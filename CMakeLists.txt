@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ur5e_rt_controller VERSION 4.0.0 LANGUAGES CXX)
+project(ur5e_rt_controller VERSION 4.2.0 LANGUAGES CXX)
 
 # Require C++20, no GNU extensions
 set(CMAKE_CXX_STANDARD 20)
@@ -84,9 +84,12 @@ install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
 )
 
+# Install all Python utility scripts
 install(PROGRAMS
   scripts/monitor_data_health.py
   scripts/plot_ur_trajectory.py
+  scripts/motion_editor_gui.py
+  scripts/hand_udp_sender_example.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
