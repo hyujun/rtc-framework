@@ -2,8 +2,8 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>ur5e_rt_controller</name>
-  <version>4.2.0</version>
-  <description>UR5e Real-time Controller with Custom Hand Integration (v4.2 - Parallel Computing Optimization)</description>
+  <version>4.2.1</version>
+  <description>UR5e Real-time Controller with Custom Hand Integration (v4.2.1 - ROS2 Standard Structure)</description>
   <maintainer email="your.email@example.com">Your Name</maintainer>
   <license>MIT</license>
 
