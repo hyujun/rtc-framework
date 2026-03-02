@@ -5,6 +5,45 @@
 
 ---
 
+## [4.2.0] - 2026-03-02
+
+### 추가 (Added)
+- **병렬 컴퓨팅 최적화**: CallbackGroup 기반 멀티스레드 executor 아키텍처
+  - `thread_config.hpp`: 스레드 설정 구조체 및 사전 정의 설정 (RT, Sensor, Logging, Aux)
+  - `thread_utils.hpp`: RT 스케줄링 및 CPU affinity 유틸리티 함수
+    - `ApplyThreadConfig()`: SCHED_FIFO, CPU affinity, nice value 설정
+    - `VerifyThreadConfig()`: 스레드 설정 검증 및 로깅
+    - `GetThreadStats()`: 지터 측정용 통계 함수
+- **4개 CallbackGroup 분리** (`custom_controller.cpp`):
+  - `cb_group_rt_`: control_timer_(500Hz), timeout_timer_(50Hz) → Core 2, SCHED_FIFO 90
+  - `cb_group_sensor_`: joint_state_sub_, target_sub_, hand_state_sub_ → Core 3, SCHED_FIFO 70
+  - `cb_group_log_`: 로깅 작업 → Core 4, SCHED_OTHER nice -5
+  - `cb_group_aux_`: estop_pub_ → Core 5, SCHED_OTHER
+- **mlockall 메모리 잠금**: main()에서 페이지 폴트 방지
+- **스레드별 RT 설정 자동화**: 각 executor를 별도 스레드에서 실행하며 스케줄러 정책 자동 적용
+
+### 변경 (Changed)
+- **`custom_controller.cpp` 재설계**:
+  - SingleThreadedExecutor 4개로 분리 (이전: 1개)
+  - 각 executor를 std::thread에서 spin() + RT 설정 적용
+  - 콜백 그룹 인자를 create_subscription/create_wall_timer에 명시
+- **main() 분리**: mlockall, executor 생성, 스레드 spawn 로직 추가
+- **CMakeLists.txt**: C++20 표준 유지, thread_utils.hpp 헤더 install 경로 추가
+
+### 성능 개선
+- **제어 지터 목표**: ~500μs → <50μs (10배 개선 예상)
+- **E-STOP 반응 시간**: ~100ms → <20ms (5배 개선 예상)
+- **Priority inversion 제거**: RT 루프와 I/O가 별도 코어에서 실행
+- **CPU 마이그레이션 차단**: CPU affinity로 cache warmup 유지
+
+### 시스템 요구사항 변경
+- **RT 권한 필수**: `/etc/security/limits.conf`에 `@realtime - rtprio 99` 설정
+- **6-core CPU 권장**: Core 0-1(OS/DDS), 2(RT), 3(Sensor), 4(Log), 5(Aux)
+- **4-core fallback 지원**: thread_config.hpp에 4-core 설정 포함
+- **PREEMPT_RT 커널 권장**: 최대 RT 성능을 위해 필요
+
+---
+
 ## [4.0.0] - 2026-03-02
 
 ### 추가 (Added)
