@@ -5,6 +5,52 @@
 
 ---
 
+## [4.2.1] - 2026-03-02
+
+### 제거 (Removed)
+- **setup.py 삭제**: ROS2 ament_cmake 표준 구조 준수
+  - ROS2 C++ 패키지는 setup.py 불필요 (CMakeLists.txt로 충분)
+  - 기존 setup.py는 패키지 디스커버리 실패 (`find_packages()` 0개 발견)
+  - entry_points 파일명 불일치 (`monitor_data_health_v2.py` 파일 없음)
+
+### 변경 (Changed)
+- **CMakeLists.txt v4.2.0 업데이트**:
+  - VERSION: 4.0.0 → 4.2.0 (package.xml과 일치)
+  - `install(PROGRAMS)` 섹션에 누락된 스크립트 2개 추가:
+    - `scripts/motion_editor_gui.py`
+    - `scripts/hand_udp_sender_example.py`
+  - 총 4개 Python 유틸리티 스크립트 설치 (`ros2 run` 사용 가능)
+
+### 사용자 영향
+- **Python 의존성 설치 방법 변경**:
+  ```bash
+  # 이전 (작동 안 함)
+  pip install -e .  # ❌ 실패
+  
+  # 변경 후 (명확)
+  pip3 install --user -r requirements.txt  # Python 의존성 설치
+  colcon build                              # ROS2 패키지 빌드
+  ```
+
+- **스크립트 실행 방법 표준화**:
+  ```bash
+  # ROS2 표준 (권장)
+  ros2 run ur5e_rt_controller monitor_data_health.py
+  ros2 run ur5e_rt_controller plot_ur_trajectory.py /tmp/ur5e_control_log.csv
+  ros2 run ur5e_rt_controller motion_editor_gui.py
+  ros2 run ur5e_rt_controller hand_udp_sender_example.py
+  
+  # 또는 직접 실행
+  python3 ~/ur_ws/src/ur5e-rt-controller/scripts/plot_ur_trajectory.py <csv_file>
+  ```
+
+### 기술적 세부사항
+- **requirements.txt 유지**: 문서 목적으로 보관
+- **CMakeLists.txt가 모든 설치 처리**: C++ 실행 파일, Python 스크립트, 헤더, 설정 파일
+- **ROS2 Best Practice 준수**: ament_cmake 패키지는 setup.py 불필요
+
+---
+
 ## [4.2.0] - 2026-03-02
 
 ### 추가 (Added)
