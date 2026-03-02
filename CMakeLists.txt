@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ur5e_rt_controller VERSION 4.2.1 LANGUAGES CXX)
+project(ur5e_rt_controller VERSION 4.2.2 LANGUAGES CXX)
 
 # Require C++20, no GNU extensions
 set(CMAKE_CXX_STANDARD 20)
