@@ -1,46 +1,49 @@
-// data_logger.hpp - v2 (CSV Logging)
-#pragma once
+#ifndef UR5E_RT_CONTROLLER_DATA_LOGGER_H_
+#define UR5E_RT_CONTROLLER_DATA_LOGGER_H_
 
-#include <string>
+#include <cstddef>
+#include <filesystem>
 #include <fstream>
-#include <vector>
-#include <chrono>
-#include <memory>
+#include <span>
 
-namespace ur5e_controller {
+#include "ur5e_rt_controller/rt_controller_interface.hpp"
 
+namespace ur5e_rt_controller {
+
+// Writes control data to a CSV file in a non-RT (logging) thread context.
+// Copy is disabled; move is enabled for deferred construction.
 class DataLogger {
-public:
-  explicit DataLogger(const std::string& filename);
+ public:
+  explicit DataLogger(std::filesystem::path log_path);
   ~DataLogger();
-  
-  // Disable copy
-  DataLogger(const DataLogger&) = delete;
-  DataLogger& operator=(const DataLogger&) = delete;
-  
-  // Enable move
-  DataLogger(DataLogger&&) = default;
-  DataLogger& operator=(DataLogger&&) = default;
-  
-  // Logging interface
-  void log_control_data(
-      double timestamp,
-      const std::vector<double>& current_positions,
-      const std::vector<double>& target_positions,
-      const std::vector<double>& commands);
-  
-  void log_hand_data(
-      double timestamp,
-      const std::vector<double>& hand_positions);
-  
-  void flush();
-  bool is_open() const;
 
-private:
+  DataLogger(const DataLogger&)            = delete;
+  DataLogger& operator=(const DataLogger&) = delete;
+  DataLogger(DataLogger&&)                 = default;
+  DataLogger& operator=(DataLogger&&)      = default;
+
+  // Log one control step: timestamp (s), current positions, target positions,
+  // and computed commands (all kNumRobotJoints elements).
+  void LogControlData(
+      double timestamp,
+      std::span<const double, kNumRobotJoints> current_positions,
+      std::span<const double, kNumRobotJoints> target_positions,
+      std::span<const double, kNumRobotJoints> commands);
+
+  // Log hand state for a given timestamp.
+  void LogHandData(double timestamp,
+                   std::span<const double, kNumHandJoints> hand_positions);
+
+  void Flush();
+  [[nodiscard]] bool IsOpen() const;
+
+ private:
   std::ofstream file_;
-  size_t log_count_{0};
-  
-  void write_header();
+  std::size_t   log_count_{0};
+
+  void WriteHeader();
 };
 
-}  // namespace ur5e_controller
+}  // namespace ur5e_rt_controller
+
+#endif  // UR5E_RT_CONTROLLER_DATA_LOGGER_H_

@@ -1,54 +1,78 @@
-// pd_controller.hpp - v3 (E-STOP Support)
-#pragma once
+#ifndef UR5E_RT_CONTROLLER_CONTROLLERS_PD_CONTROLLER_H_
+#define UR5E_RT_CONTROLLER_CONTROLLERS_PD_CONTROLLER_H_
+
+#include <array>
+#include <atomic>
+#include <span>
+#include <string_view>
 
 #include "ur5e_rt_controller/rt_controller_interface.hpp"
-#include <vector>
-#include <array>
-#include <chrono>
 
-namespace ur5e_controller {
+namespace ur5e_rt_controller {
 
-class PDController : public rt_controller_interface {
-public:
-  PDController(double kp, double kd);
-  
-  std::vector<double> compute_command(
-      const std::vector<double>& current_positions,
-      const std::vector<double>& current_velocities,
-      const std::vector<double>& target_positions,
-      double dt) override;
-  
-  void reset() override;
-  bool is_initialized() const override { return initialized_; }
-  
-  // Gain adjustment
-  void set_gains(double kp, double kd) {
-    kp_ = kp;
-    kd_ = kd;
+// Proportional-Derivative (PD) position controller with E-STOP support.
+//
+// Computes: command[i] = kp * e[i] + kd * de[i]/dt
+//
+// On E-STOP, commands drive the robot toward kSafePosition instead of the
+// user-specified target, allowing a controlled stop.
+class PDController final : public RTControllerInterface {
+ public:
+  // Aggregated gains — supports C++20 designated initialiser at call site:
+  //   PDController ctrl{{.kp = 5.0, .kd = 0.5}};
+  struct Gains {
+    double kp{5.0};
+    double kd{0.5};
+  };
+
+  explicit PDController(Gains gains = {}) noexcept;
+
+  [[nodiscard]] ControllerOutput Compute(
+      const ControllerState& state) noexcept override;
+
+  void SetRobotTarget(
+      std::span<const double, kNumRobotJoints> target) noexcept override;
+
+  void SetHandTarget(
+      std::span<const double, kNumHandJoints> target) noexcept override;
+
+  [[nodiscard]] std::string_view Name() const noexcept override {
+    return "PDController";
   }
-  
-  double get_kp() const { return kp_; }
-  double get_kd() const { return kd_; }
-  
-  // v3: E-STOP override
-  void trigger_estop() override;
-  void clear_estop() override;
 
-private:
-  double kp_;
-  double kd_;
-  bool initialized_{false};
-  
-  std::array<double, NUM_JOINTS> previous_positions_{};
-  std::array<double, NUM_JOINTS> previous_errors_{};
-  
-  // v3: Safe position for E-STOP recovery
-  std::array<double, NUM_JOINTS> safe_position_{0, -1.57, 1.57, -1.57, -1.57, 0};
-  
-  std::array<double, NUM_JOINTS> clamp_command(
-      const std::array<double, NUM_JOINTS>& command) const;
-  
-  double compute_derivative(double current_error, double previous_error, double dt) const;
+  // ── E-STOP interface ────────────────────────────────────────────────────────
+  void TriggerEstop() noexcept override;
+  void ClearEstop()   noexcept override;
+  [[nodiscard]] bool IsEstopped()    const noexcept override;
+  void SetHandEstop(bool enabled)    noexcept override;
+
+  // ── Gain accessors ──────────────────────────────────────────────────────────
+  void set_gains(Gains gains) noexcept { gains_ = gains; }
+  [[nodiscard]] Gains gains()  const noexcept { return gains_; }
+
+ private:
+  // Safe joint configuration used when E-STOP is active [rad].
+  static constexpr std::array<double, kNumRobotJoints> kSafePosition{
+      0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
+  static constexpr double kMaxJointVelocity = 2.0;  // rad/s
+
+  Gains  gains_;
+  std::array<double, kNumRobotJoints> robot_target_{};
+  std::array<double, kNumHandJoints>  hand_target_{};
+  std::array<double, kNumRobotJoints> previous_errors_{};
+
+  // Atomic flags allow safe access from both the RT control thread and the
+  // 50 Hz timeout-monitor thread.
+  std::atomic<bool> estopped_{false};
+  std::atomic<bool> hand_estopped_{false};
+
+  [[nodiscard]] static std::array<double, kNumRobotJoints> ClampCommands(
+      std::span<const double, kNumRobotJoints> commands) noexcept;
+
+  [[nodiscard]] static double ComputeDerivative(
+      double current_error, double previous_error, double dt) noexcept;
 };
 
-}  // namespace ur5e_controller
+}  // namespace ur5e_rt_controller
+
+#endif  // UR5E_RT_CONTROLLER_CONTROLLERS_PD_CONTROLLER_H_

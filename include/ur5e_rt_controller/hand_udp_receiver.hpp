@@ -1,55 +1,75 @@
-// hand_udp_receiver.hpp - v1
-#pragma once
+#ifndef UR5E_RT_CONTROLLER_HAND_UDP_RECEIVER_H_
+#define UR5E_RT_CONTROLLER_HAND_UDP_RECEIVER_H_
 
-#include <string>
-#include <vector>
+#include <atomic>
 #include <array>
+#include <cstddef>
 #include <functional>
-#include <sys/socket.h>
-#include <netinet/in.h>
+#include <mutex>
+#include <span>
+#include <thread>
 
-namespace ur5e_controller {
+#include "ur5e_rt_controller/rt_controller_interface.hpp"
 
+namespace ur5e_rt_controller {
+
+// Receives hand state packets over UDP and exposes them via callback and
+// snapshot accessor. Uses std::jthread (C++20) for cooperative cancellation.
 class HandUdpReceiver {
-public:
-  static constexpr size_t NUM_HAND_JOINTS = 4;
-  
-  using DataCallback = std::function<void(const std::array<double, NUM_HAND_JOINTS>&)>;
-  
-  explicit HandUdpReceiver(int port);
+ public:
+  // Callback invoked from the receive thread on every valid packet.
+  using DataCallback =
+      std::function<void(std::span<const double, kNumHandJoints>)>;
+
+  explicit HandUdpReceiver(int port) noexcept;
   ~HandUdpReceiver();
-  
-  // Disable copy
-  HandUdpReceiver(const HandUdpReceiver&) = delete;
+
+  HandUdpReceiver(const HandUdpReceiver&)            = delete;
   HandUdpReceiver& operator=(const HandUdpReceiver&) = delete;
-  
-  bool start();
-  void stop();
-  bool is_running() const { return running_; }
-  
-  void set_callback(DataCallback callback) {
+  HandUdpReceiver(HandUdpReceiver&&)                 = delete;
+  HandUdpReceiver& operator=(HandUdpReceiver&&)      = delete;
+
+  // Opens the socket and starts the receive thread. Returns false on error.
+  [[nodiscard]] bool Start();
+
+  // Requests stop via stop_token and joins the thread (idempotent).
+  void Stop() noexcept;
+
+  [[nodiscard]] bool IsRunning() const noexcept {
+    return running_.load(std::memory_order_acquire);
+  }
+
+  void SetCallback(DataCallback callback) noexcept {
     callback_ = std::move(callback);
   }
-  
-  // Get latest received data
-  std::array<double, NUM_HAND_JOINTS> get_latest_data() const;
-  
-  // Statistics
-  size_t get_packet_count() const { return packet_count_; }
-  double get_update_rate() const;
 
-private:
-  int socket_fd_{-1};
-  int port_;
-  bool running_{false};
-  
+  // Thread-safe snapshot of the most recently received data.
+  [[nodiscard]] std::array<double, kNumHandJoints> GetLatestData() const;
+
+  [[nodiscard]] std::size_t packet_count() const noexcept {
+    return packet_count_.load(std::memory_order_relaxed);
+  }
+
+  [[nodiscard]] double GetUpdateRate() const noexcept;
+
+ private:
+  int  port_;
+  int  socket_fd_{-1};
+  std::atomic<bool> running_{false};
+
   DataCallback callback_;
-  
-  std::array<double, NUM_HAND_JOINTS> latest_data_{};
-  size_t packet_count_{0};
-  
-  void receive_loop();
-  bool parse_packet(const char* buffer, size_t length);
+
+  mutable std::mutex                      data_mutex_;
+  std::array<double, kNumHandJoints> latest_data_{};
+  std::atomic<std::size_t>               packet_count_{0};
+
+  // C++20: jthread owns a stop_source; destructor requests stop and joins.
+  std::jthread receive_thread_;
+
+  void ReceiveLoop(std::stop_token stop_token);
+  [[nodiscard]] bool ParsePacket(std::span<const char> buffer) noexcept;
 };
 
-}  // namespace ur5e_controller
+}  // namespace ur5e_rt_controller
+
+#endif  // UR5E_RT_CONTROLLER_HAND_UDP_RECEIVER_H_
