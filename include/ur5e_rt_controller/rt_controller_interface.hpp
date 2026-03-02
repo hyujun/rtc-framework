@@ -1,55 +1,89 @@
-#pragma once
-#include <Eigen/Dense>
-#include <memory>
-#include <string>
+#ifndef UR5E_RT_CONTROLLER_RT_CONTROLLER_INTERFACE_H_
+#define UR5E_RT_CONTROLLER_RT_CONTROLLER_INTERFACE_H_
+
+#include <array>
+#include <concepts>
+#include <cstdint>
+#include <span>
+#include <string_view>
 
 namespace ur5e_rt_controller {
 
-// UR5e 로봇 상태
+// ── Compile-time constants ─────────────────────────────────────────────────────
+inline constexpr int kNumRobotJoints = 6;
+inline constexpr int kNumHandJoints  = 11;
+inline constexpr int kNumHandSensors = 44;  // 4 sensors × 11 joints
+
+// ── C++20 Concepts ─────────────────────────────────────────────────────────────
+// Constrains gain parameters to non-negative floating-point types.
+template <typename T>
+concept NonNegativeFloat = std::floating_point<T>;
+
+// ── Data structures (aggregate, zero-initialised by default) ──────────────────
 struct RobotState {
-  Eigen::VectorXd q{6};        // 관절 위치
-  Eigen::VectorXd qd{6};       // 관절 속도
-  Eigen::Vector3d tcp_pos{3};  // TCP 위치
-  double dt = 0.002;
-  uint64_t iter = 0;
+  std::array<double, kNumRobotJoints> positions{};
+  std::array<double, kNumRobotJoints> velocities{};
+  std::array<double, 3>               tcp_position{};
+  double   dt{0.002};
+  uint64_t iteration{0};
 };
 
-// 커스텀 핸드 상태
 struct HandState {
-  Eigen::VectorXd motor_pos{11};      // 11개 모터 위치
-  Eigen::VectorXd motor_vel{11};      // 11개 모터 속도
-  Eigen::VectorXd motor_current{11};  // 11개 모터 전류
-  Eigen::VectorXd sensor_data{44};    // 4개 센서 × 11개 = 44개 데이터
-  bool valid = false;
+  std::array<double, kNumHandJoints>  motor_positions{};
+  std::array<double, kNumHandJoints>  motor_velocities{};
+  std::array<double, kNumHandJoints>  motor_currents{};
+  std::array<double, kNumHandSensors> sensor_data{};
+  bool valid{false};
 };
 
-// 통합 제어 상태
 struct ControllerState {
-  RobotState robot;
-  HandState hand;
-  double dt = 0.002;
-  uint64_t iter = 0;
+  RobotState robot{};
+  HandState  hand{};
+  double   dt{0.002};
+  uint64_t iteration{0};
 };
 
-// 제어 출력
 struct ControllerOutput {
-  Eigen::VectorXd robot_cmd{6};   // UR5e 명령
-  Eigen::VectorXd hand_cmd{11};   // Hand 모터 위치 명령
-  bool valid = true;
+  std::array<double, kNumRobotJoints> robot_commands{};
+  std::array<double, kNumHandJoints>  hand_commands{};
+  bool valid{true};
 };
 
-// 제어기 인터페이스
+// ── Abstract interface (Strategy Pattern) ─────────────────────────────────────
+//
+// All virtual methods are noexcept to guarantee real-time safety: any
+// exception thrown inside a 500 Hz timer would terminate the process.
 class RTControllerInterface {
-public:
+ public:
   virtual ~RTControllerInterface() = default;
-  virtual ControllerOutput compute(const ControllerState& state) noexcept = 0;
-  virtual void setRobotTarget(const Eigen::VectorXd& target) noexcept { robot_target_ = target; }
-  virtual void setHandTarget(const Eigen::VectorXd& target) noexcept { hand_target_ = target; }
-  virtual std::string name() const noexcept = 0;
 
-protected:
-  Eigen::VectorXd robot_target_{6};
-  Eigen::VectorXd hand_target_{11};
+  RTControllerInterface(const RTControllerInterface&)            = delete;
+  RTControllerInterface& operator=(const RTControllerInterface&) = delete;
+  RTControllerInterface(RTControllerInterface&&)                 = delete;
+  RTControllerInterface& operator=(RTControllerInterface&&)      = delete;
+
+  // Compute one control step. Must be noexcept for RT safety.
+  [[nodiscard]] virtual ControllerOutput Compute(
+      const ControllerState& state) noexcept = 0;
+
+  virtual void SetRobotTarget(
+      std::span<const double, kNumRobotJoints> target) noexcept = 0;
+
+  virtual void SetHandTarget(
+      std::span<const double, kNumHandJoints> target) noexcept = 0;
+
+  [[nodiscard]] virtual std::string_view Name() const noexcept = 0;
+
+  // E-STOP interface — default no-ops for controllers that do not need it.
+  virtual void TriggerEstop() noexcept                      {}
+  virtual void ClearEstop() noexcept                        {}
+  [[nodiscard]] virtual bool IsEstopped() const noexcept    { return false; }
+  virtual void SetHandEstop(bool /*enabled*/) noexcept      {}
+
+ protected:
+  RTControllerInterface() = default;
 };
 
 }  // namespace ur5e_rt_controller
+
+#endif  // UR5E_RT_CONTROLLER_RT_CONTROLLER_INTERFACE_H_
