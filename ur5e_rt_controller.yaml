@@ -1,0 +1,47 @@
+# ur5e_rt_controller.yaml - v4 (E-STOP Parameters)
+
+# Controller Parameters
+controller:
+  control_rate: 500.0          # Hz
+  kp: 5.0                      # Proportional gain
+  kd: 0.5                      # Derivative gain
+  enable_logging: true         # Enable CSV logging
+  log_path: "/tmp/ur5e_control_log.csv"
+
+# Joint Limits
+joint_limits:
+  max_velocity: 2.0            # rad/s
+  max_acceleration: 5.0        # rad/s^2
+  position_limits:
+    joint_0: [-6.28, 6.28]     # Base
+    joint_1: [-6.28, 6.28]     # Shoulder
+    joint_2: [-3.14, 3.14]     # Elbow
+    joint_3: [-6.28, 6.28]     # Wrist 1
+    joint_4: [-6.28, 6.28]     # Wrist 2
+    joint_5: [-6.28, 6.28]     # Wrist 3
+
+# v4: E-STOP Configuration
+estop:
+  enable_estop: true           # Enable E-STOP monitoring
+  robot_timeout_ms: 100.0      # Robot data timeout (ms)
+  hand_timeout_ms: 200.0       # Hand data timeout (ms)
+  safe_position:               # Safe position for recovery (rad)
+    - 0.0                      # Base
+    - -1.57                    # Shoulder
+    - 1.57                     # Elbow
+    - -1.57                    # Wrist 1
+    - -1.57                    # Wrist 2
+    - 0.0                      # Wrist 3
+
+# Safety Parameters
+safety:
+  enable_collision_check: false
+  force_threshold: 50.0        # N
+  torque_threshold: 10.0       # Nm
+
+# Logging Parameters
+logging:
+  enable_logging: true
+  log_frequency: 100.0         # Hz (subsample from control rate)
+  max_log_size_mb: 100         # Maximum log file size
+  log_directory: "/tmp/ur5e_logs"

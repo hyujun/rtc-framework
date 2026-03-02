@@ -1,0 +1,32 @@
+# hand_udp_receiver.yaml - v1
+
+# UDP Configuration
+udp:
+  port: 50001                  # UDP listening port
+  buffer_size: 1024            # Bytes
+  timeout_ms: 1000             # Socket timeout
+
+# Publishing Parameters
+publishing:
+  rate: 100.0                  # Hz
+  topic: "/hand/joint_states"
+  queue_size: 10
+
+# Hand Configuration
+hand:
+  num_joints: 4
+  joint_names:
+    - "finger_1"
+    - "finger_2"
+    - "finger_3"
+    - "finger_4"
+  
+  # Joint limits (normalized 0.0 - 1.0)
+  min_position: 0.0
+  max_position: 1.0
+
+# Monitoring
+monitoring:
+  enable_statistics: true
+  statistics_period: 5.0       # seconds
+  log_packet_loss: true
