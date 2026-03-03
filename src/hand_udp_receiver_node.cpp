@@ -3,6 +3,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 
+#include <sys/mman.h>  // mlockall
+
 #include <array>
 #include <chrono>
 #include <memory>
@@ -87,6 +89,12 @@ class HandUdpReceiverNode : public rclcpp::Node {
 };
 
 int main(int argc, char** argv) {
+  // Lock all current and future pages — prevents page faults in the UDP recv
+  // jthread which runs at SCHED_FIFO 65.
+  if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
+    fprintf(stderr, "[WARN] hand_udp_receiver_node: mlockall failed\n");
+  }
+
   rclcpp::init(argc, argv);
   rclcpp::spin(std::make_shared<HandUdpReceiverNode>());
   rclcpp::shutdown();

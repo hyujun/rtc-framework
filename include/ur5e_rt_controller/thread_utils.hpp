@@ -8,8 +8,12 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
+#include <algorithm>   // std::min_element, std::max_element
 #include <cstring>
+#include <numeric>     // std::accumulate
 #include <string>
+#include <tuple>       // std::tuple
+#include <vector>      // std::vector
 
 namespace ur5e_rt_controller {
 
@@ -121,6 +125,31 @@ inline std::tuple<double, double, double> GetThreadStats(
   double avg = sum / latencies_us.size();
   
   return {min_val, max_val, avg};
+}
+
+// Returns the number of online logical CPUs on the current system.
+inline int GetOnlineCpuCount() noexcept {
+  const int n = static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN));
+  return (n > 0) ? n : 1;
+}
+
+// Aggregated thread configs selected at runtime for all four executor threads.
+struct SystemThreadConfigs {
+  ThreadConfig rt_control;
+  ThreadConfig sensor;
+  ThreadConfig logging;
+  ThreadConfig aux;
+};
+
+// Selects the appropriate ThreadConfig set based on the number of online CPUs.
+// >=6 cores: uses the standard 6-core configs (Cores 2-5).
+// <6  cores: falls back to 4-core configs (Cores 1-3); aux shares Core 3.
+inline SystemThreadConfigs SelectThreadConfigs() noexcept {
+  if (GetOnlineCpuCount() >= 6) {
+    return {kRtControlConfig, kSensorConfig, kLoggingConfig, kAuxConfig};
+  }
+  return {kRtControlConfig4Core, kSensorConfig4Core,
+          kLoggingConfig4Core,   kLoggingConfig4Core};
 }
 
 }  // namespace ur5e_rt_controller

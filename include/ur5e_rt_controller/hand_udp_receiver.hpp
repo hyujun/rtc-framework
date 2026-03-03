@@ -10,6 +10,8 @@
 #include <thread>
 
 #include "ur5e_rt_controller/rt_controller_interface.hpp"
+#include "ur5e_rt_controller/thread_config.hpp"
+#include "ur5e_rt_controller/thread_utils.hpp"
 
 namespace ur5e_rt_controller {
 
@@ -21,7 +23,11 @@ class HandUdpReceiver {
   using DataCallback =
       std::function<void(std::span<const double, kNumHandJoints>)>;
 
-  explicit HandUdpReceiver(int port) noexcept;
+  // thread_cfg defaults to kUdpRecvConfig (Core 3, SCHED_FIFO 65).
+  // Pass a custom config or kLoggingConfig4Core for 4-core systems.
+  explicit HandUdpReceiver(
+      int port,
+      const ThreadConfig& thread_cfg = kUdpRecvConfig) noexcept;
   ~HandUdpReceiver();
 
   HandUdpReceiver(const HandUdpReceiver&)            = delete;
@@ -53,8 +59,9 @@ class HandUdpReceiver {
   [[nodiscard]] double GetUpdateRate() const noexcept;
 
  private:
-  int  port_;
-  int  socket_fd_{-1};
+  int          port_;
+  int          socket_fd_{-1};
+  ThreadConfig thread_cfg_;
   std::atomic<bool> running_{false};
 
   DataCallback callback_;
