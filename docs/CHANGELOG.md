@@ -5,6 +5,78 @@
 
 ---
 
+## [4.3.0] - 2026-03-03
+
+### 추가 (Added) — Pinocchio 모델 기반 제어기 3종
+
+#### `PinocchioController` (`include/ur5e_rt_controller/controllers/pinocchio_controller.hpp`)
+관절공간 PD 제어에 Pinocchio 동역학 모델을 결합한 제어기.
+
+- **제어 법칙**: `command[i] = Kp * e[i] + Kd * ė[i] + g(q)[i] [+ C(q,v)·v[i]]`
+- **중력 보상**: `pinocchio::computeGeneralizedGravity(model, data, q)` — Pinocchio RNEA
+- **코리올리 보상**: `pinocchio::computeCoriolisMatrix(model, data, q, v)` (선택적, 기본 off)
+- **Forward Kinematics**: `data_.oMi[end_id_]`에서 TCP 위치 캐시
+- **야코비안**: `pinocchio::computeJointJacobian` — 진단용 접근자 제공
+- 모든 Eigen 작업 버퍼 생성자에서 사전 할당 → 500 Hz 경로 힙 할당 없음
+- `LDLT<Matrix3d>` (3×3 고정크기) 사용으로 스택 할당 보장
+- E-STOP 시 `kSafePosition = [0, -1.57, 1.57, -1.57, -1.57, 0]`으로 수렴
+
+#### `ClikController` (`include/ur5e_rt_controller/controllers/clik_controller.hpp`)
+감쇠 야코비안 유사역행렬을 이용한 Closed-Loop IK. **Cartesian 위치(3-DOF) 제어**.
+
+- **타겟 입력**: `[x, y, z, null_q3, null_q4, null_q5]` — 처음 3개는 TCP 위치 (m), 나머지 3개는 null-space 관절 참조값 (rad)
+- **1차 태스크**: `dq = kp * J_pos^# * pos_error`
+  - 감쇠 유사역행렬: `J_pos^# = J_pos^T (J_pos J_pos^T + λ²I)^{-1}`
+- **null-space 2차 태스크**: `dq += null_kp * (I − J_pos^# J_pos) * (q_null − q)`
+  - 잉여 DOF를 선호 자세(관절 한계 회피 등)로 유지
+- **적분**: `q_cmd = q + clamp(dq, ±v_max) * dt`
+- `LDLT<Matrix3d>` (3×3 고정크기) — 스택 할당, RT 경로 힙 할당 없음
+- 진단 접근자: `tcp_position()`, `position_error()`
+
+#### `OperationalSpaceController` (`include/ur5e_rt_controller/controllers/operational_space_controller.hpp`)
+완전 6-DOF Cartesian PD 제어기. 위치와 자세를 동시에 제어.
+
+- **타겟 입력**: `[x, y, z, roll, pitch, yaw]` — 위치 (m) + 자세 (rad, ZYX 오일러)
+- **자세 오차**: `rot_err = log₃(R_des * R_FK(q)^T)` — Pinocchio `pinocchio::log3()` (SO(3) 로그맵)
+- **태스크공간 PD 법칙**:
+  ```
+  task_vel[0:3] = kp_pos * pos_err  −  kd_pos * (J·dq)[0:3]
+  task_vel[3:6] = kp_rot * rot_err  −  kd_rot * (J·dq)[3:6]
+  ```
+- **역운동학**: `dq = J^# * task_vel`, `J^# = J^T (J J^T + λ²I₆)^{-1}`
+- **선택적 중력 보상**: `enable_gravity_compensation` 플래그로 활성화
+- `PartialPivLU<Matrix<double,6,6>>` (6×6 고정크기) — 스택 할당, RT 경로 힙 할당 없음
+- 진단 접근자: `tcp_position()`, `pose_error()`, `jacobian()`
+- `SetRobotTarget()` 내에서 RPY → 회전행렬 사전 계산 (센서 스레드, RT 경로 외부)
+
+### 추가 (Added) — 빌드 시스템
+
+- **`CMakeLists.txt`**: `find_package(pinocchio REQUIRED)` + `target_link_libraries(custom_controller pinocchio::pinocchio)` 추가
+- **`package.xml`**: `<depend>pinocchio</depend>` 추가
+- **`install.sh`**: `ros-humble-pinocchio` apt 설치 단계 추가, 버전 표시 v4.3.0으로 업데이트
+
+### 변경 (Changed)
+
+- **`src/custom_controller.cpp`** 상단 주석 블록: 3가지 Pinocchio 제어기 교체 가이드 표 추가 (4단계 마이그레이션 절차 포함)
+- **`README.md`**: Pinocchio 제어기 섹션 신규 추가, 의존성 표 업데이트, 버전 이력 갱신
+
+### 공통 RT 안전성 설계
+
+| 항목 | 내용 |
+|---|---|
+| 힙 할당 (500 Hz 경로) | 없음 — 생성자에서 모든 Eigen 버퍼 사전 할당 |
+| 행렬 분해 | 고정크기 Eigen 타입 사용 (스택 할당) |
+| noexcept | 모든 public 인터페이스 메서드 필수 적용 |
+| E-STOP | `std::atomic<bool>` 플래그, kSafePosition으로 수렴 |
+| URDF 로드 | 생성자에서 1회만 수행 (RT 경로 외부) |
+
+### 사용자 영향
+- **기존 동작 유지**: PDController 기본값 그대로 — 아무것도 바꾸지 않아도 됨
+- **Pinocchio 설치 필요**: `sudo apt install ros-humble-pinocchio`
+- **URDF 경로 지정 필요**: 각 Pinocchio 제어기 생성자에 절대 경로 전달
+
+---
+
 ## [4.2.3] - 2026-03-03
 
 ### 수정 (Fixed) — RT 안전성 9건

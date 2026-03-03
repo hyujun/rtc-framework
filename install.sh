@@ -10,7 +10,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-echo -e "${BLUE}🚀 UR5e RT Controller v4.2.1 Installation${NC}"
+echo -e "${BLUE}🚀 UR5e RT Controller v4.3.0 Installation${NC}"
 echo "==================================================="
 
 # Check ROS2
@@ -45,6 +45,29 @@ sudo apt install -y \
     ros-humble-ur-description \
     ros-humble-control-msgs \
     ros-humble-industrial-msgs
+
+# Pinocchio — rigid-body dynamics library (required for model-based controllers v4.3.0+)
+echo -e "${BLUE}📦 Installing Pinocchio...${NC}"
+if sudo apt install -y ros-humble-pinocchio 2>/dev/null; then
+    echo -e "${GREEN}✅ Pinocchio installed via ros-humble-pinocchio${NC}"
+else
+    echo -e "${YELLOW}⚠️  ros-humble-pinocchio not found, trying robotpkg...${NC}"
+    sudo sh -c "echo 'deb [arch=amd64] http://robotpkg.openrobots.org/packages/debian/pub $(lsb_release -sc) robotpkg' \
+        > /etc/apt/sources.list.d/robotpkg.list"
+    curl -fsSL http://robotpkg.openrobots.org/packages/debian/robotpkg.key \
+        | sudo apt-key add - 2>/dev/null || true
+    sudo apt update
+    if sudo apt install -y robotpkg-py310-pinocchio 2>/dev/null; then
+        echo -e "${GREEN}✅ Pinocchio installed via robotpkg${NC}"
+        echo "export PATH=/opt/openrobots/bin:\$PATH" >> ~/.bashrc
+        echo "export PKG_CONFIG_PATH=/opt/openrobots/lib/pkgconfig:\$PKG_CONFIG_PATH" >> ~/.bashrc
+        echo "export LD_LIBRARY_PATH=/opt/openrobots/lib:\$LD_LIBRARY_PATH" >> ~/.bashrc
+        echo "export CMAKE_PREFIX_PATH=/opt/openrobots:\$CMAKE_PREFIX_PATH" >> ~/.bashrc
+    else
+        echo -e "${YELLOW}⚠️  Pinocchio not installed — PinocchioController / ClikController / OperationalSpaceController will be unavailable${NC}"
+        echo -e "${YELLOW}   See: https://stack-of-tasks.github.io/pinocchio/download.html${NC}"
+    fi
+fi
 
 # Build tools
 sudo apt install -y \
@@ -161,3 +184,10 @@ echo "⚠️  For v4.2.0+ parallel computing:"
 echo "   1. Logout and login after installation"
 echo "   2. Verify RT permissions: ulimit -r (should be 99)"
 echo "   3. See docs/RT_OPTIMIZATION.md for CPU isolation setup"
+echo ""
+echo "🤖 Pinocchio-based controllers (v4.3.0+):"
+echo "   PinocchioController  — joint-space PD + gravity/Coriolis compensation"
+echo "   ClikController       — Cartesian position control (CLIK, 3-DOF + null-space)"
+echo "   OperationalSpaceController — full 6-DOF Cartesian PD (position + orientation)"
+echo "   URDF path required:  /opt/ros/humble/share/ur_description/urdf/ur5e.urdf"
+echo "   See README.md for usage and migration guide"
