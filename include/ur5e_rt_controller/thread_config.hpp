@@ -1,6 +1,7 @@
 #ifndef UR5E_RT_CONTROLLER_THREAD_CONFIG_HPP_
 #define UR5E_RT_CONTROLLER_THREAD_CONFIG_HPP_
 
+#include <sched.h>  // SCHED_FIFO, SCHED_OTHER, SCHED_RR
 #include <string>
 
 namespace ur5e_rt_controller {

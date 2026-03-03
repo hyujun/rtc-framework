@@ -5,6 +5,63 @@
 
 ---
 
+## [4.2.3] - 2026-03-03
+
+### 수정 (Fixed) — RT 안전성 9건
+
+#### CRITICAL: RT 스레드 파일 I/O 제거 (Fix 1)
+- **문제**: `ControlLoop()` (SCHED_FIFO 90, Core 2)에서 `DataLogger::LogControlData()` 직접 호출 → `std::ofstream` syscall로 수백 µs 블로킹 가능
+- **해결**: `log_buffer.hpp` 신규 추가 — `SpscLogBuffer<512>` lock-free SPSC 링 버퍼
+  - `ControlLoop()`는 `log_buffer_.Push(entry)` 만 호출 (O(1), 힙 할당 없음)
+  - `drain_timer_` (100Hz, log 스레드 Core 4)가 `logger_->DrainBuffer(log_buffer_)` 호출
+  - 파일 I/O가 RT 경로에서 완전히 제거됨
+
+#### CRITICAL: `state_received_` / `target_received_` 데이터 레이스 (Fix 2)
+- **문제**: `state_received_`, `target_received_`, `hand_data_received_` 가 plain `bool`로 선언되어 RT 스레드(읽기)와 sensor 스레드(쓰기)가 동시 접근 → C++ Undefined Behavior
+- **해결**: `std::atomic<bool>` 으로 교체; 쓰기는 `memory_order_release`, 읽기는 `memory_order_acquire` 사용
+
+#### CRITICAL: `TargetCallback`에서 뮤텍스 해제 후 `target_positions_` 읽기 (Fix 3)
+- **문제**: `target_mutex_` 해제 후 `controller_->SetRobotTarget(target_positions_)` 호출 → RT 스레드가 사이에 덮어쓸 수 있음
+- **해결**: 뮤텍스 안에서 `local_target = target_positions_` 복사본 생성 후 복사본으로 호출
+
+#### MAJOR: `target_mutex_` 블록 논리 오류 + 로깅 무보호 읽기 (Fix 4)
+- **문제**: `ControlLoop()`의 `target_mutex_` 블록이 `target_positions_` 복사 없이 무관한 필드만 설정; 로깅 시 `target_positions_`를 뮤텍스 없이 읽음
+- **해결**: `target_snapshot_` 멤버 추가 — `target_mutex_` 안에서 복사 후 루프 전체에서 스냅샷만 사용; `state.robot.dt`, `state.iteration`은 뮤텍스 밖으로 이동
+
+#### MAJOR: RT 스레드에서 `publish()` 힙 할당 (Fix 5)
+- **문제**: `std_msgs::msg::Float64MultiArray` 생성 + `vector::assign()` + `publish()` 가 RT 루프에서 힙 할당 유발 가능
+- **해결**: `realtime_tools::RealtimePublisher<T>` 도입 — 메시지 사전 할당, `trylock()` / `unlockAndPublish()`로 non-blocking 발행
+
+#### MAJOR: `HandUdpReceiver` jthread RT 스케줄링 미적용 (Fix 6)
+- **문제**: `kUdpRecvConfig` (Core 3, SCHED_FIFO 65)가 선언만 되고 jthread에 전혀 적용되지 않음
+- **해결**: `HandUdpReceiver` 생성자에 `const ThreadConfig& thread_cfg = kUdpRecvConfig` 파라미터 추가; `thread_cfg_` 멤버 저장 (구현체의 `ReceiveLoop()` 진입 시 `ApplyThreadConfig()` 호출 필요)
+- `hand_udp_receiver_node.cpp` main()에 `mlockall()` 추가
+
+#### MAJOR: `mlockall` 호출 순서 오류 (Fix 7)
+- **문제**: `rclcpp::init()` 이후 `mlockall(MCL_CURRENT)` 호출 → DDS/RMW가 이미 할당한 페이지 미잠금
+- **해결**: `mlockall(MCL_CURRENT | MCL_FUTURE)` → `rclcpp::init()` 순서로 재배치; `MCL_FUTURE`로 이후 할당도 자동 잠금
+
+#### MEDIUM: `GetThreadStats()` include 누락 (Fix 8)
+- **문제**: `thread_utils.hpp`가 `std::min_element`, `std::accumulate`, `std::tuple`, `std::vector` 를 사용하나 해당 헤더 미포함 → 다른 TU에서 직접 include 시 컴파일 실패 가능
+- **해결**: `<algorithm>`, `<numeric>`, `<tuple>`, `<vector>` 추가; `thread_config.hpp`에 `<sched.h>` 추가 (독립 포함 지원)
+
+#### LOW: 4코어 fallback 자동 미적용 (Fix 9)
+- **문제**: `kRtControlConfig4Core` 등이 선언만 되고 `main()`은 항상 6코어 설정 하드코딩 → 4코어 시스템에서 CPU affinity 실패
+- **해결**: `thread_utils.hpp`에 `GetOnlineCpuCount()` (`sysconf` 래퍼) + `SelectThreadConfigs()` 추가; `main()`이 런타임에 코어 수를 감지해 적절한 설정 선택
+
+### 추가 (Added)
+- `include/ur5e_rt_controller/log_buffer.hpp`: `LogEntry` 구조체 + `SpscLogBuffer<N>` 템플릿 + `ControlLogBuffer` typedef
+- `DataLogger::DrainBuffer(ControlLogBuffer&)`: log 스레드 전용 드레인 메서드
+- `GetOnlineCpuCount()`, `SelectThreadConfigs()`, `SystemThreadConfigs`: `thread_utils.hpp`에 추가
+
+### 사용자 영향
+- **기능 변화 없음**: ROS2 인터페이스(토픽, 파라미터, 서비스) 동일
+- **로그 파일 계속 생성**: drain 타이머(100Hz)가 log 스레드에서 CSV 기록 유지
+- **4코어 시스템**: 별도 설정 없이 자동으로 4코어 스레드 설정 적용
+- **RT 지터 개선**: 파일 I/O 및 힙 할당 제거로 500Hz 루프 안정성 향상
+
+---
+
 ## [4.2.2] - 2026-03-02
 
 ### 제거 (Removed)

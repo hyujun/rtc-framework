@@ -63,12 +63,13 @@ ur5e_rt_controller/
 │   ├── controllers/                       # 제어기 구현체
 │   │   ├── p_controller.hpp              # P 제어기 (비례 제어)
 │   │   └── pd_controller.hpp             # PD 제어기 + E-STOP 지원
-│   ├── data_logger.hpp                   # CSV 데이터 로거
-│   ├── hand_udp_receiver.hpp             # UDP 핸드 수신기 클래스
+│   ├── data_logger.hpp                   # CSV 데이터 로거 (DrainBuffer 포함)
+│   ├── hand_udp_receiver.hpp             # UDP 핸드 수신기 클래스 (ThreadConfig 지원)
 │   ├── hand_udp_sender.hpp               # UDP 핸드 송신기 클래스
+│   ├── log_buffer.hpp                    # RT-safe SPSC 링 버퍼 (v4.2.3)
 │   ├── rt_controller_interface.hpp       # 제어기 기반 인터페이스 (Strategy Pattern)
 │   ├── thread_config.hpp                 # 멀티스레드 설정 구조체 (v4.2.0)
-│   └── thread_utils.hpp                  # RT 스케줄링 유틸리티 (v4.2.0)
+│   └── thread_utils.hpp                  # RT 스케줄링 유틸리티 + SelectThreadConfigs (v4.2.3)
 │
 ├── launch/                                # ROS2 런치 파일
 │   ├── hand_udp.launch.py                # UDP 핸드 노드 단독 실행
@@ -128,9 +129,16 @@ ur5e_rt_controller/
 | 멤버 | 타입 | 역할 |
 |------|------|------|
 | `controller_` | `PDController` | PD 제어 계산 |
-| `logger_` | `DataLogger` | CSV 로깅 |
+| `logger_` | `DataLogger` | CSV 로깅 (log 스레드 전용) |
+| `log_buffer_` | `ControlLogBuffer` | SPSC 링 버퍼 — RT→log 스레드 전달 |
+| `target_snapshot_` | `array<double,6>` | RT 루프 전용 타겟 복사본 |
 | `control_timer_` | `rclcpp::TimerBase` | 500Hz 제어 루프 |
 | `timeout_timer_` | `rclcpp::TimerBase` | 50Hz E-STOP 감시 |
+| `drain_timer_` | `rclcpp::TimerBase` | 100Hz 링 버퍼 → CSV 드레인 (log 스레드) |
+| `rt_command_pub_` | `RealtimePublisher` | RT-safe 위치 명령 퍼블리셔 |
+| `state_received_` | `atomic<bool>` | 로봇 데이터 수신 플래그 |
+| `target_received_` | `atomic<bool>` | 타겟 수신 플래그 |
+| `hand_data_received_` | `atomic<bool>` | 핸드 데이터 수신 플래그 |
 | `cb_group_rt_` | CallbackGroup | RT 제어 루프 (Core 2, SCHED_FIFO 90) |
 | `cb_group_sensor_` | CallbackGroup | 센서 데이터 수신 (Core 3, SCHED_FIFO 70) |
 | `cb_group_log_` | CallbackGroup | 로깅 작업 (Core 4, SCHED_OTHER) |
@@ -168,6 +176,11 @@ namespace ur5e_rt_controller {
 
 #### `DataLogger` (`include/ur5e_rt_controller/data_logger.hpp`)
 이동 불가 복사 비허용 CSV 로거. 타임스탬프, 현재/목표 위치, 명령값 기록.
+`DrainBuffer(ControlLogBuffer&)` 메서드로 SPSC 링 버퍼를 소진하여 파일에 씀 — 파일 I/O는 log 스레드(Core 4)에서만 발생.
+
+#### `ControlLogBuffer` (`include/ur5e_rt_controller/log_buffer.hpp`)
+`SpscLogBuffer<512>` 기반 lock-free 단일 생산자/단일 소비자 링 버퍼.
+RT 스레드(생산자)가 `Push()`로 `LogEntry`를 넣으면, log 스레드(소비자)가 `Pop()`으로 꺼내 파일에 씀. 버퍼가 가득 차면 해당 엔트리를 드롭(RT 지터 없음).
 
 ---
 
@@ -488,8 +501,15 @@ sock.sendto(packet, target)
 - 4개 CallbackGroup 분리 (RT, Sensor, Log, Aux)
 - CPU affinity (Core 2-5 전용)
 - SCHED_FIFO 실시간 스케줄링
-- mlockall 메모리 잠금
+- `mlockall` — `rclcpp::init` 이전에 호출하여 DDS 힙 포함 전체 잠금
 - 상세 가이드: [docs/RT_OPTIMIZATION.md](docs/RT_OPTIMIZATION.md)
+
+**v4.2.3 RT 안전성 강화**:
+- `ControlLoop()`에서 파일 I/O 완전 제거 → SPSC 링 버퍼 경유
+- `RealtimePublisher` 도입으로 RT 경로 힙 할당 제거
+- `atomic<bool>` 플래그로 데이터 레이스 3건 해소
+- `HandUdpReceiver` jthread에 `kUdpRecvConfig` 자동 적용
+- `SelectThreadConfigs()` — 런타임 CPU 수 감지로 4/6코어 자동 선택
 
 ---
 
@@ -755,6 +775,7 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 
 | 버전 | 주요 변경사항 |
 |------|---------------|
+| v4.2.3 | RT 안전성 수정 9건 (SPSC 링 버퍼, RealtimePublisher, atomic 플래그, mlockall 순서 등) |
 | v4.2.2 | 디렉토리 구조 개선 (docs/ 생성, LICENSE 추가, .gitignore 추가) |
 | v4.2.1 | setup.py 제거, CMakeLists.txt 스크립트 정리 |
 | v4.2.0 | 병렬 컴퓨팅 최적화 (CallbackGroup, RT 스케줄링, CPU affinity) |
@@ -763,5 +784,5 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 | v2.0.0 | DataLogger CSV 로깅, 핸드 UDP 통합 |
 | v1.0.0 | 초기 릴리스, P/PD 제어기, 기본 ROS2 노드 |
 
-**최종 업데이트**: 2026-03-02  
-**현재 버전**: v4.2.2
+**최종 업데이트**: 2026-03-03
+**현재 버전**: v4.2.3

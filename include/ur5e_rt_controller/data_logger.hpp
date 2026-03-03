@@ -6,6 +6,7 @@
 #include <fstream>
 #include <span>
 
+#include "ur5e_rt_controller/log_buffer.hpp"
 #include "ur5e_rt_controller/rt_controller_interface.hpp"
 
 namespace ur5e_rt_controller {
@@ -36,6 +37,16 @@ class DataLogger {
 
   void Flush();
   [[nodiscard]] bool IsOpen() const;
+
+  // Drains all pending entries from the ring buffer and writes them to the CSV.
+  // Must be called exclusively from the log thread — never from the RT thread.
+  void DrainBuffer(ControlLogBuffer& buf) {
+    LogEntry entry;
+    while (buf.Pop(entry)) {
+      LogControlData(entry.timestamp, entry.current_positions,
+                     entry.target_positions, entry.commands);
+    }
+  }
 
  private:
   std::ofstream file_;
