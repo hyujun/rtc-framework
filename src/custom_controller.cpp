@@ -1,4 +1,47 @@
 // ── Includes: project header first, then ROS2, then C++ stdlib ────────────────
+//
+// ── Available Pinocchio-based controllers ────────────────────────────────────
+//
+// Three model-based controllers are available as drop-in replacements.
+// For any of them: change the controller_ member type (≈line 340) to
+//   std::unique_ptr<urtc::RTControllerInterface>
+// and remove the set_gains() call inside DeclareAndLoadParameters().
+//
+// ┌─────────────────────────────────────────────────────────────────────────┐
+// │ 1. PinocchioController — joint-space PD + gravity / Coriolis           │
+// │    Target: 6 joint angles [q0..q5] (same as PDController)              │
+// │    #include "ur5e_rt_controller/controllers/pinocchio_controller.hpp"  │
+// │                                                                         │
+// │    controller_(std::make_unique<urtc::PinocchioController>(            │
+// │        "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",          │
+// │        urtc::PinocchioController::Gains{                               │
+// │            .kp = 5.0, .kd = 0.5,                                       │
+// │            .enable_gravity_compensation  = true,                        │
+// │            .enable_coriolis_compensation = false}))                     │
+// ├─────────────────────────────────────────────────────────────────────────┤
+// │ 2. ClikController — Closed-Loop IK, Cartesian position control (3-DOF) │
+// │    Target: [x, y, z, null_q3, null_q4, null_q5]                        │
+// │      [0..2] = desired TCP position in world frame (metres)              │
+// │      [3..5] = null-space reference for joints 3–5 (radians)            │
+// │    #include "ur5e_rt_controller/controllers/clik_controller.hpp"       │
+// │                                                                         │
+// │    controller_(std::make_unique<urtc::ClikController>(                 │
+// │        "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",          │
+// │        urtc::ClikController::Gains{                                    │
+// │            .kp = 1.0, .damping = 0.01, .null_kp = 0.5}))              │
+// ├─────────────────────────────────────────────────────────────────────────┤
+// │ 3. OperationalSpaceController — OSC, full 6-DOF Cartesian PD control  │
+// │    Target: [x, y, z, roll, pitch, yaw]  (metres / radians, ZYX)       │
+// │    #include "ur5e_rt_controller/controllers/                           │
+// │              operational_space_controller.hpp"                          │
+// │                                                                         │
+// │    controller_(std::make_unique<urtc::OperationalSpaceController>(     │
+// │        "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",          │
+// │        urtc::OperationalSpaceController::Gains{                        │
+// │            .kp_pos = 1.0, .kd_pos = 0.1,                               │
+// │            .kp_rot = 0.5, .kd_rot = 0.05, .damping = 0.01}))          │
+// └─────────────────────────────────────────────────────────────────────────┘
+// ────────────────────────────────────────────────────────────────────────────
 #include "ur5e_rt_controller/controllers/pd_controller.hpp"
 #include "ur5e_rt_controller/data_logger.hpp"
 #include "ur5e_rt_controller/log_buffer.hpp"

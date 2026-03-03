@@ -28,6 +28,7 @@ find_package(controller_interface REQUIRED)
 find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(realtime_tools REQUIRED)
+find_package(pinocchio REQUIRED)
 
 # ── custom_controller ──────────────────────────────────────────────────────────
 add_executable(custom_controller
@@ -43,6 +44,7 @@ ament_target_dependencies(custom_controller
   hardware_interface
   realtime_tools
 )
+target_link_libraries(custom_controller pinocchio::pinocchio)
 
 # ── hand_udp_receiver_node ─────────────────────────────────────────────────────
 add_executable(hand_udp_receiver_node
