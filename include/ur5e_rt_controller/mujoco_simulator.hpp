@@ -4,14 +4,13 @@
 // ── Includes: project, then MuJoCo, then C++ stdlib ───────────────────────────
 #include <mujoco/mujoco.h>
 
-// Optional GLFW viewer — define MUJOCO_HAVE_GLFW in CMakeLists.txt when found
 #ifdef MUJOCO_HAVE_GLFW
 #include <GLFW/glfw3.h>
 #endif
 
 #include <array>
 #include <atomic>
-#include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <functional>
 #include <mutex>
@@ -24,36 +23,49 @@ namespace ur5e_rt_controller {
 //
 // Thread-safe wrapper around a MuJoCo physics model.
 //
+// Simulation modes (planning_sim.md §8.2):
+//   kFreeRun  — advances mj_step() as fast as possible with no timing
+//               constraints.  Best for algorithm validation, trajectory gen.
+//   kSyncStep — publishes state, waits for one controller command, then takes
+//               one physics step.  Step latency ≈ controller Compute() time,
+//               enabling direct timing measurement.
+//
 // Threading model:
-//   SimLoop  thread  — advances mj_step() at cfg.control_freq Hz; writes
-//                      latest_positions_ / latest_velocities_ under state_mutex_;
-//                      invokes state_cb_ (used to publish /joint_states).
-//   ViewerLoop thread — reads viz_qpos_ (updated by SimLoop via try_lock) and
-//                       renders the scene using GLFW + MuJoCo rendering API.
-//   Caller thread     — calls SetCommand() (protected by cmd_mutex_) and
-//                       GetPositions() / GetVelocities() (protected by state_mutex_).
+//   SimLoop thread  — runs SimLoopFreeRun or SimLoopSyncStep.
+//   ViewerLoop thread — renders scene at ~60 Hz via GLFW (optional).
+//   Caller thread   — calls SetCommand(), GetPositions(), GetVelocities().
 //
 // Synchronisation:
-//   cmd_mutex_   — protects pending_cmd_ (caller → sim)
-//   state_mutex_ — protects latest_positions_ / latest_velocities_ (sim → caller)
-//   viz_mutex_   — protects viz_qpos_ (sim → viewer); SimLoop uses try_lock to
-//                  avoid blocking the timing-critical step.
+//   cmd_mutex_   — protects pending_cmd_ (caller → sim write)
+//   cmd_pending_ — atomic flag for lock-free fast-path in FreeRun mode
+//   sync_cv_     — condition variable to wake SimLoopSyncStep on command
+//   state_mutex_ — protects latest_positions_ / latest_velocities_
+//   viz_mutex_   — protects viz_qpos_ (try_lock avoids blocking SimLoop)
 //
 class MuJoCoSimulator {
  public:
+  // Simulation execution mode.
+  enum class SimMode {
+    kFreeRun,   // Maximum speed — no timing constraints
+    kSyncStep,  // 1:1 synchronised with controller commands
+  };
+
   struct Config {
-    std::string model_path;   // absolute path to scene.xml
-    double      control_freq{500.0};  // simulation step frequency [Hz]
-    bool        enable_viewer{true};  // launch GLFW viewer thread
-    bool        realtime{true};       // sleep to match wall-clock
-    double      sim_speed{1.0};       // realtime multiplier (2.0 = 2x faster)
-    // Initial joint positions (radians) — UR5e safe pose
-    std::array<double, 6> initial_positions{
+    std::string model_path;
+    SimMode     mode{SimMode::kFreeRun};
+    bool        enable_viewer{true};
+    // kFreeRun: publish /joint_states every N physics steps.
+    // Increase to reduce DDS traffic when the sim runs much faster than 500 Hz.
+    int         publish_decimation{1};
+    // kSyncStep: max time to wait for a command before using the previous one.
+    double      sync_timeout_ms{50.0};
+    // Initial joint positions (radians) — UR5e safe upright pose.
+    std::array<double, 6> initial_qpos{
         0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0};
   };
 
-  // Called from SimLoop after each step.
-  // positions[0..5] = qpos, velocities[0..5] = qvel.
+  // Invoked from SimLoop after each publish step.
+  // positions[0..5] = qpos mapped by joint name, velocities similarly.
   using StateCallback = std::function<void(
       const std::array<double, 6>& positions,
       const std::array<double, 6>& velocities)>;
@@ -66,29 +78,28 @@ class MuJoCoSimulator {
   MuJoCoSimulator(MuJoCoSimulator&&)                 = delete;
   MuJoCoSimulator& operator=(MuJoCoSimulator&&)      = delete;
 
-  // Load MJCF model and allocate mjData.  Must be called before Start().
-  // Returns false if the XML fails to parse.
+  // Load MJCF model and resolve joint indices.  Must be called before Start().
   [[nodiscard]] bool Initialize() noexcept;
 
-  // Start simulation loop (and viewer loop if cfg.enable_viewer).
+  // Start simulation and viewer threads.
   void Start() noexcept;
 
-  // Request stop and join threads.
+  // Signal stop and join all threads.
   void Stop() noexcept;
 
-  // Write a position target into the pending command buffer.
-  // Thread-safe; called from ROS2 subscription callback.
+  // Write a position command into the pending buffer.
+  // Thread-safe.  In kSyncStep mode also wakes the simulation loop.
   void SetCommand(const std::array<double, 6>& cmd) noexcept;
 
-  // Register the callback invoked after every simulation step.
+  // Register the callback invoked after each publish step.
   void SetStateCallback(StateCallback cb) noexcept;
 
-  // Read the latest joint state (polling alternative to callback).
   [[nodiscard]] std::array<double, 6> GetPositions()  const noexcept;
   [[nodiscard]] std::array<double, 6> GetVelocities() const noexcept;
 
   [[nodiscard]] bool     IsRunning()  const noexcept { return running_.load(); }
   [[nodiscard]] uint64_t StepCount()  const noexcept { return step_count_.load(); }
+  [[nodiscard]] double   SimTimeSec() const noexcept { return sim_time_sec_.load(); }
   [[nodiscard]] int      NumJoints()  const noexcept { return model_ ? model_->nq : 0; }
 
  private:
@@ -98,18 +109,25 @@ class MuJoCoSimulator {
 
   std::atomic<bool>     running_{false};
   std::atomic<uint64_t> step_count_{0};
+  std::atomic<double>   sim_time_sec_{0.0};
 
-  // Command buffer — caller writes, SimLoop reads
+  // Command buffer.
+  // cmd_pending_ is the lock-free fast-path flag (FreeRun: checked every step
+  // without locking).  cmd_mutex_ guards pending_cmd_ during the actual copy.
   mutable std::mutex    cmd_mutex_;
+  std::atomic<bool>     cmd_pending_{false};
   std::array<double, 6> pending_cmd_{};
-  bool                  cmd_dirty_{false};
 
-  // State buffer — SimLoop writes, caller reads
+  // SyncStep synchronisation — woken by SetCommand(); also woken by Stop().
+  std::mutex              sync_mutex_;
+  std::condition_variable sync_cv_;
+
+  // State buffer — SimLoop writes, callers read.
   mutable std::mutex    state_mutex_;
   std::array<double, 6> latest_positions_{};
   std::array<double, 6> latest_velocities_{};
 
-  // Visualization buffer — SimLoop writes with try_lock, ViewerLoop reads
+  // Viewer double-buffer — SimLoop writes with try_lock, ViewerLoop reads.
   mutable std::mutex  viz_mutex_;
   std::vector<double> viz_qpos_{};
   bool                viz_dirty_{false};
@@ -119,16 +137,43 @@ class MuJoCoSimulator {
   std::jthread sim_thread_;
   std::jthread viewer_thread_;
 
+  // Joint index maps resolved from MJCF joint names at initialise time.
+  // joint_qpos_indices_[i] = data_->qpos offset for the i-th UR5e joint.
+  // joint_qvel_indices_[i] = data_->qvel offset for the i-th UR5e joint.
+  std::array<int, 6> joint_qpos_indices_{0, 1, 2, 3, 4, 5};
+  std::array<int, 6> joint_qvel_indices_{0, 1, 2, 3, 4, 5};
+
   // ── Internal helpers ───────────────────────────────────────────────────────
-  // Apply pending_cmd_ to data_->ctrl (called from SimLoop, holds cmd_mutex_).
+  // Resolve joint names → qpos/qvel indices using mj_name2id().
+  // Falls back to static 0–5 mapping if a joint is not found.
+  void ResolveJointIndices() noexcept;
+
+  // Apply pending_cmd_ to data_->ctrl (holds cmd_mutex_ internally).
   void ApplyCommand() noexcept;
 
   // Copy data_->qpos / qvel → latest_positions_ / latest_velocities_
-  // (called from SimLoop, holds state_mutex_).
+  // using resolved joint indices (holds state_mutex_ internally).
   void ReadState() noexcept;
 
-  void SimLoop(std::stop_token stop) noexcept;
+  // Snapshot state under mutex then invoke state_cb_ without holding it.
+  void InvokeStateCallback() noexcept;
+
+  // Update viz_qpos_ using try_lock (never blocks SimLoop).
+  void UpdateVizBuffer() noexcept;
+
+  void SimLoopFreeRun(std::stop_token stop) noexcept;
+  void SimLoopSyncStep(std::stop_token stop) noexcept;
   void ViewerLoop(std::stop_token stop) noexcept;
+};
+
+// ── Joint name table (must match UR driver / custom_controller) ───────────────
+static constexpr std::array<const char*, 6> kMjJointNames = {
+    "shoulder_pan_joint",
+    "shoulder_lift_joint",
+    "elbow_joint",
+    "wrist_1_joint",
+    "wrist_2_joint",
+    "wrist_3_joint",
 };
 
 // ── Inline implementation ──────────────────────────────────────────────────────
@@ -140,6 +185,28 @@ inline MuJoCoSimulator::~MuJoCoSimulator() {
   Stop();
   if (data_)  { mj_deleteData(data_);   data_  = nullptr; }
   if (model_) { mj_deleteModel(model_); model_ = nullptr; }
+}
+
+inline void MuJoCoSimulator::ResolveJointIndices() noexcept {
+  for (std::size_t i = 0; i < 6; ++i) {
+    const int jnt_id = mj_name2id(model_, mjOBJ_JOINT, kMjJointNames[i]);
+    if (jnt_id < 0) {
+      fprintf(stderr,
+              "[MuJoCoSimulator] Joint '%s' not found in model "
+              "— falling back to static index %zu\n",
+              kMjJointNames[i], i);
+      joint_qpos_indices_[i] = static_cast<int>(i);
+      joint_qvel_indices_[i] = static_cast<int>(i);
+    } else {
+      joint_qpos_indices_[i] = model_->jnt_qposadr[jnt_id];
+      joint_qvel_indices_[i] = model_->jnt_dofadr[jnt_id];
+      fprintf(stdout,
+              "[MuJoCoSimulator] '%s' → qpos[%d]  qvel[%d]\n",
+              kMjJointNames[i],
+              joint_qpos_indices_[i],
+              joint_qvel_indices_[i]);
+    }
+  }
 }
 
 inline bool MuJoCoSimulator::Initialize() noexcept {
@@ -159,34 +226,43 @@ inline bool MuJoCoSimulator::Initialize() noexcept {
     return false;
   }
 
-  // Allocate visualization buffer sized to nq
   viz_qpos_.assign(static_cast<std::size_t>(model_->nq), 0.0);
 
-  // Set initial joint positions and matching ctrl targets
+  // Resolve joint indices using model joint names (dynamic, not static mapping).
+  ResolveJointIndices();
+
+  // Set initial joint positions and matching ctrl targets.
   const int njoints = std::min(6, model_->nq);
   for (int i = 0; i < njoints; ++i) {
-    const double q0 = cfg_.initial_positions[static_cast<std::size_t>(i)];
-    data_->qpos[i] = q0;
+    const double q0 = cfg_.initial_qpos[static_cast<std::size_t>(i)];
+    const int    qi = joint_qpos_indices_[static_cast<std::size_t>(i)];
+    data_->qpos[qi] = q0;
+    // ctrl uses actuator order (matches command order 0–5)
     data_->ctrl[i] = q0;
   }
 
-  // Forward kinematics to initialise internal state
   mj_forward(model_, data_);
   ReadState();
 
   fprintf(stdout,
-          "[MuJoCoSimulator] Loaded '%s'  nq=%d  nv=%d  nu=%d  dt=%.4f s\n",
+          "[MuJoCoSimulator] Loaded '%s'  nq=%d  nv=%d  nu=%d  dt=%.4f s"
+          "  mode=%s\n",
           cfg_.model_path.c_str(),
           model_->nq, model_->nv, model_->nu,
-          static_cast<double>(model_->opt.timestep));
+          static_cast<double>(model_->opt.timestep),
+          cfg_.mode == SimMode::kFreeRun ? "free_run" : "sync_step");
   return true;
 }
 
 inline void MuJoCoSimulator::Start() noexcept {
-  if (running_.exchange(true)) {
-    return;  // already running
+  if (running_.exchange(true)) { return; }
+
+  if (cfg_.mode == SimMode::kFreeRun) {
+    sim_thread_ = std::jthread([this](std::stop_token st) { SimLoopFreeRun(st); });
+  } else {
+    sim_thread_ = std::jthread([this](std::stop_token st) { SimLoopSyncStep(st); });
   }
-  sim_thread_ = std::jthread([this](std::stop_token st) { SimLoop(st); });
+
   if (cfg_.enable_viewer) {
     viewer_thread_ = std::jthread([this](std::stop_token st) { ViewerLoop(st); });
   }
@@ -194,6 +270,7 @@ inline void MuJoCoSimulator::Start() noexcept {
 
 inline void MuJoCoSimulator::Stop() noexcept {
   running_.store(false);
+  sync_cv_.notify_all();  // wake SyncStep loop if it is waiting
   if (sim_thread_.joinable()) {
     sim_thread_.request_stop();
     sim_thread_.join();
@@ -205,9 +282,14 @@ inline void MuJoCoSimulator::Stop() noexcept {
 }
 
 inline void MuJoCoSimulator::SetCommand(const std::array<double, 6>& cmd) noexcept {
-  std::lock_guard lock(cmd_mutex_);
-  pending_cmd_ = cmd;
-  cmd_dirty_   = true;
+  {
+    std::lock_guard lock(cmd_mutex_);
+    pending_cmd_ = cmd;
+  }
+  cmd_pending_.store(true, std::memory_order_release);
+  if (cfg_.mode == SimMode::kSyncStep) {
+    sync_cv_.notify_one();
+  }
 }
 
 inline void MuJoCoSimulator::SetStateCallback(StateCallback cb) noexcept {
@@ -228,87 +310,142 @@ inline std::array<double, 6> MuJoCoSimulator::GetVelocities() const noexcept {
 
 inline void MuJoCoSimulator::ApplyCommand() noexcept {
   std::lock_guard lock(cmd_mutex_);
-  if (!cmd_dirty_ || !model_) { return; }
+  if (!model_) { return; }
   const int nact = std::min(6, model_->nu);
   for (int i = 0; i < nact; ++i) {
     data_->ctrl[i] = pending_cmd_[static_cast<std::size_t>(i)];
   }
-  cmd_dirty_ = false;
 }
 
 inline void MuJoCoSimulator::ReadState() noexcept {
   if (!model_ || !data_) { return; }
   std::lock_guard lock(state_mutex_);
-  const int nq = std::min(6, model_->nq);
-  const int nv = std::min(6, model_->nv);
-  for (int i = 0; i < nq; ++i) {
-    latest_positions_[static_cast<std::size_t>(i)]  = data_->qpos[i];
-  }
-  for (int i = 0; i < nv; ++i) {
-    latest_velocities_[static_cast<std::size_t>(i)] = data_->qvel[i];
+  for (std::size_t i = 0; i < 6; ++i) {
+    latest_positions_[i]  = data_->qpos[joint_qpos_indices_[i]];
+    latest_velocities_[i] = data_->qvel[joint_qvel_indices_[i]];
   }
 }
 
-// ── SimLoop ────────────────────────────────────────────────────────────────────
-inline void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
+inline void MuJoCoSimulator::InvokeStateCallback() noexcept {
+  if (!state_cb_) { return; }
+  std::array<double, 6> pos{}, vel{};
+  {
+    std::lock_guard lock(state_mutex_);
+    pos = latest_positions_;
+    vel = latest_velocities_;
+  }
+  state_cb_(pos, vel);
+}
+
+inline void MuJoCoSimulator::UpdateVizBuffer() noexcept {
+  if (viz_mutex_.try_lock()) {
+    std::memcpy(viz_qpos_.data(), data_->qpos,
+                static_cast<std::size_t>(model_->nq) * sizeof(double));
+    viz_dirty_ = true;
+    viz_mutex_.unlock();
+  }
+}
+
+// ── SimLoopFreeRun ─────────────────────────────────────────────────────────────
+//
+// Advances physics as fast as possible (no nanosleep / wall-clock sync).
+// Publishes /joint_states every cfg_.publish_decimation steps.
+// Use lock-free cmd_pending_ atomic to avoid mutex overhead on the hot path.
+//
+inline void MuJoCoSimulator::SimLoopFreeRun(std::stop_token stop) noexcept {
   if (!model_ || !data_) { return; }
 
-  // Compute step period in nanoseconds (adjusted by sim_speed multiplier)
-  const long period_ns = static_cast<long>(
-      1.0e9 / (cfg_.control_freq * cfg_.sim_speed));
+  const auto decim = static_cast<uint64_t>(
+      cfg_.publish_decimation > 0 ? cfg_.publish_decimation : 1);
 
-  auto next_wake = std::chrono::steady_clock::now();
+  uint64_t step = 0;
 
   while (!stop.stop_requested() && running_.load()) {
-    // 1. Push pending position command into ctrl
-    ApplyCommand();
+    // Lock-free fast path: acquire mutex only when a command arrived.
+    if (cmd_pending_.load(std::memory_order_acquire)) {
+      ApplyCommand();
+      cmd_pending_.store(false, std::memory_order_release);
+    }
 
-    // 2. Advance physics by one timestep
     mj_step(model_, data_);
-    const uint64_t count =
-        step_count_.fetch_add(1, std::memory_order_relaxed) + 1;
+    ++step;
+    step_count_.store(step, std::memory_order_relaxed);
+    sim_time_sec_.store(data_->time, std::memory_order_relaxed);
 
-    // 3. Copy new state into shared buffers
-    ReadState();
-
-    // 4. Update visualization buffer at ~62 Hz (every 8th step at 500 Hz).
-    //    try_lock avoids blocking the RT sim loop if the viewer thread holds the mutex.
-    if ((count % 8 == 0) && cfg_.enable_viewer) {
-      if (viz_mutex_.try_lock()) {
-        std::memcpy(viz_qpos_.data(), data_->qpos,
-                    static_cast<std::size_t>(model_->nq) * sizeof(double));
-        viz_dirty_ = true;
-        viz_mutex_.unlock();
-      }
+    // Publish state every N steps.
+    if (step % decim == 0) {
+      ReadState();
+      InvokeStateCallback();
     }
 
-    // 5. Notify the ROS2 node (publishes /joint_states).
-    //    Snapshot the state under the mutex, then call without holding it.
-    if (state_cb_) {
-      std::array<double, 6> pos{}, vel{};
-      {
-        std::lock_guard lock(state_mutex_);
-        pos = latest_positions_;
-        vel = latest_velocities_;
-      }
-      state_cb_(pos, vel);
-    }
-
-    // 6. Real-time sleep — advance deadline by one step period
-    if (cfg_.realtime) {
-      next_wake += std::chrono::nanoseconds(period_ns);
-      std::this_thread::sleep_until(next_wake);
+    // Update viewer buffer at ~1/8 rate (avoid starving viewer with mutex contention).
+    if ((step % 8 == 0) && cfg_.enable_viewer) {
+      UpdateVizBuffer();
     }
   }
 
-  fprintf(stdout, "[MuJoCoSimulator] SimLoop exited after %lu steps\n",
-          static_cast<unsigned long>(step_count_.load()));
+  fprintf(stdout,
+          "[MuJoCoSimulator] FreeRun exited — steps=%lu  sim_time=%.3f s\n",
+          static_cast<unsigned long>(step_count_.load()),
+          sim_time_sec_.load());
+}
+
+// ── SimLoopSyncStep ────────────────────────────────────────────────────────────
+//
+// 1. Publish current state.
+// 2. Wait for one command from the controller (or sync_timeout_ms).
+// 3. Apply command and take one physics step.
+//
+// Step latency ≈ controller Compute() time → direct timing measurement.
+//
+inline void MuJoCoSimulator::SimLoopSyncStep(std::stop_token stop) noexcept {
+  if (!model_ || !data_) { return; }
+
+  const auto timeout = std::chrono::milliseconds(
+      static_cast<int64_t>(cfg_.sync_timeout_ms > 0.0 ? cfg_.sync_timeout_ms : 50.0));
+
+  uint64_t step = 0;
+
+  while (!stop.stop_requested() && running_.load()) {
+    // 1. Publish current state to controller.
+    ReadState();
+    InvokeStateCallback();
+
+    // 2. Wait for controller command (or timeout → reuse previous command).
+    {
+      std::unique_lock lock(sync_mutex_);
+      sync_cv_.wait_for(lock, timeout, [this, &stop] {
+        return cmd_pending_.load(std::memory_order_relaxed) ||
+               stop.stop_requested() || !running_.load();
+      });
+    }
+
+    if (stop.stop_requested() || !running_.load()) { break; }
+
+    // 3. Apply command and advance physics.
+    if (cmd_pending_.load(std::memory_order_acquire)) {
+      ApplyCommand();
+      cmd_pending_.store(false, std::memory_order_release);
+    }
+    mj_step(model_, data_);
+    ++step;
+    step_count_.store(step, std::memory_order_relaxed);
+    sim_time_sec_.store(data_->time, std::memory_order_relaxed);
+
+    if ((step % 8 == 0) && cfg_.enable_viewer) {
+      UpdateVizBuffer();
+    }
+  }
+
+  fprintf(stdout,
+          "[MuJoCoSimulator] SyncStep exited — steps=%lu  sim_time=%.3f s\n",
+          static_cast<unsigned long>(step_count_.load()),
+          sim_time_sec_.load());
 }
 
 // ── ViewerLoop ─────────────────────────────────────────────────────────────────
 inline void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
 #ifdef MUJOCO_HAVE_GLFW
-  // ── GLFW + OpenGL viewer ───────────────────────────────────────────────────
   if (!glfwInit()) {
     fprintf(stderr, "[MuJoCoSimulator] glfwInit failed — viewer disabled\n");
     return;
@@ -328,9 +465,8 @@ inline void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
     return;
   }
   glfwMakeContextCurrent(window);
-  glfwSwapInterval(1);  // vsync
+  glfwSwapInterval(1);
 
-  // ── MuJoCo visualization structures ───────────────────────────────────────
   mjvCamera  cam;
   mjvOption  opt;
   mjvScene   scn;
@@ -344,22 +480,18 @@ inline void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
   mjv_makeScene(model_, &scn, 2000);
   mjr_makeContext(model_, &con, mjFONTSCALE_150);
 
-  // Initial camera position — looking from the front-right above
   cam.type      = mjCAMERA_FREE;
   cam.distance  = 2.5;
   cam.azimuth   = 90.0;
   cam.elevation = -20.0;
 
-  // ── Visualization-only mjData copy ────────────────────────────────────────
-  // This mjData is only used to compute forward kinematics for rendering;
-  // it is NEVER written to by the sim thread.
+  // Visualization-only mjData — never written by the sim thread.
   mjData* vis_data = mj_makeData(model_);
   {
-    // Initialise from the latest known state
     std::lock_guard lock(state_mutex_);
-    const int nq = std::min(6, model_->nq);
-    for (int i = 0; i < nq; ++i) {
-      vis_data->qpos[i] = latest_positions_[static_cast<std::size_t>(i)];
+    for (std::size_t i = 0; i < 6; ++i) {
+      vis_data->qpos[joint_qpos_indices_[i]] =
+          latest_positions_[i];
     }
   }
   mj_forward(model_, vis_data);
@@ -368,7 +500,6 @@ inline void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
 
   while (!stop.stop_requested() && running_.load() &&
          !glfwWindowShouldClose(window)) {
-    // ── Sync vis_data with latest simulation state ─────────────────────────
     {
       std::lock_guard lock(viz_mutex_);
       if (viz_dirty_) {
@@ -377,26 +508,21 @@ inline void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
         viz_dirty_ = false;
       }
     }
-    // Recompute FK so geom positions are up to date
     mj_forward(model_, vis_data);
 
-    // ── Render ────────────────────────────────────────────────────────────
     int width = 0, height = 0;
     glfwGetFramebufferSize(window, &width, &height);
     mjrRect viewport{0, 0, width, height};
 
-    mjv_updateScene(model_, vis_data, &opt, nullptr, &cam,
-                    mjCAT_ALL, &scn);
+    mjv_updateScene(model_, vis_data, &opt, nullptr, &cam, mjCAT_ALL, &scn);
     mjr_render(viewport, &scn, &con);
 
     glfwSwapBuffers(window);
     glfwPollEvents();
 
-    // ~60 Hz viewer update
-    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    std::this_thread::sleep_for(std::chrono::milliseconds(16));  // ~60 Hz
   }
 
-  // ── Cleanup ────────────────────────────────────────────────────────────────
   mj_deleteData(vis_data);
   mjv_freeScene(&scn);
   mjr_freeContext(&con);
@@ -405,7 +531,6 @@ inline void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
   fprintf(stdout, "[MuJoCoSimulator] Viewer closed\n");
 
 #else
-  // ── Headless stub ──────────────────────────────────────────────────────────
   fprintf(stdout,
           "[MuJoCoSimulator] Viewer not available "
           "(build without -DMUJOCO_HAVE_GLFW)\n");

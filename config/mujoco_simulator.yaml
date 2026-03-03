@@ -2,8 +2,8 @@
 # ─────────────────────────────────────
 # Launch with:
 #   ros2 launch ur5e_rt_controller mujoco_sim.launch.py
+#   ros2 launch ur5e_rt_controller mujoco_sim.launch.py sim_mode:=sync_step
 #   ros2 launch ur5e_rt_controller mujoco_sim.launch.py enable_viewer:=false
-#   ros2 launch ur5e_rt_controller mujoco_sim.launch.py sim_speed:=2.0
 
 mujoco_simulator:
   ros__parameters:
@@ -15,25 +15,27 @@ mujoco_simulator:
     # Absolute path → used as-is (e.g. for MuJoCo Menagerie model).
     model_path: ""
 
-    # ── Simulation ───────────────────────────────────────────────────────────
-    # Control loop frequency [Hz].
-    # Must match the timestep in scene.xml (timestep = 1 / control_freq).
-    #   500 Hz → timestep = 0.002 s  (default in ur5e.xml)
-    control_freq: 500.0
+    # ── Simulation mode ───────────────────────────────────────────────────────
+    # "free_run"  — advance physics as fast as possible (default).
+    #               Best for algorithm validation, trajectory generation.
+    #               Set enable_estop: false in custom_controller config!
+    # "sync_step" — publish state → wait for command → step (1:1 sync).
+    #               Step latency ≈ Compute() time → direct timing measurement.
+    sim_mode: "free_run"
 
-    # Real-time synchronisation.
-    #   true  → sleep to match wall-clock (best for interactive use)
-    #   false → run as fast as possible (best for data collection / CI)
-    realtime: true
+    # free_run only: publish /joint_states every N physics steps.
+    # Increase to reduce DDS traffic when the sim runs much faster than 500 Hz.
+    #   1  → publish every step (maximum data, highest DDS load)
+    #   10 → publish every 10th step (~50 Hz if sim runs at 500 Hz equivalent)
+    publish_decimation: 1
 
-    # Simulation speed multiplier (only effective when realtime: true).
-    #   1.0 → normal speed
-    #   2.0 → 2× faster than real time
-    sim_speed: 1.0
+    # sync_step only: max time to wait for a controller command (ms).
+    # If no command arrives within this window, the previous command is reused.
+    sync_timeout_ms: 50.0
 
     # ── Viewer ───────────────────────────────────────────────────────────────
     # Open a GLFW window for 3D visualisation.
-    # Set false for headless / SSH environments (no display required).
+    # Set false for headless / SSH environments.
     enable_viewer: true
 
     # ── Initial joint positions [rad] — UR5e safe upright pose ───────────────
@@ -48,3 +50,19 @@ mujoco_simulator:
     #   0.1  → ~90 ms settling time constant
     #   0.5  → ~18 ms settling time constant (stiffer)
     hand_filter_alpha: 0.1
+
+# ── custom_controller parameter overrides for simulation ─────────────────────
+# These override the values in ur5e_rt_controller.yaml when launched via
+# mujoco_sim.launch.py.  Key difference from real-robot config:
+#   - enable_estop: false — prevents false E-STOPs in free_run mode where
+#     wall-clock publish intervals may exceed robot_timeout_ms.
+#   - robot_timeout_ms / hand_timeout_ms: extended for sync_step mode.
+custom_controller:
+  ros__parameters:
+    control_rate: 500.0
+    kp: 5.0
+    kd: 0.5
+    enable_logging: true
+    enable_estop: false
+    robot_timeout_ms: 10000.0
+    hand_timeout_ms:  10000.0

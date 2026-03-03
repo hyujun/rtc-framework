@@ -25,6 +25,9 @@ struct LogEntry {
   std::array<double, kNumRobotJoints> current_positions;
   std::array<double, kNumRobotJoints> target_positions;
   std::array<double, kNumRobotJoints> commands;
+  // Wall-clock duration of the most recent Compute() call (µs).
+  // Populated by ControllerTimingProfiler; zero when profiling is disabled.
+  double compute_time_us{0.0};
 };
 
 // SPSC ring buffer of capacity N entries (N must be a power of 2).

@@ -25,9 +25,18 @@ namespace urtc = ur5e_rt_controller;
 // ROS2 node that drives a MuJoCo physics simulation of the UR5e and
 // presents the same topic interface as the real UR driver.
 //
+// Simulation modes (set via "sim_mode" parameter):
+//   "free_run"  — physics advances as fast as possible (default).
+//                 Best for algorithm validation and trajectory generation.
+//                 NOTE: custom_controller E-STOP must be disabled since the
+//                 wall-clock publish interval may exceed robot_timeout_ms.
+//   "sync_step" — publishes state, waits for one command, takes one step.
+//                 Step latency ≈ Compute() time → direct timing measurement.
+//
 // Published topics (replacing UR driver):
-//   /joint_states          sensor_msgs/JointState      @ control_freq Hz
+//   /joint_states          sensor_msgs/JointState      @ sim frequency
 //   /hand/joint_states     std_msgs/Float64MultiArray  @ 100 Hz
+//   /sim/status            std_msgs/Bool               @ 1 Hz
 //
 // Subscribed topics (from custom_controller):
 //   /forward_position_controller/commands  std_msgs/Float64MultiArray
@@ -57,8 +66,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     sim_->Start();
 
     RCLCPP_INFO(get_logger(),
-                "MuJoCo simulator ready — model: %s  freq: %.0f Hz  viewer: %s",
-                model_path_.c_str(), control_freq_,
+                "MuJoCo simulator ready — model: %s  mode: %s  viewer: %s",
+                model_path_.c_str(), sim_mode_.c_str(),
                 enable_viewer_ ? "ON" : "OFF");
   }
 
@@ -70,26 +79,30 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   // ── Parameter loading ────────────────────────────────────────────────────────
   void DeclareAndLoadParameters() {
     declare_parameter("model_path",    std::string(""));
-    declare_parameter("control_freq",  500.0);
     declare_parameter("enable_viewer", true);
-    declare_parameter("realtime",      true);
-    declare_parameter("sim_speed",     1.0);
     declare_parameter("enable_hand_sim", true);
     declare_parameter("hand_filter_alpha", 0.1);
 
-    // Initial joint positions (UR5e safe pose)
+    // Simulation mode: "free_run" (default) or "sync_step"
+    declare_parameter("sim_mode", std::string("free_run"));
+    // free_run: publish /joint_states every N steps (1 = every step)
+    declare_parameter("publish_decimation", 1);
+    // sync_step: max time to wait for a command before using previous (ms)
+    declare_parameter("sync_timeout_ms", 50.0);
+
+    // Initial joint positions (UR5e safe upright pose)
     declare_parameter("initial_joint_positions",
                       std::vector<double>{0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0});
 
-    model_path_         = get_parameter("model_path").as_string();
-    control_freq_       = get_parameter("control_freq").as_double();
-    enable_viewer_      = get_parameter("enable_viewer").as_bool();
-    realtime_           = get_parameter("realtime").as_bool();
-    sim_speed_          = get_parameter("sim_speed").as_double();
-    enable_hand_sim_    = get_parameter("enable_hand_sim").as_bool();
-    hand_filter_alpha_  = get_parameter("hand_filter_alpha").as_double();
+    model_path_          = get_parameter("model_path").as_string();
+    enable_viewer_       = get_parameter("enable_viewer").as_bool();
+    enable_hand_sim_     = get_parameter("enable_hand_sim").as_bool();
+    hand_filter_alpha_   = get_parameter("hand_filter_alpha").as_double();
+    sim_mode_            = get_parameter("sim_mode").as_string();
+    publish_decimation_  = get_parameter("publish_decimation").as_int();
+    sync_timeout_ms_     = get_parameter("sync_timeout_ms").as_double();
 
-    // Resolve model path: if empty or relative, resolve via ament
+    // Resolve model path: if empty or relative, locate via ament index.
     if (model_path_.empty() || model_path_[0] != '/') {
       const std::string share_dir =
           ament_index_cpp::get_package_share_directory("ur5e_rt_controller");
@@ -102,19 +115,30 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     const auto init_vec =
         get_parameter("initial_joint_positions").as_double_array();
     for (std::size_t i = 0; i < 6 && i < init_vec.size(); ++i) {
-      initial_positions_[i] = init_vec[i];
+      initial_qpos_[i] = init_vec[i];
     }
   }
 
   // ── Simulator creation ───────────────────────────────────────────────────────
   void CreateSimulator() {
+    const urtc::MuJoCoSimulator::SimMode mode =
+        (sim_mode_ == "sync_step")
+            ? urtc::MuJoCoSimulator::SimMode::kSyncStep
+            : urtc::MuJoCoSimulator::SimMode::kFreeRun;
+
+    if (sim_mode_ != "free_run" && sim_mode_ != "sync_step") {
+      RCLCPP_WARN(get_logger(),
+                  "Unknown sim_mode '%s' — defaulting to 'free_run'",
+                  sim_mode_.c_str());
+    }
+
     urtc::MuJoCoSimulator::Config cfg{
-        .model_path       = model_path_,
-        .control_freq     = control_freq_,
-        .enable_viewer    = enable_viewer_,
-        .realtime         = realtime_,
-        .sim_speed        = sim_speed_,
-        .initial_positions = initial_positions_,
+        .model_path          = model_path_,
+        .mode                = mode,
+        .enable_viewer       = enable_viewer_,
+        .publish_decimation  = publish_decimation_,
+        .sync_timeout_ms     = sync_timeout_ms_,
+        .initial_qpos        = initial_qpos_,
     };
     sim_ = std::make_unique<urtc::MuJoCoSimulator>(std::move(cfg));
 
@@ -235,10 +259,10 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     msg.data   = sim_->IsRunning();
     sim_status_pub_->publish(msg);
     RCLCPP_INFO(get_logger(),
-                "Simulator running=%s  steps=%lu  (%.1f Hz)",
+                "Simulator running=%s  steps=%lu  sim_time=%.2f s",
                 sim_->IsRunning() ? "true" : "false",
                 static_cast<unsigned long>(sim_->StepCount()),
-                control_freq_);
+                sim_->SimTimeSec());
   }
 
   // ── Joint name table (must match UR driver / custom_controller) ──────────────
@@ -272,13 +296,13 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
 
   // ── Parameters ───────────────────────────────────────────────────────────────
   std::string            model_path_;
-  double                 control_freq_{500.0};
   bool                   enable_viewer_{true};
-  bool                   realtime_{true};
-  double                 sim_speed_{1.0};
   bool                   enable_hand_sim_{true};
   double                 hand_filter_alpha_{0.1};
-  std::array<double, 6>  initial_positions_{0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0};
+  std::string            sim_mode_{"free_run"};
+  int                    publish_decimation_{1};
+  double                 sync_timeout_ms_{50.0};
+  std::array<double, 6>  initial_qpos_{0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0};
 };
 
 // ── Entry point ────────────────────────────────────────────────────────────────
