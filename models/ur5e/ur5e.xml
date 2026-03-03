@@ -1,0 +1,170 @@
+<!--
+  UR5e MuJoCo MJCF Model (Self-contained, capsule geometry)
+
+  Kinematics based on UR5e DH parameters:
+    d1=0.1625, a2=-0.425, a3=-0.3922, d4=0.1333, d5=0.0997, d6=0.0996
+
+  Body positions match MuJoCo Menagerie UR5e convention:
+    shoulder_link  : pos="0 0 0.1625"
+    upper_arm_link : pos="0 0.1333 0"  euler="0 0 -1.5708"
+    forearm_link   : pos="0 0 -0.425"
+    wrist_1_link   : pos="0 0 -0.3922" euler="0 0 1.5708"
+    wrist_2_link   : pos="0 0.1333 0"
+    wrist_3_link   : pos="0 0 -0.0997"
+    flange         : pos="0 0.0996 0"
+
+  Actuators: position-controlled (<position>) with high kp for stiff tracking.
+  Joint names match ROS2 /joint_states message from UR driver exactly.
+
+  To replace with mesh-based visuals, download MuJoCo Menagerie:
+    git clone https://github.com/google-deepmind/mujoco_menagerie.git
+    cp -r mujoco_menagerie/universal_robots_ur5e models/ur5e/
+-->
+<mujoco model="ur5e">
+
+  <compiler angle="radian" autolimits="true" eulerseq="xyz"/>
+
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="RK4">
+    <flag contact="enable"/>
+  </option>
+
+  <default>
+    <default class="ur5e">
+      <joint limited="true" damping="1.0" armature="0.01" frictionloss="0.1"/>
+      <geom contype="1" conaffinity="1" rgba="0.7 0.7 0.7 1" group="1"/>
+    </default>
+    <default class="visual">
+      <geom contype="0" conaffinity="0" group="2" rgba="0.2 0.5 0.8 1"/>
+    </default>
+    <default class="collision">
+      <geom contype="1" conaffinity="1" group="3" rgba="0.5 0.5 0.5 0"/>
+    </default>
+  </default>
+
+  <!-- ── Kinematic chain ─────────────────────────────────────────────── -->
+  <worldbody>
+
+    <!-- Fixed base plate -->
+    <body name="base" pos="0 0 0">
+      <geom class="visual" name="base_visual" type="cylinder"
+            size="0.076 0.04" pos="0 0 -0.04" rgba="0.2 0.2 0.2 1"/>
+      <geom class="collision" name="base_col" type="cylinder"
+            size="0.076 0.04" pos="0 0 -0.04"/>
+
+      <!-- ── Joint 0: Shoulder Pan (rotate around z) ── -->
+      <body name="shoulder_link" pos="0 0 0.1625">
+        <inertial mass="3.7" pos="0 0 -0.02"
+                  diaginertia="0.010267 0.010267 0.00666"/>
+        <joint name="shoulder_pan_joint"  class="ur5e"
+               axis="0 0 1" range="-6.2832 6.2832"/>
+        <geom class="visual" name="shoulder_v" type="cylinder"
+              size="0.058 0.058" pos="0 0 0" rgba="0.3 0.3 0.3 1"/>
+        <geom class="collision" name="shoulder_c" type="cylinder"
+              size="0.058 0.058"/>
+
+        <!-- ── Joint 1: Shoulder Lift (rotate around y, aligned via euler) ── -->
+        <body name="upper_arm_link" pos="0 0.1333 0" euler="0 0 -1.5708">
+          <inertial mass="8.393" pos="0 0 0.2125"
+                    diaginertia="0.22689 0.22689 0.01511"/>
+          <joint name="shoulder_lift_joint" class="ur5e"
+                 axis="0 1 0" range="-6.2832 6.2832"/>
+          <!-- Upper arm extends 0.425 m along -z in this frame -->
+          <geom class="visual" name="upper_arm_v" type="capsule"
+                fromto="0 0 0 0 0 -0.425" size="0.04" rgba="0.3 0.3 0.3 1"/>
+          <geom class="collision" name="upper_arm_c" type="capsule"
+                fromto="0 0 0 0 0 -0.425" size="0.04"/>
+
+          <!-- ── Joint 2: Elbow ── -->
+          <body name="forearm_link" pos="0 0 -0.425">
+            <inertial mass="2.275" pos="0 0 -0.196"
+                      diaginertia="0.04944 0.04944 0.004095"/>
+            <joint name="elbow_joint" class="ur5e"
+                   axis="0 1 0" range="-3.1416 3.1416"/>
+            <!-- Forearm extends 0.3922 m along -z -->
+            <geom class="visual" name="forearm_v" type="capsule"
+                  fromto="0 0 0 0 0 -0.3922" size="0.035" rgba="0.3 0.3 0.3 1"/>
+            <geom class="collision" name="forearm_c" type="capsule"
+                  fromto="0 0 0 0 0 -0.3922" size="0.035"/>
+
+            <!-- ── Joint 3: Wrist 1 ── -->
+            <body name="wrist_1_link" pos="0 0 -0.3922" euler="0 0 1.5708">
+              <inertial mass="1.219" pos="0 0 0"
+                        diaginertia="0.11117 0.11117 0.21942"/>
+              <joint name="wrist_1_joint" class="ur5e"
+                     axis="0 1 0" range="-6.2832 6.2832"/>
+              <geom class="visual" name="wrist_1_v" type="cylinder"
+                    size="0.04 0.05" rgba="0.5 0.5 0.5 1"/>
+              <geom class="collision" name="wrist_1_c" type="cylinder"
+                    size="0.04 0.05"/>
+
+              <!-- ── Joint 4: Wrist 2 (rotate around z in this frame) ── -->
+              <body name="wrist_2_link" pos="0 0.1333 0">
+                <inertial mass="1.219" pos="0 0 0"
+                          diaginertia="0.11117 0.11117 0.21942"/>
+                <joint name="wrist_2_joint" class="ur5e"
+                       axis="0 0 1" range="-6.2832 6.2832"/>
+                <geom class="visual" name="wrist_2_v" type="cylinder"
+                      size="0.04 0.05" rgba="0.5 0.5 0.5 1"/>
+                <geom class="collision" name="wrist_2_c" type="cylinder"
+                      size="0.04 0.05"/>
+
+                <!-- ── Joint 5: Wrist 3 ── -->
+                <body name="wrist_3_link" pos="0 0 -0.0997">
+                  <inertial mass="0.1889" pos="0 0.0996 0"
+                            diaginertia="0.01714 0.01714 0.03382"/>
+                  <joint name="wrist_3_joint" class="ur5e"
+                         axis="0 1 0" range="-6.2832 6.2832"/>
+                  <geom class="visual" name="wrist_3_v" type="cylinder"
+                        size="0.035 0.04" rgba="0.5 0.5 0.5 1"/>
+                  <geom class="collision" name="wrist_3_c" type="cylinder"
+                        size="0.035 0.04"/>
+
+                  <!-- End-effector / flange -->
+                  <body name="flange" pos="0 0.0996 0">
+                    <geom class="visual" name="flange_v" type="cylinder"
+                          size="0.04 0.005" rgba="0.1 0.1 0.1 1"/>
+                    <!-- Tool Centre Point site -->
+                    <site name="tcp" pos="0 0 0" size="0.01"
+                          rgba="1 0 0 0.5" type="sphere"/>
+                  </body>
+
+                </body> <!-- wrist_3_link -->
+              </body> <!-- wrist_2_link -->
+            </body> <!-- wrist_1_link -->
+          </body> <!-- forearm_link -->
+        </body> <!-- upper_arm_link -->
+      </body> <!-- shoulder_link -->
+    </body> <!-- base -->
+
+  </worldbody>
+
+  <!-- ── Position actuators (kp = high stiffness to track position commands) ── -->
+  <!--
+    ctrl[0] → shoulder_pan_joint
+    ctrl[1] → shoulder_lift_joint
+    ctrl[2] → elbow_joint
+    ctrl[3] → wrist_1_joint
+    ctrl[4] → wrist_2_joint
+    ctrl[5] → wrist_3_joint
+
+    kp gain tuning:
+      - Shoulder/elbow: 4000 N·m/rad (heavy links)
+      - Wrist joints:   1500 N·m/rad (light links)
+    kv (implicit damping) provided by joint.damping=1.0
+  -->
+  <actuator>
+    <position name="shoulder_pan"  joint="shoulder_pan_joint"
+              kp="4000" ctrlrange="-6.2832 6.2832"/>
+    <position name="shoulder_lift" joint="shoulder_lift_joint"
+              kp="4000" ctrlrange="-6.2832 6.2832"/>
+    <position name="elbow"         joint="elbow_joint"
+              kp="2000" ctrlrange="-3.1416 3.1416"/>
+    <position name="wrist_1"       joint="wrist_1_joint"
+              kp="1500" ctrlrange="-6.2832 6.2832"/>
+    <position name="wrist_2"       joint="wrist_2_joint"
+              kp="1500" ctrlrange="-6.2832 6.2832"/>
+    <position name="wrist_3"       joint="wrist_3_joint"
+              kp="1000" ctrlrange="-6.2832 6.2832"/>
+  </actuator>
+
+</mujoco>
