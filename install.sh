@@ -1,193 +1,419 @@
 #!/bin/bash
-# install.sh - Complete Installation Script for UR5e RT Controller
+# install.sh — UR5e RT Controller Installation
+#
+# Usage:
+#   ./install.sh              # full installation (default)
+#   ./install.sh sim          # MuJoCo simulation only
+#   ./install.sh robot        # Real robot only
+#   ./install.sh full         # Explicit full installation
+#   ./install.sh --help       # Show this help
 
-set -e  # Exit on error
+set -e
 
-# Colors
+# ── Colors ─────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
 NC='\033[0m'
 
-echo -e "${BLUE}🚀 UR5e RT Controller v4.3.0 Installation${NC}"
-echo "==================================================="
-
-# Check ROS2
-if ! command -v ros2 &> /dev/null; then
-    echo -e "${RED}❌ ROS2 not found. Please install ROS2 Humble first.${NC}"
+# ── Mode selection ─────────────────────────────────────────────────────────────
+MODE="${1:-full}"
+case "$MODE" in
+  sim|simulation)
+    MODE=sim
+    MODE_DESC="Simulation  (MuJoCo + Pinocchio, no UR driver, no RT perms)"
+    ;;
+  robot|realrobot|real)
+    MODE=robot
+    MODE_DESC="Real Robot  (UR driver + Pinocchio + RT permissions, no MuJoCo)"
+    ;;
+  full|all|"")
+    MODE=full
+    MODE_DESC="Full        (UR driver + Pinocchio + MuJoCo + RT permissions)"
+    ;;
+  -h|--help|help)
+    echo ""
+    echo -e "${BOLD}UR5e RT Controller — install.sh${NC}"
+    echo ""
+    echo "Usage: $0 [MODE]"
+    echo ""
+    echo "Modes:"
+    echo "  sim    — MuJoCo simulation only"
+    echo "             Installs: ROS2 build tools, Pinocchio, MuJoCo 3.x"
+    echo "             Skips:    UR robot driver, RT scheduling permissions"
+    echo ""
+    echo "  robot  — Real robot only"
+    echo "             Installs: ROS2 build tools, UR driver, Pinocchio, RT permissions"
+    echo "             Skips:    MuJoCo"
+    echo ""
+    echo "  full   — Complete installation (default)"
+    echo "             Installs: everything above"
+    echo ""
+    echo "Examples:"
+    echo "  chmod +x install.sh"
+    echo "  ./install.sh sim      # developer workstation, no hardware"
+    echo "  ./install.sh robot    # robot-side machine"
+    echo "  ./install.sh          # full setup"
+    echo ""
+    exit 0
+    ;;
+  *)
+    echo -e "${RED}Unknown mode: '$1'${NC}"
+    echo "Usage: $0 [sim|robot|full]  or  $0 --help"
     exit 1
-fi
+    ;;
+esac
 
-ROS_DISTRO=$(ros2 --version | grep -oP 'ROS \K[^ ]+')
-echo -e "${GREEN}✅ ROS2 detected: ${ROS_DISTRO}${NC}"
+# ── Banner ─────────────────────────────────────────────────────────────────────
+echo ""
+echo -e "${BOLD}${BLUE}╔══════════════════════════════════════════════════════╗${NC}"
+echo -e "${BOLD}${BLUE}║     UR5e RT Controller — Installation Script         ║${NC}"
+echo -e "${BOLD}${BLUE}╚══════════════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "  Mode : ${CYAN}${BOLD}${MODE_DESC}${NC}"
+echo ""
 
-# Check Ubuntu version
-UBUNTU_VERSION=$(lsb_release -rs)
-if [[ "$UBUNTU_VERSION" != "22.04" ]]; then
-    echo -e "${YELLOW}⚠️  Non-standard Ubuntu ($UBUNTU_VERSION). Continuing...${NC}"
-fi
+# ── Helper functions ───────────────────────────────────────────────────────────
+info()    { echo -e "${BLUE}▶ $*${NC}"; }
+success() { echo -e "${GREEN}✔ $*${NC}"; }
+warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
+error()   { echo -e "${RED}✘ $*${NC}"; exit 1; }
 
-# Create workspace
-WORKSPACE=~/ur_ws
-echo -e "${BLUE}📁 Setting up workspace: $WORKSPACE${NC}"
-mkdir -p $WORKSPACE/src
-cd $WORKSPACE/src
+# ── Common: ROS2 + Ubuntu check ────────────────────────────────────────────────
+check_prerequisites() {
+  if ! command -v ros2 &>/dev/null; then
+    error "ROS2 not found. Install ROS2 Humble first: https://docs.ros.org/en/humble/Installation.html"
+  fi
+  ROS_DISTRO_DETECTED=$(ros2 --version 2>/dev/null | grep -oP 'ROS \K[^ ]+' || echo "unknown")
+  success "ROS2 detected: ${ROS_DISTRO_DETECTED}"
 
-# Install system dependencies
-echo -e "${BLUE}📦 Installing system dependencies...${NC}"
-sudo apt update
+  UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "unknown")
+  if [[ "$UBUNTU_VERSION" != "22.04" ]]; then
+    warn "Non-standard Ubuntu (${UBUNTU_VERSION}). Recommended: 22.04. Continuing..."
+  fi
+}
 
-# UR Robot Driver
-sudo apt install -y \
-    ros-humble-ur-robot-driver \
-    ros-humble-ur-msgs \
-    ros-humble-ur-description \
-    ros-humble-control-msgs \
-    ros-humble-industrial-msgs
+# ── Common: Workspace + build tools ───────────────────────────────────────────
+setup_workspace() {
+  WORKSPACE=~/ur_ws
+  info "Setting up workspace: $WORKSPACE"
+  mkdir -p "$WORKSPACE/src"
 
-# Pinocchio — rigid-body dynamics library (required for model-based controllers v4.3.0+)
-echo -e "${BLUE}📦 Installing Pinocchio...${NC}"
-if sudo apt install -y ros-humble-pinocchio 2>/dev/null; then
-    echo -e "${GREEN}✅ Pinocchio installed via ros-humble-pinocchio${NC}"
-else
-    echo -e "${YELLOW}⚠️  ros-humble-pinocchio not found, trying robotpkg...${NC}"
+  info "Installing ROS2 build tools..."
+  sudo apt-get update -qq
+  sudo apt-get install -y \
+      ros-humble-ament-cmake \
+      ros-humble-ament-cmake-gtest \
+      python3-colcon-common-extensions \
+      python3-vcstool \
+      > /dev/null
+  success "Build tools installed"
+}
+
+# ── UR Robot Driver (robot + full) ─────────────────────────────────────────────
+install_ur_driver() {
+  info "Installing UR robot driver and dependencies..."
+  sudo apt-get install -y \
+      ros-humble-ur-robot-driver \
+      ros-humble-ur-msgs \
+      ros-humble-ur-description \
+      ros-humble-control-msgs \
+      ros-humble-industrial-msgs \
+      > /dev/null
+  success "UR robot driver installed"
+}
+
+# ── Pinocchio (all modes — needed by PinocchioController / ClikController) ────
+install_pinocchio() {
+  info "Installing Pinocchio (model-based controllers)..."
+  if sudo apt-get install -y ros-humble-pinocchio >/dev/null 2>&1; then
+    success "Pinocchio installed via ros-humble-pinocchio"
+  else
+    warn "ros-humble-pinocchio not found, trying robotpkg..."
     sudo sh -c "echo 'deb [arch=amd64] http://robotpkg.openrobots.org/packages/debian/pub $(lsb_release -sc) robotpkg' \
         > /etc/apt/sources.list.d/robotpkg.list"
     curl -fsSL http://robotpkg.openrobots.org/packages/debian/robotpkg.key \
         | sudo apt-key add - 2>/dev/null || true
-    sudo apt update
-    if sudo apt install -y robotpkg-py310-pinocchio 2>/dev/null; then
-        echo -e "${GREEN}✅ Pinocchio installed via robotpkg${NC}"
+    sudo apt-get update -qq
+    if sudo apt-get install -y robotpkg-py310-pinocchio >/dev/null 2>&1; then
+      success "Pinocchio installed via robotpkg"
+      grep -q "openrobots" ~/.bashrc || {
         echo "export PATH=/opt/openrobots/bin:\$PATH" >> ~/.bashrc
         echo "export PKG_CONFIG_PATH=/opt/openrobots/lib/pkgconfig:\$PKG_CONFIG_PATH" >> ~/.bashrc
         echo "export LD_LIBRARY_PATH=/opt/openrobots/lib:\$LD_LIBRARY_PATH" >> ~/.bashrc
         echo "export CMAKE_PREFIX_PATH=/opt/openrobots:\$CMAKE_PREFIX_PATH" >> ~/.bashrc
+      }
     else
-        echo -e "${YELLOW}⚠️  Pinocchio not installed — PinocchioController / ClikController / OperationalSpaceController will be unavailable${NC}"
-        echo -e "${YELLOW}   See: https://stack-of-tasks.github.io/pinocchio/download.html${NC}"
+      warn "Pinocchio not installed — PinocchioController / ClikController / OperationalSpaceController unavailable"
+      warn "See: https://stack-of-tasks.github.io/pinocchio/download.html"
     fi
-fi
+  fi
+}
 
-# Build tools
-sudo apt install -y \
-    ros-humble-ament-cmake \
-    ros-humble-ament-cmake-gtest \
-    ros-humble-ament-lint \
-    python3-colcon-common-extensions \
-    python3-vcstool
+# ── MuJoCo 3.x (sim + full) ────────────────────────────────────────────────────
+MJ_VERSION="3.2.4"
+MJ_DIR="/opt/mujoco-${MJ_VERSION}"
 
-# Python dependencies from requirements.txt
-echo -e "${BLUE}🐍 Installing Python dependencies...${NC}"
-if [[ -f "ur5e-rt-controller/requirements.txt" ]]; then
-    pip3 install --user -r ur5e-rt-controller/requirements.txt
-else
-    echo -e "${YELLOW}⚠️  requirements.txt not found, installing defaults${NC}"
-    pip3 install --user matplotlib pandas numpy scipy
-fi
+install_mujoco() {
+  if [[ -d "$MJ_DIR" ]]; then
+    success "MuJoCo ${MJ_VERSION} already installed at ${MJ_DIR}"
+    return
+  fi
 
-echo -e "${GREEN}✅ System dependencies installed${NC}"
+  info "Installing MuJoCo ${MJ_VERSION}..."
 
-# Clone package (if not exists)
-if [[ ! -d "ur5e-rt-controller" ]]; then
-    echo -e "${BLUE}📥 Cloning ur5e-rt-controller...${NC}"
+  # Additional GLFW/OpenGL deps for the viewer
+  sudo apt-get install -y \
+      libglfw3-dev \
+      libgl1-mesa-dev \
+      libglu1-mesa-dev \
+      > /dev/null
+
+  local TMP_TAR="/tmp/mujoco-${MJ_VERSION}-linux-x86_64.tar.gz"
+  local DL_URL="https://github.com/google-deepmind/mujoco/releases/download/${MJ_VERSION}/mujoco-${MJ_VERSION}-linux-x86_64.tar.gz"
+
+  info "Downloading MuJoCo ${MJ_VERSION}..."
+  if ! wget -q --show-progress -O "$TMP_TAR" "$DL_URL"; then
+    warn "Download failed. Install MuJoCo manually:"
+    warn "  wget $DL_URL"
+    warn "  sudo tar -xzf mujoco-${MJ_VERSION}-linux-x86_64.tar.gz -C /opt/"
+    MJ_DIR=""
+    return
+  fi
+
+  sudo tar -xzf "$TMP_TAR" -C /opt/
+  rm -f "$TMP_TAR"
+
+  # Add library path for runtime
+  local MJ_LIB_CONF="/etc/ld.so.conf.d/mujoco.conf"
+  if [[ ! -f "$MJ_LIB_CONF" ]]; then
+    echo "${MJ_DIR}/lib" | sudo tee "$MJ_LIB_CONF" > /dev/null
+    sudo ldconfig
+  fi
+
+  success "MuJoCo ${MJ_VERSION} installed at ${MJ_DIR}"
+}
+
+# ── Python dependencies ─────────────────────────────────────────────────────────
+install_python_deps() {
+  info "Installing Python dependencies..."
+  local REQ_FILE
+  REQ_FILE="$(dirname "$0")/requirements.txt"
+  if [[ -f "$REQ_FILE" ]]; then
+    pip3 install --user -q -r "$REQ_FILE"
+    success "Python dependencies installed from requirements.txt"
+  else
+    pip3 install --user -q matplotlib pandas numpy scipy
+    success "Python dependencies installed (defaults)"
+  fi
+}
+
+# ── Clone / update package ─────────────────────────────────────────────────────
+setup_package() {
+  cd "$WORKSPACE/src"
+  if [[ ! -d "ur5e-rt-controller" ]]; then
+    info "Cloning ur5e-rt-controller..."
     git clone https://github.com/hyujun/ur5e-rt-controller.git
-    cd ur5e-rt-controller
-else
-    echo -e "${YELLOW}📁 ur5e-rt-controller already exists${NC}"
-    cd ur5e-rt-controller
-fi
+  else
+    warn "ur5e-rt-controller already exists — skipping clone"
+  fi
+}
 
-# Build
-echo -e "${BLUE}🔨 Building package...${NC}"
-cd $WORKSPACE
-colcon build --packages-select ur5e_rt_controller --symlink-install
+# ── Build ──────────────────────────────────────────────────────────────────────
+build_package() {
+  info "Building ur5e_rt_controller..."
+  cd "$WORKSPACE"
 
-# Source
-source install/setup.bash
-echo "export ROS_WORKSPACE=$WORKSPACE" >> ~/.bashrc
-echo "source $WORKSPACE/install/setup.bash" >> ~/.bashrc
+  local CMAKE_ARGS=()
+  if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
+    CMAKE_ARGS+=("-Dmujoco_DIR=${MJ_DIR}/lib/cmake/mujoco")
+    info "MuJoCo cmake path: ${MJ_DIR}/lib/cmake/mujoco"
+  fi
 
-# RT permissions for v4.2.0+ parallel computing
-echo ""
-echo -e "${BLUE}⚙️  Setting up RT permissions for v4.2.0+ parallel computing...${NC}"
-if ! groups | grep -q realtime; then
-    echo -e "${YELLOW}Creating realtime group and setting limits...${NC}"
-    sudo groupadd -f realtime
-    sudo usermod -aG realtime $USER
-    
-    # Check if already configured
-    if ! grep -q "@realtime.*rtprio" /etc/security/limits.conf; then
-        echo "@realtime - rtprio 99" | sudo tee -a /etc/security/limits.conf
-    fi
-    if ! grep -q "@realtime.*memlock" /etc/security/limits.conf; then
-        echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
-    fi
-    
-    echo -e "${GREEN}✅ RT permissions configured${NC}"
-    echo -e "${YELLOW}⚠️  IMPORTANT: Please LOGOUT and LOGIN again for RT permissions to take effect${NC}"
-    echo -e "${YELLOW}   Then verify with: ulimit -r (should show 99)${NC}"
-else
-    echo -e "${GREEN}✅ RT permissions already configured${NC}"
-fi
+  if [[ ${#CMAKE_ARGS[@]} -gt 0 ]]; then
+    colcon build \
+        --packages-select ur5e_rt_controller \
+        --symlink-install \
+        --cmake-args "${CMAKE_ARGS[@]}"
+  else
+    colcon build \
+        --packages-select ur5e_rt_controller \
+        --symlink-install
+  fi
 
-# Verify installation
-echo ""
-echo -e "${BLUE}✅ Verifying installation...${NC}"
-if ros2 pkg list | grep -q ur5e_rt_controller; then
-    echo -e "${GREEN}✅ Package successfully installed!${NC}"
-else
-    echo -e "${RED}❌ Installation failed${NC}"
-    exit 1
-fi
+  source install/setup.bash
+  grep -q "ur_ws/install/setup.bash" ~/.bashrc || \
+      echo "source $WORKSPACE/install/setup.bash" >> ~/.bashrc
+  success "Package built and sourced"
+}
 
-# Test executables
-echo -e "${BLUE}🔍 Testing executables...${NC}"
-ros2 pkg executables ur5e_rt_controller
+# ── RT permissions (robot + full) ──────────────────────────────────────────────
+install_rt_permissions() {
+  info "Configuring RT scheduling permissions..."
+  sudo groupadd -f realtime
+  sudo usermod -aG realtime "$USER"
 
-# Create log directories
-mkdir -p /tmp/ur5e_logs /tmp/ur5e_stats ~/ur_plots
-echo -e "${GREEN}✅ Log directories created${NC}"
+  if ! grep -q "@realtime.*rtprio" /etc/security/limits.conf; then
+    echo "@realtime - rtprio 99" | sudo tee -a /etc/security/limits.conf > /dev/null
+  fi
+  if ! grep -q "@realtime.*memlock" /etc/security/limits.conf; then
+    echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf > /dev/null
+  fi
 
-echo ""
-echo -e "${GREEN}🎉 Installation COMPLETE!${NC}"
-echo "==================================================="
-echo ""
-echo "🚀 Quick Start Commands:"
-echo ""
-echo "1. Full system:"
-echo "   ros2 launch ur5e_rt_controller ur_control.launch.py robot_ip:=192.168.1.10"
-echo ""
-echo "2. Hand UDP only:"
-echo "   ros2 launch ur5e_rt_controller hand_udp.launch.py"
-echo ""
-echo "3. Health monitor:"
-echo "   ros2 run ur5e_rt_controller monitor_data_health.py"
-echo ""
-echo "4. Plot trajectory:"
-echo "   ros2 run ur5e_rt_controller plot_ur_trajectory.py /tmp/ur5e_control_log.csv"
-echo ""
-echo "5. Motion editor GUI:"
-echo "   ros2 run ur5e_rt_controller motion_editor_gui.py"
-echo ""
-echo "6. Hand simulator:"
-echo "   ros2 run ur5e_rt_controller hand_udp_sender_example.py"
-echo ""
-echo "📋 Logs saved to: /tmp/ur5e_control_log.csv"
-echo ""
-echo "📚 Additional resources:"
-echo "   - RT optimization guide: docs/RT_OPTIMIZATION.md"
-echo "   - Full documentation: README.md"
-echo "   - Changelog: docs/CHANGELOG.md"
-echo ""
-echo "⚠️  For v4.2.0+ parallel computing:"
-echo "   1. Logout and login after installation"
-echo "   2. Verify RT permissions: ulimit -r (should be 99)"
-echo "   3. See docs/RT_OPTIMIZATION.md for CPU isolation setup"
-echo ""
-echo "🤖 Pinocchio-based controllers (v4.3.0+):"
-echo "   PinocchioController  — joint-space PD + gravity/Coriolis compensation"
-echo "   ClikController       — Cartesian position control (CLIK, 3-DOF + null-space)"
-echo "   OperationalSpaceController — full 6-DOF Cartesian PD (position + orientation)"
-echo "   URDF path required:  /opt/ros/humble/share/ur_description/urdf/ur5e.urdf"
-echo "   See README.md for usage and migration guide"
+  success "RT permissions configured (rtprio=99, memlock=unlimited)"
+  warn "IMPORTANT: Log out and log back in for RT permissions to take effect"
+  warn "Verify with: ulimit -r  (should print 99)"
+}
+
+# ── Verify installation ─────────────────────────────────────────────────────────
+verify_installation() {
+  info "Verifying installation..."
+  source "$WORKSPACE/install/setup.bash"
+  if ros2 pkg list 2>/dev/null | grep -q ur5e_rt_controller; then
+    success "Package registered: ur5e_rt_controller"
+  else
+    error "Installation verification failed — package not found"
+  fi
+
+  info "Available executables:"
+  ros2 pkg executables ur5e_rt_controller 2>/dev/null || true
+
+  mkdir -p /tmp/ur5e_logs /tmp/ur5e_stats ~/ur_plots
+  success "Log directories ready (/tmp/ur5e_logs, /tmp/ur5e_stats, ~/ur_plots)"
+}
+
+# ── Quick start summary ─────────────────────────────────────────────────────────
+print_summary() {
+  echo ""
+  echo -e "${BOLD}${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
+  echo -e "${BOLD}${GREEN}║               Installation Complete!                 ║${NC}"
+  echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
+  echo ""
+
+  case "$MODE" in
+    sim)
+      echo -e "${CYAN}${BOLD}── Simulation Quick Start ──────────────────────────────${NC}"
+      echo ""
+      echo "  # Free-run simulation (viewer opens automatically)"
+      echo "  ros2 launch ur5e_rt_controller mujoco_sim.launch.py"
+      echo ""
+      echo "  # Sync-step mode (1:1 with controller)"
+      echo "  ros2 launch ur5e_rt_controller mujoco_sim.launch.py sim_mode:=sync_step"
+      echo ""
+      echo "  # Headless (no viewer window)"
+      echo "  ros2 launch ur5e_rt_controller mujoco_sim.launch.py enable_viewer:=false"
+      echo ""
+      echo "  # Send test commands"
+      echo "  ros2 topic pub /target_joint_positions std_msgs/msg/Float64MultiArray \\"
+      echo "      \"data: [0.0, -1.57, 0.0, 0.0, 0.0, 0.0]\""
+      echo ""
+      echo "  # Monitor RTF and steps"
+      echo "  ros2 topic echo /sim/status"
+      echo ""
+      if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
+        echo -e "  MuJoCo path : ${MJ_DIR}"
+        echo -e "  cmake arg   : -Dmujoco_DIR=${MJ_DIR}/lib/cmake/mujoco"
+      else
+        echo -e "  ${YELLOW}MuJoCo was not installed automatically.${NC}"
+        echo -e "  ${YELLOW}See: https://github.com/google-deepmind/mujoco/releases${NC}"
+      fi
+      ;;
+
+    robot)
+      echo -e "${CYAN}${BOLD}── Real Robot Quick Start ──────────────────────────────${NC}"
+      echo ""
+      echo "  # Full system launch (replace IP as needed)"
+      echo "  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
+      echo "  ros2 launch ur5e_rt_controller ur_control.launch.py robot_ip:=192.168.1.10"
+      echo ""
+      echo "  # Fake hardware (no physical robot — for testing)"
+      echo "  ros2 launch ur5e_rt_controller ur_control.launch.py use_fake_hardware:=true"
+      echo ""
+      echo "  # Hand UDP nodes only"
+      echo "  ros2 launch ur5e_rt_controller hand_udp.launch.py"
+      echo ""
+      echo "  # Monitor control loop rate (should be ~500 Hz)"
+      echo "  ros2 topic hz /forward_position_controller/commands"
+      echo ""
+      echo "  # Check E-STOP status"
+      echo "  ros2 topic echo /system/estop_status"
+      echo ""
+      echo -e "  ${YELLOW}RT permissions: log out and back in, then verify:${NC}"
+      echo "    ulimit -r   # should print 99"
+      echo "    ulimit -l   # should print unlimited"
+      ;;
+
+    full)
+      echo -e "${CYAN}${BOLD}── Quick Start ─────────────────────────────────────────${NC}"
+      echo ""
+      echo "  # Real robot"
+      echo "  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
+      echo "  ros2 launch ur5e_rt_controller ur_control.launch.py robot_ip:=192.168.1.10"
+      echo ""
+      echo "  # MuJoCo simulation"
+      echo "  ros2 launch ur5e_rt_controller mujoco_sim.launch.py"
+      echo "  ros2 launch ur5e_rt_controller mujoco_sim.launch.py sim_mode:=sync_step"
+      echo ""
+      echo "  # Fake hardware (no robot, no simulation)"
+      echo "  ros2 launch ur5e_rt_controller ur_control.launch.py use_fake_hardware:=true"
+      echo ""
+      echo "  # Hand UDP only"
+      echo "  ros2 launch ur5e_rt_controller hand_udp.launch.py"
+      echo ""
+      echo -e "  ${YELLOW}RT permissions: log out and back in, then verify:${NC}"
+      echo "    ulimit -r   # should print 99"
+      echo "    ulimit -l   # should print unlimited"
+      ;;
+  esac
+
+  echo ""
+  echo -e "${CYAN}${BOLD}── Monitoring ──────────────────────────────────────────${NC}"
+  echo "  ros2 run ur5e_rt_controller monitor_data_health.py"
+  echo "  ros2 run ur5e_rt_controller plot_ur_trajectory.py /tmp/ur5e_control_log.csv"
+  echo "  ros2 run ur5e_rt_controller motion_editor_gui.py"
+  echo ""
+  echo -e "${CYAN}${BOLD}── Documentation ───────────────────────────────────────${NC}"
+  echo "  docs/RT_OPTIMIZATION.md  — RT tuning guide"
+  echo "  docs/CHANGELOG.md        — version history"
+  echo "  CLAUDE.md                — full API and architecture reference"
+  echo ""
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Main installation sequence
+# ══════════════════════════════════════════════════════════════════════════════
+
+check_prerequisites
+setup_workspace
+
+case "$MODE" in
+  sim)
+    install_pinocchio
+    install_mujoco
+    ;;
+  robot)
+    install_ur_driver
+    install_pinocchio
+    ;;
+  full)
+    install_ur_driver
+    install_pinocchio
+    install_mujoco
+    ;;
+esac
+
+install_python_deps
+setup_package
+build_package
+
+case "$MODE" in
+  robot|full)
+    install_rt_permissions
+    ;;
+esac
+
+verify_installation
+print_summary

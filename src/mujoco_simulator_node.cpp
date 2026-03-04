@@ -3,7 +3,6 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
-#include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
@@ -36,7 +35,8 @@ namespace urtc = ur5e_rt_controller;
 // Published topics (replacing UR driver):
 //   /joint_states          sensor_msgs/JointState      @ sim frequency
 //   /hand/joint_states     std_msgs/Float64MultiArray  @ 100 Hz
-//   /sim/status            std_msgs/Bool               @ 1 Hz
+//   /sim/status            std_msgs/Float64MultiArray  @ 1 Hz
+//                          data: [step_count, sim_time_sec, rtf, paused(0/1)]
 //
 // Subscribed topics (from custom_controller):
 //   /forward_position_controller/commands  std_msgs/Float64MultiArray
@@ -59,8 +59,9 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     // Wire state callback: called from sim thread at control_freq Hz
     sim_->SetStateCallback(
         [this](const std::array<double, 6>& pos,
-               const std::array<double, 6>& vel) {
-          PublishJointState(pos, vel);
+               const std::array<double, 6>& vel,
+               const std::array<double, 6>& eff) {
+          PublishJointState(pos, vel, eff);
         });
 
     sim_->Start();
@@ -169,8 +170,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     hand_state_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
         "/hand/joint_states", rclcpp::QoS(10));
 
-    // /sim/estop_status: re-publish whether sim is running (for monitoring)
-    sim_status_pub_ = create_publisher<std_msgs::msg::Bool>(
+    // /sim/status: [step_count, sim_time_sec, rtf, paused(0/1)]
+    sim_status_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
         "/sim/status", rclcpp::QoS(10));
   }
 
@@ -235,14 +236,14 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   // Called from SimLoop thread at control_freq Hz.
   // rclcpp::Publisher::publish() is thread-safe in ROS2 Humble.
   void PublishJointState(const std::array<double, 6>& positions,
-                         const std::array<double, 6>& velocities) {
+                         const std::array<double, 6>& velocities,
+                         const std::array<double, 6>& efforts) {
     auto msg = sensor_msgs::msg::JointState();
     msg.header.stamp = now();
     msg.name         = {kJointNames.begin(), kJointNames.end()};
     msg.position     = {positions.begin(),   positions.end()};
     msg.velocity     = {velocities.begin(),  velocities.end()};
-    // Effort not simulated; fill with zeros
-    msg.effort.assign(6, 0.0);
+    msg.effort       = {efforts.begin(),     efforts.end()};
     joint_state_pub_->publish(msg);
   }
 
@@ -263,14 +264,28 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   }
 
   void PublishSimStatus() {
-    auto msg   = std_msgs::msg::Bool();
-    msg.data   = sim_->IsRunning();
+    const bool   is_running = sim_->IsRunning();
+    const bool   is_paused  = sim_->IsPaused();
+    const double rtf        = sim_->GetRtf();
+    const double sim_time   = sim_->SimTimeSec();
+    const auto   steps      = sim_->StepCount();
+
+    auto msg = std_msgs::msg::Float64MultiArray();
+    msg.data = {
+        static_cast<double>(steps),  // [0] step count
+        sim_time,                    // [1] sim time (s)
+        rtf,                         // [2] real-time factor
+        is_paused ? 1.0 : 0.0,      // [3] paused flag
+    };
     sim_status_pub_->publish(msg);
+
     RCLCPP_INFO(get_logger(),
-                "Simulator running=%s  steps=%lu  sim_time=%.2f s",
-                sim_->IsRunning() ? "true" : "false",
-                static_cast<unsigned long>(sim_->StepCount()),
-                sim_->SimTimeSec());
+                "Simulator running=%s%s  steps=%lu  sim_time=%.2f s  rtf=%.1fx",
+                is_running ? "true" : "false",
+                is_paused  ? " [PAUSED]" : "",
+                static_cast<unsigned long>(steps),
+                sim_time,
+                rtf);
   }
 
   // ── Joint name table (must match UR driver / custom_controller) ──────────────
@@ -286,7 +301,7 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   // ── ROS2 handles ─────────────────────────────────────────────────────────────
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr       joint_state_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr   hand_state_pub_;
-  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr                sim_status_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr   sim_status_pub_;
 
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr command_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr hand_cmd_sub_;

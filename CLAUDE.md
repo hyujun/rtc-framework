@@ -22,6 +22,11 @@ ros2 launch ur5e_rt_controller ur_control.launch.py robot_ip:=192.168.1.10
 # Run with fake hardware (no robot needed)
 ros2 launch ur5e_rt_controller ur_control.launch.py use_fake_hardware:=true
 
+# Run MuJoCo simulation (requires MuJoCo 3.x installed)
+ros2 launch ur5e_rt_controller mujoco_sim.launch.py
+ros2 launch ur5e_rt_controller mujoco_sim.launch.py sim_mode:=sync_step
+ros2 launch ur5e_rt_controller mujoco_sim.launch.py enable_viewer:=false
+
 # Run UDP hand nodes only
 ros2 launch ur5e_rt_controller hand_udp.launch.py udp_port:=50001 target_ip:=192.168.1.100 target_port:=50002
 ```
@@ -30,6 +35,7 @@ ros2 launch ur5e_rt_controller hand_udp.launch.py udp_port:=50001 target_ip:=192
 ```bash
 ros2 topic hz /forward_position_controller/commands   # should be ~500Hz
 ros2 topic echo /system/estop_status                  # true = E-STOP active
+ros2 topic echo /sim/status                           # MuJoCo: steps + sim_time
 ros2 control list_controllers -v
 PID=$(pgrep -f custom_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 ```
@@ -39,43 +45,67 @@ PID=$(pgrep -f custom_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep 
 ros2 topic pub /target_joint_positions std_msgs/msg/Float64MultiArray "data: [0.0, -1.57, 0.0, 0.0, 0.0, 0.0]"
 ```
 
+**Analyze compute-time logs (after sync_step run)**:
+```python
+import pandas as pd
+df = pd.read_csv('/tmp/ur5e_control_log.csv')
+print(df['compute_time_us'].describe())
+print(f'P95: {df["compute_time_us"].quantile(0.95):.1f} us')
+print(f'P99: {df["compute_time_us"].quantile(0.99):.1f} us')
+print(f'Over 2ms: {(df["compute_time_us"] > 2000).mean()*100:.2f}%')
+```
+
 ---
 
 ## Repository Layout
 
 ```
 ur5e_rt_controller/
-├── CMakeLists.txt                          # Build config — v4.2.2, C++20, 3 executables
+├── CMakeLists.txt                          # Build config — v4.4.0, C++20, 3–4 executables
 ├── package.xml                             # ROS2 package metadata
 ├── install.sh                              # One-shot installation script
 ├── requirements.txt                        # Python deps: matplotlib, pandas, numpy, scipy
 │
 ├── config/
 │   ├── ur5e_rt_controller.yaml            # Controller gains, E-STOP, joint limits
-│   └── hand_udp_receiver.yaml             # UDP hand receiver settings
+│   ├── hand_udp_receiver.yaml             # UDP hand receiver settings
+│   └── mujoco_simulator.yaml             # MuJoCo sim + custom_controller sim overrides
 │
 ├── docs/
 │   ├── CHANGELOG.md                       # Version history (Korean)
 │   └── RT_OPTIMIZATION.md                 # v4.2.0 RT tuning guide (Korean)
 │
+├── models/
+│   └── ur5e/
+│       ├── scene.xml                      # MuJoCo scene (ground plane + UR5e)
+│       └── ur5e.xml                       # UR5e robot MJCF model
+│
 ├── include/ur5e_rt_controller/
 │   ├── rt_controller_interface.hpp        # Abstract base + all data structures
 │   ├── data_logger.hpp                    # Non-RT CSV logger
+│   ├── log_buffer.hpp                     # SPSC ring buffer (RT→log thread, lock-free)
+│   ├── controller_timing_profiler.hpp     # Lock-free Compute() timing profiler
 │   ├── thread_config.hpp                  # ThreadConfig struct + predefined configs
 │   ├── thread_utils.hpp                   # ApplyThreadConfig(), VerifyThreadConfig()
 │   ├── hand_udp_receiver.hpp              # UDP receiver (C++20 jthread)
 │   ├── hand_udp_sender.hpp                # UDP sender (little-endian doubles)
+│   ├── mujoco_simulator.hpp               # Thread-safe MuJoCo physics wrapper
 │   └── controllers/
 │       ├── pd_controller.hpp              # PD + E-STOP (active implementation)
-│       └── p_controller.hpp               # Simple P controller (alternative)
+│       ├── p_controller.hpp               # Simple P controller (alternative)
+│       ├── pinocchio_controller.hpp       # Model-based PD + gravity/Coriolis compensation
+│       ├── clik_controller.hpp            # Closed-Loop IK (Cartesian position, 3-DOF)
+│       └── operational_space_controller.hpp # Full 6-DOF Cartesian PD (pos + orientation)
 │
 ├── src/
 │   ├── custom_controller.cpp              # Main 500Hz node — 4 executors, 4 threads
 │   ├── hand_udp_receiver_node.cpp         # Bridges HandUdpReceiver → /hand/joint_states
-│   └── hand_udp_sender_node.cpp           # Bridges /hand/command → UDP packets
+│   ├── hand_udp_sender_node.cpp           # Bridges /hand/command → UDP packets
+│   └── mujoco_simulator_node.cpp          # MuJoCo sim node (optional — needs MuJoCo 3.x)
 │
 ├── launch/
 │   ├── ur_control.launch.py               # Full system (UR driver + controller + monitor)
+│   ├── mujoco_sim.launch.py               # MuJoCo simulation (replaces UR driver)
 │   └── hand_udp.launch.py                 # Hand UDP nodes only
 │
 └── scripts/                               # Python utilities (installed to lib/)
@@ -115,7 +145,27 @@ struct ControllerState { RobotState robot{}; HandState hand{}; double dt; uint64
 struct ControllerOutput { std::array<double,6> robot_commands{}; std::array<double,11> hand_commands{}; bool valid{true}; };
 ```
 
-`PDController` (`include/ur5e_rt_controller/controllers/pd_controller.hpp`) is the active implementation. On E-STOP it drives toward `kSafePosition = [0, -1.57, 1.57, -1.57, -1.57, 0]` rad. Output is clamped to `kMaxJointVelocity = 2.0 rad/s`. `PController` exists as a simpler alternative (proportional-only, no E-STOP).
+### Controller Implementations
+
+| Controller | Header | Control Space | Notes |
+|---|---|---|---|
+| `PDController` | `controllers/pd_controller.hpp` | Joint-space PD | **Active default.** E-STOP drives to `kSafePosition`. |
+| `PController` | `controllers/p_controller.hpp` | Joint-space P | Proportional-only, no E-STOP. |
+| `PinocchioController` | `controllers/pinocchio_controller.hpp` | Joint-space PD + dynamics | Gravity + optional Coriolis compensation via Pinocchio RNEA. |
+| `ClikController` | `controllers/clik_controller.hpp` | Cartesian 3-DOF | Damped Jacobian pseudoinverse + null-space joint centering. |
+| `OperationalSpaceController` | `controllers/operational_space_controller.hpp` | Cartesian 6-DOF | Full pose (position + SO(3) orientation) control. |
+
+**`PDController`** on E-STOP drives toward `kSafePosition = [0, -1.57, 1.57, -1.57, -1.57, 0]` rad. Output clamped to `kMaxJointVelocity = 2.0 rad/s`.
+
+**`PinocchioController`** control law:
+```
+command[i] = Kp * e[i] + Kd * ė[i] + g(q)[i] [+ C(q,v)·v[i]]
+```
+All Eigen buffers pre-allocated in constructor — zero heap allocation on the 500 Hz path.
+
+**`ClikController`** target convention (via `/target_joint_positions`): `[x, y, z, null_q3, null_q4, null_q5]` — first 3 are TCP position in metres, last 3 are null-space reference joints 3–5 in radians.
+
+**`OperationalSpaceController`** target convention: `[x, y, z, roll, pitch, yaw]` — TCP position (m) + orientation (rad, ZYX Euler). Uses Pinocchio `log3()` for SO(3) orientation error.
 
 ### Main Node: `CustomController` (`src/custom_controller.cpp`)
 
@@ -125,7 +175,7 @@ The entire executable lives in this one file. It creates **4 `SingleThreadedExec
 |---|---|---|---|---|---|
 | `rt_executor` / `t_rt` | `cb_group_rt_` | Core 2 | SCHED_FIFO | 90 | `ControlLoop()` (500Hz), `CheckTimeouts()` (50Hz E-STOP watchdog) |
 | `sensor_executor` / `t_sensor` | `cb_group_sensor_` | Core 3 | SCHED_FIFO | 70 | `/joint_states`, `/target_joint_positions`, `/hand/joint_states` subscribers |
-| `log_executor` / `t_log` | `cb_group_log_` | Core 4 | SCHED_OTHER | nice -5 | `DataLogger` CSV writes |
+| `log_executor` / `t_log` | `cb_group_log_` | Core 4 | SCHED_OTHER | nice -5 | `DataLogger` CSV writes (drains `SpscLogBuffer`) |
 | `aux_executor` / `t_aux` | `cb_group_aux_` | Core 5 | SCHED_OTHER | 0 | E-STOP status publisher |
 
 `mlockall(MCL_CURRENT | MCL_FUTURE)` is called at startup to prevent page faults. Shared state between threads is protected by three separate mutexes (`state_mutex_`, `target_mutex_`, `hand_mutex_`).
@@ -137,7 +187,56 @@ The entire executable lives in this one file. It creates **4 `SingleThreadedExec
 - `TargetCallback()`: stores target positions under `target_mutex_`; calls `controller_->SetRobotTarget()`
 - `HandStateCallback()`: records timestamp under `hand_mutex_` (data itself is not buffered here)
 - `CheckTimeouts()` (50Hz): triggers E-STOP if data gaps exceed configured thresholds
-- `ControlLoop()` (500Hz): assembles `ControllerState`, calls `Compute()`, publishes to `/forward_position_controller/commands`, logs to CSV
+- `ControlLoop()` (500Hz): assembles `ControllerState`, calls `Compute()`, publishes to `/forward_position_controller/commands`, pushes to `SpscLogBuffer`
+
+### Lock-Free Logging Infrastructure
+
+**`SpscLogBuffer`** (`include/ur5e_rt_controller/log_buffer.hpp`): single-producer / single-consumer ring buffer (512 entries, power-of-2). The RT thread calls `Push()` without ever blocking or allocating; the log thread drains via `Pop()`. Each `LogEntry` now includes `compute_time_us` from `ControllerTimingProfiler`.
+
+**`ControllerTimingProfiler`** (`include/ur5e_rt_controller/controller_timing_profiler.hpp`): wraps `RTControllerInterface::Compute()` with `steady_clock` timing. Maintains a lock-free histogram (0–2000 µs, 100 µs buckets) + min/max/mean/stddev/p95/p99 using relaxed atomics. Budget threshold: 2000 µs (500 Hz period). Call `MeasuredCompute()` instead of `Compute()` directly; call `Summary()` every 1000 iterations for a log line.
+
+### MuJoCo Simulation
+
+**`MuJoCoSimulator`** (`include/ur5e_rt_controller/mujoco_simulator.hpp`): thread-safe wrapper around a MuJoCo 3.x physics model. Optional — only built when `mujoco` CMake package is found.
+
+Two simulation modes:
+| Mode | `SimMode` | Description |
+|---|---|---|
+| Free-run | `kFreeRun` | Advances `mj_step()` as fast as possible. Best for algorithm validation. |
+| Sync-step | `kSyncStep` | Publish state → wait for one command → step. Latency ≈ `Compute()` time. |
+
+Both modes support `max_rtf` (maximum Real-Time Factor, 0.0 = unlimited) and RTF measurement displayed in the GLFW viewer overlay.
+
+Threading model:
+- `SimLoop` thread: runs `SimLoopFreeRun` or `SimLoopSyncStep` via `std::jthread`.
+- `ViewerLoop` thread: renders scene at ~60 Hz via GLFW (optional, compiled-in with `-DMUJOCO_HAVE_GLFW`).
+- Caller thread (ROS2 node): calls `SetCommand()`, `GetPositions()`, `GetVelocities()`.
+
+Synchronisation:
+- `cmd_mutex_` + `cmd_pending_` atomic — command transfer (lock-free fast path in FreeRun).
+- `sync_cv_` — wakes `SimLoopSyncStep` when a command arrives.
+- `state_mutex_` — protects latest state snapshot.
+- `viz_mutex_` — `try_lock` only; never blocks `SimLoop`.
+
+**`mujoco_simulator_node`** (`src/mujoco_simulator_node.cpp`): ROS2 node that wraps `MuJoCoSimulator`. Publishes `/joint_states` (at physics rate or decimated), `/hand/joint_states` (100 Hz, simulated via 1st-order filter), and `/sim/status`. Subscribes to `/forward_position_controller/commands` and `/hand/command`.
+
+**MuJoCo model files** (`models/ur5e/`):
+- `ur5e.xml` — MJCF robot model
+- `scene.xml` — includes `ur5e.xml` with a ground plane
+
+To use MuJoCo Menagerie instead:
+```bash
+ros2 launch ur5e_rt_controller mujoco_sim.launch.py \
+    model_path:=/path/to/mujoco_menagerie/universal_robots_ur5e/scene.xml
+```
+
+**Install MuJoCo 3.x** (to enable `mujoco_simulator_node`):
+```bash
+wget https://github.com/google-deepmind/mujoco/releases/download/3.x.x/mujoco-3.x.x-linux-x86_64.tar.gz
+sudo tar -xzf mujoco-*.tar.gz -C /opt/
+# Then rebuild with:
+cmake -Dmujoco_DIR=/opt/mujoco-3.x.x/lib/cmake/mujoco ...
+```
 
 ### UDP Hand Protocol
 
@@ -156,14 +255,14 @@ The entire executable lives in this one file. It creates **4 `SingleThreadedExec
 
 `CheckTimeouts()` runs at 50 Hz. If `/joint_states` is not received for >100ms, `PDController::TriggerEstop()` is called (sets `estopped_` atomic flag). If `/hand/joint_states` is not received for >200ms, `SetHandEstop(true)` is called separately. Both flags use `std::atomic<bool>` for safe cross-thread access between the RT thread and the 50 Hz watchdog.
 
-To disable hand E-STOP (when no hand is connected): set `enable_estop: false` or `hand_timeout_ms: 0` in `config/ur5e_rt_controller.yaml`.
+To disable hand E-STOP (when no hand is connected): set `enable_estop: false` or `hand_timeout_ms: 0` in `config/ur5e_rt_controller.yaml`. For MuJoCo simulation, `mujoco_simulator.yaml` already sets `enable_estop: false`.
 
 ### DataLogger (`include/ur5e_rt_controller/data_logger.hpp`)
 
 Non-copyable (move-only) CSV logger. Writes one row per control step:
-`timestamp, current_pos_0..5, target_pos_0..5, command_0..5`
+`timestamp, current_pos_0..5, target_pos_0..5, command_0..5, compute_time_us`
 
-Default path: `/tmp/ur5e_control_log.csv`. Writes happen from the `log_executor` thread (Core 4), never from the 500Hz RT thread.
+Default path: `/tmp/ur5e_control_log.csv`. The 500 Hz RT thread pushes entries to `SpscLogBuffer`; the `log_executor` thread (Core 4) drains and writes CSV — never blocking the RT path.
 
 ### Thread Configuration (`include/ur5e_rt_controller/thread_config.hpp`)
 
@@ -189,12 +288,18 @@ Predefined `ThreadConfig` constants for 6-core systems:
 
 | Topic | Type | Direction | Description |
 |---|---|---|---|
-| `/joint_states` | `sensor_msgs/JointState` | Subscribe | 6-DOF positions + velocities from UR driver |
-| `/target_joint_positions` | `std_msgs/Float64MultiArray` | Subscribe | 6 target positions in radians |
-| `/hand/joint_states` | `std_msgs/Float64MultiArray` | Subscribe | 11 hand motor values from UDP receiver |
+| `/joint_states` | `sensor_msgs/JointState` | Subscribe | 6-DOF positions + velocities from UR driver or MuJoCo sim |
+| `/target_joint_positions` | `std_msgs/Float64MultiArray` | Subscribe | 6 values: joint angles (rad) for PD/Pinocchio, TCP pose for CLIK/OSC |
+| `/hand/joint_states` | `std_msgs/Float64MultiArray` | Subscribe | 11 hand motor values from UDP receiver or MuJoCo sim |
 | `/hand/command` | `std_msgs/Float64MultiArray` | Subscribe | 11 normalized hand commands (0.0–1.0) |
 | `/forward_position_controller/commands` | `std_msgs/Float64MultiArray` | Publish | 6 robot position commands (rad) |
 | `/system/estop_status` | `std_msgs/Bool` | Publish | `true` = E-STOP active |
+| `/sim/status` | `std_msgs/Float64MultiArray` | Publish | MuJoCo only: `[step_count, sim_time_sec, rtf]` |
+
+**Note on `/target_joint_positions` interpretation**: The 6 values are interpreted differently by each controller:
+- `PDController` / `PinocchioController`: joint angles in radians
+- `ClikController`: `[x, y, z, null_q3, null_q4, null_q5]` (TCP position + null-space reference)
+- `OperationalSpaceController`: `[x, y, z, roll, pitch, yaw]` (full TCP pose)
 
 ---
 
@@ -250,11 +355,34 @@ monitoring:
   statistics_period: 5.0    # seconds
 ```
 
+### `config/mujoco_simulator.yaml`
+
+```yaml
+mujoco_simulator:
+  ros__parameters:
+    model_path: ""             # Empty → <package>/models/ur5e/scene.xml
+    sim_mode: "free_run"       # "free_run" or "sync_step"
+    publish_decimation: 1      # free_run: publish every N steps
+    sync_timeout_ms: 50.0      # sync_step: command wait timeout
+    max_rtf: 0.0               # Max Real-Time Factor (0.0 = unlimited)
+    enable_viewer: true        # GLFW 3D viewer (false for headless)
+    initial_joint_positions: [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
+    enable_hand_sim: true      # Simulate hand with 1st-order filter
+    hand_filter_alpha: 0.1     # Filter coefficient per 10ms tick
+
+# Overrides custom_controller params when launched via mujoco_sim.launch.py
+custom_controller:
+  ros__parameters:
+    enable_estop: false        # Prevents false E-STOPs in free_run mode
+    robot_timeout_ms: 10000.0
+    hand_timeout_ms:  10000.0
+```
+
 ---
 
 ## Launch Files
 
-### `launch/ur_control.launch.py` — Full System
+### `launch/ur_control.launch.py` — Full System (Real Robot)
 
 | Argument | Default | Description |
 |---|---|---|
@@ -262,6 +390,21 @@ monitoring:
 | `use_fake_hardware` | `false` | Simulation mode (no physical robot) |
 
 Launches: UR robot driver (ur5e), `custom_controller` node (params from `ur5e_rt_controller.yaml`), `data_health_monitor` node (10Hz check rate, 0.2s timeout threshold).
+
+### `launch/mujoco_sim.launch.py` — MuJoCo Simulation
+
+| Argument | Default | Description |
+|---|---|---|
+| `model_path` | `""` | Absolute path to scene.xml; empty → package default |
+| `sim_mode` | `free_run` | `free_run` (max speed) or `sync_step` (1:1 sync) |
+| `enable_viewer` | `true` | Open GLFW 3D viewer window |
+| `publish_decimation` | `1` | free_run: publish every N steps |
+| `sync_timeout_ms` | `50.0` | sync_step: command wait timeout (ms) |
+| `max_rtf` | `0.0` | Max Real-Time Factor (0.0 = unlimited) |
+| `kp` | `5.0` | PD controller proportional gain |
+| `kd` | `0.5` | PD controller derivative gain |
+
+Launches: `mujoco_simulator_node`, `custom_controller`, `data_health_monitor`.
 
 ### `launch/hand_udp.launch.py` — Hand UDP Only
 
@@ -302,23 +445,42 @@ Synthetic hand data generator for development/testing. Sends sinusoidal or stati
 
 ## Adding a Custom Controller
 
-Inherit from `RTControllerInterface`, implement `Compute()`, `SetRobotTarget()`, `SetHandTarget()`, and `Name()` — all must be `noexcept`. Then replace `PDController` in `custom_controller.cpp` at the constructor (line ~40):
+Inherit from `RTControllerInterface`, implement `Compute()`, `SetRobotTarget()`, `SetHandTarget()`, and `Name()` — all must be `noexcept`. Then replace `PDController` in `custom_controller.cpp` at the constructor:
 
 ```cpp
-// Before:
+// Before (line ~40 of custom_controller.cpp):
 controller_(std::make_unique<urtc::PDController>())
 
-// After (example):
-controller_(std::make_unique<urtc::MyController>())
+// After (PinocchioController example):
+controller_(std::make_unique<urtc::PinocchioController>(
+    "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",
+    urtc::PinocchioController::Gains{
+        .kp = 5.0,
+        .kd = 0.5,
+        .enable_gravity_compensation  = true,
+        .enable_coriolis_compensation = false}))
+
+// After (ClikController example — target = [x, y, z, null_q3, null_q4, null_q5]):
+controller_(std::make_unique<urtc::ClikController>(
+    "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",
+    urtc::ClikController::Gains{.kp = 1.0, .damping = 0.01, .null_kp = 0.5}))
+
+// After (OperationalSpaceController — target = [x, y, z, roll, pitch, yaw]):
+controller_(std::make_unique<urtc::OperationalSpaceController>(
+    "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",
+    urtc::OperationalSpaceController::Gains{
+        .kp_pos = 1.0, .kd_pos = 0.1, .kp_rot = 0.5, .kd_rot = 0.05}))
 ```
 
-No CMakeLists changes needed — controllers are header-only or compiled into the same executable.
+When switching to Pinocchio-based controllers, remove the `controller_->set_gains(kp, kd)` call in `DeclareAndLoadParameters()` — gains are passed through the constructor instead.
+
+No CMakeLists changes needed for header-only controllers. `PinocchioController`, `ClikController`, and `OperationalSpaceController` require Pinocchio (already linked via `target_link_libraries(custom_controller pinocchio::pinocchio)`).
 
 ---
 
 ## Code Conventions
 
-- **Include order**: project headers first, then ROS2, then C++ stdlib (see `custom_controller.cpp` line 1 comment)
+- **Include order**: project headers first, then ROS2/third-party, then C++ stdlib (see `custom_controller.cpp` line 1 comment)
 - **Namespace**: `ur5e_rt_controller` (aliased as `urtc` in `.cpp` files)
 - **Naming**: Google C++ Style — `snake_case` members with trailing `_`, getters match member name without trailing `_`
 - **`noexcept` on all RT paths**: exceptions in 500Hz callbacks terminate the process; this is intentional and required
@@ -327,6 +489,8 @@ No CMakeLists changes needed — controllers are header-only or compiled into th
 - **Separate mutexes per domain**: `state_mutex_`, `target_mutex_`, `hand_mutex_` — never hold more than one simultaneously
 - **`[[nodiscard]]`** on all functions returning status or computed values
 - **Compiler warnings**: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion` — must compile warning-free
+- **Pinocchio headers**: always wrapped in `#pragma GCC diagnostic push/pop` to suppress Pinocchio's own `-Wconversion` / `-Wshadow` warnings
+- **Eigen heap policy**: all Eigen work buffers pre-allocated in constructors; `noalias()` used to avoid temporaries. No `new` / heap allocations on the 500 Hz path.
 
 ---
 
@@ -385,3 +549,14 @@ sudo cyclictest --mlockall --smp --priority=90 --policy=fifo \
 ```
 
 For detailed RT tuning (CPU isolation, kernel parameters, DDS configuration, IRQ affinity), see `docs/RT_OPTIMIZATION.md`.
+
+---
+
+## Version History Summary
+
+| Version | Key Changes |
+|---|---|
+| v4.4.0 | MuJoCo simulator integration (`mujoco_simulator.hpp`, `mujoco_simulator_node.cpp`, `mujoco_sim.launch.py`), RTF measurement + viewer overlay, `ControllerTimingProfiler`, `SpscLogBuffer` |
+| v4.3.0 | Pinocchio model-based controllers: `PinocchioController`, `ClikController`, `OperationalSpaceController` |
+| v4.2.3 | RT safety fixes: 9 hardening items from `planning_rt.md` |
+| v4.2.0 | Multi-executor architecture, `mlockall`, CPU affinity; 10x jitter reduction |

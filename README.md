@@ -1,8 +1,8 @@
 # UR5e RT Controller
 
-**Ubuntu 22.04 + ROS2 Humble | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v4.3.0)**
+**Ubuntu 22.04 + ROS2 Humble | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v4.5.0)**
 
-E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종**, UDP 핸드 인터페이스, CSV 데이터 로깅, Qt GUI 모션 에디터를 포함한 완전한 실시간 제어 솔루션입니다.
+E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종**, **MuJoCo 3.x 물리 시뮬레이터**, UDP 핸드 인터페이스, CSV 데이터 로깅, Qt GUI 모션 에디터를 포함한 완전한 실시간 제어 솔루션입니다.
 
 ---
 
@@ -11,6 +11,7 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 - [기능 요약](#기능-요약)
 - [프로젝트 구조](#프로젝트-구조)
 - [아키텍처 개요](#아키텍처-개요)
+- [MuJoCo 시뮬레이터](#mujoco-시뮬레이터)
 - [Pinocchio 기반 제어기](#pinocchio-기반-제어기)
 - [설치 방법](#설치-방법)
 - [사용 방법](#사용-방법)
@@ -32,12 +33,16 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 | 병렬 컴퓨팅 | CallbackGroup 기반 멀티스레드 executor (v4.2.0+) |
 | E-STOP 시스템 | 로봇/핸드 데이터 타임아웃 자동 감지 및 비상 정지 |
 | 모델 기반 제어 | Pinocchio 라이브러리 활용 — 중력 보상, CLIK, 작업공간 제어 (v4.3.0+) |
+| MuJoCo 시뮬레이션 | FreeRun / SyncStep 모드, GLFW 뷰어, RTF 측정 (v4.4.0+) |
+| 인터랙티브 뷰어 | 마우스 카메라, 키보드 단축키, Ctrl+드래그 물체 힘 인가, F1 도움말 (v4.5.0+) |
+| Solver 제어 | runtime에 integrator / solver type / iterations / tolerance 조정 (v4.5.0+) |
 | 커스텀 핸드 통합 | UDP 기반 11-DOF 핸드 데이터 수신/송신 |
-| 데이터 로깅 | CSV 형식의 제어 데이터 실시간 기록 (`DataLogger`) |
+| 데이터 로깅 | CSV 형식의 제어 데이터 실시간 기록 (`DataLogger` + SPSC 링 버퍼) |
 | 데이터 시각화 | Matplotlib 기반 관절 궤적 플롯 (`plot_ur_trajectory.py`) |
 | 데이터 헬스 모니터 | 패킷 손실/타임아웃 통계 수집 및 JSON 내보내기 |
 | Qt GUI 에디터 | 50개 포즈 저장/로드/재생 모션 에디터 |
 | Strategy Pattern | `RTControllerInterface`를 상속하는 교체 가능한 제어기 구조 |
+| 설치 모드 선택 | `install.sh sim / robot / full` — 환경에 맞게 선택 설치 (v4.5.0+) |
 
 ---
 
@@ -55,6 +60,7 @@ ur5e_rt_controller/
 │
 ├── config/                                # YAML 설정 파일
 │   ├── hand_udp_receiver.yaml            # UDP 핸드 수신기 설정
+│   ├── mujoco_simulator.yaml             # MuJoCo 시뮬레이터 + 제어기 E-STOP 오버라이드 (v4.4.0)
 │   └── ur5e_rt_controller.yaml           # 제어기 파라미터 + E-STOP 설정
 │
 ├── docs/                                  # 문서
@@ -68,17 +74,24 @@ ur5e_rt_controller/
 │   │   ├── pinocchio_controller.hpp      # 관절공간 PD + 중력/코리올리 보상 (v4.3.0)
 │   │   ├── clik_controller.hpp           # CLIK — Cartesian 위치 제어, null-space (v4.3.0)
 │   │   └── operational_space_controller.hpp  # OSC — 완전 6-DOF Cartesian PD (v4.3.0)
+│   ├── controller_timing_profiler.hpp    # Compute() 시간 측정 (락프리 히스토그램, v4.4.0)
 │   ├── data_logger.hpp                   # CSV 데이터 로거 (DrainBuffer 포함)
 │   ├── hand_udp_receiver.hpp             # UDP 핸드 수신기 클래스 (ThreadConfig 지원)
 │   ├── hand_udp_sender.hpp               # UDP 핸드 송신기 클래스
 │   ├── log_buffer.hpp                    # RT-safe SPSC 링 버퍼 (v4.2.3)
+│   ├── mujoco_simulator.hpp              # MuJoCo 물리 시뮬레이터 (v4.4.0+, 인터랙티브 뷰어 v4.5.0)
 │   ├── rt_controller_interface.hpp       # 제어기 기반 인터페이스 (Strategy Pattern)
 │   ├── thread_config.hpp                 # 멀티스레드 설정 구조체 (v4.2.0)
 │   └── thread_utils.hpp                  # RT 스케줄링 유틸리티 + SelectThreadConfigs (v4.2.3)
 │
 ├── launch/                                # ROS2 런치 파일
 │   ├── hand_udp.launch.py                # UDP 핸드 노드 단독 실행
+│   ├── mujoco_sim.launch.py              # MuJoCo 시뮬레이션 (v4.4.0)
 │   └── ur_control.launch.py              # 전체 시스템 실행 (UR 드라이버 + 제어기)
+│
+├── models/ur5e/                           # MuJoCo 모델 파일 (v4.4.0)
+│   ├── scene.xml                         # 씬 (지면 + UR5e)
+│   └── ur5e.xml                          # UR5e MJCF 모델
 │
 ├── scripts/                               # Python 유틸리티
 │   ├── hand_udp_sender_example.py        # UDP 핸드 송신 예제
@@ -89,7 +102,8 @@ ur5e_rt_controller/
 └── src/                                   # C++ 소스 파일
     ├── custom_controller.cpp             # 메인 제어 노드 (500Hz, E-STOP)
     ├── hand_udp_receiver_node.cpp        # 핸드 UDP 수신 ROS2 노드
-    └── hand_udp_sender_node.cpp          # 핸드 UDP 송신 ROS2 노드
+    ├── hand_udp_sender_node.cpp          # 핸드 UDP 송신 ROS2 노드
+    └── mujoco_simulator_node.cpp         # MuJoCo 시뮬레이터 ROS2 노드 (v4.4.0)
 ```
 
 ---
@@ -186,6 +200,102 @@ namespace ur5e_rt_controller {
 #### `ControlLogBuffer` (`include/ur5e_rt_controller/log_buffer.hpp`)
 `SpscLogBuffer<512>` 기반 lock-free 단일 생산자/단일 소비자 링 버퍼.
 RT 스레드(생산자)가 `Push()`로 `LogEntry`를 넣으면, log 스레드(소비자)가 `Pop()`으로 꺼내 파일에 씀. 버퍼가 가득 차면 해당 엔트리를 드롭(RT 지터 없음).
+
+---
+
+## MuJoCo 시뮬레이터
+
+v4.4.0+에서 MuJoCo 3.x 물리 엔진을 사용하는 시뮬레이터가 추가되었습니다. 실제 UR 드라이버 없이 제어기를 개발하고 검증할 수 있습니다.
+
+### 시뮬레이션 모드
+
+| 모드 | 설명 | 사용 사례 |
+|---|---|---|
+| `free_run` | 최대 속도로 물리 스텝 실행 (max_rtf로 제한 가능) | 알고리즘 검증, 빠른 반복 |
+| `sync_step` | 상태 발행 → 명령 대기 → 1스텝 동기화 | 지연 측정, 실제 루프와 1:1 매핑 |
+
+### 빠른 시작
+
+```bash
+# MuJoCo 설치 (sim/full 모드 install.sh가 자동 설치)
+./install.sh sim
+
+# Free-run 시뮬레이션 (뷰어 창 자동 오픈)
+ros2 launch ur5e_rt_controller mujoco_sim.launch.py
+
+# Sync-step 모드
+ros2 launch ur5e_rt_controller mujoco_sim.launch.py sim_mode:=sync_step
+
+# 헤드리스 (뷰어 없음, 서버 환경)
+ros2 launch ur5e_rt_controller mujoco_sim.launch.py enable_viewer:=false
+
+# 외부 MJCF 모델 사용 (MuJoCo Menagerie 등)
+ros2 launch ur5e_rt_controller mujoco_sim.launch.py \
+    model_path:=/path/to/mujoco_menagerie/universal_robots_ur5e/scene.xml
+
+# 시뮬레이션 상태 확인
+ros2 topic echo /sim/status    # [step_count, sim_time_sec, rtf, paused]
+```
+
+### 뷰어 단축키 (v4.5.0+)
+
+| 키 | 기능 |
+|---|---|
+| **F1** | 도움말 오버레이 (모든 키 + 현재 ON/OFF 상태) |
+| Space | 일시정지 / 재개 |
+| + / - | RTF 속도 2배 / 0.5배 |
+| R | 초기 자세로 리셋 |
+| G | 중력 ON/OFF |
+| N | 접촉 제약 ON/OFF |
+| I | integrator 순환 (Euler→RK4→Implicit→ImplFast) |
+| S | solver 순환 (PGS→CG→Newton) |
+| ] / [ | solver 반복 횟수 ×2 / ÷2 |
+| C / F | 접촉점 / 힘 화살표 표시 |
+| V / T | 충돌 지오메트리 / 투명 모드 |
+| F3 / F4 | RTF 프로파일러 / solver 통계 오버레이 |
+| Ctrl + Left drag | 물체에 스프링 힘 인가 |
+
+### Physics Solver 런타임 제어 (v4.5.0+)
+
+```cpp
+auto sim = std::make_unique<MuJoCoSimulator>(cfg);
+sim->Initialize();
+sim->Start();
+
+// Integrator 변경
+sim->SetIntegrator(mjINT_IMPLICIT);   // 강성 시스템에 더 안정적
+
+// Solver 변경
+sim->SetSolverType(mjSOL_NEWTON);     // 가장 정확 (기본값)
+sim->SetSolverIterations(200);        // 반복 횟수 증가
+
+// 중력 / 접촉 토글
+sim->EnableGravity(false);            // 무중력 테스트
+sim->SetContactEnabled(false);        // 자유 공간 운동 테스트
+
+// 외부 힘 인가
+sim->SetExternalForce(body_id, {0.0, 0.0, 10.0, 0.0, 0.0, 0.0});  // 10N 수직
+
+// Solver 통계 확인
+auto stats = sim->GetSolverStats();
+printf("iter=%d  improvement=%.3e\n", stats.iter, stats.improvement);
+```
+
+### Config 설정
+
+```cpp
+MuJoCoSimulator::Config cfg{
+    .model_path        = "/path/to/scene.xml",
+    .mode              = MuJoCoSimulator::SimMode::kFreeRun,
+    .enable_viewer     = true,
+    .max_rtf           = 5.0,            // 실시간 5배 속도
+    .integrator_type   = mjINT_EULER,    // 기본값
+    .solver_type       = mjSOL_NEWTON,   // 기본값
+    .solver_iterations = 100,
+    .solver_tolerance  = 1e-8,
+    .initial_qpos      = {0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0},
+};
+```
 
 ---
 
@@ -323,15 +433,31 @@ source /opt/ros/humble/setup.bash
 
 ```bash
 chmod +x install.sh
+
+# 전체 설치 (기본값): UR 드라이버 + Pinocchio + MuJoCo + RT 권한
 ./install.sh
+
+# 시뮬레이션 전용: Pinocchio + MuJoCo만 설치 (개발 PC / 로봇 없는 환경)
+./install.sh sim
+
+# 실제 로봇 전용: UR 드라이버 + Pinocchio + RT 권한 (MuJoCo 없음)
+./install.sh robot
+
+# 도움말
+./install.sh --help
 ```
 
-**install.sh가 자동으로 수행하는 작업**:
-- ROS2 의존성 설치 (ur_robot_driver, control_msgs 등)
-- Python 의존성 설치 (requirements.txt)
-- 패키지 빌드 (colcon build)
-- **RT 권한 설정** (realtime 그룹, rtprio 99, memlock unlimited)
-- 환경변수 설정 (~/.bashrc)
+**각 모드별 설치 내용**:
+
+| 항목 | `sim` | `robot` | `full` |
+|---|---|---|---|
+| ROS2 빌드 도구 | ✔ | ✔ | ✔ |
+| Pinocchio | ✔ | ✔ | ✔ |
+| MuJoCo 3.x | ✔ | — | ✔ |
+| UR 로봇 드라이버 | — | ✔ | ✔ |
+| RT 권한 설정 | — | ✔ | ✔ |
+
+`sim` 모드는 MuJoCo 3.x를 GitHub에서 자동 다운로드하여 `/opt/`에 설치합니다.
 
 ### 4. 수동 설치
 
@@ -535,6 +661,9 @@ hand:
 |------|------|--------|------|
 | `/forward_position_controller/commands` | `std_msgs/Float64MultiArray` | `custom_controller` | UR 위치 명령 (6개 값, rad) |
 | `/system/estop_status` | `std_msgs/Bool` | `custom_controller` | E-STOP 상태 (true=활성) |
+| `/joint_states` | `sensor_msgs/JointState` | `mujoco_simulator_node` | MuJoCo 시뮬 관절 위치/속도/**토크** |
+| `/hand/joint_states` | `std_msgs/Float64MultiArray` | `mujoco_simulator_node` | MuJoCo 핸드 상태 (100Hz) |
+| `/sim/status` | `std_msgs/Float64MultiArray` | `mujoco_simulator_node` | `[step_count, sim_time_sec, rtf, paused]` |
 
 ---
 
@@ -887,6 +1016,8 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 
 | 버전 | 주요 변경사항 |
 |------|---------------|
+| **v4.5.0** | 인터랙티브 MuJoCo 뷰어 (마우스/키보드), Physics solver 런타임 제어, 중력/접촉 토글, 물체 힘 인가, F1/F4 오버레이, install.sh sim/robot/full 모드 분리 |
+| **v4.4.0** | MuJoCo 3.x 시뮬레이터 통합 (FreeRun/SyncStep), GLFW 뷰어, RTF 측정, ControllerTimingProfiler, /sim/status 토픽 |
 | v4.3.0 | Pinocchio 모델 기반 제어기 3종 추가 (PinocchioController, ClikController, OperationalSpaceController) |
 | v4.2.3 | RT 안전성 수정 9건 (SPSC 링 버퍼, RealtimePublisher, atomic 플래그, mlockall 순서 등) |
 | v4.2.2 | 디렉토리 구조 개선 (docs/ 생성, LICENSE 추가, .gitignore 추가) |
@@ -897,5 +1028,5 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 | v2.0.0 | DataLogger CSV 로깅, 핸드 UDP 통합 |
 | v1.0.0 | 초기 릴리스, P/PD 제어기, 기본 ROS2 노드 |
 
-**최종 업데이트**: 2026-03-03
-**현재 버전**: v4.3.0
+**최종 업데이트**: 2026-03-04
+**현재 버전**: v4.5.0

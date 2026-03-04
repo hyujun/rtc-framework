@@ -5,6 +5,178 @@
 
 ---
 
+## [4.5.0] - 2026-03-04
+
+### 추가 (Added) — MuJoCo 시뮬레이터 대폭 개선
+
+#### 인터랙티브 뷰어 — 마우스 / 키보드 제어
+
+`mujoco_simulator.hpp` ViewerLoop에 완전한 인터랙티브 컨트롤 추가:
+
+| 입력 | 동작 |
+|---|---|
+| Left drag | 카메라 orbit |
+| Right drag | 카메라 pan |
+| Scroll | 줌 in/out |
+| Ctrl + Left drag | 물체에 스프링 힘 적용 (mjvPerturb) |
+| **F1** | 키 안내 + 현재 상태 오버레이 토글 (ON/OFF 실시간 표시) |
+| Space | 일시정지 / 재개 |
+| + / - | RTF 속도 2배 / 0.5배 조절 |
+| R | 초기 자세로 리셋 |
+| G | 중력 토글 |
+| N | 접촉 제약 토글 (mjDSBL_CONTACT) |
+| I | integrator 순환 (Euler→RK4→Implicit→ImplFast) |
+| S | solver 순환 (PGS→CG→Newton) |
+| ] / [ | solver iterations ×2 / ÷2 |
+| C / F / V / T | 접촉점 / 힘 화살표 / 충돌 지오메트리 / 투명 토글 |
+| F3 | RTF 프로파일러 그래프 토글 |
+| F4 | solver 통계 오버레이 토글 |
+| Backspace / Esc | 시각화 옵션 리셋 / 카메라 리셋 |
+
+#### 물리 기능 (Physics Features)
+
+- **관절 토크 (Efforts)**: `StateCallback` 3번째 인자로 `data_->qfrc_actuator` 전달
+  - `mujoco_simulator_node.cpp`가 `sensor_msgs/JointState.effort` 필드에 실제 토크 발행
+- **중력 토글**: `EnableGravity(bool)` — `model_->opt.gravity[2]` 런타임 조정
+- **물체 힘 인가 (Perturbation)**: Ctrl+Left-drag → `mjv_select` + `mjv_initPerturb` + `mjv_movePerturb` + `mjv_applyPerturbForce`
+  - `UpdatePerturb(mjvPerturb)` / `ClearPerturb()` public API
+  - `pert_mutex_`로 뷰어 스레드 → 시뮬 스레드 전달
+- **외부 힘 API**: `SetExternalForce(body_id, wrench_world)` / `ClearExternalForce()`
+  - `data_->xfrc_applied`에 월드 프레임 6-DOF wrench 적용
+
+#### 물리 Solver 제어 (Physics Solver Controls)
+
+런타임에 MuJoCo physics solver 파라미터를 thread-safe하게 조정:
+
+| API | 설명 |
+|---|---|
+| `SetIntegrator(int)` | mjINT_EULER(0) / RK4(1) / IMPLICIT(2) / IMPLICITFAST(3) |
+| `SetSolverType(int)` | mjSOL_PGS(0) / CG(1) / NEWTON(2) |
+| `SetSolverIterations(int)` | 최대 반복 횟수 (1–1000 클램프) |
+| `SetSolverTolerance(double)` | 수렴 허용 오차 (0.0 = 비활성화) |
+| `SetContactEnabled(bool)` | 접촉 제약 ON/OFF (mjDSBL_CONTACT 플래그) |
+| `GetSolverStats()` | `{improvement, gradient, iter, ncon}` — 매 step 캡처 |
+
+- `Config` 구조체에 초기값 필드 추가: `integrator_type`, `solver_type`, `solver_iterations`, `solver_tolerance`
+- `PreparePhysicsStep()`에서 매 step 전에 solver 파라미터를 atomic에서 읽어 `model_->opt`에 적용
+- `ReadSolverStats()`가 `mj_step()` 직후 `data_->solver[0]` 통계 캡처
+
+#### 오버레이 업데이트
+
+- **상단 우측 상태 패널**: Integrator / Solver / Iterations / Residual 행 추가
+- **F4 Solver 통계 오버레이**: Integrator, Solver, Max/Used 반복, Improvement, Gradient, 접촉 수, Timestep
+- **F1 도움말 오버레이**: 모든 키를 카테고리별로 정리, 토글 가능 옵션마다 `[ON/OFF]` 실시간 표시
+
+### 추가 (Added) — install.sh 모드 분리
+
+```bash
+./install.sh          # 전체 설치 (기본값)
+./install.sh sim      # 시뮬레이션 전용
+./install.sh robot    # 실제 로봇 전용
+./install.sh --help   # 사용법
+```
+
+| 모드 | 설치 내용 |
+|---|---|
+| `sim` | ROS2 빌드 도구 + Pinocchio + MuJoCo 3.x 자동 다운로드 |
+| `robot` | ROS2 빌드 도구 + UR 드라이버 + Pinocchio + RT 권한 설정 |
+| `full` | 위 모두 |
+
+- MuJoCo 3.x 자동 설치: GitHub에서 tarball 다운로드 → `/opt/`에 압축 해제 → `/etc/ld.so.conf.d/mujoco.conf` 생성
+- GLFW / OpenGL 개발 라이브러리 (`libglfw3-dev`, `libgl1-mesa-dev`) 자동 설치
+- `colcon build`에 `-Dmujoco_DIR` cmake 인자 자동 전달 (sim/full 모드)
+- 모드별 Quick Start 요약 출력
+
+### 사용자 영향
+
+- `StateCallback` 시그니처 변경: `void(positions, velocities)` → `void(positions, velocities, efforts)`
+  - `mujoco_simulator_node`는 이미 3인자 버전으로 업데이트됨
+  - 직접 `SetStateCallback`을 사용하는 코드는 람다에 3번째 인자 추가 필요
+- `mujoco_simulator_node`가 발행하는 `/joint_states`에 실제 액추에이터 토크가 포함됨
+
+---
+
+## [4.4.0] - 2026-03-03
+
+### 추가 (Added) — MuJoCo 시뮬레이션 통합
+
+#### `MuJoCoSimulator` (`include/ur5e_rt_controller/mujoco_simulator.hpp`)
+
+MuJoCo 3.x 물리 모델을 thread-safe하게 래핑한 클래스.
+
+**시뮬레이션 모드**:
+- `kFreeRun`: `mj_step()`을 가능한 빠르게 실행 (`max_rtf`로 속도 제한 가능)
+- `kSyncStep`: 상태 발행 → 명령 대기 → 1스텝. 지연 ≈ `Compute()` 시간
+
+**스레딩 모델**:
+- `SimLoop` 스레드: 물리 연산, `model_/data_`의 유일한 쓰기 스레드
+- `ViewerLoop` 스레드: GLFW 3D 뷰어 (~60 Hz, 선택적)
+- 호출자 스레드: `SetCommand()`, `GetPositions()` 등
+
+**동기화**:
+- `cmd_mutex_` + `cmd_pending_` 원자 플래그 — FreeRun 빠른 경로
+- `sync_cv_` — SyncStep에서 명령 대기
+- `state_mutex_` — 최신 positions/velocities/efforts
+- `viz_mutex_` — try_lock만 사용, SimLoop 블로킹 없음
+
+#### `mujoco_simulator_node` (`src/mujoco_simulator_node.cpp`)
+
+ROS2 노드 래퍼:
+- `/joint_states` 발행 (물리 속도 또는 데시메이션)
+- `/hand/joint_states` 발행 (100Hz, 1차 필터 시뮬레이션)
+- `/sim/status` 발행 — `[step_count, sim_time_sec, rtf, paused]` (Float64MultiArray)
+- `/forward_position_controller/commands` 구독
+- `/hand/command` 구독
+
+#### `mujoco_sim.launch.py` (`launch/mujoco_sim.launch.py`)
+
+| 인자 | 기본값 | 설명 |
+|---|---|---|
+| `model_path` | `""` | scene.xml 절대경로 (빈 문자열 = 패키지 기본) |
+| `sim_mode` | `free_run` | `free_run` 또는 `sync_step` |
+| `enable_viewer` | `true` | GLFW 3D 뷰어 창 열기 |
+| `publish_decimation` | `1` | free_run: N 스텝마다 발행 |
+| `sync_timeout_ms` | `50.0` | sync_step: 명령 대기 타임아웃 |
+| `max_rtf` | `0.0` | 최대 Real-Time Factor (0.0 = 무제한) |
+| `kp` / `kd` | `5.0` / `0.5` | PD 제어기 게인 |
+
+#### `ControllerTimingProfiler` (`include/ur5e_rt_controller/controller_timing_profiler.hpp`)
+
+`RTControllerInterface::Compute()` 시간 측정 래퍼:
+- `MeasuredCompute()` 호출 시 `steady_clock`으로 compute 시간 측정
+- 락프리 히스토그램 (0–2000 µs, 100 µs 버킷) + min/max/mean/stddev/p95/p99
+- `Summary()`: 1000 스텝마다 로그 출력 권장
+- `LogEntry`에 `compute_time_us` 필드 추가 → CSV에 기록
+
+#### MuJoCo 모델 파일 (`models/ur5e/`)
+
+- `scene.xml`: 지면판 + UR5e MJCF 씬
+- `ur5e.xml`: UR5e 로봇 MJCF 모델
+
+#### `config/mujoco_simulator.yaml`
+
+`mujoco_simulator` 노드 파라미터 + `custom_controller` E-STOP 오버라이드:
+```yaml
+custom_controller:
+  ros__parameters:
+    enable_estop: false       # free_run 모드에서 오경보 방지
+    robot_timeout_ms: 10000.0
+    hand_timeout_ms:  10000.0
+```
+
+### 추가 (Added) — RTF 측정 및 뷰어 오버레이 (v4.4.0 기본 뷰어)
+
+- RTF (Real-Time Factor) 측정: 200 스텝마다 갱신
+- 상태 오버레이 (우측 상단): 모드/RTF/제한/시뮬 시간/스텝 수 표시
+- `/sim/status` 토픽: `[step_count, sim_time_sec, rtf]`
+
+### 사용자 영향
+
+- MuJoCo 없이 빌드 시 `mujoco_simulator_node`만 빌드에서 제외됨 — 기존 기능 영향 없음
+- `mujoco_sim.launch.py`로 MuJoCo 시뮬레이션 실행 가능
+
+---
+
 ## [4.3.0] - 2026-03-03
 
 ### 추가 (Added) — Pinocchio 모델 기반 제어기 3종
