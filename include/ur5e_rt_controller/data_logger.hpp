@@ -24,12 +24,14 @@ class DataLogger {
   DataLogger& operator=(DataLogger&&)      = default;
 
   // Log one control step: timestamp (s), current positions, target positions,
-  // and computed commands (all kNumRobotJoints elements).
+  // computed commands (all kNumRobotJoints elements), and optional compute
+  // timing in µs (0.0 if profiling is disabled).
   void LogControlData(
       double timestamp,
       std::span<const double, kNumRobotJoints> current_positions,
       std::span<const double, kNumRobotJoints> target_positions,
-      std::span<const double, kNumRobotJoints> commands);
+      std::span<const double, kNumRobotJoints> commands,
+      double compute_time_us = 0.0);
 
   // Log hand state for a given timestamp.
   void LogHandData(double timestamp,
@@ -44,7 +46,8 @@ class DataLogger {
     LogEntry entry;
     while (buf.Pop(entry)) {
       LogControlData(entry.timestamp, entry.current_positions,
-                     entry.target_positions, entry.commands);
+                     entry.target_positions, entry.commands,
+                     entry.compute_time_us);
     }
   }
 

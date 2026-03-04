@@ -43,6 +43,7 @@
 // └─────────────────────────────────────────────────────────────────────────┘
 // ────────────────────────────────────────────────────────────────────────────
 #include "ur5e_rt_controller/controllers/pd_controller.hpp"
+#include "ur5e_rt_controller/controller_timing_profiler.hpp"
 #include "ur5e_rt_controller/data_logger.hpp"
 #include "ur5e_rt_controller/log_buffer.hpp"
 #include "ur5e_rt_controller/rt_controller_interface.hpp"
@@ -319,7 +320,9 @@ class CustomController : public rclcpp::Node {
     state.robot.dt  = 1.0 / control_rate_;
     state.iteration = loop_count_;
 
-    const urtc::ControllerOutput output = controller_->Compute(state);
+    // Measure Compute() wall-clock time via ControllerTimingProfiler.
+    const urtc::ControllerOutput output =
+        timing_profiler_.MeasuredCompute(*controller_, state);
 
     // Fix 5: trylock is non-blocking; if the DDS layer still holds the message
     // we simply skip publishing this cycle (jitter < 2 ms is acceptable).
@@ -337,13 +340,17 @@ class CustomController : public rclcpp::Node {
           .current_positions = state.robot.positions,
           .target_positions  = target_snapshot_,   // Fix 4: snapshot, not raw member
           .commands          = output.robot_commands,
+          .compute_time_us   = timing_profiler_.LastComputeUs(),
       };
       log_buffer_.Push(entry);  // silently drops if buffer is full
     }
 
     ++loop_count_;
-    if (loop_count_ % 500 == 0) {
-      RCLCPP_DEBUG(get_logger(), "ControlLoop: %zu iterations", loop_count_);
+    // Print timing summary every 1 000 iterations.
+    if (loop_count_ % 1000 == 0) {
+      RCLCPP_INFO(get_logger(), "%s",
+                  timing_profiler_.Summary(
+                      std::string(controller_->Name())).c_str());
     }
   }
 
@@ -380,9 +387,10 @@ class CustomController : public rclcpp::Node {
   rclcpp::TimerBase::SharedPtr drain_timer_;   // Fix 1: log drain (log thread)
 
   // ── Domain objects ──────────────────────────────────────────────────────────
-  std::unique_ptr<urtc::PDController> controller_;
-  std::unique_ptr<urtc::DataLogger>   logger_;
-  urtc::ControlLogBuffer              log_buffer_{};  // Fix 1: SPSC ring buffer
+  std::unique_ptr<urtc::PDController>    controller_;
+  std::unique_ptr<urtc::DataLogger>      logger_;
+  urtc::ControlLogBuffer                 log_buffer_{};  // Fix 1: SPSC ring buffer
+  urtc::ControllerTimingProfiler         timing_profiler_{};  // Compute() timing
 
   // ── Shared state (guarded by per-domain mutexes) ────────────────────────────
   std::array<double, urtc::kNumRobotJoints> current_positions_{};
