@@ -1,0 +1,202 @@
+name: ROS2 Humble Advanced CI
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: C++ Linting
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        linter: [cpplint, clang_tidy]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup ROS2 Humble
+      uses: ros-tooling/setup-ros@v0.7
+      with:
+        ros-distro: humble
+    
+    - name: Install Dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y \
+          ros-humble-pinocchio \
+          ros-humble-ur-robot-driver \
+          ros-humble-realtime-tools
+    
+    - name: Run Linter
+      uses: ros-tooling/action-ros-lint@v0.1
+      with:
+        linter: ${{ matrix.linter }}
+        package-name: |
+          ur5e_rt_base
+          ur5e_rt_controller
+          ur5e_hand_udp
+
+  build-test-coverage:
+    name: Build, Test & Coverage
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup ROS2 Humble
+      uses: ros-tooling/setup-ros@v0.7
+      with:
+        ros-distro: humble
+    
+    - name: Install Dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y \
+          ros-humble-pinocchio \
+          ros-humble-ur-robot-driver \
+          ros-humble-ur-msgs \
+          ros-humble-ur-description \
+          ros-humble-realtime-tools \
+          lcov
+    
+    - name: Build with Coverage
+      uses: ros-tooling/action-ros-ci@v0.4
+      with:
+        package-name: |
+          ur5e_rt_base
+          ur5e_rt_controller
+          ur5e_hand_udp
+          ur5e_tools
+        target-ros2-distro: humble
+        vcs-repo-file-url: ""
+        colcon-defaults: |
+          {
+            "build": {
+              "mixin": ["coverage-gcc", "coverage-pytest"]
+            }
+          }
+    
+    - name: Generate Coverage Report
+      run: |
+        cd build/ur5e_rt_controller
+        lcov --capture --directory . --output-file coverage.info
+        lcov --remove coverage.info '/usr/*' '/opt/*' '*/test/*' --output-file coverage_filtered.info
+        lcov --list coverage_filtered.info
+    
+    - name: Upload Coverage to CodeCov
+      uses: codecov/codecov-action@v4
+      with:
+        files: ./build/ur5e_rt_controller/coverage_filtered.info
+        flags: unittests
+        name: ur5e-rt-controller
+    
+    - name: Upload Artifacts
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: colcon-logs
+        path: ros_ws/log/
+
+  codeql:
+    name: CodeQL Security Scan
+    runs-on: ubuntu-22.04
+    permissions:
+      security-events: write
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: cpp
+        queries: security-extended
+    
+    - name: Setup ROS2
+      uses: ros-tooling/setup-ros@v0.7
+      with:
+        ros-distro: humble
+    
+    - name: Install Dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y \
+          ros-humble-pinocchio \
+          ros-humble-ur-robot-driver \
+          ros-humble-realtime-tools
+    
+    - name: Build Packages
+      run: |
+        source /opt/ros/humble/setup.bash
+        mkdir -p ros_ws/src
+        ln -s $PWD ros_ws/src/ur5e-rt-controller
+        cd ros_ws
+        colcon build \
+          --packages-up-to ur5e_rt_controller \
+          --cmake-args -DCMAKE_BUILD_TYPE=Release
+    
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+
+  performance:
+    name: RT Performance Benchmark
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup ROS2
+      uses: ros-tooling/setup-ros@v0.7
+      with:
+        ros-distro: humble
+    
+    - name: Install Dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y \
+          ros-humble-pinocchio \
+          ros-humble-ur-robot-driver \
+          ros-humble-realtime-tools \
+          google-perftools \
+          libgoogle-perftools-dev \
+          linux-tools-common \
+          linux-tools-generic
+    
+    - name: Build Release
+      run: |
+        source /opt/ros/humble/setup.bash
+        mkdir -p ros_ws/src
+        ln -s $PWD ros_ws/src/ur5e-rt-controller
+        cd ros_ws
+        colcon build \
+          --packages-up-to ur5e_rt_controller \
+          --cmake-args \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS="-O3 -march=native -flto"
+    
+    - name: Run RT Benchmark
+      run: |
+        cd ros_ws
+        source install/setup.bash
+        # 500Hz 루프 벤치마크 (fake_hardware 모드)
+        timeout 30s ros2 launch ur5e_rt_controller ur_control.launch.py \
+          use_fake_hardware:=true \
+          use_cpu_affinity:=false || true
+        
+        # 로그에서 지터 통계 추출
+        grep -i "jitter\|latency" log/latest/ur5e_rt_controller/stdout.log || echo "No jitter data"
+    
+    - name: Upload Performance Logs
+      uses: actions/upload-artifact@v4
+      with:
+        name: perf-logs
+        path: ros_ws/log/
+
+  claude-review:
+    name: Claude Code Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+    - uses: actions/checkout@v4
+    
+    - uses: anthropics/claude-code-action@v1
+      env:
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
