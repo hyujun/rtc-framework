@@ -12,11 +12,6 @@
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
-  <depend>ur_msgs</depend>
-  <depend>controller_manager</depend>
-  <depend>controller_interface</depend>
-  <depend>hardware_interface</depend>
-  <depend>pluginlib</depend>
   <depend>realtime_tools</depend>
   <depend>pinocchio</depend>
   <depend>ur5e_rt_base</depend>

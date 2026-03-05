@@ -20,11 +20,6 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(ur_msgs REQUIRED)
-find_package(controller_manager REQUIRED)
-find_package(controller_interface REQUIRED)
-find_package(hardware_interface REQUIRED)
-find_package(pluginlib REQUIRED)
 find_package(realtime_tools REQUIRED)
 find_package(pinocchio REQUIRED)
 find_package(ur5e_rt_base REQUIRED)
@@ -38,9 +33,6 @@ ament_target_dependencies(custom_controller
   rclcpp
   std_msgs
   sensor_msgs
-  ur_msgs
-  controller_interface
-  hardware_interface
   realtime_tools
   ur5e_rt_base
 )
