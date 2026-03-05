@@ -133,22 +133,30 @@ inline int GetOnlineCpuCount() noexcept {
   return (n > 0) ? n : 1;
 }
 
-// Aggregated thread configs selected at runtime for all four executor threads.
+// Aggregated thread configs selected at runtime for all threads.
 struct SystemThreadConfigs {
   ThreadConfig rt_control;
   ThreadConfig sensor;
+  ThreadConfig udp_recv;   // Hand UDP receiver (separate from sensor_io)
   ThreadConfig logging;
   ThreadConfig aux;
 };
 
 // Selects the appropriate ThreadConfig set based on the number of online CPUs.
-// >=6 cores: uses the standard 6-core configs (Cores 2-5).
-// <6  cores: falls back to 4-core configs (Cores 1-3); aux shares Core 3.
+// >=8 cores: 8-core layout — udp_recv gets its own dedicated Core 4.
+// >=6 cores: 6-core layout — udp_recv shares Core 5 with aux (light).
+// < 6 cores: 4-core fallback — udp_recv shares Core 2 with sensor_io.
 inline SystemThreadConfigs SelectThreadConfigs() noexcept {
-  if (GetOnlineCpuCount() >= 6) {
-    return {kRtControlConfig, kSensorConfig, kLoggingConfig, kAuxConfig};
+  const int ncpu = GetOnlineCpuCount();
+  if (ncpu >= 8) {
+    return {kRtControlConfig8Core, kSensorConfig8Core, kUdpRecvConfig8Core,
+            kLoggingConfig8Core,   kAuxConfig8Core};
   }
-  return {kRtControlConfig4Core, kSensorConfig4Core,
+  if (ncpu >= 6) {
+    return {kRtControlConfig, kSensorConfig, kUdpRecvConfig,
+            kLoggingConfig,   kAuxConfig};
+  }
+  return {kRtControlConfig4Core, kSensorConfig4Core, kUdpRecvConfig4Core,
           kLoggingConfig4Core,   kLoggingConfig4Core};
 }
 
