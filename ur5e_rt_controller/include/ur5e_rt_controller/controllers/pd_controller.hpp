@@ -21,11 +21,11 @@ class PDController final : public RTControllerInterface {
   // Aggregated gains — supports C++20 designated initialiser at call site:
   //   PDController ctrl{{.kp = 5.0, .kd = 0.5}};
   struct Gains {
-    double kp{5.0};
-    double kd{0.5};
+    double kp;
+    double kd;
   };
 
-  explicit PDController(Gains gains = Gains{}) noexcept;
+  explicit PDController(Gains gains = Gains{5.0, 0.5}) noexcept;
 
   [[nodiscard]] ControllerOutput Compute(
       const ControllerState& state) noexcept override;
