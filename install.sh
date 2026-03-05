@@ -98,7 +98,23 @@ check_prerequisites() {
 
 # ── Common: Workspace + build tools ───────────────────────────────────────────
 setup_workspace() {
-  WORKSPACE=~/ur_ws
+  # Auto-detect workspace from script location.
+  # Expected layout: <workspace>/src/<repo>/install.sh
+  local SCRIPT_DIR
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local SRC_DIR
+  SRC_DIR="$(dirname "$SCRIPT_DIR")"
+  local DETECTED_WS
+  DETECTED_WS="$(dirname "$SRC_DIR")"
+
+  if [[ "$(basename "$SRC_DIR")" == "src" && -d "$DETECTED_WS" ]]; then
+    WORKSPACE="$DETECTED_WS"
+    info "Workspace auto-detected: $WORKSPACE"
+  else
+    WORKSPACE=~/ur_ws
+    warn "Script is not under <workspace>/src/<repo>/ — using default: $WORKSPACE"
+  fi
+
   info "Setting up workspace: $WORKSPACE"
   mkdir -p "$WORKSPACE/src"
 
@@ -213,17 +229,30 @@ install_python_deps() {
 
 # ── Clone / update package ─────────────────────────────────────────────────────
 setup_package() {
+  # Determine the repo directory.
+  # If install.sh is already inside <workspace>/src/<repo>/, use that directly.
+  local SCRIPT_DIR
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local REPO_NAME
+  REPO_NAME="$(basename "$SCRIPT_DIR")"
+
   cd "$WORKSPACE/src"
-  if [[ ! -d "ur5e-rt-controller" ]]; then
+
+  if [[ -d "$REPO_NAME" && "$SCRIPT_DIR" == "$WORKSPACE/src/$REPO_NAME" ]]; then
+    info "Repository already present at $WORKSPACE/src/$REPO_NAME — skipping clone"
+  elif [[ ! -d "ur5e-rt-controller" ]]; then
     info "Cloning ur5e-rt-controller..."
     git clone https://github.com/hyujun/ur5e-rt-controller.git
+    REPO_NAME="ur5e-rt-controller"
   else
     warn "ur5e-rt-controller already exists — skipping clone"
+    REPO_NAME="ur5e-rt-controller"
   fi
+
   # Symlink packages from repo root into workspace src/
   for pkg in ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_mujoco_sim ur5e_tools; do
     if [[ ! -e "$pkg" ]]; then
-      ln -s "ur5e-rt-controller/$pkg" "$pkg"
+      ln -s "${REPO_NAME}/$pkg" "$pkg"
     fi
   done
 }
@@ -257,7 +286,7 @@ build_package() {
   fi
 
   source install/setup.bash
-  grep -q "ur_ws/install/setup.bash" ~/.bashrc || \
+  grep -qF "$WORKSPACE/install/setup.bash" ~/.bashrc || \
       echo "source $WORKSPACE/install/setup.bash" >> ~/.bashrc
   success "All packages built and sourced"
 }
