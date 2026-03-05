@@ -24,7 +24,7 @@ struct ThreadConfig {
 // Note: udp_recv is on Core 5 (not Core 3) to avoid contention with sensor_io.
 //       Even under UDP burst, JointStateCallback latency is unaffected.
 
-inline constexpr ThreadConfig kRtControlConfig{
+inline const ThreadConfig kRtControlConfig{
     .cpu_core       = 2,
     .sched_policy   = SCHED_FIFO,
     .sched_priority = 90,
@@ -32,7 +32,7 @@ inline constexpr ThreadConfig kRtControlConfig{
     .name           = "rt_control"
 };
 
-inline constexpr ThreadConfig kSensorConfig{
+inline const ThreadConfig kSensorConfig{
     .cpu_core       = 3,
     .sched_policy   = SCHED_FIFO,
     .sched_priority = 70,
@@ -40,7 +40,7 @@ inline constexpr ThreadConfig kSensorConfig{
     .name           = "sensor_io"
 };
 
-inline constexpr ThreadConfig kUdpRecvConfig{
+inline const ThreadConfig kUdpRecvConfig{
     .cpu_core       = 5,       // Moved from Core 3 → Core 5 (dedicated, no sensor_io contention)
     .sched_policy   = SCHED_FIFO,
     .sched_priority = 65,
@@ -48,7 +48,7 @@ inline constexpr ThreadConfig kUdpRecvConfig{
     .name           = "udp_recv"
 };
 
-inline constexpr ThreadConfig kLoggingConfig{
+inline const ThreadConfig kLoggingConfig{
     .cpu_core       = 4,
     .sched_policy   = SCHED_OTHER,
     .sched_priority = 0,
@@ -56,7 +56,7 @@ inline constexpr ThreadConfig kLoggingConfig{
     .name           = "logger"
 };
 
-inline constexpr ThreadConfig kAuxConfig{
+inline const ThreadConfig kAuxConfig{
     .cpu_core       = 5,       // Shares Core 5 with udp_recv (aux is event-driven, very light)
     .sched_policy   = SCHED_OTHER,
     .sched_priority = 0,
@@ -73,7 +73,7 @@ inline constexpr ThreadConfig kAuxConfig{
 // Core 6:   Aux                  (E-STOP publisher)
 // Core 7:   Spare                (monitoring, cyclictest measurement)
 
-inline constexpr ThreadConfig kRtControlConfig8Core{
+inline const ThreadConfig kRtControlConfig8Core{
     .cpu_core       = 2,
     .sched_policy   = SCHED_FIFO,
     .sched_priority = 90,
@@ -81,7 +81,7 @@ inline constexpr ThreadConfig kRtControlConfig8Core{
     .name           = "rt_control"
 };
 
-inline constexpr ThreadConfig kSensorConfig8Core{
+inline const ThreadConfig kSensorConfig8Core{
     .cpu_core       = 3,
     .sched_policy   = SCHED_FIFO,
     .sched_priority = 70,
@@ -89,7 +89,7 @@ inline constexpr ThreadConfig kSensorConfig8Core{
     .name           = "sensor_io"
 };
 
-inline constexpr ThreadConfig kUdpRecvConfig8Core{
+inline const ThreadConfig kUdpRecvConfig8Core{
     .cpu_core       = 4,       // Dedicated core — fully isolated from sensor_io
     .sched_policy   = SCHED_FIFO,
     .sched_priority = 65,
@@ -97,7 +97,7 @@ inline constexpr ThreadConfig kUdpRecvConfig8Core{
     .name           = "udp_recv"
 };
 
-inline constexpr ThreadConfig kLoggingConfig8Core{
+inline const ThreadConfig kLoggingConfig8Core{
     .cpu_core       = 5,
     .sched_policy   = SCHED_OTHER,
     .sched_priority = 0,
@@ -105,7 +105,7 @@ inline constexpr ThreadConfig kLoggingConfig8Core{
     .name           = "logger"
 };
 
-inline constexpr ThreadConfig kAuxConfig8Core{
+inline const ThreadConfig kAuxConfig8Core{
     .cpu_core       = 6,
     .sched_policy   = SCHED_OTHER,
     .sched_priority = 0,
@@ -119,7 +119,7 @@ inline constexpr ThreadConfig kAuxConfig8Core{
 // Core 2:   Sensor I/O + UDP recv (shared — best effort)
 // Core 3:   Logging + Aux
 
-inline constexpr ThreadConfig kRtControlConfig4Core{
+inline const ThreadConfig kRtControlConfig4Core{
     .cpu_core       = 1,
     .sched_policy   = SCHED_FIFO,
     .sched_priority = 90,
@@ -127,7 +127,7 @@ inline constexpr ThreadConfig kRtControlConfig4Core{
     .name           = "rt_control"
 };
 
-inline constexpr ThreadConfig kSensorConfig4Core{
+inline const ThreadConfig kSensorConfig4Core{
     .cpu_core       = 2,
     .sched_policy   = SCHED_FIFO,
     .sched_priority = 70,
@@ -135,7 +135,7 @@ inline constexpr ThreadConfig kSensorConfig4Core{
     .name           = "sensor_io"
 };
 
-inline constexpr ThreadConfig kUdpRecvConfig4Core{
+inline const ThreadConfig kUdpRecvConfig4Core{
     .cpu_core       = 2,       // Shares Core 2 with sensor_io (4-core: unavoidable)
     .sched_policy   = SCHED_FIFO,
     .sched_priority = 65,
@@ -143,7 +143,7 @@ inline constexpr ThreadConfig kUdpRecvConfig4Core{
     .name           = "udp_recv"
 };
 
-inline constexpr ThreadConfig kLoggingConfig4Core{
+inline const ThreadConfig kLoggingConfig4Core{
     .cpu_core       = 3,
     .sched_policy   = SCHED_OTHER,
     .sched_priority = 0,
