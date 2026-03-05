@@ -25,7 +25,7 @@ class PDController final : public RTControllerInterface {
     double kd{0.5};
   };
 
-  explicit PDController(Gains gains = {}) noexcept;
+  explicit PDController(Gains gains = Gains{}) noexcept;
 
   [[nodiscard]] ControllerOutput Compute(
       const ControllerState& state) noexcept override;
