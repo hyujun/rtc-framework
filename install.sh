@@ -220,10 +220,10 @@ setup_package() {
   else
     warn "ur5e-rt-controller already exists — skipping clone"
   fi
-  # Symlink packages from repo src/ into workspace src/
+  # Symlink packages from repo root into workspace src/
   for pkg in ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_mujoco_sim ur5e_tools; do
     if [[ ! -e "$pkg" ]]; then
-      ln -s "ur5e-rt-controller/src/$pkg" "$pkg"
+      ln -s "ur5e-rt-controller/$pkg" "$pkg"
     fi
   done
 }
@@ -278,6 +278,30 @@ install_rt_permissions() {
   success "RT permissions configured (rtprio=99, memlock=unlimited)"
   warn "IMPORTANT: Log out and log back in for RT permissions to take effect"
   warn "Verify with: ulimit -r  (should print 99)"
+}
+
+# ── [방안 D] NIC IRQ affinity (robot + full) ────────────────────────────────
+# RT 코어(Core 2-5)를 NIC 인터럽트로부터 보호.
+# 모든 하드웨어 IRQ를 Core 0-1로 제한한다.
+setup_irq_affinity() {
+  local SCRIPT
+  SCRIPT="$(dirname "$0")/ur5e_rt_controller/scripts/setup_irq_affinity.sh"
+
+  if [[ ! -f "$SCRIPT" ]]; then
+    warn "setup_irq_affinity.sh not found — skipping IRQ affinity setup"
+    warn "Run manually after build: sudo $WORKSPACE/src/ur5e-rt-controller/ur5e_rt_controller/scripts/setup_irq_affinity.sh"
+    return
+  fi
+
+  info "Configuring NIC IRQ affinity (Core 0-1 only)..."
+  if sudo bash "$SCRIPT"; then
+    success "IRQ affinity configured — RT cores 2-5 protected from NIC interrupts"
+    warn "NOTE: IRQ affinity resets on reboot. To make permanent:"
+    warn "  Add 'sudo $SCRIPT' to /etc/rc.local or a systemd oneshot service"
+  else
+    warn "IRQ affinity setup failed — continuing without it"
+    warn "Run manually: sudo $SCRIPT [NIC_NAME]"
+  fi
 }
 
 # ── Verify installation ─────────────────────────────────────────────────────────
@@ -431,6 +455,7 @@ build_package
 case "$MODE" in
   robot|full)
     install_rt_permissions
+    setup_irq_affinity
     ;;
 esac
 

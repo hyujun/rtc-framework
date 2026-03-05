@@ -20,7 +20,7 @@ ur5e_tools/
 └── setup.cfg
 ```
 
-**빌드 타입**: `ament_cmake_python` (Python 전용 패키지)
+**빌드 타입**: `ament_cmake` (Python 스크립트를 `scripts/` 경유 설치, `setup.py` 포함)
 
 **Python 의존성**: `rclpy`, `numpy`, `matplotlib`, `pandas`, `scipy`, `PyQt5`
 

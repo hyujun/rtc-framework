@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  cyclone_dds.xml — CycloneDDS configuration for UR5e RT Controller
+  [방안 E] Restricts DDS internal threads to Core 0-1 (non-RT cores),
+  preventing DDS recv/send threads from preempting RT threads on Core 2-5.
+
+  Loaded automatically via CYCLONEDDS_URI env var set in ur_control.launch.py.
+  Reference: https://cyclonedds.io/docs/cyclonedds/latest/config/index.html
+-->
+<CycloneDDS>
+  <Domain>
+    <General>
+      <!-- Use the robot-side NIC for UR driver communication.
+           Change 'eth0' to match the actual interface (e.g., enp3s0, eno1).
+           Run: ip link show   to find the correct interface name. -->
+      <Interfaces>
+        <NetworkInterface autodetermine="true" multicast="default"/>
+      </Interfaces>
+      <!-- Disable multicast if the robot subnet doesn't support it -->
+      <!-- <AllowMulticast>false</AllowMulticast> -->
+    </General>
+
+    <Tracing>
+      <Verbosity>warning</Verbosity>
+    </Tracing>
+
+    <Internal>
+      <!-- Restrict all DDS-internal threads to Core 0-1 (non-RT cores).
+           This prevents DDS recv/send from landing on Core 2-5 and causing
+           cache pressure or scheduler interference on RT threads. -->
+      <Threads>
+        <Thread name="recv">
+          <Scheduling>
+            <Class>Other</Class>
+            <Priority>0</Priority>
+          </Scheduling>
+          <!-- CPU affinity mask: 0x3 = 0b0011 = Core 0 and Core 1 -->
+          <Affinity>0x3</Affinity>
+        </Thread>
+        <Thread name="tev">
+          <Scheduling>
+            <Class>Other</Class>
+            <Priority>0</Priority>
+          </Scheduling>
+          <Affinity>0x3</Affinity>
+        </Thread>
+        <Thread name="gc">
+          <Scheduling>
+            <Class>Other</Class>
+            <Priority>0</Priority>
+          </Scheduling>
+          <Affinity>0x3</Affinity>
+        </Thread>
+        <Thread name="dq.builtins">
+          <Scheduling>
+            <Class>Other</Class>
+            <Priority>0</Priority>
+          </Scheduling>
+          <Affinity>0x3</Affinity>
+        </Thread>
+      </Threads>
+    </Internal>
+  </Domain>
+</CycloneDDS>

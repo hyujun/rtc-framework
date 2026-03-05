@@ -5,6 +5,58 @@
 
 ---
 
+## [5.1.0] - 2026-03-05
+
+### 변경 — CPU 코어 할당 최적화 (실제 로봇 제어)
+
+#### [방안 A] `kUdpRecvConfig` Core 3 → Core 5
+
+- `ur5e_rt_base/include/ur5e_rt_base/thread_config.hpp`: `kUdpRecvConfig.cpu_core` 3 → 5
+- **효과**: `sensor_io`(Core 3) 전용화 — UDP 버스트 시 `JointStateCallback` 지연 및 E-STOP 오발동 위험 제거
+
+#### [방안 B] 8코어 전용 스레드 설정 추가
+
+- `thread_config.hpp`: 8코어 config 5종 신규 (`kRtControlConfig8Core`…`kAuxConfig8Core`)
+  - udp_recv → Core 4 (완전 전용), aux → Core 6
+- `thread_config.hpp`: `kUdpRecvConfig4Core` (Core 2) 추가 — 4코어 fallback에서 udp_recv 명시
+- `thread_utils.hpp`: `SystemThreadConfigs`에 `udp_recv` 필드 추가
+- `thread_utils.hpp`: `SelectThreadConfigs()` — ≥8코어 / ≥6코어 / <6코어 자동 분기
+
+#### [방안 C] UR 드라이버 CPU 친화성 고정
+
+- `ur5e_rt_controller/launch/ur_control.launch.py`: `use_cpu_affinity` 인자 추가 (default: true)
+- 런치 3초 후 `TimerAction` + `ExecuteProcess`로 `ur_ros2_driver`를 Core 0-1에 `taskset`
+
+#### [방안 D] NIC IRQ 친화성 자동화
+
+- `ur5e_rt_controller/scripts/setup_irq_affinity.sh` 신규: 모든 NIC IRQ → Core 0-1 고정
+  - NIC 자동 감지 + 명시적 지정 지원, RT 코어 2-5 인터럽트 보호
+- `install.sh`: `robot`/`full` 모드에서 `setup_irq_affinity()` 자동 실행
+- `install.sh`: symlink 경로 수정 (`src/` 제거 — 패키지 루트 이동 반영)
+
+#### [방안 E] CycloneDDS 스레드 제한
+
+- `ur5e_rt_controller/config/cyclone_dds.xml` 신규: recv/tev/gc/dq.builtins 스레드 affinity `0x3` (Core 0-1)
+- `ur_control.launch.py`: `CYCLONEDDS_URI` + `RMW_IMPLEMENTATION` 환경변수 자동 설정
+
+#### 문서
+
+- `docs/CORE_ALLOCATION_PLAN.md` 신규: 코어 할당 최적화 계획서 (문제 분석 + 방안 A–E)
+- `CLAUDE.md`: Repository Layout 전면 갱신 (루트 직하 구조 반영), Thread Config 표 업데이트
+- `README.md`: 프로젝트 구조, launch 인자, 스레드 모니터링 출력, 버전 이력 갱신
+
+### 최종 6코어 코어 배치
+
+```
+Core 0-1  OS / NIC IRQ / DDS / UR 드라이버
+Core 2    rt_control   SCHED_FIFO 90
+Core 3    sensor_io    SCHED_FIFO 70  (전용)
+Core 4    logger       SCHED_OTHER nice -5
+Core 5    udp_recv     SCHED_FIFO 65  + aux SCHED_OTHER 0
+```
+
+---
+
 ## [5.0.0] - 2026-03-04
 
 ### 변경 — 멀티-패키지 분리 (Breaking: 빌드 구조 변경)

@@ -5,6 +5,32 @@
 
 ---
 
+## [1.1.0] - 2026-03-05
+
+### 변경 — CPU 코어 할당 최적화
+
+- **`thread_config.hpp`** `kUdpRecvConfig.cpu_core` 3 → **5**
+  - `sensor_io`(Core 3)와 `udp_recv`의 코어 경합 제거
+  - UDP 버스트 시 `JointStateCallback` 지연 위험 해소
+
+- **`thread_config.hpp`** 8코어 전용 config 5종 추가:
+  - `kRtControlConfig8Core` (Core 2, FIFO 90)
+  - `kSensorConfig8Core` (Core 3, FIFO 70)
+  - `kUdpRecvConfig8Core` (Core 4, FIFO 65) — 완전 전용 코어
+  - `kLoggingConfig8Core` (Core 5, OTHER nice -5)
+  - `kAuxConfig8Core` (Core 6, OTHER 0)
+
+- **`thread_config.hpp`** `kUdpRecvConfig4Core` 추가 (Core 2, FIFO 65)
+  - 4코어 폴백에서 `udp_recv`의 명시적 config 제공 (기존 암묵적 fallback 개선)
+
+- **`thread_utils.hpp`** `SystemThreadConfigs` 구조체에 `udp_recv` 필드 추가
+
+- **`thread_utils.hpp`** `SelectThreadConfigs()` 분기 개선:
+  - 이전: ≥6코어 / <6코어 2단계
+  - 이후: **≥8코어 / ≥6코어 / <6코어** 3단계 자동 선택
+
+---
+
 ## [1.0.0] - 2026-03-04
 
 ### 추가

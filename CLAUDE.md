@@ -59,60 +59,68 @@ print(f'Over 2ms: {(df["compute_time_us"] > 2000).mean()*100:.2f}%')
 
 ## Repository Layout
 
+v5.0.0+: 5개 독립 ROS2 패키지가 레포지토리 **루트 직하**에 위치합니다 (`src/` 없음).
+
 ```
-ur5e_rt_controller/
-├── CMakeLists.txt                          # Build config — v4.4.0, C++20, 3–4 executables
-├── package.xml                             # ROS2 package metadata
-├── install.sh                              # One-shot installation script
-├── requirements.txt                        # Python deps: matplotlib, pandas, numpy, scipy
-│
-├── config/
-│   ├── ur5e_rt_controller.yaml            # Controller gains, E-STOP, joint limits
-│   ├── hand_udp_receiver.yaml             # UDP hand receiver settings
-│   └── mujoco_simulator.yaml             # MuJoCo sim + custom_controller sim overrides
-│
+ur5e-rt-controller/
+├── install.sh                              # Automated setup (IRQ affinity included)
 ├── docs/
 │   ├── CHANGELOG.md                       # Version history (Korean)
-│   └── RT_OPTIMIZATION.md                 # v4.2.0 RT tuning guide (Korean)
+│   ├── RT_OPTIMIZATION.md                 # v4.2.0 RT tuning guide (Korean)
+│   └── CORE_ALLOCATION_PLAN.md           # CPU core allocation optimization plan
 │
-├── models/
-│   └── ur5e/
-│       ├── scene.xml                      # MuJoCo scene (ground plane + UR5e)
-│       └── ur5e.xml                       # UR5e robot MJCF model
+├── ur5e_rt_base/                          # Shared header-only package
+│   └── include/ur5e_rt_base/
+│       ├── types.hpp                      # RobotState, HandState, ControllerState, ControllerOutput
+│       ├── thread_config.hpp              # ThreadConfig + 4/6/8-core predefined RT constants
+│       ├── thread_utils.hpp               # ApplyThreadConfig(), SelectThreadConfigs()
+│       ├── log_buffer.hpp                 # SPSC ring buffer (lock-free, 512 entries)
+│       └── data_logger.hpp                # Non-RT CSV logger
 │
-├── include/ur5e_rt_controller/
-│   ├── rt_controller_interface.hpp        # Abstract base + all data structures
-│   ├── data_logger.hpp                    # Non-RT CSV logger
-│   ├── log_buffer.hpp                     # SPSC ring buffer (RT→log thread, lock-free)
-│   ├── controller_timing_profiler.hpp     # Lock-free Compute() timing profiler
-│   ├── thread_config.hpp                  # ThreadConfig struct + predefined configs
-│   ├── thread_utils.hpp                   # ApplyThreadConfig(), VerifyThreadConfig()
-│   ├── hand_udp_receiver.hpp              # UDP receiver (C++20 jthread)
-│   ├── hand_udp_sender.hpp                # UDP sender (little-endian doubles)
-│   ├── mujoco_simulator.hpp               # Thread-safe MuJoCo physics wrapper
-│   └── controllers/
-│       ├── pd_controller.hpp              # PD + E-STOP (active implementation)
-│       ├── p_controller.hpp               # Simple P controller (alternative)
-│       ├── pinocchio_controller.hpp       # Model-based PD + gravity/Coriolis compensation
-│       ├── clik_controller.hpp            # Closed-Loop IK (Cartesian position, 3-DOF)
-│       └── operational_space_controller.hpp # Full 6-DOF Cartesian PD (pos + orientation)
+├── ur5e_rt_controller/                    # 500Hz RT controller package
+│   ├── include/ur5e_rt_controller/
+│   │   ├── rt_controller_interface.hpp    # Abstract base + all data structures
+│   │   ├── controller_timing_profiler.hpp # Lock-free Compute() timing profiler
+│   │   └── controllers/
+│   │       ├── pd_controller.hpp          # PD + E-STOP (active default)
+│   │       ├── p_controller.hpp           # Simple P controller
+│   │       ├── pinocchio_controller.hpp   # Model-based PD + gravity/Coriolis
+│   │       ├── clik_controller.hpp        # Closed-Loop IK (3-DOF Cartesian)
+│   │       └── operational_space_controller.hpp # Full 6-DOF Cartesian PD
+│   ├── src/custom_controller.cpp          # Main 500Hz node — 4 executors, 4 threads
+│   ├── config/
+│   │   ├── ur5e_rt_controller.yaml        # Controller gains, E-STOP, joint limits
+│   │   └── cyclone_dds.xml                # CycloneDDS thread affinity (Core 0-1)
+│   ├── scripts/
+│   │   └── setup_irq_affinity.sh          # Pin NIC IRQs to Core 0-1
+│   └── launch/
+│       ├── ur_control.launch.py           # Full system (+ use_cpu_affinity, CYCLONEDDS_URI)
+│       └── hand_udp.launch.py             # Hand UDP nodes only (via ur5e_hand_udp)
 │
-├── src/
-│   ├── custom_controller.cpp              # Main 500Hz node — 4 executors, 4 threads
-│   ├── hand_udp_receiver_node.cpp         # Bridges HandUdpReceiver → /hand/joint_states
-│   ├── hand_udp_sender_node.cpp           # Bridges /hand/command → UDP packets
-│   └── mujoco_simulator_node.cpp          # MuJoCo sim node (optional — needs MuJoCo 3.x)
+├── ur5e_hand_udp/                         # UDP hand bridge package
+│   ├── include/ur5e_hand_udp/
+│   │   ├── hand_udp_receiver.hpp          # UDP receiver (C++20 jthread, Core 5 FIFO 65)
+│   │   └── hand_udp_sender.hpp            # UDP sender (little-endian doubles)
+│   ├── src/
+│   │   ├── hand_udp_receiver_node.cpp
+│   │   └── hand_udp_sender_node.cpp
+│   ├── config/hand_udp_receiver.yaml
+│   └── launch/hand_udp.launch.py
 │
-├── launch/
-│   ├── ur_control.launch.py               # Full system (UR driver + controller + monitor)
-│   ├── mujoco_sim.launch.py               # MuJoCo simulation (replaces UR driver)
-│   └── hand_udp.launch.py                 # Hand UDP nodes only
+├── ur5e_mujoco_sim/                       # MuJoCo 3.x simulator package (optional)
+│   ├── include/ur5e_mujoco_sim/
+│   │   └── mujoco_simulator.hpp           # Thread-safe MuJoCo physics wrapper
+│   ├── src/mujoco_simulator_node.cpp
+│   ├── models/ur5e/{scene.xml,ur5e.xml}
+│   ├── config/mujoco_simulator.yaml
+│   └── launch/mujoco_sim.launch.py
 │
-└── scripts/                               # Python utilities (installed to lib/)
-    ├── motion_editor_gui.py               # Qt5 50-pose motion editor
-    ├── monitor_data_health.py             # Data health monitor + JSON stats export
-    ├── plot_ur_trajectory.py              # Matplotlib trajectory visualization
-    └── hand_udp_sender_example.py         # Synthetic UDP hand data generator
+└── ur5e_tools/                            # Python utilities package
+    └── scripts/
+        ├── motion_editor_gui.py            # Qt5 50-pose motion editor
+        ├── monitor_data_health.py          # Data health monitor + JSON stats
+        ├── plot_ur_trajectory.py           # Matplotlib trajectory visualization
+        └── hand_udp_sender_example.py      # Synthetic UDP hand data generator
 ```
 
 ---
@@ -264,21 +272,40 @@ Non-copyable (move-only) CSV logger. Writes one row per control step:
 
 Default path: `/tmp/ur5e_control_log.csv`. The 500 Hz RT thread pushes entries to `SpscLogBuffer`; the `log_executor` thread (Core 4) drains and writes CSV — never blocking the RT path.
 
-### Thread Configuration (`include/ur5e_rt_controller/thread_config.hpp`)
+### Thread Configuration (`ur5e_rt_base/include/ur5e_rt_base/thread_config.hpp`)
 
-Predefined `ThreadConfig` constants for 6-core systems:
+`SelectThreadConfigs()` in `thread_utils.hpp` auto-selects the right config set at runtime based on `GetOnlineCpuCount()`.
+
+**6-core layout** (≥6 CPUs):
+
+| Constant | Core | Policy | Priority | Note |
+|---|---|---|---|---|
+| `kRtControlConfig` | 2 | SCHED_FIFO | 90 | 500Hz control + 50Hz E-STOP watchdog |
+| `kSensorConfig` | 3 | SCHED_FIFO | 70 | Dedicated — no udp_recv contention |
+| `kUdpRecvConfig` | 5 | SCHED_FIFO | 65 | Moved from Core 3 → Core 5 (v5.1.0) |
+| `kLoggingConfig` | 4 | SCHED_OTHER | nice -5 | |
+| `kAuxConfig` | 5 | SCHED_OTHER | 0 | Shares Core 5 with udp_recv (light) |
+
+**8-core layout** (≥8 CPUs):
 
 | Constant | Core | Policy | Priority |
 |---|---|---|---|
-| `kRtControlConfig` | 2 | SCHED_FIFO | 90 |
-| `kSensorConfig` | 3 | SCHED_FIFO | 70 |
-| `kUdpRecvConfig` | 3 | SCHED_FIFO | 65 |
-| `kLoggingConfig` | 4 | SCHED_OTHER | nice -5 |
-| `kAuxConfig` | 5 | SCHED_OTHER | 0 |
+| `kRtControlConfig8Core` | 2 | SCHED_FIFO | 90 |
+| `kSensorConfig8Core` | 3 | SCHED_FIFO | 70 |
+| `kUdpRecvConfig8Core` | 4 | SCHED_FIFO | 65 |
+| `kLoggingConfig8Core` | 5 | SCHED_OTHER | nice -5 |
+| `kAuxConfig8Core` | 6 | SCHED_OTHER | 0 |
 
-4-core fallback variants (`kRtControlConfig4Core`, `kSensorConfig4Core`, `kLoggingConfig4Core`) exist using Cores 1–3.
+**4-core fallback** (<6 CPUs): Cores 1–3; udp_recv shares Core 2 with sensor_io (`kUdpRecvConfig4Core`).
 
-`ApplyThreadConfig()` in `thread_utils.hpp` applies CPU affinity (`pthread_setaffinity_np`), scheduler policy (`pthread_setschedparam`), and thread name (`pthread_setname_np`). Returns `false` on permission failure — the node continues at SCHED_OTHER with a `[WARN]` log.
+`ApplyThreadConfig()` applies CPU affinity (`pthread_setaffinity_np`), scheduler policy (`pthread_setschedparam`), and thread name (`pthread_setname_np`). Returns `false` on permission failure — the node continues at SCHED_OTHER with a `[WARN]` log.
+
+`SystemThreadConfigs` struct (returned by `SelectThreadConfigs()`):
+```cpp
+struct SystemThreadConfigs {
+  ThreadConfig rt_control, sensor, udp_recv, logging, aux;
+};
+```
 
 ---
 
@@ -388,8 +415,13 @@ custom_controller:
 |---|---|---|
 | `robot_ip` | `192.168.1.10` | UR robot IP |
 | `use_fake_hardware` | `false` | Simulation mode (no physical robot) |
+| `use_cpu_affinity` | `true` | Pin ur_ros2_driver to Core 0-1 via taskset (3s after launch) |
 
 Launches: UR robot driver (ur5e), `custom_controller` node (params from `ur5e_rt_controller.yaml`), `data_health_monitor` node (10Hz check rate, 0.2s timeout threshold).
+
+Also sets environment variables automatically:
+- `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`
+- `CYCLONEDDS_URI=file://<pkg>/config/cyclone_dds.xml` — restricts DDS threads to Core 0-1
 
 ### `launch/mujoco_sim.launch.py` — MuJoCo Simulation
 

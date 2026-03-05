@@ -4,7 +4,9 @@
 
 E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종**, **MuJoCo 3.x 물리 시뮬레이터**, UDP 핸드 인터페이스, CSV 데이터 로깅, Qt GUI 모션 에디터를 포함한 완전한 실시간 제어 솔루션입니다.
 
-> **v5.0.0 (멀티-패키지 분리)**: 단일 패키지에서 **5개 독립 ROS2 패키지**로 리팩터링되었습니다. 각 패키지는 `src/` 디렉터리 아래에 위치하며 각자의 `README.md`와 `CHANGELOG.md`를 포함합니다.
+> **v5.0.0 (멀티-패키지 분리)**: 단일 패키지에서 **5개 독립 ROS2 패키지**로 리팩터링되었습니다. 각 패키지는 레포지토리 루트 직하에 위치하며 각자의 `README.md`와 `CHANGELOG.md`를 포함합니다.
+>
+> **v5.1.0 (CPU 코어 할당 최적화)**: 실제 로봇 제어 시 RT 성능을 극대화하는 코어 배치 전략이 적용되었습니다. `udp_recv` Core 3→5 이동, 8코어 지원, UR 드라이버 CPU 고정, NIC IRQ 친화성, CycloneDDS 스레드 제한.
 
 ---
 
@@ -50,88 +52,49 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 
 ## 프로젝트 구조
 
-v5.0.0부터 **5개 독립 ROS2 패키지**로 분리되어 `src/` 디렉터리 아래에 위치합니다.
+v5.0.0부터 **5개 독립 ROS2 패키지**로 분리되어 레포지토리 루트 직하에 위치합니다.
 
 ```
 ur5e-rt-controller/
 ├── README.md                              # 이 문서
-├── install.sh                             # 자동 설치 스크립트 (5개 패키지 빌드)
+├── install.sh                             # 자동 설치 스크립트 (IRQ affinity 포함)
 ├── requirements.txt                       # Python 의존성 목록
 │
 ├── docs/
 │   ├── CHANGELOG.md                      # 전체 버전 변경 이력
-│   └── RT_OPTIMIZATION.md                # 실시간 최적화 가이드
+│   ├── RT_OPTIMIZATION.md                # 실시간 최적화 가이드
+│   ├── CORE_ALLOCATION_PLAN.md           # CPU 코어 할당 최적화 계획서
+│   └── PLAN.md                           # 프로젝트 계획 문서
 │
-└── src/                                   # ROS2 패키지 루트
-    │
-    ├── ur5e_rt_base/                      # 📦 공유 기반 (헤더-전용)
-    │   ├── include/ur5e_rt_base/
-    │   │   ├── types.hpp                 # 공유 타입: RobotState, HandState, ControllerState...
-    │   │   ├── thread_config.hpp         # ThreadConfig + 사전 정의 RT 상수
-    │   │   ├── thread_utils.hpp          # ApplyThreadConfig(), VerifyThreadConfig()
-    │   │   ├── log_buffer.hpp            # SPSC 링 버퍼 (RT→로그, 잠금-없음)
-    │   │   └── data_logger.hpp           # 비-RT CSV 로거
-    │   ├── CMakeLists.txt
-    │   ├── package.xml
-    │   ├── README.md
-    │   └── CHANGELOG.md
-    │
-    ├── ur5e_rt_controller/                # 📦 500Hz 실시간 제어기
-    │   ├── include/ur5e_rt_controller/
-    │   │   ├── rt_controller_interface.hpp        # 추상 기반 클래스 (Strategy Pattern)
-    │   │   ├── controller_timing_profiler.hpp     # 잠금-없는 Compute() 타이밍 프로파일러
-    │   │   └── controllers/
-    │   │       ├── pd_controller.hpp              # PD + E-STOP (기본값)
-    │   │       ├── p_controller.hpp               # 단순 P 제어기
-    │   │       ├── pinocchio_controller.hpp       # PD + 중력/코리올리 보상
-    │   │       ├── clik_controller.hpp            # 폐루프 IK (3-DOF)
-    │   │       └── operational_space_controller.hpp # 6-DOF 데카르트 PD
-    │   ├── src/custom_controller.cpp              # 메인 500Hz 노드
-    │   ├── config/ur5e_rt_controller.yaml
-    │   ├── launch/ur_control.launch.py
-    │   ├── CMakeLists.txt
-    │   ├── package.xml
-    │   ├── README.md
-    │   └── CHANGELOG.md
-    │
-    ├── ur5e_hand_udp/                     # 📦 UDP 손 브리지
-    │   ├── include/ur5e_hand_udp/
-    │   │   ├── hand_udp_receiver.hpp     # UDP 수신 (jthread, 포트 50001)
-    │   │   └── hand_udp_sender.hpp       # UDP 송신 (리틀 엔디언, 포트 50002)
-    │   ├── src/
-    │   │   ├── hand_udp_receiver_node.cpp
-    │   │   └── hand_udp_sender_node.cpp
-    │   ├── config/hand_udp_receiver.yaml
-    │   ├── launch/hand_udp.launch.py
-    │   ├── CMakeLists.txt
-    │   ├── package.xml
-    │   ├── README.md
-    │   └── CHANGELOG.md
-    │
-    ├── ur5e_mujoco_sim/                   # 📦 MuJoCo 3.x 시뮬레이터 (선택적)
-    │   ├── include/ur5e_mujoco_sim/
-    │   │   └── mujoco_simulator.hpp      # 스레드 안전 물리 래퍼
-    │   ├── src/mujoco_simulator_node.cpp
-    │   ├── models/ur5e/
-    │   │   ├── scene.xml
-    │   │   └── ur5e.xml
-    │   ├── config/mujoco_simulator.yaml
-    │   ├── launch/mujoco_sim.launch.py
-    │   ├── CMakeLists.txt
-    │   ├── package.xml
-    │   ├── README.md
-    │   └── CHANGELOG.md
-    │
-    └── ur5e_tools/                        # 📦 Python 개발 유틸리티
-        ├── scripts/
-        │   ├── plot_ur_trajectory.py     # Matplotlib 궤적 시각화
-        │   ├── monitor_data_health.py    # 데이터 건강 모니터 + JSON 통계
-        │   ├── motion_editor_gui.py      # Qt5 50-포즈 모션 편집기
-        │   └── hand_udp_sender_example.py # 합성 UDP 손 데이터 생성기
-        ├── CMakeLists.txt
-        ├── package.xml
-        ├── README.md
-        └── CHANGELOG.md
+├── ur5e_rt_base/                          # 📦 공유 기반 (헤더-전용)
+│   ├── include/ur5e_rt_base/
+│   │   ├── types.hpp                     # 공유 타입: RobotState, HandState, ControllerState...
+│   │   ├── thread_config.hpp             # ThreadConfig + 4/6/8코어 사전 정의 RT 상수
+│   │   ├── thread_utils.hpp              # ApplyThreadConfig(), SelectThreadConfigs()
+│   │   ├── log_buffer.hpp                # SPSC 링 버퍼 (RT→로그, 잠금-없음)
+│   │   └── data_logger.hpp               # 비-RT CSV 로거
+│   └── ...
+│
+├── ur5e_rt_controller/                    # 📦 500Hz 실시간 제어기
+│   ├── include/ur5e_rt_controller/
+│   │   ├── rt_controller_interface.hpp   # 추상 기반 클래스 (Strategy Pattern)
+│   │   ├── controller_timing_profiler.hpp
+│   │   └── controllers/
+│   │       ├── pd_controller.hpp         # PD + E-STOP (기본값)
+│   │       ├── pinocchio_controller.hpp  # PD + 중력/코리올리 보상
+│   │       ├── clik_controller.hpp       # 폐루프 IK (3-DOF)
+│   │       └── operational_space_controller.hpp
+│   ├── src/custom_controller.cpp         # 메인 500Hz 노드
+│   ├── config/
+│   │   ├── ur5e_rt_controller.yaml
+│   │   └── cyclone_dds.xml               # CycloneDDS 스레드 Core 0-1 제한 설정
+│   ├── scripts/
+│   │   └── setup_irq_affinity.sh         # NIC IRQ → Core 0-1 고정 스크립트
+│   └── launch/ur_control.launch.py       # 전체 시스템 (use_cpu_affinity 인자 포함)
+│
+├── ur5e_hand_udp/                         # 📦 UDP 손 브리지
+├── ur5e_mujoco_sim/                       # 📦 MuJoCo 3.x 시뮬레이터 (선택적)
+└── ur5e_tools/                            # 📦 Python 개발 유틸리티
 ```
 
 ### 패키지 의존성 그래프
@@ -220,12 +183,25 @@ ur5e_tools         ← 독립 (Python 전용, rclpy)
 
 ```cpp
 namespace ur5e_rt_controller {
-  struct RobotState { Eigen::VectorXd q{6}, qd{6}; Eigen::Vector3d tcp_pos; };
-  struct HandState  { Eigen::VectorXd motor_pos{11}, motor_vel{11}, motor_current{11}, sensor_data{44}; };
-  struct ControllerOutput { Eigen::VectorXd robot_cmd{6}, hand_cmd{11}; };
+  struct RobotState {
+    std::array<double, 6>  positions{}, velocities{};
+    std::array<double, 3>  tcp_position{};
+    double dt{0.002}; uint64_t iteration{0};
+  };
+  struct HandState {
+    std::array<double, 11> motor_positions{}, motor_velocities{}, motor_currents{};
+    std::array<double, 44> sensor_data{};
+    bool valid{false};
+  };
+  struct ControllerOutput {
+    std::array<double, 6>  robot_commands{};
+    std::array<double, 11> hand_commands{};
+    bool valid{true};
+  };
 
   class RTControllerInterface {
-    virtual ControllerOutput compute(const ControllerState& state) noexcept = 0;
+    [[nodiscard]] virtual ControllerOutput Compute(
+        const ControllerState& state) noexcept = 0;
   };
 }
 ```
@@ -233,12 +209,12 @@ namespace ur5e_rt_controller {
 #### `PDController` (`include/ur5e_rt_controller/controllers/pd_controller.hpp`)
 비례-미분 제어기. E-STOP 발생 시 안전 위치 `[0, -1.57, 1.57, -1.57, -1.57, 0]`로 이동.
 
-#### `DataLogger` (`include/ur5e_rt_controller/data_logger.hpp`)
-이동 불가 복사 비허용 CSV 로거. 타임스탬프, 현재/목표 위치, 명령값 기록.
-`DrainBuffer(ControlLogBuffer&)` 메서드로 SPSC 링 버퍼를 소진하여 파일에 씀 — 파일 I/O는 log 스레드(Core 4)에서만 발생.
+#### `DataLogger` (`ur5e_rt_base/include/ur5e_rt_base/data_logger.hpp`)
+이동 전용(복사 불가) 비-RT CSV 로거. 타임스탬프, 현재/목표 위치, 명령값, `compute_time_us` 기록.
+`DrainAndWrite(SpscLogBuffer<LogEntry, 512>&)` 메서드로 SPSC 링 버퍼를 소진하여 파일에 씀 — 파일 I/O는 log 스레드(Core 4)에서만 발생.
 
-#### `ControlLogBuffer` (`include/ur5e_rt_controller/log_buffer.hpp`)
-`SpscLogBuffer<512>` 기반 lock-free 단일 생산자/단일 소비자 링 버퍼.
+#### `SpscLogBuffer` (`ur5e_rt_base/include/ur5e_rt_base/log_buffer.hpp`)
+`SpscLogBuffer<LogEntry, 512>` lock-free 단일 생산자/단일 소비자 링 버퍼.
 RT 스레드(생산자)가 `Push()`로 `LogEntry`를 넣으면, log 스레드(소비자)가 `Pop()`으로 꺼내 파일에 씀. 버퍼가 가득 차면 해당 엔트리를 드롭(RT 지터 없음).
 
 ---
@@ -261,16 +237,16 @@ v4.4.0+에서 MuJoCo 3.x 물리 엔진을 사용하는 시뮬레이터가 추가
 ./install.sh sim
 
 # Free-run 시뮬레이션 (뷰어 창 자동 오픈)
-ros2 launch ur5e_rt_controller mujoco_sim.launch.py
+ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py
 
 # Sync-step 모드
-ros2 launch ur5e_rt_controller mujoco_sim.launch.py sim_mode:=sync_step
+ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step
 
 # 헤드리스 (뷰어 없음, 서버 환경)
-ros2 launch ur5e_rt_controller mujoco_sim.launch.py enable_viewer:=false
+ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py enable_viewer:=false
 
 # 외부 MJCF 모델 사용 (MuJoCo Menagerie 등)
-ros2 launch ur5e_rt_controller mujoco_sim.launch.py \
+ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py \
     model_path:=/path/to/mujoco_menagerie/universal_robots_ur5e/scene.xml
 
 # 시뮬레이션 상태 확인
@@ -474,13 +450,13 @@ source /opt/ros/humble/setup.bash
 ```bash
 chmod +x install.sh
 
-# 전체 설치 (기본값): UR 드라이버 + Pinocchio + MuJoCo + RT 권한
+# 전체 설치 (기본값): UR 드라이버 + Pinocchio + MuJoCo + RT 권한 + IRQ affinity
 ./install.sh
 
 # 시뮬레이션 전용: Pinocchio + MuJoCo만 설치 (개발 PC / 로봇 없는 환경)
 ./install.sh sim
 
-# 실제 로봇 전용: UR 드라이버 + Pinocchio + RT 권한 (MuJoCo 없음)
+# 실제 로봇 전용: UR 드라이버 + Pinocchio + RT 권한 + IRQ affinity (MuJoCo 없음)
 ./install.sh robot
 
 # 도움말
@@ -496,6 +472,7 @@ chmod +x install.sh
 | MuJoCo 3.x | ✔ | — | ✔ |
 | UR 로봇 드라이버 | — | ✔ | ✔ |
 | RT 권한 설정 | — | ✔ | ✔ |
+| NIC IRQ affinity | — | ✔ | ✔ |
 
 `sim` 모드는 MuJoCo 3.x를 GitHub에서 자동 다운로드하여 `/opt/`에 설치합니다.
 
@@ -535,8 +512,13 @@ mkdir -p ~/ur_ws/src
 cd ~/ur_ws/src
 git clone https://github.com/hyujun/ur5e-rt-controller.git
 
+# 패키지를 워크스페이스 src/에 심링크 (루트 직하에 있음)
+for pkg in ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_tools; do
+  ln -s ur5e-rt-controller/$pkg $pkg
+done
+
 cd ~/ur_ws
-colcon build --packages-select ur5e_rt_controller --symlink-install
+colcon build --packages-select ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_tools --symlink-install
 source install/setup.bash
 
 # 환경변수 영구 추가
@@ -559,19 +541,29 @@ ros2 launch ur5e_rt_controller ur_control.launch.py robot_ip:=192.168.1.10
 ```
 
 런치 파일이 시작하는 노드:
-1. `ur_robot_driver` - UR5e 드라이버 (ur_type: ur5e)
+1. `ur_robot_driver` - UR5e 드라이버 (Core 0-1 taskset, 3초 후 자동 적용)
 2. `custom_controller` - 500Hz PD 제어 노드 + E-STOP + 병렬 컴퓨팅
 3. `data_health_monitor` - 데이터 헬스 모니터 (10Hz)
 
+런치 파일이 자동 설정하는 환경변수:
+- `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`
+- `CYCLONEDDS_URI` → `config/cyclone_dds.xml` (DDS 스레드 Core 0-1 제한)
+
+| 런치 인자 | 기본값 | 설명 |
+|---|---|---|
+| `robot_ip` | `192.168.1.10` | UR 로봇 IP |
+| `use_fake_hardware` | `false` | 가상 하드웨어 모드 |
+| `use_cpu_affinity` | `true` | UR 드라이버 Core 0-1 taskset 자동 적용 |
+
 시뮬레이션(fake hardware) 테스트:
 ```bash
-ros2 launch ur5e_rt_controller ur_control.launch.py use_fake_hardware:=true
+ros2 launch ur5e_rt_controller ur_control.launch.py use_fake_hardware:=true use_cpu_affinity:=false
 ```
 
 ### UDP 핸드 노드만 실행
 
 ```bash
-ros2 launch ur5e_rt_controller hand_udp.launch.py \
+ros2 launch ur5e_hand_udp hand_udp.launch.py \
     udp_port:=50001 \
     target_ip:=192.168.1.100 \
     target_port:=50002
@@ -584,7 +576,7 @@ ros2 launch ur5e_rt_controller hand_udp.launch.py \
 sudo apt install python3-pyqt5
 
 # GUI 실행
-ros2 run ur5e_rt_controller motion_editor_gui.py
+ros2 run ur5e_tools motion_editor_gui.py
 ```
 
 GUI 사용법:
@@ -599,23 +591,23 @@ GUI 사용법:
 
 ```bash
 # 모든 관절 플롯
-ros2 run ur5e_rt_controller plot_ur_trajectory.py /tmp/ur5e_control_log.csv
+ros2 run ur5e_tools plot_ur_trajectory.py /tmp/ur5e_control_log.csv
 
 # 특정 관절만 (0~5)
-ros2 run ur5e_rt_controller plot_ur_trajectory.py /tmp/ur5e_control_log.csv --joint 2
+ros2 run ur5e_tools plot_ur_trajectory.py /tmp/ur5e_control_log.csv --joint 2
 
 # 이미지 파일로 저장
-ros2 run ur5e_rt_controller plot_ur_trajectory.py /tmp/ur5e_control_log.csv --save-dir ~/ur_plots
+ros2 run ur5e_tools plot_ur_trajectory.py /tmp/ur5e_control_log.csv --save-dir ~/ur_plots
 
 # 통계만 출력
-ros2 run ur5e_rt_controller plot_ur_trajectory.py /tmp/ur5e_control_log.csv --stats
+ros2 run ur5e_tools plot_ur_trajectory.py /tmp/ur5e_control_log.csv --stats
 ```
 
 ### 핸드 UDP 테스트 (예제)
 
 ```bash
 # 사인파 테스트 데이터 전송 (500Hz)
-ros2 run ur5e_rt_controller hand_udp_sender_example.py
+ros2 run ur5e_tools hand_udp_sender_example.py
 # → 1) 사인파 (동적) / 2) 고정 포즈 (정적) 선택
 ```
 
@@ -663,7 +655,7 @@ logging:
   log_directory: "/tmp/ur5e_logs"
 ```
 
-### `config/hand_udp_receiver.yaml`
+### `ur5e_hand_udp/config/hand_udp_receiver.yaml`
 
 ```yaml
 udp:
@@ -675,11 +667,9 @@ publishing:
   rate: 100.0                # ROS2 퍼블리시 주파수 (Hz)
   topic: "/hand/joint_states"
 
-hand:
-  num_joints: 4
-  joint_names: [finger_1, finger_2, finger_3, finger_4]
-  min_position: 0.0
-  max_position: 1.0
+monitoring:
+  enable_statistics: true
+  statistics_period: 5.0     # 통계 출력 주기 (초)
 ```
 
 ---
@@ -692,8 +682,8 @@ hand:
 |------|------|--------|------|
 | `/joint_states` | `sensor_msgs/JointState` | UR 드라이버 | 6-DOF 관절 위치/속도/힘 |
 | `/target_joint_positions` | `std_msgs/Float64MultiArray` | 외부 노드 | 목표 관절 위치 (6개 값, rad) |
-| `/hand/joint_states` | `std_msgs/Float64MultiArray` | `hand_udp_receiver_node` | 핸드 상태 (4개 값) |
-| `/hand/command` | `std_msgs/Float64MultiArray` | 외부 노드 | 핸드 명령 (4개 값) |
+| `/hand/joint_states` | `std_msgs/Float64MultiArray` | `hand_udp_receiver_node` | 핸드 모터 위치 (**11개** 값) |
+| `/hand/command` | `std_msgs/Float64MultiArray` | 외부 노드 | 핸드 명령 (11개 값, 정규화 0.0–1.0) |
 
 ### 발행 토픽
 
@@ -701,9 +691,9 @@ hand:
 |------|------|--------|------|
 | `/forward_position_controller/commands` | `std_msgs/Float64MultiArray` | `custom_controller` | UR 위치 명령 (6개 값, rad) |
 | `/system/estop_status` | `std_msgs/Bool` | `custom_controller` | E-STOP 상태 (true=활성) |
-| `/joint_states` | `sensor_msgs/JointState` | `mujoco_simulator_node` | MuJoCo 시뮬 관절 위치/속도/**토크** |
-| `/hand/joint_states` | `std_msgs/Float64MultiArray` | `mujoco_simulator_node` | MuJoCo 핸드 상태 (100Hz) |
-| `/sim/status` | `std_msgs/Float64MultiArray` | `mujoco_simulator_node` | `[step_count, sim_time_sec, rtf, paused]` |
+| `/joint_states` | `sensor_msgs/JointState` | `mujoco_simulator_node` | MuJoCo 시뮬 관절 위치/속도 |
+| `/hand/joint_states` | `std_msgs/Float64MultiArray` | `mujoco_simulator_node` | MuJoCo 핸드 상태 — **11개** 모터 위치 (100Hz) |
+| `/sim/status` | `std_msgs/Float64MultiArray` | `mujoco_simulator_node` | `[step_count, sim_time_sec, rtf]` (1Hz) |
 
 ---
 
@@ -780,12 +770,21 @@ sock.sendto(packet, target)
 - `mlockall` — `rclcpp::init` 이전에 호출하여 DDS 힙 포함 전체 잠금
 - 상세 가이드: [docs/RT_OPTIMIZATION.md](docs/RT_OPTIMIZATION.md)
 
+**v5.1.0 CPU 코어 할당 최적화 (실제 로봇)**:
+- `kUdpRecvConfig`: Core 3 → Core 5 (`sensor_io` 전용 Core 3 확보)
+- 8코어 전용 config 추가 (`udp_recv` Core 4 독립, `aux` Core 6)
+- `SelectThreadConfigs()`: 8코어/6코어/4코어 자동 분기
+- `ur_control.launch.py`: UR 드라이버 Core 0-1 taskset 자동 적용
+- `config/cyclone_dds.xml`: DDS 스레드 Core 0-1 제한
+- `scripts/setup_irq_affinity.sh`: NIC IRQ → Core 0-1 고정
+- `install.sh`: `robot`/`full` 모드에서 IRQ affinity 자동 설정
+
 **v4.2.3 RT 안전성 강화**:
 - `ControlLoop()`에서 파일 I/O 완전 제거 → SPSC 링 버퍼 경유
 - `RealtimePublisher` 도입으로 RT 경로 힙 할당 제거
 - `atomic<bool>` 플래그로 데이터 레이스 3건 해소
 - `HandUdpReceiver` jthread에 `kUdpRecvConfig` 자동 적용
-- `SelectThreadConfigs()` — 런타임 CPU 수 감지로 4/6코어 자동 선택
+- `SelectThreadConfigs()` — 런타임 CPU 수 감지로 4/6/8코어 자동 선택
 
 ---
 
@@ -909,17 +908,21 @@ ros2 topic hz /hand/joint_states
 ros2 control list_controllers -v
 
 # 데이터 헬스 모니터 단독 실행
-ros2 run ur5e_rt_controller monitor_data_health.py
+ros2 run ur5e_tools monitor_data_health.py
 
 # 스레드 설정 확인 (v4.2.0+)
 PID=$(pgrep -f custom_controller)
 ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
-# 출력:
+# 출력 (6코어 기준):
 #   PID   TID CLS RTPRIO PSR COMMAND
 #  1234  1235  FF     90   2 rt_control    ← Core 2, FIFO 90
-#  1234  1236  FF     70   3 sensor_io     ← Core 3, FIFO 70
+#  1234  1236  FF     70   3 sensor_io     ← Core 3, FIFO 70 (전용)
 #  1234  1237  TS      -   4 logger        ← Core 4, OTHER
 #  1234  1238  TS      -   5 aux           ← Core 5, OTHER
+#  ????  ????  FF     65   5 udp_recv      ← Core 5, FIFO 65 (sensor_io와 분리)
+
+# UR 드라이버 CPU 확인 (use_cpu_affinity:=true 시)
+taskset -p $(pgrep -nf ur_ros2_driver)   # affinity mask: 3 = Core 0,1
 
 # 시스템 지터 측정 (RT 커널)
 sudo cyclictest -l100000 -m -n -p99 -t1 -i2000
@@ -1056,17 +1059,15 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 
 | 버전 | 주요 변경사항 |
 |------|---------------|
-| **v4.5.0** | 인터랙티브 MuJoCo 뷰어 (마우스/키보드), Physics solver 런타임 제어, 중력/접촉 토글, 물체 힘 인가, F1/F4 오버레이, install.sh sim/robot/full 모드 분리 |
-| **v4.4.0** | MuJoCo 3.x 시뮬레이터 통합 (FreeRun/SyncStep), GLFW 뷰어, RTF 측정, ControllerTimingProfiler, /sim/status 토픽 |
+| **v5.1.0** | CPU 코어 할당 최적화: udp_recv Core 3→5, 8코어 지원, UR 드라이버 taskset, CycloneDDS 스레드 제한, NIC IRQ affinity, install.sh 자동화 |
+| **v5.0.0** | 5개 독립 ROS2 패키지로 분리 (ur5e_rt_base, ur5e_rt_controller, ur5e_hand_udp, ur5e_mujoco_sim, ur5e_tools) |
+| v4.5.0 | 인터랙티브 MuJoCo 뷰어 (마우스/키보드), Physics solver 런타임 제어, 중력/접촉 토글, 물체 힘 인가, F1/F4 오버레이, install.sh sim/robot/full 모드 분리 |
+| v4.4.0 | MuJoCo 3.x 시뮬레이터 통합 (FreeRun/SyncStep), GLFW 뷰어, RTF 측정, ControllerTimingProfiler, /sim/status 토픽 |
 | v4.3.0 | Pinocchio 모델 기반 제어기 3종 추가 (PinocchioController, ClikController, OperationalSpaceController) |
 | v4.2.3 | RT 안전성 수정 9건 (SPSC 링 버퍼, RealtimePublisher, atomic 플래그, mlockall 순서 등) |
-| v4.2.2 | 디렉토리 구조 개선 (docs/ 생성, LICENSE 추가, .gitignore 추가) |
-| v4.2.1 | setup.py 제거, CMakeLists.txt 스크립트 정리 |
 | v4.2.0 | 병렬 컴퓨팅 최적화 (CallbackGroup, RT 스케줄링, CPU affinity) |
 | v4.0.0 | E-STOP 시스템, 핸드/로봇 타임아웃 감시, 표준 ROS2 구조 |
-| v3.0.0 | PD 제어기 E-STOP 지원, 안전 위치 설정 |
-| v2.0.0 | DataLogger CSV 로깅, 핸드 UDP 통합 |
 | v1.0.0 | 초기 릴리스, P/PD 제어기, 기본 ROS2 노드 |
 
-**최종 업데이트**: 2026-03-04
-**현재 버전**: v4.5.0
+**최종 업데이트**: 2026-03-05
+**현재 버전**: v5.1.0

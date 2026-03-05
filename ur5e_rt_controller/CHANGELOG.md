@@ -5,6 +5,22 @@
 
 ---
 
+## [5.1.0] - 2026-03-05
+
+### 추가
+
+- **`config/cyclone_dds.xml`** — CycloneDDS 내부 스레드(recv/tev/gc/dq.builtins)를 Core 0-1로 제한하는 XML 설정
+- **`scripts/setup_irq_affinity.sh`** — NIC IRQ를 Core 0-1로 고정하는 실행 스크립트 (RT 코어 2-5 보호)
+
+### 변경
+
+- **`launch/ur_control.launch.py`**:
+  - `use_cpu_affinity` 인자 추가 (default: true) — 런치 3초 후 `ur_ros2_driver`를 Core 0-1에 taskset
+  - `CYCLONEDDS_URI` 환경변수 자동 설정 (`config/cyclone_dds.xml` 경로)
+  - `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` 자동 설정 (기존 수동 export 불필요)
+
+---
+
 ## [5.0.0] - 2026-03-04
 
 ### 변경
