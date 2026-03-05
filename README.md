@@ -1,8 +1,10 @@
 # UR5e RT Controller
 
-**Ubuntu 22.04 + ROS2 Humble | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v4.5.0)**
+**Ubuntu 22.04 + ROS2 Humble | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.0.0)**
 
 E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종**, **MuJoCo 3.x 물리 시뮬레이터**, UDP 핸드 인터페이스, CSV 데이터 로깅, Qt GUI 모션 에디터를 포함한 완전한 실시간 제어 솔루션입니다.
+
+> **v5.0.0 (멀티-패키지 분리)**: 단일 패키지에서 **5개 독립 ROS2 패키지**로 리팩터링되었습니다. 각 패키지는 `src/` 디렉터리 아래에 위치하며 각자의 `README.md`와 `CHANGELOG.md`를 포함합니다.
 
 ---
 
@@ -48,62 +50,100 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 
 ## 프로젝트 구조
 
+v5.0.0부터 **5개 독립 ROS2 패키지**로 분리되어 `src/` 디렉터리 아래에 위치합니다.
+
 ```
-ur5e_rt_controller/
-├── .gitignore                             # Git 제외 파일 설정
-├── CMakeLists.txt                         # 빌드 설정 (C++20, ament_cmake)
-├── LICENSE                                # MIT License
+ur5e-rt-controller/
 ├── README.md                              # 이 문서
-├── install.sh                             # 자동 설치 스크립트
-├── package.xml                            # ROS2 패키지 메타데이터 (v4.2.2)
+├── install.sh                             # 자동 설치 스크립트 (5개 패키지 빌드)
 ├── requirements.txt                       # Python 의존성 목록
 │
-├── config/                                # YAML 설정 파일
-│   ├── hand_udp_receiver.yaml            # UDP 핸드 수신기 설정
-│   ├── mujoco_simulator.yaml             # MuJoCo 시뮬레이터 + 제어기 E-STOP 오버라이드 (v4.4.0)
-│   └── ur5e_rt_controller.yaml           # 제어기 파라미터 + E-STOP 설정
+├── docs/
+│   ├── CHANGELOG.md                      # 전체 버전 변경 이력
+│   └── RT_OPTIMIZATION.md                # 실시간 최적화 가이드
 │
-├── docs/                                  # 문서
-│   ├── CHANGELOG.md                      # 버전별 변경 이력
-│   └── RT_OPTIMIZATION.md                # 실시간 최적화 가이드 (v4.2.0)
-│
-├── include/ur5e_rt_controller/            # C++ 헤더 파일
-│   ├── controllers/                       # 제어기 구현체
-│   │   ├── p_controller.hpp              # P 제어기 (비례 제어)
-│   │   ├── pd_controller.hpp             # PD 제어기 + E-STOP 지원
-│   │   ├── pinocchio_controller.hpp      # 관절공간 PD + 중력/코리올리 보상 (v4.3.0)
-│   │   ├── clik_controller.hpp           # CLIK — Cartesian 위치 제어, null-space (v4.3.0)
-│   │   └── operational_space_controller.hpp  # OSC — 완전 6-DOF Cartesian PD (v4.3.0)
-│   ├── controller_timing_profiler.hpp    # Compute() 시간 측정 (락프리 히스토그램, v4.4.0)
-│   ├── data_logger.hpp                   # CSV 데이터 로거 (DrainBuffer 포함)
-│   ├── hand_udp_receiver.hpp             # UDP 핸드 수신기 클래스 (ThreadConfig 지원)
-│   ├── hand_udp_sender.hpp               # UDP 핸드 송신기 클래스
-│   ├── log_buffer.hpp                    # RT-safe SPSC 링 버퍼 (v4.2.3)
-│   ├── mujoco_simulator.hpp              # MuJoCo 물리 시뮬레이터 (v4.4.0+, 인터랙티브 뷰어 v4.5.0)
-│   ├── rt_controller_interface.hpp       # 제어기 기반 인터페이스 (Strategy Pattern)
-│   ├── thread_config.hpp                 # 멀티스레드 설정 구조체 (v4.2.0)
-│   └── thread_utils.hpp                  # RT 스케줄링 유틸리티 + SelectThreadConfigs (v4.2.3)
-│
-├── launch/                                # ROS2 런치 파일
-│   ├── hand_udp.launch.py                # UDP 핸드 노드 단독 실행
-│   ├── mujoco_sim.launch.py              # MuJoCo 시뮬레이션 (v4.4.0)
-│   └── ur_control.launch.py              # 전체 시스템 실행 (UR 드라이버 + 제어기)
-│
-├── models/ur5e/                           # MuJoCo 모델 파일 (v4.4.0)
-│   ├── scene.xml                         # 씬 (지면 + UR5e)
-│   └── ur5e.xml                          # UR5e MJCF 모델
-│
-├── scripts/                               # Python 유틸리티
-│   ├── hand_udp_sender_example.py        # UDP 핸드 송신 예제
-│   ├── monitor_data_health.py            # 데이터 헬스 모니터 + 통계
-│   ├── motion_editor_gui.py              # Qt5 50포즈 모션 에디터
-│   └── plot_ur_trajectory.py             # CSV 로그 시각화
-│
-└── src/                                   # C++ 소스 파일
-    ├── custom_controller.cpp             # 메인 제어 노드 (500Hz, E-STOP)
-    ├── hand_udp_receiver_node.cpp        # 핸드 UDP 수신 ROS2 노드
-    ├── hand_udp_sender_node.cpp          # 핸드 UDP 송신 ROS2 노드
-    └── mujoco_simulator_node.cpp         # MuJoCo 시뮬레이터 ROS2 노드 (v4.4.0)
+└── src/                                   # ROS2 패키지 루트
+    │
+    ├── ur5e_rt_base/                      # 📦 공유 기반 (헤더-전용)
+    │   ├── include/ur5e_rt_base/
+    │   │   ├── types.hpp                 # 공유 타입: RobotState, HandState, ControllerState...
+    │   │   ├── thread_config.hpp         # ThreadConfig + 사전 정의 RT 상수
+    │   │   ├── thread_utils.hpp          # ApplyThreadConfig(), VerifyThreadConfig()
+    │   │   ├── log_buffer.hpp            # SPSC 링 버퍼 (RT→로그, 잠금-없음)
+    │   │   └── data_logger.hpp           # 비-RT CSV 로거
+    │   ├── CMakeLists.txt
+    │   ├── package.xml
+    │   ├── README.md
+    │   └── CHANGELOG.md
+    │
+    ├── ur5e_rt_controller/                # 📦 500Hz 실시간 제어기
+    │   ├── include/ur5e_rt_controller/
+    │   │   ├── rt_controller_interface.hpp        # 추상 기반 클래스 (Strategy Pattern)
+    │   │   ├── controller_timing_profiler.hpp     # 잠금-없는 Compute() 타이밍 프로파일러
+    │   │   └── controllers/
+    │   │       ├── pd_controller.hpp              # PD + E-STOP (기본값)
+    │   │       ├── p_controller.hpp               # 단순 P 제어기
+    │   │       ├── pinocchio_controller.hpp       # PD + 중력/코리올리 보상
+    │   │       ├── clik_controller.hpp            # 폐루프 IK (3-DOF)
+    │   │       └── operational_space_controller.hpp # 6-DOF 데카르트 PD
+    │   ├── src/custom_controller.cpp              # 메인 500Hz 노드
+    │   ├── config/ur5e_rt_controller.yaml
+    │   ├── launch/ur_control.launch.py
+    │   ├── CMakeLists.txt
+    │   ├── package.xml
+    │   ├── README.md
+    │   └── CHANGELOG.md
+    │
+    ├── ur5e_hand_udp/                     # 📦 UDP 손 브리지
+    │   ├── include/ur5e_hand_udp/
+    │   │   ├── hand_udp_receiver.hpp     # UDP 수신 (jthread, 포트 50001)
+    │   │   └── hand_udp_sender.hpp       # UDP 송신 (리틀 엔디언, 포트 50002)
+    │   ├── src/
+    │   │   ├── hand_udp_receiver_node.cpp
+    │   │   └── hand_udp_sender_node.cpp
+    │   ├── config/hand_udp_receiver.yaml
+    │   ├── launch/hand_udp.launch.py
+    │   ├── CMakeLists.txt
+    │   ├── package.xml
+    │   ├── README.md
+    │   └── CHANGELOG.md
+    │
+    ├── ur5e_mujoco_sim/                   # 📦 MuJoCo 3.x 시뮬레이터 (선택적)
+    │   ├── include/ur5e_mujoco_sim/
+    │   │   └── mujoco_simulator.hpp      # 스레드 안전 물리 래퍼
+    │   ├── src/mujoco_simulator_node.cpp
+    │   ├── models/ur5e/
+    │   │   ├── scene.xml
+    │   │   └── ur5e.xml
+    │   ├── config/mujoco_simulator.yaml
+    │   ├── launch/mujoco_sim.launch.py
+    │   ├── CMakeLists.txt
+    │   ├── package.xml
+    │   ├── README.md
+    │   └── CHANGELOG.md
+    │
+    └── ur5e_tools/                        # 📦 Python 개발 유틸리티
+        ├── scripts/
+        │   ├── plot_ur_trajectory.py     # Matplotlib 궤적 시각화
+        │   ├── monitor_data_health.py    # 데이터 건강 모니터 + JSON 통계
+        │   ├── motion_editor_gui.py      # Qt5 50-포즈 모션 편집기
+        │   └── hand_udp_sender_example.py # 합성 UDP 손 데이터 생성기
+        ├── CMakeLists.txt
+        ├── package.xml
+        ├── README.md
+        └── CHANGELOG.md
+```
+
+### 패키지 의존성 그래프
+
+```
+ur5e_rt_base       ← 독립 (공유 기반, 헤더-전용)
+    ↑
+    ├── ur5e_rt_controller  ← ur5e_rt_base
+    └── ur5e_hand_udp       ← ur5e_rt_base
+
+ur5e_mujoco_sim    ← 독립 (MuJoCo/GLFW/stdlib만 사용)
+ur5e_tools         ← 독립 (Python 전용, rclpy)
 ```
 
 ---

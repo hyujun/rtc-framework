@@ -5,6 +5,82 @@
 
 ---
 
+## [5.0.0] - 2026-03-04
+
+### 변경 — 멀티-패키지 분리 (Breaking: 빌드 구조 변경)
+
+단일 `ur5e_rt_controller` 패키지를 **5개 독립 ROS2 패키지**로 분리하였습니다. 기능 변경은 없으며 패키지 경계와 의존성만 재편성되었습니다.
+
+#### 신규 패키지
+
+| 패키지 | 역할 | 버전 |
+|--------|------|------|
+| `ur5e_rt_base` | 공유 타입/스레드 유틸/로깅 (헤더-전용) | 1.0.0 |
+| `ur5e_rt_controller` | 500Hz 실시간 제어기 | 5.0.0 |
+| `ur5e_hand_udp` | UDP 손 브리지 (수신/송신 노드) | 1.0.0 |
+| `ur5e_mujoco_sim` | MuJoCo 3.x 물리 시뮬레이터 | 1.0.0 |
+| `ur5e_tools` | Python 개발 유틸리티 | 1.0.0 |
+
+#### 패키지 의존성 그래프
+
+```
+ur5e_rt_base       ← 독립
+    ↑
+    ├── ur5e_rt_controller
+    └── ur5e_hand_udp
+
+ur5e_mujoco_sim    ← 독립
+ur5e_tools         ← 독립
+```
+
+#### 이동된 파일
+
+| 구성 요소 | 이전 위치 | 신규 위치 |
+|-----------|-----------|-----------|
+| 공유 타입 | `rt_controller_interface.hpp` (내장) | `ur5e_rt_base/types.hpp` |
+| 스레드 설정/유틸 | `ur5e_rt_controller/thread_*.hpp` | `ur5e_rt_base/thread_*.hpp` |
+| 로그 버퍼/로거 | `ur5e_rt_controller/log_buffer.hpp`, `data_logger.hpp` | `ur5e_rt_base/` |
+| UDP 브리지 | `ur5e_rt_controller/hand_udp_*.hpp`, `*_node.cpp` | `ur5e_hand_udp/` |
+| MuJoCo 시뮬레이터 | `ur5e_rt_controller/mujoco_simulator.hpp`, `*_node.cpp` | `ur5e_mujoco_sim/` |
+| Python 스크립트 | `scripts/` | `ur5e_tools/scripts/` |
+| MuJoCo 모델 | `models/ur5e/` | `ur5e_mujoco_sim/models/ur5e/` |
+
+#### 빌드 방법 변경
+
+```bash
+# 이전 (v4.x)
+colcon build --packages-select ur5e_rt_controller
+
+# v5.0.0 이후
+colcon build --packages-select ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_tools
+# MuJoCo 포함 시:
+colcon build --packages-select ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_tools ur5e_mujoco_sim
+```
+
+#### 헤더 인클루드 경로 변경
+
+```cpp
+// 이전 (v4.x)
+#include "ur5e_rt_controller/thread_config.hpp"
+#include "ur5e_rt_controller/thread_utils.hpp"
+#include "ur5e_rt_controller/log_buffer.hpp"
+#include "ur5e_rt_controller/data_logger.hpp"
+#include "ur5e_rt_controller/hand_udp_receiver.hpp"
+#include "ur5e_rt_controller/mujoco_simulator.hpp"
+
+// v5.0.0 이후
+#include "ur5e_rt_base/thread_config.hpp"
+#include "ur5e_rt_base/thread_utils.hpp"
+#include "ur5e_rt_base/log_buffer.hpp"
+#include "ur5e_rt_base/data_logger.hpp"
+#include "ur5e_hand_udp/hand_udp_receiver.hpp"
+#include "ur5e_mujoco_sim/mujoco_simulator.hpp"
+```
+
+네임스페이스 `ur5e_rt_controller`는 모든 패키지에서 **변경 없이 유지**됩니다.
+
+---
+
 ## [4.5.0] - 2026-03-04
 
 ### 추가 (Added) — MuJoCo 시뮬레이터 대폭 개선

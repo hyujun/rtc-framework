@@ -220,11 +220,17 @@ setup_package() {
   else
     warn "ur5e-rt-controller already exists — skipping clone"
   fi
+  # Symlink packages from repo src/ into workspace src/
+  for pkg in ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_mujoco_sim ur5e_tools; do
+    if [[ ! -e "$pkg" ]]; then
+      ln -s "ur5e-rt-controller/src/$pkg" "$pkg"
+    fi
+  done
 }
 
 # ── Build ──────────────────────────────────────────────────────────────────────
 build_package() {
-  info "Building ur5e_rt_controller..."
+  info "Building all ur5e packages..."
   cd "$WORKSPACE"
 
   local CMAKE_ARGS=()
@@ -233,21 +239,27 @@ build_package() {
     info "MuJoCo cmake path: ${MJ_DIR}/lib/cmake/mujoco"
   fi
 
+  # Build order: ur5e_rt_base first (header-only, no deps), then the rest
+  local PACKAGES=(ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_tools)
+  if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
+    PACKAGES+=(ur5e_mujoco_sim)
+  fi
+
   if [[ ${#CMAKE_ARGS[@]} -gt 0 ]]; then
     colcon build \
-        --packages-select ur5e_rt_controller \
+        --packages-select "${PACKAGES[@]}" \
         --symlink-install \
         --cmake-args "${CMAKE_ARGS[@]}"
   else
     colcon build \
-        --packages-select ur5e_rt_controller \
+        --packages-select "${PACKAGES[@]}" \
         --symlink-install
   fi
 
   source install/setup.bash
   grep -q "ur_ws/install/setup.bash" ~/.bashrc || \
       echo "source $WORKSPACE/install/setup.bash" >> ~/.bashrc
-  success "Package built and sourced"
+  success "All packages built and sourced"
 }
 
 # ── RT permissions (robot + full) ──────────────────────────────────────────────
@@ -272,14 +284,21 @@ install_rt_permissions() {
 verify_installation() {
   info "Verifying installation..."
   source "$WORKSPACE/install/setup.bash"
-  if ros2 pkg list 2>/dev/null | grep -q ur5e_rt_controller; then
-    success "Package registered: ur5e_rt_controller"
-  else
-    error "Installation verification failed — package not found"
-  fi
+  local failed=0
+  for pkg in ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_tools; do
+    if ros2 pkg list 2>/dev/null | grep -q "^${pkg}$"; then
+      success "Package registered: $pkg"
+    else
+      warn "Package not found: $pkg"
+      failed=1
+    fi
+  done
+  [[ $failed -eq 1 ]] && error "Installation verification failed"
 
-  info "Available executables:"
+  info "Available executables (ur5e_rt_controller):"
   ros2 pkg executables ur5e_rt_controller 2>/dev/null || true
+  info "Available executables (ur5e_hand_udp):"
+  ros2 pkg executables ur5e_hand_udp 2>/dev/null || true
 
   mkdir -p /tmp/ur5e_logs /tmp/ur5e_stats ~/ur_plots
   success "Log directories ready (/tmp/ur5e_logs, /tmp/ur5e_stats, ~/ur_plots)"
@@ -298,13 +317,13 @@ print_summary() {
       echo -e "${CYAN}${BOLD}── Simulation Quick Start ──────────────────────────────${NC}"
       echo ""
       echo "  # Free-run simulation (viewer opens automatically)"
-      echo "  ros2 launch ur5e_rt_controller mujoco_sim.launch.py"
+      echo "  ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py"
       echo ""
       echo "  # Sync-step mode (1:1 with controller)"
-      echo "  ros2 launch ur5e_rt_controller mujoco_sim.launch.py sim_mode:=sync_step"
+      echo "  ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step"
       echo ""
       echo "  # Headless (no viewer window)"
-      echo "  ros2 launch ur5e_rt_controller mujoco_sim.launch.py enable_viewer:=false"
+      echo "  ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py enable_viewer:=false"
       echo ""
       echo "  # Send test commands"
       echo "  ros2 topic pub /target_joint_positions std_msgs/msg/Float64MultiArray \\"
@@ -333,7 +352,7 @@ print_summary() {
       echo "  ros2 launch ur5e_rt_controller ur_control.launch.py use_fake_hardware:=true"
       echo ""
       echo "  # Hand UDP nodes only"
-      echo "  ros2 launch ur5e_rt_controller hand_udp.launch.py"
+      echo "  ros2 launch ur5e_hand_udp hand_udp.launch.py"
       echo ""
       echo "  # Monitor control loop rate (should be ~500 Hz)"
       echo "  ros2 topic hz /forward_position_controller/commands"
@@ -354,14 +373,14 @@ print_summary() {
       echo "  ros2 launch ur5e_rt_controller ur_control.launch.py robot_ip:=192.168.1.10"
       echo ""
       echo "  # MuJoCo simulation"
-      echo "  ros2 launch ur5e_rt_controller mujoco_sim.launch.py"
-      echo "  ros2 launch ur5e_rt_controller mujoco_sim.launch.py sim_mode:=sync_step"
+      echo "  ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py"
+      echo "  ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step"
       echo ""
       echo "  # Fake hardware (no robot, no simulation)"
       echo "  ros2 launch ur5e_rt_controller ur_control.launch.py use_fake_hardware:=true"
       echo ""
       echo "  # Hand UDP only"
-      echo "  ros2 launch ur5e_rt_controller hand_udp.launch.py"
+      echo "  ros2 launch ur5e_hand_udp hand_udp.launch.py"
       echo ""
       echo -e "  ${YELLOW}RT permissions: log out and back in, then verify:${NC}"
       echo "    ulimit -r   # should print 99"
@@ -371,9 +390,9 @@ print_summary() {
 
   echo ""
   echo -e "${CYAN}${BOLD}── Monitoring ──────────────────────────────────────────${NC}"
-  echo "  ros2 run ur5e_rt_controller monitor_data_health.py"
-  echo "  ros2 run ur5e_rt_controller plot_ur_trajectory.py /tmp/ur5e_control_log.csv"
-  echo "  ros2 run ur5e_rt_controller motion_editor_gui.py"
+  echo "  ros2 run ur5e_tools monitor_data_health.py"
+  echo "  ros2 run ur5e_tools plot_ur_trajectory.py /tmp/ur5e_control_log.csv"
+  echo "  ros2 run ur5e_tools motion_editor_gui.py"
   echo ""
   echo -e "${CYAN}${BOLD}── Documentation ───────────────────────────────────────${NC}"
   echo "  docs/RT_OPTIMIZATION.md  — RT tuning guide"
