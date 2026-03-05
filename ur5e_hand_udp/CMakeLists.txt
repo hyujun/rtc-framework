@@ -21,11 +21,19 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(ur5e_rt_base REQUIRED)
 
+# ── Shared library: HandUdpReceiver + HandUdpSender implementations ────────────
+add_library(ur5e_hand_udp_lib STATIC
+  src/hand_udp_receiver.cpp
+  src/hand_udp_sender.cpp
+)
+target_include_directories(ur5e_hand_udp_lib PUBLIC include)
+ament_target_dependencies(ur5e_hand_udp_lib ur5e_rt_base)
+
 # ── hand_udp_receiver_node ─────────────────────────────────────────────────────
 add_executable(hand_udp_receiver_node
   src/hand_udp_receiver_node.cpp
 )
-target_include_directories(hand_udp_receiver_node PRIVATE include)
+target_link_libraries(hand_udp_receiver_node ur5e_hand_udp_lib)
 ament_target_dependencies(hand_udp_receiver_node
   rclcpp
   std_msgs
@@ -36,7 +44,7 @@ ament_target_dependencies(hand_udp_receiver_node
 add_executable(hand_udp_sender_node
   src/hand_udp_sender_node.cpp
 )
-target_include_directories(hand_udp_sender_node PRIVATE include)
+target_link_libraries(hand_udp_sender_node ur5e_hand_udp_lib)
 ament_target_dependencies(hand_udp_sender_node
   rclcpp
   std_msgs
