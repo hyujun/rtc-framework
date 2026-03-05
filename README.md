@@ -1,3 +1,4 @@
+[![codecov](https://codecov.io/github/hyujun/ur5e-rt-controller/graph/badge.svg?token=8PXHXLHLRF)](https://codecov.io/github/hyujun/ur5e-rt-controller)
 # UR5e RT Controller
 
 **Ubuntu 22.04 + ROS2 Humble | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.0.0)**
