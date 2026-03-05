@@ -4,13 +4,15 @@
 [![codecov](https://codecov.io/gh/hyujun/ur5e-rt-controller/branch/master/graph/badge.svg)](https://codecov.io/gh/hyujun/ur5e-rt-controller)
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 
-**Ubuntu 22.04 + ROS2 Humble | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.0.0)**
+**Ubuntu 22.04 + ROS2 Humble | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.2.0)**
 
 E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종**, **MuJoCo 3.x 물리 시뮬레이터**, UDP 핸드 인터페이스, CSV 데이터 로깅, Qt GUI 모션 에디터를 포함한 완전한 실시간 제어 솔루션입니다.
 
 > **v5.0.0 (멀티-패키지 분리)**: 단일 패키지에서 **5개 독립 ROS2 패키지**로 리팩터링되었습니다. 각 패키지는 레포지토리 루트 직하에 위치하며 각자의 `README.md`와 `CHANGELOG.md`를 포함합니다.
 >
 > **v5.1.0 (CPU 코어 할당 최적화)**: 실제 로봇 제어 시 RT 성능을 극대화하는 코어 배치 전략이 적용되었습니다. `udp_recv` Core 3→5 이동, 8코어 지원, UR 드라이버 CPU 고정, NIC IRQ 친화성, CycloneDDS 스레드 제한.
+>
+> **v5.2.0 (디지털 신호 필터)**: `ur5e_rt_base`에 RT-안전 헤더-전용 필터 라이브러리가 추가되었습니다. **4차 Bessel 저역통과 필터** (최대 선형 군지연, 위상 왜곡 없음)와 **이산-시간 Kalman 필터** (위치+속도 동시 추정, 미분 불필요)를 포함합니다.
 
 ---
 
@@ -51,6 +53,7 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 | Qt GUI 에디터 | 50개 포즈 저장/로드/재생 모션 에디터 |
 | Strategy Pattern | `RTControllerInterface`를 상속하는 교체 가능한 제어기 구조 |
 | 설치 모드 선택 | `install.sh sim / robot / full` — 환경에 맞게 선택 설치 (v4.5.0+) |
+| 신호 필터 | Bessel LPF (선형 위상) + Kalman 필터 (속도 추정 내장), N채널 RT-안전 (v5.2.0+) |
 
 ---
 
@@ -76,7 +79,10 @@ ur5e-rt-controller/
 │   │   ├── thread_config.hpp             # ThreadConfig + 4/6/8코어 사전 정의 RT 상수
 │   │   ├── thread_utils.hpp              # ApplyThreadConfig(), SelectThreadConfigs()
 │   │   ├── log_buffer.hpp                # SPSC 링 버퍼 (RT→로그, 잠금-없음)
-│   │   └── data_logger.hpp               # 비-RT CSV 로거
+│   │   ├── data_logger.hpp               # 비-RT CSV 로거
+│   │   └── filters/
+│   │       ├── bessel_filter.hpp         # 4차 Bessel LPF — N채널, noexcept, 선형 위상
+│   │       └── kalman_filter.hpp         # 이산-시간 Kalman 필터 — 위치+속도 추정, noexcept
 │   └── ...
 │
 ├── ur5e_rt_controller/                    # 📦 500Hz 실시간 제어기
@@ -413,6 +419,79 @@ ros2 topic pub /target_joint_positions std_msgs/msg/Float64MultiArray \
 | 행렬 분해 | `LDLT<Matrix3d>` (3×3 고정) | `LDLT<Matrix3d>` (3×3 고정) | `PartialPivLU<Matrix6d>` (6×6 고정) |
 | E-STOP | `kSafePosition`으로 수렴 | `kSafePosition`으로 수렴 | `kSafePosition`으로 수렴 |
 | noexcept | 모든 public 메서드 | 모든 public 메서드 | 모든 public 메서드 |
+
+---
+
+---
+
+## 신호 필터 (`ur5e_rt_base/filters/`)
+
+v5.2.0에서 추가된 RT-안전 헤더-전용 필터 라이브러리입니다. `Init()` 이후 모든 처리 메서드가 **`noexcept`** — 500Hz RT 루프에서 추가 의존성 없이 직접 사용 가능합니다.
+
+### `BesselFilterN<N>` — 4차 Bessel 저역통과 필터
+
+`#include "ur5e_rt_base/filters/bessel_filter.hpp"`
+
+**선택 이유**: 최대 선형 군지연(Maximally Flat Group Delay) → 모든 주파수 성분이 동일 지연 → 위상 왜곡 없는 관절 궤적 평활화.
+
+```cpp
+BesselFilter6 lpf;
+lpf.Init(100.0, 500.0);                  // 100 Hz 컷오프, 500 Hz 샘플레이트
+// 500 Hz RT 루프:
+auto smoothed = lpf.Apply(raw_positions); // noexcept
+```
+
+| 메서드 | RT 안전 | 설명 |
+|--------|---------|------|
+| `Init(cutoff_hz, sample_rate_hz)` | 아니오 | 계수 계산, 상태 초기화 |
+| `Apply(array<double,N>)` | **예** | N채널 필터링 |
+| `ApplyScalar(double, ch)` | **예** | 단일 채널 버전 |
+| `Reset()` | **예** | 지연 소자 초기화 |
+
+**별칭**: `BesselFilter6`, `BesselFilter11`, `BesselFilter1`
+
+---
+
+### `KalmanFilterN<N>` — 이산-시간 Kalman 필터
+
+`#include "ur5e_rt_base/filters/kalman_filter.hpp"`
+
+**선택 이유**: 위치 측정 하나로 **위치와 속도를 동시에 최적 추정** — 미분 없는 속도 추정으로 PD 제어기 D항에 직접 활용 가능.
+
+**모델**: 상수-속도 운동 모델, 상태 `x = [pos, vel]ᵀ`, 관측 `H = [1, 0]`
+
+```cpp
+KalmanFilter6 kf;
+kf.Init(0.001, 0.01, 0.1, 0.002);       // q_pos, q_vel, r, dt
+kf.SetInitialPositions(init_pos);        // 시작 과도 현상 방지
+// 500 Hz RT 루프:
+auto filtered = kf.PredictAndUpdate(raw_positions); // noexcept
+double vel_j0 = kf.velocity(0);          // 미분 없는 속도 추정
+```
+
+| 메서드 | RT 안전 | 설명 |
+|--------|---------|------|
+| `Init(q_pos, q_vel, r, dt)` | 아니오 | 파라미터 설정, 상태 초기화 |
+| `Predict()` | **예** | 상태 예측 (매 틱 호출) |
+| `Update(array<double,N>)` | **예** | 측정 융합, 필터 위치 반환 |
+| `PredictAndUpdate(array)` | **예** | Predict + Update 단일 호출 |
+| `velocity(i)` | **예** | 채널 i 속도 추정값 |
+| `SetInitialPositions(array)` | **예** | 초기 상태 시드 |
+
+**별칭**: `KalmanFilter6`, `KalmanFilter11`, `KalmanFilter1`
+
+---
+
+### Bessel vs Kalman 선택 기준
+
+| 항목 | Bessel | Kalman |
+|------|--------|--------|
+| 주 목적 | 위상 왜곡 없는 노이즈 제거 | 위치+속도 동시 추정 |
+| 파라미터 직관성 | 높음 (컷오프 Hz) | 중간 (Q/R 비율) |
+| 속도 추정 | 별도 미분 필요 | 내장 `velocity()` |
+| 급격한 위치 변화 추종 | 컷오프에 따라 지연 | `q_vel` 조정으로 대응 |
+
+> 단순 궤적 평활화 → **Bessel**, 속도 추정이 필요한 PD 제어 → **Kalman**
 
 ---
 
@@ -1063,6 +1142,7 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 
 | 버전 | 주요 변경사항 |
 |------|---------------|
+| **v5.2.0** | `ur5e_rt_base/filters/` 추가: 4차 Bessel LPF (`BesselFilterN<N>`) + 이산-시간 Kalman 필터 (`KalmanFilterN<N>`) — 모두 noexcept, RT 안전 |
 | **v5.1.0** | CPU 코어 할당 최적화: udp_recv Core 3→5, 8코어 지원, UR 드라이버 taskset, CycloneDDS 스레드 제한, NIC IRQ affinity, install.sh 자동화 |
 | **v5.0.0** | 5개 독립 ROS2 패키지로 분리 (ur5e_rt_base, ur5e_rt_controller, ur5e_hand_udp, ur5e_mujoco_sim, ur5e_tools) |
 | v4.5.0 | 인터랙티브 MuJoCo 뷰어 (마우스/키보드), Physics solver 런타임 제어, 중력/접촉 토글, 물체 힘 인가, F1/F4 오버레이, install.sh sim/robot/full 모드 분리 |
@@ -1074,4 +1154,4 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 | v1.0.0 | 초기 릴리스, P/PD 제어기, 기본 ROS2 노드 |
 
 **최종 업데이트**: 2026-03-05
-**현재 버전**: v5.1.0
+**현재 버전**: v5.2.0

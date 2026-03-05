@@ -5,6 +5,78 @@
 
 ---
 
+## [5.2.0] - 2026-03-05
+
+### 추가 (Added) — 디지털 신호 필터 라이브러리 (`ur5e_rt_base/filters/`)
+
+RT-안전 헤더-전용 필터 라이브러리가 `ur5e_rt_base`에 추가되었습니다.
+`Init()` 이후 모든 필터 메서드는 `noexcept` — 500Hz RT 루프에서 직접 호출 가능합니다.
+
+#### `ur5e_rt_base/filters/bessel_filter.hpp` — 4차 Bessel 저역통과 필터
+
+- **`BesselFilterN<N>`**: N채널 독립 4차 Bessel 저역통과 필터 (템플릿)
+- **구현 방식**: 2개의 쌍선형 변환 + biquad 직렬 연결 (Direct Form II Transposed)
+- **파라미터**: `Init(cutoff_hz, sample_rate_hz)` — Nyquist 이하 컷오프 검증 포함
+- **핵심 API**:
+  - `Apply(array<double,N>)` → 필터링된 N채널 출력 (noexcept)
+  - `ApplyScalar(double, channel)` → 단일 채널 스칼라 버전 (noexcept)
+  - `Reset()` → 지연 소자 초기화 (E-STOP/재시작 후)
+- **Bessel 선택 이유**: 최대 선형 군지연 (모든 주파수 성분이 동일 지연) → 위상 왜곡 없는 매끄러운 관절 궤적
+- **아날로그 프로토타입** (4차, -3 dB @ ω=1 rad/s):
+  - 켤레 쌍 1: ω₀=1.4302, Q=0.5219
+  - 켤레 쌍 2: ω₀=1.6034, Q=0.8055
+- **편의 별칭**: `BesselFilter6` (6-DOF 로봇), `BesselFilter11` (11-DOF 손), `BesselFilter1` (스칼라)
+
+#### `ur5e_rt_base/filters/kalman_filter.hpp` — 이산-시간 Kalman 필터
+
+- **`KalmanFilterN<N>`**: N채널 독립 상수-속도 모델 Kalman 필터 (템플릿)
+- **상태 모델**: `x = [position, velocity]ᵀ` (채널당 2×1), 전이행렬 `F = [[1,dt],[0,1]]`
+- **관측 모델**: 위치만 측정 (`H = [1, 0]`) — 속도는 필터에서 자동 추정
+- **잡음 파라미터**: `q_pos` (위치 프로세스 잡음), `q_vel` (속도 프로세스 잡음), `r` (측정 잡음)
+- **핵심 API**:
+  - `Predict()` → 매 제어 틱마다 상태 예측 (noexcept)
+  - `Update(array<double,N>)` → 측정값 융합, 필터링된 위치 반환 (noexcept)
+  - `PredictAndUpdate(array<double,N>)` → Predict + Update 단일 호출 (noexcept)
+  - `velocity(i)` → 미분 없는 속도 추정값 (noexcept)
+  - `SetInitialPositions(array)` → 초기 상태 시드 (시작 과도 현상 방지)
+  - `kalman_gain(i)` → 진단용 칼만 이득 접근
+- **수치 구현**: 2×2 공분산 행렬을 `{p00, p01, p11}` 3개 스칼라로 저장 — Eigen 불필요, 힙 할당 없음
+- **편의 별칭**: `KalmanFilter6`, `KalmanFilter11`, `KalmanFilter1`
+
+#### Bessel vs Kalman 비교
+
+| 항목 | `BesselFilterN` | `KalmanFilterN` |
+|------|----------------|-----------------|
+| 파라미터 | 컷오프 Hz, 샘플레이트 | Q/R 비율, dt |
+| 위상 지연 | 선형 고정 (Bessel 특성) | 수렴 후 최소 |
+| 속도 추정 | 별도 미분 필요 | 내장 (`velocity()`) |
+| 갑작스러운 이동 | 컷오프에 따라 느린 추종 | `q_vel` 조정으로 빠른 추종 |
+| 상태 수 | 채널당 4 (2×biquad) | 채널당 5 (pos, vel, P 행렬) |
+| 센서 잡음 모델 | 암묵적 (컷오프로 조정) | 명시적 (R 파라미터) |
+
+#### 사용 예시
+
+```cpp
+#include "ur5e_rt_base/filters/bessel_filter.hpp"
+#include "ur5e_rt_base/filters/kalman_filter.hpp"
+
+using namespace ur5e_rt_controller;
+
+// Bessel 필터 — 100Hz 컷오프, 500Hz 샘플레이트
+BesselFilter6 lpf;
+lpf.Init(100.0, 500.0);
+auto smoothed = lpf.Apply(raw_positions);          // 500Hz RT 루프
+
+// Kalman 필터 — 위치 + 속도 동시 추정
+KalmanFilter6 kf;
+kf.Init(0.001, 0.01, 0.1, 0.002);                 // q_pos, q_vel, r, dt
+kf.SetInitialPositions(current_positions);         // 초기 상태 시드
+auto filtered = kf.PredictAndUpdate(raw_positions); // 매 틱
+double vel_j0 = kf.velocity(0);                    // 관절 0 속도 (미분 없음)
+```
+
+---
+
 ## [5.1.0] - 2026-03-05
 
 ### 변경 — CPU 코어 할당 최적화 (실제 로봇 제어)

@@ -5,6 +5,61 @@
 
 ---
 
+## [1.2.0] - 2026-03-05
+
+### 추가 — 디지털 신호 필터 (`include/ur5e_rt_base/filters/`)
+
+500Hz RT 루프에서 직접 사용 가능한 헤더-전용 필터 라이브러리를 추가했습니다.
+두 필터 모두 `Init()` 이후 모든 처리 메서드가 `noexcept`이며, 힙 할당이 없습니다.
+
+#### `filters/bessel_filter.hpp`
+
+- **클래스**: `BesselFilterN<N>` — N채널 독립 4차 Bessel 저역통과 필터
+- **구조**: 2개의 biquad (Direct Form II Transposed) 직렬 연결
+- **아날로그 프로토타입**: 4차 Bessel, -3 dB 정규화
+  - 켤레 쌍 1: ω₀=1.4301691433, Q=0.5219356105
+  - 켤레 쌍 2: ω₀=1.6033574829, Q=0.8055342053
+- **쌍선형 변환**: 컷오프 prewarping 포함 → 디지털 -3 dB 점이 정확히 `cutoff_hz`에 위치
+- **API 요약**:
+
+  | 메서드 | 설명 | RT 안전 |
+  |--------|------|---------|
+  | `Init(cutoff_hz, sample_rate_hz)` | 계수 계산, 상태 초기화 | 아니오 (생성 시만) |
+  | `Apply(array<double,N>)` | N채널 필터링, 출력 반환 | **예** |
+  | `ApplyScalar(double, channel)` | 단일 채널 스칼라 버전 | **예** |
+  | `Reset()` | 지연 소자 0으로 초기화 | **예** |
+  | `cutoff_hz()` / `sample_rate_hz()` | 파라미터 접근자 | **예** |
+
+- **편의 별칭**: `BesselFilter6`, `BesselFilter11`, `BesselFilter1`
+
+#### `filters/kalman_filter.hpp`
+
+- **클래스**: `KalmanFilterN<N>` — N채널 독립 이산-시간 Kalman 필터
+- **상태 모델**: 상수-속도 (Constant Velocity), 상태 `x = [pos, vel]ᵀ` (채널당 2×1)
+- **전이 행렬**: `F = [[1, dt], [0, 1]]`
+- **관측 행렬**: `H = [1, 0]` (위치만 측정)
+- **공분산**: 2×2 행렬을 `{p00, p01, p11}` 스칼라 3개로 저장 (Eigen 의존성 없음)
+- **API 요약**:
+
+  | 메서드 | 설명 | RT 안전 |
+  |--------|------|---------|
+  | `Init(q_pos, q_vel, r, dt)` | 파라미터 설정, 상태 초기화 | 아니오 (생성 시만) |
+  | `Init(Params)` | 구조체 버전 | 아니오 |
+  | `Predict()` | 상태 예측 (매 틱) | **예** |
+  | `Update(array<double,N>)` | 측정 융합, 필터 위치 반환 | **예** |
+  | `PredictAndUpdate(array<double,N>)` | 예측+업데이트 단일 호출 | **예** |
+  | `UpdateScalar(double, channel)` | 단일 채널 버전 | **예** |
+  | `SetInitialPositions(array)` | 초기 상태 시드 | **예** |
+  | `Reset()` | 전체 상태/공분산 초기화 | **예** |
+  | `position(i)` / `velocity(i)` | 필터링된 위치/속도 | **예** |
+  | `positions()` / `velocities()` | 전체 채널 배열 | **예** |
+  | `kalman_gain(i)` | 마지막 칼만 이득 (진단용) | **예** |
+  | `position_variance(i)` | 위치 불확실도 P₀₀ | **예** |
+
+- **편의 별칭**: `KalmanFilter6`, `KalmanFilter11`, `KalmanFilter1`
+
+---
+
 ## [1.1.0] - 2026-03-05
 
 ### 변경 — CPU 코어 할당 최적화
