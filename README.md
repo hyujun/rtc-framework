@@ -1,5 +1,8 @@
-[![codecov](https://codecov.io/github/hyujun/ur5e-rt-controller/graph/badge.svg?token=8PXHXLHLRF)](https://codecov.io/github/hyujun/ur5e-rt-controller)
 # UR5e RT Controller
+
+![CI](https://github.com/hyujun/ur5e-rt-controller/actions/workflows/ros2-advanced-ci.yml/badge.svg)
+[![codecov](https://codecov.io/gh/hyujun/ur5e-rt-controller/branch/master/graph/badge.svg)](https://codecov.io/gh/hyujun/ur5e-rt-controller)
+![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 
 **Ubuntu 22.04 + ROS2 Humble | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.0.0)**
 
