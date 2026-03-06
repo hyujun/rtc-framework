@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/hyujun/ur5e-rt-controller/branch/master/graph/badge.svg)](https://codecov.io/gh/hyujun/ur5e-rt-controller)
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 
-**Ubuntu 22.04 + ROS2 Humble | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.2.1)**
+**Ubuntu 22.04 + ROS2 Humble | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.2.2)**
 
 E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종**, **MuJoCo 3.x 물리 시뮬레이터**, UDP 핸드 인터페이스, CSV 데이터 로깅, Qt GUI 모션 에디터를 포함한 완전한 실시간 제어 솔루션입니다.
 
@@ -15,6 +15,8 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 > **v5.2.0 (디지털 신호 필터)**: `ur5e_rt_base`에 RT-안전 헤더-전용 필터 라이브러리가 추가되었습니다. **4차 Bessel 저역통과 필터** (최대 선형 군지연, 위상 왜곡 없음)와 **이산-시간 Kalman 필터** (위치+속도 동시 추정, 미분 불필요)를 포함합니다.
 >
 > **v5.2.1 (빌드 버그픽스)**: MuJoCo binary tarball 설치 시 `lib/cmake/mujoco/` 부재로 cmake 탐지가 실패하던 문제 수정. `install.sh`는 `-Dmujoco_ROOT`를 전달하고, `CMakeLists.txt`는 `find_library` 폴백으로 `.so` 파일을 직접 탐지합니다.
+>
+> **v5.2.2 (MuJoCo solver_niter 버그픽스)**: `ReadSolverStats()`에서 `data_->solver_niter`(`int*`)를 `int`에 직접 대입하던 타입 오류 수정. MuJoCo 3.x island별 반복 횟수를 `data_->nisland` 만큼 합산하도록 변경.
 
 ---
 
@@ -304,7 +306,7 @@ sim->SetContactEnabled(false);        // 자유 공간 운동 테스트
 // 외부 힘 인가
 sim->SetExternalForce(body_id, {0.0, 0.0, 10.0, 0.0, 0.0, 0.0});  // 10N 수직
 
-// Solver 통계 확인
+// Solver 통계 확인 (iter = 모든 constraint island 반복 횟수 합산)
 auto stats = sim->GetSolverStats();
 printf("iter=%d  improvement=%.3e\n", stats.iter, stats.improvement);
 ```
@@ -1144,6 +1146,7 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 
 | 버전 | 주요 변경사항 |
 |------|---------------|
+| **v5.2.2** | `ur5e_mujoco_sim` `ReadSolverStats()` 수정: `solver_niter`(`int*`)를 island별 합산으로 올바르게 처리, `nisland > 0` 가드 추가 |
 | **v5.2.1** | MuJoCo binary tarball cmake 탐지 수정: `install.sh` `-Dmujoco_DIR`→`-Dmujoco_ROOT`, `CMakeLists.txt` `find_library` 폴백 추가 |
 | **v5.2.0** | `ur5e_rt_base/filters/` 추가: 4차 Bessel LPF (`BesselFilterN<N>`) + 이산-시간 Kalman 필터 (`KalmanFilterN<N>`) — 모두 noexcept, RT 안전 |
 | **v5.1.0** | CPU 코어 할당 최적화: udp_recv Core 3→5, 8코어 지원, UR 드라이버 taskset, CycloneDDS 스레드 제한, NIC IRQ affinity, install.sh 자동화 |
@@ -1157,4 +1160,4 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 | v1.0.0 | 초기 릴리스, P/PD 제어기, 기본 ROS2 노드 |
 
 **최종 업데이트**: 2026-03-06
-**현재 버전**: v5.2.1
+**현재 버전**: v5.2.2

@@ -5,6 +5,25 @@
 
 ---
 
+## [1.0.1] - 2026-03-06
+
+### 수정 (Fixed) — `solver_niter` `int*` 타입 역참조 오류
+
+`mujoco_sim_loop.cpp` `ReadSolverStats()` 에서 `data_->solver_niter`를 `int`에 직접 대입하던 오류를 수정합니다.
+
+**원인**: MuJoCo 3.x에서 `mjData::solver_niter`는 constraint island별 반복 횟수를 담는 **`int*`** 배열입니다 (`data_->nisland` 크기).
+
+**수정 내용**:
+- `data_->nisland` 만큼 반복하며 `solver_niter[k]`를 합산 → `SolverStats::iter`에 저장
+- `solver[0]` 통계 접근 전 `nisland > 0` 가드 추가 (빈 씬 방어)
+
+**영향 범위**:
+- UR5e 단독 씬 (`nisland == 1`): 동작 결과 동일
+- 다중 물체 씬 / MuJoCo Menagerie 모델: 모든 island 합산으로 올바른 반복 횟수 반영
+- `GetSolverStats().iter` 반환값 및 F4 오버레이 표시값 정확도 향상
+
+---
+
 ## [1.0.0] - 2026-03-04
 
 ### 추가

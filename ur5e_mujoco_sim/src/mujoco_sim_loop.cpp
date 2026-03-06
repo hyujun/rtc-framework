@@ -38,9 +38,14 @@ void MuJoCoSimulator::ReadSolverStats() noexcept {
   if (!data_) { return; }
   SolverStats s{};
   s.ncon = data_->ncon;
-  s.iter = data_->solver_iter;
-  // mjSolverStat[0] holds aggregate stats for the last solve.
-  if (s.iter > 0) {
+  // solver_niter is int* (one entry per constraint island in MuJoCo 3.x).
+  // Sum across all islands for the total iteration count.
+  const int nisland = data_->nisland;
+  for (int k = 0; k < nisland; ++k) {
+    s.iter += data_->solver_niter[k];
+  }
+  // mjSolverStat[0] holds aggregate stats for the first island.
+  if (nisland > 0 && s.iter > 0) {
     s.improvement = static_cast<double>(data_->solver[0].improvement);
     s.gradient    = static_cast<double>(data_->solver[0].gradient);
   }

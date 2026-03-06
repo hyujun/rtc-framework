@@ -101,7 +101,7 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
     double lasty{0.0};
 
     // Perturbation state (local to viewer, transferred to sim via UpdatePerturb)
-    mjvPerturb pert;
+    mjvPerturb pert{};
 
     // UI toggles
     bool show_profiler{false};
@@ -109,8 +109,8 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
     bool show_solver{false};  // F4: solver stats overlay
 
     // RTF rolling buffer (200 samples at ~60 Hz ≈ 3.3 s window)
-    static constexpr int kProfLen = 200;
-    float rtf_history[kProfLen]{};
+    const int kProfLen{200};
+    float rtf_history[200]{};
     int   rtf_head{0};
     int   rtf_count{0};
 
@@ -305,13 +305,13 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
         glfwGetWindowSize(w, &width, &height);
         if (width > 0 && height > 0) {
           mjtNum selpnt[3] = {};
-          int selgeom = -1, selskin = -1;
+          int selgeom = -1, selflexid = -1, selskin = -1;
           const int selobj = mjv_select(
               s->model, s->vis_data, s->opt,
               static_cast<mjtNum>(width) / static_cast<mjtNum>(height),
               static_cast<mjtNum>(xp)   / static_cast<mjtNum>(width),
               static_cast<mjtNum>(height - yp) / static_cast<mjtNum>(height),
-              s->scn, selpnt, &selgeom, &selskin);
+              s->scn, selpnt, &selgeom, &selflexid, &selskin);
 
           if (selobj > 0) {  // > 0: a UR5e link (0 = world body)
             s->pert.select = selobj;
