@@ -61,6 +61,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -83,7 +84,7 @@ class CustomController : public rclcpp::Node {
   CustomController()
       : Node("custom_controller"),
         controller_(std::make_unique<urtc::PDController>()),
-        logger_(std::make_unique<urtc::DataLogger>("/tmp/ur5e_control_log.csv"))
+        logger_(nullptr)
   {
     CreateCallbackGroups();
     DeclareAndLoadParameters();
@@ -127,6 +128,7 @@ class CustomController : public rclcpp::Node {
     declare_parameter("kp",              5.0);
     declare_parameter("kd",              0.5);
     declare_parameter("enable_logging",  true);
+    declare_parameter("log_path",        "/tmp/ur5e_control_log.csv");
     declare_parameter("robot_timeout_ms", 100.0);
     declare_parameter("hand_timeout_ms",  200.0);
     declare_parameter("enable_estop",    true);
@@ -134,6 +136,12 @@ class CustomController : public rclcpp::Node {
     control_rate_   = get_parameter("control_rate").as_double();
     enable_logging_ = get_parameter("enable_logging").as_bool();
     enable_estop_   = get_parameter("enable_estop").as_bool();
+
+    if (enable_logging_) {
+      const std::filesystem::path log_path{get_parameter("log_path").as_string()};
+      std::filesystem::create_directories(log_path.parent_path());
+      logger_ = std::make_unique<urtc::DataLogger>(log_path);
+    }
 
     robot_timeout_ = std::chrono::milliseconds(
         static_cast<int>(get_parameter("robot_timeout_ms").as_double()));

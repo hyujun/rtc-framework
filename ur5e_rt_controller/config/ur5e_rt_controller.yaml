@@ -6,7 +6,7 @@ controller:
   kp: 5.0                      # Proportional gain
   kd: 0.5                      # Derivative gain
   enable_logging: true         # Enable CSV logging
-  log_path: "/tmp/ur5e_control_log.csv"
+  log_path: "~/ur_ws/log/ur5e_control_log.csv"  # overridden by launch files with expanded path
 
 # Joint Limits
 joint_limits:
@@ -44,4 +44,4 @@ logging:
   enable_logging: true
   log_frequency: 100.0         # Hz (subsample from control rate)
   max_log_size_mb: 100         # Maximum log file size
-  log_directory: "/tmp/ur5e_logs"
+  log_directory: "~/ur_ws/log"
