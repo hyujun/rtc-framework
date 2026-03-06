@@ -87,7 +87,19 @@ check_prerequisites() {
   if ! command -v ros2 &>/dev/null; then
     error "ROS2 not found. Install ROS2 Humble first: https://docs.ros.org/en/humble/Installation.html"
   fi
-  ROS_DISTRO_DETECTED=$(ros2 --version 2>/dev/null | grep -oP 'ROS \K[^ ]+' || echo "unknown")
+
+  # Detect ROS2 distro via three-tier fallback:
+  #   1. $ROS_DISTRO env var  — set automatically when setup.bash is sourced (most reliable)
+  #   2. /opt/ros/ directory  — works even without sourcing
+  #   3. ros2 --version       — parses "(humble)" from "ros2, version X.Y.Z (humble)"
+  if [[ -n "${ROS_DISTRO:-}" ]]; then
+    ROS_DISTRO_DETECTED="$ROS_DISTRO"
+  elif ls /opt/ros/ &>/dev/null; then
+    ROS_DISTRO_DETECTED=$(ls /opt/ros/ 2>/dev/null | head -1 || echo "unknown")
+  else
+    ROS_DISTRO_DETECTED=$(ros2 --version 2>/dev/null | grep -oP '\(\K[^)]+' || echo "unknown")
+  fi
+
   success "ROS2 detected: ${ROS_DISTRO_DETECTED}"
 
   UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "unknown")
