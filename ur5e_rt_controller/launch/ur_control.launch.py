@@ -4,6 +4,8 @@
 #   C) UR driver process pinned to Core 0-1 via delayed taskset (use_cpu_affinity:=true)
 #   E) CycloneDDS threads restricted to Core 0-1 via CYCLONEDDS_URI env var
 
+import os
+
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -20,6 +22,9 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 
 def generate_launch_description():
+    # ── Log directory (colcon workspace logging_data/) ─────────────────────────
+    log_dir = os.path.expanduser('~/ur_ws/logging_data')
+
     # ── Arguments ──────────────────────────────────────────────────────────────
     robot_ip_arg = DeclareLaunchArgument(
         'robot_ip',
@@ -112,7 +117,7 @@ def generate_launch_description():
         executable='custom_controller',
         name='custom_controller',
         output='screen',
-        parameters=[ur_control_config],
+        parameters=[ur_control_config, {'log_dir': log_dir}],
         emulate_tty=True,
     )
 
