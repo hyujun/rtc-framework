@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>ur5e_mujoco_sim</name>
-  <version>5.1.0</version>
+  <version>5.2.2</version>
   <description>
     MuJoCo 3.x physics simulation for UR5e. Replaces the UR driver during
     development — publishes /joint_states and /sim/status, subscribes to

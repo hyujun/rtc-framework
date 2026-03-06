@@ -1,5 +1,6 @@
 # ur5e_tools
 
+> **Note:** This package is part of the UR5e RT Controller workspace (v5.2.2). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
 UR5e RT Controller 스택의 **Python 개발 유틸리티 패키지**입니다. 궤적 시각화, 데이터 건강 모니터링, 모션 편집 GUI, UDP 손 데이터 생성기를 포함합니다.
 
 ## 개요

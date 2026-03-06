@@ -1,5 +1,6 @@
 # CLAUDE.md — ur5e_rt_controller
 
+> **Note:** This package is part of the UR5e RT Controller workspace (v5.2.2). Please refer to the [Root CLAUDE.md](../CLAUDE.md) for full workspace context, building instructions, and architecture overview.
 500 Hz 실시간 위치 제어기 패키지. 스택의 핵심 실행 파일 `custom_controller` 을 빌드한다.
 
 ---

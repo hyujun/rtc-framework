@@ -1,5 +1,6 @@
 # CLAUDE.md — ur5e_hand_udp
 
+> **Note:** This package is part of the UR5e RT Controller workspace (v5.2.2). Please refer to the [Root CLAUDE.md](../CLAUDE.md) for full workspace context, building instructions, and architecture overview.
 11-DOF 커스텀 핸드와 ROS2 사이의 **UDP 브리지 패키지**.
 ROS2 노드 2개(`hand_udp_receiver_node`, `hand_udp_sender_node`)와
 비-ROS2 헤더(`HandUdpReceiver`, `HandUdpSender`)로 구성된다.

@@ -4,7 +4,7 @@ package_name = 'ur5e_tools'
 
 setup(
     name=package_name,
-    version='1.0.0',
+    version='5.2.2',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages',

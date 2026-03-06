@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/hyujun/ur5e-rt-controller/branch/master/graph/badge.svg)](https://codecov.io/gh/hyujun/ur5e-rt-controller)
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 
-**Ubuntu 22.04 + ROS2 Humble | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.2.2)**
+**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.2.2)**
 
 E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종**, **MuJoCo 3.x 물리 시뮬레이터**, UDP 핸드 인터페이스, CSV 데이터 로깅, Qt GUI 모션 에디터를 포함한 완전한 실시간 제어 솔루션입니다.
 
@@ -503,8 +503,7 @@ double vel_j0 = kf.velocity(0);          // 미분 없는 속도 추정
 
 ### 1. 사전 요구사항
 
-- Ubuntu 22.04 LTS
-- ROS2 Humble
+- Ubuntu 22.04 LTS (ROS 2 Humble) 또는 Ubuntu 24.04 LTS (ROS 2 Jazzy)
 - (권장) LowLatency 또는 PREEMPT_RT 커널
 
 ```bash

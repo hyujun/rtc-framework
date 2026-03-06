@@ -1,5 +1,6 @@
 # CLAUDE.md — ur5e_rt_base
 
+> **Note:** This package is part of the UR5e RT Controller workspace (v5.2.2). Please refer to the [Root CLAUDE.md](../CLAUDE.md) for full workspace context, building instructions, and architecture overview.
 헤더-전용 공유 기반 패키지. `ur5e_rt_controller`와 `ur5e_hand_udp`가 의존한다.
 **구현 파일(.cpp)이 없다** — CMakeLists는 `INTERFACE` 라이브러리만 노출한다.
 

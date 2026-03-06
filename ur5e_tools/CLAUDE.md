@@ -1,5 +1,6 @@
 # CLAUDE.md — ur5e_tools
 
+> **Note:** This package is part of the UR5e RT Controller workspace (v5.2.2). Please refer to the [Root CLAUDE.md](../CLAUDE.md) for full workspace context, building instructions, and architecture overview.
 Python 개발 유틸리티 패키지. **C++ 코드 없음** — 스크립트 4개로 구성된다.
 `ament_python` 패키지이며 `ros2 run ur5e_tools <script>` 로 실행한다.
 

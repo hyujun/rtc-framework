@@ -1,5 +1,6 @@
 # CLAUDE.md — ur5e_mujoco_sim
 
+> **Note:** This package is part of the UR5e RT Controller workspace (v5.2.2). Please refer to the [Root CLAUDE.md](../CLAUDE.md) for full workspace context, building instructions, and architecture overview.
 MuJoCo 3.x 물리 시뮬레이터 패키지. 실제 UR 드라이버 없이 `ur5e_rt_controller`와 연동 가능.
 **선택적 의존성** — MuJoCo가 설치되지 않으면 CMake가 전체 패키지를 건너뜀.
 
