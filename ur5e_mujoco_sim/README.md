@@ -244,22 +244,31 @@ print(f'Over 2ms: {(df["compute_time_us"] > 2000).mean()*100:.2f}%')
 
 ### 전제 조건: MuJoCo 3.x 설치
 
+MuJoCo 공식 binary tarball은 `lib/cmake/mujoco/` 를 포함하지 않으므로 `-Dmujoco_ROOT` 를 사용합니다.
+
 ```bash
 # MuJoCo 3.x 다운로드 및 설치
 wget https://github.com/google-deepmind/mujoco/releases/download/3.x.x/mujoco-3.x.x-linux-x86_64.tar.gz
 sudo tar -xzf mujoco-*.tar.gz -C /opt/
-
-# CMake로 빌드 시 경로 지정
-cmake -Dmujoco_DIR=/opt/mujoco-3.x.x/lib/cmake/mujoco ...
 ```
 
 ### colcon 빌드
 
 ```bash
 cd ~/ur_ws
+
+# binary tarball 설치 시 (lib/cmake/mujoco/ 없음)
+colcon build --packages-select ur5e_mujoco_sim --symlink-install \
+    --cmake-args -Dmujoco_ROOT=/opt/mujoco-3.x.x
+
+# 또는 환경변수 사용
+export MUJOCO_DIR=/opt/mujoco-3.x.x
 colcon build --packages-select ur5e_mujoco_sim --symlink-install
+
 source install/setup.bash
 ```
+
+> install.sh를 사용하는 경우 `-Dmujoco_ROOT`가 자동으로 전달됩니다.
 
 MuJoCo가 설치되지 않은 경우 `mujoco_simulator_node`는 자동으로 빌드에서 제외됩니다.
 

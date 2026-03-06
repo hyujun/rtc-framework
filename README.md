@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/hyujun/ur5e-rt-controller/branch/master/graph/badge.svg)](https://codecov.io/gh/hyujun/ur5e-rt-controller)
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 
-**Ubuntu 22.04 + ROS2 Humble | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.2.0)**
+**Ubuntu 22.04 + ROS2 Humble | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.2.1)**
 
 E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종**, **MuJoCo 3.x 물리 시뮬레이터**, UDP 핸드 인터페이스, CSV 데이터 로깅, Qt GUI 모션 에디터를 포함한 완전한 실시간 제어 솔루션입니다.
 
@@ -13,6 +13,8 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 > **v5.1.0 (CPU 코어 할당 최적화)**: 실제 로봇 제어 시 RT 성능을 극대화하는 코어 배치 전략이 적용되었습니다. `udp_recv` Core 3→5 이동, 8코어 지원, UR 드라이버 CPU 고정, NIC IRQ 친화성, CycloneDDS 스레드 제한.
 >
 > **v5.2.0 (디지털 신호 필터)**: `ur5e_rt_base`에 RT-안전 헤더-전용 필터 라이브러리가 추가되었습니다. **4차 Bessel 저역통과 필터** (최대 선형 군지연, 위상 왜곡 없음)와 **이산-시간 Kalman 필터** (위치+속도 동시 추정, 미분 불필요)를 포함합니다.
+>
+> **v5.2.1 (빌드 버그픽스)**: MuJoCo binary tarball 설치 시 `lib/cmake/mujoco/` 부재로 cmake 탐지가 실패하던 문제 수정. `install.sh`는 `-Dmujoco_ROOT`를 전달하고, `CMakeLists.txt`는 `find_library` 폴백으로 `.so` 파일을 직접 탐지합니다.
 
 ---
 
@@ -1142,6 +1144,7 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 
 | 버전 | 주요 변경사항 |
 |------|---------------|
+| **v5.2.1** | MuJoCo binary tarball cmake 탐지 수정: `install.sh` `-Dmujoco_DIR`→`-Dmujoco_ROOT`, `CMakeLists.txt` `find_library` 폴백 추가 |
 | **v5.2.0** | `ur5e_rt_base/filters/` 추가: 4차 Bessel LPF (`BesselFilterN<N>`) + 이산-시간 Kalman 필터 (`KalmanFilterN<N>`) — 모두 noexcept, RT 안전 |
 | **v5.1.0** | CPU 코어 할당 최적화: udp_recv Core 3→5, 8코어 지원, UR 드라이버 taskset, CycloneDDS 스레드 제한, NIC IRQ affinity, install.sh 자동화 |
 | **v5.0.0** | 5개 독립 ROS2 패키지로 분리 (ur5e_rt_base, ur5e_rt_controller, ur5e_hand_udp, ur5e_mujoco_sim, ur5e_tools) |
@@ -1153,5 +1156,5 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 | v4.0.0 | E-STOP 시스템, 핸드/로봇 타임아웃 감시, 표준 ROS2 구조 |
 | v1.0.0 | 초기 릴리스, P/PD 제어기, 기본 ROS2 노드 |
 
-**최종 업데이트**: 2026-03-05
-**현재 버전**: v5.2.0
+**최종 업데이트**: 2026-03-06
+**현재 버전**: v5.2.1

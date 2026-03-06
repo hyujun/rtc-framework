@@ -23,12 +23,41 @@ find_package(sensor_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 
 # ── mujoco_simulator_node (optional — requires MuJoCo 3.x C++ library) ────────
-# Install MuJoCo:
+# Install MuJoCo (binary tarball — no cmake config included):
 #   wget https://github.com/google-deepmind/mujoco/releases/download/3.x.x/mujoco-3.x.x-linux-x86_64.tar.gz
 #   sudo tar -xzf mujoco-*.tar.gz -C /opt/
-#   cmake -Dmujoco_DIR=/opt/mujoco-3.x.x/lib/cmake/mujoco ...
+#   colcon build --cmake-args -Dmujoco_ROOT=/opt/mujoco-3.x.x
+#
+# Two-stage detection:
+#   1. find_package(mujoco) — succeeds only when built from source (cmake config present)
+#   2. find_library + find_path — works with binary tarball (.so only)
 find_package(mujoco QUIET)
 find_package(glfw3 QUIET)
+
+if(NOT mujoco_FOUND)
+  # Fallback for binary tarball layout: /opt/mujoco-X.Y.Z/{lib/libmujoco.so, include/mujoco/mujoco.h}
+  find_library(MUJOCO_LIBRARY
+    NAMES mujoco
+    HINTS "${mujoco_ROOT}" "$ENV{MUJOCO_DIR}"
+    PATH_SUFFIXES lib
+    NO_DEFAULT_PATH
+  )
+  find_path(MUJOCO_INCLUDE_DIR
+    NAMES mujoco/mujoco.h
+    HINTS "${mujoco_ROOT}" "$ENV{MUJOCO_DIR}"
+    PATH_SUFFIXES include
+    NO_DEFAULT_PATH
+  )
+  if(MUJOCO_LIBRARY AND MUJOCO_INCLUDE_DIR)
+    message(STATUS "MuJoCo found via find_library: ${MUJOCO_LIBRARY}")
+    add_library(mujoco::mujoco SHARED IMPORTED)
+    set_target_properties(mujoco::mujoco PROPERTIES
+      IMPORTED_LOCATION             "${MUJOCO_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "${MUJOCO_INCLUDE_DIR}"
+    )
+    set(mujoco_FOUND TRUE)
+  endif()
+endif()
 
 if(mujoco_FOUND)
   message(STATUS "MuJoCo found — building mujoco_simulator_node")
@@ -62,8 +91,9 @@ if(mujoco_FOUND)
 else()
   message(WARNING
     "MuJoCo not found — mujoco_simulator_node will NOT be built.\n"
-    "  Install MuJoCo 3.x and re-run cmake with:\n"
-    "    -Dmujoco_DIR=/opt/mujoco-3.x.x/lib/cmake/mujoco"
+    "  Install MuJoCo 3.x binary tarball under /opt/, then re-run colcon with:\n"
+    "    --cmake-args -Dmujoco_ROOT=/opt/mujoco-3.x.x\n"
+    "  Or set environment variable MUJOCO_DIR=/opt/mujoco-3.x.x"
   )
 endif()
 

@@ -5,6 +5,46 @@
 
 ---
 
+## [5.2.1] - 2026-03-06
+
+### 수정 (Fixed) — MuJoCo binary tarball cmake 탐지 실패
+
+MuJoCo 공식 binary tarball (linux-x86_64) 은 `lib/cmake/mujoco/` 디렉토리를 포함하지 않으며 `.so` 파일과 헤더만 제공합니다. 이로 인해 기존 빌드 스크립트에서 cmake 탐지가 실패하는 문제를 수정하였습니다.
+
+#### `install.sh`
+
+- `build_package()` 함수의 cmake 인자를 변경:
+  - **이전**: `-Dmujoco_DIR=${MJ_DIR}/lib/cmake/mujoco` (존재하지 않는 경로)
+  - **이후**: `-Dmujoco_ROOT=${MJ_DIR}` (설치 루트 디렉토리)
+
+#### `ur5e_mujoco_sim/CMakeLists.txt`
+
+2단계 MuJoCo 탐지 로직으로 교체:
+
+1. `find_package(mujoco QUIET)` — 소스 빌드 시 (`lib/cmake/mujoco/` 존재)에만 성공
+2. **신규 폴백**: `find_library` + `find_path` — binary tarball 구조 (`lib/libmujoco.so` + `include/mujoco/mujoco.h`)에서 동작
+   - 탐색 힌트: `-Dmujoco_ROOT=<경로>` cmake 변수 또는 `MUJOCO_DIR` 환경변수
+   - 탐지 성공 시 `mujoco::mujoco SHARED IMPORTED` target 수동 생성
+   - 이후 `target_link_libraries(mujoco_simulator_node mujoco::mujoco)` 로직 변경 없음
+
+#### 사용법 변경
+
+```bash
+# 이전 (실패)
+colcon build --cmake-args -Dmujoco_DIR=/opt/mujoco-3.x.x/lib/cmake/mujoco
+
+# 이후 (binary tarball 및 소스 빌드 모두 지원)
+colcon build --cmake-args -Dmujoco_ROOT=/opt/mujoco-3.x.x
+
+# 또는 환경변수
+export MUJOCO_DIR=/opt/mujoco-3.x.x
+colcon build
+```
+
+install.sh 사용 시 자동으로 `-Dmujoco_ROOT`가 전달되므로 별도 조치 불필요.
+
+---
+
 ## [5.2.0] - 2026-03-05
 
 ### 추가 (Added) — 디지털 신호 필터 라이브러리 (`ur5e_rt_base/filters/`)
