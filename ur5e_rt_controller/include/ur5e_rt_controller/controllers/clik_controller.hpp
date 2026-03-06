@@ -62,7 +62,7 @@ namespace ur5e_rt_controller {
 ///   // 2. Change controller_ member type to RTControllerInterface
 ///   // 3. Initialise:
 ///   //      controller_(std::make_unique<urtc::ClikController>(
-///   //          "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",
+///   //          "$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf",
 ///   //          urtc::ClikController::Gains{
 ///   //              .kp = 1.0, .damping = 0.01, .null_kp = 0.5}))
 ///   // 4. Remove the set_gains() call in DeclareAndLoadParameters()

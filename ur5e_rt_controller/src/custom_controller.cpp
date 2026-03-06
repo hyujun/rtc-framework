@@ -13,7 +13,7 @@
 // │    #include "ur5e_rt_controller/controllers/pinocchio_controller.hpp"  │
 // │                                                                         │
 // │    controller_(std::make_unique<urtc::PinocchioController>(            │
-// │        "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",          │
+// │        "$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf", │
 // │        urtc::PinocchioController::Gains{                               │
 // │            .kp = 5.0, .kd = 0.5,                                       │
 // │            .enable_gravity_compensation  = true,                        │
@@ -26,7 +26,7 @@
 // │    #include "ur5e_rt_controller/controllers/clik_controller.hpp"       │
 // │                                                                         │
 // │    controller_(std::make_unique<urtc::ClikController>(                 │
-// │        "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",          │
+// │        "$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf", │
 // │        urtc::ClikController::Gains{                                    │
 // │            .kp = 1.0, .damping = 0.01, .null_kp = 0.5}))              │
 // ├─────────────────────────────────────────────────────────────────────────┤
@@ -36,7 +36,7 @@
 // │              operational_space_controller.hpp"                          │
 // │                                                                         │
 // │    controller_(std::make_unique<urtc::OperationalSpaceController>(     │
-// │        "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",          │
+// │        "$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf", │
 // │        urtc::OperationalSpaceController::Gains{                        │
 // │            .kp_pos = 1.0, .kd_pos = 0.1,                               │
 // │            .kp_rot = 0.5, .kd_rot = 0.05, .damping = 0.01}))          │

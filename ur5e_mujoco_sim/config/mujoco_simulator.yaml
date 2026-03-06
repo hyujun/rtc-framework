@@ -11,7 +11,7 @@ mujoco_simulator:
     # ── Model ────────────────────────────────────────────────────────────────
     # Path to scene.xml.
     # Empty string → resolved automatically to:
-    #   <package_share>/models/ur5e/scene.xml
+    #   <ur5e_description_share>/robots/ur5e/mjcf/scene.xml
     # Absolute path → used as-is (e.g. for MuJoCo Menagerie model).
     model_path: ""
 

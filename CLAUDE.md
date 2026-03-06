@@ -485,7 +485,7 @@ controller_(std::make_unique<urtc::PDController>())
 
 // After (PinocchioController example):
 controller_(std::make_unique<urtc::PinocchioController>(
-    "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",
+    "$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf",
     urtc::PinocchioController::Gains{
         .kp = 5.0,
         .kd = 0.5,
@@ -494,12 +494,12 @@ controller_(std::make_unique<urtc::PinocchioController>(
 
 // After (ClikController example — target = [x, y, z, null_q3, null_q4, null_q5]):
 controller_(std::make_unique<urtc::ClikController>(
-    "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",
+    "$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf",
     urtc::ClikController::Gains{.kp = 1.0, .damping = 0.01, .null_kp = 0.5}))
 
 // After (OperationalSpaceController — target = [x, y, z, roll, pitch, yaw]):
 controller_(std::make_unique<urtc::OperationalSpaceController>(
-    "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",
+    "$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf",
     urtc::OperationalSpaceController::Gains{
         .kp_pos = 1.0, .kd_pos = 0.1, .kp_rot = 0.5, .kd_rot = 0.05}))
 ```

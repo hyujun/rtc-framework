@@ -110,9 +110,4 @@ install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
 )
 
-# MuJoCo model files (always installed, even without MuJoCo library)
-install(DIRECTORY models/
-  DESTINATION share/${PROJECT_NAME}/models
-)
-
 ament_package()

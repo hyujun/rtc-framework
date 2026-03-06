@@ -69,8 +69,7 @@ def generate_launch_description():
         'model_path',
         default_value='',
         description=(
-            'Absolute path to MuJoCo scene.xml. '
-            'Empty string → <package>/models/ur5e/scene.xml'
+            'Absolute path to MuJoCo scene.xml. Empty string → ur5e_description package scene.xml'
         ),
     )
 

@@ -112,10 +112,12 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
 
     // Resolve model path: if empty or relative, locate via ament index.
     if (model_path_.empty() || model_path_[0] != '/') {
+      // Default model is provided by ur5e_description package.
+      // Override with an absolute path via the model_path parameter if needed.
       const std::string share_dir =
-          ament_index_cpp::get_package_share_directory("ur5e_mujoco_sim");
+          ament_index_cpp::get_package_share_directory("ur5e_description");
       const std::string rel = model_path_.empty()
-                                  ? "models/ur5e/scene.xml"
+                                  ? "robots/ur5e/mjcf/scene.xml"
                                   : model_path_;
       model_path_ = share_dir + "/" + rel;
     }

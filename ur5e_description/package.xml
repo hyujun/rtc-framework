@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>ur5e_description</name>
+  <version>5.2.2</version>
+  <description>
+    Robot model description files for UR5e:
+    - MJCF models for MuJoCo simulation (robots/ur5e/mjcf/)
+    - URDF for Pinocchio / RViz / ros2_control (robots/ur5e/urdf/), generated at build time
+    - Mesh files from UR official ROS2 Description (robots/ur5e/meshes/)
+  </description>
+  <maintainer email="your.email@example.com">Your Name</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Required to locate ur.urdf.xacro at build time -->
+  <build_depend>ur_description</build_depend>
+  <build_depend>xacro</build_depend>
+
+  <!-- No runtime dependencies: this is a data-only package -->
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

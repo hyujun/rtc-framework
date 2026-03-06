@@ -18,6 +18,9 @@
   <depend>sensor_msgs</depend>
   <depend>ament_index_cpp</depend>
 
+  <!-- Robot model files (MJCF, URDF, meshes) -->
+  <exec_depend>ur5e_description</exec_depend>
+
   <!-- MuJoCo (optional C++ library — not a ROS2 package; install separately)
        https://github.com/google-deepmind/mujoco/releases -->
 

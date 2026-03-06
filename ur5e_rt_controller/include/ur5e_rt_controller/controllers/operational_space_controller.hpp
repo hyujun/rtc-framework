@@ -68,7 +68,7 @@ namespace ur5e_rt_controller {
 ///   // 2. Change controller_ member type to RTControllerInterface
 ///   // 3. Initialise:
 ///   //      controller_(std::make_unique<urtc::OperationalSpaceController>(
-///   //          "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",
+///   //          "$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf",
 ///   //          urtc::OperationalSpaceController::Gains{
 ///   //              .kp_pos = 1.0, .kd_pos = 0.1,
 ///   //              .kp_rot = 0.5, .kd_rot = 0.05,

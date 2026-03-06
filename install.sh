@@ -274,7 +274,7 @@ setup_package() {
   fi
 
   # Symlink packages from repo root into workspace src/
-  for pkg in ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_mujoco_sim ur5e_tools; do
+  for pkg in ur5e_rt_base ur5e_description ur5e_rt_controller ur5e_hand_udp ur5e_mujoco_sim ur5e_tools; do
     if [[ ! -e "$pkg" ]]; then
       ln -s "${REPO_NAME}/$pkg" "$pkg"
     fi
@@ -295,7 +295,7 @@ build_package() {
   fi
 
   # Build order: ur5e_rt_base first (header-only, no deps), then the rest
-  local PACKAGES=(ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_tools)
+  local PACKAGES=(ur5e_rt_base ur5e_description ur5e_rt_controller ur5e_hand_udp ur5e_tools)
   if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
     PACKAGES+=(ur5e_mujoco_sim)
   fi
@@ -364,7 +364,7 @@ verify_installation() {
   info "Verifying installation..."
   source "$WORKSPACE/install/setup.bash"
   local failed=0
-  for pkg in ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_tools; do
+  for pkg in ur5e_rt_base ur5e_description ur5e_rt_controller ur5e_hand_udp ur5e_tools; do
     if ros2 pkg list 2>/dev/null | grep -q "^${pkg}$"; then
       success "Package registered: $pkg"
     else

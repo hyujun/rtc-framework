@@ -55,7 +55,7 @@ namespace ur5e_rt_controller {
 ///
 ///   // 3. Update the constructor initialiser:
 ///   //    controller_(std::make_unique<urtc::PinocchioController>(
-///   //        "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",
+///   //        "$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf",
 ///   //        urtc::PinocchioController::Gains{
 ///   //            .kp = 5.0,
 ///   //            .kd = 0.5,
