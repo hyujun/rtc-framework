@@ -22,9 +22,8 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 
 def generate_launch_description():
-    # ── Log directory (colcon workspace log/) ──────────────────────────────────
-    log_dir = os.path.expanduser('~/ur_ws/log')
-    log_path = os.path.join(log_dir, 'ur5e_control_log.csv')
+    # ── Log directory (colcon workspace logging_data/) ─────────────────────────
+    log_dir = os.path.expanduser('~/ur_ws/logging_data')
 
     # ── Arguments ──────────────────────────────────────────────────────────────
     robot_ip_arg = DeclareLaunchArgument(
@@ -118,7 +117,7 @@ def generate_launch_description():
         executable='custom_controller',
         name='custom_controller',
         output='screen',
-        parameters=[ur_control_config, {'log_path': log_path}],
+        parameters=[ur_control_config, {'log_dir': log_dir}],
         emulate_tty=True,
     )
 

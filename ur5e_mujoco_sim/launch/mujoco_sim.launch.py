@@ -43,7 +43,7 @@ custom_controller 노드를 수정 없이 그대로 실행합니다.
 연산 시간 로그 분석 (sync_step 실행 후):
   python3 -c "
   import pandas as pd
-  df = pd.read_csv('~/ur_ws/log/ur5e_control_log.csv')
+  df = pd.read_csv('~/ur_ws/logging_data/ur5e_control_log_YYMMDD_HHMM.csv')
   print(df['compute_time_us'].describe())
   print(f'P95: {df[\"compute_time_us\"].quantile(0.95):.1f} us')
   print(f'P99: {df[\"compute_time_us\"].quantile(0.99):.1f} us')
@@ -61,9 +61,8 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    # ── Log directory (colcon workspace log/) ─────────────────────────────────
-    log_dir = os.path.expanduser('~/ur_ws/log')
-    log_path = os.path.join(log_dir, 'ur5e_control_log.csv')
+    # ── Log directory (colcon workspace logging_data/) ────────────────────────
+    log_dir = os.path.expanduser('~/ur_ws/logging_data')
 
     # ── Launch arguments ─────────────────────────────────────────────────────
     model_path_arg = DeclareLaunchArgument(
@@ -178,7 +177,7 @@ def generate_launch_description():
             {
                 'kp': LaunchConfiguration('kp'),
                 'kd': LaunchConfiguration('kd'),
-                'log_path': log_path,
+                'log_dir': log_dir,
             },
         ],
     )

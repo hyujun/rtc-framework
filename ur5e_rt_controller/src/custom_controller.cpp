@@ -61,11 +61,13 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <ctime>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace std::chrono_literals;
 namespace urtc = ur5e_rt_controller;
@@ -110,6 +112,40 @@ class CustomController : public rclcpp::Node {
   rclcpp::CallbackGroup::SharedPtr GetAuxGroup()    const { return cb_group_aux_; }
 
  private:
+  // ── Log file helpers ────────────────────────────────────────────────────────
+  // Returns "<log_dir>/ur5e_control_log_YYMMDD_HHMM.csv"
+  static std::string GenerateLogFilePath(const std::string & log_dir) {
+    const auto now    = std::chrono::system_clock::now();
+    const auto time_t = std::chrono::system_clock::to_time_t(now);
+    std::tm local_tm{};
+    localtime_r(&time_t, &local_tm);
+    char timestamp[16];
+    std::strftime(timestamp, sizeof(timestamp), "%y%m%d_%H%M", &local_tm);
+    return log_dir + "/ur5e_control_log_" + timestamp + ".csv";
+  }
+
+  // Removes oldest matching log files when count exceeds max_files.
+  // Files are matched by prefix "ur5e_control_log_" and ".csv" extension;
+  // alphabetical sort equals chronological order due to the timestamp format.
+  static void CleanupOldLogFiles(const std::filesystem::path & log_dir, int max_files) {
+    if (!std::filesystem::exists(log_dir)) { return; }
+    std::vector<std::filesystem::path> files;
+    for (const auto & entry : std::filesystem::directory_iterator(log_dir)) {
+      const auto & p = entry.path();
+      if (p.extension() == ".csv") {
+        const std::string stem = p.stem().string();
+        if (stem.rfind("ur5e_control_log_", 0) == 0) {
+          files.push_back(p);
+        }
+      }
+    }
+    std::sort(files.begin(), files.end());
+    while (static_cast<int>(files.size()) > max_files) {
+      std::filesystem::remove(files.front());
+      files.erase(files.begin());
+    }
+  }
+
   // ── CallbackGroup creation ──────────────────────────────────────────────────
   void CreateCallbackGroups() {
     cb_group_rt_ = create_callback_group(
@@ -126,9 +162,10 @@ class CustomController : public rclcpp::Node {
   void DeclareAndLoadParameters() {
     declare_parameter("control_rate",    500.0);
     declare_parameter("kp",              5.0);
-    declare_parameter("kd",              0.5);
+    declare_parameter("kd",             0.5);
     declare_parameter("enable_logging",  true);
-    declare_parameter("log_path",        "/tmp/ur5e_control_log.csv");
+    declare_parameter("log_dir",         "/tmp/ur5e_logging_data");
+    declare_parameter("max_log_files",   10);
     declare_parameter("robot_timeout_ms", 100.0);
     declare_parameter("hand_timeout_ms",  200.0);
     declare_parameter("enable_estop",    true);
@@ -138,9 +175,14 @@ class CustomController : public rclcpp::Node {
     enable_estop_   = get_parameter("enable_estop").as_bool();
 
     if (enable_logging_) {
-      const std::filesystem::path log_path{get_parameter("log_path").as_string()};
-      std::filesystem::create_directories(log_path.parent_path());
-      logger_ = std::make_unique<urtc::DataLogger>(log_path);
+      const std::string log_dir_str = get_parameter("log_dir").as_string();
+      const int max_log_files       = get_parameter("max_log_files").as_int();
+      const std::filesystem::path log_dir{log_dir_str};
+      std::filesystem::create_directories(log_dir);
+      const std::string log_file = GenerateLogFilePath(log_dir_str);
+      logger_ = std::make_unique<urtc::DataLogger>(log_file);
+      CleanupOldLogFiles(log_dir, max_log_files);
+      RCLCPP_INFO(get_logger(), "Logging to: %s (max_log_files=%d)", log_file.c_str(), max_log_files);
     }
 
     robot_timeout_ = std::chrono::milliseconds(
