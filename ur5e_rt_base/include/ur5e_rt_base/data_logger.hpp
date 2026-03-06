@@ -13,10 +13,18 @@ namespace ur5e_rt_controller {
 
 // Writes control data to a CSV file in a non-RT (logging) thread context.
 // Copy is disabled; move is enabled for deferred construction.
+//
+// All methods are defined inline to keep ur5e_rt_base header-only.
 class DataLogger {
  public:
-  explicit DataLogger(std::filesystem::path log_path);
-  ~DataLogger();
+  explicit DataLogger(std::filesystem::path log_path) {
+    file_.open(log_path);
+    if (file_.is_open()) {
+      WriteHeader();
+    }
+  }
+
+  ~DataLogger() { Flush(); }
 
   DataLogger(const DataLogger&)            = delete;
   DataLogger& operator=(const DataLogger&) = delete;
@@ -31,14 +39,25 @@ class DataLogger {
       std::span<const double, kNumRobotJoints> current_positions,
       std::span<const double, kNumRobotJoints> target_positions,
       std::span<const double, kNumRobotJoints> commands,
-      double compute_time_us = 0.0);
+      double compute_time_us = 0.0) {
+    if (!file_.is_open()) { return; }
+    file_ << timestamp;
+    for (const auto v : current_positions) { file_ << ',' << v; }
+    for (const auto v : target_positions)  { file_ << ',' << v; }
+    for (const auto v : commands)          { file_ << ',' << v; }
+    file_ << ',' << compute_time_us << '\n';
+    ++log_count_;
+  }
 
-  // Log hand state for a given timestamp.
-  void LogHandData(double timestamp,
-                   std::span<const double, kNumHandJoints> hand_positions);
+  // Log hand state for a given timestamp (not written to the control CSV).
+  void LogHandData(double /*timestamp*/,
+                   std::span<const double, kNumHandJoints> /*hand_positions*/) {
+    // Reserved for future hand logging support.
+  }
 
-  void Flush();
-  [[nodiscard]] bool IsOpen() const;
+  void Flush() { if (file_.is_open()) { file_.flush(); } }
+
+  [[nodiscard]] bool IsOpen() const { return file_.is_open(); }
 
   // Drains all pending entries from the ring buffer and writes them to the CSV.
   // Must be called exclusively from the log thread — never from the RT thread.
@@ -55,7 +74,13 @@ class DataLogger {
   std::ofstream file_;
   std::size_t   log_count_{0};
 
-  void WriteHeader();
+  void WriteHeader() {
+    file_ << "timestamp";
+    for (int i = 0; i < kNumRobotJoints; ++i) { file_ << ",current_pos_" << i; }
+    for (int i = 0; i < kNumRobotJoints; ++i) { file_ << ",target_pos_" << i; }
+    for (int i = 0; i < kNumRobotJoints; ++i) { file_ << ",command_" << i; }
+    file_ << ",compute_time_us\n";
+  }
 };
 
 }  // namespace ur5e_rt_controller

@@ -26,6 +26,7 @@ find_package(ur5e_rt_base REQUIRED)
 # ── custom_controller ──────────────────────────────────────────────────────────
 add_executable(custom_controller
   src/custom_controller.cpp
+  src/pd_controller.cpp
 )
 target_include_directories(custom_controller PRIVATE include)
 ament_target_dependencies(custom_controller

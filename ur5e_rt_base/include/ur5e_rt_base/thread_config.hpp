@@ -151,6 +151,14 @@ inline const ThreadConfig kLoggingConfig4Core{
     .name           = "logger"
 };
 
+inline const ThreadConfig kAuxConfig4Core{
+    .cpu_core       = 3,       // Shares Core 3 with logging (4-core: unavoidable)
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = 0,
+    .name           = "aux"
+};
+
 }  // namespace ur5e_rt_controller
 
 #endif  // UR5E_RT_BASE_THREAD_CONFIG_HPP_

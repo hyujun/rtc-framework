@@ -157,7 +157,7 @@ inline SystemThreadConfigs SelectThreadConfigs() noexcept {
             kLoggingConfig,   kAuxConfig};
   }
   return {kRtControlConfig4Core, kSensorConfig4Core, kUdpRecvConfig4Core,
-          kLoggingConfig4Core,   kLoggingConfig4Core};
+          kLoggingConfig4Core,   kAuxConfig4Core};
 }
 
 }  // namespace ur5e_rt_controller
