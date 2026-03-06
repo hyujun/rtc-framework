@@ -5,6 +5,44 @@
 
 ---
 
+## [5.2.2] - 2026-03-06
+
+### 수정 (Fixed) — MuJoCo `solver_niter` 타입 오류 (`ur5e_mujoco_sim`)
+
+#### 원인
+
+MuJoCo 3.x는 constraint island(연결된 충돌 컴포넌트)별로 병렬 솔버를 실행합니다.
+이에 따라 `mjData::solver_niter`의 타입이 `int`에서 **`int*`** (island별 반복 횟수 배열)로 변경되었습니다.
+
+기존 코드는 `int*`를 `int`에 직접 대입하여 컴파일 경고 또는 오류를 유발하고,
+단일 island 이외의 씬에서 잘못된 반복 횟수를 보고했습니다.
+
+#### 수정 (`ur5e_mujoco_sim/src/mujoco_sim_loop.cpp` — `ReadSolverStats()`)
+
+```cpp
+// 수정 전
+s.iter = data_->solver_niter;  // int* → int 직접 대입
+
+// 수정 후 — 모든 island에 대해 합산
+const int nisland = data_->nisland;
+for (int k = 0; k < nisland; ++k) {
+    s.iter += data_->solver_niter[k];
+}
+if (nisland > 0 && s.iter > 0) {
+    s.improvement = static_cast<double>(data_->solver[0].improvement);
+    s.gradient    = static_cast<double>(data_->solver[0].gradient);
+}
+```
+
+#### 영향
+
+- UR5e 단독 씬 (`nisland == 1`): 동작 결과 동일
+- 다중 물체 씬 / MuJoCo Menagerie 모델: island별 반복 횟수가 올바르게 합산됨
+- `solver[0]` 접근 전에 `nisland > 0` 가드 추가 → 빈 씬 크래시 방지
+- `GetSolverStats().iter`가 F4 오버레이와 `/sim/status` 토픽에 정확한 값 제공
+
+---
+
 ## [5.2.1] - 2026-03-06
 
 ### 수정 (Fixed) — MuJoCo binary tarball cmake 탐지 실패
