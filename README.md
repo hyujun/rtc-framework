@@ -3,12 +3,13 @@
 ![CI](https://github.com/hyujun/ur5e-rt-controller/actions/workflows/ros2-advanced-ci.yml/badge.svg)
 [![codecov](https://codecov.io/gh/hyujun/ur5e-rt-controller/branch/master/graph/badge.svg)](https://codecov.io/gh/hyujun/ur5e-rt-controller)
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
+![ROS2 Jazzy](https://img.shields.io/badge/ROS2-Jazzy-green)
 
 **Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.2.2)**
 
 E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종**, **MuJoCo 3.x 물리 시뮬레이터**, UDP 핸드 인터페이스, CSV 데이터 로깅, Qt GUI 모션 에디터를 포함한 완전한 실시간 제어 솔루션입니다.
 
-> **v5.0.0 (멀티-패키지 분리)**: 단일 패키지에서 **5개 독립 ROS2 패키지**로 리팩터링되었습니다. 각 패키지는 레포지토리 루트 직하에 위치하며 각자의 `README.md`와 `CHANGELOG.md`를 포함합니다.
+> **v5.0.0 (멀티-패키지 분리)**: 단일 패키지에서 **6개 독립 ROS2 패키지**로 리팩터링되었습니다. 각 패키지는 레포지토리 루트 직하에 위치하며 각자의 `README.md`와 `CHANGELOG.md`를 포함합니다.
 >
 > **v5.1.0 (CPU 코어 할당 최적화)**: 실제 로봇 제어 시 RT 성능을 극대화하는 코어 배치 전략이 적용되었습니다. `udp_recv` Core 3→5 이동, 8코어 지원, UR 드라이버 CPU 고정, NIC IRQ 친화성, CycloneDDS 스레드 제한.
 >
@@ -16,7 +17,7 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 >
 > **v5.2.1 (빌드 버그픽스)**: MuJoCo binary tarball 설치 시 `lib/cmake/mujoco/` 부재로 cmake 탐지가 실패하던 문제 수정. `install.sh`는 `-Dmujoco_ROOT`를 전달하고, `CMakeLists.txt`는 `find_library` 폴백으로 `.so` 파일을 직접 탐지합니다.
 >
-> **v5.2.2 (MuJoCo solver_niter 버그픽스)**: `ReadSolverStats()`에서 `data_->solver_niter`(`int*`)를 `int`에 직접 대입하던 타입 오류 수정. MuJoCo 3.x island별 반복 횟수를 `data_->nisland` 만큼 합산하도록 변경.
+> **v5.2.2 (ROS 2 Jazzy 마이그레이션 + 다중 개선)**: `ur5e_description` 패키지 신규 추가 (MJCF/URDF/메시 통합 관리), 로깅 경로 동적 해석 (`~/ros2_ws/ur5e_ws/logging_data`), `build.sh` 빌드 스크립트 추가, `ros-jazzy-rmw-cyclonedds-cpp` 의존성 추가, `mujoco_simulator_node.cpp` → 3개 파일 분리(`mujoco_sim_loop.cpp`, `mujoco_viewer.cpp`), `solver_niter`(`int*`) island별 합산 수정.
 
 ---
 
@@ -63,12 +64,13 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 
 ## 프로젝트 구조
 
-v5.0.0부터 **5개 독립 ROS2 패키지**로 분리되어 레포지토리 루트 직하에 위치합니다.
+v5.0.0부터 **6개 독립 ROS2 패키지**로 분리되어 레포지토리 루트 직하에 위치합니다.
 
 ```
 ur5e-rt-controller/
 ├── README.md                              # 이 문서
 ├── install.sh                             # 자동 설치 스크립트 (IRQ affinity 포함)
+├── build.sh                               # 빌드 스크립트 (sim/robot/full 모드 선택)
 ├── requirements.txt                       # Python 의존성 목록
 │
 ├── docs/
@@ -77,13 +79,19 @@ ur5e-rt-controller/
 │   ├── CORE_ALLOCATION_PLAN.md           # CPU 코어 할당 최적화 계획서
 │   └── PLAN.md                           # 프로젝트 계획 문서
 │
+├── ur5e_description/                      # 📦 로봇 모델 description (신규 v5.2.2)
+│   └── robots/ur5e/
+│       ├── mjcf/                         # MuJoCo MJCF 모델 (scene.xml, ur5e.xml)
+│       ├── urdf/                         # Pinocchio용 URDF (xacro 자동 생성)
+│       └── meshes/                       # UR 공식 메시 (visual DAE + collision STL)
+│
 ├── ur5e_rt_base/                          # 📦 공유 기반 (헤더-전용)
 │   ├── include/ur5e_rt_base/
 │   │   ├── types.hpp                     # 공유 타입: RobotState, HandState, ControllerState...
 │   │   ├── thread_config.hpp             # ThreadConfig + 4/6/8코어 사전 정의 RT 상수
 │   │   ├── thread_utils.hpp              # ApplyThreadConfig(), SelectThreadConfigs()
 │   │   ├── log_buffer.hpp                # SPSC 링 버퍼 (RT→로그, 잠금-없음)
-│   │   ├── data_logger.hpp               # 비-RT CSV 로거
+│   │   ├── data_logger.hpp               # 비-RT CSV 로거 (동적 경로 해석)
 │   │   └── filters/
 │   │       ├── bessel_filter.hpp         # 4차 Bessel LPF — N채널, noexcept, 선형 위상
 │   │       └── kalman_filter.hpp         # 이산-시간 Kalman 필터 — 위치+속도 추정, noexcept
@@ -100,7 +108,7 @@ ur5e-rt-controller/
 │   │       └── operational_space_controller.hpp
 │   ├── src/custom_controller.cpp         # 메인 500Hz 노드
 │   ├── config/
-│   │   ├── ur5e_rt_controller.yaml
+│   │   ├── ur5e_rt_controller.yaml       # 로깅 경로: ~/ros2_ws/ur5e_ws/logging_data
 │   │   └── cyclone_dds.xml               # CycloneDDS 스레드 Core 0-1 제한 설정
 │   ├── scripts/
 │   │   └── setup_irq_affinity.sh         # NIC IRQ → Core 0-1 고정 스크립트
@@ -108,18 +116,26 @@ ur5e-rt-controller/
 │
 ├── ur5e_hand_udp/                         # 📦 UDP 손 브리지
 ├── ur5e_mujoco_sim/                       # 📦 MuJoCo 3.x 시뮬레이터 (선택적)
+│   ├── src/
+│   │   ├── mujoco_simulator.cpp          # 생명주기 및 I/O
+│   │   ├── mujoco_sim_loop.cpp           # 물리 루프 (FreeRun/SyncStep)
+│   │   ├── mujoco_viewer.cpp             # GLFW 뷰어 루프 (~60Hz)
+│   │   └── mujoco_simulator_node.cpp     # ROS2 노드 래퍼
+│   └── ...
 └── ur5e_tools/                            # 📦 Python 개발 유틸리티
 ```
 
 ### 패키지 의존성 그래프
 
 ```
+ur5e_description   ← 독립 (모델 파일 제공)
+
 ur5e_rt_base       ← 독립 (공유 기반, 헤더-전용)
     ↑
-    ├── ur5e_rt_controller  ← ur5e_rt_base
+    ├── ur5e_rt_controller  ← ur5e_rt_base, ur5e_description
     └── ur5e_hand_udp       ← ur5e_rt_base
 
-ur5e_mujoco_sim    ← 독립 (MuJoCo/GLFW/stdlib만 사용)
+ur5e_mujoco_sim    ← ur5e_description (런타임 모델 참조)
 ur5e_tools         ← 독립 (Python 전용, rclpy)
 ```
 
@@ -381,21 +397,21 @@ q_cmd       = q + clamp(J^# * task_vel, ±v_max) * dt
 // 2. controller_ 멤버 타입 변경 (≈line 340)
 std::unique_ptr<urtc::RTControllerInterface> controller_;
 
-// 3. 생성자 초기화
+// 3. 생성자 초기화 (ur5e_description 패키지 사용 — v5.2.2+)
 // PinocchioController:
 controller_(std::make_unique<urtc::PinocchioController>(
-    "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",
+    "$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf",
     urtc::PinocchioController::Gains{.kp = 5.0, .kd = 0.5,
                                       .enable_gravity_compensation = true}))
 
 // ClikController:
 controller_(std::make_unique<urtc::ClikController>(
-    "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",
+    "$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf",
     urtc::ClikController::Gains{.kp = 1.0, .damping = 0.01, .null_kp = 0.5}))
 
 // OperationalSpaceController:
 controller_(std::make_unique<urtc::OperationalSpaceController>(
-    "/opt/ros/humble/share/ur_description/urdf/ur5e.urdf",
+    "$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf",
     urtc::OperationalSpaceController::Gains{
         .kp_pos = 1.0, .kd_pos = 0.1,
         .kp_rot = 0.5, .kd_rot = 0.05, .damping = 0.01}))
@@ -515,8 +531,9 @@ sudo reboot
 uname -v  # "lowlatency" 또는 "PREEMPT_RT" 확인
 ```
 
-### 2. ROS2 Humble 설치
+### 2. ROS2 설치
 
+**Ubuntu 22.04 (ROS 2 Humble):**
 ```bash
 sudo apt install software-properties-common
 sudo add-apt-repository universe
@@ -529,6 +546,13 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-a
 sudo apt update
 sudo apt install ros-humble-desktop
 source /opt/ros/humble/setup.bash
+```
+
+**Ubuntu 24.04 (ROS 2 Jazzy):**
+```bash
+# 위와 동일 절차로 설치 (CODENAME=noble)
+sudo apt install ros-jazzy-desktop
+source /opt/ros/jazzy/setup.bash
 ```
 
 ### 3. 자동 설치 (권장)
@@ -557,15 +581,33 @@ chmod +x install.sh
 | Pinocchio | ✔ | ✔ | ✔ |
 | MuJoCo 3.x | ✔ | — | ✔ |
 | UR 로봇 드라이버 | — | ✔ | ✔ |
+| rmw_cyclonedds_cpp | ✔ | ✔ | ✔ |
 | RT 권한 설정 | — | ✔ | ✔ |
 | NIC IRQ affinity | — | ✔ | ✔ |
 
 `sim` 모드는 MuJoCo 3.x를 GitHub에서 자동 다운로드하여 `/opt/`에 설치합니다.
 
-### 4. 수동 설치
+### 4. 빌드 스크립트 (권장)
+
+`install.sh` 이후 `build.sh`로 패키지를 빌드합니다:
 
 ```bash
-# C++ 의존성
+chmod +x build.sh
+
+# 시뮬레이션 패키지만 빌드
+./build.sh sim
+
+# 실제 로봇 빌드 (ur5e_mujoco_sim 제외)
+./build.sh robot
+
+# 전체 빌드
+./build.sh full
+```
+
+### 5. 수동 설치
+
+```bash
+# C++ 의존성 (ROS 2 Humble)
 sudo apt install -y \
     ros-humble-ur-robot-driver \
     ros-humble-ur-msgs \
@@ -573,12 +615,22 @@ sudo apt install -y \
     ros-humble-control-msgs \
     ros-humble-industrial-msgs \
     ros-humble-ament-cmake \
+    ros-humble-rmw-cyclonedds-cpp \
+    python3-colcon-common-extensions
+
+# C++ 의존성 (ROS 2 Jazzy)
+sudo apt install -y \
+    ros-jazzy-ur-robot-driver \
+    ros-jazzy-ur-msgs \
+    ros-jazzy-ur-description \
+    ros-jazzy-control-msgs \
+    ros-jazzy-industrial-msgs \
+    ros-jazzy-ament-cmake \
+    ros-jazzy-rmw-cyclonedds-cpp \
     python3-colcon-common-extensions
 
 # Pinocchio (v4.3.0+ 필수)
-sudo apt install -y ros-humble-pinocchio
-# 또는 robotpkg 버전
-# sudo apt install -y robotpkg-py310-pinocchio
+sudo apt install -y ros-${ROS_DISTRO}-pinocchio
 
 # Python 의존성
 pip3 install --user -r requirements.txt
@@ -588,10 +640,10 @@ sudo groupadd realtime
 sudo usermod -aG realtime $USER
 echo "@realtime - rtprio 99" | sudo tee -a /etc/security/limits.conf
 echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
-# 로그아웃 후 재로그인 필수!
+# 로그아웃 후 재로그인 필수! (또는 재부팅)
 ```
 
-### 5. 빌드
+### 6. 빌드
 
 ```bash
 mkdir -p ~/ur_ws/src
@@ -599,12 +651,12 @@ cd ~/ur_ws/src
 git clone https://github.com/hyujun/ur5e-rt-controller.git
 
 # 패키지를 워크스페이스 src/에 심링크 (루트 직하에 있음)
-for pkg in ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_tools; do
+for pkg in ur5e_description ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_tools; do
   ln -s ur5e-rt-controller/$pkg $pkg
 done
 
 cd ~/ur_ws
-colcon build --packages-select ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_tools --symlink-install
+colcon build --packages-select ur5e_description ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_tools --symlink-install
 source install/setup.bash
 
 # 환경변수 영구 추가
@@ -704,41 +756,48 @@ ros2 run ur5e_tools hand_udp_sender_example.py
 ### `config/ur5e_rt_controller.yaml`
 
 ```yaml
-controller:
-  control_rate: 500.0        # 제어 주파수 (Hz)
-  kp: 5.0                    # P 게인
-  kd: 0.5                    # D 게인
-  enable_logging: true        # CSV 로깅 활성화
-  log_path: "/tmp/ur5e_control_log.csv"
+# ur5e_rt_controller.yaml (v5.2.2)
+/**:
+  ros__parameters:
+    # Controller Parameters
+    control_rate: 500.0          # Hz
+    kp: 5.0                      # Proportional gain
+    kd: 0.5                      # Derivative gain
+    enable_logging: true         # Enable CSV logging
+    log_dir: "~/ros2_ws/ur5e_ws/logging_data"  # launch 파일이 절대경로로 확장
+    max_log_files: 10            # 최근 N개 로그 파일만 보관
 
-joint_limits:
-  max_velocity: 2.0          # rad/s
-  max_acceleration: 5.0      # rad/s^2
-  position_limits:
-    joint_0: [-6.28, 6.28]   # Base
-    joint_1: [-6.28, 6.28]   # Shoulder
-    joint_2: [-3.14, 3.14]   # Elbow
-    joint_3: [-6.28, 6.28]   # Wrist 1
-    joint_4: [-6.28, 6.28]   # Wrist 2
-    joint_5: [-6.28, 6.28]   # Wrist 3
+    # Joint Limits
+    joint_limits:
+      max_velocity: 2.0            # rad/s
+      max_acceleration: 5.0        # rad/s^2
+      position_limits:
+        joint_0: [-6.28, 6.28]     # Base
+        joint_1: [-6.28, 6.28]     # Shoulder
+        joint_2: [-3.14, 3.14]     # Elbow
+        joint_3: [-6.28, 6.28]     # Wrist 1
+        joint_4: [-6.28, 6.28]     # Wrist 2
+        joint_5: [-6.28, 6.28]     # Wrist 3
 
-estop:
-  enable_estop: true
-  robot_timeout_ms: 100.0    # 로봇 데이터 100ms 미수신 시 E-STOP
-  hand_timeout_ms: 200.0     # 핸드 데이터 200ms 미수신 시 핸드 E-STOP
-  safe_position:             # E-STOP 복구 안전 위치 (rad)
-    - 0.0   # Base
-    - -1.57 # Shoulder
-    - 1.57  # Elbow
-    - -1.57 # Wrist 1
-    - -1.57 # Wrist 2
-    - 0.0   # Wrist 3
+    # E-STOP Configuration
+    estop:
+      enable_estop: true           # E-STOP 모니터링 활성화
+      robot_timeout_ms: 100.0      # 로봇 데이터 100ms 미수신 시 E-STOP
+      hand_timeout_ms: 200.0       # 핸드 데이터 200ms 미수신 시 E-STOP
+      safe_position:               # E-STOP 복구 안전 위치 (rad)
+        - 0.0                      # Base
+        - -1.57                    # Shoulder
+        - 1.57                     # Elbow
+        - -1.57                    # Wrist 1
+        - -1.57                    # Wrist 2
+        - 0.0                      # Wrist 3
 
-logging:
-  enable_logging: true
-  log_frequency: 100.0       # Hz (제어율에서 서브샘플링)
-  max_log_size_mb: 100
-  log_directory: "/tmp/ur5e_logs"
+    # Logging Parameters
+    logging:
+      enable_logging: true
+      log_frequency: 100.0         # Hz (제어율에서 서브샘플링)
+      max_log_size_mb: 100
+      log_directory: "~/ros2_ws/ur5e_ws/logging_data"
 ```
 
 ### `ur5e_hand_udp/config/hand_udp_receiver.yaml`
@@ -846,7 +905,7 @@ sock.sendto(packet, target)
 | GUI 업데이트 | 100Hz (Qt 타이머 10ms) |
 | 로봇 E-STOP 타임아웃 | 100ms |
 | 핸드 E-STOP 타임아웃 | 200ms |
-| CSV 로그 경로 | `/tmp/ur5e_control_log.csv` |
+| CSV 로그 경로 | `~/ros2_ws/ur5e_ws/logging_data/` (동적 해석) |
 | 통계 저장 경로 | `/tmp/ur5e_stats/` |
 
 **v4.2.0+ RT 최적화**:
@@ -1145,11 +1204,11 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 
 | 버전 | 주요 변경사항 |
 |------|---------------|
-| **v5.2.2** | `ur5e_mujoco_sim` `ReadSolverStats()` 수정: `solver_niter`(`int*`)를 island별 합산으로 올바르게 처리, `nisland > 0` 가드 추가 |
+| **v5.2.2** | `ur5e_description` 패키지 신규 추가 (MJCF/URDF/메시 통합), 로깅 경로 동적 해석, `build.sh` 추가, `rmw_cyclonedds_cpp` 의존성, 소스 파일 분리(`mujoco_sim_loop.cpp`, `mujoco_viewer.cpp`), `solver_niter` island 합산 수정, ROS 2 Jazzy 지원 |
 | **v5.2.1** | MuJoCo binary tarball cmake 탐지 수정: `install.sh` `-Dmujoco_DIR`→`-Dmujoco_ROOT`, `CMakeLists.txt` `find_library` 폴백 추가 |
 | **v5.2.0** | `ur5e_rt_base/filters/` 추가: 4차 Bessel LPF (`BesselFilterN<N>`) + 이산-시간 Kalman 필터 (`KalmanFilterN<N>`) — 모두 noexcept, RT 안전 |
 | **v5.1.0** | CPU 코어 할당 최적화: udp_recv Core 3→5, 8코어 지원, UR 드라이버 taskset, CycloneDDS 스레드 제한, NIC IRQ affinity, install.sh 자동화 |
-| **v5.0.0** | 5개 독립 ROS2 패키지로 분리 (ur5e_rt_base, ur5e_rt_controller, ur5e_hand_udp, ur5e_mujoco_sim, ur5e_tools) |
+| **v5.0.0** | 6개 독립 ROS2 패키지로 분리 (ur5e_description, ur5e_rt_base, ur5e_rt_controller, ur5e_hand_udp, ur5e_mujoco_sim, ur5e_tools) |
 | v4.5.0 | 인터랙티브 MuJoCo 뷰어 (마우스/키보드), Physics solver 런타임 제어, 중력/접촉 토글, 물체 힘 인가, F1/F4 오버레이, install.sh sim/robot/full 모드 분리 |
 | v4.4.0 | MuJoCo 3.x 시뮬레이터 통합 (FreeRun/SyncStep), GLFW 뷰어, RTF 측정, ControllerTimingProfiler, /sim/status 토픽 |
 | v4.3.0 | Pinocchio 모델 기반 제어기 3종 추가 (PinocchioController, ClikController, OperationalSpaceController) |
@@ -1158,5 +1217,5 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 | v4.0.0 | E-STOP 시스템, 핸드/로봇 타임아웃 감시, 표준 ROS2 구조 |
 | v1.0.0 | 초기 릴리스, P/PD 제어기, 기본 ROS2 노드 |
 
-**최종 업데이트**: 2026-03-06
+**최종 업데이트**: 2026-03-07
 **현재 버전**: v5.2.2
