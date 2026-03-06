@@ -85,7 +85,7 @@ error()   { echo -e "${RED}✘ $*${NC}"; exit 1; }
 # ── Common: ROS2 + Ubuntu check ────────────────────────────────────────────────
 check_prerequisites() {
   if ! command -v ros2 &>/dev/null; then
-    error "ROS2 not found. Install ROS2 Humble first: https://docs.ros.org/en/humble/Installation.html"
+    error "ROS2 not found. Install ROS2 Humble or Jazzy first: https://docs.ros.org/en/jazzy/Installation.html"
   fi
 
   # Detect ROS2 distro via three-tier fallback:
@@ -102,9 +102,21 @@ check_prerequisites() {
 
   success "ROS2 detected: ${ROS_DISTRO_DETECTED}"
 
+  # ── Distro-aware package prefix ─────────────────────────────────────────────
+  # ros-humble-* or ros-jazzy-* selected automatically based on detected distro.
+  ROS_PKG_PREFIX="ros-${ROS_DISTRO_DETECTED}"
+  PYTHON_ROBOTPKG_SUFFIX="py310"   # Humble / Python 3.10 default
+  if [[ "$ROS_DISTRO_DETECTED" == "jazzy" ]]; then
+    PYTHON_ROBOTPKG_SUFFIX="py312"  # Jazzy / Python 3.12
+  fi
+
   UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "unknown")
-  if [[ "$UBUNTU_VERSION" != "22.04" ]]; then
-    warn "Non-standard Ubuntu (${UBUNTU_VERSION}). Recommended: 22.04. Continuing..."
+  local SUPPORTED_UBUNTU=("22.04" "24.04")
+  if [[ ! " ${SUPPORTED_UBUNTU[*]} " =~ " ${UBUNTU_VERSION} " ]]; then
+    warn "Unsupported Ubuntu (${UBUNTU_VERSION}). Supported: 22.04 (Humble), 24.04 (Jazzy). Continuing..."
+  fi
+  if [[ "$ROS_DISTRO_DETECTED" != "humble" && "$ROS_DISTRO_DETECTED" != "jazzy" ]]; then
+    warn "Unsupported ROS2 distro: ${ROS_DISTRO_DETECTED}. Supported: humble, jazzy. Continuing..."
   fi
 }
 
@@ -130,11 +142,11 @@ setup_workspace() {
   info "Setting up workspace: $WORKSPACE"
   mkdir -p "$WORKSPACE/src"
 
-  info "Installing ROS2 build tools..."
+  info "Installing ROS2 build tools (${ROS_PKG_PREFIX})..."
   sudo apt-get update -qq
   sudo apt-get install -y \
-      ros-humble-ament-cmake \
-      ros-humble-ament-cmake-gtest \
+      ${ROS_PKG_PREFIX}-ament-cmake \
+      ${ROS_PKG_PREFIX}-ament-cmake-gtest \
       python3-colcon-common-extensions \
       python3-vcstool \
       > /dev/null
@@ -143,31 +155,31 @@ setup_workspace() {
 
 # ── UR Robot Driver (robot + full) ─────────────────────────────────────────────
 install_ur_driver() {
-  info "Installing UR robot driver and dependencies..."
+  info "Installing UR robot driver and dependencies (${ROS_PKG_PREFIX})..."
   sudo apt-get install -y \
-      ros-humble-ur-robot-driver \
-      ros-humble-ur-msgs \
-      ros-humble-ur-description \
-      ros-humble-control-msgs \
-      ros-humble-industrial-msgs \
+      ${ROS_PKG_PREFIX}-ur-robot-driver \
+      ${ROS_PKG_PREFIX}-ur-msgs \
+      ${ROS_PKG_PREFIX}-ur-description \
+      ${ROS_PKG_PREFIX}-control-msgs \
+      ${ROS_PKG_PREFIX}-industrial-msgs \
       > /dev/null
   success "UR robot driver installed"
 }
 
 # ── Pinocchio (all modes — needed by PinocchioController / ClikController) ────
 install_pinocchio() {
-  info "Installing Pinocchio (model-based controllers)..."
-  if sudo apt-get install -y ros-humble-pinocchio >/dev/null 2>&1; then
-    success "Pinocchio installed via ros-humble-pinocchio"
+  info "Installing Pinocchio (model-based controllers, ${ROS_PKG_PREFIX})..."
+  if sudo apt-get install -y ${ROS_PKG_PREFIX}-pinocchio >/dev/null 2>&1; then
+    success "Pinocchio installed via ${ROS_PKG_PREFIX}-pinocchio"
   else
-    warn "ros-humble-pinocchio not found, trying robotpkg..."
+    warn "${ROS_PKG_PREFIX}-pinocchio not found, trying robotpkg..."
     sudo sh -c "echo 'deb [arch=amd64] http://robotpkg.openrobots.org/packages/debian/pub $(lsb_release -sc) robotpkg' \
         > /etc/apt/sources.list.d/robotpkg.list"
     curl -fsSL http://robotpkg.openrobots.org/packages/debian/robotpkg.key \
         | sudo apt-key add - 2>/dev/null || true
     sudo apt-get update -qq
-    if sudo apt-get install -y robotpkg-py310-pinocchio >/dev/null 2>&1; then
-      success "Pinocchio installed via robotpkg"
+    if sudo apt-get install -y robotpkg-${PYTHON_ROBOTPKG_SUFFIX}-pinocchio >/dev/null 2>&1; then
+      success "Pinocchio installed via robotpkg (${PYTHON_ROBOTPKG_SUFFIX})"
       grep -q "openrobots" ~/.bashrc || {
         echo "export PATH=/opt/openrobots/bin:\$PATH" >> ~/.bashrc
         echo "export PKG_CONFIG_PATH=/opt/openrobots/lib/pkgconfig:\$PKG_CONFIG_PATH" >> ~/.bashrc
@@ -227,16 +239,16 @@ install_mujoco() {
 
 # ── Python dependencies ─────────────────────────────────────────────────────────
 install_python_deps() {
-  info "Installing Python dependencies..."
-  local REQ_FILE
-  REQ_FILE="$(dirname "$0")/requirements.txt"
-  if [[ -f "$REQ_FILE" ]]; then
-    pip3 install --user -q -r "$REQ_FILE"
-    success "Python dependencies installed from requirements.txt"
-  else
-    pip3 install --user -q matplotlib pandas numpy scipy
-    success "Python dependencies installed (defaults)"
-  fi
+  info "Installing Python dependencies (via apt)..."
+  sudo apt-get update -qq
+  sudo apt-get install -y \
+      python3-matplotlib \
+      python3-pandas \
+      python3-numpy \
+      python3-scipy \
+      python3-pyqt5 \
+      > /dev/null
+  success "Python dependencies installed via apt"
 }
 
 # ── Clone / update package ─────────────────────────────────────────────────────
