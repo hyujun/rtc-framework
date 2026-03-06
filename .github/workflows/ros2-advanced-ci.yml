@@ -154,9 +154,7 @@ jobs:
         sudo apt install -y \
           ros-humble-pinocchio \
           ros-humble-ur-robot-driver \
-          ros-humble-realtime-tools \
-          google-perftools \
-          libgoogle-perftools-dev
+          ros-humble-realtime-tools
     
     - name: Build Release
       run: |
