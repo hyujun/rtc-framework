@@ -5,12 +5,30 @@
 
 ---
 
-## [5.2.2] - 2026-03-06
+## [5.2.2] - 2026-03-07
 
-### 변경
+### 추가 (Added) — 소스 파일 분리 (관심사 분리)
 
-- 워크스페이스 내 모든 패키지 버전을 `5.2.2`로 통일
-- ROS 2 Jazzy 지원 대응 및 문서 갱신
+단일 `mujoco_simulator_node.cpp`에서 역할별 4개 파일로 분리:
+
+| 파일 | 역할 |
+|------|------|
+| `mujoco_simulator.cpp` | 생명주기 (`ctor/dtor`, `Initialize`, `Start`, `Stop`), I/O |
+| `mujoco_sim_loop.cpp` | `SimLoopFreeRun` / `SimLoopSyncStep` + 물리 헬퍼 함수 |
+| `mujoco_viewer.cpp` | `ViewerLoop`: GLFW 렌더링, 키보드/마우스, 오버레이 |
+| `mujoco_simulator_node.cpp` | ROS2 노드 래퍼만 (`MuJoCoSimulatorNode`) |
+
+### 변경 (Changed) — 기본 MJCF 모델 경로
+
+- **이전**: `get_package_share_directory("ur5e_mujoco_sim") + "/models/ur5e/scene.xml"`
+- **이후**: `get_package_share_directory("ur5e_description") + "/robots/ur5e/mjcf/scene.xml"`
+- 모델 파일이 `ur5e_description` 패키지로 이동 (단일 소스 관리)
+- 빌드 전 `ur5e_description` 패키지 선행 빌드 필요
+
+### 수정 (Fixed) — `solver_niter` `int*` 타입 오류
+
+- `ReadSolverStats()`에서 `data_->nisland`만큼 반복하여 `solver_niter[k]` 합산
+- `nisland > 0` 가드 추가 (빈 씬 크래시 방지)
 
 
 ## [1.0.1] - 2026-03-06

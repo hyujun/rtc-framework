@@ -5,12 +5,13 @@
 
 ---
 
-## [5.2.2] - 2026-03-06
+## [5.2.2] - 2026-03-07
 
 ### 변경
 
 - 워크스페이스 내 모든 패키지 버전을 `5.2.2`로 통일
 - ROS 2 Jazzy 지원 대응 및 문서 갱신
+- 빌드 커맨드는 `ur5e_rt_base`를 선행 빌드 후 실행: `colcon build --packages-select ur5e_rt_base ur5e_hand_udp --symlink-install`
 
 ## [1.0.0] - 2026-03-04
 

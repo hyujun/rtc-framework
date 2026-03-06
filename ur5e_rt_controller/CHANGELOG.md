@@ -5,12 +5,22 @@
 
 ---
 
-## [5.2.2] - 2026-03-06
+## [5.2.2] - 2026-03-07
 
-### 변경
+### 추가 (Added) — ROS 2 Jazzy 파라미터 파싱 호환성
 
-- 워크스페이스 내 모든 패키지 버전을 `5.2.2`로 통일
-- ROS 2 Jazzy 지원 대응 및 문서 갱신
+- `config/ur5e_rt_controller.yaml`: `/**:` + `ros__parameters:` 플랫 구조로 변경
+  - ROS 2 Jazzy에서 중첩 YAML 네임스페이스 파싱 오류 해결
+  - `enable_logging`, `log_dir`, `max_log_files` 파라미터 추가
+  - `log_dir: "~/ros2_ws/ur5e_ws/logging_data"` (launch 파일에서 절대경로로 확장)
+  - `max_log_files: 10` (오래된 파일 자동 삭제)
+
+### 변경 (Changed) — Pinocchio 제어기 URDF 경로
+
+- `ur_description` 패키지 경로 → `ur5e_description` 패키지 경로
+  - **이전**: `/opt/ros/humble/share/ur_description/urdf/ur5e.urdf`
+  - **이후**: `$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf`
+- `package.xml`: `<depend>ur5e_description</depend>` 추가
 
 
 ## [5.1.0] - 2026-03-05

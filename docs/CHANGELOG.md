@@ -5,7 +5,66 @@
 
 ---
 
-## [5.2.2] - 2026-03-06
+## [5.2.2] - 2026-03-07
+
+### 추가 (Added) — `ur5e_description` 신규 패키지
+
+MJCF, URDF, 메시 파일을 한 곳에서 관리하는 `ur5e_description` 패키지를 신규 추가했습니다.
+`ur5e_mujoco_sim`과 Pinocchio 기반 제어기가 이 단일 소스에서 모델을 참조합니다.
+
+```
+ur5e_description/robots/ur5e/
+├── mjcf/scene.xml        # MuJoCo 씬 (지면 + ur5e.xml)
+├── mjcf/ur5e.xml         # UR5e MJCF 모델
+├── urdf/ur5e.urdf        # xacro로 빌드 시 자동 생성
+└── meshes/
+    ├── visual/*.dae      # UR 공식 고해상도 시각화 메시
+    └── collision/*.stl   # 충돌 감지용 단순화 메시
+```
+
+- `ur5e_mujoco_sim` 기본 모델 경로 변경: `ur5e_description` 패키지 경유
+  - `model_path_` 해석: `ament_index_cpp::get_package_share_directory("ur5e_description") + "/robots/ur5e/mjcf/scene.xml"`
+- Pinocchio 제어기 URDF 경로: `$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf`
+- **빌드 전 필수**: `sudo apt install ros-${ROS_DISTRO}-ur-description ros-${ROS_DISTRO}-xacro`
+
+### 추가 (Added) — `build.sh` 빌드 스크립트
+
+```bash
+./build.sh sim    # ur5e_description + 기본 패키지 + ur5e_mujoco_sim (MuJoCo_ROOT 자동 탐지)
+./build.sh robot  # ur5e_mujoco_sim 제외 (실제 로봇 전용)
+./build.sh full   # 전체 패키지 빌드
+```
+
+- MuJoCo 경로를 `MUJOCO_DIR` 환경변수 또는 `/opt/mujoco-*` 자동 탐지로 전달
+- `ur5e_description` 패키지를 모든 모드에서 선행 빌드
+
+### 추가 (Added) — ROS 2 Jazzy 지원
+
+- `install.sh`: `ros-jazzy-rmw-cyclonedds-cpp` 패키지 설치 추가
+- `ur5e_rt_controller.yaml`: ROS 2 Jazzy 파라미터 파싱 오류 수정 — `/**:` + `ros__parameters:` 플랫 구조로 변경
+  - Jazzy에서는 중첩 YAML 네임스페이스가 별도 파라미터 로드 방식이 필요
+- `CLAUDE.md`, `README.md`: ROS 2 Jazzy 설치 및 빌드 절차 추가
+- CI 뱃지에 `ROS2 Jazzy` 추가
+
+### 추가 (Added) — 로깅 경로 동적 해석
+
+하드코딩된 `/tmp/ur5e_control_log.csv` 경로를 워크스페이스 기준 경로로 변경:
+
+- **새 경로**: `~/ros2_ws/ur5e_ws/logging_data/ur5e_control_log_YYMMDD_HHMM.csv`
+- `ur5e_rt_controller.yaml`: `log_dir: "~/ros2_ws/ur5e_ws/logging_data"` (launch 파일이 절대경로로 확장)
+- `max_log_files: 10` — 오래된 로그 자동 삭제 (디스크 관리)
+- `data_logger.hpp`: 타임스탬프 접미사 파일명 생성 + 오래된 파일 정리 로직 추가
+
+### 변경 (Changed) — `ur5e_mujoco_sim` 소스 파일 분리
+
+단일 파일(`mujoco_simulator_node.cpp`)에서 관심사별 4개 파일로 분리:
+
+| 파일 | 역할 |
+|------|------|
+| `mujoco_simulator.cpp` | 생명주기 (`ctor/dtor`, `Initialize`, `Start`, `Stop`), I/O (`SetCommand`, external forces) |
+| `mujoco_sim_loop.cpp` | 물리 헬퍼 + `SimLoopFreeRun` / `SimLoopSyncStep`, `ReadSolverStats()` |
+| `mujoco_viewer.cpp` | `ViewerLoop`: GLFW 렌더링, 키보드/마우스 콜백, 오버레이 |
+| `mujoco_simulator_node.cpp` | ROS2 노드 래퍼 (`MuJoCoSimulatorNode`) |
 
 ### 수정 (Fixed) — MuJoCo `solver_niter` 타입 오류 (`ur5e_mujoco_sim`)
 
