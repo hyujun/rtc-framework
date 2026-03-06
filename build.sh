@@ -192,4 +192,15 @@ source install/setup.bash
 grep -qF "$WORKSPACE/install/setup.bash" ~/.bashrc || \
     echo "source $WORKSPACE/install/setup.bash" >> ~/.bashrc
 
+# ── Check Limits ───────────────────────────────────────────────────────────────
+MEMLOCK=$(ulimit -l)
+if [[ "$MEMLOCK" != "unlimited" ]]; then
+  echo ""
+  warn "Your current memlock limit is $MEMLOCK (not unlimited)."
+  warn "Running the custom_controller may fail with RMW load errors due to mlockall()."
+  warn "Please log out and log back in (after running install.sh) or run:"
+  warn "  ulimit -l unlimited"
+  echo ""
+fi
+
 success "Build complete [mode: $MODE]"
