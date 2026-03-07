@@ -10,10 +10,10 @@ custom_controller 노드를 수정 없이 그대로 실행합니다.
   sync_step — 제어기 명령 1회 수신 후 1 step 진행 (연산 시간 직접 측정)
 
 사용법:
-  # 기본 (free_run, 뷰어 활성화)
+  # 기본 (YAML 설정 사용)
   ros2 launch ur5e_rt_controller mujoco_sim.launch.py
 
-  # sync_step 모드 (제어기 Compute() 시간 측정)
+  # sync_step 모드로 오버라이드
   ros2 launch ur5e_rt_controller mujoco_sim.launch.py sim_mode:=sync_step
 
   # Headless 모드 (디스플레이 없는 환경)
@@ -25,6 +25,9 @@ custom_controller 노드를 수정 없이 그대로 실행합니다.
 
   # PD 게인 조정
   ros2 launch ur5e_rt_controller mujoco_sim.launch.py kp:=10.0 kd:=1.0
+
+  # max_rtf 오버라이드 (YAML의 1.0 대신 10.0 사용)
+  ros2 launch ur5e_rt_controller mujoco_sim.launch.py max_rtf:=10.0
 
 실행되는 노드:
   1. mujoco_simulator_node  — MuJoCo 물리 시뮬레이터 (UR 드라이버 역할 대체)
@@ -54,14 +57,16 @@ custom_controller 노드를 수정 없이 그대로 실행합니다.
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
 
 
-def generate_launch_description():
+def launch_setup(context, *args, **kwargs):
+    """Setup function executed with launch context for conditional parameter loading."""
+    
     # ── Log directory (colcon workspace logging_data/) ────────────────────────
     try:
         share_dir = get_package_share_directory('ur5e_rt_controller')
@@ -70,68 +75,6 @@ def generate_launch_description():
     except Exception:
         log_dir = os.path.expanduser('~/ros2_ws/ur5e_ws/logging_data')
 
-    # ── Launch arguments ─────────────────────────────────────────────────────
-    model_path_arg = DeclareLaunchArgument(
-        'model_path',
-        default_value='',
-        description=(
-            'Absolute path to MuJoCo scene.xml. Empty string → ur5e_description package scene.xml'
-        ),
-    )
-
-    sim_mode_arg = DeclareLaunchArgument(
-        'sim_mode',
-        default_value='free_run',
-        description=(
-            'Simulation mode: '
-            '"free_run" (max speed, best for validation) or '
-            '"sync_step" (1:1 sync, measures Compute() time)'
-        ),
-    )
-
-    enable_viewer_arg = DeclareLaunchArgument(
-        'enable_viewer',
-        default_value='true',
-        description='Open GLFW 3D viewer window (false for headless)',
-    )
-
-    publish_decimation_arg = DeclareLaunchArgument(
-        'publish_decimation',
-        default_value='1',
-        description=(
-            'free_run only: publish /joint_states every N physics steps. '
-            'Increase to reduce DDS load in fast simulations.'
-        ),
-    )
-
-    sync_timeout_ms_arg = DeclareLaunchArgument(
-        'sync_timeout_ms',
-        default_value='50.0',
-        description='sync_step only: command wait timeout in milliseconds',
-    )
-
-    max_rtf_arg = DeclareLaunchArgument(
-        'max_rtf',
-        default_value='0.0',
-        description=(
-            'Maximum Real-Time Factor (0.0 = unlimited). '
-            'The sim loop sleeps after each mj_step() to keep RTF <= max_rtf. '
-            'Example: max_rtf:=1.0 for real-time, max_rtf:=10.0 for 10x.'
-        ),
-    )
-
-    kp_arg = DeclareLaunchArgument(
-        'kp',
-        default_value='5.0',
-        description='PD controller proportional gain',
-    )
-
-    kd_arg = DeclareLaunchArgument(
-        'kd',
-        default_value='0.5',
-        description='PD controller derivative gain',
-    )
-
     # ── Package paths ─────────────────────────────────────────────────────────
     pkg_sim  = FindPackageShare('ur5e_mujoco_sim')
     pkg_ctrl = FindPackageShare('ur5e_rt_controller')
@@ -139,52 +82,76 @@ def generate_launch_description():
     sim_config  = PathJoinSubstitution([pkg_sim,  'config', 'mujoco_simulator.yaml'])
     ctrl_config = PathJoinSubstitution([pkg_ctrl, 'config', 'ur5e_rt_controller.yaml'])
 
+    # ── Build simulator parameters (YAML first, then conditional overrides) ───
+    sim_params = [sim_config]
+    sim_overrides = {}
+    
+    # Check each launch argument - only add to overrides if explicitly provided
+    model_path = LaunchConfiguration('model_path').perform(context)
+    if model_path != '':
+        sim_overrides['model_path'] = model_path
+    
+    sim_mode = LaunchConfiguration('sim_mode').perform(context)
+    if sim_mode != '':
+        sim_overrides['sim_mode'] = sim_mode
+    
+    enable_viewer = LaunchConfiguration('enable_viewer').perform(context)
+    if enable_viewer != '':
+        # Convert string to bool
+        sim_overrides['enable_viewer'] = enable_viewer.lower() in ('true', '1', 'yes')
+    
+    publish_decimation = LaunchConfiguration('publish_decimation').perform(context)
+    if publish_decimation != '':
+        sim_overrides['publish_decimation'] = int(publish_decimation)
+    
+    sync_timeout_ms = LaunchConfiguration('sync_timeout_ms').perform(context)
+    if sync_timeout_ms != '':
+        sim_overrides['sync_timeout_ms'] = float(sync_timeout_ms)
+    
+    max_rtf = LaunchConfiguration('max_rtf').perform(context)
+    if max_rtf != '':
+        sim_overrides['max_rtf'] = float(max_rtf)
+    
+    # Add overrides only if any were provided
+    if sim_overrides:
+        sim_params.append(sim_overrides)
+
+    # ── Build controller parameters (YAML + overrides + launch args) ──────────
+    ctrl_params = [ctrl_config, sim_config]
+    ctrl_overrides = {}
+    
+    kp = LaunchConfiguration('kp').perform(context)
+    if kp != '':
+        ctrl_overrides['kp'] = float(kp)
+    
+    kd = LaunchConfiguration('kd').perform(context)
+    if kd != '':
+        ctrl_overrides['kd'] = float(kd)
+    
+    # Always set log_dir
+    ctrl_overrides['log_dir'] = log_dir
+    
+    if ctrl_overrides:
+        ctrl_params.append(ctrl_overrides)
+
     # ── Node 1: MuJoCo Simulator ──────────────────────────────────────────────
-    # Publishes  /joint_states, /hand/joint_states, /sim/status
-    # Subscribes /forward_position_controller/commands, /hand/command
     mujoco_node = Node(
         package='ur5e_mujoco_sim',
         executable='mujoco_simulator_node',
         name='mujoco_simulator',
         output='screen',
         emulate_tty=True,
-        parameters=[
-            sim_config,
-            {
-                'model_path':         LaunchConfiguration('model_path'),
-                'sim_mode':           LaunchConfiguration('sim_mode'),
-                'enable_viewer':      LaunchConfiguration('enable_viewer'),
-                'publish_decimation': LaunchConfiguration('publish_decimation'),
-                'sync_timeout_ms':    LaunchConfiguration('sync_timeout_ms'),
-                'max_rtf':            LaunchConfiguration('max_rtf'),
-            },
-        ],
+        parameters=sim_params,
     )
 
-    # ── Node 2: Custom Controller (unchanged) ─────────────────────────────────
-    # Subscribes /joint_states, /target_joint_positions, /hand/joint_states
-    # Publishes  /forward_position_controller/commands, /system/estop_status
-    #
-    # Parameter load order (later entries override earlier ones):
-    #   1. ur5e_rt_controller.yaml — base gains / logging settings
-    #   2. mujoco_simulator.yaml   — sim-specific overrides (enable_estop: false,
-    #                                extended timeouts)
-    #   3. Inline dict             — kp / kd from launch arguments
+    # ── Node 2: Custom Controller ─────────────────────────────────────────────
     custom_controller_node = Node(
         package='ur5e_rt_controller',
         executable='custom_controller',
         name='custom_controller',
         output='screen',
         emulate_tty=True,
-        parameters=[
-            ctrl_config,
-            sim_config,   # provides custom_controller.ros__parameters overrides
-            {
-                'kp': LaunchConfiguration('kp'),
-                'kd': LaunchConfiguration('kd'),
-                'log_dir': log_dir,
-            },
-        ],
+        parameters=ctrl_params,
     )
 
     # ── Node 3: Data Health Monitor ───────────────────────────────────────────
@@ -195,8 +162,94 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'check_rate':        10.0,
-            'timeout_threshold': 1.0,   # relaxed for sim (free_run may be bursty)
+            'timeout_threshold': 1.0,
         }],
+    )
+
+    return [mujoco_node, custom_controller_node, monitor_node]
+
+
+def generate_launch_description():
+    # ── Launch arguments with empty defaults (YAML values take precedence) ───
+    model_path_arg = DeclareLaunchArgument(
+        'model_path',
+        default_value='',
+        description=(
+            'Override model_path from YAML. '
+            'Empty → use YAML value (ur5e_description/scene.xml). '
+            'Absolute path → use specified MuJoCo scene.xml'
+        ),
+    )
+
+    sim_mode_arg = DeclareLaunchArgument(
+        'sim_mode',
+        default_value='',
+        description=(
+            'Override sim_mode from YAML. '
+            'Empty → use YAML value (free_run). '
+            'Options: "free_run" (max speed) or "sync_step" (1:1 sync)'
+        ),
+    )
+
+    enable_viewer_arg = DeclareLaunchArgument(
+        'enable_viewer',
+        default_value='',
+        description=(
+            'Override enable_viewer from YAML. '
+            'Empty → use YAML value (true). '
+            'Set to "false" for headless mode'
+        ),
+    )
+
+    publish_decimation_arg = DeclareLaunchArgument(
+        'publish_decimation',
+        default_value='',
+        description=(
+            'Override publish_decimation from YAML. '
+            'Empty → use YAML value (1). '
+            'free_run only: publish /joint_states every N physics steps'
+        ),
+    )
+
+    sync_timeout_ms_arg = DeclareLaunchArgument(
+        'sync_timeout_ms',
+        default_value='',
+        description=(
+            'Override sync_timeout_ms from YAML. '
+            'Empty → use YAML value (50.0). '
+            'sync_step only: command wait timeout in milliseconds'
+        ),
+    )
+
+    max_rtf_arg = DeclareLaunchArgument(
+        'max_rtf',
+        default_value='',
+        description=(
+            'Override max_rtf from YAML. '
+            'Empty → use YAML value (1.0). '
+            'Maximum Real-Time Factor (0.0 = unlimited). '
+            'Examples: 1.0 for real-time, 10.0 for 10x speed'
+        ),
+    )
+
+    kp_arg = DeclareLaunchArgument(
+        'kp',
+        default_value='',
+        description=(
+            'Override kp from YAML. '
+            'Empty → use YAML value. '
+            'PD controller proportional gain'
+        ),
+    )
+
+    kd_arg = DeclareLaunchArgument(
+        'kd',
+        default_value='',
+        description=(
+            'Override kd from YAML. '
+            'Empty → use YAML value. '
+            'PD controller derivative gain'
+        ),
     )
 
     return LaunchDescription([
@@ -209,8 +262,6 @@ def generate_launch_description():
         max_rtf_arg,
         kp_arg,
         kd_arg,
-        # Nodes
-        mujoco_node,
-        custom_controller_node,
-        monitor_node,
+        # Nodes (via OpaqueFunction for conditional parameter loading)
+        OpaqueFunction(function=launch_setup),
     ])
