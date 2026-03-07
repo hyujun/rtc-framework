@@ -217,8 +217,14 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        # Check if context is still valid before cleanup
+        try:
+            if rclpy.ok():
+                node.destroy_node()
+                rclpy.shutdown()
+        except Exception:
+            # Context already shutdown by another node, ignore
+            pass
 
 
 if __name__ == '__main__':
