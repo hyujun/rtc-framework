@@ -7,7 +7,6 @@
 
 mujoco_simulator:
   ros__parameters:
-
     # ── Model ────────────────────────────────────────────────────────────────
     # Path to scene.xml.
     # Empty string → resolved automatically to:
@@ -43,7 +42,7 @@ mujoco_simulator:
     #   1.0   → real-time (RTF = 1× — matches wall clock)
     #   10.0  → 10× real time (10 simulated seconds per wall second)
     #   100.0 → 100× real time
-    max_rtf: 0.0
+    max_rtf: 1.0
 
     # ── Viewer ───────────────────────────────────────────────────────────────
     # Open a GLFW window for 3D visualisation.
@@ -77,4 +76,4 @@ custom_controller:
     enable_logging: true
     enable_estop: false
     robot_timeout_ms: 10000.0
-    hand_timeout_ms:  10000.0
+    hand_timeout_ms: 10000.0

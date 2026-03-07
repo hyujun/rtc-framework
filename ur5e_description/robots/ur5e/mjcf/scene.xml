@@ -1,58 +1,23 @@
-<!--
-  UR5e MuJoCo Scene
-
-  Includes the robot model and adds environment (floor, lights, sky).
-
-  Usage:
-    mujoco models/ur5e/scene.xml          # open in MuJoCo viewer
-    python -c "import mujoco, mujoco.viewer; m=mujoco.MjModel.from_xml_path('models/ur5e/scene.xml'); mujoco.viewer.launch(m)"
-
-  To use the official mesh-based model from MuJoCo Menagerie:
-    git clone https://github.com/google-deepmind/mujoco_menagerie.git /tmp/menagerie
-    cp -r /tmp/menagerie/universal_robots_ur5e models/ur5e_menagerie/
-    # Then point mujoco_simulator.yaml to models/ur5e_menagerie/scene.xml
--->
-<mujoco model="ur5e_scene">
-
-  <option timestep="0.002" gravity="0 0 -9.81" integrator="RK4"/>
-
-  <!-- Include robot model -->
+<mujoco model="ur5e scene">
   <include file="ur5e.xml"/>
 
+  <statistic center="0.3 0 0.4" extent="0.8"/>
+
   <visual>
-    <headlight ambient="0.3 0.3 0.3" diffuse="0.7 0.7 0.7" specular="0.1 0.1 0.1"/>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.1 0.1 0.1" specular="0 0 0"/>
     <rgba haze="0.15 0.25 0.35 1"/>
-    <quality shadowsize="4096" numslices="28" numstacks="28"/>
+    <global azimuth="120" elevation="-20"/>
   </visual>
 
   <asset>
-    <texture type="skybox" builtin="gradient"
-             rgb1="0.3 0.5 0.7" rgb2="0 0 0"
-             width="512" height="3072"/>
-    <texture type="2d" name="groundplane"
-             builtin="checker" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
-             width="300" height="300" mark="edge" markrgb="0.8 0.8 0.8"/>
-    <material name="groundplane" texture="groundplane" texrepeat="5 5"
-              texuniform="true" reflectance="0.2"/>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
   </asset>
 
   <worldbody>
-    <!-- Lighting -->
-    <light name="spotlight" mode="targetbodycom" target="shoulder_link"
-           pos="0 -1 2" diffuse="0.8 0.8 0.8" specular="0.3 0.3 0.3"/>
-    <light name="ambient1" pos="-2 -2 3" dir="1 1 -1"
-           diffuse="0.4 0.4 0.4" specular="0.1 0.1 0.1"/>
-    <light name="ambient2" pos="2 -2 3" dir="-1 1 -1"
-           diffuse="0.4 0.4 0.4" specular="0.1 0.1 0.1"/>
-
-    <!-- Ground plane -->
-    <geom name="floor" type="plane" pos="0 0 0"
-          size="3 3 0.1" material="groundplane" conaffinity="1"/>
-
-    <!-- Base mount plate (cosmetic) -->
-    <geom name="mount_plate" type="box"
-          pos="0 0 -0.02" size="0.12 0.12 0.02"
-          rgba="0.1 0.1 0.1 1" contype="0" conaffinity="0"/>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
   </worldbody>
-
 </mujoco>
