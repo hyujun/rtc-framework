@@ -42,7 +42,11 @@
 // │            .kp_rot = 0.5, .kd_rot = 0.05, .damping = 0.01}))          │
 // └─────────────────────────────────────────────────────────────────────────┘
 // ────────────────────────────────────────────────────────────────────────────
+#include "ur5e_rt_controller/controllers/p_controller.hpp"
 #include "ur5e_rt_controller/controllers/pd_controller.hpp"
+#include "ur5e_rt_controller/controllers/pinocchio_controller.hpp"
+#include "ur5e_rt_controller/controllers/clik_controller.hpp"
+#include "ur5e_rt_controller/controllers/operational_space_controller.hpp"
 #include "ur5e_rt_controller/controller_timing_profiler.hpp"
 #include "ur5e_rt_controller/rt_controller_interface.hpp"
 #include "ur5e_rt_base/data_logger.hpp"
@@ -54,6 +58,7 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
+#include <std_msgs/msg/int32.hpp>
 
 #include <sys/mman.h>  // mlockall
 #include <ament_index_cpp/get_package_share_directory.hpp>
@@ -86,7 +91,6 @@ class CustomController : public rclcpp::Node {
  public:
   CustomController()
       : Node("custom_controller"),
-        controller_(std::make_unique<urtc::PDController>()),
         logger_(nullptr)
   {
     CreateCallbackGroups();
@@ -203,11 +207,40 @@ class CustomController : public rclcpp::Node {
     hand_timeout_ = std::chrono::milliseconds(
         static_cast<int>(get_parameter("hand_timeout_ms").as_double()));
 
-    const urtc::PDController::Gains gains{
+    std::string urdf_path = "";
+    try {
+      std::string share_dir = ament_index_cpp::get_package_share_directory("ur5e_description");
+      urdf_path = share_dir + "/robots/ur5e/urdf/ur5e.urdf";
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(get_logger(), "Could not resolve urdf path: %s", e.what());
+    }
+
+    controllers_.push_back(std::make_unique<urtc::PController>(get_parameter("kp").as_double()));
+    
+    controllers_.push_back(std::make_unique<urtc::PDController>(
+      urtc::PDController::Gains{
         .kp = get_parameter("kp").as_double(),
-        .kd = get_parameter("kd").as_double(),
-    };
-    controller_->set_gains(gains);
+        .kd = get_parameter("kd").as_double()
+      }
+    ));
+    
+    controllers_.push_back(std::make_unique<urtc::PinocchioController>(
+        urdf_path,
+        urtc::PinocchioController::Gains{
+            .kp = 5.0, .kd = 0.5,
+            .enable_gravity_compensation  = true,
+            .enable_coriolis_compensation = false}));
+            
+    controllers_.push_back(std::make_unique<urtc::ClikController>(
+        urdf_path,
+        urtc::ClikController::Gains{
+            .kp = 1.0, .damping = 0.01, .null_kp = 0.5}));
+            
+    controllers_.push_back(std::make_unique<urtc::OperationalSpaceController>(
+        urdf_path,
+        urtc::OperationalSpaceController::Gains{
+            .kp_pos = 1.0, .kd_pos = 0.1,
+            .kp_rot = 0.5, .kd_rot = 0.05, .damping = 0.01}));
   }
 
   void CreateSubscriptions() {
@@ -233,6 +266,92 @@ class CustomController : public rclcpp::Node {
         "/hand/joint_states", 10,
         [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
           HandStateCallback(std::move(msg));
+        },
+        sub_options);
+
+    controller_selector_sub_ = create_subscription<std_msgs::msg::Int32>(
+        "~/controller_type", 10,
+        [this](std_msgs::msg::Int32::SharedPtr msg) {
+          int idx = msg->data;
+          if (idx >= 0 && idx < static_cast<int>(controllers_.size())) {
+            active_controller_idx_.store(idx, std::memory_order_release);
+            RCLCPP_INFO(get_logger(), "Switched to controller: %s", controllers_[idx]->Name().data());
+          } else {
+            RCLCPP_WARN(get_logger(), "Invalid controller index: %d", idx);
+          }
+        },
+        sub_options);
+
+    // Gains subscriber — ~/controller_gains [Float64MultiArray]
+    // Data layout depends on controller type (indexed by active_controller_idx_):
+    //  0 P         : [kp]
+    //  1 PD        : [kp, kd]
+    //  2 Pinocchio : [kp, kd, gravity(0/1), coriolis(0/1)]
+    //  3 CLIK      : [kp, damping, null_kp, null_space(0/1)]
+    //  4 OSC       : [kp_pos, kd_pos, kp_rot, kd_rot, damping, gravity(0/1)]
+    controller_gains_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
+        "~/controller_gains", 10,
+        [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+          const auto& d = msg->data;
+          int idx = active_controller_idx_.load(std::memory_order_acquire);
+          switch (idx) {
+            case 0: {  // PController — kp
+              if (d.size() >= 1) {
+                auto* p = dynamic_cast<urtc::PController*>(controllers_[0].get());
+                if (p) { p->set_kp(d[0]); }
+                RCLCPP_INFO(get_logger(), "P gains: kp=%.4f", d[0]);
+              }
+              break;
+            }
+            case 1: {  // PDController — kp, kd
+              if (d.size() >= 2) {
+                auto* p = dynamic_cast<urtc::PDController*>(controllers_[1].get());
+                if (p) { p->set_gains({d[0], d[1]}); }
+                RCLCPP_INFO(get_logger(), "PD gains: kp=%.4f kd=%.4f", d[0], d[1]);
+              }
+              break;
+            }
+            case 2: {  // PinocchioController — kp, kd, gravity, coriolis
+              if (d.size() >= 4) {
+                auto* p = dynamic_cast<urtc::PinocchioController*>(controllers_[2].get());
+                if (p) {
+                  p->set_gains({d[0], d[1],
+                    d[2] > 0.5,   // enable_gravity_compensation
+                    d[3] > 0.5}); // enable_coriolis_compensation
+                }
+                RCLCPP_INFO(get_logger(),
+                  "Pinocchio gains: kp=%.4f kd=%.4f grav=%s coriolis=%s",
+                  d[0], d[1], d[2]>0.5?"ON":"OFF", d[3]>0.5?"ON":"OFF");
+              }
+              break;
+            }
+            case 3: {  // ClikController — kp, damping, null_kp, null_space
+              if (d.size() >= 4) {
+                auto* p = dynamic_cast<urtc::ClikController*>(controllers_[3].get());
+                if (p) {
+                  p->set_gains({d[0], d[1], d[2], d[3] > 0.5});
+                }
+                RCLCPP_INFO(get_logger(),
+                  "CLIK gains: kp=%.4f damping=%.4f null_kp=%.4f null=%s",
+                  d[0], d[1], d[2], d[3]>0.5?"ON":"OFF");
+              }
+              break;
+            }
+            case 4: {  // OSC — kp_pos, kd_pos, kp_rot, kd_rot, damping, gravity
+              if (d.size() >= 6) {
+                auto* p = dynamic_cast<urtc::OperationalSpaceController*>(controllers_[4].get());
+                if (p) {
+                  p->set_gains({d[0], d[1], d[2], d[3], d[4], d[5] > 0.5});
+                }
+                RCLCPP_INFO(get_logger(),
+                  "OSC gains: kp_pos=%.4f kd_pos=%.4f kp_rot=%.4f kd_rot=%.4f damping=%.4f grav=%s",
+                  d[0], d[1], d[2], d[3], d[4], d[5]>0.5?"ON":"OFF");
+              }
+              break;
+            }
+            default:
+              RCLCPP_WARN(get_logger(), "Gains received for unknown controller idx %d", idx);
+          }
         },
         sub_options);
   }
@@ -306,7 +425,8 @@ class CustomController : public rclcpp::Node {
     }
     // Fix 2: release-store after mutex released
     target_received_.store(true, std::memory_order_release);
-    controller_->SetRobotTarget(local_target);
+    int active_idx = active_controller_idx_.load(std::memory_order_acquire);
+    controllers_[active_idx]->SetRobotTarget(local_target);
   }
 
   void HandStateCallback(std_msgs::msg::Float64MultiArray::SharedPtr /*msg*/) {
@@ -334,14 +454,15 @@ class CustomController : public rclcpp::Node {
       hand_timed_out = (now_time - last_hand_update_) > hand_timeout_;
     }
 
-    if (robot_timed_out && !controller_->IsEstopped()) {
+    int active_idx = active_controller_idx_.load(std::memory_order_acquire);
+    if (robot_timed_out && !controllers_[active_idx]->IsEstopped()) {
       RCLCPP_ERROR(get_logger(), "Robot data timeout — triggering E-STOP");
-      controller_->TriggerEstop();
+      controllers_[active_idx]->TriggerEstop();
       PublishEstopStatus(true);
     }
 
     if (hand_timed_out) {
-      controller_->SetHandEstop(true);
+      controllers_[active_idx]->SetHandEstop(true);
       if (!hand_estop_logged_) {
         RCLCPP_WARN(get_logger(), "Hand data timeout — hand E-STOP active");
         hand_estop_logged_ = true;
@@ -351,7 +472,7 @@ class CustomController : public rclcpp::Node {
         RCLCPP_INFO(get_logger(), "Hand data restored — hand E-STOP cleared");
         hand_estop_logged_ = false;
       }
-      controller_->SetHandEstop(false);
+      controllers_[active_idx]->SetHandEstop(false);
     }
   }
 
@@ -379,9 +500,11 @@ class CustomController : public rclcpp::Node {
     state.robot.dt  = 1.0 / control_rate_;
     state.iteration = loop_count_;
 
+    int active_idx = active_controller_idx_.load(std::memory_order_acquire);
+
     // Measure Compute() wall-clock time via ControllerTimingProfiler.
     const urtc::ControllerOutput output =
-        timing_profiler_.MeasuredCompute(*controller_, state);
+        timing_profiler_.MeasuredCompute(*controllers_[active_idx], state);
 
     // Non-blocking: skip this cycle if publisher mutex is contended.
     if (cmd_pub_mutex_.try_lock()) {
@@ -407,9 +530,10 @@ class CustomController : public rclcpp::Node {
     ++loop_count_;
     // Print timing summary every 1 000 iterations.
     if (loop_count_ % 1000 == 0) {
+      int active_idx = active_controller_idx_.load(std::memory_order_acquire);
       RCLCPP_INFO(get_logger(), "%s",
                   timing_profiler_.Summary(
-                      std::string(controller_->Name())).c_str());
+                      std::string(controllers_[active_idx]->Name())).c_str());
     }
   }
 
@@ -434,6 +558,8 @@ class CustomController : public rclcpp::Node {
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr      joint_state_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr  target_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr  hand_state_sub_;
+  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr              controller_selector_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr  controller_gains_sub_;
 
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr     cmd_pub_;
   std_msgs::msg::Float64MultiArray                                   cmd_msg_;
@@ -445,7 +571,8 @@ class CustomController : public rclcpp::Node {
   rclcpp::TimerBase::SharedPtr drain_timer_;   // Fix 1: log drain (log thread)
 
   // ── Domain objects ──────────────────────────────────────────────────────────
-  std::unique_ptr<urtc::PDController>    controller_;
+  std::vector<std::unique_ptr<urtc::RTControllerInterface>> controllers_;
+  std::atomic<int> active_controller_idx_{1}; // Default to PDController (index 1)
   std::unique_ptr<urtc::DataLogger>      logger_;
   urtc::ControlLogBuffer                 log_buffer_{};  // Fix 1: SPSC ring buffer
   urtc::ControllerTimingProfiler         timing_profiler_{};  // Compute() timing

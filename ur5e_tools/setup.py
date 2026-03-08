@@ -25,6 +25,8 @@ setup(
     license='MIT',
     tests_require=['pytest'],
     entry_points={
-        'console_scripts': [],
+        'console_scripts': [
+            'controller_gui = ur5e_tools.controller_gui:main'
+        ],
     },
 )

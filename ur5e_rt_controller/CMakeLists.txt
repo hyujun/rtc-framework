@@ -28,6 +28,7 @@ find_package(ament_index_cpp REQUIRED)
 add_executable(custom_controller
   src/custom_controller.cpp
   src/pd_controller.cpp
+  src/p_controller.cpp
 )
 target_include_directories(custom_controller PRIVATE include)
 ament_target_dependencies(custom_controller

@@ -85,13 +85,13 @@ namespace ur5e_rt_controller
     /// @throws std::runtime_error  if the URDF cannot be parsed.
     ///
     /// @note  Model loading happens once here; it is NOT on the RT path.
-    explicit PinocchioController(std::string_view urdf_path, Gains gains = {});
+    explicit PinocchioController(std::string_view urdf_path, Gains gains);
 
     // ── RTControllerInterface — all methods are noexcept (RT safety) ──────────
     [[nodiscard]] ControllerOutput Compute(const ControllerState &state) noexcept override;
 
-    void SetRobotTarget(std::span<const double> target) noexcept override;
-    void SetHandTarget(std::span<const double> target) noexcept override;
+    void SetRobotTarget(std::span<const double, kNumRobotJoints> target) noexcept override;
+    void SetHandTarget(std::span<const double, kNumHandJoints> target) noexcept override;
 
     [[nodiscard]] std::string_view Name() const noexcept override;
 
@@ -218,9 +218,9 @@ namespace ur5e_rt_controller
   }
 
   inline void PinocchioController::SetRobotTarget(
-      std::span<const double> target) noexcept
+      std::span<const double, kNumRobotJoints> target) noexcept
   {
-    const std::size_t n = std::min(target.size(), kNumRobotJoints);
+    const std::size_t n = kNumRobotJoints;
     for (std::size_t i = 0; i < n; ++i)
     {
       robot_target_[i] = target[i];
@@ -228,9 +228,9 @@ namespace ur5e_rt_controller
   }
 
   inline void PinocchioController::SetHandTarget(
-      std::span<const double> target) noexcept
+      std::span<const double, kNumHandJoints> target) noexcept
   {
-    const std::size_t n = std::min(target.size(), kNumHandJoints);
+    const std::size_t n = kNumHandJoints;
     for (std::size_t i = 0; i < n; ++i)
     {
       hand_target_[i] = target[i];
@@ -306,7 +306,7 @@ namespace ur5e_rt_controller
     // q_ and v_ which are already the correct size from the constructor).
     const std::size_t nv =
         static_cast<std::size_t>(model_.nv);
-    const std::size_t n = std::min(kNumRobotJoints, nv);
+    const std::size_t n = std::min(static_cast<std::size_t>(kNumRobotJoints), nv);
 
     for (std::size_t i = 0; i < n; ++i)
     {
