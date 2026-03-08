@@ -1,4 +1,5 @@
-// ── Includes: project header first, then ROS2, then C++ stdlib ────────────────
+// ── Includes: project header first, then ROS2, then C++ stdlib
+// ────────────────
 //
 // ── Available Pinocchio-based controllers ────────────────────────────────────
 //
@@ -13,11 +14,12 @@
 // │    #include "ur5e_rt_controller/controllers/pinocchio_controller.hpp"  │
 // │                                                                         │
 // │    controller_(std::make_unique<urtc::PinocchioController>(            │
-// │        "$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf", │
-// │        urtc::PinocchioController::Gains{                               │
-// │            .kp = 5.0, .kd = 0.5,                                       │
-// │            .enable_gravity_compensation  = true,                        │
-// │            .enable_coriolis_compensation = false}))                     │
+// │        "$(ros2 pkg prefix
+// ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf", │ │
+// urtc::PinocchioController::Gains{                               │ │ .kp
+// = 5.0, .kd = 0.5,                                       │ │
+// .enable_gravity_compensation  = true,                        │ │
+// .enable_coriolis_compensation = false}))                     │
 // ├─────────────────────────────────────────────────────────────────────────┤
 // │ 2. ClikController — Closed-Loop IK, Cartesian position control (3-DOF) │
 // │    Target: [x, y, z, null_q3, null_q4, null_q5]                        │
@@ -26,9 +28,10 @@
 // │    #include "ur5e_rt_controller/controllers/clik_controller.hpp"       │
 // │                                                                         │
 // │    controller_(std::make_unique<urtc::ClikController>(                 │
-// │        "$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf", │
-// │        urtc::ClikController::Gains{                                    │
-// │            .kp = 1.0, .damping = 0.01, .null_kp = 0.5}))              │
+// │        "$(ros2 pkg prefix
+// ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf", │ │
+// urtc::ClikController::Gains{                                    │ │ .kp
+// = 1.0, .damping = 0.01, .null_kp = 0.5}))              │
 // ├─────────────────────────────────────────────────────────────────────────┤
 // │ 3. OperationalSpaceController — OSC, full 6-DOF Cartesian PD control  │
 // │    Target: [x, y, z, roll, pitch, yaw]  (metres / radians, ZYX)       │
@@ -36,23 +39,24 @@
 // │              operational_space_controller.hpp"                          │
 // │                                                                         │
 // │    controller_(std::make_unique<urtc::OperationalSpaceController>(     │
-// │        "$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf", │
-// │        urtc::OperationalSpaceController::Gains{                        │
-// │            .kp_pos = 1.0, .kd_pos = 0.1,                               │
-// │            .kp_rot = 0.5, .kd_rot = 0.05, .damping = 0.01}))          │
+// │        "$(ros2 pkg prefix
+// ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf", │ │
+// urtc::OperationalSpaceController::Gains{                        │ │ .kp_pos
+// = 1.0, .kd_pos = 0.1,                               │ │            .kp_rot =
+// 0.5, .kd_rot = 0.05, .damping = 0.01}))          │
 // └─────────────────────────────────────────────────────────────────────────┘
 // ────────────────────────────────────────────────────────────────────────────
-#include "ur5e_rt_controller/controllers/p_controller.hpp"
-#include "ur5e_rt_controller/controllers/pd_controller.hpp"
-#include "ur5e_rt_controller/controllers/pinocchio_controller.hpp"
-#include "ur5e_rt_controller/controllers/clik_controller.hpp"
-#include "ur5e_rt_controller/controllers/operational_space_controller.hpp"
-#include "ur5e_rt_controller/controller_timing_profiler.hpp"
-#include "ur5e_rt_controller/rt_controller_interface.hpp"
 #include "ur5e_rt_base/data_logger.hpp"
 #include "ur5e_rt_base/log_buffer.hpp"
 #include "ur5e_rt_base/thread_config.hpp"
 #include "ur5e_rt_base/thread_utils.hpp"
+#include "ur5e_rt_controller/controller_timing_profiler.hpp"
+#include "ur5e_rt_controller/controllers/clik_controller.hpp"
+#include "ur5e_rt_controller/controllers/operational_space_controller.hpp"
+#include "ur5e_rt_controller/controllers/p_controller.hpp"
+#include "ur5e_rt_controller/controllers/pd_controller.hpp"
+#include "ur5e_rt_controller/controllers/pinocchio_controller.hpp"
+#include "ur5e_rt_controller/rt_controller_interface.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -60,8 +64,8 @@
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/int32.hpp>
 
-#include <sys/mman.h>  // mlockall
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <sys/mman.h> // mlockall
 
 #include <algorithm>
 #include <array>
@@ -78,21 +82,20 @@
 using namespace std::chrono_literals;
 namespace urtc = ur5e_rt_controller;
 
-// ── CustomController ───────────────────────────────────────────────────────────
+// ── CustomController
+// ───────────────────────────────────────────────────────────
 //
 // 500 Hz position controller node with multi-threaded executors.
 //
 // CallbackGroup assignment:
 //   - cb_group_rt_:     control_timer_, timeout_timer_  (RT core)
-//   - cb_group_sensor_: joint_state_sub_, target_sub_, hand_state_sub_  (Sensor core)
+//   - cb_group_sensor_: joint_state_sub_, target_sub_, hand_state_sub_  (Sensor
+//   core)
 //   - cb_group_log_:    drain_timer_  (non-RT core)
 //   - cb_group_aux_:    estop_pub_  (aux core)
 class CustomController : public rclcpp::Node {
- public:
-  CustomController()
-      : Node("custom_controller"),
-        logger_(nullptr)
-  {
+public:
+  CustomController() : Node("custom_controller"), logger_(nullptr) {
     CreateCallbackGroups();
     DeclareAndLoadParameters();
     CreateSubscriptions();
@@ -111,16 +114,19 @@ class CustomController : public rclcpp::Node {
   }
 
   // Public accessors for main() to retrieve callback groups
-  rclcpp::CallbackGroup::SharedPtr GetRtGroup()     const { return cb_group_rt_; }
-  rclcpp::CallbackGroup::SharedPtr GetSensorGroup() const { return cb_group_sensor_; }
-  rclcpp::CallbackGroup::SharedPtr GetLogGroup()    const { return cb_group_log_; }
-  rclcpp::CallbackGroup::SharedPtr GetAuxGroup()    const { return cb_group_aux_; }
+  rclcpp::CallbackGroup::SharedPtr GetRtGroup() const { return cb_group_rt_; }
+  rclcpp::CallbackGroup::SharedPtr GetSensorGroup() const {
+    return cb_group_sensor_;
+  }
+  rclcpp::CallbackGroup::SharedPtr GetLogGroup() const { return cb_group_log_; }
+  rclcpp::CallbackGroup::SharedPtr GetAuxGroup() const { return cb_group_aux_; }
 
- private:
-  // ── Log file helpers ────────────────────────────────────────────────────────
-  // Returns "<log_dir>/ur5e_control_log_YYMMDD_HHMM.csv"
-  static std::string GenerateLogFilePath(const std::string & log_dir) {
-    const auto now    = std::chrono::system_clock::now();
+private:
+  // ── Log file helpers
+  // ──────────────────────────────────────────────────────── Returns
+  // "<log_dir>/ur5e_control_log_YYMMDD_HHMM.csv"
+  static std::string GenerateLogFilePath(const std::string &log_dir) {
+    const auto now = std::chrono::system_clock::now();
     const auto time_t = std::chrono::system_clock::to_time_t(now);
     std::tm local_tm{};
     localtime_r(&time_t, &local_tm);
@@ -132,11 +138,14 @@ class CustomController : public rclcpp::Node {
   // Removes oldest matching log files when count exceeds max_files.
   // Files are matched by prefix "ur5e_control_log_" and ".csv" extension;
   // alphabetical sort equals chronological order due to the timestamp format.
-  static void CleanupOldLogFiles(const std::filesystem::path & log_dir, int max_files) {
-    if (!std::filesystem::exists(log_dir)) { return; }
+  static void CleanupOldLogFiles(const std::filesystem::path &log_dir,
+                                 int max_files) {
+    if (!std::filesystem::exists(log_dir)) {
+      return;
+    }
     std::vector<std::filesystem::path> files;
-    for (const auto & entry : std::filesystem::directory_iterator(log_dir)) {
-      const auto & p = entry.path();
+    for (const auto &entry : std::filesystem::directory_iterator(log_dir)) {
+      const auto &p = entry.path();
       if (p.extension() == ".csv") {
         const std::string stem = p.stem().string();
         if (stem.rfind("ur5e_control_log_", 0) == 0) {
@@ -151,55 +160,65 @@ class CustomController : public rclcpp::Node {
     }
   }
 
-  // ── CallbackGroup creation ──────────────────────────────────────────────────
+  // ── CallbackGroup creation
+  // ──────────────────────────────────────────────────
   void CreateCallbackGroups() {
-    cb_group_rt_ = create_callback_group(
-        rclcpp::CallbackGroupType::MutuallyExclusive);
-    cb_group_sensor_ = create_callback_group(
-        rclcpp::CallbackGroupType::MutuallyExclusive);
-    cb_group_log_ = create_callback_group(
-        rclcpp::CallbackGroupType::MutuallyExclusive);
-    cb_group_aux_ = create_callback_group(
-        rclcpp::CallbackGroupType::MutuallyExclusive);
+    cb_group_rt_ =
+        create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    cb_group_sensor_ =
+        create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    cb_group_log_ =
+        create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    cb_group_aux_ =
+        create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   }
 
-  // ── Initialisation helpers ──────────────────────────────────────────────────
+  // ── Initialisation helpers
+  // ──────────────────────────────────────────────────
   void DeclareAndLoadParameters() {
-    declare_parameter("control_rate",    500.0);
-    declare_parameter("kp",              5.0);
-    declare_parameter("kd",             0.5);
-    declare_parameter("enable_logging",  true);
-    
+    declare_parameter("control_rate", 500.0);
+    declare_parameter("kp", 5.0);
+    declare_parameter("kd", 0.5);
+    declare_parameter("enable_logging", true);
+
     // Dynamically resolve workspace logging dir using ament_index
     std::string default_log_dir = "/tmp/ur5e_logging_data"; // fallback
     try {
-      std::string share_dir = ament_index_cpp::get_package_share_directory("ur5e_rt_controller");
-      std::filesystem::path ws_path = std::filesystem::path(share_dir).parent_path().parent_path().parent_path().parent_path();
+      std::string share_dir =
+          ament_index_cpp::get_package_share_directory("ur5e_rt_controller");
+      std::filesystem::path ws_path = std::filesystem::path(share_dir)
+                                          .parent_path()
+                                          .parent_path()
+                                          .parent_path()
+                                          .parent_path();
       default_log_dir = (ws_path / "logging_data").string();
-    } catch (const std::exception& e) {
-      RCLCPP_WARN(get_logger(), "Could not resolve workspace via ament_index: %s. Using fallback: %s", 
-                  e.what(), default_log_dir.c_str());
+    } catch (const std::exception &e) {
+      RCLCPP_WARN(
+          get_logger(),
+          "Could not resolve workspace via ament_index: %s. Using fallback: %s",
+          e.what(), default_log_dir.c_str());
     }
 
-    declare_parameter("log_dir",         default_log_dir);
-    declare_parameter("max_log_files",   10);
+    declare_parameter("log_dir", default_log_dir);
+    declare_parameter("max_log_files", 10);
     declare_parameter("robot_timeout_ms", 100.0);
-    declare_parameter("hand_timeout_ms",  200.0);
-    declare_parameter("enable_estop",    true);
+    declare_parameter("hand_timeout_ms", 200.0);
+    declare_parameter("enable_estop", true);
 
-    control_rate_   = get_parameter("control_rate").as_double();
+    control_rate_ = get_parameter("control_rate").as_double();
     enable_logging_ = get_parameter("enable_logging").as_bool();
-    enable_estop_   = get_parameter("enable_estop").as_bool();
+    enable_estop_ = get_parameter("enable_estop").as_bool();
 
     if (enable_logging_) {
       const std::string log_dir_str = get_parameter("log_dir").as_string();
-      const int max_log_files       = get_parameter("max_log_files").as_int();
+      const int max_log_files = get_parameter("max_log_files").as_int();
       const std::filesystem::path log_dir{log_dir_str};
       std::filesystem::create_directories(log_dir);
       const std::string log_file = GenerateLogFilePath(log_dir_str);
       logger_ = std::make_unique<urtc::DataLogger>(log_file);
       CleanupOldLogFiles(log_dir, max_log_files);
-      RCLCPP_INFO(get_logger(), "Logging to: %s (max_log_files=%d)", log_file.c_str(), max_log_files);
+      RCLCPP_INFO(get_logger(), "Logging to: %s (max_log_files=%d)",
+                  log_file.c_str(), max_log_files);
     }
 
     robot_timeout_ = std::chrono::milliseconds(
@@ -209,38 +228,37 @@ class CustomController : public rclcpp::Node {
 
     std::string urdf_path = "";
     try {
-      std::string share_dir = ament_index_cpp::get_package_share_directory("ur5e_description");
+      std::string share_dir =
+          ament_index_cpp::get_package_share_directory("ur5e_description");
       urdf_path = share_dir + "/robots/ur5e/urdf/ur5e.urdf";
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
       RCLCPP_WARN(get_logger(), "Could not resolve urdf path: %s", e.what());
     }
 
-    controllers_.push_back(std::make_unique<urtc::PController>(get_parameter("kp").as_double()));
-    
+    controllers_.push_back(
+        std::make_unique<urtc::PController>(get_parameter("kp").as_double()));
+
     controllers_.push_back(std::make_unique<urtc::PDController>(
-      urtc::PDController::Gains{
-        .kp = get_parameter("kp").as_double(),
-        .kd = get_parameter("kd").as_double()
-      }
-    ));
-    
+        urtc::PDController::Gains{.kp = get_parameter("kp").as_double(),
+                                  .kd = get_parameter("kd").as_double()}));
+
     controllers_.push_back(std::make_unique<urtc::PinocchioController>(
-        urdf_path,
-        urtc::PinocchioController::Gains{
-            .kp = 5.0, .kd = 0.5,
-            .enable_gravity_compensation  = true,
-            .enable_coriolis_compensation = false}));
-            
+        urdf_path, urtc::PinocchioController::Gains{
+                       .kp = 5.0,
+                       .kd = 0.5,
+                       .enable_gravity_compensation = true,
+                       .enable_coriolis_compensation = false}));
+
     controllers_.push_back(std::make_unique<urtc::ClikController>(
-        urdf_path,
-        urtc::ClikController::Gains{
-            .kp = 1.0, .damping = 0.01, .null_kp = 0.5}));
-            
+        urdf_path, urtc::ClikController::Gains{
+                       .kp = 1.0, .damping = 0.01, .null_kp = 0.5}));
+
     controllers_.push_back(std::make_unique<urtc::OperationalSpaceController>(
-        urdf_path,
-        urtc::OperationalSpaceController::Gains{
-            .kp_pos = 1.0, .kd_pos = 0.1,
-            .kp_rot = 0.5, .kd_rot = 0.05, .damping = 0.01}));
+        urdf_path, urtc::OperationalSpaceController::Gains{.kp_pos = 1.0,
+                                                           .kd_pos = 0.1,
+                                                           .kp_rot = 0.5,
+                                                           .kd_rot = 0.05,
+                                                           .damping = 0.01}));
   }
 
   void CreateSubscriptions() {
@@ -275,7 +293,8 @@ class CustomController : public rclcpp::Node {
           int idx = msg->data;
           if (idx >= 0 && idx < static_cast<int>(controllers_.size())) {
             active_controller_idx_.store(idx, std::memory_order_release);
-            RCLCPP_INFO(get_logger(), "Switched to controller: %s", controllers_[idx]->Name().data());
+            RCLCPP_INFO(get_logger(), "Switched to controller: %s",
+                        controllers_[idx]->Name().data());
           } else {
             RCLCPP_WARN(get_logger(), "Invalid controller index: %d", idx);
           }
@@ -283,74 +302,91 @@ class CustomController : public rclcpp::Node {
         sub_options);
 
     // Gains subscriber — ~/controller_gains [Float64MultiArray]
-    // Data layout depends on controller type (indexed by active_controller_idx_):
+    // Data layout depends on controller type (indexed by
+    // active_controller_idx_):
     //  0 P         : [kp]
     //  1 PD        : [kp, kd]
     //  2 Pinocchio : [kp, kd, gravity(0/1), coriolis(0/1)]
     //  3 CLIK      : [kp, damping, null_kp, null_space(0/1)]
     //  4 OSC       : [kp_pos, kd_pos, kp_rot, kd_rot, damping, gravity(0/1)]
-    controller_gains_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
+    controller_gains_sub_ = create_subscription<
+        std_msgs::msg::Float64MultiArray>(
         "~/controller_gains", 10,
         [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-          const auto& d = msg->data;
+          const auto &d = msg->data;
           int idx = active_controller_idx_.load(std::memory_order_acquire);
           switch (idx) {
-            case 0: {  // PController — kp
-              if (d.size() >= 1) {
-                auto* p = dynamic_cast<urtc::PController*>(controllers_[0].get());
-                if (p) { p->set_kp(d[0]); }
-                RCLCPP_INFO(get_logger(), "P gains: kp=%.4f", d[0]);
+          case 0: { // PController — kp
+            if (d.size() >= 1) {
+              auto *p =
+                  dynamic_cast<urtc::PController *>(controllers_[0].get());
+              if (p) {
+                p->set_kp(d[0]);
               }
-              break;
+              RCLCPP_INFO(get_logger(), "P gains: kp=%.4f", d[0]);
             }
-            case 1: {  // PDController — kp, kd
-              if (d.size() >= 2) {
-                auto* p = dynamic_cast<urtc::PDController*>(controllers_[1].get());
-                if (p) { p->set_gains({d[0], d[1]}); }
-                RCLCPP_INFO(get_logger(), "PD gains: kp=%.4f kd=%.4f", d[0], d[1]);
+            break;
+          }
+          case 1: { // PDController — kp, kd
+            if (d.size() >= 2) {
+              auto *p =
+                  dynamic_cast<urtc::PDController *>(controllers_[1].get());
+              if (p) {
+                p->set_gains({d[0], d[1]});
               }
-              break;
+              RCLCPP_INFO(get_logger(), "PD gains: kp=%.4f kd=%.4f", d[0],
+                          d[1]);
             }
-            case 2: {  // PinocchioController — kp, kd, gravity, coriolis
-              if (d.size() >= 4) {
-                auto* p = dynamic_cast<urtc::PinocchioController*>(controllers_[2].get());
-                if (p) {
-                  p->set_gains({d[0], d[1],
-                    d[2] > 0.5,   // enable_gravity_compensation
-                    d[3] > 0.5}); // enable_coriolis_compensation
-                }
-                RCLCPP_INFO(get_logger(),
-                  "Pinocchio gains: kp=%.4f kd=%.4f grav=%s coriolis=%s",
-                  d[0], d[1], d[2]>0.5?"ON":"OFF", d[3]>0.5?"ON":"OFF");
+            break;
+          }
+          case 2: { // PinocchioController — kp, kd, gravity, coriolis
+            if (d.size() >= 4) {
+              auto *p = dynamic_cast<urtc::PinocchioController *>(
+                  controllers_[2].get());
+              if (p) {
+                p->set_gains({d[0], d[1],
+                              d[2] > 0.5,   // enable_gravity_compensation
+                              d[3] > 0.5}); // enable_coriolis_compensation
               }
-              break;
+              RCLCPP_INFO(
+                  get_logger(),
+                  "Pinocchio gains: kp=%.4f kd=%.4f grav=%s coriolis=%s", d[0],
+                  d[1], d[2] > 0.5 ? "ON" : "OFF", d[3] > 0.5 ? "ON" : "OFF");
             }
-            case 3: {  // ClikController — kp, damping, null_kp, null_space
-              if (d.size() >= 4) {
-                auto* p = dynamic_cast<urtc::ClikController*>(controllers_[3].get());
-                if (p) {
-                  p->set_gains({d[0], d[1], d[2], d[3] > 0.5});
-                }
-                RCLCPP_INFO(get_logger(),
-                  "CLIK gains: kp=%.4f damping=%.4f null_kp=%.4f null=%s",
-                  d[0], d[1], d[2], d[3]>0.5?"ON":"OFF");
+            break;
+          }
+          case 3: { // ClikController — kp, damping, null_kp, null_space
+            if (d.size() >= 4) {
+              auto *p =
+                  dynamic_cast<urtc::ClikController *>(controllers_[3].get());
+              if (p) {
+                p->set_gains({d[0], d[1], d[2], d[3] > 0.5});
               }
-              break;
+              RCLCPP_INFO(
+                  get_logger(),
+                  "CLIK gains: kp=%.4f damping=%.4f null_kp=%.4f null=%s", d[0],
+                  d[1], d[2], d[3] > 0.5 ? "ON" : "OFF");
             }
-            case 4: {  // OSC — kp_pos, kd_pos, kp_rot, kd_rot, damping, gravity
-              if (d.size() >= 6) {
-                auto* p = dynamic_cast<urtc::OperationalSpaceController*>(controllers_[4].get());
-                if (p) {
-                  p->set_gains({d[0], d[1], d[2], d[3], d[4], d[5] > 0.5});
-                }
-                RCLCPP_INFO(get_logger(),
-                  "OSC gains: kp_pos=%.4f kd_pos=%.4f kp_rot=%.4f kd_rot=%.4f damping=%.4f grav=%s",
-                  d[0], d[1], d[2], d[3], d[4], d[5]>0.5?"ON":"OFF");
+            break;
+          }
+          case 4: { // OSC — kp_pos, kd_pos, kp_rot, kd_rot, damping, gravity
+            if (d.size() >= 6) {
+              auto *p = dynamic_cast<urtc::OperationalSpaceController *>(
+                  controllers_[4].get());
+              if (p) {
+                p->set_gains({d[0], d[1], d[2], d[3], d[4], d[5] > 0.5});
               }
-              break;
+              RCLCPP_INFO(get_logger(),
+                          "OSC gains: kp_pos=%.4f kd_pos=%.4f kp_rot=%.4f "
+                          "kd_rot=%.4f damping=%.4f grav=%s",
+                          d[0], d[1], d[2], d[3], d[4],
+                          d[5] > 0.5 ? "ON" : "OFF");
             }
-            default:
-              RCLCPP_WARN(get_logger(), "Gains received for unknown controller idx %d", idx);
+            break;
+          }
+          default:
+            RCLCPP_WARN(get_logger(),
+                        "Gains received for unknown controller idx %d", idx);
           }
         },
         sub_options);
@@ -363,7 +399,8 @@ class CustomController : public rclcpp::Node {
         "/forward_position_controller/commands", 10);
     cmd_msg_.data.resize(urtc::kNumRobotJoints, 0.0);
 
-    estop_pub_ = create_publisher<std_msgs::msg::Bool>("/system/estop_status", 10);
+    estop_pub_ =
+        create_publisher<std_msgs::msg::Bool>("/system/estop_status", 10);
   }
 
   void CreateTimers() {
@@ -372,26 +409,21 @@ class CustomController : public rclcpp::Node {
 
     // Assign control_timer_ and timeout_timer_ to cb_group_rt_
     control_timer_ = create_wall_timer(
-        control_period,
-        [this]() { ControlLoop(); },
-        cb_group_rt_);
+        control_period, [this]() { ControlLoop(); }, cb_group_rt_);
 
     if (enable_estop_) {
-      timeout_timer_ = create_wall_timer(
-          20ms,
-          [this]() { CheckTimeouts(); },
-          cb_group_rt_);
+      timeout_timer_ =
+          create_wall_timer(20ms, [this]() { CheckTimeouts(); }, cb_group_rt_);
     }
 
     // Fix 1: drain the SPSC log ring buffer from the log thread (Core 4).
     // File I/O stays entirely out of the 500 Hz RT thread.
-    drain_timer_ = create_wall_timer(
-        10ms,
-        [this]() { DrainLog(); },
-        cb_group_log_);
+    drain_timer_ =
+        create_wall_timer(10ms, [this]() { DrainLog(); }, cb_group_log_);
   }
 
-  // ── Subscription callbacks ──────────────────────────────────────────────────
+  // ── Subscription callbacks
+  // ──────────────────────────────────────────────────
   void JointStateCallback(sensor_msgs::msg::JointState::SharedPtr msg) {
     if (msg->position.size() < urtc::kNumRobotJoints) {
       return;
@@ -405,7 +437,8 @@ class CustomController : public rclcpp::Node {
       last_robot_update_ = now();
     }
     // Fix 2: release-store after the mutex — RT thread reads with acquire,
-    // so the C++ memory model guarantees it sees the written positions/velocities.
+    // so the C++ memory model guarantees it sees the written
+    // positions/velocities.
     state_received_.store(true, std::memory_order_release);
   }
 
@@ -438,11 +471,12 @@ class CustomController : public rclcpp::Node {
     hand_data_received_.store(true, std::memory_order_release);
   }
 
-  // ── 50 Hz watchdog (E-STOP) ─────────────────────────────────────────────────
+  // ── 50 Hz watchdog (E-STOP)
+  // ─────────────────────────────────────────────────
   void CheckTimeouts() {
     const auto now_time = now();
     bool robot_timed_out = false;
-    bool hand_timed_out  = false;
+    bool hand_timed_out = false;
 
     // Fix 2: acquire-load the atomic flag; if set, lock mutex to read timestamp
     if (state_received_.load(std::memory_order_acquire)) {
@@ -476,7 +510,8 @@ class CustomController : public rclcpp::Node {
     }
   }
 
-  // ── 500 Hz control loop ─────────────────────────────────────────────────────
+  // ── 500 Hz control loop
+  // ─────────────────────────────────────────────────────
   void ControlLoop() {
     // Fix 2: acquire-load atomics — no mutex needed for the readiness check
     if (!state_received_.load(std::memory_order_acquire) ||
@@ -487,7 +522,7 @@ class CustomController : public rclcpp::Node {
     urtc::ControllerState state{};
     {
       std::lock_guard lock(state_mutex_);
-      state.robot.positions  = current_positions_;
+      state.robot.positions = current_positions_;
       state.robot.velocities = current_velocities_;
     }
     // Fix 4: copy target_positions_ into target_snapshot_ while holding the
@@ -497,7 +532,7 @@ class CustomController : public rclcpp::Node {
       std::lock_guard lock(target_mutex_);
       target_snapshot_ = target_positions_;
     }
-    state.robot.dt  = 1.0 / control_rate_;
+    state.robot.dt = 1.0 / control_rate_;
     state.iteration = loop_count_;
 
     int active_idx = active_controller_idx_.load(std::memory_order_acquire);
@@ -521,15 +556,16 @@ class CustomController : public rclcpp::Node {
       if (loop_count_ == 0) {
         start_time_ = current_time;
       }
-      
+
       const urtc::LogEntry entry{
-          .timestamp         = current_time - start_time_,
+          .timestamp = current_time - start_time_,
           .current_positions = state.robot.positions,
-          .target_positions  = target_snapshot_,   // Fix 4: snapshot, not raw member
-          .commands          = output.robot_commands,
-          .compute_time_us   = timing_profiler_.LastComputeUs(),
+          .target_positions =
+              target_snapshot_, // Fix 4: snapshot, not raw member
+          .commands = output.robot_commands,
+          .compute_time_us = timing_profiler_.LastComputeUs(),
       };
-      log_buffer_.Push(entry);  // silently drops if buffer is full
+      log_buffer_.Push(entry); // silently drops if buffer is full
     }
 
     ++loop_count_;
@@ -537,14 +573,16 @@ class CustomController : public rclcpp::Node {
     if (loop_count_ % 1000 == 0) {
       int active_idx = active_controller_idx_.load(std::memory_order_acquire);
       RCLCPP_INFO(get_logger(), "%s",
-                  timing_profiler_.Summary(
-                      std::string(controllers_[active_idx]->Name())).c_str());
+                  timing_profiler_
+                      .Summary(std::string(controllers_[active_idx]->Name()))
+                      .c_str());
     }
   }
 
   // Fix 1: file I/O stays exclusively in the log thread (Core 4).
   void DrainLog() {
-    if (!logger_) return;
+    if (!logger_)
+      return;
     logger_->DrainBuffer(log_buffer_);
   }
 
@@ -554,35 +592,43 @@ class CustomController : public rclcpp::Node {
     estop_pub_->publish(msg);
   }
 
-  // ── ROS2 handles ────────────────────────────────────────────────────────────
+  // ── ROS2 handles
+  // ────────────────────────────────────────────────────────────
   rclcpp::CallbackGroup::SharedPtr cb_group_rt_;
   rclcpp::CallbackGroup::SharedPtr cb_group_sensor_;
   rclcpp::CallbackGroup::SharedPtr cb_group_log_;
   rclcpp::CallbackGroup::SharedPtr cb_group_aux_;
 
-  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr      joint_state_sub_;
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr  target_sub_;
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr  hand_state_sub_;
-  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr              controller_selector_sub_;
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr  controller_gains_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr
+      joint_state_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr target_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr
+      hand_state_sub_;
+  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr
+      controller_selector_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr
+      controller_gains_sub_;
 
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr     cmd_pub_;
-  std_msgs::msg::Float64MultiArray                                   cmd_msg_;
-  std::mutex                                                         cmd_pub_mutex_;
-  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr                  estop_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr cmd_pub_;
+  std_msgs::msg::Float64MultiArray cmd_msg_;
+  std::mutex cmd_pub_mutex_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_pub_;
 
   rclcpp::TimerBase::SharedPtr control_timer_;
   rclcpp::TimerBase::SharedPtr timeout_timer_;
-  rclcpp::TimerBase::SharedPtr drain_timer_;   // Fix 1: log drain (log thread)
+  rclcpp::TimerBase::SharedPtr drain_timer_; // Fix 1: log drain (log thread)
 
-  // ── Domain objects ──────────────────────────────────────────────────────────
+  // ── Domain objects
+  // ──────────────────────────────────────────────────────────
   std::vector<std::unique_ptr<urtc::RTControllerInterface>> controllers_;
-  std::atomic<int> active_controller_idx_{1}; // Default to PDController (index 1)
-  std::unique_ptr<urtc::DataLogger>      logger_;
-  urtc::ControlLogBuffer                 log_buffer_{};  // Fix 1: SPSC ring buffer
-  urtc::ControllerTimingProfiler         timing_profiler_{};  // Compute() timing
+  std::atomic<int> active_controller_idx_{
+      1}; // Default to PDController (index 1)
+  std::unique_ptr<urtc::DataLogger> logger_;
+  urtc::ControlLogBuffer log_buffer_{};              // Fix 1: SPSC ring buffer
+  urtc::ControllerTimingProfiler timing_profiler_{}; // Compute() timing
 
-  // ── Shared state (guarded by per-domain mutexes) ────────────────────────────
+  // ── Shared state (guarded by per-domain mutexes)
+  // ────────────────────────────
   std::array<double, urtc::kNumRobotJoints> current_positions_{};
   std::array<double, urtc::kNumRobotJoints> current_velocities_{};
   std::array<double, urtc::kNumRobotJoints> target_positions_{};
@@ -599,30 +645,33 @@ class CustomController : public rclcpp::Node {
   std::atomic<bool> target_received_{false};
   std::atomic<bool> hand_data_received_{false};
 
-  rclcpp::Time              last_robot_update_;
-  rclcpp::Time              last_hand_update_;
+  rclcpp::Time last_robot_update_;
+  rclcpp::Time last_hand_update_;
   std::chrono::milliseconds robot_timeout_{100};
   std::chrono::milliseconds hand_timeout_{200};
 
-  // ── Parameters ──────────────────────────────────────────────────────────────
+  // ── Parameters
+  // ──────────────────────────────────────────────────────────────
   double control_rate_{500.0};
-  bool   enable_logging_{true};
-  bool   enable_estop_{true};
-  bool   hand_estop_logged_{false};
+  bool enable_logging_{true};
+  bool enable_estop_{true};
+  bool hand_estop_logged_{false};
 
   double start_time_{0.0};
   std::size_t loop_count_{0};
 };
 
-// ── Entry point ────────────────────────────────────────────────────────────────
-int main(int argc, char** argv) {
+// ── Entry point
+// ────────────────────────────────────────────────────────────────
+int main(int argc, char **argv) {
   // Fix 7: mlockall BEFORE rclcpp::init.
   // MCL_CURRENT locks pages already mapped; MCL_FUTURE ensures every page
   // allocated afterwards (including DDS/RMW heaps) is also locked.
   // Calling mlockall after rclcpp::init leaves the DDS stack unprotected.
   if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
     fprintf(stderr, "[WARN] mlockall failed — page faults possible\n");
-    fprintf(stderr, "       Check: /etc/security/limits.conf @realtime memlock unlimited\n");
+    fprintf(stderr, "       Check: /etc/security/limits.conf @realtime memlock "
+                    "unlimited\n");
   }
 
   rclcpp::init(argc, argv);
@@ -636,24 +685,25 @@ int main(int argc, char** argv) {
   rclcpp::executors::SingleThreadedExecutor aux_executor;
 
   // 3. Add callback groups to respective executors
-  rt_executor.add_callback_group(
-      node->GetRtGroup(), node->get_node_base_interface());
-  sensor_executor.add_callback_group(
-      node->GetSensorGroup(), node->get_node_base_interface());
-  log_executor.add_callback_group(
-      node->GetLogGroup(), node->get_node_base_interface());
-  aux_executor.add_callback_group(
-      node->GetAuxGroup(), node->get_node_base_interface());
+  rt_executor.add_callback_group(node->GetRtGroup(),
+                                 node->get_node_base_interface());
+  sensor_executor.add_callback_group(node->GetSensorGroup(),
+                                     node->get_node_base_interface());
+  log_executor.add_callback_group(node->GetLogGroup(),
+                                  node->get_node_base_interface());
+  aux_executor.add_callback_group(node->GetAuxGroup(),
+                                  node->get_node_base_interface());
 
   // 4. Helper lambda to create thread with RT config
-  auto make_thread = [](auto& executor, const urtc::ThreadConfig& cfg) {
+  auto make_thread = [](auto &executor, const urtc::ThreadConfig &cfg) {
     return std::thread([&executor, cfg]() {
       if (!urtc::ApplyThreadConfig(cfg)) {
-        fprintf(stderr, "[WARN] Thread config failed for '%s' (need realtime permissions)\n",
+        fprintf(stderr,
+                "[WARN] Thread config failed for '%s' (need realtime "
+                "permissions)\n",
                 cfg.name);
       } else {
-        fprintf(stdout, "[INFO] Thread '%s' configured:\n%s",
-                cfg.name,
+        fprintf(stdout, "[INFO] Thread '%s' configured:\n%s", cfg.name,
                 urtc::VerifyThreadConfig().c_str());
       }
       executor.spin();
@@ -664,10 +714,10 @@ int main(int argc, char** argv) {
   // number of online CPUs detected via sysconf(_SC_NPROCESSORS_ONLN).
   const auto cfgs = urtc::SelectThreadConfigs();
 
-  auto t_rt     = make_thread(rt_executor,     cfgs.rt_control);
+  auto t_rt = make_thread(rt_executor, cfgs.rt_control);
   auto t_sensor = make_thread(sensor_executor, cfgs.sensor);
-  auto t_log    = make_thread(log_executor,    cfgs.logging);
-  auto t_aux    = make_thread(aux_executor,    cfgs.aux);
+  auto t_log = make_thread(log_executor, cfgs.logging);
+  auto t_aux = make_thread(aux_executor, cfgs.aux);
 
   // 6. Wait for threads to finish
   t_rt.join();
