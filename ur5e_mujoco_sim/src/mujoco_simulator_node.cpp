@@ -1,5 +1,6 @@
 // ── Includes: project first, then ROS2, then C++ stdlib ──────────────────────
 #include "ur5e_mujoco_sim/mujoco_simulator.hpp"
+#include "ur5e_mujoco_sim/ros2_resource_provider.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -50,6 +51,9 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   MuJoCoSimulatorNode()
       : Node("mujoco_simulator")
   {
+    // Register custom package:// VFS resource provider
+    urtc::RegisterRos2ResourceProvider();
+
     DeclareAndLoadParameters();
     CreateSimulator();
     CreatePublishers();
@@ -106,20 +110,16 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     enable_hand_sim_     = get_parameter("enable_hand_sim").as_bool();
     hand_filter_alpha_   = get_parameter("hand_filter_alpha").as_double();
     sim_mode_            = get_parameter("sim_mode").as_string();
-    publish_decimation_  = get_parameter("publish_decimation").as_int();
+    publish_decimation_  = static_cast<int>(get_parameter("publish_decimation").as_int());
     sync_timeout_ms_     = get_parameter("sync_timeout_ms").as_double();
     max_rtf_             = get_parameter("max_rtf").as_double();
 
-    // Resolve model path: if empty or relative, locate via ament index.
-    if (model_path_.empty() || model_path_[0] != '/') {
-      // Default model is provided by ur5e_description package.
-      // Override with an absolute path via the model_path parameter if needed.
-      const std::string share_dir =
-          ament_index_cpp::get_package_share_directory("ur5e_description");
-      const std::string rel = model_path_.empty()
-                                  ? "robots/ur5e/mjcf/scene.xml"
-                                  : model_path_;
-      model_path_ = share_dir + "/" + rel;
+    // Resolve model path: if empty, default to package:// URI
+    if (model_path_.empty()) {
+      model_path_ = "package://ur5e_description/robots/ur5e/mjcf/scene.xml";
+    } else if (model_path_.find("package://") != 0 && model_path_[0] != '/') {
+      // If someone passed a relative path, assume it's relative to ur5e_description
+      model_path_ = "package://ur5e_description/" + model_path_;
     }
 
     const auto init_vec =
