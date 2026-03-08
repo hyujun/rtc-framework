@@ -6,6 +6,8 @@
 #include <fstream>
 #include <span>
 
+#include <iomanip>
+
 #include "ur5e_rt_base/log_buffer.hpp"
 #include "ur5e_rt_base/types.hpp"
 
@@ -16,7 +18,7 @@ namespace ur5e_rt_controller {
 //
 // All methods are defined inline to keep ur5e_rt_base header-only.
 class DataLogger {
- public:
+public:
   explicit DataLogger(std::filesystem::path log_path) {
     file_.open(log_path);
     if (file_.is_open()) {
@@ -26,25 +28,33 @@ class DataLogger {
 
   ~DataLogger() { Flush(); }
 
-  DataLogger(const DataLogger&)            = delete;
-  DataLogger& operator=(const DataLogger&) = delete;
-  DataLogger(DataLogger&&)                 = default;
-  DataLogger& operator=(DataLogger&&)      = default;
+  DataLogger(const DataLogger &) = delete;
+  DataLogger &operator=(const DataLogger &) = delete;
+  DataLogger(DataLogger &&) = default;
+  DataLogger &operator=(DataLogger &&) = default;
 
   // Log one control step: timestamp (s), current positions, target positions,
   // computed commands (all kNumRobotJoints elements), and optional compute
   // timing in µs (0.0 if profiling is disabled).
-  void LogControlData(
-      double timestamp,
-      std::span<const double, kNumRobotJoints> current_positions,
-      std::span<const double, kNumRobotJoints> target_positions,
-      std::span<const double, kNumRobotJoints> commands,
-      double compute_time_us = 0.0) {
-    if (!file_.is_open()) { return; }
-    file_ << timestamp;
-    for (const auto v : current_positions) { file_ << ',' << v; }
-    for (const auto v : target_positions)  { file_ << ',' << v; }
-    for (const auto v : commands)          { file_ << ',' << v; }
+  void
+  LogControlData(double timestamp,
+                 std::span<const double, kNumRobotJoints> current_positions,
+                 std::span<const double, kNumRobotJoints> target_positions,
+                 std::span<const double, kNumRobotJoints> commands,
+                 double compute_time_us = 0.0) {
+    if (!file_.is_open()) {
+      return;
+    }
+    file_ << std::fixed << std::setprecision(6) << timestamp;
+    for (const auto v : current_positions) {
+      file_ << ',' << v;
+    }
+    for (const auto v : target_positions) {
+      file_ << ',' << v;
+    }
+    for (const auto v : commands) {
+      file_ << ',' << v;
+    }
     file_ << ',' << compute_time_us << '\n';
     ++log_count_;
   }
@@ -55,13 +65,17 @@ class DataLogger {
     // Reserved for future hand logging support.
   }
 
-  void Flush() { if (file_.is_open()) { file_.flush(); } }
+  void Flush() {
+    if (file_.is_open()) {
+      file_.flush();
+    }
+  }
 
   [[nodiscard]] bool IsOpen() const { return file_.is_open(); }
 
   // Drains all pending entries from the ring buffer and writes them to the CSV.
   // Must be called exclusively from the log thread — never from the RT thread.
-  void DrainBuffer(ControlLogBuffer& buf) {
+  void DrainBuffer(ControlLogBuffer &buf) {
     LogEntry entry;
     while (buf.Pop(entry)) {
       LogControlData(entry.timestamp, entry.current_positions,
@@ -70,19 +84,25 @@ class DataLogger {
     }
   }
 
- private:
+private:
   std::ofstream file_;
-  std::size_t   log_count_{0};
+  std::size_t log_count_{0};
 
   void WriteHeader() {
     file_ << "timestamp";
-    for (int i = 0; i < kNumRobotJoints; ++i) { file_ << ",current_pos_" << i; }
-    for (int i = 0; i < kNumRobotJoints; ++i) { file_ << ",target_pos_" << i; }
-    for (int i = 0; i < kNumRobotJoints; ++i) { file_ << ",command_" << i; }
+    for (int i = 0; i < kNumRobotJoints; ++i) {
+      file_ << ",current_pos_" << i;
+    }
+    for (int i = 0; i < kNumRobotJoints; ++i) {
+      file_ << ",target_pos_" << i;
+    }
+    for (int i = 0; i < kNumRobotJoints; ++i) {
+      file_ << ",command_" << i;
+    }
     file_ << ",compute_time_us\n";
   }
 };
 
-}  // namespace ur5e_rt_controller
+} // namespace ur5e_rt_controller
 
-#endif  // UR5E_RT_BASE_DATA_LOGGER_HPP_
+#endif // UR5E_RT_BASE_DATA_LOGGER_HPP_

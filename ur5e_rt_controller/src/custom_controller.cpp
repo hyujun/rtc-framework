@@ -517,8 +517,13 @@ class CustomController : public rclcpp::Node {
     // Fix 1: push log entry to the SPSC ring buffer — O(1), no syscall.
     // DrainLog() (log thread, Core 4) pops entries and writes the CSV file.
     if (enable_logging_) {
+      const double current_time = now().seconds();
+      if (loop_count_ == 0) {
+        start_time_ = current_time;
+      }
+      
       const urtc::LogEntry entry{
-          .timestamp         = now().seconds(),
+          .timestamp         = current_time - start_time_,
           .current_positions = state.robot.positions,
           .target_positions  = target_snapshot_,   // Fix 4: snapshot, not raw member
           .commands          = output.robot_commands,
@@ -605,6 +610,7 @@ class CustomController : public rclcpp::Node {
   bool   enable_estop_{true};
   bool   hand_estop_logged_{false};
 
+  double start_time_{0.0};
   std::size_t loop_count_{0};
 };
 
