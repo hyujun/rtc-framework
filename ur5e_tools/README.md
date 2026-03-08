@@ -1,7 +1,7 @@
 # ur5e_tools
 
-> **Note:** This package is part of the UR5e RT Controller workspace (v5.2.2). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
-UR5e RT Controller 스택의 **Python 개발 유틸리티 패키지**입니다. 궤적 시각화, 데이터 건강 모니터링, 모션 편집 GUI, UDP 손 데이터 생성기를 포함합니다.
+> **Note:** This package is part of the UR5e RT Controller workspace (v5.3.0). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
+UR5e RT Controller 스택의 **Python 개발 유틸리티 패키지**입니다. 궤적 시각화, 데이터 건강 모니터링, 모션 편집 GUI, UDP 손 데이터 생성기, 컨트롤러 GUI를 포함합니다.
 
 ## 개요
 
@@ -13,7 +13,8 @@ ur5e_tools/
 │   ├── motion_editor_gui.py         ← Qt5 50-포즈 모션 편집기 GUI
 │   └── hand_udp_sender_example.py   ← 합성 UDP 손 데이터 생성기
 ├── ur5e_tools/
-│   └── __init__.py
+│   ├── __init__.py
+│   └── controller_gui.py            ← 컨트롤러 GUI (v5.3.0+)
 ├── resource/
 │   └── ur5e_tools
 ├── package.xml
@@ -118,6 +119,33 @@ ros2 run ur5e_tools hand_udp_sender_example.py \
 ```
 
 **전송 패킷**: 77개 `double` (616바이트) — 위치/속도/전류/센서 데이터
+
+---
+
+### `controller_gui.py` — 컨트롤러 GUI (v5.3.0+)
+
+tkinter 기반 다크 테마 GUI. 컨트롤러 선택, 게인 튜닝, 타겟 전송을 단일 창에서 수행합니다.
+
+```bash
+# tkinter는 Python 표준 라이브러리 — 별도 설치 불필요
+ros2 run ur5e_tools controller_gui.py
+```
+
+**ROS2 발행 토픽:**
+| 토픽 | 타입 | 설명 |
+|------|------|------|
+| `/custom_controller/controller_type` | `std_msgs/Int32` | 컨트롤러 전환 명령 |
+| `/custom_controller/controller_gains` | `std_msgs/Float64MultiArray` | 게인 업데이트 |
+| `/target_joint_positions` | `std_msgs/Float64MultiArray` | 타겟 위치 |
+
+**컨트롤러별 게인 입력 형식:**
+| 컨트롤러 | 게인 |
+|----------|------|
+| P (0) | kp |
+| PD (1) | kp, kd |
+| Pinocchio (2) | kp, kd, gravity_comp, coriolis_comp |
+| CLIK (3) | kp, damping, null_kp, enable_null_space |
+| OSC (4) | kp_pos, kd_pos, kp_rot, kd_rot, damping, gravity_comp |
 
 ---
 

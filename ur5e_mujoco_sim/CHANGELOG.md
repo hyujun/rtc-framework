@@ -5,6 +5,43 @@
 
 ---
 
+## [5.3.0] - 2026-03-08
+
+### 추가 (Added) — MuJoCo ROS2 Resource Provider
+
+MJCF 파일 내 `package://` URI를 MuJoCo가 직접 해석할 수 있도록 전역 resource provider를 등록합니다.
+
+#### 신규 파일
+
+| 파일 | 역할 |
+|------|------|
+| `include/ur5e_mujoco_sim/ros2_resource_provider.hpp` | `RegisterRos2ResourceProvider()` 함수 선언 |
+| `src/ros2_resource_provider.cpp` | `mjp_addResourceProvider()` 기반 구현 |
+
+#### 동작 방식
+
+1. `MuJoCoSimulatorNode` 생성 시 `ur5e_rt_controller::RegisterRos2ResourceProvider()` 자동 호출
+2. MuJoCo가 파일 로드 시 `package://<pkg>/<path>` 경로를 감지하면 `ament_index_cpp::get_package_share_directory()` 로 절대경로 변환
+3. 이후 `mj_loadXML()` / `mj_loadModel()`이 변환된 경로로 파일 접근
+
+#### 이점
+
+- MJCF `<mesh file="package://ur5e_description/robots/ur5e/meshes/..."/>` 직접 사용 가능
+- `ur5e_description` 이외 패키지 메시도 동일 방식으로 참조 가능
+- 하드코딩 절대경로 의존성 제거 → 워크스페이스 이동/배포 환경에서 자동 해석
+
+#### CMakeLists.txt 변경
+
+- `ros2_resource_provider.cpp` → `mujoco_simulator_node` 빌드 대상 추가
+- `ament_index_cpp` 의존성 명시 (`find_package` + `target_link_libraries`)
+
+### 변경 (Changed) — 뷰어 개선 (`mujoco_viewer.cpp`)
+
+- `mujoco_viewer.cpp` 렌더링 루프 안정성 개선 (GLFW 창 소멸 전 뷰어 스레드 경쟁 조건 방지)
+- 컨텍스트 전환 타이밍 최적화
+
+---
+
 ## [5.2.2] - 2026-03-07
 
 ### 추가 (Added) — 소스 파일 분리 (관심사 분리)

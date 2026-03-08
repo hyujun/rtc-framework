@@ -5,6 +5,13 @@
 
 ---
 
+## [5.3.0] - 2026-03-08
+
+### 변경
+- 워크스페이스 전체 버전 (v5.3.0) 통일
+
+---
+
 ## [5.2.2] - 2026-03-07
 
 ### 변경
@@ -43,6 +50,7 @@
   - `#include "ur5e_rt_controller/rt_controller_interface.hpp"` → `#include "ur5e_rt_base/types.hpp"` (내부 헤더)
   - `#include "ur5e_rt_controller/thread_config.hpp"` → `#include "ur5e_rt_base/thread_config.hpp"` (내부 헤더)
   - `#include "ur5e_rt_controller/thread_utils.hpp"` → `#include "ur5e_rt_base/thread_utils.hpp"` (내부 헤더)
+ > **Note:** This package is part of the UR5e RT Controller workspace (v5.3.0). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
 - 헤더 가드 변경: `UR5E_RT_CONTROLLER_*` → `UR5E_HAND_UDP_*`
 
 ### 참고

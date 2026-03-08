@@ -1,7 +1,7 @@
 # ur5e_rt_controller
 
-> **Note:** This package is part of the UR5e RT Controller workspace (v5.2.2). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
-UR5e 로봇 팔을 위한 **500Hz 실시간 위치 제어기** ROS2 패키지입니다. SCHED_FIFO 멀티스레드 아키텍처, 전략 패턴 기반 컨트롤러 교체, 잠금-없는 로깅 인프라를 제공합니다.
+> **Note:** This package is part of the UR5e RT Controller workspace (v5.3.0). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
+UR5e 로봇 팔을 위한 **500Hz 실시간 위치 제어기** ROS2 패키지입니다. SCHED_FIFO 멀티스레드 아키텍처, 전략 패턴 기반 컨트롤러 교체, 런타임 컨트롤러 전환, 잠금-없는 로깅 인프라를 제공합니다.
 
 ## 개요
 
@@ -17,7 +17,8 @@ ur5e_rt_controller/
 │       ├── clik_controller.hpp            ← 폐루프 IK (데카르트 3-DOF)
 │       └── operational_space_controller.hpp ← 전체 6-DOF 데카르트 PD + SO(3)
 ├── src/
-│   └── custom_controller.cpp              ← 메인 500Hz 노드 (4 executor, 4 thread)
+│   ├── custom_controller.cpp              ← 메인 500Hz 노드 (4 executor, 4 thread, v5.3.0: 런타임 전환)
+│   └── p_controller.cpp                   ← P 제어기 소스 (v5.3.0+)
 ├── config/
 │   ├── ur5e_rt_controller.yaml           ← 제어기 파라미터
 │   └── cyclone_dds.xml                   ← CycloneDDS 스레드 Core 0-1 제한
@@ -132,6 +133,8 @@ command[i] = Kp * e[i] + Kd * ė[i] + g(q)[i] [+ C(q,v)·v[i]]
 | `/joint_states` | `sensor_msgs/JointState` | UR 드라이버 또는 시뮬레이터에서 6-DOF 위치/속도 |
 | `/target_joint_positions` | `std_msgs/Float64MultiArray` | 6개 목표값 (컨트롤러별 해석 다름) |
 | `/hand/joint_states` | `std_msgs/Float64MultiArray` | UDP 수신기에서 11개 손 모터값 |
+| `/custom_controller/controller_type` | `std_msgs/Int32` | 런타임 컨트롤러 전환 (0=P, 1=PD, 2=Pinocchio, 3=CLIK, 4=OSC) |
+| `/custom_controller/controller_gains` | `std_msgs/Float64MultiArray` | 컨트롤러별 게인 동적 업데이트 |
 
 ### 퍼블리시 토픽
 
