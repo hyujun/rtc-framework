@@ -91,13 +91,13 @@ class OperationalSpaceController final : public RTControllerInterface {
   /// @param gains      PD gains and feature flags.
   /// @throws std::runtime_error  if the URDF cannot be parsed.
   explicit OperationalSpaceController(std::string_view urdf_path,
-                                       Gains gains = {});
+                                       Gains gains);
 
   // ── RTControllerInterface — all methods are noexcept (RT safety) ──────────
   [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;
 
-  void SetRobotTarget(std::span<const double> target) noexcept override;
-  void SetHandTarget(std::span<const double> target)  noexcept override;
+  void SetRobotTarget(std::span<const double, kNumRobotJoints> target) noexcept override;
+  void SetHandTarget(std::span<const double, kNumHandJoints> target)  noexcept override;
 
   [[nodiscard]] std::string_view Name() const noexcept override;
 
@@ -290,10 +290,10 @@ inline ControllerOutput OperationalSpaceController::Compute(
 }
 
 inline void OperationalSpaceController::SetRobotTarget(
-    std::span<const double> target) noexcept {
+    std::span<const double, kNumRobotJoints> target) noexcept {
   // target[0..2] = desired TCP position [x, y, z]
   // target[3..5] = desired TCP orientation [roll, pitch, yaw]
-  const std::size_t n = std::min(target.size(), std::size_t{6});
+  const std::size_t n = 6;
   for (std::size_t i = 0; i < n; ++i) {
     pose_target_[i] = target[i];
   }
@@ -305,8 +305,8 @@ inline void OperationalSpaceController::SetRobotTarget(
 }
 
 inline void OperationalSpaceController::SetHandTarget(
-    std::span<const double> target) noexcept {
-  const std::size_t n = std::min(target.size(), kNumHandJoints);
+    std::span<const double, kNumHandJoints> target) noexcept {
+  const std::size_t n = kNumHandJoints;
   for (std::size_t i = 0; i < n; ++i) {
     hand_target_[i] = target[i];
   }

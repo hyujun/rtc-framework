@@ -80,13 +80,13 @@ class ClikController final : public RTControllerInterface {
   /// @param urdf_path  Absolute path to the UR5e URDF file.
   /// @param gains      Gains and feature flags.
   /// @throws std::runtime_error  if the URDF cannot be parsed.
-  explicit ClikController(std::string_view urdf_path, Gains gains = {});
+  explicit ClikController(std::string_view urdf_path, Gains gains);
 
   // ── RTControllerInterface — all methods are noexcept (RT safety) ──────────
   [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;
 
-  void SetRobotTarget(std::span<const double> target) noexcept override;
-  void SetHandTarget(std::span<const double> target)  noexcept override;
+  void SetRobotTarget(std::span<const double, kNumRobotJoints> target) noexcept override;
+  void SetHandTarget(std::span<const double, kNumHandJoints> target)  noexcept override;
 
   [[nodiscard]] std::string_view Name() const noexcept override;
 
@@ -252,21 +252,21 @@ inline ControllerOutput ClikController::Compute(
 }
 
 inline void ClikController::SetRobotTarget(
-    std::span<const double> target) noexcept {
+    std::span<const double, kNumRobotJoints> target) noexcept {
   // First 3 values: Cartesian [x, y, z]
-  const std::size_t n_cart = std::min(target.size(), std::size_t{3});
+  const std::size_t n_cart = 3;
   for (std::size_t i = 0; i < n_cart; ++i) {
     tcp_target_[i] = target[i];
   }
   // Values 3..5: null-space reference for joints 3, 4, 5
-  for (std::size_t i = 3; i < std::min(target.size(), kNumRobotJoints); ++i) {
+  for (std::size_t i = 3; i < kNumRobotJoints; ++i) {
     null_target_[i] = target[i];
   }
 }
 
 inline void ClikController::SetHandTarget(
-    std::span<const double> target) noexcept {
-  const std::size_t n = std::min(target.size(), kNumHandJoints);
+    std::span<const double, kNumHandJoints> target) noexcept {
+  const std::size_t n = kNumHandJoints;
   for (std::size_t i = 0; i < n; ++i) {
     hand_target_[i] = target[i];
   }
