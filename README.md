@@ -5,7 +5,7 @@
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 ![ROS2 Jazzy](https://img.shields.io/badge/ROS2-Jazzy-green)
 
-**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.2.2)**
+**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.3.0)**
 
 E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종**, **MuJoCo 3.x 물리 시뮬레이터**, UDP 핸드 인터페이스, CSV 데이터 로깅, Qt GUI 모션 에디터를 포함한 완전한 실시간 제어 솔루션입니다.
 
@@ -18,6 +18,8 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 > **v5.2.1 (빌드 버그픽스)**: MuJoCo binary tarball 설치 시 `lib/cmake/mujoco/` 부재로 cmake 탐지가 실패하던 문제 수정. `install.sh`는 `-Dmujoco_ROOT`를 전달하고, `CMakeLists.txt`는 `find_library` 폴백으로 `.so` 파일을 직접 탐지합니다.
 >
 > **v5.2.2 (ROS 2 Jazzy 마이그레이션 + 다중 개선)**: `ur5e_description` 패키지 신규 추가 (MJCF/URDF/메시 통합 관리), 로깅 경로 동적 해석 (`~/ros2_ws/ur5e_ws/logging_data`), `build.sh` 빌드 스크립트 추가, `ros-jazzy-rmw-cyclonedds-cpp` 의존성 추가, `mujoco_simulator_node.cpp` → 3개 파일 분리(`mujoco_sim_loop.cpp`, `mujoco_viewer.cpp`), `solver_niter`(`int*`) island별 합산 수정.
+>
+> **v5.3.0 (멀티 컨트롤러 런타임 전환 + GUI 게인 튜닝)**: 런타임에 P/PD/Pinocchio/CLIK/OSC 컨트롤러를 ROS2 토픽으로 전환 가능. `controller_gui.py` (tkinter) 신규 — 컨트롤러 선택, 게인 슬라이더, 타겟 전송을 단일 GUI로 통합. MuJoCo `package://` URI 네이티브 지원 (ROS2 resource provider 등록).
 
 ---
 
@@ -51,6 +53,9 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 | MuJoCo 시뮬레이션 | FreeRun / SyncStep 모드, GLFW 뷰어, RTF 측정 (v4.4.0+) |
 | 인터랙티브 뷰어 | 마우스 카메라, 키보드 단축키, Ctrl+드래그 물체 힘 인가, F1 도움말 (v4.5.0+) |
 | Solver 제어 | runtime에 integrator / solver type / iterations / tolerance 조정 (v4.5.0+) |
+| 런타임 컨트롤러 전환 | ROS2 토픽으로 P/PD/Pinocchio/CLIK/OSC 간 즉시 전환 (v5.3.0+) |
+| GUI 게인 튜닝 | tkinter 기반 `controller_gui.py` — 컨트롤러 선택·게인 설정·타겟 전송 (v5.3.0+) |
+| MuJoCo `package://` URI | ROS2 resource provider 등록으로 MJCF 내 패키지 URI 네이티브 지원 (v5.3.0+) |
 | 커스텀 핸드 통합 | UDP 기반 11-DOF 핸드 데이터 수신/송신 |
 | 데이터 로깅 | CSV 형식의 제어 데이터 실시간 기록 (`DataLogger` + SPSC 링 버퍼) |
 | 데이터 시각화 | Matplotlib 기반 관절 궤적 플롯 (`plot_ur_trajectory.py`) |
@@ -116,13 +121,18 @@ ur5e-rt-controller/
 │
 ├── ur5e_hand_udp/                         # 📦 UDP 손 브리지
 ├── ur5e_mujoco_sim/                       # 📦 MuJoCo 3.x 시뮬레이터 (선택적)
+│   ├── include/ur5e_mujoco_sim/
+│   │   └── ros2_resource_provider.hpp    # package:// URI provider 등록 (v5.3.0+)
 │   ├── src/
 │   │   ├── mujoco_simulator.cpp          # 생명주기 및 I/O
 │   │   ├── mujoco_sim_loop.cpp           # 물리 루프 (FreeRun/SyncStep)
 │   │   ├── mujoco_viewer.cpp             # GLFW 뷰어 루프 (~60Hz)
-│   │   └── mujoco_simulator_node.cpp     # ROS2 노드 래퍼
+│   │   ├── mujoco_simulator_node.cpp     # ROS2 노드 래퍼
+│   │   └── ros2_resource_provider.cpp    # package:// URI 해석 구현 (v5.3.0+)
 │   └── ...
 └── ur5e_tools/                            # 📦 Python 개발 유틸리티
+    └── ur5e_tools/
+        └── controller_gui.py              # 컨트롤러 GUI (v5.3.0+)
 ```
 
 ### 패키지 의존성 그래프
@@ -725,6 +735,23 @@ GUI 사용법:
 5. **파일 저장**: File → Save Motion to JSON (50개 포즈 JSON 백업)
 6. **파일 로드**: File → Load Motion from JSON
 
+### 컨트롤러 GUI (v5.3.0+)
+
+```bash
+# 컨트롤러 GUI 실행 (tkinter, 별도 설치 불필요)
+ros2 run ur5e_tools controller_gui.py
+```
+
+GUI 기능:
+1. **컨트롤러 선택**: P / PD / Pinocchio / CLIK / OSC 중 라디오 버튼으로 선택
+2. **컨트롤러 전환**: "Switch Controller" 클릭 → `/custom_controller/controller_type` 토픽 발행
+3. **게인 설정**: 컨트롤러별 파라미터 입력 필드(게인값) + 체크박스(bool 플래그)
+4. **게인 적용**: "Apply Gains" 클릭 → `/custom_controller/controller_gains` 토픽 발행
+5. **타겟 설정**: 관절 각도(관절 공간) 또는 TCP 위치(Cartesian 공간) 직접 입력
+6. **현재 위치 표시**: `/joint_states` 구독 → 5Hz 주기로 실시간 갱신
+7. **Copy Current → Target**: 현재 관절 위치를 타겟 필드에 복사
+8. **Send Command**: `/target_joint_positions` 토픽으로 타겟 발행
+
 ### 데이터 시각화
 
 ```bash
@@ -826,9 +853,11 @@ monitoring:
 | 토픽 | 타입 | 발행자 | 설명 |
 |------|------|--------|------|
 | `/joint_states` | `sensor_msgs/JointState` | UR 드라이버 | 6-DOF 관절 위치/속도/힘 |
-| `/target_joint_positions` | `std_msgs/Float64MultiArray` | 외부 노드 | 목표 관절 위치 (6개 값, rad) |
+| `/target_joint_positions` | `std_msgs/Float64MultiArray` | 외부 노드 / GUI | 목표 관절 위치 (6개 값, rad) |
 | `/hand/joint_states` | `std_msgs/Float64MultiArray` | `hand_udp_receiver_node` | 핸드 모터 위치 (**11개** 값) |
 | `/hand/command` | `std_msgs/Float64MultiArray` | 외부 노드 | 핸드 명령 (11개 값, 정규화 0.0–1.0) |
+| `/custom_controller/controller_type` | `std_msgs/Int32` | GUI | 컨트롤러 전환 (0=P, 1=PD, 2=Pinocchio, 3=CLIK, 4=OSC) |
+| `/custom_controller/controller_gains` | `std_msgs/Float64MultiArray` | GUI | 컨트롤러별 게인 동적 업데이트 |
 
 ### 발행 토픽
 
@@ -1204,6 +1233,7 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 
 | 버전 | 주요 변경사항 |
 |------|---------------|
+| **v5.3.0** | 런타임 컨트롤러 전환 (P/PD/Pinocchio/CLIK/OSC `controller_type` 토픽), `controller_gains` 토픽으로 동적 게인 업데이트, `controller_gui.py` tkinter GUI 신규, MuJoCo `package://` URI 네이티브 지원 (`Ros2ResourceProvider`) |
 | **v5.2.2** | `ur5e_description` 패키지 신규 추가 (MJCF/URDF/메시 통합), 로깅 경로 동적 해석, `build.sh` 추가, `rmw_cyclonedds_cpp` 의존성, 소스 파일 분리(`mujoco_sim_loop.cpp`, `mujoco_viewer.cpp`), `solver_niter` island 합산 수정, ROS 2 Jazzy 지원 |
 | **v5.2.1** | MuJoCo binary tarball cmake 탐지 수정: `install.sh` `-Dmujoco_DIR`→`-Dmujoco_ROOT`, `CMakeLists.txt` `find_library` 폴백 추가 |
 | **v5.2.0** | `ur5e_rt_base/filters/` 추가: 4차 Bessel LPF (`BesselFilterN<N>`) + 이산-시간 Kalman 필터 (`KalmanFilterN<N>`) — 모두 noexcept, RT 안전 |
@@ -1217,5 +1247,5 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 | v4.0.0 | E-STOP 시스템, 핸드/로봇 타임아웃 감시, 표준 ROS2 구조 |
 | v1.0.0 | 초기 릴리스, P/PD 제어기, 기본 ROS2 노드 |
 
-**최종 업데이트**: 2026-03-07
-**현재 버전**: v5.2.2
+**최종 업데이트**: 2026-03-08
+**현재 버전**: v5.3.0

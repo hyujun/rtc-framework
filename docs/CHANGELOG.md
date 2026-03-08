@@ -5,6 +5,87 @@
 
 ---
 
+## [5.3.0] - 2026-03-08
+
+### 추가 (Added) — 런타임 멀티 컨트롤러 전환
+
+`custom_controller.cpp`에 ROS2 토픽을 통한 런타임 컨트롤러 전환 기능이 추가되었습니다.
+재빌드 없이 다섯 가지 컨트롤러를 즉시 교체할 수 있습니다.
+
+#### 새 구독 토픽
+
+| 토픽 | 타입 | 설명 |
+|------|------|------|
+| `/custom_controller/controller_type` | `std_msgs/Int32` | 0=P, 1=PD, 2=Pinocchio, 3=CLIK, 4=OSC |
+| `/custom_controller/controller_gains` | `std_msgs/Float64MultiArray` | 컨트롤러별 게인 동적 업데이트 |
+
+#### 게인 페이로드 규약
+
+| 컨트롤러 | 게인 순서 |
+|----------|----------|
+| P (0) | `[kp]` |
+| PD (1) | `[kp, kd]` |
+| Pinocchio (2) | `[kp, kd, gravity_comp(0/1), coriolis_comp(0/1)]` |
+| CLIK (3) | `[kp, damping, null_kp, enable_null_space(0/1)]` |
+| OSC (4) | `[kp_pos, kd_pos, kp_rot, kd_rot, damping, gravity_comp(0/1)]` |
+
+#### `ur5e_rt_controller/src/p_controller.cpp` 신규
+
+단순 비례 제어기 소스 파일 추가 (저수준 테스트 및 gain 조율용):
+```
+command[i] = Kp * e[i]
+```
+
+### 추가 (Added) — `controller_gui.py` (tkinter 기반 컨트롤러 GUI)
+
+`ur5e_tools` 패키지에 `ur5e_tools/controller_gui.py` 신규 추가.
+
+```bash
+ros2 run ur5e_tools controller_gui.py
+```
+
+**주요 기능:**
+- **컨트롤러 선택**: P / PD / Pinocchio / CLIK / OSC 라디오 버튼
+- **Switch Controller**: `/custom_controller/controller_type` Int32 퍼블리시 → `custom_controller`가 런타임 교체
+- **게인 패널**: 컨트롤러 유형 변경 시 자동 재빌드 (게인 값 = `Entry`, bool 플래그 = `Checkbutton`)
+- **Apply Gains**: `/custom_controller/controller_gains` Float64MultiArray 퍼블리시
+- **위치 테이블**: Axis / Target(직접 입력) / Current(실시간 표시) 3열 구성, 5Hz 갱신
+- **Copy Current → Target**: `/joint_states` 에서 읽은 현재 위치를 타겟 필드에 복사
+- **Send Command**: `/target_joint_positions` 퍼블리시
+- 관절 공간 컨트롤러로 전환 시 타겟 필드를 현재 위치로 자동 채움 (과도 응답 방지)
+- Catppuccin Mocha 다크 테마 (bg `#1e1e2e`, accent `#89b4fa`)
+
+**`ur5e_tools/setup.py`**: `controller_gui.py` 실행 파일로 등록 추가
+
+### 추가 (Added) — MuJoCo ROS2 Resource Provider (`ur5e_mujoco_sim`)
+
+MJCF 파일 내 `package://` URI를 MuJoCo가 네이티브로 해석할 수 있도록 전역 resource provider를 등록합니다.
+
+#### 신규 파일
+
+| 파일 | 역할 |
+|------|------|
+| `include/ur5e_mujoco_sim/ros2_resource_provider.hpp` | `RegisterRos2ResourceProvider()` 선언 |
+| `src/ros2_resource_provider.cpp` | `mjpResourceProvider` 등록 구현 (`ament_index_cpp` 활용) |
+
+#### 동작 방식
+
+1. `MuJoCoSimulatorNode` 초기화 시 `RegisterRos2ResourceProvider()` 호출
+2. MuJoCo의 `mjp_addResourceProvider()`에 커스텀 핸들러 등록
+3. `mj_loadXML()` / `mj_loadModel()` 호출 시 `package://<pkg>/<path>` 형식의 경로를 자동으로 `ament_index_cpp::get_package_share_directory()` 기반 절대 경로로 변환
+
+#### 효과
+
+- MJCF `<mesh file="package://ur5e_description/robots/ur5e/..."/>` 직접 사용 가능
+- 하드코딩 경로 제거 — 패키지 재배치 및 배포 환경에서 경로 자동 해석
+
+#### `ur5e_mujoco_sim/CMakeLists.txt` 변경
+
+- `ros2_resource_provider.cpp` → `mujoco_simulator_node` 빌드 대상에 추가
+- `ament_index_cpp` 의존성 명시 추가
+
+---
+
 ## [5.2.2] - 2026-03-07
 
 ### 추가 (Added) — `ur5e_description` 신규 패키지

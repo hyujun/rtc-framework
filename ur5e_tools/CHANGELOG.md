@@ -5,6 +5,29 @@
 
 ---
 
+## [5.3.0] - 2026-03-08
+
+### 추가 (Added) — `controller_gui.py` 컨트롤러 GUI
+
+`ur5e_tools/controller_gui.py` 신규 추가. tkinter 기반 다크 테마 GUI로 컨트롤러 전환·게인 튜닝·타겟 전송을 단일 창에서 수행합니다.
+
+**ROS2 인터페이스:**
+- **구독**: `/joint_states` → 현재 관절 위치 실시간 표시 (5Hz)
+- **발행**:
+  - `/custom_controller/controller_type` (`Int32`) — 컨트롤러 교체
+  - `/custom_controller/controller_gains` (`Float64MultiArray`) — 게인 업데이트
+  - `/target_joint_positions` (`Float64MultiArray`) — 타겟 위치 전송
+
+**주요 UI 요소:**
+- 컨트롤러 라디오 버튼 (P / PD / Pinocchio / CLIK / OSC)
+- 동적 게인 패널 (컨트롤러 전환 시 자동 재구성)
+- 3열 위치 테이블 (Axis 이름 / Target 입력 / Current 표시)
+- Switch / Apply Gains / Copy Current→Target / Send Command 동작 버튼
+
+**`setup.py` 변경:** `controller_gui.py`를 `lib/ur5e_tools/` 실행 파일로 추가 등록
+
+---
+
 ## [5.2.2] - 2026-03-07
 
 ### 변경

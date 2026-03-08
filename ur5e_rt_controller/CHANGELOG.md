@@ -5,6 +5,32 @@
 
 ---
 
+## [5.3.0] - 2026-03-08
+
+### 추가 (Added) — 런타임 컨트롤러 전환 및 동적 게인 설정
+
+#### `src/custom_controller.cpp` — 컨트롤러 스위칭 구독자
+
+- `/custom_controller/controller_type` (`std_msgs/Int32`) 구독자 추가
+  - 0 = `PController`, 1 = `PDController`, 2 = `PinocchioController`, 3 = `ClikController`, 4 = `OperationalSpaceController`
+  - 전환 시 현재 관절 위치로 신규 컨트롤러의 타겟 초기화 (과도 응답 방지)
+- `/custom_controller/controller_gains` (`std_msgs/Float64MultiArray`) 구독자 추가
+  - 컨트롤러별 게인 페이로드로 `set_gains()` 호출
+  - 전환/런타임 중 모두 지원
+
+#### `src/p_controller.cpp` — 단순 P 제어기 소스 추가
+
+- `PController` (헤더 `p_controller.hpp`)의 구현 파일 분리
+- 저수준 테스트 및 게인 곡선 확인 용도
+- E-STOP 무시, 단순 비례 제어: `command[i] = Kp * e[i]`
+
+#### Pinocchio 제어기 헤더 공통 변경
+
+- `PinocchioController`, `ClikController`, `OperationalSpaceController` 헤더에 게인 수신 후 적용을 위한 `set_gains(const Gains&)` noexcept 메서드 정비
+- 스레드 안전성: 게인 업데이트는 sensor 스레드에서, Compute()는 RT 스레드에서 — 게인 구조체는 `std::atomic` 또는 뮤텍스 없이 복사-on-read 방식으로 적용
+
+---
+
 ## [5.2.2] - 2026-03-07
 
 ### 추가 (Added) — ROS 2 Jazzy 파라미터 파싱 호환성
