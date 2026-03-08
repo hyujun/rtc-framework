@@ -20,7 +20,7 @@ mujoco_simulator:
     #               Set enable_estop: false in custom_controller config!
     # "sync_step" — publish state → wait for command → step (1:1 sync).
     #               Step latency ≈ Compute() time → direct timing measurement.
-    sim_mode: "free_run"
+    sim_mode: "sync_step"
 
     # free_run only: publish /joint_states every N physics steps.
     # Increase to reduce DDS traffic when the sim runs much faster than 500 Hz.
