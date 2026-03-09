@@ -27,8 +27,11 @@ find_package(ament_index_cpp REQUIRED)
 # ── custom_controller ──────────────────────────────────────────────────────────
 add_executable(custom_controller
   src/custom_controller.cpp
-  src/pd_controller.cpp
-  src/p_controller.cpp
+  src/controllers/pd_controller.cpp
+  src/controllers/p_controller.cpp
+  src/controllers/pinocchio_controller.cpp
+  src/controllers/clik_controller.cpp
+  src/controllers/operational_space_controller.cpp
 )
 target_include_directories(custom_controller PRIVATE include)
 ament_target_dependencies(custom_controller

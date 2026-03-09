@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include <algorithm> // std::min_element, std::max_element
+#include <cmath>     // std::sqrt
 #include <cstring>
 #include <map>     // std::map
 #include <numeric> // std::accumulate
