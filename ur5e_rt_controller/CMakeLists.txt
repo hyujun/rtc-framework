@@ -25,8 +25,8 @@ find_package(ur5e_rt_base REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
-# ── custom_controller ──────────────────────────────────────────────────────────
-add_executable(custom_controller
+# ── rt_controller ──────────────────────────────────────────────────────────────
+add_executable(rt_controller
   src/rt_controller_node.cpp
   src/rt_controller_main.cpp
   src/controllers/pd_controller.cpp
@@ -35,18 +35,18 @@ add_executable(custom_controller
   src/controllers/clik_controller.cpp
   src/controllers/operational_space_controller.cpp
 )
-target_include_directories(custom_controller PRIVATE include)
-ament_target_dependencies(custom_controller
+target_include_directories(rt_controller PRIVATE include)
+ament_target_dependencies(rt_controller
   rclcpp
   std_msgs
   sensor_msgs
   ur5e_rt_base
   ament_index_cpp
 )
-target_link_libraries(custom_controller pinocchio::pinocchio yaml-cpp)
+target_link_libraries(rt_controller pinocchio::pinocchio yaml-cpp)
 
 # ── Install ────────────────────────────────────────────────────────────────────
-install(TARGETS custom_controller
+install(TARGETS rt_controller
   DESTINATION lib/${PROJECT_NAME}
 )
 

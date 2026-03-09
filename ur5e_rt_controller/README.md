@@ -140,8 +140,8 @@ command[i] = Kp * e[i] + Kd * ė[i] + g(q)[i] [+ C(q,v)·v[i]]
 | `/joint_states` | `sensor_msgs/JointState` | UR 드라이버 또는 시뮬레이터에서 6-DOF 위치/속도 |
 | `/target_joint_positions` | `std_msgs/Float64MultiArray` | 6개 목표값 (컨트롤러별 해석 다름) |
 | `/hand/joint_states` | `std_msgs/Float64MultiArray` | UDP 수신기에서 11개 손 모터값 |
-| `/custom_controller/controller_type` | `std_msgs/Int32` | 런타임 컨트롤러 전환 (0=P, 1=PD, 2=Pinocchio, 3=CLIK, 4=OSC) |
-| `/custom_controller/controller_gains` | `std_msgs/Float64MultiArray` | 컨트롤러별 게인 동적 업데이트 |
+| `/rt_controller/controller_type` | `std_msgs/Int32` | 런타임 컨트롤러 전환 (0=P, 1=PD, 2=Pinocchio, 3=CLIK, 4=OSC) |
+| `/rt_controller/controller_gains` | `std_msgs/Float64MultiArray` | 컨트롤러별 게인 동적 업데이트 |
 
 ### 퍼블리시 토픽
 
@@ -229,7 +229,7 @@ ros2 topic echo /system/estop_status
 ros2 control list_controllers -v
 
 # RT 스레드 확인
-PID=$(pgrep -f custom_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
+PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 ```
 
 ### CSV 로그 분석

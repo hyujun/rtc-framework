@@ -44,9 +44,9 @@ namespace ur5e_rt_controller
 /// allocation occurs on the 500 Hz RT path.  Pinocchio algorithms use
 /// only internally-pre-allocated Data members, also heap-free at runtime.
 ///
-/// ### Usage — replace PDController in custom_controller.cpp
+/// ### Usage — replace PDController in rt_controller.cpp
 /// @code
-///   // 1. Add at the top of custom_controller.cpp:
+///   // 1. Add at the top of rt_controller.cpp:
 ///   //    #include "ur5e_rt_controller/controllers/pinocchio_controller.hpp"
 ///
 ///   // 2. Change the controller_ member type (in class CustomController):

@@ -98,9 +98,9 @@ class ControllerGUI(Node):
         self.cmd_pub = self.create_publisher(
             Float64MultiArray, '/target_joint_positions', 10)
         self.type_pub = self.create_publisher(
-            Int32, '/custom_controller/controller_type', 10)
+            Int32, '/rt_controller/controller_type', 10)
         self.gains_pub = self.create_publisher(
-            Float64MultiArray, '/custom_controller/controller_gains', 10)
+            Float64MultiArray, '/rt_controller/controller_gains', 10)
 
         # Subscriptions
         self.current_positions = [0.0] * NUM_JOINTS

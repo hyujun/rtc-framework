@@ -221,7 +221,7 @@ std::vector<ControllerEntry> MakeControllerEntries()
 `CMakeLists.txt` 에서 `target_sources` 에 추가합니다:
 
 ```cmake
-target_sources(custom_controller PRIVATE
+target_sources(rt_controller PRIVATE
   src/controllers/p_controller.cpp
   src/controllers/pd_controller.cpp
   src/controllers/pinocchio_controller.cpp
@@ -247,10 +247,10 @@ target_sources(custom_controller PRIVATE
 
 ```bash
 # 인덱스로 전환 (등록 순서 기준, 0부터 시작)
-ros2 topic pub /custom_controller/controller_type std_msgs/msg/Int32 "data: 5"
+ros2 topic pub /rt_controller/controller_type std_msgs/msg/Int32 "data: 5"
 
 # 게인 업데이트 (UpdateGainsFromMsg 레이아웃 참고)
-ros2 topic pub /custom_controller/controller_gains std_msgs/msg/Float64MultiArray \
+ros2 topic pub /rt_controller/controller_gains std_msgs/msg/Float64MultiArray \
   "data: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0]"
 ```
 

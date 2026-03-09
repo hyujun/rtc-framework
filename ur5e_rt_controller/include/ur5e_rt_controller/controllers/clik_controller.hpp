@@ -57,7 +57,7 @@ namespace ur5e_rt_controller
 ///   - `target[3..5]` = null-space reference joints 3–5 (rad);
 ///                      joints 0–2 use `kNullTarget` as reference
 ///
-/// ### Usage — swap into custom_controller.cpp
+/// ### Usage — swap into rt_controller.cpp
 /// @code
 ///   // 1. Include this header instead of pd_controller.hpp
 ///   // 2. Change controller_ member type to RTControllerInterface

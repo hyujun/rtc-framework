@@ -49,7 +49,7 @@ ros2 topic hz /forward_position_controller/commands   # should be ~500Hz
 ros2 topic echo /system/estop_status                  # true = E-STOP active
 ros2 topic echo /sim/status                           # MuJoCo: steps + sim_time
 ros2 control list_controllers -v
-PID=$(pgrep -f custom_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
+PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 ```
 
 **Manually publish a target pose**:
@@ -519,8 +519,8 @@ mujoco_simulator:
     enable_hand_sim: true      # Simulate hand with 1st-order filter
     hand_filter_alpha: 0.1     # Filter coefficient per 10ms tick
 
-# Overrides custom_controller params when launched via mujoco_sim.launch.py
-custom_controller:
+# Overrides rt_controller params when launched via mujoco_sim.launch.py
+rt_controller:
   ros__parameters:
     enable_estop: false        # Prevents false E-STOPs in free_run mode
     robot_timeout_ms: 10000.0
@@ -539,7 +539,7 @@ custom_controller:
 | `use_fake_hardware` | `false` | Simulation mode (no physical robot) |
 | `use_cpu_affinity` | `true` | Pin ur_ros2_driver to Core 0-1 via taskset (3s after launch) |
 
-Launches: UR robot driver (ur5e), `custom_controller` node (params from `ur5e_rt_controller.yaml`), `data_health_monitor` node (10Hz check rate, 0.2s timeout threshold).
+Launches: UR robot driver (ur5e), `rt_controller` node (params from `ur5e_rt_controller.yaml`), `data_health_monitor` node (10Hz check rate, 0.2s timeout threshold).
 
 Also sets environment variables automatically:
 - `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`
@@ -558,7 +558,7 @@ Also sets environment variables automatically:
 | `kp` | `5.0` | PD controller proportional gain |
 | `kd` | `0.5` | PD controller derivative gain |
 
-Launches: `mujoco_simulator_node`, `custom_controller`, `data_health_monitor`.
+Launches: `mujoco_simulator_node`, `rt_controller`, `data_health_monitor`.
 
 ### `launch/hand_udp.launch.py` — Hand UDP Only
 
@@ -643,7 +643,7 @@ my_controller:
 {"my_controller", [](const std::string &) { return std::make_unique<urtc::MyController>(); }},
 ```
 
-No CMakeLists changes needed for header-only controllers. `PinocchioController`, `ClikController`, and `OperationalSpaceController` require Pinocchio (already linked via `target_link_libraries(custom_controller pinocchio::pinocchio)`). If your controller has a `.cpp` file, add it to `target_sources` in `CMakeLists.txt`.
+No CMakeLists changes needed for header-only controllers. `PinocchioController`, `ClikController`, and `OperationalSpaceController` require Pinocchio (already linked via `target_link_libraries(rt_controller pinocchio::pinocchio)`). If your controller has a `.cpp` file, add it to `target_sources` in `CMakeLists.txt`.
 
 ---
 
@@ -727,10 +727,10 @@ For detailed RT tuning (CPU isolation, kernel parameters, DDS configuration, IRQ
 |---|---|
 | v5.6.0 | MuJoCo viewer 전면 확장: `src/viewer/` 디렉토리 신설 (`viewer_state.hpp`, `viewer_loop.cpp`, `viewer_callbacks.cpp`, `viewer_overlays.cpp`). 신규 키: `→`(단진), `TAB`(카메라), `J/U/E/W/L/A/X`(시각화), `0-5`(geomgroup), `F5-F8`(렌더링), `F9`(sensor), `F10`(modelinfo), `P`(screenshot). 마우스: double-click(body선택), Ctrl+Drag(force/torque), Middle drag(zoom), Shift+drag(수평). Help 2페이지 분할. `StepOnce()` / `GetSimMode()` API 추가. |
 | v5.5.1 | 플롯 저장 경로 변경: `~/ur_plots` → `logging_data/ur_plot` |
-| v5.5.0 | Script enhancements: `build.sh` and `install.sh` parameter parsing & advanced options (`-c`, `-p`, `--skip-deps`, etc.). Source split: `custom_controller.cpp` → `rt_controller_node.hpp` + `.cpp` + `main.cpp`. Renamed `CustomController` → `RtControllerNode`. Fast modular math for `SpscLogBuffer`. |
+| v5.5.0 | Script enhancements: `build.sh` and `install.sh` parameter parsing & advanced options (`-c`, `-p`, `--skip-deps`, etc.). Source split: `rt_controller.cpp` → `rt_controller_node.hpp` + `.cpp` + `main.cpp`. Renamed `CustomController` → `RtControllerNode`. Fast modular math for `SpscLogBuffer`. |
 | v5.5.0 | Script enhancements:  and  parameter parsing & advanced options (, , , etc.). Source split:  →  +  + . Renamed  → . Fast modular math for . |
 | v5.4.0 | Controller Registry pattern: `MakeControllerEntries()` factory list, `LoadConfig()` + `UpdateGainsFromMsg()` hooks on `RTControllerInterface`, per-controller YAML loading loop replaces 80-line boilerplate, `switch`/`dynamic_cast` gains handler replaced by single virtual dispatch. New guide: `docs/ADDING_CONTROLLER.md` |
-| v5.3.0 | Runtime controller switching (P/PD/Pinocchio/CLIK/OSC via `/custom_controller/controller_type` topic), `controller_gains` topic for dynamic gain updates, `controller_gui.py` tkinter GUI, MuJoCo `package://` URI support (`Ros2ResourceProvider`), quintic trajectory subsystem (`QuinticPolynomial`, `TaskSpaceTrajectory`, `JointSpaceTrajectory<N>`) |
+| v5.3.0 | Runtime controller switching (P/PD/Pinocchio/CLIK/OSC via `/rt_controller/controller_type` topic), `controller_gains` topic for dynamic gain updates, `controller_gui.py` tkinter GUI, MuJoCo `package://` URI support (`Ros2ResourceProvider`), quintic trajectory subsystem (`QuinticPolynomial`, `TaskSpaceTrajectory`, `JointSpaceTrajectory<N>`) |
 | v5.2.2 | `ur5e_description` package (MJCF/URDF/mesh), dynamic log path (`~/ros2_ws/ur5e_ws/logging_data`), `build.sh`, `rmw_cyclonedds_cpp`, source split (`mujoco_sim_loop.cpp`, `mujoco_viewer.cpp`), `solver_niter` island fix, ROS2 Jazzy |
 | v5.2.1 | MuJoCo binary tarball cmake fix: `-Dmujoco_ROOT`, `find_library` fallback |
 | v5.2.0 | RT-safe filter library: `BesselFilterN<N>` + `KalmanFilterN<N>` in `ur5e_rt_base/filters/` |

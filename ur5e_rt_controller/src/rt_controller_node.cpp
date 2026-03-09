@@ -78,7 +78,7 @@ std::vector<ControllerEntry> MakeControllerEntries()
 
 // ── Constructor / destructor ──────────────────────────────────────────────────
 RtControllerNode::RtControllerNode()
-: Node("custom_controller"), logger_(nullptr)
+: Node("rt_controller"), logger_(nullptr)
 {
   CreateCallbackGroups();
   DeclareAndLoadParameters();

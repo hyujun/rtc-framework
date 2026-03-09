@@ -123,7 +123,7 @@ mujoco_simulator:
     hand_filter_alpha: 0.1     # 필터 계수 (10ms 틱당)
 
 # ur5e_rt_controller 파라미터 오버라이드 (mujoco_sim.launch.py에서)
-custom_controller:
+rt_controller:
   ros__parameters:
     enable_estop: false        # free_run에서 false E-STOP 방지
     robot_timeout_ms: 10000.0

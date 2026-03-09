@@ -17,7 +17,7 @@ mujoco_simulator:
     # ── Simulation mode ───────────────────────────────────────────────────────
     # "free_run"  — advance physics as fast as possible (default).
     #               Best for algorithm validation, trajectory generation.
-    #               Set enable_estop: false in custom_controller config!
+    #               Set enable_estop: false in rt_controller config!
     # "sync_step" — publish state → wait for command → step (1:1 sync).
     #               Step latency ≈ Compute() time → direct timing measurement.
     sim_mode: "sync_step"
@@ -62,13 +62,13 @@ mujoco_simulator:
     #   0.5  → ~18 ms settling time constant (stiffer)
     hand_filter_alpha: 0.1
 
-# ── custom_controller parameter overrides for simulation ─────────────────────
+# ── rt_controller parameter overrides for simulation ─────────────────────
 # These override the values in ur5e_rt_controller.yaml when launched via
 # mujoco_sim.launch.py.  Key difference from real-robot config:
 #   - enable_estop: false — prevents false E-STOPs in free_run mode where
 #     wall-clock publish intervals may exceed robot_timeout_ms.
 #   - robot_timeout_ms / hand_timeout_ms: extended for sync_step mode.
-custom_controller:
+rt_controller:
   ros__parameters:
     control_rate: 500.0
     kp: 5.0

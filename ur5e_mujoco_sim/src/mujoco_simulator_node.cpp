@@ -28,7 +28,7 @@ namespace urtc = ur5e_rt_controller;
 // Simulation modes (set via "sim_mode" parameter):
 //   "free_run"  — physics advances as fast as possible (default).
 //                 Best for algorithm validation and trajectory generation.
-//                 NOTE: custom_controller E-STOP must be disabled since the
+//                 NOTE: rt_controller E-STOP must be disabled since the
 //                 wall-clock publish interval may exceed robot_timeout_ms.
 //   "sync_step" — publishes state, waits for one command, takes one step.
 //                 Step latency ≈ Compute() time → direct timing measurement.
@@ -39,11 +39,11 @@ namespace urtc = ur5e_rt_controller;
 //   /sim/status            std_msgs/Float64MultiArray  @ 1 Hz
 //                          data: [step_count, sim_time_sec, rtf, paused(0/1)]
 //
-// Subscribed topics (from custom_controller):
+// Subscribed topics (from rt_controller):
 //   /forward_position_controller/commands  std_msgs/Float64MultiArray
 //   /hand/command                          std_msgs/Float64MultiArray
 //
-// The custom_controller node can be launched without modification.
+// The rt_controller node can be launched without modification.
 // Only the robot_ip / UR driver launch needs to be replaced with this node.
 //
 class MuJoCoSimulatorNode : public rclcpp::Node {
@@ -164,7 +164,7 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
 
   // ── Publishers ───────────────────────────────────────────────────────────────
   void CreatePublishers() {
-    // /joint_states: mimics UR driver output consumed by custom_controller
+    // /joint_states: mimics UR driver output consumed by rt_controller
     joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
         "/joint_states", rclcpp::QoS(10));
 
@@ -179,7 +179,7 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
 
   // ── Subscriptions ────────────────────────────────────────────────────────────
   void CreateSubscriptions() {
-    // Receive position commands from custom_controller
+    // Receive position commands from rt_controller
     command_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
         "/forward_position_controller/commands",
         rclcpp::QoS(10),
@@ -211,7 +211,7 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
 
   // ── Subscription callbacks ───────────────────────────────────────────────────
 
-  // Called when custom_controller publishes a position command.
+  // Called when rt_controller publishes a position command.
   void CommandCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
     if (msg->data.size() < 6) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
@@ -290,7 +290,7 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
                 rtf);
   }
 
-  // ── Joint name table (must match UR driver / custom_controller) ──────────────
+  // ── Joint name table (must match UR driver / rt_controller) ──────────────
   static constexpr std::array<const char*, 6> kJointNames = {
       "shoulder_pan_joint",
       "shoulder_lift_joint",
