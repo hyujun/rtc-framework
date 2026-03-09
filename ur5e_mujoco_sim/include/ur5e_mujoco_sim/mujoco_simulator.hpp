@@ -232,6 +232,16 @@ class MuJoCoSimulator {
     return current_max_rtf_.load(std::memory_order_relaxed);
   }
 
+  // Advance exactly one physics step while paused.
+  // Wakes the sim thread immediately via sync_cv_.
+  void StepOnce() noexcept {
+    step_once_.store(true, std::memory_order_release);
+    sync_cv_.notify_all();
+  }
+
+  // Return the simulation mode (kFreeRun / kSyncStep) set at construction.
+  [[nodiscard]] SimMode GetSimMode() const noexcept { return cfg_.mode; }
+
   // Toggle gravity.  Sim thread reads gravity_enabled_ before each mj_step().
   void EnableGravity(bool enable) noexcept {
     gravity_enabled_.store(enable, std::memory_order_relaxed);
@@ -273,6 +283,7 @@ class MuJoCoSimulator {
   // ── Runtime control flags ─────────────────────────────────────────────────
   std::atomic<bool>   paused_{false};
   std::atomic<bool>   reset_requested_{false};
+  std::atomic<bool>   step_once_{false};       // advance exactly one step while paused
   std::atomic<double> current_max_rtf_{0.0};
   std::atomic<bool>   gravity_enabled_{true};
   double              original_gravity_z_{-9.81};  // from model, set in Initialize()

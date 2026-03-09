@@ -5,7 +5,7 @@
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 ![ROS2 Jazzy](https://img.shields.io/badge/ROS2-Jazzy-green)
 
-**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.4.0)**
+**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.6.0)**
 
 E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종**, **MuJoCo 3.x 물리 시뮬레이터**, UDP 핸드 인터페이스, CSV 데이터 로깅, Qt GUI 모션 에디터를 포함한 완전한 실시간 제어 솔루션입니다.
 
@@ -22,6 +22,10 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 > **v5.3.0 (멀티 컨트롤러 런타임 전환 + GUI 게인 튜닝)**: 런타임에 P/PD/Pinocchio/CLIK/OSC 컨트롤러를 ROS2 토픽으로 전환 가능. `controller_gui.py` (tkinter) 신규 — 컨트롤러 선택, 게인 슬라이더, 타겟 전송을 단일 GUI로 통합. MuJoCo `package://` URI 네이티브 지원 (ROS2 resource provider 등록).
 >
 > **v5.4.0 (Controller Registry + 확장 가이드)**: 새 컨트롤러 추가 시 `MakeControllerEntries()` 한 줄 등록으로 완결. `RTControllerInterface`에 `LoadConfig()` / `UpdateGainsFromMsg()` 훅 추가로 컨트롤러별 YAML 파싱·게인 업데이트를 자기 자신이 담당. `switch`/`dynamic_cast` 코드 제거. 신규: `docs/ADDING_CONTROLLER.md` 단계별 가이드.
+>
+> **v5.5.0 (빌드·로그 최적화)**: `build.sh` / `install.sh` 파라미터 파싱 및 고급 제어 기능 구현. SPSC `log_buffer.hpp` 비트 연산 최적화. `CustomController` → `RtControllerNode` 클래스명 변경 및 노드 파일 3분할.
+>
+> **v5.6.0 (Google DeepMind MuJoCo 뷰어 기능 완전 이식)**: MuJoCo 뷰어를 `src/viewer/` 4-파일 구조로 재편. 2페이지 F1 도움말, 카메라 3모드 (Free/Tracking/Fixed), 마우스 더블클릭 물체 선택, Ctrl+드래그 힘/토크 인가, 지오메트리 그룹 0-5 가시성, 시각화 플래그 12종, 렌더링 플래그 4종 (와이어프레임/그림자/스카이박스/반사), F9 센서 오버레이, F10 모델 통계 오버레이, P 스크린샷, `StepOnce()` API. 전역 폰트 mjFONTSCALE_100으로 축소.
 
 ---
 
@@ -53,7 +57,7 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 | E-STOP 시스템 | 로봇/핸드 데이터 타임아웃 자동 감지 및 비상 정지 |
 | 모델 기반 제어 | Pinocchio 라이브러리 활용 — 중력 보상, CLIK, 작업공간 제어 (v4.3.0+) |
 | MuJoCo 시뮬레이션 | FreeRun / SyncStep 모드, GLFW 뷰어, RTF 측정 (v4.4.0+) |
-| 인터랙티브 뷰어 | 마우스 카메라, 키보드 단축키, Ctrl+드래그 물체 힘 인가, F1 도움말 (v4.5.0+) |
+| 인터랙티브 뷰어 | 카메라 3모드, 29개 키 단축키, Ctrl+드래그 힘/토크, 2페이지 도움말, F9/F10 오버레이, 스크린샷 (v5.6.0) |
 | Solver 제어 | runtime에 integrator / solver type / iterations / tolerance 조정 (v4.5.0+) |
 | 런타임 컨트롤러 전환 | ROS2 토픽으로 P/PD/Pinocchio/CLIK/OSC 간 즉시 전환 (v5.3.0+) |
 | GUI 게인 튜닝 | tkinter 기반 `controller_gui.py` — 컨트롤러 선택·게인 설정·타겟 전송 (v5.3.0+) |
@@ -150,7 +154,11 @@ ur5e-rt-controller/
 │   ├── src/
 │   │   ├── mujoco_simulator.cpp          # 생명주기 및 I/O
 │   │   ├── mujoco_sim_loop.cpp           # 물리 루프 (FreeRun/SyncStep)
-│   │   ├── mujoco_viewer.cpp             # GLFW 뷰어 루프 (~60Hz)
+│   │   ├── viewer/                       # GLFW 뷰어 (v5.6.0, 4-파일 구조)
+│   │   │   ├── viewer_state.hpp          #   공유 상태 + 함수 선언 (내부 헤더)
+│   │   │   ├── viewer_loop.cpp           #   ViewerLoop 멤버 함수 (~60Hz)
+│   │   │   ├── viewer_callbacks.cpp      #   GLFW 입력 콜백 (키/마우스)
+│   │   │   └── viewer_overlays.cpp       #   mjr_overlay/mjr_figure 렌더 함수
 │   │   ├── mujoco_simulator_node.cpp     # ROS2 노드 래퍼
 │   │   └── ros2_resource_provider.cpp    # package:// URI 해석 구현 (v5.3.0+)
 │   └── ...
@@ -317,23 +325,62 @@ ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py \
 ros2 topic echo /sim/status    # [step_count, sim_time_sec, rtf, paused]
 ```
 
-### 뷰어 단축키 (v4.5.0+)
+### 뷰어 단축키 (v5.6.0)
+
+#### 키보드
 
 | 키 | 기능 |
 |---|---|
-| **F1** | 도움말 오버레이 (모든 키 + 현재 ON/OFF 상태) |
+| **F1** | 도움말 오버레이 순환 (페이지 1 → 2 → 닫기) |
 | Space | 일시정지 / 재개 |
-| + / - | RTF 속도 2배 / 0.5배 |
+| Right (일시정지 중) | 한 스텝 진행 |
+| + / KP_ADD | RTF 속도 2배 |
+| - / KP_SUB | RTF 속도 0.5배 |
 | R | 초기 자세로 리셋 |
+| TAB | 카메라 모드 순환 (Free → Tracking → Fixed → Free) |
+| Esc | 카메라 초기화 (Free 모드로 복귀) |
 | G | 중력 ON/OFF |
 | N | 접촉 제약 ON/OFF |
-| I | integrator 순환 (Euler→RK4→Implicit→ImplFast) |
-| S | solver 순환 (PGS→CG→Newton) |
+| I | integrator 순환 (Euler → RK4 → Implicit → ImplFast) |
+| S | solver 순환 (PGS → CG → Newton) |
 | ] / [ | solver 반복 횟수 ×2 / ÷2 |
-| C / F | 접촉점 / 힘 화살표 표시 |
-| V / T | 충돌 지오메트리 / 투명 모드 |
-| F3 / F4 | RTF 프로파일러 / solver 통계 오버레이 |
-| Ctrl + Left drag | 물체에 스프링 힘 인가 |
+| C | 접촉점 표시 ON/OFF |
+| F | 접촉력 화살표 ON/OFF |
+| T | 투명 모드 ON/OFF |
+| J | 관절 시각화 ON/OFF |
+| U | 액추에이터 시각화 ON/OFF |
+| E | 관성 타원체 ON/OFF |
+| W | 질량중심(CoM) 마커 ON/OFF |
+| L | 조명 시각화 ON/OFF |
+| A | 텐던 시각화 ON/OFF |
+| X | 볼록 껍질 ON/OFF |
+| 0 / V | 지오메트리 그룹 0 ON/OFF |
+| 1 – 5 | 지오메트리 그룹 1–5 ON/OFF |
+| Backspace | 시각화 플래그 전체 초기화 |
+| F3 | RTF 프로파일러 그래프 ON/OFF |
+| F4 | Solver 통계 오버레이 ON/OFF |
+| F5 | 와이어프레임 ON/OFF |
+| F6 | 그림자 ON/OFF |
+| F7 | 스카이박스 ON/OFF |
+| F8 | 반사 ON/OFF |
+| F9 | 센서 값 오버레이 ON/OFF |
+| F10 | 모델 통계 오버레이 ON/OFF |
+| P | 스크린샷 저장 (`~/ros2_ws/ur5e_ws/logging_data/`) |
+
+#### 마우스
+
+| 조작 | 기능 |
+|---|---|
+| Left drag | 카메라 궤도 (orbit) |
+| Shift + Left drag | 수평 궤도 |
+| Right drag | 카메라 패닝 (pan) |
+| Shift + Right drag | 수평 패닝 |
+| Scroll | 줌 인/아웃 |
+| Middle drag | 줌 (드래그) |
+| Dbl-click (Left) | 물체 선택 (퍼튜베이션 대상) |
+| Ctrl + Left drag | 선택 물체에 토크 인가 |
+| Ctrl + Right drag | 선택 물체에 힘 인가 (XZ 평면) |
+| Ctrl + Shift + Right drag | 선택 물체에 힘 인가 (XY 평면) |
 
 ### Physics Solver 런타임 제어 (v4.5.0+)
 
@@ -1308,6 +1355,7 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 
 | 버전 | 주요 변경사항 |
 |------|---------------|
+| **v5.6.0** | Google DeepMind MuJoCo 뷰어 기능 완전 이식: `src/viewer/` 4-파일 구조, 2페이지 F1 도움말, 카메라 3모드, 마우스 더블클릭 물체 선택, Ctrl+드래그 힘/토크, 지오메트리 그룹 0-5, 시각화/렌더링 플래그, F9 센서·F10 모델통계 오버레이, P 스크린샷, `StepOnce()` API |
 | **v5.5.0** | `build.sh` 및 `install.sh` 파라미터 파싱 및 고급 제어 기능 구현 (`-c`, `-d`, `-r`, `-j`, `-p`, `--no-bashrc`, `--skip-*`), 초저지연 버퍼 `log_buffer.hpp` 최적화, 클래스명 변경(`CustomController`→`RtControllerNode`) 및 노드 파일 3분할 도입 |
 | **v5.4.0** | Controller Registry 패턴 (`MakeControllerEntries()`), `RTControllerInterface`에 `LoadConfig()` / `UpdateGainsFromMsg()` 훅 추가, 컨트롤러별 YAML 로딩·게인 업데이트 자기 책임화, `switch`/`dynamic_cast` 제거, `docs/ADDING_CONTROLLER.md` 신규 |
 | **v5.3.0** | 런타임 컨트롤러 전환 (P/PD/Pinocchio/CLIK/OSC `controller_type` 토픽), `controller_gains` 토픽으로 동적 게인 업데이트, `controller_gui.py` tkinter GUI 신규, MuJoCo `package://` URI 네이티브 지원 (`Ros2ResourceProvider`) |
@@ -1324,5 +1372,5 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 | v4.0.0 | E-STOP 시스템, 핸드/로봇 타임아웃 감시, 표준 ROS2 구조 |
 | v1.0.0 | 초기 릴리스, P/PD 제어기, 기본 ROS2 노드 |
 
-**최종 업데이트**: 2026-03-09
-**현재 버전**: v5.3.0
+**최종 업데이트**: 2026-03-10
+**현재 버전**: v5.6.0

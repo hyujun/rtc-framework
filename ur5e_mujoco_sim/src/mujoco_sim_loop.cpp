@@ -213,10 +213,21 @@ void MuJoCoSimulator::SimLoopFreeRun(std::stop_token stop) noexcept {
   throttle_rtf_        = current_max_rtf_.load(std::memory_order_relaxed);
 
   while (!stop.stop_requested() && running_.load()) {
-    // ── Pause ─────────────────────────────────────────────────────────────
+    // ── Pause (with step_once support) ────────────────────────────────────
     if (paused_.load(std::memory_order_relaxed)) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(2));
-      continue;
+      {
+        std::unique_lock lock(sync_mutex_);
+        sync_cv_.wait_for(lock, std::chrono::milliseconds(10), [this, &stop] {
+          return !paused_.load(std::memory_order_relaxed)
+              || step_once_.load(std::memory_order_relaxed)
+              || stop.stop_requested()
+              || !running_.load();
+        });
+      }
+      if (!step_once_.exchange(false, std::memory_order_acq_rel)) {
+        continue;  // still paused, no step requested
+      }
+      // step_once was true: fall through and execute exactly one physics step
     }
     // ── Reset ─────────────────────────────────────────────────────────────
     if (reset_requested_.exchange(false, std::memory_order_acq_rel)) {
@@ -267,10 +278,21 @@ void MuJoCoSimulator::SimLoopSyncStep(std::stop_token stop) noexcept {
   throttle_rtf_        = current_max_rtf_.load(std::memory_order_relaxed);
 
   while (!stop.stop_requested() && running_.load()) {
-    // ── Pause ─────────────────────────────────────────────────────────────
+    // ── Pause (with step_once support) ────────────────────────────────────
     if (paused_.load(std::memory_order_relaxed)) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(2));
-      continue;
+      {
+        std::unique_lock lock(sync_mutex_);
+        sync_cv_.wait_for(lock, std::chrono::milliseconds(10), [this, &stop] {
+          return !paused_.load(std::memory_order_relaxed)
+              || step_once_.load(std::memory_order_relaxed)
+              || stop.stop_requested()
+              || !running_.load();
+        });
+      }
+      if (!step_once_.exchange(false, std::memory_order_acq_rel)) {
+        continue;  // still paused, no step requested
+      }
+      // step_once was true: fall through and execute exactly one physics step
     }
     // ── Reset ─────────────────────────────────────────────────────────────
     if (reset_requested_.exchange(false, std::memory_order_acq_rel)) {

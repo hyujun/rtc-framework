@@ -5,6 +5,74 @@
 
 ---
 
+## [5.6.0] - 2026-03-09
+
+### 추가 (Added) — MuJoCo Viewer 전면 확장 (Google DeepMind 공식 viewer 기능 통합)
+
+#### 뷰어 소스 구조 분리 (`src/viewer/`)
+
+`mujoco_viewer.cpp` (668줄) 단일 파일을 기능별 4개 파일로 분리하여 유지보수성을 개선했습니다.
+
+| 파일 | 역할 | 줄 수 |
+|---|---|---|
+| `viewer/viewer_state.hpp` | `ViewerState` 구조체 + 함수 선언 (내부 헤더) | ~100 |
+| `viewer/viewer_loop.cpp` | `ViewerLoop()` 렌더 루프 + GLFW 초기화 | ~247 |
+| `viewer/viewer_callbacks.cpp` | `OnKey` / `OnMouseButton` / `OnCursorPos` / `OnScroll` | ~339 |
+| `viewer/viewer_overlays.cpp` | 6개 overlay 렌더 함수 | ~336 |
+
+#### 신규 키보드 단축키
+
+| 키 | 기능 |
+|---|---|
+| `→` (Right) | 1 step 단진 (pause 상태에서) |
+| `TAB` | 카메라 모드 순환: Free → Tracking → Fixed[0..N-1] |
+| `J` | Joint axes 표시 토글 |
+| `U` | Actuators 표시 토글 |
+| `E` | Inertia boxes 표시 토글 |
+| `W` | CoM markers 표시 토글 |
+| `L` | Lights 표시 토글 |
+| `A` | Tendons 표시 토글 |
+| `X` | Convex hulls 표시 토글 |
+| `0`–`5` | Geom group 0–5 개별 토글 |
+| `F5` | Wireframe 렌더링 토글 |
+| `F6` | Shadow 토글 |
+| `F7` | Skybox 토글 |
+| `F8` | Reflection 토글 |
+| `F9` | Sensor 값 overlay 표시 |
+| `F10` | Model info overlay (nBody, nGeom 등) |
+| `P` | 스크린샷 PPM 저장 (`logging_data/screenshot_YYYYMMDD_HHMMSS.ppm`) |
+| `F1` | Help 2페이지 순환 (off → 페이지1 → 페이지2 → off) |
+
+#### 신규 마우스 조작
+
+| 입력 | 기능 |
+|---|---|
+| Shift + Left drag | 수평 orbit |
+| Shift + Right drag | 수평 pan |
+| Middle drag | 줌 |
+| Double-click | Body 선택 (perturbation 대상) |
+| Ctrl + Left drag | 선택 body에 토크 적용 (`mjPERT_ROTATE`) |
+| Ctrl + Right drag | 선택 body에 힘 적용 (XZ 평면) |
+| Ctrl + Shift + Right drag | 선택 body에 힘 적용 (XY 평면) |
+
+#### 신규 Overlay
+
+- **Sensor overlay (F9)**: `vis_data->sensordata` 값을 최대 24개 표시; 모델에 센서가 없으면 "none in model" 표시
+- **Model info overlay (F10)**: nBody, nGeom, nJoint, nActuator, nSensor, nSite, nCamera, timestep
+- **Help overlay 2페이지 분할**: F1으로 페이지1(Sim/Camera/Physics/Solver) → 페이지2(Vis/Rendering/Perturb) 전환; 각 페이지 ~20줄로 화면 내 표시
+
+#### `MuJoCoSimulator` API 추가
+
+- `StepOnce()` — paused 상태에서 정확히 1 physics step 실행; `sync_cv_`로 sim thread 즉시 wakeup
+- `GetSimMode()` — 현재 `SimMode` (kFreeRun / kSyncStep) 반환
+- `step_once_` atomic bool — `StepOnce()` 플래그; FreeRun/SyncStep 양쪽 sim loop에서 처리
+
+#### 폰트 크기
+
+- `mjFONTSCALE_150` → `mjFONTSCALE_100` 으로 변경 (전체 overlay 텍스트 축소)
+
+---
+
 ## [5.5.1] - 2026-03-09
 ### 변경 (Changed)
 *   **플롯 저장 경로 변경**: 시각화 플롯 저장 폴더를 `~/ur_plots`에서 워크스페이스 내 `logging_data/ur_plot`으로 변경했습니다. `install.sh` 및 관련 문서가 이에 맞게 업데이트되었습니다.

@@ -143,8 +143,12 @@ ur5e-rt-controller/
 │   ├── src/
 │   │   ├── mujoco_simulator.cpp           # Lifecycle (ctor/dtor, Init, Start, Stop)
 │   │   ├── mujoco_sim_loop.cpp            # SimLoopFreeRun / SimLoopSyncStep + helpers
-│   │   ├── mujoco_viewer.cpp              # GLFW viewer loop (~60Hz, keyboard/mouse)
-│   │   └── mujoco_simulator_node.cpp      # ROS2 node wrapper
+│   │   ├── mujoco_simulator_node.cpp      # ROS2 node wrapper
+│   │   └── viewer/                        # GLFW viewer subsystem (v5.6.0+)
+│   │       ├── viewer_state.hpp           # ViewerState struct + function declarations
+│   │       ├── viewer_loop.cpp            # ViewerLoop member function (~60 Hz render loop)
+│   │       ├── viewer_callbacks.cpp       # OnKey / OnMouseButton / OnCursorPos / OnScroll
+│   │       └── viewer_overlays.cpp        # All mjr_overlay render functions
 │   ├── config/mujoco_simulator.yaml
 │   └── launch/mujoco_sim.launch.py
 │
@@ -252,11 +256,14 @@ Creates **4 `SingleThreadedExecutor`s**, each running in a dedicated `std::threa
 
 **`MuJoCoSimulator`** (`include/ur5e_mujoco_sim/mujoco_simulator.hpp`): thread-safe wrapper around a MuJoCo 3.x physics model. Optional — only built when `mujoco` CMake package is found.
 
-Source file breakdown (split from single file in v5.2.2):
+Source file breakdown (viewer subsystem split into `src/viewer/` in v5.6.0):
 - `mujoco_simulator.cpp` — lifecycle (ctor/dtor, `Initialize`, `Start`, `Stop`, `SetCommand`, external forces)
-- `mujoco_sim_loop.cpp` — physics helpers + `SimLoopFreeRun` / `SimLoopSyncStep`; `ReadSolverStats()` sums `solver_niter[k]` over all `nisland` islands
-- `mujoco_viewer.cpp` — `ViewerLoop`: GLFW rendering, keyboard/mouse callbacks, overlays
+- `mujoco_sim_loop.cpp` — physics helpers + `SimLoopFreeRun` / `SimLoopSyncStep`; `ReadSolverStats()` sums `solver_niter[k]` over all `nisland` islands; `step_once_` single-step support
 - `mujoco_simulator_node.cpp` — ROS2 node wrapper; resolves model path via `ur5e_description` package
+- `viewer/viewer_state.hpp` — `ViewerState` struct (MuJoCo handles, mouse state, UI toggles, RTF buffer, camera mode); declares all overlay + callback free functions
+- `viewer/viewer_loop.cpp` — `ViewerLoop()`: GLFW init, scene/context setup, visualisation-only `mjData`, RTF profiler figure, render loop, screenshot writer
+- `viewer/viewer_callbacks.cpp` — `OnKey`, `OnMouseButton`, `OnCursorPos`, `OnScroll`; all keyboard/mouse logic
+- `viewer/viewer_overlays.cpp` — `RenderStatusOverlay`, `RenderHelpOverlay` (2-page), `RenderSolverOverlay`, `RenderSensorOverlay`, `RenderModelInfoOverlay`, `RenderRtfProfiler`
 
 Two simulation modes:
 | Mode | `SimMode` | Description |
@@ -271,11 +278,69 @@ Threading model:
 - `ViewerLoop` thread: renders scene at ~60 Hz via GLFW (optional, compiled-in with `-DMUJOCO_HAVE_GLFW`).
 - Caller thread (ROS2 node): calls `SetCommand()`, `GetPositions()`, `GetVelocities()`.
 
+New public API (v5.6.0):
+- `StepOnce()` — advance exactly one physics step while paused; wakes sim thread via `sync_cv_`
+- `GetSimMode()` — return `SimMode` (kFreeRun / kSyncStep) set at construction
+
 Synchronisation:
 - `cmd_mutex_` + `cmd_pending_` atomic — command transfer (lock-free fast path in FreeRun).
-- `sync_cv_` — wakes `SimLoopSyncStep` when a command arrives.
+- `sync_cv_` — wakes `SimLoopSyncStep` when a command arrives; also wakes paused loops for `StepOnce` / `RequestReset`.
 - `state_mutex_` — protects latest state snapshot.
 - `viz_mutex_` — `try_lock` only; never blocks `SimLoop`.
+- `step_once_` atomic — set by `StepOnce()`; consumed by sim loop to execute exactly one step.
+
+**Viewer keyboard shortcuts** (window must have focus):
+
+| Key | Action |
+|---|---|
+| `F1` | Cycle help overlay (off → page 1: Sim/Camera/Physics → page 2: Vis/Render/Perturb → off) |
+| `Space` | Pause / Resume |
+| `→` | Step once (while paused) |
+| `+` / `-` | 2× / 0.5× speed cap (0 = unlimited) |
+| `R` | Reset to initial pose |
+| `TAB` | Cycle camera: Free → Tracking → Fixed[0..N-1] → Free |
+| `Esc` | Reset camera to default position |
+| `G` | Toggle gravity |
+| `N` | Toggle contact constraints |
+| `I` | Cycle integrator: Euler → RK4 → Implicit → ImplicitFast |
+| `S` | Cycle solver: PGS → CG → Newton |
+| `]` / `[` | Double / halve solver iterations |
+| `F4` | Toggle solver stats overlay |
+| `C` | Contact points |
+| `F` | Contact forces |
+| `0` / `V` | Geom group 0 (legacy alias V) |
+| `1`–`5` | Geom groups 1–5 |
+| `J` | Joint axes |
+| `U` | Actuators |
+| `E` | Inertia boxes |
+| `W` | CoM markers |
+| `L` | Lights |
+| `A` | Tendons |
+| `X` | Convex hulls |
+| `T` | Transparency |
+| `Backspace` | Reset visualisation options |
+| `F5` | Wireframe |
+| `F6` | Shadows |
+| `F7` | Skybox |
+| `F8` | Reflections |
+| `F3` | RTF profiler graph |
+| `F9` | Sensor values overlay |
+| `F10` | Model info overlay |
+| `P` | Save screenshot (PPM → `~/ros2_ws/ur5e_ws/logging_data/`) |
+
+**Viewer mouse controls:**
+
+| Input | Action |
+|---|---|
+| Left drag | Orbit (rotate) camera |
+| Shift + Left drag | Orbit (horizontal axis) |
+| Right drag | Pan camera (vertical) |
+| Shift + Right drag | Pan camera (horizontal) |
+| Scroll / Middle drag | Zoom |
+| Double-click | Select body for perturbation |
+| Ctrl + Left drag | Apply torque to selected body |
+| Ctrl + Right drag | Apply force XZ plane |
+| Ctrl + Shift + Right drag | Apply force XY plane |
 
 **`mujoco_simulator_node`** (`src/mujoco_simulator_node.cpp`): ROS2 node that wraps `MuJoCoSimulator`. Publishes `/joint_states` (at physics rate or decimated), `/hand/joint_states` (100 Hz, simulated via 1st-order filter), and `/sim/status`. Subscribes to `/forward_position_controller/commands` and `/hand/command`.
 
@@ -660,6 +725,8 @@ For detailed RT tuning (CPU isolation, kernel parameters, DDS configuration, IRQ
 
 | Version | Key Changes |
 |---|---|
+| v5.6.0 | MuJoCo viewer 전면 확장: `src/viewer/` 디렉토리 신설 (`viewer_state.hpp`, `viewer_loop.cpp`, `viewer_callbacks.cpp`, `viewer_overlays.cpp`). 신규 키: `→`(단진), `TAB`(카메라), `J/U/E/W/L/A/X`(시각화), `0-5`(geomgroup), `F5-F8`(렌더링), `F9`(sensor), `F10`(modelinfo), `P`(screenshot). 마우스: double-click(body선택), Ctrl+Drag(force/torque), Middle drag(zoom), Shift+drag(수평). Help 2페이지 분할. `StepOnce()` / `GetSimMode()` API 추가. |
+| v5.5.1 | 플롯 저장 경로 변경: `~/ur_plots` → `logging_data/ur_plot` |
 | v5.5.0 | Script enhancements: `build.sh` and `install.sh` parameter parsing & advanced options (`-c`, `-p`, `--skip-deps`, etc.). Source split: `custom_controller.cpp` → `rt_controller_node.hpp` + `.cpp` + `main.cpp`. Renamed `CustomController` → `RtControllerNode`. Fast modular math for `SpscLogBuffer`. |
 | v5.5.0 | Script enhancements:  and  parameter parsing & advanced options (, , , etc.). Source split:  →  +  + . Renamed  → . Fast modular math for . |
 | v5.4.0 | Controller Registry pattern: `MakeControllerEntries()` factory list, `LoadConfig()` + `UpdateGainsFromMsg()` hooks on `RTControllerInterface`, per-controller YAML loading loop replaces 80-line boilerplate, `switch`/`dynamic_cast` gains handler replaced by single virtual dispatch. New guide: `docs/ADDING_CONTROLLER.md` |

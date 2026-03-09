@@ -1,6 +1,6 @@
 # ur5e_mujoco_sim
 
-> **Note:** This package is part of the UR5e RT Controller workspace (v5.3.0). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
+> **Note:** This package is part of the UR5e RT Controller workspace (v5.6.0). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
 UR5e RT Controller 스택의 **MuJoCo 3.x 물리 시뮬레이터 패키지**입니다. 실제 UR 드라이버를 대체하여 개발 환경에서 알고리즘 검증 및 테스트를 수행할 수 있습니다.
 
 ## 개요
@@ -13,7 +13,11 @@ ur5e_mujoco_sim/
 ├── src/
 │   ├── mujoco_simulator.cpp       ← MuJoCoSimulator 구현
 │   ├── mujoco_sim_loop.cpp        ← SimLoopFreeRun / SimLoopSyncStep
-│   ├── mujoco_viewer.cpp          ← GLFW 뷰어 루프 (~60Hz)
+│   ├── viewer/                    ← GLFW 뷰어 (v5.6.0, 4-파일 구조)
+│   │   ├── viewer_state.hpp       ←   공유 상태 + 함수 선언 (내부 헤더)
+│   │   ├── viewer_loop.cpp        ←   ViewerLoop 멤버 함수 (~60Hz)
+│   │   ├── viewer_callbacks.cpp   ←   GLFW 입력 콜백 (키/마우스)
+│   │   └── viewer_overlays.cpp    ←   mjr_overlay/mjr_figure 렌더 함수
 │   ├── mujoco_simulator_node.cpp  ← ROS2 노드 래퍼
 │   └── ros2_resource_provider.cpp ← package:// URI 해석 구현 (v5.3.0+)
 ├── config/
@@ -162,25 +166,62 @@ ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py \
 
 ---
 
-## 뷰어 단축키
+## 뷰어 단축키 (v5.6.0)
 
-GLFW 3D 뷰어 실행 중 사용 가능한 키보드 단축키:
+#### 키보드
 
 | 키 | 기능 |
 |---|---|
-| **F1** | 도움말 오버레이 (모든 키 + ON/OFF 상태) |
+| **F1** | 도움말 오버레이 순환 (페이지 1 → 2 → 닫기) |
 | Space | 일시정지 / 재개 |
-| + / - | RTF 속도 2배 / 0.5배 |
+| Right (일시정지 중) | 한 스텝 진행 |
+| + / KP_ADD | RTF 속도 2배 |
+| - / KP_SUB | RTF 속도 0.5배 |
 | R | 초기 자세로 리셋 |
+| TAB | 카메라 모드 순환 (Free → Tracking → Fixed → Free) |
+| Esc | 카메라 초기화 (Free 모드로 복귀) |
 | G | 중력 ON/OFF |
 | N | 접촉 제약 ON/OFF |
-| I | integrator 순환 (Euler→RK4→Implicit→ImplFast) |
-| S | solver 순환 (PGS→CG→Newton) |
+| I | integrator 순환 (Euler → RK4 → Implicit → ImplFast) |
+| S | solver 순환 (PGS → CG → Newton) |
 | ] / [ | solver 반복 횟수 ×2 / ÷2 |
-| C / F | 접촉점 / 힘 화살표 표시 |
-| V / T | 충돌 지오메트리 / 투명 모드 |
-| F3 / F4 | RTF 프로파일러 / solver 통계 오버레이 |
-| Ctrl + Left drag | 물체에 스프링 힘 인가 |
+| C | 접촉점 표시 ON/OFF |
+| F | 접촉력 화살표 ON/OFF |
+| T | 투명 모드 ON/OFF |
+| J | 관절 시각화 ON/OFF |
+| U | 액추에이터 시각화 ON/OFF |
+| E | 관성 타원체 ON/OFF |
+| W | 질량중심(CoM) 마커 ON/OFF |
+| L | 조명 시각화 ON/OFF |
+| A | 텐던 시각화 ON/OFF |
+| X | 볼록 껍질 ON/OFF |
+| 0 / V | 지오메트리 그룹 0 ON/OFF |
+| 1 – 5 | 지오메트리 그룹 1–5 ON/OFF |
+| Backspace | 시각화 플래그 전체 초기화 |
+| F3 | RTF 프로파일러 그래프 ON/OFF |
+| F4 | Solver 통계 오버레이 ON/OFF |
+| F5 | 와이어프레임 ON/OFF |
+| F6 | 그림자 ON/OFF |
+| F7 | 스카이박스 ON/OFF |
+| F8 | 반사 ON/OFF |
+| F9 | 센서 값 오버레이 ON/OFF |
+| F10 | 모델 통계 오버레이 ON/OFF |
+| P | 스크린샷 저장 (`~/ros2_ws/ur5e_ws/logging_data/`) |
+
+#### 마우스
+
+| 조작 | 기능 |
+|---|---|
+| Left drag | 카메라 궤도 (orbit) |
+| Shift + Left drag | 수평 궤도 |
+| Right drag | 카메라 패닝 (pan) |
+| Shift + Right drag | 수평 패닝 |
+| Scroll | 줌 인/아웃 |
+| Middle drag | 줌 (드래그) |
+| Dbl-click (Left) | 물체 선택 (퍼튜베이션 대상) |
+| Ctrl + Left drag | 선택 물체에 토크 인가 |
+| Ctrl + Right drag | 선택 물체에 힘 인가 (XZ 평면) |
+| Ctrl + Shift + Right drag | 선택 물체에 힘 인가 (XY 평면) |
 
 ---
 

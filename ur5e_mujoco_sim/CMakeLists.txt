@@ -66,10 +66,12 @@ if(mujoco_FOUND)
     src/mujoco_simulator_node.cpp
     src/mujoco_simulator.cpp
     src/mujoco_sim_loop.cpp
-    src/mujoco_viewer.cpp
     src/ros2_resource_provider.cpp
+    src/viewer/viewer_loop.cpp
+    src/viewer/viewer_callbacks.cpp
+    src/viewer/viewer_overlays.cpp
   )
-  target_include_directories(mujoco_simulator_node PRIVATE include)
+  target_include_directories(mujoco_simulator_node PRIVATE include src)
   ament_target_dependencies(mujoco_simulator_node
     rclcpp
     std_msgs
