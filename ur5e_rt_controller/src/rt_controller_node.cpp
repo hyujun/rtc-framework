@@ -233,7 +233,7 @@ void RtControllerNode::DeclareAndLoadParameters()
       try {
         const std::string yaml_path = config_dir + std::string(entry.config_key) + ".yaml";
         const YAML::Node file_node  = YAML::LoadFile(yaml_path);
-        ctrl->LoadConfig(file_node[entry.config_key]);
+        ctrl->LoadConfig(file_node[std::string(entry.config_key)]);
       } catch (const std::exception & e) {
         RCLCPP_WARN(get_logger(),
           "Config load failed for '%s' (%s) — using defaults",
