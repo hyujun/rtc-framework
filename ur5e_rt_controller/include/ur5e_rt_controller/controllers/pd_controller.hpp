@@ -51,6 +51,11 @@ public:
   [[nodiscard]] bool IsEstopped()    const noexcept override;
   void SetHandEstop(bool enabled)    noexcept override;
 
+  // ── Controller registry hooks ────────────────────────────────────────────
+  // gains layout: [kp×6, kd×6]
+  void LoadConfig(const YAML::Node & cfg) override;
+  void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
+
   // ── Gain accessors ──────────────────────────────────────────────────────────
   void set_gains(Gains gains) noexcept {gains_ = gains;}
   [[nodiscard]] Gains get_gains() const noexcept {return gains_;}

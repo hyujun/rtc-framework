@@ -524,41 +524,51 @@ Synthetic hand data generator for development/testing. Sends sinusoidal or stati
 
 ## Adding a Custom Controller
 
-Inherit from `RTControllerInterface`, implement `Compute()`, `SetRobotTarget()`, `SetHandTarget()`, and `Name()` — all must be `noexcept`. Then replace `PDController` in `custom_controller.cpp` at the constructor:
+v5.4.0부터 **Controller Registry** 패턴을 사용합니다. 새 컨트롤러 추가 시 수정이 필요한 곳은 **`custom_controller.cpp` 한 곳뿐**입니다.
 
-> **URDF path** (v5.2.2+): Use `ur5e_description` package — resolved at runtime via `ament_index_cpp::get_package_share_directory("ur5e_description")`.
+자세한 단계별 가이드: **`docs/ADDING_CONTROLLER.md`**
+
+### 요약 (4단계)
+
+**1. 헤더 작성** — `include/ur5e_rt_controller/controllers/my_controller.hpp`
 
 ```cpp
-// Before (line ~40 of custom_controller.cpp):
-controller_(std::make_unique<urtc::PDController>())
+class MyController final : public RTControllerInterface {
+public:
+  struct Gains { std::array<double, 6> kp{{5.0, ...}}; };
 
-// After (PinocchioController example):
-controller_(std::make_unique<urtc::PinocchioController>(
-    ament_index_cpp::get_package_share_directory("ur5e_description")
-        + "/robots/ur5e/urdf/ur5e.urdf",
-    urtc::PinocchioController::Gains{
-        .kp = 5.0,
-        .kd = 0.5,
-        .enable_gravity_compensation  = true,
-        .enable_coriolis_compensation = false}))
+  [[nodiscard]] ControllerOutput Compute(const ControllerState &) noexcept override;
+  void SetRobotTarget(std::span<const double, 6>) noexcept override;
+  void SetHandTarget(std::span<const double, 11>) noexcept override;
+  [[nodiscard]] std::string_view Name() const noexcept override { return "MyController"; }
 
-// After (ClikController example — target = [x, y, z, null_q3, null_q4, null_q5]):
-controller_(std::make_unique<urtc::ClikController>(
-    ament_index_cpp::get_package_share_directory("ur5e_description")
-        + "/robots/ur5e/urdf/ur5e.urdf",
-    urtc::ClikController::Gains{.kp = 1.0, .damping = 0.01, .null_kp = 0.5}))
-
-// After (OperationalSpaceController — target = [x, y, z, roll, pitch, yaw]):
-controller_(std::make_unique<urtc::OperationalSpaceController>(
-    ament_index_cpp::get_package_share_directory("ur5e_description")
-        + "/robots/ur5e/urdf/ur5e.urdf",
-    urtc::OperationalSpaceController::Gains{
-        .kp_pos = 1.0, .kd_pos = 0.1, .kp_rot = 0.5, .kd_rot = 0.05}))
+  // Registry hooks — gains layout: [kp×6]
+  void LoadConfig(const YAML::Node & cfg) override;
+  void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
+};
 ```
 
-When switching to Pinocchio-based controllers, remove the `controller_->set_gains(kp, kd)` call in `DeclareAndLoadParameters()` — gains are passed through the constructor instead.
+**2. 구현 작성** — `src/controllers/my_controller.cpp`
+- `LoadConfig()`: YAML 노드에서 게인 읽기
+- `UpdateGainsFromMsg()`: flat array에서 게인 업데이트
 
-No CMakeLists changes needed for header-only controllers. `PinocchioController`, `ClikController`, and `OperationalSpaceController` require Pinocchio (already linked via `target_link_libraries(custom_controller pinocchio::pinocchio)`).
+**3. YAML 작성** — `config/controllers/my_controller.yaml`
+
+```yaml
+my_controller:
+  kp: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+```
+
+**4. 레지스트리 등록** — `src/custom_controller.cpp` 의 `MakeControllerEntries()` 에 한 줄 추가
+
+```cpp
+#include "ur5e_rt_controller/controllers/my_controller.hpp"
+
+// MakeControllerEntries() 안에:
+{"my_controller", [](const std::string &) { return std::make_unique<urtc::MyController>(); }},
+```
+
+No CMakeLists changes needed for header-only controllers. `PinocchioController`, `ClikController`, and `OperationalSpaceController` require Pinocchio (already linked via `target_link_libraries(custom_controller pinocchio::pinocchio)`). If your controller has a `.cpp` file, add it to `target_sources` in `CMakeLists.txt`.
 
 ---
 
@@ -640,6 +650,7 @@ For detailed RT tuning (CPU isolation, kernel parameters, DDS configuration, IRQ
 
 | Version | Key Changes |
 |---|---|
+| v5.4.0 | Controller Registry pattern: `MakeControllerEntries()` factory list, `LoadConfig()` + `UpdateGainsFromMsg()` hooks on `RTControllerInterface`, per-controller YAML loading loop replaces 80-line boilerplate, `switch`/`dynamic_cast` gains handler replaced by single virtual dispatch. New guide: `docs/ADDING_CONTROLLER.md` |
 | v5.3.0 | Runtime controller switching (P/PD/Pinocchio/CLIK/OSC via `/custom_controller/controller_type` topic), `controller_gains` topic for dynamic gain updates, `controller_gui.py` tkinter GUI, MuJoCo `package://` URI support (`Ros2ResourceProvider`), quintic trajectory subsystem (`QuinticPolynomial`, `TaskSpaceTrajectory`, `JointSpaceTrajectory<N>`) |
 | v5.2.2 | `ur5e_description` package (MJCF/URDF/mesh), dynamic log path (`~/ros2_ws/ur5e_ws/logging_data`), `build.sh`, `rmw_cyclonedds_cpp`, source split (`mujoco_sim_loop.cpp`, `mujoco_viewer.cpp`), `solver_niter` island fix, ROS2 Jazzy |
 | v5.2.1 | MuJoCo binary tarball cmake fix: `-Dmujoco_ROOT`, `find_library` fallback |

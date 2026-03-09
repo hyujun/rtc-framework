@@ -5,6 +5,8 @@
 // This header re-exports them and adds the abstract Strategy interface.
 #include "ur5e_rt_base/types.hpp"
 
+#include <yaml-cpp/yaml.h>
+
 #include <span>
 #include <string_view>
 
@@ -41,6 +43,24 @@ public:
   virtual void ClearEstop() noexcept                        {}
   [[nodiscard]] virtual bool IsEstopped() const noexcept    {return false;}
   virtual void SetHandEstop(bool /*enabled*/) noexcept      {}
+
+  // ── Extensibility hooks for the controller registry ──────────────────────
+  //
+  // LoadConfig()
+  //   Called once at node startup.  `cfg` is the YAML node already scoped to
+  //   this controller's key (e.g. the content under `pd_controller:` in its
+  //   YAML file).  Override to read per-controller gains / flags from disk.
+  //   Not noexcept — YAML parsing can throw; the call site wraps it in try/catch.
+  //
+  // UpdateGainsFromMsg()
+  //   Called from the ~/controller_gains subscriber (sensor thread).
+  //   `gains` is a flat array whose layout is controller-specific:
+  //   document the layout in the controller's header.  Default is a no-op.
+  virtual void LoadConfig(const YAML::Node & cfg)               {(void)cfg;}
+  virtual void UpdateGainsFromMsg(std::span<const double> gains) noexcept
+  {
+    (void)gains;
+  }
 
 protected:
   RTControllerInterface() = default;

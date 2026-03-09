@@ -130,4 +130,28 @@ double PDController::ComputeDerivative(
   return (current_error - previous_error) / dt;
 }
 
+// ── Controller registry hooks ────────────────────────────────────────────────
+
+void PDController::LoadConfig(const YAML::Node & cfg)
+{
+  if (!cfg) {return;}
+  if (cfg["kp"] && cfg["kp"].IsSequence() && cfg["kp"].size() == 6) {
+    for (std::size_t i = 0; i < 6; ++i) {gains_.kp[i] = cfg["kp"][i].as<double>();}
+  }
+  if (cfg["kd"] && cfg["kd"].IsSequence() && cfg["kd"].size() == 6) {
+    for (std::size_t i = 0; i < 6; ++i) {gains_.kd[i] = cfg["kd"][i].as<double>();}
+  }
+  if (cfg["trajectory_speed"]) {
+    gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();
+  }
+}
+
+void PDController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
+{
+  // layout: [kp×6, kd×6]
+  if (gains.size() < 12) {return;}
+  for (std::size_t i = 0; i < 6; ++i) {gains_.kp[i] = gains[i];}
+  for (std::size_t i = 0; i < 6; ++i) {gains_.kd[i] = gains[6 + i];}
+}
+
 }  // namespace ur5e_rt_controller

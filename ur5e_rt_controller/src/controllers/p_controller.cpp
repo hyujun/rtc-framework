@@ -53,4 +53,23 @@ std::array<double, kNumRobotJoints> PController::ClampCommands(
   return clamped;
 }
 
+// ── Controller registry hooks ────────────────────────────────────────────────
+
+void PController::LoadConfig(const YAML::Node & cfg)
+{
+  if (!cfg) {return;}
+  if (cfg["kp"] && cfg["kp"].IsSequence() && cfg["kp"].size() == 6) {
+    for (std::size_t i = 0; i < 6; ++i) {
+      gains_.kp[i] = cfg["kp"][i].as<double>();
+    }
+  }
+}
+
+void PController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
+{
+  // layout: [kp×6]
+  if (gains.size() < 6) {return;}
+  for (std::size_t i = 0; i < 6; ++i) {gains_.kp[i] = gains[i];}
+}
+
 }  // namespace ur5e_rt_controller

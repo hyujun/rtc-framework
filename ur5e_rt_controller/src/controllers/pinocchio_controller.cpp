@@ -196,4 +196,33 @@ void PinocchioController::UpdateDynamics(
   }
 }
 
+// ── Controller registry hooks ────────────────────────────────────────────────
+
+void PinocchioController::LoadConfig(const YAML::Node & cfg)
+{
+  if (!cfg) {return;}
+  if (cfg["kp"] && cfg["kp"].IsSequence() && cfg["kp"].size() == 6) {
+    for (std::size_t i = 0; i < 6; ++i) {gains_.kp[i] = cfg["kp"][i].as<double>();}
+  }
+  if (cfg["kd"] && cfg["kd"].IsSequence() && cfg["kd"].size() == 6) {
+    for (std::size_t i = 0; i < 6; ++i) {gains_.kd[i] = cfg["kd"][i].as<double>();}
+  }
+  if (cfg["enable_gravity_compensation"]) {
+    gains_.enable_gravity_compensation = cfg["enable_gravity_compensation"].as<bool>();
+  }
+  if (cfg["enable_coriolis_compensation"]) {
+    gains_.enable_coriolis_compensation = cfg["enable_coriolis_compensation"].as<bool>();
+  }
+}
+
+void PinocchioController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
+{
+  // layout: [kp×6, kd×6, enable_gravity(0/1), enable_coriolis(0/1)]
+  if (gains.size() < 14) {return;}
+  for (std::size_t i = 0; i < 6; ++i) {gains_.kp[i] = gains[i];}
+  for (std::size_t i = 0; i < 6; ++i) {gains_.kd[i] = gains[6 + i];}
+  gains_.enable_gravity_compensation  = gains[12] > 0.5;
+  gains_.enable_coriolis_compensation = gains[13] > 0.5;
+}
+
 }  // namespace ur5e_rt_controller

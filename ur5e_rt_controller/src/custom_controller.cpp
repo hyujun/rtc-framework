@@ -1,51 +1,4 @@
-// ── Includes: project header first, then ROS2, then C++ stdlib
-// ────────────────
-//
-// ── Available Pinocchio-based controllers ────────────────────────────────────
-//
-// Three model-based controllers are available as drop-in replacements.
-// For any of them: change the controller_ member type (≈line 340) to
-//   std::unique_ptr<urtc::RTControllerInterface>
-// and remove the set_gains() call inside DeclareAndLoadParameters().
-//
-// ┌─────────────────────────────────────────────────────────────────────────┐
-// │ 1. PinocchioController — joint-space PD + gravity / Coriolis           │
-// │    Target: 6 joint angles [q0..q5] (same as PDController)              │
-// │    #include "ur5e_rt_controller/controllers/pinocchio_controller.hpp"  │
-// │                                                                         │
-// │    controller_(std::make_unique<urtc::PinocchioController>(            │
-// │        "$(ros2 pkg prefix
-// ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf", │ │
-// urtc::PinocchioController::Gains{                               │ │ .kp
-// = 5.0, .kd = 0.5,                                       │ │
-// .enable_gravity_compensation  = true,                        │ │
-// .enable_coriolis_compensation = false}))                     │
-// ├─────────────────────────────────────────────────────────────────────────┤
-// │ 2. ClikController — Closed-Loop IK, Cartesian position control (3-DOF) │
-// │    Target: [x, y, z, null_q3, null_q4, null_q5]                        │
-// │      [0..2] = desired TCP position in world frame (metres)              │
-// │      [3..5] = null-space reference for joints 3–5 (radians)            │
-// │    #include "ur5e_rt_controller/controllers/clik_controller.hpp"       │
-// │                                                                         │
-// │    controller_(std::make_unique<urtc::ClikController>(                 │
-// │        "$(ros2 pkg prefix
-// ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf", │ │
-// urtc::ClikController::Gains{                                    │ │ .kp
-// = 1.0, .damping = 0.01, .null_kp = 0.5}))              │
-// ├─────────────────────────────────────────────────────────────────────────┤
-// │ 3. OperationalSpaceController — OSC, full 6-DOF Cartesian PD control  │
-// │    Target: [x, y, z, roll, pitch, yaw]  (metres / radians, ZYX)       │
-// │    #include "ur5e_rt_controller/controllers/                           │
-// │              operational_space_controller.hpp"                          │
-// │                                                                         │
-// │    controller_(std::make_unique<urtc::OperationalSpaceController>(     │
-// │        "$(ros2 pkg prefix
-// ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf", │ │
-// urtc::OperationalSpaceController::Gains{                        │ │ .kp_pos
-// = 1.0, .kd_pos = 0.1,                               │ │            .kp_rot =
-// 0.5, .kd_rot = 0.05, .damping = 0.01}))          │
-// └─────────────────────────────────────────────────────────────────────────┘
-// ────────────────────────────────────────────────────────────────────────────
+// ── Includes: project header first, then ROS2, then C++ stdlib ──────────────
 #include "ur5e_rt_base/data_logger.hpp"
 #include "ur5e_rt_base/log_buffer.hpp"
 #include "ur5e_rt_base/thread_config.hpp"
@@ -78,10 +31,65 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 using namespace std::chrono_literals;
 namespace urtc = ur5e_rt_controller;
+
+// ── Controller registry ──────────────────────────────────────────────────────
+//
+// To add a new controller:
+//   1. Create include/ur5e_rt_controller/controllers/my_controller.hpp
+//      (inherit RTControllerInterface, implement all pure virtuals + LoadConfig
+//       + UpdateGainsFromMsg)
+//   2. Create config/controllers/my_controller.yaml
+//   3. Add one #include line above and one entry to kControllerEntries below.
+//
+// No other changes to this file are required.
+// ────────────────────────────────────────────────────────────────────────────
+struct ControllerEntry
+{
+  // Key used both as the YAML filename stem (e.g. "pd_controller" →
+  // config/controllers/pd_controller.yaml) and as the alias accepted by
+  // the initial_controller ROS parameter.
+  std::string_view config_key;
+  std::function<std::unique_ptr<urtc::RTControllerInterface>(const std::string &)> factory;
+};
+
+static std::vector<ControllerEntry> MakeControllerEntries()
+{
+  return {
+    {
+      "p_controller",
+      [](const std::string &) {return std::make_unique<urtc::PController>();}
+    },
+    {
+      "pd_controller",
+      [](const std::string &) {return std::make_unique<urtc::PDController>();}
+    },
+    {
+      "pinocchio_controller",
+      [](const std::string & p) {
+        return std::make_unique<urtc::PinocchioController>(p, urtc::PinocchioController::Gains{});
+      }
+    },
+    {
+      "clik_controller",
+      [](const std::string & p) {
+        return std::make_unique<urtc::ClikController>(p, urtc::ClikController::Gains{});
+      }
+    },
+    {
+      "operational_space_controller",
+      [](const std::string & p) {
+        return std::make_unique<urtc::OperationalSpaceController>(
+          p, urtc::OperationalSpaceController::Gains{});
+      }
+    },
+    // ── Add new controllers here ─────────────────────────────────────────────
+  };
+}
 
 // ── CustomController
 // ───────────────────────────────────────────────────────────
@@ -246,117 +254,53 @@ private:
       RCLCPP_WARN(get_logger(), "Could not resolve urdf path: %s", e.what());
     }
 
-    std::string config_dir = "";
+    std::string config_dir;
     try {
       config_dir = ament_index_cpp::get_package_share_directory("ur5e_rt_controller") +
         "/config/controllers/";
     } catch (...) {}
 
-    auto load_array6 = [](const YAML::Node & n, std::array<double, 6> & arr) {
-        if (n && n.IsSequence() && n.size() == 6) {
-          for (size_t i = 0; i < 6; ++i) {arr[i] = n[i].as<double>();}
-        }
-      };
-    auto load_array3 = [](const YAML::Node & n, std::array<double, 3> & arr) {
-        if (n && n.IsSequence() && n.size() == 3) {
-          for (size_t i = 0; i < 3; ++i) {arr[i] = n[i].as<double>();}
-        }
-      };
+    // ── Instantiate and configure all registered controllers ─────────────────
+    // Each factory constructs the controller with default gains, then
+    // LoadConfig() reads per-controller overrides from its YAML file.
+    std::unordered_map<std::string, int> name_to_idx;
+    const auto entries = MakeControllerEntries();
 
-    // --- PController ---
-    urtc::PController::Gains p_gains;
-    try {
-      YAML::Node p_yaml = YAML::LoadFile(config_dir + "p_controller.yaml")["p_controller"];
-      if (p_yaml) {
-        load_array6(p_yaml["kp"], p_gains.kp);
-      }
-    } catch (...) {}
-    controllers_.push_back(std::make_unique<urtc::PController>(p_gains));
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+      const auto & entry = entries[i];
+      auto ctrl = entry.factory(urdf_path);
 
-    // --- PDController ---
-    urtc::PDController::Gains pd_gains;
-    try {
-      YAML::Node pd_yaml = YAML::LoadFile(config_dir + "pd_controller.yaml")["pd_controller"];
-      if (pd_yaml) {
-        load_array6(pd_yaml["kp"], pd_gains.kp);
-        load_array6(pd_yaml["kd"], pd_gains.kd);
-        if (pd_yaml["trajectory_speed"]) {
-          pd_gains.trajectory_speed = pd_yaml["trajectory_speed"].as<double>();
+      if (!config_dir.empty()) {
+        try {
+          const std::string yaml_path = config_dir + std::string(entry.config_key) + ".yaml";
+          const YAML::Node file_node  = YAML::LoadFile(yaml_path);
+          ctrl->LoadConfig(file_node[entry.config_key]);
+        } catch (const std::exception & e) {
+          RCLCPP_WARN(get_logger(),
+            "Config load failed for '%s' (%s) — using defaults",
+            ctrl->Name().data(), e.what());
         }
       }
-    } catch (...) {}
-    controllers_.push_back(std::make_unique<urtc::PDController>(pd_gains));
 
-    // --- PinocchioController ---
-    urtc::PinocchioController::Gains pin_gains;
-    try {
-      YAML::Node pin_yaml = YAML::LoadFile(config_dir +
-        "pinocchio_controller.yaml")["pinocchio_controller"];
-      if (pin_yaml) {
-        load_array6(pin_yaml["kp"], pin_gains.kp);
-        load_array6(pin_yaml["kd"], pin_gains.kd);
-        if (pin_yaml["enable_gravity_compensation"]) {
-          pin_gains.enable_gravity_compensation =
-            pin_yaml["enable_gravity_compensation"].as<bool>();
-        }
-        if (pin_yaml["enable_coriolis_compensation"]) {
-          pin_gains.enable_coriolis_compensation =
-            pin_yaml["enable_coriolis_compensation"].as<bool>();
-        }
-      }
-    } catch (...) {}
-    controllers_.push_back(std::make_unique<urtc::PinocchioController>(urdf_path, pin_gains));
+      // Register both the class name (e.g. "PDController") and the config-key
+      // alias (e.g. "pd_controller") so either form works as initial_controller.
+      name_to_idx[std::string(ctrl->Name())]   = static_cast<int>(i);
+      name_to_idx[std::string(entry.config_key)] = static_cast<int>(i);
 
-    // --- ClikController ---
-    urtc::ClikController::Gains clik_gains;
-    try {
-      YAML::Node c_yaml = YAML::LoadFile(config_dir + "clik_controller.yaml")["clik_controller"];
-      if (c_yaml) {
-        load_array3(c_yaml["kp"], clik_gains.kp);
-        if (c_yaml["damping"]) {clik_gains.damping = c_yaml["damping"].as<double>();}
-        if (c_yaml["null_kp"]) {clik_gains.null_kp = c_yaml["null_kp"].as<double>();}
-        if (c_yaml["trajectory_speed"]) {
-          clik_gains.trajectory_speed = c_yaml["trajectory_speed"].as<double>();
-        }
-        if (c_yaml["trajectory_angular_speed"]) {
-          clik_gains.trajectory_angular_speed = c_yaml["trajectory_angular_speed"].as<double>();
-        }
-      }
-    } catch (...) {}
-    controllers_.push_back(std::make_unique<urtc::ClikController>(urdf_path, clik_gains));
+      controllers_.push_back(std::move(ctrl));
+    }
 
-    // --- OperationalSpaceController ---
-    urtc::OperationalSpaceController::Gains osc_gains;
-    try {
-      YAML::Node osc_yaml = YAML::LoadFile(config_dir +
-        "operational_space_controller.yaml")["operational_space_controller"];
-      if (osc_yaml) {
-        load_array3(osc_yaml["kp_pos"], osc_gains.kp_pos);
-        load_array3(osc_yaml["kd_pos"], osc_gains.kd_pos);
-        load_array3(osc_yaml["kp_rot"], osc_gains.kp_rot);
-        load_array3(osc_yaml["kd_rot"], osc_gains.kd_rot);
-        if (osc_yaml["damping"]) {osc_gains.damping = osc_yaml["damping"].as<double>();}
-      }
-    } catch (...) {}
-    controllers_.push_back(std::make_unique<urtc::OperationalSpaceController>(urdf_path,
-      osc_gains));
-
-    // Map initial configuration string
-    std::string initial_ctrl = get_parameter("initial_controller").as_string();
-    if (initial_ctrl == "p_controller") {
-      active_controller_idx_.store(0);
-    } else if (initial_ctrl == "pd_controller") {
-      active_controller_idx_.store(1);
-    } else if (initial_ctrl == "pinocchio_controller") {
-      active_controller_idx_.store(2);
-    } else if (initial_ctrl == "clik_controller") {
-      active_controller_idx_.store(3);
-    } else if (initial_ctrl == "operational_space_controller") {
-      active_controller_idx_.store(4);
+    // Resolve initial_controller parameter → controller index
+    const std::string initial_ctrl = get_parameter("initial_controller").as_string();
+    const auto it = name_to_idx.find(initial_ctrl);
+    if (it != name_to_idx.end()) {
+      active_controller_idx_.store(it->second);
     } else {
-      RCLCPP_WARN(get_logger(), "Unknown initial_controller '%s', defaulting to pd_controller",
+      RCLCPP_WARN(get_logger(),
+        "Unknown initial_controller '%s', defaulting to pd_controller",
         initial_ctrl.c_str());
-      active_controller_idx_.store(1);
+      const auto pd_it = name_to_idx.find("pd_controller");
+      active_controller_idx_.store(pd_it != name_to_idx.end() ? pd_it->second : 1);
     }
   }
 
@@ -402,101 +346,15 @@ private:
         sub_options);
 
     // Gains subscriber — ~/controller_gains [Float64MultiArray]
-    // Layout for element-by-element assignment:
-    //  0 P         : kp (6)
-    //  1 PD        : kp (6), kd (6)
-    //  2 Pinocchio : kp (6), kd (6), grav (1), cori (1)
-    //  3 CLIK      : kp (3), damping (1), null_kp (1), null (1)
-    //  4 OSC       : kp_p (3), kd_p (3), kp_r (3), kd_r (3), damp (1), grav (1)
+    // Each controller defines its own flat-array layout in UpdateGainsFromMsg().
+    // See the controller's header comment for the exact layout.
     controller_gains_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
         "~/controller_gains", 10,
       [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-        const auto & d = msg->data;
-        int idx = active_controller_idx_.load(std::memory_order_acquire);
-
-        auto copy_to_arr6 = [&d](size_t offset, std::array<double, 6> & arr) {
-          for (size_t i = 0; i < 6; ++i) {arr[i] = d[offset + i];}
-        };
-        auto copy_to_arr3 = [&d](size_t offset, std::array<double, 3> & arr) {
-          for (size_t i = 0; i < 3; ++i) {arr[i] = d[offset + i];}
-        };
-
-        switch (idx) {
-          case 0: { // P
-              if (d.size() >= 6) {
-                auto *p = dynamic_cast<urtc::PController *>(controllers_[0].get());
-                if (p) {
-                  urtc::PController::Gains g;
-                  copy_to_arr6(0, g.kp);
-                  p->set_gains(g);
-                  RCLCPP_INFO(get_logger(), "New P gains updated (element-wise)");
-                }
-              }
-              break;
-            }
-          case 1: { // PD
-              if (d.size() >= 12) {
-                auto *p = dynamic_cast<urtc::PDController *>(controllers_[1].get());
-                if (p) {
-                  urtc::PDController::Gains g = p->get_gains();
-                  copy_to_arr6(0, g.kp);
-                  copy_to_arr6(6, g.kd);
-                  p->set_gains(g);
-                  RCLCPP_INFO(get_logger(), "New PD gains updated (element-wise)");
-                }
-              }
-              break;
-            }
-          case 2: { // Pinocchio
-              if (d.size() >= 14) {
-                auto *p = dynamic_cast<urtc::PinocchioController *>(controllers_[2].get());
-                if (p) {
-                  urtc::PinocchioController::Gains g = p->get_gains();
-                  copy_to_arr6(0, g.kp);
-                  copy_to_arr6(6, g.kd);
-                  g.enable_gravity_compensation = d[12] > 0.5;
-                  g.enable_coriolis_compensation = d[13] > 0.5;
-                  p->set_gains(g);
-                  RCLCPP_INFO(get_logger(), "New Pinocchio gains updated (element-wise)");
-                }
-              }
-              break;
-            }
-          case 3: { // Clik
-              if (d.size() >= 6) {
-                auto *p = dynamic_cast<urtc::ClikController *>(controllers_[3].get());
-                if (p) {
-                  urtc::ClikController::Gains g = p->get_gains();
-                  copy_to_arr3(0, g.kp);
-                  g.damping = d[3];
-                  g.null_kp = d[4];
-                  g.enable_null_space = d[5] > 0.5;
-                  p->set_gains(g);
-                  RCLCPP_INFO(get_logger(), "New Clik gains updated (element-wise)");
-                }
-              }
-              break;
-            }
-          case 4: { // OSC
-              if (d.size() >= 14) {
-                auto *p = dynamic_cast<urtc::OperationalSpaceController *>(controllers_[4].get());
-                if (p) {
-                  urtc::OperationalSpaceController::Gains g = p->get_gains();
-                  copy_to_arr3(0, g.kp_pos);
-                  copy_to_arr3(3, g.kd_pos);
-                  copy_to_arr3(6, g.kp_rot);
-                  copy_to_arr3(9, g.kd_rot);
-                  g.damping = d[12];
-                  g.enable_gravity_compensation = d[13] > 0.5;
-                  p->set_gains(g);
-                  RCLCPP_INFO(get_logger(), "New OSC gains updated (element-wise)");
-                }
-              }
-              break;
-            }
-          default:
-            RCLCPP_WARN(get_logger(), "Gains received for unknown controller idx %d", idx);
-        }
+        const int idx = active_controller_idx_.load(std::memory_order_acquire);
+        controllers_[static_cast<std::size_t>(idx)]->UpdateGainsFromMsg(msg->data);
+        RCLCPP_INFO(get_logger(), "Gains updated for %s",
+          controllers_[static_cast<std::size_t>(idx)]->Name().data());
         },
         sub_options);
   }

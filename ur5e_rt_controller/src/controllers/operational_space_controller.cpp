@@ -214,4 +214,36 @@ Eigen::Matrix3d OperationalSpaceController::RpyToMatrix(
          .toRotationMatrix();
 }
 
+// ── Controller registry hooks ────────────────────────────────────────────────
+
+void OperationalSpaceController::LoadConfig(const YAML::Node & cfg)
+{
+  if (!cfg) {return;}
+  auto load3 = [](const YAML::Node & n, std::array<double, 3> & arr) {
+      if (n && n.IsSequence() && n.size() == 3) {
+        for (std::size_t i = 0; i < 3; ++i) {arr[i] = n[i].as<double>();}
+      }
+    };
+  load3(cfg["kp_pos"], gains_.kp_pos);
+  load3(cfg["kd_pos"], gains_.kd_pos);
+  load3(cfg["kp_rot"], gains_.kp_rot);
+  load3(cfg["kd_rot"], gains_.kd_rot);
+  if (cfg["damping"])                    {gains_.damping = cfg["damping"].as<double>();}
+  if (cfg["enable_gravity_compensation"]) {
+    gains_.enable_gravity_compensation = cfg["enable_gravity_compensation"].as<bool>();
+  }
+}
+
+void OperationalSpaceController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
+{
+  // layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1)]
+  if (gains.size() < 14) {return;}
+  for (std::size_t i = 0; i < 3; ++i) {gains_.kp_pos[i] = gains[i];}
+  for (std::size_t i = 0; i < 3; ++i) {gains_.kd_pos[i] = gains[3 + i];}
+  for (std::size_t i = 0; i < 3; ++i) {gains_.kp_rot[i] = gains[6 + i];}
+  for (std::size_t i = 0; i < 3; ++i) {gains_.kd_rot[i] = gains[9 + i];}
+  gains_.damping                    = gains[12];
+  gains_.enable_gravity_compensation = gains[13] > 0.5;
+}
+
 }  // namespace ur5e_rt_controller

@@ -206,4 +206,31 @@ std::array<double, kNumRobotJoints> ClikController::ClampVelocity(
   return dq;
 }
 
+// ── Controller registry hooks ────────────────────────────────────────────────
+
+void ClikController::LoadConfig(const YAML::Node & cfg)
+{
+  if (!cfg) {return;}
+  if (cfg["kp"] && cfg["kp"].IsSequence() && cfg["kp"].size() == 3) {
+    for (std::size_t i = 0; i < 3; ++i) {gains_.kp[i] = cfg["kp"][i].as<double>();}
+  }
+  if (cfg["damping"])                {gains_.damping   = cfg["damping"].as<double>();}
+  if (cfg["null_kp"])                {gains_.null_kp   = cfg["null_kp"].as<double>();}
+  if (cfg["enable_null_space"])      {gains_.enable_null_space = cfg["enable_null_space"].as<bool>();}
+  if (cfg["trajectory_speed"])       {gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();}
+  if (cfg["trajectory_angular_speed"]) {
+    gains_.trajectory_angular_speed = cfg["trajectory_angular_speed"].as<double>();
+  }
+}
+
+void ClikController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
+{
+  // layout: [kp×3, damping, null_kp, enable_null_space(0/1)]
+  if (gains.size() < 6) {return;}
+  for (std::size_t i = 0; i < 3; ++i) {gains_.kp[i] = gains[i];}
+  gains_.damping          = gains[3];
+  gains_.null_kp          = gains[4];
+  gains_.enable_null_space = gains[5] > 0.5;
+}
+
 }  // namespace ur5e_rt_controller

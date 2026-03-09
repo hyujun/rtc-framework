@@ -44,6 +44,11 @@ public:
     return "PController";
   }
 
+  // ── Controller registry hooks ────────────────────────────────────────────
+  // gains layout: [kp×6]
+  void LoadConfig(const YAML::Node & cfg) override;
+  void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
+
   // Accessors (Google C++ Style: getter matches member name w/o trailing _).
   void set_gains(Gains gains) noexcept {gains_ = gains;}
   [[nodiscard]] Gains get_gains() const noexcept {return gains_;}

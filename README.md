@@ -5,7 +5,7 @@
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 ![ROS2 Jazzy](https://img.shields.io/badge/ROS2-Jazzy-green)
 
-**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.3.0)**
+**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.4.0)**
 
 E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종**, **MuJoCo 3.x 물리 시뮬레이터**, UDP 핸드 인터페이스, CSV 데이터 로깅, Qt GUI 모션 에디터를 포함한 완전한 실시간 제어 솔루션입니다.
 
@@ -20,6 +20,8 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 > **v5.2.2 (ROS 2 Jazzy 마이그레이션 + 다중 개선)**: `ur5e_description` 패키지 신규 추가 (MJCF/URDF/메시 통합 관리), 로깅 경로 동적 해석 (`~/ros2_ws/ur5e_ws/logging_data`), `build.sh` 빌드 스크립트 추가, `ros-jazzy-rmw-cyclonedds-cpp` 의존성 추가, `mujoco_simulator_node.cpp` → 3개 파일 분리(`mujoco_sim_loop.cpp`, `mujoco_viewer.cpp`), `solver_niter`(`int*`) island별 합산 수정.
 >
 > **v5.3.0 (멀티 컨트롤러 런타임 전환 + GUI 게인 튜닝)**: 런타임에 P/PD/Pinocchio/CLIK/OSC 컨트롤러를 ROS2 토픽으로 전환 가능. `controller_gui.py` (tkinter) 신규 — 컨트롤러 선택, 게인 슬라이더, 타겟 전송을 단일 GUI로 통합. MuJoCo `package://` URI 네이티브 지원 (ROS2 resource provider 등록).
+>
+> **v5.4.0 (Controller Registry + 확장 가이드)**: 새 컨트롤러 추가 시 `MakeControllerEntries()` 한 줄 등록으로 완결. `RTControllerInterface`에 `LoadConfig()` / `UpdateGainsFromMsg()` 훅 추가로 컨트롤러별 YAML 파싱·게인 업데이트를 자기 자신이 담당. `switch`/`dynamic_cast` 코드 제거. 신규: `docs/ADDING_CONTROLLER.md` 단계별 가이드.
 
 ---
 
@@ -62,6 +64,7 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 | 데이터 헬스 모니터 | 패킷 손실/타임아웃 통계 수집 및 JSON 내보내기 |
 | Qt GUI 에디터 | 50개 포즈 저장/로드/재생 모션 에디터 |
 | Strategy Pattern | `RTControllerInterface`를 상속하는 교체 가능한 제어기 구조 |
+| Controller Registry | `MakeControllerEntries()` 한 줄 등록으로 새 컨트롤러 추가 완결 (v5.4.0+) |
 | 설치 모드 선택 | `install.sh sim / robot / full` — 환경에 맞게 선택 설치 (v4.5.0+) |
 | 신호 필터 | Bessel LPF (선형 위상) + Kalman 필터 (속도 추정 내장), N채널 RT-안전 (v5.2.0+) |
 
@@ -81,6 +84,7 @@ ur5e-rt-controller/
 ├── docs/
 │   ├── CHANGELOG.md                      # 전체 버전 변경 이력
 │   ├── RT_OPTIMIZATION.md                # 실시간 최적화 가이드
+│   ├── ADDING_CONTROLLER.md              # 새 컨트롤러 추가 단계별 가이드 (v5.4.0+)
 │   └── CLAUDE.md                         # AI 어시스턴트 컨텍스트 문서
 │
 ├── ur5e_description/                      # 📦 로봇 모델 description (신규 v5.2.2)
@@ -116,11 +120,22 @@ ur5e-rt-controller/
 │   │       ├── task_space_trajectory.hpp # SE(3) 5차 스플라인 (CLIK/OSC 사용)
 │   │       └── joint_space_trajectory.hpp# 관절공간 5차 스플라인
 │   ├── src/
-│   │   ├── custom_controller.cpp         # 메인 500Hz 노드
-│   │   └── pd_controller.cpp             # PD 제어기 소스
+│   │   ├── custom_controller.cpp         # 메인 500Hz 노드 (Controller Registry, v5.4.0)
+│   │   └── controllers/                  # 각 컨트롤러 구현 (.cpp)
+│   │       ├── p_controller.cpp
+│   │       ├── pd_controller.cpp
+│   │       ├── pinocchio_controller.cpp
+│   │       ├── clik_controller.cpp
+│   │       └── operational_space_controller.cpp
 │   ├── config/
 │   │   ├── ur5e_rt_controller.yaml       # 로깅 경로: ~/ros2_ws/ur5e_ws/logging_data
-│   │   └── cyclone_dds.xml               # CycloneDDS 스레드 Core 0-1 제한 설정
+│   │   ├── cyclone_dds.xml               # CycloneDDS 스레드 Core 0-1 제한 설정
+│   │   └── controllers/                  # 컨트롤러별 게인 YAML (v5.4.0+)
+│   │       ├── p_controller.yaml
+│   │       ├── pd_controller.yaml
+│   │       ├── pinocchio_controller.yaml
+│   │       ├── clik_controller.yaml
+│   │       └── operational_space_controller.yaml
 │   ├── scripts/
 │   │   └── setup_irq_affinity.sh         # NIC IRQ → Core 0-1 고정 스크립트
 │   └── launch/ur_control.launch.py       # 전체 시스템 (use_cpu_affinity 인자 포함)
@@ -1169,44 +1184,32 @@ sudo cyclictest -l100000 -m -n -p99 -t1 -i2000
 
 ### 커스텀 제어기 추가
 
-1. `include/ur5e_rt_controller/controllers/my_controller.hpp` 생성:
+v5.4.0부터 **Controller Registry** 패턴을 사용합니다. 전체 단계: **[docs/ADDING_CONTROLLER.md](docs/ADDING_CONTROLLER.md)**
 
-```cpp
-#pragma once
-#include "ur5e_rt_controller/rt_controller_interface.hpp"
+**요약 (4단계)**:
 
-namespace ur5e_rt_controller {
+```bash
+# 1. 헤더 생성
+touch include/ur5e_rt_controller/controllers/my_controller.hpp
+# → RTControllerInterface 상속, LoadConfig() + UpdateGainsFromMsg() 구현
 
-class MyController final : public RTControllerInterface {
-public:
-  [[nodiscard]] ControllerOutput Compute(
-      const ControllerState& state) noexcept override {
-    ControllerOutput output;
-    // 제어 로직 구현 — 반드시 noexcept
-    return output;
-  }
-  void SetRobotTarget(std::span<const double>) noexcept override {}
-  void SetHandTarget(std::span<const double>)  noexcept override {}
-  [[nodiscard]] std::string_view Name() const  noexcept override { return "MyController"; }
-};
+# 2. 구현 생성
+touch src/controllers/my_controller.cpp
 
-}  // namespace ur5e_rt_controller
+# 3. YAML 생성
+echo "my_controller:\n  kp: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]" \
+  > config/controllers/my_controller.yaml
+
+# 4. custom_controller.cpp에 한 줄 추가
+# (MakeControllerEntries() 리스트에 아래 추가)
+# {"my_controller", [](const std::string &) { return std::make_unique<urtc::MyController>(); }},
 ```
-
-2. `src/custom_controller.cpp`에서 `PDController` 대신 사용:
-
-```cpp
-// controller_ 타입을 RTControllerInterface로 변경 후:
-controller_(std::make_unique<urtc::MyController>())
-```
-
-3. 재빌드:
 
 ```bash
 colcon build --packages-select ur5e_rt_controller
 ```
 
-> **Pinocchio 제어기 교체 방법**은 [Pinocchio 기반 제어기](#pinocchio-기반-제어기) 섹션을 참조하세요.
+> **Pinocchio 제어기 추가 방법**도 동일합니다. 팩토리 람다에서 `urdf_path` 인자를 사용하면 됩니다.
 
 ### CSV 로그 형식
 
@@ -1294,6 +1297,7 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 
 | 버전 | 주요 변경사항 |
 |------|---------------|
+| **v5.4.0** | Controller Registry 패턴 (`MakeControllerEntries()`), `RTControllerInterface`에 `LoadConfig()` / `UpdateGainsFromMsg()` 훅 추가, 컨트롤러별 YAML 로딩·게인 업데이트 자기 책임화, `switch`/`dynamic_cast` 제거, `docs/ADDING_CONTROLLER.md` 신규 |
 | **v5.3.0** | 런타임 컨트롤러 전환 (P/PD/Pinocchio/CLIK/OSC `controller_type` 토픽), `controller_gains` 토픽으로 동적 게인 업데이트, `controller_gui.py` tkinter GUI 신규, MuJoCo `package://` URI 네이티브 지원 (`Ros2ResourceProvider`) |
 | **v5.2.2** | `ur5e_description` 패키지 신규 추가 (MJCF/URDF/메시 통합), 로깅 경로 동적 해석, `build.sh` 추가, `rmw_cyclonedds_cpp` 의존성, 소스 파일 분리(`mujoco_sim_loop.cpp`, `mujoco_viewer.cpp`), `solver_niter` island 합산 수정, ROS 2 Jazzy 지원 |
 | **v5.2.1** | MuJoCo binary tarball cmake 탐지 수정: `install.sh` `-Dmujoco_DIR`→`-Dmujoco_ROOT`, `CMakeLists.txt` `find_library` 폴백 추가 |

@@ -5,6 +5,51 @@
 
 ---
 
+## [5.4.0] - 2026-03-09
+
+### 변경 (Changed) — Controller Registry 패턴 도입
+
+`custom_controller.cpp`의 컨트롤러 관리 방식을 **Controller Registry** 패턴으로 전면 개편했습니다. 이제 새 컨트롤러 추가 시 `custom_controller.cpp`의 `MakeControllerEntries()` 한 줄만 수정하면 됩니다.
+
+#### `RTControllerInterface` 인터페이스 확장 (`rt_controller_interface.hpp`)
+
+두 개의 새 가상 메서드 추가:
+
+| 메서드 | 용도 |
+|---|---|
+| `virtual void LoadConfig(const YAML::Node & cfg)` | 노드 시작 시 YAML에서 게인/파라미터 로드. 각 컨트롤러가 자신의 파싱 로직을 소유 |
+| `virtual void UpdateGainsFromMsg(std::span<const double> gains) noexcept` | `~/controller_gains` 토픽 수신 시 flat array에서 게인 업데이트 |
+
+기본 구현은 no-op이므로 기존 컨트롤러와 완전 하위 호환됩니다.
+
+#### 각 컨트롤러 `LoadConfig` / `UpdateGainsFromMsg` 구현
+
+5개 기존 컨트롤러 모두 두 메서드를 구현합니다:
+
+| 컨트롤러 | `UpdateGainsFromMsg` 레이아웃 |
+|---|---|
+| `PController` | `[kp×6]` (6개) |
+| `PDController` | `[kp×6, kd×6]` (12개) |
+| `PinocchioController` | `[kp×6, kd×6, gravity(0/1), coriolis(0/1)]` (14개) |
+| `ClikController` | `[kp×3, damping, null_kp, enable_null_space(0/1)]` (6개) |
+| `OperationalSpaceController` | `[kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, gravity(0/1)]` (14개) |
+
+#### `custom_controller.cpp` 리팩토링
+
+| 변경 전 | 변경 후 |
+|---|---|
+| 컨트롤러별 ~80줄 YAML 로딩 코드 | `MakeControllerEntries()` + 공통 루프 ~15줄 |
+| `if/else if` 체인 (initial_controller 이름→인덱스) | `std::unordered_map` 자동 생성 |
+| `switch` + `dynamic_cast` × 5 (게인 구독자) | `controllers_[idx]->UpdateGainsFromMsg(d)` 한 줄 |
+
+`initial_controller` ROS 파라미터에서 `"PDController"` (클래스 이름)와 `"pd_controller"` (config key) 모두 허용합니다.
+
+### 추가 (Added)
+
+- **`docs/ADDING_CONTROLLER.md`**: 새 컨트롤러 추가 단계별 가이드 (헤더 템플릿, 구현 예시, YAML 형식, 레지스트리 등록, CMakeLists, 체크리스트)
+
+---
+
 ## [5.3.0] - 2026-03-08
 
 ### 추가 (Added) — 런타임 멀티 컨트롤러 전환

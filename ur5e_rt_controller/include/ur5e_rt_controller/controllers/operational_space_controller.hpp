@@ -107,6 +107,11 @@ public:
   [[nodiscard]] bool IsEstopped() const          noexcept override;
   void SetHandEstop(bool active)                 noexcept override;
 
+  // ── Controller registry hooks ────────────────────────────────────────────
+  // gains layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1)]
+  void LoadConfig(const YAML::Node & cfg) override;
+  void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
+
   // ── Accessors (non-RT reads only) ─────────────────────────────────────────
   void set_gains(const Gains & g) noexcept {gains_ = g;}
   [[nodiscard]] Gains get_gains() const noexcept {return gains_;}

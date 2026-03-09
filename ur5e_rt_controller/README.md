@@ -296,29 +296,67 @@ auto s = traj.compute(t);  // State{positions, velocities, accelerations}
 
 ## 커스텀 컨트롤러 추가
 
-`RTControllerInterface`를 상속하여 `Compute()`, `SetRobotTarget()`, `SetHandTarget()`, `Name()`을 구현합니다. **모든 메서드는 반드시 `noexcept`여야 합니다** (500Hz 루프에서 예외 발생 시 프로세스 종료).
+v5.4.0부터 **Controller Registry** 패턴을 사용합니다. 새 컨트롤러를 추가할 때 수정해야 할 파일이 최소화되었습니다.
+
+### 4단계 요약
+
+**1. 헤더 작성** (`include/ur5e_rt_controller/controllers/my_controller.hpp`)
 
 ```cpp
-class MyController : public ur5e_rt_controller::RTControllerInterface {
- public:
-  [[nodiscard]] ControllerOutput Compute(
-      const ControllerState& state) noexcept override;
-  void SetRobotTarget(std::span<const double> target) noexcept override;
-  void SetHandTarget(std::span<const double> target) noexcept override;
-  [[nodiscard]] std::string_view Name() const noexcept override {
-    return "MyController";
-  }
+#pragma once
+#include "ur5e_rt_controller/rt_controller_interface.hpp"
+#include <yaml-cpp/yaml.h>
+
+namespace ur5e_rt_controller {
+class MyController final : public RTControllerInterface {
+public:
+  [[nodiscard]] ControllerOutput Compute(const ControllerState & state) noexcept override;
+  void SetRobotTarget(std::span<const double, kNumRobotJoints> target) noexcept override;
+  void SetHandTarget(std::span<const double, kNumHandJoints> target) noexcept override;
+  [[nodiscard]] std::string_view Name() const noexcept override { return "MyController"; }
+
+  void TriggerEstop() noexcept override;
+  void ClearEstop()   noexcept override;
+  [[nodiscard]] bool IsEstopped() const noexcept override;
+  void SetHandEstop(bool active) noexcept override;
+
+  void LoadConfig(const YAML::Node & cfg) override;           // YAML 파싱 (noexcept 아님)
+  void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
 };
+} // namespace ur5e_rt_controller
 ```
 
-그 후 `custom_controller.cpp`에서 컨트롤러를 교체합니다:
+**2. 구현 작성** (`src/controllers/my_controller.cpp`) — `Compute()`, `LoadConfig()`, `UpdateGainsFromMsg()` 등 구현
+
+**3. YAML 설정 추가** (`config/controllers/my_controller.yaml`)
+
+```yaml
+my_controller:
+  kp: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+```
+
+**4. Registry에 등록** (`src/custom_controller.cpp` → `MakeControllerEntries()`)
 
 ```cpp
-// 생성자 내 (약 40번 줄):
-controller_(std::make_unique<MyController>())
+{"my_controller", [](const std::string &) {
+  return std::make_unique<urtc::MyController>();
+}},
+// ── Add new controllers here ──
 ```
 
-헤더-전용 컨트롤러는 `CMakeLists.txt` 수정이 불필요합니다.
+> 자세한 전체 가이드는 [`docs/ADDING_CONTROLLER.md`](../docs/ADDING_CONTROLLER.md)를 참조하세요.
+
+### RTControllerInterface 가상 메서드
+
+| 메서드 | noexcept | 설명 |
+|--------|----------|------|
+| `Compute()` | ✓ | 500Hz RT 루프에서 호출 — 반드시 noexcept |
+| `SetRobotTarget()` | ✓ | 목표 관절 위치 설정 |
+| `SetHandTarget()` | ✓ | 손 목표 설정 |
+| `Name()` | ✓ | 컨트롤러 이름 반환 |
+| `TriggerEstop()` / `ClearEstop()` | ✓ | E-STOP 제어 |
+| `LoadConfig()` | ✗ | YAML 파싱 (예외 발생 가능, 호출 측에서 try/catch) |
+| `UpdateGainsFromMsg()` | ✓ | 센서 스레드에서 호출 — 반드시 noexcept |
 
 ---
 
