@@ -1,32 +1,41 @@
-# hand_udp_receiver.yaml - v1
+# hand_udp_receiver.yaml - v1.1.0 (v5.3.0 workspace)
+# UDP 수신 패킷 형식: 77 double (616 bytes)
+#   [0..10]  motor_positions[11]   — 모터 위치
+#   [11..21] motor_velocities[11]  — 모터 속도
+#   [22..32] motor_currents[11]    — 모터 전류
+#   [33..76] sensor_data[44]       — 촉각 센서 (관절당 4개)
+# ROS2 퍼블리시: /hand/joint_states — motor_positions[11] 만 전달 (11개 double)
 
-# UDP Configuration
+# ── UDP 수신 설정 ──────────────────────────────────────────────────────────────
 udp:
-  port: 50001                  # UDP listening port
-  buffer_size: 1024            # Bytes
-  timeout_ms: 1000             # Socket timeout
+  port: 50001                  # UDP 수신 포트 (launch 파라미터 udp_port:= 로 오버라이드)
+  buffer_size: 1024            # 소켓 수신 버퍼 (bytes) — 616 bytes 패킷에 충분
+  timeout_ms: 1000             # 소켓 타임아웃 (ms); 초과 시 루프 재시도
 
-# Publishing Parameters
+# ── ROS2 퍼블리시 설정 ────────────────────────────────────────────────────────
 publishing:
-  rate: 100.0                  # Hz
+  rate: 100.0                  # /hand/joint_states 퍼블리시 주기 (Hz)
   topic: "/hand/joint_states"
   queue_size: 10
 
-# Hand Configuration
+# ── 11-DOF 핸드 설정 ──────────────────────────────────────────────────────────
 hand:
-  num_joints: 4
+  num_joints: 11               # kNumHandJoints = 11 (ur5e_rt_base/types.hpp)
   joint_names:
-    - "finger_1"
-    - "finger_2"
-    - "finger_3"
-    - "finger_4"
-  
-  # Joint limits (normalized 0.0 - 1.0)
-  min_position: 0.0
-  max_position: 1.0
+    - "hand_motor_0"           # 모터 0
+    - "hand_motor_1"           # 모터 1
+    - "hand_motor_2"           # 모터 2
+    - "hand_motor_3"           # 모터 3
+    - "hand_motor_4"           # 모터 4
+    - "hand_motor_5"           # 모터 5
+    - "hand_motor_6"           # 모터 6
+    - "hand_motor_7"           # 모터 7
+    - "hand_motor_8"           # 모터 8
+    - "hand_motor_9"           # 모터 9
+    - "hand_motor_10"          # 모터 10
 
-# Monitoring
+# ── 모니터링 설정 ─────────────────────────────────────────────────────────────
 monitoring:
   enable_statistics: true
-  statistics_period: 5.0       # seconds
-  log_packet_loss: true
+  statistics_period: 5.0       # 패킷 통계 출력 주기 (초)
+  log_packet_loss: true        # 패킷 손실률 로깅

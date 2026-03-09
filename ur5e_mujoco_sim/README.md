@@ -189,11 +189,11 @@ GLFW 3D 뷰어 실행 중 사용 가능한 키보드 단축키:
 `package://` URI를 MuJoCo가 네이티브로 해석할 수 있도록 전역 resource provider를 등록합니다.
 
 ```cpp
-// mujoco_simulator_node.cpp 생성 시 자동 호용
+// mujoco_simulator_node.cpp 생성 시 자동 호출
 ur5e_rt_controller::RegisterRos2ResourceProvider();
 ```
 
-MJCF 파일 안에서 다음과 같이 쾬투지 URI를 별도 변환 없이 사용 가능:
+MJCF 파일 안에서 다음과 같이 `package://` URI를 별도 변환 없이 사용 가능:
 ```xml
 <mesh file="package://ur5e_description/robots/ur5e/meshes/ur5e.dae"/>
 ```

@@ -1,4 +1,4 @@
-# 실시간 최적화 가이드 (v4.2.0)
+# 실시간 최적화 가이드 (v4.2.0 / v5.1.0 업데이트)
 
 **UR5e RT Controller 병렬 컴퓨팅 아키텍처 상세 문서**
 
@@ -88,13 +88,15 @@ aux_executor (Core 5, SCHED_OTHER)
 
 ### 6-Core 시스템 (권장)
 
-| Core | 용도 | Scheduler | Priority | CallbackGroup | 주기 |
-|------|------|-----------|----------|---------------|------|
-| 0-1 | OS / DDS | SCHED_OTHER | - | - | - |
-| 2 | RT Control | SCHED_FIFO | 90 | cb_group_rt_ | 500Hz, 50Hz |
-| 3 | Sensor I/O | SCHED_FIFO | 70 | cb_group_sensor_ | 비정기 |
-| 4 | Logging | SCHED_OTHER | nice -5 | cb_group_log_ | 100Hz |
-| 5 | Aux | SCHED_OTHER | 0 | cb_group_aux_ | 비정기 |
+> **v5.1.0 업데이트**: `udp_recv`가 Core 3 → Core 5로 이동되었습니다. `sensor_io`(Core 3)가 전용 코어를 확보하여 UDP 버스트 시 `JointStateCallback` 지연 및 오발동 E-STOP 위험이 제거되었습니다.
+
+| Core | 용도 | Scheduler | Priority | CallbackGroup / 스레드 | 주기 |
+|------|------|-----------|----------|----------------------|------|
+| 0-1 | OS / DDS / UR 드라이버 / NIC IRQ | SCHED_OTHER | - | - | - |
+| 2 | RT Control | SCHED_FIFO | 90 | `cb_group_rt_` | 500Hz + 50Hz E-STOP |
+| 3 | Sensor I/O | SCHED_FIFO | 70 | `cb_group_sensor_` (전용) | 비정기 |
+| 4 | Logging | SCHED_OTHER | nice -5 | `cb_group_log_` | 100Hz drain |
+| 5 | UDP recv + Aux | FIFO/65 + OTHER/0 | - | `kUdpRecvConfig` + `cb_group_aux_` | 비정기 |
 
 **isolcpus 설정**: Core 2-5를 OS 스케줄러에서 격리하여 RT 전용으로 사용
 
@@ -798,6 +800,6 @@ grep -E "[0-9]{3,}\.[0-9]{3} us" trace.txt
 
 ---
 
-**최종 업데이트**: 2026-03-02  
-**작성자**: UR5e RT Controller Team  
-**버전**: v4.2.0
+**최종 업데이트**: 2026-03-09
+**작성자**: UR5e RT Controller Team
+**버전**: v5.1.0 (v4.2.0 기반, CPU 코어 할당 최적화 반영)
