@@ -21,6 +21,7 @@ class MotionEditor(QMainWindow):
         self.MAX_POSES = 50
         self.poses = [np.zeros(6) for _ in range(self.MAX_POSES)]
         self.pose_names = [f"Pose {i+1}" for i in range(self.MAX_POSES)]
+        self.pose_descriptions = ["" for _ in range(self.MAX_POSES)]
         self.current_q = np.zeros(6)
         self.selected_row = 0
         
@@ -53,20 +54,24 @@ class MotionEditor(QMainWindow):
         layout.addWidget(joint_group)
         
         # 포즈 테이블
-        self.pose_table = QTableWidget(self.MAX_POSES, 4)
-        self.pose_table.setHorizontalHeaderLabels(["#", "Name", "Status", "Preview"])
+        self.pose_table = QTableWidget(self.MAX_POSES, 5)
+        self.pose_table.setHorizontalHeaderLabels(["#", "Name", "Status", "Preview", "Description"])
         self.pose_table.setColumnWidth(0, 50)
         self.pose_table.setColumnWidth(1, 150)
         self.pose_table.setColumnWidth(2, 100)
-        self.pose_table.setColumnWidth(3, 600)
+        self.pose_table.setColumnWidth(3, 380)
+        self.pose_table.setColumnWidth(4, 250)
         self.pose_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.pose_table.setSelectionMode(QTableWidget.MultiSelection)
-        
+        self.pose_table.itemChanged.connect(self._on_item_changed)
+
         for i in range(self.MAX_POSES):
             self.pose_table.setItem(i, 0, QTableWidgetItem(str(i+1)))
             self.pose_table.setItem(i, 1, QTableWidgetItem(self.pose_names[i]))
             self.pose_table.setItem(i, 2, QTableWidgetItem("Empty"))
             self.pose_table.setItem(i, 3, QTableWidgetItem("-"))
+            desc_item = QTableWidgetItem("")
+            self.pose_table.setItem(i, 4, desc_item)
         
         layout.addWidget(self.pose_table)
         
@@ -109,6 +114,15 @@ class MotionEditor(QMainWindow):
         exit_action = file_menu.addAction("Exit")
         exit_action.triggered.connect(self.close)
         
+    def _on_item_changed(self, item):
+        """Sync in-memory data when user edits Name or Description cells directly."""
+        row = item.row()
+        col = item.column()
+        if col == 1:
+            self.pose_names[row] = item.text()
+        elif col == 4:
+            self.pose_descriptions[row] = item.text()
+
     def update_joints(self, q):
         """ROS에서 받은 관절 각도 업데이트"""
         self.current_q = q.copy()
@@ -189,8 +203,10 @@ class MotionEditor(QMainWindow):
         for idx in selected:
             row = idx.row()
             self.poses[row] = np.zeros(6)
+            self.pose_descriptions[row] = ""
             self.pose_table.item(row, 2).setText("Empty")
             self.pose_table.item(row, 3).setText("-")
+            self.pose_table.item(row, 4).setText("")
         
         self.status_label.setText("🗑️ Cleared selected poses")
     
@@ -202,9 +218,10 @@ class MotionEditor(QMainWindow):
         if filename:
             data = {
                 "num_poses": self.MAX_POSES,
-                "poses": {f"pose_{i}": self.poses[i].tolist() 
+                "poses": {f"pose_{i}": self.poses[i].tolist()
                          for i in range(self.MAX_POSES)},
-                "names": self.pose_names
+                "names": self.pose_names,
+                "descriptions": self.pose_descriptions
             }
             with open(filename, 'w') as f:
                 json.dump(data, f, indent=2)
@@ -220,10 +237,14 @@ class MotionEditor(QMainWindow):
                 with open(filename, 'r') as f:
                     data = json.load(f)
                 
+                descriptions = data.get('descriptions', [""] * self.MAX_POSES)
                 for i in range(min(self.MAX_POSES, len(data.get('poses', {})))):
                     key = f"pose_{i}"
                     if key in data['poses']:
                         self.poses[i] = np.array(data['poses'][key])
+                        desc = descriptions[i] if i < len(descriptions) else ""
+                        self.pose_descriptions[i] = desc
+                        self.pose_table.item(i, 4).setText(desc)
                         if np.linalg.norm(self.poses[i]) > 0.001:
                             self.pose_table.item(i, 2).setText("✅ Saved")
                             self.pose_table.item(i, 3).setText(str(self.poses[i][:3]))

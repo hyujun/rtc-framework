@@ -20,7 +20,7 @@ mujoco_simulator:
     #               Set enable_estop: false in custom_controller config!
     # "sync_step" — publish state → wait for command → step (1:1 sync).
     #               Step latency ≈ Compute() time → direct timing measurement.
-    sim_mode: "free_run"
+    sim_mode: "sync_step"
 
     # free_run only: publish /joint_states every N physics steps.
     # Increase to reduce DDS traffic when the sim runs much faster than 500 Hz.
@@ -42,7 +42,7 @@ mujoco_simulator:
     #   1.0   → real-time (RTF = 1× — matches wall clock)
     #   10.0  → 10× real time (10 simulated seconds per wall second)
     #   100.0 → 100× real time
-    max_rtf: 0.0
+    max_rtf: 1.0
 
     # ── Viewer ───────────────────────────────────────────────────────────────
     # Open a GLFW window for 3D visualisation.
