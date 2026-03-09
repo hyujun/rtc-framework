@@ -242,7 +242,7 @@ Creates **4 `SingleThreadedExecutor`s**, each running in a dedicated `std::threa
 
 ### Lock-Free Logging Infrastructure
 
-**`SpscLogBuffer`** (`include/ur5e_rt_controller/log_buffer.hpp`): single-producer / single-consumer ring buffer (512 entries, power-of-2). The RT thread calls `Push()` without ever blocking or allocating; the log thread drains via `Pop()`. Each `LogEntry` now includes `compute_time_us` from `ControllerTimingProfiler`.
+**`SpscLogBuffer`** (`include/ur5e_rt_controller/log_buffer.hpp`): single-producer / single-consumer ring buffer (power-of-2 entries). Uses **bitwise AND modulus** `& (N - 1)` for fast wrapping and **local index caching** to minimize cache invalidation (False Sharing) between the RT and logging threads. `alignas(kCacheLineSize)` dynamically adapts to the hardware target. The RT thread calls `Push()` without ever blocking or allocating; the log thread drains via `Pop()`. Each `LogEntry` now includes `compute_time_us` from `ControllerTimingProfiler`.
 
 **`ControllerTimingProfiler`** (`include/ur5e_rt_controller/controller_timing_profiler.hpp`): wraps `RTControllerInterface::Compute()` with `steady_clock` timing. Maintains a lock-free histogram (0–2000 µs, 100 µs buckets) + min/max/mean/stddev/p95/p99 using relaxed atomics. Budget threshold: 2000 µs (500 Hz period). Call `MeasuredCompute()` instead of `Compute()` directly; call `Summary()` every 1000 iterations for a log line.
 

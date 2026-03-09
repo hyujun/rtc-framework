@@ -195,35 +195,36 @@ auto cfgs = ur5e_rt_controller::SelectThreadConfigs();
 
 ### `ur5e_rt_base/log_buffer.hpp`
 
-500Hz RT 스레드와 로그 스레드 간 **단일-생산자 단일-소비자(SPSC) 링 버퍼**를 구현합니다.
+500Hz RT 스레드와 로그 스레드 간 **단일-생산자 단일-소비자(SPSC) 링 버퍼**를 구현합니다. 최근 성능 최적화를 적용하여 업계 최고 수준의 초저지연성을 확보했습니다.
 
 ```cpp
-template <typename T, std::size_t N>
+template <std::size_t N>
 class SpscLogBuffer {
  public:
   // RT 스레드: 절대 블로킹/할당 없음 — 버퍼 가득 시 false 반환
-  bool Push(const T& entry) noexcept;
+  bool Push(const LogEntry& entry) noexcept;
 
   // 로그 스레드: 엔트리 없으면 false 반환
-  bool Pop(T& entry) noexcept;
+  bool Pop(LogEntry& entry) noexcept;
 };
 ```
 
-**설계 특성:**
-- 크기 `N`은 반드시 2의 거듭제곱 (기본값: 512)
-- `std::atomic<std::size_t>` head/tail — 뮤텍스 없음
-- `Push()`: RT 경로에서 절대 블로킹/동적 할당 없음
-- 버퍼 가득 시 오래된 엔트리 드롭 (최신 우선)
+**설계 및 최적화 특성:**
+- 크기 `N`은 반드시 **2의 거듭제곱**이어야 합니다 (기본값: 512).
+- 모듈러 연산(`% N`) 대신 **비트 AND 연산**(`& (N - 1)`)을 사용하여 인덱스 래핑(Wrapping) 연산 파이프라인을 고속화했습니다.
+- 생산자와 소비자가 서로의 인덱스를 무인증으로 계속 읽어와 발생하는 캐시 무효화(Cache Invalidation, False Sharing) 페널티를 막기 위해, 자신의 캐시에 상대방의 인덱스를 저장(`cached_tail_`, `cached_head_`)하여 **원자성 동기화 횟수를 획기적으로 감축**시켰습니다.
+- C++17 `<new>` 헤더의 `std::hardware_destructive_interference_size`를 사용해 **하드웨어 아키텍처(x86, ARM 등)에 맞는 최적의 캐시 라인 크기**를 동적으로 컴파일-타임에 결정(`alignas(kCacheLineSize)`)합니다.
+- `Push()`: RT 경로에서 절대 블로킹/동적 할당이 일어나지 않습니다.
 
 **`LogEntry` 구조체** (DataLogger와 연계):
 
 ```cpp
 struct LogEntry {
-  double    timestamp{};
-  RobotState robot_state{};
+  double timestamp{0.0};
+  std::array<double, 6> current_positions{};
   std::array<double, 6> target_positions{};
   std::array<double, 6> commands{};
-  double    compute_time_us{};  // Compute() 실행 시간 (마이크로초)
+  double compute_time_us{0.0};  // Compute() 실행 시간 (마이크로초)
 };
 ```
 

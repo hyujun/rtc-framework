@@ -7,6 +7,13 @@
 
 ## [5.5.0] - 2026-03-09
 
+### 성능 최적화 (Performance) — `log_buffer.hpp` 초저지연 버퍼
+
+*   **비트 연산 기반 모듈러 연산**: 버퍼 크기 `N`이 2의 거듭제곱임(`static_assert` 추가)을 활용하여 모듈러 연산(`% N`)을 비트 AND 연산(`& (N - 1)`)으로 대체하여 연산 속도를 획기적으로 개선했습니다.
+*   **원자적 인덱스 로컬 캐싱 (Local Index Caching)**: 생산자와 소비자가 서로의 인덱스(`head_`, `tail_`)를 확인할 때 발생하는 불필요한 캐시 무효화(Cache Bouncing/False Sharing)를 방지하기 위해 로컬 변수(`cached_tail_`, `cached_head_`)에 값을 우선 캐싱하도록 제어 흐름을 최적화했습니다. 원자성 변수의 접근을 최소화하여 멀티 코어 통신에서 흔들림(Jitter)을 방지합니다.
+*   **하드웨어 맞춤형 캐시 라인 결정 (C++17)**: x86에 종속적이던 고정된 캐시 라인 크기(`alignas(64)`)를 제거하고, C++17 `<new>` 헤더의 `std::hardware_destructive_interference_size` 매크로를 사용하여 컴파일 타임에 타겟 아키텍처(x86, ARM 등)에 맞는 최적의 캐시 라인 차단 크기를 동적으로 결정(`alignas(kCacheLineSize)`)하도록 개선했습니다.
+*   **기본 이니셜라이저 (Default Initializers) 추가**: `LogEntry` 구조체 멤버 변수의 정적 분석 경고(Lint Warnings) 해결. 매직 넘버 `512`를 `kControlLogBufferCapacity` 상수로 치환.
+
 ### 변경 (Changed) — 소스 파일 분리 및 클래스명 변경
 
 `custom_controller.cpp` 단일 파일을 3개 파일로 분리했습니다.
