@@ -57,4 +57,16 @@ install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
 )
 
+if(BUILD_TESTING)
+  find_package(ament_lint_auto REQUIRED)
+  set(ament_cmake_copyright_FOUND TRUE)
+  set(ament_cmake_cpplint_FOUND TRUE)
+  ament_lint_auto_find_test_dependencies()
+
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_trajectory test/test_trajectory.cpp)
+  target_include_directories(test_trajectory PRIVATE include)
+  target_link_libraries(test_trajectory pinocchio::pinocchio)
+endif()
+
 ament_package()

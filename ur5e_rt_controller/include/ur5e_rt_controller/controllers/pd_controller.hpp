@@ -5,10 +5,11 @@
 #include <atomic>
 #include <span>
 #include <string_view>
-
 #include "ur5e_rt_controller/rt_controller_interface.hpp"
+#include "ur5e_rt_controller/trajectory/joint_space_trajectory.hpp"
 
-namespace ur5e_rt_controller {
+namespace ur5e_rt_controller
+{
 
 // Proportional-Derivative (PD) position controller with E-STOP support.
 //
@@ -17,10 +18,11 @@ namespace ur5e_rt_controller {
 // On E-STOP, commands drive the robot toward kSafePosition instead of the
 // user-specified target, allowing a controlled stop.
 class PDController final : public RTControllerInterface {
- public:
+public:
   // Aggregated gains — supports C++20 designated initialiser at call site:
   //   PDController ctrl{{.kp = 5.0, .kd = 0.5}};
-  struct Gains {
+  struct Gains
+  {
     double kp;
     double kd;
   };
@@ -28,15 +30,16 @@ class PDController final : public RTControllerInterface {
   explicit PDController(Gains gains = Gains{5.0, 0.5}) noexcept;
 
   [[nodiscard]] ControllerOutput Compute(
-      const ControllerState& state) noexcept override;
+    const ControllerState & state) noexcept override;
 
   void SetRobotTarget(
-      std::span<const double, kNumRobotJoints> target) noexcept override;
+    std::span<const double, kNumRobotJoints> target) noexcept override;
 
   void SetHandTarget(
-      std::span<const double, kNumHandJoints> target) noexcept override;
+    std::span<const double, kNumHandJoints> target) noexcept override;
 
-  [[nodiscard]] std::string_view Name() const noexcept override {
+  [[nodiscard]] std::string_view Name() const noexcept override
+  {
     return "PDController";
   }
 
@@ -47,19 +50,23 @@ class PDController final : public RTControllerInterface {
   void SetHandEstop(bool enabled)    noexcept override;
 
   // ── Gain accessors ──────────────────────────────────────────────────────────
-  void set_gains(Gains gains) noexcept { gains_ = gains; }
-  [[nodiscard]] Gains gains()  const noexcept { return gains_; }
+  void set_gains(Gains gains) noexcept {gains_ = gains;}
+  [[nodiscard]] Gains gains()  const noexcept {return gains_;}
 
- private:
+private:
   // Safe joint configuration used when E-STOP is active [rad].
   static constexpr std::array<double, kNumRobotJoints> kSafePosition{
-      0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
+    0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
   static constexpr double kMaxJointVelocity = 2.0;  // rad/s
 
   Gains  gains_;
   std::array<double, kNumRobotJoints> robot_target_{};
-  std::array<double, kNumHandJoints>  hand_target_{};
+  std::array<double, kNumHandJoints> hand_target_{};
   std::array<double, kNumRobotJoints> previous_errors_{};
+
+  bool new_target_{false};
+  trajectory::JointSpaceTrajectory<kNumRobotJoints> trajectory_;
+  double trajectory_time_{0.0};
 
   // Atomic flags allow safe access from both the RT control thread and the
   // 50 Hz timeout-monitor thread.
@@ -67,10 +74,10 @@ class PDController final : public RTControllerInterface {
   std::atomic<bool> hand_estopped_{false};
 
   [[nodiscard]] static std::array<double, kNumRobotJoints> ClampCommands(
-      std::span<const double, kNumRobotJoints> commands) noexcept;
+    std::span<const double, kNumRobotJoints> commands) noexcept;
 
   [[nodiscard]] static double ComputeDerivative(
-      double current_error, double previous_error, double dt) noexcept;
+    double current_error, double previous_error, double dt) noexcept;
 };
 
 }  // namespace ur5e_rt_controller

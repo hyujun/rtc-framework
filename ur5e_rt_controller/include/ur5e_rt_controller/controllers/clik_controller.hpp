@@ -16,6 +16,8 @@
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "ur5e_rt_controller/trajectory/task_space_trajectory.hpp"
+
 #include <Eigen/Cholesky>   // LDLT
 #include <Eigen/Core>
 
@@ -27,7 +29,8 @@
 #include <string>
 #include <string_view>
 
-namespace ur5e_rt_controller {
+namespace ur5e_rt_controller
+{
 
 /// Closed-Loop Inverse Kinematics (CLIK) controller.
 ///
@@ -68,9 +71,10 @@ namespace ur5e_rt_controller {
 ///   // 4. Remove the set_gains() call in DeclareAndLoadParameters()
 /// @endcode
 class ClikController final : public RTControllerInterface {
- public:
+public:
   // ── Gain / feature configuration ─────────────────────────────────────────
-  struct Gains {
+  struct Gains
+  {
     double kp{1.0};                  ///< Cartesian position gain   [1/s]
     double damping{0.01};            ///< Damping factor λ for J^#  (singularity robustness)
     double null_kp{0.5};             ///< Null-space joint-centering gain [1/s]
@@ -83,7 +87,7 @@ class ClikController final : public RTControllerInterface {
   explicit ClikController(std::string_view urdf_path, Gains gains);
 
   // ── RTControllerInterface — all methods are noexcept (RT safety) ──────────
-  [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;
+  [[nodiscard]] ControllerOutput Compute(const ControllerState & state) noexcept override;
 
   void SetRobotTarget(std::span<const double, kNumRobotJoints> target) noexcept override;
   void SetHandTarget(std::span<const double, kNumHandJoints> target)  noexcept override;
@@ -96,20 +100,22 @@ class ClikController final : public RTControllerInterface {
   void SetHandEstop(bool active)                 noexcept override;
 
   // ── Accessors (non-RT reads only) ─────────────────────────────────────────
-  void set_gains(const Gains& g) noexcept { gains_ = g; }
-  [[nodiscard]] Gains gains()    const noexcept { return gains_; }
+  void set_gains(const Gains & g) noexcept {gains_ = g;}
+  [[nodiscard]] Gains gains()    const noexcept {return gains_;}
 
   /// Cached TCP position (world frame) from the most recent Compute().
-  [[nodiscard]] std::array<double, 3> tcp_position() const noexcept {
+  [[nodiscard]] std::array<double, 3> tcp_position() const noexcept
+  {
     return tcp_position_;
   }
 
   /// Cached 3D Cartesian position error from the most recent Compute().
-  [[nodiscard]] std::array<double, 3> position_error() const noexcept {
+  [[nodiscard]] std::array<double, 3> position_error() const noexcept
+  {
     return {pos_error_[0], pos_error_[1], pos_error_[2]};
   }
 
- private:
+private:
   // ── Pinocchio model + pre-allocated Data ─────────────────────────────────
   pinocchio::Model      model_;
   pinocchio::Data       data_;
@@ -134,55 +140,62 @@ class ClikController final : public RTControllerInterface {
 
   // ── Controller state ──────────────────────────────────────────────────────
   Gains gains_;
-  std::array<double, 3>               tcp_target_{};
+  std::array<double, 3> tcp_target_{};
   /// Null-space reference configuration.  Joints 0–2 from this array;
   /// joints 3–5 are overwritten by SetRobotTarget(target[3..5]).
   std::array<double, kNumRobotJoints> null_target_{0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
-  std::array<double, kNumHandJoints>  hand_target_{};
-  std::array<double, 3>               tcp_position_{};  ///< diagnostic cache
+  std::array<double, kNumHandJoints> hand_target_{};
+  std::array<double, 6> pose_error_cache_{};               ///< diagnostic cache
+  std::array<double, 3> tcp_position_{};                ///< diagnostic cache
+
+  bool new_target_{false};
+  trajectory::TaskSpaceTrajectory trajectory_;
+  double trajectory_time_{0.0};
 
   // ── E-STOP ────────────────────────────────────────────────────────────────
   std::atomic<bool> estopped_{false};
   std::atomic<bool> hand_estopped_{false};
 
   static constexpr std::array<double, kNumRobotJoints> kSafePosition{
-      0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
+    0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
   static constexpr double kMaxJointVelocity{2.0};
 
   // ── Helpers ───────────────────────────────────────────────────────────────
-  [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state) noexcept;
+  [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState & state) noexcept;
 
   [[nodiscard]] static std::array<double, kNumRobotJoints> ClampVelocity(
-      std::array<double, kNumRobotJoints> dq) noexcept;
+    std::array<double, kNumRobotJoints> dq) noexcept;
 };
 
 // ── Constructor ─────────────────────────────────────────────────────────────
 
 inline ClikController::ClikController(std::string_view urdf_path, Gains gains)
-    : data_(pinocchio::Model{}), gains_(gains) {
+: data_(pinocchio::Model{}), gains_(gains)
+{
   pinocchio::urdf::buildModel(std::string(urdf_path), model_);
-  data_   = pinocchio::Data(model_);
+  data_ = pinocchio::Data(model_);
   end_id_ = static_cast<pinocchio::JointIndex>(model_.njoints - 1);
 
   // Pre-allocate all Eigen buffers to their final sizes.
-  q_        = Eigen::VectorXd::Zero(model_.nv);
-  J_full_   = Eigen::MatrixXd::Zero(6, model_.nv);
-  J_pos_    = Eigen::MatrixXd::Zero(3, model_.nv);
-  JJt_      = Eigen::Matrix3d::Zero();
-  JJt_inv_  = Eigen::Matrix3d::Zero();
-  Jpinv_    = Eigen::MatrixXd::Zero(model_.nv, 3);
-  N_        = Eigen::MatrixXd::Identity(model_.nv, model_.nv);
-  dq_       = Eigen::VectorXd::Zero(model_.nv);
+  q_ = Eigen::VectorXd::Zero(model_.nv);
+  J_full_ = Eigen::MatrixXd::Zero(6, model_.nv);
+  J_pos_ = Eigen::MatrixXd::Zero(3, model_.nv);
+  JJt_ = Eigen::Matrix3d::Zero();
+  JJt_inv_ = Eigen::Matrix3d::Zero();
+  Jpinv_ = Eigen::MatrixXd::Zero(model_.nv, 3);
+  N_ = Eigen::MatrixXd::Identity(model_.nv, model_.nv);
+  dq_ = Eigen::VectorXd::Zero(model_.nv);
   null_err_ = Eigen::VectorXd::Zero(model_.nv);
-  null_dq_  = Eigen::VectorXd::Zero(model_.nv);
+  null_dq_ = Eigen::VectorXd::Zero(model_.nv);
   pos_error_ = Eigen::Vector3d::Zero();
 }
 
 // ── RTControllerInterface implementation ────────────────────────────────────
 
 inline ControllerOutput ClikController::Compute(
-    const ControllerState& state) noexcept {
-  if (estopped_) return ComputeEstop(state);
+  const ControllerState & state) noexcept
+{
+  if (estopped_) {return ComputeEstop(state);}
 
   // ── Step 1: copy joint state into Eigen vector ───────────────────────────
   for (Eigen::Index i = 0; i < model_.nv; ++i) {
@@ -199,9 +212,32 @@ inline ControllerOutput ClikController::Compute(
 
   // ── Step 3: Cartesian position error ─────────────────────────────────────
   const Eigen::Vector3d tcp = data_.oMi[end_id_].translation();
+
+  if (new_target_) {
+    pinocchio::SE3 start_pose = pinocchio::SE3::Identity();
+    start_pose.translation() = tcp;
+
+    pinocchio::SE3 goal_pose = pinocchio::SE3::Identity();
+    goal_pose.translation() = Eigen::Vector3d(tcp_target_[0], tcp_target_[1], tcp_target_[2]);
+
+    double max_dist = (goal_pose.translation() - start_pose.translation()).norm();
+    double duration = std::max(0.5, max_dist / 0.2); // max 20 cm/s avg speed
+
+    trajectory_.initialize(start_pose, pinocchio::Motion::Zero(),
+                           goal_pose, pinocchio::Motion::Zero(),
+                           duration);
+
+    trajectory_time_ = 0.0;
+    new_target_ = false;
+  }
+
+  const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
+  auto traj_state = trajectory_.compute(trajectory_time_);
+  trajectory_time_ += dt;
+
   tcp_position_ = {tcp[0], tcp[1], tcp[2]};
   for (int i = 0; i < 3; ++i) {
-    pos_error_[i] = tcp_target_[static_cast<std::size_t>(i)] - tcp[i];
+    pos_error_[i] = traj_state.pose.translation()[i] - tcp[i];
   }
 
   // ── Step 4: Damped pseudoinverse  J_pos^# = J_pos^T (J_pos J_pos^T + λ²I)^{-1}
@@ -214,9 +250,9 @@ inline ControllerOutput ClikController::Compute(
   // J_pos^# = J_pos^T * JJt_^{-1}   (nv×3)
   Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
 
-  // ── Step 5: Primary task  dq = kp * J_pos^# * pos_error ──────────────────
-  dq_.noalias() = Jpinv_ * pos_error_;
-  dq_ *= gains_.kp;
+  // ── Step 5: Primary task  dq = J_pos^# * (kp * pos_error + feedforward) ───
+  Eigen::Vector3d task_vel = gains_.kp * pos_error_ + traj_state.velocity.linear();
+  dq_.noalias() = Jpinv_ * task_vel;
 
   // ── Step 6: Null-space secondary task ────────────────────────────────────
   // N = I − J_pos^# * J_pos  maps joint velocities into the null-space of
@@ -227,8 +263,8 @@ inline ControllerOutput ClikController::Compute(
     N_.noalias() -= Jpinv_ * J_pos_;
 
     for (Eigen::Index i = 0; i < model_.nv; ++i) {
-      null_err_[i] = null_target_[static_cast<std::size_t>(i)]
-                   - state.robot.positions[static_cast<std::size_t>(i)];
+      null_err_[i] = null_target_[static_cast<std::size_t>(i)] -
+        state.robot.positions[static_cast<std::size_t>(i)];
     }
     null_dq_.noalias() = N_ * null_err_;
     null_dq_ *= gains_.null_kp;
@@ -237,7 +273,6 @@ inline ControllerOutput ClikController::Compute(
 
   // ── Step 7: Clamp joint velocity and integrate ────────────────────────────
   // q_cmd = q + clamp(dq, ±v_max) * dt
-  const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
   std::array<double, kNumRobotJoints> dq_arr{};
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
     dq_arr[i] = dq_[static_cast<Eigen::Index>(i)];
@@ -252,7 +287,8 @@ inline ControllerOutput ClikController::Compute(
 }
 
 inline void ClikController::SetRobotTarget(
-    std::span<const double, kNumRobotJoints> target) noexcept {
+  std::span<const double, kNumRobotJoints> target) noexcept
+{
   // First 3 values: Cartesian [x, y, z]
   const std::size_t n_cart = 3;
   for (std::size_t i = 0; i < n_cart; ++i) {
@@ -262,53 +298,62 @@ inline void ClikController::SetRobotTarget(
   for (std::size_t i = 3; i < kNumRobotJoints; ++i) {
     null_target_[i] = target[i];
   }
+  new_target_ = true;
 }
 
 inline void ClikController::SetHandTarget(
-    std::span<const double, kNumHandJoints> target) noexcept {
+  std::span<const double, kNumHandJoints> target) noexcept
+{
   const std::size_t n = kNumHandJoints;
   for (std::size_t i = 0; i < n; ++i) {
     hand_target_[i] = target[i];
   }
 }
 
-inline std::string_view ClikController::Name() const noexcept {
+inline std::string_view ClikController::Name() const noexcept
+{
   return "ClikController";
 }
 
-inline void ClikController::TriggerEstop() noexcept {
+inline void ClikController::TriggerEstop() noexcept
+{
   estopped_.store(true, std::memory_order_relaxed);
 }
 
-inline void ClikController::ClearEstop() noexcept {
+inline void ClikController::ClearEstop() noexcept
+{
   estopped_.store(false, std::memory_order_relaxed);
 }
 
-inline bool ClikController::IsEstopped() const noexcept {
+inline bool ClikController::IsEstopped() const noexcept
+{
   return estopped_.load(std::memory_order_relaxed);
 }
 
-inline void ClikController::SetHandEstop(bool active) noexcept {
+inline void ClikController::SetHandEstop(bool active) noexcept
+{
   hand_estopped_.store(active, std::memory_order_relaxed);
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
 
 inline ControllerOutput ClikController::ComputeEstop(
-    const ControllerState& state) noexcept {
+  const ControllerState & state) noexcept
+{
   ControllerOutput output;
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    output.robot_commands[i] = state.robot.positions[i]
-        + std::clamp(kSafePosition[i] - state.robot.positions[i],
-                     -kMaxJointVelocity, kMaxJointVelocity)
-        * ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
+    output.robot_commands[i] = state.robot.positions[i] +
+      std::clamp(kSafePosition[i] - state.robot.positions[i],
+                     -kMaxJointVelocity, kMaxJointVelocity) *
+      ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
   }
   return output;
 }
 
 inline std::array<double, kNumRobotJoints> ClikController::ClampVelocity(
-    std::array<double, kNumRobotJoints> dq) noexcept {
-  for (auto& v : dq) {
+  std::array<double, kNumRobotJoints> dq) noexcept
+{
+  for (auto & v : dq) {
     v = std::clamp(v, -kMaxJointVelocity, kMaxJointVelocity);
   }
   return dq;
