@@ -7,6 +7,7 @@
 #   ./build.sh robot                        # real robot only (no MuJoCo)
 #   ./build.sh full                         # explicit full build
 #   ./build.sh sim --mujoco /opt/mujoco-3.2.4  # sim with custom MuJoCo path
+#   ./build.sh -d --export-compile-commands # debug build with IntelliSense DB
 #   ./build.sh --help                       # show help
 
 set -e
@@ -35,6 +36,7 @@ CUSTOM_PACKAGES=()
 PARALLEL_JOBS=""
 NO_BASHRC=0
 NO_SYMLINK=0
+EXPORT_COMPILE_COMMANDS=0
 
 # Default MuJoCo search path
 MJ_DEFAULT="/opt/mujoco-3.2.4"
@@ -58,17 +60,19 @@ show_help() {
   echo "            Packages: all of the above"
   echo ""
   echo "Options:"
-  echo "  -d, --debug       Build with CMAKE_BUILD_TYPE=Debug"
-  echo "  -r, --release     Build with CMAKE_BUILD_TYPE=Release (default)"
-  echo "  -c, --clean       Remove build/, install/, and log/ before building"
-  echo "  -p, --packages    Comma-separated list of specific packages to build"
-  echo "                    (Overrides default packages for the chosen mode)"
-  echo "  -j, --jobs N      Limit parallel workers (e.g. -j 4)"
-  echo "  --no-bashrc       Do not automatically add source command to ~/.bashrc"
-  echo "  --no-symlink      Do not use --symlink-install"
-  echo "  --mujoco <path>   Path to MuJoCo install dir (e.g. /opt/mujoco-3.2.4)"
-  echo "                    Auto-detected from $MJ_DEFAULT if not specified"
-  echo "  --help            Show this help"
+  echo "  -d, --debug                Build with CMAKE_BUILD_TYPE=Debug"
+  echo "  -r, --release              Build with CMAKE_BUILD_TYPE=Release (default)"
+  echo "  -c, --clean                Remove build/, install/, and log/ before building"
+  echo "  -p, --packages             Comma-separated list of specific packages to build"
+  echo "                             (Overrides default packages for the chosen mode)"
+  echo "  -j, --jobs N               Limit parallel workers (e.g. -j 4)"
+  echo "  -e, --export-compile-commands  Generate compile_commands.json for VS Code"
+  echo "                             IntelliSense and clangd (sets CMAKE_EXPORT_COMPILE_COMMANDS=ON)"
+  echo "  --no-bashrc                Do not automatically add source command to ~/.bashrc"
+  echo "  --no-symlink               Do not use --symlink-install"
+  echo "  --mujoco <path>            Path to MuJoCo install dir (e.g. /opt/mujoco-3.2.4)"
+  echo "                             Auto-detected from $MJ_DEFAULT if not specified"
+  echo "  --help                     Show this help"
   echo ""
   echo "Examples:"
   echo "  ./build.sh robot"
@@ -113,6 +117,10 @@ while [[ $# -gt 0 ]]; do
       [[ -z "${2:-}" ]] && error "--jobs requires a number"
       PARALLEL_JOBS="$2"
       shift 2
+      ;;
+    -e|--export-compile-commands)
+      EXPORT_COMPILE_COMMANDS=1
+      shift
       ;;
     --no-bashrc)
       NO_BASHRC=1
@@ -233,6 +241,12 @@ if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
   info "MuJoCo root path: ${MJ_DIR}"
 fi
 
+# compile_commands.json: Debug 빌드이거나 --export-compile-commands 지정 시 자동 활성화
+if [[ "$EXPORT_COMPILE_COMMANDS" -eq 1 || "$BUILD_TYPE" == "Debug" ]]; then
+  CMAKE_ARGS+=("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
+  info "compile_commands.json will be generated (VS Code IntelliSense)"
+fi
+
 COLCON_ARGS=("--packages-select" "${PACKAGES[@]}")
 
 if [[ "$NO_SYMLINK" -eq 0 ]]; then
@@ -257,6 +271,20 @@ if [[ "$NO_BASHRC" -eq 0 ]]; then
       echo "source $WORKSPACE/install/setup.bash" >> ~/.bashrc
 fi
 
+# ── compile_commands.json — VS Code IntelliSense 연동 ─────────────────────────
+# Debug 빌드 또는 --export-compile-commands 옵션 사용 시 자동 생성됨.
+# .vscode/c_cpp_properties.json 의 compileCommands 경로와 일치:
+#   ${workspaceFolder}/../../build/ur5e_rt_controller/compile_commands.json
+if [[ "$EXPORT_COMPILE_COMMANDS" -eq 1 || "$BUILD_TYPE" == "Debug" ]]; then
+  CC_SRC="$WORKSPACE/build/ur5e_rt_controller/compile_commands.json"
+  if [[ -f "$CC_SRC" ]]; then
+    success "compile_commands.json generated: $CC_SRC"
+    success "VS Code IntelliSense will use this file automatically"
+  else
+    warn "compile_commands.json not found at $CC_SRC — IntelliSense may be limited"
+  fi
+fi
+
 # ── Check Limits ───────────────────────────────────────────────────────────────
 MEMLOCK=$(ulimit -l)
 if [[ "$MEMLOCK" != "unlimited" ]]; then
@@ -268,4 +296,19 @@ if [[ "$MEMLOCK" != "unlimited" ]]; then
   echo ""
 fi
 
-success "Build complete [mode: $MODE]"
+# ── GDB/Debugger Hint ────────────────────────────────────────────────────────
+if [[ "$BUILD_TYPE" == "Debug" ]]; then
+  echo ""
+  echo -e "${CYAN}${BOLD}── VS Code Debugging ───────────────────────────────────${NC}"
+  echo "  Debug build complete — ready for GDB debugging in VS Code."
+  echo ""
+  echo "  Launch debugger : F5 → 'C++: Launch custom_controller (Debug)'"
+  echo "  Attach debugger : F5 → 'C++: Attach to Node (Pick Process)'"
+  echo ""
+  echo "  If attach fails with 'Operation not permitted', run:"
+  echo "    echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope"
+  echo ""
+  echo "  See: docs/VSCODE_DEBUGGING.md"
+fi
+
+success "Build complete [mode: $MODE, type: $BUILD_TYPE]"

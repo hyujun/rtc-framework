@@ -28,8 +28,10 @@ NO_BASHRC=0
 SKIP_DEPS=0
 SKIP_BUILD=0
 SKIP_RT=0
+SKIP_DEBUG_SETUP=0
 CUSTOM_PACKAGES=()
 MJ_DIR=""
+SET_PTRACE_SCOPE=0
 
 show_help() {
   echo ""
@@ -58,6 +60,9 @@ show_help() {
   echo "  --skip-deps       Skip installing apt system dependencies"
   echo "  --skip-build      Skip compiling the packages (only download/setup)"
   echo "  --skip-rt         Skip configuring RT permissions and IRQ affinity"
+  echo "  --skip-debug      Skip GDB/debugger tools installation"
+  echo "  --ptrace-scope    Set ptrace_scope=0 for VS Code Attach debugger"
+  echo "                    (Required for 'Attach to Node' launch configuration)"
   echo "  --no-bashrc       Do not automatically add source command to ~/.bashrc"
   echo "  --mujoco <path>   Use specific MuJoCo path"
   echo "  --help            Show this help"
@@ -117,6 +122,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-rt)
       SKIP_RT=1
+      shift
+      ;;
+    --skip-debug)
+      SKIP_DEBUG_SETUP=1
+      shift
+      ;;
+    --ptrace-scope)
+      SET_PTRACE_SCOPE=1
       shift
       ;;
     --no-bashrc)
@@ -328,6 +341,46 @@ install_python_deps() {
   success "Python dependencies installed via apt"
 }
 
+# ── VS Code / GDB debug tools ────────────────────────────────────────────
+install_vscode_debug_tools() {
+  info "Installing GDB and debug tools for VS Code..."
+  sudo apt-get install -y \
+      gdb \
+      gdb-multiarch \
+      > /dev/null
+  success "GDB installed"
+
+  # ── ptrace_scope: Attach to running process ────────────────────────────
+  # VS Code의 'Attach to Node' 누시엕 쫐피구는 GDB ptrace 사용.
+  # Ubuntu 기본값 ptrace_scope=1은 자식 프로세스 외 attach 거부.
+  local PTRACE_CURRENT
+  PTRACE_CURRENT=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo "unknown")
+
+  if [[ "$SET_PTRACE_SCOPE" -eq 1 ]]; then
+    info "Setting ptrace_scope=0 for VS Code Attach debugger..."
+    echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope > /dev/null
+    # 영구 적용 (sysctl.conf)
+    if ! grep -q 'kernel.yama.ptrace_scope' /etc/sysctl.d/99-ptrace.conf 2>/dev/null; then
+      echo 'kernel.yama.ptrace_scope = 0' | sudo tee /etc/sysctl.d/99-ptrace.conf > /dev/null
+      sudo sysctl -p /etc/sysctl.d/99-ptrace.conf > /dev/null 2>&1 || true
+    fi
+    success "ptrace_scope set to 0 (VS Code Attach enabled, persists across reboots)"
+    warn "Security note: ptrace_scope=0 allows any process to attach to another."
+    warn "Only use this on a development machine, not a production/robot system."
+  else
+    if [[ "$PTRACE_CURRENT" != "0" ]]; then
+      echo ""
+      warn "ptrace_scope is currently ${PTRACE_CURRENT} (not 0)."
+      warn "VS Code 'Attach to Node' debugger may fail with 'Operation not permitted'."
+      warn "To enable: re-run with --ptrace-scope, or run manually:"
+      warn "  echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope"
+      echo ""
+    else
+      success "ptrace_scope=0 already set (VS Code Attach ready)"
+    fi
+  fi
+}
+
 # ── Clone / update package ─────────────────────────────────────────────────────
 setup_package() {
   # Determine the repo directory.
@@ -369,6 +422,13 @@ build_package() {
   fi
 
   local CMAKE_ARGS=("-DCMAKE_BUILD_TYPE=${BUILD_TYPE}")
+
+  # compile_commands.json: Debug 빌드 시 자동 활성화 — .vscode/c_cpp_properties.json IntelliSense 연동
+  if [[ "$BUILD_TYPE" == "Debug" ]]; then
+    CMAKE_ARGS+=("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
+    info "compile_commands.json generation enabled (VS Code IntelliSense)"
+  fi
+
   if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
     # MuJoCo binary release (tarball) does NOT include lib/cmake/mujoco/.
     # Pass mujoco_ROOT so CMakeLists.txt can locate the .so and headers via find_library.
@@ -563,7 +623,24 @@ print_summary() {
   echo "  ros2 run ur5e_tools plot_ur_trajectory <workspace>/logging_data/ur5e_control_log_YYMMDD_HHMM.csv"
   echo "  ros2 run ur5e_tools motion_editor_gui"
   echo ""
+  echo -e "${CYAN}${BOLD}── VS Code Debugging ───────────────────────────────────${NC}"
+  echo "  # Debug build + IntelliSense:"
+  echo "  ./build.sh -d                 # or Ctrl+Shift+B in VS Code"
+  echo ""
+  echo "  # Launch debugger (F5 in VS Code):"
+  echo "  #   C++: Launch custom_controller (Debug)"
+  echo "  #   C++: Launch mujoco_simulator_node (Debug)"
+  echo ""
+  echo "  # Attach to running node:"
+  echo "  #   C++: Attach to Node (Pick Process)"
+  echo "  #   Requires: ptrace_scope=0"
+  echo "  #   Run: echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope"
+  echo "  #   Or re-run: ./install.sh --ptrace-scope"
+  echo ""
+  echo "  See: docs/VSCODE_DEBUGGING.md"
+  echo ""
   echo -e "${CYAN}${BOLD}── Documentation ───────────────────────────────────────${NC}"
+  echo "  docs/VSCODE_DEBUGGING.md — VS Code GDB debugging guide"
   echo "  docs/RT_OPTIMIZATION.md  — RT tuning guide"
   echo "  docs/CHANGELOG.md        — version history"
   echo "  CLAUDE.md                — full API and architecture reference"
@@ -595,6 +672,12 @@ if [[ "$SKIP_DEPS" -eq 0 ]]; then
   esac
 
   install_python_deps
+
+  if [[ "$SKIP_DEBUG_SETUP" -eq 0 ]]; then
+    install_vscode_debug_tools
+  else
+    info "Skipping GDB/debugger tools installation (--skip-debug)"
+  fi
 else
   info "Skipping system dependencies installation (--skip-deps)"
   # Detect workspace context mainly for the paths below
