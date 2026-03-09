@@ -23,6 +23,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(pinocchio REQUIRED)
 find_package(ur5e_rt_base REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # ── custom_controller ──────────────────────────────────────────────────────────
 add_executable(custom_controller
@@ -41,7 +42,7 @@ ament_target_dependencies(custom_controller
   ur5e_rt_base
   ament_index_cpp
 )
-target_link_libraries(custom_controller pinocchio::pinocchio)
+target_link_libraries(custom_controller pinocchio::pinocchio yaml-cpp)
 
 # ── Install ────────────────────────────────────────────────────────────────────
 install(TARGETS custom_controller

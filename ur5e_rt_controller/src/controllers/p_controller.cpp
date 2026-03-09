@@ -5,15 +5,26 @@
 namespace ur5e_rt_controller
 {
 
+PController::PController() noexcept
+: gains_(Gains{})
+{
+}
+
+PController::PController(Gains gains) noexcept
+: gains_(gains)
+{
+}
+
 ControllerOutput PController::Compute(const ControllerState & state) noexcept
 {
   ControllerOutput output;
 
   for (int i = 0; i < kNumRobotJoints; ++i) {
     const double error = robot_target_[i] - state.robot.positions[i];
-    output.robot_commands[i] = kp_ * error;
+    output.robot_commands[i] = gains_.kp[i] * error;
   }
 
+  output.actual_target_positions = robot_target_;
   output.robot_commands = ClampCommands(output.robot_commands);
   return output;
 }

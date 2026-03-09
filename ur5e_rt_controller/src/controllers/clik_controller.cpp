@@ -61,7 +61,7 @@ ControllerOutput ClikController::Compute(
     goal_pose.translation() = Eigen::Vector3d(tcp_target_[0], tcp_target_[1], tcp_target_[2]);
 
     double max_dist = (goal_pose.translation() - start_pose.translation()).norm();
-    double duration = std::max(0.5, max_dist / 0.2); // max 20 cm/s avg speed
+    double duration = std::max(0.01, max_dist / gains_.trajectory_speed);
 
     trajectory_.initialize(start_pose, pinocchio::Motion::Zero(),
                            goal_pose, pinocchio::Motion::Zero(),
@@ -91,7 +91,8 @@ ControllerOutput ClikController::Compute(
   Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
 
   // ── Step 5: Primary task  dq = J_pos^# * (kp * pos_error + feedforward) ───
-  Eigen::Vector3d task_vel = gains_.kp * pos_error_ + traj_state.velocity.linear();
+  Eigen::Vector3d kp_vec(gains_.kp[0], gains_.kp[1], gains_.kp[2]);
+  Eigen::Vector3d task_vel = kp_vec.cwiseProduct(pos_error_) + traj_state.velocity.linear();
   dq_.noalias() = Jpinv_ * task_vel;
 
   // ── Step 6: Null-space secondary task ────────────────────────────────────
@@ -122,6 +123,12 @@ ControllerOutput ClikController::Compute(
   ControllerOutput output;
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
     output.robot_commands[i] = state.robot.positions[i] + dq_arr[i] * dt;
+  }
+  for (int i = 0; i < 3; ++i) {
+    output.actual_target_positions[i] = traj_state.pose.translation()[i];
+  }
+  for (int i = 3; i < kNumRobotJoints; ++i) {
+    output.actual_target_positions[i] = null_target_[i];
   }
   return output;
 }

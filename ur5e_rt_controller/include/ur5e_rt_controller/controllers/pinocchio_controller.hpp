@@ -70,8 +70,8 @@ public:
   // ── Gain / feature configuration ─────────────────────────────────────────
   struct Gains
   {
-    double kp{5.0};
-    double kd{0.5};
+    std::array<double, 6> kp{{5.0, 5.0, 5.0, 5.0, 5.0, 5.0}};
+    std::array<double, 6> kd{{0.5, 0.5, 0.5, 0.5, 0.5, 0.5}};
     bool enable_gravity_compensation{true};     ///< Add g(q) to commands
     bool enable_coriolis_compensation{false};   ///< Add C(q,v)·v to commands
   };
@@ -100,7 +100,7 @@ public:
 
   // ── Accessors (non-RT reads only — do NOT call from the 500 Hz path) ─────
   void set_gains(const Gains & g) noexcept {gains_ = g;}
-  [[nodiscard]] Gains gains() const noexcept {return gains_;}
+  [[nodiscard]] Gains get_gains() const noexcept {return gains_;}
 
   /// Gravity torque vector g(q) cached after the most recent Compute() call.
   [[nodiscard]] std::array<double, kNumRobotJoints> gravity_torques() const noexcept;

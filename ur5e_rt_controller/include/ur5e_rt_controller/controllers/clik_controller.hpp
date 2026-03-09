@@ -73,10 +73,12 @@ public:
   // ── Gain / feature configuration ─────────────────────────────────────────
   struct Gains
   {
-    double kp{1.0};                  ///< Cartesian position gain   [1/s]
+    std::array<double, 3> kp{{1.0, 1.0, 1.0}}; ///< Cartesian position gain   [1/s]
     double damping{0.01};            ///< Damping factor λ for J^#  (singularity robustness)
     double null_kp{0.5};             ///< Null-space joint-centering gain [1/s]
     bool   enable_null_space{true};  ///< Enable null-space secondary task
+    double trajectory_speed{0.1};
+    double trajectory_angular_speed{0.5};
   };
 
   /// @param urdf_path  Absolute path to the UR5e URDF file.
@@ -99,7 +101,7 @@ public:
 
   // ── Accessors (non-RT reads only) ─────────────────────────────────────────
   void set_gains(const Gains & g) noexcept {gains_ = g;}
-  [[nodiscard]] Gains gains()    const noexcept {return gains_;}
+  [[nodiscard]] Gains get_gains() const noexcept {return gains_;}
 
   /// Cached TCP position (world frame) from the most recent Compute().
   [[nodiscard]] std::array<double, 3> tcp_position() const noexcept

@@ -16,10 +16,19 @@ namespace ur5e_rt_controller
 // Output is clamped to joint velocity limits before publishing.
 class PController final : public RTControllerInterface {
 public:
-  // kp must be >= 0; validated with a C++20 requires-clause at the call site.
+  struct Gains
+  {
+    std::array<double, 6> kp{{5.0, 5.0, 5.0, 5.0, 5.0, 5.0}};
+  };
+
+  PController() noexcept;
+  explicit PController(Gains gains) noexcept;
+
   template<NonNegativeFloat T>
   explicit PController(T kp) noexcept
-  : kp_(static_cast<double>(kp)) {}
+  {
+    gains_.kp.fill(static_cast<double>(kp));
+  }
 
   [[nodiscard]] ControllerOutput Compute(
     const ControllerState & state) noexcept override;
@@ -36,11 +45,12 @@ public:
   }
 
   // Accessors (Google C++ Style: getter matches member name w/o trailing _).
-  void   set_kp(double kp) noexcept {kp_ = kp;}
-  [[nodiscard]] double kp() const noexcept {return kp_;}
+  void set_gains(Gains gains) noexcept {gains_ = gains;}
+  [[nodiscard]] Gains get_gains() const noexcept {return gains_;}
+  void set_kp(double kp) noexcept {gains_.kp.fill(kp);}
 
 private:
-  double kp_;
+  Gains gains_;
   std::array<double, kNumRobotJoints> robot_target_{};
   std::array<double, kNumHandJoints> hand_target_{};
 

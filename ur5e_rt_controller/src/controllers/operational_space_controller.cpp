@@ -79,10 +79,15 @@ ControllerOutput OperationalSpaceController::Compute(
   }
 
   // ── Step 5: desired task-space velocity (PD law in Cartesian space) ───────
-  task_vel_.head<3>() = gains_.kp_pos * pos_err -
-    gains_.kd_pos * tcp_vel_.head<3>();
-  task_vel_.tail<3>() = gains_.kp_rot * rot_err -
-    gains_.kd_rot * tcp_vel_.tail<3>();
+  Eigen::Vector3d kp_p(gains_.kp_pos[0], gains_.kp_pos[1], gains_.kp_pos[2]);
+  Eigen::Vector3d kd_p(gains_.kd_pos[0], gains_.kd_pos[1], gains_.kd_pos[2]);
+  Eigen::Vector3d kp_r(gains_.kp_rot[0], gains_.kp_rot[1], gains_.kp_rot[2]);
+  Eigen::Vector3d kd_r(gains_.kd_rot[0], gains_.kd_rot[1], gains_.kd_rot[2]);
+
+  task_vel_.head<3>() = kp_p.cwiseProduct(pos_err) -
+    kd_p.cwiseProduct(tcp_vel_.head<3>());
+  task_vel_.tail<3>() = kp_r.cwiseProduct(rot_err) -
+    kd_r.cwiseProduct(tcp_vel_.tail<3>());
 
   // ── Step 6: Damped pseudoinverse  J^# = J^T (J J^T + λ²I₆)^{−1} ─────────
   // JJt_ and lu_ are fixed-size 6×6 — no dynamic allocation.
@@ -119,6 +124,7 @@ ControllerOutput OperationalSpaceController::Compute(
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
     output.robot_commands[i] = state.robot.positions[i] + dq_arr[i] * dt;
   }
+  output.actual_target_positions = pose_target_;
   return output;
 }
 

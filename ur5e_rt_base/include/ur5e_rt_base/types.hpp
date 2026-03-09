@@ -51,6 +51,7 @@ struct ControllerState {
 struct ControllerOutput {
   std::array<double, kNumRobotJoints> robot_commands{};
   std::array<double, kNumHandJoints>  hand_commands{};
+  std::array<double, kNumRobotJoints> actual_target_positions{};
   bool valid{true};
 };
 

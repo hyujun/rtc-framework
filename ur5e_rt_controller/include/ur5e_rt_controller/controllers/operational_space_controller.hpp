@@ -79,10 +79,10 @@ public:
   // ── Gain / feature configuration ─────────────────────────────────────────
   struct Gains
   {
-    double kp_pos{1.0};                     ///< Cartesian position gain      [1/s]
-    double kd_pos{0.1};                     ///< Cartesian position damping   [—]
-    double kp_rot{0.5};                     ///< Cartesian orientation gain   [1/s]
-    double kd_rot{0.05};                    ///< Cartesian orientation damping[—]
+    std::array<double, 3> kp_pos{{1.0, 1.0, 1.0}};            ///< Cartesian position gain      [1/s]
+    std::array<double, 3> kd_pos{{0.1, 0.1, 0.1}};            ///< Cartesian position damping   [—]
+    std::array<double, 3> kp_rot{{0.5, 0.5, 0.5}};            ///< Cartesian orientation gain   [1/s]
+    std::array<double, 3> kd_rot{{0.05, 0.05, 0.05}};         ///< Cartesian orientation damping[—]
     double damping{0.01};                   ///< Damping factor λ for J^#  (singularity robustness)
     bool   enable_gravity_compensation{false}; ///< Add g(q) feedforward term
   };
@@ -109,7 +109,7 @@ public:
 
   // ── Accessors (non-RT reads only) ─────────────────────────────────────────
   void set_gains(const Gains & g) noexcept {gains_ = g;}
-  [[nodiscard]] Gains gains()    const noexcept {return gains_;}
+  [[nodiscard]] Gains get_gains() const noexcept {return gains_;}
 
   /// Cached TCP position (world frame) from the most recent Compute().
   [[nodiscard]] std::array<double, 3> tcp_position() const noexcept

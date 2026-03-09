@@ -48,7 +48,7 @@ ControllerOutput PinocchioController::Compute(
     const double e = robot_target_[i] - state.robot.positions[i];
     const double de = (e - prev_error_[i]) / dt;
 
-    output.robot_commands[i] = gains_.kp * e + gains_.kd * de + gravity_torques_[i];
+    output.robot_commands[i] = gains_.kp[i] * e + gains_.kd[i] * de + gravity_torques_[i];
 
     if (gains_.enable_coriolis_compensation) {
       output.robot_commands[i] +=
@@ -58,6 +58,7 @@ ControllerOutput PinocchioController::Compute(
     prev_error_[i] = e;
   }
 
+  output.actual_target_positions = robot_target_;
   output.robot_commands = ClampCommands(output.robot_commands);
   return output;
 }
@@ -125,8 +126,9 @@ ControllerOutput PinocchioController::ComputeEstop(
   ControllerOutput output;
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
     output.robot_commands[i] =
-      gains_.kp * (kSafePosition[i] - state.robot.positions[i]);
+      gains_.kp[i] * (kSafePosition[i] - state.robot.positions[i]);
   }
+  output.actual_target_positions = kSafePosition;
   output.robot_commands = ClampCommands(output.robot_commands);
   return output;
 }

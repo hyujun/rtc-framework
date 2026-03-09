@@ -65,6 +65,7 @@
 #include <std_msgs/msg/int32.hpp>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <yaml-cpp/yaml.h>
 #include <sys/mman.h> // mlockall
 
 #include <algorithm>
@@ -213,6 +214,7 @@ private:
     declare_parameter("robot_timeout_ms", 100.0);
     declare_parameter("hand_timeout_ms", 200.0);
     declare_parameter("enable_estop", true);
+    declare_parameter("initial_controller", "pd_controller");
 
     control_rate_ = get_parameter("control_rate").as_double();
     enable_logging_ = get_parameter("enable_logging").as_bool();
@@ -244,30 +246,118 @@ private:
       RCLCPP_WARN(get_logger(), "Could not resolve urdf path: %s", e.what());
     }
 
-    controllers_.push_back(
-        std::make_unique<urtc::PController>(get_parameter("kp").as_double()));
+    std::string config_dir = "";
+    try {
+      config_dir = ament_index_cpp::get_package_share_directory("ur5e_rt_controller") +
+        "/config/controllers/";
+    } catch (...) {}
 
-    controllers_.push_back(std::make_unique<urtc::PDController>(
-        urtc::PDController::Gains{.kp = get_parameter("kp").as_double(),
-          .kd = get_parameter("kd").as_double()}));
+    auto load_array6 = [](const YAML::Node & n, std::array<double, 6> & arr) {
+        if (n && n.IsSequence() && n.size() == 6) {
+          for (size_t i = 0; i < 6; ++i) {arr[i] = n[i].as<double>();}
+        }
+      };
+    auto load_array3 = [](const YAML::Node & n, std::array<double, 3> & arr) {
+        if (n && n.IsSequence() && n.size() == 3) {
+          for (size_t i = 0; i < 3; ++i) {arr[i] = n[i].as<double>();}
+        }
+      };
 
-    controllers_.push_back(std::make_unique<urtc::PinocchioController>(
-        urdf_path, urtc::PinocchioController::Gains{
-      .kp = 5.0,
-      .kd = 0.5,
-      .enable_gravity_compensation = true,
-      .enable_coriolis_compensation = false}));
+    // --- PController ---
+    urtc::PController::Gains p_gains;
+    try {
+      YAML::Node p_yaml = YAML::LoadFile(config_dir + "p_controller.yaml")["p_controller"];
+      if (p_yaml) {
+        load_array6(p_yaml["kp"], p_gains.kp);
+      }
+    } catch (...) {}
+    controllers_.push_back(std::make_unique<urtc::PController>(p_gains));
 
-    controllers_.push_back(std::make_unique<urtc::ClikController>(
-        urdf_path, urtc::ClikController::Gains{
-      .kp = 1.0, .damping = 0.01, .null_kp = 0.5}));
+    // --- PDController ---
+    urtc::PDController::Gains pd_gains;
+    try {
+      YAML::Node pd_yaml = YAML::LoadFile(config_dir + "pd_controller.yaml")["pd_controller"];
+      if (pd_yaml) {
+        load_array6(pd_yaml["kp"], pd_gains.kp);
+        load_array6(pd_yaml["kd"], pd_gains.kd);
+        if (pd_yaml["trajectory_speed"]) {
+          pd_gains.trajectory_speed = pd_yaml["trajectory_speed"].as<double>();
+        }
+      }
+    } catch (...) {}
+    controllers_.push_back(std::make_unique<urtc::PDController>(pd_gains));
 
-    controllers_.push_back(std::make_unique<urtc::OperationalSpaceController>(
-        urdf_path, urtc::OperationalSpaceController::Gains{.kp_pos = 1.0,
-          .kd_pos = 0.1,
-          .kp_rot = 0.5,
-          .kd_rot = 0.05,
-          .damping = 0.01}));
+    // --- PinocchioController ---
+    urtc::PinocchioController::Gains pin_gains;
+    try {
+      YAML::Node pin_yaml = YAML::LoadFile(config_dir +
+        "pinocchio_controller.yaml")["pinocchio_controller"];
+      if (pin_yaml) {
+        load_array6(pin_yaml["kp"], pin_gains.kp);
+        load_array6(pin_yaml["kd"], pin_gains.kd);
+        if (pin_yaml["enable_gravity_compensation"]) {
+          pin_gains.enable_gravity_compensation =
+            pin_yaml["enable_gravity_compensation"].as<bool>();
+        }
+        if (pin_yaml["enable_coriolis_compensation"]) {
+          pin_gains.enable_coriolis_compensation =
+            pin_yaml["enable_coriolis_compensation"].as<bool>();
+        }
+      }
+    } catch (...) {}
+    controllers_.push_back(std::make_unique<urtc::PinocchioController>(urdf_path, pin_gains));
+
+    // --- ClikController ---
+    urtc::ClikController::Gains clik_gains;
+    try {
+      YAML::Node c_yaml = YAML::LoadFile(config_dir + "clik_controller.yaml")["clik_controller"];
+      if (c_yaml) {
+        load_array3(c_yaml["kp"], clik_gains.kp);
+        if (c_yaml["damping"]) {clik_gains.damping = c_yaml["damping"].as<double>();}
+        if (c_yaml["null_kp"]) {clik_gains.null_kp = c_yaml["null_kp"].as<double>();}
+        if (c_yaml["trajectory_speed"]) {
+          clik_gains.trajectory_speed = c_yaml["trajectory_speed"].as<double>();
+        }
+        if (c_yaml["trajectory_angular_speed"]) {
+          clik_gains.trajectory_angular_speed = c_yaml["trajectory_angular_speed"].as<double>();
+        }
+      }
+    } catch (...) {}
+    controllers_.push_back(std::make_unique<urtc::ClikController>(urdf_path, clik_gains));
+
+    // --- OperationalSpaceController ---
+    urtc::OperationalSpaceController::Gains osc_gains;
+    try {
+      YAML::Node osc_yaml = YAML::LoadFile(config_dir +
+        "operational_space_controller.yaml")["operational_space_controller"];
+      if (osc_yaml) {
+        load_array3(osc_yaml["kp_pos"], osc_gains.kp_pos);
+        load_array3(osc_yaml["kd_pos"], osc_gains.kd_pos);
+        load_array3(osc_yaml["kp_rot"], osc_gains.kp_rot);
+        load_array3(osc_yaml["kd_rot"], osc_gains.kd_rot);
+        if (osc_yaml["damping"]) {osc_gains.damping = osc_yaml["damping"].as<double>();}
+      }
+    } catch (...) {}
+    controllers_.push_back(std::make_unique<urtc::OperationalSpaceController>(urdf_path,
+      osc_gains));
+
+    // Map initial configuration string
+    std::string initial_ctrl = get_parameter("initial_controller").as_string();
+    if (initial_ctrl == "p_controller") {
+      active_controller_idx_.store(0);
+    } else if (initial_ctrl == "pd_controller") {
+      active_controller_idx_.store(1);
+    } else if (initial_ctrl == "pinocchio_controller") {
+      active_controller_idx_.store(2);
+    } else if (initial_ctrl == "clik_controller") {
+      active_controller_idx_.store(3);
+    } else if (initial_ctrl == "operational_space_controller") {
+      active_controller_idx_.store(4);
+    } else {
+      RCLCPP_WARN(get_logger(), "Unknown initial_controller '%s', defaulting to pd_controller",
+        initial_ctrl.c_str());
+      active_controller_idx_.store(1);
+    }
   }
 
   void CreateSubscriptions()
@@ -312,91 +402,100 @@ private:
         sub_options);
 
     // Gains subscriber — ~/controller_gains [Float64MultiArray]
-    // Data layout depends on controller type (indexed by
-    // active_controller_idx_):
-    //  0 P         : [kp]
-    //  1 PD        : [kp, kd]
-    //  2 Pinocchio : [kp, kd, gravity(0/1), coriolis(0/1)]
-    //  3 CLIK      : [kp, damping, null_kp, null_space(0/1)]
-    //  4 OSC       : [kp_pos, kd_pos, kp_rot, kd_rot, damping, gravity(0/1)]
-    controller_gains_sub_ = create_subscription<
-      std_msgs::msg::Float64MultiArray>(
+    // Layout for element-by-element assignment:
+    //  0 P         : kp (6)
+    //  1 PD        : kp (6), kd (6)
+    //  2 Pinocchio : kp (6), kd (6), grav (1), cori (1)
+    //  3 CLIK      : kp (3), damping (1), null_kp (1), null (1)
+    //  4 OSC       : kp_p (3), kd_p (3), kp_r (3), kd_r (3), damp (1), grav (1)
+    controller_gains_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
         "~/controller_gains", 10,
       [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
         const auto & d = msg->data;
         int idx = active_controller_idx_.load(std::memory_order_acquire);
+
+        auto copy_to_arr6 = [&d](size_t offset, std::array<double, 6> & arr) {
+          for (size_t i = 0; i < 6; ++i) {arr[i] = d[offset + i];}
+        };
+        auto copy_to_arr3 = [&d](size_t offset, std::array<double, 3> & arr) {
+          for (size_t i = 0; i < 3; ++i) {arr[i] = d[offset + i];}
+        };
+
         switch (idx) {
-          case 0: { // PController — kp
-              if (d.size() >= 1) {
-                auto *p =
-                dynamic_cast<urtc::PController *>(controllers_[0].get());
-                if (p) {
-                  p->set_kp(d[0]);
-                }
-                RCLCPP_INFO(get_logger(), "P gains: kp=%.4f", d[0]);
-              }
-              break;
-            }
-          case 1: { // PDController — kp, kd
-              if (d.size() >= 2) {
-                auto *p =
-                dynamic_cast<urtc::PDController *>(controllers_[1].get());
-                if (p) {
-                  p->set_gains({d[0], d[1]});
-                }
-                RCLCPP_INFO(get_logger(), "PD gains: kp=%.4f kd=%.4f", d[0],
-                          d[1]);
-              }
-              break;
-            }
-          case 2: { // PinocchioController — kp, kd, gravity, coriolis
-              if (d.size() >= 4) {
-                auto *p = dynamic_cast<urtc::PinocchioController *>(
-                  controllers_[2].get());
-                if (p) {
-                  p->set_gains({d[0], d[1],
-                    d[2] > 0.5,             // enable_gravity_compensation
-                    d[3] > 0.5});           // enable_coriolis_compensation
-                }
-                RCLCPP_INFO(
-                  get_logger(),
-                  "Pinocchio gains: kp=%.4f kd=%.4f grav=%s coriolis=%s", d[0],
-                  d[1], d[2] > 0.5 ? "ON" : "OFF", d[3] > 0.5 ? "ON" : "OFF");
-              }
-              break;
-            }
-          case 3: { // ClikController — kp, damping, null_kp, null_space
-              if (d.size() >= 4) {
-                auto *p =
-                dynamic_cast<urtc::ClikController *>(controllers_[3].get());
-                if (p) {
-                  p->set_gains({d[0], d[1], d[2], d[3] > 0.5});
-                }
-                RCLCPP_INFO(
-                  get_logger(),
-                  "CLIK gains: kp=%.4f damping=%.4f null_kp=%.4f null=%s", d[0],
-                  d[1], d[2], d[3] > 0.5 ? "ON" : "OFF");
-              }
-              break;
-            }
-          case 4: { // OSC — kp_pos, kd_pos, kp_rot, kd_rot, damping, gravity
+          case 0: { // P
               if (d.size() >= 6) {
-                auto *p = dynamic_cast<urtc::OperationalSpaceController *>(
-                  controllers_[4].get());
+                auto *p = dynamic_cast<urtc::PController *>(controllers_[0].get());
                 if (p) {
-                  p->set_gains({d[0], d[1], d[2], d[3], d[4], d[5] > 0.5});
+                  urtc::PController::Gains g;
+                  copy_to_arr6(0, g.kp);
+                  p->set_gains(g);
+                  RCLCPP_INFO(get_logger(), "New P gains updated (element-wise)");
                 }
-                RCLCPP_INFO(get_logger(),
-                          "OSC gains: kp_pos=%.4f kd_pos=%.4f kp_rot=%.4f "
-                          "kd_rot=%.4f damping=%.4f grav=%s",
-                          d[0], d[1], d[2], d[3], d[4],
-                          d[5] > 0.5 ? "ON" : "OFF");
+              }
+              break;
+            }
+          case 1: { // PD
+              if (d.size() >= 12) {
+                auto *p = dynamic_cast<urtc::PDController *>(controllers_[1].get());
+                if (p) {
+                  urtc::PDController::Gains g = p->get_gains();
+                  copy_to_arr6(0, g.kp);
+                  copy_to_arr6(6, g.kd);
+                  p->set_gains(g);
+                  RCLCPP_INFO(get_logger(), "New PD gains updated (element-wise)");
+                }
+              }
+              break;
+            }
+          case 2: { // Pinocchio
+              if (d.size() >= 14) {
+                auto *p = dynamic_cast<urtc::PinocchioController *>(controllers_[2].get());
+                if (p) {
+                  urtc::PinocchioController::Gains g = p->get_gains();
+                  copy_to_arr6(0, g.kp);
+                  copy_to_arr6(6, g.kd);
+                  g.enable_gravity_compensation = d[12] > 0.5;
+                  g.enable_coriolis_compensation = d[13] > 0.5;
+                  p->set_gains(g);
+                  RCLCPP_INFO(get_logger(), "New Pinocchio gains updated (element-wise)");
+                }
+              }
+              break;
+            }
+          case 3: { // Clik
+              if (d.size() >= 6) {
+                auto *p = dynamic_cast<urtc::ClikController *>(controllers_[3].get());
+                if (p) {
+                  urtc::ClikController::Gains g = p->get_gains();
+                  copy_to_arr3(0, g.kp);
+                  g.damping = d[3];
+                  g.null_kp = d[4];
+                  g.enable_null_space = d[5] > 0.5;
+                  p->set_gains(g);
+                  RCLCPP_INFO(get_logger(), "New Clik gains updated (element-wise)");
+                }
+              }
+              break;
+            }
+          case 4: { // OSC
+              if (d.size() >= 14) {
+                auto *p = dynamic_cast<urtc::OperationalSpaceController *>(controllers_[4].get());
+                if (p) {
+                  urtc::OperationalSpaceController::Gains g = p->get_gains();
+                  copy_to_arr3(0, g.kp_pos);
+                  copy_to_arr3(3, g.kd_pos);
+                  copy_to_arr3(6, g.kp_rot);
+                  copy_to_arr3(9, g.kd_rot);
+                  g.damping = d[12];
+                  g.enable_gravity_compensation = d[13] > 0.5;
+                  p->set_gains(g);
+                  RCLCPP_INFO(get_logger(), "New OSC gains updated (element-wise)");
+                }
               }
               break;
             }
           default:
-            RCLCPP_WARN(get_logger(),
-                        "Gains received for unknown controller idx %d", idx);
+            RCLCPP_WARN(get_logger(), "Gains received for unknown controller idx %d", idx);
         }
         },
         sub_options);
@@ -578,12 +677,11 @@ private:
       const urtc::LogEntry entry{
         .timestamp = current_time - start_time_,
         .current_positions = state.robot.positions,
-        .target_positions =
-          target_snapshot_,     // Fix 4: snapshot, not raw member
+        .target_positions = output.actual_target_positions,
         .commands = output.robot_commands,
         .compute_time_us = timing_profiler_.LastComputeUs(),
       };
-      log_buffer_.Push(entry); // silently drops if buffer is full
+      static_cast<void>(log_buffer_.Push(entry));  // silently drops if buffer is full
     }
 
     ++loop_count_;

@@ -3,8 +3,7 @@
   ros__parameters:
     # Controller Parameters
     control_rate: 500.0          # Hz
-    kp: 5.0                      # Proportional gain
-    kd: 0.5                      # Derivative gain
+    initial_controller: "pd_controller"
     enable_logging: true         # Enable CSV logging
     log_dir: "~/ros2_ws/ur5e_ws/logging_data"  # overridden by launch files with expanded path
     max_log_files: 10               # Keep only the N most recent log files

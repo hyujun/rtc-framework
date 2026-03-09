@@ -23,11 +23,13 @@ public:
   //   PDController ctrl{{.kp = 5.0, .kd = 0.5}};
   struct Gains
   {
-    double kp;
-    double kd;
+    std::array<double, 6> kp{{5.0, 5.0, 5.0, 5.0, 5.0, 5.0}};
+    std::array<double, 6> kd{{0.5, 0.5, 0.5, 0.5, 0.5, 0.5}};
+    double trajectory_speed{1.0};
   };
 
-  explicit PDController(Gains gains = Gains{5.0, 0.5}) noexcept;
+  PDController() noexcept;
+  explicit PDController(Gains gains) noexcept;
 
   [[nodiscard]] ControllerOutput Compute(
     const ControllerState & state) noexcept override;
@@ -51,6 +53,7 @@ public:
 
   // ── Gain accessors ──────────────────────────────────────────────────────────
   void set_gains(Gains gains) noexcept {gains_ = gains;}
+  [[nodiscard]] Gains get_gains() const noexcept {return gains_;}
   [[nodiscard]] Gains gains()  const noexcept {return gains_;}
 
 private:

@@ -7,6 +7,12 @@
 namespace ur5e_rt_controller
 {
 
+PDController::PDController() noexcept
+: gains_(Gains{})
+{
+  trajectory_.initialize({}, {}, 0.0);
+}
+
 PDController::PDController(Gains gains) noexcept
 : gains_(gains) {}
 
@@ -20,9 +26,10 @@ ControllerOutput PDController::Compute(const ControllerState & state) noexcept
     for (int i = 0; i < kNumRobotJoints; ++i) {
       const double error = kSafePosition[i] - state.robot.positions[i];
       const double derivative = ComputeDerivative(error, previous_errors_[i], dt);
-      output.robot_commands[i] = gains_.kp * error + gains_.kd * derivative;
+      output.robot_commands[i] = gains_.kp[i] * error + gains_.kd[i] * derivative;
       previous_errors_[i] = error;
     }
+    output.actual_target_positions = kSafePosition;
     output.robot_commands = ClampCommands(output.robot_commands);
     new_target_ = true; // force trajectory regeneration when E-STOP clears
     return output;
@@ -46,8 +53,8 @@ ControllerOutput PDController::Compute(const ControllerState & state) noexcept
       max_dist = std::max(max_dist, std::abs(goal_state.positions[i] - start_state.positions[i]));
     }
 
-    // Heuristic duration: 1.0 rad/s average speed, min 0.5s
-    double duration = std::max(0.5, max_dist / 1.0);
+    // Heuristic duration based on configured speed
+    double duration = std::max(0.01, max_dist / gains_.trajectory_speed);
 
     trajectory_.initialize(start_state, goal_state, duration);
     trajectory_time_ = 0.0;
@@ -62,11 +69,12 @@ ControllerOutput PDController::Compute(const ControllerState & state) noexcept
     const double derivative = ComputeDerivative(error, previous_errors_[i], dt);
 
     // Feedforward velocity + PD feedback
-    output.robot_commands[i] = traj_state.velocities[i] + gains_.kp * error + gains_.kd *
+    output.robot_commands[i] = traj_state.velocities[i] + gains_.kp[i] * error + gains_.kd[i] *
       derivative;
     previous_errors_[i] = error;
   }
 
+  output.actual_target_positions = traj_state.positions;
   output.robot_commands = ClampCommands(output.robot_commands);
   return output;
 }
