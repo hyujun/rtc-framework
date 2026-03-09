@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Prerequisites**: Ubuntu 22.04 (ROS2 Humble) **or** Ubuntu 24.04 (ROS2 Jazzy), `realtime` group membership with `rtprio 99` / `memlock unlimited` in `/etc/security/limits.conf`.
 
-> **Current workspace**: `/home/junho/ros2_ws/ur5e_ws` — log output goes to `~/ros2_ws/ur5e_ws/logging_data/` (created automatically at launch time).
+> **Current workspace**: `/home/user/ros2_ws/ur5e_ws` — log output goes to `~/ros2_ws/ur5e_ws/logging_data/` (created automatically at launch time).
 
 ```bash
 # Automated setup (installs deps, sets RT permissions)
@@ -80,7 +80,7 @@ ur5e-rt-controller/
 ├── docs/
 │   ├── CHANGELOG.md                       # Version history (Korean)
 │   ├── RT_OPTIMIZATION.md                 # v4.2.0 RT tuning guide (Korean)
-│   └── CORE_ALLOCATION_PLAN.md           # CPU core allocation optimization plan
+│   └── CLAUDE.md                          # This file — AI assistant context
 │
 ├── ur5e_description/                      # Robot model description (NEW v5.2.2)
 │   ├── robots/ur5e/
@@ -161,7 +161,7 @@ ur5e-rt-controller/
 
 This is a **ROS2 Humble / ROS2 Jazzy** multi-package repository (`ament_cmake`, C++20) implementing a 500 Hz real-time position controller for a UR5e robot arm with an 11-DOF custom hand attached via UDP.
 
-**Workspace root**: `/home/junho/ros2_ws/ur5e_ws`  
+**Workspace root**: `/home/user/ros2_ws/ur5e_ws`
 **Log output**: `~/ros2_ws/ur5e_ws/logging_data/ur5e_control_log_YYMMDD_HHMM.csv` (auto-created, `max_log_files: 10`)
 
 ### Core Design: Strategy Pattern + Multi-threaded Executors
@@ -292,7 +292,7 @@ export MUJOCO_DIR=/opt/mujoco-3.x.x && colcon build
 
 ### UDP Hand Protocol
 
-`HandUdpReceiver` (`include/ur5e_rt_controller/hand_udp_receiver.hpp`) uses `std::jthread` (C++20 cooperative cancellation) to receive packets on port 50001.
+`HandUdpReceiver` (`include/ur5e_hand_udp/hand_udp_receiver.hpp`) uses `std::jthread` (C++20 cooperative cancellation) to receive packets on port 50001.
 
 **Receive packet format — 77 `double`s (616 bytes total):**
 - 11 motor positions + 11 motor velocities + 11 motor currents + 44 sensor values (4 per joint)
@@ -640,6 +640,7 @@ For detailed RT tuning (CPU isolation, kernel parameters, DDS configuration, IRQ
 
 | Version | Key Changes |
 |---|---|
+| v5.3.0 | Runtime controller switching (P/PD/Pinocchio/CLIK/OSC via `/custom_controller/controller_type` topic), `controller_gains` topic for dynamic gain updates, `controller_gui.py` tkinter GUI, MuJoCo `package://` URI support (`Ros2ResourceProvider`), quintic trajectory subsystem (`QuinticPolynomial`, `TaskSpaceTrajectory`, `JointSpaceTrajectory<N>`) |
 | v5.2.2 | `ur5e_description` package (MJCF/URDF/mesh), dynamic log path (`~/ros2_ws/ur5e_ws/logging_data`), `build.sh`, `rmw_cyclonedds_cpp`, source split (`mujoco_sim_loop.cpp`, `mujoco_viewer.cpp`), `solver_niter` island fix, ROS2 Jazzy |
 | v5.2.1 | MuJoCo binary tarball cmake fix: `-Dmujoco_ROOT`, `find_library` fallback |
 | v5.2.0 | RT-safe filter library: `BesselFilterN<N>` + `KalmanFilterN<N>` in `ur5e_rt_base/filters/` |

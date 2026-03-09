@@ -38,6 +38,10 @@ robots/ur5e/
 ### 사전 요구사항
 
 ```bash
+# ROS2 Humble (Ubuntu 22.04)
+sudo apt install -y ros-humble-ur-description ros-humble-xacro
+
+# ROS2 Jazzy (Ubuntu 24.04)
 sudo apt install -y ros-jazzy-ur-description ros-jazzy-xacro
 ```
 

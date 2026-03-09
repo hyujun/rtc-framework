@@ -1,17 +1,20 @@
-# ur5e_rt_controller.yaml - v4 (E-STOP Parameters)
+# ur5e_rt_controller.yaml - v5.3.0
+# ROS2 Humble / Jazzy 호환 플랫 파라미터 구조
 /**:
   ros__parameters:
-    # Controller Parameters
-    control_rate: 500.0          # Hz
-    initial_controller: "pd_controller"
+    # ── Controller Parameters ──────────────────────────────────────────────────
+    control_rate: 500.0          # Hz — timer period = 1e6/rate µs
+    kp: 5.0                      # PD proportional gain (초기값; GUI로 런타임 변경 가능)
+    kd: 0.5                      # PD derivative gain   (초기값; GUI로 런타임 변경 가능)
+    initial_controller: "pd_controller"  # 시작 컨트롤러 (p / pd / pinocchio / clik / osc)
     enable_logging: true         # Enable CSV logging
-    log_dir: "~/ros2_ws/ur5e_ws/logging_data"  # overridden by launch files with expanded path
-    max_log_files: 10               # Keep only the N most recent log files
+    log_dir: "~/ros2_ws/ur5e_ws/logging_data"  # launch 파일이 절대경로로 확장
+    max_log_files: 10            # 최근 N개 로그 파일만 보관 (오래된 파일 자동 삭제)
 
-    # Joint Limits
+    # ── Joint Limits ───────────────────────────────────────────────────────────
     joint_limits:
-      max_velocity: 2.0            # rad/s
-      max_acceleration: 5.0        # rad/s^2
+      max_velocity: 2.0            # rad/s — PDController::ClampCommands()에서 적용
+      max_acceleration: 5.0        # rad/s² (정보 목적; 코드에서 강제하지 않음)
       position_limits:
         joint_0: [-6.28, 6.28]     # Base
         joint_1: [-6.28, 6.28]     # Shoulder
@@ -20,12 +23,13 @@
         joint_4: [-6.28, 6.28]     # Wrist 2
         joint_5: [-6.28, 6.28]     # Wrist 3
 
-    # v4: E-STOP Configuration
+    # ── E-STOP Configuration ───────────────────────────────────────────────────
     estop:
-      enable_estop: true           # Enable E-STOP monitoring
-      robot_timeout_ms: 100.0      # Robot data timeout (ms)
-      hand_timeout_ms: 200.0       # Hand data timeout (ms)
-      safe_position:               # Safe position for recovery (rad)
+      enable_estop: true           # E-STOP 모니터링 활성화
+      robot_timeout_ms: 100.0      # /joint_states 갭이 이 값 초과 시 E-STOP
+      hand_timeout_ms: 200.0       # /hand/joint_states 갭이 이 값 초과 시 E-STOP
+                                   # 핸드 미연결 환경: 0으로 설정하여 비활성화
+      safe_position:               # E-STOP 복구 안전 위치 (rad)
         - 0.0                      # Base
         - -1.57                    # Shoulder
         - 1.57                     # Elbow
@@ -33,15 +37,9 @@
         - -1.57                    # Wrist 2
         - 0.0                      # Wrist 3
 
-    # Safety Parameters
-    safety:
-      enable_collision_check: false
-      force_threshold: 50.0        # N
-      torque_threshold: 10.0       # Nm
-
-    # Logging Parameters
+    # ── Logging Parameters ─────────────────────────────────────────────────────
     logging:
       enable_logging: true
-      log_frequency: 100.0         # Hz (subsample from control rate)
-      max_log_size_mb: 100         # Maximum log file size
+      log_frequency: 100.0         # Hz (제어율에서 서브샘플링 의도; 현재 미적용)
+      max_log_size_mb: 100         # 최대 로그 파일 크기
       log_directory: "~/ros2_ws/ur5e_ws/logging_data"
