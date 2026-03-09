@@ -10,12 +10,6 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('lib/' + package_name, [
-            'scripts/monitor_data_health.py',
-            'scripts/plot_ur_trajectory.py',
-            'scripts/motion_editor_gui.py',
-            'scripts/hand_udp_sender_example.py',
-        ]),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -26,7 +20,11 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'controller_gui = ur5e_tools.controller_gui:main'
+            'controller_gui = ur5e_tools.gui.controller_gui:main',
+            'motion_editor_gui = ur5e_tools.gui.motion_editor_gui:main',
+            'monitor_data_health = ur5e_tools.monitoring.monitor_data_health:main',
+            'plot_ur_trajectory = ur5e_tools.plotting.plot_ur_trajectory:main',
+            'hand_udp_sender_example = ur5e_tools.utils.hand_udp_sender_example:main'
         ],
     },
 )

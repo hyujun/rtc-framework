@@ -144,12 +144,16 @@ ur5e-rt-controller/
 │   └── launch/mujoco_sim.launch.py
 │
 └── ur5e_tools/                            # Python utilities package
-    └── scripts/
-        ├── motion_editor_gui.py            # Qt5 50-pose motion editor
-        ├── monitor_data_health.py          # Data health monitor + JSON stats
-        ├── plot_ur_trajectory.py           # Matplotlib trajectory visualization
-        └── hand_udp_sender_example.py      # Synthetic UDP hand data generator
-```
+    └── ur5e_tools/
+        ├── gui/
+        │   ├── motion_editor_gui.py        # Qt5 50-pose motion editor
+        │   └── controller_gui.py           # Python GUI for testing controller gains
+        ├── monitoring/
+        │   └── monitor_data_health.py      # Data health monitor + JSON stats
+        ├── plotting/
+        │   └── plot_ur_trajectory.py       # Matplotlib trajectory visualization
+        └── utils/
+            └── hand_udp_sender_example.py  # Synthetic UDP hand data generator
 
 ---
 
@@ -495,24 +499,24 @@ Launches: `hand_udp_receiver_node`, `hand_udp_sender_node`.
 
 ## Python Utilities
 
-### `scripts/motion_editor_gui.py`
+### `ur5e_tools/gui/motion_editor_gui.py`
 
 Qt5 50-pose motion editor GUI. Subscribes to `/joint_states` (current angles), publishes to `/target_joint_positions` (execute poses). Supports JSON save/load and sequential playback with 2s inter-pose delay. Requires `PyQt5` system package.
 
-### `scripts/monitor_data_health.py`
+### `ur5e_tools/monitoring/monitor_data_health.py`
 
 `DataHealthMonitor` ROS2 node. Tracks packet rates and timeouts across all 4 topics. Saves JSON stats to `/tmp/ur5e_stats/` on shutdown. Parameters: `check_rate` (default 10Hz), `timeout_threshold` (default 0.2s), `stats_output_dir`, `enable_stats`.
 
-### `scripts/plot_ur_trajectory.py`
+### `ur5e_tools/plotting/plot_ur_trajectory.py`
 
 Matplotlib visualization of CSV control logs. Plots positions, targets, and commands per joint.
 
 ```bash
-ros2 run ur5e_rt_controller plot_ur_trajectory.py /tmp/ur5e_control_log.csv
-ros2 run ur5e_rt_controller plot_ur_trajectory.py /tmp/ur5e_control_log.csv --joint 2
+ros2 run ur5e_tools plot_ur_trajectory /tmp/ur5e_control_log.csv
+ros2 run ur5e_tools plot_ur_trajectory /tmp/ur5e_control_log.csv --joint 2
 ```
 
-### `scripts/hand_udp_sender_example.py`
+### `ur5e_tools/utils/hand_udp_sender_example.py`
 
 Synthetic hand data generator for development/testing. Sends sinusoidal or static UDP packets to the receiver on port 50001.
 

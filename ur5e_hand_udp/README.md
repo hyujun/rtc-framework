@@ -143,7 +143,7 @@ source install/setup.bash
 `ur5e_tools` 패키지의 `hand_udp_sender_example.py`를 사용합니다:
 
 ```bash
-ros2 run ur5e_tools hand_udp_sender_example.py
+ros2 run ur5e_tools hand_udp_sender_example
 ```
 
 정현파 또는 정적 손 데이터를 포트 50001로 전송합니다.

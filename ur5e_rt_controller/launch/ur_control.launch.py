@@ -130,7 +130,7 @@ def generate_launch_description():
     # ── Data health monitor ────────────────────────────────────────────────────
     monitor_node = Node(
         package='ur5e_tools',
-        executable='monitor_data_health.py',
+        executable='monitor_data_health',
         name='data_health_monitor',
         output='screen',
         parameters=[{

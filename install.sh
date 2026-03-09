@@ -470,9 +470,9 @@ print_summary() {
 
   echo ""
   echo -e "${CYAN}${BOLD}── Monitoring ──────────────────────────────────────────${NC}"
-  echo "  ros2 run ur5e_tools monitor_data_health.py"
-  echo "  ros2 run ur5e_tools plot_ur_trajectory.py <workspace>/logging_data/ur5e_control_log_YYMMDD_HHMM.csv"
-  echo "  ros2 run ur5e_tools motion_editor_gui.py"
+  echo "  ros2 run ur5e_tools monitor_data_health"
+  echo "  ros2 run ur5e_tools plot_ur_trajectory <workspace>/logging_data/ur5e_control_log_YYMMDD_HHMM.csv"
+  echo "  ros2 run ur5e_tools motion_editor_gui"
   echo ""
   echo -e "${CYAN}${BOLD}── Documentation ───────────────────────────────────────${NC}"
   echo "  docs/RT_OPTIMIZATION.md  — RT tuning guide"

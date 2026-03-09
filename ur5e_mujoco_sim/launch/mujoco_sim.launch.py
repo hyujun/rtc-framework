@@ -162,7 +162,7 @@ def launch_setup(context, *args, **kwargs):
     # ── Node 3: Data Health Monitor ───────────────────────────────────────────
     monitor_node = Node(
         package='ur5e_tools',
-        executable='monitor_data_health.py',
+        executable='monitor_data_health',
         name='data_health_monitor',
         output='screen',
         parameters=[{
