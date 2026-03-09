@@ -469,8 +469,8 @@ verify_installation() {
   info "Available executables (ur5e_hand_udp):"
   ros2 pkg executables ur5e_hand_udp 2>/dev/null || true
 
-  mkdir -p "${WORKSPACE}/logging_data/stats" ~/ur_plots
-  success "Log directories ready (${WORKSPACE}/logging_data, ~/ur_plots)"
+  mkdir -p "${WORKSPACE}/logging_data/stats" "${WORKSPACE}/logging_data/ur_plot"
+  success "Log directories ready (${WORKSPACE}/logging_data, ${WORKSPACE}/logging_data/ur_plot)"
 }
 
 # ── Quick start summary ─────────────────────────────────────────────────────────

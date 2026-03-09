@@ -849,7 +849,7 @@ ros2 run ur5e_tools plot_ur_trajectory.py /tmp/ur5e_control_log.csv
 ros2 run ur5e_tools plot_ur_trajectory.py /tmp/ur5e_control_log.csv --joint 2
 
 # 이미지 파일로 저장
-ros2 run ur5e_tools plot_ur_trajectory.py /tmp/ur5e_control_log.csv --save-dir ~/ur_plots
+ros2 run ur5e_tools plot_ur_trajectory.py /tmp/ur5e_control_log.csv --save-dir logging_data/ur_plot
 
 # 통계만 출력
 ros2 run ur5e_tools plot_ur_trajectory.py /tmp/ur5e_control_log.csv --stats
