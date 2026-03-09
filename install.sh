@@ -19,52 +19,128 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-# ── Mode selection ─────────────────────────────────────────────────────────────
-MODE="${1:-full}"
+# ── Mode & argument parsing ────────────────────────────────────────────────────
+MODE="full"
+CLEAN_BUILD=0
+BUILD_TYPE="Release"
+PARALLEL_JOBS=""
+NO_BASHRC=0
+SKIP_DEPS=0
+SKIP_BUILD=0
+SKIP_RT=0
+CUSTOM_PACKAGES=()
+MJ_DIR=""
+
+show_help() {
+  echo ""
+  echo -e "${BOLD}UR5e RT Controller — install.sh${NC}"
+  echo ""
+  echo "Usage: $0 [MODE] [OPTIONS]"
+  echo ""
+  echo "Modes:"
+  echo "  sim    — MuJoCo simulation only"
+  echo "             Installs: ROS2 build tools, Pinocchio, MuJoCo 3.x"
+  echo "             Skips:    UR robot driver, RT scheduling permissions"
+  echo ""
+  echo "  robot  — Real robot only"
+  echo "             Installs: ROS2 build tools, UR driver, Pinocchio, RT permissions"
+  echo "             Skips:    MuJoCo"
+  echo ""
+  echo "  full   — Complete installation (default)"
+  echo "             Installs: everything above"
+  echo ""
+  echo "Options:"
+  echo "  -d, --debug       Build with CMAKE_BUILD_TYPE=Debug"
+  echo "  -r, --release     Build with CMAKE_BUILD_TYPE=Release (default)"
+  echo "  -c, --clean       Remove build/, install/, and log/ before building"
+  echo "  -p, --packages    Comma-separated list of specific packages to build"
+  echo "  -j, --jobs N      Limit parallel workers for colcon (e.g. -j 4)"
+  echo "  --skip-deps       Skip installing apt system dependencies"
+  echo "  --skip-build      Skip compiling the packages (only download/setup)"
+  echo "  --skip-rt         Skip configuring RT permissions and IRQ affinity"
+  echo "  --no-bashrc       Do not automatically add source command to ~/.bashrc"
+  echo "  --mujoco <path>   Use specific MuJoCo path"
+  echo "  --help            Show this help"
+  echo ""
+  echo "Examples:"
+  echo "  chmod +x install.sh"
+  echo "  ./install.sh sim"
+  echo "  ./install.sh robot --skip-deps"
+  echo "  ./install.sh full -c -j 4"
+  echo ""
+  exit 0
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    sim|simulation)
+      MODE=sim
+      shift
+      ;;
+    robot|realrobot|real)
+      MODE=robot
+      shift
+      ;;
+    full|all)
+      MODE=full
+      shift
+      ;;
+    -d|--debug)
+      BUILD_TYPE="Debug"
+      shift
+      ;;
+    -r|--release)
+      BUILD_TYPE="Release"
+      shift
+      ;;
+    -c|--clean)
+      CLEAN_BUILD=1
+      shift
+      ;;
+    -p|--packages)
+      [[ -z "${2:-}" ]] && error "--packages requires a comma-separated list"
+      IFS=',' read -r -a CUSTOM_PACKAGES <<< "$2"
+      shift 2
+      ;;
+    -j|--jobs)
+      [[ -z "${2:-}" ]] && error "--jobs requires a number"
+      PARALLEL_JOBS="$2"
+      shift 2
+      ;;
+    --skip-deps)
+      SKIP_DEPS=1
+      shift
+      ;;
+    --skip-build)
+      SKIP_BUILD=1
+      shift
+      ;;
+    --skip-rt)
+      SKIP_RT=1
+      shift
+      ;;
+    --no-bashrc)
+      NO_BASHRC=1
+      shift
+      ;;
+    --mujoco)
+      [[ -z "${2:-}" ]] && error "--mujoco requires a path argument"
+      MJ_DIR="$2"
+      shift 2
+      ;;
+    -h|--help|help)
+      show_help
+      ;;
+    *)
+      error "Unknown argument: '$1'  (run $0 --help for usage)"
+      ;;
+  esac
+done
+
 case "$MODE" in
-  sim|simulation)
-    MODE=sim
-    MODE_DESC="Simulation  (MuJoCo + Pinocchio, no UR driver, no RT perms)"
-    ;;
-  robot|realrobot|real)
-    MODE=robot
-    MODE_DESC="Real Robot  (UR driver + Pinocchio + RT permissions, no MuJoCo)"
-    ;;
-  full|all|"")
-    MODE=full
-    MODE_DESC="Full        (UR driver + Pinocchio + MuJoCo + RT permissions)"
-    ;;
-  -h|--help|help)
-    echo ""
-    echo -e "${BOLD}UR5e RT Controller — install.sh${NC}"
-    echo ""
-    echo "Usage: $0 [MODE]"
-    echo ""
-    echo "Modes:"
-    echo "  sim    — MuJoCo simulation only"
-    echo "             Installs: ROS2 build tools, Pinocchio, MuJoCo 3.x"
-    echo "             Skips:    UR robot driver, RT scheduling permissions"
-    echo ""
-    echo "  robot  — Real robot only"
-    echo "             Installs: ROS2 build tools, UR driver, Pinocchio, RT permissions"
-    echo "             Skips:    MuJoCo"
-    echo ""
-    echo "  full   — Complete installation (default)"
-    echo "             Installs: everything above"
-    echo ""
-    echo "Examples:"
-    echo "  chmod +x install.sh"
-    echo "  ./install.sh sim      # developer workstation, no hardware"
-    echo "  ./install.sh robot    # robot-side machine"
-    echo "  ./install.sh          # full setup"
-    echo ""
-    exit 0
-    ;;
-  *)
-    echo -e "${RED}Unknown mode: '$1'${NC}"
-    echo "Usage: $0 [sim|robot|full]  or  $0 --help"
-    exit 1
-    ;;
+  sim)   MODE_DESC="Simulation  (MuJoCo + Pinocchio, no UR driver, no RT perms)" ;;
+  robot) MODE_DESC="Real Robot  (UR driver + Pinocchio + RT permissions, no MuJoCo)" ;;
+  full)  MODE_DESC="Full        (UR driver + Pinocchio + MuJoCo + RT permissions)" ;;
 esac
 
 # ── Banner ─────────────────────────────────────────────────────────────────────
@@ -196,7 +272,7 @@ install_pinocchio() {
 
 # ── MuJoCo 3.x (sim + full) ────────────────────────────────────────────────────
 MJ_VERSION="3.2.4"
-MJ_DIR="/opt/mujoco-${MJ_VERSION}"
+[[ -z "$MJ_DIR" ]] && MJ_DIR="/opt/mujoco-${MJ_VERSION}"
 
 install_mujoco() {
   if [[ -d "$MJ_DIR" ]]; then
@@ -287,7 +363,12 @@ build_package() {
   info "Building all ur5e packages..."
   cd "$WORKSPACE"
 
-  local CMAKE_ARGS=()
+  if [[ "$CLEAN_BUILD" -eq 1 ]]; then
+    info "Cleaning previous build artifacts..."
+    rm -rf build/ install/ log/
+  fi
+
+  local CMAKE_ARGS=("-DCMAKE_BUILD_TYPE=${BUILD_TYPE}")
   if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
     # MuJoCo binary release (tarball) does NOT include lib/cmake/mujoco/.
     # Pass mujoco_ROOT so CMakeLists.txt can locate the .so and headers via find_library.
@@ -296,25 +377,33 @@ build_package() {
   fi
 
   # Build order: ur5e_rt_base first (header-only, no deps), then the rest
-  local PACKAGES=(ur5e_rt_base ur5e_description ur5e_rt_controller ur5e_hand_udp ur5e_tools)
-  if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
-    PACKAGES+=(ur5e_mujoco_sim)
+  local PACKAGES=()
+  if [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]]; then
+    PACKAGES=("${CUSTOM_PACKAGES[@]}")
+  else
+    PACKAGES=(ur5e_rt_base ur5e_description ur5e_rt_controller ur5e_hand_udp ur5e_tools)
+    if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
+      PACKAGES+=(ur5e_mujoco_sim)
+    fi
+  fi
+
+  local COLCON_ARGS=("--packages-select" "${PACKAGES[@]}" "--symlink-install")
+
+  if [[ -n "$PARALLEL_JOBS" ]]; then
+    COLCON_ARGS+=("--parallel-workers" "$PARALLEL_JOBS")
   fi
 
   if [[ ${#CMAKE_ARGS[@]} -gt 0 ]]; then
-    colcon build \
-        --packages-select "${PACKAGES[@]}" \
-        --symlink-install \
-        --cmake-args "${CMAKE_ARGS[@]}"
-  else
-    colcon build \
-        --packages-select "${PACKAGES[@]}" \
-        --symlink-install
+    COLCON_ARGS+=("--cmake-args" "${CMAKE_ARGS[@]}")
   fi
 
+  colcon build "${COLCON_ARGS[@]}" || error "Build failed!"
+
   source install/setup.bash
-  grep -qF "$WORKSPACE/install/setup.bash" ~/.bashrc || \
-      echo "source $WORKSPACE/install/setup.bash" >> ~/.bashrc
+  if [[ "$NO_BASHRC" -eq 0 ]]; then
+    grep -qF "$WORKSPACE/install/setup.bash" ~/.bashrc || \
+        echo "source $WORKSPACE/install/setup.bash" >> ~/.bashrc
+  fi
   success "All packages built and sourced"
 }
 
@@ -414,7 +503,7 @@ print_summary() {
       echo ""
       if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
         echo -e "  MuJoCo path : ${MJ_DIR}"
-        echo -e "  cmake arg   : -Dmujoco_DIR=${MJ_DIR}/lib/cmake/mujoco"
+        echo -e "  cmake arg   : -Dmujoco_ROOT=${MJ_DIR}"
       else
         echo -e "  ${YELLOW}MuJoCo was not installed automatically.${NC}"
         echo -e "  ${YELLOW}See: https://github.com/google-deepmind/mujoco/releases${NC}"
@@ -485,35 +574,59 @@ print_summary() {
 # Main installation sequence
 # ══════════════════════════════════════════════════════════════════════════════
 
-check_prerequisites
-setup_workspace
+if [[ "$SKIP_DEPS" -eq 0 ]]; then
+  check_prerequisites
+  setup_workspace
 
-case "$MODE" in
-  sim)
-    install_pinocchio
-    install_mujoco
-    ;;
-  robot)
-    install_ur_driver
-    install_pinocchio
-    ;;
-  full)
-    install_ur_driver
-    install_pinocchio
-    install_mujoco
-    ;;
-esac
+  case "$MODE" in
+    sim)
+      install_pinocchio
+      install_mujoco
+      ;;
+    robot)
+      install_ur_driver
+      install_pinocchio
+      ;;
+    full)
+      install_ur_driver
+      install_pinocchio
+      install_mujoco
+      ;;
+  esac
 
-install_python_deps
+  install_python_deps
+else
+  info "Skipping system dependencies installation (--skip-deps)"
+  # Detect workspace context mainly for the paths below
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  SRC_DIR="$(dirname "$SCRIPT_DIR")"
+  DETECTED_WS="$(dirname "$SRC_DIR")"
+  if [[ "$(basename "$SRC_DIR")" == "src" && -d "$DETECTED_WS" ]]; then
+    WORKSPACE="$DETECTED_WS"
+  else
+    WORKSPACE=~/ur_ws
+  fi
+  info "Workspace context: $WORKSPACE"
+fi
+
 setup_package
-build_package
 
-case "$MODE" in
-  robot|full)
-    install_rt_permissions
-    setup_irq_affinity
-    ;;
-esac
+if [[ "$SKIP_BUILD" -eq 0 ]]; then
+  build_package
+else
+  info "Skipping colcon build (--skip-build)"
+fi
+
+if [[ "$SKIP_RT" -eq 0 ]]; then
+  case "$MODE" in
+    robot|full)
+      install_rt_permissions
+      setup_irq_affinity
+      ;;
+  esac
+else
+  info "Skipping RT permissions and IRQ affinity configure (--skip-rt)"
+fi
 
 verify_installation
 print_summary

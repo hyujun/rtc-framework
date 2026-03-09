@@ -10,15 +10,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Automated setup (installs deps, sets RT permissions)
-chmod +x install.sh && ./install.sh sim   # simulation only
-chmod +x install.sh && ./install.sh robot # real robot only
-chmod +x install.sh && ./install.sh       # full install
+chmod +x install.sh
+./install.sh sim --skip-deps   # simulation only, skip apt install
+./install.sh robot             # real robot only
+./install.sh full              # full install
 
-# Build with build.sh (recommended, handles MuJoCo path)
+# Build with build.sh (recommended, handles MuJoCo path and parallelism)
 chmod +x build.sh
-./build.sh sim    # ur5e_description, ur5e_rt_base, ur5e_rt_controller, ur5e_hand_udp, ur5e_tools, ur5e_mujoco_sim
-./build.sh robot  # excludes ur5e_mujoco_sim
-./build.sh full   # all packages
+./build.sh sim -c -j 4         # clean build sim packages with 4 workers
+./build.sh robot               # excludes ur5e_mujoco_sim
+./build.sh full                # all packages
+./build.sh -p ur5e_rt_base     # build specific package only
 
 # Manual build (from workspace root — ~/ros2_ws/ur5e_ws)
 cd ~/ros2_ws/ur5e_ws
@@ -658,7 +660,8 @@ For detailed RT tuning (CPU isolation, kernel parameters, DDS configuration, IRQ
 
 | Version | Key Changes |
 |---|---|
-| v5.5.0 | Source split: `custom_controller.cpp` → `rt_controller_node.hpp` (class decl) + `rt_controller_node.cpp` (registry + impl) + `rt_controller_main.cpp` (main). Class renamed `CustomController` → `RtControllerNode`. |
+| v5.5.0 | Script enhancements: `build.sh` and `install.sh` parameter parsing & advanced options (`-c`, `-p`, `--skip-deps`, etc.). Source split: `custom_controller.cpp` → `rt_controller_node.hpp` + `.cpp` + `main.cpp`. Renamed `CustomController` → `RtControllerNode`. Fast modular math for `SpscLogBuffer`. |
+| v5.5.0 | Script enhancements:  and  parameter parsing & advanced options (, , , etc.). Source split:  →  +  + . Renamed  → . Fast modular math for . |
 | v5.4.0 | Controller Registry pattern: `MakeControllerEntries()` factory list, `LoadConfig()` + `UpdateGainsFromMsg()` hooks on `RTControllerInterface`, per-controller YAML loading loop replaces 80-line boilerplate, `switch`/`dynamic_cast` gains handler replaced by single virtual dispatch. New guide: `docs/ADDING_CONTROLLER.md` |
 | v5.3.0 | Runtime controller switching (P/PD/Pinocchio/CLIK/OSC via `/custom_controller/controller_type` topic), `controller_gains` topic for dynamic gain updates, `controller_gui.py` tkinter GUI, MuJoCo `package://` URI support (`Ros2ResourceProvider`), quintic trajectory subsystem (`QuinticPolynomial`, `TaskSpaceTrajectory`, `JointSpaceTrajectory<N>`) |
 | v5.2.2 | `ur5e_description` package (MJCF/URDF/mesh), dynamic log path (`~/ros2_ws/ur5e_ws/logging_data`), `build.sh`, `rmw_cyclonedds_cpp`, source split (`mujoco_sim_loop.cpp`, `mujoco_viewer.cpp`), `solver_niter` island fix, ROS2 Jazzy |

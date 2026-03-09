@@ -658,6 +658,11 @@ chmod +x install.sh
 # 실제 로봇 전용: UR 드라이버 + Pinocchio + RT 권한 + IRQ affinity (MuJoCo 없음)
 ./install.sh robot
 
+# (고급) 특정 단계 스킵 기능
+./install.sh sim --skip-deps     # apt 의존성 설치 스킵
+./install.sh robot --skip-rt     # RT 권한 설정 및 IRQ affinity 셋업 스킵 (도커/컨테이너 권장)
+./install.sh full --skip-build   # 다운로드 및 초기 셋업만 진행 (colcon build 스킵)
+
 # 도움말
 ./install.sh --help
 ```
@@ -683,14 +688,17 @@ chmod +x install.sh
 ```bash
 chmod +x build.sh
 
-# 시뮬레이션 패키지만 빌드
-./build.sh sim
+# 기본 로봇/시뮬레이션/전체 모드 빌드
+./build.sh sim    # 시뮬레이션 관련 패키지만 빌드
+./build.sh robot  # 실제 로봇용 빌드 (ur5e_mujoco_sim 제외)
+./build.sh full   # 전체 패키지 빌드
 
-# 실제 로봇 빌드 (ur5e_mujoco_sim 제외)
-./build.sh robot
-
-# 전체 빌드
-./build.sh full
+# 고급 빌드 옵션 제공
+./build.sh sim -c             # 이전 빌드 파일(build/, install/, log/) 삭제 후 클린 빌드
+./build.sh full -d            # CMAKE_BUILD_TYPE=Debug 빌드 (기본값 Release)
+./build.sh -p ur5e_rt_base    # 특정 패키지만 선택해서 빌드
+./build.sh sim -j 4           # colcon 병렬 워커 개수 제한 (OOM 방지)
+./build.sh full --no-bashrc   # 빌드 후 ~/.bashrc 에 `source` 추가 생략
 ```
 
 ### 5. 수동 설치
@@ -1300,6 +1308,7 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 
 | 버전 | 주요 변경사항 |
 |------|---------------|
+| **v5.5.0** | `build.sh` 및 `install.sh` 파라미터 파싱 및 고급 제어 기능 구현 (`-c`, `-d`, `-r`, `-j`, `-p`, `--no-bashrc`, `--skip-*`), 초저지연 버퍼 `log_buffer.hpp` 최적화, 클래스명 변경(`CustomController`→`RtControllerNode`) 및 노드 파일 3분할 도입 |
 | **v5.4.0** | Controller Registry 패턴 (`MakeControllerEntries()`), `RTControllerInterface`에 `LoadConfig()` / `UpdateGainsFromMsg()` 훅 추가, 컨트롤러별 YAML 로딩·게인 업데이트 자기 책임화, `switch`/`dynamic_cast` 제거, `docs/ADDING_CONTROLLER.md` 신규 |
 | **v5.3.0** | 런타임 컨트롤러 전환 (P/PD/Pinocchio/CLIK/OSC `controller_type` 토픽), `controller_gains` 토픽으로 동적 게인 업데이트, `controller_gui.py` tkinter GUI 신규, MuJoCo `package://` URI 네이티브 지원 (`Ros2ResourceProvider`) |
 | **v5.2.2** | `ur5e_description` 패키지 신규 추가 (MJCF/URDF/메시 통합), 로깅 경로 동적 해석, `build.sh` 추가, `rmw_cyclonedds_cpp` 의존성, 소스 파일 분리(`mujoco_sim_loop.cpp`, `mujoco_viewer.cpp`), `solver_niter` island 합산 수정, ROS 2 Jazzy 지원 |

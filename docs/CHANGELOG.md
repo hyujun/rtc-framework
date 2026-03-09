@@ -7,6 +7,22 @@
 
 ## [5.5.0] - 2026-03-09
 
+### 변경 (Changed) — `build.sh` 및 `install.sh` 기능 대폭 강화
+
+빌드 및 설치 스크립트의 파라미터 파싱 로직을 전면 개편하고 다양한 옵션을 추가하여 유연한 셋업을 지원합니다.
+
+*   **공통 플래그 및 제어 추가 (`build.sh`, `install.sh`)**:
+    *   `-c`, `--clean`: 이전 빌드 부산물(`build/`, `install/`, `log/`) 삭제 후 클린 빌드
+    *   `-p`, `--packages <list>`: 기본 모드(sim/robot/full) 설정 대신, 지정한 패키지만 쉼표로 구분하여 선택 빌드
+    *   `-d`, `--debug` / `-r`, `--release`: `CMAKE_BUILD_TYPE` 을 `Debug` 또는 `Release`(기본값)로 지정
+    *   `-j`, `--jobs N`: `colcon build` 병렬 워커 개수를 제한하여 OOM(Out of Memory) 현상 방지
+    *   `--no-bashrc`: 스크립트 완료 후 `~/.bashrc`에 `source` 명령을 자동 추가하는 동작 생략
+    *   `--no-symlink`: (`build.sh` 전용) `--symlink-install` 옵션 사용 해제
+*   **고급 스킵 플래그 추가 (`install.sh` 전용)**:
+    *   `--skip-deps`: `apt-get`으로 시스템 의존성을 설치하는 과정 생략 (빠른 재설치 목적)
+    *   `--skip-build`: 의존성 및 워크스페이스만 셋업하고 `colcon build`는 생략
+    *   `--skip-rt`: `realtime` 그룹 설정 및 NIC IRQ `taskset` 스크립트 실행 생략 (Docker 등 권한 제한 환경 권장)
+
 ### 성능 최적화 (Performance) — `log_buffer.hpp` 초저지연 버퍼
 
 *   **비트 연산 기반 모듈러 연산**: 버퍼 크기 `N`이 2의 거듭제곱임(`static_assert` 추가)을 활용하여 모듈러 연산(`% N`)을 비트 AND 연산(`& (N - 1)`)으로 대체하여 연산 속도를 획기적으로 개선했습니다.

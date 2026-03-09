@@ -29,6 +29,12 @@ error()   { echo -e "${RED}✘ $*${NC}"; exit 1; }
 # ── Mode & argument parsing ────────────────────────────────────────────────────
 MODE="full"
 MJ_DIR=""
+BUILD_TYPE="Release"
+CLEAN_BUILD=0
+CUSTOM_PACKAGES=()
+PARALLEL_JOBS=""
+NO_BASHRC=0
+NO_SYMLINK=0
 
 # Default MuJoCo search path
 MJ_DEFAULT="/opt/mujoco-3.2.4"
@@ -52,6 +58,14 @@ show_help() {
   echo "            Packages: all of the above"
   echo ""
   echo "Options:"
+  echo "  -d, --debug       Build with CMAKE_BUILD_TYPE=Debug"
+  echo "  -r, --release     Build with CMAKE_BUILD_TYPE=Release (default)"
+  echo "  -c, --clean       Remove build/, install/, and log/ before building"
+  echo "  -p, --packages    Comma-separated list of specific packages to build"
+  echo "                    (Overrides default packages for the chosen mode)"
+  echo "  -j, --jobs N      Limit parallel workers (e.g. -j 4)"
+  echo "  --no-bashrc       Do not automatically add source command to ~/.bashrc"
+  echo "  --no-symlink      Do not use --symlink-install"
   echo "  --mujoco <path>   Path to MuJoCo install dir (e.g. /opt/mujoco-3.2.4)"
   echo "                    Auto-detected from $MJ_DEFAULT if not specified"
   echo "  --help            Show this help"
@@ -76,6 +90,36 @@ while [[ $# -gt 0 ]]; do
       ;;
     full|all)
       MODE=full
+      shift
+      ;;
+    -d|--debug)
+      BUILD_TYPE="Debug"
+      shift
+      ;;
+    -r|--release)
+      BUILD_TYPE="Release"
+      shift
+      ;;
+    -c|--clean)
+      CLEAN_BUILD=1
+      shift
+      ;;
+    -p|--packages)
+      [[ -z "${2:-}" ]] && error "--packages requires a comma-separated list"
+      IFS=',' read -r -a CUSTOM_PACKAGES <<< "$2"
+      shift 2
+      ;;
+    -j|--jobs)
+      [[ -z "${2:-}" ]] && error "--jobs requires a number"
+      PARALLEL_JOBS="$2"
+      shift 2
+      ;;
+    --no-bashrc)
+      NO_BASHRC=1
+      shift
+      ;;
+    --no-symlink)
+      NO_SYMLINK=1
       shift
       ;;
     --mujoco)
@@ -134,6 +178,7 @@ echo -e "${BOLD}${BLUE}║         UR5e RT Controller — Build Script          
 echo -e "${BOLD}${BLUE}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  Mode : ${CYAN}${BOLD}${MODE_DESC}${NC}"
+echo -e "  Build: ${CYAN}${BOLD}${BUILD_TYPE}${NC}"
 echo ""
 
 # ── Workspace detection ────────────────────────────────────────────────────────
@@ -152,45 +197,65 @@ fi
 [[ ! -d "$WORKSPACE" ]] && error "Workspace not found: $WORKSPACE"
 
 # ── Package selection by mode ──────────────────────────────────────────────────
-case "$MODE" in
-  robot)
-    PACKAGES=(ur5e_rt_base ur5e_description ur5e_rt_controller ur5e_hand_udp ur5e_tools)
-    ;;
-  sim)
-    PACKAGES=(ur5e_rt_base ur5e_description ur5e_rt_controller ur5e_mujoco_sim ur5e_tools)
-    ;;
-  full)
-    PACKAGES=(ur5e_rt_base ur5e_description ur5e_rt_controller ur5e_hand_udp ur5e_tools)
-    if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
-      PACKAGES+=(ur5e_mujoco_sim)
-    fi
-    ;;
-esac
+if [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]]; then
+  PACKAGES=("${CUSTOM_PACKAGES[@]}")
+  info "Using custom package list"
+else
+  case "$MODE" in
+    robot)
+      PACKAGES=(ur5e_rt_base ur5e_description ur5e_rt_controller ur5e_hand_udp ur5e_tools)
+      ;;
+    sim)
+      PACKAGES=(ur5e_rt_base ur5e_description ur5e_rt_controller ur5e_mujoco_sim ur5e_tools)
+      ;;
+    full)
+      PACKAGES=(ur5e_rt_base ur5e_description ur5e_rt_controller ur5e_hand_udp ur5e_tools)
+      if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
+        PACKAGES+=(ur5e_mujoco_sim)
+      fi
+      ;;
+  esac
+fi
 
 # ── Build ──────────────────────────────────────────────────────────────────────
 info "Building: ${PACKAGES[*]}"
 cd "$WORKSPACE"
 
-CMAKE_ARGS=()
+if [[ "$CLEAN_BUILD" -eq 1 ]]; then
+  info "Cleaning previous build artifacts..."
+  rm -rf build/ install/ log/
+  success "Clean complete"
+fi
+
+CMAKE_ARGS=("-DCMAKE_BUILD_TYPE=${BUILD_TYPE}")
 if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
-  CMAKE_ARGS+=("-Dmujoco_DIR=${MJ_DIR}/lib/cmake/mujoco")
-  info "MuJoCo cmake path: ${MJ_DIR}/lib/cmake/mujoco"
+  CMAKE_ARGS+=("-Dmujoco_ROOT=${MJ_DIR}")
+  info "MuJoCo root path: ${MJ_DIR}"
+fi
+
+COLCON_ARGS=("--packages-select" "${PACKAGES[@]}")
+
+if [[ "$NO_SYMLINK" -eq 0 ]]; then
+  COLCON_ARGS+=("--symlink-install")
+fi
+
+if [[ -n "$PARALLEL_JOBS" ]]; then
+  COLCON_ARGS+=("--parallel-workers" "$PARALLEL_JOBS")
+  info "Limiting parallel workers to $PARALLEL_JOBS"
 fi
 
 if [[ ${#CMAKE_ARGS[@]} -gt 0 ]]; then
-  colcon build \
-      --packages-select "${PACKAGES[@]}" \
-      --symlink-install \
-      --cmake-args "${CMAKE_ARGS[@]}"
-else
-  colcon build \
-      --packages-select "${PACKAGES[@]}" \
-      --symlink-install
+  COLCON_ARGS+=("--cmake-args" "${CMAKE_ARGS[@]}")
 fi
 
+colcon build "${COLCON_ARGS[@]}" || error "Build failed!"
+
 source install/setup.bash
-grep -qF "$WORKSPACE/install/setup.bash" ~/.bashrc || \
-    echo "source $WORKSPACE/install/setup.bash" >> ~/.bashrc
+
+if [[ "$NO_BASHRC" -eq 0 ]]; then
+  grep -qF "$WORKSPACE/install/setup.bash" ~/.bashrc || \
+      echo "source $WORKSPACE/install/setup.bash" >> ~/.bashrc
+fi
 
 # ── Check Limits ───────────────────────────────────────────────────────────────
 MEMLOCK=$(ulimit -l)
