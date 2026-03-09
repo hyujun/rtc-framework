@@ -8,24 +8,28 @@ UR5e 로봇 팔을 위한 **500Hz 실시간 위치 제어기** ROS2 패키지입
 ```
 ur5e_rt_controller/
 ├── include/ur5e_rt_controller/
-│   ├── rt_controller_interface.hpp        ← 추상 기반 클래스 (Strategy Pattern)
-│   ├── controller_timing_profiler.hpp     ← 잠금-없는 Compute() 타이밍 프로파일러
-│   └── controllers/
-│       ├── pd_controller.hpp              ← PD + E-STOP (기본값)
-│       ├── p_controller.hpp               ← 단순 P 제어기 (개발/테스트용)
-│       ├── pinocchio_controller.hpp       ← 모델 기반 PD + 중력/코리올리 보상
-│       ├── clik_controller.hpp            ← 폐루프 IK (데카르트 3-DOF)
-│       └── operational_space_controller.hpp ← 전체 6-DOF 데카르트 PD + SO(3)
+│   ├── rt_controller_interface.hpp          ← 추상 기반 클래스 (Strategy Pattern)
+│   ├── controller_timing_profiler.hpp       ← 잠금-없는 Compute() 타이밍 프로파일러
+│   ├── controllers/
+│   │   ├── pd_controller.hpp                ← PD + E-STOP (기본값)
+│   │   ├── p_controller.hpp                 ← 단순 P 제어기 (개발/테스트용)
+│   │   ├── pinocchio_controller.hpp         ← 모델 기반 PD + 중력/코리올리 보상
+│   │   ├── clik_controller.hpp              ← 폐루프 IK (데카르트 3-DOF)
+│   │   └── operational_space_controller.hpp ← 전체 6-DOF 데카르트 PD + SO(3)
+│   └── trajectory/                          ← 5차 궤적 생성 (v5.3.0+)
+│       ├── trajectory_utils.hpp             ← QuinticPolynomial 스칼라 유틸리티
+│       ├── task_space_trajectory.hpp        ← SE(3) 스플라인 (CLIK/OSC 사용)
+│       └── joint_space_trajectory.hpp       ← 관절공간 N-DOF 스플라인
 ├── src/
-│   ├── custom_controller.cpp              ← 메인 500Hz 노드 (4 executor, 4 thread, v5.3.0: 런타임 전환)
-│   └── p_controller.cpp                   ← P 제어기 소스 (v5.3.0+)
+│   ├── custom_controller.cpp                ← 메인 500Hz 노드 (런타임 전환, v5.3.0)
+│   └── pd_controller.cpp                    ← PD 제어기 소스
 ├── config/
-│   ├── ur5e_rt_controller.yaml           ← 제어기 파라미터
-│   └── cyclone_dds.xml                   ← CycloneDDS 스레드 Core 0-1 제한
+│   ├── ur5e_rt_controller.yaml              ← 제어기 파라미터
+│   └── cyclone_dds.xml                      ← CycloneDDS 스레드 Core 0-1 제한
 ├── scripts/
-│   └── setup_irq_affinity.sh             ← NIC IRQ → Core 0-1 고정 스크립트
+│   └── setup_irq_affinity.sh                ← NIC IRQ → Core 0-1 고정 스크립트
 └── launch/
-    └── ur_control.launch.py               ← 전체 시스템 (use_cpu_affinity 포함)
+    └── ur_control.launch.py                  ← 전체 시스템 (use_cpu_affinity 포함)
 ```
 
 **의존성:**
@@ -243,6 +247,49 @@ print(f'Over 2ms: {(df["compute_time_us"] > 2000).mean()*100:.2f}%')
 ```bash
 ros2 topic pub /target_joint_positions std_msgs/msg/Float64MultiArray \
   "data: [0.0, -1.57, 0.0, 0.0, 0.0, 0.0]"
+```
+
+---
+
+## 궤적 생성 서브시스템 (`trajectory/`)
+
+v5.3.0에서 추가된 헤더-전용 5차 다항식 궤적 생성 라이브러리입니다. CLIK/OSC 제어기에서 새 목표 수신 시 부드러운 이동을 자동으로 생성합니다.
+
+### `QuinticPolynomial` (`trajectory/trajectory_utils.hpp`)
+
+스칼라 5차 다항식 — 위치·속도·가속도 경계 조건 6개를 모두 만족하는 계수를 계산합니다.
+
+```cpp
+QuinticPolynomial poly;
+poly.compute_coefficients(p0, v0, a0, pf, vf, af, T);  // (시작, 목표, 지속시간)
+auto s = poly.compute(t);  // TrajectoryState{pos, vel, acc} — t를 [0,T]로 클램프
+```
+
+### `TaskSpaceTrajectory` (`trajectory/task_space_trajectory.hpp`)
+
+SE(3) 공간에서의 5차 스플라인 궤적. Pinocchio `log6`/`exp6`를 사용하여 두 SE(3) 포즈 사이를 부드럽게 보간합니다.
+**CLIK 및 OSC 제어기**에서 `SetRobotTarget()` 호출 시 자동으로 생성됩니다.
+
+```cpp
+// (CLIK/OSC 내부 사용 예)
+traj_.initialize(start_pose, pinocchio::Motion::Zero(),
+                 goal_pose,  pinocchio::Motion::Zero(), duration);
+auto state = traj_.compute(trajectory_time_);  // State{pose, velocity, acceleration}
+```
+
+속도 상한 계산: `duration = max(0.5, distance / 0.2m)` — 평균 이동 속도 최대 20cm/s.
+힙 할당 없음 (`QuinticPolynomial × 6`, 고정 크기 배열).
+
+### `JointSpaceTrajectory<N>` (`trajectory/joint_space_trajectory.hpp`)
+
+N-DOF 관절공간 5차 스플라인 (템플릿). N개 관절을 독립적으로 보간합니다.
+
+```cpp
+JointSpaceTrajectory<6> traj;
+JointSpaceTrajectory<6>::State start{q0, v0, {}};
+JointSpaceTrajectory<6>::State goal {qf, {}, {}};
+traj.initialize(start, goal, duration);
+auto s = traj.compute(t);  // State{positions, velocities, accelerations}
 ```
 
 ---
