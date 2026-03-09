@@ -136,8 +136,8 @@ ros2 run ur5e_tools controller_gui
 **ROS2 발행 토픽:**
 | 토픽 | 타입 | 설명 |
 |------|------|------|
-| `/custom_controller/controller_type` | `std_msgs/Int32` | 컨트롤러 전환 명령 |
-| `/custom_controller/controller_gains` | `std_msgs/Float64MultiArray` | 게인 업데이트 |
+| `/rt_controller/controller_type` | `std_msgs/Int32` | 컨트롤러 전환 명령 |
+| `/rt_controller/controller_gains` | `std_msgs/Float64MultiArray` | 게인 업데이트 |
 | `/target_joint_positions` | `std_msgs/Float64MultiArray` | 타겟 위치 |
 
 **컨트롤러별 게인 입력 형식:**

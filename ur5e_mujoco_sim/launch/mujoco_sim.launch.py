@@ -3,7 +3,7 @@ mujoco_sim.launch.py — MuJoCo 시뮬레이션 런치 파일
 =====================================================
 
 기존 실제 로봇 런치(ur_control.launch.py)와 동일한 ROS2 토픽 구조를 사용하므로
-custom_controller 노드를 수정 없이 그대로 실행합니다.
+rt_controller 노드를 수정 없이 그대로 실행합니다.
 
 시뮬레이션 모드:
   free_run  — 최대 속도로 물리 진행 (알고리즘 검증, 궤적 생성)
@@ -31,7 +31,7 @@ custom_controller 노드를 수정 없이 그대로 실행합니다.
 
 실행되는 노드:
   1. mujoco_simulator_node  — MuJoCo 물리 시뮬레이터 (UR 드라이버 역할 대체)
-  2. custom_controller       — 기존 500Hz PD 제어기 (코드 변경 없음)
+  2. rt_controller       — 기존 500Hz PD 제어기 (코드 변경 없음)
   3. monitor_data_health.py  — 데이터 헬스 모니터
 
 목표 위치 발행 (별도 터미널):
@@ -150,10 +150,10 @@ def launch_setup(context, *args, **kwargs):
     )
 
     # ── Node 2: Custom Controller ─────────────────────────────────────────────
-    custom_controller_node = Node(
+    rt_controller_node = Node(
         package='ur5e_rt_controller',
-        executable='custom_controller',
-        name='custom_controller',
+        executable='rt_controller',
+        name='rt_controller',
         output='screen',
         emulate_tty=True,
         parameters=ctrl_params,
@@ -171,7 +171,7 @@ def launch_setup(context, *args, **kwargs):
         }],
     )
 
-    return [mujoco_node, custom_controller_node, monitor_node]
+    return [mujoco_node, rt_controller_node, monitor_node]
 
 
 def generate_launch_description():

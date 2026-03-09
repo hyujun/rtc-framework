@@ -61,7 +61,7 @@ namespace ur5e_rt_controller
 ///   - `target[0..2]` = desired TCP position  [x, y, z]  in world frame (m)
 ///   - `target[3..5]` = desired TCP orientation [roll, pitch, yaw]  (rad, ZYX)
 ///
-/// ### Usage — swap into custom_controller.cpp
+/// ### Usage — swap into rt_controller.cpp
 /// @code
 ///   // 1. Include this header instead of pd_controller.hpp
 ///   // 2. Change controller_ member type to RTControllerInterface

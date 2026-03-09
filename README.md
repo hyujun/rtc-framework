@@ -52,7 +52,7 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 
 | 기능 | 설명 |
 |------|------|
-| 실시간 제어 | 500Hz PD 제어 루프 (`custom_controller`) |
+| 실시간 제어 | 500Hz PD 제어 루프 (`rt_controller`) |
 | 병렬 컴퓨팅 | CallbackGroup 기반 멀티스레드 executor (v4.2.0+) |
 | E-STOP 시스템 | 로봇/핸드 데이터 타임아웃 자동 감지 및 비상 정지 |
 | 모델 기반 제어 | Pinocchio 라이브러리 활용 — 중력 보상, CLIK, 작업공간 제어 (v4.3.0+) |
@@ -191,7 +191,7 @@ ur5e_tools         ← 독립 (Python 전용, rclpy)
 [UR5e 로봇]
     │  /joint_states (sensor_msgs/JointState)
     ▼
-[custom_controller]  ←──  /target_joint_positions (std_msgs/Float64MultiArray)
+[rt_controller]  ←──  /target_joint_positions (std_msgs/Float64MultiArray)
     │  PDController::compute_command()
     │  DataLogger::log_control_data()
     │  E-STOP 감시 (check_timeouts @ 50Hz)
@@ -207,7 +207,7 @@ ur5e_tools         ← 독립 (Python 전용, rclpy)
 [hand_udp_receiver_node]
     │  /hand/joint_states (std_msgs/Float64MultiArray)
     ▼
-[custom_controller]  ──►  E-STOP 핸드 감시
+[rt_controller]  ──►  E-STOP 핸드 감시
 
 [hand_udp_sender_node]
     │  /hand/command 구독
@@ -824,7 +824,7 @@ ros2 launch ur5e_rt_controller ur_control.launch.py robot_ip:=192.168.1.10
 
 런치 파일이 시작하는 노드:
 1. `ur_robot_driver` - UR5e 드라이버 (Core 0-1 taskset, 3초 후 자동 적용)
-2. `custom_controller` - 500Hz PD 제어 노드 + E-STOP + 병렬 컴퓨팅
+2. `rt_controller` - 500Hz PD 제어 노드 + E-STOP + 병렬 컴퓨팅
 3. `data_health_monitor` - 데이터 헬스 모니터 (10Hz)
 
 런치 파일이 자동 설정하는 환경변수:
@@ -878,9 +878,9 @@ ros2 run ur5e_tools controller_gui.py
 
 GUI 기능:
 1. **컨트롤러 선택**: P / PD / Pinocchio / CLIK / OSC 중 라디오 버튼으로 선택
-2. **컨트롤러 전환**: "Switch Controller" 클릭 → `/custom_controller/controller_type` 토픽 발행
+2. **컨트롤러 전환**: "Switch Controller" 클릭 → `/rt_controller/controller_type` 토픽 발행
 3. **게인 설정**: 컨트롤러별 파라미터 입력 필드(게인값) + 체크박스(bool 플래그)
-4. **게인 적용**: "Apply Gains" 클릭 → `/custom_controller/controller_gains` 토픽 발행
+4. **게인 적용**: "Apply Gains" 클릭 → `/rt_controller/controller_gains` 토픽 발행
 5. **타겟 설정**: 관절 각도(관절 공간) 또는 TCP 위치(Cartesian 공간) 직접 입력
 6. **현재 위치 표시**: `/joint_states` 구독 → 5Hz 주기로 실시간 갱신
 7. **Copy Current → Target**: 현재 관절 위치를 타겟 필드에 복사
@@ -990,15 +990,15 @@ monitoring:
 | `/target_joint_positions` | `std_msgs/Float64MultiArray` | 외부 노드 / GUI | 목표 관절 위치 (6개 값, rad) |
 | `/hand/joint_states` | `std_msgs/Float64MultiArray` | `hand_udp_receiver_node` | 핸드 모터 위치 (**11개** 값) |
 | `/hand/command` | `std_msgs/Float64MultiArray` | 외부 노드 | 핸드 명령 (11개 값, 정규화 0.0–1.0) |
-| `/custom_controller/controller_type` | `std_msgs/Int32` | GUI | 컨트롤러 전환 (0=P, 1=PD, 2=Pinocchio, 3=CLIK, 4=OSC) |
-| `/custom_controller/controller_gains` | `std_msgs/Float64MultiArray` | GUI | 컨트롤러별 게인 동적 업데이트 |
+| `/rt_controller/controller_type` | `std_msgs/Int32` | GUI | 컨트롤러 전환 (0=P, 1=PD, 2=Pinocchio, 3=CLIK, 4=OSC) |
+| `/rt_controller/controller_gains` | `std_msgs/Float64MultiArray` | GUI | 컨트롤러별 게인 동적 업데이트 |
 
 ### 발행 토픽
 
 | 토픽 | 타입 | 발행자 | 설명 |
 |------|------|--------|------|
-| `/forward_position_controller/commands` | `std_msgs/Float64MultiArray` | `custom_controller` | UR 위치 명령 (6개 값, rad) |
-| `/system/estop_status` | `std_msgs/Bool` | `custom_controller` | E-STOP 상태 (true=활성) |
+| `/forward_position_controller/commands` | `std_msgs/Float64MultiArray` | `rt_controller` | UR 위치 명령 (6개 값, rad) |
+| `/system/estop_status` | `std_msgs/Bool` | `rt_controller` | E-STOP 상태 (true=활성) |
 | `/joint_states` | `sensor_msgs/JointState` | `mujoco_simulator_node` | MuJoCo 시뮬 관절 위치/속도 |
 | `/hand/joint_states` | `std_msgs/Float64MultiArray` | `mujoco_simulator_node` | MuJoCo 핸드 상태 — **11개** 모터 위치 (100Hz) |
 | `/sim/status` | `std_msgs/Float64MultiArray` | `mujoco_simulator_node` | `[step_count, sim_time_sec, rtf]` (1Hz) |
@@ -1219,7 +1219,7 @@ ros2 control list_controllers -v
 ros2 run ur5e_tools monitor_data_health.py
 
 # 스레드 설정 확인 (v4.2.0+)
-PID=$(pgrep -f custom_controller)
+PID=$(pgrep -f rt_controller)
 ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 # 출력 (6코어 기준):
 #   PID   TID CLS RTPRIO PSR COMMAND

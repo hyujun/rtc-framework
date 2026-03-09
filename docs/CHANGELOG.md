@@ -174,8 +174,8 @@
 
 | 토픽 | 타입 | 설명 |
 |------|------|------|
-| `/custom_controller/controller_type` | `std_msgs/Int32` | 0=P, 1=PD, 2=Pinocchio, 3=CLIK, 4=OSC |
-| `/custom_controller/controller_gains` | `std_msgs/Float64MultiArray` | 컨트롤러별 게인 동적 업데이트 |
+| `/rt_controller/controller_type` | `std_msgs/Int32` | 0=P, 1=PD, 2=Pinocchio, 3=CLIK, 4=OSC |
+| `/rt_controller/controller_gains` | `std_msgs/Float64MultiArray` | 컨트롤러별 게인 동적 업데이트 |
 
 #### 게인 페이로드 규약
 
@@ -204,9 +204,9 @@ ros2 run ur5e_tools controller_gui.py
 
 **주요 기능:**
 - **컨트롤러 선택**: P / PD / Pinocchio / CLIK / OSC 라디오 버튼
-- **Switch Controller**: `/custom_controller/controller_type` Int32 퍼블리시 → `custom_controller`가 런타임 교체
+- **Switch Controller**: `/rt_controller/controller_type` Int32 퍼블리시 → `custom_controller`가 런타임 교체
 - **게인 패널**: 컨트롤러 유형 변경 시 자동 재빌드 (게인 값 = `Entry`, bool 플래그 = `Checkbutton`)
-- **Apply Gains**: `/custom_controller/controller_gains` Float64MultiArray 퍼블리시
+- **Apply Gains**: `/rt_controller/controller_gains` Float64MultiArray 퍼블리시
 - **위치 테이블**: Axis / Target(직접 입력) / Current(실시간 표시) 3열 구성, 5Hz 갱신
 - **Copy Current → Target**: `/joint_states` 에서 읽은 현재 위치를 타겟 필드에 복사
 - **Send Command**: `/target_joint_positions` 퍼블리시
@@ -752,7 +752,7 @@ ROS2 노드 래퍼:
 
 `mujoco_simulator` 노드 파라미터 + `custom_controller` E-STOP 오버라이드:
 ```yaml
-custom_controller:
+rt_controller:
   ros__parameters:
     enable_estop: false       # free_run 모드에서 오경보 방지
     robot_timeout_ms: 10000.0

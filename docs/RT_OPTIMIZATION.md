@@ -459,8 +459,8 @@ int main(int argc, char** argv) {
 ### 1. 스레드 설정 확인
 
 ```bash
-# custom_controller 프로세스 찾기
-PID=$(pgrep -f custom_controller)
+# rt_controller 프로세스 찾기
+PID=$(pgrep -f rt_controller)
 
 # 스레드 목록 + 스케줄러 정책 + CPU 코어
 ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
@@ -469,7 +469,7 @@ ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 **출력 예시**:
 ```
   PID   TID CLS RTPRIO PSR COMMAND
- 1234  1234  TS      -   0 custom_controller  (메인 스레드)
+ 1234  1234  TS      -   0 rt_controller  (메인 스레드)
  1234  1235  FF     90   2 rt_control         ← Core 2, FIFO 90
  1234  1236  FF     70   3 sensor_io          ← Core 3, FIFO 70
  1234  1237  TS      -   4 logger             ← Core 4, OTHER

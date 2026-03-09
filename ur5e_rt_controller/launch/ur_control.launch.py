@@ -117,11 +117,11 @@ def generate_launch_description():
         ]
     )
 
-    # ── Custom controller node ─────────────────────────────────────────────────
-    custom_controller_node = Node(
+    # ── RT controller node ─────────────────────────────────────────────────────
+    rt_controller_node = Node(
         package='ur5e_rt_controller',
-        executable='custom_controller',
-        name='custom_controller',
+        executable='rt_controller',
+        name='rt_controller',
         output='screen',
         parameters=[ur_control_config, {'log_dir': log_dir}],
         emulate_tty=True,
@@ -147,6 +147,6 @@ def generate_launch_description():
         set_cyclone_uri,
         ur_driver_launch,
         pin_ur_driver,
-        custom_controller_node,
+        rt_controller_node,
         monitor_node,
     ])
