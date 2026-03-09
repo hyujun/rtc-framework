@@ -275,10 +275,10 @@ cat /proc/interrupts | grep -E "(CPU0|CPU1)"  # 대부분의 IRQ가 Core 0-1에 
 
 ## 코드 구조
 
-### CallbackGroup 생성 (`custom_controller.cpp`)
+### CallbackGroup 생성 (`rt_controller_node.cpp`)
 
 ```cpp
-void CustomController::CreateCallbackGroups() {
+void RtControllerNode::CreateCallbackGroups() {
   cb_group_rt_ = create_callback_group(
       rclcpp::CallbackGroupType::MutuallyExclusive);
   cb_group_sensor_ = create_callback_group(
@@ -295,7 +295,7 @@ void CustomController::CreateCallbackGroups() {
 ### 타이머 할당
 
 ```cpp
-void CustomController::CreateTimers() {
+void RtControllerNode::CreateTimers() {
   const auto control_period = std::chrono::microseconds(
       static_cast<int>(1'000'000.0 / control_rate_));
   
@@ -317,7 +317,7 @@ void CustomController::CreateTimers() {
 ### 구독자 할당
 
 ```cpp
-void CustomController::CreateSubscriptions() {
+void RtControllerNode::CreateSubscriptions() {
   // SubscriptionOptions에 그룹 지정
   auto sub_options = rclcpp::SubscriptionOptions();
   sub_options.callback_group = cb_group_sensor_;
@@ -396,18 +396,18 @@ inline bool ApplyThreadConfig(const ThreadConfig& cfg) noexcept {
 }
 ```
 
-### main() 함수 (`custom_controller.cpp`)
+### main() 함수 (`rt_controller_main.cpp`)
 
 ```cpp
 int main(int argc, char** argv) {
-  rclcpp::init(argc, argv);
-
-  // 1. 메모리 잠금 (페이지 폴트 방지)
+  // 1. 메모리 잠금 (페이지 폴트 방지) — rclcpp::init 보다 먼저 호출
   if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
     fprintf(stderr, "[WARN] mlockall failed\n");
   }
 
-  auto node = std::make_shared<CustomController>();
+  rclcpp::init(argc, argv);
+
+  auto node = std::make_shared<RtControllerNode>();
 
   // 2. Executor 생성 (4개)
   rclcpp::executors::SingleThreadedExecutor rt_executor;

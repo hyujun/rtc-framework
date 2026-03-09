@@ -20,8 +20,11 @@ ur5e_rt_controller/
 │       ├── trajectory_utils.hpp             ← QuinticPolynomial 스칼라 유틸리티
 │       ├── task_space_trajectory.hpp        ← SE(3) 스플라인 (CLIK/OSC 사용)
 │       └── joint_space_trajectory.hpp       ← 관절공간 N-DOF 스플라인
+├── include/ur5e_rt_controller/
+│   └── rt_controller_node.hpp               ← RtControllerNode 클래스 선언 (v5.5.0)
 ├── src/
-│   ├── custom_controller.cpp                ← 메인 500Hz 노드 (런타임 전환, v5.3.0)
+│   ├── rt_controller_node.cpp               ← Controller Registry + 노드 구현 (v5.5.0)
+│   ├── rt_controller_main.cpp               ← main() — executor/RT 스레드 (v5.5.0)
 │   └── pd_controller.cpp                    ← PD 제어기 소스
 ├── config/
 │   ├── ur5e_rt_controller.yaml              ← 제어기 파라미터
@@ -44,7 +47,7 @@ ur5e_rt_controller/
 ### 전략 패턴 + 멀티스레드 실행기
 
 ```
-CustomController (ROS2 노드)
+RtControllerNode (ROS2 노드)
     │
     ├── rt_executor (Core 2, FIFO/90)     ← ControlLoop() 500Hz, CheckTimeouts() 50Hz
     ├── sensor_executor (Core 3, FIFO/70) ← /joint_states, /target_joint_positions, /hand/joint_states [전용]
@@ -335,7 +338,7 @@ my_controller:
   kp: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
 ```
 
-**4. Registry에 등록** (`src/custom_controller.cpp` → `MakeControllerEntries()`)
+**4. Registry에 등록** (`src/rt_controller_node.cpp` → `MakeControllerEntries()`)
 
 ```cpp
 {"my_controller", [](const std::string &) {

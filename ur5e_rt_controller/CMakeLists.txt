@@ -27,7 +27,8 @@ find_package(yaml-cpp REQUIRED)
 
 # ── custom_controller ──────────────────────────────────────────────────────────
 add_executable(custom_controller
-  src/custom_controller.cpp
+  src/rt_controller_node.cpp
+  src/rt_controller_main.cpp
   src/controllers/pd_controller.cpp
   src/controllers/p_controller.cpp
   src/controllers/pinocchio_controller.cpp

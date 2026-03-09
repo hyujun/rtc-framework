@@ -112,7 +112,10 @@ ur5e-rt-controller/
 │   │       ├── pinocchio_controller.hpp   # Model-based PD + gravity/Coriolis
 │   │       ├── clik_controller.hpp        # Closed-Loop IK (3-DOF Cartesian)
 │   │       └── operational_space_controller.hpp # Full 6-DOF Cartesian PD
-│   ├── src/custom_controller.cpp          # Main 500Hz node — 4 executors, 4 threads
+│   ├── include/ur5e_rt_controller/
+│   │   └── rt_controller_node.hpp         # RtControllerNode class declaration
+│   ├── src/rt_controller_node.cpp         # Controller registry + RtControllerNode impl
+│   ├── src/rt_controller_main.cpp         # main() — mlockall, executors, RT threads
 │   ├── config/
 │   │   ├── ur5e_rt_controller.yaml        # log_dir: ~/ros2_ws/ur5e_ws/logging_data
 │   │   └── cyclone_dds.xml                # CycloneDDS thread affinity (Core 0-1)
@@ -210,9 +213,14 @@ All Eigen buffers pre-allocated in constructor — zero heap allocation on the 5
 
 **`OperationalSpaceController`** target convention: `[x, y, z, roll, pitch, yaw]` — TCP position (m) + orientation (rad, ZYX Euler). Uses Pinocchio `log3()` for SO(3) orientation error.
 
-### Main Node: `CustomController` (`src/custom_controller.cpp`)
+### Main Node: `RtControllerNode`
 
-The entire executable lives in this one file. It creates **4 `SingleThreadedExecutor`s**, each running in a dedicated `std::thread` with RT scheduling applied via `ApplyThreadConfig()`:
+Split across three files (v5.5.0+):
+- `include/ur5e_rt_controller/rt_controller_node.hpp` — class declaration
+- `src/rt_controller_node.cpp` — controller registry (`MakeControllerEntries()`) + all member function implementations
+- `src/rt_controller_main.cpp` — `main()`: `mlockall`, executor creation, RT thread setup
+
+Creates **4 `SingleThreadedExecutor`s**, each running in a dedicated `std::thread` with RT scheduling applied via `ApplyThreadConfig()`:
 
 | Executor / Thread | Callback Group | CPU Core | Scheduler | Priority | What runs here |
 |---|---|---|---|---|---|
@@ -223,7 +231,7 @@ The entire executable lives in this one file. It creates **4 `SingleThreadedExec
 
 `mlockall(MCL_CURRENT | MCL_FUTURE)` is called at startup to prevent page faults. Shared state between threads is protected by three separate mutexes (`state_mutex_`, `target_mutex_`, `hand_mutex_`).
 
-**Key methods in `CustomController`:**
+**Key methods in `RtControllerNode`:**
 - `DeclareAndLoadParameters()`: loads `control_rate`, `kp`, `kd`, `enable_estop`, `robot_timeout_ms`, `hand_timeout_ms`, `enable_logging`
 - `CreateCallbackGroups()`: creates 4 `MutuallyExclusive` groups
 - `JointStateCallback()`: stores positions/velocities under `state_mutex_`; updates `last_robot_update_` timestamp
@@ -524,7 +532,7 @@ Synthetic hand data generator for development/testing. Sends sinusoidal or stati
 
 ## Adding a Custom Controller
 
-v5.4.0부터 **Controller Registry** 패턴을 사용합니다. 새 컨트롤러 추가 시 수정이 필요한 곳은 **`custom_controller.cpp` 한 곳뿐**입니다.
+v5.4.0부터 **Controller Registry** 패턴을 사용합니다. 새 컨트롤러 추가 시 수정이 필요한 곳은 **`src/rt_controller_node.cpp` 한 곳뿐**입니다.
 
 자세한 단계별 가이드: **`docs/ADDING_CONTROLLER.md`**
 
@@ -559,7 +567,7 @@ my_controller:
   kp: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
 ```
 
-**4. 레지스트리 등록** — `src/custom_controller.cpp` 의 `MakeControllerEntries()` 에 한 줄 추가
+**4. 레지스트리 등록** — `src/rt_controller_node.cpp` 의 `MakeControllerEntries()` 에 한 줄 추가
 
 ```cpp
 #include "ur5e_rt_controller/controllers/my_controller.hpp"
@@ -574,7 +582,7 @@ No CMakeLists changes needed for header-only controllers. `PinocchioController`,
 
 ## Code Conventions
 
-- **Include order**: project headers first, then ROS2/third-party, then C++ stdlib (see `custom_controller.cpp` line 1 comment)
+- **Include order**: project headers first, then ROS2/third-party, then C++ stdlib (see `rt_controller_node.cpp` line 1 comment)
 - **Namespace**: `ur5e_rt_controller` (aliased as `urtc` in `.cpp` files)
 - **Naming**: Google C++ Style — `snake_case` members with trailing `_`, getters match member name without trailing `_`
 - **`noexcept` on all RT paths**: exceptions in 500Hz callbacks terminate the process; this is intentional and required
@@ -650,6 +658,7 @@ For detailed RT tuning (CPU isolation, kernel parameters, DDS configuration, IRQ
 
 | Version | Key Changes |
 |---|---|
+| v5.5.0 | Source split: `custom_controller.cpp` → `rt_controller_node.hpp` (class decl) + `rt_controller_node.cpp` (registry + impl) + `rt_controller_main.cpp` (main). Class renamed `CustomController` → `RtControllerNode`. |
 | v5.4.0 | Controller Registry pattern: `MakeControllerEntries()` factory list, `LoadConfig()` + `UpdateGainsFromMsg()` hooks on `RTControllerInterface`, per-controller YAML loading loop replaces 80-line boilerplate, `switch`/`dynamic_cast` gains handler replaced by single virtual dispatch. New guide: `docs/ADDING_CONTROLLER.md` |
 | v5.3.0 | Runtime controller switching (P/PD/Pinocchio/CLIK/OSC via `/custom_controller/controller_type` topic), `controller_gains` topic for dynamic gain updates, `controller_gui.py` tkinter GUI, MuJoCo `package://` URI support (`Ros2ResourceProvider`), quintic trajectory subsystem (`QuinticPolynomial`, `TaskSpaceTrajectory`, `JointSpaceTrajectory<N>`) |
 | v5.2.2 | `ur5e_description` package (MJCF/URDF/mesh), dynamic log path (`~/ros2_ws/ur5e_ws/logging_data`), `build.sh`, `rmw_cyclonedds_cpp`, source split (`mujoco_sim_loop.cpp`, `mujoco_viewer.cpp`), `solver_niter` island fix, ROS2 Jazzy |

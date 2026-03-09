@@ -5,6 +5,24 @@
 
 ---
 
+## [5.5.0] - 2026-03-09
+
+### 변경 (Changed) — 소스 파일 분리 및 클래스명 변경
+
+`custom_controller.cpp` 단일 파일을 3개 파일로 분리했습니다.
+
+| 파일 | 역할 |
+|---|---|
+| `include/ur5e_rt_controller/rt_controller_node.hpp` | `RtControllerNode` 클래스 선언 (신규) |
+| `src/rt_controller_node.cpp` | Controller Registry(`MakeControllerEntries()`) + 모든 멤버 함수 구현 |
+| `src/rt_controller_main.cpp` | `main()` — `mlockall`, executor 생성, RT 스레드 설정 |
+
+- 클래스명 변경: `CustomController` → `RtControllerNode`
+- ROS2 노드 이름(`custom_controller`), executable 이름, 토픽명은 변경 없음
+- Controller Registry 위치: `src/custom_controller.cpp` → `src/rt_controller_node.cpp`
+
+---
+
 ## [5.4.0] - 2026-03-09
 
 ### 변경 (Changed) — Controller Registry 패턴 도입

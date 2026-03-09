@@ -119,8 +119,11 @@ ur5e-rt-controller/
 │   │       ├── trajectory_utils.hpp      # QuinticPolynomial 스칼라 유틸
 │   │       ├── task_space_trajectory.hpp # SE(3) 5차 스플라인 (CLIK/OSC 사용)
 │   │       └── joint_space_trajectory.hpp# 관절공간 5차 스플라인
+│   ├── include/ur5e_rt_controller/
+│   │   └── rt_controller_node.hpp        # RtControllerNode 클래스 선언 (v5.5.0)
 │   ├── src/
-│   │   ├── custom_controller.cpp         # 메인 500Hz 노드 (Controller Registry, v5.4.0)
+│   │   ├── rt_controller_node.cpp        # Controller Registry + 노드 구현 (v5.5.0)
+│   │   ├── rt_controller_main.cpp        # main() — executor/RT 스레드 (v5.5.0)
 │   │   └── controllers/                  # 각 컨트롤러 구현 (.cpp)
 │   │       ├── p_controller.cpp
 │   │       ├── pd_controller.cpp
@@ -206,7 +209,7 @@ ur5e_tools         ← 독립 (Python 전용, rclpy)
 
 ### 주요 클래스
 
-#### `CustomController` (`src/custom_controller.cpp`)
+#### `RtControllerNode` (`src/rt_controller_node.hpp/cpp`)
 500Hz 제어 루프를 실행하는 메인 ROS2 노드. v4.2.0부터 4개 CallbackGroup으로 분리된 멀티스레드 executor 지원.
 
 | 멤버 | 타입 | 역할 |
@@ -415,7 +418,7 @@ J^#         = J^T (J J^T + λ²I₆)^{-1}
 q_cmd       = q + clamp(J^# * task_vel, ±v_max) * dt
 ```
 
-### 사용 방법 (custom_controller.cpp 교체)
+### 사용 방법 (rt_controller_node.cpp 등록)
 
 ```cpp
 // 1. 헤더 교체 (기존 pd_controller.hpp 대신)
@@ -1200,7 +1203,7 @@ touch src/controllers/my_controller.cpp
 echo "my_controller:\n  kp: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]" \
   > config/controllers/my_controller.yaml
 
-# 4. custom_controller.cpp에 한 줄 추가
+# 4. rt_controller_node.cpp에 한 줄 추가
 # (MakeControllerEntries() 리스트에 아래 추가)
 # {"my_controller", [](const std::string &) { return std::make_unique<urtc::MyController>(); }},
 ```
