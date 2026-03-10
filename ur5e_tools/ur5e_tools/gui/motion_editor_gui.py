@@ -203,6 +203,7 @@ class MotionEditor(QMainWindow):
             f"[{q_deg[0]:.2f}, {q_deg[1]:.2f}, {q_deg[2]:.2f}, "
             f"{q_deg[3]:.2f}, {q_deg[4]:.2f}, {q_deg[5]:.2f}]°"
         )
+        self.pose_table.clearSelection()
         self.status_label.setText(f"✅ Saved to Pose {row+1}")
 
     def load_pose(self):
