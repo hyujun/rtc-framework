@@ -203,21 +203,24 @@ struct ControllerOutput { std::array<double,6> robot_commands{}; std::array<doub
 |---|---|---|---|
 | `PDController` | `controllers/pd_controller.hpp` | Joint-space PD | **Active default.** E-STOP drives to `kSafePosition`. |
 | `PController` | `controllers/p_controller.hpp` | Joint-space P | Proportional-only, no E-STOP. |
-| `PinocchioController` | `controllers/pinocchio_controller.hpp` | Joint-space PD + dynamics | Gravity + optional Coriolis compensation via Pinocchio RNEA. |
-| `ClikController` | `controllers/clik_controller.hpp` | Cartesian 3-DOF | Damped Jacobian pseudoinverse + null-space joint centering. |
-| `OperationalSpaceController` | `controllers/operational_space_controller.hpp` | Cartesian 6-DOF | Full pose (position + SO(3) orientation) control. |
+| `PinocchioController` | `controllers/pinocchio_controller.hpp` | Joint-space PD + dynamics | Gravity + optional Coriolis compensation via Pinocchio RNEA. `JointSpaceTrajectory<6>` for smooth motion (v5.6.1+). |
+| `ClikController` | `controllers/clik_controller.hpp` | Cartesian 3-DOF | Damped Jacobian pseudoinverse + null-space joint centering. `TaskSpaceTrajectory` (SE3 quintic). |
+| `OperationalSpaceController` | `controllers/operational_space_controller.hpp` | Cartesian 6-DOF | Full pose (position + SO(3) orientation) control. `TaskSpaceTrajectory` (SE3 quintic, v5.6.1+). |
 
 **`PDController`** on E-STOP drives toward `kSafePosition = [0, -1.57, 1.57, -1.57, -1.57, 0]` rad. Output clamped to `kMaxJointVelocity = 2.0 rad/s`.
 
-**`PinocchioController`** control law:
+**`PinocchioController`** control law (v5.6.1+: with `JointSpaceTrajectory<6>`):
 ```
-command[i] = Kp * e[i] + Kd * ė[i] + g(q)[i] [+ C(q,v)·v[i]]
+command[i] = traj.velocity[i] + Kp * (traj.position[i] - q[i]) + Kd * ė[i] + g(q)[i] [+ C(q,v)·v[i]]
 ```
 All Eigen buffers pre-allocated in constructor — zero heap allocation on the 500 Hz path.
+`UpdateGainsFromMsg` layout: `[kp×6, kd×6, gravity(0/1), coriolis(0/1), trajectory_speed]` (15 values).
 
-**`ClikController`** target convention (via `/target_joint_positions`): `[x, y, z, null_q3, null_q4, null_q5]` — first 3 are TCP position in metres, last 3 are null-space reference joints 3–5 in radians.
+**`ClikController`** target convention (via `/target_joint_positions`): `[x, y, z, null_q3, null_q4, null_q5]` — first 3 are TCP position in metres, last 3 are null-space reference joints 3–5 in radians. Uses `TaskSpaceTrajectory` (SE3 quintic). `trajectory_angular_speed` field removed (v5.6.1).
+`UpdateGainsFromMsg` layout: `[kp×3, damping, null_kp, enable_null_space(0/1)]` (6 values).
 
-**`OperationalSpaceController`** target convention: `[x, y, z, roll, pitch, yaw]` — TCP position (m) + orientation (rad, ZYX Euler). Uses Pinocchio `log3()` for SO(3) orientation error.
+**`OperationalSpaceController`** target convention: `[x, y, z, roll, pitch, yaw]` — TCP position (m) + orientation (rad, ZYX Euler). Uses Pinocchio `log3()` for SO(3) orientation error. Uses `TaskSpaceTrajectory` (SE3 quintic, v5.6.1+). RPY pre-computed to `goal_pose_` (SE3) in `SetRobotTarget()` (sensor thread).
+`UpdateGainsFromMsg` layout: `[kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, gravity(0/1), traj_speed, traj_ang_speed]` (16 values).
 
 ### Main Node: `RtControllerNode`
 
@@ -576,7 +579,9 @@ Launches: `hand_udp_receiver_node`, `hand_udp_sender_node`.
 
 ### `ur5e_tools/gui/motion_editor_gui.py`
 
-Qt5 50-pose motion editor GUI. Subscribes to `/joint_states` (current angles), publishes to `/target_joint_positions` (execute poses). Supports JSON save/load and sequential playback with 2s inter-pose delay. Requires `PyQt5` system package.
+Qt5 50-pose motion editor GUI. Subscribes to `/joint_states` (current angles), publishes to `/target_joint_positions` (execute poses). Supports JSON save/load and sequential playback with adjustable inter-pose hold time (default 2.0s, set via "Pose hold time (s)" spinbox in the UI). Requires `PyQt5` system package.
+
+**Note (v5.6.1)**: Publishes to `/target_joint_positions` (was incorrectly `/forward_position_controller/commands` before v5.6.1).
 
 ### `ur5e_tools/monitoring/monitor_data_health.py`
 
@@ -725,6 +730,7 @@ For detailed RT tuning (CPU isolation, kernel parameters, DDS configuration, IRQ
 
 | Version | Key Changes |
 |---|---|
+| v5.6.1 | Trajectory improvements: `PinocchioController` + `JointSpaceTrajectory<6>` (`trajectory_speed`); `OperationalSpaceController` + `TaskSpaceTrajectory` SE3 quintic (`trajectory_speed`, `trajectory_angular_speed`); `ClikController` `trajectory_angular_speed` dead-code removed. GUI: `controller_gui.py` GAIN_DEFS updated (Pinocchio 15, OSC 16); `motion_editor_gui.py` topic fix + playback interval spinbox. |
 | v5.6.0 | MuJoCo viewer 전면 확장: `src/viewer/` 디렉토리 신설 (`viewer_state.hpp`, `viewer_loop.cpp`, `viewer_callbacks.cpp`, `viewer_overlays.cpp`). 신규 키: `→`(단진), `TAB`(카메라), `J/U/E/W/L/A/X`(시각화), `0-5`(geomgroup), `F5-F8`(렌더링), `F9`(sensor), `F10`(modelinfo), `P`(screenshot). 마우스: double-click(body선택), Ctrl+Drag(force/torque), Middle drag(zoom), Shift+drag(수평). Help 2페이지 분할. `StepOnce()` / `GetSimMode()` API 추가. |
 | v5.5.1 | 플롯 저장 경로 변경: `~/ur_plots` → `logging_data/ur_plot` |
 | v5.5.0 | Script enhancements: `build.sh` and `install.sh` parameter parsing & advanced options (`-c`, `-p`, `--skip-deps`, etc.). Source split: `rt_controller.cpp` → `rt_controller_node.hpp` + `.cpp` + `main.cpp`. Renamed `CustomController` → `RtControllerNode`. Fast modular math for `SpscLogBuffer`. |

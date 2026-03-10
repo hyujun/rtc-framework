@@ -77,8 +77,7 @@ public:
     double damping{0.01};            ///< Damping factor λ for J^#  (singularity robustness)
     double null_kp{0.5};             ///< Null-space joint-centering gain [1/s]
     bool   enable_null_space{true};  ///< Enable null-space secondary task
-    double trajectory_speed{0.1};
-    double trajectory_angular_speed{0.5};
+    double trajectory_speed{0.1};  ///< Max translational speed for trajectory [m/s]
   };
 
   /// @param urdf_path  Absolute path to the UR5e URDF file.

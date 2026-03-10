@@ -19,6 +19,8 @@
 
 #include <Eigen/Core>
 
+#include "ur5e_rt_controller/trajectory/joint_space_trajectory.hpp"
+
 #include <array>
 #include <atomic>
 #include <span>
@@ -74,6 +76,7 @@ public:
     std::array<double, 6> kd{{0.5, 0.5, 0.5, 0.5, 0.5, 0.5}};
     bool enable_gravity_compensation{true};     ///< Add g(q) to commands
     bool enable_coriolis_compensation{false};   ///< Add C(q,v)·v to commands
+    double trajectory_speed{1.0};              ///< Heuristic max speed for trajectory (rad/s)
   };
 
   /// Construct and load the robot model from a URDF file.
@@ -99,7 +102,7 @@ public:
   void SetHandEstop(bool active) noexcept override;
 
   // ── Controller registry hooks ────────────────────────────────────────────
-  // gains layout: [kp×6, kd×6, enable_gravity(0/1), enable_coriolis(0/1)]
+  // gains layout: [kp×6, kd×6, enable_gravity(0/1), enable_coriolis(0/1), trajectory_speed]
   void LoadConfig(const YAML::Node & cfg) override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
 
@@ -133,6 +136,10 @@ private:
   std::array<double, kNumRobotJoints> robot_target_{};
   std::array<double, kNumHandJoints> hand_target_{};
   std::array<double, kNumRobotJoints> prev_error_{};
+
+  bool new_target_{false};
+  trajectory::JointSpaceTrajectory<kNumRobotJoints> trajectory_;
+  double trajectory_time_{0.0};
 
   // Cached diagnostic outputs
   std::array<double, kNumRobotJoints> gravity_torques_{};

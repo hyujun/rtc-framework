@@ -1,6 +1,6 @@
 # ur5e_tools
 
-> **Note:** This package is part of the UR5e RT Controller workspace (v5.3.0). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
+> **Note:** This package is part of the UR5e RT Controller workspace (v5.6.1). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
 UR5e RT Controller 스택의 **Python 개발 유틸리티 패키지**입니다. 궤적 시각화, 데이터 건강 모니터링, 모션 편집 GUI, UDP 손 데이터 생성기, 컨트롤러 GUI를 포함합니다.
 
 ## 개요
@@ -98,7 +98,7 @@ ros2 run ur5e_tools motion_editor_gui
 - `/target_joint_positions` 퍼블리시 → 포즈 실행
 - 최대 50개 포즈 저장/편집
 - JSON 파일로 저장/불러오기
-- 순차 재생 (포즈 간 2초 딜레이)
+- 순차 재생 + "Pose hold time (s)" 스핀박스로 포즈 간 대기 시간 런타임 조정 (기본 2.0s, 범위 0.1–30.0s)
 
 **전제 조건:**
 ```bash
@@ -141,13 +141,13 @@ ros2 run ur5e_tools controller_gui
 | `/target_joint_positions` | `std_msgs/Float64MultiArray` | 타겟 위치 |
 
 **컨트롤러별 게인 입력 형식:**
-| 컨트롤러 | 게인 |
-|----------|------|
-| P (0) | kp |
-| PD (1) | kp, kd |
-| Pinocchio (2) | kp, kd, gravity_comp, coriolis_comp |
-| CLIK (3) | kp, damping, null_kp, enable_null_space |
-| OSC (4) | kp_pos, kd_pos, kp_rot, kd_rot, damping, gravity_comp |
+| 컨트롤러 | 게인 | 총 개수 |
+|----------|------|---------|
+| P (0) | kp×6 | 6 |
+| PD (1) | kp×6, kd×6 | 12 |
+| Pinocchio (2) | kp×6, kd×6, gravity_comp, coriolis_comp, traj_speed | 15 |
+| CLIK (3) | kp×3, damping, null_kp, enable_null_space | 6 |
+| OSC (4) | kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, gravity_comp, traj_speed, traj_ang_speed | 16 |
 
 ---
 

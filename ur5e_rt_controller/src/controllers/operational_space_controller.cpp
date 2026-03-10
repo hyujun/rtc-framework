@@ -52,22 +52,35 @@ ControllerOutput OperationalSpaceController::Compute(
   // ── Step 3: current task-space velocity  tcp_vel = J * dq ────────────────
   tcp_vel_.noalias() = J_full_ * v_;
 
-  // ── Step 4: 6D pose error ─────────────────────────────────────────────────
+  const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
   const pinocchio::SE3 & tcp = data_.oMi[end_id_];
 
-  // 3D position error
-  const Eigen::Vector3d pos_err =
-    Eigen::Vector3d(pose_target_[0], pose_target_[1], pose_target_[2]) -
-    tcp.translation();
-  tcp_position_ = {tcp.translation()[0],
-    tcp.translation()[1],
-    tcp.translation()[2]};
+  // ── Step 3.5: initialise trajectory on new target (after FK) ─────────────
+  if (new_target_) {
+    const double trans_dist =
+      (goal_pose_.translation() - tcp.translation()).norm();
+    const double ang_dist =
+      pinocchio::log3(goal_pose_.rotation() * tcp.rotation().transpose()).norm();
+    const double duration = std::max(
+      0.01,
+      std::max(trans_dist / gains_.trajectory_speed,
+               ang_dist  / gains_.trajectory_angular_speed));
 
-  // 3D orientation error via SO(3) logarithm:
-  //   err_rot = log₃(R_des * R_current^T)
-  // This gives the axis-angle vector (in world frame) that rotates the
-  // current orientation toward the desired one.
-  const Eigen::Matrix3d R_err = R_desired_ * tcp.rotation().transpose();
+    trajectory_.initialize(tcp, pinocchio::Motion::Zero(), goal_pose_, pinocchio::Motion::Zero(), duration);
+    trajectory_time_ = 0.0;
+    new_target_ = false;
+  }
+
+  const auto traj_state = trajectory_.compute(trajectory_time_);
+  trajectory_time_ += dt;
+
+  // ── Step 4: 6D pose error w.r.t. trajectory setpoint ─────────────────────
+  // 3D position error
+  const Eigen::Vector3d pos_err = traj_state.pose.translation() - tcp.translation();
+  tcp_position_ = {tcp.translation()[0], tcp.translation()[1], tcp.translation()[2]};
+
+  // 3D orientation error via SO(3) logarithm
+  const Eigen::Matrix3d R_err = traj_state.pose.rotation() * tcp.rotation().transpose();
   const Eigen::Vector3d rot_err = pinocchio::log3(R_err);
 
   task_err_.head<3>() = pos_err;
@@ -78,15 +91,15 @@ ControllerOutput OperationalSpaceController::Compute(
     pose_error_cache_[static_cast<std::size_t>(i)] = task_err_[i];
   }
 
-  // ── Step 5: desired task-space velocity (PD law in Cartesian space) ───────
+  // ── Step 5: desired task-space velocity with feedforward ──────────────────
   Eigen::Vector3d kp_p(gains_.kp_pos[0], gains_.kp_pos[1], gains_.kp_pos[2]);
   Eigen::Vector3d kd_p(gains_.kd_pos[0], gains_.kd_pos[1], gains_.kd_pos[2]);
   Eigen::Vector3d kp_r(gains_.kp_rot[0], gains_.kp_rot[1], gains_.kp_rot[2]);
   Eigen::Vector3d kd_r(gains_.kd_rot[0], gains_.kd_rot[1], gains_.kd_rot[2]);
 
-  task_vel_.head<3>() = kp_p.cwiseProduct(pos_err) -
+  task_vel_.head<3>() = kp_p.cwiseProduct(pos_err) + traj_state.velocity.linear() -
     kd_p.cwiseProduct(tcp_vel_.head<3>());
-  task_vel_.tail<3>() = kp_r.cwiseProduct(rot_err) -
+  task_vel_.tail<3>() = kp_r.cwiseProduct(rot_err) + traj_state.velocity.angular() -
     kd_r.cwiseProduct(tcp_vel_.tail<3>());
 
   // ── Step 6: Damped pseudoinverse  J^# = J^T (J J^T + λ²I₆)^{−1} ─────────
@@ -113,7 +126,6 @@ ControllerOutput OperationalSpaceController::Compute(
   }
 
   // ── Step 9: clamp joint velocity and integrate ────────────────────────────
-  const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
   std::array<double, kNumRobotJoints> dq_arr{};
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
     dq_arr[i] = dq_[static_cast<Eigen::Index>(i)];
@@ -137,11 +149,12 @@ void OperationalSpaceController::SetRobotTarget(
   for (std::size_t i = 0; i < n; ++i) {
     pose_target_[i] = target[i];
   }
-  // Precompute R_desired from roll/pitch/yaw — called from the sensor thread,
+  // Precompute goal SE3 from position + RPY — called from the sensor thread,
   // NOT on the 500 Hz RT path.
-  if (target.size() >= 6) {
-    R_desired_ = RpyToMatrix(target[3], target[4], target[5]);
-  }
+  goal_pose_.translation() =
+    Eigen::Vector3d(target[0], target[1], target[2]);
+  goal_pose_.rotation() = RpyToMatrix(target[3], target[4], target[5]);
+  new_target_ = true;
 }
 
 void OperationalSpaceController::SetHandTarget(
@@ -166,6 +179,7 @@ void OperationalSpaceController::TriggerEstop() noexcept
 void OperationalSpaceController::ClearEstop() noexcept
 {
   estopped_.store(false, std::memory_order_relaxed);
+  new_target_ = true; // regenerate trajectory from current pose
 }
 
 bool OperationalSpaceController::IsEstopped() const noexcept
@@ -232,11 +246,16 @@ void OperationalSpaceController::LoadConfig(const YAML::Node & cfg)
   if (cfg["enable_gravity_compensation"]) {
     gains_.enable_gravity_compensation = cfg["enable_gravity_compensation"].as<bool>();
   }
+  if (cfg["trajectory_speed"])         {gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();}
+  if (cfg["trajectory_angular_speed"]) {
+    gains_.trajectory_angular_speed = cfg["trajectory_angular_speed"].as<double>();
+  }
 }
 
 void OperationalSpaceController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
 {
-  // layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1)]
+  // layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1),
+  //          trajectory_speed, trajectory_angular_speed]
   if (gains.size() < 14) {return;}
   for (std::size_t i = 0; i < 3; ++i) {gains_.kp_pos[i] = gains[i];}
   for (std::size_t i = 0; i < 3; ++i) {gains_.kd_pos[i] = gains[3 + i];}
@@ -244,6 +263,8 @@ void OperationalSpaceController::UpdateGainsFromMsg(std::span<const double> gain
   for (std::size_t i = 0; i < 3; ++i) {gains_.kd_rot[i] = gains[9 + i];}
   gains_.damping                    = gains[12];
   gains_.enable_gravity_compensation = gains[13] > 0.5;
+  if (gains.size() >= 15) {gains_.trajectory_speed         = gains[14];}
+  if (gains.size() >= 16) {gains_.trajectory_angular_speed = gains[15];}
 }
 
 }  // namespace ur5e_rt_controller

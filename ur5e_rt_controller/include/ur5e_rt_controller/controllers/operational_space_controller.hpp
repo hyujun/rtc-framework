@@ -18,6 +18,8 @@
 #include <pinocchio/spatial/explog.hpp>         // pinocchio::log3 — SO(3) logarithm
 #pragma GCC diagnostic pop
 
+#include "ur5e_rt_controller/trajectory/task_space_trajectory.hpp"
+
 #include <Eigen/Core>
 #include <Eigen/LU>  // PartialPivLU
 
@@ -85,6 +87,8 @@ public:
     std::array<double, 3> kd_rot{{0.05, 0.05, 0.05}};         ///< Cartesian orientation damping[—]
     double damping{0.01};                   ///< Damping factor λ for J^#  (singularity robustness)
     bool   enable_gravity_compensation{false}; ///< Add g(q) feedforward term
+    double trajectory_speed{0.1};           ///< Max translational speed for trajectory [m/s]
+    double trajectory_angular_speed{0.5};   ///< Max angular speed for trajectory [rad/s]
   };
 
   /// @param urdf_path  Absolute path to the UR5e URDF file.
@@ -108,7 +112,8 @@ public:
   void SetHandEstop(bool active)                 noexcept override;
 
   // ── Controller registry hooks ────────────────────────────────────────────
-  // gains layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1)]
+  // gains layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1),
+  //                trajectory_speed, trajectory_angular_speed]
   void LoadConfig(const YAML::Node & cfg) override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
 
@@ -154,8 +159,12 @@ private:
   // PartialPivLU on a fixed-size 6×6 matrix — zero dynamic allocation.
   Eigen::PartialPivLU<Eigen::Matrix<double, 6, 6>> lu_;
 
-  // Desired end-effector rotation matrix, updated in SetRobotTarget().
-  Eigen::Matrix3d R_desired_{Eigen::Matrix3d::Identity()};
+  // Desired SE3 goal pose, updated in SetRobotTarget() and used to initialise the trajectory.
+  pinocchio::SE3 goal_pose_{pinocchio::SE3::Identity()};
+
+  bool new_target_{false};
+  trajectory::TaskSpaceTrajectory trajectory_;
+  double trajectory_time_{0.0};
 
   // ── Controller state ──────────────────────────────────────────────────────
   Gains gains_;
@@ -178,11 +187,9 @@ private:
   [[nodiscard]] static std::array<double, kNumRobotJoints> ClampVelocity(
     std::array<double, kNumRobotJoints> dq) noexcept;
 
-  /// Compute R_desired from roll/pitch/yaw (ZYX Euler convention).
+  /// Compute rotation matrix from roll/pitch/yaw (ZYX Euler convention).
   /// Called from SetRobotTarget — NOT on the 500 Hz RT path.
-  static Eigen::Matrix3d RpyToMatrix(
-    double roll, double pitch,
-    double yaw) noexcept;
+  static Eigen::Matrix3d RpyToMatrix(double roll, double pitch, double yaw) noexcept;
 };
 
 }  // namespace ur5e_rt_controller

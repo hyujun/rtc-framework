@@ -5,7 +5,7 @@
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 ![ROS2 Jazzy](https://img.shields.io/badge/ROS2-Jazzy-green)
 
-**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.6.0)**
+**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.6.1)**
 
 E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종**, **MuJoCo 3.x 물리 시뮬레이터**, UDP 핸드 인터페이스, CSV 데이터 로깅, Qt GUI 모션 에디터를 포함한 완전한 실시간 제어 솔루션입니다.
 
@@ -26,6 +26,8 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 > **v5.5.0 (빌드·로그 최적화)**: `build.sh` / `install.sh` 파라미터 파싱 및 고급 제어 기능 구현. SPSC `log_buffer.hpp` 비트 연산 최적화. `CustomController` → `RtControllerNode` 클래스명 변경 및 노드 파일 3분할.
 >
 > **v5.6.0 (Google DeepMind MuJoCo 뷰어 기능 완전 이식)**: MuJoCo 뷰어를 `src/viewer/` 4-파일 구조로 재편. 2페이지 F1 도움말, 카메라 3모드 (Free/Tracking/Fixed), 마우스 더블클릭 물체 선택, Ctrl+드래그 힘/토크 인가, 지오메트리 그룹 0-5 가시성, 시각화 플래그 12종, 렌더링 플래그 4종 (와이어프레임/그림자/스카이박스/반사), F9 센서 오버레이, F10 모델 통계 오버레이, P 스크린샷, `StepOnce()` API. 전역 폰트 mjFONTSCALE_100으로 축소.
+>
+> **v5.6.1 (궤적 생성 개선 + GUI 업데이트)**: `PinocchioController`에 `JointSpaceTrajectory<6>` 추가 (직접 점프 → 5차 관절공간 궤적, `trajectory_speed` 파라미터). `OperationalSpaceController`에 `TaskSpaceTrajectory` 추가 (SE(3) 5차 스플라인, `trajectory_speed` + `trajectory_angular_speed`). `ClikController`에서 미사용 `trajectory_angular_speed` 제거. `motion_editor_gui.py` 토픽 수정 + 재생 간격 스핀박스 추가. `controller_gui.py` 게인 패널 업데이트 (Pinocchio 15개, OSC 16개).
 
 ---
 

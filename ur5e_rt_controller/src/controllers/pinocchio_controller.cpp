@@ -40,15 +40,45 @@ ControllerOutput PinocchioController::Compute(
   // Step 1 — Update Pinocchio state and compute dynamics (no allocation).
   UpdateDynamics(state.robot);
 
-  // Step 2 — PD control + gravity (+ optional Coriolis) compensation.
-  ControllerOutput output;
+  // Step 2 — Generate trajectory on new target.
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
 
+  if (new_target_) {
+    trajectory::JointSpaceTrajectory<kNumRobotJoints>::State start_state;
+    trajectory::JointSpaceTrajectory<kNumRobotJoints>::State goal_state;
+
+    double max_dist = 0.0;
+    for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+      start_state.positions[i] = state.robot.positions[i];
+      start_state.velocities[i] = state.robot.velocities[i];
+      start_state.accelerations[i] = 0.0;
+
+      goal_state.positions[i] = robot_target_[i];
+      goal_state.velocities[i] = 0.0;
+      goal_state.accelerations[i] = 0.0;
+
+      max_dist = std::max(max_dist, std::abs(robot_target_[i] - state.robot.positions[i]));
+    }
+
+    const double duration = std::max(0.01, max_dist / gains_.trajectory_speed);
+    trajectory_.initialize(start_state, goal_state, duration);
+    trajectory_time_ = 0.0;
+    new_target_ = false;
+  }
+
+  const auto traj_state = trajectory_.compute(trajectory_time_);
+  trajectory_time_ += dt;
+
+  // Step 3 — PD control tracking the trajectory + gravity (+ optional Coriolis).
+  ControllerOutput output;
+
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    const double e = robot_target_[i] - state.robot.positions[i];
+    const double e = traj_state.positions[i] - state.robot.positions[i];
     const double de = (e - prev_error_[i]) / dt;
 
-    output.robot_commands[i] = gains_.kp[i] * e + gains_.kd[i] * de + gravity_torques_[i];
+    // Feedforward velocity + PD feedback + gravity compensation
+    output.robot_commands[i] =
+      traj_state.velocities[i] + gains_.kp[i] * e + gains_.kd[i] * de + gravity_torques_[i];
 
     if (gains_.enable_coriolis_compensation) {
       output.robot_commands[i] +=
@@ -58,7 +88,7 @@ ControllerOutput PinocchioController::Compute(
     prev_error_[i] = e;
   }
 
-  output.actual_target_positions = robot_target_;
+  output.actual_target_positions = traj_state.positions;
   output.robot_commands = ClampCommands(output.robot_commands);
   return output;
 }
@@ -70,6 +100,7 @@ void PinocchioController::SetRobotTarget(
   for (std::size_t i = 0; i < n; ++i) {
     robot_target_[i] = target[i];
   }
+  new_target_ = true;
 }
 
 void PinocchioController::SetHandTarget(
@@ -95,6 +126,7 @@ void PinocchioController::ClearEstop() noexcept
 {
   estopped_.store(false, std::memory_order_relaxed);
   prev_error_ = {};   // reset derivative term on recovery
+  new_target_ = true; // regenerate trajectory from current position
 }
 
 bool PinocchioController::IsEstopped() const noexcept
@@ -213,16 +245,20 @@ void PinocchioController::LoadConfig(const YAML::Node & cfg)
   if (cfg["enable_coriolis_compensation"]) {
     gains_.enable_coriolis_compensation = cfg["enable_coriolis_compensation"].as<bool>();
   }
+  if (cfg["trajectory_speed"]) {
+    gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();
+  }
 }
 
 void PinocchioController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
 {
-  // layout: [kp×6, kd×6, enable_gravity(0/1), enable_coriolis(0/1)]
+  // layout: [kp×6, kd×6, enable_gravity(0/1), enable_coriolis(0/1), trajectory_speed]
   if (gains.size() < 14) {return;}
   for (std::size_t i = 0; i < 6; ++i) {gains_.kp[i] = gains[i];}
   for (std::size_t i = 0; i < 6; ++i) {gains_.kd[i] = gains[6 + i];}
   gains_.enable_gravity_compensation  = gains[12] > 0.5;
   gains_.enable_coriolis_compensation = gains[13] > 0.5;
+  if (gains.size() >= 15) {gains_.trajectory_speed = gains[14];}
 }
 
 }  // namespace ur5e_rt_controller
