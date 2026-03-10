@@ -266,13 +266,15 @@ class ControllerGUI(Node):
         pos_frame.pack(fill='both', expand=True, padx=12, pady=4)
 
         hdr_font = tkfont.Font(family='Segoe UI', size=9, weight='bold')
-        for col, txt in enumerate(["Axis", "Target", "Current"]):
+        for col, txt in enumerate(["Axis", "Target", "Step (±)", "Current"]):
+            width = 15 if col != 2 else 8
             tk.Label(pos_frame, text=txt, bg='#1e1e2e', fg='#89b4fa',
-                     font=hdr_font, width=15, anchor='center').grid(
+                     font=hdr_font, width=width, anchor='center').grid(
                 row=0, column=col, padx=4, pady=(0, 4))
 
         self._axis_labels: list[tk.Label] = []
         self._target_entries: list[ttk.Entry] = []
+        self._step_entries: list[ttk.Entry] = []
         self._current_labels: list[tk.Label] = []
 
         for i in range(NUM_JOINTS):
@@ -286,10 +288,19 @@ class ControllerGUI(Node):
             ent.grid(row=i + 1, column=1, padx=4, pady=2)
             self._target_entries.append(ent)
 
+            btn_frame_i = tk.Frame(pos_frame, bg='#1e1e2e')
+            btn_frame_i.grid(row=i + 1, column=2, padx=2, pady=2)
+            ttk.Button(btn_frame_i, text="-", width=2, command=lambda idx=i: self._add_step(idx, -1)).pack(side='left', padx=1)
+            step_ent = ttk.Entry(btn_frame_i, width=6, justify='center')
+            step_ent.insert(0, "0.1")
+            step_ent.pack(side='left', padx=2)
+            self._step_entries.append(step_ent)
+            ttk.Button(btn_frame_i, text="+", width=2, command=lambda idx=i: self._add_step(idx, 1)).pack(side='left', padx=1)
+
             clbl = tk.Label(pos_frame, text="---", bg='#313244',
                             fg='#f38ba8', width=15, anchor='center',
                             font=('Courier New', 9))
-            clbl.grid(row=i + 1, column=2, padx=4, pady=2)
+            clbl.grid(row=i + 1, column=3, padx=4, pady=2)
             self._current_labels.append(clbl)
 
         # ── Action Buttons ─────────────────────────────────────────────────────
@@ -502,6 +513,16 @@ class ControllerGUI(Node):
                 ent.insert(0, f"{math.degrees(values[i]):.4f}")
             else:
                 ent.insert(0, f"{values[i]:.4f}")
+
+    def _add_step(self, idx: int, sign: int):
+        try:
+            step_val = float(self._step_entries[idx].get())
+            current_val = float(self._target_entries[idx].get())
+            new_val = current_val + sign * step_val
+            self._target_entries[idx].delete(0, tk.END)
+            self._target_entries[idx].insert(0, f"{new_val:.4f}")
+        except ValueError:
+            self.get_logger().error("Invalid numerical input for target or step.")
 
     def _publish_target(self):
         try:
