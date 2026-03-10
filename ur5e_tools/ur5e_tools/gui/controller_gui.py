@@ -9,6 +9,8 @@ UR5e Controller GUI
 - Periodically display current joint positions alongside the target inputs
 - E-STOP status indicator via /system/estop_status
 """
+import math
+
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray, Int32, Bool
@@ -26,11 +28,20 @@ CONTROLLER_TYPES = {
 }
 
 TARGET_LABELS = {
-    0: ["q1 (rad)", "q2 (rad)", "q3 (rad)", "q4 (rad)", "q5 (rad)", "q6 (rad)"],
-    1: ["q1 (rad)", "q2 (rad)", "q3 (rad)", "q4 (rad)", "q5 (rad)", "q6 (rad)"],
-    2: ["q1 (rad)", "q2 (rad)", "q3 (rad)", "q4 (rad)", "q5 (rad)", "q6 (rad)"],
-    3: ["X (m)", "Y (m)", "Z (m)", "q4_null (rad)", "q5_null (rad)", "q6_null (rad)"],
-    4: ["X (m)", "Y (m)", "Z (m)", "Roll (rad)", "Pitch (rad)", "Yaw (rad)"],
+    0: ["q1 (deg)", "q2 (deg)", "q3 (deg)", "q4 (deg)", "q5 (deg)", "q6 (deg)"],
+    1: ["q1 (deg)", "q2 (deg)", "q3 (deg)", "q4 (deg)", "q5 (deg)", "q6 (deg)"],
+    2: ["q1 (deg)", "q2 (deg)", "q3 (deg)", "q4 (deg)", "q5 (deg)", "q6 (deg)"],
+    3: ["X (m)", "Y (m)", "Z (m)", "q4_null (deg)", "q5_null (deg)", "q6_null (deg)"],
+    4: ["X (m)", "Y (m)", "Z (m)", "Roll (deg)", "Pitch (deg)", "Yaw (deg)"],
+}
+
+# Target entry indices that represent angles (require rad ↔ deg conversion)
+ANGLE_INDICES = {
+    0: [0, 1, 2, 3, 4, 5],
+    1: [0, 1, 2, 3, 4, 5],
+    2: [0, 1, 2, 3, 4, 5],
+    3: [3, 4, 5],
+    4: [3, 4, 5],
 }
 
 # True → auto-fill target from current joint positions on controller switch
@@ -136,7 +147,7 @@ class ControllerGUI(Node):
         if not hasattr(self, '_current_labels'):
             return
         for i, lbl in enumerate(self._current_labels):
-            lbl.config(text=f"{self.current_positions[i]:.4f}")
+            lbl.config(text=f"{math.degrees(self.current_positions[i]):.2f}°")
         if hasattr(self, '_estop_label'):
             if self.estop_active:
                 self._estop_label.config(
@@ -484,13 +495,23 @@ class ControllerGUI(Node):
         self._set_target_entries(self.current_positions)
 
     def _set_target_entries(self, values: list[float]):
+        angle_indices = ANGLE_INDICES[self.selected_ctrl.get()]
         for i, ent in enumerate(self._target_entries):
             ent.delete(0, tk.END)
-            ent.insert(0, f"{values[i]:.4f}")
+            if i in angle_indices:
+                ent.insert(0, f"{math.degrees(values[i]):.4f}")
+            else:
+                ent.insert(0, f"{values[i]:.4f}")
 
     def _publish_target(self):
         try:
-            values = [float(e.get()) for e in self._target_entries]
+            angle_indices = ANGLE_INDICES[self.selected_ctrl.get()]
+            values = []
+            for i, e in enumerate(self._target_entries):
+                v = float(e.get())
+                if i in angle_indices:
+                    v = math.radians(v)
+                values.append(v)
         except ValueError:
             self.get_logger().error("Invalid numerical input for target.")
             return
