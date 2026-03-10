@@ -5,6 +5,43 @@
 
 ---
 
+## [5.6.1] - 2026-03-10
+
+### 변경 (Changed) — PinocchioController: JointSpaceTrajectory 추가
+
+- 직접 타겟 위치로 점프하던 방식 → 5차 다항식 관절공간 궤적 추종
+- 피드포워드 속도 + PD 피드백으로 부드러운 목표 추종
+- `trajectory_speed` 파라미터 추가 (YAML `config/controllers/pinocchio_controller.yaml` 및 `UpdateGainsFromMsg` 15번째 값)
+- `ClearEstop()` 시 `new_target_ = true` — 복귀 후 궤적 재생성
+- `UpdateGainsFromMsg` 레이아웃: `[kp×6, kd×6, gravity(0/1), coriolis(0/1), trajectory_speed]` (15개)
+
+### 변경 (Changed) — OperationalSpaceController: TaskSpaceTrajectory 추가
+
+- Cartesian 목표로 직접 점프하던 방식 → SE(3) 5차 스플라인 궤적 추종
+- 지속시간 = `max(0.01, max(trans_dist / traj_speed, ang_dist / traj_ang_speed))`
+- 피드포워드 선속도(`traj_state.velocity.linear()`) + 각속도(`traj_state.velocity.angular()`) 추가
+- `R_desired_` (`Matrix3d`) → `goal_pose_` (`pinocchio::SE3`)로 교체 (RPY → SE3 사전 계산)
+- `ClearEstop()` 시 `new_target_ = true` — 복귀 후 궤적 재생성
+- `UpdateGainsFromMsg` 레이아웃: `[kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, gravity(0/1), traj_speed, traj_ang_speed]` (16개)
+
+### 변경 (Changed) — ClikController: 미사용 `trajectory_angular_speed` 제거
+
+- `Gains` 구조체에서 `trajectory_angular_speed` 필드 제거
+- `config/controllers/clik_controller.yaml`에서 `trajectory_angular_speed: 0.5` 항목 제거
+- `LoadConfig()`에서 해당 파싱 블록 제거 (기능 변화 없음 — 이 값은 계산에 사용되지 않았음)
+
+### 변경 (Changed) — GUI 업데이트 (`ur5e_tools`)
+
+**`controller_gui.py`**:
+- Pinocchio (type 2) 게인 패널: `traj speed` (1개) 추가 → 총 15개 (`UpdateGainsFromMsg` 레이아웃과 일치)
+- OSC (type 4) 게인 패널: `traj speed` + `traj ang speed` (2개) 추가 → 총 16개
+
+**`motion_editor_gui.py`**:
+- 퍼블리시 토픽 수정: `/forward_position_controller/commands` → `/target_joint_positions`
+- "Pose hold time (s)" `QDoubleSpinBox` 추가 (범위 0.1–30.0s, 기본 2.0s): 각 포즈에서 다음 포즈로 이동하기 전 대기 시간을 런타임에 조정 가능
+
+---
+
 ## [5.6.0] - 2026-03-09
 
 ### 추가 (Added) — MuJoCo Viewer 전면 확장 (Google DeepMind 공식 viewer 기능 통합)

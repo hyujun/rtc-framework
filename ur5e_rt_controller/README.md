@@ -1,6 +1,6 @@
 # ur5e_rt_controller
 
-> **Note:** This package is part of the UR5e RT Controller workspace (v5.3.0). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
+> **Note:** This package is part of the UR5e RT Controller workspace (v5.6.1). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
 UR5e 로봇 팔을 위한 **500Hz 실시간 위치 제어기** ROS2 패키지입니다. SCHED_FIFO 멀티스레드 아키텍처, 전략 패턴 기반 컨트롤러 교체, 런타임 컨트롤러 전환, 잠금-없는 로깅 인프라를 제공합니다.
 
 ## 개요
@@ -97,19 +97,28 @@ command[i] = Kp * e[i] + Kd * ė[i]
 
 ### `PinocchioController`
 
-Pinocchio RNEA를 활용한 모델 기반 PD + 동역학 보상.
+Pinocchio RNEA를 활용한 모델 기반 PD + 동역학 보상. **5차 관절공간 궤적 추종** (v5.6.1+).
 
 ```
-command[i] = Kp * e[i] + Kd * ė[i] + g(q)[i] [+ C(q,v)·v[i]]
+command[i] = ff_vel[i] + Kp * e[i] + Kd * ė[i] + g(q)[i] [+ C(q,v)·v[i]]
 ```
 
+여기서 `ff_vel` 및 목표 위치는 `JointSpaceTrajectory<6>`에서 실시간으로 계산됩니다.
+
+| 파라미터 | 기본값 | 설명 |
+|----------|--------|------|
+| `kp` | `[5.0×6]` | 비례 게인 |
+| `kd` | `[0.5×6]` | 미분 게인 |
+| `enable_gravity_compensation` | `true` | 중력 보상 활성화 |
+| `enable_coriolis_compensation` | `false` | 코리올리 보상 활성화 |
+| `trajectory_speed` | `1.0` | 궤적 이동 속도 상한 [rad/s] — 지속시간 = max_dist / speed |
+
+- `UpdateGainsFromMsg` 레이아웃: `[kp×6, kd×6, gravity(0/1), coriolis(0/1), trajectory_speed]` (15개)
 - 모든 Eigen 버퍼: 생성자에서 사전 할당 (500Hz 경로에서 힙 할당 없음)
-- `enable_gravity_compensation`: 중력 보상 활성화
-- `enable_coriolis_compensation`: 코리올리 보상 활성화
 
 ### `ClikController`
 
-폐루프 역기구학(CLIK). 감쇠 야코비안 유사역행렬 + 영공간 관절 센터링.
+폐루프 역기구학(CLIK). 감쇠 야코비안 유사역행렬 + 영공간 관절 센터링. **SE(3) 5차 궤적 추종** (v5.3.0+).
 
 **목표 규약** (`/target_joint_positions`의 6개 값):
 ```
@@ -118,9 +127,19 @@ command[i] = Kp * e[i] + Kd * ė[i] + g(q)[i] [+ C(q,v)·v[i]]
  TCP 위치(m)  영공간 참조 관절 3–5 (rad)
 ```
 
+| 파라미터 | 기본값 | 설명 |
+|----------|--------|------|
+| `kp` | `[1.0×3]` | 위치 비례 게인 |
+| `damping` | `0.01` | 감쇠 유사역행렬 λ |
+| `null_kp` | `0.5` | 영공간 관절 센터링 게인 |
+| `enable_null_space` | `false` | 영공간 태스크 활성화 |
+| `trajectory_speed` | `0.1` | TCP 이동 속도 상한 [m/s] |
+
+- `UpdateGainsFromMsg` 레이아웃: `[kp×3, damping, null_kp, enable_null_space(0/1)]` (6개)
+
 ### `OperationalSpaceController`
 
-전체 6-DOF 데카르트 PD 제어 (위치 + SO(3) 방향). Pinocchio `log3()` 사용.
+전체 6-DOF 데카르트 PD 제어 (위치 + SO(3) 방향). Pinocchio `log3()` 사용. **SE(3) 5차 궤적 추종** (v5.6.1+).
 
 **목표 규약** (`/target_joint_positions`의 6개 값):
 ```
@@ -128,6 +147,19 @@ command[i] = Kp * e[i] + Kd * ė[i] + g(q)[i] [+ C(q,v)·v[i]]
  ─────────── ─────────────
  TCP 위치(m)  ZYX 오일러 각 (rad)
 ```
+
+| 파라미터 | 기본값 | 설명 |
+|----------|--------|------|
+| `kp_pos` | `[1.0×3]` | 위치 비례 게인 |
+| `kd_pos` | `[0.1×3]` | 위치 미분 게인 |
+| `kp_rot` | `[0.5×3]` | 회전 비례 게인 |
+| `kd_rot` | `[0.05×3]` | 회전 미분 게인 |
+| `damping` | `0.01` | 감쇠 유사역행렬 λ |
+| `enable_gravity_compensation` | `false` | 중력 보상 활성화 |
+| `trajectory_speed` | `0.1` | TCP 병진 이동 속도 상한 [m/s] |
+| `trajectory_angular_speed` | `0.5` | TCP 회전 속도 상한 [rad/s] |
+
+- `UpdateGainsFromMsg` 레이아웃: `[kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, gravity(0/1), traj_speed, traj_ang_speed]` (16개)
 
 ---
 
@@ -256,7 +288,7 @@ ros2 topic pub /target_joint_positions std_msgs/msg/Float64MultiArray \
 
 ## 궤적 생성 서브시스템 (`trajectory/`)
 
-v5.3.0에서 추가된 헤더-전용 5차 다항식 궤적 생성 라이브러리입니다. CLIK/OSC 제어기에서 새 목표 수신 시 부드러운 이동을 자동으로 생성합니다.
+v5.3.0에서 추가된 헤더-전용 5차 다항식 궤적 생성 라이브러리입니다. Pinocchio/CLIK/OSC 제어기에서 새 목표 수신 시 부드러운 이동을 자동으로 생성합니다.
 
 ### `QuinticPolynomial` (`trajectory/trajectory_utils.hpp`)
 
@@ -280,12 +312,15 @@ traj_.initialize(start_pose, pinocchio::Motion::Zero(),
 auto state = traj_.compute(trajectory_time_);  // State{pose, velocity, acceleration}
 ```
 
-속도 상한 계산: `duration = max(0.5, distance / 0.2m)` — 평균 이동 속도 최대 20cm/s.
+- **CLIK**: `duration = max(0.01, trans_dist / trajectory_speed)`
+- **OSC** (v5.6.1+): `duration = max(0.01, max(trans_dist / traj_speed, ang_dist / traj_ang_speed))`
+
 힙 할당 없음 (`QuinticPolynomial × 6`, 고정 크기 배열).
 
 ### `JointSpaceTrajectory<N>` (`trajectory/joint_space_trajectory.hpp`)
 
 N-DOF 관절공간 5차 스플라인 (템플릿). N개 관절을 독립적으로 보간합니다.
+**PinocchioController** (v5.6.1+)에서 사용됩니다.
 
 ```cpp
 JointSpaceTrajectory<6> traj;
@@ -294,6 +329,8 @@ JointSpaceTrajectory<6>::State goal {qf, {}, {}};
 traj.initialize(start, goal, duration);
 auto s = traj.compute(t);  // State{positions, velocities, accelerations}
 ```
+
+- **PinocchioController**: `duration = max(0.01, max_joint_dist / trajectory_speed)`
 
 ---
 
