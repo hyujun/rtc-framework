@@ -218,9 +218,6 @@ void ClikController::LoadConfig(const YAML::Node & cfg)
   if (cfg["null_kp"])                {gains_.null_kp   = cfg["null_kp"].as<double>();}
   if (cfg["enable_null_space"])      {gains_.enable_null_space = cfg["enable_null_space"].as<bool>();}
   if (cfg["trajectory_speed"])       {gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();}
-  if (cfg["trajectory_angular_speed"]) {
-    gains_.trajectory_angular_speed = cfg["trajectory_angular_speed"].as<double>();
-  }
 }
 
 void ClikController::UpdateGainsFromMsg(std::span<const double> gains) noexcept

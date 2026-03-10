@@ -3,4 +3,3 @@ clik_controller:
   damping: 0.01
   null_kp: 0.5
   trajectory_speed: 0.1
-  trajectory_angular_speed: 0.5
