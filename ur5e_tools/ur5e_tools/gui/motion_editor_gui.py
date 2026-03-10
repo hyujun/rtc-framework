@@ -144,9 +144,10 @@ class MotionEditor(QMainWindow):
         
         self.poses[row] = self.current_q.copy()
         self.pose_table.item(row, 2).setText("✅ Saved")
+        q_deg = np.degrees(self.current_q)
         self.pose_table.item(row, 3).setText(
-            f"[{self.current_q[0]:.2f}, {self.current_q[1]:.2f}, {self.current_q[2]:.2f}, "
-            f"{self.current_q[3]:.2f}, {self.current_q[4]:.2f}, {self.current_q[5]:.2f}]"
+            f"[{q_deg[0]:.2f}, {q_deg[1]:.2f}, {q_deg[2]:.2f}, "
+            f"{q_deg[3]:.2f}, {q_deg[4]:.2f}, {q_deg[5]:.2f}]°"
         )
         self.status_label.setText(f"✅ Saved to Pose {row+1}")
         
@@ -247,10 +248,10 @@ class MotionEditor(QMainWindow):
                         self.pose_table.item(i, 4).setText(desc)
                         if np.linalg.norm(self.poses[i]) > 0.001:
                             self.pose_table.item(i, 2).setText("✅ Saved")
-                            q = self.poses[i]
+                            q_deg = np.degrees(self.poses[i])
                             self.pose_table.item(i, 3).setText(
-                                f"[{q[0]:.2f}, {q[1]:.2f}, {q[2]:.2f}, "
-                                f"{q[3]:.2f}, {q[4]:.2f}, {q[5]:.2f}]"
+                                f"[{q_deg[0]:.2f}, {q_deg[1]:.2f}, {q_deg[2]:.2f}, "
+                                f"{q_deg[3]:.2f}, {q_deg[4]:.2f}, {q_deg[5]:.2f}]°"
                             )
                 
                 self.status_label.setText(f"📂 Loaded from {filename}")
