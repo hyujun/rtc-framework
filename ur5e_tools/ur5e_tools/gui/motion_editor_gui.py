@@ -26,6 +26,7 @@ class MotionEditor(QMainWindow):
         self.selected_row = 0
         self._play_queue = []
         self._play_step = 0
+        self._play_interval_ms = 2000   # configurable pose hold time
         self._play_timer = QTimer()
         self._play_timer.timeout.connect(self._play_next)
 
@@ -131,6 +132,24 @@ class MotionEditor(QMainWindow):
         btn_layout.addWidget(self.clear_btn)
         layout.addLayout(btn_layout)
 
+        # 재생 간격 설정
+        interval_layout = QHBoxLayout()
+        interval_layout.addStretch()
+        interval_layout.addWidget(QLabel("Pose hold time (s):"))
+        self.interval_spinbox = QDoubleSpinBox()
+        self.interval_spinbox.setRange(0.1, 30.0)
+        self.interval_spinbox.setSingleStep(0.5)
+        self.interval_spinbox.setValue(self._play_interval_ms / 1000.0)
+        self.interval_spinbox.setDecimals(1)
+        self.interval_spinbox.setFixedWidth(80)
+        self.interval_spinbox.setToolTip(
+            "Time to wait at each pose before moving to the next.\n"
+            "Set to at least (max_joint_distance / trajectory_speed) + 0.5s\n"
+            "to ensure the robot reaches the target before advancing.")
+        self.interval_spinbox.valueChanged.connect(self._on_interval_changed)
+        interval_layout.addWidget(self.interval_spinbox)
+        layout.addLayout(interval_layout)
+
         # 메뉴바
         menubar = self.menuBar()
         file_menu = menubar.addMenu("File")
@@ -144,6 +163,10 @@ class MotionEditor(QMainWindow):
         file_menu.addSeparator()
         exit_action = file_menu.addAction("Exit")
         exit_action.triggered.connect(self.close)
+
+    def _on_interval_changed(self, value):
+        """재생 간격 스핀박스 변경 시 호출"""
+        self._play_interval_ms = int(value * 1000)
 
     def _on_item_changed(self, item):
         """Sync in-memory data when user edits Name or Description cells directly."""
@@ -253,7 +276,7 @@ class MotionEditor(QMainWindow):
         self.play_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self._play_next()           # 첫 포즈 즉시 실행
-        self._play_timer.start(2000)  # 이후 2초 간격
+        self._play_timer.start(self._play_interval_ms)  # 이후 설정된 간격
 
     def _play_next(self):
         """다음 포즈 재생 (타이머 콜백)"""
@@ -381,7 +404,7 @@ class ROSNode(Node):
             JointState, '/joint_states', self.joint_callback, qos)
 
         self.cmd_pub = self.create_publisher(
-            Float64MultiArray, '/forward_position_controller/commands', qos)
+            Float64MultiArray, '/target_joint_positions', qos)
 
         self.get_logger().info("Motion Editor ROS Node started")
 

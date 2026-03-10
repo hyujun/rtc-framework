@@ -47,36 +47,40 @@ NUM_JOINTS = 6
 # ORDER must match UpdateGainsFromMsg layouts in each controller header:
 #   P:         [kp×6]
 #   PD:        [kp×6, kd×6]
-#   Pinocchio: [kp×6, kd×6, enable_gravity(0/1), enable_coriolis(0/1)]
+#   Pinocchio: [kp×6, kd×6, enable_gravity(0/1), enable_coriolis(0/1), trajectory_speed]
 #   CLIK:      [kp×3, damping, null_kp, enable_null_space(0/1)]
-#   OSC:       [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1)]
+#   OSC:       [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1),
+#               trajectory_speed, trajectory_angular_speed]
 GAIN_DEFS = {
     0: [
-        ("kp",           6, [5.0] * 6,  False),
+        ("kp",              6, [5.0] * 6,  False),
     ],
     1: [
-        ("kp",           6, [5.0] * 6,  False),
-        ("kd",           6, [0.5] * 6,  False),
+        ("kp",              6, [5.0] * 6,  False),
+        ("kd",              6, [0.5] * 6,  False),
     ],
     2: [
-        ("kp",           6, [5.0] * 6,  False),
-        ("kd",           6, [0.5] * 6,  False),
-        ("gravity comp", 1, [1],         True),
-        ("coriolis comp",1, [0],         True),
+        ("kp",              6, [5.0] * 6,  False),
+        ("kd",              6, [0.5] * 6,  False),
+        ("gravity comp",    1, [1],         True),
+        ("coriolis comp",   1, [0],         True),
+        ("traj speed",      1, [1.0],       False),
     ],
     3: [
-        ("kp",           3, [1.0] * 3,  False),
-        ("damping",      1, [0.01],      False),
-        ("null_kp",      1, [0.5],       False),
-        ("null space",   1, [1],         True),
+        ("kp",              3, [1.0] * 3,  False),
+        ("damping",         1, [0.01],      False),
+        ("null_kp",         1, [0.5],       False),
+        ("null space",      1, [1],         True),
     ],
     4: [
-        ("kp_pos",       3, [1.0] * 3,  False),
-        ("kd_pos",       3, [0.1] * 3,  False),
-        ("kp_rot",       3, [0.5] * 3,  False),
-        ("kd_rot",       3, [0.05] * 3, False),
-        ("damping",      1, [0.01],      False),
-        ("gravity comp", 1, [0],         True),
+        ("kp_pos",          3, [1.0] * 3,  False),
+        ("kd_pos",          3, [0.1] * 3,  False),
+        ("kp_rot",          3, [0.5] * 3,  False),
+        ("kd_rot",          3, [0.05] * 3, False),
+        ("damping",         1, [0.01],      False),
+        ("gravity comp",    1, [0],         True),
+        ("traj speed",      1, [0.1],       False),
+        ("traj ang speed",  1, [0.5],       False),
     ],
 }
 
