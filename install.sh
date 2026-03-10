@@ -171,6 +171,28 @@ success() { echo -e "${GREEN}✔ $*${NC}"; }
 warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
 error()   { echo -e "${RED}✘ $*${NC}"; exit 1; }
 
+# ── Common: Workspace structure check ──────────────────────────────────────────
+check_workspace_structure() {
+  info "Checking workspace directory structure..."
+  local SCRIPT_DIR
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local SRC_DIR
+  SRC_DIR="$(dirname "$SCRIPT_DIR")"
+  local DETECTED_WS
+  DETECTED_WS="$(dirname "$SRC_DIR")"
+
+  if [[ "$(basename "$SRC_DIR")" != "src" ]]; then
+    echo -e "${RED}✘ Invalid directory structure. ROS2 packages must be located inside a 'src' directory.${NC}"
+    echo -e "  Expected: ${BOLD}<workspace_dir>/src/<repository_name>${NC}"
+    echo -e "  Current:  ${BOLD}${SCRIPT_DIR}${NC}"
+    echo -e "  Example:  mkdir -p ~/ros2_ws/ur5e_ws/src && mv ${SCRIPT_DIR} ~/ros2_ws/ur5e_ws/src/"
+    exit 1
+  fi
+
+  WORKSPACE="$DETECTED_WS"
+  success "Workspace correctly configured at: $WORKSPACE"
+}
+
 # ── Common: ROS2 + Ubuntu check ────────────────────────────────────────────────
 check_prerequisites() {
   if ! command -v ros2 &>/dev/null; then
@@ -220,26 +242,6 @@ check_prerequisites() {
 
 # ── Common: Workspace + build tools ───────────────────────────────────────────
 setup_workspace() {
-  # Auto-detect workspace from script location.
-  # Expected layout: <workspace>/src/<repo>/install.sh
-  local SCRIPT_DIR
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  local SRC_DIR
-  SRC_DIR="$(dirname "$SCRIPT_DIR")"
-  local DETECTED_WS
-  DETECTED_WS="$(dirname "$SRC_DIR")"
-
-  if [[ "$(basename "$SRC_DIR")" == "src" && -d "$DETECTED_WS" ]]; then
-    WORKSPACE="$DETECTED_WS"
-    info "Workspace auto-detected: $WORKSPACE"
-  else
-    WORKSPACE=~/ur_ws
-    warn "Script is not under <workspace>/src/<repo>/ — using default: $WORKSPACE"
-  fi
-
-  info "Setting up workspace: $WORKSPACE"
-  mkdir -p "$WORKSPACE/src"
-
   info "Installing ROS2 build tools (${ROS_PKG_PREFIX})..."
   sudo apt-get update -qq
   sudo apt-get install -y \
@@ -720,6 +722,7 @@ print_summary() {
 # ══════════════════════════════════════════════════════════════════════════════
 
 if [[ "$SKIP_DEPS" -eq 0 ]]; then
+  check_workspace_structure
   check_prerequisites
   setup_workspace
 
@@ -750,16 +753,7 @@ if [[ "$SKIP_DEPS" -eq 0 ]]; then
   fi
 else
   info "Skipping system dependencies installation (--skip-deps)"
-  # Detect workspace context mainly for the paths below
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  SRC_DIR="$(dirname "$SCRIPT_DIR")"
-  DETECTED_WS="$(dirname "$SRC_DIR")"
-  if [[ "$(basename "$SRC_DIR")" == "src" && -d "$DETECTED_WS" ]]; then
-    WORKSPACE="$DETECTED_WS"
-  else
-    WORKSPACE=~/ur_ws
-  fi
-  info "Workspace context: $WORKSPACE"
+  check_workspace_structure
 fi
 
 setup_package

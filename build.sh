@@ -27,6 +27,28 @@ success() { echo -e "${GREEN}✔ $*${NC}"; }
 warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
 error()   { echo -e "${RED}✘ $*${NC}"; exit 1; }
 
+# ── Common: Workspace structure check ──────────────────────────────────────────
+check_workspace_structure() {
+  info "Checking workspace directory structure..."
+  local SCRIPT_DIR
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local SRC_DIR
+  SRC_DIR="$(dirname "$SCRIPT_DIR")"
+  local DETECTED_WS
+  DETECTED_WS="$(dirname "$SRC_DIR")"
+
+  if [[ "$(basename "$SRC_DIR")" != "src" ]]; then
+    echo -e "${RED}✘ Invalid directory structure. ROS2 packages must be located inside a 'src' directory.${NC}"
+    echo -e "  Expected: ${BOLD}<workspace_dir>/src/<repository_name>${NC}"
+    echo -e "  Current:  ${BOLD}${SCRIPT_DIR}${NC}"
+    echo -e "  Example:  mkdir -p ~/ros2_ws/ur5e_ws/src && mv ${SCRIPT_DIR} ~/ros2_ws/ur5e_ws/src/"
+    exit 1
+  fi
+
+  WORKSPACE="$DETECTED_WS"
+  success "Workspace correctly configured at: $WORKSPACE"
+}
+
 # ── Mode & argument parsing ────────────────────────────────────────────────────
 MODE="full"
 MJ_DIR=""
@@ -190,19 +212,7 @@ echo -e "  Build: ${CYAN}${BOLD}${BUILD_TYPE}${NC}"
 echo ""
 
 # ── Workspace detection ────────────────────────────────────────────────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_DIR="$(dirname "$SCRIPT_DIR")"
-DETECTED_WS="$(dirname "$SRC_DIR")"
-
-if [[ "$(basename "$SRC_DIR")" == "src" && -d "$DETECTED_WS" ]]; then
-  WORKSPACE="$DETECTED_WS"
-  info "Workspace auto-detected: $WORKSPACE"
-else
-  WORKSPACE=~/ur_ws
-  warn "Script is not under <workspace>/src/<repo>/ — using default: $WORKSPACE"
-fi
-
-[[ ! -d "$WORKSPACE" ]] && error "Workspace not found: $WORKSPACE"
+check_workspace_structure
 
 # ── Package selection by mode ──────────────────────────────────────────────────
 if [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]]; then
