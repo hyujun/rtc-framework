@@ -207,6 +207,15 @@ check_prerequisites() {
   if [[ "$ROS_DISTRO_DETECTED" != "humble" && "$ROS_DISTRO_DETECTED" != "jazzy" ]]; then
     warn "Unsupported ROS2 distro: ${ROS_DISTRO_DETECTED}. Supported: humble, jazzy. Continuing..."
   fi
+
+  # ── venv compatibility check ─────────────────────────────────────────────────
+  if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+    warn "Active virtual environment: ${VIRTUAL_ENV}"
+    warn "ROS2 colcon builds and apt-installed Python packages are system-level."
+    warn "For best compatibility create your venv with:"
+    warn "  python3 -m venv .venv --system-site-packages"
+    warn "This script will also pip-install Python deps into the venv as a fallback."
+  fi
 }
 
 # ── Common: Workspace + build tools ───────────────────────────────────────────
@@ -272,8 +281,10 @@ install_python_base_deps() {
   # numpy. Install numpy inside the venv as well to cover that case.
   if [[ -n "${VIRTUAL_ENV:-}" ]]; then
     warn "Virtual environment detected: ${VIRTUAL_ENV}"
+    warn "apt packages (python3-numpy etc.) are NOT visible inside the venv unless"
+    warn "it was created with --system-site-packages. Installing numpy via pip too."
     info "Installing numpy inside the active venv..."
-    pip install numpy --quiet || true
+    python3 -m pip install numpy --quiet || true
     success "numpy installed in venv"
   fi
 }
@@ -285,10 +296,13 @@ install_pinocchio() {
     success "Pinocchio installed via ${ROS_PKG_PREFIX}-pinocchio"
   else
     warn "${ROS_PKG_PREFIX}-pinocchio not found, trying robotpkg..."
-    sudo sh -c "echo 'deb [arch=amd64] http://robotpkg.openrobots.org/packages/debian/pub $(lsb_release -sc) robotpkg' \
-        > /etc/apt/sources.list.d/robotpkg.list"
+    # Ubuntu 22.04+ deprecates apt-key; Ubuntu 24.04 removes it entirely.
+    # Use gpg keyring method (works on both 22.04 and 24.04).
+    local ROBOTPKG_KEYRING="/usr/share/keyrings/robotpkg-archive-keyring.gpg"
     curl -fsSL http://robotpkg.openrobots.org/packages/debian/robotpkg.key \
-        | sudo apt-key add - 2>/dev/null || true
+        | sudo gpg --batch --yes --dearmor -o "$ROBOTPKG_KEYRING" 2>/dev/null || true
+    sudo sh -c "echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/robotpkg-archive-keyring.gpg] http://robotpkg.openrobots.org/packages/debian/pub $(lsb_release -sc) robotpkg' \
+        > /etc/apt/sources.list.d/robotpkg.list"
     sudo apt-get update -qq
     if sudo apt-get install -y robotpkg-${PYTHON_ROBOTPKG_SUFFIX}-pinocchio >/dev/null 2>&1; then
       success "Pinocchio installed via robotpkg (${PYTHON_ROBOTPKG_SUFFIX})"
@@ -361,6 +375,21 @@ install_python_deps() {
       python3-pyqt5 \
       > /dev/null
   success "Python dependencies installed via apt"
+
+  # apt packages are installed into the system Python's site-packages.
+  # A venv created WITHOUT --system-site-packages cannot see them.
+  # Install the same packages via pip so they are importable inside the venv.
+  if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+    info "Installing Python dependencies inside the active venv (pip)..."
+    python3 -m pip install --quiet \
+        matplotlib \
+        pandas \
+        numpy \
+        scipy \
+        PyQt5 \
+      || warn "One or more pip installs failed — check output above"
+    success "Python dependencies installed in venv"
+  fi
 }
 
 # ── VS Code / GDB debug tools ────────────────────────────────────────────

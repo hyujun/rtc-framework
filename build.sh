@@ -241,6 +241,21 @@ if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
   info "MuJoCo root path: ${MJ_DIR}"
 fi
 
+# ── venv: force system Python for CMake ───────────────────────────────────────
+# When a venv is active, CMake's FindPython picks the venv Python, which may
+# lack numpy headers and cause eigenpy/pinocchio cmake configuration to fail.
+# Force system Python so pinocchio/eigenpy find the apt-installed numpy.
+if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  SYS_PYTHON=$(command -v python3 || true)
+  SYS_PYTHON=$(readlink -f "${SYS_PYTHON}" 2>/dev/null || echo "${SYS_PYTHON}")
+  if [[ "$SYS_PYTHON" == "${VIRTUAL_ENV}"* ]]; then
+    SYS_PYTHON="/usr/bin/python3"
+  fi
+  CMAKE_ARGS+=("-DPython3_EXECUTABLE=${SYS_PYTHON}")
+  CMAKE_ARGS+=("-DPython3_FIND_VIRTUALENV=STANDARD")
+  warn "Venv detected — cmake will use system Python: ${SYS_PYTHON}"
+fi
+
 # compile_commands.json: Debug 빌드이거나 --export-compile-commands 지정 시 자동 활성화
 if [[ "$EXPORT_COMPILE_COMMANDS" -eq 1 || "$BUILD_TYPE" == "Debug" ]]; then
   CMAKE_ARGS+=("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
