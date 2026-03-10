@@ -3,7 +3,22 @@
 
 #include <array>
 #include <span>
+#include <string>
 #include <string_view>
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/algorithm/frames.hpp>
+#include <pinocchio/algorithm/kinematics.hpp>
+#include <pinocchio/multibody/data.hpp>
+#include <pinocchio/multibody/model.hpp>
+#include <pinocchio/parsers/urdf.hpp>
+#pragma GCC diagnostic pop
+
+#include <Eigen/Core>
 
 #include "ur5e_rt_controller/rt_controller_interface.hpp"
 
@@ -21,11 +36,12 @@ public:
     std::array<double, 6> kp{{5.0, 5.0, 5.0, 5.0, 5.0, 5.0}};
   };
 
-  PController() noexcept;
-  explicit PController(Gains gains) noexcept;
+  explicit PController(std::string_view urdf_path);
+  PController(std::string_view urdf_path, Gains gains);
 
-  template<NonNegativeFloat T>
-  explicit PController(T kp) noexcept
+  template<typename T>
+  explicit PController(std::string_view urdf_path, T kp)
+  : PController(urdf_path)
   {
     gains_.kp.fill(static_cast<double>(kp));
   }
@@ -58,6 +74,11 @@ private:
   Gains gains_;
   std::array<double, kNumRobotJoints> robot_target_{};
   std::array<double, kNumHandJoints> hand_target_{};
+
+  pinocchio::Model model_;
+  pinocchio::Data data_;
+  pinocchio::JointIndex end_id_{0};
+  Eigen::VectorXd q_;
 
   // Clamps each command to [-kMaxJointVelocity, +kMaxJointVelocity].
   static constexpr double kMaxJointVelocity = 2.0;  // rad/s

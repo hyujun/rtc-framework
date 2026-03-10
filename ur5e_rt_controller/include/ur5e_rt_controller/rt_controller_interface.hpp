@@ -56,7 +56,7 @@ public:
   //   Called from the ~/controller_gains subscriber (sensor thread).
   //   `gains` is a flat array whose layout is controller-specific:
   //   document the layout in the controller's header.  Default is a no-op.
-  virtual void LoadConfig(const YAML::Node & cfg)               {(void)cfg;}
+  virtual void LoadConfig(const YAML::Node & cfg) {(void)cfg;}
   virtual void UpdateGainsFromMsg(std::span<const double> gains) noexcept
   {
     (void)gains;

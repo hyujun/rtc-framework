@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <pinocchio/math/rpy.hpp>
 
 namespace ur5e_rt_controller
 {
@@ -64,9 +65,10 @@ ControllerOutput OperationalSpaceController::Compute(
     const double duration = std::max(
       0.01,
       std::max(trans_dist / gains_.trajectory_speed,
-               ang_dist  / gains_.trajectory_angular_speed));
+               ang_dist / gains_.trajectory_angular_speed));
 
-    trajectory_.initialize(tcp, pinocchio::Motion::Zero(), goal_pose_, pinocchio::Motion::Zero(), duration);
+    trajectory_.initialize(tcp, pinocchio::Motion::Zero(), goal_pose_, pinocchio::Motion::Zero(),
+        duration);
     trajectory_time_ = 0.0;
     new_target_ = false;
   }
@@ -137,6 +139,15 @@ ControllerOutput OperationalSpaceController::Compute(
     output.robot_commands[i] = state.robot.positions[i] + dq_arr[i] * dt;
   }
   output.actual_target_positions = pose_target_;
+
+  Eigen::Vector3d rpy_current = pinocchio::rpy::matrixToRpy(tcp.rotation());
+  output.actual_task_positions[0] = tcp.translation().x();
+  output.actual_task_positions[1] = tcp.translation().y();
+  output.actual_task_positions[2] = tcp.translation().z();
+  output.actual_task_positions[3] = rpy_current[0];
+  output.actual_task_positions[4] = rpy_current[1];
+  output.actual_task_positions[5] = rpy_current[2];
+
   return output;
 }
 
@@ -235,18 +246,20 @@ void OperationalSpaceController::LoadConfig(const YAML::Node & cfg)
   if (!cfg) {return;}
   auto load3 = [](const YAML::Node & n, std::array<double, 3> & arr) {
       if (n && n.IsSequence() && n.size() == 3) {
-        for (std::size_t i = 0; i < 3; ++i) {arr[i] = n[i].as<double>();}
+        for (std::size_t i = 0; i < 3; ++i) {
+          arr[i] = n[i].as<double>();
+        }
       }
     };
   load3(cfg["kp_pos"], gains_.kp_pos);
   load3(cfg["kd_pos"], gains_.kd_pos);
   load3(cfg["kp_rot"], gains_.kp_rot);
   load3(cfg["kd_rot"], gains_.kd_rot);
-  if (cfg["damping"])                    {gains_.damping = cfg["damping"].as<double>();}
+  if (cfg["damping"]) {gains_.damping = cfg["damping"].as<double>();}
   if (cfg["enable_gravity_compensation"]) {
     gains_.enable_gravity_compensation = cfg["enable_gravity_compensation"].as<bool>();
   }
-  if (cfg["trajectory_speed"])         {gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();}
+  if (cfg["trajectory_speed"]) {gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();}
   if (cfg["trajectory_angular_speed"]) {
     gains_.trajectory_angular_speed = cfg["trajectory_angular_speed"].as<double>();
   }
@@ -257,13 +270,21 @@ void OperationalSpaceController::UpdateGainsFromMsg(std::span<const double> gain
   // layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1),
   //          trajectory_speed, trajectory_angular_speed]
   if (gains.size() < 14) {return;}
-  for (std::size_t i = 0; i < 3; ++i) {gains_.kp_pos[i] = gains[i];}
-  for (std::size_t i = 0; i < 3; ++i) {gains_.kd_pos[i] = gains[3 + i];}
-  for (std::size_t i = 0; i < 3; ++i) {gains_.kp_rot[i] = gains[6 + i];}
-  for (std::size_t i = 0; i < 3; ++i) {gains_.kd_rot[i] = gains[9 + i];}
-  gains_.damping                    = gains[12];
+  for (std::size_t i = 0; i < 3; ++i) {
+    gains_.kp_pos[i] = gains[i];
+  }
+  for (std::size_t i = 0; i < 3; ++i) {
+    gains_.kd_pos[i] = gains[3 + i];
+  }
+  for (std::size_t i = 0; i < 3; ++i) {
+    gains_.kp_rot[i] = gains[6 + i];
+  }
+  for (std::size_t i = 0; i < 3; ++i) {
+    gains_.kd_rot[i] = gains[9 + i];
+  }
+  gains_.damping = gains[12];
   gains_.enable_gravity_compensation = gains[13] > 0.5;
-  if (gains.size() >= 15) {gains_.trajectory_speed         = gains[14];}
+  if (gains.size() >= 15) {gains_.trajectory_speed = gains[14];}
   if (gains.size() >= 16) {gains_.trajectory_angular_speed = gains[15];}
 }
 

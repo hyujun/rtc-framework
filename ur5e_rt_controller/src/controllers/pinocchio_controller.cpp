@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <pinocchio/math/rpy.hpp>
 
 namespace ur5e_rt_controller
 {
@@ -90,6 +91,17 @@ ControllerOutput PinocchioController::Compute(
 
   output.actual_target_positions = traj_state.positions;
   output.robot_commands = ClampCommands(output.robot_commands);
+
+  const auto last_joint = static_cast<pinocchio::JointIndex>(model_.njoints - 1);
+  const pinocchio::SE3 & tcp = data_.oMi[last_joint];
+  Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
+  output.actual_task_positions[0] = tcp.translation().x();
+  output.actual_task_positions[1] = tcp.translation().y();
+  output.actual_task_positions[2] = tcp.translation().z();
+  output.actual_task_positions[3] = rpy[0];
+  output.actual_task_positions[4] = rpy[1];
+  output.actual_task_positions[5] = rpy[2];
+
   return output;
 }
 
@@ -234,10 +246,14 @@ void PinocchioController::LoadConfig(const YAML::Node & cfg)
 {
   if (!cfg) {return;}
   if (cfg["kp"] && cfg["kp"].IsSequence() && cfg["kp"].size() == 6) {
-    for (std::size_t i = 0; i < 6; ++i) {gains_.kp[i] = cfg["kp"][i].as<double>();}
+    for (std::size_t i = 0; i < 6; ++i) {
+      gains_.kp[i] = cfg["kp"][i].as<double>();
+    }
   }
   if (cfg["kd"] && cfg["kd"].IsSequence() && cfg["kd"].size() == 6) {
-    for (std::size_t i = 0; i < 6; ++i) {gains_.kd[i] = cfg["kd"][i].as<double>();}
+    for (std::size_t i = 0; i < 6; ++i) {
+      gains_.kd[i] = cfg["kd"][i].as<double>();
+    }
   }
   if (cfg["enable_gravity_compensation"]) {
     gains_.enable_gravity_compensation = cfg["enable_gravity_compensation"].as<bool>();
@@ -254,9 +270,13 @@ void PinocchioController::UpdateGainsFromMsg(std::span<const double> gains) noex
 {
   // layout: [kp×6, kd×6, enable_gravity(0/1), enable_coriolis(0/1), trajectory_speed]
   if (gains.size() < 14) {return;}
-  for (std::size_t i = 0; i < 6; ++i) {gains_.kp[i] = gains[i];}
-  for (std::size_t i = 0; i < 6; ++i) {gains_.kd[i] = gains[6 + i];}
-  gains_.enable_gravity_compensation  = gains[12] > 0.5;
+  for (std::size_t i = 0; i < 6; ++i) {
+    gains_.kp[i] = gains[i];
+  }
+  for (std::size_t i = 0; i < 6; ++i) {
+    gains_.kd[i] = gains[6 + i];
+  }
+  gains_.enable_gravity_compensation = gains[12] > 0.5;
   gains_.enable_coriolis_compensation = gains[13] > 0.5;
   if (gains.size() >= 15) {gains_.trajectory_speed = gains[14];}
 }

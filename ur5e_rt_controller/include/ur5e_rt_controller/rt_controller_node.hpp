@@ -39,10 +39,10 @@ public:
   ~RtControllerNode() override;
 
   // Public accessors for main() to retrieve callback groups
-  rclcpp::CallbackGroup::SharedPtr GetRtGroup()     const { return cb_group_rt_; }
-  rclcpp::CallbackGroup::SharedPtr GetSensorGroup() const { return cb_group_sensor_; }
-  rclcpp::CallbackGroup::SharedPtr GetLogGroup()    const { return cb_group_log_; }
-  rclcpp::CallbackGroup::SharedPtr GetAuxGroup()    const { return cb_group_aux_; }
+  rclcpp::CallbackGroup::SharedPtr GetRtGroup()     const {return cb_group_rt_;}
+  rclcpp::CallbackGroup::SharedPtr GetSensorGroup() const {return cb_group_sensor_;}
+  rclcpp::CallbackGroup::SharedPtr GetLogGroup()    const {return cb_group_log_;}
+  rclcpp::CallbackGroup::SharedPtr GetAuxGroup()    const {return cb_group_aux_;}
 
 private:
   // ── Log file helpers ──────────────────────────────────────────────────────
@@ -85,6 +85,8 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr cmd_pub_;
   std_msgs::msg::Float64MultiArray                               cmd_msg_;
   std::mutex                                                     cmd_pub_mutex_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr task_pos_pub_;
+  std_msgs::msg::Float64MultiArray                               task_pos_msg_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr              estop_pub_;
 
   rclcpp::TimerBase::SharedPtr control_timer_;
@@ -93,8 +95,8 @@ private:
 
   // ── Domain objects ────────────────────────────────────────────────────────
   std::vector<std::unique_ptr<ur5e_rt_controller::RTControllerInterface>> controllers_;
-  std::atomic<int>                                  active_controller_idx_{1};
-  std::unique_ptr<ur5e_rt_controller::DataLogger>   logger_;
+  std::atomic<int> active_controller_idx_{1};
+  std::unique_ptr<ur5e_rt_controller::DataLogger> logger_;
   ur5e_rt_controller::ControlLogBuffer              log_buffer_{};              // SPSC ring buffer
   ur5e_rt_controller::ControllerTimingProfiler      timing_profiler_{};         // Compute() timing
 

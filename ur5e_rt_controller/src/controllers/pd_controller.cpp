@@ -3,18 +3,23 @@
 
 #include <algorithm>  // std::copy, std::clamp
 #include <cmath>
+#include <pinocchio/math/rpy.hpp>
 
 namespace ur5e_rt_controller
 {
 
-PDController::PDController() noexcept
-: gains_(Gains{})
+PDController::PDController(std::string_view urdf_path)
+: PDController(urdf_path, Gains{}) {}
+
+PDController::PDController(std::string_view urdf_path, Gains gains)
+: gains_(gains), data_(pinocchio::Model{})
 {
+  pinocchio::urdf::buildModel(std::string(urdf_path), model_);
+  data_ = pinocchio::Data(model_);
+  end_id_ = static_cast<pinocchio::JointIndex>(model_.njoints - 1);
+  q_ = Eigen::VectorXd::Zero(model_.nv);
   trajectory_.initialize({}, {}, 0.0);
 }
-
-PDController::PDController(Gains gains) noexcept
-: gains_(gains) {}
 
 ControllerOutput PDController::Compute(const ControllerState & state) noexcept
 {
@@ -31,6 +36,21 @@ ControllerOutput PDController::Compute(const ControllerState & state) noexcept
     }
     output.actual_target_positions = kSafePosition;
     output.robot_commands = ClampCommands(output.robot_commands);
+
+    for (int i = 0; i < kNumRobotJoints; ++i) {
+      q_[static_cast<Eigen::Index>(i)] = state.robot.positions[i];
+    }
+    pinocchio::forwardKinematics(model_, data_, q_);
+    pinocchio::updateFramePlacements(model_, data_);
+    const pinocchio::SE3 & tcp = data_.oMi[end_id_];
+    Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
+    output.actual_task_positions[0] = tcp.translation().x();
+    output.actual_task_positions[1] = tcp.translation().y();
+    output.actual_task_positions[2] = tcp.translation().z();
+    output.actual_task_positions[3] = rpy[0];
+    output.actual_task_positions[4] = rpy[1];
+    output.actual_task_positions[5] = rpy[2];
+
     new_target_ = true; // force trajectory regeneration when E-STOP clears
     return output;
   }
@@ -76,6 +96,21 @@ ControllerOutput PDController::Compute(const ControllerState & state) noexcept
 
   output.actual_target_positions = traj_state.positions;
   output.robot_commands = ClampCommands(output.robot_commands);
+
+  for (int i = 0; i < kNumRobotJoints; ++i) {
+    q_[static_cast<Eigen::Index>(i)] = state.robot.positions[i];
+  }
+  pinocchio::forwardKinematics(model_, data_, q_);
+  pinocchio::updateFramePlacements(model_, data_);
+  const pinocchio::SE3 & tcp = data_.oMi[end_id_];
+  Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
+  output.actual_task_positions[0] = tcp.translation().x();
+  output.actual_task_positions[1] = tcp.translation().y();
+  output.actual_task_positions[2] = tcp.translation().z();
+  output.actual_task_positions[3] = rpy[0];
+  output.actual_task_positions[4] = rpy[1];
+  output.actual_task_positions[5] = rpy[2];
+
   return output;
 }
 
@@ -136,10 +171,14 @@ void PDController::LoadConfig(const YAML::Node & cfg)
 {
   if (!cfg) {return;}
   if (cfg["kp"] && cfg["kp"].IsSequence() && cfg["kp"].size() == 6) {
-    for (std::size_t i = 0; i < 6; ++i) {gains_.kp[i] = cfg["kp"][i].as<double>();}
+    for (std::size_t i = 0; i < 6; ++i) {
+      gains_.kp[i] = cfg["kp"][i].as<double>();
+    }
   }
   if (cfg["kd"] && cfg["kd"].IsSequence() && cfg["kd"].size() == 6) {
-    for (std::size_t i = 0; i < 6; ++i) {gains_.kd[i] = cfg["kd"][i].as<double>();}
+    for (std::size_t i = 0; i < 6; ++i) {
+      gains_.kd[i] = cfg["kd"][i].as<double>();
+    }
   }
   if (cfg["trajectory_speed"]) {
     gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();
@@ -150,8 +189,12 @@ void PDController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
 {
   // layout: [kp×6, kd×6]
   if (gains.size() < 12) {return;}
-  for (std::size_t i = 0; i < 6; ++i) {gains_.kp[i] = gains[i];}
-  for (std::size_t i = 0; i < 6; ++i) {gains_.kd[i] = gains[6 + i];}
+  for (std::size_t i = 0; i < 6; ++i) {
+    gains_.kp[i] = gains[i];
+  }
+  for (std::size_t i = 0; i < 6; ++i) {
+    gains_.kd[i] = gains[6 + i];
+  }
 }
 
 }  // namespace ur5e_rt_controller

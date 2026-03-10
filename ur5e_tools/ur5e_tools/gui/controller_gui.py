@@ -31,7 +31,7 @@ TARGET_LABELS = {
     0: ["q1 (deg)", "q2 (deg)", "q3 (deg)", "q4 (deg)", "q5 (deg)", "q6 (deg)"],
     1: ["q1 (deg)", "q2 (deg)", "q3 (deg)", "q4 (deg)", "q5 (deg)", "q6 (deg)"],
     2: ["q1 (deg)", "q2 (deg)", "q3 (deg)", "q4 (deg)", "q5 (deg)", "q6 (deg)"],
-    3: ["X (m)", "Y (m)", "Z (m)", "q4_null (deg)", "q5_null (deg)", "q6_null (deg)"],
+    3: ["X (m)", "Y (m)", "Z (m)", "Roll (deg) / q4_null", "Pitch (deg) / q5_null", "Yaw (deg) / q6_null"],
     4: ["X (m)", "Y (m)", "Z (m)", "Roll (deg)", "Pitch (deg)", "Yaw (deg)"],
 }
 
@@ -78,10 +78,11 @@ GAIN_DEFS = {
         ("traj speed",      1, [1.0],       False),
     ],
     3: [
-        ("kp",              3, [1.0] * 3,  False),
+        ("kp",              6, [1.0] * 6,  False),
         ("damping",         1, [0.01],      False),
         ("null_kp",         1, [0.5],       False),
         ("null space",      1, [1],         True),
+        ("control 6dof",    1, [0],         True),
     ],
     4: [
         ("kp_pos",          3, [1.0] * 3,  False),
@@ -100,7 +101,7 @@ GAIN_COL_HEADERS = {
     0: ["J1", "J2", "J3", "J4", "J5", "J6"],
     1: ["J1", "J2", "J3", "J4", "J5", "J6"],
     2: ["J1", "J2", "J3", "J4", "J5", "J6"],
-    3: ["X",  "Y",  "Z"],
+    3: ["X",  "Y",  "Z", "Rx", "Ry", "Rz"],
     4: ["X",  "Y",  "Z"],
 }
 
@@ -121,6 +122,10 @@ class ControllerGUI(Node):
         self.current_positions = [0.0] * NUM_JOINTS
         self.create_subscription(JointState, '/joint_states',
                                  self._joint_state_cb, 10)
+        self.current_task_positions = [0.0] * 6
+        self.create_subscription(Float64MultiArray, '/rt_controller/current_task_position',
+                                 self._task_pos_cb, 10)
+        
         self.estop_active = False
         self.create_subscription(Bool, '/system/estop_status',
                                  self._estop_cb, 10)
@@ -140,14 +145,30 @@ class ControllerGUI(Node):
         if len(msg.position) >= NUM_JOINTS:
             self.current_positions = list(msg.position[:NUM_JOINTS])
 
+    def _task_pos_cb(self, msg: Float64MultiArray):
+        if len(msg.data) >= 6:
+            self.current_task_positions = list(msg.data[:6])
+
     def _estop_cb(self, msg: Bool):
         self.estop_active = msg.data
 
     def _refresh_current_display(self):
-        if not hasattr(self, '_current_labels'):
-            return
-        for i, lbl in enumerate(self._current_labels):
-            lbl.config(text=f"{math.degrees(self.current_positions[i]):.2f}°")
+        if hasattr(self, '_status_labels_values'):
+            idx = self.selected_ctrl.get()
+            if JOINT_SPACE[idx]:
+                for i in range(NUM_JOINTS):
+                    val_rad = self.current_positions[i]
+                    val_deg = math.degrees(val_rad)
+                    self._status_labels_values[i].config(text=f"{val_rad:.4f} rad  ({val_deg:.2f}°)")
+            else:
+                for i in range(6):
+                    val = self.current_task_positions[i]
+                    if i < 3:
+                        self._status_labels_values[i].config(text=f"{val:.4f} m")
+                    else:
+                        val_deg = math.degrees(val)
+                        self._status_labels_values[i].config(text=f"{val:.4f} rad  ({val_deg:.2f}°)")
+
         if hasattr(self, '_estop_label'):
             if self.estop_active:
                 self._estop_label.config(
@@ -161,7 +182,7 @@ class ControllerGUI(Node):
     def _run_gui(self):
         self.root = tk.Tk()
         self.root.title("UR5e Controller GUI")
-        self.root.geometry("760x920")
+        self.root.geometry("760x1000")
         self.root.resizable(True, True)
         self.root.configure(bg="#1e1e2e")
 
@@ -260,13 +281,13 @@ class ControllerGUI(Node):
         self._gains_applied_inner = tk.Frame(self._gains_frame, bg='#1e1e2e')
         self._gains_applied_inner.pack(fill='x', padx=4, pady=(0, 4))
 
-        # ── Position Table ─────────────────────────────────────────────────────
-        pos_frame = ttk.LabelFrame(self.root, text="Joint / Task Positions",
+        # ── Target Inputs ─────────────────────────────────────────────────────
+        pos_frame = ttk.LabelFrame(self.root, text="Target Inputs",
                                    padding=8)
         pos_frame.pack(fill='both', expand=True, padx=12, pady=4)
 
         hdr_font = tkfont.Font(family='Segoe UI', size=9, weight='bold')
-        for col, txt in enumerate(["Axis", "Target", "Step (±)", "Current"]):
+        for col, txt in enumerate(["Axis", "Target", "Step (±)"]):
             width = 15 if col != 2 else 8
             tk.Label(pos_frame, text=txt, bg='#1e1e2e', fg='#89b4fa',
                      font=hdr_font, width=width, anchor='center').grid(
@@ -297,11 +318,23 @@ class ControllerGUI(Node):
             self._step_entries.append(step_ent)
             ttk.Button(btn_frame_i, text="+", width=2, command=lambda idx=i: self._add_step(idx, 1)).pack(side='left', padx=1)
 
-            clbl = tk.Label(pos_frame, text="---", bg='#313244',
-                            fg='#f38ba8', width=15, anchor='center',
-                            font=('Courier New', 9))
-            clbl.grid(row=i + 1, column=3, padx=4, pady=2)
-            self._current_labels.append(clbl)
+        # ── Current Status ────────────────────────────────────────────────────
+        status_frame = ttk.LabelFrame(self.root, text="Current Status", padding=8)
+        status_frame.pack(fill='both', expand=False, padx=12, pady=4)
+
+        self._status_labels_names: list[tk.Label] = []
+        self._status_labels_values: list[tk.Label] = []
+
+        for i in range(6):
+            name_lbl = tk.Label(status_frame, text=f"J{i+1}:", 
+                                bg='#1e1e2e', fg='#cdd6f4', width=10, anchor='e', font=('Segoe UI', 9, 'bold'))
+            name_lbl.grid(row=i, column=0, padx=(10, 5), pady=2)
+            self._status_labels_names.append(name_lbl)
+
+            val_lbl = tk.Label(status_frame, text="0.0000 rad  (0.00°)", 
+                               bg='#313244', fg='#a6e3a1', width=30, anchor='center', font=('Courier New', 10, 'bold'))
+            val_lbl.grid(row=i, column=1, padx=5, pady=2)
+            self._status_labels_values.append(val_lbl)
 
         # ── Action Buttons ─────────────────────────────────────────────────────
         btn_frame = tk.Frame(self.root, bg='#1e1e2e')
@@ -480,6 +513,20 @@ class ControllerGUI(Node):
 
         if JOINT_SPACE[idx]:
             self._set_target_entries(self.current_positions)
+        else:
+            self._set_target_entries(self.current_task_positions)
+
+        # Update status labels names
+        status_names = TARGET_LABELS[idx]
+        if not JOINT_SPACE[idx]:
+            # For task space, we want cleaner labels for the status display if possible,
+            # but TARGET_LABELS[idx] (CLIK/OSC) already has "X (m)", "Roll (deg)", etc.
+            # Let's just use what's in TARGET_LABELS[idx] but maybe strip the unit since we show it in value.
+            # Actually, keeping it consistent with TARGET_LABELS is fine.
+            pass
+        
+        for i, name_lbl in enumerate(self._status_labels_names):
+            name_lbl.config(text=f"{TARGET_LABELS[idx][i]}:")
 
     def _publish_gains(self):
         values: list[float] = []
@@ -503,7 +550,11 @@ class ControllerGUI(Node):
         self._update_applied_display()
 
     def _copy_current_to_target(self):
-        self._set_target_entries(self.current_positions)
+        idx = self.selected_ctrl.get()
+        if JOINT_SPACE[idx]:
+            self._set_target_entries(self.current_positions)
+        else:
+            self._set_target_entries(self.current_task_positions)
 
     def _set_target_entries(self, values: list[float]):
         angle_indices = ANGLE_INDICES[self.selected_ctrl.get()]

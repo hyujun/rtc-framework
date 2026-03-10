@@ -1,5 +1,6 @@
 clik_controller:
-  kp: [1.0, 1.0, 1.0]
+  kp: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   damping: 0.01
   null_kp: 0.5
   trajectory_speed: 0.1
+  control_6dof: false

@@ -4,7 +4,23 @@
 #include <array>
 #include <atomic>
 #include <span>
+#include <string>
 #include <string_view>
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/algorithm/frames.hpp>
+#include <pinocchio/algorithm/kinematics.hpp>
+#include <pinocchio/multibody/data.hpp>
+#include <pinocchio/multibody/model.hpp>
+#include <pinocchio/parsers/urdf.hpp>
+#pragma GCC diagnostic pop
+
+#include <Eigen/Core>
+
 #include "ur5e_rt_controller/rt_controller_interface.hpp"
 #include "ur5e_rt_controller/trajectory/joint_space_trajectory.hpp"
 
@@ -28,8 +44,8 @@ public:
     double trajectory_speed{1.0};
   };
 
-  PDController() noexcept;
-  explicit PDController(Gains gains) noexcept;
+  explicit PDController(std::string_view urdf_path);
+  PDController(std::string_view urdf_path, Gains gains);
 
   [[nodiscard]] ControllerOutput Compute(
     const ControllerState & state) noexcept override;
@@ -80,6 +96,11 @@ private:
   // 50 Hz timeout-monitor thread.
   std::atomic<bool> estopped_{false};
   std::atomic<bool> hand_estopped_{false};
+
+  pinocchio::Model model_;
+  pinocchio::Data data_;
+  pinocchio::JointIndex end_id_{0};
+  Eigen::VectorXd q_;
 
   [[nodiscard]] static std::array<double, kNumRobotJoints> ClampCommands(
     std::span<const double, kNumRobotJoints> commands) noexcept;

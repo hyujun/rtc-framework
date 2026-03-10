@@ -63,10 +63,10 @@ int main(int argc, char ** argv)
   // number of online CPUs detected via sysconf(_SC_NPROCESSORS_ONLN).
   const auto cfgs = urtc::SelectThreadConfigs();
 
-  auto t_rt     = make_thread(rt_executor,     cfgs.rt_control);
+  auto t_rt = make_thread(rt_executor, cfgs.rt_control);
   auto t_sensor = make_thread(sensor_executor, cfgs.sensor);
-  auto t_log    = make_thread(log_executor,    cfgs.logging);
-  auto t_aux    = make_thread(aux_executor,    cfgs.aux);
+  auto t_log = make_thread(log_executor, cfgs.logging);
+  auto t_aux = make_thread(aux_executor, cfgs.aux);
 
   t_rt.join();
   t_sensor.join();

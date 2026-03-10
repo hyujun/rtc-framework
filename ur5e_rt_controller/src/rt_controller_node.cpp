@@ -46,11 +46,11 @@ std::vector<ControllerEntry> MakeControllerEntries()
   return {
     {
       "p_controller",
-      [](const std::string &) { return std::make_unique<urtc::PController>(); }
+      [](const std::string & p) {return std::make_unique<urtc::PController>(p);}
     },
     {
       "pd_controller",
-      [](const std::string &) { return std::make_unique<urtc::PDController>(); }
+      [](const std::string & p) {return std::make_unique<urtc::PDController>(p);}
     },
     {
       "pinocchio_controller",
@@ -183,12 +183,12 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("enable_estop", true);
   declare_parameter("initial_controller", "pd_controller");
 
-  control_rate_   = get_parameter("control_rate").as_double();
+  control_rate_ = get_parameter("control_rate").as_double();
   enable_logging_ = get_parameter("enable_logging").as_bool();
-  enable_estop_   = get_parameter("enable_estop").as_bool();
+  enable_estop_ = get_parameter("enable_estop").as_bool();
 
   if (enable_logging_) {
-    const std::string log_dir_str  = get_parameter("log_dir").as_string();
+    const std::string log_dir_str = get_parameter("log_dir").as_string();
     const int         max_log_files = get_parameter("max_log_files").as_int();
     const std::filesystem::path log_dir{log_dir_str};
     std::filesystem::create_directories(log_dir);
@@ -217,7 +217,8 @@ void RtControllerNode::DeclareAndLoadParameters()
   try {
     config_dir = ament_index_cpp::get_package_share_directory("ur5e_rt_controller") +
       "/config/controllers/";
-  } catch (...) {}
+  } catch (...) {
+  }
 
   // ── Instantiate and configure all registered controllers ─────────────────
   // Each factory constructs the controller with default gains, then
@@ -232,7 +233,7 @@ void RtControllerNode::DeclareAndLoadParameters()
     if (!config_dir.empty()) {
       try {
         const std::string yaml_path = config_dir + std::string(entry.config_key) + ".yaml";
-        const YAML::Node file_node  = YAML::LoadFile(yaml_path);
+        const YAML::Node file_node = YAML::LoadFile(yaml_path);
         ctrl->LoadConfig(file_node[std::string(entry.config_key)]);
       } catch (const std::exception & e) {
         RCLCPP_WARN(get_logger(),
@@ -243,7 +244,7 @@ void RtControllerNode::DeclareAndLoadParameters()
 
     // Register both the class name (e.g. "PDController") and the config-key
     // alias (e.g. "pd_controller") so either form works as initial_controller.
-    name_to_idx[std::string(ctrl->Name())]    = static_cast<int>(i);
+    name_to_idx[std::string(ctrl->Name())] = static_cast<int>(i);
     name_to_idx[std::string(entry.config_key)] = static_cast<int>(i);
 
     controllers_.push_back(std::move(ctrl));
@@ -325,6 +326,10 @@ void RtControllerNode::CreatePublishers()
   cmd_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
       "/forward_position_controller/commands", 10);
   cmd_msg_.data.resize(urtc::kNumRobotJoints, 0.0);
+
+  task_pos_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
+      "/rt_controller/current_task_position", 10);
+  task_pos_msg_.data.resize(6, 0.0);
 
   estop_pub_ =
     create_publisher<std_msgs::msg::Bool>("/system/estop_status", 10);
@@ -452,7 +457,7 @@ void RtControllerNode::ControlLoop()
   urtc::ControllerState state{};
   {
     std::lock_guard lock(state_mutex_);
-    state.robot.positions  = current_positions_;
+    state.robot.positions = current_positions_;
     state.robot.velocities = current_velocities_;
   }
   // Fix 4: copy target_positions_ into target_snapshot_ while holding the
@@ -462,7 +467,7 @@ void RtControllerNode::ControlLoop()
     std::lock_guard lock(target_mutex_);
     target_snapshot_ = target_positions_;
   }
-  state.robot.dt  = 1.0 / control_rate_;
+  state.robot.dt = 1.0 / control_rate_;
   state.iteration = loop_count_;
 
   int active_idx = active_controller_idx_.load(std::memory_order_acquire);
@@ -476,6 +481,11 @@ void RtControllerNode::ControlLoop()
     std::copy(output.robot_commands.begin(), output.robot_commands.end(),
               cmd_msg_.data.begin());
     cmd_pub_->publish(cmd_msg_);
+
+    std::copy(output.actual_task_positions.begin(), output.actual_task_positions.end(),
+              task_pos_msg_.data.begin());
+    task_pos_pub_->publish(task_pos_msg_);
+
     cmd_pub_mutex_.unlock();
   }
 
@@ -488,11 +498,11 @@ void RtControllerNode::ControlLoop()
     }
 
     const urtc::LogEntry entry{
-      .timestamp         = current_time - start_time_,
+      .timestamp = current_time - start_time_,
       .current_positions = state.robot.positions,
-      .target_positions  = output.actual_target_positions,
-      .commands          = output.robot_commands,
-      .compute_time_us   = timing_profiler_.LastComputeUs(),
+      .target_positions = output.actual_target_positions,
+      .commands = output.robot_commands,
+      .compute_time_us = timing_profiler_.LastComputeUs(),
     };
     static_cast<void>(log_buffer_.Push(entry));  // silently drops if buffer is full
   }

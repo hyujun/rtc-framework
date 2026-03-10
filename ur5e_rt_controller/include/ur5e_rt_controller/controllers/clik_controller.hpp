@@ -73,11 +73,12 @@ public:
   // ── Gain / feature configuration ─────────────────────────────────────────
   struct Gains
   {
-    std::array<double, 3> kp{{1.0, 1.0, 1.0}}; ///< Cartesian position gain   [1/s]
+    std::array<double, 6> kp{{1.0, 1.0, 1.0, 1.0, 1.0, 1.0}}; ///< Cartesian position/orientation gain [1/s]
     double damping{0.01};            ///< Damping factor λ for J^#  (singularity robustness)
     double null_kp{0.5};             ///< Null-space joint-centering gain [1/s]
     bool   enable_null_space{true};  ///< Enable null-space secondary task
     double trajectory_speed{0.1};  ///< Max translational speed for trajectory [m/s]
+    bool   control_6dof{false};      ///< Enable 6-DOF (translation + orientation) control
   };
 
   /// @param urdf_path  Absolute path to the UR5e URDF file.
@@ -137,13 +138,19 @@ private:
   Eigen::VectorXd null_err_;   ///< nv: (q_null − q_current)
   Eigen::VectorXd null_dq_;    ///< nv: null-space contribution to dq
   Eigen::Vector3d pos_error_;  ///< 3: Cartesian position error
+  Eigen::Matrix<double, 6, 6> JJt_6d_;       ///< 6x6: J_full * J_full^T + λ²I
+  Eigen::Matrix<double, 6, 6> JJt_inv_6d_;   ///< 6x6: (J_full * J_full^T + λ²I)^{-1}
+  Eigen::MatrixXd Jpinv_6d_;                 ///< nv×6: damped pseudoinverse J_full^#
+  Eigen::Matrix<double, 6, 1> pos_error_6d_; ///< 6: Cartesian position+orientation error
 
   // LDLT decomposition of JJt_ (3×3) — fixed-size → lives on the stack,
   // no dynamic allocation at construction or on the RT path.
   Eigen::LDLT<Eigen::Matrix3d> ldlt_;
+  Eigen::LDLT<Eigen::Matrix<double, 6, 6>> ldlt_6d_;
 
   // ── Controller state ──────────────────────────────────────────────────────
   Gains gains_;
+  pinocchio::SE3 tcp_target_pose_{pinocchio::SE3::Identity()};
   std::array<double, 3> tcp_target_{};
   /// Null-space reference configuration.  Joints 0–2 from this array;
   /// joints 3–5 are overwritten by SetRobotTarget(target[3..5]).
@@ -152,6 +159,7 @@ private:
   std::array<double, 6> pose_error_cache_{};               ///< diagnostic cache
   std::array<double, 3> tcp_position_{};                ///< diagnostic cache
 
+  bool target_initialized_{false};
   bool new_target_{false};
   trajectory::TaskSpaceTrajectory trajectory_;
   double trajectory_time_{0.0};
