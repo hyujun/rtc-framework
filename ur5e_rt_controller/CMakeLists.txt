@@ -20,6 +20,12 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+
+# Pre-find Python3 with NumPy so eigenpy's cmake detection succeeds.
+# On Ubuntu 24.04 / ROS2 Jazzy, eigenpy's python.cmake fails to detect numpy
+# unless Python3 (with NumPy component) is found before find_package(pinocchio).
+find_package(Python3 COMPONENTS Interpreter Development NumPy)
+
 find_package(pinocchio REQUIRED)
 find_package(ur5e_rt_base REQUIRED)
 find_package(ament_index_cpp REQUIRED)

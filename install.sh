@@ -256,6 +256,19 @@ install_ur_driver() {
   success "UR robot driver and CycloneDDS installed"
 }
 
+# ── Python dev headers + NumPy (required by eigenpy cmake detection) ───────────
+# eigenpy's python.cmake calls FIND_NUMPY at cmake configure time.
+# python3-dev provides Python.h; python3-numpy provides numpy headers.
+# Must be installed before colcon build (and ideally before pinocchio apt install).
+install_python_base_deps() {
+  info "Installing Python dev headers and NumPy (required by eigenpy cmake)..."
+  sudo apt-get install -y \
+      python3-dev \
+      python3-numpy \
+      > /dev/null
+  success "python3-dev and python3-numpy installed"
+}
+
 # ── Pinocchio (all modes — needed by PinocchioController / ClikController) ────
 install_pinocchio() {
   info "Installing Pinocchio (model-based controllers, ${ROS_PKG_PREFIX})..."
@@ -654,6 +667,8 @@ print_summary() {
 if [[ "$SKIP_DEPS" -eq 0 ]]; then
   check_prerequisites
   setup_workspace
+
+  install_python_base_deps
 
   case "$MODE" in
     sim)
