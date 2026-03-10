@@ -5,7 +5,7 @@ import json
 import numpy as np
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import QTimer, Qt
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QColor, QBrush
 
 import rclpy
 from rclpy.node import Node
@@ -24,6 +24,10 @@ class MotionEditor(QMainWindow):
         self.pose_descriptions = ["" for _ in range(self.MAX_POSES)]
         self.current_q = np.zeros(6)
         self.selected_row = 0
+        self._play_queue = []
+        self._play_step = 0
+        self._play_timer = QTimer()
+        self._play_timer.timeout.connect(self._play_next)
 
         self.init_ui()
         self.setWindowTitle("UR5e Motion Editor - 50 Poses 🎛️")
@@ -111,6 +115,11 @@ class MotionEditor(QMainWindow):
         self.play_btn.setStyleSheet("background: #FF9800; color: white; padding: 10px; font-size: 14px;")
         self.play_btn.clicked.connect(self.play_motion)
 
+        self.stop_btn = QPushButton("⏹ Stop")
+        self.stop_btn.setStyleSheet("background: #9E9E9E; color: white; padding: 10px; font-size: 14px;")
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self.stop_motion)
+
         self.clear_btn = QPushButton("🗑️ Clear Selected")
         self.clear_btn.setStyleSheet("background: #f44336; color: white; padding: 10px; font-size: 14px;")
         self.clear_btn.clicked.connect(self.clear_pose)
@@ -118,6 +127,7 @@ class MotionEditor(QMainWindow):
         btn_layout.addWidget(self.save_btn)
         btn_layout.addWidget(self.load_btn)
         btn_layout.addWidget(self.play_btn)
+        btn_layout.addWidget(self.stop_btn)
         btn_layout.addWidget(self.clear_btn)
         layout.addLayout(btn_layout)
 
@@ -221,24 +231,76 @@ class MotionEditor(QMainWindow):
             QMessageBox.warning(self, "Warning", "No poses checked!\nUse the checkboxes to select poses to play.")
             return
 
-        valid_poses = [i for i in checked if np.linalg.norm(self.poses[i]) > 0.001]
+        valid = [(i, self.poses[i]) for i in checked if np.linalg.norm(self.poses[i]) > 0.001]
 
-        if not valid_poses:
+        if not valid:
             QMessageBox.warning(self, "Warning", "Checked poses are all empty!")
             return
 
         reply = QMessageBox.question(
             self, "Confirm",
-            f"Play {len(valid_poses)} checked poses in sequence?\n"
-            f"Poses: {[i+1 for i in valid_poses]}",
+            f"Play {len(valid)} checked poses in sequence?\n"
+            f"Poses: {[i+1 for i, _ in valid]}",
             QMessageBox.Yes | QMessageBox.No
         )
 
-        if reply == QMessageBox.Yes:
-            self.status_label.setText(f"▶️ Playing {len(valid_poses)} poses...")
-            # 실제 재생은 ROSNode에서 처리
-            if hasattr(self, 'ros_node'):
-                self.ros_node.play_sequence([self.poses[i] for i in valid_poses])
+        if reply != QMessageBox.Yes:
+            return
+
+        self._play_queue = valid
+        self._play_step = 0
+        self.play_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self._play_next()           # 첫 포즈 즉시 실행
+        self._play_timer.start(2000)  # 이후 2초 간격
+
+    def _play_next(self):
+        """다음 포즈 재생 (타이머 콜백)"""
+        # 이전 행 하이라이트 해제
+        if self._play_step > 0:
+            prev_row = self._play_queue[self._play_step - 1][0]
+            self._set_row_highlight(prev_row, False)
+
+        # 재생 완료
+        if self._play_step >= len(self._play_queue):
+            self._play_timer.stop()
+            self.play_btn.setEnabled(True)
+            self.stop_btn.setEnabled(False)
+            self.status_label.setText(f"✅ Motion complete ({len(self._play_queue)} poses)")
+            return
+
+        row, pose = self._play_queue[self._play_step]
+        self._set_row_highlight(row, True)
+        self.pose_table.scrollToItem(self.pose_table.item(row, 0))
+        self.status_label.setText(
+            f"▶️ Playing Pose {row+1}  ({self._play_step+1} / {len(self._play_queue)})"
+        )
+
+        if hasattr(self, 'ros_node'):
+            self.ros_node.publish_pose(pose)
+
+        self._play_step += 1
+
+    def stop_motion(self):
+        """재생 중지"""
+        self._play_timer.stop()
+        # 현재 하이라이트 해제
+        if 0 < self._play_step <= len(self._play_queue):
+            self._set_row_highlight(self._play_queue[self._play_step - 1][0], False)
+        self._play_queue = []
+        self._play_step = 0
+        self.play_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.status_label.setText("⏹ Stopped")
+
+    def _set_row_highlight(self, row, active):
+        """행 배경색 하이라이트 설정"""
+        color = QColor("#FFF176") if active else QColor("white")
+        brush = QBrush(color)
+        for col in range(self.pose_table.columnCount()):
+            item = self.pose_table.item(row, col)
+            if item:
+                item.setBackground(brush)
 
     def clear_pose(self):
         """선택된 포즈 삭제"""
@@ -336,12 +398,10 @@ class ROSNode(Node):
         self.get_logger().info(f"Published pose: {pose}")
 
     def play_sequence(self, poses):
-        """포즈 시퀀스 재생"""
-        import time
+        """포즈 시퀀스 재생 (GUI의 QTimer에서 호출 - 직접 사용 안함)"""
         for i, pose in enumerate(poses):
             self.publish_pose(pose)
             self.get_logger().info(f"Playing pose {i+1}/{len(poses)}")
-            time.sleep(2.0)  # 2초 간격
 
 
 def main(args=None):
