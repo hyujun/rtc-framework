@@ -247,7 +247,11 @@ class MotionEditor(QMainWindow):
                         self.pose_table.item(i, 4).setText(desc)
                         if np.linalg.norm(self.poses[i]) > 0.001:
                             self.pose_table.item(i, 2).setText("✅ Saved")
-                            self.pose_table.item(i, 3).setText(str(self.poses[i][:3]))
+                            q = self.poses[i]
+                            self.pose_table.item(i, 3).setText(
+                                f"[{q[0]:.2f}, {q[1]:.2f}, {q[2]:.2f}, "
+                                f"{q[3]:.2f}, {q[4]:.2f}, {q[5]:.2f}]"
+                            )
                 
                 self.status_label.setText(f"📂 Loaded from {filename}")
             except Exception as e:
