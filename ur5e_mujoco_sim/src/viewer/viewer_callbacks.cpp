@@ -36,7 +36,12 @@ static void SelectBody(GLFWwindow* w, ViewerState* s) noexcept {
 
   if (selobj > 0) {
     s->pert.select = selobj;
-    mju_copy(s->pert.localpos, selpnt, 3);
+    
+    // Convert global selection point to body local coordinates
+    mjtNum pos[3];
+    mju_sub3(pos, selpnt, s->vis_data->xpos + 3 * selobj);
+    mju_mulMatTVec(s->pert.localpos, s->vis_data->xmat + 9 * selobj, pos, 3, 3);
+    
     mjv_initPerturb(s->model, s->vis_data, s->scn, &s->pert);
     fprintf(stdout, "[Viewer] Selected body %d\n", selobj);
   }
