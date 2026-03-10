@@ -2,6 +2,7 @@
 
 import sys
 import json
+import signal
 import numpy as np
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import QTimer, Qt
@@ -204,7 +205,7 @@ class MotionEditor(QMainWindow):
         """ROS에서 받은 관절 각도 업데이트"""
         self.current_q = q.copy()
         for i, val in enumerate(q):
-            self.joint_labels[i].setText(f"J{i+1}: {val:.3f}")
+            self.joint_labels[i].setText(f"J{i+1}: {np.degrees(val):.2f}°")
         self.status_label.setText(f"🟢 Live - Ready to save")
 
     def save_pose(self):
@@ -340,6 +341,7 @@ class MotionEditor(QMainWindow):
             self.pose_table.item(row, 3).setText("-")
             self.pose_table.item(row, 4).setText("")
 
+        self.pose_table.clearSelection()
         self.status_label.setText("🗑️ Cleared selected poses")
 
     def save_json(self):
@@ -434,6 +436,7 @@ def main(args=None):
 
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
 
     gui = MotionEditor()
     gui.show()
@@ -442,11 +445,12 @@ def main(args=None):
 
     # ROS2 spin을 Qt 타이머로 통합
     timer = QTimer()
-    timer.timeout.connect(lambda: rclpy.spin_once(ros_node, timeout_sec=0))
+    timer.timeout.connect(lambda: rclpy.spin_once(ros_node, timeout_sec=0) if rclpy.ok() else None)
     timer.start(10)  # 100Hz
 
     exit_code = app.exec_()
 
+    timer.stop()
     ros_node.destroy_node()
     rclpy.shutdown()
 
