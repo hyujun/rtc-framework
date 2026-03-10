@@ -62,16 +62,12 @@ bool MuJoCoSimulator::Initialize() noexcept {
   // Store original gravity for toggle
   original_gravity_z_ = static_cast<double>(model_->opt.gravity[2]);
 
-  // Apply initial solver configuration from Config
-  model_->opt.integrator  = static_cast<mjtIntegrator>(cfg_.integrator_type);
-  model_->opt.solver      = static_cast<mjtSolver>(cfg_.solver_type);
-  model_->opt.iterations  = cfg_.solver_iterations;
-  model_->opt.tolerance   = static_cast<mjtNum>(cfg_.solver_tolerance);
-  // Sync atomics with config values
-  solver_integrator_.store(cfg_.integrator_type,  std::memory_order_relaxed);
-  solver_type_.store(cfg_.solver_type,             std::memory_order_relaxed);
-  solver_iterations_.store(cfg_.solver_iterations, std::memory_order_relaxed);
-  solver_tolerance_.store(cfg_.solver_tolerance,   std::memory_order_relaxed);
+  // Sync atomics with values loaded from XML (or MuJoCo internal defaults)
+  solver_integrator_.store(model_->opt.integrator, std::memory_order_relaxed);
+  solver_type_.store(model_->opt.solver, std::memory_order_relaxed);
+  solver_iterations_.store(model_->opt.iterations, std::memory_order_relaxed);
+  solver_tolerance_.store(static_cast<double>(model_->opt.tolerance),
+                          std::memory_order_relaxed);
 
   // Pre-size external force buffer
   viz_qpos_.assign(static_cast<std::size_t>(model_->nq), 0.0);

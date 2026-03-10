@@ -108,15 +108,6 @@ class MuJoCoSimulator {
     double      max_rtf{0.0};           // 0.0 = unlimited
     std::array<double, 6> initial_qpos{
         0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0};
-
-    // ── Physics solver ────────────────────────────────────────────────────────
-    // integrator_type: mjINT_EULER(0) | mjINT_RK4(1) | mjINT_IMPLICIT(2)
-    //                  mjINT_IMPLICITFAST(3)
-    int    integrator_type{mjINT_EULER};
-    // solver_type: mjSOL_PGS(0) | mjSOL_CG(1) | mjSOL_NEWTON(2)
-    int    solver_type{mjSOL_NEWTON};
-    int    solver_iterations{100};       // max constraint solver iterations
-    double solver_tolerance{1e-8};       // convergence tolerance (0 = disabled)
   };
 
   // Invoked from SimLoop after each publish step.
