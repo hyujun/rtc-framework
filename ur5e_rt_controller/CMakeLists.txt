@@ -23,7 +23,9 @@ find_package(sensor_msgs REQUIRED)
 
 # Pre-find Python3 with NumPy so eigenpy's cmake detection succeeds.
 # On Ubuntu 24.04 / ROS2 Jazzy, eigenpy's python.cmake fails to detect numpy
-# unless Python3 (with NumPy component) is found before find_package(pinocchio).
+# when a venv is active: CMake defaults to FIRST (prefer venv Python) but the
+# venv may not have numpy installed. Setting STANDARD forces system Python.
+set(Python3_FIND_VIRTUALENV STANDARD)
 find_package(Python3 COMPONENTS Interpreter Development NumPy)
 
 find_package(pinocchio REQUIRED)

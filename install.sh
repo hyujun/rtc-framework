@@ -267,6 +267,15 @@ install_python_base_deps() {
       python3-numpy \
       > /dev/null
   success "python3-dev and python3-numpy installed"
+
+  # If a venv is active, eigenpy's cmake may pick the venv Python which lacks
+  # numpy. Install numpy inside the venv as well to cover that case.
+  if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+    warn "Virtual environment detected: ${VIRTUAL_ENV}"
+    info "Installing numpy inside the active venv..."
+    pip install numpy --quiet || true
+    success "numpy installed in venv"
+  fi
 }
 
 # ── Pinocchio (all modes — needed by PinocchioController / ClikController) ────
@@ -435,6 +444,23 @@ build_package() {
   fi
 
   local CMAKE_ARGS=("-DCMAKE_BUILD_TYPE=${BUILD_TYPE}")
+
+  # When a venv is active, CMake's FindPython prefers the venv Python, which
+  # may lack numpy and cause eigenpy's cmake to fail. Force system Python so
+  # pinocchio/eigenpy find the apt-installed numpy.
+  if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+    local SYS_PYTHON
+    SYS_PYTHON=$(command -v python3 || true)
+    # Resolve the real system python, not the venv symlink
+    SYS_PYTHON=$(readlink -f "${SYS_PYTHON}" 2>/dev/null || echo "${SYS_PYTHON}")
+    if [[ "$SYS_PYTHON" == "${VIRTUAL_ENV}"* ]]; then
+      # Still pointing inside venv — use /usr/bin/python3 directly
+      SYS_PYTHON="/usr/bin/python3"
+    fi
+    CMAKE_ARGS+=("-DPython3_EXECUTABLE=${SYS_PYTHON}")
+    CMAKE_ARGS+=("-DPython3_FIND_VIRTUALENV=STANDARD")
+    warn "Venv detected — cmake will use system Python: ${SYS_PYTHON}"
+  fi
 
   # compile_commands.json: Debug 빌드 시 자동 활성화 — .vscode/c_cpp_properties.json IntelliSense 연동
   if [[ "$BUILD_TYPE" == "Debug" ]]; then
