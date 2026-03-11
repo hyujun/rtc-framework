@@ -205,10 +205,15 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
 
   // ── Subscriptions ────────────────────────────────────────────────────────────
   void CreateSubscriptions() {
-    // Receive position commands from rt_controller
+    // Receive position commands from rt_controller.
+    // Use BEST_EFFORT to match the rt_controller publisher QoS (BEST_EFFORT + depth 1).
+    // RELIABLE subscriber cannot receive from BEST_EFFORT publisher in ROS 2 DDS.
+    rclcpp::QoS cmd_qos{10};
+    cmd_qos.best_effort();
+
     command_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
         "/forward_position_controller/commands",
-        rclcpp::QoS(10),
+        cmd_qos,
         [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
           CommandCallback(msg);
         });
@@ -216,7 +221,7 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     // Receive torque commands from rt_controller (direct torque controllers)
     torque_command_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
         "/forward_torque_controller/commands",
-        rclcpp::QoS(10),
+        cmd_qos,
         [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
           TorqueCommandCallback(msg);
         });
