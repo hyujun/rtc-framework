@@ -60,11 +60,11 @@ NUM_JOINTS = 6
 #              trajectory_speed, trajectory_angular_speed]
 GAIN_DEFS = {
     0: [
-        ("kp",              6, [5.0] * 6,  False),
+        ("kp",              6, [120.0, 120.0, 100.0, 80.0, 80.0, 80.0],  False),
     ],
     1: [
-        ("kp",              6, [5.0] * 6,  False),
-        ("kd",              6, [0.5] * 6,  False),
+        ("kp",              6, [200.0, 200.0, 150.0, 120.0, 120.0, 120.0],  False),
+        ("kd",              6, [30.0, 30.0, 25.0, 20.0, 20.0, 20.0],  False),
         ("gravity comp",    1, [0],         True),
         ("coriolis comp",   1, [0],         True),
         ("traj speed",      1, [1.0],       False),
