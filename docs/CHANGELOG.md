@@ -55,6 +55,15 @@ servo_kd: [400.0, 400.0, 400.0, 100.0, 100.0, 100.0]  # Nm·s/rad
   ```
 - **평형**: `q* = target` (정상상태 오차 없음)
 
+### 추가 (Added) — MJCF vs URDF 파라미터 비교 도구 (`ur5e_tools`)
+
+- `ur5e_tools/validation/compare_mjcf_urdf.py` 신규 — MJCF(`ur5e.xml`)와 URDF(`ur5e.urdf`) 물리 파라미터 비교 검증
+- 비교 항목: link mass, diagonal inertia, joint position limits, effort limits, axis vector, link origin offset
+- MJCF default class 상속 해석 (size3, size3_limited, size1)
+- 자동 경로 탐색: `ament_index` 또는 개발 레이아웃 상대 경로
+- 종료 코드: mismatch 0이면 `0`, 아니면 `1` (CI 통합 가능)
+- `setup.py` entry_points 등록: `ros2 run ur5e_tools compare_mjcf_urdf`
+
 ### 변경 (Changed) — mujoco_simulator.yaml rt_controller 섹션 정리
 
 - `ur5e_rt_controller.yaml`과 중복인 파라미터 제거: `control_rate`, `kp`, `kd`, `enable_logging`

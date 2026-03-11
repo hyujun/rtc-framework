@@ -15,6 +15,8 @@ ur5e_tools/
 │   │   └── monitor_data_health.py       ← 데이터 건강 모니터 + JSON 통계 출력
 │   ├── plotting/
 │   │   └── plot_ur_trajectory.py        ← Matplotlib 궤적 시각화
+│   ├── validation/
+│   │   └── compare_mjcf_urdf.py         ← MJCF vs URDF 파라미터 비교 검증
 │   └── utils/
 │       └── hand_udp_sender_example.py   ← 합성 UDP 손 데이터 생성기
 ├── resource/
@@ -148,6 +150,38 @@ ros2 run ur5e_tools controller_gui
 | Pinocchio (2) | kp×6, kd×6, gravity_comp, coriolis_comp, traj_speed | 15 |
 | CLIK (3) | kp×3, damping, null_kp, enable_null_space | 6 |
 | OSC (4) | kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, gravity_comp, traj_speed, traj_ang_speed | 16 |
+
+---
+
+### `compare_mjcf_urdf.py` — MJCF vs URDF 파라미터 비교 검증 (v5.7.0+)
+
+`ur5e_description` 패키지의 `ur5e.xml` (MJCF)과 `ur5e.urdf` (URDF)를 파싱하여 물리 파라미터 동일성을 검증합니다.
+
+```bash
+# 자동 경로 탐색 (ament_index 또는 상대 경로)
+ros2 run ur5e_tools compare_mjcf_urdf
+
+# 수동 경로 지정
+ros2 run ur5e_tools compare_mjcf_urdf \
+    --mjcf /path/to/ur5e.xml --urdf /path/to/ur5e.urdf
+
+# tolerance 조정 (기본: 1e-4)
+ros2 run ur5e_tools compare_mjcf_urdf --tolerance 0.01
+```
+
+**비교 항목:**
+
+| 항목 | MJCF 소스 | URDF 소스 |
+|------|-----------|-----------|
+| Link mass | `<inertial mass>` | `<mass value>` |
+| Diagonal inertia | `diaginertia` | `ixx, iyy, izz` |
+| Off-diagonal inertia | 없음 (0 가정) | `ixy, ixz, iyz` |
+| Joint position limits | `range` (default class 상속) | `<limit lower/upper>` |
+| Joint effort limits | `forcerange` (default class 상속) | `<limit effort>` |
+| Joint axis | `axis` | `<axis xyz>` |
+| Link origin offset | `<body pos>` | `<joint origin xyz>` |
+
+**종료 코드**: mismatch가 0이면 `0`, 아니면 `1` (CI 통합 가능)
 
 ---
 
