@@ -258,6 +258,9 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
       sim_->SetControlMode(false);
       RCLCPP_INFO(get_logger(), "Actuator mode → position servo");
     }
+    // Position command 수신 중에는 항상 gravity OFF + lock을 보장.
+    // (viewer G 키 또는 race condition으로 풀린 경우 재잠금)
+    sim_->EnforcePositionServoGravity();
     std::array<double, 6> cmd{};
     std::copy_n(msg->data.begin(), 6, cmd.begin());
     sim_->SetCommand(cmd);

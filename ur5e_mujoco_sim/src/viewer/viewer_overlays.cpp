@@ -41,6 +41,7 @@ void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp,
   const double max_rtf_val = vs.sim->GetMaxRtf();
   const bool   is_paused   = vs.sim->IsPaused();
   const bool   grav_on     = vs.sim->IsGravityEnabled();
+  const bool   grav_locked = vs.sim->IsGravityLockedByServo();
   const bool   perturbing  = (vs.pert.active != 0);
 
   char limit_str[32];
@@ -81,7 +82,7 @@ void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp,
       static_cast<unsigned long>(vs.sim->StepCount()),
       ss.ncon,
       vs.sim->IsContactEnabled() ? "on" : "OFF",
-      grav_on ? "ON" : "OFF",
+      grav_locked ? "OFF(lock)" : (grav_on ? "ON" : "OFF"),
       is_paused ? "PAUSED" : (perturbing ? "perturb" : "running"),
       kIntNames[ii], kSolNames[si],
       ss.iter, vs.sim->GetSolverIterations(),
@@ -149,7 +150,8 @@ void RenderHelpOverlay(const ViewerState& vs, const mjrRect& vp, int page) noexc
         "Solver iter [%d]\n"
         "Solver stats",
         rtf_str, cam_lbl,
-        vs.sim->IsGravityEnabled() ? "ON" : "OFF",
+        vs.sim->IsGravityLockedByServo() ? "OFF(lock)"
+            : (vs.sim->IsGravityEnabled() ? "ON" : "OFF"),
         vs.sim->IsContactEnabled() ? "ON" : "OFF",
         kIntNames[ii], kSolNames[si],
         vs.sim->GetSolverIterations());

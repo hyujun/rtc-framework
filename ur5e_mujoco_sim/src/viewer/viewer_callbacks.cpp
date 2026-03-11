@@ -136,9 +136,13 @@ void OnKey(GLFWwindow* w, int key, int /*scan*/, int action, int /*mods*/) noexc
 
   // ── Physics toggles ──────────────────────────────────────────────────────
   case GLFW_KEY_G:
-    s->sim->EnableGravity(!s->sim->IsGravityEnabled());
-    fprintf(stdout, "[Viewer] Gravity %s\n",
-            s->sim->IsGravityEnabled() ? "ON" : "OFF");
+    if (s->sim->IsGravityLockedByServo()) {
+      fprintf(stdout, "[Viewer] Gravity locked by position servo (OFF)\n");
+    } else {
+      s->sim->EnableGravity(!s->sim->IsGravityEnabled());
+      fprintf(stdout, "[Viewer] Gravity %s\n",
+              s->sim->IsGravityEnabled() ? "ON" : "OFF");
+    }
     break;
 
   case GLFW_KEY_N:

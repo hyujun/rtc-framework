@@ -262,6 +262,13 @@ class MuJoCoSimulator {
     return gravity_locked_by_servo_.load(std::memory_order_relaxed);
   }
 
+  // Position command를 수신할 때마다 호출하여 gravity OFF + lock을 보장합니다.
+  // SetControlMode(false)와 달리 actuator 파라미터를 재설정하지 않으므로 경량입니다.
+  void EnforcePositionServoGravity() noexcept {
+    gravity_enabled_.store(false, std::memory_order_relaxed);
+    gravity_locked_by_servo_.store(true, std::memory_order_relaxed);
+  }
+
   // Switch actuator mode: true = direct torque, false = position servo.
   // The change is picked up by the sim thread before the next physics step.
   //
