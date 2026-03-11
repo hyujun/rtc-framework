@@ -122,7 +122,7 @@ private:
   std::array<double, kNumHandJoints>  hand_target_{};
   std::array<double, kNumRobotJoints> prev_error_{};
 
-  bool   new_target_{false};
+  std::atomic<bool> new_target_{false};
   trajectory::JointSpaceTrajectory<kNumRobotJoints> trajectory_;
   double trajectory_time_{0.0};
 

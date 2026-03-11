@@ -163,7 +163,7 @@ private:
   // Desired SE3 goal pose, updated in SetRobotTarget() and used to initialise the trajectory.
   pinocchio::SE3 goal_pose_{pinocchio::SE3::Identity()};
 
-  bool new_target_{false};
+  std::atomic<bool> new_target_{false};
   trajectory::TaskSpaceTrajectory trajectory_;
   double trajectory_time_{0.0};
 

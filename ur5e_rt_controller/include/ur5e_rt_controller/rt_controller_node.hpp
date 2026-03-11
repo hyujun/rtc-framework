@@ -111,9 +111,19 @@ private:
   // RT-local snapshot of target — written and read only in ControlLoop()
   std::array<double, ur5e_rt_controller::kNumRobotJoints> target_snapshot_{};
 
+  // RT-local cached copies — updated via try_lock to avoid blocking the RT
+  // thread.  If the mutex is contended, the previous cycle's data is reused
+  // (stale by at most one cycle = 2 ms, acceptable for position control).
+  std::array<double, ur5e_rt_controller::kNumRobotJoints> cached_positions_{};
+  std::array<double, ur5e_rt_controller::kNumRobotJoints> cached_velocities_{};
+
   mutable std::mutex state_mutex_;
   mutable std::mutex target_mutex_;
   mutable std::mutex hand_mutex_;
+
+  // Timing summary flag — set by RT thread, consumed by log thread.
+  // Avoids std::string allocation + RCLCPP_INFO on the 500 Hz path.
+  std::atomic<bool> print_timing_summary_{false};
 
   // Atomic flags — safe to read without a mutex in the RT thread.
   // Written with release, read with acquire to guarantee visibility ordering.
@@ -132,6 +142,9 @@ private:
   bool        enable_estop_{true};
   bool        hand_estop_logged_{false};
 
-  double      start_time_{0.0};
   std::size_t loop_count_{0};
+
+  // Baseline for log timestamps — captured on first ControlLoop() iteration.
+  // steady_clock reads CLOCK_MONOTONIC via vDSO (no kernel entry on Linux).
+  std::chrono::steady_clock::time_point log_start_time_{};
 };

@@ -46,8 +46,9 @@ ControllerOutput JointPDController::Compute(
   // Pinocchio 상태 갱신 (중력, FK, 자코비안, 코리올리)
   UpdateDynamics(state.robot);
 
-  // 새 목표 수신 시 궤적 생성
-  if (new_target_) {
+  // 새 목표 수신 시 궤적 생성 — acquire-load guarantees robot_target_ writes
+  // from SetRobotTarget() (sensor thread) are visible.
+  if (new_target_.load(std::memory_order_acquire)) {
     trajectory::JointSpaceTrajectory<kNumRobotJoints>::State start_state;
     trajectory::JointSpaceTrajectory<kNumRobotJoints>::State goal_state;
 
@@ -68,7 +69,7 @@ ControllerOutput JointPDController::Compute(
     const double duration = std::max(0.01, max_dist / gains_.trajectory_speed);
     trajectory_.initialize(start_state, goal_state, duration);
     trajectory_time_ = 0.0;
-    new_target_ = false;
+    new_target_.store(false, std::memory_order_relaxed);
   }
 
   const auto traj_state = trajectory_.compute(trajectory_time_);
@@ -120,7 +121,9 @@ void JointPDController::SetRobotTarget(
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
     robot_target_[i] = target[i];
   }
-  new_target_ = true;
+  // release-store: guarantees robot_target_ writes are visible to the RT thread
+  // when it acquire-loads new_target_ in Compute().
+  new_target_.store(true, std::memory_order_release);
 }
 
 void JointPDController::SetHandTarget(
@@ -142,7 +145,7 @@ void JointPDController::ClearEstop() noexcept
 {
   estopped_.store(false, std::memory_order_release);
   prev_error_ = {};   // 미분 항 리셋
-  new_target_ = true; // 현재 위치부터 궤적 재생성
+  new_target_.store(true, std::memory_order_relaxed); // 현재 위치부터 궤적 재생성
 }
 
 bool JointPDController::IsEstopped() const noexcept
@@ -232,7 +235,7 @@ ControllerOutput JointPDController::ComputeEstop(
 
   output.actual_target_positions = kSafePosition;
   output.robot_commands = ClampCommands(output.robot_commands);
-  new_target_ = true;  // E-STOP 해제 후 궤적 재생성
+  new_target_.store(true, std::memory_order_relaxed);  // E-STOP 해제 후 궤적 재생성
   return output;
 }
 

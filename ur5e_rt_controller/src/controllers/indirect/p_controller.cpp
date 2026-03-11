@@ -28,8 +28,10 @@ ControllerOutput PController::Compute(const ControllerState & state) noexcept
     q_[static_cast<Eigen::Index>(i)] = state.robot.positions[i];
   }
 
+  // forwardKinematics already updates data_.oMi (joint placements).
+  // updateFramePlacements is unnecessary — it computes placements for all
+  // frames (links, sensors, etc.) which are not needed here.
   pinocchio::forwardKinematics(model_, data_, q_);
-  pinocchio::updateFramePlacements(model_, data_);
 
   const pinocchio::SE3 & tcp = data_.oMi[end_id_];
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
