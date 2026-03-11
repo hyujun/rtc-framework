@@ -325,7 +325,7 @@ class MuJoCoSimulator {
   std::atomic<bool>   reset_requested_{false};
   std::atomic<bool>   step_once_{false};       // advance exactly one step while paused
   std::atomic<double> current_max_rtf_{0.0};
-  std::atomic<bool>   gravity_enabled_{true};
+  std::atomic<bool>   gravity_enabled_{false};  // 초기값: position servo → gravity OFF
   double              original_gravity_z_{-9.81};  // from model, set in Initialize()
 
   // ── Physics solver atomics (applied in PreparePhysicsStep) ────────────────
