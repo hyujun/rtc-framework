@@ -108,6 +108,20 @@ class MuJoCoSimulator {
     double      max_rtf{0.0};           // 0.0 = unlimited
     std::array<double, 6> initial_qpos{
         0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0};
+
+    // ── Physics timestep validation & position servo gain scaling ────────────
+    // 0.0 → XML 값 그대로 사용 (검증 없음)
+    // > 0 → XML <option timestep>과 비교; 불일치 시 ERROR + XML 우선 적용
+    // gainprm_yaml = servo_kp / physics_timestep (position servo 시 사용)
+    double physics_timestep{0.0};
+
+    // ── Position servo gains (use_yaml_servo_gains = true 시 적용) ───────────
+    // false: XML 원본 gainprm/biasprm 사용
+    // true : servo_kp / physics_timestep → gainprm, -servo_kd → biasprm[2]
+    bool   use_yaml_servo_gains{false};
+    // servo_kp: velocity gain (Nm·s/rad), force = servo_kp*dq_cmd - servo_kd*dq_actual
+    std::array<double, 6> servo_kp{500.0, 500.0, 500.0, 150.0, 150.0, 150.0};
+    std::array<double, 6> servo_kd{400.0, 400.0, 400.0, 100.0, 100.0, 100.0};
   };
 
   // Invoked from SimLoop after each publish step.
@@ -234,11 +248,46 @@ class MuJoCoSimulator {
   [[nodiscard]] SimMode GetSimMode() const noexcept { return cfg_.mode; }
 
   // Toggle gravity.  Sim thread reads gravity_enabled_ before each mj_step().
+  // Position servo 모드에서는 gravity가 잠겨 있으므로 호출이 무시됩니다.
   void EnableGravity(bool enable) noexcept {
+    if (gravity_locked_by_servo_.load(std::memory_order_relaxed)) {
+      return;  // position servo 모드 중 gravity 변경 차단
+    }
     gravity_enabled_.store(enable, std::memory_order_relaxed);
   }
   [[nodiscard]] bool IsGravityEnabled() const noexcept {
     return gravity_enabled_.load(std::memory_order_relaxed);
+  }
+  [[nodiscard]] bool IsGravityLockedByServo() const noexcept {
+    return gravity_locked_by_servo_.load(std::memory_order_relaxed);
+  }
+
+  // Switch actuator mode: true = direct torque, false = position servo.
+  // The change is picked up by the sim thread before the next physics step.
+  //
+  // Gravity management:
+  //   → position servo (false): gravity OFF + 변경 잠금
+  //   → torque         (true) : 잠금 해제  + gravity ON (servo로 꺼진 경우)
+  void SetControlMode(bool torque_mode) noexcept {
+    const bool was_locked =
+        gravity_locked_by_servo_.load(std::memory_order_relaxed);
+    torque_mode_.store(torque_mode, std::memory_order_relaxed);
+    control_mode_pending_.store(true, std::memory_order_release);
+
+    if (!torque_mode) {
+      // → Position servo: gravity OFF + 잠금
+      gravity_enabled_.store(false, std::memory_order_relaxed);
+      gravity_locked_by_servo_.store(true, std::memory_order_relaxed);
+    } else {
+      // → Torque: 잠금 해제, gravity ON (servo로 꺼진 경우만)
+      gravity_locked_by_servo_.store(false, std::memory_order_relaxed);
+      if (was_locked) {
+        gravity_enabled_.store(true, std::memory_order_relaxed);
+      }
+    }
+  }
+  [[nodiscard]] bool IsInTorqueMode() const noexcept {
+    return torque_mode_.load(std::memory_order_relaxed);
   }
 
   // Apply an external 6-DOF wrench [Fx,Fy,Fz,Tx,Ty,Tz] (world frame, SI units)
@@ -327,6 +376,28 @@ class MuJoCoSimulator {
   std::chrono::steady_clock::time_point throttle_wall_start_{};
   double                                throttle_sim_start_{0.0};
   double                                throttle_rtf_{0.0};
+
+  // ── Actuator mode control (sim thread reads, caller writes) ──────────────
+  std::atomic<bool> torque_mode_{false};
+  std::atomic<bool> control_mode_pending_{false};
+
+  // ── Gravity lock (position servo 모드에서 gravity 변경 차단) ─────────────
+  // true: position servo 모드 → EnableGravity() 호출 무시
+  std::atomic<bool> gravity_locked_by_servo_{true};  // 초기값: position servo
+
+  // ── YAML servo gains (Initialize()에서 physics_timestep 기반으로 계산) ───
+  // gainprm_yaml_[i]  = servo_kp[i] / xml_timestep_
+  // biasprm2_yaml_[i] = -servo_kd[i]
+  double xml_timestep_{0.002};
+  std::array<double, 6> gainprm_yaml_{};
+  std::array<double, 6> biasprm2_yaml_{};
+  struct ActuatorParams {
+    double gainprm0{0.0};
+    double biasprm0{0.0};
+    double biasprm1{0.0};
+    double biasprm2{0.0};
+  };
+  std::vector<ActuatorParams> orig_actuator_params_;  // sized in Initialize()
 
   // ── External forces / perturbation (under pert_mutex_) ───────────────────
   mutable std::mutex pert_mutex_;

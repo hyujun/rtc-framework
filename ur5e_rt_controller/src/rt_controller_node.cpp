@@ -1,11 +1,10 @@
 // ── Includes: project header first, then ROS2, then C++ stdlib ──────────────
 #include "ur5e_rt_controller/rt_controller_node.hpp"
 
-#include "ur5e_rt_controller/controllers/clik_controller.hpp"
-#include "ur5e_rt_controller/controllers/operational_space_controller.hpp"
-#include "ur5e_rt_controller/controllers/p_controller.hpp"
-#include "ur5e_rt_controller/controllers/pd_controller.hpp"
-#include "ur5e_rt_controller/controllers/pinocchio_controller.hpp"
+#include "ur5e_rt_controller/controllers/direct/joint_pd_controller.hpp"
+#include "ur5e_rt_controller/controllers/direct/operational_space_controller.hpp"
+#include "ur5e_rt_controller/controllers/indirect/p_controller.hpp"
+#include "ur5e_rt_controller/controllers/indirect/clik_controller.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <yaml-cpp/yaml.h>
@@ -34,10 +33,11 @@ namespace
 {
 struct ControllerEntry
 {
-  // Key used both as the YAML filename stem (e.g. "pd_controller" →
-  // config/controllers/pd_controller.yaml) and as the alias accepted by
-  // the initial_controller ROS parameter.
+  // config_key: YAML filename stem (e.g. "pd_controller" →
+  //   config/controllers/<config_subdir>/pd_controller.yaml)
+  // config_subdir: "direct/" for torque controllers, "indirect/" for position controllers
   std::string_view config_key;
+  std::string_view config_subdir;
   std::function<std::unique_ptr<urtc::RTControllerInterface>(const std::string &)> factory;
 };
 
@@ -45,27 +45,21 @@ std::vector<ControllerEntry> MakeControllerEntries()
 {
   return {
     {
-      "p_controller",
+      "p_controller", "indirect/",
       [](const std::string & p) {return std::make_unique<urtc::PController>(p);}
     },
     {
-      "pd_controller",
-      [](const std::string & p) {return std::make_unique<urtc::PDController>(p);}
+      "joint_pd_controller", "direct/",
+      [](const std::string & p) {return std::make_unique<urtc::JointPDController>(p);}
     },
     {
-      "pinocchio_controller",
-      [](const std::string & p) {
-        return std::make_unique<urtc::PinocchioController>(p, urtc::PinocchioController::Gains{});
-      }
-    },
-    {
-      "clik_controller",
+      "clik_controller", "indirect/",
       [](const std::string & p) {
         return std::make_unique<urtc::ClikController>(p, urtc::ClikController::Gains{});
       }
     },
     {
-      "operational_space_controller",
+      "operational_space_controller", "direct/",
       [](const std::string & p) {
         return std::make_unique<urtc::OperationalSpaceController>(
           p, urtc::OperationalSpaceController::Gains{});
@@ -86,6 +80,14 @@ RtControllerNode::RtControllerNode()
   CreatePublishers();
   CreateTimers();
 
+  // 초기 활성 컨트롤러 이름 publish (transient_local이므로 구독자가 늦게 붙어도 수신)
+  {
+    std_msgs::msg::String ctrl_name_msg;
+    ctrl_name_msg.data = std::string(
+      controllers_[active_controller_idx_.load(std::memory_order_acquire)]->Name());
+    active_ctrl_name_pub_->publish(ctrl_name_msg);
+  }
+
   RCLCPP_INFO(get_logger(), "RtControllerNode ready — %.0f Hz, E-STOP: %s",
               control_rate_, enable_estop_ ? "ON" : "OFF");
   RCLCPP_INFO(get_logger(), "CallbackGroups enabled: RT, Sensor, Log, Aux");
@@ -94,6 +96,8 @@ RtControllerNode::RtControllerNode()
 RtControllerNode::~RtControllerNode()
 {
   if (logger_) {
+    // 종료 시 drain_timer_가 멈춘 후에도 ring buffer에 남은 항목을 모두 기록
+    logger_->DrainBuffer(log_buffer_);
     logger_->Flush();
   }
 }
@@ -181,7 +185,7 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("robot_timeout_ms", 100.0);
   declare_parameter("hand_timeout_ms", 200.0);
   declare_parameter("enable_estop", true);
-  declare_parameter("initial_controller", "pd_controller");
+  declare_parameter("initial_controller", "joint_pd_controller");
 
   control_rate_ = get_parameter("control_rate").as_double();
   enable_logging_ = get_parameter("enable_logging").as_bool();
@@ -232,7 +236,8 @@ void RtControllerNode::DeclareAndLoadParameters()
 
     if (!config_dir.empty()) {
       try {
-        const std::string yaml_path = config_dir + std::string(entry.config_key) + ".yaml";
+        const std::string yaml_path = config_dir + std::string(entry.config_subdir) +
+        std::string(entry.config_key) + ".yaml";
         const YAML::Node file_node = YAML::LoadFile(yaml_path);
         ctrl->LoadConfig(file_node[std::string(entry.config_key)]);
       } catch (const std::exception & e) {
@@ -257,9 +262,9 @@ void RtControllerNode::DeclareAndLoadParameters()
     active_controller_idx_.store(it->second);
   } else {
     RCLCPP_WARN(get_logger(),
-      "Unknown initial_controller '%s', defaulting to pd_controller",
+      "Unknown initial_controller '%s', defaulting to joint_pd_controller",
       initial_ctrl.c_str());
-    const auto pd_it = name_to_idx.find("pd_controller");
+    const auto pd_it = name_to_idx.find("joint_pd_controller");
     active_controller_idx_.store(pd_it != name_to_idx.end() ? pd_it->second : 1);
   }
 }
@@ -299,6 +304,10 @@ void RtControllerNode::CreateSubscriptions()
         active_controller_idx_.store(idx, std::memory_order_release);
         RCLCPP_INFO(get_logger(), "Switched to controller: %s",
                       controllers_[idx]->Name().data());
+        // 컨트롤러 전환 알림 — monitor_data_health가 컨트롤러별 통계를 분리 저장
+        std_msgs::msg::String ctrl_name_msg;
+        ctrl_name_msg.data = std::string(controllers_[idx]->Name());
+        active_ctrl_name_pub_->publish(ctrl_name_msg);
       } else {
         RCLCPP_WARN(get_logger(), "Invalid controller index: %d", idx);
       }
@@ -327,12 +336,23 @@ void RtControllerNode::CreatePublishers()
       "/forward_position_controller/commands", 10);
   cmd_msg_.data.resize(urtc::kNumRobotJoints, 0.0);
 
+  torque_cmd_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
+      "/forward_torque_controller/commands", 10);
+  torque_cmd_msg_.data.resize(urtc::kNumRobotJoints, 0.0);
+
   task_pos_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
       "/rt_controller/current_task_position", 10);
   task_pos_msg_.data.resize(6, 0.0);
 
   estop_pub_ =
     create_publisher<std_msgs::msg::Bool>("/system/estop_status", 10);
+
+  // 컨트롤러 이름 publisher — transient_local(latched) QoS로 신규 구독자가
+  // 즉시 현재 컨트롤러 이름을 받을 수 있도록 함
+  rclcpp::QoS latch_qos{1};
+  latch_qos.transient_local();
+  active_ctrl_name_pub_ =
+    create_publisher<std_msgs::msg::String>("~/active_controller_name", latch_qos);
 }
 
 void RtControllerNode::CreateTimers()
@@ -478,9 +498,15 @@ void RtControllerNode::ControlLoop()
 
   // Non-blocking: skip this cycle if publisher mutex is contended.
   if (cmd_pub_mutex_.try_lock()) {
-    std::copy(output.robot_commands.begin(), output.robot_commands.end(),
-              cmd_msg_.data.begin());
-    cmd_pub_->publish(cmd_msg_);
+    if (output.command_type == urtc::CommandType::kTorque) {
+      std::copy(output.robot_commands.begin(), output.robot_commands.end(),
+                torque_cmd_msg_.data.begin());
+      torque_cmd_pub_->publish(torque_cmd_msg_);
+    } else {
+      std::copy(output.robot_commands.begin(), output.robot_commands.end(),
+                cmd_msg_.data.begin());
+      cmd_pub_->publish(cmd_msg_);
+    }
 
     std::copy(output.actual_task_positions.begin(), output.actual_task_positions.end(),
               task_pos_msg_.data.begin());

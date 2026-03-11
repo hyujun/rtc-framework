@@ -48,12 +48,15 @@ struct ControllerState {
   uint64_t iteration{0};
 };
 
+enum class CommandType { kPosition, kTorque };
+
 struct ControllerOutput {
   std::array<double, kNumRobotJoints> robot_commands{};
   std::array<double, kNumHandJoints>  hand_commands{};
   std::array<double, kNumRobotJoints> actual_target_positions{};
   std::array<double, 6>               actual_task_positions{};
-  bool valid{true};
+  bool        valid{true};
+  CommandType command_type{CommandType::kPosition};
 };
 
 }  // namespace ur5e_rt_controller

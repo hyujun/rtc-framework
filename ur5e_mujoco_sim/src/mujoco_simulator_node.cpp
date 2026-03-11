@@ -105,6 +105,17 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     declare_parameter("initial_joint_positions",
                       std::vector<double>{0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0});
 
+    // Physics timestep validation (0.0 = use XML value without validation)
+    declare_parameter("physics_timestep", 0.0);
+
+    // Position servo gains
+    // false: XML 원본 gainprm/biasprm, true: servo_kp/kd 기반 YAML gain
+    declare_parameter("use_yaml_servo_gains", false);
+    declare_parameter("servo_kp",
+                      std::vector<double>{500.0, 500.0, 500.0, 150.0, 150.0, 150.0});
+    declare_parameter("servo_kd",
+                      std::vector<double>{400.0, 400.0, 400.0, 100.0, 100.0, 100.0});
+
     model_path_          = get_parameter("model_path").as_string();
     enable_viewer_       = get_parameter("enable_viewer").as_bool();
     enable_hand_sim_     = get_parameter("enable_hand_sim").as_bool();
@@ -113,6 +124,17 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     publish_decimation_  = static_cast<int>(get_parameter("publish_decimation").as_int());
     sync_timeout_ms_     = get_parameter("sync_timeout_ms").as_double();
     max_rtf_             = get_parameter("max_rtf").as_double();
+    physics_timestep_    = get_parameter("physics_timestep").as_double();
+    use_yaml_servo_gains_ = get_parameter("use_yaml_servo_gains").as_bool();
+
+    const auto kp_vec = get_parameter("servo_kp").as_double_array();
+    const auto kd_vec = get_parameter("servo_kd").as_double_array();
+    for (std::size_t i = 0; i < 6 && i < kp_vec.size(); ++i) {
+      servo_kp_[i] = kp_vec[i];
+    }
+    for (std::size_t i = 0; i < 6 && i < kd_vec.size(); ++i) {
+      servo_kd_[i] = kd_vec[i];
+    }
 
     // Resolve model path: if empty, default to package:// URI
     if (model_path_.empty()) {
@@ -150,6 +172,10 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
         .sync_timeout_ms     = sync_timeout_ms_,
         .max_rtf             = max_rtf_,
         .initial_qpos        = initial_qpos_,
+        .physics_timestep    = physics_timestep_,
+        .use_yaml_servo_gains = use_yaml_servo_gains_,
+        .servo_kp            = servo_kp_,
+        .servo_kd            = servo_kd_,
     };
     sim_ = std::make_unique<urtc::MuJoCoSimulator>(std::move(cfg));
 
@@ -187,6 +213,14 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
           CommandCallback(msg);
         });
 
+    // Receive torque commands from rt_controller (direct torque controllers)
+    torque_command_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
+        "/forward_torque_controller/commands",
+        rclcpp::QoS(10),
+        [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+          TorqueCommandCallback(msg);
+        });
+
     // Receive normalized hand commands (0.0–1.0) — drives the hand filter
     hand_cmd_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
         "/hand/command",
@@ -218,6 +252,29 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
                            "Command message has %zu elements (expected 6) — ignored",
                            msg->data.size());
       return;
+    }
+    // Auto-switch to position servo mode on first position command after torque.
+    if (sim_->IsInTorqueMode()) {
+      sim_->SetControlMode(false);
+      RCLCPP_INFO(get_logger(), "Actuator mode → position servo");
+    }
+    std::array<double, 6> cmd{};
+    std::copy_n(msg->data.begin(), 6, cmd.begin());
+    sim_->SetCommand(cmd);
+  }
+
+  // Called when rt_controller publishes a torque command (direct torque controllers).
+  void TorqueCommandCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+    if (msg->data.size() < 6) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                           "Torque command message has %zu elements (expected 6) — ignored",
+                           msg->data.size());
+      return;
+    }
+    // Auto-switch to direct torque mode on first torque command.
+    if (!sim_->IsInTorqueMode()) {
+      sim_->SetControlMode(true);
+      RCLCPP_INFO(get_logger(), "Actuator mode → direct torque");
     }
     std::array<double, 6> cmd{};
     std::copy_n(msg->data.begin(), 6, cmd.begin());
@@ -306,6 +363,7 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr   sim_status_pub_;
 
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr command_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr torque_command_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr hand_cmd_sub_;
 
   rclcpp::TimerBase::SharedPtr hand_pub_timer_;
@@ -329,6 +387,10 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   double                 sync_timeout_ms_{50.0};
   double                 max_rtf_{0.0};
   std::array<double, 6>  initial_qpos_{0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0};
+  double                 physics_timestep_{0.0};
+  bool                   use_yaml_servo_gains_{false};
+  std::array<double, 6>  servo_kp_{500.0, 500.0, 500.0, 150.0, 150.0, 150.0};
+  std::array<double, 6>  servo_kd_{400.0, 400.0, 400.0, 100.0, 100.0, 100.0};
 };
 
 // ── Entry point ────────────────────────────────────────────────────────────────

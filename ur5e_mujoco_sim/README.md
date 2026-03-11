@@ -116,13 +116,28 @@ mujoco_simulator:
     sim_mode: "free_run"       # "free_run" 또는 "sync_step"
     publish_decimation: 1      # free_run: N 스텝마다 퍼블리시
     sync_timeout_ms: 50.0      # sync_step: 명령 대기 타임아웃 (ms)
-    max_rtf: 0.0               # 최대 실시간 비율 (0.0 = 무제한)
+    max_rtf: 1.0               # 최대 실시간 비율 (0.0 = 무제한)
     enable_viewer: true        # GLFW 3D 뷰어 활성화
     initial_joint_positions: [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
     enable_hand_sim: true      # 손 시뮬레이션 (1차 필터)
     hand_filter_alpha: 0.1     # 필터 계수 (10ms 틱당)
 
-# ur5e_rt_controller 파라미터 오버라이드 (mujoco_sim.launch.py에서)
+    # 물리 타임스텝 검증 (XML과 불일치 시 ERROR 출력 후 XML 우선)
+    # 0.0 → 검증 없음;  > 0 → XML <option timestep>과 비교
+    physics_timestep: 0.002    # seconds (= 500 Hz)
+
+    # Position servo 게인 선택
+    # false (기본): XML 원본 gainprm/biasprm 사용
+    # true:  servo_kp/kd 기반 YAML gain 적용
+    #   gainprm = servo_kp / physics_timestep
+    #   force   = servo_kp * dq_cmd - servo_kd * dq_actual
+    # position servo 모드 진입 시 gravity가 자동으로 OFF + 잠금됨.
+    # torque 모드로 전환 시 gravity가 자동으로 ON됩니다.
+    use_yaml_servo_gains: false
+    servo_kp: [500.0, 500.0, 500.0, 150.0, 150.0, 150.0]  # Nm·s/rad
+    servo_kd: [400.0, 400.0, 400.0, 100.0, 100.0, 100.0]  # Nm·s/rad
+
+# ur5e_rt_controller 파라미터 오버라이드 (시뮬 전용 차이값만)
 rt_controller:
   ros__parameters:
     enable_estop: false        # free_run에서 false E-STOP 방지
@@ -156,13 +171,12 @@ ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py \
 | 파라미터 | 기본값 | 설명 |
 |----------|--------|------|
 | `model_path` | `""` | scene.xml 절대 경로 (빈값 = 패키지 기본) |
-| `sim_mode` | `free_run` | `free_run` 또는 `sync_step` |
-| `enable_viewer` | `true` | GLFW 3D 뷰어 창 활성화 |
-| `publish_decimation` | `1` | free_run: N 스텝마다 퍼블리시 |
-| `sync_timeout_ms` | `50.0` | sync_step: 명령 대기 타임아웃 (ms) |
-| `max_rtf` | `0.0` | 최대 실시간 비율 (0.0 = 무제한) |
-| `kp` | `5.0` | PD 비례 게인 |
-| `kd` | `0.5` | PD 미분 게인 |
+| `sim_mode` | `""` | `free_run` 또는 `sync_step` (빈값 = YAML) |
+| `enable_viewer` | `""` | GLFW 3D 뷰어 창 활성화 (빈값 = YAML) |
+| `publish_decimation` | `""` | free_run: N 스텝마다 퍼블리시 (빈값 = YAML) |
+| `sync_timeout_ms` | `""` | sync_step: 명령 대기 타임아웃 ms (빈값 = YAML) |
+| `max_rtf` | `""` | 최대 실시간 비율 (빈값 = YAML, 0.0 = 무제한) |
+| `use_yaml_servo_gains` | `""` | `true`=YAML servo gain, `false`=XML gain (빈값 = YAML) |
 
 ---
 
@@ -180,7 +194,7 @@ ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py \
 | R | 초기 자세로 리셋 |
 | TAB | 카메라 모드 순환 (Free → Tracking → Fixed → Free) |
 | Esc | 카메라 초기화 (Free 모드로 복귀) |
-| G | 중력 ON/OFF |
+| G | 중력 ON/OFF (position servo 모드에서는 잠금 — 무시됨) |
 | N | 접촉 제약 ON/OFF |
 | I | integrator 순환 (Euler → RK4 → Implicit → ImplFast) |
 | S | solver 순환 (PGS → CG → Newton) |

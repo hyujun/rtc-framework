@@ -1,5 +1,5 @@
 // ── Includes: project header first, then C++ stdlib ────────────────────────────
-#include "ur5e_rt_controller/controllers/clik_controller.hpp"
+#include "ur5e_rt_controller/controllers/indirect/clik_controller.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -41,7 +41,11 @@ ClikController::ClikController(std::string_view urdf_path, Gains gains)
 ControllerOutput ClikController::Compute(
   const ControllerState & state) noexcept
 {
-  if (estopped_) {return ComputeEstop(state);}
+  if (estopped_) {
+    auto out = ComputeEstop(state);
+    out.command_type = command_type_;
+    return out;
+  }
 
   // ── Step 1: copy joint state into Eigen vector ───────────────────────────
   for (Eigen::Index i = 0; i < model_.nv; ++i) {
@@ -200,6 +204,7 @@ ControllerOutput ClikController::Compute(
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
 
+  output.command_type = command_type_;
   return output;
 }
 
@@ -312,6 +317,10 @@ void ClikController::LoadConfig(const YAML::Node & cfg)
   if (cfg["enable_null_space"]) {gains_.enable_null_space = cfg["enable_null_space"].as<bool>();}
   if (cfg["trajectory_speed"]) {gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();}
   if (cfg["control_6dof"]) {gains_.control_6dof = cfg["control_6dof"].as<bool>();}
+  if (cfg["command_type"]) {
+    const auto s = cfg["command_type"].as<std::string>();
+    command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
+  }
 }
 
 void ClikController::UpdateGainsFromMsg(std::span<const double> gains) noexcept

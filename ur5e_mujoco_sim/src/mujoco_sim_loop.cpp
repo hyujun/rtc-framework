@@ -119,6 +119,40 @@ void MuJoCoSimulator::ThrottleIfNeeded() noexcept {
 //   3. Apply mjvPerturb spring force (viewer Ctrl+drag).
 //
 void MuJoCoSimulator::PreparePhysicsStep() noexcept {
+  // 0. Actuator mode switch (torque ↔ position servo)
+  if (control_mode_pending_.exchange(false, std::memory_order_acq_rel)) {
+    const bool torque = torque_mode_.load(std::memory_order_relaxed);
+    const int nact = std::min(6, model_->nu);
+    for (int i = 0; i < nact; ++i) {
+      const std::size_t ui = static_cast<std::size_t>(i);
+      if (torque) {
+        // Direct torque: gainprm=1, bias=0 → ctrl[i] = raw torque (Nm)
+        model_->actuator_gainprm[i * mjNGAIN + 0] = static_cast<mjtNum>(1.0);
+        model_->actuator_biasprm[i * mjNBIAS + 0] = static_cast<mjtNum>(0.0);
+        model_->actuator_biasprm[i * mjNBIAS + 1] = static_cast<mjtNum>(0.0);
+        model_->actuator_biasprm[i * mjNBIAS + 2] = static_cast<mjtNum>(0.0);
+      } else if (cfg_.use_yaml_servo_gains) {
+        // Position servo with YAML velocity gains:
+        //   gainprm = servo_kp / physics_timestep
+        //   force   = gainprm*(ctrl-q) - servo_kd*dq
+        //           = servo_kp * dq_cmd - servo_kd * dq_actual
+        const double kp = gainprm_yaml_[ui];
+        model_->actuator_gainprm[i * mjNGAIN + 0] = static_cast<mjtNum>(kp);
+        model_->actuator_biasprm[i * mjNBIAS + 0] = static_cast<mjtNum>(0.0);
+        model_->actuator_biasprm[i * mjNBIAS + 1] = static_cast<mjtNum>(-kp);
+        model_->actuator_biasprm[i * mjNBIAS + 2] =
+            static_cast<mjtNum>(biasprm2_yaml_[ui]);
+      } else {
+        // Position servo with original XML gainprm/biasprm
+        const auto & p = orig_actuator_params_[ui];
+        model_->actuator_gainprm[i * mjNGAIN + 0] = static_cast<mjtNum>(p.gainprm0);
+        model_->actuator_biasprm[i * mjNBIAS + 0] = static_cast<mjtNum>(p.biasprm0);
+        model_->actuator_biasprm[i * mjNBIAS + 1] = static_cast<mjtNum>(p.biasprm1);
+        model_->actuator_biasprm[i * mjNBIAS + 2] = static_cast<mjtNum>(p.biasprm2);
+      }
+    }
+  }
+
   // 1. Physics solver parameters (integrator, solver type, iterations, tolerance)
   model_->opt.integrator =
       static_cast<mjtIntegrator>(solver_integrator_.load(std::memory_order_relaxed));

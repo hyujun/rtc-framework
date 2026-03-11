@@ -12,6 +12,7 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/int32.hpp>
+#include <std_msgs/msg/string.hpp>
 
 // ── C++ stdlib ────────────────────────────────────────────────────────────────
 #include <array>
@@ -84,10 +85,13 @@ private:
 
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr cmd_pub_;
   std_msgs::msg::Float64MultiArray                               cmd_msg_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr torque_cmd_pub_;
+  std_msgs::msg::Float64MultiArray                               torque_cmd_msg_;
   std::mutex                                                     cmd_pub_mutex_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr task_pos_pub_;
   std_msgs::msg::Float64MultiArray                               task_pos_msg_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr              estop_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr            active_ctrl_name_pub_;
 
   rclcpp::TimerBase::SharedPtr control_timer_;
   rclcpp::TimerBase::SharedPtr timeout_timer_;

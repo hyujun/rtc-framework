@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """
-monitor_data_health_v2.py - v2 (Statistics Collection)
+monitor_data_health.py - v3 (Per-Controller Statistics)
 
-Real-time data health monitoring with statistics collection and JSON export.
+실시간 데이터 헬스 모니터링 + 컨트롤러 종류별 통계 JSON 저장.
+
+저장 구조:
+  logging_data/stats/
+    <controller_name>/
+      health_stats_YYYYMMDD_HHMMSS.json
 """
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, DurabilityPolicy
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64MultiArray, Bool
+from std_msgs.msg import Float64MultiArray, Bool, String
 import json
 from datetime import datetime
 from pathlib import Path
@@ -41,11 +47,28 @@ class DataHealthMonitor(Node):
         self.stats_dir = Path(self.get_parameter('stats_output_dir').value)
         self.enable_stats = self.get_parameter('enable_stats').value
 
-        # Create stats directory
-        if self.enable_stats:
-            self.stats_dir.mkdir(parents=True, exist_ok=True)
+        # 현재 활성 컨트롤러 이름 (~/active_controller_name 수신 전 기본값)
+        self.current_controller = 'unknown'
 
-        # Subscribers
+        # 컨트롤러별 누적 통계: {controller_name: stats_dict}
+        self.per_controller_stats = {}
+
+        # 타임스탬프 추적
+        self.last_robot_time = None
+        self.last_hand_time = None
+        self.last_command_time = None
+
+        self.robot_timeout_count = 0
+        self.hand_timeout_count = 0
+
+        # 컨트롤러 이름 구독 — transient_local(latched) QoS
+        latch_qos = QoSProfile(depth=1,
+                               durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.ctrl_name_sub = self.create_subscription(
+            String, '/rt_controller/active_controller_name',
+            self._controller_name_callback, latch_qos)
+
+        # 데이터 구독
         self.joint_state_sub = self.create_subscription(
             JointState, '/joint_states', self.joint_state_callback, 10)
 
@@ -59,13 +82,26 @@ class DataHealthMonitor(Node):
         self.estop_sub = self.create_subscription(
             Bool, '/system/estop_status', self.estop_callback, 10)
 
-        # Monitoring timer
+        # 헬스 체크 타이머
         self.timer = self.create_timer(
             1.0 / self.check_rate, self.check_health)
 
-        # Statistics
-        self.stats = {
-            'start_time': datetime.now().isoformat(),
+        self.get_logger().info('Data Health Monitor v3 started')
+        self.get_logger().info(f'Check rate: {self.check_rate} Hz')
+        self.get_logger().info(
+            f'Timeout threshold: {self.timeout_threshold} s')
+        if self.enable_stats:
+            self.get_logger().info(f'Statistics output: {self.stats_dir}')
+
+    # ── 컨트롤러별 stats 관리 ────────────────────────────────────────────────
+
+    def _make_empty_stats(self):
+        """컨트롤러 하나의 빈 통계 블록을 반환."""
+        return {
+            'first_active': datetime.now().isoformat(),
+            'last_active': None,
+            'total_active_s': 0.0,
+            '_session_start': datetime.now().isoformat(),   # 내부용 (저장 제외)
             'robot': {
                 'total_packets': 0,
                 'lost_packets': 0,
@@ -87,126 +123,161 @@ class DataHealthMonitor(Node):
                 'total_triggers': 0,
                 'current_status': False,
                 'last_trigger': None,
-            }
+            },
         }
 
-        self.last_robot_time = None
-        self.last_hand_time = None
-        self.last_command_time = None
+    def _current_stats(self):
+        """현재 컨트롤러의 stats dict 반환 (없으면 생성)."""
+        if self.current_controller not in self.per_controller_stats:
+            self.per_controller_stats[self.current_controller] = \
+                self._make_empty_stats()
+        return self.per_controller_stats[self.current_controller]
 
-        self.robot_timeout_count = 0
-        self.hand_timeout_count = 0
+    def _controller_name_callback(self, msg):
+        new_name = msg.data
+        if not new_name:
+            return
+        if new_name == self.current_controller:
+            return
 
-        self.get_logger().info('Data Health Monitor v2 started')
-        self.get_logger().info(f'Check rate: {self.check_rate} Hz')
-        self.get_logger().info(
-            f'Timeout threshold: {self.timeout_threshold} s')
-        if self.enable_stats:
-            self.get_logger().info(f'Statistics output: {self.stats_dir}')
+        # 이전 컨트롤러 세션 종료 기록
+        if self.current_controller in self.per_controller_stats:
+            prev = self.per_controller_stats[self.current_controller]
+            now_str = datetime.now().isoformat()
+            prev['last_active'] = now_str
+            # 이번 세션 활성 시간 누산
+            session_start = datetime.fromisoformat(prev['_session_start'])
+            elapsed = (datetime.now() - session_start).total_seconds()
+            prev['total_active_s'] = prev.get('total_active_s', 0.0) + elapsed
+
+        self.current_controller = new_name
+
+        # 신규 컨트롤러 진입 시 세션 시작 시간 갱신
+        stats = self._current_stats()
+        stats['_session_start'] = datetime.now().isoformat()
+
+        self.get_logger().info(f'Controller changed → {new_name}')
+
+    # ── 데이터 콜백 ─────────────────────────────────────────────────────────
 
     def joint_state_callback(self, msg):
-        now = self.get_clock().now()
-        self.last_robot_time = now
-        self.stats['robot']['total_packets'] += 1
-        self.stats['robot']['last_update'] = datetime.now().isoformat()
+        self.last_robot_time = self.get_clock().now()
+        s = self._current_stats()
+        s['robot']['total_packets'] += 1
+        s['robot']['last_update'] = datetime.now().isoformat()
 
     def hand_state_callback(self, msg):
-        now = self.get_clock().now()
-        self.last_hand_time = now
-        self.stats['hand']['total_packets'] += 1
-        self.stats['hand']['last_update'] = datetime.now().isoformat()
+        self.last_hand_time = self.get_clock().now()
+        s = self._current_stats()
+        s['hand']['total_packets'] += 1
+        s['hand']['last_update'] = datetime.now().isoformat()
 
     def command_callback(self, msg):
-        now = self.get_clock().now()
-        self.last_command_time = now
-        self.stats['commands']['total_packets'] += 1
-        self.stats['commands']['last_update'] = datetime.now().isoformat()
+        self.last_command_time = self.get_clock().now()
+        s = self._current_stats()
+        s['commands']['total_packets'] += 1
+        s['commands']['last_update'] = datetime.now().isoformat()
 
     def estop_callback(self, msg):
-        if msg.data and not self.stats['estop']['current_status']:
-            # E-STOP triggered
-            self.stats['estop']['total_triggers'] += 1
-            self.stats['estop']['last_trigger'] = datetime.now().isoformat()
-            self.get_logger().error('⚠️  E-STOP TRIGGERED!')
+        s = self._current_stats()
+        if msg.data and not s['estop']['current_status']:
+            s['estop']['total_triggers'] += 1
+            s['estop']['last_trigger'] = datetime.now().isoformat()
+            self.get_logger().error('E-STOP TRIGGERED!')
+        s['estop']['current_status'] = msg.data
 
-        self.stats['estop']['current_status'] = msg.data
+    # ── 헬스 체크 ───────────────────────────────────────────────────────────
 
     def check_health(self):
         now = self.get_clock().now()
+        s = self._current_stats()
 
-        # Check robot data
         if self.last_robot_time is not None:
             robot_age = (now - self.last_robot_time).nanoseconds / 1e9
             if robot_age > self.timeout_threshold:
                 self.robot_timeout_count += 1
-                self.stats['robot']['lost_packets'] += 1
+                s['robot']['lost_packets'] += 1
                 self.get_logger().warn(
                     f'Robot data timeout: {robot_age:.3f}s '
                     f'(count: {self.robot_timeout_count})')
 
-        # Check hand data
         if self.last_hand_time is not None:
             hand_age = (now - self.last_hand_time).nanoseconds / 1e9
             if hand_age > self.timeout_threshold:
                 self.hand_timeout_count += 1
-                self.stats['hand']['lost_packets'] += 1
+                s['hand']['lost_packets'] += 1
                 self.get_logger().warn(
                     f'Hand data timeout: {hand_age:.3f}s '
                     f'(count: {self.hand_timeout_count})')
 
-        # Log status every 10 seconds
-        if self.stats['robot']['total_packets'] % 100 == 0 and \
-           self.stats['robot']['total_packets'] > 0:
+        robot_packets = s['robot']['total_packets']
+        if robot_packets % 100 == 0 and robot_packets > 0:
             self.log_status()
 
     def log_status(self):
-        robot_packets = self.stats['robot']['total_packets']
-        robot_lost = self.stats['robot']['lost_packets']
-        hand_packets = self.stats['hand']['total_packets']
-        hand_lost = self.stats['hand']['lost_packets']
+        s = self._current_stats()
+        robot_packets = s['robot']['total_packets']
+        robot_lost = s['robot']['lost_packets']
+        hand_packets = s['hand']['total_packets']
+        hand_lost = s['hand']['lost_packets']
 
-        robot_loss_rate = (robot_lost / robot_packets *
-                           100) if robot_packets > 0 else 0
-        hand_loss_rate = (hand_lost / hand_packets *
-                          100) if hand_packets > 0 else 0
+        robot_loss_rate = (robot_lost / robot_packets * 100) if robot_packets > 0 else 0
+        hand_loss_rate = (hand_lost / hand_packets * 100) if hand_packets > 0 else 0
 
-        self.get_logger().info('=== Data Health Status ===')
         self.get_logger().info(
-            f'Robot: {robot_packets} packets, '
+            f'[{self.current_controller}] === Data Health Status ===')
+        self.get_logger().info(
+            f'  Robot:    {robot_packets} packets, '
             f'{robot_lost} lost ({robot_loss_rate:.2f}%)')
         self.get_logger().info(
-            f'Hand: {hand_packets} packets, '
+            f'  Hand:     {hand_packets} packets, '
             f'{hand_lost} lost ({hand_loss_rate:.2f}%)')
         self.get_logger().info(
-            f'Commands: {self.stats["commands"]["total_packets"]} sent')
+            f'  Commands: {s["commands"]["total_packets"]} sent')
         self.get_logger().info(
-            f'E-STOP: {"ACTIVE" if self.stats["estop"]["current_status"] else "CLEAR"} '
-            f'(triggered {self.stats["estop"]["total_triggers"]} times)')
+            f'  E-STOP:   {"ACTIVE" if s["estop"]["current_status"] else "CLEAR"} '
+            f'(triggered {s["estop"]["total_triggers"]} times)')
+
+    # ── 통계 저장 ────────────────────────────────────────────────────────────
 
     def save_statistics(self):
-        if not self.enable_stats:
+        if not self.enable_stats or not self.per_controller_stats:
             return
 
-        # Calculate rates
-        elapsed = (datetime.now() - datetime.fromisoformat(
-            self.stats['start_time'])).total_seconds()
+        now = datetime.now()
 
-        if elapsed > 0:
-            self.stats['robot']['avg_rate'] = \
-                self.stats['robot']['total_packets'] / elapsed
-            self.stats['hand']['avg_rate'] = \
-                self.stats['hand']['total_packets'] / elapsed
-            self.stats['commands']['avg_rate'] = \
-                self.stats['commands']['total_packets'] / elapsed
+        # 현재 세션 종료 처리 (last_active 기록 + 누산)
+        if self.current_controller in self.per_controller_stats:
+            cur = self.per_controller_stats[self.current_controller]
+            cur['last_active'] = now.isoformat()
+            session_start = datetime.fromisoformat(cur['_session_start'])
+            elapsed = (now - session_start).total_seconds()
+            cur['total_active_s'] = cur.get('total_active_s', 0.0) + elapsed
 
-        # Save to JSON
-        filename = f"health_stats_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        filepath = self.stats_dir / filename
+        filename = f"health_stats_{now.strftime('%Y%m%d_%H%M%S')}.json"
 
-        with open(filepath, 'w') as f:
-            json.dump(self.stats, f, indent=2)
+        for ctrl_name, stats in self.per_controller_stats.items():
+            # avg_rate 계산
+            total_s = stats.get('total_active_s', 0.0)
+            if total_s > 0:
+                stats['robot']['avg_rate'] = \
+                    stats['robot']['total_packets'] / total_s
+                stats['hand']['avg_rate'] = \
+                    stats['hand']['total_packets'] / total_s
+                stats['commands']['avg_rate'] = \
+                    stats['commands']['total_packets'] / total_s
 
-        self.get_logger().info(f'Statistics saved to {filepath}')
+            # 내부용 키 제거 후 저장
+            save_data = {k: v for k, v in stats.items()
+                         if not k.startswith('_')}
+
+            ctrl_dir = self.stats_dir / ctrl_name
+            ctrl_dir.mkdir(parents=True, exist_ok=True)
+            filepath = ctrl_dir / filename
+            with open(filepath, 'w') as f:
+                json.dump(save_data, f, indent=2)
+
+            self.get_logger().info(f'Statistics saved: {filepath}')
 
     def destroy_node(self):
         self.log_status()
@@ -223,13 +294,17 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        # Check if context is still valid before cleanup
+        # destroy_node()는 rclpy context 유효 여부와 무관하게 항상 호출.
+        # ros2 launch 종료 시 SIGINT 핸들러가 rclpy.shutdown()을 먼저 호출해
+        # rclpy.ok() == False가 되므로, 조건 밖에서 save_statistics()를 실행해야 함.
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
         try:
             if rclpy.ok():
-                node.destroy_node()
                 rclpy.shutdown()
         except Exception:
-            # Context already shutdown by another node, ignore
             pass
 
 

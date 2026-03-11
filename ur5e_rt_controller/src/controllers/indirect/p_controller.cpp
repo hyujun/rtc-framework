@@ -1,4 +1,4 @@
-#include "ur5e_rt_controller/controllers/p_controller.hpp"
+#include "ur5e_rt_controller/controllers/indirect/p_controller.hpp"
 
 #include <algorithm> // std::copy, std::clamp
 #include <pinocchio/math/rpy.hpp>
@@ -24,7 +24,7 @@ ControllerOutput PController::Compute(const ControllerState & state) noexcept
 
   for (int i = 0; i < kNumRobotJoints; ++i) {
     const double error = robot_target_[i] - state.robot.positions[i];
-    output.robot_commands[i] = gains_.kp[i] * error;
+    output.robot_commands[i] = state.robot.positions[i] + gains_.kp[i] * error * state.robot.dt;
     q_[static_cast<Eigen::Index>(i)] = state.robot.positions[i];
   }
 
@@ -43,6 +43,7 @@ ControllerOutput PController::Compute(const ControllerState & state) noexcept
 
   output.actual_target_positions = robot_target_;
   output.robot_commands = ClampCommands(output.robot_commands);
+  output.command_type = command_type_;
   return output;
 }
 
@@ -79,6 +80,10 @@ void PController::LoadConfig(const YAML::Node & cfg)
     for (std::size_t i = 0; i < 6; ++i) {
       gains_.kp[i] = cfg["kp"][i].as<double>();
     }
+  }
+  if (cfg["command_type"]) {
+    const auto s = cfg["command_type"].as<std::string>();
+    command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
 }
 

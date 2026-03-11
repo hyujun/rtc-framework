@@ -103,6 +103,7 @@ public:
   // gains layout: [kp×3, damping, null_kp, enable_null_space(0/1)]
   void LoadConfig(const YAML::Node & cfg) override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
+  [[nodiscard]] CommandType GetCommandType() const noexcept override {return command_type_;}
 
   // ── Accessors (non-RT reads only) ─────────────────────────────────────────
   void set_gains(const Gains & g) noexcept {gains_ = g;}
@@ -171,6 +172,8 @@ private:
   static constexpr std::array<double, kNumRobotJoints> kSafePosition{
     0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
   static constexpr double kMaxJointVelocity{2.0};
+
+  CommandType command_type_{CommandType::kPosition};
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState & state) noexcept;

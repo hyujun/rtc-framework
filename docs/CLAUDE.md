@@ -513,16 +513,30 @@ monitoring:
 mujoco_simulator:
   ros__parameters:
     model_path: ""             # Empty → <package>/models/ur5e/scene.xml
-    sim_mode: "free_run"       # "free_run" or "sync_step"
+    sim_mode: "sync_step"      # "free_run" or "sync_step"
     publish_decimation: 1      # free_run: publish every N steps
     sync_timeout_ms: 50.0      # sync_step: command wait timeout
-    max_rtf: 0.0               # Max Real-Time Factor (0.0 = unlimited)
+    max_rtf: 1.0               # Max Real-Time Factor (0.0 = unlimited)
     enable_viewer: true        # GLFW 3D viewer (false for headless)
     initial_joint_positions: [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
     enable_hand_sim: true      # Simulate hand with 1st-order filter
     hand_filter_alpha: 0.1     # Filter coefficient per 10ms tick
 
-# Overrides rt_controller params when launched via mujoco_sim.launch.py
+    # Timestep validation: compare with XML <option timestep>; error if mismatch (XML wins)
+    # 0.0 → no validation; > 0 → validate against XML
+    physics_timestep: 0.002    # seconds (= 500 Hz = 1/control_rate)
+
+    # Position servo gain source selection
+    # false (default): use XML original gainprm/biasprm
+    # true:  apply YAML-derived gains: gainprm = servo_kp / physics_timestep
+    #        force = servo_kp * dq_cmd - servo_kd * dq_actual
+    # Note: position servo mode automatically locks gravity OFF;
+    #       switching to torque mode automatically enables gravity.
+    use_yaml_servo_gains: false
+    servo_kp: [500.0, 500.0, 500.0, 150.0, 150.0, 150.0]  # Nm·s/rad
+    servo_kd: [400.0, 400.0, 400.0, 100.0, 100.0, 100.0]  # Nm·s/rad
+
+# Overrides rt_controller params (sim-specific differences only)
 rt_controller:
   ros__parameters:
     enable_estop: false        # Prevents false E-STOPs in free_run mode
@@ -550,16 +564,17 @@ Also sets environment variables automatically:
 
 ### `launch/mujoco_sim.launch.py` — MuJoCo Simulation
 
-| Argument | Default | Description |
-|---|---|---|
-| `model_path` | `""` | Absolute path to scene.xml; empty → package default |
-| `sim_mode` | `free_run` | `free_run` (max speed) or `sync_step` (1:1 sync) |
-| `enable_viewer` | `true` | Open GLFW 3D viewer window |
-| `publish_decimation` | `1` | free_run: publish every N steps |
-| `sync_timeout_ms` | `50.0` | sync_step: command wait timeout (ms) |
-| `max_rtf` | `0.0` | Max Real-Time Factor (0.0 = unlimited) |
-| `kp` | `5.0` | PD controller proportional gain |
-| `kd` | `0.5` | PD controller derivative gain |
+All arguments default to `""` (empty string) — YAML value takes precedence unless explicitly overridden.
+
+| Argument | Description |
+|---|---|
+| `model_path` | Absolute path to scene.xml; empty → package default |
+| `sim_mode` | `free_run` (max speed) or `sync_step` (1:1 sync) |
+| `enable_viewer` | `true`/`false` — Open GLFW 3D viewer window |
+| `publish_decimation` | free_run: publish every N steps |
+| `sync_timeout_ms` | sync_step: command wait timeout (ms) |
+| `max_rtf` | Max Real-Time Factor (0.0 = unlimited) |
+| `use_yaml_servo_gains` | `true`=YAML servo_kp/kd gains, `false`=XML gainprm/biasprm |
 
 Launches: `mujoco_simulator_node`, `rt_controller`, `data_health_monitor`.
 
@@ -730,6 +745,7 @@ For detailed RT tuning (CPU isolation, kernel parameters, DDS configuration, IRQ
 
 | Version | Key Changes |
 |---|---|
+| v5.7.0 | MuJoCo position servo gain system: `physics_timestep` (XML timestep validation), `use_yaml_servo_gains` flag, `servo_kp`/`servo_kd` per-joint YAML gains (`gainprm = servo_kp / physics_timestep`). Gravity auto-lock in position servo mode; auto-unlock + ON when switching to torque mode. `PController` fix: incremental position step `q + kp*error*dt` (eliminates steady-state position error). `mujoco_simulator.yaml` rt_controller section: removed duplicate params, kept sim-specific overrides only. |
 | v5.6.2 | MuJoCo simulation parameters priority improvement: removed hardcoded defaults (Euler/Newton) from C++ `Config` to give priority to physics solver values specified natively in MuJoCo XML. If options are missing in XML, `mj_loadXML`'s internal defaults apply safely. |
 | v5.6.1 | Trajectory improvements: `PinocchioController` + `JointSpaceTrajectory<6>` (`trajectory_speed`); `OperationalSpaceController` + `TaskSpaceTrajectory` SE3 quintic (`trajectory_speed`, `trajectory_angular_speed`); `ClikController` `trajectory_angular_speed` dead-code removed. GUI: `controller_gui.py` GAIN_DEFS updated (Pinocchio 15, OSC 16); `motion_editor_gui.py` topic fix + playback interval spinbox. |
 | v5.6.0 | MuJoCo viewer 전면 확장: `src/viewer/` 디렉토리 신설 (`viewer_state.hpp`, `viewer_loop.cpp`, `viewer_callbacks.cpp`, `viewer_overlays.cpp`). 신규 키: `→`(단진), `TAB`(카메라), `J/U/E/W/L/A/X`(시각화), `0-5`(geomgroup), `F5-F8`(렌더링), `F9`(sensor), `F10`(modelinfo), `P`(screenshot). 마우스: double-click(body선택), Ctrl+Drag(force/torque), Middle drag(zoom), Shift+drag(수평). Help 2페이지 분할. `StepOnce()` / `GetSimMode()` API 추가. |

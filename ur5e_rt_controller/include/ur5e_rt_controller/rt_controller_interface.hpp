@@ -56,6 +56,12 @@ public:
   //   Called from the ~/controller_gains subscriber (sensor thread).
   //   `gains` is a flat array whose layout is controller-specific:
   //   document the layout in the controller's header.  Default is a no-op.
+  // Returns the type of command this controller outputs (position or torque).
+  // Value is set by LoadConfig() from the YAML command_type field.
+  [[nodiscard]] virtual CommandType GetCommandType() const noexcept {
+    return CommandType::kPosition;
+  }
+
   virtual void LoadConfig(const YAML::Node & cfg) {(void)cfg;}
   virtual void UpdateGainsFromMsg(std::span<const double> gains) noexcept
   {

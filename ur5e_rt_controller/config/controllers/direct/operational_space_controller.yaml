@@ -6,3 +6,4 @@ operational_space_controller:
   damping: 0.01
   trajectory_speed: 0.1
   trajectory_angular_speed: 0.5
+  command_type: "torque"

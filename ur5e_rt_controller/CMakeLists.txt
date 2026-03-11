@@ -37,11 +37,10 @@ find_package(yaml-cpp REQUIRED)
 add_executable(rt_controller
   src/rt_controller_node.cpp
   src/rt_controller_main.cpp
-  src/controllers/pd_controller.cpp
-  src/controllers/p_controller.cpp
-  src/controllers/pinocchio_controller.cpp
-  src/controllers/clik_controller.cpp
-  src/controllers/operational_space_controller.cpp
+  src/controllers/direct/joint_pd_controller.cpp
+  src/controllers/direct/operational_space_controller.cpp
+  src/controllers/indirect/p_controller.cpp
+  src/controllers/indirect/clik_controller.cpp
 )
 target_include_directories(rt_controller PRIVATE include)
 ament_target_dependencies(rt_controller

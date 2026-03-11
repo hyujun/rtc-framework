@@ -64,6 +64,7 @@ public:
   // gains layout: [kp×6]
   void LoadConfig(const YAML::Node & cfg) override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
+  [[nodiscard]] CommandType GetCommandType() const noexcept override {return command_type_;}
 
   // Accessors (Google C++ Style: getter matches member name w/o trailing _).
   void set_gains(Gains gains) noexcept {gains_ = gains;}
@@ -79,6 +80,8 @@ private:
   pinocchio::Data data_;
   pinocchio::JointIndex end_id_{0};
   Eigen::VectorXd q_;
+
+  CommandType command_type_{CommandType::kPosition};
 
   // Clamps each command to [-kMaxJointVelocity, +kMaxJointVelocity].
   static constexpr double kMaxJointVelocity = 2.0;  // rad/s

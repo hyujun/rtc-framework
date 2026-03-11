@@ -117,6 +117,12 @@ def launch_setup(context, *args, **kwargs):
     if max_rtf != '':
         sim_overrides['max_rtf'] = float(max_rtf)
 
+    use_yaml_servo_gains = LaunchConfiguration(
+        'use_yaml_servo_gains').perform(context)
+    if use_yaml_servo_gains != '':
+        sim_overrides['use_yaml_servo_gains'] = (
+            use_yaml_servo_gains.lower() in ('true', '1', 'yes'))
+
     # Add overrides only if any were provided
     if sim_overrides:
         sim_params.append(sim_overrides)
@@ -257,6 +263,16 @@ def generate_launch_description():
         ),
     )
 
+    use_yaml_servo_gains_arg = DeclareLaunchArgument(
+        'use_yaml_servo_gains',
+        default_value='',
+        description=(
+            'Override use_yaml_servo_gains from YAML. '
+            'Empty → use YAML value (false). '
+            'true: servo_kp/kd gains from YAML, false: XML gainprm/biasprm'
+        ),
+    )
+
     return LaunchDescription([
         # Arguments
         model_path_arg,
@@ -267,6 +283,7 @@ def generate_launch_description():
         max_rtf_arg,
         kp_arg,
         kd_arg,
+        use_yaml_servo_gains_arg,
         # Nodes (via OpaqueFunction for conditional parameter loading)
         OpaqueFunction(function=launch_setup),
     ])

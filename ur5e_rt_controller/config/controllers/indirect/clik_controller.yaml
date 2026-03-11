@@ -4,3 +4,4 @@ clik_controller:
   null_kp: 0.5
   trajectory_speed: 0.1
   control_6dof: false
+  command_type: "position"

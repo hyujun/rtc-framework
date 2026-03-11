@@ -1,5 +1,5 @@
 // ── Includes: project header first, then C++ stdlib ────────────────────────────
-#include "ur5e_rt_controller/controllers/operational_space_controller.hpp"
+#include "ur5e_rt_controller/controllers/direct/operational_space_controller.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -35,7 +35,11 @@ OperationalSpaceController::OperationalSpaceController(
 ControllerOutput OperationalSpaceController::Compute(
   const ControllerState & state) noexcept
 {
-  if (estopped_) {return ComputeEstop(state);}
+  if (estopped_) {
+    auto out = ComputeEstop(state);
+    out.command_type = command_type_;
+    return out;
+  }
 
   // ── Step 1: copy joint state into Eigen vectors ──────────────────────────
   for (Eigen::Index i = 0; i < model_.nv; ++i) {
@@ -148,6 +152,7 @@ ControllerOutput OperationalSpaceController::Compute(
   output.actual_task_positions[4] = rpy_current[1];
   output.actual_task_positions[5] = rpy_current[2];
 
+  output.command_type = command_type_;
   return output;
 }
 
@@ -262,6 +267,10 @@ void OperationalSpaceController::LoadConfig(const YAML::Node & cfg)
   if (cfg["trajectory_speed"]) {gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();}
   if (cfg["trajectory_angular_speed"]) {
     gains_.trajectory_angular_speed = cfg["trajectory_angular_speed"].as<double>();
+  }
+  if (cfg["command_type"]) {
+    const auto s = cfg["command_type"].as<std::string>();
+    command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
 }
 

@@ -5,6 +5,63 @@
 
 ---
 
+## [5.7.0] - 2026-03-11
+
+### 추가 (Added) — MuJoCo Position Servo 게인 시스템
+
+#### physics_timestep 검증 (`mujoco_simulator.yaml`, `mujoco_simulator.cpp`)
+
+- `physics_timestep` 파라미터 추가 — XML `<option timestep>`과 비교 검증
+  - `0.0` → 검증 없이 XML 값 그대로 사용
+  - `> 0` → XML 값과 비교; 불일치 시 `ERROR` 출력 후 **XML 우선 적용**
+- `gainprm_yaml = servo_kp / physics_timestep` 스케일링 기준으로 사용
+
+#### YAML 기반 Position Servo 게인 (`use_yaml_servo_gains`, `servo_kp`, `servo_kd`)
+
+- `use_yaml_servo_gains: false` (기본) → XML 원본 `gainprm`/`biasprm` 사용
+- `use_yaml_servo_gains: true` → YAML 게인 적용:
+  - `gainprm = servo_kp[i] / physics_timestep`
+  - `force = servo_kp * dq_cmd - servo_kd * dq_actual`
+- `PreparePhysicsStep()`: torque / YAML servo / XML servo 3-way 분기
+- 신규 Config 파라미터:
+
+```yaml
+physics_timestep: 0.002
+use_yaml_servo_gains: false
+servo_kp: [500.0, 500.0, 500.0, 150.0, 150.0, 150.0]  # Nm·s/rad
+servo_kd: [400.0, 400.0, 400.0, 100.0, 100.0, 100.0]  # Nm·s/rad
+```
+
+#### Gravity 자동 잠금 (position servo 모드)
+
+- Position servo 진입 시: `gravity_enabled_ = false` + `gravity_locked_by_servo_ = true`
+  - `EnableGravity()` 및 viewer `G` 키 무시
+- Torque 모드 전환 시: 잠금 해제 + servo로 꺼진 경우 `gravity_enabled_ = true`
+- 신규 API: `IsGravityLockedByServo()`, `SetControlMode()` 갱신
+
+#### Launch 파라미터 (`mujoco_sim.launch.py`)
+
+- `use_yaml_servo_gains` launch argument 추가
+- 모든 launch argument 기본값 `""` (YAML 우선) 방식으로 통일
+
+### 수정 (Fixed) — PController 정상상태 오차 제거 (`p_controller.cpp`)
+
+- **원인**: `command = kp * error`를 절대 위치 명령으로 전송 → MuJoCo 서보가 `ctrl=kp*error` 위치로 구동
+  - 평형: `q* = kp/(kp+1) * target` (예: kp=1 → target 90° 시 45°에 정착)
+- **수정**: 증분 위치 스텝 방식으로 변경
+  ```cpp
+  output.robot_commands[i] = state.robot.positions[i]
+                            + gains_.kp[i] * error * state.robot.dt;
+  ```
+- **평형**: `q* = target` (정상상태 오차 없음)
+
+### 변경 (Changed) — mujoco_simulator.yaml rt_controller 섹션 정리
+
+- `ur5e_rt_controller.yaml`과 중복인 파라미터 제거: `control_rate`, `kp`, `kd`, `enable_logging`
+- 시뮬레이션 전용 차이값만 유지: `enable_estop`, `robot_timeout_ms`, `hand_timeout_ms`
+
+---
+
 ## [5.6.1] - 2026-03-10
 
 ### 변경 (Changed) — PinocchioController: JointSpaceTrajectory 추가

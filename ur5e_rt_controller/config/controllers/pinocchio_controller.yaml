@@ -1,6 +1,0 @@
-pinocchio_controller:
-  kp: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
-  kd: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
-  enable_gravity_compensation: true
-  enable_coriolis_compensation: false
-  trajectory_speed: 1.0

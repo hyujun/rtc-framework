@@ -73,6 +73,16 @@ bool MuJoCoSimulator::Initialize() noexcept {
   viz_qpos_.assign(static_cast<std::size_t>(model_->nq), 0.0);
   ext_xfrc_.assign(static_cast<std::size_t>(model_->nbody) * 6, 0.0);
 
+  // Save original actuator gain/bias params so SetControlMode() can restore them.
+  orig_actuator_params_.resize(static_cast<std::size_t>(model_->nu));
+  for (int i = 0; i < model_->nu; ++i) {
+    auto & p = orig_actuator_params_[static_cast<std::size_t>(i)];
+    p.gainprm0 = static_cast<double>(model_->actuator_gainprm[i * mjNGAIN + 0]);
+    p.biasprm0 = static_cast<double>(model_->actuator_biasprm[i * mjNBIAS + 0]);
+    p.biasprm1 = static_cast<double>(model_->actuator_biasprm[i * mjNBIAS + 1]);
+    p.biasprm2 = static_cast<double>(model_->actuator_biasprm[i * mjNBIAS + 2]);
+  }
+
   ResolveJointIndices();
 
   const int njoints = std::min(6, model_->nq);
@@ -84,13 +94,47 @@ bool MuJoCoSimulator::Initialize() noexcept {
   mj_forward(model_, data_);
   ReadState();
 
+  // ── Physics timestep 검증 ────────────────────────────────────────────────
+  xml_timestep_ = static_cast<double>(model_->opt.timestep);
+
+  if (cfg_.physics_timestep > 0.0) {
+    constexpr double kEps = 1e-9;
+    if (std::abs(cfg_.physics_timestep - xml_timestep_) > kEps) {
+      fprintf(stderr,
+              "[MuJoCoSimulator] ERROR: physics_timestep 불일치 — "
+              "yaml=%.6f s (%.1f Hz)  XML=%.6f s (%.1f Hz) → XML 값 적용\n",
+              cfg_.physics_timestep, 1.0 / cfg_.physics_timestep,
+              xml_timestep_,         1.0 / xml_timestep_);
+      // model_->opt.timestep은 XML 값 유지 (변경 없음)
+    } else {
+      fprintf(stdout,
+              "[MuJoCoSimulator] physics_timestep OK: %.6f s (%.1f Hz)\n",
+              xml_timestep_, 1.0 / xml_timestep_);
+    }
+  }
+
+  // ── YAML servo gain 사전 계산 ─────────────────────────────────────────────
+  // gainprm = servo_kp / timestep  →  force = servo_kp * dq_cmd - servo_kd * dq_actual
+  for (std::size_t i = 0; i < 6; ++i) {
+    gainprm_yaml_[i]  = cfg_.servo_kp[i] / xml_timestep_;
+    biasprm2_yaml_[i] = -cfg_.servo_kd[i];
+  }
+
+  // ── Initial gravity state: position servo → gravity OFF (잠금) ──────────
+  gravity_locked_by_servo_.store(true,  std::memory_order_relaxed);
+  gravity_enabled_.store(false, std::memory_order_relaxed);
+
   fprintf(stdout,
           "[MuJoCoSimulator] Loaded '%s'  nq=%d  nv=%d  nu=%d  nbody=%d"
-          "  dt=%.4f s  mode=%s\n",
+          "  dt=%.4f s  mode=%s\n"
+          "[MuJoCoSimulator] Servo gains: %s  "
+          "kp0=%.1f kd0=%.1f  gainprm0=%.1f\n",
           cfg_.model_path.c_str(),
           model_->nq, model_->nv, model_->nu, model_->nbody,
-          static_cast<double>(model_->opt.timestep),
-          cfg_.mode == SimMode::kFreeRun ? "free_run" : "sync_step");
+          xml_timestep_,
+          cfg_.mode == SimMode::kFreeRun ? "free_run" : "sync_step",
+          cfg_.use_yaml_servo_gains ? "YAML" : "XML",
+          cfg_.servo_kp[0], cfg_.servo_kd[0], gainprm_yaml_[0]);
   return true;
 }
 
