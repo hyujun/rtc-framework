@@ -47,8 +47,8 @@ class JointPDController final : public RTControllerInterface
 public:
   struct Gains
   {
-    std::array<double, 6> kp{{5.0, 5.0, 5.0, 5.0, 5.0, 5.0}};
-    std::array<double, 6> kd{{0.5, 0.5, 0.5, 0.5, 0.5, 0.5}};
+    std::array<double, 6> kp{{200.0, 200.0, 150.0, 120.0, 120.0, 120.0}};
+    std::array<double, 6> kd{{30.0, 30.0, 25.0, 20.0, 20.0, 20.0}};
     bool   enable_gravity_compensation{false};  ///< g(q) 보상 활성화
     bool   enable_coriolis_compensation{false}; ///< C(q,v)·v 보상 활성화
     double trajectory_speed{1.0};              ///< 궤적 최대 속도 (rad/s)
