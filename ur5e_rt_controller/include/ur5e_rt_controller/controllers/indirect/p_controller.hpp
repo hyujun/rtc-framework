@@ -32,7 +32,7 @@ class PController final : public RTControllerInterface {
 public:
   struct Gains
   {
-    std::array<double, 6> kp{{5.0, 5.0, 5.0, 5.0, 5.0, 5.0}};
+    std::array<double, 6> kp{{120.0, 120.0, 100.0, 80.0, 80.0, 80.0}};
   };
 
   explicit PController(std::string_view urdf_path);
