@@ -161,6 +161,8 @@ ur5e-rt-controller/
         │   └── monitor_data_health.py      # Data health monitor + JSON stats
         ├── plotting/
         │   └── plot_ur_trajectory.py       # Matplotlib trajectory visualization
+        ├── validation/
+        │   └── compare_mjcf_urdf.py        # MJCF vs URDF parameter comparison
         └── utils/
             └── hand_udp_sender_example.py  # Synthetic UDP hand data generator
 
@@ -615,6 +617,17 @@ ros2 run ur5e_tools plot_ur_trajectory /tmp/ur5e_control_log.csv --joint 2
 
 Synthetic hand data generator for development/testing. Sends sinusoidal or static UDP packets to the receiver on port 50001.
 
+### `ur5e_tools/validation/compare_mjcf_urdf.py`
+
+Compares UR5e MJCF (`ur5e.xml`) and URDF (`ur5e.urdf`) physics parameters: mass, inertia, joint limits, effort limits, axis vectors, link origins. Auto-detects file paths via `ament_index` or relative path fallback.
+
+```bash
+ros2 run ur5e_tools compare_mjcf_urdf
+ros2 run ur5e_tools compare_mjcf_urdf --mjcf /path/to/ur5e.xml --urdf /path/to/ur5e.urdf --tolerance 0.01
+```
+
+Exit code: `0` if all parameters match within tolerance, `1` if mismatches found.
+
 ---
 
 ## Adding a Custom Controller
@@ -745,7 +758,7 @@ For detailed RT tuning (CPU isolation, kernel parameters, DDS configuration, IRQ
 
 | Version | Key Changes |
 |---|---|
-| v5.7.0 | MuJoCo position servo gain system: `physics_timestep` (XML timestep validation), `use_yaml_servo_gains` flag, `servo_kp`/`servo_kd` per-joint YAML gains (`gainprm = servo_kp / physics_timestep`). Gravity auto-lock in position servo mode; auto-unlock + ON when switching to torque mode. `PController` fix: incremental position step `q + kp*error*dt` (eliminates steady-state position error). `mujoco_simulator.yaml` rt_controller section: removed duplicate params, kept sim-specific overrides only. |
+| v5.7.0 | MuJoCo position servo gain system: `physics_timestep` (XML timestep validation), `use_yaml_servo_gains` flag, `servo_kp`/`servo_kd` per-joint YAML gains (`gainprm = servo_kp / physics_timestep`). Gravity auto-lock in position servo mode; auto-unlock + ON when switching to torque mode. `PController` fix: incremental position step `q + kp*error*dt` (eliminates steady-state position error). `mujoco_simulator.yaml` rt_controller section: removed duplicate params, kept sim-specific overrides only. New: `compare_mjcf_urdf` validation tool in `ur5e_tools` — compares MJCF/URDF mass, inertia, joint limits, effort limits. |
 | v5.6.2 | MuJoCo simulation parameters priority improvement: removed hardcoded defaults (Euler/Newton) from C++ `Config` to give priority to physics solver values specified natively in MuJoCo XML. If options are missing in XML, `mj_loadXML`'s internal defaults apply safely. |
 | v5.6.1 | Trajectory improvements: `PinocchioController` + `JointSpaceTrajectory<6>` (`trajectory_speed`); `OperationalSpaceController` + `TaskSpaceTrajectory` SE3 quintic (`trajectory_speed`, `trajectory_angular_speed`); `ClikController` `trajectory_angular_speed` dead-code removed. GUI: `controller_gui.py` GAIN_DEFS updated (Pinocchio 15, OSC 16); `motion_editor_gui.py` topic fix + playback interval spinbox. |
 | v5.6.0 | MuJoCo viewer 전면 확장: `src/viewer/` 디렉토리 신설 (`viewer_state.hpp`, `viewer_loop.cpp`, `viewer_callbacks.cpp`, `viewer_overlays.cpp`). 신규 키: `→`(단진), `TAB`(카메라), `J/U/E/W/L/A/X`(시각화), `0-5`(geomgroup), `F5-F8`(렌더링), `F9`(sensor), `F10`(modelinfo), `P`(screenshot). 마우스: double-click(body선택), Ctrl+Drag(force/torque), Middle drag(zoom), Shift+drag(수평). Help 2페이지 분할. `StepOnce()` / `GetSimMode()` API 추가. |

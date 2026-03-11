@@ -688,10 +688,11 @@ print_summary() {
   esac
 
   echo ""
-  echo -e "${CYAN}${BOLD}── Monitoring ──────────────────────────────────────────${NC}"
+  echo -e "${CYAN}${BOLD}── Monitoring & Validation ─────────────────────────────${NC}"
   echo "  ros2 run ur5e_tools monitor_data_health"
   echo "  ros2 run ur5e_tools plot_ur_trajectory <workspace>/logging_data/ur5e_control_log_YYMMDD_HHMM.csv"
   echo "  ros2 run ur5e_tools motion_editor_gui"
+  echo "  ros2 run ur5e_tools compare_mjcf_urdf        # MJCF vs URDF parameter comparison"
   echo ""
   echo -e "${CYAN}${BOLD}── VS Code Debugging ───────────────────────────────────${NC}"
   echo "  # Debug build + IntelliSense:"

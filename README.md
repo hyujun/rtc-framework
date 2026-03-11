@@ -73,6 +73,7 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 | Controller Registry | `MakeControllerEntries()` 한 줄 등록으로 새 컨트롤러 추가 완결 (v5.4.0+) |
 | 설치 모드 선택 | `install.sh sim / robot / full` — 환경에 맞게 선택 설치 (v4.5.0+) |
 | 신호 필터 | Bessel LPF (선형 위상) + Kalman 필터 (속도 추정 내장), N채널 RT-안전 (v5.2.0+) |
+| 모델 검증 | MJCF vs URDF 물리 파라미터 비교 (`compare_mjcf_urdf.py`) — mass, inertia, joint limit 등 (v5.7.0+) |
 
 ---
 
@@ -166,7 +167,9 @@ ur5e-rt-controller/
 │   └── ...
 └── ur5e_tools/                            # 📦 Python 개발 유틸리티
     └── ur5e_tools/
-        └── controller_gui.py              # 컨트롤러 GUI (v5.3.0+)
+        ├── controller_gui.py              # 컨트롤러 GUI (v5.3.0+)
+        └── validation/
+            └── compare_mjcf_urdf.py       # MJCF vs URDF 파라미터 비교 검증 (v5.7.0+)
 ```
 
 ### 패키지 의존성 그래프
@@ -912,6 +915,17 @@ ros2 run ur5e_tools hand_udp_sender_example.py
 # → 1) 사인파 (동적) / 2) 고정 포즈 (정적) 선택
 ```
 
+### MJCF vs URDF 모델 파라미터 비교 (v5.7.0+)
+
+```bash
+# 자동 경로 탐색 (ament_index 또는 상대 경로)
+ros2 run ur5e_tools compare_mjcf_urdf
+
+# 수동 경로 지정 + tolerance 조정
+ros2 run ur5e_tools compare_mjcf_urdf \
+    --mjcf /path/to/ur5e.xml --urdf /path/to/ur5e.urdf --tolerance 0.01
+```
+
 ---
 
 ## 설정 (YAML)
@@ -1219,6 +1233,9 @@ ros2 control list_controllers -v
 
 # 데이터 헬스 모니터 단독 실행
 ros2 run ur5e_tools monitor_data_health.py
+
+# MJCF vs URDF 모델 파라미터 비교 검증
+ros2 run ur5e_tools compare_mjcf_urdf
 
 # 스레드 설정 확인 (v4.2.0+)
 PID=$(pgrep -f rt_controller)

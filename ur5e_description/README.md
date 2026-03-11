@@ -85,6 +85,25 @@ robots/ur5e/meshes/collision/*.stl
 
 ---
 
+## MJCF vs URDF 파라미터 비교
+
+두 모델 파일(MJCF, URDF)의 물리 파라미터(mass, inertia, joint limit, effort 등)를 비교하려면:
+
+```bash
+# 빌드 후
+ros2 run ur5e_tools compare_mjcf_urdf
+
+# 직접 경로 지정
+ros2 run ur5e_tools compare_mjcf_urdf --mjcf robots/ur5e/mjcf/ur5e.xml --urdf robots/ur5e/urdf/ur5e.urdf
+
+# tolerance 조정
+ros2 run ur5e_tools compare_mjcf_urdf --tolerance 0.01
+```
+
+> **참고**: MJCF는 MuJoCo Menagerie 기반, URDF는 UR 공식 xacro 생성이므로 mass/inertia 값이 다를 수 있습니다. joint limit과 effort limit은 일치합니다.
+
+---
+
 ## 메시 출처
 
 `meshes/` 파일은 UR 공식 ROS2 Description 레포지토리에서 다운로드:
