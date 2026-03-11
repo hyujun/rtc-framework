@@ -9,6 +9,7 @@
 
 #include <span>
 #include <string_view>
+#include <vector>
 
 namespace ur5e_rt_controller
 {
@@ -66,6 +67,15 @@ public:
   virtual void UpdateGainsFromMsg(std::span<const double> gains) noexcept
   {
     (void)gains;
+  }
+
+  // GetCurrentGains()
+  //   Returns the current gains as a flat array matching the layout expected
+  //   by UpdateGainsFromMsg().  Used by the GUI "Load Gain" feature to read
+  //   back the active controller's runtime gains.  Default returns empty.
+  [[nodiscard]] virtual std::vector<double> GetCurrentGains() const noexcept
+  {
+    return {};
   }
 
 protected:

@@ -326,6 +326,20 @@ void RtControllerNode::CreateSubscriptions()
         controllers_[static_cast<std::size_t>(idx)]->Name().data());
       },
       sub_options);
+
+  // Load Gain 요청 subscriber — GUI에서 요청 시 현재 활성 컨트롤러의 게인을 publish
+  request_gains_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "~/request_gains", 10,
+    [this](std_msgs::msg::Bool::SharedPtr /*msg*/) {
+      const int idx = active_controller_idx_.load(std::memory_order_acquire);
+      const auto gains = controllers_[static_cast<std::size_t>(idx)]->GetCurrentGains();
+      std_msgs::msg::Float64MultiArray gains_msg;
+      gains_msg.data = gains;
+      current_gains_pub_->publish(gains_msg);
+      RCLCPP_INFO(get_logger(), "Published current gains for %s (%zu values)",
+        controllers_[static_cast<std::size_t>(idx)]->Name().data(), gains.size());
+      },
+      sub_options);
 }
 
 void RtControllerNode::CreatePublishers()
@@ -358,6 +372,10 @@ void RtControllerNode::CreatePublishers()
   latch_qos.transient_local();
   active_ctrl_name_pub_ =
     create_publisher<std_msgs::msg::String>("~/active_controller_name", latch_qos);
+
+  // 현재 게인 응답 publisher — GUI의 Load Gain 요청에 대한 응답용
+  current_gains_pub_ =
+    create_publisher<std_msgs::msg::Float64MultiArray>("~/current_gains", 10);
 }
 
 void RtControllerNode::CreateTimers()

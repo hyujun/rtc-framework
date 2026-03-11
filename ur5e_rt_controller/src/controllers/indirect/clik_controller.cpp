@@ -336,4 +336,17 @@ void ClikController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
   gains_.control_6dof = gains[9] > 0.5;
 }
 
+std::vector<double> ClikController::GetCurrentGains() const noexcept
+{
+  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1)]
+  std::vector<double> v;
+  v.reserve(10);
+  v.insert(v.end(), gains_.kp.begin(), gains_.kp.end());
+  v.push_back(gains_.damping);
+  v.push_back(gains_.null_kp);
+  v.push_back(gains_.enable_null_space ? 1.0 : 0.0);
+  v.push_back(gains_.control_6dof ? 1.0 : 0.0);
+  return v;
+}
+
 }  // namespace ur5e_rt_controller
