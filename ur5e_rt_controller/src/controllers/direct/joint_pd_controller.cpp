@@ -217,6 +217,19 @@ void JointPDController::UpdateGainsFromMsg(
   if (gains.size() >= 15) {gains_.trajectory_speed = gains[14];}
 }
 
+std::vector<double> JointPDController::GetCurrentGains() const noexcept
+{
+  // layout: [kp×6, kd×6, enable_gravity(0/1), enable_coriolis(0/1), trajectory_speed]
+  std::vector<double> v;
+  v.reserve(15);
+  v.insert(v.end(), gains_.kp.begin(), gains_.kp.end());
+  v.insert(v.end(), gains_.kd.begin(), gains_.kd.end());
+  v.push_back(gains_.enable_gravity_compensation ? 1.0 : 0.0);
+  v.push_back(gains_.enable_coriolis_compensation ? 1.0 : 0.0);
+  v.push_back(gains_.trajectory_speed);
+  return v;
+}
+
 // ── 내부 헬퍼 ─────────────────────────────────────────────────────────────────
 
 ControllerOutput JointPDController::ComputeEstop(

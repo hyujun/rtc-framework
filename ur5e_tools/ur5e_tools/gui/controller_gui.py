@@ -108,6 +108,8 @@ class ControllerGUI(Node):
             Int32, '/rt_controller/controller_type', 10)
         self.gains_pub = self.create_publisher(
             Float64MultiArray, '/rt_controller/controller_gains', 10)
+        self.request_gains_pub = self.create_publisher(
+            Bool, '/rt_controller/request_gains', 10)
 
         # Subscriptions
         self.current_positions = [0.0] * NUM_JOINTS
@@ -120,6 +122,10 @@ class ControllerGUI(Node):
         self.estop_active = False
         self.create_subscription(Bool, '/system/estop_status',
                                  self._estop_cb, 10)
+
+        self._pending_load_gains = False
+        self.create_subscription(Float64MultiArray, '/rt_controller/current_gains',
+                                 self._current_gains_cb, 10)
 
         # 5 Hz refresh timer
         self._refresh_timer = self.create_timer(0.2, self._refresh_current_display)
@@ -142,6 +148,12 @@ class ControllerGUI(Node):
 
     def _estop_cb(self, msg: Bool):
         self.estop_active = msg.data
+
+    def _current_gains_cb(self, msg: Float64MultiArray):
+        if not self._pending_load_gains:
+            return
+        self._pending_load_gains = False
+        self.root.after(0, self._fill_gains_from_data, list(msg.data))
 
     def _refresh_current_display(self):
         if hasattr(self, '_status_labels_values'):
@@ -311,9 +323,14 @@ class ControllerGUI(Node):
         self._gains_inner = tk.Frame(self._gains_frame, bg='#1e1e2e')
         self._gains_inner.pack(fill='x')
 
-        ttk.Button(self._gains_frame, text="Apply Gains",
+        gains_btn_frame = tk.Frame(self._gains_frame, bg='#1e1e2e')
+        gains_btn_frame.pack(pady=(3, 2))
+        ttk.Button(gains_btn_frame, text="Apply Gains",
                    style='Gains.TButton',
-                   command=self._publish_gains).pack(pady=(3, 2))
+                   command=self._publish_gains).pack(side='left', padx=4)
+        ttk.Button(gains_btn_frame, text="Load Gain",
+                   style='Switch.TButton',
+                   command=self._request_load_gains).pack(side='left', padx=4)
 
         # Divider + "Currently Applied" read-only section
         ttk.Separator(self._gains_frame, orient='horizontal').pack(
@@ -675,6 +692,32 @@ class ControllerGUI(Node):
             self._set_task_target_entries(self.current_task_positions)
             for i, name_lbl in enumerate(self._status_labels_names):
                 name_lbl.config(text=f"{_task_status_names[i]}:")
+
+    def _request_load_gains(self):
+        """Request current gains from the active controller."""
+        self._pending_load_gains = True
+        msg = Bool()
+        msg.data = True
+        self.request_gains_pub.publish(msg)
+        self.get_logger().info("Requested current gains from active controller")
+
+    def _fill_gains_from_data(self, data: list[float]):
+        """Fill the gain input fields from a flat gain array received from the controller."""
+        idx = 0
+        for widgets, is_bool in zip(self._gain_entries, self._gain_is_bool):
+            for w in widgets:
+                if idx >= len(data):
+                    return
+                if is_bool:
+                    w.set(1 if data[idx] > 0.5 else 0)
+                else:
+                    w.delete(0, tk.END)
+                    w.insert(0, f"{data[idx]:.4f}")
+                idx += 1
+
+        ctrl_name = CONTROLLER_TYPES[self.selected_ctrl.get()]
+        self.get_logger().info(
+            f"Loaded gains for {ctrl_name}: {[f'{v:.4f}' for v in data]}")
 
     def _publish_gains(self):
         values: list[float] = []

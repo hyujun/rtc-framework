@@ -85,6 +85,7 @@ public:
   // ── 컨트롤러 레지스트리 훅 ────────────────────────────────────────────────
   void LoadConfig(const YAML::Node & cfg) override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
+  [[nodiscard]] std::vector<double> GetCurrentGains() const noexcept override;
   [[nodiscard]] CommandType GetCommandType() const noexcept override
   {
     return command_type_;

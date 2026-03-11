@@ -63,6 +63,7 @@ public:
   // gains layout: [kp×6]
   void LoadConfig(const YAML::Node & cfg) override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
+  [[nodiscard]] std::vector<double> GetCurrentGains() const noexcept override;
   [[nodiscard]] CommandType GetCommandType() const noexcept override {return command_type_;}
 
   // Accessors (Google C++ Style: getter matches member name w/o trailing _).

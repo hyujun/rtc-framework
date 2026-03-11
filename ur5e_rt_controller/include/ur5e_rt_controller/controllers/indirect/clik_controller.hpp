@@ -103,6 +103,7 @@ public:
   // gains layout: [kp×3, damping, null_kp, enable_null_space(0/1)]
   void LoadConfig(const YAML::Node & cfg) override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
+  [[nodiscard]] std::vector<double> GetCurrentGains() const noexcept override;
   [[nodiscard]] CommandType GetCommandType() const noexcept override {return command_type_;}
 
   // ── Accessors (non-RT reads only) ─────────────────────────────────────────

@@ -92,6 +92,8 @@ private:
   std_msgs::msg::Float64MultiArray                               task_pos_msg_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr              estop_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr            active_ctrl_name_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr current_gains_pub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr          request_gains_sub_;
 
   rclcpp::TimerBase::SharedPtr control_timer_;
   rclcpp::TimerBase::SharedPtr timeout_timer_;

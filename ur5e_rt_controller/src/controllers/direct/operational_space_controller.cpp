@@ -297,4 +297,21 @@ void OperationalSpaceController::UpdateGainsFromMsg(std::span<const double> gain
   if (gains.size() >= 16) {gains_.trajectory_angular_speed = gains[15];}
 }
 
+std::vector<double> OperationalSpaceController::GetCurrentGains() const noexcept
+{
+  // layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1),
+  //          trajectory_speed, trajectory_angular_speed]
+  std::vector<double> v;
+  v.reserve(16);
+  v.insert(v.end(), gains_.kp_pos.begin(), gains_.kp_pos.end());
+  v.insert(v.end(), gains_.kd_pos.begin(), gains_.kd_pos.end());
+  v.insert(v.end(), gains_.kp_rot.begin(), gains_.kp_rot.end());
+  v.insert(v.end(), gains_.kd_rot.begin(), gains_.kd_rot.end());
+  v.push_back(gains_.damping);
+  v.push_back(gains_.enable_gravity_compensation ? 1.0 : 0.0);
+  v.push_back(gains_.trajectory_speed);
+  v.push_back(gains_.trajectory_angular_speed);
+  return v;
+}
+
 }  // namespace ur5e_rt_controller

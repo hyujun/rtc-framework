@@ -98,4 +98,10 @@ void PController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
   }
 }
 
+std::vector<double> PController::GetCurrentGains() const noexcept
+{
+  // layout: [kp×6]
+  return {gains_.kp.begin(), gains_.kp.end()};
+}
+
 }  // namespace ur5e_rt_controller
