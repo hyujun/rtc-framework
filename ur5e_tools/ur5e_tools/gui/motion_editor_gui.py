@@ -3,6 +3,7 @@
 import os
 import sys
 import json
+import copy
 import signal
 import numpy as np
 from PyQt5.QtWidgets import *
@@ -25,23 +26,40 @@ COL_WAIT    = 5   # Wait (s) — 도달 후 대기 시간
 COL_DESC    = 6   # Description
 NUM_COLS    = 7
 
+DEFAULT_POSES = 50
+MIN_POSES = 1
+MAX_POSES_LIMIT = 500
+
+# 행 배경색
+COLOR_NORMAL   = QColor("white")
+COLOR_MODIFIED = QColor("#FFECB3")   # 연한 노랑 — 파일 대비 변경된 행
+COLOR_ADDED    = QColor("#C8E6C9")   # 연한 초록 — 파일에 없던 새 행(저장됨)
+COLOR_PLAYING  = QColor("#FFF176")   # 밝은 노랑 — 재생 중
+
 
 class MotionTab(QWidget):
     """단일 모션 파일을 관리하는 탭 위젯"""
 
-    MAX_POSES = 50
-
-    def __init__(self, parent_editor, file_path=None):
+    def __init__(self, parent_editor, num_poses=DEFAULT_POSES, file_path=None):
         super().__init__()
         self.parent_editor = parent_editor
         self._current_file = file_path
         self._modified = False
+        self._num_poses = num_poses
 
-        self.poses = [np.zeros(6) for _ in range(self.MAX_POSES)]
-        self.pose_names = [f"Pose {i+1}" for i in range(self.MAX_POSES)]
-        self.pose_descriptions = ["" for _ in range(self.MAX_POSES)]
+        self.poses = [np.zeros(6) for _ in range(self._num_poses)]
+        self.pose_names = [f"Pose {i+1}" for i in range(self._num_poses)]
+        self.pose_descriptions = ["" for _ in range(self._num_poses)]
+
+        # 파일에서 로드된 원본 스냅샷 (diff 비교용)
+        self._file_snapshot = None   # None = 파일 로드 전 / dict = 로드된 데이터
+        self._file_num_poses = 0     # 파일에 저장된 포즈 수 (데이터 있는 행 수)
 
         self._init_table()
+
+    @property
+    def num_poses(self):
+        return self._num_poses
 
     # ──────────────────────────── 스핀박스 팩토리 ────────────────────────────
 
@@ -79,7 +97,27 @@ class MotionTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.pose_table = QTableWidget(self.MAX_POSES, NUM_COLS)
+        # 정보 바: Row 수 조정 + 포즈 카운트
+        info_bar = QHBoxLayout()
+
+        info_bar.addWidget(QLabel("Rows:"))
+        self.row_count_spin = QSpinBox()
+        self.row_count_spin.setRange(MIN_POSES, MAX_POSES_LIMIT)
+        self.row_count_spin.setValue(self._num_poses)
+        self.row_count_spin.setToolTip("Total number of rows in this tab")
+        self.row_count_spin.editingFinished.connect(self._on_row_count_changed)
+        info_bar.addWidget(self.row_count_spin)
+
+        info_bar.addSpacing(20)
+        self.info_label = QLabel()
+        self.info_label.setFont(QFont("Arial", 10))
+        info_bar.addWidget(self.info_label)
+        info_bar.addStretch()
+
+        layout.addLayout(info_bar)
+
+        # 테이블
+        self.pose_table = QTableWidget(self._num_poses, NUM_COLS)
         self.pose_table.setHorizontalHeaderLabels(
             ["#", "Name", "Status", "Preview", "Traj (s)", "Wait (s)", "Description"])
         self.pose_table.setColumnWidth(COL_NUM,     50)
@@ -93,10 +131,11 @@ class MotionTab(QWidget):
         self.pose_table.setSelectionMode(QTableWidget.MultiSelection)
         self.pose_table.itemChanged.connect(self._on_item_changed)
 
-        for i in range(self.MAX_POSES):
+        for i in range(self._num_poses):
             self._init_row(i)
 
         layout.addWidget(self.pose_table)
+        self._update_info_label()
 
     def _init_row(self, i, traj=2.0, wait=0.0):
         num_item = QTableWidgetItem(str(i + 1))
@@ -120,6 +159,69 @@ class MotionTab(QWidget):
         desc = self.pose_descriptions[i] if i < len(self.pose_descriptions) else ""
         self.pose_table.setItem(i, COL_DESC, QTableWidgetItem(desc))
 
+    # ──────────────────────────── Row 수 조정 ────────────────────────────
+
+    def _on_row_count_changed(self):
+        new_count = self.row_count_spin.value()
+        if new_count == self._num_poses:
+            return
+
+        if new_count < self._num_poses:
+            # 줄이기 — 삭제될 행에 데이터가 있으면 경고
+            lost = [i+1 for i in range(new_count, self._num_poses)
+                    if np.linalg.norm(self.poses[i]) > 0.001]
+            if lost:
+                reply = QMessageBox.question(
+                    self, "Confirm",
+                    f"Reducing rows will delete saved data in row(s): {lost}\nContinue?",
+                    QMessageBox.Yes | QMessageBox.No)
+                if reply != QMessageBox.Yes:
+                    self.row_count_spin.setValue(self._num_poses)
+                    return
+
+        self._resize_to(new_count)
+
+    def _resize_to(self, new_count):
+        """행 수를 new_count로 조정"""
+        old_count = self._num_poses
+
+        traj_vals = [self._get_row_timing(i)[0] for i in range(old_count)]
+        wait_vals = [self._get_row_timing(i)[1] for i in range(old_count)]
+
+        if new_count > old_count:
+            # 확장
+            for _ in range(new_count - old_count):
+                self.poses.append(np.zeros(6))
+                self.pose_names.append(f"Pose {len(self.poses)}")
+                self.pose_descriptions.append("")
+                traj_vals.append(2.0)
+                wait_vals.append(0.0)
+        else:
+            # 축소
+            self.poses = self.poses[:new_count]
+            self.pose_names = self.pose_names[:new_count]
+            self.pose_descriptions = self.pose_descriptions[:new_count]
+            traj_vals = traj_vals[:new_count]
+            wait_vals = wait_vals[:new_count]
+
+        self._num_poses = new_count
+        self.row_count_spin.setValue(new_count)
+
+        # 테이블 행 수 조정
+        self.pose_table.itemChanged.disconnect(self._on_item_changed)
+        self.pose_table.setRowCount(new_count)
+
+        # 새로 추가된 행 초기화
+        if new_count > old_count:
+            for i in range(old_count, new_count):
+                self._init_row(i, traj_vals[i], wait_vals[i])
+
+        # 전체 rebuild
+        self._rebuild_table(traj_vals, wait_vals, reconnect=False)
+        self.pose_table.itemChanged.connect(self._on_item_changed)
+        self._mark_modified()
+        self._update_info_label()
+
     # ──────────────────────────── 이벤트 핸들러 ────────────────────────────
 
     def _on_item_changed(self, item):
@@ -136,34 +238,111 @@ class MotionTab(QWidget):
         if not self._modified:
             self._modified = True
             self.parent_editor.update_tab_title(self)
+        self._update_info_label()
+        self._update_diff_highlight()
 
     def _mark_saved(self):
         self._modified = False
+        self._take_snapshot()
         self.parent_editor.update_tab_title(self)
+        self._update_info_label()
+        self._update_diff_highlight()
 
     def _checked_rows(self):
-        return [i for i in range(self.MAX_POSES)
+        return [i for i in range(self._num_poses)
                 if self.pose_table.item(i, COL_NUM).checkState() == Qt.Checked]
 
     def select_all_poses(self):
         self.pose_table.itemChanged.disconnect(self._on_item_changed)
-        for i in range(self.MAX_POSES):
+        for i in range(self._num_poses):
             if np.linalg.norm(self.poses[i]) > 0.001:
                 self.pose_table.item(i, COL_NUM).setCheckState(Qt.Checked)
         self.pose_table.itemChanged.connect(self._on_item_changed)
 
     def deselect_all_poses(self):
         self.pose_table.itemChanged.disconnect(self._on_item_changed)
-        for i in range(self.MAX_POSES):
+        for i in range(self._num_poses):
             self.pose_table.item(i, COL_NUM).setCheckState(Qt.Unchecked)
         self.pose_table.itemChanged.connect(self._on_item_changed)
+
+    # ──────────────────────────── 포즈 카운트 / Diff ────────────────────────
+
+    def _gui_saved_count(self):
+        """GUI에서 저장된(데이터 있는) 포즈 수"""
+        return sum(1 for p in self.poses if np.linalg.norm(p) > 0.001)
+
+    def _update_info_label(self):
+        gui_count = self._gui_saved_count()
+        parts = [f"GUI: {gui_count}/{self._num_poses} saved"]
+        if self._file_snapshot is not None:
+            parts.append(f"File: {self._file_num_poses} saved")
+            diff = gui_count - self._file_num_poses
+            if diff > 0:
+                parts.append(f"(+{diff})")
+            elif diff < 0:
+                parts.append(f"({diff})")
+        elif self._current_file is None:
+            parts.append("(not saved to file)")
+        self.info_label.setText("  |  ".join(parts))
+
+    def _take_snapshot(self):
+        """현재 상태를 파일 스냅샷으로 저장 (save/load 직후 호출)"""
+        self._file_snapshot = {
+            'poses': [p.copy() for p in self.poses],
+            'descriptions': list(self.pose_descriptions),
+            'traj': [self._get_row_timing(i)[0] for i in range(self._num_poses)],
+            'wait': [self._get_row_timing(i)[1] for i in range(self._num_poses)],
+            'num_poses': self._num_poses,
+        }
+        self._file_num_poses = self._gui_saved_count()
+
+    def _is_row_different(self, row):
+        """row가 파일 스냅샷과 다른지 확인"""
+        if self._file_snapshot is None:
+            return False
+        snap = self._file_snapshot
+        # 파일보다 행 번호가 클 경우 → 새 행
+        if row >= snap['num_poses']:
+            return np.linalg.norm(self.poses[row]) > 0.001
+        # 포즈 비교
+        if not np.allclose(self.poses[row], snap['poses'][row], atol=1e-6):
+            return True
+        # description 비교
+        if self.pose_descriptions[row] != snap['descriptions'][row]:
+            return True
+        # traj/wait 비교
+        traj, wait = self._get_row_timing(row)
+        if abs(traj - snap['traj'][row]) > 0.01 or abs(wait - snap['wait'][row]) > 0.01:
+            return True
+        return False
+
+    def _update_diff_highlight(self):
+        """파일 스냅샷 대비 변경된 행을 하이라이트"""
+        for i in range(self._num_poses):
+            if self._file_snapshot is None:
+                color = COLOR_NORMAL
+            elif i >= self._file_snapshot['num_poses']:
+                # 파일에 없던 행 — 데이터가 있으면 초록
+                color = COLOR_ADDED if np.linalg.norm(self.poses[i]) > 0.001 else COLOR_NORMAL
+            elif self._is_row_different(i):
+                color = COLOR_MODIFIED
+            else:
+                color = COLOR_NORMAL
+            self._set_row_bg(i, color)
+
+    def _set_row_bg(self, row, color):
+        brush = QBrush(color)
+        for col in range(self.pose_table.columnCount()):
+            item = self.pose_table.item(row, col)
+            if item:
+                item.setBackground(brush)
 
     # ──────────────────────────── 포즈 조작 ────────────────────────────
 
     def save_pose(self, current_q):
         selected = self.pose_table.selectedIndexes()
         if not selected:
-            row = next((i for i in range(self.MAX_POSES)
+            row = next((i for i in range(self._num_poses)
                         if np.linalg.norm(self.poses[i]) < 0.001), 0)
         else:
             row = selected[0].row()
@@ -202,7 +381,7 @@ class MotionTab(QWidget):
         insert_after = selected[0].row()
         ins = insert_after + 1
 
-        last = self.MAX_POSES - 1
+        last = self._num_poses - 1
         if np.linalg.norm(self.poses[last]) > 0.001:
             reply = QMessageBox.question(
                 self, "Confirm",
@@ -212,8 +391,8 @@ class MotionTab(QWidget):
             if reply != QMessageBox.Yes:
                 return None
 
-        traj_vals = [self._get_row_timing(i)[0] for i in range(self.MAX_POSES)]
-        wait_vals = [self._get_row_timing(i)[1] for i in range(self.MAX_POSES)]
+        traj_vals = [self._get_row_timing(i)[0] for i in range(self._num_poses)]
+        wait_vals = [self._get_row_timing(i)[1] for i in range(self._num_poses)]
 
         self.poses.insert(ins, np.zeros(6))
         self.poses.pop()
@@ -236,12 +415,11 @@ class MotionTab(QWidget):
         if n == 0:
             return
 
-        traj_vals = [self._get_row_timing(i)[0] for i in range(self.MAX_POSES)]
-        wait_vals = [self._get_row_timing(i)[1] for i in range(self.MAX_POSES)]
+        traj_vals = [self._get_row_timing(i)[0] for i in range(self._num_poses)]
+        wait_vals = [self._get_row_timing(i)[1] for i in range(self._num_poses)]
 
-        # 마지막 n개 row에 데이터가 있으면 경고
         lost_rows = []
-        for i in range(self.MAX_POSES - n, self.MAX_POSES):
+        for i in range(self._num_poses - n, self._num_poses):
             if i >= 0 and np.linalg.norm(self.poses[i]) > 0.001:
                 lost_rows.append(i + 1)
         if lost_rows:
@@ -278,8 +456,8 @@ class MotionTab(QWidget):
 
         rows = sorted(set(idx.row() for idx in selected), reverse=True)
 
-        traj_vals = [self._get_row_timing(i)[0] for i in range(self.MAX_POSES)]
-        wait_vals = [self._get_row_timing(i)[1] for i in range(self.MAX_POSES)]
+        traj_vals = [self._get_row_timing(i)[0] for i in range(self._num_poses)]
+        wait_vals = [self._get_row_timing(i)[1] for i in range(self._num_poses)]
 
         for row in rows:
             self.poses.pop(row)
@@ -289,7 +467,7 @@ class MotionTab(QWidget):
             wait_vals.pop(row)
 
         deleted_count = len(rows)
-        while len(self.poses) < self.MAX_POSES:
+        while len(self.poses) < self._num_poses:
             idx = len(self.poses)
             self.poses.append(np.zeros(6))
             self.pose_names.append(f"Pose {idx+1}")
@@ -321,15 +499,16 @@ class MotionTab(QWidget):
             })
         return data
 
-    def _rebuild_table(self, traj_vals=None, wait_vals=None):
+    def _rebuild_table(self, traj_vals=None, wait_vals=None, reconnect=True):
         if traj_vals is None:
-            traj_vals = [self._get_row_timing(i)[0] for i in range(self.MAX_POSES)]
+            traj_vals = [self._get_row_timing(i)[0] for i in range(self._num_poses)]
         if wait_vals is None:
-            wait_vals = [self._get_row_timing(i)[1] for i in range(self.MAX_POSES)]
+            wait_vals = [self._get_row_timing(i)[1] for i in range(self._num_poses)]
 
-        self.pose_table.itemChanged.disconnect(self._on_item_changed)
+        if reconnect:
+            self.pose_table.itemChanged.disconnect(self._on_item_changed)
 
-        for i in range(self.MAX_POSES):
+        for i in range(self._num_poses):
             has_pose = np.linalg.norm(self.poses[i]) > 0.001
 
             num_item = self.pose_table.item(i, COL_NUM)
@@ -366,15 +545,28 @@ class MotionTab(QWidget):
             # Description
             self.pose_table.item(i, COL_DESC).setText(self.pose_descriptions[i])
 
-        self.pose_table.itemChanged.connect(self._on_item_changed)
+        if reconnect:
+            self.pose_table.itemChanged.connect(self._on_item_changed)
 
     def set_row_highlight(self, row, active):
-        color = QColor("#FFF176") if active else QColor("white")
-        brush = QBrush(color)
-        for col in range(self.pose_table.columnCount()):
-            item = self.pose_table.item(row, col)
-            if item:
-                item.setBackground(brush)
+        """재생 중 하이라이트 (diff 하이라이트보다 우선)"""
+        if active:
+            self._set_row_bg(row, COLOR_PLAYING)
+        else:
+            # 재생 해제 시 diff 상태에 맞는 색으로 복원
+            self._restore_row_bg(row)
+
+    def _restore_row_bg(self, row):
+        """단일 행의 diff 기반 배경색 복원"""
+        if self._file_snapshot is None:
+            color = COLOR_NORMAL
+        elif row >= self._file_snapshot['num_poses']:
+            color = COLOR_ADDED if np.linalg.norm(self.poses[row]) > 0.001 else COLOR_NORMAL
+        elif self._is_row_different(row):
+            color = COLOR_MODIFIED
+        else:
+            color = COLOR_NORMAL
+        self._set_row_bg(row, color)
 
     # ──────────────────────────── JSON 저장/로드 ────────────────────────────
 
@@ -387,19 +579,18 @@ class MotionTab(QWidget):
             if not filename:
                 return None
 
-        # 확장자 자동 추가
         if not os.path.splitext(filename)[1]:
             filename += ".json"
 
         traj_times, wait_times = [], []
-        for i in range(self.MAX_POSES):
+        for i in range(self._num_poses):
             t, w = self._get_row_timing(i)
             traj_times.append(t)
             wait_times.append(w)
 
         data = {
-            "num_poses": self.MAX_POSES,
-            "poses": {f"pose_{i}": self.poses[i].tolist() for i in range(self.MAX_POSES)},
+            "num_poses": self._num_poses,
+            "poses": {f"pose_{i}": self.poses[i].tolist() for i in range(self._num_poses)},
             "names": self.pose_names,
             "descriptions": self.pose_descriptions,
             "traj_times": traj_times,
@@ -416,13 +607,18 @@ class MotionTab(QWidget):
         with open(filename, 'r') as f:
             data = json.load(f)
 
-        descriptions = data.get('descriptions', [""] * self.MAX_POSES)
-        traj_times   = data.get('traj_times',   [2.0] * self.MAX_POSES)
-        wait_times   = data.get('wait_times',   [0.0] * self.MAX_POSES)
+        file_num_poses = data.get('num_poses', len(data.get('poses', {})))
+        descriptions = data.get('descriptions', [""] * file_num_poses)
+        traj_times   = data.get('traj_times',   [2.0] * file_num_poses)
+        wait_times   = data.get('wait_times',   [0.0] * file_num_poses)
+
+        # 파일의 행 수에 맞게 테이블 크기 조정
+        if file_num_poses != self._num_poses:
+            self._resize_to(file_num_poses)
 
         self.pose_table.itemChanged.disconnect(self._on_item_changed)
 
-        for i in range(min(self.MAX_POSES, len(data.get('poses', {})))):
+        for i in range(min(self._num_poses, len(data.get('poses', {})))):
             key = f"pose_{i}"
             if key not in data['poses']:
                 continue
@@ -454,6 +650,9 @@ class MotionTab(QWidget):
         self.pose_table.itemChanged.connect(self._on_item_changed)
         self._current_file = filename
         self._modified = False
+        self._take_snapshot()
+        self._update_info_label()
+        self._update_diff_highlight()
 
     def tab_display_name(self):
         if self._current_file:
@@ -466,7 +665,7 @@ class MotionTab(QWidget):
 
 
 class MotionEditor(QMainWindow):
-    """UR5e 50-Pose Motion Editor GUI (탭 기반)"""
+    """UR5e Motion Editor GUI (탭 기반)"""
 
     def __init__(self):
         super().__init__()
@@ -474,7 +673,7 @@ class MotionEditor(QMainWindow):
         self._play_queue = []
         self._play_step = 0
         self._play_tab = None
-        self._clipboard = []  # 탭 간 복사 버퍼
+        self._clipboard = []
 
         self._play_timer = QTimer()
         self._play_timer.setSingleShot(True)
@@ -482,7 +681,7 @@ class MotionEditor(QMainWindow):
 
         self.init_ui()
         self.setWindowTitle("UR5e Motion Editor 🎛️")
-        self.setGeometry(100, 100, 1100, 780)
+        self.setGeometry(100, 100, 1100, 820)
 
     def init_ui(self):
         central = QWidget()
@@ -506,6 +705,23 @@ class MotionEditor(QMainWindow):
             joint_layout.addWidget(label)
         joint_group.setLayout(joint_layout)
         layout.addWidget(joint_group)
+
+        # 범례
+        legend_layout = QHBoxLayout()
+        for color, text in [(COLOR_MODIFIED, "Modified vs file"),
+                            (COLOR_ADDED, "New (not in file)")]:
+            swatch = QLabel("  ")
+            swatch.setAutoFillBackground(True)
+            pal = swatch.palette()
+            pal.setColor(swatch.backgroundRole(), color)
+            swatch.setPalette(pal)
+            swatch.setFixedSize(16, 16)
+            swatch.setStyleSheet(f"background: {color.name()}; border: 1px solid #999;")
+            legend_layout.addWidget(swatch)
+            legend_layout.addWidget(QLabel(text))
+            legend_layout.addSpacing(15)
+        legend_layout.addStretch()
+        layout.addLayout(legend_layout)
 
         # 탭 위젯
         self.tab_widget = QTabWidget()
@@ -610,8 +826,8 @@ class MotionEditor(QMainWindow):
     def _current_tab(self):
         return self.tab_widget.currentWidget()
 
-    def _add_new_tab(self, file_path=None):
-        tab = MotionTab(self, file_path)
+    def _add_new_tab(self, file_path=None, num_poses=DEFAULT_POSES):
+        tab = MotionTab(self, num_poses=num_poses, file_path=file_path)
         idx = self.tab_widget.addTab(tab, tab.tab_display_name())
         self.tab_widget.setCurrentIndex(idx)
         return tab
@@ -633,7 +849,6 @@ class MotionEditor(QMainWindow):
             if reply != QMessageBox.Yes:
                 return
 
-        # 최소 1개 탭 유지
         if self.tab_widget.count() <= 1:
             QMessageBox.information(self, "Info", "Cannot close the last tab.")
             return
@@ -812,10 +1027,9 @@ class MotionEditor(QMainWindow):
             return
 
         try:
-            # 현재 탭이 비어있으면 (Untitled + 미수정) 재활용, 아니면 새 탭 생성
             tab = self._current_tab()
             if tab and tab._current_file is None and not tab._modified:
-                pass  # 기존 빈 탭 재활용
+                pass
             else:
                 tab = self._add_new_tab()
 
