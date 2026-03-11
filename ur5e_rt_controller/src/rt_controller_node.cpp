@@ -530,11 +530,14 @@ void RtControllerNode::ControlLoop()
   // Push log entry to the SPSC ring buffer — O(1), no syscall.
   // DrainLog() (log thread, Core 4) pops entries and writes the CSV file.
   if (enable_logging_) {
-    // Use iteration count to derive timestamp — avoids clock_gettime() syscall
-    // on every 500 Hz cycle.  Accuracy: ±dt (2 ms) which is sufficient for
-    // offline analysis.
+    // Real monotonic time via std::chrono::steady_clock (CLOCK_MONOTONIC).
+    // On Linux this reads the vDSO — no kernel entry, ~20 ns per call.
+    const auto now = std::chrono::steady_clock::now();
+    if (loop_count_ == 0) {
+      log_start_time_ = now;
+    }
     const double timestamp =
-        static_cast<double>(loop_count_) / control_rate_;
+        std::chrono::duration<double>(now - log_start_time_).count();
 
     const urtc::LogEntry entry{
       .timestamp = timestamp,

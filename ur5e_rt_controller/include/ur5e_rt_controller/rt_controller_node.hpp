@@ -143,4 +143,8 @@ private:
   bool        hand_estop_logged_{false};
 
   std::size_t loop_count_{0};
+
+  // Baseline for log timestamps — captured on first ControlLoop() iteration.
+  // steady_clock reads CLOCK_MONOTONIC via vDSO (no kernel entry on Linux).
+  std::chrono::steady_clock::time_point log_start_time_{};
 };
