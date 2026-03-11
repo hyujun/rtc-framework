@@ -107,6 +107,7 @@ private:
   static constexpr std::array<double, kNumRobotJoints> kSafePosition{
     0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
   static constexpr double kMaxJointVelocity{2.0};  // rad/s
+  static constexpr double kMaxJointTorque{150.0};  // Nm (UR5e max joint torque)
 
   // ── Pinocchio 모델 및 작업 버퍼 (생성자에서 1회 할당) ─────────────────────
   pinocchio::Model model_;
@@ -146,7 +147,7 @@ private:
   void UpdateDynamics(const RobotState & robot) noexcept;
 
   [[nodiscard]] static std::array<double, kNumRobotJoints> ClampCommands(
-    std::array<double, kNumRobotJoints> cmds) noexcept;
+    std::array<double, kNumRobotJoints> cmds, CommandType type) noexcept;
 };
 
 }  // namespace ur5e_rt_controller

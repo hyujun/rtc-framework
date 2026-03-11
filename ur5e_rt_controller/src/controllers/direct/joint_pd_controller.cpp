@@ -82,8 +82,10 @@ ControllerOutput JointPDController::Compute(
     const double e  = traj_state.positions[i] - state.robot.positions[i];
     const double de = (e - prev_error_[i]) / dt;
 
-    output.robot_commands[i] =
-      traj_state.velocities[i] + gains_.kp[i] * e + gains_.kd[i] * de;
+    output.robot_commands[i] = gains_.kp[i] * e + gains_.kd[i] * de;
+    if (command_type_ != CommandType::kTorque) {
+      output.robot_commands[i] += traj_state.velocities[i];
+    }
 
     if (gains_.enable_gravity_compensation) {
       output.robot_commands[i] += gravity_torques_[i];
@@ -97,7 +99,7 @@ ControllerOutput JointPDController::Compute(
   }
 
   output.actual_target_positions = traj_state.positions;
-  output.robot_commands = ClampCommands(output.robot_commands);
+  output.robot_commands = ClampCommands(output.robot_commands, command_type_);
 
   // TCP 포즈 출력 (task_positions: [x, y, z, roll, pitch, yaw])
   const auto last_joint =
@@ -247,7 +249,7 @@ ControllerOutput JointPDController::ComputeEstop(
   }
 
   output.actual_target_positions = kSafePosition;
-  output.robot_commands = ClampCommands(output.robot_commands);
+  output.robot_commands = ClampCommands(output.robot_commands, command_type_);
   new_target_.store(true, std::memory_order_relaxed);  // E-STOP 해제 후 궤적 재생성
   return output;
 }
@@ -294,10 +296,12 @@ void JointPDController::UpdateDynamics(const RobotState & robot) noexcept
 }
 
 std::array<double, kNumRobotJoints> JointPDController::ClampCommands(
-  std::array<double, kNumRobotJoints> cmds) noexcept
+  std::array<double, kNumRobotJoints> cmds, CommandType type) noexcept
 {
+  const double limit = (type == CommandType::kTorque)
+                            ? kMaxJointTorque : kMaxJointVelocity;
   for (auto & c : cmds) {
-    c = std::clamp(c, -kMaxJointVelocity, kMaxJointVelocity);
+    c = std::clamp(c, -limit, limit);
   }
   return cmds;
 }
