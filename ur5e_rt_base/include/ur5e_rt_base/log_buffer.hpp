@@ -16,6 +16,7 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <new>
 
 namespace ur5e_rt_controller {
@@ -57,6 +58,7 @@ class SpscLogBuffer {
     if (next == cached_tail_) {
       cached_tail_ = tail_.load(std::memory_order_acquire);
       if (next == cached_tail_) {
+        drop_count_.fetch_add(1, std::memory_order_relaxed);
         return false;  // buffer full — entry dropped
       }
     }
@@ -83,6 +85,12 @@ class SpscLogBuffer {
     return true;
   }
 
+  // Number of entries dropped due to buffer-full since construction.
+  // Safe to call from any thread (relaxed atomic).
+  [[nodiscard]] uint64_t drop_count() const noexcept {
+    return drop_count_.load(std::memory_order_relaxed);
+  }
+
  private:
   std::array<LogEntry, N> buffer_{};
 
@@ -92,6 +100,11 @@ class SpscLogBuffer {
 
   alignas(kCacheLineSize) std::atomic<std::size_t> tail_{0};  // written by consumer
   std::size_t cached_head_{0};                                // consumer local cache
+
+  // Drop counter — written by producer only, readable from any thread.
+  // Placed on its own cache line to avoid interfering with the hot
+  // producer (head_/cached_tail_) or consumer (tail_/cached_head_) groups.
+  alignas(kCacheLineSize) std::atomic<uint64_t> drop_count_{0};
 };
 
 constexpr std::size_t kControlLogBufferCapacity = 512;

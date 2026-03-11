@@ -56,7 +56,6 @@ public:
       file_ << ',' << v;
     }
     file_ << ',' << compute_time_us << '\n';
-    ++log_count_;
   }
 
   // Log hand state for a given timestamp (not written to the control CSV).
@@ -86,7 +85,6 @@ public:
 
 private:
   std::ofstream file_;
-  std::size_t log_count_{0};
 
   void WriteHeader() {
     file_ << "timestamp";

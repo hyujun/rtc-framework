@@ -500,6 +500,8 @@ void RtControllerNode::ControlLoop()
     }
   }
   state.robot.dt = 1.0 / control_rate_;
+  state.dt = state.robot.dt;  // Keep top-level dt in sync with robot.dt
+  state.robot.iteration = loop_count_;
   state.iteration = loop_count_;
 
   int active_idx = active_controller_idx_.load(std::memory_order_acquire);
