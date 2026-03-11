@@ -24,7 +24,8 @@ setup(
             'motion_editor_gui = ur5e_tools.gui.motion_editor_gui:main',
             'monitor_data_health = ur5e_tools.monitoring.monitor_data_health:main',
             'plot_ur_trajectory = ur5e_tools.plotting.plot_ur_trajectory:main',
-            'hand_udp_sender_example = ur5e_tools.utils.hand_udp_sender_example:main'
+            'hand_udp_sender_example = ur5e_tools.utils.hand_udp_sender_example:main',
+            'compare_mjcf_urdf = ur5e_tools.validation.compare_mjcf_urdf:main'
         ],
     },
 )
