@@ -332,16 +332,21 @@ void RtControllerNode::CreatePublishers()
 {
   // Pre-allocate the command message once. ControlLoop() uses try_lock() to
   // avoid blocking on the RT path — same semantics as RealtimePublisher.
+  // BEST_EFFORT + depth 1: minimises DDS overhead on the 500 Hz RT path.
+  // Stale commands are never useful; the receiver only needs the latest.
+  rclcpp::QoS cmd_qos{1};
+  cmd_qos.best_effort();
+
   cmd_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
-      "/forward_position_controller/commands", 10);
+      "/forward_position_controller/commands", cmd_qos);
   cmd_msg_.data.resize(urtc::kNumRobotJoints, 0.0);
 
   torque_cmd_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
-      "/forward_torque_controller/commands", 10);
+      "/forward_torque_controller/commands", cmd_qos);
   torque_cmd_msg_.data.resize(urtc::kNumRobotJoints, 0.0);
 
   task_pos_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
-      "/rt_controller/current_task_position", 10);
+      "/rt_controller/current_task_position", cmd_qos);
   task_pos_msg_.data.resize(6, 0.0);
 
   estop_pub_ =
@@ -474,18 +479,25 @@ void RtControllerNode::ControlLoop()
     return;
   }
 
+  // Non-blocking state acquisition: try_lock avoids blocking the RT thread
+  // when the sensor thread holds the mutex.  On contention the previous
+  // cycle's cached data is reused (stale by at most 2 ms — acceptable).
   urtc::ControllerState state{};
   {
-    std::lock_guard lock(state_mutex_);
-    state.robot.positions = current_positions_;
-    state.robot.velocities = current_velocities_;
+    std::unique_lock lock(state_mutex_, std::try_to_lock);
+    if (lock.owns_lock()) {
+      cached_positions_ = current_positions_;
+      cached_velocities_ = current_velocities_;
+    }
   }
-  // Fix 4: copy target_positions_ into target_snapshot_ while holding the
-  // mutex, then use only the snapshot.  The old code set state.robot.dt and
-  // state.iteration inside target_mutex_, which was incorrect.
+  state.robot.positions = cached_positions_;
+  state.robot.velocities = cached_velocities_;
+
   {
-    std::lock_guard lock(target_mutex_);
-    target_snapshot_ = target_positions_;
+    std::unique_lock lock(target_mutex_, std::try_to_lock);
+    if (lock.owns_lock()) {
+      target_snapshot_ = target_positions_;
+    }
   }
   state.robot.dt = 1.0 / control_rate_;
   state.iteration = loop_count_;
@@ -515,16 +527,17 @@ void RtControllerNode::ControlLoop()
     cmd_pub_mutex_.unlock();
   }
 
-  // Fix 1: push log entry to the SPSC ring buffer — O(1), no syscall.
+  // Push log entry to the SPSC ring buffer — O(1), no syscall.
   // DrainLog() (log thread, Core 4) pops entries and writes the CSV file.
   if (enable_logging_) {
-    const double current_time = now().seconds();
-    if (loop_count_ == 0) {
-      start_time_ = current_time;
-    }
+    // Use iteration count to derive timestamp — avoids clock_gettime() syscall
+    // on every 500 Hz cycle.  Accuracy: ±dt (2 ms) which is sufficient for
+    // offline analysis.
+    const double timestamp =
+        static_cast<double>(loop_count_) / control_rate_;
 
     const urtc::LogEntry entry{
-      .timestamp = current_time - start_time_,
+      .timestamp = timestamp,
       .current_positions = state.robot.positions,
       .target_positions = output.actual_target_positions,
       .commands = output.robot_commands,
@@ -534,23 +547,31 @@ void RtControllerNode::ControlLoop()
   }
 
   ++loop_count_;
-  // Print timing summary every 1 000 iterations.
+  // Signal the log thread to print timing summary every 1 000 iterations.
+  // The actual std::string allocation + RCLCPP_INFO happens in DrainLog()
+  // on the non-RT log thread (Core 4), keeping the RT path free of heap
+  // allocation and potential syscalls.
   if (loop_count_ % 1000 == 0) {
-    int idx = active_controller_idx_.load(std::memory_order_acquire);
-    RCLCPP_INFO(get_logger(), "%s",
-                timing_profiler_
-      .Summary(std::string(controllers_[idx]->Name()))
-      .c_str());
+    print_timing_summary_.store(true, std::memory_order_relaxed);
   }
 }
 
-// Fix 1: file I/O stays exclusively in the log thread (Core 4).
+// File I/O and diagnostic logging stay exclusively in the log thread (Core 4).
 void RtControllerNode::DrainLog()
 {
-  if (!logger_) {
-    return;
+  if (logger_) {
+    logger_->DrainBuffer(log_buffer_);
   }
-  logger_->DrainBuffer(log_buffer_);
+
+  // Print timing summary when signalled by the RT thread.
+  // std::string allocation + RCLCPP_INFO happen here (non-RT), not in ControlLoop().
+  if (print_timing_summary_.exchange(false, std::memory_order_relaxed)) {
+    int idx = active_controller_idx_.load(std::memory_order_acquire);
+    RCLCPP_INFO(get_logger(), "%s",
+                timing_profiler_
+      .Summary(std::string(controllers_[static_cast<std::size_t>(idx)]->Name()))
+      .c_str());
+  }
 }
 
 void RtControllerNode::PublishEstopStatus(bool estopped)

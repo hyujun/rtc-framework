@@ -161,7 +161,7 @@ private:
   std::array<double, 3> tcp_position_{};                ///< diagnostic cache
 
   bool target_initialized_{false};
-  bool new_target_{false};
+  std::atomic<bool> new_target_{false};
   trajectory::TaskSpaceTrajectory trajectory_;
   double trajectory_time_{0.0};
 

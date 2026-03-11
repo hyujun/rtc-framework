@@ -35,7 +35,7 @@ OperationalSpaceController::OperationalSpaceController(
 ControllerOutput OperationalSpaceController::Compute(
   const ControllerState & state) noexcept
 {
-  if (estopped_) {
+  if (estopped_.load(std::memory_order_acquire)) {
     auto out = ComputeEstop(state);
     out.command_type = command_type_;
     return out;
@@ -61,7 +61,7 @@ ControllerOutput OperationalSpaceController::Compute(
   const pinocchio::SE3 & tcp = data_.oMi[end_id_];
 
   // ── Step 3.5: initialise trajectory on new target (after FK) ─────────────
-  if (new_target_) {
+  if (new_target_.load(std::memory_order_acquire)) {
     const double trans_dist =
       (goal_pose_.translation() - tcp.translation()).norm();
     const double ang_dist =
@@ -74,7 +74,7 @@ ControllerOutput OperationalSpaceController::Compute(
     trajectory_.initialize(tcp, pinocchio::Motion::Zero(), goal_pose_, pinocchio::Motion::Zero(),
         duration);
     trajectory_time_ = 0.0;
-    new_target_ = false;
+    new_target_.store(false, std::memory_order_relaxed);
   }
 
   const auto traj_state = trajectory_.compute(trajectory_time_);
@@ -170,7 +170,7 @@ void OperationalSpaceController::SetRobotTarget(
   goal_pose_.translation() =
     Eigen::Vector3d(target[0], target[1], target[2]);
   goal_pose_.rotation() = RpyToMatrix(target[3], target[4], target[5]);
-  new_target_ = true;
+  new_target_.store(true, std::memory_order_release);
 }
 
 void OperationalSpaceController::SetHandTarget(
@@ -189,23 +189,23 @@ std::string_view OperationalSpaceController::Name() const noexcept
 
 void OperationalSpaceController::TriggerEstop() noexcept
 {
-  estopped_.store(true, std::memory_order_relaxed);
+  estopped_.store(true, std::memory_order_release);
 }
 
 void OperationalSpaceController::ClearEstop() noexcept
 {
-  estopped_.store(false, std::memory_order_relaxed);
-  new_target_ = true; // regenerate trajectory from current pose
+  estopped_.store(false, std::memory_order_release);
+  new_target_.store(true, std::memory_order_relaxed); // regenerate trajectory from current pose
 }
 
 bool OperationalSpaceController::IsEstopped() const noexcept
 {
-  return estopped_.load(std::memory_order_relaxed);
+  return estopped_.load(std::memory_order_acquire);
 }
 
 void OperationalSpaceController::SetHandEstop(bool active) noexcept
 {
-  hand_estopped_.store(active, std::memory_order_relaxed);
+  hand_estopped_.store(active, std::memory_order_release);
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────

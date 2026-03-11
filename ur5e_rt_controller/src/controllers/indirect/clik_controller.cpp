@@ -41,7 +41,7 @@ ClikController::ClikController(std::string_view urdf_path, Gains gains)
 ControllerOutput ClikController::Compute(
   const ControllerState & state) noexcept
 {
-  if (estopped_) {
+  if (estopped_.load(std::memory_order_acquire)) {
     auto out = ComputeEstop(state);
     out.command_type = command_type_;
     return out;
@@ -71,7 +71,7 @@ ControllerOutput ClikController::Compute(
     target_initialized_ = true;
   }
 
-  if (new_target_) {
+  if (new_target_.load(std::memory_order_acquire)) {
     pinocchio::SE3 start_pose = tcp_pose;
     pinocchio::SE3 goal_pose;
 
@@ -96,7 +96,7 @@ ControllerOutput ClikController::Compute(
                            duration);
 
     trajectory_time_ = 0.0;
-    new_target_ = false;
+    new_target_.store(false, std::memory_order_relaxed);
   }
 
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
@@ -240,7 +240,7 @@ void ClikController::SetRobotTarget(
       null_target_[i] = target[i];
     }
   }
-  new_target_ = true;
+  new_target_.store(true, std::memory_order_release);
 }
 
 void ClikController::SetHandTarget(
@@ -259,22 +259,22 @@ std::string_view ClikController::Name() const noexcept
 
 void ClikController::TriggerEstop() noexcept
 {
-  estopped_.store(true, std::memory_order_relaxed);
+  estopped_.store(true, std::memory_order_release);
 }
 
 void ClikController::ClearEstop() noexcept
 {
-  estopped_.store(false, std::memory_order_relaxed);
+  estopped_.store(false, std::memory_order_release);
 }
 
 bool ClikController::IsEstopped() const noexcept
 {
-  return estopped_.load(std::memory_order_relaxed);
+  return estopped_.load(std::memory_order_acquire);
 }
 
 void ClikController::SetHandEstop(bool active) noexcept
 {
-  hand_estopped_.store(active, std::memory_order_relaxed);
+  hand_estopped_.store(active, std::memory_order_release);
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
