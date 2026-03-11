@@ -34,6 +34,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <numbers>
 #include <stdexcept>
 
 namespace ur5e_rt_controller {
@@ -68,7 +69,7 @@ class BesselFilterN {
     // Bilinear-transform constant and prewarped analog cutoff.
     // Prewarping ensures the digital -3 dB point lands exactly at cutoff_hz.
     const double k       = 2.0 * sample_rate_hz;
-    const double omega_p = k * std::tan(M_PI * cutoff_hz / sample_rate_hz);
+    const double omega_p = k * std::tan(std::numbers::pi * cutoff_hz / sample_rate_hz);
 
     section1_ = ComputeBiquad(kProtoOmega0_1, kProtoQ_1, omega_p, k);
     section2_ = ComputeBiquad(kProtoOmega0_2, kProtoQ_2, omega_p, k);
