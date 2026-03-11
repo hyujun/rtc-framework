@@ -9,7 +9,8 @@
 #include <unistd.h>
 
 #include <algorithm> // std::min_element, std::max_element
-#include <cmath>     // std::sqrt
+#include <cerrno>   // errno
+#include <cmath>    // std::sqrt
 #include <cstring>
 #include <map>     // std::map
 #include <numeric> // std::accumulate
@@ -23,6 +24,27 @@ namespace ur5e_rt_controller
 
   // Forward declarations
   inline int GetOnlineCpuCount() noexcept;
+
+  // Thread-safe alternative to std::strerror().
+  // strerror() uses a static buffer and is not thread-safe; strerror_r()
+  // writes to a caller-provided buffer, avoiding data races when multiple
+  // threads call it concurrently (e.g. during startup).
+  inline std::string SafeStrerror(int errnum) noexcept
+  {
+    char buf[128];
+#if (_POSIX_C_SOURCE >= 200112L) && !defined(_GNU_SOURCE)
+    // XSI-compliant strerror_r: returns int
+    if (strerror_r(errnum, buf, sizeof(buf)) == 0)
+    {
+      return std::string(buf);
+    }
+    return "Unknown error " + std::to_string(errnum);
+#else
+    // GNU strerror_r: returns char* (may or may not use buf)
+    const char *result = strerror_r(errnum, buf, sizeof(buf));
+    return std::string(result);
+#endif
+  }
 
   // Validate ThreadConfig before applying
   // Returns empty string if valid, error message if invalid
@@ -155,7 +177,7 @@ namespace ur5e_rt_controller
     if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0)
     {
       full_success = false;
-      warnings += "CPU affinity failed: " + std::string(std::strerror(errno)) + "; ";
+      warnings += "CPU affinity failed: " + SafeStrerror(errno) + "; ";
     }
 
     // 2. Try RT scheduling, fallback to SCHED_OTHER if it fails
@@ -173,7 +195,7 @@ namespace ur5e_rt_controller
       {
         full_success = false;
         warnings += "RT scheduling failed, falling back to SCHED_OTHER: " +
-                    std::string(std::strerror(errno)) + "; ";
+                    SafeStrerror(errno) + "; ";
       }
     }
 
@@ -185,7 +207,7 @@ namespace ur5e_rt_controller
         param.sched_priority = 0;
         if (setpriority(PRIO_PROCESS, 0, cfg.nice_value) != 0)
         {
-          warnings += "Nice value setting failed: " + std::string(std::strerror(errno)) + "; ";
+          warnings += "Nice value setting failed: " + SafeStrerror(errno) + "; ";
         }
       }
       else
@@ -194,7 +216,7 @@ namespace ur5e_rt_controller
         param.sched_priority = 0;
         if (setpriority(PRIO_PROCESS, 0, cfg.nice_value) != 0)
         {
-          warnings += "Fallback nice value setting failed: " + std::string(std::strerror(errno)) + "; ";
+          warnings += "Fallback nice value setting failed: " + SafeStrerror(errno) + "; ";
         }
       }
       pthread_setschedparam(pthread_self(), SCHED_OTHER, &param);
@@ -207,12 +229,12 @@ namespace ur5e_rt_controller
 #ifdef __APPLE__
     if (pthread_setname_np(name_buf) != 0)
     {
-      warnings += "Thread name setting failed: " + std::string(std::strerror(errno)) + "; ";
+      warnings += "Thread name setting failed: " + SafeStrerror(errno) + "; ";
     }
 #else
     if (pthread_setname_np(pthread_self(), name_buf) != 0)
     {
-      warnings += "Thread name setting failed: " + std::string(std::strerror(errno)) + "; ";
+      warnings += "Thread name setting failed: " + SafeStrerror(errno) + "; ";
     }
 #endif
 
@@ -283,8 +305,11 @@ namespace ur5e_rt_controller
     return result;
   }
 
-  // Get thread statistics (for jitter measurement)
-  // Returns {min_latency_us, max_latency_us, avg_latency_us}
+  // Get thread statistics (for jitter measurement).
+  // Returns {min_latency_us, max_latency_us, avg_latency_us}.
+  //
+  // WARNING: NOT RT-safe — accepts std::vector (heap-allocated).
+  // Call only from non-RT threads (e.g. logging, monitoring).
   inline std::tuple<double, double, double> GetThreadStats(
       const std::vector<double> &latencies_us) noexcept
   {
@@ -312,8 +337,11 @@ namespace ur5e_rt_controller
     double percentile_99_us; // 99th percentile latency
   };
 
-  // Get comprehensive thread statistics with percentiles
-  // Returns ThreadMetrics with latency analysis
+  // Get comprehensive thread statistics with percentiles.
+  // Returns ThreadMetrics with latency analysis.
+  //
+  // WARNING: NOT RT-safe — copies and sorts the input vector (heap allocation).
+  // Call only from non-RT threads (e.g. logging, monitoring).
   inline ThreadMetrics GetThreadMetrics(const std::vector<double> &latencies_us) noexcept
   {
     ThreadMetrics metrics{};
@@ -354,8 +382,87 @@ namespace ur5e_rt_controller
     return metrics;
   }
 
-  // Check thread health and configuration consistency
-  // Returns empty string if healthy, warnings/issues if problems detected
+  // RT-safe thread health check using bitfield flags instead of strings.
+  // Zero heap allocation — safe to call periodically from the 500 Hz RT path.
+  //
+  // Usage:
+  //   auto flags = CheckThreadHealthFast(&kRtControlConfig);
+  //   if (flags != ThreadHealthFlag::kOk) { /* log or handle */ }
+  enum class ThreadHealthFlag : uint8_t
+  {
+    kOk = 0,
+    kWrongCore = 1 << 0,
+    kPolicyChanged = 1 << 1,
+    kPriorityChanged = 1 << 2,
+    kNiceChanged = 1 << 3,
+  };
+
+  inline ThreadHealthFlag operator|(ThreadHealthFlag a, ThreadHealthFlag b) noexcept
+  {
+    return static_cast<ThreadHealthFlag>(
+        static_cast<uint8_t>(a) | static_cast<uint8_t>(b));
+  }
+  inline ThreadHealthFlag operator&(ThreadHealthFlag a, ThreadHealthFlag b) noexcept
+  {
+    return static_cast<ThreadHealthFlag>(
+        static_cast<uint8_t>(a) & static_cast<uint8_t>(b));
+  }
+  inline ThreadHealthFlag &operator|=(ThreadHealthFlag &a, ThreadHealthFlag b) noexcept
+  {
+    a = a | b;
+    return a;
+  }
+
+  inline ThreadHealthFlag CheckThreadHealthFast(const ThreadConfig &expected) noexcept
+  {
+    ThreadHealthFlag flags = ThreadHealthFlag::kOk;
+
+    // Check CPU affinity
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    if (pthread_getaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) == 0)
+    {
+      if (!CPU_ISSET(expected.cpu_core, &cpuset))
+      {
+        flags |= ThreadHealthFlag::kWrongCore;
+      }
+    }
+
+    // Check scheduler policy and priority
+    int policy;
+    sched_param param;
+    if (pthread_getschedparam(pthread_self(), &policy, &param) == 0)
+    {
+      if (policy != expected.sched_policy)
+      {
+        flags |= ThreadHealthFlag::kPolicyChanged;
+      }
+      if ((policy == SCHED_FIFO || policy == SCHED_RR) &&
+          param.sched_priority != expected.sched_priority)
+      {
+        flags |= ThreadHealthFlag::kPriorityChanged;
+      }
+    }
+
+    // Check nice value for SCHED_OTHER
+    if (expected.sched_policy == SCHED_OTHER)
+    {
+      errno = 0;
+      int nice_val = getpriority(PRIO_PROCESS, 0);
+      if (errno == 0 && nice_val != expected.nice_value)
+      {
+        flags |= ThreadHealthFlag::kNiceChanged;
+      }
+    }
+
+    return flags;
+  }
+
+  // Check thread health and configuration consistency.
+  // Returns empty string if healthy, warnings/issues if problems detected.
+  //
+  // WARNING: NOT RT-safe — uses std::string (heap allocation).
+  // For RT-safe health checks, use CheckThreadHealthFast() instead.
   inline std::string CheckThreadHealth(const ThreadConfig *expected_config = nullptr) noexcept
   {
     std::string issues;
@@ -447,8 +554,17 @@ namespace ur5e_rt_controller
     ThreadConfig aux;
   };
 
-  // Validate SystemThreadConfigs for conflicts and invalid configurations
-  // Returns empty string if valid, error messages if invalid
+  // Validate SystemThreadConfigs for conflicts and invalid configurations.
+  // Returns empty string if valid, error messages if invalid.
+  //
+  // Core sharing rules:
+  //   - Two RT threads (SCHED_FIFO/RR) on the same core: allowed only if
+  //     they have DIFFERENT priorities (higher prio preempts lower).
+  //   - RT + non-RT (SCHED_OTHER) on the same core: always allowed
+  //     (RT preempts SCHED_OTHER unconditionally).
+  //   - Two non-RT threads on the same core: always allowed (CFS handles it).
+  //   - Two RT threads with the SAME priority on the SAME core: ERROR
+  //     (SCHED_FIFO with equal priority causes starvation of one thread).
   inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs &configs) noexcept
   {
     std::string errors;
@@ -460,58 +576,46 @@ namespace ur5e_rt_controller
     errors += ValidateThreadConfig(configs.logging);
     errors += ValidateThreadConfig(configs.aux);
 
-    // Check for CPU core conflicts (same core used by multiple threads)
-    std::set<int> used_cores;
-    std::vector<std::pair<std::string, int>> core_assignments = {
-        {"rt_control", configs.rt_control.cpu_core},
-        {"sensor", configs.sensor.cpu_core},
-        {"udp_recv", configs.udp_recv.cpu_core},
-        {"logging", configs.logging.cpu_core},
-        {"aux", configs.aux.cpu_core}};
-
-    for (const auto &[name, core] : core_assignments)
+    // Collect all configs with names for conflict analysis
+    struct NamedConfig
     {
-      if (used_cores.count(core) > 0)
-      {
-        errors += "CPU core " + std::to_string(core) + " conflict between threads; ";
-      }
-      used_cores.insert(core);
-    }
+      const char *name;
+      const ThreadConfig *config;
+    };
+    const std::array<NamedConfig, 5> all_configs = {{
+        {"rt_control", &configs.rt_control},
+        {"sensor", &configs.sensor},
+        {"udp_recv", &configs.udp_recv},
+        {"logging", &configs.logging},
+        {"aux", &configs.aux},
+    }};
 
-    // Check for priority conflicts (same priority on same core)
-    std::map<int, std::vector<std::pair<std::string, int>>> core_priorities;
-    for (const auto &[name, core] : core_assignments)
+    auto is_rt = [](const ThreadConfig *c)
     {
-      // Only check RT priorities (SCHED_OTHER can share cores)
-      const ThreadConfig *config = nullptr;
-      if (name == "rt_control")
-        config = &configs.rt_control;
-      else if (name == "sensor")
-        config = &configs.sensor;
-      else if (name == "udp_recv")
-        config = &configs.udp_recv;
-      else if (name == "logging")
-        config = &configs.logging;
-      else if (name == "aux")
-        config = &configs.aux;
+      return c->sched_policy == SCHED_FIFO || c->sched_policy == SCHED_RR;
+    };
 
-      if (config && (config->sched_policy == SCHED_FIFO || config->sched_policy == SCHED_RR))
-      {
-        core_priorities[core].emplace_back(name, config->sched_priority);
-      }
-    }
-
-    for (const auto &[core, priorities] : core_priorities)
+    // Check for problematic core sharing: only flag RT+RT same-priority conflicts
+    for (std::size_t i = 0; i < all_configs.size(); ++i)
     {
-      std::set<int> unique_priorities;
-      for (const auto &[name, prio] : priorities)
+      for (std::size_t j = i + 1; j < all_configs.size(); ++j)
       {
-        if (unique_priorities.count(prio) > 0)
+        const auto &a = all_configs[i];
+        const auto &b = all_configs[j];
+
+        if (a.config->cpu_core != b.config->cpu_core)
         {
-          errors += "Priority " + std::to_string(prio) + " conflict on core " +
-                    std::to_string(core) + "; ";
+          continue; // different cores — no conflict possible
         }
-        unique_priorities.insert(prio);
+
+        // Same core: only a problem if both are RT with identical priority
+        if (is_rt(a.config) && is_rt(b.config) &&
+            a.config->sched_priority == b.config->sched_priority)
+        {
+          errors += "RT priority " + std::to_string(a.config->sched_priority) +
+                    " conflict on core " + std::to_string(a.config->cpu_core) +
+                    " between '" + a.name + "' and '" + b.name + "'; ";
+        }
       }
     }
 
