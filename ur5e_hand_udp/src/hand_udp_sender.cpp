@@ -42,8 +42,11 @@ bool HandUdpSender::SendCommand(
     return false;
   }
 
-  const auto packet = EncodePacket(positions);
-  const ssize_t n = sendto(socket_fd_, packet.data(), packet.size(), 0,
+  // Encode into pre-allocated buffer — zero heap allocation.
+  hand_udp_codec::EncodeSendPacket(positions, send_buffer_);
+
+  const ssize_t n = sendto(socket_fd_, send_buffer_.data(), send_buffer_.size(),
+                            0,
                             reinterpret_cast<const sockaddr*>(&target_addr_),
                             sizeof(target_addr_));
   if (n < 0) {
@@ -51,17 +54,6 @@ bool HandUdpSender::SendCommand(
   }
   ++send_count_;
   return true;
-}
-
-std::vector<uint8_t> HandUdpSender::EncodePacket(
-    std::span<const double, kNumHandJoints> positions) noexcept {
-  // Encode kNumHandJoints doubles as little-endian bytes (host byte order on
-  // x86 is already little-endian — memcpy is sufficient).
-  constexpr std::size_t kPacketSize = kNumHandJoints * sizeof(double);
-  std::vector<uint8_t> packet(kPacketSize);
-
-  std::memcpy(packet.data(), positions.data(), kPacketSize);
-  return packet;
 }
 
 }  // namespace ur5e_rt_controller

@@ -31,10 +31,10 @@ class HandUdpReceiverNode : public rclcpp::Node {
     hand_state_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
         "/hand/joint_states", 10);
 
-    // Lambda callback — avoids std::bind boilerplate.
-    receiver_->SetCallback([this](std::span<const double, urtc::kNumHandJoints> data) {
+    // Callback receives the full HandState; we buffer it for the publish timer.
+    receiver_->SetCallback([this](const urtc::HandState& state) {
       std::lock_guard lock(data_mutex_);
-      std::copy(data.begin(), data.end(), latest_data_.begin());
+      latest_state_ = state;
       data_received_ = true;
     });
 
@@ -65,7 +65,7 @@ class HandUdpReceiverNode : public rclcpp::Node {
     std::array<double, urtc::kNumHandJoints> snapshot;
     {
       std::lock_guard lock(data_mutex_);
-      snapshot = latest_data_;
+      snapshot = latest_state_.motor_positions;
     }
 
     std_msgs::msg::Float64MultiArray msg;
@@ -82,10 +82,10 @@ class HandUdpReceiverNode : public rclcpp::Node {
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr  hand_state_pub_;
   rclcpp::TimerBase::SharedPtr                                    publish_timer_;
 
-  mutable std::mutex                          data_mutex_;
-  std::array<double, urtc::kNumHandJoints>   latest_data_{};
-  bool                                        data_received_{false};
-  std::size_t                                 publish_count_{0};
+  mutable std::mutex   data_mutex_;
+  urtc::HandState      latest_state_{};
+  bool                 data_received_{false};
+  std::size_t          publish_count_{0};
 };
 
 int main(int argc, char** argv) {
