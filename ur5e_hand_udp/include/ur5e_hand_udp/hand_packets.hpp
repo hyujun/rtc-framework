@@ -130,6 +130,20 @@ inline void Encode(
 }
 
 }  // namespace hand_packets
+
+// ── Codec adapter for UdpTransceiver<HandCodec> ─────────────────────────────
+// Satisfies the UdpPacketCodec concept (ur5e_rt_base/udp_codec.hpp).
+struct HandCodec {
+  using RecvPacket = hand_packets::HandRecvPacket;
+  using SendPacket = hand_packets::HandSendPacket;
+  using State      = HandState;
+
+  [[nodiscard]] static bool Decode(
+      std::span<const char> buf, HandState& out) noexcept {
+    return hand_packets::Decode(buf, out);
+  }
+};
+
 }  // namespace ur5e_rt_controller
 
 #endif  // UR5E_HAND_UDP_HAND_PACKETS_HPP_
