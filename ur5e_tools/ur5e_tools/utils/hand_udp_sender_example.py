@@ -189,14 +189,25 @@ class HandUDPSender:
     """
 
     def __init__(self, target_ip: str = "192.168.1.100", target_port: int = 50002,
-                 recv_timeout: float = 0.01):
+                 recv_timeout: float = 0.01, num_sensors: int = NUM_FINGERTIPS):
+        """
+        Args:
+            target_ip: 대상 IP
+            target_port: 대상 포트
+            recv_timeout: 수신 타임아웃 (초)
+            num_sensors: 연결된 핑거팁 센서 수 (0~4).
+                         예: 2이면 센서 0,1 (cmd 0x14,0x15)만 요청.
+        """
+        assert 0 <= num_sensors <= NUM_FINGERTIPS, \
+            f"num_sensors는 0~{NUM_FINGERTIPS} 범위여야 합니다: {num_sensors}"
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(recv_timeout)  # 10ms recv timeout (hand_controller.hpp 동일)
         self.target = (target_ip, target_port)
+        self.num_sensors = num_sensors
 
         print(f"Hand UDP Sender (motor: {MOTOR_PACKET_SIZE}B, sensor req: {SENSOR_REQUEST_SIZE}B → resp: {SENSOR_RESPONSE_SIZE}B)")
         print(f"  Target: {target_ip}:{target_port}")
-        print(f"  Motors: {NUM_HAND_MOTORS}, Fingertips: {NUM_FINGERTIPS}, Sensor values/tip: {SENSOR_VALUES_PER_FINGERTIP}")
+        print(f"  Motors: {NUM_HAND_MOTORS}, Connected sensors: {self.num_sensors}/{NUM_FINGERTIPS}")
 
     def write_position(self, positions: list[float]) -> None:
         """모터 목표 위치 전송 (cmd=0x01, 43B)"""
@@ -216,22 +227,29 @@ class HandUDPSender:
         """
         핑거팁 센서 데이터 요청 및 수신 (cmd=0x14..0x17, 3B → 67B)
 
+        Args:
+            fingertip_idx: 센서 인덱스 (0 ~ num_sensors-1)
+
         Returns:
             11 floats: barometer[8] + tof[3], or None on timeout
         """
-        assert 0 <= fingertip_idx < NUM_FINGERTIPS
+        assert 0 <= fingertip_idx < self.num_sensors, \
+            f"센서 인덱스 {fingertip_idx}은 연결된 센서 범위(0~{self.num_sensors - 1})를 초과합니다"
         return self._request_sensor(CMD_READ_SENSORS[fingertip_idx])
 
     def poll_cycle(self, positions: list[float]) -> dict:
         """
         HandController의 1 사이클과 동일한 플로우 실행:
-          1. WritePosition         → send 43B
-          2. ReadPosition          → send 43B, recv 43B
-          3. ReadVelocity          → send 43B, recv 43B
-          4. ReadSensor0~3         → send 3B, recv 67B × 4
+          1. WritePosition                    → send 43B
+          2. ReadPosition                     → send 43B, recv 43B
+          3. ReadVelocity                     → send 43B, recv 43B
+          4. ReadSensor × num_sensors         → send 3B, recv 67B
 
         Returns:
-            dict with keys: positions[10], velocities[10], sensors[44] (or None if timeout)
+            dict with keys:
+              - positions: [10 floats] or None
+              - velocities: [10 floats] or None
+              - sensors: [num_sensors × 11 floats]
         """
         # 1. 목표 위치 전송
         self.write_position(positions)
@@ -242,9 +260,9 @@ class HandUDPSender:
         # 3. 현재 속도 수신
         vel = self.read_velocity()
 
-        # 4. 센서 데이터 수신 (4개 핑거팁, 각 11개 유효 값)
+        # 4. 센서 데이터 수신 (연결된 센서만, 각 11개 유효 값)
         sensors = []
-        for i in range(NUM_FINGERTIPS):
+        for i in range(self.num_sensors):
             s = self.read_sensor(i)
             if s is not None:
                 sensors.extend(s)
@@ -317,12 +335,13 @@ def example_write_only():
         sender.close()
 
 
-def example_poll_cycle():
+def example_poll_cycle(num_sensors: int = NUM_FINGERTIPS):
     """HandController와 동일한 전체 poll 사이클 테스트"""
-    sender = HandUDPSender(target_ip="127.0.0.1", target_port=50002)
+    sender = HandUDPSender(target_ip="127.0.0.1", target_port=50002,
+                           num_sensors=num_sensors)
 
-    print("\n전체 poll 사이클 실행...")
-    print("  WritePosition(43B) → ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor0~3(3B→67B)")
+    print(f"\n전체 poll 사이클 실행 (센서 {num_sensors}개)...")
+    print(f"  WritePosition(43B) → ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B→67B)")
     print("Ctrl+C로 중지\n")
 
     try:
@@ -347,7 +366,7 @@ def example_poll_cycle():
                 if result["velocities"]:
                     vel_str = f'[{", ".join(f"{v:.3f}" for v in result["velocities"][:4])} ...]'
                 n_sensors = len(result['sensors'])
-                print(f"[cycle {cycle}] pos={pos_str}  vel={vel_str}  sensors={n_sensors} values ({NUM_FINGERTIPS}x{SENSOR_VALUES_PER_FINGERTIP})")
+                print(f"[cycle {cycle}] pos={pos_str}  vel={vel_str}  sensors={n_sensors} values ({num_sensors}x{SENSOR_VALUES_PER_FINGERTIP})")
 
             t += dt
             time.sleep(dt)
@@ -389,8 +408,16 @@ def main(args=None):
     print(f"  센서 요청:  {SENSOR_REQUEST_SIZE}B = [ID:1B][CMD:1B][MODE:1B]")
     print(f"  센서 응답:  {SENSOR_RESPONSE_SIZE}B = [ID:1B][CMD:1B][MODE:1B][data:16×uint32]")
     print(f"             → barometer[{BAROMETER_COUNT}] + reserved[{RESERVED_COUNT}](skip) + tof[{TOF_COUNT}] = {SENSOR_VALUES_PER_FINGERTIP} 유효 값")
-    print(f"  모터: {NUM_HAND_MOTORS}개, 핑거팁: {NUM_FINGERTIPS}개, 센서 총: {NUM_HAND_SENSORS}개")
+    print(f"  모터: {NUM_HAND_MOTORS}개, 핑거팁: 최대 {NUM_FINGERTIPS}개, 센서 값/팁: {SENSOR_VALUES_PER_FINGERTIP}개")
     print()
+
+    # 연결된 센서 수 입력
+    num_sensors_str = input(f"연결된 센서 수 (0~{NUM_FINGERTIPS}, 기본={NUM_FINGERTIPS}): ").strip()
+    num_sensors = int(num_sensors_str) if num_sensors_str else NUM_FINGERTIPS
+    assert 0 <= num_sensors <= NUM_FINGERTIPS, f"센서 수는 0~{NUM_FINGERTIPS} 범위여야 합니다"
+    print(f"  → 센서 {num_sensors}개 사용 (cmd: {', '.join(f'0x{CMD_READ_SENSORS[i]:02x}' for i in range(num_sensors)) or 'none'})")
+    print()
+
     print("모드 선택:")
     print("  1) WritePosition 사인파 (전송만)")
     print("  2) 전체 poll 사이클 (WritePos + ReadPos + ReadVel + ReadSensor)")
@@ -402,7 +429,7 @@ def main(args=None):
     if choice == "1":
         example_write_only()
     elif choice == "2":
-        example_poll_cycle()
+        example_poll_cycle(num_sensors=num_sensors)
     elif choice == "3":
         example_static_pose()
     else:
