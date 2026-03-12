@@ -21,10 +21,10 @@ namespace ur5e_rt_controller {
 class HandUdpReceiver {
  public:
   // Callback invoked from the receive thread on every valid packet.
-  using DataCallback =
-      std::function<void(std::span<const double, kNumHandJoints>)>;
+  // Provides the full HandState (positions, velocities, currents, sensors).
+  using DataCallback = std::function<void(const HandState&)>;
 
-  // thread_cfg defaults to kUdpRecvConfig (Core 3, SCHED_FIFO 65).
+  // thread_cfg defaults to kUdpRecvConfig (Core 5, SCHED_FIFO 65).
   // Pass a custom config or kLoggingConfig4Core for 4-core systems.
   explicit HandUdpReceiver(
       int port,
@@ -50,8 +50,11 @@ class HandUdpReceiver {
     callback_ = std::move(callback);
   }
 
-  // Thread-safe snapshot of the most recently received data.
+  // Thread-safe snapshot of the most recently received motor positions.
   [[nodiscard]] std::array<double, kNumHandJoints> GetLatestData() const;
+
+  // Thread-safe snapshot of the full hand state.
+  [[nodiscard]] HandState GetLatestState() const;
 
   [[nodiscard]] std::size_t packet_count() const noexcept {
     return packet_count_.load(std::memory_order_relaxed);
@@ -67,15 +70,14 @@ class HandUdpReceiver {
 
   DataCallback callback_;
 
-  mutable std::mutex                      data_mutex_;
-  std::array<double, kNumHandJoints> latest_data_{};
-  std::atomic<std::size_t>               packet_count_{0};
+  mutable std::mutex data_mutex_;
+  HandState          latest_state_{};
+  std::atomic<std::size_t> packet_count_{0};
 
   // C++20: jthread owns a stop_source; destructor requests stop and joins.
   std::jthread receive_thread_;
 
   void ReceiveLoop(std::stop_token stop_token);
-  [[nodiscard]] bool ParsePacket(std::span<const char> buffer) noexcept;
 };
 
 }  // namespace ur5e_rt_controller
