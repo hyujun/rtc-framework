@@ -59,7 +59,7 @@ show_help() {
   echo "  -j, --jobs N      Limit parallel workers for colcon (e.g. -j 4)"
   echo "  --skip-deps       Skip installing apt system dependencies"
   echo "  --skip-build      Skip compiling the packages (only download/setup)"
-  echo "  --skip-rt         Skip configuring RT permissions and IRQ affinity"
+  echo "  --skip-rt         Skip configuring RT permissions, IRQ affinity, and UDP optimization"
   echo "  --skip-debug      Skip GDB/debugger tools installation"
   echo "  --ptrace-scope    Set ptrace_scope=0 for VS Code Attach debugger"
   echo "                    (Required for 'Attach to Node' launch configuration)"
@@ -249,6 +249,7 @@ setup_workspace() {
       ${ROS_PKG_PREFIX}-ament-cmake-gtest \
       python3-colcon-common-extensions \
       python3-vcstool \
+      ethtool \
       > /dev/null
   success "Build tools installed"
 }
@@ -579,6 +580,29 @@ setup_irq_affinity() {
   fi
 }
 
+# ── [UDP/DDS] NIC & kernel network stack optimization (robot + full) ──────────
+setup_udp_optimization() {
+  local SCRIPT
+  SCRIPT="$(dirname "$0")/ur5e_rt_controller/scripts/setup_udp_optimization.sh"
+
+  if [[ ! -f "$SCRIPT" ]]; then
+    warn "setup_udp_optimization.sh not found — skipping UDP optimization"
+    warn "Run manually after build: sudo $WORKSPACE/src/ur5e-rt-controller/ur5e_rt_controller/scripts/setup_udp_optimization.sh"
+    return
+  fi
+
+  info "Configuring NIC & kernel network stack for real-time UDP/DDS..."
+  if sudo bash "$SCRIPT"; then
+    success "UDP optimization applied (coalescing off, offloads off, sysctl buffers set)"
+    warn "NOTE: sysctl settings persist via /etc/sysctl.d/99-ros2-udp.conf"
+    warn "NOTE: ethtool NIC settings (coalescing, offload, ring) reset on reboot."
+    warn "  To make permanent: add 'sudo $SCRIPT' to /etc/rc.local or a systemd service"
+  else
+    warn "UDP optimization failed — continuing without it"
+    warn "Run manually: sudo $SCRIPT [NIC_NAME]"
+  fi
+}
+
 # ── Verify installation ─────────────────────────────────────────────────────────
 verify_installation() {
   info "Verifying installation..."
@@ -770,10 +794,11 @@ if [[ "$SKIP_RT" -eq 0 ]]; then
     robot|full)
       install_rt_permissions
       setup_irq_affinity
+      setup_udp_optimization
       ;;
   esac
 else
-  info "Skipping RT permissions and IRQ affinity configure (--skip-rt)"
+  info "Skipping RT permissions, IRQ affinity, and UDP optimization (--skip-rt)"
 fi
 
 verify_installation
