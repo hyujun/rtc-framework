@@ -60,7 +60,7 @@ public:
 
   // Log hand state for a given timestamp (not written to the control CSV).
   void LogHandData(double /*timestamp*/,
-                   std::span<const double, kNumHandJoints> /*hand_positions*/) {
+                   std::span<const float, kNumHandMotors> /*hand_positions*/) {
     // Reserved for future hand logging support.
   }
 

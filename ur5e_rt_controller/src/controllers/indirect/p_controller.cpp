@@ -56,7 +56,7 @@ void PController::SetRobotTarget(
 }
 
 void PController::SetHandTarget(
-  std::span<const double, kNumHandJoints> target) noexcept
+  std::span<const float, kNumHandMotors> target) noexcept
 {
   std::copy(target.begin(), target.end(), hand_target_.begin());
 }

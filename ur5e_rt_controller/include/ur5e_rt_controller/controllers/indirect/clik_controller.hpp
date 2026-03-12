@@ -90,7 +90,7 @@ public:
   [[nodiscard]] ControllerOutput Compute(const ControllerState & state) noexcept override;
 
   void SetRobotTarget(std::span<const double, kNumRobotJoints> target) noexcept override;
-  void SetHandTarget(std::span<const double, kNumHandJoints> target)  noexcept override;
+  void SetHandTarget(std::span<const float, kNumHandMotors> target)  noexcept override;
 
   [[nodiscard]] std::string_view Name() const noexcept override;
 
@@ -157,7 +157,7 @@ private:
   /// Null-space reference configuration.  Joints 0–2 from this array;
   /// joints 3–5 are overwritten by SetRobotTarget(target[3..5]).
   std::array<double, kNumRobotJoints> null_target_{0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
-  std::array<double, kNumHandJoints> hand_target_{};
+  std::array<float, kNumHandMotors> hand_target_{};
   std::array<double, 6> pose_error_cache_{};               ///< diagnostic cache
   std::array<double, 3> tcp_position_{};                ///< diagnostic cache
 

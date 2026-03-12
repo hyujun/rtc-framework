@@ -293,9 +293,9 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   // The command updates the target for the low-pass filter.
   void HandCommandCallback(
       const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-    if (msg->data.size() < 11) { return; }
+    if (msg->data.size() < 10) { return; }
     std::lock_guard lock(hand_mutex_);
-    std::copy_n(msg->data.begin(), 11, hand_target_.begin());
+    std::copy_n(msg->data.begin(), 10, hand_target_.begin());
   }
 
   // ── Publisher helpers ────────────────────────────────────────────────────────
@@ -319,7 +319,7 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   void PublishHandState() {
     {
       std::lock_guard lock(hand_mutex_);
-      for (std::size_t i = 0; i < 11; ++i) {
+      for (std::size_t i = 0; i < 10; ++i) {
         hand_state_[i] +=
             hand_filter_alpha_ * (hand_target_[i] - hand_state_[i]);
       }
@@ -382,8 +382,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
 
   // ── Hand simulation state (low-pass filter) ───────────────────────────────────
   mutable std::mutex            hand_mutex_;
-  std::array<double, 11>        hand_state_{};   // current filtered state
-  std::array<double, 11>        hand_target_{};  // target from /hand/command
+  std::array<double, 10>        hand_state_{};   // current filtered state
+  std::array<double, 10>        hand_target_{};  // target from /hand/command
 
   // ── Parameters ───────────────────────────────────────────────────────────────
   std::string            model_path_;
