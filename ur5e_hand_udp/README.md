@@ -1,6 +1,7 @@
 # ur5e_hand_udp
 
-> **Note:** This package is part of the UR5e RT Controller workspace (v5.7.0). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.7.0)의 일부입니다.
+> 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 UR5e RT Controller 스택의 **11-DOF 손 UDP 브리지 패키지**입니다. 외부 손 컨트롤러(하드웨어 또는 시뮬레이터)와 ROS2 토픽 사이의 UDP 통신을 담당합니다.
 
 ## 개요

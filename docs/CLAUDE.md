@@ -80,8 +80,8 @@ ur5e-rt-controller/
 ├── install.sh                              # Automated setup (IRQ affinity included)
 ├── build.sh                               # Build script (sim/robot/full mode)
 ├── docs/
-│   ├── CHANGELOG.md                       # Version history (Korean)
 │   ├── RT_OPTIMIZATION.md                 # v4.2.0 RT tuning guide (Korean)
+│   ├── VSCODE_DEBUGGING.md               # VS Code + GDB debugging guide
 │   └── CLAUDE.md                          # This file — AI assistant context
 │
 ├── ur5e_description/                      # Robot model description (NEW v5.2.2)
@@ -641,7 +641,7 @@ Exit code: `0` if all parameters match within tolerance, `1` if mismatches found
 
 v5.4.0부터 **Controller Registry** 패턴을 사용합니다. 새 컨트롤러 추가 시 수정이 필요한 곳은 **`src/rt_controller_node.cpp` 한 곳뿐**입니다.
 
-자세한 단계별 가이드: **`docs/ADDING_CONTROLLER.md`**
+자세한 단계별 가이드: **`ur5e_rt_controller/docs/ADDING_CONTROLLER.md`**
 
 ### 요약 (4단계)
 
@@ -772,7 +772,7 @@ For detailed RT tuning (CPU isolation, kernel parameters, DDS configuration, IRQ
 | v5.5.1 | 플롯 저장 경로 변경: `~/ur_plots` → `logging_data/ur_plot` |
 | v5.5.0 | Script enhancements: `build.sh` and `install.sh` parameter parsing & advanced options (`-c`, `-p`, `--skip-deps`, etc.). Source split: `rt_controller.cpp` → `rt_controller_node.hpp` + `.cpp` + `main.cpp`. Renamed `CustomController` → `RtControllerNode`. Fast modular math for `SpscLogBuffer`. |
 | v5.5.0 | Script enhancements:  and  parameter parsing & advanced options (, , , etc.). Source split:  →  +  + . Renamed  → . Fast modular math for . |
-| v5.4.0 | Controller Registry pattern: `MakeControllerEntries()` factory list, `LoadConfig()` + `UpdateGainsFromMsg()` hooks on `RTControllerInterface`, per-controller YAML loading loop replaces 80-line boilerplate, `switch`/`dynamic_cast` gains handler replaced by single virtual dispatch. New guide: `docs/ADDING_CONTROLLER.md` |
+| v5.4.0 | Controller Registry pattern: `MakeControllerEntries()` factory list, `LoadConfig()` + `UpdateGainsFromMsg()` hooks on `RTControllerInterface`, per-controller YAML loading loop replaces 80-line boilerplate, `switch`/`dynamic_cast` gains handler replaced by single virtual dispatch. New guide: `ur5e_rt_controller/docs/ADDING_CONTROLLER.md` |
 | v5.3.0 | Runtime controller switching (P/PD/Pinocchio/CLIK/OSC via `/rt_controller/controller_type` topic), `controller_gains` topic for dynamic gain updates, `controller_gui.py` tkinter GUI, MuJoCo `package://` URI support (`Ros2ResourceProvider`), quintic trajectory subsystem (`QuinticPolynomial`, `TaskSpaceTrajectory`, `JointSpaceTrajectory<N>`) |
 | v5.2.2 | `ur5e_description` package (MJCF/URDF/mesh), dynamic log path (`~/ros2_ws/ur5e_ws/logging_data`), `build.sh`, `rmw_cyclonedds_cpp`, source split (`mujoco_sim_loop.cpp`, `mujoco_viewer.cpp`), `solver_niter` island fix, ROS2 Jazzy |
 | v5.2.1 | MuJoCo binary tarball cmake fix: `-Dmujoco_ROOT`, `find_library` fallback |
