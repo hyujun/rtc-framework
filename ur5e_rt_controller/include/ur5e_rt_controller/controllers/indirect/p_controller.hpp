@@ -52,7 +52,7 @@ public:
     std::span<const double, kNumRobotJoints> target) noexcept override;
 
   void SetHandTarget(
-    std::span<const double, kNumHandJoints> target) noexcept override;
+    std::span<const float, kNumHandMotors> target) noexcept override;
 
   [[nodiscard]] std::string_view Name() const noexcept override
   {
@@ -74,7 +74,7 @@ public:
 private:
   Gains gains_;
   std::array<double, kNumRobotJoints> robot_target_{};
-  std::array<double, kNumHandJoints> hand_target_{};
+  std::array<float, kNumHandMotors> hand_target_{};
 
   pinocchio::Model model_;
   pinocchio::Data data_;

@@ -35,7 +35,7 @@ public:
     std::span<const double, kNumRobotJoints> target) noexcept = 0;
 
   virtual void SetHandTarget(
-    std::span<const double, kNumHandJoints> target) noexcept = 0;
+    std::span<const float, kNumHandMotors> target) noexcept = 0;
 
   [[nodiscard]] virtual std::string_view Name() const noexcept = 0;
 

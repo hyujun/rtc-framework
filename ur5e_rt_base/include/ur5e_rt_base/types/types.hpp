@@ -16,8 +16,13 @@ namespace ur5e_rt_controller {
 
 // ── Compile-time constants ─────────────────────────────────────────────────────
 inline constexpr int kNumRobotJoints = 6;
-inline constexpr int kNumHandJoints  = 11;
-inline constexpr int kNumHandSensors = 44;  // 4 sensors × 11 joints
+inline constexpr int kNumHandMotors          = 10;
+inline constexpr int kNumFingertips          = 4;
+inline constexpr int kSensorValuesPerFingertip = 10;
+inline constexpr int kNumHandSensors         = kNumFingertips * kSensorValuesPerFingertip;  // 40
+
+// Legacy alias — downstream code still references kNumHandJoints.
+inline constexpr int kNumHandJoints = kNumHandMotors;
 
 // ── C++20 Concepts ─────────────────────────────────────────────────────────────
 // Constrains template parameters to floating-point types (double, float, etc.).
@@ -35,10 +40,9 @@ struct RobotState {
 };
 
 struct HandState {
-  std::array<double, kNumHandJoints>  motor_positions{};
-  std::array<double, kNumHandJoints>  motor_velocities{};
-  std::array<double, kNumHandJoints>  motor_currents{};
-  std::array<double, kNumHandSensors> sensor_data{};
+  std::array<float, kNumHandMotors>  motor_positions{};
+  std::array<float, kNumHandMotors>  motor_velocities{};
+  std::array<float, kNumHandSensors> sensor_data{};   // 4 fingertips × 10 values
   bool valid{false};
 };
 
@@ -56,7 +60,7 @@ enum class CommandType { kPosition, kTorque };
 
 struct ControllerOutput {
   std::array<double, kNumRobotJoints> robot_commands{};
-  std::array<double, kNumHandJoints>  hand_commands{};
+  std::array<float, kNumHandMotors>   hand_commands{};
   std::array<double, kNumRobotJoints> actual_target_positions{};
   std::array<double, 6>               actual_task_positions{};
   bool        valid{true};

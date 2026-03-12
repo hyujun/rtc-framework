@@ -129,9 +129,9 @@ void JointPDController::SetRobotTarget(
 }
 
 void JointPDController::SetHandTarget(
-  std::span<const double, kNumHandJoints> target) noexcept
+  std::span<const float, kNumHandMotors> target) noexcept
 {
-  for (std::size_t i = 0; i < kNumHandJoints; ++i) {
+  for (std::size_t i = 0; i < kNumHandMotors; ++i) {
     hand_target_[i] = target[i];
   }
 }

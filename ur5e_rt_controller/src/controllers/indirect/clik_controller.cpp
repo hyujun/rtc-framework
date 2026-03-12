@@ -244,10 +244,9 @@ void ClikController::SetRobotTarget(
 }
 
 void ClikController::SetHandTarget(
-  std::span<const double, kNumHandJoints> target) noexcept
+  std::span<const float, kNumHandMotors> target) noexcept
 {
-  const std::size_t n = kNumHandJoints;
-  for (std::size_t i = 0; i < n; ++i) {
+  for (std::size_t i = 0; i < kNumHandMotors; ++i) {
     hand_target_[i] = target[i];
   }
 }

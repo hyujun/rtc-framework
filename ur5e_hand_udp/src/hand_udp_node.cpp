@@ -14,27 +14,27 @@
 using namespace std::chrono_literals;
 namespace urtc = ur5e_rt_controller;
 
-// Unified hand UDP node — replaces the separate receiver + sender nodes.
+// Unified hand UDP node using request-response protocol.
 //
-// Owns a single HandController that manages both directions:
-//   recv: hand controller → /hand/joint_states (publishes at publish_rate Hz)
-//   send: /hand/command → hand controller (forwards on subscription callback)
+// Owns a HandController that polls the hand device:
+//   write position → read position → read velocity → read sensors × 4
+//
+// Publishes full state on /hand/joint_states.
+// Receives commands on /hand/command.
 class HandUdpNode : public rclcpp::Node {
  public:
   HandUdpNode() : Node("hand_udp_node") {
     // ── Parameters ─────────────────────────────────────────────────────
-    declare_parameter("recv_port",    50001);
     declare_parameter("target_ip",    std::string{"192.168.1.100"});
     declare_parameter("target_port",  50002);
     declare_parameter("publish_rate", 100.0);
 
-    const int         recv_port   = get_parameter("recv_port").as_int();
     const std::string target_ip   = get_parameter("target_ip").as_string();
     const int         target_port = get_parameter("target_port").as_int();
     const double      rate        = get_parameter("publish_rate").as_double();
 
     // ── HandController ─────────────────────────────────────────────────
-    controller_ = std::make_unique<urtc::HandController>(recv_port);
+    controller_ = std::make_unique<urtc::HandController>(target_ip, target_port);
 
     controller_->SetCallback([this](const urtc::HandState& state) {
       std::lock_guard lock(data_mutex_);
@@ -44,13 +44,7 @@ class HandUdpNode : public rclcpp::Node {
 
     if (!controller_->Start()) {
       RCLCPP_ERROR(get_logger(),
-                   "Failed to start HandController recv on port %d", recv_port);
-      return;
-    }
-
-    if (!controller_->InitSend(target_ip, target_port)) {
-      RCLCPP_ERROR(get_logger(),
-                   "Failed to init HandController send to %s:%d",
+                   "Failed to start HandController to %s:%d",
                    target_ip.c_str(), target_port);
       return;
     }
@@ -70,8 +64,8 @@ class HandUdpNode : public rclcpp::Node {
     publish_timer_ = create_wall_timer(period, [this]() { PublishState(); });
 
     RCLCPP_INFO(get_logger(),
-                "HandUdpNode: recv :%d, send %s:%d, pub %.0f Hz",
-                recv_port, target_ip.c_str(), target_port, rate);
+                "HandUdpNode: target %s:%d, pub %.0f Hz",
+                target_ip.c_str(), target_port, rate);
   }
 
   ~HandUdpNode() override {
@@ -82,36 +76,45 @@ class HandUdpNode : public rclcpp::Node {
   void PublishState() {
     if (!data_received_) return;
 
-    std::array<double, urtc::kNumHandJoints> snapshot;
+    urtc::HandState snapshot;
     {
       std::lock_guard lock(data_mutex_);
-      snapshot = latest_state_.motor_positions;
+      snapshot = latest_state_;
     }
 
+    // Publish: [10 positions] + [10 velocities] + [40 sensors]
     std_msgs::msg::Float64MultiArray msg;
-    msg.data.assign(snapshot.begin(), snapshot.end());
+    msg.data.reserve(urtc::kNumHandMotors * 2 + urtc::kNumHandSensors);
+
+    for (int i = 0; i < urtc::kNumHandMotors; ++i)
+      msg.data.push_back(static_cast<double>(snapshot.motor_positions[i]));
+    for (int i = 0; i < urtc::kNumHandMotors; ++i)
+      msg.data.push_back(static_cast<double>(snapshot.motor_velocities[i]));
+    for (int i = 0; i < urtc::kNumHandSensors; ++i)
+      msg.data.push_back(static_cast<double>(snapshot.sensor_data[i]));
+
     state_pub_->publish(msg);
 
     if (++publish_count_ % 100 == 0) {
-      RCLCPP_DEBUG(get_logger(), "recv: %zu pkts, send: %zu pkts",
-                   controller_->recv_count(), controller_->send_count());
+      RCLCPP_DEBUG(get_logger(), "cycles: %zu",
+                   controller_->cycle_count());
     }
   }
 
   void OnCommand(std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-    if (msg->data.size() != static_cast<std::size_t>(urtc::kNumHandJoints)) {
+    if (msg->data.size() != static_cast<std::size_t>(urtc::kNumHandMotors)) {
       RCLCPP_WARN(get_logger(),
                   "Unexpected command size %zu (expected %d)",
-                  msg->data.size(), urtc::kNumHandJoints);
+                  msg->data.size(), urtc::kNumHandMotors);
       return;
     }
 
-    std::array<double, urtc::kNumHandJoints> cmd;
-    std::copy_n(msg->data.begin(), urtc::kNumHandJoints, cmd.begin());
-
-    if (!controller_->SendCommand(cmd)) {
-      RCLCPP_ERROR(get_logger(), "UDP send failed");
+    std::array<float, urtc::kNumHandMotors> cmd;
+    for (int i = 0; i < urtc::kNumHandMotors; ++i) {
+      cmd[i] = static_cast<float>(msg->data[i]);
     }
+
+    controller_->SetTargetPositions(cmd);
   }
 
   std::unique_ptr<urtc::HandController> controller_;
