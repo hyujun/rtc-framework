@@ -82,7 +82,7 @@ class HandUdpNode : public rclcpp::Node {
       snapshot = latest_state_;
     }
 
-    // Publish: [10 positions] + [10 velocities] + [40 sensors]
+    // Publish: [10 positions] + [10 velocities] + [44 sensors]
     std_msgs::msg::Float64MultiArray msg;
     msg.data.reserve(urtc::kNumHandMotors * 2 + urtc::kNumHandSensors);
 

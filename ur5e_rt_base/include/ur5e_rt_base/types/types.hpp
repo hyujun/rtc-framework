@@ -20,8 +20,16 @@ namespace ur5e_rt_controller {
 inline constexpr int kNumRobotJoints = 6;
 inline constexpr int kNumHandMotors          = 10;
 inline constexpr int kNumFingertips          = 4;
-inline constexpr int kSensorValuesPerFingertip = 10;
-inline constexpr int kNumHandSensors         = kNumFingertips * kSensorValuesPerFingertip;  // 40
+
+// Fingertip sensor layout per fingertip (packet contains 16 uint32 values):
+//   barometer[8] + reserved[5] (skipped) + tof[3]
+// Only 11 useful values are stored (reserved is discarded).
+inline constexpr int kBarometerCount              = 8;
+inline constexpr int kReservedCount               = 5;   // in packet only, not stored
+inline constexpr int kTofCount                    = 3;
+inline constexpr int kSensorDataPerPacket         = kBarometerCount + kReservedCount + kTofCount;  // 16
+inline constexpr int kSensorValuesPerFingertip    = kBarometerCount + kTofCount;                   // 11
+inline constexpr int kNumHandSensors              = kNumFingertips * kSensorValuesPerFingertip;    // 44
 
 // Legacy alias — downstream code still references kNumHandJoints.
 inline constexpr int kNumHandJoints = kNumHandMotors;
