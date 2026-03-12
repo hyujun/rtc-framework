@@ -42,6 +42,7 @@ add_executable(rt_controller
   src/controllers/direct/operational_space_controller.cpp
   src/controllers/indirect/p_controller.cpp
   src/controllers/indirect/clik_controller.cpp
+  src/controllers/indirect/ur5e_hand_controller.cpp
 )
 target_include_directories(rt_controller PRIVATE include)
 ament_target_dependencies(rt_controller

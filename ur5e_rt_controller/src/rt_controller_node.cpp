@@ -5,6 +5,7 @@
 #include "ur5e_rt_controller/controllers/direct/operational_space_controller.hpp"
 #include "ur5e_rt_controller/controllers/indirect/p_controller.hpp"
 #include "ur5e_rt_controller/controllers/indirect/clik_controller.hpp"
+#include "ur5e_rt_controller/controllers/indirect/ur5e_hand_controller.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <yaml-cpp/yaml.h>
@@ -64,6 +65,12 @@ std::vector<ControllerEntry> MakeControllerEntries()
       [](const std::string & p) {
         return std::make_unique<urtc::OperationalSpaceController>(
           p, urtc::OperationalSpaceController::Gains{});
+      }
+    },
+    {
+      "ur5e_hand_controller", "indirect/",
+      [](const std::string & p) {
+        return std::make_unique<urtc::UrFiveEHandController>(p);
       }
     },
     // ── Add new controllers here ─────────────────────────────────────────────
@@ -496,6 +503,18 @@ void RtControllerNode::TargetCallback(std_msgs::msg::Float64MultiArray::SharedPt
   target_received_.store(true, std::memory_order_release);
   int active_idx = active_controller_idx_.load(std::memory_order_acquire);
   controllers_[active_idx]->SetRobotTarget(local_target);
+
+  // If the message contains additional values for hand motors
+  // (data[6..15]), forward them to SetHandTarget().
+  constexpr std::size_t kHandOffset = static_cast<std::size_t>(urtc::kNumRobotJoints);
+  constexpr std::size_t kHandSize   = static_cast<std::size_t>(urtc::kNumHandMotors);
+  if (msg->data.size() >= kHandOffset + kHandSize) {
+    std::array<float, urtc::kNumHandMotors> hand_target;
+    for (std::size_t i = 0; i < kHandSize; ++i) {
+      hand_target[i] = static_cast<float>(msg->data[kHandOffset + i]);
+    }
+    controllers_[active_idx]->SetHandTarget(hand_target);
+  }
 }
 
 void RtControllerNode::HandStateCallback(std_msgs::msg::Float64MultiArray::SharedPtr msg)
