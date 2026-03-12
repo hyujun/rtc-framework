@@ -11,6 +11,8 @@
 #include <array>
 #include <concepts>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace ur5e_rt_controller {
 
@@ -65,6 +67,37 @@ struct ControllerOutput {
   std::array<double, 6>               actual_task_positions{};
   bool        valid{true};
   CommandType command_type{CommandType::kPosition};
+};
+
+// ── Topic configuration for per-controller subscribe/publish routing ─────────
+
+enum class SubscribeRole {
+  kJointState,      // robot joint positions/velocities (sensor_msgs/JointState)
+  kHandState,       // hand joint state (Float64MultiArray)
+  kTarget,          // target positions (Float64MultiArray)
+};
+
+enum class PublishRole {
+  kPositionCommand,  // robot position commands (Float64MultiArray)
+  kTorqueCommand,    // robot torque commands (Float64MultiArray)
+  kHandCommand,      // hand motor commands (Float64MultiArray)
+  kTaskPosition,     // current task-space position (Float64MultiArray)
+};
+
+struct SubscribeTopicEntry {
+  std::string topic_name;
+  SubscribeRole role;
+};
+
+struct PublishTopicEntry {
+  std::string topic_name;
+  PublishRole role;
+  int data_size{0};  // pre-allocate message size (0 = use default for role)
+};
+
+struct TopicConfig {
+  std::vector<SubscribeTopicEntry> subscribe;
+  std::vector<PublishTopicEntry> publish;
 };
 
 }  // namespace ur5e_rt_controller

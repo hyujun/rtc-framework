@@ -247,6 +247,7 @@ Eigen::Matrix3d OperationalSpaceController::RpyToMatrix(
 
 void OperationalSpaceController::LoadConfig(const YAML::Node & cfg)
 {
+  RTControllerInterface::LoadConfig(cfg);
   if (!cfg) {return;}
   auto load3 = [](const YAML::Node & n, std::array<double, 3> & arr) {
       if (n && n.IsSequence() && n.size() == 3) {

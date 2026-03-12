@@ -177,6 +177,7 @@ std::array<double, 3> JointPDController::tcp_position() const noexcept
 
 void JointPDController::LoadConfig(const YAML::Node & cfg)
 {
+  RTControllerInterface::LoadConfig(cfg);
   if (!cfg) {return;}
 
   if (cfg["kp"] && cfg["kp"].IsSequence() && cfg["kp"].size() == 6) {

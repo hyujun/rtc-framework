@@ -22,6 +22,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // ── RtControllerNode ──────────────────────────────────────────────────────────
@@ -77,23 +78,31 @@ private:
   rclcpp::CallbackGroup::SharedPtr cb_group_log_;
   rclcpp::CallbackGroup::SharedPtr cb_group_aux_;
 
-  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr      joint_state_sub_;
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr  target_sub_;
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr  hand_state_sub_;
+  // ── Configurable topic subscriptions (created from controller YAML) ──────
+  // Key = topic name, value = subscription handle (kept alive for node lifetime)
+  std::vector<rclcpp::SubscriptionBase::SharedPtr> topic_subscriptions_;
+
+  // Fixed control subscriptions (always present)
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr              controller_selector_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr  controller_gains_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr               request_gains_sub_;
 
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr cmd_pub_;
-  std_msgs::msg::Float64MultiArray                               cmd_msg_;
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr torque_cmd_pub_;
-  std_msgs::msg::Float64MultiArray                               torque_cmd_msg_;
-  std::mutex                                                     cmd_pub_mutex_;
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr task_pos_pub_;
-  std_msgs::msg::Float64MultiArray                               task_pos_msg_;
+  // ── Configurable topic publishers (created from controller YAML) ──────────
+  // Key = topic name, value = publisher + pre-allocated message
+  struct PublisherEntry {
+    rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr publisher;
+    std_msgs::msg::Float64MultiArray msg;
+  };
+  std::unordered_map<std::string, PublisherEntry> topic_publishers_;
+  std::mutex                                      cmd_pub_mutex_;
+
+  // Fixed publishers (always present)
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr              estop_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr            active_ctrl_name_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr current_gains_pub_;
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr          request_gains_sub_;
+
+  // Per-controller topic config cache (index = controller index)
+  std::vector<ur5e_rt_controller::TopicConfig> controller_topic_configs_;
 
   rclcpp::TimerBase::SharedPtr control_timer_;
   rclcpp::TimerBase::SharedPtr timeout_timer_;
@@ -110,6 +119,10 @@ private:
   std::array<double, ur5e_rt_controller::kNumRobotJoints> current_positions_{};
   std::array<double, ur5e_rt_controller::kNumRobotJoints> current_velocities_{};
   std::array<double, ur5e_rt_controller::kNumRobotJoints> target_positions_{};
+
+  // Hand motor positions (guarded by hand_mutex_)
+  std::array<float, ur5e_rt_controller::kNumHandMotors> current_hand_positions_{};
+  std::array<float, ur5e_rt_controller::kNumHandMotors> cached_hand_positions_{};
   // RT-local snapshot of target — written and read only in ControlLoop()
   std::array<double, ur5e_rt_controller::kNumRobotJoints> target_snapshot_{};
 

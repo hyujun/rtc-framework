@@ -77,6 +77,7 @@ std::array<double, kNumRobotJoints> PController::ClampCommands(
 
 void PController::LoadConfig(const YAML::Node & cfg)
 {
+  RTControllerInterface::LoadConfig(cfg);
   if (!cfg) {return;}
   if (cfg["kp"] && cfg["kp"].IsSequence() && cfg["kp"].size() == 6) {
     for (std::size_t i = 0; i < 6; ++i) {

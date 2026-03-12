@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <ctime>
 #include <functional>
+#include <set>
 #include <string_view>
 #include <unordered_map>
 
@@ -255,6 +256,15 @@ void RtControllerNode::DeclareAndLoadParameters()
     controllers_.push_back(std::move(ctrl));
   }
 
+  // Cache per-controller topic configs for fast access in ControlLoop()
+  controller_topic_configs_.reserve(controllers_.size());
+  for (const auto & ctrl : controllers_) {
+    controller_topic_configs_.push_back(ctrl->GetTopicConfig());
+    const auto & tc = controller_topic_configs_.back();
+    RCLCPP_INFO(get_logger(), "Controller '%s': %zu subscribe topics, %zu publish topics",
+                ctrl->Name().data(), tc.subscribe.size(), tc.publish.size());
+  }
+
   // Resolve initial_controller parameter → controller index
   const std::string initial_ctrl = get_parameter("initial_controller").as_string();
   const auto it = name_to_idx.find(initial_ctrl);
@@ -271,31 +281,64 @@ void RtControllerNode::DeclareAndLoadParameters()
 
 void RtControllerNode::CreateSubscriptions()
 {
-  // Assign subscriptions to cb_group_sensor_
   auto sub_options = rclcpp::SubscriptionOptions();
   sub_options.callback_group = cb_group_sensor_;
 
-  joint_state_sub_ = create_subscription<sensor_msgs::msg::JointState>(
-      "/joint_states", 10,
-    [this](sensor_msgs::msg::JointState::SharedPtr msg) {
-      JointStateCallback(std::move(msg));
-      },
-      sub_options);
+  // ── Collect unique subscribe topics from all controllers ──────────────────
+  // Each topic is created once; the callback is determined by the role.
+  std::set<std::string> created_joint_state_topics;
+  std::set<std::string> created_hand_state_topics;
+  std::set<std::string> created_target_topics;
 
-  target_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
-      "/target_joint_positions", 10,
-    [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-      TargetCallback(std::move(msg));
-      },
-      sub_options);
+  for (const auto & tc : controller_topic_configs_) {
+    for (const auto & entry : tc.subscribe) {
+      switch (entry.role) {
+        case urtc::SubscribeRole::kJointState:
+          if (created_joint_state_topics.insert(entry.topic_name).second) {
+            auto sub = create_subscription<sensor_msgs::msg::JointState>(
+              entry.topic_name, 10,
+              [this](sensor_msgs::msg::JointState::SharedPtr msg) {
+                JointStateCallback(std::move(msg));
+              },
+              sub_options);
+            topic_subscriptions_.push_back(sub);
+            RCLCPP_INFO(get_logger(), "  Subscribe [joint_state]: %s",
+                        entry.topic_name.c_str());
+          }
+          break;
 
-  hand_state_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
-      "/hand/joint_states", 10,
-    [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-      HandStateCallback(std::move(msg));
-      },
-      sub_options);
+        case urtc::SubscribeRole::kHandState:
+          if (created_hand_state_topics.insert(entry.topic_name).second) {
+            auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
+              entry.topic_name, 10,
+              [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+                HandStateCallback(std::move(msg));
+              },
+              sub_options);
+            topic_subscriptions_.push_back(sub);
+            RCLCPP_INFO(get_logger(), "  Subscribe [hand_state]: %s",
+                        entry.topic_name.c_str());
+          }
+          break;
 
+        case urtc::SubscribeRole::kTarget:
+          if (created_target_topics.insert(entry.topic_name).second) {
+            auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
+              entry.topic_name, 10,
+              [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+                TargetCallback(std::move(msg));
+              },
+              sub_options);
+            topic_subscriptions_.push_back(sub);
+            RCLCPP_INFO(get_logger(), "  Subscribe [target]: %s",
+                        entry.topic_name.c_str());
+          }
+          break;
+      }
+    }
+  }
+
+  // ── Fixed control subscriptions (always present) ──────────────────────────
   controller_selector_sub_ = create_subscription<std_msgs::msg::Int32>(
       "~/controller_type", 10,
     [this](std_msgs::msg::Int32::SharedPtr msg) {
@@ -304,7 +347,6 @@ void RtControllerNode::CreateSubscriptions()
         active_controller_idx_.store(idx, std::memory_order_release);
         RCLCPP_INFO(get_logger(), "Switched to controller: %s",
                       controllers_[idx]->Name().data());
-        // 컨트롤러 전환 알림 — monitor_data_health가 컨트롤러별 통계를 분리 저장
         std_msgs::msg::String ctrl_name_msg;
         ctrl_name_msg.data = std::string(controllers_[idx]->Name());
         active_ctrl_name_pub_->publish(ctrl_name_msg);
@@ -314,9 +356,6 @@ void RtControllerNode::CreateSubscriptions()
       },
       sub_options);
 
-  // Gains subscriber — ~/controller_gains [Float64MultiArray]
-  // Each controller defines its own flat-array layout in UpdateGainsFromMsg().
-  // See the controller's header comment for the exact layout.
   controller_gains_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
       "~/controller_gains", 10,
     [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
@@ -327,7 +366,6 @@ void RtControllerNode::CreateSubscriptions()
       },
       sub_options);
 
-  // Load Gain 요청 subscriber — GUI에서 요청 시 현재 활성 컨트롤러의 게인을 publish
   request_gains_sub_ = create_subscription<std_msgs::msg::Bool>(
       "~/request_gains", 10,
     [this](std_msgs::msg::Bool::SharedPtr /*msg*/) {
@@ -344,36 +382,58 @@ void RtControllerNode::CreateSubscriptions()
 
 void RtControllerNode::CreatePublishers()
 {
-  // Pre-allocate the command message once. ControlLoop() uses try_lock() to
-  // avoid blocking on the RT path — same semantics as RealtimePublisher.
   // BEST_EFFORT + depth 1: minimises DDS overhead on the 500 Hz RT path.
-  // Stale commands are never useful; the receiver only needs the latest.
   rclcpp::QoS cmd_qos{1};
   cmd_qos.best_effort();
 
-  cmd_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
-      "/forward_position_controller/commands", cmd_qos);
-  cmd_msg_.data.resize(urtc::kNumRobotJoints, 0.0);
+  // ── Collect unique publish topics from all controllers ────────────────────
+  for (const auto & tc : controller_topic_configs_) {
+    for (const auto & entry : tc.publish) {
+      if (topic_publishers_.count(entry.topic_name) > 0) {
+        continue;  // already created
+      }
 
-  torque_cmd_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
-      "/forward_torque_controller/commands", cmd_qos);
-  torque_cmd_msg_.data.resize(urtc::kNumRobotJoints, 0.0);
+      // Determine message size from role defaults or explicit config
+      int data_size = entry.data_size;
+      if (data_size <= 0) {
+        switch (entry.role) {
+          case urtc::PublishRole::kPositionCommand:
+          case urtc::PublishRole::kTorqueCommand:
+            data_size = urtc::kNumRobotJoints;
+            break;
+          case urtc::PublishRole::kHandCommand:
+            data_size = urtc::kNumHandMotors;
+            break;
+          case urtc::PublishRole::kTaskPosition:
+            data_size = 6;
+            break;
+        }
+      }
 
-  task_pos_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
-      "/rt_controller/current_task_position", cmd_qos);
-  task_pos_msg_.data.resize(6, 0.0);
+      PublisherEntry pe;
+      pe.publisher = create_publisher<std_msgs::msg::Float64MultiArray>(
+          entry.topic_name, cmd_qos);
+      pe.msg.data.resize(static_cast<std::size_t>(data_size), 0.0);
+      topic_publishers_[entry.topic_name] = std::move(pe);
 
+      RCLCPP_INFO(get_logger(), "  Publish [%s]: %s (size=%d)",
+                  entry.role == urtc::PublishRole::kPositionCommand ? "position_cmd" :
+                  entry.role == urtc::PublishRole::kTorqueCommand   ? "torque_cmd" :
+                  entry.role == urtc::PublishRole::kHandCommand     ? "hand_cmd" :
+                                                                      "task_pos",
+                  entry.topic_name.c_str(), data_size);
+    }
+  }
+
+  // ── Fixed publishers (always present) ─────────────────────────────────────
   estop_pub_ =
     create_publisher<std_msgs::msg::Bool>("/system/estop_status", 10);
 
-  // 컨트롤러 이름 publisher — transient_local(latched) QoS로 신규 구독자가
-  // 즉시 현재 컨트롤러 이름을 받을 수 있도록 함
   rclcpp::QoS latch_qos{1};
   latch_qos.transient_local();
   active_ctrl_name_pub_ =
     create_publisher<std_msgs::msg::String>("~/active_controller_name", latch_qos);
 
-  // 현재 게인 응답 publisher — GUI의 Load Gain 요청에 대한 응답용
   current_gains_pub_ =
     create_publisher<std_msgs::msg::Float64MultiArray>("~/current_gains", 10);
 }
@@ -438,10 +498,16 @@ void RtControllerNode::TargetCallback(std_msgs::msg::Float64MultiArray::SharedPt
   controllers_[active_idx]->SetRobotTarget(local_target);
 }
 
-void RtControllerNode::HandStateCallback(std_msgs::msg::Float64MultiArray::SharedPtr /*msg*/)
+void RtControllerNode::HandStateCallback(std_msgs::msg::Float64MultiArray::SharedPtr msg)
 {
   {
     std::lock_guard lock(hand_mutex_);
+    // Store actual hand motor positions if available
+    const std::size_t n = std::min(msg->data.size(),
+                                   static_cast<std::size_t>(urtc::kNumHandMotors));
+    for (std::size_t i = 0; i < n; ++i) {
+      current_hand_positions_[i] = static_cast<float>(msg->data[i]);
+    }
     last_hand_update_ = now();
   }
   // Fix 2: release-store after mutex released
@@ -511,6 +577,16 @@ void RtControllerNode::ControlLoop()
   state.robot.positions = cached_positions_;
   state.robot.velocities = cached_velocities_;
 
+  // Hand state — populate from cached data
+  {
+    std::unique_lock lock(hand_mutex_, std::try_to_lock);
+    if (lock.owns_lock()) {
+      cached_hand_positions_ = current_hand_positions_;
+    }
+  }
+  state.hand.motor_positions = cached_hand_positions_;
+  state.hand.valid = hand_data_received_.load(std::memory_order_acquire);
+
   {
     std::unique_lock lock(target_mutex_, std::try_to_lock);
     if (lock.owns_lock()) {
@@ -530,19 +606,47 @@ void RtControllerNode::ControlLoop()
 
   // Non-blocking: skip this cycle if publisher mutex is contended.
   if (cmd_pub_mutex_.try_lock()) {
-    if (output.command_type == urtc::CommandType::kTorque) {
-      std::copy(output.robot_commands.begin(), output.robot_commands.end(),
-                torque_cmd_msg_.data.begin());
-      torque_cmd_pub_->publish(torque_cmd_msg_);
-    } else {
-      std::copy(output.robot_commands.begin(), output.robot_commands.end(),
-                cmd_msg_.data.begin());
-      cmd_pub_->publish(cmd_msg_);
-    }
+    // Publish to all topics configured for the active controller
+    const auto & pub_topics = controller_topic_configs_[
+        static_cast<std::size_t>(active_idx)].publish;
 
-    std::copy(output.actual_task_positions.begin(), output.actual_task_positions.end(),
-              task_pos_msg_.data.begin());
-    task_pos_pub_->publish(task_pos_msg_);
+    for (const auto & pt : pub_topics) {
+      auto it = topic_publishers_.find(pt.topic_name);
+      if (it == topic_publishers_.end()) { continue; }
+
+      auto & pe = it->second;
+      switch (pt.role) {
+        case urtc::PublishRole::kPositionCommand:
+          if (output.command_type == urtc::CommandType::kPosition) {
+            std::copy(output.robot_commands.begin(), output.robot_commands.end(),
+                      pe.msg.data.begin());
+            pe.publisher->publish(pe.msg);
+          }
+          break;
+        case urtc::PublishRole::kTorqueCommand:
+          if (output.command_type == urtc::CommandType::kTorque) {
+            std::copy(output.robot_commands.begin(), output.robot_commands.end(),
+                      pe.msg.data.begin());
+            pe.publisher->publish(pe.msg);
+          }
+          break;
+        case urtc::PublishRole::kHandCommand: {
+          const auto n = std::min(pe.msg.data.size(),
+                                  static_cast<std::size_t>(urtc::kNumHandMotors));
+          for (std::size_t i = 0; i < n; ++i) {
+            pe.msg.data[i] = static_cast<double>(output.hand_commands[i]);
+          }
+          pe.publisher->publish(pe.msg);
+          break;
+        }
+        case urtc::PublishRole::kTaskPosition:
+          std::copy(output.actual_task_positions.begin(),
+                    output.actual_task_positions.end(),
+                    pe.msg.data.begin());
+          pe.publisher->publish(pe.msg);
+          break;
+      }
+    }
 
     cmd_pub_mutex_.unlock();
   }
