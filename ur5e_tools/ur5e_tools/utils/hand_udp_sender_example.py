@@ -275,6 +275,36 @@ class HandUDPSender:
             "sensors": sensors,
         }
 
+    def read_cycle(self) -> dict:
+        """
+        Read request만 수행 (WritePosition 없음):
+          1. ReadPosition          → send 43B, recv 43B
+          2. ReadVelocity          → send 43B, recv 43B
+          3. ReadSensor × num_sensors → send 3B, recv 67B
+
+        Returns:
+            dict with keys:
+              - positions: [10 floats] or None
+              - velocities: [10 floats] or None
+              - sensors: [num_sensors × 11 floats]
+        """
+        pos = self.read_position()
+        vel = self.read_velocity()
+
+        sensors = []
+        for i in range(self.num_sensors):
+            s = self.read_sensor(i)
+            if s is not None:
+                sensors.extend(s)
+            else:
+                sensors.extend([0.0] * SENSOR_VALUES_PER_FINGERTIP)
+
+        return {
+            "positions": pos,
+            "velocities": vel,
+            "sensors": sensors,
+        }
+
     def _request_motor(self, cmd: int) -> list[float] | None:
         """모터 요청 전송(43B) 후 응답 수신(43B)"""
         pkt = encode_motor_packet(cmd)
@@ -400,6 +430,40 @@ def example_static_pose():
         sender.close()
 
 
+def example_read_only(num_sensors: int = NUM_FINGERTIPS):
+    """Read request만 수행 (WritePosition 없이 현재 상태 읽기)"""
+    sender = HandUDPSender(target_ip="127.0.0.1", target_port=50002,
+                           num_sensors=num_sensors)
+
+    print(f"\nRead only 사이클 실행 (센서 {num_sensors}개)...")
+    print(f"  ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B→67B)")
+    print("Ctrl+C로 중지\n")
+
+    try:
+        cycle = 0
+        dt = 0.002  # 500 Hz
+        while True:
+            result = sender.read_cycle()
+            cycle += 1
+
+            if cycle % 500 == 0:
+                pos_str = "None"
+                if result["positions"]:
+                    pos_str = f'[{", ".join(f"{p:.3f}" for p in result["positions"][:4])} ...]'
+                vel_str = "None"
+                if result["velocities"]:
+                    vel_str = f'[{", ".join(f"{v:.3f}" for v in result["velocities"][:4])} ...]'
+                n_sensors = len(result['sensors'])
+                print(f"[cycle {cycle}] pos={pos_str}  vel={vel_str}  sensors={n_sensors} values ({num_sensors}x{SENSOR_VALUES_PER_FINGERTIP})")
+
+            time.sleep(dt)
+
+    except KeyboardInterrupt:
+        print(f"\n중지됨 (총 {cycle} 사이클)")
+    finally:
+        sender.close()
+
+
 def main(args=None):
     print("=" * 65)
     print("  Hand UDP Sender Example")
@@ -422,6 +486,7 @@ def main(args=None):
     print("  1) WritePosition 사인파 (전송만)")
     print("  2) 전체 poll 사이클 (WritePos + ReadPos + ReadVel + ReadSensor)")
     print("  3) 고정 포즈 전송")
+    print("  4) Read only (ReadPos + ReadVel + ReadSensor, 쓰기 없음)")
     print()
 
     choice = input("선택 (기본=1): ").strip() or "1"
@@ -432,6 +497,8 @@ def main(args=None):
         example_poll_cycle(num_sensors=num_sensors)
     elif choice == "3":
         example_static_pose()
+    elif choice == "4":
+        example_read_only(num_sensors=num_sensors)
     else:
         print("잘못된 선택")
 
