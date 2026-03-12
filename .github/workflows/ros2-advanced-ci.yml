@@ -46,12 +46,12 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Setup ROS2 Humble
       uses: ros-tooling/setup-ros@v0.7
       with:
         required-ros-distributions: humble
-    
+
     - name: Install Dependencies
       run: |
         sudo apt update
@@ -62,37 +62,73 @@ jobs:
           ros-humble-ur-description \
           ros-humble-realtime-tools \
           lcov
-    
-    - name: Build Packages
+
+    - name: Build Packages (with coverage flags)
       run: |
         source /opt/ros/humble/setup.bash
         colcon build \
           --packages-select ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_tools \
           --cmake-args \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_CXX_FLAGS="--coverage -fprofile-arcs -ftest-coverage"
-    
-    - name: Generate Coverage Report
-      continue-on-error: true
+            -DBUILD_TESTING=ON \
+            -DCMAKE_CXX_FLAGS="--coverage -fprofile-arcs -ftest-coverage" \
+            -DCMAKE_EXE_LINKER_FLAGS="--coverage"
+
+    - name: Run Tests
       run: |
-        if [ -d "build/ur5e_rt_controller" ]; then
-          cd build/ur5e_rt_controller
-          lcov --capture --directory . --output-file coverage.info || true
-          lcov --remove coverage.info '/usr/*' '/opt/*' '*/test/*' --output-file coverage_filtered.info || true
-          lcov --list coverage_filtered.info || true
-        else
-          echo "Build directory not found, skipping coverage"
-        fi
-    
-    - name: Upload Coverage to CodeCov
-      continue-on-error: true
-      uses: codecov/codecov-action@v4
+        source /opt/ros/humble/setup.bash
+        source install/setup.bash
+        colcon test \
+          --packages-select ur5e_rt_controller \
+          --event-handlers console_cohesion+ \
+          --return-code-on-test-failure
+
+    - name: Show Test Results
+      if: always()
+      run: |
+        source /opt/ros/humble/setup.bash
+        colcon test-result --all --verbose || true
+
+    - name: Generate Coverage Report
+      if: always()
+      run: |
+        # baseline 초기화 (모든 소스 파일 포함, 실행되지 않은 파일도 0%로 표시)
+        lcov --capture --initial \
+          --directory build/ur5e_rt_controller \
+          --output-file coverage_base.info \
+          --rc lcov_branch_coverage=1 || true
+
+        # 테스트 실행 후 실제 coverage 캡처
+        lcov --capture \
+          --directory build/ur5e_rt_controller \
+          --output-file coverage_test.info \
+          --rc lcov_branch_coverage=1 || true
+
+        # baseline과 테스트 coverage 병합
+        lcov --add-tracefile coverage_base.info \
+          --add-tracefile coverage_test.info \
+          --output-file coverage_merged.info \
+          --rc lcov_branch_coverage=1 || true
+
+        # 시스템 헤더, 테스트 코드, 외부 라이브러리 제외
+        lcov --remove coverage_merged.info \
+          '/usr/*' '/opt/*' '*/test/*' '*/build/*' '*/install/*' \
+          --output-file coverage_filtered.info \
+          --rc lcov_branch_coverage=1 || true
+
+        # coverage 요약 출력
+        lcov --list coverage_filtered.info --rc lcov_branch_coverage=1 || true
+
+    - name: Upload Coverage to Codecov
+      if: always()
+      uses: codecov/codecov-action@v5
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-        files: ./build/ur5e_rt_controller/coverage_filtered.info
+        files: ./coverage_filtered.info
         flags: unittests
         name: ur5e-rt-controller
-    
+        fail_ci_if_error: false
+
     - name: Upload Artifacts
       if: failure()
       uses: actions/upload-artifact@v4
