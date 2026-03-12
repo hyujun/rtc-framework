@@ -5,3 +5,18 @@ clik_controller:
   trajectory_speed: 0.1
   control_6dof: false
   command_type: "position"
+
+  # ── Topic Configuration ────────────────────────────────────────────────────
+  topics:
+    subscribe:
+      - topic: "/joint_states"
+        role: "joint_state"
+      - topic: "/hand/joint_states"
+        role: "hand_state"
+      - topic: "/target_joint_positions"
+        role: "target"
+    publish:
+      - topic: "/forward_position_controller/commands"
+        role: "position_command"
+      - topic: "/rt_controller/current_task_position"
+        role: "task_position"

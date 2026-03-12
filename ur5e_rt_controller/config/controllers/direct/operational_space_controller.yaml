@@ -7,3 +7,18 @@ operational_space_controller:
   trajectory_speed: 0.1
   trajectory_angular_speed: 0.5
   command_type: "torque"
+
+  # ── Topic Configuration ────────────────────────────────────────────────────
+  topics:
+    subscribe:
+      - topic: "/joint_states"
+        role: "joint_state"
+      - topic: "/hand/joint_states"
+        role: "hand_state"
+      - topic: "/target_joint_positions"
+        role: "target"
+    publish:
+      - topic: "/forward_torque_controller/commands"
+        role: "torque_command"
+      - topic: "/rt_controller/current_task_position"
+        role: "task_position"
