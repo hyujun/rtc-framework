@@ -1,6 +1,6 @@
 # ur5e_rt_controller
 
-> **Note:** This package is part of the UR5e RT Controller workspace (v5.6.1). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
+> **Note:** This package is part of the UR5e RT Controller workspace (v5.7.0). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
 UR5e 로봇 팔을 위한 **500Hz 실시간 위치 제어기** ROS2 패키지입니다. SCHED_FIFO 멀티스레드 아키텍처, 전략 패턴 기반 컨트롤러 교체, 런타임 컨트롤러 전환, 잠금-없는 로깅 인프라를 제공합니다.
 
 ## 개요
@@ -93,7 +93,7 @@ command[i] = Kp * e[i] + Kd * ė[i]
 
 ### `PController`
 
-단순 비례 제어기 (E-STOP 없음, 개발/테스트용).
+단순 비례 제어기 (E-STOP 없음, 개발/테스트용). v5.7.0에서 증분 위치 스텝 방식(`q + kp*error*dt`)으로 수정되어 정상상태 오차가 제거되었습니다.
 
 ### `PinocchioController`
 

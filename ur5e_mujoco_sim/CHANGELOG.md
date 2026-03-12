@@ -5,6 +5,54 @@
 
 ---
 
+## [5.7.0] - 2026-03-11
+
+### 추가 (Added) — MuJoCo Position Servo 게인 시스템
+
+- `physics_timestep` 파라미터 — XML `<option timestep>`과 비교 검증 (불일치 시 ERROR + XML 우선)
+- `use_yaml_servo_gains` / `servo_kp` / `servo_kd` — YAML 기반 position servo 게인 적용
+  - `gainprm = servo_kp / physics_timestep`, `force = servo_kp * dq_cmd - servo_kd * dq_actual`
+- `PreparePhysicsStep()`: torque / YAML servo / XML servo 3-way 분기
+- Gravity 자동 잠금: position servo 진입 시 OFF + 잠금, torque 모드 전환 시 해제 + ON
+- `mujoco_sim.launch.py`에 `use_yaml_servo_gains` launch argument 추가
+
+### 변경 (Changed)
+
+- `mujoco_simulator.yaml` rt_controller 섹션 정리: 중복 파라미터(`control_rate`, `kp`, `kd`, `enable_logging`) 제거, 시뮬 전용 차이값만 유지
+
+---
+
+## [5.6.2] - 2026-03-10
+
+### 변경 (Changed) — 시뮬레이션 파라미터 우선순위 개선
+
+- C++ `Config`에서 하드코딩된 기본값(Euler/Newton) 제거
+- MuJoCo XML에 네이티브로 지정된 물리 solver 값이 우선 적용
+- XML에 옵션이 없으면 `mj_loadXML` 내부 기본값이 안전하게 적용
+
+---
+
+## [5.6.1] - 2026-03-10
+
+### 변경 (Changed)
+
+- 워크스페이스 전체 버전 (v5.6.1) 통일
+
+---
+
+## [5.6.0] - 2026-03-10
+
+### 추가 (Added) — MuJoCo 뷰어 전면 확장
+
+- `src/viewer/` 4-파일 구조로 재편: `viewer_state.hpp`, `viewer_loop.cpp`, `viewer_callbacks.cpp`, `viewer_overlays.cpp`
+- 2페이지 F1 도움말, 카메라 3모드 (Free/Tracking/Fixed), 마우스 더블클릭 물체 선택
+- Ctrl+드래그 힘/토크 인가, 지오메트리 그룹 0-5, 시각화 플래그 12종, 렌더링 플래그 4종
+- F9 센서 오버레이, F10 모델 통계 오버레이, P 스크린샷
+- `StepOnce()` / `GetSimMode()` API 추가
+- 전역 폰트 `mjFONTSCALE_100`으로 축소
+
+---
+
 ## [5.3.0] - 2026-03-08
 
 ### 추가 (Added) — MuJoCo ROS2 Resource Provider

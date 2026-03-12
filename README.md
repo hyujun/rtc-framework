@@ -5,7 +5,7 @@
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 ![ROS2 Jazzy](https://img.shields.io/badge/ROS2-Jazzy-green)
 
-**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.6.1)**
+**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.7.0)**
 
 E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종**, **MuJoCo 3.x 물리 시뮬레이터**, UDP 핸드 인터페이스, CSV 데이터 로깅, Qt GUI 모션 에디터를 포함한 완전한 실시간 제어 솔루션입니다.
 
@@ -28,6 +28,10 @@ E-STOP 안전 시스템, PD 제어기, **Pinocchio 기반 모델 제어기 3종*
 > **v5.6.0 (Google DeepMind MuJoCo 뷰어 기능 완전 이식)**: MuJoCo 뷰어를 `src/viewer/` 4-파일 구조로 재편. 2페이지 F1 도움말, 카메라 3모드 (Free/Tracking/Fixed), 마우스 더블클릭 물체 선택, Ctrl+드래그 힘/토크 인가, 지오메트리 그룹 0-5 가시성, 시각화 플래그 12종, 렌더링 플래그 4종 (와이어프레임/그림자/스카이박스/반사), F9 센서 오버레이, F10 모델 통계 오버레이, P 스크린샷, `StepOnce()` API. 전역 폰트 mjFONTSCALE_100으로 축소.
 >
 > **v5.6.1 (궤적 생성 개선 + GUI 업데이트)**: `PinocchioController`에 `JointSpaceTrajectory<6>` 추가 (직접 점프 → 5차 관절공간 궤적, `trajectory_speed` 파라미터). `OperationalSpaceController`에 `TaskSpaceTrajectory` 추가 (SE(3) 5차 스플라인, `trajectory_speed` + `trajectory_angular_speed`). `ClikController`에서 미사용 `trajectory_angular_speed` 제거. `motion_editor_gui.py` 토픽 수정 + 재생 간격 스핀박스 추가. `controller_gui.py` 게인 패널 업데이트 (Pinocchio 15개, OSC 16개).
+>
+> **v5.6.2 (MuJoCo 시뮬레이션 파라미터 우선순위 개선)**: C++ `Config`에서 하드코딩된 기본값(Euler/Newton) 제거 — MuJoCo XML에 네이티브로 지정된 물리 solver 값이 우선 적용됩니다. XML에 옵션이 없으면 `mj_loadXML` 내부 기본값이 안전하게 적용됩니다.
+>
+> **v5.7.0 (MuJoCo Position Servo 게인 시스템 + PController 수정)**: `physics_timestep` 파라미터 (XML timestep 검증), `use_yaml_servo_gains` 플래그로 YAML 기반 servo 게인 적용 (`gainprm = servo_kp / physics_timestep`), `servo_kp`/`servo_kd` 관절별 게인 설정. Position servo 모드에서 gravity 자동 잠금; torque 모드 전환 시 자동 해제. `PController` 수정: 증분 위치 스텝 `q + kp*error*dt` 방식으로 변경하여 정상상태 오차 제거. 신규: `compare_mjcf_urdf` MJCF/URDF 물리 파라미터 비교 검증 도구 (`ur5e_tools`).
 
 ---
 
@@ -1374,6 +1378,9 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 
 | 버전 | 주요 변경사항 |
 |------|---------------|
+| **v5.7.0** | MuJoCo position servo 게인 시스템: `physics_timestep` (XML timestep 검증), `use_yaml_servo_gains` 플래그, `servo_kp`/`servo_kd` 관절별 YAML 게인. Position servo 모드에서 gravity 자동 잠금. `PController` 증분 위치 스텝 수정 (정상상태 오차 제거). `compare_mjcf_urdf` MJCF/URDF 비교 검증 도구 신규. `mujoco_simulator.yaml` rt_controller 섹션 정리 |
+| **v5.6.2** | MuJoCo 시뮬레이션 파라미터 우선순위 개선: C++ Config에서 하드코딩 기본값(Euler/Newton) 제거 → XML 네이티브 물리 solver 값 우선 적용 |
+| **v5.6.1** | 궤적 생성 개선: `PinocchioController` + `JointSpaceTrajectory<6>`, `OperationalSpaceController` + `TaskSpaceTrajectory` SE3 quintic. `ClikController` dead-code 제거. GUI 업데이트: `controller_gui.py` 게인 패널, `motion_editor_gui.py` 토픽 수정 + 재생 간격 스핀박스 |
 | **v5.6.0** | Google DeepMind MuJoCo 뷰어 기능 완전 이식: `src/viewer/` 4-파일 구조, 2페이지 F1 도움말, 카메라 3모드, 마우스 더블클릭 물체 선택, Ctrl+드래그 힘/토크, 지오메트리 그룹 0-5, 시각화/렌더링 플래그, F9 센서·F10 모델통계 오버레이, P 스크린샷, `StepOnce()` API |
 | **v5.5.0** | `build.sh` 및 `install.sh` 파라미터 파싱 및 고급 제어 기능 구현 (`-c`, `-d`, `-r`, `-j`, `-p`, `--no-bashrc`, `--skip-*`), 초저지연 버퍼 `log_buffer.hpp` 최적화, 클래스명 변경(`CustomController`→`RtControllerNode`) 및 노드 파일 3분할 도입 |
 | **v5.4.0** | Controller Registry 패턴 (`MakeControllerEntries()`), `RTControllerInterface`에 `LoadConfig()` / `UpdateGainsFromMsg()` 훅 추가, 컨트롤러별 YAML 로딩·게인 업데이트 자기 책임화, `switch`/`dynamic_cast` 제거, `docs/ADDING_CONTROLLER.md` 신규 |
@@ -1391,5 +1398,5 @@ MIT License - [LICENSE](LICENSE) 파일 참조
 | v4.0.0 | E-STOP 시스템, 핸드/로봇 타임아웃 감시, 표준 ROS2 구조 |
 | v1.0.0 | 초기 릴리스, P/PD 제어기, 기본 ROS2 노드 |
 
-**최종 업데이트**: 2026-03-10
-**현재 버전**: v5.6.0
+**최종 업데이트**: 2026-03-12
+**현재 버전**: v5.7.0
