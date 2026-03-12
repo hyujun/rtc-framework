@@ -1,8 +1,8 @@
 #pragma once
 
 // ── Project headers ───────────────────────────────────────────────────────────
-#include "ur5e_rt_base/data_logger.hpp"
-#include "ur5e_rt_base/log_buffer.hpp"
+#include "ur5e_rt_base/logging/data_logger.hpp"
+#include "ur5e_rt_base/logging/log_buffer.hpp"
 #include "ur5e_rt_controller/controller_timing_profiler.hpp"
 #include "ur5e_rt_controller/rt_controller_interface.hpp"
 

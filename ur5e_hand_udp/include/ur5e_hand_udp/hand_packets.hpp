@@ -16,7 +16,7 @@
 #include <span>
 #include <type_traits>
 
-#include "ur5e_rt_base/types.hpp"
+#include "ur5e_rt_base/types/types.hpp"
 
 namespace ur5e_rt_controller {
 namespace hand_packets {

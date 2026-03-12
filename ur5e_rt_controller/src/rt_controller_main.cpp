@@ -1,8 +1,8 @@
 // ── Includes: project header first, then system, then C++ stdlib ─────────────
 #include "ur5e_rt_controller/rt_controller_node.hpp"
 
-#include "ur5e_rt_base/thread_config.hpp"
-#include "ur5e_rt_base/thread_utils.hpp"
+#include "ur5e_rt_base/threading/thread_config.hpp"
+#include "ur5e_rt_base/threading/thread_utils.hpp"
 
 #include <sys/mman.h>  // mlockall
 

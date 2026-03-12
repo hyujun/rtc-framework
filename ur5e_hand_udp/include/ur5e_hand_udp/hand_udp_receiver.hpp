@@ -10,9 +10,9 @@
 #include <thread>
 #include <utility>
 
-#include "ur5e_rt_base/types.hpp"
-#include "ur5e_rt_base/thread_config.hpp"
-#include "ur5e_rt_base/thread_utils.hpp"
+#include "ur5e_rt_base/types/types.hpp"
+#include "ur5e_rt_base/threading/thread_config.hpp"
+#include "ur5e_rt_base/threading/thread_utils.hpp"
 
 namespace ur5e_rt_controller {
 
