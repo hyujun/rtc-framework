@@ -3,24 +3,33 @@
 핸드 UDP 송신 예제 — ur5e_hand_udp 패키지 프로토콜 기반
 
 프로토콜 사양 (hand_packets.hpp 참조):
-  - 패킷 크기: 43 bytes (little-endian)
-  - 헤더: [ID: 0x01] [CMD: 1B] [MODE: 0x00]
-  - 데이터: 10 x uint32_t (float를 memcpy로 변환)
+
+  Request 패킷:
+    - 헤더: [ID: 0x01] [CMD: 1B] [MODE: 0x00]
+    - 모터 커맨드: 헤더(3B) + 10 × uint32(float) = 43 bytes
+    - 센서 커맨드: 헤더(3B)만 전송 (데이터 없음)
+
+  Response 패킷:
+    - 헤더: [ID: 1B (echo)] [CMD: 1B (echo)] [MODE: 1B (state mode)]
+    - MODE: 0 = motor, 1 = fingertip sensor
+    - 모터 응답: 헤더(3B) + 10 × uint32(float) = 43 bytes
+    - 센서 응답: 헤더(3B) + 16 × uint32 = 67 bytes
+      → barometer[8] + reserved[5] (skip) + tof[3] = 11 유효 값
 
 커맨드 코드:
   - WritePosition  0x01 : 모터 10개 목표 위치 전송
-  - ReadPosition   0x11 : 모터 위치 요청 → 응답 수신
-  - ReadVelocity   0x12 : 모터 속도 요청 → 응답 수신
-  - ReadSensor0~3  0x14..0x17 : 핑거팁 센서 데이터 요청 → 응답 수신
+  - ReadPosition   0x11 : 모터 위치 요청 → 응답 수신 (43B)
+  - ReadVelocity   0x12 : 모터 속도 요청 → 응답 수신 (43B)
+  - ReadSensor0~3  0x14..0x17 : 핑거팁 센서 요청 (3B) → 응답 수신 (67B)
 
 통신 플로우 (1 사이클):
-  1. WritePosition(cmd=0x01) → 10 float
-  2. ReadPosition(cmd=0x11)  → send request, recv 10 float
-  3. ReadVelocity(cmd=0x12)  → send request, recv 10 float
-  4. ReadSensor0~3(cmd=0x14..0x17) → send request, recv 10 float x 4
+  1. WritePosition(cmd=0x01) → send 43B
+  2. ReadPosition(cmd=0x11)  → send 43B, recv 43B
+  3. ReadVelocity(cmd=0x12)  → send 43B, recv 43B
+  4. ReadSensor0~3(cmd=0x14..0x17) → send 3B, recv 67B × 4
 
 ROS2 토픽 (hand_udp_node):
-  - pub: /hand/joint_states  → positions[10] + velocities[10] + sensors[40] = 60
+  - pub: /hand/joint_states  → positions[10] + velocities[10] + sensors[44] = 64
   - sub: /hand/command       → motor_commands[10]
 """
 
@@ -29,18 +38,38 @@ import struct
 import time
 import numpy as np
 
-# ── 프로토콜 상수 (hand_packets.hpp 기반) ────────────────────────────────────
+# ── 프로토콜 상수 (hand_packets.hpp / types.hpp 기반) ────────────────────────
 DEVICE_ID = 0x01
 DEFAULT_MODE = 0x00
 
 HEADER_SIZE = 3       # ID + CMD + MODE
-DATA_COUNT = 10       # float 10개
-PACKET_SIZE = HEADER_SIZE + DATA_COUNT * 4  # 43 bytes
+
+# 모터 패킷 상수
+MOTOR_DATA_COUNT = 10
+MOTOR_PACKET_SIZE = HEADER_SIZE + MOTOR_DATA_COUNT * 4  # 43 bytes
+
+# 센서 패킷 상수
+SENSOR_REQUEST_SIZE = HEADER_SIZE  # 3 bytes (헤더만)
+SENSOR_RESPONSE_DATA_COUNT = 16    # barometer(8) + reserved(5) + tof(3)
+SENSOR_RESPONSE_SIZE = HEADER_SIZE + SENSOR_RESPONSE_DATA_COUNT * 4  # 67 bytes
+
+# 센서 데이터 레이아웃
+BAROMETER_COUNT = 8
+RESERVED_COUNT = 5    # 패킷에만 존재, 저장하지 않음
+TOF_COUNT = 3
+SENSOR_VALUES_PER_FINGERTIP = BAROMETER_COUNT + TOF_COUNT  # 11 (유효 값)
 
 NUM_HAND_MOTORS = 10
 NUM_FINGERTIPS = 4
-SENSOR_VALUES_PER_FINGERTIP = 10
-NUM_HAND_SENSORS = NUM_FINGERTIPS * SENSOR_VALUES_PER_FINGERTIP  # 40
+NUM_HAND_SENSORS = NUM_FINGERTIPS * SENSOR_VALUES_PER_FINGERTIP  # 44
+
+# State mode (response mode 필드)
+STATE_MODE_MOTOR = 0
+STATE_MODE_FINGERTIP_SENSOR = 1
+
+# Sensor sub-mode
+SENSOR_MODE_RAW = 0
+SENSOR_MODE_NN = 1
 
 # 커맨드 코드
 CMD_WRITE_POSITION = 0x01
@@ -55,6 +84,11 @@ CMD_READ_SENSORS = [CMD_READ_SENSOR0, CMD_READ_SENSOR1,
                     CMD_READ_SENSOR2, CMD_READ_SENSOR3]
 
 
+def _is_sensor_command(cmd: int) -> bool:
+    """센서 커맨드인지 확인"""
+    return CMD_READ_SENSOR0 <= cmd <= CMD_READ_SENSOR3
+
+
 # ── 패킷 인코딩/디코딩 (hand_udp_codec.hpp 기반) ────────────────────────────
 
 def float_to_uint32(f: float) -> int:
@@ -67,34 +101,79 @@ def uint32_to_float(raw: int) -> float:
     return struct.unpack('<f', struct.pack('<I', raw))[0]
 
 
-def encode_packet(cmd: int, floats: list[float] | None = None) -> bytes:
+def encode_motor_packet(cmd: int, floats: list[float] | None = None) -> bytes:
     """
-    43바이트 패킷 인코딩
+    모터 패킷 인코딩 (43 bytes)
 
     Args:
-        cmd: 커맨드 코드 (예: CMD_WRITE_POSITION)
-        floats: 10개 float 데이터 (None이면 0으로 채움)
+        cmd: 커맨드 코드 (예: CMD_WRITE_POSITION, CMD_READ_POSITION)
+        floats: 10개 float 데이터 (None이면 0으로 채움, read request용)
     """
     header = struct.pack('<BBB', DEVICE_ID, cmd, DEFAULT_MODE)
     if floats is not None:
-        assert len(floats) == DATA_COUNT, f"데이터는 {DATA_COUNT}개여야 합니다"
+        assert len(floats) == MOTOR_DATA_COUNT, f"데이터는 {MOTOR_DATA_COUNT}개여야 합니다"
         data = struct.pack('<10I', *[float_to_uint32(f) for f in floats])
     else:
-        data = b'\x00' * (DATA_COUNT * 4)
+        data = b'\x00' * (MOTOR_DATA_COUNT * 4)
     return header + data
 
 
-def decode_packet(buf: bytes) -> tuple[int, list[float]]:
+def encode_sensor_request(cmd: int) -> bytes:
     """
-    43바이트 패킷 디코딩
+    센서 read request 인코딩 (3 bytes, 헤더만)
+
+    Args:
+        cmd: 센서 커맨드 코드 (CMD_READ_SENSOR0 ~ CMD_READ_SENSOR3)
+    """
+    assert _is_sensor_command(cmd), f"센서 커맨드가 아닙니다: 0x{cmd:02x}"
+    return struct.pack('<BBB', DEVICE_ID, cmd, DEFAULT_MODE)
+
+
+def decode_motor_response(buf: bytes) -> tuple[int, int, list[float]]:
+    """
+    모터 response 디코딩 (43 bytes)
 
     Returns:
-        (cmd, [10 floats])
+        (cmd, mode, [10 floats])
     """
-    assert len(buf) >= PACKET_SIZE, f"패킷 크기 부족: {len(buf)} < {PACKET_SIZE}"
-    _id, cmd, _mode = struct.unpack('<BBB', buf[:HEADER_SIZE])
-    raw_data = struct.unpack('<10I', buf[HEADER_SIZE:PACKET_SIZE])
+    assert len(buf) >= MOTOR_PACKET_SIZE, f"패킷 크기 부족: {len(buf)} < {MOTOR_PACKET_SIZE}"
+    _id, cmd, mode = struct.unpack('<BBB', buf[:HEADER_SIZE])
+    raw_data = struct.unpack('<10I', buf[HEADER_SIZE:MOTOR_PACKET_SIZE])
     floats = [uint32_to_float(r) for r in raw_data]
+    return cmd, mode, floats
+
+
+def decode_sensor_response(buf: bytes) -> tuple[int, int, list[float]]:
+    """
+    센서 response 디코딩 (67 bytes)
+    barometer[8] + reserved[5] (skip) + tof[3] = 11 유효 값 추출
+
+    Returns:
+        (cmd, mode, [11 floats: barometer(8) + tof(3)])
+    """
+    assert len(buf) >= SENSOR_RESPONSE_SIZE, f"패킷 크기 부족: {len(buf)} < {SENSOR_RESPONSE_SIZE}"
+    _id, cmd, mode = struct.unpack('<BBB', buf[:HEADER_SIZE])
+    raw_data = struct.unpack('<16I', buf[HEADER_SIZE:SENSOR_RESPONSE_SIZE])
+
+    # barometer[0..7] → out[0..7]
+    values = [uint32_to_float(raw_data[i]) for i in range(BAROMETER_COUNT)]
+    # skip reserved[8..12]
+    # tof[13..15] → out[8..10]
+    values.extend(uint32_to_float(raw_data[BAROMETER_COUNT + RESERVED_COUNT + i])
+                  for i in range(TOF_COUNT))
+
+    return cmd, mode, values
+
+
+# Legacy aliases
+def encode_packet(cmd: int, floats: list[float] | None = None) -> bytes:
+    """Legacy: 모터 패킷 인코딩 (센서 커맨드는 encode_sensor_request 사용)"""
+    return encode_motor_packet(cmd, floats)
+
+
+def decode_packet(buf: bytes) -> tuple[int, list[float]]:
+    """Legacy: 모터 response 디코딩 (mode 무시)"""
+    cmd, _mode, floats = decode_motor_response(buf)
     return cmd, floats
 
 
@@ -105,7 +184,8 @@ class HandUDPSender:
     핸드 UDP request-response 통신 클래스
 
     hand_controller.hpp의 HandController와 동일한 프로토콜 구현.
-    실제 핸드 디바이스 또는 hand_udp_node 테스트용.
+    모터 커맨드: 43B 송신 → 43B 수신
+    센서 커맨드: 3B 송신 → 67B 수신
     """
 
     def __init__(self, target_ip: str = "192.168.1.100", target_port: int = 50002,
@@ -114,40 +194,44 @@ class HandUDPSender:
         self.sock.settimeout(recv_timeout)  # 10ms recv timeout (hand_controller.hpp 동일)
         self.target = (target_ip, target_port)
 
-        print(f"Hand UDP Sender (43-byte protocol)")
+        print(f"Hand UDP Sender (motor: {MOTOR_PACKET_SIZE}B, sensor req: {SENSOR_REQUEST_SIZE}B → resp: {SENSOR_RESPONSE_SIZE}B)")
         print(f"  Target: {target_ip}:{target_port}")
-        print(f"  Packet size: {PACKET_SIZE} bytes")
-        print(f"  Motors: {NUM_HAND_MOTORS}, Fingertips: {NUM_FINGERTIPS}")
+        print(f"  Motors: {NUM_HAND_MOTORS}, Fingertips: {NUM_FINGERTIPS}, Sensor values/tip: {SENSOR_VALUES_PER_FINGERTIP}")
 
     def write_position(self, positions: list[float]) -> None:
-        """모터 목표 위치 전송 (cmd=0x01)"""
+        """모터 목표 위치 전송 (cmd=0x01, 43B)"""
         assert len(positions) == NUM_HAND_MOTORS
-        pkt = encode_packet(CMD_WRITE_POSITION, positions)
+        pkt = encode_motor_packet(CMD_WRITE_POSITION, positions)
         self.sock.sendto(pkt, self.target)
 
     def read_position(self) -> list[float] | None:
-        """모터 현재 위치 요청 및 수신 (cmd=0x11)"""
-        return self._request(CMD_READ_POSITION)
+        """모터 현재 위치 요청 및 수신 (cmd=0x11, 43B ↔ 43B)"""
+        return self._request_motor(CMD_READ_POSITION)
 
     def read_velocity(self) -> list[float] | None:
-        """모터 현재 속도 요청 및 수신 (cmd=0x12)"""
-        return self._request(CMD_READ_VELOCITY)
+        """모터 현재 속도 요청 및 수신 (cmd=0x12, 43B ↔ 43B)"""
+        return self._request_motor(CMD_READ_VELOCITY)
 
     def read_sensor(self, fingertip_idx: int) -> list[float] | None:
-        """핑거팁 센서 데이터 요청 및 수신 (cmd=0x14..0x17)"""
+        """
+        핑거팁 센서 데이터 요청 및 수신 (cmd=0x14..0x17, 3B → 67B)
+
+        Returns:
+            11 floats: barometer[8] + tof[3], or None on timeout
+        """
         assert 0 <= fingertip_idx < NUM_FINGERTIPS
-        return self._request(CMD_READ_SENSORS[fingertip_idx])
+        return self._request_sensor(CMD_READ_SENSORS[fingertip_idx])
 
     def poll_cycle(self, positions: list[float]) -> dict:
         """
         HandController의 1 사이클과 동일한 플로우 실행:
-          1. WritePosition
-          2. ReadPosition → recv
-          3. ReadVelocity → recv
-          4. ReadSensor0~3 → recv x 4
+          1. WritePosition         → send 43B
+          2. ReadPosition          → send 43B, recv 43B
+          3. ReadVelocity          → send 43B, recv 43B
+          4. ReadSensor0~3         → send 3B, recv 67B × 4
 
         Returns:
-            dict with keys: positions, velocities, sensors (or None if timeout)
+            dict with keys: positions[10], velocities[10], sensors[44] (or None if timeout)
         """
         # 1. 목표 위치 전송
         self.write_position(positions)
@@ -158,7 +242,7 @@ class HandUDPSender:
         # 3. 현재 속도 수신
         vel = self.read_velocity()
 
-        # 4. 센서 데이터 수신 (4개 핑거팁)
+        # 4. 센서 데이터 수신 (4개 핑거팁, 각 11개 유효 값)
         sensors = []
         for i in range(NUM_FINGERTIPS):
             s = self.read_sensor(i)
@@ -173,14 +257,25 @@ class HandUDPSender:
             "sensors": sensors,
         }
 
-    def _request(self, cmd: int) -> list[float] | None:
-        """요청 전송 후 응답 수신"""
-        pkt = encode_packet(cmd)
+    def _request_motor(self, cmd: int) -> list[float] | None:
+        """모터 요청 전송(43B) 후 응답 수신(43B)"""
+        pkt = encode_motor_packet(cmd)
         self.sock.sendto(pkt, self.target)
         try:
             data, _ = self.sock.recvfrom(256)
-            _, floats = decode_packet(data)
+            _, _mode, floats = decode_motor_response(data)
             return floats
+        except socket.timeout:
+            return None
+
+    def _request_sensor(self, cmd: int) -> list[float] | None:
+        """센서 요청 전송(3B) 후 응답 수신(67B)"""
+        pkt = encode_sensor_request(cmd)
+        self.sock.sendto(pkt, self.target)
+        try:
+            data, _ = self.sock.recvfrom(256)
+            _, _mode, values = decode_sensor_response(data)
+            return values
         except socket.timeout:
             return None
 
@@ -227,7 +322,7 @@ def example_poll_cycle():
     sender = HandUDPSender(target_ip="127.0.0.1", target_port=50002)
 
     print("\n전체 poll 사이클 실행...")
-    print("  WritePosition → ReadPosition → ReadVelocity → ReadSensor0~3")
+    print("  WritePosition(43B) → ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor0~3(3B→67B)")
     print("Ctrl+C로 중지\n")
 
     try:
@@ -251,7 +346,8 @@ def example_poll_cycle():
                 vel_str = "None"
                 if result["velocities"]:
                     vel_str = f'[{", ".join(f"{v:.3f}" for v in result["velocities"][:4])} ...]'
-                print(f"[cycle {cycle}] pos={pos_str}  vel={vel_str}  sensors={len(result['sensors'])} values")
+                n_sensors = len(result['sensors'])
+                print(f"[cycle {cycle}] pos={pos_str}  vel={vel_str}  sensors={n_sensors} values ({NUM_FINGERTIPS}x{SENSOR_VALUES_PER_FINGERTIP})")
 
             t += dt
             time.sleep(dt)
@@ -286,11 +382,14 @@ def example_static_pose():
 
 
 def main(args=None):
-    print("=" * 55)
-    print("  Hand UDP Sender Example (43-byte protocol)")
-    print("=" * 55)
-    print(f"\n  패킷: {PACKET_SIZE} bytes = [ID:1B][CMD:1B][MODE:1B][data:10xfloat32]")
-    print(f"  모터: {NUM_HAND_MOTORS}개, 핑거팁: {NUM_FINGERTIPS}개, 센서: {NUM_HAND_SENSORS}개")
+    print("=" * 65)
+    print("  Hand UDP Sender Example")
+    print("=" * 65)
+    print(f"\n  모터 패킷:  {MOTOR_PACKET_SIZE}B = [ID:1B][CMD:1B][MODE:1B][data:10×float32]")
+    print(f"  센서 요청:  {SENSOR_REQUEST_SIZE}B = [ID:1B][CMD:1B][MODE:1B]")
+    print(f"  센서 응답:  {SENSOR_RESPONSE_SIZE}B = [ID:1B][CMD:1B][MODE:1B][data:16×uint32]")
+    print(f"             → barometer[{BAROMETER_COUNT}] + reserved[{RESERVED_COUNT}](skip) + tof[{TOF_COUNT}] = {SENSOR_VALUES_PER_FINGERTIP} 유효 값")
+    print(f"  모터: {NUM_HAND_MOTORS}개, 핑거팁: {NUM_FINGERTIPS}개, 센서 총: {NUM_HAND_SENSORS}개")
     print()
     print("모드 선택:")
     print("  1) WritePosition 사인파 (전송만)")
