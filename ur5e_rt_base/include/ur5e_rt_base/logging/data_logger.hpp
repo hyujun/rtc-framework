@@ -8,8 +8,8 @@
 
 #include <iomanip>
 
-#include "ur5e_rt_base/log_buffer.hpp"
-#include "ur5e_rt_base/types.hpp"
+#include "ur5e_rt_base/logging/log_buffer.hpp"
+#include "ur5e_rt_base/types/types.hpp"
 
 namespace ur5e_rt_controller {
 

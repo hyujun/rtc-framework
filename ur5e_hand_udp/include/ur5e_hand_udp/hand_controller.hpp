@@ -19,8 +19,8 @@
 #include <span>
 #include <string_view>
 
-#include "ur5e_rt_base/thread_config.hpp"
-#include "ur5e_rt_base/udp_transceiver.hpp"
+#include "ur5e_rt_base/threading/thread_config.hpp"
+#include "ur5e_rt_base/udp/udp_transceiver.hpp"
 #include "ur5e_hand_udp/hand_packets.hpp"
 
 namespace ur5e_rt_controller {

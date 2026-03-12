@@ -1,7 +1,7 @@
 #ifndef UR5E_RT_BASE_THREAD_UTILS_HPP_
 #define UR5E_RT_BASE_THREAD_UTILS_HPP_
 
-#include "ur5e_rt_base/thread_config.hpp"
+#include "ur5e_rt_base/threading/thread_config.hpp"
 
 #include <pthread.h>
 #include <sched.h>

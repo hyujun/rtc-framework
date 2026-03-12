@@ -18,7 +18,7 @@
 #include <cstdint>
 #include <span>
 
-#include "ur5e_rt_base/types.hpp"
+#include "ur5e_rt_base/types/types.hpp"
 #include "ur5e_hand_udp/hand_packets.hpp"
 
 namespace ur5e_rt_controller {

@@ -11,7 +11,7 @@
 //   - Exactly ONE consumer thread (the log drain timer, Core 4).
 //   - Push() called only from the producer; Pop() called only from the consumer.
 
-#include "ur5e_rt_base/types.hpp"
+#include "ur5e_rt_base/types/types.hpp"
 
 #include <array>
 #include <atomic>

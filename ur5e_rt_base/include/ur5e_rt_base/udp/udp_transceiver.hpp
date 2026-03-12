@@ -19,10 +19,10 @@
 #include <mutex>
 #include <thread>
 
-#include "ur5e_rt_base/thread_config.hpp"
-#include "ur5e_rt_base/thread_utils.hpp"
-#include "ur5e_rt_base/udp_codec.hpp"
-#include "ur5e_rt_base/udp_socket.hpp"
+#include "ur5e_rt_base/threading/thread_config.hpp"
+#include "ur5e_rt_base/threading/thread_utils.hpp"
+#include "ur5e_rt_base/udp/udp_codec.hpp"
+#include "ur5e_rt_base/udp/udp_socket.hpp"
 
 namespace ur5e_rt_controller {
 

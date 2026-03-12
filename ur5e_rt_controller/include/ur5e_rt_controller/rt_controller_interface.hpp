@@ -3,7 +3,7 @@
 
 // Shared types (constants, data structs) live in ur5e_rt_base.
 // This header re-exports them and adds the abstract Strategy interface.
-#include "ur5e_rt_base/types.hpp"
+#include "ur5e_rt_base/types/types.hpp"
 
 #include <yaml-cpp/yaml.h>
 

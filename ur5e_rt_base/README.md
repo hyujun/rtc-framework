@@ -7,11 +7,18 @@ UR5e RT Controller 스택의 **공유 기반 패키지** — 모든 패키지가
 
 ```
 ur5e_rt_base (header-only)
-    ├── types.hpp                  ← 공유 데이터 구조체 + 상수
-    ├── thread_config.hpp          ← RT 스레드 설정 구조체 + 사전 정의 상수
-    ├── thread_utils.hpp           ← ApplyThreadConfig(), VerifyThreadConfig()
-    ├── log_buffer.hpp             ← SPSC 링 버퍼 (RT → 로그 스레드, 잠금-없음)
-    ├── data_logger.hpp            ← 비-RT CSV 로거
+    ├── types/
+    │   └── types.hpp              ← 공유 데이터 구조체 + 상수
+    ├── threading/
+    │   ├── thread_config.hpp      ← RT 스레드 설정 구조체 + 사전 정의 상수
+    │   └── thread_utils.hpp       ← ApplyThreadConfig(), VerifyThreadConfig()
+    ├── logging/
+    │   ├── log_buffer.hpp         ← SPSC 링 버퍼 (RT → 로그 스레드, 잠금-없음)
+    │   └── data_logger.hpp        ← 비-RT CSV 로거
+    ├── udp/
+    │   ├── udp_socket.hpp         ← UDP 소켓 RAII 래퍼
+    │   ├── udp_codec.hpp          ← 범용 UDP 패킷 코덱 컨셉
+    │   └── udp_transceiver.hpp    ← 범용 UDP 송수신기 템플릿
     └── filters/
         ├── bessel_filter.hpp      ← 4차 Bessel 저역통과 필터 (N채널, noexcept)
         └── kalman_filter.hpp      ← 이산-시간 Kalman 필터 (N채널, 위치+속도 추정)
@@ -32,7 +39,7 @@ ur5e_rt_base   ← (독립 — 아무 ROS2 패키지에도 의존하지 않음)
 
 ## 헤더 파일 설명
 
-### `ur5e_rt_base/types.hpp`
+### `ur5e_rt_base/types/types.hpp`
 
 500Hz 제어 루프 전체에서 공유하는 데이터 구조체와 컴파일-시간 상수를 정의합니다.
 
@@ -90,7 +97,7 @@ struct ControllerOutput {
 
 ---
 
-### `ur5e_rt_base/thread_config.hpp`
+### `ur5e_rt_base/threading/thread_config.hpp`
 
 RT 스레드 설정을 위한 `ThreadConfig` 구조체와 6코어 시스템용 사전 정의 상수를 제공합니다.
 
@@ -137,7 +144,7 @@ struct ThreadConfig {
 
 ---
 
-### `ur5e_rt_base/thread_utils.hpp`
+### `ur5e_rt_base/threading/thread_utils.hpp`
 
 RT 스레드 설정을 적용하고 검증하는 유틸리티 함수와, 런타임 CPU 수에 따라 최적 config 집합을 자동 선택하는 함수를 제공합니다.
 
@@ -173,8 +180,8 @@ SystemThreadConfigs SelectThreadConfigs() noexcept;
 **사용 예시:**
 
 ```cpp
-#include "ur5e_rt_base/thread_utils.hpp"
-#include "ur5e_rt_base/thread_config.hpp"
+#include "ur5e_rt_base/threading/thread_utils.hpp"
+#include "ur5e_rt_base/threading/thread_config.hpp"
 
 // 개별 스레드에 config 직접 적용
 auto t = std::thread([&]() {
@@ -193,7 +200,7 @@ auto cfgs = ur5e_rt_controller::SelectThreadConfigs();
 
 ---
 
-### `ur5e_rt_base/log_buffer.hpp`
+### `ur5e_rt_base/logging/log_buffer.hpp`
 
 500Hz RT 스레드와 로그 스레드 간 **단일-생산자 단일-소비자(SPSC) 링 버퍼**를 구현합니다. 최근 성능 최적화를 적용하여 업계 최고 수준의 초저지연성을 확보했습니다.
 
@@ -230,7 +237,7 @@ struct LogEntry {
 
 ---
 
-### `ur5e_rt_base/data_logger.hpp`
+### `ur5e_rt_base/logging/data_logger.hpp`
 
 비-RT 스레드에서 CSV 파일에 제어 데이터를 기록하는 로거입니다.
 
@@ -537,11 +544,11 @@ target_include_directories(my_target PRIVATE
 
 **C++ 코드:**
 ```cpp
-#include "ur5e_rt_base/types.hpp"
-#include "ur5e_rt_base/thread_config.hpp"
-#include "ur5e_rt_base/thread_utils.hpp"
-#include "ur5e_rt_base/log_buffer.hpp"
-#include "ur5e_rt_base/data_logger.hpp"
+#include "ur5e_rt_base/types/types.hpp"
+#include "ur5e_rt_base/threading/thread_config.hpp"
+#include "ur5e_rt_base/threading/thread_utils.hpp"
+#include "ur5e_rt_base/logging/log_buffer.hpp"
+#include "ur5e_rt_base/logging/data_logger.hpp"
 ```
 
 ---

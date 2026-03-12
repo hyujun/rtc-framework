@@ -95,11 +95,18 @@ ur5e-rt-controller/
 │
 ├── ur5e_rt_base/                          # Shared header-only package
 │   └── include/ur5e_rt_base/
-│       ├── types.hpp                      # RobotState, HandState, ControllerState, ControllerOutput
-│       ├── thread_config.hpp              # ThreadConfig + 4/6/8-core predefined RT constants
-│       ├── thread_utils.hpp               # ApplyThreadConfig(), SelectThreadConfigs()
-│       ├── log_buffer.hpp                 # SPSC ring buffer (lock-free, 512 entries)
-│       ├── data_logger.hpp                # Non-RT CSV logger (dynamic path resolution)
+│       ├── types/
+│       │   └── types.hpp                  # RobotState, HandState, ControllerState, ControllerOutput
+│       ├── threading/
+│       │   ├── thread_config.hpp          # ThreadConfig + 4/6/8-core predefined RT constants
+│       │   └── thread_utils.hpp           # ApplyThreadConfig(), SelectThreadConfigs()
+│       ├── logging/
+│       │   ├── log_buffer.hpp             # SPSC ring buffer (lock-free, 512 entries)
+│       │   └── data_logger.hpp            # Non-RT CSV logger (dynamic path resolution)
+│       ├── udp/
+│       │   ├── udp_socket.hpp             # UDP socket RAII wrapper
+│       │   ├── udp_codec.hpp              # Generic UDP packet codec concept
+│       │   └── udp_transceiver.hpp        # Generic UDP transceiver template
 │       └── filters/
 │           ├── bessel_filter.hpp          # 4th-order Bessel LPF (noexcept, N-channel)
 │           └── kalman_filter.hpp          # Discrete-time Kalman filter (pos+vel, noexcept)
@@ -396,7 +403,7 @@ Non-copyable (move-only) CSV logger. Writes one row per control step:
 
 Default path: `/tmp/ur5e_control_log.csv`. The 500 Hz RT thread pushes entries to `SpscLogBuffer`; the `log_executor` thread (Core 4) drains and writes CSV — never blocking the RT path.
 
-### Thread Configuration (`ur5e_rt_base/include/ur5e_rt_base/thread_config.hpp`)
+### Thread Configuration (`ur5e_rt_base/include/ur5e_rt_base/threading/thread_config.hpp`)
 
 `SelectThreadConfigs()` in `thread_utils.hpp` auto-selects the right config set at runtime based on `GetOnlineCpuCount()`.
 
