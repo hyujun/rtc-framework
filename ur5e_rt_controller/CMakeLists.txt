@@ -35,6 +35,7 @@ find_package(yaml-cpp REQUIRED)
 
 # ── rt_controller ──────────────────────────────────────────────────────────────
 add_executable(rt_controller
+  src/rt_controller_interface.cpp
   src/rt_controller_node.cpp
   src/rt_controller_main.cpp
   src/controllers/direct/joint_pd_controller.cpp

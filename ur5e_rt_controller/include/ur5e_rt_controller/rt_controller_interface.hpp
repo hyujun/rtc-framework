@@ -63,7 +63,7 @@ public:
     return CommandType::kPosition;
   }
 
-  virtual void LoadConfig(const YAML::Node & cfg) {(void)cfg;}
+  virtual void LoadConfig(const YAML::Node & cfg);
   virtual void UpdateGainsFromMsg(std::span<const double> gains) noexcept
   {
     (void)gains;
@@ -78,8 +78,27 @@ public:
     return {};
   }
 
+  // GetTopicConfig()
+  //   Returns the per-controller topic configuration (subscribe/publish topics).
+  //   Populated by LoadConfig() from the YAML "topics" section.
+  //   If no "topics" section exists, returns the default topic set.
+  [[nodiscard]] const TopicConfig & GetTopicConfig() const noexcept
+  {
+    return topic_config_;
+  }
+
 protected:
-  RTControllerInterface() = default;
+  RTControllerInterface();
+
+  // Parses the "topics" section of a controller YAML node.
+  // Called by the base LoadConfig(); subclasses that override LoadConfig()
+  // should call RTControllerInterface::LoadConfig(cfg) to inherit this.
+  static TopicConfig ParseTopicConfig(const YAML::Node & topics_node);
+
+  // Default topic configuration — matches the original hard-coded topics.
+  static TopicConfig MakeDefaultTopicConfig();
+
+  TopicConfig topic_config_;
 };
 
 }  // namespace ur5e_rt_controller

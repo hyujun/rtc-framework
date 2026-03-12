@@ -304,6 +304,7 @@ std::array<double, kNumRobotJoints> ClikController::ClampVelocity(
 
 void ClikController::LoadConfig(const YAML::Node & cfg)
 {
+  RTControllerInterface::LoadConfig(cfg);
   if (!cfg) {return;}
   if (cfg["kp"] && cfg["kp"].IsSequence()) {
     std::size_t n = std::min<std::size_t>(cfg["kp"].size(), 6);
