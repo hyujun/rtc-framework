@@ -6,80 +6,60 @@
 // All functions are header-only, noexcept, and allocation-free — safe for use
 // on SCHED_FIFO real-time threads.
 //
-// Receive packet layout (616 bytes = 77 doubles, little-endian):
-//   [ 0..10] motor_positions  (11)
-//   [11..21] motor_velocities (11)
-//   [22..32] motor_currents   (11)
-//   [33..76] sensor_data      (44)
+// Wire format is defined by packed structs in hand_packets.hpp.
+// sizeof(PacketStruct) == wire size — no manual byte-offset arithmetic.
 //
-// Send packet layout (88 bytes = 11 doubles, little-endian):
-//   [ 0..10] motor_commands   (11)
+// This header wraps hand_packets.hpp and provides the legacy API names
+// (DecodeRecvPacket, DecodeMotorPositions, EncodeSendPacket) so that
+// existing call-sites continue to compile without changes.
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <span>
 
 #include "ur5e_rt_base/types.hpp"
+#include "ur5e_hand_udp/hand_packets.hpp"
 
 namespace ur5e_rt_controller {
 namespace hand_udp_codec {
 
-// ── Protocol constants ──────────────────────────────────────────────────────
+// ── Protocol constants (derived from packed struct sizeof) ────────────────
 inline constexpr std::size_t kRecvDoubles = 77;  // 11 + 11 + 11 + 44
-inline constexpr std::size_t kRecvBytes   = kRecvDoubles * sizeof(double);  // 616
+inline constexpr std::size_t kRecvBytes   = hand_packets::kHandRecvBytes;   // 616
+inline constexpr std::size_t kSendDoubles = kNumHandJoints;                 // 11
+inline constexpr std::size_t kSendBytes   = hand_packets::kHandSendBytes;   // 88
 
-inline constexpr std::size_t kSendDoubles = kNumHandJoints;  // 11
-inline constexpr std::size_t kSendBytes   = kSendDoubles * sizeof(double);  // 88
-
-// ── Decode ──────────────────────────────────────────────────────────────────
+// ── Decode ───────────────────────────────────────────────────────────────
 
 // Decodes a received UDP packet into a full HandState.
-// Returns false if the buffer is too small.
 [[nodiscard]] inline bool DecodeRecvPacket(
     std::span<const char> buffer,
     HandState& out) noexcept {
-  if (buffer.size() < kRecvBytes) {
-    return false;
-  }
-
-  const auto* src = buffer.data();
-
-  std::memcpy(out.motor_positions.data(),  src,
-              kNumHandJoints * sizeof(double));
-  std::memcpy(out.motor_velocities.data(), src + kNumHandJoints * sizeof(double),
-              kNumHandJoints * sizeof(double));
-  std::memcpy(out.motor_currents.data(),   src + 2U * kNumHandJoints * sizeof(double),
-              kNumHandJoints * sizeof(double));
-  std::memcpy(out.sensor_data.data(),      src + 3U * kNumHandJoints * sizeof(double),
-              kNumHandSensors * sizeof(double));
-
-  out.valid = true;
-  return true;
+  return hand_packets::Decode(buffer, out);
 }
 
-// Lightweight version: decodes only motor_positions (first 11 doubles).
-// Use when velocity / current / sensor data is not needed.
+// Lightweight: decodes only motor_positions (first 11 doubles).
 [[nodiscard]] inline bool DecodeMotorPositions(
     std::span<const char> buffer,
     std::span<double, kNumHandJoints> out) noexcept {
-  if (buffer.size() < kRecvBytes) {
-    return false;
-  }
-
-  std::memcpy(out.data(), buffer.data(), kNumHandJoints * sizeof(double));
-  return true;
+  return hand_packets::DecodePosition(buffer, out);
 }
 
-// ── Encode ──────────────────────────────────────────────────────────────────
+// Lightweight: decodes only motor_velocities (doubles [11..21]).
+[[nodiscard]] inline bool DecodeMotorVelocities(
+    std::span<const char> buffer,
+    std::span<double, kNumHandJoints> out) noexcept {
+  return hand_packets::DecodeVelocity(buffer, out);
+}
+
+// ── Encode ───────────────────────────────────────────────────────────────
 
 // Encodes hand motor commands into a pre-allocated byte buffer.
-// Zero heap allocation — the caller owns the output buffer.
 inline void EncodeSendPacket(
     std::span<const double, kNumHandJoints> commands,
     std::span<uint8_t, kSendBytes> out) noexcept {
-  std::memcpy(out.data(), commands.data(), kSendBytes);
+  hand_packets::Encode(commands, out);
 }
 
 }  // namespace hand_udp_codec
