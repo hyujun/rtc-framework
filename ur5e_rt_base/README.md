@@ -1,6 +1,7 @@
 # ur5e_rt_base
 
-> **Note:** This package is part of the UR5e RT Controller workspace (v5.7.0). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.7.0)의 일부입니다.
+> 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 UR5e RT Controller 스택의 **공유 기반 패키지** — 모든 패키지가 공통으로 사용하는 타입 정의, 스레드 유틸리티, 잠금-없는(lock-free) 로깅 인프라를 제공하는 헤더-전용(header-only) 라이브러리입니다.
 
 ## 개요

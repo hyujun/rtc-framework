@@ -1,6 +1,7 @@
 # ur5e_rt_controller
 
-> **Note:** This package is part of the UR5e RT Controller workspace (v5.7.0). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.7.0)의 일부입니다.
+> 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md) | 디버깅: [VSCODE_DEBUGGING.md](../docs/VSCODE_DEBUGGING.md) | 새 컨트롤러 추가: [ADDING_CONTROLLER.md](docs/ADDING_CONTROLLER.md)
 UR5e 로봇 팔을 위한 **500Hz 실시간 위치 제어기** ROS2 패키지입니다. SCHED_FIFO 멀티스레드 아키텍처, 전략 패턴 기반 컨트롤러 교체, 런타임 컨트롤러 전환, 잠금-없는 로깅 인프라를 제공합니다.
 
 ## 개요
@@ -384,7 +385,7 @@ my_controller:
 // ── Add new controllers here ──
 ```
 
-> 자세한 전체 가이드는 [`docs/ADDING_CONTROLLER.md`](../docs/ADDING_CONTROLLER.md)를 참조하세요.
+> 자세한 전체 가이드는 [`docs/ADDING_CONTROLLER.md`](docs/ADDING_CONTROLLER.md)를 참조하세요.
 
 ### RTControllerInterface 가상 메서드
 

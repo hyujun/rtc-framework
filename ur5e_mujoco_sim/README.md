@@ -1,6 +1,7 @@
 # ur5e_mujoco_sim
 
-> **Note:** This package is part of the UR5e RT Controller workspace (v5.7.0). For full architecture details, installation instructions, and ROS 2 Jazzy compatibility, please refer to the [Root README](../README.md) and [Root CLAUDE.md](../CLAUDE.md).
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.7.0)의 일부입니다.
+> 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 UR5e RT Controller 스택의 **MuJoCo 3.x 물리 시뮬레이터 패키지**입니다. 실제 UR 드라이버를 대체하여 개발 환경에서 알고리즘 검증 및 테스트를 수행할 수 있습니다.
 
 ## 개요
