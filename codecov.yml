@@ -1,0 +1,53 @@
+# Codecov 설정 — ur5e-rt-controller
+# https://docs.codecov.io/docs/codecov-yaml
+
+codecov:
+  require_ci_to_pass: false   # coverage 업로드는 CI 실패와 독립적으로 처리
+
+coverage:
+  precision: 2
+  round: down
+  range: "0...100"
+
+  status:
+    project:
+      default:
+        target: auto          # 이전 커밋 대비 자동 목표 설정
+        threshold: 1%         # 1% 감소까지 허용
+        if_ci_failed: success
+    patch:
+      default:
+        target: 0%            # 새 코드에 대한 최소 커버리지 (점진적으로 올릴 예정)
+        if_ci_failed: success
+
+# 커버리지에서 제외할 경로
+ignore:
+  - "ur5e_description/**"
+  - "ur5e_mujoco_sim/**"
+  - "ur5e_tools/**"
+  - "**/test/**"
+  - "**/launch/**"
+  - "**/config/**"
+  - "**/scripts/**"
+
+# 컴포넌트별 커버리지 추적
+component_management:
+  individual_components:
+    - component_id: trajectory
+      name: "Trajectory Library"
+      paths:
+        - "ur5e_rt_controller/include/ur5e_rt_controller/trajectory/**"
+    - component_id: controllers
+      name: "Controllers"
+      paths:
+        - "ur5e_rt_controller/src/controllers/**"
+        - "ur5e_rt_controller/include/ur5e_rt_controller/controllers/**"
+    - component_id: rt_base
+      name: "RT Base Library"
+      paths:
+        - "ur5e_rt_base/include/**"
+    - component_id: hand_udp
+      name: "Hand UDP Bridge"
+      paths:
+        - "ur5e_hand_udp/include/**"
+        - "ur5e_hand_udp/src/**"
