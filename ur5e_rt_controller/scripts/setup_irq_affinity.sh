@@ -32,20 +32,50 @@ if [[ "$EUID" -ne 0 ]]; then
 fi
 
 # ── CPU affinity mask ─────────────────────────────────────────────────────────
+# IRQ를 non-RT 코어(Core 0-1)에만 할당한다.
+# 코어가 4개 미만이면 RT 보호가 의미 없으므로 경고한다.
+TOTAL_CORES=$(nproc)
+if [[ "$TOTAL_CORES" -lt 4 ]]; then
+  warn "CPU core count is ${TOTAL_CORES} (< 4). RT core isolation may not be effective."
+  warn "At least 4 cores recommended (Core 0-1: IRQ/OS, Core 2+: RT)."
+fi
+
 # 0x3 = 0b0011 = Core 0 + Core 1 only
 AFFINITY_MASK="3"
 AFFINITY_HEX="0x3"
 
+# ── Helper: detect physical NIC ──────────────────────────────────────────────
+# /sys/class/net/<iface>/device 심볼릭 링크는 물리 NIC에만 존재한다.
+# 가상 인터페이스(docker0, veth*, br-* 등)를 자동으로 제외한다.
+detect_physical_nic() {
+  local iface
+  for iface in /sys/class/net/*/; do
+    iface=$(basename "$iface")
+    [[ "$iface" == "lo" ]] && continue
+    # 물리 디바이스 확인 (PCI/USB 등)
+    [[ -e "/sys/class/net/${iface}/device" ]] || continue
+    # UP 상태 우선
+    if ip link show "$iface" 2>/dev/null | grep -q 'state UP'; then
+      echo "$iface"
+      return
+    fi
+  done
+  # UP 상태 NIC가 없으면 물리 NIC 중 첫 번째 반환
+  for iface in /sys/class/net/*/; do
+    iface=$(basename "$iface")
+    [[ "$iface" == "lo" ]] && continue
+    [[ -e "/sys/class/net/${iface}/device" ]] || continue
+    echo "$iface"
+    return
+  done
+}
+
 # ── Detect or use specified NIC ───────────────────────────────────────────────
 NIC="${1:-}"
 if [[ -z "$NIC" ]]; then
-  # Auto-detect: prefer the first non-loopback interface that is UP
-  NIC=$(ip link show | awk -F': ' '/^[0-9]+: / && !/lo/ && /UP/ {print $2; exit}' | cut -d'@' -f1)
-  if [[ -z "$NIC" ]]; then
-    NIC=$(ip link show | awk -F': ' '/^[0-9]+: / && !/lo/ {print $2; exit}' | cut -d'@' -f1)
-  fi
-  [[ -z "$NIC" ]] && error "No network interface found. Specify one: sudo $0 <NIC>"
-  warn "Auto-detected NIC: ${NIC}  (specify explicitly if wrong: sudo $0 <NIC>)"
+  NIC=$(detect_physical_nic)
+  [[ -z "$NIC" ]] && error "No physical network interface found. Specify one: sudo $0 <NIC>"
+  warn "Auto-detected physical NIC: ${NIC}  (specify explicitly if wrong: sudo $0 <NIC>)"
 fi
 
 info "Restricting IRQs to Core 0-1 (affinity mask: ${AFFINITY_HEX})"
@@ -53,7 +83,7 @@ info "Target NIC: ${NIC}"
 echo ""
 
 # ── Pin NIC-specific IRQs ─────────────────────────────────────────────────────
-NIC_IRQS=$(grep "${NIC}" /proc/interrupts 2>/dev/null | awk -F: '{print $1}' | tr -d ' ')
+NIC_IRQS=$(grep -w "${NIC}" /proc/interrupts 2>/dev/null | awk -F: '{print $1}' | tr -d ' ')
 
 if [[ -z "$NIC_IRQS" ]]; then
   warn "No IRQ entries found for '${NIC}' in /proc/interrupts"

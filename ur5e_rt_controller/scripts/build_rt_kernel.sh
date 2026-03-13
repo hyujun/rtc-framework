@@ -60,7 +60,9 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --batch)     BATCH_MODE=1; shift ;;
     --dry-run)   DRY_RUN=1; shift ;;
-    --build-dir) BUILD_DIR="$2"; shift 2 ;;
+    --build-dir)
+      [[ $# -ge 2 ]] || error "--build-dir requires a value"
+      BUILD_DIR="$2"; shift 2 ;;
     -h|--help)   show_help ;;
     *)           error "Unknown option: '$1'  (run $0 --help)" ;;
   esac
@@ -79,7 +81,10 @@ echo -e "${BOLD}${BLUE}╚══════════════════
 echo ""
 
 # ── [1/6] OS 버전 감지 및 커널/패치 버전 설정 ────────────────────────────────
-UBUNTU_VER=$(lsb_release -rs 2>/dev/null || error "lsb_release not found. Is this Ubuntu?")
+if ! command -v lsb_release &>/dev/null; then
+  error "lsb_release not found. Install with: sudo apt-get install -y lsb-release"
+fi
+UBUNTU_VER=$(lsb_release -rs 2>/dev/null)
 info "Ubuntu ${UBUNTU_VER} 감지"
 
 if [[ "$UBUNTU_VER" == "24.04" ]]; then
@@ -240,8 +245,8 @@ info "━━━ [6/6] .deb 패키지 설치 ━━━"
 cd "${BUILD_DIR}"
 
 # 현재 빌드에 해당하는 .deb만 설치 (이전 빌드와 구분)
-DEB_IMAGE=$(ls linux-image-${KERNEL_VERSION}*.deb 2>/dev/null | grep -v dbg | head -1)
-DEB_HEADERS=$(ls linux-headers-${KERNEL_VERSION}*.deb 2>/dev/null | head -1)
+DEB_IMAGE=$(find . -maxdepth 1 -name "linux-image-${KERNEL_VERSION}*.deb" ! -name "*dbg*" -printf '%f\n' 2>/dev/null | head -1)
+DEB_HEADERS=$(find . -maxdepth 1 -name "linux-headers-${KERNEL_VERSION}*.deb" -printf '%f\n' 2>/dev/null | head -1)
 
 if [[ -z "$DEB_IMAGE" ]]; then
   error "linux-image .deb 패키지를 찾을 수 없습니다"
@@ -265,8 +270,14 @@ if [[ "$HAS_NVIDIA" == "yes" ]]; then
   if grep -q "nvidia.NVreg_EnableMSI=1" "$GRUB_FILE" 2>/dev/null; then
     info "NVIDIA MSI 설정이 이미 존재합니다 — 건너뜀"
   else
-    # 기존 GRUB_CMDLINE_LINUX_DEFAULT에 MSI 옵션 추가
-    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 nvidia.NVreg_EnableMSI=1"/' "$GRUB_FILE"
+    # GRUB 설정 백업 후 MSI 옵션 추가
+    cp "$GRUB_FILE" "${GRUB_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    if grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GRUB_FILE"; then
+      sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 nvidia.NVreg_EnableMSI=1"/' "$GRUB_FILE"
+    else
+      warn "GRUB_CMDLINE_LINUX_DEFAULT not found in ${GRUB_FILE} — adding new entry"
+      echo 'GRUB_CMDLINE_LINUX_DEFAULT="nvidia.NVreg_EnableMSI=1"' >> "$GRUB_FILE"
+    fi
     update-grub
     success "NVIDIA MSI 설정 추가 완료"
   fi
