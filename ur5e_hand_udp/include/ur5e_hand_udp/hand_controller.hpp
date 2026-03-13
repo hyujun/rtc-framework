@@ -5,10 +5,10 @@
 //
 // Uses a single UDP socket for both send and receive.
 // Polling loop per cycle:
-//   1. Write position  (0x01)
-//   2. Read position   (0x11) → recv
-//   3. Read velocity   (0x12) → recv
-//   4. Read sensor 0-3 (0x14..0x17) → recv × 4
+//   1. Write position  (0x01)            → send 43B
+//   2. Read position   (0x11)            → send 43B, recv 43B
+//   3. Read velocity   (0x12)            → send 43B, recv 43B
+//   4. Read sensor 0-3 (0x14..0x17) × 4  → send  3B, recv 67B
 //
 // All hot-path operations are allocation-free for RT safety.
 
@@ -127,42 +127,86 @@ class HandController {
   }
 
  private:
-  // Send a packet and receive a response. Returns false on timeout/error.
-  [[nodiscard]] bool SendAndRecv(
-      const std::array<uint8_t, hand_packets::kPacketSize>& send_buf,
-      std::array<uint8_t, hand_packets::kPacketSize>& recv_buf) noexcept {
+  // Send raw bytes and receive into a buffer. Returns bytes received, or -1 on error.
+  [[nodiscard]] ssize_t SendAndRecvRaw(
+      const uint8_t* send_data, std::size_t send_len,
+      uint8_t* recv_data, std::size_t recv_len) noexcept {
     const ssize_t sent = sendto(
-        socket_fd_, send_buf.data(), send_buf.size(), 0,
+        socket_fd_, send_data, send_len, 0,
         reinterpret_cast<const sockaddr*>(&target_addr_),
         sizeof(target_addr_));
-    if (sent < 0) return false;
+    if (sent < 0) return -1;
 
-    const ssize_t recvd = recv(socket_fd_, recv_buf.data(), recv_buf.size(), 0);
-    if (recvd < static_cast<ssize_t>(hand_packets::kPacketSize)) return false;
-
-    return true;
+    const ssize_t recvd = ::recv(socket_fd_, recv_data, recv_len, 0);
+    return recvd;
   }
 
-  // Request a read command and decode 10 floats.
-  [[nodiscard]] bool RequestRead(
+  // Request a motor read command and decode 10 floats.
+  [[nodiscard]] bool RequestMotorRead(
       hand_packets::Command cmd,
-      std::array<float, hand_packets::kDataCount>& out) noexcept {
-    std::array<uint8_t, hand_packets::kPacketSize> send_buf{};
-    std::array<uint8_t, hand_packets::kPacketSize> recv_buf{};
+      std::array<float, hand_packets::kMotorDataCount>& out) noexcept {
+    std::array<uint8_t, hand_packets::kMotorPacketSize> send_buf{};
+    std::array<uint8_t, hand_packets::kMotorPacketSize> recv_buf{};
 
     hand_udp_codec::EncodeReadRequest(cmd, send_buf);
-    if (!SendAndRecv(send_buf, recv_buf)) return false;
+    const ssize_t recvd = SendAndRecvRaw(
+        send_buf.data(), send_buf.size(),
+        recv_buf.data(), recv_buf.size());
+    if (recvd < static_cast<ssize_t>(hand_packets::kMotorPacketSize)) return false;
 
-    uint8_t cmd_out;
-    return hand_udp_codec::DecodeResponse(recv_buf.data(), recv_buf.size(),
-                                          cmd_out, out);
+    uint8_t cmd_out, mode_out;
+    return hand_udp_codec::DecodeMotorResponse(
+        recv_buf.data(), static_cast<std::size_t>(recvd),
+        cmd_out, mode_out, out);
+  }
+
+  // Send a set-sensor-mode command (CMD=0x04, 3B send, 3B recv echo).
+  // Must be called once after sensor power-on to switch from NN to RAW mode.
+  [[nodiscard]] bool RequestSetSensorMode(
+      hand_packets::SensorMode sensor_mode) noexcept {
+    std::array<uint8_t, hand_packets::kSensorRequestSize> send_buf{};
+    std::array<uint8_t, hand_packets::kSensorRequestSize> recv_buf{};
+
+    hand_udp_codec::EncodeSetSensorMode(sensor_mode, send_buf);
+    const ssize_t recvd = SendAndRecvRaw(
+        send_buf.data(), send_buf.size(),
+        recv_buf.data(), recv_buf.size());
+    return recvd >= static_cast<ssize_t>(hand_packets::kSensorRequestSize);
+  }
+
+  // Request a sensor read command (3B send) and decode 11 useful values (67B recv).
+  // MODE field in request carries the desired sensor mode (default kRaw).
+  // Response mode_out indicates the actual sensor mode used.
+  [[nodiscard]] bool RequestSensorRead(
+      hand_packets::Command cmd,
+      std::array<float, kSensorValuesPerFingertip>& out,
+      hand_packets::SensorMode sensor_mode = hand_packets::SensorMode::kRaw,
+      uint8_t* response_mode = nullptr) noexcept {
+    std::array<uint8_t, hand_packets::kSensorRequestSize> send_buf{};
+    std::array<uint8_t, hand_packets::kSensorResponseSize> recv_buf{};
+
+    hand_udp_codec::EncodeSensorReadRequest(cmd, send_buf, sensor_mode);
+    const ssize_t recvd = SendAndRecvRaw(
+        send_buf.data(), send_buf.size(),
+        recv_buf.data(), recv_buf.size());
+    if (recvd < static_cast<ssize_t>(hand_packets::kSensorResponseSize)) return false;
+
+    uint8_t cmd_out, mode_out;
+    const bool ok = hand_udp_codec::DecodeSensorResponse(
+        recv_buf.data(), static_cast<std::size_t>(recvd),
+        cmd_out, mode_out, out);
+    if (ok && response_mode) {
+      *response_mode = mode_out;
+    }
+    return ok;
   }
 
   void PollLoop(std::stop_token stop_token) {
     ApplyThreadConfig(thread_cfg_);
 
-    std::array<uint8_t, hand_packets::kPacketSize> send_buf{};
-    std::array<float, hand_packets::kDataCount> float_buf{};
+    std::array<uint8_t, hand_packets::kMotorPacketSize> send_buf{};
+    std::array<float, hand_packets::kMotorDataCount> motor_float_buf{};
+    std::array<float, kSensorValuesPerFingertip> sensor_float_buf{};
 
     while (!stop_token.stop_requested()) {
       HandState state{};
@@ -179,23 +223,23 @@ class HandController {
         }
       }
 
-      // 2. Read position.
-      if (RequestRead(hand_packets::Command::kReadPosition, float_buf)) {
-        std::copy_n(float_buf.begin(), kNumHandMotors,
+      // 2. Read position (motor, 43B ↔ 43B).
+      if (RequestMotorRead(hand_packets::Command::kReadPosition, motor_float_buf)) {
+        std::copy_n(motor_float_buf.begin(), kNumHandMotors,
                     state.motor_positions.begin());
       }
 
-      // 3. Read velocity.
-      if (RequestRead(hand_packets::Command::kReadVelocity, float_buf)) {
-        std::copy_n(float_buf.begin(), kNumHandMotors,
+      // 3. Read velocity (motor, 43B ↔ 43B).
+      if (RequestMotorRead(hand_packets::Command::kReadVelocity, motor_float_buf)) {
+        std::copy_n(motor_float_buf.begin(), kNumHandMotors,
                     state.motor_velocities.begin());
       }
 
-      // 4. Read sensors (4 fingertips).
+      // 4. Read sensors (4 fingertips, 3B → 67B each).
       for (int i = 0; i < kNumFingertips; ++i) {
         auto cmd = hand_packets::SensorCommand(i);
-        if (RequestRead(cmd, float_buf)) {
-          std::copy_n(float_buf.begin(), kSensorValuesPerFingertip,
+        if (RequestSensorRead(cmd, sensor_float_buf)) {
+          std::copy_n(sensor_float_buf.begin(), kSensorValuesPerFingertip,
                       state.sensor_data.begin() + i * kSensorValuesPerFingertip);
         }
       }

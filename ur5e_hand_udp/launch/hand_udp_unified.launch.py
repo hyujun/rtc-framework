@@ -17,13 +17,13 @@ def generate_launch_description():
 
     target_ip_arg = DeclareLaunchArgument(
         'target_ip',
-        default_value='192.168.1.100',
+        default_value='192.168.1.2',
         description='Target IP for hand motor commands',
     )
 
     target_port_arg = DeclareLaunchArgument(
         'target_port',
-        default_value='50002',
+        default_value='55151',
         description='Target port for hand motor commands',
     )
 
