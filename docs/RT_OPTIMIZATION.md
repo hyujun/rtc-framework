@@ -243,19 +243,29 @@ uname -v
 ```
 
 #### Option B: PREEMPT_RT 커널 (최대 성능, 빌드 필요)
+
+자동화 스크립트 제공:
 ```bash
-# 상세 가이드:
-# https://wiki.linuxfoundation.org/realtime/documentation/howto/applications/start
+# 대화형 (menuconfig 포함)
+sudo ./ur5e_rt_controller/scripts/build_rt_kernel.sh
 
-# 요약:
-# 1. 커널 소스 다운로드 (예: 5.15.y)
-# 2. RT 패치 적용 (https://cdn.kernel.org/pub/linux/kernel/projects/rt/)
-# 3. 빌드 및 설치
-# 4. 재부팅
+# 비대화형 (CI/자동화용)
+sudo ./ur5e_rt_controller/scripts/build_rt_kernel.sh --batch
 
-# 확인
+# 다운로드 및 패치만 (빌드 전 확인용)
+sudo ./ur5e_rt_controller/scripts/build_rt_kernel.sh --dry-run
+```
+
+지원 버전:
+- Ubuntu 24.04: 커널 6.8.2 + RT patch 6.8.2-rt11
+- Ubuntu 22.04: 커널 6.6.127 + RT patch 6.6.127-rt69
+
+```bash
+# 재부팅 후 확인
 uname -v | grep PREEMPT_RT
 ```
+
+참고: https://wiki.linuxfoundation.org/realtime/documentation/howto/applications/start
 
 ### 5. IRQ Affinity (고급)
 
