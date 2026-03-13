@@ -71,6 +71,13 @@ install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
 )
 
+install(PROGRAMS
+  scripts/setup_irq_affinity.sh
+  scripts/setup_udp_optimization.sh
+  scripts/build_rt_kernel.sh
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
