@@ -37,9 +37,13 @@ ROS2 토픽 (hand_udp_node):
   - sub: /hand/command       → motor_commands[10]
 """
 
+import csv
+import os
 import socket
 import struct
 import time
+from datetime import datetime
+
 import numpy as np
 
 # ── 프로토콜 상수 (hand_packets.hpp / types.hpp 기반) ────────────────────────
@@ -411,6 +415,77 @@ def _format_sensor_detail(sensors: list[int], num_sensors: int,
     return '\n'.join(lines)
 
 
+# ── CSV 로거 ──────────────────────────────────────────────────────────────────
+
+class HandDataCsvLogger:
+    """수신 데이터를 CSV로 저장하는 로거"""
+
+    def __init__(self, num_sensors: int = NUM_FINGERTIPS,
+                 output_dir: str = ".", prefix: str = "hand_data"):
+        """
+        Args:
+            num_sensors: 연결된 핑거팁 센서 수
+            output_dir: CSV 저장 디렉토리
+            prefix: 파일명 접두어
+        """
+        self.num_sensors = num_sensors
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.makedirs(output_dir, exist_ok=True)
+        self.filepath = os.path.join(output_dir, f"{prefix}_{timestamp}.csv")
+
+        # 헤더 구성
+        header = ["timestamp", "cycle"]
+        header.extend(f"pos_{i}" for i in range(NUM_HAND_MOTORS))
+        header.extend(f"vel_{i}" for i in range(NUM_HAND_MOTORS))
+        for s in range(num_sensors):
+            header.extend(f"s{s}_baro_{j}" for j in range(BAROMETER_COUNT))
+            header.extend(f"s{s}_tof_{j}" for j in range(TOF_COUNT))
+
+        self._file = open(self.filepath, 'w', newline='')
+        self._writer = csv.writer(self._file)
+        self._writer.writerow(header)
+        self._start_time = time.monotonic()
+
+    def log(self, cycle: int, result: dict) -> None:
+        """poll_cycle / read_cycle 결과를 1행으로 기록"""
+        t = time.monotonic() - self._start_time
+        row = [f"{t:.6f}", cycle]
+
+        # positions (10)
+        pos = result.get("positions")
+        if pos:
+            row.extend(f"{v:.6f}" for v in pos)
+        else:
+            row.extend([""] * NUM_HAND_MOTORS)
+
+        # velocities (10)
+        vel = result.get("velocities")
+        if vel:
+            row.extend(f"{v:.6f}" for v in vel)
+        else:
+            row.extend([""] * NUM_HAND_MOTORS)
+
+        # sensors (num_sensors × 11 uint32)
+        sensors = result.get("sensors", [])
+        expected = self.num_sensors * SENSOR_VALUES_PER_FINGERTIP
+        if len(sensors) >= expected:
+            row.extend(str(v) for v in sensors[:expected])
+        else:
+            row.extend(str(v) for v in sensors)
+            row.extend([""] * (expected - len(sensors)))
+
+        self._writer.writerow(row)
+
+    def close(self) -> None:
+        self._file.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
 # ── 예제 함수 ────────────────────────────────────────────────────────────────
 
 def example_write_only(target_ip: str = "192.168.1.2"):
@@ -446,7 +521,8 @@ def example_write_only(target_ip: str = "192.168.1.2"):
 
 
 def example_poll_cycle(target_ip: str = "192.168.1.2",
-                       num_sensors: int = NUM_FINGERTIPS):
+                       num_sensors: int = NUM_FINGERTIPS,
+                       csv_dir: str | None = None):
     """HandController와 동일한 전체 poll 사이클 테스트"""
     sender = HandUDPSender(target_ip=target_ip, num_sensors=num_sensors)
 
@@ -459,6 +535,12 @@ def example_poll_cycle(target_ip: str = "192.168.1.2",
             print("  → 센서 모드 RAW 설정 완료")
         else:
             print("  → 센서 모드 설정 실패 (타임아웃)")
+
+    csv_logger = None
+    if csv_dir is not None:
+        csv_logger = HandDataCsvLogger(num_sensors=num_sensors,
+                                       output_dir=csv_dir, prefix="hand_poll")
+        print(f"  CSV 저장: {csv_logger.filepath}")
 
     print(f"  WritePosition(43B) → ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B[MODE=raw]→67B)")
     print("Ctrl+C로 중지\n")
@@ -475,6 +557,9 @@ def example_poll_cycle(target_ip: str = "192.168.1.2",
 
             result = sender.poll_cycle(positions)
             cycle += 1
+
+            if csv_logger:
+                csv_logger.log(cycle, result)
 
             # 1초마다 상태 출력
             if cycle % 500 == 0:
@@ -494,7 +579,11 @@ def example_poll_cycle(target_ip: str = "192.168.1.2",
 
     except KeyboardInterrupt:
         print(f"\n중지됨 (총 {cycle} 사이클)")
+        if csv_logger:
+            print(f"CSV 저장 완료: {csv_logger.filepath}")
     finally:
+        if csv_logger:
+            csv_logger.close()
         sender.close()
 
 
@@ -522,7 +611,8 @@ def example_static_pose(target_ip: str = "192.168.1.2"):
 
 
 def example_read_only(target_ip: str = "192.168.1.2",
-                      num_sensors: int = NUM_FINGERTIPS):
+                      num_sensors: int = NUM_FINGERTIPS,
+                      csv_dir: str | None = None):
     """Read request만 수행 (WritePosition 없이 현재 상태 읽기)"""
     sender = HandUDPSender(target_ip=target_ip, num_sensors=num_sensors)
 
@@ -536,6 +626,12 @@ def example_read_only(target_ip: str = "192.168.1.2",
         else:
             print("  → 센서 모드 설정 실패 (타임아웃)")
 
+    csv_logger = None
+    if csv_dir is not None:
+        csv_logger = HandDataCsvLogger(num_sensors=num_sensors,
+                                       output_dir=csv_dir, prefix="hand_read")
+        print(f"  CSV 저장: {csv_logger.filepath}")
+
     print(f"  ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B[MODE=raw]→67B)")
     print("Ctrl+C로 중지\n")
 
@@ -545,6 +641,9 @@ def example_read_only(target_ip: str = "192.168.1.2",
         while True:
             result = sender.read_cycle()
             cycle += 1
+
+            if csv_logger:
+                csv_logger.log(cycle, result)
 
             if cycle % 500 == 0:
                 pos_str = "None"
@@ -562,7 +661,11 @@ def example_read_only(target_ip: str = "192.168.1.2",
 
     except KeyboardInterrupt:
         print(f"\n중지됨 (총 {cycle} 사이클)")
+        if csv_logger:
+            print(f"CSV 저장 완료: {csv_logger.filepath}")
     finally:
+        if csv_logger:
+            csv_logger.close()
         sender.close()
 
 
@@ -589,6 +692,15 @@ def main(args=None):
     print(f"  → 센서 {num_sensors}개 사용 (cmd: {', '.join(f'0x{CMD_READ_SENSORS[i]:02x}' for i in range(num_sensors)) or 'none'})")
     print()
 
+    # CSV 저장 여부
+    csv_input = input("CSV 저장 디렉토리 (빈칸=저장 안 함, '.'=현재 디렉토리): ").strip()
+    csv_dir = csv_input if csv_input else None
+    if csv_dir:
+        print(f"  → CSV 저장: {os.path.abspath(csv_dir)}/")
+    else:
+        print("  → CSV 저장 안 함")
+    print()
+
     print("모드 선택:")
     print("  1) WritePosition 사인파 (전송만)")
     print("  2) 전체 poll 사이클 (WritePos + ReadPos + ReadVel + ReadSensor)")
@@ -601,11 +713,11 @@ def main(args=None):
     if choice == "1":
         example_write_only(target_ip=target_ip)
     elif choice == "2":
-        example_poll_cycle(target_ip=target_ip, num_sensors=num_sensors)
+        example_poll_cycle(target_ip=target_ip, num_sensors=num_sensors, csv_dir=csv_dir)
     elif choice == "3":
         example_static_pose(target_ip=target_ip)
     elif choice == "4":
-        example_read_only(target_ip=target_ip, num_sensors=num_sensors)
+        example_read_only(target_ip=target_ip, num_sensors=num_sensors, csv_dir=csv_dir)
     else:
         print("잘못된 선택")
 
