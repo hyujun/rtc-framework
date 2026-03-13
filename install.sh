@@ -195,8 +195,24 @@ check_workspace_structure() {
 
 # ── Common: ROS2 + Ubuntu check ────────────────────────────────────────────────
 check_prerequisites() {
+  # If ros2 command is not in PATH, try to find and source ROS2 from /opt/ros/
   if ! command -v ros2 &>/dev/null; then
-    error "ROS2 not found. Install ROS2 Humble or Jazzy first: https://docs.ros.org/en/jazzy/Installation.html"
+    warn "ros2 command not found in PATH. Searching /opt/ros/ ..."
+    local _found_ros2=0
+    if [[ -d /opt/ros ]]; then
+      for _distro in jazzy humble iron rolling; do
+        if [[ -f "/opt/ros/${_distro}/setup.bash" ]]; then
+          info "Found ROS2 ${_distro} at /opt/ros/${_distro} — sourcing setup.bash ..."
+          # shellcheck disable=SC1090
+          source "/opt/ros/${_distro}/setup.bash"
+          _found_ros2=1
+          break
+        fi
+      done
+    fi
+    if [[ "$_found_ros2" -eq 0 ]]; then
+      error "ROS2 not found. Install ROS2 Humble or Jazzy first: https://docs.ros.org/en/jazzy/Installation.html"
+    fi
   fi
 
   # Detect ROS2 distro via three-tier fallback:
