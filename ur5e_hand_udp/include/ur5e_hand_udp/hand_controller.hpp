@@ -160,6 +160,20 @@ class HandController {
         cmd_out, mode_out, out);
   }
 
+  // Send a set-sensor-mode command (CMD=0x04, 3B send, 3B recv echo).
+  // Must be called once after sensor power-on to switch from NN to RAW mode.
+  [[nodiscard]] bool RequestSetSensorMode(
+      hand_packets::SensorMode sensor_mode) noexcept {
+    std::array<uint8_t, hand_packets::kSensorRequestSize> send_buf{};
+    std::array<uint8_t, hand_packets::kSensorRequestSize> recv_buf{};
+
+    hand_udp_codec::EncodeSetSensorMode(sensor_mode, send_buf);
+    const ssize_t recvd = SendAndRecvRaw(
+        send_buf.data(), send_buf.size(),
+        recv_buf.data(), recv_buf.size());
+    return recvd >= static_cast<ssize_t>(hand_packets::kSensorRequestSize);
+  }
+
   // Request a sensor read command (3B send) and decode 11 useful values (67B recv).
   // MODE field in request carries the desired sensor mode (default kRaw).
   // Response mode_out indicates the actual sensor mode used.

@@ -65,13 +65,14 @@ enum class SensorMode : uint8_t {
 
 // ── Command definitions ─────────────────────────────────────────────────────
 enum class Command : uint8_t {
-  kWritePosition = 0x01,
-  kReadPosition  = 0x11,
-  kReadVelocity  = 0x12,
-  kReadSensor0   = 0x14,
-  kReadSensor1   = 0x15,
-  kReadSensor2   = 0x16,
-  kReadSensor3   = 0x17,
+  kWritePosition  = 0x01,
+  kSetSensorMode  = 0x04,  // sensor init: set mode (MODE field = kRaw/kNn)
+  kReadPosition   = 0x11,
+  kReadVelocity   = 0x12,
+  kReadSensor0    = 0x14,
+  kReadSensor1    = 0x15,
+  kReadSensor2    = 0x16,
+  kReadSensor3    = 0x17,
 };
 
 // Sensor command for fingertip index [0..3].
@@ -168,6 +169,16 @@ inline SensorRequestPacket MakeSensorReadRequest(
   return pkt;
 }
 
+// Build a set-sensor-mode request packet (3 bytes).
+// CMD=0x04, MODE field = desired SensorMode. Must be sent before reading sensor data.
+inline SensorRequestPacket MakeSetSensorMode(SensorMode sensor_mode) noexcept {
+  SensorRequestPacket pkt{};
+  pkt.id   = kDeviceId;
+  pkt.cmd  = static_cast<uint8_t>(Command::kSetSensorMode);
+  pkt.mode = static_cast<uint8_t>(sensor_mode);
+  return pkt;
+}
+
 // Build a write-position packet with float data.
 inline MotorPacket MakeWritePosition(
     const std::array<float, kNumHandMotors>& positions) noexcept {
@@ -221,6 +232,19 @@ inline void ExtractSensorValues(
   // tof: data[13..15] → out[8..10]
   for (std::size_t i = 0; i < kTofCount; ++i) {
     out[kBarometerCount + i] = Uint32ToFloat(pkt.data[kBarometerCount + kReservedCount + i]);
+  }
+}
+
+// Extract raw uint32 sensor values from a sensor response, skipping reserved fields.
+// Output: barometer[8] + tof[3] = 11 raw uint32 values (no float conversion).
+inline void ExtractSensorValuesRaw(
+    const SensorResponsePacket& pkt,
+    std::array<uint32_t, kSensorValuesPerFingertip>& out) noexcept {
+  for (std::size_t i = 0; i < kBarometerCount; ++i) {
+    out[i] = pkt.data[i];
+  }
+  for (std::size_t i = 0; i < kTofCount; ++i) {
+    out[kBarometerCount + i] = pkt.data[kBarometerCount + kReservedCount + i];
   }
 }
 

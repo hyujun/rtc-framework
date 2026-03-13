@@ -45,6 +45,15 @@ inline void EncodeSensorReadRequest(
   hand_packets::SerializeSensorRequest(pkt, out);
 }
 
+// Encode a set-sensor-mode request packet (3 bytes).
+// CMD=0x04, MODE field = desired SensorMode. Sensor init before reading data.
+inline void EncodeSetSensorMode(
+    hand_packets::SensorMode sensor_mode,
+    std::array<uint8_t, kSensorRequestBytes>& out) noexcept {
+  auto pkt = hand_packets::MakeSetSensorMode(sensor_mode);
+  hand_packets::SerializeSensorRequest(pkt, out);
+}
+
 // Encode a write-position packet (43 bytes).
 inline void EncodeWritePosition(
     const std::array<float, kNumHandMotors>& positions,
@@ -79,6 +88,20 @@ inline void EncodeWritePosition(
   cmd_out  = pkt.cmd;
   mode_out = pkt.mode;
   hand_packets::ExtractSensorValues(pkt, data_out);
+  return true;
+}
+
+// Decode a sensor response packet (67 bytes), extracting 11 raw uint32 values
+// (barometer[8] + tof[3], skipping reserved[5]). No float conversion.
+[[nodiscard]] inline bool DecodeSensorResponseRaw(
+    const uint8_t* buf, std::size_t len,
+    uint8_t& cmd_out, uint8_t& mode_out,
+    std::array<uint32_t, kSensorValuesPerFingertip>& data_out) noexcept {
+  hand_packets::SensorResponsePacket pkt{};
+  if (!hand_packets::DecodeSensorResponse(buf, len, pkt)) return false;
+  cmd_out  = pkt.cmd;
+  mode_out = pkt.mode;
+  hand_packets::ExtractSensorValuesRaw(pkt, data_out);
   return true;
 }
 
