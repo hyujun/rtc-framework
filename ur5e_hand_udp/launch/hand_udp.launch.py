@@ -1,4 +1,5 @@
-# hand_udp.launch.py - v1
+# hand_udp.launch.py — HandUdpNode 런치
+# Request-response polling 기반 통합 핸드 UDP 노드
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -7,64 +8,49 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    # Declare arguments
-    udp_port_arg = DeclareLaunchArgument(
-        'udp_port',
-        default_value='50001',
-        description='UDP port for hand data reception'
-    )
-    
     target_ip_arg = DeclareLaunchArgument(
         'target_ip',
         default_value='192.168.1.2',
-        description='Target IP for hand commands'
+        description='Target IP for hand controller',
     )
-    
+
     target_port_arg = DeclareLaunchArgument(
         'target_port',
         default_value='55151',
-        description='Target port for hand commands'
+        description='Target port for hand controller',
     )
-    
-    # Get config file
+
+    publish_rate_arg = DeclareLaunchArgument(
+        'publish_rate',
+        default_value='100.0',
+        description='Publish rate for /hand/joint_states (Hz)',
+    )
+
     hand_config = PathJoinSubstitution([
         FindPackageShare('ur5e_hand_udp'),
         'config',
-        'hand_udp_receiver.yaml'
+        'hand_udp_node.yaml',
     ])
-    
-    # Hand UDP receiver node
-    receiver_node = Node(
+
+    hand_udp_node = Node(
         package='ur5e_hand_udp',
-        executable='hand_udp_receiver_node',
-        name='hand_udp_receiver',
+        executable='hand_udp_node',
+        name='hand_udp_node',
         output='screen',
         parameters=[
             hand_config,
             {
-                'udp_port': LaunchConfiguration('udp_port'),
-            }
+                'target_ip': LaunchConfiguration('target_ip'),
+                'target_port': LaunchConfiguration('target_port'),
+                'publish_rate': LaunchConfiguration('publish_rate'),
+            },
         ],
         emulate_tty=True,
     )
-    
-    # Hand UDP sender node
-    sender_node = Node(
-        package='ur5e_hand_udp',
-        executable='hand_udp_sender_node',
-        name='hand_udp_sender',
-        output='screen',
-        parameters=[{
-            'target_ip': LaunchConfiguration('target_ip'),
-            'target_port': LaunchConfiguration('target_port'),
-        }],
-        emulate_tty=True,
-    )
-    
+
     return LaunchDescription([
-        udp_port_arg,
         target_ip_arg,
         target_port_arg,
-        receiver_node,
-        sender_node,
+        publish_rate_arg,
+        hand_udp_node,
     ])

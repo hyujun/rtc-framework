@@ -1,8 +1,12 @@
 p_controller:
+  # ── P 게인 (각 관절: [Base, Shoulder, Elbow, Wrist1, Wrist2, Wrist3]) ─────
+  # command = current_pos + kp * error * dt (증분 위치 스텝)
   kp: [120.0, 120.0, 100.0, 80.0, 80.0, 80.0]
+
+  # ── 출력 타입 ─────────────────────────────────────────────────────────────
   command_type: "position"
 
-  # ── Topic Configuration ────────────────────────────────────────────────────
+  # ── 토픽 설정 ─────────────────────────────────────────────────────────────
   topics:
     subscribe:
       - topic: "/joint_states"

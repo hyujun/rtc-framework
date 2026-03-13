@@ -39,8 +39,8 @@ ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py
 ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step
 ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py enable_viewer:=false
 
-# Run UDP hand nodes only
-ros2 launch ur5e_hand_udp hand_udp.launch.py udp_port:=50001 target_ip:=192.168.1.100 target_port:=50002
+# Run UDP hand node only
+ros2 launch ur5e_hand_udp hand_udp.launch.py target_ip:=192.168.1.2 target_port:=55151
 ```
 
 **Monitoring**:
@@ -171,21 +171,13 @@ ur5e-rt-controller/
 │   │   ├── hand_controller.hpp            # Request-response polling driver (jthread, Core 5 FIFO 65)
 │   │   ├── hand_failure_detector.hpp      # v5.8.0: 50Hz hand failure detector (jthread, non-RT)
 │   │   ├── hand_packets.hpp               # Wire-format packet definitions (43B/67B)
-│   │   ├── hand_udp_codec.hpp             # Packet encode/decode (allocation-free, noexcept)
-│   │   ├── hand_udp_receiver.hpp          # Legacy: streaming UDP receiver
-│   │   └── hand_udp_sender.hpp            # Legacy: UDP sender
+│   │   └── hand_udp_codec.hpp             # Packet encode/decode (allocation-free, noexcept)
 │   ├── src/
-│   │   ├── hand_udp_node.cpp              # Unified ROS2 node (HandController-based, recommended)
-│   │   ├── hand_udp_receiver_node.cpp     # Legacy receiver node
-│   │   ├── hand_udp_sender_node.cpp       # Legacy sender node
-│   │   ├── hand_udp_receiver.cpp          # Legacy receiver impl
-│   │   └── hand_udp_sender.cpp            # Legacy sender impl
+│   │   └── hand_udp_node.cpp              # ROS2 node (HandController + FailureDetector)
 │   ├── config/
-│   │   ├── hand_udp.yaml                  # Unified node config (recommended)
-│   │   └── hand_udp_receiver.yaml         # Legacy config
+│   │   └── hand_udp_node.yaml             # Node 파라미터 설정 (ros__parameters)
 │   └── launch/
-│       ├── hand_udp_unified.launch.py     # Unified node launch (recommended)
-│       └── hand_udp.launch.py             # Legacy two-node launch
+│       └── hand_udp.launch.py             # Hand UDP 런치
 │
 ├── ur5e_mujoco_sim/                       # MuJoCo 3.x simulator package (optional)
 │   ├── include/ur5e_mujoco_sim/
@@ -474,8 +466,6 @@ export MUJOCO_DIR=/opt/mujoco-3.x.x && colcon build
 [53–63]: fingertip_3 sensors[11]
 ```
 
-Legacy nodes (`hand_udp_receiver_node`, `hand_udp_sender_node`) used 616-byte streaming protocol and are deprecated.
-
 ### E-STOP System (v5.8.0: Global E-Stop)
 
 **Global E-Stop** (`std::atomic<bool> global_estop_`): v5.8.0에서 개별 컨트롤러 E-Stop 대신 글로벌 E-Stop 플래그로 통합. `TriggerGlobalEstop(reason)` 호출 시:
@@ -680,33 +670,25 @@ This is necessary because there is no existing ROS2 driver for the custom hand h
       log_directory: "~/ros2_ws/ur5e_ws/logging_data"
 ```
 
-### `config/hand_udp.yaml` (unified node, recommended)
+### `config/hand_udp_node.yaml`
 
 ```yaml
-udp:
-  target_ip: "192.168.1.2"    # Hand controller IP
-  target_port: 55151           # Hand controller port
-  recv_timeout_ms: 10          # v5.8.0: SO_RCVTIMEO (ms)
-  enable_write_ack: false      # v5.8.0: Hand 하드웨어 ACK 지원 시 true
+/**:
+  ros__parameters:
+    # UDP 통신
+    target_ip: "192.168.1.2"          # 핸드 컨트롤러 IP
+    target_port: 55151                # 핸드 컨트롤러 포트
+    recv_timeout_ms: 10               # SO_RCVTIMEO (ms)
+    enable_write_ack: false           # 핸드 하드웨어 ACK 지원 시 true
 
-publishing:
-  rate: 100.0                  # /hand/joint_states publish rate (Hz)
-  topic: "/hand/joint_states"
-  queue_size: 10
+    # ROS2 퍼블리시
+    publish_rate: 100.0               # /hand/joint_states 주기 (Hz)
 
-hand:
-  num_motors: 10               # kNumHandMotors
-  num_fingertips: 4            # kNumFingertips
-
-failure_detector:              # v5.8.0: C++ HandFailureDetector (50Hz jthread)
-  enable: true                 # Failure detector 활성화
-  failure_threshold: 5         # 연속 감지 횟수 임계값
-  check_motor: true            # 모터 데이터 검사
-  check_sensor: true           # 센서 데이터 검사
-
-monitoring:
-  enable_statistics: true
-  statistics_period: 5.0       # Packet statistics period (seconds)
+    # Failure Detector (50Hz non-RT jthread)
+    enable_failure_detector: true     # Failure detector 활성화
+    failure_threshold: 5              # 연속 감지 횟수 임계값
+    check_motor: true                 # 모터 데이터 검사
+    check_sensor: true                # 센서 데이터 검사
 ```
 
 ### `config/ur5e_status_monitor.yaml`
@@ -811,7 +793,7 @@ All arguments default to `""` (empty string) — YAML value takes precedence unl
 
 Launches: `mujoco_simulator_node`, `rt_controller`, `data_health_monitor`.
 
-### `launch/hand_udp_unified.launch.py` — Hand UDP (Recommended)
+### `launch/hand_udp.launch.py` — Hand UDP
 
 | Argument | Default | Description |
 |---|---|---|
@@ -819,17 +801,7 @@ Launches: `mujoco_simulator_node`, `rt_controller`, `data_health_monitor`.
 | `target_port` | `55151` | Hand controller port |
 | `publish_rate` | `100.0` | `/hand/joint_states` publish rate (Hz) |
 
-Launches: unified `hand_udp_node` (single process, request-response polling).
-
-### `launch/hand_udp.launch.py` — Hand UDP (Legacy)
-
-| Argument | Default | Description |
-|---|---|---|
-| `udp_port` | `50001` | UDP receive port |
-| `target_ip` | `192.168.1.100` | Hand controller IP |
-| `target_port` | `50002` | UDP send port |
-
-Launches: `hand_udp_receiver_node` + `hand_udp_sender_node` (deprecated, streaming protocol).
+Launches: `hand_udp_node` (single process, request-response polling).
 
 ---
 

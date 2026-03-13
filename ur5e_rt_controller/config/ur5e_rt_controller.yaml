@@ -1,49 +1,48 @@
-# ur5e_rt_controller.yaml - v5.3.0
+# ur5e_rt_controller.yaml — v5.8.0
 # ROS2 Humble / Jazzy 호환 플랫 파라미터 구조
+#
+# 주의: 코드(DeclareAndLoadParameters)가 플랫 파라미터만 읽습니다.
+#       네스트 구조(estop: / logging:)를 사용하면 파라미터가 무시됩니다.
 /**:
   ros__parameters:
-    # ── Controller Parameters ──────────────────────────────────────────────────
-    control_rate: 500.0          # Hz — timer period = 1e6/rate µs
-    kp: 5.0                      # PD proportional gain (초기값; GUI로 런타임 변경 가능)
-    kd: 0.5                      # PD derivative gain   (초기값; GUI로 런타임 변경 가능)
-    initial_controller: "pd_controller"  # 시작 컨트롤러 (p / pd / pinocchio / clik / osc)
-    enable_logging: true         # Enable CSV logging
-    log_dir: "~/ros2_ws/ur5e_ws/logging_data"  # launch 파일이 절대경로로 확장
-    max_log_files: 10            # 최근 N개 로그 파일만 보관 (오래된 파일 자동 삭제)
+    # ── 제어 주기 ─────────────────────────────────────────────────────────────
+    control_rate: 500.0              # Hz — 타이머 주기 = 1e6/rate µs
 
-    # ── Joint Limits ───────────────────────────────────────────────────────────
+    # ── 시작 컨트롤러 ─────────────────────────────────────────────────────────
+    # 레지스트리 키: p_controller(0), joint_pd_controller(1),
+    #               clik_controller(2), operational_space_controller(3),
+    #               ur5e_hand_controller(4)
+    initial_controller: "joint_pd_controller"
+
+    # ── 초기화 타임아웃 ───────────────────────────────────────────────────────
+    init_timeout_sec: 5.0            # 로봇/타겟 데이터 미수신 시 E-STOP + 셧다운 (초)
+
+    # ── E-STOP 설정 (플랫 파라미터 — 네스트 금지) ─────────────────────────────
+    enable_estop: true               # E-STOP 타임아웃 모니터링 활성화
+    robot_timeout_ms: 100.0          # /joint_states 갭 초과 시 E-STOP (ms)
+    hand_timeout_ms: 200.0           # /hand/joint_states 갭 초과 시 E-STOP (ms)
+                                     # 핸드 미연결 환경: 0.0 으로 비활성화
+
+    # ── 로깅 설정 (플랫 파라미터 — 네스트 금지) ───────────────────────────────
+    enable_logging: true             # CSV 로깅 활성화
+    log_dir: "~/ros2_ws/ur5e_ws/logging_data"   # launch 파일이 절대경로로 덮어씀
+    max_log_files: 10                # 최근 N개 로그 파일만 보관 (오래된 파일 자동 삭제)
+
+    # ── 관절 한계 ─────────────────────────────────────────────────────────────
+    # 정보 목적 — 실제 클램핑은 각 컨트롤러 내부의 kMaxJointVelocity에서 수행
     joint_limits:
-      max_velocity: 2.0            # rad/s — PDController::ClampCommands()에서 적용
-      max_acceleration: 5.0        # rad/s² (정보 목적; 코드에서 강제하지 않음)
+      max_velocity: 2.0              # rad/s
+      max_acceleration: 5.0          # rad/s² (정보 목적; 코드에서 강제하지 않음)
       position_limits:
-        joint_0: [-6.28, 6.28]     # Base
-        joint_1: [-6.28, 6.28]     # Shoulder
-        joint_2: [-3.14, 3.14]     # Elbow
-        joint_3: [-6.28, 6.28]     # Wrist 1
-        joint_4: [-6.28, 6.28]     # Wrist 2
-        joint_5: [-6.28, 6.28]     # Wrist 3
+        joint_0: [-6.28, 6.28]       # Base
+        joint_1: [-6.28, 6.28]       # Shoulder
+        joint_2: [-3.14, 3.14]       # Elbow (더 좁은 범위)
+        joint_3: [-6.28, 6.28]       # Wrist 1
+        joint_4: [-6.28, 6.28]       # Wrist 2
+        joint_5: [-6.28, 6.28]       # Wrist 3
 
-    # ── Initialization ─────────────────────────────────────────────────────────
-    init_timeout_sec: 5.0          # 초기화 타임아웃 (초) — 로봇/핸드 데이터 미수신 시 E-STOP
-    enable_status_monitor: false   # 실제 로봇 사용 시 true (non-RT 10Hz 상태 모니터)
-
-    # ── E-STOP Configuration ───────────────────────────────────────────────────
-    estop:
-      enable_estop: true           # E-STOP 모니터링 활성화
-      robot_timeout_ms: 100.0      # /joint_states 갭이 이 값 초과 시 E-STOP
-      hand_timeout_ms: 200.0       # /hand/joint_states 갭이 이 값 초과 시 E-STOP
-                                   # 핸드 미연결 환경: 0으로 설정하여 비활성화
-      safe_position:               # E-STOP 복구 안전 위치 (rad)
-        - 0.0                      # Base
-        - -1.57                    # Shoulder
-        - 1.57                     # Elbow
-        - -1.57                    # Wrist 1
-        - -1.57                    # Wrist 2
-        - 0.0                      # Wrist 3
-
-    # ── Logging Parameters ─────────────────────────────────────────────────────
-    logging:
-      enable_logging: true
-      log_frequency: 100.0         # Hz (제어율에서 서브샘플링 의도; 현재 미적용)
-      max_log_size_mb: 100         # 최대 로그 파일 크기
-      log_directory: "~/ros2_ws/ur5e_ws/logging_data"
+    # ── Status Monitor 통합 (v5.8.0) ─────────────────────────────────────────
+    # true 시 UR5eStatusMonitor가 동일 노드에서 10Hz로 실행.
+    # status_monitor.* 파라미터는 ur5e_status_monitor 패키지의 YAML에서 로드.
+    # 실제 로봇 사용 시 true 권장, 시뮬레이션에서는 false (UR 드라이버 토픽 없음)
+    enable_status_monitor: false

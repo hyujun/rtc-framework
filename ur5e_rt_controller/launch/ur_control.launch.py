@@ -60,6 +60,13 @@ def generate_launch_description():
         'ur5e_rt_controller.yaml'
     ])
 
+    # Status Monitor 설정 (ur5e_status_monitor 패키지 소유)
+    status_monitor_config = PathJoinSubstitution([
+        FindPackageShare('ur5e_status_monitor'),
+        'config',
+        'ur5e_status_monitor.yaml'
+    ])
+
     cyclone_dds_xml = PathJoinSubstitution([
         FindPackageShare('ur5e_rt_controller'),
         'config',
@@ -123,7 +130,7 @@ def generate_launch_description():
         executable='rt_controller',
         name='rt_controller',
         output='screen',
-        parameters=[ur_control_config, {'log_dir': log_dir}],
+        parameters=[ur_control_config, status_monitor_config, {'log_dir': log_dir}],
         emulate_tty=True,
     )
 

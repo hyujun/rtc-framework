@@ -99,10 +99,7 @@ ros2 launch ur5e_rt_controller ur_control.launch.py robot_ip:=192.168.1.10
 # 가상 하드웨어 (로봇 불필요)
 ros2 launch ur5e_rt_controller ur_control.launch.py use_fake_hardware:=true
 
-# UDP 핸드 노드 (통합, 권장)
-ros2 launch ur5e_hand_udp hand_udp_unified.launch.py
-
-# UDP 핸드 노드 (레거시 이중 노드)
+# UDP 핸드 노드
 ros2 launch ur5e_hand_udp hand_udp.launch.py
 ```
 

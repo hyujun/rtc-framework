@@ -1,14 +1,15 @@
 ur5e_hand_controller:
-  # UR5e 로봇 암 P 게인 (6개 관절: [j1, j2, j3, j4, j5, j6])
+  # ── UR5e 로봇 암 P 게인 ([Base, Shoulder, Elbow, Wrist1, Wrist2, Wrist3]) ─
+  # command = current_pos + kp * error * dt (증분 위치 스텝)
   robot_kp: [120.0, 120.0, 100.0, 80.0, 80.0, 80.0]
 
-  # 핸드 모터 P 게인 (10개 모터)
+  # ── 핸드 모터 P 게인 (10개 모터) ──────────────────────────────────────────
   hand_kp: [50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
 
-  # 출력 명령 타입: "position"
+  # ── 출력 타입 ─────────────────────────────────────────────────────────────
   command_type: "position"
 
-  # 토픽 설정 — 로봇 암 + 핸드 상태 수신 및 제어 입력 송신
+  # ── 토픽 설정 ─────────────────────────────────────────────────────────────
   topics:
     subscribe:
       - topic: "/joint_states"
@@ -17,7 +18,6 @@ ur5e_hand_controller:
         role: "hand_state"
       - topic: "/target_joint_positions"
         role: "target"
-
     publish:
       - topic: "/forward_position_controller/commands"
         role: "position_command"

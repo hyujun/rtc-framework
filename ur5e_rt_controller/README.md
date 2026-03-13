@@ -138,9 +138,10 @@ v5.8.0에서 기존 컨트롤러별 개별 E-Stop을 **글로벌 E-Stop** 아키
 
 `ur5e_status_monitor` 패키지를 `RtControllerNode`에 컴포지션 방식으로 통합했습니다.
 
-- **활성화**: YAML `enable_status_monitor: true` (기본 활성)
+- **활성화**: YAML `enable_status_monitor: true` (시뮬레이션 기본 `false`, 실제 로봇 시 `true` 권장)
+- **설정 분리**: `status_monitor.*` 파라미터는 `ur5e_status_monitor` 패키지의 YAML에서 관리. launch 파일이 두 YAML을 함께 로드
 - **실행 방식**: 별도 `std::jthread` — 10Hz 주기로 비-RT 모니터링
-- **모니터링 항목**: 관절 한계, 속도 초과, 통신 상태, 온도 등
+- **모니터링 항목**: 관절 한계, 속도 초과, 통신 상태, 추적 오차 등
 - **장애 콜백**: 이상 감지 시 `TriggerGlobalEstop()` 호출 → 글로벌 E-Stop 연쇄 활성화
 - **의존성**: `ur5e_status_monitor` 패키지 (shared library)
 
@@ -205,6 +206,7 @@ command[i] = current_pos[i] + kp[i] * (target[i] - current_pos[i]) * dt
 |----------|--------|------|
 | `kp` | `[1.0×6]` | 위치 비례 게인 |
 | `damping` | `0.01` | 감쇠 유사역행렬 λ |
+| `enable_null_space` | `true` | 영공간 관절 센터링 활성화 |
 | `null_kp` | `0.5` | 영공간 관절 센터링 게인 |
 | `trajectory_speed` | `0.1` | TCP 이동 속도 상한 [m/s] |
 | `control_6dof` | `false` | 6-DOF 방향 제어 활성화 |
@@ -232,6 +234,7 @@ command[i] = current_pos[i] + kp[i] * (target[i] - current_pos[i]) * dt
 | `kp_rot` | `[0.5×3]` | 회전 비례 게인 |
 | `kd_rot` | `[0.05×3]` | 회전 미분 게인 |
 | `damping` | `0.01` | 감쇠 유사역행렬 λ |
+| `enable_gravity_compensation` | `false` | 중력 보상 활성화 (+ g(q)) |
 | `trajectory_speed` | `0.1` | TCP 병진 이동 속도 상한 [m/s] |
 | `trajectory_angular_speed` | `0.5` | TCP 회전 속도 상한 [rad/s] |
 | `command_type` | `"torque"` | 출력 타입 |
@@ -327,32 +330,28 @@ topics:
 
 ### `config/ur5e_rt_controller.yaml` (노드 레벨)
 
+> **주의**: 코드(`DeclareAndLoadParameters`)가 **플랫 파라미터**만 읽습니다. `estop:` 등 네스트 구조를 사용하면 파라미터가 무시됩니다.
+
 ```yaml
 /**:
   ros__parameters:
-    control_rate: 500.0          # Hz — timer period = 1e6/rate µs
-    kp: 5.0                      # 레거시 PD 게인 (컨트롤러별 YAML에서 관리)
-    kd: 0.5                      # 레거시 PD 게인 (컨트롤러별 YAML에서 관리)
-    initial_controller: "pd_controller"  # 시작 컨트롤러 (레지스트리 키 또는 클래스명)
+    control_rate: 500.0              # Hz — 타이머 주기 = 1e6/rate µs
+    initial_controller: "joint_pd_controller"  # 레지스트리 키 또는 클래스명
+
+    init_timeout_sec: 5.0            # 초기화 타임아웃 (초) — 초과 시 E-STOP + 셧다운
+
+    # E-STOP (플랫 파라미터 — 네스트 금지)
+    enable_estop: true
+    robot_timeout_ms: 100.0          # /joint_states 갭 초과 시 E-STOP (ms)
+    hand_timeout_ms: 200.0           # 0.0 = 핸드 타임아웃 비활성화
+
+    # 로깅 (플랫 파라미터 — 네스트 금지)
     enable_logging: true
-    log_dir: "~/ros2_ws/ur5e_ws/logging_data"  # launch 파일이 절대경로로 확장
-    max_log_files: 10            # 최근 N개 로그 파일만 보관
+    log_dir: "~/ros2_ws/ur5e_ws/logging_data"
+    max_log_files: 10
 
-    joint_limits:
-      max_velocity: 2.0          # rad/s
-      max_acceleration: 5.0      # rad/s² (정보 목적)
-      position_limits:
-        joint_0: [-6.28, 6.28]   # Base ~ Wrist 3
-        joint_2: [-3.14, 3.14]   # Elbow (더 좁은 범위)
-
-    init_timeout_sec: 5.0        # 초기화 타임아웃 — 초과 시 E-Stop + 셧다운
-    enable_status_monitor: true  # ur5e_status_monitor 통합 활성화
-
-    estop:
-      enable_estop: true
-      robot_timeout_ms: 100.0    # /joint_states 갭 초과 시 E-STOP
-      hand_timeout_ms: 200.0     # 0 = 핸드 타임아웃 비활성화
-      safe_position: [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]
+    # Status Monitor (파라미터는 ur5e_status_monitor 패키지 YAML에서 로드)
+    enable_status_monitor: false     # 실제 로봇 시 true 권장
 ```
 
 ### 컨트롤러별 YAML (`config/controllers/{indirect,direct}/`)
@@ -362,10 +361,10 @@ topics:
 | 파일 | 주요 파라미터 |
 |------|-------------|
 | `indirect/p_controller.yaml` | `kp[6]`, `command_type: "position"` |
-| `indirect/clik_controller.yaml` | `kp[6]`, `damping`, `null_kp`, `trajectory_speed`, `control_6dof` |
+| `indirect/clik_controller.yaml` | `kp[6]`, `damping`, `enable_null_space`, `null_kp`, `trajectory_speed`, `control_6dof` |
 | `indirect/ur5e_hand_controller.yaml` | `robot_kp[6]`, `hand_kp[10]`, `command_type: "position"` |
-| `direct/joint_pd_controller.yaml` | `kp[6]`, `kd[6]`, `enable_gravity_compensation`, `trajectory_speed` |
-| `direct/operational_space_controller.yaml` | `kp_pos[3]`, `kd_pos[3]`, `kp_rot[3]`, `kd_rot[3]`, `damping` |
+| `direct/joint_pd_controller.yaml` | `kp[6]`, `kd[6]`, `enable_gravity_compensation`, `enable_coriolis_compensation`, `trajectory_speed` |
+| `direct/operational_space_controller.yaml` | `kp_pos[3]`, `kd_pos[3]`, `kp_rot[3]`, `kd_rot[3]`, `damping`, `enable_gravity_compensation` |
 
 ---
 
@@ -395,6 +394,10 @@ ros2 launch ur5e_rt_controller ur_control.launch.py use_fake_hardware:=true
 런치 파일이 자동 설정하는 환경변수:
 - `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`
 - `CYCLONEDDS_URI` → `config/cyclone_dds.xml` (DDS recv/send 스레드 Core 0-1 제한)
+
+런치 파일이 로드하는 설정 파일:
+- `ur5e_rt_controller/config/ur5e_rt_controller.yaml` — 노드 레벨 파라미터
+- `ur5e_status_monitor/config/ur5e_status_monitor.yaml` — Status Monitor 파라미터 (`status_monitor.*`)
 
 런치 시 함께 실행되는 노드:
 - `rt_controller` — RT 제어기 노드

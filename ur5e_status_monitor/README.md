@@ -96,7 +96,28 @@ source install/setup.bash
 
 ## Integration Guide
 
-### Compose into an existing node
+### RtControllerNode에서의 통합 (v5.8.0)
+
+`ur5e_rt_controller` 패키지의 launch 파일이 본 패키지의 설정을 자동으로 로드합니다:
+
+```python
+# ur_control.launch.py
+status_monitor_config = PathJoinSubstitution([
+    FindPackageShare('ur5e_status_monitor'),
+    'config', 'ur5e_status_monitor.yaml'
+])
+
+rt_controller_node = Node(
+    parameters=[ur_control_config, status_monitor_config, {'log_dir': log_dir}],
+    ...
+)
+```
+
+**설정 구조:**
+- `enable_status_monitor` — `ur5e_rt_controller.yaml`에서 활성화/비활성화 제어
+- `status_monitor.*` — `ur5e_status_monitor.yaml`에서 모든 파라미터 관리 (단일 소스)
+
+### 커스텀 노드에 직접 통합
 
 ```cpp
 #include "ur5e_status_monitor/ur5e_status_monitor.hpp"
@@ -139,6 +160,7 @@ monitor->setJointReference(q_ref, qd_ref);
 ## Parameters Reference
 
 All parameters are declared under the `status_monitor.` prefix.
+설정 파일: `ur5e_status_monitor/config/ur5e_status_monitor.yaml` (단일 소스)
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
