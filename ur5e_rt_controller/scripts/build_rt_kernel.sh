@@ -122,6 +122,14 @@ info "빌드 스레드: ${BUILD_THREADS}"
 # ── [3/6] 필수 패키지 설치 ───────────────────────────────────────────────────
 echo ""
 info "━━━ [1/6] 필수 빌드 패키지 설치 ━━━"
+
+# 이전 실행에서 dpkg가 broken 상태일 수 있으므로 먼저 복구
+if dpkg --audit 2>&1 | grep -q .; then
+  warn "dpkg broken 상태 감지 — 복구 중..."
+  dpkg --configure -a 2>/dev/null || true
+  apt-get install -f -y > /dev/null 2>&1 || true
+fi
+
 apt-get update -qq
 apt-get install -y \
     build-essential bc curl wget \
