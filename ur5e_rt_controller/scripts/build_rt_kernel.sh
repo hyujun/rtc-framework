@@ -261,6 +261,57 @@ dpkg -i "${DEB_IMAGE}"
 
 success "커널 패키지 설치 완료"
 
+# ── GRUB 기본 부팅 항목을 RT 커널로 설정 ──────────────────────────────────────
+echo ""
+info "━━━ GRUB 기본 부팅 항목을 RT 커널로 설정 ━━━"
+
+# 설치된 RT 커널의 정확한 버전 문자열을 .deb 파일명에서 추출
+RT_KERNEL_VER=$(echo "$DEB_IMAGE" | sed -n 's/linux-image-\(.*\)_.*\.deb/\1/p')
+
+if [[ -z "$RT_KERNEL_VER" ]]; then
+  warn "RT 커널 버전을 .deb 파일명에서 추출할 수 없습니다 — GRUB 설정을 수동으로 확인하세요"
+else
+  info "설치된 RT 커널 버전: ${RT_KERNEL_VER}"
+
+  # GRUB 메뉴에서 RT 커널에 해당하는 menuentry 찾기
+  update-grub 2>/dev/null
+
+  # /boot/grub/grub.cfg에서 RT 커널 menuentry ID 추출
+  GRUB_ENTRY=""
+  if [[ -f /boot/grub/grub.cfg ]]; then
+    # Advanced options 하위 메뉴의 정확한 menuentry ID 찾기
+    GRUB_ENTRY=$(awk -v ver="$RT_KERNEL_VER" '
+      /submenu.*Advanced options/ { sub_id=$0; gsub(/.*\047/,"",sub_id); gsub(/\047.*$/,"",sub_id) }
+      /menuentry/ && $0 ~ ver && !/recovery/ {
+        entry_id=$0; gsub(/.*\047/,"",entry_id); gsub(/\047.*$/,"",entry_id)
+        if (sub_id != "") { print sub_id ">" entry_id; exit }
+        else { print entry_id; exit }
+      }
+    ' /boot/grub/grub.cfg)
+  fi
+
+  if [[ -n "$GRUB_ENTRY" ]]; then
+    info "GRUB 메뉴 항목: ${GRUB_ENTRY}"
+
+    GRUB_FILE="/etc/default/grub"
+    cp "$GRUB_FILE" "${GRUB_FILE}.bak.rt.$(date +%Y%m%d%H%M%S)"
+
+    # GRUB_DEFAULT를 RT 커널 항목으로 설정
+    if grep -q '^GRUB_DEFAULT=' "$GRUB_FILE"; then
+      sed -i "s|^GRUB_DEFAULT=.*|GRUB_DEFAULT=\"${GRUB_ENTRY}\"|" "$GRUB_FILE"
+    else
+      echo "GRUB_DEFAULT=\"${GRUB_ENTRY}\"" >> "$GRUB_FILE"
+    fi
+
+    update-grub
+    success "GRUB 기본 부팅이 RT 커널(${RT_KERNEL_VER})로 설정되었습니다"
+  else
+    warn "GRUB 메뉴에서 RT 커널 항목을 찾을 수 없습니다"
+    warn "재부팅 시 GRUB 메뉴에서 'Advanced options'를 선택하여 RT 커널을 수동으로 선택하세요"
+    warn "설치된 RT 커널: ${RT_KERNEL_VER}"
+  fi
+fi
+
 # ── NVIDIA GRUB 최적화 ──────────────────────────────────────────────────────
 if [[ "$HAS_NVIDIA" == "yes" ]]; then
   echo ""
@@ -293,6 +344,12 @@ info "다음 단계:"
 info "  1. sudo reboot"
 info "  2. uname -v | grep PREEMPT_RT   (PREEMPT_RT 확인)"
 info "  3. uname -r                      (커널 버전 확인)"
+echo ""
+info "문제 해결:"
+info "  재부팅 후 RT 커널이 아닌 경우:"
+info "    1. 재부팅 시 GRUB 메뉴에서 'Advanced options' → RT 커널 선택"
+info "    2. 또는: sudo grep menuentry /boot/grub/grub.cfg  (RT 항목 확인)"
+info "    3. sudo grub-set-default '<RT 커널 항목>'  →  sudo update-grub"
 echo ""
 info "RT 최적화 가이드: docs/RT_OPTIMIZATION.md"
 info "IRQ affinity:     sudo ./setup_irq_affinity.sh"
