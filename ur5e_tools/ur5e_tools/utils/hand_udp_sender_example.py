@@ -5,9 +5,9 @@
 프로토콜 사양 (hand_packets.hpp 참조):
 
   Request 패킷:
-    - 헤더: [ID: 0x01] [CMD: 1B] [MODE: 0x00]
-    - 모터 커맨드: 헤더(3B) + 10 × uint32(float) = 43 bytes
-    - 센서 커맨드: 헤더(3B)만 전송 (데이터 없음)
+    - 헤더: [ID: 0x01] [CMD: 1B] [MODE: 1B]
+    - 모터 커맨드: 헤더(3B) + 10 × uint32(float) = 43 bytes, MODE=0x00
+    - 센서 커맨드: 헤더(3B)만 전송, MODE=sensor_mode (0=raw, 1=nn)
 
   Response 패킷:
     - 헤더: [ID: 1B (echo)] [CMD: 1B (echo)] [MODE: 1B (state mode)]
@@ -21,8 +21,7 @@
   - ReadPosition   0x11 : 모터 위치 요청 → 응답 수신 (43B)
   - ReadVelocity   0x12 : 모터 속도 요청 → 응답 수신 (43B)
   - ReadSensor0~3  0x14..0x17 : 핑거팁 센서 요청 (3B) → 응답 수신 (67B)
-  - SetSensorMode  0x18 : 센서 모드 설정 (3B) → 응답 (3B echo)
-                          MODE 필드: 0=raw, 1=nn (전원 인가 시 기본 nn)
+                          MODE 필드: 0=raw, 1=nn (전원 인가 시 기본 nn, 항상 raw로 요청)
 
 통신 플로우 (1 사이클):
   1. WritePosition(cmd=0x01) → send 43B
@@ -82,8 +81,6 @@ CMD_READ_SENSOR1 = 0x15
 CMD_READ_SENSOR2 = 0x16
 CMD_READ_SENSOR3 = 0x17
 
-CMD_SET_SENSOR_MODE = 0x18
-
 CMD_READ_SENSORS = [CMD_READ_SENSOR0, CMD_READ_SENSOR1,
                     CMD_READ_SENSOR2, CMD_READ_SENSOR3]
 
@@ -122,28 +119,18 @@ def encode_motor_packet(cmd: int, floats: list[float] | None = None) -> bytes:
     return header + data
 
 
-def encode_sensor_request(cmd: int) -> bytes:
+def encode_sensor_request(cmd: int, sensor_mode: int = SENSOR_MODE_RAW) -> bytes:
     """
     센서 read request 인코딩 (3 bytes, 헤더만)
+    MODE 필드에 센서 모드를 설정 (기본 RAW).
+    전원 인가 시 기본 모드는 NN이므로 항상 RAW로 요청.
 
     Args:
         cmd: 센서 커맨드 코드 (CMD_READ_SENSOR0 ~ CMD_READ_SENSOR3)
-    """
-    assert _is_sensor_command(cmd), f"센서 커맨드가 아닙니다: 0x{cmd:02x}"
-    return struct.pack('<BBB', DEVICE_ID, cmd, DEFAULT_MODE)
-
-
-def encode_set_sensor_mode(sensor_mode: int) -> bytes:
-    """
-    센서 모드 설정 패킷 인코딩 (3 bytes)
-    MODE 필드에 원하는 센서 모드를 설정 (SENSOR_MODE_RAW=0, SENSOR_MODE_NN=1)
-
-    Args:
         sensor_mode: SENSOR_MODE_RAW (0) 또는 SENSOR_MODE_NN (1)
     """
-    assert sensor_mode in (SENSOR_MODE_RAW, SENSOR_MODE_NN), \
-        f"유효하지 않은 센서 모드: {sensor_mode} (0=raw, 1=nn)"
-    return struct.pack('<BBB', DEVICE_ID, CMD_SET_SENSOR_MODE, sensor_mode)
+    assert _is_sensor_command(cmd), f"센서 커맨드가 아닙니다: 0x{cmd:02x}"
+    return struct.pack('<BBB', DEVICE_ID, cmd, sensor_mode)
 
 
 def decode_motor_response(buf: bytes) -> tuple[int, int, list[float]]:
@@ -226,30 +213,6 @@ class HandUDPSender:
         print(f"  Target: {target_ip}:{target_port}")
         print(f"  Motors: {NUM_HAND_MOTORS}, Connected sensors: {self.num_sensors}/{NUM_FINGERTIPS}")
 
-    def set_sensor_mode(self, sensor_mode: int) -> bool:
-        """
-        핑거팁 센서 모드 설정 (cmd=0x18, 3B → 3B echo)
-
-        전원 인가 시 기본 모드는 NN(1)이므로, 센서 데이터 요청 전에
-        RAW(0)로 변경해야 합니다.
-
-        Args:
-            sensor_mode: SENSOR_MODE_RAW (0) 또는 SENSOR_MODE_NN (1)
-
-        Returns:
-            True if response received, False on timeout
-        """
-        pkt = encode_set_sensor_mode(sensor_mode)
-        self.sock.sendto(pkt, self.target)
-        try:
-            data, _ = self.sock.recvfrom(256)
-            mode_name = "RAW" if sensor_mode == SENSOR_MODE_RAW else "NN"
-            print(f"  센서 모드 → {mode_name} (응답 {len(data)}B)")
-            return True
-        except socket.timeout:
-            print(f"  센서 모드 설정 타임아웃")
-            return False
-
     def write_position(self, positions: list[float]) -> None:
         """모터 목표 위치 전송 (cmd=0x01, 43B)"""
         assert len(positions) == NUM_HAND_MOTORS
@@ -264,19 +227,22 @@ class HandUDPSender:
         """모터 현재 속도 요청 및 수신 (cmd=0x12, 43B ↔ 43B)"""
         return self._request_motor(CMD_READ_VELOCITY)
 
-    def read_sensor(self, fingertip_idx: int) -> list[float] | None:
+    def read_sensor(self, fingertip_idx: int,
+                    sensor_mode: int = SENSOR_MODE_RAW) -> tuple[list[float], int] | None:
         """
         핑거팁 센서 데이터 요청 및 수신 (cmd=0x14..0x17, 3B → 67B)
+        MODE 필드에 sensor_mode를 설정하여 전송 (기본 RAW).
 
         Args:
             fingertip_idx: 센서 인덱스 (0 ~ num_sensors-1)
+            sensor_mode: SENSOR_MODE_RAW (0) 또는 SENSOR_MODE_NN (1)
 
         Returns:
-            11 floats: barometer[8] + tof[3], or None on timeout
+            (11 floats: barometer[8] + tof[3], response_mode), or None on timeout
         """
         assert 0 <= fingertip_idx < self.num_sensors, \
             f"센서 인덱스 {fingertip_idx}은 연결된 센서 범위(0~{self.num_sensors - 1})를 초과합니다"
-        return self._request_sensor(CMD_READ_SENSORS[fingertip_idx])
+        return self._request_sensor(CMD_READ_SENSORS[fingertip_idx], sensor_mode)
 
     def poll_cycle(self, positions: list[float]) -> dict:
         """
@@ -284,13 +250,14 @@ class HandUDPSender:
           1. WritePosition                    → send 43B
           2. ReadPosition                     → send 43B, recv 43B
           3. ReadVelocity                     → send 43B, recv 43B
-          4. ReadSensor × num_sensors         → send 3B, recv 67B
+          4. ReadSensor × num_sensors         → send 3B (MODE=raw), recv 67B
 
         Returns:
             dict with keys:
               - positions: [10 floats] or None
               - velocities: [10 floats] or None
               - sensors: [num_sensors × 11 floats]
+              - sensor_modes: [num_sensors × response_mode]
         """
         # 1. 목표 위치 전송
         self.write_position(positions)
@@ -301,19 +268,24 @@ class HandUDPSender:
         # 3. 현재 속도 수신
         vel = self.read_velocity()
 
-        # 4. 센서 데이터 수신 (연결된 센서만, 각 11개 유효 값)
+        # 4. 센서 데이터 수신 (연결된 센서만, 각 11개 유효 값, MODE=RAW)
         sensors = []
+        sensor_modes = []
         for i in range(self.num_sensors):
-            s = self.read_sensor(i)
-            if s is not None:
-                sensors.extend(s)
+            result = self.read_sensor(i)
+            if result is not None:
+                values, response_mode = result
+                sensors.extend(values)
+                sensor_modes.append(response_mode)
             else:
                 sensors.extend([0.0] * SENSOR_VALUES_PER_FINGERTIP)
+                sensor_modes.append(-1)
 
         return {
             "positions": pos,
             "velocities": vel,
             "sensors": sensors,
+            "sensor_modes": sensor_modes,
         }
 
     def read_cycle(self) -> dict:
@@ -321,29 +293,35 @@ class HandUDPSender:
         Read request만 수행 (WritePosition 없음):
           1. ReadPosition          → send 43B, recv 43B
           2. ReadVelocity          → send 43B, recv 43B
-          3. ReadSensor × num_sensors → send 3B, recv 67B
+          3. ReadSensor × num_sensors → send 3B (MODE=raw), recv 67B
 
         Returns:
             dict with keys:
               - positions: [10 floats] or None
               - velocities: [10 floats] or None
               - sensors: [num_sensors × 11 floats]
+              - sensor_modes: [num_sensors × response_mode]
         """
         pos = self.read_position()
         vel = self.read_velocity()
 
         sensors = []
+        sensor_modes = []
         for i in range(self.num_sensors):
-            s = self.read_sensor(i)
-            if s is not None:
-                sensors.extend(s)
+            result = self.read_sensor(i)
+            if result is not None:
+                values, response_mode = result
+                sensors.extend(values)
+                sensor_modes.append(response_mode)
             else:
                 sensors.extend([0.0] * SENSOR_VALUES_PER_FINGERTIP)
+                sensor_modes.append(-1)
 
         return {
             "positions": pos,
             "velocities": vel,
             "sensors": sensors,
+            "sensor_modes": sensor_modes,
         }
 
     def _request_motor(self, cmd: int) -> list[float] | None:
@@ -357,14 +335,21 @@ class HandUDPSender:
         except socket.timeout:
             return None
 
-    def _request_sensor(self, cmd: int) -> list[float] | None:
-        """센서 요청 전송(3B) 후 응답 수신(67B)"""
-        pkt = encode_sensor_request(cmd)
+    def _request_sensor(self, cmd: int,
+                        sensor_mode: int = SENSOR_MODE_RAW) -> tuple[list[float], int] | None:
+        """
+        센서 요청 전송(3B) 후 응답 수신(67B)
+        MODE 필드에 sensor_mode를 설정하여 전송.
+
+        Returns:
+            (11 floats, response_mode) or None on timeout
+        """
+        pkt = encode_sensor_request(cmd, sensor_mode)
         self.sock.sendto(pkt, self.target)
         try:
             data, _ = self.sock.recvfrom(256)
-            _, _mode, values = decode_sensor_response(data)
-            return values
+            _, response_mode, values = decode_sensor_response(data)
+            return values, response_mode
         except socket.timeout:
             return None
 
@@ -411,13 +396,8 @@ def example_poll_cycle(num_sensors: int = NUM_FINGERTIPS):
     sender = HandUDPSender(target_ip="127.0.0.1", target_port=50002,
                            num_sensors=num_sensors)
 
-    # 센서가 있으면 RAW 모드로 전환 (전원 인가 시 기본 NN)
-    if num_sensors > 0:
-        print("\n센서 모드를 RAW로 설정 중...")
-        sender.set_sensor_mode(SENSOR_MODE_RAW)
-
-    print(f"\n전체 poll 사이클 실행 (센서 {num_sensors}개)...")
-    print(f"  WritePosition(43B) → ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B→67B)")
+    print(f"\n전체 poll 사이클 실행 (센서 {num_sensors}개, MODE=RAW)...")
+    print(f"  WritePosition(43B) → ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B[MODE=raw]→67B)")
     print("Ctrl+C로 중지\n")
 
     try:
@@ -442,7 +422,8 @@ def example_poll_cycle(num_sensors: int = NUM_FINGERTIPS):
                 if result["velocities"]:
                     vel_str = f'[{", ".join(f"{v:.3f}" for v in result["velocities"][:4])} ...]'
                 n_sensors = len(result['sensors'])
-                print(f"[cycle {cycle}] pos={pos_str}  vel={vel_str}  sensors={n_sensors} values ({num_sensors}x{SENSOR_VALUES_PER_FINGERTIP})")
+                mode_str = ','.join(str(m) for m in result['sensor_modes'])
+                print(f"[cycle {cycle}] pos={pos_str}  vel={vel_str}  sensors={n_sensors} values  resp_mode=[{mode_str}]")
 
             t += dt
             time.sleep(dt)
@@ -481,13 +462,8 @@ def example_read_only(num_sensors: int = NUM_FINGERTIPS):
     sender = HandUDPSender(target_ip="127.0.0.1", target_port=50002,
                            num_sensors=num_sensors)
 
-    # 센서가 있으면 RAW 모드로 전환 (전원 인가 시 기본 NN)
-    if num_sensors > 0:
-        print("\n센서 모드를 RAW로 설정 중...")
-        sender.set_sensor_mode(SENSOR_MODE_RAW)
-
-    print(f"\nRead only 사이클 실행 (센서 {num_sensors}개)...")
-    print(f"  ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B→67B)")
+    print(f"\nRead only 사이클 실행 (센서 {num_sensors}개, MODE=RAW)...")
+    print(f"  ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B[MODE=raw]→67B)")
     print("Ctrl+C로 중지\n")
 
     try:
@@ -505,7 +481,8 @@ def example_read_only(num_sensors: int = NUM_FINGERTIPS):
                 if result["velocities"]:
                     vel_str = f'[{", ".join(f"{v:.3f}" for v in result["velocities"][:4])} ...]'
                 n_sensors = len(result['sensors'])
-                print(f"[cycle {cycle}] pos={pos_str}  vel={vel_str}  sensors={n_sensors} values ({num_sensors}x{SENSOR_VALUES_PER_FINGERTIP})")
+                mode_str = ','.join(str(m) for m in result['sensor_modes'])
+                print(f"[cycle {cycle}] pos={pos_str}  vel={vel_str}  sensors={n_sensors} values  resp_mode=[{mode_str}]")
 
             time.sleep(dt)
 

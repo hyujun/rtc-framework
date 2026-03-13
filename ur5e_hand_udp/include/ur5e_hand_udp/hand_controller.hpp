@@ -160,37 +160,31 @@ class HandController {
         cmd_out, mode_out, out);
   }
 
-  // Send a set-sensor-mode command (3B send, 3B recv echo).
-  // Switches fingertip sensor between raw and NN mode.
-  [[nodiscard]] bool RequestSetSensorMode(
-      hand_packets::SensorMode sensor_mode) noexcept {
-    std::array<uint8_t, hand_packets::kSensorRequestSize> send_buf{};
-    std::array<uint8_t, hand_packets::kSensorRequestSize> recv_buf{};
-
-    hand_udp_codec::EncodeSetSensorMode(sensor_mode, send_buf);
-    const ssize_t recvd = SendAndRecvRaw(
-        send_buf.data(), send_buf.size(),
-        recv_buf.data(), recv_buf.size());
-    return recvd >= static_cast<ssize_t>(hand_packets::kSensorRequestSize);
-  }
-
   // Request a sensor read command (3B send) and decode 11 useful values (67B recv).
+  // MODE field in request carries the desired sensor mode (default kRaw).
+  // Response mode_out indicates the actual sensor mode used.
   [[nodiscard]] bool RequestSensorRead(
       hand_packets::Command cmd,
-      std::array<float, kSensorValuesPerFingertip>& out) noexcept {
+      std::array<float, kSensorValuesPerFingertip>& out,
+      hand_packets::SensorMode sensor_mode = hand_packets::SensorMode::kRaw,
+      uint8_t* response_mode = nullptr) noexcept {
     std::array<uint8_t, hand_packets::kSensorRequestSize> send_buf{};
     std::array<uint8_t, hand_packets::kSensorResponseSize> recv_buf{};
 
-    hand_udp_codec::EncodeSensorReadRequest(cmd, send_buf);
+    hand_udp_codec::EncodeSensorReadRequest(cmd, send_buf, sensor_mode);
     const ssize_t recvd = SendAndRecvRaw(
         send_buf.data(), send_buf.size(),
         recv_buf.data(), recv_buf.size());
     if (recvd < static_cast<ssize_t>(hand_packets::kSensorResponseSize)) return false;
 
     uint8_t cmd_out, mode_out;
-    return hand_udp_codec::DecodeSensorResponse(
+    const bool ok = hand_udp_codec::DecodeSensorResponse(
         recv_buf.data(), static_cast<std::size_t>(recvd),
         cmd_out, mode_out, out);
+    if (ok && response_mode) {
+      *response_mode = mode_out;
+    }
+    return ok;
   }
 
   void PollLoop(std::stop_token stop_token) {

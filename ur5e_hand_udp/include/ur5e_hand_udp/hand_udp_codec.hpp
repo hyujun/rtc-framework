@@ -36,19 +36,12 @@ inline void EncodeReadRequest(
 }
 
 // Encode a sensor read-request packet (3 bytes, header only).
+// MODE field carries the desired sensor mode (kRaw=0 or kNn=1, default kRaw).
 inline void EncodeSensorReadRequest(
     hand_packets::Command cmd,
-    std::array<uint8_t, kSensorRequestBytes>& out) noexcept {
-  auto pkt = hand_packets::MakeSensorReadRequest(cmd);
-  hand_packets::SerializeSensorRequest(pkt, out);
-}
-
-// Encode a set-sensor-mode request packet (3 bytes, header only).
-// MODE field carries the desired SensorMode (kRaw=0 or kNn=1).
-inline void EncodeSetSensorMode(
-    hand_packets::SensorMode sensor_mode,
-    std::array<uint8_t, kSensorRequestBytes>& out) noexcept {
-  auto pkt = hand_packets::MakeSetSensorMode(sensor_mode);
+    std::array<uint8_t, kSensorRequestBytes>& out,
+    hand_packets::SensorMode sensor_mode = hand_packets::SensorMode::kRaw) noexcept {
+  auto pkt = hand_packets::MakeSensorReadRequest(cmd, sensor_mode);
   hand_packets::SerializeSensorRequest(pkt, out);
 }
 
