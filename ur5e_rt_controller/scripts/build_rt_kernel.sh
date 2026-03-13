@@ -258,34 +258,48 @@ info "  Image:   ${DEB_IMAGE}"
 
 # NVIDIA DKMS는 커스텀 RT 커널 헤더 이름을 인식하지 못해 빌드 실패할 수 있음.
 # dpkg post-install 트리거에서 DKMS autoinstall이 실패하면 dpkg 전체가 실패하므로,
-# 트리거를 지연시키고 headers → image 순서로 설치한 뒤 트리거를 별도 처리한다.
-info "DKMS 트리거를 지연시켜 설치 중..."
+# 커널 설치 중 DKMS autoinstall 훅을 일시 비활성화한 뒤 복원한다.
+DKMS_POSTINST="/etc/kernel/postinst.d/dkms"
+DKMS_DISABLED=0
+if [[ -f "$DKMS_POSTINST" ]]; then
+  info "DKMS autoinstall 훅 일시 비활성화..."
+  chmod -x "$DKMS_POSTINST"
+  DKMS_DISABLED=1
+fi
 
+# headers를 먼저 설치하여 이후 DKMS 빌드 시 헤더가 존재하도록 함
 DEBS_TO_INSTALL=()
 [[ -n "$DEB_HEADERS" ]] && DEBS_TO_INSTALL+=("${DEB_HEADERS}")
 DEBS_TO_INSTALL+=("${DEB_IMAGE}")
 
-dpkg --no-triggers -i "${DEBS_TO_INSTALL[@]}"
+dpkg -i "${DEBS_TO_INSTALL[@]}"
 
-# 트리거 실행 (NVIDIA DKMS 빌드 실패는 무시 — RT 커널에 NVIDIA 드라이버는 선택사항)
-info "dpkg 트리거 실행 중 (NVIDIA DKMS 실패는 무시)..."
-set +e
-dpkg --configure --pending 2>&1
-TRIGGER_RC=$?
-set -e
-
-if [[ $TRIGGER_RC -eq 0 ]]; then
-  success "커널 패키지 설치 완료"
-else
-  warn "dpkg 트리거 중 오류 발생 (exit code: ${TRIGGER_RC})"
-  warn "NVIDIA DKMS 모듈이 RT 커널에서 빌드 실패했을 가능성이 높습니다"
-  warn "RT 커널 자체는 정상 설치되었습니다"
-  warn "NVIDIA 드라이버가 필요한 경우 재부팅 후 수동 설치:"
-  warn "  sudo dkms autoinstall -k \$(uname -r)"
-  # dpkg가 broken 상태일 수 있으므로 복구
-  apt-get install -f -y > /dev/null 2>&1 || true
-  success "커널 패키지 설치 완료 (NVIDIA DKMS 제외)"
+# DKMS 훅 복원
+if [[ "$DKMS_DISABLED" -eq 1 ]] && [[ -f "$DKMS_POSTINST" ]]; then
+  chmod +x "$DKMS_POSTINST"
+  info "DKMS autoinstall 훅 복원 완료"
 fi
+
+# NVIDIA GPU가 있으면 DKMS 수동 빌드 시도 (실패해도 무시)
+if [[ "$HAS_NVIDIA" == "yes" ]]; then
+  # 패치 버전에서 RT 식별자 추출 (예: 6.8.2-rt11 → rt11)
+  RT_TAG=$(echo "$PATCH_VERSION" | grep -oP 'rt\d+')
+  FULL_KVER="${KERNEL_VERSION}-${RT_TAG}-rt-custom"
+  info "NVIDIA DKMS 모듈 빌드 시도 (커널: ${FULL_KVER})..."
+  set +e
+  dkms autoinstall -k "${FULL_KVER}" 2>&1
+  DKMS_RC=$?
+  set -e
+  if [[ $DKMS_RC -eq 0 ]]; then
+    success "NVIDIA DKMS 모듈 빌드 성공"
+  else
+    warn "NVIDIA DKMS 모듈 빌드 실패 — RT 커널 자체는 정상 설치됨"
+    warn "NVIDIA 드라이버가 필요한 경우 재부팅 후 수동 설치:"
+    warn "  sudo dkms autoinstall -k \$(uname -r)"
+  fi
+fi
+
+success "커널 패키지 설치 완료"
 
 # ── GRUB 기본 부팅 항목을 RT 커널로 설정 ──────────────────────────────────────
 echo ""
