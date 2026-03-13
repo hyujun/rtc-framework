@@ -502,31 +502,56 @@ class HandDataFailureDetector:
     다음 두 가지 실패 조건을 검사:
       1. 데이터가 모두 0인 상태가 FAILURE_THRESHOLD회 이상 연속
       2. 동일한 데이터가 FAILURE_THRESHOLD회 이상 연속
+
+    검사 대상은 motor_enabled / sensor_enabled 플래그로 선택 가능.
     """
 
-    def __init__(self, threshold: int = FAILURE_THRESHOLD):
+    def __init__(self, threshold: int = FAILURE_THRESHOLD,
+                 motor_enabled: bool = True, sensor_enabled: bool = True):
+        """
+        Args:
+            threshold: 연속 감지 횟수 임계값
+            motor_enabled: True이면 모터 위치 데이터 검사 활성화
+            sensor_enabled: True이면 핑거팁 센서 데이터 검사 활성화
+        """
         self.threshold = threshold
-        self._zero_count = 0
-        self._duplicate_count = 0
+        self.motor_enabled = motor_enabled
+        self.sensor_enabled = sensor_enabled
+
+        # 모터 검사용
+        self._motor_zero_count = 0
+        self._motor_duplicate_count = 0
         self._prev_positions: list[float] | None = None
+
+        # 센서 검사용
+        self._sensor_zero_count = 0
+        self._sensor_duplicate_count = 0
+        self._prev_sensors: list[int] | None = None
 
     def check(self, result: dict) -> None:
         """
         poll_cycle / read_cycle 결과를 검사.
         실패 조건 충족 시 에러 로그 출력 후 sys.exit(1).
         """
+        if self.motor_enabled:
+            self._check_motor(result)
+        if self.sensor_enabled:
+            self._check_sensor(result)
+
+    def _check_motor(self, result: dict) -> None:
+        """모터 위치 데이터 이상 검사"""
         positions = result.get("positions")
 
         # 데이터 수신 실패 (None) → 0 데이터로 간주
         if positions is None:
-            self._zero_count += 1
-            self._duplicate_count = 0
+            self._motor_zero_count += 1
+            self._motor_duplicate_count = 0
             self._prev_positions = None
-            if self._zero_count >= self.threshold:
+            if self._motor_zero_count >= self.threshold:
                 logger.error(
                     "[FAILURE] 위치 데이터 수신 실패 (None)가 %d회 연속 발생. "
                     "통신 장애로 판단하여 프로그램을 종료합니다.",
-                    self._zero_count,
+                    self._motor_zero_count,
                 )
                 sys.exit(1)
             return
@@ -534,37 +559,90 @@ class HandDataFailureDetector:
         # 모든 값이 0인지 확인
         all_zero = all(v == 0.0 for v in positions)
         if all_zero:
-            self._zero_count += 1
+            self._motor_zero_count += 1
         else:
-            self._zero_count = 0
+            self._motor_zero_count = 0
 
-        if self._zero_count >= self.threshold:
+        if self._motor_zero_count >= self.threshold:
             logger.error(
                 "[FAILURE] 위치 데이터가 모두 0인 상태가 %d회 연속 발생. "
                 "센서/통신 이상으로 판단하여 프로그램을 종료합니다. "
                 "마지막 데이터: %s",
-                self._zero_count,
+                self._motor_zero_count,
                 positions,
             )
             sys.exit(1)
 
         # 동일 데이터 반복 확인
         if self._prev_positions is not None and positions == self._prev_positions:
-            self._duplicate_count += 1
+            self._motor_duplicate_count += 1
         else:
-            self._duplicate_count = 0
+            self._motor_duplicate_count = 0
 
-        if self._duplicate_count >= self.threshold:
+        if self._motor_duplicate_count >= self.threshold:
             logger.error(
                 "[FAILURE] 동일한 위치 데이터가 %d회 연속 반복 발생. "
                 "데이터 갱신 이상으로 판단하여 프로그램을 종료합니다. "
                 "반복 데이터: %s",
-                self._duplicate_count + 1,  # 최초 1회 + 반복 횟수
+                self._motor_duplicate_count + 1,  # 최초 1회 + 반복 횟수
                 positions,
             )
             sys.exit(1)
 
         self._prev_positions = list(positions)
+
+    def _check_sensor(self, result: dict) -> None:
+        """핑거팁 센서 데이터 이상 검사"""
+        sensors = result.get("sensors", [])
+
+        # 센서 데이터가 비어있으면 수신 실패로 간주
+        if not sensors:
+            self._sensor_zero_count += 1
+            self._sensor_duplicate_count = 0
+            self._prev_sensors = None
+            if self._sensor_zero_count >= self.threshold:
+                logger.error(
+                    "[FAILURE] 센서 데이터 수신 실패 (빈 데이터)가 %d회 연속 발생. "
+                    "통신 장애로 판단하여 프로그램을 종료합니다.",
+                    self._sensor_zero_count,
+                )
+                sys.exit(1)
+            return
+
+        # 모든 값이 0인지 확인
+        all_zero = all(v == 0 for v in sensors)
+        if all_zero:
+            self._sensor_zero_count += 1
+        else:
+            self._sensor_zero_count = 0
+
+        if self._sensor_zero_count >= self.threshold:
+            logger.error(
+                "[FAILURE] 센서 데이터가 모두 0인 상태가 %d회 연속 발생. "
+                "센서/통신 이상으로 판단하여 프로그램을 종료합니다. "
+                "마지막 데이터: %s",
+                self._sensor_zero_count,
+                sensors,
+            )
+            sys.exit(1)
+
+        # 동일 데이터 반복 확인
+        if self._prev_sensors is not None and sensors == self._prev_sensors:
+            self._sensor_duplicate_count += 1
+        else:
+            self._sensor_duplicate_count = 0
+
+        if self._sensor_duplicate_count >= self.threshold:
+            logger.error(
+                "[FAILURE] 동일한 센서 데이터가 %d회 연속 반복 발생. "
+                "데이터 갱신 이상으로 판단하여 프로그램을 종료합니다. "
+                "반복 데이터: %s",
+                self._sensor_duplicate_count + 1,  # 최초 1회 + 반복 횟수
+                sensors,
+            )
+            sys.exit(1)
+
+        self._prev_sensors = list(sensors)
 
 
 # ── 예제 함수 ────────────────────────────────────────────────────────────────
@@ -623,7 +701,7 @@ def example_poll_cycle(target_ip: str = "192.168.1.2",
                                        output_dir=csv_dir, prefix="hand_poll")
         print(f"  CSV 저장: {csv_logger.filepath}")
 
-    failure_detector = HandDataFailureDetector()
+    failure_detector = HandDataFailureDetector(motor_enabled=False, sensor_enabled=True)
 
     print(f"  WritePosition(43B) → ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B[MODE=raw]→67B)")
     print("Ctrl+C로 중지\n")
@@ -718,7 +796,7 @@ def example_read_only(target_ip: str = "192.168.1.2",
                                        output_dir=csv_dir, prefix="hand_read")
         print(f"  CSV 저장: {csv_logger.filepath}")
 
-    failure_detector = HandDataFailureDetector()
+    failure_detector = HandDataFailureDetector(motor_enabled=False, sensor_enabled=True)
 
     print(f"  ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B[MODE=raw]→67B)")
     print("Ctrl+C로 중지\n")
