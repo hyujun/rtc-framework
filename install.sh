@@ -339,7 +339,6 @@ install_ur_driver() {
       ${ROS_PKG_PREFIX}-ur-msgs \
       ${ROS_PKG_PREFIX}-ur-description \
       ${ROS_PKG_PREFIX}-control-msgs \
-      ${ROS_PKG_PREFIX}-industrial-msgs \
       ${ROS_PKG_PREFIX}-rmw-cyclonedds-cpp \
       > /dev/null
   success "UR robot driver and CycloneDDS installed"
