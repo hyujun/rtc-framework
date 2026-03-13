@@ -225,7 +225,7 @@ success "커널 설정 완료"
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo ""
   success "Dry-run 완료. 소스 및 패치가 준비되었습니다: ${BUILD_DIR}/linux-${KERNEL_VERSION}"
-  info "빌드하려면: cd ${BUILD_DIR}/linux-${KERNEL_VERSION} && make -j${BUILD_THREADS} deb-pkg"
+  info "빌드하려면: cd ${BUILD_DIR}/linux-${KERNEL_VERSION} && make -j${BUILD_THREADS} bindeb-pkg"
   exit 0
 fi
 
@@ -233,7 +233,7 @@ fi
 echo ""
 info "━━━ [5/6] 커널 빌드 (상당 시간 소요) ━━━"
 info "빌드 스레드: ${BUILD_THREADS}  |  시작 시간: $(date '+%H:%M:%S')"
-make -j"${BUILD_THREADS}" deb-pkg
+make -j"${BUILD_THREADS}" bindeb-pkg
 
 echo ""
 info "━━━ [6/6] .deb 패키지 설치 ━━━"
