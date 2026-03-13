@@ -1,0 +1,35 @@
+# ur5e_status_monitor.yaml — v5.2.2
+# UR5e 상태 모니터링 설정
+/**:
+  ros__parameters:
+    status_monitor:
+      # ── 토픽 이름 (UR 드라이버 버전에 따라 변경 가능) ──────────────────────
+      joint_states_topic:    "/joint_states"
+      robot_mode_topic:      "/io_and_status_controller/robot_mode"
+      safety_mode_topic:     "/io_and_status_controller/safety_mode"
+      program_running_topic: "/io_and_status_controller/robot_program_running"
+
+      # ── Watchdog 임계값 ──────────────────────────────────────────────────────
+      watchdog_timeout_sec: 1.0              # /joint_states 수신 타임아웃 (초)
+
+      # ── 컨트롤러 매니저 폴링 ─────────────────────────────────────────────────
+      controller_poll_interval_sec: 5.0      # list_controllers 서비스 호출 주기 (초)
+      target_controller: "scaled_joint_trajectory_controller"  # 감시 대상 컨트롤러
+
+      # ── 추적 오차 임계값 (rad) ───────────────────────────────────────────────
+      tracking_error_pos_warn_rad:  0.05     # 위치 추적 오차 경고 임계값
+      tracking_error_pos_fault_rad: 0.15     # 위치 추적 오차 고장 임계값 (E-STOP)
+      tracking_error_vel_warn_rad:  0.1      # 속도 추적 오차 경고 임계값
+      tracking_error_vel_fault_rad: 0.3      # 속도 추적 오차 고장 임계값 (E-STOP)
+
+      # ── 관절 한계 접근 경고 (deg) ────────────────────────────────────────────
+      joint_limit_warn_margin_deg:  5.0      # 한계에서 경고 마진 (도)
+      joint_limit_fault_margin_deg: 1.0      # 한계에서 고장 마진 (도)
+
+      # ── 자동 복구 ───────────────────────────────────────────────────────────
+      auto_recovery: false                   # protective stop 자동 해제 (주의!)
+      max_recovery_attempts: 3               # 최대 복구 시도 횟수
+      recovery_interval_sec: 5.0             # 복구 시도 간 쿨다운 (초)
+
+      # ── 실패 로깅 ───────────────────────────────────────────────────────────
+      log_output_dir: "~/.ros/"              # 실패 로그 파일 출력 디렉토리

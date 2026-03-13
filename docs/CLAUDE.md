@@ -24,7 +24,7 @@ chmod +x build.sh
 
 # Manual build (from workspace root — ~/ros2_ws/ur5e_ws)
 cd ~/ros2_ws/ur5e_ws
-colcon build --packages-select ur5e_description ur5e_rt_base ur5e_rt_controller ur5e_hand_udp ur5e_tools --symlink-install
+colcon build --packages-select ur5e_description ur5e_rt_base ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_tools --symlink-install
 source install/setup.bash
 
 # Run full system (real robot)
@@ -73,7 +73,7 @@ print(f'Over 2ms: {(df["compute_time_us"] > 2000).mean()*100:.2f}%')
 
 ## Repository Layout
 
-v5.0.0+: 6개 독립 ROS2 패키지가 레포지토리 **루트 직하**에 위치합니다 (`src/` 없음).
+v5.0.0+: 7개 독립 ROS2 패키지가 레포지토리 **루트 직하**에 위치합니다 (`src/` 없음).
 
 ```
 ur5e-rt-controller/
@@ -197,6 +197,18 @@ ur5e-rt-controller/
 │   │       └── viewer_overlays.cpp        # All mjr_overlay render functions
 │   ├── config/mujoco_simulator.yaml
 │   └── launch/mujoco_sim.launch.py
+│
+├── ur5e_status_monitor/                   # Non-RT status & safety monitor (shared library)
+│   ├── include/ur5e_status_monitor/
+│   │   ├── failure_types.hpp              # FailureType/WarningType enums, FailureContext, UR mode enums
+│   │   ├── state_history.hpp              # Ring buffer (100 entries = 10s at 10Hz) for failure logs
+│   │   └── ur5e_status_monitor.hpp        # UR5eStatusMonitor class declaration
+│   ├── src/
+│   │   └── ur5e_status_monitor.cpp        # Full implementation (~550 lines)
+│   ├── config/
+│   │   └── ur5e_status_monitor.yaml       # Default parameters (Korean comments)
+│   ├── CMakeLists.txt                     # Shared library + optional ur_dashboard_msgs
+│   └── package.xml
 │
 └── ur5e_tools/                            # Python utilities package
     └── ur5e_tools/
@@ -463,6 +475,47 @@ Legacy nodes (`hand_udp_receiver_node`, `hand_udp_sender_node`) used 616-byte st
 
 To disable hand E-STOP (when no hand is connected): set `enable_estop: false` or `hand_timeout_ms: 0` in `config/ur5e_rt_controller.yaml`. For MuJoCo simulation, `mujoco_simulator.yaml` already sets `enable_estop: false`.
 
+### Status Monitor (`ur5e_status_monitor`)
+
+**`UR5eStatusMonitor`** (`include/ur5e_status_monitor/ur5e_status_monitor.hpp`): shared library (not a node) designed to be composed into `RtControllerNode` via `shared_from_this()`. Runs a `std::jthread` at 10 Hz to monitor:
+
+| Check | Trigger | FailureType |
+|---|---|---|
+| SafetyMode == PROTECTIVE_STOP | Immediate | `kProtectiveStop` |
+| SafetyMode == VIOLATION/FAULT/E-STOP | Immediate | `kSafetyViolation` / `kEstop` |
+| Program not running (after ready) | Immediate | `kProgramDisconnected` |
+| `/joint_states` timeout | `watchdog_timeout_sec` (1.0 s) | `kWatchdogTimeout` |
+| Target controller inactive | Poll every 5 s | `kControllerInactive` |
+| Position tracking error > fault | 0.15 rad | `kTrackingError` |
+| Joint within fault margin of limit | 1.0 deg | `kJointLimitViolation` |
+
+**RT-safe accessors** (lock-free `std::atomic`, called from 500 Hz `ControlLoop()`):
+- `isReady()` — all readiness conditions met (robot_mode=RUNNING, safety_mode=NORMAL, program running, joint_states recent)
+- `getFailure()` — returns `FailureType` enum (kNone if healthy)
+- `isJointLimitWarning()` — any joint within 5 deg of limit
+
+**Non-RT interface** (called from sensor thread or main):
+- `setJointReference(q_ref, qd_ref)` — `try_lock` pattern (never blocks RT thread)
+- `registerOnReady/OnFailure/OnWarning/OnRecovery()` — callback registration
+- `waitForReady(timeout_sec)` — blocking wait before starting RT loop
+
+**Thread model**: Creates `MutuallyExclusive` callback group (`GetCallbackGroup()`) for subscriptions. Intended for `aux_executor`. Monitor loop is an internal `std::jthread` (not a ROS2 timer).
+
+**Integration** (deferred — library only for now):
+```cpp
+auto monitor = std::make_unique<ur5e_status_monitor::UR5eStatusMonitor>(node);
+monitor->registerOnFailure([](auto type, auto& ctx) { /* stop RT loop */ });
+aux_executor.add_callback_group(monitor->GetCallbackGroup(), node->get_node_base_interface());
+monitor->start();
+monitor->waitForReady(10.0);
+```
+
+**Topic names configurable** via `status_monitor.*` parameters. Defaults: `/io_and_status_controller/robot_mode`, `/io_and_status_controller/safety_mode`, `/io_and_status_controller/robot_program_running`.
+
+**Optional `ur_dashboard_msgs`**: `find_package(QUIET)` + `#ifdef HAVE_UR_DASHBOARD_MSGS`. Without it, core monitoring works; auto-recovery dashboard calls are disabled.
+
+On failure: writes timestamped log file to `log_output_dir` with `[HEADER]`, `[STATE AT FAILURE]`, `[STATE HISTORY]` (last 10s CSV), `[CONTROLLER STATE AT FAILURE]`.
+
 ### DataLogger (`include/ur5e_rt_controller/data_logger.hpp`)
 
 Non-copyable (move-only) CSV logger. Writes one row per control step:
@@ -527,6 +580,10 @@ struct SystemThreadConfigs {
 | `~/controller_gains` | `std_msgs/Float64MultiArray` | Subscribe | Dynamic gain update for active controller |
 | `~/request_gains` | `std_msgs/Bool` | Subscribe | Request current gains publish (GUI integration) |
 | `/sim/status` | `std_msgs/Float64MultiArray` | Publish | MuJoCo only: `[step_count, sim_time_sec, rtf, paused(0/1)]` |
+| `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | Publish | Status monitor: is_ready, failure_type, robot_mode, safety_mode, tracking_error_max, joint_limit_margin (1 Hz) |
+| `/io_and_status_controller/robot_mode` | `std_msgs/Int32` | Subscribe | UR robot mode (from ur_robot_driver); topic name configurable |
+| `/io_and_status_controller/safety_mode` | `std_msgs/Int32` | Subscribe | UR safety mode (from ur_robot_driver); topic name configurable |
+| `/io_and_status_controller/robot_program_running` | `std_msgs/Bool` | Subscribe | UR program running state; topic name configurable |
 
 **Note on `/target_joint_positions` interpretation**: The 6 values are interpreted differently by each controller:
 - `PController` / `JointPDController`: joint angles in radians
@@ -593,6 +650,37 @@ hand:
 monitoring:
   enable_statistics: true
   statistics_period: 5.0       # Packet statistics period (seconds)
+```
+
+### `config/ur5e_status_monitor.yaml`
+
+```yaml
+# 상태 모니터링 설정 (status_monitor. prefix)
+/**:
+  ros__parameters:
+    status_monitor:
+      # Topic names (configurable for different UR driver versions)
+      joint_states_topic:    "/joint_states"
+      robot_mode_topic:      "/io_and_status_controller/robot_mode"
+      safety_mode_topic:     "/io_and_status_controller/safety_mode"
+      program_running_topic: "/io_and_status_controller/robot_program_running"
+
+      watchdog_timeout_sec: 1.0              # /joint_states timeout
+      controller_poll_interval_sec: 5.0      # list_controllers poll interval
+      target_controller: "scaled_joint_trajectory_controller"
+
+      tracking_error_pos_warn_rad:  0.05     # Position tracking error warning
+      tracking_error_pos_fault_rad: 0.15     # Position tracking error fault (→ failure)
+      tracking_error_vel_warn_rad:  0.1      # Velocity tracking error warning
+      tracking_error_vel_fault_rad: 0.3      # Velocity tracking error fault (→ failure)
+
+      joint_limit_warn_margin_deg:  5.0      # Joint limit warning margin (deg)
+      joint_limit_fault_margin_deg: 1.0      # Joint limit fault margin (deg)
+
+      auto_recovery: false                   # Enable auto-recovery (requires ur_dashboard_msgs)
+      max_recovery_attempts: 3
+      recovery_interval_sec: 5.0
+      log_output_dir: "~/.ros/"              # Failure log directory
 ```
 
 ### `config/mujoco_simulator.yaml`
@@ -946,7 +1034,9 @@ ros2 doctor                        # 시스템 전체 진단
 | Separate Mutexes | `state_mutex_`, `target_mutex_`, `hand_mutex_` | 동시에 2개 이상 hold 금지 (deadlock 방지) |
 | `std::jthread` + `stop_token` | MuJoCo sim loop, UDP receiver | cooperative cancellation |
 | `condition_variable` | `sync_cv_` (MuJoCo sync_step) | spurious wakeup 대비 predicate 필수 |
-| `try_lock` | `viz_mutex_` (viewer) | 절대 SimLoop를 블로킹하지 않음 |
+| `try_lock` | `viz_mutex_` (viewer), `ref_mutex_` (status monitor) | 절대 RT/SimLoop를 블로킹하지 않음 |
+| `std::atomic` acquire/release | `UR5eStatusMonitor` RT flags | `isReady()`, `getFailure()`, `isJointLimitWarning()` — RT thread reads only |
+| `compare_exchange_strong` | `failure_type_` (status monitor) | 한 번에 하나의 failure만 활성 |
 
 **새 스레드 추가 시 체크리스트**:
 1. `ThreadConfig` 상수 정의 (core, policy, priority)
