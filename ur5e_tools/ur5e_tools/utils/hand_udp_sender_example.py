@@ -192,7 +192,7 @@ class HandUDPSender:
     센서 커맨드: 3B 송신 → 67B 수신
     """
 
-    def __init__(self, target_ip: str = "192.168.1.100", target_port: int = 50002,
+    def __init__(self, target_ip: str = "192.168.1.2", target_port: int = 55151,
                  recv_timeout: float = 0.01, num_sensors: int = NUM_FINGERTIPS):
         """
         Args:
@@ -359,9 +359,9 @@ class HandUDPSender:
 
 # ── 예제 함수 ────────────────────────────────────────────────────────────────
 
-def example_write_only():
+def example_write_only(target_ip: str = "192.168.1.2"):
     """WritePosition만 전송하는 간단한 테스트 (사인파)"""
-    sender = HandUDPSender(target_ip="127.0.0.1", target_port=50002)
+    sender = HandUDPSender(target_ip=target_ip)
 
     print("\nWritePosition 전송 (사인파)...")
     print("Ctrl+C로 중지\n")
@@ -391,10 +391,10 @@ def example_write_only():
         sender.close()
 
 
-def example_poll_cycle(num_sensors: int = NUM_FINGERTIPS):
+def example_poll_cycle(target_ip: str = "192.168.1.2",
+                       num_sensors: int = NUM_FINGERTIPS):
     """HandController와 동일한 전체 poll 사이클 테스트"""
-    sender = HandUDPSender(target_ip="127.0.0.1", target_port=50002,
-                           num_sensors=num_sensors)
+    sender = HandUDPSender(target_ip=target_ip, num_sensors=num_sensors)
 
     print(f"\n전체 poll 사이클 실행 (센서 {num_sensors}개, MODE=RAW)...")
     print(f"  WritePosition(43B) → ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B[MODE=raw]→67B)")
@@ -434,9 +434,9 @@ def example_poll_cycle(num_sensors: int = NUM_FINGERTIPS):
         sender.close()
 
 
-def example_static_pose():
+def example_static_pose(target_ip: str = "192.168.1.2"):
     """고정 포즈 전송 (WritePosition only)"""
-    sender = HandUDPSender(target_ip="127.0.0.1", target_port=50002)
+    sender = HandUDPSender(target_ip=target_ip)
 
     positions = [0.1 * i for i in range(NUM_HAND_MOTORS)]
 
@@ -457,10 +457,10 @@ def example_static_pose():
         sender.close()
 
 
-def example_read_only(num_sensors: int = NUM_FINGERTIPS):
+def example_read_only(target_ip: str = "192.168.1.2",
+                      num_sensors: int = NUM_FINGERTIPS):
     """Read request만 수행 (WritePosition 없이 현재 상태 읽기)"""
-    sender = HandUDPSender(target_ip="127.0.0.1", target_port=50002,
-                           num_sensors=num_sensors)
+    sender = HandUDPSender(target_ip=target_ip, num_sensors=num_sensors)
 
     print(f"\nRead only 사이클 실행 (센서 {num_sensors}개, MODE=RAW)...")
     print(f"  ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B[MODE=raw]→67B)")
@@ -503,6 +503,11 @@ def main(args=None):
     print(f"  모터: {NUM_HAND_MOTORS}개, 핑거팁: 최대 {NUM_FINGERTIPS}개, 센서 값/팁: {SENSOR_VALUES_PER_FINGERTIP}개")
     print()
 
+    # 대상 IP 입력 (포트는 55151 고정)
+    target_ip = input("대상 IP (기본=192.168.1.2): ").strip() or "192.168.1.2"
+    print(f"  → {target_ip}:55151")
+    print()
+
     # 연결된 센서 수 입력
     num_sensors_str = input(f"연결된 센서 수 (0~{NUM_FINGERTIPS}, 기본={NUM_FINGERTIPS}): ").strip()
     num_sensors = int(num_sensors_str) if num_sensors_str else NUM_FINGERTIPS
@@ -520,13 +525,13 @@ def main(args=None):
     choice = input("선택 (기본=1): ").strip() or "1"
 
     if choice == "1":
-        example_write_only()
+        example_write_only(target_ip=target_ip)
     elif choice == "2":
-        example_poll_cycle(num_sensors=num_sensors)
+        example_poll_cycle(target_ip=target_ip, num_sensors=num_sensors)
     elif choice == "3":
-        example_static_pose()
+        example_static_pose(target_ip=target_ip)
     elif choice == "4":
-        example_read_only(num_sensors=num_sensors)
+        example_read_only(target_ip=target_ip, num_sensors=num_sensors)
     else:
         print("잘못된 선택")
 

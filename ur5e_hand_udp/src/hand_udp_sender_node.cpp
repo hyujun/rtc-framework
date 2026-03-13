@@ -14,8 +14,8 @@ namespace urtc = ur5e_rt_controller;
 class HandUdpSenderNode : public rclcpp::Node {
  public:
   HandUdpSenderNode() : Node("hand_udp_sender_node") {
-    declare_parameter("target_ip",   std::string{"192.168.1.100"});
-    declare_parameter("target_port", 50002);
+    declare_parameter("target_ip",   std::string{"192.168.1.2"});
+    declare_parameter("target_port", 55151);
 
     const std::string ip   = get_parameter("target_ip").as_string();
     const int         port = get_parameter("target_port").as_int();

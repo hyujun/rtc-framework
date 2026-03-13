@@ -25,8 +25,8 @@ class HandUdpNode : public rclcpp::Node {
  public:
   HandUdpNode() : Node("hand_udp_node") {
     // ── Parameters ─────────────────────────────────────────────────────
-    declare_parameter("target_ip",    std::string{"192.168.1.100"});
-    declare_parameter("target_port",  50002);
+    declare_parameter("target_ip",    std::string{"192.168.1.2"});
+    declare_parameter("target_port",  55151);
     declare_parameter("publish_rate", 100.0);
 
     const std::string target_ip   = get_parameter("target_ip").as_string();
