@@ -21,6 +21,8 @@
   - ReadPosition   0x11 : 모터 위치 요청 → 응답 수신 (43B)
   - ReadVelocity   0x12 : 모터 속도 요청 → 응답 수신 (43B)
   - ReadSensor0~3  0x14..0x17 : 핑거팁 센서 요청 (3B) → 응답 수신 (67B)
+  - SetSensorMode  0x18 : 센서 모드 설정 (3B) → 응답 (3B echo)
+                          MODE 필드: 0=raw, 1=nn (전원 인가 시 기본 nn)
 
 통신 플로우 (1 사이클):
   1. WritePosition(cmd=0x01) → send 43B
@@ -80,6 +82,8 @@ CMD_READ_SENSOR1 = 0x15
 CMD_READ_SENSOR2 = 0x16
 CMD_READ_SENSOR3 = 0x17
 
+CMD_SET_SENSOR_MODE = 0x18
+
 CMD_READ_SENSORS = [CMD_READ_SENSOR0, CMD_READ_SENSOR1,
                     CMD_READ_SENSOR2, CMD_READ_SENSOR3]
 
@@ -127,6 +131,19 @@ def encode_sensor_request(cmd: int) -> bytes:
     """
     assert _is_sensor_command(cmd), f"센서 커맨드가 아닙니다: 0x{cmd:02x}"
     return struct.pack('<BBB', DEVICE_ID, cmd, DEFAULT_MODE)
+
+
+def encode_set_sensor_mode(sensor_mode: int) -> bytes:
+    """
+    센서 모드 설정 패킷 인코딩 (3 bytes)
+    MODE 필드에 원하는 센서 모드를 설정 (SENSOR_MODE_RAW=0, SENSOR_MODE_NN=1)
+
+    Args:
+        sensor_mode: SENSOR_MODE_RAW (0) 또는 SENSOR_MODE_NN (1)
+    """
+    assert sensor_mode in (SENSOR_MODE_RAW, SENSOR_MODE_NN), \
+        f"유효하지 않은 센서 모드: {sensor_mode} (0=raw, 1=nn)"
+    return struct.pack('<BBB', DEVICE_ID, CMD_SET_SENSOR_MODE, sensor_mode)
 
 
 def decode_motor_response(buf: bytes) -> tuple[int, int, list[float]]:
@@ -208,6 +225,30 @@ class HandUDPSender:
         print(f"Hand UDP Sender (motor: {MOTOR_PACKET_SIZE}B, sensor req: {SENSOR_REQUEST_SIZE}B → resp: {SENSOR_RESPONSE_SIZE}B)")
         print(f"  Target: {target_ip}:{target_port}")
         print(f"  Motors: {NUM_HAND_MOTORS}, Connected sensors: {self.num_sensors}/{NUM_FINGERTIPS}")
+
+    def set_sensor_mode(self, sensor_mode: int) -> bool:
+        """
+        핑거팁 센서 모드 설정 (cmd=0x18, 3B → 3B echo)
+
+        전원 인가 시 기본 모드는 NN(1)이므로, 센서 데이터 요청 전에
+        RAW(0)로 변경해야 합니다.
+
+        Args:
+            sensor_mode: SENSOR_MODE_RAW (0) 또는 SENSOR_MODE_NN (1)
+
+        Returns:
+            True if response received, False on timeout
+        """
+        pkt = encode_set_sensor_mode(sensor_mode)
+        self.sock.sendto(pkt, self.target)
+        try:
+            data, _ = self.sock.recvfrom(256)
+            mode_name = "RAW" if sensor_mode == SENSOR_MODE_RAW else "NN"
+            print(f"  센서 모드 → {mode_name} (응답 {len(data)}B)")
+            return True
+        except socket.timeout:
+            print(f"  센서 모드 설정 타임아웃")
+            return False
 
     def write_position(self, positions: list[float]) -> None:
         """모터 목표 위치 전송 (cmd=0x01, 43B)"""
@@ -370,6 +411,11 @@ def example_poll_cycle(num_sensors: int = NUM_FINGERTIPS):
     sender = HandUDPSender(target_ip="127.0.0.1", target_port=50002,
                            num_sensors=num_sensors)
 
+    # 센서가 있으면 RAW 모드로 전환 (전원 인가 시 기본 NN)
+    if num_sensors > 0:
+        print("\n센서 모드를 RAW로 설정 중...")
+        sender.set_sensor_mode(SENSOR_MODE_RAW)
+
     print(f"\n전체 poll 사이클 실행 (센서 {num_sensors}개)...")
     print(f"  WritePosition(43B) → ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B→67B)")
     print("Ctrl+C로 중지\n")
@@ -434,6 +480,11 @@ def example_read_only(num_sensors: int = NUM_FINGERTIPS):
     """Read request만 수행 (WritePosition 없이 현재 상태 읽기)"""
     sender = HandUDPSender(target_ip="127.0.0.1", target_port=50002,
                            num_sensors=num_sensors)
+
+    # 센서가 있으면 RAW 모드로 전환 (전원 인가 시 기본 NN)
+    if num_sensors > 0:
+        print("\n센서 모드를 RAW로 설정 중...")
+        sender.set_sensor_mode(SENSOR_MODE_RAW)
 
     print(f"\nRead only 사이클 실행 (센서 {num_sensors}개)...")
     print(f"  ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B→67B)")

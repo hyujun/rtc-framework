@@ -4,8 +4,9 @@
 // Wire-format packet definitions for the hand UDP protocol.
 //
 // Request packet:  [ID: 1B] [CMD: 1B] [MODE: 1B] [data...]
-//   - Motor cmd:   data = 10 × uint32_t (float reinterpret)  → total 43 bytes
-//   - Sensor cmd:  no data                                    → total  3 bytes
+//   - Motor cmd:        data = 10 × uint32_t (float reinterpret)  → total 43 bytes
+//   - Sensor cmd:       no data                                    → total  3 bytes
+//   - SetSensorMode:    no data, MODE = desired sensor mode (0=raw, 1=nn) → total 3 bytes
 //
 // Response packet: [ID: 1B] [CMD: 1B] [MODE: 1B] [data...]
 //   - ID, CMD = echo of request
@@ -72,6 +73,7 @@ enum class Command : uint8_t {
   kReadSensor1   = 0x15,
   kReadSensor2   = 0x16,
   kReadSensor3   = 0x17,
+  kSetSensorMode = 0x18,
 };
 
 // Sensor command for fingertip index [0..3].
@@ -163,6 +165,16 @@ inline SensorRequestPacket MakeSensorReadRequest(Command cmd) noexcept {
   pkt.id   = kDeviceId;
   pkt.cmd  = static_cast<uint8_t>(cmd);
   pkt.mode = kDefaultMode;
+  return pkt;
+}
+
+// Build a set-sensor-mode request packet (header only, 3 bytes).
+// MODE field carries the desired SensorMode (kRaw=0 or kNn=1).
+inline SensorRequestPacket MakeSetSensorMode(SensorMode sensor_mode) noexcept {
+  SensorRequestPacket pkt{};
+  pkt.id   = kDeviceId;
+  pkt.cmd  = static_cast<uint8_t>(Command::kSetSensorMode);
+  pkt.mode = static_cast<uint8_t>(sensor_mode);
   return pkt;
 }
 
