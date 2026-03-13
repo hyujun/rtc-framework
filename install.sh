@@ -193,8 +193,68 @@ check_workspace_structure() {
   success "Workspace correctly configured at: $WORKSPACE"
 }
 
+# ── ROS2 Installation (when not found) ────────────────────────────────────────
+install_ros2() {
+  local ubuntu_ver="$1"
+  local ros_distro=""
+
+  case "$ubuntu_ver" in
+    22.04) ros_distro="humble" ;;
+    24.04) ros_distro="jazzy"  ;;
+    *)
+      error "Cannot auto-install ROS2: unsupported Ubuntu ${ubuntu_ver}. Supported: 22.04 (Humble), 24.04 (Jazzy)."
+      ;;
+  esac
+
+  info "Installing ROS2 ${ros_distro} for Ubuntu ${ubuntu_ver}..."
+
+  # ── Locale setup ──────────────────────────────────────────────────────────
+  info "Setting up locale (UTF-8)..."
+  sudo apt-get update -qq
+  sudo apt-get install -y locales > /dev/null
+  sudo locale-gen en_US en_US.UTF-8 > /dev/null
+  sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+  export LANG=en_US.UTF-8
+
+  # ── Add ROS2 apt repository ───────────────────────────────────────────────
+  info "Adding ROS2 apt repository..."
+  sudo apt-get install -y software-properties-common curl > /dev/null
+  sudo curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+      -o /usr/share/keyrings/ros-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo "$UBUNTU_CODENAME") main" \
+      | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+
+  # ── Install ROS2 ─────────────────────────────────────────────────────────
+  info "Updating package index and installing ros-${ros_distro}-desktop..."
+  sudo apt-get update -qq
+  sudo apt-get install -y ros-${ros_distro}-desktop > /dev/null
+
+  # ── Install rosdep ────────────────────────────────────────────────────────
+  info "Installing rosdep..."
+  sudo apt-get install -y python3-rosdep2 > /dev/null 2>&1 \
+      || sudo apt-get install -y python3-rosdep > /dev/null 2>&1 \
+      || true
+  if command -v rosdep &>/dev/null; then
+    sudo rosdep init 2>/dev/null || true
+    rosdep update --rosdistro="${ros_distro}" 2>/dev/null || true
+  fi
+
+  # ── Source the newly installed ROS2 ──────────────────────────────────────
+  # shellcheck disable=SC1090
+  source "/opt/ros/${ros_distro}/setup.bash"
+
+  success "ROS2 ${ros_distro} installed successfully"
+}
+
 # ── Common: ROS2 + Ubuntu check ────────────────────────────────────────────────
 check_prerequisites() {
+  # ── Detect Ubuntu version early (needed for ROS2 auto-install) ───────────
+  UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "unknown")
+  local SUPPORTED_UBUNTU=("22.04" "24.04")
+  if [[ ! " ${SUPPORTED_UBUNTU[*]} " =~ " ${UBUNTU_VERSION} " ]]; then
+    warn "Unsupported Ubuntu (${UBUNTU_VERSION}). Supported: 22.04 (Humble), 24.04 (Jazzy). Continuing..."
+  fi
+
   # If ros2 command is not in PATH, try to find and source ROS2 from /opt/ros/
   if ! command -v ros2 &>/dev/null; then
     warn "ros2 command not found in PATH. Searching /opt/ros/ ..."
@@ -211,7 +271,13 @@ check_prerequisites() {
       done
     fi
     if [[ "$_found_ros2" -eq 0 ]]; then
-      error "ROS2 not found. Install ROS2 Humble or Jazzy first: https://docs.ros.org/en/jazzy/Installation.html"
+      warn "ROS2 not found on this system."
+      if [[ " ${SUPPORTED_UBUNTU[*]} " =~ " ${UBUNTU_VERSION} " ]]; then
+        info "Supported Ubuntu ${UBUNTU_VERSION} detected — attempting automatic ROS2 installation..."
+        install_ros2 "$UBUNTU_VERSION"
+      else
+        error "ROS2 not found and auto-install unavailable for Ubuntu ${UBUNTU_VERSION}. Install ROS2 manually: https://docs.ros.org/en/jazzy/Installation.html"
+      fi
     fi
   fi
 
@@ -237,11 +303,6 @@ check_prerequisites() {
     PYTHON_ROBOTPKG_SUFFIX="py312"  # Jazzy / Python 3.12
   fi
 
-  UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "unknown")
-  local SUPPORTED_UBUNTU=("22.04" "24.04")
-  if [[ ! " ${SUPPORTED_UBUNTU[*]} " =~ " ${UBUNTU_VERSION} " ]]; then
-    warn "Unsupported Ubuntu (${UBUNTU_VERSION}). Supported: 22.04 (Humble), 24.04 (Jazzy). Continuing..."
-  fi
   if [[ "$ROS_DISTRO_DETECTED" != "humble" && "$ROS_DISTRO_DETECTED" != "jazzy" ]]; then
     warn "Unsupported ROS2 distro: ${ROS_DISTRO_DETECTED}. Supported: humble, jazzy. Continuing..."
   fi
