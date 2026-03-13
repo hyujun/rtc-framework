@@ -75,6 +75,7 @@ install(PROGRAMS
   scripts/setup_irq_affinity.sh
   scripts/setup_udp_optimization.sh
   scripts/build_rt_kernel.sh
+  scripts/setup_nvidia_rt.sh
   DESTINATION lib/${PROJECT_NAME}
 )
 
