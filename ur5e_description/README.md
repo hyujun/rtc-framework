@@ -1,6 +1,6 @@
 # ur5e_description
 
-UR5e 로봇의 모델 description 파일 패키지 (v5.8.0).
+UR5e 로봇의 모델 description 파일 패키지 (v5.10.0).
 
 `ur5e_mujoco_sim`, `ur5e_rt_controller` 등 모든 패키지가 이 단일 소스에서 모델을 참조합니다.
 

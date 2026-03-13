@@ -24,9 +24,13 @@
                                      # 핸드 미연결 환경: 0.0 으로 비활성화
 
     # ── 로깅 설정 (플랫 파라미터 — 네스트 금지) ───────────────────────────────
-    enable_logging: true             # CSV 로깅 활성화
-    log_dir: "~/ros2_ws/ur5e_ws/logging_data"   # launch 파일이 절대경로로 덮어씀
-    max_log_files: 10                # 최근 N개 로그 파일만 보관 (오래된 파일 자동 삭제)
+    enable_logging: true             # CSV 로깅 전체 활성화
+    enable_timing_log: true          # timing_log CSV (타이밍/jitter)
+    enable_robot_log: true           # robot_log CSV (관절 위치/속도)
+    enable_hand_log: true            # hand_log CSV (핸드 모터/센서) — 핸드 미연결 시 false
+    log_dir: ""                      # 세션 디렉토리 — launch 파일이 YYMMDD_HHMM 경로 설정
+                                     # 빈 문자열: UR5E_SESSION_DIR 환경변수 또는 자체 세션 생성
+    max_log_sessions: 10             # 최대 보관 세션 폴더 수 (YYMMDD_HHMM 단위)
 
     # ── 관절 한계 ─────────────────────────────────────────────────────────────
     # 정보 목적 — 실제 클램핑은 각 컨트롤러 내부의 kMaxJointVelocity에서 수행

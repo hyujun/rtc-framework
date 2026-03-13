@@ -18,6 +18,7 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/int32.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <controller_manager_msgs/srv/list_controllers.hpp>
 
 // ── C++ stdlib ───────────────────────────────────────────────────────────────
@@ -28,6 +29,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace ur5e_status_monitor {
@@ -57,6 +59,24 @@ inline constexpr std::array<std::array<double, 2>, kNumJoints> kDefaultJointLimi
 //
 class UR5eStatusMonitor {
 public:
+  // ── Message statistics ────────────────────────────────────────────────────
+  struct MessageStats {
+    uint64_t total_count{0};
+    uint64_t timeout_count{0};
+    double current_rate_hz{0.0};
+  };
+
+  // ── Per-controller statistics ─────────────────────────────────────────────
+  struct ControllerStats {
+    std::string name;
+    std::chrono::steady_clock::time_point first_active{};
+    std::chrono::steady_clock::time_point last_active{};
+    double total_active_sec{0.0};
+    uint64_t js_packets{0};
+    uint64_t js_timeouts{0};
+    uint64_t failure_count{0};
+  };
+
   /// Construct the monitor and attach to an existing ROS2 node.
   /// Does NOT start monitoring — call start() explicitly.
   /// @param node  Shared pointer to the host node (must outlive this object).
@@ -81,6 +101,9 @@ public:
 
   /// True when any joint is within the warning margin of its limit.
   [[nodiscard]] bool isJointLimitWarning() const noexcept;
+
+  /// Get joint state message statistics (packet count, rate, timeouts).
+  [[nodiscard]] MessageStats getJointStateStats() const noexcept;
 
   // ── Blocking wait ──────────────────────────────────────────────────────────
 
@@ -134,6 +157,7 @@ private:
   void OnRobotMode(std_msgs::msg::Int32::SharedPtr msg);
   void OnSafetyMode(std_msgs::msg::Int32::SharedPtr msg);
   void OnProgramRunning(std_msgs::msg::Bool::SharedPtr msg);
+  void OnControllerNameChanged(const std_msgs::msg::String::SharedPtr msg);
 
   // ── Monitor thread ─────────────────────────────────────────────────────────
   void MonitorLoop(std::stop_token stop_token);
@@ -148,6 +172,9 @@ private:
 
   // ── Diagnostics ────────────────────────────────────────────────────────────
   void PublishDiagnostics();
+
+  // ── Controller stats ──────────────────────────────────────────────────────
+  void SaveControllerStatsJson() const;
 
   // ── Failure handling ───────────────────────────────────────────────────────
   void RaiseFailure(FailureType type, const std::string& description);
@@ -166,6 +193,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr         robot_mode_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr         safety_mode_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr          program_running_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr       controller_name_sub_;
 
   // ── Publisher ──────────────────────────────────────────────────────────────
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diag_pub_;
@@ -259,6 +287,16 @@ private:
 
   // Controller state cache (from last list_controllers call)
   bool target_controller_active_{false};
+
+  // ── Message stats (packet counting & rate monitoring) ─────────────────────
+  MessageStats js_stats_;
+  std::chrono::steady_clock::time_point rate_window_start_{};
+  uint64_t rate_window_count_{0};
+
+  // ── Per-controller statistics ─────────────────────────────────────────────
+  bool enable_controller_stats_{true};
+  std::unordered_map<std::string, ControllerStats> controller_stats_;
+  std::string current_controller_name_{"unknown"};
 };
 
 }  // namespace ur5e_status_monitor

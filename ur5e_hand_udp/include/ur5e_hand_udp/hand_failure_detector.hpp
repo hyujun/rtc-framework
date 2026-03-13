@@ -14,6 +14,7 @@
 #include "ur5e_rt_base/types/types.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -25,6 +26,8 @@ struct HandFailureDetectorConfig {
   int  failure_threshold{5};   ///< 연속 감지 횟수 임계값
   bool check_motor{true};      ///< 모터 위치 데이터 검사
   bool check_sensor{true};     ///< 센서 데이터 검사
+  double min_rate_hz{30.0};    ///< 최소 허용 polling rate
+  int    rate_fail_threshold{5}; ///< 연속 N회 미달 시 failure
 };
 
 class HandFailureDetector {
@@ -70,11 +73,15 @@ public:
 private:
   void DetectLoop(std::stop_token st) {
     using namespace std::chrono_literals;
+    prev_rate_check_ = std::chrono::steady_clock::now();
+    prev_cycle_count_ = controller_.cycle_count();
+
     while (!st.stop_requested() && running_.load(std::memory_order_relaxed)) {
       const HandState state = controller_.GetLatestState();
       if (state.valid) {
         Check(state);
       }
+      CheckRate();
       std::this_thread::sleep_for(20ms);  // ~50 Hz
     }
   }
@@ -152,6 +159,30 @@ private:
     }
   }
 
+  void CheckRate() {
+    const auto now = std::chrono::steady_clock::now();
+    const double dt_sec = std::chrono::duration<double>(now - prev_rate_check_).count();
+    if (dt_sec < 0.001) return;  // 너무 짧은 간격 무시
+
+    const std::size_t current_cycles = controller_.cycle_count();
+    const double rate_hz = static_cast<double>(current_cycles - prev_cycle_count_) / dt_sec;
+
+    prev_rate_check_ = now;
+    prev_cycle_count_ = current_cycles;
+
+    if (rate_hz < cfg_.min_rate_hz) {
+      ++rate_fail_count_;
+    } else {
+      rate_fail_count_ = 0;
+    }
+
+    if (rate_fail_count_ >= cfg_.rate_fail_threshold) {
+      RaiseFailure("hand_polling_rate_low (rate=" +
+                   std::to_string(rate_hz) + " Hz, min=" +
+                   std::to_string(cfg_.min_rate_hz) + " Hz)");
+    }
+  }
+
   void RaiseFailure(const std::string& reason) {
     bool expected = false;
     if (!failed_.compare_exchange_strong(expected, true)) return;
@@ -179,6 +210,11 @@ private:
   bool prev_sensor_valid_{false};
   int  sensor_zero_count_{0};
   int  sensor_dup_count_{0};
+
+  // Rate monitoring state
+  int rate_fail_count_{0};
+  std::size_t prev_cycle_count_{0};
+  std::chrono::steady_clock::time_point prev_rate_check_{};
 };
 
 }  // namespace ur5e_rt_controller

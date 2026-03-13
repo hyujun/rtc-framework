@@ -5,6 +5,31 @@
 
 ---
 
+## [5.10.0] - 2026-03-14
+
+### 추가 (Added) — 세션 기반 통합 로깅
+
+- **세션 디렉토리 구조 (`logging_data/YYMMDD_HHMM/`)**
+  - 모든 로그 파일을 `controller/` 서브디렉토리에 통합
+  - `timing_log.csv`, `robot_log.csv`, `hand_log.csv` — 파일 이름에서 타임스탬프 제거 (세션 폴더가 타임스탬프 역할)
+
+- **`UR5E_SESSION_DIR` 환경변수 연동**
+  - Launch 파일이 설정한 `UR5E_SESSION_DIR` 자동 감지
+  - 폴백: 환경변수 미설정 시 `log_dir` 파라미터 → 자체 세션 생성
+
+- **`session_dir.hpp` 공유 유틸리티 사용** (`ur5e_rt_base`)
+  - `ResolveSessionDir()`, `CleanupOldSessions()`, `EnsureSessionSubdirs()` 활용
+
+### 변경 (Changed)
+
+- `log_dir` 기본값: `"~/ros2_ws/ur5e_ws/logging_data"` → `""` (launch 파일이 세션 경로 설정)
+- `max_log_files` → `max_log_sessions` 파라미터 이름 변경 (세션 폴더 단위 관리)
+- `GenerateLogTimestamp()`, `CleanupOldLogFiles()` 제거 → `session_dir.hpp` 유틸리티로 대체
+- CSV 로그 경로: `logging_data/{type}_log_YYMMDD_HHMM.csv` → `logging_data/YYMMDD_HHMM/controller/{type}_log.csv`
+- `ur_control.launch.py`: 세션 디렉토리 생성, `UR5E_SESSION_DIR` 환경변수 설정, `max_log_sessions` 지원
+
+---
+
 ## [5.8.0] - 2026-03-14
 
 ### 추가 (Added) — RT 안전성 및 모니터링 강화

@@ -8,6 +8,7 @@
 #include "ur5e_rt_controller/controllers/indirect/ur5e_hand_controller.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <ur5e_rt_base/logging/session_dir.hpp>
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
@@ -134,43 +135,28 @@ RtControllerNode::~RtControllerNode()
   }
 }
 
-// ── Log file helpers ──────────────────────────────────────────────────────────
-std::string RtControllerNode::GenerateLogFilePath(const std::string & log_dir)
+// ── Session directory helpers ─────────────────────────────────────────────────
+std::filesystem::path RtControllerNode::ResolveAndSetupSessionDir()
 {
-  const auto now = std::chrono::system_clock::now();
-  const auto time_t = std::chrono::system_clock::to_time_t(now);
-  std::tm local_tm{};
-  localtime_r(&time_t, &local_tm);
-  char timestamp[16];
-  std::strftime(timestamp, sizeof(timestamp), "%y%m%d_%H%M", &local_tm);
-  return log_dir + "/ur5e_control_log_" + timestamp + ".csv";
-}
+  // Dynamically resolve workspace logging dir using ament_index
+  std::string default_logging_root = "/tmp/ur5e_logging_data";
+  try {
+    std::string share_dir =
+      ament_index_cpp::get_package_share_directory("ur5e_rt_controller");
+    std::filesystem::path ws_path = std::filesystem::path(share_dir)
+      .parent_path()
+      .parent_path()
+      .parent_path()
+      .parent_path();
+    default_logging_root = (ws_path / "logging_data").string();
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(
+        get_logger(),
+        "Could not resolve workspace via ament_index: %s. Using fallback: %s",
+        e.what(), default_logging_root.c_str());
+  }
 
-// Removes oldest matching log files when count exceeds max_files.
-// Files are matched by prefix "ur5e_control_log_" and ".csv" extension;
-// alphabetical sort equals chronological order due to the timestamp format.
-void RtControllerNode::CleanupOldLogFiles(
-  const std::filesystem::path & log_dir,
-  int max_files)
-{
-  if (!std::filesystem::exists(log_dir)) {
-    return;
-  }
-  std::vector<std::filesystem::path> files;
-  for (const auto & entry : std::filesystem::directory_iterator(log_dir)) {
-    const auto & p = entry.path();
-    if (p.extension() == ".csv") {
-      const std::string stem = p.stem().string();
-      if (stem.rfind("ur5e_control_log_", 0) == 0) {
-        files.push_back(p);
-      }
-    }
-  }
-  std::sort(files.begin(), files.end());
-  while (static_cast<int>(files.size()) > max_files) {
-    std::filesystem::remove(files.front());
-    files.erase(files.begin());
-  }
+  return urtc::ResolveSessionDir(default_logging_root);
 }
 
 // ── CallbackGroup creation ────────────────────────────────────────────────────
@@ -193,27 +179,11 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("kp", 5.0);
   declare_parameter("kd", 0.5);
   declare_parameter("enable_logging", true);
-
-  // Dynamically resolve workspace logging dir using ament_index
-  std::string default_log_dir = "/tmp/ur5e_logging_data"; // fallback
-  try {
-    std::string share_dir =
-      ament_index_cpp::get_package_share_directory("ur5e_rt_controller");
-    std::filesystem::path ws_path = std::filesystem::path(share_dir)
-      .parent_path()
-      .parent_path()
-      .parent_path()
-      .parent_path();
-    default_log_dir = (ws_path / "logging_data").string();
-  } catch (const std::exception & e) {
-    RCLCPP_WARN(
-        get_logger(),
-        "Could not resolve workspace via ament_index: %s. Using fallback: %s",
-        e.what(), default_log_dir.c_str());
-  }
-
-  declare_parameter("log_dir", default_log_dir);
-  declare_parameter("max_log_files", 10);
+  declare_parameter("log_dir", std::string(""));  // launch 파일이 세션 디렉토리로 덮어씀
+  declare_parameter("max_log_sessions", 10);
+  declare_parameter("enable_timing_log", true);
+  declare_parameter("enable_robot_log", true);
+  declare_parameter("enable_hand_log", true);
   declare_parameter("robot_timeout_ms", 100.0);
   declare_parameter("hand_timeout_ms", 200.0);
   declare_parameter("enable_estop", true);
@@ -231,15 +201,42 @@ void RtControllerNode::DeclareAndLoadParameters()
   enable_status_monitor_ = get_parameter("enable_status_monitor").as_bool();
 
   if (enable_logging_) {
-    const std::string log_dir_str = get_parameter("log_dir").as_string();
-    const int         max_log_files = get_parameter("max_log_files").as_int();
-    const std::filesystem::path log_dir{log_dir_str};
-    std::filesystem::create_directories(log_dir);
-    const std::string log_file = GenerateLogFilePath(log_dir_str);
-    logger_ = std::make_unique<urtc::DataLogger>(log_file);
-    CleanupOldLogFiles(log_dir, max_log_files);
-    RCLCPP_INFO(get_logger(), "Logging to: %s (max_log_files=%d)",
-                log_file.c_str(), max_log_files);
+    // 세션 디렉토리 결정: log_dir 파라미터 → UR5E_SESSION_DIR 환경변수 → 자체 생성
+    const std::string log_dir_param = get_parameter("log_dir").as_string();
+    const int max_sessions = get_parameter("max_log_sessions").as_int();
+
+    std::filesystem::path session_dir;
+    if (!log_dir_param.empty()) {
+      // Launch 파일이 세션 디렉토리를 직접 전달한 경우
+      session_dir = std::filesystem::path(log_dir_param);
+      std::filesystem::create_directories(session_dir);
+      urtc::EnsureSessionSubdirs(session_dir);
+    } else {
+      // Standalone 실행: 자체 세션 디렉토리 생성
+      session_dir = ResolveAndSetupSessionDir();
+    }
+
+    // 세션 폴더 cleanup (logging_data 루트 기준)
+    const auto logging_root = session_dir.parent_path();
+    urtc::CleanupOldSessions(logging_root, max_sessions);
+
+    const bool enable_timing = get_parameter("enable_timing_log").as_bool();
+    const bool enable_robot  = get_parameter("enable_robot_log").as_bool();
+    const bool enable_hand   = get_parameter("enable_hand_log").as_bool();
+    const auto ctrl_dir = session_dir / "controller";
+    std::filesystem::create_directories(ctrl_dir);
+
+    const std::string timing_path = enable_timing
+        ? (ctrl_dir / "timing_log.csv").string() : "";
+    const std::string robot_path = enable_robot
+        ? (ctrl_dir / "robot_log.csv").string() : "";
+    const std::string hand_path = enable_hand
+        ? (ctrl_dir / "hand_log.csv").string() : "";
+
+    logger_ = std::make_unique<urtc::DataLogger>(timing_path, robot_path, hand_path);
+    RCLCPP_INFO(get_logger(),
+        "Logging to: %s/controller/ (max_sessions=%d)",
+        session_dir.string().c_str(), max_sessions);
   }
 
   robot_timeout_ = std::chrono::milliseconds(
@@ -760,18 +757,25 @@ void RtControllerNode::ControlLoop()
 
     const urtc::LogEntry entry{
       .timestamp = timestamp,
-      .current_positions = state.robot.positions,
-      .target_positions = output.actual_target_positions,
-      .commands = output.robot_commands,
+      // Timing
       .t_state_acquire_us = t_state_us,
       .t_compute_us = t_compute_us,
       .t_publish_us = t_publish_us,
       .t_total_us = t_total_us,
       .jitter_us = jitter_us,
-      .hand_positions = state.hand.motor_positions,
-      .hand_velocities = state.hand.motor_velocities,
-      .hand_sensors = state.hand.sensor_data,
+      // Robot
+      .goal_positions = output.goal_positions,
+      .target_positions = output.actual_target_positions,
+      .target_velocities = output.target_velocities,
+      .actual_positions = state.robot.positions,
+      .actual_velocities = state.robot.velocities,
+      // Hand
       .hand_valid = state.hand.valid,
+      .hand_goal_positions = output.hand_goal_positions,
+      .hand_commands = output.hand_commands,
+      .hand_actual_positions = state.hand.motor_positions,
+      .hand_actual_velocities = state.hand.motor_velocities,
+      .hand_sensors = state.hand.sensor_data,
     };
     static_cast<void>(log_buffer_.Push(entry));  // silently drops if buffer is full
   }

@@ -48,11 +48,9 @@ public:
   rclcpp::CallbackGroup::SharedPtr GetAuxGroup()    const {return cb_group_aux_;}
 
 private:
-  // ── Log file helpers ──────────────────────────────────────────────────────
-  // Returns "<log_dir>/ur5e_control_log_YYMMDD_HHMM.csv"
-  static std::string GenerateLogFilePath(const std::string & log_dir);
-  // Removes oldest matching log files when count exceeds max_files.
-  static void CleanupOldLogFiles(const std::filesystem::path & log_dir, int max_files);
+  // ── Session directory helpers ─────────────────────────────────────────────
+  // Resolves session directory from UR5E_SESSION_DIR env var or creates one.
+  std::filesystem::path ResolveAndSetupSessionDir();
 
   // ── Initialisation helpers ────────────────────────────────────────────────
   void CreateCallbackGroups();

@@ -198,6 +198,16 @@ ControllerOutput ClikController::Compute(
   for (int i = 3; i < kNumRobotJoints; ++i) {
     output.actual_target_positions[i] = null_target_[i];
   }
+  // goal_positions: task-space goal in [0..2], null-space goal in [3..5]
+  for (int i = 0; i < 3; ++i) {
+    output.goal_positions[i] = tcp_target_[i];
+  }
+  for (int i = 3; i < kNumRobotJoints; ++i) {
+    output.goal_positions[i] = null_target_[i];
+  }
+  // target_velocities: clamped dq (joint-space velocity command)
+  output.target_velocities = dq_arr;
+  output.hand_goal_positions = hand_target_;
 
   const pinocchio::SE3 & tcp_current = data_.oMi[end_id_];
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp_current.rotation());

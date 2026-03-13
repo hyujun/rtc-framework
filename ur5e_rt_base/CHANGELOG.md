@@ -5,6 +5,19 @@
 
 ---
 
+## [5.10.0] - 2026-03-14
+
+### 추가 (Added) — 세션 디렉토리 관리 유틸리티
+
+- **`logging/session_dir.hpp` 신규** — 모든 C++ 패키지에서 공유하는 세션 디렉토리 헬퍼
+  - `GenerateSessionTimestamp()` — `YYMMDD_HHMM` 형식 타임스탬프 생성
+  - `EnsureSessionSubdirs()` — 표준 6개 서브디렉토리 생성 (controller, monitor, hand, sim, plots, motions)
+  - `ResolveSessionDir()` — `UR5E_SESSION_DIR` 환경변수 우선, 폴백 시 자체 생성
+  - `CleanupOldSessions()` — `max_sessions` 초과 시 오래된 세션 삭제
+  - `ListSessionDirs()` — `YYMMDD_HHMM` 패턴 디렉토리 정렬 목록
+
+---
+
 ## [5.8.0] - 2026-03-14
 
 ### 추가 (Added) — 타입, 로깅, 스레드 구성 확장

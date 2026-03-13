@@ -1,6 +1,6 @@
 # ur5e_mujoco_sim
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.8.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.10.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 UR5e RT Controller 스택의 **MuJoCo 3.x 물리 시뮬레이터 패키지**입니다. 실제 UR 드라이버를 대체하여 개발 환경에서 알고리즘 검증 및 테스트를 수행할 수 있습니다.
 
@@ -184,6 +184,7 @@ ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py \
 | `sync_timeout_ms` | `""` | sync_step: 명령 대기 타임아웃 ms (빈값 = YAML) |
 | `max_rtf` | `""` | 최대 실시간 비율 (빈값 = YAML, 0.0 = 무제한) |
 | `use_yaml_servo_gains` | `""` | `true`=YAML servo gain, `false`=XML gain (빈값 = YAML) |
+| `max_log_sessions` | `10` | 최대 보관 세션 폴더 수 (YYMMDD_HHMM) |
 
 ---
 
@@ -227,7 +228,7 @@ ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py \
 | F8 | 반사 ON/OFF |
 | F9 | 센서 값 오버레이 ON/OFF |
 | F10 | 모델 통계 오버레이 ON/OFF |
-| P | 스크린샷 저장 (`~/ros2_ws/ur5e_ws/logging_data/`) |
+| P | 스크린샷 저장 (`UR5E_SESSION_DIR/sim/` → `~/ros2_ws/ur5e_ws/logging_data/` 폴백) |
 
 #### 마우스
 
@@ -334,12 +335,15 @@ ros2 topic hz /forward_position_controller/commands
 ## sync_step 컴퓨트 시간 분석
 
 ```python
-import pandas as pd
-df = pd.read_csv('/tmp/ur5e_control_log.csv')
-print(df['compute_time_us'].describe())
-print(f'P95: {df["compute_time_us"].quantile(0.95):.1f} us')
-print(f'P99: {df["compute_time_us"].quantile(0.99):.1f} us')
-print(f'Over 2ms: {(df["compute_time_us"] > 2000).mean()*100:.2f}%')
+import pandas as pd, glob, os
+sessions = sorted(glob.glob(os.path.expanduser(
+    '~/ros2_ws/ur5e_ws/logging_data/??????_????')))
+if sessions:
+    df = pd.read_csv(os.path.join(sessions[-1], 'controller', 'timing_log.csv'))
+    print(df['t_compute_us'].describe())
+    print(f'P95: {df["t_compute_us"].quantile(0.95):.1f} us')
+    print(f'P99: {df["t_compute_us"].quantile(0.99):.1f} us')
+    print(f'Over 2ms: {(df["t_compute_us"] > 2000).mean()*100:.2f}%')
 ```
 
 ---

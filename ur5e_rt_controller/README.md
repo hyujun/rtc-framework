@@ -1,6 +1,6 @@
 # ur5e_rt_controller
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.8.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.10.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md) | 디버깅: [VSCODE_DEBUGGING.md](../docs/VSCODE_DEBUGGING.md) | 새 컨트롤러 추가: [ADDING_CONTROLLER.md](docs/ADDING_CONTROLLER.md)
 
 UR5e 로봇 팔을 위한 **500Hz 실시간 제어기** ROS2 패키지입니다. SCHED_FIFO 멀티스레드 아키텍처, 전략 패턴 기반 컨트롤러 교체, 런타임 컨트롤러 전환, 잠금-없는 로깅 인프라를 제공합니다.
@@ -347,8 +347,11 @@ topics:
 
     # 로깅 (플랫 파라미터 — 네스트 금지)
     enable_logging: true
-    log_dir: "~/ros2_ws/ur5e_ws/logging_data"
-    max_log_files: 10
+    log_dir: ""                   # 세션 디렉토리 — launch 파일이 YYMMDD_HHMM 경로 설정
+    max_log_sessions: 10          # 최대 보관 세션 폴더 수
+    enable_timing_log: true       # 타이밍 CSV 로깅 활성화
+    enable_robot_log: true        # 로봇 관절 CSV 로깅 활성화
+    enable_hand_log: true         # 핸드 CSV 로깅 활성화
 
     # Status Monitor (파라미터는 ur5e_status_monitor 패키지 YAML에서 로드)
     enable_status_monitor: false     # 실제 로봇 시 true 권장
@@ -394,6 +397,7 @@ ros2 launch ur5e_rt_controller ur_control.launch.py use_fake_hardware:=true
 런치 파일이 자동 설정하는 환경변수:
 - `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`
 - `CYCLONEDDS_URI` → `config/cyclone_dds.xml` (DDS recv/send 스레드 Core 0-1 제한)
+- `UR5E_SESSION_DIR` → `logging_data/YYMMDD_HHMM` 세션 디렉토리 경로 (및 `log_dir` 파라미터 자동 설정)
 
 런치 파일이 로드하는 설정 파일:
 - `ur5e_rt_controller/config/ur5e_rt_controller.yaml` — 노드 레벨 파라미터
@@ -401,7 +405,6 @@ ros2 launch ur5e_rt_controller ur_control.launch.py use_fake_hardware:=true
 
 런치 시 함께 실행되는 노드:
 - `rt_controller` — RT 제어기 노드
-- `monitor_data_health` (`ur5e_tools`) — 10Hz 데이터 헬스 모니터
 
 ---
 
@@ -437,32 +440,60 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 
 ### CSV 로그 분석
 
-로그 파일은 `~/ros2_ws/ur5e_ws/logging_data/ur5e_control_log_YYMMDD_HHMM.csv`에 자동 저장됩니다 (`max_log_files: 10`개 보관).
+v5.10.0부터 세션 디렉토리(`logging_data/YYMMDD_HHMM/controller/`) 내에 3개 파일로 분리됩니다 (`max_log_sessions: 10`개 세션 폴더 보관, 각 파일별 `enable_*_log` 파라미터로 개별 활성화):
 
-**v5.8.0 CSV 컬럼 구성:**
+- `logging_data/YYMMDD_HHMM/controller/timing_log.csv`
+- `logging_data/YYMMDD_HHMM/controller/robot_log.csv`
+- `logging_data/YYMMDD_HHMM/controller/hand_log.csv`
 
-| 컬럼 그룹 | 컬럼명 | 설명 |
-|-----------|--------|------|
-| 페이즈별 타이밍 | `t_state_acquire_us` | 상태 데이터 획득 소요 시간 |
-| | `t_compute_us` | `Compute()` 연산 소요 시간 |
-| | `t_publish_us` | ROS2 퍼블리시 소요 시간 |
-| | `t_total_us` | 전체 제어 루프 소요 시간 |
-| | `jitter_us` | 제어 주기 지터 (목표 주기 대비 편차) |
-| 핸드 상태 | `hand_positions[10]` | 핸드 10개 모터 위치 |
-| | `hand_velocities[10]` | 핸드 10개 모터 속도 |
-| | `hand_sensors[44]` | 핸드 센서 데이터 (44채널) |
+**timing_log CSV (6 columns):**
+
+| 컬럼 | 설명 |
+|------|------|
+| `timestamp` | 타임스탬프 (초) |
+| `t_state_acquire_us` | 상태 데이터 획득 소요 시간 |
+| `t_compute_us` | Compute() 연산 소요 시간 |
+| `t_publish_us` | 명령 퍼블리시 소요 시간 |
+| `t_total_us` | 전체 제어 루프 소요 시간 |
+| `jitter_us` | 제어 주기 지터 |
+
+**robot_log CSV (31 columns):**
+
+| 컬럼 | 설명 |
+|------|------|
+| `timestamp` | 타임스탬프 (초) |
+| `goal_pos_0..5` | 최종 목표 위치 (SetRobotTarget) |
+| `target_pos_0..5` | 궤적 보간 위치 |
+| `target_vel_0..5` | 궤적 보간 속도 |
+| `actual_pos_0..5` | 실제 관절 위치 |
+| `actual_vel_0..5` | 실제 관절 속도 |
+
+**hand_log CSV (87 columns):**
+
+| 컬럼 | 설명 |
+|------|------|
+| `timestamp` | 타임스탬프 (초) |
+| `hand_valid` | 핸드 데이터 유효성 (0/1) |
+| `hand_goal_pos_0..9` | 핸드 최종 목표 위치 |
+| `hand_cmd_0..9` | 핸드 명령 |
+| `hand_actual_pos_0..9` | 핸드 실제 위치 |
+| `hand_actual_vel_0..9` | 핸드 실제 속도 |
+| `baro_f{f}_{b}` | 손가락 f 기압 센서 b (4×8=32) |
+| `tof_f{f}_{t}` | 손가락 f ToF 센서 t (4×3=12) |
 
 **오버런 감지**: `budget_us_` 임계값 (기본 = 제어 주기)을 초과하면 `overrun_count_` 원자 카운터가 증가합니다. 로그 종료 시 총 오버런 횟수가 출력됩니다.
 
 ```python
 import pandas as pd, glob, os
-log_files = sorted(glob.glob(os.path.expanduser('~/ros2_ws/ur5e_ws/logging_data/*.csv')))
-df = pd.read_csv(log_files[-1])
-print(df['t_compute_us'].describe())
-print(f'P95: {df["t_total_us"].quantile(0.95):.1f} us')
-print(f'P99: {df["t_total_us"].quantile(0.99):.1f} us')
-print(f'Jitter P99: {df["jitter_us"].quantile(0.99):.1f} us')
-print(f'Overruns: {(df["t_total_us"] > 2000).sum()}')
+log_dir = os.path.expanduser('~/ros2_ws/ur5e_ws/logging_data/')
+sessions = sorted(glob.glob(log_dir + '??????_????'))
+if sessions:
+    df = pd.read_csv(os.path.join(sessions[-1], 'controller', 'timing_log.csv'))
+    print(df['t_compute_us'].describe())
+    print(f'P95: {df["t_total_us"].quantile(0.95):.1f} us')
+    print(f'P99: {df["t_total_us"].quantile(0.99):.1f} us')
+    print(f'Jitter P99: {df["jitter_us"].quantile(0.99):.1f} us')
+    print(f'Overruns: {(df["t_total_us"] > 2000).sum()}')
 ```
 
 ---

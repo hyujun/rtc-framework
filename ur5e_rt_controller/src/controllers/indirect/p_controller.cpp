@@ -44,6 +44,9 @@ ControllerOutput PController::Compute(const ControllerState & state) noexcept
   output.actual_task_positions[5] = rpy[2];
 
   output.actual_target_positions = robot_target_;
+  output.goal_positions = robot_target_;        // P controller: no trajectory, goal == target
+  // target_velocities: zero (no trajectory generator)
+  output.hand_goal_positions = hand_target_;
   output.robot_commands = ClampCommands(output.robot_commands);
   output.command_type = command_type_;
   return output;

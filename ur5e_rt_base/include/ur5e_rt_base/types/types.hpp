@@ -76,6 +76,14 @@ struct ControllerOutput {
   std::array<double, 6>               actual_task_positions{};
   bool        valid{true};
   CommandType command_type{CommandType::kPosition};
+
+  // ── Extended fields for logging (v5.9.0) ──────────────────────────────────
+  // Goal = final target set by SetRobotTarget() (step-like)
+  // Target = trajectory-interpolated position (smooth)
+  // Target velocity = trajectory-interpolated velocity
+  std::array<double, kNumRobotJoints> goal_positions{};
+  std::array<double, kNumRobotJoints> target_velocities{};
+  std::array<float, kNumHandMotors>   hand_goal_positions{};
 };
 
 // ── Topic configuration for per-controller subscribe/publish routing ─────────

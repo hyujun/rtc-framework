@@ -39,6 +39,14 @@ class HandController {
  public:
   using StateCallback = std::function<void(const HandState&)>;
 
+  // 통신 통계 (recv 성공/타임아웃/에러 및 총 사이클 수)
+  struct HandCommStats {
+    uint64_t recv_ok{0};
+    uint64_t recv_timeout{0};
+    uint64_t recv_error{0};
+    uint64_t total_cycles{0};
+  };
+
   explicit HandController(
       std::string target_ip,
       int target_port,
@@ -143,6 +151,11 @@ class HandController {
     return recv_error_count_.load(std::memory_order_relaxed);
   }
 
+  // 통신 통계 스냅샷 반환 (struct copy — relaxed read로 충분)
+  [[nodiscard]] HandCommStats comm_stats() const noexcept {
+    return comm_stats_;
+  }
+
  private:
   // Send raw bytes and receive into a buffer. Returns bytes received, or -1 on error.
   [[nodiscard]] ssize_t SendAndRecvRaw(
@@ -158,6 +171,13 @@ class HandController {
     if (recvd < 0) {
       // EAGAIN/EWOULDBLOCK = SO_RCVTIMEO expired → increment error counter
       recv_error_count_.fetch_add(1, std::memory_order_relaxed);
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        ++comm_stats_.recv_timeout;
+      } else {
+        ++comm_stats_.recv_error;
+      }
+    } else {
+      ++comm_stats_.recv_ok;
     }
     return recvd;
   }
@@ -300,6 +320,7 @@ class HandController {
         callback_(state);
       }
 
+      ++comm_stats_.total_cycles;
       cycle_count_.fetch_add(1, std::memory_order_relaxed);
     }
   }
@@ -329,6 +350,9 @@ class HandController {
 
   // recv() 타임아웃/에러 카운터 (모든 send-recv 실패 시 증가)
   std::atomic<uint64_t> recv_error_count_{0};
+
+  // 통신 통계 (PollLoop RT 스레드에서만 쓰기, 외부에서 struct copy로 읽기)
+  HandCommStats comm_stats_;
 
   std::jthread poll_thread_;
 };

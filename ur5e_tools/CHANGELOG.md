@@ -5,6 +5,23 @@
 
 ---
 
+## [5.10.0] - 2026-03-14
+
+### 추가 (Added) — 세션 디렉토리 유틸리티
+
+- **`utils/session_dir.py` 신규** — Python 세션 디렉토리 헬퍼
+  - `get_session_dir()` — `UR5E_SESSION_DIR` 환경변수에서 세션 경로 읽기
+  - `get_session_subdir(subdir)` — 세션 내 서브디렉토리 경로 반환 + 자동 생성
+
+### 변경 (Changed) — 세션 기반 로깅 경로
+
+- `plot_ur_trajectory.py`: `--save-dir` 미지정 시 `UR5E_SESSION_DIR/plots/` 기본 경로
+- `motion_editor_gui.py`: JSON 저장 기본 경로를 `UR5E_SESSION_DIR/motions/`로 변경
+- `hand_udp_sender_example.py`: CSV 로깅 기본 경로를 `UR5E_SESSION_DIR/hand/`로 변경
+- `monitor_data_health.py` 제거 (기능이 `ur5e_status_monitor` 및 `ur5e_hand_udp`에 통합됨)
+
+---
+
 ## [5.8.0] - 2026-03-14
 
 ### 추가 (Added) — 타이밍 통계 분석

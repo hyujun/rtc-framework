@@ -425,14 +425,18 @@ class HandDataCsvLogger:
     """수신 데이터를 CSV로 저장하는 로거"""
 
     def __init__(self, num_sensors: int = NUM_FINGERTIPS,
-                 output_dir: str = ".", prefix: str = "hand_data"):
+                 output_dir: str = "", prefix: str = "hand_data"):
         """
         Args:
             num_sensors: 연결된 핑거팁 센서 수
-            output_dir: CSV 저장 디렉토리
+            output_dir: CSV 저장 디렉토리 (빈 문자열 시 UR5E_SESSION_DIR/hand 사용)
             prefix: 파일명 접두어
         """
         self.num_sensors = num_sensors
+        # 세션 디렉토리 기반 기본 경로
+        if not output_dir:
+            session = os.environ.get('UR5E_SESSION_DIR', '')
+            output_dir = os.path.join(session, 'hand') if session else '.'
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(output_dir, exist_ok=True)
         self.filepath = os.path.join(output_dir, f"{prefix}_{timestamp}.csv")

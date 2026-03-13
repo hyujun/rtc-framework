@@ -1,9 +1,9 @@
 # ur5e_tools
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.8.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.10.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md)
 
-UR5e RT Controller 스택의 **Python 개발 유틸리티 패키지**입니다. 컨트롤러 GUI, 모션 편집기, 데이터 건강 모니터링, 궤적 시각화, UDP 손 통신, 모델 검증 도구를 포함합니다.
+UR5e RT Controller 스택의 **Python 개발 유틸리티 패키지**입니다. 컨트롤러 GUI, 모션 편집기, 궤적 시각화, UDP 손 통신, 모델 검증 도구를 포함합니다.
 
 ## 개요
 
@@ -14,13 +14,14 @@ ur5e_tools/
 │   │   ├── controller_gui.py            ← tkinter 다크 테마 컨트롤러 GUI (v5.3.0+)
 │   │   └── motion_editor_gui.py         ← Qt5 모션 편집기 GUI (탭/Diff/타이밍)
 │   ├── monitoring/
-│   │   └── monitor_data_health.py       ← 데이터 건강 모니터 + 컨트롤러별 JSON 통계
+│   │   └── __init__.py
 │   ├── plotting/
 │   │   └── plot_ur_trajectory.py        ← Matplotlib 궤적 시각화
 │   ├── validation/
 │   │   └── compare_mjcf_urdf.py         ← MJCF vs URDF 파라미터 비교 검증 (v5.7.0+)
 │   └── utils/
 │       ├── hand_udp_sender_example.py   ← 11-DOF 손 UDP 프로토콜 라이브러리 + 예제
+│       ├── session_dir.py              ← 세션 디렉토리 유틸리티 (v5.10.0)
 │       └── hand_data_plot.py            ← 손 CSV 데이터 시각화
 ├── resource/
 │   └── ur5e_tools
@@ -31,12 +32,11 @@ ur5e_tools/
 
 **빌드 타입**: `ament_python` (`setup.py`의 `entry_points` 사용)
 
-**Entry points** (6개):
+**Entry points** (5개):
 | 실행 명령 | 모듈 |
 |-----------|------|
 | `ros2 run ur5e_tools controller_gui` | `gui.controller_gui` |
 | `ros2 run ur5e_tools motion_editor_gui` | `gui.motion_editor_gui` |
-| `ros2 run ur5e_tools monitor_data_health` | `monitoring.monitor_data_health` |
 | `ros2 run ur5e_tools plot_ur_trajectory` | `plotting.plot_ur_trajectory` |
 | `ros2 run ur5e_tools hand_udp_sender_example` | `utils.hand_udp_sender_example` |
 | `ros2 run ur5e_tools compare_mjcf_urdf` | `validation.compare_mjcf_urdf` |
@@ -132,93 +132,50 @@ sudo apt install python3-pyqt5
 
 ---
 
-### `monitor_data_health.py` — 데이터 건강 모니터
+### `plot_ur_trajectory.py` — 궤적 시각화 (v2)
 
-`DataHealthMonitor` ROS2 노드. 5개 토픽의 패킷 속도와 타임아웃을 추적하며, 컨트롤러별 누적 통계를 JSON으로 저장합니다.
-
-```bash
-# 기본 실행 (10Hz 확인, 0.2s 타임아웃)
-ros2 run ur5e_tools monitor_data_health
-
-# 파라미터 지정
-ros2 run ur5e_tools monitor_data_health \
-    --ros-args -p check_rate:=10.0 -p timeout_threshold:=0.2
-```
-
-**모니터링 토픽:**
-
-| 토픽 | 타입 | 기대 주기 | 설명 |
-|------|------|----------|------|
-| `/joint_states` | `JointState` | ~500Hz | UR 드라이버 상태 피드백 |
-| `/target_joint_positions` | `Float64MultiArray` | 사용자 정의 | 타겟 위치 명령 |
-| `/hand/joint_states` | `Float64MultiArray` | ~100Hz | 손 센서/위치 피드백 |
-| `/forward_position_controller/commands` | `Float64MultiArray` | ~500Hz | 액추에이터 명령 스트림 |
-| `/system/estop_status` | `Bool` | 이벤트 | E-STOP 상태 변경 |
-| `/rt_controller/active_controller_name` | `String` | Latched | 현재 활성 컨트롤러 이름 (transient_local QoS) |
-
-**파라미터:**
-
-| 파라미터 | 기본값 | 설명 |
-|----------|--------|------|
-| `check_rate` | `10.0` | 확인 주기 (Hz) |
-| `timeout_threshold` | `0.2` | 타임아웃 임계값 (초) |
-| `stats_output_dir` | `~/ros2_ws/ur5e_ws/logging_data/stats/` | JSON 통계 저장 경로 (ament_index 경유 자동 탐색) |
-| `enable_stats` | `true` | 통계 수집 활성화 |
-
-**통계 출력:**
-- 컨트롤러별 독립 JSON 파일: `logging_data/stats/<controller_name>/` 하위에 저장
-- 항목: 총 활성 시간, robot/hand/command 패킷 수·손실률·평균 주파수, E-STOP 트리거 횟수
-- 매 100 패킷마다 상태 요약 로그 출력
-- 종료 시 최종 통계 저장
-
-**타이밍 통계 (v5.8.0+):**
-
-CSV 로그의 단계별 타이밍 컬럼을 분석하여 제어 루프 성능 통계를 산출합니다:
-
-| CSV 컬럼 | 설명 |
-|----------|------|
-| `t_state_acquire_us` | 상태 획득 시간 (try_lock + 복사) |
-| `t_compute_us` | 컨트롤러 Compute() 시간 |
-| `t_publish_us` | 명령 퍼블리시 시간 |
-| `t_total_us` | 전체 ControlLoop() 시간 |
-| `jitter_us` | 루프 주기 지터 |
-
-각 메트릭별 mean, max, std, variance 통계를 `_make_empty_stats()["timing"]`에 수집합니다.
-
----
-
-### `plot_ur_trajectory.py` — 궤적 시각화
-
-CSV 제어 로그를 Matplotlib으로 시각화합니다. 관절별 위치, 목표, 명령값을 플롯합니다.
+분리된 CSV 제어 로그(`robot_log_*.csv`, `hand_log_*.csv`)를 Matplotlib으로 시각화합니다. 파일 이름으로 로그 타입을 자동 감지합니다.
 
 ```bash
-# 전체 관절 플롯
-ros2 run ur5e_tools plot_ur_trajectory /tmp/ur5e_control_log.csv
+# Robot 로그 시각화 (위치 + 속도 2개 Figure)
+ros2 run ur5e_tools plot_ur_trajectory logging_data/250314_1530/controller/robot_log.csv
 
-# 특정 관절만 플롯
-ros2 run ur5e_tools plot_ur_trajectory /tmp/ur5e_control_log.csv --joint 2
+# Hand 로그 시각화 (위치 + 속도 + 센서 3개 Figure)
+ros2 run ur5e_tools plot_ur_trajectory logging_data/250314_1530/controller/hand_log.csv
 
-# 플롯 파일로 저장 (화면 표시 대신)
-ros2 run ur5e_tools plot_ur_trajectory /tmp/ur5e_control_log.csv --save-dir /tmp/plots
+# 플롯 파일로 저장
+ros2 run ur5e_tools plot_ur_trajectory logging_data/250314_1530/controller/robot_log.csv --save-dir /tmp/plots
 
 # 통계만 출력 (플롯 없이)
-ros2 run ur5e_tools plot_ur_trajectory /tmp/ur5e_control_log.csv --stats
+ros2 run ur5e_tools plot_ur_trajectory logging_data/250314_1530/controller/robot_log.csv --stats
+
+# 추적 오차 플롯 추가 (robot only)
+ros2 run ur5e_tools plot_ur_trajectory logging_data/250314_1530/controller/robot_log.csv --error
 ```
 
-**입력 CSV 형식** (DataLogger 출력):
-```
-timestamp, current_pos_0..5, target_pos_0..5, command_0..5, compute_time_us
-```
+> **v5.10.0**: `--save-dir` 미지정 시 `UR5E_SESSION_DIR/plots/`에 자동 저장됩니다.
 
-**생성 플롯:**
+**파일 이름 자동 감지:**
+- `robot_log_*.csv` → Robot 모드
+- `hand_log_*.csv` → Hand 모드
 
-| 플롯 | 내용 |
-|------|------|
-| 단일 관절 | 현재 위치, 목표 위치, 명령값 (3개 라인) |
-| 전체 관절 (3×2 그리드) | 6개 서브플롯, 현재 vs 목표 위치 |
-| 추적 오차 | error = target - current, y=0 기준선 |
+**Robot 모드 플롯:**
 
-**통계 출력**: 구간 길이(s), 샘플 수, 평균 샘플링 속도(Hz), 관절별 RMS 추적 오차(rad + deg)
+| Figure | 레이아웃 | 내용 |
+|--------|----------|------|
+| Figure 1 | 3×2 서브플롯 | 관절별 위치 (Goal / Target / Actual) |
+| Figure 2 | 3×2 서브플롯 | 관절별 속도 (Target / Actual) |
+| Figure 3 (--error) | 2×1 | 위치/속도 추적 오차 |
+
+**Hand 모드 플롯:**
+
+| Figure | 레이아웃 | 내용 |
+|--------|----------|------|
+| Figure 1 | 2×5 서브플롯 | 모터별 위치 (Goal / Command / Actual) |
+| Figure 2 | 2×5 서브플롯 | 모터별 속도 (Actual) |
+| Figure 3 | 2×4 서브플롯 | 센서 (기압 8ch + ToF 3ch per fingertip) |
+
+**통계 출력**: 구간 길이(s), 샘플 수, 평균 샘플링 속도(Hz), 관절/모터별 RMS 추적 오차
 
 ---
 
@@ -298,7 +255,7 @@ ros2 run ur5e_tools hand_udp_sender_example \
 | StaticPose | 고정 모터 위치 전송 |
 | ReadOnly | 쓰기 없음; ReadPos + ReadVel + ReadSensor×4만 수행 |
 
-**CSV 로깅**: 타임스탬프, 모터 위치/속도, 센서별 기압/ToF 데이터 자동 기록
+**CSV 로깅**: 타임스탬프, 모터 위치/속도, 센서별 기압/ToF 데이터 자동 기록 (v5.10.0: `UR5E_SESSION_DIR/hand/` 기본 경로)
 
 **장애 감지**: 연속 0-데이터 또는 중복 데이터 5회 초과 시 자동 종료
 
@@ -351,19 +308,9 @@ sudo apt install python3-pyqt5   # motion_editor_gui만 필요
 
 ---
 
-## launch 파일에서의 사용
+## 모니터링 기능 이전 (v5.9.0)
 
-`ur5e_rt_controller`와 `ur5e_mujoco_sim`의 launch 파일은 `monitor_data_health`를 이 패키지에서 실행합니다:
-
-```python
-# ur_control.launch.py, mujoco_sim.launch.py 내
-monitor_node = Node(
-    package='ur5e_tools',
-    executable='monitor_data_health',
-    name='data_health_monitor',
-    parameters=[{'check_rate': 10.0, 'timeout_threshold': 0.2}]
-)
-```
+기존 `monitor_data_health` 기능은 `ur5e_status_monitor` 및 `ur5e_hand_udp` 패키지에 통합되었습니다. 데이터 건강 모니터링은 해당 패키지를 참조하세요.
 
 ---
 

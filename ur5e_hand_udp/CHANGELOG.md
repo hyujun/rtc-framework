@@ -5,6 +5,16 @@
 
 ---
 
+## [5.10.0] - 2026-03-14
+
+### 변경 (Changed) — 세션 기반 로깅 경로
+
+- JSON 통계 출력 경로: `/tmp/hand_udp_stats_YYYYMMDD_HHMMSS.json` → `UR5E_SESSION_DIR/hand/hand_udp_stats.json`
+  - 세션 디렉토리 미설정 시 `/tmp/` 폴백
+  - 파일 이름에서 타임스탬프 제거 (세션 폴더가 타임스탬프 역할)
+
+---
+
 ## [5.8.0] - 2026-03-14
 
 ### 추가 (Added) — 실패 감지, 타임아웃 설정, ACK

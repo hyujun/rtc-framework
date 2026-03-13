@@ -573,6 +573,13 @@ class MotionTab(QWidget):
     def save_json(self, filename=None):
         if filename is None:
             default_name = self._current_file or ""
+            # 세션 디렉토리의 motions/ 서브디렉토리를 기본 경로로 사용
+            if not default_name:
+                session = os.environ.get('UR5E_SESSION_DIR', '')
+                if session:
+                    motions_dir = os.path.join(session, 'motions')
+                    os.makedirs(motions_dir, exist_ok=True)
+                    default_name = motions_dir
             filename, _ = QFileDialog.getSaveFileName(
                 self, "Save Motion", default_name,
                 "JSON Files (*.json);;All Files (*)")

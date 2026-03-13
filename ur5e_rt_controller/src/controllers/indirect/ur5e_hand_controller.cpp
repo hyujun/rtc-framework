@@ -44,6 +44,9 @@ ControllerOutput UrFiveEHandController::Compute(const ControllerState & state) n
   output.actual_task_positions[5] = rpy[2];
 
   output.actual_target_positions = robot_target_;
+  output.goal_positions = robot_target_;        // P controller: no trajectory, goal == target
+  // target_velocities: zero (no trajectory generator)
+  output.hand_goal_positions = hand_target_;
 
   // ── Hand motor P control (same formula applied to 10 hand motors) ─────────
   if (state.hand.valid) {

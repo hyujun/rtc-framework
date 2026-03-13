@@ -1,6 +1,6 @@
 # ur5e_status_monitor
 
-Non-RT safety & status monitor for UR5e servoJ real-time control.
+**Non-RT safety & status monitor for UR5e servoJ real-time control (v5.10.0)**
 
 ![ROS2](https://img.shields.io/badge/ROS2-Humble%20%7C%20Jazzy-blue)
 ![C++](https://img.shields.io/badge/C%2B%2B-20-brightgreen)
@@ -59,6 +59,37 @@ Non-RT safety & status monitor for UR5e servoJ real-time control.
 | Velocity tracking error | warn: 0.1 rad/s, fault: 0.3 rad/s | Warn / failure | `kTrackingError` |
 | Joint limit proximity | warn: 5.0 deg, fault: 1.0 deg | Warn / failure | `kJointLimitViolation` |
 
+### Message Statistics (v5.9.0)
+
+Joint state 메시지의 패킷 수, 타임아웃 횟수, 현재 수신 rate를 추적합니다.
+
+```cpp
+struct MessageStats {
+  uint64_t total_count{0};     // 총 수신 패킷 수
+  uint64_t timeout_count{0};   // watchdog 타임아웃 횟수
+  double current_rate_hz{0.0}; // 현재 수신 rate (1초 윈도우)
+};
+
+// RT-safe accessor
+auto stats = monitor->getJointStateStats();
+```
+
+### Per-Controller Statistics (v5.9.0)
+
+컨트롤러별 활성 시간, 패킷 수, 타임아웃, 장애 횟수를 독립적으로 추적합니다. `/rt_controller/active_controller_name` 토픽을 구독하여 컨트롤러 전환을 감지합니다.
+
+```cpp
+struct ControllerStats {
+  std::string name;
+  double total_active_sec{0.0};
+  uint64_t js_packets{0};
+  uint64_t js_timeouts{0};
+  uint64_t failure_count{0};
+};
+```
+
+**JSON 통계 내보내기**: `stop()` 호출 시 `{log_output_dir}/controller_stats_YYYYMMDDTHHMMSS.json`에 저장됩니다. v5.10.0부터 기본 경로는 `UR5E_SESSION_DIR/monitor/`입니다.
+
 ---
 
 ## Dependencies
@@ -108,7 +139,10 @@ status_monitor_config = PathJoinSubstitution([
 ])
 
 rt_controller_node = Node(
-    parameters=[ur_control_config, status_monitor_config, {'log_dir': log_dir}],
+    parameters=[ur_control_config, status_monitor_config, {
+        'log_dir': session_dir,
+        'status_monitor.log_output_dir': os.path.join(session_dir, 'monitor'),
+    }],
     ...
 )
 ```
@@ -180,7 +214,8 @@ All parameters are declared under the `status_monitor.` prefix.
 | `auto_recovery` | bool | false | Enable auto-recovery |
 | `max_recovery_attempts` | int | 3 | Max recovery attempts |
 | `recovery_interval_sec` | double | 5.0 | Recovery cooldown |
-| `log_output_dir` | string | `~/.ros/` | Failure log output directory |
+| `log_output_dir` | string | `""` | 실패 로그 출력 디렉토리 (빈값: `UR5E_SESSION_DIR/monitor/` → `~/.ros` 폴백) |
+| `enable_controller_stats` | bool | true | Per-controller statistics tracking |
 
 ---
 
@@ -190,7 +225,7 @@ All parameters are declared under the `status_monitor.` prefix.
 
 | Topic | Type | Rate | Description |
 |-------|------|------|-------------|
-| `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 1 Hz | Robot status diagnostics |
+| `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 1 Hz | Robot status diagnostics (includes `joint_state_rate`, `joint_state_total`, `joint_state_timeouts`, `active_controller` key-values) |
 
 ### Subscribed Topics
 
@@ -200,6 +235,7 @@ All parameters are declared under the `status_monitor.` prefix.
 | `/io_and_status_controller/robot_mode` | `std_msgs/Int32` | UR robot mode |
 | `/io_and_status_controller/safety_mode` | `std_msgs/Int32` | UR safety mode |
 | `/io_and_status_controller/robot_program_running` | `std_msgs/Bool` | Program running state |
+| `/rt_controller/active_controller_name` | `std_msgs/String` | Active controller name (transient_local QoS) |
 
 ### Used Services
 
@@ -227,7 +263,7 @@ All parameters are declared under the `status_monitor.` prefix.
 
 ## Failure Log Format
 
-When a failure is detected, a log file is written to `{log_output_dir}/ur5e_failure_<timestamp>.log`.
+When a failure is detected, a log file is written to `{log_output_dir}/ur5e_failure_<timestamp>.log`. v5.10.0부터 기본 경로는 `UR5E_SESSION_DIR/monitor/`입니다 (launch 파일이 세션 디렉토리를 자동 설정).
 
 ### Example
 

@@ -45,36 +45,68 @@ rt_controller 노드를 수정 없이 그대로 실행합니다.
 
 연산 시간 로그 분석 (sync_step 실행 후):
   python3 -c "
-  import pandas as pd
-  df = pd.read_csv('~/ros2_ws/ur5e_ws/logging_data/ur5e_control_log_YYMMDD_HHMM.csv')
-  print(df['compute_time_us'].describe())
-  print(f'P95: {df[\"compute_time_us\"].quantile(0.95):.1f} us')
-  print(f'P99: {df[\"compute_time_us\"].quantile(0.99):.1f} us')
-  print(f'Over 2ms: {(df[\"compute_time_us\"] > 2000).mean()*100:.2f}%')
+  import pandas as pd, glob, os
+  sessions = sorted(glob.glob(os.path.expanduser('~/ros2_ws/ur5e_ws/logging_data/??????_????')))
+  if sessions:
+      df = pd.read_csv(os.path.join(sessions[-1], 'controller', 'timing_log.csv'))
+      print(df['t_compute_us'].describe())
+      print(f'P95: {df[\"t_compute_us\"].quantile(0.95):.1f} us')
+      print(f'P99: {df[\"t_compute_us\"].quantile(0.99):.1f} us')
+      print(f'Over 2ms: {(df[\"t_compute_us\"] > 2000).mean()*100:.2f}%')
   "
 """
 
 import os
+import re
+import shutil
+from datetime import datetime
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
 
 
-def launch_setup(context, *args, **kwargs):
-    """Setup function executed with launch context for conditional parameter loading."""
-
-    # ── Log directory (colcon workspace logging_data/) ────────────────────────
+def _resolve_logging_root():
+    """colcon workspace 기반 logging_data 루트 경로 결정."""
     try:
         share_dir = get_package_share_directory('ur5e_rt_controller')
         ws_dir = os.path.dirname(os.path.dirname(
             os.path.dirname(os.path.dirname(share_dir))))
-        log_dir = os.path.join(ws_dir, 'logging_data')
+        return os.path.join(ws_dir, 'logging_data')
     except Exception:
-        log_dir = os.path.expanduser('~/ros2_ws/ur5e_ws/logging_data')
+        return os.path.expanduser('~/ros2_ws/ur5e_ws/logging_data')
+
+
+def _cleanup_old_sessions(logging_root, max_sessions):
+    """YYMMDD_HHMM 패턴 세션 폴더를 max_sessions 개수 이하로 유지."""
+    if not os.path.isdir(logging_root):
+        return
+    pattern = re.compile(r'^\d{6}_\d{4}$')
+    dirs = sorted([
+        d for d in os.listdir(logging_root)
+        if os.path.isdir(os.path.join(logging_root, d)) and pattern.match(d)
+    ])
+    while len(dirs) > max_sessions:
+        oldest = os.path.join(logging_root, dirs.pop(0))
+        shutil.rmtree(oldest, ignore_errors=True)
+
+
+def launch_setup(context, *args, **kwargs):
+    """Setup function executed with launch context for conditional parameter loading."""
+
+    # ── 세션 디렉토리 생성 (YYMMDD_HHMM) ─────────────────────────────────────
+    logging_root = _resolve_logging_root()
+    session_ts = datetime.now().strftime('%y%m%d_%H%M')
+    session_dir = os.path.join(logging_root, session_ts)
+    for sub in ('controller', 'monitor', 'hand', 'sim', 'plots', 'motions'):
+        os.makedirs(os.path.join(session_dir, sub), exist_ok=True)
+
+    max_sessions = int(
+        LaunchConfiguration('max_log_sessions').perform(context) or '10')
+    _cleanup_old_sessions(logging_root, max_sessions)
 
     # ── Package paths ─────────────────────────────────────────────────────────
     pkg_sim = FindPackageShare('ur5e_mujoco_sim')
@@ -139,11 +171,17 @@ def launch_setup(context, *args, **kwargs):
     if kd != '':
         ctrl_overrides['kd'] = float(kd)
 
-    # Always set log_dir
-    ctrl_overrides['log_dir'] = log_dir
+    # 세션 디렉토리를 log_dir로 전달 (rt_controller가 session_dir 내에서 로깅)
+    ctrl_overrides['log_dir'] = session_dir
 
     if ctrl_overrides:
         ctrl_params.append(ctrl_overrides)
+
+    # ── 환경변수: 모든 노드에 세션 디렉토리 전파 ────────────────────────────────
+    set_session_dir = SetEnvironmentVariable(
+        name='UR5E_SESSION_DIR',
+        value=session_dir
+    )
 
     # ── Node 1: MuJoCo Simulator ──────────────────────────────────────────────
     mujoco_node = Node(
@@ -177,7 +215,7 @@ def launch_setup(context, *args, **kwargs):
         }],
     )
 
-    return [mujoco_node, rt_controller_node, monitor_node]
+    return [set_session_dir, mujoco_node, rt_controller_node, monitor_node]
 
 
 def generate_launch_description():
@@ -273,6 +311,12 @@ def generate_launch_description():
         ),
     )
 
+    max_log_sessions_arg = DeclareLaunchArgument(
+        'max_log_sessions',
+        default_value='10',
+        description='최대 보관 세션 폴더 수 (YYMMDD_HHMM)',
+    )
+
     return LaunchDescription([
         # Arguments
         model_path_arg,
@@ -284,6 +328,7 @@ def generate_launch_description():
         kp_arg,
         kd_arg,
         use_yaml_servo_gains_arg,
+        max_log_sessions_arg,
         # Nodes (via OpaqueFunction for conditional parameter loading)
         OpaqueFunction(function=launch_setup),
     ])

@@ -103,6 +103,9 @@ ControllerOutput JointPDController::Compute(
   }
 
   output.actual_target_positions = traj_state.positions;
+  output.goal_positions = robot_target_;
+  output.target_velocities = traj_state.velocities;
+  output.hand_goal_positions = hand_target_;
   output.robot_commands = ClampCommands(output.robot_commands, command_type_);
 
   // TCP 포즈 출력 (task_positions: [x, y, z, roll, pitch, yaw])
@@ -253,6 +256,7 @@ ControllerOutput JointPDController::ComputeEstop(
   }
 
   output.actual_target_positions = kSafePosition;
+  output.goal_positions = kSafePosition;
   output.robot_commands = ClampCommands(output.robot_commands, command_type_);
   new_target_.store(true, std::memory_order_relaxed);  // E-STOP 해제 후 궤적 재생성
   return output;

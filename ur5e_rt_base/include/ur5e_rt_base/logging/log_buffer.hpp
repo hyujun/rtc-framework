@@ -28,14 +28,11 @@ namespace ur5e_rt_controller {
   constexpr std::size_t kCacheLineSize = 64;
 #endif
 
-// One row of the control log CSV.
+// One row of the control log, split across three CSV files by the DataLogger.
 struct LogEntry {
   double timestamp{0.0};
-  std::array<double, kNumRobotJoints> current_positions{};
-  std::array<double, kNumRobotJoints> target_positions{};
-  std::array<double, kNumRobotJoints> commands{};
 
-  // ── Per-phase timing breakdown (µs) ──────────────────────────────────────
+  // ── Timing data → timing_log CSV ─────────────────────────────────────────
   // Populated by ControlLoop() via steady_clock::now() around each phase.
   double t_state_acquire_us{0.0};  // try_lock + state copy
   double t_compute_us{0.0};        // controller Compute() wall-clock
@@ -43,11 +40,20 @@ struct LogEntry {
   double t_total_us{0.0};          // entire ControlLoop() callback
   double jitter_us{0.0};           // |actual_period - expected_period|
 
-  // ── Hand state ───────────────────────────────────────────────────────────
-  std::array<float, kNumHandMotors>  hand_positions{};
-  std::array<float, kNumHandMotors>  hand_velocities{};
-  std::array<float, kNumHandSensors> hand_sensors{};
+  // ── Robot joint data → robot_log CSV ─────────────────────────────────────
+  std::array<double, kNumRobotJoints> goal_positions{};       // 최종 목표 (SetRobotTarget)
+  std::array<double, kNumRobotJoints> target_positions{};     // 궤적 보간 위치
+  std::array<double, kNumRobotJoints> target_velocities{};    // 궤적 보간 속도
+  std::array<double, kNumRobotJoints> actual_positions{};     // 실제 위치
+  std::array<double, kNumRobotJoints> actual_velocities{};    // 실제 속도
+
+  // ── Hand data → hand_log CSV ─────────────────────────────────────────────
   bool hand_valid{false};
+  std::array<float, kNumHandMotors>  hand_goal_positions{};    // 핸드 최종 목표
+  std::array<float, kNumHandMotors>  hand_commands{};          // 핸드 출력 명령
+  std::array<float, kNumHandMotors>  hand_actual_positions{};  // 핸드 실제 위치
+  std::array<float, kNumHandMotors>  hand_actual_velocities{}; // 핸드 실제 속도
+  std::array<float, kNumHandSensors> hand_sensors{};           // 44 = baro(32) + tof(12)
 
   // Legacy alias — kept for backward compatibility with external tools.
   [[nodiscard]] double compute_time_us() const noexcept { return t_compute_us; }

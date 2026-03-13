@@ -1,6 +1,6 @@
 # ur5e_rt_base
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.8.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.10.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 
 UR5e RT Controller 스택의 **공유 기반 패키지** — 모든 패키지가 공통으로 사용하는 타입 정의, 스레드 유틸리티, 잠금-없는(lock-free) 로깅 인프라, UDP 통신 프리미티브, 디지털 신호 필터를 제공하는 헤더-전용(header-only) C++20 라이브러리입니다.
@@ -16,7 +16,8 @@ ur5e_rt_base (header-only)
     │   └── thread_utils.hpp       ← ApplyThreadConfig(), 헬스체크, 지연 통계, 자동 선택
     ├── logging/
     │   ├── log_buffer.hpp         ← SPSC 링 버퍼 (RT → 로그 스레드, 잠금-없음)
-    │   └── data_logger.hpp        ← 비-RT CSV 로거
+    │   ├── data_logger.hpp        ← 비-RT CSV 로거
+    │   └── session_dir.hpp        ← 세션 디렉토리 관리 유틸리티 (v5.10.0)
     ├── udp/
     │   ├── udp_socket.hpp         ← UDP 소켓 RAII 래퍼
     │   ├── udp_codec.hpp          ← 범용 UDP 패킷 코덱 컨셉 (C++20)
@@ -113,6 +114,10 @@ struct ControllerOutput {
   std::array<double, 6>  actual_task_positions{};    // 태스크 공간 위치 (로깅용)
   bool        valid{true};                           // 출력 유효성 플래그
   CommandType command_type{CommandType::kPosition};   // 위치/토크 명령 구분
+  // ── 로깅 확장 필드 (v5.9.0) ──
+  std::array<double, 6>  goal_positions{};        // 최종 목표 위치 (SetRobotTarget)
+  std::array<double, 6>  target_velocities{};     // 궤적 보간 속도
+  std::array<float, 10>  hand_goal_positions{};    // 핸드 최종 목표 위치
 };
 
 } // namespace ur5e_rt_controller
@@ -381,23 +386,26 @@ class SpscLogBuffer {
 ```cpp
 struct LogEntry {
   double timestamp{0.0};
-  std::array<double, 6> current_positions{};
-  std::array<double, 6> target_positions{};
-  std::array<double, 6> commands{};
-  double compute_time_us{0.0};  // Compute() 실행 시간 (마이크로초)
-
-  // 타이밍 필드 (v5.8.0)
-  double t_state_acquire_us{0.0};  // 상태 취득 소요 시간 (us)
-  double t_compute_us{0.0};        // 컨트롤러 연산 소요 시간 (us)
-  double t_publish_us{0.0};        // 명령 발행 소요 시간 (us)
-  double t_total_us{0.0};          // 전체 루프 소요 시간 (us)
-  double jitter_us{0.0};           // 루프 지터 (us)
-
-  // 손 상태 필드 (v5.8.0)
-  std::array<float, 10> hand_positions{};   // 손 모터 위치
-  std::array<float, 10> hand_velocities{};  // 손 모터 속도
-  std::array<float, 44> hand_sensors{};     // 손 센서 데이터 (4×11)
-  bool hand_valid{false};                   // 손 데이터 유효성
+  // ── Timing ──
+  double t_state_acquire_us{0.0};
+  double t_compute_us{0.0};
+  double t_publish_us{0.0};
+  double t_total_us{0.0};
+  double jitter_us{0.0};
+  // ── Robot ──
+  std::array<double, 6> goal_positions{};       // 최종 목표 (SetRobotTarget)
+  std::array<double, 6> target_positions{};     // 궤적 보간 위치
+  std::array<double, 6> target_velocities{};    // 궤적 보간 속도
+  std::array<double, 6> actual_positions{};     // 실제 관절 위치
+  std::array<double, 6> actual_velocities{};    // 실제 관절 속도
+  // ── Hand ──
+  bool hand_valid{false};
+  std::array<float, 10> hand_goal_positions{};  // 핸드 최종 목표
+  std::array<float, 10> hand_commands{};        // 핸드 명령
+  std::array<float, 10> hand_actual_positions{};// 핸드 실제 위치
+  std::array<float, 10> hand_actual_velocities{};// 핸드 실제 속도
+  std::array<float, 44> hand_sensors{};         // 손 센서 (4×11)
+  [[nodiscard]] double compute_time_us() const noexcept { return t_compute_us; }
 };
 ```
 
@@ -411,43 +419,86 @@ using ControlLogBuffer = SpscLogBuffer<512>;
 
 ### `ur5e_rt_base/logging/data_logger.hpp`
 
-비-RT 스레드에서 CSV 파일에 제어 데이터를 기록하는 로거입니다.
+비-RT 스레드에서 CSV 파일에 제어 데이터를 기록하는 로거입니다. v5.9.0부터 3개 CSV 파일로 분리 기록합니다.
 
 ```cpp
 class DataLogger {
  public:
-  explicit DataLogger(std::filesystem::path log_path);
-  ~DataLogger();  // 소멸자에서 Flush() 자동 호출
+  /// 3개 CSV 파일로 분리 기록 (v5.9.0). 빈 경로 → 해당 로그 비활성화.
+  DataLogger(const std::filesystem::path& timing_path,
+             const std::filesystem::path& robot_path,
+             const std::filesystem::path& hand_path);
+  ~DataLogger();  // Flush() 자동 호출
 
-  // 이동 전용 (복사 불가)
-  DataLogger(DataLogger&&) noexcept = default;
+  DataLogger(DataLogger&&) = default;
   DataLogger& operator=(DataLogger&&) = default;
 
-  // 1 제어 스텝 기록: 타임스탬프, 현재 위치, 목표 위치, 명령, 연산 시간
-  void LogControlData(double timestamp,
-                      std::span<const double, 6> current_positions,
-                      std::span<const double, 6> target_positions,
-                      std::span<const double, 6> commands,
-                      double compute_time_us = 0.0);
-
-  // 손 데이터 기록 (향후 확장 예정)
-  void LogHandData(double timestamp,
-                   std::span<const float, 10> hand_positions);
-
-  // SpscLogBuffer에서 모든 엔트리를 드레인하여 CSV에 기록
-  // 반드시 로그 스레드에서만 호출 — RT 스레드에서 호출 금지
+  void LogEntry(const ur5e_rt_controller::LogEntry& entry);
   void DrainBuffer(ControlLogBuffer& buf);
-
   void Flush();
   [[nodiscard]] bool IsOpen() const;
 };
 ```
 
-**CSV 열 형식:**
+**CSV 열 형식 (3파일 분리, v5.9.0):**
+
+- **timing_log** (6 columns):
 ```
-timestamp, current_pos_0..5, target_pos_0..5, command_0..5, compute_time_us,
-t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us,
-hand_pos_0..9, hand_vel_0..9, hand_sensor_0..43, hand_valid
+timestamp, t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us
+```
+
+- **robot_log** (31 columns):
+```
+timestamp, goal_pos_0..5, target_pos_0..5, target_vel_0..5, actual_pos_0..5, actual_vel_0..5
+```
+
+- **hand_log** (87 columns):
+```
+timestamp, hand_valid, hand_goal_pos_0..9, hand_cmd_0..9, hand_actual_pos_0..9, hand_actual_vel_0..9, baro_f{f}_{b}, tof_f{f}_{t}
+```
+
+---
+
+### `ur5e_rt_base/logging/session_dir.hpp` (v5.10.0)
+
+모든 C++ 패키지에서 공유하는 세션 디렉토리 관리 유틸리티입니다. `logging_data/YYMMDD_HHMM/` 형식의 세션 디렉토리 생성, 환경변수 기반 경로 해석, 오래된 세션 정리 기능을 제공합니다.
+
+```cpp
+namespace ur5e_rt_controller {
+
+// 세션 타임스탬프 생성 (YYMMDD_HHMM 형식)
+[[nodiscard]] inline std::string GenerateSessionTimestamp();
+
+// 세션 디렉토리 내 표준 서브디렉토리 생성
+// controller/, monitor/, hand/, sim/, plots/, motions/
+inline void EnsureSessionSubdirs(const std::filesystem::path& session_dir);
+
+// 세션 디렉토리 해석 (우선순위: UR5E_SESSION_DIR 환경변수 → 자체 생성)
+[[nodiscard]] inline std::filesystem::path ResolveSessionDir(
+    const std::string& fallback_logging_root);
+
+// 오래된 세션 폴더 정리 (YYMMDD_HHMM 패턴, max_sessions 초과 시 삭제)
+inline void CleanupOldSessions(
+    const std::filesystem::path& logging_root, int max_sessions);
+
+// 세션 디렉토리 목록 조회 (정렬된 YYMMDD_HHMM 폴더)
+[[nodiscard]] inline std::vector<std::filesystem::path> ListSessionDirs(
+    const std::filesystem::path& logging_root);
+
+}  // namespace ur5e_rt_controller
+```
+
+**사용 예시:**
+
+```cpp
+#include "ur5e_rt_base/logging/session_dir.hpp"
+
+// 패턴 1: 환경변수 또는 자체 생성 (노드 단독 실행 시)
+auto session = urtc::ResolveSessionDir("~/ros2_ws/ur5e_ws/logging_data");
+auto ctrl_dir = session / "controller";
+
+// 패턴 2: 오래된 세션 정리
+urtc::CleanupOldSessions(logging_root, 10);
 ```
 
 ---
@@ -885,6 +936,7 @@ target_include_directories(my_target PRIVATE
 #include "ur5e_rt_base/threading/thread_utils.hpp"
 #include "ur5e_rt_base/logging/log_buffer.hpp"
 #include "ur5e_rt_base/logging/data_logger.hpp"
+#include "ur5e_rt_base/logging/session_dir.hpp"
 #include "ur5e_rt_base/udp/udp_socket.hpp"
 #include "ur5e_rt_base/udp/udp_codec.hpp"
 #include "ur5e_rt_base/udp/udp_transceiver.hpp"

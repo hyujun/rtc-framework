@@ -92,6 +92,19 @@ UR5eStatusMonitor::UR5eStatusMonitor(rclcpp::Node::SharedPtr node)
       [this](std_msgs::msg::Bool::SharedPtr msg) { OnProgramRunning(std::move(msg)); },
       sub_opts);
 
+  // ── Active controller name subscription (transient_local QoS) ─────────────
+  if (enable_controller_stats_) {
+    auto ctrl_qos = rclcpp::QoS(1)
+        .reliable()
+        .transient_local();
+    controller_name_sub_ = node_->create_subscription<std_msgs::msg::String>(
+        "/rt_controller/active_controller_name", ctrl_qos,
+        [this](std_msgs::msg::String::SharedPtr msg) {
+          OnControllerNameChanged(std::move(msg));
+        },
+        sub_opts);
+  }
+
   // ── Publisher ──────────────────────────────────────────────────────────────
   diag_pub_ = node_->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
       "/diagnostics", 10);
@@ -156,11 +169,24 @@ void UR5eStatusMonitor::DeclareAndLoadParameters() {
   max_recovery_attempts_  = static_cast<int>(declare("max_recovery_attempts",  3L));
   recovery_interval_sec_  = declare("recovery_interval_sec",  5.0);
 
-  // Logging
-  log_output_dir_ = declare("log_output_dir", std::string("~/.ros/"));
+  // Controller stats
+  enable_controller_stats_ = declare("enable_controller_stats", true);
 
-  // Expand ~ to HOME
-  if (!log_output_dir_.empty() && log_output_dir_[0] == '~') {
+  // Logging — 세션 디렉토리 통합
+  log_output_dir_ = declare("log_output_dir", std::string(""));
+
+  if (log_output_dir_.empty()) {
+    // UR5E_SESSION_DIR 환경변수에서 세션 디렉토리 읽기
+    const char* session_env = std::getenv("UR5E_SESSION_DIR");
+    if (session_env != nullptr && session_env[0] != '\0') {
+      log_output_dir_ = std::string(session_env) + "/monitor";
+    } else {
+      // fallback: ~/.ros/
+      const char* home = std::getenv("HOME");
+      log_output_dir_ = home ? std::string(home) + "/.ros" : "/tmp";
+    }
+  } else if (!log_output_dir_.empty() && log_output_dir_[0] == '~') {
+    // Expand ~ to HOME
     const char* home = std::getenv("HOME");
     if (home != nullptr) {
       log_output_dir_ = std::string(home) + log_output_dir_.substr(1);
@@ -201,6 +227,10 @@ void UR5eStatusMonitor::OnJointState(sensor_msgs::msg::JointState::SharedPtr msg
   last_joint_state_time_.store(
       std::chrono::steady_clock::now().time_since_epoch().count(),
       std::memory_order_release);
+
+  // ── Packet counting ─────────────────────────────────────────────────────
+  ++js_stats_.total_count;
+  ++rate_window_count_;
 }
 
 void UR5eStatusMonitor::OnRobotMode(std_msgs::msg::Int32::SharedPtr msg) {
@@ -315,6 +345,7 @@ void UR5eStatusMonitor::start() {
     return;
   }
   start_time_ = std::chrono::steady_clock::now();
+  rate_window_start_ = start_time_;
   monitor_thread_ = std::jthread([this](std::stop_token st) {
     MonitorLoop(std::move(st));
   });
@@ -326,6 +357,9 @@ void UR5eStatusMonitor::stop() {
     monitor_thread_.request_stop();
     monitor_thread_.join();
     RCLCPP_INFO(node_->get_logger(), "[StatusMonitor] Monitor thread stopped");
+  }
+  if (enable_controller_stats_) {
+    SaveControllerStatsJson();
   }
 }
 
@@ -350,8 +384,30 @@ void UR5eStatusMonitor::MonitorLoop(std::stop_token stop_token) {
     CheckTrackingErrors();
     CheckJointLimits();
 
-    // Controller manager poll (less frequent)
+    // ── Rate calculation ──────────────────────────────────────────────────────
     const auto now = std::chrono::steady_clock::now();
+    {
+      const double elapsed =
+          std::chrono::duration<double>(now - rate_window_start_).count();
+      if (elapsed >= 1.0) {
+        js_stats_.current_rate_hz =
+            static_cast<double>(rate_window_count_) / elapsed;
+        rate_window_count_ = 0;
+        rate_window_start_ = now;
+      }
+    }
+
+    // ── Per-controller stats update ─────────────────────────────────────────
+    if (enable_controller_stats_) {
+      auto it = controller_stats_.find(current_controller_name_);
+      if (it != controller_stats_.end()) {
+        it->second.js_packets = js_stats_.total_count;
+        it->second.js_timeouts = js_stats_.timeout_count;
+        it->second.last_active = now;
+      }
+    }
+
+    // Controller manager poll (less frequent)
     const auto poll_interval = std::chrono::duration<double>(controller_poll_interval_sec_);
     if (now - last_controller_poll_time_ >= poll_interval) {
       CheckControllerManager();
@@ -470,6 +526,7 @@ void UR5eStatusMonitor::CheckJointStateWatchdog() {
   const auto timeout = std::chrono::duration<double>(watchdog_timeout_sec_);
 
   if (age > timeout) {
+    ++js_stats_.timeout_count;
     RaiseFailure(FailureType::kWatchdogTimeout,
         "joint_states not received for " +
         std::to_string(std::chrono::duration<double>(age).count()) + " s "
@@ -723,6 +780,10 @@ void UR5eStatusMonitor::PublishDiagnostics() {
   add_kv("target_controller", target_controller_);
   add_kv("target_controller_active", target_controller_active_ ? "true" : "false");
   add_kv("recovery_attempts", std::to_string(recovery_attempts_));
+  add_kv("joint_state_rate",     std::to_string(js_stats_.current_rate_hz));
+  add_kv("joint_state_total",    std::to_string(js_stats_.total_count));
+  add_kv("joint_state_timeouts", std::to_string(js_stats_.timeout_count));
+  add_kv("active_controller",    current_controller_name_);
 
   // Compute max tracking error for diagnostics
   {
@@ -779,6 +840,14 @@ void UR5eStatusMonitor::RaiseFailure(FailureType type, const std::string& descri
   }
 
   is_ready_.store(false, std::memory_order_release);
+
+  // Increment per-controller failure count
+  if (enable_controller_stats_) {
+    auto it = controller_stats_.find(current_controller_name_);
+    if (it != controller_stats_.end()) {
+      ++it->second.failure_count;
+    }
+  }
 
   RCLCPP_ERROR(node_->get_logger(), "[StatusMonitor] FAILURE: %s — %s",
                std::string(FailureTypeToString(type)).c_str(),
@@ -987,6 +1056,119 @@ void UR5eStatusMonitor::AttemptRecovery(FailureType type) {
                 recovery_attempts_,
                 std::string(SafetyModeToString(safety)).c_str());
   }
+}
+
+// ── getJointStateStats ────────────────────────────────────────────────────────
+
+UR5eStatusMonitor::MessageStats UR5eStatusMonitor::getJointStateStats() const noexcept {
+  return js_stats_;
+}
+
+// ── OnControllerNameChanged ──────────────────────────────────────────────────
+
+void UR5eStatusMonitor::OnControllerNameChanged(
+    const std_msgs::msg::String::SharedPtr msg) {
+  if (!msg) return;
+
+  const std::string& new_name = msg->data;
+  if (new_name == current_controller_name_) {
+    return;  // No change
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+
+  // Update total_active_sec for the previous controller
+  auto prev_it = controller_stats_.find(current_controller_name_);
+  if (prev_it != controller_stats_.end() &&
+      prev_it->second.last_active.time_since_epoch().count() > 0) {
+    prev_it->second.total_active_sec +=
+        std::chrono::duration<double>(now - prev_it->second.last_active).count();
+  }
+
+  RCLCPP_INFO(node_->get_logger(),
+              "[StatusMonitor] Active controller: %s → %s",
+              current_controller_name_.c_str(), new_name.c_str());
+
+  current_controller_name_ = new_name;
+
+  // Create new entry if not exists
+  auto [it, inserted] = controller_stats_.try_emplace(new_name);
+  if (inserted) {
+    it->second.name = new_name;
+    it->second.first_active = now;
+  }
+  it->second.last_active = now;
+}
+
+// ── SaveControllerStatsJson ──────────────────────────────────────────────────
+
+void UR5eStatusMonitor::SaveControllerStatsJson() const {
+  if (controller_stats_.empty()) {
+    return;
+  }
+
+  try {
+    std::filesystem::create_directories(log_output_dir_);
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(node_->get_logger(),
+                 "[StatusMonitor] Failed to create log directory '%s': %s",
+                 log_output_dir_.c_str(), e.what());
+    return;
+  }
+
+  const std::string filename = log_output_dir_ + "/controller_stats_" +
+                               SteadyToIso8601() + ".json";
+  std::ofstream ofs(filename);
+  if (!ofs.is_open()) {
+    RCLCPP_ERROR(node_->get_logger(),
+                 "[StatusMonitor] Failed to open controller stats file: %s",
+                 filename.c_str());
+    return;
+  }
+
+  // Finalize active time for current controller
+  const auto now = std::chrono::steady_clock::now();
+  const double uptime =
+      std::chrono::duration<double>(now - start_time_).count();
+
+  ofs << "{\n";
+  ofs << "  \"timestamp\": \"" << SteadyToIso8601() << "\",\n";
+  ofs << "  \"uptime_sec\": " << std::fixed << std::setprecision(3) << uptime << ",\n";
+  ofs << "  \"joint_state_total\": " << js_stats_.total_count << ",\n";
+  ofs << "  \"joint_state_timeouts\": " << js_stats_.timeout_count << ",\n";
+  ofs << "  \"joint_state_last_rate_hz\": " << std::fixed << std::setprecision(1)
+      << js_stats_.current_rate_hz << ",\n";
+  ofs << "  \"controllers\": {\n";
+
+  std::size_t idx = 0;
+  for (const auto& [name, stats] : controller_stats_) {
+    // Calculate final active time for the current controller
+    double active_sec = stats.total_active_sec;
+    if (name == current_controller_name_ &&
+        stats.last_active.time_since_epoch().count() > 0) {
+      active_sec +=
+          std::chrono::duration<double>(now - stats.last_active).count();
+    }
+
+    ofs << "    \"" << name << "\": {\n";
+    ofs << "      \"total_active_sec\": " << std::fixed << std::setprecision(3)
+        << active_sec << ",\n";
+    ofs << "      \"js_packets\": " << stats.js_packets << ",\n";
+    ofs << "      \"js_timeouts\": " << stats.js_timeouts << ",\n";
+    ofs << "      \"failure_count\": " << stats.failure_count << "\n";
+    ofs << "    }";
+    if (++idx < controller_stats_.size()) {
+      ofs << ',';
+    }
+    ofs << '\n';
+  }
+
+  ofs << "  }\n";
+  ofs << "}\n";
+
+  ofs.close();
+  RCLCPP_INFO(node_->get_logger(),
+              "[StatusMonitor] Controller stats written: %s", filename.c_str());
 }
 
 }  // namespace ur5e_status_monitor

@@ -31,5 +31,9 @@
       max_recovery_attempts: 3               # 최대 복구 시도 횟수
       recovery_interval_sec: 5.0             # 복구 시도 간 쿨다운 (초)
 
+      # ── 컨트롤러별 통계 ───────────────────────────────────────────────────────
+      enable_controller_stats: true          # 컨트롤러별 패킷/타임아웃/활성시간 통계 수집
+
       # ── 실패 로깅 ───────────────────────────────────────────────────────────
-      log_output_dir: "~/.ros/"              # 실패 로그 파일 출력 디렉토리
+      log_output_dir: ""                     # 빈 문자열: UR5E_SESSION_DIR/monitor/ 사용
+                                             # launch 파일이 세션 디렉토리 경로로 덮어씀

@@ -4,8 +4,6 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
-#include <span>
-
 #include <iomanip>
 
 #include "ur5e_rt_base/logging/log_buffer.hpp"
@@ -13,16 +11,33 @@
 
 namespace ur5e_rt_controller {
 
-// Writes control data to a CSV file in a non-RT (logging) thread context.
+// Writes control data to three separate CSV files in a non-RT (logging) thread:
+//   - timing_log:  per-phase timing breakdown (6 columns)
+//   - robot_log:   robot joint states (31 columns)
+//   - hand_log:    hand motor states + sensor data (87 columns)
+//
+// All three files share the same timestamp column for post-hoc join.
 // Copy is disabled; move is enabled for deferred construction.
 //
 // All methods are defined inline to keep ur5e_rt_base header-only.
 class DataLogger {
 public:
-  explicit DataLogger(std::filesystem::path log_path) {
-    file_.open(log_path);
-    if (file_.is_open()) {
-      WriteHeader();
+  /// Construct with paths for each log file.  Pass an empty path to disable
+  /// that particular log category.
+  DataLogger(const std::filesystem::path & timing_path,
+             const std::filesystem::path & robot_path,
+             const std::filesystem::path & hand_path) {
+    if (!timing_path.empty()) {
+      timing_file_.open(timing_path);
+      if (timing_file_.is_open()) { WriteTimingHeader(); }
+    }
+    if (!robot_path.empty()) {
+      robot_file_.open(robot_path);
+      if (robot_file_.is_open()) { WriteRobotHeader(); }
+    }
+    if (!hand_path.empty()) {
+      hand_file_.open(hand_path);
+      if (hand_file_.is_open()) { WriteHandHeader(); }
     }
   }
 
@@ -33,84 +48,24 @@ public:
   DataLogger(DataLogger &&) = default;
   DataLogger &operator=(DataLogger &&) = default;
 
-  // Log one control step with full per-phase timing breakdown.
+  // Write one log entry to all open files.
   void LogEntry(const ur5e_rt_controller::LogEntry &entry) {
-    if (!file_.is_open()) {
-      return;
-    }
-    file_ << std::fixed << std::setprecision(6) << entry.timestamp;
-    for (const auto v : entry.current_positions) {
-      file_ << ',' << v;
-    }
-    for (const auto v : entry.target_positions) {
-      file_ << ',' << v;
-    }
-    for (const auto v : entry.commands) {
-      file_ << ',' << v;
-    }
-    file_ << ',' << entry.t_state_acquire_us
-           << ',' << entry.t_compute_us
-           << ',' << entry.t_publish_us
-           << ',' << entry.t_total_us
-           << ',' << entry.jitter_us;
-    // Hand state
-    file_ << ',' << (entry.hand_valid ? 1 : 0);
-    for (const auto v : entry.hand_positions) {
-      file_ << ',' << v;
-    }
-    for (const auto v : entry.hand_velocities) {
-      file_ << ',' << v;
-    }
-    for (const auto v : entry.hand_sensors) {
-      file_ << ',' << v;
-    }
-    file_ << '\n';
-  }
-
-  // Legacy overload — delegates to the new LogEntry-based method.
-  void
-  LogControlData(double timestamp,
-                 std::span<const double, kNumRobotJoints> current_positions,
-                 std::span<const double, kNumRobotJoints> target_positions,
-                 std::span<const double, kNumRobotJoints> commands,
-                 double compute_time_us = 0.0) {
-    if (!file_.is_open()) {
-      return;
-    }
-    file_ << std::fixed << std::setprecision(6) << timestamp;
-    for (const auto v : current_positions) {
-      file_ << ',' << v;
-    }
-    for (const auto v : target_positions) {
-      file_ << ',' << v;
-    }
-    for (const auto v : commands) {
-      file_ << ',' << v;
-    }
-    // Per-phase timing: only compute_time_us available in legacy API
-    file_ << ',' << 0.0            // t_state_acquire_us
-           << ',' << compute_time_us  // t_compute_us
-           << ',' << 0.0            // t_publish_us
-           << ',' << 0.0            // t_total_us
-           << ',' << 0.0            // jitter_us
-           << '\n';
-  }
-
-  // Log hand state for a given timestamp (not written to the control CSV).
-  void LogHandData(double /*timestamp*/,
-                   std::span<const float, kNumHandMotors> /*hand_positions*/) {
-    // Reserved for future hand logging support.
+    WriteTimingRow(entry);
+    WriteRobotRow(entry);
+    WriteHandRow(entry);
   }
 
   void Flush() {
-    if (file_.is_open()) {
-      file_.flush();
-    }
+    if (timing_file_.is_open()) { timing_file_.flush(); }
+    if (robot_file_.is_open())  { robot_file_.flush(); }
+    if (hand_file_.is_open())   { hand_file_.flush(); }
   }
 
-  [[nodiscard]] bool IsOpen() const { return file_.is_open(); }
+  [[nodiscard]] bool IsOpen() const {
+    return timing_file_.is_open() || robot_file_.is_open() || hand_file_.is_open();
+  }
 
-  // Drains all pending entries from the ring buffer and writes them to the CSV.
+  // Drains all pending entries from the ring buffer and writes them.
   // Must be called exclusively from the log thread — never from the RT thread.
   void DrainBuffer(ControlLogBuffer &buf) {
     ur5e_rt_controller::LogEntry entry;
@@ -120,35 +75,84 @@ public:
   }
 
 private:
-  std::ofstream file_;
+  std::ofstream timing_file_;
+  std::ofstream robot_file_;
+  std::ofstream hand_file_;
 
-  void WriteHeader() {
-    file_ << "timestamp";
-    for (int i = 0; i < kNumRobotJoints; ++i) {
-      file_ << ",current_pos_" << i;
+  // ── Timing CSV ──────────────────────────────────────────────────────────────
+  void WriteTimingHeader() {
+    timing_file_ << "timestamp"
+                 << ",t_state_acquire_us"
+                 << ",t_compute_us"
+                 << ",t_publish_us"
+                 << ",t_total_us"
+                 << ",jitter_us"
+                 << '\n';
+  }
+
+  void WriteTimingRow(const ur5e_rt_controller::LogEntry &e) {
+    if (!timing_file_.is_open()) { return; }
+    timing_file_ << std::fixed << std::setprecision(6) << e.timestamp
+                 << ',' << e.t_state_acquire_us
+                 << ',' << e.t_compute_us
+                 << ',' << e.t_publish_us
+                 << ',' << e.t_total_us
+                 << ',' << e.jitter_us
+                 << '\n';
+  }
+
+  // ── Robot CSV ───────────────────────────────────────────────────────────────
+  void WriteRobotHeader() {
+    robot_file_ << "timestamp";
+    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",goal_pos_" << i; }
+    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",target_pos_" << i; }
+    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",target_vel_" << i; }
+    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",actual_pos_" << i; }
+    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",actual_vel_" << i; }
+    robot_file_ << '\n';
+  }
+
+  void WriteRobotRow(const ur5e_rt_controller::LogEntry &e) {
+    if (!robot_file_.is_open()) { return; }
+    robot_file_ << std::fixed << std::setprecision(6) << e.timestamp;
+    for (const auto v : e.goal_positions)      { robot_file_ << ',' << v; }
+    for (const auto v : e.target_positions)    { robot_file_ << ',' << v; }
+    for (const auto v : e.target_velocities)   { robot_file_ << ',' << v; }
+    for (const auto v : e.actual_positions)    { robot_file_ << ',' << v; }
+    for (const auto v : e.actual_velocities)   { robot_file_ << ',' << v; }
+    robot_file_ << '\n';
+  }
+
+  // ── Hand CSV ────────────────────────────────────────────────────────────────
+  void WriteHandHeader() {
+    hand_file_ << "timestamp"
+               << ",hand_valid";
+    for (int i = 0; i < kNumHandMotors; ++i) { hand_file_ << ",hand_goal_pos_" << i; }
+    for (int i = 0; i < kNumHandMotors; ++i) { hand_file_ << ",hand_cmd_" << i; }
+    for (int i = 0; i < kNumHandMotors; ++i) { hand_file_ << ",hand_actual_pos_" << i; }
+    for (int i = 0; i < kNumHandMotors; ++i) { hand_file_ << ",hand_actual_vel_" << i; }
+    // Sensor columns: barometer (8 per fingertip) + tof (3 per fingertip)
+    for (int f = 0; f < kNumFingertips; ++f) {
+      for (int b = 0; b < kBarometerCount; ++b) {
+        hand_file_ << ",baro_f" << f << "_" << b;
+      }
+      for (int t = 0; t < kTofCount; ++t) {
+        hand_file_ << ",tof_f" << f << "_" << t;
+      }
     }
-    for (int i = 0; i < kNumRobotJoints; ++i) {
-      file_ << ",target_pos_" << i;
-    }
-    for (int i = 0; i < kNumRobotJoints; ++i) {
-      file_ << ",command_" << i;
-    }
-    file_ << ",t_state_acquire_us"
-           << ",t_compute_us"
-           << ",t_publish_us"
-           << ",t_total_us"
-           << ",jitter_us"
-           << ",hand_valid";
-    for (int i = 0; i < kNumHandMotors; ++i) {
-      file_ << ",hand_pos_" << i;
-    }
-    for (int i = 0; i < kNumHandMotors; ++i) {
-      file_ << ",hand_vel_" << i;
-    }
-    for (int i = 0; i < kNumHandSensors; ++i) {
-      file_ << ",hand_sensor_" << i;
-    }
-    file_ << '\n';
+    hand_file_ << '\n';
+  }
+
+  void WriteHandRow(const ur5e_rt_controller::LogEntry &e) {
+    if (!hand_file_.is_open()) { return; }
+    hand_file_ << std::fixed << std::setprecision(6) << e.timestamp
+               << ',' << (e.hand_valid ? 1 : 0);
+    for (const auto v : e.hand_goal_positions)    { hand_file_ << ',' << v; }
+    for (const auto v : e.hand_commands)          { hand_file_ << ',' << v; }
+    for (const auto v : e.hand_actual_positions)  { hand_file_ << ',' << v; }
+    for (const auto v : e.hand_actual_velocities) { hand_file_ << ',' << v; }
+    for (const auto v : e.hand_sensors)           { hand_file_ << ',' << v; }
+    hand_file_ << '\n';
   }
 };
 

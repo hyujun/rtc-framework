@@ -190,15 +190,20 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
       std::vector<unsigned char> rgb(npix * 3);
       mjr_readPixels(rgb.data(), nullptr, viewport, &con);
 
-      // Resolve output directory
-      const char* home = std::getenv("HOME");
+      // 세션 디렉토리 기반 출력 경로 결정
       char dir[256];
-      if (home) {
-        std::snprintf(dir, sizeof(dir),
-                      "%s/ros2_ws/ur5e_ws/logging_data", home);
+      const char* session_env = std::getenv("UR5E_SESSION_DIR");
+      if (session_env && session_env[0] != '\0') {
+        std::snprintf(dir, sizeof(dir), "%s/sim", session_env);
       } else {
-        std::strncpy(dir, "/tmp", sizeof(dir) - 1);
-        dir[sizeof(dir) - 1] = '\0';
+        const char* home = std::getenv("HOME");
+        if (home) {
+          std::snprintf(dir, sizeof(dir),
+                        "%s/ros2_ws/ur5e_ws/logging_data", home);
+        } else {
+          std::strncpy(dir, "/tmp", sizeof(dir) - 1);
+          dir[sizeof(dir) - 1] = '\0';
+        }
       }
       mkdir(dir, 0755);  // no-op if already exists
 
@@ -206,7 +211,7 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
       const auto now  = std::chrono::system_clock::now();
       const auto t    = std::chrono::system_clock::to_time_t(now);
       char       ts[32];
-      std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", std::localtime(&t));
+      std::strftime(ts, sizeof(ts), "%H%M%S", std::localtime(&t));
       std::snprintf(fname, sizeof(fname), "%s/screenshot_%s.ppm", dir, ts);
 
       // Write binary PPM (flip Y: OpenGL stores bottom-up)

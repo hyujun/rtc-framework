@@ -1,6 +1,6 @@
 # ur5e_hand_udp
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.8.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.10.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 
 UR5e RT Controller 스택의 **10-DOF 손 UDP 브리지 패키지**입니다. 외부 손 컨트롤러(하드웨어)와 ROS2 토픽 사이의 UDP request-response 통신을 담당합니다.
@@ -173,6 +173,10 @@ ur5e_rt_base ← ur5e_hand_udp   (ur5e_rt_controller에 의존하지 않음)
     failure_threshold: 5              # 연속 장애 판정 횟수
     check_motor: true                 # 모터 위치 검사 활성화
     check_sensor: true                # 센서 데이터 검사 활성화
+
+    # Rate monitoring (failure detector에서 사용)
+    min_rate_hz: 30.0               # 최소 허용 polling rate
+    rate_fail_threshold: 5          # 연속 N회 미달 시 failure
 ```
 
 ---
@@ -245,6 +249,7 @@ estop:
 - **두 가지 장애 조건**:
   1. **All-zero 데이터**: 모든 값이 0인 프레임이 N회 연속 감지
   2. **Duplicate 데이터**: 동일한 값이 N회 연속 반복 감지
+  3. **Low rate**: PollLoop rate가 `min_rate_hz` 미만인 상태가 N회 연속 감지
 - **독립적 검사 채널**: 모터 위치(`check_motor`)와 센서 데이터(`check_sensor`)를 각각 독립적으로 검사
 - **장애 콜백 등록**: 장애 감지 시 등록된 콜백을 호출하여 글로벌 E-Stop을 트리거
 - **YAML 설정**:
@@ -252,6 +257,38 @@ estop:
   - `failure_threshold`: 연속 장애 판정 횟수 (N)
   - `check_motor`: 모터 위치 검사 활성화
   - `check_sensor`: 센서 데이터 검사 활성화
+
+### HandCommStats (v5.9.0)
+
+`HandController`에 추가된 통신 통계 구조체입니다. PollLoop RT 스레드에서만 쓰기, 외부에서 struct copy로 읽기.
+
+```cpp
+struct HandCommStats {
+  uint64_t recv_ok{0};       // 수신 성공 횟수
+  uint64_t recv_timeout{0};  // SO_RCVTIMEO 타임아웃 횟수
+  uint64_t recv_error{0};    // 기타 수신 에러 횟수
+  uint64_t total_cycles{0};  // 총 PollLoop 사이클 수
+};
+
+// 스냅샷 조회 (relaxed read, struct copy)
+auto stats = controller.comm_stats();
+```
+
+### JSON 통계 내보내기 (v5.9.0, 경로 변경 v5.10.0)
+
+노드 종료 시 `UR5E_SESSION_DIR/hand/hand_udp_stats.json`에 통신 통계를 저장합니다 (세션 미설정 시 `/tmp/` 폴백):
+
+```json
+{
+  "total_cycles": 150000,
+  "recv_ok": 148500,
+  "recv_timeout": 1200,
+  "recv_error": 300,
+  "avg_rate_hz": 99.50,
+  "elapsed_sec": 1500.00,
+  "failure_detected": false
+}
+```
 
 ---
 

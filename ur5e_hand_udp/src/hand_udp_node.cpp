@@ -8,8 +8,12 @@
 
 #include <array>
 #include <chrono>
+#include <ctime>
+#include <fstream>
+#include <iomanip>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 
 using namespace std::chrono_literals;
@@ -35,6 +39,8 @@ class HandUdpNode : public rclcpp::Node {
     declare_parameter("failure_threshold", 5);
     declare_parameter("check_motor", true);
     declare_parameter("check_sensor", true);
+    declare_parameter("min_rate_hz", 30.0);
+    declare_parameter("rate_fail_threshold", 5);
 
     const std::string target_ip       = get_parameter("target_ip").as_string();
     const int         target_port     = get_parameter("target_port").as_int();
@@ -68,6 +74,9 @@ class HandUdpNode : public rclcpp::Node {
           get_parameter("failure_threshold").as_int());
       fd_cfg.check_motor  = get_parameter("check_motor").as_bool();
       fd_cfg.check_sensor = get_parameter("check_sensor").as_bool();
+      fd_cfg.min_rate_hz  = get_parameter("min_rate_hz").as_double();
+      fd_cfg.rate_fail_threshold = static_cast<int>(
+          get_parameter("rate_fail_threshold").as_int());
 
       failure_detector_ = std::make_unique<urtc::HandFailureDetector>(
           *controller_, fd_cfg);
@@ -100,6 +109,7 @@ class HandUdpNode : public rclcpp::Node {
   }
 
   ~HandUdpNode() override {
+    SaveCommStats();
     if (failure_detector_) failure_detector_->Stop();
     if (controller_) controller_->Stop();
   }
@@ -133,6 +143,49 @@ class HandUdpNode : public rclcpp::Node {
     }
   }
 
+  void SaveCommStats() const {
+    if (!controller_) return;
+
+    const auto stats = controller_->comm_stats();
+    const bool fd_failed = failure_detector_ ? failure_detector_->failed() : false;
+
+    // 평균 rate 계산 (start_time_ 기준)
+    const auto elapsed = std::chrono::steady_clock::now() - start_time_;
+    const double elapsed_sec = std::chrono::duration<double>(elapsed).count();
+    const double avg_rate_hz = (elapsed_sec > 0.0)
+        ? static_cast<double>(stats.total_cycles) / elapsed_sec
+        : 0.0;
+
+    // 세션 디렉토리 기반 경로 결정
+    std::string output_dir;
+    const char* session_env = std::getenv("UR5E_SESSION_DIR");
+    if (session_env != nullptr && session_env[0] != '\0') {
+      output_dir = std::string(session_env) + "/hand";
+    } else {
+      output_dir = "/tmp";
+    }
+
+    const std::string path = output_dir + "/hand_udp_stats.json";
+    std::ofstream ofs(path);
+    if (!ofs.is_open()) return;
+
+    ofs << "{\n"
+        << "  \"total_cycles\": "    << stats.total_cycles   << ",\n"
+        << "  \"recv_ok\": "         << stats.recv_ok        << ",\n"
+        << "  \"recv_timeout\": "    << stats.recv_timeout    << ",\n"
+        << "  \"recv_error\": "      << stats.recv_error      << ",\n"
+        << "  \"avg_rate_hz\": "     << std::fixed << std::setprecision(2) << avg_rate_hz << ",\n"
+        << "  \"elapsed_sec\": "     << std::fixed << std::setprecision(2) << elapsed_sec << ",\n"
+        << "  \"failure_detected\": " << (fd_failed ? "true" : "false") << "\n"
+        << "}\n";
+    ofs.close();
+
+    RCLCPP_INFO(get_logger(),
+                "Hand comm stats saved to %s (cycles=%lu, ok=%lu, timeout=%lu, error=%lu, rate=%.1f Hz)",
+                path.c_str(), stats.total_cycles, stats.recv_ok,
+                stats.recv_timeout, stats.recv_error, avg_rate_hz);
+  }
+
   void OnCommand(std_msgs::msg::Float64MultiArray::SharedPtr msg) {
     if (msg->data.size() != static_cast<std::size_t>(urtc::kNumHandMotors)) {
       RCLCPP_WARN(get_logger(),
@@ -160,6 +213,8 @@ class HandUdpNode : public rclcpp::Node {
   urtc::HandState     latest_state_{};
   bool                data_received_{false};
   std::size_t         publish_count_{0};
+
+  std::chrono::steady_clock::time_point start_time_{std::chrono::steady_clock::now()};
 };
 
 int main(int argc, char** argv) {

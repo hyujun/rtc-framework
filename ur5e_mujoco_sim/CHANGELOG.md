@@ -5,6 +5,17 @@
 
 ---
 
+## [5.10.0] - 2026-03-14
+
+### 변경 (Changed) — 세션 기반 로깅
+
+- 스크린샷 저장 경로: `UR5E_SESSION_DIR/sim/` 우선 사용 (미설정 시 `~/ros2_ws/ur5e_ws/logging_data/` 폴백)
+- 스크린샷 파일 이름: `screenshot_HHMMSS.ppm` (날짜 제거 — 세션 폴더에 포함)
+- `mujoco_sim.launch.py`: 세션 디렉토리 생성 (`logging_data/YYMMDD_HHMM/`), `UR5E_SESSION_DIR` 환경변수 설정
+- `mujoco_sim.launch.py`: `max_log_sessions` launch argument 추가 (기본 10, 오래된 세션 자동 삭제)
+
+---
+
 ## [5.8.0] - 2026-03-14
 
 ### 변경

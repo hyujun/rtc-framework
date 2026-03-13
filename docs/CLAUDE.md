@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Prerequisites**: Ubuntu 22.04 (ROS2 Humble) **or** Ubuntu 24.04 (ROS2 Jazzy), `realtime` group membership with `rtprio 99` / `memlock unlimited` in `/etc/security/limits.conf`.
 
-> **Current workspace**: `/home/user/ros2_ws/ur5e_ws` — log output goes to `~/ros2_ws/ur5e_ws/logging_data/` (created automatically at launch time).
+> **Current workspace**: `/home/user/ros2_ws/ur5e_ws` — log output goes to `~/ros2_ws/ur5e_ws/logging_data/YYMMDD_HHMM/` (세션 디렉토리, launch 시 자동 생성).
 
 ```bash
 # Automated setup (installs deps, sets RT permissions)
@@ -60,16 +60,21 @@ ros2 topic pub /target_joint_positions std_msgs/msg/Float64MultiArray "data: [0.
 **Analyze compute-time logs (after sync_step run)**:
 ```python
 import pandas as pd, glob, os
-# Log files saved to ~/ros2_ws/ur5e_ws/logging_data/
-log_files = sorted(glob.glob(os.path.expanduser('~/ros2_ws/ur5e_ws/logging_data/*.csv')))
-df = pd.read_csv(log_files[-1])  # most recent log
-# v5.8.0: per-phase timing columns
-for col in ['t_state_acquire_us', 't_compute_us', 't_publish_us', 't_total_us', 'jitter_us']:
-    if col in df.columns:
-        print(f'\n{col}:')
-        print(df[col].describe())
-        print(f'P95: {df[col].quantile(0.95):.1f} us, P99: {df[col].quantile(0.99):.1f} us')
-print(f'\nOver 2ms: {(df["t_total_us"] > 2000).mean()*100:.2f}%')
+# v5.10.0: 세션 디렉토리 기반 — logging_data/YYMMDD_HHMM/controller/
+log_root = os.path.expanduser('~/ros2_ws/ur5e_ws/logging_data/')
+sessions = sorted(glob.glob(log_root + '??????_????'))  # YYMMDD_HHMM
+if sessions:
+    ctrl_dir = os.path.join(sessions[-1], 'controller')
+    timing_f = os.path.join(ctrl_dir, 'timing_log.csv')
+    robot_f  = os.path.join(ctrl_dir, 'robot_log.csv')
+    if os.path.exists(timing_f):
+        df_t = pd.read_csv(timing_f)
+        for col in ['t_state_acquire_us', 't_compute_us', 't_publish_us', 't_total_us', 'jitter_us']:
+            print(f'\n{col}:')
+            print(df_t[col].describe())
+    if os.path.exists(robot_f):
+        df_r = pd.read_csv(robot_f)
+        print(f'\nRobot log: {len(df_r)} samples, {len(df_r.columns)} columns')
 ```
 
 ---
@@ -144,7 +149,7 @@ ur5e-rt-controller/
 │   │           ├── joint_pd_controller.cpp
 │   │           └── operational_space_controller.cpp
 │   ├── config/
-│   │   ├── ur5e_rt_controller.yaml        # log_dir: ~/ros2_ws/ur5e_ws/logging_data
+│   │   ├── ur5e_rt_controller.yaml        # log_dir: 세션 디렉토리 (launch가 설정)
 │   │   ├── cyclone_dds.xml                # CycloneDDS thread affinity (Core 0-1)
 │   │   └── controllers/
 │   │       ├── indirect/
@@ -211,8 +216,6 @@ ur5e-rt-controller/
         ├── gui/
         │   ├── motion_editor_gui.py        # Qt5 50-pose motion editor
         │   └── controller_gui.py           # Python GUI for testing controller gains
-        ├── monitoring/
-        │   └── monitor_data_health.py      # Data health monitor + JSON stats
         ├── plotting/
         │   └── plot_ur_trajectory.py       # Matplotlib trajectory visualization
         ├── validation/
@@ -228,7 +231,12 @@ ur5e-rt-controller/
 This is a **ROS2 Humble / ROS2 Jazzy** multi-package repository (`ament_cmake`, C++20) implementing a 500 Hz real-time position/torque controller for a UR5e robot arm with a 10-DOF custom hand (44 tactile sensors) attached via UDP.
 
 **Workspace root**: `/home/user/ros2_ws/ur5e_ws`
-**Log output**: `~/ros2_ws/ur5e_ws/logging_data/ur5e_control_log_YYMMDD_HHMM.csv` (auto-created, `max_log_files: 10`)
+**Log output**: `~/ros2_ws/ur5e_ws/logging_data/YYMMDD_HHMM/` (세션 디렉토리, `max_log_sessions: 10`)
+  - `controller/` — timing_log.csv, robot_log.csv, hand_log.csv
+  - `monitor/` — ur5e_failure_*.log, controller_stats.json
+  - `hand/` — hand_udp_stats.json
+  - `sim/` — screenshot_*.ppm (MuJoCo 전용)
+  - `plots/`, `motions/` — ur5e_tools 출력
 
 ### Core Design: Strategy Pattern + Multi-threaded Executors
 
@@ -261,6 +269,9 @@ struct ControllerOutput {
   std::array<float, 10>  hand_commands{};            // float[10], not double[11]
   std::array<double, 6>  actual_target_positions{};  // logging
   std::array<double, 6>  actual_task_positions{};    // logging
+  std::array<double, 6>  goal_positions{};           // v5.9.0: 최종 목표 (SetRobotTarget)
+  std::array<double, 6>  target_velocities{};        // v5.9.0: 궤적 보간 속도
+  std::array<float, 10>  hand_goal_positions{};      // v5.9.0: 핸드 최종 목표
   bool valid{true};
   CommandType command_type{CommandType::kPosition};   // kPosition or kTorque
 };
@@ -306,25 +317,25 @@ Creates **4 `SingleThreadedExecutor`s**, each running in a dedicated `std::threa
 |---|---|---|---|---|---|
 | `rt_executor` / `t_rt` | `cb_group_rt_` | Core 2 | SCHED_FIFO | 90 | `ControlLoop()` (500Hz), `CheckTimeouts()` (50Hz E-STOP watchdog) |
 | `sensor_executor` / `t_sensor` | `cb_group_sensor_` | Core 3 | SCHED_FIFO | 70 | `/joint_states`, `/target_joint_positions`, `/hand/joint_states` subscribers |
-| `log_executor` / `t_log` | `cb_group_log_` | Core 4 | SCHED_OTHER | nice -5 | `DataLogger` CSV writes (drains `SpscLogBuffer`) |
+| `log_executor` / `t_log` | `cb_group_log_` | Core 4 | SCHED_OTHER | nice -5 | `DataLogger` 3-file CSV writes (drains `SpscLogBuffer`) |
 | `aux_executor` / `t_aux` | `cb_group_aux_` | Core 5 | SCHED_OTHER | 0 | E-STOP status publisher |
 
 `mlockall(MCL_CURRENT | MCL_FUTURE)` is called at startup to prevent page faults. Shared state between threads is protected by three separate mutexes (`state_mutex_`, `target_mutex_`, `hand_mutex_`).
 
 **Key methods in `RtControllerNode`:**
-- `DeclareAndLoadParameters()`: loads `control_rate`, `kp`, `kd`, `enable_estop`, `robot_timeout_ms`, `hand_timeout_ms`, `enable_logging`, `init_timeout_sec`, `enable_status_monitor`
+- `DeclareAndLoadParameters()`: loads `control_rate`, `kp`, `kd`, `enable_estop`, `robot_timeout_ms`, `hand_timeout_ms`, `enable_logging`, `enable_timing_log`, `enable_robot_log`, `enable_hand_log`, `init_timeout_sec`, `enable_status_monitor`
 - `CreateCallbackGroups()`: creates 4 `MutuallyExclusive` groups
 - `JointStateCallback()`: stores positions/velocities/torques under `state_mutex_`; updates `last_robot_update_` timestamp
 - `TargetCallback()`: stores target positions under `target_mutex_`; calls `controller_->SetRobotTarget()`
 - `HandStateCallback()`: records timestamp under `hand_mutex_` (data itself is not buffered here)
 - `CheckTimeouts()` (50Hz): triggers `TriggerGlobalEstop()` if data gaps exceed configured thresholds (v5.8.0: 글로벌 E-Stop)
 - `TriggerGlobalEstop(reason)` (v5.8.0): sets `global_estop_` atomic, calls controller E-Stop, propagates to hand, logs reason
-- `ControlLoop()` (500Hz): checks `global_estop_` → assembles `ControllerState` → calls `Compute()` → publishes → pushes to `SpscLogBuffer` (with per-phase timing + hand state). Overrun detection via `budget_us_` threshold.
+- `ControlLoop()` (500Hz): checks `global_estop_` → assembles `ControllerState` → calls `Compute()` → publishes → pushes to `SpscLogBuffer` (with per-phase timing, robot state including goal/target/actual, and hand state). Overrun detection via `budget_us_` threshold.
 - Init timeout (v5.8.0): if `init_wait_ticks_` exceeds `init_timeout_ticks_` (= `init_timeout_sec` × `control_rate_`), triggers `TriggerGlobalEstop("init_timeout")` + `rclcpp::shutdown()`
 
 ### Lock-Free Logging Infrastructure
 
-**`SpscLogBuffer`** (`include/ur5e_rt_controller/log_buffer.hpp`): single-producer / single-consumer ring buffer (power-of-2 entries). Uses **bitwise AND modulus** `& (N - 1)` for fast wrapping and **local index caching** to minimize cache invalidation (False Sharing) between the RT and logging threads. `alignas(kCacheLineSize)` dynamically adapts to the hardware target. The RT thread calls `Push()` without ever blocking or allocating; the log thread drains via `Pop()`. Each `LogEntry` includes per-phase timing (`t_state_acquire_us`, `t_compute_us`, `t_publish_us`, `t_total_us`, `jitter_us`) and hand state (`hand_positions[10]`, `hand_velocities[10]`, `hand_sensors[44]`, `hand_valid`) fields (v5.8.0).
+**`SpscLogBuffer`** (`include/ur5e_rt_controller/log_buffer.hpp`): single-producer / single-consumer ring buffer (power-of-2 entries). Uses **bitwise AND modulus** `& (N - 1)` for fast wrapping and **local index caching** to minimize cache invalidation (False Sharing) between the RT and logging threads. `alignas(kCacheLineSize)` dynamically adapts to the hardware target. The RT thread calls `Push()` without ever blocking or allocating; the log thread drains via `Pop()`. Each `LogEntry` has separate timing/robot/hand sections (v5.9.0): timing (`t_state_acquire_us`, `t_compute_us`, `t_publish_us`, `t_total_us`, `jitter_us`), robot (`goal_positions[6]`, `target_positions[6]`, `target_velocities[6]`, `actual_positions[6]`, `actual_velocities[6]`), and hand (`hand_valid`, `hand_goal_positions[10]`, `hand_commands[10]`, `hand_actual_positions[10]`, `hand_actual_velocities[10]`, `hand_sensors[44]`).
 
 **`ControllerTimingProfiler`** (`include/ur5e_rt_controller/controller_timing_profiler.hpp`): wraps `RTControllerInterface::Compute()` with `steady_clock` timing. Maintains a lock-free histogram (0–2000 µs, 100 µs buckets) + min/max/mean/stddev/p95/p99 using relaxed atomics. Budget threshold: 2000 µs (500 Hz period). Call `MeasuredCompute()` instead of `Compute()` directly; call `Summary()` every 1000 iterations for a log line.
 
@@ -402,7 +413,7 @@ Synchronisation:
 | `F3` | RTF profiler graph |
 | `F9` | Sensor values overlay |
 | `F10` | Model info overlay |
-| `P` | Save screenshot (PPM → `~/ros2_ws/ur5e_ws/logging_data/`) |
+| `P` | Save screenshot (PPM → `session_dir/sim/`) |
 
 **Viewer mouse controls:**
 
@@ -443,7 +454,7 @@ export MUJOCO_DIR=/opt/mujoco-3.x.x && colcon build
 
 ### UDP Hand Protocol (Request-Response)
 
-`HandController` (`include/ur5e_hand_udp/hand_controller.hpp`) is a high-level request-response driver using a single UDP socket (port **55151**, `std::jthread`, Core 5, SCHED_FIFO/65). v5.8.0: `recv_timeout_ms` YAML 설정 (기본 10ms), `recv_error_count_` 원자적 카운터, `SetEstopFlag()` 글로벌 E-Stop 연동, `enable_write_ack` 선택적 ACK. Each poll cycle:
+`HandController` (`include/ur5e_hand_udp/hand_controller.hpp`) is a high-level request-response driver using a single UDP socket (port **55151**, `std::jthread`, Core 5, SCHED_FIFO/65). v5.8.0: `recv_timeout_ms` YAML 설정 (기본 10ms), `recv_error_count_` 원자적 카운터, `SetEstopFlag()` 글로벌 E-Stop 연동, `enable_write_ack` 선택적 ACK. v5.9.0: `HandCommStats` 추가 (통신 통계), `HandFailureDetector` rate monitoring (`min_rate_hz`, `rate_fail_threshold`), `HandUdpNode` 소멸자에서 JSON stats export. Each poll cycle:
 
 1. `WritePosition` (CMD=0x01) — send 43B motor packet (10 × float32 as uint32)
 2. `ReadPosition` (CMD=0x11) — send 43B, recv 43B → 10 motor positions
@@ -525,12 +536,31 @@ monitor->waitForReady(10.0);
 
 On failure: writes timestamped log file to `log_output_dir` with `[HEADER]`, `[STATE AT FAILURE]`, `[STATE HISTORY]` (last 10s CSV), `[CONTROLLER STATE AT FAILURE]`.
 
+**v5.9.0 enhancements**: `MessageStats` struct for per-topic message statistics, per-controller `ControllerStats`, subscribes to `/rt_controller/active_controller_name` for controller name tracking, JSON stats export on `stop()`.
+
 ### DataLogger (`include/ur5e_rt_controller/data_logger.hpp`)
 
-Non-copyable (move-only) CSV logger. Writes one row per control step:
-`timestamp, current_pos_0..5, target_pos_0..5, command_0..5, t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us, hand_pos_0..9, hand_vel_0..9, hand_sensor_0..43, hand_valid`
+Non-copyable (move-only) CSV logger. v5.9.0: split into **3 separate files**, each independently enabled:
 
-Default path: `/tmp/ur5e_control_log.csv`. The 500 Hz RT thread pushes entries to `SpscLogBuffer`; the `log_executor` thread (Core 4) drains and writes CSV — never blocking the RT path.
+| File | Columns | Content |
+|---|---|---|
+| `timing_log_YYMMDD_HHMM.csv` | 7 | `timestamp, t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us` |
+| `robot_log_YYMMDD_HHMM.csv` | 31 | `timestamp, goal_pos_0~5, target_pos_0~5, target_vel_0~5, actual_pos_0~5, actual_vel_0~5` |
+| `hand_log_YYMMDD_HHMM.csv` | 87 | `timestamp, hand_valid, hand_goal_pos_0~9, hand_cmd_0~9, hand_actual_pos_0~9, hand_actual_vel_0~9, baro_f0_0~7, tof_f0_0~2, baro_f1_0~7, tof_f1_0~2, ...` |
+
+Constructor takes 3 paths (empty path disables that category):
+```cpp
+DataLogger(const std::filesystem::path& timing_path,
+           const std::filesystem::path& robot_path,
+           const std::filesystem::path& hand_path)
+```
+
+`LogEntry` is restructured with separate timing/robot/hand sections:
+- **Timing**: timestamp, t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us
+- **Robot**: goal_positions[6], target_positions[6], target_velocities[6], actual_positions[6], actual_velocities[6]
+- **Hand**: hand_valid, hand_goal_positions[10], hand_commands[10], hand_actual_positions[10], hand_actual_velocities[10], hand_sensors[44]
+
+The 500 Hz RT thread pushes entries to `SpscLogBuffer`; the `log_executor` thread (Core 4) drains and writes to all enabled CSV files — never blocking the RT path.
 
 ### Thread Configuration (`ur5e_rt_base/include/ur5e_rt_base/threading/thread_config.hpp`)
 
@@ -641,8 +671,11 @@ This is necessary because there is no existing ROS2 driver for the custom hand h
     kp: 5.0                    # Legacy PD gain (각 컨트롤러 YAML에서 개별 설정 권장)
     kd: 0.5                    # Legacy PD gain (각 컨트롤러 YAML에서 개별 설정 권장)
     enable_logging: true       # Write timestamped CSV
-    log_dir: "~/ros2_ws/ur5e_ws/logging_data"  # expanded to absolute path at launch
-    max_log_files: 10          # Rotate; keep only most recent N files
+    enable_timing_log: true    # v5.9.0: 타이밍 CSV 활성화 (timing_log_*.csv)
+    enable_robot_log: true     # v5.9.0: 로봇 CSV 활성화 (robot_log_*.csv)
+    enable_hand_log: true      # v5.9.0: 핸드 CSV 활성화 (hand_log_*.csv)
+    log_dir: ""                # 세션 디렉토리 — launch 파일이 YYMMDD_HHMM 경로 설정
+    max_log_sessions: 10       # 최대 보관 세션 폴더 수
 
     joint_limits:
       max_velocity: 2.0          # rad/s — enforced in controller ClampCommands()
@@ -665,9 +698,9 @@ This is necessary because there is no existing ROS2 driver for the custom hand h
       safe_position: [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]  # Recovery position (rad)
 
     logging:
-      log_frequency: 100.0       # Hz (subsampling intent; not currently enforced)
-      max_log_size_mb: 100
-      log_directory: "~/ros2_ws/ur5e_ws/logging_data"
+      log_directory: ""          # 세션 디렉토리 (launch가 설정, 환경변수 UR5E_SESSION_DIR)
+      max_log_sessions: 10       # 세션 폴더 보관 수
+      log_directory: ""          # 세션 디렉토리 (UR5E_SESSION_DIR)
 ```
 
 ### `config/hand_udp_node.yaml`
@@ -813,17 +846,18 @@ Qt5 50-pose motion editor GUI. Subscribes to `/joint_states` (current angles), p
 
 **Note (v5.6.1)**: Publishes to `/target_joint_positions` (was incorrectly `/forward_position_controller/commands` before v5.6.1).
 
-### `ur5e_tools/monitoring/monitor_data_health.py`
+### `ur5e_tools/plotting/plot_ur_trajectory.py` (v2)
 
-`DataHealthMonitor` ROS2 node. Tracks packet rates and timeouts across all 4 topics. Saves JSON stats to `/tmp/ur5e_stats/` on shutdown. Parameters: `check_rate` (default 10Hz), `timeout_threshold` (default 0.2s), `stats_output_dir`, `enable_stats`.
+Matplotlib visualization of CSV control logs. v5.9.0: auto-detects log type from filename and generates appropriate figures.
 
-### `ur5e_tools/plotting/plot_ur_trajectory.py`
-
-Matplotlib visualization of CSV control logs. Plots positions, targets, and commands per joint.
+| Filename pattern | Mode | Figures |
+|---|---|---|
+| `robot_log_*.csv` | Robot | Fig 1: 3x2 position (goal/target/actual), Fig 2: 3x2 velocity (target/actual), optional tracking error |
+| `hand_log_*.csv` | Hand | Fig 1: 2x5 position (goal/cmd/actual), Fig 2: 2x5 velocity, Fig 3: 2x4 barometer+ToF sensors |
 
 ```bash
-ros2 run ur5e_tools plot_ur_trajectory /tmp/ur5e_control_log.csv
-ros2 run ur5e_tools plot_ur_trajectory /tmp/ur5e_control_log.csv --joint 2
+ros2 run ur5e_tools plot_ur_trajectory ~/ros2_ws/ur5e_ws/logging_data/250314_1200/controller/robot_log.csv
+ros2 run ur5e_tools plot_ur_trajectory ~/ros2_ws/ur5e_ws/logging_data/250314_1200/controller/hand_log.csv
 ```
 
 ### `ur5e_tools/utils/hand_udp_sender_example.py`
@@ -1094,6 +1128,7 @@ ros2 doctor                        # 시스템 전체 진단
 
 | Version | Key Changes |
 |---|---|
+| v5.9.0 | 3-file CSV logging split: `timing_log_*.csv` (7 cols), `robot_log_*.csv` (31 cols), `hand_log_*.csv` (87 cols). `DataLogger` constructor takes 3 paths (empty = disabled). New YAML params: `enable_timing_log`, `enable_robot_log`, `enable_hand_log`. `ControllerOutput` extended: `goal_positions`, `target_velocities`, `hand_goal_positions`. `LogEntry` restructured with separate timing/robot/hand sections. `monitor_data_health.py` removed (functionality redistributed to `ur5e_status_monitor` MessageStats/ControllerStats/JSON export and `ur5e_hand_udp` HandCommStats/rate monitoring). `plot_ur_trajectory.py` v2: auto-detects log type from filename (robot/hand mode). `ur5e_status_monitor`: `MessageStats`, per-controller `ControllerStats`, controller name subscription, JSON stats on `stop()`. `ur5e_hand_udp`: `HandCommStats`, `HandFailureDetector` rate monitoring (`min_rate_hz`, `rate_fail_threshold`), JSON stats export in `HandUdpNode` destructor. |
 | v5.8.0 | Global E-Stop (`TriggerGlobalEstop(reason)`) replacing per-controller E-Stop. Status monitor integration (`enable_status_monitor`). HandFailureDetector (50Hz C++). Init timeout (`init_timeout_sec`). Per-phase timing in LogEntry/CSV (`t_state_acquire_us`/`t_compute_us`/`t_publish_us`/`t_total_us`/`jitter_us`). Hand state in CSV. `RobotState.torques`. Trajectory race fix (`target_mutex_` try_lock in JointPD/CLIK/OSC). Overrun detection (`budget_us_`). Hand UDP `recv_timeout_ms`, `enable_write_ack`. SystemThreadConfigs 5→7 fields (status_monitor, hand_failure). Thread configs for 4/6/8-core. |
 | v5.7.0 | MuJoCo position servo gain system: `physics_timestep` (XML timestep validation), `use_yaml_servo_gains` flag, `servo_kp`/`servo_kd` per-joint YAML gains (`gainprm = servo_kp / physics_timestep`). Gravity auto-lock in position servo mode; auto-unlock + ON when switching to torque mode. `PController` fix: incremental position step `q + kp*error*dt` (eliminates steady-state position error). `mujoco_simulator.yaml` rt_controller section: removed duplicate params, kept sim-specific overrides only. New: `compare_mjcf_urdf` validation tool in `ur5e_tools` — compares MJCF/URDF mass, inertia, joint limits, effort limits. |
 | v5.6.2 | MuJoCo simulation parameters priority improvement: removed hardcoded defaults (Euler/Newton) from C++ `Config` to give priority to physics solver values specified natively in MuJoCo XML. If options are missing in XML, `mj_loadXML`'s internal defaults apply safely. |

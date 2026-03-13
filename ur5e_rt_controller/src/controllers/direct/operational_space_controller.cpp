@@ -148,6 +148,9 @@ ControllerOutput OperationalSpaceController::Compute(
     output.robot_commands[i] = state.robot.positions[i] + dq_arr[i] * dt;
   }
   output.actual_target_positions = pose_target_;
+  output.goal_positions = pose_target_;       // task-space goal [x,y,z,r,p,y]
+  output.target_velocities = dq_arr;          // clamped joint velocity command
+  output.hand_goal_positions = hand_target_;
 
   Eigen::Vector3d rpy_current = pinocchio::rpy::matrixToRpy(tcp.rotation());
   output.actual_task_positions[0] = tcp.translation().x();
