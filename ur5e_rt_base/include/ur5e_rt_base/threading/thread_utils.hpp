@@ -549,9 +549,11 @@ namespace ur5e_rt_controller
   {
     ThreadConfig rt_control;
     ThreadConfig sensor;
-    ThreadConfig udp_recv; // Hand UDP receiver (separate from sensor_io)
+    ThreadConfig udp_recv;        // Hand UDP receiver (separate from sensor_io)
     ThreadConfig logging;
     ThreadConfig aux;
+    ThreadConfig status_monitor;  // Non-RT status monitor (10 Hz)
+    ThreadConfig hand_failure;    // Non-RT hand failure detector (50 Hz)
   };
 
   // Validate SystemThreadConfigs for conflicts and invalid configurations.
@@ -575,6 +577,8 @@ namespace ur5e_rt_controller
     errors += ValidateThreadConfig(configs.udp_recv);
     errors += ValidateThreadConfig(configs.logging);
     errors += ValidateThreadConfig(configs.aux);
+    errors += ValidateThreadConfig(configs.status_monitor);
+    errors += ValidateThreadConfig(configs.hand_failure);
 
     // Collect all configs with names for conflict analysis
     struct NamedConfig
@@ -582,12 +586,14 @@ namespace ur5e_rt_controller
       const char *name;
       const ThreadConfig *config;
     };
-    const std::array<NamedConfig, 5> all_configs = {{
+    const std::array<NamedConfig, 7> all_configs = {{
         {"rt_control", &configs.rt_control},
         {"sensor", &configs.sensor},
         {"udp_recv", &configs.udp_recv},
         {"logging", &configs.logging},
         {"aux", &configs.aux},
+        {"status_monitor", &configs.status_monitor},
+        {"hand_failure", &configs.hand_failure},
     }};
 
     auto is_rt = [](const ThreadConfig *c)
@@ -632,15 +638,18 @@ namespace ur5e_rt_controller
     if (ncpu >= 8)
     {
       return {kRtControlConfig8Core, kSensorConfig8Core, kUdpRecvConfig8Core,
-              kLoggingConfig8Core, kAuxConfig8Core};
+              kLoggingConfig8Core, kAuxConfig8Core,
+              kStatusMonitorConfig8Core, kHandFailureConfig8Core};
     }
     if (ncpu >= 6)
     {
       return {kRtControlConfig, kSensorConfig, kUdpRecvConfig,
-              kLoggingConfig, kAuxConfig};
+              kLoggingConfig, kAuxConfig,
+              kStatusMonitorConfig, kHandFailureConfig};
     }
     return {kRtControlConfig4Core, kSensorConfig4Core, kUdpRecvConfig4Core,
-            kLoggingConfig4Core, kAuxConfig4Core};
+            kLoggingConfig4Core, kAuxConfig4Core,
+            kStatusMonitorConfig4Core, kHandFailureConfig4Core};
   }
 
 } // namespace ur5e_rt_controller

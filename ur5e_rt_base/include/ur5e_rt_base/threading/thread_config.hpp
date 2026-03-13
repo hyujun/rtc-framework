@@ -64,6 +64,26 @@ inline const ThreadConfig kAuxConfig{
     .name           = "aux"
 };
 
+// ── Non-RT monitoring threads (6-core) ──────────────────────────────────────
+// Status monitor (10 Hz) and hand failure detector (50 Hz) are both non-RT.
+// They share Core 4 with logging — all are SCHED_OTHER and I/O-light.
+
+inline const ThreadConfig kStatusMonitorConfig{
+    .cpu_core       = 4,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -2,
+    .name           = "status_mon"
+};
+
+inline const ThreadConfig kHandFailureConfig{
+    .cpu_core       = 4,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -2,
+    .name           = "hand_detect"
+};
+
 // ── 8-core configuration ────────────────────────────────────────────────────
 // Core 0-1: OS / DDS / NIC IRQ  (isolated by isolcpus=2-6)
 // Core 2:   RT Control           (500 Hz ControlLoop + 50 Hz E-STOP watchdog)
@@ -113,6 +133,25 @@ inline const ThreadConfig kAuxConfig8Core{
     .name           = "aux"
 };
 
+// ── Non-RT monitoring threads (8-core) ──────────────────────────────────────
+// With 8 cores, monitoring threads get Core 6 (shared with aux).
+
+inline const ThreadConfig kStatusMonitorConfig8Core{
+    .cpu_core       = 6,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -2,
+    .name           = "status_mon"
+};
+
+inline const ThreadConfig kHandFailureConfig8Core{
+    .cpu_core       = 6,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -2,
+    .name           = "hand_detect"
+};
+
 // ── 4-core fallback ─────────────────────────────────────────────────────────
 // Core 0:   OS / DDS / IRQ
 // Core 1:   RT Control
@@ -157,6 +196,25 @@ inline const ThreadConfig kAuxConfig4Core{
     .sched_priority = 0,
     .nice_value     = 0,
     .name           = "aux"
+};
+
+// ── Non-RT monitoring threads (4-core) ──────────────────────────────────────
+// With 4 cores, monitoring threads share Core 3 with logging + aux.
+
+inline const ThreadConfig kStatusMonitorConfig4Core{
+    .cpu_core       = 3,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = 0,
+    .name           = "status_mon"
+};
+
+inline const ThreadConfig kHandFailureConfig4Core{
+    .cpu_core       = 3,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = 0,
+    .name           = "hand_detect"
 };
 
 }  // namespace ur5e_rt_controller

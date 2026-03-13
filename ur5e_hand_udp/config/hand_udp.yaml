@@ -18,6 +18,8 @@
 udp:
   target_ip: "192.168.1.2"       # 핸드 컨트롤러 IP
   target_port: 55151             # 핸드 컨트롤러 포트
+  recv_timeout_ms: 10            # SO_RCVTIMEO (ms), Hand UDP 수신 타임아웃
+  enable_write_ack: false        # Hand 하드웨어 ACK 지원 시 true
 
 # ── ROS2 퍼블리시 설정 ────────────────────────────────────────────────────────
 publishing:
@@ -40,6 +42,13 @@ hand:
     - "hand_motor_7"
     - "hand_motor_8"
     - "hand_motor_9"
+
+# ── Failure Detector 설정 ────────────────────────────────────────────────────
+failure_detector:
+  enable: true                   # Failure detector 활성화
+  failure_threshold: 5           # 연속 감지 횟수 임계값
+  check_motor: true              # 모터 데이터 검사
+  check_sensor: true             # 센서 데이터 검사
 
 # ── 모니터링 설정 ─────────────────────────────────────────────────────────────
 monitoring:

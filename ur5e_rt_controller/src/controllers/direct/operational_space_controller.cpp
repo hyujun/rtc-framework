@@ -61,20 +61,25 @@ ControllerOutput OperationalSpaceController::Compute(
   const pinocchio::SE3 & tcp = data_.oMi[end_id_];
 
   // ── Step 3.5: initialise trajectory on new target (after FK) ─────────────
+  // target_mutex_로 goal_pose_ 읽기 + trajectory 초기화 보호.
+  // try_lock이므로 RT thread blocking 없음 — 실패 시 다음 tick에 처리.
   if (new_target_.load(std::memory_order_acquire)) {
-    const double trans_dist =
-      (goal_pose_.translation() - tcp.translation()).norm();
-    const double ang_dist =
-      pinocchio::log3(goal_pose_.rotation() * tcp.rotation().transpose()).norm();
-    const double duration = std::max(
-      0.01,
-      std::max(trans_dist / gains_.trajectory_speed,
-               ang_dist / gains_.trajectory_angular_speed));
+    std::unique_lock lock(target_mutex_, std::try_to_lock);
+    if (lock.owns_lock()) {
+      const double trans_dist =
+        (goal_pose_.translation() - tcp.translation()).norm();
+      const double ang_dist =
+        pinocchio::log3(goal_pose_.rotation() * tcp.rotation().transpose()).norm();
+      const double duration = std::max(
+        0.01,
+        std::max(trans_dist / gains_.trajectory_speed,
+                 ang_dist / gains_.trajectory_angular_speed));
 
-    trajectory_.initialize(tcp, pinocchio::Motion::Zero(), goal_pose_, pinocchio::Motion::Zero(),
-        duration);
-    trajectory_time_ = 0.0;
-    new_target_.store(false, std::memory_order_relaxed);
+      trajectory_.initialize(tcp, pinocchio::Motion::Zero(), goal_pose_, pinocchio::Motion::Zero(),
+          duration);
+      trajectory_time_ = 0.0;
+      new_target_.store(false, std::memory_order_relaxed);
+    }
   }
 
   const auto traj_state = trajectory_.compute(trajectory_time_);
@@ -159,6 +164,7 @@ ControllerOutput OperationalSpaceController::Compute(
 void OperationalSpaceController::SetRobotTarget(
   std::span<const double, kNumRobotJoints> target) noexcept
 {
+  std::lock_guard lock(target_mutex_);
   // target[0..2] = desired TCP position [x, y, z]
   // target[3..5] = desired TCP orientation [roll, pitch, yaw]
   const std::size_t n = 6;

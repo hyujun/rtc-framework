@@ -23,6 +23,10 @@
         joint_4: [-6.28, 6.28]     # Wrist 2
         joint_5: [-6.28, 6.28]     # Wrist 3
 
+    # ── Initialization ─────────────────────────────────────────────────────────
+    init_timeout_sec: 5.0          # 초기화 타임아웃 (초) — 로봇/핸드 데이터 미수신 시 E-STOP
+    enable_status_monitor: false   # 실제 로봇 사용 시 true (non-RT 10Hz 상태 모니터)
+
     # ── E-STOP Configuration ───────────────────────────────────────────────────
     estop:
       enable_estop: true           # E-STOP 모니터링 활성화

@@ -14,6 +14,7 @@
 
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -41,10 +42,14 @@ class HandController {
   explicit HandController(
       std::string target_ip,
       int target_port,
-      const ThreadConfig& thread_cfg = kUdpRecvConfig) noexcept
+      const ThreadConfig& thread_cfg = kUdpRecvConfig,
+      int recv_timeout_ms = 10,
+      bool enable_write_ack = false) noexcept
       : target_ip_(std::move(target_ip)),
         target_port_(target_port),
-        thread_cfg_(thread_cfg) {}
+        thread_cfg_(thread_cfg),
+        recv_timeout_ms_(recv_timeout_ms),
+        enable_write_ack_(enable_write_ack) {}
 
   ~HandController() { Stop(); }
 
@@ -69,10 +74,11 @@ class HandController {
       return false;
     }
 
-    // Recv timeout for stop_token check (10 ms for fast response).
+    // SO_RCVTIMEO: YAML에서 설정 가능 (기본값 10ms).
+    // recv() 타임아웃으로 stop_token 체크 + 통신 실패 감지 가능.
     struct timeval tv{};
-    tv.tv_sec  = 0;
-    tv.tv_usec = 10'000;
+    tv.tv_sec  = recv_timeout_ms_ / 1000;
+    tv.tv_usec = (recv_timeout_ms_ % 1000) * 1000;
     setsockopt(socket_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     running_.store(true, std::memory_order_release);
@@ -96,6 +102,12 @@ class HandController {
 
   void SetCallback(StateCallback cb) noexcept {
     callback_ = std::move(cb);
+  }
+
+  // ── E-Stop flag (shared with RtControllerNode) ─────────────────────────
+
+  void SetEstopFlag(std::atomic<bool>* flag) noexcept {
+    estop_flag_ = flag;
   }
 
   // ── Command (thread-safe write from ROS2 callback) ─────────────────────
@@ -126,6 +138,11 @@ class HandController {
     return cycle_count_.load(std::memory_order_relaxed);
   }
 
+  // recv() 타임아웃/에러 발생 횟수 (any thread, relaxed).
+  [[nodiscard]] uint64_t recv_error_count() const noexcept {
+    return recv_error_count_.load(std::memory_order_relaxed);
+  }
+
  private:
   // Send raw bytes and receive into a buffer. Returns bytes received, or -1 on error.
   [[nodiscard]] ssize_t SendAndRecvRaw(
@@ -138,6 +155,10 @@ class HandController {
     if (sent < 0) return -1;
 
     const ssize_t recvd = ::recv(socket_fd_, recv_data, recv_len, 0);
+    if (recvd < 0) {
+      // EAGAIN/EWOULDBLOCK = SO_RCVTIMEO expired → increment error counter
+      recv_error_count_.fetch_add(1, std::memory_order_relaxed);
+    }
     return recvd;
   }
 
@@ -209,7 +230,20 @@ class HandController {
     std::array<float, kSensorValuesPerFingertip> sensor_float_buf{};
 
     while (!stop_token.stop_requested()) {
+      // E-Stop 체크: 전역 E-Stop 발생 시 zero 명령 전송 후 루프 종료
+      if (estop_flag_ && estop_flag_->load(std::memory_order_acquire)) {
+        // zero 명령 전송
+        std::array<float, kNumHandMotors> zeros{};
+        std::array<uint8_t, hand_packets::kMotorPacketSize> zero_buf{};
+        hand_udp_codec::EncodeWritePosition(zeros, zero_buf);
+        sendto(socket_fd_, zero_buf.data(), zero_buf.size(), 0,
+               reinterpret_cast<const sockaddr*>(&target_addr_),
+               sizeof(target_addr_));
+        break;
+      }
+
       HandState state{};
+      bool any_recv_ok = false;
 
       // 1. Write position (if new command available).
       {
@@ -219,6 +253,13 @@ class HandController {
           sendto(socket_fd_, send_buf.data(), send_buf.size(), 0,
                  reinterpret_cast<const sockaddr*>(&target_addr_),
                  sizeof(target_addr_));
+          // Optional ACK: wait for hardware to echo back after write.
+          // Enable only when hand firmware supports write ACK.
+          if (enable_write_ack_) {
+            std::array<uint8_t, hand_packets::kMotorPacketSize> ack_buf{};
+            recvfrom(socket_fd_, ack_buf.data(), ack_buf.size(), 0,
+                     nullptr, nullptr);
+          }
           has_new_command_ = false;
         }
       }
@@ -227,12 +268,14 @@ class HandController {
       if (RequestMotorRead(hand_packets::Command::kReadPosition, motor_float_buf)) {
         std::copy_n(motor_float_buf.begin(), kNumHandMotors,
                     state.motor_positions.begin());
+        any_recv_ok = true;
       }
 
       // 3. Read velocity (motor, 43B ↔ 43B).
       if (RequestMotorRead(hand_packets::Command::kReadVelocity, motor_float_buf)) {
         std::copy_n(motor_float_buf.begin(), kNumHandMotors,
                     state.motor_velocities.begin());
+        any_recv_ok = true;
       }
 
       // 4. Read sensors (4 fingertips, 3B → 67B each).
@@ -241,10 +284,12 @@ class HandController {
         if (RequestSensorRead(cmd, sensor_float_buf)) {
           std::copy_n(sensor_float_buf.begin(), kSensorValuesPerFingertip,
                       state.sensor_data.begin() + i * kSensorValuesPerFingertip);
+          any_recv_ok = true;
         }
       }
 
-      state.valid = true;
+      // state.valid = true only if at least one recv succeeded
+      state.valid = any_recv_ok;
 
       // Update shared state.
       {
@@ -263,10 +308,16 @@ class HandController {
   int          target_port_;
   int          socket_fd_{-1};
   ThreadConfig thread_cfg_;
+  int          recv_timeout_ms_;
   sockaddr_in  target_addr_{};
 
   std::atomic<bool> running_{false};
   StateCallback     callback_;
+
+  bool enable_write_ack_;
+
+  // 전역 E-Stop 플래그 (RtControllerNode에서 설정, null이면 체크하지 않음)
+  std::atomic<bool>* estop_flag_{nullptr};
 
   mutable std::mutex cmd_mutex_;
   std::array<float, kNumHandMotors> target_positions_{};
@@ -275,6 +326,9 @@ class HandController {
   mutable std::mutex state_mutex_;
   HandState          latest_state_{};
   std::atomic<std::size_t> cycle_count_{0};
+
+  // recv() 타임아웃/에러 카운터 (모든 send-recv 실패 시 증가)
+  std::atomic<uint64_t> recv_error_count_{0};
 
   std::jthread poll_thread_;
 };

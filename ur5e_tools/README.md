@@ -1,6 +1,6 @@
 # ur5e_tools
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.7.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.8.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md)
 
 UR5e RT Controller 스택의 **Python 개발 유틸리티 패키지**입니다. 컨트롤러 GUI, 모션 편집기, 데이터 건강 모니터링, 궤적 시각화, UDP 손 통신, 모델 검증 도구를 포함합니다.
@@ -170,6 +170,20 @@ ros2 run ur5e_tools monitor_data_health \
 - 항목: 총 활성 시간, robot/hand/command 패킷 수·손실률·평균 주파수, E-STOP 트리거 횟수
 - 매 100 패킷마다 상태 요약 로그 출력
 - 종료 시 최종 통계 저장
+
+**타이밍 통계 (v5.8.0+):**
+
+CSV 로그의 단계별 타이밍 컬럼을 분석하여 제어 루프 성능 통계를 산출합니다:
+
+| CSV 컬럼 | 설명 |
+|----------|------|
+| `t_state_acquire_us` | 상태 획득 시간 (try_lock + 복사) |
+| `t_compute_us` | 컨트롤러 Compute() 시간 |
+| `t_publish_us` | 명령 퍼블리시 시간 |
+| `t_total_us` | 전체 ControlLoop() 시간 |
+| `jitter_us` | 루프 주기 지터 |
+
+각 메트릭별 mean, max, std, variance 통계를 `_make_empty_stats()["timing"]`에 수집합니다.
 
 ---
 

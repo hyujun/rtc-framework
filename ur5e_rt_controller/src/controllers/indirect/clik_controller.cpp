@@ -71,32 +71,36 @@ ControllerOutput ClikController::Compute(
     target_initialized_ = true;
   }
 
+  // target_mutex_로 target 읽기 + trajectory 초기화 보호.
+  // try_lock이므로 RT thread blocking 없음 — 실패 시 다음 tick에 처리.
   if (new_target_.load(std::memory_order_acquire)) {
-    pinocchio::SE3 start_pose = tcp_pose;
-    pinocchio::SE3 goal_pose;
+    std::unique_lock lock(target_mutex_, std::try_to_lock);
+    if (lock.owns_lock()) {
+      pinocchio::SE3 start_pose = tcp_pose;
+      pinocchio::SE3 goal_pose;
 
-    if (gains_.control_6dof) {
-      goal_pose = tcp_target_pose_;
-    } else {
-      goal_pose = start_pose; // keep current rotation
-      goal_pose.translation() = Eigen::Vector3d(tcp_target_[0], tcp_target_[1], tcp_target_[2]);
+      if (gains_.control_6dof) {
+        goal_pose = tcp_target_pose_;
+      } else {
+        goal_pose = start_pose; // keep current rotation
+        goal_pose.translation() = Eigen::Vector3d(tcp_target_[0], tcp_target_[1], tcp_target_[2]);
+      }
+
+      double max_dist = (goal_pose.translation() - start_pose.translation()).norm();
+      if (gains_.control_6dof) {
+        double angular_dist = pinocchio::log3(start_pose.rotation().transpose() *
+            goal_pose.rotation()).norm();
+        max_dist = std::max(max_dist, angular_dist * 0.2);
+      }
+      double duration = std::max(0.01, max_dist / gains_.trajectory_speed);
+
+      trajectory_.initialize(start_pose, pinocchio::Motion::Zero(),
+                             goal_pose, pinocchio::Motion::Zero(),
+                             duration);
+
+      trajectory_time_ = 0.0;
+      new_target_.store(false, std::memory_order_relaxed);
     }
-
-    double max_dist = (goal_pose.translation() - start_pose.translation()).norm();
-    // For 6-DOF, we might also consider angular distance
-    if (gains_.control_6dof) {
-      double angular_dist = pinocchio::log3(start_pose.rotation().transpose() *
-          goal_pose.rotation()).norm();
-      max_dist = std::max(max_dist, angular_dist * 0.2); // Rough heuristic: 1 rad ~ 0.2 m
-    }
-    double duration = std::max(0.01, max_dist / gains_.trajectory_speed);
-
-    trajectory_.initialize(start_pose, pinocchio::Motion::Zero(),
-                           goal_pose, pinocchio::Motion::Zero(),
-                           duration);
-
-    trajectory_time_ = 0.0;
-    new_target_.store(false, std::memory_order_relaxed);
   }
 
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
@@ -211,6 +215,7 @@ ControllerOutput ClikController::Compute(
 void ClikController::SetRobotTarget(
   std::span<const double, kNumRobotJoints> target) noexcept
 {
+  std::lock_guard lock(target_mutex_);
   if (gains_.control_6dof) {
     // 6-DOF target mode: [x, y, z, roll, pitch, yaw]
     tcp_target_[0] = target[0];

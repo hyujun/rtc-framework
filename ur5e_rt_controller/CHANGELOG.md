@@ -5,6 +5,60 @@
 
 ---
 
+## [5.8.0] - 2026-03-14
+
+### 추가 (Added) — RT 안전성 및 모니터링 강화
+
+- **M1: 제어 루프 단계별 타이밍 계측**
+  - `LogEntry`에 `t_state_acquire_us`, `t_compute_us`, `t_publish_us`, `t_total_us`, `jitter_us` 필드 추가
+  - `ControlLoop()`에서 `steady_clock` 기반 4단계 타이밍 측정
+  - CSV 로그에 타이밍 컬럼 자동 기록
+
+- **C2: ControlLoop 벽시계 오버런 감지**
+  - `budget_us_` (= 1e6 / control_rate) 초과 시 `overrun_count_` 원자적 증가
+  - 타이밍 요약 로그에 오버런 횟수 출력
+
+- **C4: 궤적 레이스 컨디션 수정 (try_lock 패턴)**
+  - `JointPDController`, `ClikController`, `OperationalSpaceController`에 `target_mutex_` 추가
+  - `SetRobotTarget()`: `lock_guard` 보호, `Compute()`: `try_to_lock` (실패 시 다음 틱에서 처리)
+  - RT 스레드 블로킹 없이 `SetRobotTarget()`/`Compute()` 동시 접근 방지
+
+- **H3: 글로벌 E-Stop 플래그 및 전파**
+  - `std::atomic<bool> global_estop_` + `TriggerGlobalEstop(reason)` 메서드
+  - 모든 서브시스템(컨트롤러, 핸드, 상태 모니터)에 E-Stop 전파
+  - E-Stop 사유 및 타임스탬프 로그 기록
+
+- **H1: UR5e 상태 모니터 통합**
+  - `ur5e_status_monitor` 패키지를 `RtControllerNode`에 컴포지션
+  - YAML `enable_status_monitor: true`로 활성화 (기본 false)
+  - 10Hz `std::jthread`로 안전 상태, 추적 오차, 관절 한계 모니터링
+  - 실패 감지 시 `TriggerGlobalEstop()` 콜백 연결
+
+- **H2: 핸드 실패 감지기 (C++ HandFailureDetector)**
+  - 50Hz `std::jthread`로 모터/센서 데이터 이상 감지
+  - 전-영점 데이터 × N회 연속, 중복 데이터 × N회 연속 감지
+  - YAML `failure_detector.enable: true`로 활성화
+
+- **H4: 초기화 타임아웃**
+  - `init_timeout_sec` (기본 5.0초) 내 로봇/핸드 데이터 미수신 시 E-Stop + 종료
+  - `init_wait_ticks_` 카운터 기반 RT-safe 구현
+
+- **H5: 관절 토크 데이터 (`RobotState.torques`)**
+  - `RobotState`에 `std::array<double, 6> torques{}` 추가
+  - `/joint_states` effort 필드에서 토크 복사 (가용 시)
+
+- **M2: 핸드 상태 CSV 로깅**
+  - `LogEntry`에 `hand_positions[10]`, `hand_velocities[10]`, `hand_sensors[44]`, `hand_valid` 추가
+  - CSV 헤더 및 데이터 행에 핸드 상태 자동 기록
+
+### 변경 (Changed)
+
+- `CheckTimeouts()` → `TriggerGlobalEstop()` 호출로 변경 (기존 개별 E-Stop 대신 글로벌)
+- `DeclareAndLoadParameters()`에 `init_timeout_sec`, `enable_status_monitor` 파라미터 추가
+- `CMakeLists.txt`에 `ur5e_status_monitor` 의존성 추가
+
+---
+
 ## [5.7.0] - 2026-03-11
 
 ### 수정 (Fixed) — PController 정상상태 오차 제거

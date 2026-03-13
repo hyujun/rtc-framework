@@ -5,6 +5,33 @@
 
 ---
 
+## [5.8.0] - 2026-03-14
+
+### 추가 (Added) — 타입, 로깅, 스레드 구성 확장
+
+- **`RobotState`에 `torques` 추가** (`types.hpp`)
+  - `std::array<double, 6> torques{}` — `/joint_states` effort 필드에서 복사
+
+- **`LogEntry` 확장** (`log_buffer.hpp`)
+  - 타이밍 필드: `t_state_acquire_us`, `t_compute_us`, `t_publish_us`, `t_total_us`, `jitter_us`
+  - 핸드 상태 필드: `hand_positions[10]`, `hand_velocities[10]`, `hand_sensors[44]`, `hand_valid`
+
+- **`DataLogger` CSV 포맷 확장** (`data_logger.hpp`)
+  - 타이밍 컬럼 5개 + 핸드 상태 컬럼 65개 추가
+  - 기존 `compute_time_us` → `t_compute_us`로 대체
+
+- **모니터링 스레드 구성** (`thread_config.hpp`)
+  - `kStatusMonitorConfig` / `kHandFailureConfig` (6-core: Core 4, SCHED_OTHER, nice -2)
+  - `kStatusMonitorConfig8Core` / `kHandFailureConfig8Core` (8-core: Core 6)
+  - `kStatusMonitorConfig4Core` / `kHandFailureConfig4Core` (4-core: Core 3)
+
+- **`SystemThreadConfigs` 확장** (`thread_utils.hpp`)
+  - 5 → 7 필드: `status_monitor`, `hand_failure` 추가
+  - `ValidateSystemThreadConfigs()` 7개 스레드 검증
+  - `SelectThreadConfigs()` 모든 코어 레이아웃에 모니터링 스레드 포함
+
+---
+
 ## [5.7.0] - 2026-03-11
 
 ### 변경

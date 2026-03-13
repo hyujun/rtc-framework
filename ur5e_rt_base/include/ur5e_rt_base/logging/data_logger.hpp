@@ -33,9 +33,41 @@ public:
   DataLogger(DataLogger &&) = default;
   DataLogger &operator=(DataLogger &&) = default;
 
-  // Log one control step: timestamp (s), current positions, target positions,
-  // computed commands (all kNumRobotJoints elements), and optional compute
-  // timing in µs (0.0 if profiling is disabled).
+  // Log one control step with full per-phase timing breakdown.
+  void LogEntry(const ur5e_rt_controller::LogEntry &entry) {
+    if (!file_.is_open()) {
+      return;
+    }
+    file_ << std::fixed << std::setprecision(6) << entry.timestamp;
+    for (const auto v : entry.current_positions) {
+      file_ << ',' << v;
+    }
+    for (const auto v : entry.target_positions) {
+      file_ << ',' << v;
+    }
+    for (const auto v : entry.commands) {
+      file_ << ',' << v;
+    }
+    file_ << ',' << entry.t_state_acquire_us
+           << ',' << entry.t_compute_us
+           << ',' << entry.t_publish_us
+           << ',' << entry.t_total_us
+           << ',' << entry.jitter_us;
+    // Hand state
+    file_ << ',' << (entry.hand_valid ? 1 : 0);
+    for (const auto v : entry.hand_positions) {
+      file_ << ',' << v;
+    }
+    for (const auto v : entry.hand_velocities) {
+      file_ << ',' << v;
+    }
+    for (const auto v : entry.hand_sensors) {
+      file_ << ',' << v;
+    }
+    file_ << '\n';
+  }
+
+  // Legacy overload — delegates to the new LogEntry-based method.
   void
   LogControlData(double timestamp,
                  std::span<const double, kNumRobotJoints> current_positions,
@@ -55,7 +87,13 @@ public:
     for (const auto v : commands) {
       file_ << ',' << v;
     }
-    file_ << ',' << compute_time_us << '\n';
+    // Per-phase timing: only compute_time_us available in legacy API
+    file_ << ',' << 0.0            // t_state_acquire_us
+           << ',' << compute_time_us  // t_compute_us
+           << ',' << 0.0            // t_publish_us
+           << ',' << 0.0            // t_total_us
+           << ',' << 0.0            // jitter_us
+           << '\n';
   }
 
   // Log hand state for a given timestamp (not written to the control CSV).
@@ -75,11 +113,9 @@ public:
   // Drains all pending entries from the ring buffer and writes them to the CSV.
   // Must be called exclusively from the log thread — never from the RT thread.
   void DrainBuffer(ControlLogBuffer &buf) {
-    LogEntry entry;
+    ur5e_rt_controller::LogEntry entry;
     while (buf.Pop(entry)) {
-      LogControlData(entry.timestamp, entry.current_positions,
-                     entry.target_positions, entry.commands,
-                     entry.compute_time_us);
+      LogEntry(entry);
     }
   }
 
@@ -97,7 +133,22 @@ private:
     for (int i = 0; i < kNumRobotJoints; ++i) {
       file_ << ",command_" << i;
     }
-    file_ << ",compute_time_us\n";
+    file_ << ",t_state_acquire_us"
+           << ",t_compute_us"
+           << ",t_publish_us"
+           << ",t_total_us"
+           << ",jitter_us"
+           << ",hand_valid";
+    for (int i = 0; i < kNumHandMotors; ++i) {
+      file_ << ",hand_pos_" << i;
+    }
+    for (int i = 0; i < kNumHandMotors; ++i) {
+      file_ << ",hand_vel_" << i;
+    }
+    for (int i = 0; i < kNumHandSensors; ++i) {
+      file_ << ",hand_sensor_" << i;
+    }
+    file_ << '\n';
   }
 };
 

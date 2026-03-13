@@ -46,30 +46,34 @@ ControllerOutput JointPDController::Compute(
   // Pinocchio 상태 갱신 (중력, FK, 자코비안, 코리올리)
   UpdateDynamics(state.robot);
 
-  // 새 목표 수신 시 궤적 생성 — acquire-load guarantees robot_target_ writes
-  // from SetRobotTarget() (sensor thread) are visible.
+  // 새 목표 수신 시 궤적 생성.
+  // target_mutex_로 robot_target_ 읽기와 trajectory 초기화를 보호.
+  // try_lock이므로 RT thread blocking 없음 — 실패 시 다음 tick(≤2ms)에 처리.
   if (new_target_.load(std::memory_order_acquire)) {
-    trajectory::JointSpaceTrajectory<kNumRobotJoints>::State start_state;
-    trajectory::JointSpaceTrajectory<kNumRobotJoints>::State goal_state;
+    std::unique_lock lock(target_mutex_, std::try_to_lock);
+    if (lock.owns_lock()) {
+      trajectory::JointSpaceTrajectory<kNumRobotJoints>::State start_state;
+      trajectory::JointSpaceTrajectory<kNumRobotJoints>::State goal_state;
 
-    double max_dist = 0.0;
-    for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-      start_state.positions[i]     = state.robot.positions[i];
-      start_state.velocities[i]    = state.robot.velocities[i];
-      start_state.accelerations[i] = 0.0;
+      double max_dist = 0.0;
+      for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+        start_state.positions[i]     = state.robot.positions[i];
+        start_state.velocities[i]    = state.robot.velocities[i];
+        start_state.accelerations[i] = 0.0;
 
-      goal_state.positions[i]     = robot_target_[i];
-      goal_state.velocities[i]    = 0.0;
-      goal_state.accelerations[i] = 0.0;
+        goal_state.positions[i]     = robot_target_[i];
+        goal_state.velocities[i]    = 0.0;
+        goal_state.accelerations[i] = 0.0;
 
-      max_dist = std::max(max_dist,
-        std::abs(robot_target_[i] - state.robot.positions[i]));
+        max_dist = std::max(max_dist,
+          std::abs(robot_target_[i] - state.robot.positions[i]));
+      }
+
+      const double duration = std::max(0.01, max_dist / gains_.trajectory_speed);
+      trajectory_.initialize(start_state, goal_state, duration);
+      trajectory_time_ = 0.0;
+      new_target_.store(false, std::memory_order_relaxed);
     }
-
-    const double duration = std::max(0.01, max_dist / gains_.trajectory_speed);
-    trajectory_.initialize(start_state, goal_state, duration);
-    trajectory_time_ = 0.0;
-    new_target_.store(false, std::memory_order_relaxed);
   }
 
   const auto traj_state = trajectory_.compute(trajectory_time_);
@@ -120,11 +124,10 @@ ControllerOutput JointPDController::Compute(
 void JointPDController::SetRobotTarget(
   std::span<const double, kNumRobotJoints> target) noexcept
 {
+  std::lock_guard lock(target_mutex_);
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
     robot_target_[i] = target[i];
   }
-  // release-store: guarantees robot_target_ writes are visible to the RT thread
-  // when it acquire-loads new_target_ in Compute().
   new_target_.store(true, std::memory_order_release);
 }
 

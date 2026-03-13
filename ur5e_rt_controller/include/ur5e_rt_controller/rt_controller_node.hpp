@@ -5,6 +5,7 @@
 #include "ur5e_rt_base/logging/log_buffer.hpp"
 #include "ur5e_rt_controller/controller_timing_profiler.hpp"
 #include "ur5e_rt_controller/rt_controller_interface.hpp"
+#include <ur5e_status_monitor/ur5e_status_monitor.hpp>
 
 // ── ROS2 ─────────────────────────────────────────────────────────────────────
 #include <rclcpp/rclcpp.hpp>
@@ -72,6 +73,16 @@ private:
 
   void PublishEstopStatus(bool estopped);
 
+  /// Trigger a global E-Stop that propagates to all subsystems.
+  /// Safe to call from any thread. Idempotent — second call is a no-op.
+  void TriggerGlobalEstop(std::string_view reason) noexcept;
+  /// Clear global E-Stop and re-enable all subsystems.
+  void ClearGlobalEstop() noexcept;
+  [[nodiscard]] bool IsGlobalEstopped() const noexcept
+  {
+    return global_estop_.load(std::memory_order_acquire);
+  }
+
   // ── ROS2 handles ──────────────────────────────────────────────────────────
   rclcpp::CallbackGroup::SharedPtr cb_group_rt_;
   rclcpp::CallbackGroup::SharedPtr cb_group_sensor_;
@@ -115,10 +126,18 @@ private:
   ur5e_rt_controller::ControlLogBuffer              log_buffer_{};              // SPSC ring buffer
   ur5e_rt_controller::ControllerTimingProfiler      timing_profiler_{};         // Compute() timing
 
+  // ── Status Monitor (optional, non-RT) ──────────────────────────────────────
+  std::unique_ptr<ur5e_status_monitor::UR5eStatusMonitor> status_monitor_;
+  bool enable_status_monitor_{false};
+
   // ── Shared state (guarded by per-domain mutexes) ──────────────────────────
   std::array<double, ur5e_rt_controller::kNumRobotJoints> current_positions_{};
   std::array<double, ur5e_rt_controller::kNumRobotJoints> current_velocities_{};
   std::array<double, ur5e_rt_controller::kNumRobotJoints> target_positions_{};
+
+  // Joint torques from effort field (guarded by state_mutex_)
+  std::array<double, ur5e_rt_controller::kNumRobotJoints> current_torques_{};
+  std::array<double, ur5e_rt_controller::kNumRobotJoints> cached_torques_{};
 
   // Hand motor positions (guarded by hand_mutex_)
   std::array<float, ur5e_rt_controller::kNumHandMotors> current_hand_positions_{};
@@ -159,7 +178,24 @@ private:
 
   std::size_t loop_count_{0};
 
+  // ── Initialization timeout ──────────────────────────────────────────────────
+  bool     init_complete_{false};
+  uint64_t init_wait_ticks_{0};
+  uint64_t init_timeout_ticks_{2500};  // default 5s at 500Hz
+
   // Baseline for log timestamps — captured on first ControlLoop() iteration.
   // steady_clock reads CLOCK_MONOTONIC via vDSO (no kernel entry on Linux).
   std::chrono::steady_clock::time_point log_start_time_{};
+
+  // ── Global E-Stop ──────────────────────────────────────────────────────────
+  std::atomic<bool> global_estop_{false};
+  std::string       estop_reason_;          // NRT only — written in TriggerGlobalEstop
+
+  // ── Per-tick timing & overrun detection ──────────────────────────────────
+  // Previous loop start time — used for jitter calculation.
+  std::chrono::steady_clock::time_point prev_loop_start_{};
+  // Tick budget in µs — computed from control_rate_ in DeclareAndLoadParameters().
+  double budget_us_{2000.0};
+  // Overrun counter — incremented (relaxed) when t_total > budget. Read by log thread.
+  std::atomic<uint64_t> overrun_count_{0};
 };

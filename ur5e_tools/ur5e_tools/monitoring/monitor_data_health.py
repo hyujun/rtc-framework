@@ -15,7 +15,9 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray, Bool, String
+import csv
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 
@@ -123,6 +125,14 @@ class DataHealthMonitor(Node):
                 'total_triggers': 0,
                 'current_status': False,
                 'last_trigger': None,
+            },
+            'timing': {
+                'samples': 0,
+                't_state_acquire_us': {'mean': 0.0, 'max': 0.0, 'std': 0.0},
+                't_compute_us':       {'mean': 0.0, 'max': 0.0, 'std': 0.0},
+                't_publish_us':       {'mean': 0.0, 'max': 0.0, 'std': 0.0},
+                't_total_us':         {'mean': 0.0, 'max': 0.0, 'std': 0.0},
+                'jitter_us':          {'mean': 0.0, 'max': 0.0, 'std': 0.0},
             },
         }
 
@@ -240,6 +250,69 @@ class DataHealthMonitor(Node):
 
     # ── 통계 저장 ────────────────────────────────────────────────────────────
 
+    def compute_timing_stats_from_csv(self):
+        """Read the latest CSV log file and compute timing statistics."""
+        import os
+        from ament_index_python.packages import get_package_share_directory
+
+        try:
+            share_dir = get_package_share_directory('ur5e_rt_controller')
+            ws_dir = os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.dirname(share_dir))))
+            log_dir = Path(ws_dir) / 'logging_data'
+        except Exception:
+            log_dir = Path.home() / 'ros2_ws' / 'ur5e_ws' / 'logging_data'
+
+        if not log_dir.exists():
+            return
+
+        # Find the latest CSV
+        csv_files = sorted(log_dir.glob('ur5e_control_log_*.csv'))
+        if not csv_files:
+            return
+        latest_csv = csv_files[-1]
+
+        timing_keys = [
+            't_state_acquire_us', 't_compute_us', 't_publish_us',
+            't_total_us', 'jitter_us',
+        ]
+        accum = {k: [] for k in timing_keys}
+
+        try:
+            with open(latest_csv, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    for k in timing_keys:
+                        if k in row:
+                            try:
+                                accum[k].append(float(row[k]))
+                            except (ValueError, TypeError):
+                                pass
+        except Exception as e:
+            self.get_logger().warn(f'Failed to read CSV for timing stats: {e}')
+            return
+
+        s = self._current_stats()
+        for k in timing_keys:
+            vals = accum[k]
+            n = len(vals)
+            if n == 0:
+                continue
+            mean = sum(vals) / n
+            var = sum((v - mean) ** 2 for v in vals) / n
+            s['timing'][k] = {
+                'mean': round(mean, 2),
+                'max': round(max(vals), 2),
+                'std': round(math.sqrt(var), 2),
+            }
+        s['timing']['samples'] = len(accum['t_total_us'])
+
+        self.get_logger().info(
+            f'[{self.current_controller}] Timing (from {latest_csv.name}): '
+            f'compute={s["timing"]["t_compute_us"]["mean"]:.1f}µs, '
+            f'total={s["timing"]["t_total_us"]["mean"]:.1f}µs, '
+            f'jitter={s["timing"]["jitter_us"]["mean"]:.1f}µs')
+
     def save_statistics(self):
         if not self.enable_stats or not self.per_controller_stats:
             return
@@ -281,6 +354,7 @@ class DataHealthMonitor(Node):
 
     def destroy_node(self):
         self.log_status()
+        self.compute_timing_stats_from_csv()
         self.save_statistics()
         super().destroy_node()
 

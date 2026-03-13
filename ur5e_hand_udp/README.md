@@ -1,6 +1,6 @@
 # ur5e_hand_udp
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.7.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.8.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 
 UR5e RT Controller 스택의 **10-DOF 손 UDP 브리지 패키지**입니다. 외부 손 컨트롤러(하드웨어)와 ROS2 토픽 사이의 UDP request-response 통신을 담당합니다.
@@ -13,6 +13,7 @@ ur5e_hand_udp/
 │   ├── hand_packets.hpp        ← 와이어 포맷 구조체, 인코딩/디코딩 헬퍼
 │   ├── hand_udp_codec.hpp      ← 공개 코덱 API (allocation-free, noexcept)
 │   ├── hand_controller.hpp     ← 핵심 드라이버 (request-response 폴링)
+│   ├── hand_failure_detector.hpp ← 손 통신 장애 감지기 (v5.8.0)
 │   ├── hand_udp_receiver.hpp   ← (레거시) 호환 alias
 │   └── hand_udp_sender.hpp     ← (레거시) 호환 alias
 ├── src/
@@ -124,6 +125,10 @@ ur5e_rt_base ← ur5e_hand_udp   (ur5e_rt_controller에 의존하지 않음)
 `HandController`를 사용하는 통합 ROS2 노드입니다. 단일 프로세스에서 송수신을 모두 처리합니다.
 
 - **내부**: `HandController` — request-response 폴링 (jthread, Core 5, SCHED_FIFO/65)
+  - `recv_timeout_ms` 생성자 파라미터: YAML에서 구동되는 `SO_RCVTIMEO` 소켓 타임아웃 설정
+  - `recv_error_count_` (`std::atomic<uint64_t>`): recv 실패 횟수를 추적하는 원자적 카운터
+  - `SetEstopFlag(std::atomic<bool>*)`: 글로벌 E-Stop 플래그 전파를 위한 설정 메서드
+  - `enable_write_ack` 플래그: 커맨드 ACK 메커니즘 활성화 (WritePosition 후 응답 대기)
 - **퍼블리시**: `/hand/joint_states` (`std_msgs/Float64MultiArray`, 100Hz)
   - **64개 `double` 값**: `[positions:10] + [velocities:10] + [sensors:44]`
 - **구독**: `/hand/command` (`std_msgs/Float64MultiArray`)
@@ -173,6 +178,8 @@ ur5e_rt_base ← ur5e_hand_udp   (ur5e_rt_controller에 의존하지 않음)
 udp:
   target_ip: "192.168.1.2"       # 핸드 컨트롤러 IP
   target_port: 55151             # 핸드 컨트롤러 포트
+  recv_timeout_ms: 10            # SO_RCVTIMEO 소켓 수신 타임아웃 (ms)
+  enable_write_ack: false        # WritePosition 커맨드 ACK 대기 활성화
 
 # ── ROS2 퍼블리시 설정 ──────────────────────────────────────────────────────
 publishing:
@@ -191,6 +198,13 @@ hand:
 monitoring:
   enable_statistics: true
   statistics_period: 5.0         # 패킷 통계 출력 주기 (초)
+
+# ── 장애 감지기 설정 (v5.8.0) ──────────────────────────────────────────────
+failure_detector:
+  enable: true                   # 장애 감지기 활성화
+  failure_threshold: 50          # 연속 장애 판정 횟수 (50Hz × N)
+  check_motor: true              # 모터 위치 데이터 검사 활성화
+  check_sensor: true             # 센서 데이터 검사 활성화
 ```
 
 ---
@@ -266,6 +280,22 @@ estop:
 ```
 
 손이 연결되지 않은 경우: `hand_timeout_ms: 0` 설정.
+
+### HandFailureDetector (v5.8.0)
+
+`hand_failure_detector.hpp`에 정의된 C++ 클래스로, 손 통신 데이터의 이상 상태를 감지합니다.
+
+- **50Hz `std::jthread`** 비-RT 모니터링 스레드로 동작
+- **두 가지 장애 조건**:
+  1. **All-zero 데이터**: 모든 값이 0인 프레임이 N회 연속 감지
+  2. **Duplicate 데이터**: 동일한 값이 N회 연속 반복 감지
+- **독립적 검사 채널**: 모터 위치(`check_motor`)와 센서 데이터(`check_sensor`)를 각각 독립적으로 검사
+- **장애 콜백 등록**: 장애 감지 시 등록된 콜백을 호출하여 글로벌 E-Stop을 트리거
+- **YAML 설정**:
+  - `failure_detector.enable`: 장애 감지기 활성화 여부
+  - `failure_detector.failure_threshold`: 연속 장애 판정 횟수 (N)
+  - `failure_detector.check_motor`: 모터 위치 검사 활성화
+  - `failure_detector.check_sensor`: 센서 데이터 검사 활성화
 
 ---
 

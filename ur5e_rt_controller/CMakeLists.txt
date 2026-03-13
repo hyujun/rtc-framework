@@ -31,6 +31,7 @@ find_package(Python3 COMPONENTS Interpreter Development NumPy)
 find_package(pinocchio REQUIRED)
 find_package(ur5e_rt_base REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(ur5e_status_monitor REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 # ── rt_controller ──────────────────────────────────────────────────────────────
@@ -50,6 +51,7 @@ ament_target_dependencies(rt_controller
   std_msgs
   sensor_msgs
   ur5e_rt_base
+  ur5e_status_monitor
   ament_index_cpp
 )
 target_link_libraries(rt_controller pinocchio::pinocchio yaml-cpp)

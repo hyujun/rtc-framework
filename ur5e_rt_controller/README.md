@@ -1,6 +1,6 @@
 # ur5e_rt_controller
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.7.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.8.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md) | 디버깅: [VSCODE_DEBUGGING.md](../docs/VSCODE_DEBUGGING.md) | 새 컨트롤러 추가: [ADDING_CONTROLLER.md](docs/ADDING_CONTROLLER.md)
 
 UR5e 로봇 팔을 위한 **500Hz 실시간 제어기** ROS2 패키지입니다. SCHED_FIFO 멀티스레드 아키텍처, 전략 패턴 기반 컨트롤러 교체, 런타임 컨트롤러 전환, 잠금-없는 로깅 인프라를 제공합니다.
@@ -93,6 +93,12 @@ RtControllerNode (ROS2 노드)
 HandUdpReceiver (별도 jthread)
     └── udp_recv (Core 5, FIFO/65)       ← UDP 패킷 수신 [sensor_io와 분리]
 
+StatusMonitor (별도 jthread, enable_status_monitor: true 시)
+    └── monitor_thread (Core 5, OTHER/0) ← 10Hz 비-RT 상태/안전 모니터링
+
+HandFailureMonitor (별도 jthread)
+    └── hand_monitor (Core 5, OTHER/0)   ← 핸드 통신 실패 감지
+
     controller_ (RTControllerInterface)
         └── [교체 가능] PController / JointPDController / ClikController /
                         OperationalSpaceController / UrFiveEHandController
@@ -109,6 +115,34 @@ HandUdpReceiver (별도 jthread)
 | `hand_mutex_` | 손 데이터 타임스탬프 | sensor ↔ RT |
 
 RT 스레드는 `try_to_lock` 패턴을 사용하여 뮤텍스 경합 시 이전 사이클의 캐시된 데이터를 재사용합니다 (≤2ms 지연, 허용 범위).
+
+### Global E-Stop 시스템 (v5.8.0)
+
+v5.8.0에서 기존 컨트롤러별 개별 E-Stop을 **글로벌 E-Stop** 아키텍처로 대체했습니다.
+
+- **핵심 상태**: `std::atomic<bool> global_estop_` — 모든 서브시스템에서 원자적으로 참조
+- **트리거**: `TriggerGlobalEstop(const std::string& reason)` — 사유를 로그에 기록하고 즉시 활성화
+- **전파 대상**: 컨트롤러(`controller_->TriggerEstop()`), 핸드(`SetHandEstop(true)`), 상태 모니터(`StatusMonitor`)
+- **초기화 타임아웃**: `init_timeout_sec` (기본 5.0초) — 초기화 완료 전 타임아웃 발생 시 `TriggerGlobalEstop()` + 노드 셧다운
+- **E-Stop 상태 퍼블리시**: `/system/estop_status` (aux_executor, 50Hz)
+
+```
+[장애 발생] → TriggerGlobalEstop(reason)
+                ├── global_estop_ = true
+                ├── controller_->TriggerEstop()     ← 안전 위치로 이동
+                ├── hand: SetHandEstop(true)        ← 핸드 정지
+                └── status_monitor: 상태 반영       ← 모니터링 알림
+```
+
+### Status Monitor 통합 (v5.8.0)
+
+`ur5e_status_monitor` 패키지를 `RtControllerNode`에 컴포지션 방식으로 통합했습니다.
+
+- **활성화**: YAML `enable_status_monitor: true` (기본 활성)
+- **실행 방식**: 별도 `std::jthread` — 10Hz 주기로 비-RT 모니터링
+- **모니터링 항목**: 관절 한계, 속도 초과, 통신 상태, 온도 등
+- **장애 콜백**: 이상 감지 시 `TriggerGlobalEstop()` 호출 → 글로벌 E-Stop 연쇄 활성화
+- **의존성**: `ur5e_status_monitor` 패키지 (shared library)
 
 ---
 
@@ -154,6 +188,7 @@ command[i] = current_pos[i] + kp[i] * (target[i] - current_pos[i]) * dt
 - E-STOP 안전 위치: `[0, -1.57, 1.57, -1.57, -1.57, 0]` rad
 - 궤적 지속시간: `max(0.01, max_joint_dist / trajectory_speed)`
 - 모든 Eigen 버퍼: 생성자에서 사전 할당 (500Hz 경로에서 힙 할당 없음)
+- `target_mutex_` try_lock 패턴: `SetRobotTarget()` 호출 시 궤적 생성과 `Compute()` 루프 간의 레이스 컨디션 방지. 잠금 실패 시 이전 궤적을 계속 추종
 
 ### `ClikController` (indirect, index 2)
 
@@ -177,6 +212,7 @@ command[i] = current_pos[i] + kp[i] * (target[i] - current_pos[i]) * dt
 
 - `UpdateGainsFromMsg` 레이아웃: `[kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1)]` (10개)
 - 궤적 지속시간 (3-DOF): `max(0.01, trans_dist / trajectory_speed)`
+- `target_mutex_` try_lock 패턴: `SetRobotTarget()` 호출 시 궤적 생성과 `Compute()` 루프 간의 레이스 컨디션 방지. 잠금 실패 시 이전 궤적을 계속 추종
 
 ### `OperationalSpaceController` (direct, index 3)
 
@@ -202,6 +238,7 @@ command[i] = current_pos[i] + kp[i] * (target[i] - current_pos[i]) * dt
 
 - `UpdateGainsFromMsg` 레이아웃: `[kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, gravity(0/1), traj_speed, traj_ang_speed]` (16개)
 - 궤적 지속시간: `max(0.01, max(trans_dist / traj_speed, ang_dist / traj_ang_speed))`
+- `target_mutex_` try_lock 패턴: `SetRobotTarget()` 호출 시 궤적 생성과 `Compute()` 루프 간의 레이스 컨디션 방지. 잠금 실패 시 이전 궤적을 계속 추종
 
 ### `UrFiveEHandController` (indirect, index 4)
 
@@ -308,6 +345,9 @@ topics:
         joint_0: [-6.28, 6.28]   # Base ~ Wrist 3
         joint_2: [-3.14, 3.14]   # Elbow (더 좁은 범위)
 
+    init_timeout_sec: 5.0        # 초기화 타임아웃 — 초과 시 E-Stop + 셧다운
+    enable_status_monitor: true  # ur5e_status_monitor 통합 활성화
+
     estop:
       enable_estop: true
       robot_timeout_ms: 100.0    # /joint_states 갭 초과 시 E-STOP
@@ -396,14 +436,30 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 
 로그 파일은 `~/ros2_ws/ur5e_ws/logging_data/ur5e_control_log_YYMMDD_HHMM.csv`에 자동 저장됩니다 (`max_log_files: 10`개 보관).
 
+**v5.8.0 CSV 컬럼 구성:**
+
+| 컬럼 그룹 | 컬럼명 | 설명 |
+|-----------|--------|------|
+| 페이즈별 타이밍 | `t_state_acquire_us` | 상태 데이터 획득 소요 시간 |
+| | `t_compute_us` | `Compute()` 연산 소요 시간 |
+| | `t_publish_us` | ROS2 퍼블리시 소요 시간 |
+| | `t_total_us` | 전체 제어 루프 소요 시간 |
+| | `jitter_us` | 제어 주기 지터 (목표 주기 대비 편차) |
+| 핸드 상태 | `hand_positions[10]` | 핸드 10개 모터 위치 |
+| | `hand_velocities[10]` | 핸드 10개 모터 속도 |
+| | `hand_sensors[44]` | 핸드 센서 데이터 (44채널) |
+
+**오버런 감지**: `budget_us_` 임계값 (기본 = 제어 주기)을 초과하면 `overrun_count_` 원자 카운터가 증가합니다. 로그 종료 시 총 오버런 횟수가 출력됩니다.
+
 ```python
 import pandas as pd, glob, os
 log_files = sorted(glob.glob(os.path.expanduser('~/ros2_ws/ur5e_ws/logging_data/*.csv')))
 df = pd.read_csv(log_files[-1])
-print(df['compute_time_us'].describe())
-print(f'P95: {df["compute_time_us"].quantile(0.95):.1f} us')
-print(f'P99: {df["compute_time_us"].quantile(0.99):.1f} us')
-print(f'Over 2ms: {(df["compute_time_us"] > 2000).mean()*100:.2f}%')
+print(df['t_compute_us'].describe())
+print(f'P95: {df["t_total_us"].quantile(0.95):.1f} us')
+print(f'P99: {df["t_total_us"].quantile(0.99):.1f} us')
+print(f'Jitter P99: {df["jitter_us"].quantile(0.99):.1f} us')
+print(f'Overruns: {(df["t_total_us"] > 2000).sum()}')
 ```
 
 ---

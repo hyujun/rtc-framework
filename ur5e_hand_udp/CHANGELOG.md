@@ -5,6 +5,35 @@
 
 ---
 
+## [5.8.0] - 2026-03-14
+
+### 추가 (Added) — 실패 감지, 타임아웃 설정, ACK
+
+- **C1: UDP 수신 타임아웃 YAML 설정**
+  - `recv_timeout_ms` 파라미터 (기본 10ms, `hand_udp.yaml`에서 설정)
+  - `HandController` 생성자에서 `SO_RCVTIMEO` 설정
+  - 수신 실패 시 `recv_error_count_` 원자적 카운터 증가
+
+- **H2: HandFailureDetector (C++ 실패 감지기)**
+  - `hand_failure_detector.hpp` 신규 — 50Hz `std::jthread` 비-RT 모니터링
+  - 전-영점 데이터 및 중복 데이터 연속 N회 감지
+  - 모터 + 센서 데이터 개별 검사 설정 (`check_motor`, `check_sensor`)
+  - 실패 콜백 등록 → 글로벌 E-Stop 트리거
+
+- **L2: Hand Command ACK 메커니즘**
+  - `enable_write_ack` 설정 (기본 false)
+  - `WritePosition` 후 조건부 `recvfrom()` ACK 수신
+
+- **글로벌 E-Stop 플래그 연동**
+  - `SetEstopFlag(std::atomic<bool>*)` — RT 컨트롤러에서 전파
+  - PollLoop에서 E-Stop 시 영점 명령 전송 후 중단
+
+### 변경 (Changed)
+
+- `hand_udp.yaml`에 `recv_timeout_ms`, `enable_write_ack`, `failure_detector` 섹션 추가
+
+---
+
 ## [5.7.0] - 2026-03-11
 
 ### 변경

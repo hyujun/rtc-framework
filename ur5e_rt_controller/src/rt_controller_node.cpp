@@ -96,6 +96,27 @@ RtControllerNode::RtControllerNode()
     active_ctrl_name_pub_->publish(ctrl_name_msg);
   }
 
+  // ── Status Monitor (optional) ────────────────────────────────────────────
+  if (enable_status_monitor_) {
+    status_monitor_ = std::make_unique<ur5e_status_monitor::UR5eStatusMonitor>(
+        shared_from_this());
+
+    status_monitor_->registerOnFailure(
+        [this](ur5e_status_monitor::FailureType type,
+               const ur5e_status_monitor::FailureContext & ctx) {
+          (void)type;
+          TriggerGlobalEstop(ctx.description);
+        });
+
+    status_monitor_->registerOnReady(
+        [this]() {
+          RCLCPP_INFO(get_logger(), "StatusMonitor: system ready");
+        });
+
+    status_monitor_->start();
+    RCLCPP_INFO(get_logger(), "UR5eStatusMonitor started (10 Hz)");
+  }
+
   RCLCPP_INFO(get_logger(), "RtControllerNode ready — %.0f Hz, E-STOP: %s",
               control_rate_, enable_estop_ ? "ON" : "OFF");
   RCLCPP_INFO(get_logger(), "CallbackGroups enabled: RT, Sensor, Log, Aux");
@@ -103,6 +124,9 @@ RtControllerNode::RtControllerNode()
 
 RtControllerNode::~RtControllerNode()
 {
+  if (status_monitor_) {
+    status_monitor_->stop();
+  }
   if (logger_) {
     // 종료 시 drain_timer_가 멈춘 후에도 ring buffer에 남은 항목을 모두 기록
     logger_->DrainBuffer(log_buffer_);
@@ -193,11 +217,18 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("robot_timeout_ms", 100.0);
   declare_parameter("hand_timeout_ms", 200.0);
   declare_parameter("enable_estop", true);
+  declare_parameter("enable_status_monitor", false);
+  declare_parameter("init_timeout_sec", 5.0);
   declare_parameter("initial_controller", "joint_pd_controller");
 
   control_rate_ = get_parameter("control_rate").as_double();
+  budget_us_ = 1.0e6 / control_rate_;  // tick budget in µs (e.g., 2000.0 at 500 Hz)
+
+  const double init_timeout_sec = get_parameter("init_timeout_sec").as_double();
+  init_timeout_ticks_ = static_cast<uint64_t>(init_timeout_sec * control_rate_);
   enable_logging_ = get_parameter("enable_logging").as_bool();
   enable_estop_ = get_parameter("enable_estop").as_bool();
+  enable_status_monitor_ = get_parameter("enable_status_monitor").as_bool();
 
   if (enable_logging_) {
     const std::string log_dir_str = get_parameter("log_dir").as_string();
@@ -477,6 +508,10 @@ void RtControllerNode::JointStateCallback(sensor_msgs::msg::JointState::SharedPt
                 current_positions_.begin());
     std::copy_n(msg->velocity.begin(), urtc::kNumRobotJoints,
                 current_velocities_.begin());
+    if (msg->effort.size() >= static_cast<std::size_t>(urtc::kNumRobotJoints)) {
+      std::copy_n(msg->effort.begin(), urtc::kNumRobotJoints,
+                  current_torques_.begin());
+    }
     last_robot_update_ = now();
   }
   // Fix 2: release-store after the mutex — RT thread reads with acquire,
@@ -550,51 +585,64 @@ void RtControllerNode::CheckTimeouts()
     hand_timed_out = (now_time - last_hand_update_) > hand_timeout_;
   }
 
-  int active_idx = active_controller_idx_.load(std::memory_order_acquire);
-  if (robot_timed_out && !controllers_[active_idx]->IsEstopped()) {
-    RCLCPP_ERROR(get_logger(), "Robot data timeout — triggering E-STOP");
-    controllers_[active_idx]->TriggerEstop();
-    PublishEstopStatus(true);
+  if (robot_timed_out && !IsGlobalEstopped()) {
+    TriggerGlobalEstop("robot_timeout");
   }
 
-  if (hand_timed_out) {
-    controllers_[active_idx]->SetHandEstop(true);
-    if (!hand_estop_logged_) {
-      RCLCPP_WARN(get_logger(), "Hand data timeout — hand E-STOP active");
-      hand_estop_logged_ = true;
-    }
-  } else {
-    if (hand_estop_logged_) {
-      RCLCPP_INFO(get_logger(), "Hand data restored — hand E-STOP cleared");
-      hand_estop_logged_ = false;
-    }
-    controllers_[active_idx]->SetHandEstop(false);
+  if (hand_timed_out && !IsGlobalEstopped()) {
+    TriggerGlobalEstop("hand_timeout");
+  } else if (!hand_timed_out && hand_estop_logged_) {
+    RCLCPP_INFO(get_logger(), "Hand data restored");
+    hand_estop_logged_ = false;
+  }
+  if (hand_timed_out && !hand_estop_logged_) {
+    hand_estop_logged_ = true;
   }
 }
 
 // ── 500 Hz control loop ───────────────────────────────────────────────────────
 void RtControllerNode::ControlLoop()
 {
-  // Fix 2: acquire-load atomics — no mutex needed for the readiness check
+  // ── Phase 0: tick start + readiness check ──────────────────────────────
+  const auto t0 = std::chrono::steady_clock::now();
+
   if (!state_received_.load(std::memory_order_acquire) ||
     !target_received_.load(std::memory_order_acquire))
   {
+    // Initialization timeout — check if we've waited too long for data.
+    if (!init_complete_ && ++init_wait_ticks_ > init_timeout_ticks_) {
+      RCLCPP_FATAL(get_logger(),
+          "Initialization timeout (%.1f s): robot=%d, target=%d, hand=%d",
+          static_cast<double>(init_timeout_ticks_) / control_rate_,
+          state_received_.load(std::memory_order_relaxed) ? 1 : 0,
+          target_received_.load(std::memory_order_relaxed) ? 1 : 0,
+          hand_data_received_.load(std::memory_order_relaxed) ? 1 : 0);
+      TriggerGlobalEstop("init_timeout");
+      rclcpp::shutdown();
+    }
     return;
   }
+  init_complete_ = true;
 
-  // Non-blocking state acquisition: try_lock avoids blocking the RT thread
-  // when the sensor thread holds the mutex.  On contention the previous
-  // cycle's cached data is reused (stale by at most 2 ms — acceptable).
+  // Global E-Stop: controller Compute() handles safe-position internally.
+  // We still run the full loop to keep logging and timing active.
+
+  // ── Phase 1: non-blocking state acquisition ────────────────────────────
+  // try_lock avoids blocking the RT thread when the sensor thread holds the
+  // mutex.  On contention the previous cycle's cached data is reused
+  // (stale by at most 2 ms — acceptable).
   urtc::ControllerState state{};
   {
     std::unique_lock lock(state_mutex_, std::try_to_lock);
     if (lock.owns_lock()) {
       cached_positions_ = current_positions_;
       cached_velocities_ = current_velocities_;
+      cached_torques_ = current_torques_;
     }
   }
   state.robot.positions = cached_positions_;
   state.robot.velocities = cached_velocities_;
+  state.robot.torques = cached_torques_;
 
   // Hand state — populate from cached data
   {
@@ -617,13 +665,18 @@ void RtControllerNode::ControlLoop()
   state.robot.iteration = loop_count_;
   state.iteration = loop_count_;
 
+  const auto t1 = std::chrono::steady_clock::now();  // end of state acquisition
+
+  // ── Phase 2: compute control law ───────────────────────────────────────
   int active_idx = active_controller_idx_.load(std::memory_order_acquire);
 
   // Measure Compute() wall-clock time via ControllerTimingProfiler.
   const urtc::ControllerOutput output =
     timing_profiler_.MeasuredCompute(*controllers_[active_idx], state);
 
-  // Non-blocking: skip this cycle if publisher mutex is contended.
+  const auto t2 = std::chrono::steady_clock::now();  // end of compute
+
+  // ── Phase 3: non-blocking publish ──────────────────────────────────────
   if (cmd_pub_mutex_.try_lock()) {
     // Publish to all topics configured for the active controller
     const auto & pub_topics = controller_topic_configs_[
@@ -670,24 +723,55 @@ void RtControllerNode::ControlLoop()
     cmd_pub_mutex_.unlock();
   }
 
+  const auto t3 = std::chrono::steady_clock::now();  // end of publish
+
+  // ── Phase 4: per-phase timing + log push ───────────────────────────────
+  const double t_state_us =
+      std::chrono::duration<double, std::micro>(t1 - t0).count();
+  const double t_compute_us =
+      std::chrono::duration<double, std::micro>(t2 - t1).count();
+  const double t_publish_us =
+      std::chrono::duration<double, std::micro>(t3 - t2).count();
+  const double t_total_us =
+      std::chrono::duration<double, std::micro>(t3 - t0).count();
+
+  // Jitter = |actual_period - expected_period|
+  double jitter_us = 0.0;
+  if (loop_count_ > 0) {
+    const double actual_period_us =
+        std::chrono::duration<double, std::micro>(t0 - prev_loop_start_).count();
+    jitter_us = std::abs(actual_period_us - budget_us_);
+  }
+  prev_loop_start_ = t0;
+
+  // Overrun detection — RT-safe: no string alloc, just atomic increment.
+  if (t_total_us > budget_us_) {
+    overrun_count_.fetch_add(1, std::memory_order_relaxed);
+  }
+
   // Push log entry to the SPSC ring buffer — O(1), no syscall.
   // DrainLog() (log thread, Core 4) pops entries and writes the CSV file.
   if (enable_logging_) {
-    // Real monotonic time via std::chrono::steady_clock (CLOCK_MONOTONIC).
-    // On Linux this reads the vDSO — no kernel entry, ~20 ns per call.
-    const auto now = std::chrono::steady_clock::now();
     if (loop_count_ == 0) {
-      log_start_time_ = now;
+      log_start_time_ = t0;
     }
     const double timestamp =
-        std::chrono::duration<double>(now - log_start_time_).count();
+        std::chrono::duration<double>(t0 - log_start_time_).count();
 
     const urtc::LogEntry entry{
       .timestamp = timestamp,
       .current_positions = state.robot.positions,
       .target_positions = output.actual_target_positions,
       .commands = output.robot_commands,
-      .compute_time_us = timing_profiler_.LastComputeUs(),
+      .t_state_acquire_us = t_state_us,
+      .t_compute_us = t_compute_us,
+      .t_publish_us = t_publish_us,
+      .t_total_us = t_total_us,
+      .jitter_us = jitter_us,
+      .hand_positions = state.hand.motor_positions,
+      .hand_velocities = state.hand.motor_velocities,
+      .hand_sensors = state.hand.sensor_data,
+      .hand_valid = state.hand.valid,
     };
     static_cast<void>(log_buffer_.Push(entry));  // silently drops if buffer is full
   }
@@ -713,10 +797,14 @@ void RtControllerNode::DrainLog()
   // std::string allocation + RCLCPP_INFO happen here (non-RT), not in ControlLoop().
   if (print_timing_summary_.exchange(false, std::memory_order_relaxed)) {
     int idx = active_controller_idx_.load(std::memory_order_acquire);
-    RCLCPP_INFO(get_logger(), "%s",
+    const auto overruns = overrun_count_.load(std::memory_order_relaxed);
+    const auto drops = log_buffer_.drop_count();
+    RCLCPP_INFO(get_logger(), "%s  overruns=%lu  log_drops=%lu",
                 timing_profiler_
       .Summary(std::string(controllers_[static_cast<std::size_t>(idx)]->Name()))
-      .c_str());
+      .c_str(),
+      static_cast<unsigned long>(overruns),
+      static_cast<unsigned long>(drops));
   }
 }
 
@@ -725,4 +813,43 @@ void RtControllerNode::PublishEstopStatus(bool estopped)
   std_msgs::msg::Bool msg;
   msg.data = estopped;
   estop_pub_->publish(msg);
+}
+
+// ── Global E-Stop ──────────────────────────────────────────────────────────────
+void RtControllerNode::TriggerGlobalEstop(std::string_view reason) noexcept
+{
+  // Idempotent — only the first call logs and propagates.
+  bool expected = false;
+  if (!global_estop_.compare_exchange_strong(expected, true,
+          std::memory_order_acq_rel, std::memory_order_relaxed)) {
+    return;  // already estopped
+  }
+
+  estop_reason_ = std::string(reason);
+
+  // Propagate to all controllers — TriggerEstop is safe from any thread.
+  for (auto & ctrl : controllers_) {
+    ctrl->TriggerEstop();
+    ctrl->SetHandEstop(true);
+  }
+  PublishEstopStatus(true);
+
+  RCLCPP_ERROR(get_logger(), "GLOBAL E-STOP triggered: %s", estop_reason_.c_str());
+}
+
+void RtControllerNode::ClearGlobalEstop() noexcept
+{
+  if (!global_estop_.load(std::memory_order_acquire)) {
+    return;
+  }
+  global_estop_.store(false, std::memory_order_release);
+
+  for (auto & ctrl : controllers_) {
+    ctrl->ClearEstop();
+    ctrl->SetHandEstop(false);
+  }
+  PublishEstopStatus(false);
+
+  RCLCPP_INFO(get_logger(), "GLOBAL E-STOP cleared (was: %s)", estop_reason_.c_str());
+  estop_reason_.clear();
 }

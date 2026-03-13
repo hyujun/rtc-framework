@@ -34,9 +34,23 @@ struct LogEntry {
   std::array<double, kNumRobotJoints> current_positions{};
   std::array<double, kNumRobotJoints> target_positions{};
   std::array<double, kNumRobotJoints> commands{};
-  // Wall-clock duration of the most recent Compute() call (µs).
-  // Populated by ControllerTimingProfiler; zero when profiling is disabled.
-  double compute_time_us{0.0};
+
+  // ── Per-phase timing breakdown (µs) ──────────────────────────────────────
+  // Populated by ControlLoop() via steady_clock::now() around each phase.
+  double t_state_acquire_us{0.0};  // try_lock + state copy
+  double t_compute_us{0.0};        // controller Compute() wall-clock
+  double t_publish_us{0.0};        // cmd_pub try_lock + publish
+  double t_total_us{0.0};          // entire ControlLoop() callback
+  double jitter_us{0.0};           // |actual_period - expected_period|
+
+  // ── Hand state ───────────────────────────────────────────────────────────
+  std::array<float, kNumHandMotors>  hand_positions{};
+  std::array<float, kNumHandMotors>  hand_velocities{};
+  std::array<float, kNumHandSensors> hand_sensors{};
+  bool hand_valid{false};
+
+  // Legacy alias — kept for backward compatibility with external tools.
+  [[nodiscard]] double compute_time_us() const noexcept { return t_compute_us; }
 };
 
 // SPSC ring buffer of capacity N entries (N must be a power of 2).

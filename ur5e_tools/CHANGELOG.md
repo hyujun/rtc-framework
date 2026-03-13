@@ -5,6 +5,17 @@
 
 ---
 
+## [5.8.0] - 2026-03-14
+
+### 추가 (Added) — 타이밍 통계 분석
+
+- **C3: `monitor_data_health.py` 타이밍 통계 확장**
+  - CSV 로그의 새 타이밍 컬럼 파싱: `t_state_acquire_us`, `t_compute_us`, `t_publish_us`, `t_total_us`, `jitter_us`
+  - 타이밍 메트릭별 mean/max/std/variance 통계 산출
+  - `_make_empty_stats()`에 `"timing"` 섹션 추가
+
+---
+
 ## [5.7.0] - 2026-03-11
 
 ### 추가 (Added) — MJCF vs URDF 파라미터 비교 도구

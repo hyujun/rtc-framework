@@ -44,6 +44,7 @@ concept FloatingPointType = std::floating_point<T>;
 struct RobotState {
   std::array<double, kNumRobotJoints> positions{};
   std::array<double, kNumRobotJoints> velocities{};
+  std::array<double, kNumRobotJoints> torques{};       ///< optional — zero if unavailable
   std::array<double, 3>               tcp_position{};
   double   dt{0.002};
   uint64_t iteration{0};

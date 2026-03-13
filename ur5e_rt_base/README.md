@@ -1,6 +1,6 @@
 # ur5e_rt_base
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.7.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.8.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 
 UR5e RT Controller 스택의 **공유 기반 패키지** — 모든 패키지가 공통으로 사용하는 타입 정의, 스레드 유틸리티, 잠금-없는(lock-free) 로깅 인프라, UDP 통신 프리미티브, 디지털 신호 필터를 제공하는 헤더-전용(header-only) C++20 라이브러리입니다.
@@ -82,6 +82,7 @@ namespace ur5e_rt_controller {
 struct RobotState {
   std::array<double, 6>  positions{};    // 관절 위치 (rad)
   std::array<double, 6>  velocities{};   // 관절 속도 (rad/s)
+  std::array<double, 6>  torques{};      // 관절 토크 (Nm)
   std::array<double, 3>  tcp_position{}; // TCP 위치 (m, x/y/z)
   double   dt{0.002};                    // 제어 주기 (s)
   uint64_t iteration{0};                 // 누적 제어 반복 횟수
@@ -179,6 +180,8 @@ struct ThreadConfig {
 | `kUdpRecvConfig` | **5** | `SCHED_FIFO` | 65 | UDP 수신 스레드 (sensor_io 경합 방지) |
 | `kLoggingConfig` | 4 | `SCHED_OTHER` | nice -5 | CSV 로깅 스레드 |
 | `kAuxConfig` | 5 | `SCHED_OTHER` | 0 | 보조 스레드 (이벤트 기반, 경량) |
+| `kStatusMonitorConfig` | 4 | `SCHED_OTHER` | nice -2 | 비-RT 상태 모니터 (10 Hz) |
+| `kHandFailureConfig` | 4 | `SCHED_OTHER` | nice -2 | 비-RT 손 고장 감지 (50 Hz) |
 
 **8코어 시스템** (Core 0-1: OS/DDS/IRQ, Core 2-6: RT 전용, Core 7: 예비, `isolcpus=2-6`):
 
@@ -189,6 +192,8 @@ struct ThreadConfig {
 | `kUdpRecvConfig8Core` | **4** | `SCHED_FIFO` | 65 | UDP 수신 스레드 (전용 코어) |
 | `kLoggingConfig8Core` | 5 | `SCHED_OTHER` | nice -5 | CSV 로깅 스레드 |
 | `kAuxConfig8Core` | 6 | `SCHED_OTHER` | 0 | 보조 스레드 |
+| `kStatusMonitorConfig8Core` | 6 | `SCHED_OTHER` | nice -2 | 비-RT 상태 모니터 (10 Hz) |
+| `kHandFailureConfig8Core` | 6 | `SCHED_OTHER` | nice -2 | 비-RT 손 고장 감지 (50 Hz) |
 
 **4코어 폴백** (Core 0: OS/DDS/IRQ, Core 1-3: RT):
 
@@ -199,6 +204,8 @@ struct ThreadConfig {
 | `kUdpRecvConfig4Core` | 2 | `SCHED_FIFO` | 65 | UDP 수신 (sensor_io 코어 공유 불가피) |
 | `kLoggingConfig4Core` | 3 | `SCHED_OTHER` | nice -5 | CSV 로깅 스레드 |
 | `kAuxConfig4Core` | 3 | `SCHED_OTHER` | 0 | 보조 스레드 (logging 코어 공유) |
+| `kStatusMonitorConfig4Core` | 3 | `SCHED_OTHER` | nice 0 | 비-RT 상태 모니터 (10 Hz) |
+| `kHandFailureConfig4Core` | 3 | `SCHED_OTHER` | nice 0 | 비-RT 손 고장 감지 (50 Hz) |
 
 ---
 
@@ -227,7 +234,7 @@ ApplyThreadConfigWithFallback(const ThreadConfig& cfg) noexcept;
 // 코어 범위, 스케줄러 정책, 우선순위 범위, nice 값, 이름 길이 검증
 [[nodiscard]] std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept;
 
-// 시스템 전체 5개 스레드 설정의 충돌 검사
+// 시스템 전체 7개 스레드 설정의 충돌 검사
 // RT+RT 동일 우선순위 동일 코어 → 에러 (SCHED_FIFO 기아 발생)
 // RT+non-RT 동일 코어 → 허용 (RT가 무조건 선점)
 [[nodiscard]] std::string ValidateSystemThreadConfigs(
@@ -299,6 +306,8 @@ struct SystemThreadConfigs {
   ThreadConfig udp_recv;
   ThreadConfig logging;
   ThreadConfig aux;
+  ThreadConfig status_monitor;  // Non-RT status monitor (10 Hz)
+  ThreadConfig hand_failure;    // Non-RT hand failure detector (50 Hz)
 };
 
 // 런타임 CPU 수에 따라 최적 ThreadConfig 집합 자동 반환
@@ -376,6 +385,19 @@ struct LogEntry {
   std::array<double, 6> target_positions{};
   std::array<double, 6> commands{};
   double compute_time_us{0.0};  // Compute() 실행 시간 (마이크로초)
+
+  // 타이밍 필드 (v5.8.0)
+  double t_state_acquire_us{0.0};  // 상태 취득 소요 시간 (us)
+  double t_compute_us{0.0};        // 컨트롤러 연산 소요 시간 (us)
+  double t_publish_us{0.0};        // 명령 발행 소요 시간 (us)
+  double t_total_us{0.0};          // 전체 루프 소요 시간 (us)
+  double jitter_us{0.0};           // 루프 지터 (us)
+
+  // 손 상태 필드 (v5.8.0)
+  std::array<float, 10> hand_positions{};   // 손 모터 위치
+  std::array<float, 10> hand_velocities{};  // 손 모터 속도
+  std::array<float, 44> hand_sensors{};     // 손 센서 데이터 (4×11)
+  bool hand_valid{false};                   // 손 데이터 유효성
 };
 ```
 
@@ -423,7 +445,9 @@ class DataLogger {
 
 **CSV 열 형식:**
 ```
-timestamp, current_pos_0..5, target_pos_0..5, command_0..5, compute_time_us
+timestamp, current_pos_0..5, target_pos_0..5, command_0..5, compute_time_us,
+t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us,
+hand_pos_0..9, hand_vel_0..9, hand_sensor_0..43, hand_valid
 ```
 
 ---

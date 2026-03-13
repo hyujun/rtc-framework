@@ -25,6 +25,7 @@
 
 #include <array>
 #include <atomic>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -165,6 +166,9 @@ private:
   pinocchio::SE3 goal_pose_{pinocchio::SE3::Identity()};
 
   std::atomic<bool> new_target_{false};
+  // SetRobotTarget() (sensor thread) ↔ Compute() trajectory regen (RT thread) 보호.
+  // RT thread는 try_lock만 사용하므로 blocking 없음.
+  std::mutex target_mutex_;
   trajectory::TaskSpaceTrajectory trajectory_;
   double trajectory_time_{0.0};
 

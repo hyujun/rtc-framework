@@ -96,6 +96,8 @@ aux_executor (Core 5, SCHED_OTHER)
 | 2 | RT Control | SCHED_FIFO | 90 | `cb_group_rt_` | 500Hz + 50Hz E-STOP |
 | 3 | Sensor I/O | SCHED_FIFO | 70 | `cb_group_sensor_` (전용) | 비정기 |
 | 4 | Logging | SCHED_OTHER | nice -5 | `cb_group_log_` | 100Hz drain |
+| 4 | Status Monitor | SCHED_OTHER | nice -2 | `status_mon` (jthread) | 10Hz |
+| 4 | Hand Failure Detector | SCHED_OTHER | nice -2 | `hand_detect` (jthread) | 50Hz |
 | 5 | UDP recv + Aux | FIFO/65 + OTHER/0 | - | `kUdpRecvConfig` + `cb_group_aux_` | 비정기 |
 
 **isolcpus 설정**: Core 2-5를 OS 스케줄러에서 격리하여 RT 전용으로 사용
@@ -107,7 +109,12 @@ SCHED_FIFO prio 90 (rt_control)      ← 최고 우선순위
            ↓
 SCHED_FIFO prio 70 (sensor_io)       ← 센서 데이터 수신
            ↓
+SCHED_FIFO prio 65 (udp_recv)        ← Hand UDP 수신
+           ↓
 SCHED_OTHER nice -5 (logger)         ← I/O bound
+           ↓
+SCHED_OTHER nice -2 (status_mon)     ← 상태 모니터 (10 Hz)
+SCHED_OTHER nice -2 (hand_detect)    ← 핸드 이상 감지 (50 Hz)
            ↓
 SCHED_OTHER nice 0  (aux)            ← 보조 작업
 ```
@@ -484,6 +491,8 @@ ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
  1234  1236  FF     70   3 sensor_io          ← Core 3, FIFO 70
  1234  1237  TS      -   4 logger             ← Core 4, OTHER
  1234  1238  TS      -   5 aux                ← Core 5, OTHER
+ 1234  1239  TS      -   4 status_mon         ← Core 4, OTHER (10 Hz)
+ 1234  1240  TS      -   4 hand_detect        ← Core 4, OTHER (50 Hz)
 ```
 
 **CLS 값**:
@@ -682,8 +691,8 @@ inline constexpr ThreadConfig kLoggingConfig4Core{
 |------|------|-----------|----------|
 | 0 | OS + DDS | SCHED_OTHER | - |
 | 1 | RT Control (500Hz + 50Hz) | SCHED_FIFO | 90 |
-| 2 | Sensor + UDP recv | SCHED_FIFO | 70 |
-| 3 | Logging + Aux | SCHED_OTHER | nice -5 |
+| 2 | Sensor + UDP recv | SCHED_FIFO | 70/65 |
+| 3 | Logging + Aux + Status Monitor + Hand Failure Detector | SCHED_OTHER | nice -5/0 |
 
 **GRUB 설정 (4-core)**:
 ```bash
@@ -812,4 +821,4 @@ grep -E "[0-9]{3,}\.[0-9]{3} us" trace.txt
 
 **최종 업데이트**: 2026-03-12
 **작성자**: UR5e RT Controller Team
-**버전**: v5.7.0 (v4.2.0 기반, CPU 코어 할당 최적화 반영)
+**버전**: v5.8.0 (v4.2.0 기반, CPU 코어 할당 최적화 + 모니터링 스레드 추가 반영)

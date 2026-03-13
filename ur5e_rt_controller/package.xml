@@ -14,6 +14,7 @@
   <depend>sensor_msgs</depend>
   <depend>pinocchio</depend>
   <depend>ur5e_rt_base</depend>
+  <depend>ur5e_status_monitor</depend>
   <depend>ament_index_cpp</depend>
   <depend>yaml-cpp</depend>
 

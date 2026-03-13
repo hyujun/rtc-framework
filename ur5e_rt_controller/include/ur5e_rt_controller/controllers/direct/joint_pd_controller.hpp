@@ -20,6 +20,7 @@
 
 #include <array>
 #include <atomic>
+#include <mutex>
 #include <span>
 #include <string_view>
 
@@ -124,6 +125,9 @@ private:
   std::array<float, kNumHandMotors>   hand_target_{};
   std::array<double, kNumRobotJoints> prev_error_{};
 
+  // SetRobotTarget() (sensor thread) ↔ Compute() trajectory regen (RT thread) 보호.
+  // RT thread는 try_lock만 사용하므로 blocking 없음.
+  std::mutex target_mutex_;
   std::atomic<bool> new_target_{false};
   trajectory::JointSpaceTrajectory<kNumRobotJoints> trajectory_;
   double trajectory_time_{0.0};

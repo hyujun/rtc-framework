@@ -63,10 +63,13 @@ import pandas as pd, glob, os
 # Log files saved to ~/ros2_ws/ur5e_ws/logging_data/
 log_files = sorted(glob.glob(os.path.expanduser('~/ros2_ws/ur5e_ws/logging_data/*.csv')))
 df = pd.read_csv(log_files[-1])  # most recent log
-print(df['compute_time_us'].describe())
-print(f'P95: {df["compute_time_us"].quantile(0.95):.1f} us')
-print(f'P99: {df["compute_time_us"].quantile(0.99):.1f} us')
-print(f'Over 2ms: {(df["compute_time_us"] > 2000).mean()*100:.2f}%')
+# v5.8.0: per-phase timing columns
+for col in ['t_state_acquire_us', 't_compute_us', 't_publish_us', 't_total_us', 'jitter_us']:
+    if col in df.columns:
+        print(f'\n{col}:')
+        print(df[col].describe())
+        print(f'P95: {df[col].quantile(0.95):.1f} us, P99: {df[col].quantile(0.99):.1f} us')
+print(f'\nOver 2ms: {(df["t_total_us"] > 2000).mean()*100:.2f}%')
 ```
 
 ---
@@ -166,6 +169,7 @@ ur5e-rt-controller/
 ├── ur5e_hand_udp/                         # UDP hand bridge package (10-DOF + 44 sensors)
 │   ├── include/ur5e_hand_udp/
 │   │   ├── hand_controller.hpp            # Request-response polling driver (jthread, Core 5 FIFO 65)
+│   │   ├── hand_failure_detector.hpp      # v5.8.0: 50Hz hand failure detector (jthread, non-RT)
 │   │   ├── hand_packets.hpp               # Wire-format packet definitions (43B/67B)
 │   │   ├── hand_udp_codec.hpp             # Packet encode/decode (allocation-free, noexcept)
 │   │   ├── hand_udp_receiver.hpp          # Legacy: streaming UDP receiver
@@ -249,6 +253,7 @@ kNumHandJoints  = kNumHandMotors  // legacy alias (= 10)
 
 struct RobotState {
   std::array<double, 6>  positions{}, velocities{};
+  std::array<double, 6>  torques{};         // v5.8.0: /joint_states effort에서 복사
   std::array<double, 3>  tcp_position{};
   double dt{0.002}; uint64_t iteration{0};
 };
@@ -274,9 +279,9 @@ struct ControllerOutput {
 | Controller | Header | Type | Control Space | Notes |
 |---|---|---|---|---|
 | `PController` (idx 0) | `controllers/indirect/p_controller.hpp` | Indirect (position) | Joint-space P | Incremental step: `q + kp*error*dt`. No E-STOP. |
-| `JointPDController` (idx 1) | `controllers/direct/joint_pd_controller.hpp` | Direct (torque) | Joint-space PD + dynamics | Gravity + optional Coriolis via Pinocchio RNEA. `JointSpaceTrajectory<6>`. **Has E-STOP.** |
-| `ClikController` (idx 2) | `controllers/indirect/clik_controller.hpp` | Indirect (position) | Cartesian 3-DOF | Damped Jacobian pseudoinverse + null-space. `TaskSpaceTrajectory` (SE3 quintic). |
-| `OperationalSpaceController` (idx 3) | `controllers/direct/operational_space_controller.hpp` | Direct (torque) | Cartesian 6-DOF | Full pose (position + SO(3)) control. `TaskSpaceTrajectory` (SE3 quintic). |
+| `JointPDController` (idx 1) | `controllers/direct/joint_pd_controller.hpp` | Direct (torque) | Joint-space PD + dynamics | Gravity + optional Coriolis via Pinocchio RNEA. `JointSpaceTrajectory<6>`. **Has E-STOP.** `target_mutex_` try_lock (v5.8.0). |
+| `ClikController` (idx 2) | `controllers/indirect/clik_controller.hpp` | Indirect (position) | Cartesian 3-DOF | Damped Jacobian pseudoinverse + null-space. `TaskSpaceTrajectory` (SE3 quintic). `target_mutex_` try_lock (v5.8.0). |
+| `OperationalSpaceController` (idx 3) | `controllers/direct/operational_space_controller.hpp` | Direct (torque) | Cartesian 6-DOF | Full pose (position + SO(3)) control. `TaskSpaceTrajectory` (SE3 quintic). `target_mutex_` try_lock (v5.8.0). |
 | `UrFiveEHandController` (idx 4) | `controllers/indirect/ur5e_hand_controller.hpp` | Indirect (position) | Joint P + Hand | Arm P control (6-DOF) + hand motor commands (10-DOF). |
 
 **`JointPDController`** on E-STOP drives toward `kSafePosition = [0, -1.57, 1.57, -1.57, -1.57, 0]` rad. Output clamped to `kMaxJointVelocity = 2.0 rad/s`.
@@ -315,17 +320,19 @@ Creates **4 `SingleThreadedExecutor`s**, each running in a dedicated `std::threa
 `mlockall(MCL_CURRENT | MCL_FUTURE)` is called at startup to prevent page faults. Shared state between threads is protected by three separate mutexes (`state_mutex_`, `target_mutex_`, `hand_mutex_`).
 
 **Key methods in `RtControllerNode`:**
-- `DeclareAndLoadParameters()`: loads `control_rate`, `kp`, `kd`, `enable_estop`, `robot_timeout_ms`, `hand_timeout_ms`, `enable_logging`
+- `DeclareAndLoadParameters()`: loads `control_rate`, `kp`, `kd`, `enable_estop`, `robot_timeout_ms`, `hand_timeout_ms`, `enable_logging`, `init_timeout_sec`, `enable_status_monitor`
 - `CreateCallbackGroups()`: creates 4 `MutuallyExclusive` groups
-- `JointStateCallback()`: stores positions/velocities under `state_mutex_`; updates `last_robot_update_` timestamp
+- `JointStateCallback()`: stores positions/velocities/torques under `state_mutex_`; updates `last_robot_update_` timestamp
 - `TargetCallback()`: stores target positions under `target_mutex_`; calls `controller_->SetRobotTarget()`
 - `HandStateCallback()`: records timestamp under `hand_mutex_` (data itself is not buffered here)
-- `CheckTimeouts()` (50Hz): triggers E-STOP if data gaps exceed configured thresholds
-- `ControlLoop()` (500Hz): assembles `ControllerState`, calls `Compute()`, publishes to `/forward_position_controller/commands` (indirect) or `/forward_torque_controller/commands` (direct) based on `CommandType`, pushes to `SpscLogBuffer`
+- `CheckTimeouts()` (50Hz): triggers `TriggerGlobalEstop()` if data gaps exceed configured thresholds (v5.8.0: 글로벌 E-Stop)
+- `TriggerGlobalEstop(reason)` (v5.8.0): sets `global_estop_` atomic, calls controller E-Stop, propagates to hand, logs reason
+- `ControlLoop()` (500Hz): checks `global_estop_` → assembles `ControllerState` → calls `Compute()` → publishes → pushes to `SpscLogBuffer` (with per-phase timing + hand state). Overrun detection via `budget_us_` threshold.
+- Init timeout (v5.8.0): if `init_wait_ticks_` exceeds `init_timeout_ticks_` (= `init_timeout_sec` × `control_rate_`), triggers `TriggerGlobalEstop("init_timeout")` + `rclcpp::shutdown()`
 
 ### Lock-Free Logging Infrastructure
 
-**`SpscLogBuffer`** (`include/ur5e_rt_controller/log_buffer.hpp`): single-producer / single-consumer ring buffer (power-of-2 entries). Uses **bitwise AND modulus** `& (N - 1)` for fast wrapping and **local index caching** to minimize cache invalidation (False Sharing) between the RT and logging threads. `alignas(kCacheLineSize)` dynamically adapts to the hardware target. The RT thread calls `Push()` without ever blocking or allocating; the log thread drains via `Pop()`. Each `LogEntry` now includes `compute_time_us` from `ControllerTimingProfiler`.
+**`SpscLogBuffer`** (`include/ur5e_rt_controller/log_buffer.hpp`): single-producer / single-consumer ring buffer (power-of-2 entries). Uses **bitwise AND modulus** `& (N - 1)` for fast wrapping and **local index caching** to minimize cache invalidation (False Sharing) between the RT and logging threads. `alignas(kCacheLineSize)` dynamically adapts to the hardware target. The RT thread calls `Push()` without ever blocking or allocating; the log thread drains via `Pop()`. Each `LogEntry` includes per-phase timing (`t_state_acquire_us`, `t_compute_us`, `t_publish_us`, `t_total_us`, `jitter_us`) and hand state (`hand_positions[10]`, `hand_velocities[10]`, `hand_sensors[44]`, `hand_valid`) fields (v5.8.0).
 
 **`ControllerTimingProfiler`** (`include/ur5e_rt_controller/controller_timing_profiler.hpp`): wraps `RTControllerInterface::Compute()` with `steady_clock` timing. Maintains a lock-free histogram (0–2000 µs, 100 µs buckets) + min/max/mean/stddev/p95/p99 using relaxed atomics. Budget threshold: 2000 µs (500 Hz period). Call `MeasuredCompute()` instead of `Compute()` directly; call `Summary()` every 1000 iterations for a log line.
 
@@ -444,7 +451,7 @@ export MUJOCO_DIR=/opt/mujoco-3.x.x && colcon build
 
 ### UDP Hand Protocol (Request-Response)
 
-`HandController` (`include/ur5e_hand_udp/hand_controller.hpp`) is a high-level request-response driver using a single UDP socket (port **55151**, `std::jthread`, Core 5, SCHED_FIFO/65). Each poll cycle:
+`HandController` (`include/ur5e_hand_udp/hand_controller.hpp`) is a high-level request-response driver using a single UDP socket (port **55151**, `std::jthread`, Core 5, SCHED_FIFO/65). v5.8.0: `recv_timeout_ms` YAML 설정 (기본 10ms), `recv_error_count_` 원자적 카운터, `SetEstopFlag()` 글로벌 E-Stop 연동, `enable_write_ack` 선택적 ACK. Each poll cycle:
 
 1. `WritePosition` (CMD=0x01) — send 43B motor packet (10 × float32 as uint32)
 2. `ReadPosition` (CMD=0x11) — send 43B, recv 43B → 10 motor positions
@@ -469,15 +476,27 @@ export MUJOCO_DIR=/opt/mujoco-3.x.x && colcon build
 
 Legacy nodes (`hand_udp_receiver_node`, `hand_udp_sender_node`) used 616-byte streaming protocol and are deprecated.
 
-### E-STOP System
+### E-STOP System (v5.8.0: Global E-Stop)
 
-`CheckTimeouts()` runs at 50 Hz. If `/joint_states` is not received for >100ms, `JointPDController::TriggerEstop()` is called (sets `estopped_` atomic flag). If `/hand/joint_states` is not received for >200ms, `SetHandEstop(true)` is called separately. Both flags use `std::atomic<bool>` for safe cross-thread access between the RT thread and the 50 Hz watchdog.
+**Global E-Stop** (`std::atomic<bool> global_estop_`): v5.8.0에서 개별 컨트롤러 E-Stop 대신 글로벌 E-Stop 플래그로 통합. `TriggerGlobalEstop(reason)` 호출 시:
+1. `global_estop_ = true` (atomic)
+2. 활성 컨트롤러의 `TriggerEstop()` 호출 (safe position으로 이동)
+3. HandController에 E-Stop 전파 (영점 명령 전송)
+4. 사유 + 타임스탬프 로그 기록
+
+**E-Stop 트리거 소스:**
+- `CheckTimeouts()` (50Hz): `/joint_states` >100ms 미수신 → `TriggerGlobalEstop("robot_timeout")`, `/hand/joint_states` >200ms 미수신 → `TriggerGlobalEstop("hand_timeout")`
+- `UR5eStatusMonitor` (10Hz): 안전 모드 위반, 추적 오차, 관절 한계 등 감지 시 콜백 → `TriggerGlobalEstop(failure_type)`
+- `HandFailureDetector` (50Hz): 영점/중복 데이터 감지 시 콜백 → `TriggerGlobalEstop("hand_failure")`
+- Init timeout: `init_timeout_sec` (기본 5.0초) 내 데이터 미수신 → `TriggerGlobalEstop("init_timeout")` + `rclcpp::shutdown()`
+
+`ControlLoop()` 진입 시 `global_estop_` 확인 → set이면 컨트롤러의 E-Stop 상태에서 `Compute()` 호출 후 반환.
 
 To disable hand E-STOP (when no hand is connected): set `enable_estop: false` or `hand_timeout_ms: 0` in `config/ur5e_rt_controller.yaml`. For MuJoCo simulation, `mujoco_simulator.yaml` already sets `enable_estop: false`.
 
-### Status Monitor (`ur5e_status_monitor`)
+### Status Monitor (`ur5e_status_monitor`) — v5.8.0: RtControllerNode에 통합
 
-**`UR5eStatusMonitor`** (`include/ur5e_status_monitor/ur5e_status_monitor.hpp`): shared library (not a node) designed to be composed into `RtControllerNode` via `shared_from_this()`. Runs a `std::jthread` at 10 Hz to monitor:
+**`UR5eStatusMonitor`** (`include/ur5e_status_monitor/ur5e_status_monitor.hpp`): shared library composed into `RtControllerNode` via `shared_from_this()`. `enable_status_monitor: true` (YAML)로 활성화. Runs a `std::jthread` at 10 Hz to monitor. Failure 감지 시 등록된 콜백 → `TriggerGlobalEstop()` 호출:
 
 | Check | Trigger | FailureType |
 |---|---|---|
@@ -519,7 +538,7 @@ On failure: writes timestamped log file to `log_output_dir` with `[HEADER]`, `[S
 ### DataLogger (`include/ur5e_rt_controller/data_logger.hpp`)
 
 Non-copyable (move-only) CSV logger. Writes one row per control step:
-`timestamp, current_pos_0..5, target_pos_0..5, command_0..5, compute_time_us`
+`timestamp, current_pos_0..5, target_pos_0..5, command_0..5, t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us, hand_pos_0..9, hand_vel_0..9, hand_sensor_0..43, hand_valid`
 
 Default path: `/tmp/ur5e_control_log.csv`. The 500 Hz RT thread pushes entries to `SpscLogBuffer`; the `log_executor` thread (Core 4) drains and writes CSV — never blocking the RT path.
 
@@ -536,6 +555,8 @@ Default path: `/tmp/ur5e_control_log.csv`. The 500 Hz RT thread pushes entries t
 | `kUdpRecvConfig` | 5 | SCHED_FIFO | 65 | Moved from Core 3 → Core 5 (v5.1.0) |
 | `kLoggingConfig` | 4 | SCHED_OTHER | nice -5 | |
 | `kAuxConfig` | 5 | SCHED_OTHER | 0 | Shares Core 5 with udp_recv (light) |
+| `kStatusMonitorConfig` | 4 | SCHED_OTHER | nice -2 | 10Hz status monitor (v5.8.0) |
+| `kHandFailureConfig` | 4 | SCHED_OTHER | nice -2 | 50Hz hand failure detector (v5.8.0) |
 
 **8-core layout** (≥8 CPUs):
 
@@ -546,8 +567,10 @@ Default path: `/tmp/ur5e_control_log.csv`. The 500 Hz RT thread pushes entries t
 | `kUdpRecvConfig8Core` | 4 | SCHED_FIFO | 65 |
 | `kLoggingConfig8Core` | 5 | SCHED_OTHER | nice -5 |
 | `kAuxConfig8Core` | 6 | SCHED_OTHER | 0 |
+| `kStatusMonitorConfig8Core` | 6 | SCHED_OTHER | nice -2 |
+| `kHandFailureConfig8Core` | 6 | SCHED_OTHER | nice -2 |
 
-**4-core fallback** (<6 CPUs): Cores 1–3; udp_recv shares Core 2 with sensor_io (`kUdpRecvConfig4Core`).
+**4-core fallback** (<6 CPUs): Cores 1–3; udp_recv shares Core 2 with sensor_io; logging + aux + status_monitor + hand_failure share Core 3 (`k*Config4Core`).
 
 `ApplyThreadConfig()` applies CPU affinity (`pthread_setaffinity_np`), scheduler policy (`pthread_setschedparam`), and thread name (`pthread_setname_np`). Returns `false` on permission failure — the node continues at SCHED_OTHER with a `[WARN]` log.
 
@@ -555,8 +578,31 @@ Default path: `/tmp/ur5e_control_log.csv`. The 500 Hz RT thread pushes entries t
 ```cpp
 struct SystemThreadConfigs {
   ThreadConfig rt_control, sensor, udp_recv, logging, aux;
+  ThreadConfig status_monitor;  // Non-RT status monitor (10 Hz, v5.8.0)
+  ThreadConfig hand_failure;    // Non-RT hand failure detector (50 Hz, v5.8.0)
 };
 ```
+
+### UR5e Communication Architecture
+
+The RT controller communicates with the UR5e arm **indirectly** via the ROS2 topic chain, not via direct UDP to the robot controller:
+
+```
+UR5e Robot Controller (CB3/e-series)
+    ↕  RTDE / URCap (125 Hz / 500 Hz)
+ur_robot_driver (ros2_control)
+    ↕  /joint_states (sensor_msgs/JointState)
+    ↕  /forward_position_controller/commands (Float64MultiArray)
+rt_controller_node (500 Hz SCHED_FIFO)
+```
+
+**Why not direct UDP?**
+- `ur_robot_driver` already manages the RTDE socket lifecycle, safety mode transitions, and URCap program state.
+- Duplicating the RTDE link would conflict with `ros2_control` and break safety mode handling.
+- ROS2 DDS intra-process transport adds ~50-100µs latency per hop, which is acceptable for the 2ms tick budget.
+
+**Hand communication** is direct UDP (single socket, request-response per `HandController`).
+This is necessary because there is no existing ROS2 driver for the custom hand hardware.
 
 ---
 
@@ -619,6 +665,9 @@ struct SystemThreadConfigs {
         joint_4: [-6.28, 6.28]   # Wrist 2
         joint_5: [-6.28, 6.28]   # Wrist 3
 
+    init_timeout_sec: 5.0        # v5.8.0: 초기화 타임아웃 (초) — 로봇/핸드 데이터 미수신 시 E-STOP
+    enable_status_monitor: false # v5.8.0: 실제 로봇 사용 시 true (non-RT 10Hz 상태 모니터)
+
     estop:
       enable_estop: true
       robot_timeout_ms: 100.0    # Trigger if /joint_states gap exceeds this
@@ -637,6 +686,8 @@ struct SystemThreadConfigs {
 udp:
   target_ip: "192.168.1.2"    # Hand controller IP
   target_port: 55151           # Hand controller port
+  recv_timeout_ms: 10          # v5.8.0: SO_RCVTIMEO (ms)
+  enable_write_ack: false      # v5.8.0: Hand 하드웨어 ACK 지원 시 true
 
 publishing:
   rate: 100.0                  # /hand/joint_states publish rate (Hz)
@@ -646,6 +697,12 @@ publishing:
 hand:
   num_motors: 10               # kNumHandMotors
   num_fingertips: 4            # kNumFingertips
+
+failure_detector:              # v5.8.0: C++ HandFailureDetector (50Hz jthread)
+  enable: true                 # Failure detector 활성화
+  failure_threshold: 5         # 연속 감지 횟수 임계값
+  check_motor: true            # 모터 데이터 검사
+  check_sensor: true           # 센서 데이터 검사
 
 monitoring:
   enable_statistics: true
@@ -887,6 +944,7 @@ No CMakeLists changes needed for header-only controllers. `JointPDController`, `
 - **C++20 features in use**: `std::jthread`, `std::stop_token`, designated initializers (`.field = value`), `std::concepts` (`NonNegativeFloat`), `std::span`, `std::string_view`
 - **`std::atomic<bool>` for cross-thread flags**: E-STOP flags avoid mutex overhead on the RT path
 - **Separate mutexes per domain**: `state_mutex_`, `target_mutex_`, `hand_mutex_` — never hold more than one simultaneously
+- **Trajectory race condition fix (v5.8.0)**: `JointPDController`, `ClikController`, `OperationalSpaceController`에 각각 `target_mutex_` 추가. `SetRobotTarget()` (센서 스레드): `lock_guard` 보호, `Compute()` trajectory regen 블록 (RT 스레드): `unique_lock(target_mutex_, try_to_lock)` — 실패 시 다음 틱에서 처리 (≤2ms 지연). RT 스레드 블로킹 불가.
 - **`[[nodiscard]]`** on all functions returning status or computed values
 - **Compiler warnings**: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion` — must compile warning-free
 - **Pinocchio headers**: always wrapped in `#pragma GCC diagnostic push/pop` to suppress Pinocchio's own `-Wconversion` / `-Wshadow` warnings
@@ -1034,16 +1092,18 @@ ros2 doctor                        # 시스템 전체 진단
 | Separate Mutexes | `state_mutex_`, `target_mutex_`, `hand_mutex_` | 동시에 2개 이상 hold 금지 (deadlock 방지) |
 | `std::jthread` + `stop_token` | MuJoCo sim loop, UDP receiver | cooperative cancellation |
 | `condition_variable` | `sync_cv_` (MuJoCo sync_step) | spurious wakeup 대비 predicate 필수 |
-| `try_lock` | `viz_mutex_` (viewer), `ref_mutex_` (status monitor) | 절대 RT/SimLoop를 블로킹하지 않음 |
+| `try_lock` | `viz_mutex_` (viewer), `ref_mutex_` (status monitor), `target_mutex_` (controllers, v5.8.0) | 절대 RT/SimLoop를 블로킹하지 않음 |
 | `std::atomic` acquire/release | `UR5eStatusMonitor` RT flags | `isReady()`, `getFailure()`, `isJointLimitWarning()` — RT thread reads only |
 | `compare_exchange_strong` | `failure_type_` (status monitor) | 한 번에 하나의 failure만 활성 |
 
 **새 스레드 추가 시 체크리스트**:
-1. `ThreadConfig` 상수 정의 (core, policy, priority)
-2. `SystemThreadConfigs`에 추가
-3. `ApplyThreadConfig()` 호출
-4. RT 경로면 `SCHED_FIFO` + 적절한 priority
-5. 4/6/8-core 레이아웃 모두 업데이트
+1. `ThreadConfig` 상수 정의 (core, policy, priority) — 4/6/8-core 변형 모두
+2. `SystemThreadConfigs`에 필드 추가 (현재 7개: rt_control, sensor, udp_recv, logging, aux, status_monitor, hand_failure)
+3. `ValidateSystemThreadConfigs()` 배열에 새 필드 추가
+4. `SelectThreadConfigs()` 모든 코어 레이아웃에 반환값 추가
+5. `ApplyThreadConfig()` 호출
+6. RT 경로면 `SCHED_FIFO` + 적절한 priority
+7. `docs/RT_OPTIMIZATION.md` CPU 할당 테이블 업데이트
 
 ### Python Tool Guidelines (from python-performance-optimization)
 
@@ -1062,6 +1122,7 @@ ros2 doctor                        # 시스템 전체 진단
 
 | Version | Key Changes |
 |---|---|
+| v5.8.0 | Global E-Stop (`TriggerGlobalEstop(reason)`) replacing per-controller E-Stop. Status monitor integration (`enable_status_monitor`). HandFailureDetector (50Hz C++). Init timeout (`init_timeout_sec`). Per-phase timing in LogEntry/CSV (`t_state_acquire_us`/`t_compute_us`/`t_publish_us`/`t_total_us`/`jitter_us`). Hand state in CSV. `RobotState.torques`. Trajectory race fix (`target_mutex_` try_lock in JointPD/CLIK/OSC). Overrun detection (`budget_us_`). Hand UDP `recv_timeout_ms`, `enable_write_ack`. SystemThreadConfigs 5→7 fields (status_monitor, hand_failure). Thread configs for 4/6/8-core. |
 | v5.7.0 | MuJoCo position servo gain system: `physics_timestep` (XML timestep validation), `use_yaml_servo_gains` flag, `servo_kp`/`servo_kd` per-joint YAML gains (`gainprm = servo_kp / physics_timestep`). Gravity auto-lock in position servo mode; auto-unlock + ON when switching to torque mode. `PController` fix: incremental position step `q + kp*error*dt` (eliminates steady-state position error). `mujoco_simulator.yaml` rt_controller section: removed duplicate params, kept sim-specific overrides only. New: `compare_mjcf_urdf` validation tool in `ur5e_tools` — compares MJCF/URDF mass, inertia, joint limits, effort limits. |
 | v5.6.2 | MuJoCo simulation parameters priority improvement: removed hardcoded defaults (Euler/Newton) from C++ `Config` to give priority to physics solver values specified natively in MuJoCo XML. If options are missing in XML, `mj_loadXML`'s internal defaults apply safely. |
 | v5.6.1 | Trajectory improvements: `PinocchioController` + `JointSpaceTrajectory<6>` (`trajectory_speed`); `OperationalSpaceController` + `TaskSpaceTrajectory` SE3 quintic (`trajectory_speed`, `trajectory_angular_speed`); `ClikController` `trajectory_angular_speed` dead-code removed. GUI: `controller_gui.py` GAIN_DEFS updated (Pinocchio 15, OSC 16); `motion_editor_gui.py` topic fix + playback interval spinbox. |
