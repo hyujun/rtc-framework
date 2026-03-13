@@ -357,6 +357,23 @@ class HandUDPSender:
         self.sock.close()
 
 
+def _format_sensor_detail(sensors: list[float], num_sensors: int,
+                          sensor_modes: list[int]) -> str:
+    """핑거팁별 센서 데이터를 barometer[8] + tof[3]로 포맷"""
+    lines = []
+    for i in range(num_sensors):
+        offset = i * SENSOR_VALUES_PER_FINGERTIP
+        data = sensors[offset:offset + SENSOR_VALUES_PER_FINGERTIP]
+        baro = data[:BAROMETER_COUNT]
+        tof = data[BAROMETER_COUNT:]
+        mode = sensor_modes[i] if i < len(sensor_modes) else -1
+        mode_name = "raw" if mode == SENSOR_MODE_RAW else ("nn" if mode == SENSOR_MODE_NN else "?")
+        baro_str = ', '.join(f'{v:.1f}' for v in baro)
+        tof_str = ', '.join(f'{v:.1f}' for v in tof)
+        lines.append(f"    fingertip[{i}] (mode={mode_name}): baro=[{baro_str}]  tof=[{tof_str}]")
+    return '\n'.join(lines)
+
+
 # ── 예제 함수 ────────────────────────────────────────────────────────────────
 
 def example_write_only(target_ip: str = "192.168.1.2"):
@@ -421,9 +438,10 @@ def example_poll_cycle(target_ip: str = "192.168.1.2",
                 vel_str = "None"
                 if result["velocities"]:
                     vel_str = f'[{", ".join(f"{v:.3f}" for v in result["velocities"][:4])} ...]'
-                n_sensors = len(result['sensors'])
-                mode_str = ','.join(str(m) for m in result['sensor_modes'])
-                print(f"[cycle {cycle}] pos={pos_str}  vel={vel_str}  sensors={n_sensors} values  resp_mode=[{mode_str}]")
+                print(f"[cycle {cycle}] pos={pos_str}  vel={vel_str}")
+                if num_sensors > 0:
+                    print(_format_sensor_detail(
+                        result['sensors'], num_sensors, result['sensor_modes']))
 
             t += dt
             time.sleep(dt)
@@ -480,9 +498,10 @@ def example_read_only(target_ip: str = "192.168.1.2",
                 vel_str = "None"
                 if result["velocities"]:
                     vel_str = f'[{", ".join(f"{v:.3f}" for v in result["velocities"][:4])} ...]'
-                n_sensors = len(result['sensors'])
-                mode_str = ','.join(str(m) for m in result['sensor_modes'])
-                print(f"[cycle {cycle}] pos={pos_str}  vel={vel_str}  sensors={n_sensors} values  resp_mode=[{mode_str}]")
+                print(f"[cycle {cycle}] pos={pos_str}  vel={vel_str}")
+                if num_sensors > 0:
+                    print(_format_sensor_detail(
+                        result['sensors'], num_sensors, result['sensor_modes']))
 
             time.sleep(dt)
 
