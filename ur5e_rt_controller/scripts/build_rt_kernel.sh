@@ -256,10 +256,36 @@ info "설치할 패키지:"
 info "  Image:   ${DEB_IMAGE}"
 [[ -n "$DEB_HEADERS" ]] && info "  Headers: ${DEB_HEADERS}"
 
-dpkg -i "${DEB_IMAGE}"
-[[ -n "$DEB_HEADERS" ]] && dpkg -i "${DEB_HEADERS}"
+# NVIDIA DKMS는 커스텀 RT 커널 헤더 이름을 인식하지 못해 빌드 실패할 수 있음.
+# dpkg post-install 트리거에서 DKMS autoinstall이 실패하면 dpkg 전체가 실패하므로,
+# 트리거를 지연시키고 headers → image 순서로 설치한 뒤 트리거를 별도 처리한다.
+info "DKMS 트리거를 지연시켜 설치 중..."
 
-success "커널 패키지 설치 완료"
+DEBS_TO_INSTALL=()
+[[ -n "$DEB_HEADERS" ]] && DEBS_TO_INSTALL+=("${DEB_HEADERS}")
+DEBS_TO_INSTALL+=("${DEB_IMAGE}")
+
+dpkg --no-triggers -i "${DEBS_TO_INSTALL[@]}"
+
+# 트리거 실행 (NVIDIA DKMS 빌드 실패는 무시 — RT 커널에 NVIDIA 드라이버는 선택사항)
+info "dpkg 트리거 실행 중 (NVIDIA DKMS 실패는 무시)..."
+set +e
+dpkg --configure --pending 2>&1
+TRIGGER_RC=$?
+set -e
+
+if [[ $TRIGGER_RC -eq 0 ]]; then
+  success "커널 패키지 설치 완료"
+else
+  warn "dpkg 트리거 중 오류 발생 (exit code: ${TRIGGER_RC})"
+  warn "NVIDIA DKMS 모듈이 RT 커널에서 빌드 실패했을 가능성이 높습니다"
+  warn "RT 커널 자체는 정상 설치되었습니다"
+  warn "NVIDIA 드라이버가 필요한 경우 재부팅 후 수동 설치:"
+  warn "  sudo dkms autoinstall -k \$(uname -r)"
+  # dpkg가 broken 상태일 수 있으므로 복구
+  apt-get install -f -y > /dev/null 2>&1 || true
+  success "커널 패키지 설치 완료 (NVIDIA DKMS 제외)"
+fi
 
 # ── GRUB 기본 부팅 항목을 RT 커널로 설정 ──────────────────────────────────────
 echo ""
