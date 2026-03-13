@@ -114,35 +114,74 @@ ur5e-rt-controller/
 ├── ur5e_rt_controller/                    # 500Hz RT controller package
 │   ├── include/ur5e_rt_controller/
 │   │   ├── rt_controller_interface.hpp    # Abstract base + all data structures
+│   │   ├── rt_controller_node.hpp         # RtControllerNode class declaration
 │   │   ├── controller_timing_profiler.hpp # Lock-free Compute() timing profiler
+│   │   ├── controllers/
+│   │   │   ├── indirect/                  # Position command output (q + kp*error*dt)
+│   │   │   │   ├── p_controller.hpp       # Simple P controller (incremental step)
+│   │   │   │   ├── clik_controller.hpp    # Closed-Loop IK (3-DOF Cartesian)
+│   │   │   │   └── ur5e_hand_controller.hpp # Arm + Hand unified P controller
+│   │   │   └── direct/                    # Torque command output (PD + dynamics)
+│   │   │       ├── joint_pd_controller.hpp # PD + gravity/Coriolis + E-STOP
+│   │   │       └── operational_space_controller.hpp # 6-DOF Cartesian PD + SO(3)
+│   │   └── trajectory/                    # Quintic trajectory generation (v5.3.0+)
+│   │       ├── trajectory_utils.hpp       # QuinticPolynomial scalar utility
+│   │       ├── task_space_trajectory.hpp  # SE(3) quintic spline (CLIK/OSC)
+│   │       └── joint_space_trajectory.hpp # N-DOF joint-space spline (JointPD)
+│   ├── src/
+│   │   ├── rt_controller_node.cpp         # Controller registry + RtControllerNode impl
+│   │   ├── rt_controller_main.cpp         # main() — mlockall, executors, RT threads
+│   │   ├── rt_controller_interface.cpp    # Base class impl (TopicConfig parsing)
 │   │   └── controllers/
-│   │       ├── pd_controller.hpp          # PD + E-STOP (active default)
-│   │       ├── p_controller.hpp           # Simple P controller
-│   │       ├── pinocchio_controller.hpp   # Model-based PD + gravity/Coriolis
-│   │       ├── clik_controller.hpp        # Closed-Loop IK (3-DOF Cartesian)
-│   │       └── operational_space_controller.hpp # Full 6-DOF Cartesian PD
-│   ├── include/ur5e_rt_controller/
-│   │   └── rt_controller_node.hpp         # RtControllerNode class declaration
-│   ├── src/rt_controller_node.cpp         # Controller registry + RtControllerNode impl
-│   ├── src/rt_controller_main.cpp         # main() — mlockall, executors, RT threads
+│   │       ├── indirect/
+│   │       │   ├── p_controller.cpp
+│   │       │   ├── clik_controller.cpp
+│   │       │   └── ur5e_hand_controller.cpp
+│   │       └── direct/
+│   │           ├── joint_pd_controller.cpp
+│   │           └── operational_space_controller.cpp
 │   ├── config/
 │   │   ├── ur5e_rt_controller.yaml        # log_dir: ~/ros2_ws/ur5e_ws/logging_data
-│   │   └── cyclone_dds.xml                # CycloneDDS thread affinity (Core 0-1)
+│   │   ├── cyclone_dds.xml                # CycloneDDS thread affinity (Core 0-1)
+│   │   └── controllers/
+│   │       ├── indirect/
+│   │       │   ├── p_controller.yaml
+│   │       │   ├── clik_controller.yaml
+│   │       │   └── ur5e_hand_controller.yaml
+│   │       └── direct/
+│   │           ├── joint_pd_controller.yaml
+│   │           └── operational_space_controller.yaml
 │   ├── scripts/
-│   │   └── setup_irq_affinity.sh          # Pin NIC IRQs to Core 0-1
+│   │   ├── setup_irq_affinity.sh          # Pin NIC IRQs to Core 0-1
+│   │   ├── setup_udp_optimization.sh      # UDP socket/network optimization
+│   │   ├── setup_nvidia_rt.sh             # NVIDIA + RT kernel coexistence
+│   │   └── build_rt_kernel.sh             # PREEMPT_RT kernel build helper
+│   ├── test/
+│   │   └── test_trajectory.cpp            # Trajectory generation unit tests
+│   ├── docs/
+│   │   └── ADDING_CONTROLLER.md           # Step-by-step new controller guide
 │   └── launch/
-│       ├── ur_control.launch.py           # Full system (+ use_cpu_affinity, CYCLONEDDS_URI)
-│       └── hand_udp.launch.py             # Hand UDP nodes only (via ur5e_hand_udp)
+│       └── ur_control.launch.py           # Full system (+ use_cpu_affinity, CYCLONEDDS_URI)
 │
-├── ur5e_hand_udp/                         # UDP hand bridge package
+├── ur5e_hand_udp/                         # UDP hand bridge package (10-DOF + 44 sensors)
 │   ├── include/ur5e_hand_udp/
-│   │   ├── hand_udp_receiver.hpp          # UDP receiver (C++20 jthread, Core 5 FIFO 65)
-│   │   └── hand_udp_sender.hpp            # UDP sender (little-endian doubles)
+│   │   ├── hand_controller.hpp            # Request-response polling driver (jthread, Core 5 FIFO 65)
+│   │   ├── hand_packets.hpp               # Wire-format packet definitions (43B/67B)
+│   │   ├── hand_udp_codec.hpp             # Packet encode/decode (allocation-free, noexcept)
+│   │   ├── hand_udp_receiver.hpp          # Legacy: streaming UDP receiver
+│   │   └── hand_udp_sender.hpp            # Legacy: UDP sender
 │   ├── src/
-│   │   ├── hand_udp_receiver_node.cpp
-│   │   └── hand_udp_sender_node.cpp
-│   ├── config/hand_udp_receiver.yaml
-│   └── launch/hand_udp.launch.py
+│   │   ├── hand_udp_node.cpp              # Unified ROS2 node (HandController-based, recommended)
+│   │   ├── hand_udp_receiver_node.cpp     # Legacy receiver node
+│   │   ├── hand_udp_sender_node.cpp       # Legacy sender node
+│   │   ├── hand_udp_receiver.cpp          # Legacy receiver impl
+│   │   └── hand_udp_sender.cpp            # Legacy sender impl
+│   ├── config/
+│   │   ├── hand_udp.yaml                  # Unified node config (recommended)
+│   │   └── hand_udp_receiver.yaml         # Legacy config
+│   └── launch/
+│       ├── hand_udp_unified.launch.py     # Unified node launch (recommended)
+│       └── hand_udp.launch.py             # Legacy two-node launch
 │
 ├── ur5e_mujoco_sim/                       # MuJoCo 3.x simulator package (optional)
 │   ├── include/ur5e_mujoco_sim/
@@ -171,13 +210,14 @@ ur5e-rt-controller/
         ├── validation/
         │   └── compare_mjcf_urdf.py        # MJCF vs URDF parameter comparison
         └── utils/
-            └── hand_udp_sender_example.py  # Synthetic UDP hand data generator
+            ├── hand_udp_sender_example.py  # Synthetic UDP hand data generator
+            └── hand_data_plot.py           # Hand CSV data visualization
 
 ---
 
 ## Architecture
 
-This is a **ROS2 Humble / ROS2 Jazzy** multi-package repository (`ament_cmake`, C++20) implementing a 500 Hz real-time position controller for a UR5e robot arm with an 11-DOF custom hand attached via UDP.
+This is a **ROS2 Humble / ROS2 Jazzy** multi-package repository (`ament_cmake`, C++20) implementing a 500 Hz real-time position/torque controller for a UR5e robot arm with a 10-DOF custom hand (44 tactile sensors) attached via UDP.
 
 **Workspace root**: `/home/user/ros2_ws/ur5e_ws`
 **Log output**: `~/ros2_ws/ur5e_ws/logging_data/ur5e_control_log_YYMMDD_HHMM.csv` (auto-created, `max_log_files: 10`)
@@ -187,10 +227,13 @@ This is a **ROS2 Humble / ROS2 Jazzy** multi-package repository (`ament_cmake`, 
 `RTControllerInterface` (`include/ur5e_rt_controller/rt_controller_interface.hpp`) is the abstract base for all controllers. All virtual methods are `noexcept` — a hard RT safety requirement (an exception in a 500 Hz loop terminates the process). The key data types defined here are used throughout the codebase:
 
 ```cpp
-// Compile-time constants
+// Compile-time constants (ur5e_rt_base/types/types.hpp)
 kNumRobotJoints = 6
-kNumHandJoints  = 11
-kNumHandSensors = 44  // 4 sensors × 11 joints
+kNumHandMotors  = 10          // 10-DOF hand motors
+kNumFingertips  = 4
+kSensorValuesPerFingertip = 11 // 8 barometer + 3 ToF
+kNumHandSensors = 44          // 4 fingertips × 11 values
+kNumHandJoints  = kNumHandMotors  // legacy alias (= 10)
 
 struct RobotState {
   std::array<double, 6>  positions{}, velocities{};
@@ -198,32 +241,42 @@ struct RobotState {
   double dt{0.002}; uint64_t iteration{0};
 };
 struct HandState {
-  std::array<double, 11> motor_positions{}, motor_velocities{}, motor_currents{};
-  std::array<double, 44> sensor_data{};
+  std::array<float, 10>  motor_positions{};   // float, not double
+  std::array<float, 10>  motor_velocities{};
+  std::array<float, 44>  sensor_data{};       // 4 fingertips × 11 values
   bool valid{false};
 };
 struct ControllerState { RobotState robot{}; HandState hand{}; double dt; uint64_t iteration; };
-struct ControllerOutput { std::array<double,6> robot_commands{}; std::array<double,11> hand_commands{}; bool valid{true}; };
+struct ControllerOutput {
+  std::array<double, 6>  robot_commands{};
+  std::array<float, 10>  hand_commands{};            // float[10], not double[11]
+  std::array<double, 6>  actual_target_positions{};  // logging
+  std::array<double, 6>  actual_task_positions{};    // logging
+  bool valid{true};
+  CommandType command_type{CommandType::kPosition};   // kPosition or kTorque
+};
 ```
 
 ### Controller Implementations
 
-| Controller | Header | Control Space | Notes |
-|---|---|---|---|
-| `PDController` | `controllers/pd_controller.hpp` | Joint-space PD | **Active default.** E-STOP drives to `kSafePosition`. |
-| `PController` | `controllers/p_controller.hpp` | Joint-space P | Proportional-only, no E-STOP. |
-| `PinocchioController` | `controllers/pinocchio_controller.hpp` | Joint-space PD + dynamics | Gravity + optional Coriolis compensation via Pinocchio RNEA. `JointSpaceTrajectory<6>` for smooth motion (v5.6.1+). |
-| `ClikController` | `controllers/clik_controller.hpp` | Cartesian 3-DOF | Damped Jacobian pseudoinverse + null-space joint centering. `TaskSpaceTrajectory` (SE3 quintic). |
-| `OperationalSpaceController` | `controllers/operational_space_controller.hpp` | Cartesian 6-DOF | Full pose (position + SO(3) orientation) control. `TaskSpaceTrajectory` (SE3 quintic, v5.6.1+). |
+| Controller | Header | Type | Control Space | Notes |
+|---|---|---|---|---|
+| `PController` (idx 0) | `controllers/indirect/p_controller.hpp` | Indirect (position) | Joint-space P | Incremental step: `q + kp*error*dt`. No E-STOP. |
+| `JointPDController` (idx 1) | `controllers/direct/joint_pd_controller.hpp` | Direct (torque) | Joint-space PD + dynamics | Gravity + optional Coriolis via Pinocchio RNEA. `JointSpaceTrajectory<6>`. **Has E-STOP.** |
+| `ClikController` (idx 2) | `controllers/indirect/clik_controller.hpp` | Indirect (position) | Cartesian 3-DOF | Damped Jacobian pseudoinverse + null-space. `TaskSpaceTrajectory` (SE3 quintic). |
+| `OperationalSpaceController` (idx 3) | `controllers/direct/operational_space_controller.hpp` | Direct (torque) | Cartesian 6-DOF | Full pose (position + SO(3)) control. `TaskSpaceTrajectory` (SE3 quintic). |
+| `UrFiveEHandController` (idx 4) | `controllers/indirect/ur5e_hand_controller.hpp` | Indirect (position) | Joint P + Hand | Arm P control (6-DOF) + hand motor commands (10-DOF). |
 
-**`PDController`** on E-STOP drives toward `kSafePosition = [0, -1.57, 1.57, -1.57, -1.57, 0]` rad. Output clamped to `kMaxJointVelocity = 2.0 rad/s`.
+**`JointPDController`** on E-STOP drives toward `kSafePosition = [0, -1.57, 1.57, -1.57, -1.57, 0]` rad. Output clamped to `kMaxJointVelocity = 2.0 rad/s`.
 
-**`PinocchioController`** control law (v5.6.1+: with `JointSpaceTrajectory<6>`):
+**`JointPDController`** control law (v5.6.1+: with `JointSpaceTrajectory<6>`):
 ```
 command[i] = traj.velocity[i] + Kp * (traj.position[i] - q[i]) + Kd * ė[i] + g(q)[i] [+ C(q,v)·v[i]]
 ```
 All Eigen buffers pre-allocated in constructor — zero heap allocation on the 500 Hz path.
 `UpdateGainsFromMsg` layout: `[kp×6, kd×6, gravity(0/1), coriolis(0/1), trajectory_speed]` (15 values).
+
+**`UrFiveEHandController`** target convention (via `/target_joint_positions`): `data[0-5]` = robot joint targets (rad), `data[6-15]` = hand motor targets (optional, ignored if array size < 16). Uses incremental position step for both arm and hand. `UpdateGainsFromMsg` layout: `[robot_kp×6, hand_kp×10]` (16 values).
 
 **`ClikController`** target convention (via `/target_joint_positions`): `[x, y, z, null_q3, null_q4, null_q5]` — first 3 are TCP position in metres, last 3 are null-space reference joints 3–5 in radians. Uses `TaskSpaceTrajectory` (SE3 quintic). `trajectory_angular_speed` field removed (v5.6.1).
 `UpdateGainsFromMsg` layout: `[kp×3, damping, null_kp, enable_null_space(0/1)]` (6 values).
@@ -256,7 +309,7 @@ Creates **4 `SingleThreadedExecutor`s**, each running in a dedicated `std::threa
 - `TargetCallback()`: stores target positions under `target_mutex_`; calls `controller_->SetRobotTarget()`
 - `HandStateCallback()`: records timestamp under `hand_mutex_` (data itself is not buffered here)
 - `CheckTimeouts()` (50Hz): triggers E-STOP if data gaps exceed configured thresholds
-- `ControlLoop()` (500Hz): assembles `ControllerState`, calls `Compute()`, publishes to `/forward_position_controller/commands`, pushes to `SpscLogBuffer`
+- `ControlLoop()` (500Hz): assembles `ControllerState`, calls `Compute()`, publishes to `/forward_position_controller/commands` (indirect) or `/forward_torque_controller/commands` (direct) based on `CommandType`, pushes to `SpscLogBuffer`
 
 ### Lock-Free Logging Infrastructure
 
@@ -377,22 +430,36 @@ cmake -Dmujoco_ROOT=/opt/mujoco-3.x.x ...
 export MUJOCO_DIR=/opt/mujoco-3.x.x && colcon build
 ```
 
-### UDP Hand Protocol
+### UDP Hand Protocol (Request-Response)
 
-`HandUdpReceiver` (`include/ur5e_hand_udp/hand_udp_receiver.hpp`) uses `std::jthread` (C++20 cooperative cancellation) to receive packets on port 50001.
+`HandController` (`include/ur5e_hand_udp/hand_controller.hpp`) is a high-level request-response driver using a single UDP socket (port **55151**, `std::jthread`, Core 5, SCHED_FIFO/65). Each poll cycle:
 
-**Receive packet format — 77 `double`s (616 bytes total):**
-- 11 motor positions + 11 motor velocities + 11 motor currents + 44 sensor values (4 per joint)
+1. `WritePosition` (CMD=0x01) — send 43B motor packet (10 × float32 as uint32)
+2. `ReadPosition` (CMD=0x11) — send 43B, recv 43B → 10 motor positions
+3. `ReadVelocity` (CMD=0x12) — send 43B, recv 43B → 10 motor velocities
+4. `ReadSensor0–3` (CMD=0x14..0x17) — send 3B, recv 67B × 4 fingertips → 44 sensor values
 
-`HandUdpSender` encodes 11 `double`s as little-endian bytes and sends to port 50002 (normalized 0.0–1.0 motor commands).
+**Motor packet**: 43 bytes = `[ID:1B][CMD:1B][MODE:1B][10 × float32 as uint32]` (little-endian)
+**Sensor request**: 3 bytes = `[ID:1B][CMD:1B][MODE:1B]`
+**Sensor response**: 67 bytes = `[header:3B][barometer[8]:uint32][reserved[5]:uint32][tof[3]:uint32]` — reserved fields discarded, 11 values stored per fingertip (8 barometer + 3 ToF)
 
-`HandUdpReceiverNode` (`src/hand_udp_receiver_node.cpp`) bridges the receiver to ROS2: it latches incoming data via callback and re-publishes at 100Hz on `/hand/joint_states`.
+`HandUdpNode` (`src/hand_udp_node.cpp`) is the **unified ROS2 node** (recommended). Wraps `HandController` and publishes `/hand/joint_states` at 100Hz with **64 doubles**: `[positions:10][velocities:10][sensors:44]`. Subscribes to `/hand/command` (10 float motor commands, 0.0–1.0).
 
-`HandUdpSenderNode` (`src/hand_udp_sender_node.cpp`) bridges the other direction: subscribes to `/hand/command` and calls `HandUdpSender::SendCommand()`.
+**Data layout in `/hand/joint_states`:**
+```
+[0–9]:   motor_positions[10]
+[10–19]: motor_velocities[10]
+[20–30]: fingertip_0 sensors[11] (barometer[8] + tof[3])
+[31–41]: fingertip_1 sensors[11]
+[42–52]: fingertip_2 sensors[11]
+[53–63]: fingertip_3 sensors[11]
+```
+
+Legacy nodes (`hand_udp_receiver_node`, `hand_udp_sender_node`) used 616-byte streaming protocol and are deprecated.
 
 ### E-STOP System
 
-`CheckTimeouts()` runs at 50 Hz. If `/joint_states` is not received for >100ms, `PDController::TriggerEstop()` is called (sets `estopped_` atomic flag). If `/hand/joint_states` is not received for >200ms, `SetHandEstop(true)` is called separately. Both flags use `std::atomic<bool>` for safe cross-thread access between the RT thread and the 50 Hz watchdog.
+`CheckTimeouts()` runs at 50 Hz. If `/joint_states` is not received for >100ms, `JointPDController::TriggerEstop()` is called (sets `estopped_` atomic flag). If `/hand/joint_states` is not received for >200ms, `SetHandEstop(true)` is called separately. Both flags use `std::atomic<bool>` for safe cross-thread access between the RT thread and the 50 Hz watchdog.
 
 To disable hand E-STOP (when no hand is connected): set `enable_estop: false` or `hand_timeout_ms: 0` in `config/ur5e_rt_controller.yaml`. For MuJoCo simulation, `mujoco_simulator.yaml` already sets `enable_estop: false`.
 
@@ -447,17 +514,25 @@ struct SystemThreadConfigs {
 | Topic | Type | Direction | Description |
 |---|---|---|---|
 | `/joint_states` | `sensor_msgs/JointState` | Subscribe | 6-DOF positions + velocities from UR driver or MuJoCo sim |
-| `/target_joint_positions` | `std_msgs/Float64MultiArray` | Subscribe | 6 values: joint angles (rad) for PD/Pinocchio, TCP pose for CLIK/OSC |
-| `/hand/joint_states` | `std_msgs/Float64MultiArray` | Subscribe | 11 hand motor values from UDP receiver or MuJoCo sim |
-| `/hand/command` | `std_msgs/Float64MultiArray` | Subscribe | 11 normalized hand commands (0.0–1.0) |
-| `/forward_position_controller/commands` | `std_msgs/Float64MultiArray` | Publish | 6 robot position commands (rad) |
+| `/target_joint_positions` | `std_msgs/Float64MultiArray` | Subscribe | 6+ values: interpretation varies by controller (see below) |
+| `/hand/joint_states` | `std_msgs/Float64MultiArray` | Subscribe | 64 doubles: [positions:10][velocities:10][sensors:44] (unified node) |
+| `/hand/command` | `std_msgs/Float64MultiArray` | Subscribe | 10 normalized hand motor commands (0.0–1.0) |
+| `/forward_position_controller/commands` | `std_msgs/Float64MultiArray` | Publish | 6 robot position commands (rad) — indirect controllers |
+| `/forward_torque_controller/commands` | `std_msgs/Float64MultiArray` | Publish | 6 robot torque commands (Nm) — direct controllers |
+| `/rt_controller/current_task_position` | `std_msgs/Float64MultiArray` | Publish | 6D FK task-space position |
 | `/system/estop_status` | `std_msgs/Bool` | Publish | `true` = E-STOP active |
-| `/sim/status` | `std_msgs/Float64MultiArray` | Publish | MuJoCo only: `[step_count, sim_time_sec, rtf]` |
+| `~/active_controller_name` | `std_msgs/String` | Publish | Current active controller name (transient_local QoS) |
+| `~/current_gains` | `std_msgs/Float64MultiArray` | Publish | Active controller's current gains (response to `~/request_gains`) |
+| `~/controller_type` | `std_msgs/Int32` | Subscribe | Runtime controller switching (0=P, 1=JointPD, 2=CLIK, 3=OSC, 4=Hand) |
+| `~/controller_gains` | `std_msgs/Float64MultiArray` | Subscribe | Dynamic gain update for active controller |
+| `~/request_gains` | `std_msgs/Bool` | Subscribe | Request current gains publish (GUI integration) |
+| `/sim/status` | `std_msgs/Float64MultiArray` | Publish | MuJoCo only: `[step_count, sim_time_sec, rtf, paused(0/1)]` |
 
 **Note on `/target_joint_positions` interpretation**: The 6 values are interpreted differently by each controller:
-- `PDController` / `PinocchioController`: joint angles in radians
+- `PController` / `JointPDController`: joint angles in radians
 - `ClikController`: `[x, y, z, null_q3, null_q4, null_q5]` (TCP position + null-space reference)
 - `OperationalSpaceController`: `[x, y, z, roll, pitch, yaw]` (full TCP pose)
+- `UrFiveEHandController`: `data[0-5]` robot joints (rad), `data[6-15]` hand motors (optional)
 
 ---
 
@@ -470,14 +545,14 @@ struct SystemThreadConfigs {
 /**:
   ros__parameters:
     control_rate: 500.0        # Hz — timer period = 1e6/rate µs
-    kp: 5.0                    # PD proportional gain
-    kd: 0.5                    # PD derivative gain
+    kp: 5.0                    # Legacy PD gain (각 컨트롤러 YAML에서 개별 설정 권장)
+    kd: 0.5                    # Legacy PD gain (각 컨트롤러 YAML에서 개별 설정 권장)
     enable_logging: true       # Write timestamped CSV
     log_dir: "~/ros2_ws/ur5e_ws/logging_data"  # expanded to absolute path at launch
     max_log_files: 10          # Rotate; keep only most recent N files
 
     joint_limits:
-      max_velocity: 2.0          # rad/s — enforced in PDController::ClampCommands()
+      max_velocity: 2.0          # rad/s — enforced in controller ClampCommands()
       max_acceleration: 5.0      # rad/s² (informational; not enforced in code)
       position_limits:           # Per-joint soft limits (informational)
         joint_0: [-6.28, 6.28]   # Base
@@ -499,21 +574,25 @@ struct SystemThreadConfigs {
       log_directory: "~/ros2_ws/ur5e_ws/logging_data"
 ```
 
-### `config/hand_udp_receiver.yaml`
+### `config/hand_udp.yaml` (unified node, recommended)
 
 ```yaml
 udp:
-  port: 50001                # Listening port (override at launch with udp_port:=)
-  buffer_size: 1024
-  timeout_ms: 1000
+  target_ip: "192.168.1.2"    # Hand controller IP
+  target_port: 55151           # Hand controller port
 
 publishing:
-  rate: 100.0                # /hand/joint_states publish rate
+  rate: 100.0                  # /hand/joint_states publish rate (Hz)
   topic: "/hand/joint_states"
+  queue_size: 10
+
+hand:
+  num_motors: 10               # kNumHandMotors
+  num_fingertips: 4            # kNumFingertips
 
 monitoring:
   enable_statistics: true
-  statistics_period: 5.0    # seconds
+  statistics_period: 5.0       # Packet statistics period (seconds)
 ```
 
 ### `config/mujoco_simulator.yaml`
@@ -587,7 +666,17 @@ All arguments default to `""` (empty string) — YAML value takes precedence unl
 
 Launches: `mujoco_simulator_node`, `rt_controller`, `data_health_monitor`.
 
-### `launch/hand_udp.launch.py` — Hand UDP Only
+### `launch/hand_udp_unified.launch.py` — Hand UDP (Recommended)
+
+| Argument | Default | Description |
+|---|---|---|
+| `target_ip` | `192.168.1.2` | Hand controller IP |
+| `target_port` | `55151` | Hand controller port |
+| `publish_rate` | `100.0` | `/hand/joint_states` publish rate (Hz) |
+
+Launches: unified `hand_udp_node` (single process, request-response polling).
+
+### `launch/hand_udp.launch.py` — Hand UDP (Legacy)
 
 | Argument | Default | Description |
 |---|---|---|
@@ -595,7 +684,7 @@ Launches: `mujoco_simulator_node`, `rt_controller`, `data_health_monitor`.
 | `target_ip` | `192.168.1.100` | Hand controller IP |
 | `target_port` | `50002` | UDP send port |
 
-Launches: `hand_udp_receiver_node`, `hand_udp_sender_node`.
+Launches: `hand_udp_receiver_node` + `hand_udp_sender_node` (deprecated, streaming protocol).
 
 ---
 
@@ -624,6 +713,19 @@ ros2 run ur5e_tools plot_ur_trajectory /tmp/ur5e_control_log.csv --joint 2
 
 Synthetic hand data generator for development/testing. Sends sinusoidal or static UDP packets to the receiver on port 50001.
 
+### `ur5e_tools/utils/hand_data_plot.py`
+
+Hand CSV data visualization tool. Plots motor positions, velocities, and fingertip sensor data (barometer, ToF) from CSV files generated by `hand_udp_sender_example.py`. Auto-detects sensor count.
+
+```bash
+python3 ur5e_tools/utils/hand_data_plot.py <csv_file>
+python3 ur5e_tools/utils/hand_data_plot.py hand_read.csv --motors 0 1 2
+python3 ur5e_tools/utils/hand_data_plot.py hand_read.csv --sensors-only
+python3 ur5e_tools/utils/hand_data_plot.py hand_read.csv --motors-only
+```
+
+> **Note**: Not registered as an entry_point — run directly with `python3`.
+
 ### `ur5e_tools/validation/compare_mjcf_urdf.py`
 
 Compares UR5e MJCF (`ur5e.xml`) and URDF (`ur5e.urdf`) physics parameters: mass, inertia, joint limits, effort limits, axis vectors, link origins. Auto-detects file paths via `ament_index` or relative path fallback.
@@ -645,7 +747,7 @@ v5.4.0부터 **Controller Registry** 패턴을 사용합니다. 새 컨트롤러
 
 ### 요약 (4단계)
 
-**1. 헤더 작성** — `include/ur5e_rt_controller/controllers/my_controller.hpp`
+**1. 헤더 작성** — `include/ur5e_rt_controller/controllers/indirect/my_controller.hpp` (또는 `direct/`)
 
 ```cpp
 class MyController final : public RTControllerInterface {
@@ -653,8 +755,8 @@ public:
   struct Gains { std::array<double, 6> kp{{5.0, ...}}; };
 
   [[nodiscard]] ControllerOutput Compute(const ControllerState &) noexcept override;
-  void SetRobotTarget(std::span<const double, 6>) noexcept override;
-  void SetHandTarget(std::span<const double, 11>) noexcept override;
+  void SetRobotTarget(std::span<const double, kNumRobotJoints>) noexcept override;
+  void SetHandTarget(std::span<const float, kNumHandMotors>) noexcept override;
   [[nodiscard]] std::string_view Name() const noexcept override { return "MyController"; }
 
   // Registry hooks — gains layout: [kp×6]
@@ -663,11 +765,11 @@ public:
 };
 ```
 
-**2. 구현 작성** — `src/controllers/my_controller.cpp`
+**2. 구현 작성** — `src/controllers/indirect/my_controller.cpp` (또는 `direct/`)
 - `LoadConfig()`: YAML 노드에서 게인 읽기
 - `UpdateGainsFromMsg()`: flat array에서 게인 업데이트
 
-**3. YAML 작성** — `config/controllers/my_controller.yaml`
+**3. YAML 작성** — `config/controllers/indirect/my_controller.yaml` (또는 `direct/`)
 
 ```yaml
 my_controller:
@@ -677,13 +779,14 @@ my_controller:
 **4. 레지스트리 등록** — `src/rt_controller_node.cpp` 의 `MakeControllerEntries()` 에 한 줄 추가
 
 ```cpp
-#include "ur5e_rt_controller/controllers/my_controller.hpp"
+#include "ur5e_rt_controller/controllers/indirect/my_controller.hpp"
 
 // MakeControllerEntries() 안에:
-{"my_controller", [](const std::string &) { return std::make_unique<urtc::MyController>(); }},
+{"my_controller", "indirect/",
+ [](const std::string & urdf_path) { return std::make_unique<urtc::MyController>(urdf_path); }},
 ```
 
-No CMakeLists changes needed for header-only controllers. `PinocchioController`, `ClikController`, and `OperationalSpaceController` require Pinocchio (already linked via `target_link_libraries(rt_controller pinocchio::pinocchio)`). If your controller has a `.cpp` file, add it to `target_sources` in `CMakeLists.txt`.
+No CMakeLists changes needed for header-only controllers. `JointPDController`, `ClikController`, and `OperationalSpaceController` require Pinocchio (already linked via `target_link_libraries(rt_controller pinocchio::pinocchio)`). If your controller has a `.cpp` file, add it to `target_sources` in `CMakeLists.txt`.
 
 ---
 
@@ -703,11 +806,14 @@ No CMakeLists changes needed for header-only controllers. `PinocchioController`,
 
 ---
 
-## Key Constants (from `rt_controller_interface.hpp`)
+## Key Constants (from `ur5e_rt_base/types/types.hpp`)
 
 - `kNumRobotJoints = 6`
-- `kNumHandJoints = 11`
-- `kNumHandSensors = 44` (4 sensors × 11 joints)
+- `kNumHandMotors = 10` (10-DOF hand motors)
+- `kNumFingertips = 4`
+- `kSensorValuesPerFingertip = 11` (8 barometer + 3 ToF)
+- `kNumHandSensors = 44` (4 fingertips × 11 values)
+- `kNumHandJoints = kNumHandMotors` (legacy alias = 10)
 
 ---
 
@@ -761,6 +867,107 @@ For detailed RT tuning (CPU isolation, kernel parameters, DDS configuration, IRQ
 
 ---
 
+## Development Guidelines
+
+이 프로젝트에 적용되는 C++/ROS2/Python 개발 가이드라인입니다. `.agents/skills/`의 규칙을 프로젝트 특성에 맞게 정리한 것입니다.
+
+### C++ RT Safety Rules (from cpp-pro)
+
+**MUST DO** (500Hz RT 경로에서 필수):
+- `noexcept` 모든 RT 콜백 — 예외 발생 시 프로세스 종료 (의도적 설계)
+- RAII 패턴 일관 적용 — `std::unique_ptr`, `std::shared_ptr` 사용, raw `new`/`delete` 금지
+- 모든 Eigen 버퍼 생성자에서 pre-allocate — RT 경로에서 heap 할당 절대 금지
+- `[[nodiscard]]` 상태/계산 결과 반환 함수에 적용
+- `const`-correctness 준수
+- 컴파일러 경고 플래그: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`
+- C++20 features 적극 활용: `std::jthread`, `std::span`, `std::string_view`, `std::concepts`, designated initializers
+
+**MUST NOT DO**:
+- C-style 캐스트 사용 금지 — `static_cast`, `reinterpret_cast` 등 사용
+- `using namespace std` 헤더에서 금지
+- Undefined Behavior 무시 금지
+- expensive 타입의 move semantics 누락 금지
+
+**Memory & Performance 패턴**:
+- Cache line padding (`alignas(64)`)으로 False Sharing 방지 — `SpscLogBuffer`에서 이미 적용
+- SPSC Queue: `memory_order_acquire/release` 쌍으로 동기화, `relaxed`는 카운터/플래그에만
+- Atomic 사용 가이드:
+  | Ordering | 용도 | 이 프로젝트 예시 |
+  |---|---|---|
+  | `relaxed` | 카운터, 통계 | `ControllerTimingProfiler` histogram |
+  | `acquire/release` | Producer-Consumer | `SpscLogBuffer` head/tail |
+  | `seq_cst` | 전체 순서 보장 | E-STOP `std::atomic<bool>` (기본값) |
+
+### ROS2 Common Pitfalls (from ros2-robotics)
+
+**Critical — Silent Failure 주의**:
+
+1. **QoS Mismatch** (가장 흔한 ROS2 버그):
+   - Publisher `BEST_EFFORT` + Subscriber `RELIABLE` = **연결 자체가 안됨, 에러 없음**
+   - 디버깅: `ros2 topic info /topic_name -v`로 QoS 확인
+   - 이 프로젝트의 QoS 가이드:
+     | 용도 | Reliability | Durability | Depth |
+     |---|---|---|---|
+     | 센서 데이터 (`/joint_states`) | BEST_EFFORT | VOLATILE | 1 |
+     | 명령 (`/forward_position_controller/commands`) | RELIABLE | VOLATILE | 10 |
+     | 상태/파라미터 (`/system/estop_status`) | RELIABLE | TRANSIENT_LOCAL | 1 |
+
+2. **Topic Name Typo**: 오타가 있어도 에러 없이 별도 토픽 생성됨 → `ros2 topic list`로 확인 필수
+
+3. **Blocking Callbacks**: 단일 스레드 executor에서 콜백이 블로킹되면 모든 콜백 중단
+   - 이 프로젝트는 4개 `SingleThreadedExecutor` + `MutuallyExclusiveCallbackGroup`으로 분리
+   - 콜백 내에서 `sleep()`, 동기 I/O, 무한 루프 절대 금지
+
+4. **Parameter 미선언**: `get_parameter()` 전에 반드시 `declare_parameter()` 필요 (ROS1과 다름)
+
+**ROS2 디버깅 체크리스트**:
+```bash
+ros2 topic info /topic_name -v     # QoS 호환성 확인
+ros2 topic hz /topic_name          # 발행 주파수 확인
+ros2 node info /node_name          # pub/sub 목록 확인
+ros2 param list /node_name         # 파라미터 목록 확인
+ros2 doctor                        # 시스템 전체 진단
+```
+
+**Launch File 모범 사례**:
+- `DeclareLaunchArgument`로 인자 선언 → `LaunchConfiguration`으로 참조
+- `PathJoinSubstitution` + `FindPackageShare`로 경로 구성
+- 조건부 노드: `IfCondition` / `UnlessCondition`
+- 지연 시작: `TimerAction(period=N, actions=[...])`
+
+### Concurrency Patterns (from cpp-pro)
+
+이 프로젝트에서 사용 중인 동시성 패턴:
+
+| 패턴 | 적용 위치 | 핵심 규칙 |
+|---|---|---|
+| SPSC Ring Buffer | `SpscLogBuffer` | power-of-2 크기, bitwise AND modulus, local index caching |
+| `std::atomic<bool>` | E-STOP flags | mutex 없이 cross-thread 접근, `seq_cst` 기본 |
+| Separate Mutexes | `state_mutex_`, `target_mutex_`, `hand_mutex_` | 동시에 2개 이상 hold 금지 (deadlock 방지) |
+| `std::jthread` + `stop_token` | MuJoCo sim loop, UDP receiver | cooperative cancellation |
+| `condition_variable` | `sync_cv_` (MuJoCo sync_step) | spurious wakeup 대비 predicate 필수 |
+| `try_lock` | `viz_mutex_` (viewer) | 절대 SimLoop를 블로킹하지 않음 |
+
+**새 스레드 추가 시 체크리스트**:
+1. `ThreadConfig` 상수 정의 (core, policy, priority)
+2. `SystemThreadConfigs`에 추가
+3. `ApplyThreadConfig()` 호출
+4. RT 경로면 `SCHED_FIFO` + 적절한 priority
+5. 4/6/8-core 레이아웃 모두 업데이트
+
+### Python Tool Guidelines (from python-performance-optimization)
+
+`ur5e_tools/` Python 코드 작성 시:
+
+- **프로파일링 먼저**: `cProfile` / `timeit`으로 병목 확인 후 최적화
+- **GUI (PyQt5)**: 메인 스레드에서만 UI 업데이트, ROS2 콜백은 별도 스레드
+- **대용량 CSV 처리**: `pandas`로 벡터화 연산, 루프 최소화
+- **NumPy 활용**: joint state 계산 등 수치 연산에 NumPy 벡터 연산 선호
+- **Generator 사용**: 대용량 데이터 순회 시 `list` 대신 generator로 메모리 절약
+- **`functools.lru_cache`**: 반복 계산에 캐싱 적용 (예: FK/IK lookup)
+
+---
+
 ## Version History Summary
 
 | Version | Key Changes |
@@ -771,7 +978,6 @@ For detailed RT tuning (CPU isolation, kernel parameters, DDS configuration, IRQ
 | v5.6.0 | MuJoCo viewer 전면 확장: `src/viewer/` 디렉토리 신설 (`viewer_state.hpp`, `viewer_loop.cpp`, `viewer_callbacks.cpp`, `viewer_overlays.cpp`). 신규 키: `→`(단진), `TAB`(카메라), `J/U/E/W/L/A/X`(시각화), `0-5`(geomgroup), `F5-F8`(렌더링), `F9`(sensor), `F10`(modelinfo), `P`(screenshot). 마우스: double-click(body선택), Ctrl+Drag(force/torque), Middle drag(zoom), Shift+drag(수평). Help 2페이지 분할. `StepOnce()` / `GetSimMode()` API 추가. |
 | v5.5.1 | 플롯 저장 경로 변경: `~/ur_plots` → `logging_data/ur_plot` |
 | v5.5.0 | Script enhancements: `build.sh` and `install.sh` parameter parsing & advanced options (`-c`, `-p`, `--skip-deps`, etc.). Source split: `rt_controller.cpp` → `rt_controller_node.hpp` + `.cpp` + `main.cpp`. Renamed `CustomController` → `RtControllerNode`. Fast modular math for `SpscLogBuffer`. |
-| v5.5.0 | Script enhancements:  and  parameter parsing & advanced options (, , , etc.). Source split:  →  +  + . Renamed  → . Fast modular math for . |
 | v5.4.0 | Controller Registry pattern: `MakeControllerEntries()` factory list, `LoadConfig()` + `UpdateGainsFromMsg()` hooks on `RTControllerInterface`, per-controller YAML loading loop replaces 80-line boilerplate, `switch`/`dynamic_cast` gains handler replaced by single virtual dispatch. New guide: `ur5e_rt_controller/docs/ADDING_CONTROLLER.md` |
 | v5.3.0 | Runtime controller switching (P/PD/Pinocchio/CLIK/OSC via `/rt_controller/controller_type` topic), `controller_gains` topic for dynamic gain updates, `controller_gui.py` tkinter GUI, MuJoCo `package://` URI support (`Ros2ResourceProvider`), quintic trajectory subsystem (`QuinticPolynomial`, `TaskSpaceTrajectory`, `JointSpaceTrajectory<N>`) |
 | v5.2.2 | `ur5e_description` package (MJCF/URDF/mesh), dynamic log path (`~/ros2_ws/ur5e_ws/logging_data`), `build.sh`, `rmw_cyclonedds_cpp`, source split (`mujoco_sim_loop.cpp`, `mujoco_viewer.cpp`), `solver_niter` island fix, ROS2 Jazzy |

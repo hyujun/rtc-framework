@@ -321,21 +321,27 @@ if [[ -z "$RT_KERNEL_VER" ]]; then
 else
   info "설치된 RT 커널 버전: ${RT_KERNEL_VER}"
 
-  # GRUB 메뉴에서 RT 커널에 해당하는 menuentry 찾기
+  # grub.cfg 갱신
   update-grub 2>/dev/null
 
-  # /boot/grub/grub.cfg에서 RT 커널 menuentry ID 추출
+  # /boot/grub/grub.cfg에서 RT 커널의 menuentry 표시 이름을 추출
+  # GRUB2는 "submenu 제목>menuentry 제목" 형식의 문자열을 GRUB_DEFAULT로 지원
   GRUB_ENTRY=""
   if [[ -f /boot/grub/grub.cfg ]]; then
-    # Advanced options 하위 메뉴의 정확한 menuentry ID 찾기
-    GRUB_ENTRY=$(awk -v ver="$RT_KERNEL_VER" '
-      /submenu.*Advanced options/ { sub_id=$0; gsub(/.*\047/,"",sub_id); gsub(/\047.*$/,"",sub_id) }
-      /menuentry/ && $0 ~ ver && !/recovery/ {
-        entry_id=$0; gsub(/.*\047/,"",entry_id); gsub(/\047.*$/,"",entry_id)
-        if (sub_id != "") { print sub_id ">" entry_id; exit }
-        else { print entry_id; exit }
-      }
-    ' /boot/grub/grub.cfg)
+    # "Advanced options" submenu의 표시 제목 추출
+    SUBMENU_TITLE=$(grep -oP "submenu\s+'\K[^']+" /boot/grub/grub.cfg | head -1)
+
+    # RT 커널 menuentry의 표시 제목 추출 (recovery 모드 제외)
+    ENTRY_TITLE=$(grep -v recovery /boot/grub/grub.cfg \
+      | grep -oP "menuentry\s+'\K[^']*${RT_KERNEL_VER}[^']*(?=')" \
+      | head -1)
+
+    if [[ -n "$SUBMENU_TITLE" && -n "$ENTRY_TITLE" ]]; then
+      GRUB_ENTRY="${SUBMENU_TITLE}>${ENTRY_TITLE}"
+    elif [[ -n "$ENTRY_TITLE" ]]; then
+      # submenu 없이 최상위에 RT 커널이 있는 경우
+      GRUB_ENTRY="$ENTRY_TITLE"
+    fi
   fi
 
   if [[ -n "$GRUB_ENTRY" ]]; then
@@ -353,10 +359,16 @@ else
 
     update-grub
     success "GRUB 기본 부팅이 RT 커널(${RT_KERNEL_VER})로 설정되었습니다"
+
+    # 설정 검증
+    info "검증 — /etc/default/grub 의 GRUB_DEFAULT:"
+    grep '^GRUB_DEFAULT=' "$GRUB_FILE" | sed 's/^/  /'
   else
     warn "GRUB 메뉴에서 RT 커널 항목을 찾을 수 없습니다"
-    warn "재부팅 시 GRUB 메뉴에서 'Advanced options'를 선택하여 RT 커널을 수동으로 선택하세요"
-    warn "설치된 RT 커널: ${RT_KERNEL_VER}"
+    warn "수동 설정 방법:"
+    warn "  1. grep menuentry /boot/grub/grub.cfg | grep '${RT_KERNEL_VER}'"
+    warn "  2. sudo grub-set-default 'Advanced options for Ubuntu>Ubuntu, with Linux ${RT_KERNEL_VER}'"
+    warn "  3. sudo update-grub"
   fi
 fi
 

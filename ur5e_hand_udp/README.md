@@ -2,22 +2,35 @@
 
 > 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.7.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
-UR5e RT Controller 스택의 **11-DOF 손 UDP 브리지 패키지**입니다. 외부 손 컨트롤러(하드웨어 또는 시뮬레이터)와 ROS2 토픽 사이의 UDP 통신을 담당합니다.
+
+UR5e RT Controller 스택의 **10-DOF 손 UDP 브리지 패키지**입니다. 외부 손 컨트롤러(하드웨어)와 ROS2 토픽 사이의 UDP request-response 통신을 담당합니다.
 
 ## 개요
 
 ```
 ur5e_hand_udp/
 ├── include/ur5e_hand_udp/
-│   ├── hand_udp_receiver.hpp    ← UDP 수신 (jthread, 포트 50001)
-│   └── hand_udp_sender.hpp      ← UDP 송신 (리틀 엔디언 double, 포트 50002)
+│   ├── hand_packets.hpp        ← 와이어 포맷 구조체, 인코딩/디코딩 헬퍼
+│   ├── hand_udp_codec.hpp      ← 공개 코덱 API (allocation-free, noexcept)
+│   ├── hand_controller.hpp     ← 핵심 드라이버 (request-response 폴링)
+│   ├── hand_udp_receiver.hpp   ← (레거시) 호환 alias
+│   └── hand_udp_sender.hpp     ← (레거시) 호환 alias
 ├── src/
-│   ├── hand_udp_receiver_node.cpp ← UDP → /hand/joint_states (100Hz)
-│   └── hand_udp_sender_node.cpp   ← /hand/command → UDP
+│   ├── hand_udp_node.cpp           ← 통합 ROS2 노드 (권장)
+│   ├── hand_udp_receiver.cpp       ← (레거시) 스트리밍 수신기
+│   ├── hand_udp_receiver_node.cpp  ← (레거시) ROS2 래퍼
+│   ├── hand_udp_sender.cpp         ← (레거시) 송신기
+│   └── hand_udp_sender_node.cpp    ← (레거시) ROS2 래퍼
 ├── config/
-│   └── hand_udp_receiver.yaml
-└── launch/
-    └── hand_udp.launch.py
+│   ├── hand_udp.yaml               ← 통합 노드 설정 (권장)
+│   └── hand_udp_receiver.yaml      ← (레거시) 이중 노드 설정
+├── launch/
+│   ├── hand_udp_unified.launch.py  ← 통합 런치 (권장)
+│   └── hand_udp.launch.py          ← (레거시) 이중 노드 런치
+├── CMakeLists.txt
+├── package.xml
+├── README.md
+└── CHANGELOG.md
 ```
 
 **의존성 그래프 내 위치:**
@@ -28,87 +41,181 @@ ur5e_rt_base ← ur5e_hand_udp   (ur5e_rt_controller에 의존하지 않음)
 
 ---
 
-## UDP 프로토콜
+## 손 구조 (10-DOF + 44 센서)
 
-### 수신 (손 상태, 포트 50001)
+| 항목 | 값 | 상수 (ur5e_rt_base/types.hpp) |
+|------|-----|-------------------------------|
+| 모터 수 | **10** | `kNumHandMotors` |
+| 핑거팁 수 | **4** | `kNumFingertips` |
+| 핑거팁당 기압 센서 | 8 | `kBarometerCount` |
+| 핑거팁당 ToF 센서 | 3 | `kTofCount` |
+| 핑거팁당 센서 합계 | **11** (8+3) | `kSensorValuesPerFingertip` |
+| 총 센서 값 | **44** (4×11) | `kNumHandSensors` |
 
-패킷 크기: **77 × `double` = 616 바이트**
+> 와이어 포맷에는 핑거팁당 `reserved[5]` 필드가 추가로 포함되나, 디코딩 시 폐기됩니다.
 
-| 오프셋 | 필드 | 개수 | 설명 |
-|--------|------|------|------|
-| 0–10 | `motor_positions` | 11 | 모터 위치 |
-| 11–21 | `motor_velocities` | 11 | 모터 속도 |
-| 22–32 | `motor_currents` | 11 | 모터 전류 |
-| 33–76 | `sensor_data` | 44 | 촉각 센서 (관절당 4개) |
+---
 
-모든 값: 호스트 바이트 순서(little-endian) `double`
+## UDP 프로토콜 (Request-Response)
 
-### 송신 (손 명령, 포트 50002)
+단일 UDP 소켓으로 **요청-응답** 방식 통신합니다 (포트: **55151**).
 
-패킷 크기: **11 × `double` = 88 바이트**
+### 패킷 형식
 
-- 11개 모터 명령 (정규화 0.0–1.0)
-- 리틀 엔디언 `double` 인코딩
+**모터 패킷 (43 바이트, little-endian):**
+
+```
+오프셋  필드          타입              개수    설명
+0       id            uint8_t           1       디바이스 ID (0x01)
+1       cmd           uint8_t           1       커맨드 (아래 표 참조)
+2       mode          uint8_t           1       모드 (기본 0x00)
+3–42    data          uint32_t[10]      10      모터 데이터 (float → uint32 reinterpret)
+```
+
+**센서 요청 패킷 (3 바이트):**
+
+```
+오프셋  필드          타입              설명
+0       id            uint8_t           0x01
+1       cmd           uint8_t           0x14–0x17 (핑거팁 0–3)
+2       mode          uint8_t           센서 모드 (0=Raw, 1=NN)
+```
+
+**센서 응답 패킷 (67 바이트):**
+
+```
+오프셋  필드           타입              설명
+0–2     헤더           3B               id/cmd/mode 에코
+3–34    barometer[8]   uint32_t[8]      기압 센서 (float)
+35–54   reserved[5]    uint32_t[5]      예약 (디코딩 시 폐기)
+55–66   tof[3]         uint32_t[3]      ToF 센서 (float)
+```
+
+### 커맨드 정의
+
+| 커맨드 | 코드 | 송신 | 수신 | 설명 |
+|--------|------|------|------|------|
+| `kWritePosition` | `0x01` | 43B | — | 10개 모터 위치 명령 (응답 없음) |
+| `kSetSensorMode` | `0x04` | 3B | 3B | 센서 모드 초기화 (Raw/NN) |
+| `kReadPosition` | `0x11` | 43B | 43B | 10개 모터 위치 읽기 |
+| `kReadVelocity` | `0x12` | 43B | 43B | 10개 모터 속도 읽기 |
+| `kReadSensor0–3` | `0x14–0x17` | 3B | 67B | 핑거팁 센서 읽기 (각 11개 값) |
+
+### 폴링 사이클
+
+`HandController`가 매 사이클마다 아래 순서로 통신합니다:
+
+```
+1. WritePosition  (0x01) → 43B 송신 (새 명령이 있을 때만)
+2. ReadPosition   (0x11) → 43B 송신 → 43B 수신 → 10 float (위치)
+3. ReadVelocity   (0x12) → 43B 송신 → 43B 수신 → 10 float (속도)
+4. ReadSensor0    (0x14) →  3B 송신 → 67B 수신 → 11 float (핑거팁 0)
+5. ReadSensor1    (0x15) →  3B 송신 → 67B 수신 → 11 float (핑거팁 1)
+6. ReadSensor2    (0x16) →  3B 송신 → 67B 수신 → 11 float (핑거팁 2)
+7. ReadSensor3    (0x17) →  3B 송신 → 67B 수신 → 11 float (핑거팁 3)
+```
 
 ---
 
 ## 노드 설명
 
-### `hand_udp_receiver_node`
+### `hand_udp_node` (통합, 권장)
 
-UDP 소켓에서 손 상태 패킷을 수신하여 ROS2 토픽으로 중계합니다.
+`HandController`를 사용하는 통합 ROS2 노드입니다. 단일 프로세스에서 송수신을 모두 처리합니다.
 
-- **수신**: UDP 포트 50001에서 616바이트 패킷
+- **내부**: `HandController` — request-response 폴링 (jthread, Core 5, SCHED_FIFO/65)
 - **퍼블리시**: `/hand/joint_states` (`std_msgs/Float64MultiArray`, 100Hz)
-  - **11개 `double` 값** — `motor_positions[11]` (모터 위치)
-  - 속도/전류/센서 데이터는 UDP로 수신하지만 `HandUdpReceiver` 콜백이 11개만 전달함
-- `std::jthread` (C++20 협동 취소) 사용으로 깔끔한 종료 보장
-- RT 스레드 설정: **Core 5**, SCHED_FIFO/65 (`kUdpRecvConfig`, v1.1.0: Core 3→5로 변경)
-- 패킷 간격 통계 로깅 (5초마다)
-
-### `hand_udp_sender_node`
-
-ROS2 토픽 구독하여 손 명령을 UDP로 전송합니다.
-
+  - **64개 `double` 값**: `[positions:10] + [velocities:10] + [sensors:44]`
 - **구독**: `/hand/command` (`std_msgs/Float64MultiArray`)
-  - 11개 정규화된 모터 명령 (0.0–1.0)
-- **송신**: UDP `target_ip:target_port` (기본값: `192.168.1.100:50002`)
+  - **10개** 정규화된 모터 명령 (0.0–1.0)
+- `mlockall(MCL_CURRENT | MCL_FUTURE)` — 페이지 폴트 방지
+
+### 레거시 노드 (비권장)
+
+| 노드 | 설명 |
+|------|------|
+| `hand_udp_receiver_node` | UDP 스트리밍 수신 → `/hand/joint_states` (10개 위치만) |
+| `hand_udp_sender_node` | `/hand/command` → UDP 송신 |
+
+> 레거시 노드는 616바이트 스트리밍 프로토콜을 사용합니다. 빌드에서 제외되어 있습니다.
 
 ---
 
 ## ROS2 인터페이스
 
-| 토픽 | 타입 | 방향 | 설명 |
-|------|------|------|------|
-| `/hand/joint_states` | `std_msgs/Float64MultiArray` | 퍼블리시 | **11개** 모터 위치값 (100Hz) |
-| `/hand/command` | `std_msgs/Float64MultiArray` | 구독 | 11개 정규화된 손 명령 (0.0–1.0) |
+| 토픽 | 타입 | 방향 | 크기 | 설명 |
+|------|------|------|------|------|
+| `/hand/joint_states` | `std_msgs/Float64MultiArray` | 퍼블리시 | **64** | [0–9] 위치, [10–19] 속도, [20–63] 센서 |
+| `/hand/command` | `std_msgs/Float64MultiArray` | 구독 | **10** | 정규화된 모터 명령 (0.0–1.0) |
+
+### `/hand/joint_states` 데이터 레이아웃
+
+```
+인덱스   내용                    개수
+[0–9]    motor_positions         10    모터 위치
+[10–19]  motor_velocities        10    모터 속도
+[20–30]  fingertip_0 sensors     11    기압[8] + ToF[3]
+[31–41]  fingertip_1 sensors     11    기압[8] + ToF[3]
+[42–52]  fingertip_2 sensors     11    기압[8] + ToF[3]
+[53–63]  fingertip_3 sensors     11    기압[8] + ToF[3]
+                                ────
+                                 64
+```
 
 ---
 
 ## 설정
 
-### `config/hand_udp_receiver.yaml`
+### `config/hand_udp.yaml` (통합 노드용)
 
 ```yaml
+# ── UDP 설정 ──────────────────────────────────────────────────────────────
 udp:
-  port: 50001          # 수신 포트
-  buffer_size: 1024    # 버퍼 크기 (바이트)
-  timeout_ms: 1000     # 소켓 타임아웃
+  target_ip: "192.168.1.2"       # 핸드 컨트롤러 IP
+  target_port: 55151             # 핸드 컨트롤러 포트
 
+# ── ROS2 퍼블리시 설정 ──────────────────────────────────────────────────────
 publishing:
-  rate: 100.0          # /hand/joint_states 퍼블리시 주기 (Hz)
+  rate: 100.0                    # /hand/joint_states 퍼블리시 주기 (Hz)
   topic: "/hand/joint_states"
+  queue_size: 10
 
+# ── 10-DOF 핸드 설정 ────────────────────────────────────────────────────────
+hand:
+  num_motors: 10                 # kNumHandMotors
+  num_fingertips: 4              # kNumFingertips
+  joint_names:
+    - "hand_motor_0" ~ "hand_motor_9"
+
+# ── 모니터링 설정 ───────────────────────────────────────────────────────────
 monitoring:
   enable_statistics: true
-  statistics_period: 5.0  # 통계 출력 주기 (초)
+  statistics_period: 5.0         # 패킷 통계 출력 주기 (초)
 ```
 
 ---
 
 ## 실행
 
-### 손 UDP 노드만 실행
+### 통합 노드 실행 (권장)
+
+```bash
+ros2 launch ur5e_hand_udp hand_udp_unified.launch.py \
+    target_ip:=192.168.1.2 \
+    target_port:=55151 \
+    publish_rate:=100.0
+```
+
+### Launch 파라미터
+
+| 파라미터 | 기본값 | 설명 |
+|----------|--------|------|
+| `target_ip` | `192.168.1.2` | 손 컨트롤러 IP |
+| `target_port` | `55151` | 손 컨트롤러 포트 |
+| `publish_rate` | `100.0` | `/hand/joint_states` 퍼블리시 주기 (Hz) |
+| `recv_port` | `50001` | (미사용, 레거시 호환) |
+
+### 레거시 이중 노드 실행 (비권장)
 
 ```bash
 ros2 launch ur5e_hand_udp hand_udp.launch.py \
@@ -116,14 +223,6 @@ ros2 launch ur5e_hand_udp hand_udp.launch.py \
     target_ip:=192.168.1.100 \
     target_port:=50002
 ```
-
-### Launch 파라미터
-
-| 파라미터 | 기본값 | 설명 |
-|----------|--------|------|
-| `udp_port` | `50001` | UDP 수신 포트 |
-| `target_ip` | `192.168.1.100` | 손 컨트롤러 IP |
-| `target_port` | `50002` | UDP 송신 포트 |
 
 ---
 
@@ -137,28 +236,26 @@ source install/setup.bash
 
 ---
 
-## 개발/테스트
+## RT/안전 기능
 
-### 합성 UDP 데이터 전송 (테스트용)
+### 실시간 스레드
 
-`ur5e_tools` 패키지의 `hand_udp_sender_example.py`를 사용합니다:
+| 항목 | 값 |
+|------|-----|
+| CPU 코어 | **Core 5** (`kUdpRecvConfig`) |
+| 스케줄러 | `SCHED_FIFO` |
+| 우선순위 | **65** |
+| 메모리 잠금 | `mlockall(MCL_CURRENT \| MCL_FUTURE)` |
 
-```bash
-ros2 run ur5e_tools hand_udp_sender_example
-```
+> v5.1.0에서 Core 3 → Core 5로 이동 (sensor_io 스레드와의 경합 방지).
 
-정현파 또는 정적 손 데이터를 포트 50001로 전송합니다.
+### Allocation-free 설계
 
-### 수신 확인
+- 모든 코덱 함수: `noexcept`, 힙 할당 없음
+- 폴링 루프: 고정 크기 배열만 사용 (`std::array`)
+- `trivially_copyable` 패킷 구조체 (`#pragma pack`, `static_assert` 검증)
 
-```bash
-ros2 topic echo /hand/joint_states
-ros2 topic hz /hand/joint_states  # 약 100Hz
-```
-
----
-
-## 손 E-STOP 설정
+### E-STOP 연동
 
 `ur5e_rt_controller`의 `config/ur5e_rt_controller.yaml`에서:
 
@@ -172,26 +269,56 @@ estop:
 
 ---
 
-## `HandUdpReceiver` 사용 예시 (C++)
+## `HandController` 사용 예시 (C++)
 
 ```cpp
-#include "ur5e_hand_udp/hand_udp_receiver.hpp"
+#include "ur5e_hand_udp/hand_controller.hpp"
 
-ur5e_rt_controller::HandUdpReceiver receiver(/*port=*/50001);
+namespace urtc = ur5e_rt_controller;
 
-// 콜백 시그니처: std::span<const double, kNumHandJoints> (11개 모터 위치)
-receiver.SetCallback([](std::span<const double, ur5e_rt_controller::kNumHandJoints> data) {
-  // data[0..10] = motor_positions[11]
-  for (std::size_t i = 0; i < data.size(); ++i) {
-    printf("motor[%zu] = %.3f\n", i, data[i]);
-  }
+// HandController 생성 (IP, 포트)
+urtc::HandController controller("192.168.1.2", 55151);
+
+// 상태 콜백 등록
+controller.SetCallback([](const urtc::HandState& state) {
+  // state.motor_positions[10]  — 모터 위치
+  // state.motor_velocities[10] — 모터 속도
+  // state.sensor_data[44]      — 촉각 센서 (4 핑거팁 × 11)
+  printf("pos[0]=%.3f vel[0]=%.3f sensor[0]=%.3f\n",
+         state.motor_positions[0],
+         state.motor_velocities[0],
+         state.sensor_data[0]);
 });
 
-receiver.Start();  // UDP 수신 jthread 시작
+controller.Start();  // 폴링 jthread 시작 (Core 5, SCHED_FIFO/65)
+
+// 모터 명령 전송 (스레드 안전)
+std::array<float, urtc::kNumHandMotors> cmd{};
+cmd.fill(0.5f);
+controller.SetTargetPositions(cmd);
 
 // ... (노드 실행 중)
 
-receiver.Stop();  // jthread 협동 취소
+controller.Stop();  // jthread 협동 취소
+```
+
+---
+
+## 개발/테스트
+
+### 수신 확인
+
+```bash
+ros2 topic echo /hand/joint_states
+ros2 topic hz /hand/joint_states  # 약 100Hz
+```
+
+### 명령 전송 테스트
+
+```bash
+# 10개 모터에 0.5 값 전송
+ros2 topic pub /hand/command std_msgs/msg/Float64MultiArray \
+    "{data: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]}"
 ```
 
 ---

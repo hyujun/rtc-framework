@@ -46,7 +46,7 @@ ur5e_mujoco_sim  ← ur5e_description에서 모델 참조 (ament_index + package
 
 ## 시뮬레이션 모드
 
-### `free_run` (기본값)
+### `free_run`
 
 `mj_step()`을 최대 속도로 진행합니다. 알고리즘 검증 및 빠른 반복 개발에 적합합니다.
 
@@ -56,7 +56,7 @@ SimLoop → mj_step() (가능한 빠르게)
         → /forward_position_controller/commands 구독 (비동기)
 ```
 
-### `sync_step` (동기 스텝)
+### `sync_step` (기본값)
 
 상태 퍼블리시 → 명령 대기 → 물리 스텝을 순서대로 수행합니다. `Compute()` 지연 시간을 정확히 측정할 수 있습니다.
 
@@ -75,16 +75,19 @@ SimLoop → /joint_states 퍼블리시
 
 | 토픽 | 타입 | 주기 | 설명 |
 |------|------|------|------|
-| `/joint_states` | `sensor_msgs/JointState` | 물리 속도 또는 데시메이션 | 6-DOF 관절 위치/속도 |
-| `/hand/joint_states` | `std_msgs/Float64MultiArray` | 100Hz | 시뮬레이션된 손 상태 (1차 필터) |
+| `/joint_states` | `sensor_msgs/JointState` | 물리 속도 또는 데시메이션 | 6-DOF 관절 위치/속도/토크 (effort = `qfrc_actuator`) |
+| `/hand/joint_states` | `std_msgs/Float64MultiArray` | 100Hz | 시뮬레이션된 10-DOF 손 상태 (1차 저역통과 필터) |
 | `/sim/status` | `std_msgs/Float64MultiArray` | 1Hz | `[step_count, sim_time_sec, rtf, paused(0/1)]` |
 
 ### 구독 토픽
 
 | 토픽 | 타입 | 설명 |
 |------|------|------|
-| `/forward_position_controller/commands` | `std_msgs/Float64MultiArray` | 6개 로봇 위치 명령 (rad) |
-| `/hand/command` | `std_msgs/Float64MultiArray` | 11개 손 명령 (0.0–1.0) |
+| `/forward_position_controller/commands` | `std_msgs/Float64MultiArray` | 6개 로봇 위치 명령 (rad) — 수신 시 자동 position servo 모드 |
+| `/forward_torque_controller/commands` | `std_msgs/Float64MultiArray` | 6개 로봇 토크 명령 (Nm) — 수신 시 자동 torque 모드 전환 |
+| `/hand/command` | `std_msgs/Float64MultiArray` | 10개 손 명령 (0.0–1.0) |
+
+> **QoS 참고**: `/forward_position_controller/commands`와 `/forward_torque_controller/commands`는 `BEST_EFFORT` QoS를 사용합니다. rt_controller의 퍼블리셔가 `BEST_EFFORT + depth 1`이므로, `RELIABLE` 구독자는 메시지를 수신할 수 없습니다.
 
 ---
 
@@ -97,7 +100,10 @@ mujoco_simulator_node
     │     └── SimLoopFreeRun 또는 SimLoopSyncStep
     │         ├── cmd_mutex_ + cmd_pending_ (atomic) — 명령 전달 (잠금-없음 fast path)
     │         ├── sync_cv_ — SyncStep 명령 대기 (조건 변수)
-    │         └── state_mutex_ — 최신 상태 스냅샷 보호
+    │         ├── state_mutex_ — 최신 상태 스냅샷 보호
+    │         ├── pert_mutex_ (try_lock 전용 — 퍼튜베이션/외부힘 보호)
+    │         ├── solver_stats_mutex_ — solver 통계 보호
+    │         └── step_once_ (atomic) — 일시정지 중 단진 제어
     │
     └── ViewerLoop 스레드 (jthread, 선택적)
           └── GLFW 3D 뷰어 ~60Hz
@@ -114,7 +120,7 @@ mujoco_simulator_node
 mujoco_simulator:
   ros__parameters:
     model_path: ""             # 빈 값 → <패키지>/models/ur5e/scene.xml
-    sim_mode: "free_run"       # "free_run" 또는 "sync_step"
+    sim_mode: "sync_step"      # "free_run" 또는 "sync_step"
     publish_decimation: 1      # free_run: N 스텝마다 퍼블리시
     sync_timeout_ms: 50.0      # sync_step: 명령 대기 타임아웃 (ms)
     max_rtf: 1.0               # 최대 실시간 비율 (0.0 = 무제한)
@@ -153,11 +159,11 @@ rt_controller:
 ### MuJoCo 시뮬레이션
 
 ```bash
-# 기본 (free_run, 뷰어 활성화)
+# 기본 (sync_step, 뷰어 활성화)
 ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py
 
-# 동기 스텝 모드
-ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step
+# free_run 모드 (최대 속도)
+ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py sim_mode:=free_run
 
 # 헤드리스 (CI/서버)
 ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py enable_viewer:=false
@@ -283,9 +289,29 @@ sim->ClearExternalForce();
 // RTF 상한 동적 변경
 sim->SetMaxRtf(5.0);                   // 실시간 5배
 
-// 시뮬레이터 상태 조회
-auto stats = sim->GetStats();          // .step_count, .sim_time, .rtf, .paused
-auto snapshot = sim->GetStateSnapshot();
+// 제어 모드 전환 (v5.7.0)
+sim->SetControlMode(true);             // torque 모드 (gravity 자동 ON)
+sim->SetControlMode(false);            // position servo 모드 (gravity 자동 OFF + 잠금)
+
+// 일시정지 제어
+sim->Pause();
+sim->Resume();
+sim->StepOnce();                       // 일시정지 중 1스텝 진행
+
+// 시뮬레이터 상태 조회 (개별 접근자)
+auto steps    = sim->StepCount();      // uint64_t
+auto sim_time = sim->SimTimeSec();     // double (seconds)
+auto rtf      = sim->GetRtf();         // double (실시간 비율)
+auto paused   = sim->IsPaused();       // bool
+auto mode     = sim->GetSimMode();     // kFreeRun / kSyncStep
+
+// 관절 상태 조회
+auto pos = sim->GetPositions();        // array<double, 6>
+auto vel = sim->GetVelocities();       // array<double, 6>
+auto eff = sim->GetEfforts();          // array<double, 6> (qfrc_actuator)
+
+// Solver 통계 조회
+auto solver = sim->GetSolverStats();   // {improvement, gradient, iter, ncon}
 ```
 
 ---

@@ -5,6 +5,18 @@
 
 ---
 
+## [Unreleased]
+
+### 변경 (Changed) — 문서
+
+- README.md: `/forward_torque_controller/commands` 토픽, effort 필드, QoS 설명 추가
+- README.md: 설정 예시 `sim_mode` 기본값을 `"sync_step"`으로 수정 (실제 YAML과 일치)
+- README.md: 존재하지 않는 API (`GetStats()`, `GetStateSnapshot()`) 제거, 실제 접근자로 대체
+- README.md: 누락 API 메서드 추가 (제어 모드 전환, 일시정지, solver 통계 등)
+- README.md: hand 시뮬레이션 10-DOF로 수정 (기존 11개 → 10개)
+
+---
+
 ## [5.7.0] - 2026-03-11
 
 ### 추가 (Added) — MuJoCo Position Servo 게인 시스템
@@ -15,10 +27,21 @@
 - `PreparePhysicsStep()`: torque / YAML servo / XML servo 3-way 분기
 - Gravity 자동 잠금: position servo 진입 시 OFF + 잠금, torque 모드 전환 시 해제 + ON
 - `mujoco_sim.launch.py`에 `use_yaml_servo_gains` launch argument 추가
+- `/forward_torque_controller/commands` 토크 명령 구독 — 수신 시 자동으로 torque 모드 전환
+- `SetControlMode(bool)` API — position servo ↔ torque 모드 전환 (gravity 자동 관리)
+- `EnforcePositionServoGravity()` — 위치 명령 수신마다 gravity OFF + lock 재확인 (경량 메서드)
+- `/joint_states` effort 필드 퍼블리시 (`qfrc_actuator` — 액추에이터 토크 Nm)
+- 위치/토크 명령 구독 QoS를 `BEST_EFFORT`로 설정 (rt_controller 퍼블리셔와 일치)
 
 ### 변경 (Changed)
 
 - `mujoco_simulator.yaml` rt_controller 섹션 정리: 중복 파라미터(`control_rate`, `kp`, `kd`, `enable_logging`) 제거, 시뮬 전용 차이값만 유지
+
+### 수정 (Fixed)
+
+- Gravity lock QoS 불일치: rt_controller(`BEST_EFFORT`) ↔ simulator(`RELIABLE`) 간 QoS 불일치로 position command 미수신 → gravity lock 미동작 문제 해결
+- Position servo 모드에서 gravity OFF 강제 재적용 (viewer `G` 키 또는 race condition으로 활성화되는 경우 방어)
+- `gravity_enabled_` 초기값을 `false`로 수정하여 초기 position servo 모드와 일치
 
 ---
 
