@@ -9,6 +9,7 @@
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <ur5e_rt_base/logging/session_dir.hpp>
+#include <ur5e_rt_base/threading/thread_utils.hpp>
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
@@ -114,8 +115,10 @@ RtControllerNode::RtControllerNode()
           RCLCPP_INFO(get_logger(), "StatusMonitor: system ready");
         });
 
-    status_monitor_->start();
-    RCLCPP_INFO(get_logger(), "UR5eStatusMonitor started (10 Hz)");
+    const auto cfgs = ur5e_rt_controller::SelectThreadConfigs();
+    status_monitor_->start(cfgs.status_monitor);
+    RCLCPP_INFO(get_logger(), "UR5eStatusMonitor started (10 Hz, Core %d)",
+                cfgs.status_monitor.cpu_core);
   }
 
   RCLCPP_INFO(get_logger(), "RtControllerNode ready — %.0f Hz, E-STOP: %s",

@@ -1,6 +1,8 @@
 #include "ur5e_hand_udp/hand_controller.hpp"
 #include "ur5e_hand_udp/hand_failure_detector.hpp"
 
+#include <ur5e_rt_base/threading/thread_utils.hpp>
+
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 
@@ -78,8 +80,9 @@ class HandUdpNode : public rclcpp::Node {
       fd_cfg.rate_fail_threshold = static_cast<int>(
           get_parameter("rate_fail_threshold").as_int());
 
+      const auto cfgs = urtc::SelectThreadConfigs();
       failure_detector_ = std::make_unique<urtc::HandFailureDetector>(
-          *controller_, fd_cfg);
+          *controller_, fd_cfg, cfgs.hand_failure);
       failure_detector_->SetFailureCallback(
           [this](const std::string& reason) {
             RCLCPP_ERROR(get_logger(), "Hand failure detected: %s", reason.c_str());

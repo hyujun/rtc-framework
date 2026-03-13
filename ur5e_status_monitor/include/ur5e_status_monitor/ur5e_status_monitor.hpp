@@ -11,6 +11,8 @@
 // ── Project headers ──────────────────────────────────────────────────────────
 #include "ur5e_status_monitor/failure_types.hpp"
 #include "ur5e_status_monitor/state_history.hpp"
+#include "ur5e_rt_base/threading/thread_config.hpp"
+#include "ur5e_rt_base/threading/thread_utils.hpp"
 
 // ── ROS2 ─────────────────────────────────────────────────────────────────────
 #include <rclcpp/rclcpp.hpp>
@@ -140,7 +142,9 @@ public:
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   /// Start the 10 Hz monitor thread.
-  void start();
+  /// @param thread_cfg  Thread scheduling / CPU affinity configuration.
+  void start(const ur5e_rt_controller::ThreadConfig& thread_cfg =
+                 ur5e_rt_controller::kStatusMonitorConfig);
 
   /// Request the monitor thread to stop and join.
   void stop();

@@ -777,11 +777,13 @@ sudo sysctl -p /etc/sysctl.d/99-realtime.conf
 ### 3. 네트워크 튜닝
 
 ```bash
-# UDP 버퍼 크기 증가 (핸드 UDP 통신)
-sudo sysctl -w net.core.rmem_max=8388608
-sudo sysctl -w net.core.wmem_max=8388608
-sudo sysctl -w net.core.rmem_default=65536
-sudo sysctl -w net.core.wmem_default=65536
+# UDP 버퍼 크기 증가 (ROS 2 DDS + 핸드 UDP 통신)
+# setup_udp_optimization.sh에서 자동 설정됨 (/etc/sysctl.d/99-ros2-udp.conf)
+sudo sysctl -w net.core.rmem_max=2147483647
+sudo sysctl -w net.core.rmem_default=2147483647
+sudo sysctl -w net.core.wmem_max=2147483647
+sudo sysctl -w net.core.wmem_default=2147483647
+sudo sysctl -w net.core.netdev_max_backlog=5000
 ```
 
 ### 4. 지터 프로파일링

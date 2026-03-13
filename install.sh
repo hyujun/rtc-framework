@@ -701,6 +701,17 @@ verify_installation() {
 
   mkdir -p "${WORKSPACE}/logging_data/stats" "${WORKSPACE}/logging_data/ur_plot"
   success "Log directories ready (${WORKSPACE}/logging_data, ${WORKSPACE}/logging_data/ur_plot)"
+
+  # RT 환경 검증 (robot/full 모드)
+  if [[ "$MODE" == "robot" || "$MODE" == "full" ]]; then
+    local CHECK_SCRIPT
+    CHECK_SCRIPT="$(dirname "$0")/ur5e_rt_controller/scripts/check_rt_setup.sh"
+    if [[ -f "$CHECK_SCRIPT" ]]; then
+      echo ""
+      info "━━━ RT System Configuration Check ━━━"
+      bash "$CHECK_SCRIPT" --verbose || true
+    fi
+  fi
 }
 
 # ── Quick start summary ─────────────────────────────────────────────────────────

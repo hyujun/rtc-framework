@@ -310,15 +310,39 @@ if [[ "$EXPORT_COMPILE_COMMANDS" -eq 1 || "$BUILD_TYPE" == "Debug" ]]; then
   fi
 fi
 
-# ── Check Limits ───────────────────────────────────────────────────────────────
-MEMLOCK=$(ulimit -l)
-if [[ "$MEMLOCK" != "unlimited" ]]; then
-  echo ""
-  warn "Your current memlock limit is $MEMLOCK (not unlimited)."
-  warn "Running the custom_controller may fail with RMW load errors due to mlockall()."
-  warn "Please log out and log back in (after running install.sh) or run:"
-  warn "  ulimit -l unlimited"
-  echo ""
+# ── RT Setup Verification ─────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CHECK_SCRIPT="${SCRIPT_DIR}/ur5e_rt_controller/scripts/check_rt_setup.sh"
+
+if [[ -f "$CHECK_SCRIPT" ]]; then
+  case "$MODE" in
+    robot|full)
+      echo ""
+      info "Verifying RT system configuration..."
+      bash "$CHECK_SCRIPT" --summary || true
+      ;;
+    sim)
+      # sim 모드: RT permissions만 간략 체크
+      MEMLOCK=$(ulimit -l)
+      if [[ "$MEMLOCK" != "unlimited" ]]; then
+        echo ""
+        warn "Your current memlock limit is $MEMLOCK (not unlimited)."
+        warn "Running the custom_controller may fail with RMW load errors due to mlockall()."
+        warn "Run: ./install.sh robot  or  ulimit -l unlimited"
+        echo ""
+      fi
+      ;;
+  esac
+else
+  # fallback: check_rt_setup.sh 미발견 시 기존 로직
+  MEMLOCK=$(ulimit -l)
+  if [[ "$MEMLOCK" != "unlimited" ]]; then
+    echo ""
+    warn "Your current memlock limit is $MEMLOCK (not unlimited)."
+    warn "Running the custom_controller may fail with RMW load errors due to mlockall()."
+    warn "  ulimit -l unlimited"
+    echo ""
+  fi
 fi
 
 # ── GDB/Debugger Hint ────────────────────────────────────────────────────────

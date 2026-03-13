@@ -339,14 +339,16 @@ void UR5eStatusMonitor::registerOnRecovery(std::function<void()> cb) {
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 
-void UR5eStatusMonitor::start() {
+void UR5eStatusMonitor::start(
+    const ur5e_rt_controller::ThreadConfig& thread_cfg) {
   if (monitor_thread_.joinable()) {
     RCLCPP_WARN(node_->get_logger(), "[StatusMonitor] Already running");
     return;
   }
   start_time_ = std::chrono::steady_clock::now();
   rate_window_start_ = start_time_;
-  monitor_thread_ = std::jthread([this](std::stop_token st) {
+  monitor_thread_ = std::jthread([this, thread_cfg](std::stop_token st) {
+    ur5e_rt_controller::ApplyThreadConfigWithFallback(thread_cfg);
     MonitorLoop(std::move(st));
   });
   RCLCPP_INFO(node_->get_logger(), "[StatusMonitor] Monitor thread started (10 Hz)");

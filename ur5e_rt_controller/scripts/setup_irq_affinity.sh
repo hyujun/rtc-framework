@@ -32,17 +32,30 @@ if [[ "$EUID" -ne 0 ]]; then
 fi
 
 # ── CPU affinity mask ─────────────────────────────────────────────────────────
-# IRQ를 non-RT 코어(Core 0-1)에만 할당한다.
-# 코어가 4개 미만이면 RT 보호가 의미 없으므로 경고한다.
+# IRQ를 non-RT 코어에만 할당한다.
+# thread_config.hpp의 코어 레이아웃과 일치시킨다:
+#   4코어: Core 0 = OS (isolcpus=1-3) → IRQ mask 0x1
+#   6코어: Core 0-1 = OS (isolcpus=2-5) → IRQ mask 0x3
+#   8코어+: Core 0-1 = OS (isolcpus=2-N) → IRQ mask 0x3
 TOTAL_CORES=$(nproc)
 if [[ "$TOTAL_CORES" -lt 4 ]]; then
   warn "CPU core count is ${TOTAL_CORES} (< 4). RT core isolation may not be effective."
-  warn "At least 4 cores recommended (Core 0-1: IRQ/OS, Core 2+: RT)."
+  warn "At least 4 cores recommended."
 fi
 
-# 0x3 = 0b0011 = Core 0 + Core 1 only
-AFFINITY_MASK="3"
-AFFINITY_HEX="0x3"
+if [[ "$TOTAL_CORES" -le 4 ]]; then
+  # 4코어: Core 0만 OS, Core 1은 RT Control 전용
+  AFFINITY_MASK="1"
+  AFFINITY_HEX="0x1"
+  OS_CORES="0"
+  RT_CORES="1-$((TOTAL_CORES - 1))"
+else
+  # 6코어+: Core 0-1이 OS
+  AFFINITY_MASK="3"
+  AFFINITY_HEX="0x3"
+  OS_CORES="0-1"
+  RT_CORES="2-$((TOTAL_CORES - 1))"
+fi
 
 # ── Helper: detect physical NIC ──────────────────────────────────────────────
 # /sys/class/net/<iface>/device 심볼릭 링크는 물리 NIC에만 존재한다.
@@ -78,7 +91,7 @@ if [[ -z "$NIC" ]]; then
   warn "Auto-detected physical NIC: ${NIC}  (specify explicitly if wrong: sudo $0 <NIC>)"
 fi
 
-info "Restricting IRQs to Core 0-1 (affinity mask: ${AFFINITY_HEX})"
+info "Restricting IRQs to Core ${OS_CORES} (affinity mask: ${AFFINITY_HEX})"
 info "Target NIC: ${NIC}"
 echo ""
 
@@ -92,14 +105,14 @@ else
   for irq in $NIC_IRQS; do
     if [[ -f "/proc/irq/${irq}/smp_affinity" ]]; then
       echo "$AFFINITY_MASK" > "/proc/irq/${irq}/smp_affinity"
-      info "  IRQ ${irq} (${NIC}) → Core 0-1"
+      info "  IRQ ${irq} (${NIC}) → Core ${OS_CORES}"
     fi
   done
 fi
 
-# ── Pin all other IRQs to Core 0-1 ────────────────────────────────────────────
-# Protects RT cores 2-5 from any hardware interrupt
-info "Pinning all other IRQs to Core 0-1..."
+# ── Pin all other IRQs to OS cores ────────────────────────────────────────────
+# Protects RT cores from any hardware interrupt
+info "Pinning all other IRQs to Core ${OS_CORES}..."
 PINNED=0
 SKIPPED=0
 for irq_dir in /proc/irq/*/; do
@@ -119,7 +132,7 @@ info "  Pinned: ${PINNED} IRQs  |  Skipped (read-only): ${SKIPPED} IRQs"
 # ── Verify ────────────────────────────────────────────────────────────────────
 echo ""
 info "Verification:"
-info "  /proc/irq/<N>/smp_affinity should read '${AFFINITY_MASK}' (= Core 0,1)"
+info "  /proc/irq/<N>/smp_affinity should read '${AFFINITY_MASK}' (= Core ${OS_CORES})"
 if [[ -n "$NIC_IRQS" ]]; then
   for irq in $NIC_IRQS; do
     if [[ -f "/proc/irq/${irq}/smp_affinity" ]]; then
@@ -131,17 +144,36 @@ fi
 
 echo ""
 info "IRQ affinity configuration complete."
-info "RT cores 2-5 are now protected from NIC and hardware interrupts."
+info "RT cores ${RT_CORES} are now protected from NIC and hardware interrupts."
 info ""
-info "Thread layout (6-core):"
-info "  Core 0-1: OS / DDS / NIC IRQ"
-info "  Core 2:   rt_control   (SCHED_FIFO 90, 500Hz control + 50Hz E-STOP)"
-info "  Core 3:   sensor_io    (SCHED_FIFO 70, joint_state/target/hand callbacks)"
-info "  Core 4:   logger       (SCHED_OTHER nice -5, 100Hz CSV drain)"
-info "  Core 4:   status_mon   (SCHED_OTHER nice -2, 10Hz status monitor)"
-info "  Core 4:   hand_detect  (SCHED_OTHER nice -2, 50Hz hand failure detector)"
-info "  Core 5:   udp_recv     (SCHED_FIFO 65, hand UDP polling)"
-info "  Core 5:   aux          (SCHED_OTHER nice 0, E-STOP publisher)"
+
+if [[ "$TOTAL_CORES" -le 4 ]]; then
+  info "Thread layout (${TOTAL_CORES}-core):"
+  info "  Core 0:   OS / DDS / NIC IRQ"
+  info "  Core 1:   rt_control   (SCHED_FIFO 90, 500Hz control + 50Hz E-STOP)"
+  info "  Core 2:   sensor_io    (SCHED_FIFO 70) + udp_recv (SCHED_FIFO 65)"
+  info "  Core 3:   logger       (SCHED_OTHER nice -5) + aux + status_mon + hand_detect"
+elif [[ "$TOTAL_CORES" -le 7 ]]; then
+  info "Thread layout (${TOTAL_CORES}-core):"
+  info "  Core 0-1: OS / DDS / NIC IRQ"
+  info "  Core 2:   rt_control   (SCHED_FIFO 90, 500Hz control + 50Hz E-STOP)"
+  info "  Core 3:   sensor_io    (SCHED_FIFO 70, joint_state/target/hand callbacks)"
+  info "  Core 4:   logger       (SCHED_OTHER nice -5, 100Hz CSV drain)"
+  info "  Core 4:   status_mon   (SCHED_OTHER nice -2, 10Hz status monitor)"
+  info "  Core 4:   hand_detect  (SCHED_OTHER nice -2, 50Hz hand failure detector)"
+  info "  Core 5:   udp_recv     (SCHED_FIFO 65, hand UDP polling)"
+  info "  Core 5:   aux          (SCHED_OTHER nice 0, E-STOP publisher)"
+else
+  info "Thread layout (${TOTAL_CORES}-core):"
+  info "  Core 0-1: OS / DDS / NIC IRQ"
+  info "  Core 2:   rt_control   (SCHED_FIFO 90, 500Hz control + 50Hz E-STOP)"
+  info "  Core 3:   sensor_io    (SCHED_FIFO 70, joint_state/target/hand callbacks)"
+  info "  Core 4:   udp_recv     (SCHED_FIFO 65, hand UDP polling)"
+  info "  Core 5:   logger       (SCHED_OTHER nice -5, 100Hz CSV drain)"
+  info "  Core 6:   aux          (SCHED_OTHER nice 0) + status_mon + hand_detect"
+  info "  Core 7:   spare        (monitoring, cyclictest measurement)"
+fi
+
 info ""
 info "To make persistent across reboots, add to /etc/rc.local or a systemd service:"
 info "  sudo $(realpath "$0") ${NIC}"

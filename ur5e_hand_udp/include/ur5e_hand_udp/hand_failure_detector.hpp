@@ -11,6 +11,8 @@
 // On failure, invokes a registered callback (typically triggers global E-Stop).
 
 #include "ur5e_hand_udp/hand_controller.hpp"
+#include "ur5e_rt_base/threading/thread_config.hpp"
+#include "ur5e_rt_base/threading/thread_utils.hpp"
 #include "ur5e_rt_base/types/types.hpp"
 
 #include <atomic>
@@ -35,11 +37,13 @@ public:
   using Config = HandFailureDetectorConfig;
   using FailureCallback = std::function<void(const std::string&)>;
 
-  /// @param controller  Reference to the HandController to monitor.
-  /// @param cfg         Detection configuration.
+  /// @param controller   Reference to the HandController to monitor.
+  /// @param cfg          Detection configuration.
+  /// @param thread_cfg   Thread scheduling / CPU affinity configuration.
   explicit HandFailureDetector(HandController& controller,
-                               Config cfg = Config{})
-    : controller_(controller), cfg_(cfg) {}
+                               Config cfg = Config{},
+                               ThreadConfig thread_cfg = kHandFailureConfig)
+    : controller_(controller), cfg_(cfg), thread_cfg_(thread_cfg) {}
 
   ~HandFailureDetector() { Stop(); }
 
@@ -73,6 +77,7 @@ public:
 private:
   void DetectLoop(std::stop_token st) {
     using namespace std::chrono_literals;
+    ApplyThreadConfigWithFallback(thread_cfg_);
     prev_rate_check_ = std::chrono::steady_clock::now();
     prev_cycle_count_ = controller_.cycle_count();
 
@@ -193,6 +198,7 @@ private:
 
   HandController& controller_;
   Config          cfg_;
+  ThreadConfig    thread_cfg_;
   FailureCallback on_failure_;
 
   std::jthread       thread_;
