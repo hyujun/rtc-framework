@@ -13,6 +13,7 @@
 #   sudo ./build_rt_kernel.sh --dry-run      # 다운로드 및 패치까지만 실행
 #   sudo ./build_rt_kernel.sh --status       # 진행 상태만 확인 (실행 안 함)
 #   sudo ./build_rt_kernel.sh --force-step 5 # 5단계부터 강제 재실행
+#   sudo ./build_rt_kernel.sh --force-step 7 # GRUB 등록만 재실행
 #   sudo ./build_rt_kernel.sh --clean        # 빌드 소스 정리 후 처음부터
 #   sudo ./build_rt_kernel.sh --help
 #
@@ -90,18 +91,19 @@ show_help() {
   echo "  --batch          비대화형 모드 (menuconfig 건너뜀)"
   echo "  --dry-run        다운로드 및 패치까지만 실행 (빌드 안 함)"
   echo "  --status         진행 상태만 확인 (실행하지 않음)"
-  echo "  --force-step N   N단계부터 강제 재실행 (1-6)"
+  echo "  --force-step N   N단계부터 강제 재실행 (1-7)"
   echo "  --clean          빌드 소스 정리 후 처음부터 (다운로드 파일은 보존)"
   echo "  --build-dir DIR  빌드 디렉토리 지정 (기본: ~/rt_kernel_build)"
   echo "  --help           이 도움말 표시"
   echo ""
   echo "단계 구성:"
-  echo "  [1/6] 필수 빌드 패키지 설치"
-  echo "  [2/6] 커널 소스 + RT 패치 다운로드"
-  echo "  [3/6] 압축 해제 및 패치 적용"
-  echo "  [4/6] 커널 설정 (PREEMPT_RT 활성화)"
-  echo "  [5/6] 커널 빌드 (make bindeb-pkg)"
-  echo "  [6/6] .deb 패키지 설치 + GRUB 설정"
+  echo "  [1/7] 필수 빌드 패키지 설치"
+  echo "  [2/7] 커널 소스 + RT 패치 다운로드"
+  echo "  [3/7] 압축 해제 및 패치 적용"
+  echo "  [4/7] 커널 설정 (PREEMPT_RT 활성화)"
+  echo "  [5/7] 커널 빌드 (make bindeb-pkg)"
+  echo "  [6/7] .deb 패키지 설치"
+  echo "  [7/7] GRUB 등록 확인 및 기본 부팅 설정"
   echo ""
   echo "이전 실행에서 완료된 단계는 자동으로 건너뜁니다."
   echo ""
@@ -122,8 +124,8 @@ while [[ $# -gt 0 ]]; do
     --force-step)
       [[ $# -ge 2 ]] || error "--force-step requires a step number (1-6)"
       FORCE_STEP="$2"
-      if [[ "$FORCE_STEP" -lt 1 || "$FORCE_STEP" -gt 6 ]]; then
-        error "--force-step must be 1-6 (given: ${FORCE_STEP})"
+      if [[ "$FORCE_STEP" -lt 1 || "$FORCE_STEP" -gt 7 ]]; then
+        error "--force-step must be 1-7 (given: ${FORCE_STEP})"
       fi
       shift 2 ;;
     --clean)     CLEAN_BUILD=1; shift ;;
@@ -228,24 +230,53 @@ is_step5_done() {
   [[ -n "$found" ]]
 }
 
-# [6/6] 설치 완료 여부
+# [6/7] 설치 완료 여부
 is_step6_done() {
   # dpkg -l에서 RT 커널 이미지가 ii (installed) 상태인지 확인
   dpkg -l "linux-image-${RT_KERNEL_FULL}" 2>/dev/null | grep -q "^ii" 2>/dev/null
 }
 
+# [7/7] GRUB 등록 완료 여부
+is_step7_done() {
+  # 조건 1: /boot/grub/grub.cfg에 RT 커널 항목이 존재하는가
+  if [[ ! -f /boot/grub/grub.cfg ]]; then
+    return 1
+  fi
+  if ! grep -q "${RT_KERNEL_FULL}" /boot/grub/grub.cfg 2>/dev/null; then
+    # RT_KERNEL_FULL이 없으면 .deb에서 추출한 버전으로도 확인
+    # (LOCALVERSION 차이로 인한 버전 문자열 변형 대응)
+    if ! grep -q "${KERNEL_VERSION}.*rt.*custom" /boot/grub/grub.cfg 2>/dev/null; then
+      return 1
+    fi
+  fi
+
+  # 조건 2: /etc/default/grub의 GRUB_DEFAULT가 RT 커널을 가리키는가
+  if [[ -f /etc/default/grub ]]; then
+    local grub_default
+    grub_default=$(grep '^GRUB_DEFAULT=' /etc/default/grub 2>/dev/null | head -1)
+    if [[ -n "$grub_default" ]] && echo "$grub_default" | grep -q "rt.*custom\|${KERNEL_VERSION}.*rt"; then
+      return 0
+    fi
+    # GRUB_DEFAULT=0 이면서 첫 번째 항목이 RT 커널인 경우도 OK
+    # 그러나 이 경우 확신할 수 없으므로 false 반환 (안전하게 재설정)
+  fi
+  return 1
+}
+
 # ── 진행 상태 표시 ────────────────────────────────────────────────────────────
 show_status() {
   local labels=(
-    "[1/6] 필수 빌드 패키지 설치"
-    "[2/6] 커널 소스 + RT 패치 다운로드"
-    "[3/6] 압축 해제 및 패치 적용"
-    "[4/6] 커널 설정 (PREEMPT_RT)"
-    "[5/6] 커널 빌드 (make bindeb-pkg)"
-    "[6/6] .deb 패키지 설치 + GRUB"
+    "[1/7] 필수 빌드 패키지 설치"
+    "[2/7] 커널 소스 + RT 패치 다운로드"
+    "[3/7] 압축 해제 및 패치 적용"
+    "[4/7] 커널 설정 (PREEMPT_RT)"
+    "[5/7] 커널 빌드 (make bindeb-pkg)"
+    "[6/7] .deb 패키지 설치"
+    "[7/7] GRUB 등록 및 기본 부팅 설정"
   )
   local check_fns=("is_step1_done" "is_step2_done" "is_step3_done"
-                    "is_step4_done" "is_step5_done" "is_step6_done")
+                    "is_step4_done" "is_step5_done" "is_step6_done"
+                    "is_step7_done")
   local first_todo=0
 
   echo -e "${BOLD}━━━ 진행 상태 ━━━${NC}"
@@ -329,7 +360,7 @@ should_skip() {
 # [1/6] 필수 빌드 패키지 설치
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
-info "━━━ [1/6] 필수 빌드 패키지 설치 ━━━"
+info "━━━ [1/7] 필수 빌드 패키지 설치 ━━━"
 
 if should_skip 1 is_step1_done; then
   success "필수 패키지가 이미 설치되어 있습니다 — 건너뜀"
@@ -365,7 +396,7 @@ fi
 # [2/6] 커널 소스 + RT 패치 다운로드
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
-info "━━━ [2/6] 커널 소스 다운로드 ━━━"
+info "━━━ [2/7] 커널 소스 다운로드 ━━━"
 
 if should_skip 2 is_step2_done; then
   success "커널 소스 + RT 패치가 이미 다운로드되어 있습니다 — 건너뜀"
@@ -397,7 +428,7 @@ fi
 # [3/6] 압축 해제 및 패치 적용
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
-info "━━━ [3/6] 압축 해제 및 패치 적용 ━━━"
+info "━━━ [3/7] 압축 해제 및 패치 적용 ━━━"
 
 if should_skip 3 is_step3_done; then
   success "RT 패치가 이미 적용되어 있습니다 — 건너뜀"
@@ -425,7 +456,7 @@ fi
 # [4/6] 커널 설정 (PREEMPT_RT 활성화)
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
-info "━━━ [4/6] 커널 설정 (PREEMPT_RT 활성화) ━━━"
+info "━━━ [4/7] 커널 설정 (PREEMPT_RT 활성화) ━━━"
 
 if should_skip 4 is_step4_done; then
   success "커널 설정이 이미 완료되어 있습니다 (CONFIG_PREEMPT_RT=y) — 건너뜀"
@@ -486,7 +517,7 @@ fi
 # [5/6] 커널 빌드
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
-info "━━━ [5/6] 커널 빌드 ━━━"
+info "━━━ [5/7] 커널 빌드 ━━━"
 
 if should_skip 5 is_step5_done; then
   success "커널이 이미 빌드되어 있습니다 (.deb 존재) — 건너뜀"
@@ -504,10 +535,10 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [6/6] .deb 패키지 설치 + GRUB 설정
+# [6/7] .deb 패키지 설치
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
-info "━━━ [6/6] .deb 패키지 설치 ━━━"
+info "━━━ [6/7] .deb 패키지 설치 ━━━"
 
 if should_skip 6 is_step6_done; then
   success "RT 커널이 이미 설치되어 있습니다 (${RT_KERNEL_FULL}) — 건너뜀"
@@ -567,35 +598,70 @@ else
   fi
 
   success "커널 패키지 설치 완료"
+fi
 
-  # ── GRUB 기본 부팅 항목을 RT 커널로 설정 ────────────────────────────────────
-  echo ""
-  info "━━━ GRUB 기본 부팅 항목을 RT 커널로 설정 ━━━"
+# ══════════════════════════════════════════════════════════════════════════════
+# [7/7] GRUB 등록 확인 및 기본 부팅 설정
+# ══════════════════════════════════════════════════════════════════════════════
+echo ""
+info "━━━ [7/7] GRUB 등록 확인 및 기본 부팅 설정 ━━━"
 
-  # 설치된 RT 커널의 정확한 버전 문자열을 .deb 파일명에서 추출
+if should_skip 7 is_step7_done; then
+  success "RT 커널이 이미 GRUB에 등록되어 기본 부팅으로 설정되어 있습니다 — 건너뜀"
+
+  # 현재 GRUB 설정 표시
+  if [[ -f /etc/default/grub ]]; then
+    info "현재 GRUB_DEFAULT:"
+    grep '^GRUB_DEFAULT=' /etc/default/grub | sed 's/^/  /'
+  fi
+
+  # 현재 부팅 중인 커널이 RT인지 확인
+  if uname -v 2>/dev/null | grep -q PREEMPT_RT; then
+    success "현재 실행 중인 커널: $(uname -r) (PREEMPT_RT 활성)"
+  else
+    info "현재 실행 중인 커널: $(uname -r) (비-RT — 재부팅 필요)"
+  fi
+else
+  # .deb 파일명에서 RT 커널 버전 추출
+  DEB_IMAGE=$(find "${BUILD_DIR}" -maxdepth 1 -name "linux-image-${KERNEL_VERSION}*.deb" \
+    ! -name "*dbg*" -printf '%f\n' 2>/dev/null | head -1)
   RT_KERNEL_VER=$(echo "$DEB_IMAGE" | sed -n 's/linux-image-\(.*\)_.*\.deb/\1/p')
 
+  # .deb에서 추출 실패 시 RT_KERNEL_FULL 사용
   if [[ -z "$RT_KERNEL_VER" ]]; then
-    warn "RT 커널 버전을 .deb 파일명에서 추출할 수 없습니다 — GRUB 설정을 수동으로 확인하세요"
+    RT_KERNEL_VER="${RT_KERNEL_FULL}"
+  fi
+
+  info "RT 커널 버전: ${RT_KERNEL_VER}"
+
+  # ── GRUB 메뉴 항목 검색 ──────────────────────────────────────────────────
+  # grub.cfg를 갱신하여 새로 설치된 커널이 반영되도록 함
+  info "GRUB 설정 갱신 중..."
+  update-grub 2>/dev/null
+
+  # /boot/grub/grub.cfg에서 RT 커널 존재 여부 확인
+  if [[ ! -f /boot/grub/grub.cfg ]]; then
+    warn "/boot/grub/grub.cfg가 존재하지 않습니다"
+    warn "GRUB가 설치되어 있는지 확인하세요: dpkg -l grub-pc grub-efi-amd64"
+  elif ! grep -q "${RT_KERNEL_VER}" /boot/grub/grub.cfg 2>/dev/null; then
+    warn "GRUB 메뉴에 RT 커널(${RT_KERNEL_VER})이 등록되지 않았습니다"
+    warn "커널 이미지가 /boot에 있는지 확인하세요:"
+    warn "  ls /boot/vmlinuz-*rt*"
+    warn "없다면 커널 재설치가 필요합니다: $0 --force-step 6"
   else
-    info "설치된 RT 커널 버전: ${RT_KERNEL_VER}"
+    success "RT 커널이 GRUB 메뉴에 등록되어 있습니다"
 
-    # grub.cfg 갱신
-    update-grub 2>/dev/null
-
-    # /boot/grub/grub.cfg에서 RT 커널의 menuentry 표시 이름을 추출
+    # ── 기본 부팅 항목 설정 ────────────────────────────────────────────────
     GRUB_ENTRY=""
-    if [[ -f /boot/grub/grub.cfg ]]; then
-      SUBMENU_TITLE=$(grep -oP "submenu\s+'\K[^']+" /boot/grub/grub.cfg | head -1)
-      ENTRY_TITLE=$(grep -v recovery /boot/grub/grub.cfg \
-        | grep -oP "menuentry\s+'\K[^']*${RT_KERNEL_VER}[^']*(?=')" \
-        | head -1)
+    SUBMENU_TITLE=$(grep -oP "submenu\s+'\K[^']+" /boot/grub/grub.cfg | head -1)
+    ENTRY_TITLE=$(grep -v recovery /boot/grub/grub.cfg \
+      | grep -oP "menuentry\s+'\K[^']*${RT_KERNEL_VER}[^']*(?=')" \
+      | head -1)
 
-      if [[ -n "$SUBMENU_TITLE" && -n "$ENTRY_TITLE" ]]; then
-        GRUB_ENTRY="${SUBMENU_TITLE}>${ENTRY_TITLE}"
-      elif [[ -n "$ENTRY_TITLE" ]]; then
-        GRUB_ENTRY="$ENTRY_TITLE"
-      fi
+    if [[ -n "$SUBMENU_TITLE" && -n "$ENTRY_TITLE" ]]; then
+      GRUB_ENTRY="${SUBMENU_TITLE}>${ENTRY_TITLE}"
+    elif [[ -n "$ENTRY_TITLE" ]]; then
+      GRUB_ENTRY="$ENTRY_TITLE"
     fi
 
     if [[ -n "$GRUB_ENTRY" ]]; then
