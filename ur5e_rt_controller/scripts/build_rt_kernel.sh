@@ -77,6 +77,7 @@ get_physical_cores() {
 BATCH_MODE=0
 DRY_RUN=0
 STATUS_ONLY=0
+VERIFY_ONLY=0
 FORCE_STEP=0
 CLEAN_BUILD=0
 BUILD_DIR="${HOME}/rt_kernel_build"
@@ -90,7 +91,8 @@ show_help() {
   echo "Options:"
   echo "  --batch          비대화형 모드 (menuconfig 건너뜀)"
   echo "  --dry-run        다운로드 및 패치까지만 실행 (빌드 안 함)"
-  echo "  --status         진행 상태만 확인 (실행하지 않음)"
+  echo "  --status         진행 상태 요약 확인 (실행하지 않음)"
+  echo "  --verify         각 단계별 세부 적용 상태 진단 (실행하지 않음)"
   echo "  --force-step N   N단계부터 강제 재실행 (1-7)"
   echo "  --clean          빌드 소스 정리 후 처음부터 (다운로드 파일은 보존)"
   echo "  --build-dir DIR  빌드 디렉토리 지정 (기본: ~/rt_kernel_build)"
@@ -109,7 +111,8 @@ show_help() {
   echo ""
   echo "Examples:"
   echo "  sudo ./build_rt_kernel.sh --batch          # 전체 자동 (완료 단계 스킵)"
-  echo "  sudo ./build_rt_kernel.sh --status         # 상태만 확인"
+  echo "  sudo ./build_rt_kernel.sh --status         # 상태 요약 확인"
+  echo "  sudo ./build_rt_kernel.sh --verify         # 세부 적용 상태 진단"
   echo "  sudo ./build_rt_kernel.sh --force-step 5   # 빌드부터 강제 재실행"
   echo "  sudo ./build_rt_kernel.sh --clean --batch  # 정리 후 처음부터"
   echo ""
@@ -121,6 +124,7 @@ while [[ $# -gt 0 ]]; do
     --batch)     BATCH_MODE=1; shift ;;
     --dry-run)   DRY_RUN=1; shift ;;
     --status)    STATUS_ONLY=1; shift ;;
+    --verify)    VERIFY_ONLY=1; shift ;;
     --force-step)
       [[ $# -ge 2 ]] || error "--force-step requires a step number (1-6)"
       FORCE_STEP="$2"
@@ -317,6 +321,300 @@ show_status() {
   echo ""
 }
 
+# ── 세부 적용 상태 진단 (--verify) ──────────────────────────────────────────
+# 각 단계별로 구체적으로 무엇이 적용되어 있고 무엇이 누락되어 있는지 표시한다.
+show_verify() {
+  local pass_icon="${GREEN}✔${NC}"
+  local fail_icon="${RED}✘${NC}"
+  local total_pass=0
+  local total_fail=0
+
+  echo -e "${BOLD}━━━ RT 커널 빌드 상태 진단 ━━━${NC}"
+  echo ""
+  info "Ubuntu: ${UBUNTU_VER}  |  대상 커널: ${KERNEL_VERSION}  |  RT: ${PATCH_VERSION}"
+  info "빌드 디렉토리: ${BUILD_DIR}"
+  info "CPU: 물리 ${PHYSICAL_CORES}코어 / 논리 ${LOGICAL_CORES}코어  |  NVIDIA: ${HAS_NVIDIA}"
+  echo ""
+
+  # ── [1/7] 필수 패키지 ────────────────────────────────────────────────────
+  echo -e "${BOLD}[1/7] 필수 빌드 패키지${NC}"
+  local required_pkgs=("build-essential" "libncurses-dev" "libssl-dev" "libelf-dev"
+                       "flex" "bison" "debhelper" "bc" "dkms" "cpio")
+  for pkg in "${required_pkgs[@]}"; do
+    if dpkg -s "$pkg" &>/dev/null; then
+      local ver
+      ver=$(dpkg -s "$pkg" 2>/dev/null | grep '^Version:' | awk '{print $2}')
+      echo -e "  ${pass_icon} ${pkg}  ${DIM}(${ver})${NC}"
+      ((total_pass++))
+    else
+      echo -e "  ${fail_icon} ${pkg}  ${DIM}— 미설치${NC}"
+      ((total_fail++))
+    fi
+  done
+  if [[ "$HAS_NVIDIA" == "yes" ]]; then
+    local nvidia_dkms
+    nvidia_dkms=$(dpkg -l 'nvidia-dkms-*' 2>/dev/null | grep '^ii' | awk '{print $2, $3}' | head -1)
+    if [[ -n "$nvidia_dkms" ]]; then
+      echo -e "  ${pass_icon} ${nvidia_dkms}"
+      ((total_pass++))
+    else
+      echo -e "  ${fail_icon} nvidia-dkms-*  ${DIM}— NVIDIA DKMS 드라이버 미설치${NC}"
+      ((total_fail++))
+    fi
+  fi
+  echo ""
+
+  # ── [2/7] 다운로드 ──────────────────────────────────────────────────────
+  echo -e "${BOLD}[2/7] 커널 소스 + RT 패치 다운로드${NC}"
+  local kernel_tar="${BUILD_DIR}/linux-${KERNEL_VERSION}.tar.xz"
+  local patch_file="${BUILD_DIR}/patch-${PATCH_VERSION}.patch.xz"
+  if [[ -f "$kernel_tar" ]]; then
+    local sz
+    sz=$(du -h "$kernel_tar" 2>/dev/null | awk '{print $1}')
+    echo -e "  ${pass_icon} linux-${KERNEL_VERSION}.tar.xz  ${DIM}(${sz})${NC}"
+    ((total_pass++))
+  else
+    echo -e "  ${fail_icon} linux-${KERNEL_VERSION}.tar.xz  ${DIM}— 파일 없음${NC}"
+    ((total_fail++))
+  fi
+  if [[ -f "$patch_file" ]]; then
+    local sz
+    sz=$(du -h "$patch_file" 2>/dev/null | awk '{print $1}')
+    echo -e "  ${pass_icon} patch-${PATCH_VERSION}.patch.xz  ${DIM}(${sz})${NC}"
+    ((total_pass++))
+  else
+    echo -e "  ${fail_icon} patch-${PATCH_VERSION}.patch.xz  ${DIM}— 파일 없음${NC}"
+    ((total_fail++))
+  fi
+  echo ""
+
+  # ── [3/7] 압축 해제 + 패치 ─────────────────────────────────────────────
+  echo -e "${BOLD}[3/7] 압축 해제 및 패치 적용${NC}"
+  if [[ -d "${KERNEL_SRC_DIR}" ]]; then
+    echo -e "  ${pass_icon} 소스 디렉토리 존재: ${KERNEL_SRC_DIR}"
+    ((total_pass++))
+  else
+    echo -e "  ${fail_icon} 소스 디렉토리 없음: ${KERNEL_SRC_DIR}"
+    ((total_fail++))
+  fi
+  if [[ -f "${KERNEL_SRC_DIR}/.rt_patched" ]]; then
+    echo -e "  ${pass_icon} RT 패치 적용됨 (.rt_patched 마커 존재)"
+    ((total_pass++))
+  else
+    echo -e "  ${fail_icon} RT 패치 미적용 (.rt_patched 마커 없음)"
+    ((total_fail++))
+  fi
+  echo ""
+
+  # ── [4/7] 커널 설정 ────────────────────────────────────────────────────
+  echo -e "${BOLD}[4/7] 커널 설정 (PREEMPT_RT)${NC}"
+  local kconfig="${KERNEL_SRC_DIR}/.config"
+  if [[ -f "$kconfig" ]]; then
+    echo -e "  ${pass_icon} .config 파일 존재"
+    ((total_pass++))
+
+    # 주요 설정값 확인
+    local config_checks=(
+      "CONFIG_PREEMPT_RT=y:PREEMPT_RT 활성화"
+      "CONFIG_PREEMPT_NONE=:PREEMPT_NONE 비활성화"
+      "CONFIG_PREEMPT_VOLUNTARY=:PREEMPT_VOLUNTARY 비활성화"
+    )
+    for check in "${config_checks[@]}"; do
+      local key="${check%%:*}"
+      local desc="${check#*:}"
+      local config_key="${key%%=*}"
+      local config_val="${key#*=}"
+
+      if [[ -n "$config_val" ]]; then
+        # key=value 형태: 해당 값이 있어야 pass
+        if grep -q "^${key}$" "$kconfig" 2>/dev/null; then
+          echo -e "  ${pass_icon} ${desc}  ${DIM}(${key})${NC}"
+          ((total_pass++))
+        else
+          local actual
+          actual=$(grep "^${config_key}=" "$kconfig" 2>/dev/null | head -1)
+          echo -e "  ${fail_icon} ${desc}  ${DIM}(기대: ${key}, 실제: ${actual:-미설정})${NC}"
+          ((total_fail++))
+        fi
+      else
+        # key= 형태 (빈 값): 해당 키가 'is not set' 이거나 없어야 pass
+        if grep -q "^${config_key}=y" "$kconfig" 2>/dev/null; then
+          echo -e "  ${fail_icon} ${desc}  ${DIM}(${config_key}=y 가 아직 활성화됨)${NC}"
+          ((total_fail++))
+        else
+          echo -e "  ${pass_icon} ${desc}  ${DIM}(${config_key} 비활성화 확인)${NC}"
+          ((total_pass++))
+        fi
+      fi
+    done
+
+    # LOCALVERSION 확인
+    local localver
+    localver=$(grep '^CONFIG_LOCALVERSION=' "$kconfig" 2>/dev/null | sed 's/CONFIG_LOCALVERSION="\(.*\)"/\1/')
+    if [[ -n "$localver" ]]; then
+      echo -e "  ${pass_icon} LOCALVERSION = \"${localver}\""
+      ((total_pass++))
+    else
+      echo -e "  ${fail_icon} LOCALVERSION 미설정"
+      ((total_fail++))
+    fi
+  else
+    echo -e "  ${fail_icon} .config 파일 없음"
+    ((total_fail++))
+  fi
+  echo ""
+
+  # ── [5/7] 빌드 결과 ────────────────────────────────────────────────────
+  echo -e "${BOLD}[5/7] 커널 빌드 (make bindeb-pkg)${NC}"
+  local deb_image
+  deb_image=$(find "${BUILD_DIR}" -maxdepth 1 -name "linux-image-${KERNEL_VERSION}*.deb" \
+    ! -name "*dbg*" 2>/dev/null | head -1)
+  local deb_headers
+  deb_headers=$(find "${BUILD_DIR}" -maxdepth 1 -name "linux-headers-${KERNEL_VERSION}*.deb" \
+    2>/dev/null | head -1)
+  if [[ -n "$deb_image" ]]; then
+    local sz
+    sz=$(du -h "$deb_image" 2>/dev/null | awk '{print $1}')
+    echo -e "  ${pass_icon} linux-image .deb  ${DIM}($(basename "$deb_image"), ${sz})${NC}"
+    ((total_pass++))
+  else
+    echo -e "  ${fail_icon} linux-image .deb  ${DIM}— 빌드 산출물 없음${NC}"
+    ((total_fail++))
+  fi
+  if [[ -n "$deb_headers" ]]; then
+    local sz
+    sz=$(du -h "$deb_headers" 2>/dev/null | awk '{print $1}')
+    echo -e "  ${pass_icon} linux-headers .deb  ${DIM}($(basename "$deb_headers"), ${sz})${NC}"
+    ((total_pass++))
+  else
+    echo -e "  ${fail_icon} linux-headers .deb  ${DIM}— 빌드 산출물 없음${NC}"
+    ((total_fail++))
+  fi
+  echo ""
+
+  # ── [6/7] 패키지 설치 상태 ─────────────────────────────────────────────
+  echo -e "${BOLD}[6/7] .deb 패키지 설치${NC}"
+  if dpkg -l "linux-image-${RT_KERNEL_FULL}" 2>/dev/null | grep -q "^ii"; then
+    local installed_ver
+    installed_ver=$(dpkg -l "linux-image-${RT_KERNEL_FULL}" 2>/dev/null | grep "^ii" | awk '{print $3}')
+    echo -e "  ${pass_icon} linux-image-${RT_KERNEL_FULL}  ${DIM}(${installed_ver})${NC}"
+    ((total_pass++))
+  else
+    echo -e "  ${fail_icon} linux-image-${RT_KERNEL_FULL}  ${DIM}— dpkg 미설치${NC}"
+    ((total_fail++))
+  fi
+  if dpkg -l "linux-headers-${RT_KERNEL_FULL}" 2>/dev/null | grep -q "^ii"; then
+    echo -e "  ${pass_icon} linux-headers-${RT_KERNEL_FULL}"
+    ((total_pass++))
+  else
+    echo -e "  ${fail_icon} linux-headers-${RT_KERNEL_FULL}  ${DIM}— dpkg 미설치${NC}"
+    ((total_fail++))
+  fi
+  # /boot에 커널 이미지 존재 확인
+  local vmlinuz="/boot/vmlinuz-${RT_KERNEL_FULL}"
+  if [[ -f "$vmlinuz" ]]; then
+    local sz
+    sz=$(du -h "$vmlinuz" 2>/dev/null | awk '{print $1}')
+    echo -e "  ${pass_icon} ${vmlinuz}  ${DIM}(${sz})${NC}"
+    ((total_pass++))
+  else
+    # 와일드카드로 rt-custom 패턴 검색
+    local found_vmlinuz
+    found_vmlinuz=$(ls /boot/vmlinuz-*rt*custom* 2>/dev/null | head -1)
+    if [[ -n "$found_vmlinuz" ]]; then
+      echo -e "  ${pass_icon} ${found_vmlinuz}  ${DIM}(이름 다를 수 있음)${NC}"
+      ((total_pass++))
+    else
+      echo -e "  ${fail_icon} /boot/vmlinuz-*rt*custom*  ${DIM}— 커널 이미지 없음${NC}"
+      ((total_fail++))
+    fi
+  fi
+  echo ""
+
+  # ── [7/7] GRUB 등록 상태 ───────────────────────────────────────────────
+  echo -e "${BOLD}[7/7] GRUB 등록 및 기본 부팅 설정${NC}"
+
+  # grub.cfg에 RT 커널 항목 존재 확인
+  if [[ -f /boot/grub/grub.cfg ]]; then
+    echo -e "  ${pass_icon} /boot/grub/grub.cfg 존재"
+    ((total_pass++))
+
+    local grub_rt_entry
+    grub_rt_entry=$(grep -v recovery /boot/grub/grub.cfg 2>/dev/null \
+      | grep -oP "menuentry\s+'\K[^']*(?:${RT_KERNEL_FULL}|${KERNEL_VERSION}[^']*rt[^']*custom)[^']*(?=')" \
+      | head -1)
+    if [[ -n "$grub_rt_entry" ]]; then
+      echo -e "  ${pass_icon} GRUB 메뉴에 RT 커널 등록됨"
+      echo -e "      ${DIM}→ ${grub_rt_entry}${NC}"
+      ((total_pass++))
+    else
+      echo -e "  ${fail_icon} GRUB 메뉴에 RT 커널 항목 없음"
+      ((total_fail++))
+    fi
+  else
+    echo -e "  ${fail_icon} /boot/grub/grub.cfg 없음"
+    ((total_fail++))
+  fi
+
+  # GRUB_DEFAULT 확인
+  if [[ -f /etc/default/grub ]]; then
+    local grub_default
+    grub_default=$(grep '^GRUB_DEFAULT=' /etc/default/grub 2>/dev/null | head -1 \
+      | sed 's/GRUB_DEFAULT=//' | tr -d '"'"'")
+    if [[ -n "$grub_default" ]]; then
+      if echo "$grub_default" | grep -q "rt.*custom\|${KERNEL_VERSION}.*rt"; then
+        echo -e "  ${pass_icon} GRUB_DEFAULT → RT 커널"
+        echo -e "      ${DIM}→ ${grub_default}${NC}"
+        ((total_pass++))
+      else
+        echo -e "  ${fail_icon} GRUB_DEFAULT → RT 커널이 아님"
+        echo -e "      ${DIM}→ 현재: ${grub_default}${NC}"
+        ((total_fail++))
+      fi
+    else
+      echo -e "  ${fail_icon} GRUB_DEFAULT 설정 없음"
+      ((total_fail++))
+    fi
+  fi
+
+  # NVIDIA GRUB 파라미터
+  if [[ "$HAS_NVIDIA" == "yes" && -f /etc/default/grub ]]; then
+    if grep -q "nvidia.NVreg_EnableMSI=1" /etc/default/grub 2>/dev/null; then
+      echo -e "  ${pass_icon} NVIDIA MSI 활성화  ${DIM}(nvidia.NVreg_EnableMSI=1)${NC}"
+      ((total_pass++))
+    else
+      echo -e "  ${fail_icon} NVIDIA MSI 미설정  ${DIM}(nvidia.NVreg_EnableMSI=1 없음)${NC}"
+      ((total_fail++))
+    fi
+  fi
+
+  # 현재 부팅 커널 상태
+  echo ""
+  echo -e "${BOLD}현재 실행 중인 커널${NC}"
+  echo -e "  커널 버전: $(uname -r)"
+  if uname -v 2>/dev/null | grep -q PREEMPT_RT; then
+    echo -e "  ${pass_icon} PREEMPT_RT 활성  ${DIM}($(uname -v))${NC}"
+    ((total_pass++))
+  else
+    echo -e "  ${fail_icon} PREEMPT_RT 비활성 — 재부팅 필요"
+    echo -e "      ${DIM}현재: $(uname -v)${NC}"
+    ((total_fail++))
+  fi
+
+  # ── 요약 ────────────────────────────────────────────────────────────────
+  echo ""
+  echo -e "${BOLD}━━━ 진단 결과 ━━━${NC}"
+  echo -e "  ${GREEN}통과: ${total_pass}${NC}  |  ${RED}실패: ${total_fail}${NC}"
+  echo ""
+  if [[ "$total_fail" -eq 0 ]]; then
+    echo -e "  ${GREEN}${BOLD}모든 항목이 정상 적용되어 있습니다!${NC}"
+  else
+    echo -e "  ${YELLOW}${total_fail}개 항목이 미적용 상태입니다.${NC}"
+    echo -e "  ${DIM}실행: sudo $0 --batch  (미완료 단계만 자동 실행)${NC}"
+  fi
+  echo ""
+}
+
 # ── --clean 처리 ──────────────────────────────────────────────────────────────
 if [[ "$CLEAN_BUILD" -eq 1 ]]; then
   info "빌드 소스 정리 중... (다운로드 파일은 보존)"
@@ -333,6 +631,12 @@ if [[ "$CLEAN_BUILD" -eq 1 ]]; then
 fi
 
 # ── --status 처리 ─────────────────────────────────────────────────────────────
+# ── --verify 처리 ────────────────────────────────────────────────────────────
+if [[ "$VERIFY_ONLY" -eq 1 ]]; then
+  show_verify
+  exit 0
+fi
+
 show_status
 
 if [[ "$STATUS_ONLY" -eq 1 ]]; then
