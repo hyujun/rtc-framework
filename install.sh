@@ -324,6 +324,7 @@ setup_workspace() {
   sudo apt-get install -y \
       ${ROS_PKG_PREFIX}-ament-cmake \
       ${ROS_PKG_PREFIX}-ament-cmake-gtest \
+      ${ROS_PKG_PREFIX}-controller-manager-msgs \
       python3-colcon-common-extensions \
       python3-vcstool \
       ethtool \
