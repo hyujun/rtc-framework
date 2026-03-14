@@ -292,21 +292,34 @@ show_status() {
 
   for i in "${!labels[@]}"; do
     local step=$((i + 1))
-    local forced=0
 
-    # --force-step 적용: 해당 단계 이후는 미완료로 표시
-    if [[ "$FORCE_STEP" -gt 0 && "$step" -ge "$FORCE_STEP" ]]; then
-      forced=1
-    fi
-
-    if [[ "$forced" -eq 0 ]] && ${check_fns[$i]}; then
-      echo -e "  ${GREEN}[DONE]${NC} ${labels[$i]}"
-    else
-      if [[ "$first_todo" -eq 0 ]]; then
-        echo -e "  ${YELLOW}[>>>>]${NC} ${labels[$i]}  ${DIM}← 여기서 재개${NC}"
-        first_todo=$step
+    if [[ "$FORCE_STEP" -gt 0 ]]; then
+      # --force-step 모드: N 이전은 SKIP, N 이후는 실행 대상
+      if [[ "$step" -lt "$FORCE_STEP" ]]; then
+        if ${check_fns[$i]}; then
+          echo -e "  ${GREEN}[DONE]${NC} ${labels[$i]}"
+        else
+          echo -e "  ${DIM}[SKIP]${NC} ${labels[$i]}"
+        fi
       else
-        echo -e "  ${DIM}[TODO]${NC} ${labels[$i]}"
+        if [[ "$first_todo" -eq 0 ]]; then
+          echo -e "  ${YELLOW}[>>>>]${NC} ${labels[$i]}  ${DIM}← 여기서 재개${NC}"
+          first_todo=$step
+        else
+          echo -e "  ${DIM}[TODO]${NC} ${labels[$i]}"
+        fi
+      fi
+    else
+      # 일반 모드: 완료 여부로 판단
+      if ${check_fns[$i]}; then
+        echo -e "  ${GREEN}[DONE]${NC} ${labels[$i]}"
+      else
+        if [[ "$first_todo" -eq 0 ]]; then
+          echo -e "  ${YELLOW}[>>>>]${NC} ${labels[$i]}  ${DIM}← 여기서 재개${NC}"
+          first_todo=$step
+        else
+          echo -e "  ${DIM}[TODO]${NC} ${labels[$i]}"
+        fi
       fi
     fi
   done
@@ -648,16 +661,20 @@ should_skip() {
   local step="$1"
   local check_fn="$2"
 
-  # --force-step이 지정되었고 현재 단계가 그 이후면 강제 실행
-  if [[ "$FORCE_STEP" -gt 0 && "$step" -ge "$FORCE_STEP" ]]; then
-    return 1  # 스킵하지 않음
+  if [[ "$FORCE_STEP" -gt 0 ]]; then
+    # --force-step N 이전 단계: 무조건 스킵 (완료 여부 무관)
+    if [[ "$step" -lt "$FORCE_STEP" ]]; then
+      return 0  # 스킵
+    fi
+    # --force-step N 이후 단계: 무조건 실행
+    return 1    # 스킵하지 않음
   fi
 
-  # 완료 확인 함수 호출
+  # --force-step 미지정: 완료 확인 함수로 판단
   if $check_fn; then
-    return 0  # 스킵
+    return 0  # 스킵 (완료됨)
   fi
-  return 1    # 스킵하지 않음
+  return 1    # 스킵하지 않음 (미완료 → 실행)
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
