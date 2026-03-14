@@ -111,14 +111,19 @@ def launch_setup(context, *args, **kwargs):
     # ── Package paths ─────────────────────────────────────────────────────────
     pkg_sim = FindPackageShare('ur5e_mujoco_sim')
     pkg_ctrl = FindPackageShare('ur5e_rt_controller')
-    pkg_hand = FindPackageShare('ur5e_hand_udp')
 
     sim_config = PathJoinSubstitution(
         [pkg_sim,  'config', 'mujoco_simulator.yaml'])
     ctrl_config = PathJoinSubstitution(
         [pkg_ctrl, 'config', 'ur5e_rt_controller.yaml'])
-    hand_config = PathJoinSubstitution(
-        [pkg_hand, 'config', 'hand_udp_node.yaml'])
+
+    # ur5e_hand_udp is optional — may not be built in sim-only installs
+    hand_config = None
+    try:
+        hand_share = get_package_share_directory('ur5e_hand_udp')
+        hand_config = os.path.join(hand_share, 'config', 'hand_udp_node.yaml')
+    except Exception:
+        pass
 
     # ── Build simulator parameters (YAML first, then conditional overrides) ───
     sim_params = [sim_config]
@@ -180,7 +185,9 @@ def launch_setup(context, *args, **kwargs):
         sim_params.append(sim_overrides)
 
     # ── Build controller parameters (YAML + overrides + launch args) ──────────
-    ctrl_params = [ctrl_config, sim_config, hand_config]
+    ctrl_params = [ctrl_config, sim_config]
+    if hand_config is not None:
+        ctrl_params.append(hand_config)
     ctrl_overrides = {}
 
     kp = LaunchConfiguration('kp').perform(context)
