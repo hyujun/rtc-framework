@@ -2,7 +2,8 @@
 # setup_nvidia_rt.sh — NVIDIA 드라이버 + Linux RT 커널 공존 환경 설정
 #
 # NVIDIA GPU(디스플레이 전용)와 PREEMPT_RT 커널이 안정적으로 공존하도록
-# modprobe, GRUB, IRQ affinity, persistence mode, nouveau 블랙리스트를 설정한다.
+# modprobe, GRUB, IRQ affinity, persistence mode, nouveau 블랙리스트,
+# X11 anti-tearing(ForceFullCompositionPipeline), compositor 우선순위를 설정한다.
 #
 # 대상: Ubuntu 22.04 / 24.04, PREEMPT_RT 커널, NVIDIA GPU (CUDA 미사용)
 # 제어 루프: 500Hz (2ms period), 목표 max jitter: < 200μs
@@ -46,7 +47,9 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   echo "  4. NVIDIA IRQ affinity systemd 서비스"
   echo "  5. nvidia-smi persistence mode 서비스"
   echo "  6. nouveau 블랙리스트 (활성 시)"
-  echo "  7. 검증 요약 및 cyclictest 명령"
+  echo "  7. X11 화면 티어링 방지 (ForceFullCompositionPipeline)"
+  echo "  8. Compositor 우선순위 부스트 서비스"
+  echo "  9. 검증 요약 및 cyclictest 명령"
   echo ""
   exit 0
 fi
@@ -76,9 +79,9 @@ backup_file() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [1/7] Pre-flight Checks
+# [1/9] Pre-flight Checks
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [1/7] Pre-flight Checks ━━━${NC}"
+echo -e "${BOLD}━━━ [1/9] Pre-flight Checks ━━━${NC}"
 echo ""
 
 # ── Root check ──────────────────────────────────────────────────────────────
@@ -170,17 +173,36 @@ else
 fi
 RT_CORES="${RT_CORES_START}-${RT_CORES_END}"
 
+if [[ "$TOTAL_CORES" -le 4 ]]; then
+  warn "4코어 시스템: OS 코어가 1개(Core 0)뿐입니다"
+  warn "X11/Wayland + NVIDIA IRQ + 시스템 프로세스가 모두 Core 0에서 동작하므로"
+  warn "디스플레이 렌더링 프레임이 밀려 화면 끊김이 발생할 수 있습니다"
+  WARNINGS+=("4코어 시스템 — 디스플레이 성능 저하 가능 (OS 코어 1개)")
+fi
+
 success "CPU 레이아웃 (${TOTAL_CORES}코어):"
 info "  OS / NVIDIA IRQ:  Core ${OS_CORES}"
 info "  RT 격리 대상:     Core ${RT_CORES} (thread_config.hpp 레이아웃과 일치)"
 info "  IRQ affinity mask: 0x${IRQ_AFFINITY_MASK}"
+
+# ── Display server detection ──────────────────────────────────────────────
+DISPLAY_SERVER="unknown"
+if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+  DISPLAY_SERVER="wayland"
+elif [[ -n "${DISPLAY:-}" ]]; then
+  DISPLAY_SERVER="x11"
+else
+  # 비-GUI 환경에서도 X11 설정 파일은 설치 (재부팅 후 GUI 시작 시 적용)
+  DISPLAY_SERVER="headless"
+fi
+info "디스플레이 서버: ${DISPLAY_SERVER}"
 
 # ── nouveau check ───────────────────────────────────────────────────────────
 NOUVEAU_ACTIVE=0
 if lsmod 2>/dev/null | grep -q nouveau; then
   NOUVEAU_ACTIVE=1
   warn "nouveau 모듈이 활성 상태입니다!"
-  warn "NVIDIA 독점 드라이버와 충돌합니다. [6/7] 단계에서 블랙리스트를 설정합니다."
+  warn "NVIDIA 독점 드라이버와 충돌합니다. [6/9] 단계에서 블랙리스트를 설정합니다."
   WARNINGS+=("nouveau 모듈 활성 — 블랙리스트 적용 예정")
 else
   success "nouveau 비활성 확인"
@@ -198,9 +220,9 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [2/7] NVIDIA modprobe Configuration
+# [2/9] NVIDIA modprobe Configuration
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [2/7] NVIDIA modprobe 설정 ━━━${NC}"
+echo -e "${BOLD}━━━ [2/9] NVIDIA modprobe 설정 ━━━${NC}"
 echo ""
 
 MODPROBE_CONF="/etc/modprobe.d/nvidia-rt.conf"
@@ -226,9 +248,9 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [3/7] GRUB Configuration
+# [3/9] GRUB Configuration
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [3/7] GRUB 커널 파라미터 설정 ━━━${NC}"
+echo -e "${BOLD}━━━ [3/9] GRUB 커널 파라미터 설정 ━━━${NC}"
 echo ""
 
 GRUB_FILE="/etc/default/grub"
@@ -311,9 +333,9 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [4/7] NVIDIA IRQ Affinity systemd Service
+# [4/9] NVIDIA IRQ Affinity systemd Service
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [4/7] NVIDIA IRQ Affinity 서비스 ━━━${NC}"
+echo -e "${BOLD}━━━ [4/9] NVIDIA IRQ Affinity 서비스 ━━━${NC}"
 echo ""
 
 IRQ_SERVICE="/etc/systemd/system/nvidia-irq-affinity.service"
@@ -399,9 +421,9 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [5/7] nvidia-smi Persistence Mode
+# [5/9] nvidia-smi Persistence Mode
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [5/7] nvidia-smi Persistence Mode ━━━${NC}"
+echo -e "${BOLD}━━━ [5/9] nvidia-smi Persistence Mode ━━━${NC}"
 echo ""
 
 PERSIST_SERVICE="/etc/systemd/system/nvidia-persistence.service"
@@ -440,9 +462,9 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [6/7] nouveau Blacklist (if active)
+# [6/9] nouveau Blacklist (if active)
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [6/7] nouveau 블랙리스트 ━━━${NC}"
+echo -e "${BOLD}━━━ [6/9] nouveau 블랙리스트 ━━━${NC}"
 echo ""
 
 NOUVEAU_CONF="/etc/modprobe.d/blacklist-nouveau.conf"
@@ -478,9 +500,152 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [7/7] Validation & Summary
+# [7/9] X11 Anti-Tearing Configuration
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [7/7] 설정 요약 ━━━${NC}"
+echo -e "${BOLD}━━━ [7/9] X11 화면 티어링 방지 ━━━${NC}"
+echo ""
+
+# ForceFullCompositionPipeline은 NVIDIA 독점 드라이버의 vsync 기반 티어링 방지 기능.
+# nvidia-drm modeset=1만으로는 KMS만 활성화될 뿐, 실제 티어링은 해결되지 않는다.
+# Wayland 환경에서도 XWayland fallback 시 유효하므로, X11 설정 파일은 항상 설치한다.
+XORG_CONF_DIR="/etc/X11/xorg.conf.d"
+XORG_CONF="${XORG_CONF_DIR}/20-nvidia-antitear.conf"
+
+# nvidia-settings에서 현재 연결된 디스플레이 이름 감지
+DISPLAY_NAME=""
+if command -v nvidia-settings &>/dev/null && [[ "$DISPLAY_SERVER" != "headless" ]]; then
+  DISPLAY_NAME=$(nvidia-settings -q CurrentMetaMode -t 2>/dev/null \
+    | grep -oP '^[A-Za-z]+-[0-9]+' | head -1 || true)
+fi
+
+# 디스플레이 이름을 감지하지 못한 경우 범용 설정 사용
+if [[ -n "$DISPLAY_NAME" ]]; then
+  METAMODE_VALUE="${DISPLAY_NAME}: nvidia-auto-select +0+0 {ForceFullCompositionPipeline=On}"
+  info "감지된 디스플레이: ${DISPLAY_NAME}"
+else
+  METAMODE_VALUE="nvidia-auto-select +0+0 {ForceFullCompositionPipeline=On}"
+  info "디스플레이 이름 미감지 — 범용 MetaMode 사용"
+fi
+
+XORG_CONTENT="# NVIDIA 화면 티어링 방지 설정
+# Generated by setup_nvidia_rt.sh
+#
+# ForceFullCompositionPipeline: GPU 측 vsync 강제 (compositor 무관)
+# TripleBuffer: 프레임 드롭 방지 (vsync 활성화 시 성능 보완)
+Section \"Screen\"
+    Identifier     \"Screen0\"
+    Device         \"Device0\"
+    Monitor        \"Monitor0\"
+    Option         \"MetaModes\" \"${METAMODE_VALUE}\"
+    Option         \"TripleBuffer\" \"On\"
+    Option         \"AllowIndirectGLXProtocol\" \"off\"
+EndSection"
+
+mkdir -p "$XORG_CONF_DIR"
+
+if [[ -f "$XORG_CONF" ]] && diff -q <(echo "$XORG_CONTENT") "$XORG_CONF" &>/dev/null; then
+  info "이미 동일한 X11 설정이 존재합니다 — 건너뜀"
+else
+  backup_file "$XORG_CONF"
+  echo "$XORG_CONTENT" > "$XORG_CONF"
+  success "X11 anti-tearing 설정: ${XORG_CONF}"
+  CHANGES_APPLIED+=("X11 ForceFullCompositionPipeline: ${XORG_CONF}")
+fi
+
+if [[ "$DISPLAY_SERVER" == "wayland" ]]; then
+  info "Wayland 환경 감지 — XWayland 창에만 적용됩니다"
+  info "순수 Wayland 앱의 티어링은 compositor(Mutter/KWin) 설정을 확인하세요"
+  WARNINGS+=("Wayland 환경 — ForceFullCompositionPipeline은 XWayland에만 적용")
+fi
+
+echo ""
+
+# ══════════════════════════════════════════════════════════════════════════════
+# [8/9] Compositor Priority Boost for RT Environment
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "${BOLD}━━━ [8/9] Compositor 우선순위 부스트 ━━━${NC}"
+echo ""
+
+# RT 커널에서 SCHED_FIFO 스레드(제어 루프)가 SCHED_OTHER(compositor)를 완전히 선점하면
+# 화면 갱신이 밀려서 끊김이 발생한다.
+# compositor의 nice 값을 낮춰(우선순위 높임) SCHED_OTHER 내에서 최우선으로 실행되게 한다.
+# 주의: SCHED_FIFO로 올리면 RT 제어 루프와 경쟁하므로 nice 조정만 수행.
+COMPOSITOR_SERVICE="/etc/systemd/system/rt-compositor-boost.service"
+COMPOSITOR_SCRIPT="/usr/local/bin/rt-compositor-boost.sh"
+
+COMPOSITOR_SCRIPT_CONTENT='#!/bin/bash
+# rt-compositor-boost.sh — RT 환경에서 compositor/Xorg 우선순위 부스트
+# Generated by setup_nvidia_rt.sh
+#
+# RT 스레드(SCHED_FIFO)에 의해 디스플레이 compositor가 기아 상태에 빠지는 것을 방지.
+# SCHED_OTHER 내에서 nice -10으로 우선순위를 높인다.
+set -euo pipefail
+
+BOOSTED=0
+
+# Xorg / Xwayland
+for proc_name in Xorg Xwayland; do
+  for pid in $(pgrep -x "$proc_name" 2>/dev/null || true); do
+    renice -n -10 -p "$pid" 2>/dev/null && ((BOOSTED++)) || true
+  done
+done
+
+# GNOME compositor (mutter)
+for pid in $(pgrep -f "gnome-shell" 2>/dev/null || true); do
+  renice -n -10 -p "$pid" 2>/dev/null && ((BOOSTED++)) || true
+done
+
+# KDE compositor (kwin)
+for pid in $(pgrep -f "kwin" 2>/dev/null || true); do
+  renice -n -10 -p "$pid" 2>/dev/null && ((BOOSTED++)) || true
+done
+
+echo "rt-compositor-boost: boosted ${BOOSTED} display processes (nice -10)"'
+
+COMPOSITOR_SERVICE_CONTENT="[Unit]
+Description=Boost compositor/Xorg priority for RT kernel display stability
+After=display-manager.service
+After=graphical.target
+
+[Service]
+Type=oneshot
+ExecStart=${COMPOSITOR_SCRIPT}
+RemainAfterExit=yes
+# 디스플레이 매니저가 완전히 시작된 후 실행
+ExecStartPre=/bin/sleep 5
+
+[Install]
+WantedBy=graphical.target"
+
+echo "$COMPOSITOR_SCRIPT_CONTENT" > "$COMPOSITOR_SCRIPT"
+chmod +x "$COMPOSITOR_SCRIPT"
+success "Compositor 부스트 스크립트: ${COMPOSITOR_SCRIPT}"
+
+if [[ -f "$COMPOSITOR_SERVICE" ]] && diff -q <(echo "$COMPOSITOR_SERVICE_CONTENT") "$COMPOSITOR_SERVICE" &>/dev/null; then
+  info "서비스가 이미 동일한 설정으로 존재합니다 — 건너뜀"
+else
+  backup_file "$COMPOSITOR_SERVICE"
+  echo "$COMPOSITOR_SERVICE_CONTENT" > "$COMPOSITOR_SERVICE"
+  systemctl daemon-reload
+  systemctl enable rt-compositor-boost.service 2>/dev/null
+  success "Compositor 부스트 서비스: ${COMPOSITOR_SERVICE}"
+  CHANGES_APPLIED+=("Compositor 우선순위 부스트 서비스: ${COMPOSITOR_SERVICE}")
+fi
+
+# GUI 환경이면 즉시 실행
+if [[ "$DISPLAY_SERVER" != "headless" ]]; then
+  bash "$COMPOSITOR_SCRIPT" 2>/dev/null || true
+  success "Compositor 우선순위 즉시 적용 완료"
+else
+  info "headless 환경 — 재부팅 후 GUI 시작 시 자동 적용됩니다"
+fi
+
+echo ""
+
+# ══════════════════════════════════════════════════════════════════════════════
+# [9/9] Validation & Summary
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "${BOLD}━━━ [9/9] 설정 요약 ━━━${NC}"
 echo ""
 
 # ── Summary table ───────────────────────────────────────────────────────────
@@ -556,6 +721,9 @@ echo "  cat /proc/interrupts | grep nvidia           # NVIDIA IRQ 확인"
 echo "  nvidia-smi -q -d PERFORMANCE                 # persistence mode 확인"
 echo "  systemctl status nvidia-irq-affinity          # IRQ affinity 서비스"
 echo "  systemctl status nvidia-persistence           # persistence 서비스"
+echo "  systemctl status rt-compositor-boost          # compositor 부스트 서비스"
+echo "  cat /etc/X11/xorg.conf.d/20-nvidia-antitear.conf  # X11 anti-tearing"
+echo "  nvidia-settings -q CurrentMetaMode            # 현재 MetaMode 확인"
 echo ""
 
 # ── Reboot prompt ───────────────────────────────────────────────────────────
