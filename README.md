@@ -5,7 +5,7 @@
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 ![ROS2 Jazzy](https://img.shields.io/badge/ROS2-Jazzy-green)
 
-**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.11.0)**
+**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.12.0)**
 
 E-STOP 안전 시스템, 전략 패턴 기반 다중 제어기(P/JointPD/CLIK/OSC/Hand), MuJoCo 3.x 물리 시뮬레이터, UDP 핸드 인터페이스, CSV 데이터 로깅, GUI 도구를 포함한 완전한 실시간 제어 솔루션입니다.
 
@@ -56,7 +56,7 @@ ur5e_tools            ← 독립 (Python 전용, rclpy)
 - **세션 기반 통합 로깅**: `logging_data/YYMMDD_HHMM/` 세션 디렉토리에 모든 패키지 로그 통합 — controller/, monitor/, hand/, sim/, plots/, motions/ 서브디렉토리 (v5.10.0)
 - **RT-안전 신호 필터**: Bessel LPF + Kalman 필터 (N채널, noexcept)
 - **통신 통계 모니터링**: Status Monitor MessageStats + 컨트롤러별 통계, Hand UDP CommStats + rate 모니터링 (v5.9.0)
-- **궤적 시각화 v2**: 파일 이름 자동 감지, robot (위치+속도), hand (위치+속도+센서) 다중 Figure (v5.9.0)
+- **궤적 시각화 v3**: 4-카테고리 CSV 지원, command/torque/task-pos 신규 Figure, `--all` 플래그, 레거시 호환 (v5.12.0)
 - **GUI 도구**: Qt5 모션 편집기, tkinter 컨트롤러 GUI, Matplotlib 궤적 시각화
 - **세션 디렉토리 전파**: `UR5E_SESSION_DIR` 환경변수로 모든 노드에 세션 경로 자동 전파 (v5.10.0)
 
@@ -112,6 +112,8 @@ ros2 launch ur5e_hand_udp hand_udp.launch.py
 ros2 topic hz /forward_position_controller/commands   # ~500Hz
 ros2 topic echo /system/estop_status                  # E-STOP 상태
 ros2 topic echo /sim/status                           # MuJoCo 시뮬 상태
+ros2 topic echo /rt_controller/trajectory_state   # 궤적 보간 상태 (18값)
+ros2 topic echo /rt_controller/controller_state    # 제어기 상태 (18값)
 ```
 
 ---
@@ -122,11 +124,13 @@ ros2 topic echo /sim/status                           # MuJoCo 시뮬 상태
 [UR5e 로봇 / MuJoCo 시뮬레이터]
     │  /joint_states
     ▼
-[RtControllerNode]  ←  /target_joint_positions
+[RtControllerNode]  ←  /target_joint_positions (goal)
     │  Strategy Pattern: P / JointPD / CLIK / OSC / Hand
     │  4 Executor 스레드 (RT Core 2 / Sensor Core 3 / Log Core 4 / Aux Core 5)
     ├──→ /forward_position_controller/commands → [UR 드라이버 / MuJoCo]  (indirect 컨트롤러)
-    └──→ /forward_torque_controller/commands  → [UR 드라이버 / MuJoCo]  (direct 컨트롤러)
+    ├──→ /forward_torque_controller/commands  → [UR 드라이버 / MuJoCo]  (direct 컨트롤러)
+    ├──→ /rt_controller/trajectory_state            → [모니터링/rqt_plot]
+    └──→ /rt_controller/controller_state            → [모니터링/rqt_plot]
 
 [10-DOF 핸드] ←UDP event-driven→ [HandController] ←직접 소유→ [RtControllerNode]
 ```

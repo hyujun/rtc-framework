@@ -13,8 +13,8 @@ namespace ur5e_rt_controller {
 
 // Writes control data to three separate CSV files in a non-RT (logging) thread:
 //   - timing_log:  per-phase timing breakdown (6 columns)
-//   - robot_log:   robot joint states (31 columns)
-//   - hand_log:    hand motor states + sensor data (87 columns)
+//   - robot_log:   robot joint states (49 columns — 4-category: goal/state/command/trajectory)
+//   - hand_log:    hand motor states + sensor data (87 columns — 4-category: goal/state/command)
 //
 // All three files share the same timestamp column for post-hoc join.
 // Copy is disabled; move is enabled for deferred construction.
@@ -102,33 +102,52 @@ private:
   }
 
   // ── Robot CSV ───────────────────────────────────────────────────────────────
+  // 4-카테고리 순서: Goal → Current State → Command → Trajectory
   void WriteRobotHeader() {
     robot_file_ << "timestamp";
+    // 카테고리 1: Goal State
     for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",goal_pos_" << i; }
-    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",target_pos_" << i; }
-    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",target_vel_" << i; }
+    // 카테고리 2: Current State
     for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",actual_pos_" << i; }
     for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",actual_vel_" << i; }
+    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",actual_torque_" << i; }
+    for (int i = 0; i < 6; ++i)               { robot_file_ << ",task_pos_" << i; }
+    // 카테고리 3: Control Command
+    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",command_" << i; }
+    robot_file_ << ",command_type";
+    // 카테고리 4: Trajectory State
+    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",traj_pos_" << i; }
+    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",traj_vel_" << i; }
     robot_file_ << '\n';
   }
 
   void WriteRobotRow(const ur5e_rt_controller::LogEntry &e) {
     if (!robot_file_.is_open()) { return; }
     robot_file_ << std::fixed << std::setprecision(6) << e.timestamp;
-    for (const auto v : e.goal_positions)      { robot_file_ << ',' << v; }
-    for (const auto v : e.target_positions)    { robot_file_ << ',' << v; }
-    for (const auto v : e.target_velocities)   { robot_file_ << ',' << v; }
-    for (const auto v : e.actual_positions)    { robot_file_ << ',' << v; }
-    for (const auto v : e.actual_velocities)   { robot_file_ << ',' << v; }
+    // 카테고리 1: Goal State
+    for (const auto v : e.goal_positions)          { robot_file_ << ',' << v; }
+    // 카테고리 2: Current State
+    for (const auto v : e.actual_positions)        { robot_file_ << ',' << v; }
+    for (const auto v : e.actual_velocities)       { robot_file_ << ',' << v; }
+    for (const auto v : e.actual_torques)          { robot_file_ << ',' << v; }
+    for (const auto v : e.actual_task_positions)   { robot_file_ << ',' << v; }
+    // 카테고리 3: Control Command
+    for (const auto v : e.robot_commands)          { robot_file_ << ',' << v; }
+    robot_file_ << ',' << (e.command_type == CommandType::kPosition ? 0 : 1);
+    // 카테고리 4: Trajectory State
+    for (const auto v : e.trajectory_positions)    { robot_file_ << ',' << v; }
+    for (const auto v : e.trajectory_velocities)   { robot_file_ << ',' << v; }
     robot_file_ << '\n';
   }
 
   // ── Hand CSV ────────────────────────────────────────────────────────────────
+  // 4-카테고리 순서: Goal → Current State → Command
   void WriteHandHeader() {
     hand_file_ << "timestamp"
                << ",hand_valid";
+    // 카테고리 1: Goal State
     for (int i = 0; i < kNumHandMotors; ++i) { hand_file_ << ",hand_goal_pos_" << i; }
-    for (int i = 0; i < kNumHandMotors; ++i) { hand_file_ << ",hand_cmd_" << i; }
+    // 카테고리 2: Current State
     for (int i = 0; i < kNumHandMotors; ++i) { hand_file_ << ",hand_actual_pos_" << i; }
     for (int i = 0; i < kNumHandMotors; ++i) { hand_file_ << ",hand_actual_vel_" << i; }
     // Sensor columns: barometer (8 per fingertip) + tof (3 per fingertip)
@@ -140,6 +159,8 @@ private:
         hand_file_ << ",tof_f" << f << "_" << t;
       }
     }
+    // 카테고리 3: Control Command
+    for (int i = 0; i < kNumHandMotors; ++i) { hand_file_ << ",hand_cmd_" << i; }
     hand_file_ << '\n';
   }
 
@@ -147,11 +168,14 @@ private:
     if (!hand_file_.is_open()) { return; }
     hand_file_ << std::fixed << std::setprecision(6) << e.timestamp
                << ',' << (e.hand_valid ? 1 : 0);
+    // 카테고리 1: Goal State
     for (const auto v : e.hand_goal_positions)    { hand_file_ << ',' << v; }
-    for (const auto v : e.hand_commands)          { hand_file_ << ',' << v; }
+    // 카테고리 2: Current State
     for (const auto v : e.hand_actual_positions)  { hand_file_ << ',' << v; }
     for (const auto v : e.hand_actual_velocities) { hand_file_ << ',' << v; }
     for (const auto v : e.hand_sensors)           { hand_file_ << ',' << v; }
+    // 카테고리 3: Control Command
+    for (const auto v : e.hand_commands)          { hand_file_ << ',' << v; }
     hand_file_ << '\n';
   }
 };

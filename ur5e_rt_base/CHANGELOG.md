@@ -5,6 +5,28 @@
 
 ---
 
+## [5.12.0] - 2026-03-14
+
+### 변경 (Changed) — 4-카테고리 토픽/CSV 체계
+
+- **`SubscribeRole` enum** (`types.hpp`)
+  - `kTarget` → `kGoal` rename (카테고리 1: Goal State)
+
+- **`PublishRole` enum** (`types.hpp`)
+  - `kTrajectoryState` 추가 (카테고리 4: 궤적 보간 상태)
+  - `kControllerState` 추가 (카테고리 4: 제어기 내부 상태)
+
+- **`LogEntry` 구조체** (`log_buffer.hpp`)
+  - 4-카테고리별 필드 그루핑 (Goal → State → Command → Trajectory)
+  - 신규 필드: `actual_torques[6]`, `actual_task_positions[6]`, `robot_commands[6]`, `command_type`
+  - rename: `target_positions` → `trajectory_positions`, `target_velocities` → `trajectory_velocities`
+
+- **`DataLogger` CSV 포맷** (`data_logger.hpp`)
+  - robot_log: 31 → 49 컬럼 (torque, task_pos, command, command_type 추가)
+  - hand_log: 컬럼 순서 4-카테고리별 재배치 (Goal → State → Sensor → Command)
+
+---
+
 ## [5.10.0] - 2026-03-14
 
 ### 추가 (Added) — 세션 디렉토리 관리 유틸리티

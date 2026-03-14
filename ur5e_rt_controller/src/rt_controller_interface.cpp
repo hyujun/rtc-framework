@@ -12,14 +12,19 @@ namespace
 const std::unordered_map<std::string, SubscribeRole> kSubscribeRoleMap = {
   {"joint_state",  SubscribeRole::kJointState},
   {"hand_state",   SubscribeRole::kHandState},
-  {"target",       SubscribeRole::kTarget},
+  {"goal",         SubscribeRole::kGoal},
+  {"target",       SubscribeRole::kGoal},       // 하위 호환
 };
 
 const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
-  {"position_command", PublishRole::kPositionCommand},
-  {"torque_command",   PublishRole::kTorqueCommand},
-  {"hand_command",     PublishRole::kHandCommand},
-  {"task_position",    PublishRole::kTaskPosition},
+  // 카테고리 3: Control Command
+  {"position_command",  PublishRole::kPositionCommand},
+  {"torque_command",    PublishRole::kTorqueCommand},
+  {"hand_command",      PublishRole::kHandCommand},
+  // 카테고리 4: Logging/Monitoring
+  {"task_position",     PublishRole::kTaskPosition},
+  {"trajectory_state",  PublishRole::kTrajectoryState},
+  {"controller_state",  PublishRole::kControllerState},
 };
 }  // namespace
 
@@ -33,12 +38,14 @@ TopicConfig RTControllerInterface::MakeDefaultTopicConfig()
   cfg.subscribe = {
     {"/joint_states",           SubscribeRole::kJointState},
     {"/hand/joint_states",      SubscribeRole::kHandState},
-    {"/target_joint_positions", SubscribeRole::kTarget},
+    {"/target_joint_positions", SubscribeRole::kGoal},
   };
   cfg.publish = {
-    {"/forward_position_controller/commands", PublishRole::kPositionCommand, kNumRobotJoints},
-    {"/forward_torque_controller/commands",   PublishRole::kTorqueCommand,   kNumRobotJoints},
-    {"/rt_controller/current_task_position",  PublishRole::kTaskPosition,    6},
+    {"/forward_position_controller/commands", PublishRole::kPositionCommand,  kNumRobotJoints},
+    {"/forward_torque_controller/commands",   PublishRole::kTorqueCommand,    kNumRobotJoints},
+    {"/rt_controller/current_task_position",  PublishRole::kTaskPosition,     6},
+    {"/rt_controller/trajectory_state",       PublishRole::kTrajectoryState,  18},
+    {"/rt_controller/controller_state",       PublishRole::kControllerState,  18},
   };
   return cfg;
 }

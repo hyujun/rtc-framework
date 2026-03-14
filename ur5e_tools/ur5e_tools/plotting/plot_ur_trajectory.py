@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """
-plot_ur_trajectory.py - v2
+plot_ur_trajectory.py - v3
 
-Visualize UR5e trajectory data from split CSV logs.
+Visualize UR5e trajectory data from split CSV logs (4-category convention).
+
+CSV 컬럼 카테고리:
+  1. Goal State — 외부 입력 목표
+  2. Current State — 센서 피드백
+  3. Control Command — 액추에이터 출력
+  4. Trajectory State — 궤적 보간 내부 상태
 
 파일 이름으로 robot/hand 데이터를 자동 구분:
-  - robot_log_*.csv → Robot 모드 (Figure 1: Position, Figure 2: Velocity)
-  - hand_log_*.csv  → Hand 모드 (Figure 1: Position, Figure 2: Velocity,
-                                  Figure 3: Barometer/ToF 센서)
+  - robot_log*.csv → Robot 모드
+  - hand_log*.csv  → Hand 모드
 """
 
 import os
@@ -24,18 +29,33 @@ import sys
 JOINT_NAMES = ['Base', 'Shoulder', 'Elbow', 'Wrist 1', 'Wrist 2', 'Wrist 3']
 
 
+def _has_columns(df, prefix, count):
+    """Check if df has columns like '{prefix}0' .. '{prefix}{count-1}'."""
+    return all(f'{prefix}{i}' in df.columns for i in range(count))
+
+
 def plot_robot_positions(df, save_dir=None):
-    """Figure 1: Robot joint positions (3x2 subplot)."""
+    """Figure 1: Robot joint positions — goal vs trajectory vs actual (3x2)."""
     fig, axes = plt.subplots(3, 2, figsize=(15, 12))
     fig.suptitle('Robot Joint Positions', fontsize=16, fontweight='bold')
     axes = axes.flatten()
+
+    has_traj = _has_columns(df, 'traj_pos_', 6)
+    # 하위 호환: 이전 CSV의 target_pos_ 컬럼 지원
+    has_legacy_target = not has_traj and _has_columns(df, 'target_pos_', 6)
 
     for i in range(6):
         ax = axes[i]
         t = df['timestamp']
         ax.plot(t, df[f'actual_pos_{i}'], label='Actual', linewidth=1.5)
-        ax.plot(t, df[f'target_pos_{i}'], label='Target (traj)',
-                linestyle='--', linewidth=1.5)
+
+        if has_traj:
+            ax.plot(t, df[f'traj_pos_{i}'], label='Trajectory',
+                    linestyle='--', linewidth=1.5)
+        elif has_legacy_target:
+            ax.plot(t, df[f'target_pos_{i}'], label='Target (traj)',
+                    linestyle='--', linewidth=1.5)
+
         ax.plot(t, df[f'goal_pos_{i}'], label='Goal',
                 linestyle=':', linewidth=1.5, alpha=0.8)
 
@@ -56,17 +76,25 @@ def plot_robot_positions(df, save_dir=None):
 
 
 def plot_robot_velocities(df, save_dir=None):
-    """Figure 2: Robot joint velocities (3x2 subplot)."""
+    """Figure 2: Robot joint velocities — trajectory vs actual (3x2)."""
     fig, axes = plt.subplots(3, 2, figsize=(15, 12))
     fig.suptitle('Robot Joint Velocities', fontsize=16, fontweight='bold')
     axes = axes.flatten()
+
+    has_traj = _has_columns(df, 'traj_vel_', 6)
+    has_legacy_target = not has_traj and _has_columns(df, 'target_vel_', 6)
 
     for i in range(6):
         ax = axes[i]
         t = df['timestamp']
         ax.plot(t, df[f'actual_vel_{i}'], label='Actual', linewidth=1.5)
-        ax.plot(t, df[f'target_vel_{i}'], label='Target (traj)',
-                linestyle='--', linewidth=1.5)
+
+        if has_traj:
+            ax.plot(t, df[f'traj_vel_{i}'], label='Trajectory',
+                    linestyle='--', linewidth=1.5)
+        elif has_legacy_target:
+            ax.plot(t, df[f'target_vel_{i}'], label='Target (traj)',
+                    linestyle='--', linewidth=1.5)
 
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Velocity (rad/s)')
@@ -84,27 +112,146 @@ def plot_robot_velocities(df, save_dir=None):
     plt.close()
 
 
+def plot_robot_commands(df, save_dir=None):
+    """Figure 3: Robot control commands — command output per joint (3x2)."""
+    if not _has_columns(df, 'command_', 6):
+        print('  Skipping command plot (command_* columns not found)')
+        return
+
+    fig, axes = plt.subplots(3, 2, figsize=(15, 12))
+
+    # command_type: 0=position, 1=torque
+    has_type = 'command_type' in df.columns
+    if has_type:
+        cmd_type = df['command_type'].mode().iloc[0] if len(df) > 0 else 0
+        type_label = 'Position' if cmd_type == 0 else 'Torque'
+        unit = 'rad' if cmd_type == 0 else 'Nm'
+    else:
+        type_label = 'Command'
+        unit = ''
+
+    fig.suptitle(f'Robot Control Commands ({type_label})',
+                 fontsize=16, fontweight='bold')
+    axes = axes.flatten()
+
+    for i in range(6):
+        ax = axes[i]
+        t = df['timestamp']
+        ax.plot(t, df[f'command_{i}'], label=type_label,
+                linewidth=1.5, color='C2')
+        ax.plot(t, df[f'actual_pos_{i}'], label='Actual pos',
+                linewidth=1.0, alpha=0.5, linestyle='--')
+
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel(f'{type_label} ({unit})' if unit else type_label)
+        ax.set_title(f'Joint {i}: {JOINT_NAMES[i]}')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if save_dir:
+        path = Path(save_dir) / 'robot_commands.png'
+        plt.savefig(path, dpi=300, bbox_inches='tight')
+        print(f'Saved: {path}')
+    else:
+        plt.show()
+    plt.close()
+
+
+def plot_robot_torques(df, save_dir=None):
+    """Figure 4: Robot actual torques (3x2)."""
+    if not _has_columns(df, 'actual_torque_', 6):
+        print('  Skipping torque plot (actual_torque_* columns not found)')
+        return
+
+    fig, axes = plt.subplots(3, 2, figsize=(15, 12))
+    fig.suptitle('Robot Actual Torques', fontsize=16, fontweight='bold')
+    axes = axes.flatten()
+
+    for i in range(6):
+        ax = axes[i]
+        t = df['timestamp']
+        ax.plot(t, df[f'actual_torque_{i}'], label='Torque',
+                linewidth=1.5, color='C3')
+
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel('Torque (Nm)')
+        ax.set_title(f'Joint {i}: {JOINT_NAMES[i]}')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if save_dir:
+        path = Path(save_dir) / 'robot_torques.png'
+        plt.savefig(path, dpi=300, bbox_inches='tight')
+        print(f'Saved: {path}')
+    else:
+        plt.show()
+    plt.close()
+
+
+def plot_robot_task_position(df, save_dir=None):
+    """Figure 5: TCP task-space position (3x1: x, y, z)."""
+    if not _has_columns(df, 'task_pos_', 3):
+        print('  Skipping task position plot (task_pos_* columns not found)')
+        return
+
+    labels = ['X', 'Y', 'Z']
+    fig, axes = plt.subplots(3, 1, figsize=(14, 10))
+    fig.suptitle('TCP Task-Space Position', fontsize=16, fontweight='bold')
+
+    t = df['timestamp']
+    for i in range(3):
+        ax = axes[i]
+        ax.plot(t, df[f'task_pos_{i}'], label=f'{labels[i]}',
+                linewidth=1.5)
+        ax.set_ylabel(f'{labels[i]} (m)')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+    axes[-1].set_xlabel('Time (s)')
+
+    plt.tight_layout()
+    if save_dir:
+        path = Path(save_dir) / 'robot_task_position.png'
+        plt.savefig(path, dpi=300, bbox_inches='tight')
+        print(f'Saved: {path}')
+    else:
+        plt.show()
+    plt.close()
+
+
 def plot_robot_tracking_error(df, save_dir=None):
-    """Optional: position & velocity tracking error."""
+    """Position & velocity tracking error (trajectory - actual)."""
+    # trajectory 컬럼 결정 (신규 traj_pos_ 또는 레거시 target_pos_)
+    if _has_columns(df, 'traj_pos_', 6):
+        pos_prefix, vel_prefix = 'traj_pos_', 'traj_vel_'
+    elif _has_columns(df, 'target_pos_', 6):
+        pos_prefix, vel_prefix = 'target_pos_', 'target_vel_'
+    else:
+        print('  Skipping tracking error plot (trajectory columns not found)')
+        return
+
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8))
     fig.suptitle('Robot Tracking Errors', fontsize=16, fontweight='bold')
     t = df['timestamp']
 
     for i in range(6):
-        pos_err = df[f'target_pos_{i}'] - df[f'actual_pos_{i}']
+        pos_err = df[f'{pos_prefix}{i}'] - df[f'actual_pos_{i}']
         ax1.plot(t, pos_err, label=f'J{i} ({JOINT_NAMES[i]})', alpha=0.7)
     ax1.set_ylabel('Position Error (rad)')
-    ax1.set_title('Position Tracking Error (target - actual)')
+    ax1.set_title('Position Tracking Error (trajectory - actual)')
     ax1.legend(fontsize=8, ncol=3)
     ax1.grid(True, alpha=0.3)
     ax1.axhline(y=0, color='k', linewidth=0.5)
 
-    for i in range(6):
-        vel_err = df[f'target_vel_{i}'] - df[f'actual_vel_{i}']
-        ax2.plot(t, vel_err, label=f'J{i} ({JOINT_NAMES[i]})', alpha=0.7)
+    has_vel = _has_columns(df, vel_prefix, 6)
+    if has_vel:
+        for i in range(6):
+            vel_err = df[f'{vel_prefix}{i}'] - df[f'actual_vel_{i}']
+            ax2.plot(t, vel_err, label=f'J{i} ({JOINT_NAMES[i]})', alpha=0.7)
     ax2.set_xlabel('Time (s)')
     ax2.set_ylabel('Velocity Error (rad/s)')
-    ax2.set_title('Velocity Tracking Error (target - actual)')
+    ax2.set_title('Velocity Tracking Error (trajectory - actual)')
     ax2.legend(fontsize=8, ncol=3)
     ax2.grid(True, alpha=0.3)
     ax2.axhline(y=0, color='k', linewidth=0.5)
@@ -126,18 +273,32 @@ def print_robot_statistics(df):
     print(f'Duration: {duration:.2f} s | Samples: {len(df)}'
           f' | Rate: {len(df) / duration:.1f} Hz')
 
-    print('\nPosition Tracking Error (RMS):')
-    for i in range(6):
-        err = df[f'target_pos_{i}'] - df[f'actual_pos_{i}']
-        rms = np.sqrt(np.mean(err ** 2))
-        print(f'  Joint {i} ({JOINT_NAMES[i]}): '
-              f'{rms:.6f} rad ({np.rad2deg(rms):.4f} deg)')
+    # trajectory 컬럼 결정
+    if _has_columns(df, 'traj_pos_', 6):
+        pos_prefix, vel_prefix = 'traj_pos_', 'traj_vel_'
+    elif _has_columns(df, 'target_pos_', 6):
+        pos_prefix, vel_prefix = 'target_pos_', 'target_vel_'
+    else:
+        pos_prefix, vel_prefix = None, None
 
-    print('\nVelocity Tracking Error (RMS):')
-    for i in range(6):
-        err = df[f'target_vel_{i}'] - df[f'actual_vel_{i}']
-        rms = np.sqrt(np.mean(err ** 2))
-        print(f'  Joint {i} ({JOINT_NAMES[i]}): {rms:.6f} rad/s')
+    if pos_prefix:
+        print('\nPosition Tracking Error (RMS):')
+        for i in range(6):
+            err = df[f'{pos_prefix}{i}'] - df[f'actual_pos_{i}']
+            rms = np.sqrt(np.mean(err ** 2))
+            print(f'  Joint {i} ({JOINT_NAMES[i]}): '
+                  f'{rms:.6f} rad ({np.rad2deg(rms):.4f} deg)')
+
+    if vel_prefix and _has_columns(df, vel_prefix, 6):
+        print('\nVelocity Tracking Error (RMS):')
+        for i in range(6):
+            err = df[f'{vel_prefix}{i}'] - df[f'actual_vel_{i}']
+            rms = np.sqrt(np.mean(err ** 2))
+            print(f'  Joint {i} ({JOINT_NAMES[i]}): {rms:.6f} rad/s')
+
+    if 'command_type' in df.columns:
+        cmd_type = df['command_type'].mode().iloc[0] if len(df) > 0 else 0
+        print(f'\nCommand type: {"position" if cmd_type == 0 else "torque"}')
 
 
 # ── Hand 모드 ──────────────────────────────────────────────────────────────
@@ -285,9 +446,9 @@ def print_hand_statistics(df):
 def detect_log_type(filepath):
     """Detect log type from filename prefix."""
     stem = Path(filepath).stem
-    if stem.startswith('robot_log_'):
+    if stem.startswith('robot_log'):
         return 'robot'
-    elif stem.startswith('hand_log_'):
+    elif stem.startswith('hand_log'):
         return 'hand'
     else:
         return 'unknown'
@@ -295,9 +456,9 @@ def detect_log_type(filepath):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Plot UR5e trajectory from split CSV logs')
+        description='Plot UR5e trajectory from split CSV logs (4-category)')
     parser.add_argument('csv_file', type=str,
-                        help='Path to robot_log_*.csv or hand_log_*.csv')
+                        help='Path to robot_log*.csv or hand_log*.csv')
     parser.add_argument('--save-dir', type=str, default=None,
                         help='Directory to save plots (PNG). '
                              '미지정 시 UR5E_SESSION_DIR/plots/ 사용')
@@ -305,8 +466,23 @@ def main():
                         help='Print statistics only (no plots)')
     parser.add_argument('--error', action='store_true',
                         help='Also plot tracking error figures (robot only)')
+    parser.add_argument('--command', action='store_true',
+                        help='Also plot control command figures (robot only)')
+    parser.add_argument('--torque', action='store_true',
+                        help='Also plot actual torque figures (robot only)')
+    parser.add_argument('--task-pos', action='store_true',
+                        help='Also plot TCP task-space position (robot only)')
+    parser.add_argument('--all', action='store_true',
+                        help='Plot all available figures')
 
     args = parser.parse_args()
+
+    # --all 플래그로 모든 플롯 활성화
+    if args.all:
+        args.error = True
+        args.command = True
+        args.torque = True
+        args.task_pos = True
 
     # --save-dir 미지정 시 세션 디렉토리의 plots/ 서브디렉토리를 기본값으로 사용
     if args.save_dir is None:
@@ -317,7 +493,7 @@ def main():
     log_type = detect_log_type(args.csv_file)
     if log_type == 'unknown':
         print(f'Error: Cannot detect log type from filename: {args.csv_file}')
-        print('Expected: robot_log_*.csv or hand_log_*.csv')
+        print('Expected: robot_log*.csv or hand_log*.csv')
         sys.exit(1)
 
     print(f'Loading ({log_type}): {args.csv_file}')
@@ -333,6 +509,12 @@ def main():
             plot_robot_velocities(df, args.save_dir)
             if args.error:
                 plot_robot_tracking_error(df, args.save_dir)
+            if args.command:
+                plot_robot_commands(df, args.save_dir)
+            if args.torque:
+                plot_robot_torques(df, args.save_dir)
+            if args.task_pos:
+                plot_robot_task_position(df, args.save_dir)
     elif log_type == 'hand':
         print_hand_statistics(df)
         if not args.stats:

@@ -29,31 +29,57 @@ namespace ur5e_rt_controller {
 #endif
 
 // One row of the control log, split across three CSV files by the DataLogger.
+// Fields are grouped by the 4-category topic convention:
+//   1. Goal State — 외부 입력 목표
+//   2. Current State — 센서 피드백
+//   3. Control Command — 액추에이터 출력
+//   4. Trajectory/Logging — 궤적 보간 내부 상태
 struct LogEntry {
   double timestamp{0.0};
 
-  // ── Timing data → timing_log CSV ─────────────────────────────────────────
-  // Populated by ControlLoop() via steady_clock::now() around each phase.
+  // ── Timing data → timing_log.csv ───────────────────────────────────────
   double t_state_acquire_us{0.0};  // try_lock + state copy
   double t_compute_us{0.0};        // controller Compute() wall-clock
   double t_publish_us{0.0};        // cmd_pub try_lock + publish
   double t_total_us{0.0};          // entire ControlLoop() callback
   double jitter_us{0.0};           // |actual_period - expected_period|
 
-  // ── Robot joint data → robot_log CSV ─────────────────────────────────────
-  std::array<double, kNumRobotJoints> goal_positions{};       // 최종 목표 (SetRobotTarget)
-  std::array<double, kNumRobotJoints> target_positions{};     // 궤적 보간 위치
-  std::array<double, kNumRobotJoints> target_velocities{};    // 궤적 보간 속도
-  std::array<double, kNumRobotJoints> actual_positions{};     // 실제 위치
-  std::array<double, kNumRobotJoints> actual_velocities{};    // 실제 속도
+  // ══════════════════════════════════════════════════════════════════════════
+  // ── Robot joint data → robot_log.csv ───────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
 
-  // ── Hand data → hand_log CSV ─────────────────────────────────────────────
+  // 카테고리 1: Goal State (외부 입력 목표)
+  std::array<double, kNumRobotJoints> goal_positions{};
+
+  // 카테고리 2: Current State (센서 피드백)
+  std::array<double, kNumRobotJoints> actual_positions{};
+  std::array<double, kNumRobotJoints> actual_velocities{};
+  std::array<double, kNumRobotJoints> actual_torques{};        // 실제 토크
+  std::array<double, 6>               actual_task_positions{};  // TCP 위치
+
+  // 카테고리 3: Control Command (액추에이터 출력)
+  std::array<double, kNumRobotJoints> robot_commands{};
+  CommandType command_type{CommandType::kPosition};
+
+  // 카테고리 4: Trajectory State (궤적 보간 내부 상태)
+  std::array<double, kNumRobotJoints> trajectory_positions{};   // 궤적 보간 위치
+  std::array<double, kNumRobotJoints> trajectory_velocities{};  // 궤적 보간 속도
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ── Hand data → hand_log.csv ───────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
   bool hand_valid{false};
-  std::array<float, kNumHandMotors>  hand_goal_positions{};    // 핸드 최종 목표
-  std::array<float, kNumHandMotors>  hand_commands{};          // 핸드 출력 명령
-  std::array<float, kNumHandMotors>  hand_actual_positions{};  // 핸드 실제 위치
-  std::array<float, kNumHandMotors>  hand_actual_velocities{}; // 핸드 실제 속도
+
+  // 카테고리 1: Goal State
+  std::array<float, kNumHandMotors>  hand_goal_positions{};
+
+  // 카테고리 2: Current State
+  std::array<float, kNumHandMotors>  hand_actual_positions{};
+  std::array<float, kNumHandMotors>  hand_actual_velocities{};
   std::array<float, kNumHandSensors> hand_sensors{};           // 44 = baro(32) + tof(12)
+
+  // 카테고리 3: Control Command
+  std::array<float, kNumHandMotors>  hand_commands{};
 
   // Legacy alias — kept for backward compatibility with external tools.
   [[nodiscard]] double compute_time_us() const noexcept { return t_compute_us; }

@@ -1,6 +1,6 @@
 # ur5e_tools
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.10.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.12.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md)
 
 UR5e RT Controller 스택의 **Python 개발 유틸리티 패키지**입니다. 컨트롤러 GUI, 모션 편집기, 궤적 시각화, UDP 손 통신, 모델 검증 도구를 포함합니다.
@@ -132,7 +132,7 @@ sudo apt install python3-pyqt5
 
 ---
 
-### `plot_ur_trajectory.py` — 궤적 시각화 (v2)
+### `plot_ur_trajectory.py` — 궤적 시각화 (v3, 4-카테고리)
 
 분리된 CSV 제어 로그(`robot_log_*.csv`, `hand_log_*.csv`)를 Matplotlib으로 시각화합니다. 파일 이름으로 로그 타입을 자동 감지합니다.
 
@@ -161,11 +161,19 @@ ros2 run ur5e_tools plot_ur_trajectory logging_data/250314_1530/controller/robot
 
 **Robot 모드 플롯:**
 
-| Figure | 레이아웃 | 내용 |
-|--------|----------|------|
-| Figure 1 | 3×2 서브플롯 | 관절별 위치 (Goal / Target / Actual) |
-| Figure 2 | 3×2 서브플롯 | 관절별 속도 (Target / Actual) |
-| Figure 3 (--error) | 2×1 | 위치/속도 추적 오차 |
+| Figure | 플래그 | 레이아웃 | 내용 |
+|--------|--------|----------|------|
+| Figure 1 | (기본) | 3×2 서브플롯 | 관절별 위치 (Goal / Trajectory / Actual) |
+| Figure 2 | (기본) | 3×2 서브플롯 | 관절별 속도 (Trajectory / Actual) |
+| Figure 3 | `--command` | 3×2 서브플롯 | 관절별 제어 명령 (Position/Torque) |
+| Figure 4 | `--torque` | 3×2 서브플롯 | 관절별 실제 토크 |
+| Figure 5 | `--task-pos` | 3×1 | TCP 태스크 위치 (X/Y/Z) |
+| Figure 6 | `--error` | 2×1 | 위치/속도 추적 오차 |
+
+```bash
+# 모든 Figure 한 번에 생성
+ros2 run ur5e_tools plot_ur_trajectory robot_log.csv --all
+```
 
 **Hand 모드 플롯:**
 

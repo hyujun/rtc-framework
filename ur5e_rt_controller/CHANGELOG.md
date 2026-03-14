@@ -5,6 +5,36 @@
 
 ---
 
+## [5.12.0] - 2026-03-14
+
+### 추가 (Added) — 4-카테고리 토픽/CSV 체계
+
+- **토픽 Role 재구성 (4-카테고리)**
+  - 카테고리 1 — Goal State: `SubscribeRole::kTarget` → `SubscribeRole::kGoal` rename (YAML `"target"` 하위 호환 유지)
+  - 카테고리 3 — Control Command: 기존 유지 (`position_command`, `torque_command`, `hand_command`)
+  - 카테고리 4 — Logging/Monitoring: `PublishRole::kTrajectoryState`, `PublishRole::kControllerState` 신규 추가
+
+- **신규 모니터링 토픽 2개**
+  - `/rt_controller/trajectory_state` (Float64MultiArray, size=18): goal[6] + traj_pos[6] + traj_vel[6]
+  - `/rt_controller/controller_state` (Float64MultiArray, size=18): actual_pos[6] + actual_vel[6] + command[6]
+
+- **robot_log.csv 확장 (31 → 49 컬럼)**
+  - 신규: `actual_torque_0..5`, `task_pos_0..5`, `command_0..5`, `command_type`
+  - rename: `target_pos_*` → `traj_pos_*`, `target_vel_*` → `traj_vel_*`
+  - 컬럼 순서: 4-카테고리별 그루핑 (Goal → State → Command → Trajectory)
+
+- **hand_log.csv 컬럼 재배치**
+  - 카테고리별 순서: Goal → Current State → Sensor → Command
+
+### 변경 (Changed)
+
+- 모든 컨트롤러 YAML `topics.subscribe` role: `"target"` → `"goal"` (하위 호환 유지)
+- 모든 컨트롤러 YAML `topics.publish`에 `trajectory_state`, `controller_state` 토픽 추가
+- `ControlLoop()` Phase 3: `kTrajectoryState`, `kControllerState` publish case 추가
+- `LogEntry` 채우기: `actual_torques`, `actual_task_positions`, `robot_commands`, `command_type` 추가
+
+---
+
 ## [5.11.0] - 2026-03-14
 
 ### 변경 (Changed) — HandController sensor_decimation 파라미터 전달

@@ -545,7 +545,7 @@ Non-copyable (move-only) CSV logger. v5.9.0: split into **3 separate files**, ea
 | File | Columns | Content |
 |---|---|---|
 | `timing_log_YYMMDD_HHMM.csv` | 7 | `timestamp, t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us` |
-| `robot_log_YYMMDD_HHMM.csv` | 31 | `timestamp, goal_pos_0~5, target_pos_0~5, target_vel_0~5, actual_pos_0~5, actual_vel_0~5` |
+| `robot_log_YYMMDD_HHMM.csv` | 49 | `timestamp, goal_pos_0~5, actual_pos_0~5, actual_vel_0~5, actual_torque_0~5, task_pos_0~5, command_0~5, command_type, traj_pos_0~5, traj_vel_0~5` |
 | `hand_log_YYMMDD_HHMM.csv` | 87 | `timestamp, hand_valid, hand_goal_pos_0~9, hand_cmd_0~9, hand_actual_pos_0~9, hand_actual_vel_0~9, baro_f0_0~7, tof_f0_0~2, baro_f1_0~7, tof_f1_0~2, ...` |
 
 Constructor takes 3 paths (empty path disables that category):
@@ -557,7 +557,7 @@ DataLogger(const std::filesystem::path& timing_path,
 
 `LogEntry` is restructured with separate timing/robot/hand sections:
 - **Timing**: timestamp, t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us
-- **Robot**: goal_positions[6], target_positions[6], target_velocities[6], actual_positions[6], actual_velocities[6]
+- **Robot** (4-카테고리): goal_positions[6] (Goal), actual_positions[6], actual_velocities[6], actual_torques[6], actual_task_positions[6] (State), robot_commands[6], command_type (Command), trajectory_positions[6], trajectory_velocities[6] (Trajectory)
 - **Hand**: hand_valid, hand_goal_positions[10], hand_commands[10], hand_actual_positions[10], hand_actual_velocities[10], hand_sensors[44]
 
 The 500 Hz RT thread pushes entries to `SpscLogBuffer`; the `log_executor` thread (Core 4) drains and writes to all enabled CSV files — never blocking the RT path.
@@ -640,6 +640,8 @@ v5.11.0: `HandController` is directly owned by `RtControllerNode` (no ROS topic 
 | `/forward_position_controller/commands` | `std_msgs/Float64MultiArray` | Publish | 6 robot position commands (rad) — indirect controllers |
 | `/forward_torque_controller/commands` | `std_msgs/Float64MultiArray` | Publish | 6 robot torque commands (Nm) — direct controllers |
 | `/rt_controller/current_task_position` | `std_msgs/Float64MultiArray` | Publish | 6D FK task-space position |
+| `/rt_controller/trajectory_state` | `std_msgs/Float64MultiArray` | Publish | 궤적 보간 상태 (18: goal[6]+traj_pos[6]+traj_vel[6]) |
+| `/rt_controller/controller_state` | `std_msgs/Float64MultiArray` | Publish | 제어기 내부 상태 (18: actual_pos[6]+actual_vel[6]+command[6]) |
 | `/system/estop_status` | `std_msgs/Bool` | Publish | `true` = E-STOP active |
 | `~/active_controller_name` | `std_msgs/String` | Publish | Current active controller name (transient_local QoS) |
 | `~/current_gains` | `std_msgs/Float64MultiArray` | Publish | Active controller's current gains (response to `~/request_gains`) |

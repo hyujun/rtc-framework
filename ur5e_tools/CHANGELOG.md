@@ -5,6 +5,19 @@
 
 ---
 
+## [5.12.0] - 2026-03-14
+
+### 변경 (Changed) — 궤적 시각화 v3
+
+- **`plot_ur_trajectory.py` v3 업데이트**
+  - 새 robot_log.csv 4-카테고리 컬럼 지원 (`traj_pos_*`, `traj_vel_*`, `command_*`, `actual_torque_*`, `task_pos_*`)
+  - 레거시 CSV 하위 호환 (`target_pos_*`, `target_vel_*` 자동 감지)
+  - 신규 Figure: `--command` (제어 명령), `--torque` (실제 토크), `--task-pos` (TCP 위치)
+  - `--all` 플래그: 모든 Figure 한 번에 생성
+  - 파일명 감지 패턴: `robot_log_*.csv` → `robot_log*.csv` 확장 (세션 디렉토리 호환)
+
+---
+
 ## [5.10.0] - 2026-03-14
 
 ### 추가 (Added) — 세션 디렉토리 유틸리티

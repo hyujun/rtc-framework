@@ -89,16 +89,20 @@ struct ControllerOutput {
 // ── Topic configuration for per-controller subscribe/publish routing ─────────
 
 enum class SubscribeRole {
-  kJointState,      // robot joint positions/velocities (sensor_msgs/JointState)
-  kHandState,       // hand joint state (Float64MultiArray)
-  kTarget,          // target positions (Float64MultiArray)
+  kJointState,      // 카테고리 2: 로봇 현재 상태 (sensor_msgs/JointState)
+  kHandState,       // 카테고리 2: 핸드 현재 상태 (Float64MultiArray)
+  kGoal,            // 카테고리 1: 궤적 최종 목표 (Float64MultiArray)
 };
 
 enum class PublishRole {
-  kPositionCommand,  // robot position commands (Float64MultiArray)
-  kTorqueCommand,    // robot torque commands (Float64MultiArray)
-  kHandCommand,      // hand motor commands (Float64MultiArray)
-  kTaskPosition,     // current task-space position (Float64MultiArray)
+  // 카테고리 3: Control Command
+  kPositionCommand,    // 로봇 위치 명령 (Float64MultiArray)
+  kTorqueCommand,      // 로봇 토크 명령 (Float64MultiArray)
+  kHandCommand,        // 핸드 모터 명령 (Float64MultiArray)
+  // 카테고리 4: Logging/Monitoring
+  kTaskPosition,       // 현재 TCP 위치 (Float64MultiArray, size=6)
+  kTrajectoryState,    // 궤적 보간 상태 (Float64MultiArray, size=18: goal[6]+traj_pos[6]+traj_vel[6])
+  kControllerState,    // 제어기 내부 상태 (Float64MultiArray, size=18: actual_pos[6]+actual_vel[6]+command[6])
 };
 
 struct SubscribeTopicEntry {

@@ -1,6 +1,6 @@
 # ur5e_rt_base
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.10.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.12.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 
 UR5e RT Controller 스택의 **공유 기반 패키지** — 모든 패키지가 공통으로 사용하는 타입 정의, 스레드 유틸리티, 잠금-없는(lock-free) 로깅 인프라, UDP 통신 프리미티브, 디지털 신호 필터를 제공하는 헤더-전용(header-only) C++20 라이브러리입니다.
@@ -129,16 +129,20 @@ struct ControllerOutput {
 
 ```cpp
 enum class SubscribeRole {
-  kJointState,   // 로봇 관절 위치/속도 (sensor_msgs/JointState)
-  kHandState,    // 손 관절 상태 (Float64MultiArray)
-  kTarget,       // 목표 위치 (Float64MultiArray)
+  kJointState,   // 카테고리 2: 로봇 현재 상태 (sensor_msgs/JointState)
+  kHandState,    // 카테고리 2: 핸드 현재 상태 (Float64MultiArray)
+  kGoal,         // 카테고리 1: 궤적 최종 목표 (Float64MultiArray)
 };
 
 enum class PublishRole {
-  kPositionCommand,  // 로봇 위치 명령 (Float64MultiArray)
-  kTorqueCommand,    // 로봇 토크 명령 (Float64MultiArray)
-  kHandCommand,      // 손 모터 명령 (Float64MultiArray)
-  kTaskPosition,     // 현재 태스크 공간 위치 (Float64MultiArray)
+  // 카테고리 3: Control Command
+  kPositionCommand,    // 로봇 위치 명령 (Float64MultiArray)
+  kTorqueCommand,      // 로봇 토크 명령 (Float64MultiArray)
+  kHandCommand,        // 핸드 모터 명령 (Float64MultiArray)
+  // 카테고리 4: Logging/Monitoring
+  kTaskPosition,       // TCP 위치 (Float64MultiArray, size=6)
+  kTrajectoryState,    // 궤적 보간 상태 (Float64MultiArray, size=18)
+  kControllerState,    // 제어기 내부 상태 (Float64MultiArray, size=18)
 };
 
 struct SubscribeTopicEntry {
@@ -392,20 +396,30 @@ struct LogEntry {
   double t_publish_us{0.0};
   double t_total_us{0.0};
   double jitter_us{0.0};
-  // ── Robot ──
-  std::array<double, 6> goal_positions{};       // 최종 목표 (SetRobotTarget)
-  std::array<double, 6> target_positions{};     // 궤적 보간 위치
-  std::array<double, 6> target_velocities{};    // 궤적 보간 속도
-  std::array<double, 6> actual_positions{};     // 실제 관절 위치
-  std::array<double, 6> actual_velocities{};    // 실제 관절 속도
-  // ── Hand ──
+  // ── Robot (4-카테고리) ──
+  // 카테고리 1: Goal State
+  std::array<double, 6> goal_positions{};
+  // 카테고리 2: Current State
+  std::array<double, 6> actual_positions{};
+  std::array<double, 6> actual_velocities{};
+  std::array<double, 6> actual_torques{};        // 실제 토크
+  std::array<double, 6> actual_task_positions{};  // TCP 위치
+  // 카테고리 3: Control Command
+  std::array<double, 6> robot_commands{};
+  CommandType command_type{CommandType::kPosition};
+  // 카테고리 4: Trajectory State
+  std::array<double, 6> trajectory_positions{};   // 궤적 보간 위치
+  std::array<double, 6> trajectory_velocities{};  // 궤적 보간 속도
+  // ── Hand (4-카테고리) ──
   bool hand_valid{false};
-  std::array<float, 10> hand_goal_positions{};  // 핸드 최종 목표
-  std::array<float, 10> hand_commands{};        // 핸드 명령
-  std::array<float, 10> hand_actual_positions{};// 핸드 실제 위치
-  std::array<float, 10> hand_actual_velocities{};// 핸드 실제 속도
-  std::array<float, 44> hand_sensors{};         // 손 센서 (4×11)
-  [[nodiscard]] double compute_time_us() const noexcept { return t_compute_us; }
+  // 카테고리 1: Goal State
+  std::array<float, 10> hand_goal_positions{};
+  // 카테고리 2: Current State
+  std::array<float, 10> hand_actual_positions{};
+  std::array<float, 10> hand_actual_velocities{};
+  std::array<float, 44> hand_sensors{};
+  // 카테고리 3: Control Command
+  std::array<float, 10> hand_commands{};
 };
 ```
 
@@ -447,14 +461,14 @@ class DataLogger {
 timestamp, t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us
 ```
 
-- **robot_log** (31 columns):
+- **robot_log** (49 columns, 4-카테고리):
 ```
-timestamp, goal_pos_0..5, target_pos_0..5, target_vel_0..5, actual_pos_0..5, actual_vel_0..5
+timestamp, goal_pos_0..5, actual_pos_0..5, actual_vel_0..5, actual_torque_0..5, task_pos_0..5, command_0..5, command_type, traj_pos_0..5, traj_vel_0..5
 ```
 
-- **hand_log** (87 columns):
+- **hand_log** (87 columns, 4-카테고리):
 ```
-timestamp, hand_valid, hand_goal_pos_0..9, hand_cmd_0..9, hand_actual_pos_0..9, hand_actual_vel_0..9, baro_f{f}_{b}, tof_f{f}_{t}
+timestamp, hand_valid, hand_goal_pos_0..9, hand_actual_pos_0..9, hand_actual_vel_0..9, baro_f{f}_{b}, tof_f{f}_{t}, hand_cmd_0..9
 ```
 
 ---

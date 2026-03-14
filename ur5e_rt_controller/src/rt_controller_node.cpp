@@ -386,7 +386,7 @@ void RtControllerNode::CreateSubscriptions()
                       entry.topic_name.c_str());
           break;
 
-        case urtc::SubscribeRole::kTarget:
+        case urtc::SubscribeRole::kGoal:
           if (created_target_topics.insert(entry.topic_name).second) {
             auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
               entry.topic_name, 10,
@@ -472,6 +472,10 @@ void RtControllerNode::CreatePublishers()
           case urtc::PublishRole::kTaskPosition:
             data_size = 6;
             break;
+          case urtc::PublishRole::kTrajectoryState:
+          case urtc::PublishRole::kControllerState:
+            data_size = 18;  // goal[6] + pos[6] + vel[6]
+            break;
         }
       }
 
@@ -481,12 +485,16 @@ void RtControllerNode::CreatePublishers()
       pe.msg.data.resize(static_cast<std::size_t>(data_size), 0.0);
       topic_publishers_[entry.topic_name] = std::move(pe);
 
+      const char * role_str =
+          entry.role == urtc::PublishRole::kPositionCommand ? "position_cmd" :
+          entry.role == urtc::PublishRole::kTorqueCommand   ? "torque_cmd" :
+          entry.role == urtc::PublishRole::kHandCommand     ? "hand_cmd" :
+          entry.role == urtc::PublishRole::kTaskPosition    ? "task_pos" :
+          entry.role == urtc::PublishRole::kTrajectoryState ? "traj_state" :
+          entry.role == urtc::PublishRole::kControllerState ? "ctrl_state" :
+                                                              "unknown";
       RCLCPP_INFO(get_logger(), "  Publish [%s]: %s (size=%d)",
-                  entry.role == urtc::PublishRole::kPositionCommand ? "position_cmd" :
-                  entry.role == urtc::PublishRole::kTorqueCommand   ? "torque_cmd" :
-                  entry.role == urtc::PublishRole::kHandCommand     ? "hand_cmd" :
-                                                                      "task_pos",
-                  entry.topic_name.c_str(), data_size);
+                  role_str, entry.topic_name.c_str(), data_size);
     }
   }
 
@@ -703,6 +711,20 @@ void RtControllerNode::ControlLoop()
                     pe.msg.data.begin());
           pe.publisher->publish(pe.msg);
           break;
+        case urtc::PublishRole::kTrajectoryState:
+          // goal[6] + trajectory_interpolated_pos[6] + trajectory_interpolated_vel[6]
+          std::copy_n(output.goal_positions.begin(), 6, pe.msg.data.begin());
+          std::copy_n(output.actual_target_positions.begin(), 6, pe.msg.data.begin() + 6);
+          std::copy_n(output.target_velocities.begin(), 6, pe.msg.data.begin() + 12);
+          pe.publisher->publish(pe.msg);
+          break;
+        case urtc::PublishRole::kControllerState:
+          // actual_pos[6] + actual_vel[6] + command[6]
+          std::copy_n(state.robot.positions.begin(), 6, pe.msg.data.begin());
+          std::copy_n(state.robot.velocities.begin(), 6, pe.msg.data.begin() + 6);
+          std::copy_n(output.robot_commands.begin(), 6, pe.msg.data.begin() + 12);
+          pe.publisher->publish(pe.msg);
+          break;
       }
     }
 
@@ -758,19 +780,28 @@ void RtControllerNode::ControlLoop()
       .t_publish_us = t_publish_us,
       .t_total_us = t_total_us,
       .jitter_us = jitter_us,
-      // Robot
+      // Robot — 카테고리 1: Goal State
       .goal_positions = output.goal_positions,
-      .target_positions = output.actual_target_positions,
-      .target_velocities = output.target_velocities,
+      // Robot — 카테고리 2: Current State
       .actual_positions = state.robot.positions,
       .actual_velocities = state.robot.velocities,
-      // Hand
+      .actual_torques = state.robot.torques,
+      .actual_task_positions = output.actual_task_positions,
+      // Robot — 카테고리 3: Control Command
+      .robot_commands = output.robot_commands,
+      .command_type = output.command_type,
+      // Robot — 카테고리 4: Trajectory State
+      .trajectory_positions = output.actual_target_positions,
+      .trajectory_velocities = output.target_velocities,
+      // Hand — 카테고리 1: Goal State
       .hand_valid = state.hand.valid,
       .hand_goal_positions = output.hand_goal_positions,
-      .hand_commands = output.hand_commands,
+      // Hand — 카테고리 2: Current State
       .hand_actual_positions = state.hand.motor_positions,
       .hand_actual_velocities = state.hand.motor_velocities,
       .hand_sensors = state.hand.sensor_data,
+      // Hand — 카테고리 3: Control Command
+      .hand_commands = output.hand_commands,
     };
     static_cast<void>(log_buffer_.Push(entry));  // silently drops if buffer is full
   }

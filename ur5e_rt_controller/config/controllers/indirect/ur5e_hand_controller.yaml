@@ -12,19 +12,29 @@ ur5e_hand_controller:
   # ── 토픽 설정 ─────────────────────────────────────────────────────────────
   topics:
     subscribe:
+      # 카테고리 1: Goal State (궤적 최종 목표)
+      - topic: "/target_joint_positions"
+        role: "goal"
+      # 카테고리 2: Current State (센서 피드백)
       - topic: "/joint_states"
         role: "joint_state"
       - topic: "/hand/joint_states"
         role: "hand_state"
-      - topic: "/target_joint_positions"
-        role: "target"
     publish:
+      # 카테고리 3: Control Command (액추에이터 출력)
       - topic: "/forward_position_controller/commands"
         role: "position_command"
         data_size: 6
       - topic: "/hand/command"
         role: "hand_command"
         data_size: 10
+      # 카테고리 4: Logging/Monitoring (진단 발행)
       - topic: "/rt_controller/current_task_position"
         role: "task_position"
         data_size: 6
+      - topic: "/rt_controller/trajectory_state"
+        role: "trajectory_state"
+        data_size: 18
+      - topic: "/rt_controller/controller_state"
+        role: "controller_state"
+        data_size: 18
