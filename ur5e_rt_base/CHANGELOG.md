@@ -5,6 +5,16 @@
 
 ---
 
+## [5.13.0] - 2026-03-14
+
+### 추가 (Added) — Role → 문자열 변환 유틸리티
+
+- **`SubscribeRoleToString()` / `PublishRoleToString()`** (`types.hpp`)
+  - `SubscribeRole` / `PublishRole` enum → 문자열 변환 inline 함수
+  - ROS2 파라미터 이름 생성 및 디버그 로깅에 활용
+
+---
+
 ## [5.12.0] - 2026-03-14
 
 ### 변경 (Changed) — 4-카테고리 토픽/CSV 체계

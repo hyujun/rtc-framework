@@ -58,6 +58,7 @@ private:
   void DeclareAndLoadParameters();
   void CreateSubscriptions();
   void CreatePublishers();
+  void ExposeTopicParameters();
   void CreateTimers();
 
   // ── Subscription callbacks ────────────────────────────────────────────────
@@ -112,6 +113,9 @@ private:
 
   // Per-controller topic config cache (index = controller index)
   std::vector<ur5e_rt_controller::TopicConfig> controller_topic_configs_;
+
+  // Read-only parameter guard handle (topic params immutable after init)
+  rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
 
   rclcpp::TimerBase::SharedPtr control_timer_;
   rclcpp::TimerBase::SharedPtr timeout_timer_;

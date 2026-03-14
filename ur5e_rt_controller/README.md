@@ -1,6 +1,6 @@
 # ur5e_rt_controller
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.12.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.13.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md) | 디버깅: [VSCODE_DEBUGGING.md](../docs/VSCODE_DEBUGGING.md) | 새 컨트롤러 추가: [ADDING_CONTROLLER.md](docs/ADDING_CONTROLLER.md)
 
 UR5e 로봇 팔을 위한 **500Hz 실시간 제어기** ROS2 패키지입니다. SCHED_FIFO 멀티스레드 아키텍처, 전략 패턴 기반 컨트롤러 교체, 런타임 컨트롤러 전환, 잠금-없는 로깅 인프라를 제공합니다.
@@ -336,6 +336,49 @@ topics:
       data_size: 18
 ```
 
+### ROS2 파라미터 인트로스펙션 (v5.13.0)
+
+모든 컨트롤러의 토픽 매핑이 읽기 전용 ROS2 파라미터로 노출됩니다. 런타임에 토픽 구성을 확인할 수 있지만, RT 안전성을 위해 변경은 차단됩니다.
+
+```bash
+# 토픽 파라미터 목록 확인
+ros2 param list /rt_controller | grep controllers
+# 출력 예시:
+#   controllers.PController.subscribe.goal
+#   controllers.PController.subscribe.joint_state
+#   controllers.PController.publish.position_command
+#   controllers.PController.publish.task_position
+#   controllers.PController.publish.trajectory_state
+#   controllers.PController.publish.controller_state
+#   controllers.JointPDController.subscribe.goal
+#   ...
+
+# 특정 토픽 이름 조회
+ros2 param get /rt_controller controllers.PController.subscribe.goal
+# String value is: /target_joint_positions
+
+# 런타임 변경 시도 → 거부됨
+ros2 param set /rt_controller controllers.PController.subscribe.goal /new_topic
+# Setting parameter failed: Topic parameters are read-only after initialisation
+```
+
+### ROS2 Topic Remapping (v5.13.0)
+
+표준 ROS2 토픽 리맵핑이 네이티브로 지원됩니다. `create_publisher()`/`create_subscription()` 호출로 토픽이 생성되므로 `--ros-args -r`을 통한 리맵핑이 자동으로 적용됩니다.
+
+```bash
+# 토픽 이름 변경 (모든 컨트롤러에 적용)
+ros2 run ur5e_rt_controller rt_controller \
+  --ros-args -r /target_joint_positions:=/my_target \
+             -r /forward_position_controller/commands:=/my_robot/commands
+
+# launch 파일에서 리맵핑
+ros2 launch ur5e_rt_controller ur_control.launch.py \
+  --ros-args -r /joint_states:=/my_robot/joint_states
+```
+
+> **주의**: 리맵핑은 모든 컨트롤러에 동일하게 적용됩니다. 컨트롤러별 토픽 분리가 필요한 경우 컨트롤러 YAML 파일의 `topics:` 섹션을 수정하세요.
+
 ---
 
 ## 설정
@@ -446,6 +489,10 @@ ros2 topic echo /rt_controller/active_controller_name
 # 현재 게인 조회
 ros2 topic pub --once ~/request_gains std_msgs/msg/Bool "data: true"
 ros2 topic echo ~/current_gains
+
+# 토픽 파라미터 확인
+ros2 param list /rt_controller | grep controllers
+ros2 param get /rt_controller controllers.PController.subscribe.goal
 
 # RT 스레드 확인
 PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID

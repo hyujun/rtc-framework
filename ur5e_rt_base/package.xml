@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>ur5e_rt_base</name>
-  <version>5.2.2</version>
+  <version>5.13.0</version>
   <description>
     Shared types, thread utilities, and logging infrastructure for the
     UR5e RT controller stack. Header-only; no executables.

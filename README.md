@@ -5,7 +5,7 @@
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 ![ROS2 Jazzy](https://img.shields.io/badge/ROS2-Jazzy-green)
 
-**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.12.0)**
+**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.13.0)**
 
 E-STOP 안전 시스템, 전략 패턴 기반 다중 제어기(P/JointPD/CLIK/OSC/Hand), MuJoCo 3.x 물리 시뮬레이터, UDP 핸드 인터페이스, CSV 데이터 로깅, GUI 도구를 포함한 완전한 실시간 제어 솔루션입니다.
 
@@ -57,6 +57,7 @@ ur5e_tools            ← 독립 (Python 전용, rclpy)
 - **RT-안전 신호 필터**: Bessel LPF + Kalman 필터 (N채널, noexcept)
 - **통신 통계 모니터링**: Status Monitor MessageStats + 컨트롤러별 통계, Hand UDP CommStats + rate 모니터링 (v5.9.0)
 - **궤적 시각화 v3**: 4-카테고리 CSV 지원, command/torque/task-pos 신규 Figure, `--all` 플래그, 레거시 호환 (v5.12.0)
+- **ROS2 파라미터 토픽 인트로스펙션**: 컨트롤러별 토픽 매핑을 읽기 전용 ROS2 파라미터로 노출 — `ros2 param list/get`으로 확인 가능, `--ros-args -r`로 토픽 이름 변경 지원 (v5.13.0)
 - **GUI 도구**: Qt5 모션 편집기, tkinter 컨트롤러 GUI, Matplotlib 궤적 시각화
 - **세션 디렉토리 전파**: `UR5E_SESSION_DIR` 환경변수로 모든 노드에 세션 경로 자동 전파 (v5.10.0)
 
@@ -114,6 +115,8 @@ ros2 topic echo /system/estop_status                  # E-STOP 상태
 ros2 topic echo /sim/status                           # MuJoCo 시뮬 상태
 ros2 topic echo /rt_controller/trajectory_state   # 궤적 보간 상태 (18값)
 ros2 topic echo /rt_controller/controller_state    # 제어기 상태 (18값)
+ros2 param list /rt_controller | grep controllers   # 토픽 파라미터 확인
+ros2 param get /rt_controller controllers.PController.subscribe.goal  # 토픽 이름 조회
 ```
 
 ---

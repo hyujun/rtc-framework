@@ -5,6 +5,22 @@
 
 ---
 
+## [5.13.0] - 2026-03-14
+
+### 추가 (Added) — ROS2 Parameter Exposure + Topic Remapping 지원
+
+- **토픽 구성 ROS2 파라미터 노출 (읽기 전용)**
+  - `ExposeTopicParameters()`: 모든 컨트롤러의 토픽 매핑을 ROS2 파라미터로 노출
+  - 파라미터 명명: `controllers.<ctrl_name>.subscribe.<role>`, `controllers.<ctrl_name>.publish.<role>`
+  - `ros2 param list/get`으로 런타임 토픽 구성 확인 가능
+  - `add_on_set_parameters_callback`으로 런타임 변경 차단 (RT 안전성 유지)
+
+- **ROS2 Topic Remapping 지원 문서화**
+  - `--ros-args -r /old_topic:=/new_topic` 네이티브 지원 확인 및 문서화
+  - `create_publisher()`/`create_subscription()` 사용으로 자동 호환
+
+---
+
 ## [5.12.0] - 2026-03-14
 
 ### 추가 (Added) — 4-카테고리 토픽/CSV 체계

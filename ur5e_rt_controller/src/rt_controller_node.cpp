@@ -88,6 +88,7 @@ RtControllerNode::RtControllerNode()
   DeclareAndLoadParameters();
   CreateSubscriptions();
   CreatePublishers();
+  ExposeTopicParameters();
   CreateTimers();
 
   // 초기 활성 컨트롤러 이름 publish (transient_local이므로 구독자가 늦게 붙어도 수신)
@@ -509,6 +510,62 @@ void RtControllerNode::CreatePublishers()
 
   current_gains_pub_ =
     create_publisher<std_msgs::msg::Float64MultiArray>("~/current_gains", 10);
+}
+
+// ── Expose topic configuration as read-only ROS2 parameters ─────────────────
+// After CreatePublishers(), the final topic mapping is known.  Expose it as
+// read-only parameters so that `ros2 param list/get` can introspect the
+// active topic configuration at runtime.
+//
+// Parameter naming convention:
+//   controllers.<ctrl_name>.subscribe.<role>   = topic name
+//   controllers.<ctrl_name>.publish.<role>     = topic name
+//
+// All "controllers.*" parameters are rejected at set-time to preserve RT
+// safety — topic routing must not change after initialisation.
+void RtControllerNode::ExposeTopicParameters()
+{
+  for (std::size_t i = 0; i < controllers_.size(); ++i) {
+    const auto & tc = controller_topic_configs_[i];
+    const std::string prefix =
+        "controllers." + std::string(controllers_[i]->Name());
+
+    for (const auto & entry : tc.subscribe) {
+      const std::string param_name =
+          prefix + ".subscribe." + urtc::SubscribeRoleToString(entry.role);
+      if (!has_parameter(param_name)) {
+        declare_parameter(param_name, entry.topic_name);
+      }
+    }
+
+    for (const auto & entry : tc.publish) {
+      const std::string param_name =
+          prefix + ".publish." + urtc::PublishRoleToString(entry.role);
+      if (!has_parameter(param_name)) {
+        declare_parameter(param_name, entry.topic_name);
+      }
+    }
+  }
+
+  // ── Read-only guard: reject any runtime mutation of topic parameters ────
+  param_callback_handle_ = add_on_set_parameters_callback(
+      [](const std::vector<rclcpp::Parameter> & params)
+          -> rcl_interfaces::msg::SetParametersResult {
+        rcl_interfaces::msg::SetParametersResult result;
+        for (const auto & p : params) {
+          if (p.get_name().rfind("controllers.", 0) == 0) {
+            result.successful = false;
+            result.reason =
+                "Topic parameters are read-only after initialisation";
+            return result;
+          }
+        }
+        result.successful = true;
+        return result;
+      });
+
+  RCLCPP_INFO(get_logger(),
+      "Topic parameters exposed (read-only) — use 'ros2 param list' to inspect");
 }
 
 void RtControllerNode::CreateTimers()

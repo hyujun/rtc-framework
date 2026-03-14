@@ -324,6 +324,7 @@ Creates **4 `SingleThreadedExecutor`s**, each running in a dedicated `std::threa
 
 **Key methods in `RtControllerNode`:**
 - `DeclareAndLoadParameters()`: loads `control_rate`, `kp`, `kd`, `enable_estop`, `robot_timeout_ms`, `hand_timeout_ms`, `enable_logging`, `enable_timing_log`, `enable_robot_log`, `enable_hand_log`, `init_timeout_sec`, `enable_status_monitor`
+- `ExposeTopicParameters()`: exposes all controller topic mappings as read-only ROS2 parameters (`controllers.<ctrl_name>.subscribe.<role>`, `controllers.<ctrl_name>.publish.<role>`). Rejected at runtime via `add_on_set_parameters_callback` for RT safety.
 - `CreateCallbackGroups()`: creates 4 `MutuallyExclusive` groups
 - `JointStateCallback()`: stores positions/velocities/torques under `state_mutex_`; updates `last_robot_update_` timestamp
 - `TargetCallback()`: stores target positions under `target_mutex_`; calls `controller_->SetRobotTarget()`
@@ -335,7 +336,7 @@ Creates **4 `SingleThreadedExecutor`s**, each running in a dedicated `std::threa
 
 ### Lock-Free Logging Infrastructure
 
-**`SpscLogBuffer`** (`include/ur5e_rt_controller/log_buffer.hpp`): single-producer / single-consumer ring buffer (power-of-2 entries). Uses **bitwise AND modulus** `& (N - 1)` for fast wrapping and **local index caching** to minimize cache invalidation (False Sharing) between the RT and logging threads. `alignas(kCacheLineSize)` dynamically adapts to the hardware target. The RT thread calls `Push()` without ever blocking or allocating; the log thread drains via `Pop()`. Each `LogEntry` has separate timing/robot/hand sections (v5.9.0): timing (`t_state_acquire_us`, `t_compute_us`, `t_publish_us`, `t_total_us`, `jitter_us`), robot (`goal_positions[6]`, `target_positions[6]`, `target_velocities[6]`, `actual_positions[6]`, `actual_velocities[6]`), and hand (`hand_valid`, `hand_goal_positions[10]`, `hand_commands[10]`, `hand_actual_positions[10]`, `hand_actual_velocities[10]`, `hand_sensors[44]`).
+**`SpscLogBuffer`** (`include/ur5e_rt_controller/log_buffer.hpp`): single-producer / single-consumer ring buffer (power-of-2 entries). Uses **bitwise AND modulus** `& (N - 1)` for fast wrapping and **local index caching** to minimize cache invalidation (False Sharing) between the RT and logging threads. `alignas(kCacheLineSize)` dynamically adapts to the hardware target. The RT thread calls `Push()` without ever blocking or allocating; the log thread drains via `Pop()`. Each `LogEntry` has separate timing/robot/hand sections (v5.9.0): timing (`t_state_acquire_us`, `t_compute_us`, `t_publish_us`, `t_total_us`, `jitter_us`), robot (`goal_positions[6]`, `target_positions[6]`, `target_velocities[6]`, `actual_positions[6]`, `actual_velocities[6]`, `actual_torques[6]`, `actual_task_positions[6]`, `robot_commands[6]`, `command_type`, `trajectory_positions[6]`, `trajectory_velocities[6]`), and hand (`hand_valid`, `hand_goal_positions[10]`, `hand_commands[10]`, `hand_actual_positions[10]`, `hand_actual_velocities[10]`, `hand_sensors[44]`).
 
 **`ControllerTimingProfiler`** (`include/ur5e_rt_controller/controller_timing_profiler.hpp`): wraps `RTControllerInterface::Compute()` with `steady_clock` timing. Maintains a lock-free histogram (0–2000 µs, 100 µs buckets) + min/max/mean/stddev/p95/p99 using relaxed atomics. Budget threshold: 2000 µs (500 Hz period). Call `MeasuredCompute()` instead of `Compute()` directly; call `Summary()` every 1000 iterations for a log line.
 
@@ -659,6 +660,10 @@ v5.11.0: `HandController` is directly owned by `RtControllerNode` (no ROS topic 
 - `ClikController`: `[x, y, z, null_q3, null_q4, null_q5]` (TCP position + null-space reference)
 - `OperationalSpaceController`: `[x, y, z, roll, pitch, yaw]` (full TCP pose)
 - `UrFiveEHandController`: `data[0-5]` robot joints (rad), `data[6-15]` hand motors (optional)
+
+**Topic Remapping** (v5.13.0): Standard `--ros-args -r /old:=/new` remapping works natively since all topics use `create_publisher()`/`create_subscription()`. Remapping applies to all controllers uniformly.
+
+**Topic Parameter Introspection** (v5.13.0): All topic mappings are exposed as read-only ROS2 parameters. Use `ros2 param list /rt_controller | grep controllers` to see all mappings. Parameter naming: `controllers.<ControllerName>.subscribe.<role>` / `controllers.<ControllerName>.publish.<role>`.
 
 ---
 
@@ -1131,6 +1136,7 @@ ros2 doctor                        # 시스템 전체 진단
 
 | Version | Key Changes |
 |---|---|
+| v5.13.0 | ROS2 Parameter Exposure: all per-controller topic mappings exposed as read-only parameters (`controllers.*`). Topic Remapping documented. `SubscribeRoleToString()`/`PublishRoleToString()` added to types.hpp. |
 | v5.9.0 | 3-file CSV logging split: `timing_log_*.csv` (7 cols), `robot_log_*.csv` (31 cols), `hand_log_*.csv` (87 cols). `DataLogger` constructor takes 3 paths (empty = disabled). New YAML params: `enable_timing_log`, `enable_robot_log`, `enable_hand_log`. `ControllerOutput` extended: `goal_positions`, `target_velocities`, `hand_goal_positions`. `LogEntry` restructured with separate timing/robot/hand sections. `monitor_data_health.py` removed (functionality redistributed to `ur5e_status_monitor` MessageStats/ControllerStats/JSON export and `ur5e_hand_udp` HandCommStats/rate monitoring). `plot_ur_trajectory.py` v2: auto-detects log type from filename (robot/hand mode). `ur5e_status_monitor`: `MessageStats`, per-controller `ControllerStats`, controller name subscription, JSON stats on `stop()`. `ur5e_hand_udp`: `HandCommStats`, `HandFailureDetector` rate monitoring (`min_rate_hz`, `rate_fail_threshold`), JSON stats export in `HandUdpNode` destructor. |
 | v5.8.0 | Global E-Stop (`TriggerGlobalEstop(reason)`) replacing per-controller E-Stop. Status monitor integration (`enable_status_monitor`). HandFailureDetector (50Hz C++). Init timeout (`init_timeout_sec`). Per-phase timing in LogEntry/CSV (`t_state_acquire_us`/`t_compute_us`/`t_publish_us`/`t_total_us`/`jitter_us`). Hand state in CSV. `RobotState.torques`. Trajectory race fix (`target_mutex_` try_lock in JointPD/CLIK/OSC). Overrun detection (`budget_us_`). Hand UDP `recv_timeout_ms`, `enable_write_ack`. SystemThreadConfigs 5→7 fields (status_monitor, hand_failure). Thread configs for 4/6/8-core. |
 | v5.7.0 | MuJoCo position servo gain system: `physics_timestep` (XML timestep validation), `use_yaml_servo_gains` flag, `servo_kp`/`servo_kd` per-joint YAML gains (`gainprm = servo_kp / physics_timestep`). Gravity auto-lock in position servo mode; auto-unlock + ON when switching to torque mode. `PController` fix: incremental position step `q + kp*error*dt` (eliminates steady-state position error). `mujoco_simulator.yaml` rt_controller section: removed duplicate params, kept sim-specific overrides only. New: `compare_mjcf_urdf` validation tool in `ur5e_tools` — compares MJCF/URDF mass, inertia, joint limits, effort limits. |

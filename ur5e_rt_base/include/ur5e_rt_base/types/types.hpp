@@ -121,6 +121,29 @@ struct TopicConfig {
   std::vector<PublishTopicEntry> publish;
 };
 
+// ── Role → string conversion (for ROS2 parameter exposure) ──────────────────
+
+inline const char * SubscribeRoleToString(SubscribeRole role) noexcept {
+  switch (role) {
+    case SubscribeRole::kJointState: return "joint_state";
+    case SubscribeRole::kHandState:  return "hand_state";
+    case SubscribeRole::kGoal:       return "goal";
+  }
+  return "unknown";
+}
+
+inline const char * PublishRoleToString(PublishRole role) noexcept {
+  switch (role) {
+    case PublishRole::kPositionCommand: return "position_command";
+    case PublishRole::kTorqueCommand:   return "torque_command";
+    case PublishRole::kHandCommand:     return "hand_command";
+    case PublishRole::kTaskPosition:    return "task_position";
+    case PublishRole::kTrajectoryState: return "trajectory_state";
+    case PublishRole::kControllerState: return "controller_state";
+  }
+  return "unknown";
+}
+
 }  // namespace ur5e_rt_controller
 
 #endif  // UR5E_RT_BASE_TYPES_HPP_
