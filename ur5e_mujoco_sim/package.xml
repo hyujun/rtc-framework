@@ -20,6 +20,8 @@
 
   <!-- Robot model files (MJCF, URDF, meshes) -->
   <exec_depend>ur5e_description</exec_depend>
+  <!-- Hand UDP config (launch에서 hand_udp_node.yaml 참조) -->
+  <exec_depend>ur5e_hand_udp</exec_depend>
 
   <!-- MuJoCo (optional C++ library — not a ROS2 package; install separately)
        https://github.com/google-deepmind/mujoco/releases -->

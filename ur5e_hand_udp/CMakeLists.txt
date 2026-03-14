@@ -50,4 +50,8 @@ install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
 )
 
+# ── Export headers for downstream packages (e.g. ur5e_rt_controller) ──────────
+ament_export_include_directories(include)
+ament_export_dependencies(ur5e_rt_base)
+
 ament_package()

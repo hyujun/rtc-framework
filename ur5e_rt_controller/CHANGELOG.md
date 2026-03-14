@@ -5,6 +5,16 @@
 
 ---
 
+## [5.11.0] - 2026-03-14
+
+### 변경 (Changed) — HandController sensor_decimation 파라미터 전달
+
+- `DeclareAndLoadParameters()`에 `sensor_decimation` 파라미터 추가 (기본값 1)
+- `HandController` 생성 시 `sensor_decimation` 값 전달
+- `hand_udp_node.yaml`에서 설정된 값을 launch 파일을 통해 rt_controller_node에 로드
+
+---
+
 ## [5.10.0] - 2026-03-14
 
 ### 추가 (Added) — 세션 기반 통합 로깅

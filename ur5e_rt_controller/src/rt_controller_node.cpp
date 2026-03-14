@@ -128,6 +128,9 @@ RtControllerNode::RtControllerNode()
 
 RtControllerNode::~RtControllerNode()
 {
+  if (hand_controller_) {
+    hand_controller_->Stop();
+  }
   if (status_monitor_) {
     status_monitor_->stop();
   }
@@ -188,7 +191,6 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("enable_robot_log", true);
   declare_parameter("enable_hand_log", true);
   declare_parameter("robot_timeout_ms", 100.0);
-  declare_parameter("hand_timeout_ms", 200.0);
   declare_parameter("enable_estop", true);
   declare_parameter("enable_status_monitor", false);
   declare_parameter("init_timeout_sec", 5.0);
@@ -244,8 +246,42 @@ void RtControllerNode::DeclareAndLoadParameters()
 
   robot_timeout_ = std::chrono::milliseconds(
       static_cast<int>(get_parameter("robot_timeout_ms").as_double()));
-  hand_timeout_ = std::chrono::milliseconds(
-      static_cast<int>(get_parameter("hand_timeout_ms").as_double()));
+
+  // ── Hand Controller (직접 UDP 통신, event-driven) ──────────────────────────
+  // hand_udp_node.yaml의 파라미터를 launch에서 로드
+  declare_parameter("target_ip", std::string(""));
+  declare_parameter("target_port", 0);
+  declare_parameter("recv_timeout_ms", 10);
+  declare_parameter("enable_write_ack", false);
+  declare_parameter("sensor_decimation", 1);
+
+  const std::string hand_ip = get_parameter("target_ip").as_string();
+  const int hand_port = static_cast<int>(get_parameter("target_port").as_int());
+  enable_hand_ = !hand_ip.empty() && hand_port > 0;
+
+  if (enable_hand_) {
+    const int hand_recv_timeout = static_cast<int>(
+        get_parameter("recv_timeout_ms").as_int());
+    const bool hand_write_ack = get_parameter("enable_write_ack").as_bool();
+    const int sensor_decimation = static_cast<int>(
+        get_parameter("sensor_decimation").as_int());
+    const auto cfgs = ur5e_rt_controller::SelectThreadConfigs();
+
+    hand_controller_ = std::make_unique<urtc::HandController>(
+        hand_ip, hand_port, cfgs.udp_recv,
+        hand_recv_timeout, hand_write_ack, sensor_decimation);
+    hand_controller_->SetEstopFlag(&global_estop_);
+
+    if (hand_controller_->Start()) {
+      RCLCPP_INFO(get_logger(), "HandController started: %s:%d (event-driven)",
+                  hand_ip.c_str(), hand_port);
+    } else {
+      RCLCPP_ERROR(get_logger(), "HandController failed to start: %s:%d",
+                   hand_ip.c_str(), hand_port);
+      hand_controller_.reset();
+      enable_hand_ = false;
+    }
+  }
 
   std::string urdf_path = "";
   try {
@@ -325,7 +361,6 @@ void RtControllerNode::CreateSubscriptions()
   // ── Collect unique subscribe topics from all controllers ──────────────────
   // Each topic is created once; the callback is determined by the role.
   std::set<std::string> created_joint_state_topics;
-  std::set<std::string> created_hand_state_topics;
   std::set<std::string> created_target_topics;
 
   for (const auto & tc : controller_topic_configs_) {
@@ -346,17 +381,9 @@ void RtControllerNode::CreateSubscriptions()
           break;
 
         case urtc::SubscribeRole::kHandState:
-          if (created_hand_state_topics.insert(entry.topic_name).second) {
-            auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
-              entry.topic_name, 10,
-              [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-                HandStateCallback(std::move(msg));
-              },
-              sub_options);
-            topic_subscriptions_.push_back(sub);
-            RCLCPP_INFO(get_logger(), "  Subscribe [hand_state]: %s",
-                        entry.topic_name.c_str());
-          }
+          // Hand state는 HandController에서 직접 읽으므로 ROS 구독 생략
+          RCLCPP_INFO(get_logger(), "  Subscribe [hand_state]: %s (skipped — direct UDP)",
+                      entry.topic_name.c_str());
           break;
 
         case urtc::SubscribeRole::kTarget:
@@ -552,51 +579,20 @@ void RtControllerNode::TargetCallback(std_msgs::msg::Float64MultiArray::SharedPt
   }
 }
 
-void RtControllerNode::HandStateCallback(std_msgs::msg::Float64MultiArray::SharedPtr msg)
-{
-  {
-    std::lock_guard lock(hand_mutex_);
-    // Store actual hand motor positions if available
-    const std::size_t n = std::min(msg->data.size(),
-                                   static_cast<std::size_t>(urtc::kNumHandMotors));
-    for (std::size_t i = 0; i < n; ++i) {
-      current_hand_positions_[i] = static_cast<float>(msg->data[i]);
-    }
-    last_hand_update_ = now();
-  }
-  // Fix 2: release-store after mutex released
-  hand_data_received_.store(true, std::memory_order_release);
-}
-
 // ── 50 Hz watchdog (E-STOP) ───────────────────────────────────────────────────
 void RtControllerNode::CheckTimeouts()
 {
   const auto now_time = now();
   bool robot_timed_out = false;
-  bool hand_timed_out = false;
 
   // Fix 2: acquire-load the atomic flag; if set, lock mutex to read timestamp
   if (state_received_.load(std::memory_order_acquire)) {
     std::lock_guard lock(state_mutex_);
     robot_timed_out = (now_time - last_robot_update_) > robot_timeout_;
   }
-  if (hand_data_received_.load(std::memory_order_acquire)) {
-    std::lock_guard lock(hand_mutex_);
-    hand_timed_out = (now_time - last_hand_update_) > hand_timeout_;
-  }
 
   if (robot_timed_out && !IsGlobalEstopped()) {
     TriggerGlobalEstop("robot_timeout");
-  }
-
-  if (hand_timed_out && !IsGlobalEstopped()) {
-    TriggerGlobalEstop("hand_timeout");
-  } else if (!hand_timed_out && hand_estop_logged_) {
-    RCLCPP_INFO(get_logger(), "Hand data restored");
-    hand_estop_logged_ = false;
-  }
-  if (hand_timed_out && !hand_estop_logged_) {
-    hand_estop_logged_ = true;
   }
 }
 
@@ -612,11 +608,11 @@ void RtControllerNode::ControlLoop()
     // Initialization timeout — check if we've waited too long for data.
     if (!init_complete_ && ++init_wait_ticks_ > init_timeout_ticks_) {
       RCLCPP_FATAL(get_logger(),
-          "Initialization timeout (%.1f s): robot=%d, target=%d, hand=%d",
+          "Initialization timeout (%.1f s): robot=%d, target=%d, hand=%s",
           static_cast<double>(init_timeout_ticks_) / control_rate_,
           state_received_.load(std::memory_order_relaxed) ? 1 : 0,
           target_received_.load(std::memory_order_relaxed) ? 1 : 0,
-          hand_data_received_.load(std::memory_order_relaxed) ? 1 : 0);
+          enable_hand_ ? (hand_controller_ && hand_controller_->IsRunning() ? "running" : "stopped") : "disabled");
       TriggerGlobalEstop("init_timeout");
       rclcpp::shutdown();
     }
@@ -644,15 +640,11 @@ void RtControllerNode::ControlLoop()
   state.robot.velocities = cached_velocities_;
   state.robot.torques = cached_torques_;
 
-  // Hand state — populate from cached data
-  {
-    std::unique_lock lock(hand_mutex_, std::try_to_lock);
-    if (lock.owns_lock()) {
-      cached_hand_positions_ = current_hand_positions_;
-    }
+  // Hand state — HandController에서 직접 읽기 (이전 tick에서 준비된 state)
+  if (hand_controller_) {
+    cached_hand_state_ = hand_controller_->GetLatestState();
   }
-  state.hand.motor_positions = cached_hand_positions_;
-  state.hand.valid = hand_data_received_.load(std::memory_order_acquire);
+  state.hand = cached_hand_state_;
 
   {
     std::unique_lock lock(target_mutex_, std::try_to_lock);
@@ -702,15 +694,9 @@ void RtControllerNode::ControlLoop()
             pe.publisher->publish(pe.msg);
           }
           break;
-        case urtc::PublishRole::kHandCommand: {
-          const auto n = std::min(pe.msg.data.size(),
-                                  static_cast<std::size_t>(urtc::kNumHandMotors));
-          for (std::size_t i = 0; i < n; ++i) {
-            pe.msg.data[i] = static_cast<double>(output.hand_commands[i]);
-          }
-          pe.publisher->publish(pe.msg);
+        case urtc::PublishRole::kHandCommand:
+          // Hand command는 HandController로 직접 전송 (아래 Phase 3.5에서 처리)
           break;
-        }
         case urtc::PublishRole::kTaskPosition:
           std::copy(output.actual_task_positions.begin(),
                     output.actual_task_positions.end(),
@@ -721,6 +707,12 @@ void RtControllerNode::ControlLoop()
     }
 
     cmd_pub_mutex_.unlock();
+  }
+
+  // ── Phase 3.5: hand command 전송 + 다음 tick용 state 읽기 요청 ────────
+  // Event-driven pipeline: hand thread가 write → read 수행, 다음 tick에서 사용
+  if (hand_controller_) {
+    hand_controller_->SendCommandAndRequestStates(output.hand_commands);
   }
 
   const auto t3 = std::chrono::steady_clock::now();  // end of publish

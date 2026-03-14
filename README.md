@@ -5,7 +5,7 @@
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 ![ROS2 Jazzy](https://img.shields.io/badge/ROS2-Jazzy-green)
 
-**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.10.0)**
+**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.11.0)**
 
 E-STOP 안전 시스템, 전략 패턴 기반 다중 제어기(P/JointPD/CLIK/OSC/Hand), MuJoCo 3.x 물리 시뮬레이터, UDP 핸드 인터페이스, CSV 데이터 로깅, GUI 도구를 포함한 완전한 실시간 제어 솔루션입니다.
 
@@ -52,7 +52,7 @@ ur5e_tools            ← 독립 (Python 전용, rclpy)
 - **핸드 실패 감지기**: 50Hz C++ 모니터 (영점/중복 데이터 감지) + E-Stop 트리거 (v5.8.0)
 - **초기화 타임아웃**: 설정 가능한 시간 내 데이터 미수신 시 E-Stop + 종료 (v5.8.0)
 - **MuJoCo 시뮬레이터**: FreeRun/SyncStep 모드, GLFW 인터랙티브 뷰어, RTF 측정
-- **UDP 핸드 통합**: 10-DOF 커스텀 핸드 (10 모터 + 44 촉각 센서) 요청-응답 프로토콜
+- **UDP 핸드 통합**: 10-DOF 커스텀 핸드 (10 모터 + 44 촉각 센서) event-driven 프로토콜, sensor decimation + busy skip 보호 (v5.11.0)
 - **세션 기반 통합 로깅**: `logging_data/YYMMDD_HHMM/` 세션 디렉토리에 모든 패키지 로그 통합 — controller/, monitor/, hand/, sim/, plots/, motions/ 서브디렉토리 (v5.10.0)
 - **RT-안전 신호 필터**: Bessel LPF + Kalman 필터 (N채널, noexcept)
 - **통신 통계 모니터링**: Status Monitor MessageStats + 컨트롤러별 통계, Hand UDP CommStats + rate 모니터링 (v5.9.0)
@@ -128,7 +128,7 @@ ros2 topic echo /sim/status                           # MuJoCo 시뮬 상태
     ├──→ /forward_position_controller/commands → [UR 드라이버 / MuJoCo]  (indirect 컨트롤러)
     └──→ /forward_torque_controller/commands  → [UR 드라이버 / MuJoCo]  (direct 컨트롤러)
 
-[10-DOF 핸드] ←UDP req/resp→ [HandUdpNode] ←ROS2→ [RtControllerNode]
+[10-DOF 핸드] ←UDP event-driven→ [HandController] ←직접 소유→ [RtControllerNode]
 ```
 
 각 패키지의 상세 아키텍처는 해당 패키지의 README.md를 참조하세요.

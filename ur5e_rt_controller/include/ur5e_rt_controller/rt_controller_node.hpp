@@ -5,6 +5,7 @@
 #include "ur5e_rt_base/logging/log_buffer.hpp"
 #include "ur5e_rt_controller/controller_timing_profiler.hpp"
 #include "ur5e_rt_controller/rt_controller_interface.hpp"
+#include <ur5e_hand_udp/hand_controller.hpp>
 #include <ur5e_status_monitor/ur5e_status_monitor.hpp>
 
 // ── ROS2 ─────────────────────────────────────────────────────────────────────
@@ -62,7 +63,6 @@ private:
   // ── Subscription callbacks ────────────────────────────────────────────────
   void JointStateCallback(sensor_msgs::msg::JointState::SharedPtr msg);
   void TargetCallback(std_msgs::msg::Float64MultiArray::SharedPtr msg);
-  void HandStateCallback(std_msgs::msg::Float64MultiArray::SharedPtr msg);
 
   // ── Timer callbacks ───────────────────────────────────────────────────────
   void CheckTimeouts();   // 50 Hz watchdog (E-STOP)
@@ -128,6 +128,12 @@ private:
   std::unique_ptr<ur5e_status_monitor::UR5eStatusMonitor> status_monitor_;
   bool enable_status_monitor_{false};
 
+  // ── Hand Controller (직접 소유, event-driven) ──────────────────────────────
+  std::unique_ptr<ur5e_rt_controller::HandController> hand_controller_;
+  bool enable_hand_{false};
+  // RT-local hand state cache — updated from HandController each tick
+  ur5e_rt_controller::HandState cached_hand_state_{};
+
   // ── Shared state (guarded by per-domain mutexes) ──────────────────────────
   std::array<double, ur5e_rt_controller::kNumRobotJoints> current_positions_{};
   std::array<double, ur5e_rt_controller::kNumRobotJoints> current_velocities_{};
@@ -137,9 +143,6 @@ private:
   std::array<double, ur5e_rt_controller::kNumRobotJoints> current_torques_{};
   std::array<double, ur5e_rt_controller::kNumRobotJoints> cached_torques_{};
 
-  // Hand motor positions (guarded by hand_mutex_)
-  std::array<float, ur5e_rt_controller::kNumHandMotors> current_hand_positions_{};
-  std::array<float, ur5e_rt_controller::kNumHandMotors> cached_hand_positions_{};
   // RT-local snapshot of target — written and read only in ControlLoop()
   std::array<double, ur5e_rt_controller::kNumRobotJoints> target_snapshot_{};
 
@@ -151,7 +154,6 @@ private:
 
   mutable std::mutex state_mutex_;
   mutable std::mutex target_mutex_;
-  mutable std::mutex hand_mutex_;
 
   // Timing summary flag — set by RT thread, consumed by log thread.
   // Avoids std::string allocation + RCLCPP_INFO on the 500 Hz path.
@@ -161,18 +163,14 @@ private:
   // Written with release, read with acquire to guarantee visibility ordering.
   std::atomic<bool> state_received_{false};
   std::atomic<bool> target_received_{false};
-  std::atomic<bool> hand_data_received_{false};
 
   rclcpp::Time              last_robot_update_;
-  rclcpp::Time              last_hand_update_;
   std::chrono::milliseconds robot_timeout_{100};
-  std::chrono::milliseconds hand_timeout_{200};
 
   // ── Parameters ────────────────────────────────────────────────────────────
   double      control_rate_{500.0};
   bool        enable_logging_{true};
   bool        enable_estop_{true};
-  bool        hand_estop_logged_{false};
 
   std::size_t loop_count_{0};
 

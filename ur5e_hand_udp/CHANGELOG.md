@@ -5,6 +5,32 @@
 
 ---
 
+## [5.11.0] - 2026-03-14
+
+### 추가 (Added) — Event Skip 보호 및 Sensor Decimation
+
+- **Event Skip 보호 (`busy_` flag)**
+  - `std::atomic<bool> busy_` — EventLoop 실행 중 `true`, 완료 시 `false`
+  - `SendCommandAndRequestStates()` 호출 시 `busy_`이면 이벤트 skip + `event_skip_count_` 증가
+  - Skip 시 이전 state 유지 (latest_state_ 변경 없음)
+  - `event_skip_count()` 접근자 추가
+
+- **Sensor Decimation (`sensor_decimation` 파라미터)**
+  - `sensor_decimation: N` — N cycle마다 센서(4 fingertip) 읽기, 나머지 cycle은 캐시 사용
+  - 기본값: `4` (평균 ~1.3ms/cycle, write+pos+vel만 → 500Hz ControlLoop 추종 가능)
+  - `sensor_decimation: 1`으로 설정 시 매 cycle 센서 읽기 (기존 동작)
+  - `cached_sensor_data` 로컬 버퍼로 센서 데이터 캐싱
+
+- **`HandCommStats` 확장**
+  - `event_skip_count` 필드 추가 (comm_stats() 스냅샷에 포함)
+
+### 변경 (Changed)
+
+- `HandController` 생성자에 `sensor_decimation` 파라미터 추가 (기본값 1)
+- `hand_udp_node.yaml`에 `sensor_decimation: 4` 파라미터 추가
+
+---
+
 ## [5.10.0] - 2026-03-14
 
 ### 변경 (Changed) — 세션 기반 로깅 경로

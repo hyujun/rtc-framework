@@ -95,6 +95,13 @@ def generate_launch_description():
         'ur5e_status_monitor.yaml'
     ])
 
+    # Hand UDP 설정 (ur5e_hand_udp 패키지 소유)
+    hand_udp_config = PathJoinSubstitution([
+        FindPackageShare('ur5e_hand_udp'),
+        'config',
+        'hand_udp_node.yaml'
+    ])
+
     cyclone_dds_xml = PathJoinSubstitution([
         FindPackageShare('ur5e_rt_controller'),
         'config',
@@ -163,10 +170,16 @@ def generate_launch_description():
         executable='rt_controller',
         name='rt_controller',
         output='screen',
-        parameters=[ur_control_config, status_monitor_config, {
-            'log_dir': session_dir,
-            'status_monitor.log_output_dir': os.path.join(session_dir, 'monitor'),
-        }],
+        parameters=[
+            ur_control_config,
+            status_monitor_config,
+            hand_udp_config,
+            {
+                'log_dir': session_dir,
+                'status_monitor.log_output_dir':
+                    os.path.join(session_dir, 'monitor'),
+            },
+        ],
         emulate_tty=True,
     )
 

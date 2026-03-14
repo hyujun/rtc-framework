@@ -1,6 +1,6 @@
 # ur5e_hand_udp
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.10.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.11.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 
 UR5e RT Controller 스택의 **10-DOF 손 UDP 브리지 패키지**입니다. 외부 손 컨트롤러(하드웨어)와 ROS2 토픽 사이의 UDP request-response 통신을 담당합니다.
@@ -12,7 +12,7 @@ ur5e_hand_udp/
 ├── include/ur5e_hand_udp/
 │   ├── hand_packets.hpp          ← 와이어 포맷 구조체, 인코딩/디코딩 헬퍼
 │   ├── hand_udp_codec.hpp        ← 공개 코덱 API (allocation-free, noexcept)
-│   ├── hand_controller.hpp       ← 핵심 드라이버 (request-response 폴링)
+│   ├── hand_controller.hpp       ← 핵심 드라이버 (event-driven, busy skip, sensor decimation)
 │   └── hand_failure_detector.hpp ← 손 통신 장애 감지기 (v5.8.0)
 ├── src/
 │   └── hand_udp_node.cpp         ← ROS2 노드 (HandController + FailureDetector)
@@ -94,19 +94,39 @@ ur5e_rt_base ← ur5e_hand_udp   (ur5e_rt_controller에 의존하지 않음)
 | `kReadVelocity` | `0x12` | 43B | 43B | 10개 모터 속도 읽기 |
 | `kReadSensor0–3` | `0x14–0x17` | 3B | 67B | 핑거팁 센서 읽기 (각 11개 값) |
 
-### 폴링 사이클
+### Event-Driven 통신 사이클
 
-`HandController`가 매 사이클마다 아래 순서로 통신합니다:
+`HandController`는 ControlLoop의 `SendCommandAndRequestStates()` 호출에 의해 event-driven으로 구동됩니다:
 
 ```
-1. WritePosition  (0x01) → 43B 송신 (새 명령이 있을 때만)
+[Core 2] ControlLoop 500Hz
+             │
+             │ Phase 3.5: SendCommandAndRequestStates(cmd)
+             │            → busy_ 체크 → condvar notify (non-blocking, ~1µs)
+             │            → busy_ 시 skip + event_skip_count 증가
+             ▼
+[Core 5] EventLoop — condvar wait → wake
+                     → WritePosition(cmd)
+                     → ReadPosition / ReadVelocity
+                     → ReadSensor×4 (sensor_decimation cycle마다)
+                     → latest_state_ 갱신
+```
+
+매 사이클 통신 순서:
+
+```
+1. WritePosition  (0x01) → 43B 송신 (이번 tick 명령)
 2. ReadPosition   (0x11) → 43B 송신 → 43B 수신 → 10 float (위치)
 3. ReadVelocity   (0x12) → 43B 송신 → 43B 수신 → 10 float (속도)
-4. ReadSensor0    (0x14) →  3B 송신 → 67B 수신 → 11 float (핑거팁 0)
-5. ReadSensor1    (0x15) →  3B 송신 → 67B 수신 → 11 float (핑거팁 1)
-6. ReadSensor2    (0x16) →  3B 송신 → 67B 수신 → 11 float (핑거팁 2)
-7. ReadSensor3    (0x17) →  3B 송신 → 67B 수신 → 11 float (핑거팁 3)
+4. ReadSensor0-3  (0x14–0x17) → sensor_decimation cycle마다 수행 (기본 4)
+   → 3B 송신 → 67B 수신 × 4 핑거팁 → 44 float (센서)
+   → skip 시 이전 캐시 데이터 유지
 ```
+
+**Sensor Decimation** (`sensor_decimation: 4` 기본값):
+- cycle 1–3: write + pos + vel = 3 round-trips (~1.3ms) ✓ < 2ms
+- cycle 4: write + pos + vel + sensor×4 = 7 round-trips (~3.3ms)
+- 평균: ~1.8ms/cycle → 500Hz ControlLoop 추종 가능
 
 ---
 
@@ -116,11 +136,13 @@ ur5e_rt_base ← ur5e_hand_udp   (ur5e_rt_controller에 의존하지 않음)
 
 `HandController`를 사용하는 ROS2 노드입니다. 단일 프로세스에서 송수신을 모두 처리합니다.
 
-- **내부**: `HandController` — request-response 폴링 (jthread, Core 5, SCHED_FIFO/65)
+- **내부**: `HandController` — event-driven 드라이버 (jthread, Core 5, SCHED_FIFO/65)
   - `recv_timeout_ms` 생성자 파라미터: YAML에서 구동되는 `SO_RCVTIMEO` 소켓 타임아웃 설정
   - `recv_error_count_` (`std::atomic<uint64_t>`): recv 실패 횟수를 추적하는 원자적 카운터
   - `SetEstopFlag(std::atomic<bool>*)`: 글로벌 E-Stop 플래그 전파를 위한 설정 메서드
   - `enable_write_ack` 플래그: 커맨드 ACK 메커니즘 활성화 (WritePosition 후 응답 대기)
+  - `busy_` flag: EventLoop busy 중 이벤트 skip 보호 (v5.11.0)
+  - `sensor_decimation`: N cycle마다 센서 읽기 — 기본 4 (v5.11.0)
 - **퍼블리시**: `/hand/joint_states` (`std_msgs/Float64MultiArray`, 100Hz)
   - **64개 `double` 값**: `[positions:10] + [velocities:10] + [sensors:44]`
 - **구독**: `/hand/command` (`std_msgs/Float64MultiArray`)
@@ -164,6 +186,7 @@ ur5e_rt_base ← ur5e_hand_udp   (ur5e_rt_controller에 의존하지 않음)
     target_port: 55151                # 핸드 컨트롤러 포트
     recv_timeout_ms: 10               # SO_RCVTIMEO (ms)
     enable_write_ack: false           # 핸드 하드웨어 ACK 지원 시 true
+    sensor_decimation: 4              # N cycle마다 센서 읽기 (1=매번, 4=4cycle마다)
 
     # ROS2 퍼블리시
     publish_rate: 100.0               # /hand/joint_states 주기 (Hz)
@@ -258,16 +281,17 @@ estop:
   - `check_motor`: 모터 위치 검사 활성화
   - `check_sensor`: 센서 데이터 검사 활성화
 
-### HandCommStats (v5.9.0)
+### HandCommStats (v5.9.0, v5.11.0 확장)
 
-`HandController`에 추가된 통신 통계 구조체입니다. PollLoop RT 스레드에서만 쓰기, 외부에서 struct copy로 읽기.
+`HandController`에 추가된 통신 통계 구조체입니다. EventLoop 스레드에서만 쓰기, 외부에서 struct copy로 읽기.
 
 ```cpp
 struct HandCommStats {
-  uint64_t recv_ok{0};       // 수신 성공 횟수
-  uint64_t recv_timeout{0};  // SO_RCVTIMEO 타임아웃 횟수
-  uint64_t recv_error{0};    // 기타 수신 에러 횟수
-  uint64_t total_cycles{0};  // 총 PollLoop 사이클 수
+  uint64_t recv_ok{0};            // 수신 성공 횟수
+  uint64_t recv_timeout{0};       // SO_RCVTIMEO 타임아웃 횟수
+  uint64_t recv_error{0};         // 기타 수신 에러 횟수
+  uint64_t total_cycles{0};       // 총 EventLoop 사이클 수
+  uint64_t event_skip_count{0};   // EventLoop busy 중 skip된 이벤트 수 (v5.11.0)
 };
 
 // 스냅샷 조회 (relaxed read, struct copy)
