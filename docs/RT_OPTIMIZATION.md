@@ -193,11 +193,25 @@ ulimit -l  # 출력: unlimited (memlock)
 
 ### 2. CPU Isolation (권장)
 
+> **주의: SMT/Hyper-Threading 환경**
+>
+> `isolcpus`는 **물리 코어** 기준으로 설정해야 합니다. `nproc`은 논리 코어(SMT 포함)를
+> 반환하므로, HT가 켜진 시스템에서 `nproc` 값을 그대로 사용하면 과도한 격리가 발생합니다.
+>
+> | CPU | 물리 코어 | `nproc` | 올바른 `isolcpus` | 잘못된 `isolcpus` |
+> |-----|-----------|---------|-------------------|-------------------|
+> | i7-8700 (6C/12T) | 6 | 12 | `2-5` | `2-11` (OS에 2코어만 남김) |
+> | i5-8250U (4C/8T) | 4 | 8 | `1-3` | `1-7` (OS에 1코어만 남김) |
+>
+> 물리 코어 수 확인: `lscpu -p=Core,Socket | grep -v '^#' | sort -u | wc -l`
+>
+> `setup_nvidia_rt.sh`, `setup_irq_affinity.sh`는 자동으로 물리 코어를 감지합니다.
+
 ```bash
 # /etc/default/grub 편집
 sudo nano /etc/default/grub
 
-# 다음 줄 추가 또는 수정 (6-core 기준)
+# 다음 줄 추가 또는 수정 (6-core 기준, 물리 코어 기준)
 GRUB_CMDLINE_LINUX_DEFAULT="quiet splash isolcpus=2-5 nohz_full=2-5 rcu_nocbs=2-5"
 
 # GRUB 업데이트
@@ -821,6 +835,6 @@ grep -E "[0-9]{3,}\.[0-9]{3} us" trace.txt
 
 ---
 
-**최종 업데이트**: 2026-03-12
+**최종 업데이트**: 2026-03-14
 **작성자**: UR5e RT Controller Team
-**버전**: v5.8.0 (v4.2.0 기반, CPU 코어 할당 최적화 + 모니터링 스레드 추가 반영)
+**버전**: v5.8.0 (v4.2.0 기반, CPU 코어 할당 최적화 + 모니터링 스레드 추가 + 물리/논리 코어 구분 반영)

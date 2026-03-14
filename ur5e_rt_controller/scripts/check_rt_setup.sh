@@ -150,9 +150,44 @@ _category_set_detail() {
   CATEGORY_DETAIL["$1"]="$2"
 }
 
+# ── Helper: physical CPU core count (SMT/HT 제외) ────────────────────────────
+# nproc은 논리 코어(HT 포함)를 반환하므로, 물리 코어만 카운트한다.
+# 예: i7-8700 (6C/12T) → nproc=12 이지만 이 함수는 6을 반환.
+get_physical_cores() {
+  if command -v lscpu &>/dev/null; then
+    local count
+    count=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l)
+    if [[ "$count" -gt 0 ]]; then
+      echo "$count"
+      return
+    fi
+  fi
+  if [[ -f /sys/devices/system/cpu/cpu0/topology/core_id ]]; then
+    local seen=""
+    local count=0
+    for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
+      local pkg_file="${cpu_dir}topology/physical_package_id"
+      local core_file="${cpu_dir}topology/core_id"
+      [[ -f "$pkg_file" && -f "$core_file" ]] || continue
+      local key
+      key="$(cat "$pkg_file"):$(cat "$core_file")"
+      if [[ ! " $seen " == *" $key "* ]]; then
+        seen="$seen $key"
+        ((count++))
+      fi
+    done
+    if [[ "$count" -gt 0 ]]; then
+      echo "$count"
+      return
+    fi
+  fi
+  nproc
+}
+
 # ── CPU layout auto-detection ────────────────────────────────────────────────
-# thread_config.hpp와 동일한 로직 (setup_irq_affinity.sh, setup_nvidia_rt.sh 참조)
-TOTAL_CORES=$(nproc)
+# thread_config.hpp와 동일한 로직 (물리 코어 기준)
+LOGICAL_CORES=$(nproc)
+TOTAL_CORES=$(get_physical_cores)
 
 if [[ "$TOTAL_CORES" -le 4 ]]; then
   EXPECTED_ISOLATED="1-$((TOTAL_CORES - 1))"

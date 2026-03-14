@@ -67,6 +67,43 @@ CHANGES_APPLIED=()
 BACKUP_FILES=()
 WARNINGS=()
 
+# ── Helper: physical CPU core count (SMT/HT 제외) ─────────────────────────
+# nproc은 논리 코어(HT 포함)를 반환하므로, 물리 코어만 카운트한다.
+# 예: i7-8700 (6C/12T) → nproc=12 이지만 이 함수는 6을 반환.
+# thread_config.hpp의 코어 레이아웃은 물리 코어 기준이므로 반드시 물리 코어를 사용해야 한다.
+get_physical_cores() {
+  if command -v lscpu &>/dev/null; then
+    local count
+    count=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l)
+    if [[ "$count" -gt 0 ]]; then
+      echo "$count"
+      return
+    fi
+  fi
+  # Fallback: sysfs topology 직접 파싱
+  if [[ -f /sys/devices/system/cpu/cpu0/topology/core_id ]]; then
+    local seen=""
+    local count=0
+    for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
+      local pkg_file="${cpu_dir}topology/physical_package_id"
+      local core_file="${cpu_dir}topology/core_id"
+      [[ -f "$pkg_file" && -f "$core_file" ]] || continue
+      local key
+      key="$(cat "$pkg_file"):$(cat "$core_file")"
+      if [[ ! " $seen " == *" $key "* ]]; then
+        seen="$seen $key"
+        ((count++))
+      fi
+    done
+    if [[ "$count" -gt 0 ]]; then
+      echo "$count"
+      return
+    fi
+  fi
+  # 최후 수단: nproc (VM, 컨테이너 등에서 sysfs 미지원 시)
+  nproc
+}
+
 # ── Helper: backup a file before modifying ──────────────────────────────────
 backup_file() {
   local file="$1"
@@ -142,9 +179,16 @@ success "NVIDIA GPU: ${NVIDIA_GPU_MODEL}"
 info "  드라이버 버전: ${NVIDIA_DRIVER_VER}"
 
 # ── CPU layout auto-detection ───────────────────────────────────────────────
-TOTAL_CORES=$(nproc)
+LOGICAL_CORES=$(nproc)
+TOTAL_CORES=$(get_physical_cores)
+
+if [[ "$LOGICAL_CORES" -ne "$TOTAL_CORES" ]]; then
+  info "SMT/Hyper-Threading 감지: 논리 ${LOGICAL_CORES}코어, 물리 ${TOTAL_CORES}코어"
+  info "thread_config.hpp 레이아웃과 일치하도록 물리 코어(${TOTAL_CORES}) 기준으로 설정합니다"
+fi
+
 if [[ "$TOTAL_CORES" -lt 4 ]]; then
-  error "CPU 코어가 ${TOTAL_CORES}개입니다. 최소 4코어가 필요합니다."
+  error "물리 CPU 코어가 ${TOTAL_CORES}개입니다. 최소 4코어가 필요합니다."
   error "  Core 0-1: OS/NVIDIA IRQ, Core 2+: RT 제어 루프"
   exit 1
 fi
