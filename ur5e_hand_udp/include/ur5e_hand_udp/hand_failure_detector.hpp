@@ -137,8 +137,9 @@ private:
     const auto& sens = state.sensor_data;
 
     bool all_zero = true;
-    for (int i = 0; i < kNumHandSensors; ++i) {
-      if (sens[i] != 0.0f) { all_zero = false; break; }
+    const int num_sensors = state.num_fingertips * kSensorValuesPerFingertip;
+    for (int i = 0; i < num_sensors; ++i) {
+      if (sens[static_cast<std::size_t>(i)] != 0.0f) { all_zero = false; break; }
     }
     if (all_zero) {
       ++sensor_zero_count_;
@@ -212,7 +213,7 @@ private:
   int  motor_dup_count_{0};
 
   // Sensor state
-  std::array<float, kNumHandSensors> prev_sensor_{};
+  std::array<float, kMaxHandSensors> prev_sensor_{};
   bool prev_sensor_valid_{false};
   int  sensor_zero_count_{0};
   int  sensor_dup_count_{0};

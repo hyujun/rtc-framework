@@ -15,6 +15,7 @@
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <ur5e_msgs/msg/joint_command.hpp>
 
 // ── C++ stdlib ────────────────────────────────────────────────────────────────
 #include <array>
@@ -64,6 +65,10 @@ private:
   // ── Subscription callbacks ────────────────────────────────────────────────
   void JointStateCallback(sensor_msgs::msg::JointState::SharedPtr msg);
   void TargetCallback(std_msgs::msg::Float64MultiArray::SharedPtr msg);
+
+  // ── Joint name validation (v5.14.0) ──────────────────────────────────────
+  void LoadAndValidateJointNames();
+  void BuildJointStateIndexMap(const std::vector<std::string>& msg_names);
 
   // ── Timer callbacks ───────────────────────────────────────────────────────
   void CheckTimeouts();   // 50 Hz watchdog (E-STOP)
@@ -135,8 +140,16 @@ private:
   // ── Hand Controller (직접 소유, event-driven) ──────────────────────────────
   std::unique_ptr<ur5e_rt_controller::HandController> hand_controller_;
   bool enable_hand_{false};
-  // RT-local hand state cache — updated from HandController each tick
+  // RT-local hand state cache — updated from HandController or sim each tick
   ur5e_rt_controller::HandState cached_hand_state_{};
+
+  // ── Hand Simulation (ROS 토픽 기반, MuJoCo fake response 연동) ────────────
+  bool hand_sim_enabled_{false};
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr  hand_sim_cmd_pub_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr hand_sim_state_sub_;
+  std_msgs::msg::Float64MultiArray hand_sim_cmd_msg_;  // pre-allocated
+  mutable std::mutex sim_hand_mutex_;
+  ur5e_rt_controller::HandState sim_hand_state_{};
 
   // ── Shared state (guarded by per-domain mutexes) ──────────────────────────
   std::array<double, ur5e_rt_controller::kNumRobotJoints> current_positions_{};
@@ -170,6 +183,14 @@ private:
 
   rclcpp::Time              last_robot_update_;
   std::chrono::milliseconds robot_timeout_{100};
+
+  // ── Named joint mapping (v5.14.0) ────────────────────────────────────────
+  std::vector<std::string> robot_joint_names_;
+  std::vector<std::string> hand_motor_names_;
+  std::vector<std::string> fingertip_names_;
+  // JointState msg의 name 순서 → 내부 인덱스 매핑 (첫 수신 시 빌드)
+  std::vector<int> joint_state_reorder_;   // joint_state_reorder_[msg_idx] = internal_idx
+  bool joint_state_map_built_{false};
 
   // ── Parameters ────────────────────────────────────────────────────────────
   double      control_rate_{500.0};

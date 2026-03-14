@@ -34,6 +34,7 @@ find_package(ament_index_cpp REQUIRED)
 find_package(ur5e_hand_udp REQUIRED)
 find_package(ur5e_status_monitor REQUIRED)
 find_package(yaml-cpp REQUIRED)
+find_package(ur5e_msgs REQUIRED)
 
 # ── rt_controller ──────────────────────────────────────────────────────────────
 add_executable(rt_controller
@@ -55,6 +56,7 @@ ament_target_dependencies(rt_controller
   ur5e_hand_udp
   ur5e_status_monitor
   ament_index_cpp
+  ur5e_msgs
 )
 target_link_libraries(rt_controller pinocchio::pinocchio yaml-cpp)
 

@@ -76,7 +76,8 @@ struct LogEntry {
   // 카테고리 2: Current State
   std::array<float, kNumHandMotors>  hand_actual_positions{};
   std::array<float, kNumHandMotors>  hand_actual_velocities{};
-  std::array<float, kNumHandSensors> hand_sensors{};           // 44 = baro(32) + tof(12)
+  std::array<float, kMaxHandSensors> hand_sensors{};           // 최대 kMaxFingertips × 11
+  int num_fingertips{kDefaultNumFingertips};                   // 실제 사용 fingertip 수
 
   // 카테고리 3: Control Command
   std::array<float, kNumHandMotors>  hand_commands{};

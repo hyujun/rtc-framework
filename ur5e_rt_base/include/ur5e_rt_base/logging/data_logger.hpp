@@ -14,7 +14,7 @@ namespace ur5e_rt_controller {
 // Writes control data to three separate CSV files in a non-RT (logging) thread:
 //   - timing_log:  per-phase timing breakdown (6 columns)
 //   - robot_log:   robot joint states (49 columns — 4-category: goal/state/command/trajectory)
-//   - hand_log:    hand motor states + sensor data (87 columns — 4-category: goal/state/command)
+//   - hand_log:    hand motor states + sensor data (variable columns — 4-category)
 //
 // All three files share the same timestamp column for post-hoc join.
 // Copy is disabled; move is enabled for deferred construction.
@@ -24,9 +24,23 @@ class DataLogger {
 public:
   /// Construct with paths for each log file.  Pass an empty path to disable
   /// that particular log category.
+  /// joint_names/motor_names/fingertip_names are used for CSV headers (v5.14.0).
+  /// Empty vectors → numeric index fallback.
   DataLogger(const std::filesystem::path & timing_path,
              const std::filesystem::path & robot_path,
-             const std::filesystem::path & hand_path) {
+             const std::filesystem::path & hand_path,
+             const std::vector<std::string>& joint_names = {},
+             const std::vector<std::string>& motor_names = {},
+             const std::vector<std::string>& fingertip_names = {})
+      : joint_names_(joint_names),
+        motor_names_(motor_names),
+        fingertip_names_(fingertip_names),
+        num_fingertips_(fingertip_names.empty()
+                            ? kDefaultNumFingertips
+                            : static_cast<int>(fingertip_names.size()))
+  {
+    if (num_fingertips_ > kMaxFingertips) { num_fingertips_ = kMaxFingertips; }
+
     if (!timing_path.empty()) {
       timing_file_.open(timing_path);
       if (timing_file_.is_open()) { WriteTimingHeader(); }
@@ -79,6 +93,25 @@ private:
   std::ofstream robot_file_;
   std::ofstream hand_file_;
 
+  // 이름 벡터 (v5.14.0)
+  std::vector<std::string> joint_names_;
+  std::vector<std::string> motor_names_;
+  std::vector<std::string> fingertip_names_;
+  int num_fingertips_;
+
+  // 조인트 이름 또는 인덱스 문자열 반환
+  std::string JointLabel(std::size_t i) const {
+    return (i < joint_names_.size()) ? joint_names_[i] : std::to_string(i);
+  }
+  std::string MotorLabel(std::size_t i) const {
+    return (i < motor_names_.size()) ? motor_names_[i] : std::to_string(i);
+  }
+  std::string FingertipLabel(int f) const {
+    return (static_cast<std::size_t>(f) < fingertip_names_.size())
+               ? fingertip_names_[static_cast<std::size_t>(f)]
+               : "f" + std::to_string(f);
+  }
+
   // ── Timing CSV ──────────────────────────────────────────────────────────────
   void WriteTimingHeader() {
     timing_file_ << "timestamp"
@@ -106,18 +139,32 @@ private:
   void WriteRobotHeader() {
     robot_file_ << "timestamp";
     // 카테고리 1: Goal State
-    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",goal_pos_" << i; }
+    for (int i = 0; i < kNumRobotJoints; ++i) {
+      robot_file_ << ",goal_pos_" << JointLabel(static_cast<std::size_t>(i));
+    }
     // 카테고리 2: Current State
-    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",actual_pos_" << i; }
-    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",actual_vel_" << i; }
-    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",actual_torque_" << i; }
+    for (int i = 0; i < kNumRobotJoints; ++i) {
+      robot_file_ << ",actual_pos_" << JointLabel(static_cast<std::size_t>(i));
+    }
+    for (int i = 0; i < kNumRobotJoints; ++i) {
+      robot_file_ << ",actual_vel_" << JointLabel(static_cast<std::size_t>(i));
+    }
+    for (int i = 0; i < kNumRobotJoints; ++i) {
+      robot_file_ << ",actual_torque_" << JointLabel(static_cast<std::size_t>(i));
+    }
     for (int i = 0; i < 6; ++i)               { robot_file_ << ",task_pos_" << i; }
     // 카테고리 3: Control Command
-    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",command_" << i; }
+    for (int i = 0; i < kNumRobotJoints; ++i) {
+      robot_file_ << ",command_" << JointLabel(static_cast<std::size_t>(i));
+    }
     robot_file_ << ",command_type";
     // 카테고리 4: Trajectory State
-    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",traj_pos_" << i; }
-    for (int i = 0; i < kNumRobotJoints; ++i) { robot_file_ << ",traj_vel_" << i; }
+    for (int i = 0; i < kNumRobotJoints; ++i) {
+      robot_file_ << ",traj_pos_" << JointLabel(static_cast<std::size_t>(i));
+    }
+    for (int i = 0; i < kNumRobotJoints; ++i) {
+      robot_file_ << ",traj_vel_" << JointLabel(static_cast<std::size_t>(i));
+    }
     robot_file_ << '\n';
   }
 
@@ -146,21 +193,30 @@ private:
     hand_file_ << "timestamp"
                << ",hand_valid";
     // 카테고리 1: Goal State
-    for (int i = 0; i < kNumHandMotors; ++i) { hand_file_ << ",hand_goal_pos_" << i; }
+    for (int i = 0; i < kNumHandMotors; ++i) {
+      hand_file_ << ",hand_goal_pos_" << MotorLabel(static_cast<std::size_t>(i));
+    }
     // 카테고리 2: Current State
-    for (int i = 0; i < kNumHandMotors; ++i) { hand_file_ << ",hand_actual_pos_" << i; }
-    for (int i = 0; i < kNumHandMotors; ++i) { hand_file_ << ",hand_actual_vel_" << i; }
+    for (int i = 0; i < kNumHandMotors; ++i) {
+      hand_file_ << ",hand_actual_pos_" << MotorLabel(static_cast<std::size_t>(i));
+    }
+    for (int i = 0; i < kNumHandMotors; ++i) {
+      hand_file_ << ",hand_actual_vel_" << MotorLabel(static_cast<std::size_t>(i));
+    }
     // Sensor columns: barometer (8 per fingertip) + tof (3 per fingertip)
-    for (int f = 0; f < kNumFingertips; ++f) {
+    for (int f = 0; f < num_fingertips_; ++f) {
+      const auto fl = FingertipLabel(f);
       for (int b = 0; b < kBarometerCount; ++b) {
-        hand_file_ << ",baro_f" << f << "_" << b;
+        hand_file_ << ",baro_" << fl << "_" << b;
       }
       for (int t = 0; t < kTofCount; ++t) {
-        hand_file_ << ",tof_f" << f << "_" << t;
+        hand_file_ << ",tof_" << fl << "_" << t;
       }
     }
     // 카테고리 3: Control Command
-    for (int i = 0; i < kNumHandMotors; ++i) { hand_file_ << ",hand_cmd_" << i; }
+    for (int i = 0; i < kNumHandMotors; ++i) {
+      hand_file_ << ",hand_cmd_" << MotorLabel(static_cast<std::size_t>(i));
+    }
     hand_file_ << '\n';
   }
 
@@ -173,7 +229,11 @@ private:
     // 카테고리 2: Current State
     for (const auto v : e.hand_actual_positions)  { hand_file_ << ',' << v; }
     for (const auto v : e.hand_actual_velocities) { hand_file_ << ',' << v; }
-    for (const auto v : e.hand_sensors)           { hand_file_ << ',' << v; }
+    // Sensor data: num_fingertips에 따라 출력
+    const int num_sensors = e.num_fingertips * kSensorValuesPerFingertip;
+    for (int i = 0; i < num_sensors; ++i) {
+      hand_file_ << ',' << e.hand_sensors[static_cast<std::size_t>(i)];
+    }
     // 카테고리 3: Control Command
     for (const auto v : e.hand_commands)          { hand_file_ << ',' << v; }
     hand_file_ << '\n';

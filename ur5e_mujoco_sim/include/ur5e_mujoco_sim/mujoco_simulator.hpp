@@ -106,8 +106,6 @@ class MuJoCoSimulator {
     int         publish_decimation{1};   // kFreeRun: publish every N steps
     double      sync_timeout_ms{50.0};   // kSyncStep: command wait timeout
     double      max_rtf{0.0};           // 0.0 = unlimited
-    std::array<double, 6> initial_qpos{
-        0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0};
 
     // ── Physics timestep validation & position servo gain scaling ────────────
     // 0.0 → XML 값 그대로 사용 (검증 없음)
@@ -120,16 +118,23 @@ class MuJoCoSimulator {
     // true : servo_kp / physics_timestep → gainprm, -servo_kd → biasprm[2]
     bool   use_yaml_servo_gains{false};
     // servo_kp: velocity gain (Nm·s/rad), force = servo_kp*dq_cmd - servo_kd*dq_actual
-    std::array<double, 6> servo_kp{500.0, 500.0, 500.0, 150.0, 150.0, 150.0};
-    std::array<double, 6> servo_kd{400.0, 400.0, 400.0, 100.0, 100.0, 100.0};
+    // 크기는 XML에서 발견된 로봇 조인트 수와 일치해야 함
+    std::vector<double> servo_kp{500.0, 500.0, 500.0, 150.0, 150.0, 150.0};
+    std::vector<double> servo_kd{400.0, 400.0, 400.0, 100.0, 100.0, 100.0};
+
+    // ── Robot topics (fake_hand_response 패턴과 동일) ─────────────────────────
+    // 로봇 커맨드 수신 토픽 (JointCommand msg, command_type으로 position/torque 결정)
+    std::string command_topic{"/rt_controller/joint_command"};
+    // 로봇 상태 퍼블리시 토픽
+    std::string state_topic{"/joint_states"};
   };
 
   // Invoked from SimLoop after each publish step.
   // efforts = data_->qfrc_actuator (actuator forces in Nm, indexed by DOF).
   using StateCallback = std::function<void(
-      const std::array<double, 6>& positions,
-      const std::array<double, 6>& velocities,
-      const std::array<double, 6>& efforts)>;
+      const std::vector<double>& positions,
+      const std::vector<double>& velocities,
+      const std::vector<double>& efforts)>;
 
   explicit MuJoCoSimulator(Config cfg) noexcept;
   ~MuJoCoSimulator();
@@ -149,14 +154,14 @@ class MuJoCoSimulator {
   void Stop() noexcept;
 
   // Write a position command into the pending buffer.  Thread-safe.
-  void SetCommand(const std::array<double, 6>& cmd) noexcept;
+  void SetCommand(const std::vector<double>& cmd) noexcept;
 
   // Register the state callback (positions, velocities, efforts).
   void SetStateCallback(StateCallback cb) noexcept;
 
-  [[nodiscard]] std::array<double, 6> GetPositions()  const noexcept;
-  [[nodiscard]] std::array<double, 6> GetVelocities() const noexcept;
-  [[nodiscard]] std::array<double, 6> GetEfforts()    const noexcept;
+  [[nodiscard]] std::vector<double> GetPositions()  const noexcept;
+  [[nodiscard]] std::vector<double> GetVelocities() const noexcept;
+  [[nodiscard]] std::vector<double> GetEfforts()    const noexcept;
 
   // Solver statistics snapshot captured after each mj_step().
   struct SolverStats {
@@ -310,13 +315,23 @@ class MuJoCoSimulator {
   void ClearPerturb() noexcept;
 
   // ── Status accessors ──────────────────────────────────────────────────────
+  [[nodiscard]] const std::vector<std::string>& GetJointNames() const noexcept {
+    return joint_names_;
+  }
+
   [[nodiscard]] bool     IsRunning()  const noexcept { return running_.load(); }
   [[nodiscard]] uint64_t StepCount()  const noexcept { return step_count_.load(); }
   [[nodiscard]] double   SimTimeSec() const noexcept { return sim_time_sec_.load(); }
   [[nodiscard]] int      NumJoints()  const noexcept { return model_ ? model_->nq : 0; }
+  [[nodiscard]] int      NumRobotJoints() const noexcept { return num_robot_joints_; }
   [[nodiscard]] double   GetRtf()     const noexcept {
     return rtf_.load(std::memory_order_relaxed);
   }
+  [[nodiscard]] double   GetPhysicsTimestep() const noexcept { return xml_timestep_; }
+
+  // Re-resolve joint indices from a new set of names (e.g. from command message).
+  // Returns true if all names were found in XML.
+  bool ResolveJointIndices(const std::vector<std::string>& names) noexcept;
 
  private:
   Config   cfg_;
@@ -349,16 +364,16 @@ class MuJoCoSimulator {
   // ── Command buffer ────────────────────────────────────────────────────────
   mutable std::mutex    cmd_mutex_;
   std::atomic<bool>     cmd_pending_{false};
-  std::array<double, 6> pending_cmd_{};
+  std::vector<double>   pending_cmd_{};
 
   std::mutex              sync_mutex_;
   std::condition_variable sync_cv_;
 
   // ── State buffer (under state_mutex_) ─────────────────────────────────────
   mutable std::mutex    state_mutex_;
-  std::array<double, 6> latest_positions_{};
-  std::array<double, 6> latest_velocities_{};
-  std::array<double, 6> latest_efforts_{};   // qfrc_actuator per joint DOF
+  std::vector<double>   latest_positions_{};
+  std::vector<double>   latest_velocities_{};
+  std::vector<double>   latest_efforts_{};   // qfrc_actuator per joint DOF
 
   // ── Viewer double-buffer ──────────────────────────────────────────────────
   mutable std::mutex  viz_mutex_;
@@ -371,8 +386,17 @@ class MuJoCoSimulator {
   std::jthread sim_thread_;
   std::jthread viewer_thread_;
 
-  std::array<int, 6> joint_qpos_indices_{0, 1, 2, 3, 4, 5};
-  std::array<int, 6> joint_qvel_indices_{0, 1, 2, 3, 4, 5};
+  // XML에서 발견된 로봇 조인트 수 (Initialize()에서 설정)
+  int num_robot_joints_{0};
+
+  std::vector<int> joint_qpos_indices_{};
+  std::vector<int> joint_qvel_indices_{};
+
+  // XML에서 자동 발견된 조인트 이름 (Initialize()에서 설정)
+  std::vector<std::string> joint_names_;
+
+  // XML keyframe 또는 0으로 초기화된 초기 관절 위치
+  std::vector<double> initial_qpos_{};
 
   // ── RTF measurement ───────────────────────────────────────────────────────
   std::chrono::steady_clock::time_point rtf_wall_start_{};
@@ -396,8 +420,8 @@ class MuJoCoSimulator {
   // gainprm_yaml_[i]  = servo_kp[i] / xml_timestep_
   // biasprm2_yaml_[i] = -servo_kd[i]
   double xml_timestep_{0.002};
-  std::array<double, 6> gainprm_yaml_{};
-  std::array<double, 6> biasprm2_yaml_{};
+  std::vector<double> gainprm_yaml_{};
+  std::vector<double> biasprm2_yaml_{};
   struct ActuatorParams {
     double gainprm0{0.0};
     double biasprm0{0.0};
@@ -416,7 +440,8 @@ class MuJoCoSimulator {
   bool                ext_xfrc_dirty_{false};
 
   // ── Internal helpers ───────────────────────────────────────────────────────
-  void ResolveJointIndices() noexcept;
+  // XML에서 hinge joint + actuator 연결된 조인트 자동 발견
+  bool DiscoverRobotJoints() noexcept;
   void ApplyCommand() noexcept;
   void ReadState() noexcept;
   // Capture solver statistics from data_ after mj_step().
@@ -434,16 +459,6 @@ class MuJoCoSimulator {
   void SimLoopFreeRun(std::stop_token stop) noexcept;
   void SimLoopSyncStep(std::stop_token stop) noexcept;
   void ViewerLoop(std::stop_token stop) noexcept;
-};
-
-// ── Joint name table ───────────────────────────────────────────────────────────
-static constexpr std::array<const char*, 6> kMjJointNames = {
-    "shoulder_pan_joint",
-    "shoulder_lift_joint",
-    "elbow_joint",
-    "wrist_1_joint",
-    "wrist_2_joint",
-    "wrist_3_joint",
 };
 
 }  // namespace ur5e_rt_controller

@@ -71,12 +71,13 @@ show_help() {
   echo ""
   echo "Modes:"
   echo "  robot   Build packages for real robot (no MuJoCo)"
-  echo "            Packages: ur5e_rt_base, ur5e_description, ur5e_status_monitor,"
+  echo "            Packages: ur5e_msgs, ur5e_rt_base, ur5e_description, ur5e_status_monitor,"
   echo "                      ur5e_rt_controller, ur5e_hand_udp, ur5e_tools"
   echo ""
-  echo "  sim     Build packages for simulation (requires MuJoCo)"
-  echo "            Packages: ur5e_rt_base, ur5e_description, ur5e_status_monitor,"
-  echo "                      ur5e_rt_controller, ur5e_mujoco_sim, ur5e_tools"
+  echo "  sim     Build for simulation (MuJoCo required, hand uses fake response)"
+  echo "            Packages: ur5e_msgs, ur5e_rt_base, ur5e_description, ur5e_status_monitor,"
+  echo "                      ur5e_rt_controller, ur5e_hand_udp, ur5e_mujoco_sim, ur5e_tools"
+  echo "            Note: ur5e_hand_udp is a build dependency but not used at runtime"
   echo ""
   echo "  full    Build all packages (default)"
   echo "            Packages: all of the above"
@@ -197,8 +198,8 @@ fi
 
 # ── Banner ─────────────────────────────────────────────────────────────────────
 case "$MODE" in
-  robot) MODE_DESC="Real Robot  (ur5e_rt_base, ur5e_status_monitor, ur5e_rt_controller, ur5e_hand_udp, ur5e_tools)" ;;
-  sim)   MODE_DESC="Simulation  (ur5e_rt_base, ur5e_status_monitor, ur5e_rt_controller, ur5e_mujoco_sim, ur5e_tools)" ;;
+  robot) MODE_DESC="Real Robot  (ur5e_msgs, ur5e_rt_base, ur5e_status_monitor, ur5e_rt_controller, ur5e_hand_udp, ur5e_tools)" ;;
+  sim)   MODE_DESC="Simulation  (ur5e_msgs, ..., ur5e_mujoco_sim — hand: fake response)" ;;
   full)  MODE_DESC="Full        (all packages)" ;;
 esac
 
@@ -221,13 +222,13 @@ if [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]]; then
 else
   case "$MODE" in
     robot)
-      PACKAGES=(ur5e_rt_base ur5e_description ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_tools)
+      PACKAGES=(ur5e_msgs ur5e_rt_base ur5e_description ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_tools)
       ;;
     sim)
-      PACKAGES=(ur5e_rt_base ur5e_description ur5e_status_monitor ur5e_rt_controller ur5e_mujoco_sim ur5e_tools)
+      PACKAGES=(ur5e_msgs ur5e_rt_base ur5e_description ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_mujoco_sim ur5e_tools)
       ;;
     full)
-      PACKAGES=(ur5e_rt_base ur5e_description ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_tools)
+      PACKAGES=(ur5e_msgs ur5e_rt_base ur5e_description ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_tools)
       if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
         PACKAGES+=(ur5e_mujoco_sim)
       fi

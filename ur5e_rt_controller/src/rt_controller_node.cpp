@@ -12,6 +12,9 @@
 #include <ur5e_rt_base/threading/thread_utils.hpp>
 #include <yaml-cpp/yaml.h>
 
+#include <pinocchio/multibody/model.hpp>
+#include <pinocchio/parsers/urdf.hpp>
+
 #include <algorithm>
 #include <ctime>
 #include <functional>
@@ -197,6 +200,16 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("init_timeout_sec", 5.0);
   declare_parameter("initial_controller", "joint_pd_controller");
 
+  // Hand simulation (MuJoCo fake response 연동)
+  declare_parameter("hand_sim_enabled", false);
+  declare_parameter("hand_command_topic", std::string("/hand/command"));
+  declare_parameter("hand_state_topic", std::string("/hand/joint_states"));
+
+  // Joint/Motor/Fingertip names (v5.14.0 named messaging)
+  declare_parameter("robot_joint_names", std::vector<std::string>{});
+  declare_parameter("hand_motor_names", std::vector<std::string>{});
+  declare_parameter("hand_fingertip_names", std::vector<std::string>{});
+
   control_rate_ = get_parameter("control_rate").as_double();
   budget_us_ = 1.0e6 / control_rate_;  // tick budget in µs (e.g., 2000.0 at 500 Hz)
 
@@ -239,7 +252,13 @@ void RtControllerNode::DeclareAndLoadParameters()
     const std::string hand_path = enable_hand
         ? (ctrl_dir / "hand_log.csv").string() : "";
 
-    logger_ = std::make_unique<urtc::DataLogger>(timing_path, robot_path, hand_path);
+    // joint/motor/fingertip names는 아직 로드 전일 수 있으므로 YAML에서 직접 읽기
+    const auto yaml_joint_names = get_parameter("robot_joint_names").as_string_array();
+    const auto yaml_motor_names = get_parameter("hand_motor_names").as_string_array();
+    const auto yaml_fingertip_names = get_parameter("hand_fingertip_names").as_string_array();
+    logger_ = std::make_unique<urtc::DataLogger>(
+        timing_path, robot_path, hand_path,
+        yaml_joint_names, yaml_motor_names, yaml_fingertip_names);
     RCLCPP_INFO(get_logger(),
         "Logging to: %s/controller/ (max_sessions=%d)",
         session_dir.string().c_str(), max_sessions);
@@ -258,9 +277,36 @@ void RtControllerNode::DeclareAndLoadParameters()
 
   const std::string hand_ip = get_parameter("target_ip").as_string();
   const int hand_port = static_cast<int>(get_parameter("target_port").as_int());
-  enable_hand_ = !hand_ip.empty() && hand_port > 0;
+  hand_sim_enabled_ = get_parameter("hand_sim_enabled").as_bool();
+  enable_hand_ = !hand_ip.empty() && hand_port > 0 && !hand_sim_enabled_;
 
-  if (enable_hand_) {
+  if (hand_sim_enabled_) {
+    // ROS 토픽 기반 핸드 통신 (MuJoCo fake response 연동)
+    const std::string hand_cmd_topic = get_parameter("hand_command_topic").as_string();
+    const std::string hand_state_topic = get_parameter("hand_state_topic").as_string();
+
+    hand_sim_cmd_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
+        hand_cmd_topic, rclcpp::QoS(10));
+    hand_sim_cmd_msg_.data.resize(10, 0.0);
+
+    rclcpp::SubscriptionOptions sub_opts;
+    sub_opts.callback_group = cb_group_sensor_;
+    hand_sim_state_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
+        hand_state_topic, rclcpp::QoS(10),
+        [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+          if (msg->data.size() < 10) { return; }
+          std::lock_guard lock(sim_hand_mutex_);
+          for (std::size_t i = 0; i < 10 && i < msg->data.size(); ++i) {
+            sim_hand_state_.motor_positions[i] = static_cast<float>(msg->data[i]);
+          }
+          sim_hand_state_.valid = true;
+        },
+        sub_opts);
+
+    RCLCPP_INFO(get_logger(),
+        "Hand simulation mode: cmd=%s, state=%s (UDP disabled)",
+        hand_cmd_topic.c_str(), hand_state_topic.c_str());
+  } else if (enable_hand_) {
     const int hand_recv_timeout = static_cast<int>(
         get_parameter("recv_timeout_ms").as_int());
     const bool hand_write_ack = get_parameter("enable_write_ack").as_bool();
@@ -299,6 +345,9 @@ void RtControllerNode::DeclareAndLoadParameters()
       "/config/controllers/";
   } catch (...) {
   }
+
+  // ── Joint name loading & URDF validation (v5.14.0) ─────────────────────
+  LoadAndValidateJointNames();
 
   // ── Instantiate and configure all registered controllers ─────────────────
   // Each factory constructs the controller with default gains, then
@@ -382,9 +431,14 @@ void RtControllerNode::CreateSubscriptions()
           break;
 
         case urtc::SubscribeRole::kHandState:
-          // Hand state는 HandController에서 직접 읽으므로 ROS 구독 생략
-          RCLCPP_INFO(get_logger(), "  Subscribe [hand_state]: %s (skipped — direct UDP)",
-                      entry.topic_name.c_str());
+          // hand_sim_enabled 시 ROS 토픽으로 수신, 그 외에는 UDP 직접 읽기
+          if (hand_sim_enabled_) {
+            RCLCPP_INFO(get_logger(), "  Subscribe [hand_state]: %s (via ROS topic — sim mode)",
+                        entry.topic_name.c_str());
+          } else {
+            RCLCPP_INFO(get_logger(), "  Subscribe [hand_state]: %s (skipped — direct UDP)",
+                        entry.topic_name.c_str());
+          }
           break;
 
         case urtc::SubscribeRole::kGoal:
@@ -591,23 +645,47 @@ void RtControllerNode::CreateTimers()
 // ── Subscription callbacks ────────────────────────────────────────────────────
 void RtControllerNode::JointStateCallback(sensor_msgs::msg::JointState::SharedPtr msg)
 {
-  if (msg->position.size() < urtc::kNumRobotJoints) {
+  if (msg->position.size() < static_cast<std::size_t>(urtc::kNumRobotJoints)) {
     return;
   }
+
+  // 이름 기반 매핑: msg->name이 있으면 첫 수신 시 맵 빌드 (이후 인덱스만 사용)
+  if (!msg->name.empty() && !joint_state_map_built_) {
+    BuildJointStateIndexMap(msg->name);
+  }
+
   {
     std::lock_guard lock(state_mutex_);
-    std::copy_n(msg->position.begin(), urtc::kNumRobotJoints,
-                current_positions_.begin());
-    std::copy_n(msg->velocity.begin(), urtc::kNumRobotJoints,
-                current_velocities_.begin());
-    if (msg->effort.size() >= static_cast<std::size_t>(urtc::kNumRobotJoints)) {
-      std::copy_n(msg->effort.begin(), urtc::kNumRobotJoints,
-                  current_torques_.begin());
+
+    if (joint_state_map_built_ && !msg->name.empty()) {
+      // 이름 기반: msg의 각 인덱스를 내부 인덱스로 매핑
+      for (std::size_t msg_i = 0; msg_i < msg->position.size() &&
+           msg_i < joint_state_reorder_.size(); ++msg_i) {
+        const int idx = joint_state_reorder_[msg_i];
+        if (idx >= 0 && idx < urtc::kNumRobotJoints) {
+          const auto uidx = static_cast<std::size_t>(idx);
+          current_positions_[uidx] = msg->position[msg_i];
+          if (msg_i < msg->velocity.size()) {
+            current_velocities_[uidx] = msg->velocity[msg_i];
+          }
+          if (msg_i < msg->effort.size()) {
+            current_torques_[uidx] = msg->effort[msg_i];
+          }
+        }
+      }
+    } else {
+      // Positional fallback (기존 동작)
+      std::copy_n(msg->position.begin(), urtc::kNumRobotJoints,
+                  current_positions_.begin());
+      std::copy_n(msg->velocity.begin(), urtc::kNumRobotJoints,
+                  current_velocities_.begin());
+      if (msg->effort.size() >= static_cast<std::size_t>(urtc::kNumRobotJoints)) {
+        std::copy_n(msg->effort.begin(), urtc::kNumRobotJoints,
+                    current_torques_.begin());
+      }
     }
     last_robot_update_ = now();
   }
-  // Fix 2: release-store after the mutex — RT thread reads with acquire,
-  // so the C++ memory model guarantees it sees the written positions/velocities.
   state_received_.store(true, std::memory_order_release);
 }
 
@@ -671,13 +749,16 @@ void RtControllerNode::ControlLoop()
     !target_received_.load(std::memory_order_acquire))
   {
     // Initialization timeout — check if we've waited too long for data.
-    if (!init_complete_ && ++init_wait_ticks_ > init_timeout_ticks_) {
+    // init_timeout_ticks_ == 0 → 타임아웃 비활성화 (init_timeout_sec: 0.0)
+    if (!init_complete_ && init_timeout_ticks_ > 0 &&
+        ++init_wait_ticks_ > init_timeout_ticks_) {
       RCLCPP_FATAL(get_logger(),
           "Initialization timeout (%.1f s): robot=%d, target=%d, hand=%s",
           static_cast<double>(init_timeout_ticks_) / control_rate_,
           state_received_.load(std::memory_order_relaxed) ? 1 : 0,
           target_received_.load(std::memory_order_relaxed) ? 1 : 0,
-          enable_hand_ ? (hand_controller_ && hand_controller_->IsRunning() ? "running" : "stopped") : "disabled");
+          hand_sim_enabled_ ? "sim" :
+          (enable_hand_ ? (hand_controller_ && hand_controller_->IsRunning() ? "running" : "stopped") : "disabled"));
       TriggerGlobalEstop("init_timeout");
       rclcpp::shutdown();
     }
@@ -705,9 +786,14 @@ void RtControllerNode::ControlLoop()
   state.robot.velocities = cached_velocities_;
   state.robot.torques = cached_torques_;
 
-  // Hand state — HandController에서 직접 읽기 (이전 tick에서 준비된 state)
+  // Hand state — HandController 또는 ROS 토픽에서 읽기
   if (hand_controller_) {
     cached_hand_state_ = hand_controller_->GetLatestState();
+  } else if (hand_sim_enabled_) {
+    std::unique_lock lock(sim_hand_mutex_, std::try_to_lock);
+    if (lock.owns_lock()) {
+      cached_hand_state_ = sim_hand_state_;
+    }
   }
   state.hand = cached_hand_state_;
 
@@ -789,9 +875,15 @@ void RtControllerNode::ControlLoop()
   }
 
   // ── Phase 3.5: hand command 전송 + 다음 tick용 state 읽기 요청 ────────
-  // Event-driven pipeline: hand thread가 write → read 수행, 다음 tick에서 사용
   if (hand_controller_) {
+    // Event-driven pipeline: hand thread가 write → read 수행, 다음 tick에서 사용
     hand_controller_->SendCommandAndRequestStates(output.hand_commands);
+  } else if (hand_sim_enabled_ && hand_sim_cmd_pub_) {
+    // ROS 토픽으로 MuJoCo fake hand에 커맨드 전송
+    for (std::size_t i = 0; i < 10 && i < output.hand_commands.size(); ++i) {
+      hand_sim_cmd_msg_.data[i] = static_cast<double>(output.hand_commands[i]);
+    }
+    hand_sim_cmd_pub_->publish(hand_sim_cmd_msg_);
   }
 
   const auto t3 = std::chrono::steady_clock::now();  // end of publish
@@ -939,4 +1031,144 @@ void RtControllerNode::ClearGlobalEstop() noexcept
 
   RCLCPP_INFO(get_logger(), "GLOBAL E-STOP cleared (was: %s)", estop_reason_.c_str());
   estop_reason_.clear();
+}
+
+// ── Joint name loading & URDF validation (v5.14.0) ──────────────────────────
+
+void RtControllerNode::LoadAndValidateJointNames()
+{
+  // 1. YAML에서 이름 로드
+  robot_joint_names_ = get_parameter("robot_joint_names").as_string_array();
+  hand_motor_names_  = get_parameter("hand_motor_names").as_string_array();
+  fingertip_names_   = get_parameter("hand_fingertip_names").as_string_array();
+
+  // 비어있으면 기본값 사용
+  if (robot_joint_names_.empty()) {
+    robot_joint_names_ = urtc::kDefaultRobotJointNames;
+    RCLCPP_WARN(get_logger(),
+                "No robot_joint_names in YAML — using defaults");
+  }
+  if (hand_motor_names_.empty()) {
+    hand_motor_names_ = urtc::kDefaultHandMotorNames;
+  }
+  if (fingertip_names_.empty()) {
+    fingertip_names_ = urtc::kDefaultFingertipNames;
+  }
+
+  // 2. 개수 검증
+  if (robot_joint_names_.size() != static_cast<std::size_t>(urtc::kNumRobotJoints)) {
+    RCLCPP_ERROR(get_logger(),
+                 "robot_joint_names has %zu entries (expected %d) — using defaults",
+                 robot_joint_names_.size(), urtc::kNumRobotJoints);
+    robot_joint_names_ = urtc::kDefaultRobotJointNames;
+  }
+
+  // 3. URDF active joint 검증
+  std::string urdf_path;
+  try {
+    urdf_path = ament_index_cpp::get_package_share_directory("ur5e_description") +
+                "/robots/ur5e/urdf/ur5e.urdf";
+  } catch (...) {
+    RCLCPP_WARN(get_logger(), "Cannot resolve URDF path — skipping joint name validation");
+    return;
+  }
+
+  try {
+    pinocchio::Model model;
+    pinocchio::urdf::buildModel(urdf_path, model);
+
+    // Pinocchio model_.names[0] = "universe" (고정), [1..njoints-1] = 실제 조인트
+    std::vector<std::string> urdf_joint_names;
+    for (int j = 1; j < model.njoints; ++j) {
+      urdf_joint_names.push_back(model.names[static_cast<std::size_t>(j)]);
+    }
+
+    // 비교: YAML의 각 이름이 URDF에 존재하는지
+    bool all_found = true;
+    bool order_match = true;
+    for (std::size_t i = 0; i < robot_joint_names_.size(); ++i) {
+      auto it = std::find(urdf_joint_names.begin(), urdf_joint_names.end(),
+                          robot_joint_names_[i]);
+      if (it == urdf_joint_names.end()) {
+        RCLCPP_ERROR(get_logger(),
+                     "YAML joint '%s' NOT FOUND in URDF",
+                     robot_joint_names_[i].c_str());
+        all_found = false;
+      } else {
+        const auto urdf_idx = static_cast<std::size_t>(
+            std::distance(urdf_joint_names.begin(), it));
+        if (urdf_idx != i) {
+          order_match = false;
+        }
+      }
+    }
+
+    if (!all_found) {
+      // 사용 가능한 URDF 조인트 목록 출력
+      std::string avail;
+      for (const auto& n : urdf_joint_names) { avail += "  " + n + "\n"; }
+      RCLCPP_ERROR(get_logger(),
+                   "Joint name mismatch — falling back to defaults.\n"
+                   "Available URDF joints:\n%s", avail.c_str());
+      robot_joint_names_ = urtc::kDefaultRobotJointNames;
+    } else if (!order_match) {
+      // 이름은 모두 존재하지만 순서가 다름
+      std::string remap_info;
+      for (std::size_t i = 0; i < robot_joint_names_.size(); ++i) {
+        auto it = std::find(urdf_joint_names.begin(), urdf_joint_names.end(),
+                            robot_joint_names_[i]);
+        const auto urdf_idx = static_cast<std::size_t>(
+            std::distance(urdf_joint_names.begin(), it));
+        remap_info += "  YAML[" + std::to_string(i) + "] \"" +
+                      robot_joint_names_[i] + "\" → URDF index " +
+                      std::to_string(urdf_idx) + "\n";
+      }
+      RCLCPP_WARN(get_logger(),
+                   "Joint name ORDER mismatch between YAML and URDF:\n%s"
+                   "Verify gains/limits match the YAML order.",
+                   remap_info.c_str());
+    } else {
+      RCLCPP_INFO(get_logger(),
+                  "Joint names validated: YAML matches URDF (%zu/%zu)",
+                  robot_joint_names_.size(), urdf_joint_names.size());
+    }
+  } catch (const std::exception& e) {
+    RCLCPP_WARN(get_logger(), "URDF validation failed: %s", e.what());
+  }
+
+  // 로그 출력
+  RCLCPP_INFO(get_logger(), "Robot joints: [%s]",
+              [&]{
+                std::string s;
+                for (std::size_t i = 0; i < robot_joint_names_.size(); ++i) {
+                  if (i > 0) s += ", ";
+                  s += robot_joint_names_[i];
+                }
+                return s;
+              }().c_str());
+  RCLCPP_INFO(get_logger(), "Hand motors: %zu, Fingertips: %zu",
+              hand_motor_names_.size(), fingertip_names_.size());
+}
+
+void RtControllerNode::BuildJointStateIndexMap(
+    const std::vector<std::string>& msg_names)
+{
+  joint_state_reorder_.resize(msg_names.size(), -1);
+
+  for (std::size_t msg_i = 0; msg_i < msg_names.size(); ++msg_i) {
+    for (std::size_t our_i = 0; our_i < robot_joint_names_.size(); ++our_i) {
+      if (msg_names[msg_i] == robot_joint_names_[our_i]) {
+        joint_state_reorder_[msg_i] = static_cast<int>(our_i);
+        break;
+      }
+    }
+    if (joint_state_reorder_[msg_i] < 0) {
+      RCLCPP_DEBUG(get_logger(),
+                   "JointState name '%s' not in robot_joint_names — ignored",
+                   msg_names[msg_i].c_str());
+    }
+  }
+  joint_state_map_built_ = true;
+
+  RCLCPP_INFO(get_logger(), "Built JointState name→index map from incoming message");
 }

@@ -151,7 +151,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$MODE" in
-  sim)   MODE_DESC="Simulation  (MuJoCo + Pinocchio, no UR driver, no RT perms)" ;;
+  sim)   MODE_DESC="Simulation  (MuJoCo + Pinocchio, hand: fake response, no RT perms)" ;;
   robot) MODE_DESC="Real Robot  (UR driver + Pinocchio + RT permissions, no MuJoCo)" ;;
   full)  MODE_DESC="Full        (UR driver + Pinocchio + MuJoCo + RT permissions)" ;;
 esac
@@ -534,7 +534,7 @@ setup_package() {
   fi
 
   # Symlink packages from repo root into workspace src/
-  for pkg in ur5e_rt_base ur5e_description ur5e_rt_controller ur5e_hand_udp ur5e_mujoco_sim ur5e_tools; do
+  for pkg in ur5e_msgs ur5e_rt_base ur5e_description ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_mujoco_sim ur5e_tools; do
     if [[ ! -e "$pkg" ]]; then
       ln -s "${REPO_NAME}/$pkg" "$pkg"
     fi
@@ -588,7 +588,7 @@ build_package() {
   if [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]]; then
     PACKAGES=("${CUSTOM_PACKAGES[@]}")
   else
-    PACKAGES=(ur5e_rt_base ur5e_description ur5e_rt_controller ur5e_hand_udp ur5e_tools)
+    PACKAGES=(ur5e_msgs ur5e_rt_base ur5e_description ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_tools)
     if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
       PACKAGES+=(ur5e_mujoco_sim)
     fi
@@ -684,7 +684,7 @@ verify_installation() {
   info "Verifying installation..."
   source "$WORKSPACE/install/setup.bash"
   local failed=0
-  for pkg in ur5e_rt_base ur5e_description ur5e_rt_controller ur5e_hand_udp ur5e_tools; do
+  for pkg in ur5e_msgs ur5e_rt_base ur5e_description ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_tools; do
     if ros2 pkg list 2>/dev/null | grep -q "^${pkg}$"; then
       success "Package registered: $pkg"
     else
@@ -734,6 +734,9 @@ print_summary() {
       echo ""
       echo "  # Headless (no viewer window)"
       echo "  ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py enable_viewer:=false"
+      echo ""
+      echo "  # Hand simulation is built-in (fake_hand_response in mujoco_simulator.yaml)"
+      echo "  # No need to run ur5e_hand_udp separately"
       echo ""
       echo "  # Send test commands"
       echo "  ros2 topic pub /target_joint_positions std_msgs/msg/Float64MultiArray \\"
@@ -800,7 +803,6 @@ print_summary() {
 
   echo ""
   echo -e "${CYAN}${BOLD}── Monitoring & Validation ─────────────────────────────${NC}"
-  echo "  ros2 run ur5e_tools monitor_data_health"
   echo "  ros2 run ur5e_tools plot_ur_trajectory <workspace>/logging_data/ur5e_control_log_YYMMDD_HHMM.csv"
   echo "  ros2 run ur5e_tools motion_editor_gui"
   echo "  ros2 run ur5e_tools compare_mjcf_urdf        # MJCF vs URDF parameter comparison"

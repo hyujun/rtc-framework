@@ -26,12 +26,45 @@ import sys
 
 # ── Robot 모드 ──────────────────────────────────────────────────────────────
 
-JOINT_NAMES = ['Base', 'Shoulder', 'Elbow', 'Wrist 1', 'Wrist 2', 'Wrist 3']
+# 기본 표시 이름 (인덱스 기반 CSV 하위 호환용)
+JOINT_NAMES_DEFAULT = ['Base', 'Shoulder', 'Elbow', 'Wrist 1', 'Wrist 2', 'Wrist 3']
+
+
+def _detect_joint_columns(df, prefix, count=6):
+    """CSV 헤더에서 prefix로 시작하는 컬럼을 감지하여 (column_names, display_names) 반환.
+
+    v5.14.0 named headers: 'goal_pos_shoulder_pan_joint' 형태
+    Legacy numeric headers: 'goal_pos_0' 형태
+    둘 다 자동 감지.
+    """
+    # 1. 이름 기반 컬럼 탐색 (prefix로 시작하는 모든 컬럼)
+    named_cols = [c for c in df.columns if c.startswith(prefix)]
+    if len(named_cols) >= count:
+        # prefix 제거하여 표시 이름 추출
+        display = [c[len(prefix):] for c in named_cols[:count]]
+        return named_cols[:count], display
+
+    # 2. 숫자 인덱스 기반 fallback
+    numeric_cols = [f'{prefix}{i}' for i in range(count)]
+    if all(c in df.columns for c in numeric_cols):
+        return numeric_cols, JOINT_NAMES_DEFAULT[:count]
+
+    return [], []
 
 
 def _has_columns(df, prefix, count):
-    """Check if df has columns like '{prefix}0' .. '{prefix}{count-1}'."""
+    """Check if df has columns like '{prefix}0' .. '{prefix}{count-1}'.
+    Also supports named columns (v5.14.0)."""
+    # Named columns
+    named = [c for c in df.columns if c.startswith(prefix)]
+    if len(named) >= count:
+        return True
+    # Numeric fallback
     return all(f'{prefix}{i}' in df.columns for i in range(count))
+
+
+# 하위 호환 alias
+JOINT_NAMES = JOINT_NAMES_DEFAULT
 
 
 def plot_robot_positions(df, save_dir=None):
@@ -40,28 +73,31 @@ def plot_robot_positions(df, save_dir=None):
     fig.suptitle('Robot Joint Positions', fontsize=16, fontweight='bold')
     axes = axes.flatten()
 
-    has_traj = _has_columns(df, 'traj_pos_', 6)
+    actual_cols, display_names = _detect_joint_columns(df, 'actual_pos_', 6)
+    goal_cols, _ = _detect_joint_columns(df, 'goal_pos_', 6)
+    traj_cols, _ = _detect_joint_columns(df, 'traj_pos_', 6)
     # 하위 호환: 이전 CSV의 target_pos_ 컬럼 지원
-    has_legacy_target = not has_traj and _has_columns(df, 'target_pos_', 6)
+    legacy_cols, _ = _detect_joint_columns(df, 'target_pos_', 6) if not traj_cols else ([], [])
 
-    for i in range(6):
+    for i in range(min(6, len(actual_cols))):
         ax = axes[i]
         t = df['timestamp']
-        ax.plot(t, df[f'actual_pos_{i}'], label='Actual', linewidth=1.5)
+        ax.plot(t, df[actual_cols[i]], label='Actual', linewidth=1.5)
 
-        if has_traj:
-            ax.plot(t, df[f'traj_pos_{i}'], label='Trajectory',
+        if traj_cols:
+            ax.plot(t, df[traj_cols[i]], label='Trajectory',
                     linestyle='--', linewidth=1.5)
-        elif has_legacy_target:
-            ax.plot(t, df[f'target_pos_{i}'], label='Target (traj)',
+        elif legacy_cols:
+            ax.plot(t, df[legacy_cols[i]], label='Target (traj)',
                     linestyle='--', linewidth=1.5)
 
-        ax.plot(t, df[f'goal_pos_{i}'], label='Goal',
-                linestyle=':', linewidth=1.5, alpha=0.8)
+        if goal_cols:
+            ax.plot(t, df[goal_cols[i]], label='Goal',
+                    linestyle=':', linewidth=1.5, alpha=0.8)
 
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Position (rad)')
-        ax.set_title(f'Joint {i}: {JOINT_NAMES[i]}')
+        ax.set_title(f'Joint {i}: {display_names[i]}')
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
@@ -81,24 +117,25 @@ def plot_robot_velocities(df, save_dir=None):
     fig.suptitle('Robot Joint Velocities', fontsize=16, fontweight='bold')
     axes = axes.flatten()
 
-    has_traj = _has_columns(df, 'traj_vel_', 6)
-    has_legacy_target = not has_traj and _has_columns(df, 'target_vel_', 6)
+    actual_cols, display_names = _detect_joint_columns(df, 'actual_vel_', 6)
+    traj_cols, _ = _detect_joint_columns(df, 'traj_vel_', 6)
+    legacy_cols, _ = _detect_joint_columns(df, 'target_vel_', 6) if not traj_cols else ([], [])
 
-    for i in range(6):
+    for i in range(min(6, len(actual_cols))):
         ax = axes[i]
         t = df['timestamp']
-        ax.plot(t, df[f'actual_vel_{i}'], label='Actual', linewidth=1.5)
+        ax.plot(t, df[actual_cols[i]], label='Actual', linewidth=1.5)
 
-        if has_traj:
-            ax.plot(t, df[f'traj_vel_{i}'], label='Trajectory',
+        if traj_cols:
+            ax.plot(t, df[traj_cols[i]], label='Trajectory',
                     linestyle='--', linewidth=1.5)
-        elif has_legacy_target:
-            ax.plot(t, df[f'target_vel_{i}'], label='Target (traj)',
+        elif legacy_cols:
+            ax.plot(t, df[legacy_cols[i]], label='Target (traj)',
                     linestyle='--', linewidth=1.5)
 
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Velocity (rad/s)')
-        ax.set_title(f'Joint {i}: {JOINT_NAMES[i]}')
+        ax.set_title(f'Joint {i}: {display_names[i]}')
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
@@ -134,17 +171,21 @@ def plot_robot_commands(df, save_dir=None):
                  fontsize=16, fontweight='bold')
     axes = axes.flatten()
 
-    for i in range(6):
+    cmd_cols, display_names = _detect_joint_columns(df, 'command_', 6)
+    actual_cols, _ = _detect_joint_columns(df, 'actual_pos_', 6)
+
+    for i in range(min(6, len(cmd_cols))):
         ax = axes[i]
         t = df['timestamp']
-        ax.plot(t, df[f'command_{i}'], label=type_label,
+        ax.plot(t, df[cmd_cols[i]], label=type_label,
                 linewidth=1.5, color='C2')
-        ax.plot(t, df[f'actual_pos_{i}'], label='Actual pos',
-                linewidth=1.0, alpha=0.5, linestyle='--')
+        if actual_cols:
+            ax.plot(t, df[actual_cols[i]], label='Actual pos',
+                    linewidth=1.0, alpha=0.5, linestyle='--')
 
         ax.set_xlabel('Time (s)')
         ax.set_ylabel(f'{type_label} ({unit})' if unit else type_label)
-        ax.set_title(f'Joint {i}: {JOINT_NAMES[i]}')
+        ax.set_title(f'Joint {i}: {display_names[i]}')
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 

@@ -17,7 +17,7 @@ namespace ur5e_rt_controller {
 void MuJoCoSimulator::ApplyCommand() noexcept {
   std::lock_guard lock(cmd_mutex_);
   if (!model_) { return; }
-  const int nact = std::min(6, model_->nu);
+  const int nact = std::min(num_robot_joints_, model_->nu);
   for (int i = 0; i < nact; ++i) {
     data_->ctrl[i] = pending_cmd_[static_cast<std::size_t>(i)];
   }
@@ -26,7 +26,8 @@ void MuJoCoSimulator::ApplyCommand() noexcept {
 void MuJoCoSimulator::ReadState() noexcept {
   if (!model_ || !data_) { return; }
   std::lock_guard lock(state_mutex_);
-  for (std::size_t i = 0; i < 6; ++i) {
+  const auto nj = static_cast<std::size_t>(num_robot_joints_);
+  for (std::size_t i = 0; i < nj; ++i) {
     latest_positions_[i]  = data_->qpos[joint_qpos_indices_[i]];
     latest_velocities_[i] = data_->qvel[joint_qvel_indices_[i]];
     // qfrc_actuator: net actuator force on each DOF (Nm for revolute joints).
@@ -60,7 +61,8 @@ MuJoCoSimulator::SolverStats MuJoCoSimulator::GetSolverStats() const noexcept {
 
 void MuJoCoSimulator::InvokeStateCallback() noexcept {
   if (!state_cb_) { return; }
-  std::array<double, 6> pos{}, vel{}, eff{};
+  const auto nj = static_cast<std::size_t>(num_robot_joints_);
+  std::vector<double> pos(nj), vel(nj), eff(nj);
   {
     std::lock_guard lock(state_mutex_);
     pos = latest_positions_;
@@ -122,7 +124,7 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
   // 0. Actuator mode switch (torque ↔ position servo)
   if (control_mode_pending_.exchange(false, std::memory_order_acq_rel)) {
     const bool torque = torque_mode_.load(std::memory_order_relaxed);
-    const int nact = std::min(6, model_->nu);
+    const int nact = std::min(num_robot_joints_, model_->nu);
     for (int i = 0; i < nact; ++i) {
       const std::size_t ui = static_cast<std::size_t>(i);
       if (torque) {
@@ -203,11 +205,10 @@ void MuJoCoSimulator::ClearContactForces() noexcept {
 // ── HandleReset ───────────────────────────────────────────────────────────────
 void MuJoCoSimulator::HandleReset() noexcept {
   mj_resetData(model_, data_);
-  const int n = std::min(6, model_->nq);
-  for (int i = 0; i < n; ++i) {
+  for (int i = 0; i < num_robot_joints_; ++i) {
     const std::size_t ui = static_cast<std::size_t>(i);
-    data_->qpos[joint_qpos_indices_[ui]] = cfg_.initial_qpos[ui];
-    data_->ctrl[i]                       = cfg_.initial_qpos[ui];
+    data_->qpos[joint_qpos_indices_[ui]] = initial_qpos_[ui];
+    data_->ctrl[i]                       = initial_qpos_[ui];
   }
   // Restore gravity (may have been zeroed before reset)
   model_->opt.gravity[2] =

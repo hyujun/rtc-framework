@@ -1,4 +1,4 @@
-# MuJoCo Simulator Node Configuration (v5.3.0)
+# MuJoCo Simulator Node Configuration (v5.15.0)
 # ─────────────────────────────────────────────
 # Launch with:
 #   ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py
@@ -68,32 +68,43 @@ mujoco_simulator:
     #   → force = servo_kp * dq_cmd - servo_kd * dq_actual
     #   servo_kp > servo_kd 조건 만족 시 servo가 damping을 이김
     #
+    # 배열 크기는 XML에서 발견된 로봇 조인트 수와 일치해야 함.
+    # 불일치 시 Initialize() 실패.
+    #
     # position servo 모드 진입 시 gravity가 자동으로 OFF되며,
     # torque 모드로 전환 시 gravity가 자동으로 ON됩니다.
     use_yaml_servo_gains: false
     servo_kp: [500.0, 500.0, 500.0, 150.0, 150.0, 150.0]
     servo_kd: [400.0, 400.0, 400.0, 100.0, 100.0, 100.0]
 
-    # ── Initial joint positions [rad] — UR5e safe upright pose ───────────────
-    #   [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
-    initial_joint_positions: [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
+    # ── Robot Topics (fake_hand_response 패턴과 동일) ─────────────────────────
+    # 로봇 조인트 이름은 XML에서 hinge+actuator 기준으로 자동 발견.
+    # command_topic: JointCommand msg 수신 (command_type으로 position/torque 결정)
+    # state_topic: JointState msg 퍼블리시
+    robot_topics:
+      command_topic: "/rt_controller/joint_command"
+      state_topic: "/joint_states"
 
-    # ── Hand simulation (low-pass filter on /hand/command) ───────────────────
-    enable_hand_sim: true
-
-    # 1st-order filter coefficient per 10 ms timer tick (100 Hz).
-    # hand_state += alpha * (hand_target - hand_state)
-    #   0.1  → ~90 ms settling time constant
-    #   0.5  → ~18 ms settling time constant (stiffer)
-    hand_filter_alpha: 0.1
+    # ── Fake Hand Response (시뮬레이션 전용 핸드 LPF) ──────────────────────────
+    # enable: true 시 MuJoCo 노드 내부에서 low-pass filter로 핸드 상태를 생성.
+    # ur5e_hand_udp (실제 UDP 통신) 없이 시뮬레이션 가능.
+    # rt_controller는 hand_sim_enabled: true로 설정하여 ROS 토픽으로 통신.
+    fake_hand_response:
+      enable: true
+      filter_alpha: 0.1                       # 1차 LPF 계수 (10ms tick 기준, 100Hz)
+                                               #   0.1 → ~90ms settling, 0.5 → ~18ms settling
+      command_topic: "/hand/command"            # 핸드 커맨드 수신 토픽
+      state_topic: "/hand/joint_states"         # 핸드 상태 퍼블리시 토픽
 
 # ── rt_controller parameter overrides for simulation ─────────────────────
 # ur5e_rt_controller.yaml 대비 시뮬레이션 전용 차이값만 오버라이드.
 #   - enable_estop: false  — free_run 모드에서 wall-clock 지연으로 인한
 #                            오탐 E-STOP 방지
 #   - robot/hand_timeout_ms — sync_step / free_run 모두 timeout 여유 확보
+#   - init_timeout_sec: 0.0 — 시뮬레이션에서 초기화 타임아웃 비활성화
 rt_controller:
   ros__parameters:
     enable_estop: false
     robot_timeout_ms: 10000.0
     hand_timeout_ms: 10000.0
+    init_timeout_sec: 0.0

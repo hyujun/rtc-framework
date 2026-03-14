@@ -129,14 +129,15 @@ class HandUdpNode : public rclcpp::Node {
 
     // Publish: [10 positions] + [10 velocities] + [44 sensors]
     std_msgs::msg::Float64MultiArray msg;
-    msg.data.reserve(urtc::kNumHandMotors * 2 + urtc::kNumHandSensors);
+    const int num_sensors = snapshot.num_fingertips * urtc::kSensorValuesPerFingertip;
+    msg.data.reserve(static_cast<std::size_t>(urtc::kNumHandMotors * 2 + num_sensors));
 
     for (int i = 0; i < urtc::kNumHandMotors; ++i)
-      msg.data.push_back(static_cast<double>(snapshot.motor_positions[i]));
+      msg.data.push_back(static_cast<double>(snapshot.motor_positions[static_cast<std::size_t>(i)]));
     for (int i = 0; i < urtc::kNumHandMotors; ++i)
-      msg.data.push_back(static_cast<double>(snapshot.motor_velocities[i]));
-    for (int i = 0; i < urtc::kNumHandSensors; ++i)
-      msg.data.push_back(static_cast<double>(snapshot.sensor_data[i]));
+      msg.data.push_back(static_cast<double>(snapshot.motor_velocities[static_cast<std::size_t>(i)]));
+    for (int i = 0; i < num_sensors; ++i)
+      msg.data.push_back(static_cast<double>(snapshot.sensor_data[static_cast<std::size_t>(i)]));
 
     state_pub_->publish(msg);
 

@@ -19,7 +19,10 @@ namespace ur5e_rt_controller {
 // ── Compile-time constants ─────────────────────────────────────────────────────
 inline constexpr int kNumRobotJoints = 6;
 inline constexpr int kNumHandMotors          = 10;
-inline constexpr int kNumFingertips          = 4;
+
+// Fingertip 수: YAML에서 런타임 설정 가능. 배열 크기는 kMaxFingertips로 고정.
+inline constexpr int kDefaultNumFingertips   = 4;    // YAML 미설정 시 기본값
+inline constexpr int kMaxFingertips          = 8;    // 배열 상한 (RT 경로 힙 할당 방지)
 
 // Fingertip sensor layout per fingertip (packet contains 16 uint32 values):
 //   barometer[8] + reserved[5] (skipped) + tof[3]
@@ -29,10 +32,33 @@ inline constexpr int kReservedCount               = 5;   // in packet only, not 
 inline constexpr int kTofCount                    = 3;
 inline constexpr int kSensorDataPerPacket         = kBarometerCount + kReservedCount + kTofCount;  // 16
 inline constexpr int kSensorValuesPerFingertip    = kBarometerCount + kTofCount;                   // 11
+inline constexpr int kMaxHandSensors              = kMaxFingertips * kSensorValuesPerFingertip;    // 88
+
+// 기본값 기반 상수 (하위 호환)
+inline constexpr int kNumFingertips               = kDefaultNumFingertips;                         // 4
 inline constexpr int kNumHandSensors              = kNumFingertips * kSensorValuesPerFingertip;    // 44
 
 // Legacy alias — downstream code still references kNumHandJoints.
 inline constexpr int kNumHandJoints = kNumHandMotors;
+
+// ── Default joint/motor/fingertip names ─────────────────────────────────────
+// YAML 미설정 시 사용되는 기본 이름. URDF/XML 검증의 기준.
+inline const std::vector<std::string> kDefaultRobotJointNames = {
+  "shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
+  "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"
+};
+
+inline const std::vector<std::string> kDefaultHandMotorNames = {
+  "thumb_cmc", "thumb_mcp", "thumb_ip",
+  "index_mcp", "index_pip",
+  "middle_mcp", "middle_pip",
+  "ring_mcp", "ring_pip",
+  "little_mcp"
+};
+
+inline const std::vector<std::string> kDefaultFingertipNames = {
+  "index", "middle", "ring", "little"
+};
 
 // ── C++20 Concepts ─────────────────────────────────────────────────────────────
 // Constrains template parameters to floating-point types (double, float, etc.).
@@ -51,9 +77,10 @@ struct RobotState {
 };
 
 struct HandState {
-  std::array<float, kNumHandMotors>  motor_positions{};
-  std::array<float, kNumHandMotors>  motor_velocities{};
-  std::array<float, kNumHandSensors> sensor_data{};   // 4 fingertips × 10 values
+  std::array<float, kNumHandMotors>   motor_positions{};
+  std::array<float, kNumHandMotors>   motor_velocities{};
+  std::array<float, kMaxHandSensors>  sensor_data{};   // 최대 kMaxFingertips × 11 values
+  int num_fingertips{kDefaultNumFingertips};            // 실제 사용 fingertip 수 (YAML)
   bool valid{false};
 };
 

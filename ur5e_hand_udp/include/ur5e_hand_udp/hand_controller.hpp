@@ -59,13 +59,16 @@ class HandController {
       const ThreadConfig& thread_cfg = kUdpRecvConfig,
       int recv_timeout_ms = 10,
       bool enable_write_ack = false,
-      int sensor_decimation = 1) noexcept
+      int sensor_decimation = 1,
+      int num_fingertips = kDefaultNumFingertips) noexcept
       : target_ip_(std::move(target_ip)),
         target_port_(target_port),
         thread_cfg_(thread_cfg),
         recv_timeout_ms_(recv_timeout_ms),
         enable_write_ack_(enable_write_ack),
-        sensor_decimation_(sensor_decimation < 1 ? 1 : sensor_decimation) {}
+        sensor_decimation_(sensor_decimation < 1 ? 1 : sensor_decimation),
+        num_fingertips_(num_fingertips > kMaxFingertips ? kMaxFingertips
+                       : (num_fingertips < 0 ? 0 : num_fingertips)) {}
 
   ~HandController() { Stop(); }
 
@@ -292,7 +295,7 @@ class HandController {
     std::array<float, kNumHandMotors> pending_cmd{};
 
     // Sensor decimation: 이전 cycle의 sensor_data를 유지하기 위한 버퍼
-    std::array<float, kNumFingertips * kSensorValuesPerFingertip> cached_sensor_data{};
+    std::array<float, kMaxHandSensors> cached_sensor_data{};
     int sensor_cycle_counter = 0;
 
     while (!stop_token.stop_requested()) {
@@ -354,7 +357,7 @@ class HandController {
       ++sensor_cycle_counter;
       if (sensor_cycle_counter >= sensor_decimation_) {
         sensor_cycle_counter = 0;
-        for (int i = 0; i < kNumFingertips; ++i) {
+        for (int i = 0; i < num_fingertips_; ++i) {
           auto cmd = hand_packets::SensorCommand(i);
           if (RequestSensorRead(cmd, sensor_float_buf)) {
             std::copy_n(sensor_float_buf.begin(), kSensorValuesPerFingertip,
@@ -365,6 +368,7 @@ class HandController {
       }
       // 항상 캐시된 센서 데이터를 state에 복사 (읽었든 안 읽었든)
       state.sensor_data = cached_sensor_data;
+      state.num_fingertips = num_fingertips_;
 
       // state.valid = true only if at least one recv succeeded
       state.valid = any_recv_ok;
@@ -396,6 +400,7 @@ class HandController {
 
   bool enable_write_ack_;
   int  sensor_decimation_;     // N cycle마다 센서 읽기 (1=매번, 4=4cycle마다)
+  int  num_fingertips_;        // YAML에서 설정된 fingertip 수
 
   // 전역 E-Stop 플래그 (RtControllerNode에서 설정, null이면 체크하지 않음)
   std::atomic<bool>* estop_flag_{nullptr};

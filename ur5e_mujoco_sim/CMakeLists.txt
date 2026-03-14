@@ -21,6 +21,7 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(ur5e_msgs REQUIRED)
 
 # ── mujoco_simulator_node (optional — requires MuJoCo 3.x C++ library) ────────
 # Install MuJoCo (binary tarball — no cmake config included):
@@ -77,6 +78,7 @@ if(mujoco_FOUND)
     std_msgs
     sensor_msgs
     ament_index_cpp
+    ur5e_msgs
   )
   target_link_libraries(mujoco_simulator_node mujoco::mujoco)
 

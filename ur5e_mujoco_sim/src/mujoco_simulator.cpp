@@ -24,22 +24,131 @@ MuJoCoSimulator::~MuJoCoSimulator() {
 
 // ── Initialization ─────────────────────────────────────────────────────────────
 
-void MuJoCoSimulator::ResolveJointIndices() noexcept {
-  for (std::size_t i = 0; i < 6; ++i) {
-    const int jnt_id = mj_name2id(model_, mjOBJ_JOINT, kMjJointNames[i]);
-    if (jnt_id < 0) {
-      fprintf(stderr,
-              "[MuJoCoSimulator] Joint '%s' not found — using static index %zu\n",
-              kMjJointNames[i], i);
-      joint_qpos_indices_[i] = static_cast<int>(i);
-      joint_qvel_indices_[i] = static_cast<int>(i);
-    } else {
-      joint_qpos_indices_[i] = model_->jnt_qposadr[jnt_id];
-      joint_qvel_indices_[i] = model_->jnt_dofadr[jnt_id];
-      fprintf(stdout, "[MuJoCoSimulator] '%s' → qpos[%d]  qvel[%d]\n",
-              kMjJointNames[i], joint_qpos_indices_[i], joint_qvel_indices_[i]);
+// XML에서 hinge joint + actuator 연결된 조인트를 자동 발견
+bool MuJoCoSimulator::DiscoverRobotJoints() noexcept {
+  joint_names_.clear();
+  joint_qpos_indices_.clear();
+  joint_qvel_indices_.clear();
+
+  for (int j = 0; j < model_->njnt; ++j) {
+    // hinge joint만 필터
+    if (model_->jnt_type[j] != mjJNT_HINGE) { continue; }
+
+    // 이 joint에 연결된 actuator가 있는지 확인
+    bool has_actuator = false;
+    for (int a = 0; a < model_->nu; ++a) {
+      if (model_->actuator_trntype[a] == mjTRN_JOINT &&
+          model_->actuator_trnid[2 * a] == j) {
+        has_actuator = true;
+        break;
+      }
+    }
+    if (!has_actuator) { continue; }
+
+    const char* name = mj_id2name(model_, mjOBJ_JOINT, j);
+    joint_names_.emplace_back(name ? name : "(unnamed)");
+    joint_qpos_indices_.push_back(model_->jnt_qposadr[j]);
+    joint_qvel_indices_.push_back(model_->jnt_dofadr[j]);
+
+    // actuator 정보 출력
+    for (int a = 0; a < model_->nu; ++a) {
+      if (model_->actuator_trntype[a] == mjTRN_JOINT &&
+          model_->actuator_trnid[2 * a] == j) {
+        const char* act_name = mj_id2name(model_, mjOBJ_ACTUATOR, a);
+        fprintf(stdout, "[MuJoCoSimulator] '%s' → qpos[%d]  qvel[%d]  actuator[%d] '%s'\n",
+                joint_names_.back().c_str(),
+                joint_qpos_indices_.back(),
+                joint_qvel_indices_.back(),
+                a, act_name ? act_name : "(unnamed)");
+        break;
+      }
     }
   }
+
+  num_robot_joints_ = static_cast<int>(joint_names_.size());
+
+  if (num_robot_joints_ == 0) {
+    fprintf(stderr,
+            "[MuJoCoSimulator] ERROR: No hinge joints with actuators found in XML model\n");
+    fprintf(stderr, "[MuJoCoSimulator] Available XML joints:\n");
+    for (int j = 0; j < model_->njnt; ++j) {
+      const char* name = mj_id2name(model_, mjOBJ_JOINT, j);
+      fprintf(stderr, "  [%d] type=%d  %s\n", j, model_->jnt_type[j],
+              name ? name : "(unnamed)");
+    }
+    return false;
+  }
+
+  // 조인트 이름 목록 출력
+  std::string names_str;
+  for (int i = 0; i < num_robot_joints_; ++i) {
+    if (i > 0) names_str += ", ";
+    names_str += joint_names_[static_cast<std::size_t>(i)];
+  }
+  fprintf(stdout, "[MuJoCoSimulator] Found %d robot joints from XML: [%s]\n",
+          num_robot_joints_, names_str.c_str());
+
+  return true;
+}
+
+bool MuJoCoSimulator::ResolveJointIndices(
+    const std::vector<std::string>& names) noexcept {
+  if (names.empty()) {
+    fprintf(stderr,
+            "[MuJoCoSimulator] WARN: ResolveJointIndices called with empty names\n");
+    return false;
+  }
+
+  if (static_cast<int>(names.size()) != num_robot_joints_) {
+    fprintf(stderr,
+            "[MuJoCoSimulator] ERROR: joint names has %zu entries "
+            "(expected %d from XML)\n", names.size(), num_robot_joints_);
+    return false;
+  }
+
+  // msg 이름이 XML에서 발견된 joint_names_에 존재하는지 비교 검증
+  bool all_ok = true;
+  std::vector<int> new_qpos(static_cast<std::size_t>(num_robot_joints_));
+  std::vector<int> new_qvel(static_cast<std::size_t>(num_robot_joints_));
+
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    const int jnt_id = mj_name2id(model_, mjOBJ_JOINT, names[i].c_str());
+    if (jnt_id < 0) {
+      fprintf(stderr,
+              "[MuJoCoSimulator] ERROR: joint '%s' not found in XML model\n",
+              names[i].c_str());
+      all_ok = false;
+      new_qpos[i] = static_cast<int>(i);
+      new_qvel[i] = static_cast<int>(i);
+    } else {
+      // msg 이름이 XML 발견 목록에 있는지 확인
+      auto it = std::find(joint_names_.begin(), joint_names_.end(), names[i]);
+      if (it == joint_names_.end()) {
+        fprintf(stderr,
+                "[MuJoCoSimulator] ERROR: joint '%s' exists in XML but is not "
+                "a robot joint (hinge+actuator)\n", names[i].c_str());
+        all_ok = false;
+      }
+      new_qpos[i] = model_->jnt_qposadr[jnt_id];
+      new_qvel[i] = model_->jnt_dofadr[jnt_id];
+      fprintf(stdout, "[MuJoCoSimulator] ResolveJointIndices: '%s' → qpos[%d]  qvel[%d]\n",
+              names[i].c_str(), new_qpos[i], new_qvel[i]);
+    }
+  }
+
+  if (all_ok) {
+    joint_qpos_indices_ = std::move(new_qpos);
+    joint_qvel_indices_ = std::move(new_qvel);
+    // 이름 순서도 msg 순서로 갱신
+    joint_names_.assign(names.begin(), names.end());
+  } else {
+    fprintf(stderr, "[MuJoCoSimulator] Available robot joints from XML:\n");
+    for (const auto& n : joint_names_) {
+      fprintf(stderr, "  %s\n", n.c_str());
+    }
+  }
+
+  return all_ok;
 }
 
 bool MuJoCoSimulator::Initialize() noexcept {
@@ -83,13 +192,40 @@ bool MuJoCoSimulator::Initialize() noexcept {
     p.biasprm2 = static_cast<double>(model_->actuator_biasprm[i * mjNBIAS + 2]);
   }
 
-  ResolveJointIndices();
+  // ── XML 기반 로봇 조인트 자동 발견 ────────────────────────────────────────
+  if (!DiscoverRobotJoints()) {
+    return false;
+  }
 
-  const int njoints = std::min(6, model_->nq);
-  for (int i = 0; i < njoints; ++i) {
-    const double q0 = cfg_.initial_qpos[static_cast<std::size_t>(i)];
-    data_->qpos[joint_qpos_indices_[static_cast<std::size_t>(i)]] = q0;
-    data_->ctrl[i] = q0;
+  // ── 동적 버퍼 resize ──────────────────────────────────────────────────────
+  const auto nj = static_cast<std::size_t>(num_robot_joints_);
+  pending_cmd_.resize(nj, 0.0);
+  latest_positions_.resize(nj, 0.0);
+  latest_velocities_.resize(nj, 0.0);
+  latest_efforts_.resize(nj, 0.0);
+  initial_qpos_.resize(nj, 0.0);
+  gainprm_yaml_.resize(nj, 0.0);
+  biasprm2_yaml_.resize(nj, 0.0);
+
+  // ── Initial positions: XML keyframe → 0 fallback ──────────────────────
+  if (model_->nkey > 0) {
+    // 첫 번째 keyframe 사용
+    for (std::size_t i = 0; i < nj; ++i) {
+      initial_qpos_[i] = static_cast<double>(
+          model_->key_qpos[joint_qpos_indices_[i]]);
+    }
+    const char* key_name = mj_id2name(model_, mjOBJ_KEY, 0);
+    fprintf(stdout, "[MuJoCoSimulator] Initial positions from XML keyframe '%s'\n",
+            key_name ? key_name : "(unnamed)");
+  } else {
+    std::fill(initial_qpos_.begin(), initial_qpos_.end(), 0.0);
+    fprintf(stdout, "[MuJoCoSimulator] No keyframe in XML — using zero initial positions\n");
+  }
+
+  for (int i = 0; i < num_robot_joints_; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    data_->qpos[joint_qpos_indices_[ui]] = initial_qpos_[ui];
+    data_->ctrl[i] = initial_qpos_[ui];
   }
   mj_forward(model_, data_);
   ReadState();
@@ -113,11 +249,27 @@ bool MuJoCoSimulator::Initialize() noexcept {
     }
   }
 
-  // ── YAML servo gain 사전 계산 ─────────────────────────────────────────────
+  // ── YAML servo gain 크기 검증 + 사전 계산 ──────────────────────────────────
+  if (cfg_.use_yaml_servo_gains) {
+    if (static_cast<int>(cfg_.servo_kp.size()) != num_robot_joints_ ||
+        static_cast<int>(cfg_.servo_kd.size()) != num_robot_joints_) {
+      fprintf(stderr,
+              "[MuJoCoSimulator] ERROR: servo_kp/kd size (%zu/%zu) != "
+              "XML robot joints (%d). Set use_yaml_servo_gains: false or "
+              "adjust servo_kp/kd array size.\n",
+              cfg_.servo_kp.size(), cfg_.servo_kd.size(), num_robot_joints_);
+      return false;
+    }
+  }
+
   // gainprm = servo_kp / timestep  →  force = servo_kp * dq_cmd - servo_kd * dq_actual
-  for (std::size_t i = 0; i < 6; ++i) {
-    gainprm_yaml_[i]  = cfg_.servo_kp[i] / xml_timestep_;
-    biasprm2_yaml_[i] = -cfg_.servo_kd[i];
+  for (std::size_t i = 0; i < nj; ++i) {
+    if (i < cfg_.servo_kp.size()) {
+      gainprm_yaml_[i]  = cfg_.servo_kp[i] / xml_timestep_;
+    }
+    if (i < cfg_.servo_kd.size()) {
+      biasprm2_yaml_[i] = -cfg_.servo_kd[i];
+    }
   }
 
   // ── Initial gravity state: position servo → gravity OFF (잠금) ──────────
@@ -126,15 +278,18 @@ bool MuJoCoSimulator::Initialize() noexcept {
 
   fprintf(stdout,
           "[MuJoCoSimulator] Loaded '%s'  nq=%d  nv=%d  nu=%d  nbody=%d"
-          "  dt=%.4f s  mode=%s\n"
+          "  robot_joints=%d  dt=%.4f s  mode=%s\n"
           "[MuJoCoSimulator] Servo gains: %s  "
           "kp0=%.1f kd0=%.1f  gainprm0=%.1f\n",
           cfg_.model_path.c_str(),
           model_->nq, model_->nv, model_->nu, model_->nbody,
+          num_robot_joints_,
           xml_timestep_,
           cfg_.mode == SimMode::kFreeRun ? "free_run" : "sync_step",
           cfg_.use_yaml_servo_gains ? "YAML" : "XML",
-          cfg_.servo_kp[0], cfg_.servo_kd[0], gainprm_yaml_[0]);
+          cfg_.servo_kp.empty() ? 0.0 : cfg_.servo_kp[0],
+          cfg_.servo_kd.empty() ? 0.0 : cfg_.servo_kd[0],
+          gainprm_yaml_.empty() ? 0.0 : gainprm_yaml_[0]);
   return true;
 }
 
@@ -168,7 +323,7 @@ void MuJoCoSimulator::Stop() noexcept {
 
 // ── Command / State I/O ────────────────────────────────────────────────────────
 
-void MuJoCoSimulator::SetCommand(const std::array<double, 6>& cmd) noexcept {
+void MuJoCoSimulator::SetCommand(const std::vector<double>& cmd) noexcept {
   { std::lock_guard lock(cmd_mutex_); pending_cmd_ = cmd; }
   cmd_pending_.store(true, std::memory_order_release);
   if (cfg_.mode == SimMode::kSyncStep) { sync_cv_.notify_one(); }
@@ -178,15 +333,15 @@ void MuJoCoSimulator::SetStateCallback(StateCallback cb) noexcept {
   state_cb_ = std::move(cb);
 }
 
-std::array<double, 6> MuJoCoSimulator::GetPositions() const noexcept {
+std::vector<double> MuJoCoSimulator::GetPositions() const noexcept {
   std::lock_guard lock(state_mutex_);
   return latest_positions_;
 }
-std::array<double, 6> MuJoCoSimulator::GetVelocities() const noexcept {
+std::vector<double> MuJoCoSimulator::GetVelocities() const noexcept {
   std::lock_guard lock(state_mutex_);
   return latest_velocities_;
 }
-std::array<double, 6> MuJoCoSimulator::GetEfforts() const noexcept {
+std::vector<double> MuJoCoSimulator::GetEfforts() const noexcept {
   std::lock_guard lock(state_mutex_);
   return latest_efforts_;
 }

@@ -5,6 +5,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
+#include <ur5e_msgs/msg/joint_command.hpp>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -15,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using namespace std::chrono_literals;
@@ -34,17 +36,13 @@ namespace urtc = ur5e_rt_controller;
 //                 Step latency ≈ Compute() time → direct timing measurement.
 //
 // Published topics (replacing UR driver):
-//   /joint_states          sensor_msgs/JointState      @ sim frequency
-//   /hand/joint_states     std_msgs/Float64MultiArray  @ 100 Hz
-//   /sim/status            std_msgs/Float64MultiArray  @ 1 Hz
-//                          data: [step_count, sim_time_sec, rtf, paused(0/1)]
+//   <robot_topics.state_topic>   sensor_msgs/JointState      @ sim frequency
+//   <fake_hand_response.state_topic>  std_msgs/Float64MultiArray  @ 100 Hz
+//   /sim/status                  std_msgs/Float64MultiArray  @ 1 Hz
 //
 // Subscribed topics (from rt_controller):
-//   /forward_position_controller/commands  std_msgs/Float64MultiArray
-//   /hand/command                          std_msgs/Float64MultiArray
-//
-// The rt_controller node can be launched without modification.
-// Only the robot_ip / UR driver launch needs to be replaced with this node.
+//   <robot_topics.command_topic>  ur5e_msgs/JointCommand (command_type으로 position/torque 결정)
+//   <fake_hand_response.command_topic>  std_msgs/Float64MultiArray
 //
 class MuJoCoSimulatorNode : public rclcpp::Node {
  public:
@@ -62,9 +60,9 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
 
     // Wire state callback: called from sim thread at control_freq Hz
     sim_->SetStateCallback(
-        [this](const std::array<double, 6>& pos,
-               const std::array<double, 6>& vel,
-               const std::array<double, 6>& eff) {
+        [this](const std::vector<double>& pos,
+               const std::vector<double>& vel,
+               const std::vector<double>& eff) {
           PublishJointState(pos, vel, eff);
         });
 
@@ -74,10 +72,11 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
         max_rtf_ > 0.0 ? std::to_string(max_rtf_) + "x" : "unlimited";
     RCLCPP_INFO(get_logger(),
                 "MuJoCo simulator ready — model: %s  mode: %s  viewer: %s"
-                "  max_rtf: %s",
+                "  max_rtf: %s  robot_joints: %d",
                 model_path_.c_str(), sim_mode_.c_str(),
                 enable_viewer_ ? "ON" : "OFF",
-                max_rtf_str.c_str());
+                max_rtf_str.c_str(),
+                sim_->NumRobotJoints());
   }
 
   ~MuJoCoSimulatorNode() override {
@@ -89,8 +88,18 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   void DeclareAndLoadParameters() {
     declare_parameter("model_path",    std::string(""));
     declare_parameter("enable_viewer", true);
-    declare_parameter("enable_hand_sim", true);
-    declare_parameter("hand_filter_alpha", 0.1);
+
+    // Fake hand response (시뮬레이션 전용 핸드 LPF)
+    declare_parameter("fake_hand_response.enable", true);
+    declare_parameter("fake_hand_response.filter_alpha", 0.1);
+    declare_parameter("fake_hand_response.command_topic", std::string("/hand/command"));
+    declare_parameter("fake_hand_response.state_topic", std::string("/hand/joint_states"));
+
+    // Robot topics (fake_hand_response 패턴과 동일)
+    declare_parameter("robot_topics.command_topic",
+                      std::string("/rt_controller/joint_command"));
+    declare_parameter("robot_topics.state_topic",
+                      std::string("/joint_states"));
 
     // Simulation mode: "free_run" (default) or "sync_step"
     declare_parameter("sim_mode", std::string("free_run"));
@@ -101,9 +110,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     // Maximum Real-Time Factor (0.0 = unlimited)
     declare_parameter("max_rtf", 0.0);
 
-    // Initial joint positions (UR5e safe upright pose)
-    declare_parameter("initial_joint_positions",
-                      std::vector<double>{0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0});
+    // control_rate (launch에서 rt_controller config로부터 전달)
+    declare_parameter("control_rate", 500.0);
 
     // Physics timestep validation (0.0 = use XML value without validation)
     declare_parameter("physics_timestep", 0.0);
@@ -118,23 +126,22 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
 
     model_path_          = get_parameter("model_path").as_string();
     enable_viewer_       = get_parameter("enable_viewer").as_bool();
-    enable_hand_sim_     = get_parameter("enable_hand_sim").as_bool();
-    hand_filter_alpha_   = get_parameter("hand_filter_alpha").as_double();
+    fake_hand_enable_    = get_parameter("fake_hand_response.enable").as_bool();
+    fake_hand_alpha_     = get_parameter("fake_hand_response.filter_alpha").as_double();
+    fake_hand_cmd_topic_ = get_parameter("fake_hand_response.command_topic").as_string();
+    fake_hand_state_topic_ = get_parameter("fake_hand_response.state_topic").as_string();
+    robot_command_topic_ = get_parameter("robot_topics.command_topic").as_string();
+    robot_state_topic_   = get_parameter("robot_topics.state_topic").as_string();
     sim_mode_            = get_parameter("sim_mode").as_string();
     publish_decimation_  = static_cast<int>(get_parameter("publish_decimation").as_int());
     sync_timeout_ms_     = get_parameter("sync_timeout_ms").as_double();
     max_rtf_             = get_parameter("max_rtf").as_double();
+    control_rate_        = get_parameter("control_rate").as_double();
     physics_timestep_    = get_parameter("physics_timestep").as_double();
     use_yaml_servo_gains_ = get_parameter("use_yaml_servo_gains").as_bool();
 
-    const auto kp_vec = get_parameter("servo_kp").as_double_array();
-    const auto kd_vec = get_parameter("servo_kd").as_double_array();
-    for (std::size_t i = 0; i < 6 && i < kp_vec.size(); ++i) {
-      servo_kp_[i] = kp_vec[i];
-    }
-    for (std::size_t i = 0; i < 6 && i < kd_vec.size(); ++i) {
-      servo_kd_[i] = kd_vec[i];
-    }
+    servo_kp_ = get_parameter("servo_kp").as_double_array();
+    servo_kd_ = get_parameter("servo_kd").as_double_array();
 
     // Resolve model path: if empty, default to package:// URI
     if (model_path_.empty()) {
@@ -142,12 +149,6 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     } else if (model_path_.find("package://") != 0 && model_path_[0] != '/') {
       // If someone passed a relative path, assume it's relative to ur5e_description
       model_path_ = "package://ur5e_description/" + model_path_;
-    }
-
-    const auto init_vec =
-        get_parameter("initial_joint_positions").as_double_array();
-    for (std::size_t i = 0; i < 6 && i < init_vec.size(); ++i) {
-      initial_qpos_[i] = init_vec[i];
     }
   }
 
@@ -171,11 +172,12 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
         .publish_decimation  = publish_decimation_,
         .sync_timeout_ms     = sync_timeout_ms_,
         .max_rtf             = max_rtf_,
-        .initial_qpos        = initial_qpos_,
         .physics_timestep    = physics_timestep_,
         .use_yaml_servo_gains = use_yaml_servo_gains_,
         .servo_kp            = servo_kp_,
         .servo_kd            = servo_kd_,
+        .command_topic       = robot_command_topic_,
+        .state_topic         = robot_state_topic_,
     };
     sim_ = std::make_unique<urtc::MuJoCoSimulator>(std::move(cfg));
 
@@ -186,17 +188,40 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
                    model_path_.c_str());
       throw std::runtime_error("MuJoCo model load failed");
     }
+
+    // ── physics_timestep vs control_rate 검증 ───────────────────────────────
+    // 물리 스텝 주파수가 제어 주파수보다 낮으면 시뮬레이션 의미 없음
+    const double xml_dt = sim_->GetPhysicsTimestep();
+    if (xml_dt > 0.0 && control_rate_ > 0.0) {
+      const double physics_freq = 1.0 / xml_dt;
+      if (physics_freq < control_rate_) {
+        RCLCPP_FATAL(get_logger(),
+            "Physics frequency (%.1f Hz = 1/%.4fs) < control_rate (%.1f Hz). "
+            "MuJoCo cannot step fast enough for the controller. "
+            "Decrease physics_timestep or decrease control_rate.",
+            physics_freq, xml_dt, control_rate_);
+        throw std::runtime_error("physics_timestep vs control_rate mismatch");
+      }
+      RCLCPP_INFO(get_logger(),
+          "Physics vs control rate OK: physics=%.1f Hz >= control=%.1f Hz",
+          physics_freq, control_rate_);
+    }
+
+    // Build joint name→index map from XML-discovered joints
+    BuildJointNameIndexMap();
   }
 
   // ── Publishers ───────────────────────────────────────────────────────────────
   void CreatePublishers() {
-    // /joint_states: mimics UR driver output consumed by rt_controller
+    // Robot state: mimics UR driver output consumed by rt_controller
     joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
-        "/joint_states", rclcpp::QoS(10));
+        robot_state_topic_, rclcpp::QoS(10));
 
-    // /hand/joint_states: 11 DOF hand state (simulated via low-pass filter)
-    hand_state_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
-        "/hand/joint_states", rclcpp::QoS(10));
+    // hand state (simulated via low-pass filter) — 토픽명 YAML 설정
+    if (fake_hand_enable_) {
+      hand_state_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
+          fake_hand_state_topic_, rclcpp::QoS(10));
+    }
 
     // /sim/status: [step_count, sim_time_sec, rtf, paused(0/1)]
     sim_status_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
@@ -205,40 +230,33 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
 
   // ── Subscriptions ────────────────────────────────────────────────────────────
   void CreateSubscriptions() {
-    // Receive position commands from rt_controller.
     // Use BEST_EFFORT to match the rt_controller publisher QoS (BEST_EFFORT + depth 1).
-    // RELIABLE subscriber cannot receive from BEST_EFFORT publisher in ROS 2 DDS.
     rclcpp::QoS cmd_qos{10};
     cmd_qos.best_effort();
 
-    command_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
-        "/forward_position_controller/commands",
+    // 단일 command subscription: JointCommand msg (command_type으로 position/torque 결정)
+    command_sub_ = create_subscription<ur5e_msgs::msg::JointCommand>(
+        robot_command_topic_,
         cmd_qos,
-        [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-          CommandCallback(msg);
-        });
-
-    // Receive torque commands from rt_controller (direct torque controllers)
-    torque_command_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
-        "/forward_torque_controller/commands",
-        cmd_qos,
-        [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-          TorqueCommandCallback(msg);
+        [this](const ur5e_msgs::msg::JointCommand::SharedPtr msg) {
+          JointCommandCallback(msg);
         });
 
     // Receive normalized hand commands (0.0–1.0) — drives the hand filter
-    hand_cmd_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
-        "/hand/command",
-        rclcpp::QoS(10),
-        [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-          HandCommandCallback(msg);
-        });
+    if (fake_hand_enable_) {
+      hand_cmd_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
+          fake_hand_cmd_topic_,
+          rclcpp::QoS(10),
+          [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+            HandCommandCallback(msg);
+          });
+    }
   }
 
   // ── Timers ───────────────────────────────────────────────────────────────────
   void CreateTimers() {
-    // Hand joint state publisher @ 100 Hz
-    if (enable_hand_sim_) {
+    // Hand joint state publisher @ 100 Hz (fake response)
+    if (fake_hand_enable_) {
       hand_pub_timer_ = create_wall_timer(
           10ms, [this]() { PublishHandState(); });
     }
@@ -250,45 +268,6 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
 
   // ── Subscription callbacks ───────────────────────────────────────────────────
 
-  // Called when rt_controller publishes a position command.
-  void CommandCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-    if (msg->data.size() < 6) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                           "Command message has %zu elements (expected 6) — ignored",
-                           msg->data.size());
-      return;
-    }
-    // Auto-switch to position servo mode on first position command after torque.
-    if (sim_->IsInTorqueMode()) {
-      sim_->SetControlMode(false);
-      RCLCPP_INFO(get_logger(), "Actuator mode → position servo");
-    }
-    // Position command 수신 중에는 항상 gravity OFF + lock을 보장.
-    // (viewer G 키 또는 race condition으로 풀린 경우 재잠금)
-    sim_->EnforcePositionServoGravity();
-    std::array<double, 6> cmd{};
-    std::copy_n(msg->data.begin(), 6, cmd.begin());
-    sim_->SetCommand(cmd);
-  }
-
-  // Called when rt_controller publishes a torque command (direct torque controllers).
-  void TorqueCommandCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-    if (msg->data.size() < 6) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                           "Torque command message has %zu elements (expected 6) — ignored",
-                           msg->data.size());
-      return;
-    }
-    // Auto-switch to direct torque mode on first torque command.
-    if (!sim_->IsInTorqueMode()) {
-      sim_->SetControlMode(true);
-      RCLCPP_INFO(get_logger(), "Actuator mode → direct torque");
-    }
-    std::array<double, 6> cmd{};
-    std::copy_n(msg->data.begin(), 6, cmd.begin());
-    sim_->SetCommand(cmd);
-  }
-
   // Called when a hand command is received.
   // The command updates the target for the low-pass filter.
   void HandCommandCallback(
@@ -298,19 +277,88 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     std::copy_n(msg->data.begin(), 10, hand_target_.begin());
   }
 
+  // Called when rt_controller publishes a JointCommand.
+  // command_type으로 position/torque 자동 전환.
+  void JointCommandCallback(const ur5e_msgs::msg::JointCommand::SharedPtr msg) {
+    if (msg->values.empty()) { return; }
+
+    const int nj = sim_->NumRobotJoints();
+    const bool is_torque = (msg->command_type == "torque");
+
+    // 이름 기반 매핑: joint_names가 비어있으면 positional fallback
+    std::vector<double> cmd(static_cast<std::size_t>(nj), 0.0);
+    if (msg->joint_names.empty()) {
+      // Positional fallback
+      const std::size_t n = std::min(msg->values.size(),
+                                     static_cast<std::size_t>(nj));
+      std::copy_n(msg->values.begin(), n, cmd.begin());
+    } else {
+      // 첫 수신 시 command message의 joint_names와 XML 이름 비교 검증
+      if (!joint_indices_resolved_from_msg_) {
+        const std::vector<std::string> names(
+            msg->joint_names.begin(), msg->joint_names.end());
+        if (sim_->ResolveJointIndices(names)) {
+          RCLCPP_INFO(get_logger(),
+              "ResolveJointIndices updated from JointCommand message (%zu joints)",
+              names.size());
+        } else {
+          RCLCPP_WARN(get_logger(),
+              "ResolveJointIndices from JointCommand: some names not found in XML");
+        }
+        // name→index 맵도 갱신
+        joint_name_index_map_.clear();
+        BuildJointNameIndexMap();
+        joint_indices_resolved_from_msg_ = true;
+      }
+      for (std::size_t i = 0; i < msg->joint_names.size() && i < msg->values.size(); ++i) {
+        auto it = joint_name_index_map_.find(msg->joint_names[i]);
+        if (it != joint_name_index_map_.end()) {
+          cmd[it->second] = msg->values[i];
+        } else {
+          RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                               "Unknown joint name in JointCommand: '%s'",
+                               msg->joint_names[i].c_str());
+        }
+      }
+    }
+
+    if (is_torque) {
+      if (!sim_->IsInTorqueMode()) {
+        sim_->SetControlMode(true);
+        RCLCPP_INFO(get_logger(), "Actuator mode → direct torque (via JointCommand)");
+      }
+    } else {
+      if (sim_->IsInTorqueMode()) {
+        sim_->SetControlMode(false);
+        RCLCPP_INFO(get_logger(), "Actuator mode → position servo (via JointCommand)");
+      }
+      sim_->EnforcePositionServoGravity();
+    }
+    sim_->SetCommand(cmd);
+  }
+
+  void BuildJointNameIndexMap() {
+    const auto& names = sim_->GetJointNames();
+    for (std::size_t i = 0; i < names.size(); ++i) {
+      joint_name_index_map_[names[i]] = i;
+    }
+    RCLCPP_INFO(get_logger(), "Built joint name→index map (%zu joints)",
+                names.size());
+  }
+
   // ── Publisher helpers ────────────────────────────────────────────────────────
 
   // Called from SimLoop thread at control_freq Hz.
   // rclcpp::Publisher::publish() is thread-safe in ROS2 Humble.
-  void PublishJointState(const std::array<double, 6>& positions,
-                         const std::array<double, 6>& velocities,
-                         const std::array<double, 6>& efforts) {
+  void PublishJointState(const std::vector<double>& positions,
+                         const std::vector<double>& velocities,
+                         const std::vector<double>& efforts) {
     auto msg = sensor_msgs::msg::JointState();
     msg.header.stamp = now();
-    msg.name         = {kJointNames.begin(), kJointNames.end()};
-    msg.position     = {positions.begin(),   positions.end()};
-    msg.velocity     = {velocities.begin(),  velocities.end()};
-    msg.effort       = {efforts.begin(),     efforts.end()};
+    msg.name         = sim_->GetJointNames();
+    msg.position     = positions;
+    msg.velocity     = velocities;
+    msg.effort       = efforts;
     joint_state_pub_->publish(msg);
   }
 
@@ -321,7 +369,7 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
       std::lock_guard lock(hand_mutex_);
       for (std::size_t i = 0; i < 10; ++i) {
         hand_state_[i] +=
-            hand_filter_alpha_ * (hand_target_[i] - hand_state_[i]);
+            fake_hand_alpha_ * (hand_target_[i] - hand_state_[i]);
       }
     }
 
@@ -355,23 +403,12 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
                 rtf);
   }
 
-  // ── Joint name table (must match UR driver / rt_controller) ──────────────
-  static constexpr std::array<const char*, 6> kJointNames = {
-      "shoulder_pan_joint",
-      "shoulder_lift_joint",
-      "elbow_joint",
-      "wrist_1_joint",
-      "wrist_2_joint",
-      "wrist_3_joint",
-  };
-
   // ── ROS2 handles ─────────────────────────────────────────────────────────────
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr       joint_state_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr   hand_state_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr   sim_status_pub_;
 
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr command_sub_;
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr torque_command_sub_;
+  rclcpp::Subscription<ur5e_msgs::msg::JointCommand>::SharedPtr    command_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr hand_cmd_sub_;
 
   rclcpp::TimerBase::SharedPtr hand_pub_timer_;
@@ -388,17 +425,25 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   // ── Parameters ───────────────────────────────────────────────────────────────
   std::string            model_path_;
   bool                   enable_viewer_{true};
-  bool                   enable_hand_sim_{true};
-  double                 hand_filter_alpha_{0.1};
+  bool                   fake_hand_enable_{true};
+  double                 fake_hand_alpha_{0.1};
+  std::string            fake_hand_cmd_topic_{"/hand/command"};
+  std::string            fake_hand_state_topic_{"/hand/joint_states"};
+  std::string            robot_command_topic_{"/rt_controller/joint_command"};
+  std::string            robot_state_topic_{"/joint_states"};
   std::string            sim_mode_{"free_run"};
   int                    publish_decimation_{1};
   double                 sync_timeout_ms_{50.0};
   double                 max_rtf_{0.0};
-  std::array<double, 6>  initial_qpos_{0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0};
+  double                 control_rate_{500.0};
   double                 physics_timestep_{0.0};
   bool                   use_yaml_servo_gains_{false};
-  std::array<double, 6>  servo_kp_{500.0, 500.0, 500.0, 150.0, 150.0, 150.0};
-  std::array<double, 6>  servo_kd_{400.0, 400.0, 400.0, 100.0, 100.0, 100.0};
+  std::vector<double>    servo_kp_{500.0, 500.0, 500.0, 150.0, 150.0, 150.0};
+  std::vector<double>    servo_kd_{400.0, 400.0, 400.0, 100.0, 100.0, 100.0};
+
+  // ── Named joint mapping ───────────────────────────────────────────────────────
+  std::unordered_map<std::string, std::size_t> joint_name_index_map_;
+  bool joint_indices_resolved_from_msg_{false};
 };
 
 // ── Entry point ────────────────────────────────────────────────────────────────

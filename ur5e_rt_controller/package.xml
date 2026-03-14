@@ -18,6 +18,7 @@
   <depend>ur5e_status_monitor</depend>
   <depend>ament_index_cpp</depend>
   <depend>yaml-cpp</depend>
+  <depend>ur5e_msgs</depend>
 
   <exec_depend>ur5e_description</exec_depend>
 

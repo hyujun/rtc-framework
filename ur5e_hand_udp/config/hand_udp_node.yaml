@@ -27,6 +27,26 @@
                                       # decimation=4: 평균 ~1.3ms/cycle (write+pos+vel만)
                                       # 센서 skip 시 이전 캐시 데이터 유지
 
+    # ── 모터/핑거팁 이름 (v5.14.0 named messaging) ──────────────────────
+    # 비어있으면 기본 이름 사용.
+    hand_motor_names:
+      - "thumb_cmc"
+      - "thumb_mcp"
+      - "thumb_ip"
+      - "index_mcp"
+      - "index_pip"
+      - "middle_mcp"
+      - "middle_pip"
+      - "ring_mcp"
+      - "ring_pip"
+      - "little_mcp"
+
+    hand_fingertip_names:
+      - "index"
+      - "middle"
+      - "ring"
+      - "little"
+
     # ── Standalone 전용 설정 (hand_udp_node 단독 실행 시) ────────────────
     publish_rate: 100.0               # /hand/joint_states 퍼블리시 주기 (Hz)
 

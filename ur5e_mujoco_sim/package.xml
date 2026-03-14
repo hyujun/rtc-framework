@@ -17,6 +17,7 @@
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>ament_index_cpp</depend>
+  <depend>ur5e_msgs</depend>
 
   <!-- Robot model files (MJCF, URDF, meshes) -->
   <exec_depend>ur5e_description</exec_depend>

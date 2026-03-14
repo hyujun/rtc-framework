@@ -17,6 +17,13 @@
     # ── 초기화 타임아웃 ───────────────────────────────────────────────────────
     init_timeout_sec: 5.0            # 로봇/타겟 데이터 미수신 시 E-STOP + 셧다운 (초)
 
+    # ── 핸드 시뮬레이션 (MuJoCo fake response 연동) ────────────────────────────
+    # true 시 UDP HandController 대신 ROS 토픽으로 핸드 통신 (시뮬레이션 전용)
+    # MuJoCo의 fake_hand_response와 토픽명이 일치해야 합니다
+    hand_sim_enabled: false
+    hand_command_topic: "/hand/command"
+    hand_state_topic: "/hand/joint_states"
+
     # ── E-STOP 설정 (플랫 파라미터 — 네스트 금지) ─────────────────────────────
     enable_estop: true               # E-STOP 타임아웃 모니터링 활성화
     robot_timeout_ms: 100.0          # /joint_states 갭 초과 시 E-STOP (ms)
@@ -31,6 +38,17 @@
     log_dir: ""                      # 세션 디렉토리 — launch 파일이 YYMMDD_HHMM 경로 설정
                                      # 빈 문자열: UR5E_SESSION_DIR 환경변수 또는 자체 세션 생성
     max_log_sessions: 10             # 최대 보관 세션 폴더 수 (YYMMDD_HHMM 단위)
+
+    # ── 조인트/모터/핑거팁 이름 (v5.14.0 named messaging) ─────────────────────
+    # URDF active joint과 비교 검증. 불일치 시 에러.
+    # 비어있으면 URDF에서 자동 추출하여 사용.
+    robot_joint_names:
+      - "shoulder_pan_joint"
+      - "shoulder_lift_joint"
+      - "elbow_joint"
+      - "wrist_1_joint"
+      - "wrist_2_joint"
+      - "wrist_3_joint"
 
     # ── 관절 한계 ─────────────────────────────────────────────────────────────
     # 정보 목적 — 실제 클램핑은 각 컨트롤러 내부의 kMaxJointVelocity에서 수행

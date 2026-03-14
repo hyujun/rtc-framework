@@ -158,6 +158,23 @@ def launch_setup(context, *args, **kwargs):
         sim_overrides['use_yaml_servo_gains'] = (
             use_yaml_servo_gains.lower() in ('true', '1', 'yes'))
 
+    # ── Fake hand response + control_rate 연동 ─────────────────────────────
+    import yaml
+
+    # control_rate를 MuJoCo 노드에 전달 (physics_timestep 검증용)
+    try:
+        ctrl_yaml_path = os.path.join(
+            get_package_share_directory('ur5e_rt_controller'),
+            'config', 'ur5e_rt_controller.yaml')
+        with open(ctrl_yaml_path, 'r') as f:
+            ctrl_yaml = yaml.safe_load(f)
+        control_rate = (ctrl_yaml.get('/**', {})
+                        .get('ros__parameters', {})
+                        .get('control_rate', 500.0))
+        sim_overrides['control_rate'] = float(control_rate)
+    except Exception:
+        sim_overrides['control_rate'] = 500.0
+
     # Add overrides only if any were provided
     if sim_overrides:
         sim_params.append(sim_overrides)
@@ -176,6 +193,28 @@ def launch_setup(context, *args, **kwargs):
 
     # 세션 디렉토리를 log_dir로 전달 (rt_controller가 session_dir 내에서 로깅)
     ctrl_overrides['log_dir'] = session_dir
+
+    # Fake hand response 연동: MuJoCo 설정을 rt_controller에 전달
+    sim_yaml_path = os.path.join(
+        get_package_share_directory('ur5e_mujoco_sim'),
+        'config', 'mujoco_simulator.yaml')
+    try:
+        with open(sim_yaml_path, 'r') as f:
+            sim_yaml = yaml.safe_load(f)
+        fake_hand = (sim_yaml.get('mujoco_simulator', {})
+                     .get('ros__parameters', {})
+                     .get('fake_hand_response', {}))
+        if fake_hand.get('enable', False):
+            ctrl_overrides['hand_sim_enabled'] = True
+            ctrl_overrides['hand_command_topic'] = fake_hand.get(
+                'command_topic', '/hand/command')
+            ctrl_overrides['hand_state_topic'] = fake_hand.get(
+                'state_topic', '/hand/joint_states')
+            # UDP hand 비활성화
+            ctrl_overrides['target_ip'] = ''
+            ctrl_overrides['target_port'] = 0
+    except Exception:
+        pass  # YAML 읽기 실패 시 기본값 사용
 
     if ctrl_overrides:
         ctrl_params.append(ctrl_overrides)
@@ -206,19 +245,7 @@ def launch_setup(context, *args, **kwargs):
         parameters=ctrl_params,
     )
 
-    # ── Node 3: Data Health Monitor ───────────────────────────────────────────
-    monitor_node = Node(
-        package='ur5e_tools',
-        executable='monitor_data_health',
-        name='data_health_monitor',
-        output='screen',
-        parameters=[{
-            'check_rate':        10.0,
-            'timeout_threshold': 1.0,
-        }],
-    )
-
-    return [set_session_dir, mujoco_node, rt_controller_node, monitor_node]
+    return [set_session_dir, mujoco_node, rt_controller_node]
 
 
 def generate_launch_description():

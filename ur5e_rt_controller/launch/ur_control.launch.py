@@ -183,18 +183,6 @@ def generate_launch_description():
         emulate_tty=True,
     )
 
-    # ── Data health monitor ────────────────────────────────────────────────────
-    monitor_node = Node(
-        package='ur5e_tools',
-        executable='monitor_data_health',
-        name='data_health_monitor',
-        output='screen',
-        parameters=[{
-            'check_rate': 10.0,
-            'timeout_threshold': 0.2,
-        }],
-    )
-
     return LaunchDescription([
         robot_ip_arg,
         use_fake_hardware_arg,
@@ -205,5 +193,4 @@ def generate_launch_description():
         ur_driver_launch,
         pin_ur_driver,
         rt_controller_node,
-        monitor_node,
     ])
