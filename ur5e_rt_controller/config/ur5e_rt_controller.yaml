@@ -17,6 +17,12 @@
     # ── 초기화 타임아웃 ───────────────────────────────────────────────────────
     init_timeout_sec: 5.0            # 로봇/타겟 데이터 미수신 시 E-STOP + 셧다운 (초)
 
+    # ── JointCommand 발행 (MuJoCo / 외부 시뮬레이터 연동) ──────────────────────
+    # ur5e_msgs/JointCommand 메시지를 발행하는 토픽.
+    # MuJoCo의 robot_topics.command_topic과 일치해야 합니다.
+    # 빈 문자열이면 비활성화 (실제 로봇은 ros2_control 토픽만 사용).
+    joint_command_topic: "/rt_controller/joint_command"
+
     # ── 핸드 시뮬레이션 (MuJoCo fake response 연동) ────────────────────────────
     # true 시 UDP HandController 대신 ROS 토픽으로 핸드 통신 (시뮬레이션 전용)
     # MuJoCo의 fake_hand_response와 토픽명이 일치해야 합니다

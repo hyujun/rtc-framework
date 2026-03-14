@@ -116,6 +116,10 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr            active_ctrl_name_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr current_gains_pub_;
 
+  // JointCommand publisher (MuJoCo / 외부 시뮬레이터용)
+  rclcpp::Publisher<ur5e_msgs::msg::JointCommand>::SharedPtr     joint_command_pub_;
+  ur5e_msgs::msg::JointCommand                                   joint_command_msg_;  // pre-allocated
+
   // Per-controller topic config cache (index = controller index)
   std::vector<ur5e_rt_controller::TopicConfig> controller_topic_configs_;
 

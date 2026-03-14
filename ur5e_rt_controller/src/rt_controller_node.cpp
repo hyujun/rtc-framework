@@ -200,6 +200,9 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("init_timeout_sec", 5.0);
   declare_parameter("initial_controller", "joint_pd_controller");
 
+  // JointCommand 발행 (MuJoCo / 외부 시뮬레이터 연동)
+  declare_parameter("joint_command_topic", std::string("/rt_controller/joint_command"));
+
   // Hand simulation (MuJoCo fake response 연동)
   declare_parameter("hand_sim_enabled", false);
   declare_parameter("hand_command_topic", std::string("/hand/command"));
@@ -553,6 +556,23 @@ void RtControllerNode::CreatePublishers()
     }
   }
 
+  // ── JointCommand publisher (MuJoCo / 외부 시뮬레이터용) ────────────────────
+  {
+    const std::string jc_topic = get_parameter("joint_command_topic").as_string();
+    if (!jc_topic.empty()) {
+      joint_command_pub_ = create_publisher<ur5e_msgs::msg::JointCommand>(
+          jc_topic, cmd_qos);
+
+      // Pre-allocate message
+      joint_command_msg_.joint_names = robot_joint_names_;
+      joint_command_msg_.values.resize(urtc::kNumRobotJoints, 0.0);
+      joint_command_msg_.command_type = "position";
+
+      RCLCPP_INFO(get_logger(), "  Publish [joint_command]: %s (JointCommand msg)",
+                  jc_topic.c_str());
+    }
+  }
+
   // ── Fixed publishers (always present) ─────────────────────────────────────
   estop_pub_ =
     create_publisher<std_msgs::msg::Bool>("/system/estop_status", 10);
@@ -869,6 +889,16 @@ void RtControllerNode::ControlLoop()
           pe.publisher->publish(pe.msg);
           break;
       }
+    }
+
+    // ── JointCommand 발행 (MuJoCo / 외부 시뮬레이터용) ──────────────────
+    if (joint_command_pub_) {
+      joint_command_msg_.header.stamp = now();
+      joint_command_msg_.command_type =
+          (output.command_type == urtc::CommandType::kTorque) ? "torque" : "position";
+      std::copy(output.robot_commands.begin(), output.robot_commands.end(),
+                joint_command_msg_.values.begin());
+      joint_command_pub_->publish(joint_command_msg_);
     }
 
     cmd_pub_mutex_.unlock();
