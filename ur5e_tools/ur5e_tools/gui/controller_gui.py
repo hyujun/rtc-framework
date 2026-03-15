@@ -342,7 +342,7 @@ class ControllerGUI(Node):
         ctrl_frame = ttk.LabelFrame(scrollable_frame, text="Controller", padding=4)
         ctrl_frame.pack(fill='x', padx=8, pady=2)
 
-        self.selected_ctrl = tk.IntVar(value=1)
+        self.selected_ctrl = tk.IntVar(value=4)
         btn_row = tk.Frame(ctrl_frame, bg='#1e1e2e')
         btn_row.pack(fill='x')
         for idx, name in CONTROLLER_TYPES.items():
