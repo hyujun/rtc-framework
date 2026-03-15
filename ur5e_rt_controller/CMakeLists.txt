@@ -22,8 +22,10 @@ find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 
 # 디버깅: CMAKE_PREFIX_PATH 확인 (CI 문제 진단 후 제거 예정)
-message(WARNING ">>> CMAKE_PREFIX_PATH = ${CMAKE_PREFIX_PATH}")
-message(WARNING ">>> CMAKE_MODULE_PATH = ${CMAKE_MODULE_PATH}")
+message(WARNING ">>> CMAKE_PREFIX_PATH(var) = ${CMAKE_PREFIX_PATH}")
+message(WARNING ">>> CMAKE_PREFIX_PATH(env) = $ENV{CMAKE_PREFIX_PATH}")
+message(WARNING ">>> AMENT_PREFIX_PATH(env) = $ENV{AMENT_PREFIX_PATH}")
+message(WARNING ">>> CMAKE_FIND_PACKAGE_REDIRECTS_DIR = ${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}")
 
 # ── Workspace 내부 패키지 먼저 찾기 ──────────────────────────────────────────
 # pinocchio의 find_dependency() 체인이 CMake 3.31에서 CMAKE_PREFIX_PATH 스코프를
