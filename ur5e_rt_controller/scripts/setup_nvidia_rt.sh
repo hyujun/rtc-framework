@@ -759,9 +759,14 @@ echo -e "${BOLD}━━━ [9/11] NVIDIA DKMS 모듈 빌드 ━━━${NC}"
 echo ""
 
 # RT 커널로 부팅하면 기존 NVIDIA DKMS 모듈이 빌드되지 않아 nvidia-smi가 작동하지 않을 수 있다.
-# 커스텀 RT 커널(예: 6.8.2-rt11-rt-custom)에서는 `dkms autoinstall`이 apport 검증에서
-# "kernel package linux-headers-X is not supported" 에러로 실패한다.
-# 해결: `dkms build/install`을 NVIDIA 모듈 이름/버전을 직접 지정하여 실행한다.
+# 커스텀 RT 커널에서 NVIDIA DKMS 빌드가 실패하는 원인 3가지:
+#   1. `dkms autoinstall` → apport 검증: "kernel package linux-headers-X is not supported"
+#   2. NVIDIA 빌드 시스템 → PREEMPT_RT 감지 후 빌드 차단
+#   3. dkms.conf → BUILD_EXCLUSIVE_CONFIG="!CONFIG_PREEMPT_RT" 지시문
+# 해결:
+#   - `dkms build -m nvidia -v VERSION -k KERNEL`으로 apport 우회
+#   - `IGNORE_PREEMPT_RT_PRESENCE=1` 환경변수로 RT 감지 차단 우회
+#   - dkms.conf의 BUILD_EXCLUSIVE_CONFIG 라인 주석 처리
 DKMS_NEEDED=0
 
 if ! command -v nvidia-smi &>/dev/null; then
@@ -825,9 +830,34 @@ if [[ "$DKMS_NEEDED" -eq 1 ]]; then
         if echo "$DKMS_STATUS" | grep -q "installed"; then
           success "NVIDIA ${NVIDIA_DKMS_VER} 모듈이 이미 설치됨 (커널: ${KERNEL_VER})"
         else
-          # ── dkms build + install (autoinstall 대신 직접 지정) ────────────
-          # `dkms autoinstall`은 커스텀 커널에서 apport 검증 실패.
-          # `dkms build -m nvidia -v VERSION -k KERNEL`은 apport를 우회한다.
+          # ── RT 커널용 NVIDIA DKMS 빌드 준비 ─────────────────────────────
+          # NVIDIA 빌드 시스템은 PREEMPT_RT 커널을 명시적으로 차단한다:
+          #   1. conftest.sh에서 CONFIG_PREEMPT_RT 감지 → 빌드 거부
+          #   2. dkms.conf의 BUILD_EXCLUSIVE_CONFIG="!CONFIG_PREEMPT_RT"
+          # 이 두 가지를 우회해야 RT 커널에서 NVIDIA 모듈을 빌드할 수 있다.
+
+          # (a) dkms.conf의 BUILD_EXCLUSIVE_CONFIG 주석 처리
+          NVIDIA_DKMS_CONF="/usr/src/nvidia-${NVIDIA_DKMS_VER}/dkms.conf"
+          if [[ -f "$NVIDIA_DKMS_CONF" ]]; then
+            if grep -q 'BUILD_EXCLUSIVE_CONFIG.*PREEMPT_RT' "$NVIDIA_DKMS_CONF" 2>/dev/null; then
+              info "NVIDIA dkms.conf에서 BUILD_EXCLUSIVE_CONFIG (PREEMPT_RT 차단) 비활성화..."
+              backup_file "$NVIDIA_DKMS_CONF"
+              sed -i 's/^\(BUILD_EXCLUSIVE_CONFIG=.*PREEMPT_RT\)/#\1  # Disabled for RT kernel by setup_nvidia_rt.sh/' \
+                "$NVIDIA_DKMS_CONF"
+              success "BUILD_EXCLUSIVE_CONFIG 비활성화 완료"
+              CHANGES_APPLIED+=("NVIDIA dkms.conf BUILD_EXCLUSIVE_CONFIG 비활성화")
+            fi
+          fi
+
+          # (b) IGNORE_PREEMPT_RT_PRESENCE=1 환경변수 설정
+          # NVIDIA 빌드 시스템의 conftest.sh가 RT 커널 감지 후 빌드를 거부하는 것을 우회
+          export IGNORE_PREEMPT_RT_PRESENCE=1
+          export IGNORE_CC_MISMATCH=1
+          info "NVIDIA RT 빌드 우회 환경변수 설정:"
+          info "  IGNORE_PREEMPT_RT_PRESENCE=1"
+          info "  IGNORE_CC_MISMATCH=1"
+
+          # ── dkms build + install ────────────────────────────────────────
           info "NVIDIA ${NVIDIA_DKMS_VER} 모듈 빌드 시작 (커널: ${KERNEL_VER})..."
           info "  dkms build -m nvidia -v ${NVIDIA_DKMS_VER} -k ${KERNEL_VER}"
 
@@ -878,6 +908,15 @@ if [[ "$DKMS_NEEDED" -eq 1 ]]; then
               done
             fi
             WARNINGS+=("NVIDIA DKMS 빌드 실패 — ${MAKE_LOG} 확인")
+          fi
+
+          # ── IGNORE_PREEMPT_RT_PRESENCE 영구 설정 ──────────────────────
+          # 향후 커널 업데이트 시 DKMS 자동 빌드에서도 RT 우회가 적용되도록
+          ENV_FILE="/etc/environment"
+          if ! grep -q "IGNORE_PREEMPT_RT_PRESENCE" "$ENV_FILE" 2>/dev/null; then
+            echo "IGNORE_PREEMPT_RT_PRESENCE=1" >> "$ENV_FILE"
+            info "IGNORE_PREEMPT_RT_PRESENCE=1 → ${ENV_FILE} (영구 설정)"
+            CHANGES_APPLIED+=("IGNORE_PREEMPT_RT_PRESENCE=1 영구 설정: ${ENV_FILE}")
           fi
         fi
 

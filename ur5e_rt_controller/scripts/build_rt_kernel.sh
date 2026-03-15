@@ -915,6 +915,19 @@ else
 
     if [[ -n "$NVIDIA_DKMS_VER" ]]; then
       info "NVIDIA DKMS 모듈 빌드 시도 (nvidia/${NVIDIA_DKMS_VER}, 커널: ${RT_KERNEL_FULL})..."
+
+      # RT 커널에서 NVIDIA 빌드 차단 우회:
+      # 1. IGNORE_PREEMPT_RT_PRESENCE=1 → conftest.sh RT 감지 우회
+      # 2. BUILD_EXCLUSIVE_CONFIG 주석 처리 → dkms.conf RT 제외 우회
+      export IGNORE_PREEMPT_RT_PRESENCE=1
+      export IGNORE_CC_MISMATCH=1
+
+      NVIDIA_DKMS_CONF="/usr/src/nvidia-${NVIDIA_DKMS_VER}/dkms.conf"
+      if [[ -f "$NVIDIA_DKMS_CONF" ]] && grep -q 'BUILD_EXCLUSIVE_CONFIG.*PREEMPT_RT' "$NVIDIA_DKMS_CONF" 2>/dev/null; then
+        sed -i 's/^\(BUILD_EXCLUSIVE_CONFIG=.*PREEMPT_RT\)/#\1  # Disabled for RT kernel/' "$NVIDIA_DKMS_CONF"
+        info "NVIDIA dkms.conf BUILD_EXCLUSIVE_CONFIG 비활성화"
+      fi
+
       set +e
       dkms build -m nvidia -v "${NVIDIA_DKMS_VER}" -k "${RT_KERNEL_FULL}" 2>&1
       BUILD_RC=$?
