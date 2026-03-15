@@ -27,7 +27,7 @@
 
 통신 플로우 (1 사이클):
   0. SetSensorMode(cmd=0x04) → send 3B, recv 3B (초기화, 1회)
-  1. WritePosition(cmd=0x01) → send 43B
+  1. WritePosition(cmd=0x01) → send 43B, recv 43B (echo)
   2. ReadPosition(cmd=0x11)  → send 43B, recv 43B
   3. ReadVelocity(cmd=0x12)  → send 43B, recv 43B
   4. ReadSensor0~3(cmd=0x14..0x17) → send 3B, recv 67B × 4
@@ -241,11 +241,10 @@ class HandUDPSender:
         print(f"  Target: {target_ip}:{target_port}")
         print(f"  Motors: {NUM_HAND_MOTORS}, Connected sensors: {self.num_sensors}/{NUM_FINGERTIPS}")
 
-    def write_position(self, positions: list[float]) -> None:
-        """모터 목표 위치 전송 (cmd=0x01, 43B)"""
+    def write_position(self, positions: list[float]) -> list[float] | None:
+        """모터 목표 위치 전송 및 echo 수신 (cmd=0x01, 43B ↔ 43B)"""
         assert len(positions) == NUM_HAND_MOTORS
-        pkt = encode_motor_packet(CMD_WRITE_POSITION, positions)
-        self.sock.sendto(pkt, self.target)
+        return self._request_motor(CMD_WRITE_POSITION, positions)
 
     def read_position(self) -> list[float] | None:
         """모터 현재 위치 요청 및 수신 (cmd=0x11, 43B ↔ 43B)"""
@@ -294,7 +293,7 @@ class HandUDPSender:
     def poll_cycle(self, positions: list[float]) -> dict:
         """
         HandController의 1 사이클과 동일한 플로우 실행:
-          1. WritePosition                    → send 43B
+          1. WritePosition                    → send 43B, recv 43B (echo)
           2. ReadPosition                     → send 43B, recv 43B
           3. ReadVelocity                     → send 43B, recv 43B
           4. ReadSensor × num_sensors         → send 3B (MODE=raw), recv 67B
@@ -311,10 +310,12 @@ class HandUDPSender:
         timeouts = 0
         cycle_start = time.perf_counter()
 
-        # 1. 목표 위치 전송
+        # 1. 목표 위치 전송 + echo 수신
         t0 = time.perf_counter()
-        self.write_position(positions)
+        write_echo = self.write_position(positions)
         timing["write_position"] = time.perf_counter() - t0
+        if write_echo is None:
+            timeouts += 1
 
         # 2. 현재 위치 수신
         t0 = time.perf_counter()
@@ -416,9 +417,10 @@ class HandUDPSender:
             "timing": timing,
         }
 
-    def _request_motor(self, cmd: int) -> list[float] | None:
-        """모터 요청 전송(43B) 후 응답 수신(43B)"""
-        pkt = encode_motor_packet(cmd)
+    def _request_motor(self, cmd: int,
+                       floats: list[float] | None = None) -> list[float] | None:
+        """모터 요청 전송(43B) 후 echo 응답 수신(43B)"""
+        pkt = encode_motor_packet(cmd, floats)
         self.sock.sendto(pkt, self.target)
         try:
             data, _ = self.sock.recvfrom(256)
@@ -814,7 +816,7 @@ def example_poll_cycle(target_ip: str = "192.168.1.2",
     failure_detector = HandDataFailureDetector(motor_enabled=False, sensor_enabled=True)
     timing_stats = UdpTimingStats()
 
-    print(f"  WritePosition(43B) → ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B[MODE=raw]→67B)")
+    print(f"  WritePosition(43B↔43B) → ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B[MODE=raw]→67B)")
     print("Ctrl+C로 중지\n")
 
     try:
