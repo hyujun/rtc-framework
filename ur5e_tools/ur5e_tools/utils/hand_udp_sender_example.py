@@ -556,6 +556,13 @@ class HandDataCsvLogger:
         for s in range(num_sensors):
             header.extend(f"s{s}_baro_{j}" for j in range(BAROMETER_COUNT))
             header.extend(f"s{s}_tof_{j}" for j in range(TOF_COUNT))
+        # 타이밍 컬럼 (ms 단위)
+        self._timing_keys = ["cycle", "write_position",
+                              "read_position", "read_velocity"]
+        if num_sensors > 0:
+            self._timing_keys.append("read_sensors")
+        self._timing_keys.append("timeouts")
+        header.extend(f"t_{k}" for k in self._timing_keys)
 
         self._file = open(self.filepath, 'w', newline='')
         self._writer = csv.writer(self._file)
@@ -589,6 +596,17 @@ class HandDataCsvLogger:
         else:
             row.extend(str(v) for v in sensors)
             row.extend([""] * (expected - len(sensors)))
+
+        # timing (ms 단위, timeouts는 정수)
+        timing = result.get("timing", {})
+        for k in self._timing_keys:
+            v = timing.get(k)
+            if v is None:
+                row.append("")
+            elif k == "timeouts":
+                row.append(str(int(v)))
+            else:
+                row.append(f"{v * 1000:.4f}")  # sec → ms
 
         self._writer.writerow(row)
 
