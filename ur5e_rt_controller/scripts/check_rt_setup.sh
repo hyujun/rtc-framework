@@ -367,13 +367,20 @@ check_cpu_isolation() {
   isolated=$(cat "$isolated_file" 2>/dev/null || echo "")
 
   if [[ -z "$isolated" ]]; then
-    _fail "격리된 CPU 없음 (isolcpus 미설정)"
-    _fix "GRUB에 isolcpus=${EXPECTED_ISOLATED} 추가"
-    _fix "sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh"
-    _category_update "cpu_isolation" "FAIL"
-    _category_set_detail "cpu_isolation" "none"
+    _warn "CPU 격리 미활성 — 로봇/시뮬 실행 시 자동 활성화됩니다"
+    _fix "수동 활성화: sudo ${SCRIPT_DIR}/cpu_shield.sh on [--robot|--sim]"
+    _category_update "cpu_isolation" "WARN"
+    _category_set_detail "cpu_isolation" "none (auto-activate on launch)"
   elif [[ "$isolated" == "$EXPECTED_ISOLATED" ]]; then
-    _pass "CPU 격리 일치: ${isolated} (기대값: ${EXPECTED_ISOLATED})"
+    # Detect isolation method
+    if grep -q "isolcpus=" /proc/cmdline 2>/dev/null; then
+      _pass "CPU 격리 일치 (isolcpus): ${isolated}"
+      _warn "isolcpus는 빌드 성능에 영향. cset shield 전환 권장"
+      _fix "GRUB에서 isolcpus 제거 후 sudo cpu_shield.sh on --robot 사용"
+      _category_update "cpu_isolation" "WARN"
+    else
+      _pass "CPU 격리 일치 (cset shield): ${isolated}"
+    fi
     if [[ "$HAS_SMT" -eq 1 ]]; then
       _pass "SMT/HT 시블링 포함 격리 확인됨 (${LOGICAL_CORES} logical CPUs)"
     fi
@@ -414,8 +421,9 @@ check_grub_params() {
   local found=0 total=0
 
   # 필수 파라미터 (값 포함)
-  local -a params_with_val=("isolcpus" "nohz_full" "rcu_nocbs" "processor.max_cstate")
-  for param in "${params_with_val[@]}"; do
+  # isolcpus는 cset shield로 대체되어 선택 사항으로 변경
+  local -a params_required=("nohz_full" "rcu_nocbs" "processor.max_cstate")
+  for param in "${params_required[@]}"; do
     ((total++)) || true
     if echo "$cmdline" | grep -qE "(^| )${param}="; then
       _pass "${param} 설정됨"
@@ -425,6 +433,18 @@ check_grub_params() {
       _category_update "grub_params" "FAIL"
     fi
   done
+
+  # isolcpus: 선택 사항 (cset shield로 대체 가능)
+  ((total++)) || true
+  if echo "$cmdline" | grep -qE "(^| )isolcpus="; then
+    _warn "isolcpus 설정됨 (cset shield로 전환 권장 — 빌드 성능 향상)"
+    _fix "GRUB에서 isolcpus 제거 후 cpu_shield.sh 사용"
+    ((found++)) || true
+    _category_update "grub_params" "WARN"
+  else
+    _pass "isolcpus 미사용 (cset shield 동적 격리 방식 — 정상)"
+    ((found++)) || true
+  fi
 
   # 선택 파라미터 (값 없음)
   local -a params_no_val=("threadirqs" "nosoftlockup")

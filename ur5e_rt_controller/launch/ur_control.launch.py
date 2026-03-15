@@ -163,6 +163,26 @@ def generate_launch_description():
     # ── UR robot driver launch (via OpaqueFunction for mock_hardware compat) ──
     ur_driver_launch_action = OpaqueFunction(function=_launch_setup)
 
+    # ── [RT] 로봇 모드 CPU Shield (Tier 1 + Tier 2) ─────────────────────────────
+    # 격리 미활성 시 자동으로 cset shield를 활성화한다.
+    enable_cpu_shield = ExecuteProcess(
+        cmd=[
+            'bash', '-c',
+            'SCRIPT_DIR="$(ros2 pkg prefix ur5e_rt_controller 2>/dev/null)/lib/ur5e_rt_controller" && '
+            'if [ -f "$SCRIPT_DIR/cpu_shield.sh" ]; then '
+            '  ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); '
+            '  if [ -z "$ISOLATED" ]; then '
+            '    echo "[RT] CPU shield 미활성 — 로봇 모드 자동 활성화 중..."; '
+            '    sudo "$SCRIPT_DIR/cpu_shield.sh" on --robot; '
+            '  else '
+            '    echo "[RT] CPU shield 이미 활성: Core $ISOLATED 격리됨"; '
+            '  fi; '
+            'fi'
+        ],
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('use_cpu_affinity'))
+    )
+
     # ── [방안 C] UR driver CPU pinning ─────────────────────────────────────────
     # Applies taskset to pin ur_ros2_driver process to Core 0-1 after startup.
     # Delayed 3 s to allow the UR driver process to fully start before pinning.
@@ -211,6 +231,7 @@ def generate_launch_description():
         set_session_dir,
         set_rmw,
         set_cyclone_uri,
+        enable_cpu_shield,
         ur_driver_launch_action,
         pin_ur_driver,
         rt_controller_node,

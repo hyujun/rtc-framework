@@ -27,6 +27,72 @@ success() { echo -e "${GREEN}✔ $*${NC}"; }
 warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
 error()   { echo -e "${RED}✘ $*${NC}"; exit 1; }
 
+# ── CPU shield 자동 관리 (빌드 전) ──────────────────────────────────────────
+# cset shield가 활성이면 자동 해제하여 전체 코어로 빌드한다.
+# isolcpus(GRUB 고정)는 재부팅 없이 해제 불가 → 경고만 출력.
+auto_release_cpu_shield() {
+  local isolated
+  isolated=$(cat /sys/devices/system/cpu/isolated 2>/dev/null || echo "")
+
+  if [[ -z "$isolated" ]]; then
+    return 0  # 격리 없음 → 전체 코어 사용 가능
+  fi
+
+  local available total
+  available=$(nproc)
+  total=$(nproc --all)
+  warn "CPU 격리 감지: Core ${isolated} 격리 중 (${available}/${total} 코어 사용 가능)"
+
+  # Case 1: cset shield 활성 → 자동 해제
+  local SCRIPT_DIR_BUILD
+  SCRIPT_DIR_BUILD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local SHIELD_SCRIPT="${SCRIPT_DIR_BUILD}/ur5e_rt_controller/scripts/cpu_shield.sh"
+  if command -v cset &>/dev/null && cset shield -s 2>/dev/null | grep -q "user"; then
+    info "cset shield 감지 → 빌드를 위해 자동 해제 중..."
+    if [[ -f "$SHIELD_SCRIPT" ]]; then
+      sudo bash "$SHIELD_SCRIPT" off 2>/dev/null || sudo cset shield --reset 2>/dev/null || true
+    else
+      sudo cset shield --reset 2>/dev/null || true
+    fi
+    success "CPU 격리 해제 완료 — 전체 ${total} 코어로 빌드합니다"
+    return 0
+  fi
+
+  # Case 2: isolcpus (GRUB 고정) → 해제 불가, 경고만
+  if grep -q "isolcpus=" /proc/cmdline 2>/dev/null; then
+    warn "isolcpus GRUB 파라미터 감지 — 재부팅 없이 해제 불가"
+    warn "빌드에 ${available}/${total} 코어만 사용됩니다"
+    warn "권장: isolcpus를 GRUB에서 제거하고 cset shield 방식으로 전환하세요"
+    return 0
+  fi
+
+  return 0
+}
+
+# ── ROS2 auto-source ─────────────────────────────────────────────────────────
+# ros2 커맨드가 PATH에 없으면 /opt/ros/ 에서 탐색 후 자동 소싱.
+# build.sh만 실행해도 빌드 후 ros2 launch 등 사용 가능.
+ensure_ros2_sourced() {
+  if command -v ros2 &>/dev/null; then
+    return 0
+  fi
+
+  warn "ros2 command not found in PATH. Searching /opt/ros/ ..."
+  if [[ -d /opt/ros ]]; then
+    for _distro in jazzy humble iron rolling; do
+      if [[ -f "/opt/ros/${_distro}/setup.bash" ]]; then
+        info "Found ROS2 ${_distro} at /opt/ros/${_distro} — sourcing setup.bash ..."
+        # shellcheck disable=SC1090
+        source "/opt/ros/${_distro}/setup.bash"
+        success "ROS2 ${_distro} sourced"
+        return 0
+      fi
+    done
+  fi
+
+  error "ROS2 not found. Install ROS2 or source setup.bash before running build.sh"
+}
+
 # ── Common: Workspace structure check ──────────────────────────────────────────
 check_workspace_structure() {
   info "Checking workspace directory structure..."
@@ -206,6 +272,9 @@ echo -e "  Mode : ${CYAN}${BOLD}${MODE_DESC}${NC}"
 echo -e "  Build: ${CYAN}${BOLD}${BUILD_TYPE}${NC}"
 echo ""
 
+# ── ROS2 environment ──────────────────────────────────────────────────────────
+ensure_ros2_sourced
+
 # ── Workspace detection ────────────────────────────────────────────────────────
 check_workspace_structure
 
@@ -229,6 +298,9 @@ else
       ;;
   esac
 fi
+
+# ── CPU shield auto-release (빌드 전 격리 해제) ────────────────────────────────
+auto_release_cpu_shield
 
 # ── Build ──────────────────────────────────────────────────────────────────────
 info "Building: ${PACKAGES[*]}"

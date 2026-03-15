@@ -217,6 +217,24 @@ inline const ThreadConfig kHandFailureConfig4Core{
     .name           = "hand_detect"
 };
 
+// ── Simulation core assignment (Tier 3, no RT scheduling) ────────────────────
+// Used by mujoco_sim.launch.py for taskset pinning of MuJoCo threads.
+// MuJoCo sim_thread runs physics computation (CPU-intensive, no RT constraints).
+// MuJoCo viewer_thread handles GLFW rendering (GPU-bound, OS core OK).
+struct SimCoreLayout {
+  int sim_thread_core;    // MuJoCo physics thread (-1 = no pinning)
+  int viewer_core;        // GLFW viewer thread (-1 = OS cores, no pinning)
+};
+
+/// Returns MuJoCo simulation core layout based on physical core count.
+/// Only pins sim_thread on 8+ core systems where dedicated Tier 3 cores exist.
+inline constexpr SimCoreLayout GetSimCoreLayout(int physical_cores) {
+  if (physical_cores >= 16) return {9, 10};   // 16+: OS 0-3, RT 4-8, Sim 9-10
+  if (physical_cores >= 10) return {7, 8};    // 10+: OS 0-1, RT 2-6, Sim 7-8
+  if (physical_cores >= 8)  return {6, -1};   // 8:   OS 0-1, RT 2-6, Sim 6 (viewer on OS)
+  return {-1, -1};                            // <8:  no dedicated sim core
+}
+
 }  // namespace ur5e_rt_controller
 
 #endif  // UR5E_RT_BASE_THREAD_CONFIG_HPP_
