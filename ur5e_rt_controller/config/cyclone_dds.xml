@@ -24,41 +24,8 @@
       <Verbosity>warning</Verbosity>
     </Tracing>
 
-    <Internal>
-      <!-- Restrict all DDS-internal threads to Core 0-1 (non-RT cores).
-           This prevents DDS recv/send from landing on Core 2-5 and causing
-           cache pressure or scheduler interference on RT threads. -->
-      <Threads>
-        <Thread name="recv">
-          <Scheduling>
-            <Class>Other</Class>
-            <Priority>0</Priority>
-          </Scheduling>
-          <!-- CPU affinity mask: 0x3 = 0b0011 = Core 0 and Core 1 -->
-          <Affinity>0x3</Affinity>
-        </Thread>
-        <Thread name="tev">
-          <Scheduling>
-            <Class>Other</Class>
-            <Priority>0</Priority>
-          </Scheduling>
-          <Affinity>0x3</Affinity>
-        </Thread>
-        <Thread name="gc">
-          <Scheduling>
-            <Class>Other</Class>
-            <Priority>0</Priority>
-          </Scheduling>
-          <Affinity>0x3</Affinity>
-        </Thread>
-        <Thread name="dq.builtins">
-          <Scheduling>
-            <Class>Other</Class>
-            <Priority>0</Priority>
-          </Scheduling>
-          <Affinity>0x3</Affinity>
-        </Thread>
-      </Threads>
-    </Internal>
+    <!-- NOTE: <Internal><Threads> removed — unsupported in CycloneDDS
+         version shipped with ROS 2 Jazzy. DDS thread affinity for RT
+         isolation should be handled via taskset or cgroup instead. -->
   </Domain>
 </CycloneDDS>
