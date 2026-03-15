@@ -24,7 +24,6 @@ MODE="full"
 CLEAN_BUILD=0
 BUILD_TYPE="Release"
 PARALLEL_JOBS=""
-NO_BASHRC=0
 SKIP_DEPS=0
 SKIP_BUILD=0
 SKIP_RT=0
@@ -63,7 +62,6 @@ show_help() {
   echo "  --skip-debug      Skip GDB/debugger tools installation"
   echo "  --ptrace-scope    Set ptrace_scope=0 for VS Code Attach debugger"
   echo "                    (Required for 'Attach to Node' launch configuration)"
-  echo "  --no-bashrc       Do not automatically add source command to ~/.bashrc"
   echo "  --mujoco <path>   Use specific MuJoCo path"
   echo "  --help            Show this help"
   echo ""
@@ -130,10 +128,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --ptrace-scope)
       SET_PTRACE_SCOPE=1
-      shift
-      ;;
-    --no-bashrc)
-      NO_BASHRC=1
       shift
       ;;
     --mujoco)
@@ -627,10 +621,6 @@ build_package() {
   colcon build "${COLCON_ARGS[@]}" || error "Build failed!"
 
   source install/setup.bash
-  if [[ "$NO_BASHRC" -eq 0 ]]; then
-    grep -qF "$WORKSPACE/install/setup.bash" ~/.bashrc || \
-        echo "source $WORKSPACE/install/setup.bash" >> ~/.bashrc
-  fi
   success "All packages built and sourced"
 }
 
