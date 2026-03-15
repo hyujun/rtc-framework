@@ -15,6 +15,7 @@ from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
     IncludeLaunchDescription,
+    OpaqueFunction,
     SetEnvironmentVariable,
     TimerAction,
 )
@@ -50,6 +51,32 @@ def _cleanup_old_sessions(logging_root, max_sessions):
         shutil.rmtree(oldest, ignore_errors=True)
 
 
+def _launch_setup(context):
+    """Resolve launch arguments and build actions that need runtime values."""
+    # ROS 2 Jazzy renamed use_fake_hardware → use_mock_hardware.
+    # Accept either flag; if either is 'true', enable mock hardware.
+    use_mock = context.launch_configurations.get('use_mock_hardware', 'false')
+    use_fake = context.launch_configurations.get('use_fake_hardware', 'false')
+    mock_enabled = 'true' if use_mock == 'true' or use_fake == 'true' else 'false'
+
+    ur_driver_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            PathJoinSubstitution([
+                FindPackageShare('ur_robot_driver'),
+                'launch',
+                'ur_control.launch.py'
+            ])
+        ]),
+        launch_arguments={
+            'ur_type': 'ur5e',
+            'robot_ip': LaunchConfiguration('robot_ip'),
+            'use_mock_hardware': mock_enabled,
+            'launch_rviz': 'false',
+        }.items()
+    )
+    return [ur_driver_launch]
+
+
 def generate_launch_description():
     # ── 세션 디렉토리 생성 (YYMMDD_HHMM) ─────────────────────────────────────
     logging_root = _resolve_logging_root()
@@ -66,10 +93,17 @@ def generate_launch_description():
         description='IP address of the UR robot'
     )
 
+    # ROS 2 Jazzy ur_robot_driver renamed use_fake_hardware → use_mock_hardware.
+    # Both are accepted for backwards compatibility.
+    use_mock_hardware_arg = DeclareLaunchArgument(
+        'use_mock_hardware',
+        default_value='false',
+        description='Use mock hardware for testing (Jazzy)'
+    )
     use_fake_hardware_arg = DeclareLaunchArgument(
         'use_fake_hardware',
         default_value='false',
-        description='Use fake hardware for testing'
+        description='[Deprecated — use use_mock_hardware] Alias kept for compatibility'
     )
 
     use_cpu_affinity_arg = DeclareLaunchArgument(
@@ -126,22 +160,8 @@ def generate_launch_description():
         value='rmw_cyclonedds_cpp'
     )
 
-    # ── UR robot driver launch ─────────────────────────────────────────────────
-    ur_driver_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([
-            PathJoinSubstitution([
-                FindPackageShare('ur_robot_driver'),
-                'launch',
-                'ur_control.launch.py'
-            ])
-        ]),
-        launch_arguments={
-            'ur_type': 'ur5e',
-            'robot_ip': LaunchConfiguration('robot_ip'),
-            'use_fake_hardware': LaunchConfiguration('use_fake_hardware'),
-            'launch_rviz': 'false',
-        }.items()
-    )
+    # ── UR robot driver launch (via OpaqueFunction for mock_hardware compat) ──
+    ur_driver_launch_action = OpaqueFunction(function=_launch_setup)
 
     # ── [방안 C] UR driver CPU pinning ─────────────────────────────────────────
     # Applies taskset to pin ur_ros2_driver process to Core 0-1 after startup.
@@ -185,12 +205,13 @@ def generate_launch_description():
 
     return LaunchDescription([
         robot_ip_arg,
+        use_mock_hardware_arg,
         use_fake_hardware_arg,
         use_cpu_affinity_arg,
         set_session_dir,
         set_rmw,
         set_cyclone_uri,
-        ur_driver_launch,
+        ur_driver_launch_action,
         pin_ur_driver,
         rt_controller_node,
     ])
