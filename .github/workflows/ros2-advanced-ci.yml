@@ -107,6 +107,17 @@ jobs:
     - name: Build Packages (with coverage flags)
       run: |
         source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+
+        # 디버깅: ur5e_rt_base 먼저 단독 빌드 후 install 경로 확인
+        colcon build --packages-select ur5e_rt_base \
+          --cmake-args -DCMAKE_BUILD_TYPE=Debug -DCMAKE_POLICY_DEFAULT_CMP0167=OLD
+        echo "=== ur5e_rt_base install structure ==="
+        find install/ur5e_rt_base -name "*Config*" -o -name "*config*" 2>/dev/null || echo "No config files!"
+        echo "=== CMAKE_PREFIX_PATH ==="
+        echo "${CMAKE_PREFIX_PATH:-not set}"
+        echo "=== ament_prefix_path ==="
+        echo "${AMENT_PREFIX_PATH:-not set}"
+
         # --packages-up-to: ur5e_description 등 의존성 자동 해결
         colcon build \
           --packages-up-to ur5e_rt_controller ur5e_hand_udp ur5e_tools \
