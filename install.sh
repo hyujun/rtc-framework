@@ -10,6 +10,9 @@
 
 set -e
 
+# ── Script directory (absolute path, safe across cd) ──────────────────────────
+INSTALL_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # ── Colors ─────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -681,7 +684,7 @@ get_physical_cores() {
 # 모든 하드웨어 IRQ를 OS 코어로 제한한다.
 setup_irq_affinity() {
   local SCRIPT
-  SCRIPT="$(dirname "$0")/ur5e_rt_controller/scripts/setup_irq_affinity.sh"
+  SCRIPT="${INSTALL_SCRIPT_DIR}/ur5e_rt_controller/scripts/setup_irq_affinity.sh"
 
   if [[ ! -f "$SCRIPT" ]]; then
     warn "setup_irq_affinity.sh not found — skipping IRQ affinity setup"
@@ -714,7 +717,7 @@ setup_irq_affinity() {
 # ── [UDP/DDS] NIC & kernel network stack optimization (robot + full) ──────────
 setup_udp_optimization() {
   local SCRIPT
-  SCRIPT="$(dirname "$0")/ur5e_rt_controller/scripts/setup_udp_optimization.sh"
+  SCRIPT="${INSTALL_SCRIPT_DIR}/ur5e_rt_controller/scripts/setup_udp_optimization.sh"
 
   if [[ ! -f "$SCRIPT" ]]; then
     warn "setup_udp_optimization.sh not found — skipping UDP optimization"
@@ -744,7 +747,7 @@ setup_nvidia_rt() {
   fi
 
   local SCRIPT
-  SCRIPT="$(dirname "$0")/ur5e_rt_controller/scripts/setup_nvidia_rt.sh"
+  SCRIPT="${INSTALL_SCRIPT_DIR}/ur5e_rt_controller/scripts/setup_nvidia_rt.sh"
 
   if [[ ! -f "$SCRIPT" ]]; then
     warn "setup_nvidia_rt.sh not found — skipping NVIDIA RT setup"
@@ -850,7 +853,7 @@ verify_installation() {
   # RT 환경 검증 (robot/full 모드)
   if [[ "$MODE" == "robot" || "$MODE" == "full" ]]; then
     local CHECK_SCRIPT
-    CHECK_SCRIPT="$(dirname "$0")/ur5e_rt_controller/scripts/check_rt_setup.sh"
+    CHECK_SCRIPT="${INSTALL_SCRIPT_DIR}/ur5e_rt_controller/scripts/check_rt_setup.sh"
     if [[ -f "$CHECK_SCRIPT" ]]; then
       echo ""
       info "━━━ RT System Configuration Check ━━━"
