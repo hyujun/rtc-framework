@@ -79,6 +79,9 @@ ament_export_dependencies(
   controller_manager_msgs
   ur5e_rt_base
 )
+if(ur_dashboard_msgs_FOUND)
+  ament_export_dependencies(ur_dashboard_msgs)
+endif()
 ament_export_include_directories(include)
 
 if(BUILD_TESTING)
