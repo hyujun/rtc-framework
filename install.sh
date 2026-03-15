@@ -22,6 +22,34 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+# ── Helper functions (인자 파싱 전에 정의 — error() 등에서 사용) ────────────────
+info()    { echo -e "${BLUE}▶ $*${NC}"; }
+success() { echo -e "${GREEN}✔ $*${NC}"; }
+warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
+error()   { echo -e "${RED}✘ $*${NC}"; exit 1; }
+
+# ── 공통 유틸리티 라이브러리 (get_physical_cores, compute_cpu_layout 등) ──────
+_RT_COMMON="${INSTALL_SCRIPT_DIR}/ur5e_rt_controller/scripts/lib/rt_common.sh"
+if [[ -f "$_RT_COMMON" ]]; then
+  # shellcheck source=ur5e_rt_controller/scripts/lib/rt_common.sh
+  source "$_RT_COMMON"
+fi
+# rt_common.sh가 bracket 스타일 로깅을 정의하므로 install.sh 이모지 스타일로 복원
+info()    { echo -e "${BLUE}▶ $*${NC}"; }
+success() { echo -e "${GREEN}✔ $*${NC}"; }
+warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
+error()   { echo -e "${RED}✘ $*${NC}"; exit 1; }
+
+# ── apt-get update 이중 호출 방지 ─────────────────────────────────────────────
+_LAST_APT_UPDATE=0
+apt_update_if_stale() {
+  local now; now=$(date +%s)
+  if (( now - _LAST_APT_UPDATE > 300 )); then
+    sudo apt-get update -qq
+    _LAST_APT_UPDATE=$now
+  fi
+}
+
 # ── Mode & argument parsing ────────────────────────────────────────────────────
 MODE="full"
 CLEAN_BUILD=0
@@ -162,12 +190,6 @@ echo ""
 echo -e "  Mode : ${CYAN}${BOLD}${MODE_DESC}${NC}"
 echo ""
 
-# ── Helper functions ───────────────────────────────────────────────────────────
-info()    { echo -e "${BLUE}▶ $*${NC}"; }
-success() { echo -e "${GREEN}✔ $*${NC}"; }
-warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
-error()   { echo -e "${RED}✘ $*${NC}"; exit 1; }
-
 # ── CPU shield 자동 관리 (빌드 전) ──────────────────────────────────────────
 # cset shield가 활성이면 자동 해제하여 전체 코어로 빌드한다.
 auto_release_cpu_shield() {
@@ -208,12 +230,7 @@ auto_release_cpu_shield() {
 # ── System info (physical vs logical core detection) ──────────────────────────
 {
   LOGICAL_CORES=$(nproc --all)
-  # Quick physical core detection for banner display
-  PHYS_CORES="$LOGICAL_CORES"
-  if command -v lscpu &>/dev/null; then
-    _pc=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l)
-    [[ "$_pc" -gt 0 ]] && PHYS_CORES="$_pc"
-  fi
+  PHYS_CORES=$(get_physical_cores)
   echo -e "  CPU  : ${CYAN}${BOLD}${PHYS_CORES} physical cores${NC} (${LOGICAL_CORES} logical)"
   if [[ "$LOGICAL_CORES" -ne "$PHYS_CORES" ]]; then
     echo -e "         ${YELLOW}SMT/HT detected — thread_config.hpp uses physical core count${NC}"
@@ -373,7 +390,7 @@ check_prerequisites() {
 # ── Common: Workspace + build tools ───────────────────────────────────────────
 setup_workspace() {
   info "Installing ROS2 build tools (${ROS_PKG_PREFIX})..."
-  sudo apt-get update -qq
+  apt_update_if_stale
   sudo apt-get install -y \
       ${ROS_PKG_PREFIX}-ament-cmake \
       ${ROS_PKG_PREFIX}-ament-cmake-gtest \
@@ -499,7 +516,7 @@ install_mujoco() {
 # ── Python dependencies ─────────────────────────────────────────────────────────
 install_python_deps() {
   info "Installing Python dependencies (via apt)..."
-  sudo apt-get update -qq
+  apt_update_if_stale
   sudo apt-get install -y \
       python3-matplotlib \
       python3-pandas \
@@ -673,48 +690,18 @@ install_rt_permissions() {
   if ! grep -q "@realtime.*rtprio" /etc/security/limits.conf; then
     echo "@realtime - rtprio 99" | sudo tee -a /etc/security/limits.conf > /dev/null
   fi
-  # Force memlock unlimited by removing old @realtime memlock entries first
-  sudo sed -i '/@realtime.*memlock/d' /etc/security/limits.conf
-  echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf > /dev/null
+  # memlock unlimited 설정 (이미 올바르면 건너뜀)
+  if ! grep -q '^@realtime - memlock unlimited$' /etc/security/limits.conf 2>/dev/null; then
+    sudo sed -i '/@realtime.*memlock/d' /etc/security/limits.conf
+    echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf > /dev/null
+  fi
 
   success "RT permissions configured (rtprio=99, memlock=unlimited)"
   warn "IMPORTANT: Log out and log back in for RT permissions to take effect"
   warn "Verify with: ulimit -l  (MUST be 'unlimited' to avoid RMW load errors with mlockall)"
 }
 
-# ── Helper: physical CPU core count (SMT/HT 제외) ─────────────────────────
-# nproc은 논리 코어(HT 포함)를 반환하므로, 물리 코어만 카운트한다.
-# 예: i7-8700 (6C/12T) → nproc=12 이지만 이 함수는 6을 반환.
-get_physical_cores() {
-  if command -v lscpu &>/dev/null; then
-    local count
-    count=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l)
-    if [[ "$count" -gt 0 ]]; then
-      echo "$count"
-      return
-    fi
-  fi
-  if [[ -f /sys/devices/system/cpu/cpu0/topology/core_id ]]; then
-    local seen=""
-    local count=0
-    for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
-      local pkg_file="${cpu_dir}topology/physical_package_id"
-      local core_file="${cpu_dir}topology/core_id"
-      [[ -f "$pkg_file" && -f "$core_file" ]] || continue
-      local key
-      key="$(cat "$pkg_file"):$(cat "$core_file")"
-      if [[ ! " $seen " == *" $key "* ]]; then
-        seen="$seen $key"
-        ((count++))
-      fi
-    done
-    if [[ "$count" -gt 0 ]]; then
-      echo "$count"
-      return
-    fi
-  fi
-  nproc --all
-}
+# get_physical_cores() — rt_common.sh에서 제공
 
 # ── cpuset tools for dynamic CPU isolation ──────────────────────────────────
 # cset shield 명령을 사용하여 런타임에 CPU 격리를 on/off 할 수 있다.
@@ -738,30 +725,18 @@ install_cset_tools() {
 # ── [방안 D] NIC IRQ affinity (robot + full) ────────────────────────────────
 # RT 코어를 NIC 인터럽트로부터 보호.
 # 모든 하드웨어 IRQ를 OS 코어로 제한한다.
+# CPU 레이아웃 계산은 setup_irq_affinity.sh 내부에서 rt_common.sh로 처리.
 setup_irq_affinity() {
-  local SCRIPT
-  SCRIPT="${INSTALL_SCRIPT_DIR}/ur5e_rt_controller/scripts/setup_irq_affinity.sh"
+  local SCRIPT="${INSTALL_SCRIPT_DIR}/ur5e_rt_controller/scripts/setup_irq_affinity.sh"
 
   if [[ ! -f "$SCRIPT" ]]; then
     warn "setup_irq_affinity.sh not found — skipping IRQ affinity setup"
-    warn "Run manually after build: sudo $WORKSPACE/src/ur5e-rt-controller/ur5e_rt_controller/scripts/setup_irq_affinity.sh"
     return
   fi
 
-  local PHYS_CORES
-  PHYS_CORES=$(get_physical_cores)
-  local OS_CORES RT_CORES
-  if [[ "$PHYS_CORES" -le 4 ]]; then
-    OS_CORES="0"
-    RT_CORES="1-$((PHYS_CORES - 1))"
-  else
-    OS_CORES="0-1"
-    RT_CORES="2-$((PHYS_CORES - 1))"
-  fi
-
-  info "Configuring NIC IRQ affinity (Core ${OS_CORES} only)..."
+  info "Configuring NIC IRQ affinity..."
   if sudo bash "$SCRIPT"; then
-    success "IRQ affinity configured — RT cores ${RT_CORES} protected from NIC interrupts"
+    success "IRQ affinity configured — RT cores protected from NIC interrupts"
     warn "NOTE: IRQ affinity resets on reboot. To make permanent:"
     warn "  Add 'sudo $SCRIPT' to /etc/rc.local or a systemd oneshot service"
   else

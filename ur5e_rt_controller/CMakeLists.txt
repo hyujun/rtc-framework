@@ -90,6 +90,12 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+# 공통 라이브러리 (source 전용, 실행 권한 불필요)
+install(FILES
+  scripts/lib/rt_common.sh
+  DESTINATION lib/${PROJECT_NAME}/lib
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)

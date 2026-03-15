@@ -1,8 +1,10 @@
 #!/bin/bash
-# setup_irq_affinity.sh — [방안 D] NIC IRQ 친화성 설정
+# setup_irq_affinity.sh — NIC IRQ 친화성 설정
 #
-# RT 코어(Core 2-5)를 NIC 인터럽트로부터 보호.
-# 이더넷 NIC의 IRQ를 Core 0-1로 제한하여 ControlLoop() jitter를 줄인다.
+# RT 코어를 NIC 인터럽트로부터 보호.
+# 이더넷 NIC 및 모든 하드웨어 IRQ를 OS 코어로 제한하여 ControlLoop() jitter를 줄인다.
+#
+# 멱등성: 이미 올바르게 설정된 IRQ는 건너뛴다.
 #
 # Usage:
 #   sudo ./setup_irq_affinity.sh           # NIC 자동 감지
@@ -16,64 +18,27 @@
 
 set -euo pipefail
 
-# ── Colors ────────────────────────────────────────────────────────────────────
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
+# ── 공통 라이브러리 로드 ────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/rt_common.sh
+source "${SCRIPT_DIR}/lib/rt_common.sh"
+make_logger "IRQ"
 
-info()  { echo -e "${GREEN}[IRQ]${NC} $*"; }
-warn()  { echo -e "${YELLOW}[IRQ]${NC} $*"; }
+# error()를 exit 포함 버전으로 재정의
 error() { echo -e "${RED}[IRQ]${NC} $*" >&2; exit 1; }
 
 # ── Root check ────────────────────────────────────────────────────────────────
-if [[ "$EUID" -ne 0 ]]; then
-  error "Root privileges required. Run: sudo $0 $*"
-fi
-
-# ── Helper: physical CPU core count (SMT/HT 제외) ─────────────────────────
-# nproc은 논리 코어(HT 포함)를 반환하므로, 물리 코어만 카운트한다.
-# 예: i7-8700 (6C/12T) → nproc=12 이지만 이 함수는 6을 반환.
-get_physical_cores() {
-  if command -v lscpu &>/dev/null; then
-    local count
-    count=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l)
-    if [[ "$count" -gt 0 ]]; then
-      echo "$count"
-      return
-    fi
-  fi
-  if [[ -f /sys/devices/system/cpu/cpu0/topology/core_id ]]; then
-    local seen=""
-    local count=0
-    for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
-      local pkg_file="${cpu_dir}topology/physical_package_id"
-      local core_file="${cpu_dir}topology/core_id"
-      [[ -f "$pkg_file" && -f "$core_file" ]] || continue
-      local key
-      key="$(cat "$pkg_file"):$(cat "$core_file")"
-      if [[ ! " $seen " == *" $key "* ]]; then
-        seen="$seen $key"
-        ((count++))
-      fi
-    done
-    if [[ "$count" -gt 0 ]]; then
-      echo "$count"
-      return
-    fi
-  fi
-  nproc --all
-}
+require_root "$@"
 
 # ── CPU affinity mask ─────────────────────────────────────────────────────────
-# IRQ를 non-RT 코어에만 할당한다.
-# thread_config.hpp의 코어 레이아웃과 일치시킨다 (물리 코어 기준):
-#   4코어: Core 0 = OS (isolcpus=1-3) → IRQ mask 0x1
-#   6코어: Core 0-1 = OS (isolcpus=2-5) → IRQ mask 0x3
-#   8코어+: Core 0-1 = OS (isolcpus=2-N) → IRQ mask 0x3
-# nproc --all: isolcpus로 격리된 CPU 포함 전체 논리 코어 수 반환
-LOGICAL_CORES=$(nproc --all)
-TOTAL_CORES=$(get_physical_cores)
+# compute_cpu_layout()는 TOTAL_CORES, LOGICAL_CORES, IRQ_AFFINITY_MASK,
+# OS_CORES_DESC, RT_CORES_START, RT_CORES_END 등을 설정한다.
+compute_cpu_layout
+
+AFFINITY_MASK="$IRQ_AFFINITY_MASK"
+AFFINITY_HEX="0x${IRQ_AFFINITY_MASK}"
+OS_CORES="$OS_CORES_DESC"
+RT_CORES="${RT_CORES_START}-${RT_CORES_END}"
 
 if [[ "$LOGICAL_CORES" -ne "$TOTAL_CORES" ]]; then
   info "SMT/HT detected: ${LOGICAL_CORES} logical, ${TOTAL_CORES} physical cores"
@@ -84,46 +49,6 @@ if [[ "$TOTAL_CORES" -lt 4 ]]; then
   warn "Physical core count is ${TOTAL_CORES} (< 4). RT core isolation may not be effective."
   warn "At least 4 physical cores recommended."
 fi
-
-if [[ "$TOTAL_CORES" -le 4 ]]; then
-  # 4코어: Core 0만 OS, Core 1은 RT Control 전용
-  AFFINITY_MASK="1"
-  AFFINITY_HEX="0x1"
-  OS_CORES="0"
-  RT_CORES="1-$((TOTAL_CORES - 1))"
-else
-  # 6코어+: Core 0-1이 OS
-  AFFINITY_MASK="3"
-  AFFINITY_HEX="0x3"
-  OS_CORES="0-1"
-  RT_CORES="2-$((TOTAL_CORES - 1))"
-fi
-
-# ── Helper: detect physical NIC ──────────────────────────────────────────────
-# /sys/class/net/<iface>/device 심볼릭 링크는 물리 NIC에만 존재한다.
-# 가상 인터페이스(docker0, veth*, br-* 등)를 자동으로 제외한다.
-detect_physical_nic() {
-  local iface
-  for iface in /sys/class/net/*/; do
-    iface=$(basename "$iface")
-    [[ "$iface" == "lo" ]] && continue
-    # 물리 디바이스 확인 (PCI/USB 등)
-    [[ -e "/sys/class/net/${iface}/device" ]] || continue
-    # UP 상태 우선
-    if ip link show "$iface" 2>/dev/null | grep -q 'state UP'; then
-      echo "$iface"
-      return
-    fi
-  done
-  # UP 상태 NIC가 없으면 물리 NIC 중 첫 번째 반환
-  for iface in /sys/class/net/*/; do
-    iface=$(basename "$iface")
-    [[ "$iface" == "lo" ]] && continue
-    [[ -e "/sys/class/net/${iface}/device" ]] || continue
-    echo "$iface"
-    return
-  done
-}
 
 # ── Detect or use specified NIC ───────────────────────────────────────────────
 NIC="${1:-}"
@@ -137,6 +62,17 @@ info "Restricting IRQs to Core ${OS_CORES} (affinity mask: ${AFFINITY_HEX})"
 info "Target NIC: ${NIC}"
 echo ""
 
+# ── Helper: 현재 IRQ의 affinity가 이미 올바른지 확인 ──────────────────────────
+is_irq_already_pinned() {
+  local smp_file="$1"
+  local mask
+  mask=$(cat "$smp_file" 2>/dev/null) || return 1
+  # mask에서 콤마, 선행 0 제거 후 비교
+  mask=$(echo "$mask" | tr -d ',' | sed 's/^0*//' | tr '[:upper:]' '[:lower:]')
+  [[ -z "$mask" ]] && mask="0"
+  [[ "$mask" == "$AFFINITY_MASK" ]]
+}
+
 # ── Pin NIC-specific IRQs ─────────────────────────────────────────────────────
 NIC_IRQS=$(grep -w "${NIC}" /proc/interrupts 2>/dev/null | awk -F: '{print $1}' | tr -d ' ')
 
@@ -145,9 +81,14 @@ if [[ -z "$NIC_IRQS" ]]; then
   warn "Verify NIC name with: ip link show"
 else
   for irq in $NIC_IRQS; do
-    if [[ -f "/proc/irq/${irq}/smp_affinity" ]]; then
-      echo "$AFFINITY_MASK" > "/proc/irq/${irq}/smp_affinity"
-      info "  IRQ ${irq} (${NIC}) → Core ${OS_CORES}"
+    SMP_FILE="/proc/irq/${irq}/smp_affinity"
+    if [[ -f "$SMP_FILE" ]]; then
+      if is_irq_already_pinned "$SMP_FILE"; then
+        info "  IRQ ${irq} (${NIC}) → already on Core ${OS_CORES}"
+      else
+        echo "$AFFINITY_MASK" > "$SMP_FILE"
+        info "  IRQ ${irq} (${NIC}) → Core ${OS_CORES}"
+      fi
     fi
   done
 fi
@@ -157,29 +98,57 @@ fi
 info "Pinning all other IRQs to Core ${OS_CORES}..."
 PINNED=0
 SKIPPED=0
+ALREADY_OK=0
 for irq_dir in /proc/irq/*/; do
   irq=$(basename "$irq_dir")
   [[ "$irq" == "0" ]] && continue   # Timer IRQ — do not touch
   smp_file="${irq_dir}smp_affinity"
   if [[ -f "$smp_file" ]]; then
-    if echo "$AFFINITY_MASK" > "$smp_file" 2>/dev/null; then
+    if is_irq_already_pinned "$smp_file"; then
+      ((ALREADY_OK++)) || true
+    elif echo "$AFFINITY_MASK" > "$smp_file" 2>/dev/null; then
       ((PINNED++)) || true
     else
       ((SKIPPED++)) || true
     fi
   fi
 done
-info "  Pinned: ${PINNED} IRQs  |  Skipped (read-only): ${SKIPPED} IRQs"
+info "  Pinned: ${PINNED} IRQs  |  Already OK: ${ALREADY_OK}  |  Skipped (read-only): ${SKIPPED} IRQs"
 
-# ── Verify ────────────────────────────────────────────────────────────────────
+# ── Post-apply verification: RT 코어에 잔여 IRQ 확인 ──────────────────────────
+RT_RESIDUAL=0
+for irq_dir in /proc/irq/*/; do
+  irq=$(basename "$irq_dir")
+  [[ "$irq" == "0" || "$irq" == "default_smp_affinity" ]] && continue
+  smp_file="${irq_dir}smp_affinity"
+  [[ -f "$smp_file" ]] || continue
+  local_mask=$(cat "$smp_file" 2>/dev/null) || continue
+  local_mask=$(echo "$local_mask" | tr -d ',' | sed 's/^0*//' | tr '[:upper:]' '[:lower:]')
+  [[ -z "$local_mask" ]] && local_mask="0"
+  local_dec=$((16#${local_mask}))
+  # RT 코어에 할당되어 있는지 확인
+  for ((core=RT_CORES_START; core<=RT_CORES_END; core++)); do
+    if (( local_dec & (1 << core) )); then
+      ((RT_RESIDUAL++)) || true
+      break
+    fi
+  done
+done
+
 echo ""
-info "Verification:"
-info "  /proc/irq/<N>/smp_affinity should read '${AFFINITY_MASK}' (= Core ${OS_CORES})"
+if [[ "$RT_RESIDUAL" -gt 0 ]]; then
+  warn "Verification: ${RT_RESIDUAL} IRQs still assigned to RT cores (read-only, kernel-protected)"
+  warn "These IRQs cannot be reassigned but are typically low-frequency."
+else
+  info "Verification: All IRQs pinned to OS cores — RT cores fully protected"
+fi
+
+# ── Verify NIC IRQs ──────────────────────────────────────────────────────────
 if [[ -n "$NIC_IRQS" ]]; then
   for irq in $NIC_IRQS; do
     if [[ -f "/proc/irq/${irq}/smp_affinity" ]]; then
       VAL=$(cat "/proc/irq/${irq}/smp_affinity")
-      info "  IRQ ${irq} smp_affinity = ${VAL}  $([ "$VAL" = "$AFFINITY_MASK" ] && echo '✔' || echo '✘ (unexpected)')"
+      info "  IRQ ${irq} smp_affinity = ${VAL}  $([ "$(echo "$VAL" | tr -d ',' | sed 's/^0*//')" = "$AFFINITY_MASK" ] && echo '✔' || echo '✘ (unexpected)')"
     fi
   done
 fi

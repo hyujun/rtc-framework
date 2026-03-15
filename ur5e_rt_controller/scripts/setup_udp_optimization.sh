@@ -4,6 +4,8 @@
 # 실시간 UDP/ROS2(DDS) 통신을 위한 NIC 및 커널 네트워크 스택 최적화.
 # IRQ affinity와 함께 사용하면 ControlLoop() jitter를 최소화할 수 있습니다.
 #
+# 멱등성: 이미 적용된 설정은 건너뛰고, 변경이 필요한 경우에만 적용합니다.
+#
 # Usage:
 #   sudo ./setup_udp_optimization.sh           # NIC 자동 감지
 #   sudo ./setup_udp_optimization.sh enp1s0    # NIC 이름 명시
@@ -17,45 +19,17 @@
 
 set -euo pipefail
 
-# ── Colors ────────────────────────────────────────────────────────────────────
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# ── 공통 라이브러리 로드 ────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/rt_common.sh
+source "${SCRIPT_DIR}/lib/rt_common.sh"
+make_logger "UDP-OPT"
 
-info()    { echo -e "${GREEN}[UDP-OPT]${NC} $*"; }
-warn()    { echo -e "${YELLOW}[UDP-OPT]${NC} $*"; }
-error()   { echo -e "${RED}[UDP-OPT]${NC} $*" >&2; exit 1; }
-section() { echo -e "${BLUE}[UDP-OPT]${NC} $*"; }
+# error()를 exit 포함 버전으로 재정의
+error() { echo -e "${RED}[UDP-OPT]${NC} $*" >&2; exit 1; }
 
 # ── Root check ────────────────────────────────────────────────────────────────
-if [[ "$EUID" -ne 0 ]]; then
-  error "Root privileges required. Run: sudo $0 ${1:-}"
-fi
-
-# ── Helper: detect physical NIC ──────────────────────────────────────────────
-# /sys/class/net/<iface>/device 심볼릭 링크는 물리 NIC에만 존재한다.
-# 가상 인터페이스(docker0, veth*, br-* 등)를 자동으로 제외한다.
-detect_physical_nic() {
-  local iface
-  for iface in /sys/class/net/*/; do
-    iface=$(basename "$iface")
-    [[ "$iface" == "lo" ]] && continue
-    [[ -e "/sys/class/net/${iface}/device" ]] || continue
-    if ip link show "$iface" 2>/dev/null | grep -q 'state UP'; then
-      echo "$iface"
-      return
-    fi
-  done
-  for iface in /sys/class/net/*/; do
-    iface=$(basename "$iface")
-    [[ "$iface" == "lo" ]] && continue
-    [[ -e "/sys/class/net/${iface}/device" ]] || continue
-    echo "$iface"
-    return
-  done
-}
+require_root "${1:-}"
 
 # ── Detect or use specified NIC ───────────────────────────────────────────────
 NIC="${1:-}"
@@ -90,37 +64,76 @@ run_ethtool() {
 
 # ── 1. NIC Interrupt Coalescing 비활성화 ──────────────────────────────────────
 # 데이터가 찰 때까지 기다리지 않고 즉시 인터럽트를 발생시켜 지연 시간을 최소화합니다.
-section "Step 1: Disabling NIC Interrupt Coalescing..."
-run_ethtool -C "$NIC" rx-usecs 0 tx-usecs 0
-run_ethtool -C "$NIC" adaptive-rx off adaptive-tx off
-info "  Interrupt coalescing: rx-usecs=0, tx-usecs=0, adaptive=off"
+section "Step 1: NIC Interrupt Coalescing..."
+COAL_CHANGED=0
+COAL_OUT=$(ethtool -c "$NIC" 2>/dev/null) || true
+CURRENT_RX_USECS=$(echo "$COAL_OUT" | grep "^rx-usecs:" | awk '{print $2}')
+CURRENT_ADAPTIVE_RX=$(echo "$COAL_OUT" | grep "^Adaptive RX:" | awk '{print $2}')
+
+if [[ "$CURRENT_RX_USECS" != "0" ]]; then
+  run_ethtool -C "$NIC" rx-usecs 0 tx-usecs 0
+  COAL_CHANGED=1
+fi
+if [[ "$CURRENT_ADAPTIVE_RX" != "off" ]]; then
+  run_ethtool -C "$NIC" adaptive-rx off adaptive-tx off
+  COAL_CHANGED=1
+fi
+
+if [[ "$COAL_CHANGED" -eq 1 ]]; then
+  info "  Interrupt coalescing: rx-usecs=0, tx-usecs=0, adaptive=off"
+else
+  info "  Interrupt coalescing already optimal — skipped"
+fi
 
 # ── 2. 오프로딩 기능 비활성화 ────────────────────────────────────────────────
 # 하드웨어가 패킷을 병합(Aggregation)하는 기능을 끄면 CPU 부하가 약간 늘지만
 # 지연 시간은 줄어듭니다 (DDS RTPS 소형 패킷에 유리).
-section "Step 2: Disabling NIC Offload Features..."
-run_ethtool -K "$NIC" gro off lro off tso off gso off
-info "  Offloads disabled: GRO, LRO, TSO, GSO"
+section "Step 2: NIC Offload Features..."
+OFFLOAD_CHANGED=0
+OFFLOAD_OUT=$(ethtool -k "$NIC" 2>/dev/null) || true
+for feature in generic-receive-offload large-receive-offload tcp-segmentation-offload generic-segmentation-offload; do
+  CURRENT=$(echo "$OFFLOAD_OUT" | grep "^${feature}:" | awk '{print $2}')
+  if [[ "$CURRENT" != "off" && -n "$CURRENT" ]]; then
+    OFFLOAD_CHANGED=1
+    break
+  fi
+done
+
+if [[ "$OFFLOAD_CHANGED" -eq 1 ]]; then
+  run_ethtool -K "$NIC" gro off lro off tso off gso off
+  info "  Offloads disabled: GRO, LRO, TSO, GSO"
+else
+  info "  Offloads already disabled — skipped"
+fi
 
 # ── 3. 링 버퍼 크기 조정 ──────────────────────────────────────────────────────
 # 너무 크면 지연 시간(버퍼링)이 늘고, 너무 작으면 패킷 유실이 발생합니다.
 # 1024는 RT/DDS 통신에서 균형 잡힌 값입니다.
-section "Step 3: Adjusting Ring Buffer Size (rx=1024, tx=1024)..."
-run_ethtool -G "$NIC" rx 1024 tx 1024
-info "  Ring buffer: rx=1024, tx=1024"
+section "Step 3: Ring Buffer Size..."
+RING_CHANGED=0
+RING_OUT=$(ethtool -g "$NIC" 2>/dev/null) || true
+# "Current hardware settings:" 이후의 RX/TX 값을 확인
+CURRENT_RX_RING=$(echo "$RING_OUT" | awk '/Current hardware settings:/,0' | grep "^RX:" | head -1 | awk '{print $2}')
+if [[ -n "$CURRENT_RX_RING" && "$CURRENT_RX_RING" != "1024" ]]; then
+  run_ethtool -G "$NIC" rx 1024 tx 1024
+  RING_CHANGED=1
+fi
+
+if [[ "$RING_CHANGED" -eq 1 ]]; then
+  info "  Ring buffer: rx=1024, tx=1024"
+else
+  info "  Ring buffer already 1024 — skipped"
+fi
 
 # ── 4. 커널 네트워크 스택 최적화 (sysctl) ────────────────────────────────────
 # ROS 2 (DDS) 통신 시 대용량 데이터 전송 및 빠른 처리를 위한 설정.
+# rmem_max/wmem_max: DDS가 setsockopt으로 필요한 만큼 확보할 수 있도록 상한 확대.
+# rmem_default/wmem_default: Linux 기본값(212992) 유지 — 모든 소켓에 거대 버퍼 할당 방지.
 # 영구 적용: /etc/sysctl.d/99-ros2-udp.conf
-section "Step 4: Optimizing Kernel Network Stack (sysctl)..."
+section "Step 4: Kernel Network Stack (sysctl)..."
 
 SYSCTL_CONF="/etc/sysctl.d/99-ros2-udp.conf"
-if [[ -f "$SYSCTL_CONF" ]]; then
-  cp "$SYSCTL_CONF" "${SYSCTL_CONF}.bak.$(date +%Y%m%d%H%M%S)"
-  info "  Existing config backed up: ${SYSCTL_CONF}.bak.*"
-fi
-cat > "$SYSCTL_CONF" << 'EOF'
-# ROS 2 / DDS Real-time UDP optimization
+SYSCTL_CONTENT="# ROS 2 / DDS Real-time UDP optimization
 # Generated by setup_udp_optimization.sh
 # Reference: https://docs.ros.org/en/jazzy/How-To-Guides/DDS-tuning.html
 
@@ -132,22 +145,26 @@ net.core.wmem_max     = 2147483647
 net.core.wmem_default = 212992
 
 # Input packet queue depth — prevents drops under burst load
-net.core.netdev_max_backlog = 5000
-EOF
+net.core.netdev_max_backlog = 5000"
 
-# 즉시 적용 (재부팅 없이)
+if write_file_if_changed "$SYSCTL_CONF" "$SYSCTL_CONTENT"; then
+  info "  Config written to ${SYSCTL_CONF}"
+else
+  info "  ${SYSCTL_CONF} already up-to-date — skipped"
+fi
+
+# 즉시 적용 (재부팅 없이) — conf 파일의 값과 일치하는 fallback
 sysctl -p "$SYSCTL_CONF" > /dev/null 2>&1 || {
-  # sysctl -p <file> fails on some older distros; fall back to -w per param
   sysctl -w net.core.rmem_max=2147483647     > /dev/null
-  sysctl -w net.core.rmem_default=2147483647 > /dev/null
+  sysctl -w net.core.rmem_default=212992     > /dev/null
   sysctl -w net.core.wmem_max=2147483647     > /dev/null
-  sysctl -w net.core.wmem_default=2147483647 > /dev/null
+  sysctl -w net.core.wmem_default=212992     > /dev/null
   sysctl -w net.core.netdev_max_backlog=5000 > /dev/null
 }
 
 info "  rmem_max / wmem_max = 2147483647 (2 GB)"
+info "  rmem_default / wmem_default = 212992 (Linux default)"
 info "  netdev_max_backlog  = 5000"
-info "  Persistent config written to ${SYSCTL_CONF}"
 
 # ── 5. IRQ 친화성 안내 ────────────────────────────────────────────────────────
 # NIC IRQ affinity는 setup_irq_affinity.sh에서 별도 처리합니다.

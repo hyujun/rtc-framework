@@ -25,49 +25,11 @@
 
 set -euo pipefail
 
-# ── Colors ────────────────────────────────────────────────────────────────────
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
-info()    { echo -e "${CYAN}[SHIELD]${NC} $*"; }
-success() { echo -e "${GREEN}[SHIELD]${NC} $*"; }
-warn()    { echo -e "${YELLOW}[SHIELD]${NC} $*"; }
-error()   { echo -e "${RED}[SHIELD]${NC} $*" >&2; }
-
-# ── Helper: physical CPU core count (SMT/HT 제외) ─────────────────────────
-get_physical_cores() {
-  if command -v lscpu &>/dev/null; then
-    local count
-    count=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l)
-    if [[ "$count" -gt 0 ]]; then
-      echo "$count"
-      return
-    fi
-  fi
-  if [[ -f /sys/devices/system/cpu/cpu0/topology/core_id ]]; then
-    local seen=""
-    local count=0
-    for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
-      local pkg_file="${cpu_dir}topology/physical_package_id"
-      local core_file="${cpu_dir}topology/core_id"
-      [[ -f "$pkg_file" && -f "$core_file" ]] || continue
-      local key
-      key="$(cat "$pkg_file"):$(cat "$core_file")"
-      if [[ ! " $seen " == *" $key "* ]]; then
-        seen="$seen $key"
-        ((count++))
-      fi
-    done
-    if [[ "$count" -gt 0 ]]; then
-      echo "$count"
-      return
-    fi
-  fi
-  nproc --all
-}
+# ── 공통 라이브러리 로드 ────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/rt_common.sh
+source "${SCRIPT_DIR}/lib/rt_common.sh"
+make_logger "SHIELD"
 
 # ── Compute shield cores based on mode and core count ─────────────────────
 compute_shield_cores() {
@@ -150,15 +112,31 @@ do_on() {
     fi
   fi
 
-  # Fallback: /sys/fs/cgroup/cpuset direct manipulation
-  local cpuset_root="/sys/fs/cgroup/cpuset"
-  if [[ -d "$cpuset_root" ]]; then
+  # Fallback: cgroup v2 통합 경로 또는 cgroup v1 cpuset
+  local cpuset_root=""
+  if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then
+    # cgroup v2: 통합 경로
+    cpuset_root="/sys/fs/cgroup"
+  elif [[ -d /sys/fs/cgroup/cpuset ]]; then
+    # cgroup v1: 별도 cpuset 경로
+    cpuset_root="/sys/fs/cgroup/cpuset"
+  fi
+
+  if [[ -n "$cpuset_root" ]]; then
     local shield_dir="${cpuset_root}/rt_shield"
     mkdir -p "$shield_dir" 2>/dev/null || true
     if [[ -d "$shield_dir" ]]; then
-      echo "$shield_cores" > "${shield_dir}/cpuset.cpus" 2>/dev/null
-      echo 0 > "${shield_dir}/cpuset.mems" 2>/dev/null
-      echo 1 > "${shield_dir}/cpuset.cpu_exclusive" 2>/dev/null || true
+      if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then
+        # cgroup v2: cpuset 컨트롤러 활성화
+        echo "+cpuset" > "${cpuset_root}/cgroup.subtree_control" 2>/dev/null || true
+        echo "$shield_cores" > "${shield_dir}/cpuset.cpus" 2>/dev/null || true
+        echo "0" > "${shield_dir}/cpuset.mems" 2>/dev/null || true
+      else
+        # cgroup v1
+        echo "$shield_cores" > "${shield_dir}/cpuset.cpus" 2>/dev/null
+        echo 0 > "${shield_dir}/cpuset.mems" 2>/dev/null
+        echo 1 > "${shield_dir}/cpuset.cpu_exclusive" 2>/dev/null || true
+      fi
       echo "$mode" > "$SHIELD_MODE_FILE"
       success "cpuset fallback: Core ${shield_cores} isolated via ${shield_dir}"
       return 0
@@ -186,13 +164,27 @@ do_off() {
     fi
   fi
 
-  # Fallback: remove cpuset rt_shield
-  local shield_dir="/sys/fs/cgroup/cpuset/rt_shield"
-  if [[ -d "$shield_dir" ]]; then
-    # Move tasks back to root cpuset
-    while IFS= read -r pid; do
-      echo "$pid" > /sys/fs/cgroup/cpuset/tasks 2>/dev/null || true
-    done < "${shield_dir}/tasks" 2>/dev/null || true
+  # Fallback: remove cpuset rt_shield (cgroup v1 or v2)
+  local shield_dir=""
+  if [[ -d /sys/fs/cgroup/rt_shield ]]; then
+    shield_dir="/sys/fs/cgroup/rt_shield"
+  elif [[ -d /sys/fs/cgroup/cpuset/rt_shield ]]; then
+    shield_dir="/sys/fs/cgroup/cpuset/rt_shield"
+  fi
+
+  if [[ -n "$shield_dir" && -d "$shield_dir" ]]; then
+    # Move tasks back to parent cgroup
+    local tasks_file="${shield_dir}/cgroup.procs"
+    [[ -f "$tasks_file" ]] || tasks_file="${shield_dir}/tasks"
+    local parent_tasks
+    parent_tasks="$(dirname "$shield_dir")/cgroup.procs"
+    [[ -f "$parent_tasks" ]] || parent_tasks="$(dirname "$shield_dir")/tasks"
+
+    if [[ -f "$tasks_file" && -f "$parent_tasks" ]]; then
+      while IFS= read -r pid; do
+        echo "$pid" > "$parent_tasks" 2>/dev/null || true
+      done < "$tasks_file" 2>/dev/null || true
+    fi
     rmdir "$shield_dir" 2>/dev/null || true
     rm -f "$SHIELD_MODE_FILE"
     success "cpuset fallback shield removed — all cores available"

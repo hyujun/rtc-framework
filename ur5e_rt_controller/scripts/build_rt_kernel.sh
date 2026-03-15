@@ -25,53 +25,18 @@
 
 set -euo pipefail
 
-# ── Colors ────────────────────────────────────────────────────────────────────
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-BLUE='\033[0;34m'
-DIM='\033[2m'
-BOLD='\033[1m'
-NC='\033[0m'
+# ── 공통 라이브러리 로드 ────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/rt_common.sh
+source "${SCRIPT_DIR}/lib/rt_common.sh"
 
+# build_rt_kernel 전용 로깅 (기존 호출 코드와 호환)
 info()    { echo -e "${BLUE}[RT-KERNEL]${NC} $*"; }
 success() { echo -e "${GREEN}[RT-KERNEL]${NC} $*"; }
 warn()    { echo -e "${YELLOW}[RT-KERNEL]${NC} $*"; }
 error()   { echo -e "${RED}[RT-KERNEL]${NC} $*" >&2; exit 1; }
 
-# ── Helper: physical CPU core count (SMT/HT 제외) ────────────────────────────
-# nproc은 논리 코어(HT 포함)를 반환하므로, 물리 코어만 카운트한다.
-# 예: i7-8700 (6C/12T) → nproc=12 이지만 이 함수는 6을 반환.
-get_physical_cores() {
-  if command -v lscpu &>/dev/null; then
-    local count
-    count=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l)
-    if [[ "$count" -gt 0 ]]; then
-      echo "$count"
-      return
-    fi
-  fi
-  if [[ -f /sys/devices/system/cpu/cpu0/topology/core_id ]]; then
-    local seen=""
-    local count=0
-    for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
-      local pkg_file="${cpu_dir}topology/physical_package_id"
-      local core_file="${cpu_dir}topology/core_id"
-      [[ -f "$pkg_file" && -f "$core_file" ]] || continue
-      local key
-      key="$(cat "$pkg_file"):$(cat "$core_file")"
-      if [[ ! " $seen " == *" $key "* ]]; then
-        seen="$seen $key"
-        ((count++))
-      fi
-    done
-    if [[ "$count" -gt 0 ]]; then
-      echo "$count"
-      return
-    fi
-  fi
-  nproc --all
-}
+# get_physical_cores() — rt_common.sh에서 제공
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
 BATCH_MODE=0

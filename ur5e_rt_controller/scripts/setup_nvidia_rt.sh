@@ -20,18 +20,21 @@
 
 set -euo pipefail
 
-# ── Colors ──────────────────────────────────────────────────────────────────
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
+# ── 공통 라이브러리 로드 ────────────────────────────────────────────────────
+SCRIPT_DIR_NVIDIA="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/rt_common.sh
+source "${SCRIPT_DIR_NVIDIA}/lib/rt_common.sh"
+make_logger "NVIDIA-RT"
 
+# NVIDIA 스크립트 전용 로깅 재정의 (기존 호출 코드와 호환)
 success() { echo -e "${GREEN}[SUCCESS]${NC} $*"; }
 warn()    { echo -e "${YELLOW}[WARNING]${NC} $*"; }
 error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 info()    { echo -e "${CYAN}[INFO]${NC} $*"; }
+
+# ── 지연 작업 플래그 (멱등성 최적화) ───────────────────────────────────────
+_NEED_DAEMON_RELOAD=0
+_NEED_INITRAMFS_UPDATE=0
 
 # ── Help ────────────────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
@@ -69,42 +72,7 @@ CHANGES_APPLIED=()
 BACKUP_FILES=()
 WARNINGS=()
 
-# ── Helper: physical CPU core count (SMT/HT 제외) ─────────────────────────
-# nproc은 논리 코어(HT 포함)를 반환하므로, 물리 코어만 카운트한다.
-# 예: i7-8700 (6C/12T) → nproc=12 이지만 이 함수는 6을 반환.
-# thread_config.hpp의 코어 레이아웃은 물리 코어 기준이므로 반드시 물리 코어를 사용해야 한다.
-get_physical_cores() {
-  if command -v lscpu &>/dev/null; then
-    local count
-    count=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l)
-    if [[ "$count" -gt 0 ]]; then
-      echo "$count"
-      return
-    fi
-  fi
-  # Fallback: sysfs topology 직접 파싱
-  if [[ -f /sys/devices/system/cpu/cpu0/topology/core_id ]]; then
-    local seen=""
-    local count=0
-    for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
-      local pkg_file="${cpu_dir}topology/physical_package_id"
-      local core_file="${cpu_dir}topology/core_id"
-      [[ -f "$pkg_file" && -f "$core_file" ]] || continue
-      local key
-      key="$(cat "$pkg_file"):$(cat "$core_file")"
-      if [[ ! " $seen " == *" $key "* ]]; then
-        seen="$seen $key"
-        ((count++))
-      fi
-    done
-    if [[ "$count" -gt 0 ]]; then
-      echo "$count"
-      return
-    fi
-  fi
-  # 최후 수단: nproc --all (VM, 컨테이너 등에서 sysfs 미지원 시)
-  nproc --all
-}
+# get_physical_cores() — rt_common.sh에서 제공
 
 # ── Helper: backup a file before modifying ──────────────────────────────────
 backup_file() {
@@ -422,9 +390,9 @@ if [[ "$GRUB_MODIFIED" -eq 1 ]]; then
 
   # GRUB_CMDLINE_LINUX_DEFAULT 라인 교체 또는 추가
   if grep -q "^${GRUB_VAR}=" "$GRUB_FILE"; then
-    # sed로 해당 라인 교체 (특수문자 이스케이프)
-    ESCAPED_CMDLINE=$(printf '%s' "$NEW_CMDLINE" | sed 's/[&/\]/\\&/g')
-    sed -i "s|^${GRUB_VAR}=.*|${GRUB_VAR}=\"${ESCAPED_CMDLINE}\"|" "$GRUB_FILE"
+    # sed로 해당 라인 교체 (구분자 # 사용 — cmdline에 |가 있을 수 있으므로)
+    ESCAPED_CMDLINE=$(printf '%s' "$NEW_CMDLINE" | sed 's/[&#\\/]/\\&/g')
+    sed -i "s#^${GRUB_VAR}=.*#${GRUB_VAR}=\"${ESCAPED_CMDLINE}\"#" "$GRUB_FILE"
   else
     echo "${GRUB_VAR}=\"${NEW_CMDLINE}\"" >> "$GRUB_FILE"
   fi
@@ -436,9 +404,8 @@ if [[ "$GRUB_MODIFIED" -eq 1 ]]; then
   update-grub 2>/dev/null
   success "update-grub 완료"
 
-  info "update-initramfs -u 실행 중..."
-  update-initramfs -u 2>/dev/null
-  success "initramfs 업데이트 완료"
+  _NEED_INITRAMFS_UPDATE=1
+  info "initramfs 업데이트 — 스크립트 종료 시 일괄 실행"
 else
   info "GRUB 파라미터가 이미 모두 설정되어 있습니다 — 건너뜀"
 fi
@@ -506,22 +473,26 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target"
 
-# 스크립트 설치
-echo "$IRQ_SCRIPT_CONTENT" > "$IRQ_SCRIPT"
-chmod +x "$IRQ_SCRIPT"
-success "IRQ affinity 스크립트: ${IRQ_SCRIPT}"
-
-# 서비스 설치
-if [[ -f "$IRQ_SERVICE" ]] && diff -q <(echo "$IRQ_SERVICE_CONTENT") "$IRQ_SERVICE" &>/dev/null; then
-  info "서비스가 이미 동일한 설정으로 존재합니다 — 건너뜀"
+# 스크립트 설치 (멱등: 내용 동일하면 skip)
+if write_file_if_changed "$IRQ_SCRIPT" "$IRQ_SCRIPT_CONTENT" false; then
+  chmod +x "$IRQ_SCRIPT"
+  success "IRQ affinity 스크립트: ${IRQ_SCRIPT}"
 else
-  backup_file "$IRQ_SERVICE"
-  echo "$IRQ_SERVICE_CONTENT" > "$IRQ_SERVICE"
-  success "서비스 파일: ${IRQ_SERVICE}"
-  CHANGES_APPLIED+=("NVIDIA IRQ affinity 서비스: ${IRQ_SERVICE}")
+  info "IRQ affinity 스크립트 이미 동일 — 건너뜀"
 fi
 
-systemctl daemon-reload
+# 서비스 설치 (멱등)
+if write_file_if_changed "$IRQ_SERVICE" "$IRQ_SERVICE_CONTENT"; then
+  success "서비스 파일: ${IRQ_SERVICE}"
+  CHANGES_APPLIED+=("NVIDIA IRQ affinity 서비스: ${IRQ_SERVICE}")
+  _NEED_DAEMON_RELOAD=1
+else
+  info "서비스가 이미 동일한 설정으로 존재합니다 — 건너뜀"
+fi
+
+if [[ "$_NEED_DAEMON_RELOAD" -eq 1 ]]; then
+  : # daemon-reload는 스크립트 끝에서 한 번만 실행
+fi
 systemctl enable nvidia-irq-affinity.service 2>/dev/null
 # 현재 NVIDIA IRQ가 있으면 즉시 실행
 if grep -qE "nvidia|NVrm" /proc/interrupts 2>/dev/null; then
@@ -561,16 +532,14 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target"
 
-if [[ -f "$PERSIST_SERVICE" ]] && diff -q <(echo "$PERSIST_SERVICE_CONTENT") "$PERSIST_SERVICE" &>/dev/null; then
-  info "Persistence 서비스가 이미 동일한 설정으로 존재합니다 — 건너뜀"
-else
-  backup_file "$PERSIST_SERVICE"
-  echo "$PERSIST_SERVICE_CONTENT" > "$PERSIST_SERVICE"
-  systemctl daemon-reload
-  systemctl enable --now nvidia-persistence.service 2>/dev/null || true
+if write_file_if_changed "$PERSIST_SERVICE" "$PERSIST_SERVICE_CONTENT"; then
+  _NEED_DAEMON_RELOAD=1
   success "Persistence mode 서비스: ${PERSIST_SERVICE}"
   CHANGES_APPLIED+=("NVIDIA persistence mode 서비스: ${PERSIST_SERVICE}")
+else
+  info "Persistence 서비스가 이미 동일한 설정으로 존재합니다 — 건너뜀"
 fi
+systemctl enable --now nvidia-persistence.service 2>/dev/null || true
 
 echo ""
 
@@ -594,10 +563,7 @@ if [[ "$NOUVEAU_ACTIVE" -eq 1 ]]; then
     echo "$NOUVEAU_CONTENT" > "$NOUVEAU_CONF"
     success "nouveau 블랙리스트: ${NOUVEAU_CONF}"
     CHANGES_APPLIED+=("nouveau 블랙리스트: ${NOUVEAU_CONF}")
-
-    info "update-initramfs -u 실행 중..."
-    update-initramfs -u 2>/dev/null
-    success "initramfs 업데이트 완료"
+    _NEED_INITRAMFS_UPDATE=1
   fi
 else
   # nouveau가 비활성이어도 블랙리스트 파일이 없으면 예방적으로 설치
@@ -730,19 +696,22 @@ ExecStartPre=/bin/sleep 5
 [Install]
 WantedBy=graphical.target"
 
-echo "$COMPOSITOR_SCRIPT_CONTENT" > "$COMPOSITOR_SCRIPT"
-chmod +x "$COMPOSITOR_SCRIPT"
-success "Compositor 부스트 스크립트: ${COMPOSITOR_SCRIPT}"
-
-if [[ -f "$COMPOSITOR_SERVICE" ]] && diff -q <(echo "$COMPOSITOR_SERVICE_CONTENT") "$COMPOSITOR_SERVICE" &>/dev/null; then
-  info "서비스가 이미 동일한 설정으로 존재합니다 — 건너뜀"
+# 스크립트 설치 (멱등)
+if write_file_if_changed "$COMPOSITOR_SCRIPT" "$COMPOSITOR_SCRIPT_CONTENT" false; then
+  chmod +x "$COMPOSITOR_SCRIPT"
+  success "Compositor 부스트 스크립트: ${COMPOSITOR_SCRIPT}"
 else
-  backup_file "$COMPOSITOR_SERVICE"
-  echo "$COMPOSITOR_SERVICE_CONTENT" > "$COMPOSITOR_SERVICE"
-  systemctl daemon-reload
+  info "Compositor 부스트 스크립트 이미 동일 — 건너뜀"
+fi
+
+# 서비스 설치 (멱등)
+if write_file_if_changed "$COMPOSITOR_SERVICE" "$COMPOSITOR_SERVICE_CONTENT"; then
+  _NEED_DAEMON_RELOAD=1
   systemctl enable rt-compositor-boost.service 2>/dev/null
   success "Compositor 부스트 서비스: ${COMPOSITOR_SERVICE}"
   CHANGES_APPLIED+=("Compositor 우선순위 부스트 서비스: ${COMPOSITOR_SERVICE}")
+else
+  info "서비스가 이미 동일한 설정으로 존재합니다 — 건너뜀"
 fi
 
 # GUI 환경이면 즉시 실행
@@ -1035,15 +1004,13 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target"
 
-if [[ -f "$GOV_SERVICE" ]] && diff -q <(echo "$GOV_SERVICE_CONTENT") "$GOV_SERVICE" &>/dev/null; then
-  info "CPU governor 서비스가 이미 동일한 설정으로 존재합니다 — 건너뜀"
-else
-  backup_file "$GOV_SERVICE"
-  echo "$GOV_SERVICE_CONTENT" > "$GOV_SERVICE"
-  systemctl daemon-reload
+if write_file_if_changed "$GOV_SERVICE" "$GOV_SERVICE_CONTENT"; then
+  _NEED_DAEMON_RELOAD=1
   systemctl enable cpu-governor-performance.service 2>/dev/null
   success "CPU governor 서비스: ${GOV_SERVICE}"
   CHANGES_APPLIED+=("CPU governor performance 서비스: ${GOV_SERVICE}")
+else
+  info "CPU governor 서비스가 이미 동일한 설정으로 존재합니다 — 건너뜀"
 fi
 
 # Intel P-state 드라이버 확인 (NUC 등 Intel 시스템)
@@ -1064,6 +1031,18 @@ echo ""
 # ══════════════════════════════════════════════════════════════════════════════
 # [11/11] Validation & Summary
 # ══════════════════════════════════════════════════════════════════════════════
+# ── 지연된 시스템 작업 일괄 실행 ────────────────────────────────────────────
+if [[ "$_NEED_DAEMON_RELOAD" -eq 1 ]]; then
+  info "systemctl daemon-reload 실행 중..."
+  systemctl daemon-reload
+  success "daemon-reload 완료"
+fi
+if [[ "$_NEED_INITRAMFS_UPDATE" -eq 1 ]]; then
+  info "update-initramfs -u 실행 중..."
+  update-initramfs -u 2>/dev/null
+  success "initramfs 업데이트 완료"
+fi
+
 echo -e "${BOLD}━━━ [11/11] 설정 요약 ━━━${NC}"
 echo ""
 

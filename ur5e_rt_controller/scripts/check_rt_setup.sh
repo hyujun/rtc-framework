@@ -25,14 +25,10 @@
 
 set -u
 
-# ── Colors ────────────────────────────────────────────────────────────────────
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-DIM='\033[2m'
-NC='\033[0m'
+# ── 공통 라이브러리 로드 ────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/rt_common.sh
+source "${SCRIPT_DIR}/lib/rt_common.sh"
 
 # ── Output mode ──────────────────────────────────────────────────────────────
 OUTPUT_MODE="verbose"   # verbose | summary | json
@@ -47,8 +43,7 @@ SKIP_COUNT=0
 # ── JSON accumulator ────────────────────────────────────────────────────────
 JSON_CATEGORIES=""
 
-# ── Script directory (for --fix suggestions) ─────────────────────────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# SCRIPT_DIR — rt_common.sh 로드 시 이미 설정됨 (for --fix suggestions)
 
 # ── Argument parsing ────────────────────────────────────────────────────────
 show_help() {
@@ -150,149 +145,16 @@ _category_set_detail() {
   CATEGORY_DETAIL["$1"]="$2"
 }
 
-# ── Helper: physical CPU core count (SMT/HT 제외) ────────────────────────────
-# nproc은 논리 코어(HT 포함)를 반환하므로, 물리 코어만 카운트한다.
-# 예: i7-8700 (6C/12T) → nproc=12 이지만 이 함수는 6을 반환.
-get_physical_cores() {
-  if command -v lscpu &>/dev/null; then
-    local count
-    count=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l)
-    if [[ "$count" -gt 0 ]]; then
-      echo "$count"
-      return
-    fi
-  fi
-  if [[ -f /sys/devices/system/cpu/cpu0/topology/core_id ]]; then
-    local seen=""
-    local count=0
-    for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
-      local pkg_file="${cpu_dir}topology/physical_package_id"
-      local core_file="${cpu_dir}topology/core_id"
-      [[ -f "$pkg_file" && -f "$core_file" ]] || continue
-      local key
-      key="$(cat "$pkg_file"):$(cat "$core_file")"
-      if [[ ! " $seen " == *" $key "* ]]; then
-        seen="$seen $key"
-        ((count++))
-      fi
-    done
-    if [[ "$count" -gt 0 ]]; then
-      echo "$count"
-      return
-    fi
-  fi
-  nproc --all
-}
+# get_physical_cores() — rt_common.sh에서 제공
 
 # ── CPU layout auto-detection ────────────────────────────────────────────────
-# thread_config.hpp는 물리 코어 수로 레이아웃(4/6/8-core)을 선택하고,
-# 물리 코어 인덱스(= 논리 CPU 번호)에 스레드를 pinning한다.
-# 하지만 isolcpus는 논리 CPU 번호를 사용하므로, SMT/HT 시스템에서는
-# RT 물리 코어의 HT 시블링 논리 CPU도 격리 대상에 포함해야 한다.
-# nproc --all: isolcpus로 격리된 CPU 포함 전체 논리 코어 수 반환
-# nproc (without --all)은 격리된 CPU를 제외하므로 isolcpus 설정 시 잘못된 값 반환
-LOGICAL_CORES=$(nproc --all)
-TOTAL_CORES=$(get_physical_cores)
-HAS_SMT=0
-if [[ "$LOGICAL_CORES" -ne "$TOTAL_CORES" ]]; then
-  HAS_SMT=1
-fi
+# compute_cpu_layout()는 rt_common.sh에서 제공.
+# LOGICAL_CORES, TOTAL_CORES, HAS_SMT, IRQ_AFFINITY_MASK, OS_CORES_DESC,
+# OS_PHYS_START, OS_PHYS_END, RT_CORES_START, RT_CORES_END를 설정한다.
+compute_cpu_layout
+EXPECTED_IRQ_MASK="$IRQ_AFFINITY_MASK"
 
-if [[ "$TOTAL_CORES" -le 4 ]]; then
-  EXPECTED_IRQ_MASK="1"      # 0x1 = Core 0 only
-  OS_CORES_DESC="0"
-  OS_PHYS_START=0
-  OS_PHYS_END=0
-  RT_CORES_START=1           # 물리 코어 기준 (thread_config.hpp 인덱스)
-else
-  EXPECTED_IRQ_MASK="3"      # 0x3 = Core 0-1
-  OS_CORES_DESC="0-1"
-  OS_PHYS_START=0
-  OS_PHYS_END=1
-  RT_CORES_START=2           # 물리 코어 기준
-fi
-RT_CORES_END=$((TOTAL_CORES - 1))
-
-# ── Helper: sysfs에서 OS 물리 코어에 속하는 모든 논리 CPU 번호 조회 ──────────
-# 반환값: OS에 해당하는 논리 CPU 번호 집합 (나머지가 isolcpus 대상)
-get_os_logical_cpus() {
-  local os_cpus=""
-  for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
-    local cpu_num
-    cpu_num=$(basename "$cpu_dir" | sed 's/cpu//')
-    local core_file="${cpu_dir}topology/core_id"
-    [[ -f "$core_file" ]] || continue
-    local core_id
-    core_id=$(cat "$core_file" 2>/dev/null)
-    if [[ "$core_id" -ge "$OS_PHYS_START" && "$core_id" -le "$OS_PHYS_END" ]]; then
-      os_cpus="${os_cpus} ${cpu_num}"
-    fi
-  done
-  echo "$os_cpus"
-}
-
-# ── isolcpus 기대값 계산 (논리 CPU 기준) ──────────────────────────────────────
-# 비-SMT: 물리 = 논리이므로 단순 범위 (예: "2-5")
-# SMT: OS 물리 코어의 모든 HT 시블링을 제외한 나머지 (예: "2-5,8-11")
-compute_expected_isolated() {
-  if [[ "$HAS_SMT" -eq 0 ]]; then
-    # 비-SMT: 단순 범위
-    if [[ "$TOTAL_CORES" -le 4 ]]; then
-      echo "1-$((TOTAL_CORES - 1))"
-    else
-      echo "2-$((TOTAL_CORES - 1))"
-    fi
-    return
-  fi
-
-  # SMT 시스템: OS 코어에 속하지 않는 모든 논리 CPU를 구한다
-  local os_cpus
-  os_cpus=$(get_os_logical_cpus)
-
-  local isolated_list=()
-  for ((cpu=0; cpu<LOGICAL_CORES; cpu++)); do
-    local is_os=0
-    for os_cpu in $os_cpus; do
-      if [[ "$cpu" -eq "$os_cpu" ]]; then
-        is_os=1
-        break
-      fi
-    done
-    if [[ "$is_os" -eq 0 ]]; then
-      isolated_list+=("$cpu")
-    fi
-  done
-
-  # 연속된 번호를 범위 표기로 변환 (예: 2 3 4 5 8 9 10 11 → "2-5,8-11")
-  local result=""
-  local range_start="" range_end=""
-  for cpu in "${isolated_list[@]}"; do
-    if [[ -z "$range_start" ]]; then
-      range_start=$cpu
-      range_end=$cpu
-    elif [[ "$cpu" -eq $((range_end + 1)) ]]; then
-      range_end=$cpu
-    else
-      # 이전 범위 출력
-      if [[ "$range_start" -eq "$range_end" ]]; then
-        result="${result:+${result},}${range_start}"
-      else
-        result="${result:+${result},}${range_start}-${range_end}"
-      fi
-      range_start=$cpu
-      range_end=$cpu
-    fi
-  done
-  # 마지막 범위 출력
-  if [[ -n "$range_start" ]]; then
-    if [[ "$range_start" -eq "$range_end" ]]; then
-      result="${result:+${result},}${range_start}"
-    else
-      result="${result:+${result},}${range_start}-${range_end}"
-    fi
-  fi
-  echo "$result"
-}
+# get_os_logical_cpus(), compute_expected_isolated() — rt_common.sh에서 제공
 
 EXPECTED_ISOLATED=$(compute_expected_isolated)
 
@@ -616,11 +478,12 @@ check_network_udp() {
   _category_start "network_udp"
 
   # sysctl 값 검증 (setup_udp_optimization.sh와 일치)
+  # rmem_default/wmem_default는 Linux 기본값(212992) 유지 — 모든 소켓에 거대 버퍼 할당 방지
   local -A expected_sysctl=(
     ["net.core.rmem_max"]="2147483647"
     ["net.core.wmem_max"]="2147483647"
-    ["net.core.rmem_default"]="2147483647"
-    ["net.core.wmem_default"]="2147483647"
+    ["net.core.rmem_default"]="212992"
+    ["net.core.wmem_default"]="212992"
     ["net.core.netdev_max_backlog"]="5000"
   )
 
@@ -662,27 +525,9 @@ check_network_udp() {
 
   # NIC coalescing/offload (ethtool — 권한 필요할 수 있음)
   if command -v ethtool &>/dev/null; then
-    # 물리 NIC 자동 감지
+    # 물리 NIC 자동 감지 (rt_common.sh)
     local nic=""
-    for iface in /sys/class/net/*/; do
-      iface=$(basename "$iface")
-      [[ "$iface" == "lo" ]] && continue
-      [[ -e "/sys/class/net/${iface}/device" ]] || continue
-      if ip link show "$iface" 2>/dev/null | grep -q 'state UP'; then
-        nic="$iface"
-        break
-      fi
-    done
-    # fallback: 첫 번째 물리 NIC
-    if [[ -z "$nic" ]]; then
-      for iface in /sys/class/net/*/; do
-        iface=$(basename "$iface")
-        [[ "$iface" == "lo" ]] && continue
-        [[ -e "/sys/class/net/${iface}/device" ]] || continue
-        nic="$iface"
-        break
-      done
-    fi
+    nic=$(detect_physical_nic)
 
     if [[ -n "$nic" ]]; then
       # Coalescing 확인
