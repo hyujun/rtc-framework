@@ -21,6 +21,16 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 
+# ── Workspace 내부 패키지 먼저 찾기 ──────────────────────────────────────────
+# pinocchio의 find_dependency() 체인이 CMake 3.31에서 CMAKE_PREFIX_PATH 스코프를
+# 오염시켜 이후 find_package()가 colcon install 경로를 찾지 못하는 문제 방지
+find_package(ur5e_rt_base REQUIRED)
+find_package(ament_index_cpp REQUIRED)
+find_package(ur5e_hand_udp REQUIRED)
+find_package(ur5e_status_monitor REQUIRED)
+find_package(yaml-cpp REQUIRED)
+find_package(ur5e_msgs REQUIRED)
+
 # Pre-find Python3 with NumPy so eigenpy's cmake detection succeeds.
 # On Ubuntu 24.04 / ROS2 Jazzy, eigenpy's python.cmake fails to detect numpy
 # when a venv is active: CMake defaults to FIRST (prefer venv Python) but the
@@ -29,12 +39,6 @@ set(Python3_FIND_VIRTUALENV STANDARD)
 find_package(Python3 COMPONENTS Interpreter Development NumPy)
 
 find_package(pinocchio REQUIRED)
-find_package(ur5e_rt_base REQUIRED)
-find_package(ament_index_cpp REQUIRED)
-find_package(ur5e_hand_udp REQUIRED)
-find_package(ur5e_status_monitor REQUIRED)
-find_package(yaml-cpp REQUIRED)
-find_package(ur5e_msgs REQUIRED)
 
 # ── rt_controller_lib (테스트에서 링크 가능한 라이브러리) ─────────────────────
 add_library(rt_controller_lib STATIC
