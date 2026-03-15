@@ -100,8 +100,8 @@ get_physical_cores() {
       return
     fi
   fi
-  # 최후 수단: nproc (VM, 컨테이너 등에서 sysfs 미지원 시)
-  nproc
+  # 최후 수단: nproc --all (VM, 컨테이너 등에서 sysfs 미지원 시)
+  nproc --all
 }
 
 # ── Helper: backup a file before modifying ──────────────────────────────────
@@ -179,7 +179,8 @@ success "NVIDIA GPU: ${NVIDIA_GPU_MODEL}"
 info "  드라이버 버전: ${NVIDIA_DRIVER_VER}"
 
 # ── CPU layout auto-detection ───────────────────────────────────────────────
-LOGICAL_CORES=$(nproc)
+# nproc --all: isolcpus로 격리된 CPU 포함 전체 논리 코어 수 반환
+LOGICAL_CORES=$(nproc --all)
 TOTAL_CORES=$(get_physical_cores)
 
 if [[ "$LOGICAL_CORES" -ne "$TOTAL_CORES" ]]; then

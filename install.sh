@@ -173,7 +173,7 @@ error()   { echo -e "${RED}✘ $*${NC}"; exit 1; }
 
 # ── System info (physical vs logical core detection) ──────────────────────────
 {
-  LOGICAL_CORES=$(nproc)
+  LOGICAL_CORES=$(nproc --all)
   # Quick physical core detection for banner display
   PHYS_CORES="$LOGICAL_CORES"
   if command -v lscpu &>/dev/null; then
@@ -682,7 +682,7 @@ get_physical_cores() {
       return
     fi
   fi
-  nproc
+  nproc --all
 }
 
 # ── [방안 D] NIC IRQ affinity (robot + full) ────────────────────────────────

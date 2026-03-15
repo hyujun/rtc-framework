@@ -62,7 +62,7 @@ get_physical_cores() {
       return
     fi
   fi
-  nproc
+  nproc --all
 }
 
 # ── CPU affinity mask ─────────────────────────────────────────────────────────
@@ -71,7 +71,8 @@ get_physical_cores() {
 #   4코어: Core 0 = OS (isolcpus=1-3) → IRQ mask 0x1
 #   6코어: Core 0-1 = OS (isolcpus=2-5) → IRQ mask 0x3
 #   8코어+: Core 0-1 = OS (isolcpus=2-N) → IRQ mask 0x3
-LOGICAL_CORES=$(nproc)
+# nproc --all: isolcpus로 격리된 CPU 포함 전체 논리 코어 수 반환
+LOGICAL_CORES=$(nproc --all)
 TOTAL_CORES=$(get_physical_cores)
 
 if [[ "$LOGICAL_CORES" -ne "$TOTAL_CORES" ]]; then

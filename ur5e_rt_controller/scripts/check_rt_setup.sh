@@ -181,7 +181,7 @@ get_physical_cores() {
       return
     fi
   fi
-  nproc
+  nproc --all
 }
 
 # ── CPU layout auto-detection ────────────────────────────────────────────────
@@ -189,7 +189,9 @@ get_physical_cores() {
 # 물리 코어 인덱스(= 논리 CPU 번호)에 스레드를 pinning한다.
 # 하지만 isolcpus는 논리 CPU 번호를 사용하므로, SMT/HT 시스템에서는
 # RT 물리 코어의 HT 시블링 논리 CPU도 격리 대상에 포함해야 한다.
-LOGICAL_CORES=$(nproc)
+# nproc --all: isolcpus로 격리된 CPU 포함 전체 논리 코어 수 반환
+# nproc (without --all)은 격리된 CPU를 제외하므로 isolcpus 설정 시 잘못된 값 반환
+LOGICAL_CORES=$(nproc --all)
 TOTAL_CORES=$(get_physical_cores)
 HAS_SMT=0
 if [[ "$LOGICAL_CORES" -ne "$TOTAL_CORES" ]]; then

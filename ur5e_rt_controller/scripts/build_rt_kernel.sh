@@ -70,7 +70,7 @@ get_physical_cores() {
       return
     fi
   fi
-  nproc
+  nproc --all
 }
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
@@ -187,7 +187,8 @@ if lspci 2>/dev/null | grep -qi nvidia; then
 fi
 
 # CPU 정보
-LOGICAL_CORES=$(nproc)
+# nproc --all: isolcpus로 격리된 CPU 포함 전체 논리 코어 수 반환
+LOGICAL_CORES=$(nproc --all)
 PHYSICAL_CORES=$(get_physical_cores)
 BUILD_THREADS="${LOGICAL_CORES}"
 
