@@ -130,9 +130,7 @@ namespace ur5e_rt_controller
         // Failed to set RT scheduling - likely permission issue
         return false;
       }
-    }
-    else if (cfg.sched_policy == SCHED_OTHER)
-    {
+    } else if (cfg.sched_policy == SCHED_OTHER) {
       // Set nice value for SCHED_OTHER
       if (setpriority(PRIO_PROCESS, 0, cfg.nice_value) != 0)
       {
@@ -192,9 +190,7 @@ namespace ur5e_rt_controller
       if (pthread_setschedparam(pthread_self(), cfg.sched_policy, &param) == 0)
       {
         rt_success = true;
-      }
-      else
-      {
+      } else {
         full_success = false;
         warnings += "RT scheduling failed, falling back to SCHED_OTHER: " +
                     SafeStrerror(errno) + "; ";
@@ -211,9 +207,7 @@ namespace ur5e_rt_controller
         {
           warnings += "Nice value setting failed: " + SafeStrerror(errno) + "; ";
         }
-      }
-      else
-      {
+      } else {
         // Fallback: set nice value for RT policies that failed
         param.sched_priority = 0;
         if (setpriority(PRIO_PROCESS, 0, cfg.nice_value) != 0)
@@ -328,16 +322,16 @@ namespace ur5e_rt_controller
     return {min_val, max_val, avg};
   }
 
-  // Enhanced thread metrics for comprehensive monitoring
-  struct ThreadMetrics
-  {
-    double min_latency_us;
-    double max_latency_us;
-    double avg_latency_us;
-    double jitter_us;        // Standard deviation of latencies
-    double percentile_95_us; // 95th percentile latency
-    double percentile_99_us; // 99th percentile latency
-  };
+// Enhanced thread metrics for comprehensive monitoring
+struct ThreadMetrics
+{
+  double min_latency_us;
+  double max_latency_us;
+  double avg_latency_us;
+  double jitter_us;        // Standard deviation of latencies
+  double percentile_95_us; // 95th percentile latency
+  double percentile_99_us; // 99th percentile latency
+};
 
   // Get comprehensive thread statistics with percentiles.
   // Returns ThreadMetrics with latency analysis.
@@ -513,9 +507,7 @@ namespace ur5e_rt_controller
                     std::to_string(expected_config->sched_priority) + " to " +
                     std::to_string(param.sched_priority) + "; ";
         }
-      }
-      else
-      {
+      } else {
         // General health check without expected config
         if (policy == SCHED_OTHER)
         {
@@ -607,17 +599,17 @@ namespace ur5e_rt_controller
     return static_cast<int>(unique_cores.size());
   }
 
-  // Aggregated thread configs selected at runtime for all threads.
-  struct SystemThreadConfigs
-  {
-    ThreadConfig rt_control;
-    ThreadConfig sensor;
-    ThreadConfig udp_recv;        // Hand UDP receiver (separate from sensor_io)
-    ThreadConfig logging;
-    ThreadConfig aux;
-    ThreadConfig status_monitor;  // Non-RT status monitor (10 Hz)
-    ThreadConfig hand_failure;    // Non-RT hand failure detector (50 Hz)
-  };
+// Aggregated thread configs selected at runtime for all threads.
+struct SystemThreadConfigs
+{
+  ThreadConfig rt_control;
+  ThreadConfig sensor;
+  ThreadConfig udp_recv;        // Hand UDP receiver (separate from sensor_io)
+  ThreadConfig logging;
+  ThreadConfig aux;
+  ThreadConfig status_monitor;  // Non-RT status monitor (10 Hz)
+  ThreadConfig hand_failure;    // Non-RT hand failure detector (50 Hz)
+};
 
   // Validate SystemThreadConfigs for conflicts and invalid configurations.
   // Returns empty string if valid, error messages if invalid.

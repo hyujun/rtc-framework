@@ -27,6 +27,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace ur5e_rt_controller
 {

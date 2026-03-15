@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <string>
+#include <vector>
 
 #include "ur5e_rt_base/logging/log_buffer.hpp"
 #include "ur5e_rt_base/types/types.hpp"

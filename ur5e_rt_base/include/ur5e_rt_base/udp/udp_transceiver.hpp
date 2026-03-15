@@ -18,6 +18,7 @@
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <utility>
 
 #include "ur5e_rt_base/threading/thread_config.hpp"
 #include "ur5e_rt_base/threading/thread_utils.hpp"

@@ -3,7 +3,7 @@
 #include "ur5e_rt_controller/trajectory/joint_space_trajectory.hpp"
 #include "ur5e_rt_controller/trajectory/task_space_trajectory.hpp"
 
-using namespace ur5e_rt_controller;
+namespace trajectory = ur5e_rt_controller::trajectory;
 
 TEST(TrajectoryTest, QuinticPolynomial_RestToRest) {
   trajectory::QuinticPolynomial poly(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0);

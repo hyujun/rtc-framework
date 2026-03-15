@@ -38,7 +38,7 @@ concept UdpPacketCodec = requires {
   && std::is_trivially_copyable_v<typename C::SendPacket>
   && requires(std::span<const char> buf, typename C::State& state) {
     { C::Decode(buf, state) } -> std::same_as<bool>;
-  };
+  }
 
 // ── Generic decode helper ────────────────────────────────────────────────────
 // Decodes a raw buffer into a packed struct T via memcpy.

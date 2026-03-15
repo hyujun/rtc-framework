@@ -23,6 +23,7 @@
 #include <mutex>
 #include <span>
 #include <string_view>
+#include <vector>
 
 namespace ur5e_rt_controller
 {
