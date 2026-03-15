@@ -56,7 +56,6 @@ BUILD_TYPE="Release"
 CLEAN_BUILD=0
 CUSTOM_PACKAGES=()
 PARALLEL_JOBS=""
-NO_BASHRC=0
 NO_SYMLINK=0
 EXPORT_COMPILE_COMMANDS=0
 
@@ -91,7 +90,6 @@ show_help() {
   echo "  -j, --jobs N               Limit parallel workers (e.g. -j 4)"
   echo "  -e, --export-compile-commands  Generate compile_commands.json for VS Code"
   echo "                             IntelliSense and clangd (sets CMAKE_EXPORT_COMPILE_COMMANDS=ON)"
-  echo "  --no-bashrc                Do not automatically add source command to ~/.bashrc"
   echo "  --no-symlink               Do not use --symlink-install"
   echo "  --mujoco <path>            Path to MuJoCo install dir (e.g. /opt/mujoco-3.2.4)"
   echo "                             Auto-detected from $MJ_DEFAULT if not specified"
@@ -143,10 +141,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     -e|--export-compile-commands)
       EXPORT_COMPILE_COMMANDS=1
-      shift
-      ;;
-    --no-bashrc)
-      NO_BASHRC=1
       shift
       ;;
     --no-symlink)
@@ -291,11 +285,6 @@ fi
 colcon build "${COLCON_ARGS[@]}" || error "Build failed!"
 
 source install/setup.bash
-
-if [[ "$NO_BASHRC" -eq 0 ]]; then
-  grep -qF "$WORKSPACE/install/setup.bash" ~/.bashrc || \
-      echo "source $WORKSPACE/install/setup.bash" >> ~/.bashrc
-fi
 
 # ── compile_commands.json — VS Code IntelliSense 연동 ─────────────────────────
 # Debug 빌드 또는 --export-compile-commands 옵션 사용 시 자동 생성됨.
