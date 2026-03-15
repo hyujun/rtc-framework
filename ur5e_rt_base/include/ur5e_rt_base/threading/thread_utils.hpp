@@ -11,12 +11,14 @@
 #include <algorithm> // std::min_element, std::max_element
 #include <cerrno>   // errno
 #include <cmath>    // std::sqrt
+#include <cstdio>   // fopen, fclose, fscanf
 #include <cstring>
 #include <map>     // std::map
 #include <numeric> // std::accumulate
 #include <set>     // std::set
 #include <string>
 #include <tuple>  // std::tuple
+#include <utility> // std::pair
 #include <vector> // std::vector
 
 namespace ur5e_rt_controller
@@ -538,10 +540,71 @@ namespace ur5e_rt_controller
   }
 
   // Returns the number of online logical CPUs on the current system.
+  // Includes SMT/Hyper-Threading siblings (e.g., 6C/12T returns 12).
+  // Use for CPU affinity validation (logical CPU IDs are valid up to this count).
   inline int GetOnlineCpuCount() noexcept
   {
     const int n = static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN));
     return (n > 0) ? n : 1;
+  }
+
+  // Returns the number of physical CPU cores (excluding SMT/HT siblings).
+  // Parses sysfs topology to count unique (socket_id, core_id) pairs.
+  // Falls back to GetOnlineCpuCount() if sysfs topology is unavailable.
+  //
+  // This is the correct metric for selecting thread layouts (4/6/8-core)
+  // because thread_config.hpp assigns threads to physical cores.
+  // Example: i7-8700 (6C/12T) → returns 6, not 12.
+  inline int GetPhysicalCpuCount() noexcept
+  {
+    std::set<std::pair<int, int>> unique_cores;
+
+    for (int cpu = 0; cpu < 1024; ++cpu)
+    {
+      char pkg_path[128];
+      char core_path[128];
+
+      std::snprintf(pkg_path, sizeof(pkg_path),
+                    "/sys/devices/system/cpu/cpu%d/topology/physical_package_id", cpu);
+      std::snprintf(core_path, sizeof(core_path),
+                    "/sys/devices/system/cpu/cpu%d/topology/core_id", cpu);
+
+      FILE *pkg_file = std::fopen(pkg_path, "r");
+      if (!pkg_file)
+      {
+        break; // No more CPUs
+      }
+      int socket_id = 0;
+      if (std::fscanf(pkg_file, "%d", &socket_id) != 1)
+      {
+        std::fclose(pkg_file);
+        break;
+      }
+      std::fclose(pkg_file);
+
+      FILE *core_file = std::fopen(core_path, "r");
+      if (!core_file)
+      {
+        break;
+      }
+      int core_id = 0;
+      if (std::fscanf(core_file, "%d", &core_id) != 1)
+      {
+        std::fclose(core_file);
+        break;
+      }
+      std::fclose(core_file);
+
+      unique_cores.insert({socket_id, core_id});
+    }
+
+    if (unique_cores.empty())
+    {
+      // Fallback: sysfs topology unavailable (VM, container, etc.)
+      return GetOnlineCpuCount();
+    }
+
+    return static_cast<int>(unique_cores.size());
   }
 
   // Aggregated thread configs selected at runtime for all threads.
@@ -628,13 +691,16 @@ namespace ur5e_rt_controller
     return errors;
   }
 
-  // Selects the appropriate ThreadConfig set based on the number of online CPUs.
+  // Selects the appropriate ThreadConfig set based on the number of physical CPU cores.
+  // Uses GetPhysicalCpuCount() (not GetOnlineCpuCount()) to avoid SMT/HT over-counting.
+  // Example: i7-8700 (6C/12T) correctly selects 6-core layout, not 8-core.
+  //
   // >=8 cores: 8-core layout — udp_recv gets its own dedicated Core 4.
   // >=6 cores: 6-core layout — udp_recv shares Core 5 with aux (light).
   // < 6 cores: 4-core fallback — udp_recv shares Core 2 with sensor_io.
   inline SystemThreadConfigs SelectThreadConfigs() noexcept
   {
-    const int ncpu = GetOnlineCpuCount();
+    const int ncpu = GetPhysicalCpuCount();
     if (ncpu >= 8)
     {
       return {kRtControlConfig8Core, kSensorConfig8Core, kUdpRecvConfig8Core,

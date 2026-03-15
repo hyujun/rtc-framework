@@ -59,7 +59,7 @@ show_help() {
   echo "  -j, --jobs N      Limit parallel workers for colcon (e.g. -j 4)"
   echo "  --skip-deps       Skip installing apt system dependencies"
   echo "  --skip-build      Skip compiling the packages (only download/setup)"
-  echo "  --skip-rt         Skip configuring RT permissions, IRQ affinity, and UDP optimization"
+  echo "  --skip-rt         Skip configuring RT permissions, IRQ affinity, UDP optimization, NVIDIA setup, and CPU governor"
   echo "  --skip-debug      Skip GDB/debugger tools installation"
   echo "  --ptrace-scope    Set ptrace_scope=0 for VS Code Attach debugger"
   echo "                    (Required for 'Attach to Node' launch configuration)"
@@ -170,6 +170,25 @@ info()    { echo -e "${BLUE}▶ $*${NC}"; }
 success() { echo -e "${GREEN}✔ $*${NC}"; }
 warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
 error()   { echo -e "${RED}✘ $*${NC}"; exit 1; }
+
+# ── System info (physical vs logical core detection) ──────────────────────────
+{
+  LOGICAL_CORES=$(nproc --all)
+  # Quick physical core detection for banner display
+  PHYS_CORES="$LOGICAL_CORES"
+  if command -v lscpu &>/dev/null; then
+    _pc=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l)
+    [[ "$_pc" -gt 0 ]] && PHYS_CORES="$_pc"
+  fi
+  echo -e "  CPU  : ${CYAN}${BOLD}${PHYS_CORES} physical cores${NC} (${LOGICAL_CORES} logical)"
+  if [[ "$LOGICAL_CORES" -ne "$PHYS_CORES" ]]; then
+    echo -e "         ${YELLOW}SMT/HT detected — thread_config.hpp uses physical core count${NC}"
+  fi
+  if lspci 2>/dev/null | grep -qi 'nvidia'; then
+    echo -e "  GPU  : ${CYAN}${BOLD}NVIDIA detected${NC} (RT-safe setup will be applied)"
+  fi
+  echo ""
+}
 
 # ── Common: Workspace structure check ──────────────────────────────────────────
 check_workspace_structure() {
@@ -633,9 +652,43 @@ install_rt_permissions() {
   warn "Verify with: ulimit -l  (MUST be 'unlimited' to avoid RMW load errors with mlockall)"
 }
 
+# ── Helper: physical CPU core count (SMT/HT 제외) ─────────────────────────
+# nproc은 논리 코어(HT 포함)를 반환하므로, 물리 코어만 카운트한다.
+# 예: i7-8700 (6C/12T) → nproc=12 이지만 이 함수는 6을 반환.
+get_physical_cores() {
+  if command -v lscpu &>/dev/null; then
+    local count
+    count=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l)
+    if [[ "$count" -gt 0 ]]; then
+      echo "$count"
+      return
+    fi
+  fi
+  if [[ -f /sys/devices/system/cpu/cpu0/topology/core_id ]]; then
+    local seen=""
+    local count=0
+    for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
+      local pkg_file="${cpu_dir}topology/physical_package_id"
+      local core_file="${cpu_dir}topology/core_id"
+      [[ -f "$pkg_file" && -f "$core_file" ]] || continue
+      local key
+      key="$(cat "$pkg_file"):$(cat "$core_file")"
+      if [[ ! " $seen " == *" $key "* ]]; then
+        seen="$seen $key"
+        ((count++))
+      fi
+    done
+    if [[ "$count" -gt 0 ]]; then
+      echo "$count"
+      return
+    fi
+  fi
+  nproc --all
+}
+
 # ── [방안 D] NIC IRQ affinity (robot + full) ────────────────────────────────
-# RT 코어(Core 2-5)를 NIC 인터럽트로부터 보호.
-# 모든 하드웨어 IRQ를 Core 0-1로 제한한다.
+# RT 코어를 NIC 인터럽트로부터 보호.
+# 모든 하드웨어 IRQ를 OS 코어로 제한한다.
 setup_irq_affinity() {
   local SCRIPT
   SCRIPT="$(dirname "$0")/ur5e_rt_controller/scripts/setup_irq_affinity.sh"
@@ -646,9 +699,20 @@ setup_irq_affinity() {
     return
   fi
 
-  info "Configuring NIC IRQ affinity (Core 0-1 only)..."
+  local PHYS_CORES
+  PHYS_CORES=$(get_physical_cores)
+  local OS_CORES RT_CORES
+  if [[ "$PHYS_CORES" -le 4 ]]; then
+    OS_CORES="0"
+    RT_CORES="1-$((PHYS_CORES - 1))"
+  else
+    OS_CORES="0-1"
+    RT_CORES="2-$((PHYS_CORES - 1))"
+  fi
+
+  info "Configuring NIC IRQ affinity (Core ${OS_CORES} only)..."
   if sudo bash "$SCRIPT"; then
-    success "IRQ affinity configured — RT cores 2-5 protected from NIC interrupts"
+    success "IRQ affinity configured — RT cores ${RT_CORES} protected from NIC interrupts"
     warn "NOTE: IRQ affinity resets on reboot. To make permanent:"
     warn "  Add 'sudo $SCRIPT' to /etc/rc.local or a systemd oneshot service"
   else
@@ -677,6 +741,96 @@ setup_udp_optimization() {
   else
     warn "UDP optimization failed — continuing without it"
     warn "Run manually: sudo $SCRIPT [NIC_NAME]"
+  fi
+}
+
+# ── [NVIDIA] RT-safe GPU configuration (robot + full) ────────────────────────
+# NVIDIA GPU가 감지되면 RT 커널 호환성 + 화면 티어링 방지를 설정한다.
+setup_nvidia_rt() {
+  # NVIDIA GPU 존재 여부 확인
+  if ! lspci 2>/dev/null | grep -qi 'nvidia'; then
+    info "No NVIDIA GPU detected — skipping NVIDIA RT setup"
+    return
+  fi
+
+  local SCRIPT
+  SCRIPT="$(dirname "$0")/ur5e_rt_controller/scripts/setup_nvidia_rt.sh"
+
+  if [[ ! -f "$SCRIPT" ]]; then
+    warn "setup_nvidia_rt.sh not found — skipping NVIDIA RT setup"
+    warn "Run manually: sudo $WORKSPACE/src/ur5e-rt-controller/ur5e_rt_controller/scripts/setup_nvidia_rt.sh"
+    return
+  fi
+
+  info "NVIDIA GPU detected — configuring RT-safe GPU settings (11 steps)..."
+  info "  Includes: modprobe, GRUB, IRQ affinity, persistence, nouveau blacklist,"
+  info "            X11 anti-tearing, compositor boost, DKMS RT build, CPU governor"
+  if sudo bash "$SCRIPT"; then
+    success "NVIDIA RT setup complete (DKMS, CPU governor, anti-tearing, etc.)"
+    warn "NOTE: A reboot is required for GRUB and X11 changes to take effect"
+  else
+    warn "NVIDIA RT setup failed — continuing without it"
+    warn "Run manually: sudo $SCRIPT"
+  fi
+}
+
+# ── CPU Governor → performance (비-NVIDIA 시스템용) ───────────────────────────
+# NVIDIA GPU가 있는 시스템은 setup_nvidia_rt.sh [10/11]에서 처리.
+# NVIDIA가 없는 시스템에서도 powersave → performance 전환이 필요하다.
+setup_cpu_governor() {
+  # NVIDIA GPU가 있으면 setup_nvidia_rt.sh에서 이미 처리됨
+  if lspci 2>/dev/null | grep -qi 'nvidia'; then
+    return
+  fi
+
+  # cpufreq 디렉토리가 없으면 고정 클럭 CPU (VM 등)
+  if [[ ! -d /sys/devices/system/cpu/cpu0/cpufreq ]]; then
+    return
+  fi
+
+  # 현재 governor 확인
+  local non_perf=0
+  for gov_file in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    if [[ -f "$gov_file" ]]; then
+      local gov
+      gov=$(cat "$gov_file" 2>/dev/null)
+      [[ "$gov" != "performance" ]] && ((non_perf++)) || true
+    fi
+  done
+
+  if [[ "$non_perf" -eq 0 ]]; then
+    success "CPU governor: all cores already set to performance"
+    return
+  fi
+
+  info "Setting CPU governor to performance (${non_perf} cores need change)..."
+
+  # 즉시 적용
+  for gov_file in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    echo "performance" | sudo tee "$gov_file" > /dev/null 2>&1 || true
+  done
+
+  # systemd 서비스로 영구 적용
+  local GOV_SERVICE="/etc/systemd/system/cpu-governor-performance.service"
+  if [[ ! -f "$GOV_SERVICE" ]]; then
+    sudo tee "$GOV_SERVICE" > /dev/null << 'GOVEOF'
+[Unit]
+Description=Set CPU governor to performance for RT kernel
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'if command -v cpupower &>/dev/null; then cpupower frequency-set -g performance; else for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$f" 2>/dev/null || true; done; fi'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+GOVEOF
+    sudo systemctl daemon-reload
+    sudo systemctl enable cpu-governor-performance.service 2>/dev/null
+    success "CPU governor → performance (service enabled for persistence)"
+  else
+    success "CPU governor → performance (service already exists)"
   fi
 }
 
@@ -885,10 +1039,12 @@ if [[ "$SKIP_RT" -eq 0 ]]; then
       install_rt_permissions
       setup_irq_affinity
       setup_udp_optimization
+      setup_nvidia_rt
+      setup_cpu_governor
       ;;
   esac
 else
-  info "Skipping RT permissions, IRQ affinity, and UDP optimization (--skip-rt)"
+  info "Skipping RT permissions, IRQ affinity, UDP optimization, NVIDIA setup, and CPU governor (--skip-rt)"
 fi
 
 verify_installation

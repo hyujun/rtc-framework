@@ -31,16 +31,58 @@ if [[ "$EUID" -ne 0 ]]; then
   error "Root privileges required. Run: sudo $0 $*"
 fi
 
+# ── Helper: physical CPU core count (SMT/HT 제외) ─────────────────────────
+# nproc은 논리 코어(HT 포함)를 반환하므로, 물리 코어만 카운트한다.
+# 예: i7-8700 (6C/12T) → nproc=12 이지만 이 함수는 6을 반환.
+get_physical_cores() {
+  if command -v lscpu &>/dev/null; then
+    local count
+    count=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l)
+    if [[ "$count" -gt 0 ]]; then
+      echo "$count"
+      return
+    fi
+  fi
+  if [[ -f /sys/devices/system/cpu/cpu0/topology/core_id ]]; then
+    local seen=""
+    local count=0
+    for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
+      local pkg_file="${cpu_dir}topology/physical_package_id"
+      local core_file="${cpu_dir}topology/core_id"
+      [[ -f "$pkg_file" && -f "$core_file" ]] || continue
+      local key
+      key="$(cat "$pkg_file"):$(cat "$core_file")"
+      if [[ ! " $seen " == *" $key "* ]]; then
+        seen="$seen $key"
+        ((count++))
+      fi
+    done
+    if [[ "$count" -gt 0 ]]; then
+      echo "$count"
+      return
+    fi
+  fi
+  nproc --all
+}
+
 # ── CPU affinity mask ─────────────────────────────────────────────────────────
 # IRQ를 non-RT 코어에만 할당한다.
-# thread_config.hpp의 코어 레이아웃과 일치시킨다:
+# thread_config.hpp의 코어 레이아웃과 일치시킨다 (물리 코어 기준):
 #   4코어: Core 0 = OS (isolcpus=1-3) → IRQ mask 0x1
 #   6코어: Core 0-1 = OS (isolcpus=2-5) → IRQ mask 0x3
 #   8코어+: Core 0-1 = OS (isolcpus=2-N) → IRQ mask 0x3
-TOTAL_CORES=$(nproc)
+# nproc --all: isolcpus로 격리된 CPU 포함 전체 논리 코어 수 반환
+LOGICAL_CORES=$(nproc --all)
+TOTAL_CORES=$(get_physical_cores)
+
+if [[ "$LOGICAL_CORES" -ne "$TOTAL_CORES" ]]; then
+  info "SMT/HT detected: ${LOGICAL_CORES} logical, ${TOTAL_CORES} physical cores"
+  info "Using physical core count (${TOTAL_CORES}) to match thread_config.hpp layout"
+fi
+
 if [[ "$TOTAL_CORES" -lt 4 ]]; then
-  warn "CPU core count is ${TOTAL_CORES} (< 4). RT core isolation may not be effective."
-  warn "At least 4 cores recommended."
+  warn "Physical core count is ${TOTAL_CORES} (< 4). RT core isolation may not be effective."
+  warn "At least 4 physical cores recommended."
 fi
 
 if [[ "$TOTAL_CORES" -le 4 ]]; then

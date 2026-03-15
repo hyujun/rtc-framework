@@ -193,11 +193,25 @@ ulimit -l  # 출력: unlimited (memlock)
 
 ### 2. CPU Isolation (권장)
 
+> **주의: SMT/Hyper-Threading 환경**
+>
+> `isolcpus`는 **물리 코어** 기준으로 설정해야 합니다. `nproc`은 논리 코어(SMT 포함)를
+> 반환하므로, HT가 켜진 시스템에서 `nproc` 값을 그대로 사용하면 과도한 격리가 발생합니다.
+>
+> | CPU | 물리 코어 | `nproc` | 올바른 `isolcpus` | 잘못된 `isolcpus` |
+> |-----|-----------|---------|-------------------|-------------------|
+> | i7-8700 (6C/12T) | 6 | 12 | `2-5` | `2-11` (OS에 2코어만 남김) |
+> | i5-8250U (4C/8T) | 4 | 8 | `1-3` | `1-7` (OS에 1코어만 남김) |
+>
+> 물리 코어 수 확인: `lscpu -p=Core,Socket | grep -v '^#' | sort -u | wc -l`
+>
+> `setup_nvidia_rt.sh`, `setup_irq_affinity.sh`는 자동으로 물리 코어를 감지합니다.
+
 ```bash
 # /etc/default/grub 편집
 sudo nano /etc/default/grub
 
-# 다음 줄 추가 또는 수정 (6-core 기준)
+# 다음 줄 추가 또는 수정 (6-core 기준, 물리 코어 기준)
 GRUB_CMDLINE_LINUX_DEFAULT="quiet splash isolcpus=2-5 nohz_full=2-5 rcu_nocbs=2-5"
 
 # GRUB 업데이트
@@ -221,6 +235,26 @@ cat /proc/cmdline | grep isolcpus
 
 ### 3. CPU 성능 모드
 
+> **중요**: RT 코어뿐 아니라 **모든 CPU 코어** (OS 코어 포함)의 governor를 `performance`로
+> 설정해야 합니다. OS 코어가 `powersave`이면 compositor 프레임 드롭 → 화면 찢김이 발생합니다.
+
+#### 자동 설정 (권장)
+
+```bash
+# NVIDIA 시스템: setup_nvidia_rt.sh [10/11] 단계에서 자동 설정
+sudo ./ur5e_rt_controller/scripts/setup_nvidia_rt.sh
+
+# 비-NVIDIA 시스템: install.sh가 자동으로 cpu-governor-performance.service 생성
+./install.sh robot   # 또는 full
+```
+
+`setup_nvidia_rt.sh`는 다음을 수행합니다:
+1. sysfs를 통해 즉시 모든 코어를 `performance`로 변경
+2. `cpu-governor-performance.service` (systemd oneshot) 생성 및 활성화
+3. 재부팅 시 자동 적용 (`cpupower` 사용 가능하면 사용, 아니면 sysfs fallback)
+
+#### 수동 설정
+
 ```bash
 # cpufrequtils 설치
 sudo apt install cpufrequtils
@@ -232,12 +266,79 @@ sudo cpupower frequency-set -g performance
 cpupower frequency-info | grep "current policy"
 # 출력: current policy: frequency should be within ... (performance)
 
-# 부팅 시 자동 적용
+# 부팅 시 자동 적용 (방법 1: cpufrequtils)
 echo 'GOVERNOR="performance"' | sudo tee /etc/default/cpufrequtils
 sudo systemctl restart cpufrequtils
+
+# 부팅 시 자동 적용 (방법 2: systemd service — setup_nvidia_rt.sh가 생성하는 방식)
+sudo systemctl status cpu-governor-performance.service
 ```
 
-### 4. PREEMPT_RT 커널 (선택, 최대 성능)
+#### 확인
+
+```bash
+# 모든 코어의 governor 확인 (powersave가 있으면 문제)
+for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+  echo "$(basename $(dirname $(dirname $f))): $(cat $f)"
+done
+
+# systemd service 상태 확인
+sudo systemctl status cpu-governor-performance.service
+```
+
+### 4. NVIDIA + RT 커널 공존 (NVIDIA GPU 사용 시)
+
+NVIDIA 드라이버는 기본적으로 `CONFIG_PREEMPT_RT` 커널에서 빌드를 거부합니다. 커스텀 RT 커널에서
+NVIDIA DKMS 모듈을 빌드하려면 **3가지 차단 레이어**를 모두 우회해야 합니다:
+
+| 차단 레이어 | 원인 | 해결 |
+|-------------|------|------|
+| `dkms autoinstall` apport 검증 | 커스텀 커널명 거부 (`linux-headers-*-rt-custom` 미지원) | `dkms build -m nvidia -v VERSION -k KERNEL` 직접 호출 |
+| `conftest.sh` RT 감지 | `CONFIG_PREEMPT_RT` 감지 → 빌드 거부 | `IGNORE_PREEMPT_RT_PRESENCE=1` 환경변수 |
+| `dkms.conf` BUILD_EXCLUSIVE | `BUILD_EXCLUSIVE_CONFIG="!CONFIG_PREEMPT_RT"` | sed로 주석 처리 |
+
+#### 자동 설정 (권장)
+
+```bash
+# setup_nvidia_rt.sh [9/11] 단계에서 자동 처리
+sudo ./ur5e_rt_controller/scripts/setup_nvidia_rt.sh
+
+# 또는 RT 커널 빌드 시 자동 처리
+sudo ./ur5e_rt_controller/scripts/build_rt_kernel.sh
+```
+
+#### 수동 설정
+
+```bash
+# 1. NVIDIA DKMS 버전 확인
+NVIDIA_DKMS_VER=$(dkms status nvidia 2>/dev/null | head -1 | awk -F'[,/]' '{print $2}' | tr -d ' ')
+KERNEL_VER=$(uname -r)
+
+# 2. dkms.conf의 BUILD_EXCLUSIVE_CONFIG 주석 처리
+sudo sed -i 's/^\(BUILD_EXCLUSIVE_CONFIG=.*PREEMPT_RT\)/#\1/' \
+  /usr/src/nvidia-${NVIDIA_DKMS_VER}/dkms.conf
+
+# 3. RT 감지 우회 + 빌드
+sudo IGNORE_PREEMPT_RT_PRESENCE=1 IGNORE_CC_MISMATCH=1 \
+  dkms build -m nvidia -v ${NVIDIA_DKMS_VER} -k ${KERNEL_VER}
+sudo dkms install -m nvidia -v ${NVIDIA_DKMS_VER} -k ${KERNEL_VER}
+
+# 4. 모듈 로드
+sudo modprobe nvidia
+
+# 5. 영구 설정 (/etc/environment에 추가)
+echo "IGNORE_PREEMPT_RT_PRESENCE=1" | sudo tee -a /etc/environment
+```
+
+#### 검증
+
+```bash
+nvidia-smi                        # GPU 인식 확인
+dkms status nvidia                # 현재 커널에 installed 확인
+grep IGNORE_PREEMPT_RT /etc/environment  # 영구 설정 확인
+```
+
+### 5. PREEMPT_RT 커널 (선택, 최대 성능)
 
 #### Option A: LowLatency 커널 (더 쉬운 방법)
 ```bash
@@ -274,8 +375,15 @@ uname -v | grep PREEMPT_RT
 
 참고: https://wiki.linuxfoundation.org/realtime/documentation/howto/applications/start
 
-### 5. IRQ Affinity (고급)
+### 6. IRQ Affinity (고급)
 
+자동화 스크립트 제공:
+```bash
+# 자동 설정 (NIC IRQ를 Core 0-1로 pin)
+sudo ./ur5e_rt_controller/scripts/setup_irq_affinity.sh
+```
+
+수동 설정:
 ```bash
 # 모든 IRQ를 Core 0-1로 제한 (RT 코어 2-5를 보호)
 for irq in $(ls /proc/irq/); do
@@ -557,6 +665,17 @@ sudo perf stat -e context-switches,cpu-migrations -p $PID sleep 10
 
 ## 문제 해결
 
+> **자동 진단**: `check_rt_setup.sh`를 실행하면 8개 카테고리의 RT 설정을 자동 점검합니다.
+> ```bash
+> ./ur5e_rt_controller/scripts/check_rt_setup.sh           # 상세 출력
+> ./ur5e_rt_controller/scripts/check_rt_setup.sh --fix     # 수정 명령 제안
+> ./ur5e_rt_controller/scripts/check_rt_setup.sh --summary # 1줄 요약
+> ```
+>
+> 검증 카테고리: RT Kernel, CPU Isolation, GRUB Parameters, RT Permissions,
+> IRQ Affinity, Network/UDP, NVIDIA (DKMS 상태 + persistence mode + `IGNORE_PREEMPT_RT_PRESENCE` 영구 설정),
+> CPU Frequency (모든 코어 governor + `cpu-governor-performance.service`)
+
 ### 권한 부족 에러
 
 **증상**:
@@ -645,14 +764,42 @@ EOF
 export CYCLONEDDS_URI=file://$HOME/cyclonedds.xml
 ```
 
+### NVIDIA DKMS 빌드 실패 (RT 커널)
+
+**증상**:
+```
+ERROR (dkms apport): kernel package linux-headers-6.8.2-rt11-rt-custom is not supported
+```
+또는 `nvidia-smi` 실행 불가 (NVIDIA 모듈 미로드)
+
+**원인**: NVIDIA DKMS가 커스텀 RT 커널에서 빌드를 거부 (3가지 차단 레이어)
+
+**해결**:
+```bash
+# 자동 해결 (권장)
+sudo ./ur5e_rt_controller/scripts/setup_nvidia_rt.sh
+
+# 검증
+nvidia-smi
+dkms status nvidia
+```
+
+자세한 내용: [NVIDIA + RT 커널 공존](#4-nvidia--rt-커널-공존-nvidia-gpu-사용-시)
+
 ### 500Hz 미달성
 
-**원인**: CPU frequency scaling
+**원인**: CPU frequency scaling (powersave governor)
 ```bash
-cpupower frequency-info | grep "current policy"
-# 출력: ... powersave → 문제
+# 모든 코어의 governor 확인
+for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+  echo "$(basename $(dirname $(dirname $f))): $(cat $f)"
+done
+# 어떤 코어든 powersave → 문제
 
-# 해결
+# 해결 (자동)
+sudo ./ur5e_rt_controller/scripts/setup_nvidia_rt.sh  # [10/11] CPU governor 설정
+
+# 해결 (수동)
 sudo cpupower frequency-set -g performance
 ```
 
@@ -821,6 +968,6 @@ grep -E "[0-9]{3,}\.[0-9]{3} us" trace.txt
 
 ---
 
-**최종 업데이트**: 2026-03-12
+**최종 업데이트**: 2026-03-15
 **작성자**: UR5e RT Controller Team
-**버전**: v5.8.0 (v4.2.0 기반, CPU 코어 할당 최적화 + 모니터링 스레드 추가 반영)
+**버전**: v5.8.0 (v4.2.0 기반, CPU 코어 할당 최적화 + 모니터링 스레드 추가 + 물리/논리 코어 구분 + NVIDIA DKMS RT 커널 우회 + CPU governor 자동 설정)

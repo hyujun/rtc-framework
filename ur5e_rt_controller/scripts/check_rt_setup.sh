@@ -150,22 +150,172 @@ _category_set_detail() {
   CATEGORY_DETAIL["$1"]="$2"
 }
 
+# ── Helper: physical CPU core count (SMT/HT 제외) ────────────────────────────
+# nproc은 논리 코어(HT 포함)를 반환하므로, 물리 코어만 카운트한다.
+# 예: i7-8700 (6C/12T) → nproc=12 이지만 이 함수는 6을 반환.
+get_physical_cores() {
+  if command -v lscpu &>/dev/null; then
+    local count
+    count=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l)
+    if [[ "$count" -gt 0 ]]; then
+      echo "$count"
+      return
+    fi
+  fi
+  if [[ -f /sys/devices/system/cpu/cpu0/topology/core_id ]]; then
+    local seen=""
+    local count=0
+    for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
+      local pkg_file="${cpu_dir}topology/physical_package_id"
+      local core_file="${cpu_dir}topology/core_id"
+      [[ -f "$pkg_file" && -f "$core_file" ]] || continue
+      local key
+      key="$(cat "$pkg_file"):$(cat "$core_file")"
+      if [[ ! " $seen " == *" $key "* ]]; then
+        seen="$seen $key"
+        ((count++))
+      fi
+    done
+    if [[ "$count" -gt 0 ]]; then
+      echo "$count"
+      return
+    fi
+  fi
+  nproc --all
+}
+
 # ── CPU layout auto-detection ────────────────────────────────────────────────
-# thread_config.hpp와 동일한 로직 (setup_irq_affinity.sh, setup_nvidia_rt.sh 참조)
-TOTAL_CORES=$(nproc)
+# thread_config.hpp는 물리 코어 수로 레이아웃(4/6/8-core)을 선택하고,
+# 물리 코어 인덱스(= 논리 CPU 번호)에 스레드를 pinning한다.
+# 하지만 isolcpus는 논리 CPU 번호를 사용하므로, SMT/HT 시스템에서는
+# RT 물리 코어의 HT 시블링 논리 CPU도 격리 대상에 포함해야 한다.
+# nproc --all: isolcpus로 격리된 CPU 포함 전체 논리 코어 수 반환
+# nproc (without --all)은 격리된 CPU를 제외하므로 isolcpus 설정 시 잘못된 값 반환
+LOGICAL_CORES=$(nproc --all)
+TOTAL_CORES=$(get_physical_cores)
+HAS_SMT=0
+if [[ "$LOGICAL_CORES" -ne "$TOTAL_CORES" ]]; then
+  HAS_SMT=1
+fi
 
 if [[ "$TOTAL_CORES" -le 4 ]]; then
-  EXPECTED_ISOLATED="1-$((TOTAL_CORES - 1))"
   EXPECTED_IRQ_MASK="1"      # 0x1 = Core 0 only
   OS_CORES_DESC="0"
-  RT_CORES_START=1
+  OS_PHYS_START=0
+  OS_PHYS_END=0
+  RT_CORES_START=1           # 물리 코어 기준 (thread_config.hpp 인덱스)
 else
-  EXPECTED_ISOLATED="2-$((TOTAL_CORES - 1))"
   EXPECTED_IRQ_MASK="3"      # 0x3 = Core 0-1
   OS_CORES_DESC="0-1"
-  RT_CORES_START=2
+  OS_PHYS_START=0
+  OS_PHYS_END=1
+  RT_CORES_START=2           # 물리 코어 기준
 fi
 RT_CORES_END=$((TOTAL_CORES - 1))
+
+# ── Helper: sysfs에서 OS 물리 코어에 속하는 모든 논리 CPU 번호 조회 ──────────
+# 반환값: OS에 해당하는 논리 CPU 번호 집합 (나머지가 isolcpus 대상)
+get_os_logical_cpus() {
+  local os_cpus=""
+  for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
+    local cpu_num
+    cpu_num=$(basename "$cpu_dir" | sed 's/cpu//')
+    local core_file="${cpu_dir}topology/core_id"
+    [[ -f "$core_file" ]] || continue
+    local core_id
+    core_id=$(cat "$core_file" 2>/dev/null)
+    if [[ "$core_id" -ge "$OS_PHYS_START" && "$core_id" -le "$OS_PHYS_END" ]]; then
+      os_cpus="${os_cpus} ${cpu_num}"
+    fi
+  done
+  echo "$os_cpus"
+}
+
+# ── isolcpus 기대값 계산 (논리 CPU 기준) ──────────────────────────────────────
+# 비-SMT: 물리 = 논리이므로 단순 범위 (예: "2-5")
+# SMT: OS 물리 코어의 모든 HT 시블링을 제외한 나머지 (예: "2-5,8-11")
+compute_expected_isolated() {
+  if [[ "$HAS_SMT" -eq 0 ]]; then
+    # 비-SMT: 단순 범위
+    if [[ "$TOTAL_CORES" -le 4 ]]; then
+      echo "1-$((TOTAL_CORES - 1))"
+    else
+      echo "2-$((TOTAL_CORES - 1))"
+    fi
+    return
+  fi
+
+  # SMT 시스템: OS 코어에 속하지 않는 모든 논리 CPU를 구한다
+  local os_cpus
+  os_cpus=$(get_os_logical_cpus)
+
+  local isolated_list=()
+  for ((cpu=0; cpu<LOGICAL_CORES; cpu++)); do
+    local is_os=0
+    for os_cpu in $os_cpus; do
+      if [[ "$cpu" -eq "$os_cpu" ]]; then
+        is_os=1
+        break
+      fi
+    done
+    if [[ "$is_os" -eq 0 ]]; then
+      isolated_list+=("$cpu")
+    fi
+  done
+
+  # 연속된 번호를 범위 표기로 변환 (예: 2 3 4 5 8 9 10 11 → "2-5,8-11")
+  local result=""
+  local range_start="" range_end=""
+  for cpu in "${isolated_list[@]}"; do
+    if [[ -z "$range_start" ]]; then
+      range_start=$cpu
+      range_end=$cpu
+    elif [[ "$cpu" -eq $((range_end + 1)) ]]; then
+      range_end=$cpu
+    else
+      # 이전 범위 출력
+      if [[ "$range_start" -eq "$range_end" ]]; then
+        result="${result:+${result},}${range_start}"
+      else
+        result="${result:+${result},}${range_start}-${range_end}"
+      fi
+      range_start=$cpu
+      range_end=$cpu
+    fi
+  done
+  # 마지막 범위 출력
+  if [[ -n "$range_start" ]]; then
+    if [[ "$range_start" -eq "$range_end" ]]; then
+      result="${result:+${result},}${range_start}"
+    else
+      result="${result:+${result},}${range_start}-${range_end}"
+    fi
+  fi
+  echo "$result"
+}
+
+EXPECTED_ISOLATED=$(compute_expected_isolated)
+
+# IRQ affinity 체크에 사용할 논리 RT CPU 목록 (RT 물리 코어 + HT 시블링 포함)
+# should_be_isolated[cpu]=1 이면 해당 논리 CPU에 IRQ가 있으면 안 됨
+declare -A IS_RT_LOGICAL_CPU
+if [[ "$HAS_SMT" -eq 0 ]]; then
+  for ((core=RT_CORES_START; core<=RT_CORES_END; core++)); do
+    IS_RT_LOGICAL_CPU[$core]=1
+  done
+else
+  _os_cpus=$(get_os_logical_cpus)
+  for ((_cpu=0; _cpu<LOGICAL_CORES; _cpu++)); do
+    _is_os=0
+    for _os_cpu in $_os_cpus; do
+      [[ "$_cpu" -eq "$_os_cpu" ]] && { _is_os=1; break; }
+    done
+    if [[ "$_is_os" -eq 0 ]]; then
+      IS_RT_LOGICAL_CPU[$_cpu]=1
+    fi
+  done
+  unset _os_cpus _cpu _is_os _os_cpu
+fi
 
 # ══════════════════════════════════════════════════════════════════════════════
 # [1/8] RT Kernel
@@ -224,10 +374,22 @@ check_cpu_isolation() {
     _category_set_detail "cpu_isolation" "none"
   elif [[ "$isolated" == "$EXPECTED_ISOLATED" ]]; then
     _pass "CPU 격리 일치: ${isolated} (기대값: ${EXPECTED_ISOLATED})"
+    if [[ "$HAS_SMT" -eq 1 ]]; then
+      _pass "SMT/HT 시블링 포함 격리 확인됨 (${LOGICAL_CORES} logical CPUs)"
+    fi
     _category_set_detail "cpu_isolation" "${isolated}"
   else
+    # 부분 일치 여부 확인: 기대값의 코어가 모두 포함되어 있는지
+    local partial_ok=1
+    # EXPECTED_ISOLATED의 범위를 파싱하여 actual에 모두 포함되는지 확인
+    # (단순 문자열 불일치이지만 실제로는 기능적으로 충분할 수 있음)
     _warn "CPU 격리 불일치: ${isolated} (기대값: ${EXPECTED_ISOLATED})"
+    if [[ "$HAS_SMT" -eq 1 ]]; then
+      _warn "SMT/HT 시스템: 물리 ${TOTAL_CORES}코어 / 논리 ${LOGICAL_CORES}코어"
+      _warn "isolcpus는 논리 CPU 번호를 사용해야 합니다 (HT 시블링 포함)"
+    fi
     _fix "GRUB의 isolcpus=${isolated} → isolcpus=${EXPECTED_ISOLATED} 로 변경"
+    _fix "sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh"
     _category_update "cpu_isolation" "WARN"
     _category_set_detail "cpu_isolation" "${isolated} (expected ${EXPECTED_ISOLATED})"
   fi
@@ -378,10 +540,10 @@ check_irq_affinity() {
     [[ -z "$mask" ]] && mask="0"
     local mask_dec=$((16#${mask}))
 
-    # RT 코어에 IRQ가 할당되어 있는지 확인
+    # RT 논리 CPU에 IRQ가 할당되어 있는지 확인 (SMT 시블링 포함)
     local on_rt=0
-    for ((core=RT_CORES_START; core<=RT_CORES_END; core++)); do
-      if (( mask_dec & (1 << core) )); then
+    for cpu in "${!IS_RT_LOGICAL_CPU[@]}"; do
+      if (( mask_dec & (1 << cpu) )); then
         on_rt=1
         break
       fi
@@ -557,20 +719,59 @@ check_nvidia() {
     return
   fi
 
-  # Persistence mode
+  # nvidia-smi 동작 여부 (DKMS 모듈 빌드 상태 반영)
   if command -v nvidia-smi &>/dev/null; then
-    local persist
-    persist=$(nvidia-smi -q -d PERFORMANCE 2>/dev/null | grep -i "persistence" | head -1 || echo "")
-    if echo "$persist" | grep -qi "enabled"; then
-      _pass "Persistence mode: Enabled"
-    elif [[ -n "$persist" ]]; then
-      _warn "Persistence mode: Disabled (RT 지연 원인 가능)"
-      _category_update "nvidia" "WARN"
+    if nvidia-smi &>/dev/null; then
+      _pass "nvidia-smi 정상 작동"
+
+      # Persistence mode
+      local persist
+      persist=$(nvidia-smi -q -d PERFORMANCE 2>/dev/null | grep -i "persistence" | head -1 || echo "")
+      if echo "$persist" | grep -qi "enabled"; then
+        _pass "Persistence mode: Enabled"
+      elif [[ -n "$persist" ]]; then
+        _warn "Persistence mode: Disabled (RT 지연 원인 가능)"
+        _category_update "nvidia" "WARN"
+      fi
     else
-      _skip "nvidia-smi persistence 정보 없음"
+      _fail "nvidia-smi 실행 실패 — NVIDIA 커널 모듈 미로드 (DKMS 빌드 필요)"
+      _fix "sudo IGNORE_PREEMPT_RT_PRESENCE=1 dkms autoinstall && sudo modprobe nvidia"
+      _fix "또는: sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh"
+      _category_update "nvidia" "FAIL"
     fi
   else
-    _skip "nvidia-smi 미설치"
+    _fail "nvidia-smi 미설치 — NVIDIA 드라이버 패키지 또는 DKMS 빌드 필요"
+    _fix "sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh"
+    _category_update "nvidia" "FAIL"
+  fi
+
+  # DKMS 모듈 상태
+  if command -v dkms &>/dev/null; then
+    local dkms_status
+    dkms_status=$(dkms status nvidia 2>/dev/null | grep "$(uname -r)" || true)
+    if echo "$dkms_status" | grep -q "installed"; then
+      _pass "NVIDIA DKMS 모듈: installed ($(uname -r))"
+    elif [[ -n "$dkms_status" ]]; then
+      _warn "NVIDIA DKMS 모듈: $(echo "$dkms_status" | head -1)"
+      _category_update "nvidia" "WARN"
+    else
+      _warn "NVIDIA DKMS 모듈: 현재 커널($(uname -r))용 미빌드"
+      _fix "sudo IGNORE_PREEMPT_RT_PRESENCE=1 dkms autoinstall"
+      _category_update "nvidia" "WARN"
+    fi
+  fi
+
+  # IGNORE_PREEMPT_RT_PRESENCE 영구 설정 확인
+  if [[ -f /etc/environment ]] && grep -q "IGNORE_PREEMPT_RT_PRESENCE" /etc/environment 2>/dev/null; then
+    _pass "IGNORE_PREEMPT_RT_PRESENCE=1 영구 설정 (/etc/environment)"
+  else
+    local kernel_ver
+    kernel_ver=$(uname -r)
+    if echo "$kernel_ver" | grep -qi "rt\|realtime"; then
+      _warn "IGNORE_PREEMPT_RT_PRESENCE=1 미설정 — DKMS 자동 빌드 시 실패 가능"
+      _fix "echo 'IGNORE_PREEMPT_RT_PRESENCE=1' | sudo tee -a /etc/environment"
+      _category_update "nvidia" "WARN"
+    fi
   fi
 
   # modprobe 설정
@@ -621,10 +822,12 @@ check_cpu_frequency() {
     return
   fi
 
+  # 모든 코어의 governor 확인 (OS 코어도 powersave이면 compositor 프레임 드롭 발생)
   local non_perf=0
   local checked=0
+  local rt_non_perf=0
 
-  for ((core=RT_CORES_START; core<=RT_CORES_END; core++)); do
+  for ((core=0; core<LOGICAL_CORES; core++)); do
     local gov_file="/sys/devices/system/cpu/cpu${core}/cpufreq/scaling_governor"
     if [[ -f "$gov_file" ]]; then
       local gov
@@ -632,6 +835,10 @@ check_cpu_frequency() {
       ((checked++)) || true
       if [[ "$gov" != "performance" ]]; then
         ((non_perf++)) || true
+        # RT 코어인지 확인
+        if [[ -n "${IS_RT_LOGICAL_CPU[$core]:-}" ]]; then
+          ((rt_non_perf++)) || true
+        fi
         if [[ "$OUTPUT_MODE" == "verbose" ]]; then
           _warn "Core ${core}: governor = ${gov} (performance 권장)"
         fi
@@ -640,19 +847,37 @@ check_cpu_frequency() {
   done
 
   if [[ "$checked" -eq 0 ]]; then
-    _skip "RT 코어의 cpufreq 정보 없음"
+    _skip "cpufreq 정보 없음"
     _category_set_detail "cpu_frequency" "unknown"
     return
   fi
 
   if [[ "$non_perf" -eq 0 ]]; then
-    _pass "RT 코어(${RT_CORES_START}-${RT_CORES_END}) 모두 performance governor"
+    _pass "모든 코어(${checked}개) performance governor"
     _category_set_detail "cpu_frequency" "all performance"
   else
-    _warn "RT 코어 중 ${non_perf}개가 performance 아님"
+    if [[ "$rt_non_perf" -gt 0 ]]; then
+      _warn "RT 코어 중 ${rt_non_perf}개가 performance 아님 — 제어 루프 jitter 위험"
+      _category_update "cpu_frequency" "WARN"
+    fi
+    if [[ "$((non_perf - rt_non_perf))" -gt 0 ]]; then
+      _warn "OS 코어 중 $((non_perf - rt_non_perf))개가 performance 아님 — 화면 끊김 위험"
+      _category_update "cpu_frequency" "WARN"
+    fi
     _fix "sudo cpupower frequency-set -g performance"
-    _category_update "cpu_frequency" "WARN"
-    _category_set_detail "cpu_frequency" "${non_perf} non-performance"
+    _fix "또는: sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh  (영구 서비스 포함)"
+    _category_set_detail "cpu_frequency" "${non_perf}/${checked} non-performance"
+  fi
+
+  # cpu-governor-performance.service 상태 확인
+  if systemctl is-enabled cpu-governor-performance.service &>/dev/null; then
+    _pass "cpu-governor-performance.service: enabled (재부팅 시 자동 적용)"
+  else
+    if [[ "$non_perf" -gt 0 ]]; then
+      _warn "cpu-governor-performance.service: not enabled (재부팅 시 powersave 복원)"
+      _fix "sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh  (서비스 자동 생성)"
+      _category_update "cpu_frequency" "WARN"
+    fi
   fi
 }
 
@@ -735,8 +960,12 @@ print_json() {
 main() {
   if [[ "$OUTPUT_MODE" == "verbose" ]]; then
     echo ""
-    echo -e "${BOLD}${CYAN}RT Setup Verification (${TOTAL_CORES}-core system)${NC}"
-    echo -e "${DIM}OS cores: ${OS_CORES_DESC}  |  RT cores: ${RT_CORES_START}-${RT_CORES_END}  |  IRQ mask: 0x${EXPECTED_IRQ_MASK}${NC}"
+    local smt_info=""
+    if [[ "$HAS_SMT" -eq 1 ]]; then
+      smt_info="  |  SMT: ${LOGICAL_CORES} logical"
+    fi
+    echo -e "${BOLD}${CYAN}RT Setup Verification (${TOTAL_CORES}-core system${smt_info})${NC}"
+    echo -e "${DIM}OS cores: ${OS_CORES_DESC}  |  RT cores: ${RT_CORES_START}-${RT_CORES_END}  |  isolcpus: ${EXPECTED_ISOLATED}  |  IRQ mask: 0x${EXPECTED_IRQ_MASK}${NC}"
   fi
 
   check_rt_kernel

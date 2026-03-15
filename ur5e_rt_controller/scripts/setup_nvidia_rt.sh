@@ -2,7 +2,8 @@
 # setup_nvidia_rt.sh — NVIDIA 드라이버 + Linux RT 커널 공존 환경 설정
 #
 # NVIDIA GPU(디스플레이 전용)와 PREEMPT_RT 커널이 안정적으로 공존하도록
-# modprobe, GRUB, IRQ affinity, persistence mode, nouveau 블랙리스트를 설정한다.
+# modprobe, GRUB, IRQ affinity, persistence mode, nouveau 블랙리스트,
+# X11 anti-tearing(ForceFullCompositionPipeline), compositor 우선순위를 설정한다.
 #
 # 대상: Ubuntu 22.04 / 24.04, PREEMPT_RT 커널, NVIDIA GPU (CUDA 미사용)
 # 제어 루프: 500Hz (2ms period), 목표 max jitter: < 200μs
@@ -46,7 +47,11 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   echo "  4. NVIDIA IRQ affinity systemd 서비스"
   echo "  5. nvidia-smi persistence mode 서비스"
   echo "  6. nouveau 블랙리스트 (활성 시)"
-  echo "  7. 검증 요약 및 cyclictest 명령"
+  echo "  7. X11 화면 티어링 방지 (ForceFullCompositionPipeline)"
+  echo "  8. Compositor 우선순위 부스트 서비스"
+  echo "  9. NVIDIA DKMS 모듈 빌드 (RT 커널용)"
+  echo " 10. CPU governor 설정 (performance 모드)"
+  echo " 11. 검증 요약 및 cyclictest 명령"
   echo ""
   exit 0
 fi
@@ -64,6 +69,43 @@ CHANGES_APPLIED=()
 BACKUP_FILES=()
 WARNINGS=()
 
+# ── Helper: physical CPU core count (SMT/HT 제외) ─────────────────────────
+# nproc은 논리 코어(HT 포함)를 반환하므로, 물리 코어만 카운트한다.
+# 예: i7-8700 (6C/12T) → nproc=12 이지만 이 함수는 6을 반환.
+# thread_config.hpp의 코어 레이아웃은 물리 코어 기준이므로 반드시 물리 코어를 사용해야 한다.
+get_physical_cores() {
+  if command -v lscpu &>/dev/null; then
+    local count
+    count=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l)
+    if [[ "$count" -gt 0 ]]; then
+      echo "$count"
+      return
+    fi
+  fi
+  # Fallback: sysfs topology 직접 파싱
+  if [[ -f /sys/devices/system/cpu/cpu0/topology/core_id ]]; then
+    local seen=""
+    local count=0
+    for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
+      local pkg_file="${cpu_dir}topology/physical_package_id"
+      local core_file="${cpu_dir}topology/core_id"
+      [[ -f "$pkg_file" && -f "$core_file" ]] || continue
+      local key
+      key="$(cat "$pkg_file"):$(cat "$core_file")"
+      if [[ ! " $seen " == *" $key "* ]]; then
+        seen="$seen $key"
+        ((count++))
+      fi
+    done
+    if [[ "$count" -gt 0 ]]; then
+      echo "$count"
+      return
+    fi
+  fi
+  # 최후 수단: nproc --all (VM, 컨테이너 등에서 sysfs 미지원 시)
+  nproc --all
+}
+
 # ── Helper: backup a file before modifying ──────────────────────────────────
 backup_file() {
   local file="$1"
@@ -76,9 +118,9 @@ backup_file() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [1/7] Pre-flight Checks
+# [1/11] Pre-flight Checks
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [1/7] Pre-flight Checks ━━━${NC}"
+echo -e "${BOLD}━━━ [1/11] Pre-flight Checks ━━━${NC}"
 echo ""
 
 # ── Root check ──────────────────────────────────────────────────────────────
@@ -139,9 +181,17 @@ success "NVIDIA GPU: ${NVIDIA_GPU_MODEL}"
 info "  드라이버 버전: ${NVIDIA_DRIVER_VER}"
 
 # ── CPU layout auto-detection ───────────────────────────────────────────────
-TOTAL_CORES=$(nproc)
+# nproc --all: isolcpus로 격리된 CPU 포함 전체 논리 코어 수 반환
+LOGICAL_CORES=$(nproc --all)
+TOTAL_CORES=$(get_physical_cores)
+
+if [[ "$LOGICAL_CORES" -ne "$TOTAL_CORES" ]]; then
+  info "SMT/Hyper-Threading 감지: 논리 ${LOGICAL_CORES}코어, 물리 ${TOTAL_CORES}코어"
+  info "thread_config.hpp 레이아웃과 일치하도록 물리 코어(${TOTAL_CORES}) 기준으로 설정합니다"
+fi
+
 if [[ "$TOTAL_CORES" -lt 4 ]]; then
-  error "CPU 코어가 ${TOTAL_CORES}개입니다. 최소 4코어가 필요합니다."
+  error "물리 CPU 코어가 ${TOTAL_CORES}개입니다. 최소 4코어가 필요합니다."
   error "  Core 0-1: OS/NVIDIA IRQ, Core 2+: RT 제어 루프"
   exit 1
 fi
@@ -150,37 +200,119 @@ fi
 #   4코어: Core 0 = OS, Core 1-3 = RT (isolcpus=1-3)
 #   6코어: Core 0-1 = OS, Core 2-5 = RT (isolcpus=2-5)
 #   8코어: Core 0-1 = OS, Core 2-6 = RT, Core 7 = spare (isolcpus=2-7)
+#
+# SMT/HT 시스템에서는 isolcpus에 HT 시블링도 포함해야 한다.
+# 예: 6C/12T → 물리 Core 0-1 = OS, isolcpus=2-5,8-11 (HT 시블링 포함)
 if [[ "$TOTAL_CORES" -le 4 ]]; then
   OS_CORES="0"
   RT_CORES_START=1
   RT_CORES_END=$((TOTAL_CORES - 1))
-  # NVIDIA IRQ도 Core 0에만 할당 (4코어 시 Core 1은 RT Control)
+  OS_PHYS_START=0
+  OS_PHYS_END=0
   IRQ_AFFINITY_MASK="1"   # 0x1 = Core 0 only
 elif [[ "$TOTAL_CORES" -le 7 ]]; then
   OS_CORES="0-1"
   RT_CORES_START=2
   RT_CORES_END=$((TOTAL_CORES - 1))
+  OS_PHYS_START=0
+  OS_PHYS_END=1
   IRQ_AFFINITY_MASK="3"   # 0x3 = Core 0-1
 else
-  # 8코어 이상: Core 7은 spare (cyclictest, 모니터링용)
   OS_CORES="0-1"
   RT_CORES_START=2
   RT_CORES_END=$((TOTAL_CORES - 1))
+  OS_PHYS_START=0
+  OS_PHYS_END=1
   IRQ_AFFINITY_MASK="3"   # 0x3 = Core 0-1
 fi
-RT_CORES="${RT_CORES_START}-${RT_CORES_END}"
+
+# ── isolcpus 값 계산 (SMT 시블링 포함) ────────────────────────────────────
+# 비-SMT: 단순 범위 (예: "2-5")
+# SMT: OS 물리 코어의 HT 시블링을 제외한 모든 논리 CPU (예: "2-5,8-11")
+if [[ "$LOGICAL_CORES" -eq "$TOTAL_CORES" ]]; then
+  # 비-SMT: 물리 = 논리
+  RT_CORES="${RT_CORES_START}-${RT_CORES_END}"
+else
+  # SMT: OS 물리 코어에 속하는 논리 CPU를 찾고 나머지를 isolcpus에 사용
+  OS_LOGICAL_CPUS=""
+  for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
+    cpu_num=$(basename "$cpu_dir" | sed 's/cpu//')
+    core_file="${cpu_dir}topology/core_id"
+    [[ -f "$core_file" ]] || continue
+    core_id=$(cat "$core_file" 2>/dev/null)
+    if [[ "$core_id" -ge "$OS_PHYS_START" && "$core_id" -le "$OS_PHYS_END" ]]; then
+      OS_LOGICAL_CPUS="${OS_LOGICAL_CPUS} ${cpu_num}"
+    fi
+  done
+
+  # OS 논리 CPU를 제외한 나머지를 범위 표기로 변환
+  ISOLATED_LIST=()
+  for ((cpu=0; cpu<LOGICAL_CORES; cpu++)); do
+    is_os=0
+    for os_cpu in $OS_LOGICAL_CPUS; do
+      [[ "$cpu" -eq "$os_cpu" ]] && { is_os=1; break; }
+    done
+    [[ "$is_os" -eq 0 ]] && ISOLATED_LIST+=("$cpu")
+  done
+
+  # 연속 번호를 범위 표기로 변환 (예: 2 3 4 5 8 9 10 11 → "2-5,8-11")
+  RT_CORES=""
+  range_start="" range_end=""
+  for cpu in "${ISOLATED_LIST[@]}"; do
+    if [[ -z "$range_start" ]]; then
+      range_start=$cpu; range_end=$cpu
+    elif [[ "$cpu" -eq $((range_end + 1)) ]]; then
+      range_end=$cpu
+    else
+      if [[ "$range_start" -eq "$range_end" ]]; then
+        RT_CORES="${RT_CORES:+${RT_CORES},}${range_start}"
+      else
+        RT_CORES="${RT_CORES:+${RT_CORES},}${range_start}-${range_end}"
+      fi
+      range_start=$cpu; range_end=$cpu
+    fi
+  done
+  if [[ -n "$range_start" ]]; then
+    if [[ "$range_start" -eq "$range_end" ]]; then
+      RT_CORES="${RT_CORES:+${RT_CORES},}${range_start}"
+    else
+      RT_CORES="${RT_CORES:+${RT_CORES},}${range_start}-${range_end}"
+    fi
+  fi
+
+  info "SMT isolcpus 계산: ${RT_CORES} (OS 논리 CPU:${OS_LOGICAL_CPUS})"
+fi
+
+if [[ "$TOTAL_CORES" -le 4 ]]; then
+  warn "4코어 시스템: OS 코어가 1개(Core 0)뿐입니다"
+  warn "X11/Wayland + NVIDIA IRQ + 시스템 프로세스가 모두 Core 0에서 동작하므로"
+  warn "디스플레이 렌더링 프레임이 밀려 화면 끊김이 발생할 수 있습니다"
+  WARNINGS+=("4코어 시스템 — 디스플레이 성능 저하 가능 (OS 코어 1개)")
+fi
 
 success "CPU 레이아웃 (${TOTAL_CORES}코어):"
 info "  OS / NVIDIA IRQ:  Core ${OS_CORES}"
 info "  RT 격리 대상:     Core ${RT_CORES} (thread_config.hpp 레이아웃과 일치)"
 info "  IRQ affinity mask: 0x${IRQ_AFFINITY_MASK}"
 
+# ── Display server detection ──────────────────────────────────────────────
+DISPLAY_SERVER="unknown"
+if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+  DISPLAY_SERVER="wayland"
+elif [[ -n "${DISPLAY:-}" ]]; then
+  DISPLAY_SERVER="x11"
+else
+  # 비-GUI 환경에서도 X11 설정 파일은 설치 (재부팅 후 GUI 시작 시 적용)
+  DISPLAY_SERVER="headless"
+fi
+info "디스플레이 서버: ${DISPLAY_SERVER}"
+
 # ── nouveau check ───────────────────────────────────────────────────────────
 NOUVEAU_ACTIVE=0
 if lsmod 2>/dev/null | grep -q nouveau; then
   NOUVEAU_ACTIVE=1
   warn "nouveau 모듈이 활성 상태입니다!"
-  warn "NVIDIA 독점 드라이버와 충돌합니다. [6/7] 단계에서 블랙리스트를 설정합니다."
+  warn "NVIDIA 독점 드라이버와 충돌합니다. [6/11] 단계에서 블랙리스트를 설정합니다."
   WARNINGS+=("nouveau 모듈 활성 — 블랙리스트 적용 예정")
 else
   success "nouveau 비활성 확인"
@@ -198,9 +330,9 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [2/7] NVIDIA modprobe Configuration
+# [2/11] NVIDIA modprobe Configuration
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [2/7] NVIDIA modprobe 설정 ━━━${NC}"
+echo -e "${BOLD}━━━ [2/11] NVIDIA modprobe 설정 ━━━${NC}"
 echo ""
 
 MODPROBE_CONF="/etc/modprobe.d/nvidia-rt.conf"
@@ -226,9 +358,9 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [3/7] GRUB Configuration
+# [3/11] GRUB Configuration
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [3/7] GRUB 커널 파라미터 설정 ━━━${NC}"
+echo -e "${BOLD}━━━ [3/11] GRUB 커널 파라미터 설정 ━━━${NC}"
 echo ""
 
 GRUB_FILE="/etc/default/grub"
@@ -311,9 +443,9 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [4/7] NVIDIA IRQ Affinity systemd Service
+# [4/11] NVIDIA IRQ Affinity systemd Service
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [4/7] NVIDIA IRQ Affinity 서비스 ━━━${NC}"
+echo -e "${BOLD}━━━ [4/11] NVIDIA IRQ Affinity 서비스 ━━━${NC}"
 echo ""
 
 IRQ_SERVICE="/etc/systemd/system/nvidia-irq-affinity.service"
@@ -399,9 +531,9 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [5/7] nvidia-smi Persistence Mode
+# [5/11] nvidia-smi Persistence Mode
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [5/7] nvidia-smi Persistence Mode ━━━${NC}"
+echo -e "${BOLD}━━━ [5/11] nvidia-smi Persistence Mode ━━━${NC}"
 echo ""
 
 PERSIST_SERVICE="/etc/systemd/system/nvidia-persistence.service"
@@ -440,9 +572,9 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [6/7] nouveau Blacklist (if active)
+# [6/11] nouveau Blacklist (if active)
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [6/7] nouveau 블랙리스트 ━━━${NC}"
+echo -e "${BOLD}━━━ [6/11] nouveau 블랙리스트 ━━━${NC}"
 echo ""
 
 NOUVEAU_CONF="/etc/modprobe.d/blacklist-nouveau.conf"
@@ -478,9 +610,458 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [7/7] Validation & Summary
+# [7/11] X11 Anti-Tearing Configuration
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [7/7] 설정 요약 ━━━${NC}"
+echo -e "${BOLD}━━━ [7/11] X11 화면 티어링 방지 ━━━${NC}"
+echo ""
+
+# ForceFullCompositionPipeline은 NVIDIA 독점 드라이버의 vsync 기반 티어링 방지 기능.
+# nvidia-drm modeset=1만으로는 KMS만 활성화될 뿐, 실제 티어링은 해결되지 않는다.
+# Wayland 환경에서도 XWayland fallback 시 유효하므로, X11 설정 파일은 항상 설치한다.
+XORG_CONF_DIR="/etc/X11/xorg.conf.d"
+XORG_CONF="${XORG_CONF_DIR}/20-nvidia-antitear.conf"
+
+# nvidia-settings에서 현재 연결된 디스플레이 이름 감지
+DISPLAY_NAME=""
+if command -v nvidia-settings &>/dev/null && [[ "$DISPLAY_SERVER" != "headless" ]]; then
+  DISPLAY_NAME=$(nvidia-settings -q CurrentMetaMode -t 2>/dev/null \
+    | grep -oP '^[A-Za-z]+-[0-9]+' | head -1 || true)
+fi
+
+# 디스플레이 이름을 감지하지 못한 경우 범용 설정 사용
+if [[ -n "$DISPLAY_NAME" ]]; then
+  METAMODE_VALUE="${DISPLAY_NAME}: nvidia-auto-select +0+0 {ForceFullCompositionPipeline=On}"
+  info "감지된 디스플레이: ${DISPLAY_NAME}"
+else
+  METAMODE_VALUE="nvidia-auto-select +0+0 {ForceFullCompositionPipeline=On}"
+  info "디스플레이 이름 미감지 — 범용 MetaMode 사용"
+fi
+
+XORG_CONTENT="# NVIDIA 화면 티어링 방지 설정
+# Generated by setup_nvidia_rt.sh
+#
+# ForceFullCompositionPipeline: GPU 측 vsync 강제 (compositor 무관)
+# TripleBuffer: 프레임 드롭 방지 (vsync 활성화 시 성능 보완)
+Section \"Screen\"
+    Identifier     \"Screen0\"
+    Device         \"Device0\"
+    Monitor        \"Monitor0\"
+    Option         \"MetaModes\" \"${METAMODE_VALUE}\"
+    Option         \"TripleBuffer\" \"On\"
+    Option         \"AllowIndirectGLXProtocol\" \"off\"
+EndSection"
+
+mkdir -p "$XORG_CONF_DIR"
+
+if [[ -f "$XORG_CONF" ]] && diff -q <(echo "$XORG_CONTENT") "$XORG_CONF" &>/dev/null; then
+  info "이미 동일한 X11 설정이 존재합니다 — 건너뜀"
+else
+  backup_file "$XORG_CONF"
+  echo "$XORG_CONTENT" > "$XORG_CONF"
+  success "X11 anti-tearing 설정: ${XORG_CONF}"
+  CHANGES_APPLIED+=("X11 ForceFullCompositionPipeline: ${XORG_CONF}")
+fi
+
+if [[ "$DISPLAY_SERVER" == "wayland" ]]; then
+  info "Wayland 환경 감지 — XWayland 창에만 적용됩니다"
+  info "순수 Wayland 앱의 티어링은 compositor(Mutter/KWin) 설정을 확인하세요"
+  WARNINGS+=("Wayland 환경 — ForceFullCompositionPipeline은 XWayland에만 적용")
+fi
+
+echo ""
+
+# ══════════════════════════════════════════════════════════════════════════════
+# [8/11] Compositor Priority Boost for RT Environment
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "${BOLD}━━━ [8/11] Compositor 우선순위 부스트 ━━━${NC}"
+echo ""
+
+# RT 커널에서 SCHED_FIFO 스레드(제어 루프)가 SCHED_OTHER(compositor)를 완전히 선점하면
+# 화면 갱신이 밀려서 끊김이 발생한다.
+# compositor의 nice 값을 낮춰(우선순위 높임) SCHED_OTHER 내에서 최우선으로 실행되게 한다.
+# 주의: SCHED_FIFO로 올리면 RT 제어 루프와 경쟁하므로 nice 조정만 수행.
+COMPOSITOR_SERVICE="/etc/systemd/system/rt-compositor-boost.service"
+COMPOSITOR_SCRIPT="/usr/local/bin/rt-compositor-boost.sh"
+
+COMPOSITOR_SCRIPT_CONTENT='#!/bin/bash
+# rt-compositor-boost.sh — RT 환경에서 compositor/Xorg 우선순위 부스트
+# Generated by setup_nvidia_rt.sh
+#
+# RT 스레드(SCHED_FIFO)에 의해 디스플레이 compositor가 기아 상태에 빠지는 것을 방지.
+# SCHED_OTHER 내에서 nice -10으로 우선순위를 높인다.
+set -euo pipefail
+
+BOOSTED=0
+
+# Xorg / Xwayland
+for proc_name in Xorg Xwayland; do
+  for pid in $(pgrep -x "$proc_name" 2>/dev/null || true); do
+    renice -n -10 -p "$pid" 2>/dev/null && ((BOOSTED++)) || true
+  done
+done
+
+# GNOME compositor (mutter)
+for pid in $(pgrep -f "gnome-shell" 2>/dev/null || true); do
+  renice -n -10 -p "$pid" 2>/dev/null && ((BOOSTED++)) || true
+done
+
+# KDE compositor (kwin)
+for pid in $(pgrep -f "kwin" 2>/dev/null || true); do
+  renice -n -10 -p "$pid" 2>/dev/null && ((BOOSTED++)) || true
+done
+
+echo "rt-compositor-boost: boosted ${BOOSTED} display processes (nice -10)"'
+
+COMPOSITOR_SERVICE_CONTENT="[Unit]
+Description=Boost compositor/Xorg priority for RT kernel display stability
+After=display-manager.service
+After=graphical.target
+
+[Service]
+Type=oneshot
+ExecStart=${COMPOSITOR_SCRIPT}
+RemainAfterExit=yes
+# 디스플레이 매니저가 완전히 시작된 후 실행
+ExecStartPre=/bin/sleep 5
+
+[Install]
+WantedBy=graphical.target"
+
+echo "$COMPOSITOR_SCRIPT_CONTENT" > "$COMPOSITOR_SCRIPT"
+chmod +x "$COMPOSITOR_SCRIPT"
+success "Compositor 부스트 스크립트: ${COMPOSITOR_SCRIPT}"
+
+if [[ -f "$COMPOSITOR_SERVICE" ]] && diff -q <(echo "$COMPOSITOR_SERVICE_CONTENT") "$COMPOSITOR_SERVICE" &>/dev/null; then
+  info "서비스가 이미 동일한 설정으로 존재합니다 — 건너뜀"
+else
+  backup_file "$COMPOSITOR_SERVICE"
+  echo "$COMPOSITOR_SERVICE_CONTENT" > "$COMPOSITOR_SERVICE"
+  systemctl daemon-reload
+  systemctl enable rt-compositor-boost.service 2>/dev/null
+  success "Compositor 부스트 서비스: ${COMPOSITOR_SERVICE}"
+  CHANGES_APPLIED+=("Compositor 우선순위 부스트 서비스: ${COMPOSITOR_SERVICE}")
+fi
+
+# GUI 환경이면 즉시 실행
+if [[ "$DISPLAY_SERVER" != "headless" ]]; then
+  bash "$COMPOSITOR_SCRIPT" 2>/dev/null || true
+  success "Compositor 우선순위 즉시 적용 완료"
+else
+  info "headless 환경 — 재부팅 후 GUI 시작 시 자동 적용됩니다"
+fi
+
+echo ""
+
+# ══════════════════════════════════════════════════════════════════════════════
+# [9/11] NVIDIA DKMS Module Build for RT Kernel
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "${BOLD}━━━ [9/11] NVIDIA DKMS 모듈 빌드 ━━━${NC}"
+echo ""
+
+# RT 커널로 부팅하면 기존 NVIDIA DKMS 모듈이 빌드되지 않아 nvidia-smi가 작동하지 않을 수 있다.
+# 커스텀 RT 커널에서 NVIDIA DKMS 빌드가 실패하는 원인 3가지:
+#   1. `dkms autoinstall` → apport 검증: "kernel package linux-headers-X is not supported"
+#   2. NVIDIA 빌드 시스템 → PREEMPT_RT 감지 후 빌드 차단
+#   3. dkms.conf → BUILD_EXCLUSIVE_CONFIG="!CONFIG_PREEMPT_RT" 지시문
+# 해결:
+#   - `dkms build -m nvidia -v VERSION -k KERNEL`으로 apport 우회
+#   - `IGNORE_PREEMPT_RT_PRESENCE=1` 환경변수로 RT 감지 차단 우회
+#   - dkms.conf의 BUILD_EXCLUSIVE_CONFIG 라인 주석 처리
+DKMS_NEEDED=0
+
+if ! command -v nvidia-smi &>/dev/null; then
+  # nvidia-smi 바이너리 자체가 없는 경우 — NVIDIA 드라이버 패키지 미설치
+  warn "nvidia-smi를 찾을 수 없습니다"
+  # NVIDIA 드라이버 패키지가 설치되어 있는지 확인
+  NVIDIA_PKG=$(dpkg -l 2>/dev/null | grep -oP 'nvidia-driver-\K[0-9]+' | sort -rn | head -1 || true)
+  if [[ -n "$NVIDIA_PKG" ]]; then
+    info "NVIDIA 드라이버 패키지 감지: nvidia-driver-${NVIDIA_PKG}"
+    DKMS_NEEDED=1
+  else
+    warn "NVIDIA 드라이버 패키지가 설치되지 않았습니다"
+    warn "설치: sudo apt-get install -y nvidia-driver-535  (또는 최신 버전)"
+    WARNINGS+=("NVIDIA 드라이버 패키지 미설치 — sudo apt-get install nvidia-driver-XXX")
+  fi
+elif ! nvidia-smi &>/dev/null; then
+  # nvidia-smi 바이너리는 있지만 실행 실패 — 커널 모듈 미로드
+  warn "nvidia-smi 실행 실패 — NVIDIA 커널 모듈이 로드되지 않았습니다"
+  DKMS_NEEDED=1
+else
+  success "nvidia-smi 정상 작동 — DKMS 빌드 불필요"
+fi
+
+if [[ "$DKMS_NEEDED" -eq 1 ]]; then
+  if ! command -v dkms &>/dev/null; then
+    warn "dkms가 설치되어 있지 않습니다"
+    warn "설치: sudo apt-get install -y dkms"
+    WARNINGS+=("dkms 미설치 — sudo apt-get install -y dkms")
+  else
+    # ── 커널 헤더 확인 ──────────────────────────────────────────────────────
+    # 커스텀 RT 커널은 linux-headers-xxx-rt-custom .deb로 설치되었을 수 있다.
+    # /lib/modules/$(uname -r)/build 심볼릭 링크가 존재하면 헤더 사용 가능.
+    HEADERS_DIR="/lib/modules/${KERNEL_VER}/build"
+    if [[ ! -d "$HEADERS_DIR" ]]; then
+      warn "커널 헤더 디렉토리가 없습니다: ${HEADERS_DIR}"
+      warn "커스텀 RT 커널 헤더를 먼저 설치하세요:"
+      warn "  build_rt_kernel.sh 빌드 디렉토리에서:"
+      warn "    sudo dpkg -i linux-headers-${KERNEL_VER}_*.deb"
+      WARNINGS+=("커널 헤더 미설치 — /lib/modules/${KERNEL_VER}/build 없음")
+    else
+      info "커널 헤더 확인: ${HEADERS_DIR}"
+
+      # ── NVIDIA DKMS 모듈 버전 탐색 ─────────────────────────────────────
+      # /var/lib/dkms/nvidia/ 에서 설치된 NVIDIA DKMS 소스 버전을 찾는다.
+      NVIDIA_DKMS_VER=""
+      if [[ -d /var/lib/dkms/nvidia ]]; then
+        NVIDIA_DKMS_VER=$(ls -1 /var/lib/dkms/nvidia/ 2>/dev/null \
+          | grep -E '^[0-9]+\.' | sort -V | tail -1 || true)
+      fi
+
+      if [[ -z "$NVIDIA_DKMS_VER" ]]; then
+        warn "NVIDIA DKMS 소스를 찾을 수 없습니다 (/var/lib/dkms/nvidia/)"
+        warn "NVIDIA DKMS 패키지 설치:"
+        warn "  sudo apt-get install -y nvidia-dkms-535  (또는 설치된 드라이버 버전)"
+        WARNINGS+=("NVIDIA DKMS 소스 없음 — nvidia-dkms-XXX 설치 필요")
+      else
+        info "NVIDIA DKMS 소스 버전: ${NVIDIA_DKMS_VER}"
+
+        # ── 이미 빌드되었는지 확인 ────────────────────────────────────────
+        DKMS_STATUS=$(dkms status nvidia/"${NVIDIA_DKMS_VER}" -k "${KERNEL_VER}" 2>/dev/null || true)
+        if echo "$DKMS_STATUS" | grep -q "installed"; then
+          success "NVIDIA ${NVIDIA_DKMS_VER} 모듈이 이미 설치됨 (커널: ${KERNEL_VER})"
+        else
+          # ── RT 커널용 NVIDIA DKMS 빌드 준비 ─────────────────────────────
+          # NVIDIA 빌드 시스템은 PREEMPT_RT 커널을 명시적으로 차단한다:
+          #   1. conftest.sh에서 CONFIG_PREEMPT_RT 감지 → 빌드 거부
+          #   2. dkms.conf의 BUILD_EXCLUSIVE_CONFIG="!CONFIG_PREEMPT_RT"
+          # 이 두 가지를 우회해야 RT 커널에서 NVIDIA 모듈을 빌드할 수 있다.
+
+          # (a) dkms.conf의 BUILD_EXCLUSIVE_CONFIG 주석 처리
+          NVIDIA_DKMS_CONF="/usr/src/nvidia-${NVIDIA_DKMS_VER}/dkms.conf"
+          if [[ -f "$NVIDIA_DKMS_CONF" ]]; then
+            if grep -q 'BUILD_EXCLUSIVE_CONFIG.*PREEMPT_RT' "$NVIDIA_DKMS_CONF" 2>/dev/null; then
+              info "NVIDIA dkms.conf에서 BUILD_EXCLUSIVE_CONFIG (PREEMPT_RT 차단) 비활성화..."
+              backup_file "$NVIDIA_DKMS_CONF"
+              sed -i 's/^\(BUILD_EXCLUSIVE_CONFIG=.*PREEMPT_RT\)/#\1  # Disabled for RT kernel by setup_nvidia_rt.sh/' \
+                "$NVIDIA_DKMS_CONF"
+              success "BUILD_EXCLUSIVE_CONFIG 비활성화 완료"
+              CHANGES_APPLIED+=("NVIDIA dkms.conf BUILD_EXCLUSIVE_CONFIG 비활성화")
+            fi
+          fi
+
+          # (b) IGNORE_PREEMPT_RT_PRESENCE=1 환경변수 설정
+          # NVIDIA 빌드 시스템의 conftest.sh가 RT 커널 감지 후 빌드를 거부하는 것을 우회
+          export IGNORE_PREEMPT_RT_PRESENCE=1
+          export IGNORE_CC_MISMATCH=1
+          info "NVIDIA RT 빌드 우회 환경변수 설정:"
+          info "  IGNORE_PREEMPT_RT_PRESENCE=1"
+          info "  IGNORE_CC_MISMATCH=1"
+
+          # ── dkms build + install ────────────────────────────────────────
+          info "NVIDIA ${NVIDIA_DKMS_VER} 모듈 빌드 시작 (커널: ${KERNEL_VER})..."
+          info "  dkms build -m nvidia -v ${NVIDIA_DKMS_VER} -k ${KERNEL_VER}"
+
+          set +e
+          BUILD_OUTPUT=$(dkms build -m nvidia -v "${NVIDIA_DKMS_VER}" -k "${KERNEL_VER}" 2>&1)
+          BUILD_RC=$?
+          set -e
+
+          if [[ $BUILD_RC -eq 0 ]]; then
+            success "NVIDIA DKMS 빌드 성공"
+
+            # install
+            info "NVIDIA DKMS 모듈 설치 중..."
+            set +e
+            INSTALL_OUTPUT=$(dkms install -m nvidia -v "${NVIDIA_DKMS_VER}" -k "${KERNEL_VER}" 2>&1)
+            INSTALL_RC=$?
+            set -e
+
+            if [[ $INSTALL_RC -eq 0 ]]; then
+              success "NVIDIA DKMS 모듈 설치 성공"
+              CHANGES_APPLIED+=("NVIDIA DKMS 모듈 빌드/설치: nvidia/${NVIDIA_DKMS_VER} for ${KERNEL_VER}")
+            else
+              warn "NVIDIA DKMS 모듈 설치 실패:"
+              echo "$INSTALL_OUTPUT" | tail -5
+              WARNINGS+=("NVIDIA DKMS install 실패 — 재부팅 후 재시도")
+            fi
+          else
+            warn "NVIDIA DKMS 빌드 실패:"
+            echo "$BUILD_OUTPUT" | tail -10
+
+            # 빌드 실패 원인 분석
+            if echo "$BUILD_OUTPUT" | grep -qi "gcc.*not found\|cc.*not found"; then
+              warn "빌드 도구(gcc) 미설치: sudo apt-get install -y build-essential"
+              WARNINGS+=("gcc 미설치 — sudo apt-get install build-essential")
+            fi
+            if echo "$BUILD_OUTPUT" | grep -qi "kernel source\|kernel header"; then
+              warn "커널 헤더/소스 문제: /lib/modules/${KERNEL_VER}/build 확인"
+              WARNINGS+=("커널 헤더/소스 불완전 — Makefile 등 확인 필요")
+            fi
+
+            # make.log 경로 안내
+            MAKE_LOG="/var/lib/dkms/nvidia/${NVIDIA_DKMS_VER}/build/make.log"
+            if [[ -f "$MAKE_LOG" ]]; then
+              warn "상세 빌드 로그: ${MAKE_LOG}"
+              warn "마지막 20줄:"
+              tail -20 "$MAKE_LOG" 2>/dev/null | while IFS= read -r line; do
+                warn "  ${line}"
+              done
+            fi
+            WARNINGS+=("NVIDIA DKMS 빌드 실패 — ${MAKE_LOG} 확인")
+          fi
+
+          # ── IGNORE_PREEMPT_RT_PRESENCE 영구 설정 ──────────────────────
+          # 향후 커널 업데이트 시 DKMS 자동 빌드에서도 RT 우회가 적용되도록
+          ENV_FILE="/etc/environment"
+          if ! grep -q "IGNORE_PREEMPT_RT_PRESENCE" "$ENV_FILE" 2>/dev/null; then
+            echo "IGNORE_PREEMPT_RT_PRESENCE=1" >> "$ENV_FILE"
+            info "IGNORE_PREEMPT_RT_PRESENCE=1 → ${ENV_FILE} (영구 설정)"
+            CHANGES_APPLIED+=("IGNORE_PREEMPT_RT_PRESENCE=1 영구 설정: ${ENV_FILE}")
+          fi
+        fi
+
+        # ── 모듈 로드 시도 ──────────────────────────────────────────────────
+        # 빌드/설치 성공 후 또는 이미 설치된 경우 modprobe 시도
+        if dkms status nvidia/"${NVIDIA_DKMS_VER}" -k "${KERNEL_VER}" 2>/dev/null | grep -q "installed"; then
+          if ! lsmod | grep -q "^nvidia "; then
+            info "NVIDIA 커널 모듈 로드 중..."
+            if modprobe nvidia 2>/dev/null; then
+              success "nvidia 모듈 로드 성공"
+              if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+                success "nvidia-smi 정상 작동 확인"
+              else
+                warn "nvidia-smi 아직 작동하지 않음 — 재부팅 후 확인하세요"
+                WARNINGS+=("NVIDIA 모듈 설치됨, 재부팅 필요할 수 있음")
+              fi
+            else
+              warn "nvidia 모듈 로드 실패 — 재부팅 후 자동 로드됩니다"
+              WARNINGS+=("nvidia modprobe 실패 — 재부팅 필요")
+            fi
+          else
+            success "nvidia 모듈 이미 로드됨"
+          fi
+        fi
+      fi
+    fi
+  fi
+fi
+
+echo ""
+
+# ══════════════════════════════════════════════════════════════════════════════
+# [10/11] CPU Governor Configuration (Performance Mode)
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "${BOLD}━━━ [10/11] CPU Governor 설정 (Performance 모드) ━━━${NC}"
+echo ""
+
+# CPU governor가 powersave이면 클럭이 동적으로 낮아져서:
+# 1. RT 코어: 제어 루프 jitter 증가
+# 2. OS 코어: compositor/Xorg 프레임 드롭 → 화면 끊김
+# 모든 코어를 performance로 설정하여 최대 클럭 유지.
+
+# cpupower 도구 설치 확인 및 설치
+CPUPOWER_AVAILABLE=0
+if command -v cpupower &>/dev/null; then
+  CPUPOWER_AVAILABLE=1
+else
+  info "cpupower가 설치되어 있지 않습니다 — 설치 중..."
+  if apt-get install -y linux-tools-common linux-tools-generic 2>/dev/null; then
+    # linux-tools-$(uname -r) 패키지도 필요할 수 있음
+    apt-get install -y "linux-tools-${KERNEL_VER}" 2>/dev/null || true
+    if command -v cpupower &>/dev/null; then
+      CPUPOWER_AVAILABLE=1
+      success "cpupower 설치 완료"
+      CHANGES_APPLIED+=("cpupower 도구 설치")
+    else
+      warn "cpupower 설치 실패 — sysfs를 통해 직접 설정합니다"
+    fi
+  else
+    warn "linux-tools 패키지 설치 실패 — sysfs를 통해 직접 설정합니다"
+  fi
+fi
+
+# 현재 governor 상태 확인
+GOV_CHANGE_NEEDED=0
+for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
+  gov_file="${cpu_dir}cpufreq/scaling_governor"
+  if [[ -f "$gov_file" ]]; then
+    current_gov=$(cat "$gov_file" 2>/dev/null)
+    if [[ "$current_gov" != "performance" ]]; then
+      GOV_CHANGE_NEEDED=1
+      break
+    fi
+  fi
+done
+
+if [[ "$GOV_CHANGE_NEEDED" -eq 1 ]]; then
+  # 즉시 설정: sysfs를 통해 모든 CPU governor를 performance로 변경
+  GOV_SET_COUNT=0
+  GOV_FAIL_COUNT=0
+  for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
+    gov_file="${cpu_dir}cpufreq/scaling_governor"
+    if [[ -f "$gov_file" ]]; then
+      if echo "performance" > "$gov_file" 2>/dev/null; then
+        ((GOV_SET_COUNT++)) || true
+      else
+        ((GOV_FAIL_COUNT++)) || true
+      fi
+    fi
+  done
+  if [[ "$GOV_SET_COUNT" -gt 0 ]]; then
+    success "CPU governor → performance (${GOV_SET_COUNT}개 CPU 적용)"
+  fi
+  if [[ "$GOV_FAIL_COUNT" -gt 0 ]]; then
+    warn "${GOV_FAIL_COUNT}개 CPU governor 설정 실패"
+  fi
+else
+  info "모든 CPU가 이미 performance governor 사용 중 — 건너뜀"
+fi
+
+# 재부팅 시 자동 적용을 위한 systemd 서비스 생성
+GOV_SERVICE="/etc/systemd/system/cpu-governor-performance.service"
+GOV_SERVICE_CONTENT="[Unit]
+Description=Set CPU governor to performance for RT kernel
+After=multi-user.target
+
+[Service]
+Type=oneshot
+# cpupower가 있으면 사용, 없으면 sysfs 직접 설정
+ExecStart=/bin/bash -c 'if command -v cpupower &>/dev/null; then cpupower frequency-set -g performance; else for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > \"\$f\" 2>/dev/null || true; done; fi'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target"
+
+if [[ -f "$GOV_SERVICE" ]] && diff -q <(echo "$GOV_SERVICE_CONTENT") "$GOV_SERVICE" &>/dev/null; then
+  info "CPU governor 서비스가 이미 동일한 설정으로 존재합니다 — 건너뜀"
+else
+  backup_file "$GOV_SERVICE"
+  echo "$GOV_SERVICE_CONTENT" > "$GOV_SERVICE"
+  systemctl daemon-reload
+  systemctl enable cpu-governor-performance.service 2>/dev/null
+  success "CPU governor 서비스: ${GOV_SERVICE}"
+  CHANGES_APPLIED+=("CPU governor performance 서비스: ${GOV_SERVICE}")
+fi
+
+# Intel P-state 드라이버 확인 (NUC 등 Intel 시스템)
+if [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+  info "Intel P-state 드라이버 감지"
+  # Turbo Boost는 RT 안정성에 영향을 줄 수 있으므로 비활성화 옵션 안내
+  TURBO_STATE=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null)
+  if [[ "$TURBO_STATE" == "0" ]]; then
+    info "  Turbo Boost: 활성 (RT jitter 증가 가능, 비활성화 권장)"
+    info "  비활성화: echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo"
+  else
+    success "  Turbo Boost: 비활성 (RT 안정성 최적)"
+  fi
+fi
+
+echo ""
+
+# ══════════════════════════════════════════════════════════════════════════════
+# [11/11] Validation & Summary
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "${BOLD}━━━ [11/11] 설정 요약 ━━━${NC}"
 echo ""
 
 # ── Summary table ───────────────────────────────────────────────────────────
@@ -554,8 +1135,14 @@ echo -e "${BOLD}기타 검증 명령:${NC}"
 echo "  cat /sys/devices/system/cpu/isolated         # 격리된 CPU 확인"
 echo "  cat /proc/interrupts | grep nvidia           # NVIDIA IRQ 확인"
 echo "  nvidia-smi -q -d PERFORMANCE                 # persistence mode 확인"
+echo "  dkms status                                   # DKMS 모듈 빌드 상태"
+echo "  cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor  # CPU governor"
 echo "  systemctl status nvidia-irq-affinity          # IRQ affinity 서비스"
 echo "  systemctl status nvidia-persistence           # persistence 서비스"
+echo "  systemctl status rt-compositor-boost          # compositor 부스트 서비스"
+echo "  systemctl status cpu-governor-performance     # CPU governor 서비스"
+echo "  cat /etc/X11/xorg.conf.d/20-nvidia-antitear.conf  # X11 anti-tearing"
+echo "  nvidia-settings -q CurrentMetaMode            # 현재 MetaMode 확인"
 echo ""
 
 # ── Reboot prompt ───────────────────────────────────────────────────────────
