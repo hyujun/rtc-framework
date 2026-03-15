@@ -21,6 +21,10 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 
+# 디버깅: CMAKE_PREFIX_PATH 확인 (CI 문제 진단 후 제거 예정)
+message(STATUS ">>> CMAKE_PREFIX_PATH = ${CMAKE_PREFIX_PATH}")
+message(STATUS ">>> CMAKE_MODULE_PATH = ${CMAKE_MODULE_PATH}")
+
 # ── Workspace 내부 패키지 먼저 찾기 ──────────────────────────────────────────
 # pinocchio의 find_dependency() 체인이 CMake 3.31에서 CMAKE_PREFIX_PATH 스코프를
 # 오염시켜 이후 find_package()가 colcon install 경로를 찾지 못하는 문제 방지
