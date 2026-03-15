@@ -79,6 +79,9 @@ private:
 
   void PublishEstopStatus(bool estopped);
 
+  // Save hand communication & timing statistics to JSON on shutdown.
+  void SaveHandStats() const;
+
   /// Trigger a global E-Stop that propagates to all subsystems.
   /// Safe to call from any thread. Idempotent — second call is a no-op.
   void TriggerGlobalEstop(std::string_view reason) noexcept;

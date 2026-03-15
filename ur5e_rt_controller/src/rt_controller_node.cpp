@@ -17,7 +17,9 @@
 
 #include <algorithm>
 #include <ctime>
+#include <fstream>
 #include <functional>
+#include <iomanip>
 #include <set>
 #include <string_view>
 #include <unordered_map>
@@ -133,6 +135,7 @@ RtControllerNode::RtControllerNode()
 RtControllerNode::~RtControllerNode()
 {
   if (hand_controller_) {
+    SaveHandStats();
     hand_controller_->Stop();
   }
   if (status_monitor_) {
@@ -143,6 +146,83 @@ RtControllerNode::~RtControllerNode()
     logger_->DrainBuffer(log_buffer_);
     logger_->Flush();
   }
+}
+
+// ── Hand stats export (mirrors HandUdpNode::SaveCommStats) ───────────────────
+void RtControllerNode::SaveHandStats() const
+{
+  if (!hand_controller_) return;
+
+  const auto stats = hand_controller_->comm_stats();
+  const auto elapsed = std::chrono::steady_clock::now() - log_start_time_;
+  const double elapsed_sec = std::chrono::duration<double>(elapsed).count();
+  const double avg_rate_hz = (elapsed_sec > 0.0)
+      ? static_cast<double>(stats.total_cycles) / elapsed_sec : 0.0;
+
+  std::string output_dir;
+  const char* session_env = std::getenv("UR5E_SESSION_DIR");
+  if (session_env != nullptr && session_env[0] != '\0') {
+    output_dir = std::string(session_env) + "/hand";
+  } else {
+    output_dir = "/tmp";
+  }
+
+  const std::string path = output_dir + "/hand_udp_stats.json";
+  std::ofstream ofs(path);
+  if (!ofs.is_open()) return;
+
+  const auto ts = hand_controller_->timing_stats();
+
+  ofs << std::fixed
+      << "{\n"
+      << "  \"comm_stats\": {\n"
+      << "    \"total_cycles\": "     << stats.total_cycles    << ",\n"
+      << "    \"recv_ok\": "          << stats.recv_ok         << ",\n"
+      << "    \"recv_timeout\": "     << stats.recv_timeout     << ",\n"
+      << "    \"recv_error\": "       << stats.recv_error       << ",\n"
+      << "    \"event_skip_count\": " << stats.event_skip_count << ",\n"
+      << "    \"avg_rate_hz\": "      << std::setprecision(2) << avg_rate_hz  << ",\n"
+      << "    \"elapsed_sec\": "      << std::setprecision(2) << elapsed_sec  << "\n"
+      << "  },\n"
+      << "  \"timing_stats\": {\n"
+      << "    \"count\": " << ts.count << ",\n"
+      << "    \"total_us\": {"
+      << " \"mean\": " << std::setprecision(1) << ts.mean_us
+      << ", \"min\": "  << ts.min_us
+      << ", \"max\": "  << ts.max_us
+      << ", \"stddev\": " << ts.stddev_us
+      << ", \"p95\": "  << ts.p95_us
+      << ", \"p99\": "  << ts.p99_us
+      << " },\n"
+      << "    \"write_us\": {"
+      << " \"mean\": " << ts.write.mean_us
+      << ", \"min\": " << ts.write.min_us
+      << ", \"max\": " << ts.write.max_us
+      << " },\n"
+      << "    \"read_pos_us\": {"
+      << " \"mean\": " << ts.read_pos.mean_us
+      << ", \"min\": " << ts.read_pos.min_us
+      << ", \"max\": " << ts.read_pos.max_us
+      << " },\n"
+      << "    \"read_vel_us\": {"
+      << " \"mean\": " << ts.read_vel.mean_us
+      << ", \"min\": " << ts.read_vel.min_us
+      << ", \"max\": " << ts.read_vel.max_us
+      << " },\n"
+      << "    \"read_sensor_us\": {"
+      << " \"mean\": " << ts.read_sensor.mean_us
+      << ", \"min\": " << ts.read_sensor.min_us
+      << ", \"max\": " << ts.read_sensor.max_us
+      << ", \"sensor_cycles\": " << ts.sensor_cycle_count
+      << " },\n"
+      << "    \"over_budget\": " << ts.over_budget << "\n"
+      << "  }\n"
+      << "}\n";
+  ofs.close();
+
+  RCLCPP_INFO(get_logger(),
+      "Hand stats saved to %s (cycles=%lu, rate=%.1f Hz)",
+      path.c_str(), stats.total_cycles, avg_rate_hz);
 }
 
 // ── Session directory helpers ─────────────────────────────────────────────────
