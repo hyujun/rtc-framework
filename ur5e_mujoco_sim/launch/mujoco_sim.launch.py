@@ -62,7 +62,14 @@ import shutil
 from datetime import datetime
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction, SetEnvironmentVariable
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    OpaqueFunction,
+    SetEnvironmentVariable,
+    TimerAction,
+)
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -232,6 +239,29 @@ def launch_setup(context, *args, **kwargs):
         value=session_dir
     )
 
+    # ── [RT] 시뮬레이션 모드 CPU Shield (Tier 1만) ─────────────────────────────
+    use_affinity = LaunchConfiguration('use_cpu_affinity').perform(context)
+    actions = [set_session_dir]
+
+    if use_affinity.lower() in ('true', '1', 'yes'):
+        enable_sim_cpu_shield = ExecuteProcess(
+            cmd=[
+                'bash', '-c',
+                'SCRIPT_DIR="$(ros2 pkg prefix ur5e_rt_controller 2>/dev/null)/lib/ur5e_rt_controller" && '
+                'if [ -f "$SCRIPT_DIR/cpu_shield.sh" ]; then '
+                '  ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); '
+                '  if [ -z "$ISOLATED" ]; then '
+                '    echo "[SIM] CPU shield 미활성 — 시뮬 모드 Tier 1 격리 활성화 중..."; '
+                '    sudo "$SCRIPT_DIR/cpu_shield.sh" on --sim; '
+                '  else '
+                '    echo "[SIM] CPU shield 이미 활성: Core $ISOLATED 격리됨"; '
+                '  fi; '
+                'fi'
+            ],
+            output='screen',
+        )
+        actions.append(enable_sim_cpu_shield)
+
     # ── Node 1: MuJoCo Simulator ──────────────────────────────────────────────
     mujoco_node = Node(
         package='ur5e_mujoco_sim',
@@ -252,7 +282,33 @@ def launch_setup(context, *args, **kwargs):
         parameters=ctrl_params,
     )
 
-    return [set_session_dir, mujoco_node, rt_controller_node]
+    actions.extend([mujoco_node, rt_controller_node])
+
+    # ── MuJoCo sim_thread를 Tier 3 코어에 pin (8코어+) ─────────────────────────
+    if use_affinity.lower() in ('true', '1', 'yes'):
+        pin_mujoco_sim = TimerAction(
+            period=2.0,
+            actions=[
+                ExecuteProcess(
+                    cmd=[
+                        'bash', '-c',
+                        'PHYS=$(lscpu -p=Core,Socket 2>/dev/null | grep -v "^#" | sort -u | wc -l); '
+                        'if [ "$PHYS" -ge 8 ]; then '
+                        '  PID=$(pgrep -nf mujoco_simulator_node); '
+                        '  if [ -n "$PID" ]; then '
+                        '    SIM_CORE=$((PHYS >= 10 ? 7 : 6)); '
+                        '    taskset -cp $SIM_CORE "$PID" && '
+                        '    echo "[SIM] mujoco_simulator (PID=$PID) pinned to Core $SIM_CORE"; '
+                        '  fi; '
+                        'fi'
+                    ],
+                    output='screen',
+                )
+            ]
+        )
+        actions.append(pin_mujoco_sim)
+
+    return actions
 
 
 def generate_launch_description():
@@ -354,6 +410,15 @@ def generate_launch_description():
         description='최대 보관 세션 폴더 수 (YYMMDD_HHMM)',
     )
 
+    use_cpu_affinity_arg = DeclareLaunchArgument(
+        'use_cpu_affinity',
+        default_value='true',
+        description=(
+            'Enable CPU shield (Tier 1 isolation) and MuJoCo core pinning. '
+            'Set false for CI or environments without sudo.'
+        )
+    )
+
     return LaunchDescription([
         # Arguments
         model_path_arg,
@@ -366,6 +431,7 @@ def generate_launch_description():
         kd_arg,
         use_yaml_servo_gains_arg,
         max_log_sessions_arg,
+        use_cpu_affinity_arg,
         # Nodes (via OpaqueFunction for conditional parameter loading)
         OpaqueFunction(function=launch_setup),
     ])

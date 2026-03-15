@@ -6,6 +6,8 @@
 
 #include <sys/mman.h>  // mlockall
 
+#include <fstream>
+#include <string>
 #include <thread>
 
 namespace urtc = ur5e_rt_controller;
@@ -24,6 +26,26 @@ int main(int argc, char ** argv)
   }
 
   rclcpp::init(argc, argv);
+
+  // Check CPU isolation status — warn if RT cores are not isolated
+  {
+    std::ifstream isolated_file("/sys/devices/system/cpu/isolated");
+    std::string isolated;
+    if (isolated_file.is_open()) {
+      std::getline(isolated_file, isolated);
+    }
+    if (isolated.empty()) {
+      fprintf(stderr,
+              "[WARN] No CPU isolation detected (RT cores may receive OS "
+              "interrupts)\n");
+      fprintf(stderr,
+              "       Run: sudo cpu_shield.sh on --robot  (or launch via "
+              "ur_control.launch.py)\n");
+    } else {
+      fprintf(stdout, "[INFO] CPU isolation active: Core %s\n",
+              isolated.c_str());
+    }
+  }
 
   auto node = std::make_shared<RtControllerNode>();
 

@@ -168,6 +168,43 @@ success() { echo -e "${GREEN}✔ $*${NC}"; }
 warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
 error()   { echo -e "${RED}✘ $*${NC}"; exit 1; }
 
+# ── CPU shield 자동 관리 (빌드 전) ──────────────────────────────────────────
+# cset shield가 활성이면 자동 해제하여 전체 코어로 빌드한다.
+auto_release_cpu_shield() {
+  local isolated
+  isolated=$(cat /sys/devices/system/cpu/isolated 2>/dev/null || echo "")
+
+  if [[ -z "$isolated" ]]; then
+    return 0
+  fi
+
+  local available total
+  available=$(nproc)
+  total=$(nproc --all)
+  warn "CPU 격리 감지: Core ${isolated} 격리 중 (${available}/${total} 코어 사용 가능)"
+
+  local SHIELD_SCRIPT="${INSTALL_SCRIPT_DIR}/ur5e_rt_controller/scripts/cpu_shield.sh"
+  if command -v cset &>/dev/null && cset shield -s 2>/dev/null | grep -q "user"; then
+    info "cset shield 감지 → 빌드를 위해 자동 해제 중..."
+    if [[ -f "$SHIELD_SCRIPT" ]]; then
+      sudo bash "$SHIELD_SCRIPT" off 2>/dev/null || sudo cset shield --reset 2>/dev/null || true
+    else
+      sudo cset shield --reset 2>/dev/null || true
+    fi
+    success "CPU 격리 해제 완료 — 전체 ${total} 코어로 빌드합니다"
+    return 0
+  fi
+
+  if grep -q "isolcpus=" /proc/cmdline 2>/dev/null; then
+    warn "isolcpus GRUB 파라미터 감지 — 재부팅 없이 해제 불가"
+    warn "빌드에 ${available}/${total} 코어만 사용됩니다"
+    warn "권장: isolcpus를 GRUB에서 제거하고 cset shield 방식으로 전환하세요"
+    return 0
+  fi
+
+  return 0
+}
+
 # ── System info (physical vs logical core detection) ──────────────────────────
 {
   LOGICAL_CORES=$(nproc --all)
@@ -679,6 +716,25 @@ get_physical_cores() {
   nproc --all
 }
 
+# ── cpuset tools for dynamic CPU isolation ──────────────────────────────────
+# cset shield 명령을 사용하여 런타임에 CPU 격리를 on/off 할 수 있다.
+# isolcpus GRUB 파라미터 없이도 빌드 시 전체 코어, 실행 시 격리 코어를 사용.
+install_cset_tools() {
+  info "Installing cpuset tools for dynamic CPU isolation..."
+  if command -v cset &>/dev/null; then
+    success "cset already installed"
+    return
+  fi
+  if sudo apt-get install -y cpuset > /dev/null 2>&1; then
+    success "cset installed via cpuset package"
+  elif sudo apt-get install -y python3-cpuset > /dev/null 2>&1; then
+    success "cset installed via python3-cpuset"
+  else
+    warn "cset 설치 실패 — /sys/fs/cgroup/cpuset fallback 사용"
+    warn "수동 설치: sudo apt-get install -y cpuset"
+  fi
+}
+
 # ── [방안 D] NIC IRQ affinity (robot + full) ────────────────────────────────
 # RT 코어를 NIC 인터럽트로부터 보호.
 # 모든 하드웨어 IRQ를 OS 코어로 제한한다.
@@ -1021,6 +1077,7 @@ fi
 setup_package
 
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
+  auto_release_cpu_shield
   build_package
 else
   info "Skipping colcon build (--skip-build)"
@@ -1029,6 +1086,7 @@ fi
 if [[ "$SKIP_RT" -eq 0 ]]; then
   case "$MODE" in
     robot|full)
+      install_cset_tools
       install_rt_permissions
       setup_irq_affinity
       setup_udp_optimization

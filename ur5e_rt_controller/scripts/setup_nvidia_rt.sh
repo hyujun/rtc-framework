@@ -371,8 +371,11 @@ if [[ ! -f "$GRUB_FILE" ]]; then
 fi
 
 # 추가할 파라미터 목록 (값이 있는 것과 없는 것 구분)
+# NOTE: isolcpus는 cset shield로 대체되어 제거됨.
+# cset shield는 런타임에 동적으로 CPU 격리를 on/off 할 수 있어
+# 빌드 시 전체 코어를 사용할 수 있다. (cpu_shield.sh 참조)
+# nohz_full과 rcu_nocbs는 isolcpus와 독립적으로 유효하므로 유지.
 declare -A GRUB_PARAMS_WITH_VALUE=(
-  ["isolcpus"]="${RT_CORES}"
   ["nohz_full"]="${RT_CORES}"
   ["rcu_nocbs"]="${RT_CORES}"
   ["processor.max_cstate"]="1"
@@ -427,7 +430,7 @@ if [[ "$GRUB_MODIFIED" -eq 1 ]]; then
   fi
 
   success "GRUB 설정 업데이트 완료"
-  CHANGES_APPLIED+=("GRUB 커널 파라미터: isolcpus, nohz_full, rcu_nocbs, threadirqs 등")
+  CHANGES_APPLIED+=("GRUB 커널 파라미터: nohz_full, rcu_nocbs, threadirqs 등 (isolcpus → cset shield로 대체)")
 
   info "update-grub 실행 중..."
   update-grub 2>/dev/null
