@@ -113,7 +113,7 @@ UR5eStatusMonitor::UR5eStatusMonitor(rclcpp::Node::SharedPtr node)
   list_controllers_client_ =
       node_->create_client<controller_manager_msgs::srv::ListControllers>(
           "/controller_manager/list_controllers",
-          rclcpp::ServicesQoS().get_rmw_qos_profile(),
+          rclcpp::ServicesQoS(),
           cb_group_monitor_);
 
   RCLCPP_INFO(node_->get_logger(), "[StatusMonitor] Initialized — topics: %s, %s, %s, %s",

@@ -299,8 +299,25 @@ void RtControllerNode::DeclareAndLoadParameters()
         [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
           if (msg->data.size() < 10) { return; }
           std::lock_guard lock(sim_hand_mutex_);
-          for (std::size_t i = 0; i < 10 && i < msg->data.size(); ++i) {
+          // Positions: [0..9]
+          for (std::size_t i = 0; i < urtc::kNumHandMotors && i < msg->data.size(); ++i) {
             sim_hand_state_.motor_positions[i] = static_cast<float>(msg->data[i]);
+          }
+          // Velocities: [10..19]
+          constexpr std::size_t vel_offset = urtc::kNumHandMotors;
+          for (std::size_t i = 0; i < urtc::kNumHandMotors
+                   && (vel_offset + i) < msg->data.size(); ++i) {
+            sim_hand_state_.motor_velocities[i] =
+                static_cast<float>(msg->data[vel_offset + i]);
+          }
+          // Sensors: [20..63] (4 fingertips × 11 values)
+          constexpr std::size_t sensor_offset = urtc::kNumHandMotors * 2;
+          const std::size_t num_sensor_values = msg->data.size() > sensor_offset
+              ? msg->data.size() - sensor_offset : 0;
+          for (std::size_t i = 0; i < num_sensor_values
+                   && i < sim_hand_state_.sensor_data.size(); ++i) {
+            sim_hand_state_.sensor_data[i] =
+                static_cast<float>(msg->data[sensor_offset + i]);
           }
           sim_hand_state_.valid = true;
         },
