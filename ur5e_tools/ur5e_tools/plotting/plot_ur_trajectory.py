@@ -263,12 +263,12 @@ def plot_robot_task_position(df, save_dir=None):
 
 def plot_robot_tracking_error(df, save_dir=None):
     """Position & velocity tracking error (trajectory - actual)."""
-    # trajectory 컬럼 결정 (신규 traj_pos_ 또는 레거시 target_pos_)
-    if _has_columns(df, 'traj_pos_', 6):
-        pos_prefix, vel_prefix = 'traj_pos_', 'traj_vel_'
-    elif _has_columns(df, 'target_pos_', 6):
-        pos_prefix, vel_prefix = 'target_pos_', 'target_vel_'
-    else:
+    # trajectory 컬럼 결정 (신규 named 또는 레거시 numeric)
+    traj_pos_cols, traj_names = _detect_joint_columns(df, 'traj_pos_', 6)
+    if not traj_pos_cols:
+        traj_pos_cols, traj_names = _detect_joint_columns(df, 'target_pos_', 6)
+    actual_pos_cols, _ = _detect_joint_columns(df, 'actual_pos_', 6)
+    if not traj_pos_cols or not actual_pos_cols:
         print('  Skipping tracking error plot (trajectory columns not found)')
         return
 
@@ -276,20 +276,24 @@ def plot_robot_tracking_error(df, save_dir=None):
     fig.suptitle('Robot Tracking Errors', fontsize=16, fontweight='bold')
     t = df['timestamp']
 
-    for i in range(6):
-        pos_err = df[f'{pos_prefix}{i}'] - df[f'actual_pos_{i}']
-        ax1.plot(t, pos_err, label=f'J{i} ({JOINT_NAMES[i]})', alpha=0.7)
+    for i in range(min(6, len(traj_pos_cols))):
+        pos_err = df[traj_pos_cols[i]] - df[actual_pos_cols[i]]
+        ax1.plot(t, pos_err, label=f'J{i} ({traj_names[i]})', alpha=0.7)
     ax1.set_ylabel('Position Error (rad)')
     ax1.set_title('Position Tracking Error (trajectory - actual)')
     ax1.legend(fontsize=8, ncol=3)
     ax1.grid(True, alpha=0.3)
     ax1.axhline(y=0, color='k', linewidth=0.5)
 
-    has_vel = _has_columns(df, vel_prefix, 6)
-    if has_vel:
-        for i in range(6):
-            vel_err = df[f'{vel_prefix}{i}'] - df[f'actual_vel_{i}']
-            ax2.plot(t, vel_err, label=f'J{i} ({JOINT_NAMES[i]})', alpha=0.7)
+    # Velocity tracking error
+    traj_vel_cols, _ = _detect_joint_columns(df, 'traj_vel_', 6)
+    if not traj_vel_cols:
+        traj_vel_cols, _ = _detect_joint_columns(df, 'target_vel_', 6)
+    actual_vel_cols, _ = _detect_joint_columns(df, 'actual_vel_', 6)
+    if traj_vel_cols and actual_vel_cols:
+        for i in range(min(6, len(traj_vel_cols))):
+            vel_err = df[traj_vel_cols[i]] - df[actual_vel_cols[i]]
+            ax2.plot(t, vel_err, label=f'J{i} ({traj_names[i]})', alpha=0.7)
     ax2.set_xlabel('Time (s)')
     ax2.set_ylabel('Velocity Error (rad/s)')
     ax2.set_title('Velocity Tracking Error (trajectory - actual)')
@@ -314,28 +318,31 @@ def print_robot_statistics(df):
     print(f'Duration: {duration:.2f} s | Samples: {len(df)}'
           f' | Rate: {len(df) / duration:.1f} Hz')
 
-    # trajectory 컬럼 결정
-    if _has_columns(df, 'traj_pos_', 6):
-        pos_prefix, vel_prefix = 'traj_pos_', 'traj_vel_'
-    elif _has_columns(df, 'target_pos_', 6):
-        pos_prefix, vel_prefix = 'target_pos_', 'target_vel_'
-    else:
-        pos_prefix, vel_prefix = None, None
+    # trajectory 컬럼 결정 (named 또는 numeric)
+    traj_pos_cols, traj_names = _detect_joint_columns(df, 'traj_pos_', 6)
+    if not traj_pos_cols:
+        traj_pos_cols, traj_names = _detect_joint_columns(df, 'target_pos_', 6)
+    actual_pos_cols, _ = _detect_joint_columns(df, 'actual_pos_', 6)
 
-    if pos_prefix:
+    if traj_pos_cols and actual_pos_cols:
         print('\nPosition Tracking Error (RMS):')
-        for i in range(6):
-            err = df[f'{pos_prefix}{i}'] - df[f'actual_pos_{i}']
+        for i in range(min(6, len(traj_pos_cols))):
+            err = df[traj_pos_cols[i]] - df[actual_pos_cols[i]]
             rms = np.sqrt(np.mean(err ** 2))
-            print(f'  Joint {i} ({JOINT_NAMES[i]}): '
+            print(f'  Joint {i} ({traj_names[i]}): '
                   f'{rms:.6f} rad ({np.rad2deg(rms):.4f} deg)')
 
-    if vel_prefix and _has_columns(df, vel_prefix, 6):
+    traj_vel_cols, _ = _detect_joint_columns(df, 'traj_vel_', 6)
+    if not traj_vel_cols:
+        traj_vel_cols, _ = _detect_joint_columns(df, 'target_vel_', 6)
+    actual_vel_cols, _ = _detect_joint_columns(df, 'actual_vel_', 6)
+
+    if traj_vel_cols and actual_vel_cols:
         print('\nVelocity Tracking Error (RMS):')
-        for i in range(6):
-            err = df[f'{vel_prefix}{i}'] - df[f'actual_vel_{i}']
+        for i in range(min(6, len(traj_vel_cols))):
+            err = df[traj_vel_cols[i]] - df[actual_vel_cols[i]]
             rms = np.sqrt(np.mean(err ** 2))
-            print(f'  Joint {i} ({JOINT_NAMES[i]}): {rms:.6f} rad/s')
+            print(f'  Joint {i} ({traj_names[i]}): {rms:.6f} rad/s')
 
     if 'command_type' in df.columns:
         cmd_type = df['command_type'].mode().iloc[0] if len(df) > 0 else 0
