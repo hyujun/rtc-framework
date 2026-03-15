@@ -359,22 +359,31 @@ TOF_COUNT = 3
 
 def plot_hand_positions(df, save_dir=None):
     """Figure 1: Hand motor positions (2x5 subplot)."""
+    actual_cols, motor_names = _detect_joint_columns(df, 'hand_actual_pos_', NUM_HAND_MOTORS)
+    cmd_cols, _ = _detect_joint_columns(df, 'hand_cmd_', NUM_HAND_MOTORS)
+    goal_cols, _ = _detect_joint_columns(df, 'hand_goal_pos_', NUM_HAND_MOTORS)
+    if not actual_cols:
+        print('  Skipping hand positions plot (columns not found)')
+        return
+
     fig, axes = plt.subplots(2, 5, figsize=(20, 8))
     fig.suptitle('Hand Motor Positions', fontsize=16, fontweight='bold')
     axes = axes.flatten()
 
     t = df['timestamp']
-    for i in range(NUM_HAND_MOTORS):
+    for i in range(min(NUM_HAND_MOTORS, len(actual_cols))):
         ax = axes[i]
-        ax.plot(t, df[f'hand_actual_pos_{i}'], label='Actual', linewidth=1.5)
-        ax.plot(t, df[f'hand_cmd_{i}'], label='Command',
-                linestyle='--', linewidth=1.5)
-        ax.plot(t, df[f'hand_goal_pos_{i}'], label='Goal',
-                linestyle=':', linewidth=1.5, alpha=0.8)
+        ax.plot(t, df[actual_cols[i]], label='Actual', linewidth=1.5)
+        if i < len(cmd_cols):
+            ax.plot(t, df[cmd_cols[i]], label='Command',
+                    linestyle='--', linewidth=1.5)
+        if i < len(goal_cols):
+            ax.plot(t, df[goal_cols[i]], label='Goal',
+                    linestyle=':', linewidth=1.5, alpha=0.8)
 
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Position')
-        ax.set_title(f'Motor {i}')
+        ax.set_title(f'Motor {i} ({motor_names[i]})')
         ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
 
@@ -390,18 +399,23 @@ def plot_hand_positions(df, save_dir=None):
 
 def plot_hand_velocities(df, save_dir=None):
     """Figure 2: Hand motor velocities (2x5 subplot)."""
+    vel_cols, motor_names = _detect_joint_columns(df, 'hand_actual_vel_', NUM_HAND_MOTORS)
+    if not vel_cols:
+        print('  Skipping hand velocities plot (columns not found)')
+        return
+
     fig, axes = plt.subplots(2, 5, figsize=(20, 8))
     fig.suptitle('Hand Motor Velocities', fontsize=16, fontweight='bold')
     axes = axes.flatten()
 
     t = df['timestamp']
-    for i in range(NUM_HAND_MOTORS):
+    for i in range(min(NUM_HAND_MOTORS, len(vel_cols))):
         ax = axes[i]
-        ax.plot(t, df[f'hand_actual_vel_{i}'], label='Actual', linewidth=1.5)
+        ax.plot(t, df[vel_cols[i]], label='Actual', linewidth=1.5)
 
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Velocity')
-        ax.set_title(f'Motor {i}')
+        ax.set_title(f'Motor {i} ({motor_names[i]})')
         ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
 
@@ -469,14 +483,14 @@ def print_hand_statistics(df):
     valid_ratio = df['hand_valid'].sum() / len(df) * 100
     print(f'Hand valid: {valid_ratio:.1f}%')
 
-    print('\nPosition Tracking Error (RMS):')
-    for i in range(NUM_HAND_MOTORS):
-        goal_col = f'hand_goal_pos_{i}'
-        actual_col = f'hand_actual_pos_{i}'
-        if goal_col in df.columns and actual_col in df.columns:
-            err = df[goal_col] - df[actual_col]
+    goal_cols, _ = _detect_joint_columns(df, 'hand_goal_pos_', NUM_HAND_MOTORS)
+    actual_cols, motor_names = _detect_joint_columns(df, 'hand_actual_pos_', NUM_HAND_MOTORS)
+    if goal_cols and actual_cols:
+        print('\nPosition Tracking Error (RMS):')
+        for i in range(min(NUM_HAND_MOTORS, len(goal_cols), len(actual_cols))):
+            err = df[goal_cols[i]] - df[actual_cols[i]]
             rms = np.sqrt(np.mean(err ** 2))
-            print(f'  Motor {i}: {rms:.6f}')
+            print(f'  Motor {i} ({motor_names[i]}): {rms:.6f}')
 
     # Sensor summary
     baro_cols = [c for c in df.columns if c.startswith('baro_')]
