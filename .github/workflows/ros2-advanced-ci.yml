@@ -20,12 +20,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+        linter: [cpplint, cppcheck]
         include:
           - os: ubuntu-22.04
             ros_distro: humble
           - os: ubuntu-24.04
             ros_distro: jazzy
-        linter: [cpplint, cppcheck]
       fail-fast: false
     steps:
     - uses: actions/checkout@v4
@@ -55,6 +56,9 @@ jobs:
           ur5e_hand_udp
           ur5e_status_monitor
         workspace-directory: src/ur5e-rt-controller
+      env:
+        # Ubuntu 24.04의 cppcheck 2.13.0 성능 이슈 차단 우회
+        AMENT_CPPCHECK_ALLOW_SLOW_VERSIONS: 1
 
   # ============================================================
   #  Build, Test & Coverage (distro matrix)
@@ -109,10 +113,16 @@ jobs:
           --cmake-args \
             -DCMAKE_BUILD_TYPE=Debug \
             -DBUILD_TESTING=ON \
+            -DCMAKE_POLICY_DEFAULT_CMP0167=OLD \
             -DCMAKE_CXX_FLAGS="--coverage -fprofile-arcs -ftest-coverage" \
             -DCMAKE_C_FLAGS="--coverage" \
             -DCMAKE_EXE_LINKER_FLAGS="--coverage" \
             -DCMAKE_SHARED_LINKER_FLAGS="--coverage"
+
+    - name: Clean stale coverage data
+      run: |
+        # 캐시에서 복원된 이전 실행의 .gcda 파일 제거 → 깨끗한 coverage 측정
+        find build/ -name '*.gcda' -delete 2>/dev/null || true
 
     - name: Run Tests
       run: |
@@ -132,25 +142,55 @@ jobs:
     - name: Generate Coverage Report
       if: always()
       run: |
+        # 빌드 실패 시 coverage 디렉토리가 없으면 skip
+        if [ ! -d "build/ur5e_rt_controller" ]; then
+          echo "::warning::build/ur5e_rt_controller not found — skipping coverage"
+          exit 0
+        fi
+
         set -e
 
-        # baseline 초기화 (모든 소스 파일 포함)
-        lcov --capture --initial \
-          --directory build/ur5e_rt_controller \
-          --output-file coverage_base.info \
-          --rc lcov_branch_coverage=1
+        # lcov 버전 감지 (Ubuntu 22.04: 1.x, Ubuntu 24.04: 2.x)
+        LCOV_MAJOR=$(lcov --version | grep -oP '\d+' | head -1)
+        if [ "$LCOV_MAJOR" -ge 2 ]; then
+          BRANCH_RC="--rc branch_coverage=1"
+        else
+          BRANCH_RC="--rc lcov_branch_coverage=1"
+        fi
 
-        # 테스트 실행 후 실제 coverage 캡처
-        lcov --capture \
-          --directory build/ur5e_rt_controller \
-          --output-file coverage_test.info \
-          --rc lcov_branch_coverage=1
+        if [ "$LCOV_MAJOR" -ge 2 ]; then
+          # lcov 2.x: --initial 제거됨, --capture만 사용
+          # --ignore-errors mismatch: gcno/gcda 버전 불일치 시에도 진행
+          lcov --capture \
+            --directory build/ur5e_rt_controller \
+            --output-file coverage_merged.info \
+            $BRANCH_RC \
+            --ignore-errors mismatch
+        else
+          # lcov 1.x: baseline + test coverage 병합
+          lcov --capture --initial \
+            --directory build/ur5e_rt_controller \
+            --output-file coverage_base.info \
+            $BRANCH_RC
 
-        # baseline과 테스트 coverage 병합
-        lcov --add-tracefile coverage_base.info \
-          --add-tracefile coverage_test.info \
-          --output-file coverage_merged.info \
-          --rc lcov_branch_coverage=1
+          lcov --capture \
+            --directory build/ur5e_rt_controller \
+            --output-file coverage_test.info \
+            $BRANCH_RC
+
+          lcov --add-tracefile coverage_base.info \
+            --add-tracefile coverage_test.info \
+            --output-file coverage_merged.info \
+            $BRANCH_RC
+        fi
+
+        # 디버깅: gcda 존재 확인 + 캡처된 소스 경로 확인
+        echo "=== .gcda files ==="
+        find build/ur5e_rt_controller -name '*.gcda' | head -20 || echo "No .gcda files!"
+        echo ""
+        echo "=== Source paths in coverage_merged.info ==="
+        grep '^SF:' coverage_merged.info | head -20 || true
+        echo ""
 
         # 프로젝트 소스 코드만 추출 (--extract: 명시적 포함 방식)
         lcov --extract coverage_merged.info \
@@ -160,17 +200,17 @@ jobs:
           '*/ur5e_hand_udp/include/*' \
           '*/ur5e_hand_udp/src/*' \
           --output-file coverage_extracted.info \
-          --rc lcov_branch_coverage=1
+          $BRANCH_RC
 
         # 테스트 코드 자체는 제외
         lcov --remove coverage_extracted.info \
           '*/test/*' \
           --output-file coverage_filtered.info \
-          --rc lcov_branch_coverage=1
+          $BRANCH_RC
 
         # coverage 요약 출력
         echo "=== Coverage Summary ==="
-        lcov --list coverage_filtered.info --rc lcov_branch_coverage=1 || true
+        lcov --list coverage_filtered.info $BRANCH_RC || true
 
     - name: Upload Coverage to Codecov
       if: always()
@@ -224,7 +264,9 @@ jobs:
         source /opt/ros/humble/setup.bash
         colcon build \
           --packages-up-to ur5e_rt_controller ur5e_hand_udp \
-          --cmake-args -DCMAKE_BUILD_TYPE=Release
+          --cmake-args \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POLICY_DEFAULT_CMP0167=OLD
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
@@ -279,7 +321,8 @@ jobs:
           --packages-up-to ur5e_rt_controller ur5e_hand_udp \
           --cmake-args \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DCMAKE_BUILD_TYPE=Debug
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_POLICY_DEFAULT_CMP0167=OLD
 
     - name: Merge compile_commands.json
       run: |

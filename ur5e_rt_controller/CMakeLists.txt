@@ -36,19 +36,18 @@ find_package(ur5e_status_monitor REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(ur5e_msgs REQUIRED)
 
-# ── rt_controller ──────────────────────────────────────────────────────────────
-add_executable(rt_controller
+# ── rt_controller_lib (테스트에서 링크 가능한 라이브러리) ─────────────────────
+add_library(rt_controller_lib STATIC
   src/rt_controller_interface.cpp
   src/rt_controller_node.cpp
-  src/rt_controller_main.cpp
   src/controllers/direct/joint_pd_controller.cpp
   src/controllers/direct/operational_space_controller.cpp
   src/controllers/indirect/p_controller.cpp
   src/controllers/indirect/clik_controller.cpp
   src/controllers/indirect/ur5e_hand_controller.cpp
 )
-target_include_directories(rt_controller PRIVATE include)
-ament_target_dependencies(rt_controller
+target_include_directories(rt_controller_lib PUBLIC include)
+ament_target_dependencies(rt_controller_lib PUBLIC
   rclcpp
   std_msgs
   sensor_msgs
@@ -58,7 +57,11 @@ ament_target_dependencies(rt_controller
   ament_index_cpp
   ur5e_msgs
 )
-target_link_libraries(rt_controller pinocchio::pinocchio yaml-cpp)
+target_link_libraries(rt_controller_lib PUBLIC pinocchio::pinocchio yaml-cpp)
+
+# ── rt_controller (실행 파일 — main만 컴파일) ─────────────────────────────────
+add_executable(rt_controller src/rt_controller_main.cpp)
+target_link_libraries(rt_controller PRIVATE rt_controller_lib)
 
 # ── Install ────────────────────────────────────────────────────────────────────
 install(TARGETS rt_controller
@@ -95,8 +98,7 @@ if(BUILD_TESTING)
 
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_trajectory test/test_trajectory.cpp)
-  target_include_directories(test_trajectory PRIVATE include)
-  target_link_libraries(test_trajectory pinocchio::pinocchio)
+  target_link_libraries(test_trajectory rt_controller_lib)
 endif()
 
 ament_package()
