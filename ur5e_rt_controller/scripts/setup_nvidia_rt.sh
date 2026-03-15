@@ -197,25 +197,88 @@ fi
 #   4코어: Core 0 = OS, Core 1-3 = RT (isolcpus=1-3)
 #   6코어: Core 0-1 = OS, Core 2-5 = RT (isolcpus=2-5)
 #   8코어: Core 0-1 = OS, Core 2-6 = RT, Core 7 = spare (isolcpus=2-7)
+#
+# SMT/HT 시스템에서는 isolcpus에 HT 시블링도 포함해야 한다.
+# 예: 6C/12T → 물리 Core 0-1 = OS, isolcpus=2-5,8-11 (HT 시블링 포함)
 if [[ "$TOTAL_CORES" -le 4 ]]; then
   OS_CORES="0"
   RT_CORES_START=1
   RT_CORES_END=$((TOTAL_CORES - 1))
-  # NVIDIA IRQ도 Core 0에만 할당 (4코어 시 Core 1은 RT Control)
+  OS_PHYS_START=0
+  OS_PHYS_END=0
   IRQ_AFFINITY_MASK="1"   # 0x1 = Core 0 only
 elif [[ "$TOTAL_CORES" -le 7 ]]; then
   OS_CORES="0-1"
   RT_CORES_START=2
   RT_CORES_END=$((TOTAL_CORES - 1))
+  OS_PHYS_START=0
+  OS_PHYS_END=1
   IRQ_AFFINITY_MASK="3"   # 0x3 = Core 0-1
 else
-  # 8코어 이상: Core 7은 spare (cyclictest, 모니터링용)
   OS_CORES="0-1"
   RT_CORES_START=2
   RT_CORES_END=$((TOTAL_CORES - 1))
+  OS_PHYS_START=0
+  OS_PHYS_END=1
   IRQ_AFFINITY_MASK="3"   # 0x3 = Core 0-1
 fi
-RT_CORES="${RT_CORES_START}-${RT_CORES_END}"
+
+# ── isolcpus 값 계산 (SMT 시블링 포함) ────────────────────────────────────
+# 비-SMT: 단순 범위 (예: "2-5")
+# SMT: OS 물리 코어의 HT 시블링을 제외한 모든 논리 CPU (예: "2-5,8-11")
+if [[ "$LOGICAL_CORES" -eq "$TOTAL_CORES" ]]; then
+  # 비-SMT: 물리 = 논리
+  RT_CORES="${RT_CORES_START}-${RT_CORES_END}"
+else
+  # SMT: OS 물리 코어에 속하는 논리 CPU를 찾고 나머지를 isolcpus에 사용
+  OS_LOGICAL_CPUS=""
+  for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
+    cpu_num=$(basename "$cpu_dir" | sed 's/cpu//')
+    core_file="${cpu_dir}topology/core_id"
+    [[ -f "$core_file" ]] || continue
+    core_id=$(cat "$core_file" 2>/dev/null)
+    if [[ "$core_id" -ge "$OS_PHYS_START" && "$core_id" -le "$OS_PHYS_END" ]]; then
+      OS_LOGICAL_CPUS="${OS_LOGICAL_CPUS} ${cpu_num}"
+    fi
+  done
+
+  # OS 논리 CPU를 제외한 나머지를 범위 표기로 변환
+  ISOLATED_LIST=()
+  for ((cpu=0; cpu<LOGICAL_CORES; cpu++)); do
+    is_os=0
+    for os_cpu in $OS_LOGICAL_CPUS; do
+      [[ "$cpu" -eq "$os_cpu" ]] && { is_os=1; break; }
+    done
+    [[ "$is_os" -eq 0 ]] && ISOLATED_LIST+=("$cpu")
+  done
+
+  # 연속 번호를 범위 표기로 변환 (예: 2 3 4 5 8 9 10 11 → "2-5,8-11")
+  RT_CORES=""
+  range_start="" range_end=""
+  for cpu in "${ISOLATED_LIST[@]}"; do
+    if [[ -z "$range_start" ]]; then
+      range_start=$cpu; range_end=$cpu
+    elif [[ "$cpu" -eq $((range_end + 1)) ]]; then
+      range_end=$cpu
+    else
+      if [[ "$range_start" -eq "$range_end" ]]; then
+        RT_CORES="${RT_CORES:+${RT_CORES},}${range_start}"
+      else
+        RT_CORES="${RT_CORES:+${RT_CORES},}${range_start}-${range_end}"
+      fi
+      range_start=$cpu; range_end=$cpu
+    fi
+  done
+  if [[ -n "$range_start" ]]; then
+    if [[ "$range_start" -eq "$range_end" ]]; then
+      RT_CORES="${RT_CORES:+${RT_CORES},}${range_start}"
+    else
+      RT_CORES="${RT_CORES:+${RT_CORES},}${range_start}-${range_end}"
+    fi
+  fi
+
+  info "SMT isolcpus 계산: ${RT_CORES} (OS 논리 CPU:${OS_LOGICAL_CPUS})"
+fi
 
 if [[ "$TOTAL_CORES" -le 4 ]]; then
   warn "4코어 시스템: OS 코어가 1개(Core 0)뿐입니다"
