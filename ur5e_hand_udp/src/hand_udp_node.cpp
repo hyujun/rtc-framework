@@ -44,6 +44,10 @@ class HandUdpNode : public rclcpp::Node {
     declare_parameter("min_rate_hz", 30.0);
     declare_parameter("rate_fail_threshold", 5);
 
+    // Hand motor/fingertip names (이름 기반 매핑용)
+    declare_parameter("hand_motor_names", std::vector<std::string>{});
+    declare_parameter("hand_fingertip_names", std::vector<std::string>{});
+
     const std::string target_ip       = get_parameter("target_ip").as_string();
     const int         target_port     = get_parameter("target_port").as_int();
     const double      rate            = get_parameter("publish_rate").as_double();
@@ -105,6 +109,23 @@ class HandUdpNode : public rclcpp::Node {
     const auto period = std::chrono::microseconds(
         static_cast<int>(1'000'000.0 / rate));
     publish_timer_ = create_wall_timer(period, [this]() { PublishState(); });
+
+    // Hand motor names 로드 및 로그
+    auto motor_names = get_parameter("hand_motor_names").as_string_array();
+    if (motor_names.empty()) { motor_names = urtc::kDefaultHandMotorNames; }
+    auto fingertip_names = get_parameter("hand_fingertip_names").as_string_array();
+    if (fingertip_names.empty()) { fingertip_names = urtc::kDefaultFingertipNames; }
+
+    {
+      std::string names_str;
+      for (std::size_t i = 0; i < motor_names.size(); ++i) {
+        if (i > 0) names_str += ", ";
+        names_str += motor_names[i];
+      }
+      RCLCPP_INFO(get_logger(),
+                  "Hand motor order (%zu): [%s]",
+                  motor_names.size(), names_str.c_str());
+    }
 
     RCLCPP_INFO(get_logger(),
                 "HandUdpNode: target %s:%d, pub %.0f Hz",

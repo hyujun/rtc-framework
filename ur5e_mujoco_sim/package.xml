@@ -18,6 +18,7 @@
   <depend>sensor_msgs</depend>
   <depend>ament_index_cpp</depend>
   <depend>ur5e_msgs</depend>
+  <depend>ur5e_rt_base</depend>
 
   <!-- Robot model files (MJCF, URDF, meshes) -->
   <exec_depend>ur5e_description</exec_depend>

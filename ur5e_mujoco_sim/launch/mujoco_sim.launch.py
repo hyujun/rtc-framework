@@ -35,7 +35,7 @@ rt_controller 노드를 수정 없이 그대로 실행합니다.
   3. monitor_data_health.py  — 데이터 헬스 모니터
 
 목표 위치 발행 (별도 터미널):
-  ros2 topic pub /target_joint_positions std_msgs/msg/Float64MultiArray \\
+  ros2 topic pub /ur5e/target_joint_positions std_msgs/msg/Float64MultiArray \\
     "data: [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]"
 
 모니터링:

@@ -73,22 +73,22 @@ TopicConfig RTControllerInterface::MakeDefaultTopicConfig()
 
   // ── ur5e 디바이스 그룹 (기본 토픽) ──
   cfg.ur5e.subscribe = {
-    {"/joint_states",           SubscribeRole::kJointState},
-    {"/target_joint_positions", SubscribeRole::kGoal},
+    {"/joint_states",                SubscribeRole::kJointState},
+    {"/ur5e/target_joint_positions", SubscribeRole::kGoal},
   };
   cfg.ur5e.publish = {
     {"/forward_position_controller/commands", PublishRole::kPositionCommand,  kNumRobotJoints},
     {"/forward_torque_controller/commands",   PublishRole::kTorqueCommand,    kNumRobotJoints},
-    {"/rt_controller/current_task_position",  PublishRole::kTaskPosition,     6},
-    {"/rt_controller/trajectory_state",       PublishRole::kTrajectoryState,  18},
-    {"/rt_controller/controller_state",       PublishRole::kControllerState,  18},
+    {"/ur5e/current_task_position",           PublishRole::kTaskPosition,     6},
+    {"/ur5e/trajectory_state",                PublishRole::kTrajectoryState,  18},
+    {"/ur5e/controller_state",                PublishRole::kControllerState,  18},
   };
 
   // ── hand 디바이스 그룹 (기본 토픽) ──
   cfg.hand.subscribe = {
     {"/hand/joint_states", SubscribeRole::kHandState},
   };
-  // hand.publish는 기본적으로 비어있음 (ur5e_hand_controller만 kHandCommand 발행)
+  // hand goal/publish는 기본적으로 비어있음 (ur5e_hand_controller YAML에서만 설정)
 
   return cfg;
 }

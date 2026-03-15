@@ -1061,7 +1061,7 @@ class ROSNode(Node):
             JointState, '/joint_states', self.joint_callback, qos)
 
         self.cmd_pub = self.create_publisher(
-            Float64MultiArray, '/target_joint_positions', qos)
+            Float64MultiArray, '/ur5e/target_joint_positions', qos)
 
         self.get_logger().info("Motion Editor ROS Node started")
 

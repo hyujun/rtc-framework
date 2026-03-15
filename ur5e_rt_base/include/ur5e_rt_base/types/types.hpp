@@ -50,15 +50,14 @@ inline const std::vector<std::string> kDefaultRobotJointNames = {
 };
 
 inline const std::vector<std::string> kDefaultHandMotorNames = {
-  "thumb_cmc", "thumb_mcp", "thumb_ip",
-  "index_mcp", "index_pip",
-  "middle_mcp", "middle_pip",
-  "ring_mcp", "ring_pip",
-  "little_mcp"
+  "thumb_cmc_aa", "thumb_cmc_fe", "thumb_mcp_fe",
+  "index_mcp_aa", "index_mcp_fe", "index_dip_fe",
+  "middle_mcp_aa", "middle_mcp_fe", "middle_dip_fe",
+  "ring_mcp_fe"
 };
 
 inline const std::vector<std::string> kDefaultFingertipNames = {
-  "index", "middle", "ring", "little"
+  "thumb", "index", "middle", "ring"
 };
 
 // ── C++20 Concepts ─────────────────────────────────────────────────────────────

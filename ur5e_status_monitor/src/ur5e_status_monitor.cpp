@@ -98,7 +98,7 @@ UR5eStatusMonitor::UR5eStatusMonitor(rclcpp::Node::SharedPtr node)
         .reliable()
         .transient_local();
     controller_name_sub_ = node_->create_subscription<std_msgs::msg::String>(
-        "/rt_controller/active_controller_name", ctrl_qos,
+        "/ur5e/active_controller_name", ctrl_qos,
         [this](std_msgs::msg::String::SharedPtr msg) {
           OnControllerNameChanged(std::move(msg));
         },

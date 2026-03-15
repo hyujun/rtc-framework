@@ -64,11 +64,13 @@ private:
 
   // ── Subscription callbacks ────────────────────────────────────────────────
   void JointStateCallback(sensor_msgs::msg::JointState::SharedPtr msg);
-  void TargetCallback(std_msgs::msg::Float64MultiArray::SharedPtr msg);
+  void RobotTargetCallback(std_msgs::msg::Float64MultiArray::SharedPtr msg);
+  void HandTargetCallback(std_msgs::msg::Float64MultiArray::SharedPtr msg);
 
   // ── Joint name validation (v5.14.0) ──────────────────────────────────────
   void LoadAndValidateJointNames();
   void BuildJointStateIndexMap(const std::vector<std::string>& msg_names);
+  void BuildHandStateIndexMap(const std::vector<std::string>& source_names);
 
   // ── Timer callbacks ───────────────────────────────────────────────────────
   void CheckTimeouts();   // 50 Hz watchdog (E-STOP)
@@ -201,6 +203,11 @@ private:
   // JointState msg의 name 순서 → 내부 인덱스 매핑 (첫 수신 시 빌드)
   std::vector<int> joint_state_reorder_;   // joint_state_reorder_[msg_idx] = internal_idx
   bool joint_state_map_built_{false};
+
+  // Hand motor name → index map (sim hand state 수신 시 이름 기반 reorder)
+  // 외부 노드의 hand_motor_names와 내부 hand_motor_names_ 간 매핑
+  std::vector<int> hand_state_reorder_;
+  bool hand_state_map_built_{false};
 
   // ── Parameters ────────────────────────────────────────────────────────────
   double      control_rate_{500.0};

@@ -28,7 +28,7 @@
     # ur5e_msgs/JointCommand 메시지를 발행하는 토픽.
     # MuJoCo의 robot_topics.command_topic과 일치해야 합니다.
     # 빈 문자열이면 비활성화 (실제 로봇은 ros2_control 토픽만 사용).
-    joint_command_topic: "/rt_controller/joint_command"
+    joint_command_topic: "/ur5e/joint_command"
 
     # ── 핸드 시뮬레이션 (MuJoCo fake response 연동) ────────────────────────────
     # true 시 UDP HandController 대신 ROS 토픽으로 핸드 통신 (시뮬레이션 전용)

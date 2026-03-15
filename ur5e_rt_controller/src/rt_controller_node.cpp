@@ -208,7 +208,7 @@ void RtControllerNode::DeclareAndLoadParameters()
   global_device_flags_.enable_hand = get_parameter("enable_hand").as_bool();
 
   // JointCommand 발행 (MuJoCo / 외부 시뮬레이터 연동)
-  declare_parameter("joint_command_topic", std::string("/rt_controller/joint_command"));
+  declare_parameter("joint_command_topic", std::string("/ur5e/joint_command"));
 
   // Hand simulation (MuJoCo fake response 연동)
   declare_parameter("hand_sim_enabled", false);
@@ -331,18 +331,43 @@ void RtControllerNode::DeclareAndLoadParameters()
         [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
           if (msg->data.size() < 10) { return; }
           std::lock_guard lock(sim_hand_mutex_);
-          // Positions: [0..9]
-          for (std::size_t i = 0; i < urtc::kNumHandMotors && i < msg->data.size(); ++i) {
-            sim_hand_state_.motor_positions[i] = static_cast<float>(msg->data[i]);
+
+          if (hand_state_map_built_) {
+            // 이름 기반 reorder: source index → internal index
+            const std::size_t n = std::min(hand_state_reorder_.size(),
+                                           msg->data.size());
+            for (std::size_t src_i = 0; src_i < n; ++src_i) {
+              const int idx = hand_state_reorder_[src_i];
+              if (idx >= 0 && idx < urtc::kNumHandMotors) {
+                const auto uidx = static_cast<std::size_t>(idx);
+                sim_hand_state_.motor_positions[uidx] =
+                    static_cast<float>(msg->data[src_i]);
+              }
+            }
+            // Velocities: [10..19] (same reorder)
+            constexpr std::size_t vel_offset = urtc::kNumHandMotors;
+            for (std::size_t src_i = 0; src_i < n
+                     && (vel_offset + src_i) < msg->data.size(); ++src_i) {
+              const int idx = hand_state_reorder_[src_i];
+              if (idx >= 0 && idx < urtc::kNumHandMotors) {
+                sim_hand_state_.motor_velocities[static_cast<std::size_t>(idx)] =
+                    static_cast<float>(msg->data[vel_offset + src_i]);
+              }
+            }
+          } else {
+            // Positional fallback (이름 매핑 미빌드 시)
+            for (std::size_t i = 0; i < urtc::kNumHandMotors && i < msg->data.size(); ++i) {
+              sim_hand_state_.motor_positions[i] = static_cast<float>(msg->data[i]);
+            }
+            constexpr std::size_t vel_offset = urtc::kNumHandMotors;
+            for (std::size_t i = 0; i < urtc::kNumHandMotors
+                     && (vel_offset + i) < msg->data.size(); ++i) {
+              sim_hand_state_.motor_velocities[i] =
+                  static_cast<float>(msg->data[vel_offset + i]);
+            }
           }
-          // Velocities: [10..19]
-          constexpr std::size_t vel_offset = urtc::kNumHandMotors;
-          for (std::size_t i = 0; i < urtc::kNumHandMotors
-                   && (vel_offset + i) < msg->data.size(); ++i) {
-            sim_hand_state_.motor_velocities[i] =
-                static_cast<float>(msg->data[vel_offset + i]);
-          }
-          // Sensors: [20..63] (4 fingertips × 11 values)
+
+          // Sensors: [20..63] (4 fingertips × 11 values) — always positional
           constexpr std::size_t sensor_offset = urtc::kNumHandMotors * 2;
           const std::size_t num_sensor_values = msg->data.size() > sensor_offset
               ? msg->data.size() - sensor_offset : 0;
@@ -400,6 +425,9 @@ void RtControllerNode::DeclareAndLoadParameters()
 
   // ── Joint name loading & URDF validation (v5.14.0) ─────────────────────
   LoadAndValidateJointNames();
+
+  // hand_motor_names_ 기반 identity map 빌드 (sim/UDP 모두 동일 이름 순서 사용)
+  BuildHandStateIndexMap(hand_motor_names_);
 
   // ── Instantiate and configure all registered controllers ─────────────────
   // Each factory constructs the controller with default gains, then
@@ -521,7 +549,7 @@ void RtControllerNode::CreateSubscriptions()
               auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
                 entry.topic_name, 10,
                 [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-                  TargetCallback(std::move(msg));
+                  RobotTargetCallback(std::move(msg));
                 },
                 sub_options);
               topic_subscriptions_.push_back(sub);
@@ -538,14 +566,31 @@ void RtControllerNode::CreateSubscriptions()
     // hand 토픽: any controller enables hand → 생성
     if (any_hand) {
       for (const auto & entry : tc.hand.subscribe) {
-        if (entry.role == urtc::SubscribeRole::kHandState) {
-          if (hand_sim_enabled_) {
-            RCLCPP_INFO(get_logger(), "  Subscribe [hand/hand_state]: %s (via ROS — sim)",
-                        entry.topic_name.c_str());
-          } else {
-            RCLCPP_INFO(get_logger(), "  Subscribe [hand/hand_state]: %s (direct UDP/fake)",
-                        entry.topic_name.c_str());
-          }
+        switch (entry.role) {
+          case urtc::SubscribeRole::kHandState:
+            if (hand_sim_enabled_) {
+              RCLCPP_INFO(get_logger(), "  Subscribe [hand/hand_state]: %s (via ROS — sim)",
+                          entry.topic_name.c_str());
+            } else {
+              RCLCPP_INFO(get_logger(), "  Subscribe [hand/hand_state]: %s (direct UDP/fake)",
+                          entry.topic_name.c_str());
+            }
+            break;
+          case urtc::SubscribeRole::kGoal:
+            if (created_target_topics.insert(entry.topic_name).second) {
+              auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
+                entry.topic_name, 10,
+                [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+                  HandTargetCallback(std::move(msg));
+                },
+                sub_options);
+              topic_subscriptions_.push_back(sub);
+              RCLCPP_INFO(get_logger(), "  Subscribe [hand/goal]: %s",
+                          entry.topic_name.c_str());
+            }
+            break;
+          default:
+            break;
         }
       }
     }
@@ -553,7 +598,7 @@ void RtControllerNode::CreateSubscriptions()
 
   // ── Fixed control subscriptions (always present) ──────────────────────────
   controller_selector_sub_ = create_subscription<std_msgs::msg::Int32>(
-      "~/controller_type", 10,
+      "/ur5e/controller_type", 10,
     [this](std_msgs::msg::Int32::SharedPtr msg) {
       int idx = msg->data;
       if (idx >= 0 && idx < static_cast<int>(controllers_.size())) {
@@ -570,7 +615,7 @@ void RtControllerNode::CreateSubscriptions()
       sub_options);
 
   controller_gains_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
-      "~/controller_gains", 10,
+      "/ur5e/controller_gains", 10,
     [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
       const int idx = active_controller_idx_.load(std::memory_order_acquire);
       controllers_[static_cast<std::size_t>(idx)]->UpdateGainsFromMsg(msg->data);
@@ -580,7 +625,7 @@ void RtControllerNode::CreateSubscriptions()
       sub_options);
 
   request_gains_sub_ = create_subscription<std_msgs::msg::Bool>(
-      "~/request_gains", 10,
+      "/ur5e/request_gains", 10,
     [this](std_msgs::msg::Bool::SharedPtr /*msg*/) {
       const int idx = active_controller_idx_.load(std::memory_order_acquire);
       const auto gains = controllers_[static_cast<std::size_t>(idx)]->GetCurrentGains();
@@ -682,10 +727,10 @@ void RtControllerNode::CreatePublishers()
   rclcpp::QoS latch_qos{1};
   latch_qos.transient_local();
   active_ctrl_name_pub_ =
-    create_publisher<std_msgs::msg::String>("~/active_controller_name", latch_qos);
+    create_publisher<std_msgs::msg::String>("/ur5e/active_controller_name", latch_qos);
 
   current_gains_pub_ =
-    create_publisher<std_msgs::msg::Float64MultiArray>("~/current_gains", 10);
+    create_publisher<std_msgs::msg::Float64MultiArray>("/ur5e/current_gains", 10);
 }
 
 // ── Expose topic configuration as read-only ROS2 parameters ─────────────────
@@ -827,14 +872,12 @@ void RtControllerNode::JointStateCallback(sensor_msgs::msg::JointState::SharedPt
   state_received_.store(true, std::memory_order_release);
 }
 
-void RtControllerNode::TargetCallback(std_msgs::msg::Float64MultiArray::SharedPtr msg)
+void RtControllerNode::RobotTargetCallback(
+    std_msgs::msg::Float64MultiArray::SharedPtr msg)
 {
   if (msg->data.size() < urtc::kNumRobotJoints) {
     return;
   }
-  // Fix 3: build a local copy while the mutex is held, then call
-  // SetRobotTarget() with the copy — avoids a data race where the RT thread
-  // could overwrite target_positions_ between mutex release and the call.
   std::array<double, urtc::kNumRobotJoints> local_target;
   {
     std::lock_guard lock(target_mutex_);
@@ -842,22 +885,23 @@ void RtControllerNode::TargetCallback(std_msgs::msg::Float64MultiArray::SharedPt
                 target_positions_.begin());
     local_target = target_positions_;
   }
-  // Fix 2: release-store after mutex released
   target_received_.store(true, std::memory_order_release);
   int active_idx = active_controller_idx_.load(std::memory_order_acquire);
   controllers_[active_idx]->SetRobotTarget(local_target);
+}
 
-  // If the message contains additional values for hand motors
-  // (data[6..15]), forward them to SetHandTarget().
-  constexpr std::size_t kHandOffset = static_cast<std::size_t>(urtc::kNumRobotJoints);
-  constexpr std::size_t kHandSize   = static_cast<std::size_t>(urtc::kNumHandMotors);
-  if (msg->data.size() >= kHandOffset + kHandSize) {
-    std::array<float, urtc::kNumHandMotors> hand_target;
-    for (std::size_t i = 0; i < kHandSize; ++i) {
-      hand_target[i] = static_cast<float>(msg->data[kHandOffset + i]);
-    }
-    controllers_[active_idx]->SetHandTarget(hand_target);
+void RtControllerNode::HandTargetCallback(
+    std_msgs::msg::Float64MultiArray::SharedPtr msg)
+{
+  if (msg->data.size() < urtc::kNumHandMotors) {
+    return;
   }
+  std::array<float, urtc::kNumHandMotors> hand_target;
+  for (std::size_t i = 0; i < urtc::kNumHandMotors; ++i) {
+    hand_target[i] = static_cast<float>(msg->data[i]);
+  }
+  int active_idx = active_controller_idx_.load(std::memory_order_acquire);
+  controllers_[active_idx]->SetHandTarget(hand_target);
 }
 
 // ── 50 Hz watchdog (E-STOP) ───────────────────────────────────────────────────
@@ -1327,8 +1371,34 @@ void RtControllerNode::LoadAndValidateJointNames()
                 }
                 return s;
               }().c_str());
-  RCLCPP_INFO(get_logger(), "Hand motors: %zu, Fingertips: %zu",
-              hand_motor_names_.size(), fingertip_names_.size());
+  // Hand motor 개수 검증
+  if (hand_motor_names_.size() != static_cast<std::size_t>(urtc::kNumHandMotors)) {
+    RCLCPP_ERROR(get_logger(),
+                 "hand_motor_names has %zu entries (expected %d) — using defaults",
+                 hand_motor_names_.size(), urtc::kNumHandMotors);
+    hand_motor_names_ = urtc::kDefaultHandMotorNames;
+  }
+
+  RCLCPP_INFO(get_logger(), "Hand motors (%zu): [%s]",
+              hand_motor_names_.size(),
+              [&]{
+                std::string s;
+                for (std::size_t i = 0; i < hand_motor_names_.size(); ++i) {
+                  if (i > 0) s += ", ";
+                  s += hand_motor_names_[i];
+                }
+                return s;
+              }().c_str());
+  RCLCPP_INFO(get_logger(), "Fingertips (%zu): [%s]",
+              fingertip_names_.size(),
+              [&]{
+                std::string s;
+                for (std::size_t i = 0; i < fingertip_names_.size(); ++i) {
+                  if (i > 0) s += ", ";
+                  s += fingertip_names_[i];
+                }
+                return s;
+              }().c_str());
 }
 
 void RtControllerNode::BuildJointStateIndexMap(
@@ -1352,4 +1422,28 @@ void RtControllerNode::BuildJointStateIndexMap(
   joint_state_map_built_ = true;
 
   RCLCPP_INFO(get_logger(), "Built JointState name→index map from incoming message");
+}
+
+void RtControllerNode::BuildHandStateIndexMap(
+    const std::vector<std::string>& source_names)
+{
+  hand_state_reorder_.resize(source_names.size(), -1);
+
+  for (std::size_t src_i = 0; src_i < source_names.size(); ++src_i) {
+    for (std::size_t our_i = 0; our_i < hand_motor_names_.size(); ++our_i) {
+      if (source_names[src_i] == hand_motor_names_[our_i]) {
+        hand_state_reorder_[src_i] = static_cast<int>(our_i);
+        break;
+      }
+    }
+    if (hand_state_reorder_[src_i] < 0) {
+      RCLCPP_WARN(get_logger(),
+                  "Hand motor name '%s' from source not in hand_motor_names — ignored",
+                  source_names[src_i].c_str());
+    }
+  }
+  hand_state_map_built_ = true;
+
+  RCLCPP_INFO(get_logger(), "Built hand state name→index map (%zu entries)",
+              source_names.size());
 }

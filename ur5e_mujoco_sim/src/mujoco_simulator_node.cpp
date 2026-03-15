@@ -1,6 +1,7 @@
 // ── Includes: project first, then ROS2, then C++ stdlib ──────────────────────
 #include "ur5e_mujoco_sim/mujoco_simulator.hpp"
 #include "ur5e_mujoco_sim/ros2_resource_provider.hpp"
+#include <ur5e_rt_base/types/types.hpp>
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -95,9 +96,12 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     declare_parameter("fake_hand_response.command_topic", std::string("/hand/command"));
     declare_parameter("fake_hand_response.state_topic", std::string("/hand/joint_states"));
 
+    // Hand motor names (이름 기반 매핑용 — 빈 배열이면 기본값 사용)
+    declare_parameter("hand_motor_names", std::vector<std::string>{});
+
     // Robot topics (fake_hand_response 패턴과 동일)
     declare_parameter("robot_topics.command_topic",
-                      std::string("/rt_controller/joint_command"));
+                      std::string("/ur5e/joint_command"));
     declare_parameter("robot_topics.state_topic",
                       std::string("/joint_states"));
 
@@ -142,6 +146,21 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
 
     servo_kp_ = get_parameter("servo_kp").as_double_array();
     servo_kd_ = get_parameter("servo_kd").as_double_array();
+
+    // Hand motor names (이름 기반 순서 보장)
+    hand_motor_names_ = get_parameter("hand_motor_names").as_string_array();
+    if (hand_motor_names_.empty()) {
+      hand_motor_names_ = urtc::kDefaultHandMotorNames;
+    }
+    if (fake_hand_enable_) {
+      std::string names_str;
+      for (std::size_t i = 0; i < hand_motor_names_.size(); ++i) {
+        if (i > 0) names_str += ", ";
+        names_str += hand_motor_names_[i];
+      }
+      RCLCPP_INFO(get_logger(), "Hand motor names (%zu): [%s]",
+                  hand_motor_names_.size(), names_str.c_str());
+    }
 
     // Resolve model path: if empty, default to package:// URI
     if (model_path_.empty()) {
@@ -429,7 +448,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   double                 fake_hand_alpha_{0.1};
   std::string            fake_hand_cmd_topic_{"/hand/command"};
   std::string            fake_hand_state_topic_{"/hand/joint_states"};
-  std::string            robot_command_topic_{"/rt_controller/joint_command"};
+  std::vector<std::string> hand_motor_names_;
+  std::string            robot_command_topic_{"/ur5e/joint_command"};
   std::string            robot_state_topic_{"/joint_states"};
   std::string            sim_mode_{"free_run"};
   int                    publish_decimation_{1};

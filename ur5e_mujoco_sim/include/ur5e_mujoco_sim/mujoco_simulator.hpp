@@ -124,7 +124,7 @@ class MuJoCoSimulator {
 
     // ── Robot topics (fake_hand_response 패턴과 동일) ─────────────────────────
     // 로봇 커맨드 수신 토픽 (JointCommand msg, command_type으로 position/torque 결정)
-    std::string command_topic{"/rt_controller/joint_command"};
+    std::string command_topic{"/ur5e/joint_command"};
     // 로봇 상태 퍼블리시 토픽
     std::string state_topic{"/joint_states"};
   };

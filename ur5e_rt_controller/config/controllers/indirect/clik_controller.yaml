@@ -23,7 +23,7 @@ clik_controller:
     ur5e:
       subscribe:
         # 카테고리 1: Goal State (궤적 최종 목표)
-        - topic: "/target_joint_positions"
+        - topic: "/ur5e/target_joint_positions"
           role: "goal"
         # 카테고리 2: Current State (센서 피드백)
         - topic: "/joint_states"
@@ -33,13 +33,13 @@ clik_controller:
         - topic: "/forward_position_controller/commands"
           role: "position_command"
         # 카테고리 4: Logging/Monitoring (진단 발행)
-        - topic: "/rt_controller/current_task_position"
+        - topic: "/ur5e/current_task_position"
           role: "task_position"
           data_size: 6
-        - topic: "/rt_controller/trajectory_state"
+        - topic: "/ur5e/trajectory_state"
           role: "trajectory_state"
           data_size: 18
-        - topic: "/rt_controller/controller_state"
+        - topic: "/ur5e/controller_state"
           role: "controller_state"
           data_size: 18
     hand:

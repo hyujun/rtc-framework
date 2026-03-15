@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 UR5e Controller GUI
-- Select controller type (P, JointPD, CLIK, OSC)
+- Select controller type (P, JointPD, CLIK, OSC, UR5e Hand)
 - Set gains per controller via ~/controller_gains
   (gain vectors match UpdateGainsFromMsg layouts in each controller header)
 - Displays currently applied gains after "Apply Gains" is pressed
 - When switching controller, current joint positions become the new target
 - Periodically display current joint positions alongside the target inputs
 - E-STOP status indicator via /system/estop_status
+- Hand motor target UI for UR5e Hand Controller (index 4)
 """
 import math
 
@@ -24,6 +25,7 @@ CONTROLLER_TYPES = {
     1: "Joint PD Controller",
     2: "CLIK Controller",
     3: "OSC Controller",
+    4: "UR5e Hand Controller",
 }
 
 TARGET_LABELS = {
@@ -31,6 +33,7 @@ TARGET_LABELS = {
     1: ["q1 (deg)", "q2 (deg)", "q3 (deg)", "q4 (deg)", "q5 (deg)", "q6 (deg)"],
     2: ["X (m)", "Y (m)", "Z (m)", "Roll (deg) / q4_null", "Pitch (deg) / q5_null", "Yaw (deg) / q6_null"],
     3: ["X (m)", "Y (m)", "Z (m)", "Roll (deg)", "Pitch (deg)", "Yaw (deg)"],
+    4: ["q1 (deg)", "q2 (deg)", "q3 (deg)", "q4 (deg)", "q5 (deg)", "q6 (deg)"],
 }
 
 # Target entry indices that represent angles (require rad ↔ deg conversion)
@@ -39,12 +42,27 @@ ANGLE_INDICES = {
     1: [0, 1, 2, 3, 4, 5],
     2: [3, 4, 5],
     3: [3, 4, 5],
+    4: [0, 1, 2, 3, 4, 5],
 }
 
 # True → auto-fill target from current joint positions on controller switch
-JOINT_SPACE = {0: True, 1: True, 2: False, 3: False}
+JOINT_SPACE = {0: True, 1: True, 2: False, 3: False, 4: True}
 
 NUM_JOINTS = 6
+NUM_HAND_MOTORS = 10
+
+# ── Hand finger groups (이름 기반) ───────────────────────────────────────────
+HAND_FINGER_GROUPS = [
+    ("Thumb",  ["thumb_cmc_aa", "thumb_cmc_fe", "thumb_mcp_fe"]),
+    ("Index",  ["index_mcp_aa", "index_mcp_fe", "index_dip_fe"]),
+    ("Middle", ["middle_mcp_aa", "middle_mcp_fe", "middle_dip_fe"]),
+    ("Ring",   ["ring_mcp_fe"]),
+]
+
+# Flat list of all hand motor names (canonical order)
+HAND_MOTOR_NAMES = []
+for _grp_name, _motors in HAND_FINGER_GROUPS:
+    HAND_MOTOR_NAMES.extend(_motors)
 
 # ── Gain definitions per controller ──────────────────────────────────────────
 # Each entry: (label, size, defaults, is_bool)
@@ -58,6 +76,7 @@ NUM_JOINTS = 6
 #   CLIK:     [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1)]
 #   OSC:      [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1),
 #              trajectory_speed, trajectory_angular_speed]
+#   Hand:     [robot_kp×6, hand_kp×10]
 GAIN_DEFS = {
     0: [
         ("kp",              6, [120.0, 120.0, 100.0, 80.0, 80.0, 80.0],  False),
@@ -86,6 +105,10 @@ GAIN_DEFS = {
         ("traj speed",      1, [0.1],       False),
         ("traj ang speed",  1, [0.5],       False),
     ],
+    4: [
+        ("robot_kp",        6, [120.0, 120.0, 100.0, 80.0, 80.0, 80.0], False),
+        ("hand_kp",        10, [50.0] * 10, False),
+    ],
 }
 
 # Column header labels for array gain rows
@@ -94,6 +117,17 @@ GAIN_COL_HEADERS = {
     1: ["J1", "J2", "J3", "J4", "J5", "J6"],
     2: ["J1", "J2", "J3", "J4", "J5", "J6"],
     3: ["X",  "Y",  "Z"],
+    4: ["J1", "J2", "J3", "J4", "J5", "J6",
+        "H1", "H2", "H3", "H4"],
+}
+
+# Per-row sub-headers inserted BEFORE the gain row (controller_idx → {label → names})
+# 해당 gain label 앞에 이름 행을 삽입
+GAIN_ROW_NAMES = {
+    4: {
+        "robot_kp": ["base", "shoulder", "elbow", "wrist1", "wrist2", "wrist3"],
+        "hand_kp": [n.split('_', 1)[1] for n in HAND_MOTOR_NAMES],
+    },
 }
 
 
@@ -102,30 +136,37 @@ class ControllerGUI(Node):
         super().__init__('controller_gui')
 
         # Publishers
-        self.cmd_pub = self.create_publisher(
-            Float64MultiArray, '/target_joint_positions', 10)
+        self.robot_cmd_pub = self.create_publisher(
+            Float64MultiArray, '/ur5e/target_joint_positions', 10)
+        self.hand_cmd_pub = self.create_publisher(
+            Float64MultiArray, '/hand/target_joint_positions', 10)
         self.type_pub = self.create_publisher(
-            Int32, '/rt_controller/controller_type', 10)
+            Int32, '/ur5e/controller_type', 10)
         self.gains_pub = self.create_publisher(
-            Float64MultiArray, '/rt_controller/controller_gains', 10)
+            Float64MultiArray, '/ur5e/controller_gains', 10)
         self.request_gains_pub = self.create_publisher(
-            Bool, '/rt_controller/request_gains', 10)
+            Bool, '/ur5e/request_gains', 10)
 
         # Subscriptions
         self.current_positions = [0.0] * NUM_JOINTS
         self.create_subscription(JointState, '/joint_states',
                                  self._joint_state_cb, 10)
         self.current_task_positions = [0.0] * 6
-        self.create_subscription(Float64MultiArray, '/rt_controller/current_task_position',
+        self.create_subscription(Float64MultiArray, '/ur5e/current_task_position',
                                  self._task_pos_cb, 10)
-        
+
         self.estop_active = False
         self.create_subscription(Bool, '/system/estop_status',
                                  self._estop_cb, 10)
 
         self._pending_load_gains = False
-        self.create_subscription(Float64MultiArray, '/rt_controller/current_gains',
+        self.create_subscription(Float64MultiArray, '/ur5e/current_gains',
                                  self._current_gains_cb, 10)
+
+        # Hand state subscription
+        self.current_hand_positions = [0.0] * NUM_HAND_MOTORS
+        self.create_subscription(Float64MultiArray, '/hand/joint_states',
+                                 self._hand_state_cb, 10)
 
         # 5 Hz refresh timer
         self._refresh_timer = self.create_timer(0.2, self._refresh_current_display)
@@ -149,6 +190,10 @@ class ControllerGUI(Node):
     def _estop_cb(self, msg: Bool):
         self.estop_active = msg.data
 
+    def _hand_state_cb(self, msg: Float64MultiArray):
+        if len(msg.data) >= NUM_HAND_MOTORS:
+            self.current_hand_positions = list(msg.data[:NUM_HAND_MOTORS])
+
     def _current_gains_cb(self, msg: Float64MultiArray):
         if not self._pending_load_gains:
             return
@@ -158,7 +203,7 @@ class ControllerGUI(Node):
     def _refresh_current_display(self):
         if hasattr(self, '_status_labels_values'):
             idx = self.selected_ctrl.get()
-            if JOINT_SPACE[idx]:
+            if JOINT_SPACE.get(idx, True):
                 for i in range(NUM_JOINTS):
                     val_rad = self.current_positions[i]
                     val_deg = math.degrees(val_rad)
@@ -182,6 +227,14 @@ class ControllerGUI(Node):
                     self._task_state_labels_values[i].config(
                         text=f"{val:.4f} rad  ({val_deg:.2f}°)")
 
+        # Hand state refresh
+        if hasattr(self, '_hand_state_labels_values'):
+            for i in range(NUM_HAND_MOTORS):
+                val_rad = self.current_hand_positions[i]
+                val_deg = math.degrees(val_rad)
+                self._hand_state_labels_values[i].config(
+                    text=f"{val_deg:.2f}°")
+
         if hasattr(self, '_estop_label'):
             if self.estop_active:
                 self._estop_label.config(
@@ -195,7 +248,7 @@ class ControllerGUI(Node):
     def _run_gui(self):
         self.root = tk.Tk()
         self.root.title("UR5e Controller GUI")
-        self.root.geometry("800x760")
+        self.root.geometry("1000x900")
         self.root.resizable(True, True)
         self.root.configure(bg="#1e1e2e")
 
@@ -312,14 +365,10 @@ class ControllerGUI(Node):
         self._gains_frame = ttk.LabelFrame(scrollable_frame, text="Gains", padding=4)
         self._gains_frame.pack(fill='x', padx=8, pady=2)
 
-        # _gain_entries[i]         : list of Entry/IntVar widgets for param i
-        # _gain_is_bool[i]         : bool flag for param i
-        # _applied_label_widgets[i]: list of tk.Label widgets for param i (display only)
         self._gain_entries: list = []
         self._gain_is_bool: list[bool] = []
         self._applied_label_widgets: list = []
 
-        # Editable inputs
         self._gains_inner = tk.Frame(self._gains_frame, bg='#1e1e2e')
         self._gains_inner.pack(fill='x')
 
@@ -332,7 +381,6 @@ class ControllerGUI(Node):
                    style='Switch.TButton',
                    command=self._request_load_gains).pack(side='left', padx=4)
 
-        # Divider + "Currently Applied" read-only section
         ttk.Separator(self._gains_frame, orient='horizontal').pack(
             fill='x', pady=(1, 2))
         tk.Label(self._gains_frame, text="Currently Applied:",
@@ -348,8 +396,12 @@ class ControllerGUI(Node):
 
         hdr_font = tkfont.Font(family='Segoe UI', size=9, weight='bold')
 
+        # ── Top row: Joint + Task targets side by side ────────────────────────
+        top_target_row = tk.Frame(pos_frame, bg='#1e1e2e')
+        top_target_row.pack(fill='x')
+
         # ── Left: Joint Target ─────────────────────────────────────────────────
-        left_target_frame = tk.Frame(pos_frame, bg='#1e1e2e')
+        left_target_frame = tk.Frame(top_target_row, bg='#1e1e2e')
         left_target_frame.pack(side='left', fill='y', padx=(0, 2))
 
         tk.Label(left_target_frame, text="Joint Target",
@@ -392,10 +444,10 @@ class ControllerGUI(Node):
             self._joint_step_btns.append([btn_m, btn_p])
 
         # Vertical separator
-        ttk.Separator(pos_frame, orient='vertical').pack(side='left', fill='y', padx=6)
+        ttk.Separator(top_target_row, orient='vertical').pack(side='left', fill='y', padx=6)
 
         # ── Right: Task Target ─────────────────────────────────────────────────
-        right_target_frame = tk.Frame(pos_frame, bg='#1e1e2e')
+        right_target_frame = tk.Frame(top_target_row, bg='#1e1e2e')
         right_target_frame.pack(side='left', fill='y', padx=(2, 0))
 
         tk.Label(right_target_frame, text="Task Target",
@@ -437,6 +489,57 @@ class ControllerGUI(Node):
             self._task_step_entries.append(step_ent)
             self._task_step_btns.append([btn_m, btn_p])
 
+        # ── Hand Motor Target (하단, 4열 레이아웃) ─────────────────────────────
+        ttk.Separator(pos_frame, orient='horizontal').pack(fill='x', pady=4)
+
+        hand_target_label = tk.Label(pos_frame, text="Hand Motor Target",
+                                     bg='#1e1e2e', fg='#89b4fa', font=hdr_font)
+        hand_target_label.pack(anchor='w', padx=4)
+
+        hand_target_frame = tk.Frame(pos_frame, bg='#1e1e2e')
+        hand_target_frame.pack(fill='x', padx=4)
+
+        self._hand_target_entries: list[ttk.Entry] = []
+        self._hand_step_entries: list[ttk.Entry] = []
+        self._hand_step_btns: list[list] = []
+
+        max_rows = max(len(motors) for _, motors in HAND_FINGER_GROUPS)
+        for col_idx, (finger_name, motors) in enumerate(HAND_FINGER_GROUPS):
+            col_frame = tk.Frame(hand_target_frame, bg='#1e1e2e')
+            col_frame.grid(row=0, column=col_idx, padx=4, sticky='n')
+
+            tk.Label(col_frame, text=finger_name,
+                     bg='#1e1e2e', fg='#f9e2af',
+                     font=hdr_font).grid(row=0, column=0, columnspan=3, pady=(0, 2))
+
+            for row_idx, motor_name in enumerate(motors):
+                # 손가락 prefix 제거한 짧은 라벨
+                short_name = motor_name.split('_', 1)[1] if '_' in motor_name else motor_name
+                tk.Label(col_frame, text=short_name,
+                         bg='#1e1e2e', fg='#cdd6f4', width=8, anchor='e',
+                         font=('Segoe UI', 8)).grid(
+                    row=row_idx + 1, column=0, padx=1, pady=1)
+
+                ent = ttk.Entry(col_frame, width=8, justify='center')
+                ent.insert(0, "0.00")
+                ent.grid(row=row_idx + 1, column=1, padx=1, pady=1)
+                self._hand_target_entries.append(ent)
+
+                bf = tk.Frame(col_frame, bg='#1e1e2e')
+                bf.grid(row=row_idx + 1, column=2, padx=1, pady=1)
+                hand_idx = len(self._hand_target_entries) - 1
+                btn_m = ttk.Button(bf, text="-", width=2,
+                                   command=lambda hi=hand_idx: self._add_hand_step(hi, -1))
+                btn_m.pack(side='left')
+                step_ent = ttk.Entry(bf, width=4, justify='center')
+                step_ent.insert(0, "1.0")
+                step_ent.pack(side='left')
+                btn_p = ttk.Button(bf, text="+", width=2,
+                                   command=lambda hi=hand_idx: self._add_hand_step(hi, 1))
+                btn_p.pack(side='left')
+                self._hand_step_entries.append(step_ent)
+                self._hand_step_btns.append([btn_m, btn_p])
+
         # ── Current Status ────────────────────────────────────────────────────
         status_frame = ttk.LabelFrame(scrollable_frame, text="Current Status", padding=4)
         status_frame.pack(fill='both', expand=False, padx=8, pady=2)
@@ -468,7 +571,7 @@ class ControllerGUI(Node):
         # Vertical separator
         ttk.Separator(status_frame, orient='vertical').pack(side='left', fill='y', padx=6)
 
-        # Right sub-frame: task state (always shown)
+        # Middle sub-frame: task state (always shown)
         right_status = tk.Frame(status_frame, bg='#1e1e2e')
         right_status.pack(side='left', fill='y', padx=(2, 0))
 
@@ -489,6 +592,41 @@ class ControllerGUI(Node):
                                font=('Courier New', 9, 'bold'))
             val_lbl.grid(row=i + 1, column=1, padx=3, pady=1)
             self._task_state_labels_values.append(val_lbl)
+
+        # Vertical separator
+        ttk.Separator(status_frame, orient='vertical').pack(side='left', fill='y', padx=6)
+
+        # Right sub-frame: hand state (4열 그룹)
+        hand_status_frame = tk.Frame(status_frame, bg='#1e1e2e')
+        hand_status_frame.pack(side='left', fill='y', padx=(2, 0))
+
+        tk.Label(hand_status_frame, text="Hand State",
+                 bg='#1e1e2e', fg='#89b4fa',
+                 font=('Segoe UI', 9, 'bold')).grid(
+            row=0, column=0, columnspan=len(HAND_FINGER_GROUPS), pady=(0, 2))
+
+        self._hand_state_labels_values: list[tk.Label] = []
+
+        for col_idx, (finger_name, motors) in enumerate(HAND_FINGER_GROUPS):
+            col_frame = tk.Frame(hand_status_frame, bg='#1e1e2e')
+            col_frame.grid(row=1, column=col_idx, padx=2, sticky='n')
+
+            tk.Label(col_frame, text=finger_name,
+                     bg='#1e1e2e', fg='#f9e2af',
+                     font=('Segoe UI', 8, 'bold')).pack(anchor='center')
+
+            for motor_name in motors:
+                short_name = motor_name.split('_', 1)[1] if '_' in motor_name else motor_name
+                row_frame = tk.Frame(col_frame, bg='#1e1e2e')
+                row_frame.pack(fill='x', pady=1)
+                tk.Label(row_frame, text=f"{short_name}:",
+                         bg='#1e1e2e', fg='#cdd6f4', width=7, anchor='e',
+                         font=('Segoe UI', 8)).pack(side='left')
+                val_lbl = tk.Label(row_frame, text="0.00°",
+                                   bg='#313244', fg='#f9e2af', width=8, anchor='center',
+                                   font=('Courier New', 8, 'bold'))
+                val_lbl.pack(side='left', padx=2)
+                self._hand_state_labels_values.append(val_lbl)
 
         # ── Action Buttons ─────────────────────────────────────────────────────
         btn_frame = tk.Frame(scrollable_frame, bg='#1e1e2e')
@@ -537,9 +675,21 @@ class ControllerGUI(Node):
 
         array_row = 1
         scalar_frame = None
+        row_names_map = GAIN_ROW_NAMES.get(ctrl_idx, {})
 
         for label, size, defaults, is_bool in defs:
             if size > 1:
+                # 이름 행 삽입 (GAIN_ROW_NAMES에 정의된 경우)
+                names = row_names_map.get(label)
+                if names:
+                    for j, name in enumerate(names):
+                        tk.Label(self._gains_inner, text=name,
+                                 bg='#1e1e2e', fg='#f9e2af',
+                                 font=('Segoe UI', 7),
+                                 width=7, anchor='center').grid(
+                            row=array_row, column=j + 1, padx=2)
+                    array_row += 1
+
                 tk.Label(self._gains_inner, text=label + ':',
                          bg='#1e1e2e', fg='#cdd6f4',
                          font=('Segoe UI', 8), anchor='e').grid(
@@ -594,6 +744,17 @@ class ControllerGUI(Node):
 
         for label, size, defaults, is_bool in defs:
             if size > 1:
+                # 이름 행 삽입 (editable 섹션과 동일)
+                names = row_names_map.get(label)
+                if names:
+                    for j, name in enumerate(names):
+                        tk.Label(self._gains_applied_inner, text=name,
+                                 bg='#1e1e2e', fg='#585b70',
+                                 font=('Segoe UI', 7),
+                                 width=7, anchor='center').grid(
+                            row=array_row_a, column=j + 1, padx=2)
+                    array_row_a += 1
+
                 tk.Label(self._gains_applied_inner, text=label + ':',
                          bg='#1e1e2e', fg='#585b70',
                          font=('Segoe UI', 8), anchor='e').grid(
@@ -648,8 +809,11 @@ class ControllerGUI(Node):
 
     def _update_target_inputs_state(self, ctrl_idx: int):
         """Enable joint or task target inputs based on controller type."""
-        joint_state = 'normal' if JOINT_SPACE[ctrl_idx] else 'disabled'
-        task_state  = 'disabled' if JOINT_SPACE[ctrl_idx] else 'normal'
+        is_joint = JOINT_SPACE.get(ctrl_idx, True)
+        joint_state = 'normal' if is_joint else 'disabled'
+        task_state  = 'disabled' if is_joint else 'normal'
+        hand_state  = 'normal' if ctrl_idx == 4 else 'disabled'
+
         for ent in self._joint_target_entries:
             ent.configure(state=joint_state)
         for ent in self._joint_step_entries:
@@ -664,6 +828,13 @@ class ControllerGUI(Node):
         for btns in self._task_step_btns:
             for btn in btns:
                 btn.configure(state=task_state)
+        for ent in self._hand_target_entries:
+            ent.configure(state=hand_state)
+        for ent in self._hand_step_entries:
+            ent.configure(state=hand_state)
+        for btns in self._hand_step_btns:
+            for btn in btns:
+                btn.configure(state=hand_state)
 
     def _on_ctrl_radio_change(self):
         idx = self.selected_ctrl.get()
@@ -684,7 +855,7 @@ class ControllerGUI(Node):
         self._update_target_inputs_state(idx)
 
         _task_status_names = ["X (m)", "Y (m)", "Z (m)", "Roll", "Pitch", "Yaw"]
-        if JOINT_SPACE[idx]:
+        if JOINT_SPACE.get(idx, True):
             self._set_joint_target_entries(self.current_positions)
             for i, name_lbl in enumerate(self._status_labels_names):
                 name_lbl.config(text=f"J{i+1}:")
@@ -692,6 +863,10 @@ class ControllerGUI(Node):
             self._set_task_target_entries(self.current_task_positions)
             for i, name_lbl in enumerate(self._status_labels_names):
                 name_lbl.config(text=f"{_task_status_names[i]}:")
+
+        # Hand controller: hand target도 현재 위치로 초기화
+        if idx == 4:
+            self._set_hand_target_entries(self.current_hand_positions)
 
     def _request_load_gains(self):
         """Request current gains from the active controller."""
@@ -742,10 +917,12 @@ class ControllerGUI(Node):
 
     def _copy_current_to_target(self):
         idx = self.selected_ctrl.get()
-        if JOINT_SPACE[idx]:
+        if JOINT_SPACE.get(idx, True):
             self._set_joint_target_entries(self.current_positions)
         else:
             self._set_task_target_entries(self.current_task_positions)
+        if idx == 4:
+            self._set_hand_target_entries(self.current_hand_positions)
 
     def _set_joint_target_entries(self, values: list[float]):
         for i, ent in enumerate(self._joint_target_entries):
@@ -759,6 +936,12 @@ class ControllerGUI(Node):
                 ent.insert(0, f"{values[i]:.4f}")
             else:
                 ent.insert(0, f"{math.degrees(values[i]):.4f}")
+
+    def _set_hand_target_entries(self, values: list[float]):
+        for i, ent in enumerate(self._hand_target_entries):
+            if i < len(values):
+                ent.delete(0, tk.END)
+                ent.insert(0, f"{math.degrees(values[i]):.2f}")
 
     def _add_joint_step(self, idx: int, sign: int):
         try:
@@ -778,27 +961,53 @@ class ControllerGUI(Node):
         except ValueError:
             self.get_logger().error("Invalid numerical input for task target or step.")
 
+    def _add_hand_step(self, idx: int, sign: int):
+        try:
+            step_val = float(self._hand_step_entries[idx].get())
+            new_val = float(self._hand_target_entries[idx].get()) + sign * step_val
+            self._hand_target_entries[idx].delete(0, tk.END)
+            self._hand_target_entries[idx].insert(0, f"{new_val:.2f}")
+        except ValueError:
+            self.get_logger().error("Invalid numerical input for hand target or step.")
+
     def _publish_target(self):
         idx = self.selected_ctrl.get()
         try:
-            if JOINT_SPACE[idx]:
-                values = [math.radians(float(e.get()))
-                          for e in self._joint_target_entries]
+            if JOINT_SPACE.get(idx, True):
+                robot_values = [math.radians(float(e.get()))
+                                for e in self._joint_target_entries]
             else:
-                values = []
+                robot_values = []
                 for i, e in enumerate(self._task_target_entries):
                     v = float(e.get())
                     if i >= 3:
                         v = math.radians(v)
-                    values.append(v)
+                    robot_values.append(v)
+
         except ValueError:
             self.get_logger().error("Invalid numerical input for target.")
             return
-        msg = Float64MultiArray()
-        msg.data = values
-        self.cmd_pub.publish(msg)
+
+        # Robot target → /ur5e/target_joint_positions
+        robot_msg = Float64MultiArray()
+        robot_msg.data = robot_values
+        self.robot_cmd_pub.publish(robot_msg)
         self.get_logger().info(
-            f"Sent command: {[f'{v:.4f}' for v in values]}")
+            f"Sent robot cmd: {[f'{v:.4f}' for v in robot_values]}")
+
+        # Hand target → /hand/target_joint_positions (컨트롤러 4일 때만)
+        if idx == 4:
+            try:
+                hand_values = [math.radians(float(e.get()))
+                               for e in self._hand_target_entries]
+            except ValueError:
+                self.get_logger().error("Invalid numerical input for hand target.")
+                return
+            hand_msg = Float64MultiArray()
+            hand_msg.data = hand_values
+            self.hand_cmd_pub.publish(hand_msg)
+            self.get_logger().info(
+                f"Sent hand cmd: {[f'{v:.4f}' for v in hand_values]}")
 
     def _on_close(self):
         self.root.destroy()

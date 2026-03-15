@@ -82,7 +82,7 @@ mujoco_simulator:
     # command_topic: JointCommand msg 수신 (command_type으로 position/torque 결정)
     # state_topic: JointState msg 퍼블리시
     robot_topics:
-      command_topic: "/rt_controller/joint_command"
+      command_topic: "/ur5e/joint_command"
       state_topic: "/joint_states"
 
     # ── Fake Hand Response (시뮬레이션 전용 핸드 LPF) ──────────────────────────
