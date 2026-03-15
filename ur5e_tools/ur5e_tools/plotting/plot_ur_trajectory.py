@@ -357,6 +357,22 @@ BARO_COUNT = 8
 TOF_COUNT = 3
 
 
+def _detect_fingertip_labels(df):
+    """CSV 헤더에서 fingertip 라벨 목록을 자동 감지.
+
+    baro_*_0 패턴의 컬럼을 찾아 중간 라벨을 추출.
+      - Named:   baro_thumb_0  → 'thumb'
+      - Numeric:  baro_f0_0    → 'f0'
+    """
+    labels = []
+    for col in df.columns:
+        if col.startswith('baro_') and col.endswith('_0'):
+            middle = col[len('baro_'):-len('_0')]
+            if f'baro_{middle}_1' in df.columns:
+                labels.append(middle)
+    return labels
+
+
 def plot_hand_positions(df, save_dir=None):
     """Figure 1: Hand motor positions (2x5 subplot)."""
     actual_cols, motor_names = _detect_joint_columns(df, 'hand_actual_pos_', NUM_HAND_MOTORS)
@@ -430,34 +446,44 @@ def plot_hand_velocities(df, save_dir=None):
 
 
 def plot_hand_sensors(df, save_dir=None):
-    """Figure 3: Hand sensor data (2 rows x 4 cols: barometer + ToF)."""
-    fig, axes = plt.subplots(2, NUM_FINGERTIPS, figsize=(20, 8))
+    """Figure 3: Hand sensor data (2 rows x N cols: barometer + ToF)."""
+    labels = _detect_fingertip_labels(df)
+    if not labels:
+        print('  Skipping hand sensors plot (sensor columns not found)')
+        return
+
+    num_ft = len(labels)
+    fig, axes = plt.subplots(2, num_ft, figsize=(5 * num_ft, 8))
     fig.suptitle('Hand Sensor Data', fontsize=16, fontweight='bold')
+
+    # fingertip이 1개면 axes가 1D가 되므로 2D로 보정
+    if num_ft == 1:
+        axes = axes.reshape(2, 1)
 
     t = df['timestamp']
 
     # Row 1: Barometer (8ch per fingertip)
-    for f_idx in range(NUM_FINGERTIPS):
+    for f_idx, label in enumerate(labels):
         ax = axes[0, f_idx]
         for b in range(BARO_COUNT):
-            col = f'baro_f{f_idx}_{b}'
+            col = f'baro_{label}_{b}'
             if col in df.columns:
                 ax.plot(t, df[col], label=f'B{b}', alpha=0.7, linewidth=0.8)
-        ax.set_title(f'Fingertip {f_idx} — Barometer')
+        ax.set_title(f'{label} — Barometer')
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Pressure')
         ax.legend(fontsize=6, ncol=4)
         ax.grid(True, alpha=0.3)
 
     # Row 2: ToF (3ch per fingertip)
-    for f_idx in range(NUM_FINGERTIPS):
+    for f_idx, label in enumerate(labels):
         ax = axes[1, f_idx]
         for t_idx in range(TOF_COUNT):
-            col = f'tof_f{f_idx}_{t_idx}'
+            col = f'tof_{label}_{t_idx}'
             if col in df.columns:
                 ax.plot(t, df[col], label=f'ToF{t_idx}',
                         linewidth=1.2, marker='.', markersize=1)
-        ax.set_title(f'Fingertip {f_idx} — ToF')
+        ax.set_title(f'{label} — ToF')
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Distance')
         ax.legend(fontsize=7)
