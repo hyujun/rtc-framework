@@ -15,7 +15,8 @@
     initial_controller: "joint_pd_controller"
 
     # ── 초기화 타임아웃 ───────────────────────────────────────────────────────
-    init_timeout_sec: 5.0            # 로봇/타겟 데이터 미수신 시 E-STOP + 셧다운 (초)
+    init_timeout_sec: 30.0           # 로봇/타겟 데이터 미수신 시 E-STOP + 셧다운 (초)
+                                     # fake_hardware 시 UR driver 스타트업에 시간이 걸리므로 충분히 설정
 
     # ── JointCommand 발행 (MuJoCo / 외부 시뮬레이터 연동) ──────────────────────
     # ur5e_msgs/JointCommand 메시지를 발행하는 토픽.
