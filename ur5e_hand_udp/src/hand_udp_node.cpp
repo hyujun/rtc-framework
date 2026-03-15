@@ -194,19 +194,61 @@ class HandUdpNode : public rclcpp::Node {
     std::ofstream ofs(path);
     if (!ofs.is_open()) return;
 
+    // 타이밍 통계
+    const auto ts = controller_->timing_stats();
+
     ofs << "{\n"
-        << "  \"total_cycles\": "    << stats.total_cycles   << ",\n"
-        << "  \"recv_ok\": "         << stats.recv_ok        << ",\n"
-        << "  \"recv_timeout\": "    << stats.recv_timeout    << ",\n"
-        << "  \"recv_error\": "      << stats.recv_error      << ",\n"
-        << "  \"avg_rate_hz\": "     << std::fixed << std::setprecision(2) << avg_rate_hz << ",\n"
-        << "  \"elapsed_sec\": "     << std::fixed << std::setprecision(2) << elapsed_sec << ",\n"
-        << "  \"failure_detected\": " << (fd_failed ? "true" : "false") << "\n"
+        << "  \"comm_stats\": {\n"
+        << "    \"total_cycles\": "    << stats.total_cycles   << ",\n"
+        << "    \"recv_ok\": "         << stats.recv_ok        << ",\n"
+        << "    \"recv_timeout\": "    << stats.recv_timeout    << ",\n"
+        << "    \"recv_error\": "      << stats.recv_error      << ",\n"
+        << "    \"event_skip_count\": " << stats.event_skip_count << ",\n"
+        << "    \"avg_rate_hz\": "     << std::fixed << std::setprecision(2) << avg_rate_hz << ",\n"
+        << "    \"elapsed_sec\": "     << std::fixed << std::setprecision(2) << elapsed_sec << ",\n"
+        << "    \"failure_detected\": " << (fd_failed ? "true" : "false") << "\n"
+        << "  },\n"
+        << "  \"timing_stats\": {\n"
+        << "    \"count\": " << ts.count << ",\n"
+        << "    \"total_us\": {"
+        << " \"mean\": " << std::setprecision(1) << ts.mean_us
+        << ", \"min\": " << ts.min_us
+        << ", \"max\": " << ts.max_us
+        << ", \"stddev\": " << ts.stddev_us
+        << ", \"p95\": " << ts.p95_us
+        << ", \"p99\": " << ts.p99_us
+        << " },\n"
+        << "    \"write_us\": {"
+        << " \"mean\": " << ts.write.mean_us
+        << ", \"min\": " << ts.write.min_us
+        << ", \"max\": " << ts.write.max_us
+        << " },\n"
+        << "    \"read_pos_us\": {"
+        << " \"mean\": " << ts.read_pos.mean_us
+        << ", \"min\": " << ts.read_pos.min_us
+        << ", \"max\": " << ts.read_pos.max_us
+        << " },\n"
+        << "    \"read_vel_us\": {"
+        << " \"mean\": " << ts.read_vel.mean_us
+        << ", \"min\": " << ts.read_vel.min_us
+        << ", \"max\": " << ts.read_vel.max_us
+        << " },\n"
+        << "    \"read_sensor_us\": {"
+        << " \"mean\": " << ts.read_sensor.mean_us
+        << ", \"min\": " << ts.read_sensor.min_us
+        << ", \"max\": " << ts.read_sensor.max_us
+        << ", \"sensor_cycles\": " << ts.sensor_cycle_count
+        << " },\n"
+        << "    \"over_budget\": " << ts.over_budget << "\n"
+        << "  }\n"
         << "}\n";
     ofs.close();
 
+    // 타이밍 요약 로그 출력
+    RCLCPP_INFO(get_logger(), "%s", controller_->TimingSummary().c_str());
+
     RCLCPP_INFO(get_logger(),
-                "Hand comm stats saved to %s (cycles=%lu, ok=%lu, timeout=%lu, error=%lu, rate=%.1f Hz)",
+                "Hand stats saved to %s (cycles=%lu, ok=%lu, timeout=%lu, error=%lu, rate=%.1f Hz)",
                 path.c_str(), stats.total_cycles, stats.recv_ok,
                 stats.recv_timeout, stats.recv_error, avg_rate_hz);
   }
