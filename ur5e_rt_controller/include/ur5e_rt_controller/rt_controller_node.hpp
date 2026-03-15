@@ -221,6 +221,9 @@ private:
   uint64_t init_wait_ticks_{0};
   uint64_t init_timeout_ticks_{2500};  // default 5s at 500Hz
 
+  // ── Auto-hold position (목표 미입력 시 현재 위치 유지) ─────────────────────
+  bool auto_hold_position_{true};
+
   // Baseline for log timestamps — captured on first ControlLoop() iteration.
   // steady_clock reads CLOCK_MONOTONIC via vDSO (no kernel entry on Linux).
   std::chrono::steady_clock::time_point log_start_time_{};

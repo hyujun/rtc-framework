@@ -64,6 +64,17 @@ void PController::SetHandTarget(
   std::copy(target.begin(), target.end(), hand_target_.begin());
 }
 
+void PController::InitializeHoldPosition(
+  const ControllerState & state) noexcept
+{
+  std::copy(state.robot.positions.begin(), state.robot.positions.end(),
+            robot_target_.begin());
+  if (state.hand.valid) {
+    std::copy(state.hand.motor_positions.begin(),
+              state.hand.motor_positions.end(), hand_target_.begin());
+  }
+}
+
 std::array<double, kNumRobotJoints> PController::ClampCommands(
   std::span<const double, kNumRobotJoints> commands) noexcept
 {

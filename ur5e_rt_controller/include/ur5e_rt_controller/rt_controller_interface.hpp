@@ -39,6 +39,14 @@ public:
 
   [[nodiscard]] virtual std::string_view Name() const noexcept = 0;
 
+  // Auto-hold: initialise target from current state so the robot holds
+  // its position when no external goal has been received.
+  // Each controller implements this according to its own target format
+  // (joint-space, task-space, etc.).  Called once from ControlLoop Phase 0
+  // when state_received_ is true but target_received_ is false.
+  virtual void InitializeHoldPosition(
+    const ControllerState & state) noexcept = 0;
+
   // E-STOP interface — default no-ops for controllers that do not need it.
   virtual void TriggerEstop() noexcept                      {}
   virtual void ClearEstop() noexcept                        {}

@@ -190,6 +190,41 @@ void OperationalSpaceController::SetHandTarget(
   }
 }
 
+void OperationalSpaceController::InitializeHoldPosition(
+  const ControllerState & state) noexcept
+{
+  // FK로 현재 TCP pose를 계산하여 goal로 설정
+  for (Eigen::Index i = 0; i < model_.nv; ++i) {
+    q_[i] = state.robot.positions[static_cast<std::size_t>(i)];
+  }
+  pinocchio::computeJointJacobians(model_, data_, q_);
+  const pinocchio::SE3 & tcp = data_.oMi[end_id_];
+
+  std::lock_guard lock(target_mutex_);
+  goal_pose_ = tcp;
+
+  // pose_target_도 동기화 [x, y, z, roll, pitch, yaw]
+  const Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
+  pose_target_[0] = tcp.translation()[0];
+  pose_target_[1] = tcp.translation()[1];
+  pose_target_[2] = tcp.translation()[2];
+  pose_target_[3] = rpy[0];
+  pose_target_[4] = rpy[1];
+  pose_target_[5] = rpy[2];
+  new_target_.store(false, std::memory_order_relaxed);
+
+  // 제자리 궤적 초기화 (start == goal)
+  trajectory_.initialize(tcp, pinocchio::Motion::Zero(),
+                         tcp, pinocchio::Motion::Zero(), 0.01);
+  trajectory_time_ = 0.0;
+
+  if (state.hand.valid) {
+    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+      hand_target_[i] = state.hand.motor_positions[i];
+    }
+  }
+}
+
 std::string_view OperationalSpaceController::Name() const noexcept
 {
   return "OperationalSpaceController";

@@ -266,6 +266,40 @@ void ClikController::SetHandTarget(
   }
 }
 
+void ClikController::InitializeHoldPosition(
+  const ControllerState & state) noexcept
+{
+  // FK로 현재 TCP 위치/자세를 계산하여 target으로 설정
+  for (Eigen::Index i = 0; i < model_.nv; ++i) {
+    q_[i] = state.robot.positions[static_cast<std::size_t>(i)];
+  }
+  pinocchio::forwardKinematics(model_, data_, q_);
+  const pinocchio::SE3 & tcp_pose = data_.oMi[end_id_];
+
+  std::lock_guard lock(target_mutex_);
+  tcp_target_pose_ = tcp_pose;
+  tcp_target_ = {tcp_pose.translation()[0],
+                 tcp_pose.translation()[1],
+                 tcp_pose.translation()[2]};
+  // null-space target: 현재 관절 위치로 초기화
+  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+    null_target_[i] = state.robot.positions[i];
+  }
+  target_initialized_ = true;
+  new_target_.store(false, std::memory_order_relaxed);
+
+  // 제자리 궤적 초기화 (start == goal)
+  trajectory_.initialize(tcp_pose, pinocchio::Motion::Zero(),
+                         tcp_pose, pinocchio::Motion::Zero(), 0.01);
+  trajectory_time_ = 0.0;
+
+  if (state.hand.valid) {
+    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+      hand_target_[i] = state.hand.motor_positions[i];
+    }
+  }
+}
+
 std::string_view ClikController::Name() const noexcept
 {
   return "ClikController";

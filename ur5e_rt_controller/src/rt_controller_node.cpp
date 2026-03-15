@@ -198,6 +198,7 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("enable_estop", true);
   declare_parameter("enable_status_monitor", false);
   declare_parameter("init_timeout_sec", 5.0);
+  declare_parameter("auto_hold_position", true);
   declare_parameter("initial_controller", "joint_pd_controller");
 
   // ── 디바이스 활성화 플래그 (글로벌 기본값) ────────────────────────────────
@@ -225,6 +226,7 @@ void RtControllerNode::DeclareAndLoadParameters()
 
   const double init_timeout_sec = get_parameter("init_timeout_sec").as_double();
   init_timeout_ticks_ = static_cast<uint64_t>(init_timeout_sec * control_rate_);
+  auto_hold_position_ = get_parameter("auto_hold_position").as_bool();
   enable_logging_ = get_parameter("enable_logging").as_bool();
   enable_estop_ = get_parameter("enable_estop").as_bool();
   enable_status_monitor_ = get_parameter("enable_status_monitor").as_bool();
@@ -602,6 +604,23 @@ void RtControllerNode::CreateSubscriptions()
     [this](std_msgs::msg::Int32::SharedPtr msg) {
       int idx = msg->data;
       if (idx >= 0 && idx < static_cast<int>(controllers_.size())) {
+        // 컨트롤러 전환 시 현재 위치로 hold position 초기화 (target 공백 방지)
+        if (auto_hold_position_ &&
+            state_received_.load(std::memory_order_acquire)) {
+          urtc::ControllerState hold_state{};
+          {
+            std::lock_guard lock(state_mutex_);
+            hold_state.robot.positions = current_positions_;
+            hold_state.robot.velocities = current_velocities_;
+            hold_state.robot.torques = current_torques_;
+          }
+          hold_state.robot.dt = 1.0 / control_rate_;
+          hold_state.dt = hold_state.robot.dt;
+          if (hand_controller_) {
+            hold_state.hand = hand_controller_->GetLatestState();
+          }
+          controllers_[idx]->InitializeHoldPosition(hold_state);
+        }
         active_controller_idx_.store(idx, std::memory_order_release);
         RCLCPP_INFO(get_logger(), "Switched to controller: %s",
                       controllers_[idx]->Name().data());
@@ -655,6 +674,11 @@ void RtControllerNode::CreatePublishers()
   auto create_pub = [&](const urtc::PublishTopicEntry & entry,
                         const char * device_prefix) {
     if (topic_publishers_.count(entry.topic_name) > 0) {
+      return;
+    }
+    // hand_sim_enabled_ 시 kHandCommand는 hand_sim_cmd_pub_ (RELIABLE)이 담당
+    // — BEST_EFFORT 중복 publisher 생성 방지 (MuJoCo subscriber QoS 호환)
+    if (entry.role == urtc::PublishRole::kHandCommand && hand_sim_enabled_) {
       return;
     }
 
@@ -930,11 +954,8 @@ void RtControllerNode::ControlLoop()
   // ── Phase 0: tick start + readiness check ──────────────────────────────
   const auto t0 = std::chrono::steady_clock::now();
 
-  if (!state_received_.load(std::memory_order_acquire) ||
-    !target_received_.load(std::memory_order_acquire))
-  {
-    // Initialization timeout — check if we've waited too long for data.
-    // init_timeout_ticks_ == 0 → 타임아웃 비활성화 (init_timeout_sec: 0.0)
+  if (!state_received_.load(std::memory_order_acquire)) {
+    // 로봇 state가 아직 수신되지 않음 — 제어 불가
     if (!init_complete_ && init_timeout_ticks_ > 0 &&
         ++init_wait_ticks_ > init_timeout_ticks_) {
       RCLCPP_FATAL(get_logger(),
@@ -948,6 +969,61 @@ void RtControllerNode::ControlLoop()
       rclcpp::shutdown();
     }
     return;
+  }
+
+  // Auto-hold: 외부 goal 미수신 시 현재 위치를 목표로 자동 설정
+  if (!target_received_.load(std::memory_order_acquire)) {
+    if (auto_hold_position_) {
+      // state는 수신됨 — 현재 위치를 읽어 target으로 초기화
+      urtc::ControllerState hold_state{};
+      {
+        std::lock_guard lock(state_mutex_);
+        cached_positions_ = current_positions_;
+        cached_velocities_ = current_velocities_;
+        cached_torques_ = current_torques_;
+      }
+      hold_state.robot.positions = cached_positions_;
+      hold_state.robot.velocities = cached_velocities_;
+      hold_state.robot.torques = cached_torques_;
+      hold_state.robot.dt = 1.0 / control_rate_;
+      hold_state.dt = hold_state.robot.dt;
+
+      // Hand state도 읽기
+      if (hand_controller_) {
+        hold_state.hand = hand_controller_->GetLatestState();
+      } else if (hand_sim_enabled_) {
+        std::lock_guard lock(sim_hand_mutex_);
+        hold_state.hand = sim_hand_state_;
+      }
+
+      int idx = active_controller_idx_.load(std::memory_order_acquire);
+      controllers_[idx]->InitializeHoldPosition(hold_state);
+
+      // node-level target도 동기화
+      {
+        std::lock_guard lock(target_mutex_);
+        target_positions_ = cached_positions_;
+      }
+      target_received_.store(true, std::memory_order_release);
+      RCLCPP_INFO(get_logger(),
+          "Auto-hold: initialized target from current position (%s)",
+          controllers_[idx]->Name().data());
+    } else {
+      // auto_hold 비활성: 기존 동작 (timeout까지 대기)
+      if (!init_complete_ && init_timeout_ticks_ > 0 &&
+          ++init_wait_ticks_ > init_timeout_ticks_) {
+        RCLCPP_FATAL(get_logger(),
+            "Initialization timeout (%.1f s): robot=%d, target=%d, hand=%s",
+            static_cast<double>(init_timeout_ticks_) / control_rate_,
+            1,
+            target_received_.load(std::memory_order_relaxed) ? 1 : 0,
+            hand_sim_enabled_ ? "sim" :
+            (enable_hand_ ? (hand_controller_ && hand_controller_->IsRunning() ? "running" : "stopped") : "disabled"));
+        TriggerGlobalEstop("init_timeout");
+        rclcpp::shutdown();
+      }
+      return;
+    }
   }
   init_complete_ = true;
 

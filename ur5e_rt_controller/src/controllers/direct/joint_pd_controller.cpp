@@ -142,6 +142,32 @@ void JointPDController::SetHandTarget(
   }
 }
 
+void JointPDController::InitializeHoldPosition(
+  const ControllerState & state) noexcept
+{
+  // 현재 관절 위치를 목표로 설정 + 제자리 궤적 초기화
+  std::lock_guard lock(target_mutex_);
+  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+    robot_target_[i] = state.robot.positions[i];
+  }
+  trajectory::JointSpaceTrajectory<kNumRobotJoints>::State hold_state;
+  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+    hold_state.positions[i]     = state.robot.positions[i];
+    hold_state.velocities[i]    = 0.0;
+    hold_state.accelerations[i] = 0.0;
+  }
+  trajectory_.initialize(hold_state, hold_state, 0.01);
+  trajectory_time_ = 0.0;
+  prev_error_ = {};
+  new_target_.store(false, std::memory_order_relaxed);
+
+  if (state.hand.valid) {
+    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+      hand_target_[i] = state.hand.motor_positions[i];
+    }
+  }
+}
+
 // ── E-STOP ────────────────────────────────────────────────────────────────────
 
 void JointPDController::TriggerEstop() noexcept

@@ -93,6 +93,8 @@ public:
   void SetRobotTarget(std::span<const double, kNumRobotJoints> target) noexcept override;
   void SetHandTarget(std::span<const float, kNumHandMotors> target)  noexcept override;
 
+  void InitializeHoldPosition(const ControllerState & state) noexcept override;
+
   [[nodiscard]] std::string_view Name() const noexcept override;
 
   void TriggerEstop()                            noexcept override;
