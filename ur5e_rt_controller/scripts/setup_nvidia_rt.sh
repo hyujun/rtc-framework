@@ -49,7 +49,9 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   echo "  6. nouveau 블랙리스트 (활성 시)"
   echo "  7. X11 화면 티어링 방지 (ForceFullCompositionPipeline)"
   echo "  8. Compositor 우선순위 부스트 서비스"
-  echo "  9. 검증 요약 및 cyclictest 명령"
+  echo "  9. NVIDIA DKMS 모듈 빌드 (RT 커널용)"
+  echo " 10. CPU governor 설정 (performance 모드)"
+  echo " 11. 검증 요약 및 cyclictest 명령"
   echo ""
   exit 0
 fi
@@ -116,9 +118,9 @@ backup_file() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [1/9] Pre-flight Checks
+# [1/11] Pre-flight Checks
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [1/9] Pre-flight Checks ━━━${NC}"
+echo -e "${BOLD}━━━ [1/11] Pre-flight Checks ━━━${NC}"
 echo ""
 
 # ── Root check ──────────────────────────────────────────────────────────────
@@ -310,7 +312,7 @@ NOUVEAU_ACTIVE=0
 if lsmod 2>/dev/null | grep -q nouveau; then
   NOUVEAU_ACTIVE=1
   warn "nouveau 모듈이 활성 상태입니다!"
-  warn "NVIDIA 독점 드라이버와 충돌합니다. [6/9] 단계에서 블랙리스트를 설정합니다."
+  warn "NVIDIA 독점 드라이버와 충돌합니다. [6/11] 단계에서 블랙리스트를 설정합니다."
   WARNINGS+=("nouveau 모듈 활성 — 블랙리스트 적용 예정")
 else
   success "nouveau 비활성 확인"
@@ -328,9 +330,9 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [2/9] NVIDIA modprobe Configuration
+# [2/11] NVIDIA modprobe Configuration
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [2/9] NVIDIA modprobe 설정 ━━━${NC}"
+echo -e "${BOLD}━━━ [2/11] NVIDIA modprobe 설정 ━━━${NC}"
 echo ""
 
 MODPROBE_CONF="/etc/modprobe.d/nvidia-rt.conf"
@@ -356,9 +358,9 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [3/9] GRUB Configuration
+# [3/11] GRUB Configuration
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [3/9] GRUB 커널 파라미터 설정 ━━━${NC}"
+echo -e "${BOLD}━━━ [3/11] GRUB 커널 파라미터 설정 ━━━${NC}"
 echo ""
 
 GRUB_FILE="/etc/default/grub"
@@ -441,9 +443,9 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [4/9] NVIDIA IRQ Affinity systemd Service
+# [4/11] NVIDIA IRQ Affinity systemd Service
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [4/9] NVIDIA IRQ Affinity 서비스 ━━━${NC}"
+echo -e "${BOLD}━━━ [4/11] NVIDIA IRQ Affinity 서비스 ━━━${NC}"
 echo ""
 
 IRQ_SERVICE="/etc/systemd/system/nvidia-irq-affinity.service"
@@ -529,9 +531,9 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [5/9] nvidia-smi Persistence Mode
+# [5/11] nvidia-smi Persistence Mode
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [5/9] nvidia-smi Persistence Mode ━━━${NC}"
+echo -e "${BOLD}━━━ [5/11] nvidia-smi Persistence Mode ━━━${NC}"
 echo ""
 
 PERSIST_SERVICE="/etc/systemd/system/nvidia-persistence.service"
@@ -570,9 +572,9 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [6/9] nouveau Blacklist (if active)
+# [6/11] nouveau Blacklist (if active)
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [6/9] nouveau 블랙리스트 ━━━${NC}"
+echo -e "${BOLD}━━━ [6/11] nouveau 블랙리스트 ━━━${NC}"
 echo ""
 
 NOUVEAU_CONF="/etc/modprobe.d/blacklist-nouveau.conf"
@@ -608,9 +610,9 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [7/9] X11 Anti-Tearing Configuration
+# [7/11] X11 Anti-Tearing Configuration
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [7/9] X11 화면 티어링 방지 ━━━${NC}"
+echo -e "${BOLD}━━━ [7/11] X11 화면 티어링 방지 ━━━${NC}"
 echo ""
 
 # ForceFullCompositionPipeline은 NVIDIA 독점 드라이버의 vsync 기반 티어링 방지 기능.
@@ -669,9 +671,9 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [8/9] Compositor Priority Boost for RT Environment
+# [8/11] Compositor Priority Boost for RT Environment
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [8/9] Compositor 우선순위 부스트 ━━━${NC}"
+echo -e "${BOLD}━━━ [8/11] Compositor 우선순위 부스트 ━━━${NC}"
 echo ""
 
 # RT 커널에서 SCHED_FIFO 스레드(제어 루프)가 SCHED_OTHER(compositor)를 완전히 선점하면
@@ -751,9 +753,187 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [9/9] Validation & Summary
+# [9/11] NVIDIA DKMS Module Build for RT Kernel
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "${BOLD}━━━ [9/9] 설정 요약 ━━━${NC}"
+echo -e "${BOLD}━━━ [9/11] NVIDIA DKMS 모듈 빌드 ━━━${NC}"
+echo ""
+
+# RT 커널로 부팅하면 기존 NVIDIA DKMS 모듈이 빌드되지 않아 nvidia-smi가 작동하지 않을 수 있다.
+# 이 단계에서 현재 커널에 대해 DKMS autoinstall을 실행하여 NVIDIA 모듈을 빌드/설치한다.
+DKMS_NEEDED=0
+
+if ! command -v nvidia-smi &>/dev/null; then
+  # nvidia-smi 바이너리 자체가 없는 경우 — NVIDIA 드라이버 패키지 미설치
+  warn "nvidia-smi를 찾을 수 없습니다"
+  # NVIDIA 드라이버 패키지가 설치되어 있는지 확인
+  NVIDIA_PKG=$(dpkg -l 2>/dev/null | grep -oP 'nvidia-driver-\K[0-9]+' | sort -rn | head -1 || true)
+  if [[ -n "$NVIDIA_PKG" ]]; then
+    info "NVIDIA 드라이버 패키지 감지: nvidia-driver-${NVIDIA_PKG}"
+    DKMS_NEEDED=1
+  else
+    warn "NVIDIA 드라이버 패키지가 설치되지 않았습니다"
+    warn "설치: sudo apt-get install -y nvidia-driver-535  (또는 최신 버전)"
+    WARNINGS+=("NVIDIA 드라이버 패키지 미설치 — sudo apt-get install nvidia-driver-XXX")
+  fi
+elif ! nvidia-smi &>/dev/null; then
+  # nvidia-smi 바이너리는 있지만 실행 실패 — 커널 모듈 미로드
+  warn "nvidia-smi 실행 실패 — NVIDIA 커널 모듈이 로드되지 않았습니다"
+  DKMS_NEEDED=1
+else
+  success "nvidia-smi 정상 작동 — DKMS 빌드 불필요"
+fi
+
+if [[ "$DKMS_NEEDED" -eq 1 ]]; then
+  if command -v dkms &>/dev/null; then
+    info "DKMS autoinstall 실행 중 (현재 커널: ${KERNEL_VER})..."
+    if dkms autoinstall 2>&1 | tail -5; then
+      success "DKMS autoinstall 완료"
+      CHANGES_APPLIED+=("NVIDIA DKMS 모듈 빌드: ${KERNEL_VER}")
+
+      # 모듈 로드 시도
+      info "NVIDIA 커널 모듈 로드 중..."
+      if modprobe nvidia 2>/dev/null; then
+        success "nvidia 모듈 로드 성공"
+        # nvidia-smi 재확인
+        if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+          success "nvidia-smi 정상 작동 확인"
+        else
+          warn "nvidia-smi 아직 작동하지 않음 — 재부팅 후 확인하세요"
+          WARNINGS+=("NVIDIA 모듈 빌드 완료, 재부팅 필요할 수 있음")
+        fi
+      else
+        warn "nvidia 모듈 로드 실패 — 재부팅 후 자동 로드됩니다"
+        WARNINGS+=("NVIDIA 모듈 로드 실패 — 재부팅 필요")
+      fi
+    else
+      error "DKMS autoinstall 실패"
+      warn "수동으로 확인하세요: sudo dkms status"
+      warn "커널 헤더 설치 필요할 수 있음: sudo apt-get install linux-headers-${KERNEL_VER}"
+      WARNINGS+=("DKMS autoinstall 실패 — linux-headers-${KERNEL_VER} 설치 확인")
+    fi
+  else
+    warn "dkms가 설치되어 있지 않습니다"
+    warn "설치: sudo apt-get install -y dkms"
+    WARNINGS+=("dkms 미설치 — sudo apt-get install -y dkms")
+  fi
+fi
+
+echo ""
+
+# ══════════════════════════════════════════════════════════════════════════════
+# [10/11] CPU Governor Configuration (Performance Mode)
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "${BOLD}━━━ [10/11] CPU Governor 설정 (Performance 모드) ━━━${NC}"
+echo ""
+
+# CPU governor가 powersave이면 클럭이 동적으로 낮아져서:
+# 1. RT 코어: 제어 루프 jitter 증가
+# 2. OS 코어: compositor/Xorg 프레임 드롭 → 화면 끊김
+# 모든 코어를 performance로 설정하여 최대 클럭 유지.
+
+# cpupower 도구 설치 확인 및 설치
+CPUPOWER_AVAILABLE=0
+if command -v cpupower &>/dev/null; then
+  CPUPOWER_AVAILABLE=1
+else
+  info "cpupower가 설치되어 있지 않습니다 — 설치 중..."
+  if apt-get install -y linux-tools-common linux-tools-generic 2>/dev/null; then
+    # linux-tools-$(uname -r) 패키지도 필요할 수 있음
+    apt-get install -y "linux-tools-${KERNEL_VER}" 2>/dev/null || true
+    if command -v cpupower &>/dev/null; then
+      CPUPOWER_AVAILABLE=1
+      success "cpupower 설치 완료"
+      CHANGES_APPLIED+=("cpupower 도구 설치")
+    else
+      warn "cpupower 설치 실패 — sysfs를 통해 직접 설정합니다"
+    fi
+  else
+    warn "linux-tools 패키지 설치 실패 — sysfs를 통해 직접 설정합니다"
+  fi
+fi
+
+# 현재 governor 상태 확인
+GOV_CHANGE_NEEDED=0
+for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
+  gov_file="${cpu_dir}cpufreq/scaling_governor"
+  if [[ -f "$gov_file" ]]; then
+    current_gov=$(cat "$gov_file" 2>/dev/null)
+    if [[ "$current_gov" != "performance" ]]; then
+      GOV_CHANGE_NEEDED=1
+      break
+    fi
+  fi
+done
+
+if [[ "$GOV_CHANGE_NEEDED" -eq 1 ]]; then
+  # 즉시 설정: sysfs를 통해 모든 CPU governor를 performance로 변경
+  GOV_SET_COUNT=0
+  GOV_FAIL_COUNT=0
+  for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
+    gov_file="${cpu_dir}cpufreq/scaling_governor"
+    if [[ -f "$gov_file" ]]; then
+      if echo "performance" > "$gov_file" 2>/dev/null; then
+        ((GOV_SET_COUNT++)) || true
+      else
+        ((GOV_FAIL_COUNT++)) || true
+      fi
+    fi
+  done
+  if [[ "$GOV_SET_COUNT" -gt 0 ]]; then
+    success "CPU governor → performance (${GOV_SET_COUNT}개 CPU 적용)"
+  fi
+  if [[ "$GOV_FAIL_COUNT" -gt 0 ]]; then
+    warn "${GOV_FAIL_COUNT}개 CPU governor 설정 실패"
+  fi
+else
+  info "모든 CPU가 이미 performance governor 사용 중 — 건너뜀"
+fi
+
+# 재부팅 시 자동 적용을 위한 systemd 서비스 생성
+GOV_SERVICE="/etc/systemd/system/cpu-governor-performance.service"
+GOV_SERVICE_CONTENT="[Unit]
+Description=Set CPU governor to performance for RT kernel
+After=multi-user.target
+
+[Service]
+Type=oneshot
+# cpupower가 있으면 사용, 없으면 sysfs 직접 설정
+ExecStart=/bin/bash -c 'if command -v cpupower &>/dev/null; then cpupower frequency-set -g performance; else for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > \"\$f\" 2>/dev/null || true; done; fi'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target"
+
+if [[ -f "$GOV_SERVICE" ]] && diff -q <(echo "$GOV_SERVICE_CONTENT") "$GOV_SERVICE" &>/dev/null; then
+  info "CPU governor 서비스가 이미 동일한 설정으로 존재합니다 — 건너뜀"
+else
+  backup_file "$GOV_SERVICE"
+  echo "$GOV_SERVICE_CONTENT" > "$GOV_SERVICE"
+  systemctl daemon-reload
+  systemctl enable cpu-governor-performance.service 2>/dev/null
+  success "CPU governor 서비스: ${GOV_SERVICE}"
+  CHANGES_APPLIED+=("CPU governor performance 서비스: ${GOV_SERVICE}")
+fi
+
+# Intel P-state 드라이버 확인 (NUC 등 Intel 시스템)
+if [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+  info "Intel P-state 드라이버 감지"
+  # Turbo Boost는 RT 안정성에 영향을 줄 수 있으므로 비활성화 옵션 안내
+  TURBO_STATE=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null)
+  if [[ "$TURBO_STATE" == "0" ]]; then
+    info "  Turbo Boost: 활성 (RT jitter 증가 가능, 비활성화 권장)"
+    info "  비활성화: echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo"
+  else
+    success "  Turbo Boost: 비활성 (RT 안정성 최적)"
+  fi
+fi
+
+echo ""
+
+# ══════════════════════════════════════════════════════════════════════════════
+# [11/11] Validation & Summary
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "${BOLD}━━━ [11/11] 설정 요약 ━━━${NC}"
 echo ""
 
 # ── Summary table ───────────────────────────────────────────────────────────
@@ -827,9 +1007,12 @@ echo -e "${BOLD}기타 검증 명령:${NC}"
 echo "  cat /sys/devices/system/cpu/isolated         # 격리된 CPU 확인"
 echo "  cat /proc/interrupts | grep nvidia           # NVIDIA IRQ 확인"
 echo "  nvidia-smi -q -d PERFORMANCE                 # persistence mode 확인"
+echo "  dkms status                                   # DKMS 모듈 빌드 상태"
+echo "  cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor  # CPU governor"
 echo "  systemctl status nvidia-irq-affinity          # IRQ affinity 서비스"
 echo "  systemctl status nvidia-persistence           # persistence 서비스"
 echo "  systemctl status rt-compositor-boost          # compositor 부스트 서비스"
+echo "  systemctl status cpu-governor-performance     # CPU governor 서비스"
 echo "  cat /etc/X11/xorg.conf.d/20-nvidia-antitear.conf  # X11 anti-tearing"
 echo "  nvidia-settings -q CurrentMetaMode            # 현재 MetaMode 확인"
 echo ""
