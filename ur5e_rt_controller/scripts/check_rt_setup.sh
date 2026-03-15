@@ -719,20 +719,59 @@ check_nvidia() {
     return
   fi
 
-  # Persistence mode
+  # nvidia-smi 동작 여부 (DKMS 모듈 빌드 상태 반영)
   if command -v nvidia-smi &>/dev/null; then
-    local persist
-    persist=$(nvidia-smi -q -d PERFORMANCE 2>/dev/null | grep -i "persistence" | head -1 || echo "")
-    if echo "$persist" | grep -qi "enabled"; then
-      _pass "Persistence mode: Enabled"
-    elif [[ -n "$persist" ]]; then
-      _warn "Persistence mode: Disabled (RT 지연 원인 가능)"
-      _category_update "nvidia" "WARN"
+    if nvidia-smi &>/dev/null; then
+      _pass "nvidia-smi 정상 작동"
+
+      # Persistence mode
+      local persist
+      persist=$(nvidia-smi -q -d PERFORMANCE 2>/dev/null | grep -i "persistence" | head -1 || echo "")
+      if echo "$persist" | grep -qi "enabled"; then
+        _pass "Persistence mode: Enabled"
+      elif [[ -n "$persist" ]]; then
+        _warn "Persistence mode: Disabled (RT 지연 원인 가능)"
+        _category_update "nvidia" "WARN"
+      fi
     else
-      _skip "nvidia-smi persistence 정보 없음"
+      _fail "nvidia-smi 실행 실패 — NVIDIA 커널 모듈 미로드 (DKMS 빌드 필요)"
+      _fix "sudo IGNORE_PREEMPT_RT_PRESENCE=1 dkms autoinstall && sudo modprobe nvidia"
+      _fix "또는: sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh"
+      _category_update "nvidia" "FAIL"
     fi
   else
-    _skip "nvidia-smi 미설치"
+    _fail "nvidia-smi 미설치 — NVIDIA 드라이버 패키지 또는 DKMS 빌드 필요"
+    _fix "sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh"
+    _category_update "nvidia" "FAIL"
+  fi
+
+  # DKMS 모듈 상태
+  if command -v dkms &>/dev/null; then
+    local dkms_status
+    dkms_status=$(dkms status nvidia 2>/dev/null | grep "$(uname -r)" || true)
+    if echo "$dkms_status" | grep -q "installed"; then
+      _pass "NVIDIA DKMS 모듈: installed ($(uname -r))"
+    elif [[ -n "$dkms_status" ]]; then
+      _warn "NVIDIA DKMS 모듈: $(echo "$dkms_status" | head -1)"
+      _category_update "nvidia" "WARN"
+    else
+      _warn "NVIDIA DKMS 모듈: 현재 커널($(uname -r))용 미빌드"
+      _fix "sudo IGNORE_PREEMPT_RT_PRESENCE=1 dkms autoinstall"
+      _category_update "nvidia" "WARN"
+    fi
+  fi
+
+  # IGNORE_PREEMPT_RT_PRESENCE 영구 설정 확인
+  if [[ -f /etc/environment ]] && grep -q "IGNORE_PREEMPT_RT_PRESENCE" /etc/environment 2>/dev/null; then
+    _pass "IGNORE_PREEMPT_RT_PRESENCE=1 영구 설정 (/etc/environment)"
+  else
+    local kernel_ver
+    kernel_ver=$(uname -r)
+    if echo "$kernel_ver" | grep -qi "rt\|realtime"; then
+      _warn "IGNORE_PREEMPT_RT_PRESENCE=1 미설정 — DKMS 자동 빌드 시 실패 가능"
+      _fix "echo 'IGNORE_PREEMPT_RT_PRESENCE=1' | sudo tee -a /etc/environment"
+      _category_update "nvidia" "WARN"
+    fi
   fi
 
   # modprobe 설정
@@ -783,10 +822,12 @@ check_cpu_frequency() {
     return
   fi
 
+  # 모든 코어의 governor 확인 (OS 코어도 powersave이면 compositor 프레임 드롭 발생)
   local non_perf=0
   local checked=0
+  local rt_non_perf=0
 
-  for ((core=RT_CORES_START; core<=RT_CORES_END; core++)); do
+  for ((core=0; core<LOGICAL_CORES; core++)); do
     local gov_file="/sys/devices/system/cpu/cpu${core}/cpufreq/scaling_governor"
     if [[ -f "$gov_file" ]]; then
       local gov
@@ -794,6 +835,10 @@ check_cpu_frequency() {
       ((checked++)) || true
       if [[ "$gov" != "performance" ]]; then
         ((non_perf++)) || true
+        # RT 코어인지 확인
+        if [[ -n "${IS_RT_LOGICAL_CPU[$core]:-}" ]]; then
+          ((rt_non_perf++)) || true
+        fi
         if [[ "$OUTPUT_MODE" == "verbose" ]]; then
           _warn "Core ${core}: governor = ${gov} (performance 권장)"
         fi
@@ -802,19 +847,37 @@ check_cpu_frequency() {
   done
 
   if [[ "$checked" -eq 0 ]]; then
-    _skip "RT 코어의 cpufreq 정보 없음"
+    _skip "cpufreq 정보 없음"
     _category_set_detail "cpu_frequency" "unknown"
     return
   fi
 
   if [[ "$non_perf" -eq 0 ]]; then
-    _pass "RT 코어(${RT_CORES_START}-${RT_CORES_END}) 모두 performance governor"
+    _pass "모든 코어(${checked}개) performance governor"
     _category_set_detail "cpu_frequency" "all performance"
   else
-    _warn "RT 코어 중 ${non_perf}개가 performance 아님"
+    if [[ "$rt_non_perf" -gt 0 ]]; then
+      _warn "RT 코어 중 ${rt_non_perf}개가 performance 아님 — 제어 루프 jitter 위험"
+      _category_update "cpu_frequency" "WARN"
+    fi
+    if [[ "$((non_perf - rt_non_perf))" -gt 0 ]]; then
+      _warn "OS 코어 중 $((non_perf - rt_non_perf))개가 performance 아님 — 화면 끊김 위험"
+      _category_update "cpu_frequency" "WARN"
+    fi
     _fix "sudo cpupower frequency-set -g performance"
-    _category_update "cpu_frequency" "WARN"
-    _category_set_detail "cpu_frequency" "${non_perf} non-performance"
+    _fix "또는: sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh  (영구 서비스 포함)"
+    _category_set_detail "cpu_frequency" "${non_perf}/${checked} non-performance"
+  fi
+
+  # cpu-governor-performance.service 상태 확인
+  if systemctl is-enabled cpu-governor-performance.service &>/dev/null; then
+    _pass "cpu-governor-performance.service: enabled (재부팅 시 자동 적용)"
+  else
+    if [[ "$non_perf" -gt 0 ]]; then
+      _warn "cpu-governor-performance.service: not enabled (재부팅 시 powersave 복원)"
+      _fix "sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh  (서비스 자동 생성)"
+      _category_update "cpu_frequency" "WARN"
+    fi
   fi
 }
 

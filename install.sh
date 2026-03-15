@@ -59,7 +59,7 @@ show_help() {
   echo "  -j, --jobs N      Limit parallel workers for colcon (e.g. -j 4)"
   echo "  --skip-deps       Skip installing apt system dependencies"
   echo "  --skip-build      Skip compiling the packages (only download/setup)"
-  echo "  --skip-rt         Skip configuring RT permissions, IRQ affinity, UDP optimization, and NVIDIA setup"
+  echo "  --skip-rt         Skip configuring RT permissions, IRQ affinity, UDP optimization, NVIDIA setup, and CPU governor"
   echo "  --skip-debug      Skip GDB/debugger tools installation"
   echo "  --ptrace-scope    Set ptrace_scope=0 for VS Code Attach debugger"
   echo "                    (Required for 'Attach to Node' launch configuration)"
@@ -761,13 +761,75 @@ setup_nvidia_rt() {
     return
   fi
 
-  info "NVIDIA GPU detected — configuring RT-safe GPU settings..."
+  info "NVIDIA GPU detected — configuring RT-safe GPU settings (11 steps)..."
+  info "  Includes: modprobe, GRUB, IRQ affinity, persistence, nouveau blacklist,"
+  info "            X11 anti-tearing, compositor boost, DKMS RT build, CPU governor"
   if sudo bash "$SCRIPT"; then
-    success "NVIDIA RT setup complete (driver persistence, power management, anti-tearing)"
+    success "NVIDIA RT setup complete (DKMS, CPU governor, anti-tearing, etc.)"
     warn "NOTE: A reboot is required for GRUB and X11 changes to take effect"
   else
     warn "NVIDIA RT setup failed — continuing without it"
     warn "Run manually: sudo $SCRIPT"
+  fi
+}
+
+# ── CPU Governor → performance (비-NVIDIA 시스템용) ───────────────────────────
+# NVIDIA GPU가 있는 시스템은 setup_nvidia_rt.sh [10/11]에서 처리.
+# NVIDIA가 없는 시스템에서도 powersave → performance 전환이 필요하다.
+setup_cpu_governor() {
+  # NVIDIA GPU가 있으면 setup_nvidia_rt.sh에서 이미 처리됨
+  if lspci 2>/dev/null | grep -qi 'nvidia'; then
+    return
+  fi
+
+  # cpufreq 디렉토리가 없으면 고정 클럭 CPU (VM 등)
+  if [[ ! -d /sys/devices/system/cpu/cpu0/cpufreq ]]; then
+    return
+  fi
+
+  # 현재 governor 확인
+  local non_perf=0
+  for gov_file in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    if [[ -f "$gov_file" ]]; then
+      local gov
+      gov=$(cat "$gov_file" 2>/dev/null)
+      [[ "$gov" != "performance" ]] && ((non_perf++)) || true
+    fi
+  done
+
+  if [[ "$non_perf" -eq 0 ]]; then
+    success "CPU governor: all cores already set to performance"
+    return
+  fi
+
+  info "Setting CPU governor to performance (${non_perf} cores need change)..."
+
+  # 즉시 적용
+  for gov_file in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    echo "performance" | sudo tee "$gov_file" > /dev/null 2>&1 || true
+  done
+
+  # systemd 서비스로 영구 적용
+  local GOV_SERVICE="/etc/systemd/system/cpu-governor-performance.service"
+  if [[ ! -f "$GOV_SERVICE" ]]; then
+    sudo tee "$GOV_SERVICE" > /dev/null << 'GOVEOF'
+[Unit]
+Description=Set CPU governor to performance for RT kernel
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'if command -v cpupower &>/dev/null; then cpupower frequency-set -g performance; else for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$f" 2>/dev/null || true; done; fi'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+GOVEOF
+    sudo systemctl daemon-reload
+    sudo systemctl enable cpu-governor-performance.service 2>/dev/null
+    success "CPU governor → performance (service enabled for persistence)"
+  else
+    success "CPU governor → performance (service already exists)"
   fi
 }
 
@@ -977,10 +1039,11 @@ if [[ "$SKIP_RT" -eq 0 ]]; then
       setup_irq_affinity
       setup_udp_optimization
       setup_nvidia_rt
+      setup_cpu_governor
       ;;
   esac
 else
-  info "Skipping RT permissions, IRQ affinity, UDP optimization, and NVIDIA setup (--skip-rt)"
+  info "Skipping RT permissions, IRQ affinity, UDP optimization, NVIDIA setup, and CPU governor (--skip-rt)"
 fi
 
 verify_installation
