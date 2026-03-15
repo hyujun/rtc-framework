@@ -27,7 +27,7 @@
 
 통신 플로우 (1 사이클):
   0. SetSensorMode(cmd=0x04) → send 3B, recv 3B (초기화, 1회)
-  1. WritePosition(cmd=0x01) → send 43B
+  1. WritePosition(cmd=0x01) → send 43B, recv 43B (echo)
   2. ReadPosition(cmd=0x11)  → send 43B, recv 43B
   3. ReadVelocity(cmd=0x12)  → send 43B, recv 43B
   4. ReadSensor0~3(cmd=0x14..0x17) → send 3B, recv 67B × 4
@@ -45,6 +45,8 @@ import struct
 import sys
 import time
 from datetime import datetime
+
+from collections import deque
 
 import numpy as np
 
@@ -239,11 +241,10 @@ class HandUDPSender:
         print(f"  Target: {target_ip}:{target_port}")
         print(f"  Motors: {NUM_HAND_MOTORS}, Connected sensors: {self.num_sensors}/{NUM_FINGERTIPS}")
 
-    def write_position(self, positions: list[float]) -> None:
-        """모터 목표 위치 전송 (cmd=0x01, 43B)"""
+    def write_position(self, positions: list[float]) -> list[float] | None:
+        """모터 목표 위치 전송 및 echo 수신 (cmd=0x01, 43B ↔ 43B)"""
         assert len(positions) == NUM_HAND_MOTORS
-        pkt = encode_motor_packet(CMD_WRITE_POSITION, positions)
-        self.sock.sendto(pkt, self.target)
+        return self._request_motor(CMD_WRITE_POSITION, positions)
 
     def read_position(self) -> list[float] | None:
         """모터 현재 위치 요청 및 수신 (cmd=0x11, 43B ↔ 43B)"""
@@ -292,7 +293,7 @@ class HandUDPSender:
     def poll_cycle(self, positions: list[float]) -> dict:
         """
         HandController의 1 사이클과 동일한 플로우 실행:
-          1. WritePosition                    → send 43B
+          1. WritePosition                    → send 43B, recv 43B (echo)
           2. ReadPosition                     → send 43B, recv 43B
           3. ReadVelocity                     → send 43B, recv 43B
           4. ReadSensor × num_sensors         → send 3B (MODE=raw), recv 67B
@@ -303,19 +304,37 @@ class HandUDPSender:
               - velocities: [10 floats] or None
               - sensors: [num_sensors × 11 uint32]
               - sensor_modes: [num_sensors × response_mode]
+              - timing: dict with per-step durations (seconds)
         """
-        # 1. 목표 위치 전송
-        self.write_position(positions)
+        timing = {}
+        timeouts = 0
+        cycle_start = time.perf_counter()
+
+        # 1. 목표 위치 전송 + echo 수신
+        t0 = time.perf_counter()
+        write_echo = self.write_position(positions)
+        timing["write_position"] = time.perf_counter() - t0
+        if write_echo is None:
+            timeouts += 1
 
         # 2. 현재 위치 수신
+        t0 = time.perf_counter()
         pos = self.read_position()
+        timing["read_position"] = time.perf_counter() - t0
+        if pos is None:
+            timeouts += 1
 
         # 3. 현재 속도 수신
+        t0 = time.perf_counter()
         vel = self.read_velocity()
+        timing["read_velocity"] = time.perf_counter() - t0
+        if vel is None:
+            timeouts += 1
 
         # 4. 센서 데이터 수신 (연결된 센서만, 각 11개 유효 값, MODE=RAW)
         sensors = []
         sensor_modes = []
+        t0 = time.perf_counter()
         for i in range(self.num_sensors):
             result = self.read_sensor(i)
             if result is not None:
@@ -325,12 +344,19 @@ class HandUDPSender:
             else:
                 sensors.extend([0] * SENSOR_VALUES_PER_FINGERTIP)
                 sensor_modes.append(-1)
+                timeouts += 1
+        if self.num_sensors > 0:
+            timing["read_sensors"] = time.perf_counter() - t0
+
+        timing["cycle"] = time.perf_counter() - cycle_start
+        timing["timeouts"] = timeouts
 
         return {
             "positions": pos,
             "velocities": vel,
             "sensors": sensors,
             "sensor_modes": sensor_modes,
+            "timing": timing,
         }
 
     def read_cycle(self) -> dict:
@@ -346,12 +372,27 @@ class HandUDPSender:
               - velocities: [10 floats] or None
               - sensors: [num_sensors × 11 uint32]
               - sensor_modes: [num_sensors × response_mode]
+              - timing: dict with per-step durations (seconds)
         """
+        timing = {}
+        timeouts = 0
+        cycle_start = time.perf_counter()
+
+        t0 = time.perf_counter()
         pos = self.read_position()
+        timing["read_position"] = time.perf_counter() - t0
+        if pos is None:
+            timeouts += 1
+
+        t0 = time.perf_counter()
         vel = self.read_velocity()
+        timing["read_velocity"] = time.perf_counter() - t0
+        if vel is None:
+            timeouts += 1
 
         sensors = []
         sensor_modes = []
+        t0 = time.perf_counter()
         for i in range(self.num_sensors):
             result = self.read_sensor(i)
             if result is not None:
@@ -361,17 +402,25 @@ class HandUDPSender:
             else:
                 sensors.extend([0] * SENSOR_VALUES_PER_FINGERTIP)
                 sensor_modes.append(-1)
+                timeouts += 1
+        if self.num_sensors > 0:
+            timing["read_sensors"] = time.perf_counter() - t0
+
+        timing["cycle"] = time.perf_counter() - cycle_start
+        timing["timeouts"] = timeouts
 
         return {
             "positions": pos,
             "velocities": vel,
             "sensors": sensors,
             "sensor_modes": sensor_modes,
+            "timing": timing,
         }
 
-    def _request_motor(self, cmd: int) -> list[float] | None:
-        """모터 요청 전송(43B) 후 응답 수신(43B)"""
-        pkt = encode_motor_packet(cmd)
+    def _request_motor(self, cmd: int,
+                       floats: list[float] | None = None) -> list[float] | None:
+        """모터 요청 전송(43B) 후 echo 응답 수신(43B)"""
+        pkt = encode_motor_packet(cmd, floats)
         self.sock.sendto(pkt, self.target)
         try:
             data, _ = self.sock.recvfrom(256)
@@ -419,6 +468,65 @@ def _format_sensor_detail(sensors: list[int], num_sensors: int,
     return '\n'.join(lines)
 
 
+# ── UDP 타이밍 통계 ──────────────────────────────────────────────────────────
+
+class UdpTimingStats:
+    """UDP 통신 사이클의 타이밍 통계를 수집·출력하는 클래스"""
+
+    def __init__(self, window_size: int = 500):
+        """
+        Args:
+            window_size: 통계 계산에 사용할 최근 샘플 수
+        """
+        self.window_size = window_size
+        self._cycle_times: deque[float] = deque(maxlen=window_size)
+        self._write_times: deque[float] = deque(maxlen=window_size)
+        self._read_pos_times: deque[float] = deque(maxlen=window_size)
+        self._read_vel_times: deque[float] = deque(maxlen=window_size)
+        self._read_sensor_times: deque[float] = deque(maxlen=window_size)
+        self._timeout_count = 0
+        self._total_cycles = 0
+
+    def record(self, timing: dict) -> None:
+        """poll_cycle / read_cycle에서 반환된 timing dict를 기록"""
+        self._total_cycles += 1
+        if "cycle" in timing:
+            self._cycle_times.append(timing["cycle"])
+        if "write_position" in timing:
+            self._write_times.append(timing["write_position"])
+        if "read_position" in timing:
+            self._read_pos_times.append(timing["read_position"])
+        if "read_velocity" in timing:
+            self._read_vel_times.append(timing["read_velocity"])
+        if "read_sensors" in timing:
+            self._read_sensor_times.append(timing["read_sensors"])
+        self._timeout_count += timing.get("timeouts", 0)
+
+    @staticmethod
+    def _stats_str(times: deque[float], label: str) -> str:
+        if not times:
+            return f"  {label}: N/A"
+        arr = np.array(times)
+        return (f"  {label}: "
+                f"avg={arr.mean() * 1000:.3f}ms  "
+                f"min={arr.min() * 1000:.3f}ms  "
+                f"max={arr.max() * 1000:.3f}ms  "
+                f"std={arr.std() * 1000:.3f}ms")
+
+    def format_stats(self) -> str:
+        """현재 통계를 문자열로 포맷"""
+        n = len(self._cycle_times)
+        lines = [f"── UDP Timing Stats (last {n} cycles, total {self._total_cycles}, timeouts {self._timeout_count}) ──"]
+        lines.append(self._stats_str(self._cycle_times, "cycle_total "))
+        if self._write_times:
+            lines.append(self._stats_str(self._write_times, "write_pos   "))
+        lines.append(self._stats_str(self._read_pos_times, "read_pos    "))
+        lines.append(self._stats_str(self._read_vel_times, "read_vel    "))
+        if self._read_sensor_times:
+            lines.append(self._stats_str(self._read_sensor_times, "read_sensors"))
+        return '\n'.join(lines)
+
+
 # ── CSV 로거 ──────────────────────────────────────────────────────────────────
 
 class HandDataCsvLogger:
@@ -448,6 +556,13 @@ class HandDataCsvLogger:
         for s in range(num_sensors):
             header.extend(f"s{s}_baro_{j}" for j in range(BAROMETER_COUNT))
             header.extend(f"s{s}_tof_{j}" for j in range(TOF_COUNT))
+        # 타이밍 컬럼 (ms 단위)
+        self._timing_keys = ["cycle", "write_position",
+                              "read_position", "read_velocity"]
+        if num_sensors > 0:
+            self._timing_keys.append("read_sensors")
+        self._timing_keys.append("timeouts")
+        header.extend(f"t_{k}" for k in self._timing_keys)
 
         self._file = open(self.filepath, 'w', newline='')
         self._writer = csv.writer(self._file)
@@ -481,6 +596,17 @@ class HandDataCsvLogger:
         else:
             row.extend(str(v) for v in sensors)
             row.extend([""] * (expected - len(sensors)))
+
+        # timing (ms 단위, timeouts는 정수)
+        timing = result.get("timing", {})
+        for k in self._timing_keys:
+            v = timing.get(k)
+            if v is None:
+                row.append("")
+            elif k == "timeouts":
+                row.append(str(int(v)))
+            else:
+                row.append(f"{v * 1000:.4f}")  # sec → ms
 
         self._writer.writerow(row)
 
@@ -706,8 +832,9 @@ def example_poll_cycle(target_ip: str = "192.168.1.2",
         print(f"  CSV 저장: {csv_logger.filepath}")
 
     failure_detector = HandDataFailureDetector(motor_enabled=False, sensor_enabled=True)
+    timing_stats = UdpTimingStats()
 
-    print(f"  WritePosition(43B) → ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B[MODE=raw]→67B)")
+    print(f"  WritePosition(43B↔43B) → ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B[MODE=raw]→67B)")
     print("Ctrl+C로 중지\n")
 
     try:
@@ -726,6 +853,9 @@ def example_poll_cycle(target_ip: str = "192.168.1.2",
             # Failure detection: 0 데이터 또는 동일 데이터 연속 감지
             failure_detector.check(result)
 
+            # 타이밍 통계 수집
+            timing_stats.record(result.get("timing", {}))
+
             if csv_logger:
                 csv_logger.log(cycle, result)
 
@@ -741,12 +871,14 @@ def example_poll_cycle(target_ip: str = "192.168.1.2",
                 if num_sensors > 0:
                     print(_format_sensor_detail(
                         result['sensors'], num_sensors, result['sensor_modes']))
+                print(timing_stats.format_stats())
 
             t += dt
             time.sleep(dt)
 
     except KeyboardInterrupt:
         print(f"\n중지됨 (총 {cycle} 사이클)")
+        print(timing_stats.format_stats())
         if csv_logger:
             print(f"CSV 저장 완료: {csv_logger.filepath}")
     finally:
@@ -801,6 +933,7 @@ def example_read_only(target_ip: str = "192.168.1.2",
         print(f"  CSV 저장: {csv_logger.filepath}")
 
     failure_detector = HandDataFailureDetector(motor_enabled=False, sensor_enabled=True)
+    timing_stats = UdpTimingStats()
 
     print(f"  ReadPosition(43B↔43B) → ReadVelocity(43B↔43B) → ReadSensor×{num_sensors}(3B[MODE=raw]→67B)")
     print("Ctrl+C로 중지\n")
@@ -814,6 +947,9 @@ def example_read_only(target_ip: str = "192.168.1.2",
 
             # Failure detection: 0 데이터 또는 동일 데이터 연속 감지
             failure_detector.check(result)
+
+            # 타이밍 통계 수집
+            timing_stats.record(result.get("timing", {}))
 
             if csv_logger:
                 csv_logger.log(cycle, result)
@@ -829,11 +965,13 @@ def example_read_only(target_ip: str = "192.168.1.2",
                 if num_sensors > 0:
                     print(_format_sensor_detail(
                         result['sensors'], num_sensors, result['sensor_modes']))
+                print(timing_stats.format_stats())
 
             time.sleep(dt)
 
     except KeyboardInterrupt:
         print(f"\n중지됨 (총 {cycle} 사이클)")
+        print(timing_stats.format_stats())
         if csv_logger:
             print(f"CSV 저장 완료: {csv_logger.filepath}")
     finally:
