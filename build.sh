@@ -69,6 +69,30 @@ auto_release_cpu_shield() {
   return 0
 }
 
+# ── ROS2 auto-source ─────────────────────────────────────────────────────────
+# ros2 커맨드가 PATH에 없으면 /opt/ros/ 에서 탐색 후 자동 소싱.
+# build.sh만 실행해도 빌드 후 ros2 launch 등 사용 가능.
+ensure_ros2_sourced() {
+  if command -v ros2 &>/dev/null; then
+    return 0
+  fi
+
+  warn "ros2 command not found in PATH. Searching /opt/ros/ ..."
+  if [[ -d /opt/ros ]]; then
+    for _distro in jazzy humble iron rolling; do
+      if [[ -f "/opt/ros/${_distro}/setup.bash" ]]; then
+        info "Found ROS2 ${_distro} at /opt/ros/${_distro} — sourcing setup.bash ..."
+        # shellcheck disable=SC1090
+        source "/opt/ros/${_distro}/setup.bash"
+        success "ROS2 ${_distro} sourced"
+        return 0
+      fi
+    done
+  fi
+
+  error "ROS2 not found. Install ROS2 or source setup.bash before running build.sh"
+}
+
 # ── Common: Workspace structure check ──────────────────────────────────────────
 check_workspace_structure() {
   info "Checking workspace directory structure..."
@@ -247,6 +271,9 @@ echo ""
 echo -e "  Mode : ${CYAN}${BOLD}${MODE_DESC}${NC}"
 echo -e "  Build: ${CYAN}${BOLD}${BUILD_TYPE}${NC}"
 echo ""
+
+# ── ROS2 environment ──────────────────────────────────────────────────────────
+ensure_ros2_sourced
 
 # ── Workspace detection ────────────────────────────────────────────────────────
 check_workspace_structure
