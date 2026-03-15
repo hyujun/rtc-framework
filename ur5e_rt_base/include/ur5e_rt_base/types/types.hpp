@@ -11,6 +11,7 @@
 #include <array>
 #include <concepts>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -143,10 +144,41 @@ struct PublishTopicEntry {
   int data_size{0};  // pre-allocate message size (0 = use default for role)
 };
 
-struct TopicConfig {
+// ── Device enable/disable flags ──────────────────────────────────────────────
+
+// 글로벌 디바이스 활성화 플래그 (ur5e_rt_controller.yaml에서 로드)
+struct DeviceEnableFlags {
+  bool enable_ur5e{true};
+  bool enable_hand{false};
+};
+
+// 컨트롤러별 디바이스 플래그 오버라이드 (nullopt = 글로벌 상속)
+struct PerControllerDeviceFlags {
+  std::optional<bool> enable_ur5e;   // nullopt = inherit global
+  std::optional<bool> enable_hand;   // nullopt = inherit global
+};
+
+// ── Device topic grouping ────────────────────────────────────────────────────
+
+struct DeviceTopicGroup {
   std::vector<SubscribeTopicEntry> subscribe;
   std::vector<PublishTopicEntry> publish;
 };
+
+struct TopicConfig {
+  DeviceTopicGroup ur5e;
+  DeviceTopicGroup hand;
+};
+
+// ── Device classification helpers ────────────────────────────────────────────
+
+inline bool IsHandSubscribeRole(SubscribeRole r) noexcept {
+  return r == SubscribeRole::kHandState;
+}
+
+inline bool IsHandPublishRole(PublishRole r) noexcept {
+  return r == PublishRole::kHandCommand;
+}
 
 // ── Role → string conversion (for ROS2 parameter exposure) ──────────────────
 

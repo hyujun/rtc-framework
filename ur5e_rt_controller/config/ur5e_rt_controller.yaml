@@ -8,11 +8,17 @@
     # ── 제어 주기 ─────────────────────────────────────────────────────────────
     control_rate: 500.0              # Hz — 타이머 주기 = 1e6/rate µs
 
+    # ── 디바이스 활성화 (글로벌 기본값) ─────────────────────────────────────────
+    enable_ur5e: true              # UR5e 로봇 암 통신 활성화
+    enable_hand: false             # 핸드 통신 활성화 (기본: 비활성)
+    # 참고: use_fake_hand는 launch argument로만 전달 (YAML에 미포함)
+    #       코드에서 declare_parameter("use_fake_hand", false)로 기본값 선언
+
     # ── 시작 컨트롤러 ─────────────────────────────────────────────────────────
     # 레지스트리 키: p_controller(0), joint_pd_controller(1),
     #               clik_controller(2), operational_space_controller(3),
     #               ur5e_hand_controller(4)
-    initial_controller: "joint_pd_controller"
+    initial_controller: "ur5e_hand_controller"
 
     # ── 초기화 타임아웃 ───────────────────────────────────────────────────────
     init_timeout_sec: 30.0           # 로봇/타겟 데이터 미수신 시 E-STOP + 셧다운 (초)

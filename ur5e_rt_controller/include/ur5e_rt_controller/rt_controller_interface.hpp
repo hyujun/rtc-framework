@@ -87,6 +87,15 @@ public:
     return topic_config_;
   }
 
+  // GetPerControllerDeviceFlags()
+  //   Returns per-controller device enable/disable overrides.
+  //   nullopt = inherit from global (ur5e_rt_controller.yaml).
+  [[nodiscard]] const PerControllerDeviceFlags & GetPerControllerDeviceFlags()
+    const noexcept
+  {
+    return per_controller_device_flags_;
+  }
+
 protected:
   RTControllerInterface();
 
@@ -99,6 +108,7 @@ protected:
   static TopicConfig MakeDefaultTopicConfig();
 
   TopicConfig topic_config_;
+  PerControllerDeviceFlags per_controller_device_flags_;
 };
 
 }  // namespace ur5e_rt_controller

@@ -123,6 +123,12 @@ private:
   // Per-controller topic config cache (index = controller index)
   std::vector<ur5e_rt_controller::TopicConfig> controller_topic_configs_;
 
+  // ── Device enable/disable flags ──────────────────────────────────────────
+  ur5e_rt_controller::DeviceEnableFlags global_device_flags_;
+  std::vector<ur5e_rt_controller::DeviceEnableFlags> controller_device_flags_;
+  [[nodiscard]] ur5e_rt_controller::DeviceEnableFlags ResolveDeviceFlags(
+      const ur5e_rt_controller::PerControllerDeviceFlags & per_ctrl) const noexcept;
+
   // Read-only parameter guard handle (topic params immutable after init)
   rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
 

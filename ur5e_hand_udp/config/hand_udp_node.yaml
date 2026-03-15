@@ -17,6 +17,11 @@
 
 /**:
   ros__parameters:
+    # ── Fake hand 모드 ──────────────────────────────────────────────────────
+    use_fake_hand: false              # true: echo-back mock (UDP 소켓 미생성)
+                                      # command를 즉시 position state로 반환
+                                      # launch argument로 override 가능
+
     # ── UDP 통신 설정 ──────────────────────────────────────────────────────
     # rt_controller 통합 + standalone 공용
     target_ip: "192.168.1.2"          # 핸드 컨트롤러 IP (빈 문자열 → hand 비활성)

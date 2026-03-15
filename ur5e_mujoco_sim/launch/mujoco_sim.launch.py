@@ -208,6 +208,11 @@ def launch_setup(context, *args, **kwargs):
     # 세션 디렉토리를 log_dir로 전달 (rt_controller가 session_dir 내에서 로깅)
     ctrl_overrides['log_dir'] = session_dir
 
+    # use_fake_hand launch argument → rt_controller 파라미터로 전달
+    use_fake_hand = LaunchConfiguration('use_fake_hand').perform(context)
+    if use_fake_hand.lower() in ('true', '1', 'yes'):
+        ctrl_overrides['use_fake_hand'] = True
+
     # Fake hand response 연동: MuJoCo 설정을 rt_controller에 전달
     sim_yaml_path = os.path.join(
         get_package_share_directory('ur5e_mujoco_sim'),
@@ -419,6 +424,15 @@ def generate_launch_description():
         )
     )
 
+    use_fake_hand_arg = DeclareLaunchArgument(
+        'use_fake_hand',
+        default_value='false',
+        description=(
+            'Use fake hand echo-back mode (no UDP/ROS communication). '
+            'Command is echoed back as position state immediately.'
+        )
+    )
+
     return LaunchDescription([
         # Arguments
         model_path_arg,
@@ -432,6 +446,7 @@ def generate_launch_description():
         use_yaml_servo_gains_arg,
         max_log_sessions_arg,
         use_cpu_affinity_arg,
+        use_fake_hand_arg,
         # Nodes (via OpaqueFunction for conditional parameter loading)
         OpaqueFunction(function=launch_setup),
     ])

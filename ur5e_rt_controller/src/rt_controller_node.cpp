@@ -200,6 +200,13 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("init_timeout_sec", 5.0);
   declare_parameter("initial_controller", "joint_pd_controller");
 
+  // ── 디바이스 활성화 플래그 (글로벌 기본값) ────────────────────────────────
+  declare_parameter("enable_ur5e", true);
+  declare_parameter("enable_hand", false);
+  declare_parameter("use_fake_hand", false);  // launch argument로만 전달
+  global_device_flags_.enable_ur5e = get_parameter("enable_ur5e").as_bool();
+  global_device_flags_.enable_hand = get_parameter("enable_hand").as_bool();
+
   // JointCommand 발행 (MuJoCo / 외부 시뮬레이터 연동)
   declare_parameter("joint_command_topic", std::string("/rt_controller/joint_command"));
 
@@ -243,8 +250,10 @@ void RtControllerNode::DeclareAndLoadParameters()
     urtc::CleanupOldSessions(logging_root, max_sessions);
 
     const bool enable_timing = get_parameter("enable_timing_log").as_bool();
-    const bool enable_robot  = get_parameter("enable_robot_log").as_bool();
-    const bool enable_hand   = get_parameter("enable_hand_log").as_bool();
+    const bool enable_robot  = get_parameter("enable_robot_log").as_bool()
+                               && global_device_flags_.enable_ur5e;
+    const bool enable_hand   = get_parameter("enable_hand_log").as_bool()
+                               && global_device_flags_.enable_hand;
     const auto ctrl_dir = session_dir / "controller";
     std::filesystem::create_directories(ctrl_dir);
 
@@ -267,8 +276,13 @@ void RtControllerNode::DeclareAndLoadParameters()
         session_dir.string().c_str(), max_sessions);
   }
 
-  robot_timeout_ = std::chrono::milliseconds(
-      static_cast<int>(get_parameter("robot_timeout_ms").as_double()));
+  // E-STOP 타임아웃: ur5e 비활성 시 robot_timeout 비활성화
+  if (global_device_flags_.enable_ur5e) {
+    robot_timeout_ = std::chrono::milliseconds(
+        static_cast<int>(get_parameter("robot_timeout_ms").as_double()));
+  } else {
+    robot_timeout_ = std::chrono::milliseconds(0);
+  }
 
   // ── Hand Controller (직접 UDP 통신, event-driven) ──────────────────────────
   // hand_udp_node.yaml의 파라미터를 launch에서 로드
@@ -281,9 +295,27 @@ void RtControllerNode::DeclareAndLoadParameters()
   const std::string hand_ip = get_parameter("target_ip").as_string();
   const int hand_port = static_cast<int>(get_parameter("target_port").as_int());
   hand_sim_enabled_ = get_parameter("hand_sim_enabled").as_bool();
-  enable_hand_ = !hand_ip.empty() && hand_port > 0 && !hand_sim_enabled_;
+  const bool use_fake_hand = get_parameter("use_fake_hand").as_bool();
 
-  if (hand_sim_enabled_) {
+  // Hand 전체 비활성 시 모든 hand 통신 skip
+  if (!global_device_flags_.enable_hand) {
+    hand_sim_enabled_ = false;
+    enable_hand_ = false;
+    RCLCPP_INFO(get_logger(), "Hand disabled (enable_hand=false)");
+  } else if (use_fake_hand) {
+    // Fake mode: echo-back HandController (UDP 소켓 없이 내부 echo-back)
+    hand_sim_enabled_ = false;
+    const auto cfgs = ur5e_rt_controller::SelectThreadConfigs();
+    hand_controller_ = std::make_unique<urtc::HandController>(
+        "", 0, cfgs.udp_recv, 10, false, 1, urtc::kDefaultNumFingertips, true);
+    static_cast<void>(hand_controller_->Start());
+    enable_hand_ = true;
+    RCLCPP_INFO(get_logger(), "HandController started in FAKE mode (echo-back)");
+  } else {
+    enable_hand_ = !hand_ip.empty() && hand_port > 0 && !hand_sim_enabled_;
+  }
+
+  if (hand_sim_enabled_ && global_device_flags_.enable_hand) {
     // ROS 토픽 기반 핸드 통신 (MuJoCo fake response 연동)
     const std::string hand_cmd_topic = get_parameter("hand_command_topic").as_string();
     const std::string hand_state_topic = get_parameter("hand_state_topic").as_string();
@@ -326,7 +358,7 @@ void RtControllerNode::DeclareAndLoadParameters()
     RCLCPP_INFO(get_logger(),
         "Hand simulation mode: cmd=%s, state=%s (UDP disabled)",
         hand_cmd_topic.c_str(), hand_state_topic.c_str());
-  } else if (enable_hand_) {
+  } else if (enable_hand_ && !hand_controller_) {
     const int hand_recv_timeout = static_cast<int>(
         get_parameter("recv_timeout_ms").as_int());
     const bool hand_write_ack = get_parameter("enable_write_ack").as_bool();
@@ -400,13 +432,36 @@ void RtControllerNode::DeclareAndLoadParameters()
     controllers_.push_back(std::move(ctrl));
   }
 
-  // Cache per-controller topic configs for fast access in ControlLoop()
+  // Cache per-controller topic configs and resolve device flags
   controller_topic_configs_.reserve(controllers_.size());
+  controller_device_flags_.reserve(controllers_.size());
   for (const auto & ctrl : controllers_) {
     controller_topic_configs_.push_back(ctrl->GetTopicConfig());
+    controller_device_flags_.push_back(
+        ResolveDeviceFlags(ctrl->GetPerControllerDeviceFlags()));
+
     const auto & tc = controller_topic_configs_.back();
-    RCLCPP_INFO(get_logger(), "Controller '%s': %zu subscribe topics, %zu publish topics",
-                ctrl->Name().data(), tc.subscribe.size(), tc.publish.size());
+    const auto & df = controller_device_flags_.back();
+    RCLCPP_INFO(get_logger(),
+        "Controller '%s': ur5e=%s (%zu+%zu topics), hand=%s (%zu+%zu topics)",
+        ctrl->Name().data(),
+        df.enable_ur5e ? "ON" : "OFF",
+        tc.ur5e.subscribe.size(), tc.ur5e.publish.size(),
+        df.enable_hand ? "ON" : "OFF",
+        tc.hand.subscribe.size(), tc.hand.publish.size());
+  }
+
+  // ur5e가 어떤 컨트롤러에서도 활성화되지 않으면 joint_states 대기 skip
+  {
+    bool any_ur5e = false;
+    for (const auto & df : controller_device_flags_) {
+      if (df.enable_ur5e) { any_ur5e = true; break; }
+    }
+    if (!any_ur5e) {
+      state_received_.store(true, std::memory_order_release);
+      target_received_.store(true, std::memory_order_release);
+      RCLCPP_INFO(get_logger(), "No controller enables ur5e — skipping init wait");
+    }
   }
 
   // Resolve initial_controller parameter → controller index
@@ -428,52 +483,70 @@ void RtControllerNode::CreateSubscriptions()
   auto sub_options = rclcpp::SubscriptionOptions();
   sub_options.callback_group = cb_group_sensor_;
 
+  // ── Determine which device groups are enabled by any controller ──────────
+  // Topics are created at startup for the union of all enabled controllers,
+  // so runtime controller switching finds pre-existing topics.
+  bool any_ur5e = false, any_hand = false;
+  for (const auto & df : controller_device_flags_) {
+    if (df.enable_ur5e) { any_ur5e = true; }
+    if (df.enable_hand) { any_hand = true; }
+  }
+
   // ── Collect unique subscribe topics from all controllers ──────────────────
-  // Each topic is created once; the callback is determined by the role.
   std::set<std::string> created_joint_state_topics;
   std::set<std::string> created_target_topics;
 
-  for (const auto & tc : controller_topic_configs_) {
-    for (const auto & entry : tc.subscribe) {
-      switch (entry.role) {
-        case urtc::SubscribeRole::kJointState:
-          if (created_joint_state_topics.insert(entry.topic_name).second) {
-            auto sub = create_subscription<sensor_msgs::msg::JointState>(
-              entry.topic_name, 10,
-              [this](sensor_msgs::msg::JointState::SharedPtr msg) {
-                JointStateCallback(std::move(msg));
-              },
-              sub_options);
-            topic_subscriptions_.push_back(sub);
-            RCLCPP_INFO(get_logger(), "  Subscribe [joint_state]: %s",
-                        entry.topic_name.c_str());
-          }
-          break;
+  for (std::size_t ci = 0; ci < controller_topic_configs_.size(); ++ci) {
+    const auto & tc = controller_topic_configs_[ci];
 
-        case urtc::SubscribeRole::kHandState:
-          // hand_sim_enabled 시 ROS 토픽으로 수신, 그 외에는 UDP 직접 읽기
+    // ur5e 토픽: any controller enables ur5e → 생성
+    if (any_ur5e) {
+      for (const auto & entry : tc.ur5e.subscribe) {
+        switch (entry.role) {
+          case urtc::SubscribeRole::kJointState:
+            if (created_joint_state_topics.insert(entry.topic_name).second) {
+              auto sub = create_subscription<sensor_msgs::msg::JointState>(
+                entry.topic_name, 10,
+                [this](sensor_msgs::msg::JointState::SharedPtr msg) {
+                  JointStateCallback(std::move(msg));
+                },
+                sub_options);
+              topic_subscriptions_.push_back(sub);
+              RCLCPP_INFO(get_logger(), "  Subscribe [ur5e/joint_state]: %s",
+                          entry.topic_name.c_str());
+            }
+            break;
+          case urtc::SubscribeRole::kGoal:
+            if (created_target_topics.insert(entry.topic_name).second) {
+              auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
+                entry.topic_name, 10,
+                [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+                  TargetCallback(std::move(msg));
+                },
+                sub_options);
+              topic_subscriptions_.push_back(sub);
+              RCLCPP_INFO(get_logger(), "  Subscribe [ur5e/goal]: %s",
+                          entry.topic_name.c_str());
+            }
+            break;
+          default:
+            break;
+        }
+      }
+    }
+
+    // hand 토픽: any controller enables hand → 생성
+    if (any_hand) {
+      for (const auto & entry : tc.hand.subscribe) {
+        if (entry.role == urtc::SubscribeRole::kHandState) {
           if (hand_sim_enabled_) {
-            RCLCPP_INFO(get_logger(), "  Subscribe [hand_state]: %s (via ROS topic — sim mode)",
+            RCLCPP_INFO(get_logger(), "  Subscribe [hand/hand_state]: %s (via ROS — sim)",
                         entry.topic_name.c_str());
           } else {
-            RCLCPP_INFO(get_logger(), "  Subscribe [hand_state]: %s (skipped — direct UDP)",
+            RCLCPP_INFO(get_logger(), "  Subscribe [hand/hand_state]: %s (direct UDP/fake)",
                         entry.topic_name.c_str());
           }
-          break;
-
-        case urtc::SubscribeRole::kGoal:
-          if (created_target_topics.insert(entry.topic_name).second) {
-            auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
-              entry.topic_name, 10,
-              [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-                TargetCallback(std::move(msg));
-              },
-              sub_options);
-            topic_subscriptions_.push_back(sub);
-            RCLCPP_INFO(get_logger(), "  Subscribe [target]: %s",
-                        entry.topic_name.c_str());
-          }
-          break;
+        }
       }
     }
   }
@@ -526,50 +599,62 @@ void RtControllerNode::CreatePublishers()
   rclcpp::QoS cmd_qos{1};
   cmd_qos.best_effort();
 
-  // ── Collect unique publish topics from all controllers ────────────────────
+  // ── Determine which device groups are enabled by any controller ──────────
+  bool any_ur5e = false, any_hand = false;
+  for (const auto & df : controller_device_flags_) {
+    if (df.enable_ur5e) { any_ur5e = true; }
+    if (df.enable_hand) { any_hand = true; }
+  }
+
+  // Helper: create a publisher for a publish entry if not already created.
+  auto create_pub = [&](const urtc::PublishTopicEntry & entry,
+                        const char * device_prefix) {
+    if (topic_publishers_.count(entry.topic_name) > 0) {
+      return;
+    }
+
+    int data_size = entry.data_size;
+    if (data_size <= 0) {
+      switch (entry.role) {
+        case urtc::PublishRole::kPositionCommand:
+        case urtc::PublishRole::kTorqueCommand:
+          data_size = urtc::kNumRobotJoints;
+          break;
+        case urtc::PublishRole::kHandCommand:
+          data_size = urtc::kNumHandMotors;
+          break;
+        case urtc::PublishRole::kTaskPosition:
+          data_size = 6;
+          break;
+        case urtc::PublishRole::kTrajectoryState:
+        case urtc::PublishRole::kControllerState:
+          data_size = 18;
+          break;
+      }
+    }
+
+    PublisherEntry pe;
+    pe.publisher = create_publisher<std_msgs::msg::Float64MultiArray>(
+        entry.topic_name, cmd_qos);
+    pe.msg.data.resize(static_cast<std::size_t>(data_size), 0.0);
+    topic_publishers_[entry.topic_name] = std::move(pe);
+
+    const char * role_str = urtc::PublishRoleToString(entry.role);
+    RCLCPP_INFO(get_logger(), "  Publish [%s/%s]: %s (size=%d)",
+                device_prefix, role_str, entry.topic_name.c_str(), data_size);
+  };
+
+  // ── Create publishers for enabled device groups ───────────────────────────
   for (const auto & tc : controller_topic_configs_) {
-    for (const auto & entry : tc.publish) {
-      if (topic_publishers_.count(entry.topic_name) > 0) {
-        continue;  // already created
+    if (any_ur5e) {
+      for (const auto & entry : tc.ur5e.publish) {
+        create_pub(entry, "ur5e");
       }
-
-      // Determine message size from role defaults or explicit config
-      int data_size = entry.data_size;
-      if (data_size <= 0) {
-        switch (entry.role) {
-          case urtc::PublishRole::kPositionCommand:
-          case urtc::PublishRole::kTorqueCommand:
-            data_size = urtc::kNumRobotJoints;
-            break;
-          case urtc::PublishRole::kHandCommand:
-            data_size = urtc::kNumHandMotors;
-            break;
-          case urtc::PublishRole::kTaskPosition:
-            data_size = 6;
-            break;
-          case urtc::PublishRole::kTrajectoryState:
-          case urtc::PublishRole::kControllerState:
-            data_size = 18;  // goal[6] + pos[6] + vel[6]
-            break;
-        }
+    }
+    if (any_hand) {
+      for (const auto & entry : tc.hand.publish) {
+        create_pub(entry, "hand");
       }
-
-      PublisherEntry pe;
-      pe.publisher = create_publisher<std_msgs::msg::Float64MultiArray>(
-          entry.topic_name, cmd_qos);
-      pe.msg.data.resize(static_cast<std::size_t>(data_size), 0.0);
-      topic_publishers_[entry.topic_name] = std::move(pe);
-
-      const char * role_str =
-          entry.role == urtc::PublishRole::kPositionCommand ? "position_cmd" :
-          entry.role == urtc::PublishRole::kTorqueCommand   ? "torque_cmd" :
-          entry.role == urtc::PublishRole::kHandCommand     ? "hand_cmd" :
-          entry.role == urtc::PublishRole::kTaskPosition    ? "task_pos" :
-          entry.role == urtc::PublishRole::kTrajectoryState ? "traj_state" :
-          entry.role == urtc::PublishRole::kControllerState ? "ctrl_state" :
-                                                              "unknown";
-      RCLCPP_INFO(get_logger(), "  Publish [%s]: %s (size=%d)",
-                  role_str, entry.topic_name.c_str(), data_size);
     }
   }
 
@@ -621,17 +706,33 @@ void RtControllerNode::ExposeTopicParameters()
     const std::string prefix =
         "controllers." + std::string(controllers_[i]->Name());
 
-    for (const auto & entry : tc.subscribe) {
+    // ur5e 디바이스 그룹
+    for (const auto & entry : tc.ur5e.subscribe) {
       const std::string param_name =
-          prefix + ".subscribe." + urtc::SubscribeRoleToString(entry.role);
+          prefix + ".ur5e.subscribe." + urtc::SubscribeRoleToString(entry.role);
+      if (!has_parameter(param_name)) {
+        declare_parameter(param_name, entry.topic_name);
+      }
+    }
+    for (const auto & entry : tc.ur5e.publish) {
+      const std::string param_name =
+          prefix + ".ur5e.publish." + urtc::PublishRoleToString(entry.role);
       if (!has_parameter(param_name)) {
         declare_parameter(param_name, entry.topic_name);
       }
     }
 
-    for (const auto & entry : tc.publish) {
+    // hand 디바이스 그룹
+    for (const auto & entry : tc.hand.subscribe) {
       const std::string param_name =
-          prefix + ".publish." + urtc::PublishRoleToString(entry.role);
+          prefix + ".hand.subscribe." + urtc::SubscribeRoleToString(entry.role);
+      if (!has_parameter(param_name)) {
+        declare_parameter(param_name, entry.topic_name);
+      }
+    }
+    for (const auto & entry : tc.hand.publish) {
+      const std::string param_name =
+          prefix + ".hand.publish." + urtc::PublishRoleToString(entry.role);
       if (!has_parameter(param_name)) {
         declare_parameter(param_name, entry.topic_name);
       }
@@ -762,6 +863,9 @@ void RtControllerNode::TargetCallback(std_msgs::msg::Float64MultiArray::SharedPt
 // ── 50 Hz watchdog (E-STOP) ───────────────────────────────────────────────────
 void RtControllerNode::CheckTimeouts()
 {
+  // ur5e 비활성 시 robot timeout 체크 skip
+  if (!global_device_flags_.enable_ur5e) { return; }
+
   const auto now_time = now();
   bool robot_timed_out = false;
 
@@ -858,13 +962,15 @@ void RtControllerNode::ControlLoop()
 
   // ── Phase 3: non-blocking publish ──────────────────────────────────────
   if (cmd_pub_mutex_.try_lock()) {
-    // Publish to all topics configured for the active controller
-    const auto & pub_topics = controller_topic_configs_[
-        static_cast<std::size_t>(active_idx)].publish;
+    const auto & active_tc = controller_topic_configs_[
+        static_cast<std::size_t>(active_idx)];
+    const auto & active_df = controller_device_flags_[
+        static_cast<std::size_t>(active_idx)];
 
-    for (const auto & pt : pub_topics) {
+    // Helper: publish a single topic entry
+    auto publish_entry = [&](const urtc::PublishTopicEntry & pt) {
       auto it = topic_publishers_.find(pt.topic_name);
-      if (it == topic_publishers_.end()) { continue; }
+      if (it == topic_publishers_.end()) { return; }
 
       auto & pe = it->second;
       switch (pt.role) {
@@ -883,7 +989,7 @@ void RtControllerNode::ControlLoop()
           }
           break;
         case urtc::PublishRole::kHandCommand:
-          // Hand command는 HandController로 직접 전송 (아래 Phase 3.5에서 처리)
+          // Hand command는 HandController로 직접 전송 (Phase 3.5)
           break;
         case urtc::PublishRole::kTaskPosition:
           std::copy(output.actual_task_positions.begin(),
@@ -892,19 +998,31 @@ void RtControllerNode::ControlLoop()
           pe.publisher->publish(pe.msg);
           break;
         case urtc::PublishRole::kTrajectoryState:
-          // goal[6] + trajectory_interpolated_pos[6] + trajectory_interpolated_vel[6]
           std::copy_n(output.goal_positions.begin(), 6, pe.msg.data.begin());
           std::copy_n(output.actual_target_positions.begin(), 6, pe.msg.data.begin() + 6);
           std::copy_n(output.target_velocities.begin(), 6, pe.msg.data.begin() + 12);
           pe.publisher->publish(pe.msg);
           break;
         case urtc::PublishRole::kControllerState:
-          // actual_pos[6] + actual_vel[6] + command[6]
           std::copy_n(state.robot.positions.begin(), 6, pe.msg.data.begin());
           std::copy_n(state.robot.velocities.begin(), 6, pe.msg.data.begin() + 6);
           std::copy_n(output.robot_commands.begin(), 6, pe.msg.data.begin() + 12);
           pe.publisher->publish(pe.msg);
           break;
+      }
+    };
+
+    // Publish ur5e topics (if enabled for active controller)
+    if (active_df.enable_ur5e) {
+      for (const auto & pt : active_tc.ur5e.publish) {
+        publish_entry(pt);
+      }
+    }
+
+    // Publish hand topics (if enabled for active controller)
+    if (active_df.enable_hand) {
+      for (const auto & pt : active_tc.hand.publish) {
+        publish_entry(pt);
       }
     }
 
@@ -922,10 +1040,12 @@ void RtControllerNode::ControlLoop()
   }
 
   // ── Phase 3.5: hand command 전송 + 다음 tick용 state 읽기 요청 ────────
-  if (hand_controller_) {
+  const auto & active_df_35 = controller_device_flags_[
+      static_cast<std::size_t>(active_idx)];
+  if (active_df_35.enable_hand && hand_controller_) {
     // Event-driven pipeline: hand thread가 write → read 수행, 다음 tick에서 사용
     hand_controller_->SendCommandAndRequestStates(output.hand_commands);
-  } else if (hand_sim_enabled_ && hand_sim_cmd_pub_) {
+  } else if (active_df_35.enable_hand && hand_sim_enabled_ && hand_sim_cmd_pub_) {
     // ROS 토픽으로 MuJoCo fake hand에 커맨드 전송
     for (std::size_t i = 0; i < 10 && i < output.hand_commands.size(); ++i) {
       hand_sim_cmd_msg_.data[i] = static_cast<double>(output.hand_commands[i]);
@@ -1039,6 +1159,20 @@ void RtControllerNode::PublishEstopStatus(bool estopped)
   std_msgs::msg::Bool msg;
   msg.data = estopped;
   estop_pub_->publish(msg);
+}
+
+// ── Device flag resolution ─────────────────────────────────────────────────────
+urtc::DeviceEnableFlags RtControllerNode::ResolveDeviceFlags(
+    const urtc::PerControllerDeviceFlags & per_ctrl) const noexcept
+{
+  urtc::DeviceEnableFlags resolved = global_device_flags_;
+  if (per_ctrl.enable_ur5e.has_value()) {
+    resolved.enable_ur5e = per_ctrl.enable_ur5e.value();
+  }
+  if (per_ctrl.enable_hand.has_value()) {
+    resolved.enable_hand = per_ctrl.enable_hand.value();
+  }
+  return resolved;
 }
 
 // ── Global E-Stop ──────────────────────────────────────────────────────────────

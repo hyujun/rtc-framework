@@ -14,28 +14,35 @@ joint_pd_controller:
   # ── 출력 타입 ─────────────────────────────────────────────────────────────
   command_type: "torque"
 
+  # ── 디바이스 활성화 (미설정 시 글로벌 기본값 상속) ──────────────────────────
+  # enable_ur5e: true
+  # enable_hand: false
+
   # ── 토픽 설정 ─────────────────────────────────────────────────────────────
   topics:
-    subscribe:
-      # 카테고리 1: Goal State (궤적 최종 목표)
-      - topic: "/target_joint_positions"
-        role: "goal"
-      # 카테고리 2: Current State (센서 피드백)
-      - topic: "/joint_states"
-        role: "joint_state"
-      - topic: "/hand/joint_states"
-        role: "hand_state"
-    publish:
-      # 카테고리 3: Control Command (액추에이터 출력)
-      - topic: "/forward_torque_controller/commands"
-        role: "torque_command"
-      # 카테고리 4: Logging/Monitoring (진단 발행)
-      - topic: "/rt_controller/current_task_position"
-        role: "task_position"
-        data_size: 6
-      - topic: "/rt_controller/trajectory_state"
-        role: "trajectory_state"
-        data_size: 18
-      - topic: "/rt_controller/controller_state"
-        role: "controller_state"
-        data_size: 18
+    ur5e:
+      subscribe:
+        # 카테고리 1: Goal State (궤적 최종 목표)
+        - topic: "/target_joint_positions"
+          role: "goal"
+        # 카테고리 2: Current State (센서 피드백)
+        - topic: "/joint_states"
+          role: "joint_state"
+      publish:
+        # 카테고리 3: Control Command (액추에이터 출력)
+        - topic: "/forward_torque_controller/commands"
+          role: "torque_command"
+        # 카테고리 4: Logging/Monitoring (진단 발행)
+        - topic: "/rt_controller/current_task_position"
+          role: "task_position"
+          data_size: 6
+        - topic: "/rt_controller/trajectory_state"
+          role: "trajectory_state"
+          data_size: 18
+        - topic: "/rt_controller/controller_state"
+          role: "controller_state"
+          data_size: 18
+    hand:
+      subscribe:
+        - topic: "/hand/joint_states"
+          role: "hand_state"

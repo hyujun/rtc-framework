@@ -60,7 +60,8 @@ class HandController {
       int recv_timeout_ms = 10,
       bool enable_write_ack = false,
       int sensor_decimation = 1,
-      int num_fingertips = kDefaultNumFingertips) noexcept
+      int num_fingertips = kDefaultNumFingertips,
+      bool use_fake_hand = false) noexcept
       : target_ip_(std::move(target_ip)),
         target_port_(target_port),
         thread_cfg_(thread_cfg),
@@ -68,7 +69,8 @@ class HandController {
         enable_write_ack_(enable_write_ack),
         sensor_decimation_(sensor_decimation < 1 ? 1 : sensor_decimation),
         num_fingertips_(num_fingertips > kMaxFingertips ? kMaxFingertips
-                       : (num_fingertips < 0 ? 0 : num_fingertips)) {}
+                       : (num_fingertips < 0 ? 0 : num_fingertips)),
+        use_fake_hand_(use_fake_hand) {}
 
   ~HandController() { Stop(); }
 
@@ -80,6 +82,12 @@ class HandController {
   // ── Lifecycle ──────────────────────────────────────────────────────────
 
   [[nodiscard]] bool Start() {
+    if (use_fake_hand_) {
+      // Fake mode: UDP 소켓/스레드 없이 echo-back만 수행
+      running_.store(true, std::memory_order_release);
+      return true;
+    }
+
     socket_fd_ = socket(AF_INET, SOCK_DGRAM, 0);
     if (socket_fd_ < 0) return false;
 
@@ -110,6 +118,7 @@ class HandController {
 
   void Stop() noexcept {
     running_.store(false, std::memory_order_release);
+    if (use_fake_hand_) { return; }  // fake mode: 소켓/스레드 없음
     event_thread_.request_stop();
     // condvar에 대기 중인 스레드를 깨움
     event_cv_.notify_all();
@@ -139,6 +148,17 @@ class HandController {
   /// EventLoop이 busy면 skip하고 event_skip_count 증가 (이전 state 유지).
   void SendCommandAndRequestStates(
       const std::array<float, kNumHandMotors>& cmd) noexcept {
+    // Fake mode: command를 즉시 position으로 echo-back (통신 없음)
+    if (use_fake_hand_) {
+      std::lock_guard lock(state_mutex_);
+      std::copy(cmd.begin(), cmd.end(), latest_state_.motor_positions.begin());
+      // velocities = 0, sensor_data = 0 (기본값 유지)
+      latest_state_.num_fingertips = num_fingertips_;
+      latest_state_.valid = true;
+      cycle_count_.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+
     if (busy_.load(std::memory_order_acquire)) {
       event_skip_count_.fetch_add(1, std::memory_order_relaxed);
       return;
@@ -401,6 +421,7 @@ class HandController {
   bool enable_write_ack_;
   int  sensor_decimation_;     // N cycle마다 센서 읽기 (1=매번, 4=4cycle마다)
   int  num_fingertips_;        // YAML에서 설정된 fingertip 수
+  bool use_fake_hand_;         // true: echo-back mock (UDP 소켓 미생성)
 
   // 전역 E-Stop 플래그 (RtControllerNode에서 설정, null이면 체크하지 않음)
   std::atomic<bool>* estop_flag_{nullptr};
