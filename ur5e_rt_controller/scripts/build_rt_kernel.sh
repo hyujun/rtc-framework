@@ -904,18 +904,36 @@ else
   fi
 
   # NVIDIA GPU가 있으면 DKMS 수동 빌드 시도 (실패해도 무시)
+  # 주의: `dkms autoinstall`은 커스텀 RT 커널에서 apport 검증 실패.
+  # `dkms build -m nvidia -v VERSION -k KERNEL`으로 직접 빌드한다.
   if [[ "$HAS_NVIDIA" == "yes" ]]; then
-    info "NVIDIA DKMS 모듈 빌드 시도 (커널: ${RT_KERNEL_FULL})..."
-    set +e
-    dkms autoinstall -k "${RT_KERNEL_FULL}" 2>&1
-    DKMS_RC=$?
-    set -e
-    if [[ $DKMS_RC -eq 0 ]]; then
-      success "NVIDIA DKMS 모듈 빌드 성공"
+    NVIDIA_DKMS_VER=""
+    if [[ -d /var/lib/dkms/nvidia ]]; then
+      NVIDIA_DKMS_VER=$(ls -1 /var/lib/dkms/nvidia/ 2>/dev/null \
+        | grep -E '^[0-9]+\.' | sort -V | tail -1 || true)
+    fi
+
+    if [[ -n "$NVIDIA_DKMS_VER" ]]; then
+      info "NVIDIA DKMS 모듈 빌드 시도 (nvidia/${NVIDIA_DKMS_VER}, 커널: ${RT_KERNEL_FULL})..."
+      set +e
+      dkms build -m nvidia -v "${NVIDIA_DKMS_VER}" -k "${RT_KERNEL_FULL}" 2>&1
+      BUILD_RC=$?
+      if [[ $BUILD_RC -eq 0 ]]; then
+        dkms install -m nvidia -v "${NVIDIA_DKMS_VER}" -k "${RT_KERNEL_FULL}" 2>&1
+        INSTALL_RC=$?
+      fi
+      set -e
+
+      if [[ $BUILD_RC -eq 0 && ${INSTALL_RC:-1} -eq 0 ]]; then
+        success "NVIDIA DKMS 모듈 빌드/설치 성공"
+      else
+        warn "NVIDIA DKMS 모듈 빌드 실패 — RT 커널 자체는 정상 설치됨"
+        warn "재부팅 후 setup_nvidia_rt.sh를 실행하여 NVIDIA 모듈을 빌드하세요"
+        MAKE_LOG="/var/lib/dkms/nvidia/${NVIDIA_DKMS_VER}/build/make.log"
+        [[ -f "$MAKE_LOG" ]] && warn "빌드 로그: ${MAKE_LOG}"
+      fi
     else
-      warn "NVIDIA DKMS 모듈 빌드 실패 — RT 커널 자체는 정상 설치됨"
-      warn "NVIDIA 드라이버가 필요한 경우 재부팅 후 수동 설치:"
-      warn "  sudo dkms autoinstall -k \$(uname -r)"
+      info "NVIDIA DKMS 소스 없음 — 건너뜀 (재부팅 후 setup_nvidia_rt.sh로 설정)"
     fi
   fi
 

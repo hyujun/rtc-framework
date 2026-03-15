@@ -759,7 +759,9 @@ echo -e "${BOLD}━━━ [9/11] NVIDIA DKMS 모듈 빌드 ━━━${NC}"
 echo ""
 
 # RT 커널로 부팅하면 기존 NVIDIA DKMS 모듈이 빌드되지 않아 nvidia-smi가 작동하지 않을 수 있다.
-# 이 단계에서 현재 커널에 대해 DKMS autoinstall을 실행하여 NVIDIA 모듈을 빌드/설치한다.
+# 커스텀 RT 커널(예: 6.8.2-rt11-rt-custom)에서는 `dkms autoinstall`이 apport 검증에서
+# "kernel package linux-headers-X is not supported" 에러로 실패한다.
+# 해결: `dkms build/install`을 NVIDIA 모듈 이름/버전을 직접 지정하여 실행한다.
 DKMS_NEEDED=0
 
 if ! command -v nvidia-smi &>/dev/null; then
@@ -784,37 +786,124 @@ else
 fi
 
 if [[ "$DKMS_NEEDED" -eq 1 ]]; then
-  if command -v dkms &>/dev/null; then
-    info "DKMS autoinstall 실행 중 (현재 커널: ${KERNEL_VER})..."
-    if dkms autoinstall 2>&1 | tail -5; then
-      success "DKMS autoinstall 완료"
-      CHANGES_APPLIED+=("NVIDIA DKMS 모듈 빌드: ${KERNEL_VER}")
-
-      # 모듈 로드 시도
-      info "NVIDIA 커널 모듈 로드 중..."
-      if modprobe nvidia 2>/dev/null; then
-        success "nvidia 모듈 로드 성공"
-        # nvidia-smi 재확인
-        if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
-          success "nvidia-smi 정상 작동 확인"
-        else
-          warn "nvidia-smi 아직 작동하지 않음 — 재부팅 후 확인하세요"
-          WARNINGS+=("NVIDIA 모듈 빌드 완료, 재부팅 필요할 수 있음")
-        fi
-      else
-        warn "nvidia 모듈 로드 실패 — 재부팅 후 자동 로드됩니다"
-        WARNINGS+=("NVIDIA 모듈 로드 실패 — 재부팅 필요")
-      fi
-    else
-      error "DKMS autoinstall 실패"
-      warn "수동으로 확인하세요: sudo dkms status"
-      warn "커널 헤더 설치 필요할 수 있음: sudo apt-get install linux-headers-${KERNEL_VER}"
-      WARNINGS+=("DKMS autoinstall 실패 — linux-headers-${KERNEL_VER} 설치 확인")
-    fi
-  else
+  if ! command -v dkms &>/dev/null; then
     warn "dkms가 설치되어 있지 않습니다"
     warn "설치: sudo apt-get install -y dkms"
     WARNINGS+=("dkms 미설치 — sudo apt-get install -y dkms")
+  else
+    # ── 커널 헤더 확인 ──────────────────────────────────────────────────────
+    # 커스텀 RT 커널은 linux-headers-xxx-rt-custom .deb로 설치되었을 수 있다.
+    # /lib/modules/$(uname -r)/build 심볼릭 링크가 존재하면 헤더 사용 가능.
+    HEADERS_DIR="/lib/modules/${KERNEL_VER}/build"
+    if [[ ! -d "$HEADERS_DIR" ]]; then
+      warn "커널 헤더 디렉토리가 없습니다: ${HEADERS_DIR}"
+      warn "커스텀 RT 커널 헤더를 먼저 설치하세요:"
+      warn "  build_rt_kernel.sh 빌드 디렉토리에서:"
+      warn "    sudo dpkg -i linux-headers-${KERNEL_VER}_*.deb"
+      WARNINGS+=("커널 헤더 미설치 — /lib/modules/${KERNEL_VER}/build 없음")
+    else
+      info "커널 헤더 확인: ${HEADERS_DIR}"
+
+      # ── NVIDIA DKMS 모듈 버전 탐색 ─────────────────────────────────────
+      # /var/lib/dkms/nvidia/ 에서 설치된 NVIDIA DKMS 소스 버전을 찾는다.
+      NVIDIA_DKMS_VER=""
+      if [[ -d /var/lib/dkms/nvidia ]]; then
+        NVIDIA_DKMS_VER=$(ls -1 /var/lib/dkms/nvidia/ 2>/dev/null \
+          | grep -E '^[0-9]+\.' | sort -V | tail -1 || true)
+      fi
+
+      if [[ -z "$NVIDIA_DKMS_VER" ]]; then
+        warn "NVIDIA DKMS 소스를 찾을 수 없습니다 (/var/lib/dkms/nvidia/)"
+        warn "NVIDIA DKMS 패키지 설치:"
+        warn "  sudo apt-get install -y nvidia-dkms-535  (또는 설치된 드라이버 버전)"
+        WARNINGS+=("NVIDIA DKMS 소스 없음 — nvidia-dkms-XXX 설치 필요")
+      else
+        info "NVIDIA DKMS 소스 버전: ${NVIDIA_DKMS_VER}"
+
+        # ── 이미 빌드되었는지 확인 ────────────────────────────────────────
+        DKMS_STATUS=$(dkms status nvidia/"${NVIDIA_DKMS_VER}" -k "${KERNEL_VER}" 2>/dev/null || true)
+        if echo "$DKMS_STATUS" | grep -q "installed"; then
+          success "NVIDIA ${NVIDIA_DKMS_VER} 모듈이 이미 설치됨 (커널: ${KERNEL_VER})"
+        else
+          # ── dkms build + install (autoinstall 대신 직접 지정) ────────────
+          # `dkms autoinstall`은 커스텀 커널에서 apport 검증 실패.
+          # `dkms build -m nvidia -v VERSION -k KERNEL`은 apport를 우회한다.
+          info "NVIDIA ${NVIDIA_DKMS_VER} 모듈 빌드 시작 (커널: ${KERNEL_VER})..."
+          info "  dkms build -m nvidia -v ${NVIDIA_DKMS_VER} -k ${KERNEL_VER}"
+
+          set +e
+          BUILD_OUTPUT=$(dkms build -m nvidia -v "${NVIDIA_DKMS_VER}" -k "${KERNEL_VER}" 2>&1)
+          BUILD_RC=$?
+          set -e
+
+          if [[ $BUILD_RC -eq 0 ]]; then
+            success "NVIDIA DKMS 빌드 성공"
+
+            # install
+            info "NVIDIA DKMS 모듈 설치 중..."
+            set +e
+            INSTALL_OUTPUT=$(dkms install -m nvidia -v "${NVIDIA_DKMS_VER}" -k "${KERNEL_VER}" 2>&1)
+            INSTALL_RC=$?
+            set -e
+
+            if [[ $INSTALL_RC -eq 0 ]]; then
+              success "NVIDIA DKMS 모듈 설치 성공"
+              CHANGES_APPLIED+=("NVIDIA DKMS 모듈 빌드/설치: nvidia/${NVIDIA_DKMS_VER} for ${KERNEL_VER}")
+            else
+              warn "NVIDIA DKMS 모듈 설치 실패:"
+              echo "$INSTALL_OUTPUT" | tail -5
+              WARNINGS+=("NVIDIA DKMS install 실패 — 재부팅 후 재시도")
+            fi
+          else
+            warn "NVIDIA DKMS 빌드 실패:"
+            echo "$BUILD_OUTPUT" | tail -10
+
+            # 빌드 실패 원인 분석
+            if echo "$BUILD_OUTPUT" | grep -qi "gcc.*not found\|cc.*not found"; then
+              warn "빌드 도구(gcc) 미설치: sudo apt-get install -y build-essential"
+              WARNINGS+=("gcc 미설치 — sudo apt-get install build-essential")
+            fi
+            if echo "$BUILD_OUTPUT" | grep -qi "kernel source\|kernel header"; then
+              warn "커널 헤더/소스 문제: /lib/modules/${KERNEL_VER}/build 확인"
+              WARNINGS+=("커널 헤더/소스 불완전 — Makefile 등 확인 필요")
+            fi
+
+            # make.log 경로 안내
+            MAKE_LOG="/var/lib/dkms/nvidia/${NVIDIA_DKMS_VER}/build/make.log"
+            if [[ -f "$MAKE_LOG" ]]; then
+              warn "상세 빌드 로그: ${MAKE_LOG}"
+              warn "마지막 20줄:"
+              tail -20 "$MAKE_LOG" 2>/dev/null | while IFS= read -r line; do
+                warn "  ${line}"
+              done
+            fi
+            WARNINGS+=("NVIDIA DKMS 빌드 실패 — ${MAKE_LOG} 확인")
+          fi
+        fi
+
+        # ── 모듈 로드 시도 ──────────────────────────────────────────────────
+        # 빌드/설치 성공 후 또는 이미 설치된 경우 modprobe 시도
+        if dkms status nvidia/"${NVIDIA_DKMS_VER}" -k "${KERNEL_VER}" 2>/dev/null | grep -q "installed"; then
+          if ! lsmod | grep -q "^nvidia "; then
+            info "NVIDIA 커널 모듈 로드 중..."
+            if modprobe nvidia 2>/dev/null; then
+              success "nvidia 모듈 로드 성공"
+              if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+                success "nvidia-smi 정상 작동 확인"
+              else
+                warn "nvidia-smi 아직 작동하지 않음 — 재부팅 후 확인하세요"
+                WARNINGS+=("NVIDIA 모듈 설치됨, 재부팅 필요할 수 있음")
+              fi
+            else
+              warn "nvidia 모듈 로드 실패 — 재부팅 후 자동 로드됩니다"
+              WARNINGS+=("nvidia modprobe 실패 — 재부팅 필요")
+            fi
+          else
+            success "nvidia 모듈 이미 로드됨"
+          fi
+        fi
+      fi
+    fi
   fi
 fi
 
