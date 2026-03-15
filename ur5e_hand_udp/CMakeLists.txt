@@ -19,12 +19,6 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
-
-# 디버깅: CMAKE_PREFIX_PATH 확인 (CI 문제 진단 후 제거 예정)
-message(WARNING ">>> [hand_udp] CMAKE_PREFIX_PATH(var) = ${CMAKE_PREFIX_PATH}")
-message(WARNING ">>> [hand_udp] CMAKE_PREFIX_PATH(env) = $ENV{CMAKE_PREFIX_PATH}")
-message(WARNING ">>> [hand_udp] AMENT_PREFIX_PATH(env) = $ENV{AMENT_PREFIX_PATH}")
-
 find_package(ur5e_rt_base REQUIRED)
 
 # ── Unified node: HandController (request-response polling) ──────────────────

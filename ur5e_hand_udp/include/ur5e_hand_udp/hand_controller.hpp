@@ -370,6 +370,12 @@ class HandController {
       return false;
     }
 
+    // 소형 패킷(43~67B) 전용 소켓 — 버퍼를 명시적으로 설정하여
+    // rmem_default/wmem_default 커널 기본값에 의존하지 않음.
+    constexpr int kUdpBufSize = 65536;  // 64 KB
+    setsockopt(socket_fd_, SOL_SOCKET, SO_RCVBUF, &kUdpBufSize, sizeof(kUdpBufSize));
+    setsockopt(socket_fd_, SOL_SOCKET, SO_SNDBUF, &kUdpBufSize, sizeof(kUdpBufSize));
+
     // SO_RCVTIMEO: YAML에서 설정 가능 (기본값 10ms).
     // recv() 타임아웃으로 stop_token 체크 + 통신 실패 감지 가능.
     struct timeval tv{};

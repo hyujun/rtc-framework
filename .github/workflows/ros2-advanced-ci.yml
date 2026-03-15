@@ -82,6 +82,11 @@ jobs:
       with:
         required-ros-distributions: ${{ matrix.ros_distro }}
 
+    # setup-ros의 colcon이 다수 의존성 시 CMAKE_PREFIX_PATH 구분자를
+    # 세미콜론(;)으로 설정하는 버그 수정 — pip으로 최신 버전 설치
+    - name: Upgrade colcon
+      run: pip install -U colcon-cmake colcon-core
+
     # colcon 빌드 캐시
     - name: Cache colcon workspace
       uses: actions/cache@v4
@@ -119,11 +124,6 @@ jobs:
             '-DCMAKE_EXE_LINKER_FLAGS=--coverage' \
             '-DCMAKE_SHARED_LINKER_FLAGS=--coverage'
 
-    - name: Clean stale coverage data
-      run: |
-        # 캐시에서 복원된 이전 실행의 .gcda 파일 제거 → 깨끗한 coverage 측정
-        find build/ -name '*.gcda' -delete 2>/dev/null || true
-
     - name: Run Tests
       run: |
         source /opt/ros/${{ matrix.ros_distro }}/setup.bash
@@ -160,7 +160,6 @@ jobs:
 
         if [ "$LCOV_MAJOR" -ge 2 ]; then
           # lcov 2.x: --initial 제거됨, --capture만 사용
-          # --ignore-errors mismatch: gcno/gcda 버전 불일치 시에도 진행
           lcov --capture \
             --directory build/ur5e_rt_controller \
             --output-file coverage_merged.info \
@@ -183,14 +182,6 @@ jobs:
             --output-file coverage_merged.info \
             $BRANCH_RC
         fi
-
-        # 디버깅: gcda 존재 확인 + 캡처된 소스 경로 확인
-        echo "=== .gcda files ==="
-        find build/ur5e_rt_controller -name '*.gcda' | head -20 || echo "No .gcda files!"
-        echo ""
-        echo "=== Source paths in coverage_merged.info ==="
-        grep '^SF:' coverage_merged.info | head -20 || true
-        echo ""
 
         # 프로젝트 소스 코드만 추출 (--extract: 명시적 포함 방식)
         lcov --extract coverage_merged.info \
@@ -251,6 +242,9 @@ jobs:
       with:
         required-ros-distributions: humble
 
+    - name: Upgrade colcon
+      run: pip install -U colcon-cmake colcon-core
+
     - name: Install Dependencies
       run: |
         sudo apt-get update
@@ -293,6 +287,9 @@ jobs:
       uses: ros-tooling/setup-ros@v0.7
       with:
         required-ros-distributions: ${{ matrix.ros_distro }}
+
+    - name: Upgrade colcon
+      run: pip install -U colcon-cmake colcon-core
 
     # colcon 빌드 캐시 (build-test-coverage와 별도 키 — cmake args 다름)
     - name: Cache colcon workspace
