@@ -302,17 +302,17 @@ if [[ "$HAS_SMT" -eq 0 ]]; then
     IS_RT_LOGICAL_CPU[$core]=1
   done
 else
-  local os_cpus
-  os_cpus=$(get_os_logical_cpus)
-  for ((cpu=0; cpu<LOGICAL_CORES; cpu++)); do
-    local is_os=0
-    for os_cpu in $os_cpus; do
-      [[ "$cpu" -eq "$os_cpu" ]] && { is_os=1; break; }
+  _os_cpus=$(get_os_logical_cpus)
+  for ((_cpu=0; _cpu<LOGICAL_CORES; _cpu++)); do
+    _is_os=0
+    for _os_cpu in $_os_cpus; do
+      [[ "$_cpu" -eq "$_os_cpu" ]] && { _is_os=1; break; }
     done
-    if [[ "$is_os" -eq 0 ]]; then
-      IS_RT_LOGICAL_CPU[$cpu]=1
+    if [[ "$_is_os" -eq 0 ]]; then
+      IS_RT_LOGICAL_CPU[$_cpu]=1
     fi
   done
+  unset _os_cpus _cpu _is_os _os_cpu
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
