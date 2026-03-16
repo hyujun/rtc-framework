@@ -456,7 +456,7 @@ void RtControllerNode::DeclareAndLoadParameters()
           for (std::size_t i = 0; i < num_sensor_values
                    && i < sim_hand_state_.sensor_data.size(); ++i) {
             sim_hand_state_.sensor_data[i] =
-                static_cast<float>(msg->data[sensor_offset + i]);
+                static_cast<uint32_t>(msg->data[sensor_offset + i]);
           }
           sim_hand_state_.valid = true;
         },

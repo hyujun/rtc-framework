@@ -589,12 +589,12 @@ class HandController {
     return false;  // max_retries 초과 — 초기화 실패
   }
 
-  // Request a sensor read command (3B send) and decode 11 useful values (67B recv).
+  // Request a sensor read command (3B send) and decode 11 useful raw uint32 values (67B recv).
   // MODE field in request carries the desired sensor mode (default kRaw).
   // Response mode_out indicates the actual sensor mode used.
   [[nodiscard]] bool RequestSensorRead(
       hand_packets::Command cmd,
-      std::array<float, kSensorValuesPerFingertip>& out,
+      std::array<uint32_t, kSensorValuesPerFingertip>& out,
       hand_packets::SensorMode sensor_mode = hand_packets::SensorMode::kRaw,
       uint8_t* response_mode = nullptr) noexcept {
     std::array<uint8_t, hand_packets::kSensorRequestSize> send_buf{};
@@ -607,7 +607,7 @@ class HandController {
     if (recvd < static_cast<ssize_t>(hand_packets::kSensorResponseSize)) return false;
 
     uint8_t cmd_out, mode_out;
-    const bool ok = hand_udp_codec::DecodeSensorResponse(
+    const bool ok = hand_udp_codec::DecodeSensorResponseRaw(
         recv_buf.data(), static_cast<std::size_t>(recvd),
         cmd_out, mode_out, out);
     if (ok && response_mode) {
@@ -627,11 +627,11 @@ class HandController {
 
     std::array<uint8_t, hand_packets::kMotorPacketSize> send_buf{};
     std::array<float, hand_packets::kMotorDataCount> motor_float_buf{};
-    std::array<float, kSensorValuesPerFingertip> sensor_float_buf{};
+    std::array<uint32_t, kSensorValuesPerFingertip> sensor_raw_buf{};
     std::array<float, kNumHandMotors> pending_cmd{};
 
     // Sensor decimation: 이전 cycle의 sensor_data를 유지하기 위한 버퍼
-    std::array<float, kMaxHandSensors> cached_sensor_data{};
+    std::array<uint32_t, kMaxHandSensors> cached_sensor_data{};
     int sensor_cycle_counter = 0;
 
     while (!stop_token.stop_requested()) {
@@ -705,8 +705,8 @@ class HandController {
         sensor_cycle_counter = 0;
         for (int i = 0; i < num_fingertips_; ++i) {
           auto cmd = hand_packets::SensorCommand(i);
-          if (RequestSensorRead(cmd, sensor_float_buf)) {
-            std::copy_n(sensor_float_buf.begin(), kSensorValuesPerFingertip,
+          if (RequestSensorRead(cmd, sensor_raw_buf)) {
+            std::copy_n(sensor_raw_buf.begin(), kSensorValuesPerFingertip,
                         cached_sensor_data.begin() + i * kSensorValuesPerFingertip);
             any_recv_ok = true;
           }

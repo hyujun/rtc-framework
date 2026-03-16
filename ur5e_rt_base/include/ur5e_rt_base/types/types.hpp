@@ -79,7 +79,7 @@ struct RobotState {
 struct HandState {
   std::array<float, kNumHandMotors>   motor_positions{};
   std::array<float, kNumHandMotors>   motor_velocities{};
-  std::array<float, kMaxHandSensors>  sensor_data{};   // 최대 kMaxFingertips × 11 values
+  std::array<uint32_t, kMaxHandSensors> sensor_data{};  // 최대 kMaxFingertips × 11 values (raw uint32)
   int num_fingertips{kDefaultNumFingertips};            // 실제 사용 fingertip 수 (YAML)
   bool valid{false};
 };
