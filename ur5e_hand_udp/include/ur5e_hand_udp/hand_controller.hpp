@@ -613,7 +613,10 @@ class HandController {
 
   // Request a sensor read command (3B send) and decode 11 useful raw uint32 values (67B recv).
   // MODE field in request carries the desired sensor mode (default kRaw).
-  // Response cmd must match the request cmd; stale responses are discarded and retried.
+  // Response cmd must match the request cmd; stale responses are discarded via non-blocking retry.
+  //
+  // 첫 recv만 blocking(SO_RCVTIMEO)으로 HW 응답 대기.
+  // cmd 불일치 시 retry recv는 MSG_DONTWAIT로 즉시 반환하여 timeout spike 방지.
   [[nodiscard]] bool RequestSensorRead(
       hand_packets::Command cmd,
       std::array<uint32_t, kSensorValuesPerFingertip>& out,
@@ -625,29 +628,33 @@ class HandController {
 
     hand_udp_codec::EncodeSensorReadRequest(cmd, send_buf, sensor_mode);
 
-    // 최대 3회 시도: stale 응답(cmd 불일치)은 버리고 재수신
-    constexpr int kMaxRetries = 3;
-    for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
-      // 첫 시도에서만 send, 이후는 recv만 재시도
-      if (attempt == 0) {
-        const ssize_t sent = sendto(
-            socket_fd_, send_buf.data(), send_buf.size(), 0,
-            reinterpret_cast<const sockaddr*>(&target_addr_),
-            sizeof(target_addr_));
-        if (sent < 0) return false;
-      }
+    const ssize_t sent = sendto(
+        socket_fd_, send_buf.data(), send_buf.size(), 0,
+        reinterpret_cast<const sockaddr*>(&target_addr_),
+        sizeof(target_addr_));
+    if (sent < 0) return false;
 
-      const ssize_t recvd = ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), 0);
+    // 최대 3회 시도: 첫 recv만 blocking, 이후는 non-blocking
+    constexpr int kMaxAttempts = 3;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+      // attempt 0: blocking recv (SO_RCVTIMEO) — HW 응답 대기
+      // attempt 1+: non-blocking recv — 소켓 버퍼의 stale 패킷만 소비
+      const int flags = (attempt == 0) ? 0 : MSG_DONTWAIT;
+      const ssize_t recvd = ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), flags);
       if (recvd < 0) {
-        recv_error_count_.fetch_add(1, std::memory_order_relaxed);
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-          ++comm_stats_.recv_timeout;
-        } else {
-          ++comm_stats_.recv_error;
+        if (attempt == 0) {
+          recv_error_count_.fetch_add(1, std::memory_order_relaxed);
+          if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            ++comm_stats_.recv_timeout;
+          } else {
+            ++comm_stats_.recv_error;
+          }
         }
-        return false;  // 타임아웃이면 재시도 의미 없음
+        return false;
       }
-      ++comm_stats_.recv_ok;
+      if (attempt == 0) {
+        ++comm_stats_.recv_ok;
+      }
 
       if (recvd < static_cast<ssize_t>(hand_packets::kSensorResponseSize)) continue;
 
@@ -660,13 +667,12 @@ class HandController {
       if (response_mode) { *response_mode = mode_out; }
       if (response_cmd)  { *response_cmd = cmd_out; }
 
-      // cmd 일치 검증: 불일치 시 stale 응답 → 버리고 재수신
       if (cmd_out == static_cast<uint8_t>(cmd)) {
         return true;
       }
-      // cmd 불일치 — stale 응답이므로 다음 recv로 재시도
+      // cmd 불일치 — stale 응답, non-blocking으로 다음 패킷 시도
     }
-    return false;  // kMaxRetries 초과
+    return false;
   }
 
   // Event-driven loop: condvar 대기 → ControlLoop 이벤트 수신 시 write + read 수행.
