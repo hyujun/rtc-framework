@@ -225,13 +225,14 @@ inline void ExtractSensorValues(
     const SensorResponsePacket& pkt,
     std::array<float, kSensorValuesPerFingertip>& out) noexcept {
   // barometer: data[0..7] → out[0..7]
+  // Sensor data is raw integer (ADC count, mm, etc.), NOT IEEE 754 float.
   for (std::size_t i = 0; i < kBarometerCount; ++i) {
-    out[i] = Uint32ToFloat(pkt.data[i]);
+    out[i] = static_cast<float>(pkt.data[i]);
   }
   // skip reserved: data[8..12]
   // tof: data[13..15] → out[8..10]
   for (std::size_t i = 0; i < kTofCount; ++i) {
-    out[kBarometerCount + i] = Uint32ToFloat(pkt.data[kBarometerCount + kReservedCount + i]);
+    out[kBarometerCount + i] = static_cast<float>(pkt.data[kBarometerCount + kReservedCount + i]);
   }
 }
 
