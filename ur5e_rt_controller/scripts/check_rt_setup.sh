@@ -9,17 +9,20 @@
 #   ./check_rt_setup.sh --summary    # 카테고리당 1줄 (build.sh용)
 #   ./check_rt_setup.sh --json       # CI용 JSON 출력
 #   ./check_rt_setup.sh --fix        # 실패 항목별 수정 명령 제안
+#   ./check_rt_setup.sh --benchmark  # cyclictest 실행 (sudo 필요)
 #   ./check_rt_setup.sh --help
 #
-# 검증 카테고리 (8개):
-#   1. RT Kernel        — PREEMPT_RT 활성 여부
-#   2. CPU Isolation    — isolcpus 설정 확인 (thread_config.hpp 매칭)
-#   3. GRUB Parameters  — isolcpus, nohz_full, rcu_nocbs, threadirqs 등
-#   4. RT Permissions   — ulimit, realtime 그룹, limits.conf
-#   5. IRQ Affinity     — 모든 IRQ가 OS 코어에 pinned 여부
-#   6. Network/UDP      — sysctl 버퍼, NIC coalescing/offload
-#   7. NVIDIA (optional)— persistence mode, IRQ affinity, modprobe
-#   8. CPU Frequency    — governor=performance 여부
+# 검증 카테고리 (9개):
+#   1. RT Kernel          — PREEMPT_RT 활성 여부
+#   2. CPU Isolation      — isolcpus 설정 확인 (thread_config.hpp 매칭)
+#   3. Scheduler & Memory — clocksource, sched_rt_runtime_us, THP 등
+#   4. GRUB Parameters    — isolcpus, nohz_full, rcu_nocbs, threadirqs 등
+#   5. RT Permissions     — ulimit, realtime 그룹, limits.conf
+#   6. IRQ Affinity       — 모든 IRQ가 OS 코어에 pinned 여부
+#   7. Network/UDP        — sysctl 버퍼, NIC coalescing/offload
+#   8. NVIDIA (optional)  — persistence mode, IRQ affinity, modprobe
+#   9. CPU Frequency      — governor=performance 여부
+#  [B] Benchmark (--benchmark) — cyclictest RT 지터 실측
 #
 # Exit codes: 0=all pass, 1=warnings only, 2=failures exist
 
@@ -33,6 +36,7 @@ source "${SCRIPT_DIR}/lib/rt_common.sh"
 # ── Output mode ──────────────────────────────────────────────────────────────
 OUTPUT_MODE="verbose"   # verbose | summary | json
 SHOW_FIX=0
+BENCHMARK_MODE=0
 
 # ── Counters ─────────────────────────────────────────────────────────────────
 PASS_COUNT=0
@@ -57,6 +61,7 @@ show_help() {
   echo "  --summary     카테고리당 1줄 요약"
   echo "  --json        JSON 출력 (CI용)"
   echo "  --fix         실패 항목별 수정 명령 표시"
+  echo "  --benchmark   cyclictest RT 지터 실측 (sudo 필요)"
   echo "  --help        이 도움말"
   echo ""
   echo "Exit codes:"
@@ -73,6 +78,7 @@ while [[ $# -gt 0 ]]; do
     --summary)  OUTPUT_MODE="summary"; shift ;;
     --json)     OUTPUT_MODE="json"; shift ;;
     --fix)      SHOW_FIX=1; shift ;;
+    --benchmark) BENCHMARK_MODE=1; shift ;;
     -h|--help)  show_help ;;
     *)          echo "Unknown option: $1"; show_help ;;
   esac
@@ -180,10 +186,10 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [1/8] RT Kernel
+# [1/9] RT Kernel
 # ══════════════════════════════════════════════════════════════════════════════
 check_rt_kernel() {
-  _section "1/8" "RT Kernel"
+  _section "1/9" "RT Kernel"
   _category_start "rt_kernel"
 
   local kernel_ver kernel_detail
@@ -212,10 +218,10 @@ check_rt_kernel() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [2/8] CPU Isolation
+# [2/9] CPU Isolation
 # ══════════════════════════════════════════════════════════════════════════════
 check_cpu_isolation() {
-  _section "2/8" "CPU Isolation"
+  _section "2/9" "CPU Isolation"
   _category_start "cpu_isolation"
 
   local isolated_file="/sys/devices/system/cpu/isolated"
@@ -265,10 +271,93 @@ check_cpu_isolation() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [3/8] GRUB Parameters
+# [3/9] Scheduler & Memory
+# ══════════════════════════════════════════════════════════════════════════════
+check_scheduler_memory() {
+  _section "3/9" "Scheduler & Memory"
+  _category_start "scheduler_memory"
+
+  local issues=0
+
+  # 3.1 Clocksource — tsc가 아니면 타이머 정밀도 저하
+  local clock_file="/sys/devices/system/clocksource/clocksource0/current_clocksource"
+  if [[ -r "$clock_file" ]]; then
+    local clock
+    clock=$(cat "$clock_file" 2>/dev/null || echo "unknown")
+    if [[ "$clock" == "tsc" ]]; then
+      _pass "Clocksource: tsc"
+    else
+      _warn "Clocksource: ${clock} (tsc 권장 — 타이머 정밀도 저하)"
+      _fix "echo tsc | sudo tee /sys/devices/system/clocksource/clocksource0/current_clocksource"
+      _fix "GRUB에 clocksource=tsc tsc=reliable 추가 (영구 적용)"
+      _category_update "scheduler_memory" "WARN"
+      ((issues++)) || true
+    fi
+  else
+    _skip "Clocksource: 파일 없음 (${clock_file})"
+  fi
+
+  # 3.2 sched_rt_runtime_us — -1이 아니면 RT 스레드 95% 쓰로틀링
+  local rt_runtime
+  rt_runtime=$(sysctl -n kernel.sched_rt_runtime_us 2>/dev/null || echo "unknown")
+  if [[ "$rt_runtime" == "-1" ]]; then
+    _pass "sched_rt_runtime_us: -1 (RT 쓰로틀링 없음)"
+  elif [[ "$rt_runtime" == "unknown" ]]; then
+    _skip "sched_rt_runtime_us: 읽기 실패"
+  else
+    _fail "sched_rt_runtime_us: ${rt_runtime} (기본 950000 → RT 스레드 95% 제한)"
+    _fix "sudo sysctl -w kernel.sched_rt_runtime_us=-1"
+    _fix "영구 적용: echo 'kernel.sched_rt_runtime_us=-1' | sudo tee /etc/sysctl.d/99-rt-sched.conf"
+    _category_update "scheduler_memory" "FAIL"
+    ((issues++)) || true
+  fi
+
+  # 3.3 timer_migration — isolated core에 타이머 이동 방지
+  local timer_mig
+  timer_mig=$(sysctl -n kernel.timer_migration 2>/dev/null || echo "unknown")
+  if [[ "$timer_mig" == "0" ]]; then
+    _pass "timer_migration: 0"
+  elif [[ "$timer_mig" == "unknown" ]]; then
+    _skip "timer_migration: 읽기 실패"
+  else
+    _warn "timer_migration: ${timer_mig} (0 권장 — isolated core에 타이머 이동 방지)"
+    _fix "sudo sysctl -w kernel.timer_migration=0"
+    _category_update "scheduler_memory" "WARN"
+    ((issues++)) || true
+  fi
+
+  # 3.4 Transparent Huge Pages — THP compaction이 latency spike 유발
+  local thp_file="/sys/kernel/mm/transparent_hugepage/enabled"
+  if [[ -r "$thp_file" ]]; then
+    local thp_val
+    thp_val=$(cat "$thp_file" 2>/dev/null || echo "")
+    if [[ "$thp_val" == *"[never]"* ]]; then
+      _pass "Transparent Huge Pages: never"
+    else
+      local active
+      active=$(echo "$thp_val" | grep -oP '\[\K[^\]]+')
+      _warn "Transparent Huge Pages: ${active} (never 권장 — compaction이 latency spike 유발)"
+      _fix "echo never | sudo tee ${thp_file}"
+      _fix "영구 적용: GRUB에 transparent_hugepage=never 추가"
+      _category_update "scheduler_memory" "WARN"
+      ((issues++)) || true
+    fi
+  else
+    _skip "THP: sysfs 파일 없음"
+  fi
+
+  if [[ "$issues" -eq 0 ]]; then
+    _category_set_detail "scheduler_memory" "all optimal"
+  else
+    _category_set_detail "scheduler_memory" "${issues} issue(s)"
+  fi
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# [4/9] GRUB Parameters
 # ══════════════════════════════════════════════════════════════════════════════
 check_grub_params() {
-  _section "3/8" "GRUB Parameters"
+  _section "4/9" "GRUB Parameters"
   _category_start "grub_params"
 
   local cmdline
@@ -326,10 +415,10 @@ check_grub_params() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [4/8] RT Permissions
+# [5/9] RT Permissions
 # ══════════════════════════════════════════════════════════════════════════════
 check_rt_permissions() {
-  _section "4/8" "RT Permissions"
+  _section "5/9" "RT Permissions"
   _category_start "rt_permissions"
 
   # ulimit -r (rtprio)
@@ -389,10 +478,10 @@ check_rt_permissions() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [5/8] IRQ Affinity
+# [6/9] IRQ Affinity
 # ══════════════════════════════════════════════════════════════════════════════
 check_irq_affinity() {
-  _section "5/8" "IRQ Affinity"
+  _section "6/9" "IRQ Affinity"
   _category_start "irq_affinity"
 
   local rt_irq_count=0
@@ -471,10 +560,10 @@ check_irq_affinity() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [6/8] Network / UDP
+# [7/9] Network / UDP
 # ══════════════════════════════════════════════════════════════════════════════
 check_network_udp() {
-  _section "6/8" "Network / UDP"
+  _section "7/9" "Network / UDP"
   _category_start "network_udp"
 
   # sysctl 값 검증 (setup_udp_optimization.sh와 일치)
@@ -546,6 +635,17 @@ check_network_udp() {
         _skip "NIC ${nic}: ethtool -c 권한 부족"
       fi
 
+      # Adaptive interrupt moderation 확인
+      local adaptive_rx
+      adaptive_rx=$(echo "$coal_out" | awk '/^Adaptive RX:/ {print $3}')
+      if [[ "${adaptive_rx:-}" == "on" ]]; then
+        _warn "NIC ${nic}: Adaptive RX coalescing ON (jitter 유발)"
+        _fix "sudo ethtool -C ${nic} adaptive-rx off"
+        _category_update "network_udp" "WARN"
+      elif [[ -n "${adaptive_rx:-}" ]]; then
+        _pass "NIC ${nic}: Adaptive RX coalescing off"
+      fi
+
       # Offload 확인
       local offload_out
       offload_out=$(ethtool -k "$nic" 2>&1)
@@ -571,10 +671,10 @@ check_network_udp() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [7/8] NVIDIA (optional)
+# [8/9] NVIDIA (optional)
 # ══════════════════════════════════════════════════════════════════════════════
 check_nvidia() {
-  _section "7/8" "NVIDIA (optional)"
+  _section "8/9" "NVIDIA (optional)"
   _category_start "nvidia"
 
   # GPU 존재 확인
@@ -608,6 +708,15 @@ check_nvidia() {
     _fail "nvidia-smi 미설치 — NVIDIA 드라이버 패키지 또는 DKMS 빌드 필요"
     _fix "sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh"
     _category_update "nvidia" "FAIL"
+  fi
+
+  # nvidia-powerd — GPU 전력 관리가 jitter 유발
+  if systemctl is-active --quiet nvidia-powerd 2>/dev/null; then
+    _warn "nvidia-powerd 실행 중 (GPU 전력 관리가 latency spike 유발)"
+    _fix "sudo systemctl disable --now nvidia-powerd"
+    _category_update "nvidia" "WARN"
+  else
+    _pass "nvidia-powerd: 미실행"
   fi
 
   # DKMS 모듈 상태
@@ -674,10 +783,10 @@ check_nvidia() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [8/8] CPU Frequency
+# [9/9] CPU Frequency
 # ══════════════════════════════════════════════════════════════════════════════
 check_cpu_frequency() {
-  _section "8/8" "CPU Frequency"
+  _section "9/9" "CPU Frequency"
   _category_start "cpu_frequency"
 
   local gov_dir="/sys/devices/system/cpu/cpu0/cpufreq"
@@ -747,13 +856,80 @@ check_cpu_frequency() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
+# [B] Benchmark — cyclictest RT 지터 실측 (--benchmark 옵션)
+# ══════════════════════════════════════════════════════════════════════════════
+check_benchmark() {
+  _section "Bench" "RT Latency Benchmark (cyclictest)"
+  _category_start "benchmark"
+
+  if ! command -v cyclictest &>/dev/null; then
+    _fail "cyclictest 미설치"
+    _fix "sudo apt install rt-tests"
+    _category_update "benchmark" "FAIL"
+    _category_set_detail "benchmark" "not installed"
+    return
+  fi
+
+  if [[ "$EUID" -ne 0 ]]; then
+    _skip "cyclictest는 root 권한 필요 (sudo $0 --benchmark)"
+    _category_set_detail "benchmark" "needs sudo"
+    return
+  fi
+
+  local cycles=10000
+  if [[ "$OUTPUT_MODE" == "verbose" ]]; then
+    echo -e "  ${DIM}cyclictest 실행 중 (${cycles} loops, 1ms interval, SCHED_FIFO 99)...${NC}"
+  fi
+
+  local ct_out
+  ct_out=$(cyclictest --mlockall --smp --priority=99 --interval=1000 \
+           --loops="$cycles" --quiet 2>/dev/null || true)
+
+  if [[ -z "$ct_out" ]]; then
+    _warn "cyclictest 출력 없음"
+    _category_update "benchmark" "WARN"
+    _category_set_detail "benchmark" "no output"
+    return
+  fi
+
+  local worst_max=0
+  while IFS= read -r line; do
+    if [[ "$line" =~ T:\ *([0-9]+).*Min:\ *([0-9]+).*Avg:\ *([0-9]+).*Max:\ *([0-9]+) ]]; then
+      local core="${BASH_REMATCH[1]}"
+      local ct_min="${BASH_REMATCH[2]}"
+      local ct_avg="${BASH_REMATCH[3]}"
+      local ct_max="${BASH_REMATCH[4]}"
+
+      if [[ "$ct_max" -le 50 ]]; then
+        _pass "Core ${core}: Min=${ct_min} Avg=${ct_avg} Max=${ct_max} μs"
+      elif [[ "$ct_max" -le 100 ]]; then
+        _warn "Core ${core}: Min=${ct_min} Avg=${ct_avg} Max=${ct_max} μs (marginal >50μs)"
+        _category_update "benchmark" "WARN"
+      else
+        _fail "Core ${core}: Min=${ct_min} Avg=${ct_avg} Max=${ct_max} μs (excessive >100μs)"
+        _category_update "benchmark" "FAIL"
+      fi
+
+      [[ "$ct_max" -gt "$worst_max" ]] && worst_max="$ct_max"
+    fi
+  done <<< "$ct_out"
+
+  _category_set_detail "benchmark" "max ${worst_max}μs"
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Summary output
 # ══════════════════════════════════════════════════════════════════════════════
 print_summary() {
-  local categories=("rt_kernel" "cpu_isolation" "grub_params" "rt_permissions"
-                    "irq_affinity" "network_udp" "nvidia" "cpu_frequency")
-  local labels=("RT Kernel" "CPU Isolation" "GRUB Params" "RT Permissions"
-                "IRQ Affinity" "Network/UDP" "NVIDIA" "CPU Frequency")
+  local categories=("rt_kernel" "cpu_isolation" "scheduler_memory" "grub_params"
+                    "rt_permissions" "irq_affinity" "network_udp" "nvidia" "cpu_frequency")
+  local labels=("RT Kernel" "CPU Isolation" "Sched/Memory" "GRUB Params"
+                "RT Permissions" "IRQ Affinity" "Network/UDP" "NVIDIA" "CPU Frequency")
+
+  if [[ "$BENCHMARK_MODE" -eq 1 ]]; then
+    categories+=("benchmark")
+    labels+=("Benchmark")
+  fi
 
   if [[ "$OUTPUT_MODE" == "summary" ]]; then
     echo -e "${BOLD}RT Setup Check (${TOTAL_CORES}-core)${NC}"
@@ -792,8 +968,11 @@ print_summary() {
 # JSON output
 # ══════════════════════════════════════════════════════════════════════════════
 print_json() {
-  local categories=("rt_kernel" "cpu_isolation" "grub_params" "rt_permissions"
-                    "irq_affinity" "network_udp" "nvidia" "cpu_frequency")
+  local categories=("rt_kernel" "cpu_isolation" "scheduler_memory" "grub_params"
+                    "rt_permissions" "irq_affinity" "network_udp" "nvidia" "cpu_frequency")
+  if [[ "$BENCHMARK_MODE" -eq 1 ]]; then
+    categories+=("benchmark")
+  fi
 
   echo "{"
   echo "  \"timestamp\": \"$(date -Iseconds)\","
@@ -835,12 +1014,17 @@ main() {
 
   check_rt_kernel
   check_cpu_isolation
+  check_scheduler_memory
   check_grub_params
   check_rt_permissions
   check_irq_affinity
   check_network_udp
   check_nvidia
   check_cpu_frequency
+
+  if [[ "$BENCHMARK_MODE" -eq 1 ]]; then
+    check_benchmark
+  fi
 
   if [[ "$OUTPUT_MODE" == "json" ]]; then
     print_json
