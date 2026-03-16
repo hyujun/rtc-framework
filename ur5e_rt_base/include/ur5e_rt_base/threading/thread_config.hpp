@@ -217,6 +217,79 @@ inline const ThreadConfig kHandFailureConfig4Core{
     .name           = "hand_detect"
 };
 
+// ── 16-core configuration ───────────────────────────────────────────────────
+// cset shield isolates Core 4-8 → "user" cpuset (0 tasks).
+// rt_controller lives in "system" cpuset (Core 0-3, 9-21).
+// All threads MUST use system-cpuset cores to avoid pthread_setaffinity_np
+// failures caused by cpuset boundary violations.
+//
+// Core 0-1:  OS / DDS / NIC IRQ
+// Core 2:    RT Control           (SCHED_FIFO 90, protected by priority)
+// Core 3:    Sensor I/O           (SCHED_FIFO 70, protected by priority)
+// Core 4-8:  cset shield "user"   (reserved — reduces OS noise system-wide)
+// Core 9:    UDP recv             (SCHED_FIFO 65)
+// Core 10:   Logging              (100 Hz CSV drain)
+// Core 11:   Aux                  (E-STOP publisher)
+
+inline const ThreadConfig kRtControlConfig16Core{
+    .cpu_core       = 2,
+    .sched_policy   = SCHED_FIFO,
+    .sched_priority = 90,
+    .nice_value     = 0,
+    .name           = "rt_control"
+};
+
+inline const ThreadConfig kSensorConfig16Core{
+    .cpu_core       = 3,
+    .sched_policy   = SCHED_FIFO,
+    .sched_priority = 70,
+    .nice_value     = 0,
+    .name           = "sensor_io"
+};
+
+inline const ThreadConfig kUdpRecvConfig16Core{
+    .cpu_core       = 9,       // System cpuset — outside shield (4-8)
+    .sched_policy   = SCHED_FIFO,
+    .sched_priority = 65,
+    .nice_value     = 0,
+    .name           = "udp_recv"
+};
+
+inline const ThreadConfig kLoggingConfig16Core{
+    .cpu_core       = 10,      // System cpuset — outside shield (4-8)
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -5,
+    .name           = "logger"
+};
+
+inline const ThreadConfig kAuxConfig16Core{
+    .cpu_core       = 11,      // System cpuset — outside shield (4-8)
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = 0,
+    .name           = "aux"
+};
+
+// ── Non-RT monitoring threads (16-core) ────────────────────────────────────
+// Share Core 10 with logging — all SCHED_OTHER and I/O-light.
+
+inline const ThreadConfig kStatusMonitorConfig16Core{
+    .cpu_core       = 10,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -2,
+    .name           = "status_mon"
+};
+
+inline const ThreadConfig kHandFailureConfig16Core{
+    .cpu_core       = 10,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -2,
+    .name           = "hand_detect"
+};
+
 // ── Simulation core assignment (Tier 3, no RT scheduling) ────────────────────
 // Used by mujoco_sim.launch.py for taskset pinning of MuJoCo threads.
 // MuJoCo sim_thread runs physics computation (CPU-intensive, no RT constraints).

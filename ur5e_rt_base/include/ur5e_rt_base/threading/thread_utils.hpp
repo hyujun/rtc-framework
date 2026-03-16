@@ -687,12 +687,19 @@ struct SystemThreadConfigs
   // Uses GetPhysicalCpuCount() (not GetOnlineCpuCount()) to avoid SMT/HT over-counting.
   // Example: i7-8700 (6C/12T) correctly selects 6-core layout, not 8-core.
   //
-  // >=8 cores: 8-core layout — udp_recv gets its own dedicated Core 4.
-  // >=6 cores: 6-core layout — udp_recv shares Core 5 with aux (light).
-  // < 6 cores: 4-core fallback — udp_recv shares Core 2 with sensor_io.
+  // >=16 cores: 16-core layout — non-RT threads on cores 9+ (outside cset shield 4-8).
+  // >=8 cores:  8-core layout — udp_recv gets its own dedicated Core 4.
+  // >=6 cores:  6-core layout — udp_recv shares Core 5 with aux (light).
+  // < 6 cores:  4-core fallback — udp_recv shares Core 2 with sensor_io.
   inline SystemThreadConfigs SelectThreadConfigs() noexcept
   {
     const int ncpu = GetPhysicalCpuCount();
+    if (ncpu >= 16)
+    {
+      return {kRtControlConfig16Core, kSensorConfig16Core, kUdpRecvConfig16Core,
+              kLoggingConfig16Core, kAuxConfig16Core,
+              kStatusMonitorConfig16Core, kHandFailureConfig16Core};
+    }
     if (ncpu >= 8)
     {
       return {kRtControlConfig8Core, kSensorConfig8Core, kUdpRecvConfig8Core,
