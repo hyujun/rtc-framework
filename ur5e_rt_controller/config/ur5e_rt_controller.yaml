@@ -48,6 +48,11 @@
     hand_timeout_ms: 200.0           # /hand/joint_states 갭 초과 시 E-STOP (ms)
                                      # 핸드 미연결 환경: 0.0 으로 비활성화
 
+    # ── 핸드 센서 설정 ───────────────────────────────────────────────────────
+    # 실제 물리 센서가 있는 fingertip 수 (thumb=0, index=1, middle=2, ring=3)
+    # -1: num_fingertips와 동일 (기본), 2: thumb+index만 센서 읽기 (middle/ring=0)
+    num_sensor_fingertips: 2
+
     # ── 로깅 설정 (플랫 파라미터 — 네스트 금지) ───────────────────────────────
     enable_logging: true             # CSV 로깅 전체 활성화
     enable_timing_log: true          # timing_log CSV (타이밍/jitter)
