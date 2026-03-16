@@ -1,6 +1,6 @@
 # ur5e_description
 
-UR5e 로봇의 모델 description 파일 패키지 (v5.10.0).
+UR5e 로봇의 모델 description 파일 패키지 (v5.14.0).
 
 `ur5e_mujoco_sim`, `ur5e_rt_controller` 등 모든 패키지가 이 단일 소스에서 모델을 참조합니다.
 
@@ -30,6 +30,29 @@ robots/ur5e/
         ├── base.stl, shoulder.stl, upperarm.stl
         ├── forearm.stl, wrist1.stl, wrist2.stl, wrist3.stl
 ```
+
+### 관절 사양
+
+| 관절 | 타입 | 위치 한계 (rad) | 최대 속도 (rad/s) | 최대 토크 (Nm) |
+|------|------|----------------|-------------------|----------------|
+| shoulder_pan_joint | revolute | ±2π | 2.0944 | 150.0 |
+| shoulder_lift_joint | revolute | ±2π | 2.0944 | 150.0 |
+| elbow_joint | revolute | ±π | 3.1416 | 150.0 |
+| wrist_1_joint | revolute | ±2π | 3.1416 | 28.0 |
+| wrist_2_joint | revolute | ±2π | 3.1416 | 28.0 |
+| wrist_3_joint | revolute | ±2π | 3.1416 | 28.0 |
+
+### 링크 질량
+
+| 링크 | 질량 (kg) | 비고 |
+|------|-----------|------|
+| base_link | 4.0 | 고정 베이스 |
+| shoulder_link | 3.7 | — |
+| upper_arm_link | 8.393 | — |
+| forearm_link | 2.275 | — |
+| wrist_1_link | 1.219 | — |
+| wrist_2_link | 1.219 | — |
+| wrist_3_link | 0.1879 | 엔드 이펙터 |
 
 ---
 

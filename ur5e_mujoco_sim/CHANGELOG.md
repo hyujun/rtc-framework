@@ -18,15 +18,9 @@
 
 ## [5.8.0] - 2026-03-14
 
-### 변경
+### 변경 (Changed)
+
 - 워크스페이스 전체 버전 (v5.8.0) 통일
-
----
-
-## [Unreleased]
-
-### 변경 (Changed) — 문서
-
 - README.md: `/forward_torque_controller/commands` 토픽, effort 필드, QoS 설명 추가
 - README.md: 설정 예시 `sim_mode` 기본값을 `"sync_step"`으로 수정 (실제 YAML과 일치)
 - README.md: 존재하지 않는 API (`GetStats()`, `GetStateSnapshot()`) 제거, 실제 접근자로 대체

@@ -1,6 +1,6 @@
 # ur5e_hand_udp
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.11.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.14.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 
 UR5e RT Controller 스택의 **10-DOF 손 UDP 브리지 패키지**입니다. 외부 손 컨트롤러(하드웨어)와 ROS2 토픽 사이의 UDP request-response 통신을 담당합니다.
@@ -298,6 +298,20 @@ struct HandCommStats {
 auto stats = controller.comm_stats();
 ```
 
+### HandTimingProfiler
+
+EventLoop의 각 단계별 소요시간을 추적합니다:
+
+```cpp
+struct HandTimingStats {
+  double write_us{0.0};     // WritePosition 소요시간
+  double read_pos_us{0.0};  // ReadPosition 소요시간
+  double read_vel_us{0.0};  // ReadVelocity 소요시간
+  double read_sensor_us{0.0}; // ReadSensor×4 소요시간
+  double total_us{0.0};     // 전체 사이클 소요시간
+};
+```
+
 ### JSON 통계 내보내기 (v5.9.0, 경로 변경 v5.10.0)
 
 노드 종료 시 `UR5E_SESSION_DIR/hand/hand_udp_stats.json`에 통신 통계를 저장합니다 (세션 미설정 시 `/tmp/` 폴백):
@@ -308,9 +322,15 @@ auto stats = controller.comm_stats();
   "recv_ok": 148500,
   "recv_timeout": 1200,
   "recv_error": 300,
+  "event_skip_count": 42,
   "avg_rate_hz": 99.50,
   "elapsed_sec": 1500.00,
-  "failure_detected": false
+  "failure_detected": false,
+  "timing_stats": {
+    "write_us": {"mean": 120.5, "max": 450.2},
+    "read_pos_us": {"mean": 180.3, "max": 520.1},
+    "total_cycle_us": {"mean": 1350.0, "max": 3200.5}
+  }
 }
 ```
 

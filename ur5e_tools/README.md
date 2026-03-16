@@ -1,6 +1,6 @@
 # ur5e_tools
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.12.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.14.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md)
 
 UR5e RT Controller 스택의 **Python 개발 유틸리티 패키지**입니다. 컨트롤러 GUI, 모션 편집기, 궤적 시각화, UDP 손 통신, 모델 검증 도구를 포함합니다.
