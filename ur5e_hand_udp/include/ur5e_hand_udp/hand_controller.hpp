@@ -601,9 +601,19 @@ class HandController {
     return false;  // max_retries 초과 — 초기화 실패
   }
 
+  // Drain stale UDP responses from the socket buffer (non-blocking).
+  void DrainStaleResponses() noexcept {
+    std::array<uint8_t, hand_packets::kMaxPacketSize> discard{};
+    for (int i = 0; i < 8; ++i) {
+      const ssize_t r = ::recv(socket_fd_, discard.data(), discard.size(),
+                               MSG_DONTWAIT);
+      if (r <= 0) break;  // 버퍼 비어있으면 종료
+    }
+  }
+
   // Request a sensor read command (3B send) and decode 11 useful raw uint32 values (67B recv).
   // MODE field in request carries the desired sensor mode (default kRaw).
-  // Response mode_out indicates the actual sensor mode used.
+  // Response cmd must match the request cmd; stale responses are discarded and retried.
   [[nodiscard]] bool RequestSensorRead(
       hand_packets::Command cmd,
       std::array<uint32_t, kSensorValuesPerFingertip>& out,
@@ -614,22 +624,49 @@ class HandController {
     std::array<uint8_t, hand_packets::kSensorResponseSize> recv_buf{};
 
     hand_udp_codec::EncodeSensorReadRequest(cmd, send_buf, sensor_mode);
-    const ssize_t recvd = SendAndRecvRaw(
-        send_buf.data(), send_buf.size(),
-        recv_buf.data(), recv_buf.size());
-    if (recvd < static_cast<ssize_t>(hand_packets::kSensorResponseSize)) return false;
 
-    uint8_t cmd_out, mode_out;
-    const bool ok = hand_udp_codec::DecodeSensorResponseRaw(
-        recv_buf.data(), static_cast<std::size_t>(recvd),
-        cmd_out, mode_out, out);
-    if (ok && response_mode) {
-      *response_mode = mode_out;
+    // 최대 3회 시도: stale 응답(cmd 불일치)은 버리고 재수신
+    constexpr int kMaxRetries = 3;
+    for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
+      // 첫 시도에서만 send, 이후는 recv만 재시도
+      if (attempt == 0) {
+        const ssize_t sent = sendto(
+            socket_fd_, send_buf.data(), send_buf.size(), 0,
+            reinterpret_cast<const sockaddr*>(&target_addr_),
+            sizeof(target_addr_));
+        if (sent < 0) return false;
+      }
+
+      const ssize_t recvd = ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), 0);
+      if (recvd < 0) {
+        recv_error_count_.fetch_add(1, std::memory_order_relaxed);
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+          ++comm_stats_.recv_timeout;
+        } else {
+          ++comm_stats_.recv_error;
+        }
+        return false;  // 타임아웃이면 재시도 의미 없음
+      }
+      ++comm_stats_.recv_ok;
+
+      if (recvd < static_cast<ssize_t>(hand_packets::kSensorResponseSize)) continue;
+
+      uint8_t cmd_out, mode_out;
+      const bool ok = hand_udp_codec::DecodeSensorResponseRaw(
+          recv_buf.data(), static_cast<std::size_t>(recvd),
+          cmd_out, mode_out, out);
+      if (!ok) continue;
+
+      if (response_mode) { *response_mode = mode_out; }
+      if (response_cmd)  { *response_cmd = cmd_out; }
+
+      // cmd 일치 검증: 불일치 시 stale 응답 → 버리고 재수신
+      if (cmd_out == static_cast<uint8_t>(cmd)) {
+        return true;
+      }
+      // cmd 불일치 — stale 응답이므로 다음 recv로 재시도
     }
-    if (ok && response_cmd) {
-      *response_cmd = cmd_out;
-    }
-    return ok;
+    return false;  // kMaxRetries 초과
   }
 
   // Event-driven loop: condvar 대기 → ControlLoop 이벤트 수신 시 write + read 수행.
@@ -721,6 +758,8 @@ class HandController {
       const bool is_sensor_cycle = (sensor_cycle_counter >= sensor_decimation_);
       if (is_sensor_cycle) {
         sensor_cycle_counter = 0;
+        // 이전 cycle에서 남은 stale 응답을 drain하여 cmd/resp 불일치 방지
+        DrainStaleResponses();
         const auto now_dbg = std::chrono::steady_clock::now();
         const bool do_debug_print =
             (now_dbg - sensor_debug_print_time) >= std::chrono::seconds(1);
