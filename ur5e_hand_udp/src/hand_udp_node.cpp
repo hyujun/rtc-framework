@@ -55,9 +55,10 @@ class HandUdpNode : public rclcpp::Node {
     const bool        enable_write_ack = get_parameter("enable_write_ack").as_bool();
 
     // ── HandController ─────────────────────────────────────────────────
+    const auto ft_names = get_parameter("hand_fingertip_names").as_string_array();
     controller_ = std::make_unique<urtc::HandController>(
         target_ip, target_port, urtc::kUdpRecvConfig, recv_timeout_ms,
-        enable_write_ack);
+        enable_write_ack, 1, urtc::kDefaultNumFingertips, false, ft_names);
 
     controller_->SetCallback([this](const urtc::HandState& state) {
       std::lock_guard lock(data_mutex_);
