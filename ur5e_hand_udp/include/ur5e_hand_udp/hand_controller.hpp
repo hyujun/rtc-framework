@@ -608,7 +608,8 @@ class HandController {
       hand_packets::Command cmd,
       std::array<uint32_t, kSensorValuesPerFingertip>& out,
       hand_packets::SensorMode sensor_mode = hand_packets::SensorMode::kRaw,
-      uint8_t* response_mode = nullptr) noexcept {
+      uint8_t* response_mode = nullptr,
+      uint8_t* response_cmd = nullptr) noexcept {
     std::array<uint8_t, hand_packets::kSensorRequestSize> send_buf{};
     std::array<uint8_t, hand_packets::kSensorResponseSize> recv_buf{};
 
@@ -624,6 +625,9 @@ class HandController {
         cmd_out, mode_out, out);
     if (ok && response_mode) {
       *response_mode = mode_out;
+    }
+    if (ok && response_cmd) {
+      *response_cmd = cmd_out;
     }
     return ok;
   }
@@ -722,7 +726,9 @@ class HandController {
             (now_dbg - sensor_debug_print_time) >= std::chrono::seconds(1);
         for (int i = 0; i < num_fingertips_; ++i) {
           auto cmd = hand_packets::SensorCommand(i);
-          if (RequestSensorRead(cmd, sensor_raw_buf)) {
+          uint8_t resp_cmd = 0;
+          if (RequestSensorRead(cmd, sensor_raw_buf,
+                                hand_packets::SensorMode::kRaw, nullptr, &resp_cmd)) {
             std::copy_n(sensor_raw_buf.begin(), kSensorValuesPerFingertip,
                         cached_sensor_data.begin() + i * kSensorValuesPerFingertip);
             any_recv_ok = true;
@@ -732,7 +738,8 @@ class HandController {
               const char* name = (static_cast<std::size_t>(i) < fingertip_names_.size())
                                      ? fingertip_names_[static_cast<std::size_t>(i)].c_str()
                                      : "unknown";
-              std::printf("[Sensor %d (%s)] baro=[", i, name);
+              std::printf("[Sensor %d (%s) cmd=0x%02X resp=0x%02X] baro=[",
+                          i, name, static_cast<uint8_t>(cmd), resp_cmd);
               for (int b = 0; b < kBarometerCount; ++b) {
                 std::printf("%s%u", (b > 0 ? "," : ""), sensor_raw_buf[static_cast<std::size_t>(b)]);
               }
@@ -747,7 +754,8 @@ class HandController {
             const char* name = (static_cast<std::size_t>(i) < fingertip_names_.size())
                                    ? fingertip_names_[static_cast<std::size_t>(i)].c_str()
                                    : "unknown";
-            std::printf("[Sensor %d (%s)] recv FAILED\n", i, name);
+            std::printf("[Sensor %d (%s) cmd=0x%02X] recv FAILED\n",
+                        i, name, static_cast<uint8_t>(cmd));
           }
         }
         if (do_debug_print) {
