@@ -28,8 +28,8 @@
     target_port: 55151                # 핸드 컨트롤러 포트 (0 → hand 비활성)
     recv_timeout_ms: 2                # SO_RCVTIMEO (ms), 수신 타임아웃
     enable_write_ack: false           # 핸드 하드웨어 ACK 지원 시 true
-    sensor_decimation: 2              # N cycle마다 센서 읽기 (1=매번, 2=2cycle마다)
-                                      # decimation=4: 평균 ~1.3ms/cycle (write+pos+vel만)
+    sensor_decimation: 3              # N cycle마다 센서 읽기 (1=매번, 3=3cycle마다)
+                                      # decimation=3: 센서 사이클 빈도↓ → over_budget↓
                                       # 센서 skip 시 이전 캐시 데이터 유지
 
     # ── 모터/핑거팁 이름 (v5.14.0 named messaging) ──────────────────────
