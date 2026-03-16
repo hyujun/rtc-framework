@@ -383,6 +383,11 @@ class HandController {
     tv.tv_usec = (recv_timeout_ms_ % 1000) * 1000;
     setsockopt(socket_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
+    // 센서 초기화: NN → RAW 모드 전환 (num_fingertips > 0일 때만)
+    if (num_fingertips_ > 0) {
+      sensor_init_ok_ = InitializeSensors();
+    }
+
     running_.store(true, std::memory_order_release);
     event_thread_ = std::jthread([this](std::stop_token st) {
       EventLoop(std::move(st));
@@ -468,6 +473,11 @@ class HandController {
     return running_.load(std::memory_order_acquire);
   }
 
+  /// Returns true if sensor initialization (NN→RAW) succeeded.
+  [[nodiscard]] bool IsSensorInitialized() const noexcept {
+    return sensor_init_ok_;
+  }
+
   [[nodiscard]] std::size_t cycle_count() const noexcept {
     return cycle_count_.load(std::memory_order_relaxed);
   }
@@ -546,6 +556,7 @@ class HandController {
 
   // Send a set-sensor-mode command (CMD=0x04, 3B send, 3B recv echo).
   // Must be called once after sensor power-on to switch from NN to RAW mode.
+  // Returns true only when response mode field confirms the requested mode.
   [[nodiscard]] bool RequestSetSensorMode(
       hand_packets::SensorMode sensor_mode) noexcept {
     std::array<uint8_t, hand_packets::kSensorRequestSize> send_buf{};
@@ -555,15 +566,35 @@ class HandController {
     const ssize_t recvd = SendAndRecvRaw(
         send_buf.data(), send_buf.size(),
         recv_buf.data(), recv_buf.size());
-    return recvd >= static_cast<ssize_t>(hand_packets::kSensorRequestSize);
+    if (recvd < static_cast<ssize_t>(hand_packets::kSensorRequestSize)) {
+      return false;  // 수신 실패 (타임아웃)
+    }
+    // Response mode 필드(offset 2)가 요청한 모드와 일치하는지 검증
+    return recv_buf[2] == static_cast<uint8_t>(sensor_mode);
   }
 
-  // Request a sensor read command (3B send) and decode 11 useful values (67B recv).
+  // Sensor initialization: switch from NN (power-on default) to RAW mode.
+  // Retries up to max_retries times with retry_interval_ms between attempts.
+  // Returns true only when the response confirms RAW mode.
+  [[nodiscard]] bool InitializeSensors(
+      int max_retries = 5,
+      int retry_interval_ms = 100) noexcept {
+    for (int attempt = 0; attempt < max_retries; ++attempt) {
+      if (RequestSetSensorMode(hand_packets::SensorMode::kRaw)) {
+        return true;  // Response mode == kRaw 확인됨
+      }
+      std::this_thread::sleep_for(
+          std::chrono::milliseconds(retry_interval_ms));
+    }
+    return false;  // max_retries 초과 — 초기화 실패
+  }
+
+  // Request a sensor read command (3B send) and decode 11 useful raw uint32 values (67B recv).
   // MODE field in request carries the desired sensor mode (default kRaw).
   // Response mode_out indicates the actual sensor mode used.
   [[nodiscard]] bool RequestSensorRead(
       hand_packets::Command cmd,
-      std::array<float, kSensorValuesPerFingertip>& out,
+      std::array<uint32_t, kSensorValuesPerFingertip>& out,
       hand_packets::SensorMode sensor_mode = hand_packets::SensorMode::kRaw,
       uint8_t* response_mode = nullptr) noexcept {
     std::array<uint8_t, hand_packets::kSensorRequestSize> send_buf{};
@@ -576,7 +607,7 @@ class HandController {
     if (recvd < static_cast<ssize_t>(hand_packets::kSensorResponseSize)) return false;
 
     uint8_t cmd_out, mode_out;
-    const bool ok = hand_udp_codec::DecodeSensorResponse(
+    const bool ok = hand_udp_codec::DecodeSensorResponseRaw(
         recv_buf.data(), static_cast<std::size_t>(recvd),
         cmd_out, mode_out, out);
     if (ok && response_mode) {
@@ -596,11 +627,11 @@ class HandController {
 
     std::array<uint8_t, hand_packets::kMotorPacketSize> send_buf{};
     std::array<float, hand_packets::kMotorDataCount> motor_float_buf{};
-    std::array<float, kSensorValuesPerFingertip> sensor_float_buf{};
+    std::array<uint32_t, kSensorValuesPerFingertip> sensor_raw_buf{};
     std::array<float, kNumHandMotors> pending_cmd{};
 
     // Sensor decimation: 이전 cycle의 sensor_data를 유지하기 위한 버퍼
-    std::array<float, kMaxHandSensors> cached_sensor_data{};
+    std::array<uint32_t, kMaxHandSensors> cached_sensor_data{};
     int sensor_cycle_counter = 0;
 
     while (!stop_token.stop_requested()) {
@@ -674,8 +705,8 @@ class HandController {
         sensor_cycle_counter = 0;
         for (int i = 0; i < num_fingertips_; ++i) {
           auto cmd = hand_packets::SensorCommand(i);
-          if (RequestSensorRead(cmd, sensor_float_buf)) {
-            std::copy_n(sensor_float_buf.begin(), kSensorValuesPerFingertip,
+          if (RequestSensorRead(cmd, sensor_raw_buf)) {
+            std::copy_n(sensor_raw_buf.begin(), kSensorValuesPerFingertip,
                         cached_sensor_data.begin() + i * kSensorValuesPerFingertip);
             any_recv_ok = true;
           }
@@ -732,6 +763,7 @@ class HandController {
   int  sensor_decimation_;     // N cycle마다 센서 읽기 (1=매번, 4=4cycle마다)
   int  num_fingertips_;        // YAML에서 설정된 fingertip 수
   bool use_fake_hand_;         // true: echo-back mock (UDP 소켓 미생성)
+  bool sensor_init_ok_{false}; // 센서 초기화 (NN→RAW) 성공 여부
 
   // 전역 E-Stop 플래그 (RtControllerNode에서 설정, null이면 체크하지 않음)
   std::atomic<bool>* estop_flag_{nullptr};

@@ -165,18 +165,25 @@ def generate_launch_description():
 
     # ── [RT] 로봇 모드 CPU Shield (Tier 1 + Tier 2) ─────────────────────────────
     # 격리 미활성 시 자동으로 cset shield를 활성화한다.
+    # 스크립트 경로를 Python에서 미리 resolve (sudo 환경에서 ros2 명령 불가 문제 회피)
+    _pkg_prefix = get_package_share_directory('ur5e_rt_controller')
+    _shield_script = os.path.join(
+        os.path.dirname(os.path.dirname(_pkg_prefix)),
+        'lib', 'ur5e_rt_controller', 'cpu_shield.sh')
+
     enable_cpu_shield = ExecuteProcess(
         cmd=[
             'bash', '-c',
-            'SCRIPT_DIR="$(ros2 pkg prefix ur5e_rt_controller 2>/dev/null)/lib/ur5e_rt_controller" && '
-            'if [ -f "$SCRIPT_DIR/cpu_shield.sh" ]; then '
+            f'if [ -f "{_shield_script}" ]; then '
             '  ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); '
             '  if [ -z "$ISOLATED" ]; then '
             '    echo "[RT] CPU shield 미활성 — 로봇 모드 자동 활성화 중..."; '
-            '    sudo "$SCRIPT_DIR/cpu_shield.sh" on --robot; '
+            f'    sudo "{_shield_script}" on --robot; '
             '  else '
             '    echo "[RT] CPU shield 이미 활성: Core $ISOLATED 격리됨"; '
             '  fi; '
+            'else '
+            f'  echo "[RT] WARNING: cpu_shield.sh not found: {_shield_script}"; '
             'fi'
         ],
         output='screen',

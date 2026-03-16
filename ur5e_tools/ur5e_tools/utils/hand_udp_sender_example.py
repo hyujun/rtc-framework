@@ -263,15 +263,37 @@ class HandUDPSender:
             sensor_mode: SENSOR_MODE_RAW (0) 또는 SENSOR_MODE_NN (1)
 
         Returns:
-            True if echo received, False on timeout
+            True if response mode confirms requested mode, False otherwise
         """
         pkt = encode_set_sensor_mode(sensor_mode)
         self.sock.sendto(pkt, self.target)
         try:
             data, _ = self.sock.recvfrom(256)
-            return len(data) >= SENSOR_REQUEST_SIZE
+            if len(data) < SENSOR_REQUEST_SIZE:
+                return False
+            # Response mode 필드(offset 2)가 요청한 모드와 일치하는지 검증
+            return data[2] == sensor_mode
         except socket.timeout:
             return False
+
+    def initialize_sensors(self, max_retries: int = 5,
+                           retry_interval: float = 0.1) -> bool:
+        """센서 초기화: NN → RAW 모드 전환 (재시도 포함).
+
+        Response mode가 RAW로 확인될 때까지 최대 max_retries회 재시도.
+
+        Args:
+            max_retries: 최대 재시도 횟수 (기본 5)
+            retry_interval: 재시도 간격 초 (기본 0.1)
+
+        Returns:
+            True if sensor confirmed RAW mode, False if all retries failed
+        """
+        for attempt in range(max_retries):
+            if self.set_sensor_mode(SENSOR_MODE_RAW):
+                return True
+            time.sleep(retry_interval)
+        return False
 
     def read_sensor(self, fingertip_idx: int,
                     sensor_mode: int = SENSOR_MODE_RAW) -> tuple[list[int], int] | None:
@@ -820,10 +842,10 @@ def example_poll_cycle(target_ip: str = "192.168.1.2",
     # 센서 초기화: NN → RAW 모드 전환 (전원 인가 시 기본 NN)
     if num_sensors > 0:
         print("  센서 초기화: set_sensor_mode(RAW)...")
-        if sender.set_sensor_mode(SENSOR_MODE_RAW):
+        if sender.initialize_sensors():
             print("  → 센서 모드 RAW 설정 완료")
         else:
-            print("  → 센서 모드 설정 실패 (타임아웃)")
+            print("  → 센서 초기화 실패 (RAW 모드 전환 불가)")
 
     csv_logger = None
     if csv_dir is not None:
@@ -921,10 +943,10 @@ def example_read_only(target_ip: str = "192.168.1.2",
     # 센서 초기화: NN → RAW 모드 전환 (전원 인가 시 기본 NN)
     if num_sensors > 0:
         print("  센서 초기화: set_sensor_mode(RAW)...")
-        if sender.set_sensor_mode(SENSOR_MODE_RAW):
+        if sender.initialize_sensors():
             print("  → 센서 모드 RAW 설정 완료")
         else:
-            print("  → 센서 모드 설정 실패 (타임아웃)")
+            print("  → 센서 초기화 실패 (RAW 모드 전환 불가)")
 
     csv_logger = None
     if csv_dir is not None:
