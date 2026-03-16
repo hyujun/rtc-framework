@@ -687,12 +687,40 @@ struct SystemThreadConfigs
   // Uses GetPhysicalCpuCount() (not GetOnlineCpuCount()) to avoid SMT/HT over-counting.
   // Example: i7-8700 (6C/12T) correctly selects 6-core layout, not 8-core.
   //
-  // >=8 cores: 8-core layout — udp_recv gets its own dedicated Core 4.
-  // >=6 cores: 6-core layout — udp_recv shares Core 5 with aux (light).
-  // < 6 cores: 4-core fallback — udp_recv shares Core 2 with sensor_io.
+  // cset shield core allocation (robot mode):
+  //   ≤4: 1-3 | 5-7: 2-5 | 8-15: 2-6 | 16+: 4-8
+  // Thread layouts place threads OUTSIDE the shield range to avoid cpuset conflicts.
+  //
+  // >=16 cores: 16-core layout — threads on 0-3,9+ (shield 4-8).
+  // >=12 cores: 12-core layout — threads on 0-1,7-11 (shield 2-6), dedicated cores.
+  // >=10 cores: 10-core layout — threads on 0-1,7-9 (shield 2-6), shared Core 9.
+  // >=8 cores:  8-core layout — threads on 2-6 (no shield-aware mapping).
+  // >=6 cores:  6-core layout — threads on 2-5, udp_recv shares Core 5 with aux.
+  // < 6 cores:  4-core fallback — threads on 1-3, udp_recv shares Core 2.
+  //
+  // Note: 8-9 core layout still uses cores 2-6 which overlap with shield 2-6.
+  // On these systems, SCHED_FIFO provides RT protection without cpuset isolation.
   inline SystemThreadConfigs SelectThreadConfigs() noexcept
   {
     const int ncpu = GetPhysicalCpuCount();
+    if (ncpu >= 16)
+    {
+      return {kRtControlConfig16Core, kSensorConfig16Core, kUdpRecvConfig16Core,
+              kLoggingConfig16Core, kAuxConfig16Core,
+              kStatusMonitorConfig16Core, kHandFailureConfig16Core};
+    }
+    if (ncpu >= 12)
+    {
+      return {kRtControlConfig12Core, kSensorConfig12Core, kUdpRecvConfig12Core,
+              kLoggingConfig12Core, kAuxConfig12Core,
+              kStatusMonitorConfig12Core, kHandFailureConfig12Core};
+    }
+    if (ncpu >= 10)
+    {
+      return {kRtControlConfig10Core, kSensorConfig10Core, kUdpRecvConfig10Core,
+              kLoggingConfig10Core, kAuxConfig10Core,
+              kStatusMonitorConfig10Core, kHandFailureConfig10Core};
+    }
     if (ncpu >= 8)
     {
       return {kRtControlConfig8Core, kSensorConfig8Core, kUdpRecvConfig8Core,

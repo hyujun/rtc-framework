@@ -217,6 +217,220 @@ inline const ThreadConfig kHandFailureConfig4Core{
     .name           = "hand_detect"
 };
 
+// ── 10-core configuration ───────────────────────────────────────────────────
+// cset shield isolates Core 2-6 → "user" cpuset.
+// rt_controller lives in "system" cpuset (Core 0-1, 7-9).
+// Only 3 non-OS system cores available → udp_recv shares with logging/aux.
+//
+// Core 0-1:  OS / DDS / NIC IRQ
+// Core 2-6:  cset shield "user"   (reserved — reduces OS noise system-wide)
+// Core 7:    RT Control           (SCHED_FIFO 90)
+// Core 8:    Sensor I/O           (SCHED_FIFO 70)
+// Core 9:    UDP recv + Logging + Aux  (shared — udp_recv preempts via FIFO)
+
+inline const ThreadConfig kRtControlConfig10Core{
+    .cpu_core       = 7,
+    .sched_policy   = SCHED_FIFO,
+    .sched_priority = 90,
+    .nice_value     = 0,
+    .name           = "rt_control"
+};
+
+inline const ThreadConfig kSensorConfig10Core{
+    .cpu_core       = 8,
+    .sched_policy   = SCHED_FIFO,
+    .sched_priority = 70,
+    .nice_value     = 0,
+    .name           = "sensor_io"
+};
+
+inline const ThreadConfig kUdpRecvConfig10Core{
+    .cpu_core       = 9,       // Shared — SCHED_FIFO preempts logging/aux
+    .sched_policy   = SCHED_FIFO,
+    .sched_priority = 65,
+    .nice_value     = 0,
+    .name           = "udp_recv"
+};
+
+inline const ThreadConfig kLoggingConfig10Core{
+    .cpu_core       = 9,       // Shared with udp_recv — preempted by FIFO 65
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -5,
+    .name           = "logger"
+};
+
+inline const ThreadConfig kAuxConfig10Core{
+    .cpu_core       = 9,       // Shared with udp_recv + logging
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = 0,
+    .name           = "aux"
+};
+
+// ── Non-RT monitoring threads (10-core) ────────────────────────────────────
+
+inline const ThreadConfig kStatusMonitorConfig10Core{
+    .cpu_core       = 9,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -2,
+    .name           = "status_mon"
+};
+
+inline const ThreadConfig kHandFailureConfig10Core{
+    .cpu_core       = 9,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -2,
+    .name           = "hand_detect"
+};
+
+// ── 12-core configuration ───────────────────────────────────────────────────
+// cset shield isolates Core 2-6 → "user" cpuset.
+// rt_controller lives in "system" cpuset (Core 0-1, 7-11).
+// 5 non-OS system cores → dedicated core for each thread.
+//
+// Core 0-1:  OS / DDS / NIC IRQ
+// Core 2-6:  cset shield "user"   (reserved — reduces OS noise system-wide)
+// Core 7:    RT Control           (SCHED_FIFO 90)
+// Core 8:    Sensor I/O           (SCHED_FIFO 70)
+// Core 9:    UDP recv             (SCHED_FIFO 65)
+// Core 10:   Logging + monitors   (100 Hz CSV drain)
+// Core 11:   Aux                  (E-STOP publisher)
+
+inline const ThreadConfig kRtControlConfig12Core{
+    .cpu_core       = 7,
+    .sched_policy   = SCHED_FIFO,
+    .sched_priority = 90,
+    .nice_value     = 0,
+    .name           = "rt_control"
+};
+
+inline const ThreadConfig kSensorConfig12Core{
+    .cpu_core       = 8,
+    .sched_policy   = SCHED_FIFO,
+    .sched_priority = 70,
+    .nice_value     = 0,
+    .name           = "sensor_io"
+};
+
+inline const ThreadConfig kUdpRecvConfig12Core{
+    .cpu_core       = 9,       // Dedicated — fully isolated from sensor_io
+    .sched_policy   = SCHED_FIFO,
+    .sched_priority = 65,
+    .nice_value     = 0,
+    .name           = "udp_recv"
+};
+
+inline const ThreadConfig kLoggingConfig12Core{
+    .cpu_core       = 10,      // System cpuset — outside shield (2-6)
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -5,
+    .name           = "logger"
+};
+
+inline const ThreadConfig kAuxConfig12Core{
+    .cpu_core       = 11,      // System cpuset — outside shield (2-6)
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = 0,
+    .name           = "aux"
+};
+
+// ── Non-RT monitoring threads (12-core) ────────────────────────────────────
+// Share Core 10 with logging — all SCHED_OTHER and I/O-light.
+
+inline const ThreadConfig kStatusMonitorConfig12Core{
+    .cpu_core       = 10,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -2,
+    .name           = "status_mon"
+};
+
+inline const ThreadConfig kHandFailureConfig12Core{
+    .cpu_core       = 10,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -2,
+    .name           = "hand_detect"
+};
+
+// ── 16-core configuration ───────────────────────────────────────────────────
+// cset shield isolates Core 4-8 → "user" cpuset (0 tasks).
+// rt_controller lives in "system" cpuset (Core 0-3, 9-21).
+// All threads MUST use system-cpuset cores to avoid pthread_setaffinity_np
+// failures caused by cpuset boundary violations.
+//
+// Core 0-1:  OS / DDS / NIC IRQ
+// Core 2:    RT Control           (SCHED_FIFO 90, protected by priority)
+// Core 3:    Sensor I/O           (SCHED_FIFO 70, protected by priority)
+// Core 4-8:  cset shield "user"   (reserved — reduces OS noise system-wide)
+// Core 9:    UDP recv             (SCHED_FIFO 65)
+// Core 10:   Logging              (100 Hz CSV drain)
+// Core 11:   Aux                  (E-STOP publisher)
+
+inline const ThreadConfig kRtControlConfig16Core{
+    .cpu_core       = 2,
+    .sched_policy   = SCHED_FIFO,
+    .sched_priority = 90,
+    .nice_value     = 0,
+    .name           = "rt_control"
+};
+
+inline const ThreadConfig kSensorConfig16Core{
+    .cpu_core       = 3,
+    .sched_policy   = SCHED_FIFO,
+    .sched_priority = 70,
+    .nice_value     = 0,
+    .name           = "sensor_io"
+};
+
+inline const ThreadConfig kUdpRecvConfig16Core{
+    .cpu_core       = 9,       // System cpuset — outside shield (4-8)
+    .sched_policy   = SCHED_FIFO,
+    .sched_priority = 65,
+    .nice_value     = 0,
+    .name           = "udp_recv"
+};
+
+inline const ThreadConfig kLoggingConfig16Core{
+    .cpu_core       = 10,      // System cpuset — outside shield (4-8)
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -5,
+    .name           = "logger"
+};
+
+inline const ThreadConfig kAuxConfig16Core{
+    .cpu_core       = 11,      // System cpuset — outside shield (4-8)
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = 0,
+    .name           = "aux"
+};
+
+// ── Non-RT monitoring threads (16-core) ────────────────────────────────────
+// Share Core 10 with logging — all SCHED_OTHER and I/O-light.
+
+inline const ThreadConfig kStatusMonitorConfig16Core{
+    .cpu_core       = 10,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -2,
+    .name           = "status_mon"
+};
+
+inline const ThreadConfig kHandFailureConfig16Core{
+    .cpu_core       = 10,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -2,
+    .name           = "hand_detect"
+};
+
 // ── Simulation core assignment (Tier 3, no RT scheduling) ────────────────────
 // Used by mujoco_sim.launch.py for taskset pinning of MuJoCo threads.
 // MuJoCo sim_thread runs physics computation (CPU-intensive, no RT constraints).
@@ -228,10 +442,12 @@ struct SimCoreLayout {
 
 /// Returns MuJoCo simulation core layout based on physical core count.
 /// Only pins sim_thread on 8+ core systems where dedicated Tier 3 cores exist.
+/// Avoids cores used by RT thread layouts and cset shield ranges.
 inline constexpr SimCoreLayout GetSimCoreLayout(int physical_cores) {
-  if (physical_cores >= 16) return {9, 10};   // 16+: OS 0-3, RT 4-8, Sim 9-10
-  if (physical_cores >= 10) return {7, 8};    // 10+: OS 0-1, RT 2-6, Sim 7-8
-  if (physical_cores >= 8)  return {6, -1};   // 8:   OS 0-1, RT 2-6, Sim 6 (viewer on OS)
+  if (physical_cores >= 16) return {12, 13};  // 16+: RT 2-3,9-11, shield 4-8, Sim 12-13
+  if (physical_cores >= 12) return {11, -1};  // 12+: RT 7-11, shield 2-6, Sim shares 11
+  if (physical_cores >= 10) return {9, -1};   // 10+: RT 7-9, shield 2-6, Sim shares 9
+  if (physical_cores >= 8)  return {7, -1};   // 8:   RT 2-6, Sim 7 (viewer on OS)
   return {-1, -1};                            // <8:  no dedicated sim core
 }
 
