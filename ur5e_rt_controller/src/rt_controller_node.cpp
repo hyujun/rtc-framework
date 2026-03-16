@@ -373,7 +373,6 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("recv_timeout_ms", 10);
   declare_parameter("enable_write_ack", false);
   declare_parameter("sensor_decimation", 1);
-  declare_parameter("num_sensor_fingertips", -1);
 
   const std::string hand_ip = get_parameter("target_ip").as_string();
   const int hand_port = static_cast<int>(get_parameter("target_port").as_int());
@@ -472,14 +471,11 @@ void RtControllerNode::DeclareAndLoadParameters()
     const bool hand_write_ack = get_parameter("enable_write_ack").as_bool();
     const int sensor_decimation = static_cast<int>(
         get_parameter("sensor_decimation").as_int());
-    const int num_sensor_fingertips = static_cast<int>(
-        get_parameter("num_sensor_fingertips").as_int());
     const auto cfgs = ur5e_rt_controller::SelectThreadConfigs();
 
     hand_controller_ = std::make_unique<urtc::HandController>(
         hand_ip, hand_port, cfgs.udp_recv,
-        hand_recv_timeout, hand_write_ack, sensor_decimation,
-        urtc::kDefaultNumFingertips, false, num_sensor_fingertips);
+        hand_recv_timeout, hand_write_ack, sensor_decimation);
     hand_controller_->SetEstopFlag(&global_estop_);
 
     if (hand_controller_->Start()) {

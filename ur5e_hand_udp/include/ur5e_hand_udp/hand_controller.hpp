@@ -330,8 +330,7 @@ class HandController {
       bool enable_write_ack = false,
       int sensor_decimation = 1,
       int num_fingertips = kDefaultNumFingertips,
-      bool use_fake_hand = false,
-      int num_sensor_fingertips = -1) noexcept
+      bool use_fake_hand = false) noexcept
       : target_ip_(std::move(target_ip)),
         target_port_(target_port),
         thread_cfg_(thread_cfg),
@@ -340,12 +339,7 @@ class HandController {
         sensor_decimation_(sensor_decimation < 1 ? 1 : sensor_decimation),
         num_fingertips_(num_fingertips > kMaxFingertips ? kMaxFingertips
                        : (num_fingertips < 0 ? 0 : num_fingertips)),
-        use_fake_hand_(use_fake_hand),
-        num_sensor_fingertips_(num_sensor_fingertips < 0
-                               ? num_fingertips_
-                               : (num_sensor_fingertips > num_fingertips_
-                                  ? num_fingertips_
-                                  : num_sensor_fingertips)) {}
+        use_fake_hand_(use_fake_hand) {}
 
   ~HandController() { Stop(); }
 
@@ -709,7 +703,7 @@ class HandController {
       const bool is_sensor_cycle = (sensor_cycle_counter >= sensor_decimation_);
       if (is_sensor_cycle) {
         sensor_cycle_counter = 0;
-        for (int i = 0; i < num_sensor_fingertips_; ++i) {
+        for (int i = 0; i < num_fingertips_; ++i) {
           auto cmd = hand_packets::SensorCommand(i);
           if (RequestSensorRead(cmd, sensor_raw_buf)) {
             std::copy_n(sensor_raw_buf.begin(), kSensorValuesPerFingertip,
@@ -767,9 +761,8 @@ class HandController {
 
   bool enable_write_ack_;
   int  sensor_decimation_;     // N cycle마다 센서 읽기 (1=매번, 4=4cycle마다)
-  int  num_fingertips_;        // YAML에서 설정된 fingertip 수 (CSV 컬럼 등 구조 결정)
+  int  num_fingertips_;        // YAML에서 설정된 fingertip 수
   bool use_fake_hand_;         // true: echo-back mock (UDP 소켓 미생성)
-  int  num_sensor_fingertips_; // 실제 센서 읽기 대상 fingertip 수 (나머지는 0 유지)
   bool sensor_init_ok_{false}; // 센서 초기화 (NN→RAW) 성공 여부
 
   // 전역 E-Stop 플래그 (RtControllerNode에서 설정, null이면 체크하지 않음)
