@@ -481,6 +481,10 @@ void RtControllerNode::DeclareAndLoadParameters()
     if (hand_controller_->Start()) {
       RCLCPP_INFO(get_logger(), "HandController started: %s:%d (event-driven)",
                   hand_ip.c_str(), hand_port);
+      if (!hand_controller_->IsSensorInitialized()) {
+        RCLCPP_WARN(get_logger(),
+            "Hand sensor init failed — sensors may remain in NN mode");
+      }
     } else {
       RCLCPP_ERROR(get_logger(), "HandController failed to start: %s:%d",
                    hand_ip.c_str(), hand_port);
