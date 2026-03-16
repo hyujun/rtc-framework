@@ -5,6 +5,16 @@
 
 ---
 
+## [5.14.0] - 2026-03-16
+
+### 변경 (Changed) — 문서 업데이트
+
+- README.md: HandTimingProfiler 섹션 추가
+- README.md: JSON 통계 예시에 event_skip_count, timing_stats 추가
+- README.md: 버전 v5.14.0 업데이트
+
+---
+
 ## [5.11.0] - 2026-03-14
 
 ### 추가 (Added) — Event Skip 보호 및 Sensor Decimation

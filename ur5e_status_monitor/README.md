@@ -1,6 +1,6 @@
 # ur5e_status_monitor
 
-**Non-RT safety & status monitor for UR5e servoJ real-time control (v5.10.0)**
+**Non-RT safety & status monitor for UR5e servoJ real-time control (v5.14.0)**
 
 ![ROS2](https://img.shields.io/badge/ROS2-Humble%20%7C%20Jazzy-blue)
 ![C++](https://img.shields.io/badge/C%2B%2B-20-brightgreen)

@@ -5,7 +5,7 @@
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 ![ROS2 Jazzy](https://img.shields.io/badge/ROS2-Jazzy-green)
 
-**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.13.0)**
+**Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.14.0)**
 
 E-STOP 안전 시스템, 전략 패턴 기반 다중 제어기(P/JointPD/CLIK/OSC/Hand), MuJoCo 3.x 물리 시뮬레이터, UDP 핸드 인터페이스, CSV 데이터 로깅, GUI 도구를 포함한 완전한 실시간 제어 솔루션입니다.
 
@@ -13,10 +13,11 @@ E-STOP 안전 시스템, 전략 패턴 기반 다중 제어기(P/JointPD/CLIK/OS
 
 ## 패키지 구성
 
-7개 독립 ROS2 패키지로 구성되어 있으며, 각 패키지는 자체 `README.md`와 `CHANGELOG.md`를 포함합니다.
+8개 독립 ROS2 패키지로 구성되어 있으며, 각 패키지는 자체 `README.md`와 `CHANGELOG.md`를 포함합니다.
 
 | 패키지 | 설명 | 빌드 시스템 |
 |--------|------|-------------|
+| [`ur5e_msgs`](ur5e_msgs/) | 커스텀 ROS2 메시지 정의 (JointCommand, HandCommand, HandSensorState) | ament_cmake |
 | [`ur5e_description`](ur5e_description/) | 로봇 모델 파일 (MJCF, URDF, 메시) | ament_cmake |
 | [`ur5e_rt_base`](ur5e_rt_base/) | 공유 헤더-전용 라이브러리 (타입, 스레딩, 로깅, 필터) | ament_cmake |
 | [`ur5e_status_monitor`](ur5e_status_monitor/) | 비-RT 상태 모니터 라이브러리 (10Hz 안전 감시) | ament_cmake |
@@ -28,12 +29,13 @@ E-STOP 안전 시스템, 전략 패턴 기반 다중 제어기(P/JointPD/CLIK/OS
 ### 의존성 그래프
 
 ```
+ur5e_msgs             ← 독립 (std_msgs만 의존)
 ur5e_description      ← 독립 (모델 파일 제공)
 
 ur5e_rt_base          ← 독립 (공유 기반, 헤더-전용)
     ↑
     ├── ur5e_status_monitor  ← ur5e_rt_base (비-RT 상태 모니터 라이브러리)
-    ├── ur5e_rt_controller   ← ur5e_rt_base, ur5e_description, ur5e_status_monitor
+    ├── ur5e_rt_controller   ← ur5e_rt_base, ur5e_msgs, ur5e_description, ur5e_status_monitor
     └── ur5e_hand_udp        ← ur5e_rt_base
 
 ur5e_mujoco_sim       ← ur5e_description (런타임 모델 참조)
@@ -162,6 +164,7 @@ echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
 | [docs/VSCODE_DEBUGGING.md](docs/VSCODE_DEBUGGING.md) | VS Code + GDB 디버깅 가이드 |
 | [docs/CLAUDE.md](docs/CLAUDE.md) | AI 어시스턴트 컨텍스트 문서 |
 | [ur5e_rt_controller/docs/ADDING_CONTROLLER.md](ur5e_rt_controller/docs/ADDING_CONTROLLER.md) | 새 컨트롤러 추가 단계별 가이드 |
+| [docs/SHELL_SCRIPTS.md](docs/SHELL_SCRIPTS.md) | RT 설정 쉘 스크립트 가이드 (커널 빌드, CPU 격리, IRQ, 네트워크) |
 
 ---
 
