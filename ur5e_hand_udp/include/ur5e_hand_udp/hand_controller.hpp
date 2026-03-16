@@ -32,6 +32,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -330,7 +331,8 @@ class HandController {
       bool enable_write_ack = false,
       int sensor_decimation = 1,
       int num_fingertips = kDefaultNumFingertips,
-      bool use_fake_hand = false) noexcept
+      bool use_fake_hand = false,
+      const std::vector<std::string>& fingertip_names = {}) noexcept
       : target_ip_(std::move(target_ip)),
         target_port_(target_port),
         thread_cfg_(thread_cfg),
@@ -339,7 +341,17 @@ class HandController {
         sensor_decimation_(sensor_decimation < 1 ? 1 : sensor_decimation),
         num_fingertips_(num_fingertips > kMaxFingertips ? kMaxFingertips
                        : (num_fingertips < 0 ? 0 : num_fingertips)),
-        use_fake_hand_(use_fake_hand) {}
+        use_fake_hand_(use_fake_hand),
+        fingertip_names_(fingertip_names.empty()
+                         ? kDefaultFingertipNames
+                         : fingertip_names)
+  {
+    // fingertip_names 갯수로 num_fingertips_ 결정
+    const int name_count = static_cast<int>(fingertip_names_.size());
+    if (name_count < num_fingertips_) {
+      num_fingertips_ = name_count;
+    }
+  }
 
   ~HandController() { Stop(); }
 
@@ -699,6 +711,7 @@ class HandController {
       const auto t3 = std::chrono::steady_clock::now();  // read_vel 완료
 
       // 4. Read sensors — sensor_decimation_ cycle마다 수행, 나머지는 캐시 사용
+      //    fingertip_names_ 갯수만큼 순서대로 sensor0, sensor1, ... 커맨드 전송
       ++sensor_cycle_counter;
       const bool is_sensor_cycle = (sensor_cycle_counter >= sensor_decimation_);
       if (is_sensor_cycle) {
@@ -709,6 +722,26 @@ class HandController {
             std::copy_n(sensor_raw_buf.begin(), kSensorValuesPerFingertip,
                         cached_sensor_data.begin() + i * kSensorValuesPerFingertip);
             any_recv_ok = true;
+
+            // Debug: 수신된 센서 데이터 출력
+            const char* name = (static_cast<std::size_t>(i) < fingertip_names_.size())
+                                   ? fingertip_names_[static_cast<std::size_t>(i)].c_str()
+                                   : "unknown";
+            std::printf("[Sensor %d (%s)] baro=[", i, name);
+            for (int b = 0; b < kBarometerCount; ++b) {
+              std::printf("%s%u", (b > 0 ? "," : ""), sensor_raw_buf[static_cast<std::size_t>(b)]);
+            }
+            std::printf("] tof=[");
+            for (int t = 0; t < kTofCount; ++t) {
+              std::printf("%s%u", (t > 0 ? "," : ""),
+                          sensor_raw_buf[static_cast<std::size_t>(kBarometerCount + t)]);
+            }
+            std::printf("]\n");
+          } else {
+            const char* name = (static_cast<std::size_t>(i) < fingertip_names_.size())
+                                   ? fingertip_names_[static_cast<std::size_t>(i)].c_str()
+                                   : "unknown";
+            std::printf("[Sensor %d (%s)] recv FAILED\n", i, name);
           }
         }
       }
@@ -761,8 +794,9 @@ class HandController {
 
   bool enable_write_ack_;
   int  sensor_decimation_;     // N cycle마다 센서 읽기 (1=매번, 4=4cycle마다)
-  int  num_fingertips_;        // YAML에서 설정된 fingertip 수
+  int  num_fingertips_;        // fingertip_names 갯수로 결정된 센서 읽기 대상 수
   bool use_fake_hand_;         // true: echo-back mock (UDP 소켓 미생성)
+  std::vector<std::string> fingertip_names_;  // YAML에서 로드된 fingertip 이름 목록
   bool sensor_init_ok_{false}; // 센서 초기화 (NN→RAW) 성공 여부
 
   // 전역 E-Stop 플래그 (RtControllerNode에서 설정, null이면 체크하지 않음)

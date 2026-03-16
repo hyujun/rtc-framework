@@ -388,8 +388,10 @@ void RtControllerNode::DeclareAndLoadParameters()
     // Fake mode: echo-back HandController (UDP 소켓 없이 내부 echo-back)
     hand_sim_enabled_ = false;
     const auto cfgs = ur5e_rt_controller::SelectThreadConfigs();
+    const auto fake_ft_names = get_parameter("hand_fingertip_names").as_string_array();
     hand_controller_ = std::make_unique<urtc::HandController>(
-        "", 0, cfgs.udp_recv, 10, false, 1, urtc::kDefaultNumFingertips, true);
+        "", 0, cfgs.udp_recv, 10, false, 1, urtc::kDefaultNumFingertips, true,
+        fake_ft_names);
     static_cast<void>(hand_controller_->Start());
     enable_hand_ = true;
     RCLCPP_INFO(get_logger(), "HandController started in FAKE mode (echo-back)");
@@ -471,11 +473,13 @@ void RtControllerNode::DeclareAndLoadParameters()
     const bool hand_write_ack = get_parameter("enable_write_ack").as_bool();
     const int sensor_decimation = static_cast<int>(
         get_parameter("sensor_decimation").as_int());
+    const auto hand_ft_names = get_parameter("hand_fingertip_names").as_string_array();
     const auto cfgs = ur5e_rt_controller::SelectThreadConfigs();
 
     hand_controller_ = std::make_unique<urtc::HandController>(
         hand_ip, hand_port, cfgs.udp_recv,
-        hand_recv_timeout, hand_write_ack, sensor_decimation);
+        hand_recv_timeout, hand_write_ack, sensor_decimation,
+        urtc::kDefaultNumFingertips, false, hand_ft_names);
     hand_controller_->SetEstopFlag(&global_estop_);
 
     if (hand_controller_->Start()) {
