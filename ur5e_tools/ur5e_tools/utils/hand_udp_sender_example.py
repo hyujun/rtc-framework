@@ -20,7 +20,7 @@
   - WritePosition  0x01 : 모터 10개 목표 위치 전송
   - SetSensorMode  0x04 : 센서 초기화 (MODE 필드 = 0:raw / 1:nn), 3B → 3B echo
   - ReadAllMotors  0x10 : 모터 10개 위치+속도+전류 일괄 요청 → 응답 수신 (123B)
-                          데이터: [m0_pos,m0_vel,m0_cur, m1_pos,m1_vel,m1_cur, ..., m9]
+                          데이터: [pos0..pos9, vel0..vel9, cur0..cur9] (그룹 배치)
   - ReadPosition   0x11 : 모터 위치 요청 → 응답 수신 (43B)
   - ReadVelocity   0x12 : 모터 속도 요청 → 응답 수신 (43B)
   - ReadSensor0~3  0x14..0x17 : 핑거팁 센서 요청 (3B) → 응답 수신 (67B)
@@ -231,7 +231,7 @@ def encode_all_motor_request() -> bytes:
 def decode_all_motor_response(buf: bytes) -> tuple[int, int, list[float], list[float], list[float]]:
     """
     모터 전체 데이터 일괄 응답 디코딩 (123 bytes)
-    데이터 순서: [m0_pos, m0_vel, m0_cur, m1_pos, m1_vel, m1_cur, ..., m9_pos, m9_vel, m9_cur]
+    데이터 순서 (그룹 배치): [pos0..pos9, vel0..vel9, cur0..cur9]
 
     Returns:
         (cmd, mode, positions[10], velocities[10], currents[10])
@@ -242,14 +242,10 @@ def decode_all_motor_response(buf: bytes) -> tuple[int, int, list[float], list[f
     raw_data = struct.unpack(f'<{ALL_MOTOR_DATA_COUNT}I',
                              buf[HEADER_SIZE:ALL_MOTOR_PACKET_SIZE])
 
-    positions = []
-    velocities = []
-    currents = []
-    for i in range(MOTOR_DATA_COUNT):
-        base = i * ALL_MOTOR_VALUES_PER_MOTOR
-        positions.append(uint32_to_float(raw_data[base]))
-        velocities.append(uint32_to_float(raw_data[base + 1]))
-        currents.append(uint32_to_float(raw_data[base + 2]))
+    n = MOTOR_DATA_COUNT  # 10
+    positions = [uint32_to_float(raw_data[i]) for i in range(n)]
+    velocities = [uint32_to_float(raw_data[n + i]) for i in range(n)]
+    currents = [uint32_to_float(raw_data[2 * n + i]) for i in range(n)]
 
     return cmd, mode, positions, velocities, currents
 
