@@ -39,7 +39,7 @@
 통신 플로우 (1 사이클 — bulk):
   0. SetSensorMode(cmd=0x04)   → send 3B, recv 3B (초기화, 1회)
   1. WritePosition(cmd=0x01)   → send 43B, recv 43B (echo)
-  2. ReadAllMotors(cmd=0x10)   → send 43B, recv 123B (pos+vel+cur 일괄)
+  2. ReadAllMotors(cmd=0x10)   → send 3B, recv 123B (pos+vel+cur 일괄)
   3. ReadAllSensors(cmd=0x19)  → send 3B, recv 259B (센서 4개 일괄)
 
 ROS2 토픽 (hand_udp_node):
@@ -108,7 +108,7 @@ SENSOR_MODE_NN = 1
 # 커맨드 코드
 CMD_WRITE_POSITION = 0x01
 CMD_SET_SENSOR_MODE = 0x04  # 센서 초기화: 모드 변경 (MODE 필드 = raw/nn)
-CMD_READ_ALL_MOTORS = 0x10  # 모터 10개 pos+vel+cur 일괄 (43B → 123B)
+CMD_READ_ALL_MOTORS = 0x10  # 모터 10개 pos+vel+cur 일괄 (3B → 123B)
 CMD_READ_POSITION = 0x11
 CMD_READ_VELOCITY = 0x12
 CMD_READ_SENSOR0 = 0x14
@@ -222,10 +222,10 @@ def decode_sensor_response(buf: bytes) -> tuple[int, int, list[int]]:
 
 def encode_all_motor_request() -> bytes:
     """
-    모터 전체 데이터 일괄 요청 인코딩 (cmd=0x10, 43 bytes — 0 데이터)
+    모터 전체 데이터 일괄 요청 인코딩 (cmd=0x10, 3 bytes — 헤더만)
     응답: 123 bytes (10모터 × pos,vel,cur)
     """
-    return encode_motor_packet(CMD_READ_ALL_MOTORS)
+    return struct.pack('<BBB', DEVICE_ID, CMD_READ_ALL_MOTORS, 0x00)
 
 
 def decode_all_motor_response(buf: bytes) -> tuple[int, int, list[float], list[float], list[float]]:
@@ -390,7 +390,7 @@ class HandUDPSender:
 
     def read_all_motors(self) -> tuple[list[float], list[float], list[float]] | None:
         """
-        모터 전체 데이터 일괄 요청 (cmd=0x10, 43B → 123B)
+        모터 전체 데이터 일괄 요청 (cmd=0x10, 3B → 123B)
         10개 모터의 위치, 속도, 전류를 한 번에 수신.
 
         Returns:
@@ -573,7 +573,7 @@ class HandUDPSender:
         """
         Bulk 모드 1 사이클 (0x10 + 0x19 사용):
           1. WritePosition(cmd=0x01)   → send 43B, recv 43B (echo)
-          2. ReadAllMotors(cmd=0x10)   → send 43B, recv 123B (pos+vel+cur)
+          2. ReadAllMotors(cmd=0x10)   → send 3B, recv 123B (pos+vel+cur)
           3. ReadAllSensors(cmd=0x19)  → send 3B, recv 259B (센서 4개)
 
         Returns:
@@ -638,7 +638,7 @@ class HandUDPSender:
     def read_cycle_bulk(self) -> dict:
         """
         Bulk read only (WritePosition 없음):
-          1. ReadAllMotors(cmd=0x10)   → send 43B, recv 123B
+          1. ReadAllMotors(cmd=0x10)   → send 3B, recv 123B
           2. ReadAllSensors(cmd=0x19)  → send 3B, recv 259B
 
         Returns:
@@ -1309,7 +1309,7 @@ def example_poll_cycle_bulk(target_ip: str = "192.168.1.2",
     failure_detector = HandDataFailureDetector(motor_enabled=False, sensor_enabled=True)
     timing_stats = UdpTimingStats()
 
-    print(f"  WritePosition(43B↔43B) → ReadAllMotors(43B→123B) → ReadAllSensors(3B→259B)")
+    print(f"  WritePosition(43B↔43B) → ReadAllMotors(3B→123B) → ReadAllSensors(3B→259B)")
     print("Ctrl+C로 중지\n")
 
     try:
@@ -1386,7 +1386,7 @@ def example_read_only_bulk(target_ip: str = "192.168.1.2",
     failure_detector = HandDataFailureDetector(motor_enabled=False, sensor_enabled=True)
     timing_stats = UdpTimingStats()
 
-    print(f"  ReadAllMotors(43B→123B) → ReadAllSensors(3B→259B)")
+    print(f"  ReadAllMotors(3B→123B) → ReadAllSensors(3B→259B)")
     print("Ctrl+C로 중지\n")
 
     try:
