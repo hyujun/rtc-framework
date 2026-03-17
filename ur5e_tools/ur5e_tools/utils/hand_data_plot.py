@@ -8,14 +8,19 @@
   python3 hand_data_plot.py hand_read_20260313_143000.csv --motors 0 1 2
   python3 hand_data_plot.py hand_read_20260313_143000.csv --sensors-only
   python3 hand_data_plot.py hand_poll_20260313_143000.csv --timing-only
+  python3 hand_data_plot.py hand_bulk_poll_20260313_143000.csv
 
-CSV 컬럼 구조:
+CSV 컬럼 구조 (legacy):
   timestamp, cycle,
   pos_0..pos_9, vel_0..vel_9,
-  s0_baro_0..s0_baro_7, s0_tof_0..s0_tof_2,
-  s1_baro_0..s1_baro_7, s1_tof_0..s1_tof_2,
-  ...,
+  s0_baro_0..s0_baro_7, s0_tof_0..s0_tof_2, ...,
   t_cycle, t_write_position, t_read_position, t_read_velocity, t_read_sensors, t_timeouts
+
+CSV 컬럼 구조 (bulk):
+  timestamp, cycle,
+  pos_0..pos_9, vel_0..vel_9, cur_0..cur_9,
+  s0_baro_0..s0_baro_7, s0_tof_0..s0_tof_2, ...,
+  t_cycle, t_write_position, t_read_all_motors, t_read_all_sensors, t_timeouts
 """
 
 import argparse
@@ -83,6 +88,33 @@ def plot_motor_velocities(df: pd.DataFrame, motor_indices: list[int] | None = No
     fig.tight_layout()
 
 
+def detect_bulk_mode(df: pd.DataFrame) -> bool:
+    """CSV가 bulk 모드인지 감지 (cur_0 컬럼 존재 여부)"""
+    return "cur_0" in df.columns
+
+
+def plot_motor_currents(df: pd.DataFrame, motor_indices: list[int] | None = None):
+    """모터 전류 플롯 (bulk 모드 전용)"""
+    cur_cols = [c for c in df.columns if c.startswith("cur_")]
+    if not cur_cols:
+        print("모터 전류 데이터 없음")
+        return
+
+    if motor_indices:
+        cur_cols = [f"cur_{i}" for i in motor_indices if f"cur_{i}" in df.columns]
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    for col in cur_cols:
+        valid = pd.to_numeric(df[col], errors='coerce')
+        ax.plot(df["timestamp"], valid, label=col, linewidth=0.8)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Current")
+    ax.set_title("Motor Currents")
+    ax.legend(fontsize=7, ncol=5)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+
+
 def plot_sensor_barometer(df: pd.DataFrame, num_sensors: int):
     """핑거팁별 기압 센서 데이터 플롯 (uint32)"""
     fig, axes = plt.subplots(num_sensors, 1, figsize=(12, 3 * num_sensors),
@@ -129,21 +161,31 @@ def plot_sensor_tof(df: pd.DataFrame, num_sensors: int):
     fig.tight_layout()
 
 
-TIMING_COLS = ["t_cycle", "t_write_position", "t_read_position",
-               "t_read_velocity", "t_read_sensors"]
+TIMING_COLS_LEGACY = ["t_cycle", "t_write_position", "t_read_position",
+                      "t_read_velocity", "t_read_sensors"]
+TIMING_COLS_BULK = ["t_cycle", "t_write_position", "t_read_all_motors",
+                    "t_read_all_sensors"]
 TIMING_LABELS = {"t_cycle": "cycle_total", "t_write_position": "write_pos",
                  "t_read_position": "read_pos", "t_read_velocity": "read_vel",
-                 "t_read_sensors": "read_sensors"}
+                 "t_read_sensors": "read_sensors",
+                 "t_read_all_motors": "read_all_mot",
+                 "t_read_all_sensors": "read_all_sen"}
+
+
+def get_timing_cols(df: pd.DataFrame) -> list[str]:
+    """CSV 컬럼에서 사용 가능한 타이밍 컬럼 목록 반환 (bulk/legacy 자동 감지)"""
+    candidates = TIMING_COLS_BULK if detect_bulk_mode(df) else TIMING_COLS_LEGACY
+    return [c for c in candidates if c in df.columns]
 
 
 def has_timing_data(df: pd.DataFrame) -> bool:
     """CSV에 타이밍 컬럼이 존재하는지 확인"""
-    return any(c in df.columns for c in TIMING_COLS)
+    return len(get_timing_cols(df)) > 0
 
 
 def plot_timing(df: pd.DataFrame):
     """UDP 통신 타이밍 플롯 (시계열 + 히스토그램 + 요약 통계)"""
-    available = [c for c in TIMING_COLS if c in df.columns]
+    available = get_timing_cols(df)
     if not available:
         print("타이밍 데이터 없음 (t_cycle 등 컬럼 미존재)")
         return
@@ -242,8 +284,12 @@ def main():
     print(f"  시간 범위: {df['timestamp'].iloc[0]:.3f} ~ {df['timestamp'].iloc[-1]:.3f} s")
 
     num_sensors = detect_num_sensors(df)
+    bulk_mode = detect_bulk_mode(df)
     has_timing = has_timing_data(df)
+    print(f"  모드: {'bulk' if bulk_mode else 'legacy'}")
     print(f"  감지된 센서 수: {num_sensors}")
+    if bulk_mode:
+        print(f"  전류 데이터: 있음 (cur_0..cur_9)")
     print(f"  타이밍 데이터: {'있음' if has_timing else '없음'}")
 
     if args.timing_only:
@@ -257,6 +303,8 @@ def main():
     if not args.sensors_only:
         plot_motor_positions(df, args.motors)
         plot_motor_velocities(df, args.motors)
+        if bulk_mode:
+            plot_motor_currents(df, args.motors)
 
     if not args.motors_only and num_sensors > 0:
         plot_sensor_barometer(df, num_sensors)
