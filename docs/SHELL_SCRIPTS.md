@@ -17,6 +17,7 @@ UR5e RT Controller 워크스페이스의 빌드, 설치, 실시간 환경 설정
 | `setup_udp_optimization.sh` | `ur5e_rt_controller/scripts/` | ~188 | 네트워크/UDP 실시간 최적화 |
 | `setup_nvidia_rt.sh` | `ur5e_rt_controller/scripts/` | ~1146 | NVIDIA GPU + RT 커널 공존 설정 (11단계) |
 | `check_rt_setup.sh` | `ur5e_rt_controller/scripts/` | ~861 | RT 환경 검증 (8개 카테고리) |
+| `verify_rt_runtime.sh` | `ur5e_rt_controller/scripts/` | ~620 | 제어기 구동 중 RT 런타임 검증 (7개 카테고리) |
 
 모든 RT 설정 스크립트는 공유 유틸리티 라이브러리 `lib/rt_common.sh`를 사용합니다.
 
@@ -409,6 +410,72 @@ nvidia-smi -q -d PERFORMANCE         # persistence mode 확인
 ./check_rt_setup.sh --summary    # 요약 출력
 ./check_rt_setup.sh --json       # JSON 형식 출력
 ./check_rt_setup.sh --fix        # 수정 명령 제안 포함
+```
+
+---
+
+### verify_rt_runtime.sh --- 제어기 RT 런타임 검증
+
+**목적**: 제어기(`rt_controller`)가 실행 중일 때, 각 스레드의 RT 설정이 `thread_config.hpp`에 정의된 대로 올바르게 적용되었는지 실시간 확인합니다. `check_rt_setup.sh`가 정적 시스템 설정을 검증하는 반면, 이 스크립트는 실행 중인 프로세스의 런타임 상태를 검증합니다.
+
+**`check_rt_setup.sh`와의 차이점**:
+
+| 항목 | `check_rt_setup.sh` | `verify_rt_runtime.sh` |
+|------|---------------------|------------------------|
+| 검증 시점 | 제어기 실행 **전** | 제어기 실행 **중** |
+| 대상 | 시스템 설정 (커널, GRUB, sysctl 등) | 프로세스/스레드 상태 |
+| sudo 필요 | 불필요 (read-only) | 불필요 (read-only) |
+| 제어기 필요 | 불필요 | **필수** (rt_controller 실행 중이어야 함) |
+
+**인자**:
+
+| 인자 | 설명 |
+|------|------|
+| `--verbose` | 상세 출력 (기본값) |
+| `--summary` | 카테고리당 1줄 요약 |
+| `--json` | CI용 JSON 출력 (스레드 상세 포함) |
+| `--watch [N]` | N초 간격 반복 모니터링 (기본 3초, Ctrl+C 종료) |
+
+**검증 카테고리 (7개)**:
+
+| # | 카테고리 | 점검 내용 |
+|---|----------|-----------|
+| 1 | Process Discovery | `rt_controller` 프로세스 감지, `thread_config.hpp` 스레드 이름 매칭 |
+| 2 | Scheduling Policy | 각 스레드의 SCHED_FIFO/OTHER 정책 및 우선순위 검증 |
+| 3 | CPU Affinity | 스레드별 코어 할당이 `thread_config.hpp` 기대값과 일치하는지 확인 |
+| 4 | Memory Locking | `mlockall` 적용 여부 (VmLck), major/minor page fault 추적 |
+| 5 | Context Switches | RT 스레드의 비자발적 컨텍스트 스위치 비율 감시 |
+| 6 | CPU Migration | RT 스레드가 기대 코어에서 실행 중인지 (코어 이동 감지) |
+| 7 | RT Throttling | `sched_rt_runtime_us` 쓰로틀링 발생 여부, 누적 대기 시간 |
+
+**종료 코드**:
+
+| 코드 | 의미 |
+|------|------|
+| 0 | 모든 항목 통과 |
+| 1 | 경고 존재 |
+| 2 | 실패 존재 |
+| 3 | 제어기 미실행 |
+
+**사용 예시**:
+```bash
+./verify_rt_runtime.sh                # 상세 검증
+./verify_rt_runtime.sh --summary      # 요약 출력
+./verify_rt_runtime.sh --json         # JSON 형식 (CI 파이프라인용)
+./verify_rt_runtime.sh --watch        # 3초 간격 실시간 모니터링
+./verify_rt_runtime.sh --watch 5      # 5초 간격 모니터링
+```
+
+**JSON 출력 예시** (주요 필드):
+```json
+{
+  "controller_pid": 12345,
+  "cpu_cores": 6,
+  "categories": { "scheduling_policy": {"status": "PASS", "detail": "3/3 correct"} },
+  "threads": {
+    "rt_control": {"tid": 12346, "expected_cpu": 2, "actual_affinity": "0x4", "actual_policy": "SCHED_FIFO", "actual_priority": 90}
+  }
+}
 ```
 
 ---
