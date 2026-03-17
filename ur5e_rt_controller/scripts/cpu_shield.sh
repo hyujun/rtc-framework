@@ -100,6 +100,14 @@ do_on() {
 
   info "Activating CPU shield (mode: ${mode}, cores: ${shield_cores}, ${phys_cores}-core system)"
 
+  # Disable RT throttling (sched_rt_runtime_us=-1) so RT threads can use 100% CPU
+  local current_rt_runtime
+  current_rt_runtime=$(sysctl -n kernel.sched_rt_runtime_us 2>/dev/null || echo "unknown")
+  if [[ "$current_rt_runtime" != "-1" ]]; then
+    sysctl -w kernel.sched_rt_runtime_us=-1 >/dev/null 2>&1 || true
+    info "sched_rt_runtime_us: ${current_rt_runtime} → -1 (RT throttling disabled)"
+  fi
+
   # Try cset shield first
   if command -v cset &>/dev/null; then
     if cset shield --cpu="${shield_cores}" --kthread=on 2>/dev/null; then
@@ -153,6 +161,14 @@ do_off() {
   if [[ "$EUID" -ne 0 ]]; then
     error "Root privileges required. Run: sudo $0 off"
     exit 1
+  fi
+
+  # Restore default RT throttling (950000µs per 1000000µs period = 95%)
+  local current_rt_runtime
+  current_rt_runtime=$(sysctl -n kernel.sched_rt_runtime_us 2>/dev/null || echo "unknown")
+  if [[ "$current_rt_runtime" == "-1" ]]; then
+    sysctl -w kernel.sched_rt_runtime_us=950000 >/dev/null 2>&1 || true
+    info "sched_rt_runtime_us: -1 → 950000 (RT throttling restored)"
   fi
 
   # Try cset shield reset
