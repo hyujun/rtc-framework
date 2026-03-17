@@ -173,9 +173,14 @@ void RtControllerNode::SaveHandStats() const
 
   const auto ts = hand_controller_->timing_stats();
 
+  const bool is_bulk = (hand_controller_->communication_mode() ==
+                        urtc::HandCommunicationMode::kBulk);
+  const char* mode_str = is_bulk ? "bulk" : "individual";
+
   ofs << std::fixed
       << "{\n"
       << "  \"comm_stats\": {\n"
+      << "    \"communication_mode\": \"" << mode_str << "\",\n"
       << "    \"total_cycles\": "     << stats.total_cycles    << ",\n"
       << "    \"recv_ok\": "          << stats.recv_ok         << ",\n"
       << "    \"recv_timeout\": "     << stats.recv_timeout     << ",\n"
@@ -198,24 +203,40 @@ void RtControllerNode::SaveHandStats() const
       << " \"mean\": " << ts.write.mean_us
       << ", \"min\": " << ts.write.min_us
       << ", \"max\": " << ts.write.max_us
-      << " },\n"
-      << "    \"read_pos_us\": {"
-      << " \"mean\": " << ts.read_pos.mean_us
-      << ", \"min\": " << ts.read_pos.min_us
-      << ", \"max\": " << ts.read_pos.max_us
-      << " },\n"
-      << "    \"read_vel_us\": {"
-      << " \"mean\": " << ts.read_vel.mean_us
-      << ", \"min\": " << ts.read_vel.min_us
-      << ", \"max\": " << ts.read_vel.max_us
-      << " },\n"
-      << "    \"read_sensor_us\": {"
-      << " \"mean\": " << ts.read_sensor.mean_us
-      << ", \"min\": " << ts.read_sensor.min_us
-      << ", \"max\": " << ts.read_sensor.max_us
-      << ", \"sensor_cycles\": " << ts.sensor_cycle_count
-      << " },\n"
-      << "    \"over_budget\": " << ts.over_budget << "\n"
+      << " },\n";
+
+  if (is_bulk) {
+    ofs << "    \"read_all_motor_us\": {"
+        << " \"mean\": " << ts.read_all_motor.mean_us
+        << ", \"min\": " << ts.read_all_motor.min_us
+        << ", \"max\": " << ts.read_all_motor.max_us
+        << " },\n"
+        << "    \"read_all_sensor_us\": {"
+        << " \"mean\": " << ts.read_all_sensor.mean_us
+        << ", \"min\": " << ts.read_all_sensor.min_us
+        << ", \"max\": " << ts.read_all_sensor.max_us
+        << ", \"sensor_cycles\": " << ts.sensor_cycle_count
+        << " },\n";
+  } else {
+    ofs << "    \"read_pos_us\": {"
+        << " \"mean\": " << ts.read_pos.mean_us
+        << ", \"min\": " << ts.read_pos.min_us
+        << ", \"max\": " << ts.read_pos.max_us
+        << " },\n"
+        << "    \"read_vel_us\": {"
+        << " \"mean\": " << ts.read_vel.mean_us
+        << ", \"min\": " << ts.read_vel.min_us
+        << ", \"max\": " << ts.read_vel.max_us
+        << " },\n"
+        << "    \"read_sensor_us\": {"
+        << " \"mean\": " << ts.read_sensor.mean_us
+        << ", \"min\": " << ts.read_sensor.min_us
+        << ", \"max\": " << ts.read_sensor.max_us
+        << ", \"sensor_cycles\": " << ts.sensor_cycle_count
+        << " },\n";
+  }
+
+  ofs << "    \"over_budget\": " << ts.over_budget << "\n"
       << "  }\n"
       << "}\n";
   ofs.close();
@@ -373,6 +394,7 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("recv_timeout_ms", 10);
   declare_parameter("enable_write_ack", false);
   declare_parameter("sensor_decimation", 1);
+  declare_parameter("communication_mode", std::string{"individual"});
 
   const std::string hand_ip = get_parameter("target_ip").as_string();
   const int hand_port = static_cast<int>(get_parameter("target_port").as_int());
@@ -474,12 +496,16 @@ void RtControllerNode::DeclareAndLoadParameters()
     const int sensor_decimation = static_cast<int>(
         get_parameter("sensor_decimation").as_int());
     const auto hand_ft_names = get_parameter("hand_fingertip_names").as_string_array();
+    const std::string hand_comm_mode_str = get_parameter("communication_mode").as_string();
+    const auto hand_comm_mode = (hand_comm_mode_str == "bulk")
+        ? urtc::HandCommunicationMode::kBulk
+        : urtc::HandCommunicationMode::kIndividual;
     const auto cfgs = ur5e_rt_controller::SelectThreadConfigs();
 
     hand_controller_ = std::make_unique<urtc::HandController>(
         hand_ip, hand_port, cfgs.udp_recv,
         hand_recv_timeout, hand_write_ack, sensor_decimation,
-        urtc::kDefaultNumFingertips, false, hand_ft_names);
+        urtc::kDefaultNumFingertips, false, hand_ft_names, hand_comm_mode);
     hand_controller_->SetEstopFlag(&global_estop_);
 
     if (hand_controller_->Start()) {

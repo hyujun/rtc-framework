@@ -6,6 +6,8 @@
 // Request packet:  [ID: 1B] [CMD: 1B] [MODE: 1B] [data...]
 //   - Motor cmd:   data = 10 × uint32_t (float reinterpret)  → total 43 bytes
 //   - Sensor cmd:  no data, MODE = sensor mode (0=raw, 1=nn) → total  3 bytes
+//   - Bulk motor (0x10): request 3B, response 123B (pos[10]+vel[10]+cur[10])
+//   - Bulk sensor (0x19): request 3B, response 259B (4 fingers × 16 uint32)
 //
 // Response packet: [ID: 1B] [CMD: 1B] [MODE: 1B] [data...]
 //   - ID, CMD = echo of request
@@ -40,8 +42,20 @@ inline constexpr std::size_t kSensorRequestSize    = kHeaderSize;  // 3 (no data
 inline constexpr std::size_t kSensorResponseDataCount = kSensorDataPerPacket;  // 16
 inline constexpr std::size_t kSensorResponseSize   = kHeaderSize + kSensorResponseDataCount * sizeof(uint32_t);  // 67
 
+// Bulk motor packet constants (cmd=0x10): response = pos[10] + vel[10] + cur[10]
+inline constexpr std::size_t kAllMotorValuesPerMotor = 3;  // pos, vel, cur
+inline constexpr std::size_t kAllMotorDataCount      = kMotorDataCount * kAllMotorValuesPerMotor;  // 30
+inline constexpr std::size_t kAllMotorRequestSize    = kHeaderSize;  // 3 (no data)
+inline constexpr std::size_t kAllMotorResponseSize   = kHeaderSize + kAllMotorDataCount * sizeof(uint32_t);  // 123
+
+// Bulk sensor packet constants (cmd=0x19): response = 4 fingers × 16 uint32
+inline constexpr std::size_t kAllSensorFingertipCount = kDefaultNumFingertips;  // 4
+inline constexpr std::size_t kAllSensorDataCount      = kAllSensorFingertipCount * kSensorDataPerPacket;  // 64
+inline constexpr std::size_t kAllSensorRequestSize    = kHeaderSize;  // 3 (no data)
+inline constexpr std::size_t kAllSensorResponseSize   = kHeaderSize + kAllSensorDataCount * sizeof(uint32_t);  // 259
+
 // Max packet size (for receive buffer allocation)
-inline constexpr std::size_t kMaxPacketSize = kSensorResponseSize;  // 67
+inline constexpr std::size_t kMaxPacketSize = kAllSensorResponseSize;  // 259
 
 // Legacy alias
 inline constexpr std::size_t kDataCount  = kMotorDataCount;
@@ -50,6 +64,8 @@ inline constexpr std::size_t kPacketSize = kMotorPacketSize;
 static_assert(kMotorPacketSize == 43, "Motor packet size must be 43 bytes");
 static_assert(kSensorRequestSize == 3, "Sensor request size must be 3 bytes");
 static_assert(kSensorResponseSize == 67, "Sensor response size must be 67 bytes");
+static_assert(kAllMotorResponseSize == 123, "Bulk motor response must be 123 bytes");
+static_assert(kAllSensorResponseSize == 259, "Bulk sensor response must be 259 bytes");
 
 // ── State mode (response mode field) ────────────────────────────────────────
 enum class StateMode : uint8_t {
@@ -65,14 +81,16 @@ enum class SensorMode : uint8_t {
 
 // ── Command definitions ─────────────────────────────────────────────────────
 enum class Command : uint8_t {
-  kWritePosition  = 0x01,
-  kSetSensorMode  = 0x04,  // sensor init: set mode (MODE field = kRaw/kNn)
-  kReadPosition   = 0x11,
-  kReadVelocity   = 0x12,
-  kReadSensor0    = 0x14,
-  kReadSensor1    = 0x15,
-  kReadSensor2    = 0x16,
-  kReadSensor3    = 0x17,
+  kWritePosition    = 0x01,
+  kSetSensorMode    = 0x04,  // sensor init: set mode (MODE field = kRaw/kNn)
+  kReadAllMotors    = 0x10,  // bulk: read pos[10]+vel[10]+cur[10] in one response (123B)
+  kReadPosition     = 0x11,
+  kReadVelocity     = 0x12,
+  kReadSensor0      = 0x14,
+  kReadSensor1      = 0x15,
+  kReadSensor2      = 0x16,
+  kReadSensor3      = 0x17,
+  kReadAllSensors   = 0x19,  // bulk: read 4 fingertips in one response (259B)
 };
 
 // Sensor command for fingertip index [0..3].
@@ -128,6 +146,32 @@ struct SensorResponsePacket {
 #pragma pack(pop)
 
 static_assert(sizeof(SensorResponsePacket) == kSensorResponseSize, "SensorResponsePacket size mismatch");
+
+// Bulk motor response: 123 bytes (pos[10] + vel[10] + cur[10])
+#pragma pack(push, 1)
+struct AllMotorResponsePacket {
+  uint8_t  id;
+  uint8_t  cmd;
+  uint8_t  mode;
+  std::array<uint32_t, kAllMotorDataCount> data;  // [pos0..9, vel0..9, cur0..9]
+};
+#pragma pack(pop)
+
+static_assert(sizeof(AllMotorResponsePacket) == kAllMotorResponseSize, "AllMotorResponsePacket size mismatch");
+static_assert(std::is_trivially_copyable_v<AllMotorResponsePacket>, "Must be trivially copyable");
+
+// Bulk sensor response: 259 bytes (4 × 16 uint32)
+#pragma pack(push, 1)
+struct AllSensorResponsePacket {
+  uint8_t  id;
+  uint8_t  cmd;
+  uint8_t  mode;
+  std::array<uint32_t, kAllSensorDataCount> data;  // finger0[16] + finger1[16] + ...
+};
+#pragma pack(pop)
+
+static_assert(sizeof(AllSensorResponsePacket) == kAllSensorResponseSize, "AllSensorResponsePacket size mismatch");
+static_assert(std::is_trivially_copyable_v<AllSensorResponsePacket>, "Must be trivially copyable");
 
 // Legacy alias
 using HandPacket = MotorPacket;
@@ -245,6 +289,74 @@ inline void ExtractSensorValuesRaw(
   }
   for (std::size_t i = 0; i < kTofCount; ++i) {
     out[kBarometerCount + i] = pkt.data[kBarometerCount + kReservedCount + i];
+  }
+}
+
+// Build a bulk motor read-request packet (3 bytes, header only).
+inline SensorRequestPacket MakeReadAllMotorsRequest() noexcept {
+  SensorRequestPacket pkt{};
+  pkt.id   = kDeviceId;
+  pkt.cmd  = static_cast<uint8_t>(Command::kReadAllMotors);
+  pkt.mode = kDefaultMode;
+  return pkt;
+}
+
+// Build a bulk sensor read-request packet (3 bytes, header only).
+inline SensorRequestPacket MakeReadAllSensorsRequest(
+    SensorMode sensor_mode = SensorMode::kRaw) noexcept {
+  SensorRequestPacket pkt{};
+  pkt.id   = kDeviceId;
+  pkt.cmd  = static_cast<uint8_t>(Command::kReadAllSensors);
+  pkt.mode = static_cast<uint8_t>(sensor_mode);
+  return pkt;
+}
+
+// Decode raw bytes into an AllMotorResponsePacket. Returns false if buffer too small.
+[[nodiscard]] inline bool DecodeAllMotorResponse(
+    const uint8_t* buf, std::size_t len, AllMotorResponsePacket& out) noexcept {
+  if (len < kAllMotorResponseSize) return false;
+  std::memcpy(&out, buf, kAllMotorResponseSize);
+  return true;
+}
+
+// Decode raw bytes into an AllSensorResponsePacket. Returns false if buffer too small.
+[[nodiscard]] inline bool DecodeAllSensorResponse(
+    const uint8_t* buf, std::size_t len, AllSensorResponsePacket& out) noexcept {
+  if (len < kAllSensorResponseSize) return false;
+  std::memcpy(&out, buf, kAllSensorResponseSize);
+  return true;
+}
+
+// Extract motor data from bulk response (grouped layout: pos[10], vel[10], cur[10]).
+inline void ExtractAllMotorFloats(
+    const AllMotorResponsePacket& pkt,
+    std::array<float, kMotorDataCount>& positions,
+    std::array<float, kMotorDataCount>& velocities) noexcept {
+  for (std::size_t i = 0; i < kMotorDataCount; ++i) {
+    positions[i]  = Uint32ToFloat(pkt.data[i]);
+    velocities[i] = Uint32ToFloat(pkt.data[kMotorDataCount + i]);
+    // currents at pkt.data[2*kMotorDataCount + i] — available but not stored in HandState
+  }
+}
+
+// Extract all sensor values from bulk response (4 fingers × 16 uint32).
+// Output: concatenated barometer[8]+tof[3] per finger, skipping reserved[5].
+// out must have at least num_fingertips * kSensorValuesPerFingertip elements.
+inline void ExtractAllSensorValuesRaw(
+    const AllSensorResponsePacket& pkt,
+    uint32_t* out, int num_fingertips) noexcept {
+  for (int f = 0; f < num_fingertips; ++f) {
+    const std::size_t pkt_base = static_cast<std::size_t>(f) * kSensorDataPerPacket;
+    const std::size_t out_base = static_cast<std::size_t>(f) * kSensorValuesPerFingertip;
+    // barometer[8]
+    for (std::size_t i = 0; i < kBarometerCount; ++i) {
+      out[out_base + i] = pkt.data[pkt_base + i];
+    }
+    // skip reserved[5], tof[3]
+    for (std::size_t i = 0; i < kTofCount; ++i) {
+      out[out_base + kBarometerCount + i] =
+          pkt.data[pkt_base + kBarometerCount + kReservedCount + i];
+    }
   }
 }
 

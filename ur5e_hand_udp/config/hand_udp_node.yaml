@@ -6,10 +6,15 @@
 #   - standalone (hand_udp_node 단독 실행): ROS2 토픽으로 상태 퍼블리시/명령 구독
 #
 # 통신 프로토콜 (1 사이클):
-#   1. Write position  (cmd=0x01) → 10 float (모터 커맨드)
-#   2. Read position   (cmd=0x11) → request & recv 10 float
-#   3. Read velocity   (cmd=0x12) → request & recv 10 float
-#   4. Read sensor 0-3 (cmd=0x14..0x17) → request & recv × 4
+#   Individual mode (기존):
+#     1. Write position  (cmd=0x01) → 10 float (모터 커맨드)
+#     2. Read position   (cmd=0x11) → request & recv 10 float
+#     3. Read velocity   (cmd=0x12) → request & recv 10 float
+#     4. Read sensor 0-3 (cmd=0x14..0x17) → request & recv × 4
+#   Bulk mode:
+#     1. Write position  (cmd=0x01) → 10 float (모터 커맨드)
+#     2. Read all motors (cmd=0x10) → request 3B & recv 123B (pos+vel+cur)
+#     3. Read all sensors(cmd=0x19) → request 3B & recv 259B (4 fingers)
 #
 # Standalone 모드 ROS2 토픽:
 #   pub: /hand/joint_states  [positions:10 + velocities:10 + sensors:44] = 64 doubles
@@ -31,6 +36,10 @@
     sensor_decimation: 3              # N cycle마다 센서 읽기 (1=매번, 3=3cycle마다)
                                       # decimation=3: 센서 사이클 빈도↓ → over_budget↓
                                       # 센서 skip 시 이전 캐시 데이터 유지
+
+    # ── 통신 모드 ────────────────────────────────────────────────────────
+    communication_mode: "bulk"        # "individual": 0x11+0x12+0x14~0x17 (6 round-trips)
+                                      # "bulk":       0x10+0x19 (2 round-trips)
 
     # ── 모터/핑거팁 이름 (v5.14.0 named messaging) ──────────────────────
     # 비어있으면 기본 이름 사용.

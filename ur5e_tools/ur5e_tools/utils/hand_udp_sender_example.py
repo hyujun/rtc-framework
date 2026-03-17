@@ -19,18 +19,28 @@
 커맨드 코드:
   - WritePosition  0x01 : 모터 10개 목표 위치 전송
   - SetSensorMode  0x04 : 센서 초기화 (MODE 필드 = 0:raw / 1:nn), 3B → 3B echo
+  - ReadAllMotors  0x10 : 모터 10개 위치+속도+전류 일괄 요청 → 응답 수신 (123B)
+                          데이터: [pos0..pos9, vel0..vel9, cur0..cur9] (그룹 배치)
   - ReadPosition   0x11 : 모터 위치 요청 → 응답 수신 (43B)
   - ReadVelocity   0x12 : 모터 속도 요청 → 응답 수신 (43B)
   - ReadSensor0~3  0x14..0x17 : 핑거팁 센서 요청 (3B) → 응답 수신 (67B)
                           MODE 필드: 0=raw, 1=nn (전원 인가 시 기본 nn, 항상 raw로 요청)
                           센서 데이터는 uint32 원본 값 (float 변환 없음)
+  - ReadAllSensors 0x19 : 4개 핑거팁 센서 일괄 요청 (3B, MODE=raw) → 응답 수신 (259B)
+                          데이터: finger0~3 × (barometer[8]+reserved[5]+tof[3]) = 64 × uint32
 
-통신 플로우 (1 사이클):
+통신 플로우 (1 사이클 — legacy):
   0. SetSensorMode(cmd=0x04) → send 3B, recv 3B (초기화, 1회)
   1. WritePosition(cmd=0x01) → send 43B, recv 43B (echo)
   2. ReadPosition(cmd=0x11)  → send 43B, recv 43B
   3. ReadVelocity(cmd=0x12)  → send 43B, recv 43B
   4. ReadSensor0~3(cmd=0x14..0x17) → send 3B, recv 67B × 4
+
+통신 플로우 (1 사이클 — bulk):
+  0. SetSensorMode(cmd=0x04)   → send 3B, recv 3B (초기화, 1회)
+  1. WritePosition(cmd=0x01)   → send 43B, recv 43B (echo)
+  2. ReadAllMotors(cmd=0x10)   → send 3B, recv 123B (pos+vel+cur 일괄)
+  3. ReadAllSensors(cmd=0x19)  → send 3B, recv 259B (센서 4개 일괄)
 
 ROS2 토픽 (hand_udp_node):
   - pub: /hand/joint_states  → positions[10] + velocities[10] + sensors[44] = 64
@@ -58,23 +68,33 @@ DEFAULT_MODE = 0x00
 
 HEADER_SIZE = 3       # ID + CMD + MODE
 
+NUM_HAND_MOTORS = 10
+NUM_FINGERTIPS = 4
+
 # 모터 패킷 상수
 MOTOR_DATA_COUNT = 10
 MOTOR_PACKET_SIZE = HEADER_SIZE + MOTOR_DATA_COUNT * 4  # 43 bytes
+
+# All-motor 패킷 상수 (cmd=0x10)
+ALL_MOTOR_VALUES_PER_MOTOR = 3    # pos, vel, cur
+ALL_MOTOR_DATA_COUNT = MOTOR_DATA_COUNT * ALL_MOTOR_VALUES_PER_MOTOR  # 30
+ALL_MOTOR_PACKET_SIZE = HEADER_SIZE + ALL_MOTOR_DATA_COUNT * 4  # 123 bytes
 
 # 센서 패킷 상수
 SENSOR_REQUEST_SIZE = HEADER_SIZE  # 3 bytes (헤더만)
 SENSOR_RESPONSE_DATA_COUNT = 16    # barometer(8) + reserved(5) + tof(3)
 SENSOR_RESPONSE_SIZE = HEADER_SIZE + SENSOR_RESPONSE_DATA_COUNT * 4  # 67 bytes
 
+# All-sensor 패킷 상수 (cmd=0x19)
+ALL_SENSOR_FINGER_DATA_COUNT = SENSOR_RESPONSE_DATA_COUNT  # 16 per finger
+ALL_SENSOR_DATA_COUNT = ALL_SENSOR_FINGER_DATA_COUNT * NUM_FINGERTIPS  # 64
+ALL_SENSOR_RESPONSE_SIZE = HEADER_SIZE + ALL_SENSOR_DATA_COUNT * 4  # 259 bytes
+
 # 센서 데이터 레이아웃
 BAROMETER_COUNT = 8
 RESERVED_COUNT = 5    # 패킷에만 존재, 저장하지 않음
 TOF_COUNT = 3
 SENSOR_VALUES_PER_FINGERTIP = BAROMETER_COUNT + TOF_COUNT  # 11 (유효 값)
-
-NUM_HAND_MOTORS = 10
-NUM_FINGERTIPS = 4
 NUM_HAND_SENSORS = NUM_FINGERTIPS * SENSOR_VALUES_PER_FINGERTIP  # 44
 
 # State mode (response mode 필드)
@@ -88,12 +108,15 @@ SENSOR_MODE_NN = 1
 # 커맨드 코드
 CMD_WRITE_POSITION = 0x01
 CMD_SET_SENSOR_MODE = 0x04  # 센서 초기화: 모드 변경 (MODE 필드 = raw/nn)
+CMD_READ_ALL_MOTORS = 0x10  # 모터 10개 pos+vel+cur 일괄 (3B → 123B)
 CMD_READ_POSITION = 0x11
 CMD_READ_VELOCITY = 0x12
 CMD_READ_SENSOR0 = 0x14
 CMD_READ_SENSOR1 = 0x15
 CMD_READ_SENSOR2 = 0x16
 CMD_READ_SENSOR3 = 0x17
+
+CMD_READ_ALL_SENSORS = 0x19   # 센서 4개 일괄 (3B → 259B, MODE=raw)
 
 CMD_READ_SENSORS = [CMD_READ_SENSOR0, CMD_READ_SENSOR1,
                     CMD_READ_SENSOR2, CMD_READ_SENSOR3]
@@ -197,6 +220,72 @@ def decode_sensor_response(buf: bytes) -> tuple[int, int, list[int]]:
     return cmd, mode, values
 
 
+def encode_all_motor_request() -> bytes:
+    """
+    모터 전체 데이터 일괄 요청 인코딩 (cmd=0x10, 3 bytes — 헤더만)
+    응답: 123 bytes (10모터 × pos,vel,cur)
+    """
+    return struct.pack('<BBB', DEVICE_ID, CMD_READ_ALL_MOTORS, 0x00)
+
+
+def decode_all_motor_response(buf: bytes) -> tuple[int, int, list[float], list[float], list[float]]:
+    """
+    모터 전체 데이터 일괄 응답 디코딩 (123 bytes)
+    데이터 순서 (그룹 배치): [pos0..pos9, vel0..vel9, cur0..cur9]
+
+    Returns:
+        (cmd, mode, positions[10], velocities[10], currents[10])
+    """
+    assert len(buf) >= ALL_MOTOR_PACKET_SIZE, \
+        f"패킷 크기 부족: {len(buf)} < {ALL_MOTOR_PACKET_SIZE}"
+    _id, cmd, mode = struct.unpack('<BBB', buf[:HEADER_SIZE])
+    raw_data = struct.unpack(f'<{ALL_MOTOR_DATA_COUNT}I',
+                             buf[HEADER_SIZE:ALL_MOTOR_PACKET_SIZE])
+
+    n = MOTOR_DATA_COUNT  # 10
+    positions = [uint32_to_float(raw_data[i]) for i in range(n)]
+    velocities = [uint32_to_float(raw_data[n + i]) for i in range(n)]
+    currents = [uint32_to_float(raw_data[2 * n + i]) for i in range(n)]
+
+    return cmd, mode, positions, velocities, currents
+
+
+def encode_all_sensor_request(sensor_mode: int = SENSOR_MODE_RAW) -> bytes:
+    """
+    센서 4개 일괄 요청 인코딩 (cmd=0x19, 3 bytes, MODE=raw)
+    응답: 259 bytes (finger0~3 × 16 × uint32)
+    """
+    return struct.pack('<BBB', DEVICE_ID, CMD_READ_ALL_SENSORS, sensor_mode)
+
+
+def decode_all_sensor_response(buf: bytes) -> tuple[int, int, list[int]]:
+    """
+    센서 4개 일괄 응답 디코딩 (259 bytes)
+    각 핑거: barometer[8] + reserved[5](skip) + tof[3] = 11 유효 값
+    4핑거 × 11 = 44 유효 값
+
+    Returns:
+        (cmd, mode, [44 uint32: finger0(baro8+tof3) + finger1 + finger2 + finger3])
+    """
+    assert len(buf) >= ALL_SENSOR_RESPONSE_SIZE, \
+        f"패킷 크기 부족: {len(buf)} < {ALL_SENSOR_RESPONSE_SIZE}"
+    _id, cmd, mode = struct.unpack('<BBB', buf[:HEADER_SIZE])
+    raw_data = struct.unpack(f'<{ALL_SENSOR_DATA_COUNT}I',
+                             buf[HEADER_SIZE:ALL_SENSOR_RESPONSE_SIZE])
+
+    values = []
+    for finger in range(NUM_FINGERTIPS):
+        base = finger * ALL_SENSOR_FINGER_DATA_COUNT
+        # barometer[0..7]
+        values.extend(raw_data[base + i] for i in range(BAROMETER_COUNT))
+        # skip reserved[8..12]
+        # tof[13..15]
+        values.extend(raw_data[base + BAROMETER_COUNT + RESERVED_COUNT + i]
+                      for i in range(TOF_COUNT))
+
+    return cmd, mode, values
+
+
 # Legacy aliases
 def encode_packet(cmd: int, floats: list[float] | None = None) -> bytes:
     """Legacy: 모터 패킷 인코딩 (센서 커맨드는 encode_sensor_request 사용)"""
@@ -294,6 +383,43 @@ class HandUDPSender:
                 return True
             time.sleep(retry_interval)
         return False
+
+    def read_all_motors(self) -> tuple[list[float], list[float], list[float]] | None:
+        """
+        모터 전체 데이터 일괄 요청 (cmd=0x10, 3B → 123B)
+        10개 모터의 위치, 속도, 전류를 한 번에 수신.
+
+        Returns:
+            (positions[10], velocities[10], currents[10]) or None on timeout
+        """
+        pkt = encode_all_motor_request()
+        self.sock.sendto(pkt, self.target)
+        try:
+            data, _ = self.sock.recvfrom(512)
+            _, _mode, positions, velocities, currents = decode_all_motor_response(data)
+            return positions, velocities, currents
+        except socket.timeout:
+            return None
+
+    def read_all_sensors(self, sensor_mode: int = SENSOR_MODE_RAW) -> tuple[list[int], int] | None:
+        """
+        센서 4개 일괄 요청 (cmd=0x19, 3B → 259B)
+        4개 핑거팁 센서의 raw 데이터를 한 번에 수신.
+
+        Args:
+            sensor_mode: SENSOR_MODE_RAW (0) 또는 SENSOR_MODE_NN (1)
+
+        Returns:
+            (sensors[44]: 4×(barometer[8]+tof[3]), response_mode) or None on timeout
+        """
+        pkt = encode_all_sensor_request(sensor_mode)
+        self.sock.sendto(pkt, self.target)
+        try:
+            data, _ = self.sock.recvfrom(512)
+            _, response_mode, values = decode_all_sensor_response(data)
+            return values, response_mode
+        except socket.timeout:
+            return None
 
     def read_sensor(self, fingertip_idx: int,
                     sensor_mode: int = SENSOR_MODE_RAW) -> tuple[list[int], int] | None:
@@ -439,6 +565,128 @@ class HandUDPSender:
             "timing": timing,
         }
 
+    def poll_cycle_bulk(self, positions: list[float]) -> dict:
+        """
+        Bulk 모드 1 사이클 (0x10 + 0x19 사용):
+          1. WritePosition(cmd=0x01)   → send 43B, recv 43B (echo)
+          2. ReadAllMotors(cmd=0x10)   → send 3B, recv 123B (pos+vel+cur)
+          3. ReadAllSensors(cmd=0x19)  → send 3B, recv 259B (센서 4개)
+
+        Returns:
+            dict with keys:
+              - positions: [10 floats] or None
+              - velocities: [10 floats] or None
+              - currents: [10 floats] or None
+              - sensors: [44 uint32] (4×11)
+              - sensor_modes: [response_mode]
+              - timing: dict with per-step durations (seconds)
+        """
+        timing = {}
+        timeouts = 0
+        cycle_start = time.perf_counter()
+
+        # 1. 목표 위치 전송 + echo 수신
+        t0 = time.perf_counter()
+        write_echo = self.write_position(positions)
+        timing["write_position"] = time.perf_counter() - t0
+        if write_echo is None:
+            timeouts += 1
+
+        # 2. 모터 전체 데이터 일괄 수신 (pos + vel + cur)
+        pos = None
+        vel = None
+        cur = None
+        t0 = time.perf_counter()
+        motor_result = self.read_all_motors()
+        timing["read_all_motors"] = time.perf_counter() - t0
+        if motor_result is not None:
+            pos, vel, cur = motor_result
+        else:
+            timeouts += 1
+
+        # 3. 센서 전체 데이터 일괄 수신
+        sensors = []
+        sensor_modes = []
+        if self.num_sensors > 0:
+            t0 = time.perf_counter()
+            sensor_result = self.read_all_sensors()
+            timing["read_all_sensors"] = time.perf_counter() - t0
+            if sensor_result is not None:
+                sensors, response_mode = sensor_result
+                sensor_modes = [response_mode] * NUM_FINGERTIPS
+            else:
+                sensors = [0] * NUM_HAND_SENSORS
+                sensor_modes = [-1] * NUM_FINGERTIPS
+                timeouts += 1
+
+        timing["cycle"] = time.perf_counter() - cycle_start
+        timing["timeouts"] = timeouts
+
+        return {
+            "positions": pos,
+            "velocities": vel,
+            "currents": cur,
+            "sensors": sensors,
+            "sensor_modes": sensor_modes,
+            "timing": timing,
+        }
+
+    def read_cycle_bulk(self) -> dict:
+        """
+        Bulk read only (WritePosition 없음):
+          1. ReadAllMotors(cmd=0x10)   → send 3B, recv 123B
+          2. ReadAllSensors(cmd=0x19)  → send 3B, recv 259B
+
+        Returns:
+            dict with keys:
+              - positions: [10 floats] or None
+              - velocities: [10 floats] or None
+              - currents: [10 floats] or None
+              - sensors: [44 uint32] (4×11)
+              - sensor_modes: [response_mode]
+              - timing: dict with per-step durations (seconds)
+        """
+        timing = {}
+        timeouts = 0
+        cycle_start = time.perf_counter()
+
+        pos = None
+        vel = None
+        cur = None
+        t0 = time.perf_counter()
+        motor_result = self.read_all_motors()
+        timing["read_all_motors"] = time.perf_counter() - t0
+        if motor_result is not None:
+            pos, vel, cur = motor_result
+        else:
+            timeouts += 1
+
+        sensors = []
+        sensor_modes = []
+        if self.num_sensors > 0:
+            t0 = time.perf_counter()
+            sensor_result = self.read_all_sensors()
+            timing["read_all_sensors"] = time.perf_counter() - t0
+            if sensor_result is not None:
+                sensors, response_mode = sensor_result
+                sensor_modes = [response_mode] * NUM_FINGERTIPS
+            else:
+                sensors = [0] * NUM_HAND_SENSORS
+                sensor_modes = [-1] * NUM_FINGERTIPS
+                timeouts += 1
+
+        timing["cycle"] = time.perf_counter() - cycle_start
+        timing["timeouts"] = timeouts
+
+        return {
+            "positions": pos,
+            "velocities": vel,
+            "currents": cur,
+            "sensors": sensors,
+            "sensor_modes": sensor_modes,
+            "timing": timing,
+        }
+
     def _request_motor(self, cmd: int,
                        floats: list[float] | None = None) -> list[float] | None:
         """모터 요청 전송(43B) 후 echo 응답 수신(43B)"""
@@ -506,11 +754,14 @@ class UdpTimingStats:
         self._read_pos_times: deque[float] = deque(maxlen=window_size)
         self._read_vel_times: deque[float] = deque(maxlen=window_size)
         self._read_sensor_times: deque[float] = deque(maxlen=window_size)
+        # bulk mode
+        self._read_all_motor_times: deque[float] = deque(maxlen=window_size)
+        self._read_all_sensor_times: deque[float] = deque(maxlen=window_size)
         self._timeout_count = 0
         self._total_cycles = 0
 
     def record(self, timing: dict) -> None:
-        """poll_cycle / read_cycle에서 반환된 timing dict를 기록"""
+        """poll_cycle / read_cycle / bulk 사이클에서 반환된 timing dict를 기록"""
         self._total_cycles += 1
         if "cycle" in timing:
             self._cycle_times.append(timing["cycle"])
@@ -522,6 +773,10 @@ class UdpTimingStats:
             self._read_vel_times.append(timing["read_velocity"])
         if "read_sensors" in timing:
             self._read_sensor_times.append(timing["read_sensors"])
+        if "read_all_motors" in timing:
+            self._read_all_motor_times.append(timing["read_all_motors"])
+        if "read_all_sensors" in timing:
+            self._read_all_sensor_times.append(timing["read_all_sensors"])
         self._timeout_count += timing.get("timeouts", 0)
 
     @staticmethod
@@ -546,6 +801,10 @@ class UdpTimingStats:
         lines.append(self._stats_str(self._read_vel_times, "read_vel    "))
         if self._read_sensor_times:
             lines.append(self._stats_str(self._read_sensor_times, "read_sensors"))
+        if self._read_all_motor_times:
+            lines.append(self._stats_str(self._read_all_motor_times, "read_all_mot"))
+        if self._read_all_sensor_times:
+            lines.append(self._stats_str(self._read_all_sensor_times, "read_all_sen"))
         return '\n'.join(lines)
 
 
@@ -555,14 +814,17 @@ class HandDataCsvLogger:
     """수신 데이터를 CSV로 저장하는 로거"""
 
     def __init__(self, num_sensors: int = NUM_FINGERTIPS,
-                 output_dir: str = "", prefix: str = "hand_data"):
+                 output_dir: str = "", prefix: str = "hand_data",
+                 bulk_mode: bool = False):
         """
         Args:
             num_sensors: 연결된 핑거팁 센서 수
             output_dir: CSV 저장 디렉토리 (빈 문자열 시 UR5E_SESSION_DIR/hand 사용)
             prefix: 파일명 접두어
+            bulk_mode: True이면 전류 컬럼 추가 및 bulk 타이밍 키 사용
         """
         self.num_sensors = num_sensors
+        self.bulk_mode = bulk_mode
         # 세션 디렉토리 기반 기본 경로
         if not output_dir:
             session = os.environ.get('UR5E_SESSION_DIR', '')
@@ -575,14 +837,22 @@ class HandDataCsvLogger:
         header = ["timestamp", "cycle"]
         header.extend(f"pos_{i}" for i in range(NUM_HAND_MOTORS))
         header.extend(f"vel_{i}" for i in range(NUM_HAND_MOTORS))
+        if bulk_mode:
+            header.extend(f"cur_{i}" for i in range(NUM_HAND_MOTORS))
         for s in range(num_sensors):
             header.extend(f"s{s}_baro_{j}" for j in range(BAROMETER_COUNT))
             header.extend(f"s{s}_tof_{j}" for j in range(TOF_COUNT))
         # 타이밍 컬럼 (ms 단위)
-        self._timing_keys = ["cycle", "write_position",
-                              "read_position", "read_velocity"]
-        if num_sensors > 0:
-            self._timing_keys.append("read_sensors")
+        if bulk_mode:
+            self._timing_keys = ["cycle", "write_position",
+                                  "read_all_motors"]
+            if num_sensors > 0:
+                self._timing_keys.append("read_all_sensors")
+        else:
+            self._timing_keys = ["cycle", "write_position",
+                                  "read_position", "read_velocity"]
+            if num_sensors > 0:
+                self._timing_keys.append("read_sensors")
         self._timing_keys.append("timeouts")
         header.extend(f"t_{k}" for k in self._timing_keys)
 
@@ -609,6 +879,14 @@ class HandDataCsvLogger:
             row.extend(f"{v:.6f}" for v in vel)
         else:
             row.extend([""] * NUM_HAND_MOTORS)
+
+        # currents (10, bulk mode only)
+        if self.bulk_mode:
+            cur = result.get("currents")
+            if cur:
+                row.extend(f"{v:.6f}" for v in cur)
+            else:
+                row.extend([""] * NUM_HAND_MOTORS)
 
         # sensors (num_sensors × 11 uint32)
         sensors = result.get("sensors", [])
@@ -1002,6 +1280,153 @@ def example_read_only(target_ip: str = "192.168.1.2",
         sender.close()
 
 
+def example_poll_cycle_bulk(target_ip: str = "192.168.1.2",
+                            num_sensors: int = NUM_FINGERTIPS,
+                            csv_dir: str | None = None):
+    """Bulk 모드 전체 poll 사이클 (0x10 + 0x19)"""
+    sender = HandUDPSender(target_ip=target_ip, num_sensors=num_sensors)
+
+    print(f"\nBulk poll 사이클 실행 (센서 {num_sensors}개, MODE=RAW)...")
+
+    if num_sensors > 0:
+        print("  센서 초기화: set_sensor_mode(RAW)...")
+        if sender.initialize_sensors():
+            print("  → 센서 모드 RAW 설정 완료")
+        else:
+            print("  → 센서 초기화 실패 (RAW 모드 전환 불가)")
+
+    csv_logger = None
+    if csv_dir is not None:
+        csv_logger = HandDataCsvLogger(num_sensors=num_sensors,
+                                       output_dir=csv_dir, prefix="hand_bulk_poll",
+                                       bulk_mode=True)
+        print(f"  CSV 저장: {csv_logger.filepath}")
+
+    failure_detector = HandDataFailureDetector(motor_enabled=False, sensor_enabled=True)
+    timing_stats = UdpTimingStats()
+
+    print(f"  WritePosition(43B↔43B) → ReadAllMotors(3B→123B) → ReadAllSensors(3B→259B)")
+    print("Ctrl+C로 중지\n")
+
+    try:
+        t = 0.0
+        dt = 0.002  # 500 Hz
+        cycle = 0
+        while True:
+            positions = [
+                0.5 + 0.3 * np.sin(2 * np.pi * 0.5 * t + i * 0.2)
+                for i in range(NUM_HAND_MOTORS)
+            ]
+
+            result = sender.poll_cycle_bulk(positions)
+            cycle += 1
+
+            failure_detector.check(result)
+            timing_stats.record(result.get("timing", {}))
+
+            if csv_logger:
+                csv_logger.log(cycle, result)
+
+            if cycle % 500 == 0:
+                pos_str = "None"
+                if result["positions"]:
+                    pos_str = f'[{", ".join(f"{p:.3f}" for p in result["positions"][:4])} ...]'
+                vel_str = "None"
+                if result["velocities"]:
+                    vel_str = f'[{", ".join(f"{v:.3f}" for v in result["velocities"][:4])} ...]'
+                cur_str = "None"
+                if result["currents"]:
+                    cur_str = f'[{", ".join(f"{c:.3f}" for c in result["currents"][:4])} ...]'
+                print(f"[cycle {cycle}] pos={pos_str}  vel={vel_str}  cur={cur_str}")
+                if num_sensors > 0:
+                    print(_format_sensor_detail(
+                        result['sensors'], num_sensors, result['sensor_modes']))
+                print(timing_stats.format_stats())
+
+            t += dt
+            time.sleep(dt)
+
+    except KeyboardInterrupt:
+        print(f"\n중지됨 (총 {cycle} 사이클)")
+        print(timing_stats.format_stats())
+        if csv_logger:
+            print(f"CSV 저장 완료: {csv_logger.filepath}")
+    finally:
+        if csv_logger:
+            csv_logger.close()
+        sender.close()
+
+
+def example_read_only_bulk(target_ip: str = "192.168.1.2",
+                           num_sensors: int = NUM_FINGERTIPS,
+                           csv_dir: str | None = None):
+    """Bulk read only (0x10 + 0x19, WritePosition 없음)"""
+    sender = HandUDPSender(target_ip=target_ip, num_sensors=num_sensors)
+
+    print(f"\nBulk read only 사이클 실행 (센서 {num_sensors}개, MODE=RAW)...")
+
+    if num_sensors > 0:
+        print("  센서 초기화: set_sensor_mode(RAW)...")
+        if sender.initialize_sensors():
+            print("  → 센서 모드 RAW 설정 완료")
+        else:
+            print("  → 센서 초기화 실패 (RAW 모드 전환 불가)")
+
+    csv_logger = None
+    if csv_dir is not None:
+        csv_logger = HandDataCsvLogger(num_sensors=num_sensors,
+                                       output_dir=csv_dir, prefix="hand_bulk_read",
+                                       bulk_mode=True)
+        print(f"  CSV 저장: {csv_logger.filepath}")
+
+    failure_detector = HandDataFailureDetector(motor_enabled=False, sensor_enabled=True)
+    timing_stats = UdpTimingStats()
+
+    print(f"  ReadAllMotors(3B→123B) → ReadAllSensors(3B→259B)")
+    print("Ctrl+C로 중지\n")
+
+    try:
+        cycle = 0
+        dt = 0.002  # 500 Hz
+        while True:
+            result = sender.read_cycle_bulk()
+            cycle += 1
+
+            failure_detector.check(result)
+            timing_stats.record(result.get("timing", {}))
+
+            if csv_logger:
+                csv_logger.log(cycle, result)
+
+            if cycle % 500 == 0:
+                pos_str = "None"
+                if result["positions"]:
+                    pos_str = f'[{", ".join(f"{p:.3f}" for p in result["positions"][:4])} ...]'
+                vel_str = "None"
+                if result["velocities"]:
+                    vel_str = f'[{", ".join(f"{v:.3f}" for v in result["velocities"][:4])} ...]'
+                cur_str = "None"
+                if result["currents"]:
+                    cur_str = f'[{", ".join(f"{c:.3f}" for c in result["currents"][:4])} ...]'
+                print(f"[cycle {cycle}] pos={pos_str}  vel={vel_str}  cur={cur_str}")
+                if num_sensors > 0:
+                    print(_format_sensor_detail(
+                        result['sensors'], num_sensors, result['sensor_modes']))
+                print(timing_stats.format_stats())
+
+            time.sleep(dt)
+
+    except KeyboardInterrupt:
+        print(f"\n중지됨 (총 {cycle} 사이클)")
+        print(timing_stats.format_stats())
+        if csv_logger:
+            print(f"CSV 저장 완료: {csv_logger.filepath}")
+    finally:
+        if csv_logger:
+            csv_logger.close()
+        sender.close()
+
+
 def main(args=None):
     logging.basicConfig(
         level=logging.INFO,
@@ -1011,10 +1436,12 @@ def main(args=None):
     print("=" * 65)
     print("  Hand UDP Sender Example")
     print("=" * 65)
-    print(f"\n  모터 패킷:  {MOTOR_PACKET_SIZE}B = [ID:1B][CMD:1B][MODE:1B][data:10×float32]")
-    print(f"  센서 요청:  {SENSOR_REQUEST_SIZE}B = [ID:1B][CMD:1B][MODE:1B]")
-    print(f"  센서 응답:  {SENSOR_RESPONSE_SIZE}B = [ID:1B][CMD:1B][MODE:1B][data:16×uint32]")
-    print(f"             → barometer[{BAROMETER_COUNT}] + reserved[{RESERVED_COUNT}](skip) + tof[{TOF_COUNT}] = {SENSOR_VALUES_PER_FINGERTIP} 유효 값")
+    print(f"\n  모터 패킷:       {MOTOR_PACKET_SIZE}B = [ID:1B][CMD:1B][MODE:1B][data:10×float32]")
+    print(f"  모터 일괄 응답:  {ALL_MOTOR_PACKET_SIZE}B = [ID:1B][CMD:1B][MODE:1B][data:30×float32] (pos+vel+cur)")
+    print(f"  센서 요청:       {SENSOR_REQUEST_SIZE}B = [ID:1B][CMD:1B][MODE:1B]")
+    print(f"  센서 응답:       {SENSOR_RESPONSE_SIZE}B = [ID:1B][CMD:1B][MODE:1B][data:16×uint32]")
+    print(f"                  → barometer[{BAROMETER_COUNT}] + reserved[{RESERVED_COUNT}](skip) + tof[{TOF_COUNT}] = {SENSOR_VALUES_PER_FINGERTIP} 유효 값")
+    print(f"  센서 일괄 응답:  {ALL_SENSOR_RESPONSE_SIZE}B = [ID:1B][CMD:1B][MODE:1B][data:64×uint32] (4핑거)")
     print(f"  모터: {NUM_HAND_MOTORS}개, 핑거팁: 최대 {NUM_FINGERTIPS}개, 센서 값/팁: {SENSOR_VALUES_PER_FINGERTIP}개")
     print()
 
@@ -1044,6 +1471,8 @@ def main(args=None):
     print("  2) 전체 poll 사이클 (WritePos + ReadPos + ReadVel + ReadSensor)")
     print("  3) 고정 포즈 전송")
     print("  4) Read only (ReadPos + ReadVel + ReadSensor, 쓰기 없음)")
+    print("  5) Bulk poll 사이클 (WritePos + ReadAllMotors[0x10] + ReadAllSensors[0x19])")
+    print("  6) Bulk read only (ReadAllMotors[0x10] + ReadAllSensors[0x19], 쓰기 없음)")
     print()
 
     choice = input("선택 (기본=1): ").strip() or "1"
@@ -1056,6 +1485,10 @@ def main(args=None):
         example_static_pose(target_ip=target_ip)
     elif choice == "4":
         example_read_only(target_ip=target_ip, num_sensors=num_sensors, csv_dir=csv_dir)
+    elif choice == "5":
+        example_poll_cycle_bulk(target_ip=target_ip, num_sensors=num_sensors, csv_dir=csv_dir)
+    elif choice == "6":
+        example_read_only_bulk(target_ip=target_ip, num_sensors=num_sensors, csv_dir=csv_dir)
     else:
         print("잘못된 선택")
 
