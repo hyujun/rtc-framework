@@ -9,12 +9,12 @@
 #include <sys/mman.h>  // mlockall
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
 #include <memory>
-#include <mutex>
 #include <sstream>
 #include <string>
 
@@ -36,6 +36,8 @@ class HandUdpNode : public rclcpp::Node {
     declare_parameter("target_port",     55151);
     declare_parameter("publish_rate",    100.0);
     declare_parameter("recv_timeout_ms", 10);
+    // enable_write_ack is deprecated — echo is always consumed for RT safety.
+    // Parameter kept for backward compatibility but ignored.
     declare_parameter("enable_write_ack", false);
     declare_parameter("enable_failure_detector", true);
     declare_parameter("failure_threshold", 5);
@@ -55,8 +57,6 @@ class HandUdpNode : public rclcpp::Node {
     const int         target_port     = get_parameter("target_port").as_int();
     const double      rate            = get_parameter("publish_rate").as_double();
     const int         recv_timeout_ms = get_parameter("recv_timeout_ms").as_int();
-    const bool        enable_write_ack = get_parameter("enable_write_ack").as_bool();
-
     // ── Communication mode ──────────────────────────────────────────────
     const std::string comm_mode_str = get_parameter("communication_mode").as_string();
     const auto comm_mode = (comm_mode_str == "bulk")
@@ -67,13 +67,11 @@ class HandUdpNode : public rclcpp::Node {
     const auto ft_names = get_parameter("hand_fingertip_names").as_string_array();
     controller_ = std::make_unique<urtc::HandController>(
         target_ip, target_port, urtc::kUdpRecvConfig, recv_timeout_ms,
-        enable_write_ack, 1, urtc::kDefaultNumFingertips, false, ft_names,
-        comm_mode);
+        false /* enable_write_ack: deprecated */, 1,
+        urtc::kDefaultNumFingertips, false, ft_names, comm_mode);
 
-    controller_->SetCallback([this](const urtc::HandState& state) {
-      std::lock_guard lock(data_mutex_);
-      latest_state_  = state;
-      data_received_ = true;
+    controller_->SetCallback([this](const urtc::HandState& /*state*/) {
+      data_received_.store(true, std::memory_order_relaxed);
     });
 
     if (!controller_->Start()) {
@@ -151,13 +149,9 @@ class HandUdpNode : public rclcpp::Node {
 
  private:
   void PublishState() {
-    if (!data_received_) return;
+    if (!data_received_.load(std::memory_order_relaxed)) return;
 
-    urtc::HandState snapshot;
-    {
-      std::lock_guard lock(data_mutex_);
-      snapshot = latest_state_;
-    }
+    const urtc::HandState snapshot = controller_->GetLatestState();
 
     // Publish: [10 positions] + [10 velocities] + [44 sensors]
     std_msgs::msg::Float64MultiArray msg;
@@ -307,9 +301,7 @@ class HandUdpNode : public rclcpp::Node {
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr command_sub_;
   rclcpp::TimerBase::SharedPtr publish_timer_;
 
-  mutable std::mutex  data_mutex_;
-  urtc::HandState     latest_state_{};
-  bool                data_received_{false};
+  std::atomic<bool>   data_received_{false};
   std::size_t         publish_count_{0};
 
   std::chrono::steady_clock::time_point start_time_{std::chrono::steady_clock::now()};

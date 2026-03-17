@@ -6,13 +6,12 @@
 #   - standalone (hand_udp_node 단독 실행): ROS2 토픽으로 상태 퍼블리시/명령 구독
 #
 # 통신 프로토콜 (1 사이클):
-#   Individual mode (기존):
-#     1. Write position  (cmd=0x01) → 10 float (모터 커맨드)
-#     2. Read position   (cmd=0x11) → request & recv 10 float
-#     3. Read velocity   (cmd=0x12) → request & recv 10 float
-#     4. Read sensor 0-3 (cmd=0x14..0x17) → request & recv × 4
+#   Individual mode:
+#     1. Write position  (cmd=0x01) + recv echo → position 획득 (1 RT 절약)
+#     2. Read velocity   (cmd=0x12) → request & recv 10 float
+#     3. Read sensor 0-3 (cmd=0x14..0x17) → request & recv × 4
 #   Bulk mode:
-#     1. Write position  (cmd=0x01) → 10 float (모터 커맨드)
+#     1. Write position  (cmd=0x01) + recv echo → 소켓 버퍼 정리
 #     2. Read all motors (cmd=0x10) → request 3B & recv 123B (pos+vel+cur)
 #     3. Read all sensors(cmd=0x19) → request 3B & recv 259B (4 fingers)
 #
@@ -32,7 +31,7 @@
     target_ip: "192.168.1.2"          # 핸드 컨트롤러 IP (빈 문자열 → hand 비활성)
     target_port: 55151                # 핸드 컨트롤러 포트 (0 → hand 비활성)
     recv_timeout_ms: 2                # SO_RCVTIMEO (ms), 수신 타임아웃
-    enable_write_ack: false           # 핸드 하드웨어 ACK 지원 시 true
+    # enable_write_ack: deprecated — write echo는 항상 수신 (RT 안전성)
     sensor_decimation: 3              # N cycle마다 센서 읽기 (1=매번, 3=3cycle마다)
                                       # decimation=3: 센서 사이클 빈도↓ → over_budget↓
                                       # 센서 skip 시 이전 캐시 데이터 유지
