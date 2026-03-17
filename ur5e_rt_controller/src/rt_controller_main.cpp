@@ -49,15 +49,21 @@ int main(int argc, char ** argv)
 
   auto node = std::make_shared<RtControllerNode>();
 
-  // Create executors for each callback group
-  rclcpp::executors::SingleThreadedExecutor rt_executor;
+  // Select thread configs based on physical core count
+  const auto cfgs = urtc::SelectThreadConfigs();
+
+  // ── RT loop + Publish offload (jthreads, managed by node) ───────────────
+  // These replace the former rt_executor:
+  //   - RtLoopEntry:      clock_nanosleep 500 Hz loop (Core 2, SCHED_FIFO 90)
+  //   - PublishLoopEntry: SPSC drain → all publish() calls (Core 5, SCHED_OTHER)
+  node->StartRtLoop(cfgs.rt_control);
+  node->StartPublishLoop(cfgs.publish);
+
+  // ── ROS2 executors (sensor, log, aux — unchanged) ──────────────────────
   rclcpp::executors::SingleThreadedExecutor sensor_executor;
   rclcpp::executors::SingleThreadedExecutor log_executor;
   rclcpp::executors::SingleThreadedExecutor aux_executor;
 
-  // Add callback groups to respective executors
-  rt_executor.add_callback_group(node->GetRtGroup(),
-                                 node->get_node_base_interface());
   sensor_executor.add_callback_group(node->GetSensorGroup(),
                                      node->get_node_base_interface());
   log_executor.add_callback_group(node->GetLogGroup(),
@@ -65,7 +71,7 @@ int main(int argc, char ** argv)
   aux_executor.add_callback_group(node->GetAuxGroup(),
                                   node->get_node_base_interface());
 
-  // Helper lambda to create thread with RT config
+  // Helper lambda to create executor thread with RT config
   auto make_thread = [](auto & executor, const urtc::ThreadConfig & cfg) {
       return std::thread([&executor, cfg]() {
                  if (!urtc::ApplyThreadConfig(cfg)) {
@@ -81,19 +87,17 @@ int main(int argc, char ** argv)
       });
     };
 
-  // Fix 9: select 6-core or 4-core thread configs at runtime based on the
-  // number of online CPUs detected via sysconf(_SC_NPROCESSORS_ONLN).
-  const auto cfgs = urtc::SelectThreadConfigs();
-
-  auto t_rt = make_thread(rt_executor, cfgs.rt_control);
   auto t_sensor = make_thread(sensor_executor, cfgs.sensor);
   auto t_log = make_thread(log_executor, cfgs.logging);
   auto t_aux = make_thread(aux_executor, cfgs.aux);
 
-  t_rt.join();
   t_sensor.join();
   t_log.join();
   t_aux.join();
+
+  // Graceful shutdown of RT loop + publish thread
+  node->StopRtLoop();
+  node->StopPublishLoop();
 
   rclcpp::shutdown();
   return 0;

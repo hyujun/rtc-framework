@@ -80,29 +80,39 @@ ur5e_rt_controller/
 
 ## 아키텍처
 
-### 전략 패턴 + 멀티스레드 실행기
+### 전략 패턴 + 멀티스레드 아키텍처 (v5.16.0)
 
 ```
 RtControllerNode (ROS2 노드)
     │
-    ├── rt_executor (Core 2, FIFO/90)     ← ControlLoop() 500Hz, CheckTimeouts() 50Hz
-    ├── sensor_executor (Core 3, FIFO/70) ← /joint_states, /target_joint_positions, /hand/joint_states [전용]
-    ├── log_executor (Core 4, OTHER/nice-5)← DataLogger CSV 기록 (SpscLogBuffer 드레인)
+    ├── rt_loop (Core 2, FIFO/90)         ← std::jthread, clock_nanosleep 500Hz
+    │     ├── ControlLoop()               ← 절대시간 루프 (TIMER_ABSTIME)
+    │     └── CheckTimeouts() 매 10틱     ← 50Hz inline (executor 미사용)
+    │
+    ├── publish_thread (Core 5, OTHER/-3) ← std::jthread, SPSC 드레인 → publish()
+    │     └── ControlPublishBuffer        ← lock-free SPSC 링 버퍼 (512 slots)
+    │
+    ├── sensor_executor (Core 3, FIFO/70) ← /joint_states, /target_joint_positions [전용]
+    ├── log_executor (Core 4, OTHER/-5)   ← DataLogger CSV 기록 (SpscLogBuffer 드레인)
     └── aux_executor (Core 5, OTHER/0)    ← /system/estop_status 퍼블리시
 
-HandUdpReceiver (별도 jthread)
+HandController (별도 jthread, event-driven)
     └── udp_recv (Core 5, FIFO/65)       ← UDP 패킷 수신 [sensor_io와 분리]
 
 StatusMonitor (별도 jthread, enable_status_monitor: true 시)
-    └── monitor_thread (Core 5, OTHER/0) ← 10Hz 비-RT 상태/안전 모니터링
+    └── monitor_thread (Core 4, OTHER/0) ← 10Hz 비-RT 상태/안전 모니터링
 
 HandFailureMonitor (별도 jthread)
-    └── hand_monitor (Core 5, OTHER/0)   ← 핸드 통신 실패 감지
+    └── hand_monitor (Core 4, OTHER/0)   ← 핸드 통신 실패 감지
 
     controller_ (RTControllerInterface)
         └── [교체 가능] PController / JointPDController / ClikController /
                         OperationalSpaceController / UrFiveEHandController
 ```
+
+> **v5.16.0 변경**: `rt_executor` + `create_wall_timer()` → `clock_nanosleep` jthread.
+> Phase 3 `publish()` 호출 → SPSC 버퍼 + `publish_thread`로 오프로드.
+> Executor 4개 → 3개. RT 경로에서 DDS 직렬화/시스템 콜 완전 제거.
 
 `mlockall(MCL_CURRENT | MCL_FUTURE)` — 시작 시 페이지 폴트 방지
 
@@ -545,7 +555,7 @@ v5.10.0부터 세션 디렉토리(`logging_data/YYMMDD_HHMM/controller/`) 내에
 | `tof_f{f}_{t}` | 2. State | 손가락 f ToF 센서 t (4×3=12) |
 | `hand_cmd_0..9` | 3. Command | 핸드 명령 |
 
-**오버런 감지**: `budget_us_` 임계값 (기본 = 제어 주기)을 초과하면 `overrun_count_` 원자 카운터가 증가합니다. 로그 종료 시 총 오버런 횟수가 출력됩니다.
+**오버런 감지 (v5.16.0)**: 3단계 오버런 추적 — `overrun_count_` (RT loop tick 지연), `compute_overrun_count_` (ControlLoop 실행시간 초과), `skip_count_` (놓친 tick 수). 연속 10회 overrun 시 `TriggerGlobalEstop("consecutive_overrun")`. 로그 요약에 `pub_drops` (publish 버퍼 drop) 추가.
 
 ```python
 import pandas as pd, glob, os

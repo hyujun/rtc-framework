@@ -64,6 +64,19 @@ inline const ThreadConfig kAuxConfig{
     .name           = "aux"
 };
 
+// ── Publish offload thread (6-core) ──────────────────────────────────────────
+// Drains SPSC publish buffer and calls all ROS2 publish() on a non-RT core.
+// Shares Core 5 with aux and udp_recv — publish is SCHED_OTHER, preempted
+// by udp_recv (SCHED_FIFO 65).
+
+inline const ThreadConfig kPublishConfig{
+    .cpu_core       = 5,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -3,
+    .name           = "rt_publish"
+};
+
 // ── Non-RT monitoring threads (6-core) ──────────────────────────────────────
 // Status monitor (10 Hz) and hand failure detector (50 Hz) are both non-RT.
 // They share Core 4 with logging — all are SCHED_OTHER and I/O-light.
@@ -133,6 +146,14 @@ inline const ThreadConfig kAuxConfig8Core{
     .name           = "aux"
 };
 
+inline const ThreadConfig kPublishConfig8Core{
+    .cpu_core       = 6,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -3,
+    .name           = "rt_publish"
+};
+
 // ── Non-RT monitoring threads (8-core) ──────────────────────────────────────
 // With 8 cores, monitoring threads get Core 6 (shared with aux).
 
@@ -196,6 +217,14 @@ inline const ThreadConfig kAuxConfig4Core{
     .sched_priority = 0,
     .nice_value     = 0,
     .name           = "aux"
+};
+
+inline const ThreadConfig kPublishConfig4Core{
+    .cpu_core       = 3,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -3,
+    .name           = "rt_publish"
 };
 
 // ── Non-RT monitoring threads (4-core) ──────────────────────────────────────
@@ -266,6 +295,14 @@ inline const ThreadConfig kAuxConfig10Core{
     .sched_priority = 0,
     .nice_value     = 0,
     .name           = "aux"
+};
+
+inline const ThreadConfig kPublishConfig10Core{
+    .cpu_core       = 9,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -3,
+    .name           = "rt_publish"
 };
 
 // ── Non-RT monitoring threads (10-core) ────────────────────────────────────
@@ -339,6 +376,14 @@ inline const ThreadConfig kAuxConfig12Core{
     .name           = "aux"
 };
 
+inline const ThreadConfig kPublishConfig12Core{
+    .cpu_core       = 11,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -3,
+    .name           = "rt_publish"
+};
+
 // ── Non-RT monitoring threads (12-core) ────────────────────────────────────
 // Share Core 10 with logging — all SCHED_OTHER and I/O-light.
 
@@ -410,6 +455,14 @@ inline const ThreadConfig kAuxConfig16Core{
     .sched_priority = 0,
     .nice_value     = 0,
     .name           = "aux"
+};
+
+inline const ThreadConfig kPublishConfig16Core{
+    .cpu_core       = 11,
+    .sched_policy   = SCHED_OTHER,
+    .sched_priority = 0,
+    .nice_value     = -3,
+    .name           = "rt_publish"
 };
 
 // ── Non-RT monitoring threads (16-core) ────────────────────────────────────

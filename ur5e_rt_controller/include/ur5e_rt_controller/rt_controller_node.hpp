@@ -3,6 +3,7 @@
 // ── Project headers ───────────────────────────────────────────────────────────
 #include "ur5e_rt_base/logging/data_logger.hpp"
 #include "ur5e_rt_base/logging/log_buffer.hpp"
+#include "ur5e_rt_base/threading/publish_buffer.hpp"
 #include "ur5e_rt_controller/controller_timing_profiler.hpp"
 #include "ur5e_rt_controller/rt_controller_interface.hpp"
 #include <ur5e_hand_udp/hand_controller.hpp>
@@ -25,18 +26,20 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
 // ── RtControllerNode ──────────────────────────────────────────────────────────
 //
-// 500 Hz position controller node with multi-threaded executors.
+// 500 Hz position controller node.
 //
-// CallbackGroup assignment:
-//   - cb_group_rt_:     control_timer_, timeout_timer_  (RT core)
-//   - cb_group_sensor_: joint_state_sub_, target_sub_, hand_state_sub_  (Sensor core)
-//   - cb_group_log_:    drain_timer_  (non-RT core)
-//   - cb_group_aux_:    estop_pub_  (aux core)
+// Threading model:
+//   - rt_loop (jthread):   clock_nanosleep RT loop — ControlLoop() + CheckTimeouts()
+//   - publish_thread (jthread): SPSC drain → all ROS2 publish() calls
+//   - cb_group_sensor_:    joint_state_sub_, target_sub_, hand_state_sub_  (Sensor core)
+//   - cb_group_log_:       drain_timer_  (non-RT core)
+//   - cb_group_aux_:       estop_pub_  (aux core)
 class RtControllerNode : public rclcpp::Node
 {
 public:
@@ -44,10 +47,15 @@ public:
   ~RtControllerNode() override;
 
   // Public accessors for main() to retrieve callback groups
-  rclcpp::CallbackGroup::SharedPtr GetRtGroup()     const {return cb_group_rt_;}
   rclcpp::CallbackGroup::SharedPtr GetSensorGroup() const {return cb_group_sensor_;}
   rclcpp::CallbackGroup::SharedPtr GetLogGroup()    const {return cb_group_log_;}
   rclcpp::CallbackGroup::SharedPtr GetAuxGroup()    const {return cb_group_aux_;}
+
+  // RT loop lifecycle — called from main()
+  void StartRtLoop(const ur5e_rt_controller::ThreadConfig& rt_cfg);
+  void StartPublishLoop(const ur5e_rt_controller::ThreadConfig& pub_cfg);
+  void StopRtLoop();
+  void StopPublishLoop();
 
 private:
   // ── Session directory helpers ─────────────────────────────────────────────
@@ -72,9 +80,13 @@ private:
   void BuildJointStateIndexMap(const std::vector<std::string>& msg_names);
   void BuildHandStateIndexMap(const std::vector<std::string>& source_names);
 
-  // ── Timer callbacks ───────────────────────────────────────────────────────
-  void CheckTimeouts();   // 50 Hz watchdog (E-STOP)
+  // ── RT loop (clock_nanosleep) ─────────────────────────────────────────────
+  void RtLoopEntry(const ur5e_rt_controller::ThreadConfig& cfg);
+  void CheckTimeouts();   // 50 Hz watchdog — called inline from RT loop
   void ControlLoop();     // 500 Hz control loop
+
+  // ── Publish offload (SPSC drain → publish) ──────────────────────────────
+  void PublishLoopEntry(const ur5e_rt_controller::ThreadConfig& cfg);
   void DrainLog();        // Log drain (non-RT core)
 
   void PublishEstopStatus(bool estopped);
@@ -93,7 +105,6 @@ private:
   }
 
   // ── ROS2 handles ──────────────────────────────────────────────────────────
-  rclcpp::CallbackGroup::SharedPtr cb_group_rt_;
   rclcpp::CallbackGroup::SharedPtr cb_group_sensor_;
   rclcpp::CallbackGroup::SharedPtr cb_group_log_;
   rclcpp::CallbackGroup::SharedPtr cb_group_aux_;
@@ -114,7 +125,6 @@ private:
     std_msgs::msg::Float64MultiArray msg;
   };
   std::unordered_map<std::string, PublisherEntry> topic_publishers_;
-  std::mutex                                      cmd_pub_mutex_;
 
   // Fixed publishers (always present)
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr              estop_pub_;
@@ -137,9 +147,16 @@ private:
   // Read-only parameter guard handle (topic params immutable after init)
   rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
 
-  rclcpp::TimerBase::SharedPtr control_timer_;
-  rclcpp::TimerBase::SharedPtr timeout_timer_;
   rclcpp::TimerBase::SharedPtr drain_timer_;  // log drain (log thread)
+
+  // ── RT loop (clock_nanosleep, replaces control_timer_ + timeout_timer_) ──
+  std::jthread rt_loop_thread_;
+  std::atomic<bool> rt_loop_running_{false};
+
+  // ── Publish offload (SPSC buffer + dedicated thread) ────────────────────
+  ur5e_rt_controller::ControlPublishBuffer publish_buffer_{};
+  std::jthread publish_thread_;
+  std::atomic<bool> publish_running_{false};
 
   // ── Domain objects ────────────────────────────────────────────────────────
   std::vector<std::unique_ptr<ur5e_rt_controller::RTControllerInterface>> controllers_;
@@ -196,8 +213,8 @@ private:
   std::atomic<bool> state_received_{false};
   std::atomic<bool> target_received_{false};
 
-  rclcpp::Time              last_robot_update_;
-  std::chrono::milliseconds robot_timeout_{100};
+  std::chrono::steady_clock::time_point last_robot_update_{};
+  std::chrono::milliseconds             robot_timeout_{100};
 
   // ── Named joint mapping (v5.14.0) ────────────────────────────────────────
   std::vector<std::string> robot_joint_names_;
@@ -240,6 +257,13 @@ private:
   std::chrono::steady_clock::time_point prev_loop_start_{};
   // Tick budget in µs — computed from control_rate_ in DeclareAndLoadParameters().
   double budget_us_{2000.0};
-  // Overrun counter — incremented (relaxed) when t_total > budget. Read by log thread.
+  // Overrun counter — ticks where clock_nanosleep woke late (RT loop level).
   std::atomic<uint64_t> overrun_count_{0};
+  // Compute overrun — ticks where ControlLoop() itself exceeded budget.
+  std::atomic<uint64_t> compute_overrun_count_{0};
+  // Cumulative skipped ticks due to overrun recovery (missed deadline → skip).
+  std::atomic<uint64_t> skip_count_{0};
+  // Consecutive overrun counter — reset on normal tick, E-STOP on threshold.
+  std::atomic<uint64_t> consecutive_overruns_{0};
+  static constexpr uint64_t kMaxConsecutiveOverruns = 10;
 };

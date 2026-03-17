@@ -56,31 +56,37 @@ SingleThreadedExecutor (1개 스레드)
 3. **CPU Migration**: OS가 스레드를 다른 코어로 이동 → cache miss
 4. **RT 우선순위 미설정**: SCHED_OTHER 기본 정책 사용
 
-### 신규 (v4.2.0)
+### v4.2.0 → v5.16.0 (현재)
 
 ```
-rt_executor (Core 2, SCHED_FIFO prio 90)
-  ├─ control_timer_ (500Hz)
-  └─ timeout_timer_ (50Hz)
+rt_loop (Core 2, SCHED_FIFO prio 90) ← std::jthread, clock_nanosleep
+  ├─ ControlLoop() (500Hz, TIMER_ABSTIME 절대시간)
+  ├─ CheckTimeouts() (매 10틱 = 50Hz, inline)
+  └─ overrun recovery (skip + 재정렬, consecutive E-STOP)
 
-sensor_executor (Core 3, SCHED_FIFO prio 70)
+publish_thread (Core 5, SCHED_OTHER nice -3) ← std::jthread, SPSC drain
+  └─ ControlPublishBuffer → 모든 publish() 호출
+
+sensor_executor (Core 3, SCHED_FIFO prio 70) ← ROS2 Executor
   ├─ joint_state_sub_
   ├─ target_sub_
   └─ hand_state_sub_
 
-log_executor (Core 4, SCHED_OTHER nice -5)
-  └─ logging operations
+log_executor (Core 4, SCHED_OTHER nice -5) ← ROS2 Executor
+  └─ drain_timer_ (SpscLogBuffer → CSV)
 
-aux_executor (Core 5, SCHED_OTHER)
+aux_executor (Core 5, SCHED_OTHER) ← ROS2 Executor
   └─ estop_pub_
 ```
 
-**개선사항**:
-1. **CallbackGroup 분리**: 4개 독립 그룹 (RT, Sensor, Log, Aux)
-2. **Executor 분리**: 4개 SingleThreadedExecutor를 별도 std::thread에서 실행
-3. **CPU Affinity**: 각 스레드를 전용 CPU 코어에 고정
-4. **RT 스케줄링**: SCHED_FIFO (RT), SCHED_OTHER (non-RT) 명시적 설정
-5. **메모리 잠금**: mlockall(MCL_CURRENT | MCL_FUTURE)로 페이지 폴트 방지
+**v5.16.0 개선사항** (v4.2.0 기반):
+1. **clock_nanosleep RT 루프**: `create_wall_timer()` → `clock_nanosleep(TIMER_ABSTIME)` — executor dispatch 지터 제거
+2. **Publish 오프로드**: SPSC 버퍼 + 전용 publish thread — DDS 직렬화/syscall RT 경로에서 제거
+3. **Executor 축소**: 4개 → 3개 (rt_executor 제거, jthread 대체)
+4. **Overrun recovery**: 놓친 tick skip + 다음 경계 재정렬, 연속 10회 시 E-STOP
+5. **CPU Affinity**: 각 스레드를 전용 CPU 코어에 고정
+6. **RT 스케줄링**: SCHED_FIFO (RT), SCHED_OTHER (non-RT) 명시적 설정
+7. **메모리 잠금**: mlockall(MCL_CURRENT | MCL_FUTURE)로 페이지 폴트 방지
 
 ---
 
@@ -90,15 +96,16 @@ aux_executor (Core 5, SCHED_OTHER)
 
 > **v5.1.0 업데이트**: `udp_recv`가 Core 3 → Core 5로 이동되었습니다. `sensor_io`(Core 3)가 전용 코어를 확보하여 UDP 버스트 시 `JointStateCallback` 지연 및 오발동 E-STOP 위험이 제거되었습니다.
 
-| Core | 용도 | Scheduler | Priority | CallbackGroup / 스레드 | 주기 |
-|------|------|-----------|----------|----------------------|------|
+| Core | 용도 | Scheduler | Priority | 스레드 유형 | 주기 |
+|------|------|-----------|----------|------------|------|
 | 0-1 | OS / DDS / UR 드라이버 / NIC IRQ | SCHED_OTHER | - | - | - |
-| 2 | RT Control | SCHED_FIFO | 90 | `cb_group_rt_` | 500Hz + 50Hz E-STOP |
-| 3 | Sensor I/O | SCHED_FIFO | 70 | `cb_group_sensor_` (전용) | 비정기 |
-| 4 | Logging | SCHED_OTHER | nice -5 | `cb_group_log_` | 100Hz drain |
-| 4 | Status Monitor | SCHED_OTHER | nice -2 | `status_mon` (jthread) | 10Hz |
-| 4 | Hand Failure Detector | SCHED_OTHER | nice -2 | `hand_detect` (jthread) | 50Hz |
-| 5 | UDP recv + Aux | FIFO/65 + OTHER/0 | - | `kUdpRecvConfig` + `cb_group_aux_` | 비정기 |
+| 2 | RT Control | SCHED_FIFO | 90 | `std::jthread` (clock_nanosleep) | 500Hz + 50Hz E-STOP |
+| 3 | Sensor I/O | SCHED_FIFO | 70 | ROS2 Executor (`cb_group_sensor_`) | 비정기 |
+| 4 | Logging | SCHED_OTHER | nice -5 | ROS2 Executor (`cb_group_log_`) | 100Hz drain |
+| 4 | Status Monitor | SCHED_OTHER | nice -2 | `std::jthread` | 10Hz |
+| 4 | Hand Failure Detector | SCHED_OTHER | nice -2 | `std::jthread` | 50Hz |
+| 5 | Publish offload | SCHED_OTHER | nice -3 | `std::jthread` (SPSC drain) | 500Hz (event) |
+| 5 | UDP recv + Aux | FIFO/65 + OTHER/0 | - | `std::jthread` + ROS2 Executor | 비정기 |
 
 **isolcpus 설정**: Core 2-5를 OS 스케줄러에서 격리하여 RT 전용으로 사용
 
@@ -404,8 +411,8 @@ cat /proc/interrupts | grep -E "(CPU0|CPU1)"  # 대부분의 IRQ가 Core 0-1에 
 
 ```cpp
 void RtControllerNode::CreateCallbackGroups() {
-  cb_group_rt_ = create_callback_group(
-      rclcpp::CallbackGroupType::MutuallyExclusive);
+  // cb_group_rt_ 제거 (v5.16.0) — ControlLoop() + CheckTimeouts()는
+  // RtLoopEntry() jthread에서 clock_nanosleep으로 직접 실행
   cb_group_sensor_ = create_callback_group(
       rclcpp::CallbackGroupType::MutuallyExclusive);
   cb_group_log_ = create_callback_group(
@@ -417,27 +424,33 @@ void RtControllerNode::CreateCallbackGroups() {
 
 **MutuallyExclusive**: 같은 그룹 내 콜백은 순차 실행 (thread-safe)
 
-### 타이머 할당
+### RT 루프 (v5.16.0, clock_nanosleep 기반)
 
 ```cpp
-void RtControllerNode::CreateTimers() {
-  const auto control_period = std::chrono::microseconds(
-      static_cast<int>(1'000'000.0 / control_rate_));
-  
-  // control_timer_를 cb_group_rt_에 할당
-  control_timer_ = create_wall_timer(
-      control_period,
-      [this]() { ControlLoop(); },
-      cb_group_rt_);  // ← 명시적 그룹 지정
+void RtControllerNode::RtLoopEntry(const ThreadConfig& cfg) {
+  ApplyThreadConfig(cfg);  // Core 2, SCHED_FIFO 90
 
-  if (enable_estop_) {
-    timeout_timer_ = create_wall_timer(
-        20ms,
-        [this]() { CheckTimeouts(); },
-        cb_group_rt_);  // ← 같은 그룹 (RT)
+  const int64_t period_ns = static_cast<int64_t>(1.0e9 / control_rate_);
+  struct timespec next_wake{};
+  clock_gettime(CLOCK_MONOTONIC, &next_wake);
+
+  while (rt_loop_running_ && rclcpp::ok()) {
+    next_wake.tv_nsec += period_ns;
+    // ... normalize ...
+    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next_wake, nullptr);
+
+    // Overrun recovery: 놓친 tick skip + 다음 경계 재정렬
+    // ...
+
+    ControlLoop();
+
+    if (++tick % 10 == 0) CheckTimeouts();  // 50Hz inline
   }
 }
 ```
+
+> **v5.16.0**: `create_wall_timer()` + `cb_group_rt_` 제거. `clock_nanosleep(TIMER_ABSTIME)` 절대시간
+> 루프로 대체하여 executor dispatch 지터 ~50-200μs 제거. CheckTimeouts()는 매 10틱 inline 호출.
 
 ### 구독자 할당
 
@@ -521,7 +534,7 @@ inline bool ApplyThreadConfig(const ThreadConfig& cfg) noexcept {
 }
 ```
 
-### main() 함수 (`rt_controller_main.cpp`)
+### main() 함수 (`rt_controller_main.cpp`, v5.16.0)
 
 ```cpp
 int main(int argc, char** argv) {
@@ -531,51 +544,39 @@ int main(int argc, char** argv) {
   }
 
   rclcpp::init(argc, argv);
-
   auto node = std::make_shared<RtControllerNode>();
+  const auto cfgs = SelectThreadConfigs();
 
-  // 2. Executor 생성 (4개)
-  rclcpp::executors::SingleThreadedExecutor rt_executor;
+  // 2. RT loop + Publish offload (jthread, executor 미사용)
+  node->StartRtLoop(cfgs.rt_control);       // Core 2, SCHED_FIFO 90, clock_nanosleep
+  node->StartPublishLoop(cfgs.publish);      // Core 5, SCHED_OTHER nice -3, SPSC drain
+
+  // 3. ROS2 Executor 생성 (3개 — rt_executor 제거됨)
   rclcpp::executors::SingleThreadedExecutor sensor_executor;
   rclcpp::executors::SingleThreadedExecutor log_executor;
   rclcpp::executors::SingleThreadedExecutor aux_executor;
 
-  // 3. CallbackGroup 할당
-  rt_executor.add_callback_group(
-      node->GetRtGroup(), node->get_node_base_interface());
-  sensor_executor.add_callback_group(
-      node->GetSensorGroup(), node->get_node_base_interface());
-  // ... log_executor, aux_executor
+  sensor_executor.add_callback_group(node->GetSensorGroup(), ...);
+  log_executor.add_callback_group(node->GetLogGroup(), ...);
+  aux_executor.add_callback_group(node->GetAuxGroup(), ...);
 
-  // 4. 스레드 생성 + RT 설정
-  auto make_thread = [](auto& executor, const ThreadConfig& cfg) {
-    return std::thread([&executor, cfg]() {
-      if (!ApplyThreadConfig(cfg)) {
-        fprintf(stderr, "[WARN] Thread config failed for '%s'\n", cfg.name.c_str());
-      } else {
-        fprintf(stdout, "[INFO] Thread '%s' configured:\n%s",
-                cfg.name.c_str(), VerifyThreadConfig().c_str());
-      }
-      executor.spin();
-    });
-  };
+  // 4. Executor 스레드 생성 + RT 설정
+  auto t_sensor = make_thread(sensor_executor, cfgs.sensor);
+  auto t_log    = make_thread(log_executor,    cfgs.logging);
+  auto t_aux    = make_thread(aux_executor,    cfgs.aux);
 
-  // 5. 스레드 spawn
-  auto t_rt     = make_thread(rt_executor,     kRtControlConfig);
-  auto t_sensor = make_thread(sensor_executor, kSensorConfig);
-  auto t_log    = make_thread(log_executor,    kLoggingConfig);
-  auto t_aux    = make_thread(aux_executor,    kAuxConfig);
-
-  // 6. Join
-  t_rt.join();
-  t_sensor.join();
-  t_log.join();
-  t_aux.join();
+  // 5. Join + 종료
+  t_sensor.join(); t_log.join(); t_aux.join();
+  node->StopRtLoop();
+  node->StopPublishLoop();
 
   rclcpp::shutdown();
   return 0;
 }
 ```
+
+> **v5.16.0 변경**: `rt_executor` 제거. `StartRtLoop()` / `StartPublishLoop()`이
+> `clock_nanosleep` jthread와 SPSC publish thread를 각각 관리. Executor 4개 → 3개.
 
 ---
 
@@ -591,16 +592,17 @@ PID=$(pgrep -f rt_controller)
 ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 ```
 
-**출력 예시**:
+**출력 예시 (v5.16.0)**:
 ```
   PID   TID CLS RTPRIO PSR COMMAND
  1234  1234  TS      -   0 rt_controller  (메인 스레드)
- 1234  1235  FF     90   2 rt_control         ← Core 2, FIFO 90
- 1234  1236  FF     70   3 sensor_io          ← Core 3, FIFO 70
- 1234  1237  TS      -   4 logger             ← Core 4, OTHER
- 1234  1238  TS      -   5 aux                ← Core 5, OTHER
- 1234  1239  TS      -   4 status_mon         ← Core 4, OTHER (10 Hz)
- 1234  1240  TS      -   4 hand_detect        ← Core 4, OTHER (50 Hz)
+ 1234  1235  FF     90   2 rt_control         ← Core 2, FIFO 90 (clock_nanosleep jthread)
+ 1234  1236  TS      -   5 rt_publish         ← Core 5, OTHER   (SPSC publish jthread)
+ 1234  1237  FF     70   3 sensor_io          ← Core 3, FIFO 70 (ROS2 Executor)
+ 1234  1238  TS      -   4 logger             ← Core 4, OTHER   (ROS2 Executor)
+ 1234  1239  TS      -   5 aux                ← Core 5, OTHER   (ROS2 Executor)
+ 1234  1240  TS      -   4 status_mon         ← Core 4, OTHER (10 Hz)
+ 1234  1241  TS      -   4 hand_detect        ← Core 4, OTHER (50 Hz)
 ```
 
 **CLS 값**:
@@ -968,6 +970,6 @@ grep -E "[0-9]{3,}\.[0-9]{3} us" trace.txt
 
 ---
 
-**최종 업데이트**: 2026-03-15
+**최종 업데이트**: 2026-03-17
 **작성자**: UR5e RT Controller Team
-**버전**: v5.8.0 (v4.2.0 기반, CPU 코어 할당 최적화 + 모니터링 스레드 추가 + 물리/논리 코어 구분 + NVIDIA DKMS RT 커널 우회 + CPU governor 자동 설정)
+**버전**: v5.16.0 (v4.2.0 기반 → v5.16.0: clock_nanosleep RT loop + SPSC publish offload + overrun recovery + CPU 코어 할당 최적화 + 모니터링 스레드 + NVIDIA DKMS RT 커널 우회 + CPU governor 자동 설정)

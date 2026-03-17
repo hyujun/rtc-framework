@@ -5,6 +5,60 @@
 
 ---
 
+## [5.16.0] - 2026-03-17
+
+### 변경 (Changed) — RT Loop 아키텍처: clock_nanosleep + SPSC Publish Offload
+
+- **RT 제어 루프를 ROS2 executor에서 전용 jthread로 이동**
+  - `create_wall_timer(2ms, ControlLoop(), cb_group_rt_)` 제거
+  - `RtLoopEntry()` jthread: `clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)` 기반 500Hz 절대시간 루프
+  - `CheckTimeouts()` 매 10틱(50Hz) inline 호출 — `timeout_timer_` 제거
+  - Executor epoll 디스패치 지터 ~50-200μs 제거 → 타이머 정밀도 < 10μs
+
+- **Publish 작업을 별도 jthread + SPSC 버퍼로 오프로드**
+  - 신규: `ControlPublishBuffer` (SPSC 링 버퍼, 512 slots) — `publish_buffer.hpp`
+  - 신규: `PublishLoopEntry()` jthread — SPSC drain → 모든 `publish()` 호출
+  - ControlLoop() Phase 3: `publish()` 호출 전체를 SPSC push 1회로 교체
+  - DDS 직렬화, `sendto()` 시스템 콜, `std::string` 할당이 RT 경로에서 완전 제거
+  - `cmd_pub_mutex_` 제거 (SPSC single-consumer로 대체)
+
+- **Overrun recovery (clock_nanosleep burst 방지)**
+  - 놓친 tick 감지 → skip + 다음 정상 주기 경계로 재정렬 (burst 실행 방지)
+  - `consecutive_overruns_` ≥ 10 → `TriggerGlobalEstop("consecutive_overrun")`
+  - 신규 카운터 분리: `overrun_count_` (RT loop level), `compute_overrun_count_` (ControlLoop level), `skip_count_` (누적 skip tick)
+
+- **Executor 4개 → 3개로 축소**
+  - 제거: `rt_executor`, `cb_group_rt_` (→ `RtLoopEntry` jthread가 대체)
+  - 유지: `sensor_executor`, `log_executor`, `aux_executor`
+  - 신규: `publish_thread_` jthread (Core 5, SCHED_OTHER nice -3)
+
+- **API 변경 (RtControllerNode)**
+  - 제거: `GetRtGroup()`, `control_timer_`, `timeout_timer_`, `cmd_pub_mutex_`
+  - 추가: `StartRtLoop()`, `StopRtLoop()`, `StartPublishLoop()`, `StopPublishLoop()`
+  - 타입 변경: `last_robot_update_` → `steady_clock::time_point` (rclcpp::Time에서 변경)
+  - `CheckTimeouts()`: `now()` → `steady_clock::now()`, `lock_guard` → `try_to_lock`
+
+- **스레드 구성 추가 (`thread_config.hpp`)**
+  - `kPublishConfig` 상수: 4/6/8/10/12/16-core 전체 레이아웃에 추가
+  - `SystemThreadConfigs.publish` 필드 추가
+  - `ValidateSystemThreadConfigs()`, `SelectThreadConfigs()` 업데이트
+
+### 추가 (Added)
+
+- `ur5e_rt_base/include/ur5e_rt_base/threading/publish_buffer.hpp`
+  - `PublishSnapshot` 구조체: robot/hand commands, state, flags (~640B)
+  - `SpscPublishBuffer<N>`: lock-free SPSC 링 버퍼 (log_buffer.hpp 패턴 동일)
+
+### 성능 개선
+
+| 메트릭 | v5.13.0 (executor) | v5.16.0 (clock_nanosleep) |
+|--------|-------------------|--------------------------|
+| 제어 주기 지터 | ~50-200μs | < 10μs (목표) |
+| publish 오버헤드 (RT 경로) | 60-200μs | 0 (SPSC push ~2μs) |
+| Context switch 감소 | — | executor dispatch 제거 |
+
+---
+
 ## [5.13.0] - 2026-03-14
 
 ### 추가 (Added) — ROS2 Parameter Exposure + Topic Remapping 지원

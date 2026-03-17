@@ -15,6 +15,9 @@
 #include <pinocchio/multibody/model.hpp>
 #include <pinocchio/parsers/urdf.hpp>
 
+#include <sched.h>    // sched_yield
+#include <time.h>     // clock_nanosleep, clock_gettime, CLOCK_MONOTONIC, TIMER_ABSTIME
+
 #include <algorithm>
 #include <ctime>
 #include <fstream>
@@ -129,11 +132,17 @@ RtControllerNode::RtControllerNode()
 
   RCLCPP_INFO(get_logger(), "RtControllerNode ready — %.0f Hz, E-STOP: %s",
               control_rate_, enable_estop_ ? "ON" : "OFF");
-  RCLCPP_INFO(get_logger(), "CallbackGroups enabled: RT, Sensor, Log, Aux");
+  RCLCPP_INFO(get_logger(),
+      "Threading: clock_nanosleep RT loop + SPSC publish offload + "
+      "Sensor/Log/Aux executors");
 }
 
 RtControllerNode::~RtControllerNode()
 {
+  // Stop RT loop + publish thread (idempotent — safe if already stopped by main)
+  StopRtLoop();
+  StopPublishLoop();
+
   if (hand_controller_) {
     SaveHandStats();
     hand_controller_->Stop();
@@ -273,8 +282,8 @@ std::filesystem::path RtControllerNode::ResolveAndSetupSessionDir()
 // ── CallbackGroup creation ────────────────────────────────────────────────────
 void RtControllerNode::CreateCallbackGroups()
 {
-  cb_group_rt_ =
-    create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  // cb_group_rt_ removed — ControlLoop() + CheckTimeouts() run in
+  // a dedicated clock_nanosleep jthread (RtLoopEntry), not an executor.
   cb_group_sensor_ =
     create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   cb_group_log_ =
@@ -945,19 +954,10 @@ void RtControllerNode::ExposeTopicParameters()
 
 void RtControllerNode::CreateTimers()
 {
-  const auto control_period = std::chrono::microseconds(
-      static_cast<int>(1'000'000.0 / control_rate_));
+  // control_timer_ and timeout_timer_ removed — ControlLoop() + CheckTimeouts()
+  // now run inside RtLoopEntry() (clock_nanosleep jthread, Core 2, SCHED_FIFO 90).
 
-  // Assign control_timer_ and timeout_timer_ to cb_group_rt_
-  control_timer_ = create_wall_timer(
-      control_period, [this]() {ControlLoop();}, cb_group_rt_);
-
-  if (enable_estop_) {
-    timeout_timer_ =
-      create_wall_timer(20ms, [this]() {CheckTimeouts();}, cb_group_rt_);
-  }
-
-  // Fix 1: drain the SPSC log ring buffer from the log thread (Core 4).
+  // Drain the SPSC log ring buffer from the log thread (Core 4).
   // File I/O stays entirely out of the 500 Hz RT thread.
   drain_timer_ =
     create_wall_timer(10ms, [this]() {DrainLog();}, cb_group_log_);
@@ -1005,7 +1005,7 @@ void RtControllerNode::JointStateCallback(sensor_msgs::msg::JointState::SharedPt
                     current_torques_.begin());
       }
     }
-    last_robot_update_ = now();
+    last_robot_update_ = std::chrono::steady_clock::now();
   }
   state_received_.store(true, std::memory_order_release);
 }
@@ -1048,13 +1048,16 @@ void RtControllerNode::CheckTimeouts()
   // ur5e 비활성 시 robot timeout 체크 skip
   if (!global_device_flags_.enable_ur5e) { return; }
 
-  const auto now_time = now();
+  const auto now_time = std::chrono::steady_clock::now();
   bool robot_timed_out = false;
 
-  // Fix 2: acquire-load the atomic flag; if set, lock mutex to read timestamp
+  // Non-blocking: try_lock avoids stalling the RT loop if sensor thread
+  // holds the mutex. On contention, skip this check (retried in 20 ms).
   if (state_received_.load(std::memory_order_acquire)) {
-    std::lock_guard lock(state_mutex_);
-    robot_timed_out = (now_time - last_robot_update_) > robot_timeout_;
+    std::unique_lock lock(state_mutex_, std::try_to_lock);
+    if (lock.owns_lock()) {
+      robot_timed_out = (now_time - last_robot_update_) > robot_timeout_;
+    }
   }
 
   if (robot_timed_out && !IsGlobalEstopped()) {
@@ -1194,97 +1197,41 @@ void RtControllerNode::ControlLoop()
 
   const auto t2 = std::chrono::steady_clock::now();  // end of compute
 
-  // ── Phase 3: non-blocking publish ──────────────────────────────────────
-  if (cmd_pub_mutex_.try_lock()) {
-    const auto & active_tc = controller_topic_configs_[
-        static_cast<std::size_t>(active_idx)];
+  // ── Phase 3: push publish snapshot to SPSC buffer (lock-free, O(1)) ────
+  // All ROS2 publish() calls are offloaded to the non-RT publish thread.
+  {
     const auto & active_df = controller_device_flags_[
         static_cast<std::size_t>(active_idx)];
-
-    // Helper: publish a single topic entry
-    auto publish_entry = [&](const urtc::PublishTopicEntry & pt) {
-      auto it = topic_publishers_.find(pt.topic_name);
-      if (it == topic_publishers_.end()) { return; }
-
-      auto & pe = it->second;
-      switch (pt.role) {
-        case urtc::PublishRole::kPositionCommand:
-          if (output.command_type == urtc::CommandType::kPosition) {
-            std::copy(output.robot_commands.begin(), output.robot_commands.end(),
-                      pe.msg.data.begin());
-            pe.publisher->publish(pe.msg);
-          }
-          break;
-        case urtc::PublishRole::kTorqueCommand:
-          if (output.command_type == urtc::CommandType::kTorque) {
-            std::copy(output.robot_commands.begin(), output.robot_commands.end(),
-                      pe.msg.data.begin());
-            pe.publisher->publish(pe.msg);
-          }
-          break;
-        case urtc::PublishRole::kHandCommand:
-          // Hand command는 HandController로 직접 전송 (Phase 3.5)
-          break;
-        case urtc::PublishRole::kTaskPosition:
-          std::copy(output.actual_task_positions.begin(),
-                    output.actual_task_positions.end(),
-                    pe.msg.data.begin());
-          pe.publisher->publish(pe.msg);
-          break;
-        case urtc::PublishRole::kTrajectoryState:
-          std::copy_n(output.goal_positions.begin(), 6, pe.msg.data.begin());
-          std::copy_n(output.actual_target_positions.begin(), 6, pe.msg.data.begin() + 6);
-          std::copy_n(output.target_velocities.begin(), 6, pe.msg.data.begin() + 12);
-          pe.publisher->publish(pe.msg);
-          break;
-        case urtc::PublishRole::kControllerState:
-          std::copy_n(state.robot.positions.begin(), 6, pe.msg.data.begin());
-          std::copy_n(state.robot.velocities.begin(), 6, pe.msg.data.begin() + 6);
-          std::copy_n(output.robot_commands.begin(), 6, pe.msg.data.begin() + 12);
-          pe.publisher->publish(pe.msg);
-          break;
-      }
+    const urtc::PublishSnapshot snap{
+      .robot_commands        = output.robot_commands,
+      .command_type          = output.command_type,
+      .actual_task_positions = output.actual_task_positions,
+      .goal_positions        = output.goal_positions,
+      .actual_target_positions = output.actual_target_positions,
+      .target_velocities     = output.target_velocities,
+      .actual_positions      = state.robot.positions,
+      .actual_velocities     = state.robot.velocities,
+      .hand_commands         = output.hand_commands,
+      .stamp_ns              = std::chrono::steady_clock::now()
+                                 .time_since_epoch().count(),
+      .active_controller_idx = active_idx,
+      .ur5e_enabled          = active_df.enable_ur5e,
+      .hand_enabled          = active_df.enable_hand,
+      .hand_sim_enabled      = hand_sim_enabled_,
     };
-
-    // Publish ur5e topics (if enabled for active controller)
-    if (active_df.enable_ur5e) {
-      for (const auto & pt : active_tc.ur5e.publish) {
-        publish_entry(pt);
-      }
-    }
-
-    // Publish hand topics (if enabled for active controller)
-    if (active_df.enable_hand) {
-      for (const auto & pt : active_tc.hand.publish) {
-        publish_entry(pt);
-      }
-    }
-
-    // ── JointCommand 발행 (MuJoCo / 외부 시뮬레이터용) ──────────────────
-    if (joint_command_pub_) {
-      joint_command_msg_.header.stamp = now();
-      joint_command_msg_.command_type =
-          (output.command_type == urtc::CommandType::kTorque) ? "torque" : "position";
-      std::copy(output.robot_commands.begin(), output.robot_commands.end(),
-                joint_command_msg_.values.begin());
-      joint_command_pub_->publish(joint_command_msg_);
-    }
-
-    cmd_pub_mutex_.unlock();
+    static_cast<void>(publish_buffer_.Push(snap));
   }
 
-  // ── Phase 3.5: hand command 전송 + 다음 tick용 state 읽기 요청 ────────
-  const auto & active_df_35 = controller_device_flags_[
-      static_cast<std::size_t>(active_idx)];
-  if (active_df_35.enable_hand && hand_controller_) {
-    // Event-driven pipeline: hand thread가 write → read 수행, 다음 tick에서 사용
-    hand_controller_->SendCommandAndRequestStates(output.hand_commands);
-  } else if (active_df_35.enable_hand && hand_sim_enabled_ && hand_sim_cmd_pub_) {
-    // ROS 토픽으로 MuJoCo fake hand에 커맨드 전송
-    for (std::size_t i = 0; i < 10 && i < output.hand_commands.size(); ++i) {
-      hand_sim_cmd_msg_.data[i] = static_cast<double>(output.hand_commands[i]);
+  // ── Phase 3.5: hand command 전송 (RT path — condvar notify, ~100ns) ────
+  // HandController::SendCommandAndRequestStates()는 non-blocking condvar
+  // notify로 hand UDP EventLoop를 깨움. 실제 I/O는 hand thread에서 수행.
+  // hand_sim_cmd_pub_ publish는 publish thread로 이동됨 (snap.hand_sim_enabled).
+  {
+    const auto & active_df_35 = controller_device_flags_[
+        static_cast<std::size_t>(active_idx)];
+    if (active_df_35.enable_hand && hand_controller_) {
+      hand_controller_->SendCommandAndRequestStates(output.hand_commands);
     }
-    hand_sim_cmd_pub_->publish(hand_sim_cmd_msg_);
   }
 
   const auto t3 = std::chrono::steady_clock::now();  // end of publish
@@ -1308,9 +1255,10 @@ void RtControllerNode::ControlLoop()
   }
   prev_loop_start_ = t0;
 
-  // Overrun detection — RT-safe: no string alloc, just atomic increment.
+  // Compute overrun — ControlLoop() itself exceeded tick budget.
+  // (Distinguished from RT loop overrun which includes sleep jitter.)
   if (t_total_us > budget_us_) {
-    overrun_count_.fetch_add(1, std::memory_order_relaxed);
+    compute_overrun_count_.fetch_add(1, std::memory_order_relaxed);
   }
 
   // Push log entry to the SPSC ring buffer — O(1), no syscall.
@@ -1378,13 +1326,230 @@ void RtControllerNode::DrainLog()
   if (print_timing_summary_.exchange(false, std::memory_order_relaxed)) {
     int idx = active_controller_idx_.load(std::memory_order_acquire);
     const auto overruns = overrun_count_.load(std::memory_order_relaxed);
-    const auto drops = log_buffer_.drop_count();
-    RCLCPP_INFO(get_logger(), "%s  overruns=%lu  log_drops=%lu",
-                timing_profiler_
-      .Summary(std::string(controllers_[static_cast<std::size_t>(idx)]->Name()))
-      .c_str(),
-      static_cast<unsigned long>(overruns),
-      static_cast<unsigned long>(drops));
+    const auto compute_overruns = compute_overrun_count_.load(std::memory_order_relaxed);
+    const auto skips = skip_count_.load(std::memory_order_relaxed);
+    const auto log_drops = log_buffer_.drop_count();
+    const auto pub_drops = publish_buffer_.drop_count();
+    RCLCPP_INFO(get_logger(),
+        "%s  overruns=%lu  compute_overruns=%lu  skips=%lu  "
+        "log_drops=%lu  pub_drops=%lu",
+        timing_profiler_
+          .Summary(std::string(controllers_[static_cast<std::size_t>(idx)]->Name()))
+          .c_str(),
+        static_cast<unsigned long>(overruns),
+        static_cast<unsigned long>(compute_overruns),
+        static_cast<unsigned long>(skips),
+        static_cast<unsigned long>(log_drops),
+        static_cast<unsigned long>(pub_drops));
+  }
+}
+
+// ── RT loop (clock_nanosleep) ──────────────────────────────────────────────────
+//
+// Replaces create_wall_timer() with a tight POSIX absolute-time sleep loop.
+// Eliminates ~50-200 µs of executor/epoll dispatch jitter.  Overrun recovery
+// skips missed ticks and realigns to the next period boundary — no burst.
+//
+// Threading: runs as std::jthread on Core 2, SCHED_FIFO 90.
+//            CheckTimeouts() inlined every 10th tick (50 Hz).
+
+void RtControllerNode::RtLoopEntry(const urtc::ThreadConfig& cfg)
+{
+  urtc::ApplyThreadConfig(cfg);
+
+  const int64_t period_ns = static_cast<int64_t>(1.0e9 / control_rate_);
+  struct timespec next_wake{};
+  clock_gettime(CLOCK_MONOTONIC, &next_wake);
+  rt_loop_running_.store(true, std::memory_order_release);
+
+  uint32_t timeout_tick = 0;
+
+  while (rt_loop_running_.load(std::memory_order_acquire) && rclcpp::ok()) {
+    // Advance to next absolute wake time
+    next_wake.tv_nsec += period_ns;
+    if (next_wake.tv_nsec >= 1'000'000'000L) {
+      next_wake.tv_sec  += next_wake.tv_nsec / 1'000'000'000L;
+      next_wake.tv_nsec %= 1'000'000'000L;
+    }
+
+    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next_wake, nullptr);
+
+    // ── Overrun detection & recovery ──────────────────────────────────────
+    // If ControlLoop() took longer than one period, next_wake is already in
+    // the past.  clock_nanosleep returns immediately → burst.  We detect
+    // this by checking how far behind we are and skip missed ticks.
+    struct timespec now_ts{};
+    clock_gettime(CLOCK_MONOTONIC, &now_ts);
+    const int64_t now_ns  = now_ts.tv_sec  * 1'000'000'000L + now_ts.tv_nsec;
+    const int64_t wake_ns = next_wake.tv_sec * 1'000'000'000L + next_wake.tv_nsec;
+    const int64_t lag_ns  = now_ns - wake_ns;
+
+    if (lag_ns > period_ns) {
+      // Skip missed ticks — realign to the next period boundary
+      const int64_t missed_ticks = lag_ns / period_ns;
+      const int64_t advance_ns   = missed_ticks * period_ns;
+      next_wake.tv_nsec += static_cast<long>(advance_ns);
+      if (next_wake.tv_nsec >= 1'000'000'000L) {
+        next_wake.tv_sec  += next_wake.tv_nsec / 1'000'000'000L;
+        next_wake.tv_nsec %= 1'000'000'000L;
+      }
+      overrun_count_.fetch_add(1, std::memory_order_relaxed);
+      skip_count_.fetch_add(static_cast<uint64_t>(missed_ticks),
+                            std::memory_order_relaxed);
+
+      // Consecutive overrun safety — E-STOP if sustained
+      const auto consecutive =
+          consecutive_overruns_.fetch_add(1, std::memory_order_relaxed) + 1;
+      if (consecutive >= kMaxConsecutiveOverruns) {
+        TriggerGlobalEstop("consecutive_overrun");
+      }
+    } else {
+      // Normal tick — reset consecutive counter
+      consecutive_overruns_.store(0, std::memory_order_relaxed);
+    }
+
+    ControlLoop();
+
+    // CheckTimeouts() — every 10th tick (= 50 Hz)
+    if (enable_estop_ && ++timeout_tick % 10 == 0) {
+      CheckTimeouts();
+    }
+  }
+}
+
+void RtControllerNode::StartRtLoop(const urtc::ThreadConfig& rt_cfg)
+{
+  rt_loop_thread_ = std::jthread([this, rt_cfg]() {
+    RtLoopEntry(rt_cfg);
+  });
+}
+
+void RtControllerNode::StopRtLoop()
+{
+  rt_loop_running_.store(false, std::memory_order_release);
+  if (rt_loop_thread_.joinable()) {
+    rt_loop_thread_.join();
+  }
+}
+
+// ── Publish offload thread ────────────────────────────────────────────────────
+//
+// Drains the SPSC publish buffer and performs all ROS2 publish() calls.
+// Runs on a non-RT core (Core 5/6, SCHED_OTHER nice -3).
+// All DDS serialization, string allocation, and sendto() syscalls happen here,
+// keeping the RT path free of unbounded-latency operations.
+
+void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
+{
+  urtc::ApplyThreadConfig(cfg);
+  publish_running_.store(true, std::memory_order_release);
+
+  urtc::PublishSnapshot snap{};
+
+  while (publish_running_.load(std::memory_order_acquire) && rclcpp::ok()) {
+    if (!publish_buffer_.Pop(snap)) {
+      sched_yield();
+      continue;
+    }
+
+    const auto & active_tc = controller_topic_configs_[
+        static_cast<std::size_t>(snap.active_controller_idx)];
+
+    // Helper: publish a single topic entry from snapshot data
+    auto publish_entry = [&](const urtc::PublishTopicEntry & pt) {
+      auto it = topic_publishers_.find(pt.topic_name);
+      if (it == topic_publishers_.end()) { return; }
+
+      auto & pe = it->second;
+      switch (pt.role) {
+        case urtc::PublishRole::kPositionCommand:
+          if (snap.command_type == urtc::CommandType::kPosition) {
+            std::copy(snap.robot_commands.begin(), snap.robot_commands.end(),
+                      pe.msg.data.begin());
+            pe.publisher->publish(pe.msg);
+          }
+          break;
+        case urtc::PublishRole::kTorqueCommand:
+          if (snap.command_type == urtc::CommandType::kTorque) {
+            std::copy(snap.robot_commands.begin(), snap.robot_commands.end(),
+                      pe.msg.data.begin());
+            pe.publisher->publish(pe.msg);
+          }
+          break;
+        case urtc::PublishRole::kHandCommand:
+          // Hand command는 RT 경로에서 HandController로 직접 전송 (Phase 3.5)
+          break;
+        case urtc::PublishRole::kTaskPosition:
+          std::copy(snap.actual_task_positions.begin(),
+                    snap.actual_task_positions.end(),
+                    pe.msg.data.begin());
+          pe.publisher->publish(pe.msg);
+          break;
+        case urtc::PublishRole::kTrajectoryState:
+          std::copy_n(snap.goal_positions.begin(), 6, pe.msg.data.begin());
+          std::copy_n(snap.actual_target_positions.begin(), 6, pe.msg.data.begin() + 6);
+          std::copy_n(snap.target_velocities.begin(), 6, pe.msg.data.begin() + 12);
+          pe.publisher->publish(pe.msg);
+          break;
+        case urtc::PublishRole::kControllerState:
+          std::copy_n(snap.actual_positions.begin(), 6, pe.msg.data.begin());
+          std::copy_n(snap.actual_velocities.begin(), 6, pe.msg.data.begin() + 6);
+          std::copy_n(snap.robot_commands.begin(), 6, pe.msg.data.begin() + 12);
+          pe.publisher->publish(pe.msg);
+          break;
+      }
+    };
+
+    // Publish ur5e topics
+    if (snap.ur5e_enabled) {
+      for (const auto & pt : active_tc.ur5e.publish) {
+        publish_entry(pt);
+      }
+    }
+
+    // Publish hand topics (ROS only — hand UDP is handled in RT Phase 3.5)
+    if (snap.hand_enabled) {
+      for (const auto & pt : active_tc.hand.publish) {
+        publish_entry(pt);
+      }
+    }
+
+    // JointCommand publish (MuJoCo / external simulator)
+    if (joint_command_pub_) {
+      // Convert monotonic ns → ROS2 Time
+      const auto sec  = static_cast<int32_t>(snap.stamp_ns / 1'000'000'000L);
+      const auto nsec = static_cast<uint32_t>(snap.stamp_ns % 1'000'000'000L);
+      joint_command_msg_.header.stamp.sec = sec;
+      joint_command_msg_.header.stamp.nanosec = nsec;
+      joint_command_msg_.command_type =
+          (snap.command_type == urtc::CommandType::kTorque) ? "torque" : "position";
+      std::copy(snap.robot_commands.begin(), snap.robot_commands.end(),
+                joint_command_msg_.values.begin());
+      joint_command_pub_->publish(joint_command_msg_);
+    }
+
+    // Hand sim command (MuJoCo fake hand — ROS topic)
+    if (snap.hand_sim_enabled && hand_sim_cmd_pub_) {
+      for (std::size_t i = 0; i < 10 && i < snap.hand_commands.size(); ++i) {
+        hand_sim_cmd_msg_.data[i] = static_cast<double>(snap.hand_commands[i]);
+      }
+      hand_sim_cmd_pub_->publish(hand_sim_cmd_msg_);
+    }
+  }
+}
+
+void RtControllerNode::StartPublishLoop(const urtc::ThreadConfig& pub_cfg)
+{
+  publish_thread_ = std::jthread([this, pub_cfg]() {
+    PublishLoopEntry(pub_cfg);
+  });
+}
+
+void RtControllerNode::StopPublishLoop()
+{
+  publish_running_.store(false, std::memory_order_release);
+  if (publish_thread_.joinable()) {
+    publish_thread_.join();
   }
 }
 

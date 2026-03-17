@@ -311,29 +311,36 @@ All Eigen buffers pre-allocated in constructor — zero heap allocation on the 5
 Split across three files (v5.5.0+):
 - `include/ur5e_rt_controller/rt_controller_node.hpp` — class declaration
 - `src/rt_controller_node.cpp` — controller registry (`MakeControllerEntries()`) + all member function implementations
-- `src/rt_controller_main.cpp` — `main()`: `mlockall`, executor creation, RT thread setup
+- `src/rt_controller_main.cpp` — `main()`: `mlockall`, jthread lifecycle, executor creation
 
-Creates **4 `SingleThreadedExecutor`s**, each running in a dedicated `std::thread` with RT scheduling applied via `ApplyThreadConfig()`:
+**Threading model (v5.16.0)**: 2 dedicated `std::jthread`s + 3 `SingleThreadedExecutor`s:
 
-| Executor / Thread | Callback Group | CPU Core | Scheduler | Priority | What runs here |
+| Thread / Executor | Type | CPU Core | Scheduler | Priority | What runs here |
 |---|---|---|---|---|---|
-| `rt_executor` / `t_rt` | `cb_group_rt_` | Core 2 | SCHED_FIFO | 90 | `ControlLoop()` (500Hz), `CheckTimeouts()` (50Hz E-STOP watchdog) |
-| `sensor_executor` / `t_sensor` | `cb_group_sensor_` | Core 3 | SCHED_FIFO | 70 | `/joint_states`, `/target_joint_positions`, `/hand/joint_states` subscribers |
-| `log_executor` / `t_log` | `cb_group_log_` | Core 4 | SCHED_OTHER | nice -5 | `DataLogger` 3-file CSV writes (drains `SpscLogBuffer`) |
-| `aux_executor` / `t_aux` | `cb_group_aux_` | Core 5 | SCHED_OTHER | 0 | E-STOP status publisher |
+| `rt_loop` | `std::jthread` (clock_nanosleep) | Core 2 | SCHED_FIFO | 90 | `ControlLoop()` (500Hz) + `CheckTimeouts()` (50Hz inline) |
+| `publish_thread` | `std::jthread` (SPSC drain) | Core 5 | SCHED_OTHER | nice -3 | All `publish()` calls via `ControlPublishBuffer` |
+| `sensor_executor` / `t_sensor` | ROS2 Executor | Core 3 | SCHED_FIFO | 70 | `/joint_states`, `/target_joint_positions`, `/hand/joint_states` subscribers |
+| `log_executor` / `t_log` | ROS2 Executor | Core 4 | SCHED_OTHER | nice -5 | `DataLogger` 3-file CSV writes (drains `SpscLogBuffer`) |
+| `aux_executor` / `t_aux` | ROS2 Executor | Core 5 | SCHED_OTHER | 0 | E-STOP status publisher |
+
+> **v5.16.0 변경**: `rt_executor` + `create_wall_timer()` 제거. `clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)` 기반 jthread로 대체. Phase 3 publish를 SPSC 버퍼 + publish thread로 오프로드. Executor 4개 → 3개.
 
 `mlockall(MCL_CURRENT | MCL_FUTURE)` is called at startup to prevent page faults. Shared state between threads is protected by three separate mutexes (`state_mutex_`, `target_mutex_`, `hand_mutex_`).
 
 **Key methods in `RtControllerNode`:**
 - `DeclareAndLoadParameters()`: loads `control_rate`, `kp`, `kd`, `enable_estop`, `robot_timeout_ms`, `hand_timeout_ms`, `enable_logging`, `enable_timing_log`, `enable_robot_log`, `enable_hand_log`, `init_timeout_sec`, `enable_status_monitor`
 - `ExposeTopicParameters()`: exposes all controller topic mappings as read-only ROS2 parameters (`controllers.<ctrl_name>.subscribe.<role>`, `controllers.<ctrl_name>.publish.<role>`). Rejected at runtime via `add_on_set_parameters_callback` for RT safety.
-- `CreateCallbackGroups()`: creates 4 `MutuallyExclusive` groups
-- `JointStateCallback()`: stores positions/velocities/torques under `state_mutex_`; updates `last_robot_update_` timestamp
+- `CreateCallbackGroups()`: creates 3 `MutuallyExclusive` groups (sensor, log, aux — `cb_group_rt_` removed in v5.16.0)
+- `StartRtLoop(cfg)` / `StopRtLoop()`: lifecycle for the clock_nanosleep RT loop jthread
+- `StartPublishLoop(cfg)` / `StopPublishLoop()`: lifecycle for the SPSC publish offload jthread
+- `RtLoopEntry(cfg)`: dedicated RT loop — `clock_nanosleep` 500Hz + `CheckTimeouts()` every 10th tick + overrun recovery (skip missed ticks, consecutive overrun E-STOP)
+- `PublishLoopEntry(cfg)`: drains `ControlPublishBuffer` and performs all `publish()` calls on non-RT thread
+- `JointStateCallback()`: stores positions/velocities/torques under `state_mutex_`; updates `last_robot_update_` timestamp (`steady_clock`)
 - `TargetCallback()`: stores target positions under `target_mutex_`; calls `controller_->SetRobotTarget()`
 - `HandStateCallback()`: records timestamp under `hand_mutex_` (data itself is not buffered here)
-- `CheckTimeouts()` (50Hz): triggers `TriggerGlobalEstop()` if data gaps exceed configured thresholds (v5.8.0: 글로벌 E-Stop)
+- `CheckTimeouts()` (50Hz, inline): triggers `TriggerGlobalEstop()` if data gaps exceed configured thresholds. Uses `try_to_lock` (non-blocking) + `steady_clock` (v5.16.0)
 - `TriggerGlobalEstop(reason)` (v5.8.0): sets `global_estop_` atomic, calls controller E-Stop, propagates to hand, logs reason
-- `ControlLoop()` (500Hz): checks `global_estop_` → assembles `ControllerState` → calls `Compute()` → publishes → pushes to `SpscLogBuffer` (with per-phase timing, robot state including goal/target/actual, and hand state). Overrun detection via `budget_us_` threshold.
+- `ControlLoop()` (500Hz): checks `global_estop_` → assembles `ControllerState` → calls `Compute()` → pushes `PublishSnapshot` to SPSC buffer → pushes `LogEntry` to log buffer. Overrun detection via `budget_us_` threshold.
 - Init timeout (v5.8.0): if `init_wait_ticks_` exceeds `init_timeout_ticks_` (= `init_timeout_sec` × `control_rate_`), triggers `TriggerGlobalEstop("init_timeout")` + `rclcpp::shutdown()`
 
 ### Lock-Free Logging Infrastructure
@@ -572,11 +579,12 @@ The 500 Hz RT thread pushes entries to `SpscLogBuffer`; the `log_executor` threa
 
 | Constant | Core | Policy | Priority | Note |
 |---|---|---|---|---|
-| `kRtControlConfig` | 2 | SCHED_FIFO | 90 | 500Hz control + 50Hz E-STOP watchdog |
+| `kRtControlConfig` | 2 | SCHED_FIFO | 90 | clock_nanosleep 500Hz RT loop + 50Hz E-STOP |
 | `kSensorConfig` | 3 | SCHED_FIFO | 70 | Dedicated — no udp_recv contention |
 | `kUdpRecvConfig` | 5 | SCHED_FIFO | 65 | Moved from Core 3 → Core 5 (v5.1.0) |
 | `kLoggingConfig` | 4 | SCHED_OTHER | nice -5 | |
 | `kAuxConfig` | 5 | SCHED_OTHER | 0 | Shares Core 5 with udp_recv (light) |
+| `kPublishConfig` | 5 | SCHED_OTHER | nice -3 | SPSC drain → publish() (v5.16.0) |
 | `kStatusMonitorConfig` | 4 | SCHED_OTHER | nice -2 | 10Hz status monitor (v5.8.0) |
 | `kHandFailureConfig` | 4 | SCHED_OTHER | nice -2 | 50Hz hand failure detector (v5.8.0) |
 
@@ -589,6 +597,7 @@ The 500 Hz RT thread pushes entries to `SpscLogBuffer`; the `log_executor` threa
 | `kUdpRecvConfig8Core` | 4 | SCHED_FIFO | 65 |
 | `kLoggingConfig8Core` | 5 | SCHED_OTHER | nice -5 |
 | `kAuxConfig8Core` | 6 | SCHED_OTHER | 0 |
+| `kPublishConfig8Core` | 6 | SCHED_OTHER | nice -3 |
 | `kStatusMonitorConfig8Core` | 6 | SCHED_OTHER | nice -2 |
 | `kHandFailureConfig8Core` | 6 | SCHED_OTHER | nice -2 |
 
@@ -600,6 +609,7 @@ The 500 Hz RT thread pushes entries to `SpscLogBuffer`; the `log_executor` threa
 ```cpp
 struct SystemThreadConfigs {
   ThreadConfig rt_control, sensor, udp_recv, logging, aux;
+  ThreadConfig publish;         // Non-RT publish offload thread (v5.16.0)
   ThreadConfig status_monitor;  // Non-RT status monitor (10 Hz, v5.8.0)
   ThreadConfig hand_failure;    // Non-RT hand failure detector (50 Hz, v5.8.0)
 };
@@ -1138,6 +1148,7 @@ ros2 doctor                        # 시스템 전체 진단
 
 | Version | Key Changes |
 |---|---|
+| v5.16.0 | RT Loop Architecture: `create_wall_timer()` → `clock_nanosleep(TIMER_ABSTIME)` jthread. Phase 3 publish → SPSC buffer + publish thread offload. Executor 4→3. `cb_group_rt_`/`control_timer_`/`timeout_timer_`/`cmd_pub_mutex_` removed. Overrun recovery with skip + consecutive E-STOP. `kPublishConfig` thread configs for all core tiers. `publish_buffer.hpp` new file. |
 | v5.13.0 | ROS2 Parameter Exposure: all per-controller topic mappings exposed as read-only parameters (`controllers.*`). Topic Remapping documented. `SubscribeRoleToString()`/`PublishRoleToString()` added to types.hpp. |
 | v5.9.0 | 3-file CSV logging split: `timing_log_*.csv` (7 cols), `robot_log_*.csv` (31 cols), `hand_log_*.csv` (87 cols). `DataLogger` constructor takes 3 paths (empty = disabled). New YAML params: `enable_timing_log`, `enable_robot_log`, `enable_hand_log`. `ControllerOutput` extended: `goal_positions`, `target_velocities`, `hand_goal_positions`. `LogEntry` restructured with separate timing/robot/hand sections. `monitor_data_health.py` removed (functionality redistributed to `ur5e_status_monitor` MessageStats/ControllerStats/JSON export and `ur5e_hand_udp` HandCommStats/rate monitoring). `plot_ur_trajectory.py` v2: auto-detects log type from filename (robot/hand mode). `ur5e_status_monitor`: `MessageStats`, per-controller `ControllerStats`, controller name subscription, JSON stats on `stop()`. `ur5e_hand_udp`: `HandCommStats`, `HandFailureDetector` rate monitoring (`min_rate_hz`, `rate_fail_threshold`), JSON stats export in `HandUdpNode` destructor. |
 | v5.8.0 | Global E-Stop (`TriggerGlobalEstop(reason)`) replacing per-controller E-Stop. Status monitor integration (`enable_status_monitor`). HandFailureDetector (50Hz C++). Init timeout (`init_timeout_sec`). Per-phase timing in LogEntry/CSV (`t_state_acquire_us`/`t_compute_us`/`t_publish_us`/`t_total_us`/`jitter_us`). Hand state in CSV. `RobotState.torques`. Trajectory race fix (`target_mutex_` try_lock in JointPD/CLIK/OSC). Overrun detection (`budget_us_`). Hand UDP `recv_timeout_ms`, `enable_write_ack`. SystemThreadConfigs 5→7 fields (status_monitor, hand_failure). Thread configs for 4/6/8-core. |

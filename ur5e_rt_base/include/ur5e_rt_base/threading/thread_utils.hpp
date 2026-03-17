@@ -607,6 +607,7 @@ struct SystemThreadConfigs
   ThreadConfig udp_recv;        // Hand UDP receiver (separate from sensor_io)
   ThreadConfig logging;
   ThreadConfig aux;
+  ThreadConfig publish;         // Non-RT publish offload thread
   ThreadConfig status_monitor;  // Non-RT status monitor (10 Hz)
   ThreadConfig hand_failure;    // Non-RT hand failure detector (50 Hz)
 };
@@ -632,6 +633,7 @@ struct SystemThreadConfigs
     errors += ValidateThreadConfig(configs.udp_recv);
     errors += ValidateThreadConfig(configs.logging);
     errors += ValidateThreadConfig(configs.aux);
+    errors += ValidateThreadConfig(configs.publish);
     errors += ValidateThreadConfig(configs.status_monitor);
     errors += ValidateThreadConfig(configs.hand_failure);
 
@@ -641,12 +643,13 @@ struct SystemThreadConfigs
       const char *name;
       const ThreadConfig *config;
     };
-    const std::array<NamedConfig, 7> all_configs = {{
+    const std::array<NamedConfig, 8> all_configs = {{
         {"rt_control", &configs.rt_control},
         {"sensor", &configs.sensor},
         {"udp_recv", &configs.udp_recv},
         {"logging", &configs.logging},
         {"aux", &configs.aux},
+        {"publish", &configs.publish},
         {"status_monitor", &configs.status_monitor},
         {"hand_failure", &configs.hand_failure},
     }};
@@ -706,35 +709,35 @@ struct SystemThreadConfigs
     if (ncpu >= 16)
     {
       return {kRtControlConfig16Core, kSensorConfig16Core, kUdpRecvConfig16Core,
-              kLoggingConfig16Core, kAuxConfig16Core,
+              kLoggingConfig16Core, kAuxConfig16Core, kPublishConfig16Core,
               kStatusMonitorConfig16Core, kHandFailureConfig16Core};
     }
     if (ncpu >= 12)
     {
       return {kRtControlConfig12Core, kSensorConfig12Core, kUdpRecvConfig12Core,
-              kLoggingConfig12Core, kAuxConfig12Core,
+              kLoggingConfig12Core, kAuxConfig12Core, kPublishConfig12Core,
               kStatusMonitorConfig12Core, kHandFailureConfig12Core};
     }
     if (ncpu >= 10)
     {
       return {kRtControlConfig10Core, kSensorConfig10Core, kUdpRecvConfig10Core,
-              kLoggingConfig10Core, kAuxConfig10Core,
+              kLoggingConfig10Core, kAuxConfig10Core, kPublishConfig10Core,
               kStatusMonitorConfig10Core, kHandFailureConfig10Core};
     }
     if (ncpu >= 8)
     {
       return {kRtControlConfig8Core, kSensorConfig8Core, kUdpRecvConfig8Core,
-              kLoggingConfig8Core, kAuxConfig8Core,
+              kLoggingConfig8Core, kAuxConfig8Core, kPublishConfig8Core,
               kStatusMonitorConfig8Core, kHandFailureConfig8Core};
     }
     if (ncpu >= 6)
     {
       return {kRtControlConfig, kSensorConfig, kUdpRecvConfig,
-              kLoggingConfig, kAuxConfig,
+              kLoggingConfig, kAuxConfig, kPublishConfig,
               kStatusMonitorConfig, kHandFailureConfig};
     }
     return {kRtControlConfig4Core, kSensorConfig4Core, kUdpRecvConfig4Core,
-            kLoggingConfig4Core, kAuxConfig4Core,
+            kLoggingConfig4Core, kAuxConfig4Core, kPublishConfig4Core,
             kStatusMonitorConfig4Core, kHandFailureConfig4Core};
   }
 
