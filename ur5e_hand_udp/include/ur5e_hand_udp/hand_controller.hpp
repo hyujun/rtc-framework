@@ -7,11 +7,12 @@
 // Driven by ControlLoop events (pipeline mode):
 //   Phase 4 of tick N: SendCommandAndRequestStates(cmd)
 //     → Hand thread wakes and executes (individual mode):
-//       1. Write position  (0x01) + recv echo → send 43B, recv 43B (= position)
-//       2. Read velocity   (0x12)             → send 43B, recv 43B
-//       3. Read sensor 0-3 (0x14..0x17) × 4   → send  3B, recv 67B
+//       1. Write position  (0x01) + recv echo → send 43B, recv 43B (header cmd만 검증)
+//       2. Read position   (0x11)             → send 43B, recv 43B
+//       3. Read velocity   (0x12)             → send 43B, recv 43B
+//       4. Read sensor 0-3 (0x14..0x17) × 4   → send  3B, recv 67B
 //     → Hand thread (bulk mode):
-//       1. Write position  (0x01) + recv echo → send 43B, recv 43B
+//       1. Write position  (0x01) + recv echo → send 43B, recv 43B (header cmd만 검증)
 //       2. Read all motors (0x10)             → send  3B, recv 123B
 //       3. Read all sensors (0x19)            → send  3B, recv 259B
 //     → State ready for tick N+1
@@ -392,6 +393,8 @@ class HandController {
     uint64_t recv_ok{0};
     uint64_t recv_timeout{0};
     uint64_t recv_error{0};
+    uint64_t cmd_mismatch{0};         // response cmd != request cmd (stale packet)
+    uint64_t mode_mismatch{0};        // sensor response mode != kRaw
     uint64_t total_cycles{0};
     uint64_t event_skip_count{0};     // EventLoop busy 중 skip된 이벤트 수
   };
@@ -626,6 +629,7 @@ class HandController {
 
   // Request a motor read command and decode 10 floats.
   // Verifies response cmd matches the request to reject stale packets.
+  // 첫 recv만 blocking(SO_RCVTIMEO), cmd 불일치 시 non-blocking retry로 stale 소비.
   [[nodiscard]] bool RequestMotorRead(
       hand_packets::Command cmd,
       std::array<float, hand_packets::kMotorDataCount>& out) noexcept {
@@ -633,19 +637,48 @@ class HandController {
     std::array<uint8_t, hand_packets::kMotorPacketSize> recv_buf{};
 
     hand_udp_codec::EncodeReadRequest(cmd, send_buf);
-    const ssize_t recvd = SendAndRecvRaw(
-        send_buf.data(), send_buf.size(),
-        recv_buf.data(), recv_buf.size());
-    if (recvd < static_cast<ssize_t>(hand_packets::kMotorPacketSize)) return false;
 
-    uint8_t cmd_out, mode_out;
-    if (!hand_udp_codec::DecodeMotorResponse(
-            recv_buf.data(), static_cast<std::size_t>(recvd),
-            cmd_out, mode_out, out)) {
-      return false;
+    const ssize_t sent = sendto(
+        socket_fd_, send_buf.data(), send_buf.size(), 0,
+        reinterpret_cast<const sockaddr*>(&target_addr_),
+        sizeof(target_addr_));
+    if (sent < 0) return false;
+
+    // 최대 3회 시도: 첫 recv만 blocking, 이후는 non-blocking (stale packet 소비)
+    constexpr int kMaxAttempts = 3;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+      const int flags = (attempt == 0) ? 0 : MSG_DONTWAIT;
+      const ssize_t recvd = ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), flags);
+      if (recvd < 0) {
+        if (attempt == 0) {
+          recv_error_count_.fetch_add(1, std::memory_order_relaxed);
+          if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            ++comm_stats_.recv_timeout;
+          } else {
+            ++comm_stats_.recv_error;
+          }
+        }
+        return false;
+      }
+      if (attempt == 0) {
+        ++comm_stats_.recv_ok;
+      }
+
+      if (recvd < static_cast<ssize_t>(hand_packets::kMotorPacketSize)) continue;
+
+      uint8_t cmd_out, mode_out;
+      if (!hand_udp_codec::DecodeMotorResponse(
+              recv_buf.data(), static_cast<std::size_t>(recvd),
+              cmd_out, mode_out, out)) {
+        continue;
+      }
+      // Verify response cmd matches request — reject stale/echo packets
+      if (cmd_out == static_cast<uint8_t>(cmd)) {
+        return true;
+      }
+      ++comm_stats_.cmd_mismatch;
     }
-    // Verify response cmd matches request — reject stale/echo packets
-    return cmd_out == static_cast<uint8_t>(cmd);
+    return false;
   }
 
   // Send a set-sensor-mode command (CMD=0x04, 3B send, 3B recv echo).
@@ -749,10 +782,17 @@ class HandController {
       if (response_mode) { *response_mode = mode_out; }
       if (response_cmd)  { *response_cmd = cmd_out; }
 
-      if (cmd_out == static_cast<uint8_t>(cmd)) {
-        return true;
+      if (cmd_out != static_cast<uint8_t>(cmd)) {
+        // cmd 불일치 — stale 응답, non-blocking으로 다음 패킷 시도
+        ++comm_stats_.cmd_mismatch;
+        continue;
       }
-      // cmd 불일치 — stale 응답, non-blocking으로 다음 패킷 시도
+      // sensor response mode는 반드시 kRaw여야 함
+      if (mode_out != static_cast<uint8_t>(sensor_mode)) {
+        ++comm_stats_.mode_mismatch;
+        return false;  // mode 불일치는 HW 상태 문제 — retry 무의미
+      }
+      return true;
     }
     return false;
   }
@@ -760,6 +800,7 @@ class HandController {
   // Request bulk motor read (cmd=0x10): 3B send, 123B recv.
   // Extracts positions[10] and velocities[10] from grouped response.
   // Verifies response cmd matches 0x10 to reject stale packets.
+  // 첫 recv만 blocking(SO_RCVTIMEO), cmd 불일치 시 non-blocking retry로 stale 소비.
   [[nodiscard]] bool RequestAllMotorRead(
       std::array<float, hand_packets::kMotorDataCount>& positions,
       std::array<float, hand_packets::kMotorDataCount>& velocities) noexcept {
@@ -767,22 +808,52 @@ class HandController {
     std::array<uint8_t, hand_packets::kAllMotorResponseSize> recv_buf{};
 
     hand_udp_codec::EncodeReadAllMotorsRequest(send_buf);
-    const ssize_t recvd = SendAndRecvRaw(
-        send_buf.data(), send_buf.size(),
-        recv_buf.data(), recv_buf.size());
-    if (recvd < static_cast<ssize_t>(hand_packets::kAllMotorResponseSize)) return false;
 
-    uint8_t cmd_out, mode_out;
-    if (!hand_udp_codec::DecodeAllMotorResponse(
-            recv_buf.data(), static_cast<std::size_t>(recvd),
-            cmd_out, mode_out, positions, velocities)) {
-      return false;
+    const ssize_t sent = sendto(
+        socket_fd_, send_buf.data(), send_buf.size(), 0,
+        reinterpret_cast<const sockaddr*>(&target_addr_),
+        sizeof(target_addr_));
+    if (sent < 0) return false;
+
+    constexpr int kMaxAttempts = 3;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+      const int flags = (attempt == 0) ? 0 : MSG_DONTWAIT;
+      const ssize_t recvd = ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), flags);
+      if (recvd < 0) {
+        if (attempt == 0) {
+          recv_error_count_.fetch_add(1, std::memory_order_relaxed);
+          if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            ++comm_stats_.recv_timeout;
+          } else {
+            ++comm_stats_.recv_error;
+          }
+        }
+        return false;
+      }
+      if (attempt == 0) {
+        ++comm_stats_.recv_ok;
+      }
+
+      if (recvd < static_cast<ssize_t>(hand_packets::kAllMotorResponseSize)) continue;
+
+      uint8_t cmd_out, mode_out;
+      if (!hand_udp_codec::DecodeAllMotorResponse(
+              recv_buf.data(), static_cast<std::size_t>(recvd),
+              cmd_out, mode_out, positions, velocities)) {
+        continue;
+      }
+      if (cmd_out == static_cast<uint8_t>(hand_packets::Command::kReadAllMotors)) {
+        return true;
+      }
+      ++comm_stats_.cmd_mismatch;
     }
-    return cmd_out == static_cast<uint8_t>(hand_packets::Command::kReadAllMotors);
+    return false;
   }
 
   // Request bulk sensor read (cmd=0x19): 3B send, 259B recv.
   // Extracts all fingertip sensor data into flat buffer.
+  // Verifies response cmd matches 0x19 to reject stale packets.
+  // 첫 recv만 blocking(SO_RCVTIMEO), cmd 불일치 시 non-blocking retry로 stale 소비.
   [[nodiscard]] bool RequestAllSensorRead(
       uint32_t* out, int num_fingertips,
       hand_packets::SensorMode sensor_mode = hand_packets::SensorMode::kRaw) noexcept {
@@ -790,27 +861,64 @@ class HandController {
     std::array<uint8_t, hand_packets::kAllSensorResponseSize> recv_buf{};
 
     hand_udp_codec::EncodeReadAllSensorsRequest(send_buf, sensor_mode);
-    const ssize_t recvd = SendAndRecvRaw(
-        send_buf.data(), send_buf.size(),
-        recv_buf.data(), recv_buf.size());
-    if (recvd < static_cast<ssize_t>(hand_packets::kAllSensorResponseSize)) return false;
 
-    uint8_t cmd_out, mode_out;
-    return hand_udp_codec::DecodeAllSensorResponseRaw(
-        recv_buf.data(), static_cast<std::size_t>(recvd),
-        cmd_out, mode_out, out, num_fingertips);
+    const ssize_t sent = sendto(
+        socket_fd_, send_buf.data(), send_buf.size(), 0,
+        reinterpret_cast<const sockaddr*>(&target_addr_),
+        sizeof(target_addr_));
+    if (sent < 0) return false;
+
+    constexpr int kMaxAttempts = 3;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+      const int flags = (attempt == 0) ? 0 : MSG_DONTWAIT;
+      const ssize_t recvd = ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), flags);
+      if (recvd < 0) {
+        if (attempt == 0) {
+          recv_error_count_.fetch_add(1, std::memory_order_relaxed);
+          if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            ++comm_stats_.recv_timeout;
+          } else {
+            ++comm_stats_.recv_error;
+          }
+        }
+        return false;
+      }
+      if (attempt == 0) {
+        ++comm_stats_.recv_ok;
+      }
+
+      if (recvd < static_cast<ssize_t>(hand_packets::kAllSensorResponseSize)) continue;
+
+      uint8_t cmd_out, mode_out;
+      if (!hand_udp_codec::DecodeAllSensorResponseRaw(
+              recv_buf.data(), static_cast<std::size_t>(recvd),
+              cmd_out, mode_out, out, num_fingertips)) {
+        continue;
+      }
+      if (cmd_out != static_cast<uint8_t>(hand_packets::Command::kReadAllSensors)) {
+        ++comm_stats_.cmd_mismatch;
+        continue;
+      }
+      // sensor response mode는 반드시 요청한 mode(kRaw)여야 함
+      if (mode_out != static_cast<uint8_t>(sensor_mode)) {
+        ++comm_stats_.mode_mismatch;
+        return false;  // mode 불일치는 HW 상태 문제 — retry 무의미
+      }
+      return true;
+    }
+    return false;
   }
 
   // Event-driven loop: condvar 대기 → ControlLoop 이벤트 수신 시 write + read 수행.
   // Pipeline: tick N의 Phase 4에서 write + read → tick N+1의 Phase 1에서 state 사용.
   //
   // Communication mode:
-  //   Individual: write+echo(=pos) → 0x12 vel → 0x14~0x17 sensors (5 round-trips)
+  //   Individual: write+echo → 0x11 pos → 0x12 vel → 0x14~0x17 sensors (6 round-trips)
   //   Bulk:       write+echo → 0x10 all motors → 0x19 all sensors (3 round-trips)
   //
   // WritePosition echo: 하드웨어가 43B echo를 반환하므로 항상 수신.
-  //   Individual: echo를 motor position으로 사용 → ReadPosition(0x11) 제거 (1 RT 절약).
-  //   Bulk: echo를 수신하여 소켓 버퍼 오염 방지 (AllMotorRead가 올바른 패킷 수신).
+  //   echo의 data 부분은 의미 없음 — header cmd(0x01)만 검증하여 소켓 버퍼 drain.
+  //   모든 read는 request → response → cmd 검증 패턴을 따름.
   //
   // Sensor decimation: sensor_decimation_ 주기마다 센서 읽기 수행.
   //   decimation=1 → 매 cycle (기존), decimation=4 → 4 cycle마다.
@@ -866,8 +974,8 @@ class HandController {
       // ── Timing: t0 = EventLoop 시작 ──
       const auto t0 = std::chrono::steady_clock::now();
 
-      // 1. Write position + recv echo (항상 수신하여 소켓 버퍼 오염 방지)
-      //    echo = 43B MotorPacket, cmd=0x01, 하드웨어가 적용한 position 반환.
+      // 1. Write position + recv echo (소켓 버퍼 drain, header cmd만 검증)
+      //    echo = 43B, 하드웨어 반환. data 부분은 의미 없음 — cmd(0x01)만 확인.
       hand_udp_codec::EncodeWritePosition(pending_cmd, send_buf);
       sendto(socket_fd_, send_buf.data(), send_buf.size(), 0,
              reinterpret_cast<const sockaddr*>(&target_addr_),
@@ -875,12 +983,11 @@ class HandController {
       bool echo_ok = false;
       {
         const ssize_t recvd = ::recv(socket_fd_, echo_buf.data(), echo_buf.size(), 0);
-        if (recvd >= static_cast<ssize_t>(hand_packets::kMotorPacketSize)) {
-          uint8_t cmd_out, mode_out;
-          if (hand_udp_codec::DecodeMotorResponse(
-                  echo_buf.data(), static_cast<std::size_t>(recvd),
-                  cmd_out, mode_out, motor_pos_buf)) {
-            echo_ok = (cmd_out == static_cast<uint8_t>(hand_packets::Command::kWritePosition));
+        if (recvd >= static_cast<ssize_t>(hand_packets::kHeaderSize)) {
+          echo_ok = (echo_buf[1] == static_cast<uint8_t>(
+                         hand_packets::Command::kWritePosition));
+          if (!echo_ok) {
+            ++comm_stats_.cmd_mismatch;
           }
           ++comm_stats_.recv_ok;
         } else if (recvd < 0) {
@@ -949,18 +1056,18 @@ class HandController {
 
       } else {
         // ══════════════════════════════════════════════════════════════════
-        // Individual mode: echo(=pos) + 0x12 vel + 0x14~0x17 sensors
-        // WritePosition echo를 motor position으로 사용 → ReadPosition(0x11) 제거
+        // Individual mode: echo(cmd확인) + 0x11 pos + 0x12 vel + 0x14~0x17 sensors
+        // 모든 read는 request → response → cmd 검증 패턴을 따름
         // ══════════════════════════════════════════════════════════════════
 
-        // 2. Use write echo as motor position (1 round-trip 절약)
-        if (echo_ok) {
+        // 2. Read position (motor, 43B ↔ 43B) — request & response cmd 검증
+        if (RequestMotorRead(hand_packets::Command::kReadPosition, motor_pos_buf)) {
           std::copy_n(motor_pos_buf.begin(), kNumHandMotors,
                       state.motor_positions.begin());
           any_recv_ok = true;
         }
 
-        const auto t2 = std::chrono::steady_clock::now();  // echo→pos 완료
+        const auto t2 = std::chrono::steady_clock::now();  // read_pos 완료
 
         // 3. Read velocity (motor, 43B ↔ 43B)
         if (RequestMotorRead(hand_packets::Command::kReadVelocity, motor_vel_buf)) {
@@ -972,6 +1079,7 @@ class HandController {
         const auto t3 = std::chrono::steady_clock::now();  // read_vel 완료
 
         // 4. Read sensors — sensor_decimation_ cycle마다 수행, 나머지는 캐시 사용
+        //    각 센서도 request → response → cmd 검증 패턴 (RequestSensorRead 내부)
         if (is_sensor_cycle) {
           for (int i = 0; i < num_fingertips_; ++i) {
             auto cmd = hand_packets::SensorCommand(i);
