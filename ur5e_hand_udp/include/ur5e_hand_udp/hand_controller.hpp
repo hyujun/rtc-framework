@@ -8,8 +8,8 @@
 //   Phase 4 of tick N: SendCommandAndRequestStates(cmd)
 //     → Hand thread wakes and executes (individual mode):
 //       1. Write position  (0x01) + recv echo → send 43B, recv 43B (header cmd만 검증)
-//       2. Read position   (0x11)             → send 43B, recv 43B
-//       3. Read velocity   (0x12)             → send 43B, recv 43B
+//       2. Read position   (0x11)             → send  3B, recv 43B
+//       3. Read velocity   (0x12)             → send  3B, recv 43B
 //       4. Read sensor 0-3 (0x14..0x17) × 4   → send  3B, recv 67B
 //     → Hand thread (bulk mode):
 //       1. Write position  (0x01) + recv echo → send 43B, recv 43B (header cmd만 검증)
@@ -628,15 +628,16 @@ class HandController {
   }
 
   // Request a motor read command and decode 10 floats.
+  // Sends header only (3 bytes) — data payload is not needed for read requests.
   // Verifies response cmd matches the request to reject stale packets.
   // 첫 recv만 blocking(SO_RCVTIMEO), cmd 불일치 시 non-blocking retry로 stale 소비.
   [[nodiscard]] bool RequestMotorRead(
       hand_packets::Command cmd,
       std::array<float, hand_packets::kMotorDataCount>& out) noexcept {
-    std::array<uint8_t, hand_packets::kMotorPacketSize> send_buf{};
+    std::array<uint8_t, hand_packets::kSensorRequestSize> send_buf{};  // 3B header only
     std::array<uint8_t, hand_packets::kMotorPacketSize> recv_buf{};
 
-    hand_udp_codec::EncodeReadRequest(cmd, send_buf);
+    hand_udp_codec::EncodeMotorReadRequest(cmd, send_buf);
 
     const ssize_t sent = sendto(
         socket_fd_, send_buf.data(), send_buf.size(), 0,
@@ -1060,7 +1061,7 @@ class HandController {
         // 모든 read는 request → response → cmd 검증 패턴을 따름
         // ══════════════════════════════════════════════════════════════════
 
-        // 2. Read position (motor, 43B ↔ 43B) — request & response cmd 검증
+        // 2. Read position (motor, 3B → 43B) — request & response cmd 검증
         if (RequestMotorRead(hand_packets::Command::kReadPosition, motor_pos_buf)) {
           std::copy_n(motor_pos_buf.begin(), kNumHandMotors,
                       state.motor_positions.begin());
@@ -1069,7 +1070,7 @@ class HandController {
 
         const auto t2 = std::chrono::steady_clock::now();  // read_pos 완료
 
-        // 3. Read velocity (motor, 43B ↔ 43B)
+        // 3. Read velocity (motor, 3B → 43B)
         if (RequestMotorRead(hand_packets::Command::kReadVelocity, motor_vel_buf)) {
           std::copy_n(motor_vel_buf.begin(), kNumHandMotors,
                       state.motor_velocities.begin());

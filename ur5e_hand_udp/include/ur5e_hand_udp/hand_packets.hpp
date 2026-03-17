@@ -193,12 +193,23 @@ inline uint32_t FloatToUint32(float f) noexcept {
 // ── Encode helpers ──────────────────────────────────────────────────────────
 
 // Build a motor read-request packet (data filled with zeros).
+// Legacy: sends 43 bytes. Prefer MakeMotorReadRequest() (3 bytes, header only).
 inline MotorPacket MakeReadRequest(Command cmd) noexcept {
   MotorPacket pkt{};
   pkt.id   = kDeviceId;
   pkt.cmd  = static_cast<uint8_t>(cmd);
   pkt.mode = kDefaultMode;
   pkt.data = {};
+  return pkt;
+}
+
+// Build a motor read-request packet (header only, 3 bytes).
+// Read position/velocity requests only need the header — no data payload required.
+inline SensorRequestPacket MakeMotorReadRequest(Command cmd) noexcept {
+  SensorRequestPacket pkt{};
+  pkt.id   = kDeviceId;
+  pkt.cmd  = static_cast<uint8_t>(cmd);
+  pkt.mode = kDefaultMode;
   return pkt;
 }
 

@@ -32,11 +32,21 @@ inline constexpr std::size_t kPacketBytes = kMotorPacketBytes;
 // ── Encode requests ──────────────────────────────────────────────────────
 
 // Encode a motor read-request packet (43 bytes).
+// Legacy: sends full MotorPacket with zero data. Prefer EncodeMotorReadRequest() (3 bytes).
 inline void EncodeReadRequest(
     hand_packets::Command cmd,
     std::array<uint8_t, kMotorPacketBytes>& out) noexcept {
   auto pkt = hand_packets::MakeReadRequest(cmd);
   hand_packets::SerializePacket(pkt, out);
+}
+
+// Encode a motor read-request packet (3 bytes, header only).
+// Read position/velocity requests only need the header — no data payload required.
+inline void EncodeMotorReadRequest(
+    hand_packets::Command cmd,
+    std::array<uint8_t, kSensorRequestBytes>& out) noexcept {
+  auto pkt = hand_packets::MakeMotorReadRequest(cmd);
+  hand_packets::SerializeSensorRequest(pkt, out);
 }
 
 // Encode a sensor read-request packet (3 bytes, header only).
