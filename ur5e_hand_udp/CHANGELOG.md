@@ -5,6 +5,48 @@
 
 ---
 
+## [5.15.0] - 2026-03-17
+
+### 추가 (Added) — RT 최적화: SeqLock, Write Echo, printf 제거
+
+- **SeqLock 기반 lock-free 상태 공유**
+  - `state_mutex_` → `SeqLock<HandState>` 교체 — writer(EventLoop) wait-free, reader lock-free
+  - `ur5e_rt_base/threading/seqlock.hpp` 신규 — 범용 single-writer/multi-reader SeqLock 템플릿
+  - Priority inversion 완전 제거 (SCHED_FIFO 스레드 간 mutex 공유 없음)
+
+- **WritePosition echo 활용 (Individual 모드 1 round-trip 절약)**
+  - Write echo를 항상 수신하여 소켓 버퍼 오염 방지
+  - Individual 모드: echo 데이터를 motor position으로 사용 → `ReadPosition(0x11)` 제거
+  - 6 round-trips → 5 round-trips (Individual), Bulk 모드: stale 패킷 문제 해결
+
+- **응답 cmd 검증 추가**
+  - `RequestMotorRead()`: response cmd 필드와 request cmd 비교 — stale/echo 패킷 거부
+  - `RequestAllMotorRead()`: response cmd == 0x10 검증
+
+### 변경 (Changed)
+
+- **EventLoop에서 printf 완전 제거** — stdout mutex + write(2) syscall로 인한 ms-level 스파이크 제거
+  - 센서 디버그 출력 제거 (HandTimingProfiler로 대체)
+  - 통신 통계 디버그 출력 제거 (HandCommStats / JSON export로 대체)
+
+- **`enable_write_ack` 파라미터 deprecated** — write echo는 항상 수신
+  - 생성자 시그니처 호환성 유지 (파라미터 무시)
+  - YAML에서 제거, 기존 설정 파일과의 하위 호환성 유지
+
+- **`DrainStaleResponses()` 호출 제거** — write echo 수신 + cmd 검증으로 stale 패킷 방지
+  - Individual 모드: echo 수신 후 velocity read → sensor read (깨끗한 소켓 버퍼)
+  - Bulk 모드: echo 수신 후 AllMotorRead → AllSensorRead (cmd 검증으로 안전)
+
+- `HandUdpNode`: `data_mutex_` → `std::atomic<bool>` + `GetLatestState()` (SeqLock) 사용
+
+### 수정 (Fixed)
+
+- **Cascading response 버그 수정** — `enable_write_ack=false`일 때 write echo가 소켓 버퍼에 잔류하여:
+  - Individual 모드: ReadPosition이 echo(cmd=0x01)를 수신 → commanded 값을 actual로 오인, velocity에 position 데이터 혼입
+  - Bulk 모드: AllMotorRead가 43B echo를 수신(123B 기대) → 항상 실패
+
+---
+
 ## [5.14.0] - 2026-03-16
 
 ### 변경 (Changed) — 문서 업데이트

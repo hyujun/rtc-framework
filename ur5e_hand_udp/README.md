@@ -1,6 +1,6 @@
 # ur5e_hand_udp
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.14.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.15.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 
 UR5e RT Controller 스택의 **10-DOF 손 UDP 브리지 패키지**입니다. 외부 손 컨트롤러(하드웨어)와 ROS2 토픽 사이의 UDP request-response 통신을 담당합니다.
@@ -88,9 +88,9 @@ ur5e_rt_base ← ur5e_hand_udp   (ur5e_rt_controller에 의존하지 않음)
 
 | 커맨드 | 코드 | 송신 | 수신 | 설명 |
 |--------|------|------|------|------|
-| `kWritePosition` | `0x01` | 43B | — | 10개 모터 위치 명령 (응답 없음) |
+| `kWritePosition` | `0x01` | 43B | 43B | 10개 모터 위치 명령 (echo 응답 = 적용된 position) |
 | `kSetSensorMode` | `0x04` | 3B | 3B | 센서 모드 초기화 (Raw/NN) |
-| `kReadPosition` | `0x11` | 43B | 43B | 10개 모터 위치 읽기 |
+| `kReadPosition` | `0x11` | 43B | 43B | 10개 모터 위치 읽기 (Individual 모드에서 echo로 대체) |
 | `kReadVelocity` | `0x12` | 43B | 43B | 10개 모터 속도 읽기 |
 | `kReadSensor0–3` | `0x14–0x17` | 3B | 67B | 핑거팁 센서 읽기 (각 11개 값) |
 
@@ -106,27 +106,36 @@ ur5e_rt_base ← ur5e_hand_udp   (ur5e_rt_controller에 의존하지 않음)
              │            → busy_ 시 skip + event_skip_count 증가
              ▼
 [Core 5] EventLoop — condvar wait → wake
-                     → WritePosition(cmd)
-                     → ReadPosition / ReadVelocity
-                     → ReadSensor×4 (sensor_decimation cycle마다)
-                     → latest_state_ 갱신
+                     → WritePosition(cmd) + recv echo (= position)
+                     → ReadVelocity (Individual) 또는 ReadAllMotors (Bulk)
+                     → ReadSensors (sensor_decimation cycle마다)
+                     → state_seqlock_ 갱신 (lock-free)
 ```
 
-매 사이클 통신 순서:
+매 사이클 통신 순서 (Individual 모드):
 
 ```
-1. WritePosition  (0x01) → 43B 송신 (이번 tick 명령)
-2. ReadPosition   (0x11) → 43B 송신 → 43B 수신 → 10 float (위치)
-3. ReadVelocity   (0x12) → 43B 송신 → 43B 수신 → 10 float (속도)
-4. ReadSensor0-3  (0x14–0x17) → sensor_decimation cycle마다 수행 (기본 4)
+1. WritePosition  (0x01) → 43B 송신 + 43B echo 수신 → position 획득 (ReadPosition 대체)
+2. ReadVelocity   (0x12) → 43B 송신 → 43B 수신 → 10 float (속도)
+3. ReadSensor0-3  (0x14–0x17) → sensor_decimation cycle마다 수행
    → 3B 송신 → 67B 수신 × 4 핑거팁 → 44 float (센서)
    → skip 시 이전 캐시 데이터 유지
 ```
 
-**Sensor Decimation** (`sensor_decimation: 4` 기본값):
-- cycle 1–3: write + pos + vel = 3 round-trips (~1.3ms) ✓ < 2ms
-- cycle 4: write + pos + vel + sensor×4 = 7 round-trips (~3.3ms)
-- 평균: ~1.8ms/cycle → 500Hz ControlLoop 추종 가능
+매 사이클 통신 순서 (Bulk 모드):
+
+```
+1. WritePosition  (0x01) → 43B 송신 + 43B echo 수신 → 소켓 버퍼 정리
+2. ReadAllMotors  (0x10) → 3B 송신 → 123B 수신 → pos[10]+vel[10]+cur[10]
+3. ReadAllSensors (0x19) → sensor_decimation cycle마다 수행
+   → 3B 송신 → 259B 수신 → 4 fingertips × 16 uint32
+```
+
+**Sensor Decimation** (`sensor_decimation: 3` 기본값):
+- Individual: cycle 1–2: write+echo + vel = 2 round-trips (~0.8ms) ✓ < 2ms
+- Individual: cycle 3: write+echo + vel + sensor×4 = 6 round-trips (~2.8ms)
+- Bulk: cycle 1–2: write+echo + all_motors = 2 round-trips (~0.6ms) ✓ < 2ms
+- Bulk: cycle 3: write+echo + all_motors + all_sensors = 3 round-trips (~1.2ms)
 
 ---
 
@@ -140,9 +149,10 @@ ur5e_rt_base ← ur5e_hand_udp   (ur5e_rt_controller에 의존하지 않음)
   - `recv_timeout_ms` 생성자 파라미터: YAML에서 구동되는 `SO_RCVTIMEO` 소켓 타임아웃 설정
   - `recv_error_count_` (`std::atomic<uint64_t>`): recv 실패 횟수를 추적하는 원자적 카운터
   - `SetEstopFlag(std::atomic<bool>*)`: 글로벌 E-Stop 플래그 전파를 위한 설정 메서드
-  - `enable_write_ack` 플래그: 커맨드 ACK 메커니즘 활성화 (WritePosition 후 응답 대기)
+  - Write echo 항상 수신: 소켓 버퍼 오염 방지 + Individual 모드에서 position으로 활용
   - `busy_` flag: EventLoop busy 중 이벤트 skip 보호 (v5.11.0)
-  - `sensor_decimation`: N cycle마다 센서 읽기 — 기본 4 (v5.11.0)
+  - `sensor_decimation`: N cycle마다 센서 읽기 — 기본 3 (v5.11.0)
+  - SeqLock 기반 lock-free 상태 공유 (v5.15.0)
 - **퍼블리시**: `/hand/joint_states` (`std_msgs/Float64MultiArray`, 100Hz)
   - **64개 `double` 값**: `[positions:10] + [velocities:10] + [sensors:44]`
 - **구독**: `/hand/command` (`std_msgs/Float64MultiArray`)
@@ -185,8 +195,7 @@ ur5e_rt_base ← ur5e_hand_udp   (ur5e_rt_controller에 의존하지 않음)
     target_ip: "192.168.1.2"          # 핸드 컨트롤러 IP
     target_port: 55151                # 핸드 컨트롤러 포트
     recv_timeout_ms: 10               # SO_RCVTIMEO (ms)
-    enable_write_ack: false           # 핸드 하드웨어 ACK 지원 시 true
-    sensor_decimation: 4              # N cycle마다 센서 읽기 (1=매번, 4=4cycle마다)
+    sensor_decimation: 3              # N cycle마다 센서 읽기 (1=매번, 3=3cycle마다)
 
     # ROS2 퍼블리시
     publish_rate: 100.0               # /hand/joint_states 주기 (Hz)
@@ -246,11 +255,15 @@ source install/setup.bash
 
 > v5.1.0에서 Core 3 → Core 5로 이동 (sensor_io 스레드와의 경합 방지).
 
-### Allocation-free 설계
+### RT 안전 설계 (v5.15.0)
 
 - 모든 코덱 함수: `noexcept`, 힙 할당 없음
 - 폴링 루프: 고정 크기 배열만 사용 (`std::array`)
 - `trivially_copyable` 패킷 구조체 (`#pragma pack`, `static_assert` 검증)
+- **SeqLock** 기반 lock-free 상태 공유 — `state_mutex_` 제거, priority inversion 방지
+- **printf 제거** — EventLoop (SCHED_FIFO) 스레드에서 stdout 출력 완전 제거
+- **Write echo 항상 수신** — 소켓 버퍼 오염 방지, cmd 검증으로 stale 패킷 거부
+- **응답 cmd 검증** — `RequestMotorRead()`, `RequestAllMotorRead()`에 cmd 필드 검증 추가
 
 ### E-STOP 연동
 

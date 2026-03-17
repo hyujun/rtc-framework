@@ -107,7 +107,8 @@ ur5e-rt-controller/
 │       │   └── types.hpp                  # RobotState, HandState, ControllerState, ControllerOutput
 │       ├── threading/
 │       │   ├── thread_config.hpp          # ThreadConfig + 4/6/8-core predefined RT constants
-│       │   └── thread_utils.hpp           # ApplyThreadConfig(), SelectThreadConfigs()
+│       │   ├── thread_utils.hpp           # ApplyThreadConfig(), SelectThreadConfigs()
+│       │   └── seqlock.hpp               # Lock-free SeqLock<T> (single-writer/multi-reader)
 │       ├── logging/
 │       │   ├── log_buffer.hpp             # SPSC ring buffer (lock-free, 512 entries)
 │       │   └── data_logger.hpp            # Non-RT CSV logger (dynamic path resolution)
@@ -456,12 +457,11 @@ export MUJOCO_DIR=/opt/mujoco-3.x.x && colcon build
 
 ### UDP Hand Protocol (Request-Response)
 
-`HandController` (`include/ur5e_hand_udp/hand_controller.hpp`) is a high-level event-driven driver using a single UDP socket (port **55151**, `std::jthread`, Core 5, SCHED_FIFO/65). v5.8.0: `recv_timeout_ms` YAML 설정 (기본 10ms), `recv_error_count_` 원자적 카운터, `SetEstopFlag()` 글로벌 E-Stop 연동, `enable_write_ack` 선택적 ACK. v5.9.0: `HandCommStats` 추가 (통신 통계), `HandFailureDetector` rate monitoring (`min_rate_hz`, `rate_fail_threshold`), `HandUdpNode` 소멸자에서 JSON stats export. v5.11.0: **busy skip 보호** (`busy_` atomic flag — EventLoop busy 중 이벤트 skip, `event_skip_count` 카운터), **sensor decimation** (`sensor_decimation: 4` — N cycle마다 센서 읽기, 나머지는 캐시 사용, 평균 ~1.3ms/cycle). Each event cycle:
+`HandController` (`include/ur5e_hand_udp/hand_controller.hpp`) is a high-level event-driven driver using a single UDP socket (port **55151**, `std::jthread`, Core 5, SCHED_FIFO/65). v5.8.0: `recv_timeout_ms` YAML 설정 (기본 10ms), `recv_error_count_` 원자적 카운터, `SetEstopFlag()` 글로벌 E-Stop 연동. v5.9.0: `HandCommStats` 추가 (통신 통계), `HandFailureDetector` rate monitoring (`min_rate_hz`, `rate_fail_threshold`), `HandUdpNode` 소멸자에서 JSON stats export. v5.11.0: **busy skip 보호** (`busy_` atomic flag — EventLoop busy 중 이벤트 skip, `event_skip_count` 카운터), **sensor decimation** (`sensor_decimation: 3` — N cycle마다 센서 읽기, 나머지는 캐시 사용). v5.15.0: **RT 최적화** — `state_mutex_` → `SeqLock<HandState>` (lock-free), EventLoop에서 printf 완전 제거, WritePosition echo 항상 수신 (Individual 모드에서 ReadPosition 대체 → 1 RT 절약), 응답 cmd 검증 추가, `DrainStaleResponses()` 제거. Each event cycle (Individual mode):
 
-1. `WritePosition` (CMD=0x01) — send 43B motor packet (10 × float32 as uint32)
-2. `ReadPosition` (CMD=0x11) — send 43B, recv 43B → 10 motor positions
-3. `ReadVelocity` (CMD=0x12) — send 43B, recv 43B → 10 motor velocities
-4. `ReadSensor0–3` (CMD=0x14..0x17) — send 3B, recv 67B × 4 fingertips → 44 sensor values (sensor_decimation cycle마다, 기본 4)
+1. `WritePosition` (CMD=0x01) — send 43B + recv 43B echo → motor positions (ReadPosition 대체)
+2. `ReadVelocity` (CMD=0x12) — send 43B, recv 43B → 10 motor velocities
+3. `ReadSensor0–3` (CMD=0x14..0x17) — send 3B, recv 67B × 4 fingertips → 44 sensor values (sensor_decimation cycle마다, 기본 3)
 
 **Motor packet**: 43 bytes = `[ID:1B][CMD:1B][MODE:1B][10 × float32 as uint32]` (little-endian)
 **Sensor request**: 3 bytes = `[ID:1B][CMD:1B][MODE:1B]`
@@ -625,7 +625,8 @@ rt_controller_node (500 Hz SCHED_FIFO)
 
 **Hand communication** is direct UDP (single socket, event-driven per `HandController`, owned by `RtControllerNode`).
 This is necessary because there is no existing ROS2 driver for the custom hand hardware.
-v5.11.0: `HandController` is directly owned by `RtControllerNode` (no ROS topic bridge). ControlLoop Phase 3.5 calls `SendCommandAndRequestStates()` → EventLoop (Core 5) performs write + read asynchronously. `busy_` flag prevents event queueing when EventLoop is still running (skip + warning count). `sensor_decimation: 4` reduces average cycle to ~1.3ms.
+v5.11.0: `HandController` is directly owned by `RtControllerNode` (no ROS topic bridge). ControlLoop Phase 3.5 calls `SendCommandAndRequestStates()` → EventLoop (Core 5) performs write + read asynchronously. `busy_` flag prevents event queueing when EventLoop is still running (skip + warning count). `sensor_decimation: 3` reduces average cycle.
+v5.15.0 RT optimizations: `SeqLock<HandState>` replaces `state_mutex_` (lock-free read/write, no priority inversion). WritePosition echo always consumed — Individual mode uses echo as motor position (eliminates ReadPosition, 6→5 round-trips). Response cmd verification rejects stale packets. `DrainStaleResponses()` removed. No printf on EventLoop thread.
 
 ---
 
@@ -721,7 +722,7 @@ v5.11.0: `HandController` is directly owned by `RtControllerNode` (no ROS topic 
     target_ip: "192.168.1.2"          # 핸드 컨트롤러 IP
     target_port: 55151                # 핸드 컨트롤러 포트
     recv_timeout_ms: 10               # SO_RCVTIMEO (ms)
-    enable_write_ack: false           # 핸드 하드웨어 ACK 지원 시 true
+    # enable_write_ack: deprecated — echo는 항상 수신 (v5.15.0)
 
     # ROS2 퍼블리시
     publish_rate: 100.0               # /hand/joint_states 주기 (Hz)

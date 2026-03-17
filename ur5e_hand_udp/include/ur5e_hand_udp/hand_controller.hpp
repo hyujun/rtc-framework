@@ -7,18 +7,20 @@
 // Driven by ControlLoop events (pipeline mode):
 //   Phase 4 of tick N: SendCommandAndRequestStates(cmd)
 //     → Hand thread wakes and executes (individual mode):
-//       1. Write position  (0x01)            → send 43B
-//       2. Read position   (0x11)            → send 43B, recv 43B
-//       3. Read velocity   (0x12)            → send 43B, recv 43B
-//       4. Read sensor 0-3 (0x14..0x17) × 4  → send  3B, recv 67B
+//       1. Write position  (0x01) + recv echo → send 43B, recv 43B (= position)
+//       2. Read velocity   (0x12)             → send 43B, recv 43B
+//       3. Read sensor 0-3 (0x14..0x17) × 4   → send  3B, recv 67B
 //     → Hand thread (bulk mode):
-//       1. Write position  (0x01)            → send 43B
-//       2. Read all motors (0x10)            → send  3B, recv 123B
-//       3. Read all sensors (0x19)           → send  3B, recv 259B
+//       1. Write position  (0x01) + recv echo → send 43B, recv 43B
+//       2. Read all motors (0x10)             → send  3B, recv 123B
+//       3. Read all sensors (0x19)            → send  3B, recv 259B
 //     → State ready for tick N+1
 //   Phase 1 of tick N+1: GetLatestState() returns pre-fetched state
 //
-// All hot-path operations are allocation-free for RT safety.
+// RT safety:
+//   - All hot-path operations are allocation-free.
+//   - No printf/stdout on the EventLoop thread.
+//   - Shared state uses SeqLock (lock-free) instead of mutex.
 
 #include <algorithm>
 #include <array>
@@ -29,7 +31,6 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <mutex>
@@ -46,6 +47,7 @@
 #include "ur5e_rt_base/types/types.hpp"
 #include "ur5e_rt_base/threading/thread_config.hpp"
 #include "ur5e_rt_base/threading/thread_utils.hpp"
+#include "ur5e_rt_base/threading/seqlock.hpp"
 #include "ur5e_hand_udp/hand_packets.hpp"
 #include "ur5e_hand_udp/hand_udp_codec.hpp"
 
@@ -399,7 +401,7 @@ class HandController {
       int target_port,
       const ThreadConfig& thread_cfg = kUdpRecvConfig,
       int recv_timeout_ms = 10,
-      bool enable_write_ack = false,
+      bool /*enable_write_ack*/ = false,  // deprecated: echo is always consumed
       int sensor_decimation = 1,
       int num_fingertips = kDefaultNumFingertips,
       bool use_fake_hand = false,
@@ -409,7 +411,6 @@ class HandController {
         target_port_(target_port),
         thread_cfg_(thread_cfg),
         recv_timeout_ms_(recv_timeout_ms),
-        enable_write_ack_(enable_write_ack),
         sensor_decimation_(sensor_decimation < 1 ? 1 : sensor_decimation),
         num_fingertips_(num_fingertips > kMaxFingertips ? kMaxFingertips
                        : (num_fingertips < 0 ? 0 : num_fingertips)),
@@ -515,11 +516,11 @@ class HandController {
       const std::array<float, kNumHandMotors>& cmd) noexcept {
     // Fake mode: command를 즉시 position으로 echo-back (통신 없음)
     if (use_fake_hand_) {
-      std::lock_guard lock(state_mutex_);
-      std::copy(cmd.begin(), cmd.end(), latest_state_.motor_positions.begin());
-      // velocities = 0, sensor_data = 0 (기본값 유지)
-      latest_state_.num_fingertips = num_fingertips_;
-      latest_state_.valid = true;
+      HandState fake_state{};
+      std::copy(cmd.begin(), cmd.end(), fake_state.motor_positions.begin());
+      fake_state.num_fingertips = num_fingertips_;
+      fake_state.valid = true;
+      state_seqlock_.Store(fake_state);
       cycle_count_.fetch_add(1, std::memory_order_relaxed);
       return;
     }
@@ -544,14 +545,12 @@ class HandController {
 
   // ── State access ───────────────────────────────────────────────────────
 
-  [[nodiscard]] HandState GetLatestState() const {
-    std::lock_guard lock(state_mutex_);
-    return latest_state_;
+  [[nodiscard]] HandState GetLatestState() const noexcept {
+    return state_seqlock_.Load();
   }
 
-  [[nodiscard]] std::array<float, kNumHandMotors> GetLatestPositions() const {
-    std::lock_guard lock(state_mutex_);
-    return latest_state_.motor_positions;
+  [[nodiscard]] std::array<float, kNumHandMotors> GetLatestPositions() const noexcept {
+    return state_seqlock_.Load().motor_positions;
   }
 
   [[nodiscard]] bool IsRunning() const noexcept {
@@ -626,6 +625,7 @@ class HandController {
   }
 
   // Request a motor read command and decode 10 floats.
+  // Verifies response cmd matches the request to reject stale packets.
   [[nodiscard]] bool RequestMotorRead(
       hand_packets::Command cmd,
       std::array<float, hand_packets::kMotorDataCount>& out) noexcept {
@@ -639,9 +639,13 @@ class HandController {
     if (recvd < static_cast<ssize_t>(hand_packets::kMotorPacketSize)) return false;
 
     uint8_t cmd_out, mode_out;
-    return hand_udp_codec::DecodeMotorResponse(
-        recv_buf.data(), static_cast<std::size_t>(recvd),
-        cmd_out, mode_out, out);
+    if (!hand_udp_codec::DecodeMotorResponse(
+            recv_buf.data(), static_cast<std::size_t>(recvd),
+            cmd_out, mode_out, out)) {
+      return false;
+    }
+    // Verify response cmd matches request — reject stale/echo packets
+    return cmd_out == static_cast<uint8_t>(cmd);
   }
 
   // Send a set-sensor-mode command (CMD=0x04, 3B send, 3B recv echo).
@@ -755,6 +759,7 @@ class HandController {
 
   // Request bulk motor read (cmd=0x10): 3B send, 123B recv.
   // Extracts positions[10] and velocities[10] from grouped response.
+  // Verifies response cmd matches 0x10 to reject stale packets.
   [[nodiscard]] bool RequestAllMotorRead(
       std::array<float, hand_packets::kMotorDataCount>& positions,
       std::array<float, hand_packets::kMotorDataCount>& velocities) noexcept {
@@ -768,9 +773,12 @@ class HandController {
     if (recvd < static_cast<ssize_t>(hand_packets::kAllMotorResponseSize)) return false;
 
     uint8_t cmd_out, mode_out;
-    return hand_udp_codec::DecodeAllMotorResponse(
-        recv_buf.data(), static_cast<std::size_t>(recvd),
-        cmd_out, mode_out, positions, velocities);
+    if (!hand_udp_codec::DecodeAllMotorResponse(
+            recv_buf.data(), static_cast<std::size_t>(recvd),
+            cmd_out, mode_out, positions, velocities)) {
+      return false;
+    }
+    return cmd_out == static_cast<uint8_t>(hand_packets::Command::kReadAllMotors);
   }
 
   // Request bulk sensor read (cmd=0x19): 3B send, 259B recv.
@@ -797,18 +805,25 @@ class HandController {
   // Pipeline: tick N의 Phase 4에서 write + read → tick N+1의 Phase 1에서 state 사용.
   //
   // Communication mode:
-  //   Individual: write → 0x11 pos → 0x12 vel → 0x14~0x17 sensors (6 round-trips)
-  //   Bulk:       write → 0x10 all motors → 0x19 all sensors (2 round-trips)
+  //   Individual: write+echo(=pos) → 0x12 vel → 0x14~0x17 sensors (5 round-trips)
+  //   Bulk:       write+echo → 0x10 all motors → 0x19 all sensors (3 round-trips)
+  //
+  // WritePosition echo: 하드웨어가 43B echo를 반환하므로 항상 수신.
+  //   Individual: echo를 motor position으로 사용 → ReadPosition(0x11) 제거 (1 RT 절약).
+  //   Bulk: echo를 수신하여 소켓 버퍼 오염 방지 (AllMotorRead가 올바른 패킷 수신).
   //
   // Sensor decimation: sensor_decimation_ 주기마다 센서 읽기 수행.
   //   decimation=1 → 매 cycle (기존), decimation=4 → 4 cycle마다.
   //   센서 skip 시 이전 sensor_data 유지.
+  //
+  // RT safety: No printf/stdout — debug data available via HandTimingProfiler.
   void EventLoop(std::stop_token stop_token) {
     ApplyThreadConfig(thread_cfg_);
 
     const bool is_bulk = (communication_mode_ == HandCommunicationMode::kBulk);
 
     std::array<uint8_t, hand_packets::kMotorPacketSize> send_buf{};
+    std::array<uint8_t, hand_packets::kMotorPacketSize> echo_buf{};
     std::array<float, hand_packets::kMotorDataCount> motor_pos_buf{};
     std::array<float, hand_packets::kMotorDataCount> motor_vel_buf{};
     std::array<uint32_t, kSensorValuesPerFingertip> sensor_raw_buf{};
@@ -817,9 +832,6 @@ class HandController {
     // Sensor decimation: 이전 cycle의 sensor_data를 유지하기 위한 버퍼
     std::array<uint32_t, kMaxHandSensors> cached_sensor_data{};
     int sensor_cycle_counter = 0;
-    auto sensor_debug_print_time = std::chrono::steady_clock::now();
-    auto comm_debug_print_time = std::chrono::steady_clock::now();
-    HandCommStats prev_debug_stats{};  // 이전 1초 스냅샷 (delta 계산용)
 
     while (!stop_token.stop_requested()) {
       // condvar 대기 — ControlLoop의 SendCommandAndRequestStates()가 깨움
@@ -854,18 +866,34 @@ class HandController {
       // ── Timing: t0 = EventLoop 시작 ──
       const auto t0 = std::chrono::steady_clock::now();
 
-      // 1. Write position (이번 tick 명령)
+      // 1. Write position + recv echo (항상 수신하여 소켓 버퍼 오염 방지)
+      //    echo = 43B MotorPacket, cmd=0x01, 하드웨어가 적용한 position 반환.
       hand_udp_codec::EncodeWritePosition(pending_cmd, send_buf);
       sendto(socket_fd_, send_buf.data(), send_buf.size(), 0,
              reinterpret_cast<const sockaddr*>(&target_addr_),
              sizeof(target_addr_));
-      if (enable_write_ack_) {
-        std::array<uint8_t, hand_packets::kMotorPacketSize> ack_buf{};
-        recvfrom(socket_fd_, ack_buf.data(), ack_buf.size(), 0,
-                 nullptr, nullptr);
+      bool echo_ok = false;
+      {
+        const ssize_t recvd = ::recv(socket_fd_, echo_buf.data(), echo_buf.size(), 0);
+        if (recvd >= static_cast<ssize_t>(hand_packets::kMotorPacketSize)) {
+          uint8_t cmd_out, mode_out;
+          if (hand_udp_codec::DecodeMotorResponse(
+                  echo_buf.data(), static_cast<std::size_t>(recvd),
+                  cmd_out, mode_out, motor_pos_buf)) {
+            echo_ok = (cmd_out == static_cast<uint8_t>(hand_packets::Command::kWritePosition));
+          }
+          ++comm_stats_.recv_ok;
+        } else if (recvd < 0) {
+          recv_error_count_.fetch_add(1, std::memory_order_relaxed);
+          if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            ++comm_stats_.recv_timeout;
+          } else {
+            ++comm_stats_.recv_error;
+          }
+        }
       }
 
-      const auto t1 = std::chrono::steady_clock::now();  // write 완료
+      const auto t1 = std::chrono::steady_clock::now();  // write+echo 완료
 
       // ── Sensor decimation counter (공통) ──
       ++sensor_cycle_counter;
@@ -874,10 +902,10 @@ class HandController {
 
       if (is_bulk) {
         // ══════════════════════════════════════════════════════════════════
-        // Bulk mode: 0x10 all motors (1 RT) + 0x19 all sensors (1 RT)
+        // Bulk mode: echo(position) + 0x10 all motors + 0x19 all sensors
         // ══════════════════════════════════════════════════════════════════
 
-        // 2. Read all motors (0x10, 3B → 123B)
+        // 2. Read all motors (0x10, 3B → 123B) — position + velocity + current
         if (RequestAllMotorRead(motor_pos_buf, motor_vel_buf)) {
           std::copy_n(motor_pos_buf.begin(), kNumHandMotors,
                       state.motor_positions.begin());
@@ -890,7 +918,6 @@ class HandController {
 
         // 3. Read all sensors (0x19, 3B → 259B) — decimation 적용
         if (is_sensor_cycle) {
-          DrainStaleResponses();
           if (RequestAllSensorRead(cached_sensor_data.data(), num_fingertips_,
                                    hand_packets::SensorMode::kRaw)) {
             any_recv_ok = true;
@@ -899,40 +926,13 @@ class HandController {
 
         const auto t3 = std::chrono::steady_clock::now();  // read_all_sensor 완료
 
-        // Debug: 수신된 센서 데이터 출력 (1초에 1회) — t3 이후에 배치하여 타이밍에 영향 없음
-        if (is_sensor_cycle) {
-          const auto now_dbg = std::chrono::steady_clock::now();
-          if ((now_dbg - sensor_debug_print_time) >= std::chrono::seconds(1)) {
-            for (int i = 0; i < num_fingertips_; ++i) {
-              const auto off = static_cast<std::size_t>(i * kSensorValuesPerFingertip);
-              const char* name = (static_cast<std::size_t>(i) < fingertip_names_.size())
-                                     ? fingertip_names_[static_cast<std::size_t>(i)].c_str()
-                                     : "unknown";
-              std::printf("[BulkSensor %d (%s)] baro=[", i, name);
-              for (int b = 0; b < kBarometerCount; ++b) {
-                std::printf("%s%u", (b > 0 ? "," : ""), cached_sensor_data[off + static_cast<std::size_t>(b)]);
-              }
-              std::printf("] tof=[");
-              for (int t = 0; t < kTofCount; ++t) {
-                std::printf("%s%u", (t > 0 ? "," : ""),
-                            cached_sensor_data[off + static_cast<std::size_t>(kBarometerCount + t)]);
-              }
-              std::printf("]\n");
-            }
-            sensor_debug_print_time = now_dbg;
-          }
-        }
-
         // 항상 캐시된 센서 데이터를 state에 복사
         state.sensor_data = cached_sensor_data;
         state.num_fingertips = num_fingertips_;
         state.valid = any_recv_ok;
 
-        // Update shared state
-        {
-          std::lock_guard lock(state_mutex_);
-          latest_state_ = state;
-        }
+        // Update shared state (lock-free SeqLock)
+        state_seqlock_.Store(state);
         if (callback_) { callback_(state); }
 
         const auto t4 = std::chrono::steady_clock::now();  // 전체 완료
@@ -949,17 +949,18 @@ class HandController {
 
       } else {
         // ══════════════════════════════════════════════════════════════════
-        // Individual mode: 0x11 pos + 0x12 vel + 0x14~0x17 sensors (기존)
+        // Individual mode: echo(=pos) + 0x12 vel + 0x14~0x17 sensors
+        // WritePosition echo를 motor position으로 사용 → ReadPosition(0x11) 제거
         // ══════════════════════════════════════════════════════════════════
 
-        // 2. Read position (motor, 43B ↔ 43B) — 다음 tick용 state
-        if (RequestMotorRead(hand_packets::Command::kReadPosition, motor_pos_buf)) {
+        // 2. Use write echo as motor position (1 round-trip 절약)
+        if (echo_ok) {
           std::copy_n(motor_pos_buf.begin(), kNumHandMotors,
                       state.motor_positions.begin());
           any_recv_ok = true;
         }
 
-        const auto t2 = std::chrono::steady_clock::now();  // read_pos 완료
+        const auto t2 = std::chrono::steady_clock::now();  // echo→pos 완료
 
         // 3. Read velocity (motor, 43B ↔ 43B)
         if (RequestMotorRead(hand_packets::Command::kReadVelocity, motor_vel_buf)) {
@@ -971,70 +972,27 @@ class HandController {
         const auto t3 = std::chrono::steady_clock::now();  // read_vel 완료
 
         // 4. Read sensors — sensor_decimation_ cycle마다 수행, 나머지는 캐시 사용
-        // 센서 읽기 결과를 debug print용으로 보관
-        std::array<uint8_t, kDefaultNumFingertips> sensor_resp_cmd{};
-        std::array<bool, kDefaultNumFingertips> sensor_read_ok{};
         if (is_sensor_cycle) {
-          DrainStaleResponses();
           for (int i = 0; i < num_fingertips_; ++i) {
             auto cmd = hand_packets::SensorCommand(i);
-            uint8_t resp_cmd = 0;
             if (RequestSensorRead(cmd, sensor_raw_buf,
-                                  hand_packets::SensorMode::kRaw, nullptr, &resp_cmd)) {
+                                  hand_packets::SensorMode::kRaw)) {
               std::copy_n(sensor_raw_buf.begin(), kSensorValuesPerFingertip,
                           cached_sensor_data.begin() + i * kSensorValuesPerFingertip);
               any_recv_ok = true;
-              sensor_read_ok[static_cast<std::size_t>(i)] = true;
             }
-            sensor_resp_cmd[static_cast<std::size_t>(i)] = resp_cmd;
           }
         }
 
         const auto t4 = std::chrono::steady_clock::now();  // read_sensor 완료
-
-        // Debug: 센서 데이터 출력 (1초에 1회) — t4 이후에 배치하여 타이밍에 영향 없음
-        if (is_sensor_cycle) {
-          const auto now_dbg = std::chrono::steady_clock::now();
-          if ((now_dbg - sensor_debug_print_time) >= std::chrono::seconds(1)) {
-            for (int i = 0; i < num_fingertips_; ++i) {
-              const auto off = static_cast<std::size_t>(i * kSensorValuesPerFingertip);
-              const char* name = (static_cast<std::size_t>(i) < fingertip_names_.size())
-                                     ? fingertip_names_[static_cast<std::size_t>(i)].c_str()
-                                     : "unknown";
-              auto cmd = hand_packets::SensorCommand(i);
-              if (sensor_read_ok[static_cast<std::size_t>(i)]) {
-                std::printf("[Sensor %d (%s) cmd=0x%02X resp=0x%02X] baro=[",
-                            i, name, static_cast<uint8_t>(cmd),
-                            sensor_resp_cmd[static_cast<std::size_t>(i)]);
-                for (int b = 0; b < kBarometerCount; ++b) {
-                  std::printf("%s%u", (b > 0 ? "," : ""),
-                              cached_sensor_data[off + static_cast<std::size_t>(b)]);
-                }
-                std::printf("] tof=[");
-                for (int t = 0; t < kTofCount; ++t) {
-                  std::printf("%s%u", (t > 0 ? "," : ""),
-                              cached_sensor_data[off + static_cast<std::size_t>(kBarometerCount + t)]);
-                }
-                std::printf("]\n");
-              } else {
-                std::printf("[Sensor %d (%s) cmd=0x%02X] recv FAILED\n",
-                            i, name, static_cast<uint8_t>(cmd));
-              }
-            }
-            sensor_debug_print_time = now_dbg;
-          }
-        }
 
         // 항상 캐시된 센서 데이터를 state에 복사
         state.sensor_data = cached_sensor_data;
         state.num_fingertips = num_fingertips_;
         state.valid = any_recv_ok;
 
-        // Update shared state
-        {
-          std::lock_guard lock(state_mutex_);
-          latest_state_ = state;
-        }
+        // Update shared state (lock-free SeqLock)
+        state_seqlock_.Store(state);
         if (callback_) { callback_(state); }
 
         const auto t5 = std::chrono::steady_clock::now();  // 전체 완료
@@ -1053,36 +1011,6 @@ class HandController {
       ++comm_stats_.total_cycles;
       cycle_count_.fetch_add(1, std::memory_order_relaxed);
 
-      // ── 1초마다 패킷 송수신 요약 디버그 출력 ──
-      {
-        const auto now_dbg = std::chrono::steady_clock::now();
-        if ((now_dbg - comm_debug_print_time) >= std::chrono::seconds(1)) {
-          const auto& cs = comm_stats_;
-          const uint64_t d_cycles  = cs.total_cycles  - prev_debug_stats.total_cycles;
-          const uint64_t d_ok      = cs.recv_ok        - prev_debug_stats.recv_ok;
-          const uint64_t d_timeout = cs.recv_timeout    - prev_debug_stats.recv_timeout;
-          const uint64_t d_error   = cs.recv_error      - prev_debug_stats.recv_error;
-          const uint64_t d_skip    = cs.event_skip_count - prev_debug_stats.event_skip_count;
-          const char* mode_str = is_bulk ? "bulk" : "individual";
-
-          std::printf("[HandUDP %s] 1s: cycles=%lu recv_ok=%lu timeout=%lu error=%lu skip=%lu | "
-                      "total: cycles=%lu recv_ok=%lu timeout=%lu error=%lu\n",
-                      mode_str,
-                      static_cast<unsigned long>(d_cycles),
-                      static_cast<unsigned long>(d_ok),
-                      static_cast<unsigned long>(d_timeout),
-                      static_cast<unsigned long>(d_error),
-                      static_cast<unsigned long>(d_skip),
-                      static_cast<unsigned long>(cs.total_cycles),
-                      static_cast<unsigned long>(cs.recv_ok),
-                      static_cast<unsigned long>(cs.recv_timeout),
-                      static_cast<unsigned long>(cs.recv_error));
-
-          prev_debug_stats = cs;
-          comm_debug_print_time = now_dbg;
-        }
-      }
-
       busy_.store(false, std::memory_order_release);
     }
   }
@@ -1097,7 +1025,6 @@ class HandController {
   std::atomic<bool> running_{false};
   StateCallback     callback_;
 
-  bool enable_write_ack_;
   int  sensor_decimation_;     // N cycle마다 센서 읽기 (1=매번, 4=4cycle마다)
   int  num_fingertips_;        // fingertip_names 갯수로 결정된 센서 읽기 대상 수
   bool use_fake_hand_;         // true: echo-back mock (UDP 소켓 미생성)
@@ -1118,8 +1045,7 @@ class HandController {
   std::atomic<bool>     busy_{false};
   std::atomic<uint64_t> event_skip_count_{0};
 
-  mutable std::mutex state_mutex_;
-  HandState          latest_state_{};
+  SeqLock<HandState> state_seqlock_{};
   std::atomic<std::size_t> cycle_count_{0};
 
   // recv() 타임아웃/에러 카운터 (모든 send-recv 실패 시 증가)
