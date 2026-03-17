@@ -818,6 +818,8 @@ class HandController {
     std::array<uint32_t, kMaxHandSensors> cached_sensor_data{};
     int sensor_cycle_counter = 0;
     auto sensor_debug_print_time = std::chrono::steady_clock::now();
+    auto comm_debug_print_time = std::chrono::steady_clock::now();
+    HandCommStats prev_debug_stats{};  // 이전 1초 스냅샷 (delta 계산용)
 
     while (!stop_token.stop_requested()) {
       // condvar 대기 — ControlLoop의 SendCommandAndRequestStates()가 깨움
@@ -1039,6 +1041,37 @@ class HandController {
 
       ++comm_stats_.total_cycles;
       cycle_count_.fetch_add(1, std::memory_order_relaxed);
+
+      // ── 1초마다 패킷 송수신 요약 디버그 출력 ──
+      {
+        const auto now_dbg = std::chrono::steady_clock::now();
+        if ((now_dbg - comm_debug_print_time) >= std::chrono::seconds(1)) {
+          const auto& cs = comm_stats_;
+          const uint64_t d_cycles  = cs.total_cycles  - prev_debug_stats.total_cycles;
+          const uint64_t d_ok      = cs.recv_ok        - prev_debug_stats.recv_ok;
+          const uint64_t d_timeout = cs.recv_timeout    - prev_debug_stats.recv_timeout;
+          const uint64_t d_error   = cs.recv_error      - prev_debug_stats.recv_error;
+          const uint64_t d_skip    = cs.event_skip_count - prev_debug_stats.event_skip_count;
+          const char* mode_str = is_bulk ? "bulk" : "individual";
+
+          std::printf("[HandUDP %s] 1s: cycles=%lu recv_ok=%lu timeout=%lu error=%lu skip=%lu | "
+                      "total: cycles=%lu recv_ok=%lu timeout=%lu error=%lu\n",
+                      mode_str,
+                      static_cast<unsigned long>(d_cycles),
+                      static_cast<unsigned long>(d_ok),
+                      static_cast<unsigned long>(d_timeout),
+                      static_cast<unsigned long>(d_error),
+                      static_cast<unsigned long>(d_skip),
+                      static_cast<unsigned long>(cs.total_cycles),
+                      static_cast<unsigned long>(cs.recv_ok),
+                      static_cast<unsigned long>(cs.recv_timeout),
+                      static_cast<unsigned long>(cs.recv_error));
+
+          prev_debug_stats = cs;
+          comm_debug_print_time = now_dbg;
+        }
+      }
+
       busy_.store(false, std::memory_order_release);
     }
   }
