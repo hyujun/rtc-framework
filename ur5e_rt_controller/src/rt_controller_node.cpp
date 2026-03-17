@@ -173,9 +173,14 @@ void RtControllerNode::SaveHandStats() const
 
   const auto ts = hand_controller_->timing_stats();
 
+  const bool is_bulk = (hand_controller_->communication_mode() ==
+                        urtc::HandCommunicationMode::kBulk);
+  const char* mode_str = is_bulk ? "bulk" : "individual";
+
   ofs << std::fixed
       << "{\n"
       << "  \"comm_stats\": {\n"
+      << "    \"communication_mode\": \"" << mode_str << "\",\n"
       << "    \"total_cycles\": "     << stats.total_cycles    << ",\n"
       << "    \"recv_ok\": "          << stats.recv_ok         << ",\n"
       << "    \"recv_timeout\": "     << stats.recv_timeout     << ",\n"
@@ -198,24 +203,40 @@ void RtControllerNode::SaveHandStats() const
       << " \"mean\": " << ts.write.mean_us
       << ", \"min\": " << ts.write.min_us
       << ", \"max\": " << ts.write.max_us
-      << " },\n"
-      << "    \"read_pos_us\": {"
-      << " \"mean\": " << ts.read_pos.mean_us
-      << ", \"min\": " << ts.read_pos.min_us
-      << ", \"max\": " << ts.read_pos.max_us
-      << " },\n"
-      << "    \"read_vel_us\": {"
-      << " \"mean\": " << ts.read_vel.mean_us
-      << ", \"min\": " << ts.read_vel.min_us
-      << ", \"max\": " << ts.read_vel.max_us
-      << " },\n"
-      << "    \"read_sensor_us\": {"
-      << " \"mean\": " << ts.read_sensor.mean_us
-      << ", \"min\": " << ts.read_sensor.min_us
-      << ", \"max\": " << ts.read_sensor.max_us
-      << ", \"sensor_cycles\": " << ts.sensor_cycle_count
-      << " },\n"
-      << "    \"over_budget\": " << ts.over_budget << "\n"
+      << " },\n";
+
+  if (is_bulk) {
+    ofs << "    \"read_all_motor_us\": {"
+        << " \"mean\": " << ts.read_all_motor.mean_us
+        << ", \"min\": " << ts.read_all_motor.min_us
+        << ", \"max\": " << ts.read_all_motor.max_us
+        << " },\n"
+        << "    \"read_all_sensor_us\": {"
+        << " \"mean\": " << ts.read_all_sensor.mean_us
+        << ", \"min\": " << ts.read_all_sensor.min_us
+        << ", \"max\": " << ts.read_all_sensor.max_us
+        << ", \"sensor_cycles\": " << ts.sensor_cycle_count
+        << " },\n";
+  } else {
+    ofs << "    \"read_pos_us\": {"
+        << " \"mean\": " << ts.read_pos.mean_us
+        << ", \"min\": " << ts.read_pos.min_us
+        << ", \"max\": " << ts.read_pos.max_us
+        << " },\n"
+        << "    \"read_vel_us\": {"
+        << " \"mean\": " << ts.read_vel.mean_us
+        << ", \"min\": " << ts.read_vel.min_us
+        << ", \"max\": " << ts.read_vel.max_us
+        << " },\n"
+        << "    \"read_sensor_us\": {"
+        << " \"mean\": " << ts.read_sensor.mean_us
+        << ", \"min\": " << ts.read_sensor.min_us
+        << ", \"max\": " << ts.read_sensor.max_us
+        << ", \"sensor_cycles\": " << ts.sensor_cycle_count
+        << " },\n";
+  }
+
+  ofs << "    \"over_budget\": " << ts.over_budget << "\n"
       << "  }\n"
       << "}\n";
   ofs.close();
