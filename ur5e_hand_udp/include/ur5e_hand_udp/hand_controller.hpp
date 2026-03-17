@@ -894,32 +894,34 @@ class HandController {
           if (RequestAllSensorRead(cached_sensor_data.data(), num_fingertips_,
                                    hand_packets::SensorMode::kRaw)) {
             any_recv_ok = true;
-
-            // Debug: 수신된 센서 데이터 출력 (1초에 1회)
-            const auto now_dbg = std::chrono::steady_clock::now();
-            if ((now_dbg - sensor_debug_print_time) >= std::chrono::seconds(1)) {
-              for (int i = 0; i < num_fingertips_; ++i) {
-                const auto off = static_cast<std::size_t>(i * kSensorValuesPerFingertip);
-                const char* name = (static_cast<std::size_t>(i) < fingertip_names_.size())
-                                       ? fingertip_names_[static_cast<std::size_t>(i)].c_str()
-                                       : "unknown";
-                std::printf("[BulkSensor %d (%s)] baro=[", i, name);
-                for (int b = 0; b < kBarometerCount; ++b) {
-                  std::printf("%s%u", (b > 0 ? "," : ""), cached_sensor_data[off + static_cast<std::size_t>(b)]);
-                }
-                std::printf("] tof=[");
-                for (int t = 0; t < kTofCount; ++t) {
-                  std::printf("%s%u", (t > 0 ? "," : ""),
-                              cached_sensor_data[off + static_cast<std::size_t>(kBarometerCount + t)]);
-                }
-                std::printf("]\n");
-              }
-              sensor_debug_print_time = now_dbg;
-            }
           }
         }
 
         const auto t3 = std::chrono::steady_clock::now();  // read_all_sensor 완료
+
+        // Debug: 수신된 센서 데이터 출력 (1초에 1회) — t3 이후에 배치하여 타이밍에 영향 없음
+        if (is_sensor_cycle) {
+          const auto now_dbg = std::chrono::steady_clock::now();
+          if ((now_dbg - sensor_debug_print_time) >= std::chrono::seconds(1)) {
+            for (int i = 0; i < num_fingertips_; ++i) {
+              const auto off = static_cast<std::size_t>(i * kSensorValuesPerFingertip);
+              const char* name = (static_cast<std::size_t>(i) < fingertip_names_.size())
+                                     ? fingertip_names_[static_cast<std::size_t>(i)].c_str()
+                                     : "unknown";
+              std::printf("[BulkSensor %d (%s)] baro=[", i, name);
+              for (int b = 0; b < kBarometerCount; ++b) {
+                std::printf("%s%u", (b > 0 ? "," : ""), cached_sensor_data[off + static_cast<std::size_t>(b)]);
+              }
+              std::printf("] tof=[");
+              for (int t = 0; t < kTofCount; ++t) {
+                std::printf("%s%u", (t > 0 ? "," : ""),
+                            cached_sensor_data[off + static_cast<std::size_t>(kBarometerCount + t)]);
+              }
+              std::printf("]\n");
+            }
+            sensor_debug_print_time = now_dbg;
+          }
+        }
 
         // 항상 캐시된 센서 데이터를 state에 복사
         state.sensor_data = cached_sensor_data;
@@ -969,11 +971,11 @@ class HandController {
         const auto t3 = std::chrono::steady_clock::now();  // read_vel 완료
 
         // 4. Read sensors — sensor_decimation_ cycle마다 수행, 나머지는 캐시 사용
+        // 센서 읽기 결과를 debug print용으로 보관
+        std::array<uint8_t, kDefaultNumFingertips> sensor_resp_cmd{};
+        std::array<bool, kDefaultNumFingertips> sensor_read_ok{};
         if (is_sensor_cycle) {
           DrainStaleResponses();
-          const auto now_dbg = std::chrono::steady_clock::now();
-          const bool do_debug_print =
-              (now_dbg - sensor_debug_print_time) >= std::chrono::seconds(1);
           for (int i = 0; i < num_fingertips_; ++i) {
             auto cmd = hand_packets::SensorCommand(i);
             uint8_t resp_cmd = 0;
@@ -982,37 +984,46 @@ class HandController {
               std::copy_n(sensor_raw_buf.begin(), kSensorValuesPerFingertip,
                           cached_sensor_data.begin() + i * kSensorValuesPerFingertip);
               any_recv_ok = true;
-
-              if (do_debug_print) {
-                const char* name = (static_cast<std::size_t>(i) < fingertip_names_.size())
-                                       ? fingertip_names_[static_cast<std::size_t>(i)].c_str()
-                                       : "unknown";
-                std::printf("[Sensor %d (%s) cmd=0x%02X resp=0x%02X] baro=[",
-                            i, name, static_cast<uint8_t>(cmd), resp_cmd);
-                for (int b = 0; b < kBarometerCount; ++b) {
-                  std::printf("%s%u", (b > 0 ? "," : ""), sensor_raw_buf[static_cast<std::size_t>(b)]);
-                }
-                std::printf("] tof=[");
-                for (int t = 0; t < kTofCount; ++t) {
-                  std::printf("%s%u", (t > 0 ? "," : ""),
-                              sensor_raw_buf[static_cast<std::size_t>(kBarometerCount + t)]);
-                }
-                std::printf("]\n");
-              }
-            } else if (do_debug_print) {
-              const char* name = (static_cast<std::size_t>(i) < fingertip_names_.size())
-                                     ? fingertip_names_[static_cast<std::size_t>(i)].c_str()
-                                     : "unknown";
-              std::printf("[Sensor %d (%s) cmd=0x%02X] recv FAILED\n",
-                          i, name, static_cast<uint8_t>(cmd));
+              sensor_read_ok[static_cast<std::size_t>(i)] = true;
             }
-          }
-          if (do_debug_print) {
-            sensor_debug_print_time = now_dbg;
+            sensor_resp_cmd[static_cast<std::size_t>(i)] = resp_cmd;
           }
         }
 
         const auto t4 = std::chrono::steady_clock::now();  // read_sensor 완료
+
+        // Debug: 센서 데이터 출력 (1초에 1회) — t4 이후에 배치하여 타이밍에 영향 없음
+        if (is_sensor_cycle) {
+          const auto now_dbg = std::chrono::steady_clock::now();
+          if ((now_dbg - sensor_debug_print_time) >= std::chrono::seconds(1)) {
+            for (int i = 0; i < num_fingertips_; ++i) {
+              const auto off = static_cast<std::size_t>(i * kSensorValuesPerFingertip);
+              const char* name = (static_cast<std::size_t>(i) < fingertip_names_.size())
+                                     ? fingertip_names_[static_cast<std::size_t>(i)].c_str()
+                                     : "unknown";
+              auto cmd = hand_packets::SensorCommand(i);
+              if (sensor_read_ok[static_cast<std::size_t>(i)]) {
+                std::printf("[Sensor %d (%s) cmd=0x%02X resp=0x%02X] baro=[",
+                            i, name, static_cast<uint8_t>(cmd),
+                            sensor_resp_cmd[static_cast<std::size_t>(i)]);
+                for (int b = 0; b < kBarometerCount; ++b) {
+                  std::printf("%s%u", (b > 0 ? "," : ""),
+                              cached_sensor_data[off + static_cast<std::size_t>(b)]);
+                }
+                std::printf("] tof=[");
+                for (int t = 0; t < kTofCount; ++t) {
+                  std::printf("%s%u", (t > 0 ? "," : ""),
+                              cached_sensor_data[off + static_cast<std::size_t>(kBarometerCount + t)]);
+                }
+                std::printf("]\n");
+              } else {
+                std::printf("[Sensor %d (%s) cmd=0x%02X] recv FAILED\n",
+                            i, name, static_cast<uint8_t>(cmd));
+              }
+            }
+            sensor_debug_print_time = now_dbg;
+          }
+        }
 
         // 항상 캐시된 센서 데이터를 state에 복사
         state.sensor_data = cached_sensor_data;
