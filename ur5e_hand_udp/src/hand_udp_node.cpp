@@ -48,17 +48,27 @@ class HandUdpNode : public rclcpp::Node {
     declare_parameter("hand_motor_names", std::vector<std::string>{});
     declare_parameter("hand_fingertip_names", std::vector<std::string>{});
 
+    // Communication mode: "individual" (0x11+0x12+0x14~0x17) or "bulk" (0x10+0x19)
+    declare_parameter("communication_mode", std::string{"individual"});
+
     const std::string target_ip       = get_parameter("target_ip").as_string();
     const int         target_port     = get_parameter("target_port").as_int();
     const double      rate            = get_parameter("publish_rate").as_double();
     const int         recv_timeout_ms = get_parameter("recv_timeout_ms").as_int();
     const bool        enable_write_ack = get_parameter("enable_write_ack").as_bool();
 
+    // ── Communication mode ──────────────────────────────────────────────
+    const std::string comm_mode_str = get_parameter("communication_mode").as_string();
+    const auto comm_mode = (comm_mode_str == "bulk")
+        ? urtc::HandCommunicationMode::kBulk
+        : urtc::HandCommunicationMode::kIndividual;
+
     // ── HandController ─────────────────────────────────────────────────
     const auto ft_names = get_parameter("hand_fingertip_names").as_string_array();
     controller_ = std::make_unique<urtc::HandController>(
         target_ip, target_port, urtc::kUdpRecvConfig, recv_timeout_ms,
-        enable_write_ack, 1, urtc::kDefaultNumFingertips, false, ft_names);
+        enable_write_ack, 1, urtc::kDefaultNumFingertips, false, ft_names,
+        comm_mode);
 
     controller_->SetCallback([this](const urtc::HandState& state) {
       std::lock_guard lock(data_mutex_);
@@ -129,8 +139,8 @@ class HandUdpNode : public rclcpp::Node {
     }
 
     RCLCPP_INFO(get_logger(),
-                "HandUdpNode: target %s:%d, pub %.0f Hz",
-                target_ip.c_str(), target_port, rate);
+                "HandUdpNode: target %s:%d, pub %.0f Hz, mode=%s",
+                target_ip.c_str(), target_port, rate, comm_mode_str.c_str());
   }
 
   ~HandUdpNode() override {
@@ -198,8 +208,12 @@ class HandUdpNode : public rclcpp::Node {
     // 타이밍 통계
     const auto ts = controller_->timing_stats();
 
+    const bool is_bulk = (controller_->communication_mode() == urtc::HandCommunicationMode::kBulk);
+    const char* mode_str = is_bulk ? "bulk" : "individual";
+
     ofs << "{\n"
         << "  \"comm_stats\": {\n"
+        << "    \"communication_mode\": \"" << mode_str << "\",\n"
         << "    \"total_cycles\": "    << stats.total_cycles   << ",\n"
         << "    \"recv_ok\": "         << stats.recv_ok        << ",\n"
         << "    \"recv_timeout\": "    << stats.recv_timeout    << ",\n"
@@ -223,24 +237,40 @@ class HandUdpNode : public rclcpp::Node {
         << " \"mean\": " << ts.write.mean_us
         << ", \"min\": " << ts.write.min_us
         << ", \"max\": " << ts.write.max_us
-        << " },\n"
-        << "    \"read_pos_us\": {"
-        << " \"mean\": " << ts.read_pos.mean_us
-        << ", \"min\": " << ts.read_pos.min_us
-        << ", \"max\": " << ts.read_pos.max_us
-        << " },\n"
-        << "    \"read_vel_us\": {"
-        << " \"mean\": " << ts.read_vel.mean_us
-        << ", \"min\": " << ts.read_vel.min_us
-        << ", \"max\": " << ts.read_vel.max_us
-        << " },\n"
-        << "    \"read_sensor_us\": {"
-        << " \"mean\": " << ts.read_sensor.mean_us
-        << ", \"min\": " << ts.read_sensor.min_us
-        << ", \"max\": " << ts.read_sensor.max_us
-        << ", \"sensor_cycles\": " << ts.sensor_cycle_count
-        << " },\n"
-        << "    \"over_budget\": " << ts.over_budget << "\n"
+        << " },\n";
+
+    if (is_bulk) {
+      ofs << "    \"read_all_motor_us\": {"
+          << " \"mean\": " << ts.read_all_motor.mean_us
+          << ", \"min\": " << ts.read_all_motor.min_us
+          << ", \"max\": " << ts.read_all_motor.max_us
+          << " },\n"
+          << "    \"read_all_sensor_us\": {"
+          << " \"mean\": " << ts.read_all_sensor.mean_us
+          << ", \"min\": " << ts.read_all_sensor.min_us
+          << ", \"max\": " << ts.read_all_sensor.max_us
+          << ", \"sensor_cycles\": " << ts.sensor_cycle_count
+          << " },\n";
+    } else {
+      ofs << "    \"read_pos_us\": {"
+          << " \"mean\": " << ts.read_pos.mean_us
+          << ", \"min\": " << ts.read_pos.min_us
+          << ", \"max\": " << ts.read_pos.max_us
+          << " },\n"
+          << "    \"read_vel_us\": {"
+          << " \"mean\": " << ts.read_vel.mean_us
+          << ", \"min\": " << ts.read_vel.min_us
+          << ", \"max\": " << ts.read_vel.max_us
+          << " },\n"
+          << "    \"read_sensor_us\": {"
+          << " \"mean\": " << ts.read_sensor.mean_us
+          << ", \"min\": " << ts.read_sensor.min_us
+          << ", \"max\": " << ts.read_sensor.max_us
+          << ", \"sensor_cycles\": " << ts.sensor_cycle_count
+          << " },\n";
+    }
+
+    ofs << "    \"over_budget\": " << ts.over_budget << "\n"
         << "  }\n"
         << "}\n";
     ofs.close();

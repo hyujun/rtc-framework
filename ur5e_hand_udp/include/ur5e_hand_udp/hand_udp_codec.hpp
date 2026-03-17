@@ -17,10 +17,14 @@ namespace ur5e_rt_controller {
 namespace hand_udp_codec {
 
 // ── Protocol constants ───────────────────────────────────────────────────
-inline constexpr std::size_t kMotorPacketBytes    = hand_packets::kMotorPacketSize;     // 43
-inline constexpr std::size_t kSensorRequestBytes  = hand_packets::kSensorRequestSize;   // 3
-inline constexpr std::size_t kSensorResponseBytes = hand_packets::kSensorResponseSize;  // 67
-inline constexpr std::size_t kMaxPacketBytes       = hand_packets::kMaxPacketSize;       // 67
+inline constexpr std::size_t kMotorPacketBytes         = hand_packets::kMotorPacketSize;         // 43
+inline constexpr std::size_t kSensorRequestBytes       = hand_packets::kSensorRequestSize;       // 3
+inline constexpr std::size_t kSensorResponseBytes      = hand_packets::kSensorResponseSize;      // 67
+inline constexpr std::size_t kAllMotorRequestBytes     = hand_packets::kAllMotorRequestSize;     // 3
+inline constexpr std::size_t kAllMotorResponseBytes    = hand_packets::kAllMotorResponseSize;    // 123
+inline constexpr std::size_t kAllSensorRequestBytes    = hand_packets::kAllSensorRequestSize;    // 3
+inline constexpr std::size_t kAllSensorResponseBytes   = hand_packets::kAllSensorResponseSize;   // 259
+inline constexpr std::size_t kMaxPacketBytes            = hand_packets::kMaxPacketSize;           // 259
 
 // Legacy alias
 inline constexpr std::size_t kPacketBytes = kMotorPacketBytes;
@@ -51,6 +55,21 @@ inline void EncodeSetSensorMode(
     hand_packets::SensorMode sensor_mode,
     std::array<uint8_t, kSensorRequestBytes>& out) noexcept {
   auto pkt = hand_packets::MakeSetSensorMode(sensor_mode);
+  hand_packets::SerializeSensorRequest(pkt, out);
+}
+
+// Encode a bulk motor read-request packet (3 bytes, cmd=0x10).
+inline void EncodeReadAllMotorsRequest(
+    std::array<uint8_t, kAllMotorRequestBytes>& out) noexcept {
+  auto pkt = hand_packets::MakeReadAllMotorsRequest();
+  hand_packets::SerializeSensorRequest(pkt, out);
+}
+
+// Encode a bulk sensor read-request packet (3 bytes, cmd=0x19).
+inline void EncodeReadAllSensorsRequest(
+    std::array<uint8_t, kAllSensorRequestBytes>& out,
+    hand_packets::SensorMode sensor_mode = hand_packets::SensorMode::kRaw) noexcept {
+  auto pkt = hand_packets::MakeReadAllSensorsRequest(sensor_mode);
   hand_packets::SerializeSensorRequest(pkt, out);
 }
 
@@ -102,6 +121,35 @@ inline void EncodeWritePosition(
   cmd_out  = pkt.cmd;
   mode_out = pkt.mode;
   hand_packets::ExtractSensorValuesRaw(pkt, data_out);
+  return true;
+}
+
+// Decode a bulk motor response (123 bytes), extracting positions[10] and velocities[10].
+// Data layout: grouped [pos0..9, vel0..9, cur0..9].
+[[nodiscard]] inline bool DecodeAllMotorResponse(
+    const uint8_t* buf, std::size_t len,
+    uint8_t& cmd_out, uint8_t& mode_out,
+    std::array<float, hand_packets::kMotorDataCount>& positions,
+    std::array<float, hand_packets::kMotorDataCount>& velocities) noexcept {
+  hand_packets::AllMotorResponsePacket pkt{};
+  if (!hand_packets::DecodeAllMotorResponse(buf, len, pkt)) return false;
+  cmd_out  = pkt.cmd;
+  mode_out = pkt.mode;
+  hand_packets::ExtractAllMotorFloats(pkt, positions, velocities);
+  return true;
+}
+
+// Decode a bulk sensor response (259 bytes), extracting all fingertip data.
+// Output: concatenated barometer[8]+tof[3] per finger (num_fingertips × 11 raw uint32).
+[[nodiscard]] inline bool DecodeAllSensorResponseRaw(
+    const uint8_t* buf, std::size_t len,
+    uint8_t& cmd_out, uint8_t& mode_out,
+    uint32_t* out, int num_fingertips) noexcept {
+  hand_packets::AllSensorResponsePacket pkt{};
+  if (!hand_packets::DecodeAllSensorResponse(buf, len, pkt)) return false;
+  cmd_out  = pkt.cmd;
+  mode_out = pkt.mode;
+  hand_packets::ExtractAllSensorValuesRaw(pkt, out, num_fingertips);
   return true;
 }
 
