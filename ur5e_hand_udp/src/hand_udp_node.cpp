@@ -208,6 +208,7 @@ class HandUdpNode : public rclcpp::Node {
     ofs << "{\n"
         << "  \"comm_stats\": {\n"
         << "    \"communication_mode\": \"" << mode_str << "\",\n"
+        << "    \"recv_timeout_ms\": " << std::fixed << std::setprecision(3) << controller_->recv_timeout_ms() << ",\n"
         << "    \"total_cycles\": "    << stats.total_cycles   << ",\n"
         << "    \"recv_ok\": "         << stats.recv_ok        << ",\n"
         << "    \"recv_timeout\": "    << stats.recv_timeout    << ",\n"

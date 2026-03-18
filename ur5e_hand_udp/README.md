@@ -146,7 +146,7 @@ ur5e_rt_base ← ur5e_hand_udp   (ur5e_rt_controller에 의존하지 않음)
 `HandController`를 사용하는 ROS2 노드입니다. 단일 프로세스에서 송수신을 모두 처리합니다.
 
 - **내부**: `HandController` — event-driven 드라이버 (jthread, Core 5, SCHED_FIFO/65)
-  - `recv_timeout_ms` 생성자 파라미터: YAML에서 구동되는 `SO_RCVTIMEO` 소켓 타임아웃 설정
+  - `recv_timeout_ms` 생성자 파라미터: YAML에서 구동되는 `ppoll()` 기반 수신 타임아웃 (sub-ms 지원, hrtimer on PREEMPT_RT)
   - `recv_error_count_` (`std::atomic<uint64_t>`): recv 실패 횟수를 추적하는 원자적 카운터
   - `SetEstopFlag(std::atomic<bool>*)`: 글로벌 E-Stop 플래그 전파를 위한 설정 메서드
   - Write echo 항상 수신: 소켓 버퍼 오염 방지 + Individual 모드에서 position으로 활용
@@ -194,7 +194,7 @@ ur5e_rt_base ← ur5e_hand_udp   (ur5e_rt_controller에 의존하지 않음)
     # UDP 통신
     target_ip: "192.168.1.2"          # 핸드 컨트롤러 IP
     target_port: 55151                # 핸드 컨트롤러 포트
-    recv_timeout_ms: 10               # SO_RCVTIMEO (ms)
+    recv_timeout_ms: 0.4              # ppoll 수신 타임아웃 (ms, sub-ms 지원)
     sensor_decimation: 3              # N cycle마다 센서 읽기 (1=매번, 3=3cycle마다)
 
     # ROS2 퍼블리시
@@ -301,7 +301,7 @@ estop:
 ```cpp
 struct HandCommStats {
   uint64_t recv_ok{0};            // 수신 성공 횟수
-  uint64_t recv_timeout{0};       // SO_RCVTIMEO 타임아웃 횟수
+  uint64_t recv_timeout{0};       // ppoll 수신 타임아웃 횟수
   uint64_t recv_error{0};         // 기타 수신 에러 횟수
   uint64_t total_cycles{0};       // 총 EventLoop 사이클 수
   uint64_t event_skip_count{0};   // EventLoop busy 중 skip된 이벤트 수 (v5.11.0)
@@ -331,6 +331,7 @@ struct HandTimingStats {
 
 ```json
 {
+  "recv_timeout_ms": 0.400,
   "total_cycles": 150000,
   "recv_ok": 148500,
   "recv_timeout": 1200,

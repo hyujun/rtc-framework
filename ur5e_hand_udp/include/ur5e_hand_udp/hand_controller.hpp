@@ -42,6 +42,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -465,13 +466,16 @@ class HandController {
     setsockopt(socket_fd_, SOL_SOCKET, SO_RCVBUF, &kUdpBufSize, sizeof(kUdpBufSize));
     setsockopt(socket_fd_, SOL_SOCKET, SO_SNDBUF, &kUdpBufSize, sizeof(kUdpBufSize));
 
-    // SO_RCVTIMEO: YAML에서 설정 가능 (기본값 10ms, sub-ms 지원: 0.4 → 400µs).
-    // recv() 타임아웃으로 stop_token 체크 + 통신 실패 감지 가능.
-    struct timeval tv{};
-    const long total_us = static_cast<long>(recv_timeout_ms_ * 1000.0);
-    tv.tv_sec  = total_us / 1'000'000;
-    tv.tv_usec = total_us % 1'000'000;
-    setsockopt(socket_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    // Sub-ms recv timeout: ppoll() 기반 (hrtimer on PREEMPT_RT).
+    // SO_RCVTIMEO는 jiffies 해상도(HZ=1000→1ms)로 sub-ms 불가능.
+    // ppoll은 struct timespec (ns 단위) → hrtimer → µs 정밀도 제공.
+    // 안전망으로 SO_RCVTIMEO도 100ms로 설정 (ppoll 실패 시 무한 블록 방지).
+    {
+      struct timeval tv{};
+      tv.tv_sec  = 0;
+      tv.tv_usec = 100'000;  // 100ms safety fallback
+      setsockopt(socket_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    }
 
     // 센서 초기화: NN → RAW 모드 전환 (num_fingertips > 0일 때만)
     if (num_fingertips_ > 0) {
@@ -602,7 +606,35 @@ class HandController {
     return communication_mode_;
   }
 
+  // 설정된 recv timeout (ms) 반환
+  [[nodiscard]] double recv_timeout_ms() const noexcept {
+    return recv_timeout_ms_;
+  }
+
  private:
+  // Sub-ms precision recv using ppoll (hrtimer on PREEMPT_RT kernels).
+  // SO_RCVTIMEO uses schedule_timeout() → jiffies resolution (1ms on HZ=1000).
+  // ppoll uses struct timespec (ns) → hrtimer → true µs-level precision.
+  // Returns bytes received, or -1 with errno=EAGAIN on timeout.
+  [[nodiscard]] ssize_t RecvWithTimeout(
+      void* buf, std::size_t len) noexcept {
+    struct pollfd pfd{};
+    pfd.fd = socket_fd_;
+    pfd.events = POLLIN;
+
+    struct timespec ts{};
+    const long total_ns = static_cast<long>(recv_timeout_ms_ * 1'000'000.0);
+    ts.tv_sec  = total_ns / 1'000'000'000;
+    ts.tv_nsec = total_ns % 1'000'000'000;
+
+    const int ret = ::ppoll(&pfd, 1, &ts, nullptr);
+    if (ret <= 0) {
+      errno = EAGAIN;
+      return -1;
+    }
+    return ::recv(socket_fd_, buf, len, MSG_DONTWAIT);
+  }
+
   // Send raw bytes and receive into a buffer. Returns bytes received, or -1 on error.
   [[nodiscard]] ssize_t SendAndRecvRaw(
       const uint8_t* send_data, std::size_t send_len,
@@ -613,9 +645,8 @@ class HandController {
         sizeof(target_addr_));
     if (sent < 0) return -1;
 
-    const ssize_t recvd = ::recv(socket_fd_, recv_data, recv_len, 0);
+    const ssize_t recvd = RecvWithTimeout(recv_data, recv_len);
     if (recvd < 0) {
-      // EAGAIN/EWOULDBLOCK = SO_RCVTIMEO expired → increment error counter
       recv_error_count_.fetch_add(1, std::memory_order_relaxed);
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         ++comm_stats_.recv_timeout;
@@ -631,7 +662,7 @@ class HandController {
   // Request a motor read command and decode 10 floats.
   // Sends header only (3 bytes) — data payload is not needed for read requests.
   // Verifies response cmd matches the request to reject stale packets.
-  // 첫 recv만 blocking(SO_RCVTIMEO), cmd 불일치 시 non-blocking retry로 stale 소비.
+  // 첫 recv만 ppoll 대기(hrtimer), cmd 불일치 시 non-blocking retry로 stale 소비.
   [[nodiscard]] bool RequestMotorRead(
       hand_packets::Command cmd,
       std::array<float, hand_packets::kMotorDataCount>& out) noexcept {
@@ -646,11 +677,12 @@ class HandController {
         sizeof(target_addr_));
     if (sent < 0) return false;
 
-    // 최대 3회 시도: 첫 recv만 blocking, 이후는 non-blocking (stale packet 소비)
+    // 최대 3회 시도: 첫 recv만 ppoll 대기, 이후는 non-blocking (stale packet 소비)
     constexpr int kMaxAttempts = 3;
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-      const int flags = (attempt == 0) ? 0 : MSG_DONTWAIT;
-      const ssize_t recvd = ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), flags);
+      const ssize_t recvd = (attempt == 0)
+          ? RecvWithTimeout(recv_buf.data(), recv_buf.size())
+          : ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), MSG_DONTWAIT);
       if (recvd < 0) {
         if (attempt == 0) {
           recv_error_count_.fetch_add(1, std::memory_order_relaxed);
@@ -732,7 +764,7 @@ class HandController {
   // MODE field in request carries the desired sensor mode (default kRaw).
   // Response cmd must match the request cmd; stale responses are discarded via non-blocking retry.
   //
-  // 첫 recv만 blocking(SO_RCVTIMEO)으로 HW 응답 대기.
+  // 첫 recv만 ppoll 대기(hrtimer)으로 HW 응답 대기.
   // cmd 불일치 시 retry recv는 MSG_DONTWAIT로 즉시 반환하여 timeout spike 방지.
   [[nodiscard]] bool RequestSensorRead(
       hand_packets::Command cmd,
@@ -751,13 +783,14 @@ class HandController {
         sizeof(target_addr_));
     if (sent < 0) return false;
 
-    // 최대 3회 시도: 첫 recv만 blocking, 이후는 non-blocking
+    // 최대 3회 시도: 첫 recv만 ppoll 대기, 이후는 non-blocking
     constexpr int kMaxAttempts = 3;
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-      // attempt 0: blocking recv (SO_RCVTIMEO) — HW 응답 대기
+      // attempt 0: ppoll + recv (hrtimer 기반 sub-ms 정밀도)
       // attempt 1+: non-blocking recv — 소켓 버퍼의 stale 패킷만 소비
-      const int flags = (attempt == 0) ? 0 : MSG_DONTWAIT;
-      const ssize_t recvd = ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), flags);
+      const ssize_t recvd = (attempt == 0)
+          ? RecvWithTimeout(recv_buf.data(), recv_buf.size())
+          : ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), MSG_DONTWAIT);
       if (recvd < 0) {
         if (attempt == 0) {
           recv_error_count_.fetch_add(1, std::memory_order_relaxed);
@@ -802,7 +835,7 @@ class HandController {
   // Request bulk motor read (cmd=0x10): 3B send, 123B recv.
   // Extracts positions[10] and velocities[10] from grouped response.
   // Verifies response cmd matches 0x10 to reject stale packets.
-  // 첫 recv만 blocking(SO_RCVTIMEO), cmd 불일치 시 non-blocking retry로 stale 소비.
+  // 첫 recv만 ppoll 대기(hrtimer), cmd 불일치 시 non-blocking retry로 stale 소비.
   [[nodiscard]] bool RequestAllMotorRead(
       std::array<float, hand_packets::kMotorDataCount>& positions,
       std::array<float, hand_packets::kMotorDataCount>& velocities) noexcept {
@@ -819,8 +852,9 @@ class HandController {
 
     constexpr int kMaxAttempts = 3;
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-      const int flags = (attempt == 0) ? 0 : MSG_DONTWAIT;
-      const ssize_t recvd = ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), flags);
+      const ssize_t recvd = (attempt == 0)
+          ? RecvWithTimeout(recv_buf.data(), recv_buf.size())
+          : ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), MSG_DONTWAIT);
       if (recvd < 0) {
         if (attempt == 0) {
           recv_error_count_.fetch_add(1, std::memory_order_relaxed);
@@ -855,7 +889,7 @@ class HandController {
   // Request bulk sensor read (cmd=0x19): 3B send, 259B recv.
   // Extracts all fingertip sensor data into flat buffer.
   // Verifies response cmd matches 0x19 to reject stale packets.
-  // 첫 recv만 blocking(SO_RCVTIMEO), cmd 불일치 시 non-blocking retry로 stale 소비.
+  // 첫 recv만 ppoll 대기(hrtimer), cmd 불일치 시 non-blocking retry로 stale 소비.
   [[nodiscard]] bool RequestAllSensorRead(
       uint32_t* out, int num_fingertips,
       hand_packets::SensorMode sensor_mode = hand_packets::SensorMode::kRaw) noexcept {
@@ -872,8 +906,9 @@ class HandController {
 
     constexpr int kMaxAttempts = 3;
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-      const int flags = (attempt == 0) ? 0 : MSG_DONTWAIT;
-      const ssize_t recvd = ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), flags);
+      const ssize_t recvd = (attempt == 0)
+          ? RecvWithTimeout(recv_buf.data(), recv_buf.size())
+          : ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), MSG_DONTWAIT);
       if (recvd < 0) {
         if (attempt == 0) {
           recv_error_count_.fetch_add(1, std::memory_order_relaxed);
@@ -984,7 +1019,7 @@ class HandController {
              sizeof(target_addr_));
       bool echo_ok = false;
       {
-        const ssize_t recvd = ::recv(socket_fd_, echo_buf.data(), echo_buf.size(), 0);
+        const ssize_t recvd = RecvWithTimeout(echo_buf.data(), echo_buf.size());
         if (recvd >= static_cast<ssize_t>(hand_packets::kHeaderSize)) {
           echo_ok = (echo_buf[1] == static_cast<uint8_t>(
                          hand_packets::Command::kWritePosition));

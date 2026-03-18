@@ -5,6 +5,21 @@
 
 ---
 
+## [5.15.1] - 2026-03-18
+
+### 변경 (Changed) — Sub-ms recv timeout: SO_RCVTIMEO → ppoll
+
+- **`RecvWithTimeout()` 도입**: `SO_RCVTIMEO` → `ppoll()` 기반 수신 타임아웃
+  - `SO_RCVTIMEO`는 `schedule_timeout()` 사용 → jiffies 해상도 (HZ=1000에서 1ms) → sub-ms 불가
+  - `ppoll()`은 `struct timespec` (ns 단위) → hrtimer → PREEMPT_RT에서 µs 정밀도 제공
+  - 모든 blocking `recv()` 호출을 `RecvWithTimeout()` (ppoll + MSG_DONTWAIT)으로 교체
+  - `SO_RCVTIMEO`는 100ms 안전망으로 유지 (ppoll 실패 시 무한 블록 방지)
+- **`recv_timeout_ms` stats JSON 추가**: 런타임 적용값 확인용 (`hand_udp_stats.json`)
+- **YAML 기본값 변경**: `recv_timeout_ms` 2.0ms → 0.4ms (400µs)
+- **`recv_timeout_ms()` 접근자 추가**: `HandController`에서 설정값 조회 가능
+
+---
+
 ## [5.15.0] - 2026-03-17
 
 ### 추가 (Added) — RT 최적화: SeqLock, Write Echo, printf 제거
