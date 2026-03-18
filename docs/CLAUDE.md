@@ -464,7 +464,7 @@ export MUJOCO_DIR=/opt/mujoco-3.x.x && colcon build
 
 ### UDP Hand Protocol (Request-Response)
 
-`HandController` (`include/ur5e_hand_udp/hand_controller.hpp`) is a high-level event-driven driver using a single UDP socket (port **55151**, `std::jthread`, Core 5, SCHED_FIFO/65). v5.8.0: `recv_timeout_ms` YAML 설정 (기본 10ms), `recv_error_count_` 원자적 카운터, `SetEstopFlag()` 글로벌 E-Stop 연동. v5.9.0: `HandCommStats` 추가 (통신 통계), `HandFailureDetector` rate monitoring (`min_rate_hz`, `rate_fail_threshold`), `HandUdpNode` 소멸자에서 JSON stats export. v5.11.0: **busy skip 보호** (`busy_` atomic flag — EventLoop busy 중 이벤트 skip, `event_skip_count` 카운터), **sensor decimation** (`sensor_decimation: 3` — N cycle마다 센서 읽기, 나머지는 캐시 사용). v5.15.0: **RT 최적화** — `state_mutex_` → `SeqLock<HandState>` (lock-free), EventLoop에서 printf 완전 제거, WritePosition echo 항상 수신 (Individual 모드에서 ReadPosition 대체 → 1 RT 절약), 응답 cmd 검증 추가, `DrainStaleResponses()` 제거. Each event cycle (Individual mode):
+`HandController` (`include/ur5e_hand_udp/hand_controller.hpp`) is a high-level event-driven driver using a single UDP socket (port **55151**, `std::jthread`, Core 5, SCHED_FIFO/65). v5.8.0: `recv_timeout_ms` YAML 설정 (기본 10ms), `recv_error_count_` 원자적 카운터, `SetEstopFlag()` 글로벌 E-Stop 연동. v5.9.0: `HandCommStats` 추가 (통신 통계), `HandFailureDetector` rate monitoring (`min_rate_hz`, `rate_fail_threshold`), `HandUdpNode` 소멸자에서 JSON stats export. v5.11.0: **busy skip 보호** (`busy_` atomic flag — EventLoop busy 중 이벤트 skip, `event_skip_count` 카운터), **sensor decimation** (`sensor_decimation: 3` — N cycle마다 센서 읽기, 나머지는 캐시 사용). v5.15.0: **RT 최적화** — `state_mutex_` → `SeqLock<HandState>` (lock-free), EventLoop에서 printf 완전 제거, WritePosition echo 항상 수신 (Individual 모드에서 ReadPosition 대체 → 1 RT 절약), 응답 cmd 검증 추가, `DrainStaleResponses()` 제거. v5.15.1: **Sub-ms recv timeout** — `SO_RCVTIMEO` → `ppoll()` 기반 `RecvWithTimeout()` (hrtimer, µs 정밀도), 기본값 0.4ms, stats JSON에 `recv_timeout_ms` 출력. Each event cycle (Individual mode):
 
 1. `WritePosition` (CMD=0x01) — send 43B + recv 43B echo → motor positions (ReadPosition 대체)
 2. `ReadVelocity` (CMD=0x12) — send 43B, recv 43B → 10 motor velocities
@@ -731,7 +731,7 @@ v5.15.0 RT optimizations: `SeqLock<HandState>` replaces `state_mutex_` (lock-fre
     # UDP 통신
     target_ip: "192.168.1.2"          # 핸드 컨트롤러 IP
     target_port: 55151                # 핸드 컨트롤러 포트
-    recv_timeout_ms: 10               # SO_RCVTIMEO (ms)
+    recv_timeout_ms: 0.4              # ppoll 수신 타임아웃 (ms, sub-ms 지원)
     # enable_write_ack: deprecated — echo는 항상 수신 (v5.15.0)
 
     # ROS2 퍼블리시
@@ -1149,6 +1149,7 @@ ros2 doctor                        # 시스템 전체 진단
 | Version | Key Changes |
 |---|---|
 | v5.16.0 | RT Loop Architecture: `create_wall_timer()` → `clock_nanosleep(TIMER_ABSTIME)` jthread. Phase 3 publish → SPSC buffer + publish thread offload. Executor 4→3. `cb_group_rt_`/`control_timer_`/`timeout_timer_`/`cmd_pub_mutex_` removed. Overrun recovery with skip + consecutive E-STOP. `kPublishConfig` thread configs for all core tiers. `publish_buffer.hpp` new file. |
+| v5.15.1 | Hand UDP sub-ms recv timeout: `SO_RCVTIMEO` → `ppoll()` 기반 `RecvWithTimeout()`. SO_RCVTIMEO는 jiffies 해상도(1ms)로 sub-ms 불가 → ppoll hrtimer로 µs 정밀도. 기본값 2.0ms→0.4ms. Stats JSON에 `recv_timeout_ms` 출력. |
 | v5.13.0 | ROS2 Parameter Exposure: all per-controller topic mappings exposed as read-only parameters (`controllers.*`). Topic Remapping documented. `SubscribeRoleToString()`/`PublishRoleToString()` added to types.hpp. |
 | v5.9.0 | 3-file CSV logging split: `timing_log_*.csv` (7 cols), `robot_log_*.csv` (31 cols), `hand_log_*.csv` (87 cols). `DataLogger` constructor takes 3 paths (empty = disabled). New YAML params: `enable_timing_log`, `enable_robot_log`, `enable_hand_log`. `ControllerOutput` extended: `goal_positions`, `target_velocities`, `hand_goal_positions`. `LogEntry` restructured with separate timing/robot/hand sections. `monitor_data_health.py` removed (functionality redistributed to `ur5e_status_monitor` MessageStats/ControllerStats/JSON export and `ur5e_hand_udp` HandCommStats/rate monitoring). `plot_ur_trajectory.py` v2: auto-detects log type from filename (robot/hand mode). `ur5e_status_monitor`: `MessageStats`, per-controller `ControllerStats`, controller name subscription, JSON stats on `stop()`. `ur5e_hand_udp`: `HandCommStats`, `HandFailureDetector` rate monitoring (`min_rate_hz`, `rate_fail_threshold`), JSON stats export in `HandUdpNode` destructor. |
 | v5.8.0 | Global E-Stop (`TriggerGlobalEstop(reason)`) replacing per-controller E-Stop. Status monitor integration (`enable_status_monitor`). HandFailureDetector (50Hz C++). Init timeout (`init_timeout_sec`). Per-phase timing in LogEntry/CSV (`t_state_acquire_us`/`t_compute_us`/`t_publish_us`/`t_total_us`/`jitter_us`). Hand state in CSV. `RobotState.torques`. Trajectory race fix (`target_mutex_` try_lock in JointPD/CLIK/OSC). Overrun detection (`budget_us_`). Hand UDP `recv_timeout_ms`, `enable_write_ack`. SystemThreadConfigs 5→7 fields (status_monitor, hand_failure). Thread configs for 4/6/8-core. |
