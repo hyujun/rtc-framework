@@ -53,6 +53,10 @@ class HandUdpNode : public rclcpp::Node {
     // Communication mode: "individual" (0x11+0x12+0x14~0x17) or "bulk" (0x10+0x19)
     declare_parameter("communication_mode", std::string{"individual"});
 
+    // TOF sensor LPF
+    declare_parameter("tof_lpf_enabled", false);
+    declare_parameter("tof_lpf_cutoff_hz", 15.0);
+
     const std::string target_ip       = get_parameter("target_ip").as_string();
     const int         target_port     = get_parameter("target_port").as_int();
     const double      rate            = get_parameter("publish_rate").as_double();
@@ -63,12 +67,17 @@ class HandUdpNode : public rclcpp::Node {
         ? urtc::HandCommunicationMode::kBulk
         : urtc::HandCommunicationMode::kIndividual;
 
+    // ── TOF LPF ──────────────────────────────────────────────────────────
+    const bool   tof_lpf_enabled    = get_parameter("tof_lpf_enabled").as_bool();
+    const double tof_lpf_cutoff_hz  = get_parameter("tof_lpf_cutoff_hz").as_double();
+
     // ── HandController ─────────────────────────────────────────────────
     const auto ft_names = get_parameter("hand_fingertip_names").as_string_array();
     controller_ = std::make_unique<urtc::HandController>(
         target_ip, target_port, urtc::kUdpRecvConfig, recv_timeout_ms,
         false /* enable_write_ack: deprecated */, 1,
-        urtc::kDefaultNumFingertips, false, ft_names, comm_mode);
+        urtc::kDefaultNumFingertips, false, ft_names, comm_mode,
+        tof_lpf_enabled, tof_lpf_cutoff_hz);
 
     controller_->SetCallback([this](const urtc::HandState& /*state*/) {
       data_received_.store(true, std::memory_order_relaxed);

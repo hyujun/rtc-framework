@@ -209,6 +209,10 @@ using BesselFilter6  = BesselFilterN<6>;   // 6-DOF robot joints
 using BesselFilter11 = BesselFilterN<11>;  // 11-DOF hand joints
 using BesselFilter1  = BesselFilterN<1>;   // single-channel scalar use
 
+// TOF sensor filtering (kMaxFingertips × kTofCount = 8 × 3 = 24 channels)
+inline constexpr std::size_t kMaxTofChannels = 24;
+using BesselFilterTof = BesselFilterN<kMaxTofChannels>;
+
 }  // namespace ur5e_rt_controller
 
 #endif  // UR5E_RT_BASE_FILTERS_BESSEL_FILTER_HPP_

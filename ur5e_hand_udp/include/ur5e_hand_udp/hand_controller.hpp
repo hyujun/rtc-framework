@@ -50,6 +50,7 @@
 #include "ur5e_rt_base/threading/thread_config.hpp"
 #include "ur5e_rt_base/threading/thread_utils.hpp"
 #include "ur5e_rt_base/threading/seqlock.hpp"
+#include "ur5e_rt_base/filters/bessel_filter.hpp"
 #include "ur5e_hand_udp/hand_packets.hpp"
 #include "ur5e_hand_udp/hand_udp_codec.hpp"
 
@@ -410,7 +411,9 @@ class HandController {
       int num_fingertips = kDefaultNumFingertips,
       bool use_fake_hand = false,
       const std::vector<std::string>& fingertip_names = {},
-      HandCommunicationMode communication_mode = HandCommunicationMode::kIndividual) noexcept
+      HandCommunicationMode communication_mode = HandCommunicationMode::kIndividual,
+      bool tof_lpf_enabled = false,
+      double tof_lpf_cutoff_hz = 15.0) noexcept
       : target_ip_(std::move(target_ip)),
         target_port_(target_port),
         thread_cfg_(thread_cfg),
@@ -422,7 +425,9 @@ class HandController {
         fingertip_names_(fingertip_names.empty()
                          ? kDefaultFingertipNames
                          : fingertip_names),
-        communication_mode_(communication_mode)
+        communication_mode_(communication_mode),
+        tof_lpf_enabled_(tof_lpf_enabled),
+        tof_lpf_cutoff_hz_(tof_lpf_cutoff_hz)
   {
     // fingertip_names 갯수로 num_fingertips_ 결정
     const int name_count = static_cast<int>(fingertip_names_.size());
@@ -480,6 +485,18 @@ class HandController {
     // 센서 초기화: NN → RAW 모드 전환 (num_fingertips > 0일 때만)
     if (num_fingertips_ > 0) {
       sensor_init_ok_ = InitializeSensors();
+    }
+
+    // TOF LPF 초기화 (effective rate = 500Hz / sensor_decimation)
+    if (tof_lpf_enabled_ && num_fingertips_ > 0) {
+      try {
+        const double effective_rate =
+            500.0 / static_cast<double>(sensor_decimation_);
+        tof_filter_.Init(tof_lpf_cutoff_hz_, effective_rate);
+        tof_filter_active_ = true;
+      } catch (...) {
+        tof_filter_active_ = false;
+      }
     }
 
     running_.store(true, std::memory_order_release);
@@ -1066,6 +1083,7 @@ class HandController {
                                    hand_packets::SensorMode::kRaw)) {
             any_recv_ok = true;
           }
+          ApplyTofFilter(cached_sensor_data);
         }
 
         const auto t3 = std::chrono::steady_clock::now();  // read_all_sensor 완료
@@ -1127,6 +1145,7 @@ class HandController {
               any_recv_ok = true;
             }
           }
+          ApplyTofFilter(cached_sensor_data);
         }
 
         const auto t4 = std::chrono::steady_clock::now();  // read_sensor 완료
@@ -1160,6 +1179,35 @@ class HandController {
     }
   }
 
+  // ── TOF LPF (noexcept — EventLoop hot path에서 호출) ─────────────────────
+  void ApplyTofFilter(
+      std::array<uint32_t, kMaxHandSensors>& sensor_data) noexcept {
+    if (!tof_filter_active_) return;
+
+    // TOF 값 추출 → double 배열
+    std::array<double, kMaxTofChannels> tof_input{};
+    for (int f = 0; f < num_fingertips_; ++f) {
+      const int base = f * kSensorValuesPerFingertip + kBarometerCount;
+      for (int t = 0; t < kTofCount; ++t) {
+        tof_input[static_cast<std::size_t>(f * kTofCount + t)] =
+            static_cast<double>(sensor_data[static_cast<std::size_t>(base + t)]);
+      }
+    }
+
+    // 4차 Bessel LPF 적용
+    const auto filtered = tof_filter_.Apply(tof_input);
+
+    // 필터링된 값을 다시 uint32_t로 변환하여 저장
+    for (int f = 0; f < num_fingertips_; ++f) {
+      const int base = f * kSensorValuesPerFingertip + kBarometerCount;
+      for (int t = 0; t < kTofCount; ++t) {
+        const double v = filtered[static_cast<std::size_t>(f * kTofCount + t)];
+        sensor_data[static_cast<std::size_t>(base + t)] =
+            static_cast<uint32_t>(std::max(0.0, std::round(v)));
+      }
+    }
+  }
+
   std::string  target_ip_;
   int          target_port_;
   int          socket_fd_{-1};
@@ -1176,6 +1224,12 @@ class HandController {
   std::vector<std::string> fingertip_names_;  // YAML에서 로드된 fingertip 이름 목록
   HandCommunicationMode communication_mode_;  // individual (기존) 또는 bulk (0x10/0x19)
   bool sensor_init_ok_{false}; // 센서 초기화 (NN→RAW) 성공 여부
+
+  // ── TOF LPF 설정 ──
+  bool   tof_lpf_enabled_{false};
+  double tof_lpf_cutoff_hz_{15.0};
+  bool   tof_filter_active_{false};   // Init 성공 후 true
+  BesselFilterN<kMaxTofChannels> tof_filter_{};
 
   // 전역 E-Stop 플래그 (RtControllerNode에서 설정, null이면 체크하지 않음)
   std::atomic<bool>* estop_flag_{nullptr};
