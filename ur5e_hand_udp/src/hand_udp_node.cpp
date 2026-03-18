@@ -53,7 +53,9 @@ class HandUdpNode : public rclcpp::Node {
     // Communication mode: "individual" (0x11+0x12+0x14~0x17) or "bulk" (0x10+0x19)
     declare_parameter("communication_mode", std::string{"individual"});
 
-    // TOF sensor LPF
+    // Sensor LPF
+    declare_parameter("baro_lpf_enabled", false);
+    declare_parameter("baro_lpf_cutoff_hz", 30.0);
     declare_parameter("tof_lpf_enabled", false);
     declare_parameter("tof_lpf_cutoff_hz", 15.0);
 
@@ -67,7 +69,9 @@ class HandUdpNode : public rclcpp::Node {
         ? urtc::HandCommunicationMode::kBulk
         : urtc::HandCommunicationMode::kIndividual;
 
-    // ── TOF LPF ──────────────────────────────────────────────────────────
+    // ── Sensor LPF ────────────────────────────────────────────────────────
+    const bool   baro_lpf_enabled   = get_parameter("baro_lpf_enabled").as_bool();
+    const double baro_lpf_cutoff_hz = get_parameter("baro_lpf_cutoff_hz").as_double();
     const bool   tof_lpf_enabled    = get_parameter("tof_lpf_enabled").as_bool();
     const double tof_lpf_cutoff_hz  = get_parameter("tof_lpf_cutoff_hz").as_double();
 
@@ -77,7 +81,8 @@ class HandUdpNode : public rclcpp::Node {
         target_ip, target_port, urtc::kUdpRecvConfig, recv_timeout_ms,
         false /* enable_write_ack: deprecated */, 1,
         urtc::kDefaultNumFingertips, false, ft_names, comm_mode,
-        tof_lpf_enabled, tof_lpf_cutoff_hz);
+        tof_lpf_enabled, tof_lpf_cutoff_hz,
+        baro_lpf_enabled, baro_lpf_cutoff_hz);
 
     controller_->SetCallback([this](const urtc::HandState& /*state*/) {
       data_received_.store(true, std::memory_order_relaxed);

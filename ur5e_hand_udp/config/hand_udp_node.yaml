@@ -36,12 +36,16 @@
                                       # decimation=3: 센서 사이클 빈도↓ → over_budget↓
                                       # 센서 skip 시 이전 캐시 데이터 유지
 
-    # ── TOF 센서 LPF 설정 ────────────────────────────────────────────────
+    # ── 센서 LPF 설정 (4차 Bessel LPF) ──────────────────────────────────
+    # 유효 센서 샘플링 레이트 = 500 / sensor_decimation
+    # cutoff는 유효 레이트의 절반 미만이어야 함
+    # 예: decimation=3 → 유효 ~167Hz → cutoff < 83Hz
+    baro_lpf_enabled: false           # Barometer 센서 Low-Pass Filter 활성화
+    baro_lpf_cutoff_hz: 30.0          # Barometer LPF 차단 주파수 (Hz)
+                                      # 접촉/파지 역학 대역폭 고려 30Hz 권장
     tof_lpf_enabled: false            # VL53L4CD TOF 센서 Low-Pass Filter 활성화
-    tof_lpf_cutoff_hz: 15.0           # LPF 차단 주파수 (Hz), 4차 Bessel LPF
-                                      # 유효 센서 샘플링 레이트 = 500 / sensor_decimation
-                                      # cutoff는 유효 레이트의 절반 미만이어야 함
-                                      # 예: decimation=3 → 유효 ~167Hz → cutoff < 83Hz
+    tof_lpf_cutoff_hz: 15.0           # TOF LPF 차단 주파수 (Hz)
+                                      # 거리 측정 노이즈 제거 15Hz 권장
 
     # ── 통신 모드 ────────────────────────────────────────────────────────
     communication_mode: "bulk"        # "individual": 0x11+0x12+0x14~0x17 (6 round-trips)

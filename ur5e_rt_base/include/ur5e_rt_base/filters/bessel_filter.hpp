@@ -209,6 +209,10 @@ using BesselFilter6  = BesselFilterN<6>;   // 6-DOF robot joints
 using BesselFilter11 = BesselFilterN<11>;  // 11-DOF hand joints
 using BesselFilter1  = BesselFilterN<1>;   // single-channel scalar use
 
+// Barometer sensor filtering (kMaxFingertips × kBarometerCount = 8 × 8 = 64 channels)
+inline constexpr std::size_t kMaxBaroChannels = 64;
+using BesselFilterBaro = BesselFilterN<kMaxBaroChannels>;
+
 // TOF sensor filtering (kMaxFingertips × kTofCount = 8 × 3 = 24 channels)
 inline constexpr std::size_t kMaxTofChannels = 24;
 using BesselFilterTof = BesselFilterN<kMaxTofChannels>;

@@ -405,6 +405,8 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("enable_write_ack", false);
   declare_parameter("sensor_decimation", 1);
   declare_parameter("communication_mode", std::string{"individual"});
+  declare_parameter("baro_lpf_enabled", false);
+  declare_parameter("baro_lpf_cutoff_hz", 30.0);
   declare_parameter("tof_lpf_enabled", false);
   declare_parameter("tof_lpf_cutoff_hz", 15.0);
 
@@ -512,6 +514,8 @@ void RtControllerNode::DeclareAndLoadParameters()
     const auto hand_comm_mode = (hand_comm_mode_str == "bulk")
         ? urtc::HandCommunicationMode::kBulk
         : urtc::HandCommunicationMode::kIndividual;
+    const bool baro_lpf_enabled = get_parameter("baro_lpf_enabled").as_bool();
+    const double baro_lpf_cutoff_hz = get_parameter("baro_lpf_cutoff_hz").as_double();
     const bool tof_lpf_enabled = get_parameter("tof_lpf_enabled").as_bool();
     const double tof_lpf_cutoff_hz = get_parameter("tof_lpf_cutoff_hz").as_double();
     const auto cfgs = ur5e_rt_controller::SelectThreadConfigs();
@@ -520,7 +524,8 @@ void RtControllerNode::DeclareAndLoadParameters()
         hand_ip, hand_port, cfgs.udp_recv,
         hand_recv_timeout, hand_write_ack, sensor_decimation,
         urtc::kDefaultNumFingertips, false, hand_ft_names, hand_comm_mode,
-        tof_lpf_enabled, tof_lpf_cutoff_hz);
+        tof_lpf_enabled, tof_lpf_cutoff_hz,
+        baro_lpf_enabled, baro_lpf_cutoff_hz);
     hand_controller_->SetEstopFlag(&global_estop_);
 
     if (hand_controller_->Start()) {

@@ -413,7 +413,9 @@ class HandController {
       const std::vector<std::string>& fingertip_names = {},
       HandCommunicationMode communication_mode = HandCommunicationMode::kIndividual,
       bool tof_lpf_enabled = false,
-      double tof_lpf_cutoff_hz = 15.0) noexcept
+      double tof_lpf_cutoff_hz = 15.0,
+      bool baro_lpf_enabled = false,
+      double baro_lpf_cutoff_hz = 30.0) noexcept
       : target_ip_(std::move(target_ip)),
         target_port_(target_port),
         thread_cfg_(thread_cfg),
@@ -427,7 +429,11 @@ class HandController {
                          : fingertip_names),
         communication_mode_(communication_mode),
         tof_lpf_enabled_(tof_lpf_enabled),
-        tof_lpf_cutoff_hz_(tof_lpf_cutoff_hz)
+        tof_lpf_cutoff_hz_(tof_lpf_cutoff_hz),
+        baro_lpf_enabled_(baro_lpf_enabled),
+        baro_lpf_cutoff_hz_(baro_lpf_cutoff_hz)
+        // baro_filter_active_, baro_filter_, tof_filter_active_, tof_filter_
+        // are value-initialized (false / default)
   {
     // fingertip_names 갯수로 num_fingertips_ 결정
     const int name_count = static_cast<int>(fingertip_names_.size());
@@ -487,15 +493,27 @@ class HandController {
       sensor_init_ok_ = InitializeSensors();
     }
 
-    // TOF LPF 초기화 (effective rate = 500Hz / sensor_decimation)
-    if (tof_lpf_enabled_ && num_fingertips_ > 0) {
-      try {
-        const double effective_rate =
-            500.0 / static_cast<double>(sensor_decimation_);
-        tof_filter_.Init(tof_lpf_cutoff_hz_, effective_rate);
-        tof_filter_active_ = true;
-      } catch (...) {
-        tof_filter_active_ = false;
+    // 센서 LPF 초기화 (effective rate = 500Hz / sensor_decimation)
+    if (num_fingertips_ > 0) {
+      const double effective_rate =
+          500.0 / static_cast<double>(sensor_decimation_);
+
+      if (baro_lpf_enabled_) {
+        try {
+          baro_filter_.Init(baro_lpf_cutoff_hz_, effective_rate);
+          baro_filter_active_ = true;
+        } catch (...) {
+          baro_filter_active_ = false;
+        }
+      }
+
+      if (tof_lpf_enabled_) {
+        try {
+          tof_filter_.Init(tof_lpf_cutoff_hz_, effective_rate);
+          tof_filter_active_ = true;
+        } catch (...) {
+          tof_filter_active_ = false;
+        }
       }
     }
 
@@ -1083,7 +1101,7 @@ class HandController {
                                    hand_packets::SensorMode::kRaw)) {
             any_recv_ok = true;
           }
-          ApplyTofFilter(cached_sensor_data);
+          ApplySensorFilters(cached_sensor_data);
         }
 
         const auto t3 = std::chrono::steady_clock::now();  // read_all_sensor 완료
@@ -1145,7 +1163,7 @@ class HandController {
               any_recv_ok = true;
             }
           }
-          ApplyTofFilter(cached_sensor_data);
+          ApplySensorFilters(cached_sensor_data);
         }
 
         const auto t4 = std::chrono::steady_clock::now();  // read_sensor 완료
@@ -1179,31 +1197,48 @@ class HandController {
     }
   }
 
-  // ── TOF LPF (noexcept — EventLoop hot path에서 호출) ─────────────────────
-  void ApplyTofFilter(
+  // ── 센서 LPF (noexcept — EventLoop hot path에서 호출) ────────────────────
+  void ApplySensorFilters(
       std::array<uint32_t, kMaxHandSensors>& sensor_data) noexcept {
-    if (!tof_filter_active_) return;
-
-    // TOF 값 추출 → double 배열
-    std::array<double, kMaxTofChannels> tof_input{};
-    for (int f = 0; f < num_fingertips_; ++f) {
-      const int base = f * kSensorValuesPerFingertip + kBarometerCount;
-      for (int t = 0; t < kTofCount; ++t) {
-        tof_input[static_cast<std::size_t>(f * kTofCount + t)] =
-            static_cast<double>(sensor_data[static_cast<std::size_t>(base + t)]);
+    // Barometer LPF (8 channels per fingertip)
+    if (baro_filter_active_) {
+      std::array<double, kMaxBaroChannels> baro_input{};
+      for (int f = 0; f < num_fingertips_; ++f) {
+        const int base = f * kSensorValuesPerFingertip;
+        for (int b = 0; b < kBarometerCount; ++b) {
+          baro_input[static_cast<std::size_t>(f * kBarometerCount + b)] =
+              static_cast<double>(sensor_data[static_cast<std::size_t>(base + b)]);
+        }
+      }
+      const auto filtered = baro_filter_.Apply(baro_input);
+      for (int f = 0; f < num_fingertips_; ++f) {
+        const int base = f * kSensorValuesPerFingertip;
+        for (int b = 0; b < kBarometerCount; ++b) {
+          const double v = filtered[static_cast<std::size_t>(f * kBarometerCount + b)];
+          sensor_data[static_cast<std::size_t>(base + b)] =
+              static_cast<uint32_t>(std::max(0.0, std::round(v)));
+        }
       }
     }
 
-    // 4차 Bessel LPF 적용
-    const auto filtered = tof_filter_.Apply(tof_input);
-
-    // 필터링된 값을 다시 uint32_t로 변환하여 저장
-    for (int f = 0; f < num_fingertips_; ++f) {
-      const int base = f * kSensorValuesPerFingertip + kBarometerCount;
-      for (int t = 0; t < kTofCount; ++t) {
-        const double v = filtered[static_cast<std::size_t>(f * kTofCount + t)];
-        sensor_data[static_cast<std::size_t>(base + t)] =
-            static_cast<uint32_t>(std::max(0.0, std::round(v)));
+    // TOF LPF (3 channels per fingertip)
+    if (tof_filter_active_) {
+      std::array<double, kMaxTofChannels> tof_input{};
+      for (int f = 0; f < num_fingertips_; ++f) {
+        const int base = f * kSensorValuesPerFingertip + kBarometerCount;
+        for (int t = 0; t < kTofCount; ++t) {
+          tof_input[static_cast<std::size_t>(f * kTofCount + t)] =
+              static_cast<double>(sensor_data[static_cast<std::size_t>(base + t)]);
+        }
+      }
+      const auto filtered = tof_filter_.Apply(tof_input);
+      for (int f = 0; f < num_fingertips_; ++f) {
+        const int base = f * kSensorValuesPerFingertip + kBarometerCount;
+        for (int t = 0; t < kTofCount; ++t) {
+          const double v = filtered[static_cast<std::size_t>(f * kTofCount + t)];
+          sensor_data[static_cast<std::size_t>(base + t)] =
+              static_cast<uint32_t>(std::max(0.0, std::round(v)));
+        }
       }
     }
   }
@@ -1225,9 +1260,14 @@ class HandController {
   HandCommunicationMode communication_mode_;  // individual (기존) 또는 bulk (0x10/0x19)
   bool sensor_init_ok_{false}; // 센서 초기화 (NN→RAW) 성공 여부
 
-  // ── TOF LPF 설정 ──
+  // ── 센서 LPF 설정 (initializer list 순서와 일치) ──
   bool   tof_lpf_enabled_{false};
   double tof_lpf_cutoff_hz_{15.0};
+  bool   baro_lpf_enabled_{false};
+  double baro_lpf_cutoff_hz_{30.0};
+
+  bool   baro_filter_active_{false};  // Init 성공 후 true
+  BesselFilterN<kMaxBaroChannels> baro_filter_{};
   bool   tof_filter_active_{false};   // Init 성공 후 true
   BesselFilterN<kMaxTofChannels> tof_filter_{};
 
