@@ -403,7 +403,7 @@ class HandController {
       std::string target_ip,
       int target_port,
       const ThreadConfig& thread_cfg = kUdpRecvConfig,
-      int recv_timeout_ms = 10,
+      double recv_timeout_ms = 10.0,
       bool /*enable_write_ack*/ = false,  // deprecated: echo is always consumed
       int sensor_decimation = 1,
       int num_fingertips = kDefaultNumFingertips,
@@ -465,11 +465,12 @@ class HandController {
     setsockopt(socket_fd_, SOL_SOCKET, SO_RCVBUF, &kUdpBufSize, sizeof(kUdpBufSize));
     setsockopt(socket_fd_, SOL_SOCKET, SO_SNDBUF, &kUdpBufSize, sizeof(kUdpBufSize));
 
-    // SO_RCVTIMEO: YAML에서 설정 가능 (기본값 10ms).
+    // SO_RCVTIMEO: YAML에서 설정 가능 (기본값 10ms, sub-ms 지원: 0.4 → 400µs).
     // recv() 타임아웃으로 stop_token 체크 + 통신 실패 감지 가능.
     struct timeval tv{};
-    tv.tv_sec  = recv_timeout_ms_ / 1000;
-    tv.tv_usec = (recv_timeout_ms_ % 1000) * 1000;
+    const long total_us = static_cast<long>(recv_timeout_ms_ * 1000.0);
+    tv.tv_sec  = total_us / 1'000'000;
+    tv.tv_usec = total_us % 1'000'000;
     setsockopt(socket_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     // 센서 초기화: NN → RAW 모드 전환 (num_fingertips > 0일 때만)
@@ -1128,7 +1129,7 @@ class HandController {
   int          target_port_;
   int          socket_fd_{-1};
   ThreadConfig thread_cfg_;
-  int          recv_timeout_ms_;
+  double       recv_timeout_ms_;
   sockaddr_in  target_addr_{};
 
   std::atomic<bool> running_{false};

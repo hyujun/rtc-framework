@@ -30,7 +30,7 @@
     # rt_controller 통합 + standalone 공용
     target_ip: "192.168.1.2"          # 핸드 컨트롤러 IP (빈 문자열 → hand 비활성)
     target_port: 55151                # 핸드 컨트롤러 포트 (0 → hand 비활성)
-    recv_timeout_ms: 2                # SO_RCVTIMEO (ms), 수신 타임아웃
+    recv_timeout_ms: 2.0              # SO_RCVTIMEO (ms), 수신 타임아웃 (sub-ms 지원: 0.4 → 400µs)
     # enable_write_ack: deprecated — write echo는 항상 수신 (RT 안전성)
     sensor_decimation: 3              # N cycle마다 센서 읽기 (1=매번, 3=3cycle마다)
                                       # decimation=3: 센서 사이클 빈도↓ → over_budget↓

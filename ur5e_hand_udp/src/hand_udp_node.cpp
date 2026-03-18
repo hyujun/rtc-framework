@@ -35,7 +35,7 @@ class HandUdpNode : public rclcpp::Node {
     declare_parameter("target_ip",       std::string{"192.168.1.2"});
     declare_parameter("target_port",     55151);
     declare_parameter("publish_rate",    100.0);
-    declare_parameter("recv_timeout_ms", 10);
+    declare_parameter("recv_timeout_ms", 10.0);
     // enable_write_ack is deprecated — echo is always consumed for RT safety.
     // Parameter kept for backward compatibility but ignored.
     declare_parameter("enable_write_ack", false);
@@ -56,7 +56,7 @@ class HandUdpNode : public rclcpp::Node {
     const std::string target_ip       = get_parameter("target_ip").as_string();
     const int         target_port     = get_parameter("target_port").as_int();
     const double      rate            = get_parameter("publish_rate").as_double();
-    const int         recv_timeout_ms = get_parameter("recv_timeout_ms").as_int();
+    const double      recv_timeout_ms = get_parameter("recv_timeout_ms").as_double();
     // ── Communication mode ──────────────────────────────────────────────
     const std::string comm_mode_str = get_parameter("communication_mode").as_string();
     const auto comm_mode = (comm_mode_str == "bulk")

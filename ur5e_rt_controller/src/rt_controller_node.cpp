@@ -400,7 +400,7 @@ void RtControllerNode::DeclareAndLoadParameters()
   // hand_udp_node.yaml의 파라미터를 launch에서 로드
   declare_parameter("target_ip", std::string(""));
   declare_parameter("target_port", 0);
-  declare_parameter("recv_timeout_ms", 10);
+  declare_parameter("recv_timeout_ms", 10.0);
   declare_parameter("enable_write_ack", false);
   declare_parameter("sensor_decimation", 1);
   declare_parameter("communication_mode", std::string{"individual"});
@@ -499,8 +499,8 @@ void RtControllerNode::DeclareAndLoadParameters()
         "Hand simulation mode: cmd=%s, state=%s (UDP disabled)",
         hand_cmd_topic.c_str(), hand_state_topic.c_str());
   } else if (enable_hand_ && !hand_controller_) {
-    const int hand_recv_timeout = static_cast<int>(
-        get_parameter("recv_timeout_ms").as_int());
+    const double hand_recv_timeout =
+        get_parameter("recv_timeout_ms").as_double();
     const bool hand_write_ack = get_parameter("enable_write_ack").as_bool();
     const int sensor_decimation = static_cast<int>(
         get_parameter("sensor_decimation").as_int());
