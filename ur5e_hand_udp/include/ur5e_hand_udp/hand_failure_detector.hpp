@@ -31,6 +31,8 @@ struct HandFailureDetectorConfig {
   bool check_sensor{true};     ///< 센서 데이터 검사
   double min_rate_hz{30.0};    ///< 최소 허용 polling rate
   int    rate_fail_threshold{5}; ///< 연속 N회 미달 시 failure
+  bool check_link{true};        ///< UDP 링크 상태 검사
+  int  link_fail_threshold{10}; ///< 연속 N회 recv 전체 실패 시 link_down
 };
 
 class HandFailureDetector {
@@ -88,6 +90,9 @@ private:
         Check(state);
       }
       CheckRate();
+      if (cfg_.check_link) {
+        CheckLink();
+      }
       std::this_thread::sleep_for(20ms);  // ~50 Hz
     }
   }
@@ -187,6 +192,14 @@ private:
       RaiseFailure("hand_polling_rate_low (rate=" +
                    std::to_string(rate_hz) + " Hz, min=" +
                    std::to_string(cfg_.min_rate_hz) + " Hz)");
+    }
+  }
+
+  void CheckLink() {
+    const uint64_t failures = controller_.consecutive_recv_failures();
+    if (failures >= static_cast<uint64_t>(cfg_.link_fail_threshold)) {
+      RaiseFailure("hand_udp_link_down (consecutive_recv_failures=" +
+                   std::to_string(failures) + ")");
     }
   }
 
