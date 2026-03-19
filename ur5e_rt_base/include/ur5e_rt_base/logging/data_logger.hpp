@@ -205,7 +205,17 @@ private:
     for (int i = 0; i < kNumHandMotors; ++i) {
       hand_file_ << ",hand_actual_vel_" << MotorLabel(static_cast<std::size_t>(i));
     }
-    // Sensor columns: barometer (8 per fingertip) + tof (3 per fingertip)
+    // Stage 1: Raw sensor (pre-LPF)
+    for (int f = 0; f < num_fingertips_; ++f) {
+      const auto fl = FingertipLabel(f);
+      for (int b = 0; b < kBarometerCount; ++b) {
+        hand_file_ << ",baro_raw_" << fl << "_" << b;
+      }
+      for (int t = 0; t < kTofCount; ++t) {
+        hand_file_ << ",tof_raw_" << fl << "_" << t;
+      }
+    }
+    // Stage 2: Filtered sensor (post-LPF, pre-inference)
     for (int f = 0; f < num_fingertips_; ++f) {
       const auto fl = FingertipLabel(f);
       for (int b = 0; b < kBarometerCount; ++b) {
@@ -214,6 +224,17 @@ private:
       for (int t = 0; t < kTofCount; ++t) {
         hand_file_ << ",tof_" << fl << "_" << t;
       }
+    }
+    // Stage 3: F/T inference output
+    hand_file_ << ",ft_valid";
+    for (int f = 0; f < num_fingertips_; ++f) {
+      const auto fl = FingertipLabel(f);
+      hand_file_ << ",ft_" << fl << "_fx"
+                 << ",ft_" << fl << "_fy"
+                 << ",ft_" << fl << "_fz"
+                 << ",ft_" << fl << "_tx"
+                 << ",ft_" << fl << "_ty"
+                 << ",ft_" << fl << "_tz";
     }
     // 카테고리 3: Control Command
     for (int i = 0; i < kNumHandMotors; ++i) {
@@ -231,10 +252,20 @@ private:
     // 카테고리 2: Current State
     for (const auto v : e.hand_actual_positions)  { hand_file_ << ',' << v; }
     for (const auto v : e.hand_actual_velocities) { hand_file_ << ',' << v; }
-    // Sensor data: num_fingertips에 따라 출력
+    // Stage 1: Raw sensor data (pre-LPF)
     const int num_sensors = e.num_fingertips * kSensorValuesPerFingertip;
     for (int i = 0; i < num_sensors; ++i) {
+      hand_file_ << ',' << e.hand_sensors_raw[static_cast<std::size_t>(i)];
+    }
+    // Stage 2: Filtered sensor data (post-LPF)
+    for (int i = 0; i < num_sensors; ++i) {
       hand_file_ << ',' << e.hand_sensors[static_cast<std::size_t>(i)];
+    }
+    // Stage 3: F/T inference output
+    hand_file_ << ',' << (e.hand_ft_valid ? 1 : 0);
+    const int num_ft = e.num_fingertips * kFTValuesPerFingertip;
+    for (int i = 0; i < num_ft; ++i) {
+      hand_file_ << ',' << e.hand_ft_data[static_cast<std::size_t>(i)];
     }
     // 카테고리 3: Control Command
     for (const auto v : e.hand_commands)          { hand_file_ << ',' << v; }

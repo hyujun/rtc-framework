@@ -473,6 +473,63 @@ install_pinocchio() {
 MJ_VERSION="3.2.4"
 [[ -z "$MJ_DIR" ]] && MJ_DIR="/opt/mujoco-${MJ_VERSION}"
 
+install_onnxruntime() {
+  # ONNX Runtime C++ API (fingertip F/T inference)
+  local ONNXRT_VER="1.17.1"
+  local ONNXRT_DIR="/opt/onnxruntime"
+
+  # apt에서 설치 가능한지 확인
+  if dpkg -l libonnxruntime-dev > /dev/null 2>&1; then
+    success "ONNX Runtime already installed (apt)"
+    return
+  fi
+
+  # /opt/onnxruntime에 이미 설치된 경우
+  if [[ -d "$ONNXRT_DIR" && -f "$ONNXRT_DIR/lib/libonnxruntime.so" ]]; then
+    success "ONNX Runtime already installed at ${ONNXRT_DIR}"
+    return
+  fi
+
+  info "Installing ONNX Runtime ${ONNXRT_VER}..."
+
+  # 방법 1: apt
+  if sudo apt-get install -y libonnxruntime-dev > /dev/null 2>&1; then
+    success "ONNX Runtime installed via apt"
+    return
+  fi
+
+  # 방법 2: GitHub 릴리즈 다운로드
+  local ARCH
+  ARCH=$(uname -m)
+  if [[ "$ARCH" == "x86_64" ]]; then
+    ARCH="x64"
+  elif [[ "$ARCH" == "aarch64" ]]; then
+    ARCH="aarch64"
+  fi
+
+  local DL_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRT_VER}/onnxruntime-linux-${ARCH}-${ONNXRT_VER}.tgz"
+  local TMP_TAR="/tmp/onnxruntime-${ONNXRT_VER}.tgz"
+
+  if ! wget -q --show-progress -O "$TMP_TAR" "$DL_URL"; then
+    warn "ONNX Runtime download failed. F/T inference will not be available."
+    warn "  Manual install: wget $DL_URL && sudo tar -xzf ... -C /opt/"
+    return
+  fi
+
+  sudo tar -xzf "$TMP_TAR" -C /opt/
+  sudo ln -sf "/opt/onnxruntime-linux-${ARCH}-${ONNXRT_VER}" "$ONNXRT_DIR"
+  rm -f "$TMP_TAR"
+
+  # ldconfig 등록
+  local ONNXRT_LIB_CONF="/etc/ld.so.conf.d/onnxruntime.conf"
+  if [[ ! -f "$ONNXRT_LIB_CONF" ]]; then
+    echo "${ONNXRT_DIR}/lib" | sudo tee "$ONNXRT_LIB_CONF" > /dev/null
+    sudo ldconfig
+  fi
+
+  success "ONNX Runtime ${ONNXRT_VER} installed at ${ONNXRT_DIR}"
+}
+
 install_mujoco() {
   if [[ -d "$MJ_DIR" ]]; then
     success "MuJoCo ${MJ_VERSION} already installed at ${MJ_DIR}"
@@ -1041,7 +1098,7 @@ print_summary() {
   echo "  ./build.sh -d                 # or Ctrl+Shift+B in VS Code"
   echo ""
   echo "  # Launch debugger (F5 in VS Code):"
-  echo "  #   C++: Launch custom_controller (Debug)"
+  echo "  #   C++: Launch rt_controller (Debug)"
   echo "  #   C++: Launch mujoco_simulator_node (Debug)"
   echo ""
   echo "  # Attach to running node:"
@@ -1070,6 +1127,8 @@ if [[ "$SKIP_DEPS" -eq 0 ]]; then
   setup_workspace
 
   install_python_base_deps
+
+  install_onnxruntime
 
   case "$MODE" in
     sim)

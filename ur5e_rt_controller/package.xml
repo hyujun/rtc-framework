@@ -2,9 +2,9 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>ur5e_rt_controller</name>
-  <version>5.13.0</version>
-  <description>UR5e 500 Hz real-time position controller with PD, Pinocchio, CLIK, and OSC implementations.</description>
-  <maintainer email="your.email@example.com">Your Name</maintainer>
+  <version>5.16.0</version>
+  <description>UR5e 500 Hz real-time position/torque controller with P, JointPD, CLIK, OSC, and Hand controller implementations. clock_nanosleep RT loop + SPSC publish offload architecture.</description>
+  <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

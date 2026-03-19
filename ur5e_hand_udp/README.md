@@ -1,6 +1,6 @@
 # ur5e_hand_udp
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.15.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.16.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 
 UR5e RT Controller 스택의 **10-DOF 손 UDP 브리지 패키지**입니다. 외부 손 컨트롤러(하드웨어)와 ROS2 토픽 사이의 UDP request-response 통신을 담당합니다.

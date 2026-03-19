@@ -6,6 +6,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
+#include <ur5e_msgs/msg/hand_force_torque_state.hpp>
+#include <ur5e_msgs/msg/fingertip_force_torque.hpp>
 
 #include <sys/mman.h>  // mlockall
 
@@ -62,6 +64,20 @@ class HandUdpNode : public rclcpp::Node {
     declare_parameter("tof_lpf_enabled", false);
     declare_parameter("tof_lpf_cutoff_hz", 15.0);
 
+    // F/T inference
+    declare_parameter("ft_inferencer.enabled", false);
+    declare_parameter("ft_inferencer.num_fingertips", 4);
+    declare_parameter("ft_inferencer.model_paths", std::vector<std::string>{});
+    declare_parameter("ft_inferencer.calibration_enabled", true);
+    declare_parameter("ft_inferencer.calibration_samples", 500);
+    // Per-fingertip normalization (mean/std arrays)
+    for (const auto& name : {"thumb", "index", "middle", "ring"}) {
+      declare_parameter("ft_inferencer." + std::string(name) + "_mean",
+                        std::vector<double>(8, 0.0));
+      declare_parameter("ft_inferencer." + std::string(name) + "_std",
+                        std::vector<double>(8, 1.0));
+    }
+
     const std::string target_ip       = get_parameter("target_ip").as_string();
     const int         target_port     = get_parameter("target_port").as_int();
     const double      rate            = get_parameter("publish_rate").as_double();
@@ -78,6 +94,35 @@ class HandUdpNode : public rclcpp::Node {
     const bool   tof_lpf_enabled    = get_parameter("tof_lpf_enabled").as_bool();
     const double tof_lpf_cutoff_hz  = get_parameter("tof_lpf_cutoff_hz").as_double();
 
+    // ── F/T Inferencer Config ────────────────────────────────────────
+    urtc::FingertipFTInferencer::Config ft_config;
+    ft_config.enabled = get_parameter("ft_inferencer.enabled").as_bool();
+    ft_config.num_fingertips = static_cast<int>(
+        get_parameter("ft_inferencer.num_fingertips").as_int());
+    ft_config.model_paths = get_parameter("ft_inferencer.model_paths").as_string_array();
+    ft_config.calibration_enabled = get_parameter("ft_inferencer.calibration_enabled").as_bool();
+    ft_config.calibration_samples = static_cast<int>(
+        get_parameter("ft_inferencer.calibration_samples").as_int());
+
+    // Per-fingertip mean/std 로드
+    const std::array<const char*, 4> ft_param_names = {"thumb", "index", "middle", "ring"};
+    for (int f = 0; f < 4 && f < ft_config.num_fingertips; ++f) {
+      auto mean_vec = get_parameter(
+          "ft_inferencer." + std::string(ft_param_names[static_cast<std::size_t>(f)]) + "_mean")
+          .as_double_array();
+      auto std_vec = get_parameter(
+          "ft_inferencer." + std::string(ft_param_names[static_cast<std::size_t>(f)]) + "_std")
+          .as_double_array();
+      for (int b = 0; b < urtc::kBarometerCount && b < static_cast<int>(mean_vec.size()); ++b) {
+        ft_config.input_mean[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
+            static_cast<float>(mean_vec[static_cast<std::size_t>(b)]);
+      }
+      for (int b = 0; b < urtc::kBarometerCount && b < static_cast<int>(std_vec.size()); ++b) {
+        ft_config.input_std[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
+            static_cast<float>(std_vec[static_cast<std::size_t>(b)]);
+      }
+    }
+
     // ── HandController ─────────────────────────────────────────────────
     const auto ft_names = get_parameter("hand_fingertip_names").as_string_array();
     controller_ = std::make_unique<urtc::HandController>(
@@ -85,7 +130,7 @@ class HandUdpNode : public rclcpp::Node {
         false /* enable_write_ack: deprecated */, 1,
         urtc::kDefaultNumFingertips, false, ft_names, comm_mode,
         tof_lpf_enabled, tof_lpf_cutoff_hz,
-        baro_lpf_enabled, baro_lpf_cutoff_hz);
+        baro_lpf_enabled, baro_lpf_cutoff_hz, ft_config);
 
     controller_->SetCallback([this](const urtc::HandState& /*state*/) {
       data_received_.store(true, std::memory_order_relaxed);
@@ -132,6 +177,12 @@ class HandUdpNode : public rclcpp::Node {
         "/hand/link_status", 10);
     link_fail_threshold_ = static_cast<uint64_t>(
         get_parameter("link_fail_threshold").as_int());
+
+    // F/T state publisher
+    if (ft_config.enabled) {
+      ft_pub_ = create_publisher<ur5e_msgs::msg::HandForceTorqueState>(
+          "/hand/force_torque_state", 10);
+    }
 
     command_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
         "/hand/command", 10,
@@ -190,6 +241,31 @@ class HandUdpNode : public rclcpp::Node {
       msg.data.push_back(static_cast<double>(snapshot.sensor_data[static_cast<std::size_t>(i)]));
 
     state_pub_->publish(msg);
+
+    // F/T inference 결과 발행
+    if (ft_pub_ && controller_->ft_inference_enabled()) {
+      const auto ft_state = controller_->GetLatestFTState();
+      if (ft_state.valid) {
+        ur5e_msgs::msg::HandForceTorqueState ft_msg;
+        ft_msg.header.stamp = this->now();
+        const auto& ft_names_list = get_parameter("hand_fingertip_names").as_string_array();
+        for (int f = 0; f < ft_state.num_fingertips; ++f) {
+          ur5e_msgs::msg::FingertipForceTorque ft;
+          ft.name = (static_cast<std::size_t>(f) < ft_names_list.size())
+              ? ft_names_list[static_cast<std::size_t>(f)]
+              : "f" + std::to_string(f);
+          const int base = f * urtc::kFTValuesPerFingertip;
+          for (int j = 0; j < 3; ++j) {
+            ft.force[static_cast<std::size_t>(j)] =
+                ft_state.ft_data[static_cast<std::size_t>(base + j)];
+            ft.torque[static_cast<std::size_t>(j)] =
+                ft_state.ft_data[static_cast<std::size_t>(base + 3 + j)];
+          }
+          ft_msg.fingertips.push_back(ft);
+        }
+        ft_pub_->publish(ft_msg);
+      }
+    }
 
     // UDP link status 발행
     const uint64_t failures = controller_->consecutive_recv_failures();
@@ -308,6 +384,16 @@ class HandUdpNode : public rclcpp::Node {
           << " },\n";
     }
 
+    // F/T inference timing
+    if (ts.ft_infer_count > 0) {
+      ofs << "    \"ft_infer_us\": {"
+          << " \"mean\": " << ts.ft_infer.mean_us
+          << ", \"min\": " << ts.ft_infer.min_us
+          << ", \"max\": " << ts.ft_infer.max_us
+          << ", \"count\": " << ts.ft_infer_count
+          << " },\n";
+    }
+
     ofs << "    \"over_budget\": " << ts.over_budget << "\n"
         << "  }\n"
         << "}\n";
@@ -346,6 +432,7 @@ class HandUdpNode : public rclcpp::Node {
   rclcpp::TimerBase::SharedPtr publish_timer_;
 
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr link_status_pub_;
+  rclcpp::Publisher<ur5e_msgs::msg::HandForceTorqueState>::SharedPtr ft_pub_;
   uint64_t            link_fail_threshold_{10};
   bool                prev_link_ok_{true};
 

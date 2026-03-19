@@ -1,13 +1,13 @@
 # ur5e_msgs
 
-![version](https://img.shields.io/badge/version-v5.14.0-blue)
+![version](https://img.shields.io/badge/version-v5.16.0-blue)
 
 > 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 
 ## 개요
 
-UR5e RT Controller 스택을 위한 **커스텀 ROS2 메시지 정의** 패키지입니다. 로봇 암 관절 커맨드, 핸드 모터 커맨드/피드백, 핑거팁 센서 데이터를 위한 메시지 타입을 정의합니다.
+UR5e RT Controller 스택을 위한 **커스텀 ROS2 메시지 정의** 패키지입니다. 로봇 암 관절 커맨드, 핸드 모터 커맨드/피드백, 핑거팁 센서 데이터, 핑거팁 힘/토크 추론 결과를 위한 메시지 타입을 정의합니다.
 
 ---
 
@@ -18,11 +18,13 @@ ur5e_msgs/
 ├── CMakeLists.txt
 ├── package.xml
 └── msg/
-    ├── JointCommand.msg      ← 로봇 암 관절 커맨드 (position/torque)
-    ├── HandCommand.msg       ← 핸드 모터 커맨드
-    ├── HandMotorState.msg    ← 핸드 모터 피드백 (위치/속도)
-    ├── FingertipSensor.msg   ← 단일 핑거팁 센서 (기압 + ToF)
-    └── HandSensorState.msg   ← 전체 핸드 센서 상태
+    ├── JointCommand.msg          ← 로봇 암 관절 커맨드 (position/torque)
+    ├── HandCommand.msg           ← 핸드 모터 커맨드
+    ├── HandMotorState.msg        ← 핸드 모터 피드백 (위치/속도)
+    ├── FingertipSensor.msg       ← 단일 핑거팁 센서 (기압 + ToF)
+    ├── HandSensorState.msg       ← 전체 핸드 센서 상태
+    ├── FingertipForceTorque.msg  ← 단일 핑거팁 힘/토크 추론 결과
+    └── HandForceTorqueState.msg  ← 전체 핸드 힘/토크 상태
 ```
 
 ---
@@ -96,6 +98,25 @@ ur5e_msgs/
 |------|------|------|
 | `header` | `std_msgs/Header` | 타임스탬프 및 프레임 ID |
 | `fingertips` | `FingertipSensor[]` | 핑거팁 센서 배열 |
+
+### `FingertipForceTorque.msg`
+
+단일 핑거팁의 ONNX 모델 기반 힘/토크 추론 결과입니다.
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `name` | `string` | 핑거팁 이름 |
+| `force` | `float32[3]` | 추론된 힘 (Fx, Fy, Fz) |
+| `torque` | `float32[3]` | 추론된 토크 (Tx, Ty, Tz) |
+
+### `HandForceTorqueState.msg`
+
+전체 핸드의 힘/토크 추론 상태를 집계합니다.
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `header` | `std_msgs/Header` | 타임스탬프 및 프레임 ID |
+| `fingertips` | `FingertipForceTorque[]` | 핑거팁 힘/토크 추론 배열 |
 
 ---
 

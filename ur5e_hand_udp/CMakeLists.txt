@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ur5e_hand_udp VERSION 5.2.2 LANGUAGES CXX)
+project(ur5e_hand_udp VERSION 5.16.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,34 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(ur5e_rt_base REQUIRED)
+find_package(ur5e_msgs REQUIRED)
+
+# ── ONNX Runtime ─────────────────────────────────────────────────────────────
+# find_package 우선, 실패 시 pkg-config fallback
+find_package(onnxruntime QUIET)
+if(NOT onnxruntime_FOUND)
+  find_package(PkgConfig QUIET)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(ONNXRUNTIME QUIET libonnxruntime)
+  endif()
+  if(NOT ONNXRUNTIME_FOUND)
+    # /opt/onnxruntime 수동 설치 경로 탐색
+    find_library(ONNXRUNTIME_LIB onnxruntime
+      PATHS /opt/onnxruntime/lib /usr/local/lib
+    )
+    find_path(ONNXRUNTIME_INCLUDE onnxruntime_cxx_api.h
+      PATHS /opt/onnxruntime/include /usr/local/include/onnxruntime
+    )
+    if(ONNXRUNTIME_LIB AND ONNXRUNTIME_INCLUDE)
+      set(ONNXRUNTIME_FOUND TRUE)
+      set(ONNXRUNTIME_LIBRARIES ${ONNXRUNTIME_LIB})
+      set(ONNXRUNTIME_INCLUDE_DIRS ${ONNXRUNTIME_INCLUDE})
+      message(STATUS "ONNX Runtime found: ${ONNXRUNTIME_LIB}")
+    else()
+      message(WARNING "ONNX Runtime not found — F/T inference will not be available")
+    endif()
+  endif()
+endif()
 
 # ── Unified node: HandController (request-response polling) ──────────────────
 add_executable(hand_udp_node
@@ -30,7 +58,18 @@ ament_target_dependencies(hand_udp_node
   rclcpp
   std_msgs
   ur5e_rt_base
+  ur5e_msgs
 )
+
+# ONNX Runtime 링크 (발견된 경우)
+if(ONNXRUNTIME_FOUND)
+  if(TARGET onnxruntime::onnxruntime)
+    target_link_libraries(hand_udp_node onnxruntime::onnxruntime)
+  else()
+    target_include_directories(hand_udp_node PRIVATE ${ONNXRUNTIME_INCLUDE_DIRS})
+    target_link_libraries(hand_udp_node ${ONNXRUNTIME_LIBRARIES})
+  endif()
+endif()
 
 # ── Install ────────────────────────────────────────────────────────────────────
 install(TARGETS
@@ -50,8 +89,12 @@ install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
 )
 
+install(DIRECTORY models/
+  DESTINATION share/${PROJECT_NAME}/models
+)
+
 # ── Export headers for downstream packages (e.g. ur5e_rt_controller) ──────────
 ament_export_include_directories(include)
-ament_export_dependencies(ur5e_rt_base)
+ament_export_dependencies(ur5e_rt_base ur5e_msgs)
 
 ament_package()

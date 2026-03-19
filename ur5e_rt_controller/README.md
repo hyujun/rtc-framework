@@ -1,6 +1,6 @@
 # ur5e_rt_controller
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.14.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.16.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md) | 디버깅: [VSCODE_DEBUGGING.md](../docs/VSCODE_DEBUGGING.md) | 새 컨트롤러 추가: [ADDING_CONTROLLER.md](docs/ADDING_CONTROLLER.md)
 
 UR5e 로봇 팔을 위한 **500Hz 실시간 제어기** ROS2 패키지입니다. SCHED_FIFO 멀티스레드 아키텍처, 전략 패턴 기반 컨트롤러 교체, 런타임 컨트롤러 전환, 잠금-없는 로깅 인프라를 제공합니다.

@@ -2,12 +2,12 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>ur5e_rt_base</name>
-  <version>5.13.0</version>
+  <version>5.16.0</version>
   <description>
-    Shared types, thread utilities, and logging infrastructure for the
-    UR5e RT controller stack. Header-only; no executables.
+    Shared types, thread utilities, filters, UDP abstractions, and logging
+    infrastructure for the UR5e RT controller stack. Header-only; no executables.
   </description>
-  <maintainer email="your.email@example.com">Your Name</maintainer>
+  <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

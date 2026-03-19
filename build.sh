@@ -350,6 +350,11 @@ if [[ -n "$PARALLEL_JOBS" ]]; then
   info "Limiting parallel workers to $PARALLEL_JOBS"
 fi
 
+# ONNX Runtime: /opt/onnxruntime 수동 설치 경로 cmake 전파
+if [[ -d "/opt/onnxruntime" ]]; then
+  CMAKE_ARGS+=("-DCMAKE_PREFIX_PATH=/opt/onnxruntime")
+fi
+
 if [[ ${#CMAKE_ARGS[@]} -gt 0 ]]; then
   COLCON_ARGS+=("--cmake-args" "${CMAKE_ARGS[@]}")
 fi
@@ -389,7 +394,7 @@ if [[ -f "$CHECK_SCRIPT" ]]; then
       if [[ "$MEMLOCK" != "unlimited" ]]; then
         echo ""
         warn "Your current memlock limit is $MEMLOCK (not unlimited)."
-        warn "Running the custom_controller may fail with RMW load errors due to mlockall()."
+        warn "Running the rt_controller may fail with RMW load errors due to mlockall()."
         warn "Run: ./install.sh robot  or  ulimit -l unlimited"
         echo ""
       fi
@@ -401,7 +406,7 @@ else
   if [[ "$MEMLOCK" != "unlimited" ]]; then
     echo ""
     warn "Your current memlock limit is $MEMLOCK (not unlimited)."
-    warn "Running the custom_controller may fail with RMW load errors due to mlockall()."
+    warn "Running the rt_controller may fail with RMW load errors due to mlockall()."
     warn "  ulimit -l unlimited"
     echo ""
   fi
@@ -413,7 +418,7 @@ if [[ "$BUILD_TYPE" == "Debug" ]]; then
   echo -e "${CYAN}${BOLD}── VS Code Debugging ───────────────────────────────────${NC}"
   echo "  Debug build complete — ready for GDB debugging in VS Code."
   echo ""
-  echo "  Launch debugger : F5 → 'C++: Launch custom_controller (Debug)'"
+  echo "  Launch debugger : F5 → 'C++: Launch rt_controller (Debug)'"
   echo "  Attach debugger : F5 → 'C++: Attach to Node (Pick Process)'"
   echo ""
   echo "  If attach fails with 'Operation not permitted', run:"

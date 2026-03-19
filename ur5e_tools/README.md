@@ -1,6 +1,6 @@
 # ur5e_tools
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.14.0)의 일부입니다.
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.16.0)의 일부입니다.
 > 설치/빌드: [Root README](../README.md)
 
 UR5e RT Controller 스택의 **Python 개발 유틸리티 패키지**입니다. 컨트롤러 GUI, 모션 편집기, 궤적 시각화, UDP 손 통신, 모델 검증 도구를 포함합니다.
@@ -16,11 +16,11 @@ ur5e_tools/
 │   ├── monitoring/
 │   │   └── __init__.py
 │   ├── plotting/
-│   │   └── plot_ur_trajectory.py        ← Matplotlib 궤적 시각화
+│   │   └── plot_ur_log.py               ← Matplotlib 로그 시각화 (v4)
 │   ├── validation/
 │   │   └── compare_mjcf_urdf.py         ← MJCF vs URDF 파라미터 비교 검증 (v5.7.0+)
 │   └── utils/
-│       ├── hand_udp_sender_example.py   ← 11-DOF 손 UDP 프로토콜 라이브러리 + 예제
+│       ├── hand_udp_sender_example.py   ← 10-DOF 손 UDP 프로토콜 라이브러리 + 예제
 │       ├── session_dir.py              ← 세션 디렉토리 유틸리티 (v5.10.0)
 │       └── hand_data_plot.py            ← 손 CSV 데이터 시각화
 ├── resource/
@@ -32,12 +32,13 @@ ur5e_tools/
 
 **빌드 타입**: `ament_python` (`setup.py`의 `entry_points` 사용)
 
-**Entry points** (5개):
+**Entry points** (6개):
 | 실행 명령 | 모듈 |
 |-----------|------|
 | `ros2 run ur5e_tools controller_gui` | `gui.controller_gui` |
 | `ros2 run ur5e_tools motion_editor_gui` | `gui.motion_editor_gui` |
-| `ros2 run ur5e_tools plot_ur_trajectory` | `plotting.plot_ur_trajectory` |
+| `ros2 run ur5e_tools plot_ur_log` | `plotting.plot_ur_log` |
+| `ros2 run ur5e_tools plot_ur_trajectory` | `plotting.plot_ur_log` (legacy alias) |
 | `ros2 run ur5e_tools hand_udp_sender_example` | `utils.hand_udp_sender_example` |
 | `ros2 run ur5e_tools compare_mjcf_urdf` | `validation.compare_mjcf_urdf` |
 
@@ -132,28 +133,35 @@ sudo apt install python3-pyqt5
 
 ---
 
-### `plot_ur_trajectory.py` — 궤적 시각화 (v3, 4-카테고리)
+### `plot_ur_log.py` — 로그 시각화 (v4, 4-카테고리)
+
+> **v4**: `plot_ur_trajectory.py`에서 이름 변경. `plot_ur_trajectory`는 legacy alias로 유지됩니다.
 
 분리된 CSV 제어 로그(`robot_log_*.csv`, `hand_log_*.csv`)를 Matplotlib으로 시각화합니다. 파일 이름으로 로그 타입을 자동 감지합니다.
 
 ```bash
 # Robot 로그 시각화 (위치 + 속도 2개 Figure)
-ros2 run ur5e_tools plot_ur_trajectory logging_data/250314_1530/controller/robot_log.csv
+ros2 run ur5e_tools plot_ur_log logging_data/250314_1530/controller/robot_log.csv
 
 # Hand 로그 시각화 (위치 + 속도 + 센서 3개 Figure)
-ros2 run ur5e_tools plot_ur_trajectory logging_data/250314_1530/controller/hand_log.csv
+ros2 run ur5e_tools plot_ur_log logging_data/250314_1530/controller/hand_log.csv
 
 # 플롯 파일로 저장
-ros2 run ur5e_tools plot_ur_trajectory logging_data/250314_1530/controller/robot_log.csv --save-dir /tmp/plots
+ros2 run ur5e_tools plot_ur_log logging_data/250314_1530/controller/robot_log.csv --save-dir /tmp/plots
 
 # 통계만 출력 (플롯 없이)
-ros2 run ur5e_tools plot_ur_trajectory logging_data/250314_1530/controller/robot_log.csv --stats
+ros2 run ur5e_tools plot_ur_log logging_data/250314_1530/controller/robot_log.csv --stats
 
 # 추적 오차 플롯 추가 (robot only)
-ros2 run ur5e_tools plot_ur_trajectory logging_data/250314_1530/controller/robot_log.csv --error
+ros2 run ur5e_tools plot_ur_log logging_data/250314_1530/controller/robot_log.csv --error
+
+# Hand raw sensor + F/T + 비교 플롯
+ros2 run ur5e_tools plot_ur_log hand_log.csv --raw --ft --sensor-compare
 ```
 
 > **v5.10.0**: `--save-dir` 미지정 시 `UR5E_SESSION_DIR/plots/`에 자동 저장됩니다.
+>
+> **v4 최적화**: `--save-dir` 지정 시 Agg backend 자동 사용 (GUI 없이 렌더링).
 
 **파일 이름 자동 감지:**
 - `robot_log_*.csv` → Robot 모드
@@ -172,18 +180,21 @@ ros2 run ur5e_tools plot_ur_trajectory logging_data/250314_1530/controller/robot
 
 ```bash
 # 모든 Figure 한 번에 생성
-ros2 run ur5e_tools plot_ur_trajectory robot_log.csv --all
+ros2 run ur5e_tools plot_ur_log robot_log.csv --all
 ```
 
 **Hand 모드 플롯:**
 
-| Figure | 레이아웃 | 내용 |
-|--------|----------|------|
-| Figure 1 | 2×5 서브플롯 | 모터별 위치 (Goal / Command / Actual) |
-| Figure 2 | 2×5 서브플롯 | 모터별 속도 (Actual) |
-| Figure 3 | 2×4 서브플롯 | 센서 (기압 8ch + ToF 3ch per fingertip) |
+| Figure | 플래그 | 레이아웃 | 내용 |
+|--------|--------|----------|------|
+| Figure 1 | (기본) | 2×5 서브플롯 | 모터별 위치 (Goal / Command / Actual) |
+| Figure 2 | (기본) | 2×5 서브플롯 | 모터별 속도 (Actual) |
+| Figure 3 | (기본) | 2×N 서브플롯 | 센서 (기압 8ch + ToF 3ch per fingertip) |
+| Figure 4 | `--raw` | 2×N 서브플롯 | Raw 센서 (pre-LPF, 기압 + ToF) |
+| Figure 5 | `--ft` | N×2 서브플롯 | F/T 추론 출력 (Force + Torque per fingertip) |
+| Figure 6 | `--sensor-compare` | 2×N 서브플롯 | Raw vs Filtered 센서 오버레이 비교 |
 
-**통계 출력**: 구간 길이(s), 샘플 수, 평균 샘플링 속도(Hz), 관절/모터별 RMS 추적 오차
+**통계 출력**: 구간 길이(s), 샘플 수, 평균 샘플링 속도(Hz), 관절/모터별 RMS 추적 오차, F/T 추론 통계 (mean/std/min/max)
 
 ---
 
@@ -223,7 +234,7 @@ ros2 run ur5e_tools compare_mjcf_urdf --tolerance 0.01
 
 ---
 
-### `hand_udp_sender_example.py` — 11-DOF 손 UDP 프로토콜 라이브러리 + 예제
+### `hand_udp_sender_example.py` — 10-DOF 손 UDP 프로토콜 라이브러리 + 예제
 
 개발/테스트용 UDP 손 통신 라이브러리 및 합성 데이터 생성기입니다. `HandUDPSender` 클래스로 request-response 통신, CSV 로깅, 장애 감지를 지원합니다.
 

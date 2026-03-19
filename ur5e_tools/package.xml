@@ -2,9 +2,9 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>ur5e_tools</name>
-  <version>5.2.2</version>
-  <description>Python development utilities for the UR5e RT controller stack: trajectory plotter, data health monitor, motion editor GUI, and UDP hand data generator.</description>
-  <maintainer email="your.email@example.com">Your Name</maintainer>
+  <version>5.16.0</version>
+  <description>Python development utilities for the UR5e RT controller stack: log plotter, controller GUI, motion editor GUI, MJCF/URDF validator, and UDP hand data tools.</description>
+  <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_python</buildtool_depend>

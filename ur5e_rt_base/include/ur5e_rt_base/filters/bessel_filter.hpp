@@ -206,7 +206,7 @@ class BesselFilterN {
 
 // ── Convenience aliases ────────────────────────────────────────────────────
 using BesselFilter6  = BesselFilterN<6>;   // 6-DOF robot joints
-using BesselFilter11 = BesselFilterN<11>;  // 11-DOF hand joints
+using BesselFilter11 = BesselFilterN<11>;  // 11 sensor values per fingertip (8 baro + 3 ToF)
 using BesselFilter1  = BesselFilterN<1>;   // single-channel scalar use
 
 // Barometer sensor filtering (kMaxFingertips × kBarometerCount = 8 × 8 = 64 channels)

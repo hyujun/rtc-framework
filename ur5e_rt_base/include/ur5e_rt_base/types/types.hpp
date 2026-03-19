@@ -66,7 +66,19 @@ inline const std::vector<std::string> kDefaultFingertipNames = {
 template <typename T>
 concept FloatingPointType = std::floating_point<T>;
 
+// Fingertip F/T inference 관련 상수
+inline constexpr int kFTValuesPerFingertip = 6;   // Fx, Fy, Fz, Tx, Ty, Tz
+
 // ── Data structures (aggregate, zero-initialised by default) ──────────────────
+
+// Fingertip F/T 추론 결과 (SeqLock 호환: trivially_copyable)
+struct FingertipFTState {
+  static constexpr int kMaxFTValues = kMaxFingertips * kFTValuesPerFingertip;  // 48
+  std::array<float, kMaxFTValues> ft_data{};
+  int  num_fingertips{0};
+  bool valid{false};
+};
+
 struct RobotState {
   std::array<double, kNumRobotJoints> positions{};
   std::array<double, kNumRobotJoints> velocities{};
@@ -79,8 +91,9 @@ struct RobotState {
 struct HandState {
   std::array<float, kNumHandMotors>   motor_positions{};
   std::array<float, kNumHandMotors>   motor_velocities{};
-  std::array<uint32_t, kMaxHandSensors> sensor_data{};  // 최대 kMaxFingertips × 11 values (raw uint32)
-  int num_fingertips{kDefaultNumFingertips};            // 실제 사용 fingertip 수 (YAML)
+  std::array<uint32_t, kMaxHandSensors> sensor_data{};      // 필터링된 센서 데이터 (post-LPF)
+  std::array<uint32_t, kMaxHandSensors> sensor_data_raw{};  // 원본 센서 데이터 (pre-LPF)
+  int num_fingertips{kDefaultNumFingertips};                // 실제 사용 fingertip 수 (YAML)
   bool valid{false};
 };
 

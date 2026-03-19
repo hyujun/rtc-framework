@@ -306,7 +306,7 @@ class KalmanFilterN {
 
 // ── Convenience aliases ────────────────────────────────────────────────────
 using KalmanFilter6  = KalmanFilterN<6>;   // 6-DOF robot joints
-using KalmanFilter11 = KalmanFilterN<11>;  // 11-DOF hand joints
+using KalmanFilter11 = KalmanFilterN<11>;  // 11 sensor values per fingertip (8 baro + 3 ToF)
 using KalmanFilter1  = KalmanFilterN<1>;   // single-channel scalar use
 
 }  // namespace ur5e_rt_controller

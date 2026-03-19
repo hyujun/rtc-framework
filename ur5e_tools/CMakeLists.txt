@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ur5e_tools)
+project(ur5e_tools VERSION 5.16.0)
 
 find_package(ament_cmake_python REQUIRED)
 

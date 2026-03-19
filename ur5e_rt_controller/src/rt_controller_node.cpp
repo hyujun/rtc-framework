@@ -1309,9 +1309,16 @@ void RtControllerNode::ControlLoop()
       .hand_actual_positions = state.hand.motor_positions,
       .hand_actual_velocities = state.hand.motor_velocities,
       .hand_sensors = state.hand.sensor_data,
+      .hand_sensors_raw = state.hand.sensor_data_raw,
       // Hand — 카테고리 3: Control Command
       .hand_commands = output.hand_commands,
     };
+    // F/T inference 결과 (hand_controller_가 있고 활성화된 경우)
+    if (hand_controller_ && hand_controller_->ft_inference_enabled()) {
+      const auto ft_state = hand_controller_->GetLatestFTState();
+      entry.hand_ft_data = ft_state.ft_data;
+      entry.hand_ft_valid = ft_state.valid;
+    }
     static_cast<void>(log_buffer_.Push(entry));  // silently drops if buffer is full
   }
 

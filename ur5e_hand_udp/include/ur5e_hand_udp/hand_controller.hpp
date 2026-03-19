@@ -51,6 +51,7 @@
 #include "ur5e_rt_base/threading/thread_utils.hpp"
 #include "ur5e_rt_base/threading/seqlock.hpp"
 #include "ur5e_rt_base/filters/bessel_filter.hpp"
+#include "ur5e_hand_udp/fingertip_ft_inferencer.hpp"
 #include "ur5e_hand_udp/hand_packets.hpp"
 #include "ur5e_hand_udp/hand_udp_codec.hpp"
 
@@ -112,6 +113,10 @@ class HandTimingProfiler {
     PhaseStats read_all_motor;
     PhaseStats read_all_sensor;
     bool       is_bulk_mode{false};
+
+    // F/T inference phase
+    PhaseStats ft_infer;
+    uint64_t   ft_infer_count{0};  // FT 추론이 실행된 cycle 수
   };
 
   // Per-tick 측정값 (EventLoop에서 채워서 Update()에 전달)
@@ -124,6 +129,7 @@ class HandTimingProfiler {
     // Bulk mode phases
     double read_all_motor_us{0.0};
     double read_all_sensor_us{0.0};  // 0 if sensor decimation skipped
+    double ft_infer_us{0.0};  // 0 if FT inference disabled or not run
     double total_us{0.0};
     bool   is_sensor_cycle{false};
     bool   is_bulk_mode{false};
@@ -177,6 +183,12 @@ class HandTimingProfiler {
                     t.read_sensor_us);
       }
     }
+
+    // F/T inference phase (공통 — bulk/individual 무관)
+    if (t.ft_infer_us > 0.0) {
+      ft_infer_count_.fetch_add(1, std::memory_order_relaxed);
+      UpdatePhase(ft_infer_sum_, ft_infer_min_, ft_infer_max_, t.ft_infer_us);
+    }
   }
 
   // ── Statistics snapshot ───────────────────────────────────────────────────
@@ -221,6 +233,13 @@ class HandTimingProfiler {
       }
     }
 
+    // F/T inference stats
+    s.ft_infer_count = ft_infer_count_.load(std::memory_order_relaxed);
+    if (s.ft_infer_count > 0) {
+      s.ft_infer = LoadPhaseStats(ft_infer_sum_, ft_infer_min_, ft_infer_max_,
+                                  s.ft_infer_count);
+    }
+
     for (int b = 0; b <= kBuckets; ++b) {
       s.histogram[static_cast<std::size_t>(b)] =
           histogram_[static_cast<std::size_t>(b)].load(
@@ -263,6 +282,14 @@ class HandTimingProfiler {
           s.write.mean_us, s.read_pos.mean_us, s.read_vel.mean_us,
           s.read_sensor.mean_us);
     }
+
+    // FT inference stats (조건부 출력)
+    if (s.ft_infer_count > 0) {
+      const std::size_t len = std::strlen(buf);
+      std::snprintf(buf + len, sizeof(buf) - len,
+                    "  ft=%.0f\xc2\xb5s", s.ft_infer.mean_us);
+    }
+
     return std::string(buf);
   }
 
@@ -296,6 +323,10 @@ class HandTimingProfiler {
     read_all_sensor_max_.store(0.0, std::memory_order_relaxed);
     sensor_cycle_count_.store(0, std::memory_order_relaxed);
     is_bulk_mode_.store(false, std::memory_order_relaxed);
+    ft_infer_sum_.store(0.0, std::memory_order_relaxed);
+    ft_infer_min_.store(1e9, std::memory_order_relaxed);
+    ft_infer_max_.store(0.0, std::memory_order_relaxed);
+    ft_infer_count_.store(0, std::memory_order_relaxed);
   }
 
  private:
@@ -384,6 +415,11 @@ class HandTimingProfiler {
   std::atomic<double> read_all_sensor_max_{0.0};
   std::atomic<uint64_t> sensor_cycle_count_{0};
   std::atomic<bool> is_bulk_mode_{false};
+  // F/T inference phase accumulators
+  std::atomic<double> ft_infer_sum_{0.0};
+  std::atomic<double> ft_infer_min_{1e9};
+  std::atomic<double> ft_infer_max_{0.0};
+  std::atomic<uint64_t> ft_infer_count_{0};
 };
 
 class HandController {
@@ -415,7 +451,8 @@ class HandController {
       bool tof_lpf_enabled = false,
       double tof_lpf_cutoff_hz = 15.0,
       bool baro_lpf_enabled = false,
-      double baro_lpf_cutoff_hz = 30.0) noexcept
+      double baro_lpf_cutoff_hz = 30.0,
+      FingertipFTInferencer::Config ft_config = {}) noexcept
       : target_ip_(std::move(target_ip)),
         target_port_(target_port),
         thread_cfg_(thread_cfg),
@@ -431,7 +468,8 @@ class HandController {
         tof_lpf_enabled_(tof_lpf_enabled),
         tof_lpf_cutoff_hz_(tof_lpf_cutoff_hz),
         baro_lpf_enabled_(baro_lpf_enabled),
-        baro_lpf_cutoff_hz_(baro_lpf_cutoff_hz)
+        baro_lpf_cutoff_hz_(baro_lpf_cutoff_hz),
+        ft_config_(std::move(ft_config))
         // baro_filter_active_, baro_filter_, tof_filter_active_, tof_filter_
         // are value-initialized (false / default)
   {
@@ -517,6 +555,18 @@ class HandController {
       }
     }
 
+    // F/T 추론기 초기화 (센서 LPF 이후, EventLoop 시작 이전)
+    if (ft_config_.enabled && num_fingertips_ > 0) {
+      ft_inferencer_ = std::make_unique<FingertipFTInferencer>();
+      try {
+        ft_inferencer_->Init(ft_config_);
+        ft_enabled_ = ft_inferencer_->is_initialized();
+      } catch (...) {
+        ft_enabled_ = false;
+        ft_inferencer_.reset();
+      }
+    }
+
     running_.store(true, std::memory_order_release);
     event_thread_ = std::jthread([this](std::stop_token st) {
       EventLoop(std::move(st));
@@ -598,6 +648,16 @@ class HandController {
 
   [[nodiscard]] bool IsRunning() const noexcept {
     return running_.load(std::memory_order_acquire);
+  }
+
+  // ── F/T inference accessors ──────────────────────────────────────────────
+
+  [[nodiscard]] FingertipFTState GetLatestFTState() const noexcept {
+    return ft_seqlock_.Load();
+  }
+
+  [[nodiscard]] bool ft_inference_enabled() const noexcept {
+    return ft_enabled_;
   }
 
   /// Returns true if sensor initialization (NN→RAW) succeeded.
@@ -1047,6 +1107,8 @@ class HandController {
 
       HandState state{};
       bool any_recv_ok = false;
+      double ft_infer_elapsed_us = 0.0;
+      std::array<uint32_t, kMaxHandSensors> cached_sensor_data_raw{};
 
       // ── Timing: t0 = EventLoop 시작 ──
       const auto t0 = std::chrono::steady_clock::now();
@@ -1106,12 +1168,27 @@ class HandController {
                                    hand_packets::SensorMode::kRaw)) {
             any_recv_ok = true;
           }
+          cached_sensor_data_raw = cached_sensor_data;   // raw 사본 보존 (LPF 이전)
           ApplySensorFilters(cached_sensor_data);
+
+          // F/T 추론 (캘리브레이션 또는 추론)
+          if (ft_enabled_) {
+            if (!ft_inferencer_->is_calibrated()) {
+              ft_inferencer_->FeedCalibration(cached_sensor_data, num_fingertips_);
+            } else {
+              const auto ft_t0 = std::chrono::steady_clock::now();
+              auto ft_result = ft_inferencer_->Infer(cached_sensor_data, num_fingertips_);
+              const auto ft_t1 = std::chrono::steady_clock::now();
+              ft_infer_elapsed_us = std::chrono::duration<double, std::micro>(ft_t1 - ft_t0).count();
+              ft_seqlock_.Store(ft_result);
+            }
+          }
         }
 
-        const auto t3 = std::chrono::steady_clock::now();  // read_all_sensor 완료
+        const auto t3 = std::chrono::steady_clock::now();  // read_all_sensor + FT 완료
 
         // 항상 캐시된 센서 데이터를 state에 복사
+        state.sensor_data_raw = cached_sensor_data_raw;
         state.sensor_data = cached_sensor_data;
         state.num_fingertips = num_fingertips_;
         state.valid = any_recv_ok;
@@ -1128,6 +1205,7 @@ class HandController {
         pt.write_us           = std::chrono::duration<double, std::micro>(t1 - t0).count();
         pt.read_all_motor_us  = std::chrono::duration<double, std::micro>(t2 - t1).count();
         pt.read_all_sensor_us = std::chrono::duration<double, std::micro>(t3 - t2).count();
+        pt.ft_infer_us        = ft_infer_elapsed_us;
         pt.total_us           = std::chrono::duration<double, std::micro>(t4 - t0).count();
         pt.is_sensor_cycle    = is_sensor_cycle;
         timing_profiler_.Update(pt);
@@ -1168,12 +1246,27 @@ class HandController {
               any_recv_ok = true;
             }
           }
+          cached_sensor_data_raw = cached_sensor_data;   // raw 사본 보존 (LPF 이전)
           ApplySensorFilters(cached_sensor_data);
+
+          // F/T 추론 (캘리브레이션 또는 추론)
+          if (ft_enabled_) {
+            if (!ft_inferencer_->is_calibrated()) {
+              ft_inferencer_->FeedCalibration(cached_sensor_data, num_fingertips_);
+            } else {
+              const auto ft_t0 = std::chrono::steady_clock::now();
+              auto ft_result = ft_inferencer_->Infer(cached_sensor_data, num_fingertips_);
+              const auto ft_t1 = std::chrono::steady_clock::now();
+              ft_infer_elapsed_us = std::chrono::duration<double, std::micro>(ft_t1 - ft_t0).count();
+              ft_seqlock_.Store(ft_result);
+            }
+          }
         }
 
-        const auto t4 = std::chrono::steady_clock::now();  // read_sensor 완료
+        const auto t4 = std::chrono::steady_clock::now();  // read_sensor + FT 완료
 
         // 항상 캐시된 센서 데이터를 state에 복사
+        state.sensor_data_raw = cached_sensor_data_raw;
         state.sensor_data = cached_sensor_data;
         state.num_fingertips = num_fingertips_;
         state.valid = any_recv_ok;
@@ -1190,6 +1283,7 @@ class HandController {
         pt.read_pos_us    = std::chrono::duration<double, std::micro>(t2 - t1).count();
         pt.read_vel_us    = std::chrono::duration<double, std::micro>(t3 - t2).count();
         pt.read_sensor_us = std::chrono::duration<double, std::micro>(t4 - t3).count();
+        pt.ft_infer_us    = ft_infer_elapsed_us;
         pt.total_us       = std::chrono::duration<double, std::micro>(t5 - t0).count();
         pt.is_sensor_cycle = is_sensor_cycle;
         timing_profiler_.Update(pt);
@@ -1310,6 +1404,12 @@ class HandController {
 
   // 타이밍 프로파일러 (EventLoop에서 write, 외부에서 read)
   HandTimingProfiler timing_profiler_;
+
+  // ── F/T 추론기 ──
+  FingertipFTInferencer::Config ft_config_;
+  std::unique_ptr<FingertipFTInferencer> ft_inferencer_;
+  SeqLock<FingertipFTState> ft_seqlock_{};  // EventLoop(writer) ↔ 외부(reader)
+  bool ft_enabled_{false};
 
   std::jthread event_thread_;
 };

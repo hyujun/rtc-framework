@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ur5e_mujoco_sim VERSION 5.2.2 LANGUAGES CXX)
+project(ur5e_mujoco_sim VERSION 5.16.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
