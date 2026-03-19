@@ -7,7 +7,7 @@
 
 **Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 실시간 UR5e 제어기 + 커스텀 핸드 통합 (v5.16.0)**
 
-E-STOP 안전 시스템, 전략 패턴 기반 다중 제어기(P/JointPD/CLIK/OSC/Hand), MuJoCo 3.x 물리 시뮬레이터, UDP 핸드 인터페이스, CSV 데이터 로깅, GUI 도구를 포함한 완전한 실시간 제어 솔루션입니다.
+E-STOP 안전 시스템, 전략 패턴 기반 다중 제어기(P/JointPD/CLIK/OSC/DemoJoint/DemoTask), MuJoCo 3.x 물리 시뮬레이터, UDP 핸드 인터페이스, CSV 데이터 로깅, GUI 도구를 포함한 완전한 실시간 제어 솔루션입니다.
 
 ---
 
@@ -21,7 +21,7 @@ E-STOP 안전 시스템, 전략 패턴 기반 다중 제어기(P/JointPD/CLIK/OS
 | [`ur5e_description`](ur5e_description/) | 로봇 모델 파일 (MJCF, URDF, 메시) | ament_cmake |
 | [`ur5e_rt_base`](ur5e_rt_base/) | 공유 헤더-전용 라이브러리 (타입, 스레딩, 로깅, 필터) | ament_cmake |
 | [`ur5e_status_monitor`](ur5e_status_monitor/) | 비-RT 상태 모니터 라이브러리 (10Hz 안전 감시) | ament_cmake |
-| [`ur5e_rt_controller`](ur5e_rt_controller/) | 500Hz 실시간 제어기 — 위치/토크 (P/JointPD/CLIK/OSC/Hand) | ament_cmake |
+| [`ur5e_rt_controller`](ur5e_rt_controller/) | 500Hz 실시간 제어기 — 위치/토크 (P/JointPD/CLIK/OSC/DemoJoint/DemoTask) | ament_cmake |
 | [`ur5e_hand_udp`](ur5e_hand_udp/) | 10-DOF 커스텀 핸드 UDP 브리지 (44 촉각 센서) | ament_cmake |
 | [`ur5e_mujoco_sim`](ur5e_mujoco_sim/) | MuJoCo 3.x 물리 시뮬레이터 (선택적) | ament_cmake |
 | [`ur5e_tools`](ur5e_tools/) | Python 개발 유틸리티 (GUI, 시각화, 검증) | ament_python |
@@ -47,7 +47,7 @@ ur5e_tools            ← 독립 (Python 전용, rclpy)
 ## 주요 기능
 
 - **500Hz 실시간 제어**: clock_nanosleep RT loop + SPSC publish offload, CPU 코어 할당 (4/6/8코어 자동 선택, 8스레드)
-- **전략 패턴 제어기**: PController, JointPDController, ClikController, OperationalSpaceController, UrFiveEHandController
+- **전략 패턴 제어기**: PController, JointPDController, ClikController, OperationalSpaceController, DemoJointController, DemoTaskController
 - **런타임 컨트롤러 전환**: ROS2 토픽으로 제어기 간 즉시 전환 + 동적 게인 업데이트
 - **글로벌 E-STOP 안전 시스템**: 로봇/핸드 타임아웃, 상태 모니터, 핸드 실패 감지 → 통합 비상 정지 (v5.8.0)
 - **상태 모니터**: 10Hz 비-RT 안전 감시 (로봇 모드, 추적 오차, 관절 한계) + 실패 시 글로벌 E-Stop (v5.8.0)

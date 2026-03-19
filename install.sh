@@ -439,7 +439,7 @@ install_python_base_deps() {
   fi
 }
 
-# ── Pinocchio (all modes — needed by PinocchioController / ClikController) ────
+# ── Pinocchio (all modes — needed by ClikController / DemoTaskController / OSC) ──
 install_pinocchio() {
   info "Installing Pinocchio (model-based controllers, ${ROS_PKG_PREFIX})..."
   if sudo apt-get install -y ${ROS_PKG_PREFIX}-pinocchio >/dev/null 2>&1; then
@@ -463,7 +463,7 @@ install_pinocchio() {
         echo "export CMAKE_PREFIX_PATH=/opt/openrobots:\$CMAKE_PREFIX_PATH" >> ~/.bashrc
       }
     else
-      warn "Pinocchio not installed — PinocchioController / ClikController / OperationalSpaceController unavailable"
+      warn "Pinocchio not installed — ClikController / DemoTaskController / OperationalSpaceController unavailable"
       warn "See: https://stack-of-tasks.github.io/pinocchio/download.html"
     fi
   fi

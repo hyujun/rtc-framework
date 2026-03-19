@@ -1,5 +1,5 @@
 // ── Includes: project header first, then C++ stdlib ────────────────────────────
-#include "ur5e_rt_controller/controllers/indirect/clik_controller.hpp"
+#include "ur5e_rt_controller/controllers/indirect/demo_task_controller.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -10,7 +10,7 @@ namespace ur5e_rt_controller
 
 // ── Constructor ─────────────────────────────────────────────────────────────
 
-ClikController::ClikController(std::string_view urdf_path, Gains gains)
+DemoTaskController::DemoTaskController(std::string_view urdf_path, Gains gains)
 : data_(pinocchio::Model{}), gains_(gains)
 {
   pinocchio::urdf::buildModel(std::string(urdf_path), model_);
@@ -38,7 +38,7 @@ ClikController::ClikController(std::string_view urdf_path, Gains gains)
 
 // ── RTControllerInterface implementation ────────────────────────────────────
 
-ControllerOutput ClikController::Compute(
+ControllerOutput DemoTaskController::Compute(
   const ControllerState & state) noexcept
 {
   if (estopped_.load(std::memory_order_acquire)) {
@@ -53,11 +53,9 @@ ControllerOutput ClikController::Compute(
   }
 
   // ── Step 2: FK + Jacobians ───────────────────────────────────────────────
-  // computeJointJacobians performs FK internally — data_.oMi is updated.
   pinocchio::computeJointJacobians(model_, data_, q_);
   pinocchio::getJointJacobian(model_, data_, end_id_,
                                pinocchio::LOCAL_WORLD_ALIGNED, J_full_);
-  // Translational Jacobian: rows 0..2
   J_pos_.noalias() = J_full_.topRows(3);
 
   // ── Step 3: Cartesian position/orientation error ──────────────────────────
@@ -66,7 +64,6 @@ ControllerOutput ClikController::Compute(
 
   if (!target_initialized_) {
     tcp_target_pose_ = tcp_pose;
-    // Keep internal target synchronized
     tcp_target_ = {tcp[0], tcp[1], tcp[2]};
     target_initialized_ = true;
   }
@@ -82,7 +79,7 @@ ControllerOutput ClikController::Compute(
       if (gains_.control_6dof) {
         goal_pose = tcp_target_pose_;
       } else {
-        goal_pose = start_pose; // keep current rotation
+        goal_pose = start_pose;
         goal_pose.translation() = Eigen::Vector3d(tcp_target_[0], tcp_target_[1], tcp_target_[2]);
       }
 
@@ -109,17 +106,11 @@ ControllerOutput ClikController::Compute(
 
   tcp_position_ = {tcp[0], tcp[1], tcp[2]};
 
-  // Positional error is trajectory - current
-  // Rotation error is computed using log6/log3
-  pinocchio::SE3 T_current_desired = tcp_pose.actInv(traj_state.pose); // relative pose
+  pinocchio::SE3 T_current_desired = tcp_pose.actInv(traj_state.pose);
   pinocchio::Motion twist_error = pinocchio::log6(T_current_desired);
 
-  // The twist_error is the spatial velocity needed in the LOCAL frame to reach target.
-  // Converting it to the LOCAL_WORLD_ALIGNED frame (where J_full_ is expressed).
   Eigen::Vector3d p_err = traj_state.pose.translation() - tcp;
-  Eigen::Vector3d r_err = twist_error.angular();
-  // We can just use p_err in world frame and r_err in world frame:
-  r_err = tcp_pose.rotation() * twist_error.angular();
+  Eigen::Vector3d r_err = tcp_pose.rotation() * twist_error.angular();
 
   pos_error_6d_.head<3>() = p_err;
   pos_error_6d_.tail<3>() = r_err;
@@ -142,13 +133,11 @@ ControllerOutput ClikController::Compute(
     }
 
     Eigen::Matrix<double, 6, 1> task_vel_6d = kp_vec_6d.cwiseProduct(pos_error_6d_);
-    // Feedforward
     task_vel_6d.head<3>() += traj_state.velocity.linear();
-    task_vel_6d.tail<3>() += tcp_pose.rotation() * traj_state.velocity.angular(); // to world frame
+    task_vel_6d.tail<3>() += tcp_pose.rotation() * traj_state.velocity.angular();
 
     dq_.noalias() = Jpinv_6d_ * task_vel_6d;
   } else {
-    // 3D version
     JJt_.noalias() = J_pos_ * J_pos_.transpose();
     JJt_.diagonal().array() += gains_.damping * gains_.damping;
     ldlt_.compute(JJt_);
@@ -163,8 +152,6 @@ ControllerOutput ClikController::Compute(
   // ── Step 6: Null-space secondary task ────────────────────────────────────
   // 6-DOF 모드에서는 6×6 정방 Jacobian의 null-space가 0차원이므로 skip.
   if (gains_.enable_null_space && !gains_.control_6dof) {
-    // N = I − J^# * J  maps joint velocities into the null-space of
-    // J, leaving the primary task unaffected.
     N_.setIdentity();
     N_.noalias() -= Jpinv_ * J_pos_;
 
@@ -178,7 +165,6 @@ ControllerOutput ClikController::Compute(
   }
 
   // ── Step 7: Clamp joint velocity and integrate ────────────────────────────
-  // q_cmd = q + clamp(dq, ±v_max) * dt
   std::array<double, kNumRobotJoints> dq_arr{};
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
     dq_arr[i] = dq_[static_cast<Eigen::Index>(i)];
@@ -195,14 +181,12 @@ ControllerOutput ClikController::Compute(
   for (int i = 3; i < kNumRobotJoints; ++i) {
     output.actual_target_positions[i] = null_target_[i];
   }
-  // goal_positions: task-space goal in [0..2], null-space goal in [3..5]
   for (int i = 0; i < 3; ++i) {
     output.goal_positions[i] = tcp_target_[i];
   }
   for (int i = 3; i < kNumRobotJoints; ++i) {
     output.goal_positions[i] = null_target_[i];
   }
-  // target_velocities: clamped dq (joint-space velocity command)
   output.target_velocities = dq_arr;
   output.hand_goal_positions = hand_target_;
 
@@ -215,22 +199,31 @@ ControllerOutput ClikController::Compute(
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
 
+  // ── Step 8: Hand P control ────────────────────────────────────────────────
+  if (state.hand.valid) {
+    for (int i = 0; i < kNumHandMotors; ++i) {
+      const auto idx = static_cast<std::size_t>(i);
+      const float error = hand_target_[idx] - state.hand.motor_positions[idx];
+      output.hand_commands[idx] =
+        state.hand.motor_positions[idx] +
+        gains_.hand_kp[idx] * error * static_cast<float>(state.dt);
+    }
+    output.hand_commands = ClampHandCommands(output.hand_commands);
+  }
+
   output.command_type = command_type_;
   return output;
 }
 
-void ClikController::SetRobotTarget(
+void DemoTaskController::SetRobotTarget(
   std::span<const double, kNumRobotJoints> target) noexcept
 {
   std::lock_guard lock(target_mutex_);
   if (gains_.control_6dof) {
-    // 6-DOF target mode: [x, y, z, roll, pitch, yaw]
     tcp_target_[0] = target[0];
     tcp_target_[1] = target[1];
     tcp_target_[2] = target[2];
 
-    // Convert Roll-Pitch-Yaw to Rotation Matrix
-    // R = Rz(yaw) * Ry(pitch) * Rx(roll)
     double r = target[3];
     double p = target[4];
     double y = target[5];
@@ -244,7 +237,6 @@ void ClikController::SetRobotTarget(
     tcp_target_pose_.translation() << target[0], target[1], target[2];
     tcp_target_pose_.rotation() = q.matrix();
   } else {
-    // 3-DOF target mode: [x, y, z, null3, null4, null5]
     for (std::size_t i = 0; i < 3; ++i) {
       tcp_target_[i] = target[i];
     }
@@ -255,7 +247,7 @@ void ClikController::SetRobotTarget(
   new_target_.store(true, std::memory_order_release);
 }
 
-void ClikController::SetHandTarget(
+void DemoTaskController::SetHandTarget(
   std::span<const float, kNumHandMotors> target) noexcept
 {
   for (std::size_t i = 0; i < kNumHandMotors; ++i) {
@@ -263,7 +255,7 @@ void ClikController::SetHandTarget(
   }
 }
 
-void ClikController::InitializeHoldPosition(
+void DemoTaskController::InitializeHoldPosition(
   const ControllerState & state) noexcept
 {
   // FK로 현재 TCP 위치/자세를 계산하여 target으로 설정
@@ -278,7 +270,6 @@ void ClikController::InitializeHoldPosition(
   tcp_target_ = {tcp_pose.translation()[0],
                  tcp_pose.translation()[1],
                  tcp_pose.translation()[2]};
-  // null-space target: 현재 관절 위치로 초기화
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
     null_target_[i] = state.robot.positions[i];
   }
@@ -297,34 +288,34 @@ void ClikController::InitializeHoldPosition(
   }
 }
 
-std::string_view ClikController::Name() const noexcept
+std::string_view DemoTaskController::Name() const noexcept
 {
-  return "ClikController";
+  return "DemoTaskController";
 }
 
-void ClikController::TriggerEstop() noexcept
+void DemoTaskController::TriggerEstop() noexcept
 {
   estopped_.store(true, std::memory_order_release);
 }
 
-void ClikController::ClearEstop() noexcept
+void DemoTaskController::ClearEstop() noexcept
 {
   estopped_.store(false, std::memory_order_release);
 }
 
-bool ClikController::IsEstopped() const noexcept
+bool DemoTaskController::IsEstopped() const noexcept
 {
   return estopped_.load(std::memory_order_acquire);
 }
 
-void ClikController::SetHandEstop(bool active) noexcept
+void DemoTaskController::SetHandEstop(bool active) noexcept
 {
   hand_estopped_.store(active, std::memory_order_release);
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
 
-ControllerOutput ClikController::ComputeEstop(
+ControllerOutput DemoTaskController::ComputeEstop(
   const ControllerState & state) noexcept
 {
   ControllerOutput output;
@@ -337,7 +328,7 @@ ControllerOutput ClikController::ComputeEstop(
   return output;
 }
 
-std::array<double, kNumRobotJoints> ClikController::ClampVelocity(
+std::array<double, kNumRobotJoints> DemoTaskController::ClampVelocity(
   std::array<double, kNumRobotJoints> dq) noexcept
 {
   for (auto & v : dq) {
@@ -346,12 +337,26 @@ std::array<double, kNumRobotJoints> ClikController::ClampVelocity(
   return dq;
 }
 
+std::array<float, kNumHandMotors> DemoTaskController::ClampHandCommands(
+  std::span<const float, kNumHandMotors> commands) noexcept
+{
+  std::array<float, kNumHandMotors> clamped{};
+  for (int i = 0; i < kNumHandMotors; ++i) {
+    clamped[static_cast<std::size_t>(i)] = std::clamp(
+      commands[static_cast<std::size_t>(i)],
+      -kMaxHandVelocity, kMaxHandVelocity);
+  }
+  return clamped;
+}
+
 // ── Controller registry hooks ────────────────────────────────────────────────
 
-void ClikController::LoadConfig(const YAML::Node & cfg)
+void DemoTaskController::LoadConfig(const YAML::Node & cfg)
 {
   RTControllerInterface::LoadConfig(cfg);
   if (!cfg) {return;}
+
+  // CLIK gains
   if (cfg["kp"] && cfg["kp"].IsSequence()) {
     std::size_t n = std::min<std::size_t>(cfg["kp"].size(), 6);
     for (std::size_t i = 0; i < n; ++i) {
@@ -363,15 +368,25 @@ void ClikController::LoadConfig(const YAML::Node & cfg)
   if (cfg["enable_null_space"]) {gains_.enable_null_space = cfg["enable_null_space"].as<bool>();}
   if (cfg["trajectory_speed"]) {gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();}
   if (cfg["control_6dof"]) {gains_.control_6dof = cfg["control_6dof"].as<bool>();}
+
+  // Hand gains
+  if (cfg["hand_kp"] && cfg["hand_kp"].IsSequence() &&
+      cfg["hand_kp"].size() == static_cast<std::size_t>(kNumHandMotors))
+  {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors); ++i) {
+      gains_.hand_kp[i] = cfg["hand_kp"][i].as<float>();
+    }
+  }
+
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
     command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
 }
 
-void ClikController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
+void DemoTaskController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
 {
-  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1)]
+  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10] = 20
   if (gains.size() < 10) {return;}
   for (std::size_t i = 0; i < 6; ++i) {
     gains_.kp[i] = gains[i];
@@ -380,18 +395,27 @@ void ClikController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
   gains_.null_kp = gains[7];
   gains_.enable_null_space = gains[8] > 0.5;
   gains_.control_6dof = gains[9] > 0.5;
+
+  if (gains.size() >= 20) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors); ++i) {
+      gains_.hand_kp[i] = static_cast<float>(gains[10 + i]);
+    }
+  }
 }
 
-std::vector<double> ClikController::GetCurrentGains() const noexcept
+std::vector<double> DemoTaskController::GetCurrentGains() const noexcept
 {
-  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1)]
+  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10] = 20
   std::vector<double> v;
-  v.reserve(10);
+  v.reserve(20);
   v.insert(v.end(), gains_.kp.begin(), gains_.kp.end());
   v.push_back(gains_.damping);
   v.push_back(gains_.null_kp);
   v.push_back(gains_.enable_null_space ? 1.0 : 0.0);
   v.push_back(gains_.control_6dof ? 1.0 : 0.0);
+  for (const float h : gains_.hand_kp) {
+    v.push_back(static_cast<double>(h));
+  }
   return v;
 }
 

@@ -287,7 +287,8 @@ struct ControllerOutput {
 | `JointPDController` (idx 1) | `controllers/direct/joint_pd_controller.hpp` | Direct (torque) | Joint-space PD + dynamics | Gravity + optional Coriolis via Pinocchio RNEA. `JointSpaceTrajectory<6>`. **Has E-STOP.** `target_mutex_` try_lock (v5.8.0). |
 | `ClikController` (idx 2) | `controllers/indirect/clik_controller.hpp` | Indirect (position) | Cartesian 3-DOF | Damped Jacobian pseudoinverse + null-space. `TaskSpaceTrajectory` (SE3 quintic). `target_mutex_` try_lock (v5.8.0). |
 | `OperationalSpaceController` (idx 3) | `controllers/direct/operational_space_controller.hpp` | Direct (torque) | Cartesian 6-DOF | Full pose (position + SO(3)) control. `TaskSpaceTrajectory` (SE3 quintic). `target_mutex_` try_lock (v5.8.0). |
-| `UrFiveEHandController` (idx 4) | `controllers/indirect/ur5e_hand_controller.hpp` | Indirect (position) | Joint P + Hand | Arm P control (6-DOF) + hand motor commands (10-DOF). |
+| `DemoJointController` (idx 4) | `controllers/indirect/demo_joint_controller.hpp` | Indirect (position) | Joint P + Hand | Arm P control (6-DOF) + hand motor commands (10-DOF). |
+| `DemoTaskController` (idx 5) | `controllers/indirect/demo_task_controller.hpp` | Indirect (position) | Cartesian CLIK + Hand | CLIK arm (3/6-DOF) + hand P control (10-DOF). `TaskSpaceTrajectory`. **Has E-STOP.** |
 
 **`JointPDController`** on E-STOP drives toward `kSafePosition = [0, -1.57, 1.57, -1.57, -1.57, 0]` rad. Output clamped to `kMaxJointVelocity = 2.0 rad/s`.
 
@@ -298,10 +299,12 @@ command[i] = traj.velocity[i] + Kp * (traj.position[i] - q[i]) + Kd * ė[i] + g(
 All Eigen buffers pre-allocated in constructor — zero heap allocation on the 500 Hz path.
 `UpdateGainsFromMsg` layout: `[kp×6, kd×6, gravity(0/1), coriolis(0/1), trajectory_speed]` (15 values).
 
-**`UrFiveEHandController`** target convention (via `/target_joint_positions`): `data[0-5]` = robot joint targets (rad), `data[6-15]` = hand motor targets (optional, ignored if array size < 16). Uses incremental position step for both arm and hand. `UpdateGainsFromMsg` layout: `[robot_kp×6, hand_kp×10]` (16 values).
+**`DemoJointController`** target convention (via `/target_joint_positions`): `data[0-5]` = robot joint targets (rad), `data[6-15]` = hand motor targets (optional, ignored if array size < 16). Uses incremental position step for both arm and hand. `UpdateGainsFromMsg` layout: `[robot_kp×6, hand_kp×10]` (16 values).
+
+**`DemoTaskController`** = CLIK arm + hand P control. Target convention same as ClikController (3-DOF: `[x,y,z,null3,null4,null5]`, 6-DOF: `[x,y,z,r,p,y]`). Hand targets via `SetHandTarget()`. `UpdateGainsFromMsg` layout: `[kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10]` (20 values).
 
 **`ClikController`** target convention (via `/target_joint_positions`): `[x, y, z, null_q3, null_q4, null_q5]` — first 3 are TCP position in metres, last 3 are null-space reference joints 3–5 in radians. Uses `TaskSpaceTrajectory` (SE3 quintic). `trajectory_angular_speed` field removed (v5.6.1).
-`UpdateGainsFromMsg` layout: `[kp×3, damping, null_kp, enable_null_space(0/1)]` (6 values).
+`UpdateGainsFromMsg` layout: `[kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1)]` (10 values).
 
 **`OperationalSpaceController`** target convention: `[x, y, z, roll, pitch, yaw]` — TCP position (m) + orientation (rad, ZYX Euler). Uses Pinocchio `log3()` for SO(3) orientation error. Uses `TaskSpaceTrajectory` (SE3 quintic, v5.6.1+). RPY pre-computed to `goal_pose_` (SE3) in `SetRobotTarget()` (sensor thread).
 `UpdateGainsFromMsg` layout: `[kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, gravity(0/1), traj_speed, traj_ang_speed]` (16 values).

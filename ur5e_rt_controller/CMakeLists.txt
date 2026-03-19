@@ -44,7 +44,8 @@ add_library(rt_controller_lib STATIC
   src/controllers/direct/operational_space_controller.cpp
   src/controllers/indirect/p_controller.cpp
   src/controllers/indirect/clik_controller.cpp
-  src/controllers/indirect/ur5e_hand_controller.cpp
+  src/controllers/indirect/demo_joint_controller.cpp
+  src/controllers/indirect/demo_task_controller.cpp
 )
 target_include_directories(rt_controller_lib PUBLIC include)
 ament_target_dependencies(rt_controller_lib PUBLIC

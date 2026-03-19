@@ -73,9 +73,9 @@ public:
   State compute(double time) const
   {
     State state;
-    Eigen::VectorXd p(6);
-    Eigen::VectorXd v(6);
-    Eigen::VectorXd a(6);
+    Eigen::Matrix<double, 6, 1> p;
+    Eigen::Matrix<double, 6, 1> v;
+    Eigen::Matrix<double, 6, 1> a;
 
     for (int i = 0; i < 6; ++i) {
       auto p_state = polynomials_[i].compute(time);

@@ -5,6 +5,25 @@
 
 ---
 
+## [5.17.0] - 2026-03-19
+
+### 변경 (Changed) — 컨트롤러 이름 변경 및 신규 추가
+
+- **`UrFiveEHandController` → `DemoJointController` 이름 변경 (index 4)**
+  - 클래스명, 파일명, YAML config key 일괄 변경
+  - 기능 변경 없음 (로봇 암 P + 핸드 P 통합 제어)
+
+- **`DemoTaskController` 신규 추가 (index 5)**
+  - ClikController의 task-space 제어 (감쇠 야코비안 유사역행렬 + 영공간 관절 센터링)
+  - DemoJointController의 핸드 P 제어 (10모터)를 결합
+  - 3-DOF / 6-DOF 모드, SE(3) 5차 궤적 추종, E-STOP 지원
+  - `UpdateGainsFromMsg` 레이아웃: `[kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10]` (20개)
+  - YAML: `demo_task_controller.yaml` (enable_ur5e + enable_hand = true)
+
+- **Controller GUI 업데이트**: 인덱스 5 (Demo Task Controller) 추가, 핸드 활성화 조건 확장
+
+---
+
 ## [5.16.0] - 2026-03-17
 
 ### 변경 (Changed) — RT Loop 아키텍처: clock_nanosleep + SPSC Publish Offload

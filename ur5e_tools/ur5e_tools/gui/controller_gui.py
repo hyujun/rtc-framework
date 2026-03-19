@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 UR5e Controller GUI
-- Select controller type (P, JointPD, CLIK, OSC, UR5e Hand)
+- Select controller type (P, JointPD, CLIK, OSC, Demo Joint, Demo Task)
 - Set gains per controller via ~/controller_gains
   (gain vectors match UpdateGainsFromMsg layouts in each controller header)
 - Displays currently applied gains after "Apply Gains" is pressed
 - When switching controller, current joint positions become the new target
 - Periodically display current joint positions alongside the target inputs
 - E-STOP status indicator via /system/estop_status
-- Hand motor target UI for UR5e Hand Controller (index 4)
+- Hand motor target UI for Demo Joint Controller (index 4) and Demo Task Controller (index 5)
 """
 import math
 
@@ -25,7 +25,8 @@ CONTROLLER_TYPES = {
     1: "Joint PD Controller",
     2: "CLIK Controller",
     3: "OSC Controller",
-    4: "UR5e Hand Controller",
+    4: "Demo Joint Controller",
+    5: "Demo Task Controller",
 }
 
 TARGET_LABELS = {
@@ -34,6 +35,7 @@ TARGET_LABELS = {
     2: ["X (m)", "Y (m)", "Z (m)", "Roll (deg) / q4_null", "Pitch (deg) / q5_null", "Yaw (deg) / q6_null"],
     3: ["X (m)", "Y (m)", "Z (m)", "Roll (deg)", "Pitch (deg)", "Yaw (deg)"],
     4: ["q1 (deg)", "q2 (deg)", "q3 (deg)", "q4 (deg)", "q5 (deg)", "q6 (deg)"],
+    5: ["X (m)", "Y (m)", "Z (m)", "Roll (deg) / q4_null", "Pitch (deg) / q5_null", "Yaw (deg) / q6_null"],
 }
 
 # Target entry indices that represent angles (require rad ↔ deg conversion)
@@ -43,10 +45,11 @@ ANGLE_INDICES = {
     2: [3, 4, 5],
     3: [3, 4, 5],
     4: [0, 1, 2, 3, 4, 5],
+    5: [3, 4, 5],
 }
 
 # True → auto-fill target from current joint positions on controller switch
-JOINT_SPACE = {0: True, 1: True, 2: False, 3: False, 4: True}
+JOINT_SPACE = {0: True, 1: True, 2: False, 3: False, 4: True, 5: False}
 
 NUM_JOINTS = 6
 NUM_HAND_MOTORS = 10
@@ -76,7 +79,8 @@ for _grp_name, _motors in HAND_FINGER_GROUPS:
 #   CLIK:     [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1)]
 #   OSC:      [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1),
 #              trajectory_speed, trajectory_angular_speed]
-#   Hand:     [robot_kp×6, hand_kp×10]
+#   DemoJoint: [robot_kp×6, hand_kp×10]
+#   DemoTask:  [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10]
 GAIN_DEFS = {
     0: [
         ("kp",              6, [120.0, 120.0, 100.0, 80.0, 80.0, 80.0],  False),
@@ -109,6 +113,14 @@ GAIN_DEFS = {
         ("robot_kp",        6, [120.0, 120.0, 100.0, 80.0, 80.0, 80.0], False),
         ("hand_kp",        10, [50.0] * 10, False),
     ],
+    5: [
+        ("kp",              6, [1.0] * 6,  False),
+        ("damping",         1, [0.01],      False),
+        ("null_kp",         1, [0.5],       False),
+        ("null space",      1, [1],         True),
+        ("control 6dof",    1, [0],         True),
+        ("hand_kp",        10, [50.0] * 10, False),
+    ],
 }
 
 # Column header labels for array gain rows
@@ -119,6 +131,8 @@ GAIN_COL_HEADERS = {
     3: ["X",  "Y",  "Z"],
     4: ["J1", "J2", "J3", "J4", "J5", "J6",
         "H1", "H2", "H3", "H4"],
+    5: ["J1", "J2", "J3", "J4", "J5", "J6",
+        "H1", "H2", "H3", "H4"],
 }
 
 # Per-row sub-headers inserted BEFORE the gain row (controller_idx → {label → names})
@@ -126,6 +140,9 @@ GAIN_COL_HEADERS = {
 GAIN_ROW_NAMES = {
     4: {
         "robot_kp": ["base", "shoulder", "elbow", "wrist1", "wrist2", "wrist3"],
+        "hand_kp": [n.split('_', 1)[1] for n in HAND_MOTOR_NAMES],
+    },
+    5: {
         "hand_kp": [n.split('_', 1)[1] for n in HAND_MOTOR_NAMES],
     },
 }
@@ -812,7 +829,7 @@ class ControllerGUI(Node):
         is_joint = JOINT_SPACE.get(ctrl_idx, True)
         joint_state = 'normal' if is_joint else 'disabled'
         task_state  = 'disabled' if is_joint else 'normal'
-        hand_state  = 'normal' if ctrl_idx == 4 else 'disabled'
+        hand_state  = 'normal' if ctrl_idx in (4, 5) else 'disabled'
 
         for ent in self._joint_target_entries:
             ent.configure(state=joint_state)
@@ -864,8 +881,8 @@ class ControllerGUI(Node):
             for i, name_lbl in enumerate(self._status_labels_names):
                 name_lbl.config(text=f"{_task_status_names[i]}:")
 
-        # Hand controller: hand target도 현재 위치로 초기화
-        if idx == 4:
+        # Hand-enabled controllers: hand target도 현재 위치로 초기화
+        if idx in (4, 5):
             self._set_hand_target_entries(self.current_hand_positions)
 
     def _request_load_gains(self):
@@ -921,7 +938,7 @@ class ControllerGUI(Node):
             self._set_joint_target_entries(self.current_positions)
         else:
             self._set_task_target_entries(self.current_task_positions)
-        if idx == 4:
+        if idx in (4, 5):
             self._set_hand_target_entries(self.current_hand_positions)
 
     def _set_joint_target_entries(self, values: list[float]):
@@ -995,8 +1012,8 @@ class ControllerGUI(Node):
         self.get_logger().info(
             f"Sent robot cmd: {[f'{v:.4f}' for v in robot_values]}")
 
-        # Hand target → /hand/target_joint_positions (컨트롤러 4일 때만)
-        if idx == 4:
+        # Hand target → /hand/target_joint_positions (핸드 활성 컨트롤러)
+        if idx in (4, 5):
             try:
                 hand_values = [math.radians(float(e.get()))
                                for e in self._hand_target_entries]

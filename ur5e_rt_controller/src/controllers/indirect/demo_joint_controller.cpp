@@ -1,4 +1,4 @@
-#include "ur5e_rt_controller/controllers/indirect/ur5e_hand_controller.hpp"
+#include "ur5e_rt_controller/controllers/indirect/demo_joint_controller.hpp"
 
 #include <algorithm>  // std::copy, std::clamp
 #include <pinocchio/math/rpy.hpp>
@@ -6,10 +6,10 @@
 namespace ur5e_rt_controller
 {
 
-UrFiveEHandController::UrFiveEHandController(std::string_view urdf_path)
-: UrFiveEHandController(urdf_path, Gains{}) {}
+DemoJointController::DemoJointController(std::string_view urdf_path)
+: DemoJointController(urdf_path, Gains{}) {}
 
-UrFiveEHandController::UrFiveEHandController(std::string_view urdf_path, Gains gains)
+DemoJointController::DemoJointController(std::string_view urdf_path, Gains gains)
 : gains_(gains), data_(pinocchio::Model{})
 {
   pinocchio::urdf::buildModel(std::string(urdf_path), model_);
@@ -18,7 +18,7 @@ UrFiveEHandController::UrFiveEHandController(std::string_view urdf_path, Gains g
   q_      = Eigen::VectorXd::Zero(model_.nv);
 }
 
-ControllerOutput UrFiveEHandController::Compute(const ControllerState & state) noexcept
+ControllerOutput DemoJointController::Compute(const ControllerState & state) noexcept
 {
   ControllerOutput output;
 
@@ -66,19 +66,19 @@ ControllerOutput UrFiveEHandController::Compute(const ControllerState & state) n
   return output;
 }
 
-void UrFiveEHandController::SetRobotTarget(
+void DemoJointController::SetRobotTarget(
   std::span<const double, kNumRobotJoints> target) noexcept
 {
   std::copy(target.begin(), target.end(), robot_target_.begin());
 }
 
-void UrFiveEHandController::SetHandTarget(
+void DemoJointController::SetHandTarget(
   std::span<const float, kNumHandMotors> target) noexcept
 {
   std::copy(target.begin(), target.end(), hand_target_.begin());
 }
 
-void UrFiveEHandController::InitializeHoldPosition(
+void DemoJointController::InitializeHoldPosition(
   const ControllerState & state) noexcept
 {
   std::copy(state.robot.positions.begin(), state.robot.positions.end(),
@@ -89,7 +89,7 @@ void UrFiveEHandController::InitializeHoldPosition(
   }
 }
 
-std::array<double, kNumRobotJoints> UrFiveEHandController::ClampRobotCommands(
+std::array<double, kNumRobotJoints> DemoJointController::ClampRobotCommands(
   std::span<const double, kNumRobotJoints> commands) noexcept
 {
   std::array<double, kNumRobotJoints> clamped{};
@@ -101,7 +101,7 @@ std::array<double, kNumRobotJoints> UrFiveEHandController::ClampRobotCommands(
   return clamped;
 }
 
-std::array<float, kNumHandMotors> UrFiveEHandController::ClampHandCommands(
+std::array<float, kNumHandMotors> DemoJointController::ClampHandCommands(
   std::span<const float, kNumHandMotors> commands) noexcept
 {
   std::array<float, kNumHandMotors> clamped{};
@@ -115,7 +115,7 @@ std::array<float, kNumHandMotors> UrFiveEHandController::ClampHandCommands(
 
 // ── Controller registry hooks ────────────────────────────────────────────────
 
-void UrFiveEHandController::LoadConfig(const YAML::Node & cfg)
+void DemoJointController::LoadConfig(const YAML::Node & cfg)
 {
   RTControllerInterface::LoadConfig(cfg);
   if (!cfg) { return; }
@@ -142,7 +142,7 @@ void UrFiveEHandController::LoadConfig(const YAML::Node & cfg)
   }
 }
 
-void UrFiveEHandController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
+void DemoJointController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
 {
   // layout: [robot_kp×6, hand_kp×10] = 16 values
   constexpr std::size_t kRobot = static_cast<std::size_t>(kNumRobotJoints);
@@ -159,7 +159,7 @@ void UrFiveEHandController::UpdateGainsFromMsg(std::span<const double> gains) no
   }
 }
 
-std::vector<double> UrFiveEHandController::GetCurrentGains() const noexcept
+std::vector<double> DemoJointController::GetCurrentGains() const noexcept
 {
   // layout: [robot_kp×6, hand_kp×10] = 16 values
   std::vector<double> out;

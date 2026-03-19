@@ -224,6 +224,8 @@ std::vector<ControllerEntry> MakeControllerEntries()
     {"pinocchio_controller", ...},
     {"clik_controller",  ...},
     {"operational_space_controller", ...},
+    {"demo_joint_controller", ...},
+    {"demo_task_controller", ...},
 
     // ↓ 새 컨트롤러 등록
     {

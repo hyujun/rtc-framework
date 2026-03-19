@@ -1,5 +1,5 @@
-#ifndef UR5E_RT_CONTROLLER_CONTROLLERS_UR5E_HAND_CONTROLLER_H_
-#define UR5E_RT_CONTROLLER_CONTROLLERS_UR5E_HAND_CONTROLLER_H_
+#ifndef UR5E_RT_CONTROLLER_CONTROLLERS_DEMO_JOINT_CONTROLLER_H_
+#define UR5E_RT_CONTROLLER_CONTROLLERS_DEMO_JOINT_CONTROLLER_H_
 
 #include <array>
 #include <span>
@@ -40,7 +40,7 @@ namespace ur5e_rt_controller
 //   data[6..15] : hand motor targets (rad), optional — ignored if size < 16
 //
 // Gains layout for UpdateGainsFromMsg: [robot_kp×6, hand_kp×10] = 16 values
-class UrFiveEHandController final : public RTControllerInterface {
+class DemoJointController final : public RTControllerInterface {
 public:
   struct Gains
   {
@@ -50,8 +50,8 @@ public:
       50.0f, 50.0f, 50.0f, 50.0f, 50.0f}};
   };
 
-  explicit UrFiveEHandController(std::string_view urdf_path);
-  UrFiveEHandController(std::string_view urdf_path, Gains gains);
+  explicit DemoJointController(std::string_view urdf_path);
+  DemoJointController(std::string_view urdf_path, Gains gains);
 
   [[nodiscard]] ControllerOutput Compute(
     const ControllerState & state) noexcept override;
@@ -67,7 +67,7 @@ public:
 
   [[nodiscard]] std::string_view Name() const noexcept override
   {
-    return "UrFiveEHandController";
+    return "DemoJointController";
   }
 
   // ── Controller registry hooks ────────────────────────────────────────────
@@ -105,4 +105,4 @@ private:
 
 }  // namespace ur5e_rt_controller
 
-#endif  // UR5E_RT_CONTROLLER_CONTROLLERS_UR5E_HAND_CONTROLLER_H_
+#endif  // UR5E_RT_CONTROLLER_CONTROLLERS_DEMO_JOINT_CONTROLLER_H_

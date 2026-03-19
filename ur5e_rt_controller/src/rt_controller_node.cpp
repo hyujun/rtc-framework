@@ -5,7 +5,8 @@
 #include "ur5e_rt_controller/controllers/direct/operational_space_controller.hpp"
 #include "ur5e_rt_controller/controllers/indirect/p_controller.hpp"
 #include "ur5e_rt_controller/controllers/indirect/clik_controller.hpp"
-#include "ur5e_rt_controller/controllers/indirect/ur5e_hand_controller.hpp"
+#include "ur5e_rt_controller/controllers/indirect/demo_joint_controller.hpp"
+#include "ur5e_rt_controller/controllers/indirect/demo_task_controller.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <ur5e_rt_base/logging/session_dir.hpp>
@@ -78,9 +79,16 @@ std::vector<ControllerEntry> MakeControllerEntries()
       }
     },
     {
-      "ur5e_hand_controller", "indirect/",
+      "demo_joint_controller", "indirect/",
       [](const std::string & p) {
-        return std::make_unique<urtc::UrFiveEHandController>(p);
+        return std::make_unique<urtc::DemoJointController>(p);
+      }
+    },
+    {
+      "demo_task_controller", "indirect/",
+      [](const std::string & p) {
+        return std::make_unique<urtc::DemoTaskController>(
+          p, urtc::DemoTaskController::Gains{});
       }
     },
     // ── Add new controllers here ─────────────────────────────────────────────
