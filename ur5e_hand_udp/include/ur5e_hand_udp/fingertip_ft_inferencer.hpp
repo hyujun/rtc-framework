@@ -23,11 +23,46 @@
 #include <string>
 #include <vector>
 
+#ifdef HAS_ONNXRUNTIME
 #include <onnxruntime_cxx_api.h>
+#endif
 
 #include "ur5e_rt_base/types/types.hpp"
 
 namespace ur5e_rt_controller {
+
+#ifndef HAS_ONNXRUNTIME
+
+/// Stub implementation when ONNX Runtime is not available.
+class FingertipFTInferencer {
+ public:
+  struct Config {
+    bool enabled{false};
+    int  num_fingertips{kDefaultNumFingertips};
+    std::vector<std::string> model_paths;
+    std::array<std::array<float, kBarometerCount>, kMaxFingertips> input_mean{};
+    std::array<std::array<float, kBarometerCount>, kMaxFingertips> input_std{};
+    bool calibration_enabled{true};
+    int  calibration_samples{500};
+  };
+
+  void Init(const Config& /*config*/) {}
+  [[nodiscard]] bool FeedCalibration(
+      const std::array<uint32_t, kMaxHandSensors>& /*sensor_data*/,
+      int /*num_fingertips*/) noexcept { return true; }
+  [[nodiscard]] FingertipFTState Infer(
+      const std::array<uint32_t, kMaxHandSensors>& /*sensor_data*/,
+      int /*num_fingertips*/) noexcept { return {}; }
+  [[nodiscard]] bool is_initialized() const noexcept { return false; }
+  [[nodiscard]] bool is_calibrated() const noexcept { return false; }
+  [[nodiscard]] int  num_active_models() const noexcept { return 0; }
+  [[nodiscard]] int  calibration_count() const noexcept { return 0; }
+  [[nodiscard]] int  calibration_target() const noexcept { return 0; }
+  [[nodiscard]] std::array<std::array<float, kBarometerCount>, kMaxFingertips>
+      baseline_offset() const noexcept { return {}; }
+};
+
+#else  // HAS_ONNXRUNTIME
 
 class FingertipFTInferencer {
  public:
@@ -275,6 +310,8 @@ class FingertipFTInferencer {
   int  calibration_count_{0};
   bool calibrated_{false};
 };
+
+#endif  // HAS_ONNXRUNTIME
 
 }  // namespace ur5e_rt_controller
 

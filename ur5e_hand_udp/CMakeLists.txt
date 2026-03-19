@@ -63,6 +63,7 @@ ament_target_dependencies(hand_udp_node
 
 # ONNX Runtime 링크 (발견된 경우)
 if(ONNXRUNTIME_FOUND)
+  target_compile_definitions(hand_udp_node PRIVATE HAS_ONNXRUNTIME)
   if(TARGET onnxruntime::onnxruntime)
     target_link_libraries(hand_udp_node onnxruntime::onnxruntime)
   else()
@@ -89,9 +90,11 @@ install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
 )
 
-install(DIRECTORY models/
-  DESTINATION share/${PROJECT_NAME}/models
-)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models")
+  install(DIRECTORY models/
+    DESTINATION share/${PROJECT_NAME}/models
+  )
+endif()
 
 # ── Export headers for downstream packages (e.g. ur5e_rt_controller) ──────────
 ament_export_include_directories(include)

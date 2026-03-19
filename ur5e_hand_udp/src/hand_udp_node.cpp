@@ -417,7 +417,7 @@ class HandUdpNode : public rclcpp::Node {
     }
 
     std::array<float, urtc::kNumHandMotors> cmd;
-    for (int i = 0; i < urtc::kNumHandMotors; ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(urtc::kNumHandMotors); ++i) {
       cmd[i] = static_cast<float>(msg->data[i]);
     }
 
