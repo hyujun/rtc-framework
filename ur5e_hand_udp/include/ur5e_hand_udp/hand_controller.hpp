@@ -619,6 +619,11 @@ class HandController {
     return event_skip_count_.load(std::memory_order_relaxed);
   }
 
+  // 연속 recv 전체 실패 횟수 (0이면 link alive)
+  [[nodiscard]] uint64_t consecutive_recv_failures() const noexcept {
+    return consecutive_recv_failures_.load(std::memory_order_relaxed);
+  }
+
   // 통신 통계 스냅샷 반환 (struct copy — relaxed read로 충분)
   [[nodiscard]] HandCommStats comm_stats() const noexcept {
     HandCommStats stats = comm_stats_;
@@ -1193,6 +1198,13 @@ class HandController {
       ++comm_stats_.total_cycles;
       cycle_count_.fetch_add(1, std::memory_order_relaxed);
 
+      // UDP link health: 연속 실패 카운터 업데이트
+      if (any_recv_ok) {
+        consecutive_recv_failures_.store(0, std::memory_order_relaxed);
+      } else {
+        consecutive_recv_failures_.fetch_add(1, std::memory_order_relaxed);
+      }
+
       busy_.store(false, std::memory_order_release);
     }
   }
@@ -1289,6 +1301,9 @@ class HandController {
 
   // recv() 타임아웃/에러 카운터 (모든 send-recv 실패 시 증가)
   std::atomic<uint64_t> recv_error_count_{0};
+
+  // 연속 recv 전체 실패 카운터 (cycle 내 모든 recv 실패 시 증가, 1개라도 성공 시 0)
+  std::atomic<uint64_t> consecutive_recv_failures_{0};
 
   // 통신 통계 (EventLoop 스레드에서만 쓰기, 외부에서 struct copy로 읽기)
   HandCommStats comm_stats_;

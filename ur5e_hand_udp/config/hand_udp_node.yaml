@@ -83,3 +83,8 @@
     # Rate monitoring (failure detector에서 사용)
     min_rate_hz: 30.0               # 최소 허용 polling rate
     rate_fail_threshold: 5          # 연속 N회 미달 시 failure
+
+    # UDP link health check (failure detector에서 사용)
+    check_link: true                # UDP 링크 상태 검사 활성화
+    link_fail_threshold: 10         # 연속 N회 recv 전체 실패 시 link_down 판정
+                                    # 500Hz 기준 10회 = ~20ms 무응답 시 link_down

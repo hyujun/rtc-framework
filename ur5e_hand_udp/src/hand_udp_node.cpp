@@ -4,6 +4,7 @@
 #include <ur5e_rt_base/threading/thread_utils.hpp>
 
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 
 #include <sys/mman.h>  // mlockall
@@ -45,6 +46,8 @@ class HandUdpNode : public rclcpp::Node {
     declare_parameter("check_sensor", true);
     declare_parameter("min_rate_hz", 30.0);
     declare_parameter("rate_fail_threshold", 5);
+    declare_parameter("check_link", true);
+    declare_parameter("link_fail_threshold", 10);
 
     // Hand motor/fingertip names (이름 기반 매핑용)
     declare_parameter("hand_motor_names", std::vector<std::string>{});
@@ -106,6 +109,9 @@ class HandUdpNode : public rclcpp::Node {
       fd_cfg.min_rate_hz  = get_parameter("min_rate_hz").as_double();
       fd_cfg.rate_fail_threshold = static_cast<int>(
           get_parameter("rate_fail_threshold").as_int());
+      fd_cfg.check_link  = get_parameter("check_link").as_bool();
+      fd_cfg.link_fail_threshold = static_cast<int>(
+          get_parameter("link_fail_threshold").as_int());
 
       const auto cfgs = urtc::SelectThreadConfigs();
       failure_detector_ = std::make_unique<urtc::HandFailureDetector>(
@@ -122,6 +128,10 @@ class HandUdpNode : public rclcpp::Node {
     // ── ROS2 pub/sub ───────────────────────────────────────────────────
     state_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
         "/hand/joint_states", 10);
+    link_status_pub_ = create_publisher<std_msgs::msg::Bool>(
+        "/hand/link_status", 10);
+    link_fail_threshold_ = static_cast<uint64_t>(
+        get_parameter("link_fail_threshold").as_int());
 
     command_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
         "/hand/command", 10,
@@ -181,6 +191,23 @@ class HandUdpNode : public rclcpp::Node {
 
     state_pub_->publish(msg);
 
+    // UDP link status 발행
+    const uint64_t failures = controller_->consecutive_recv_failures();
+    const bool link_ok = (failures < link_fail_threshold_);
+    if (link_ok != prev_link_ok_) {
+      if (link_ok) {
+        RCLCPP_INFO(get_logger(), "Hand UDP link UP (recovered)");
+      } else {
+        RCLCPP_WARN(get_logger(),
+                    "Hand UDP link DOWN (consecutive_recv_failures=%lu)",
+                    static_cast<unsigned long>(failures));
+      }
+      prev_link_ok_ = link_ok;
+    }
+    std_msgs::msg::Bool link_msg;
+    link_msg.data = link_ok;
+    link_status_pub_->publish(link_msg);
+
     if (++publish_count_ % 100 == 0) {
       RCLCPP_DEBUG(get_logger(), "cycles: %zu",
                    controller_->cycle_count());
@@ -230,7 +257,9 @@ class HandUdpNode : public rclcpp::Node {
         << "    \"event_skip_count\": " << stats.event_skip_count << ",\n"
         << "    \"avg_rate_hz\": "     << std::fixed << std::setprecision(2) << avg_rate_hz << ",\n"
         << "    \"elapsed_sec\": "     << std::fixed << std::setprecision(2) << elapsed_sec << ",\n"
-        << "    \"failure_detected\": " << (fd_failed ? "true" : "false") << "\n"
+        << "    \"failure_detected\": " << (fd_failed ? "true" : "false") << ",\n"
+        << "    \"consecutive_recv_failures\": " << controller_->consecutive_recv_failures() << ",\n"
+        << "    \"link_ok\": " << (controller_->consecutive_recv_failures() < link_fail_threshold_ ? "true" : "false") << "\n"
         << "  },\n"
         << "  \"timing_stats\": {\n"
         << "    \"count\": " << ts.count << ",\n"
@@ -315,6 +344,10 @@ class HandUdpNode : public rclcpp::Node {
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr    state_pub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr command_sub_;
   rclcpp::TimerBase::SharedPtr publish_timer_;
+
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr link_status_pub_;
+  uint64_t            link_fail_threshold_{10};
+  bool                prev_link_ok_{true};
 
   std::atomic<bool>   data_received_{false};
   std::size_t         publish_count_{0};
