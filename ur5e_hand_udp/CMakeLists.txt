@@ -24,74 +24,66 @@ find_package(ur5e_msgs REQUIRED)
 
 # ── ONNX Runtime ─────────────────────────────────────────────────────────────
 # find_package 우선, 실패 시 pkg-config fallback, 최후 수동 탐색
+# F/T inference는 선택적 기능 — 미설치 시 STATUS 메시지만 출력
 set(_ORT_FOUND FALSE)
+set(ONNXRUNTIME_INCLUDE_DIRS "")
+set(ONNXRUNTIME_LIBRARIES "")
 
-find_package(onnxruntime QUIET)
-if(onnxruntime_FOUND OR ONNXRUNTIME_FOUND)
-  set(_ORT_FOUND TRUE)
+# 1) 헤더 경로 탐색 (어떤 방식이든 헤더가 있어야 빌드 가능)
+find_path(_ORT_HEADER_DIR onnxruntime_cxx_api.h
+  PATHS
+    /usr/include/onnxruntime/core/session
+    /usr/local/include/onnxruntime/core/session
+    /usr/include/onnxruntime
+    /usr/local/include/onnxruntime
+    /opt/onnxruntime/include
+  NO_DEFAULT_PATH
+)
+if(NOT _ORT_HEADER_DIR)
+  # NO_DEFAULT_PATH에서 못 찾으면 시스템 기본 경로도 탐색
+  find_path(_ORT_HEADER_DIR onnxruntime_cxx_api.h)
 endif()
 
-if(NOT _ORT_FOUND)
-  find_package(PkgConfig QUIET)
-  if(PkgConfig_FOUND)
-    pkg_check_modules(ONNXRUNTIME QUIET libonnxruntime)
-    if(ONNXRUNTIME_FOUND)
-      set(_ORT_FOUND TRUE)
-    endif()
-  endif()
-endif()
+if(_ORT_HEADER_DIR)
+  set(ONNXRUNTIME_INCLUDE_DIRS ${_ORT_HEADER_DIR})
 
-if(NOT _ORT_FOUND)
-  # /opt/onnxruntime 수동 설치 경로 탐색
-  find_library(ONNXRUNTIME_LIB onnxruntime
-    PATHS /opt/onnxruntime/lib /usr/local/lib
-  )
-  find_path(ONNXRUNTIME_INCLUDE onnxruntime_cxx_api.h
-    PATHS /opt/onnxruntime/include /usr/local/include/onnxruntime
-  )
-  if(ONNXRUNTIME_LIB AND ONNXRUNTIME_INCLUDE)
+  # 2a) find_package (cmake config)
+  find_package(onnxruntime QUIET)
+  if(onnxruntime_FOUND OR ONNXRUNTIME_FOUND)
     set(_ORT_FOUND TRUE)
-    set(ONNXRUNTIME_LIBRARIES ${ONNXRUNTIME_LIB})
-    set(ONNXRUNTIME_INCLUDE_DIRS ${ONNXRUNTIME_INCLUDE})
-    message(STATUS "ONNX Runtime found (manual): ${ONNXRUNTIME_LIB}")
   endif()
-endif()
 
-# 최종 검증: 어떤 경로로 찾았든 헤더가 실제 존재하는지 확인
-if(_ORT_FOUND)
-  # find_package가 include dir을 설정하지 않는 경우 (apt 패키지 등) 직접 탐색
-  if(NOT ONNXRUNTIME_INCLUDE_DIRS)
-    find_path(_ORT_HEADER_DIR onnxruntime_cxx_api.h
-      PATHS
-        /usr/include/onnxruntime/core/session
-        /usr/local/include/onnxruntime/core/session
-        /usr/include/onnxruntime
-        /usr/local/include/onnxruntime
+  # 2b) pkg-config fallback
+  if(NOT _ORT_FOUND)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+      pkg_check_modules(ONNXRUNTIME QUIET libonnxruntime)
+      if(ONNXRUNTIME_FOUND)
+        set(_ORT_FOUND TRUE)
+      endif()
+    endif()
+  endif()
+
+  # 2c) 수동 라이브러리 탐색
+  if(NOT _ORT_FOUND)
+    find_library(ONNXRUNTIME_LIB onnxruntime
+      PATHS /opt/onnxruntime/lib /usr/local/lib /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu
     )
-    if(_ORT_HEADER_DIR)
-      set(ONNXRUNTIME_INCLUDE_DIRS ${_ORT_HEADER_DIR})
+    if(ONNXRUNTIME_LIB)
+      set(_ORT_FOUND TRUE)
+      set(ONNXRUNTIME_LIBRARIES ${ONNXRUNTIME_LIB})
+      message(STATUS "ONNX Runtime found (manual): ${ONNXRUNTIME_LIB}")
     endif()
-  endif()
-
-  include(CheckIncludeFileCXX)
-  set(CMAKE_REQUIRED_INCLUDES ${ONNXRUNTIME_INCLUDE_DIRS})
-  if(TARGET onnxruntime::onnxruntime)
-    get_target_property(_ORT_INC onnxruntime::onnxruntime INTERFACE_INCLUDE_DIRECTORIES)
-    if(_ORT_INC)
-      list(APPEND CMAKE_REQUIRED_INCLUDES ${_ORT_INC})
-    endif()
-  endif()
-  check_include_file_cxx("onnxruntime_cxx_api.h" _ORT_HEADER_OK)
-  unset(CMAKE_REQUIRED_INCLUDES)
-  if(NOT _ORT_HEADER_OK)
-    message(WARNING "ONNX Runtime detected but onnxruntime_cxx_api.h not found — F/T inference disabled\n"
-                    "  Install headers: sudo apt install libonnxruntime-dev")
-    set(_ORT_FOUND FALSE)
   endif()
 endif()
 
-if(NOT _ORT_FOUND)
-  message(WARNING "ONNX Runtime not found — F/T inference will not be available")
+if(_ORT_FOUND)
+  message(STATUS "ONNX Runtime: enabled (headers: ${ONNXRUNTIME_INCLUDE_DIRS})")
+else()
+  message(STATUS "ONNX Runtime not found — F/T inference disabled (optional)")
+  if(NOT _ORT_HEADER_DIR)
+    message(STATUS "  Install: sudo apt install libonnxruntime-dev")
+  endif()
 endif()
 
 # ── Unified node: HandController (request-response polling) ──────────────────
@@ -109,14 +101,10 @@ ament_target_dependencies(hand_udp_node
 # ONNX Runtime 링크 (발견된 경우)
 if(_ORT_FOUND)
   target_compile_definitions(hand_udp_node PRIVATE HAS_ONNXRUNTIME)
+  target_include_directories(hand_udp_node PRIVATE ${ONNXRUNTIME_INCLUDE_DIRS})
   if(TARGET onnxruntime::onnxruntime)
     target_link_libraries(hand_udp_node onnxruntime::onnxruntime)
-    # find_package 타겟이 include dir을 누락하는 경우 수동으로 추가
-    if(ONNXRUNTIME_INCLUDE_DIRS)
-      target_include_directories(hand_udp_node PRIVATE ${ONNXRUNTIME_INCLUDE_DIRS})
-    endif()
   else()
-    target_include_directories(hand_udp_node PRIVATE ${ONNXRUNTIME_INCLUDE_DIRS})
     target_link_libraries(hand_udp_node ${ONNXRUNTIME_LIBRARIES})
   endif()
 endif()
