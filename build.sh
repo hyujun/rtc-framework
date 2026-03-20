@@ -361,7 +361,7 @@ fi
 
 colcon build "${COLCON_ARGS[@]}" || error "Build failed!"
 
-source install/setup.bash
+source "${WORKSPACE}/install/setup.bash"
 
 # ── compile_commands.json — VS Code IntelliSense 연동 ─────────────────────────
 # Debug 빌드 또는 --export-compile-commands 옵션 사용 시 자동 생성됨.
