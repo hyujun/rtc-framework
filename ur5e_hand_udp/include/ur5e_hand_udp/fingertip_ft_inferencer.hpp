@@ -211,7 +211,7 @@ class FingertipFTInferencer {
       // Input: [1, history_length, 16] (rank 3) — unsqueeze(0) 효과
       const int64_t H = static_cast<int64_t>(config_.history_length);
       const int64_t input_shape[] = {1, H, kFTInputSize};             // [1, 12, 16]
-      constexpr int64_t output_shape[] = {1, kFTValuesPerFingertip};  // [1, 13]
+      constexpr int64_t output_shape[] = {1, 1, kFTValuesPerFingertip};  // [1, 1, 13]
       RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
                   "finger[%d]: creating input tensor shape [1, %d, %d] (rank=3)...",
                   f, config_.history_length, static_cast<int>(kFTInputSize));
@@ -224,11 +224,11 @@ class FingertipFTInferencer {
                   "finger[%d]: input tensor created OK", f);
 
       RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                  "finger[%d]: creating output tensor shape [1, %d] (rank=2)...",
+                  "finger[%d]: creating output tensor shape [1, 1, %d] (rank=3)...",
                   f, static_cast<int>(kFTValuesPerFingertip));
       model.output_tensor = Ort::Value::CreateTensor<float>(
           memory_info_, model.output_buffer.data(),
-          model.output_buffer.size(), output_shape, 2);
+          model.output_buffer.size(), output_shape, 3);
       RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
                   "finger[%d]: output tensor created OK", f);
 
