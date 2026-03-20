@@ -454,11 +454,11 @@ void RtControllerNode::DeclareAndLoadParameters()
       auto std_vec = get_parameter(
           "ft_inferencer." + std::string(ft_param_names[static_cast<std::size_t>(f)]) + "_std")
           .as_double_array();
-      for (int b = 0; b < urtc::kBarometerCount && b < static_cast<int>(mean_vec.size()); ++b) {
+      for (int b = 0; b < urtc::kFTInputSize && b < static_cast<int>(mean_vec.size()); ++b) {
         cfg.input_mean[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
             static_cast<float>(mean_vec[static_cast<std::size_t>(b)]);
       }
-      for (int b = 0; b < urtc::kBarometerCount && b < static_cast<int>(std_vec.size()); ++b) {
+      for (int b = 0; b < urtc::kFTInputSize && b < static_cast<int>(std_vec.size()); ++b) {
         cfg.input_std[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
             static_cast<float>(std_vec[static_cast<std::size_t>(b)]);
       }

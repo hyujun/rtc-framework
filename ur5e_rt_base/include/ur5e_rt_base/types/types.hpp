@@ -67,7 +67,9 @@ template <typename T>
 concept FloatingPointType = std::floating_point<T>;
 
 // Fingertip F/T inference 관련 상수
-inline constexpr int kFTValuesPerFingertip = 6;   // Fx, Fy, Fz, Tx, Ty, Tz
+// Output layout: [contact(1), F(3), u(3), Fn(3), Fx(1), Fy(1), Fz(1)] = 13
+inline constexpr int kFTValuesPerFingertip = 13;
+inline constexpr int kFTInputSize          = 2 * kBarometerCount;  // baro(8) + delta(8) = 16
 
 // ── Data structures (aggregate, zero-initialised by default) ──────────────────
 

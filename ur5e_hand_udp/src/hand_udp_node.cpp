@@ -113,11 +113,11 @@ class HandUdpNode : public rclcpp::Node {
       auto std_vec = get_parameter(
           "ft_inferencer." + std::string(ft_param_names[static_cast<std::size_t>(f)]) + "_std")
           .as_double_array();
-      for (int b = 0; b < urtc::kBarometerCount && b < static_cast<int>(mean_vec.size()); ++b) {
+      for (int b = 0; b < urtc::kFTInputSize && b < static_cast<int>(mean_vec.size()); ++b) {
         ft_config.input_mean[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
             static_cast<float>(mean_vec[static_cast<std::size_t>(b)]);
       }
-      for (int b = 0; b < urtc::kBarometerCount && b < static_cast<int>(std_vec.size()); ++b) {
+      for (int b = 0; b < urtc::kFTInputSize && b < static_cast<int>(std_vec.size()); ++b) {
         ft_config.input_std[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
             static_cast<float>(std_vec[static_cast<std::size_t>(b)]);
       }
@@ -255,12 +255,17 @@ class HandUdpNode : public rclcpp::Node {
               ? ft_names_list[static_cast<std::size_t>(f)]
               : "f" + std::to_string(f);
           const int base = f * urtc::kFTValuesPerFingertip;
+          // Output: [contact(1), F(3), u(3), Fn(3), Fx(1), Fy(1), Fz(1)]
+          ft.contact = (ft_state.ft_data[static_cast<std::size_t>(base)] > 0.5f);
           for (int j = 0; j < 3; ++j) {
-            ft.force[static_cast<std::size_t>(j)] =
-                ft_state.ft_data[static_cast<std::size_t>(base + j)];
-            ft.torque[static_cast<std::size_t>(j)] =
-                ft_state.ft_data[static_cast<std::size_t>(base + 3 + j)];
+            const auto ju = static_cast<std::size_t>(j);
+            ft.force[ju]        = ft_state.ft_data[static_cast<std::size_t>(base + 1 + j)];
+            ft.direction[ju]    = ft_state.ft_data[static_cast<std::size_t>(base + 4 + j)];
+            ft.normal_force[ju] = ft_state.ft_data[static_cast<std::size_t>(base + 7 + j)];
           }
+          ft.force_x = ft_state.ft_data[static_cast<std::size_t>(base + 10)];
+          ft.force_y = ft_state.ft_data[static_cast<std::size_t>(base + 11)];
+          ft.force_z = ft_state.ft_data[static_cast<std::size_t>(base + 12)];
           ft_msg.fingertips.push_back(ft);
         }
         ft_pub_->publish(ft_msg);

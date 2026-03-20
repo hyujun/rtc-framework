@@ -1,11 +1,13 @@
-# fingertip_ft_inferencer.yaml — Fingertip F/T ONNX 추론 설정
+# fingertip_ft_inferencer.yaml — Fingertip 접촉/힘 ONNX 추론 설정
 #
 # Per-fingertip 모델 기반 추론:
-#   입력: barometer 8ch (fingertip당)
-#   출력: F/T 6값 [Fx, Fy, Fz, Tx, Ty, Tz] (fingertip당)
+#   입력: barometer 8ch + barometer_delta 8ch = 16 (fingertip당)
+#   출력: [contact(1), F(3), u(3), Fn(3), Fx(1), Fy(1), Fz(1)] = 13 (fingertip당)
 #
 # 추론은 sensor cycle에서만 실행 (sensor_decimation 주기에 따름)
-# 정규화 공식: (raw - baseline_offset[f][b] - input_mean[f][b]) / input_std[f][b]
+# 정규화 공식: (value - input_mean[f][ch]) / input_std[f][ch]
+#   ch 0..7:  barometer (baseline offset 보정 후)
+#   ch 8..15: barometer_delta (current - previous)
 
 /**:
   ros__parameters:
@@ -29,12 +31,12 @@
                                         # sensor_decimation=3 @ 500Hz → 약 3초 소요
 
       # Per-fingertip 학습 시 정규화 파라미터 (global mean/std)
-      # 각 배열은 8 float (barometer 채널 순서)
-      thumb_mean:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-      thumb_std:   [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-      index_mean:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-      index_std:   [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-      middle_mean: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-      middle_std:  [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-      ring_mean:   [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-      ring_std:    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+      # 각 배열은 16 float: barometer[0..7] + barometer_delta[0..7]
+      thumb_mean:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      thumb_std:   [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+      index_mean:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      index_std:   [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+      middle_mean: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      middle_std:  [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+      ring_mean:   [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      ring_std:    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]

@@ -3,9 +3,9 @@
 
 // Per-fingertip ONNX Runtime 기반 Force/Torque 추론기.
 //
-// 각 fingertip마다 개별 ONNX 모델을 로드하여 barometer 8ch → F/T 6축 변환.
-//   Input:  float32[1, 8]  (barometer 8ch, 정규화됨)
-//   Output: float32[1, 6]  ([Fx, Fy, Fz, Tx, Ty, Tz])
+// 각 fingertip마다 개별 ONNX 모델을 로드하여 barometer + delta → 접촉/힘 추론.
+//   Input:  float32[1, 16]  (barometer 8ch + barometer_delta 8ch, 정규화됨)
+//   Output: float32[1, 13]  ([contact(1), F(3), u(3), Fn(3), Fx(1), Fy(1), Fz(1)])
 //
 // RT safety:
 //   - Init()에서 모든 동적 할당 수행 (non-RT 컨텍스트)
@@ -42,8 +42,9 @@ class FingertipFTInferencer {
     bool enabled{false};
     int  num_fingertips{kDefaultNumFingertips};
     std::vector<std::string> model_paths;
-    std::array<std::array<float, kBarometerCount>, kMaxFingertips> input_mean{};
-    std::array<std::array<float, kBarometerCount>, kMaxFingertips> input_std{};
+    // 정규화 파라미터: [fingertip][input_channel] (baro 8 + delta 8 = 16)
+    std::array<std::array<float, kFTInputSize>, kMaxFingertips> input_mean{};
+    std::array<std::array<float, kFTInputSize>, kMaxFingertips> input_std{};
     bool calibration_enabled{true};
     int  calibration_samples{500};
   };
@@ -80,9 +81,10 @@ class FingertipFTInferencer {
     // Per-fingertip ONNX 모델 경로 (빈 문자열 → 해당 finger 비활성)
     std::vector<std::string> model_paths;
 
-    // Per-fingertip 정규화 파라미터 [fingertip][barometer_channel]
-    std::array<std::array<float, kBarometerCount>, kMaxFingertips> input_mean{};
-    std::array<std::array<float, kBarometerCount>, kMaxFingertips> input_std{};
+    // Per-fingertip 정규화 파라미터 [fingertip][input_channel]
+    // input_channel: baro[0..7] + delta[0..7] = 16
+    std::array<std::array<float, kFTInputSize>, kMaxFingertips> input_mean{};
+    std::array<std::array<float, kFTInputSize>, kMaxFingertips> input_std{};
 
     // Baseline Offset Calibration
     bool calibration_enabled{true};
@@ -159,8 +161,8 @@ class FingertipFTInferencer {
 #endif
 
       // 사전 할당된 버퍼 위에 Ort::Value 텐서 생성
-      constexpr int64_t input_shape[] = {1, kBarometerCount};
-      constexpr int64_t output_shape[] = {1, kFTValuesPerFingertip};
+      constexpr int64_t input_shape[] = {1, kFTInputSize};           // [1, 16]
+      constexpr int64_t output_shape[] = {1, kFTValuesPerFingertip}; // [1, 13]
 
       model.input_tensor = Ort::Value::CreateTensor<float>(
           memory_info_, model.input_buffer.data(),
@@ -184,6 +186,9 @@ class FingertipFTInferencer {
 
     RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
                 "num_active=%d / %d", num_active_, n);
+
+    // prev_barometer 초기화 (delta 계산용)
+    for (auto& p : prev_barometer_) p.fill(0.0f);
 
     // Calibration 초기화
     if (config_.calibration_enabled) {
@@ -265,27 +270,41 @@ class FingertipFTInferencer {
         if (!model.valid) continue;
 
         const int sensor_base = f * kSensorValuesPerFingertip;
+        const auto fi = static_cast<std::size_t>(f);
 
-        // Stride 추출 + Baseline Offset 정규화
+        // ── barometer[0..7]: baseline-offset 정규화 ────────────────────
+        std::array<float, kBarometerCount> cur_baro{};
         for (int b = 0; b < kBarometerCount; ++b) {
+          const auto bi = static_cast<std::size_t>(b);
           const float raw = static_cast<float>(
               sensor_data[static_cast<std::size_t>(sensor_base + b)]);
-          const float baseline =
-              baseline_offset_[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)];
-          const float mean =
-              config_.input_mean[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)];
-          float std_val =
-              config_.input_std[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)];
-          if (std_val == 0.0f) std_val = 1.0f;  // division-by-zero guard
+          cur_baro[bi] = raw - baseline_offset_[fi][bi];
 
-          model.input_buffer[static_cast<std::size_t>(b)] =
-              (raw - baseline - mean) / std_val;
+          const float mean = config_.input_mean[fi][bi];
+          float std_val = config_.input_std[fi][bi];
+          if (std_val == 0.0f) std_val = 1.0f;
+          model.input_buffer[bi] = (cur_baro[bi] - mean) / std_val;
         }
+
+        // ── barometer_delta[8..15]: current - previous ─────────────────
+        for (int b = 0; b < kBarometerCount; ++b) {
+          const auto bi = static_cast<std::size_t>(b);
+          const auto di = static_cast<std::size_t>(kBarometerCount + b);
+          const float delta = cur_baro[bi] - prev_barometer_[fi][bi];
+
+          const float mean = config_.input_mean[fi][di];
+          float std_val = config_.input_std[fi][di];
+          if (std_val == 0.0f) std_val = 1.0f;
+          model.input_buffer[di] = (delta - mean) / std_val;
+        }
+
+        // 현재 값을 prev에 저장 (다음 사이클의 delta 계산용)
+        prev_barometer_[fi] = cur_baro;
 
         // 추론 (IoBinding → output_buffer에 직접 기록)
         model.session->Run(Ort::RunOptions{nullptr}, *model.io_binding);
 
-        // 결과 복사: output_buffer[6] → ft_data[f*6 .. f*6+5]
+        // 결과 복사: output_buffer[13] → ft_data[f*13 .. f*13+12]
         const int ft_base = f * kFTValuesPerFingertip;
         std::memcpy(&result.ft_data[static_cast<std::size_t>(ft_base)],
                      model.output_buffer.data(),
@@ -322,8 +341,8 @@ class FingertipFTInferencer {
   struct PerFingertipModel {
     std::unique_ptr<Ort::Session> session;
     std::unique_ptr<Ort::IoBinding> io_binding;
-    std::array<float, kBarometerCount>       input_buffer{};   // 8 baro
-    std::array<float, kFTValuesPerFingertip> output_buffer{};  // 6 FT
+    std::array<float, kFTInputSize>          input_buffer{};   // baro(8) + delta(8) = 16
+    std::array<float, kFTValuesPerFingertip> output_buffer{};  // 13 outputs
     Ort::Value input_tensor{nullptr};
     Ort::Value output_tensor{nullptr};
     std::string input_name;
@@ -348,6 +367,9 @@ class FingertipFTInferencer {
   std::array<std::array<float, kBarometerCount>, kMaxFingertips>  baseline_offset_{};
   int  calibration_count_{0};
   bool calibrated_{false};
+
+  // 이전 barometer 값 (delta 계산용)
+  std::array<std::array<float, kBarometerCount>, kMaxFingertips> prev_barometer_{};
 };
 
 #endif  // HAS_ONNXRUNTIME
