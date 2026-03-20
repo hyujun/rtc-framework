@@ -14,7 +14,7 @@
 //
 // Baseline Offset Calibration:
 //   - Init() 이후 FeedCalibration()으로 센서 baseline 자동 측정
-//   - 정규화 공식: (raw - baseline_offset - yaml_mean) / yaml_std
+//   - 정규화 공식: (raw - baseline_offset) / input_max → [-1, +1]
 
 #include <array>
 #include <cmath>
@@ -42,9 +42,10 @@ class FingertipFTInferencer {
     bool enabled{false};
     int  num_fingertips{kDefaultNumFingertips};
     std::vector<std::string> model_paths;
-    // 정규화 파라미터: [fingertip][input_channel] (baro 8 + delta 8 = 16)
-    std::array<std::array<float, kFTInputSize>, kMaxFingertips> input_mean{};
-    std::array<std::array<float, kFTInputSize>, kMaxFingertips> input_std{};
+    // Per-fingertip 정규화 파라미터: input_max [fingertip][input_channel]
+    // input_channel: baro[0..7] + delta[0..7] = 16
+    // 정규화 공식: value / input_max → [-1, +1]
+    std::array<std::array<float, kFTInputSize>, kMaxFingertips> input_max{};
     bool calibration_enabled{true};
     int  calibration_samples{500};
   };
@@ -81,10 +82,10 @@ class FingertipFTInferencer {
     // Per-fingertip ONNX 모델 경로 (빈 문자열 → 해당 finger 비활성)
     std::vector<std::string> model_paths;
 
-    // Per-fingertip 정규화 파라미터 [fingertip][input_channel]
+    // Per-fingertip 정규화 파라미터: input_max [fingertip][input_channel]
     // input_channel: baro[0..7] + delta[0..7] = 16
-    std::array<std::array<float, kFTInputSize>, kMaxFingertips> input_mean{};
-    std::array<std::array<float, kFTInputSize>, kMaxFingertips> input_std{};
+    // 정규화 공식: value / input_max → [-1, +1]
+    std::array<std::array<float, kFTInputSize>, kMaxFingertips> input_max{};
 
     // Baseline Offset Calibration
     bool calibration_enabled{true};
@@ -272,7 +273,7 @@ class FingertipFTInferencer {
         const int sensor_base = f * kSensorValuesPerFingertip;
         const auto fi = static_cast<std::size_t>(f);
 
-        // ── barometer[0..7]: baseline-offset 정규화 ────────────────────
+        // ── barometer[0..7]: baseline-offset → input_max 정규화 ─────────
         std::array<float, kBarometerCount> cur_baro{};
         for (int b = 0; b < kBarometerCount; ++b) {
           const auto bi = static_cast<std::size_t>(b);
@@ -280,10 +281,9 @@ class FingertipFTInferencer {
               sensor_data[static_cast<std::size_t>(sensor_base + b)]);
           cur_baro[bi] = raw - baseline_offset_[fi][bi];
 
-          const float mean = config_.input_mean[fi][bi];
-          float std_val = config_.input_std[fi][bi];
-          if (std_val == 0.0f) std_val = 1.0f;
-          model.input_buffer[bi] = (cur_baro[bi] - mean) / std_val;
+          float max_val = config_.input_max[fi][bi];
+          if (max_val == 0.0f) max_val = 1.0f;
+          model.input_buffer[bi] = cur_baro[bi] / max_val;
         }
 
         // ── barometer_delta[8..15]: current - previous ─────────────────
@@ -292,10 +292,9 @@ class FingertipFTInferencer {
           const auto di = static_cast<std::size_t>(kBarometerCount + b);
           const float delta = cur_baro[bi] - prev_barometer_[fi][bi];
 
-          const float mean = config_.input_mean[fi][di];
-          float std_val = config_.input_std[fi][di];
-          if (std_val == 0.0f) std_val = 1.0f;
-          model.input_buffer[di] = (delta - mean) / std_val;
+          float max_val = config_.input_max[fi][di];
+          if (max_val == 0.0f) max_val = 1.0f;
+          model.input_buffer[di] = delta / max_val;
         }
 
         // 현재 값을 prev에 저장 (다음 사이클의 delta 계산용)
