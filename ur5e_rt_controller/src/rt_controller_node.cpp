@@ -1289,7 +1289,7 @@ void RtControllerNode::ControlLoop()
     const double timestamp =
         std::chrono::duration<double>(t0 - log_start_time_).count();
 
-    const urtc::LogEntry entry{
+    urtc::LogEntry entry{
       .timestamp = timestamp,
       // Timing
       .t_state_acquire_us = t_state_us,

@@ -1174,7 +1174,7 @@ class HandController {
           // F/T 추론 (캘리브레이션 또는 추론)
           if (ft_enabled_) {
             if (!ft_inferencer_->is_calibrated()) {
-              ft_inferencer_->FeedCalibration(cached_sensor_data, num_fingertips_);
+              static_cast<void>(ft_inferencer_->FeedCalibration(cached_sensor_data, num_fingertips_));
             } else {
               const auto ft_t0 = std::chrono::steady_clock::now();
               auto ft_result = ft_inferencer_->Infer(cached_sensor_data, num_fingertips_);
@@ -1252,7 +1252,7 @@ class HandController {
           // F/T 추론 (캘리브레이션 또는 추론)
           if (ft_enabled_) {
             if (!ft_inferencer_->is_calibrated()) {
-              ft_inferencer_->FeedCalibration(cached_sensor_data, num_fingertips_);
+              static_cast<void>(ft_inferencer_->FeedCalibration(cached_sensor_data, num_fingertips_));
             } else {
               const auto ft_t0 = std::chrono::steady_clock::now();
               auto ft_result = ft_inferencer_->Infer(cached_sensor_data, num_fingertips_);
