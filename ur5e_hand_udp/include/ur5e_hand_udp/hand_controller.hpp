@@ -491,15 +491,39 @@ class HandController {
 
   [[nodiscard]] bool Start() {
     // F/T 추론기 초기화 (fake/real 공통 — EventLoop 불필요)
+    std::fprintf(stderr, "[HandController] FT config: enabled=%d, num_fingertips=%d, "
+                 "model_paths.size=%zu, calibration_enabled=%d, calibration_samples=%d\n",
+                 ft_config_.enabled ? 1 : 0, num_fingertips_,
+                 ft_config_.model_paths.size(),
+                 ft_config_.calibration_enabled ? 1 : 0,
+                 ft_config_.calibration_samples);
     if (ft_config_.enabled && num_fingertips_ > 0) {
+      for (std::size_t i = 0; i < ft_config_.model_paths.size(); ++i) {
+        std::fprintf(stderr, "[HandController] FT model_path[%zu]=\"%s\"\n",
+                     i, ft_config_.model_paths[i].c_str());
+      }
       ft_inferencer_ = std::make_unique<FingertipFTInferencer>();
       try {
         ft_inferencer_->Init(ft_config_);
         ft_enabled_ = ft_inferencer_->is_initialized();
+        std::fprintf(stderr, "[HandController] FT init OK: initialized=%d, "
+                     "num_active_models=%d, calibrated=%d\n",
+                     ft_inferencer_->is_initialized() ? 1 : 0,
+                     ft_inferencer_->num_active_models(),
+                     ft_inferencer_->is_calibrated() ? 1 : 0);
+      } catch (const std::exception& e) {
+        std::fprintf(stderr, "[HandController] FT init FAILED: %s\n", e.what());
+        ft_enabled_ = false;
+        ft_inferencer_.reset();
       } catch (...) {
+        std::fprintf(stderr, "[HandController] FT init FAILED: unknown exception\n");
         ft_enabled_ = false;
         ft_inferencer_.reset();
       }
+    } else {
+      std::fprintf(stderr, "[HandController] FT inference SKIPPED: enabled=%d, "
+                   "num_fingertips=%d\n",
+                   ft_config_.enabled ? 1 : 0, num_fingertips_);
     }
 
     if (use_fake_hand_) {
