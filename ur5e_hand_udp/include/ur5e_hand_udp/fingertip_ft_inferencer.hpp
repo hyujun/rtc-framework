@@ -139,12 +139,18 @@ class FingertipFTInferencer {
                   "finger[%d]: loading \"%s\"", f, path.c_str());
 
       // Session 생성
+      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                  "finger[%d]: creating Ort::Session...", f);
       model.session = std::make_unique<Ort::Session>(
           env_, path.c_str(), session_options);
+      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                  "finger[%d]: Ort::Session created OK", f);
 
       // Input/Output 이름 쿼리
       // ORT_API_VERSION >= 13 (v1.13+): GetInputNameAllocated 사용
       // 이전 버전 (Ubuntu 22.04 apt v1.11): GetInputName 사용
+      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                  "finger[%d]: querying input/output names...", f);
 #if ORT_API_VERSION >= 13
       auto input_name_alloc = model.session->GetInputNameAllocated(0, allocator_);
       auto output_name_alloc = model.session->GetOutputNameAllocated(0, allocator_);
@@ -160,23 +166,77 @@ class FingertipFTInferencer {
         allocator_.Free(out_name);
       }
 #endif
+      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                  "finger[%d]: input_name='%s', output_name='%s'",
+                  f, model.input_name.c_str(), model.output_name.c_str());
+
+      // 모델이 기대하는 input/output shape 로깅
+      {
+        const auto num_inputs = model.session->GetInputCount();
+        const auto num_outputs = model.session->GetOutputCount();
+        RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                    "finger[%d]: model has %zu inputs, %zu outputs",
+                    f, num_inputs, num_outputs);
+
+        auto input_type_info = model.session->GetInputTypeInfo(0);
+        auto input_tensor_info = input_type_info.GetTensorTypeAndShapeInfo();
+        auto input_dims = input_tensor_info.GetShape();
+        std::string input_shape_str = "[";
+        for (std::size_t d = 0; d < input_dims.size(); ++d) {
+          if (d > 0) input_shape_str += ", ";
+          input_shape_str += std::to_string(input_dims[d]);
+        }
+        input_shape_str += "]";
+        RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                    "finger[%d]: model expected input shape: %s (rank=%zu)",
+                    f, input_shape_str.c_str(), input_dims.size());
+
+        auto output_type_info = model.session->GetOutputTypeInfo(0);
+        auto output_tensor_info = output_type_info.GetTensorTypeAndShapeInfo();
+        auto output_dims = output_tensor_info.GetShape();
+        std::string output_shape_str = "[";
+        for (std::size_t d = 0; d < output_dims.size(); ++d) {
+          if (d > 0) output_shape_str += ", ";
+          output_shape_str += std::to_string(output_dims[d]);
+        }
+        output_shape_str += "]";
+        RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                    "finger[%d]: model expected output shape: %s (rank=%zu)",
+                    f, output_shape_str.c_str(), output_dims.size());
+      }
 
       // 사전 할당된 버퍼 위에 Ort::Value 텐서 생성
       constexpr int64_t input_shape[] = {1, kFTInputSize};           // [1, 16]
       constexpr int64_t output_shape[] = {1, kFTValuesPerFingertip}; // [1, 13]
+      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                  "finger[%d]: creating input tensor shape [1, %d] (rank=2)...",
+                  f, static_cast<int>(kFTInputSize));
 
       model.input_tensor = Ort::Value::CreateTensor<float>(
           memory_info_, model.input_buffer.data(),
           model.input_buffer.size(), input_shape, 2);
+      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                  "finger[%d]: input tensor created OK", f);
 
+      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                  "finger[%d]: creating output tensor shape [1, %d] (rank=2)...",
+                  f, static_cast<int>(kFTValuesPerFingertip));
       model.output_tensor = Ort::Value::CreateTensor<float>(
           memory_info_, model.output_buffer.data(),
           model.output_buffer.size(), output_shape, 2);
+      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                  "finger[%d]: output tensor created OK", f);
 
       // IoBinding 생성 + 바인딩
+      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                  "finger[%d]: creating IoBinding and binding I/O...", f);
       model.io_binding = std::make_unique<Ort::IoBinding>(*model.session);
       model.io_binding->BindInput(model.input_name.c_str(), model.input_tensor);
+      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                  "finger[%d]: BindInput OK", f);
       model.io_binding->BindOutput(model.output_name.c_str(), model.output_tensor);
+      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                  "finger[%d]: BindOutput OK", f);
 
       model.valid = true;
       ++num_active_;
