@@ -59,6 +59,20 @@ endif()
 
 # 최종 검증: 어떤 경로로 찾았든 헤더가 실제 존재하는지 확인
 if(_ORT_FOUND)
+  # find_package가 include dir을 설정하지 않는 경우 (apt 패키지 등) 직접 탐색
+  if(NOT ONNXRUNTIME_INCLUDE_DIRS)
+    find_path(_ORT_HEADER_DIR onnxruntime_cxx_api.h
+      PATHS
+        /usr/include/onnxruntime/core/session
+        /usr/local/include/onnxruntime/core/session
+        /usr/include/onnxruntime
+        /usr/local/include/onnxruntime
+    )
+    if(_ORT_HEADER_DIR)
+      set(ONNXRUNTIME_INCLUDE_DIRS ${_ORT_HEADER_DIR})
+    endif()
+  endif()
+
   include(CheckIncludeFileCXX)
   set(CMAKE_REQUIRED_INCLUDES ${ONNXRUNTIME_INCLUDE_DIRS})
   if(TARGET onnxruntime::onnxruntime)
@@ -97,6 +111,10 @@ if(_ORT_FOUND)
   target_compile_definitions(hand_udp_node PRIVATE HAS_ONNXRUNTIME)
   if(TARGET onnxruntime::onnxruntime)
     target_link_libraries(hand_udp_node onnxruntime::onnxruntime)
+    # find_package 타겟이 include dir을 누락하는 경우 수동으로 추가
+    if(ONNXRUNTIME_INCLUDE_DIRS)
+      target_include_directories(hand_udp_node PRIVATE ${ONNXRUNTIME_INCLUDE_DIRS})
+    endif()
   else()
     target_include_directories(hand_udp_node PRIVATE ${ONNXRUNTIME_INCLUDE_DIRS})
     target_link_libraries(hand_udp_node ${ONNXRUNTIME_LIBRARIES})
