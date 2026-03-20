@@ -480,14 +480,14 @@ install_onnxruntime() {
   local ONNXRT_VER="1.17.1"
   local ONNXRT_DIR="/opt/onnxruntime"
 
-  # apt에서 설치 가능한지 확인
-  if dpkg -l libonnxruntime-dev > /dev/null 2>&1; then
+  # apt에서 설치되어 있는지 확인 (dpkg -s로 실제 설치 상태 검증)
+  if dpkg -s libonnxruntime-dev 2>/dev/null | grep -q "^Status:.*install ok installed"; then
     success "ONNX Runtime already installed (apt)"
     return
   fi
 
-  # /opt/onnxruntime에 이미 설치된 경우
-  if [[ -d "$ONNXRT_DIR" && -f "$ONNXRT_DIR/lib/libonnxruntime.so" ]]; then
+  # /opt/onnxruntime에 이미 설치된 경우 (라이브러리 + 헤더 모두 확인)
+  if [[ -d "$ONNXRT_DIR" && -f "$ONNXRT_DIR/lib/libonnxruntime.so" && -f "$ONNXRT_DIR/include/onnxruntime_cxx_api.h" ]]; then
     success "ONNX Runtime already installed at ${ONNXRT_DIR}"
     return
   fi
