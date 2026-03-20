@@ -373,7 +373,7 @@ check_grub_params() {
 
   # 필수 파라미터 (값 포함)
   # isolcpus는 cset shield로 대체되어 선택 사항으로 변경
-  local -a params_required=("nohz_full" "rcu_nocbs" "processor.max_cstate")
+  local -a params_required=("nohz_full" "rcu_nocbs" "processor.max_cstate" "clocksource" "tsc" "nmi_watchdog")
   for param in "${params_required[@]}"; do
     ((total++)) || true
     if echo "$cmdline" | grep -qE "(^| )${param}="; then
@@ -850,6 +850,33 @@ check_cpu_frequency() {
     if [[ "$non_perf" -gt 0 ]]; then
       _warn "cpu-governor-performance.service: not enabled (재부팅 시 powersave 복원)"
       _fix "sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh  (서비스 자동 생성)"
+      _category_update "cpu_frequency" "WARN"
+    fi
+  fi
+
+  # Turbo Boost 확인 — 주파수 변동으로 인한 jitter 유발 (특히 NUC 등 소형 PC)
+  local turbo_file="/sys/devices/system/cpu/intel_pstate/no_turbo"
+  if [[ -f "$turbo_file" ]]; then
+    local no_turbo
+    no_turbo=$(cat "$turbo_file" 2>/dev/null || echo "unknown")
+    if [[ "$no_turbo" == "1" ]]; then
+      _pass "Intel Turbo Boost: 비활성 (주파수 안정)"
+    else
+      _warn "Intel Turbo Boost: 활성 (소형 PC에서 열 쓰로틀링으로 인한 jitter 위험)"
+      _fix "echo 1 | sudo tee ${turbo_file}"
+      _category_update "cpu_frequency" "WARN"
+    fi
+  fi
+
+  local amd_boost_file="/sys/devices/system/cpu/cpufreq/boost"
+  if [[ -f "$amd_boost_file" && ! -f "$turbo_file" ]]; then
+    local amd_boost
+    amd_boost=$(cat "$amd_boost_file" 2>/dev/null || echo "unknown")
+    if [[ "$amd_boost" == "0" ]]; then
+      _pass "AMD Boost: 비활성 (주파수 안정)"
+    else
+      _warn "AMD Boost: 활성 (소형 PC에서 열 쓰로틀링으로 인한 jitter 위험)"
+      _fix "echo 0 | sudo tee ${amd_boost_file}"
       _category_update "cpu_frequency" "WARN"
     fi
   fi

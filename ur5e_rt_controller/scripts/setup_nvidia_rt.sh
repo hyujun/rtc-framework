@@ -347,7 +347,15 @@ declare -A GRUB_PARAMS_WITH_VALUE=(
   ["nohz_full"]="${RT_CORES}"
   ["rcu_nocbs"]="${RT_CORES}"
   ["processor.max_cstate"]="1"
+  # TSC 클럭소스 명시 지정 — HPET 대비 50-100x 빠른 타이머 읽기
+  ["clocksource"]="tsc"
+  ["tsc"]="reliable"
+  # NMI watchdog 비활성화 — RT 코어에서 간헐적 100-350µs 지연 유발
+  ["nmi_watchdog"]="0"
 )
+# threadirqs: 하드웨어 IRQ 핸들러를 스레드화하여 RT 스케줄링 적용
+# nosoftlockup: RT 스레드가 장시간 CPU를 점유해도 soft lockup 경고 방지
+# tsc_early: 부팅 초기부터 TSC 사용 (일부 커널에서 HPET fallback 방지)
 GRUB_PARAMS_WITHOUT_VALUE=("threadirqs" "nosoftlockup")
 
 # 기존 스크립트(build_rt_kernel.sh)와 RT_OPTIMIZATION.md에 맞춰
@@ -398,7 +406,7 @@ if [[ "$GRUB_MODIFIED" -eq 1 ]]; then
   fi
 
   success "GRUB 설정 업데이트 완료"
-  CHANGES_APPLIED+=("GRUB 커널 파라미터: nohz_full, rcu_nocbs, threadirqs 등 (isolcpus → cset shield로 대체)")
+  CHANGES_APPLIED+=("GRUB 커널 파라미터: nohz_full, rcu_nocbs, clocksource=tsc, nmi_watchdog=0, threadirqs 등")
 
   info "update-grub 실행 중..."
   update-grub 2>/dev/null
