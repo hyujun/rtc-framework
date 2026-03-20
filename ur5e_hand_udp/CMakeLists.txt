@@ -29,6 +29,10 @@ set(_ORT_FOUND FALSE)
 set(ONNXRUNTIME_INCLUDE_DIRS "")
 set(ONNXRUNTIME_LIBRARIES "")
 
+# CMake 캐시 초기화 — 이전 빌드의 stale 경로 방지
+unset(_ORT_HEADER_DIR CACHE)
+unset(ONNXRUNTIME_LIB CACHE)
+
 # 1) 헤더 경로 탐색 (어떤 방식이든 헤더가 있어야 빌드 가능)
 find_path(_ORT_HEADER_DIR onnxruntime_cxx_api.h
   PATHS
@@ -42,6 +46,13 @@ find_path(_ORT_HEADER_DIR onnxruntime_cxx_api.h
 if(NOT _ORT_HEADER_DIR)
   # NO_DEFAULT_PATH에서 못 찾으면 시스템 기본 경로도 탐색
   find_path(_ORT_HEADER_DIR onnxruntime_cxx_api.h)
+endif()
+
+# 1b) 최종 검증: find_path 결과가 실제로 존재하는지 확인 (stale cache 방지)
+if(_ORT_HEADER_DIR AND NOT EXISTS "${_ORT_HEADER_DIR}/onnxruntime_cxx_api.h")
+  message(STATUS "ONNX Runtime header path stale (${_ORT_HEADER_DIR}) — resetting")
+  unset(_ORT_HEADER_DIR CACHE)
+  set(_ORT_HEADER_DIR "")
 endif()
 
 if(_ORT_HEADER_DIR)
@@ -77,8 +88,14 @@ if(_ORT_HEADER_DIR)
   endif()
 endif()
 
+# 최종 게이트: 라이브러리를 찾았더라도 헤더가 실제로 존재해야 활성화
 if(_ORT_FOUND)
-  message(STATUS "ONNX Runtime: enabled (headers: ${ONNXRUNTIME_INCLUDE_DIRS})")
+  if(NOT EXISTS "${ONNXRUNTIME_INCLUDE_DIRS}/onnxruntime_cxx_api.h")
+    message(STATUS "ONNX Runtime library found but header missing at ${ONNXRUNTIME_INCLUDE_DIRS} — disabling")
+    set(_ORT_FOUND FALSE)
+  else()
+    message(STATUS "ONNX Runtime: enabled (headers: ${ONNXRUNTIME_INCLUDE_DIRS})")
+  endif()
 else()
   message(STATUS "ONNX Runtime not found — F/T inference disabled (optional)")
   if(NOT _ORT_HEADER_DIR)
