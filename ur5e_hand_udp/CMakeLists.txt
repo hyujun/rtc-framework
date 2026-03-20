@@ -23,12 +23,27 @@ find_package(ur5e_rt_base REQUIRED)
 find_package(ur5e_msgs REQUIRED)
 
 # ── ONNX Runtime ─────────────────────────────────────────────────────────────
-# find_package 우선, 실패 시 pkg-config fallback
+# find_package 우선, 실패 시 pkg-config fallback, 최후 수동 탐색
 find_package(onnxruntime QUIET)
 if(NOT onnxruntime_FOUND)
   find_package(PkgConfig QUIET)
   if(PkgConfig_FOUND)
     pkg_check_modules(ONNXRUNTIME QUIET libonnxruntime)
+  endif()
+  # pkg-config가 라이브러리만 찾고 헤더가 없는 경우 무효화
+  if(ONNXRUNTIME_FOUND)
+    find_path(_ORT_HEADER_CHECK onnxruntime_cxx_api.h
+      PATHS ${ONNXRUNTIME_INCLUDE_DIRS}
+      NO_DEFAULT_PATH
+    )
+    if(NOT _ORT_HEADER_CHECK)
+      find_path(_ORT_HEADER_CHECK onnxruntime_cxx_api.h)
+    endif()
+    if(NOT _ORT_HEADER_CHECK)
+      message(WARNING "ONNX Runtime pkg-config found but headers missing (install libonnxruntime-dev)")
+      set(ONNXRUNTIME_FOUND FALSE)
+    endif()
+    unset(_ORT_HEADER_CHECK CACHE)
   endif()
   if(NOT ONNXRUNTIME_FOUND)
     # /opt/onnxruntime 수동 설치 경로 탐색
