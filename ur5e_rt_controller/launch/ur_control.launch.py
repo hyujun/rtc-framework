@@ -59,6 +59,8 @@ def _launch_setup(context):
     use_fake = context.launch_configurations.get('use_fake_hardware', 'false')
     mock_enabled = 'true' if use_mock == 'true' or use_fake == 'true' else 'false'
 
+    # Humble uses 'use_fake_hardware', Jazzy+ uses 'use_mock_hardware'.
+    # Pass both so the correct one is picked up regardless of ROS distro.
     ur_driver_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([
@@ -71,6 +73,7 @@ def _launch_setup(context):
             'ur_type': 'ur5e',
             'robot_ip': LaunchConfiguration('robot_ip'),
             'use_mock_hardware': mock_enabled,
+            'use_fake_hardware': mock_enabled,
             'launch_rviz': 'false',
         }.items()
     )
