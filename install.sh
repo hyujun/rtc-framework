@@ -311,7 +311,8 @@ install_ros2() {
 
   # ── Source the newly installed ROS2 ──────────────────────────────────────
   # shellcheck disable=SC1090
-  source "/opt/ros/${ros_distro}/setup.bash"
+  # NOTE: set -e 하에서 setup.bash 내부 non-zero 반환 방지
+  source "/opt/ros/${ros_distro}/setup.bash" || true
 
   success "ROS2 ${ros_distro} installed successfully"
 }
@@ -334,7 +335,8 @@ check_prerequisites() {
         if [[ -f "/opt/ros/${_distro}/setup.bash" ]]; then
           info "Found ROS2 ${_distro} at /opt/ros/${_distro} — sourcing setup.bash ..."
           # shellcheck disable=SC1090
-          source "/opt/ros/${_distro}/setup.bash"
+          # NOTE: set -e 하에서 setup.bash 내부 non-zero 반환 방지
+          source "/opt/ros/${_distro}/setup.bash" || true
           _found_ros2=1
           break
         fi
@@ -478,14 +480,14 @@ install_onnxruntime() {
   local ONNXRT_VER="1.17.1"
   local ONNXRT_DIR="/opt/onnxruntime"
 
-  # apt에서 설치 가능한지 확인
-  if dpkg -l libonnxruntime-dev > /dev/null 2>&1; then
+  # apt에서 설치되어 있는지 확인 (dpkg -s로 실제 설치 상태 검증)
+  if dpkg -s libonnxruntime-dev 2>/dev/null | grep -q "^Status:.*install ok installed"; then
     success "ONNX Runtime already installed (apt)"
     return
   fi
 
-  # /opt/onnxruntime에 이미 설치된 경우
-  if [[ -d "$ONNXRT_DIR" && -f "$ONNXRT_DIR/lib/libonnxruntime.so" ]]; then
+  # /opt/onnxruntime에 이미 설치된 경우 (라이브러리 + 헤더 모두 확인)
+  if [[ -d "$ONNXRT_DIR" && -f "$ONNXRT_DIR/lib/libonnxruntime.so" && -f "$ONNXRT_DIR/include/onnxruntime_cxx_api.h" ]]; then
     success "ONNX Runtime already installed at ${ONNXRT_DIR}"
     return
   fi
@@ -734,7 +736,8 @@ build_package() {
 
   colcon build "${COLCON_ARGS[@]}" || error "Build failed!"
 
-  source install/setup.bash
+  # 빌드 후 최신 overlay 소싱 (verify_installation 등 후속 작업용)
+  source "${WORKSPACE}/install/setup.bash" || true
   success "All packages built and sourced"
 }
 
@@ -957,18 +960,111 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 GOVEOF
-    sudo systemctl daemon-reload
-    sudo systemctl enable cpu-governor-performance.service 2>/dev/null
+    sudo timeout 30 systemctl daemon-reload || true
+    sudo systemctl enable cpu-governor-performance.service 2>/dev/null || true
     success "CPU governor → performance (service enabled for persistence)"
   else
     success "CPU governor → performance (service already exists)"
   fi
 }
 
+# ── [RT] GRUB 커널 파라미터 + sysctl (NVIDIA 무관, robot + full) ──────────────
+# clocksource=tsc, nmi_watchdog=0, sched_rt_runtime_us=-1 등 RT 필수 설정.
+# NVIDIA 시스템은 setup_nvidia_rt.sh [3/11]에서도 같은 GRUB 파라미터를 설정하지만,
+# "이미 존재" 로 건너뛰므로 중복 문제는 없다.
+setup_rt_kernel_params() {
+  # rt_common.sh의 compute_cpu_layout 사용
+  compute_cpu_layout
+
+  # ── RT_CORES 계산 (SMT 시블링 포함) ──
+  # rt_common.sh의 compute_expected_isolated() 재사용 (get_os_logical_cpus + _format_cpu_range)
+  local RT_CORES
+  RT_CORES=$(compute_expected_isolated)
+
+  info "RT kernel params: RT_CORES=${RT_CORES}, OS_CORES=${OS_CORES_DESC}"
+
+  # ── 1) GRUB 커널 파라미터 ──
+  local GRUB_FILE="/etc/default/grub"
+  if [[ -f "$GRUB_FILE" ]]; then
+    declare -A GRUB_PARAMS_WITH_VALUE=(
+      ["nohz_full"]="${RT_CORES}"
+      ["rcu_nocbs"]="${RT_CORES}"
+      ["processor.max_cstate"]="1"
+      ["clocksource"]="tsc"
+      ["tsc"]="reliable"
+      ["nmi_watchdog"]="0"
+    )
+    local -a GRUB_PARAMS_WITHOUT_VALUE=("threadirqs" "nosoftlockup")
+    local GRUB_VAR="GRUB_CMDLINE_LINUX_DEFAULT"
+    local CURRENT_CMDLINE=""
+    if grep -q "^${GRUB_VAR}=" "$GRUB_FILE"; then
+      CURRENT_CMDLINE=$(grep "^${GRUB_VAR}=" "$GRUB_FILE" | sed "s/^${GRUB_VAR}=\"\(.*\)\"/\1/")
+    fi
+
+    local GRUB_MODIFIED=0
+    local NEW_CMDLINE="$CURRENT_CMDLINE"
+
+    local param value
+    for param in "${!GRUB_PARAMS_WITH_VALUE[@]}"; do
+      value="${GRUB_PARAMS_WITH_VALUE[$param]}"
+      if ! echo "$NEW_CMDLINE" | grep -qE "(^| )${param}="; then
+        NEW_CMDLINE="${NEW_CMDLINE:+${NEW_CMDLINE} }${param}=${value}"
+        GRUB_MODIFIED=1
+        info "  GRUB 추가: ${param}=${value}"
+      fi
+    done
+    for param in "${GRUB_PARAMS_WITHOUT_VALUE[@]}"; do
+      if ! echo "$NEW_CMDLINE" | grep -qE "(^| )${param}( |$)"; then
+        NEW_CMDLINE="${NEW_CMDLINE:+${NEW_CMDLINE} }${param}"
+        GRUB_MODIFIED=1
+        info "  GRUB 추가: ${param}"
+      fi
+    done
+
+    if [[ "$GRUB_MODIFIED" -eq 1 ]]; then
+      # 백업
+      sudo cp "$GRUB_FILE" "${GRUB_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+
+      if grep -q "^${GRUB_VAR}=" "$GRUB_FILE"; then
+        local ESCAPED_CMDLINE
+        ESCAPED_CMDLINE=$(printf '%s' "$NEW_CMDLINE" | sed 's/[&#\\/]/\\&/g')
+        sudo sed -i "s#^${GRUB_VAR}=.*#${GRUB_VAR}=\"${ESCAPED_CMDLINE}\"#" "$GRUB_FILE"
+      else
+        echo "${GRUB_VAR}=\"${NEW_CMDLINE}\"" | sudo tee -a "$GRUB_FILE" > /dev/null
+      fi
+
+      sudo update-grub 2>/dev/null || true
+      success "GRUB RT 파라미터 설정 완료 (재부팅 필요)"
+    else
+      success "GRUB RT 파라미터: 이미 모두 설정됨"
+    fi
+  else
+    warn "GRUB 설정 파일(${GRUB_FILE})을 찾을 수 없습니다 — 건너뜀"
+  fi
+
+  # ── 2) sched_rt_runtime_us = -1 (RT 스로틀링 해제) ──
+  local RT_RUNTIME
+  RT_RUNTIME=$(cat /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null || echo "")
+  if [[ "$RT_RUNTIME" != "-1" ]]; then
+    sudo sysctl -w kernel.sched_rt_runtime_us=-1 > /dev/null 2>&1 || true
+    # 영구 설정
+    local SYSCTL_RT="/etc/sysctl.d/99-rt-sched.conf"
+    if [[ ! -f "$SYSCTL_RT" ]] || ! grep -q "sched_rt_runtime_us" "$SYSCTL_RT" 2>/dev/null; then
+      echo "kernel.sched_rt_runtime_us=-1" | sudo tee "$SYSCTL_RT" > /dev/null
+      success "sched_rt_runtime_us=-1 설정 완료 (즉시 + 영구)"
+    else
+      sudo sysctl -w kernel.sched_rt_runtime_us=-1 > /dev/null 2>&1 || true
+      success "sched_rt_runtime_us=-1 즉시 적용 (영구 설정 이미 존재)"
+    fi
+  else
+    success "sched_rt_runtime_us: 이미 -1 (RT 스로틀링 없음)"
+  fi
+}
+
 # ── Verify installation ─────────────────────────────────────────────────────────
 verify_installation() {
   info "Verifying installation..."
-  source "$WORKSPACE/install/setup.bash"
+  source "$WORKSPACE/install/setup.bash" || true
   local failed=0
   for pkg in ur5e_msgs ur5e_rt_base ur5e_description ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_tools; do
     if ros2 pkg list 2>/dev/null | grep -q "^${pkg}$"; then
@@ -1173,6 +1269,7 @@ if [[ "$SKIP_RT" -eq 0 ]]; then
       install_cset_tools
       install_rt_permissions
       setup_rt_sudoers
+      setup_rt_kernel_params
       setup_irq_affinity
       setup_udp_optimization
       setup_nvidia_rt

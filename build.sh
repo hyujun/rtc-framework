@@ -83,7 +83,8 @@ ensure_ros2_sourced() {
       if [[ -f "/opt/ros/${_distro}/setup.bash" ]]; then
         info "Found ROS2 ${_distro} at /opt/ros/${_distro} — sourcing setup.bash ..."
         # shellcheck disable=SC1090
-        source "/opt/ros/${_distro}/setup.bash"
+        # NOTE: set -e 하에서 setup.bash 내부 non-zero 반환 방지
+        source "/opt/ros/${_distro}/setup.bash" || true
         success "ROS2 ${_distro} sourced"
         return 0
       fi
@@ -91,6 +92,18 @@ ensure_ros2_sourced() {
   fi
 
   error "ROS2 not found. Install ROS2 or source setup.bash before running build.sh"
+}
+
+# ── Workspace overlay auto-source ────────────────────────────────────────────
+# 기존 빌드 결과가 있으면 workspace overlay를 소싱하여
+# colcon build가 기존 패키지 의존성(ur5e_msgs 등)을 찾을 수 있게 한다.
+source_workspace_overlay() {
+  local ws_setup="${WORKSPACE}/install/setup.bash"
+  if [[ -f "$ws_setup" ]]; then
+    info "기존 workspace overlay 소싱: ${ws_setup}"
+    # shellcheck disable=SC1090
+    source "$ws_setup" || true
+  fi
 }
 
 # ── Common: Workspace structure check ──────────────────────────────────────────
@@ -278,6 +291,9 @@ ensure_ros2_sourced
 # ── Workspace detection ────────────────────────────────────────────────────────
 check_workspace_structure
 
+# ── Workspace overlay (기존 빌드 결과 소싱) ───────────────────────────────────
+source_workspace_overlay
+
 # ── Package selection by mode ──────────────────────────────────────────────────
 if [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]]; then
   PACKAGES=("${CUSTOM_PACKAGES[@]}")
@@ -361,7 +377,8 @@ fi
 
 colcon build "${COLCON_ARGS[@]}" || error "Build failed!"
 
-source install/setup.bash
+# 빌드 후 최신 overlay 소싱 (check_rt_setup.sh 등 후속 작업용)
+source "${WORKSPACE}/install/setup.bash" || true
 
 # ── compile_commands.json — VS Code IntelliSense 연동 ─────────────────────────
 # Debug 빌드 또는 --export-compile-commands 옵션 사용 시 자동 생성됨.

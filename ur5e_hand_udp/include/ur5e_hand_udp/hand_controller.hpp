@@ -46,6 +46,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <rclcpp/logging.hpp>
+
 #include "ur5e_rt_base/types/types.hpp"
 #include "ur5e_rt_base/threading/thread_config.hpp"
 #include "ur5e_rt_base/threading/thread_utils.hpp"
@@ -490,6 +492,46 @@ class HandController {
   // ── Lifecycle ──────────────────────────────────────────────────────────
 
   [[nodiscard]] bool Start() {
+    // F/T 추론기 초기화 (fake/real 공통 — EventLoop 불필요)
+    RCLCPP_INFO(rclcpp::get_logger("HandController"),
+                "FT config: enabled=%d, num_fingertips=%d, "
+                "model_paths.size=%zu, calibration_enabled=%d, calibration_samples=%d",
+                ft_config_.enabled ? 1 : 0, num_fingertips_,
+                ft_config_.model_paths.size(),
+                ft_config_.calibration_enabled ? 1 : 0,
+                ft_config_.calibration_samples);
+    if (ft_config_.enabled && num_fingertips_ > 0) {
+      for (std::size_t i = 0; i < ft_config_.model_paths.size(); ++i) {
+        RCLCPP_INFO(rclcpp::get_logger("HandController"),
+                    "FT model_path[%zu]=\"%s\"",
+                    i, ft_config_.model_paths[i].c_str());
+      }
+      ft_inferencer_ = std::make_unique<FingertipFTInferencer>();
+      try {
+        ft_inferencer_->Init(ft_config_);
+        ft_enabled_ = ft_inferencer_->is_initialized();
+        RCLCPP_INFO(rclcpp::get_logger("HandController"),
+                    "FT init OK: initialized=%d, num_active_models=%d, calibrated=%d",
+                    ft_inferencer_->is_initialized() ? 1 : 0,
+                    ft_inferencer_->num_active_models(),
+                    ft_inferencer_->is_calibrated() ? 1 : 0);
+      } catch (const std::exception& e) {
+        RCLCPP_ERROR(rclcpp::get_logger("HandController"),
+                     "FT init FAILED: %s", e.what());
+        ft_enabled_ = false;
+        ft_inferencer_.reset();
+      } catch (...) {
+        RCLCPP_ERROR(rclcpp::get_logger("HandController"),
+                     "FT init FAILED: unknown exception");
+        ft_enabled_ = false;
+        ft_inferencer_.reset();
+      }
+    } else {
+      RCLCPP_WARN(rclcpp::get_logger("HandController"),
+                  "FT inference SKIPPED: enabled=%d, num_fingertips=%d",
+                  ft_config_.enabled ? 1 : 0, num_fingertips_);
+    }
+
     if (use_fake_hand_) {
       // Fake mode: UDP 소켓/스레드 없이 echo-back만 수행
       running_.store(true, std::memory_order_release);
@@ -555,18 +597,6 @@ class HandController {
       }
     }
 
-    // F/T 추론기 초기화 (센서 LPF 이후, EventLoop 시작 이전)
-    if (ft_config_.enabled && num_fingertips_ > 0) {
-      ft_inferencer_ = std::make_unique<FingertipFTInferencer>();
-      try {
-        ft_inferencer_->Init(ft_config_);
-        ft_enabled_ = ft_inferencer_->is_initialized();
-      } catch (...) {
-        ft_enabled_ = false;
-        ft_inferencer_.reset();
-      }
-    }
-
     running_.store(true, std::memory_order_release);
     event_thread_ = std::jthread([this](std::stop_token st) {
       EventLoop(std::move(st));
@@ -613,6 +643,19 @@ class HandController {
       std::copy(cmd.begin(), cmd.end(), fake_state.motor_positions.begin());
       fake_state.num_fingertips = num_fingertips_;
       fake_state.valid = true;
+
+      // Fake mode F/T 추론 (센서 데이터는 0 — 파이프라인 테스트용)
+      if (ft_enabled_ && ft_inferencer_) {
+        if (!ft_inferencer_->is_calibrated()) {
+          static_cast<void>(ft_inferencer_->FeedCalibration(
+              fake_state.sensor_data, num_fingertips_));
+        } else {
+          auto ft_result = ft_inferencer_->Infer(
+              fake_state.sensor_data, num_fingertips_);
+          ft_seqlock_.Store(ft_result);
+        }
+      }
+
       state_seqlock_.Store(fake_state);
       cycle_count_.fetch_add(1, std::memory_order_relaxed);
       return;
@@ -1174,7 +1217,7 @@ class HandController {
           // F/T 추론 (캘리브레이션 또는 추론)
           if (ft_enabled_) {
             if (!ft_inferencer_->is_calibrated()) {
-              ft_inferencer_->FeedCalibration(cached_sensor_data, num_fingertips_);
+              static_cast<void>(ft_inferencer_->FeedCalibration(cached_sensor_data, num_fingertips_));
             } else {
               const auto ft_t0 = std::chrono::steady_clock::now();
               auto ft_result = ft_inferencer_->Infer(cached_sensor_data, num_fingertips_);
@@ -1252,7 +1295,7 @@ class HandController {
           // F/T 추론 (캘리브레이션 또는 추론)
           if (ft_enabled_) {
             if (!ft_inferencer_->is_calibrated()) {
-              ft_inferencer_->FeedCalibration(cached_sensor_data, num_fingertips_);
+              static_cast<void>(ft_inferencer_->FeedCalibration(cached_sensor_data, num_fingertips_));
             } else {
               const auto ft_t0 = std::chrono::steady_clock::now();
               auto ft_result = ft_inferencer_->Infer(cached_sensor_data, num_fingertips_);

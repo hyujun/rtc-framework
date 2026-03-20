@@ -6,6 +6,13 @@
 
   Loaded automatically via CYCLONEDDS_URI env var set in ur_control.launch.py.
   Reference: https://cyclonedds.io/docs/cyclonedds/latest/config/index.html
+
+  Thread affinity:
+    - Jazzy (CycloneDDS 0.11+): <Internal><Threads> removed — causes fatal
+      "unknown element" error. DDS thread pinning handled by taskset (방안 D).
+    - Humble (CycloneDDS 0.10.x): <Internal><Threads> was supported but
+      cannot coexist in a single XML. Use a separate XML if Humble support
+      is needed, or rely on taskset pinning which works on both.
 -->
 <CycloneDDS>
   <Domain>
@@ -24,8 +31,9 @@
       <Verbosity>warning</Verbosity>
     </Tracing>
 
-    <!-- NOTE: <Internal><Threads> removed — unsupported in CycloneDDS
-         version shipped with ROS 2 Jazzy. DDS thread affinity for RT
-         isolation should be handled via taskset or cgroup instead. -->
+    <!-- NOTE: <Internal><Threads> is NOT supported in CycloneDDS 0.11+
+         (Jazzy). Adding it causes a fatal "unknown element" error that
+         prevents all ROS 2 nodes from starting. DDS thread affinity is
+         handled by taskset in ur_control.launch.py (방안 D) instead. -->
   </Domain>
 </CycloneDDS>

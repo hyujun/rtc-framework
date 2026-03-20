@@ -36,6 +36,33 @@ find_package(ur5e_status_monitor REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(ur5e_msgs REQUIRED)
 
+# ── ONNX Runtime (hand_controller.hpp → fingertip_ft_inferencer.hpp 헤더용) ──
+# ur5e_hand_udp가 header-only로 FingertipFTInferencer를 사용하므로,
+# downstream에서도 HAS_ONNXRUNTIME + include path가 필요.
+set(_RT_ORT_FOUND FALSE)
+unset(_RT_ORT_HEADER_DIR CACHE)
+find_path(_RT_ORT_HEADER_DIR onnxruntime_cxx_api.h
+  PATHS
+    /usr/include/onnxruntime/core/session
+    /usr/local/include/onnxruntime/core/session
+    /usr/include/onnxruntime
+    /usr/local/include/onnxruntime
+    /opt/onnxruntime/include
+  NO_DEFAULT_PATH
+)
+if(NOT _RT_ORT_HEADER_DIR)
+  find_path(_RT_ORT_HEADER_DIR onnxruntime_cxx_api.h)
+endif()
+if(_RT_ORT_HEADER_DIR AND EXISTS "${_RT_ORT_HEADER_DIR}/onnxruntime_cxx_api.h")
+  unset(_RT_ORT_LIB CACHE)
+  find_library(_RT_ORT_LIB onnxruntime
+    PATHS /opt/onnxruntime/lib /usr/local/lib /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu
+  )
+  if(_RT_ORT_LIB)
+    set(_RT_ORT_FOUND TRUE)
+  endif()
+endif()
+
 # ── rt_controller_lib (테스트에서 링크 가능한 라이브러리) ─────────────────────
 add_library(rt_controller_lib STATIC
   src/rt_controller_interface.cpp
@@ -59,6 +86,16 @@ ament_target_dependencies(rt_controller_lib PUBLIC
   ur5e_msgs
 )
 target_link_libraries(rt_controller_lib PUBLIC pinocchio::pinocchio yaml-cpp)
+
+# ONNX Runtime (fingertip_ft_inferencer.hpp 헤더 전용 — 실제 추론 링크)
+if(_RT_ORT_FOUND)
+  target_compile_definitions(rt_controller_lib PUBLIC HAS_ONNXRUNTIME)
+  target_include_directories(rt_controller_lib PUBLIC ${_RT_ORT_HEADER_DIR})
+  target_link_libraries(rt_controller_lib PUBLIC ${_RT_ORT_LIB})
+  message(STATUS "ur5e_rt_controller: ONNX Runtime enabled (${_RT_ORT_HEADER_DIR})")
+else()
+  message(STATUS "ur5e_rt_controller: ONNX Runtime not found — F/T stub used")
+endif()
 
 # ── rt_controller (실행 파일 — main만 컴파일) ─────────────────────────────────
 add_executable(rt_controller src/rt_controller_main.cpp)

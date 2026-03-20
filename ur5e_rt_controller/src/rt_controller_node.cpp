@@ -340,6 +340,19 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("hand_motor_names", std::vector<std::string>{});
   declare_parameter("hand_fingertip_names", std::vector<std::string>{});
 
+  // F/T inference (ONNX Runtime) — hand_udp_config YAML에서 로드
+  declare_parameter("ft_inferencer.enabled", false);
+  declare_parameter("ft_inferencer.num_fingertips", 4);
+  declare_parameter("ft_inferencer.model_paths", std::vector<std::string>{});
+  declare_parameter("ft_inferencer.calibration_enabled", true);
+  declare_parameter("ft_inferencer.calibration_samples", 500);
+  for (const auto& ft_name : {"thumb", "index", "middle", "ring"}) {
+    declare_parameter("ft_inferencer." + std::string(ft_name) + "_mean",
+                      std::vector<double>(8, 0.0));
+    declare_parameter("ft_inferencer." + std::string(ft_name) + "_std",
+                      std::vector<double>(8, 1.0));
+  }
+
   control_rate_ = get_parameter("control_rate").as_double();
   budget_us_ = 1.0e6 / control_rate_;  // tick budget in µs (e.g., 2000.0 at 500 Hz)
 
@@ -423,6 +436,36 @@ void RtControllerNode::DeclareAndLoadParameters()
   hand_sim_enabled_ = get_parameter("hand_sim_enabled").as_bool();
   const bool use_fake_hand = get_parameter("use_fake_hand").as_bool();
 
+  // F/T inferencer config 로드 (fake/real 공통)
+  auto load_ft_config = [this]() {
+    urtc::FingertipFTInferencer::Config cfg;
+    cfg.enabled = get_parameter("ft_inferencer.enabled").as_bool();
+    cfg.num_fingertips = static_cast<int>(
+        get_parameter("ft_inferencer.num_fingertips").as_int());
+    cfg.model_paths = get_parameter("ft_inferencer.model_paths").as_string_array();
+    cfg.calibration_enabled = get_parameter("ft_inferencer.calibration_enabled").as_bool();
+    cfg.calibration_samples = static_cast<int>(
+        get_parameter("ft_inferencer.calibration_samples").as_int());
+    const std::array<const char*, 4> ft_param_names = {"thumb", "index", "middle", "ring"};
+    for (int f = 0; f < 4 && f < cfg.num_fingertips; ++f) {
+      auto mean_vec = get_parameter(
+          "ft_inferencer." + std::string(ft_param_names[static_cast<std::size_t>(f)]) + "_mean")
+          .as_double_array();
+      auto std_vec = get_parameter(
+          "ft_inferencer." + std::string(ft_param_names[static_cast<std::size_t>(f)]) + "_std")
+          .as_double_array();
+      for (int b = 0; b < urtc::kBarometerCount && b < static_cast<int>(mean_vec.size()); ++b) {
+        cfg.input_mean[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
+            static_cast<float>(mean_vec[static_cast<std::size_t>(b)]);
+      }
+      for (int b = 0; b < urtc::kBarometerCount && b < static_cast<int>(std_vec.size()); ++b) {
+        cfg.input_std[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
+            static_cast<float>(std_vec[static_cast<std::size_t>(b)]);
+      }
+    }
+    return cfg;
+  };
+
   // Hand 전체 비활성 시 모든 hand 통신 skip
   if (!global_device_flags_.enable_hand) {
     hand_sim_enabled_ = false;
@@ -433,12 +476,15 @@ void RtControllerNode::DeclareAndLoadParameters()
     hand_sim_enabled_ = false;
     const auto cfgs = ur5e_rt_controller::SelectThreadConfigs();
     const auto fake_ft_names = get_parameter("hand_fingertip_names").as_string_array();
+    const auto ft_config = load_ft_config();
     hand_controller_ = std::make_unique<urtc::HandController>(
         "", 0, cfgs.udp_recv, 10, false, 1, urtc::kDefaultNumFingertips, true,
-        fake_ft_names);
+        fake_ft_names, urtc::HandCommunicationMode::kIndividual,
+        false, 15.0, false, 30.0, ft_config);
     static_cast<void>(hand_controller_->Start());
     enable_hand_ = true;
-    RCLCPP_INFO(get_logger(), "HandController started in FAKE mode (echo-back)");
+    RCLCPP_INFO(get_logger(), "HandController started in FAKE mode (echo-back, ft=%s)",
+                ft_config.enabled ? "enabled" : "disabled");
   } else {
     enable_hand_ = !hand_ip.empty() && hand_port > 0 && !hand_sim_enabled_;
   }
@@ -527,13 +573,14 @@ void RtControllerNode::DeclareAndLoadParameters()
     const bool tof_lpf_enabled = get_parameter("tof_lpf_enabled").as_bool();
     const double tof_lpf_cutoff_hz = get_parameter("tof_lpf_cutoff_hz").as_double();
     const auto cfgs = ur5e_rt_controller::SelectThreadConfigs();
+    const auto ft_config = load_ft_config();
 
     hand_controller_ = std::make_unique<urtc::HandController>(
         hand_ip, hand_port, cfgs.udp_recv,
         hand_recv_timeout, hand_write_ack, sensor_decimation,
         urtc::kDefaultNumFingertips, false, hand_ft_names, hand_comm_mode,
         tof_lpf_enabled, tof_lpf_cutoff_hz,
-        baro_lpf_enabled, baro_lpf_cutoff_hz);
+        baro_lpf_enabled, baro_lpf_cutoff_hz, ft_config);
     hand_controller_->SetEstopFlag(&global_estop_);
 
     if (hand_controller_->Start()) {
@@ -1289,7 +1336,7 @@ void RtControllerNode::ControlLoop()
     const double timestamp =
         std::chrono::duration<double>(t0 - log_start_time_).count();
 
-    const urtc::LogEntry entry{
+    urtc::LogEntry entry{
       .timestamp = timestamp,
       // Timing
       .t_state_acquire_us = t_state_us,

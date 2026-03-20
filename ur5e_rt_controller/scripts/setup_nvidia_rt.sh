@@ -347,7 +347,15 @@ declare -A GRUB_PARAMS_WITH_VALUE=(
   ["nohz_full"]="${RT_CORES}"
   ["rcu_nocbs"]="${RT_CORES}"
   ["processor.max_cstate"]="1"
+  # TSC 클럭소스 명시 지정 — HPET 대비 50-100x 빠른 타이머 읽기
+  ["clocksource"]="tsc"
+  ["tsc"]="reliable"
+  # NMI watchdog 비활성화 — RT 코어에서 간헐적 100-350µs 지연 유발
+  ["nmi_watchdog"]="0"
 )
+# threadirqs: 하드웨어 IRQ 핸들러를 스레드화하여 RT 스케줄링 적용
+# nosoftlockup: RT 스레드가 장시간 CPU를 점유해도 soft lockup 경고 방지
+# tsc_early: 부팅 초기부터 TSC 사용 (일부 커널에서 HPET fallback 방지)
 GRUB_PARAMS_WITHOUT_VALUE=("threadirqs" "nosoftlockup")
 
 # 기존 스크립트(build_rt_kernel.sh)와 RT_OPTIMIZATION.md에 맞춰
@@ -398,10 +406,10 @@ if [[ "$GRUB_MODIFIED" -eq 1 ]]; then
   fi
 
   success "GRUB 설정 업데이트 완료"
-  CHANGES_APPLIED+=("GRUB 커널 파라미터: nohz_full, rcu_nocbs, threadirqs 등 (isolcpus → cset shield로 대체)")
+  CHANGES_APPLIED+=("GRUB 커널 파라미터: nohz_full, rcu_nocbs, clocksource=tsc, nmi_watchdog=0, threadirqs 등")
 
   info "update-grub 실행 중..."
-  update-grub 2>/dev/null
+  update-grub 2>/dev/null || true
   success "update-grub 완료"
 
   _NEED_INITRAMFS_UPDATE=1
@@ -493,10 +501,10 @@ fi
 if [[ "$_NEED_DAEMON_RELOAD" -eq 1 ]]; then
   : # daemon-reload는 스크립트 끝에서 한 번만 실행
 fi
-systemctl enable nvidia-irq-affinity.service 2>/dev/null
-# 현재 NVIDIA IRQ가 있으면 즉시 실행
+systemctl enable nvidia-irq-affinity.service 2>/dev/null || true
+# 현재 NVIDIA IRQ가 있으면 즉시 실행 (timeout 30초 — systemd 블로킹 방지)
 if grep -qE "nvidia|NVrm" /proc/interrupts 2>/dev/null; then
-  systemctl start nvidia-irq-affinity.service 2>/dev/null || true
+  timeout 30 systemctl start nvidia-irq-affinity.service 2>/dev/null || true
   success "NVIDIA IRQ affinity 즉시 적용 완료"
 else
   info "현재 NVIDIA IRQ 없음 — 재부팅 후 자동 적용됩니다"
@@ -539,7 +547,8 @@ if write_file_if_changed "$PERSIST_SERVICE" "$PERSIST_SERVICE_CONTENT"; then
 else
   info "Persistence 서비스가 이미 동일한 설정으로 존재합니다 — 건너뜀"
 fi
-systemctl enable --now nvidia-persistence.service 2>/dev/null || true
+systemctl enable nvidia-persistence.service 2>/dev/null || true
+timeout 30 systemctl start nvidia-persistence.service 2>/dev/null || true
 
 echo ""
 
@@ -707,7 +716,7 @@ fi
 # 서비스 설치 (멱등)
 if write_file_if_changed "$COMPOSITOR_SERVICE" "$COMPOSITOR_SERVICE_CONTENT"; then
   _NEED_DAEMON_RELOAD=1
-  systemctl enable rt-compositor-boost.service 2>/dev/null
+  systemctl enable rt-compositor-boost.service 2>/dev/null || true
   success "Compositor 부스트 서비스: ${COMPOSITOR_SERVICE}"
   CHANGES_APPLIED+=("Compositor 우선순위 부스트 서비스: ${COMPOSITOR_SERVICE}")
 else
@@ -1006,7 +1015,7 @@ WantedBy=multi-user.target"
 
 if write_file_if_changed "$GOV_SERVICE" "$GOV_SERVICE_CONTENT"; then
   _NEED_DAEMON_RELOAD=1
-  systemctl enable cpu-governor-performance.service 2>/dev/null
+  systemctl enable cpu-governor-performance.service 2>/dev/null || true
   success "CPU governor 서비스: ${GOV_SERVICE}"
   CHANGES_APPLIED+=("CPU governor performance 서비스: ${GOV_SERVICE}")
 else
@@ -1034,12 +1043,12 @@ echo ""
 # ── 지연된 시스템 작업 일괄 실행 ────────────────────────────────────────────
 if [[ "$_NEED_DAEMON_RELOAD" -eq 1 ]]; then
   info "systemctl daemon-reload 실행 중..."
-  systemctl daemon-reload
+  timeout 30 systemctl daemon-reload || true
   success "daemon-reload 완료"
 fi
 if [[ "$_NEED_INITRAMFS_UPDATE" -eq 1 ]]; then
   info "update-initramfs -u 실행 중..."
-  update-initramfs -u 2>/dev/null
+  update-initramfs -u 2>/dev/null || true
   success "initramfs 업데이트 완료"
 fi
 

@@ -1,7 +1,8 @@
-# ur_control.launch.py - v2 (core allocation optimized)
+# ur_control.launch.py - v3 (DDS thread isolation for Jazzy)
 #
 # Core allocation optimizations applied:
 #   C) UR driver process pinned to Core 0-1 via delayed taskset (use_cpu_affinity:=true)
+#   D) rt_controller DDS threads pinned to Core 0-1 (prevents 100-350µs jitter on Jazzy)
 #   E) CycloneDDS threads restricted to Core 0-1 via CYCLONEDDS_URI env var
 
 import os
@@ -59,6 +60,8 @@ def _launch_setup(context):
     use_fake = context.launch_configurations.get('use_fake_hardware', 'false')
     mock_enabled = 'true' if use_mock == 'true' or use_fake == 'true' else 'false'
 
+    # Humble uses 'use_fake_hardware', Jazzy+ uses 'use_mock_hardware'.
+    # Pass both so the correct one is picked up regardless of ROS distro.
     ur_driver_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([
@@ -71,6 +74,7 @@ def _launch_setup(context):
             'ur_type': 'ur5e',
             'robot_ip': LaunchConfiguration('robot_ip'),
             'use_mock_hardware': mock_enabled,
+            'use_fake_hardware': mock_enabled,
             'launch_rviz': 'false',
         }.items()
     )
@@ -134,6 +138,13 @@ def generate_launch_description():
         FindPackageShare('ur5e_hand_udp'),
         'config',
         'hand_udp_node.yaml'
+    ])
+
+    # Fingertip F/T 추론기 설정 (ur5e_hand_udp 패키지 소유)
+    ft_inferencer_config = PathJoinSubstitution([
+        FindPackageShare('ur5e_hand_udp'),
+        'config',
+        'fingertip_ft_inferencer.yaml'
     ])
 
     cyclone_dds_xml = PathJoinSubstitution([
@@ -211,6 +222,43 @@ def generate_launch_description():
         ]
     )
 
+    # ── [방안 D] rt_controller DDS thread pinning ────────────────────────────
+    # CycloneDDS Jazzy (0.11+) removed XML-based <Threads> affinity config.
+    # Without pinning, DDS recv/send threads can run on RT cores (Core 2+)
+    # and cause 100-350 µs period jitter via clock_nanosleep preemption.
+    # Pin all non-RT threads (DDS, rclcpp) in the rt_controller process to
+    # Core 0-1 after startup.  The RT thread (Core 2) sets its own affinity
+    # via ApplyThreadConfig() so it won't be affected by this process-wide mask.
+    pin_rt_controller_dds = TimerAction(
+        period=5.0,
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    'bash', '-c',
+                    'PID=$(pgrep -nf "rt_controller"); '
+                    'if [ -z "$PID" ]; then '
+                    '  echo "[RT] WARNING: rt_controller not found — DDS thread pinning skipped"; '
+                    '  exit 0; '
+                    'fi; '
+                    # Pin the entire process to Core 0-1 first (affects new threads)
+                    'taskset -cp 0-1 "$PID" 2>/dev/null; '
+                    # Then pin each existing non-RT thread individually
+                    'PINNED=0; '
+                    'for TID in $(ls /proc/$PID/task/ 2>/dev/null); do '
+                    '  COMM=$(cat /proc/$PID/task/$TID/comm 2>/dev/null || echo ""); '
+                    # Skip the RT control thread (already pinned to Core 2 via SCHED_FIFO)
+                    '  POLICY=$(chrt -p $TID 2>/dev/null | grep -o "SCHED_FIFO" || echo ""); '
+                    '  if [ -n "$POLICY" ]; then continue; fi; '
+                    '  taskset -cp 0-1 "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
+                    'done; '
+                    'echo "[RT] rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core 0-1"'
+                ],
+                output='screen',
+                condition=IfCondition(LaunchConfiguration('use_cpu_affinity'))
+            )
+        ]
+    )
+
     # ── RT controller node ─────────────────────────────────────────────────────
     rt_controller_node = Node(
         package='ur5e_rt_controller',
@@ -221,6 +269,7 @@ def generate_launch_description():
             ur_control_config,
             status_monitor_config,
             hand_udp_config,
+            ft_inferencer_config,
             {
                 'log_dir': session_dir,
                 'status_monitor.log_output_dir':
@@ -242,4 +291,5 @@ def generate_launch_description():
         ur_driver_launch_action,
         pin_ur_driver,
         rt_controller_node,
+        pin_rt_controller_dds,
     ])

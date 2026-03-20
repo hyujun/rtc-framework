@@ -23,11 +23,52 @@
 #include <string>
 #include <vector>
 
+#ifdef HAS_ONNXRUNTIME
 #include <onnxruntime_cxx_api.h>
+#endif
+
+#include <rclcpp/logging.hpp>
 
 #include "ur5e_rt_base/types/types.hpp"
 
 namespace ur5e_rt_controller {
+
+#ifndef HAS_ONNXRUNTIME
+
+/// Stub implementation when ONNX Runtime is not available.
+class FingertipFTInferencer {
+ public:
+  struct Config {
+    bool enabled{false};
+    int  num_fingertips{kDefaultNumFingertips};
+    std::vector<std::string> model_paths;
+    std::array<std::array<float, kBarometerCount>, kMaxFingertips> input_mean{};
+    std::array<std::array<float, kBarometerCount>, kMaxFingertips> input_std{};
+    bool calibration_enabled{true};
+    int  calibration_samples{500};
+  };
+
+  void Init(const Config& /*config*/) {
+    RCLCPP_ERROR(rclcpp::get_logger("FT-Inferencer"),
+                 "STUB: HAS_ONNXRUNTIME not defined! "
+                 "ONNX Runtime unavailable — FT inference disabled.");
+  }
+  [[nodiscard]] bool FeedCalibration(
+      const std::array<uint32_t, kMaxHandSensors>& /*sensor_data*/,
+      int /*num_fingertips*/) noexcept { return true; }
+  [[nodiscard]] FingertipFTState Infer(
+      const std::array<uint32_t, kMaxHandSensors>& /*sensor_data*/,
+      int /*num_fingertips*/) noexcept { return {}; }
+  [[nodiscard]] bool is_initialized() const noexcept { return false; }
+  [[nodiscard]] bool is_calibrated() const noexcept { return false; }
+  [[nodiscard]] int  num_active_models() const noexcept { return 0; }
+  [[nodiscard]] int  calibration_count() const noexcept { return 0; }
+  [[nodiscard]] int  calibration_target() const noexcept { return 0; }
+  [[nodiscard]] std::array<std::array<float, kBarometerCount>, kMaxFingertips>
+      baseline_offset() const noexcept { return {}; }
+};
+
+#else  // HAS_ONNXRUNTIME
 
 class FingertipFTInferencer {
  public:
@@ -64,6 +105,11 @@ class FingertipFTInferencer {
     config_ = config;
     const int n = std::min(config_.num_fingertips, kMaxFingertips);
     num_active_ = 0;
+    RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                "Init: num_fingertips=%d, model_paths.size=%zu, calibration=%s(%d samples)",
+                n, config_.model_paths.size(),
+                config_.calibration_enabled ? "ON" : "OFF",
+                config_.calibration_samples);
 
     // Ort::SessionOptions (모든 모델 공유)
     Ort::SessionOptions session_options;
@@ -79,21 +125,38 @@ class FingertipFTInferencer {
       // 모델 경로 없으면 해당 finger 비활성
       if (f >= static_cast<int>(config_.model_paths.size()) ||
           config_.model_paths[static_cast<std::size_t>(f)].empty()) {
+        RCLCPP_WARN(rclcpp::get_logger("FT-Inferencer"),
+                    "finger[%d]: SKIPPED (empty path)", f);
         model.valid = false;
         continue;
       }
 
       const auto& path = config_.model_paths[static_cast<std::size_t>(f)];
+      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                  "finger[%d]: loading \"%s\"", f, path.c_str());
 
       // Session 생성
       model.session = std::make_unique<Ort::Session>(
           env_, path.c_str(), session_options);
 
       // Input/Output 이름 쿼리
+      // ORT_API_VERSION >= 13 (v1.13+): GetInputNameAllocated 사용
+      // 이전 버전 (Ubuntu 22.04 apt v1.11): GetInputName 사용
+#if ORT_API_VERSION >= 13
       auto input_name_alloc = model.session->GetInputNameAllocated(0, allocator_);
       auto output_name_alloc = model.session->GetOutputNameAllocated(0, allocator_);
       model.input_name = input_name_alloc.get();
       model.output_name = output_name_alloc.get();
+#else
+      {
+        char* in_name = model.session->GetInputName(0, allocator_);
+        char* out_name = model.session->GetOutputName(0, allocator_);
+        model.input_name = in_name;
+        model.output_name = out_name;
+        allocator_.Free(in_name);
+        allocator_.Free(out_name);
+      }
+#endif
 
       // 사전 할당된 버퍼 위에 Ort::Value 텐서 생성
       constexpr int64_t input_shape[] = {1, kBarometerCount};
@@ -114,7 +177,13 @@ class FingertipFTInferencer {
 
       model.valid = true;
       ++num_active_;
+      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                  "finger[%d]: loaded OK (input=%s, output=%s)",
+                  f, model.input_name.c_str(), model.output_name.c_str());
     }
+
+    RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                "num_active=%d / %d", num_active_, n);
 
     // Calibration 초기화
     if (config_.calibration_enabled) {
@@ -136,6 +205,9 @@ class FingertipFTInferencer {
     }
 
     initialized_ = (num_active_ > 0);
+    RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                "Init done: initialized=%d, calibrated=%d",
+                initialized_ ? 1 : 0, calibrated_ ? 1 : 0);
   }
 
   // ── Calibration (noexcept — EventLoop hot path) ───────────────────────────
@@ -168,6 +240,8 @@ class FingertipFTInferencer {
         }
       }
       calibrated_ = true;
+      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                  "Calibration COMPLETE (%d samples)", calibration_count_);
       return true;
     }
     return false;
@@ -275,6 +349,8 @@ class FingertipFTInferencer {
   int  calibration_count_{0};
   bool calibrated_{false};
 };
+
+#endif  // HAS_ONNXRUNTIME
 
 }  // namespace ur5e_rt_controller
 
