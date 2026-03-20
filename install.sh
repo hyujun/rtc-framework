@@ -311,7 +311,8 @@ install_ros2() {
 
   # ── Source the newly installed ROS2 ──────────────────────────────────────
   # shellcheck disable=SC1090
-  source "/opt/ros/${ros_distro}/setup.bash"
+  # NOTE: set -e 하에서 setup.bash 내부 non-zero 반환 방지
+  source "/opt/ros/${ros_distro}/setup.bash" || true
 
   success "ROS2 ${ros_distro} installed successfully"
 }
@@ -334,7 +335,8 @@ check_prerequisites() {
         if [[ -f "/opt/ros/${_distro}/setup.bash" ]]; then
           info "Found ROS2 ${_distro} at /opt/ros/${_distro} — sourcing setup.bash ..."
           # shellcheck disable=SC1090
-          source "/opt/ros/${_distro}/setup.bash"
+          # NOTE: set -e 하에서 setup.bash 내부 non-zero 반환 방지
+          source "/opt/ros/${_distro}/setup.bash" || true
           _found_ros2=1
           break
         fi
@@ -734,7 +736,8 @@ build_package() {
 
   colcon build "${COLCON_ARGS[@]}" || error "Build failed!"
 
-  source install/setup.bash
+  # 빌드 후 최신 overlay 소싱 (verify_installation 등 후속 작업용)
+  source "${WORKSPACE}/install/setup.bash" || true
   success "All packages built and sourced"
 }
 
@@ -968,7 +971,7 @@ GOVEOF
 # ── Verify installation ─────────────────────────────────────────────────────────
 verify_installation() {
   info "Verifying installation..."
-  source "$WORKSPACE/install/setup.bash"
+  source "$WORKSPACE/install/setup.bash" || true
   local failed=0
   for pkg in ur5e_msgs ur5e_rt_base ur5e_description ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_tools; do
     if ros2 pkg list 2>/dev/null | grep -q "^${pkg}$"; then
