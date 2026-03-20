@@ -67,6 +67,7 @@ class HandUdpNode : public rclcpp::Node {
     // F/T inference
     declare_parameter("ft_inferencer.enabled", false);
     declare_parameter("ft_inferencer.num_fingertips", 4);
+    declare_parameter("ft_inferencer.history_length", urtc::kFTHistoryLength);
     declare_parameter("ft_inferencer.model_paths", std::vector<std::string>{});
     declare_parameter("ft_inferencer.calibration_enabled", true);
     declare_parameter("ft_inferencer.calibration_samples", 500);
@@ -97,6 +98,8 @@ class HandUdpNode : public rclcpp::Node {
     ft_config.enabled = get_parameter("ft_inferencer.enabled").as_bool();
     ft_config.num_fingertips = static_cast<int>(
         get_parameter("ft_inferencer.num_fingertips").as_int());
+    ft_config.history_length = static_cast<int>(
+        get_parameter("ft_inferencer.history_length").as_int());
     ft_config.model_paths = get_parameter("ft_inferencer.model_paths").as_string_array();
     ft_config.calibration_enabled = get_parameter("ft_inferencer.calibration_enabled").as_bool();
     ft_config.calibration_samples = static_cast<int>(

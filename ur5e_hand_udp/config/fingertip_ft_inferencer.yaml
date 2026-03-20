@@ -14,6 +14,7 @@
     ft_inferencer:
       enabled: false                    # ONNX F/T 추론 활성화
       num_fingertips: 4                 # 추론 대상 fingertip 수
+      history_length: 12                # FIFO history 길이 (12 row 채워진 후 추론 시작)
 
       # Per-fingertip ONNX 모델 경로 (fingertip 수만큼 지정)
       # 빈 문자열("") → 해당 finger 추론 비활성
