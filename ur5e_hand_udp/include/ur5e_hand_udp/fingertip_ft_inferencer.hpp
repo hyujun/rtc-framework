@@ -19,7 +19,6 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -27,6 +26,8 @@
 #ifdef HAS_ONNXRUNTIME
 #include <onnxruntime_cxx_api.h>
 #endif
+
+#include <rclcpp/logging.hpp>
 
 #include "ur5e_rt_base/types/types.hpp"
 
@@ -48,8 +49,9 @@ class FingertipFTInferencer {
   };
 
   void Init(const Config& /*config*/) {
-    std::fprintf(stderr, "[FT-Inferencer] STUB: HAS_ONNXRUNTIME not defined! "
-                 "ONNX Runtime unavailable — FT inference disabled.\n");
+    RCLCPP_ERROR(rclcpp::get_logger("FT-Inferencer"),
+                 "STUB: HAS_ONNXRUNTIME not defined! "
+                 "ONNX Runtime unavailable — FT inference disabled.");
   }
   [[nodiscard]] bool FeedCalibration(
       const std::array<uint32_t, kMaxHandSensors>& /*sensor_data*/,
@@ -103,11 +105,11 @@ class FingertipFTInferencer {
     config_ = config;
     const int n = std::min(config_.num_fingertips, kMaxFingertips);
     num_active_ = 0;
-    std::fprintf(stderr, "[FT-Inferencer] Init: num_fingertips=%d, "
-                 "model_paths.size=%zu, calibration=%s(%d samples)\n",
-                 n, config_.model_paths.size(),
-                 config_.calibration_enabled ? "ON" : "OFF",
-                 config_.calibration_samples);
+    RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                "Init: num_fingertips=%d, model_paths.size=%zu, calibration=%s(%d samples)",
+                n, config_.model_paths.size(),
+                config_.calibration_enabled ? "ON" : "OFF",
+                config_.calibration_samples);
 
     // Ort::SessionOptions (모든 모델 공유)
     Ort::SessionOptions session_options;
@@ -123,13 +125,15 @@ class FingertipFTInferencer {
       // 모델 경로 없으면 해당 finger 비활성
       if (f >= static_cast<int>(config_.model_paths.size()) ||
           config_.model_paths[static_cast<std::size_t>(f)].empty()) {
-        std::fprintf(stderr, "[FT-Inferencer] finger[%d]: SKIPPED (empty path)\n", f);
+        RCLCPP_WARN(rclcpp::get_logger("FT-Inferencer"),
+                    "finger[%d]: SKIPPED (empty path)", f);
         model.valid = false;
         continue;
       }
 
       const auto& path = config_.model_paths[static_cast<std::size_t>(f)];
-      std::fprintf(stderr, "[FT-Inferencer] finger[%d]: loading \"%s\"\n", f, path.c_str());
+      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                  "finger[%d]: loading \"%s\"", f, path.c_str());
 
       // Session 생성
       model.session = std::make_unique<Ort::Session>(
@@ -173,11 +177,13 @@ class FingertipFTInferencer {
 
       model.valid = true;
       ++num_active_;
-      std::fprintf(stderr, "[FT-Inferencer] finger[%d]: loaded OK (input=%s, output=%s)\n",
-                   f, model.input_name.c_str(), model.output_name.c_str());
+      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                  "finger[%d]: loaded OK (input=%s, output=%s)",
+                  f, model.input_name.c_str(), model.output_name.c_str());
     }
 
-    std::fprintf(stderr, "[FT-Inferencer] num_active=%d / %d\n", num_active_, n);
+    RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                "num_active=%d / %d", num_active_, n);
 
     // Calibration 초기화
     if (config_.calibration_enabled) {
@@ -199,8 +205,9 @@ class FingertipFTInferencer {
     }
 
     initialized_ = (num_active_ > 0);
-    std::fprintf(stderr, "[FT-Inferencer] Init done: initialized=%d, calibrated=%d\n",
-                 initialized_ ? 1 : 0, calibrated_ ? 1 : 0);
+    RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                "Init done: initialized=%d, calibrated=%d",
+                initialized_ ? 1 : 0, calibrated_ ? 1 : 0);
   }
 
   // ── Calibration (noexcept — EventLoop hot path) ───────────────────────────
@@ -233,9 +240,8 @@ class FingertipFTInferencer {
         }
       }
       calibrated_ = true;
-      // Note: fprintf from RT context (one-time only at calibration completion)
-      std::fprintf(stderr, "[FT-Inferencer] Calibration COMPLETE (%d samples)\n",
-                   calibration_count_);
+      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                  "Calibration COMPLETE (%d samples)", calibration_count_);
       return true;
     }
     return false;
