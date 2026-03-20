@@ -125,10 +125,23 @@ class FingertipFTInferencer {
           env_, path.c_str(), session_options);
 
       // Input/Output 이름 쿼리
+      // ORT_API_VERSION >= 13 (v1.13+): GetInputNameAllocated 사용
+      // 이전 버전 (Ubuntu 22.04 apt v1.11): GetInputName 사용
+#if ORT_API_VERSION >= 13
       auto input_name_alloc = model.session->GetInputNameAllocated(0, allocator_);
       auto output_name_alloc = model.session->GetOutputNameAllocated(0, allocator_);
       model.input_name = input_name_alloc.get();
       model.output_name = output_name_alloc.get();
+#else
+      {
+        char* in_name = model.session->GetInputName(0, allocator_);
+        char* out_name = model.session->GetOutputName(0, allocator_);
+        model.input_name = in_name;
+        model.output_name = out_name;
+        allocator_.Free(in_name);
+        allocator_.Free(out_name);
+      }
+#endif
 
       // 사전 할당된 버퍼 위에 Ort::Value 텐서 생성
       constexpr int64_t input_shape[] = {1, kBarometerCount};
