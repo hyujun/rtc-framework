@@ -208,14 +208,13 @@ class FingertipFTInferencer {
       }
 
       // 사전 할당된 버퍼 위에 Ort::Value 텐서 생성
-      // Input: [1, 16, history_length] (rank 3) — feature-major layout
-      // buffer[feature * H + time]: 각 feature row에 H개 time step
+      // Input: [1, history_length, 16] (rank 3) — unsqueeze(0) 효과
       const int64_t H = static_cast<int64_t>(config_.history_length);
-      const int64_t input_shape[] = {1, kFTInputSize, H};             // [1, 16, 12]
+      const int64_t input_shape[] = {1, H, kFTInputSize};             // [1, 12, 16]
       constexpr int64_t output_shape[] = {1, kFTValuesPerFingertip};  // [1, 13]
       RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
                   "finger[%d]: creating input tensor shape [1, %d, %d] (rank=3)...",
-                  f, static_cast<int>(kFTInputSize), config_.history_length);
+                  f, config_.history_length, static_cast<int>(kFTInputSize));
 
       model.input_tensor = Ort::Value::CreateTensor<float>(
           memory_info_, model.input_buffer.data(),
@@ -374,20 +373,16 @@ class FingertipFTInferencer {
         // 현재 값을 prev에 저장 (다음 사이클의 delta 계산용)
         prev_barometer_[fi] = cur_baro;
 
-        // ── FIFO column append (feature-major layout) ─────────────────────
-        // buffer layout: [feature][time] — buffer[ch * H + t]
-        // 각 feature row에서 time값을 왼쪽 1칸 shift → 마지막 column에 새 값 append
-        {
-          float* buf = model.input_buffer.data();
-          for (int ch = 0; ch < kFTInputSize; ++ch) {
-            float* row = buf + ch * H;
-            if (H > 1) {
-              std::memmove(row, row + 1,
-                           static_cast<std::size_t>(H - 1) * sizeof(float));
-            }
-            row[H - 1] = new_row[static_cast<std::size_t>(ch)];
-          }
+        // ── FIFO shift: row[0] 제거, row[1..H-1] → row[0..H-2], new_row → row[H-1] ──
+        const auto row_bytes = static_cast<std::size_t>(kFTInputSize) * sizeof(float);
+        if (H > 1) {
+          std::memmove(model.input_buffer.data(),
+                       model.input_buffer.data() + kFTInputSize,
+                       static_cast<std::size_t>(H - 1) * row_bytes);
         }
+        std::memcpy(model.input_buffer.data() +
+                         static_cast<std::size_t>(H - 1) * kFTInputSize,
+                     new_row.data(), row_bytes);
 
         // History count 증가 (최대 H)
         if (model.history_count < H) {
