@@ -490,6 +490,18 @@ class HandController {
   // ── Lifecycle ──────────────────────────────────────────────────────────
 
   [[nodiscard]] bool Start() {
+    // F/T 추론기 초기화 (fake/real 공통 — EventLoop 불필요)
+    if (ft_config_.enabled && num_fingertips_ > 0) {
+      ft_inferencer_ = std::make_unique<FingertipFTInferencer>();
+      try {
+        ft_inferencer_->Init(ft_config_);
+        ft_enabled_ = ft_inferencer_->is_initialized();
+      } catch (...) {
+        ft_enabled_ = false;
+        ft_inferencer_.reset();
+      }
+    }
+
     if (use_fake_hand_) {
       // Fake mode: UDP 소켓/스레드 없이 echo-back만 수행
       running_.store(true, std::memory_order_release);
@@ -555,18 +567,6 @@ class HandController {
       }
     }
 
-    // F/T 추론기 초기화 (센서 LPF 이후, EventLoop 시작 이전)
-    if (ft_config_.enabled && num_fingertips_ > 0) {
-      ft_inferencer_ = std::make_unique<FingertipFTInferencer>();
-      try {
-        ft_inferencer_->Init(ft_config_);
-        ft_enabled_ = ft_inferencer_->is_initialized();
-      } catch (...) {
-        ft_enabled_ = false;
-        ft_inferencer_.reset();
-      }
-    }
-
     running_.store(true, std::memory_order_release);
     event_thread_ = std::jthread([this](std::stop_token st) {
       EventLoop(std::move(st));
@@ -613,6 +613,19 @@ class HandController {
       std::copy(cmd.begin(), cmd.end(), fake_state.motor_positions.begin());
       fake_state.num_fingertips = num_fingertips_;
       fake_state.valid = true;
+
+      // Fake mode F/T 추론 (센서 데이터는 0 — 파이프라인 테스트용)
+      if (ft_enabled_ && ft_inferencer_) {
+        if (!ft_inferencer_->is_calibrated()) {
+          static_cast<void>(ft_inferencer_->FeedCalibration(
+              fake_state.sensor_data, num_fingertips_));
+        } else {
+          auto ft_result = ft_inferencer_->Infer(
+              fake_state.sensor_data, num_fingertips_);
+          ft_seqlock_.Store(ft_result);
+        }
+      }
+
       state_seqlock_.Store(fake_state);
       cycle_count_.fetch_add(1, std::memory_order_relaxed);
       return;
