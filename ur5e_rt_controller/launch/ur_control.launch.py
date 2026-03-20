@@ -140,6 +140,13 @@ def generate_launch_description():
         'hand_udp_node.yaml'
     ])
 
+    # Fingertip F/T 추론기 설정 (ur5e_hand_udp 패키지 소유)
+    ft_inferencer_config = PathJoinSubstitution([
+        FindPackageShare('ur5e_hand_udp'),
+        'config',
+        'fingertip_ft_inferencer.yaml'
+    ])
+
     cyclone_dds_xml = PathJoinSubstitution([
         FindPackageShare('ur5e_rt_controller'),
         'config',
@@ -262,6 +269,7 @@ def generate_launch_description():
             ur_control_config,
             status_monitor_config,
             hand_udp_config,
+            ft_inferencer_config,
             {
                 'log_dir': session_dir,
                 'status_monitor.log_output_dir':
