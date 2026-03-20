@@ -501,10 +501,10 @@ fi
 if [[ "$_NEED_DAEMON_RELOAD" -eq 1 ]]; then
   : # daemon-reload는 스크립트 끝에서 한 번만 실행
 fi
-systemctl enable nvidia-irq-affinity.service 2>/dev/null
-# 현재 NVIDIA IRQ가 있으면 즉시 실행
+systemctl enable nvidia-irq-affinity.service 2>/dev/null || true
+# 현재 NVIDIA IRQ가 있으면 즉시 실행 (timeout 30초 — systemd 블로킹 방지)
 if grep -qE "nvidia|NVrm" /proc/interrupts 2>/dev/null; then
-  systemctl start nvidia-irq-affinity.service 2>/dev/null || true
+  timeout 30 systemctl start nvidia-irq-affinity.service 2>/dev/null || true
   success "NVIDIA IRQ affinity 즉시 적용 완료"
 else
   info "현재 NVIDIA IRQ 없음 — 재부팅 후 자동 적용됩니다"
@@ -715,7 +715,7 @@ fi
 # 서비스 설치 (멱등)
 if write_file_if_changed "$COMPOSITOR_SERVICE" "$COMPOSITOR_SERVICE_CONTENT"; then
   _NEED_DAEMON_RELOAD=1
-  systemctl enable rt-compositor-boost.service 2>/dev/null
+  systemctl enable rt-compositor-boost.service 2>/dev/null || true
   success "Compositor 부스트 서비스: ${COMPOSITOR_SERVICE}"
   CHANGES_APPLIED+=("Compositor 우선순위 부스트 서비스: ${COMPOSITOR_SERVICE}")
 else
@@ -1014,7 +1014,7 @@ WantedBy=multi-user.target"
 
 if write_file_if_changed "$GOV_SERVICE" "$GOV_SERVICE_CONTENT"; then
   _NEED_DAEMON_RELOAD=1
-  systemctl enable cpu-governor-performance.service 2>/dev/null
+  systemctl enable cpu-governor-performance.service 2>/dev/null || true
   success "CPU governor 서비스: ${GOV_SERVICE}"
   CHANGES_APPLIED+=("CPU governor performance 서비스: ${GOV_SERVICE}")
 else
@@ -1042,7 +1042,7 @@ echo ""
 # ── 지연된 시스템 작업 일괄 실행 ────────────────────────────────────────────
 if [[ "$_NEED_DAEMON_RELOAD" -eq 1 ]]; then
   info "systemctl daemon-reload 실행 중..."
-  systemctl daemon-reload
+  systemctl daemon-reload || true
   success "daemon-reload 완료"
 fi
 if [[ "$_NEED_INITRAMFS_UPDATE" -eq 1 ]]; then
