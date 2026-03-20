@@ -547,7 +547,8 @@ if write_file_if_changed "$PERSIST_SERVICE" "$PERSIST_SERVICE_CONTENT"; then
 else
   info "Persistence 서비스가 이미 동일한 설정으로 존재합니다 — 건너뜀"
 fi
-systemctl enable --now nvidia-persistence.service 2>/dev/null || true
+systemctl enable nvidia-persistence.service 2>/dev/null || true
+timeout 30 systemctl start nvidia-persistence.service 2>/dev/null || true
 
 echo ""
 
@@ -1042,7 +1043,7 @@ echo ""
 # ── 지연된 시스템 작업 일괄 실행 ────────────────────────────────────────────
 if [[ "$_NEED_DAEMON_RELOAD" -eq 1 ]]; then
   info "systemctl daemon-reload 실행 중..."
-  systemctl daemon-reload || true
+  timeout 30 systemctl daemon-reload || true
   success "daemon-reload 완료"
 fi
 if [[ "$_NEED_INITRAMFS_UPDATE" -eq 1 ]]; then

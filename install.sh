@@ -960,8 +960,8 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 GOVEOF
-    sudo systemctl daemon-reload
-    sudo systemctl enable cpu-governor-performance.service 2>/dev/null
+    sudo timeout 30 systemctl daemon-reload || true
+    sudo systemctl enable cpu-governor-performance.service 2>/dev/null || true
     success "CPU governor → performance (service enabled for persistence)"
   else
     success "CPU governor → performance (service already exists)"
