@@ -55,10 +55,10 @@ class FingertipFTInferencer {
                  "ONNX Runtime unavailable — FT inference disabled.");
   }
   [[nodiscard]] bool FeedCalibration(
-      const std::array<uint32_t, kMaxHandSensors>& /*sensor_data*/,
+      const std::array<int32_t, kMaxHandSensors>& /*sensor_data*/,
       int /*num_fingertips*/) noexcept { return true; }
   [[nodiscard]] FingertipFTState Infer(
-      const std::array<uint32_t, kMaxHandSensors>& /*sensor_data*/,
+      const std::array<int32_t, kMaxHandSensors>& /*sensor_data*/,
       int /*num_fingertips*/) noexcept { return {}; }
   [[nodiscard]] bool is_initialized() const noexcept { return false; }
   [[nodiscard]] bool is_calibrated() const noexcept { return false; }
@@ -220,7 +220,7 @@ class FingertipFTInferencer {
   /// 캘리브레이션 데이터 축적. sensor cycle마다 호출.
   /// @return true: 캘리브레이션 완료
   [[nodiscard]] bool FeedCalibration(
-      const std::array<uint32_t, kMaxHandSensors>& sensor_data,
+      const std::array<int32_t, kMaxHandSensors>& sensor_data,
       int num_fingertips) noexcept {
     if (calibrated_) return true;
 
@@ -256,7 +256,7 @@ class FingertipFTInferencer {
 
   /// Per-fingertip 순차 추론. sensor_data에서 barometer만 추출 → 정규화 → 추론.
   [[nodiscard]] FingertipFTState Infer(
-      const std::array<uint32_t, kMaxHandSensors>& sensor_data,
+      const std::array<int32_t, kMaxHandSensors>& sensor_data,
       int num_fingertips) noexcept {
     FingertipFTState result{};
     if (!initialized_ || !calibrated_) return result;

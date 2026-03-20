@@ -903,7 +903,7 @@ class HandController {
     }
   }
 
-  // Request a sensor read command (3B send) and decode 11 useful raw uint32 values (67B recv).
+  // Request a sensor read command (3B send) and decode 11 useful raw int32 values (67B recv).
   // MODE field in request carries the desired sensor mode (default kRaw).
   // Response cmd must match the request cmd; stale responses are discarded via non-blocking retry.
   //
@@ -911,7 +911,7 @@ class HandController {
   // cmd 불일치 시 retry recv는 MSG_DONTWAIT로 즉시 반환하여 timeout spike 방지.
   [[nodiscard]] bool RequestSensorRead(
       hand_packets::Command cmd,
-      std::array<uint32_t, kSensorValuesPerFingertip>& out,
+      std::array<int32_t, kSensorValuesPerFingertip>& out,
       hand_packets::SensorMode sensor_mode = hand_packets::SensorMode::kRaw,
       uint8_t* response_mode = nullptr,
       uint8_t* response_cmd = nullptr) noexcept {
@@ -1034,7 +1034,7 @@ class HandController {
   // Verifies response cmd matches 0x19 to reject stale packets.
   // 첫 recv만 ppoll 대기(hrtimer), cmd 불일치 시 non-blocking retry로 stale 소비.
   [[nodiscard]] bool RequestAllSensorRead(
-      uint32_t* out, int num_fingertips,
+      int32_t* out, int num_fingertips,
       hand_packets::SensorMode sensor_mode = hand_packets::SensorMode::kRaw) noexcept {
     std::array<uint8_t, hand_packets::kAllSensorRequestSize> send_buf{};
     std::array<uint8_t, hand_packets::kAllSensorResponseSize> recv_buf{};
@@ -1114,11 +1114,11 @@ class HandController {
     std::array<uint8_t, hand_packets::kMotorPacketSize> echo_buf{};
     std::array<float, hand_packets::kMotorDataCount> motor_pos_buf{};
     std::array<float, hand_packets::kMotorDataCount> motor_vel_buf{};
-    std::array<uint32_t, kSensorValuesPerFingertip> sensor_raw_buf{};
+    std::array<int32_t, kSensorValuesPerFingertip> sensor_raw_buf{};
     std::array<float, kNumHandMotors> pending_cmd{};
 
     // Sensor decimation: 이전 cycle의 sensor_data를 유지하기 위한 버퍼
-    std::array<uint32_t, kMaxHandSensors> cached_sensor_data{};
+    std::array<int32_t, kMaxHandSensors> cached_sensor_data{};
     int sensor_cycle_counter = 0;
 
     while (!stop_token.stop_requested()) {
@@ -1151,7 +1151,7 @@ class HandController {
       HandState state{};
       bool any_recv_ok = false;
       double ft_infer_elapsed_us = 0.0;
-      std::array<uint32_t, kMaxHandSensors> cached_sensor_data_raw{};
+      std::array<int32_t, kMaxHandSensors> cached_sensor_data_raw{};
 
       // ── Timing: t0 = EventLoop 시작 ──
       const auto t0 = std::chrono::steady_clock::now();
@@ -1348,7 +1348,7 @@ class HandController {
 
   // ── 센서 LPF (noexcept — EventLoop hot path에서 호출) ────────────────────
   void ApplySensorFilters(
-      std::array<uint32_t, kMaxHandSensors>& sensor_data) noexcept {
+      std::array<int32_t, kMaxHandSensors>& sensor_data) noexcept {
     // Barometer LPF (8 channels per fingertip)
     if (baro_filter_active_) {
       std::array<double, kMaxBaroChannels> baro_input{};
@@ -1365,7 +1365,7 @@ class HandController {
         for (int b = 0; b < kBarometerCount; ++b) {
           const double v = filtered[static_cast<std::size_t>(f * kBarometerCount + b)];
           sensor_data[static_cast<std::size_t>(base + b)] =
-              static_cast<uint32_t>(std::max(0.0, std::round(v)));
+              static_cast<int32_t>(std::round(v));
         }
       }
     }
@@ -1386,7 +1386,7 @@ class HandController {
         for (int t = 0; t < kTofCount; ++t) {
           const double v = filtered[static_cast<std::size_t>(f * kTofCount + t)];
           sensor_data[static_cast<std::size_t>(base + t)] =
-              static_cast<uint32_t>(std::max(0.0, std::round(v)));
+              static_cast<int32_t>(std::round(v));
         }
       }
     }

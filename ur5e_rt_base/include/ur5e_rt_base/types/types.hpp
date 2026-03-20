@@ -93,8 +93,8 @@ struct RobotState {
 struct HandState {
   std::array<float, kNumHandMotors>   motor_positions{};
   std::array<float, kNumHandMotors>   motor_velocities{};
-  std::array<uint32_t, kMaxHandSensors> sensor_data{};      // 필터링된 센서 데이터 (post-LPF)
-  std::array<uint32_t, kMaxHandSensors> sensor_data_raw{};  // 원본 센서 데이터 (pre-LPF)
+  std::array<int32_t, kMaxHandSensors> sensor_data{};      // 필터링된 센서 데이터 (post-LPF)
+  std::array<int32_t, kMaxHandSensors> sensor_data_raw{};  // 원본 센서 데이터 (pre-LPF)
   int num_fingertips{kDefaultNumFingertips};                // 실제 사용 fingertip 수 (YAML)
   bool valid{false};
 };

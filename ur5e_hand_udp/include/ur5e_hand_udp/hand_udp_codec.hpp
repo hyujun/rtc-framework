@@ -120,12 +120,12 @@ inline void EncodeWritePosition(
   return true;
 }
 
-// Decode a sensor response packet (67 bytes), extracting 11 raw uint32 values
+// Decode a sensor response packet (67 bytes), extracting 11 raw int32 values
 // (barometer[8] + tof[3], skipping reserved[5]). No float conversion.
 [[nodiscard]] inline bool DecodeSensorResponseRaw(
     const uint8_t* buf, std::size_t len,
     uint8_t& cmd_out, uint8_t& mode_out,
-    std::array<uint32_t, kSensorValuesPerFingertip>& data_out) noexcept {
+    std::array<int32_t, kSensorValuesPerFingertip>& data_out) noexcept {
   hand_packets::SensorResponsePacket pkt{};
   if (!hand_packets::DecodeSensorResponse(buf, len, pkt)) return false;
   cmd_out  = pkt.cmd;
@@ -150,11 +150,11 @@ inline void EncodeWritePosition(
 }
 
 // Decode a bulk sensor response (259 bytes), extracting all fingertip data.
-// Output: concatenated barometer[8]+tof[3] per finger (num_fingertips × 11 raw uint32).
+// Output: concatenated barometer[8]+tof[3] per finger (num_fingertips × 11 raw int32).
 [[nodiscard]] inline bool DecodeAllSensorResponseRaw(
     const uint8_t* buf, std::size_t len,
     uint8_t& cmd_out, uint8_t& mode_out,
-    uint32_t* out, int num_fingertips) noexcept {
+    int32_t* out, int num_fingertips) noexcept {
   hand_packets::AllSensorResponsePacket pkt{};
   if (!hand_packets::DecodeAllSensorResponse(buf, len, pkt)) return false;
   cmd_out  = pkt.cmd;
