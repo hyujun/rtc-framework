@@ -24,44 +24,60 @@ find_package(ur5e_msgs REQUIRED)
 
 # ── ONNX Runtime ─────────────────────────────────────────────────────────────
 # find_package 우선, 실패 시 pkg-config fallback, 최후 수동 탐색
+set(_ORT_FOUND FALSE)
+
 find_package(onnxruntime QUIET)
-if(NOT onnxruntime_FOUND)
+if(onnxruntime_FOUND OR ONNXRUNTIME_FOUND)
+  set(_ORT_FOUND TRUE)
+endif()
+
+if(NOT _ORT_FOUND)
   find_package(PkgConfig QUIET)
   if(PkgConfig_FOUND)
     pkg_check_modules(ONNXRUNTIME QUIET libonnxruntime)
-  endif()
-  # pkg-config가 라이브러리만 찾고 헤더가 없는 경우 무효화
-  if(ONNXRUNTIME_FOUND)
-    find_path(_ORT_HEADER_CHECK onnxruntime_cxx_api.h
-      PATHS ${ONNXRUNTIME_INCLUDE_DIRS}
-      NO_DEFAULT_PATH
-    )
-    if(NOT _ORT_HEADER_CHECK)
-      find_path(_ORT_HEADER_CHECK onnxruntime_cxx_api.h)
-    endif()
-    if(NOT _ORT_HEADER_CHECK)
-      message(WARNING "ONNX Runtime pkg-config found but headers missing (install libonnxruntime-dev)")
-      set(ONNXRUNTIME_FOUND FALSE)
-    endif()
-    unset(_ORT_HEADER_CHECK CACHE)
-  endif()
-  if(NOT ONNXRUNTIME_FOUND)
-    # /opt/onnxruntime 수동 설치 경로 탐색
-    find_library(ONNXRUNTIME_LIB onnxruntime
-      PATHS /opt/onnxruntime/lib /usr/local/lib
-    )
-    find_path(ONNXRUNTIME_INCLUDE onnxruntime_cxx_api.h
-      PATHS /opt/onnxruntime/include /usr/local/include/onnxruntime
-    )
-    if(ONNXRUNTIME_LIB AND ONNXRUNTIME_INCLUDE)
-      set(ONNXRUNTIME_FOUND TRUE)
-      set(ONNXRUNTIME_LIBRARIES ${ONNXRUNTIME_LIB})
-      set(ONNXRUNTIME_INCLUDE_DIRS ${ONNXRUNTIME_INCLUDE})
-      message(STATUS "ONNX Runtime found: ${ONNXRUNTIME_LIB}")
-    else()
-      message(WARNING "ONNX Runtime not found — F/T inference will not be available")
+    if(ONNXRUNTIME_FOUND)
+      set(_ORT_FOUND TRUE)
     endif()
   endif()
+endif()
+
+if(NOT _ORT_FOUND)
+  # /opt/onnxruntime 수동 설치 경로 탐색
+  find_library(ONNXRUNTIME_LIB onnxruntime
+    PATHS /opt/onnxruntime/lib /usr/local/lib
+  )
+  find_path(ONNXRUNTIME_INCLUDE onnxruntime_cxx_api.h
+    PATHS /opt/onnxruntime/include /usr/local/include/onnxruntime
+  )
+  if(ONNXRUNTIME_LIB AND ONNXRUNTIME_INCLUDE)
+    set(_ORT_FOUND TRUE)
+    set(ONNXRUNTIME_LIBRARIES ${ONNXRUNTIME_LIB})
+    set(ONNXRUNTIME_INCLUDE_DIRS ${ONNXRUNTIME_INCLUDE})
+    message(STATUS "ONNX Runtime found (manual): ${ONNXRUNTIME_LIB}")
+  endif()
+endif()
+
+# 최종 검증: 어떤 경로로 찾았든 헤더가 실제 존재하는지 확인
+if(_ORT_FOUND)
+  include(CheckIncludeFileCXX)
+  set(CMAKE_REQUIRED_INCLUDES ${ONNXRUNTIME_INCLUDE_DIRS})
+  if(TARGET onnxruntime::onnxruntime)
+    get_target_property(_ORT_INC onnxruntime::onnxruntime INTERFACE_INCLUDE_DIRECTORIES)
+    if(_ORT_INC)
+      list(APPEND CMAKE_REQUIRED_INCLUDES ${_ORT_INC})
+    endif()
+  endif()
+  check_include_file_cxx("onnxruntime_cxx_api.h" _ORT_HEADER_OK)
+  unset(CMAKE_REQUIRED_INCLUDES)
+  if(NOT _ORT_HEADER_OK)
+    message(WARNING "ONNX Runtime detected but onnxruntime_cxx_api.h not found — F/T inference disabled\n"
+                    "  Install headers: sudo apt install libonnxruntime-dev")
+    set(_ORT_FOUND FALSE)
+  endif()
+endif()
+
+if(NOT _ORT_FOUND)
+  message(WARNING "ONNX Runtime not found — F/T inference will not be available")
 endif()
 
 # ── Unified node: HandController (request-response polling) ──────────────────
@@ -77,7 +93,7 @@ ament_target_dependencies(hand_udp_node
 )
 
 # ONNX Runtime 링크 (발견된 경우)
-if(ONNXRUNTIME_FOUND)
+if(_ORT_FOUND)
   target_compile_definitions(hand_udp_node PRIVATE HAS_ONNXRUNTIME)
   if(TARGET onnxruntime::onnxruntime)
     target_link_libraries(hand_udp_node onnxruntime::onnxruntime)
