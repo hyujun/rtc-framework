@@ -409,7 +409,7 @@ if [[ "$GRUB_MODIFIED" -eq 1 ]]; then
   CHANGES_APPLIED+=("GRUB 커널 파라미터: nohz_full, rcu_nocbs, clocksource=tsc, nmi_watchdog=0, threadirqs 등")
 
   info "update-grub 실행 중..."
-  update-grub 2>/dev/null
+  update-grub 2>/dev/null || true
   success "update-grub 완료"
 
   _NEED_INITRAMFS_UPDATE=1
@@ -1048,7 +1048,7 @@ if [[ "$_NEED_DAEMON_RELOAD" -eq 1 ]]; then
 fi
 if [[ "$_NEED_INITRAMFS_UPDATE" -eq 1 ]]; then
   info "update-initramfs -u 실행 중..."
-  update-initramfs -u 2>/dev/null
+  update-initramfs -u 2>/dev/null || true
   success "initramfs 업데이트 완료"
 fi
 

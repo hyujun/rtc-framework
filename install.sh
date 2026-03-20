@@ -977,52 +977,9 @@ setup_rt_kernel_params() {
   compute_cpu_layout
 
   # ── RT_CORES 계산 (SMT 시블링 포함) ──
+  # rt_common.sh의 compute_expected_isolated() 재사용 (get_os_logical_cpus + _format_cpu_range)
   local RT_CORES
-  if [[ "$LOGICAL_CORES" -eq "$TOTAL_CORES" ]]; then
-    RT_CORES="${RT_CORES_START}-${RT_CORES_END}"
-  else
-    local os_logical_cpus=""
-    for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
-      local cpu_num core_id
-      cpu_num=$(basename "$cpu_dir" | sed 's/cpu//')
-      local core_file="${cpu_dir}topology/core_id"
-      [[ -f "$core_file" ]] || continue
-      core_id=$(cat "$core_file" 2>/dev/null)
-      if [[ "$core_id" -ge "$OS_PHYS_START" && "$core_id" -le "$OS_PHYS_END" ]]; then
-        os_logical_cpus="${os_logical_cpus} ${cpu_num}"
-      fi
-    done
-
-    local -a isolated_list=()
-    local cpu
-    for ((cpu=0; cpu<LOGICAL_CORES; cpu++)); do
-      local is_os=0 os_cpu
-      for os_cpu in $os_logical_cpus; do
-        [[ "$cpu" -eq "$os_cpu" ]] && { is_os=1; break; }
-      done
-      [[ "$is_os" -eq 0 ]] && isolated_list+=("$cpu")
-    done
-
-    RT_CORES=""
-    local range_start="" range_end=""
-    for cpu in "${isolated_list[@]}"; do
-      if [[ -z "$range_start" ]]; then
-        range_start=$cpu; range_end=$cpu
-      elif [[ "$cpu" -eq $((range_end + 1)) ]]; then
-        range_end=$cpu
-      else
-        [[ "$range_start" -eq "$range_end" ]] \
-          && RT_CORES="${RT_CORES:+${RT_CORES},}${range_start}" \
-          || RT_CORES="${RT_CORES:+${RT_CORES},}${range_start}-${range_end}"
-        range_start=$cpu; range_end=$cpu
-      fi
-    done
-    if [[ -n "$range_start" ]]; then
-      [[ "$range_start" -eq "$range_end" ]] \
-        && RT_CORES="${RT_CORES:+${RT_CORES},}${range_start}" \
-        || RT_CORES="${RT_CORES:+${RT_CORES},}${range_start}-${range_end}"
-    fi
-  fi
+  RT_CORES=$(compute_expected_isolated)
 
   info "RT kernel params: RT_CORES=${RT_CORES}, OS_CORES=${OS_CORES_DESC}"
 

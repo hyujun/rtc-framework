@@ -955,7 +955,7 @@ else
   # ── GRUB 메뉴 항목 검색 ──────────────────────────────────────────────────
   # grub.cfg를 갱신하여 새로 설치된 커널이 반영되도록 함
   info "GRUB 설정 갱신 중..."
-  update-grub 2>/dev/null
+  update-grub 2>/dev/null || true
 
   # /boot/grub/grub.cfg에서 RT 커널 존재 여부 확인
   if [[ ! -f /boot/grub/grub.cfg ]]; then
@@ -994,7 +994,7 @@ else
         echo "GRUB_DEFAULT=\"${GRUB_ENTRY}\"" >> "$GRUB_FILE"
       fi
 
-      update-grub
+      update-grub 2>/dev/null || true
       success "GRUB 기본 부팅이 RT 커널(${RT_KERNEL_VER})로 설정되었습니다"
 
       info "검증 — /etc/default/grub 의 GRUB_DEFAULT:"
@@ -1024,7 +1024,7 @@ else
         warn "GRUB_CMDLINE_LINUX_DEFAULT not found in ${GRUB_FILE} — adding new entry"
         echo 'GRUB_CMDLINE_LINUX_DEFAULT="nvidia.NVreg_EnableMSI=1"' >> "$GRUB_FILE"
       fi
-      update-grub
+      update-grub 2>/dev/null || true
       success "NVIDIA MSI 설정 추가 완료"
     fi
   fi
