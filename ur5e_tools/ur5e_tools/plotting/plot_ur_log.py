@@ -429,14 +429,22 @@ def _detect_fingertip_labels_raw(df):
 def _detect_ft_labels(df):
     """CSV 헤더에서 FT output fingertip 라벨 목록을 자동 감지.
 
-    ft_{label}_fx 패턴의 컬럼을 찾아 라벨을 추출.
+    ft_{label}_contact 패턴의 컬럼을 찾아 라벨을 추출.
+    Legacy fallback: ft_{label}_fx 패턴도 지원.
     """
     labels = []
     for col in df.columns:
-        if col.startswith('ft_') and col.endswith('_fx'):
-            middle = col[len('ft_'):-len('_fx')]
-            if middle != 'valid' and f'ft_{middle}_fy' in df.columns:
+        if col.startswith('ft_') and col.endswith('_contact'):
+            middle = col[len('ft_'):-len('_contact')]
+            if middle != 'valid' and f'ft_{middle}_fx' in df.columns:
                 labels.append(middle)
+    if not labels:
+        # Legacy fallback (6-output 모델)
+        for col in df.columns:
+            if col.startswith('ft_') and col.endswith('_fx'):
+                middle = col[len('ft_'):-len('_fx')]
+                if middle != 'valid' and f'ft_{middle}_fy' in df.columns:
+                    labels.append(middle)
     return labels
 
 
@@ -620,49 +628,128 @@ def plot_hand_sensors_raw(df, fingertip_labels, save_dir=None):
 
 
 def plot_hand_ft_output(df, fingertip_labels, save_dir=None):
-    """Fingertip Force/Torque inference output: N_fingertips x 2 subplot grid."""
+    """Fingertip contact/force inference output.
+
+    Output layout per fingertip (13 values):
+      contact(1), F(3), u(3), Fn(3), Fx_scalar(1), Fy_scalar(1), Fz_scalar(1)
+
+    Plot grid: N_fingertips rows x 5 columns:
+      [Contact Flag | Force F | Direction u | Normal Force Fn | Scalar Forces]
+    """
     labels = fingertip_labels
     if not labels:
-        print('  Skipping F/T plot (ft_*_fx columns not found)')
+        print('  Skipping F/T plot (ft_*_contact / ft_*_fx columns not found)')
         return
 
     num_ft = len(labels)
-    fig, axes = plt.subplots(num_ft, 2, figsize=(14, 4 * num_ft))
-    fig.suptitle('Fingertip Force/Torque (ONNX inference)',
-                 fontsize=16, fontweight='bold')
 
-    # num_ft==1이면 axes가 1D가 되므로 2D로 보정
-    if num_ft == 1:
-        axes = axes.reshape(1, 2)
+    # 새 13-output 모델 여부 감지
+    has_new_format = f'ft_{labels[0]}_contact' in df.columns
 
-    t = df['timestamp']
-    force_components = ['fx', 'fy', 'fz']
-    torque_components = ['tx', 'ty', 'tz']
+    if has_new_format:
+        ncols = 5
+        fig, axes = plt.subplots(num_ft, ncols, figsize=(24, 4 * num_ft))
+        fig.suptitle('Fingertip Contact & Force (ONNX inference)',
+                     fontsize=16, fontweight='bold')
+        if num_ft == 1:
+            axes = axes.reshape(1, ncols)
 
-    for f_idx, label in enumerate(labels):
-        # Left column: Force
-        ax_f = axes[f_idx, 0]
-        for comp in force_components:
-            col = f'ft_{label}_{comp}'
+        t = df['timestamp']
+
+        for f_idx, label in enumerate(labels):
+            # Col 0: Contact flag
+            ax = axes[f_idx, 0]
+            col = f'ft_{label}_contact'
             if col in df.columns:
-                ax_f.plot(t, df[col], label=comp.upper(), linewidth=1.2)
-        ax_f.set_title(f'{label} — Force')
-        ax_f.set_xlabel('Time (s)')
-        ax_f.set_ylabel('Force (N)')
-        ax_f.legend(fontsize=8)
-        ax_f.grid(True, alpha=0.3)
+                ax.plot(t, df[col], linewidth=1.2, color='C0')
+                ax.fill_between(t, 0, df[col], alpha=0.2, color='C0')
+            ax.set_title(f'{label} — Contact')
+            ax.set_xlabel('Time (s)')
+            ax.set_ylabel('Contact (0/1)')
+            ax.set_ylim(-0.1, 1.1)
+            ax.grid(True, alpha=0.3)
 
-        # Right column: Torque
-        ax_t = axes[f_idx, 1]
-        for comp in torque_components:
-            col = f'ft_{label}_{comp}'
-            if col in df.columns:
-                ax_t.plot(t, df[col], label=comp.upper(), linewidth=1.2)
-        ax_t.set_title(f'{label} — Torque')
-        ax_t.set_xlabel('Time (s)')
-        ax_t.set_ylabel('Torque (Nm)')
-        ax_t.legend(fontsize=8)
-        ax_t.grid(True, alpha=0.3)
+            # Col 1: Force vector F (Fx, Fy, Fz)
+            ax = axes[f_idx, 1]
+            for comp, c_label in [('fx', 'FX'), ('fy', 'FY'), ('fz', 'FZ')]:
+                col = f'ft_{label}_{comp}'
+                if col in df.columns:
+                    ax.plot(t, df[col], label=c_label, linewidth=1.2)
+            ax.set_title(f'{label} — Force (F)')
+            ax.set_xlabel('Time (s)')
+            ax.set_ylabel('Force (N)')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+
+            # Col 2: Direction vector u (ux, uy, uz)
+            ax = axes[f_idx, 2]
+            for comp, c_label in [('ux', 'uX'), ('uy', 'uY'), ('uz', 'uZ')]:
+                col = f'ft_{label}_{comp}'
+                if col in df.columns:
+                    ax.plot(t, df[col], label=c_label, linewidth=1.2)
+            ax.set_title(f'{label} — Direction (u)')
+            ax.set_xlabel('Time (s)')
+            ax.set_ylabel('Unit vector')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+
+            # Col 3: Normal force Fn (Fnx, Fny, Fnz)
+            ax = axes[f_idx, 3]
+            for comp, c_label in [('fnx', 'FnX'), ('fny', 'FnY'), ('fnz', 'FnZ')]:
+                col = f'ft_{label}_{comp}'
+                if col in df.columns:
+                    ax.plot(t, df[col], label=c_label, linewidth=1.2)
+            ax.set_title(f'{label} — Normal Force (Fn)')
+            ax.set_xlabel('Time (s)')
+            ax.set_ylabel('Force (N)')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+
+            # Col 4: Scalar forces (Fx, Fy, Fz)
+            ax = axes[f_idx, 4]
+            for comp, c_label in [('fx_scalar', 'Fx'), ('fy_scalar', 'Fy'),
+                                   ('fz_scalar', 'Fz')]:
+                col = f'ft_{label}_{comp}'
+                if col in df.columns:
+                    ax.plot(t, df[col], label=c_label, linewidth=1.2)
+            ax.set_title(f'{label} — Scalar Forces')
+            ax.set_xlabel('Time (s)')
+            ax.set_ylabel('Force (N)')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+
+    else:
+        # Legacy 6-output 모델: Force(3) + Torque(3)
+        ncols = 2
+        fig, axes = plt.subplots(num_ft, ncols, figsize=(14, 4 * num_ft))
+        fig.suptitle('Fingertip Force/Torque (ONNX inference)',
+                     fontsize=16, fontweight='bold')
+        if num_ft == 1:
+            axes = axes.reshape(1, ncols)
+
+        t = df['timestamp']
+        for f_idx, label in enumerate(labels):
+            ax_f = axes[f_idx, 0]
+            for comp in ['fx', 'fy', 'fz']:
+                col = f'ft_{label}_{comp}'
+                if col in df.columns:
+                    ax_f.plot(t, df[col], label=comp.upper(), linewidth=1.2)
+            ax_f.set_title(f'{label} — Force')
+            ax_f.set_xlabel('Time (s)')
+            ax_f.set_ylabel('Force (N)')
+            ax_f.legend(fontsize=8)
+            ax_f.grid(True, alpha=0.3)
+
+            ax_t = axes[f_idx, 1]
+            for comp in ['tx', 'ty', 'tz']:
+                col = f'ft_{label}_{comp}'
+                if col in df.columns:
+                    ax_t.plot(t, df[col], label=comp.upper(), linewidth=1.2)
+            ax_t.set_title(f'{label} — Torque')
+            ax_t.set_xlabel('Time (s)')
+            ax_t.set_ylabel('Torque (Nm)')
+            ax_t.legend(fontsize=8)
+            ax_t.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if save_dir:
@@ -787,7 +874,15 @@ def print_hand_statistics(df):
     # FT inference output statistics
     ft_labels = _detect_ft_labels(df)
     if ft_labels:
-        ft_comps = ['fx', 'fy', 'fz', 'tx', 'ty', 'tz']
+        # 새 13-output 모델 여부 감지
+        has_new_format = f'ft_{ft_labels[0]}_contact' in df.columns
+        if has_new_format:
+            ft_comps = ['contact', 'fx', 'fy', 'fz',
+                        'ux', 'uy', 'uz',
+                        'fnx', 'fny', 'fnz',
+                        'fx_scalar', 'fy_scalar', 'fz_scalar']
+        else:
+            ft_comps = ['fx', 'fy', 'fz', 'tx', 'ty', 'tz']
         print('\nF/T Inference Output:')
         if 'ft_valid' in df.columns:
             ft_valid_ratio = df['ft_valid'].sum() / len(df) * 100
@@ -798,7 +893,7 @@ def print_hand_statistics(df):
                 col = f'ft_{label}_{comp}'
                 if col in df.columns:
                     data = df[col]
-                    print(f'    {comp.upper()}: mean={data.mean():.4f}'
+                    print(f'    {comp}: mean={data.mean():.4f}'
                           f'  std={data.std():.4f}'
                           f'  min={data.min():.4f}'
                           f'  max={data.max():.4f}')

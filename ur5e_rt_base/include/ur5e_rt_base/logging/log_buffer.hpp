@@ -76,8 +76,8 @@ struct LogEntry {
   // 카테고리 2: Current State
   std::array<float, kNumHandMotors>  hand_actual_positions{};
   std::array<float, kNumHandMotors>  hand_actual_velocities{};
-  std::array<uint32_t, kMaxHandSensors> hand_sensors{};         // 필터링된 센서 (post-LPF)
-  std::array<uint32_t, kMaxHandSensors> hand_sensors_raw{};    // 원본 센서 (pre-LPF)
+  std::array<int32_t, kMaxHandSensors> hand_sensors{};         // 필터링된 센서 (post-LPF)
+  std::array<int32_t, kMaxHandSensors> hand_sensors_raw{};    // 원본 센서 (pre-LPF)
   int num_fingertips{kDefaultNumFingertips};                   // 실제 사용 fingertip 수
 
   // F/T 추론 결과 (ONNX 출력)

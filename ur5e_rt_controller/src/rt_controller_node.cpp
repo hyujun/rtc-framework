@@ -347,10 +347,8 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("ft_inferencer.calibration_enabled", true);
   declare_parameter("ft_inferencer.calibration_samples", 500);
   for (const auto& ft_name : {"thumb", "index", "middle", "ring"}) {
-    declare_parameter("ft_inferencer." + std::string(ft_name) + "_mean",
-                      std::vector<double>(8, 0.0));
-    declare_parameter("ft_inferencer." + std::string(ft_name) + "_std",
-                      std::vector<double>(8, 1.0));
+    declare_parameter("ft_inferencer." + std::string(ft_name) + "_max",
+                      std::vector<double>(16, 1.0));
   }
 
   control_rate_ = get_parameter("control_rate").as_double();
@@ -448,19 +446,12 @@ void RtControllerNode::DeclareAndLoadParameters()
         get_parameter("ft_inferencer.calibration_samples").as_int());
     const std::array<const char*, 4> ft_param_names = {"thumb", "index", "middle", "ring"};
     for (int f = 0; f < 4 && f < cfg.num_fingertips; ++f) {
-      auto mean_vec = get_parameter(
-          "ft_inferencer." + std::string(ft_param_names[static_cast<std::size_t>(f)]) + "_mean")
+      auto max_vec = get_parameter(
+          "ft_inferencer." + std::string(ft_param_names[static_cast<std::size_t>(f)]) + "_max")
           .as_double_array();
-      auto std_vec = get_parameter(
-          "ft_inferencer." + std::string(ft_param_names[static_cast<std::size_t>(f)]) + "_std")
-          .as_double_array();
-      for (int b = 0; b < urtc::kBarometerCount && b < static_cast<int>(mean_vec.size()); ++b) {
-        cfg.input_mean[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
-            static_cast<float>(mean_vec[static_cast<std::size_t>(b)]);
-      }
-      for (int b = 0; b < urtc::kBarometerCount && b < static_cast<int>(std_vec.size()); ++b) {
-        cfg.input_std[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
-            static_cast<float>(std_vec[static_cast<std::size_t>(b)]);
+      for (int b = 0; b < urtc::kFTInputSize && b < static_cast<int>(max_vec.size()); ++b) {
+        cfg.input_max[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
+            static_cast<float>(max_vec[static_cast<std::size_t>(b)]);
       }
     }
     return cfg;
@@ -548,7 +539,7 @@ void RtControllerNode::DeclareAndLoadParameters()
           for (std::size_t i = 0; i < num_sensor_values
                    && i < sim_hand_state_.sensor_data.size(); ++i) {
             sim_hand_state_.sensor_data[i] =
-                static_cast<uint32_t>(msg->data[sensor_offset + i]);
+                static_cast<int32_t>(msg->data[sensor_offset + i]);
           }
           sim_hand_state_.valid = true;
         },

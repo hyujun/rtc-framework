@@ -226,15 +226,23 @@ private:
       }
     }
     // Stage 3: F/T inference output
+    // Output: [contact(1), F(3), u(3), Fn(3), Fx(1), Fy(1), Fz(1)] = 13 per fingertip
     hand_file_ << ",ft_valid";
     for (int f = 0; f < num_fingertips_; ++f) {
       const auto fl = FingertipLabel(f);
-      hand_file_ << ",ft_" << fl << "_fx"
+      hand_file_ << ",ft_" << fl << "_contact"
+                 << ",ft_" << fl << "_fx"
                  << ",ft_" << fl << "_fy"
                  << ",ft_" << fl << "_fz"
-                 << ",ft_" << fl << "_tx"
-                 << ",ft_" << fl << "_ty"
-                 << ",ft_" << fl << "_tz";
+                 << ",ft_" << fl << "_ux"
+                 << ",ft_" << fl << "_uy"
+                 << ",ft_" << fl << "_uz"
+                 << ",ft_" << fl << "_fnx"
+                 << ",ft_" << fl << "_fny"
+                 << ",ft_" << fl << "_fnz"
+                 << ",ft_" << fl << "_fx_scalar"
+                 << ",ft_" << fl << "_fy_scalar"
+                 << ",ft_" << fl << "_fz_scalar";
     }
     // 카테고리 3: Control Command
     for (int i = 0; i < kNumHandMotors; ++i) {

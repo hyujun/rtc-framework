@@ -67,7 +67,10 @@ template <typename T>
 concept FloatingPointType = std::floating_point<T>;
 
 // Fingertip F/T inference 관련 상수
-inline constexpr int kFTValuesPerFingertip = 6;   // Fx, Fy, Fz, Tx, Ty, Tz
+// Output layout: [contact(1), F(3), u(3), Fn(3), Fx(1), Fy(1), Fz(1)] = 13
+inline constexpr int kFTValuesPerFingertip = 13;
+inline constexpr int kFTInputSize          = 2 * kBarometerCount;  // baro(8) + delta(8) = 16
+inline constexpr int kFTHistoryLength      = 12;                   // FIFO history rows for ONNX input
 
 // ── Data structures (aggregate, zero-initialised by default) ──────────────────
 
@@ -91,8 +94,8 @@ struct RobotState {
 struct HandState {
   std::array<float, kNumHandMotors>   motor_positions{};
   std::array<float, kNumHandMotors>   motor_velocities{};
-  std::array<uint32_t, kMaxHandSensors> sensor_data{};      // 필터링된 센서 데이터 (post-LPF)
-  std::array<uint32_t, kMaxHandSensors> sensor_data_raw{};  // 원본 센서 데이터 (pre-LPF)
+  std::array<int32_t, kMaxHandSensors> sensor_data{};      // 필터링된 센서 데이터 (post-LPF)
+  std::array<int32_t, kMaxHandSensors> sensor_data_raw{};  // 원본 센서 데이터 (pre-LPF)
   int num_fingertips{kDefaultNumFingertips};                // 실제 사용 fingertip 수 (YAML)
   bool valid{false};
 };

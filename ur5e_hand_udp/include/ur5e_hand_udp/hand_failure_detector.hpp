@@ -227,7 +227,7 @@ private:
   int  motor_dup_count_{0};
 
   // Sensor state
-  std::array<uint32_t, kMaxHandSensors> prev_sensor_{};
+  std::array<int32_t, kMaxHandSensors> prev_sensor_{};
   bool prev_sensor_valid_{false};
   int  sensor_zero_count_{0};
   int  sensor_dup_count_{0};

@@ -67,15 +67,14 @@ class HandUdpNode : public rclcpp::Node {
     // F/T inference
     declare_parameter("ft_inferencer.enabled", false);
     declare_parameter("ft_inferencer.num_fingertips", 4);
+    declare_parameter("ft_inferencer.history_length", urtc::kFTHistoryLength);
     declare_parameter("ft_inferencer.model_paths", std::vector<std::string>{});
     declare_parameter("ft_inferencer.calibration_enabled", true);
     declare_parameter("ft_inferencer.calibration_samples", 500);
-    // Per-fingertip normalization (mean/std arrays)
+    // Per-fingertip normalization (input_max arrays)
     for (const auto& name : {"thumb", "index", "middle", "ring"}) {
-      declare_parameter("ft_inferencer." + std::string(name) + "_mean",
-                        std::vector<double>(8, 0.0));
-      declare_parameter("ft_inferencer." + std::string(name) + "_std",
-                        std::vector<double>(8, 1.0));
+      declare_parameter("ft_inferencer." + std::string(name) + "_max",
+                        std::vector<double>(16, 1.0));
     }
 
     const std::string target_ip       = get_parameter("target_ip").as_string();
@@ -99,27 +98,22 @@ class HandUdpNode : public rclcpp::Node {
     ft_config.enabled = get_parameter("ft_inferencer.enabled").as_bool();
     ft_config.num_fingertips = static_cast<int>(
         get_parameter("ft_inferencer.num_fingertips").as_int());
+    ft_config.history_length = static_cast<int>(
+        get_parameter("ft_inferencer.history_length").as_int());
     ft_config.model_paths = get_parameter("ft_inferencer.model_paths").as_string_array();
     ft_config.calibration_enabled = get_parameter("ft_inferencer.calibration_enabled").as_bool();
     ft_config.calibration_samples = static_cast<int>(
         get_parameter("ft_inferencer.calibration_samples").as_int());
 
-    // Per-fingertip mean/std 로드
+    // Per-fingertip input_max 로드
     const std::array<const char*, 4> ft_param_names = {"thumb", "index", "middle", "ring"};
     for (int f = 0; f < 4 && f < ft_config.num_fingertips; ++f) {
-      auto mean_vec = get_parameter(
-          "ft_inferencer." + std::string(ft_param_names[static_cast<std::size_t>(f)]) + "_mean")
+      auto max_vec = get_parameter(
+          "ft_inferencer." + std::string(ft_param_names[static_cast<std::size_t>(f)]) + "_max")
           .as_double_array();
-      auto std_vec = get_parameter(
-          "ft_inferencer." + std::string(ft_param_names[static_cast<std::size_t>(f)]) + "_std")
-          .as_double_array();
-      for (int b = 0; b < urtc::kBarometerCount && b < static_cast<int>(mean_vec.size()); ++b) {
-        ft_config.input_mean[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
-            static_cast<float>(mean_vec[static_cast<std::size_t>(b)]);
-      }
-      for (int b = 0; b < urtc::kBarometerCount && b < static_cast<int>(std_vec.size()); ++b) {
-        ft_config.input_std[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
-            static_cast<float>(std_vec[static_cast<std::size_t>(b)]);
+      for (int b = 0; b < urtc::kFTInputSize && b < static_cast<int>(max_vec.size()); ++b) {
+        ft_config.input_max[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
+            static_cast<float>(max_vec[static_cast<std::size_t>(b)]);
       }
     }
 
@@ -255,12 +249,17 @@ class HandUdpNode : public rclcpp::Node {
               ? ft_names_list[static_cast<std::size_t>(f)]
               : "f" + std::to_string(f);
           const int base = f * urtc::kFTValuesPerFingertip;
+          // Output: [contact(1), F(3), u(3), Fn(3), Fx(1), Fy(1), Fz(1)]
+          ft.contact = (ft_state.ft_data[static_cast<std::size_t>(base)] > 0.5f);
           for (int j = 0; j < 3; ++j) {
-            ft.force[static_cast<std::size_t>(j)] =
-                ft_state.ft_data[static_cast<std::size_t>(base + j)];
-            ft.torque[static_cast<std::size_t>(j)] =
-                ft_state.ft_data[static_cast<std::size_t>(base + 3 + j)];
+            const auto ju = static_cast<std::size_t>(j);
+            ft.force[ju]        = ft_state.ft_data[static_cast<std::size_t>(base + 1 + j)];
+            ft.direction[ju]    = ft_state.ft_data[static_cast<std::size_t>(base + 4 + j)];
+            ft.normal_force[ju] = ft_state.ft_data[static_cast<std::size_t>(base + 7 + j)];
           }
+          ft.force_x = ft_state.ft_data[static_cast<std::size_t>(base + 10)];
+          ft.force_y = ft_state.ft_data[static_cast<std::size_t>(base + 11)];
+          ft.force_z = ft_state.ft_data[static_cast<std::size_t>(base + 12)];
           ft_msg.fingertips.push_back(ft);
         }
         ft_pub_->publish(ft_msg);
