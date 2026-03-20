@@ -1,0 +1,228 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="custom_hand">
+  <!--
+    Custom Hand URDF — simplified geometric model (no mesh)
+    10 revolute joints matching hand_udp_node motor names:
+      thumb:  thumb_cmc_aa, thumb_cmc_fe, thumb_mcp_fe
+      index:  index_mcp_aa, index_mcp_fe, index_dip_fe
+      middle: middle_mcp_aa, middle_mcp_fe, middle_dip_fe
+      ring:   ring_mcp_fe
+    4 fingertip frames: thumb_tip_link, index_tip_link, middle_tip_link, ring_tip_link
+  -->
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- Colors                                                                -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <material name="hand_dark_gray">
+    <color rgba="0.3 0.3 0.3 1.0"/>
+  </material>
+  <material name="hand_light_gray">
+    <color rgba="0.7 0.7 0.7 1.0"/>
+  </material>
+  <material name="fingertip_blue">
+    <color rgba="0.2 0.4 0.8 1.0"/>
+  </material>
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- Palm (hand_base_link)                                                 -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <link name="hand_base_link">
+    <visual>
+      <origin xyz="0 0 0.0125" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.08 0.10 0.025"/>
+      </geometry>
+      <material name="hand_dark_gray"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.0125" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.08 0.10 0.025"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.3"/>
+      <origin xyz="0 0 0.0125" rpy="0 0 0"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- Finger link macro                                                     -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <xacro:macro name="finger_link" params="name length:=0.035 radius:=0.008 material:=hand_light_gray">
+    <link name="${name}">
+      <visual>
+        <origin xyz="0 0 ${length/2}" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${radius}" length="${length}"/>
+        </geometry>
+        <material name="${material}"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 ${length/2}" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${radius}" length="${length}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="0.02"/>
+        <origin xyz="0 0 ${length/2}" rpy="0 0 0"/>
+        <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-7"/>
+      </inertial>
+    </link>
+  </xacro:macro>
+
+  <!-- Fingertip link (smaller, blue) -->
+  <xacro:macro name="fingertip_link" params="name length:=0.025 radius:=0.009">
+    <link name="${name}">
+      <visual>
+        <origin xyz="0 0 ${length/2}" rpy="0 0 0"/>
+        <geometry>
+          <sphere radius="${radius}"/>
+        </geometry>
+        <material name="fingertip_blue"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 ${length/2}" rpy="0 0 0"/>
+        <geometry>
+          <sphere radius="${radius}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="0.01"/>
+        <origin xyz="0 0 ${length/2}" rpy="0 0 0"/>
+        <inertia ixx="1e-7" ixy="0" ixz="0" iyy="1e-7" iyz="0" izz="1e-7"/>
+      </inertial>
+    </link>
+  </xacro:macro>
+
+  <!-- Revolute joint macro -->
+  <xacro:macro name="finger_joint" params="name parent child origin_xyz origin_rpy axis_xyz">
+    <joint name="${name}" type="revolute">
+      <parent link="${parent}"/>
+      <child link="${child}"/>
+      <origin xyz="${origin_xyz}" rpy="${origin_rpy}"/>
+      <axis xyz="${axis_xyz}"/>
+      <limit lower="-1.5708" upper="1.5708" effort="5.0" velocity="3.14"/>
+      <dynamics damping="0.01" friction="0.01"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- THUMB — 3 joints: thumb_cmc_aa, thumb_cmc_fe, thumb_mcp_fe           -->
+  <!--   Offset from palm center: X=-0.035 (lateral), Y=-0.03              -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <xacro:finger_link name="thumb_cmc_aa_link" length="0.030"/>
+  <xacro:finger_link name="thumb_cmc_fe_link" length="0.035"/>
+  <xacro:finger_link name="thumb_mcp_fe_link" length="0.030"/>
+  <xacro:fingertip_link name="thumb_tip_link"/>
+
+  <!-- thumb_cmc_aa: abduction/adduction (Y-axis rotation) -->
+  <xacro:finger_joint name="thumb_cmc_aa"
+    parent="hand_base_link" child="thumb_cmc_aa_link"
+    origin_xyz="-0.035 -0.03 0.025" origin_rpy="0 -0.3 0"
+    axis_xyz="0 1 0"/>
+
+  <!-- thumb_cmc_fe: flexion/extension (X-axis rotation) -->
+  <xacro:finger_joint name="thumb_cmc_fe"
+    parent="thumb_cmc_aa_link" child="thumb_cmc_fe_link"
+    origin_xyz="0 0 0.030" origin_rpy="0 0 0"
+    axis_xyz="1 0 0"/>
+
+  <!-- thumb_mcp_fe: flexion/extension -->
+  <xacro:finger_joint name="thumb_mcp_fe"
+    parent="thumb_cmc_fe_link" child="thumb_mcp_fe_link"
+    origin_xyz="0 0 0.035" origin_rpy="0 0 0"
+    axis_xyz="1 0 0"/>
+
+  <!-- thumb tip (fixed) -->
+  <joint name="thumb_tip_joint" type="fixed">
+    <parent link="thumb_mcp_fe_link"/>
+    <child link="thumb_tip_link"/>
+    <origin xyz="0 0 0.030" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- INDEX — 3 joints: index_mcp_aa, index_mcp_fe, index_dip_fe           -->
+  <!--   Offset: X=-0.025, Y=0.04                                          -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <xacro:finger_link name="index_mcp_aa_link" length="0.035"/>
+  <xacro:finger_link name="index_mcp_fe_link" length="0.030"/>
+  <xacro:finger_link name="index_dip_fe_link" length="0.025"/>
+  <xacro:fingertip_link name="index_tip_link"/>
+
+  <!-- index_mcp_aa: abduction/adduction -->
+  <xacro:finger_joint name="index_mcp_aa"
+    parent="hand_base_link" child="index_mcp_aa_link"
+    origin_xyz="-0.025 0.04 0.025" origin_rpy="0 0 0"
+    axis_xyz="1 0 0"/>
+
+  <!-- index_mcp_fe: flexion/extension -->
+  <xacro:finger_joint name="index_mcp_fe"
+    parent="index_mcp_aa_link" child="index_mcp_fe_link"
+    origin_xyz="0 0 0.035" origin_rpy="0 0 0"
+    axis_xyz="1 0 0"/>
+
+  <!-- index_dip_fe: flexion/extension -->
+  <xacro:finger_joint name="index_dip_fe"
+    parent="index_mcp_fe_link" child="index_dip_fe_link"
+    origin_xyz="0 0 0.030" origin_rpy="0 0 0"
+    axis_xyz="1 0 0"/>
+
+  <!-- index tip (fixed) -->
+  <joint name="index_tip_joint" type="fixed">
+    <parent link="index_dip_fe_link"/>
+    <child link="index_tip_link"/>
+    <origin xyz="0 0 0.025" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- MIDDLE — 3 joints: middle_mcp_aa, middle_mcp_fe, middle_dip_fe       -->
+  <!--   Offset: X=0.0, Y=0.04                                             -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <xacro:finger_link name="middle_mcp_aa_link" length="0.035"/>
+  <xacro:finger_link name="middle_mcp_fe_link" length="0.030"/>
+  <xacro:finger_link name="middle_dip_fe_link" length="0.025"/>
+  <xacro:fingertip_link name="middle_tip_link"/>
+
+  <xacro:finger_joint name="middle_mcp_aa"
+    parent="hand_base_link" child="middle_mcp_aa_link"
+    origin_xyz="0.0 0.04 0.025" origin_rpy="0 0 0"
+    axis_xyz="1 0 0"/>
+
+  <xacro:finger_joint name="middle_mcp_fe"
+    parent="middle_mcp_aa_link" child="middle_mcp_fe_link"
+    origin_xyz="0 0 0.035" origin_rpy="0 0 0"
+    axis_xyz="1 0 0"/>
+
+  <xacro:finger_joint name="middle_dip_fe"
+    parent="middle_mcp_fe_link" child="middle_dip_fe_link"
+    origin_xyz="0 0 0.030" origin_rpy="0 0 0"
+    axis_xyz="1 0 0"/>
+
+  <joint name="middle_tip_joint" type="fixed">
+    <parent link="middle_dip_fe_link"/>
+    <child link="middle_tip_link"/>
+    <origin xyz="0 0 0.025" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- RING — 1 joint: ring_mcp_fe                                          -->
+  <!--   Offset: X=0.025, Y=0.035                                          -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <xacro:finger_link name="ring_mcp_fe_link" length="0.035"/>
+  <xacro:fingertip_link name="ring_tip_link"/>
+
+  <xacro:finger_joint name="ring_mcp_fe"
+    parent="hand_base_link" child="ring_mcp_fe_link"
+    origin_xyz="0.025 0.035 0.025" origin_rpy="0 0 0"
+    axis_xyz="1 0 0"/>
+
+  <joint name="ring_tip_joint" type="fixed">
+    <parent link="ring_mcp_fe_link"/>
+    <child link="ring_tip_link"/>
+    <origin xyz="0 0 0.035" rpy="0 0 0"/>
+  </joint>
+
+</robot>

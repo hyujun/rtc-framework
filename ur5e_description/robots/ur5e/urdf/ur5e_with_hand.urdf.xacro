@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<!--
+  Combined URDF: UR5e + Custom Hand
+  Hand is attached to tool0 via a fixed joint.
+  Process with: xacro ur5e_with_hand.urdf.xacro
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ur5e_with_hand">
+
+  <!-- UR5e base robot (pre-generated URDF, included as-is) -->
+  <xacro:include filename="$(find ur5e_description)/robots/ur5e/urdf/ur5e.urdf"/>
+
+  <!-- Custom Hand model -->
+  <xacro:include filename="$(find ur5e_description)/robots/ur5e/urdf/hand.urdf.xacro"/>
+
+  <!-- Attach hand to tool0 -->
+  <joint name="tool0_to_hand" type="fixed">
+    <parent link="tool0"/>
+    <child link="hand_base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+</robot>
