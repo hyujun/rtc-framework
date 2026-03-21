@@ -1,6 +1,11 @@
 # ur5e_description
 
-UR5e 로봇의 모델 description 파일 패키지 (v5.16.0).
+![version](https://img.shields.io/badge/version-v5.16.0-blue)
+
+> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스의 일부입니다.
+> 설치/빌드: [Root README](../README.md)
+
+UR5e 로봇의 모델 description 파일 패키지입니다.
 
 `rtc_mujoco_sim`, `rtc_controller_manager` + `rtc_controllers` 등 모든 패키지가 이 단일 소스에서 모델을 참조합니다.
 
@@ -136,3 +141,24 @@ ros2 run rtc_tools compare_mjcf_urdf --tolerance 0.01
 ## URDF 출처
 
 UR 공식 `ur_description` 패키지의 `ur.urdf.xacro`를 `ur_type:=ur5e`로 xacro 변환.
+
+---
+
+## 의존성 그래프 내 위치
+
+**독립 패키지** — 외부 ROS2 패키지 의존성 없음 (URDF 생성에 `xacro`, `ur_description` 필요).
+
+```
+ur5e_description  ← 독립 (MJCF/URDF/메시 제공)
+    ↑
+    ├── rtc_mujoco_sim         (MJCF scene.xml 참조, ament_index + package:// URI)
+    ├── rtc_controller_manager (URDF ur5e.urdf 참조, Pinocchio 모델 빌드)
+    ├── rtc_controllers        (URDF 경유 FK/IK/Dynamics 계산)
+    └── ur5e_bringup           (launch 파일에서 URDF 경로 설정)
+```
+
+---
+
+## 라이선스
+
+MIT License — 자세한 내용은 [LICENSE](../LICENSE) 파일을 참조하세요.

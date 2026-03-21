@@ -140,8 +140,11 @@ source install/setup.bash
 ```
 rtc_msgs   ← std_msgs (ROS2 기본 메시지)
     ↑
+    ├── rtc_controller_interface (컨트롤러 타입 정의)
     ├── rtc_controller_manager   (JointCommand 구독)
-    └── rtc_mujoco_sim           (잠재적 사용)
+    ├── rtc_status_monitor       (상태 모니터링)
+    ├── rtc_mujoco_sim           (시뮬레이션 연동)
+    └── ur5e_hand_driver         (핸드 커맨드/피드백)
 ```
 
 ### 사용처
@@ -149,7 +152,10 @@ rtc_msgs   ← std_msgs (ROS2 기본 메시지)
 | 패키지 | 사용 방식 |
 |--------|----------|
 | `rtc_controller_manager` | `JointCommand` 구독을 통한 관절 명령 수신 |
-| `rtc_mujoco_sim` | 잠재적 시뮬레이션 연동 |
+| `rtc_controller_interface` | 컨트롤러 타입 정의에서 메시지 타입 참조 |
+| `rtc_status_monitor` | 상태 모니터링에서 핸드 센서/모터 상태 참조 |
+| `rtc_mujoco_sim` | 시뮬레이션 연동 |
+| `ur5e_hand_driver` | 핸드 모터 커맨드/피드백, 센서 데이터 |
 
 ---
 

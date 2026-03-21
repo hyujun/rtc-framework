@@ -89,6 +89,15 @@ SimLoop → /joint_states 퍼블리시
 
 > **QoS 참고**: `/forward_position_controller/commands`와 `/forward_torque_controller/commands`는 `BEST_EFFORT` QoS를 사용합니다. rt_controller의 퍼블리셔가 `BEST_EFFORT + depth 1`이므로, `RELIABLE` 구독자는 메시지를 수신할 수 없습니다.
 
+### 제어 모드 자동 전환
+
+| 토픽 수신 | 제어 모드 | Gravity |
+|---|---|---|
+| `/forward_position_controller/commands` | Position Servo | 자동 OFF + 잠금 |
+| `/forward_torque_controller/commands` | Torque | 자동 ON |
+
+Position servo 모드에서는 중력이 자동으로 OFF되고 잠금됩니다 (`G` 키 무시). Torque 모드로 전환 시 중력이 자동으로 ON됩니다.
+
 ---
 
 ## 스레딩 모델
@@ -108,7 +117,19 @@ mujoco_simulator_node
     └── ViewerLoop 스레드 (jthread, 선택적)
           └── GLFW 3D 뷰어 ~60Hz
               └── viz_mutex_ (try_lock 전용 — SimLoop 절대 블로킹 안 함)
+
+Caller 스레드 (ROS2 노드): SetCommand(), GetPositions(), GetVelocities() 호출
 ```
+
+### 동기화 메커니즘
+
+| Mutex / Atomic | 용도 |
+|---|---|
+| `cmd_mutex_` + `cmd_pending_` (atomic) | 명령 전달 (FreeRun에서 lock-free fast path) |
+| `sync_cv_` | SyncStep 명령 대기 + 일시정지 중 StepOnce/Reset 깨우기 |
+| `state_mutex_` | 최신 상태 스냅샷 보호 |
+| `viz_mutex_` (try_lock 전용) | 뷰어 데이터 보호 — SimLoop 절대 블로킹 안 함 |
+| `step_once_` (atomic) | 일시정지 중 1스텝 진행 제어 |
 
 ---
 
