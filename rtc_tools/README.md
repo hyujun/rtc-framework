@@ -21,7 +21,7 @@ rtc_tools/
 │   │   └── compare_mjcf_urdf.py         ← MJCF vs URDF 파라미터 비교 검증 (v5.7.0+)
 │   └── utils/
 │       ├── hand_udp_sender_example.py   ← 10-DOF 손 UDP 프로토콜 라이브러리 + 예제
-│       ├── session_dir.py              ← 세션 디렉토리 유틸리티 (v5.10.0)
+│       ├── session_dir.py               ← 세션 디렉토리 유틸리티 (v5.10.0, RTC_SESSION_DIR 관리)
 │       └── hand_data_plot.py            ← 손 CSV 데이터 시각화
 ├── resource/
 │   └── rtc_tools
@@ -324,6 +324,15 @@ source install/setup.bash
 pip install matplotlib pandas numpy scipy
 sudo apt install python3-pyqt5   # motion_editor_gui만 필요
 ```
+
+---
+
+## 세션 디렉토리 유틸리티 (`session_dir.py`, v5.10.0)
+
+`RTC_SESSION_DIR` 환경변수를 통해 세션 디렉토리 경로를 관리하는 유틸리티입니다. 모든 패키지에서 세션 디렉토리 경로를 통일하기 위해 사용됩니다.
+
+- `--save-dir` 미지정 시 `RTC_SESSION_DIR/plots/`에 자동 저장
+- `UR5E_SESSION_DIR` 환경변수 폴백 지원
 
 ---
 
