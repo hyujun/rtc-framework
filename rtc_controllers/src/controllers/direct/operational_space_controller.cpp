@@ -1,5 +1,5 @@
 // ── Includes: project header first, then C++ stdlib ────────────────────────────
-#include "rtc/controllers/direct/operational_space_controller.hpp"
+#include "rtc_controllers/direct/operational_space_controller.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -61,8 +61,6 @@ ControllerOutput OperationalSpaceController::Compute(
   const pinocchio::SE3 & tcp = data_.oMi[end_id_];
 
   // ── Step 3.5: initialise trajectory on new target (after FK) ─────────────
-  // target_mutex_로 goal_pose_ 읽기 + trajectory 초기화 보호.
-  // try_lock이므로 RT thread blocking 없음 — 실패 시 다음 tick에 처리.
   if (new_target_.load(std::memory_order_acquire)) {
     std::unique_lock lock(target_mutex_, std::try_to_lock);
     if (lock.owns_lock()) {
@@ -114,12 +112,9 @@ ControllerOutput OperationalSpaceController::Compute(
     kd_r.cwiseProduct(tcp_vel_.tail<3>());
 
   // ── Step 6: Damped pseudoinverse  J^# = J^T (J J^T + λ²I₆)^{−1} ─────────
-  // JJt_ and lu_ are fixed-size 6×6 — no dynamic allocation.
   JJt_.noalias() = J_full_ * J_full_.transpose();
   JJt_.diagonal().array() += gains_.damping * gains_.damping;
   lu_.compute(JJt_);
-  // J^# = J^T * JJt_^{−1}   (nv×6)
-  // Solve JJt_ * X = I₆  to get JJt_^{−1}
   Jpinv_.noalias() = J_full_.transpose() *
     lu_.solve(Eigen::Matrix<double, 6, 6>::Identity());
 
@@ -127,9 +122,6 @@ ControllerOutput OperationalSpaceController::Compute(
   dq_.noalias() = Jpinv_ * task_vel_;
 
   // ── Step 8: optional gravity compensation ────────────────────────────────
-  // Adds the gravity torque g(q) as a feedforward bias.
-  // Note: g(q) is in [N·m]; treating it as a velocity offset works as a
-  // heuristic feedforward on most position-controlled UR setups.
   if (gains_.enable_gravity_compensation) {
     const Eigen::VectorXd & g =
       pinocchio::computeGeneralizedGravity(model_, data_, q_);
@@ -168,14 +160,10 @@ void OperationalSpaceController::SetRobotTarget(
   std::span<const double, kNumRobotJoints> target) noexcept
 {
   std::lock_guard lock(target_mutex_);
-  // target[0..2] = desired TCP position [x, y, z]
-  // target[3..5] = desired TCP orientation [roll, pitch, yaw]
   const std::size_t n = 6;
   for (std::size_t i = 0; i < n; ++i) {
     pose_target_[i] = target[i];
   }
-  // Precompute goal SE3 from position + RPY — called from the sensor thread,
-  // NOT on the 500 Hz RT path.
   goal_pose_.translation() =
     Eigen::Vector3d(target[0], target[1], target[2]);
   goal_pose_.rotation() = RpyToMatrix(target[3], target[4], target[5]);
@@ -193,7 +181,6 @@ void OperationalSpaceController::SetHandTarget(
 void OperationalSpaceController::InitializeHoldPosition(
   const ControllerState & state) noexcept
 {
-  // FK로 현재 TCP pose를 계산하여 goal로 설정
   for (Eigen::Index i = 0; i < model_.nv; ++i) {
     q_[i] = state.robot.positions[static_cast<std::size_t>(i)];
   }
@@ -203,7 +190,6 @@ void OperationalSpaceController::InitializeHoldPosition(
   std::lock_guard lock(target_mutex_);
   goal_pose_ = tcp;
 
-  // pose_target_도 동기화 [x, y, z, roll, pitch, yaw]
   const Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
   pose_target_[0] = tcp.translation()[0];
   pose_target_[1] = tcp.translation()[1];
@@ -213,7 +199,6 @@ void OperationalSpaceController::InitializeHoldPosition(
   pose_target_[5] = rpy[2];
   new_target_.store(false, std::memory_order_relaxed);
 
-  // 제자리 궤적 초기화 (start == goal)
   trajectory_.initialize(tcp, pinocchio::Motion::Zero(),
                          tcp, pinocchio::Motion::Zero(), 0.01);
   trajectory_time_ = 0.0;
@@ -238,7 +223,7 @@ void OperationalSpaceController::TriggerEstop() noexcept
 void OperationalSpaceController::ClearEstop() noexcept
 {
   estopped_.store(false, std::memory_order_release);
-  new_target_.store(true, std::memory_order_relaxed); // regenerate trajectory from current pose
+  new_target_.store(true, std::memory_order_relaxed);
 }
 
 bool OperationalSpaceController::IsEstopped() const noexcept
