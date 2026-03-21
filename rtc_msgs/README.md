@@ -140,16 +140,16 @@ source install/setup.bash
 ```
 rtc_msgs   ← std_msgs (ROS2 기본 메시지)
     ↑
-    ├── ur5e_rt_controller   (JointCommand 구독)
-    └── ur5e_mujoco_sim      (잠재적 사용)
+    ├── rtc_controller_manager   (JointCommand 구독)
+    └── rtc_mujoco_sim           (잠재적 사용)
 ```
 
 ### 사용처
 
 | 패키지 | 사용 방식 |
 |--------|----------|
-| `ur5e_rt_controller` | `JointCommand` 구독을 통한 관절 명령 수신 |
-| `ur5e_mujoco_sim` | 잠재적 시뮬레이션 연동 |
+| `rtc_controller_manager` | `JointCommand` 구독을 통한 관절 명령 수신 |
+| `rtc_mujoco_sim` | 잠재적 시뮬레이션 연동 |
 
 ---
 

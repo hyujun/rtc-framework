@@ -7,7 +7,7 @@
 
 ### 추가 (Added)
 
-- **초기 생성**: RT Controller 스택을 위한 커스텀 ROS2 메시지 정의 패키지
+- **초기 생성**: RT Controller 스택을 위한 커스텀 ROS2 메시지 정의 패키지 (ur5e_msgs에서 rtc_msgs로 이름 변경)
 - `JointCommand.msg` — 로봇 암 관절 명령 (position/torque), joint_names 기반 매핑
 - `HandCommand.msg` — 핸드 모터 명령, motor_names 기반 매핑
 - `HandMotorState.msg` — 핸드 모터 피드백 (위치/속도)

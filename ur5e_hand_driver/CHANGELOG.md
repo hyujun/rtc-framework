@@ -1,4 +1,4 @@
-# 변경 이력 — ur5e_hand_udp
+# 변경 이력 — ur5e_hand_driver
 
 이 파일은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/) 형식을 따르며,
 [시맨틱 버전 관리](https://semver.org/lang/ko/)를 사용합니다.
@@ -26,7 +26,7 @@
 
 - **SeqLock 기반 lock-free 상태 공유**
   - `state_mutex_` → `SeqLock<HandState>` 교체 — writer(EventLoop) wait-free, reader lock-free
-  - `ur5e_rt_base/threading/seqlock.hpp` 신규 — 범용 single-writer/multi-reader SeqLock 템플릿
+  - `rtc_base/threading/seqlock.hpp` 신규 — 범용 single-writer/multi-reader SeqLock 템플릿
   - Priority inversion 완전 제거 (SCHED_FIFO 스레드 간 mutex 공유 없음)
 
 - **WritePosition echo 활용 (Individual 모드 1 round-trip 절약)**
@@ -164,7 +164,7 @@
 
 ### 추가
 
-- **초기 분리**: `ur5e_rt_controller` 단일 패키지에서 UDP 핸드 브리지를 독립 패키지로 추출
+- **초기 분리**: `rtc_controller_manager` 단일 패키지에서 UDP 핸드 브리지를 독립 패키지로 추출
 - `HandUdpReceiver`: UDP 포트 50001에서 616바이트(77 double) 손 상태 패킷 수신, `std::jthread` 사용
 - `HandUdpSender`: 11 double 리틀 엔디언 인코딩 모터 명령 송신 (포트 50002)
 - `hand_udp_receiver_node`: UDP → `/hand/joint_states` (100Hz) ROS2 브리지

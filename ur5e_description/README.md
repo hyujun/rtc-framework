@@ -2,7 +2,7 @@
 
 UR5e 로봇의 모델 description 파일 패키지 (v5.16.0).
 
-`ur5e_mujoco_sim`, `ur5e_rt_controller` 등 모든 패키지가 이 단일 소스에서 모델을 참조합니다.
+`rtc_mujoco_sim`, `rtc_controller_manager` + `rtc_controllers` 등 모든 패키지가 이 단일 소스에서 모델을 참조합니다.
 
 ---
 
@@ -103,8 +103,8 @@ robots/ur5e/meshes/collision/*.stl
 
 | 패키지 | 파일 |
 |--------|------|
-| `ur5e_mujoco_sim` | `mjcf/scene.xml` (기본 model_path) |
-| `ur5e_rt_controller` (Pinocchio/CLIK/OSC 컨트롤러) | `urdf/ur5e.urdf` |
+| `rtc_mujoco_sim` | `mjcf/scene.xml` (기본 model_path) |
+| `rtc_controller_manager` + `rtc_controllers` (Pinocchio/CLIK/OSC 컨트롤러) | `urdf/ur5e.urdf` |
 
 ---
 
@@ -114,13 +114,13 @@ robots/ur5e/meshes/collision/*.stl
 
 ```bash
 # 빌드 후
-ros2 run ur5e_tools compare_mjcf_urdf
+ros2 run rtc_tools compare_mjcf_urdf
 
 # 직접 경로 지정
-ros2 run ur5e_tools compare_mjcf_urdf --mjcf robots/ur5e/mjcf/ur5e.xml --urdf robots/ur5e/urdf/ur5e.urdf
+ros2 run rtc_tools compare_mjcf_urdf --mjcf robots/ur5e/mjcf/ur5e.xml --urdf robots/ur5e/urdf/ur5e.urdf
 
 # tolerance 조정
-ros2 run ur5e_tools compare_mjcf_urdf --tolerance 0.01
+ros2 run rtc_tools compare_mjcf_urdf --tolerance 0.01
 ```
 
 > **참고**: MJCF는 MuJoCo Menagerie 기반, URDF는 UR 공식 xacro 생성이므로 mass/inertia 값이 다를 수 있습니다. joint limit과 effort limit은 일치합니다.

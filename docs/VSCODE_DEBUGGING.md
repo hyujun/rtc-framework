@@ -65,7 +65,7 @@ echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
 ### 방법 B — 터미널 직접 실행
 
 ```bash
-cd /home/junho/ros2_ws/ur5e_ws
+cd /home/user/ros2_ws/ur5e_ws
 source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install \
   --cmake-args -DCMAKE_BUILD_TYPE=Debug \
@@ -105,7 +105,7 @@ VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다.
 ```json
 "args": [
   "--ros-args",
-  "--params-file", "/home/junho/ros2_ws/ur5e_ws/src/ur5e-rt-controller/ur5e_rt_controller/config/controller_config.yaml"
+  "--params-file", "/home/user/ros2_ws/ur5e_ws/src/ur5e-rt-controller/rtc_controller_manager/config/rt_controller_manager.yaml"
 ]
 ```
 
@@ -125,9 +125,9 @@ VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다.
 먼저 터미널에서 노드를 정상적으로 실행합니다:
 
 ```bash
-cd /home/junho/ros2_ws/ur5e_ws
+cd /home/user/ros2_ws/ur5e_ws
 source /opt/ros/jazzy/setup.bash && source install/setup.bash
-ros2 launch ur5e_rt_controller ur_control.launch.py
+ros2 launch ur5e_bringup robot.launch.py
 ```
 
 ### 4-2. VS Code에서 Attach

@@ -1,6 +1,6 @@
 # 쉘 스크립트 가이드
 
-UR5e RT Controller 워크스페이스의 빌드, 설치, 실시간 환경 설정 쉘 스크립트 레퍼런스입니다.
+RTC (Real-Time Controller) 워크스페이스의 빌드, 설치, 실시간 환경 설정 쉘 스크립트 레퍼런스입니다.
 
 ---
 
@@ -10,14 +10,14 @@ UR5e RT Controller 워크스페이스의 빌드, 설치, 실시간 환경 설정
 |----------|------|-------|------|
 | `build.sh` | `/` (루트) | ~425 | 패키지 빌드 (sim/robot/full 모드 선택, CPU shield 관리) |
 | `install.sh` | `/` (루트) | ~1128 | 전체 설치 파이프라인 (의존성, RT 권한, 커널, 시스템 설정) |
-| `rt_common.sh` | `ur5e_rt_controller/scripts/lib/` | ~260 | 공유 유틸리티 라이브러리 (로깅, CPU 감지, NIC 감지) |
-| `build_rt_kernel.sh` | `ur5e_rt_controller/scripts/` | ~1057 | PREEMPT_RT 커널 빌드 및 설치 (7단계) |
-| `cpu_shield.sh` | `ur5e_rt_controller/scripts/` | ~323 | 동적 CPU 격리 관리 (cset shield 기반) |
-| `setup_irq_affinity.sh` | `ur5e_rt_controller/scripts/` | ~190 | 하드웨어 IRQ를 OS 코어에 고정 |
-| `setup_udp_optimization.sh` | `ur5e_rt_controller/scripts/` | ~188 | 네트워크/UDP 실시간 최적화 |
-| `setup_nvidia_rt.sh` | `ur5e_rt_controller/scripts/` | ~1146 | NVIDIA GPU + RT 커널 공존 설정 (11단계) |
-| `check_rt_setup.sh` | `ur5e_rt_controller/scripts/` | ~861 | RT 환경 검증 (8개 카테고리) |
-| `verify_rt_runtime.sh` | `ur5e_rt_controller/scripts/` | ~620 | 제어기 구동 중 RT 런타임 검증 (7개 카테고리) |
+| `rt_common.sh` | `rtc_scripts/scripts/lib/` | ~260 | 공유 유틸리티 라이브러리 (로깅, CPU 감지, NIC 감지) |
+| `build_rt_kernel.sh` | `rtc_scripts/scripts/` | ~1057 | PREEMPT_RT 커널 빌드 및 설치 (7단계) |
+| `cpu_shield.sh` | `rtc_scripts/scripts/` | ~323 | 동적 CPU 격리 관리 (cset shield 기반) |
+| `setup_irq_affinity.sh` | `rtc_scripts/scripts/` | ~190 | 하드웨어 IRQ를 OS 코어에 고정 |
+| `setup_udp_optimization.sh` | `rtc_scripts/scripts/` | ~188 | 네트워크/UDP 실시간 최적화 |
+| `setup_nvidia_rt.sh` | `rtc_scripts/scripts/` | ~1146 | NVIDIA GPU + RT 커널 공존 설정 (11단계) |
+| `check_rt_setup.sh` | `rtc_scripts/scripts/` | ~861 | RT 환경 검증 (8개 카테고리) |
+| `verify_rt_runtime.sh` | `rtc_scripts/scripts/` | ~620 | 제어기 구동 중 RT 런타임 검증 (7개 카테고리) |
 
 모든 RT 설정 스크립트는 공유 유틸리티 라이브러리 `lib/rt_common.sh`를 사용합니다.
 
@@ -101,7 +101,7 @@ UR5e RT Controller 워크스페이스의 빌드, 설치, 실시간 환경 설정
 
 ---
 
-## RT 설정 스크립트 (`ur5e_rt_controller/scripts/`)
+## RT 설정 스크립트 (`rtc_scripts/scripts/`)
 
 ### lib/rt_common.sh --- 공유 유틸리티 라이브러리
 
@@ -234,7 +234,7 @@ uname -v | grep PREEMPT_RT   # 재부팅 후 RT 커널 확인
 | 16코어 이상 | Core 4-8 |
 
 **자동 호출 시점**:
-- 로봇 런치: `ur_control.launch.py`에서 자동 호출
+- 로봇 런치: `ur5e_bringup` launch 파일에서 자동 호출
 - 시뮬 런치: `mujoco_sim.launch.py`에서 자동 호출
 - 빌드 전: `build.sh` / `install.sh`에서 자동 해제
 
