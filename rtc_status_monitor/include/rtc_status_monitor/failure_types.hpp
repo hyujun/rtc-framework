@@ -1,12 +1,5 @@
 #pragma once
 
-// ── Workspace Analysis ───────────────────────────────────────────────────────
-// Package:      rtc_status_monitor (v5.2.2)
-// Convention:   ur5e_ prefix, snake_case, MIT license
-// Dependencies: No ROS2 deps in this header — pure C++20
-// Reuse:        kNumRobotJoints from rtc_base/types/types.hpp
-// ─────────────────────────────────────────────────────────────────────────────
-
 // ── Project headers ──────────────────────────────────────────────────────────
 #include "rtc_base/types/types.hpp"
 
@@ -16,10 +9,10 @@
 #include <string>
 #include <string_view>
 
-namespace rtc_status_monitor {
+namespace rtc {
 
 // ── Compile-time constants ───────────────────────────────────────────────────
-inline constexpr int kNumJoints = rtc::kNumRobotJoints;
+inline constexpr int kNumJoints = kNumRobotJoints;
 
 // ── FailureType ──────────────────────────────────────────────────────────────
 /// Enumerates all detectable failure conditions.
@@ -164,4 +157,4 @@ enum class URSafetyMode : int32_t {
   return SafetyModeToString(static_cast<URSafetyMode>(val));
 }
 
-}  // namespace rtc_status_monitor
+}  // namespace rtc

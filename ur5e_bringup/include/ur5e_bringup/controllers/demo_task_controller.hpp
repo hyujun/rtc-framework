@@ -40,11 +40,11 @@ namespace ur5e_bringup
 ///
 /// ### Arm control law (same as ClikController)
 /// @code
-///   pos_error    = x_des - FK(q)
-///   J^#          = J^T (J J^T + lambda^2 I)^{-1}         [damped pseudoinverse]
-///   N            = I - J^# J                        [null-space projector]
-///   dq           = kp * J^# * pos_error + null_kp * N * (q_null - q)
-///   q_cmd        = q + clamp(dq, +/-v_max) * dt
+///   pos_error    = x_des − FK(q)
+///   J^#          = J^T (J J^T + λ²I)^{−1}         [damped pseudoinverse]
+///   N            = I − J^# J                        [null-space projector]
+///   dq           = kp · J^# · pos_error + null_kp · N · (q_null − q)
+///   q_cmd        = q + clamp(dq, ±v_max) * dt
 /// @endcode
 ///
 /// ### Hand control law (same as DemoJointController)
@@ -57,22 +57,22 @@ namespace ur5e_bringup
 ///   - 6-DOF mode: `target[0..2]` = TCP position [x,y,z], `target[3..5]` = [roll,pitch,yaw]
 ///
 /// ### Gains layout for UpdateGainsFromMsg
-///   `[kp*6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp*10]` = 20 values
-class DemoTaskController final : public rtc::RTControllerInterface {
+///   `[kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10]` = 20 values
+class DemoTaskController final : public RTControllerInterface {
 public:
   // ── Gain / feature configuration ─────────────────────────────────────────
   struct Gains
   {
     // Arm (CLIK) gains
     std::array<double, 6> kp{{1.0, 1.0, 1.0, 1.0, 1.0, 1.0}}; ///< Cartesian position/orientation gain [1/s]
-    double damping{0.01};            ///< Damping factor lambda for J^#
+    double damping{0.01};            ///< Damping factor λ for J^#
     double null_kp{0.5};             ///< Null-space joint-centering gain [1/s]
     bool   enable_null_space{true};  ///< Enable null-space secondary task
     double trajectory_speed{0.1};    ///< Max translational speed for trajectory [m/s]
     bool   control_6dof{false};      ///< Enable 6-DOF (translation + orientation) control
 
     // Hand gains
-    std::array<float, rtc::kNumHandMotors> hand_kp{{
+    std::array<float, kNumHandMotors> hand_kp{{
       50.0f, 50.0f, 50.0f, 50.0f, 50.0f,
       50.0f, 50.0f, 50.0f, 50.0f, 50.0f}};
   };
@@ -85,8 +85,8 @@ public:
   // ── RTControllerInterface — all methods are noexcept (RT safety) ──────────
   [[nodiscard]] ControllerOutput Compute(const ControllerState & state) noexcept override;
 
-  void SetRobotTarget(std::span<const double, rtc::kNumRobotJoints> target) noexcept override;
-  void SetHandTarget(std::span<const float, rtc::kNumHandMotors> target)  noexcept override;
+  void SetRobotTarget(std::span<const double, kNumRobotJoints> target) noexcept override;
+  void SetHandTarget(std::span<const float, kNumHandMotors> target)  noexcept override;
 
   void InitializeHoldPosition(const ControllerState & state) noexcept override;
 
@@ -98,7 +98,7 @@ public:
   void SetHandEstop(bool active)                 noexcept override;
 
   // ── Controller registry hooks ────────────────────────────────────────────
-  // gains layout: [kp*6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp*10] = 20 values
+  // gains layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10] = 20 values
   void LoadConfig(const YAML::Node & cfg) override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
   [[nodiscard]] std::vector<double> GetCurrentGains() const noexcept override;
@@ -148,21 +148,21 @@ private:
   Gains gains_;
   pinocchio::SE3 tcp_target_pose_{pinocchio::SE3::Identity()};
   std::array<double, 3> tcp_target_{};
-  std::array<double, rtc::kNumRobotJoints> null_target_{0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
-  std::array<float, rtc::kNumHandMotors> hand_target_{};
+  std::array<double, kNumRobotJoints> null_target_{0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
+  std::array<float, kNumHandMotors> hand_target_{};
   std::array<double, 3> tcp_position_{};
 
   bool target_initialized_{false};
   std::atomic<bool> new_target_{false};
   std::mutex target_mutex_;
-  rtc::trajectory::TaskSpaceTrajectory trajectory_;
+  trajectory::TaskSpaceTrajectory trajectory_;
   double trajectory_time_{0.0};
 
   // ── E-STOP ────────────────────────────────────────────────────────────────
   std::atomic<bool> estopped_{false};
   std::atomic<bool> hand_estopped_{false};
 
-  static constexpr std::array<double, rtc::kNumRobotJoints> kSafePosition{
+  static constexpr std::array<double, kNumRobotJoints> kSafePosition{
     0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
   static constexpr double kMaxJointVelocity{2.0};
   static constexpr float  kMaxHandVelocity{1.0f};
@@ -172,11 +172,11 @@ private:
   // ── Helpers ───────────────────────────────────────────────────────────────
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState & state) noexcept;
 
-  [[nodiscard]] static std::array<double, rtc::kNumRobotJoints> ClampVelocity(
-    std::array<double, rtc::kNumRobotJoints> dq) noexcept;
+  [[nodiscard]] static std::array<double, kNumRobotJoints> ClampVelocity(
+    std::array<double, kNumRobotJoints> dq) noexcept;
 
-  [[nodiscard]] static std::array<float, rtc::kNumHandMotors> ClampHandCommands(
-    std::span<const float, rtc::kNumHandMotors> commands) noexcept;
+  [[nodiscard]] static std::array<float, kNumHandMotors> ClampHandCommands(
+    std::span<const float, kNumHandMotors> commands) noexcept;
 };
 
 }  // namespace ur5e_bringup

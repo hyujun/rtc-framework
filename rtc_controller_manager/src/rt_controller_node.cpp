@@ -1,16 +1,18 @@
 // ── Includes: project header first, then ROS2, then C++ stdlib ──────────────
-#include "rtc/rt_controller_node.hpp"
+#include "rtc_controller_manager/rt_controller_node.hpp"
 
-#include "rtc/controllers/direct/joint_pd_controller.hpp"
-#include "rtc/controllers/direct/operational_space_controller.hpp"
-#include "rtc/controllers/indirect/p_controller.hpp"
-#include "rtc/controllers/indirect/clik_controller.hpp"
-#include "rtc/controllers/indirect/demo_joint_controller.hpp"
-#include "rtc/controllers/indirect/demo_task_controller.hpp"
+#include "rtc_controllers/controllers/direct/joint_pd_controller.hpp"
+#include "rtc_controllers/controllers/direct/operational_space_controller.hpp"
+#include "rtc_controllers/controllers/indirect/p_controller.hpp"
+#include "rtc_controllers/controllers/indirect/clik_controller.hpp"
+// Moved to ur5e_bringup — register via plugin system
+// #include "rtc_controllers/controllers/indirect/demo_joint_controller.hpp"
+// Moved to ur5e_bringup — register via plugin system
+// #include "rtc_controllers/controllers/indirect/demo_task_controller.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
-#include <ur5e_rt_base/logging/session_dir.hpp>
-#include <ur5e_rt_base/threading/thread_utils.hpp>
+#include <rtc_base/logging/session_dir.hpp>
+#include <rtc_base/threading/thread_utils.hpp>
 #include <yaml-cpp/yaml.h>
 
 #include <pinocchio/multibody/model.hpp>
@@ -34,7 +36,7 @@ namespace urtc = rtc;
 // ── Controller registry ──────────────────────────────────────────────────────
 //
 // To add a new controller:
-//   1. Create include/rtc/controllers/my_controller.hpp
+//   1. Create include/ur5e_rt_controller/controllers/my_controller.hpp
 //      (inherit RTControllerInterface, implement all pure virtuals + LoadConfig
 //       + UpdateGainsFromMsg)
 //   2. Create config/controllers/my_controller.yaml
@@ -78,19 +80,20 @@ std::vector<ControllerEntry> MakeControllerEntries()
           p, urtc::OperationalSpaceController::Gains{});
       }
     },
-    {
-      "demo_joint_controller", "indirect/",
-      [](const std::string & p) {
-        return std::make_unique<urtc::DemoJointController>(p);
-      }
-    },
-    {
-      "demo_task_controller", "indirect/",
-      [](const std::string & p) {
-        return std::make_unique<urtc::DemoTaskController>(
-          p, urtc::DemoTaskController::Gains{});
-      }
-    },
+    // Moved to ur5e_bringup — register via plugin system
+    // {
+    //   "demo_joint_controller", "indirect/",
+    //   [](const std::string & p) {
+    //     return std::make_unique<urtc::DemoJointController>(p);
+    //   }
+    // },
+    // {
+    //   "demo_task_controller", "indirect/",
+    //   [](const std::string & p) {
+    //     return std::make_unique<urtc::DemoTaskController>(
+    //       p, urtc::DemoTaskController::Gains{});
+    //   }
+    // },
     // ── Add new controllers here ─────────────────────────────────────────────
   };
 }
@@ -117,12 +120,12 @@ RtControllerNode::RtControllerNode()
 
   // ── Status Monitor (optional) ────────────────────────────────────────────
   if (enable_status_monitor_) {
-    status_monitor_ = std::make_unique<ur5e_status_monitor::UR5eStatusMonitor>(
+    status_monitor_ = std::make_unique<rtc_status_monitor::RtcStatusMonitor>(
         shared_from_this());
 
     status_monitor_->registerOnFailure(
-        [this](ur5e_status_monitor::FailureType type,
-               const ur5e_status_monitor::FailureContext & ctx) {
+        [this](rtc_status_monitor::FailureType type,
+               const rtc_status_monitor::FailureContext & ctx) {
           (void)type;
           TriggerGlobalEstop(ctx.description);
         });
@@ -134,7 +137,7 @@ RtControllerNode::RtControllerNode()
 
     const auto cfgs = rtc::SelectThreadConfigs();
     status_monitor_->start(cfgs.status_monitor);
-    RCLCPP_INFO(get_logger(), "UR5eStatusMonitor started (10 Hz, Core %d)",
+    RCLCPP_INFO(get_logger(), "RtcStatusMonitor started (10 Hz, Core %d)",
                 cfgs.status_monitor.cpu_core);
   }
 
@@ -271,7 +274,7 @@ std::filesystem::path RtControllerNode::ResolveAndSetupSessionDir()
   std::string default_logging_root = "/tmp/ur5e_logging_data";
   try {
     std::string share_dir =
-      ament_index_cpp::get_package_share_directory("rtc");
+      ament_index_cpp::get_package_share_directory("ur5e_rt_controller");
     std::filesystem::path ws_path = std::filesystem::path(share_dir)
       .parent_path()
       .parent_path()
@@ -600,7 +603,7 @@ void RtControllerNode::DeclareAndLoadParameters()
 
   std::string config_dir;
   try {
-    config_dir = ament_index_cpp::get_package_share_directory("rtc") +
+    config_dir = ament_index_cpp::get_package_share_directory("ur5e_rt_controller") +
       "/config/controllers/";
   } catch (...) {
   }
