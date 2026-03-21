@@ -166,7 +166,7 @@ private:
   rtc::ControllerTimingProfiler      timing_profiler_{};         // Compute() timing
 
   // ── Status Monitor (optional, non-RT) ──────────────────────────────────────
-  std::unique_ptr<rtc_status_monitor::UR5eStatusMonitor> status_monitor_;
+  std::unique_ptr<rtc::RtcStatusMonitor> status_monitor_;
   bool enable_status_monitor_{false};
 
   // ── Hand Controller ──────────────────────────────────────────────────────

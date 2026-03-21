@@ -25,6 +25,13 @@
 namespace ur5e_bringup
 {
 
+using rtc::kNumRobotJoints;
+using rtc::kNumHandMotors;
+using rtc::RTControllerInterface;
+using rtc::ControllerOutput;
+using rtc::ControllerState;
+using rtc::CommandType;
+
 // Unified Proportional (P) position controller for UR5e arm + hand.
 //
 // Robot arm control law (identical to PController):

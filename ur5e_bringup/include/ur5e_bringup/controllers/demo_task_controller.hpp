@@ -32,6 +32,14 @@
 namespace ur5e_bringup
 {
 
+using rtc::kNumRobotJoints;
+using rtc::kNumHandMotors;
+using rtc::RTControllerInterface;
+using rtc::ControllerOutput;
+using rtc::ControllerState;
+using rtc::CommandType;
+namespace trajectory = rtc::trajectory;
+
 /// Demo Task-Space Controller: CLIK (arm) + P control (hand).
 ///
 /// Controls the end-effector in Cartesian space via damped Jacobian

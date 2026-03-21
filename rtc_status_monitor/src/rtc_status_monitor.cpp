@@ -23,7 +23,7 @@
 #include <iomanip>
 #include <sstream>
 
-namespace rtc_status_monitor {
+namespace rtc {
 
 namespace {
 
@@ -59,7 +59,7 @@ std::string FormatArray(const std::array<double, kNumJoints>& arr) {
 
 // ── Constructor ──────────────────────────────────────────────────────────────
 
-UR5eStatusMonitor::UR5eStatusMonitor(rclcpp::Node::SharedPtr node)
+RtcStatusMonitor::RtcStatusMonitor(rclcpp::Node::SharedPtr node)
   : node_(std::move(node)) {
   // Create a dedicated callback group for monitor subscriptions.
   // Added to aux_executor in main() via GetCallbackGroup().
@@ -123,13 +123,13 @@ UR5eStatusMonitor::UR5eStatusMonitor(rclcpp::Node::SharedPtr node)
 
 // ── Destructor ───────────────────────────────────────────────────────────────
 
-UR5eStatusMonitor::~UR5eStatusMonitor() {
+RtcStatusMonitor::~RtcStatusMonitor() {
   stop();
 }
 
 // ── DeclareAndLoadParameters ─────────────────────────────────────────────────
 
-void UR5eStatusMonitor::DeclareAndLoadParameters() {
+void RtcStatusMonitor::DeclareAndLoadParameters() {
   auto declare = [this](const std::string& name, auto default_val) {
     return node_->declare_parameter(
         "status_monitor." + name, default_val);
@@ -207,7 +207,7 @@ void UR5eStatusMonitor::DeclareAndLoadParameters() {
 
 // ── Subscription Callbacks ───────────────────────────────────────────────────
 
-void UR5eStatusMonitor::OnJointState(sensor_msgs::msg::JointState::SharedPtr msg) {
+void RtcStatusMonitor::OnJointState(sensor_msgs::msg::JointState::SharedPtr msg) {
   if (!msg || msg->position.size() < static_cast<std::size_t>(kNumJoints)) {
     return;
   }
@@ -233,7 +233,7 @@ void UR5eStatusMonitor::OnJointState(sensor_msgs::msg::JointState::SharedPtr msg
   ++rate_window_count_;
 }
 
-void UR5eStatusMonitor::OnRobotMode(std_msgs::msg::Int32::SharedPtr msg) {
+void RtcStatusMonitor::OnRobotMode(std_msgs::msg::Int32::SharedPtr msg) {
   if (!msg) return;
   const auto prev = robot_mode_.exchange(msg->data, std::memory_order_release);
   if (prev != msg->data) {
@@ -245,7 +245,7 @@ void UR5eStatusMonitor::OnRobotMode(std_msgs::msg::Int32::SharedPtr msg) {
   }
 }
 
-void UR5eStatusMonitor::OnSafetyMode(std_msgs::msg::Int32::SharedPtr msg) {
+void RtcStatusMonitor::OnSafetyMode(std_msgs::msg::Int32::SharedPtr msg) {
   if (!msg) return;
   const auto prev = safety_mode_.exchange(msg->data, std::memory_order_release);
   if (prev != msg->data) {
@@ -257,7 +257,7 @@ void UR5eStatusMonitor::OnSafetyMode(std_msgs::msg::Int32::SharedPtr msg) {
   }
 }
 
-void UR5eStatusMonitor::OnProgramRunning(std_msgs::msg::Bool::SharedPtr msg) {
+void RtcStatusMonitor::OnProgramRunning(std_msgs::msg::Bool::SharedPtr msg) {
   if (!msg) return;
   const bool prev = program_running_.exchange(msg->data, std::memory_order_release);
   if (prev != msg->data) {
@@ -270,21 +270,21 @@ void UR5eStatusMonitor::OnProgramRunning(std_msgs::msg::Bool::SharedPtr msg) {
 
 // ── RT-safe accessors ────────────────────────────────────────────────────────
 
-bool UR5eStatusMonitor::isReady() const noexcept {
+bool RtcStatusMonitor::isReady() const noexcept {
   return is_ready_.load(std::memory_order_acquire);
 }
 
-FailureType UR5eStatusMonitor::getFailure() const noexcept {
+FailureType RtcStatusMonitor::getFailure() const noexcept {
   return failure_type_.load(std::memory_order_acquire);
 }
 
-bool UR5eStatusMonitor::isJointLimitWarning() const noexcept {
+bool RtcStatusMonitor::isJointLimitWarning() const noexcept {
   return joint_limit_warning_.load(std::memory_order_acquire);
 }
 
 // ── waitForReady ─────────────────────────────────────────────────────────────
 
-bool UR5eStatusMonitor::waitForReady(double timeout_sec) {
+bool RtcStatusMonitor::waitForReady(double timeout_sec) {
   const auto deadline = std::chrono::steady_clock::now()
                         + std::chrono::duration<double>(timeout_sec);
   while (!is_ready_.load(std::memory_order_acquire)) {
@@ -301,7 +301,7 @@ bool UR5eStatusMonitor::waitForReady(double timeout_sec) {
 
 // ── setJointReference ────────────────────────────────────────────────────────
 
-void UR5eStatusMonitor::setJointReference(
+void RtcStatusMonitor::setJointReference(
     const std::array<double, kNumJoints>& q_ref,
     const std::array<double, kNumJoints>& qd_ref) noexcept {
   // try_lock: never block the RT thread
@@ -315,31 +315,31 @@ void UR5eStatusMonitor::setJointReference(
 
 // ── Callback registration ────────────────────────────────────────────────────
 
-void UR5eStatusMonitor::registerOnReady(std::function<void()> cb) {
+void RtcStatusMonitor::registerOnReady(std::function<void()> cb) {
   std::lock_guard<std::mutex> lock(callback_mutex_);
   on_ready_cb_ = std::move(cb);
 }
 
-void UR5eStatusMonitor::registerOnFailure(
+void RtcStatusMonitor::registerOnFailure(
     std::function<void(FailureType, const FailureContext&)> cb) {
   std::lock_guard<std::mutex> lock(callback_mutex_);
   on_failure_cb_ = std::move(cb);
 }
 
-void UR5eStatusMonitor::registerOnWarning(
+void RtcStatusMonitor::registerOnWarning(
     std::function<void(WarningType, const std::string&)> cb) {
   std::lock_guard<std::mutex> lock(callback_mutex_);
   on_warning_cb_ = std::move(cb);
 }
 
-void UR5eStatusMonitor::registerOnRecovery(std::function<void()> cb) {
+void RtcStatusMonitor::registerOnRecovery(std::function<void()> cb) {
   std::lock_guard<std::mutex> lock(callback_mutex_);
   on_recovery_cb_ = std::move(cb);
 }
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 
-void UR5eStatusMonitor::start(
+void RtcStatusMonitor::start(
     const rtc::ThreadConfig& thread_cfg) {
   if (monitor_thread_.joinable()) {
     RCLCPP_WARN(node_->get_logger(), "[StatusMonitor] Already running");
@@ -354,7 +354,7 @@ void UR5eStatusMonitor::start(
   RCLCPP_INFO(node_->get_logger(), "[StatusMonitor] Monitor thread started (10 Hz)");
 }
 
-void UR5eStatusMonitor::stop() {
+void RtcStatusMonitor::stop() {
   if (monitor_thread_.joinable()) {
     monitor_thread_.request_stop();
     monitor_thread_.join();
@@ -365,13 +365,13 @@ void UR5eStatusMonitor::stop() {
   }
 }
 
-rclcpp::CallbackGroup::SharedPtr UR5eStatusMonitor::GetCallbackGroup() const {
+rclcpp::CallbackGroup::SharedPtr RtcStatusMonitor::GetCallbackGroup() const {
   return cb_group_monitor_;
 }
 
 // ── MonitorLoop ──────────────────────────────────────────────────────────────
 
-void UR5eStatusMonitor::MonitorLoop(std::stop_token stop_token) {
+void RtcStatusMonitor::MonitorLoop(std::stop_token stop_token) {
   constexpr auto kMonitorPeriod = std::chrono::milliseconds(100);  // 10 Hz
   uint64_t iteration = 0;
 
@@ -473,7 +473,7 @@ void UR5eStatusMonitor::MonitorLoop(std::stop_token stop_token) {
 
 // ── CheckReadiness ───────────────────────────────────────────────────────────
 
-void UR5eStatusMonitor::CheckReadiness() {
+void RtcStatusMonitor::CheckReadiness() {
   // Don't report ready if a failure is active
   if (failure_type_.load(std::memory_order_acquire) != FailureType::kNone) {
     is_ready_.store(false, std::memory_order_release);
@@ -516,7 +516,7 @@ void UR5eStatusMonitor::CheckReadiness() {
 
 // ── CheckJointStateWatchdog ──────────────────────────────────────────────────
 
-void UR5eStatusMonitor::CheckJointStateWatchdog() {
+void RtcStatusMonitor::CheckJointStateWatchdog() {
   if (!joint_state_received_.load(std::memory_order_acquire)) {
     return;  // Not received yet — don't trigger during startup
   }
@@ -538,7 +538,7 @@ void UR5eStatusMonitor::CheckJointStateWatchdog() {
 
 // ── CheckRobotStatus ─────────────────────────────────────────────────────────
 
-void UR5eStatusMonitor::CheckRobotStatus() {
+void RtcStatusMonitor::CheckRobotStatus() {
   const auto safety = static_cast<URSafetyMode>(
       safety_mode_.load(std::memory_order_acquire));
 
@@ -574,7 +574,7 @@ void UR5eStatusMonitor::CheckRobotStatus() {
 
 // ── CheckTrackingErrors ──────────────────────────────────────────────────────
 
-void UR5eStatusMonitor::CheckTrackingErrors() {
+void RtcStatusMonitor::CheckTrackingErrors() {
   // Snapshot reference (try_lock — skip if contended)
   std::array<double, kNumJoints> q_ref{};
   std::array<double, kNumJoints> qd_ref{};
@@ -641,7 +641,7 @@ void UR5eStatusMonitor::CheckTrackingErrors() {
 
 // ── CheckJointLimits ─────────────────────────────────────────────────────────
 
-void UR5eStatusMonitor::CheckJointLimits() {
+void RtcStatusMonitor::CheckJointLimits() {
   std::array<double, kNumJoints> q{};
   {
     std::lock_guard<std::mutex> lock(joint_state_mutex_);
@@ -686,7 +686,7 @@ void UR5eStatusMonitor::CheckJointLimits() {
 
 // ── CheckControllerManager ───────────────────────────────────────────────────
 
-void UR5eStatusMonitor::CheckControllerManager() {
+void RtcStatusMonitor::CheckControllerManager() {
   if (!list_controllers_client_->service_is_ready()) {
     RCLCPP_DEBUG(node_->get_logger(),
                  "[StatusMonitor] controller_manager service not available");
@@ -734,7 +734,7 @@ void UR5eStatusMonitor::CheckControllerManager() {
 
 // ── PublishDiagnostics ───────────────────────────────────────────────────────
 
-void UR5eStatusMonitor::PublishDiagnostics() {
+void RtcStatusMonitor::PublishDiagnostics() {
   diagnostic_msgs::msg::DiagnosticArray diag_array;
   diag_array.header.stamp = node_->now();
 
@@ -833,7 +833,7 @@ void UR5eStatusMonitor::PublishDiagnostics() {
 
 // ── RaiseFailure ─────────────────────────────────────────────────────────────
 
-void UR5eStatusMonitor::RaiseFailure(FailureType type, const std::string& description) {
+void RtcStatusMonitor::RaiseFailure(FailureType type, const std::string& description) {
   // Only raise if no failure is already active
   auto expected = FailureType::kNone;
   if (!failure_type_.compare_exchange_strong(expected, type,
@@ -897,7 +897,7 @@ void UR5eStatusMonitor::RaiseFailure(FailureType type, const std::string& descri
 
 // ── ClearFailure ─────────────────────────────────────────────────────────────
 
-void UR5eStatusMonitor::ClearFailure() {
+void RtcStatusMonitor::ClearFailure() {
   failure_type_.store(FailureType::kNone, std::memory_order_release);
   ready_callback_fired_ = false;
   RCLCPP_INFO(node_->get_logger(), "[StatusMonitor] Failure cleared");
@@ -905,7 +905,7 @@ void UR5eStatusMonitor::ClearFailure() {
 
 // ── LogFailureToFile ─────────────────────────────────────────────────────────
 
-void UR5eStatusMonitor::LogFailureToFile(const FailureContext& ctx) {
+void RtcStatusMonitor::LogFailureToFile(const FailureContext& ctx) {
   try {
     std::filesystem::create_directories(log_output_dir_);
   } catch (const std::exception& e) {
@@ -989,7 +989,7 @@ void UR5eStatusMonitor::LogFailureToFile(const FailureContext& ctx) {
 
 // ── AttemptRecovery ──────────────────────────────────────────────────────────
 
-void UR5eStatusMonitor::AttemptRecovery(FailureType type) {
+void RtcStatusMonitor::AttemptRecovery(FailureType type) {
   // Only attempt recovery for specific failure types
   if (type != FailureType::kProtectiveStop &&
       type != FailureType::kProgramDisconnected) {
@@ -1062,13 +1062,13 @@ void UR5eStatusMonitor::AttemptRecovery(FailureType type) {
 
 // ── getJointStateStats ────────────────────────────────────────────────────────
 
-UR5eStatusMonitor::MessageStats UR5eStatusMonitor::getJointStateStats() const noexcept {
+RtcStatusMonitor::MessageStats RtcStatusMonitor::getJointStateStats() const noexcept {
   return js_stats_;
 }
 
 // ── OnControllerNameChanged ──────────────────────────────────────────────────
 
-void UR5eStatusMonitor::OnControllerNameChanged(
+void RtcStatusMonitor::OnControllerNameChanged(
     const std_msgs::msg::String::SharedPtr msg) {
   if (!msg) return;
 
@@ -1104,7 +1104,7 @@ void UR5eStatusMonitor::OnControllerNameChanged(
 
 // ── SaveControllerStatsJson ──────────────────────────────────────────────────
 
-void UR5eStatusMonitor::SaveControllerStatsJson() const {
+void RtcStatusMonitor::SaveControllerStatsJson() const {
   if (controller_stats_.empty()) {
     return;
   }
@@ -1173,4 +1173,4 @@ void UR5eStatusMonitor::SaveControllerStatsJson() const {
               "[StatusMonitor] Controller stats written: %s", filename.c_str());
 }
 
-}  // namespace rtc_status_monitor
+}  // namespace rtc

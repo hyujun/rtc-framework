@@ -1,14 +1,14 @@
 // ── Includes: project header first, then ROS2, then C++ stdlib ──────────────
 #include "rtc_controller_manager/rt_controller_node.hpp"
 
-#include "rtc_controllers/controllers/direct/joint_pd_controller.hpp"
-#include "rtc_controllers/controllers/direct/operational_space_controller.hpp"
-#include "rtc_controllers/controllers/indirect/p_controller.hpp"
-#include "rtc_controllers/controllers/indirect/clik_controller.hpp"
+#include "rtc_controllers/direct/joint_pd_controller.hpp"
+#include "rtc_controllers/direct/operational_space_controller.hpp"
+#include "rtc_controllers/indirect/p_controller.hpp"
+#include "rtc_controllers/indirect/clik_controller.hpp"
 // Moved to ur5e_bringup — register via plugin system
-// #include "rtc_controllers/controllers/indirect/demo_joint_controller.hpp"
+// #include "rtc_controllers/indirect/demo_joint_controller.hpp"
 // Moved to ur5e_bringup — register via plugin system
-// #include "rtc_controllers/controllers/indirect/demo_task_controller.hpp"
+// #include "rtc_controllers/indirect/demo_task_controller.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rtc_base/logging/session_dir.hpp>
@@ -36,7 +36,7 @@ namespace urtc = rtc;
 // ── Controller registry ──────────────────────────────────────────────────────
 //
 // To add a new controller:
-//   1. Create include/rtc_controllers/controllers/my_controller.hpp
+//   1. Create include/rtc_controllers/my_controller.hpp
 //      (inherit RTControllerInterface, implement all pure virtuals + LoadConfig
 //       + UpdateGainsFromMsg)
 //   2. Create config/controllers/my_controller.yaml
@@ -120,12 +120,12 @@ RtControllerNode::RtControllerNode()
 
   // ── Status Monitor (optional) ────────────────────────────────────────────
   if (enable_status_monitor_) {
-    status_monitor_ = std::make_unique<rtc_status_monitor::RtcStatusMonitor>(
+    status_monitor_ = std::make_unique<rtc::RtcStatusMonitor>(
         shared_from_this());
 
     status_monitor_->registerOnFailure(
-        [this](rtc_status_monitor::FailureType type,
-               const rtc_status_monitor::FailureContext & ctx) {
+        [this](rtc::FailureType type,
+               const rtc::FailureContext & ctx) {
           (void)type;
           TriggerGlobalEstop(ctx.description);
         });
@@ -1262,23 +1262,28 @@ void RtControllerNode::ControlLoop()
   {
     const auto & active_df = controller_device_flags_[
         static_cast<std::size_t>(active_idx)];
-    const urtc::PublishSnapshot snap{
-      .robot_commands        = output.robot_commands,
-      .command_type          = output.command_type,
-      .actual_task_positions = output.actual_task_positions,
-      .goal_positions        = output.goal_positions,
-      .actual_target_positions = output.actual_target_positions,
-      .target_velocities     = output.target_velocities,
-      .actual_positions      = state.robot.positions,
-      .actual_velocities     = state.robot.velocities,
-      .hand_commands         = output.hand_commands,
-      .stamp_ns              = std::chrono::steady_clock::now()
-                                 .time_since_epoch().count(),
-      .active_controller_idx = active_idx,
-      .ur5e_enabled          = active_df.enable_ur5e,
-      .hand_enabled          = active_df.enable_hand,
-      .hand_sim_enabled      = hand_sim_enabled_,
-    };
+    urtc::PublishSnapshot snap{};
+    snap.command_type          = output.command_type;
+    snap.actual_task_positions = output.actual_task_positions;
+    snap.stamp_ns              = std::chrono::steady_clock::now()
+                                   .time_since_epoch().count();
+    snap.active_controller_idx = active_idx;
+    snap.ur5e_enabled          = active_df.enable_ur5e;
+    snap.device_enabled        = active_df.enable_hand;
+    snap.device_sim_enabled    = hand_sim_enabled_;
+    // Copy robot arrays (size 6 → size kMaxRobotDOF)
+    for (std::size_t i = 0; i < urtc::kNumRobotJoints; ++i) {
+      snap.robot_commands[i]        = output.robot_commands[i];
+      snap.goal_positions[i]        = output.goal_positions[i];
+      snap.actual_target_positions[i] = output.actual_target_positions[i];
+      snap.target_velocities[i]     = output.target_velocities[i];
+      snap.actual_positions[i]      = state.robot.positions[i];
+      snap.actual_velocities[i]     = state.robot.velocities[i];
+    }
+    // Copy device commands (size kNumHandMotors → kMaxDeviceChannels)
+    for (std::size_t i = 0; i < urtc::kNumHandMotors; ++i) {
+      snap.device_commands[i] = output.hand_commands[i];
+    }
     static_cast<void>(publish_buffer_.Push(snap));
   }
 
@@ -1330,43 +1335,49 @@ void RtControllerNode::ControlLoop()
     const double timestamp =
         std::chrono::duration<double>(t0 - log_start_time_).count();
 
-    urtc::LogEntry entry{
-      .timestamp = timestamp,
-      // Timing
-      .t_state_acquire_us = t_state_us,
-      .t_compute_us = t_compute_us,
-      .t_publish_us = t_publish_us,
-      .t_total_us = t_total_us,
-      .jitter_us = jitter_us,
-      // Robot — 카테고리 1: Goal State
-      .goal_positions = output.goal_positions,
-      // Robot — 카테고리 2: Current State
-      .actual_positions = state.robot.positions,
-      .actual_velocities = state.robot.velocities,
-      .actual_torques = state.robot.torques,
-      .actual_task_positions = output.actual_task_positions,
-      // Robot — 카테고리 3: Control Command
-      .robot_commands = output.robot_commands,
-      .command_type = output.command_type,
-      // Robot — 카테고리 4: Trajectory State
-      .trajectory_positions = output.actual_target_positions,
-      .trajectory_velocities = output.target_velocities,
-      // Hand — 카테고리 1: Goal State
-      .hand_valid = state.hand.valid,
-      .hand_goal_positions = output.hand_goal_positions,
-      // Hand — 카테고리 2: Current State
-      .hand_actual_positions = state.hand.motor_positions,
-      .hand_actual_velocities = state.hand.motor_velocities,
-      .hand_sensors = state.hand.sensor_data,
-      .hand_sensors_raw = state.hand.sensor_data_raw,
-      // Hand — 카테고리 3: Control Command
-      .hand_commands = output.hand_commands,
-    };
+    urtc::LogEntry entry{};
+    entry.timestamp          = timestamp;
+    entry.t_state_acquire_us = t_state_us;
+    entry.t_compute_us       = t_compute_us;
+    entry.t_publish_us       = t_publish_us;
+    entry.t_total_us         = t_total_us;
+    entry.jitter_us          = jitter_us;
+    entry.actual_task_positions = output.actual_task_positions;
+    entry.command_type       = output.command_type;
+    entry.device_valid       = state.hand.valid;
+    entry.num_device_channels = urtc::kNumHandMotors;
+    // Robot arrays (size 6 → kMaxRobotDOF)
+    for (std::size_t i = 0; i < urtc::kNumRobotJoints; ++i) {
+      entry.goal_positions[i]        = output.goal_positions[i];
+      entry.actual_positions[i]      = state.robot.positions[i];
+      entry.actual_velocities[i]     = state.robot.velocities[i];
+      entry.actual_torques[i]        = state.robot.torques[i];
+      entry.robot_commands[i]        = output.robot_commands[i];
+      entry.trajectory_positions[i]  = output.actual_target_positions[i];
+      entry.trajectory_velocities[i] = output.target_velocities[i];
+    }
+    // Device goal/actual/velocity/command 복사 (크기가 다른 배열)
+    for (std::size_t i = 0; i < urtc::kNumHandMotors; ++i) {
+      entry.device_goal[i] = output.hand_goal_positions[i];
+      entry.device_actual[i] = state.hand.motor_positions[i];
+      entry.device_velocities[i] = state.hand.motor_velocities[i];
+      entry.device_commands[i] = output.hand_commands[i];
+    }
+    // Sensor data 복사 (int32_t → float 변환)
+    for (std::size_t i = 0; i < urtc::kMaxHandSensors && i < entry.sensor_data.size(); ++i) {
+      entry.sensor_data[i] = static_cast<float>(state.hand.sensor_data[i]);
+      entry.sensor_data_raw[i] = static_cast<float>(state.hand.sensor_data_raw[i]);
+    }
+    entry.num_sensor_channels = urtc::kMaxHandSensors;
+    entry.num_fingertips = state.hand.num_fingertips;
     // F/T inference 결과 (hand_controller_가 있고 활성화된 경우)
     if (hand_controller_ && hand_controller_->ft_inference_enabled()) {
       const auto ft_state = hand_controller_->GetLatestFTState();
-      entry.hand_ft_data = ft_state.ft_data;
-      entry.hand_ft_valid = ft_state.valid;
+      for (std::size_t i = 0; i < ft_state.ft_data.size() && i < entry.inference_output.size(); ++i) {
+        entry.inference_output[i] = ft_state.ft_data[i];
+      }
+      entry.inference_valid = ft_state.valid;
+      entry.num_inference_values = static_cast<int>(ft_state.ft_data.size());
     }
     static_cast<void>(log_buffer_.Push(entry));  // silently drops if buffer is full
   }
@@ -1575,7 +1586,7 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
     }
 
     // Publish hand topics (ROS only — hand UDP is handled in RT Phase 3.5)
-    if (snap.hand_enabled) {
+    if (snap.device_enabled) {
       for (const auto & pt : active_tc.hand.publish) {
         publish_entry(pt);
       }
@@ -1596,9 +1607,9 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
     }
 
     // Hand sim command (MuJoCo fake hand — ROS topic)
-    if (snap.hand_sim_enabled && hand_sim_cmd_pub_) {
-      for (std::size_t i = 0; i < 10 && i < snap.hand_commands.size(); ++i) {
-        hand_sim_cmd_msg_.data[i] = static_cast<double>(snap.hand_commands[i]);
+    if (snap.device_sim_enabled && hand_sim_cmd_pub_) {
+      for (std::size_t i = 0; i < 10 && i < snap.device_commands.size(); ++i) {
+        hand_sim_cmd_msg_.data[i] = static_cast<double>(snap.device_commands[i]);
       }
       hand_sim_cmd_pub_->publish(hand_sim_cmd_msg_);
     }

@@ -21,6 +21,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rtc_controller_interface REQUIRED)
 find_package(rtc_base REQUIRED)
 find_package(rtc_msgs REQUIRED)
+find_package(Eigen3 REQUIRED)
 find_package(pinocchio REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
@@ -41,7 +42,7 @@ ament_target_dependencies(rtc_controllers
   rtc_msgs
   pinocchio
 )
-target_link_libraries(rtc_controllers yaml-cpp)
+target_link_libraries(rtc_controllers yaml-cpp Eigen3::Eigen)
 
 # Position-independent code for static library (needed when linked into shared libs)
 set_target_properties(rtc_controllers PROPERTIES POSITION_INDEPENDENT_CODE ON)
