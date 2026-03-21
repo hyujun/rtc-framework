@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>rtc_mujoco_sim</name>
+  <version>5.16.0</version>
+  <description>
+    MuJoCo 3.x physics simulation for UR5e with interactive GLFW viewer.
+    Replaces the UR driver during development — publishes /joint_states
+    and /sim/status, subscribes to /forward_position_controller/commands.
+  </description>
+  <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>rtc_msgs</depend>
+  <depend>rtc_base</depend>
+
+  <!-- Robot model files (MJCF, URDF, meshes) -->
+  <exec_depend>ur5e_description</exec_depend>
+  <!-- Hand UDP config (launch에서 hand_udp_node.yaml 참조) -->
+  <exec_depend>ur5e_hand_udp</exec_depend>
+
+  <!-- MuJoCo (optional C++ library — not a ROS2 package; install separately)
+       https://github.com/google-deepmind/mujoco/releases -->
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

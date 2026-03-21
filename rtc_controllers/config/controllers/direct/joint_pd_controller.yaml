@@ -1,0 +1,48 @@
+joint_pd_controller:
+  # ── PD 게인 (각 관절: [Base, Shoulder, Elbow, Wrist1, Wrist2, Wrist3]) ────
+  kp: [200.0, 200.0, 150.0, 120.0, 120.0, 120.0]
+  kd: [30.0, 30.0, 25.0, 20.0, 20.0, 20.0]
+
+  # ── 동역학 보상 ───────────────────────────────────────────────────────────
+  enable_gravity_compensation: false     # 중력 보상 (true = PD + g(q))
+  enable_coriolis_compensation: false    # 코리올리/원심력 보상 (true = + C(q,v)·v)
+
+  # ── 궤적 속도 제한 ────────────────────────────────────────────────────────
+  # 5차 다항식 궤적 소요시간 = max(0.01, max_joint_dist / trajectory_speed)
+  trajectory_speed: 1.0                  # 최대 관절 이동 속도 (rad/s)
+
+  # ── 출력 타입 ─────────────────────────────────────────────────────────────
+  command_type: "torque"
+
+  # ── 디바이스 활성화 (미설정 시 글로벌 기본값 상속) ──────────────────────────
+  # enable_ur5e: true
+  # enable_hand: false
+
+  # ── 토픽 설정 ─────────────────────────────────────────────────────────────
+  topics:
+    ur5e:
+      subscribe:
+        # 카테고리 1: Goal State (궤적 최종 목표)
+        - topic: "/ur5e/target_joint_positions"
+          role: "goal"
+        # 카테고리 2: Current State (센서 피드백)
+        - topic: "/joint_states"
+          role: "joint_state"
+      publish:
+        # 카테고리 3: Control Command (액추에이터 출력)
+        - topic: "/forward_torque_controller/commands"
+          role: "torque_command"
+        # 카테고리 4: Logging/Monitoring (진단 발행)
+        - topic: "/ur5e/current_task_position"
+          role: "task_position"
+          data_size: 6
+        - topic: "/ur5e/trajectory_state"
+          role: "trajectory_state"
+          data_size: 18
+        - topic: "/ur5e/controller_state"
+          role: "controller_state"
+          data_size: 18
+    hand:
+      subscribe:
+        - topic: "/hand/joint_states"
+          role: "hand_state"

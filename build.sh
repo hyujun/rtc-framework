@@ -1,5 +1,5 @@
 #!/bin/bash
-# build.sh — UR5e RT Controller Build Script
+# build.sh — RTC (Real-Time Controller) Build Script
 #
 # Usage:
 #   ./build.sh                              # full build (robot + sim)
@@ -46,7 +46,7 @@ auto_release_cpu_shield() {
   # Case 1: cset shield 활성 → 자동 해제
   local SCRIPT_DIR_BUILD
   SCRIPT_DIR_BUILD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  local SHIELD_SCRIPT="${SCRIPT_DIR_BUILD}/ur5e_rt_controller/scripts/cpu_shield.sh"
+  local SHIELD_SCRIPT="${SCRIPT_DIR_BUILD}/rtc_scripts/scripts/cpu_shield.sh"
   if command -v cset &>/dev/null && cset shield -s 2>/dev/null | grep -q "user"; then
     info "cset shield 감지 → 빌드를 위해 자동 해제 중..."
     if [[ -f "$SHIELD_SCRIPT" ]]; then
@@ -143,22 +143,22 @@ MJ_DEFAULT="/opt/mujoco-3.2.4"
 
 show_help() {
   echo ""
-  echo -e "${BOLD}UR5e RT Controller — build.sh${NC}"
+  echo -e "${BOLD}RTC (Real-Time Controller) — build.sh${NC}"
   echo ""
   echo "Usage: $0 [MODE] [OPTIONS]"
   echo ""
   echo "Modes:"
   echo "  robot   Build packages for real robot (no MuJoCo)"
-  echo "            Packages: ur5e_msgs, ur5e_rt_base, ur5e_description, ur5e_status_monitor,"
-  echo "                      ur5e_rt_controller, ur5e_hand_udp, ur5e_tools"
+  echo "            Packages: rtc_msgs, rtc_base, rtc_communication, rtc_controller_interface,"
+  echo "                      rtc_controllers, rtc_controller_manager, rtc_status_monitor,"
+  echo "                      rtc_inference, rtc_scripts, ur5e_description, ur5e_hand_driver,"
+  echo "                      ur5e_bringup, rtc_tools"
   echo ""
   echo "  sim     Build for simulation (MuJoCo required, hand uses fake response)"
-  echo "            Packages: ur5e_msgs, ur5e_rt_base, ur5e_description, ur5e_status_monitor,"
-  echo "                      ur5e_rt_controller, ur5e_hand_udp, ur5e_mujoco_sim, ur5e_tools"
-  echo "            Note: ur5e_hand_udp is a build dependency but not used at runtime"
+  echo "            Packages: all robot packages + rtc_mujoco_sim"
   echo ""
   echo "  full    Build all packages (default)"
-  echo "            Packages: all of the above"
+  echo "            Packages: all of the above + rtc_digital_twin"
   echo ""
   echo "Options:"
   echo "  -d, --debug                Build with CMAKE_BUILD_TYPE=Debug"
@@ -264,21 +264,21 @@ fi
 
 # full 모드에서 MuJoCo 없으면 경고 후 robot 패키지만 빌드
 if [[ "$MODE" == "full" && ( -z "$MJ_DIR" || ! -d "$MJ_DIR" ) ]]; then
-  warn "MuJoCo not found — ur5e_mujoco_sim will be skipped"
+  warn "MuJoCo not found — rtc_mujoco_sim will be skipped"
   warn "Specify --mujoco <path> to include simulation packages"
   MJ_DIR=""
 fi
 
 # ── Banner ─────────────────────────────────────────────────────────────────────
 case "$MODE" in
-  robot) MODE_DESC="Real Robot  (ur5e_msgs, ur5e_rt_base, ur5e_status_monitor, ur5e_rt_controller, ur5e_hand_udp, ur5e_tools)" ;;
-  sim)   MODE_DESC="Simulation  (ur5e_msgs, ..., ur5e_mujoco_sim — hand: fake response)" ;;
+  robot) MODE_DESC="Real Robot  (rtc_* framework + ur5e_* robot-specific)" ;;
+  sim)   MODE_DESC="Simulation  (rtc_* + rtc_mujoco_sim — hand: fake response)" ;;
   full)  MODE_DESC="Full        (all packages)" ;;
 esac
 
 echo ""
 echo -e "${BOLD}${BLUE}╔══════════════════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}${BLUE}║         UR5e RT Controller — Build Script            ║${NC}"
+echo -e "${BOLD}${BLUE}║       RTC (Real-Time Controller) — Build Script      ║${NC}"
 echo -e "${BOLD}${BLUE}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  Mode : ${CYAN}${BOLD}${MODE_DESC}${NC}"
@@ -299,18 +299,29 @@ if [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]]; then
   PACKAGES=("${CUSTOM_PACKAGES[@]}")
   info "Using custom package list"
 else
+  # ── Base packages (build order matters for colcon dependency resolution) ──
+  BASE_PACKAGES=(
+    rtc_msgs rtc_base rtc_communication rtc_controller_interface
+    rtc_controllers rtc_controller_manager rtc_status_monitor
+    rtc_inference rtc_scripts rtc_tools
+  )
+  ROBOT_PACKAGES=(
+    ur5e_description ur5e_hand_driver ur5e_bringup
+  )
+
   case "$MODE" in
     robot)
-      PACKAGES=(ur5e_msgs ur5e_rt_base ur5e_description ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_tools)
+      PACKAGES=("${BASE_PACKAGES[@]}" "${ROBOT_PACKAGES[@]}")
       ;;
     sim)
-      PACKAGES=(ur5e_msgs ur5e_rt_base ur5e_description ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_mujoco_sim ur5e_tools)
+      PACKAGES=("${BASE_PACKAGES[@]}" rtc_mujoco_sim "${ROBOT_PACKAGES[@]}")
       ;;
     full)
-      PACKAGES=(ur5e_msgs ur5e_rt_base ur5e_description ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_tools)
+      PACKAGES=("${BASE_PACKAGES[@]}" "${ROBOT_PACKAGES[@]}")
       if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
-        PACKAGES+=(ur5e_mujoco_sim)
+        PACKAGES+=(rtc_mujoco_sim)
       fi
+      PACKAGES+=(rtc_digital_twin)
       ;;
   esac
 fi
@@ -385,7 +396,7 @@ source "${WORKSPACE}/install/setup.bash" || true
 # .vscode/c_cpp_properties.json 의 compileCommands 경로와 일치:
 #   ${workspaceFolder}/../../build/ur5e_rt_controller/compile_commands.json
 if [[ "$EXPORT_COMPILE_COMMANDS" -eq 1 || "$BUILD_TYPE" == "Debug" ]]; then
-  CC_SRC="$WORKSPACE/build/ur5e_rt_controller/compile_commands.json"
+  CC_SRC="$WORKSPACE/build/rtc_controller_manager/compile_commands.json"
   if [[ -f "$CC_SRC" ]]; then
     success "compile_commands.json generated: $CC_SRC"
     success "VS Code IntelliSense will use this file automatically"
@@ -396,7 +407,7 @@ fi
 
 # ── RT Setup Verification ─────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CHECK_SCRIPT="${SCRIPT_DIR}/ur5e_rt_controller/scripts/check_rt_setup.sh"
+CHECK_SCRIPT="${SCRIPT_DIR}/rtc_scripts/scripts/check_rt_setup.sh"
 
 if [[ -f "$CHECK_SCRIPT" ]]; then
   case "$MODE" in

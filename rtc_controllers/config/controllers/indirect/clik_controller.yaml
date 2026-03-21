@@ -1,0 +1,48 @@
+clik_controller:
+  # ── CLIK 게인 ─────────────────────────────────────────────────────────────
+  kp: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]   # 데카르트 비례 게인 (6-DOF)
+  damping: 0.01                           # 감쇠 유사역행렬 λ (특이점 근처 안정화)
+  trajectory_speed: 0.1                   # TCP 최대 병진 속도 (m/s)
+
+  # ── 영공간 (null-space) 설정 ──────────────────────────────────────────────
+  enable_null_space: true                 # 영공간 관절 센터링 활성화
+  null_kp: 0.5                            # 영공간 비례 게인
+
+  # ── 6-DOF 모드 ────────────────────────────────────────────────────────────
+  control_6dof: false                     # false=3-DOF(위치만), true=6-DOF(위치+방향)
+
+  # ── 출력 타입 ─────────────────────────────────────────────────────────────
+  command_type: "position"
+
+  # ── 디바이스 활성화 (미설정 시 글로벌 기본값 상속) ──────────────────────────
+  # enable_ur5e: true
+  # enable_hand: false
+
+  # ── 토픽 설정 ─────────────────────────────────────────────────────────────
+  topics:
+    ur5e:
+      subscribe:
+        # 카테고리 1: Goal State (궤적 최종 목표)
+        - topic: "/ur5e/target_joint_positions"
+          role: "goal"
+        # 카테고리 2: Current State (센서 피드백)
+        - topic: "/joint_states"
+          role: "joint_state"
+      publish:
+        # 카테고리 3: Control Command (액추에이터 출력)
+        - topic: "/forward_position_controller/commands"
+          role: "position_command"
+        # 카테고리 4: Logging/Monitoring (진단 발행)
+        - topic: "/ur5e/current_task_position"
+          role: "task_position"
+          data_size: 6
+        - topic: "/ur5e/trajectory_state"
+          role: "trajectory_state"
+          data_size: 18
+        - topic: "/ur5e/controller_state"
+          role: "controller_state"
+          data_size: 18
+    hand:
+      subscribe:
+        - topic: "/hand/joint_states"
+          role: "hand_state"

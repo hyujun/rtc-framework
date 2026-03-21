@@ -1,0 +1,6 @@
+# requirements.txt - Python dependencies for UR5e RT Controller
+matplotlib>=3.5.3
+pandas>=1.5.3
+numpy>=1.24.3
+scipy>=1.10.1
+rclpy>=0.20.0

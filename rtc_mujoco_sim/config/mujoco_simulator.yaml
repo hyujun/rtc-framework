@@ -1,0 +1,110 @@
+# MuJoCo Simulator Node Configuration (v5.15.0)
+# ─────────────────────────────────────────────
+# Launch with:
+#   ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py
+#   ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step
+#   ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py enable_viewer:=false
+
+mujoco_simulator:
+  ros__parameters:
+    # ── Model ────────────────────────────────────────────────────────────────
+    # Path to scene.xml.
+    # Empty string → resolved automatically to:
+    #   <ur5e_description_share>/robots/ur5e/mjcf/scene.xml
+    # Absolute path → used as-is (e.g. for MuJoCo Menagerie model).
+    model_path: ""
+
+    # ── Simulation mode ───────────────────────────────────────────────────────
+    # "free_run"  — advance physics as fast as possible (default).
+    #               Best for algorithm validation, trajectory generation.
+    #               Set enable_estop: false in rt_controller config!
+    # "sync_step" — publish state → wait for command → step (1:1 sync).
+    #               Step latency ≈ Compute() time → direct timing measurement.
+    sim_mode: "sync_step"
+
+    # free_run only: publish /joint_states every N physics steps.
+    # Increase to reduce DDS traffic when the sim runs much faster than 500 Hz.
+    #   1  → publish every step (maximum data, highest DDS load)
+    #   10 → publish every 10th step (~50 Hz if sim runs at 500 Hz equivalent)
+    publish_decimation: 1
+
+    # sync_step only: max time to wait for a controller command (ms).
+    # If no command arrives within this window, the previous command is reused.
+    sync_timeout_ms: 50.0
+
+    # ── Max Real-Time Factor ──────────────────────────────────────────────────
+    # Maximum simulation speed as a multiple of real time (0.0 = unlimited).
+    # The sim loop sleeps after each mj_step() to keep RTF ≤ this value.
+    # Applies to both free_run and sync_step modes.
+    #
+    # Examples:
+    #   0.0   → unlimited (default, max hardware speed)
+    #   1.0   → real-time (RTF = 1× — matches wall clock)
+    #   10.0  → 10× real time (10 simulated seconds per wall second)
+    #   100.0 → 100× real time
+    max_rtf: 1.0
+
+    # ── Viewer ───────────────────────────────────────────────────────────────
+    # Open a GLFW window for 3D visualisation.
+    # Set false for headless / SSH environments.
+    enable_viewer: true
+
+    # ── Physics Timestep ──────────────────────────────────────────────────────
+    # MuJoCo 물리 스텝 주기 (seconds). control_rate의 역수 (0.002 s = 500 Hz).
+    # XML의 <option timestep="...">과 비교 검증:
+    #   0.0      → XML 값 그대로 사용 (검증 없음)
+    #   일치      → 정상
+    #   불일치    → RCLCPP_ERROR 출력 후 XML 값 우선 적용
+    # position servo의 YAML gain 스케일링 기준:
+    #   gainprm = servo_kp / physics_timestep
+    physics_timestep: 0.002   # seconds  (= 500 Hz)
+
+    # ── Position Servo Gains ──────────────────────────────────────────────────
+    # use_yaml_servo_gains: true  → servo_kp/kd를 gainprm/biasprm으로 사용
+    #                      false → XML 원본 gainprm/biasprm 사용 (기본값)
+    #
+    # servo_kp: velocity gain (Nm·s/rad).
+    #   gainprm = servo_kp / physics_timestep
+    #   → force = servo_kp * dq_cmd - servo_kd * dq_actual
+    #   servo_kp > servo_kd 조건 만족 시 servo가 damping을 이김
+    #
+    # 배열 크기는 XML에서 발견된 로봇 조인트 수와 일치해야 함.
+    # 불일치 시 Initialize() 실패.
+    #
+    # position servo 모드 진입 시 gravity가 자동으로 OFF되며,
+    # torque 모드로 전환 시 gravity가 자동으로 ON됩니다.
+    use_yaml_servo_gains: false
+    servo_kp: [500.0, 500.0, 500.0, 150.0, 150.0, 150.0]
+    servo_kd: [400.0, 400.0, 400.0, 100.0, 100.0, 100.0]
+
+    # ── Robot Topics (fake_hand_response 패턴과 동일) ─────────────────────────
+    # 로봇 조인트 이름은 XML에서 hinge+actuator 기준으로 자동 발견.
+    # command_topic: JointCommand msg 수신 (command_type으로 position/torque 결정)
+    # state_topic: JointState msg 퍼블리시
+    robot_topics:
+      command_topic: "/ur5e/joint_command"
+      state_topic: "/joint_states"
+
+    # ── Fake Hand Response (시뮬레이션 전용 핸드 LPF) ──────────────────────────
+    # enable: true 시 MuJoCo 노드 내부에서 low-pass filter로 핸드 상태를 생성.
+    # ur5e_hand_udp (실제 UDP 통신) 없이 시뮬레이션 가능.
+    # rt_controller는 hand_sim_enabled: true로 설정하여 ROS 토픽으로 통신.
+    fake_hand_response:
+      enable: true
+      filter_alpha: 0.1                       # 1차 LPF 계수 (10ms tick 기준, 100Hz)
+                                               #   0.1 → ~90ms settling, 0.5 → ~18ms settling
+      command_topic: "/hand/command"            # 핸드 커맨드 수신 토픽
+      state_topic: "/hand/joint_states"         # 핸드 상태 퍼블리시 토픽
+
+# ── rt_controller parameter overrides for simulation ─────────────────────
+# ur5e_rt_controller.yaml 대비 시뮬레이션 전용 차이값만 오버라이드.
+#   - enable_estop: false  — free_run 모드에서 wall-clock 지연으로 인한
+#                            오탐 E-STOP 방지
+#   - robot/hand_timeout_ms — sync_step / free_run 모두 timeout 여유 확보
+#   - init_timeout_sec: 0.0 — 시뮬레이션에서 초기화 타임아웃 비활성화
+rt_controller:
+  ros__parameters:
+    enable_estop: false
+    robot_timeout_ms: 10000.0
+    hand_timeout_ms: 10000.0
+    init_timeout_sec: 0.0

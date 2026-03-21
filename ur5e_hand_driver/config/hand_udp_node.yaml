@@ -1,0 +1,90 @@
+# hand_udp_node.yaml — Hand UDP 드라이버 설정
+#
+# 동작 모드:
+#   - rt_controller 통합 (기본): ControlLoop에서 event-driven으로 구동
+#     Phase 3.5에서 SendCommandAndRequestStates() → EventLoop가 write + read 수행
+#   - standalone (hand_udp_node 단독 실행): ROS2 토픽으로 상태 퍼블리시/명령 구독
+#
+# 통신 프로토콜 (1 사이클):
+#   Individual mode:
+#     1. Write position  (cmd=0x01) + recv echo → position 획득 (1 RT 절약)
+#     2. Read velocity   (cmd=0x12) → request & recv 10 float
+#     3. Read sensor 0-3 (cmd=0x14..0x17) → request & recv × 4
+#   Bulk mode:
+#     1. Write position  (cmd=0x01) + recv echo → 소켓 버퍼 정리
+#     2. Read all motors (cmd=0x10) → request 3B & recv 123B (pos+vel+cur)
+#     3. Read all sensors(cmd=0x19) → request 3B & recv 259B (4 fingers)
+#
+# Standalone 모드 ROS2 토픽:
+#   pub: /hand/joint_states  [positions:10 + velocities:10 + sensors:44] = 64 doubles
+#   sub: /hand/command        motor_commands[10] (0.0–1.0)
+
+/**:
+  ros__parameters:
+    # ── Fake hand 모드 ──────────────────────────────────────────────────────
+    use_fake_hand: false              # true: echo-back mock (UDP 소켓 미생성)
+                                      # command를 즉시 position state로 반환
+                                      # launch argument로 override 가능
+
+    # ── UDP 통신 설정 ──────────────────────────────────────────────────────
+    # rt_controller 통합 + standalone 공용
+    target_ip: "192.168.1.2"          # 핸드 컨트롤러 IP (빈 문자열 → hand 비활성)
+    target_port: 55151                # 핸드 컨트롤러 포트 (0 → hand 비활성)
+    recv_timeout_ms: 0.4              # ppoll 수신 타임아웃 (ms), sub-ms 지원: 0.4 → 400µs
+    # enable_write_ack: deprecated — write echo는 항상 수신 (RT 안전성)
+    sensor_decimation: 3              # N cycle마다 센서 읽기 (1=매번, 3=3cycle마다)
+                                      # decimation=3: 센서 사이클 빈도↓ → over_budget↓
+                                      # 센서 skip 시 이전 캐시 데이터 유지
+
+    # ── 센서 LPF 설정 (4차 Bessel LPF) ──────────────────────────────────
+    # 유효 센서 샘플링 레이트 = 500 / sensor_decimation
+    # cutoff는 유효 레이트의 절반 미만이어야 함
+    # 예: decimation=3 → 유효 ~167Hz → cutoff < 83Hz
+    baro_lpf_enabled: false           # Barometer 센서 Low-Pass Filter 활성화
+    baro_lpf_cutoff_hz: 30.0          # Barometer LPF 차단 주파수 (Hz)
+                                      # 접촉/파지 역학 대역폭 고려 30Hz 권장
+    tof_lpf_enabled: false            # VL53L4CD TOF 센서 Low-Pass Filter 활성화
+    tof_lpf_cutoff_hz: 15.0           # TOF LPF 차단 주파수 (Hz)
+                                      # 거리 측정 노이즈 제거 15Hz 권장
+
+    # ── 통신 모드 ────────────────────────────────────────────────────────
+    communication_mode: "bulk"        # "individual": 0x11+0x12+0x14~0x17 (6 round-trips)
+                                      # "bulk":       0x10+0x19 (2 round-trips)
+
+    # ── 모터/핑거팁 이름 (v5.14.0 named messaging) ──────────────────────
+    # 비어있으면 기본 이름 사용.
+    hand_motor_names:
+      - "thumb_cmc_aa"
+      - "thumb_cmc_fe"
+      - "thumb_mcp_fe"
+      - "index_mcp_aa"
+      - "index_mcp_fe"
+      - "index_dip_fe"
+      - "middle_mcp_aa"
+      - "middle_mcp_fe"
+      - "middle_dip_fe"
+      - "ring_mcp_fe"
+
+    hand_fingertip_names:
+      - "thumb"
+      - "index"
+      - "middle"
+      - "ring"
+
+    # ── Standalone 전용 설정 (hand_udp_node 단독 실행 시) ────────────────
+    publish_rate: 100.0               # /hand/joint_states 퍼블리시 주기 (Hz)
+
+    # ── Failure Detector 설정 (50Hz non-RT jthread) ────────────────────────
+    enable_failure_detector: true     # Failure detector 활성화
+    failure_threshold: 5              # 연속 감지 횟수 임계값 (all-zero 또는 중복 데이터)
+    check_motor: true                 # 모터 position 데이터 검사
+    check_sensor: true                # 센서 데이터 검사
+
+    # Rate monitoring (failure detector에서 사용)
+    min_rate_hz: 30.0               # 최소 허용 polling rate
+    rate_fail_threshold: 5          # 연속 N회 미달 시 failure
+
+    # UDP link health check (failure detector에서 사용)
+    check_link: true                # UDP 링크 상태 검사 활성화
+    link_fail_threshold: 10         # 연속 N회 recv 전체 실패 시 link_down 판정
+                                    # 500Hz 기준 10회 = ~20ms 무응답 시 link_down

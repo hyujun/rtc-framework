@@ -1,0 +1,40 @@
+# fingertip_ft_inferencer.yaml — Fingertip 접촉/힘 ONNX 추론 설정
+#
+# Per-fingertip 모델 기반 추론:
+#   입력: barometer 8ch + barometer_delta 8ch = 16 (fingertip당)
+#   출력: [contact(1), F(3), u(3), Fn(3), Fx(1), Fy(1), Fz(1)] = 13 (fingertip당)
+#
+# 추론은 sensor cycle에서만 실행 (sensor_decimation 주기에 따름)
+# 정규화 공식: value / input_max[f][ch] → [-1, +1]
+#   ch 0..7:  barometer (baseline offset 보정 후)
+#   ch 8..15: barometer_delta (current - previous)
+
+/**:
+  ros__parameters:
+    ft_inferencer:
+      enabled: false                    # ONNX F/T 추론 활성화
+      num_fingertips: 4                 # 추론 대상 fingertip 수
+      history_length: 12                # FIFO history 길이 (12 row 채워진 후 추론 시작)
+
+      # Per-fingertip ONNX 모델 경로 (fingertip 수만큼 지정)
+      # 빈 문자열("") → 해당 finger 추론 비활성
+      model_paths:
+        - ""   # thumb
+        - ""   # index
+        - ""   # middle
+        - ""   # ring
+
+      # Baseline Offset Calibration
+      # 시작 시 N 샘플을 수집하여 센서 baseline 자동 측정
+      # 캘리브레이션 중에는 F/T 추론이 수행되지 않음
+      calibration_enabled: true         # baseline offset 자동 보정 활성화
+      calibration_samples: 500          # 캘리브레이션 샘플 수 (sensor cycle 기준)
+                                        # sensor_decimation=3 @ 500Hz → 약 3초 소요
+
+      # Per-fingertip 정규화 파라미터 (input_max)
+      # 각 배열은 16 float: barometer[0..7] + barometer_delta[0..7]
+      # 정규화: value / input_max → [-1, +1]
+      thumb_max:   [40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0]
+      index_max:   [40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0]
+      middle_max:  [40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0]
+      ring_max:    [40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0, 40000.0]
