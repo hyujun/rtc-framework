@@ -137,8 +137,8 @@ ControllerOutput ClikController::Compute(
     Jpinv_6d_.noalias() = J_full_.transpose() * JJt_inv_6d_;
 
     Eigen::Matrix<double, 6, 1> kp_vec_6d;
-    for (int i = 0; i < 6; ++i) {
-      kp_vec_6d[i] = gains_.kp[i];
+    for (std::size_t i = 0; i < 6; ++i) {
+      kp_vec_6d[static_cast<Eigen::Index>(i)] = gains_.kp[i];
     }
 
     Eigen::Matrix<double, 6, 1> task_vel_6d = kp_vec_6d.cwiseProduct(pos_error_6d_);
@@ -185,17 +185,17 @@ ControllerOutput ClikController::Compute(
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
     output.robot_commands[i] = state.robot.positions[i] + dq_arr[i] * dt;
   }
-  for (int i = 0; i < 3; ++i) {
-    output.actual_target_positions[i] = traj_state.pose.translation()[i];
+  for (std::size_t i = 0; i < 3; ++i) {
+    output.actual_target_positions[i] = traj_state.pose.translation()[static_cast<Eigen::Index>(i)];
   }
-  for (int i = 3; i < kNumRobotJoints; ++i) {
+  for (std::size_t i = 3; i < kNumRobotJoints; ++i) {
     output.actual_target_positions[i] = null_target_[i];
   }
   // goal_positions: task-space goal in [0..2], null-space goal in [3..5]
-  for (int i = 0; i < 3; ++i) {
+  for (std::size_t i = 0; i < 3; ++i) {
     output.goal_positions[i] = tcp_target_[i];
   }
-  for (int i = 3; i < kNumRobotJoints; ++i) {
+  for (std::size_t i = 3; i < kNumRobotJoints; ++i) {
     output.goal_positions[i] = null_target_[i];
   }
   // target_velocities: clamped dq (joint-space velocity command)

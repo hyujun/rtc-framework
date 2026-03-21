@@ -111,7 +111,7 @@ private:
 
     // All-zero check
     bool all_zero = true;
-    for (int i = 0; i < kNumHandMotors; ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors); ++i) {
       if (pos[i] != 0.0f) { all_zero = false; break; }
     }
     if (all_zero) {

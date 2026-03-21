@@ -111,7 +111,7 @@ namespace rtc
     // 1. Set CPU affinity
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
-    CPU_SET(cfg.cpu_core, &cpuset);
+    CPU_SET(static_cast<std::size_t>(cfg.cpu_core), &cpuset);
 
     if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0)
     {
@@ -172,7 +172,7 @@ namespace rtc
     // 1. Always try CPU affinity first (critical for isolation)
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
-    CPU_SET(cfg.cpu_core, &cpuset);
+    CPU_SET(static_cast<std::size_t>(cfg.cpu_core), &cpuset);
 
     if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0)
     {
@@ -249,7 +249,7 @@ namespace rtc
     if (pthread_getaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) == 0)
     {
       result += "CPU affinity: ";
-      for (int i = 0; i < CPU_SETSIZE; ++i)
+      for (std::size_t i = 0; i < static_cast<std::size_t>(CPU_SETSIZE); ++i)
       {
         if (CPU_ISSET(i, &cpuset))
         {
@@ -317,7 +317,7 @@ namespace rtc
     double min_val = *std::min_element(latencies_us.begin(), latencies_us.end());
     double max_val = *std::max_element(latencies_us.begin(), latencies_us.end());
     double sum = std::accumulate(latencies_us.begin(), latencies_us.end(), 0.0);
-    double avg = sum / latencies_us.size();
+    double avg = sum / static_cast<double>(latencies_us.size());
 
     return {min_val, max_val, avg};
   }
@@ -362,16 +362,16 @@ struct ThreadMetrics
       sum += lat;
       sum_sq += lat * lat;
     }
-    metrics.avg_latency_us = sum / latencies_us.size();
+    metrics.avg_latency_us = sum / static_cast<double>(latencies_us.size());
 
     // Jitter (standard deviation)
-    double variance = (sum_sq / latencies_us.size()) - (metrics.avg_latency_us * metrics.avg_latency_us);
+    double variance = (sum_sq / static_cast<double>(latencies_us.size())) - (metrics.avg_latency_us * metrics.avg_latency_us);
     metrics.jitter_us = std::sqrt(std::max(0.0, variance));
 
     // Percentiles
     size_t n = sorted_latencies.size();
-    size_t idx_95 = static_cast<size_t>(0.95 * (n - 1));
-    size_t idx_99 = static_cast<size_t>(0.99 * (n - 1));
+    size_t idx_95 = static_cast<size_t>(0.95 * static_cast<double>(n - 1));
+    size_t idx_99 = static_cast<size_t>(0.99 * static_cast<double>(n - 1));
     metrics.percentile_95_us = sorted_latencies[idx_95];
     metrics.percentile_99_us = sorted_latencies[idx_99];
 
@@ -418,7 +418,7 @@ struct ThreadMetrics
     CPU_ZERO(&cpuset);
     if (pthread_getaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) == 0)
     {
-      if (!CPU_ISSET(expected.cpu_core, &cpuset))
+      if (!CPU_ISSET(static_cast<std::size_t>(expected.cpu_core), &cpuset))
       {
         flags |= ThreadHealthFlag::kWrongCore;
       }
@@ -471,9 +471,9 @@ struct ThreadMetrics
       if (pthread_getaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) == 0)
       {
         bool on_expected_core = false;
-        for (int i = 0; i < CPU_SETSIZE; ++i)
+        for (std::size_t i = 0; i < static_cast<std::size_t>(CPU_SETSIZE); ++i)
         {
-          if (CPU_ISSET(i, &cpuset) && i == expected_config->cpu_core)
+          if (CPU_ISSET(i, &cpuset) && static_cast<int>(i) == expected_config->cpu_core)
           {
             on_expected_core = true;
             break;

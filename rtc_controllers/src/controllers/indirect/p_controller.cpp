@@ -22,7 +22,7 @@ ControllerOutput PController::Compute(const ControllerState & state) noexcept
 {
   ControllerOutput output;
 
-  for (int i = 0; i < kNumRobotJoints; ++i) {
+  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
     const double error = robot_target_[i] - state.robot.positions[i];
     output.robot_commands[i] = state.robot.positions[i] + gains_.kp[i] * error * state.robot.dt;
     q_[static_cast<Eigen::Index>(i)] = state.robot.positions[i];
@@ -79,10 +79,8 @@ std::array<double, kNumRobotJoints> PController::ClampCommands(
   std::span<const double, kNumRobotJoints> commands) noexcept
 {
   std::array<double, kNumRobotJoints> clamped{};
-  for (int i = 0; i < kNumRobotJoints; ++i) {
-    clamped[static_cast<std::size_t>(i)] = std::clamp(
-        commands[static_cast<std::size_t>(i)],
-        -kMaxJointVelocity, kMaxJointVelocity);
+  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+    clamped[i] = std::clamp(commands[i], -kMaxJointVelocity, kMaxJointVelocity);
   }
   return clamped;
 }

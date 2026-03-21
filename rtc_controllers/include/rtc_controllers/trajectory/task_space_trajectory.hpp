@@ -62,10 +62,10 @@ public:
     Eigen::VectorXd v_start = delta_v0.toVector();
     Eigen::VectorXd v_goal = delta_vf.toVector();
 
-    for (int i = 0; i < 6; ++i) {
+    for (std::size_t i = 0; i < 6; ++i) {
       polynomials_[i].compute_coefficients(
-          0.0, v_start[i], 0.0,
-          p_goal[i], v_goal[i], 0.0,
+          0.0, v_start[static_cast<Eigen::Index>(i)], 0.0,
+          p_goal[static_cast<Eigen::Index>(i)], v_goal[static_cast<Eigen::Index>(i)], 0.0,
           duration);
     }
   }
@@ -77,11 +77,12 @@ public:
     Eigen::Matrix<double, 6, 1> v;
     Eigen::Matrix<double, 6, 1> a;
 
-    for (int i = 0; i < 6; ++i) {
+    for (std::size_t i = 0; i < 6; ++i) {
       auto p_state = polynomials_[i].compute(time);
-      p[i] = p_state.pos;
-      v[i] = p_state.vel;
-      a[i] = p_state.acc;
+      const auto ei = static_cast<Eigen::Index>(i);
+      p[ei] = p_state.pos;
+      v[ei] = p_state.vel;
+      a[ei] = p_state.acc;
     }
 
     pinocchio::Motion delta_X(p);

@@ -23,7 +23,7 @@ ControllerOutput DemoJointController::Compute(const ControllerState & state) noe
   ControllerOutput output;
 
   // ── Robot arm P control (identical to PController) ────────────────────────
-  for (int i = 0; i < kNumRobotJoints; ++i) {
+  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
     const double error = robot_target_[i] - state.robot.positions[i];
     output.robot_commands[i] =
       state.robot.positions[i] + gains_.robot_kp[i] * error * state.robot.dt;
@@ -50,14 +50,11 @@ ControllerOutput DemoJointController::Compute(const ControllerState & state) noe
 
   // ── Hand motor P control (same formula applied to 10 hand motors) ─────────
   if (state.hand.valid) {
-    for (int i = 0; i < kNumHandMotors; ++i) {
-      const float error =
-        hand_target_[static_cast<std::size_t>(i)] -
-        state.hand.motor_positions[static_cast<std::size_t>(i)];
-      output.hand_commands[static_cast<std::size_t>(i)] =
-        state.hand.motor_positions[static_cast<std::size_t>(i)] +
-        gains_.hand_kp[static_cast<std::size_t>(i)] * error *
-        static_cast<float>(state.dt);
+    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+      const float error = hand_target_[i] - state.hand.motor_positions[i];
+      output.hand_commands[i] =
+        state.hand.motor_positions[i] +
+        gains_.hand_kp[i] * error * static_cast<float>(state.dt);
     }
     output.hand_commands = ClampHandCommands(output.hand_commands);
   }
@@ -93,10 +90,8 @@ std::array<double, kNumRobotJoints> DemoJointController::ClampRobotCommands(
   std::span<const double, kNumRobotJoints> commands) noexcept
 {
   std::array<double, kNumRobotJoints> clamped{};
-  for (int i = 0; i < kNumRobotJoints; ++i) {
-    clamped[static_cast<std::size_t>(i)] = std::clamp(
-      commands[static_cast<std::size_t>(i)],
-      -kMaxJointVelocity, kMaxJointVelocity);
+  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+    clamped[i] = std::clamp(commands[i], -kMaxJointVelocity, kMaxJointVelocity);
   }
   return clamped;
 }
@@ -105,10 +100,8 @@ std::array<float, kNumHandMotors> DemoJointController::ClampHandCommands(
   std::span<const float, kNumHandMotors> commands) noexcept
 {
   std::array<float, kNumHandMotors> clamped{};
-  for (int i = 0; i < kNumHandMotors; ++i) {
-    clamped[static_cast<std::size_t>(i)] = std::clamp(
-      commands[static_cast<std::size_t>(i)],
-      -kMaxHandVelocity, kMaxHandVelocity);
+  for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+    clamped[i] = std::clamp(commands[i], -kMaxHandVelocity, kMaxHandVelocity);
   }
   return clamped;
 }

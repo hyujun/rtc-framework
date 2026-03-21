@@ -78,7 +78,7 @@ class HandUdpNode : public rclcpp::Node {
     }
 
     const std::string target_ip       = get_parameter("target_ip").as_string();
-    const int         target_port     = get_parameter("target_port").as_int();
+    const int         target_port     = static_cast<int>(get_parameter("target_port").as_int());
     const double      rate            = get_parameter("publish_rate").as_double();
     const double      recv_timeout_ms = get_parameter("recv_timeout_ms").as_double();
     // ── Communication mode ──────────────────────────────────────────────
@@ -242,7 +242,7 @@ class HandUdpNode : public rclcpp::Node {
       if (ft_state.valid) {
         rtc_msgs::msg::HandForceTorqueState ft_msg;
         ft_msg.header.stamp = this->now();
-        const auto& ft_names_list = get_parameter("hand_fingertip_names").as_string_array();
+        const auto ft_names_list = get_parameter("hand_fingertip_names").as_string_array();
         for (int f = 0; f < ft_state.num_fingertips; ++f) {
           rtc_msgs::msg::FingertipForceTorque ft;
           ft.name = (static_cast<std::size_t>(f) < ft_names_list.size())
