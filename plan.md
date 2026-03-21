@@ -1,43 +1,50 @@
-# UR5e RT Controller Repository Restructuring Plan
+# RTC (Real-Time Controller) Repository Restructuring Plan
+
+## 설계 원칙
+
+1. **로봇 비종속(Robot-Agnostic)** — 모든 URDF 로봇에 적용 가능. UR5e 전용 코드는 별도 config/description으로 분리
+2. **가변 DOF** — `kNumRobotJoints = 6` 컴파일 타임 상수 제거 → 런타임 URDF 파싱 기반 동적 DOF
+3. **0.5ms (2kHz) RT loop 지원** — clock_nanosleep 기반, configurable sampling time (0.5ms ~ 10ms)
+4. **관심사 분리** — Interface / Implementation / Manager / Communication 명확 분리
+5. **`rtc_` namespace** — 범용 prefix, 로봇별 패키지만 로봇 이름 사용
+
+---
 
 ## 현재 구조의 문제점
 
 1. **ur5e_rt_controller가 모놀리식** — Controller interface, 6개 controller 구현, RT loop, controller registry, launch files, RT setup scripts가 모두 하나의 패키지에 존재
-2. **관심사 분리 부족** — controller 정의(interface)와 구현(implementations)과 관리(manager)가 혼재
-3. **통신 계층 분산** — UDP 추상화는 ur5e_rt_base에, hand UDP는 별도 패키지, DDS config는 ur5e_rt_controller에 분산
-4. **Bringup 분산** — launch 파일이 각 패키지에 흩어져 있고, 통합 launch 로직이 없음
-5. **RT 인프라가 여러 곳에 혼재** — RT 스크립트, CPU 핀닝, DDS 설정 등이 ur5e_rt_controller에 묶여 있음
+2. **UR5e 하드코딩** — `kNumRobotJoints = 6` 컴파일 상수, URDF 경로 하드코딩, 기본 joint name이 UR5e 전용
+3. **관심사 분리 부족** — controller 정의(interface)와 구현(implementations)과 관리(manager)가 혼재
+4. **통신 계층 분산** — UDP 추상화는 ur5e_rt_base에, hand UDP는 별도 패키지, DDS config는 ur5e_rt_controller에 분산
+5. **Bringup 분산** — launch 파일이 각 패키지에 흩어져 있고, 통합 launch 로직이 없음
+6. **500Hz 고정** — sampling time이 코드에 묶여 있어 더 높은 주파수 대응 불가
 
-## 참고 아키텍처 분석
-
-| 패턴 | ros2_control | franka_ros2 | lbr_fri_ros2_stack |
-|------|-------------|-------------|-------------------|
-| Interface/Base | `controller_interface` | (ros2_control 사용) | (ros2_control 사용) |
-| Controller 구현 | 별도 repo (ros2_controllers) | `franka_example_controllers` | `lbr_ros2_control` 내 |
-| Manager | `controller_manager` | (ros2_control 사용) | (ros2_control 사용) |
-| Hardware 통신 | `hardware_interface` | `franka_hardware` | `lbr_fri_ros2` |
-| Description | (별도 repo) | (URDF 포함) | `lbr_description` |
-| Bringup | (별도 repo) | `franka_bringup` | `lbr_bringup` |
-| Simulation | (별도 repo) | `franka_gazebo_bringup` | Gazebo 통합 |
-| Messages | `controller_manager_msgs` | `franka_msgs` | (표준 사용) |
+---
 
 ## 제안하는 새 구조
 
 ```
-ur5e-rt-controller/
-├── ur5e_msgs/                    # [유지] 커스텀 메시지 정의
-├── ur5e_description/             # [유지] URDF/MJCF/meshes
-├── ur5e_rt_base/                 # [축소] RT 인프라 공통 라이브러리
-├── ur5e_controller_interface/    # [신규] Controller 추상 인터페이스
-├── ur5e_controllers/             # [신규] Controller 구현체들
-├── ur5e_controller_manager/      # [신규] RT loop + controller lifecycle
-├── ur5e_communication/           # [신규] 통신 계층 (UDP, hardware)
-├── ur5e_status_monitor/          # [유지] 안전 모니터링
-├── ur5e_mujoco_sim/              # [유지] MuJoCo 시뮬레이션
-├── ur5e_digital_twin/            # [유지] RViz2 시각화
-├── ur5e_bringup/                 # [신규] 통합 launch/config/RT scripts
-├── ur5e_tools/                   # [유지] 개발 유틸리티
-├── docs/                         # [유지] 문서
+ur5e-rt-controller/                      # (repo 이름은 유지, 내부만 범용화)
+│
+│  ── 범용 프레임워크 (robot-agnostic) ──
+├── rtc_msgs/                            # [리네임] 커스텀 메시지 정의
+├── rtc_base/                            # [리네임+축소] RT 인프라 공통 라이브러리
+├── rtc_controller_interface/            # [신규] Controller 추상 인터페이스 (가변 DOF)
+├── rtc_controllers/                     # [신규] Controller 구현체들 (범용)
+├── rtc_controller_manager/              # [신규] RT loop + controller lifecycle
+├── rtc_communication/                   # [신규] 통신 계층 (UDP 추상화)
+├── rtc_status_monitor/                  # [리네임] 안전 모니터링 (가변 DOF)
+├── rtc_mujoco_sim/                      # [리네임] MuJoCo 시뮬레이션 (범용 URDF)
+├── rtc_digital_twin/                    # [리네임] RViz2 시각화 (범용 URDF)
+├── rtc_tools/                           # [리네임] 개발 유틸리티
+│
+│  ── 로봇별 패키지 (robot-specific) ──
+├── ur5e_description/                    # [유지] UR5e URDF/MJCF/meshes
+├── ur5e_hand_driver/                    # [리네임] Hand 하드웨어 드라이버 (UR5e 전용 end-effector)
+├── ur5e_bringup/                        # [신규] UR5e 전용 launch/config/RT scripts
+│
+│  ── 공통 ──
+├── docs/
 ├── build.sh
 ├── install.sh
 └── README.md
@@ -45,270 +52,397 @@ ur5e-rt-controller/
 
 ---
 
+## 핵심 설계 변경사항
+
+### A. 가변 DOF 지원 (kNumRobotJoints 제거)
+
+**현재:**
+```cpp
+// types.hpp
+inline constexpr int kNumRobotJoints = 6;  // 컴파일 타임 고정
+std::array<double, kNumRobotJoints> q;      // 고정 크기 배열
+```
+
+**변경 후:**
+```cpp
+// rtc_base/types/robot_model.hpp
+struct RobotModel {
+  int num_joints;                           // URDF에서 런타임 결정
+  std::vector<std::string> joint_names;
+  std::vector<double> joint_lower_limits;
+  std::vector<double> joint_upper_limits;
+  std::vector<double> velocity_limits;
+  std::vector<double> effort_limits;
+  // pinocchio::Model은 controller_interface에서 관리
+};
+
+// RT-critical 경로에서는 Eigen::VectorXd 사용 (dynamic size)
+// 또는 최대 DOF 템플릿으로 성능 보장:
+template<int MaxDOF = 12>
+using JointVector = Eigen::Matrix<double, Eigen::Dynamic, 1, 0, MaxDOF, 1>;
+```
+
+**전략:** Eigen::Dynamic + MaxDOF 상한을 사용하여 heap allocation 없이 가변 DOF 지원. RT loop 내에서 dynamic allocation 방지.
+
+### B. 0.5ms (2kHz) RT Loop 지원
+
+**현재:** `control_rate: 500` (2ms, 500Hz) 고정적 사용
+
+**변경 후:**
+```yaml
+# config에서 sampling time 직접 지정
+rt_controller_manager:
+  ros__parameters:
+    sampling_time_us: 500        # 0.5ms = 2kHz (최소값)
+    # 또는
+    control_rate_hz: 2000        # 둘 중 하나만 지정
+```
+
+**0.5ms 대응을 위한 아키텍처 고려사항:**
+- `clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)` 유지 — 0.5ms 정밀도 충분
+- RT thread priority 99 + `SCHED_FIFO` 필수
+- CPU isolation (`isolcpus`) + IRQ affinity 필수 (0.5ms에서 IRQ jitter가 deadline miss 유발)
+- Lock-free publish offload 아키텍처 유지 — ROS2 publish는 RT loop 밖에서
+- Controller `Compute()` 함수 실행 시간 budget 모니터링 강화 (timing profiler)
+- DDS config에서 `max_message_size` 및 `receive_buffer_size` 최적화
+
+### C. URDF 경로 외부화
+
+**현재:** `ur5e_description` 하드코딩
+
+**변경 후:**
+```yaml
+# ur5e_bringup/config/ur5e_robot.yaml
+rt_controller_manager:
+  ros__parameters:
+    robot_description_package: "ur5e_description"
+    urdf_path: "robots/ur5e/urdf/ur5e.urdf"
+    # 또는 robot_description topic에서 수신
+```
+
+Launch argument로 URDF 경로를 주입하여 어떤 로봇이든 사용 가능.
+
+---
+
 ## 패키지별 상세 계획
 
-### 1. `ur5e_msgs` — 유지 (변경 없음)
-현재 7개 메시지 타입 그대로 유지.
+### 1. `rtc_msgs` — 리네임 (ur5e_msgs → rtc_msgs)
 
-### 2. `ur5e_description` — 유지 (변경 없음)
-URDF, MJCF, meshes 그대로 유지.
+기존 7개 메시지 타입 유지. 네임스페이스만 `ur5e_msgs` → `rtc_msgs`로 변경.
+UR5e 전용 필드가 있다면 범용화하거나 별도 분리.
 
-### 3. `ur5e_rt_base` — 축소 (통신 레이어 분리)
+### 2. `rtc_base` — 리네임+축소 (ur5e_rt_base → rtc_base)
 
-**유지할 내용:**
+Header-only RT 인프라 라이브러리. UDP 레이어는 `rtc_communication`으로 이동.
+
 ```
-ur5e_rt_base/include/ur5e_rt_base/
-├── types/              # Core types (types.hpp)
-├── threading/          # Thread utilities (thread_utils, thread_config, publish_buffer, seqlock)
-├── filters/            # RT-safe signal processing (bessel_filter, kalman_filter)
-└── logging/            # Lock-free data logging (data_logger, log_buffer, session_dir)
+rtc_base/include/rtc_base/
+├── types/
+│   ├── types.hpp                  # 범용 type 정의 (kNumRobotJoints 제거)
+│   └── robot_model.hpp            # [신규] 런타임 DOF 모델
+├── threading/
+│   ├── thread_utils.hpp
+│   ├── thread_config.hpp
+│   ├── publish_buffer.hpp
+│   └── seqlock.hpp
+├── filters/
+│   ├── bessel_filter.hpp
+│   └── kalman_filter.hpp
+└── logging/
+    ├── data_logger.hpp
+    ├── log_buffer.hpp
+    └── session_dir.hpp
 ```
 
-**ur5e_communication으로 이동할 내용:**
-```
-udp/                    # → ur5e_communication으로 이동
-├── udp_socket.hpp
-├── udp_transceiver.hpp
-└── udp_codec.hpp
-```
+**핵심 변경:**
+- `kNumRobotJoints`, `kDefaultRobotJointNames` 상수 제거
+- `RobotModel` 구조체 도입 (런타임 DOF)
+- `udp/` 디렉토리 → `rtc_communication`으로 이동
+- namespace: `ur5e_rt_base` → `rtc`
 
-### 4. `ur5e_controller_interface` — 신규 (ur5e_rt_controller에서 분리)
+### 3. `rtc_controller_interface` — 신규 (ur5e_rt_controller에서 분리)
 
-Controller의 추상 인터페이스를 정의하는 패키지. ros2_control의 `controller_interface` 패턴 참고.
+Controller의 추상 인터페이스. ros2_control의 `controller_interface` 패턴 참고.
 
-**포함 내용:**
 ```
-ur5e_controller_interface/
-├── include/ur5e_controller_interface/
-│   ├── rt_controller_interface.hpp     # ← 기존 rt_controller_interface.hpp 이동
+rtc_controller_interface/
+├── include/rtc_controller_interface/
+│   ├── rt_controller_interface.hpp     # 추상 인터페이스 (가변 DOF)
 │   ├── controller_types.hpp            # Controller 관련 type 정의
-│   └── controller_state.hpp            # Controller state 정보 구조체
+│   └── controller_state.hpp            # Controller state 구조체
 ├── src/
-│   └── rt_controller_interface.cpp     # ← 기존 rt_controller_interface.cpp 이동
+│   └── rt_controller_interface.cpp
 ├── package.xml
 └── CMakeLists.txt
 ```
 
-**의존성:** `ur5e_rt_base`, `ur5e_msgs`, `sensor_msgs`, `pinocchio`
+**의존성:** `rtc_base`, `rtc_msgs`, `sensor_msgs`, `pinocchio`
 
-**역할:**
-- Controller가 구현해야 할 순수 가상 함수 정의 (`Init()`, `Compute()`, `Reset()`, `Cleanup()`)
-- 공통 state/command 접근 인터페이스
-- Controller 등록 매크로/유틸리티
+**핵심 변경:**
+- `Init()`에서 `RobotModel`을 받아 DOF를 런타임에 결정
+- pinocchio model 빌드를 interface 레벨에서 공통 처리
+- state/command 벡터를 `Eigen::VectorXd`로 변경
 
-### 5. `ur5e_controllers` — 신규 (ur5e_rt_controller에서 분리)
+### 4. `rtc_controllers` — 신규 (ur5e_rt_controller에서 분리)
 
-6개 controller 구현체를 모은 패키지. franka_ros2의 `franka_example_controllers`, ros2_controllers 패턴 참고.
+6개 범용 controller 구현체. UR5e 전용 controller(hand_controller)는 `ur5e_hand_driver`에 잔류.
 
-**포함 내용:**
 ```
-ur5e_controllers/
-├── include/ur5e_controllers/
-│   ├── direct/                         # Torque command controllers
+rtc_controllers/
+├── include/rtc_controllers/
+│   ├── direct/                          # Torque command controllers
 │   │   ├── joint_pd_controller.hpp
 │   │   └── operational_space_controller.hpp
-│   └── indirect/                       # Position command controllers
-│       ├── p_controller.hpp
-│       ├── clik_controller.hpp
-│       ├── demo_joint_controller.hpp
-│       ├── demo_task_controller.hpp
-│       └── ur5e_hand_controller.hpp
-├── src/
-│   └── controllers/                    # 각 controller 구현 파일
-├── config/
-│   └── controllers/
-│       ├── direct/
-│       │   ├── joint_pd_controller.yaml
-│       │   └── operational_space_controller.yaml
-│       └── indirect/
-│           ├── p_controller.yaml
-│           ├── clik_controller.yaml
-│           ├── demo_joint_controller.yaml
-│           ├── demo_task_controller.yaml
-│           └── ur5e_hand_controller.yaml
-├── package.xml
-└── CMakeLists.txt
-```
-
-**의존성:** `ur5e_controller_interface`, `ur5e_rt_base`, `ur5e_msgs`, `pinocchio`
-
-**포함할 보조 코드:**
-```
-├── include/ur5e_controllers/
-│   └── trajectory/                     # ← 기존 trajectory 유틸 이동
+│   ├── indirect/                        # Position command controllers
+│   │   ├── p_controller.hpp
+│   │   ├── clik_controller.hpp
+│   │   ├── demo_joint_controller.hpp
+│   │   └── demo_task_controller.hpp
+│   └── trajectory/
 │       ├── trajectory_utils.hpp
 │       ├── joint_space_trajectory.hpp
 │       └── task_space_trajectory.hpp
+├── src/controllers/
+│   ├── direct/
+│   │   ├── joint_pd_controller.cpp
+│   │   └── operational_space_controller.cpp
+│   └── indirect/
+│       ├── p_controller.cpp
+│       ├── clik_controller.cpp
+│       ├── demo_joint_controller.cpp
+│       └── demo_task_controller.cpp
+├── config/controllers/
+│   ├── direct/
+│   │   ├── joint_pd_controller.yaml
+│   │   └── operational_space_controller.yaml
+│   └── indirect/
+│       ├── p_controller.yaml
+│       ├── clik_controller.yaml
+│       ├── demo_joint_controller.yaml
+│       └── demo_task_controller.yaml
+├── package.xml
+└── CMakeLists.txt
 ```
 
-### 6. `ur5e_controller_manager` — 신규 (ur5e_rt_controller 핵심 분리)
+**의존성:** `rtc_controller_interface`, `rtc_base`, `rtc_msgs`, `pinocchio`
 
-RT loop 실행, controller lifecycle 관리, runtime switching을 담당. ros2_control의 `controller_manager` 패턴 참고.
+**핵심 변경:**
+- 모든 controller가 가변 DOF 지원 (고정 크기 배열 → Eigen::VectorXd)
+- `ur5e_hand_controller`는 여기서 제외 → `ur5e_hand_driver`에 잔류 (UR5e 전용 end-effector)
 
-**포함 내용:**
+### 5. `rtc_controller_manager` — 신규 (ur5e_rt_controller 핵심 분리)
+
+RT loop 실행, controller lifecycle 관리, runtime switching 담당.
+
 ```
-ur5e_controller_manager/
-├── include/ur5e_controller_manager/
-│   ├── rt_controller_node.hpp          # ← 기존 rt_controller_node.hpp 이동
-│   ├── controller_registry.hpp         # Controller 등록/검색 (기존 node에서 분리)
-│   └── controller_timing_profiler.hpp  # ← 기존 timing profiler 이동
+rtc_controller_manager/
+├── include/rtc_controller_manager/
+│   ├── rt_controller_node.hpp
+│   ├── controller_registry.hpp          # Controller 등록/검색 (node에서 분리)
+│   └── controller_timing_profiler.hpp
 ├── src/
-│   ├── rt_controller_node.cpp          # ← 기존 rt_controller_node.cpp 이동
-│   └── rt_controller_main.cpp          # ← 기존 main 이동
+│   ├── rt_controller_node.cpp
+│   └── rt_controller_main.cpp
 ├── config/
-│   ├── ur5e_rt_controller.yaml         # ← 기존 메인 config 이동
-│   └── cyclone_dds.xml                 # ← 기존 DDS config 이동
+│   ├── rt_controller_manager.yaml       # 범용 config (sampling_time_us 포함)
+│   └── cyclone_dds.xml
 ├── test/
 │   └── ...
 ├── package.xml
 └── CMakeLists.txt
 ```
 
-**의존성:** `ur5e_controller_interface`, `ur5e_controllers`, `ur5e_rt_base`, `ur5e_communication`, `ur5e_status_monitor`, `ur5e_msgs`
+**의존성:** `rtc_controller_interface`, `rtc_controllers`, `rtc_base`, `rtc_communication`, `rtc_status_monitor`, `rtc_msgs`
+
+**핵심 변경:**
+- `sampling_time_us` 파라미터로 RT loop 주기 설정 (기본 2000us=500Hz, 최소 500us=2kHz)
+- URDF 경로를 파라미터/topic으로 수신 (하드코딩 제거)
+- `RobotModel`을 URDF에서 빌드하여 controller에 전달
+- UR5e 전용 코드 (`enable_ur5e`, `ur5e_hand_controller` 등) 제거 → bringup config로 이동
+- timing profiler에서 deadline miss 경고 임계값을 sampling_time 기반으로 동적 계산
+
+### 6. `rtc_communication` — 신규 (ur5e_rt_base UDP 이동)
+
+범용 하드웨어 통신 추상화. UDP socket, transceiver, codec만 포함.
+
+```
+rtc_communication/
+├── include/rtc_communication/
+│   ├── udp_socket.hpp
+│   ├── udp_transceiver.hpp
+│   └── udp_codec.hpp
+├── package.xml                          # header-only
+└── CMakeLists.txt
+```
+
+**의존성:** `rtc_base`
 
 **역할:**
-- 500Hz RT loop 실행 (`clock_nanosleep`)
-- Controller 등록, 선택, runtime switching
-- Lock-free publish offload 아키텍처
-- E-STOP 관리
-- CPU core 핀닝 및 스레드 스케줄링
+- UDP 통신 추상화 (socket, transceiver, codec)
+- 로봇별 프로토콜 구현은 각 로봇 드라이버 패키지에서 담당
+- **Hand UDP는 여기에 포함하지 않음** → `ur5e_hand_driver`에서 이 패키지를 depend하여 사용
 
-### 7. `ur5e_communication` — 신규 (ur5e_rt_base + ur5e_hand_udp 통합)
+### 7. `rtc_status_monitor` — 리네임 (ur5e_status_monitor → rtc_status_monitor)
 
-모든 하드웨어 통신을 담당하는 패키지. lbr_fri_ros2_stack의 `lbr_fri_ros2`, franka_ros2의 `franka_hardware` 패턴 참고.
-
-**포함 내용:**
 ```
-ur5e_communication/
-├── include/ur5e_communication/
-│   ├── udp/                            # ← ur5e_rt_base/udp/ 이동
-│   │   ├── udp_socket.hpp
-│   │   ├── udp_transceiver.hpp
-│   │   └── udp_codec.hpp
-│   └── hand/                           # ← ur5e_hand_udp/ 이동
-│       ├── hand_packets.hpp
-│       ├── hand_udp_codec.hpp
-│       ├── hand_controller.hpp
-│       └── hand_failure_detector.hpp
+rtc_status_monitor/
+└── (기존 구조 유지, namespace 변경)
+```
+
+**핵심 변경:**
+- `kNumJoints` 하드코딩 제거 → `RobotModel`에서 DOF 수신
+- namespace: `ur5e_status_monitor` → `rtc`
+
+### 8. `rtc_mujoco_sim` — 리네임 (ur5e_mujoco_sim → rtc_mujoco_sim)
+
+**핵심 변경:**
+- MJCF 경로를 파라미터로 수신 (하드코딩 제거)
+- 어떤 URDF/MJCF 로봇이든 시뮬레이션 가능
+
+### 9. `rtc_digital_twin` — 리네임 (ur5e_digital_twin → rtc_digital_twin)
+
+**핵심 변경:**
+- URDF를 `robot_description` topic에서 수신 → 어떤 로봇이든 시각화 가능
+
+### 10. `rtc_tools` — 리네임 (ur5e_tools → rtc_tools)
+
+기존 Python 유틸리티 유지, namespace만 변경.
+
+### 11. `ur5e_description` — 유지 (변경 없음)
+
+UR5e 전용 URDF/MJCF/meshes. 로봇별 패키지이므로 `ur5e_` prefix 유지.
+
+### 12. `ur5e_hand_driver` — 리네임 (ur5e_hand_udp → ur5e_hand_driver)
+
+UR5e 전용 end-effector 드라이버. `rtc_communication`의 UDP 추상화를 사용.
+
+```
+ur5e_hand_driver/
+├── include/ur5e_hand_driver/
+│   ├── hand_packets.hpp
+│   ├── hand_udp_codec.hpp
+│   ├── hand_controller.hpp              # ← 기존 ur5e_hand_controller도 여기로
+│   ├── hand_failure_detector.hpp
+│   └── fingertip_ft_inferencer.hpp
 ├── src/
-│   └── hand/
-│       └── hand_udp_node.cpp
+│   └── hand_udp_node.cpp
 ├── config/
-│   └── hand_udp_node.yaml              # ← 기존 hand config 이동
+│   ├── hand_udp_node.yaml
+│   └── fingertip_ft_inferencer.yaml
 ├── launch/
-│   └── hand_udp.launch.py              # ← 기존 hand launch 이동
+│   └── hand_udp.launch.py
+├── models/                              # ONNX 모델
 ├── package.xml
 └── CMakeLists.txt
 ```
 
-**의존성:** `ur5e_rt_base`, `ur5e_msgs`
+**의존성:** `rtc_communication`, `rtc_base`, `rtc_msgs`, `rtc_controller_interface`
 
-**역할:**
-- UDP 통신 추상화 (socket, transceiver, codec)
-- Hand UDP 프로토콜 (request-response)
-- Hand failure detection
-- 향후 다른 하드웨어 통신도 이곳에 추가 가능
+### 13. `ur5e_bringup` — 신규 (UR5e 전용 launch/config 통합)
 
-### 8. `ur5e_status_monitor` — 유지 (변경 없음)
-기존 안전 모니터링 로직 그대로 유지.
+UR5e에 특화된 launch, config, RT scripts를 통합하는 패키지.
 
-### 9. `ur5e_mujoco_sim` — 유지 (변경 없음)
-기존 MuJoCo 시뮬레이션 패키지 그대로 유지.
-
-### 10. `ur5e_digital_twin` — 유지 (변경 없음)
-기존 RViz2 시각화 패키지 그대로 유지.
-
-### 11. `ur5e_bringup` — 신규 (launch/config/scripts 통합)
-
-시스템 전체의 launch, 설정, RT 환경 스크립트를 통합. franka_ros2의 `franka_bringup`, lbr_fri_ros2_stack의 `lbr_bringup` 패턴 참고.
-
-**포함 내용:**
 ```
 ur5e_bringup/
 ├── launch/
-│   ├── ur5e_robot.launch.py            # ← 기존 ur_control.launch.py 리팩터링
-│   ├── ur5e_sim.launch.py              # ← 기존 mujoco_sim.launch.py 래핑
-│   ├── ur5e_full.launch.py             # 로봇 + 디지털 트윈 + 모니터링 통합
-│   └── ur5e_hand.launch.py             # ← 기존 hand_udp.launch.py 래핑
+│   ├── robot.launch.py                  # 실물 로봇 launch
+│   ├── sim.launch.py                    # MuJoCo 시뮬레이션 launch
+│   ├── full.launch.py                   # 로봇 + 디지털 트윈 + 모니터링 통합
+│   └── hand.launch.py                   # Hand driver launch
 ├── config/
-│   ├── robot_params.yaml               # 로봇 기본 파라미터 (IP, joint names, limits)
-│   └── launch_profiles/                # 다양한 실행 프로파일
-│       ├── default.yaml
-│       ├── sim_only.yaml
-│       └── full_system.yaml
+│   ├── ur5e_robot.yaml                  # UR5e 전용 파라미터 (URDF 경로, joint names, limits)
+│   ├── ur5e_controllers.yaml            # UR5e용 controller 파라미터 오버라이드
+│   └── ur5e_rt.yaml                     # UR5e용 RT 설정 (sampling_time, CPU cores)
 ├── scripts/
-│   ├── build_rt_kernel.sh              # ← 기존 scripts 이동
+│   ├── build_rt_kernel.sh
 │   ├── check_rt_setup.sh
-│   ├── setup_irq_affinity.sh
-│   ├── setup_udp_optimization.sh
-│   ├── setup_nvidia_rt.sh
 │   ├── cpu_shield.sh
+│   ├── setup_irq_affinity.sh
+│   ├── setup_nvidia_rt.sh
+│   ├── setup_udp_optimization.sh
 │   ├── verify_rt_runtime.sh
 │   └── lib/rt_common.sh
 ├── package.xml
 └── CMakeLists.txt
 ```
 
-**의존성:** `ur5e_controller_manager`, `ur5e_mujoco_sim`, `ur5e_digital_twin`, `ur5e_communication`
+**의존성:** `rtc_controller_manager`, `rtc_mujoco_sim`, `rtc_digital_twin`, `ur5e_hand_driver`, `ur5e_description`
 
 **역할:**
-- 통합 시스템 launch (로봇/시뮬레이션/full)
-- RT 환경 설정 스크립트 중앙 관리
-- Launch profile 기반 설정
-
-### 12. `ur5e_tools` — 유지 (변경 없음)
-기존 Python 개발 유틸리티 그대로 유지.
+- UR5e 전용 launch (URDF 경로, joint name, sampling_time 등을 argument로 주입)
+- 다른 로봇 사용 시 → `{robot_name}_bringup` 패키지를 만들면 됨
 
 ---
 
 ## 패키지 의존성 그래프
 
 ```
-ur5e_msgs (독립)
-ur5e_description (독립)
-ur5e_rt_base (독립, header-only)
+rtc_msgs (독립)
+rtc_base (독립, header-only)
     │
-    ├── ur5e_communication ← ur5e_rt_base, ur5e_msgs
+    ├── rtc_communication ← rtc_base                         [범용 UDP]
     │
-    ├── ur5e_controller_interface ← ur5e_rt_base, ur5e_msgs
+    ├── rtc_controller_interface ← rtc_base, rtc_msgs        [범용 인터페이스]
     │       │
-    │       └── ur5e_controllers ← ur5e_controller_interface, ur5e_rt_base
+    │       └── rtc_controllers ← rtc_controller_interface    [범용 컨트롤러]
     │               │
-    │               └── ur5e_controller_manager ← ur5e_controllers, ur5e_controller_interface,
-    │                                              ur5e_communication, ur5e_status_monitor
+    │               └── rtc_controller_manager                [범용 매니저]
+    │                    ← rtc_controllers, rtc_controller_interface,
+    │                       rtc_communication, rtc_status_monitor
     │
-    ├── ur5e_status_monitor ← ur5e_rt_base
+    ├── rtc_status_monitor ← rtc_base, rtc_msgs              [범용 모니터링]
     │
-    ├── ur5e_mujoco_sim ← ur5e_description
+    ├── rtc_mujoco_sim (독립, MJCF 파라미터화)                [범용 시뮬레이션]
     │
-    ├── ur5e_digital_twin (독립, Python)
+    ├── rtc_digital_twin (독립, Python)                       [범용 시각화]
     │
-    └── ur5e_bringup ← ur5e_controller_manager, ur5e_mujoco_sim,
-                        ur5e_digital_twin, ur5e_communication
+    rtc_tools (독립, Python)                                  [범용 유틸]
 
-ur5e_tools (독립, Python)
+ur5e_description (독립, 로봇별)
+    │
+    └── ur5e_bringup ← rtc_controller_manager, rtc_mujoco_sim,
+    │                   rtc_digital_twin, ur5e_hand_driver, ur5e_description
+    │
+    └── ur5e_hand_driver ← rtc_communication, rtc_base,      [UR5e 전용 드라이버]
+                            rtc_msgs, rtc_controller_interface
 ```
+
+**다른 로봇 추가 시:**
+```
+panda_description/          # Panda URDF/meshes
+panda_bringup/              # Panda launch/config (rtc_controller_manager 사용)
+```
+→ `rtc_*` 패키지는 재사용, 로봇별 패키지만 추가하면 됨.
 
 ---
 
 ## 마이그레이션 순서 (단계별)
 
-### Phase 1: 기반 패키지 분리 (의존성 없는 것부터)
-1. `ur5e_communication` 생성 — ur5e_rt_base에서 udp/ 이동 + ur5e_hand_udp 흡수
-2. `ur5e_controller_interface` 생성 — ur5e_rt_controller에서 interface 분리
+### Phase 1: 기반 패키지 (의존성 없는 것부터)
+1. `rtc_msgs` 생성 — ur5e_msgs 리네임 + namespace 변경
+2. `rtc_base` 생성 — ur5e_rt_base 리네임, `kNumRobotJoints` 제거, `RobotModel` 도입, udp/ 분리
+3. `rtc_communication` 생성 — ur5e_rt_base에서 udp/ 이동
 
-### Phase 2: 구현 패키지 분리
-3. `ur5e_controllers` 생성 — 6개 controller 구현 + trajectory 유틸 이동
-4. `ur5e_controller_manager` 생성 — RT loop, node, registry, timing profiler 이동
+### Phase 2: Controller 패키지 분리
+4. `rtc_controller_interface` 생성 — ur5e_rt_controller에서 interface 분리, 가변 DOF 적용
+5. `rtc_controllers` 생성 — 6개 controller 구현 이동, 가변 DOF 적용
+6. `rtc_status_monitor` 생성 — ur5e_status_monitor 리네임, 가변 DOF 적용
 
-### Phase 3: 통합 패키지 생성
-5. `ur5e_bringup` 생성 — launch files 통합 + RT scripts 이동
-6. 기존 `ur5e_rt_controller`, `ur5e_hand_udp` 패키지 제거
+### Phase 3: Manager + 통합
+7. `rtc_controller_manager` 생성 — RT loop, node, registry 이동, `sampling_time_us` 파라미터화
+8. `rtc_mujoco_sim` 리네임 — MJCF 경로 파라미터화
+9. `rtc_digital_twin` 리네임 — robot_description topic 기반
+10. `rtc_tools` 리네임
 
-### Phase 4: 정리
-7. build.sh, install.sh 업데이트
-8. README.md 업데이트
-9. CI/CD 설정 업데이트
+### Phase 4: 로봇별 패키지
+11. `ur5e_hand_driver` 생성 — ur5e_hand_udp 리네임 + ur5e_hand_controller 이동
+12. `ur5e_bringup` 생성 — launch/config/scripts 통합
+
+### Phase 5: 정리
+13. 기존 `ur5e_rt_controller`, `ur5e_hand_udp`, `ur5e_rt_base`, `ur5e_status_monitor` 패키지 제거
+14. build.sh, install.sh 업데이트
+15. README.md 업데이트
+16. CI/CD 설정 업데이트
 
 ---
 
@@ -316,32 +450,43 @@ ur5e_tools (독립, Python)
 
 | 기존 위치 | 새 위치 |
 |-----------|---------|
-| `ur5e_rt_controller/include/.../rt_controller_interface.hpp` | `ur5e_controller_interface/include/...` |
-| `ur5e_rt_controller/src/rt_controller_interface.cpp` | `ur5e_controller_interface/src/...` |
-| `ur5e_rt_controller/include/.../controllers/direct/` | `ur5e_controllers/include/.../direct/` |
-| `ur5e_rt_controller/include/.../controllers/indirect/` | `ur5e_controllers/include/.../indirect/` |
-| `ur5e_rt_controller/src/controllers/` | `ur5e_controllers/src/controllers/` |
-| `ur5e_rt_controller/include/.../trajectory/` | `ur5e_controllers/include/.../trajectory/` |
-| `ur5e_rt_controller/config/controllers/` | `ur5e_controllers/config/controllers/` |
-| `ur5e_rt_controller/include/.../rt_controller_node.hpp` | `ur5e_controller_manager/include/...` |
-| `ur5e_rt_controller/src/rt_controller_node.cpp` | `ur5e_controller_manager/src/...` |
-| `ur5e_rt_controller/src/rt_controller_main.cpp` | `ur5e_controller_manager/src/...` |
-| `ur5e_rt_controller/include/.../controller_timing_profiler.hpp` | `ur5e_controller_manager/include/...` |
-| `ur5e_rt_controller/config/ur5e_rt_controller.yaml` | `ur5e_controller_manager/config/...` |
-| `ur5e_rt_controller/config/cyclone_dds.xml` | `ur5e_controller_manager/config/...` |
-| `ur5e_rt_controller/launch/ur_control.launch.py` | `ur5e_bringup/launch/ur5e_robot.launch.py` |
+| `ur5e_msgs/` | `rtc_msgs/` (namespace 변경) |
+| `ur5e_rt_base/include/.../types/` | `rtc_base/include/rtc_base/types/` |
+| `ur5e_rt_base/include/.../threading/` | `rtc_base/include/rtc_base/threading/` |
+| `ur5e_rt_base/include/.../filters/` | `rtc_base/include/rtc_base/filters/` |
+| `ur5e_rt_base/include/.../logging/` | `rtc_base/include/rtc_base/logging/` |
+| `ur5e_rt_base/include/.../udp/` | `rtc_communication/include/rtc_communication/` |
+| `ur5e_rt_controller/.../rt_controller_interface.hpp` | `rtc_controller_interface/include/rtc_controller_interface/` |
+| `ur5e_rt_controller/src/rt_controller_interface.cpp` | `rtc_controller_interface/src/` |
+| `ur5e_rt_controller/.../controllers/direct/` | `rtc_controllers/include/rtc_controllers/direct/` |
+| `ur5e_rt_controller/.../controllers/indirect/` (hand 제외) | `rtc_controllers/include/rtc_controllers/indirect/` |
+| `ur5e_rt_controller/src/controllers/` (hand 제외) | `rtc_controllers/src/controllers/` |
+| `ur5e_rt_controller/.../trajectory/` | `rtc_controllers/include/rtc_controllers/trajectory/` |
+| `ur5e_rt_controller/config/controllers/` | `rtc_controllers/config/controllers/` |
+| `ur5e_rt_controller/.../rt_controller_node.hpp` | `rtc_controller_manager/include/rtc_controller_manager/` |
+| `ur5e_rt_controller/src/rt_controller_node.cpp` | `rtc_controller_manager/src/` |
+| `ur5e_rt_controller/src/rt_controller_main.cpp` | `rtc_controller_manager/src/` |
+| `ur5e_rt_controller/.../controller_timing_profiler.hpp` | `rtc_controller_manager/include/rtc_controller_manager/` |
+| `ur5e_rt_controller/config/ur5e_rt_controller.yaml` | `ur5e_bringup/config/ur5e_robot.yaml` (UR5e 부분) + `rtc_controller_manager/config/rt_controller_manager.yaml` (범용 부분) |
+| `ur5e_rt_controller/config/cyclone_dds.xml` | `rtc_controller_manager/config/` |
+| `ur5e_rt_controller/launch/ur_control.launch.py` | `ur5e_bringup/launch/robot.launch.py` |
 | `ur5e_rt_controller/scripts/*.sh` | `ur5e_bringup/scripts/` |
-| `ur5e_rt_base/include/.../udp/` | `ur5e_communication/include/.../udp/` |
-| `ur5e_hand_udp/` (전체) | `ur5e_communication/` (hand/ 서브디렉토리) |
-| `ur5e_mujoco_sim/launch/mujoco_sim.launch.py` | 유지 + `ur5e_bringup/launch/ur5e_sim.launch.py`에서 래핑 |
+| `ur5e_status_monitor/` | `rtc_status_monitor/` (namespace 변경 + 가변 DOF) |
+| `ur5e_hand_udp/` (전체) | `ur5e_hand_driver/` (리네임) |
+| `ur5e_rt_controller/.../controllers/indirect/ur5e_hand_controller` | `ur5e_hand_driver/` (UR5e 전용이므로) |
+| `ur5e_mujoco_sim/` | `rtc_mujoco_sim/` (MJCF 경로 파라미터화) |
+| `ur5e_digital_twin/` | `rtc_digital_twin/` (robot_description topic 기반) |
+| `ur5e_tools/` | `rtc_tools/` |
 
 ---
 
 ## 장점
 
-1. **관심사 분리** — Interface, Implementation, Manager가 명확히 분리
-2. **독립 빌드/테스트** — 각 패키지를 독립적으로 빌드/테스트 가능
-3. **재사용성** — controller_interface를 기반으로 새 controller 추가 용이
-4. **표준 패턴** — ros2_control, franka_ros2, lbr_fri_ros2_stack과 동일한 구조
-5. **통합 Bringup** — 시스템 전체를 하나의 진입점으로 launch 가능
-6. **통신 추상화** — 새 하드웨어 추가 시 communication 패키지만 확장
+1. **로봇 비종속** — 어떤 URDF 로봇이든 `{robot}_bringup` + `{robot}_description`만 추가하면 사용 가능
+2. **가변 DOF** — 6축, 7축, 12축 등 어떤 manipulator든 대응
+3. **2kHz RT 대응** — configurable sampling time으로 0.5ms까지 지원
+4. **관심사 분리** — Interface / Implementation / Manager / Communication 명확 분리
+5. **독립 빌드/테스트** — 각 패키지를 독립적으로 빌드/테스트 가능
+6. **재사용성** — controller_interface를 기반으로 새 controller 추가 용이
+7. **표준 패턴** — ros2_control, franka_ros2, lbr_fri_ros2_stack과 동일한 구조
+8. **확장성** — 새 로봇, 새 end-effector, 새 통신 프로토콜 추가 시 기존 코드 수정 최소화
