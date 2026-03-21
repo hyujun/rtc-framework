@@ -10,6 +10,7 @@
 6. **Inference 분리** — RT-safe 추론 엔진을 독립 패키지로 분리, 센서별 전처리는 드라이버에 잔류
 7. **통신 확장성** — Transport 추상화로 UDP, CAN-FD, EtherCAT, RS485 등 새 프로토콜 쉽게 추가 가능
 8. **Controller 계층 분리** — 범용 manipulator controller와 로봇+end-effector 통합 controller(demo) 명확 분리
+9. **Logging 범용화** — 고정 크기 LogEntry(6-DOF, 10-motor) → 가변 DOF 로깅, 세션 디렉토리 로봇 비종속화
 
 ---
 
@@ -24,6 +25,7 @@
 7. **Inference 결합** — ONNX Runtime 추론 코드가 `ur5e_hand_udp`에 직접 임베딩. RT-safe 추론 래퍼를 다른 센서/모델에 재사용 불가
 8. **통신 확장 불가** — UDP socket만 존재, CAN-FD/EtherCAT/RS485 등 다른 통신 방식을 추가하려면 전체 구조 변경 필요. Transport 추상화 부재
 9. **Controller 혼재** — 범용 manipulator controller(P, PD, CLIK, OSC)와 UR5e+hand 통합 controller(DemoJoint, DemoTask)가 같은 패키지에 혼재. demo controller는 hand 제어를 포함하므로 특정 로봇 셋업에 종속
+10. **Logging 고정 크기** — `LogEntry`가 `std::array<double, 6>` (robot), `std::array<float, 10>` (hand) 등 컴파일 타임 고정 크기 배열 사용. 7-DOF 로봇이나 다른 end-effector에 대응 불가. `DataLogger` CSV 컬럼도 6-joint/10-motor에 하드코딩. `UR5E_SESSION_DIR` 환경변수명이 UR5e 전용
 
 ---
 
@@ -233,6 +235,119 @@ rtc_controllers (범용)                  ur5e_bringup (로봇 전용)
 - `ControllerOutput::hand_commands` 생성 여부: 범용 controller는 robot_commands만 생성
 - `hand.motor_positions` 참조 여부: demo controller만 hand state를 read
 
+### G. Logging 범용화 (가변 DOF + 세션 비종속화)
+
+**현재:** `LogEntry`가 고정 크기 배열, `DataLogger`가 6-DOF/10-motor에 하드코딩
+```cpp
+// 현재 LogEntry (log_buffer.hpp) — 모든 크기가 컴파일 타임 고정
+struct LogEntry {
+  std::array<double, 6> goal_positions;        // ← 6-DOF 고정
+  std::array<double, 6> actual_positions;      // ← 6-DOF 고정
+  std::array<double, 6> robot_commands;        // ← 6-DOF 고정
+  std::array<float, 10> hand_goal_positions;   // ← 10-motor 고정
+  std::array<float, 10> hand_commands;         // ← 10-motor 고정
+  std::array<int32_t, 88> hand_sensors;        // ← kMaxHandSensors 고정
+  // ...
+};
+```
+
+**변경 후:** MaxDOF 템플릿 + 런타임 실제 DOF 지정
+```cpp
+// rtc_base/logging/log_entry.hpp — 가변 DOF 대응
+template <int MaxRobotDOF = 12, int MaxDeviceChannels = 64>
+struct LogEntry {
+  // ── Timing (로봇 비종속) ─────────────────────
+  double timestamp;
+  double t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us;
+
+  // ── Robot state (가변 DOF) ───────────────────
+  int num_robot_joints;                                     // 런타임 결정
+  std::array<double, MaxRobotDOF> goal_positions{};
+  std::array<double, MaxRobotDOF> actual_positions{};
+  std::array<double, MaxRobotDOF> actual_velocities{};
+  std::array<double, MaxRobotDOF> actual_torques{};
+  std::array<double, MaxRobotDOF> robot_commands{};
+  std::array<double, MaxRobotDOF> trajectory_positions{};
+  std::array<double, MaxRobotDOF> trajectory_velocities{};
+  std::array<double, 6> actual_task_positions{};            // TCP는 항상 6D (x,y,z,r,p,y)
+  CommandType command_type{CommandType::kPosition};
+
+  // ── Device state (end-effector, 선택적) ──────
+  bool device_valid{false};
+  int num_device_channels;                                  // 런타임 결정
+  std::array<float, MaxDeviceChannels> device_goal{};
+  std::array<float, MaxDeviceChannels> device_actual{};
+  std::array<float, MaxDeviceChannels> device_commands{};
+
+  // ── Sensor data (선택적, 로봇별) ─────────────
+  int num_sensor_channels{0};
+  std::array<float, 128> sensor_data{};                     // 범용 센서 버퍼
+  std::array<float, 128> sensor_data_raw{};
+
+  // ── Inference output (선택적) ────────────────
+  bool inference_valid{false};
+  int num_inference_values{0};
+  std::array<float, 64> inference_output{};
+};
+
+// 기본 alias (기존 호환)
+using DefaultLogEntry = LogEntry<12, 64>;
+// UR5e 전용 (기존 크기와 동일한 성능 보장)
+using Ur5eLogEntry = LogEntry<6, 10>;
+```
+
+**DataLogger 범용화:**
+```cpp
+// rtc_base/logging/data_logger.hpp
+class DataLogger {
+ public:
+  struct Config {
+    int num_robot_joints;                    // CSV 컬럼 수 결정
+    int num_device_channels{0};             // 0이면 device 로그 생략
+    int num_sensor_channels{0};
+    int num_inference_values{0};
+    std::vector<std::string> joint_names;    // CSV 헤더
+    std::vector<std::string> device_names;   // CSV 헤더
+    std::vector<std::string> sensor_names;   // CSV 헤더
+    bool enable_timing_log{true};
+    bool enable_robot_log{true};
+    bool enable_device_log{true};            // hand_log → device_log
+  };
+
+  explicit DataLogger(const Config& config, const std::string& log_dir);
+  // ...
+};
+```
+
+**세션 디렉토리 범용화:**
+```
+// 환경변수 변경
+UR5E_SESSION_DIR → RTC_SESSION_DIR
+
+// 디렉토리 구조 범용화
+logging_data/YYMMDD_HHMM/
+  controller/   → 그대로 유지 (timing_log, robot_log, device_log)
+  monitor/      → 그대로 유지
+  device/       → hand/ 리네임 (범용 end-effector)
+  sim/          → 그대로 유지
+  plots/        → 그대로 유지
+  motions/      → 그대로 유지
+```
+
+**핵심 변경 포인트:**
+1. `LogEntry`: 고정 배열 → MaxDOF 템플릿 + `num_robot_joints` 런타임 지정
+2. `DataLogger`: 하드코딩 컬럼 → `Config::num_robot_joints` 기반 동적 CSV 생성
+3. `hand_log.csv` → `device_log.csv` (범용 end-effector)
+4. `UR5E_SESSION_DIR` → `RTC_SESSION_DIR` (하위 호환: `UR5E_SESSION_DIR` fallback)
+5. `session_dir.hpp`: 하위 디렉토리 `hand/` → `device/`
+6. `SpscLogBuffer<N>`: 템플릿 파라미터로 `LogEntry` 타입 지정 가능
+7. `publish_buffer.hpp`: `PublishSnapshot`도 동일하게 가변 DOF 대응
+
+**RT 안전성 유지:**
+- `MaxDOF` 상한으로 heap allocation 없이 가변 DOF 지원 (Eigen::Dynamic과 동일 패턴)
+- `std::array<T, MaxDOF>`는 trivially copyable → `SeqLock`, SPSC 버퍼 호환
+- `Push()`/`Pop()`은 기존과 동일하게 lock-free O(1)
+
 ---
 
 ## 패키지별 상세 계획
@@ -254,15 +369,16 @@ rtc_base/include/rtc_base/
 ├── threading/
 │   ├── thread_utils.hpp
 │   ├── thread_config.hpp
-│   ├── publish_buffer.hpp
+│   ├── publish_buffer.hpp         # [수정] PublishSnapshot 가변 DOF 대응
 │   └── seqlock.hpp
 ├── filters/
 │   ├── bessel_filter.hpp
 │   └── kalman_filter.hpp
 └── logging/
-    ├── data_logger.hpp
-    ├── log_buffer.hpp
-    └── session_dir.hpp
+    ├── log_entry.hpp              # [수정] LogEntry 템플릿 (MaxRobotDOF, MaxDeviceChannels)
+    ├── log_buffer.hpp             # [수정] SpscLogBuffer<EntryType> 타입 파라미터
+    ├── data_logger.hpp            # [수정] DataLogger::Config 기반 동적 CSV 생성
+    └── session_dir.hpp            # [수정] RTC_SESSION_DIR + hand/→device/ 리네임
 ```
 
 **핵심 변경:**
@@ -270,6 +386,22 @@ rtc_base/include/rtc_base/
 - `RobotModel` 구조체 도입 (런타임 DOF)
 - `udp/` 디렉토리 → `rtc_communication`으로 이동
 - namespace: `ur5e_rt_base` → `rtc`
+
+**Logging 변경:**
+- `LogEntry` → `LogEntry<MaxRobotDOF, MaxDeviceChannels>` 템플릿으로 변경
+  - `std::array<double, 6>` → `std::array<double, MaxRobotDOF>` + `num_robot_joints`
+  - `hand_*` 필드 → `device_*` 필드 (범용 end-effector)
+  - `hand_sensors` → `sensor_data` (범용 센서 버퍼)
+  - F/T 전용 필드 → `inference_output` (범용 추론 결과)
+- `SpscLogBuffer` → `SpscLogBuffer<EntryType>` 타입 파라미터 지원
+- `DataLogger` → `DataLogger::Config` 구조체로 동적 CSV 컬럼 생성
+  - `num_robot_joints`로 robot_log.csv 컬럼 수 결정
+  - `num_device_channels`로 device_log.csv 컬럼 수 결정 (0이면 생략)
+  - `hand_log.csv` → `device_log.csv` 리네임
+- `session_dir.hpp`:
+  - `UR5E_SESSION_DIR` → `RTC_SESSION_DIR` (하위 호환: `UR5E_SESSION_DIR` fallback)
+  - `hand/` 하위 디렉토리 → `device/` 리네임
+- `PublishSnapshot` → 가변 DOF 대응 (MaxRobotDOF 템플릿)
 
 ### 3. `rtc_controller_interface` — 신규 (ur5e_rt_controller에서 분리)
 
@@ -834,7 +966,7 @@ kuka_bringup/               # KUKA launch/config + KUKA 전용 controller
 
 ### Phase 1: 기반 패키지 (의존성 없는 것부터)
 1. `rtc_msgs` 생성 — ur5e_msgs 리네임 + namespace 변경
-2. `rtc_base` 생성 — ur5e_rt_base 리네임, `kNumRobotJoints` 제거, `RobotModel` 도입, udp/ 분리
+2. `rtc_base` 생성 — ur5e_rt_base 리네임, `kNumRobotJoints` 제거, `RobotModel` 도입, udp/ 분리, Logging 범용화 (LogEntry 템플릿, DataLogger Config 기반, session_dir RTC_SESSION_DIR)
 3. `rtc_communication` 생성 — Transport 추상 인터페이스 + UdpTransport 구현 (ur5e_rt_base에서 udp/ 이동 + 범용화)
 4. `rtc_inference` 생성 — ur5e_hand_udp에서 ONNX Runtime 래퍼 추출, 범용 추론 엔진 구현
 5. `rtc_scripts` 생성 — ur5e_rt_controller/scripts/ 이동, 로봇 이름 하드코딩 제거, 경로 범용화
@@ -876,7 +1008,9 @@ kuka_bringup/               # KUKA launch/config + KUKA 전용 controller
 | `ur5e_rt_base/include/.../types/` | `rtc_base/include/rtc_base/types/` |
 | `ur5e_rt_base/include/.../threading/` | `rtc_base/include/rtc_base/threading/` |
 | `ur5e_rt_base/include/.../filters/` | `rtc_base/include/rtc_base/filters/` |
-| `ur5e_rt_base/include/.../logging/` | `rtc_base/include/rtc_base/logging/` |
+| `ur5e_rt_base/include/.../logging/log_buffer.hpp` | `rtc_base/include/rtc_base/logging/log_entry.hpp` (LogEntry 분리) + `log_buffer.hpp` (SpscLogBuffer 타입 파라미터화) |
+| `ur5e_rt_base/include/.../logging/data_logger.hpp` | `rtc_base/include/rtc_base/logging/data_logger.hpp` (Config 기반 동적 CSV, hand→device 리네임) |
+| `ur5e_rt_base/include/.../logging/session_dir.hpp` | `rtc_base/include/rtc_base/logging/session_dir.hpp` (UR5E_SESSION_DIR→RTC_SESSION_DIR, hand/→device/) |
 | `ur5e_rt_base/include/.../udp/udp_socket.hpp` | `rtc_communication/include/rtc_communication/udp/udp_socket.hpp` |
 | `ur5e_rt_base/include/.../udp/udp_codec.hpp` | `rtc_communication/include/rtc_communication/packet_codec.hpp` (범용화) |
 | `ur5e_rt_base/include/.../udp/udp_transceiver.hpp` | `rtc_communication/include/rtc_communication/transceiver.hpp` (Transport 기반 범용화) |
@@ -1020,3 +1154,4 @@ bash "${RT_SCRIPTS_DIR}/check_rt_setup.sh"
 9. **추론 재사용** — `rtc_inference`로 RT-safe ONNX 추론을 어떤 센서/모델에든 재사용 가능 (F/T estimation, contact detection, anomaly detection 등)
 10. **통신 프로토콜 확장** — Transport 추상화로 UDP 외에 CAN-FD, EtherCAT, RS485 등을 `TransportInterface` 구현만으로 추가 가능. 기존 Codec/Transceiver 코드 재사용
 11. **Controller 계층 명확** — 범용 manipulator controller(any robot)와 로봇+end-effector 통합 demo controller(robot-specific)가 명확히 분리되어, 새 로봇 추가 시 범용 controller는 그대로 재사용하고 통합 controller만 자체 작성
+12. **Logging 범용화** — `LogEntry<MaxDOF>` 템플릿으로 6-DOF, 7-DOF, 12-DOF 등 어떤 로봇이든 동일 로깅 인프라 사용. `DataLogger::Config`로 CSV 컬럼 동적 생성. `RTC_SESSION_DIR`로 로봇 비종속 세션 관리
