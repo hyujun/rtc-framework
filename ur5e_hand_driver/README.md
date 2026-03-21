@@ -29,7 +29,7 @@ ur5e_hand_driver/
 **의존성 그래프 내 위치:**
 
 ```
-rtc_base ← ur5e_hand_driver   (ur5e_rt_controller에 의존하지 않음)
+rtc_base, rtc_communication ← ur5e_hand_driver   (rtc_controller_manager에 의존하지 않음)
 ```
 
 ---
@@ -267,7 +267,7 @@ source install/setup.bash
 
 ### E-STOP 연동
 
-`ur5e_rt_controller`의 `config/ur5e_rt_controller.yaml`에서:
+`rtc_controller_manager`의 `config/rt_controller_manager.yaml` (또는 `ur5e_bringup/config/ur5e_robot.yaml`)에서:
 
 ```yaml
 estop:
@@ -327,7 +327,7 @@ struct HandTimingStats {
 
 ### JSON 통계 내보내기 (v5.9.0, 경로 변경 v5.10.0)
 
-노드 종료 시 `UR5E_SESSION_DIR/hand/hand_udp_stats.json`에 통신 통계를 저장합니다 (세션 미설정 시 `/tmp/` 폴백):
+노드 종료 시 `RTC_SESSION_DIR/hand/hand_udp_stats.json`에 통신 통계를 저장합니다 (세션 미설정 시 `/tmp/` 폴백):
 
 ```json
 {

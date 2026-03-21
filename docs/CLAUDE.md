@@ -18,29 +18,29 @@ chmod +x install.sh
 # Build with build.sh (recommended, handles MuJoCo path and parallelism)
 chmod +x build.sh
 ./build.sh sim -c -j 4         # clean build sim packages with 4 workers
-./build.sh robot               # excludes ur5e_mujoco_sim
+./build.sh robot               # excludes rtc_mujoco_sim
 ./build.sh full                # all packages
-./build.sh -p ur5e_rt_base     # build specific package only
+./build.sh -p rtc_base          # build specific package only
 
 # Manual build (from workspace root — ~/ros2_ws/ur5e_ws)
 cd ~/ros2_ws/ur5e_ws
-colcon build --packages-select ur5e_description ur5e_rt_base ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_tools --symlink-install
+colcon build --packages-select ur5e_description rtc_base rtc_status_monitor rtc_controller_manager rtc_controllers rtc_controller_interface ur5e_hand_driver rtc_tools --symlink-install
 source install/setup.bash
 
 # Run full system (real robot)
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-ros2 launch ur5e_rt_controller ur_control.launch.py robot_ip:=192.168.1.10
+ros2 launch ur5e_bringup robot.launch.py robot_ip:=192.168.1.10
 
 # Run with fake hardware (no robot needed)
-ros2 launch ur5e_rt_controller ur_control.launch.py use_fake_hardware:=true
+ros2 launch ur5e_bringup robot.launch.py use_fake_hardware:=true
 
 # Run MuJoCo simulation (requires MuJoCo 3.x installed)
-ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py
-ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step
-ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py enable_viewer:=false
+ros2 launch rtc_mujoco_sim mujoco_sim.launch.py
+ros2 launch rtc_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step
+ros2 launch rtc_mujoco_sim mujoco_sim.launch.py enable_viewer:=false
 
 # Run UDP hand node only
-ros2 launch ur5e_hand_udp hand_udp.launch.py target_ip:=192.168.1.2 target_port:=55151
+ros2 launch ur5e_hand_driver hand_udp.launch.py target_ip:=192.168.1.2 target_port:=55151
 ```
 
 **Monitoring**:

@@ -1,4 +1,4 @@
-# 변경 이력 — ur5e_mujoco_sim
+# 변경 이력 — rtc_mujoco_sim
 
 이 파일은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/) 형식을 따르며,
 [시맨틱 버전 관리](https://semver.org/lang/ko/)를 사용합니다.
@@ -9,9 +9,9 @@
 
 ### 변경 (Changed) — 세션 기반 로깅
 
-- 스크린샷 저장 경로: `UR5E_SESSION_DIR/sim/` 우선 사용 (미설정 시 `~/ros2_ws/ur5e_ws/logging_data/` 폴백)
+- 스크린샷 저장 경로: `RTC_SESSION_DIR/sim/` 우선 사용 (미설정 시 `~/ros2_ws/ur5e_ws/logging_data/` 폴백)
 - 스크린샷 파일 이름: `screenshot_HHMMSS.ppm` (날짜 제거 — 세션 폴더에 포함)
-- `mujoco_sim.launch.py`: 세션 디렉토리 생성 (`logging_data/YYMMDD_HHMM/`), `UR5E_SESSION_DIR` 환경변수 설정
+- `mujoco_sim.launch.py`: 세션 디렉토리 생성 (`logging_data/YYMMDD_HHMM/`), `RTC_SESSION_DIR` 환경변수 설정
 - `mujoco_sim.launch.py`: `max_log_sessions` launch argument 추가 (기본 10, 오래된 세션 자동 삭제)
 
 ---
@@ -98,12 +98,12 @@ MJCF 파일 내 `package://` URI를 MuJoCo가 직접 해석할 수 있도록 전
 
 | 파일 | 역할 |
 |------|------|
-| `include/ur5e_mujoco_sim/ros2_resource_provider.hpp` | `RegisterRos2ResourceProvider()` 함수 선언 |
+| `include/rtc_mujoco_sim/ros2_resource_provider.hpp` | `RegisterRos2ResourceProvider()` 함수 선언 |
 | `src/ros2_resource_provider.cpp` | `mjp_addResourceProvider()` 기반 구현 |
 
 #### 동작 방식
 
-1. `MuJoCoSimulatorNode` 생성 시 `ur5e_rt_controller::RegisterRos2ResourceProvider()` 자동 호출
+1. `MuJoCoSimulatorNode` 생성 시 `rtc_controller_manager::RegisterRos2ResourceProvider()` 자동 호출
 2. MuJoCo가 파일 로드 시 `package://<pkg>/<path>` 경로를 감지하면 `ament_index_cpp::get_package_share_directory()` 로 절대경로 변환
 3. 이후 `mj_loadXML()` / `mj_loadModel()`이 변환된 경로로 파일 접근
 
@@ -140,7 +140,7 @@ MJCF 파일 내 `package://` URI를 MuJoCo가 직접 해석할 수 있도록 전
 
 ### 변경 (Changed) — 기본 MJCF 모델 경로
 
-- **이전**: `get_package_share_directory("ur5e_mujoco_sim") + "/models/ur5e/scene.xml"`
+- **이전**: `get_package_share_directory("rtc_mujoco_sim") + "/models/ur5e/scene.xml"`
 - **이후**: `get_package_share_directory("ur5e_description") + "/robots/ur5e/mjcf/scene.xml"`
 - 모델 파일이 `ur5e_description` 패키지로 이동 (단일 소스 관리)
 - 빌드 전 `ur5e_description` 패키지 선행 빌드 필요
@@ -174,8 +174,8 @@ MJCF 파일 내 `package://` URI를 MuJoCo가 직접 해석할 수 있도록 전
 
 ### 추가
 
-- **초기 분리**: `ur5e_rt_controller` 단일 패키지에서 MuJoCo 시뮬레이터를 독립 패키지로 추출
-- `include/ur5e_mujoco_sim/mujoco_simulator.hpp` — 스레드 안전 MuJoCo 3.x 물리 래퍼
+- **초기 분리**: `rtc_controller_manager` 단일 패키지에서 MuJoCo 시뮬레이터를 독립 패키지로 추출
+- `include/rtc_mujoco_sim/mujoco_simulator.hpp` — 스레드 안전 MuJoCo 3.x 물리 래퍼
   - 두 가지 시뮬레이션 모드: `kFreeRun` (최대 속도), `kSyncStep` (명령 동기 스텝)
   - `SimLoop` 스레드 (`jthread`) — 물리 시뮬레이션 실행
   - `ViewerLoop` 스레드 (`jthread`, 선택적) — GLFW 3D 뷰어 ~60Hz
@@ -188,14 +188,14 @@ MJCF 파일 내 `package://` URI를 MuJoCo가 직접 해석할 수 있도록 전
   - `/sim/status` 퍼블리시 (`[step_count, sim_time_sec, rtf]`)
   - `/forward_position_controller/commands` 구독
   - `/hand/command` 구독
-  - `get_package_share_directory("ur5e_mujoco_sim")` — 패키지 내 모델 경로 참조
+  - `get_package_share_directory("rtc_mujoco_sim")` — 패키지 내 모델 경로 참조
 - `models/ur5e/scene.xml` — MuJoCo 씬 (지면 + UR5e 포함)
 - `models/ur5e/ur5e.xml` — UR5e MJCF 로봇 모델
 - `launch/mujoco_sim.launch.py` — 시뮬레이션 실행 파일
   - `model_path`, `sim_mode`, `enable_viewer`, `publish_decimation`, `sync_timeout_ms`, `max_rtf`, `kp`, `kd` 파라미터
-  - `mujoco_simulator_node` (패키지: `ur5e_mujoco_sim`)
-  - `custom_controller` (패키지: `ur5e_rt_controller`, E-STOP 비활성 오버라이드)
-  - `monitor_data_health.py` (패키지: `ur5e_tools`)
+  - `mujoco_simulator_node` (패키지: `rtc_mujoco_sim`)
+  - `custom_controller` (패키지: `rtc_controller_manager`, E-STOP 비활성 오버라이드)
+  - `monitor_data_health.py` (패키지: `rtc_tools`)
 - `config/mujoco_simulator.yaml` — 시뮬레이터 파라미터 + `custom_controller` 오버라이드
 - `CMakeLists.txt` — MuJoCo/GLFW 선택적 의존성, 미설치 시 자동 건너뜀
 - `package.xml` — `rclcpp`, `std_msgs`, `sensor_msgs`, `ament_index_cpp` 의존성
@@ -203,15 +203,15 @@ MJCF 파일 내 `package://` URI를 MuJoCo가 직접 해석할 수 있도록 전
 ### 변경
 
 - 인클루드 경로 변경:
-  - `#include "ur5e_rt_controller/mujoco_simulator.hpp"` → `#include "ur5e_mujoco_sim/mujoco_simulator.hpp"`
+  - `#include "rtc_controller_manager/mujoco_simulator.hpp"` → `#include "rtc_mujoco_sim/mujoco_simulator.hpp"`
 - 헤더 가드 변경: `UR5E_RT_CONTROLLER_MUJOCO_SIMULATOR_HPP_` → `UR5E_MUJOCO_SIM_MUJOCO_SIMULATOR_HPP_`
-- 패키지 공유 디렉터리 참조 변경: `get_package_share_directory("ur5e_rt_controller")` → `get_package_share_directory("ur5e_mujoco_sim")`
-- launch 파일 내 패키지 참조 분리: `pkg_sim` (ur5e_mujoco_sim) / `pkg_ctrl` (ur5e_rt_controller)
+- 패키지 공유 디렉터리 참조 변경: `get_package_share_directory("rtc_controller_manager")` → `get_package_share_directory("rtc_mujoco_sim")`
+- launch 파일 내 패키지 참조 분리: `pkg_sim` (rtc_mujoco_sim) / `pkg_ctrl` (rtc_controller_manager)
 
 ### 참고
 
-이 패키지는 다음 v4.4.0 `ur5e_rt_controller` 파일에서 추출되었습니다:
-- `include/ur5e_rt_controller/mujoco_simulator.hpp`
+이 패키지는 다음 v4.4.0 `rtc_controller_manager` 파일에서 추출되었습니다:
+- `include/rtc_controller_manager/mujoco_simulator.hpp`
 - `src/mujoco_simulator_node.cpp`
 - `launch/mujoco_sim.launch.py`
 - `config/mujoco_simulator.yaml`
