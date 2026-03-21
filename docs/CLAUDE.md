@@ -257,7 +257,7 @@ This is a **ROS2 Humble / ROS2 Jazzy** multi-package repository (`ament_cmake`, 
 
 **Workspace root**: `/home/user/ros2_ws/ur5e_ws`
 **Log output**: `~/ros2_ws/ur5e_ws/logging_data/YYMMDD_HHMM/` (세션 디렉토리, `max_log_sessions: 10`)
-  - `controller/` — timing_log.csv, robot_log.csv, hand_log.csv
+  - `controller/` — timing_log.csv, robot_log.csv, device_log.csv
   - `monitor/` — ur5e_failure_*.log, controller_stats.json
   - `hand/` — hand_udp_stats.json
   - `sim/` — screenshot_*.ppm (MuJoCo 전용)
@@ -277,8 +277,10 @@ kSensorValuesPerFingertip = 11 // 8 barometer + 3 ToF
 kNumHandSensors = 44          // 4 fingertips × 11 values
 kNumHandJoints  = kNumHandMotors  // legacy alias (= 10)
 
+// Note: array sizes shown below are for 6-DOF UR5e; actual sizes are
+// runtime-configurable via RobotModel. Uses MaxRobotDOF template internally.
 struct RobotState {
-  std::array<double, 6>  positions{}, velocities{};
+  std::array<double, 6>  positions{}, velocities{};   // size = num_dof (runtime)
   std::array<double, 6>  torques{};         // v5.8.0: /joint_states effort에서 복사
   std::array<double, 3>  tcp_position{};
   double dt{0.002}; uint64_t iteration{0};
@@ -357,7 +359,7 @@ Split across three files (v5.5.0+):
 `mlockall(MCL_CURRENT | MCL_FUTURE)` is called at startup to prevent page faults. Shared state between threads is protected by three separate mutexes (`state_mutex_`, `target_mutex_`, `hand_mutex_`).
 
 **Key methods in `RtControllerNode`:**
-- `DeclareAndLoadParameters()`: loads `control_rate`, `kp`, `kd`, `enable_estop`, `robot_timeout_ms`, `hand_timeout_ms`, `enable_logging`, `enable_timing_log`, `enable_robot_log`, `enable_hand_log`, `init_timeout_sec`, `enable_status_monitor`
+- `DeclareAndLoadParameters()`: loads `control_rate`, `kp`, `kd`, `enable_estop`, `robot_timeout_ms`, `hand_timeout_ms`, `enable_logging`, `enable_timing_log`, `enable_robot_log`, `enable_device_log`, `init_timeout_sec`, `enable_status_monitor`
 - `ExposeTopicParameters()`: exposes all controller topic mappings as read-only ROS2 parameters (`controllers.<ctrl_name>.subscribe.<role>`, `controllers.<ctrl_name>.publish.<role>`). Rejected at runtime via `add_on_set_parameters_callback` for RT safety.
 - `CreateCallbackGroups()`: creates 3 `MutuallyExclusive` groups (sensor, log, aux — `cb_group_rt_` removed in v5.16.0)
 - `StartRtLoop(cfg)` / `StopRtLoop()`: lifecycle for the clock_nanosleep RT loop jthread
@@ -374,7 +376,7 @@ Split across three files (v5.5.0+):
 
 ### Lock-Free Logging Infrastructure
 
-**`SpscLogBuffer`** (`rtc_base/include/rtc_base/logging/log_buffer.hpp`): single-producer / single-consumer ring buffer (power-of-2 entries). Uses **bitwise AND modulus** `& (N - 1)` for fast wrapping and **local index caching** to minimize cache invalidation (False Sharing) between the RT and logging threads. `alignas(kCacheLineSize)` dynamically adapts to the hardware target. The RT thread calls `Push()` without ever blocking or allocating; the log thread drains via `Pop()`. Each `LogEntry` has separate timing/robot/hand sections (v5.9.0): timing (`t_state_acquire_us`, `t_compute_us`, `t_publish_us`, `t_total_us`, `jitter_us`), robot (`goal_positions[6]`, `target_positions[6]`, `target_velocities[6]`, `actual_positions[6]`, `actual_velocities[6]`, `actual_torques[6]`, `actual_task_positions[6]`, `robot_commands[6]`, `command_type`, `trajectory_positions[6]`, `trajectory_velocities[6]`), and hand (`hand_valid`, `hand_goal_positions[10]`, `hand_commands[10]`, `hand_actual_positions[10]`, `hand_actual_velocities[10]`, `hand_sensors[44]`).
+**`SpscLogBuffer`** (`rtc_base/include/rtc_base/logging/log_buffer.hpp`): single-producer / single-consumer ring buffer (power-of-2 entries). Uses **bitwise AND modulus** `& (N - 1)` for fast wrapping and **local index caching** to minimize cache invalidation (False Sharing) between the RT and logging threads. `alignas(kCacheLineSize)` dynamically adapts to the hardware target. The RT thread calls `Push()` without ever blocking or allocating; the log thread drains via `Pop()`. Each `LogEntry` has separate timing/robot/hand sections (v5.9.0): timing (`t_state_acquire_us`, `t_compute_us`, `t_publish_us`, `t_total_us`, `jitter_us`), robot (`goal_positions[6]`, `target_positions[6]`, `target_velocities[6]`, `actual_positions[6]`, `actual_velocities[6]`, `actual_torques[6]`, `actual_task_positions[6]`, `robot_commands[6]`, `command_type`, `trajectory_positions[6]`, `trajectory_velocities[6]`), and device (`device_valid`, `device_goal_positions[10]`, `device_commands[10]`, `device_actual_positions[10]`, `device_actual_velocities[10]`, `device_sensors[44]`).
 
 **`ControllerTimingProfiler`** (`rtc_controller_manager/include/rtc_controller_manager/controller_timing_profiler.hpp`): wraps `RTControllerInterface::Compute()` with `steady_clock` timing. Maintains a lock-free histogram (0–2000 µs, 100 µs buckets) + min/max/mean/stddev/p95/p99 using relaxed atomics. Budget threshold: 2000 µs (500 Hz period). Call `MeasuredCompute()` instead of `Compute()` directly; call `Summary()` every 1000 iterations for a log line.
 
@@ -468,7 +470,7 @@ Synchronisation:
 | Ctrl + Right drag | Apply force XZ plane |
 | Ctrl + Shift + Right drag | Apply force XY plane |
 
-**`mujoco_simulator_node`** (`src/mujoco_simulator_node.cpp`): ROS2 node that wraps `MuJoCoSimulator`. Publishes `/joint_states` (at physics rate or decimated), `/hand/joint_states` (100 Hz, simulated via 1st-order filter), and `/sim/status`. Subscribes to `/forward_position_controller/commands` and `/hand/command`.
+**`mujoco_simulator_node`** (`rtc_mujoco_sim/src/mujoco_simulator_node.cpp`): ROS2 node that wraps `MuJoCoSimulator`. Publishes `/joint_states` (at physics rate or decimated), `/hand/joint_states` (100 Hz, simulated via 1st-order filter), and `/sim/status`. Subscribes to `/forward_position_controller/commands` and `/hand/command`.
 
 **MuJoCo model files** (provided by `ur5e_description` package, v5.2.2+):
 - Default path resolved at runtime: `$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/mjcf/scene.xml`
@@ -503,7 +505,7 @@ export MUJOCO_DIR=/opt/mujoco-3.x.x && colcon build
 **Sensor request**: 3 bytes = `[ID:1B][CMD:1B][MODE:1B]`
 **Sensor response**: 67 bytes = `[header:3B][barometer[8]:uint32][reserved[5]:uint32][tof[3]:uint32]` — reserved fields discarded, 11 values stored per fingertip (8 barometer + 3 ToF)
 
-`HandUdpNode` (`src/hand_udp_node.cpp`) is the **unified ROS2 node** (recommended). Wraps `HandController` and publishes `/hand/joint_states` at 100Hz with **64 doubles**: `[positions:10][velocities:10][sensors:44]`. Subscribes to `/hand/command` (10 float motor commands, 0.0–1.0).
+`HandUdpNode` (`ur5e_hand_driver/src/hand_udp_node.cpp`) is the **unified ROS2 node** (recommended). Wraps `HandController` and publishes `/hand/joint_states` at 100Hz with **64 doubles**: `[positions:10][velocities:10][sensors:44]`. Subscribes to `/hand/command` (10 float motor commands, 0.0–1.0).
 
 **Data layout in `/hand/joint_states`:**
 ```
@@ -584,19 +586,19 @@ Non-copyable (move-only) CSV logger. v5.9.0: split into **3 separate files**, ea
 |---|---|---|
 | `timing_log_YYMMDD_HHMM.csv` | 7 | `timestamp, t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us` |
 | `robot_log_YYMMDD_HHMM.csv` | 49 | `timestamp, goal_pos_0~5, actual_pos_0~5, actual_vel_0~5, actual_torque_0~5, task_pos_0~5, command_0~5, command_type, traj_pos_0~5, traj_vel_0~5` |
-| `hand_log_YYMMDD_HHMM.csv` | 87 | `timestamp, hand_valid, hand_goal_pos_0~9, hand_cmd_0~9, hand_actual_pos_0~9, hand_actual_vel_0~9, baro_f0_0~7, tof_f0_0~2, baro_f1_0~7, tof_f1_0~2, ...` |
+| `device_log_YYMMDD_HHMM.csv` | 87 | `timestamp, device_valid, device_goal_pos_0~9, device_cmd_0~9, device_actual_pos_0~9, device_actual_vel_0~9, baro_f0_0~7, tof_f0_0~2, baro_f1_0~7, tof_f1_0~2, ...` |
 
 Constructor takes 3 paths (empty path disables that category):
 ```cpp
 DataLogger(const std::filesystem::path& timing_path,
            const std::filesystem::path& robot_path,
-           const std::filesystem::path& hand_path)
+           const std::filesystem::path& device_path)
 ```
 
-`LogEntry` is restructured with separate timing/robot/hand sections:
+`LogEntry` is restructured with separate timing/robot/device sections:
 - **Timing**: timestamp, t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us
 - **Robot** (4-카테고리): goal_positions[6] (Goal), actual_positions[6], actual_velocities[6], actual_torques[6], actual_task_positions[6] (State), robot_commands[6], command_type (Command), trajectory_positions[6], trajectory_velocities[6] (Trajectory)
-- **Hand**: hand_valid, hand_goal_positions[10], hand_commands[10], hand_actual_positions[10], hand_actual_velocities[10], hand_sensors[44]
+- **Device**: device_valid, device_goal_positions[10], device_commands[10], device_actual_positions[10], device_actual_velocities[10], device_sensors[44]
 
 The 500 Hz RT thread pushes entries to `SpscLogBuffer`; the `log_executor` thread (Core 4) drains and writes to all enabled CSV files — never blocking the RT path.
 
@@ -700,7 +702,7 @@ v5.15.0 RT optimizations: `SeqLock<HandState>` replaces `state_mutex_` (lock-fre
 - `PController` / `JointPDController`: joint angles in radians
 - `ClikController`: `[x, y, z, null_q3, null_q4, null_q5]` (TCP position + null-space reference)
 - `OperationalSpaceController`: `[x, y, z, roll, pitch, yaw]` (full TCP pose)
-- `UrFiveEHandController`: `data[0-5]` robot joints (rad), `data[6-15]` hand motors (optional)
+- `DemoJointController`: `data[0-5]` robot joints (rad), `data[6-15]` hand motors (optional)
 
 **Topic Remapping** (v5.13.0): Standard `--ros-args -r /old:=/new` remapping works natively since all topics use `create_publisher()`/`create_subscription()`. Remapping applies to all controllers uniformly.
 
@@ -722,7 +724,7 @@ v5.15.0 RT optimizations: `SeqLock<HandState>` replaces `state_mutex_` (lock-fre
     enable_logging: true       # Write timestamped CSV
     enable_timing_log: true    # v5.9.0: 타이밍 CSV 활성화 (timing_log_*.csv)
     enable_robot_log: true     # v5.9.0: 로봇 CSV 활성화 (robot_log_*.csv)
-    enable_hand_log: true      # v5.9.0: 핸드 CSV 활성화 (hand_log_*.csv)
+    enable_device_log: true    # v5.9.0: 디바이스 CSV 활성화 (device_log_*.csv)
     log_dir: ""                # 세션 디렉토리 — launch 파일이 YYMMDD_HHMM 경로 설정
     max_log_sessions: 10       # 최대 보관 세션 폴더 수
 
@@ -902,11 +904,11 @@ Matplotlib visualization of CSV control logs. v5.9.0: auto-detects log type from
 | Filename pattern | Mode | Figures |
 |---|---|---|
 | `robot_log_*.csv` | Robot | Fig 1: 3x2 position (goal/target/actual), Fig 2: 3x2 velocity (target/actual), optional tracking error |
-| `hand_log_*.csv` | Hand | Fig 1: 2x5 position (goal/cmd/actual), Fig 2: 2x5 velocity, Fig 3: 2x4 barometer+ToF sensors |
+| `device_log_*.csv` | Device | Fig 1: 2x5 position (goal/cmd/actual), Fig 2: 2x5 velocity, Fig 3: 2x4 barometer+ToF sensors |
 
 ```bash
 ros2 run rtc_tools plot_rtc_log ~/ros2_ws/ur5e_ws/logging_data/250314_1200/controller/robot_log.csv
-ros2 run rtc_tools plot_rtc_log ~/ros2_ws/ur5e_ws/logging_data/250314_1200/controller/hand_log.csv
+ros2 run rtc_tools plot_rtc_log ~/ros2_ws/ur5e_ws/logging_data/250314_1200/controller/device_log.csv
 ```
 
 ### `rtc_tools/utils/hand_udp_sender_example.py`
@@ -967,21 +969,21 @@ public:
 - `LoadConfig()`: YAML 노드에서 게인 읽기
 - `UpdateGainsFromMsg()`: flat array에서 게인 업데이트
 
-**3. YAML 작성** — `config/controllers/indirect/my_controller.yaml` (또는 `direct/`)
+**3. YAML 작성** — `rtc_controllers/config/controllers/indirect/my_controller.yaml` (또는 `direct/`)
 
 ```yaml
 my_controller:
   kp: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
 ```
 
-**4. 레지스트리 등록** — `src/rt_controller_node.cpp` 의 `MakeControllerEntries()` 에 한 줄 추가
+**4. 레지스트리 등록** — `rtc_controller_manager/src/rt_controller_node.cpp` 의 `MakeControllerEntries()` 에 한 줄 추가
 
 ```cpp
-#include "ur5e_rt_controller/controllers/indirect/my_controller.hpp"
+#include "rtc_controllers/indirect/my_controller.hpp"
 
 // MakeControllerEntries() 안에:
 {"my_controller", "indirect/",
- [](const std::string & urdf_path) { return std::make_unique<urtc::MyController>(urdf_path); }},
+ [](const std::string & urdf_path) { return std::make_unique<rtc::MyController>(urdf_path); }},
 ```
 
 No CMakeLists changes needed for header-only controllers. `JointPDController`, `ClikController`, and `OperationalSpaceController` require Pinocchio (already linked via `target_link_libraries(rt_controller pinocchio::pinocchio)`). If your controller has a `.cpp` file, add it to `target_sources` in `CMakeLists.txt`.
@@ -991,7 +993,7 @@ No CMakeLists changes needed for header-only controllers. `JointPDController`, `
 ## Code Conventions
 
 - **Include order**: project headers first, then ROS2/third-party, then C++ stdlib (see `rt_controller_node.cpp` line 1 comment)
-- **Namespace**: `ur5e_rt_controller` (aliased as `urtc` in `.cpp` files)
+- **Namespace**: `rtc` (all packages use the `rtc` namespace)
 - **Naming**: Google C++ Style — `snake_case` members with trailing `_`, getters match member name without trailing `_`
 - **`noexcept` on all RT paths**: exceptions in 500Hz callbacks terminate the process; this is intentional and required
 - **C++20 features in use**: `std::jthread`, `std::stop_token`, designated initializers (`.field = value`), `std::concepts` (`NonNegativeFloat`), `std::span`, `std::string_view`
@@ -1005,10 +1007,10 @@ No CMakeLists changes needed for header-only controllers. `JointPDController`, `
 
 ---
 
-## Key Constants (from `ur5e_rt_base/types/types.hpp`)
+## Key Constants (from `rtc_base/types/types.hpp`)
 
-- `kNumRobotJoints = 6`
-- `kNumHandMotors = 10` (10-DOF hand motors)
+- `kNumRobotJoints` — **removed**; DOF is now runtime-configurable via `RobotModel` (URDF-based). Arrays use `MaxRobotDOF` template where fixed sizes are needed.
+- `kNumHandMotors = 10` (10-DOF hand motors, UR5e-specific)
 - `kNumFingertips = 4`
 - `kSensorValuesPerFingertip = 11` (8 barometer + 3 ToF)
 - `kNumHandSensors = 44` (4 fingertips × 11 values)
@@ -1160,7 +1162,7 @@ ros2 doctor                        # 시스템 전체 진단
 
 ### Python Tool Guidelines (from python-performance-optimization)
 
-`ur5e_tools/` Python 코드 작성 시:
+`rtc_tools/` Python 코드 작성 시:
 
 - **프로파일링 먼저**: `cProfile` / `timeit`으로 병목 확인 후 최적화
 - **GUI (PyQt5)**: 메인 스레드에서만 UI 업데이트, ROS2 콜백은 별도 스레드
