@@ -1,5 +1,5 @@
-# hand_udp.launch.py — HandUdpNode 런치
-# Request-response polling 기반 통합 핸드 UDP 노드
+# hand.launch.py — Hand driver launch for UR5e bringup
+# Copied from ur5e_hand_udp/launch/hand_udp.launch.py with updated package names.
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -27,13 +27,13 @@ def generate_launch_description():
     )
 
     hand_config = PathJoinSubstitution([
-        FindPackageShare('ur5e_hand_udp'),
+        FindPackageShare('ur5e_hand_driver'),
         'config',
         'hand_udp_node.yaml',
     ])
 
     hand_udp_node = Node(
-        package='ur5e_hand_udp',
+        package='ur5e_hand_driver',
         executable='hand_udp_node',
         name='hand_udp_node',
         output='screen',

@@ -6,8 +6,6 @@
 namespace ur5e_bringup
 {
 
-using namespace rtc;
-
 DemoJointController::DemoJointController(std::string_view urdf_path)
 : DemoJointController(urdf_path, Gains{}) {}
 

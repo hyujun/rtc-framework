@@ -40,12 +40,12 @@ namespace ur5e_bringup
 //   data[6..15] : hand motor targets (rad), optional — ignored if size < 16
 //
 // Gains layout for UpdateGainsFromMsg: [robot_kp×6, hand_kp×10] = 16 values
-class DemoJointController final : public rtc::RTControllerInterface {
+class DemoJointController final : public RTControllerInterface {
 public:
   struct Gains
   {
-    std::array<double, rtc::kNumRobotJoints> robot_kp{{120.0, 120.0, 100.0, 80.0, 80.0, 80.0}};
-    std::array<float, rtc::kNumHandMotors>   hand_kp{{
+    std::array<double, kNumRobotJoints> robot_kp{{120.0, 120.0, 100.0, 80.0, 80.0, 80.0}};
+    std::array<float, kNumHandMotors>   hand_kp{{
       50.0f, 50.0f, 50.0f, 50.0f, 50.0f,
       50.0f, 50.0f, 50.0f, 50.0f, 50.0f}};
   };
@@ -57,10 +57,10 @@ public:
     const ControllerState & state) noexcept override;
 
   void SetRobotTarget(
-    std::span<const double, rtc::kNumRobotJoints> target) noexcept override;
+    std::span<const double, kNumRobotJoints> target) noexcept override;
 
   void SetHandTarget(
-    std::span<const float, rtc::kNumHandMotors> target) noexcept override;
+    std::span<const float, kNumHandMotors> target) noexcept override;
 
   void InitializeHoldPosition(
     const ControllerState & state) noexcept override;
@@ -82,8 +82,8 @@ public:
 
 private:
   Gains gains_;
-  std::array<double, rtc::kNumRobotJoints> robot_target_{};
-  std::array<float, rtc::kNumHandMotors>   hand_target_{};
+  std::array<double, kNumRobotJoints> robot_target_{};
+  std::array<float, kNumHandMotors>   hand_target_{};
 
   pinocchio::Model      model_;
   pinocchio::Data       data_;
@@ -94,13 +94,13 @@ private:
 
   // Clamps each robot command to [-kMaxJointVelocity, +kMaxJointVelocity].
   static constexpr double kMaxJointVelocity = 2.0;   // rad/s
-  [[nodiscard]] static std::array<double, rtc::kNumRobotJoints> ClampRobotCommands(
-    std::span<const double, rtc::kNumRobotJoints> commands) noexcept;
+  [[nodiscard]] static std::array<double, kNumRobotJoints> ClampRobotCommands(
+    std::span<const double, kNumRobotJoints> commands) noexcept;
 
   // Clamps each hand command to [-kMaxHandVelocity, +kMaxHandVelocity].
   static constexpr float kMaxHandVelocity = 1.0f;    // rad/s
-  [[nodiscard]] static std::array<float, rtc::kNumHandMotors> ClampHandCommands(
-    std::span<const float, rtc::kNumHandMotors> commands) noexcept;
+  [[nodiscard]] static std::array<float, kNumHandMotors> ClampHandCommands(
+    std::span<const float, kNumHandMotors> commands) noexcept;
 };
 
 }  // namespace ur5e_bringup

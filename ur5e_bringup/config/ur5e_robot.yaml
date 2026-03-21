@@ -1,65 +1,45 @@
-# ur5e_rt_controller.yaml — v5.8.0
-# ROS2 Humble / Jazzy 호환 플랫 파라미터 구조
-#
-# 주의: 코드(DeclareAndLoadParameters)가 플랫 파라미터만 읽습니다.
-#       네스트 구조(estop: / logging:)를 사용하면 파라미터가 무시됩니다.
+# ur5e_robot.yaml — UR5e-specific robot parameters
+# Extracted from ur5e_rt_controller.yaml for the ur5e_bringup package.
 /**:
   ros__parameters:
-    # ── 제어 주기 ─────────────────────────────────────────────────────────────
-    control_rate: 500.0              # Hz — 타이머 주기 = 1e6/rate µs
+    # ── Control rate ──────────────────────────────────────────────────────────
+    control_rate: 500.0              # Hz
 
-    # ── 디바이스 활성화 (글로벌 기본값) ─────────────────────────────────────────
-    enable_ur5e: true              # UR5e 로봇 암 통신 활성화
-    enable_hand: false             # 핸드 통신 활성화 (기본: 비활성)
-    # 참고: use_fake_hand는 launch argument로만 전달 (YAML에 미포함)
-    #       코드에서 declare_parameter("use_fake_hand", false)로 기본값 선언
+    # ── Device activation (global defaults) ───────────────────────────────────
+    enable_ur5e: true
+    enable_hand: false
 
-    # ── 시작 컨트롤러 ─────────────────────────────────────────────────────────
-    # 레지스트리 키: p_controller(0), joint_pd_controller(1),
-    #               clik_controller(2), operational_space_controller(3),
-    #               ur5e_hand_controller(4)
-    initial_controller: "ur5e_hand_controller"
+    # ── Initial controller ────────────────────────────────────────────────────
+    initial_controller: "demo_joint_controller"
 
-    # ── 초기화 타임아웃 ───────────────────────────────────────────────────────
-    init_timeout_sec: 30.0           # 로봇/타겟 데이터 미수신 시 E-STOP + 셧다운 (초)
-                                     # fake_hardware 시 UR driver 스타트업에 시간이 걸리므로 충분히 설정
+    # ── Initialization timeout ────────────────────────────────────────────────
+    init_timeout_sec: 30.0
 
-    # ── Auto-hold position ─────────────────────────────────────────────────
-    auto_hold_position: true         # 외부 goal 미입력 시 현재 위치를 자동 목표로 설정
-                                     # true: state 수신 즉시 현재 위치 유지 (권장)
-                                     # false: 기존 동작 (target 미수신 시 init_timeout으로 종료)
+    # ── Auto-hold position ────────────────────────────────────────────────────
+    auto_hold_position: true
 
-    # ── JointCommand 발행 (MuJoCo / 외부 시뮬레이터 연동) ──────────────────────
-    # ur5e_msgs/JointCommand 메시지를 발행하는 토픽.
-    # MuJoCo의 robot_topics.command_topic과 일치해야 합니다.
-    # 빈 문자열이면 비활성화 (실제 로봇은 ros2_control 토픽만 사용).
+    # ── JointCommand topic (MuJoCo / external simulator) ──────────────────────
     joint_command_topic: "/ur5e/joint_command"
 
-    # ── 핸드 시뮬레이션 (MuJoCo fake response 연동) ────────────────────────────
-    # true 시 UDP HandController 대신 ROS 토픽으로 핸드 통신 (시뮬레이션 전용)
-    # MuJoCo의 fake_hand_response와 토픽명이 일치해야 합니다
+    # ── Hand simulation (MuJoCo fake response) ───────────────────────────────
     hand_sim_enabled: false
     hand_command_topic: "/hand/command"
     hand_state_topic: "/hand/joint_states"
 
-    # ── E-STOP 설정 (플랫 파라미터 — 네스트 금지) ─────────────────────────────
-    enable_estop: true               # E-STOP 타임아웃 모니터링 활성화
-    robot_timeout_ms: 100.0          # /joint_states 갭 초과 시 E-STOP (ms)
-    hand_timeout_ms: 200.0           # /hand/joint_states 갭 초과 시 E-STOP (ms)
-                                     # 핸드 미연결 환경: 0.0 으로 비활성화
+    # ── E-STOP ────────────────────────────────────────────────────────────────
+    enable_estop: true
+    robot_timeout_ms: 100.0
+    hand_timeout_ms: 200.0
 
-    # ── 로깅 설정 (플랫 파라미터 — 네스트 금지) ───────────────────────────────
-    enable_logging: true             # CSV 로깅 전체 활성화
-    enable_timing_log: true          # timing_log CSV (타이밍/jitter)
-    enable_robot_log: true           # robot_log CSV (관절 위치/속도)
-    enable_hand_log: true            # hand_log CSV (핸드 모터/센서) — 핸드 미연결 시 false
-    log_dir: ""                      # 세션 디렉토리 — launch 파일이 YYMMDD_HHMM 경로 설정
-                                     # 빈 문자열: UR5E_SESSION_DIR 환경변수 또는 자체 세션 생성
-    max_log_sessions: 10             # 최대 보관 세션 폴더 수 (YYMMDD_HHMM 단위)
+    # ── Logging ───────────────────────────────────────────────────────────────
+    enable_logging: true
+    enable_timing_log: true
+    enable_robot_log: true
+    enable_hand_log: true
+    log_dir: ""
+    max_log_sessions: 10
 
-    # ── 조인트/모터/핑거팁 이름 (v5.14.0 named messaging) ─────────────────────
-    # URDF active joint과 비교 검증. 불일치 시 에러.
-    # 비어있으면 URDF에서 자동 추출하여 사용.
+    # ── Joint names ───────────────────────────────────────────────────────────
     robot_joint_names:
       - "shoulder_pan_joint"
       - "shoulder_lift_joint"
@@ -68,21 +48,17 @@
       - "wrist_2_joint"
       - "wrist_3_joint"
 
-    # ── 관절 한계 ─────────────────────────────────────────────────────────────
-    # 정보 목적 — 실제 클램핑은 각 컨트롤러 내부의 kMaxJointVelocity에서 수행
+    # ── Joint limits ──────────────────────────────────────────────────────────
     joint_limits:
-      max_velocity: 2.0              # rad/s
-      max_acceleration: 5.0          # rad/s² (정보 목적; 코드에서 강제하지 않음)
+      max_velocity: 2.0
+      max_acceleration: 5.0
       position_limits:
-        joint_0: [-6.28, 6.28]       # Base
-        joint_1: [-6.28, 6.28]       # Shoulder
-        joint_2: [-3.14, 3.14]       # Elbow (더 좁은 범위)
-        joint_3: [-6.28, 6.28]       # Wrist 1
-        joint_4: [-6.28, 6.28]       # Wrist 2
-        joint_5: [-6.28, 6.28]       # Wrist 3
+        joint_0: [-6.28, 6.28]
+        joint_1: [-6.28, 6.28]
+        joint_2: [-3.14, 3.14]
+        joint_3: [-6.28, 6.28]
+        joint_4: [-6.28, 6.28]
+        joint_5: [-6.28, 6.28]
 
-    # ── Status Monitor 통합 (v5.8.0) ─────────────────────────────────────────
-    # true 시 UR5eStatusMonitor가 동일 노드에서 10Hz로 실행.
-    # status_monitor.* 파라미터는 ur5e_status_monitor 패키지의 YAML에서 로드.
-    # 실제 로봇 사용 시 true 권장, 시뮬레이션에서는 false (UR 드라이버 토픽 없음)
+    # ── Status Monitor ────────────────────────────────────────────────────────
     enable_status_monitor: false
