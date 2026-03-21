@@ -195,32 +195,35 @@ struct MyCodec {
 - 선택적 상태 변경 콜백 지원
 - 할당 없는 송신 경로
 
-| 메서드 | 설명 |
-|--------|------|
-| `StartRecv()` | 전송 열기 + jthread 수신 루프 시작 |
-| `Stop()` | 수신 루프 중지 + 전송 닫기 |
-| `Send(SendPacket&)` | 할당 없는 패킷 송신 (`noexcept`) |
-| `GetLatestState()` | 최신 디코딩 상태 스냅샷 (mutex 보호) |
-| `SetCallback(fn)` | 상태 변경 콜백 등록 |
-| `recv_count()` | 수신 패킷 수 (atomic) |
-| `send_count()` | 송신 패킷 수 (atomic) |
+| 메서드 | 시그니처 | 설명 |
+|--------|---------|------|
+| `StartRecv()` | `[[nodiscard]] bool StartRecv()` | 전송 열기 + jthread 수신 루프 시작 |
+| `Stop()` | `void Stop() noexcept` | 수신 루프 중지 + 전송 닫기 |
+| `Send()` | `[[nodiscard]] bool Send(const SendPacket&) noexcept` | 할당 없는 패킷 송신 (스택 배열 사용) |
+| `GetLatestState()` | `[[nodiscard]] State GetLatestState() const` | 최신 디코딩 상태 스냅샷 (mutex 보호) |
+| `SetCallback()` | `void SetCallback(StateCallback cb) noexcept` | 상태 변경 콜백 등록 |
+| `IsRunning()` | `[[nodiscard]] bool IsRunning() const noexcept` | 수신 루프 실행 상태 (atomic) |
+| `recv_count()` | `[[nodiscard]] size_t recv_count() const noexcept` | 수신 패킷 수 (atomic, relaxed) |
+| `send_count()` | `[[nodiscard]] size_t send_count() const noexcept` | 송신 패킷 수 (atomic, relaxed) |
+| `transport()` | `TransportInterface* transport() const noexcept` | 하위 전송 계층 직접 접근 |
 
 ```cpp
 auto transport = std::make_unique<UdpTransport>(config);
 Transceiver<MyCodec> xcvr(std::move(transport), kUdpRecvConfig);
 
 xcvr.SetCallback([](const MyCodec::State& state) {
-    // 새 데이터 수신 시 호출
+    // 새 데이터 수신 시 호출 (data_mutex_ 보유 중 — 빠르게 반환해야 함)
 });
 
 xcvr.StartRecv();  // jthread 시작 (SCHED_FIFO, Core 5)
 
 // 송신
 MyCodec::SendPacket cmd{};
-xcvr.Send(cmd);  // RT-safe
+xcvr.Send(cmd);  // RT-safe, 스택 배열로 인코딩
 
 // 최신 상태 조회
 auto state = xcvr.GetLatestState();
+bool alive = xcvr.IsRunning();
 ```
 
 ---
@@ -237,6 +240,32 @@ auto state = xcvr.GetLatestState();
 | 스레드 이름 | `udp_recv` |
 
 > `Transceiver` 생성자에서 `ThreadConfig`를 지정하여 커스텀 스레드 레이아웃 적용이 가능합니다.
+
+### 수신 루프 상세 (`RecvLoop`)
+
+```
+while (!stop_requested):
+  1. transport_->Recv(buffer)     ← 커널 블로킹 (SO_RCVTIMEO=100ms)
+  2. 패킷 크기 검증               ← sizeof(RecvPacket) 미만 시 무시
+  3. Codec::Decode(buffer, state)  ← 디코딩 실패 시 무시
+  4. lock_guard(data_mutex_)       ← latest_state_ 갱신
+  5. callback_(state)              ← 콜백 호출 (mutex 보유 중)
+  6. recv_count_++                 ← atomic (relaxed)
+```
+
+**핵심 특성:**
+- 커널 소켓 타임아웃으로 `Stop()` 지연 최대 100 ms
+- 수신 버퍼에 +64 바이트 여유 공간 (오버사이즈 데이터그램 감지)
+- 디코딩 실패 시 자동 무시 (에러 콜백 없음)
+- `SetCallback()`은 `StartRecv()` 전에 호출해야 안전
+
+### 메모리 순서 보장
+
+| 원자적 변수 | 쓰기 순서 | 읽기 순서 | 용도 |
+|------------|----------|----------|------|
+| `running_` | `release` | `acquire` | 셧다운 동기화 |
+| `recv_count_` | `relaxed` | `relaxed` | 통계 (동기화 불필요) |
+| `send_count_` | `relaxed` | `relaxed` | 통계 (동기화 불필요) |
 
 ---
 
