@@ -1,14 +1,7 @@
 // ── Includes: project header first, then ROS2, then C++ stdlib ──────────────
 #include "rtc_controller_manager/rt_controller_node.hpp"
 
-#include "rtc_controllers/direct/joint_pd_controller.hpp"
-#include "rtc_controllers/direct/operational_space_controller.hpp"
-#include "rtc_controllers/indirect/p_controller.hpp"
-#include "rtc_controllers/indirect/clik_controller.hpp"
-// Moved to ur5e_bringup — register via plugin system
-// #include "rtc_controllers/indirect/demo_joint_controller.hpp"
-// Moved to ur5e_bringup — register via plugin system
-// #include "rtc_controllers/indirect/demo_task_controller.hpp"
+#include "rtc_controller_interface/controller_registry.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rtc_base/logging/session_dir.hpp>
@@ -36,68 +29,13 @@ namespace urtc = rtc;
 // ── Controller registry ──────────────────────────────────────────────────────
 //
 // To add a new controller:
-//   1. Create include/rtc_controllers/my_controller.hpp
-//      (inherit RTControllerInterface, implement all pure virtuals + LoadConfig
-//       + UpdateGainsFromMsg)
-//   2. Create config/controllers/my_controller.yaml
-//   3. Add one #include line above and one entry to MakeControllerEntries() below.
+//   1. Implement RTControllerInterface in your package
+//   2. Create a config/controllers/<subdir>/<key>.yaml
+//   3. Use RTC_REGISTER_CONTROLLER() macro in a .cpp file
+//   4. Link the final executable against your library
 //
-// No other changes to this file are required.
+// See rtc_controllers/src/controller_registration.cpp for built-in examples.
 // ─────────────────────────────────────────────────────────────────────────────
-namespace
-{
-struct ControllerEntry
-{
-  // config_key: YAML filename stem (e.g. "pd_controller" →
-  //   config/controllers/<config_subdir>/pd_controller.yaml)
-  // config_subdir: "direct/" for torque controllers, "indirect/" for position controllers
-  std::string_view config_key;
-  std::string_view config_subdir;
-  std::function<std::unique_ptr<urtc::RTControllerInterface>(const std::string &)> factory;
-};
-
-std::vector<ControllerEntry> MakeControllerEntries()
-{
-  return {
-    {
-      "p_controller", "indirect/",
-      [](const std::string & p) {return std::make_unique<urtc::PController>(p);}
-    },
-    {
-      "joint_pd_controller", "direct/",
-      [](const std::string & p) {return std::make_unique<urtc::JointPDController>(p);}
-    },
-    {
-      "clik_controller", "indirect/",
-      [](const std::string & p) {
-        return std::make_unique<urtc::ClikController>(p, urtc::ClikController::Gains{});
-      }
-    },
-    {
-      "operational_space_controller", "direct/",
-      [](const std::string & p) {
-        return std::make_unique<urtc::OperationalSpaceController>(
-          p, urtc::OperationalSpaceController::Gains{});
-      }
-    },
-    // Moved to ur5e_bringup — register via plugin system
-    // {
-    //   "demo_joint_controller", "indirect/",
-    //   [](const std::string & p) {
-    //     return std::make_unique<urtc::DemoJointController>(p);
-    //   }
-    // },
-    // {
-    //   "demo_task_controller", "indirect/",
-    //   [](const std::string & p) {
-    //     return std::make_unique<urtc::DemoTaskController>(
-    //       p, urtc::DemoTaskController::Gains{});
-    //   }
-    // },
-    // ── Add new controllers here ─────────────────────────────────────────────
-  };
-}
-}  // namespace
 
 // ── Constructor / destructor ──────────────────────────────────────────────────
 RtControllerNode::RtControllerNode()
@@ -444,6 +382,18 @@ void RtControllerNode::DeclareAndLoadParameters()
     cfg.num_fingertips = static_cast<int>(
         get_parameter("ft_inferencer.num_fingertips").as_int());
     cfg.model_paths = get_parameter("ft_inferencer.model_paths").as_string_array();
+
+    // Resolve relative model paths against ur5e_hand_driver package's models/ directory
+    {
+      const std::string models_dir =
+          ament_index_cpp::get_package_share_directory("ur5e_hand_driver") + "/models/";
+      for (auto& p : cfg.model_paths) {
+        if (!p.empty() && p[0] != '/') {
+          p = models_dir + p;
+        }
+      }
+    }
+
     cfg.calibration_enabled = get_parameter("ft_inferencer.calibration_enabled").as_bool();
     cfg.calibration_samples = static_cast<int>(
         get_parameter("ft_inferencer.calibration_samples").as_int());
@@ -601,13 +551,6 @@ void RtControllerNode::DeclareAndLoadParameters()
     RCLCPP_WARN(get_logger(), "Could not resolve urdf path: %s", e.what());
   }
 
-  std::string config_dir;
-  try {
-    config_dir = ament_index_cpp::get_package_share_directory("rtc_controller_manager") +
-      "/config/controllers/";
-  } catch (...) {
-  }
-
   // ── Joint name loading & URDF validation (v5.14.0) ─────────────────────
   LoadAndValidateJointNames();
 
@@ -615,32 +558,34 @@ void RtControllerNode::DeclareAndLoadParameters()
   BuildHandStateIndexMap(hand_motor_names_);
 
   // ── Instantiate and configure all registered controllers ─────────────────
-  // Each factory constructs the controller with default gains, then
-  // LoadConfig() reads per-controller overrides from its YAML file.
+  // Controllers are registered via RTC_REGISTER_CONTROLLER() macro at static
+  // init time.  Each factory constructs the controller with default gains,
+  // then LoadConfig() reads per-controller overrides from its YAML file.
   std::unordered_map<std::string, int> name_to_idx;
-  const auto entries = MakeControllerEntries();
+  const auto & entries = urtc::ControllerRegistry::Instance().GetEntries();
 
   for (std::size_t i = 0; i < entries.size(); ++i) {
     const auto & entry = entries[i];
     auto ctrl = entry.factory(urdf_path);
 
-    if (!config_dir.empty()) {
-      try {
-        const std::string yaml_path = config_dir + std::string(entry.config_subdir) +
-        std::string(entry.config_key) + ".yaml";
-        const YAML::Node file_node = YAML::LoadFile(yaml_path);
-        ctrl->LoadConfig(file_node[std::string(entry.config_key)]);
-      } catch (const std::exception & e) {
-        RCLCPP_WARN(get_logger(),
-          "Config load failed for '%s' (%s) — using defaults",
-          ctrl->Name().data(), e.what());
-      }
+    // Config path: <config_package>/config/controllers/<subdir>/<key>.yaml
+    try {
+      const std::string pkg_dir =
+        ament_index_cpp::get_package_share_directory(entry.config_package);
+      const std::string yaml_path = pkg_dir + "/config/controllers/" +
+        entry.config_subdir + entry.config_key + ".yaml";
+      const YAML::Node file_node = YAML::LoadFile(yaml_path);
+      ctrl->LoadConfig(file_node[entry.config_key]);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(get_logger(),
+        "Config load failed for '%s' (pkg=%s, %s) — using defaults",
+        ctrl->Name().data(), entry.config_package.c_str(), e.what());
     }
 
     // Register both the class name (e.g. "PDController") and the config-key
     // alias (e.g. "pd_controller") so either form works as initial_controller.
     name_to_idx[std::string(ctrl->Name())] = static_cast<int>(i);
-    name_to_idx[std::string(entry.config_key)] = static_cast<int>(i);
+    name_to_idx[entry.config_key] = static_cast<int>(i);
 
     controllers_.push_back(std::move(ctrl));
   }

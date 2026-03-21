@@ -243,8 +243,8 @@ def generate_launch_description():
 
     # ── RT controller node ─────────────────────────────────────────────────────
     rt_controller_node = Node(
-        package='rtc_controller_manager',
-        executable='rt_controller',
+        package='ur5e_bringup',
+        executable='ur5e_rt_controller',
         name='rt_controller',
         output='screen',
         parameters=[

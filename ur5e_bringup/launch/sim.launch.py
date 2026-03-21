@@ -244,8 +244,8 @@ def launch_setup(context, *args, **kwargs):
 
     # ── Node 2: Custom Controller ─────────────────────────────────────────────
     rt_controller_node = Node(
-        package='rtc_controller_manager',
-        executable='rt_controller',
+        package='ur5e_bringup',
+        executable='ur5e_rt_controller',
         name='rt_controller',
         output='screen',
         emulate_tty=True,

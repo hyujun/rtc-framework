@@ -27,6 +27,7 @@ find_package(yaml-cpp REQUIRED)
 # ── Library ───────────────────────────────────────────────────────────────────
 add_library(rtc_controller_interface SHARED
   src/rt_controller_interface.cpp
+  src/controller_registry.cpp
 )
 target_include_directories(rtc_controller_interface PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

@@ -16,7 +16,8 @@
   <depend>yaml-cpp</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
-  <exec_depend>rtc_controller_manager</exec_depend>
+  <depend>rtc_controller_manager</depend>
+  <exec_depend>rclpy</exec_depend>
   <exec_depend>rtc_scripts</exec_depend>
   <exec_depend>ur5e_description</exec_depend>
   <exec_depend>ur5e_hand_driver</exec_depend>

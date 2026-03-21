@@ -31,11 +31,13 @@ set(Python3_FIND_VIRTUALENV STANDARD)
 find_package(Python3 COMPONENTS Interpreter Development NumPy)
 
 find_package(pinocchio REQUIRED)
+find_package(rtc_controller_manager REQUIRED)
 
 # ── Static library: demo controllers ──────────────────────────────────────────
 add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/demo_joint_controller.cpp
   src/controllers/demo_task_controller.cpp
+  src/controllers/controller_registration.cpp
 )
 
 target_include_directories(${PROJECT_NAME}_demo_controllers PUBLIC
@@ -58,6 +60,20 @@ target_link_libraries(${PROJECT_NAME}_demo_controllers
   yaml-cpp
 )
 
+# ── UR5e-specific executable (links built-in + demo controllers) ──────────────
+add_executable(ur5e_rt_controller
+  src/ur5e_rt_controller_main.cpp
+)
+target_link_libraries(ur5e_rt_controller
+  ${PROJECT_NAME}_demo_controllers
+)
+ament_target_dependencies(ur5e_rt_controller
+  rclcpp
+  rtc_base
+  rtc_controller_manager
+  rtc_controllers
+)
+
 # ── Install headers ───────────────────────────────────────────────────────────
 install(
   DIRECTORY include/
@@ -73,6 +89,11 @@ install(
   RUNTIME DESTINATION bin
 )
 
+# ── Install executable ────────────────────────────────────────────────────────
+install(TARGETS ur5e_rt_controller
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 # ── Install config ────────────────────────────────────────────────────────────
 install(
   DIRECTORY config/
@@ -83,6 +104,19 @@ install(
 install(
   DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
+)
+
+# ── Install Python scripts ───────────────────────────────────────────────────
+install(
+  PROGRAMS scripts/demo_controller_gui.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME demo_controller_gui
+)
+
+install(
+  PROGRAMS scripts/motion_editor_gui.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME motion_editor_gui
 )
 
 # ── Export ─────────────────────────────────────────────────────────────────────

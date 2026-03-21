@@ -31,6 +31,7 @@ add_library(rtc_controllers STATIC
   src/controllers/indirect/clik_controller.cpp
   src/controllers/direct/joint_pd_controller.cpp
   src/controllers/direct/operational_space_controller.cpp
+  src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

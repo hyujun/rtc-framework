@@ -15,7 +15,7 @@
   <depend>rtc_communication</depend>
   <depend>rtc_inference</depend>
   <depend>rtc_msgs</depend>
-
+  <depend>ament_index_cpp</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

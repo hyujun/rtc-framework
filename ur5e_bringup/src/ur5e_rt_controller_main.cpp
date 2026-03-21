@@ -1,3 +1,16 @@
+// ── UR5e-specific entry point ─────────────────────────────────────────────────
+//
+// Based on rtc_controller_manager/src/rt_controller_main.cpp.
+// Additionally force-links the ur5e_bringup demo controllers so they appear
+// in the ControllerRegistry alongside the 4 built-in controllers.
+//
+// Threading model (v5.16.0):
+//   rt_loop          Core 2  SCHED_FIFO 90   clock_nanosleep 500Hz + 50Hz E-STOP
+//   publish_thread   Core 5  SCHED_OTHER -3   SPSC drain → all publish() calls
+//   sensor_executor  Core 3  SCHED_FIFO 70   /joint_states, /target, /hand subs
+//   log_executor     Core 4  SCHED_OTHER -5   SpscLogBuffer → CSV drain
+//   aux_executor     Core 5  SCHED_OTHER  0   E-STOP status publisher
+
 // ── Includes: project header first, then system, then C++ stdlib ─────────────
 #include "rtc_controller_manager/rt_controller_node.hpp"
 
@@ -12,13 +25,16 @@
 
 namespace urtc = rtc;
 
-// Force-link built-in controller registrations from the static library
+// Force-link controller registrations from static libraries
 namespace rtc { void ForceBuiltinControllerRegistration(); }
+namespace ur5e_bringup { void ForceDemoControllerRegistration(); }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 int main(int argc, char ** argv)
 {
   rtc::ForceBuiltinControllerRegistration();
+  ur5e_bringup::ForceDemoControllerRegistration();
+
   // Fix 7: mlockall BEFORE rclcpp::init.
   // MCL_CURRENT locks pages already mapped; MCL_FUTURE ensures every page
   // allocated afterwards (including DDS/RMW heaps) is also locked.

@@ -23,6 +23,7 @@ find_package(rtc_base REQUIRED)
 find_package(rtc_communication REQUIRED)
 find_package(rtc_inference REQUIRED)
 find_package(rtc_msgs REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 
 # ── Unified node: HandController (request-response polling) ──────────────────
 # Note: HAS_ONNXRUNTIME, ONNX includes, and link libraries are propagated
@@ -38,6 +39,7 @@ ament_target_dependencies(hand_udp_node
   rtc_communication
   rtc_inference
   rtc_msgs
+  ament_index_cpp
 )
 
 # ── Install ────────────────────────────────────────────────────────────────────

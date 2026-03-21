@@ -83,6 +83,7 @@ install(TARGETS rt_controller
 )
 
 install(TARGETS rtc_controller_manager_lib
+  EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
@@ -95,5 +96,25 @@ install(DIRECTORY include/
 install(DIRECTORY config/
   DESTINATION share/${PROJECT_NAME}/config
 )
+
+# ── Export library for external bringup packages ─────────────────────────────
+ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
+ament_export_dependencies(
+  rclcpp
+  sensor_msgs
+  std_msgs
+  ament_index_cpp
+  rtc_controller_interface
+  rtc_controllers
+  rtc_base
+  rtc_communication
+  rtc_status_monitor
+  rtc_msgs
+  rtc_inference
+  ur5e_hand_driver
+  pinocchio
+  yaml-cpp
+)
+ament_export_include_directories(include)
 
 ament_package()

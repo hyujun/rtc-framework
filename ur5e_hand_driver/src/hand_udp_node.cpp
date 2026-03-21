@@ -9,6 +9,8 @@
 #include <rtc_msgs/msg/hand_force_torque_state.hpp>
 #include <rtc_msgs/msg/fingertip_force_torque.hpp>
 
+#include <ament_index_cpp/get_package_share_directory.hpp>
+
 #include <sys/mman.h>  // mlockall
 
 #include <array>
@@ -101,6 +103,18 @@ class HandUdpNode : public rclcpp::Node {
     ft_config.history_length = static_cast<int>(
         get_parameter("ft_inferencer.history_length").as_int());
     ft_config.model_paths = get_parameter("ft_inferencer.model_paths").as_string_array();
+
+    // Resolve relative model paths against ur5e_hand_driver package's models/ directory
+    {
+      const std::string models_dir =
+          ament_index_cpp::get_package_share_directory("ur5e_hand_driver") + "/models/";
+      for (auto& p : ft_config.model_paths) {
+        if (!p.empty() && p[0] != '/') {
+          p = models_dir + p;
+        }
+      }
+    }
+
     ft_config.calibration_enabled = get_parameter("ft_inferencer.calibration_enabled").as_bool();
     ft_config.calibration_samples = static_cast<int>(
         get_parameter("ft_inferencer.calibration_samples").as_int());
