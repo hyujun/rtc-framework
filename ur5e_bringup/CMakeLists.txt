@@ -61,11 +61,15 @@ target_link_libraries(${PROJECT_NAME}_demo_controllers
 )
 
 # ── UR5e-specific executable (links built-in + demo controllers) ──────────────
+# --whole-archive prevents the linker from stripping static-init registration
+# TUs, eliminating the need for ForceDemoControllerRegistration().
 add_executable(ur5e_rt_controller
   src/ur5e_rt_controller_main.cpp
 )
 target_link_libraries(ur5e_rt_controller
+  -Wl,--whole-archive
   ${PROJECT_NAME}_demo_controllers
+  -Wl,--no-whole-archive
 )
 ament_target_dependencies(ur5e_rt_controller
   rclcpp

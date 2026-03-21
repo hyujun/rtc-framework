@@ -40,6 +40,7 @@ find_package(rtc_msgs REQUIRED)
 # ── Static library ────────────────────────────────────────────────────────────
 add_library(rtc_controller_manager_lib STATIC
   src/rt_controller_node.cpp
+  src/rt_controller_main_impl.cpp
 )
 target_include_directories(rtc_controller_manager_lib PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
