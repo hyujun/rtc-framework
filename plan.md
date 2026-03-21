@@ -7,6 +7,7 @@
 3. **0.5ms (2kHz) RT loop 지원** — clock_nanosleep 기반, configurable sampling time (0.5ms ~ 10ms)
 4. **관심사 분리** — Interface / Implementation / Manager / Communication 명확 분리
 5. **`rtc_` namespace** — 범용 prefix, 로봇별 패키지만 로봇 이름 사용
+6. **Inference 분리** — RT-safe 추론 엔진을 독립 패키지로 분리, 센서별 전처리는 드라이버에 잔류
 
 ---
 
@@ -18,6 +19,7 @@
 4. **통신 계층 분산** — UDP 추상화는 ur5e_rt_base에, hand UDP는 별도 패키지, DDS config는 ur5e_rt_controller에 분산
 5. **Bringup 분산** — launch 파일이 각 패키지에 흩어져 있고, 통합 launch 로직이 없음
 6. **500Hz 고정** — sampling time이 코드에 묶여 있어 더 높은 주파수 대응 불가
+7. **Inference 결합** — ONNX Runtime 추론 코드가 `ur5e_hand_udp`에 직접 임베딩. RT-safe 추론 래퍼를 다른 센서/모델에 재사용 불가
 
 ---
 
@@ -33,6 +35,7 @@ ur5e-rt-controller/                      # (repo 이름은 유지, 내부만 범
 ├── rtc_controllers/                     # [신규] Controller 구현체들 (범용)
 ├── rtc_controller_manager/              # [신규] RT loop + controller lifecycle
 ├── rtc_communication/                   # [신규] 통신 계층 (UDP 추상화)
+├── rtc_inference/                       # [신규] RT-safe 추론 엔진 (ONNX Runtime)
 ├── rtc_status_monitor/                  # [리네임] 안전 모니터링 (가변 DOF)
 ├── rtc_mujoco_sim/                      # [리네임] MuJoCo 시뮬레이션 (범용 URDF)
 ├── rtc_digital_twin/                    # [리네임] RViz2 시각화 (범용 URDF)
@@ -121,6 +124,39 @@ rt_controller_manager:
 ```
 
 Launch argument로 URDF 경로를 주입하여 어떤 로봇이든 사용 가능.
+
+### D. RT-safe Inference 엔진 분리
+
+**현재:** `FingertipFTInferencer`에 ONNX Runtime 코드가 직접 임베딩
+```cpp
+// ur5e_hand_udp/fingertip_ft_inferencer.hpp 에 모든 것이 섞여 있음:
+Ort::Env env_;                    // ← 범용 (추론 엔진)
+Ort::Session session_;            // ← 범용 (추론 엔진)
+Ort::IoBinding io_binding_;       // ← 범용 (추론 엔진)
+float input_buffer_[...];        // ← 범용 (추론 엔진)
+float prev_barometer_[...];      // ← 센서 전용 (전처리)
+float baseline_offset_[...];     // ← 센서 전용 (캘리브레이션)
+```
+
+**변경 후:** 2계층 분리
+```
+rtc_inference (범용)          ur5e_hand_driver (센서 전용)
+┌─────────────────────┐      ┌──────────────────────────────┐
+│ OnnxEngine           │      │ FingertipFTInferencer        │
+│  - Ort::Env          │◄─────│  - engine_: OnnxEngine       │
+│  - Ort::Session(s)   │ uses │  - prev_barometer_           │
+│  - IoBinding(s)      │      │  - baseline_offset_          │
+│  - input/output buf  │      │  - FIFO history management   │
+│  - Init() / Run()    │      │  - Calibration logic         │
+└─────────────────────┘      │  - Barometer preprocessing   │
+                              └──────────────────────────────┘
+```
+
+**재사용 시나리오:**
+- 다른 센서의 F/T 추론 모델
+- Contact detection 모델
+- Anomaly detection 모델
+- 향후 TensorRT/OpenVINO 백엔드 교체
 
 ---
 
@@ -282,7 +318,87 @@ rtc_communication/
 - 로봇별 프로토콜 구현은 각 로봇 드라이버 패키지에서 담당
 - **Hand UDP는 여기에 포함하지 않음** → `ur5e_hand_driver`에서 이 패키지를 depend하여 사용
 
-### 7. `rtc_status_monitor` — 리네임 (ur5e_status_monitor → rtc_status_monitor)
+### 7. `rtc_inference` — 신규 (ur5e_hand_udp에서 추론 엔진 분리)
+
+범용 RT-safe 추론 엔진. 현재 `FingertipFTInferencer`에 임베딩된 ONNX Runtime 래퍼를 일반화.
+
+```
+rtc_inference/
+├── include/rtc_inference/
+│   ├── inference_engine.hpp             # 추론 엔진 추상 인터페이스
+│   ├── onnx/
+│   │   ├── onnx_session.hpp             # RT-safe ONNX 세션 래퍼
+│   │   ├── onnx_tensor_pool.hpp         # 사전 할당 I/O 텐서 풀
+│   │   └── onnx_engine.hpp              # InferenceEngine의 ONNX 구현체
+│   └── inference_types.hpp              # 공통 타입 (InferenceResult, TensorSpec 등)
+├── src/
+│   └── onnx/
+│       ├── onnx_session.cpp
+│       └── onnx_engine.cpp
+├── package.xml
+└── CMakeLists.txt
+```
+
+**의존성:** `rtc_base`, ONNX Runtime (optional, `HAS_ONNXRUNTIME` 유지)
+
+**설계 원칙:**
+
+1. **RT-safe Inference 패턴 추출:**
+   현재 `FingertipFTInferencer`에 있는 다음 패턴을 범용화:
+   - `Init()`: non-RT 컨텍스트에서 Session 생성, 텐서 사전 할당, IoBinding, warmup
+   - `Run()`: noexcept + allocation-free 추론 (IoBinding으로 zero-copy)
+   - Stub 구현 (ONNX Runtime 미설치 시 graceful fallback)
+
+2. **추상 인터페이스:**
+   ```cpp
+   // rtc_inference/inference_engine.hpp
+   class InferenceEngine {
+    public:
+     virtual ~InferenceEngine() = default;
+
+     /// non-RT: 모델 로드, 텐서 할당, warmup
+     virtual void Init(const ModelConfig& config) = 0;
+
+     /// RT-safe: 사전 할당된 input buffer에 데이터가 채워진 상태에서 추론 실행
+     /// @return true if inference succeeded
+     [[nodiscard]] virtual bool Run() noexcept = 0;
+
+     /// 사전 할당된 input/output buffer 접근
+     virtual float* input_buffer(int model_idx = 0) noexcept = 0;
+     virtual const float* output_buffer(int model_idx = 0) const noexcept = 0;
+
+     [[nodiscard]] virtual bool is_initialized() const noexcept = 0;
+   };
+   ```
+
+3. **OnnxEngine 구현:**
+   ```cpp
+   // rtc_inference/onnx/onnx_engine.hpp
+   struct ModelConfig {
+     std::string model_path;
+     std::vector<int64_t> input_shape;   // e.g., {1, 12, 16}
+     std::vector<int64_t> output_shape;  // e.g., {1, 1, 13}
+     int intra_op_threads{1};            // RT: single-threaded 추론
+   };
+
+   class OnnxEngine : public InferenceEngine {
+     // Ort::Session, IoBinding, pre-allocated buffers
+     // 복수 모델 지원 (fingertip처럼 per-unit 모델)
+   };
+   ```
+
+4. **향후 확장:**
+   - TensorRT 백엔드 (`TensorRTEngine : InferenceEngine`)
+   - OpenVINO 백엔드
+   - 다른 센서 모델 (force estimation, contact detection, anomaly detection 등)
+
+**핵심 변경 (기존 FingertipFTInferencer 대비):**
+- ONNX 세션 관리 (`Ort::Env`, `Ort::Session`, `Ort::IoBinding`) → `rtc_inference`로 이동
+- 텐서 사전 할당 + warmup 로직 → `rtc_inference`로 이동
+- Barometer 전처리, delta 계산, FIFO history, calibration → `ur5e_hand_driver`에 잔류
+- `ur5e_hand_driver`의 `FingertipFTInferencer`는 `rtc_inference::OnnxEngine`을 내부적으로 사용
+
+### 8. `rtc_status_monitor` — 리네임 (ur5e_status_monitor → rtc_status_monitor)
 
 ```
 rtc_status_monitor/
@@ -312,9 +428,9 @@ rtc_status_monitor/
 
 UR5e 전용 URDF/MJCF/meshes. 로봇별 패키지이므로 `ur5e_` prefix 유지.
 
-### 12. `ur5e_hand_driver` — 리네임 (ur5e_hand_udp → ur5e_hand_driver)
+### 13. `ur5e_hand_driver` — 리네임 (ur5e_hand_udp → ur5e_hand_driver)
 
-UR5e 전용 end-effector 드라이버. `rtc_communication`의 UDP 추상화를 사용.
+UR5e 전용 end-effector 드라이버. `rtc_communication`의 UDP 추상화 + `rtc_inference`의 추론 엔진을 사용.
 
 ```
 ur5e_hand_driver/
@@ -323,7 +439,7 @@ ur5e_hand_driver/
 │   ├── hand_udp_codec.hpp
 │   ├── hand_controller.hpp              # ← 기존 ur5e_hand_controller도 여기로
 │   ├── hand_failure_detector.hpp
-│   └── fingertip_ft_inferencer.hpp
+│   └── fingertip_ft_inferencer.hpp      # 센서 전처리 + rtc_inference::OnnxEngine 사용
 ├── src/
 │   └── hand_udp_node.cpp
 ├── config/
@@ -331,14 +447,20 @@ ur5e_hand_driver/
 │   └── fingertip_ft_inferencer.yaml
 ├── launch/
 │   └── hand_udp.launch.py
-├── models/                              # ONNX 모델
+├── models/                              # ONNX 모델 파일
 ├── package.xml
 └── CMakeLists.txt
 ```
 
-**의존성:** `rtc_communication`, `rtc_base`, `rtc_msgs`, `rtc_controller_interface`
+**의존성:** `rtc_communication`, `rtc_inference`, `rtc_base`, `rtc_msgs`, `rtc_controller_interface`
 
-### 13. `ur5e_bringup` — 신규 (UR5e 전용 launch/config 통합)
+**핵심 변경 (inference 분리):**
+- `FingertipFTInferencer`가 직접 `Ort::Session`/`Ort::IoBinding`을 관리하지 않음
+- 대신 `rtc_inference::OnnxEngine`을 멤버로 소유하고, `Init()`에서 모델 로드 위임
+- Barometer 전처리 → FIFO history → input buffer 채우기 → `engine.Run()` → output 해석
+- Calibration (baseline offset) 로직은 그대로 `FingertipFTInferencer`에 잔류
+
+### 14. `ur5e_bringup` — 신규 (UR5e 전용 launch/config 통합)
 
 UR5e에 특화된 launch, config, RT scripts를 통합하는 패키지.
 
@@ -382,6 +504,9 @@ rtc_base (독립, header-only)
     │
     ├── rtc_communication ← rtc_base                         [범용 UDP]
     │
+    ├── rtc_inference ← rtc_base                             [범용 RT-safe 추론]
+    │                    (optional: ONNX Runtime)
+    │
     ├── rtc_controller_interface ← rtc_base, rtc_msgs        [범용 인터페이스]
     │       │
     │       └── rtc_controllers ← rtc_controller_interface    [범용 컨트롤러]
@@ -403,8 +528,8 @@ ur5e_description (독립, 로봇별)
     └── ur5e_bringup ← rtc_controller_manager, rtc_mujoco_sim,
     │                   rtc_digital_twin, ur5e_hand_driver, ur5e_description
     │
-    └── ur5e_hand_driver ← rtc_communication, rtc_base,      [UR5e 전용 드라이버]
-                            rtc_msgs, rtc_controller_interface
+    └── ur5e_hand_driver ← rtc_communication, rtc_inference,  [UR5e 전용 드라이버]
+                            rtc_base, rtc_msgs, rtc_controller_interface
 ```
 
 **다른 로봇 추가 시:**
@@ -422,27 +547,28 @@ panda_bringup/              # Panda launch/config (rtc_controller_manager 사용
 1. `rtc_msgs` 생성 — ur5e_msgs 리네임 + namespace 변경
 2. `rtc_base` 생성 — ur5e_rt_base 리네임, `kNumRobotJoints` 제거, `RobotModel` 도입, udp/ 분리
 3. `rtc_communication` 생성 — ur5e_rt_base에서 udp/ 이동
+4. `rtc_inference` 생성 — ur5e_hand_udp에서 ONNX Runtime 래퍼 추출, 범용 추론 엔진 구현
 
 ### Phase 2: Controller 패키지 분리
-4. `rtc_controller_interface` 생성 — ur5e_rt_controller에서 interface 분리, 가변 DOF 적용
-5. `rtc_controllers` 생성 — 6개 controller 구현 이동, 가변 DOF 적용
-6. `rtc_status_monitor` 생성 — ur5e_status_monitor 리네임, 가변 DOF 적용
+5. `rtc_controller_interface` 생성 — ur5e_rt_controller에서 interface 분리, 가변 DOF 적용
+6. `rtc_controllers` 생성 — 6개 controller 구현 이동, 가변 DOF 적용
+7. `rtc_status_monitor` 생성 — ur5e_status_monitor 리네임, 가변 DOF 적용
 
 ### Phase 3: Manager + 통합
-7. `rtc_controller_manager` 생성 — RT loop, node, registry 이동, `sampling_time_us` 파라미터화
-8. `rtc_mujoco_sim` 리네임 — MJCF 경로 파라미터화
-9. `rtc_digital_twin` 리네임 — robot_description topic 기반
-10. `rtc_tools` 리네임
+8. `rtc_controller_manager` 생성 — RT loop, node, registry 이동, `sampling_time_us` 파라미터화
+9. `rtc_mujoco_sim` 리네임 — MJCF 경로 파라미터화
+10. `rtc_digital_twin` 리네임 — robot_description topic 기반
+11. `rtc_tools` 리네임
 
 ### Phase 4: 로봇별 패키지
-11. `ur5e_hand_driver` 생성 — ur5e_hand_udp 리네임 + ur5e_hand_controller 이동
-12. `ur5e_bringup` 생성 — launch/config/scripts 통합
+12. `ur5e_hand_driver` 생성 — ur5e_hand_udp 리네임 + `rtc_inference` 연동 + ur5e_hand_controller 이동
+13. `ur5e_bringup` 생성 — launch/config/scripts 통합
 
 ### Phase 5: 정리
-13. 기존 `ur5e_rt_controller`, `ur5e_hand_udp`, `ur5e_rt_base`, `ur5e_status_monitor` 패키지 제거
-14. build.sh, install.sh 업데이트
-15. README.md 업데이트
-16. CI/CD 설정 업데이트
+14. 기존 `ur5e_rt_controller`, `ur5e_hand_udp`, `ur5e_rt_base`, `ur5e_status_monitor` 패키지 제거
+15. build.sh, install.sh 업데이트
+16. README.md 업데이트
+17. CI/CD 설정 업데이트
 
 ---
 
@@ -472,7 +598,9 @@ panda_bringup/              # Panda launch/config (rtc_controller_manager 사용
 | `ur5e_rt_controller/launch/ur_control.launch.py` | `ur5e_bringup/launch/robot.launch.py` |
 | `ur5e_rt_controller/scripts/*.sh` | `ur5e_bringup/scripts/` |
 | `ur5e_status_monitor/` | `rtc_status_monitor/` (namespace 변경 + 가변 DOF) |
-| `ur5e_hand_udp/` (전체) | `ur5e_hand_driver/` (리네임) |
+| `ur5e_hand_udp/.../fingertip_ft_inferencer.hpp` (ONNX 세션/텐서 부분) | `rtc_inference/` (범용 추론 엔진으로 추출) |
+| `ur5e_hand_udp/.../fingertip_ft_inferencer.hpp` (전처리/calibration 부분) | `ur5e_hand_driver/` (센서 전용 로직 잔류) |
+| `ur5e_hand_udp/` (나머지 전체) | `ur5e_hand_driver/` (리네임) |
 | `ur5e_rt_controller/.../controllers/indirect/ur5e_hand_controller` | `ur5e_hand_driver/` (UR5e 전용이므로) |
 | `ur5e_mujoco_sim/` | `rtc_mujoco_sim/` (MJCF 경로 파라미터화) |
 | `ur5e_digital_twin/` | `rtc_digital_twin/` (robot_description topic 기반) |
@@ -490,3 +618,4 @@ panda_bringup/              # Panda launch/config (rtc_controller_manager 사용
 6. **재사용성** — controller_interface를 기반으로 새 controller 추가 용이
 7. **표준 패턴** — ros2_control, franka_ros2, lbr_fri_ros2_stack과 동일한 구조
 8. **확장성** — 새 로봇, 새 end-effector, 새 통신 프로토콜 추가 시 기존 코드 수정 최소화
+9. **추론 재사용** — `rtc_inference`로 RT-safe ONNX 추론을 어떤 센서/모델에든 재사용 가능 (F/T estimation, contact detection, anomaly detection 등)
