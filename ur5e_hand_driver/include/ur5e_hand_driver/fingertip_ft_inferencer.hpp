@@ -1,19 +1,19 @@
 #ifndef UR5E_HAND_DRIVER_FINGERTIP_FT_INFERENCER_HPP_
 #define UR5E_HAND_DRIVER_FINGERTIP_FT_INFERENCER_HPP_
 
-// Per-fingertip ONNX Runtime 기반 Force/Torque 추론기.
+// Per-fingertip Force/Torque 추론기 — OnnxEngine 상속.
 //
-// 각 fingertip마다 개별 ONNX 모델을 로드하여 barometer + delta → 접촉/힘 추론.
+// 각 fingertip마다 개별 ONNX 모델을 OnnxEngine에 등록하여 접촉/힘 추론.
 //   Input:  float32[1, H, 16]  (H=history_length, barometer 8ch + barometer_delta 8ch, 정규화됨)
-//   Output: float32[1, 13]  ([contact(1), F(3), u(3), Fn(3), Fx(1), Fy(1), Fz(1)])
+//   Output: float32[1, 1, 13]  ([contact(1), F(3), u(3), Fn(3), Fx(1), Fy(1), Fz(1)])
 //
 // RT safety:
-//   - Init()에서 모든 동적 할당 수행 (non-RT 컨텍스트)
+//   - InitFT()에서 모든 동적 할당 수행 (non-RT 컨텍스트)
 //   - Infer()/FeedCalibration()는 noexcept + allocation-free
-//   - 사전 할당된 I/O 버퍼 + Ort::IoBinding으로 zero-alloc 추론
+//   - OnnxEngine의 사전 할당된 I/O 버퍼 + IoBinding으로 zero-alloc 추론
 //
 // Baseline Offset Calibration:
-//   - Init() 이후 FeedCalibration()으로 센서 baseline 자동 측정
+//   - InitFT() 이후 FeedCalibration()으로 센서 baseline 자동 측정
 //   - 정규화 공식: (raw - baseline_offset) / input_max → [-1, +1]
 
 #include <array>
@@ -23,60 +23,14 @@
 #include <string>
 #include <vector>
 
-#ifdef HAS_ONNXRUNTIME
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wshadow"
-#include <onnxruntime_cxx_api.h>
-#pragma GCC diagnostic pop
-#endif
-
 #include <rclcpp/logging.hpp>
 
 #include "rtc_base/types/types.hpp"
+#include "rtc_inference/onnx/onnx_engine.hpp"
 
 namespace rtc {
 
-#ifndef HAS_ONNXRUNTIME
-
-/// Stub implementation when ONNX Runtime is not available.
-class FingertipFTInferencer {
- public:
-  struct Config {
-    bool enabled{false};
-    int  num_fingertips{kDefaultNumFingertips};
-    int  history_length{kFTHistoryLength};
-    std::vector<std::string> model_paths;
-    // Per-fingertip 정규화 파라미터: input_max [fingertip][input_channel]
-    // input_channel: baro[0..7] + delta[0..7] = 16
-    // 정규화 공식: value / input_max → [-1, +1]
-    std::array<std::array<float, kFTInputSize>, kMaxFingertips> input_max{};
-    bool calibration_enabled{true};
-    int  calibration_samples{500};
-  };
-
-  void Init(const Config& /*config*/) {
-    RCLCPP_ERROR(rclcpp::get_logger("FT-Inferencer"),
-                 "STUB: HAS_ONNXRUNTIME not defined! "
-                 "ONNX Runtime unavailable — FT inference disabled.");
-  }
-  [[nodiscard]] bool FeedCalibration(
-      const std::array<int32_t, kMaxHandSensors>& /*sensor_data*/,
-      int /*num_fingertips*/) noexcept { return true; }
-  [[nodiscard]] FingertipFTState Infer(
-      const std::array<int32_t, kMaxHandSensors>& /*sensor_data*/,
-      int /*num_fingertips*/) noexcept { return {}; }
-  [[nodiscard]] bool is_initialized() const noexcept { return false; }
-  [[nodiscard]] bool is_calibrated() const noexcept { return false; }
-  [[nodiscard]] int  num_active_models() const noexcept { return 0; }
-  [[nodiscard]] int  calibration_count() const noexcept { return 0; }
-  [[nodiscard]] int  calibration_target() const noexcept { return 0; }
-  [[nodiscard]] std::array<std::array<float, kBarometerCount>, kMaxFingertips>
-      baseline_offset() const noexcept { return {}; }
-};
-
-#else  // HAS_ONNXRUNTIME
-
-class FingertipFTInferencer {
+class FingertipFTInferencer : public OnnxEngine {
  public:
   // ── Configuration ─────────────────────────────────────────────────────────
   struct Config {
@@ -98,7 +52,7 @@ class FingertipFTInferencer {
   };
 
   FingertipFTInferencer() = default;
-  ~FingertipFTInferencer() = default;
+  ~FingertipFTInferencer() override = default;
 
   FingertipFTInferencer(const FingertipFTInferencer&) = delete;
   FingertipFTInferencer& operator=(const FingertipFTInferencer&) = delete;
@@ -107,35 +61,26 @@ class FingertipFTInferencer {
 
   // ── Lifecycle (non-RT) ────────────────────────────────────────────────────
 
-  /// 모델 로드, Ort::Session 생성, 텐서 사전 할당, warmup 실행.
+  /// 도메인 초기화: OnnxEngine::Init(ModelConfig)를 fingertip별로 호출,
+  /// 캘리브레이션/history 상태 초기화.
   /// non-RT 컨텍스트에서만 호출. 실패 시 예외.
-  void Init(const Config& config) {
+  void InitFT(const Config& config) {
     config_ = config;
     const int n = std::min(config_.num_fingertips, kMaxFingertips);
-    num_active_ = 0;
+    finger_to_model_.fill(-1);
+
     RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                "Init: num_fingertips=%d, history_length=%d, model_paths.size=%zu, calibration=%s(%d samples)",
+                "InitFT: num_fingertips=%d, history_length=%d, model_paths.size=%zu, calibration=%s(%d samples)",
                 n, config_.history_length, config_.model_paths.size(),
                 config_.calibration_enabled ? "ON" : "OFF",
                 config_.calibration_samples);
 
-    // Ort::SessionOptions (모든 모델 공유)
-    Ort::SessionOptions session_options;
-    session_options.SetIntraOpNumThreads(1);
-    session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-    session_options.EnableCpuMemArena();
-
-    memory_info_ = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-
     for (int f = 0; f < n; ++f) {
-      auto& model = models_[static_cast<std::size_t>(f)];
-
       // 모델 경로 없으면 해당 finger 비활성
       if (f >= static_cast<int>(config_.model_paths.size()) ||
           config_.model_paths[static_cast<std::size_t>(f)].empty()) {
         RCLCPP_WARN(rclcpp::get_logger("FT-Inferencer"),
                     "finger[%d]: SKIPPED (empty path)", f);
-        model.valid = false;
         continue;
       }
 
@@ -143,123 +88,29 @@ class FingertipFTInferencer {
       RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
                   "finger[%d]: loading \"%s\"", f, path.c_str());
 
-      // Session 생성
-      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                  "finger[%d]: creating Ort::Session...", f);
-      model.session = std::make_unique<Ort::Session>(
-          env_, path.c_str(), session_options);
-      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                  "finger[%d]: Ort::Session created OK", f);
+      // OnnxEngine에 모델 등록
+      ModelConfig mc;
+      mc.model_path = path;
+      mc.input_shape = {1, static_cast<int64_t>(config_.history_length),
+                        static_cast<int64_t>(kFTInputSize)};
+      mc.output_shape = {1, 1, static_cast<int64_t>(kFTValuesPerFingertip)};
+      mc.intra_op_threads = 1;
 
-      // Input/Output 이름 쿼리
-      // ORT_API_VERSION >= 13 (v1.13+): GetInputNameAllocated 사용
-      // 이전 버전 (Ubuntu 22.04 apt v1.11): GetInputName 사용
-      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                  "finger[%d]: querying input/output names...", f);
-#if ORT_API_VERSION >= 13
-      auto input_name_alloc = model.session->GetInputNameAllocated(0, allocator_);
-      auto output_name_alloc = model.session->GetOutputNameAllocated(0, allocator_);
-      model.input_name = input_name_alloc.get();
-      model.output_name = output_name_alloc.get();
-#else
-      {
-        char* in_name = model.session->GetInputName(0, allocator_);
-        char* out_name = model.session->GetOutputName(0, allocator_);
-        model.input_name = in_name;
-        model.output_name = out_name;
-        allocator_.Free(in_name);
-        allocator_.Free(out_name);
-      }
-#endif
-      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                  "finger[%d]: input_name='%s', output_name='%s'",
-                  f, model.input_name.c_str(), model.output_name.c_str());
-
-      // 모델이 기대하는 input/output shape 로깅
-      {
-        const auto num_inputs = model.session->GetInputCount();
-        const auto num_outputs = model.session->GetOutputCount();
-        RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                    "finger[%d]: model has %zu inputs, %zu outputs",
-                    f, num_inputs, num_outputs);
-
-        auto input_type_info = model.session->GetInputTypeInfo(0);
-        auto input_tensor_info = input_type_info.GetTensorTypeAndShapeInfo();
-        auto input_dims = input_tensor_info.GetShape();
-        std::string input_shape_str = "[";
-        for (std::size_t d = 0; d < input_dims.size(); ++d) {
-          if (d > 0) input_shape_str += ", ";
-          input_shape_str += std::to_string(input_dims[d]);
-        }
-        input_shape_str += "]";
-        RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                    "finger[%d]: model expected input shape: %s (rank=%zu)",
-                    f, input_shape_str.c_str(), input_dims.size());
-
-        auto output_type_info = model.session->GetOutputTypeInfo(0);
-        auto output_tensor_info = output_type_info.GetTensorTypeAndShapeInfo();
-        auto output_dims = output_tensor_info.GetShape();
-        std::string output_shape_str = "[";
-        for (std::size_t d = 0; d < output_dims.size(); ++d) {
-          if (d > 0) output_shape_str += ", ";
-          output_shape_str += std::to_string(output_dims[d]);
-        }
-        output_shape_str += "]";
-        RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                    "finger[%d]: model expected output shape: %s (rank=%zu)",
-                    f, output_shape_str.c_str(), output_dims.size());
-      }
-
-      // 사전 할당된 버퍼 위에 Ort::Value 텐서 생성
-      // Input: [1, history_length, 16] (rank 3) — unsqueeze(0) 효과
-      const int64_t H = static_cast<int64_t>(config_.history_length);
-      const int64_t input_shape[] = {1, H, kFTInputSize};             // [1, 12, 16]
-      constexpr int64_t output_shape[] = {1, 1, kFTValuesPerFingertip};  // [1, 1, 13]
-      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                  "finger[%d]: creating input tensor shape [1, %d, %d] (rank=3)...",
-                  f, config_.history_length, static_cast<int>(kFTInputSize));
-
-      model.input_tensor = Ort::Value::CreateTensor<float>(
-          memory_info_, model.input_buffer.data(),
-          static_cast<std::size_t>(config_.history_length) * kFTInputSize,
-          input_shape, 3);
-      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                  "finger[%d]: input tensor created OK", f);
+      OnnxEngine::Init(mc);
+      finger_to_model_[static_cast<std::size_t>(f)] = num_models() - 1;
 
       RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                  "finger[%d]: creating output tensor shape [1, 1, %d] (rank=3)...",
-                  f, static_cast<int>(kFTValuesPerFingertip));
-      model.output_tensor = Ort::Value::CreateTensor<float>(
-          memory_info_, model.output_buffer.data(),
-          model.output_buffer.size(), output_shape, 3);
-      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                  "finger[%d]: output tensor created OK", f);
-
-      model.history_count = 0;
-
-      // IoBinding 생성 + 바인딩
-      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                  "finger[%d]: creating IoBinding and binding I/O...", f);
-      model.io_binding = std::make_unique<Ort::IoBinding>(*model.session);
-      model.io_binding->BindInput(model.input_name.c_str(), model.input_tensor);
-      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                  "finger[%d]: BindInput OK", f);
-      model.io_binding->BindOutput(model.output_name.c_str(), model.output_tensor);
-      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                  "finger[%d]: BindOutput OK", f);
-
-      model.valid = true;
-      ++num_active_;
-      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                  "finger[%d]: loaded OK (input=%s, output=%s)",
-                  f, model.input_name.c_str(), model.output_name.c_str());
+                  "finger[%d]: loaded OK (model_idx=%d)", f, num_models() - 1);
     }
 
     RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                "num_active=%d / %d", num_active_, n);
+                "num_active=%d / %d", num_models(), n);
 
     // prev_barometer 초기화 (delta 계산용)
     for (auto& p : prev_barometer_) p.fill(0.0f);
+
+    // history_count 초기화
+    history_count_.fill(0);
 
     // Calibration 초기화
     if (config_.calibration_enabled) {
@@ -272,18 +123,19 @@ class FingertipFTInferencer {
       calibrated_ = true;
     }
 
-    // Warmup: 각 모델에 더미 추론 1회 (JIT 오버헤드 제거)
+    // input_max 역수 사전 계산 (Infer()에서 div → mul 최적화)
     for (int f = 0; f < n; ++f) {
-      auto& model = models_[static_cast<std::size_t>(f)];
-      if (!model.valid) continue;
-      model.input_buffer.fill(0.0f);
-      model.session->Run(Ort::RunOptions{nullptr}, *model.io_binding);
+      const auto fi = static_cast<std::size_t>(f);
+      for (int ch = 0; ch < kFTInputSize; ++ch) {
+        const auto ci = static_cast<std::size_t>(ch);
+        const float m = config_.input_max[fi][ci];
+        input_max_reciprocal_[fi][ci] = (m == 0.0f) ? 1.0f : (1.0f / m);
+      }
     }
 
-    initialized_ = (num_active_ > 0);
     RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
-                "Init done: initialized=%d, calibrated=%d",
-                initialized_ ? 1 : 0, calibrated_ ? 1 : 0);
+                "InitFT done: initialized=%d, calibrated=%d",
+                is_initialized() ? 1 : 0, calibrated_ ? 1 : 0);
   }
 
   // ── Calibration (noexcept — EventLoop hot path) ───────────────────────────
@@ -323,15 +175,17 @@ class FingertipFTInferencer {
     return false;
   }
 
-  // ── Inference (noexcept, allocation-free) ──────────────────────────────────
+  // ── Inference (noexcept, allocation-free, 3-phase pipeline) ────────────────
 
-  /// Per-fingertip 순차 추론. sensor_data에서 barometer만 추출 → 정규화 → history FIFO → 추론.
-  /// history가 history_length만큼 채워지지 않으면 추론을 수행하지 않고 invalid 반환.
+  /// 3-phase pipeline 추론:
+  ///   Phase 1: 전처리 — 모든 fingertip의 정규화 + delta + FIFO shift (L1i cache 유지)
+  ///   Phase 2: 추론 — RunModels()로 모든 ready 모델 일괄 실행 (ONNX runtime L1i 유지)
+  ///   Phase 3: 결과 복사 — output_buffer → FingertipFTState
   [[nodiscard]] FingertipFTState Infer(
       const std::array<int32_t, kMaxHandSensors>& sensor_data,
       int num_fingertips) noexcept {
     FingertipFTState result{};
-    if (!initialized_ || !calibrated_) return result;
+    if (!is_initialized() || !calibrated_) return result;
 
     try {
       const int n = std::min(num_fingertips,
@@ -339,79 +193,85 @@ class FingertipFTInferencer {
       const int H = config_.history_length;
       bool all_ready = true;
 
+      // Ready 모델 인덱스 수집 + finger→model 매핑 (Phase 2, 3에서 사용)
+      std::array<int, kMaxFingertips> ready_models{};
+      std::array<int, kMaxFingertips> ready_fingers{};
+      int num_ready = 0;
+
+      // ── Phase 1: 전처리 (모든 fingertip) ─────────────────────────────────
       for (int f = 0; f < n; ++f) {
-        auto& model = models_[static_cast<std::size_t>(f)];
-        if (!model.valid) continue;
+        const auto fi = static_cast<std::size_t>(f);
+        const int model_idx = finger_to_model_[fi];
+        if (model_idx < 0) continue;
 
         const int sensor_base = f * kSensorValuesPerFingertip;
-        const auto fi = static_cast<std::size_t>(f);
 
-        // ── 새 row 계산: baro(8) + delta(8) = 16 float ──────────────────
+        // 새 row 계산: baro(8) + delta(8) = 16 float
         std::array<float, kFTInputSize> new_row{};
 
-        // barometer[0..7]: baseline-offset → input_max 정규화
+        // barometer[0..7]: baseline-offset → reciprocal 정규화 (mul)
         std::array<float, kBarometerCount> cur_baro{};
         for (int b = 0; b < kBarometerCount; ++b) {
           const auto bi = static_cast<std::size_t>(b);
           const float raw = static_cast<float>(
               sensor_data[static_cast<std::size_t>(sensor_base + b)]);
           cur_baro[bi] = raw - baseline_offset_[fi][bi];
-
-          float max_val = config_.input_max[fi][bi];
-          if (max_val == 0.0f) max_val = 1.0f;
-          new_row[bi] = cur_baro[bi] / max_val;
+          new_row[bi] = cur_baro[bi] * input_max_reciprocal_[fi][bi];
         }
 
-        // barometer_delta[8..15]: current - previous
+        // barometer_delta[8..15]: (current - previous) × reciprocal
         for (int b = 0; b < kBarometerCount; ++b) {
           const auto bi = static_cast<std::size_t>(b);
           const auto di = static_cast<std::size_t>(kBarometerCount + b);
-          const float delta = cur_baro[bi] - prev_barometer_[fi][bi];
-
-          float max_val = config_.input_max[fi][di];
-          if (max_val == 0.0f) max_val = 1.0f;
-          new_row[di] = delta / max_val;
+          new_row[di] = (cur_baro[bi] - prev_barometer_[fi][bi])
+                        * input_max_reciprocal_[fi][di];
         }
 
-        // 현재 값을 prev에 저장 (다음 사이클의 delta 계산용)
         prev_barometer_[fi] = cur_baro;
 
-        // ── FIFO shift: row[0] 제거, row[1..H-1] → row[0..H-2], new_row → row[H-1] ──
+        // FIFO shift: OnnxEngine의 input_buffer에 직접 조작
+        float* buf = input_buffer(model_idx);
         const auto row_bytes = static_cast<std::size_t>(kFTInputSize) * sizeof(float);
         if (H > 1) {
-          std::memmove(model.input_buffer.data(),
-                       model.input_buffer.data() + kFTInputSize,
+          std::memmove(buf,
+                       buf + kFTInputSize,
                        static_cast<std::size_t>(H - 1) * row_bytes);
         }
-        std::memcpy(model.input_buffer.data() +
-                         static_cast<std::size_t>(H - 1) * kFTInputSize,
+        std::memcpy(buf + static_cast<std::size_t>(H - 1) * kFTInputSize,
                      new_row.data(), row_bytes);
 
         // History count 증가 (최대 H)
-        if (model.history_count < H) {
-          ++model.history_count;
+        if (history_count_[fi] < H) {
+          ++history_count_[fi];
         }
 
-        // History가 아직 안 채워졌으면 추론 skip
-        if (model.history_count < H) {
+        if (history_count_[fi] < H) {
           all_ready = false;
-          continue;
+        } else {
+          ready_models[static_cast<std::size_t>(num_ready)] = model_idx;
+          ready_fingers[static_cast<std::size_t>(num_ready)] = f;
+          ++num_ready;
         }
+      }
 
-        // ── 추론 (IoBinding → output_buffer에 직접 기록) ──────────────────
-        model.session->Run(Ort::RunOptions{nullptr}, *model.io_binding);
+      // ── Phase 2: 일괄 추론 (direct Session::Run, IoBinding 우회) ─────────
+      if (num_ready > 0) {
+        (void)RunModels(ready_models.data(), num_ready);
+      }
 
-        // 결과 복사: output_buffer[13] → ft_data[f*13 .. f*13+12]
+      // ── Phase 3: 결과 복사 ───────────────────────────────────────────────
+      for (int i = 0; i < num_ready; ++i) {
+        const int f = ready_fingers[static_cast<std::size_t>(i)];
+        const int model_idx = ready_models[static_cast<std::size_t>(i)];
         const int ft_base = f * kFTValuesPerFingertip;
         std::memcpy(&result.ft_data[static_cast<std::size_t>(ft_base)],
-                     model.output_buffer.data(),
+                     output_buffer(model_idx),
                      sizeof(float) * kFTValuesPerFingertip);
       }
 
       result.num_fingertips = n;
       result.valid = all_ready;
     } catch (...) {
-      // 예외 발생 시 invalid 반환 (noexcept 보장)
       result.valid = false;
     }
 
@@ -420,9 +280,7 @@ class FingertipFTInferencer {
 
   // ── Accessors ─────────────────────────────────────────────────────────────
 
-  [[nodiscard]] bool is_initialized() const noexcept { return initialized_; }
   [[nodiscard]] bool is_calibrated() const noexcept { return calibrated_; }
-  [[nodiscard]] int  num_active_models() const noexcept { return num_active_; }
   [[nodiscard]] int  calibration_count() const noexcept { return calibration_count_; }
   [[nodiscard]] int  calibration_target() const noexcept {
     return config_.calibration_samples;
@@ -434,33 +292,13 @@ class FingertipFTInferencer {
   }
 
  private:
-  // Per-fingertip 모델 데이터 (사전 할당)
-  struct PerFingertipModel {
-    std::unique_ptr<Ort::Session> session;
-    std::unique_ptr<Ort::IoBinding> io_binding;
-    // History buffer: [history_length × kFTInputSize] = [12 × 16] = 192 floats
-    // Row layout: row[t] = baro(8) + delta(8), t=0 oldest, t=H-1 newest
-    std::array<float, kFTHistoryLength * kFTInputSize> input_buffer{};
-    std::array<float, kFTValuesPerFingertip> output_buffer{};  // 13 outputs
-    Ort::Value input_tensor{nullptr};
-    Ort::Value output_tensor{nullptr};
-    std::string input_name;
-    std::string output_name;
-    int  history_count{0};   // 현재 채워진 history row 수 (0 ~ history_length)
-    bool valid{false};
-  };
-
   Config config_{};
-  bool   initialized_{false};
-  int    num_active_{0};
 
-  // ONNX Runtime 공유 객체
-  Ort::Env env_{ORT_LOGGING_LEVEL_WARNING, "fingertip_ft"};
-  Ort::AllocatorWithDefaultOptions allocator_;
-  Ort::MemoryInfo memory_info_{nullptr};
+  // fingertip index → OnnxEngine model index 매핑 (-1 = inactive)
+  std::array<int, kMaxFingertips> finger_to_model_{};
 
-  // Per-fingertip 모델 배열
-  std::array<PerFingertipModel, kMaxFingertips> models_;
+  // Per-fingertip history count (0 ~ history_length)
+  std::array<int, kMaxFingertips> history_count_{};
 
   // Baseline Offset Calibration
   std::array<std::array<double, kBarometerCount>, kMaxFingertips> calibration_sum_{};
@@ -468,11 +306,12 @@ class FingertipFTInferencer {
   int  calibration_count_{0};
   bool calibrated_{false};
 
+  // input_max 역수 (div → mul 최적화, InitFT()에서 사전 계산)
+  std::array<std::array<float, kFTInputSize>, kMaxFingertips> input_max_reciprocal_{};
+
   // 이전 barometer 값 (delta 계산용)
   std::array<std::array<float, kBarometerCount>, kMaxFingertips> prev_barometer_{};
 };
-
-#endif  // HAS_ONNXRUNTIME
 
 }  // namespace rtc
 

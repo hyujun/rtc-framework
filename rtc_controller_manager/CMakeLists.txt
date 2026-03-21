@@ -33,6 +33,7 @@ find_package(rtc_communication REQUIRED)
 find_package(rtc_status_monitor REQUIRED)
 find_package(rtc_msgs REQUIRED)
 
+find_package(rtc_inference REQUIRED)
 find_package(ur5e_hand_driver REQUIRED)
 find_package(rtc_msgs REQUIRED)
 
@@ -55,6 +56,7 @@ ament_target_dependencies(rtc_controller_manager_lib
   rtc_communication
   rtc_status_monitor
   rtc_msgs
+  rtc_inference
   ur5e_hand_driver
   rtc_msgs
 )

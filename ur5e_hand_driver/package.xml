@@ -16,7 +16,6 @@
   <depend>rtc_inference</depend>
   <depend>rtc_msgs</depend>
 
-  <build_depend>libonnxruntime-dev</build_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

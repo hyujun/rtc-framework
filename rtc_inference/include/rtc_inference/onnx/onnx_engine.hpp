@@ -31,6 +31,9 @@ class OnnxEngine : public InferenceEngine {
     Ort::SessionOptions opts;
     opts.SetIntraOpNumThreads(config.intra_op_threads);
     opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+    if (!config.optimized_model_path.empty()) {
+      opts.SetOptimizedModelFilePath(config.optimized_model_path.c_str());
+    }
 
     sessions_.emplace_back(*env_, config.model_path.c_str(), opts);
     auto& session = sessions_.back();
@@ -75,10 +78,19 @@ class OnnxEngine : public InferenceEngine {
     input_tensors_.push_back(std::move(input_tensor));
     output_tensors_.push_back(std::move(output_tensor));
 
-    // Warmup
-    session.Run(Ort::RunOptions{nullptr},
-                input_names_.back().c_str(), &input_tensors_.back(), 1,
-                output_names_.back().c_str(), &output_tensors_.back(), 1);
+    // Pre-allocate RunOptions once (reused across all RunModels calls)
+    if (!run_options_) {
+      run_options_ = std::make_unique<Ort::RunOptions>();
+    }
+
+    // Warmup (direct Session::Run, bypass IoBinding)
+    {
+      const char* in_names[] = {input_names_.back().c_str()};
+      const char* out_names[] = {output_names_.back().c_str()};
+      session.Run(*run_options_,
+                  in_names, &input_tensors_.back(), 1,
+                  out_names, &output_tensors_.back(), 1);
+    }
 
     initialized_ = true;
   }
@@ -97,16 +109,37 @@ class OnnxEngine : public InferenceEngine {
     }
   }
 
-  // Also provide per-model Run
-  [[nodiscard]] bool RunModel(int model_idx) noexcept {
+  /// Per-model inference via IoBinding (backward compatible).
+  [[nodiscard]] bool RunModel(int model_idx) noexcept override {
     if (!initialized_ || model_idx < 0 ||
         static_cast<std::size_t>(model_idx) >= sessions_.size()) return false;
     try {
-      io_bindings_[static_cast<std::size_t>(model_idx)].SynchronizeInputs();
-      sessions_[static_cast<std::size_t>(model_idx)].Run(
-          Ort::RunOptions{nullptr},
-          io_bindings_[static_cast<std::size_t>(model_idx)]);
-      io_bindings_[static_cast<std::size_t>(model_idx)].SynchronizeOutputs();
+      const auto mi = static_cast<std::size_t>(model_idx);
+      io_bindings_[mi].SynchronizeInputs();
+      sessions_[mi].Run(*run_options_, io_bindings_[mi]);
+      io_bindings_[mi].SynchronizeOutputs();
+      return true;
+    } catch (...) {
+      return false;
+    }
+  }
+
+  /// RT-optimized batch run: direct Session::Run bypassing IoBinding overhead.
+  /// Pre-allocated RunOptions reused across calls. SynchronizeInputs/Outputs
+  /// skipped (CPU-only, no device transfer needed).
+  [[nodiscard]] bool RunModels(const int* model_indices,
+                               int count) noexcept override {
+    if (!initialized_ || count <= 0) return false;
+    try {
+      for (int i = 0; i < count; ++i) {
+        const auto mi = static_cast<std::size_t>(model_indices[i]);
+        if (mi >= sessions_.size()) return false;
+        const char* in_names[]  = {input_names_[mi].c_str()};
+        const char* out_names[] = {output_names_[mi].c_str()};
+        sessions_[mi].Run(*run_options_,
+                          in_names, &input_tensors_[mi], 1,
+                          out_names, &output_tensors_[mi], 1);
+      }
       return true;
     } catch (...) {
       return false;
@@ -137,6 +170,7 @@ class OnnxEngine : public InferenceEngine {
  private:
   bool initialized_{false};
   std::unique_ptr<Ort::Env> env_;
+  std::unique_ptr<Ort::RunOptions> run_options_;
   std::vector<ModelConfig> configs_;
   std::vector<Ort::Session> sessions_;
   std::vector<Ort::IoBinding> io_bindings_;

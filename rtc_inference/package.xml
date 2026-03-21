@@ -8,6 +8,7 @@
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>rtc_base</depend>
+  <build_depend>libonnxruntime-dev</build_depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
   <export>

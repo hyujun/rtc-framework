@@ -508,12 +508,12 @@ class HandController {
       }
       ft_inferencer_ = std::make_unique<FingertipFTInferencer>();
       try {
-        ft_inferencer_->Init(ft_config_);
+        ft_inferencer_->InitFT(ft_config_);
         ft_enabled_ = ft_inferencer_->is_initialized();
         RCLCPP_INFO(rclcpp::get_logger("HandController"),
                     "FT init OK: initialized=%d, num_active_models=%d, calibrated=%d",
                     ft_inferencer_->is_initialized() ? 1 : 0,
-                    ft_inferencer_->num_active_models(),
+                    ft_inferencer_->num_models(),
                     ft_inferencer_->is_calibrated() ? 1 : 0);
       } catch (const std::exception& e) {
         RCLCPP_ERROR(rclcpp::get_logger("HandController"),
