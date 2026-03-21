@@ -8,6 +8,8 @@
 4. **관심사 분리** — Interface / Implementation / Manager / Communication 명확 분리
 5. **`rtc_` namespace** — 범용 prefix, 로봇별 패키지만 로봇 이름 사용
 6. **Inference 분리** — RT-safe 추론 엔진을 독립 패키지로 분리, 센서별 전처리는 드라이버에 잔류
+7. **통신 확장성** — Transport 추상화로 UDP, CAN-FD, EtherCAT, RS485 등 새 프로토콜 쉽게 추가 가능
+8. **Controller 계층 분리** — 범용 manipulator controller와 로봇+end-effector 통합 controller(demo) 명확 분리
 
 ---
 
@@ -20,6 +22,8 @@
 5. **Bringup 분산** — launch 파일이 각 패키지에 흩어져 있고, 통합 launch 로직이 없음
 6. **500Hz 고정** — sampling time이 코드에 묶여 있어 더 높은 주파수 대응 불가
 7. **Inference 결합** — ONNX Runtime 추론 코드가 `ur5e_hand_udp`에 직접 임베딩. RT-safe 추론 래퍼를 다른 센서/모델에 재사용 불가
+8. **통신 확장 불가** — UDP socket만 존재, CAN-FD/EtherCAT/RS485 등 다른 통신 방식을 추가하려면 전체 구조 변경 필요. Transport 추상화 부재
+9. **Controller 혼재** — 범용 manipulator controller(P, PD, CLIK, OSC)와 UR5e+hand 통합 controller(DemoJoint, DemoTask)가 같은 패키지에 혼재. demo controller는 hand 제어를 포함하므로 특정 로봇 셋업에 종속
 
 ---
 
@@ -32,9 +36,9 @@ ur5e-rt-controller/                      # (repo 이름은 유지, 내부만 범
 ├── rtc_msgs/                            # [리네임] 커스텀 메시지 정의
 ├── rtc_base/                            # [리네임+축소] RT 인프라 공통 라이브러리
 ├── rtc_controller_interface/            # [신규] Controller 추상 인터페이스 (가변 DOF)
-├── rtc_controllers/                     # [신규] Controller 구현체들 (범용)
+├── rtc_controllers/                     # [신규] 범용 manipulator Controller (P, PD, CLIK, OSC)
 ├── rtc_controller_manager/              # [신규] RT loop + controller lifecycle
-├── rtc_communication/                   # [신규] 통신 계층 (UDP 추상화)
+├── rtc_communication/                   # [신규] 통신 계층 (Transport 추상화: UDP/CAN-FD/EtherCAT/RS485)
 ├── rtc_inference/                       # [신규] RT-safe 추론 엔진 (ONNX Runtime)
 ├── rtc_status_monitor/                  # [리네임] 안전 모니터링 (가변 DOF)
 ├── rtc_mujoco_sim/                      # [리네임] MuJoCo 시뮬레이션 (범용 URDF)
@@ -158,6 +162,76 @@ rtc_inference (범용)          ur5e_hand_driver (센서 전용)
 - Anomaly detection 모델
 - 향후 TensorRT/OpenVINO 백엔드 교체
 
+### E. Transport 추상화 (통신 확장성)
+
+**현재:** UDP socket만 존재 (`UdpSocket` RAII wrapper + `UdpTransceiver` template)
+```cpp
+// 현재: UDP에 직접 결합
+class UdpSocket { /* AF_INET, SOCK_DGRAM only */ };
+
+template <typename Codec>
+class UdpTransceiver { /* UdpSocket에 직접 의존 */ };
+```
+
+**변경 후:** Transport 추상 인터페이스 + 프로토콜별 구현
+```
+rtc_communication (범용 Transport 계층)
+┌─────────────────────────────────────────────────────────┐
+│ TransportInterface (abstract)                           │
+│  - Open() / Close()                                     │
+│  - Send(span<const uint8_t>) noexcept → ssize_t         │
+│  - Recv(span<uint8_t>) noexcept → ssize_t               │
+│  - SetTimeout(ms)                                       │
+│  - is_open() noexcept                                   │
+├─────────────────────────────────────────────────────────┤
+│ udp/UdpTransport         : TransportInterface           │
+│ canfd/CanFdTransport     : TransportInterface (planned) │
+│ ethercat/EcTransport     : TransportInterface (planned) │
+│ serial/Rs485Transport    : TransportInterface (planned) │
+├─────────────────────────────────────────────────────────┤
+│ PacketCodec<C> concept   — 프로토콜 비종속 codec        │
+│ Transceiver<Transport,Codec> — 범용 recv/send loop      │
+└─────────────────────────────────────────────────────────┘
+```
+
+**확장 시나리오:**
+- CAN-FD: Dynamixel, HEBI actuator 등 CAN 기반 servo 제어
+- EtherLab 기반 EtherCAT: KUKA, Beckhoff, Elmo Gold 등 산업용 모터 드라이버
+- RS485: Robotis, Feetech 등 serial servo 제어
+
+### F. Controller 계층 분리 (범용 vs 통합 demo)
+
+**현재:** 6개 controller가 모두 `ur5e_rt_controller`에 혼재
+```
+rtc_controllers/
+├── p_controller           ← 범용 manipulator (any robot)
+├── joint_pd_controller    ← 범용 manipulator (any robot)
+├── clik_controller        ← 범용 manipulator (any robot)
+├── osc_controller         ← 범용 manipulator (any robot)
+├── demo_joint_controller  ← UR5e + Hand 통합 (robot-specific)
+└── demo_task_controller   ← UR5e + Hand 통합 (robot-specific)
+```
+
+**변경 후:** 2계층 분리
+```
+rtc_controllers (범용)                  ur5e_bringup (로봇 전용)
+┌──────────────────────────┐            ┌──────────────────────────────┐
+│ Manipulator Controllers  │            │ Demo Controllers             │
+│  - PController           │            │  - DemoJointController       │
+│  - JointPDController     │            │    (arm 6-DOF + hand 10-DOF) │
+│  - ClikController        │            │  - DemoTaskController        │
+│  - OperationalSpaceCtrl  │            │    (CLIK arm + hand P ctrl)  │
+│                          │            │                              │
+│ Any URDF manipulator:    │            │ UR5e + custom hand 전용:     │
+│ UR5e, KUKA, Franka, etc. │            │ ur5e_hand_driver 의존        │
+└──────────────────────────┘            └──────────────────────────────┘
+```
+
+**분리 기준:**
+- `SetHandTarget()` 사용 여부: demo controller만 hand를 직접 제어
+- `ControllerOutput::hand_commands` 생성 여부: 범용 controller는 robot_commands만 생성
+- `hand.motor_positions` 참조 여부: demo controller만 hand state를 read
+
 ---
 
 ## 패키지별 상세 계획
@@ -221,19 +295,18 @@ rtc_controller_interface/
 
 ### 4. `rtc_controllers` — 신규 (ur5e_rt_controller에서 분리)
 
-6개 범용 controller 구현체. UR5e 전용 controller(hand_controller)는 `ur5e_hand_driver`에 잔류.
+**범용 manipulator controller만 포함.** 어떤 로봇(UR5e, KUKA, Franka 등)에든 사용 가능한 controller.
+Demo controller (arm+hand 통합)는 `ur5e_bringup`으로 이동 (아래 14번 참조).
 
 ```
 rtc_controllers/
 ├── include/rtc_controllers/
 │   ├── direct/                          # Torque command controllers
-│   │   ├── joint_pd_controller.hpp
-│   │   └── operational_space_controller.hpp
+│   │   ├── joint_pd_controller.hpp      # PD + gravity/Coriolis (any manipulator)
+│   │   └── operational_space_controller.hpp  # 6-DOF Cartesian PD (any manipulator)
 │   ├── indirect/                        # Position command controllers
-│   │   ├── p_controller.hpp
-│   │   ├── clik_controller.hpp
-│   │   ├── demo_joint_controller.hpp
-│   │   └── demo_task_controller.hpp
+│   │   ├── p_controller.hpp             # Simple P controller (any manipulator)
+│   │   └── clik_controller.hpp          # Closed-Loop IK (any manipulator)
 │   └── trajectory/
 │       ├── trajectory_utils.hpp
 │       ├── joint_space_trajectory.hpp
@@ -244,18 +317,14 @@ rtc_controllers/
 │   │   └── operational_space_controller.cpp
 │   └── indirect/
 │       ├── p_controller.cpp
-│       ├── clik_controller.cpp
-│       ├── demo_joint_controller.cpp
-│       └── demo_task_controller.cpp
+│       └── clik_controller.cpp
 ├── config/controllers/
 │   ├── direct/
 │   │   ├── joint_pd_controller.yaml
 │   │   └── operational_space_controller.yaml
 │   └── indirect/
 │       ├── p_controller.yaml
-│       ├── clik_controller.yaml
-│       ├── demo_joint_controller.yaml
-│       └── demo_task_controller.yaml
+│       └── clik_controller.yaml
 ├── package.xml
 └── CMakeLists.txt
 ```
@@ -264,7 +333,10 @@ rtc_controllers/
 
 **핵심 변경:**
 - 모든 controller가 가변 DOF 지원 (고정 크기 배열 → Eigen::VectorXd)
-- `ur5e_hand_controller`는 여기서 제외 → `ur5e_hand_driver`에 잔류 (UR5e 전용 end-effector)
+- **demo_joint_controller, demo_task_controller 제외** → `ur5e_bringup`으로 이동 (UR5e+hand 통합 로직이므로)
+- `ur5e_hand_controller`도 제외 → `ur5e_hand_driver`에 잔류 (UR5e 전용 end-effector)
+- **4개 범용 controller만 포함:** PController, JointPDController, ClikController, OperationalSpaceController
+- 이 controller들은 `ControllerOutput::robot_commands`만 생성, `hand_commands`는 건드리지 않음
 
 ### 5. `rtc_controller_manager` — 신규 (ur5e_rt_controller 핵심 분리)
 
@@ -297,26 +369,181 @@ rtc_controller_manager/
 - UR5e 전용 코드 (`enable_ur5e`, `ur5e_hand_controller` 등) 제거 → bringup config로 이동
 - timing profiler에서 deadline miss 경고 임계값을 sampling_time 기반으로 동적 계산
 
-### 6. `rtc_communication` — 신규 (ur5e_rt_base UDP 이동)
+### 6. `rtc_communication` — 신규 (ur5e_rt_base UDP 이동 + Transport 추상화)
 
-범용 하드웨어 통신 추상화. UDP socket, transceiver, codec만 포함.
+범용 하드웨어 통신 추상화. Transport interface + 프로토콜별 구현 + codec concept + transceiver template.
 
 ```
 rtc_communication/
 ├── include/rtc_communication/
-│   ├── udp_socket.hpp
-│   ├── udp_transceiver.hpp
-│   └── udp_codec.hpp
-├── package.xml                          # header-only
+│   ├── transport_interface.hpp          # [신규] Transport 추상 인터페이스
+│   ├── packet_codec.hpp                 # [리네임] 범용 패킷 codec concept (기존 udp_codec.hpp 확장)
+│   ├── transceiver.hpp                  # [리네임] Transport 기반 범용 transceiver (기존 udp_transceiver.hpp 범용화)
+│   ├── udp/                             # UDP transport 구현
+│   │   ├── udp_transport.hpp            # TransportInterface 구현 (기존 udp_socket.hpp 래핑)
+│   │   └── udp_socket.hpp               # [이동] 기존 UDP socket RAII wrapper
+│   ├── canfd/                           # [planned] CAN-FD transport
+│   │   └── canfd_transport.hpp          # SocketCAN AF_CAN + CANFD_MTU
+│   ├── ethercat/                        # [planned] EtherLab EtherCAT transport
+│   │   └── ec_transport.hpp             # ecrt_master / ecrt_domain 래핑
+│   └── serial/                          # [planned] RS485 serial transport
+│       └── rs485_transport.hpp          # termios B* + RS485 ioctl
+├── src/
+│   ├── udp/
+│   │   └── udp_transport.cpp
+│   ├── canfd/                           # [planned]
+│   │   └── canfd_transport.cpp
+│   ├── ethercat/                        # [planned]
+│   │   └── ec_transport.cpp
+│   └── serial/                          # [planned]
+│       └── rs485_transport.cpp
+├── package.xml
 └── CMakeLists.txt
 ```
 
-**의존성:** `rtc_base`
+**의존성:** `rtc_base`, (optional: `libsocketcan`, `etherlab`, `serial`)
+
+**핵심 설계:**
+
+1. **Transport 추상 인터페이스:**
+   ```cpp
+   // rtc_communication/transport_interface.hpp
+   class TransportInterface {
+    public:
+     virtual ~TransportInterface() = default;
+
+     /// non-RT: transport 열기 (소켓/디바이스 초기화)
+     [[nodiscard]] virtual bool Open() = 0;
+     virtual void Close() noexcept = 0;
+
+     /// RT-safe: 데이터 송수신 (allocation-free, noexcept)
+     [[nodiscard]] virtual ssize_t Send(
+         std::span<const uint8_t> data) noexcept = 0;
+     [[nodiscard]] virtual ssize_t Recv(
+         std::span<uint8_t> buffer) noexcept = 0;
+
+     virtual void SetRecvTimeout(int timeout_ms) noexcept = 0;
+     [[nodiscard]] virtual bool is_open() const noexcept = 0;
+   };
+   ```
+
+2. **UdpTransport 구현 (기존 UdpSocket 래핑):**
+   ```cpp
+   // rtc_communication/udp/udp_transport.hpp
+   class UdpTransport : public TransportInterface {
+    public:
+     struct Config {
+       std::string bind_address{"0.0.0.0"};
+       int bind_port{0};
+       std::string target_address;
+       int target_port{0};
+       int recv_buffer_size{256 * 1024};
+     };
+
+     explicit UdpTransport(const Config& config);
+     // TransportInterface 구현...
+   };
+   ```
+
+3. **범용 Transceiver (Transport 기반):**
+   ```cpp
+   // rtc_communication/transceiver.hpp
+   template <typename Codec>
+     requires PacketCodec<Codec>
+   class Transceiver {
+    public:
+     explicit Transceiver(
+         std::unique_ptr<TransportInterface> transport,
+         const ThreadConfig& thread_cfg);
+
+     [[nodiscard]] bool Start();
+     void Stop() noexcept;
+     // recv loop는 TransportInterface::Recv()를 사용
+   };
+   ```
+
+4. **PacketCodec concept (기존 UdpPacketCodec 범용화):**
+   ```cpp
+   // rtc_communication/packet_codec.hpp
+   // 기존 UdpPacketCodec 리네임, transport 비종속
+   template <typename C>
+   concept PacketCodec = requires {
+     typename C::RecvPacket;
+     typename C::SendPacket;
+     typename C::State;
+   } && std::is_trivially_copyable_v<typename C::RecvPacket>
+     && std::is_trivially_copyable_v<typename C::SendPacket>
+     && requires(std::span<const uint8_t> buf, typename C::State& state) {
+       { C::Decode(buf, state) } -> std::same_as<bool>;
+     };
+   ```
+
+5. **[planned] CAN-FD Transport:**
+   ```cpp
+   // rtc_communication/canfd/canfd_transport.hpp
+   class CanFdTransport : public TransportInterface {
+    public:
+     struct Config {
+       std::string interface{"can0"};  // SocketCAN interface
+       uint32_t bitrate{1000000};      // 1 Mbps
+       uint32_t dbitrate{5000000};     // 5 Mbps data phase
+       uint32_t can_id{0};            // filter CAN ID
+     };
+     // AF_CAN + CANFD_MTU (64 bytes)
+   };
+   ```
+
+6. **[planned] EtherLab EtherCAT Transport:**
+   ```cpp
+   // rtc_communication/ethercat/ec_transport.hpp
+   class EcTransport : public TransportInterface {
+    public:
+     struct Config {
+       int master_index{0};
+       uint16_t alias{0};
+       uint16_t position{0};
+       uint32_t vendor_id{0};
+       uint32_t product_code{0};
+     };
+     // ecrt_master_create() / ecrt_domain_process()
+     // cyclic PDO 기반 RT-safe data exchange
+   };
+   ```
+
+7. **[planned] RS485 Serial Transport:**
+   ```cpp
+   // rtc_communication/serial/rs485_transport.hpp
+   class Rs485Transport : public TransportInterface {
+    public:
+     struct Config {
+       std::string device{"/dev/ttyUSB0"};
+       speed_t baudrate{B1000000};     // 1 Mbps
+       bool rs485_mode{true};          // SER_RS485_ENABLED
+       int response_delay_us{0};
+     };
+     // termios + TIOCSRS485 ioctl
+   };
+   ```
 
 **역할:**
-- UDP 통신 추상화 (socket, transceiver, codec)
-- 로봇별 프로토콜 구현은 각 로봇 드라이버 패키지에서 담당
-- **Hand UDP는 여기에 포함하지 않음** → `ur5e_hand_driver`에서 이 패키지를 depend하여 사용
+- Transport 추상화로 프로토콜 비종속 통신
+- 새 프로토콜 추가 시 `TransportInterface` 구현체만 작성하면 기존 Codec/Transceiver 재사용
+- 로봇별 프로토콜 구현은 각 로봇 드라이버 패키지에서 Codec 담당
+- **Hand UDP는 여기에 포함하지 않음** → `ur5e_hand_driver`에서 `UdpTransport` + hand-specific codec을 사용
+
+**조건부 빌드:**
+```cmake
+# CMakeLists.txt
+option(RTC_COMM_UDP      "Build UDP transport"      ON)
+option(RTC_COMM_CANFD    "Build CAN-FD transport"   OFF)
+option(RTC_COMM_ETHERCAT "Build EtherCAT transport" OFF)
+option(RTC_COMM_RS485    "Build RS485 transport"     OFF)
+
+if(RTC_COMM_CANFD)
+  find_package(socketcan REQUIRED)
+  add_library(rtc_canfd_transport ...)
+endif()
+```
 
 ### 7. `rtc_inference` — 신규 (ur5e_hand_udp에서 추론 엔진 분리)
 
@@ -460,12 +687,20 @@ ur5e_hand_driver/
 - Barometer 전처리 → FIFO history → input buffer 채우기 → `engine.Run()` → output 해석
 - Calibration (baseline offset) 로직은 그대로 `FingertipFTInferencer`에 잔류
 
-### 14. `ur5e_bringup` — 신규 (UR5e 전용 launch/config 통합)
+### 14. `ur5e_bringup` — 신규 (UR5e 전용 launch/config/demo controllers 통합)
 
-UR5e에 특화된 launch, config, RT scripts를 통합하는 패키지.
+UR5e에 특화된 launch, config, RT scripts, 그리고 **UR5e+hand 통합 demo controller**를 포함하는 패키지.
 
 ```
 ur5e_bringup/
+├── include/ur5e_bringup/
+│   └── controllers/                     # [신규] UR5e+hand 통합 controller
+│       ├── demo_joint_controller.hpp    # [이동] Arm P + Hand P 통합 controller
+│       └── demo_task_controller.hpp     # [이동] CLIK arm + Hand P 통합 controller
+├── src/
+│   └── controllers/
+│       ├── demo_joint_controller.cpp
+│       └── demo_task_controller.cpp
 ├── launch/
 │   ├── robot.launch.py                  # 실물 로봇 launch
 │   ├── sim.launch.py                    # MuJoCo 시뮬레이션 launch
@@ -474,7 +709,10 @@ ur5e_bringup/
 ├── config/
 │   ├── ur5e_robot.yaml                  # UR5e 전용 파라미터 (URDF 경로, joint names, limits)
 │   ├── ur5e_controllers.yaml            # UR5e용 controller 파라미터 오버라이드
-│   └── ur5e_rt.yaml                     # UR5e용 RT 설정 (sampling_time, CPU cores)
+│   ├── ur5e_rt.yaml                     # UR5e용 RT 설정 (sampling_time, CPU cores)
+│   └── controllers/
+│       ├── demo_joint_controller.yaml   # [이동] Demo joint controller 설정
+│       └── demo_task_controller.yaml    # [이동] Demo task controller 설정
 ├── scripts/
 │   ├── build_rt_kernel.sh
 │   ├── check_rt_setup.sh
@@ -488,11 +726,22 @@ ur5e_bringup/
 └── CMakeLists.txt
 ```
 
-**의존성:** `rtc_controller_manager`, `rtc_mujoco_sim`, `rtc_digital_twin`, `ur5e_hand_driver`, `ur5e_description`
+**의존성:** `rtc_controller_manager`, `rtc_controller_interface`, `rtc_controllers`, `rtc_mujoco_sim`, `rtc_digital_twin`, `ur5e_hand_driver`, `ur5e_description`, `pinocchio`
 
 **역할:**
 - UR5e 전용 launch (URDF 경로, joint name, sampling_time 등을 argument로 주입)
-- 다른 로봇 사용 시 → `{robot_name}_bringup` 패키지를 만들면 됨
+- **UR5e+hand 통합 demo controller 소유:**
+  - `DemoJointController`: arm 6-DOF P control + hand 10-DOF P control (joint space)
+  - `DemoTaskController`: arm CLIK (3/6-DOF task space) + hand P control + E-STOP
+  - 이 controller들은 `ur5e_hand_driver`에 의존하여 hand state/command를 직접 처리
+  - `rtc_controller_manager`의 controller registry에 plugin으로 등록
+- 다른 로봇 사용 시 → `{robot_name}_bringup` 패키지를 만들고 자체 demo controller 포함
+
+**Demo controller가 ur5e_bringup에 있는 이유:**
+- `SetHandTarget()`, `hand.motor_positions` 등 hand-specific API를 사용
+- `ur5e_hand_driver`에 직접 의존 (UR5e 셋업 전용)
+- 범용 manipulator에는 hand가 없으므로 `rtc_controllers`에 부적합
+- 다른 로봇+end-effector 조합은 자체 bringup 패키지에 통합 controller를 작성
 
 ---
 
@@ -502,14 +751,16 @@ ur5e_bringup/
 rtc_msgs (독립)
 rtc_base (독립, header-only)
     │
-    ├── rtc_communication ← rtc_base                         [범용 UDP]
+    ├── rtc_communication ← rtc_base                         [범용 Transport 추상화]
+    │       (optional: libsocketcan, etherlab, serial)        [UDP/CAN-FD/EtherCAT/RS485]
     │
     ├── rtc_inference ← rtc_base                             [범용 RT-safe 추론]
     │                    (optional: ONNX Runtime)
     │
     ├── rtc_controller_interface ← rtc_base, rtc_msgs        [범용 인터페이스]
     │       │
-    │       └── rtc_controllers ← rtc_controller_interface    [범용 컨트롤러]
+    │       └── rtc_controllers ← rtc_controller_interface    [범용 manipulator 컨트롤러]
+    │               │               (P, PD, CLIK, OSC만 포함)
     │               │
     │               └── rtc_controller_manager                [범용 매니저]
     │                    ← rtc_controllers, rtc_controller_interface,
@@ -525,19 +776,31 @@ rtc_base (독립, header-only)
 
 ur5e_description (독립, 로봇별)
     │
-    └── ur5e_bringup ← rtc_controller_manager, rtc_mujoco_sim,
-    │                   rtc_digital_twin, ur5e_hand_driver, ur5e_description
-    │
     └── ur5e_hand_driver ← rtc_communication, rtc_inference,  [UR5e 전용 드라이버]
-                            rtc_base, rtc_msgs, rtc_controller_interface
+    │                       rtc_base, rtc_msgs,
+    │                       rtc_controller_interface
+    │
+    └── ur5e_bringup ← rtc_controller_manager,                [UR5e 전용 bringup]
+                        rtc_controller_interface,
+                        rtc_controllers,                       [demo controller용]
+                        rtc_mujoco_sim, rtc_digital_twin,
+                        ur5e_hand_driver, ur5e_description,
+                        pinocchio
+                        ※ DemoJointController, DemoTaskController 소유
 ```
 
 **다른 로봇 추가 시:**
 ```
 panda_description/          # Panda URDF/meshes
-panda_bringup/              # Panda launch/config (rtc_controller_manager 사용)
+panda_bringup/              # Panda launch/config + Panda 전용 controller
+                            # rtc_controller_manager, rtc_controllers 재사용
+
+kuka_description/           # KUKA URDF/meshes
+kuka_servo_driver/          # KUKA용 EtherCAT 드라이버 (rtc_communication::EcTransport 사용)
+kuka_bringup/               # KUKA launch/config + KUKA 전용 controller
 ```
 → `rtc_*` 패키지는 재사용, 로봇별 패키지만 추가하면 됨.
+→ 새 통신 프로토콜이 필요하면 `rtc_communication`에 Transport 구현체 추가.
 
 ---
 
@@ -546,29 +809,34 @@ panda_bringup/              # Panda launch/config (rtc_controller_manager 사용
 ### Phase 1: 기반 패키지 (의존성 없는 것부터)
 1. `rtc_msgs` 생성 — ur5e_msgs 리네임 + namespace 변경
 2. `rtc_base` 생성 — ur5e_rt_base 리네임, `kNumRobotJoints` 제거, `RobotModel` 도입, udp/ 분리
-3. `rtc_communication` 생성 — ur5e_rt_base에서 udp/ 이동
+3. `rtc_communication` 생성 — Transport 추상 인터페이스 + UdpTransport 구현 (ur5e_rt_base에서 udp/ 이동 + 범용화)
 4. `rtc_inference` 생성 — ur5e_hand_udp에서 ONNX Runtime 래퍼 추출, 범용 추론 엔진 구현
 
 ### Phase 2: Controller 패키지 분리
 5. `rtc_controller_interface` 생성 — ur5e_rt_controller에서 interface 분리, 가변 DOF 적용
-6. `rtc_controllers` 생성 — 6개 controller 구현 이동, 가변 DOF 적용
+6. `rtc_controllers` 생성 — **4개 범용 manipulator controller만 이동** (P, PD, CLIK, OSC), 가변 DOF 적용
 7. `rtc_status_monitor` 생성 — ur5e_status_monitor 리네임, 가변 DOF 적용
 
 ### Phase 3: Manager + 통합
-8. `rtc_controller_manager` 생성 — RT loop, node, registry 이동, `sampling_time_us` 파라미터화
+8. `rtc_controller_manager` 생성 — RT loop, node, registry 이동, `sampling_time_us` 파라미터화, controller plugin 시스템
 9. `rtc_mujoco_sim` 리네임 — MJCF 경로 파라미터화
 10. `rtc_digital_twin` 리네임 — robot_description topic 기반
 11. `rtc_tools` 리네임
 
 ### Phase 4: 로봇별 패키지
-12. `ur5e_hand_driver` 생성 — ur5e_hand_udp 리네임 + `rtc_inference` 연동 + ur5e_hand_controller 이동
-13. `ur5e_bringup` 생성 — launch/config/scripts 통합
+12. `ur5e_hand_driver` 생성 — ur5e_hand_udp 리네임 + `rtc_communication::UdpTransport` 사용 + `rtc_inference` 연동 + ur5e_hand_controller 이동
+13. `ur5e_bringup` 생성 — launch/config/scripts 통합 + **demo_joint_controller, demo_task_controller 이동** (UR5e+hand 통합 controller)
 
 ### Phase 5: 정리
 14. 기존 `ur5e_rt_controller`, `ur5e_hand_udp`, `ur5e_rt_base`, `ur5e_status_monitor` 패키지 제거
 15. build.sh, install.sh 업데이트
 16. README.md 업데이트
 17. CI/CD 설정 업데이트
+
+### Phase 6: [선택] 추가 Transport 구현
+18. `rtc_communication`에 CAN-FD transport 추가 (SocketCAN 기반)
+19. `rtc_communication`에 EtherCAT transport 추가 (EtherLab 기반)
+20. `rtc_communication`에 RS485 transport 추가 (termios 기반)
 
 ---
 
@@ -581,12 +849,20 @@ panda_bringup/              # Panda launch/config (rtc_controller_manager 사용
 | `ur5e_rt_base/include/.../threading/` | `rtc_base/include/rtc_base/threading/` |
 | `ur5e_rt_base/include/.../filters/` | `rtc_base/include/rtc_base/filters/` |
 | `ur5e_rt_base/include/.../logging/` | `rtc_base/include/rtc_base/logging/` |
-| `ur5e_rt_base/include/.../udp/` | `rtc_communication/include/rtc_communication/` |
+| `ur5e_rt_base/include/.../udp/udp_socket.hpp` | `rtc_communication/include/rtc_communication/udp/udp_socket.hpp` |
+| `ur5e_rt_base/include/.../udp/udp_codec.hpp` | `rtc_communication/include/rtc_communication/packet_codec.hpp` (범용화) |
+| `ur5e_rt_base/include/.../udp/udp_transceiver.hpp` | `rtc_communication/include/rtc_communication/transceiver.hpp` (Transport 기반 범용화) |
+| — (신규) | `rtc_communication/include/rtc_communication/transport_interface.hpp` |
+| — (신규) | `rtc_communication/include/rtc_communication/udp/udp_transport.hpp` |
 | `ur5e_rt_controller/.../rt_controller_interface.hpp` | `rtc_controller_interface/include/rtc_controller_interface/` |
 | `ur5e_rt_controller/src/rt_controller_interface.cpp` | `rtc_controller_interface/src/` |
 | `ur5e_rt_controller/.../controllers/direct/` | `rtc_controllers/include/rtc_controllers/direct/` |
-| `ur5e_rt_controller/.../controllers/indirect/` (hand 제외) | `rtc_controllers/include/rtc_controllers/indirect/` |
-| `ur5e_rt_controller/src/controllers/` (hand 제외) | `rtc_controllers/src/controllers/` |
+| `ur5e_rt_controller/.../controllers/indirect/p_controller.hpp` | `rtc_controllers/include/rtc_controllers/indirect/` |
+| `ur5e_rt_controller/.../controllers/indirect/clik_controller.hpp` | `rtc_controllers/include/rtc_controllers/indirect/` |
+| `ur5e_rt_controller/.../controllers/indirect/demo_joint_controller.hpp` | `ur5e_bringup/include/ur5e_bringup/controllers/` (UR5e+hand 통합) |
+| `ur5e_rt_controller/.../controllers/indirect/demo_task_controller.hpp` | `ur5e_bringup/include/ur5e_bringup/controllers/` (UR5e+hand 통합) |
+| `ur5e_rt_controller/src/controllers/` (범용 4개) | `rtc_controllers/src/controllers/` |
+| `ur5e_rt_controller/src/controllers/indirect/demo_*.cpp` | `ur5e_bringup/src/controllers/` |
 | `ur5e_rt_controller/.../trajectory/` | `rtc_controllers/include/rtc_controllers/trajectory/` |
 | `ur5e_rt_controller/config/controllers/` | `rtc_controllers/config/controllers/` |
 | `ur5e_rt_controller/.../rt_controller_node.hpp` | `rtc_controller_manager/include/rtc_controller_manager/` |
@@ -601,7 +877,9 @@ panda_bringup/              # Panda launch/config (rtc_controller_manager 사용
 | `ur5e_hand_udp/.../fingertip_ft_inferencer.hpp` (ONNX 세션/텐서 부분) | `rtc_inference/` (범용 추론 엔진으로 추출) |
 | `ur5e_hand_udp/.../fingertip_ft_inferencer.hpp` (전처리/calibration 부분) | `ur5e_hand_driver/` (센서 전용 로직 잔류) |
 | `ur5e_hand_udp/` (나머지 전체) | `ur5e_hand_driver/` (리네임) |
-| `ur5e_rt_controller/.../controllers/indirect/ur5e_hand_controller` | `ur5e_hand_driver/` (UR5e 전용이므로) |
+| `ur5e_rt_controller/.../controllers/indirect/ur5e_hand_controller` | `ur5e_hand_driver/` (UR5e end-effector 전용) |
+| `ur5e_rt_controller/config/controllers/indirect/demo_joint_controller.yaml` | `ur5e_bringup/config/controllers/` |
+| `ur5e_rt_controller/config/controllers/indirect/demo_task_controller.yaml` | `ur5e_bringup/config/controllers/` |
 | `ur5e_mujoco_sim/` | `rtc_mujoco_sim/` (MJCF 경로 파라미터화) |
 | `ur5e_digital_twin/` | `rtc_digital_twin/` (robot_description topic 기반) |
 | `ur5e_tools/` | `rtc_tools/` |
@@ -619,3 +897,5 @@ panda_bringup/              # Panda launch/config (rtc_controller_manager 사용
 7. **표준 패턴** — ros2_control, franka_ros2, lbr_fri_ros2_stack과 동일한 구조
 8. **확장성** — 새 로봇, 새 end-effector, 새 통신 프로토콜 추가 시 기존 코드 수정 최소화
 9. **추론 재사용** — `rtc_inference`로 RT-safe ONNX 추론을 어떤 센서/모델에든 재사용 가능 (F/T estimation, contact detection, anomaly detection 등)
+10. **통신 프로토콜 확장** — Transport 추상화로 UDP 외에 CAN-FD, EtherCAT, RS485 등을 `TransportInterface` 구현만으로 추가 가능. 기존 Codec/Transceiver 코드 재사용
+11. **Controller 계층 명확** — 범용 manipulator controller(any robot)와 로봇+end-effector 통합 demo controller(robot-specific)가 명확히 분리되어, 새 로봇 추가 시 범용 controller는 그대로 재사용하고 통합 controller만 자체 작성
