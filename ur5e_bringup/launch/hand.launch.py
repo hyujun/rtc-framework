@@ -1,5 +1,5 @@
-# hand.launch.py — Hand driver launch for UR5e bringup
-# Copied from ur5e_hand_udp/launch/hand_udp.launch.py with updated package names.
+# hand.launch.py — HandUdpNode launch for UR5e bringup
+# Request-response polling based unified hand UDP node
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution

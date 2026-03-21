@@ -2,30 +2,26 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>ur5e_bringup</name>
-  <version>0.1.0</version>
-  <description>UR5e-specific bringup: demo controllers, launch files, and robot configuration.</description>
+  <version>5.16.0</version>
+  <description>UR5e-specific launch, config, and demo controllers for RTC framework.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
-
   <buildtool_depend>ament_cmake</buildtool_depend>
-
   <depend>rclcpp</depend>
-  <depend>rtc_controller_manager</depend>
   <depend>rtc_controller_interface</depend>
   <depend>rtc_controllers</depend>
-  <depend>rtc_scripts</depend>
-  <depend>rtc_mujoco_sim</depend>
-  <depend>rtc_digital_twin</depend>
-  <depend>ur5e_hand_driver</depend>
-  <depend>ur5e_description</depend>
+  <depend>rtc_base</depend>
+  <depend>rtc_msgs</depend>
+  <depend>pinocchio</depend>
   <depend>yaml-cpp</depend>
-
-  <build_depend>pinocchio</build_depend>
-  <build_depend>eigen</build_depend>
-
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <exec_depend>rtc_controller_manager</exec_depend>
+  <exec_depend>rtc_scripts</exec_depend>
+  <exec_depend>ur5e_description</exec_depend>
+  <exec_depend>ur5e_hand_driver</exec_depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
-
   <export>
     <build_type>ament_cmake</build_type>
   </export>

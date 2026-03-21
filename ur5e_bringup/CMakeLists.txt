@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ur5e_bringup VERSION 0.1.0 LANGUAGES CXX)
+project(ur5e_bringup VERSION 5.16.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -18,66 +18,92 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(rtc_controller_interface REQUIRED)
+find_package(rtc_controllers REQUIRED)
 find_package(rtc_base REQUIRED)
+find_package(rtc_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
-# Pinocchio (suppress noisy warnings)
-find_package(pinocchio REQUIRED)
-find_package(Eigen3 REQUIRED)
+# Pre-find Python3 with NumPy so eigenpy's cmake detection succeeds.
+set(Python3_FIND_VIRTUALENV STANDARD)
+find_package(Python3 COMPONENTS Interpreter Development NumPy)
 
-# ── Demo controllers (STATIC library) ────────────────────────────────────────
-add_library(ur5e_bringup_controllers STATIC
+find_package(pinocchio REQUIRED)
+
+# ── Static library: demo controllers ──────────────────────────────────────────
+add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/demo_joint_controller.cpp
   src/controllers/demo_task_controller.cpp
 )
-target_include_directories(ur5e_bringup_controllers
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-)
-target_link_libraries(ur5e_bringup_controllers
-  PUBLIC
-    pinocchio::pinocchio
-    Eigen3::Eigen
-    yaml-cpp
-)
-ament_target_dependencies(ur5e_bringup_controllers
-  PUBLIC
-    rclcpp
-    rtc_controller_interface
-    rtc_base
+
+target_include_directories(${PROJECT_NAME}_demo_controllers PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
 )
 
-# ── Install ────────────────────────────────────────────────────────────────────
-install(TARGETS ur5e_bringup_controllers
+ament_target_dependencies(${PROJECT_NAME}_demo_controllers
+  rclcpp
+  std_msgs
+  sensor_msgs
+  rtc_controller_interface
+  rtc_controllers
+  rtc_base
+  rtc_msgs
+  pinocchio
+)
+
+target_link_libraries(${PROJECT_NAME}_demo_controllers
+  yaml-cpp
+)
+
+# ── Install headers ───────────────────────────────────────────────────────────
+install(
+  DIRECTORY include/
+  DESTINATION include
+)
+
+# ── Install library ───────────────────────────────────────────────────────────
+install(
+  TARGETS ${PROJECT_NAME}_demo_controllers
+  EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
 
-install(DIRECTORY include/
-  DESTINATION include
-)
-
-install(DIRECTORY config/
+# ── Install config ────────────────────────────────────────────────────────────
+install(
+  DIRECTORY config/
   DESTINATION share/${PROJECT_NAME}/config
 )
 
-install(DIRECTORY launch/
+# ── Install launch files ──────────────────────────────────────────────────────
+install(
+  DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
 )
 
 # ── Export ─────────────────────────────────────────────────────────────────────
-ament_export_include_directories(include)
-ament_export_libraries(ur5e_bringup_controllers)
+ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
   rclcpp
+  std_msgs
+  sensor_msgs
   rtc_controller_interface
+  rtc_controllers
   rtc_base
+  rtc_msgs
   pinocchio
-  Eigen3
   yaml-cpp
 )
+ament_export_include_directories(include)
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+if(BUILD_TESTING)
+  find_package(ament_lint_auto REQUIRED)
+  ament_lint_auto_find_test_dependencies()
+endif()
 
 ament_package()

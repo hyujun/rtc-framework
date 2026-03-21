@@ -11,23 +11,23 @@ rt_controller 노드를 수정 없이 그대로 실행합니다.
 
 사용법:
   # 기본 (YAML 설정 사용)
-  ros2 launch ur5e_rt_controller mujoco_sim.launch.py
+  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py
 
   # sync_step 모드로 오버라이드
-  ros2 launch ur5e_rt_controller mujoco_sim.launch.py sim_mode:=sync_step
+  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step
 
   # Headless 모드 (디스플레이 없는 환경)
-  ros2 launch ur5e_rt_controller mujoco_sim.launch.py enable_viewer:=false
+  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py enable_viewer:=false
 
   # 외부 Menagerie 모델 사용
-  ros2 launch ur5e_rt_controller mujoco_sim.launch.py \\
+  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py \\
       model_path:=/path/to/mujoco_menagerie/universal_robots_ur5e/scene.xml
 
   # PD 게인 조정
-  ros2 launch ur5e_rt_controller mujoco_sim.launch.py kp:=10.0 kd:=1.0
+  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py kp:=10.0 kd:=1.0
 
   # max_rtf 오버라이드 (YAML의 1.0 대신 10.0 사용)
-  ros2 launch ur5e_rt_controller mujoco_sim.launch.py max_rtf:=10.0
+  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py max_rtf:=10.0
 
 실행되는 노드:
   1. mujoco_simulator_node  — MuJoCo 물리 시뮬레이터 (UR 드라이버 역할 대체)
@@ -79,7 +79,7 @@ from ament_index_python.packages import get_package_share_directory
 def _resolve_logging_root():
     """colcon workspace 기반 logging_data 루트 경로 결정."""
     try:
-        share_dir = get_package_share_directory('ur5e_rt_controller')
+        share_dir = get_package_share_directory('rtc_controller_manager')
         ws_dir = os.path.dirname(os.path.dirname(
             os.path.dirname(os.path.dirname(share_dir))))
         return os.path.join(ws_dir, 'logging_data')
@@ -117,12 +117,12 @@ def launch_setup(context, *args, **kwargs):
 
     # ── Package paths ─────────────────────────────────────────────────────────
     pkg_sim = FindPackageShare('rtc_mujoco_sim')
-    pkg_ctrl = FindPackageShare('ur5e_rt_controller')
+    pkg_ctrl = FindPackageShare('rtc_controller_manager')
 
     sim_config = PathJoinSubstitution(
         [pkg_sim,  'config', 'mujoco_simulator.yaml'])
     ctrl_config = PathJoinSubstitution(
-        [pkg_ctrl, 'config', 'ur5e_rt_controller.yaml'])
+        [pkg_ctrl, 'config', 'rt_controller_manager.yaml'])
 
     # ur5e_hand_udp is optional — may not be built in sim-only installs
     hand_config = None
@@ -176,8 +176,8 @@ def launch_setup(context, *args, **kwargs):
     # control_rate를 MuJoCo 노드에 전달 (physics_timestep 검증용)
     try:
         ctrl_yaml_path = os.path.join(
-            get_package_share_directory('ur5e_rt_controller'),
-            'config', 'ur5e_rt_controller.yaml')
+            get_package_share_directory('rtc_controller_manager'),
+            'config', 'rt_controller_manager.yaml')
         with open(ctrl_yaml_path, 'r') as f:
             ctrl_yaml = yaml.safe_load(f)
         control_rate = (ctrl_yaml.get('/**', {})
@@ -252,7 +252,7 @@ def launch_setup(context, *args, **kwargs):
         enable_sim_cpu_shield = ExecuteProcess(
             cmd=[
                 'bash', '-c',
-                'SCRIPT_DIR="$(ros2 pkg prefix ur5e_rt_controller 2>/dev/null)/lib/ur5e_rt_controller" && '
+                'SCRIPT_DIR="$(ros2 pkg prefix rtc_controller_manager 2>/dev/null)/lib/rtc_controller_manager" && '
                 'if [ -f "$SCRIPT_DIR/cpu_shield.sh" ]; then '
                 '  ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); '
                 '  if [ -z "$ISOLATED" ]; then '
@@ -279,7 +279,7 @@ def launch_setup(context, *args, **kwargs):
 
     # ── Node 2: Custom Controller ─────────────────────────────────────────────
     rt_controller_node = Node(
-        package='ur5e_rt_controller',
+        package='rtc_controller_manager',
         executable='rt_controller',
         name='rt_controller',
         output='screen',

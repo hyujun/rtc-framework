@@ -7,7 +7,7 @@
 #include "rtc_controller_manager/controller_timing_profiler.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include <ur5e_hand_udp/hand_controller.hpp>
-#include <rtc_status_monitor/ur5e_status_monitor.hpp>
+#include <rtc_status_monitor/rtc_status_monitor.hpp>
 
 // ── ROS2 ─────────────────────────────────────────────────────────────────────
 #include <rclcpp/rclcpp.hpp>

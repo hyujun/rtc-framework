@@ -1,34 +1,30 @@
 demo_joint_controller:
-  # ── UR5e 로봇 암 P 게인 ([Base, Shoulder, Elbow, Wrist1, Wrist2, Wrist3]) ─
-  # command = current_pos + kp * error * dt (증분 위치 스텝)
+  # ── UR5e robot arm P gains ([Base, Shoulder, Elbow, Wrist1, Wrist2, Wrist3]) ─
+  # command = current_pos + kp * error * dt (incremental position step)
   robot_kp: [120.0, 120.0, 100.0, 80.0, 80.0, 80.0]
 
-  # ── 핸드 모터 P 게인 (10개 모터) ──────────────────────────────────────────
+  # ── Hand motor P gains (10 motors) ──────────────────────────────────────────
   hand_kp: [50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
 
-  # ── 출력 타입 ─────────────────────────────────────────────────────────────
+  # ── Output type ─────────────────────────────────────────────────────────────
   command_type: "position"
 
-  # ── 디바이스 활성화 ────────────────────────────────────────────────────────
+  # ── Device activation ──────────────────────────────────────────────────────
   enable_ur5e: true
-  enable_hand: true              # 이 컨트롤러만 핸드 활성화
+  enable_hand: true
 
-  # ── 토픽 설정 ─────────────────────────────────────────────────────────────
+  # ── Topic configuration ─────────────────────────────────────────────────────
   topics:
     ur5e:
       subscribe:
-        # 카테고리 1: Goal State (궤적 최종 목표)
         - topic: "/ur5e/target_joint_positions"
           role: "goal"
-        # 카테고리 2: Current State (센서 피드백)
         - topic: "/joint_states"
           role: "joint_state"
       publish:
-        # 카테고리 3: Control Command (액추에이터 출력)
         - topic: "/forward_position_controller/commands"
           role: "position_command"
           data_size: 6
-        # 카테고리 4: Logging/Monitoring (진단 발행)
         - topic: "/ur5e/current_task_position"
           role: "task_position"
           data_size: 6
@@ -40,10 +36,8 @@ demo_joint_controller:
           data_size: 18
     hand:
       subscribe:
-        # 카테고리 1: Hand Goal State (핸드 모터 목표 위치)
         - topic: "/hand/target_joint_positions"
           role: "goal"
-        # 카테고리 2: Hand Current State (센서 피드백)
         - topic: "/hand/joint_states"
           role: "hand_state"
       publish:
