@@ -1,4 +1,4 @@
-# 변경 이력 — ur5e_tools
+# 변경 이력 — rtc_tools
 
 이 파일은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/) 형식을 따르며,
 [시맨틱 버전 관리](https://semver.org/lang/ko/)를 사용합니다.
@@ -23,15 +23,15 @@
 ### 추가 (Added) — 세션 디렉토리 유틸리티
 
 - **`utils/session_dir.py` 신규** — Python 세션 디렉토리 헬퍼
-  - `get_session_dir()` — `UR5E_SESSION_DIR` 환경변수에서 세션 경로 읽기
+  - `get_session_dir()` — `RTC_SESSION_DIR` 환경변수에서 세션 경로 읽기
   - `get_session_subdir(subdir)` — 세션 내 서브디렉토리 경로 반환 + 자동 생성
 
 ### 변경 (Changed) — 세션 기반 로깅 경로
 
-- `plot_ur_trajectory.py`: `--save-dir` 미지정 시 `UR5E_SESSION_DIR/plots/` 기본 경로
-- `motion_editor_gui.py`: JSON 저장 기본 경로를 `UR5E_SESSION_DIR/motions/`로 변경
-- `hand_udp_sender_example.py`: CSV 로깅 기본 경로를 `UR5E_SESSION_DIR/hand/`로 변경
-- `monitor_data_health.py` 제거 (기능이 `ur5e_status_monitor` 및 `ur5e_hand_udp`에 통합됨)
+- `plot_rtc_log.py` (구 `plot_ur_trajectory.py`): `--save-dir` 미지정 시 `RTC_SESSION_DIR/plots/` 기본 경로
+- `motion_editor_gui.py`: JSON 저장 기본 경로를 `RTC_SESSION_DIR/motions/`로 변경
+- `hand_udp_sender_example.py`: CSV 로깅 기본 경로를 `RTC_SESSION_DIR/hand/`로 변경
+- `monitor_data_health.py` 제거 (기능이 `rtc_status_monitor` 및 `ur5e_hand_driver`에 통합됨)
 
 ---
 
@@ -50,13 +50,13 @@
 
 ### 추가 (Added) — MJCF vs URDF 파라미터 비교 도구
 
-- `ur5e_tools/validation/compare_mjcf_urdf.py` 신규
+- `rtc_tools/validation/compare_mjcf_urdf.py` 신규
 - `ur5e_description` 패키지의 MJCF(`ur5e.xml`)와 URDF(`ur5e.urdf`) 물리 파라미터 비교 검증
 - 비교 항목: link mass, diagonal inertia, joint position limits, effort limits, axis vector, link origin offset
 - MJCF default class 상속 해석 (`size3`, `size3_limited`, `size1`)
 - 자동 경로 탐색: `ament_index` 또는 개발 레이아웃 상대 경로
 - 종료 코드: mismatch 0이면 `0`, 아니면 `1` (CI 통합 가능)
-- `setup.py` entry_points 등록: `ros2 run ur5e_tools compare_mjcf_urdf`
+- `setup.py` entry_points 등록: `ros2 run rtc_tools compare_mjcf_urdf`
 
 ---
 
@@ -91,7 +91,7 @@
 
 ### 추가
 
-- **초기 분리**: `ur5e_rt_controller` 단일 패키지에서 Python 유틸리티를 독립 패키지로 추출
+- **초기 분리**: `rtc_controller_manager` 단일 패키지에서 Python 유틸리티를 독립 패키지로 추출
 - `plotting/plot_ur_trajectory.py`: Matplotlib 기반 CSV 제어 로그 궤적 시각화
 - `monitoring/monitor_data_health.py`: `DataHealthMonitor` ROS2 노드 — 4개 토픽 패킷 속도/타임아웃 추적, JSON 통계 출력
 - `gui/motion_editor_gui.py`: Qt5 기반 50-포즈 모션 편집기 GUI
