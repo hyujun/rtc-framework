@@ -36,7 +36,7 @@ namespace urtc = rtc;
 // ── Controller registry ──────────────────────────────────────────────────────
 //
 // To add a new controller:
-//   1. Create include/ur5e_rt_controller/controllers/my_controller.hpp
+//   1. Create include/rtc_controllers/controllers/my_controller.hpp
 //      (inherit RTControllerInterface, implement all pure virtuals + LoadConfig
 //       + UpdateGainsFromMsg)
 //   2. Create config/controllers/my_controller.yaml
@@ -274,7 +274,7 @@ std::filesystem::path RtControllerNode::ResolveAndSetupSessionDir()
   std::string default_logging_root = "/tmp/ur5e_logging_data";
   try {
     std::string share_dir =
-      ament_index_cpp::get_package_share_directory("ur5e_rt_controller");
+      ament_index_cpp::get_package_share_directory("rtc_controller_manager");
     std::filesystem::path ws_path = std::filesystem::path(share_dir)
       .parent_path()
       .parent_path()
@@ -603,7 +603,7 @@ void RtControllerNode::DeclareAndLoadParameters()
 
   std::string config_dir;
   try {
-    config_dir = ament_index_cpp::get_package_share_directory("ur5e_rt_controller") +
+    config_dir = ament_index_cpp::get_package_share_directory("rtc_controller_manager") +
       "/config/controllers/";
   } catch (...) {
   }

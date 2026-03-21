@@ -1,30 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  cyclone_dds.xml — CycloneDDS configuration for UR5e RT Controller
-  [방안 E] Restricts DDS internal threads to Core 0-1 (non-RT cores),
-  preventing DDS recv/send threads from preempting RT threads on Core 2-5.
+  cyclone_dds.xml — CycloneDDS configuration for RT Controller Manager
+  Restricts DDS internal threads to non-RT cores, preventing DDS recv/send
+  threads from preempting RT threads.
 
-  Loaded automatically via CYCLONEDDS_URI env var set in ur_control.launch.py.
+  Loaded automatically via CYCLONEDDS_URI env var set in launch files.
   Reference: https://cyclonedds.io/docs/cyclonedds/latest/config/index.html
-
-  Thread affinity:
-    - Jazzy (CycloneDDS 0.11+): <Internal><Threads> removed — causes fatal
-      "unknown element" error. DDS thread pinning handled by taskset (방안 D).
-    - Humble (CycloneDDS 0.10.x): <Internal><Threads> was supported but
-      cannot coexist in a single XML. Use a separate XML if Humble support
-      is needed, or rely on taskset pinning which works on both.
 -->
 <CycloneDDS>
   <Domain>
     <General>
-      <!-- Use the robot-side NIC for UR driver communication.
-           Change 'eth0' to match the actual interface (e.g., enp3s0, eno1).
-           Run: ip link show   to find the correct interface name. -->
       <Interfaces>
         <NetworkInterface autodetermine="true" multicast="default"/>
       </Interfaces>
-      <!-- Disable multicast if the robot subnet doesn't support it -->
-      <!-- <AllowMulticast>false</AllowMulticast> -->
     </General>
 
     <Tracing>
@@ -32,8 +20,7 @@
     </Tracing>
 
     <!-- NOTE: <Internal><Threads> is NOT supported in CycloneDDS 0.11+
-         (Jazzy). Adding it causes a fatal "unknown element" error that
-         prevents all ROS 2 nodes from starting. DDS thread affinity is
-         handled by taskset in ur_control.launch.py (방안 D) instead. -->
+         (Jazzy). DDS thread affinity is handled by taskset in launch
+         files instead. -->
   </Domain>
 </CycloneDDS>

@@ -1,11 +1,5 @@
 #pragma once
 
-// ── Workspace Analysis ───────────────────────────────────────────────────────
-// Package:      rtc_status_monitor (v5.2.2)
-// Reuse:        kNumRobotJoints from rtc_base/types/types.hpp
-// Thread safety: NOT thread-safe internally — caller must guard with mutex
-// ─────────────────────────────────────────────────────────────────────────────
-
 // ── Project headers ──────────────────────────────────────────────────────────
 #include "rtc_status_monitor/failure_types.hpp"
 
@@ -15,7 +9,7 @@
 #include <cstddef>
 #include <vector>
 
-namespace rtc_status_monitor {
+namespace rtc {
 
 // ── StateHistoryEntry ────────────────────────────────────────────────────────
 /// Single snapshot recorded at each 10 Hz monitor cycle.
@@ -35,7 +29,7 @@ struct StateHistoryEntry {
 /// Fixed-size circular buffer for state snapshots.
 /// Capacity defaults to 100 entries (10 seconds at 10 Hz).
 ///
-/// NOT thread-safe — the caller (UR5eStatusMonitor) guards access
+/// NOT thread-safe — the caller (RtcStatusMonitor) guards access
 /// with history_mutex_.
 class StateHistory {
 public:
@@ -85,4 +79,4 @@ private:
   std::size_t count_{0};
 };
 
-}  // namespace rtc_status_monitor
+}  // namespace rtc

@@ -1,13 +1,5 @@
 #pragma once
 
-// ── Workspace Analysis ───────────────────────────────────────────────────────
-// Package:      rtc_status_monitor (v5.2.2)
-// Build type:   Shared library — composed into RtControllerNode
-// Executor:     Monitor callback group → aux_executor (non-RT)
-// Thread model: Internal std::jthread at 10 Hz for periodic checks
-// RT safety:    isReady(), getFailure(), isJointLimitWarning() are lock-free
-// ─────────────────────────────────────────────────────────────────────────────
-
 // ── Project headers ──────────────────────────────────────────────────────────
 #include "rtc_status_monitor/failure_types.hpp"
 #include "rtc_status_monitor/state_history.hpp"
@@ -34,7 +26,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace rtc_status_monitor {
+namespace rtc {
 
 // ── Default joint limits for UR5e (rad) ──────────────────────────────────────
 // Each pair is {lower, upper}. Overridable via ROS2 parameters.
@@ -47,7 +39,7 @@ inline constexpr std::array<std::array<double, 2>, kNumJoints> kDefaultJointLimi
   {{ -6.2832,  6.2832}},  // joint 5: ±360 deg
 }};
 
-// ── UR5eStatusMonitor ────────────────────────────────────────────────────────
+// ── RtcStatusMonitor ────────────────────────────────────────────────────────
 //
 // Non-RT status monitor for UR5e servoJ control.
 // Composed into an existing ROS2 node via shared_ptr.
@@ -55,11 +47,11 @@ inline constexpr std::array<std::array<double, 2>, kNumJoints> kDefaultJointLimi
 // Architecture:
 //   RT Control Thread (500 Hz)
 //        ↕ atomic reads: isReady() / getFailure() / isJointLimitWarning()
-//   UR5eStatusMonitor (10 Hz std::jthread)
+//   RtcStatusMonitor (10 Hz std::jthread)
 //        ↕ ROS2 subscriptions / service calls
 //   ur_robot_driver / controller_manager
 //
-class UR5eStatusMonitor {
+class RtcStatusMonitor {
 public:
   // ── Message statistics ────────────────────────────────────────────────────
   struct MessageStats {
@@ -82,16 +74,16 @@ public:
   /// Construct the monitor and attach to an existing ROS2 node.
   /// Does NOT start monitoring — call start() explicitly.
   /// @param node  Shared pointer to the host node (must outlive this object).
-  explicit UR5eStatusMonitor(rclcpp::Node::SharedPtr node);
+  explicit RtcStatusMonitor(rclcpp::Node::SharedPtr node);
 
   /// Destructor — stops the monitor thread if running.
-  ~UR5eStatusMonitor();
+  ~RtcStatusMonitor();
 
   // Non-copyable, non-movable
-  UR5eStatusMonitor(const UR5eStatusMonitor&) = delete;
-  UR5eStatusMonitor& operator=(const UR5eStatusMonitor&) = delete;
-  UR5eStatusMonitor(UR5eStatusMonitor&&) = delete;
-  UR5eStatusMonitor& operator=(UR5eStatusMonitor&&) = delete;
+  RtcStatusMonitor(const RtcStatusMonitor&) = delete;
+  RtcStatusMonitor& operator=(const RtcStatusMonitor&) = delete;
+  RtcStatusMonitor(RtcStatusMonitor&&) = delete;
+  RtcStatusMonitor& operator=(RtcStatusMonitor&&) = delete;
 
   // ── RT-safe accessors (lock-free, called from 500 Hz control loop) ─────────
 
@@ -143,8 +135,8 @@ public:
 
   /// Start the 10 Hz monitor thread.
   /// @param thread_cfg  Thread scheduling / CPU affinity configuration.
-  void start(const rtc::ThreadConfig& thread_cfg =
-                 rtc::kStatusMonitorConfig);
+  void start(const ThreadConfig& thread_cfg =
+                 kStatusMonitorConfig);
 
   /// Request the monitor thread to stop and join.
   void stop();
@@ -217,8 +209,6 @@ private:
   std::atomic<bool>    program_running_{false};
   std::atomic<bool>    joint_state_received_{false};
 
-  // last_joint_state_time_ stores steady_clock::time_point::rep (int64_t nanoseconds)
-  // so it can be stored atomically without a mutex.
   std::atomic<int64_t> last_joint_state_time_{0};
 
   // ── Mutex-guarded state: reference from RT thread ──────────────────────────
@@ -248,51 +238,41 @@ private:
   std::jthread monitor_thread_;
 
   // ── Parameters ─────────────────────────────────────────────────────────────
-  // Tracking error thresholds (rad)
   double tracking_error_pos_warn_rad_{0.05};
   double tracking_error_pos_fault_rad_{0.15};
   double tracking_error_vel_warn_rad_{0.1};
   double tracking_error_vel_fault_rad_{0.3};
 
-  // Joint limit margins (rad, converted from deg parameters)
-  double joint_limit_warn_margin_rad_{0.0873};   // ~5.0 deg
-  double joint_limit_fault_margin_rad_{0.0175};   // ~1.0 deg
+  double joint_limit_warn_margin_rad_{0.0873};
+  double joint_limit_fault_margin_rad_{0.0175};
 
-  // Joint limits
   std::array<std::array<double, 2>, kNumJoints> joint_limits_{kDefaultJointLimits};
 
-  // Watchdog
   double watchdog_timeout_sec_{1.0};
 
-  // Controller manager
   double controller_poll_interval_sec_{5.0};
   std::string target_controller_{"scaled_joint_trajectory_controller"};
 
-  // Recovery
   bool   auto_recovery_{false};
   int    max_recovery_attempts_{3};
   double recovery_interval_sec_{5.0};
   int    recovery_attempts_{0};
   std::chrono::steady_clock::time_point last_recovery_time_{};
 
-  // Logging
   std::string log_output_dir_;
 
-  // Topic names (configurable)
   std::string joint_states_topic_{"/joint_states"};
   std::string robot_mode_topic_{"/io_and_status_controller/robot_mode"};
   std::string safety_mode_topic_{"/io_and_status_controller/safety_mode"};
   std::string program_running_topic_{"/io_and_status_controller/robot_program_running"};
 
-  // Diagnostics timing
   std::chrono::steady_clock::time_point last_diag_time_{};
   std::chrono::steady_clock::time_point last_controller_poll_time_{};
   std::chrono::steady_clock::time_point start_time_{};
 
-  // Controller state cache (from last list_controllers call)
   bool target_controller_active_{false};
 
-  // ── Message stats (packet counting & rate monitoring) ─────────────────────
+  // ── Message stats ──────────────────────────────────────────────────────────
   MessageStats js_stats_;
   std::chrono::steady_clock::time_point rate_window_start_{};
   uint64_t rate_window_count_{0};
@@ -303,4 +283,4 @@ private:
   std::string current_controller_name_{"unknown"};
 };
 
-}  // namespace rtc_status_monitor
+}  // namespace rtc

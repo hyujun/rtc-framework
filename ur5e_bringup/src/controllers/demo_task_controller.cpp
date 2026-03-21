@@ -8,8 +8,6 @@
 namespace ur5e_bringup
 {
 
-using namespace rtc;
-
 // ── Constructor ─────────────────────────────────────────────────────────────
 
 DemoTaskController::DemoTaskController(std::string_view urdf_path, Gains gains)
@@ -70,8 +68,6 @@ ControllerOutput DemoTaskController::Compute(
     target_initialized_ = true;
   }
 
-  // target_mutex_로 target 읽기 + trajectory 초기화 보호.
-  // try_lock이므로 RT thread blocking 없음 — 실패 시 다음 tick에 처리.
   if (new_target_.load(std::memory_order_acquire)) {
     std::unique_lock lock(target_mutex_, std::try_to_lock);
     if (lock.owns_lock()) {
@@ -385,7 +381,7 @@ void DemoTaskController::LoadConfig(const YAML::Node & cfg)
 
 void DemoTaskController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
 {
-  // layout: [kp*6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp*10] = 20
+  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10] = 20
   if (gains.size() < 10) {return;}
   for (std::size_t i = 0; i < 6; ++i) {
     gains_.kp[i] = gains[i];
@@ -404,7 +400,7 @@ void DemoTaskController::UpdateGainsFromMsg(std::span<const double> gains) noexc
 
 std::vector<double> DemoTaskController::GetCurrentGains() const noexcept
 {
-  // layout: [kp*6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp*10] = 20
+  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10] = 20
   std::vector<double> v;
   v.reserve(20);
   v.insert(v.end(), gains_.kp.begin(), gains_.kp.end());
