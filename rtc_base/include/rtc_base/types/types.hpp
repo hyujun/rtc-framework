@@ -15,7 +15,11 @@ namespace rtc {
 
 // ── Compile-time constants ─────────────────────────────────────────────────────
 inline constexpr int kNumRobotJoints = 6;
+inline constexpr int kMaxRobotDOF            = 12;   // max joints for generic robots
 inline constexpr int kNumHandMotors          = 10;
+inline constexpr int kMaxDeviceChannels      = 64;   // max channels for generic devices
+inline constexpr int kMaxSensorChannels      = 128;  // max sensor data channels
+inline constexpr int kMaxInferenceValues     = 64;   // max inference output values
 
 // Fingertip 수: YAML에서 런타임 설정 가능. 배열 크기는 kMaxFingertips로 고정.
 inline constexpr int kDefaultNumFingertips   = 4;    // YAML 미설정 시 기본값

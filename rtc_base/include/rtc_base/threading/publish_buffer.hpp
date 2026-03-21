@@ -36,26 +36,27 @@ namespace rtc {
 
 // Snapshot of all data needed for ROS2 publishing in one control tick.
 // Populated by the RT loop (producer), consumed by the publish thread.
-// ~640 bytes — fits in 10 cache lines.
 struct PublishSnapshot {
   // ── Robot commands ──────────────────────────────────────────────────────
-  std::array<double, kNumRobotJoints> robot_commands{};
+  int num_robot_joints{kNumRobotJoints};
+  std::array<double, kMaxRobotDOF> robot_commands{};
   CommandType command_type{CommandType::kPosition};
 
   // ── Task position (6-DOF FK output) ────────────────────────────────────
   std::array<double, 6> actual_task_positions{};
 
   // ── Trajectory state (kTrajectoryState topic) ──────────────────────────
-  std::array<double, kNumRobotJoints> goal_positions{};
-  std::array<double, kNumRobotJoints> actual_target_positions{};
-  std::array<double, kNumRobotJoints> target_velocities{};
+  std::array<double, kMaxRobotDOF> goal_positions{};
+  std::array<double, kMaxRobotDOF> actual_target_positions{};
+  std::array<double, kMaxRobotDOF> target_velocities{};
 
   // ── Controller state (kControllerState topic) ──────────────────────────
-  std::array<double, kNumRobotJoints> actual_positions{};
-  std::array<double, kNumRobotJoints> actual_velocities{};
+  std::array<double, kMaxRobotDOF> actual_positions{};
+  std::array<double, kMaxRobotDOF> actual_velocities{};
 
-  // ── Hand commands ──────────────────────────────────────────────────────
-  std::array<float, kNumHandMotors> hand_commands{};
+  // ── Device commands ────────────────────────────────────────────────────
+  int num_device_channels{0};
+  std::array<float, kMaxDeviceChannels> device_commands{};
 
   // ── JointCommand header stamp (monotonic nanoseconds) ──────────────────
   int64_t stamp_ns{0};
@@ -65,8 +66,8 @@ struct PublishSnapshot {
 
   // ── Device flags (resolved per-controller) ─────────────────────────────
   bool ur5e_enabled{false};
-  bool hand_enabled{false};
-  bool hand_sim_enabled{false};
+  bool device_enabled{false};
+  bool device_sim_enabled{false};
 };
 
 // SPSC ring buffer of capacity N entries (N must be a power of 2).

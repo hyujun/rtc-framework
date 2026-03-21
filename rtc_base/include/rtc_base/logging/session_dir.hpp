@@ -19,13 +19,13 @@ namespace rtc {
 //   logging_data/YYMMDD_HHMM/
 //     controller/   — rt_controller CSV 로그
 //     monitor/      — status_monitor 장애/통계
-//     hand/         — hand_udp 통신 통계
+//     device/       — device 통신 통계
 //     sim/          — mujoco 스크린샷
 //     plots/        — 플롯 출력
 //     motions/      — 모션 에디터 JSON
 //
-// 환경변수 UR5E_SESSION_DIR로 세션 경로를 전파.
-// Header-only — ur5e_rt_base의 링크 정책 유지.
+// 환경변수 RTC_SESSION_DIR (fallback: UR5E_SESSION_DIR)로 세션 경로를 전파.
+// Header-only — rtc_base의 링크 정책 유지.
 
 /// "YYMMDD_HHMM" 형식의 타임스탬프 문자열 생성
 inline std::string GenerateSessionTimestamp() {
@@ -41,22 +41,24 @@ inline std::string GenerateSessionTimestamp() {
 /// 세션 디렉토리 내 표준 서브디렉토리 생성
 inline void EnsureSessionSubdirs(const std::filesystem::path & session_dir) {
   static constexpr const char* kSubdirs[] = {
-    "controller", "monitor", "hand", "sim", "plots", "motions"
+    "controller", "monitor", "device", "sim", "plots", "motions"
   };
   for (const auto* sub : kSubdirs) {
     std::filesystem::create_directories(session_dir / sub);
   }
 }
 
-/// UR5E_SESSION_DIR 환경변수에서 세션 디렉토리를 읽거나,
+/// RTC_SESSION_DIR 환경변수에서 세션 디렉토리를 읽거나,
 /// 없으면 fallback_logging_root 아래에 새 세션 디렉토리를 생성.
+/// UR5E_SESSION_DIR도 하위 호환을 위해 fallback으로 확인.
 ///
 /// @param fallback_logging_root  환경변수 미설정 시 사용할 logging_data 루트 경로
 /// @return 세션 디렉토리 절대 경로 (e.g. .../logging_data/260314_1430)
 inline std::filesystem::path ResolveSessionDir(
     const std::string & fallback_logging_root) {
-  // 1. 환경변수 우선
-  const char* env = std::getenv("UR5E_SESSION_DIR");
+  // 1. 환경변수 우선 (RTC_SESSION_DIR → UR5E_SESSION_DIR fallback)
+  const char* env = std::getenv("RTC_SESSION_DIR");
+  if (!env) env = std::getenv("UR5E_SESSION_DIR");  // backward compat
   if (env != nullptr && env[0] != '\0') {
     std::filesystem::path session_dir{env};
     std::filesystem::create_directories(session_dir);

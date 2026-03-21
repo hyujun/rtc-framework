@@ -47,45 +47,49 @@ struct LogEntry {
   // ══════════════════════════════════════════════════════════════════════════
   // ── Robot joint data → robot_log.csv ───────────────────────────────────
   // ══════════════════════════════════════════════════════════════════════════
+  int num_robot_joints{6};  // actual joint count for this robot
 
   // 카테고리 1: Goal State (외부 입력 목표)
-  std::array<double, kNumRobotJoints> goal_positions{};
+  std::array<double, kMaxRobotDOF> goal_positions{};
 
   // 카테고리 2: Current State (센서 피드백)
-  std::array<double, kNumRobotJoints> actual_positions{};
-  std::array<double, kNumRobotJoints> actual_velocities{};
-  std::array<double, kNumRobotJoints> actual_torques{};        // 실제 토크
-  std::array<double, 6>               actual_task_positions{};  // TCP 위치
+  std::array<double, kMaxRobotDOF> actual_positions{};
+  std::array<double, kMaxRobotDOF> actual_velocities{};
+  std::array<double, kMaxRobotDOF> actual_torques{};        // 실제 토크
+  std::array<double, 6>            actual_task_positions{};  // TCP 위치
 
   // 카테고리 3: Control Command (액추에이터 출력)
-  std::array<double, kNumRobotJoints> robot_commands{};
+  std::array<double, kMaxRobotDOF> robot_commands{};
   CommandType command_type{CommandType::kPosition};
 
   // 카테고리 4: Trajectory State (궤적 보간 내부 상태)
-  std::array<double, kNumRobotJoints> trajectory_positions{};   // 궤적 보간 위치
-  std::array<double, kNumRobotJoints> trajectory_velocities{};  // 궤적 보간 속도
+  std::array<double, kMaxRobotDOF> trajectory_positions{};   // 궤적 보간 위치
+  std::array<double, kMaxRobotDOF> trajectory_velocities{};  // 궤적 보간 속도
 
   // ══════════════════════════════════════════════════════════════════════════
-  // ── Hand data → hand_log.csv ───────────────────────────────────────────
+  // ── Device data → device_log.csv ───────────────────────────────────────
   // ══════════════════════════════════════════════════════════════════════════
-  bool hand_valid{false};
+  bool device_valid{false};
+  int num_device_channels{0};
 
   // 카테고리 1: Goal State
-  std::array<float, kNumHandMotors>  hand_goal_positions{};
+  std::array<float, kMaxDeviceChannels>  device_goal{};
 
   // 카테고리 2: Current State
-  std::array<float, kNumHandMotors>  hand_actual_positions{};
-  std::array<float, kNumHandMotors>  hand_actual_velocities{};
-  std::array<int32_t, kMaxHandSensors> hand_sensors{};         // 필터링된 센서 (post-LPF)
-  std::array<int32_t, kMaxHandSensors> hand_sensors_raw{};    // 원본 센서 (pre-LPF)
-  int num_fingertips{kDefaultNumFingertips};                   // 실제 사용 fingertip 수
+  std::array<float, kMaxDeviceChannels>  device_actual{};
+  std::array<float, kMaxDeviceChannels>  device_velocities{};
+  std::array<float, kMaxSensorChannels>  sensor_data{};         // 필터링된 센서 (post-LPF)
+  std::array<float, kMaxSensorChannels>  sensor_data_raw{};     // 원본 센서 (pre-LPF)
+  int num_sensor_channels{0};
+  int num_fingertips{kDefaultNumFingertips};                    // 하위 호환용
 
-  // F/T 추론 결과 (ONNX 출력)
-  std::array<float, FingertipFTState::kMaxFTValues> hand_ft_data{};
-  bool hand_ft_valid{false};
+  // Inference output (e.g. ONNX model output)
+  std::array<float, kMaxInferenceValues> inference_output{};
+  bool inference_valid{false};
+  int num_inference_values{0};
 
   // 카테고리 3: Control Command
-  std::array<float, kNumHandMotors>  hand_commands{};
+  std::array<float, kMaxDeviceChannels>  device_commands{};
 
   // Legacy alias — kept for backward compatibility with external tools.
   [[nodiscard]] double compute_time_us() const noexcept { return t_compute_us; }
