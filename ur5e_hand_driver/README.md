@@ -313,25 +313,79 @@ struct HandCommStats {
   uint64_t recv_error{0};         // 기타 수신 에러 횟수
   uint64_t total_cycles{0};       // 총 EventLoop 사이클 수
   uint64_t event_skip_count{0};   // EventLoop busy 중 skip된 이벤트 수 (v5.11.0)
+  uint64_t cmd_mismatch{0};       // stale 패킷 거부 횟수 (cmd 불일치)
+  uint64_t mode_mismatch{0};      // 센서 모드 검증 실패 (Raw/NN 불일치)
 };
 
 // 스냅샷 조회 (relaxed read, struct copy)
 auto stats = controller.comm_stats();
 ```
 
+### 센서 저역통과 필터링 (v5.14.0)
+
+EventLoop에서 Bessel 4차 LPF를 적용하여 센서 노이즈를 제거합니다.
+
+```yaml
+baro_lpf_enabled: true
+baro_lpf_cutoff_hz: 30.0    # 기압 센서 차단 주파수
+tof_lpf_enabled: true
+tof_lpf_cutoff_hz: 15.0     # ToF 센서 차단 주파수
+```
+
+- 실효 샘플링 레이트 = 500 Hz / `sensor_decimation`
+- 필터링된 데이터: `HandState.sensor_data[]`, 원시 데이터: `HandState.sensor_data_raw[]`
+- `ApplySensorFilters()`는 `noexcept`로 RT 루프에서 안전
+
+---
+
+### FingertipFTInferencer (F/T 추론, v5.15.0)
+
+`OnnxEngine`을 상속하여 핑거팁별 ONNX 모델 기반 힘/토크 추론을 수행합니다.
+
+```yaml
+ft_inferencer:
+  enabled: true
+  num_fingertips: 4
+  model_paths: ["/path/thumb.onnx", "/path/index.onnx", ...]
+  calibration_enabled: true
+  calibration_samples: 500     # 500 샘플 @500Hz = 1초 캘리브레이션
+  thumb_max: [...]             # 16채널 정규화 최댓값 (핑거팁별)
+  index_max: [...]
+  middle_max: [...]
+  ring_max: [...]
+```
+
+**3-Phase 추론 파이프라인 (RT-safe, noexcept):**
+
+1. **전처리:** 센서 정규화 + 델타 계산 + FIFO 히스토리 시프트
+2. **배치 추론:** `RunModels(indices, count)` (할당 없음)
+3. **결과 복사:** → `FingertipFTState` (contact, force, direction, normal_force)
+
+**캘리브레이션:** `FeedCalibration()`으로 기준선 오프셋 자동 측정 (첫 N 사이클)
+
+---
+
 ### HandTimingProfiler
 
-EventLoop의 각 단계별 소요시간을 추적합니다:
+EventLoop의 각 단계별 소요시간을 추적합니다 (Individual/Bulk 모드별):
+
+**Individual 모드:**
 
 ```cpp
 struct HandTimingStats {
-  double write_us{0.0};     // WritePosition 소요시간
-  double read_pos_us{0.0};  // ReadPosition 소요시간
-  double read_vel_us{0.0};  // ReadVelocity 소요시간
+  double write_us{0.0};       // WritePosition 소요시간
+  double read_pos_us{0.0};    // ReadPosition 소요시간
+  double read_vel_us{0.0};    // ReadVelocity 소요시간
   double read_sensor_us{0.0}; // ReadSensor×4 소요시간
-  double total_us{0.0};     // 전체 사이클 소요시간
+  double total_us{0.0};       // 전체 사이클 소요시간
 };
 ```
+
+**Bulk 모드:**
+- `read_all_motor_us`: ReadAllMotors (0x10) 소요시간
+- `read_all_sensor_us`: ReadAllSensors (0x19) 소요시간
+
+히스토그램 기반 p95/p99 백분위수, 예산(2000µs) 초과 카운트 제공
 
 ### JSON 통계 내보내기 (v5.9.0, 경로 변경 v5.10.0)
 
