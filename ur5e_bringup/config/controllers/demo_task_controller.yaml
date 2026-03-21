@@ -1,0 +1,54 @@
+demo_task_controller:
+  # ── CLIK gains (robot arm task-space control) ──────────────────────────────
+  kp: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]   # Cartesian proportional gain (6-DOF)
+  damping: 0.01                           # Damped pseudoinverse lambda (singularity stabilization)
+  trajectory_speed: 0.1                   # TCP max translational speed (m/s)
+
+  # ── Null-space configuration ────────────────────────────────────────────────
+  enable_null_space: true                 # Enable null-space joint centering
+  null_kp: 0.5                            # Null-space proportional gain
+
+  # ── 6-DOF mode ──────────────────────────────────────────────────────────────
+  control_6dof: false                     # false=3-DOF (position only), true=6-DOF (position+orientation)
+
+  # ── Hand motor P gains (10 motors) ──────────────────────────────────────────
+  hand_kp: [50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
+
+  # ── Output type ─────────────────────────────────────────────────────────────
+  command_type: "position"
+
+  # ── Device activation ──────────────────────────────────────────────────────
+  enable_ur5e: true
+  enable_hand: true
+
+  # ── Topic configuration ─────────────────────────────────────────────────────
+  topics:
+    ur5e:
+      subscribe:
+        - topic: "/ur5e/target_joint_positions"
+          role: "goal"
+        - topic: "/joint_states"
+          role: "joint_state"
+      publish:
+        - topic: "/forward_position_controller/commands"
+          role: "position_command"
+          data_size: 6
+        - topic: "/ur5e/current_task_position"
+          role: "task_position"
+          data_size: 6
+        - topic: "/ur5e/trajectory_state"
+          role: "trajectory_state"
+          data_size: 18
+        - topic: "/ur5e/controller_state"
+          role: "controller_state"
+          data_size: 18
+    hand:
+      subscribe:
+        - topic: "/hand/target_joint_positions"
+          role: "goal"
+        - topic: "/hand/joint_states"
+          role: "hand_state"
+      publish:
+        - topic: "/hand/command"
+          role: "hand_command"
+          data_size: 10

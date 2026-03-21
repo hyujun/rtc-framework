@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>rtc_controllers</name>
+  <version>0.1.0</version>
+  <description>Generic robot controllers (P, CLIK, JointPD, OSC) for the RTC framework.</description>
+  <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rtc_controller_interface</depend>
+  <depend>rtc_base</depend>
+  <depend>rtc_msgs</depend>
+  <depend>pinocchio</depend>
+  <depend>yaml-cpp</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

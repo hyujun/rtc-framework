@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  cyclone_dds.xml — CycloneDDS configuration for RT Controller Manager
+  Restricts DDS internal threads to non-RT cores, preventing DDS recv/send
+  threads from preempting RT threads.
+
+  Loaded automatically via CYCLONEDDS_URI env var set in launch files.
+  Reference: https://cyclonedds.io/docs/cyclonedds/latest/config/index.html
+-->
+<CycloneDDS>
+  <Domain>
+    <General>
+      <Interfaces>
+        <NetworkInterface autodetermine="true" multicast="default"/>
+      </Interfaces>
+    </General>
+
+    <Tracing>
+      <Verbosity>warning</Verbosity>
+    </Tracing>
+
+    <!-- NOTE: <Internal><Threads> is NOT supported in CycloneDDS 0.11+
+         (Jazzy). DDS thread affinity is handled by taskset in launch
+         files instead. -->
+  </Domain>
+</CycloneDDS>

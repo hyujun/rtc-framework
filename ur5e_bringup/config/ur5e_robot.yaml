@@ -1,0 +1,64 @@
+# ur5e_robot.yaml — UR5e-specific configuration for RTC framework
+# ROS2 Humble / Jazzy compatible flat parameter structure
+/**:
+  ros__parameters:
+    # ── Control rate ──────────────────────────────────────────────────────────
+    control_rate: 500.0              # Hz — timer period = 1e6/rate us
+
+    # ── Device activation (global defaults) ───────────────────────────────────
+    enable_ur5e: true              # UR5e robot arm communication
+    enable_hand: false             # Hand communication (default: disabled)
+
+    # ── Initial controller ────────────────────────────────────────────────────
+    initial_controller: "demo_joint_controller"
+
+    # ── Initialization timeout ────────────────────────────────────────────────
+    init_timeout_sec: 30.0           # E-STOP + shutdown if no robot/target data (sec)
+
+    # ── Auto-hold position ────────────────────────────────────────────────────
+    auto_hold_position: true         # Auto-target current position when no external goal
+
+    # ── JointCommand publishing (MuJoCo / external simulator) ─────────────────
+    joint_command_topic: "/ur5e/joint_command"
+
+    # ── Hand simulation (MuJoCo fake response) ───────────────────────────────
+    hand_sim_enabled: false
+    hand_command_topic: "/hand/command"
+    hand_state_topic: "/hand/joint_states"
+
+    # ── E-STOP configuration ─────────────────────────────────────────────────
+    enable_estop: true               # E-STOP timeout monitoring
+    robot_timeout_ms: 100.0          # /joint_states gap triggers E-STOP (ms)
+    hand_timeout_ms: 200.0           # /hand/joint_states gap triggers E-STOP (ms)
+
+    # ── Logging configuration ─────────────────────────────────────────────────
+    enable_logging: true
+    enable_timing_log: true
+    enable_robot_log: true
+    enable_hand_log: true
+    log_dir: ""
+    max_log_sessions: 10
+
+    # ── Joint names (UR5e URDF active joints) ─────────────────────────────────
+    robot_joint_names:
+      - "shoulder_pan_joint"
+      - "shoulder_lift_joint"
+      - "elbow_joint"
+      - "wrist_1_joint"
+      - "wrist_2_joint"
+      - "wrist_3_joint"
+
+    # ── Joint limits ──────────────────────────────────────────────────────────
+    joint_limits:
+      max_velocity: 2.0              # rad/s
+      max_acceleration: 5.0          # rad/s^2 (informational)
+      position_limits:
+        joint_0: [-6.28, 6.28]       # Base
+        joint_1: [-6.28, 6.28]       # Shoulder
+        joint_2: [-3.14, 3.14]       # Elbow
+        joint_3: [-6.28, 6.28]       # Wrist 1
+        joint_4: [-6.28, 6.28]       # Wrist 2
+        joint_5: [-6.28, 6.28]       # Wrist 3
+
+    # ── Status Monitor ────────────────────────────────────────────────────────
+    enable_status_monitor: false

@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>rtc_controller_manager</name>
+  <version>0.1.0</version>
+  <description>
+    RT Controller Manager — generic 500 Hz real-time controller node.
+    Manages controller lifecycle, RT loop, publish offload, and logging.
+    Phase 3 of the RTC restructuring (extracted from rtc_controller_manager).
+  </description>
+  <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>yaml-cpp</depend>
+  <depend>ament_index_cpp</depend>
+
+  <!-- RTC packages (Phase 1-2) -->
+  <depend>rtc_controller_interface</depend>
+  <depend>rtc_controllers</depend>
+  <depend>rtc_base</depend>
+  <depend>rtc_communication</depend>
+  <depend>rtc_status_monitor</depend>
+  <depend>rtc_msgs</depend>
+
+  <!-- Pinocchio for URDF validation -->
+  <depend>pinocchio</depend>
+
+  <depend>ur5e_hand_driver</depend>
+  <depend>rtc_msgs</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
