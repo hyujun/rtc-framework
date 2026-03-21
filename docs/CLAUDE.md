@@ -94,39 +94,39 @@ ur5e-rt-controller/
 │
 │── ── Robot-agnostic framework (rtc_*) ── ──
 │
-├── rtc_base/                              # Shared header-only package
+├── rtc_base/                              # Shared header-only RT infrastructure
 │   └── include/rtc_base/
 │       ├── types/
-│       │   └── types.hpp                  # RobotState, HandState, ControllerState, ControllerOutput
+│       │   └── types.hpp                  # RobotState, HandState, ControllerState, ControllerOutput (variable DOF via MaxRobotDOF)
 │       ├── threading/
 │       │   ├── thread_config.hpp          # ThreadConfig + 4/6/8-core predefined RT constants
 │       │   ├── thread_utils.hpp           # ApplyThreadConfig(), SelectThreadConfigs()
+│       │   ├── publish_buffer.hpp         # PublishSnapshot SPSC buffer for non-RT publish offload
 │       │   └── seqlock.hpp               # Lock-free SeqLock<T> (single-writer/multi-reader)
 │       ├── logging/
-│       │   ├── log_buffer.hpp             # SPSC ring buffer (lock-free, 512 entries)
-│       │   └── data_logger.hpp            # Non-RT CSV logger (dynamic path resolution)
-│       ├── udp/
-│       │   ├── udp_socket.hpp             # UDP socket RAII wrapper
-│       │   ├── udp_codec.hpp              # Generic UDP packet codec concept
-│       │   └── udp_transceiver.hpp        # Generic UDP transceiver template
+│       │   ├── log_buffer.hpp             # SPSC ring buffer (lock-free, 512 entries) + LogEntry
+│       │   ├── data_logger.hpp            # Non-RT CSV logger (Config-based dynamic columns)
+│       │   └── session_dir.hpp            # RTC_SESSION_DIR + session directory management
 │       └── filters/
 │           ├── bessel_filter.hpp          # 4th-order Bessel LPF (noexcept, N-channel)
 │           └── kalman_filter.hpp          # Discrete-time Kalman filter (pos+vel, noexcept)
 │
-├── rtc_controller_interface/              # Abstract controller base class
-│   └── include/rtc_controller_interface/
-│       └── rt_controller_interface.hpp    # Abstract base + all data structures
+├── rtc_controller_interface/              # Abstract controller base class (variable DOF)
+│   ├── include/rtc_controller_interface/
+│   │   ├── rt_controller_interface.hpp    # Abstract base (Init, Compute, SetTarget — all noexcept)
+│   │   └── controller_types.hpp           # Controller-related type definitions
+│   └── src/
+│       └── rt_controller_interface.cpp    # Base class impl (TopicConfig, pinocchio model build)
 │
-├── rtc_controller_manager/                # 500Hz RT controller manager node
+├── rtc_controller_manager/                # Configurable-rate RT controller manager node (500Hz-2kHz)
 │   ├── include/rtc_controller_manager/
 │   │   ├── rt_controller_node.hpp         # RtControllerNode class declaration
 │   │   └── controller_timing_profiler.hpp # Lock-free Compute() timing profiler
 │   ├── src/
 │   │   ├── rt_controller_node.cpp         # Controller registry + RtControllerNode impl
-│   │   ├── rt_controller_main.cpp         # main() — mlockall, executors, RT threads
-│   │   └── rt_controller_interface.cpp    # Base class impl (TopicConfig parsing)
+│   │   └── rt_controller_main.cpp         # main() — mlockall, executors, RT threads
 │   └── config/
-│       ├── rt_controller_manager.yaml     # log_dir: 세션 디렉토리 (launch가 설정)
+│       ├── rt_controller_manager.yaml     # control_rate, logging, E-STOP config
 │       └── cyclone_dds.xml                # CycloneDDS thread affinity (Core 0-1)
 │
 ├── rtc_controllers/                       # Generic controller implementations
@@ -152,11 +152,30 @@ ur5e-rt-controller/
 │           ├── joint_pd_controller.yaml
 │           └── operational_space_controller.yaml
 │
-├── rtc_communication/                     # Communication infrastructure
+├── rtc_communication/                     # Transport abstraction layer (UDP, planned: CAN-FD/EtherCAT/RS485)
+│   └── include/rtc_communication/
+│       ├── transport_interface.hpp        # Abstract TransportInterface (Open/Close/Send/Recv)
+│       ├── packet_codec.hpp              # PacketCodec concept (transport-agnostic)
+│       ├── transceiver.hpp               # Generic Transceiver<Transport,Codec> template
+│       └── udp/
+│           ├── udp_socket.hpp            # UDP socket RAII wrapper
+│           └── udp_transport.hpp         # UdpTransport : TransportInterface
 │
-├── rtc_inference/                         # Inference framework
+├── rtc_inference/                         # RT-safe inference engine (ONNX Runtime)
+│   └── include/rtc_inference/
+│       ├── inference_engine.hpp           # Abstract InferenceEngine (Init/Run — RT-safe)
+│       ├── inference_types.hpp            # ModelConfig, InferenceResult
+│       └── onnx/
+│           └── onnx_engine.hpp           # OnnxEngine : InferenceEngine (IoBinding, pre-allocated buffers)
 │
-├── rtc_msgs/                              # Custom ROS2 message definitions
+├── rtc_digital_twin/                      # RViz2 digital twin visualization (Python)
+│   ├── rtc_digital_twin/
+│   │   ├── digital_twin_node.py          # Joint state → RViz2 robot model
+│   │   └── sensor_visualizer.py          # Sensor data visualization
+│   ├── config/digital_twin.yaml
+│   └── launch/digital_twin.launch.py
+│
+├── rtc_msgs/                              # Custom ROS2 message definitions (7 types)
 │
 ├── rtc_mujoco_sim/                        # MuJoCo 3.x simulator package (optional)
 │   ├── include/rtc_mujoco_sim/
@@ -173,13 +192,16 @@ ur5e-rt-controller/
 │   ├── config/mujoco_simulator.yaml
 │   └── launch/mujoco_sim.launch.py
 │
-├── rtc_scripts/                           # Setup and utility scripts
+├── rtc_scripts/                           # RT system setup/verification scripts (robot-agnostic)
 │   └── scripts/
+│       ├── lib/rt_common.sh               # Shared utilities (logging, CPU detect, NIC detect)
 │       ├── setup_irq_affinity.sh          # Pin NIC IRQs to Core 0-1
 │       ├── setup_udp_optimization.sh      # UDP socket/network optimization
-│       ├── setup_nvidia_rt.sh             # NVIDIA + RT kernel coexistence (11-step: DKMS RT bypass + CPU governor)
-│       ├── build_rt_kernel.sh             # PREEMPT_RT kernel build helper (NVIDIA DKMS RT bypass 포함)
-│       └── check_rt_setup.sh             # RT setup verification (8 categories: kernel, CPU, GRUB, permissions, IRQ, network, NVIDIA, governor)
+│       ├── setup_nvidia_rt.sh             # NVIDIA + RT kernel coexistence (11-step)
+│       ├── build_rt_kernel.sh             # PREEMPT_RT kernel build helper
+│       ├── check_rt_setup.sh             # RT setup verification (8 categories)
+│       ├── cpu_shield.sh                  # Dynamic CPU isolation (cset shield)
+│       └── verify_rt_runtime.sh           # Runtime RT thread verification
 │
 ├── rtc_status_monitor/                    # Non-RT status & safety monitor (shared library)
 │   ├── include/rtc_status_monitor/
@@ -211,21 +233,20 @@ ur5e-rt-controller/
 ├── ur5e_bringup/                          # UR5e-specific bringup, configs, and demo controllers
 │   ├── include/ur5e_bringup/
 │   │   └── controllers/
-│   │       ├── demo_joint_controller.hpp  # Arm + Hand unified P controller (idx 4)
-│   │       └── demo_task_controller.hpp   # CLIK arm + Hand P controller (idx 5)
+│   │       ├── demo_joint_controller.hpp  # Arm 6-DOF P + Hand 10-DOF P (idx 4)
+│   │       └── demo_task_controller.hpp   # CLIK arm + Hand P + E-STOP (idx 5)
 │   ├── src/controllers/
 │   │   ├── demo_joint_controller.cpp
 │   │   └── demo_task_controller.cpp
 │   ├── config/
-│   │   ├── ur5e_robot.yaml                # UR5e-specific controller parameters
+│   │   ├── ur5e_robot.yaml                # UR5e-specific parameters (URDF path, joint names)
 │   │   └── controllers/
-│   │       └── indirect/
-│   │           ├── demo_joint_controller.yaml
-│   │           └── demo_task_controller.yaml
-│   ├── launch/
-│   │   └── robot.launch.py                # Full system (+ use_cpu_affinity, CYCLONEDDS_URI)
-│   └── test/
-│       └── test_trajectory.cpp            # Trajectory generation unit tests
+│   │       ├── demo_joint_controller.yaml
+│   │       └── demo_task_controller.yaml
+│   └── launch/
+│       ├── robot.launch.py                # Real robot (+ cpu_affinity, CYCLONEDDS_URI)
+│       ├── sim.launch.py                  # MuJoCo simulation
+│       └── hand.launch.py                 # Hand driver only
 │
 ├── ur5e_description/                      # Robot model description
 │   ├── robots/ur5e/
@@ -253,13 +274,13 @@ ur5e-rt-controller/
 
 ## Architecture
 
-This is a **ROS2 Humble / ROS2 Jazzy** multi-package repository (`ament_cmake`, C++20) implementing a 500 Hz real-time position/torque controller for a UR5e robot arm with a 10-DOF custom hand (44 tactile sensors) attached via UDP.
+This is a **ROS2 Humble / ROS2 Jazzy** multi-package repository (`ament_cmake`, C++20) implementing a robot-agnostic real-time controller framework (RTC). The `rtc_*` packages support any URDF manipulator with variable DOF and configurable control rate (500Hz-2kHz). Currently deployed with UR5e + 10-DOF custom hand (44 tactile sensors) via UDP.
 
 **Workspace root**: `/home/user/ros2_ws/ur5e_ws`
 **Log output**: `~/ros2_ws/ur5e_ws/logging_data/YYMMDD_HHMM/` (세션 디렉토리, `max_log_sessions: 10`)
   - `controller/` — timing_log.csv, robot_log.csv, device_log.csv
   - `monitor/` — ur5e_failure_*.log, controller_stats.json
-  - `hand/` — hand_udp_stats.json
+  - `device/` — hand_udp_stats.json (end-effector data)
   - `sim/` — screenshot_*.ppm (MuJoCo 전용)
   - `plots/`, `motions/` — rtc_tools 출력
 
@@ -751,7 +772,6 @@ v5.15.0 RT optimizations: `SeqLock<HandState>` replaces `state_mutex_` (lock-fre
     logging:
       log_directory: ""          # 세션 디렉토리 (launch가 설정, 환경변수 RTC_SESSION_DIR, UR5E_SESSION_DIR fallback)
       max_log_sessions: 10       # 세션 폴더 보관 수
-      log_directory: ""          # 세션 디렉토리 (RTC_SESSION_DIR)
 ```
 
 ### `ur5e_hand_driver/config/hand_udp_node.yaml`
@@ -952,11 +972,11 @@ v5.4.0부터 **Controller Registry** 패턴을 사용합니다. 새 컨트롤러
 ```cpp
 class MyController final : public RTControllerInterface {
 public:
-  struct Gains { std::array<double, 6> kp{{5.0, ...}}; };
+  struct Gains { std::vector<double> kp; };  // size = num_joints (variable DOF)
 
   [[nodiscard]] ControllerOutput Compute(const ControllerState &) noexcept override;
   void SetRobotTarget(std::span<const double> targets) noexcept override;
-  void SetHandTarget(std::span<const float, kNumHandMotors>) noexcept override;
+  void SetHandTarget(std::span<const float> targets) noexcept override;
   [[nodiscard]] std::string_view Name() const noexcept override { return "MyController"; }
 
   // Registry hooks — gains layout: [kp×6]
@@ -1116,7 +1136,7 @@ For detailed RT tuning (CPU isolation, kernel parameters, DDS configuration, IRQ
 2. **Topic Name Typo**: 오타가 있어도 에러 없이 별도 토픽 생성됨 → `ros2 topic list`로 확인 필수
 
 3. **Blocking Callbacks**: 단일 스레드 executor에서 콜백이 블로킹되면 모든 콜백 중단
-   - 이 프로젝트는 4개 `SingleThreadedExecutor` + `MutuallyExclusiveCallbackGroup`으로 분리
+   - 이 프로젝트는 3개 `SingleThreadedExecutor` + `MutuallyExclusiveCallbackGroup`으로 분리
    - 콜백 내에서 `sleep()`, 동기 I/O, 무한 루프 절대 금지
 
 4. **Parameter 미선언**: `get_parameter()` 전에 반드시 `declare_parameter()` 필요 (ROS1과 다름)
