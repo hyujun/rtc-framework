@@ -914,7 +914,7 @@ void RtControllerNode::CreatePublishers()
   {
     const std::string jc_topic = get_parameter("joint_command_topic").as_string();
     if (!jc_topic.empty()) {
-      joint_command_pub_ = create_publisher<ur5e_msgs::msg::JointCommand>(
+      joint_command_pub_ = create_publisher<rtc_msgs::msg::JointCommand>(
           jc_topic, cmd_qos);
 
       // Pre-allocate message

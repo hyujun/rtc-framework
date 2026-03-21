@@ -96,7 +96,7 @@ ensure_ros2_sourced() {
 
 # ── Workspace overlay auto-source ────────────────────────────────────────────
 # 기존 빌드 결과가 있으면 workspace overlay를 소싱하여
-# colcon build가 기존 패키지 의존성(ur5e_msgs 등)을 찾을 수 있게 한다.
+# colcon build가 기존 패키지 의존성(rtc_msgs 등)을 찾을 수 있게 한다.
 source_workspace_overlay() {
   local ws_setup="${WORKSPACE}/install/setup.bash"
   if [[ -f "$ws_setup" ]]; then
@@ -394,7 +394,7 @@ source "${WORKSPACE}/install/setup.bash" || true
 # ── compile_commands.json — VS Code IntelliSense 연동 ─────────────────────────
 # Debug 빌드 또는 --export-compile-commands 옵션 사용 시 자동 생성됨.
 # .vscode/c_cpp_properties.json 의 compileCommands 경로와 일치:
-#   ${workspaceFolder}/../../build/ur5e_rt_controller/compile_commands.json
+#   ${workspaceFolder}/../../build/rtc_controller_manager/compile_commands.json
 if [[ "$EXPORT_COMPILE_COMMANDS" -eq 1 || "$BUILD_TYPE" == "Debug" ]]; then
   CC_SRC="$WORKSPACE/build/rtc_controller_manager/compile_commands.json"
   if [[ -f "$CC_SRC" ]]; then

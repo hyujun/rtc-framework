@@ -161,7 +161,7 @@ struct PublishTopicEntry {
 
 // ── Device enable/disable flags ──────────────────────────────────────────────
 
-// 글로벌 디바이스 활성화 플래그 (ur5e_rt_controller.yaml에서 로드)
+// 글로벌 디바이스 활성화 플래그 (rtc.yaml에서 로드)
 struct DeviceEnableFlags {
   bool enable_ur5e{true};
   bool enable_hand{false};

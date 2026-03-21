@@ -87,7 +87,7 @@ def launch_setup(context, *args, **kwargs):
     _cleanup_old_sessions(logging_root, max_sessions)
 
     # ── Package paths ─────────────────────────────────────────────────────────
-    pkg_sim = FindPackageShare('ur5e_mujoco_sim')
+    pkg_sim = FindPackageShare('rtc_mujoco_sim')
     pkg_bringup = FindPackageShare('ur5e_bringup')
 
     sim_config = PathJoinSubstitution(
@@ -95,10 +95,10 @@ def launch_setup(context, *args, **kwargs):
     ctrl_config = PathJoinSubstitution(
         [pkg_bringup, 'config', 'ur5e_robot.yaml'])
 
-    # ur5e_hand_udp is optional — may not be built in sim-only installs
+    # ur5e_hand_driver is optional — may not be built in sim-only installs
     hand_config = None
     try:
-        hand_share = get_package_share_directory('ur5e_hand_udp')
+        hand_share = get_package_share_directory('ur5e_hand_driver')
         hand_config = os.path.join(hand_share, 'config', 'hand_udp_node.yaml')
     except Exception:
         pass
@@ -181,7 +181,7 @@ def launch_setup(context, *args, **kwargs):
 
     # Fake hand response: pass MuJoCo config to rt_controller
     sim_yaml_path = os.path.join(
-        get_package_share_directory('ur5e_mujoco_sim'),
+        get_package_share_directory('rtc_mujoco_sim'),
         'config', 'mujoco_simulator.yaml')
     try:
         with open(sim_yaml_path, 'r') as f:
@@ -234,7 +234,7 @@ def launch_setup(context, *args, **kwargs):
 
     # ── Node 1: MuJoCo Simulator ──────────────────────────────────────────────
     mujoco_node = Node(
-        package='ur5e_mujoco_sim',
+        package='rtc_mujoco_sim',
         executable='mujoco_simulator_node',
         name='mujoco_simulator',
         output='screen',

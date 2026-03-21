@@ -1,9 +1,9 @@
 # MuJoCo Simulator Node Configuration (v5.15.0)
 # ─────────────────────────────────────────────
 # Launch with:
-#   ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py
-#   ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step
-#   ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py enable_viewer:=false
+#   ros2 launch rtc_mujoco_sim mujoco_sim.launch.py
+#   ros2 launch rtc_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step
+#   ros2 launch rtc_mujoco_sim mujoco_sim.launch.py enable_viewer:=false
 
 mujoco_simulator:
   ros__parameters:
@@ -87,7 +87,7 @@ mujoco_simulator:
 
     # ── Fake Hand Response (시뮬레이션 전용 핸드 LPF) ──────────────────────────
     # enable: true 시 MuJoCo 노드 내부에서 low-pass filter로 핸드 상태를 생성.
-    # ur5e_hand_udp (실제 UDP 통신) 없이 시뮬레이션 가능.
+    # ur5e_hand_driver (실제 UDP 통신) 없이 시뮬레이션 가능.
     # rt_controller는 hand_sim_enabled: true로 설정하여 ROS 토픽으로 통신.
     fake_hand_response:
       enable: true
@@ -97,7 +97,7 @@ mujoco_simulator:
       state_topic: "/hand/joint_states"         # 핸드 상태 퍼블리시 토픽
 
 # ── rt_controller parameter overrides for simulation ─────────────────────
-# ur5e_rt_controller.yaml 대비 시뮬레이션 전용 차이값만 오버라이드.
+# rtc_controller_manager.yaml 대비 시뮬레이션 전용 차이값만 오버라이드.
 #   - enable_estop: false  — free_run 모드에서 wall-clock 지연으로 인한
 #                            오탐 E-STOP 방지
 #   - robot/hand_timeout_ms — sync_step / free_run 모두 timeout 여유 확보

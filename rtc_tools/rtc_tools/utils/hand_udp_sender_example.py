@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-핸드 UDP 송신 예제 — ur5e_hand_udp 패키지 프로토콜 기반
+핸드 UDP 송신 예제 — ur5e_hand_driver 패키지 프로토콜 기반
 
 프로토콜 사양 (hand_packets.hpp 참조):
 

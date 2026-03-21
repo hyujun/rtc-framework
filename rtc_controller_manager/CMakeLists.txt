@@ -33,9 +33,8 @@ find_package(rtc_communication REQUIRED)
 find_package(rtc_status_monitor REQUIRED)
 find_package(rtc_msgs REQUIRED)
 
-# Temporary (Phase 4 will rename)
-find_package(ur5e_hand_udp REQUIRED)
-find_package(ur5e_msgs REQUIRED)
+find_package(ur5e_hand_driver REQUIRED)
+find_package(rtc_msgs REQUIRED)
 
 # ── Static library ────────────────────────────────────────────────────────────
 add_library(rtc_controller_manager_lib STATIC
@@ -56,8 +55,8 @@ ament_target_dependencies(rtc_controller_manager_lib
   rtc_communication
   rtc_status_monitor
   rtc_msgs
-  ur5e_hand_udp
-  ur5e_msgs
+  ur5e_hand_driver
+  rtc_msgs
 )
 target_link_libraries(rtc_controller_manager_lib
   yaml-cpp

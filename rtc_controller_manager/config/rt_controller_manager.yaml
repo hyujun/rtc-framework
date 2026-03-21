@@ -1,5 +1,5 @@
 # rt_controller_manager.yaml — generic controller manager configuration
-# Extracted from ur5e_rt_controller.yaml (robot-agnostic parts)
+# Extracted from rtc_controller_manager.yaml (robot-agnostic parts)
 /**:
   ros__parameters:
     # ── Control rate ─────────────────────────────────────────────────────────────

@@ -124,23 +124,23 @@ def generate_launch_description():
         'ur5e_robot.yaml'
     ])
 
-    # Status Monitor config (ur5e_status_monitor package)
+    # Status Monitor config (rtc_status_monitor package)
     status_monitor_config = PathJoinSubstitution([
-        FindPackageShare('ur5e_status_monitor'),
+        FindPackageShare('rtc_status_monitor'),
         'config',
-        'ur5e_status_monitor.yaml'
+        'rtc_status_monitor.yaml'
     ])
 
-    # Hand UDP config (ur5e_hand_udp package)
+    # Hand UDP config (ur5e_hand_driver package)
     hand_udp_config = PathJoinSubstitution([
-        FindPackageShare('ur5e_hand_udp'),
+        FindPackageShare('ur5e_hand_driver'),
         'config',
         'hand_udp_node.yaml'
     ])
 
-    # Fingertip F/T inferencer config (ur5e_hand_udp package)
+    # Fingertip F/T inferencer config (ur5e_hand_driver package)
     ft_inferencer_config = PathJoinSubstitution([
-        FindPackageShare('ur5e_hand_udp'),
+        FindPackageShare('ur5e_hand_driver'),
         'config',
         'fingertip_ft_inferencer.yaml'
     ])

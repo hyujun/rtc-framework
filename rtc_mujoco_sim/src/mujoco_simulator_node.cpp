@@ -42,7 +42,7 @@ namespace urtc = rtc;
 //   /sim/status                  std_msgs/Float64MultiArray  @ 1 Hz
 //
 // Subscribed topics (from rt_controller):
-//   <robot_topics.command_topic>  ur5e_msgs/JointCommand (command_type으로 position/torque 결정)
+//   <robot_topics.command_topic>  rtc_msgs/JointCommand (command_type으로 position/torque 결정)
 //   <fake_hand_response.command_topic>  std_msgs/Float64MultiArray
 //
 class MuJoCoSimulatorNode : public rclcpp::Node {

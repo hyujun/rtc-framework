@@ -6,7 +6,7 @@
 #include "rtc_base/threading/publish_buffer.hpp"
 #include "rtc_controller_manager/controller_timing_profiler.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
-#include <ur5e_hand_udp/hand_controller.hpp>
+#include <ur5e_hand_driver/hand_controller.hpp>
 #include <rtc_status_monitor/rtc_status_monitor.hpp>
 
 // ── ROS2 ─────────────────────────────────────────────────────────────────────
@@ -16,7 +16,7 @@
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/string.hpp>
-#include <ur5e_msgs/msg/joint_command.hpp>
+#include <rtc_msgs/msg/joint_command.hpp>
 
 // ── C++ stdlib ────────────────────────────────────────────────────────────────
 #include <array>
@@ -132,8 +132,8 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr current_gains_pub_;
 
   // JointCommand publisher (MuJoCo / external simulator)
-  rclcpp::Publisher<ur5e_msgs::msg::JointCommand>::SharedPtr     joint_command_pub_;
-  ur5e_msgs::msg::JointCommand                                   joint_command_msg_;  // pre-allocated
+  rclcpp::Publisher<rtc_msgs::msg::JointCommand>::SharedPtr     joint_command_pub_;
+  rtc_msgs::msg::JointCommand                                   joint_command_msg_;  // pre-allocated
 
   // Per-controller topic config cache (index = controller index)
   std::vector<rtc::TopicConfig> controller_topic_configs_;

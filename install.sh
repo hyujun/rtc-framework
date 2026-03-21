@@ -664,7 +664,7 @@ setup_package() {
   fi
 
   # Symlink packages from repo root into workspace src/
-  for pkg in ur5e_msgs ur5e_rt_base ur5e_description ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_mujoco_sim ur5e_tools; do
+  for pkg in rtc_msgs rtc_base ur5e_description rtc_status_monitor rtc_controller_manager ur5e_hand_driver rtc_mujoco_sim rtc_tools; do
     if [[ ! -e "$pkg" ]]; then
       ln -s "${REPO_NAME}/$pkg" "$pkg"
     fi
@@ -713,14 +713,14 @@ build_package() {
     info "MuJoCo root: ${MJ_DIR}"
   fi
 
-  # Build order: ur5e_rt_base first (header-only, no deps), then the rest
+  # Build order: rtc_base first (header-only, no deps), then the rest
   local PACKAGES=()
   if [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]]; then
     PACKAGES=("${CUSTOM_PACKAGES[@]}")
   else
-    PACKAGES=(ur5e_msgs ur5e_rt_base ur5e_description ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_tools)
+    PACKAGES=(rtc_msgs rtc_base ur5e_description rtc_status_monitor rtc_controller_manager ur5e_hand_driver rtc_tools)
     if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
-      PACKAGES+=(ur5e_mujoco_sim)
+      PACKAGES+=(rtc_mujoco_sim)
     fi
   fi
 
@@ -772,7 +772,7 @@ setup_rt_sudoers() {
   local SUDOERS_FILE="/etc/sudoers.d/ur5e-rt-controller"
 
   # 설치된 cpu_shield.sh 경로
-  local INSTALLED_SHIELD="${WORKSPACE}/install/ur5e_rt_controller/lib/ur5e_rt_controller/cpu_shield.sh"
+  local INSTALLED_SHIELD="${WORKSPACE}/install/rtc_controller_manager/lib/rtc_controller_manager/cpu_shield.sh"
   # 소스 cpu_shield.sh 경로
   local SOURCE_SHIELD="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/cpu_shield.sh"
 
@@ -1066,7 +1066,7 @@ verify_installation() {
   info "Verifying installation..."
   source "$WORKSPACE/install/setup.bash" || true
   local failed=0
-  for pkg in ur5e_msgs ur5e_rt_base ur5e_description ur5e_status_monitor ur5e_rt_controller ur5e_hand_udp ur5e_tools; do
+  for pkg in rtc_msgs rtc_base ur5e_description rtc_status_monitor rtc_controller_manager ur5e_hand_driver rtc_tools; do
     if ros2 pkg list 2>/dev/null | grep -q "^${pkg}$"; then
       success "Package registered: $pkg"
     else
@@ -1076,10 +1076,10 @@ verify_installation() {
   done
   [[ $failed -eq 1 ]] && error "Installation verification failed"
 
-  info "Available executables (ur5e_rt_controller):"
-  ros2 pkg executables ur5e_rt_controller 2>/dev/null || true
-  info "Available executables (ur5e_hand_udp):"
-  ros2 pkg executables ur5e_hand_udp 2>/dev/null || true
+  info "Available executables (rtc_controller_manager):"
+  ros2 pkg executables rtc_controller_manager 2>/dev/null || true
+  info "Available executables (ur5e_hand_driver):"
+  ros2 pkg executables ur5e_hand_driver 2>/dev/null || true
 
   mkdir -p "${WORKSPACE}/logging_data/stats" "${WORKSPACE}/logging_data/ur_plot"
   success "Log directories ready (${WORKSPACE}/logging_data, ${WORKSPACE}/logging_data/ur_plot)"
@@ -1109,16 +1109,16 @@ print_summary() {
       echo -e "${CYAN}${BOLD}── Simulation Quick Start ──────────────────────────────${NC}"
       echo ""
       echo "  # Free-run simulation (viewer opens automatically)"
-      echo "  ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py"
+      echo "  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py"
       echo ""
       echo "  # Sync-step mode (1:1 with controller)"
-      echo "  ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step"
+      echo "  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step"
       echo ""
       echo "  # Headless (no viewer window)"
-      echo "  ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py enable_viewer:=false"
+      echo "  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py enable_viewer:=false"
       echo ""
       echo "  # Hand simulation is built-in (fake_hand_response in mujoco_simulator.yaml)"
-      echo "  # No need to run ur5e_hand_udp separately"
+      echo "  # No need to run ur5e_hand_driver separately"
       echo ""
       echo "  # Send test commands"
       echo "  ros2 topic pub /target_joint_positions std_msgs/msg/Float64MultiArray \\"
@@ -1141,13 +1141,13 @@ print_summary() {
       echo ""
       echo "  # Full system launch (replace IP as needed)"
       echo "  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
-      echo "  ros2 launch ur5e_rt_controller ur_control.launch.py robot_ip:=192.168.1.10"
+      echo "  ros2 launch rtc_controller_manager ur_control.launch.py robot_ip:=192.168.1.10"
       echo ""
       echo "  # Fake hardware (no physical robot — for testing)"
-      echo "  ros2 launch ur5e_rt_controller ur_control.launch.py use_fake_hardware:=true"
+      echo "  ros2 launch rtc_controller_manager ur_control.launch.py use_fake_hardware:=true"
       echo ""
       echo "  # Hand UDP nodes only"
-      echo "  ros2 launch ur5e_hand_udp hand_udp.launch.py"
+      echo "  ros2 launch ur5e_hand_driver hand_udp.launch.py"
       echo ""
       echo "  # Monitor control loop rate (should be ~500 Hz)"
       echo "  ros2 topic hz /forward_position_controller/commands"
@@ -1165,17 +1165,17 @@ print_summary() {
       echo ""
       echo "  # Real robot"
       echo "  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
-      echo "  ros2 launch ur5e_rt_controller ur_control.launch.py robot_ip:=192.168.1.10"
+      echo "  ros2 launch rtc_controller_manager ur_control.launch.py robot_ip:=192.168.1.10"
       echo ""
       echo "  # MuJoCo simulation"
-      echo "  ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py"
-      echo "  ros2 launch ur5e_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step"
+      echo "  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py"
+      echo "  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step"
       echo ""
       echo "  # Fake hardware (no robot, no simulation)"
-      echo "  ros2 launch ur5e_rt_controller ur_control.launch.py use_fake_hardware:=true"
+      echo "  ros2 launch rtc_controller_manager ur_control.launch.py use_fake_hardware:=true"
       echo ""
       echo "  # Hand UDP only"
-      echo "  ros2 launch ur5e_hand_udp hand_udp.launch.py"
+      echo "  ros2 launch ur5e_hand_driver hand_udp.launch.py"
       echo ""
       echo -e "  ${YELLOW}RT permissions: log out and back in, then verify:${NC}"
       echo "    ulimit -r   # should print 99"
@@ -1185,9 +1185,9 @@ print_summary() {
 
   echo ""
   echo -e "${CYAN}${BOLD}── Monitoring & Validation ─────────────────────────────${NC}"
-  echo "  ros2 run ur5e_tools plot_ur_trajectory <workspace>/logging_data/ur5e_control_log_YYMMDD_HHMM.csv"
-  echo "  ros2 run ur5e_tools motion_editor_gui"
-  echo "  ros2 run ur5e_tools compare_mjcf_urdf        # MJCF vs URDF parameter comparison"
+  echo "  ros2 run rtc_tools plot_ur_trajectory <workspace>/logging_data/ur5e_control_log_YYMMDD_HHMM.csv"
+  echo "  ros2 run rtc_tools motion_editor_gui"
+  echo "  ros2 run rtc_tools compare_mjcf_urdf        # MJCF vs URDF parameter comparison"
   echo ""
   echo -e "${CYAN}${BOLD}── VS Code Debugging ───────────────────────────────────${NC}"
   echo "  # Debug build + IntelliSense:"

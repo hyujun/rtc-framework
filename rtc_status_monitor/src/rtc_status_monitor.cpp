@@ -4,7 +4,7 @@
 // Code style:   K&R braces, PascalCase methods, snake_case_ members
 // Thread model: std::jthread for monitor loop, MutuallyExclusive callback group
 // Dependencies: rclcpp, std_msgs, sensor_msgs, diagnostic_msgs,
-//               controller_manager_msgs, ur5e_rt_base
+//               controller_manager_msgs, rtc_base
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Project headers ──────────────────────────────────────────────────────────

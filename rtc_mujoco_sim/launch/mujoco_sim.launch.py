@@ -124,10 +124,10 @@ def launch_setup(context, *args, **kwargs):
     ctrl_config = PathJoinSubstitution(
         [pkg_ctrl, 'config', 'rt_controller_manager.yaml'])
 
-    # ur5e_hand_udp is optional — may not be built in sim-only installs
+    # ur5e_hand_driver is optional — may not be built in sim-only installs
     hand_config = None
     try:
-        hand_share = get_package_share_directory('ur5e_hand_udp')
+        hand_share = get_package_share_directory('ur5e_hand_driver')
         hand_config = os.path.join(hand_share, 'config', 'hand_udp_node.yaml')
     except Exception:
         pass
