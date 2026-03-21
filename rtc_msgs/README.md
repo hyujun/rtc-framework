@@ -101,13 +101,20 @@ rtc_msgs/
 
 ### `FingertipForceTorque.msg`
 
-단일 핑거팁의 ONNX 모델 기반 힘/토크 추론 결과입니다.
+단일 핑거팁의 ONNX 모델 기반 힘/토크 추론 결과입니다 (13개 출력값에 대응).
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
-| `name` | `string` | 핑거팁 이름 |
-| `force` | `float32[3]` | 추론된 힘 (Fx, Fy, Fz) |
-| `torque` | `float32[3]` | 추론된 토크 (Tx, Ty, Tz) |
+| `name` | `string` | 핑거팁 이름 (예: `"index"`, `"thumb"`) |
+| `contact` | `bool` | 접촉 감지 플래그 |
+| `force` | `float32[3]` | 힘 벡터 (Fx, Fy, Fz) [N] |
+| `direction` | `float32[3]` | 단위 방향 벡터 (ux, uy, uz) |
+| `normal_force` | `float32[3]` | 수직 힘 벡터 (Fnx, Fny, Fnz) [N] |
+| `force_x` | `float32` | Fx 스칼라 성분 [N] |
+| `force_y` | `float32` | Fy 스칼라 성분 [N] |
+| `force_z` | `float32` | Fz 스칼라 성분 [N] |
+
+> 대역폭 최적화를 위해 `Header` 필드를 포함하지 않습니다. 타임스탬프는 상위 `HandForceTorqueState.msg`의 header를 사용합니다.
 
 ### `HandForceTorqueState.msg`
 
@@ -149,13 +156,14 @@ rtc_msgs   ← std_msgs (ROS2 기본 메시지)
 
 ### 사용처
 
-| 패키지 | 사용 방식 |
-|--------|----------|
-| `rtc_controller_manager` | `JointCommand` 구독을 통한 관절 명령 수신 |
-| `rtc_controller_interface` | 컨트롤러 타입 정의에서 메시지 타입 참조 |
-| `rtc_status_monitor` | 상태 모니터링에서 핸드 센서/모터 상태 참조 |
-| `rtc_mujoco_sim` | 시뮬레이션 연동 |
-| `ur5e_hand_driver` | 핸드 모터 커맨드/피드백, 센서 데이터 |
+| 패키지 | 메시지 | 사용 방식 |
+|--------|--------|----------|
+| `rtc_controller_manager` | `JointCommand` | MuJoCo/외부 시뮬레이터에 관절 커맨드 퍼블리시 |
+| `rtc_mujoco_sim` | `JointCommand` | 관절 커맨드 구독 → 물리 시뮬레이션 적용 |
+| `ur5e_hand_driver` | `HandForceTorqueState` | ONNX F/T 추론 결과 퍼블리시 (`/hand/ft_state`) |
+| `ur5e_hand_driver` | `HandSensorState` | 핑거팁 센서 데이터 퍼블리시 |
+| `ur5e_bringup` | `HandCommand` | 데모 컨트롤러에서 핸드 모터 커맨드 |
+| `rtc_controller_interface` | 전체 | 컨트롤러 타입 정의에서 메시지 타입 참조 |
 
 ---
 

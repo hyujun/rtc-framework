@@ -114,11 +114,20 @@ rtc_inference/
 
 **추론 실행 경로:**
 
-| 경로 | 메서드 | 최적화 |
-|------|--------|--------|
-| 단일 모델 | `RunModel(idx)` | IoBinding 기반 (동기화 포함) |
-| 배치 모델 | `RunModels(indices, count)` | 직접 `Session::Run()` (IoBinding 우회, 낮은 오버헤드) |
-| 전체 모델 | `Run()` | 순차 `RunModel()` 호출 |
+| 경로 | 메서드 | 최적화 | 권장 용도 |
+|------|--------|--------|----------|
+| 단일 모델 | `RunModel(idx)` | IoBinding 기반 (SynchronizeInputs/Outputs 호출) | 후방 호환 |
+| 배치 모델 | `RunModels(indices, count)` | **직접 `Session::Run()`** (IoBinding 우회, 동기화 생략) | **RT 루프 권장** |
+| 전체 모델 | `Run()` | IoBinding 기반 순차 호출 | 모든 모델 실행 |
+
+> **`RunModels()`가 가장 빠른 이유:** IoBinding 래퍼와 SynchronizeInputs/Outputs 오버헤드를 우회하여 ONNX Runtime `Session::Run()`을 직접 호출합니다. CPU 백엔드에서 동기화는 no-op이므로 안전하게 생략됩니다.
+
+**RT 안전 메커니즘:**
+- 모든 RT 메서드는 내부에서 `try-catch`로 감싸져 ONNX Runtime 예외를 `false` 반환으로 변환합니다
+- `RunModel()`, `RunModels()`는 인덱스 범위 검증 후 `false` 반환
+- `output_buffer()`는 `const float*` 반환 (읽기 전용)
+- `OnnxEngine`은 Non-copyable, Non-movable (소유권 단일 스레드)
+- 스레드 안전 보장 없음 — 단일 스레드 소비자 전제
 
 ```cpp
 // 사용 예시
