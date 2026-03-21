@@ -265,11 +265,12 @@ This is a **ROS2 Humble / ROS2 Jazzy** multi-package repository (`ament_cmake`, 
 
 ### Core Design: Strategy Pattern + Multi-threaded Executors
 
-`RTControllerInterface` (`include/ur5e_rt_controller/rt_controller_interface.hpp`) is the abstract base for all controllers. All virtual methods are `noexcept` — a hard RT safety requirement (an exception in a 500 Hz loop terminates the process). The key data types defined here are used throughout the codebase:
+`RTControllerInterface` (`rtc_controller_interface/include/rtc_controller_interface/rt_controller_interface.hpp`) is the abstract base for all controllers. All virtual methods are `noexcept` — a hard RT safety requirement (an exception in a 500 Hz loop terminates the process). The key data types defined here are used throughout the codebase:
 
 ```cpp
-// Compile-time constants (ur5e_rt_base/types/types.hpp)
-kNumRobotJoints = 6
+// Runtime-configurable DOF (rtc_base/types/types.hpp)
+// kNumRobotJoints removed — DOF is now runtime-configurable via RobotModel (URDF-based)
+// MaxRobotDOF template used for fixed-size arrays where needed
 kNumHandMotors  = 10          // 10-DOF hand motors
 kNumFingertips  = 4
 kSensorValuesPerFingertip = 11 // 8 barometer + 3 ToF
