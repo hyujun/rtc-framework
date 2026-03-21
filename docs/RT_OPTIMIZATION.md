@@ -971,5 +971,5 @@ grep -E "[0-9]{3,}\.[0-9]{3} us" trace.txt
 ---
 
 **최종 업데이트**: 2026-03-17
-**작성자**: UR5e RT Controller Team
+**작성자**: RTC Framework Team
 **버전**: v5.16.0 (v4.2.0 기반 → v5.16.0: clock_nanosleep RT loop + SPSC publish offload + overrun recovery + CPU 코어 할당 최적화 + 모니터링 스레드 + NVIDIA DKMS RT 커널 우회 + CPU governor 자동 설정)
