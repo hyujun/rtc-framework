@@ -784,6 +784,31 @@ rtc_status_monitor/
 
 기존 Python 유틸리티 유지, namespace만 변경.
 
+**`plot_ur_log.py` → `plot_rtc_log.py` 범용화:**
+
+현재 문제점:
+- Joint 수 `6` 하드코딩 (`_detect_joint_columns(df, prefix, 6)`)
+- `NUM_HAND_MOTORS = 10` 하드코딩
+- Subplot grid `(3, 2)` / `(2, 5)` 고정 (6-joint / 10-motor 전용)
+- `UR5E_SESSION_DIR` 환경변수 참조
+- `hand_log` 파일명 감지 (→ `device_log`)
+- Title/description에 "UR5e" 하드코딩
+
+변경사항:
+1. **가변 DOF 자동 감지** — CSV 헤더에서 `actual_pos_*` 컬럼 수를 자동 감지하여 joint 수 결정
+   ```python
+   def _detect_num_joints(df, prefix='actual_pos_'):
+       """CSV 헤더에서 prefix로 시작하는 컬럼 수를 자동 감지."""
+       return len([c for c in df.columns if c.startswith(prefix)])
+   ```
+2. **동적 subplot grid** — `math.ceil(n_joints / 2)` × 2 그리드, 1-column 자동 대응
+3. **`NUM_HAND_MOTORS` 제거** — device 채널 수도 CSV 헤더에서 자동 감지
+4. **`UR5E_SESSION_DIR` → `RTC_SESSION_DIR`** (하위 호환 fallback 유지)
+5. **`hand_log` → `device_log`** 파일명 감지 추가 (하위 호환: `hand_log`도 계속 인식)
+6. **파일명 변경** — `plot_ur_log.py` → `plot_rtc_log.py`
+7. **Title 범용화** — "UR5e" 제거, "Robot Joint Positions" 유지
+8. **`JOINT_NAMES_DEFAULT` 제거** — CSV 헤더의 named columns에서 표시 이름 추출, 없으면 `J0`, `J1`, ... 사용
+
 ### 11. `rtc_scripts` — 신규 (ur5e_rt_controller/scripts 이동 + 범용화)
 
 Robot-agnostic RT 시스템 설정/검증 스크립트 패키지. 기존 `ur5e_rt_controller/scripts/`의 스크립트를 로봇 비종속으로 범용화.
@@ -1052,6 +1077,7 @@ kuka_bringup/               # KUKA launch/config + KUKA 전용 controller
 | `ur5e_mujoco_sim/` | `rtc_mujoco_sim/` (MJCF 경로 파라미터화) |
 | `ur5e_digital_twin/` | `rtc_digital_twin/` (robot_description topic 기반) |
 | `ur5e_tools/` | `rtc_tools/` |
+| `ur5e_tools/.../plot_ur_log.py` | `rtc_tools/.../plot_rtc_log.py` (가변 DOF, device_log 지원, RTC_SESSION_DIR) |
 | `build.sh` | `build.sh` (패키지 목록 + 스크립트 경로 업데이트) |
 | `install.sh` | `install.sh` (RT setup 경로 `rtc_scripts/` 기반으로 변경) |
 
