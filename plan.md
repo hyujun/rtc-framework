@@ -44,16 +44,17 @@ ur5e-rt-controller/                      # (repo 이름은 유지, 내부만 범
 ├── rtc_mujoco_sim/                      # [리네임] MuJoCo 시뮬레이션 (범용 URDF)
 ├── rtc_digital_twin/                    # [리네임] RViz2 시각화 (범용 URDF)
 ├── rtc_tools/                           # [리네임] 개발 유틸리티
+├── rtc_scripts/                         # [신규] RT 시스템 설정/검증 스크립트 (robot-agnostic)
 │
 │  ── 로봇별 패키지 (robot-specific) ──
 ├── ur5e_description/                    # [유지] UR5e URDF/MJCF/meshes
 ├── ur5e_hand_driver/                    # [리네임] Hand 하드웨어 드라이버 (UR5e 전용 end-effector)
-├── ur5e_bringup/                        # [신규] UR5e 전용 launch/config/RT scripts
+├── ur5e_bringup/                        # [신규] UR5e 전용 launch/config/demo controllers
 │
 │  ── 공통 ──
 ├── docs/
-├── build.sh
-├── install.sh
+├── build.sh                             # [업데이트] 새 패키지 구조 대응
+├── install.sh                           # [업데이트] rtc_scripts 기반 RT 설정
 └── README.md
 ```
 
@@ -651,7 +652,39 @@ rtc_status_monitor/
 
 기존 Python 유틸리티 유지, namespace만 변경.
 
-### 11. `ur5e_description` — 유지 (변경 없음)
+### 11. `rtc_scripts` — 신규 (ur5e_rt_controller/scripts 이동 + 범용화)
+
+Robot-agnostic RT 시스템 설정/검증 스크립트 패키지. 기존 `ur5e_rt_controller/scripts/`의 스크립트를 로봇 비종속으로 범용화.
+
+```
+rtc_scripts/
+├── scripts/
+│   ├── lib/
+│   │   └── rt_common.sh                 # [이동] 공통 유틸리티 (get_physical_cores, compute_cpu_layout 등)
+│   ├── setup_irq_affinity.sh            # [이동] NIC IRQ affinity 설정 (Core 0-1)
+│   ├── setup_udp_optimization.sh        # [이동] UDP socket/network 최적화
+│   ├── setup_nvidia_rt.sh               # [이동] NVIDIA + RT kernel 공존 (DKMS RT bypass)
+│   ├── build_rt_kernel.sh               # [이동] PREEMPT_RT kernel 빌드 헬퍼
+│   ├── check_rt_setup.sh                # [이동] RT 설정 검증 (8 categories)
+│   ├── cpu_shield.sh                    # [이동] cset shield on/off
+│   └── verify_rt_runtime.sh             # [이동] RT 런타임 검증
+├── package.xml                          # ament_cmake (scripts install)
+└── CMakeLists.txt
+```
+
+**의존성:** 없음 (독립, shell script only)
+
+**역할:**
+- RT 커널 빌드, IRQ affinity, CPU 격리, NVIDIA RT 설정 등 **어떤 로봇에든 공통**으로 필요한 RT 시스템 스크립트
+- `install.sh`와 `build.sh`가 `rtc_scripts/scripts/`를 참조
+- 로봇별 bringup에서는 `rtc_scripts`를 depend하여 사용 (직접 스크립트를 복사하지 않음)
+
+**기존 스크립트 범용화 변경:**
+- `setup_irq_affinity.sh`: `ur5e_rt_controller` 경로 참조 제거, 범용 NIC 인터페이스명 파라미터화
+- `check_rt_setup.sh`: 로봇 이름 하드코딩 제거, 범용 검증 항목만 유지
+- `rt_common.sh`: namespace 변경 없음 (이미 범용)
+
+### 12. `ur5e_description` — 유지 (변경 없음)
 
 UR5e 전용 URDF/MJCF/meshes. 로봇별 패키지이므로 `ur5e_` prefix 유지.
 
@@ -689,7 +722,8 @@ ur5e_hand_driver/
 
 ### 14. `ur5e_bringup` — 신규 (UR5e 전용 launch/config/demo controllers 통합)
 
-UR5e에 특화된 launch, config, RT scripts, 그리고 **UR5e+hand 통합 demo controller**를 포함하는 패키지.
+UR5e에 특화된 launch, config, 그리고 **UR5e+hand 통합 demo controller**를 포함하는 패키지.
+RT 시스템 스크립트는 `rtc_scripts`에서 관리 (로봇 비종속).
 
 ```
 ur5e_bringup/
@@ -713,20 +747,11 @@ ur5e_bringup/
 │   └── controllers/
 │       ├── demo_joint_controller.yaml   # [이동] Demo joint controller 설정
 │       └── demo_task_controller.yaml    # [이동] Demo task controller 설정
-├── scripts/
-│   ├── build_rt_kernel.sh
-│   ├── check_rt_setup.sh
-│   ├── cpu_shield.sh
-│   ├── setup_irq_affinity.sh
-│   ├── setup_nvidia_rt.sh
-│   ├── setup_udp_optimization.sh
-│   ├── verify_rt_runtime.sh
-│   └── lib/rt_common.sh
 ├── package.xml
 └── CMakeLists.txt
 ```
 
-**의존성:** `rtc_controller_manager`, `rtc_controller_interface`, `rtc_controllers`, `rtc_mujoco_sim`, `rtc_digital_twin`, `ur5e_hand_driver`, `ur5e_description`, `pinocchio`
+**의존성:** `rtc_controller_manager`, `rtc_controller_interface`, `rtc_controllers`, `rtc_scripts`, `rtc_mujoco_sim`, `rtc_digital_twin`, `ur5e_hand_driver`, `ur5e_description`, `pinocchio`
 
 **역할:**
 - UR5e 전용 launch (URDF 경로, joint name, sampling_time 등을 argument로 주입)
@@ -773,6 +798,7 @@ rtc_base (독립, header-only)
     ├── rtc_digital_twin (독립, Python)                       [범용 시각화]
     │
     rtc_tools (독립, Python)                                  [범용 유틸]
+    rtc_scripts (독립, shell scripts)                          [RT 시스템 설정]
 
 ur5e_description (독립, 로봇별)
     │
@@ -782,7 +808,7 @@ ur5e_description (독립, 로봇별)
     │
     └── ur5e_bringup ← rtc_controller_manager,                [UR5e 전용 bringup]
                         rtc_controller_interface,
-                        rtc_controllers,                       [demo controller용]
+                        rtc_controllers, rtc_scripts,          [demo controller + RT scripts]
                         rtc_mujoco_sim, rtc_digital_twin,
                         ur5e_hand_driver, ur5e_description,
                         pinocchio
@@ -811,32 +837,34 @@ kuka_bringup/               # KUKA launch/config + KUKA 전용 controller
 2. `rtc_base` 생성 — ur5e_rt_base 리네임, `kNumRobotJoints` 제거, `RobotModel` 도입, udp/ 분리
 3. `rtc_communication` 생성 — Transport 추상 인터페이스 + UdpTransport 구현 (ur5e_rt_base에서 udp/ 이동 + 범용화)
 4. `rtc_inference` 생성 — ur5e_hand_udp에서 ONNX Runtime 래퍼 추출, 범용 추론 엔진 구현
+5. `rtc_scripts` 생성 — ur5e_rt_controller/scripts/ 이동, 로봇 이름 하드코딩 제거, 경로 범용화
 
 ### Phase 2: Controller 패키지 분리
-5. `rtc_controller_interface` 생성 — ur5e_rt_controller에서 interface 분리, 가변 DOF 적용
-6. `rtc_controllers` 생성 — **4개 범용 manipulator controller만 이동** (P, PD, CLIK, OSC), 가변 DOF 적용
-7. `rtc_status_monitor` 생성 — ur5e_status_monitor 리네임, 가변 DOF 적용
+6. `rtc_controller_interface` 생성 — ur5e_rt_controller에서 interface 분리, 가변 DOF 적용
+7. `rtc_controllers` 생성 — **4개 범용 manipulator controller만 이동** (P, PD, CLIK, OSC), 가변 DOF 적용
+8. `rtc_status_monitor` 생성 — ur5e_status_monitor 리네임, 가변 DOF 적용
 
 ### Phase 3: Manager + 통합
-8. `rtc_controller_manager` 생성 — RT loop, node, registry 이동, `sampling_time_us` 파라미터화, controller plugin 시스템
-9. `rtc_mujoco_sim` 리네임 — MJCF 경로 파라미터화
-10. `rtc_digital_twin` 리네임 — robot_description topic 기반
-11. `rtc_tools` 리네임
+9. `rtc_controller_manager` 생성 — RT loop, node, registry 이동, `sampling_time_us` 파라미터화, controller plugin 시스템
+10. `rtc_mujoco_sim` 리네임 — MJCF 경로 파라미터화
+11. `rtc_digital_twin` 리네임 — robot_description topic 기반
+12. `rtc_tools` 리네임
 
 ### Phase 4: 로봇별 패키지
-12. `ur5e_hand_driver` 생성 — ur5e_hand_udp 리네임 + `rtc_communication::UdpTransport` 사용 + `rtc_inference` 연동 + ur5e_hand_controller 이동
-13. `ur5e_bringup` 생성 — launch/config/scripts 통합 + **demo_joint_controller, demo_task_controller 이동** (UR5e+hand 통합 controller)
+13. `ur5e_hand_driver` 생성 — ur5e_hand_udp 리네임 + `rtc_communication::UdpTransport` 사용 + `rtc_inference` 연동 + ur5e_hand_controller 이동
+14. `ur5e_bringup` 생성 — launch/config 통합 + **demo_joint_controller, demo_task_controller 이동** (UR5e+hand 통합 controller)
 
-### Phase 5: 정리
-14. 기존 `ur5e_rt_controller`, `ur5e_hand_udp`, `ur5e_rt_base`, `ur5e_status_monitor` 패키지 제거
-15. build.sh, install.sh 업데이트
-16. README.md 업데이트
-17. CI/CD 설정 업데이트
+### Phase 5: 빌드 시스템 + 정리
+15. `build.sh` 업데이트 — 패키지 목록 `rtc_*` 기반으로 변경, 스크립트 경로 `rtc_scripts/` 참조
+16. `install.sh` 업데이트 — RT setup 스크립트 경로 `rtc_scripts/` 기반, `rt_common.sh` 소싱 경로 변경
+17. 기존 `ur5e_rt_controller`, `ur5e_hand_udp`, `ur5e_rt_base`, `ur5e_status_monitor` 패키지 제거
+18. README.md 업데이트
+19. CI/CD 설정 업데이트
 
 ### Phase 6: [선택] 추가 Transport 구현
-18. `rtc_communication`에 CAN-FD transport 추가 (SocketCAN 기반)
-19. `rtc_communication`에 EtherCAT transport 추가 (EtherLab 기반)
-20. `rtc_communication`에 RS485 transport 추가 (termios 기반)
+20. `rtc_communication`에 CAN-FD transport 추가 (SocketCAN 기반)
+21. `rtc_communication`에 EtherCAT transport 추가 (EtherLab 기반)
+22. `rtc_communication`에 RS485 transport 추가 (termios 기반)
 
 ---
 
@@ -872,7 +900,14 @@ kuka_bringup/               # KUKA launch/config + KUKA 전용 controller
 | `ur5e_rt_controller/config/ur5e_rt_controller.yaml` | `ur5e_bringup/config/ur5e_robot.yaml` (UR5e 부분) + `rtc_controller_manager/config/rt_controller_manager.yaml` (범용 부분) |
 | `ur5e_rt_controller/config/cyclone_dds.xml` | `rtc_controller_manager/config/` |
 | `ur5e_rt_controller/launch/ur_control.launch.py` | `ur5e_bringup/launch/robot.launch.py` |
-| `ur5e_rt_controller/scripts/*.sh` | `ur5e_bringup/scripts/` |
+| `ur5e_rt_controller/scripts/setup_irq_affinity.sh` | `rtc_scripts/scripts/setup_irq_affinity.sh` |
+| `ur5e_rt_controller/scripts/setup_udp_optimization.sh` | `rtc_scripts/scripts/setup_udp_optimization.sh` |
+| `ur5e_rt_controller/scripts/setup_nvidia_rt.sh` | `rtc_scripts/scripts/setup_nvidia_rt.sh` |
+| `ur5e_rt_controller/scripts/build_rt_kernel.sh` | `rtc_scripts/scripts/build_rt_kernel.sh` |
+| `ur5e_rt_controller/scripts/check_rt_setup.sh` | `rtc_scripts/scripts/check_rt_setup.sh` |
+| `ur5e_rt_controller/scripts/cpu_shield.sh` | `rtc_scripts/scripts/cpu_shield.sh` |
+| `ur5e_rt_controller/scripts/verify_rt_runtime.sh` | `rtc_scripts/scripts/verify_rt_runtime.sh` |
+| `ur5e_rt_controller/scripts/lib/rt_common.sh` | `rtc_scripts/scripts/lib/rt_common.sh` |
 | `ur5e_status_monitor/` | `rtc_status_monitor/` (namespace 변경 + 가변 DOF) |
 | `ur5e_hand_udp/.../fingertip_ft_inferencer.hpp` (ONNX 세션/텐서 부분) | `rtc_inference/` (범용 추론 엔진으로 추출) |
 | `ur5e_hand_udp/.../fingertip_ft_inferencer.hpp` (전처리/calibration 부분) | `ur5e_hand_driver/` (센서 전용 로직 잔류) |
@@ -883,6 +918,92 @@ kuka_bringup/               # KUKA launch/config + KUKA 전용 controller
 | `ur5e_mujoco_sim/` | `rtc_mujoco_sim/` (MJCF 경로 파라미터화) |
 | `ur5e_digital_twin/` | `rtc_digital_twin/` (robot_description topic 기반) |
 | `ur5e_tools/` | `rtc_tools/` |
+| `build.sh` | `build.sh` (패키지 목록 + 스크립트 경로 업데이트) |
+| `install.sh` | `install.sh` (RT setup 경로 `rtc_scripts/` 기반으로 변경) |
+
+---
+
+## `build.sh` / `install.sh` 업데이트 계획
+
+### `build.sh` 변경사항
+
+**현재:** `ur5e_*` 패키지 이름 하드코딩, `ur5e_rt_controller/scripts/` 경로 참조
+
+**변경 후:**
+```bash
+# 패키지 목록 업데이트
+case "$MODE" in
+  robot)
+    PACKAGES=(
+      rtc_msgs rtc_base rtc_communication rtc_controller_interface
+      rtc_controllers rtc_controller_manager rtc_status_monitor
+      rtc_inference rtc_scripts
+      ur5e_description ur5e_hand_driver ur5e_bringup
+      rtc_tools
+    )
+    ;;
+  sim)
+    PACKAGES=(
+      rtc_msgs rtc_base rtc_communication rtc_controller_interface
+      rtc_controllers rtc_controller_manager rtc_status_monitor
+      rtc_inference rtc_mujoco_sim rtc_scripts
+      ur5e_description ur5e_hand_driver ur5e_bringup
+      rtc_tools
+    )
+    ;;
+  full)
+    PACKAGES=(
+      rtc_msgs rtc_base rtc_communication rtc_controller_interface
+      rtc_controllers rtc_controller_manager rtc_status_monitor
+      rtc_inference rtc_mujoco_sim rtc_digital_twin rtc_scripts
+      ur5e_description ur5e_hand_driver ur5e_bringup
+      rtc_tools
+    )
+    ;;
+esac
+```
+
+**주요 변경 포인트:**
+1. 패키지 이름 `ur5e_*` → `rtc_*` 매핑 업데이트
+2. `check_rt_setup.sh` 경로: `ur5e_rt_controller/scripts/` → `rtc_scripts/scripts/`
+3. `cpu_shield.sh` 경로: 동일하게 `rtc_scripts/scripts/` 기반으로 변경
+4. `compile_commands.json` 경로: `build/ur5e_rt_controller/` → `build/rtc_controller_manager/`
+5. Banner/help 텍스트: "UR5e RT Controller" → "RTC (Real-Time Controller)"
+6. `auto_release_cpu_shield()`: 스크립트 경로 `rtc_scripts/scripts/cpu_shield.sh`로 변경
+7. `rt_common.sh` 경로: `rtc_scripts/scripts/lib/rt_common.sh`로 변경
+
+### `install.sh` 변경사항
+
+**현재:** `ur5e_rt_controller/scripts/lib/rt_common.sh` 참조, UR5e 전용 빌드 모드
+
+**변경 후:**
+```bash
+# rt_common.sh 경로 변경
+_RT_COMMON="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/lib/rt_common.sh"
+
+# 빌드 모드별 패키지 업데이트 (build.sh와 동일)
+# RT 설정 스크립트 경로 변경
+RT_SCRIPTS_DIR="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts"
+
+# IRQ affinity 설정
+bash "${RT_SCRIPTS_DIR}/setup_irq_affinity.sh"
+
+# UDP optimization
+bash "${RT_SCRIPTS_DIR}/setup_udp_optimization.sh"
+
+# NVIDIA RT 설정
+bash "${RT_SCRIPTS_DIR}/setup_nvidia_rt.sh"
+
+# RT 환경 검증
+bash "${RT_SCRIPTS_DIR}/check_rt_setup.sh"
+```
+
+**주요 변경 포인트:**
+1. `rt_common.sh` 소싱 경로: `ur5e_rt_controller/scripts/lib/` → `rtc_scripts/scripts/lib/`
+2. 모든 RT setup 스크립트 경로: `ur5e_rt_controller/scripts/` → `rtc_scripts/scripts/`
+3. 빌드 실행 시 `build.sh`에 새 패키지 목록 전달
+4. Banner/help 텍스트: "UR5e RT Controller" → "RTC (Real-Time Controller)"
+5. `--skip-deps` 동작은 유지 (apt 패키지 설치 스킵)
 
 ---
 
