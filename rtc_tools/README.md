@@ -32,17 +32,20 @@ rtc_tools/
 
 **빌드 타입**: `ament_python` (`setup.py`의 `entry_points` 사용)
 
-**Entry points** (6개):
-| 실행 명령 | 모듈 |
-|-----------|------|
-| `ros2 run rtc_tools controller_gui` | `gui.controller_gui` |
-| `ros2 run rtc_tools motion_editor_gui` | `gui.motion_editor_gui` |
-| `ros2 run rtc_tools plot_rtc_log` | `plotting.plot_rtc_log` |
-| `ros2 run rtc_tools plot_ur_trajectory` | `plotting.plot_rtc_log` (legacy alias) |
-| `ros2 run rtc_tools hand_udp_sender_example` | `utils.hand_udp_sender_example` |
-| `ros2 run rtc_tools compare_mjcf_urdf` | `validation.compare_mjcf_urdf` |
+**Entry points** (7개):
+| 실행 명령 | 모듈 | 설명 |
+|-----------|------|------|
+| `ros2 run rtc_tools controller_gui` | `gui.controller_gui` | 컨트롤러 GUI (tkinter) |
+| `ros2 run rtc_tools plot_rtc_log` | `plotting.plot_rtc_log` | CSV 로그 시각화 |
+| `ros2 run rtc_tools plot_ur_log` | `plotting.plot_rtc_log` | plot_rtc_log의 별칭 |
+| `ros2 run rtc_tools plot_ur_trajectory` | `plotting.plot_rtc_log` | legacy 별칭 |
+| `ros2 run rtc_tools hand_udp_sender_example` | `utils.hand_udp_sender_example` | 핸드 UDP 테스트 (대화형) |
+| `ros2 run rtc_tools compare_mjcf_urdf` | `validation.compare_mjcf_urdf` | MJCF/URDF 파라미터 비교 |
+| `ros2 run rtc_tools urdf_to_mjcf` | `conversion.urdf_to_mjcf` | URDF/XACRO → MJCF 변환 |
 
-**Python 의존성**: `rclpy`, `numpy`, `matplotlib`, `pandas`, `scipy`, `PyQt5` (motion_editor_gui만 필요)
+> `motion_editor_gui`는 `ur5e_bringup` 패키지로 이동되었습니다.
+
+**Python 의존성**: `rclpy`, `numpy`, `matplotlib`, `pandas`, `scipy`, `mujoco` (urdf_to_mjcf만 필요)
 
 ---
 
@@ -94,42 +97,33 @@ ros2 run rtc_tools controller_gui
 
 ---
 
-### `motion_editor_gui.py` — 모션 편집기 GUI
+### `urdf_to_mjcf.py` — URDF/XACRO → MJCF 변환
 
-Qt5 기반 모션 시퀀스 편집기입니다. 현재 관절 상태를 캡처하여 포즈를 시퀀스로 저장하고, 포즈별 궤적/대기 시간을 지정하여 순차 재생할 수 있습니다.
+URDF 또는 XACRO 파일을 MuJoCo MJCF XML로 변환합니다.
 
 ```bash
-# PyQt5 필요
-ros2 run rtc_tools motion_editor_gui
+# 기본 변환
+ros2 run rtc_tools urdf_to_mjcf --input robot.urdf --output robot.xml
+
+# XACRO 파일 변환 (자동 감지)
+ros2 run rtc_tools urdf_to_mjcf --input robot.urdf.xacro --output robot.xml
+
+# 메시 디렉토리 지정
+ros2 run rtc_tools urdf_to_mjcf --input robot.urdf --output robot.xml \
+    --meshdir /path/to/meshes
+
+# XACRO 인자 전달
+ros2 run rtc_tools urdf_to_mjcf --input robot.urdf.xacro --output robot.xml \
+    --xacro-args name:=ur5e use_hand:=true
 ```
 
 **기능:**
+- `package://` URI 자동 해석 (ament_index 연동)
+- XACRO 파일 자동 감지 및 처리
+- 메시 디렉토리 경로 커스텀 지정
+- MuJoCo Python 패키지 (`mujoco`) 필요
 
-| 기능 | 설명 |
-|------|------|
-| 탭 인터페이스 | 멀티 모션 지원; 탭별 독립 포즈 시퀀스 관리 |
-| 테이블 레이아웃 | 7 컬럼: 체크박스, 이름, 상태(✅/Empty), 미리보기, Traj(s), Wait(s), 설명 |
-| 포즈 저장 | 행 수 커스터마이징 (1-500, 기본 50) |
-| 타이밍 제어 | 포즈별 Traj(s) 스핀박스 (0.1-60s, 기본 2.0s) + Wait(s) 스핀박스 (0.0-60s, 기본 0.0s) |
-| 행 조작 | Save, Load, Insert Empty, Delete Selected |
-| 재생 | 체크된 포즈 순차 재생; Traj + Wait 시간 기반 자동 진행 |
-| Copy/Paste | 클립보드 기반 행 복제 (탭 간 이동 가능) |
-| Select All / Deselect All | 저장된 포즈 일괄 선택/해제 |
-| Diff 하이라이트 | 흰색=변경없음, 노랑=파일 대비 수정됨, 초록=신규 추가 |
-| JSON 저장/불러오기 | 포즈, 이름, 설명, 타이밍 정보 포함 |
-| 현재 상태 표시 | 실시간 관절 각도 (rad + deg) |
-
-**ROS2 토픽:**
-
-| 방향 | 토픽 | 타입 | 설명 |
-|------|------|------|------|
-| 구독 | `/joint_states` | `JointState` | 현재 관절 상태 캡처 |
-| 발행 | `/target_joint_positions` | `Float64MultiArray` | 포즈 재생/수동 로드 시 전송 |
-
-**전제 조건:**
-```bash
-sudo apt install python3-pyqt5
-```
+> **참고:** `motion_editor_gui`는 `ur5e_bringup` 패키지로 이동되었습니다 (`ros2 run ur5e_bringup motion_editor_gui`).
 
 ---
 
