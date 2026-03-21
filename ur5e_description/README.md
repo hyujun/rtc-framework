@@ -49,15 +49,34 @@ robots/ur5e/
 
 ### 링크 질량
 
-| 링크 | 질량 (kg) | 비고 |
-|------|-----------|------|
-| base_link | 4.0 | 고정 베이스 |
-| shoulder_link | 3.7 | — |
-| upper_arm_link | 8.393 | — |
-| forearm_link | 2.275 | — |
-| wrist_1_link | 1.219 | — |
-| wrist_2_link | 1.219 | — |
-| wrist_3_link | 0.1879 | 엔드 이펙터 |
+| 링크 | URDF (kg) | MJCF (kg) | 비고 |
+|------|-----------|-----------|------|
+| base_link_inertia | 4.0 | 4.0 | 고정 베이스 |
+| shoulder_link | 3.761 | 3.7 | — |
+| upper_arm_link | 8.058 | 8.393 | MJCF +0.335 kg 차이 |
+| forearm_link | 2.846 | 2.275 | MJCF -0.571 kg 차이 |
+| wrist_1_link | 1.37 | 1.219 | — |
+| wrist_2_link | 1.3 | 1.219 | — |
+| wrist_3_link | 0.365 | 0.1889 | MJCF 51% 가벼움 |
+
+> URDF와 MJCF 간 질량 차이가 있습니다. `ros2 run rtc_tools compare_mjcf_urdf`로 상세 비교 가능합니다.
+
+---
+
+### 커스텀 핸드 모델
+
+10-DOF 커스텀 핸드 URDF가 포함되어 있습니다 (`hand.urdf.xacro`, `ur5e_with_hand.urdf.xacro`).
+
+**관절 (10 revolute):**
+
+| 핑거 | 관절 | 범위 | Effort |
+|-------|------|------|--------|
+| Thumb | thumb_cmc_aa, thumb_cmc_fe, thumb_mcp_fe | ±90° | 5.0 Nm |
+| Index | index_mcp_aa, index_mcp_fe, index_dip_fe | ±90° | 5.0 Nm |
+| Middle | middle_mcp_aa, middle_mcp_fe, middle_dip_fe | ±90° | 5.0 Nm |
+| Ring | ring_mcp_fe | ±90° | 5.0 Nm |
+
+**핑거팁 프레임:** `thumb_tip_link`, `index_tip_link`, `middle_tip_link`, `ring_tip_link` (fixed links)
 
 ---
 
@@ -95,11 +114,14 @@ robots/ur5e/mjcf/scene.xml          # MuJoCo 진입점
 robots/ur5e/mjcf/ur5e.xml           # 로봇 모델
 
 # URDF (빌드 시 생성)
-robots/ur5e/urdf/ur5e.urdf          # Pinocchio 진입점
+robots/ur5e/urdf/ur5e.urdf          # Pinocchio 진입점 (로봇 암만)
+robots/ur5e/urdf/hand.urdf.xacro    # 10-DOF 커스텀 핸드
+robots/ur5e/urdf/ur5e_with_hand.urdf.xacro  # 로봇 + 핸드 조합
 
 # Mesh
-robots/ur5e/meshes/visual/*.dae
-robots/ur5e/meshes/collision/*.stl
+robots/ur5e/meshes/visual/*.dae     # 시각화용 (7 files)
+robots/ur5e/meshes/collision/*.stl  # 충돌용 (7 files)
+robots/ur5e/meshes/assets/*.obj     # MJCF 시각화용 (24 files)
 ```
 
 ---

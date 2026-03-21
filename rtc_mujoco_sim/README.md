@@ -403,6 +403,36 @@ MuJoCo가 설치되지 않은 경우 `mujoco_simulator_node`는 자동으로 빌
 
 ---
 
+## 핸드 시뮬레이션 (fake_hand_response)
+
+MuJoCo 시뮬레이터는 실제 핸드 하드웨어 없이 핸드 커맨드를 에코백하는 가상 핸드 모드를 지원합니다.
+
+**설정 (`mujoco_simulator.yaml`):**
+
+```yaml
+fake_hand_response:
+  enable: true               # 가상 핸드 활성화
+  filter_alpha: 0.3          # 저역통과 필터 계수 (0=무응답, 1=즉시)
+  command_topic: "/hand/command"
+  state_topic: "/hand/joint_states"
+```
+
+**동작:** 커맨드 수신 시 `filter_alpha` 기반 1차 저역통과 필터로 부드러운 응답 생성 → 100 Hz (`create_wall_timer(10ms)`)로 퍼블리시
+
+**Launch 연동:** `sim.launch.py`에서 `use_fake_hand:=true` 시 자동으로 rt_controller에 핸드 시뮬레이션 설정 전파 (실제 UDP 드라이버 비활성화)
+
+---
+
+## JointCommand 메시지 처리
+
+`MuJoCoSimulatorNode`는 `rtc_msgs/JointCommand` 메시지를 구독하여 시뮬레이션에 적용합니다.
+
+- `command_type` 필드에 따라 **위치/토크 모드 자동 전환**
+- `joint_names` 기반 이름→인덱스 매핑 (첫 수신 시 `ResolveJointIndices()` 호출)
+- 액추에이터 gainprm/biasprm 재계산으로 모드 전환 시 물리적 일관성 유지
+
+---
+
 ## MuJoCo Menagerie 사용
 
 ```bash
