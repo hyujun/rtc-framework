@@ -1451,7 +1451,7 @@ class ROSNode(Node):
             JointState, '/joint_states', self.joint_callback, qos)
 
         self.hand_sub = self.create_subscription(
-            Float64MultiArray, '/hand/joint_states',
+            JointState, '/hand/joint_states',
             self.hand_callback, qos)
 
         self.task_pos_sub = self.create_subscription(
@@ -1476,8 +1476,8 @@ class ROSNode(Node):
             self.gui.update_joints(q)
 
     def hand_callback(self, msg):
-        if len(msg.data) >= NUM_HAND_MOTORS:
-            h = np.array(msg.data[:NUM_HAND_MOTORS])
+        if len(msg.position) >= NUM_HAND_MOTORS:
+            h = np.array(msg.position[:NUM_HAND_MOTORS])
             self.gui.update_hand_state(h)
 
     def task_pos_callback(self, msg):

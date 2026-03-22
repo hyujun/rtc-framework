@@ -123,7 +123,7 @@ class DemoControllerGUI(Node):
 
         # Hand state subscription
         self.current_hand_positions = [0.0] * NUM_HAND_MOTORS
-        self.create_subscription(Float64MultiArray, '/hand/joint_states',
+        self.create_subscription(JointState, '/hand/joint_states',
                                  self._hand_state_cb, 10)
 
         # 5 Hz refresh timer
@@ -148,9 +148,9 @@ class DemoControllerGUI(Node):
     def _estop_cb(self, msg: Bool):
         self.estop_active = msg.data
 
-    def _hand_state_cb(self, msg: Float64MultiArray):
-        if len(msg.data) >= NUM_HAND_MOTORS:
-            self.current_hand_positions = list(msg.data[:NUM_HAND_MOTORS])
+    def _hand_state_cb(self, msg: JointState):
+        if len(msg.position) >= NUM_HAND_MOTORS:
+            self.current_hand_positions = list(msg.position[:NUM_HAND_MOTORS])
 
     def _current_gains_cb(self, msg: Float64MultiArray):
         if not self._pending_load_gains:

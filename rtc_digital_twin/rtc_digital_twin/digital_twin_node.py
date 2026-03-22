@@ -1,9 +1,10 @@
 """Digital Twin Node — 500Hz topic subscriber + 60Hz RViz publisher.
 
-Subscribes to /joint_states (UR5e) and /hand/joint_states (Custom Hand),
-caches the latest state, and publishes combined JointState + MarkerArray
-at a configurable display rate (default 60Hz) for robot_state_publisher
-and RViz2 visualization.
+Subscribes to /joint_states (UR5e), /hand/joint_states (Custom Hand),
+and /hand/sensor_states (fingertip sensors), caches the latest state,
+and publishes combined JointState + MarkerArray at a configurable
+display rate (default 60Hz) for robot_state_publisher and RViz2
+visualization.
 """
 
 import rclpy
@@ -25,6 +26,7 @@ class DigitalTwinNode(Node):
         self.declare_parameter('enable_hand', True)
         self.declare_parameter('robot_joint_states_topic', '/joint_states')
         self.declare_parameter('hand_joint_states_topic', '/hand/joint_states')
+        self.declare_parameter('hand_sensor_states_topic', '/hand/sensor_states')
 
         self.declare_parameter('robot_joint_names', [
             'shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint',
@@ -53,6 +55,7 @@ class DigitalTwinNode(Node):
         self._enable_hand = self.get_parameter('enable_hand').value
         robot_topic = self.get_parameter('robot_joint_states_topic').value
         hand_topic = self.get_parameter('hand_joint_states_topic').value
+        sensor_topic = self.get_parameter('hand_sensor_states_topic').value
         self._robot_joint_names = list(self.get_parameter('robot_joint_names').value)
         self._hand_motor_names = list(self.get_parameter('hand_motor_names').value)
         fingertip_names = list(self.get_parameter('fingertip_names').value)
@@ -97,7 +100,10 @@ class DigitalTwinNode(Node):
         )
         if self._enable_hand:
             self.create_subscription(
-                Float64MultiArray, hand_topic, self._hand_cb, qos
+                JointState, hand_topic, self._hand_cb, qos
+            )
+            self.create_subscription(
+                Float64MultiArray, sensor_topic, self._sensor_cb, qos
             )
 
         # ── Publishers ──────────────────────────────────────────────────
@@ -133,17 +139,25 @@ class DigitalTwinNode(Node):
                     self._robot_velocities[idx] = msg.velocity[i]
         self._robot_data_received = True
 
-    def _hand_cb(self, msg: Float64MultiArray):
-        """Cache latest hand state. Format: [pos×10, vel×10, sensor×44] = 64 doubles."""
-        data = msg.data
-        if len(data) < 64:
-            return
-        self._hand_positions = list(data[0:10])
-        self._hand_velocities = list(data[10:20])
-        for i in range(len(self._fingertip_sensors)):
-            offset = 20 + i * 11
-            self._fingertip_sensors[i] = list(data[offset:offset + 11])
+    def _hand_cb(self, msg: JointState):
+        """Cache latest hand motor positions and velocities from JointState."""
+        n_hand = len(self._hand_motor_names)
+        if len(msg.position) >= n_hand:
+            self._hand_positions = list(msg.position[:n_hand])
+        if msg.velocity and len(msg.velocity) >= n_hand:
+            self._hand_velocities = list(msg.velocity[:n_hand])
         self._hand_data_received = True
+
+    def _sensor_cb(self, msg: Float64MultiArray):
+        """Cache latest fingertip sensor data from Float64MultiArray."""
+        data = msg.data
+        n_tips = len(self._fingertip_sensors)
+        expected = n_tips * 11
+        if len(data) < expected:
+            return
+        for i in range(n_tips):
+            offset = i * 11
+            self._fingertip_sensors[i] = list(data[offset:offset + 11])
 
     # ── 60Hz display publish ─────────────────────────────────────────────
 
