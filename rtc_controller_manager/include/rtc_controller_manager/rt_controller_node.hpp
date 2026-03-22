@@ -22,8 +22,10 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -73,6 +75,8 @@ private:
   void JointStateCallback(sensor_msgs::msg::JointState::SharedPtr msg);
   void RobotTargetCallback(std_msgs::msg::Float64MultiArray::SharedPtr msg);
   void HandTargetCallback(std_msgs::msg::Float64MultiArray::SharedPtr msg);
+  void DeviceStateCallback(sensor_msgs::msg::JointState::SharedPtr msg);
+  void DeviceSensorCallback(std_msgs::msg::Float64MultiArray::SharedPtr msg);
 
   // ── Joint name validation (v5.14.0) ──────────────────────────────────────
   void LoadAndValidateJointNames();
@@ -137,11 +141,30 @@ private:
   // Per-controller topic config cache (index = controller index)
   std::vector<rtc::TopicConfig> controller_topic_configs_;
 
-  // ── Device enable/disable flags ──────────────────────────────────────────
-  rtc::DeviceEnableFlags global_device_flags_;
-  std::vector<rtc::DeviceEnableFlags> controller_device_flags_;
-  [[nodiscard]] rtc::DeviceEnableFlags ResolveDeviceFlags(
-      const rtc::PerControllerDeviceFlags & per_ctrl) const noexcept;
+  // ── Dynamic device group management ──────────────────────────────────────
+  std::set<std::string> active_groups_;           // union of all controller groups
+  std::map<std::string, int> group_slot_map_;     // group name → PublishSnapshot slot index
+
+  // ── Device timeout entries (E-STOP watchdog) ──────────────────────────────
+  struct DeviceTimeoutEntry {
+    std::string group_name;
+    std::string state_topic;
+    std::chrono::milliseconds timeout{100};
+    std::chrono::steady_clock::time_point last_update{};
+    // Not std::atomic — written from a single subscriber callback,
+    // read from RT thread. Worst case: 1-tick delay (acceptable).
+    volatile bool received{false};
+  };
+  std::vector<DeviceTimeoutEntry> device_timeouts_;
+  [[nodiscard]] bool AllTimeoutDevicesReceived() const noexcept;
+
+  // ── Temporary bridge (removed in PR2) ─────────────────────────────────────
+  // Maps group name → ControllerState.robot / .hand fixed structure.
+  struct GroupStateMapping {
+    std::string group_name;
+    enum class Target { kRobot, kHand } target;
+  };
+  std::vector<GroupStateMapping> group_state_mappings_;
 
   // Read-only parameter guard handle (topic params immutable after init)
   rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
@@ -204,8 +227,7 @@ private:
   std::atomic<bool> state_received_{false};
   std::atomic<bool> target_received_{false};
 
-  std::chrono::steady_clock::time_point last_robot_update_{};
-  std::chrono::milliseconds             robot_timeout_{100};
+  // last_robot_update_ and robot_timeout_ replaced by device_timeouts_ entries
 
   // ── Named joint mapping (v5.14.0) ────────────────────────────────────────
   std::vector<std::string> robot_joint_names_;

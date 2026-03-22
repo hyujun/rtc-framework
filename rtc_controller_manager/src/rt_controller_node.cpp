@@ -151,19 +151,15 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("enable_timing_log", true);
   declare_parameter("enable_robot_log", true);
   declare_parameter("enable_hand_log", true);
-  declare_parameter("robot_timeout_ms", 100.0);
   declare_parameter("enable_estop", true);
   declare_parameter("enable_status_monitor", false);
   declare_parameter("init_timeout_sec", 5.0);
   declare_parameter("auto_hold_position", true);
   declare_parameter("initial_controller", "joint_pd_controller");
 
-  // ── 디바이스 활성화 플래그 (글로벌 기본값) ────────────────────────────────
-  declare_parameter("enable_ur5e", true);
-  declare_parameter("enable_hand", false);
-  global_device_flags_.enable_ur5e = get_parameter("enable_ur5e").as_bool();
-  global_device_flags_.enable_hand = get_parameter("enable_hand").as_bool();
-
+  // ── Device timeouts (replaces robot_timeout_ms / enable_ur5e / enable_hand) ─
+  declare_parameter("device_timeout_names", std::vector<std::string>{});
+  declare_parameter("device_timeout_values", std::vector<double>{});
 
   // Joint/Motor/Fingertip names (v5.14.0 named messaging)
   declare_parameter("robot_joint_names", std::vector<std::string>{});
@@ -181,65 +177,8 @@ void RtControllerNode::DeclareAndLoadParameters()
   enable_estop_ = get_parameter("enable_estop").as_bool();
   enable_status_monitor_ = get_parameter("enable_status_monitor").as_bool();
 
-  if (enable_logging_) {
-    // 세션 디렉토리 결정: log_dir 파라미터 → UR5E_SESSION_DIR 환경변수 → 자체 생성
-    const std::string log_dir_param = get_parameter("log_dir").as_string();
-    const int max_sessions = get_parameter("max_log_sessions").as_int();
-
-    std::filesystem::path session_dir;
-    if (!log_dir_param.empty()) {
-      // Launch 파일이 세션 디렉토리를 직접 전달한 경우
-      session_dir = std::filesystem::path(log_dir_param);
-      std::filesystem::create_directories(session_dir);
-      urtc::EnsureSessionSubdirs(session_dir);
-    } else {
-      // Standalone 실행: 자체 세션 디렉토리 생성
-      session_dir = ResolveAndSetupSessionDir();
-    }
-
-    // 세션 폴더 cleanup (logging_data 루트 기준)
-    const auto logging_root = session_dir.parent_path();
-    urtc::CleanupOldSessions(logging_root, max_sessions);
-
-    const bool enable_timing = get_parameter("enable_timing_log").as_bool();
-    const bool enable_robot  = get_parameter("enable_robot_log").as_bool()
-                               && global_device_flags_.enable_ur5e;
-    const bool enable_hand   = get_parameter("enable_hand_log").as_bool()
-                               && global_device_flags_.enable_hand;
-    const auto ctrl_dir = session_dir / "controller";
-    std::filesystem::create_directories(ctrl_dir);
-
-    const std::string timing_path = enable_timing
-        ? (ctrl_dir / "timing_log.csv").string() : "";
-    const std::string robot_path = enable_robot
-        ? (ctrl_dir / "robot_log.csv").string() : "";
-    const std::string hand_path = enable_hand
-        ? (ctrl_dir / "hand_log.csv").string() : "";
-
-    // joint/motor/fingertip names는 아직 로드 전일 수 있으므로 YAML에서 직접 읽기
-    const auto yaml_joint_names = get_parameter("robot_joint_names").as_string_array();
-    const auto yaml_motor_names = get_parameter("hand_motor_names").as_string_array();
-    const auto yaml_fingertip_names = get_parameter("hand_fingertip_names").as_string_array();
-    logger_ = std::make_unique<urtc::DataLogger>(
-        timing_path, robot_path, hand_path,
-        yaml_joint_names, yaml_motor_names, yaml_fingertip_names);
-    RCLCPP_INFO(get_logger(),
-        "Logging to: %s/controller/ (max_sessions=%d)",
-        session_dir.string().c_str(), max_sessions);
-  }
-
-  // E-STOP 타임아웃: ur5e 비활성 시 robot_timeout 비활성화
-  if (global_device_flags_.enable_ur5e) {
-    robot_timeout_ = std::chrono::milliseconds(
-        static_cast<int>(get_parameter("robot_timeout_ms").as_double()));
-  } else {
-    robot_timeout_ = std::chrono::milliseconds(0);
-  }
-
-  // Hand 비활성 시 로그
-  if (!global_device_flags_.enable_hand) {
-    RCLCPP_INFO(get_logger(), "Hand disabled (enable_hand=false)");
-  }
+  // NOTE: Logging setup is deferred until after controller loading,
+  // because active_groups_ must be known to determine which logs to create.
 
   std::string urdf_path = "";
   try {
@@ -289,36 +228,132 @@ void RtControllerNode::DeclareAndLoadParameters()
     controllers_.push_back(std::move(ctrl));
   }
 
-  // Cache per-controller topic configs and resolve device flags
+  // Cache per-controller topic configs and build active_groups_ + group_slot_map_
   controller_topic_configs_.reserve(controllers_.size());
-  controller_device_flags_.reserve(controllers_.size());
   for (const auto & ctrl : controllers_) {
     controller_topic_configs_.push_back(ctrl->GetTopicConfig());
-    controller_device_flags_.push_back(
-        ResolveDeviceFlags(ctrl->GetPerControllerDeviceFlags()));
 
     const auto & tc = controller_topic_configs_.back();
-    const auto & df = controller_device_flags_.back();
-    RCLCPP_INFO(get_logger(),
-        "Controller '%s': ur5e=%s (%zu+%zu topics), hand=%s (%zu+%zu topics)",
-        ctrl->Name().data(),
-        df.enable_ur5e ? "ON" : "OFF",
-        tc.ur5e.subscribe.size(), tc.ur5e.publish.size(),
-        df.enable_hand ? "ON" : "OFF",
-        tc.hand.subscribe.size(), tc.hand.publish.size());
+    std::string groups_info;
+    for (const auto & [name, group] : tc.groups) {
+      if (!group.subscribe.empty() || !group.publish.empty()) {
+        groups_info += name + "(" +
+            std::to_string(group.subscribe.size()) + "sub+" +
+            std::to_string(group.publish.size()) + "pub) ";
+      }
+    }
+    RCLCPP_INFO(get_logger(), "Controller '%s': %s",
+        ctrl->Name().data(), groups_info.c_str());
   }
 
-  // ur5e가 어떤 컨트롤러에서도 활성화되지 않으면 joint_states 대기 skip
+  // ── Build active_groups_ (union of all controllers' groups) ──────────────
   {
-    bool any_ur5e = false;
-    for (const auto & df : controller_device_flags_) {
-      if (df.enable_ur5e) { any_ur5e = true; break; }
+    int slot_idx = 0;
+    for (const auto & tc : controller_topic_configs_) {
+      for (const auto & [name, group] : tc.groups) {
+        if (!group.subscribe.empty() || !group.publish.empty()) {
+          if (active_groups_.insert(name).second) {
+            group_slot_map_[name] = slot_idx++;
+          }
+        }
+      }
     }
-    if (!any_ur5e) {
-      state_received_.store(true, std::memory_order_release);
-      target_received_.store(true, std::memory_order_release);
-      RCLCPP_INFO(get_logger(), "No controller enables ur5e — skipping init wait");
+    if (slot_idx > urtc::PublishSnapshot::kMaxGroups) {
+      RCLCPP_FATAL(get_logger(), "Too many device groups (%d > %d)",
+          slot_idx, urtc::PublishSnapshot::kMaxGroups);
+      rclcpp::shutdown();
+      return;
     }
+  }
+
+  // ── Build group_state_mappings_ (temporary bridge — removed in PR2) ──────
+  for (const auto & group_name : active_groups_) {
+    GroupStateMapping m;
+    m.group_name = group_name;
+    m.target = (group_name == "ur5e")
+        ? GroupStateMapping::Target::kRobot
+        : GroupStateMapping::Target::kHand;
+    group_state_mappings_.push_back(m);
+  }
+
+  // ── Deferred logging setup (needs active_groups_) ────────────────────────
+  if (enable_logging_) {
+    const std::string log_dir_param = get_parameter("log_dir").as_string();
+    const int max_sessions = get_parameter("max_log_sessions").as_int();
+
+    std::filesystem::path session_dir;
+    if (!log_dir_param.empty()) {
+      session_dir = std::filesystem::path(log_dir_param);
+      std::filesystem::create_directories(session_dir);
+      urtc::EnsureSessionSubdirs(session_dir);
+    } else {
+      session_dir = ResolveAndSetupSessionDir();
+    }
+    const auto logging_root = session_dir.parent_path();
+    urtc::CleanupOldSessions(logging_root, max_sessions);
+
+    const bool enable_timing = get_parameter("enable_timing_log").as_bool();
+    const bool enable_robot  = get_parameter("enable_robot_log").as_bool()
+                               && active_groups_.contains("ur5e");
+    const bool enable_hand   = get_parameter("enable_hand_log").as_bool()
+                               && active_groups_.contains("hand");
+    const auto ctrl_dir = session_dir / "controller";
+    std::filesystem::create_directories(ctrl_dir);
+
+    const std::string timing_path = enable_timing
+        ? (ctrl_dir / "timing_log.csv").string() : "";
+    const std::string robot_path = enable_robot
+        ? (ctrl_dir / "robot_log.csv").string() : "";
+    const std::string hand_path = enable_hand
+        ? (ctrl_dir / "hand_log.csv").string() : "";
+
+    const auto yaml_joint_names = get_parameter("robot_joint_names").as_string_array();
+    const auto yaml_motor_names = get_parameter("hand_motor_names").as_string_array();
+    const auto yaml_fingertip_names = get_parameter("hand_fingertip_names").as_string_array();
+    logger_ = std::make_unique<urtc::DataLogger>(
+        timing_path, robot_path, hand_path,
+        yaml_joint_names, yaml_motor_names, yaml_fingertip_names);
+    RCLCPP_INFO(get_logger(),
+        "Logging to: %s/controller/ (max_sessions=%d)",
+        session_dir.string().c_str(), max_sessions);
+  }
+
+  // ── Parse device_timeouts & match to active topic groups ─────────────────
+  {
+    const auto timeout_names = get_parameter("device_timeout_names").as_string_array();
+    const auto timeout_values = get_parameter("device_timeout_values").as_double_array();
+    for (std::size_t i = 0; i < timeout_names.size() && i < timeout_values.size(); ++i) {
+      const auto & name = timeout_names[i];
+      if (!active_groups_.contains(name)) {
+        RCLCPP_WARN(get_logger(),
+            "Device timeout '%s' has no matching topic group — ignored", name.c_str());
+        continue;
+      }
+      std::string state_topic;
+      for (const auto & tc : controller_topic_configs_) {
+        state_topic = tc.GetSubscribeTopicName(name, urtc::SubscribeRole::kState);
+        if (!state_topic.empty()) break;
+      }
+      if (state_topic.empty()) {
+        RCLCPP_WARN(get_logger(),
+            "Device timeout '%s' has no state subscription — ignored", name.c_str());
+        continue;
+      }
+      DeviceTimeoutEntry entry;
+      entry.group_name = name;
+      entry.state_topic = state_topic;
+      entry.timeout = std::chrono::milliseconds(static_cast<int>(timeout_values[i]));
+      device_timeouts_.push_back(std::move(entry));
+      RCLCPP_INFO(get_logger(), "Device timeout: '%s' → watching '%s' (%dms)",
+          name.c_str(), state_topic.c_str(), static_cast<int>(timeout_values[i]));
+    }
+  }
+
+  // Skip init wait if no device timeouts configured
+  if (device_timeouts_.empty()) {
+    state_received_.store(true, std::memory_order_release);
+    target_received_.store(true, std::memory_order_release);
+    RCLCPP_INFO(get_logger(), "No device timeouts configured — skipping init wait");
   }
 
   // Resolve initial_controller parameter → controller index
@@ -340,41 +375,81 @@ void RtControllerNode::CreateSubscriptions()
   auto sub_options = rclcpp::SubscriptionOptions();
   sub_options.callback_group = cb_group_sensor_;
 
-  // ── Determine which device groups are enabled by any controller ──────────
-  // Topics are created at startup for the union of all enabled controllers,
-  // so runtime controller switching finds pre-existing topics.
-  bool any_ur5e = false, any_hand = false;
-  for (const auto & df : controller_device_flags_) {
-    if (df.enable_ur5e) { any_ur5e = true; }
-    if (df.enable_hand) { any_hand = true; }
-  }
+  // ── Helper: find DeviceTimeoutEntry for a given state topic ──────────────
+  auto find_timeout_entry = [this](const std::string & topic) -> DeviceTimeoutEntry* {
+    for (auto & dt : device_timeouts_) {
+      if (dt.state_topic == topic) return &dt;
+    }
+    return nullptr;
+  };
 
-  // ── Collect unique subscribe topics from all controllers ──────────────────
-  std::set<std::string> created_joint_state_topics;
-  std::set<std::string> created_target_topics;
+  // ── Helper: find GroupStateMapping for a group name ──────────────────────
+  auto find_mapping = [this](const std::string & group_name) -> GroupStateMapping::Target {
+    for (const auto & m : group_state_mappings_) {
+      if (m.group_name == group_name) return m.target;
+    }
+    return GroupStateMapping::Target::kHand;  // fallback
+  };
 
-  for (std::size_t ci = 0; ci < controller_topic_configs_.size(); ++ci) {
-    const auto & tc = controller_topic_configs_[ci];
+  // ── Create subscriptions for all active device groups ────────────────────
+  std::set<std::string> created_topics;
 
-    // ur5e 토픽: any controller enables ur5e → 생성
-    if (any_ur5e) {
-      for (const auto & entry : tc.ur5e.subscribe) {
+  for (const auto & tc : controller_topic_configs_) {
+    for (const auto & [group_name, group] : tc.groups) {
+      if (!active_groups_.contains(group_name)) continue;
+
+      const auto state_target = find_mapping(group_name);
+
+      for (const auto & entry : group.subscribe) {
+        if (!created_topics.insert(entry.topic_name).second) continue;
+
+        DeviceTimeoutEntry * dt_ptr = find_timeout_entry(entry.topic_name);
+
         switch (entry.role) {
-          case urtc::SubscribeRole::kState:
-            if (created_joint_state_topics.insert(entry.topic_name).second) {
+          case urtc::SubscribeRole::kState: {
+            if (state_target == GroupStateMapping::Target::kRobot) {
               auto sub = create_subscription<sensor_msgs::msg::JointState>(
                 entry.topic_name, 10,
-                [this](sensor_msgs::msg::JointState::SharedPtr msg) {
+                [this, dt_ptr](sensor_msgs::msg::JointState::SharedPtr msg) {
                   JointStateCallback(std::move(msg));
+                  if (dt_ptr) {
+                    dt_ptr->last_update = std::chrono::steady_clock::now();
+                    dt_ptr->received = true;
+                  }
                 },
                 sub_options);
               topic_subscriptions_.push_back(sub);
-              RCLCPP_INFO(get_logger(), "  Subscribe [ur5e/state]: %s",
-                          entry.topic_name.c_str());
+            } else {
+              auto sub = create_subscription<sensor_msgs::msg::JointState>(
+                entry.topic_name, 10,
+                [this, dt_ptr](sensor_msgs::msg::JointState::SharedPtr msg) {
+                  DeviceStateCallback(std::move(msg));
+                  if (dt_ptr) {
+                    dt_ptr->last_update = std::chrono::steady_clock::now();
+                    dt_ptr->received = true;
+                  }
+                },
+                sub_options);
+              topic_subscriptions_.push_back(sub);
             }
+            RCLCPP_INFO(get_logger(), "  Subscribe [%s/state]: %s",
+                        group_name.c_str(), entry.topic_name.c_str());
             break;
-          case urtc::SubscribeRole::kTarget:
-            if (created_target_topics.insert(entry.topic_name).second) {
+          }
+          case urtc::SubscribeRole::kSensorState: {
+            auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
+              entry.topic_name, 10,
+              [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+                DeviceSensorCallback(std::move(msg));
+              },
+              sub_options);
+            topic_subscriptions_.push_back(sub);
+            RCLCPP_INFO(get_logger(), "  Subscribe [%s/sensor_state]: %s",
+                        group_name.c_str(), entry.topic_name.c_str());
+            break;
+          }
+          case urtc::SubscribeRole::kTarget: {
+            if (state_target == GroupStateMapping::Target::kRobot) {
               auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
                 entry.topic_name, 10,
                 [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
@@ -382,83 +457,7 @@ void RtControllerNode::CreateSubscriptions()
                 },
                 sub_options);
               topic_subscriptions_.push_back(sub);
-              RCLCPP_INFO(get_logger(), "  Subscribe [ur5e/target]: %s",
-                          entry.topic_name.c_str());
-            }
-            break;
-          default:
-            break;
-        }
-      }
-    }
-
-    // hand 토픽: any controller enables hand → 생성
-    if (any_hand) {
-      for (const auto & entry : tc.hand.subscribe) {
-        switch (entry.role) {
-          case urtc::SubscribeRole::kState:
-            if (created_joint_state_topics.insert(entry.topic_name).second) {
-              auto sub = create_subscription<sensor_msgs::msg::JointState>(
-                entry.topic_name, 10,
-                [this](sensor_msgs::msg::JointState::SharedPtr msg) {
-                  if (msg->position.size() < 1) { return; }
-                  std::lock_guard lock(hand_state_mutex_);
-
-                  if (hand_state_map_built_) {
-                    const std::size_t n = std::min(hand_state_reorder_.size(),
-                                                   msg->position.size());
-                    for (std::size_t src_i = 0; src_i < n; ++src_i) {
-                      const int idx = hand_state_reorder_[src_i];
-                      if (idx >= 0 && idx < urtc::kNumHandMotors) {
-                        const auto uidx = static_cast<std::size_t>(idx);
-                        cached_hand_state_.motor_positions[uidx] =
-                            static_cast<float>(msg->position[src_i]);
-                        if (src_i < msg->velocity.size()) {
-                          cached_hand_state_.motor_velocities[uidx] =
-                              static_cast<float>(msg->velocity[src_i]);
-                        }
-                      }
-                    }
-                  } else {
-                    for (std::size_t i = 0; i < urtc::kNumHandMotors
-                             && i < msg->position.size(); ++i) {
-                      cached_hand_state_.motor_positions[i] =
-                          static_cast<float>(msg->position[i]);
-                    }
-                    for (std::size_t i = 0; i < urtc::kNumHandMotors
-                             && i < msg->velocity.size(); ++i) {
-                      cached_hand_state_.motor_velocities[i] =
-                          static_cast<float>(msg->velocity[i]);
-                    }
-                  }
-                  cached_hand_state_.valid = true;
-                },
-                sub_options);
-              topic_subscriptions_.push_back(sub);
-              RCLCPP_INFO(get_logger(), "  Subscribe [hand/state]: %s",
-                          entry.topic_name.c_str());
-            }
-            break;
-          case urtc::SubscribeRole::kSensorState:
-            if (created_joint_state_topics.insert(entry.topic_name).second) {
-              auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
-                entry.topic_name, 10,
-                [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-                  std::lock_guard lock(hand_state_mutex_);
-                  for (std::size_t i = 0; i < msg->data.size()
-                           && i < cached_hand_state_.sensor_data.size(); ++i) {
-                    cached_hand_state_.sensor_data[i] =
-                        static_cast<int32_t>(msg->data[i]);
-                  }
-                },
-                sub_options);
-              topic_subscriptions_.push_back(sub);
-              RCLCPP_INFO(get_logger(), "  Subscribe [hand/sensor_state]: %s",
-                          entry.topic_name.c_str());
-            }
-            break;
-          case urtc::SubscribeRole::kTarget:
-            if (created_target_topics.insert(entry.topic_name).second) {
+            } else {
               auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
                 entry.topic_name, 10,
                 [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
@@ -466,10 +465,11 @@ void RtControllerNode::CreateSubscriptions()
                 },
                 sub_options);
               topic_subscriptions_.push_back(sub);
-              RCLCPP_INFO(get_logger(), "  Subscribe [hand/target]: %s",
-                          entry.topic_name.c_str());
             }
+            RCLCPP_INFO(get_logger(), "  Subscribe [%s/target]: %s",
+                        group_name.c_str(), entry.topic_name.c_str());
             break;
+          }
         }
       }
     }
@@ -541,25 +541,25 @@ void RtControllerNode::CreatePublishers()
   rclcpp::QoS cmd_qos{1};
   cmd_qos.best_effort();
 
-  // ── Determine which device groups are enabled by any controller ──────────
-  bool any_ur5e = false, any_hand = false;
-  for (const auto & df : controller_device_flags_) {
-    if (df.enable_ur5e) { any_ur5e = true; }
-    if (df.enable_hand) { any_hand = true; }
-  }
+  // ── Helper: find GroupStateMapping for joint name / size resolution ──────
+  auto find_mapping = [this](const std::string & group_name) -> GroupStateMapping::Target {
+    for (const auto & m : group_state_mappings_) {
+      if (m.group_name == group_name) return m.target;
+    }
+    return GroupStateMapping::Target::kHand;
+  };
 
   // Helper: create a publisher for a publish entry if not already created.
   auto create_pub = [&](const urtc::PublishTopicEntry & entry,
-                        const char * device_prefix,
-                        bool is_hand) {
+                        const std::string & group_name) {
     switch (entry.role) {
       case urtc::PublishRole::kJointCommand: {
-        // JointCommand publisher (rtc_msgs/JointCommand)
         if (joint_command_publishers_.count(entry.topic_name) > 0) { return; }
         JointCommandPublisherEntry jce;
         jce.publisher = create_publisher<rtc_msgs::msg::JointCommand>(
             entry.topic_name, cmd_qos);
-        if (!is_hand) {
+        // Temporary bridge: use group_state_mappings_ for joint names/size
+        if (find_mapping(group_name) == GroupStateMapping::Target::kRobot) {
           jce.msg.joint_names = robot_joint_names_;
           jce.msg.values.resize(urtc::kNumRobotJoints, 0.0);
         } else {
@@ -569,7 +569,7 @@ void RtControllerNode::CreatePublishers()
         jce.msg.command_type = "position";
         joint_command_publishers_[entry.topic_name] = std::move(jce);
         RCLCPP_INFO(get_logger(), "  Publish [%s/joint_command]: %s (JointCommand)",
-                    device_prefix, entry.topic_name.c_str());
+                    group_name.c_str(), entry.topic_name.c_str());
         return;
       }
       default:
@@ -583,7 +583,8 @@ void RtControllerNode::CreatePublishers()
     if (data_size <= 0) {
       switch (entry.role) {
         case urtc::PublishRole::kRos2Command:
-          data_size = is_hand ? urtc::kNumHandMotors : urtc::kNumRobotJoints;
+          data_size = (find_mapping(group_name) == GroupStateMapping::Target::kRobot)
+              ? urtc::kNumRobotJoints : urtc::kNumHandMotors;
           break;
         case urtc::PublishRole::kTaskPosition:
           data_size = 6;
@@ -606,19 +607,15 @@ void RtControllerNode::CreatePublishers()
 
     const char * role_str = urtc::PublishRoleToString(entry.role);
     RCLCPP_INFO(get_logger(), "  Publish [%s/%s]: %s (size=%d)",
-                device_prefix, role_str, entry.topic_name.c_str(), data_size);
+                group_name.c_str(), role_str, entry.topic_name.c_str(), data_size);
   };
 
-  // ── Create publishers for enabled device groups ───────────────────────────
+  // ── Create publishers for all active device groups ────────────────────────
   for (const auto & tc : controller_topic_configs_) {
-    if (any_ur5e) {
-      for (const auto & entry : tc.ur5e.publish) {
-        create_pub(entry, "ur5e", false);
-      }
-    }
-    if (any_hand) {
-      for (const auto & entry : tc.hand.publish) {
-        create_pub(entry, "hand", true);
+    for (const auto & [group_name, group] : tc.groups) {
+      if (!active_groups_.contains(group_name)) continue;
+      for (const auto & entry : group.publish) {
+        create_pub(entry, group_name);
       }
     }
   }
@@ -654,35 +651,21 @@ void RtControllerNode::ExposeTopicParameters()
     const std::string prefix =
         "controllers." + std::string(controllers_[i]->Name());
 
-    // ur5e 디바이스 그룹
-    for (const auto & entry : tc.ur5e.subscribe) {
-      const std::string param_name =
-          prefix + ".ur5e.subscribe." + urtc::SubscribeRoleToString(entry.role);
-      if (!has_parameter(param_name)) {
-        declare_parameter(param_name, entry.topic_name);
+    // All device groups (dynamic)
+    for (const auto & [group_name, group] : tc.groups) {
+      for (const auto & entry : group.subscribe) {
+        const std::string param_name =
+            prefix + "." + group_name + ".subscribe." + urtc::SubscribeRoleToString(entry.role);
+        if (!has_parameter(param_name)) {
+          declare_parameter(param_name, entry.topic_name);
+        }
       }
-    }
-    for (const auto & entry : tc.ur5e.publish) {
-      const std::string param_name =
-          prefix + ".ur5e.publish." + urtc::PublishRoleToString(entry.role);
-      if (!has_parameter(param_name)) {
-        declare_parameter(param_name, entry.topic_name);
-      }
-    }
-
-    // hand 디바이스 그룹
-    for (const auto & entry : tc.hand.subscribe) {
-      const std::string param_name =
-          prefix + ".hand.subscribe." + urtc::SubscribeRoleToString(entry.role);
-      if (!has_parameter(param_name)) {
-        declare_parameter(param_name, entry.topic_name);
-      }
-    }
-    for (const auto & entry : tc.hand.publish) {
-      const std::string param_name =
-          prefix + ".hand.publish." + urtc::PublishRoleToString(entry.role);
-      if (!has_parameter(param_name)) {
-        declare_parameter(param_name, entry.topic_name);
+      for (const auto & entry : group.publish) {
+        const std::string param_name =
+            prefix + "." + group_name + ".publish." + urtc::PublishRoleToString(entry.role);
+        if (!has_parameter(param_name)) {
+          declare_parameter(param_name, entry.topic_name);
+        }
       }
     }
   }
@@ -761,7 +744,7 @@ void RtControllerNode::JointStateCallback(sensor_msgs::msg::JointState::SharedPt
                     current_torques_.begin());
       }
     }
-    last_robot_update_ = std::chrono::steady_clock::now();
+    // last_update is now set by DeviceTimeoutEntry in CreateSubscriptions
   }
   state_received_.store(true, std::memory_order_release);
 }
@@ -801,24 +784,24 @@ void RtControllerNode::HandTargetCallback(
 // ── 50 Hz watchdog (E-STOP) ───────────────────────────────────────────────────
 void RtControllerNode::CheckTimeouts()
 {
-  // ur5e 비활성 시 robot timeout 체크 skip
-  if (!global_device_flags_.enable_ur5e) { return; }
+  if (device_timeouts_.empty()) { return; }
 
-  const auto now_time = std::chrono::steady_clock::now();
-  bool robot_timed_out = false;
-
-  // Non-blocking: try_lock avoids stalling the RT loop if sensor thread
-  // holds the mutex. On contention, skip this check (retried in 20 ms).
-  if (state_received_.load(std::memory_order_acquire)) {
-    std::unique_lock lock(state_mutex_, std::try_to_lock);
-    if (lock.owns_lock()) {
-      robot_timed_out = (now_time - last_robot_update_) > robot_timeout_;
+  const auto now = std::chrono::steady_clock::now();
+  for (auto & dt : device_timeouts_) {
+    if (!dt.received) continue;
+    if ((now - dt.last_update) > dt.timeout && !IsGlobalEstopped()) {
+      TriggerGlobalEstop(dt.group_name + "_timeout");
+      return;
     }
   }
+}
 
-  if (robot_timed_out && !IsGlobalEstopped()) {
-    TriggerGlobalEstop("robot_timeout");
+bool RtControllerNode::AllTimeoutDevicesReceived() const noexcept
+{
+  for (const auto & dt : device_timeouts_) {
+    if (!dt.received) return false;
   }
+  return true;
 }
 
 // ── 500 Hz control loop ───────────────────────────────────────────────────────
@@ -946,7 +929,7 @@ void RtControllerNode::ControlLoop()
   // ── Phase 3: push publish snapshot to SPSC buffer (lock-free, O(1)) ────
   // All ROS2 publish() calls are offloaded to the non-RT publish thread.
   {
-    const auto & active_df = controller_device_flags_[
+    const auto & active_tc = controller_topic_configs_[
         static_cast<std::size_t>(active_idx)];
     urtc::PublishSnapshot snap{};
     snap.command_type          = output.command_type;
@@ -954,21 +937,40 @@ void RtControllerNode::ControlLoop()
     snap.stamp_ns              = std::chrono::steady_clock::now()
                                    .time_since_epoch().count();
     snap.active_controller_idx = active_idx;
-    snap.ur5e_enabled          = active_df.enable_ur5e;
-    snap.device_enabled        = active_df.enable_hand;
-    // Copy robot arrays (size 6 → size kMaxRobotDOF)
+
+    // Shared robot state data (trajectory, controller state)
     for (std::size_t i = 0; i < urtc::kNumRobotJoints; ++i) {
-      snap.robot_commands[i]        = output.robot_commands[i];
-      snap.goal_positions[i]        = output.goal_positions[i];
+      snap.goal_positions[i]          = output.goal_positions[i];
       snap.actual_target_positions[i] = output.actual_target_positions[i];
-      snap.target_velocities[i]     = output.target_velocities[i];
-      snap.actual_positions[i]      = state.robot.positions[i];
-      snap.actual_velocities[i]     = state.robot.velocities[i];
+      snap.target_velocities[i]       = output.target_velocities[i];
+      snap.actual_positions[i]        = state.robot.positions[i];
+      snap.actual_velocities[i]       = state.robot.velocities[i];
     }
-    // Copy device commands (size kNumHandMotors → kMaxDeviceChannels)
-    for (std::size_t i = 0; i < urtc::kNumHandMotors; ++i) {
-      snap.device_commands[i] = output.hand_commands[i];
+
+    // Per-group commands → group_commands slots (temporary bridge)
+    int gi = 0;
+    for (const auto & [gname, ggroup] : active_tc.groups) {
+      if (gi >= urtc::PublishSnapshot::kMaxGroups) break;
+      auto m_it = std::find_if(group_state_mappings_.begin(),
+          group_state_mappings_.end(),
+          [&](const auto & m) { return m.group_name == gname; });
+      if (m_it != group_state_mappings_.end() &&
+          m_it->target == GroupStateMapping::Target::kRobot) {
+        snap.group_commands[gi].num_channels = urtc::kNumRobotJoints;
+        for (int j = 0; j < urtc::kNumRobotJoints; ++j) {
+          snap.group_commands[gi].commands[j] = output.robot_commands[j];
+        }
+      } else {
+        snap.group_commands[gi].num_channels = urtc::kNumHandMotors;
+        for (int j = 0; j < urtc::kNumHandMotors; ++j) {
+          snap.group_commands[gi].commands[j] =
+              static_cast<double>(output.hand_commands[j]);
+        }
+      }
+      ++gi;
     }
+    snap.num_groups = gi;
+
     static_cast<void>(publish_buffer_.Push(snap));
   }
 
@@ -1207,7 +1209,7 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
         (snap.command_type == urtc::CommandType::kTorque) ? "torque" : "position";
 
     // Helper: publish a single topic entry from snapshot data
-    auto publish_entry = [&](const urtc::PublishTopicEntry & pt, bool is_hand) {
+    auto publish_entry = [&](const urtc::PublishTopicEntry & pt, int group_idx) {
       switch (pt.role) {
         case urtc::PublishRole::kJointCommand: {
           auto jc_it = joint_command_publishers_.find(pt.topic_name);
@@ -1216,14 +1218,10 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           jce.msg.header.stamp.sec = sec;
           jce.msg.header.stamp.nanosec = nsec;
           jce.msg.command_type = cmd_type_str;
-          if (!is_hand) {
-            std::copy_n(snap.robot_commands.begin(), snap.num_robot_joints,
-                        jce.msg.values.begin());
-          } else {
-            for (std::size_t i = 0; i < urtc::kNumHandMotors
-                     && i < snap.device_commands.size(); ++i) {
-              jce.msg.values[i] = static_cast<double>(snap.device_commands[i]);
-            }
+          const auto & gc = snap.group_commands[group_idx];
+          for (int i = 0; i < gc.num_channels
+                   && i < static_cast<int>(jce.msg.values.size()); ++i) {
+            jce.msg.values[i] = gc.commands[i];
           }
           jce.publisher->publish(jce.msg);
           return;
@@ -1237,18 +1235,15 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
       auto & pe = it->second;
 
       switch (pt.role) {
-        case urtc::PublishRole::kRos2Command:
-          if (!is_hand) {
-            std::copy_n(snap.robot_commands.begin(), snap.num_robot_joints,
-                        pe.msg.data.begin());
-          } else {
-            for (std::size_t i = 0; i < urtc::kNumHandMotors
-                     && i < snap.device_commands.size(); ++i) {
-              pe.msg.data[i] = static_cast<double>(snap.device_commands[i]);
-            }
+        case urtc::PublishRole::kRos2Command: {
+          const auto & gc = snap.group_commands[group_idx];
+          for (int i = 0; i < gc.num_channels
+                   && i < static_cast<int>(pe.msg.data.size()); ++i) {
+            pe.msg.data[i] = gc.commands[i];
           }
           pe.publisher->publish(pe.msg);
           break;
+        }
         case urtc::PublishRole::kTaskPosition:
           std::copy(snap.actual_task_positions.begin(),
                     snap.actual_task_positions.end(),
@@ -1261,29 +1256,28 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           std::copy_n(snap.target_velocities.begin(), 6, pe.msg.data.begin() + 12);
           pe.publisher->publish(pe.msg);
           break;
-        case urtc::PublishRole::kControllerState:
+        case urtc::PublishRole::kControllerState: {
           std::copy_n(snap.actual_positions.begin(), 6, pe.msg.data.begin());
           std::copy_n(snap.actual_velocities.begin(), 6, pe.msg.data.begin() + 6);
-          std::copy_n(snap.robot_commands.begin(), 6, pe.msg.data.begin() + 12);
+          const auto & gc = snap.group_commands[group_idx];
+          for (int i = 0; i < 6 && i < gc.num_channels; ++i) {
+            pe.msg.data[i + 12] = gc.commands[i];
+          }
           pe.publisher->publish(pe.msg);
           break;
+        }
         default:
           break;
       }
     };
 
-    // Publish ur5e topics
-    if (snap.ur5e_enabled) {
-      for (const auto & pt : active_tc.ur5e.publish) {
-        publish_entry(pt, false);
+    // Publish all device groups uniformly
+    int group_idx = 0;
+    for (const auto & [group_name, group] : active_tc.groups) {
+      for (const auto & pt : group.publish) {
+        publish_entry(pt, group_idx);
       }
-    }
-
-    // Publish hand topics
-    if (snap.device_enabled) {
-      for (const auto & pt : active_tc.hand.publish) {
-        publish_entry(pt, true);
-      }
+      ++group_idx;
     }
   }
 }
@@ -1310,18 +1304,51 @@ void RtControllerNode::PublishEstopStatus(bool estopped)
   estop_pub_->publish(msg);
 }
 
-// ── Device flag resolution ─────────────────────────────────────────────────────
-urtc::DeviceEnableFlags RtControllerNode::ResolveDeviceFlags(
-    const urtc::PerControllerDeviceFlags & per_ctrl) const noexcept
+// ── Device state callbacks (extracted from inline lambdas) ─────────────────────
+void RtControllerNode::DeviceStateCallback(
+    sensor_msgs::msg::JointState::SharedPtr msg)
 {
-  urtc::DeviceEnableFlags resolved = global_device_flags_;
-  if (per_ctrl.enable_ur5e.has_value()) {
-    resolved.enable_ur5e = per_ctrl.enable_ur5e.value();
+  if (msg->position.size() < 1) { return; }
+  std::lock_guard lock(hand_state_mutex_);
+
+  if (hand_state_map_built_) {
+    const std::size_t n = std::min(hand_state_reorder_.size(),
+                                   msg->position.size());
+    for (std::size_t src_i = 0; src_i < n; ++src_i) {
+      const int idx = hand_state_reorder_[src_i];
+      if (idx >= 0 && idx < urtc::kNumHandMotors) {
+        const auto uidx = static_cast<std::size_t>(idx);
+        cached_hand_state_.motor_positions[uidx] =
+            static_cast<float>(msg->position[src_i]);
+        if (src_i < msg->velocity.size()) {
+          cached_hand_state_.motor_velocities[uidx] =
+              static_cast<float>(msg->velocity[src_i]);
+        }
+      }
+    }
+  } else {
+    for (std::size_t i = 0; i < urtc::kNumHandMotors
+             && i < msg->position.size(); ++i) {
+      cached_hand_state_.motor_positions[i] =
+          static_cast<float>(msg->position[i]);
+    }
+    for (std::size_t i = 0; i < urtc::kNumHandMotors
+             && i < msg->velocity.size(); ++i) {
+      cached_hand_state_.motor_velocities[i] =
+          static_cast<float>(msg->velocity[i]);
+    }
   }
-  if (per_ctrl.enable_hand.has_value()) {
-    resolved.enable_hand = per_ctrl.enable_hand.value();
+  cached_hand_state_.valid = true;
+}
+
+void RtControllerNode::DeviceSensorCallback(
+    std_msgs::msg::Float64MultiArray::SharedPtr msg)
+{
+  std::lock_guard lock(hand_state_mutex_);
+  for (std::size_t i = 0; i < msg->data.size()
+           && i < cached_hand_state_.sensor_data.size(); ++i) {
+    cached_hand_state_.sensor_data[i] = static_cast<int32_t>(msg->data[i]);
   }
-  return resolved;
 }
 
 // ── Global E-Stop ──────────────────────────────────────────────────────────────

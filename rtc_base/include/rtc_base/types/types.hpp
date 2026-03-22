@@ -7,7 +7,7 @@
 #include <array>
 #include <concepts>
 #include <cstdint>
-#include <optional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -158,20 +158,6 @@ struct PublishTopicEntry {
   int data_size{0};  // pre-allocate message size (0 = use default for role)
 };
 
-// ── Device enable/disable flags ──────────────────────────────────────────────
-
-// 글로벌 디바이스 활성화 플래그 (rtc.yaml에서 로드)
-struct DeviceEnableFlags {
-  bool enable_ur5e{true};
-  bool enable_hand{false};
-};
-
-// 컨트롤러별 디바이스 플래그 오버라이드 (nullopt = 글로벌 상속)
-struct PerControllerDeviceFlags {
-  std::optional<bool> enable_ur5e;   // nullopt = inherit global
-  std::optional<bool> enable_hand;   // nullopt = inherit global
-};
-
 // ── Device topic grouping ────────────────────────────────────────────────────
 
 struct DeviceTopicGroup {
@@ -179,20 +165,40 @@ struct DeviceTopicGroup {
   std::vector<PublishTopicEntry> publish;
 };
 
+// Dynamic topic configuration: groups keyed by device name ("ur5e", "hand", …)
 struct TopicConfig {
-  DeviceTopicGroup ur5e;
-  DeviceTopicGroup hand;
+  std::map<std::string, DeviceTopicGroup> groups;
+
+  // True if the named group exists and has at least one topic entry.
+  [[nodiscard]] bool HasGroup(const std::string& name) const noexcept {
+    auto it = groups.find(name);
+    return it != groups.end() &&
+           (!it->second.subscribe.empty() || !it->second.publish.empty());
+  }
+
+  // True if the named group has a subscribe entry with the given role.
+  [[nodiscard]] bool HasSubscribeRole(
+      const std::string& group_name, SubscribeRole role) const noexcept {
+    auto it = groups.find(group_name);
+    if (it == groups.end()) return false;
+    for (const auto& e : it->second.subscribe) {
+      if (e.role == role) return true;
+    }
+    return false;
+  }
+
+  // Returns the topic name for the first subscribe entry matching the role,
+  // or an empty string if not found.
+  [[nodiscard]] std::string GetSubscribeTopicName(
+      const std::string& group_name, SubscribeRole role) const {
+    auto it = groups.find(group_name);
+    if (it == groups.end()) return {};
+    for (const auto& e : it->second.subscribe) {
+      if (e.role == role) return e.topic_name;
+    }
+    return {};
+  }
 };
-
-// ── Device classification helpers ────────────────────────────────────────────
-
-inline bool IsHandSubscribeRole(SubscribeRole /*r*/) noexcept {
-  return false;  // deprecated — device grouping handles hand vs ur5e distinction
-}
-
-inline bool IsHandPublishRole(PublishRole /*r*/) noexcept {
-  return false;  // deprecated — device grouping handles hand vs ur5e distinction
-}
 
 // ── Role → string conversion (for ROS2 parameter exposure) ──────────────────
 

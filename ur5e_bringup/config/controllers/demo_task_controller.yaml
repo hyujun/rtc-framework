@@ -17,9 +17,6 @@ demo_task_controller:
   # ── Output type ─────────────────────────────────────────────────────────────
   command_type: "position"
 
-  # ── Device activation ──────────────────────────────────────────────────────
-  enable_ur5e: true
-  enable_hand: true
 
   # ── Topic configuration ─────────────────────────────────────────────────────
   topics:

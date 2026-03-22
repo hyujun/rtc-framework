@@ -5,10 +5,6 @@
     # ── Control rate ─────────────────────────────────────────────────────────────
     control_rate: 500.0              # Hz
 
-    # ── Device enable (global defaults) ─────────────────────────────────────────
-    enable_ur5e: true
-    enable_hand: false
-
     # ── Starting controller ─────────────────────────────────────────────────────
     initial_controller: "joint_pd_controller"
 
@@ -28,8 +24,9 @@
 
     # ── E-STOP settings ─────────────────────────────────────────────────────────
     enable_estop: true
-    robot_timeout_ms: 100.0
-    hand_timeout_ms: 200.0
+    # device_timeouts: matches topics group names, watches state topic for gaps
+    device_timeout_names: ["ur5e"]
+    device_timeout_values: [100.0]
 
     # ── Logging settings ─────────────────────────────────────────────────────────
     enable_logging: true

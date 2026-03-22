@@ -5,10 +5,6 @@
     # ── Control rate ──────────────────────────────────────────────────────────
     control_rate: 500.0              # Hz — timer period = 1e6/rate us
 
-    # ── Device activation (global defaults) ───────────────────────────────────
-    enable_ur5e: true              # UR5e robot arm communication
-    enable_hand: false             # Hand communication (default: disabled)
-
     # ── Initial controller ────────────────────────────────────────────────────
     initial_controller: "demo_joint_controller"
 
@@ -20,8 +16,9 @@
 
     # ── E-STOP configuration ─────────────────────────────────────────────────
     enable_estop: true               # E-STOP timeout monitoring
-    robot_timeout_ms: 100.0          # /joint_states gap triggers E-STOP (ms)
-    hand_timeout_ms: 200.0           # /hand/joint_states gap triggers E-STOP (ms)
+    # device_timeouts: matches topics group names, watches state topic for gaps
+    device_timeout_names: ["ur5e"]
+    device_timeout_values: [100.0]   # ms
 
     # ── Logging configuration ─────────────────────────────────────────────────
     enable_logging: true

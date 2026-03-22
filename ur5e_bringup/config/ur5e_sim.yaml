@@ -6,10 +6,6 @@
     # ── Control rate ──────────────────────────────────────────────────────────
     control_rate: 500.0              # Hz — timer period = 1e6/rate us
 
-    # ── Device activation ────────────────────────────────────────────────────
-    enable_ur5e: true              # UR5e robot arm communication
-    enable_hand: true              # Hand communication (enabled for simulation)
-
     # ── Initial controller ────────────────────────────────────────────────────
     initial_controller: "demo_joint_controller"
 
@@ -21,8 +17,8 @@
 
     # ── E-STOP configuration (relaxed for simulation) ────────────────────────
     enable_estop: false              # Disabled for simulation
-    robot_timeout_ms: 10000.0        # Relaxed timeout (sim startup delay)
-    hand_timeout_ms: 10000.0         # Relaxed timeout (sim startup delay)
+    device_timeout_names: ["ur5e", "hand"]
+    device_timeout_values: [10000.0, 10000.0]  # Relaxed for sim startup
 
     # ── Logging configuration ─────────────────────────────────────────────────
     enable_logging: true

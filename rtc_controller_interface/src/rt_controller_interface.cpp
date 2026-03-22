@@ -1,5 +1,6 @@
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 
+#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -78,11 +79,11 @@ TopicConfig RTControllerInterface::MakeDefaultTopicConfig()
   TopicConfig cfg;
 
   // ── ur5e device group (default topics) ──
-  cfg.ur5e.subscribe = {
+  cfg.groups["ur5e"].subscribe = {
     {"/joint_states",                SubscribeRole::kState},
     {"/ur5e/target_joint_positions", SubscribeRole::kTarget},
   };
-  cfg.ur5e.publish = {
+  cfg.groups["ur5e"].publish = {
     {"/ur5e/joint_command",                   PublishRole::kJointCommand,     kNumRobotJoints},
     {"/forward_position_controller/commands", PublishRole::kRos2Command,      kNumRobotJoints},
     {"/ur5e/current_task_position",           PublishRole::kTaskPosition,     6},
@@ -90,10 +91,7 @@ TopicConfig RTControllerInterface::MakeDefaultTopicConfig()
     {"/ur5e/controller_state",                PublishRole::kControllerState,  18},
   };
 
-  // ── hand device group (default topics) ──
-  cfg.hand.subscribe = {
-    {"/hand/joint_states", SubscribeRole::kState},
-  };
+  // hand is NOT included by default — add via YAML topics section to activate.
 
   return cfg;
 }
@@ -104,20 +102,17 @@ TopicConfig RTControllerInterface::ParseTopicConfig(const YAML::Node & topics_no
   if (topics_node["subscribe"] && topics_node["subscribe"].IsSequence()) {
     throw std::runtime_error(
         "Flat topics: format is deprecated. "
-        "Migrate to topics.ur5e / topics.hand grouping. "
+        "Migrate to device-group keyed format (e.g. topics.ur5e / topics.hand). "
         "See config/controllers/ examples for the new format.");
   }
 
   TopicConfig cfg;
 
-  // ── ur5e device group parsing ──
-  if (topics_node["ur5e"] && topics_node["ur5e"].IsMap()) {
-    ParseDeviceTopicGroup(topics_node["ur5e"], cfg.ur5e);
-  }
-
-  // ── hand device group parsing ──
-  if (topics_node["hand"] && topics_node["hand"].IsMap()) {
-    ParseDeviceTopicGroup(topics_node["hand"], cfg.hand);
+  // ── Dynamic device group parsing: iterate all keys ──
+  for (auto it = topics_node.begin(); it != topics_node.end(); ++it) {
+    const std::string group_name = it->first.as<std::string>();
+    if (!it->second.IsMap()) { continue; }
+    ParseDeviceTopicGroup(it->second, cfg.groups[group_name]);
   }
 
   return cfg;
@@ -127,12 +122,11 @@ void RTControllerInterface::LoadConfig(const YAML::Node & cfg)
 {
   if (!cfg) { return; }
 
-  // ── Device enable flags (per-controller override) ──
-  if (cfg["enable_ur5e"]) {
-    per_controller_device_flags_.enable_ur5e = cfg["enable_ur5e"].as<bool>();
-  }
-  if (cfg["enable_hand"]) {
-    per_controller_device_flags_.enable_hand = cfg["enable_hand"].as<bool>();
+  // ── Deprecation warning for removed device enable flags ──
+  if (cfg["enable_ur5e"] || cfg["enable_hand"]) {
+    std::cerr << "[WARN] enable_ur5e/enable_hand in controller YAML is "
+              << "deprecated and ignored. Device activation is now determined "
+              << "by the topics section presence.\n";
   }
 
   // Parse topics section if present; otherwise keep the default topic config.
