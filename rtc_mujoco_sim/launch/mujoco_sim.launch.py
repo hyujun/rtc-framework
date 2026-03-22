@@ -213,23 +213,39 @@ def launch_setup(context, *args, **kwargs):
     if use_fake_hand.lower() in ('true', '1', 'yes'):
         ctrl_overrides['use_fake_hand'] = True
 
-    # Fake hand response 연동: MuJoCo 설정을 rt_controller에 전달
+    # Hand topic 연동: MuJoCo 설정에서 hand 그룹 토픽을 rt_controller에 전달
     sim_yaml_path = os.path.join(
         get_package_share_directory('rtc_mujoco_sim'),
         'config', 'mujoco_simulator.yaml')
     try:
         with open(sim_yaml_path, 'r') as f:
             sim_yaml = yaml.safe_load(f)
-        fake_hand = (sim_yaml.get('mujoco_simulator', {})
-                     .get('ros__parameters', {})
-                     .get('fake_hand_response', {}))
-        if fake_hand.get('enable', False):
+        sim_params_yaml = (sim_yaml.get('mujoco_simulator', {})
+                           .get('ros__parameters', {}))
+
+        # Check robot_response for hand group
+        robot_resp = sim_params_yaml.get('robot_response', {})
+        robot_groups = robot_resp.get('groups', [])
+        if 'hand' in robot_groups:
+            hand_cfg = robot_resp.get('hand', {})
             ctrl_overrides['hand_sim_enabled'] = True
-            ctrl_overrides['hand_command_topic'] = fake_hand.get(
+            ctrl_overrides['hand_command_topic'] = hand_cfg.get(
                 'command_topic', '/hand/command')
-            ctrl_overrides['hand_state_topic'] = fake_hand.get(
+            ctrl_overrides['hand_state_topic'] = hand_cfg.get(
                 'state_topic', '/hand/joint_states')
-            # UDP hand 비활성화
+            ctrl_overrides['target_ip'] = ''
+            ctrl_overrides['target_port'] = 0
+
+        # Check fake_response for hand group
+        fake_resp = sim_params_yaml.get('fake_response', {})
+        fake_groups = fake_resp.get('groups', [])
+        if 'hand' in fake_groups:
+            hand_cfg = fake_resp.get('hand', {})
+            ctrl_overrides['hand_sim_enabled'] = True
+            ctrl_overrides['hand_command_topic'] = hand_cfg.get(
+                'command_topic', '/hand/command')
+            ctrl_overrides['hand_state_topic'] = hand_cfg.get(
+                'state_topic', '/hand/joint_states')
             ctrl_overrides['target_ip'] = ''
             ctrl_overrides['target_port'] = 0
     except Exception:

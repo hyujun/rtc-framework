@@ -65,10 +65,11 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
 
   // ── Visualisation-only mjData (only qpos is synced from physics thread) ────
   mjData* vis_data = mj_makeData(model_);
-  {
-    std::lock_guard lock(state_mutex_);
-    for (std::size_t i = 0; i < 6; ++i) {
-      vis_data->qpos[joint_qpos_indices_[i]] = latest_positions_[i];
+  for (auto& g : groups_) {
+    if (!g->is_robot) continue;
+    std::lock_guard lock(g->state_mutex);
+    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_joints); ++i) {
+      vis_data->qpos[g->qpos_indices[i]] = g->positions[i];
     }
   }
   mj_forward(model_, vis_data);

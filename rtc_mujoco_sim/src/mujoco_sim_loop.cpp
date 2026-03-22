@@ -1,6 +1,7 @@
 // ── mujoco_sim_loop.cpp ────────────────────────────────────────────────────────
 // Physics helpers (ReadState, PreparePhysicsStep, RTF, etc.) and both
 // simulation loops: SimLoopFreeRun and SimLoopSyncStep.
+// Multi-group: iterates over robot groups for command/state/actuator ops.
 // ──────────────────────────────────────────────────────────────────────────────
 #include "rtc_mujoco_sim/mujoco_simulator.hpp"
 
@@ -15,23 +16,31 @@ namespace rtc {
 // ── Private helpers ────────────────────────────────────────────────────────────
 
 void MuJoCoSimulator::ApplyCommand() noexcept {
-  std::lock_guard lock(cmd_mutex_);
   if (!model_) { return; }
-  const int nact = std::min(num_robot_joints_, model_->nu);
-  for (int i = 0; i < nact; ++i) {
-    data_->ctrl[i] = pending_cmd_[static_cast<std::size_t>(i)];
+  for (auto& g : groups_) {
+    if (!g->is_robot) continue;
+    if (!g->cmd_pending.load(std::memory_order_acquire)) continue;
+
+    std::lock_guard lock(g->cmd_mutex);
+    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_joints); ++i) {
+      if (i < g->pending_cmd.size() && i < g->actuator_indices.size()) {
+        data_->ctrl[g->actuator_indices[i]] = g->pending_cmd[i];
+      }
+    }
+    g->cmd_pending.store(false, std::memory_order_release);
   }
 }
 
 void MuJoCoSimulator::ReadState() noexcept {
   if (!model_ || !data_) { return; }
-  std::lock_guard lock(state_mutex_);
-  const auto nj = static_cast<std::size_t>(num_robot_joints_);
-  for (std::size_t i = 0; i < nj; ++i) {
-    latest_positions_[i]  = data_->qpos[joint_qpos_indices_[i]];
-    latest_velocities_[i] = data_->qvel[joint_qvel_indices_[i]];
-    // qfrc_actuator: net actuator force on each DOF (Nm for revolute joints).
-    latest_efforts_[i]    = data_->qfrc_actuator[joint_qvel_indices_[i]];
+  for (auto& g : groups_) {
+    if (!g->is_robot) continue;
+    std::lock_guard lock(g->state_mutex);
+    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_joints); ++i) {
+      g->positions[i]  = data_->qpos[g->qpos_indices[i]];
+      g->velocities[i] = data_->qvel[g->qvel_indices[i]];
+      g->efforts[i]    = data_->qfrc_actuator[g->qvel_indices[i]];
+    }
   }
 }
 
@@ -39,13 +48,10 @@ void MuJoCoSimulator::ReadSolverStats() noexcept {
   if (!data_) { return; }
   SolverStats s{};
   s.ncon = data_->ncon;
-  // solver_niter is int* (one entry per constraint island in MuJoCo 3.x).
-  // Sum across all islands for the total iteration count.
   const int nisland = data_->nisland;
   for (int k = 0; k < nisland; ++k) {
     s.iter += data_->solver_niter[k];
   }
-  // mjSolverStat[0] holds aggregate stats for the first island.
   if (nisland > 0 && s.iter > 0) {
     s.improvement = static_cast<double>(data_->solver[0].improvement);
     s.gradient    = static_cast<double>(data_->solver[0].gradient);
@@ -54,22 +60,20 @@ void MuJoCoSimulator::ReadSolverStats() noexcept {
   latest_solver_stats_ = s;
 }
 
-MuJoCoSimulator::SolverStats MuJoCoSimulator::GetSolverStats() const noexcept {
-  std::lock_guard lock(solver_stats_mutex_);
-  return latest_solver_stats_;
-}
-
 void MuJoCoSimulator::InvokeStateCallback() noexcept {
-  if (!state_cb_) { return; }
-  const auto nj = static_cast<std::size_t>(num_robot_joints_);
-  std::vector<double> pos(nj), vel(nj), eff(nj);
-  {
-    std::lock_guard lock(state_mutex_);
-    pos = latest_positions_;
-    vel = latest_velocities_;
-    eff = latest_efforts_;
+  for (auto& g : groups_) {
+    if (!g->is_robot) continue;
+    if (!g->state_cb) continue;
+    const auto nj = static_cast<std::size_t>(g->num_joints);
+    std::vector<double> pos(nj), vel(nj), eff(nj);
+    {
+      std::lock_guard lock(g->state_mutex);
+      pos = g->positions;
+      vel = g->velocities;
+      eff = g->efforts;
+    }
+    g->state_cb(pos, vel, eff);
   }
-  state_cb_(pos, vel, eff);
 }
 
 void MuJoCoSimulator::UpdateVizBuffer() noexcept {
@@ -114,48 +118,39 @@ void MuJoCoSimulator::ThrottleIfNeeded() noexcept {
 }
 
 // ── PreparePhysicsStep ─────────────────────────────────────────────────────────
-//
-// Called on the sim thread immediately before mj_step():
-//   1. Apply gravity state (toggle on/off).
-//   2. Apply user-specified external forces (SetExternalForce).
-//   3. Apply mjvPerturb spring force (viewer Ctrl+drag).
-//
+
 void MuJoCoSimulator::PreparePhysicsStep() noexcept {
-  // 0. Actuator mode switch (torque ↔ position servo)
-  if (control_mode_pending_.exchange(false, std::memory_order_acq_rel)) {
-    const bool torque = torque_mode_.load(std::memory_order_relaxed);
-    const int nact = std::min(num_robot_joints_, model_->nu);
-    for (int i = 0; i < nact; ++i) {
-      const std::size_t ui = static_cast<std::size_t>(i);
+  // 0. Per-group actuator mode switch (torque ↔ position servo)
+  for (auto& g : groups_) {
+    if (!g->is_robot) continue;
+    if (!g->control_mode_pending.exchange(false, std::memory_order_acq_rel)) continue;
+
+    const bool torque = g->torque_mode.load(std::memory_order_relaxed);
+    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_joints); ++i) {
+      const int act = g->actuator_indices[i];
       if (torque) {
-        // Direct torque: gainprm=1, bias=0 → ctrl[i] = raw torque (Nm)
-        model_->actuator_gainprm[i * mjNGAIN + 0] = static_cast<mjtNum>(1.0);
-        model_->actuator_biasprm[i * mjNBIAS + 0] = static_cast<mjtNum>(0.0);
-        model_->actuator_biasprm[i * mjNBIAS + 1] = static_cast<mjtNum>(0.0);
-        model_->actuator_biasprm[i * mjNBIAS + 2] = static_cast<mjtNum>(0.0);
+        model_->actuator_gainprm[act * mjNGAIN + 0] = static_cast<mjtNum>(1.0);
+        model_->actuator_biasprm[act * mjNBIAS + 0] = static_cast<mjtNum>(0.0);
+        model_->actuator_biasprm[act * mjNBIAS + 1] = static_cast<mjtNum>(0.0);
+        model_->actuator_biasprm[act * mjNBIAS + 2] = static_cast<mjtNum>(0.0);
       } else if (cfg_.use_yaml_servo_gains) {
-        // Position servo with YAML velocity gains:
-        //   gainprm = servo_kp / physics_timestep
-        //   force   = gainprm*(ctrl-q) - servo_kd*dq
-        //           = servo_kp * dq_cmd - servo_kd * dq_actual
-        const double kp = gainprm_yaml_[ui];
-        model_->actuator_gainprm[i * mjNGAIN + 0] = static_cast<mjtNum>(kp);
-        model_->actuator_biasprm[i * mjNBIAS + 0] = static_cast<mjtNum>(0.0);
-        model_->actuator_biasprm[i * mjNBIAS + 1] = static_cast<mjtNum>(-kp);
-        model_->actuator_biasprm[i * mjNBIAS + 2] =
-            static_cast<mjtNum>(biasprm2_yaml_[ui]);
+        const double kp = g->gainprm_yaml[i];
+        model_->actuator_gainprm[act * mjNGAIN + 0] = static_cast<mjtNum>(kp);
+        model_->actuator_biasprm[act * mjNBIAS + 0] = static_cast<mjtNum>(0.0);
+        model_->actuator_biasprm[act * mjNBIAS + 1] = static_cast<mjtNum>(-kp);
+        model_->actuator_biasprm[act * mjNBIAS + 2] =
+            static_cast<mjtNum>(g->biasprm2_yaml[i]);
       } else {
-        // Position servo with original XML gainprm/biasprm
-        const auto & p = orig_actuator_params_[ui];
-        model_->actuator_gainprm[i * mjNGAIN + 0] = static_cast<mjtNum>(p.gainprm0);
-        model_->actuator_biasprm[i * mjNBIAS + 0] = static_cast<mjtNum>(p.biasprm0);
-        model_->actuator_biasprm[i * mjNBIAS + 1] = static_cast<mjtNum>(p.biasprm1);
-        model_->actuator_biasprm[i * mjNBIAS + 2] = static_cast<mjtNum>(p.biasprm2);
+        const auto& p = orig_actuator_params_[static_cast<std::size_t>(act)];
+        model_->actuator_gainprm[act * mjNGAIN + 0] = static_cast<mjtNum>(p.gainprm0);
+        model_->actuator_biasprm[act * mjNBIAS + 0] = static_cast<mjtNum>(p.biasprm0);
+        model_->actuator_biasprm[act * mjNBIAS + 1] = static_cast<mjtNum>(p.biasprm1);
+        model_->actuator_biasprm[act * mjNBIAS + 2] = static_cast<mjtNum>(p.biasprm2);
       }
     }
   }
 
-  // 1. Physics solver parameters (integrator, solver type, iterations, tolerance)
+  // 1. Physics solver parameters
   model_->opt.integrator =
       static_cast<mjtIntegrator>(solver_integrator_.load(std::memory_order_relaxed));
   model_->opt.solver =
@@ -164,29 +159,27 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
   model_->opt.tolerance  =
       static_cast<mjtNum>(solver_tolerance_.load(std::memory_order_relaxed));
 
-  // 2. Contact enable / disable (mjDSBL_CONTACT flag)
+  // 2. Contact enable / disable
   if (contacts_enabled_.load(std::memory_order_relaxed)) {
     model_->opt.disableflags &= ~mjDSBL_CONTACT;
   } else {
     model_->opt.disableflags |= mjDSBL_CONTACT;
   }
 
-  // 3. Gravity toggle (cheap relaxed load)
+  // 3. Gravity toggle
   model_->opt.gravity[2] =
       gravity_enabled_.load(std::memory_order_relaxed)
       ? static_cast<mjtNum>(original_gravity_z_)
       : static_cast<mjtNum>(0.0);
 
-  // 4. External forces and perturbation (under pert_mutex_)
+  // 4. External forces and perturbation
   if (pert_mutex_.try_lock()) {
-    // User-specified wrench via SetExternalForce()
     if (ext_xfrc_dirty_) {
       const std::size_t n = static_cast<std::size_t>(model_->nbody) * 6;
       std::memcpy(data_->xfrc_applied, ext_xfrc_.data(), n * sizeof(double));
     } else {
       mju_zero(data_->xfrc_applied, model_->nbody * 6);
     }
-    // 5. Viewer perturbation spring (additive on top of ext_xfrc_)
     if (pert_active_ && shared_pert_.select > 0) {
       mjv_applyPerturbForce(model_, data_, &shared_pert_);
     }
@@ -195,22 +188,24 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
 }
 
 void MuJoCoSimulator::ClearContactForces() noexcept {
-  // xfrc_applied is re-set each step from the external force buffer.
-  // Clear it here so stale forces don't persist if pert_mutex_ was not acquired.
   if (!pert_active_ && !ext_xfrc_dirty_) {
     mju_zero(data_->xfrc_applied, model_->nbody * 6);
   }
 }
 
 // ── HandleReset ───────────────────────────────────────────────────────────────
+
 void MuJoCoSimulator::HandleReset() noexcept {
   mj_resetData(model_, data_);
-  for (int i = 0; i < num_robot_joints_; ++i) {
-    const std::size_t ui = static_cast<std::size_t>(i);
-    data_->qpos[joint_qpos_indices_[ui]] = initial_qpos_[ui];
-    data_->ctrl[i]                       = initial_qpos_[ui];
+
+  for (auto& g : groups_) {
+    if (!g->is_robot) continue;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_joints); ++i) {
+      data_->qpos[g->qpos_indices[i]] = g->initial_qpos[i];
+      data_->ctrl[g->actuator_indices[i]] = g->initial_qpos[i];
+    }
   }
-  // Restore gravity (may have been zeroed before reset)
+
   model_->opt.gravity[2] =
       gravity_enabled_.load(std::memory_order_relaxed)
       ? static_cast<mjtNum>(original_gravity_z_)
@@ -235,6 +230,7 @@ void MuJoCoSimulator::HandleReset() noexcept {
 }
 
 // ── SimLoopFreeRun ─────────────────────────────────────────────────────────────
+
 void MuJoCoSimulator::SimLoopFreeRun(std::stop_token stop) noexcept {
   if (!model_ || !data_) { return; }
 
@@ -260,9 +256,8 @@ void MuJoCoSimulator::SimLoopFreeRun(std::stop_token stop) noexcept {
         });
       }
       if (!step_once_.exchange(false, std::memory_order_acq_rel)) {
-        continue;  // still paused, no step requested
+        continue;
       }
-      // step_once was true: fall through and execute exactly one physics step
     }
     // ── Reset ─────────────────────────────────────────────────────────────
     if (reset_requested_.exchange(false, std::memory_order_acq_rel)) {
@@ -270,11 +265,8 @@ void MuJoCoSimulator::SimLoopFreeRun(std::stop_token stop) noexcept {
       step = 0;
       continue;
     }
-    // ── Command (lock-free fast path) ─────────────────────────────────────
-    if (cmd_pending_.load(std::memory_order_acquire)) {
-      ApplyCommand();
-      cmd_pending_.store(false, std::memory_order_release);
-    }
+    // ── Command (all robot groups) ────────────────────────────────────────
+    ApplyCommand();
     // ── Physics step ──────────────────────────────────────────────────────
     PreparePhysicsStep();
     mj_step(model_, data_);
@@ -300,12 +292,19 @@ void MuJoCoSimulator::SimLoopFreeRun(std::stop_token stop) noexcept {
 }
 
 // ── SimLoopSyncStep ────────────────────────────────────────────────────────────
+
 void MuJoCoSimulator::SimLoopSyncStep(std::stop_token stop) noexcept {
   if (!model_ || !data_) { return; }
 
   const auto timeout = std::chrono::milliseconds(
       static_cast<int64_t>(cfg_.sync_timeout_ms > 0.0 ? cfg_.sync_timeout_ms : 50.0));
   uint64_t step = 0;
+
+  // Find primary group index
+  std::size_t primary_idx = 0;
+  for (std::size_t i = 0; i < groups_.size(); ++i) {
+    if (groups_[i]->is_primary) { primary_idx = i; break; }
+  }
 
   const auto loop_start = std::chrono::steady_clock::now();
   rtf_wall_start_      = loop_start;  rtf_sim_start_      = data_->time;
@@ -325,9 +324,8 @@ void MuJoCoSimulator::SimLoopSyncStep(std::stop_token stop) noexcept {
         });
       }
       if (!step_once_.exchange(false, std::memory_order_acq_rel)) {
-        continue;  // still paused, no step requested
+        continue;
       }
-      // step_once was true: fall through and execute exactly one physics step
     }
     // ── Reset ─────────────────────────────────────────────────────────────
     if (reset_requested_.exchange(false, std::memory_order_acq_rel)) {
@@ -335,15 +333,15 @@ void MuJoCoSimulator::SimLoopSyncStep(std::stop_token stop) noexcept {
       step = 0;
       continue;
     }
-    // 1. Publish current state
+    // 1. Publish current state for ALL robot groups
     ReadState();
     InvokeStateCallback();
 
-    // 2. Wait for command (or timeout / stop / resume / reset)
+    // 2. Wait for command from PRIMARY group
     {
       std::unique_lock lock(sync_mutex_);
-      sync_cv_.wait_for(lock, timeout, [this, &stop] {
-        return cmd_pending_.load(std::memory_order_relaxed)
+      sync_cv_.wait_for(lock, timeout, [this, &stop, primary_idx] {
+        return groups_[primary_idx]->cmd_pending.load(std::memory_order_relaxed)
             || stop.stop_requested()
             || !running_.load()
             || reset_requested_.load(std::memory_order_relaxed);
@@ -355,11 +353,8 @@ void MuJoCoSimulator::SimLoopSyncStep(std::stop_token stop) noexcept {
       step = 0;
       continue;
     }
-    // 3. Apply command and step
-    if (cmd_pending_.load(std::memory_order_acquire)) {
-      ApplyCommand();
-      cmd_pending_.store(false, std::memory_order_release);
-    }
+    // 3. Apply commands from ALL robot groups and step
+    ApplyCommand();
     PreparePhysicsStep();
     mj_step(model_, data_);
     ClearContactForces();
