@@ -47,6 +47,8 @@ demo_task_controller:
           role: "target"
         - topic: "/hand/joint_states"
           role: "state"
+        - topic: "/hand/sensor_states"
+          role: "sensor_state"
       publish:
         - topic: "/hand/joint_command"
           role: "joint_command"

@@ -70,6 +70,23 @@ ControllerOutput DemoJointController::Compute(const ControllerState & state) noe
     for (int i = 0; i < nc1; ++i) {
       out1.goal_positions[i] = device_targets_[1][i];
     }
+
+    // ── Hand sensor data (per-fingertip) ──────────────────────────────────
+    const int num_sensor_ch = dev1.num_sensor_channels;
+    const int num_fingertips = num_sensor_ch / rtc::kSensorValuesPerFingertip;
+    for (int f = 0; f < num_fingertips && f < rtc::kMaxFingertips; ++f) {
+      const int base = f * rtc::kSensorValuesPerFingertip;
+      // barometer[8] + tof[3] per fingertip
+      [[maybe_unused]] const int32_t * baro = &dev1.sensor_data[base];
+      [[maybe_unused]] const int32_t * tof  = &dev1.sensor_data[base + rtc::kBarometerCount];
+
+      // Inference output placeholders (populated when inference is ready)
+      [[maybe_unused]] std::array<float, 3> F{};             // 추정 힘 [Fx, Fy, Fz]
+      [[maybe_unused]] std::array<float, 3> u{};             // 추정 변위 [ux, uy, uz]
+      [[maybe_unused]] float contact_flag = 0.0f;            // 접촉 판별 플래그
+
+      // TODO: F, u, contact_flag = inference(baro, tof)
+    }
   }
 
   output.command_type = command_type_;
