@@ -468,6 +468,14 @@ ros2 topic pub /hand/command std_msgs/msg/Float64MultiArray \
 
 ---
 
+## 최적화 내역 (v5.16.1)
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **코드 검증** | C++20, `[[nodiscard]]`, `noexcept`, `static_assert` 확인 완료 — 이미 적용됨 |
+
+---
+
 ## 라이선스
 
 MIT License
