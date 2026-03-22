@@ -24,7 +24,9 @@ namespace rtc {
 
 struct JointGroupConfig {
   std::string name;                       // 임의 이름 (ur5e, hand, kuka, ...)
-  std::vector<std::string> joint_names;   // YAML 필수 명시
+  std::vector<std::string> joint_names;   // 하위호환: command/state 미지정 시 사용
+  std::vector<std::string> command_joint_names;  // command용 joint names (빈 경우 joint_names 사용)
+  std::vector<std::string> state_joint_names;    // state용 joint names (빈 경우 XML 전체)
   std::string command_topic;
   std::string state_topic;
   bool is_robot{true};                    // true=robot_response, false=fake_response
@@ -38,22 +40,35 @@ struct JointGroupConfig {
 
 struct JointGroup {
   std::string name;
-  std::vector<std::string> joint_names;
-  int num_joints{0};
+
+  // ── Command joints (actuator 매칭용) ──────────────────────────────
+  std::vector<std::string> command_joint_names;
+  int num_command_joints{0};
+
+  // ── State joints (state publish용) ────────────────────────────────
+  std::vector<std::string> state_joint_names;
+  int num_state_joints{0};
+
   bool is_robot{true};                    // robot_response 여부
   bool is_primary{false};                 // sync_step 대기 대상
 
-  // ── MuJoCo 인덱스 (is_robot==true, 이름 기반 비연속 가능) ──────────
+  // ── MuJoCo 인덱스: command용 (is_robot==true, 이름 기반 비연속 가능)
   std::vector<int> qpos_indices;
   std::vector<int> qvel_indices;
   std::vector<int> actuator_indices;
 
-  // ── Command/State 버퍼 ──────────────────────────────────────────
+  // ── MuJoCo 인덱스: state용 ────────────────────────────────────────
+  std::vector<int> state_qpos_indices;
+  std::vector<int> state_qvel_indices;
+
+  // ── Command 버퍼 ──────────────────────────────────────────────────
   std::vector<double> pending_cmd;
+  std::vector<double> initial_qpos;
+
+  // ── State 버퍼 (state_joint_names 기준) ───────────────────────────
   std::vector<double> positions;
   std::vector<double> velocities;
   std::vector<double> efforts;
-  std::vector<double> initial_qpos;
   std::atomic<bool>   cmd_pending{false};
   mutable std::mutex  cmd_mutex;
   mutable std::mutex  state_mutex;
@@ -166,7 +181,9 @@ class MuJoCoSimulator {
   [[nodiscard]] std::vector<double> GetEfforts(std::size_t group_idx)    const noexcept;
 
   [[nodiscard]] const std::vector<std::string>& GetJointNames(std::size_t group_idx) const noexcept;
+  [[nodiscard]] const std::vector<std::string>& GetStateJointNames(std::size_t group_idx) const noexcept;
   [[nodiscard]] int  NumGroupJoints(std::size_t group_idx) const noexcept;
+  [[nodiscard]] int  NumStateJoints(std::size_t group_idx) const noexcept;
   [[nodiscard]] bool IsGroupRobot(std::size_t group_idx) const noexcept;
   [[nodiscard]] std::size_t NumGroups() const noexcept { return groups_.size(); }
 
@@ -388,10 +405,14 @@ class MuJoCoSimulator {
   // ── Internal helpers ───────────────────────────────────────────────────────
   // XML에서 모든 hinge+actuator 조인트를 발견하여 all_xml_joint_names_에 저장
   bool DiscoverAllXmlJoints() noexcept;
-  // robot 그룹의 joint_names를 XML과 양방향 검증 후 인덱스 매핑
+  // robot 그룹의 command_joint_names를 XML과 양방향 검증 후 인덱스 매핑
   bool ValidateAndMapRobotGroups() noexcept;
-  // 단일 robot 그룹의 인덱스 매핑
+  // state_joint_names 검증 (XML에 존재 여부) 및 인덱스 매핑
+  bool ValidateAndMapStateJoints() noexcept;
+  // 단일 robot 그룹의 command용 인덱스 매핑
   bool MapGroupIndices(JointGroup& group) noexcept;
+  // 단일 그룹의 state용 인덱스 매핑
+  bool MapStateIndices(JointGroup& group) noexcept;
 
   void ApplyCommand() noexcept;
   void ReadState() noexcept;

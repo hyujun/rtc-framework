@@ -102,6 +102,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
       gc.name = gname;
       gc.is_robot = true;
       gc.joint_names = get_parameter("robot_response." + gname + ".joint_names").as_string_array();
+      gc.command_joint_names = get_parameter("robot_response." + gname + ".command_joint_names").as_string_array();
+      gc.state_joint_names = get_parameter("robot_response." + gname + ".state_joint_names").as_string_array();
       gc.command_topic = get_parameter("robot_response." + gname + ".command_topic").as_string();
       gc.state_topic = get_parameter("robot_response." + gname + ".state_topic").as_string();
 
@@ -124,6 +126,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
       gc.name = gname;
       gc.is_robot = false;
       gc.joint_names = get_parameter("fake_response." + gname + ".joint_names").as_string_array();
+      gc.command_joint_names = get_parameter("fake_response." + gname + ".command_joint_names").as_string_array();
+      gc.state_joint_names = get_parameter("fake_response." + gname + ".state_joint_names").as_string_array();
       gc.command_topic = get_parameter("fake_response." + gname + ".command_topic").as_string();
       gc.state_topic = get_parameter("fake_response." + gname + ".state_topic").as_string();
       gc.filter_alpha = get_parameter("fake_response." + gname + ".filter_alpha").as_double();
@@ -142,6 +146,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   void DeclareGroupParams(const std::string& section, const std::string& gname) {
     const auto prefix = section + "." + gname + ".";
     declare_parameter(prefix + "joint_names", std::vector<std::string>{});
+    declare_parameter(prefix + "command_joint_names", std::vector<std::string>{});
+    declare_parameter(prefix + "state_joint_names", std::vector<std::string>{});
     declare_parameter(prefix + "command_topic", std::string(""));
     declare_parameter(prefix + "state_topic", std::string(""));
   }
@@ -206,12 +212,12 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
       auto& h = group_handles_[idx];
       h.group_idx = idx;
 
-      const auto& joint_names = sim_->GetJointNames(idx);
+      const auto& cmd_joint_names = sim_->GetJointNames(idx);
       const bool is_robot = sim_->IsGroupRobot(idx);
 
-      // Build name → index map
-      for (std::size_t j = 0; j < joint_names.size(); ++j) {
-        h.name_index_map[joint_names[j]] = j;
+      // Build name → index map (command_joint_names 기준)
+      for (std::size_t j = 0; j < cmd_joint_names.size(); ++j) {
+        h.name_index_map[cmd_joint_names[j]] = j;
       }
 
       // Topic names from config (groups_ order matches group_configs_ order)
@@ -240,11 +246,12 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
             });
       }
 
-      RCLCPP_INFO(get_logger(), "Group[%zu] '%s' %s — cmd: %s  state: %s  joints: %zu",
+      RCLCPP_INFO(get_logger(),
+                  "Group[%zu] '%s' %s — cmd: %s  state: %s  cmd_joints: %d  state_joints: %d",
                   idx, group_configs_[idx].name.c_str(),
                   is_robot ? "ROBOT" : "FAKE",
                   cmd_topic.c_str(), state_topic.c_str(),
-                  joint_names.size());
+                  sim_->NumGroupJoints(idx), sim_->NumStateJoints(idx));
     }
   }
 
@@ -317,8 +324,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     if (group_idx >= group_handles_.size()) return;
     auto msg = sensor_msgs::msg::JointState();
     msg.header.stamp = now();
-    msg.name.assign(sim_->GetJointNames(group_idx).begin(),
-                    sim_->GetJointNames(group_idx).end());
+    msg.name.assign(sim_->GetStateJointNames(group_idx).begin(),
+                    sim_->GetStateJointNames(group_idx).end());
     msg.position = positions;
     msg.velocity = velocities;
     msg.effort   = efforts;
@@ -331,8 +338,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
 
     auto msg = sensor_msgs::msg::JointState();
     msg.header.stamp = now();
-    msg.name.assign(sim_->GetJointNames(group_idx).begin(),
-                    sim_->GetJointNames(group_idx).end());
+    msg.name.assign(sim_->GetStateJointNames(group_idx).begin(),
+                    sim_->GetStateJointNames(group_idx).end());
     msg.position = state;
     msg.velocity.resize(state.size(), 0.0);
     msg.effort.resize(state.size(), 0.0);

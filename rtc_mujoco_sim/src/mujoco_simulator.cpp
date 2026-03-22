@@ -76,12 +76,12 @@ bool MuJoCoSimulator::MapGroupIndices(JointGroup& group) noexcept {
   group.qvel_indices.clear();
   group.actuator_indices.clear();
 
-  for (std::size_t i = 0; i < group.joint_names.size(); ++i) {
-    const auto& jname = group.joint_names[i];
+  for (std::size_t i = 0; i < group.command_joint_names.size(); ++i) {
+    const auto& jname = group.command_joint_names[i];
     const int jnt_id = mj_name2id(model_, mjOBJ_JOINT, jname.c_str());
     if (jnt_id < 0) {
       fprintf(stderr,
-              "[MuJoCoSimulator] ERROR: group '%s' — joint '%s' not found in XML\n",
+              "[MuJoCoSimulator] ERROR: group '%s' — command joint '%s' not found in XML\n",
               group.name.c_str(), jname.c_str());
       return false;
     }
@@ -97,7 +97,7 @@ bool MuJoCoSimulator::MapGroupIndices(JointGroup& group) noexcept {
         found_actuator = true;
 
         const char* act_name = mj_id2name(model_, mjOBJ_ACTUATOR, a);
-        fprintf(stdout, "[MuJoCoSimulator] [%s] '%s' → qpos[%d]  qvel[%d]  actuator[%d] '%s'\n",
+        fprintf(stdout, "[MuJoCoSimulator] [%s] cmd '%s' → qpos[%d]  qvel[%d]  actuator[%d] '%s'\n",
                 group.name.c_str(), jname.c_str(),
                 group.qpos_indices.back(), group.qvel_indices.back(),
                 a, act_name ? act_name : "(unnamed)");
@@ -106,7 +106,7 @@ bool MuJoCoSimulator::MapGroupIndices(JointGroup& group) noexcept {
     }
     if (!found_actuator) {
       fprintf(stderr,
-              "[MuJoCoSimulator] ERROR: group '%s' — joint '%s' has no actuator\n",
+              "[MuJoCoSimulator] ERROR: group '%s' — command joint '%s' has no actuator\n",
               group.name.c_str(), jname.c_str());
       return false;
     }
@@ -114,17 +114,43 @@ bool MuJoCoSimulator::MapGroupIndices(JointGroup& group) noexcept {
   return true;
 }
 
+// ── State joint index mapping ─────────────────────────────────────────────────
+
+bool MuJoCoSimulator::MapStateIndices(JointGroup& group) noexcept {
+  group.state_qpos_indices.clear();
+  group.state_qvel_indices.clear();
+
+  for (std::size_t i = 0; i < group.state_joint_names.size(); ++i) {
+    const auto& jname = group.state_joint_names[i];
+    const int jnt_id = mj_name2id(model_, mjOBJ_JOINT, jname.c_str());
+    if (jnt_id < 0) {
+      fprintf(stderr,
+              "[MuJoCoSimulator] ERROR: group '%s' — state joint '%s' not found in XML\n",
+              group.name.c_str(), jname.c_str());
+      return false;
+    }
+
+    group.state_qpos_indices.push_back(model_->jnt_qposadr[jnt_id]);
+    group.state_qvel_indices.push_back(model_->jnt_dofadr[jnt_id]);
+
+    fprintf(stdout, "[MuJoCoSimulator] [%s] state '%s' → qpos[%d]  qvel[%d]\n",
+            group.name.c_str(), jname.c_str(),
+            group.state_qpos_indices.back(), group.state_qvel_indices.back());
+  }
+  return true;
+}
+
 // ── Validate robot groups against XML (양방향 완전 일치) ────────────────────────
 
 bool MuJoCoSimulator::ValidateAndMapRobotGroups() noexcept {
-  // Collect all robot joint names from YAML
-  std::set<std::string> yaml_joints;
+  // Collect all command joint names from robot groups
+  std::set<std::string> cmd_joints;
   for (const auto& g : groups_) {
     if (!g->is_robot) continue;
-    for (const auto& jn : g->joint_names) {
-      if (!yaml_joints.insert(jn).second) {
+    for (const auto& jn : g->command_joint_names) {
+      if (!cmd_joints.insert(jn).second) {
         fprintf(stderr,
-                "[MuJoCoSimulator] ERROR: duplicate joint name '%s' across robot groups\n",
+                "[MuJoCoSimulator] ERROR: duplicate command joint '%s' across robot groups\n",
                 jn.c_str());
         return false;
       }
@@ -135,30 +161,30 @@ bool MuJoCoSimulator::ValidateAndMapRobotGroups() noexcept {
   std::set<std::string> xml_joints(all_xml_joint_names_.begin(),
                                     all_xml_joint_names_.end());
 
-  // Check YAML → XML (YAML에 있는데 XML에 없음)
+  // Check YAML → XML (command에 있는데 XML에 없음)
   bool ok = true;
-  for (const auto& jn : yaml_joints) {
+  for (const auto& jn : cmd_joints) {
     if (xml_joints.find(jn) == xml_joints.end()) {
       fprintf(stderr,
-              "[MuJoCoSimulator] ERROR: YAML joint '%s' not found in XML\n",
+              "[MuJoCoSimulator] ERROR: command joint '%s' not found in XML\n",
               jn.c_str());
       ok = false;
     }
   }
 
-  // Check XML → YAML (XML에 있는데 YAML에 없음)
+  // Check XML → YAML (XML에 있는데 command에 없음)
   for (const auto& jn : xml_joints) {
-    if (yaml_joints.find(jn) == yaml_joints.end()) {
+    if (cmd_joints.find(jn) == cmd_joints.end()) {
       fprintf(stderr,
-              "[MuJoCoSimulator] ERROR: XML joint '%s' not covered by any robot_response group\n",
+              "[MuJoCoSimulator] ERROR: XML joint '%s' not covered by any robot_response command_joint_names\n",
               jn.c_str());
       ok = false;
     }
   }
 
   if (!ok) {
-    fprintf(stderr, "[MuJoCoSimulator] YAML robot joints (%zu):", yaml_joints.size());
-    for (const auto& jn : yaml_joints) fprintf(stderr, " %s", jn.c_str());
+    fprintf(stderr, "[MuJoCoSimulator] command joints (%zu):", cmd_joints.size());
+    for (const auto& jn : cmd_joints) fprintf(stderr, " %s", jn.c_str());
     fprintf(stderr, "\n[MuJoCoSimulator] XML joints (%zu):", xml_joints.size());
     for (const auto& jn : xml_joints) fprintf(stderr, " %s", jn.c_str());
     fprintf(stderr, "\n");
@@ -166,13 +192,56 @@ bool MuJoCoSimulator::ValidateAndMapRobotGroups() noexcept {
   }
 
   fprintf(stdout,
-          "[MuJoCoSimulator] Robot groups validated: %zu YAML joints == %zu XML joints\n",
-          yaml_joints.size(), xml_joints.size());
+          "[MuJoCoSimulator] Command joints validated: %zu command == %zu XML joints\n",
+          cmd_joints.size(), xml_joints.size());
 
-  // Map indices for each robot group
+  // Map command indices for each robot group
   for (auto& g : groups_) {
     if (!g->is_robot) continue;
     if (!MapGroupIndices(*g)) return false;
+  }
+
+  return true;
+}
+
+// ── Validate and map state joints ────────────────────────────────────────────
+
+bool MuJoCoSimulator::ValidateAndMapStateJoints() noexcept {
+  std::set<std::string> xml_joints(all_xml_joint_names_.begin(),
+                                    all_xml_joint_names_.end());
+
+  for (auto& g : groups_) {
+    if (!g->is_robot) continue;
+
+    // Check all state_joint_names exist in XML
+    bool ok = true;
+    for (const auto& jn : g->state_joint_names) {
+      if (xml_joints.find(jn) == xml_joints.end()) {
+        fprintf(stderr,
+                "[MuJoCoSimulator] ERROR: group '%s' — state joint '%s' not found in XML\n",
+                g->name.c_str(), jn.c_str());
+        ok = false;
+      }
+    }
+    if (!ok) return false;
+
+    // Warn about XML joints not in state_joint_names
+    std::set<std::string> state_set(g->state_joint_names.begin(),
+                                     g->state_joint_names.end());
+    for (const auto& jn : all_xml_joint_names_) {
+      if (state_set.find(jn) == state_set.end()) {
+        fprintf(stdout,
+                "[MuJoCoSimulator] WARNING: group '%s' — XML joint '%s' not in state_joint_names\n",
+                g->name.c_str(), jn.c_str());
+      }
+    }
+
+    // Map state indices
+    if (!MapStateIndices(*g)) return false;
+
+    fprintf(stdout,
+            "[MuJoCoSimulator] [%s] state joints: %d (command: %d)\n",
+            g->name.c_str(), g->num_state_joints, g->num_command_joints);
   }
 
   return true;
@@ -251,10 +320,11 @@ bool MuJoCoSimulator::Initialize() noexcept {
 
   bool first_robot = true;
   for (const auto& gc : cfg_.groups) {
-    // Validate required fields
-    if (gc.joint_names.empty()) {
+    // Resolve command_joint_names: prefer explicit, fallback to joint_names
+    auto cmd_names = gc.command_joint_names.empty() ? gc.joint_names : gc.command_joint_names;
+    if (cmd_names.empty()) {
       fprintf(stderr,
-              "[MuJoCoSimulator] ERROR: group '%s' has empty joint_names\n",
+              "[MuJoCoSimulator] ERROR: group '%s' has no command_joint_names (nor joint_names)\n",
               gc.name.c_str());
       return false;
     }
@@ -266,41 +336,59 @@ bool MuJoCoSimulator::Initialize() noexcept {
     }
 
     auto g = std::make_unique<JointGroup>();
-    g->name          = gc.name;
-    g->joint_names   = gc.joint_names;
-    g->num_joints    = static_cast<int>(gc.joint_names.size());
-    g->is_robot      = gc.is_robot;
-    g->command_topic = gc.command_topic;
-    g->state_topic   = gc.state_topic;
-    g->filter_alpha  = gc.filter_alpha;
+    g->name                = gc.name;
+    g->command_joint_names = cmd_names;
+    g->num_command_joints  = static_cast<int>(cmd_names.size());
+    g->is_robot            = gc.is_robot;
+    g->command_topic       = gc.command_topic;
+    g->state_topic         = gc.state_topic;
+    g->filter_alpha        = gc.filter_alpha;
+
+    // Resolve state_joint_names: prefer explicit, fallback to XML all joints
+    if (!gc.state_joint_names.empty()) {
+      g->state_joint_names = gc.state_joint_names;
+    } else if (gc.is_robot) {
+      g->state_joint_names = all_xml_joint_names_;
+    } else {
+      // fake group: state same as command
+      g->state_joint_names = cmd_names;
+    }
+    g->num_state_joints = static_cast<int>(g->state_joint_names.size());
 
     if (gc.is_robot && first_robot) {
       g->is_primary = true;
       first_robot = false;
     }
 
-    const auto nj = static_cast<std::size_t>(g->num_joints);
+    const auto ncj = static_cast<std::size_t>(g->num_command_joints);
+    const auto nsj = static_cast<std::size_t>(g->num_state_joints);
 
     if (gc.is_robot) {
-      // Robot group buffers
-      g->pending_cmd.resize(nj, 0.0);
-      g->positions.resize(nj, 0.0);
-      g->velocities.resize(nj, 0.0);
-      g->efforts.resize(nj, 0.0);
-      g->initial_qpos.resize(nj, 0.0);
-      g->gainprm_yaml.resize(nj, 0.0);
-      g->biasprm2_yaml.resize(nj, 0.0);
+      // Command buffers
+      g->pending_cmd.resize(ncj, 0.0);
+      g->initial_qpos.resize(ncj, 0.0);
+      g->gainprm_yaml.resize(ncj, 0.0);
+      g->biasprm2_yaml.resize(ncj, 0.0);
+      // State buffers
+      g->positions.resize(nsj, 0.0);
+      g->velocities.resize(nsj, 0.0);
+      g->efforts.resize(nsj, 0.0);
     } else {
-      // Fake group: LPF buffers
-      g->fake_state.resize(nj, 0.0);
-      g->fake_target.resize(nj, 0.0);
+      // Fake group: LPF buffers (command size for target, state size for output)
+      g->fake_target.resize(ncj, 0.0);
+      g->fake_state.resize(nsj, 0.0);
     }
 
     groups_.push_back(std::move(g));
   }
 
-  // ── Validate robot groups against XML (양방향 완전 일치) ─────────────────
+  // ── Validate command joints against XML (양방향 완전 일치) ────────────────
   if (!ValidateAndMapRobotGroups()) {
+    return false;
+  }
+
+  // ── Validate state joints against XML ──────────────────────────────────
+  if (!ValidateAndMapStateJoints()) {
     return false;
   }
 
@@ -326,7 +414,7 @@ bool MuJoCoSimulator::Initialize() noexcept {
   for (auto& g : groups_) {
     if (!g->is_robot) continue;
 
-    const auto nj = static_cast<std::size_t>(g->num_joints);
+    const auto ncj = static_cast<std::size_t>(g->num_command_joints);
 
     // Servo gains: use per-group if provided, otherwise inherit global
     const auto& kp = (!cfg_.groups.empty()) ? [&]() -> const std::vector<double>& {
@@ -344,29 +432,29 @@ bool MuJoCoSimulator::Initialize() noexcept {
     }() : cfg_.servo_kd;
 
     if (cfg_.use_yaml_servo_gains) {
-      if (kp.size() != nj || kd.size() != nj) {
+      if (kp.size() != ncj || kd.size() != ncj) {
         fprintf(stderr,
-                "[MuJoCoSimulator] ERROR: group '%s' servo_kp/kd size (%zu/%zu) != joints (%zu)\n",
-                g->name.c_str(), kp.size(), kd.size(), nj);
+                "[MuJoCoSimulator] ERROR: group '%s' servo_kp/kd size (%zu/%zu) != command joints (%zu)\n",
+                g->name.c_str(), kp.size(), kd.size(), ncj);
         return false;
       }
     }
 
-    for (std::size_t i = 0; i < nj; ++i) {
+    for (std::size_t i = 0; i < ncj; ++i) {
       if (i < kp.size()) g->gainprm_yaml[i] = kp[i] / xml_timestep_;
       if (i < kd.size()) g->biasprm2_yaml[i] = -kd[i];
     }
 
     // Initial positions from keyframe
     if (model_->nkey > 0) {
-      for (std::size_t i = 0; i < nj; ++i) {
+      for (std::size_t i = 0; i < ncj; ++i) {
         g->initial_qpos[i] = static_cast<double>(
             model_->key_qpos[g->qpos_indices[i]]);
       }
     }
 
     // Apply initial positions
-    for (std::size_t i = 0; i < nj; ++i) {
+    for (std::size_t i = 0; i < ncj; ++i) {
       data_->qpos[g->qpos_indices[i]] = g->initial_qpos[i];
       data_->ctrl[g->actuator_indices[i]] = g->initial_qpos[i];
     }
@@ -388,13 +476,13 @@ bool MuJoCoSimulator::Initialize() noexcept {
   gravity_enabled_.store(false, std::memory_order_relaxed);
 
   // ── Summary ─────────────────────────────────────────────────────────────
-  int total_robot_joints = 0;
+  int total_cmd_joints = 0;
   for (const auto& g : groups_) {
-    if (g->is_robot) total_robot_joints += g->num_joints;
-    fprintf(stdout, "[MuJoCoSimulator] Group '%s': %s  %d joints  cmd=%s  state=%s%s\n",
+    if (g->is_robot) total_cmd_joints += g->num_command_joints;
+    fprintf(stdout, "[MuJoCoSimulator] Group '%s': %s  cmd_joints=%d  state_joints=%d  cmd=%s  state=%s%s\n",
             g->name.c_str(),
             g->is_robot ? "ROBOT" : "FAKE",
-            g->num_joints,
+            g->num_command_joints, g->num_state_joints,
             g->command_topic.c_str(),
             g->state_topic.c_str(),
             g->is_primary ? "  [PRIMARY]" : "");
@@ -402,10 +490,10 @@ bool MuJoCoSimulator::Initialize() noexcept {
 
   fprintf(stdout,
           "[MuJoCoSimulator] Loaded '%s'  nq=%d nv=%d nu=%d  groups=%zu"
-          "  robot_joints=%d  dt=%.4f s  mode=%s\n",
+          "  command_joints=%d  dt=%.4f s  mode=%s\n",
           cfg_.model_path.c_str(),
           model_->nq, model_->nv, model_->nu,
-          groups_.size(), total_robot_joints,
+          groups_.size(), total_cmd_joints,
           xml_timestep_,
           cfg_.mode == SimMode::kFreeRun ? "free_run" : "sync_step");
 
@@ -485,12 +573,24 @@ const std::vector<std::string>& MuJoCoSimulator::GetJointNames(
     std::size_t group_idx) const noexcept {
   static const std::vector<std::string> empty;
   if (group_idx >= groups_.size()) return empty;
-  return groups_[group_idx]->joint_names;
+  return groups_[group_idx]->command_joint_names;
+}
+
+const std::vector<std::string>& MuJoCoSimulator::GetStateJointNames(
+    std::size_t group_idx) const noexcept {
+  static const std::vector<std::string> empty;
+  if (group_idx >= groups_.size()) return empty;
+  return groups_[group_idx]->state_joint_names;
 }
 
 int MuJoCoSimulator::NumGroupJoints(std::size_t group_idx) const noexcept {
   if (group_idx >= groups_.size()) return 0;
-  return groups_[group_idx]->num_joints;
+  return groups_[group_idx]->num_command_joints;
+}
+
+int MuJoCoSimulator::NumStateJoints(std::size_t group_idx) const noexcept {
+  if (group_idx >= groups_.size()) return 0;
+  return groups_[group_idx]->num_state_joints;
 }
 
 bool MuJoCoSimulator::IsGroupRobot(std::size_t group_idx) const noexcept {
@@ -552,7 +652,8 @@ void MuJoCoSimulator::AdvanceFakeLPF(std::size_t group_idx) noexcept {
   auto& g = *groups_[group_idx];
   if (g.is_robot) return;
   std::lock_guard lock(g.fake_mutex);
-  for (std::size_t i = 0; i < g.fake_state.size(); ++i) {
+  const auto n = std::min(g.fake_state.size(), g.fake_target.size());
+  for (std::size_t i = 0; i < n; ++i) {
     g.fake_state[i] += g.filter_alpha * (g.fake_target[i] - g.fake_state[i]);
   }
 }

@@ -68,8 +68,8 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
   for (auto& g : groups_) {
     if (!g->is_robot) continue;
     std::lock_guard lock(g->state_mutex);
-    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_joints); ++i) {
-      vis_data->qpos[g->qpos_indices[i]] = g->positions[i];
+    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_state_joints); ++i) {
+      vis_data->qpos[g->state_qpos_indices[i]] = g->positions[i];
     }
   }
   mj_forward(model_, vis_data);

@@ -22,7 +22,7 @@ void MuJoCoSimulator::ApplyCommand() noexcept {
     if (!g->cmd_pending.load(std::memory_order_acquire)) continue;
 
     std::lock_guard lock(g->cmd_mutex);
-    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_joints); ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_command_joints); ++i) {
       if (i < g->pending_cmd.size() && i < g->actuator_indices.size()) {
         data_->ctrl[g->actuator_indices[i]] = g->pending_cmd[i];
       }
@@ -36,10 +36,10 @@ void MuJoCoSimulator::ReadState() noexcept {
   for (auto& g : groups_) {
     if (!g->is_robot) continue;
     std::lock_guard lock(g->state_mutex);
-    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_joints); ++i) {
-      g->positions[i]  = data_->qpos[g->qpos_indices[i]];
-      g->velocities[i] = data_->qvel[g->qvel_indices[i]];
-      g->efforts[i]    = data_->qfrc_actuator[g->qvel_indices[i]];
+    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_state_joints); ++i) {
+      g->positions[i]  = data_->qpos[g->state_qpos_indices[i]];
+      g->velocities[i] = data_->qvel[g->state_qvel_indices[i]];
+      g->efforts[i]    = data_->qfrc_actuator[g->state_qvel_indices[i]];
     }
   }
 }
@@ -64,8 +64,7 @@ void MuJoCoSimulator::InvokeStateCallback() noexcept {
   for (auto& g : groups_) {
     if (!g->is_robot) continue;
     if (!g->state_cb) continue;
-    const auto nj = static_cast<std::size_t>(g->num_joints);
-    std::vector<double> pos(nj), vel(nj), eff(nj);
+    std::vector<double> pos, vel, eff;
     {
       std::lock_guard lock(g->state_mutex);
       pos = g->positions;
@@ -126,7 +125,7 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
     if (!g->control_mode_pending.exchange(false, std::memory_order_acq_rel)) continue;
 
     const bool torque = g->torque_mode.load(std::memory_order_relaxed);
-    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_joints); ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_command_joints); ++i) {
       const int act = g->actuator_indices[i];
       if (torque) {
         model_->actuator_gainprm[act * mjNGAIN + 0] = static_cast<mjtNum>(1.0);
@@ -200,7 +199,7 @@ void MuJoCoSimulator::HandleReset() noexcept {
 
   for (auto& g : groups_) {
     if (!g->is_robot) continue;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_joints); ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_command_joints); ++i) {
       data_->qpos[g->qpos_indices[i]] = g->initial_qpos[i];
       data_->ctrl[g->actuator_indices[i]] = g->initial_qpos[i];
     }
