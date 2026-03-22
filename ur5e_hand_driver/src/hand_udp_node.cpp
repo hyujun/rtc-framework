@@ -306,17 +306,14 @@ class HandUdpNode : public rclcpp::Node {
               ? ft_names_list[static_cast<std::size_t>(f)]
               : "f" + std::to_string(f);
           const int base = f * urtc::kFTValuesPerFingertip;
-          // Output: [contact(1), F(3), u(3), Fn(3), Fx(1), Fy(1), Fz(1)]
+          // Output: [contact_prob(1), F(3), u(3)]
           ft.contact = (ft_state.ft_data[static_cast<std::size_t>(base)] > 0.5f);
+          ft.contact_probability = ft_state.ft_data[static_cast<std::size_t>(base)];
           for (int j = 0; j < 3; ++j) {
             const auto ju = static_cast<std::size_t>(j);
-            ft.force[ju]        = ft_state.ft_data[static_cast<std::size_t>(base + 1 + j)];
-            ft.direction[ju]    = ft_state.ft_data[static_cast<std::size_t>(base + 4 + j)];
-            ft.normal_force[ju] = ft_state.ft_data[static_cast<std::size_t>(base + 7 + j)];
+            ft.force[ju]     = ft_state.ft_data[static_cast<std::size_t>(base + 1 + j)];
+            ft.direction[ju] = ft_state.ft_data[static_cast<std::size_t>(base + 4 + j)];
           }
-          ft.force_x = ft_state.ft_data[static_cast<std::size_t>(base + 10)];
-          ft.force_y = ft_state.ft_data[static_cast<std::size_t>(base + 11)];
-          ft.force_z = ft_state.ft_data[static_cast<std::size_t>(base + 12)];
           ft_msg.fingertips.push_back(ft);
         }
         ft_pub_->publish(ft_msg);

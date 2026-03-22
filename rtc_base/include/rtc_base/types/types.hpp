@@ -84,8 +84,9 @@ template <typename T>
 concept TriviallyCopyableType = std::is_trivially_copyable_v<T>;
 
 // Fingertip F/T inference 관련 상수
-// Output layout: [contact(1), F(3), u(3), Fn(3), Fx(1), Fy(1), Fz(1)] = 13
-inline constexpr int kFTValuesPerFingertip = 13;
+// Output layout: [contact_prob(1), F(3), u(3)] = 7
+// (3-head model: output0=contact logit→sigmoid, output1=F, output2=u)
+inline constexpr int kFTValuesPerFingertip = 7;
 inline constexpr int kFTInputSize          = 2 * kBarometerCount;  // baro(8) + delta(8) = 16
 inline constexpr int kFTHistoryLength      = 12;                   // FIFO history rows for ONNX input
 
