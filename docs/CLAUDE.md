@@ -75,6 +75,7 @@ ur5e_bringup ← rtc_controller_manager, ur5e_hand_driver, ur5e_description
 
 ```cpp
 // Key constants
+kCacheLineSize = 64;  // unified cache line size (types.hpp, shared by SeqLock/SPSC)
 kNumRobotJoints = 6;  kMaxRobotDOF = 12;
 kNumHandMotors = 10;  kDefaultNumFingertips = 4;
 kSensorValuesPerFingertip = 11;  // 8 barometer + 3 ToF
@@ -105,8 +106,8 @@ Core 0-1: OS/DDS/IRQ (isolcpus=2-5). Auto-selects 4/6/8/10/12/16-core layouts vi
 
 ### Lock-Free Primitives
 
-- **SeqLock<T>**: Single-writer/multi-reader. `Store()` wait-free, `Load()` lock-free with retry. Requires `is_trivially_copyable_v<T>`.
-- **SpscLogBuffer<512>** / **SpscPublishBuffer<512>**: SPSC ring buffers. Cache-line aligned (`alignas(64)`), bitwise AND modulus, local index caching. Push is wait-free noexcept; drops on full.
+- **SeqLock<T>**: Single-writer/multi-reader. `Store()` wait-free, `Load()` lock-free with retry. Requires `is_trivially_copyable_v<T>`. Uses unified `kCacheLineSize` from `types.hpp`.
+- **SpscLogBuffer<512>** / **SpscPublishBuffer<512>**: SPSC ring buffers. Cache-line aligned (`alignas(kCacheLineSize)`), bitwise AND modulus, local index caching. Push is wait-free noexcept with `[[unlikely]]` branch hints on full-buffer paths; drops on full.
 - **Atomic E-STOP**: `std::atomic<bool> global_estop_` — seq_cst by default for cross-thread visibility.
 
 ### Controller Implementations
@@ -241,13 +242,16 @@ enable_failure_detector: true
 - **Namespace**: `rtc` (all packages)
 - **Naming**: Google C++ Style — `snake_case` members with trailing `_`
 - **`noexcept` on all RT paths**: exceptions in 500Hz loop terminate the process (intentional)
-- **C++20**: `std::jthread`, `std::stop_token`, `std::span`, `std::string_view`, `std::concepts`, designated initializers
+- **C++20**: `std::jthread`, `std::stop_token`, `std::span`, `std::string_view`, `std::concepts`, designated initializers, `[[likely]]/[[unlikely]]`, `constexpr` functions
+- **`[[nodiscard]]`** on all functions returning status/error information (e.g. `ApplyThreadConfig()`, `IsRunning()`)
+- **`[[likely]]/[[unlikely]]`** on hot-path branch hints (SPSC buffer full checks, recv loop)
+- **`static_assert`** on template parameters (`BesselFilterN<N>`, `KalmanFilterN<N>`, `JointSpaceTrajectory<N>` — all require `N > 0`)
 - **Include order**: project → ROS2/third-party → C++ stdlib
 - **Separate mutexes**: `state_mutex_`, `target_mutex_`, `hand_mutex_` — never hold more than one
 - **Trajectory race fix**: `SetRobotTarget()` uses `lock_guard`, `Compute()` uses `try_to_lock` (never blocks RT)
 - **Eigen**: all buffers pre-allocated in constructor, `noalias()` to avoid temporaries, zero heap on 500Hz path
 - **Pinocchio headers**: `#pragma GCC diagnostic push/pop` to suppress warnings
-- **Compiler flags**: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`
+- **Compiler flags**: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion` (set in each package's CMakeLists.txt with `CMAKE_CXX_STANDARD 20`)
 
 ### Concurrency Patterns
 
@@ -304,3 +308,32 @@ Optional CPU isolation for max RT performance:
 ```
 
 If `ApplyThreadConfig()` fails, the node continues at SCHED_OTHER with a `[WARN]` log (increased jitter).
+
+---
+
+## Optimization Summary (v5.16.1)
+
+Cross-cutting optimizations applied to all 15 packages:
+
+### Build System
+- All C++ packages explicitly set `CMAKE_CXX_STANDARD 20` + `CMAKE_CXX_STANDARD_REQUIRED ON`
+- Strict compiler warning flags (`-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`)
+
+### Code Quality
+| Optimization | Packages Affected | Description |
+|-------------|-------------------|-------------|
+| `kCacheLineSize` unified | `rtc_base` | Single definition in `types.hpp`, removed duplicates from SeqLock/SPSC |
+| `[[likely]]/[[unlikely]]` | `rtc_base`, `rtc_communication` | Branch hints on SPSC buffer full paths, recv loop |
+| `[[nodiscard]]` | `rtc_base`, `rtc_controller_interface` | `ApplyThreadConfig()`, `ControllerRegistry::Instance()` |
+| `constexpr` | `rtc_base` | `SubscribeRoleToString()`, `PublishRoleToString()`, `ComputeBiquad()` |
+| `static_assert(N > 0)` | `rtc_base`, `rtc_controllers` | `BesselFilterN`, `KalmanFilterN`, `JointSpaceTrajectory` |
+| `noexcept` | `rtc_controller_interface` | `ControllerRegistry::Instance()` |
+| Include order | `rtc_communication`, `rtc_controllers` | Google style compliance (project → third-party → stdlib) |
+| Unused includes | `rtc_communication`, `rtc_controller_manager` | Removed `<string_view>`, `<ctime>` |
+| `TriviallyCopyableType` concept | `rtc_base` | New concept for lock-free primitive type constraints |
+| `std::array` buffer | `rtc_base` | `session_dir.hpp` — safer timestamp buffer |
+
+### Documentation
+- All 15 packages have `"최적화 내역"` (optimization changelog) section in README.md
+- RT-safety warnings documented on non-RT-safe functions (`GetSubscribeTopicName()`)
+- Kalman filter accessor preconditions documented (`i < N`)
