@@ -15,7 +15,6 @@
 #include <time.h>     // clock_nanosleep, clock_gettime, CLOCK_MONOTONIC, TIMER_ABSTIME
 
 #include <algorithm>
-#include <ctime>
 #include <fstream>
 #include <functional>
 #include <iomanip>

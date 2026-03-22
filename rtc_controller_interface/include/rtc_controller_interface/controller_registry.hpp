@@ -39,7 +39,7 @@ struct ControllerEntry
 class ControllerRegistry
 {
 public:
-  static ControllerRegistry & Instance();
+  static ControllerRegistry & Instance() noexcept;
 
   void Register(ControllerEntry entry);
 

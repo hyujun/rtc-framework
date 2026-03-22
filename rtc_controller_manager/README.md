@@ -281,6 +281,14 @@ rtc_controller_manager  ← 500 Hz RT 제어 실행 엔진
 
 ---
 
+## 최적화 내역 (v0.1.1)
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **rt_controller_node.cpp** | 미사용 `<ctime>` include 제거 |
+
+---
+
 ## 라이선스
 
 MIT License — 자세한 내용은 [LICENSE](../LICENSE) 파일을 참조하세요.
