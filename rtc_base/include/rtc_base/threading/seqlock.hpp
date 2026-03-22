@@ -16,14 +16,14 @@
 //   // Reader (any thread):
 //   MyData snapshot = sl.Load();
 
+#include "rtc_base/types/types.hpp"
+
 #include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <type_traits>
 
 namespace rtc {
-
-inline constexpr std::size_t kSeqLockCacheLineSize = 64;
 
 template <typename T>
 class SeqLock {
@@ -67,8 +67,8 @@ class SeqLock {
   }
 
  private:
-  alignas(kSeqLockCacheLineSize) std::atomic<uint32_t> seq_{0};
-  alignas(kSeqLockCacheLineSize) T data_{};
+  alignas(kCacheLineSize) std::atomic<uint32_t> seq_{0};
+  alignas(kCacheLineSize) T data_{};
 };
 
 }  // namespace rtc

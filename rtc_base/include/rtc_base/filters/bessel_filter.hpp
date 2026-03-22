@@ -41,6 +41,8 @@ namespace rtc {
 
 template <std::size_t N>
 class BesselFilterN {
+  static_assert(N > 0, "BesselFilterN: N must be at least 1");
+
  public:
   // Coefficients of one second-order IIR section.
   // Transfer function:
@@ -156,7 +158,7 @@ class BesselFilterN {
   //        a2    = (k² − (ω₀/Q)·k + ω₀²) / D
   //
   // Q is scale-invariant and is passed through unchanged.
-  [[nodiscard]] static BiquadCoeffs ComputeBiquad(double omega0_proto,
+  [[nodiscard]] static constexpr BiquadCoeffs ComputeBiquad(double omega0_proto,
                                                   double q_proto,
                                                   double omega_p,
                                                   double k) noexcept {

@@ -6,13 +6,24 @@
 
 #include <array>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <map>
+#include <new>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace rtc {
+
+// ── Hardware cache line size (shared across all threading primitives) ─────────
+#ifdef __cpp_lib_hardware_interference_size
+inline constexpr std::size_t kCacheLineSize =
+    std::hardware_destructive_interference_size;
+#else
+inline constexpr std::size_t kCacheLineSize = 64;
+#endif
 
 // ── Compile-time constants ─────────────────────────────────────────────────────
 inline constexpr int kNumRobotJoints = 6;  // default channel count (UR5e); runtime count from YAML
@@ -63,9 +74,14 @@ inline const std::vector<std::string> kDefaultFingertipNames = {
 
 // ── C++20 Concepts ─────────────────────────────────────────────────────────────
 // Constrains template parameters to floating-point types (double, float, etc.).
-// Used for gain parameters and filter coefficients.
+// Used for gain parameters and filter coefficients in downstream packages
+// (e.g. bessel_filter.hpp, kalman_filter.hpp).
 template <typename T>
 concept FloatingPointType = std::floating_point<T>;
+
+// Constrains types to be usable in lock-free primitives (SeqLock, SPSC buffers).
+template <typename T>
+concept TriviallyCopyableType = std::is_trivially_copyable_v<T>;
 
 // Fingertip F/T inference 관련 상수
 // Output layout: [contact(1), F(3), u(3), Fn(3), Fx(1), Fy(1), Fz(1)] = 13
@@ -231,6 +247,9 @@ struct TopicConfig {
 
   // Returns the topic name for the first subscribe entry matching the role,
   // or an empty string if not found.
+  //
+  // WARNING: NOT RT-safe — returns std::string (potential heap allocation).
+  // Call only during initialisation, not from the 500 Hz control loop.
   [[nodiscard]] std::string GetSubscribeTopicName(
       const std::string& group_name, SubscribeRole role) const {
     auto it = groups.find(group_name);
@@ -244,7 +263,7 @@ struct TopicConfig {
 
 // ── Role → string conversion (for ROS2 parameter exposure) ──────────────────
 
-inline const char * SubscribeRoleToString(SubscribeRole role) noexcept {
+[[nodiscard]] inline constexpr const char * SubscribeRoleToString(SubscribeRole role) noexcept {
   switch (role) {
     case SubscribeRole::kState:       return "state";
     case SubscribeRole::kSensorState: return "sensor_state";
@@ -253,7 +272,7 @@ inline const char * SubscribeRoleToString(SubscribeRole role) noexcept {
   return "unknown";
 }
 
-inline const char * PublishRoleToString(PublishRole role) noexcept {
+[[nodiscard]] inline constexpr const char * PublishRoleToString(PublishRole role) noexcept {
   switch (role) {
     case PublishRole::kJointCommand:    return "joint_command";
     case PublishRole::kRos2Command:     return "ros2_command";

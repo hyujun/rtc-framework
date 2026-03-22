@@ -2,6 +2,7 @@
 #define RTC_BASE_SESSION_DIR_HPP_
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
@@ -33,9 +34,9 @@ inline std::string GenerateSessionTimestamp() {
   const auto time_t = std::chrono::system_clock::to_time_t(now);
   std::tm local_tm{};
   localtime_r(&time_t, &local_tm);
-  char ts[16];
-  std::strftime(ts, sizeof(ts), "%y%m%d_%H%M", &local_tm);
-  return std::string(ts);
+  std::array<char, 16> ts{};
+  std::strftime(ts.data(), ts.size(), "%y%m%d_%H%M", &local_tm);
+  return std::string(ts.data());
 }
 
 /// 세션 디렉토리 내 표준 서브디렉토리 생성

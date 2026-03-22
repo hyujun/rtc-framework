@@ -98,7 +98,7 @@ namespace rtc
   // Requirements:
   // - CAP_SYS_NICE capability or membership in 'realtime' group
   // - /etc/security/limits.conf: @realtime - rtprio 99
-  inline bool ApplyThreadConfig(const ThreadConfig &cfg) noexcept
+  [[nodiscard]] inline bool ApplyThreadConfig(const ThreadConfig &cfg) noexcept
   {
     // Validate configuration first
     std::string validation_errors = ValidateThreadConfig(cfg);
@@ -158,7 +158,7 @@ namespace rtc
   // Apply thread configuration with graceful fallback
   // Attempts to apply as much configuration as possible, even if RT scheduling fails
   // Returns {full_success, warnings} - full_success is true only if everything succeeded
-  inline std::pair<bool, std::string> ApplyThreadConfigWithFallback(const ThreadConfig &cfg) noexcept
+  [[nodiscard]] inline std::pair<bool, std::string> ApplyThreadConfigWithFallback(const ThreadConfig &cfg) noexcept
   {
     std::string validation_errors = ValidateThreadConfig(cfg);
     if (!validation_errors.empty())
