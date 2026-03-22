@@ -193,7 +193,8 @@ void RtControllerNode::DeclareAndLoadParameters()
   LoadAndValidateJointNames();
 
   // hand_motor_names_ 기반 identity map 빌드 (sim/UDP 모두 동일 이름 순서 사용)
-  BuildHandStateIndexMap(hand_motor_names_);
+  // Build device reorder maps from joint names for known groups
+  // (robot reorder is built on first message; hand identity map built here)
 
   // ── Instantiate and configure all registered controllers ─────────────────
   // Controllers are registered via RTC_REGISTER_CONTROLLER() macro at static
@@ -266,14 +267,9 @@ void RtControllerNode::DeclareAndLoadParameters()
     }
   }
 
-  // ── Build group_state_mappings_ (temporary bridge — removed in PR2) ──────
-  for (const auto & group_name : active_groups_) {
-    GroupStateMapping m;
-    m.group_name = group_name;
-    m.target = (group_name == "ur5e")
-        ? GroupStateMapping::Target::kRobot
-        : GroupStateMapping::Target::kHand;
-    group_state_mappings_.push_back(m);
+  // Build device reorder maps for known groups
+  if (auto it = group_slot_map_.find("hand"); it != group_slot_map_.end()) {
+    BuildDeviceReorderMap(it->second, hand_motor_names_);
   }
 
   // ── Deferred logging setup (needs active_groups_) ────────────────────────
@@ -383,14 +379,6 @@ void RtControllerNode::CreateSubscriptions()
     return nullptr;
   };
 
-  // ── Helper: find GroupStateMapping for a group name ──────────────────────
-  auto find_mapping = [this](const std::string & group_name) -> GroupStateMapping::Target {
-    for (const auto & m : group_state_mappings_) {
-      if (m.group_name == group_name) return m.target;
-    }
-    return GroupStateMapping::Target::kHand;  // fallback
-  };
-
   // ── Create subscriptions for all active device groups ────────────────────
   std::set<std::string> created_topics;
 
@@ -398,7 +386,7 @@ void RtControllerNode::CreateSubscriptions()
     for (const auto & [group_name, group] : tc.groups) {
       if (!active_groups_.contains(group_name)) continue;
 
-      const auto state_target = find_mapping(group_name);
+      const int slot = group_slot_map_[group_name];
 
       for (const auto & entry : group.subscribe) {
         if (!created_topics.insert(entry.topic_name).second) continue;
@@ -407,67 +395,43 @@ void RtControllerNode::CreateSubscriptions()
 
         switch (entry.role) {
           case urtc::SubscribeRole::kState: {
-            if (state_target == GroupStateMapping::Target::kRobot) {
-              auto sub = create_subscription<sensor_msgs::msg::JointState>(
-                entry.topic_name, 10,
-                [this, dt_ptr](sensor_msgs::msg::JointState::SharedPtr msg) {
-                  JointStateCallback(std::move(msg));
-                  if (dt_ptr) {
-                    dt_ptr->last_update = std::chrono::steady_clock::now();
-                    dt_ptr->received = true;
-                  }
-                },
-                sub_options);
-              topic_subscriptions_.push_back(sub);
-            } else {
-              auto sub = create_subscription<sensor_msgs::msg::JointState>(
-                entry.topic_name, 10,
-                [this, dt_ptr](sensor_msgs::msg::JointState::SharedPtr msg) {
-                  DeviceStateCallback(std::move(msg));
-                  if (dt_ptr) {
-                    dt_ptr->last_update = std::chrono::steady_clock::now();
-                    dt_ptr->received = true;
-                  }
-                },
-                sub_options);
-              topic_subscriptions_.push_back(sub);
-            }
-            RCLCPP_INFO(get_logger(), "  Subscribe [%s/state]: %s",
-                        group_name.c_str(), entry.topic_name.c_str());
+            auto sub = create_subscription<sensor_msgs::msg::JointState>(
+              entry.topic_name, 10,
+              [this, slot, dt_ptr](sensor_msgs::msg::JointState::SharedPtr msg) {
+                DeviceJointStateCallback(slot, std::move(msg));
+                if (dt_ptr) {
+                  dt_ptr->last_update = std::chrono::steady_clock::now();
+                  dt_ptr->received = true;
+                }
+              },
+              sub_options);
+            topic_subscriptions_.push_back(sub);
+            RCLCPP_INFO(get_logger(), "  Subscribe [%s/state]: %s (slot %d)",
+                        group_name.c_str(), entry.topic_name.c_str(), slot);
             break;
           }
           case urtc::SubscribeRole::kSensorState: {
             auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
               entry.topic_name, 10,
-              [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-                DeviceSensorCallback(std::move(msg));
+              [this, slot](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+                DeviceSensorCallback(slot, std::move(msg));
               },
               sub_options);
             topic_subscriptions_.push_back(sub);
-            RCLCPP_INFO(get_logger(), "  Subscribe [%s/sensor_state]: %s",
-                        group_name.c_str(), entry.topic_name.c_str());
+            RCLCPP_INFO(get_logger(), "  Subscribe [%s/sensor_state]: %s (slot %d)",
+                        group_name.c_str(), entry.topic_name.c_str(), slot);
             break;
           }
           case urtc::SubscribeRole::kTarget: {
-            if (state_target == GroupStateMapping::Target::kRobot) {
-              auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
-                entry.topic_name, 10,
-                [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-                  RobotTargetCallback(std::move(msg));
-                },
-                sub_options);
-              topic_subscriptions_.push_back(sub);
-            } else {
-              auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
-                entry.topic_name, 10,
-                [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-                  HandTargetCallback(std::move(msg));
-                },
-                sub_options);
-              topic_subscriptions_.push_back(sub);
-            }
-            RCLCPP_INFO(get_logger(), "  Subscribe [%s/target]: %s",
-                        group_name.c_str(), entry.topic_name.c_str());
+            auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
+              entry.topic_name, 10,
+              [this, slot](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+                DeviceTargetCallback(slot, std::move(msg));
+              },
+              sub_options);
+            topic_subscriptions_.push_back(sub);
+            RCLCPP_INFO(get_logger(), "  Subscribe [%s/target]: %s (slot %d)",
+                        group_name.c_str(), entry.topic_name.c_str(), slot);
             break;
           }
         }
@@ -486,17 +450,22 @@ void RtControllerNode::CreateSubscriptions()
             state_received_.load(std::memory_order_acquire)) {
           urtc::ControllerState hold_state{};
           {
-            std::lock_guard lock(state_mutex_);
-            hold_state.robot.positions = current_positions_;
-            hold_state.robot.velocities = current_velocities_;
-            hold_state.robot.torques = current_torques_;
+            std::lock_guard lock(device_state_mutex_);
+            int di = 0;
+            for (const auto& [gname, ggroup] : controller_topic_configs_[idx].groups) {
+              const int slot = group_slot_map_.at(gname);
+              auto& dev = hold_state.devices[di];
+              const auto& cache = device_states_[slot];
+              dev.num_channels = cache.num_channels;
+              dev.positions = cache.positions;
+              dev.velocities = cache.velocities;
+              dev.efforts = cache.efforts;
+              dev.valid = cache.valid;
+              ++di;
+            }
+            hold_state.num_devices = di;
           }
-          hold_state.robot.dt = 1.0 / control_rate_;
-          hold_state.dt = hold_state.robot.dt;
-          {
-            std::lock_guard lock(hand_state_mutex_);
-            hold_state.hand = cached_hand_state_;
-          }
+          hold_state.dt = 1.0 / control_rate_;
           controllers_[idx]->InitializeHoldPosition(hold_state);
         }
         active_controller_idx_.store(idx, std::memory_order_release);
@@ -541,30 +510,23 @@ void RtControllerNode::CreatePublishers()
   rclcpp::QoS cmd_qos{1};
   cmd_qos.best_effort();
 
-  // ── Helper: find GroupStateMapping for joint name / size resolution ──────
-  auto find_mapping = [this](const std::string & group_name) -> GroupStateMapping::Target {
-    for (const auto & m : group_state_mappings_) {
-      if (m.group_name == group_name) return m.target;
-    }
-    return GroupStateMapping::Target::kHand;
-  };
-
   // Helper: create a publisher for a publish entry if not already created.
   auto create_pub = [&](const urtc::PublishTopicEntry & entry,
                         const std::string & group_name) {
+    const int slot = group_slot_map_[group_name];
+
     switch (entry.role) {
       case urtc::PublishRole::kJointCommand: {
         if (joint_command_publishers_.count(entry.topic_name) > 0) { return; }
         JointCommandPublisherEntry jce;
         jce.publisher = create_publisher<rtc_msgs::msg::JointCommand>(
             entry.topic_name, cmd_qos);
-        // Temporary bridge: use group_state_mappings_ for joint names/size
-        if (find_mapping(group_name) == GroupStateMapping::Target::kRobot) {
+        if (slot == 0) {
           jce.msg.joint_names = robot_joint_names_;
-          jce.msg.values.resize(urtc::kNumRobotJoints, 0.0);
+          jce.msg.values.resize(robot_joint_names_.size(), 0.0);
         } else {
           jce.msg.joint_names = hand_motor_names_;
-          jce.msg.values.resize(urtc::kNumHandMotors, 0.0);
+          jce.msg.values.resize(hand_motor_names_.size(), 0.0);
         }
         jce.msg.command_type = "position";
         joint_command_publishers_[entry.topic_name] = std::move(jce);
@@ -583,8 +545,9 @@ void RtControllerNode::CreatePublishers()
     if (data_size <= 0) {
       switch (entry.role) {
         case urtc::PublishRole::kRos2Command:
-          data_size = (find_mapping(group_name) == GroupStateMapping::Target::kRobot)
-              ? urtc::kNumRobotJoints : urtc::kNumHandMotors;
+          data_size = (slot == 0)
+              ? static_cast<int>(robot_joint_names_.size())
+              : static_cast<int>(hand_motor_names_.size());
           break;
         case urtc::PublishRole::kTaskPosition:
           data_size = 6;
@@ -702,83 +665,65 @@ void RtControllerNode::CreateTimers()
     create_wall_timer(10ms, [this]() {DrainLog();}, cb_group_log_);
 }
 
-// ── Subscription callbacks ────────────────────────────────────────────────────
-void RtControllerNode::JointStateCallback(sensor_msgs::msg::JointState::SharedPtr msg)
+// ── Subscription callbacks (unified per-device) ──────────────────────────────
+void RtControllerNode::DeviceJointStateCallback(
+    int device_slot, sensor_msgs::msg::JointState::SharedPtr msg)
 {
-  if (msg->position.size() < static_cast<std::size_t>(urtc::kNumRobotJoints)) {
-    return;
+  if (msg->position.empty()) return;
+
+  auto& reorder = device_reorder_maps_[device_slot];
+  if (!reorder.built && !msg->name.empty()) {
+    BuildDeviceReorderMap(device_slot, msg->name);
   }
 
-  // 이름 기반 매핑: msg->name이 있으면 첫 수신 시 맵 빌드 (이후 인덱스만 사용)
-  if (!msg->name.empty() && !joint_state_map_built_) {
-    BuildJointStateIndexMap(msg->name);
-  }
+  std::lock_guard lock(device_state_mutex_);
+  auto& ds = device_states_[device_slot];
+  ds.num_channels = static_cast<int>(msg->position.size());
 
-  {
-    std::lock_guard lock(state_mutex_);
-
-    if (joint_state_map_built_ && !msg->name.empty()) {
-      // 이름 기반: msg의 각 인덱스를 내부 인덱스로 매핑
-      for (std::size_t msg_i = 0; msg_i < msg->position.size() &&
-           msg_i < joint_state_reorder_.size(); ++msg_i) {
-        const int idx = joint_state_reorder_[msg_i];
-        if (idx >= 0 && idx < urtc::kNumRobotJoints) {
-          const auto uidx = static_cast<std::size_t>(idx);
-          current_positions_[uidx] = msg->position[msg_i];
-          if (msg_i < msg->velocity.size()) {
-            current_velocities_[uidx] = msg->velocity[msg_i];
-          }
-          if (msg_i < msg->effort.size()) {
-            current_torques_[uidx] = msg->effort[msg_i];
-          }
-        }
-      }
-    } else {
-      // Positional fallback (기존 동작)
-      std::copy_n(msg->position.begin(), urtc::kNumRobotJoints,
-                  current_positions_.begin());
-      std::copy_n(msg->velocity.begin(), urtc::kNumRobotJoints,
-                  current_velocities_.begin());
-      if (msg->effort.size() >= static_cast<std::size_t>(urtc::kNumRobotJoints)) {
-        std::copy_n(msg->effort.begin(), urtc::kNumRobotJoints,
-                    current_torques_.begin());
+  if (reorder.built && !msg->name.empty()) {
+    for (std::size_t src = 0; src < msg->position.size() &&
+         src < reorder.reorder.size(); ++src) {
+      const int idx = reorder.reorder[src];
+      if (idx >= 0 && idx < urtc::kMaxDeviceChannels) {
+        ds.positions[idx] = msg->position[src];
+        if (src < msg->velocity.size()) ds.velocities[idx] = msg->velocity[src];
+        if (src < msg->effort.size()) ds.efforts[idx] = msg->effort[src];
       }
     }
-    // last_update is now set by DeviceTimeoutEntry in CreateSubscriptions
+  } else {
+    for (std::size_t i = 0; i < msg->position.size() &&
+         i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
+      ds.positions[i] = msg->position[i];
+    }
+    for (std::size_t i = 0; i < msg->velocity.size() &&
+         i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
+      ds.velocities[i] = msg->velocity[i];
+    }
+    for (std::size_t i = 0; i < msg->effort.size() &&
+         i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
+      ds.efforts[i] = msg->effort[i];
+    }
   }
+  ds.valid = true;
   state_received_.store(true, std::memory_order_release);
 }
 
-void RtControllerNode::RobotTargetCallback(
-    std_msgs::msg::Float64MultiArray::SharedPtr msg)
+void RtControllerNode::DeviceTargetCallback(
+    int device_slot, std_msgs::msg::Float64MultiArray::SharedPtr msg)
 {
-  if (msg->data.size() < urtc::kNumRobotJoints) {
-    return;
-  }
-  std::array<double, urtc::kNumRobotJoints> local_target;
+  if (msg->data.empty()) return;
   {
     std::lock_guard lock(target_mutex_);
-    std::copy_n(msg->data.begin(), urtc::kNumRobotJoints,
-                target_positions_.begin());
-    local_target = target_positions_;
+    const int n = std::min(static_cast<int>(msg->data.size()),
+                           urtc::kMaxDeviceChannels);
+    for (int i = 0; i < n; ++i) {
+      device_targets_[device_slot][i] = msg->data[i];
+    }
   }
   target_received_.store(true, std::memory_order_release);
-  int active_idx = active_controller_idx_.load(std::memory_order_acquire);
-  controllers_[active_idx]->SetRobotTarget(local_target);
-}
-
-void RtControllerNode::HandTargetCallback(
-    std_msgs::msg::Float64MultiArray::SharedPtr msg)
-{
-  if (msg->data.size() < urtc::kNumHandMotors) {
-    return;
-  }
-  std::array<float, urtc::kNumHandMotors> hand_target;
-  for (std::size_t i = 0; i < urtc::kNumHandMotors; ++i) {
-    hand_target[i] = static_cast<float>(msg->data[i]);
-  }
-  int active_idx = active_controller_idx_.load(std::memory_order_acquire);
-  controllers_[active_idx]->SetHandTarget(hand_target);
+  int idx = active_controller_idx_.load(std::memory_order_acquire);
+  controllers_[idx]->SetDeviceTarget(device_slot,
+      std::span<const double>(msg->data.data(), msg->data.size()));
 }
 
 // ── 50 Hz watchdog (E-STOP) ───────────────────────────────────────────────────
@@ -828,34 +773,32 @@ void RtControllerNode::ControlLoop()
   // Auto-hold: 외부 goal 미수신 시 현재 위치를 목표로 자동 설정
   if (!target_received_.load(std::memory_order_acquire)) {
     if (auto_hold_position_) {
+      int idx = active_controller_idx_.load(std::memory_order_acquire);
+      const auto & active_tc = controller_topic_configs_[
+          static_cast<std::size_t>(idx)];
+
       // state는 수신됨 — 현재 위치를 읽어 target으로 초기화
       urtc::ControllerState hold_state{};
       {
-        std::lock_guard lock(state_mutex_);
-        cached_positions_ = current_positions_;
-        cached_velocities_ = current_velocities_;
-        cached_torques_ = current_torques_;
+        std::lock_guard lock(device_state_mutex_);
+        int di = 0;
+        for (const auto& [gname, ggroup] : active_tc.groups) {
+          const int slot = group_slot_map_.at(gname);
+          auto& dev = hold_state.devices[di];
+          const auto& cache = device_states_[slot];
+          dev.num_channels = cache.num_channels;
+          dev.positions = cache.positions;
+          dev.velocities = cache.velocities;
+          dev.efforts = cache.efforts;
+          dev.valid = cache.valid;
+          ++di;
+        }
+        hold_state.num_devices = di;
       }
-      hold_state.robot.positions = cached_positions_;
-      hold_state.robot.velocities = cached_velocities_;
-      hold_state.robot.torques = cached_torques_;
-      hold_state.robot.dt = 1.0 / control_rate_;
-      hold_state.dt = hold_state.robot.dt;
+      hold_state.dt = 1.0 / control_rate_;
 
-      // Hand state — ROS 토픽에서 읽기
-      {
-        std::lock_guard lock(hand_state_mutex_);
-        hold_state.hand = cached_hand_state_;
-      }
-
-      int idx = active_controller_idx_.load(std::memory_order_acquire);
       controllers_[idx]->InitializeHoldPosition(hold_state);
 
-      // node-level target도 동기화
-      {
-        std::lock_guard lock(target_mutex_);
-        target_positions_ = cached_positions_;
-      }
       target_received_.store(true, std::memory_order_release);
       RCLCPP_INFO(get_logger(),
           "Auto-hold: initialized target from current position (%s)",
@@ -884,35 +827,41 @@ void RtControllerNode::ControlLoop()
   // try_lock avoids blocking the RT thread when the sensor thread holds the
   // mutex.  On contention the previous cycle's cached data is reused
   // (stale by at most 2 ms — acceptable).
+  const int active_idx_for_tc = active_controller_idx_.load(std::memory_order_acquire);
+  const auto & active_tc = controller_topic_configs_[
+      static_cast<std::size_t>(active_idx_for_tc)];
+
   urtc::ControllerState state{};
   {
-    std::unique_lock lock(state_mutex_, std::try_to_lock);
+    std::unique_lock lock(device_state_mutex_, std::try_to_lock);
     if (lock.owns_lock()) {
-      cached_positions_ = current_positions_;
-      cached_velocities_ = current_velocities_;
-      cached_torques_ = current_torques_;
+      cached_device_states_ = device_states_;
     }
   }
-  state.robot.positions = cached_positions_;
-  state.robot.velocities = cached_velocities_;
-  state.robot.torques = cached_torques_;
-
-  // Hand state — ROS 토픽에서 읽기 (try_lock으로 RT 안전)
-  {
-    std::unique_lock lock(hand_state_mutex_, std::try_to_lock);
-    // lock 실패 시 이전 사이클 데이터 재사용 (≤2ms 지연, 제어에 무해)
+  int di = 0;
+  for (const auto& [gname, ggroup] : active_tc.groups) {
+    const int slot = group_slot_map_.at(gname);
+    auto& dev = state.devices[di];
+    const auto& cache = cached_device_states_[slot];
+    dev.num_channels = cache.num_channels;
+    dev.positions = cache.positions;
+    dev.velocities = cache.velocities;
+    dev.efforts = cache.efforts;
+    dev.sensor_data = cache.sensor_data;
+    dev.sensor_data_raw = cache.sensor_data_raw;
+    dev.num_sensor_channels = cache.num_sensor_channels;
+    dev.valid = cache.valid;
+    ++di;
   }
-  state.hand = cached_hand_state_;
+  state.num_devices = di;
 
   {
     std::unique_lock lock(target_mutex_, std::try_to_lock);
     if (lock.owns_lock()) {
-      target_snapshot_ = target_positions_;
+      device_target_snapshots_ = device_targets_;
     }
   }
-  state.robot.dt = 1.0 / control_rate_;
-  state.dt = state.robot.dt;  // Keep top-level dt in sync with robot.dt
-  state.robot.iteration = loop_count_;
+  state.dt = 1.0 / control_rate_;
   state.iteration = loop_count_;
 
   const auto t1 = std::chrono::steady_clock::now();  // end of state acquisition
@@ -929,8 +878,6 @@ void RtControllerNode::ControlLoop()
   // ── Phase 3: push publish snapshot to SPSC buffer (lock-free, O(1)) ────
   // All ROS2 publish() calls are offloaded to the non-RT publish thread.
   {
-    const auto & active_tc = controller_topic_configs_[
-        static_cast<std::size_t>(active_idx)];
     urtc::PublishSnapshot snap{};
     snap.command_type          = output.command_type;
     snap.actual_task_positions = output.actual_task_positions;
@@ -938,44 +885,25 @@ void RtControllerNode::ControlLoop()
                                    .time_since_epoch().count();
     snap.active_controller_idx = active_idx;
 
-    // Shared robot state data (trajectory, controller state)
-    for (std::size_t i = 0; i < urtc::kNumRobotJoints; ++i) {
-      snap.goal_positions[i]          = output.goal_positions[i];
-      snap.actual_target_positions[i] = output.actual_target_positions[i];
-      snap.target_velocities[i]       = output.target_velocities[i];
-      snap.actual_positions[i]        = state.robot.positions[i];
-      snap.actual_velocities[i]       = state.robot.velocities[i];
-    }
-
-    // Per-group commands → group_commands slots (temporary bridge)
+    // Per-group commands → group_commands slots
     int gi = 0;
     for (const auto & [gname, ggroup] : active_tc.groups) {
       if (gi >= urtc::PublishSnapshot::kMaxGroups) break;
-      auto m_it = std::find_if(group_state_mappings_.begin(),
-          group_state_mappings_.end(),
-          [&](const auto & m) { return m.group_name == gname; });
-      if (m_it != group_state_mappings_.end() &&
-          m_it->target == GroupStateMapping::Target::kRobot) {
-        snap.group_commands[gi].num_channels = urtc::kNumRobotJoints;
-        for (int j = 0; j < urtc::kNumRobotJoints; ++j) {
-          snap.group_commands[gi].commands[j] = output.robot_commands[j];
-        }
-      } else {
-        snap.group_commands[gi].num_channels = urtc::kNumHandMotors;
-        for (int j = 0; j < urtc::kNumHandMotors; ++j) {
-          snap.group_commands[gi].commands[j] =
-              static_cast<double>(output.hand_commands[j]);
-        }
-      }
+      auto& gc = snap.group_commands[gi];
+      const auto& dout = output.devices[gi];
+      gc.num_channels = dout.num_channels;
+      gc.commands = dout.commands;
+      gc.goal_positions = dout.goal_positions;
+      gc.target_positions = dout.target_positions;
+      gc.target_velocities = dout.target_velocities;
+      gc.actual_positions = state.devices[gi].positions;
+      gc.actual_velocities = state.devices[gi].velocities;
       ++gi;
     }
     snap.num_groups = gi;
 
     static_cast<void>(publish_buffer_.Push(snap));
   }
-
-  // Hand commands are now published via JointCommand topics in PublishLoopEntry()
-  // — no direct HandController ownership in rt_controller_node.
 
   const auto t3 = std::chrono::steady_clock::now();  // end of publish
 
@@ -1022,32 +950,30 @@ void RtControllerNode::ControlLoop()
     entry.jitter_us          = jitter_us;
     entry.actual_task_positions = output.actual_task_positions;
     entry.command_type       = output.command_type;
-    entry.device_valid       = state.hand.valid;
-    entry.num_device_channels = urtc::kNumHandMotors;
-    // Robot arrays (size 6 → kMaxRobotDOF)
-    for (std::size_t i = 0; i < urtc::kNumRobotJoints; ++i) {
-      entry.goal_positions[i]        = output.goal_positions[i];
-      entry.actual_positions[i]      = state.robot.positions[i];
-      entry.actual_velocities[i]     = state.robot.velocities[i];
-      entry.actual_torques[i]        = state.robot.torques[i];
-      entry.robot_commands[i]        = output.robot_commands[i];
-      entry.trajectory_positions[i]  = output.actual_target_positions[i];
-      entry.trajectory_velocities[i] = output.target_velocities[i];
+
+    // Per-device logging
+    for (int dvi = 0; dvi < state.num_devices; ++dvi) {
+      auto& dl = entry.devices[dvi];
+      const auto& dout = output.devices[dvi];
+      const auto& dstate = state.devices[dvi];
+      dl.num_channels = dout.num_channels;
+      dl.valid = dstate.valid;
+      for (int j = 0; j < dout.num_channels; ++j) {
+        dl.goal_positions[j] = dout.goal_positions[j];
+        dl.actual_positions[j] = dstate.positions[j];
+        dl.actual_velocities[j] = dstate.velocities[j];
+        dl.efforts[j] = dstate.efforts[j];
+        dl.commands[j] = dout.commands[j];
+        dl.trajectory_positions[j] = dout.target_positions[j];
+        dl.trajectory_velocities[j] = dout.target_velocities[j];
+      }
+      dl.num_sensor_channels = dstate.num_sensor_channels;
+      for (int j = 0; j < dstate.num_sensor_channels; ++j) {
+        dl.sensor_data[j] = static_cast<float>(dstate.sensor_data[j]);
+        dl.sensor_data_raw[j] = static_cast<float>(dstate.sensor_data_raw[j]);
+      }
     }
-    // Device goal/actual/velocity/command 복사 (크기가 다른 배열)
-    for (std::size_t i = 0; i < urtc::kNumHandMotors; ++i) {
-      entry.device_goal[i] = output.hand_goal_positions[i];
-      entry.device_actual[i] = state.hand.motor_positions[i];
-      entry.device_velocities[i] = state.hand.motor_velocities[i];
-      entry.device_commands[i] = output.hand_commands[i];
-    }
-    // Sensor data 복사 (int32_t → float 변환)
-    for (std::size_t i = 0; i < urtc::kMaxHandSensors && i < entry.sensor_data.size(); ++i) {
-      entry.sensor_data[i] = static_cast<float>(state.hand.sensor_data[i]);
-      entry.sensor_data_raw[i] = static_cast<float>(state.hand.sensor_data_raw[i]);
-    }
-    entry.num_sensor_channels = urtc::kMaxHandSensors;
-    entry.num_fingertips = state.hand.num_fingertips;
+    entry.num_devices = state.num_devices;
     static_cast<void>(log_buffer_.Push(entry));  // silently drops if buffer is full
   }
 
@@ -1250,17 +1176,23 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
                     pe.msg.data.begin());
           pe.publisher->publish(pe.msg);
           break;
-        case urtc::PublishRole::kTrajectoryState:
-          std::copy_n(snap.goal_positions.begin(), 6, pe.msg.data.begin());
-          std::copy_n(snap.actual_target_positions.begin(), 6, pe.msg.data.begin() + 6);
-          std::copy_n(snap.target_velocities.begin(), 6, pe.msg.data.begin() + 12);
+        case urtc::PublishRole::kTrajectoryState: {
+          const auto & gc = snap.group_commands[group_idx];
+          const int n = std::min(gc.num_channels, 6);
+          for (int i = 0; i < n; ++i) {
+            pe.msg.data[i] = gc.goal_positions[i];
+            pe.msg.data[i + 6] = gc.target_positions[i];
+            pe.msg.data[i + 12] = gc.target_velocities[i];
+          }
           pe.publisher->publish(pe.msg);
           break;
+        }
         case urtc::PublishRole::kControllerState: {
-          std::copy_n(snap.actual_positions.begin(), 6, pe.msg.data.begin());
-          std::copy_n(snap.actual_velocities.begin(), 6, pe.msg.data.begin() + 6);
           const auto & gc = snap.group_commands[group_idx];
-          for (int i = 0; i < 6 && i < gc.num_channels; ++i) {
+          const int n = std::min(gc.num_channels, 6);
+          for (int i = 0; i < n; ++i) {
+            pe.msg.data[i] = gc.actual_positions[i];
+            pe.msg.data[i + 6] = gc.actual_velocities[i];
             pe.msg.data[i + 12] = gc.commands[i];
           }
           pe.publisher->publish(pe.msg);
@@ -1304,51 +1236,18 @@ void RtControllerNode::PublishEstopStatus(bool estopped)
   estop_pub_->publish(msg);
 }
 
-// ── Device state callbacks (extracted from inline lambdas) ─────────────────────
-void RtControllerNode::DeviceStateCallback(
-    sensor_msgs::msg::JointState::SharedPtr msg)
-{
-  if (msg->position.size() < 1) { return; }
-  std::lock_guard lock(hand_state_mutex_);
-
-  if (hand_state_map_built_) {
-    const std::size_t n = std::min(hand_state_reorder_.size(),
-                                   msg->position.size());
-    for (std::size_t src_i = 0; src_i < n; ++src_i) {
-      const int idx = hand_state_reorder_[src_i];
-      if (idx >= 0 && idx < urtc::kNumHandMotors) {
-        const auto uidx = static_cast<std::size_t>(idx);
-        cached_hand_state_.motor_positions[uidx] =
-            static_cast<float>(msg->position[src_i]);
-        if (src_i < msg->velocity.size()) {
-          cached_hand_state_.motor_velocities[uidx] =
-              static_cast<float>(msg->velocity[src_i]);
-        }
-      }
-    }
-  } else {
-    for (std::size_t i = 0; i < urtc::kNumHandMotors
-             && i < msg->position.size(); ++i) {
-      cached_hand_state_.motor_positions[i] =
-          static_cast<float>(msg->position[i]);
-    }
-    for (std::size_t i = 0; i < urtc::kNumHandMotors
-             && i < msg->velocity.size(); ++i) {
-      cached_hand_state_.motor_velocities[i] =
-          static_cast<float>(msg->velocity[i]);
-    }
-  }
-  cached_hand_state_.valid = true;
-}
-
+// ── Device sensor callback (unified per-device) ──────────────────────────────
 void RtControllerNode::DeviceSensorCallback(
-    std_msgs::msg::Float64MultiArray::SharedPtr msg)
+    int device_slot, std_msgs::msg::Float64MultiArray::SharedPtr msg)
 {
-  std::lock_guard lock(hand_state_mutex_);
-  for (std::size_t i = 0; i < msg->data.size()
-           && i < cached_hand_state_.sensor_data.size(); ++i) {
-    cached_hand_state_.sensor_data[i] = static_cast<int32_t>(msg->data[i]);
+  std::lock_guard lock(device_state_mutex_);
+  auto& ds = device_states_[device_slot];
+  for (std::size_t i = 0; i < msg->data.size() &&
+       i < static_cast<std::size_t>(urtc::kMaxSensorChannels); ++i) {
+    ds.sensor_data[i] = static_cast<int32_t>(msg->data[i]);
   }
+  ds.num_sensor_channels = static_cast<int>(
+      std::min(msg->data.size(), static_cast<std::size_t>(urtc::kMaxSensorChannels)));
 }
 
 // ── Global E-Stop ──────────────────────────────────────────────────────────────
@@ -1533,49 +1432,25 @@ void RtControllerNode::LoadAndValidateJointNames()
               }().c_str());
 }
 
-void RtControllerNode::BuildJointStateIndexMap(
-    const std::vector<std::string>& msg_names)
+void RtControllerNode::BuildDeviceReorderMap(
+    int device_slot, const std::vector<std::string>& msg_names)
 {
-  joint_state_reorder_.resize(msg_names.size(), -1);
+  // Determine reference names based on slot
+  const auto& ref_names = (device_slot == 0) ? robot_joint_names_ : hand_motor_names_;
+  if (ref_names.empty()) return;
+
+  auto& map = device_reorder_maps_[device_slot];
+  map.reorder.resize(msg_names.size(), -1);
 
   for (std::size_t msg_i = 0; msg_i < msg_names.size(); ++msg_i) {
-    for (std::size_t our_i = 0; our_i < robot_joint_names_.size(); ++our_i) {
-      if (msg_names[msg_i] == robot_joint_names_[our_i]) {
-        joint_state_reorder_[msg_i] = static_cast<int>(our_i);
+    for (std::size_t ref_i = 0; ref_i < ref_names.size(); ++ref_i) {
+      if (msg_names[msg_i] == ref_names[ref_i]) {
+        map.reorder[msg_i] = static_cast<int>(ref_i);
         break;
       }
     }
-    if (joint_state_reorder_[msg_i] < 0) {
-      RCLCPP_DEBUG(get_logger(),
-                   "JointState name '%s' not in robot_joint_names — ignored",
-                   msg_names[msg_i].c_str());
-    }
   }
-  joint_state_map_built_ = true;
-
-  RCLCPP_INFO(get_logger(), "Built JointState name→index map from incoming message");
-}
-
-void RtControllerNode::BuildHandStateIndexMap(
-    const std::vector<std::string>& source_names)
-{
-  hand_state_reorder_.resize(source_names.size(), -1);
-
-  for (std::size_t src_i = 0; src_i < source_names.size(); ++src_i) {
-    for (std::size_t our_i = 0; our_i < hand_motor_names_.size(); ++our_i) {
-      if (source_names[src_i] == hand_motor_names_[our_i]) {
-        hand_state_reorder_[src_i] = static_cast<int>(our_i);
-        break;
-      }
-    }
-    if (hand_state_reorder_[src_i] < 0) {
-      RCLCPP_WARN(get_logger(),
-                  "Hand motor name '%s' from source not in hand_motor_names — ignored",
-                  source_names[src_i].c_str());
-    }
-  }
-  hand_state_map_built_ = true;
-
-  RCLCPP_INFO(get_logger(), "Built hand state name→index map (%zu entries)",
-              source_names.size());
+  map.built = true;
+  RCLCPP_INFO(get_logger(), "Built device reorder map for slot %d (%zu names)",
+              device_slot, msg_names.size());
 }

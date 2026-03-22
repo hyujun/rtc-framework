@@ -91,8 +91,8 @@ public:
   // ── RTControllerInterface — all methods are noexcept (RT safety) ──────────
   [[nodiscard]] ControllerOutput Compute(const ControllerState & state) noexcept override;
 
-  void SetRobotTarget(std::span<const double, kNumRobotJoints> target) noexcept override;
-  void SetHandTarget(std::span<const float, kNumHandMotors> target)  noexcept override;
+  void SetDeviceTarget(
+    int device_idx, std::span<const double> target) noexcept override;
 
   void InitializeHoldPosition(const ControllerState & state) noexcept override;
 
@@ -161,7 +161,7 @@ private:
   /// Null-space reference configuration.  Joints 0–2 from this array;
   /// joints 3–5 are overwritten by SetRobotTarget(target[3..5]).
   std::array<double, kNumRobotJoints> null_target_{0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
-  std::array<float, kNumHandMotors> hand_target_{};
+  std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices> device_targets_{};
   std::array<double, 6> pose_error_cache_{};               ///< diagnostic cache
   std::array<double, 3> tcp_position_{};                ///< diagnostic cache
 
@@ -184,8 +184,8 @@ private:
   // ── Helpers ───────────────────────────────────────────────────────────────
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState & state) noexcept;
 
-  [[nodiscard]] static std::array<double, kNumRobotJoints> ClampVelocity(
-    std::array<double, kNumRobotJoints> dq) noexcept;
+  static void ClampVelocity(
+    std::array<double, kMaxDeviceChannels>& dq, int n) noexcept;
 };
 
 }  // namespace rtc

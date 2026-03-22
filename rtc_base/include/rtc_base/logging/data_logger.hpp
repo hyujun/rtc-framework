@@ -190,21 +190,23 @@ private:
 
   void WriteRobotRow(const rtc::LogEntry &e) {
     if (!robot_file_.is_open()) { return; }
-    const int nj = e.num_robot_joints;
+    // devices[0] = robot (first device group, typically "ur5e")
+    const auto & d = e.devices[0];
+    const int nj = std::min(d.num_channels, num_robot_joints_);
     robot_file_ << std::fixed << std::setprecision(6) << e.timestamp;
     // 카테고리 1: Goal State
-    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << e.goal_positions[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << d.goal_positions[static_cast<std::size_t>(i)]; }
     // 카테고리 2: Current State
-    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << e.actual_positions[static_cast<std::size_t>(i)]; }
-    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << e.actual_velocities[static_cast<std::size_t>(i)]; }
-    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << e.actual_torques[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << d.actual_positions[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << d.actual_velocities[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << d.efforts[static_cast<std::size_t>(i)]; }
     for (const auto v : e.actual_task_positions)   { robot_file_ << ',' << v; }
     // 카테고리 3: Control Command
-    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << e.robot_commands[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << d.commands[static_cast<std::size_t>(i)]; }
     robot_file_ << ',' << (e.command_type == CommandType::kPosition ? 0 : 1);
     // 카테고리 4: Trajectory State
-    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << e.trajectory_positions[static_cast<std::size_t>(i)]; }
-    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << e.trajectory_velocities[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << d.trajectory_positions[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << d.trajectory_velocities[static_cast<std::size_t>(i)]; }
     robot_file_ << '\n';
   }
 
@@ -247,22 +249,24 @@ private:
 
   void WriteDeviceRow(const rtc::LogEntry &e) {
     if (!device_file_.is_open()) { return; }
-    const int nc = e.num_device_channels;
+    // devices[1] = device (second device group, typically "hand")
+    const auto & d = (e.num_devices > 1) ? e.devices[1] : e.devices[0];
+    const int nc = std::min(d.num_channels, num_device_channels_);
     device_file_ << std::fixed << std::setprecision(6) << e.timestamp
-                 << ',' << (e.device_valid ? 1 : 0);
+                 << ',' << (d.valid ? 1 : 0);
     // 카테고리 1: Goal State
-    for (int i = 0; i < nc; ++i) { device_file_ << ',' << e.device_goal[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nc; ++i) { device_file_ << ',' << d.goal_positions[static_cast<std::size_t>(i)]; }
     // 카테고리 2: Current State
-    for (int i = 0; i < nc; ++i) { device_file_ << ',' << e.device_actual[static_cast<std::size_t>(i)]; }
-    for (int i = 0; i < nc; ++i) { device_file_ << ',' << e.device_velocities[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nc; ++i) { device_file_ << ',' << d.actual_positions[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nc; ++i) { device_file_ << ',' << d.actual_velocities[static_cast<std::size_t>(i)]; }
     // Sensor data: raw (pre-LPF)
-    const int ns = e.num_sensor_channels;
+    const int ns = d.num_sensor_channels;
     for (int i = 0; i < ns; ++i) {
-      device_file_ << ',' << e.sensor_data_raw[static_cast<std::size_t>(i)];
+      device_file_ << ',' << d.sensor_data_raw[static_cast<std::size_t>(i)];
     }
     // Sensor data: filtered (post-LPF)
     for (int i = 0; i < ns; ++i) {
-      device_file_ << ',' << e.sensor_data[static_cast<std::size_t>(i)];
+      device_file_ << ',' << d.sensor_data[static_cast<std::size_t>(i)];
     }
     // Inference output
     device_file_ << ',' << (e.inference_valid ? 1 : 0);
@@ -271,7 +275,7 @@ private:
       device_file_ << ',' << e.inference_output[static_cast<std::size_t>(i)];
     }
     // 카테고리 3: Control Command
-    for (int i = 0; i < nc; ++i) { device_file_ << ',' << e.device_commands[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nc; ++i) { device_file_ << ',' << d.commands[static_cast<std::size_t>(i)]; }
     device_file_ << '\n';
   }
 };

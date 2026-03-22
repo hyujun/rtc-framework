@@ -28,70 +28,49 @@ namespace rtc {
   constexpr std::size_t kCacheLineSize = 64;
 #endif
 
-// One row of the control log, split across three CSV files by the DataLogger.
-// Fields are grouped by the 4-category topic convention:
-//   1. Goal State — 외부 입력 목표
-//   2. Current State — 센서 피드백
-//   3. Control Command — 액추에이터 출력
-//   4. Trajectory/Logging — 궤적 보간 내부 상태
+// Per-device log data slot (used in LogEntry for each device group)
+struct DeviceLogSlot {
+  int num_channels{0};
+  std::array<double, kMaxDeviceChannels> goal_positions{};
+  std::array<double, kMaxDeviceChannels> actual_positions{};
+  std::array<double, kMaxDeviceChannels> actual_velocities{};
+  std::array<double, kMaxDeviceChannels> efforts{};
+  std::array<double, kMaxDeviceChannels> commands{};
+  std::array<double, kMaxDeviceChannels> trajectory_positions{};
+  std::array<double, kMaxDeviceChannels> trajectory_velocities{};
+  std::array<float, kMaxSensorChannels>  sensor_data{};
+  std::array<float, kMaxSensorChannels>  sensor_data_raw{};
+  int num_sensor_channels{0};
+  bool valid{false};
+};
+
+// One row of the control log, split across CSV files by the DataLogger.
 struct LogEntry {
+  static constexpr int kMaxDevices = 4;
+
   double timestamp{0.0};
 
   // ── Timing data → timing_log.csv ───────────────────────────────────────
-  double t_state_acquire_us{0.0};  // try_lock + state copy
-  double t_compute_us{0.0};        // controller Compute() wall-clock
-  double t_publish_us{0.0};        // cmd_pub try_lock + publish
-  double t_total_us{0.0};          // entire ControlLoop() callback
-  double jitter_us{0.0};           // |actual_period - expected_period|
+  double t_state_acquire_us{0.0};
+  double t_compute_us{0.0};
+  double t_publish_us{0.0};
+  double t_total_us{0.0};
+  double jitter_us{0.0};
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // ── Robot joint data → robot_log.csv ───────────────────────────────────
-  // ══════════════════════════════════════════════════════════════════════════
-  int num_robot_joints{6};  // actual joint count for this robot
-
-  // 카테고리 1: Goal State (외부 입력 목표)
-  std::array<double, kMaxRobotDOF> goal_positions{};
-
-  // 카테고리 2: Current State (센서 피드백)
-  std::array<double, kMaxRobotDOF> actual_positions{};
-  std::array<double, kMaxRobotDOF> actual_velocities{};
-  std::array<double, kMaxRobotDOF> actual_torques{};        // 실제 토크
-  std::array<double, 6>            actual_task_positions{};  // TCP 위치
-
-  // 카테고리 3: Control Command (액추에이터 출력)
-  std::array<double, kMaxRobotDOF> robot_commands{};
+  // ── Shared ─────────────────────────────────────────────────────────────
+  std::array<double, 6> actual_task_positions{};
   CommandType command_type{CommandType::kPosition};
 
-  // 카테고리 4: Trajectory State (궤적 보간 내부 상태)
-  std::array<double, kMaxRobotDOF> trajectory_positions{};   // 궤적 보간 위치
-  std::array<double, kMaxRobotDOF> trajectory_velocities{};  // 궤적 보간 속도
+  // ── Per-device data ────────────────────────────────────────────────────
+  std::array<DeviceLogSlot, kMaxDevices> devices{};
+  int num_devices{0};
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // ── Device data → device_log.csv ───────────────────────────────────────
-  // ══════════════════════════════════════════════════════════════════════════
-  bool device_valid{false};
-  int num_device_channels{0};
-
-  // 카테고리 1: Goal State
-  std::array<float, kMaxDeviceChannels>  device_goal{};
-
-  // 카테고리 2: Current State
-  std::array<float, kMaxDeviceChannels>  device_actual{};
-  std::array<float, kMaxDeviceChannels>  device_velocities{};
-  std::array<float, kMaxSensorChannels>  sensor_data{};         // 필터링된 센서 (post-LPF)
-  std::array<float, kMaxSensorChannels>  sensor_data_raw{};     // 원본 센서 (pre-LPF)
-  int num_sensor_channels{0};
-  int num_fingertips{kDefaultNumFingertips};                    // 하위 호환용
-
-  // Inference output (e.g. ONNX model output)
+  // Inference output (e.g. ONNX model output) — not per-device
   std::array<float, kMaxInferenceValues> inference_output{};
   bool inference_valid{false};
   int num_inference_values{0};
 
-  // 카테고리 3: Control Command
-  std::array<float, kMaxDeviceChannels>  device_commands{};
-
-  // Legacy alias — kept for backward compatibility with external tools.
+  // Legacy alias
   [[nodiscard]] double compute_time_us() const noexcept { return t_compute_us; }
 };
 

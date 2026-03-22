@@ -82,51 +82,66 @@ struct FingertipFTState {
   bool valid{false};
 };
 
+// Legacy structs — used by ur5e_hand_driver and other packages that haven't
+// migrated to the unified DeviceState yet.  Will be removed in PR3.
 struct RobotState {
   std::array<double, kNumRobotJoints> positions{};
   std::array<double, kNumRobotJoints> velocities{};
-  std::array<double, kNumRobotJoints> torques{};       ///< optional — zero if unavailable
+  std::array<double, kNumRobotJoints> torques{};
   std::array<double, 3>               tcp_position{};
   double   dt{0.002};
   uint64_t iteration{0};
 };
 
 struct HandState {
-  std::array<float, kNumHandMotors>   motor_positions{};
-  std::array<float, kNumHandMotors>   motor_velocities{};
-  std::array<int32_t, kMaxHandSensors> sensor_data{};      // 필터링된 센서 데이터 (post-LPF)
-  std::array<int32_t, kMaxHandSensors> sensor_data_raw{};  // 원본 센서 데이터 (pre-LPF)
-  int num_fingertips{kDefaultNumFingertips};                // 실제 사용 fingertip 수 (YAML)
+  std::array<float, kNumHandMotors>    motor_positions{};
+  std::array<float, kNumHandMotors>    motor_velocities{};
+  std::array<int32_t, kMaxHandSensors> sensor_data{};
+  std::array<int32_t, kMaxHandSensors> sensor_data_raw{};
+  int  num_fingertips{kDefaultNumFingertips};
+  bool valid{false};
+};
+
+// Unified device state — used for all device groups (robot arm, hand, gripper, …)
+struct DeviceState {
+  int num_channels{0};
+  std::array<double, kMaxDeviceChannels> positions{};
+  std::array<double, kMaxDeviceChannels> velocities{};
+  std::array<double, kMaxDeviceChannels> efforts{};          // torques for robot arm
+  std::array<int32_t, kMaxSensorChannels> sensor_data{};     // post-filter
+  std::array<int32_t, kMaxSensorChannels> sensor_data_raw{}; // pre-filter
+  int num_sensor_channels{0};
   bool valid{false};
 };
 
 struct ControllerState {
-  RobotState robot{};
-  HandState  hand{};
-  // NOTE: dt and iteration duplicate robot.dt and robot.iteration.
-  // Both MUST be kept in sync when assembling ControllerState.
-  // Controllers may read either field; inconsistency causes subtle bugs.
+  static constexpr int kMaxDevices = 4;
+  std::array<DeviceState, kMaxDevices> devices{};
+  int      num_devices{0};
   double   dt{0.002};
   uint64_t iteration{0};
 };
 
 enum class CommandType { kPosition, kTorque };
 
+// Unified device output — per-device commands, goals, and trajectory data
+struct DeviceOutput {
+  int num_channels{0};
+  std::array<double, kMaxDeviceChannels> commands{};
+  std::array<double, kMaxDeviceChannels> goal_positions{};
+  std::array<double, kMaxDeviceChannels> target_positions{};    // trajectory interpolated
+  std::array<double, kMaxDeviceChannels> target_velocities{};
+};
+
 struct ControllerOutput {
-  std::array<double, kNumRobotJoints> robot_commands{};
-  std::array<float, kNumHandMotors>   hand_commands{};
-  std::array<double, kNumRobotJoints> actual_target_positions{};
-  std::array<double, 6>               actual_task_positions{};
+  static constexpr int kMaxDevices = 4;
+  std::array<DeviceOutput, kMaxDevices> devices{};
+  int num_devices{0};
+
+  // Shared fields (not per-device)
+  std::array<double, 6> actual_task_positions{};  // TCP FK result
   bool        valid{true};
   CommandType command_type{CommandType::kPosition};
-
-  // ── Extended fields for logging (v5.9.0) ──────────────────────────────────
-  // Goal = final target set by SetRobotTarget() (step-like)
-  // Target = trajectory-interpolated position (smooth)
-  // Target velocity = trajectory-interpolated velocity
-  std::array<double, kNumRobotJoints> goal_positions{};
-  std::array<double, kNumRobotJoints> target_velocities{};
-  std::array<float, kNumHandMotors>   hand_goal_positions{};
 };
 
 // ── Topic configuration for per-controller subscribe/publish routing ─────────

@@ -37,11 +37,16 @@ namespace rtc {
 // Snapshot of all data needed for ROS2 publishing in one control tick.
 // Populated by the RT loop (producer), consumed by the publish thread.
 struct PublishSnapshot {
-  // ── Per-group command slots (RT-safe fixed-size) ───────────────────────
+  // ── Per-group data slots (RT-safe fixed-size) ──────────────────────────
   static constexpr int kMaxGroups = 4;
   struct GroupCommandSlot {
     int num_channels{0};
     std::array<double, kMaxDeviceChannels> commands{};
+    std::array<double, kMaxDeviceChannels> goal_positions{};
+    std::array<double, kMaxDeviceChannels> target_positions{};
+    std::array<double, kMaxDeviceChannels> target_velocities{};
+    std::array<double, kMaxDeviceChannels> actual_positions{};
+    std::array<double, kMaxDeviceChannels> actual_velocities{};
   };
   std::array<GroupCommandSlot, kMaxGroups> group_commands{};
   int num_groups{0};
@@ -49,15 +54,6 @@ struct PublishSnapshot {
   // ── Shared data (group-independent) ────────────────────────────────────
   CommandType command_type{CommandType::kPosition};
   std::array<double, 6> actual_task_positions{};
-
-  // Trajectory state (kTrajectoryState topic)
-  std::array<double, kMaxRobotDOF> goal_positions{};
-  std::array<double, kMaxRobotDOF> actual_target_positions{};
-  std::array<double, kMaxRobotDOF> target_velocities{};
-
-  // Controller state (kControllerState topic)
-  std::array<double, kMaxRobotDOF> actual_positions{};
-  std::array<double, kMaxRobotDOF> actual_velocities{};
 
   // JointCommand header stamp (monotonic nanoseconds)
   int64_t stamp_ns{0};

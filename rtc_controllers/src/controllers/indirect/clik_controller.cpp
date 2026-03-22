@@ -48,8 +48,9 @@ ControllerOutput ClikController::Compute(
   }
 
   // ── Step 1: copy joint state into Eigen vector ───────────────────────────
+  const auto & dev0 = state.devices[0];
   for (Eigen::Index i = 0; i < model_.nv; ++i) {
-    q_[i] = state.robot.positions[static_cast<std::size_t>(i)];
+    q_[i] = dev0.positions[static_cast<std::size_t>(i)];
   }
 
   // ── Step 2: FK + Jacobians ───────────────────────────────────────────────
@@ -167,7 +168,7 @@ ControllerOutput ClikController::Compute(
 
     for (Eigen::Index i = 0; i < model_.nv; ++i) {
       null_err_[i] = null_target_[static_cast<std::size_t>(i)] -
-        state.robot.positions[static_cast<std::size_t>(i)];
+        dev0.positions[static_cast<std::size_t>(i)];
     }
     null_dq_.noalias() = N_ * null_err_;
     null_dq_ *= gains_.null_kp;
@@ -175,32 +176,41 @@ ControllerOutput ClikController::Compute(
   }
 
   // ── Step 7: Clamp joint velocity and integrate ────────────────────────────
-  std::array<double, kNumRobotJoints> dq_arr{};
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    dq_arr[i] = dq_[static_cast<Eigen::Index>(i)];
-  }
-  dq_arr = ClampVelocity(dq_arr);
-
   ControllerOutput output;
+  output.num_devices = state.num_devices;
+  auto & out0 = output.devices[0];
+  out0.num_channels = kNumRobotJoints;
+
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    output.robot_commands[i] = state.robot.positions[i] + dq_arr[i] * dt;
+    out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
+  }
+  ClampVelocity(out0.target_velocities, kNumRobotJoints);
+
+  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+    out0.commands[i] = dev0.positions[i] + out0.target_velocities[i] * dt;
   }
   for (std::size_t i = 0; i < 3; ++i) {
-    output.actual_target_positions[i] = traj_state.pose.translation()[static_cast<Eigen::Index>(i)];
+    out0.target_positions[i] = traj_state.pose.translation()[static_cast<Eigen::Index>(i)];
   }
   for (std::size_t i = 3; i < kNumRobotJoints; ++i) {
-    output.actual_target_positions[i] = null_target_[i];
+    out0.target_positions[i] = null_target_[i];
   }
   // goal_positions: task-space goal in [0..2], null-space goal in [3..5]
   for (std::size_t i = 0; i < 3; ++i) {
-    output.goal_positions[i] = tcp_target_[i];
+    out0.goal_positions[i] = tcp_target_[i];
   }
   for (std::size_t i = 3; i < kNumRobotJoints; ++i) {
-    output.goal_positions[i] = null_target_[i];
+    out0.goal_positions[i] = null_target_[i];
   }
-  // target_velocities: clamped dq (joint-space velocity command)
-  output.target_velocities = dq_arr;
-  output.hand_goal_positions = hand_target_;
+
+  // Device 1 (hand): pass-through goals
+  if (state.num_devices > 1) {
+    auto & out1 = output.devices[1];
+    out1.num_channels = kNumHandMotors;
+    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+      out1.goal_positions[i] = device_targets_[1][i];
+    }
+  }
 
   const pinocchio::SE3 & tcp_current = data_.oMi[end_id_];
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp_current.rotation());
@@ -215,56 +225,58 @@ ControllerOutput ClikController::Compute(
   return output;
 }
 
-void ClikController::SetRobotTarget(
-  std::span<const double, kNumRobotJoints> target) noexcept
+void ClikController::SetDeviceTarget(
+  int device_idx, std::span<const double> target) noexcept
 {
-  std::lock_guard lock(target_mutex_);
-  if (gains_.control_6dof) {
-    // 6-DOF target mode: [x, y, z, roll, pitch, yaw]
-    tcp_target_[0] = target[0];
-    tcp_target_[1] = target[1];
-    tcp_target_[2] = target[2];
+  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) return;
+  if (device_idx == 0) {
+    std::lock_guard lock(target_mutex_);
+    if (gains_.control_6dof) {
+      // 6-DOF target mode: [x, y, z, roll, pitch, yaw]
+      if (target.size() >= 6) {
+        tcp_target_[0] = target[0];
+        tcp_target_[1] = target[1];
+        tcp_target_[2] = target[2];
 
-    // Convert Roll-Pitch-Yaw to Rotation Matrix
-    // R = Rz(yaw) * Ry(pitch) * Rx(roll)
-    double r = target[3];
-    double p = target[4];
-    double y = target[5];
+        double r = target[3];
+        double p = target[4];
+        double y = target[5];
 
-    Eigen::AngleAxisd rollAngle(r, Eigen::Vector3d::UnitX());
-    Eigen::AngleAxisd pitchAngle(p, Eigen::Vector3d::UnitY());
-    Eigen::AngleAxisd yawAngle(y, Eigen::Vector3d::UnitZ());
+        Eigen::AngleAxisd rollAngle(r, Eigen::Vector3d::UnitX());
+        Eigen::AngleAxisd pitchAngle(p, Eigen::Vector3d::UnitY());
+        Eigen::AngleAxisd yawAngle(y, Eigen::Vector3d::UnitZ());
 
-    Eigen::Quaternion<double> q = yawAngle * pitchAngle * rollAngle;
+        Eigen::Quaternion<double> q = yawAngle * pitchAngle * rollAngle;
 
-    tcp_target_pose_.translation() << target[0], target[1], target[2];
-    tcp_target_pose_.rotation() = q.matrix();
+        tcp_target_pose_.translation() << target[0], target[1], target[2];
+        tcp_target_pose_.rotation() = q.matrix();
+      }
+    } else {
+      // 3-DOF target mode: [x, y, z, null3, null4, null5]
+      const int n = std::min(static_cast<int>(target.size()), static_cast<int>(kNumRobotJoints));
+      for (int i = 0; i < std::min(n, 3); ++i) {
+        tcp_target_[i] = target[i];
+      }
+      for (int i = 3; i < n; ++i) {
+        null_target_[i] = target[i];
+      }
+    }
+    new_target_.store(true, std::memory_order_release);
   } else {
-    // 3-DOF target mode: [x, y, z, null3, null4, null5]
-    for (std::size_t i = 0; i < 3; ++i) {
-      tcp_target_[i] = target[i];
+    const int n = std::min(static_cast<int>(target.size()), kMaxDeviceChannels);
+    for (int i = 0; i < n; ++i) {
+      device_targets_[device_idx][i] = target[i];
     }
-    for (std::size_t i = 3; i < kNumRobotJoints; ++i) {
-      null_target_[i] = target[i];
-    }
-  }
-  new_target_.store(true, std::memory_order_release);
-}
-
-void ClikController::SetHandTarget(
-  std::span<const float, kNumHandMotors> target) noexcept
-{
-  for (std::size_t i = 0; i < kNumHandMotors; ++i) {
-    hand_target_[i] = target[i];
   }
 }
 
 void ClikController::InitializeHoldPosition(
   const ControllerState & state) noexcept
 {
+  const auto & dev0 = state.devices[0];
   // Compute current TCP position/pose via FK and set as target
   for (Eigen::Index i = 0; i < model_.nv; ++i) {
-    q_[i] = state.robot.positions[static_cast<std::size_t>(i)];
+    q_[i] = dev0.positions[static_cast<std::size_t>(i)];
   }
   pinocchio::forwardKinematics(model_, data_, q_);
   const pinocchio::SE3 & tcp_pose = data_.oMi[end_id_];
@@ -276,7 +288,7 @@ void ClikController::InitializeHoldPosition(
                  tcp_pose.translation()[2]};
   // null-space target: initialize to current joint positions
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    null_target_[i] = state.robot.positions[i];
+    null_target_[i] = dev0.positions[i];
   }
   target_initialized_ = true;
   new_target_.store(false, std::memory_order_relaxed);
@@ -286,9 +298,11 @@ void ClikController::InitializeHoldPosition(
                          tcp_pose, pinocchio::Motion::Zero(), 0.01);
   trajectory_time_ = 0.0;
 
-  if (state.hand.valid) {
-    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
-      hand_target_[i] = state.hand.motor_positions[i];
+  for (int d = 1; d < state.num_devices; ++d) {
+    const auto & dev = state.devices[d];
+    if (!dev.valid) continue;
+    for (int i = 0; i < dev.num_channels && i < kMaxDeviceChannels; ++i) {
+      device_targets_[d][i] = dev.positions[i];
     }
   }
 }
@@ -323,23 +337,26 @@ void ClikController::SetHandEstop(bool active) noexcept
 ControllerOutput ClikController::ComputeEstop(
   const ControllerState & state) noexcept
 {
+  const auto & dev0 = state.devices[0];
   ControllerOutput output;
+  output.num_devices = state.num_devices;
+  auto & out0 = output.devices[0];
+  out0.num_channels = kNumRobotJoints;
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    output.robot_commands[i] = state.robot.positions[i] +
-      std::clamp(kSafePosition[i] - state.robot.positions[i],
+    out0.commands[i] = dev0.positions[i] +
+      std::clamp(kSafePosition[i] - dev0.positions[i],
                      -kMaxJointVelocity, kMaxJointVelocity) *
       ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
   }
   return output;
 }
 
-std::array<double, kNumRobotJoints> ClikController::ClampVelocity(
-  std::array<double, kNumRobotJoints> dq) noexcept
+void ClikController::ClampVelocity(
+  std::array<double, kMaxDeviceChannels>& dq, int n) noexcept
 {
-  for (auto & v : dq) {
-    v = std::clamp(v, -kMaxJointVelocity, kMaxJointVelocity);
+  for (int i = 0; i < n; ++i) {
+    dq[i] = std::clamp(dq[i], -kMaxJointVelocity, kMaxJointVelocity);
   }
-  return dq;
 }
 
 // ── Controller registry hooks ────────────────────────────────────────────────

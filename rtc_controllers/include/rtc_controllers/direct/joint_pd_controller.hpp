@@ -55,11 +55,8 @@ public:
   [[nodiscard]] ControllerOutput Compute(
     const ControllerState & state) noexcept override;
 
-  void SetRobotTarget(
-    std::span<const double, kNumRobotJoints> target) noexcept override;
-
-  void SetHandTarget(
-    std::span<const float, kNumHandMotors> target) noexcept override;
+  void SetDeviceTarget(
+    int device_idx, std::span<const double> target) noexcept override;
 
   void InitializeHoldPosition(
     const ControllerState & state) noexcept override;
@@ -113,8 +110,7 @@ private:
 
   // ── Controller state ───────────────────────────────────────────────────────
   Gains  gains_;
-  std::array<double, kNumRobotJoints> robot_target_{};
-  std::array<float, kNumHandMotors>   hand_target_{};
+  std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices> device_targets_{};
   std::array<double, kNumRobotJoints> prev_error_{};
 
   std::mutex target_mutex_;
@@ -136,10 +132,10 @@ private:
   [[nodiscard]] ControllerOutput ComputeEstop(
     const ControllerState & state) noexcept;
 
-  void UpdateDynamics(const RobotState & robot) noexcept;
+  void UpdateDynamics(const DeviceState & dev) noexcept;
 
-  [[nodiscard]] static std::array<double, kNumRobotJoints> ClampCommands(
-    std::array<double, kNumRobotJoints> cmds, CommandType type) noexcept;
+  static void ClampCommands(
+    std::array<double, kMaxDeviceChannels>& cmds, int n, CommandType type) noexcept;
 };
 
 }  // namespace rtc

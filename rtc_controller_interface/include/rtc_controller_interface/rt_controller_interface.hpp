@@ -31,11 +31,8 @@ public:
   [[nodiscard]] virtual ControllerOutput Compute(
     const ControllerState & state) noexcept = 0;
 
-  virtual void SetRobotTarget(
-    std::span<const double, kNumRobotJoints> target) noexcept = 0;
-
-  virtual void SetHandTarget(
-    std::span<const float, kNumHandMotors> target) noexcept = 0;
+  virtual void SetDeviceTarget(
+    int device_idx, std::span<const double> target) noexcept = 0;
 
   [[nodiscard]] virtual std::string_view Name() const noexcept = 0;
 

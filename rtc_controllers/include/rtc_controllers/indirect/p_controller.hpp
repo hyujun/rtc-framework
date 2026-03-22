@@ -49,11 +49,8 @@ public:
   [[nodiscard]] ControllerOutput Compute(
     const ControllerState & state) noexcept override;
 
-  void SetRobotTarget(
-    std::span<const double, kNumRobotJoints> target) noexcept override;
-
-  void SetHandTarget(
-    std::span<const float, kNumHandMotors> target) noexcept override;
+  void SetDeviceTarget(
+    int device_idx, std::span<const double> target) noexcept override;
 
   void InitializeHoldPosition(
     const ControllerState & state) noexcept override;
@@ -77,8 +74,7 @@ public:
 
 private:
   Gains gains_;
-  std::array<double, kNumRobotJoints> robot_target_{};
-  std::array<float, kNumHandMotors> hand_target_{};
+  std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices> device_targets_{};
 
   pinocchio::Model model_;
   pinocchio::Data data_;
@@ -89,8 +85,8 @@ private:
 
   // Clamps each command to [-kMaxJointVelocity, +kMaxJointVelocity].
   static constexpr double kMaxJointVelocity = 2.0;  // rad/s
-  [[nodiscard]] static std::array<double, kNumRobotJoints> ClampCommands(
-    std::span<const double, kNumRobotJoints> commands) noexcept;
+  static void ClampCommands(
+    std::array<double, kMaxDeviceChannels>& commands, int n) noexcept;
 };
 
 }  // namespace rtc

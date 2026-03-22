@@ -34,6 +34,7 @@ namespace ur5e_bringup
 
 using rtc::kNumRobotJoints;
 using rtc::kNumHandMotors;
+using rtc::kMaxDeviceChannels;
 using rtc::RTControllerInterface;
 using rtc::ControllerOutput;
 using rtc::ControllerState;
@@ -93,8 +94,8 @@ public:
   // ── RTControllerInterface — all methods are noexcept (RT safety) ──────────
   [[nodiscard]] ControllerOutput Compute(const ControllerState & state) noexcept override;
 
-  void SetRobotTarget(std::span<const double, kNumRobotJoints> target) noexcept override;
-  void SetHandTarget(std::span<const float, kNumHandMotors> target)  noexcept override;
+  void SetDeviceTarget(
+    int device_idx, std::span<const double> target) noexcept override;
 
   void InitializeHoldPosition(const ControllerState & state) noexcept override;
 
@@ -157,7 +158,7 @@ private:
   pinocchio::SE3 tcp_target_pose_{pinocchio::SE3::Identity()};
   std::array<double, 3> tcp_target_{};
   std::array<double, kNumRobotJoints> null_target_{0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
-  std::array<float, kNumHandMotors> hand_target_{};
+  std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices> device_targets_{};
   std::array<double, 3> tcp_position_{};
 
   bool target_initialized_{false};
@@ -173,18 +174,15 @@ private:
   static constexpr std::array<double, kNumRobotJoints> kSafePosition{
     0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
   static constexpr double kMaxJointVelocity{2.0};
-  static constexpr float  kMaxHandVelocity{1.0f};
+  static constexpr double kMaxHandVelocity{1.0};
 
   CommandType command_type_{CommandType::kPosition};
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState & state) noexcept;
 
-  [[nodiscard]] static std::array<double, kNumRobotJoints> ClampVelocity(
-    std::array<double, kNumRobotJoints> dq) noexcept;
-
-  [[nodiscard]] static std::array<float, kNumHandMotors> ClampHandCommands(
-    std::span<const float, kNumHandMotors> commands) noexcept;
+  static void ClampCommands(
+    std::array<double, kMaxDeviceChannels>& cmds, int n, double limit) noexcept;
 };
 
 }  // namespace ur5e_bringup

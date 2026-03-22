@@ -21,15 +21,20 @@ DemoJointController::DemoJointController(std::string_view urdf_path, Gains gains
 ControllerOutput DemoJointController::Compute(const ControllerState & state) noexcept
 {
   ControllerOutput output;
+  output.num_devices = state.num_devices;
+
+  const auto & dev0 = state.devices[0];
+  auto & out0 = output.devices[0];
+  out0.num_channels = kNumRobotJoints;
 
   // ── Robot arm P control (identical to PController) ────────────────────────
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    const double error = robot_target_[i] - state.robot.positions[i];
-    output.robot_commands[i] =
-      state.robot.positions[i] + gains_.robot_kp[i] * error * state.robot.dt;
-    q_[static_cast<Eigen::Index>(i)] = state.robot.positions[i];
+    const double error = device_targets_[0][i] - dev0.positions[i];
+    out0.commands[i] =
+      dev0.positions[i] + gains_.robot_kp[i] * error * state.dt;
+    q_[static_cast<Eigen::Index>(i)] = dev0.positions[i];
   }
-  output.robot_commands = ClampRobotCommands(output.robot_commands);
+  ClampCommands(out0.commands, kNumRobotJoints, kMaxJointVelocity);
 
   // ── Forward kinematics for task-space logging ─────────────────────────────
   pinocchio::forwardKinematics(model_, data_, q_);
@@ -43,67 +48,60 @@ ControllerOutput DemoJointController::Compute(const ControllerState & state) noe
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
 
-  output.actual_target_positions = robot_target_;
-  output.goal_positions = robot_target_;        // P controller: no trajectory, goal == target
-  // target_velocities: zero (no trajectory generator)
-  output.hand_goal_positions = hand_target_;
+  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+    out0.target_positions[i] = device_targets_[0][i];
+    out0.goal_positions[i] = device_targets_[0][i];
+  }
 
   // ── Hand motor P control (same formula applied to 10 hand motors) ─────────
-  if (state.hand.valid) {
+  if (state.num_devices > 1 && state.devices[1].valid) {
+    const auto & dev1 = state.devices[1];
+    auto & out1 = output.devices[1];
+    out1.num_channels = kNumHandMotors;
     for (std::size_t i = 0; i < kNumHandMotors; ++i) {
-      const float error = hand_target_[i] - state.hand.motor_positions[i];
-      output.hand_commands[i] =
-        state.hand.motor_positions[i] +
-        gains_.hand_kp[i] * error * static_cast<float>(state.dt);
+      const double error = device_targets_[1][i] - dev1.positions[i];
+      out1.commands[i] =
+        dev1.positions[i] +
+        static_cast<double>(gains_.hand_kp[i]) * error * state.dt;
     }
-    output.hand_commands = ClampHandCommands(output.hand_commands);
+    ClampCommands(out1.commands, kNumHandMotors, kMaxHandVelocity);
+    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+      out1.goal_positions[i] = device_targets_[1][i];
+    }
   }
 
   output.command_type = command_type_;
   return output;
 }
 
-void DemoJointController::SetRobotTarget(
-  std::span<const double, kNumRobotJoints> target) noexcept
+void DemoJointController::SetDeviceTarget(
+  int device_idx, std::span<const double> target) noexcept
 {
-  std::copy(target.begin(), target.end(), robot_target_.begin());
-}
-
-void DemoJointController::SetHandTarget(
-  std::span<const float, kNumHandMotors> target) noexcept
-{
-  std::copy(target.begin(), target.end(), hand_target_.begin());
+  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) return;
+  const int n = std::min(static_cast<int>(target.size()), kMaxDeviceChannels);
+  for (int i = 0; i < n; ++i) {
+    device_targets_[device_idx][i] = target[i];
+  }
 }
 
 void DemoJointController::InitializeHoldPosition(
   const ControllerState & state) noexcept
 {
-  std::copy(state.robot.positions.begin(), state.robot.positions.end(),
-            robot_target_.begin());
-  if (state.hand.valid) {
-    std::copy(state.hand.motor_positions.begin(),
-              state.hand.motor_positions.end(), hand_target_.begin());
+  for (int d = 0; d < state.num_devices; ++d) {
+    const auto & dev = state.devices[d];
+    if (!dev.valid && d > 0) continue;
+    for (int i = 0; i < dev.num_channels && i < kMaxDeviceChannels; ++i) {
+      device_targets_[d][i] = dev.positions[i];
+    }
   }
 }
 
-std::array<double, kNumRobotJoints> DemoJointController::ClampRobotCommands(
-  std::span<const double, kNumRobotJoints> commands) noexcept
+void DemoJointController::ClampCommands(
+  std::array<double, kMaxDeviceChannels>& commands, int n, double limit) noexcept
 {
-  std::array<double, kNumRobotJoints> clamped{};
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    clamped[i] = std::clamp(commands[i], -kMaxJointVelocity, kMaxJointVelocity);
+  for (int i = 0; i < n; ++i) {
+    commands[i] = std::clamp(commands[i], -limit, limit);
   }
-  return clamped;
-}
-
-std::array<float, kNumHandMotors> DemoJointController::ClampHandCommands(
-  std::span<const float, kNumHandMotors> commands) noexcept
-{
-  std::array<float, kNumHandMotors> clamped{};
-  for (std::size_t i = 0; i < kNumHandMotors; ++i) {
-    clamped[i] = std::clamp(commands[i], -kMaxHandVelocity, kMaxHandVelocity);
-  }
-  return clamped;
 }
 
 // ── Controller registry hooks ────────────────────────────────────────────────

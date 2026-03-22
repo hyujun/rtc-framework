@@ -86,8 +86,8 @@ public:
   // ── RTControllerInterface — all methods are noexcept (RT safety) ──────────
   [[nodiscard]] ControllerOutput Compute(const ControllerState & state) noexcept override;
 
-  void SetRobotTarget(std::span<const double, kNumRobotJoints> target) noexcept override;
-  void SetHandTarget(std::span<const float, kNumHandMotors> target)  noexcept override;
+  void SetDeviceTarget(
+    int device_idx, std::span<const double> target) noexcept override;
 
   void InitializeHoldPosition(const ControllerState & state) noexcept override;
 
@@ -157,7 +157,7 @@ private:
   // ── Controller state ──────────────────────────────────────────────────────
   Gains gains_;
   std::array<double, 6> pose_target_{};                ///< [x,y,z,r,p,yaw]
-  std::array<float, kNumHandMotors> hand_target_{};
+  std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices> device_targets_{};
   std::array<double, 3> tcp_position_{};               ///< diagnostic cache
   std::array<double, 6> pose_error_cache_{};              ///< diagnostic cache
 
@@ -174,8 +174,8 @@ private:
   // ── Helpers ───────────────────────────────────────────────────────────────
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState & state) noexcept;
 
-  [[nodiscard]] static std::array<double, kNumRobotJoints> ClampVelocity(
-    std::array<double, kNumRobotJoints> dq) noexcept;
+  static void ClampVelocity(
+    std::array<double, kMaxDeviceChannels>& dq, int n) noexcept;
 
   static Eigen::Matrix3d RpyToMatrix(double roll, double pitch, double yaw) noexcept;
 };

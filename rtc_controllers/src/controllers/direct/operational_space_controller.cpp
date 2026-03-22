@@ -42,10 +42,11 @@ ControllerOutput OperationalSpaceController::Compute(
   }
 
   // ── Step 1: copy joint state into Eigen vectors ──────────────────────────
+  const auto & dev0 = state.devices[0];
   for (Eigen::Index i = 0; i < model_.nv; ++i) {
     const auto ui = static_cast<std::size_t>(i);
-    q_[i] = state.robot.positions[ui];
-    v_[i] = state.robot.velocities[ui];
+    q_[i] = dev0.positions[ui];
+    v_[i] = dev0.velocities[ui];
   }
 
   // ── Step 2: FK + full Jacobian ────────────────────────────────────────────
@@ -129,20 +130,32 @@ ControllerOutput OperationalSpaceController::Compute(
   }
 
   // ── Step 9: clamp joint velocity and integrate ────────────────────────────
-  std::array<double, kNumRobotJoints> dq_arr{};
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    dq_arr[i] = dq_[static_cast<Eigen::Index>(i)];
-  }
-  dq_arr = ClampVelocity(dq_arr);
-
   ControllerOutput output;
+  output.num_devices = state.num_devices;
+  auto & out0 = output.devices[0];
+  out0.num_channels = kNumRobotJoints;
+
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    output.robot_commands[i] = state.robot.positions[i] + dq_arr[i] * dt;
+    out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
   }
-  output.actual_target_positions = pose_target_;
-  output.goal_positions = pose_target_;       // task-space goal [x,y,z,r,p,y]
-  output.target_velocities = dq_arr;          // clamped joint velocity command
-  output.hand_goal_positions = hand_target_;
+  ClampVelocity(out0.target_velocities, kNumRobotJoints);
+
+  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+    out0.commands[i] = dev0.positions[i] + out0.target_velocities[i] * dt;
+  }
+  for (std::size_t i = 0; i < 6; ++i) {
+    out0.target_positions[i] = pose_target_[i];
+    out0.goal_positions[i] = pose_target_[i];
+  }
+
+  // Device 1 (hand): pass-through goals
+  if (state.num_devices > 1) {
+    auto & out1 = output.devices[1];
+    out1.num_channels = kNumHandMotors;
+    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+      out1.goal_positions[i] = device_targets_[1][i];
+    }
+  }
 
   Eigen::Vector3d rpy_current = pinocchio::rpy::matrixToRpy(tcp.rotation());
   output.actual_task_positions[0] = tcp.translation().x();
@@ -156,33 +169,36 @@ ControllerOutput OperationalSpaceController::Compute(
   return output;
 }
 
-void OperationalSpaceController::SetRobotTarget(
-  std::span<const double, kNumRobotJoints> target) noexcept
+void OperationalSpaceController::SetDeviceTarget(
+  int device_idx, std::span<const double> target) noexcept
 {
-  std::lock_guard lock(target_mutex_);
-  const std::size_t n = 6;
-  for (std::size_t i = 0; i < n; ++i) {
-    pose_target_[i] = target[i];
-  }
-  goal_pose_.translation() =
-    Eigen::Vector3d(target[0], target[1], target[2]);
-  goal_pose_.rotation() = RpyToMatrix(target[3], target[4], target[5]);
-  new_target_.store(true, std::memory_order_release);
-}
-
-void OperationalSpaceController::SetHandTarget(
-  std::span<const float, kNumHandMotors> target) noexcept
-{
-  for (std::size_t i = 0; i < kNumHandMotors; ++i) {
-    hand_target_[i] = target[i];
+  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) return;
+  if (device_idx == 0) {
+    std::lock_guard lock(target_mutex_);
+    const int n = std::min(static_cast<int>(target.size()), 6);
+    for (int i = 0; i < n; ++i) {
+      pose_target_[i] = target[i];
+    }
+    if (n >= 6) {
+      goal_pose_.translation() =
+        Eigen::Vector3d(target[0], target[1], target[2]);
+      goal_pose_.rotation() = RpyToMatrix(target[3], target[4], target[5]);
+    }
+    new_target_.store(true, std::memory_order_release);
+  } else {
+    const int n = std::min(static_cast<int>(target.size()), kMaxDeviceChannels);
+    for (int i = 0; i < n; ++i) {
+      device_targets_[device_idx][i] = target[i];
+    }
   }
 }
 
 void OperationalSpaceController::InitializeHoldPosition(
   const ControllerState & state) noexcept
 {
+  const auto & dev0 = state.devices[0];
   for (Eigen::Index i = 0; i < model_.nv; ++i) {
-    q_[i] = state.robot.positions[static_cast<std::size_t>(i)];
+    q_[i] = dev0.positions[static_cast<std::size_t>(i)];
   }
   pinocchio::computeJointJacobians(model_, data_, q_);
   const pinocchio::SE3 & tcp = data_.oMi[end_id_];
@@ -203,9 +219,11 @@ void OperationalSpaceController::InitializeHoldPosition(
                          tcp, pinocchio::Motion::Zero(), 0.01);
   trajectory_time_ = 0.0;
 
-  if (state.hand.valid) {
-    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
-      hand_target_[i] = state.hand.motor_positions[i];
+  for (int d = 1; d < state.num_devices; ++d) {
+    const auto & dev = state.devices[d];
+    if (!dev.valid) continue;
+    for (int i = 0; i < dev.num_channels && i < kMaxDeviceChannels; ++i) {
+      device_targets_[d][i] = dev.positions[i];
     }
   }
 }
@@ -242,24 +260,26 @@ ControllerOutput OperationalSpaceController::ComputeEstop(
   const ControllerState & state) noexcept
 {
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
+  const auto & dev0 = state.devices[0];
   ControllerOutput output;
+  output.num_devices = state.num_devices;
+  auto & out0 = output.devices[0];
+  out0.num_channels = kNumRobotJoints;
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    output.robot_commands[i] = state.robot.positions[i] +
-      std::clamp(kSafePosition[i] - state.robot.positions[i],
+    out0.commands[i] = dev0.positions[i] +
+      std::clamp(kSafePosition[i] - dev0.positions[i],
                      -kMaxJointVelocity, kMaxJointVelocity) *
       dt;
   }
   return output;
 }
 
-std::array<double, kNumRobotJoints>
-OperationalSpaceController::ClampVelocity(
-  std::array<double, kNumRobotJoints> dq) noexcept
+void OperationalSpaceController::ClampVelocity(
+  std::array<double, kMaxDeviceChannels>& dq, int n) noexcept
 {
-  for (auto & v : dq) {
-    v = std::clamp(v, -kMaxJointVelocity, kMaxJointVelocity);
+  for (int i = 0; i < n; ++i) {
+    dq[i] = std::clamp(dq[i], -kMaxJointVelocity, kMaxJointVelocity);
   }
-  return dq;
 }
 
 Eigen::Matrix3d OperationalSpaceController::RpyToMatrix(

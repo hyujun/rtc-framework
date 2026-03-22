@@ -71,17 +71,18 @@ private:
   void ExposeTopicParameters();
   void CreateTimers();
 
-  // ── Subscription callbacks ────────────────────────────────────────────────
-  void JointStateCallback(sensor_msgs::msg::JointState::SharedPtr msg);
-  void RobotTargetCallback(std_msgs::msg::Float64MultiArray::SharedPtr msg);
-  void HandTargetCallback(std_msgs::msg::Float64MultiArray::SharedPtr msg);
-  void DeviceStateCallback(sensor_msgs::msg::JointState::SharedPtr msg);
-  void DeviceSensorCallback(std_msgs::msg::Float64MultiArray::SharedPtr msg);
+  // ── Subscription callbacks (unified per-device) ──────────────────────────
+  void DeviceJointStateCallback(int device_slot,
+      sensor_msgs::msg::JointState::SharedPtr msg);
+  void DeviceSensorCallback(int device_slot,
+      std_msgs::msg::Float64MultiArray::SharedPtr msg);
+  void DeviceTargetCallback(int device_slot,
+      std_msgs::msg::Float64MultiArray::SharedPtr msg);
 
   // ── Joint name validation (v5.14.0) ──────────────────────────────────────
   void LoadAndValidateJointNames();
-  void BuildJointStateIndexMap(const std::vector<std::string>& msg_names);
-  void BuildHandStateIndexMap(const std::vector<std::string>& source_names);
+  void BuildDeviceReorderMap(int device_slot,
+      const std::vector<std::string>& msg_names);
 
   // ── RT loop (clock_nanosleep) ─────────────────────────────────────────────
   void RtLoopEntry(const rtc::ThreadConfig& cfg);
@@ -158,13 +159,25 @@ private:
   std::vector<DeviceTimeoutEntry> device_timeouts_;
   [[nodiscard]] bool AllTimeoutDevicesReceived() const noexcept;
 
-  // ── Temporary bridge (removed in PR2) ─────────────────────────────────────
-  // Maps group name → ControllerState.robot / .hand fixed structure.
-  struct GroupStateMapping {
-    std::string group_name;
-    enum class Target { kRobot, kHand } target;
+  // ── Per-device state caches (indexed by group_slot_map_) ─────────────────
+  static constexpr int kMaxDevices = rtc::PublishSnapshot::kMaxGroups;
+  struct DeviceStateCache {
+    int num_channels{0};
+    std::array<double, rtc::kMaxDeviceChannels> positions{};
+    std::array<double, rtc::kMaxDeviceChannels> velocities{};
+    std::array<double, rtc::kMaxDeviceChannels> efforts{};
+    std::array<int32_t, rtc::kMaxSensorChannels> sensor_data{};
+    std::array<int32_t, rtc::kMaxSensorChannels> sensor_data_raw{};
+    int num_sensor_channels{0};
+    bool valid{false};
   };
-  std::vector<GroupStateMapping> group_state_mappings_;
+  std::array<DeviceStateCache, kMaxDevices> device_states_{};
+  std::array<DeviceStateCache, kMaxDevices> cached_device_states_{};
+  std::mutex device_state_mutex_;
+
+  // Per-device targets
+  std::array<std::array<double, rtc::kMaxDeviceChannels>, kMaxDevices> device_targets_{};
+  std::array<std::array<double, rtc::kMaxDeviceChannels>, kMaxDevices> device_target_snapshots_{};
 
   // Read-only parameter guard handle (topic params immutable after init)
   rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
@@ -191,53 +204,27 @@ private:
   std::unique_ptr<rtc::RtcStatusMonitor> status_monitor_;
   bool enable_status_monitor_{false};
 
-  // ── Hand state (ROS topic subscription) ──────────────────────────────────
-  // Updated from /hand/joint_states (JointState) subscription — same path for
-  // both real (ur5e_hand_driver) and sim (rtc_mujoco_sim).
-  mutable std::mutex hand_state_mutex_;
-  rtc::HandState cached_hand_state_{};
+  // ── Shared state ──────────────────────────────────────────────────────────
+  // All device state is now in device_states_[] / cached_device_states_[]
+  // guarded by device_state_mutex_.
 
-  // ── Shared state (guarded by per-domain mutexes) ──────────────────────────
-  std::array<double, rtc::kNumRobotJoints> current_positions_{};
-  std::array<double, rtc::kNumRobotJoints> current_velocities_{};
-  std::array<double, rtc::kNumRobotJoints> target_positions_{};
-
-  // Joint torques from effort field (guarded by state_mutex_)
-  std::array<double, rtc::kNumRobotJoints> current_torques_{};
-  std::array<double, rtc::kNumRobotJoints> cached_torques_{};
-
-  // RT-local snapshot of target — written and read only in ControlLoop()
-  std::array<double, rtc::kNumRobotJoints> target_snapshot_{};
-
-  // RT-local cached copies — updated via try_lock to avoid blocking the RT
-  // thread.  If the mutex is contended, the previous cycle's data is reused
-  // (stale by at most one cycle = 2 ms, acceptable for position control).
-  std::array<double, rtc::kNumRobotJoints> cached_positions_{};
-  std::array<double, rtc::kNumRobotJoints> cached_velocities_{};
-
-  mutable std::mutex state_mutex_;
   mutable std::mutex target_mutex_;
 
-  // Timing summary flag — set by RT thread, consumed by log thread.
-  // Avoids std::string allocation + RCLCPP_INFO on the 500 Hz path.
   std::atomic<bool> print_timing_summary_{false};
-
-  // Atomic flags — safe to read without a mutex in the RT thread.
-  // Written with release, read with acquire to guarantee visibility ordering.
   std::atomic<bool> state_received_{false};
   std::atomic<bool> target_received_{false};
-
-  // last_robot_update_ and robot_timeout_ replaced by device_timeouts_ entries
 
   // ── Named joint mapping (v5.14.0) ────────────────────────────────────────
   std::vector<std::string> robot_joint_names_;
   std::vector<std::string> hand_motor_names_;
   std::vector<std::string> fingertip_names_;
-  std::vector<int> joint_state_reorder_;
-  bool joint_state_map_built_{false};
 
-  std::vector<int> hand_state_reorder_;
-  bool hand_state_map_built_{false};
+  // Per-device reorder maps (indexed by device slot)
+  struct DeviceReorderMap {
+    std::vector<int> reorder;
+    bool built{false};
+  };
+  std::array<DeviceReorderMap, kMaxDevices> device_reorder_maps_{};
 
   // ── Parameters ────────────────────────────────────────────────────────────
   double      control_rate_{500.0};

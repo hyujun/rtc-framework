@@ -40,8 +40,9 @@ ControllerOutput JointPDController::Compute(
   }
 
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
+  const auto & dev0 = state.devices[0];
 
-  UpdateDynamics(state.robot);
+  UpdateDynamics(dev0);
 
   if (new_target_.load(std::memory_order_acquire)) {
     std::unique_lock lock(target_mutex_, std::try_to_lock);
@@ -51,16 +52,16 @@ ControllerOutput JointPDController::Compute(
 
       double max_dist = 0.0;
       for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-        start_state.positions[i]     = state.robot.positions[i];
-        start_state.velocities[i]    = state.robot.velocities[i];
+        start_state.positions[i]     = dev0.positions[i];
+        start_state.velocities[i]    = dev0.velocities[i];
         start_state.accelerations[i] = 0.0;
 
-        goal_state.positions[i]     = robot_target_[i];
+        goal_state.positions[i]     = device_targets_[0][i];
         goal_state.velocities[i]    = 0.0;
         goal_state.accelerations[i] = 0.0;
 
         max_dist = std::max(max_dist,
-          std::abs(robot_target_[i] - state.robot.positions[i]));
+          std::abs(device_targets_[0][i] - dev0.positions[i]));
       }
 
       const double duration = std::max(0.01, max_dist / gains_.trajectory_speed);
@@ -75,32 +76,46 @@ ControllerOutput JointPDController::Compute(
 
   // PD control + feedforward velocity + optional gravity/Coriolis compensation
   ControllerOutput output;
+  output.num_devices = state.num_devices;
+  auto & out0 = output.devices[0];
+  out0.num_channels = kNumRobotJoints;
 
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    const double e  = traj_state.positions[i] - state.robot.positions[i];
+    const double e  = traj_state.positions[i] - dev0.positions[i];
     const double de = (e - prev_error_[i]) / dt;
 
-    output.robot_commands[i] = gains_.kp[i] * e + gains_.kd[i] * de;
+    out0.commands[i] = gains_.kp[i] * e + gains_.kd[i] * de;
     if (command_type_ != CommandType::kTorque) {
-      output.robot_commands[i] += traj_state.velocities[i];
+      out0.commands[i] += traj_state.velocities[i];
     }
 
     if (gains_.enable_gravity_compensation) {
-      output.robot_commands[i] += gravity_torques_[i];
+      out0.commands[i] += gravity_torques_[i];
     }
     if (gains_.enable_coriolis_compensation) {
-      output.robot_commands[i] +=
+      out0.commands[i] +=
         coriolis_forces_[static_cast<Eigen::Index>(i)];
     }
 
     prev_error_[i] = e;
   }
 
-  output.actual_target_positions = traj_state.positions;
-  output.goal_positions = robot_target_;
-  output.target_velocities = traj_state.velocities;
-  output.hand_goal_positions = hand_target_;
-  output.robot_commands = ClampCommands(output.robot_commands, command_type_);
+  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+    out0.target_positions[i] = traj_state.positions[i];
+    out0.goal_positions[i] = device_targets_[0][i];
+    out0.target_velocities[i] = traj_state.velocities[i];
+  }
+
+  // Device 1 (hand): pass-through goals
+  if (state.num_devices > 1) {
+    auto & out1 = output.devices[1];
+    out1.num_channels = kNumHandMotors;
+    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+      out1.goal_positions[i] = device_targets_[1][i];
+    }
+  }
+
+  ClampCommands(out0.commands, kNumRobotJoints, command_type_);
 
   // TCP pose output (task_positions: [x, y, z, roll, pitch, yaw])
   const auto last_joint =
@@ -118,34 +133,35 @@ ControllerOutput JointPDController::Compute(
   return output;
 }
 
-void JointPDController::SetRobotTarget(
-  std::span<const double, kNumRobotJoints> target) noexcept
+void JointPDController::SetDeviceTarget(
+  int device_idx, std::span<const double> target) noexcept
 {
-  std::lock_guard lock(target_mutex_);
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    robot_target_[i] = target[i];
-  }
-  new_target_.store(true, std::memory_order_release);
-}
-
-void JointPDController::SetHandTarget(
-  std::span<const float, kNumHandMotors> target) noexcept
-{
-  for (std::size_t i = 0; i < kNumHandMotors; ++i) {
-    hand_target_[i] = target[i];
+  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) return;
+  const int n = std::min(static_cast<int>(target.size()), kMaxDeviceChannels);
+  if (device_idx == 0) {
+    std::lock_guard lock(target_mutex_);
+    for (int i = 0; i < n; ++i) {
+      device_targets_[0][i] = target[i];
+    }
+    new_target_.store(true, std::memory_order_release);
+  } else {
+    for (int i = 0; i < n; ++i) {
+      device_targets_[device_idx][i] = target[i];
+    }
   }
 }
 
 void JointPDController::InitializeHoldPosition(
   const ControllerState & state) noexcept
 {
+  const auto & dev0 = state.devices[0];
   std::lock_guard lock(target_mutex_);
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    robot_target_[i] = state.robot.positions[i];
+    device_targets_[0][i] = dev0.positions[i];
   }
   trajectory::JointSpaceTrajectory<kNumRobotJoints>::State hold_state;
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    hold_state.positions[i]     = state.robot.positions[i];
+    hold_state.positions[i]     = dev0.positions[i];
     hold_state.velocities[i]    = 0.0;
     hold_state.accelerations[i] = 0.0;
   }
@@ -154,9 +170,11 @@ void JointPDController::InitializeHoldPosition(
   prev_error_ = {};
   new_target_.store(false, std::memory_order_relaxed);
 
-  if (state.hand.valid) {
-    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
-      hand_target_[i] = state.hand.motor_positions[i];
+  for (int d = 1; d < state.num_devices; ++d) {
+    const auto & dev = state.devices[d];
+    if (!dev.valid) continue;
+    for (int i = 0; i < dev.num_channels && i < kMaxDeviceChannels; ++i) {
+      device_targets_[d][i] = dev.positions[i];
     }
   }
 }
@@ -264,30 +282,37 @@ ControllerOutput JointPDController::ComputeEstop(
   const ControllerState & state) noexcept
 {
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
+  const auto & dev0 = state.devices[0];
 
   ControllerOutput output;
+  output.num_devices = state.num_devices;
+  auto & out0 = output.devices[0];
+  out0.num_channels = kNumRobotJoints;
+
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    const double e  = kSafePosition[i] - state.robot.positions[i];
+    const double e  = kSafePosition[i] - dev0.positions[i];
     const double de = (e - prev_error_[i]) / dt;
-    output.robot_commands[i] = gains_.kp[i] * e + gains_.kd[i] * de;
+    out0.commands[i] = gains_.kp[i] * e + gains_.kd[i] * de;
     prev_error_[i] = e;
   }
 
-  output.actual_target_positions = kSafePosition;
-  output.goal_positions = kSafePosition;
-  output.robot_commands = ClampCommands(output.robot_commands, command_type_);
+  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+    out0.target_positions[i] = kSafePosition[i];
+    out0.goal_positions[i] = kSafePosition[i];
+  }
+  ClampCommands(out0.commands, kNumRobotJoints, command_type_);
   new_target_.store(true, std::memory_order_relaxed);
   return output;
 }
 
-void JointPDController::UpdateDynamics(const RobotState & robot) noexcept
+void JointPDController::UpdateDynamics(const DeviceState & dev) noexcept
 {
   const std::size_t nv = static_cast<std::size_t>(model_.nv);
   const std::size_t n  = std::min(static_cast<std::size_t>(kNumRobotJoints), nv);
 
   for (std::size_t i = 0; i < n; ++i) {
-    q_[static_cast<Eigen::Index>(i)] = robot.positions[i];
-    v_[static_cast<Eigen::Index>(i)] = robot.velocities[i];
+    q_[static_cast<Eigen::Index>(i)] = dev.positions[i];
+    v_[static_cast<Eigen::Index>(i)] = dev.velocities[i];
   }
 
   // ── Gravity torque g(q) ─────────────────────────────────────────────────
@@ -321,15 +346,14 @@ void JointPDController::UpdateDynamics(const RobotState & robot) noexcept
   }
 }
 
-std::array<double, kNumRobotJoints> JointPDController::ClampCommands(
-  std::array<double, kNumRobotJoints> cmds, CommandType type) noexcept
+void JointPDController::ClampCommands(
+  std::array<double, kMaxDeviceChannels>& cmds, int n, CommandType type) noexcept
 {
   const double limit = (type == CommandType::kTorque)
                             ? kMaxJointTorque : kMaxJointVelocity;
-  for (auto & c : cmds) {
-    c = std::clamp(c, -limit, limit);
+  for (int i = 0; i < n; ++i) {
+    cmds[i] = std::clamp(cmds[i], -limit, limit);
   }
-  return cmds;
 }
 
 }  // namespace rtc

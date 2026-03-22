@@ -21,18 +21,20 @@ PController::PController(std::string_view urdf_path, Gains gains)
 ControllerOutput PController::Compute(const ControllerState & state) noexcept
 {
   ControllerOutput output;
+  output.num_devices = state.num_devices;
+
+  // Device 0 (robot arm): P control
+  const auto & dev0 = state.devices[0];
+  auto & out0 = output.devices[0];
+  out0.num_channels = kNumRobotJoints;
 
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    const double error = robot_target_[i] - state.robot.positions[i];
-    output.robot_commands[i] = state.robot.positions[i] + gains_.kp[i] * error * state.robot.dt;
-    q_[static_cast<Eigen::Index>(i)] = state.robot.positions[i];
+    const double error = device_targets_[0][i] - dev0.positions[i];
+    out0.commands[i] = dev0.positions[i] + gains_.kp[i] * error * state.dt;
+    q_[static_cast<Eigen::Index>(i)] = dev0.positions[i];
   }
 
-  // forwardKinematics already updates data_.oMi (joint placements).
-  // updateFramePlacements is unnecessary — it computes placements for all
-  // frames (links, sensors, etc.) which are not needed here.
   pinocchio::forwardKinematics(model_, data_, q_);
-
   const pinocchio::SE3 & tcp = data_.oMi[end_id_];
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
 
@@ -43,46 +45,53 @@ ControllerOutput PController::Compute(const ControllerState & state) noexcept
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
 
-  output.actual_target_positions = robot_target_;
-  output.goal_positions = robot_target_;        // P controller: no trajectory, goal == target
-  // target_velocities: zero (no trajectory generator)
-  output.hand_goal_positions = hand_target_;
-  output.robot_commands = ClampCommands(output.robot_commands);
+  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+    out0.target_positions[i] = device_targets_[0][i];
+    out0.goal_positions[i] = device_targets_[0][i];
+  }
+
+  // Device 1 (hand): pass-through goals
+  if (state.num_devices > 1) {
+    auto & out1 = output.devices[1];
+    out1.num_channels = kNumHandMotors;
+    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+      out1.goal_positions[i] = device_targets_[1][i];
+    }
+  }
+
+  ClampCommands(out0.commands, kNumRobotJoints);
   output.command_type = command_type_;
   return output;
 }
 
-void PController::SetRobotTarget(
-  std::span<const double, kNumRobotJoints> target) noexcept
+void PController::SetDeviceTarget(
+  int device_idx, std::span<const double> target) noexcept
 {
-  std::copy(target.begin(), target.end(), robot_target_.begin());
-}
-
-void PController::SetHandTarget(
-  std::span<const float, kNumHandMotors> target) noexcept
-{
-  std::copy(target.begin(), target.end(), hand_target_.begin());
+  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) return;
+  const int n = std::min(static_cast<int>(target.size()), kMaxDeviceChannels);
+  for (int i = 0; i < n; ++i) {
+    device_targets_[device_idx][i] = target[i];
+  }
 }
 
 void PController::InitializeHoldPosition(
   const ControllerState & state) noexcept
 {
-  std::copy(state.robot.positions.begin(), state.robot.positions.end(),
-            robot_target_.begin());
-  if (state.hand.valid) {
-    std::copy(state.hand.motor_positions.begin(),
-              state.hand.motor_positions.end(), hand_target_.begin());
+  for (int d = 0; d < state.num_devices; ++d) {
+    const auto & dev = state.devices[d];
+    if (!dev.valid && d > 0) continue;
+    for (int i = 0; i < dev.num_channels && i < kMaxDeviceChannels; ++i) {
+      device_targets_[d][i] = dev.positions[i];
+    }
   }
 }
 
-std::array<double, kNumRobotJoints> PController::ClampCommands(
-  std::span<const double, kNumRobotJoints> commands) noexcept
+void PController::ClampCommands(
+  std::array<double, kMaxDeviceChannels>& commands, int n) noexcept
 {
-  std::array<double, kNumRobotJoints> clamped{};
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    clamped[i] = std::clamp(commands[i], -kMaxJointVelocity, kMaxJointVelocity);
+  for (int i = 0; i < n; ++i) {
+    commands[i] = std::clamp(commands[i], -kMaxJointVelocity, kMaxJointVelocity);
   }
-  return clamped;
 }
 
 // ── Controller registry hooks ────────────────────────────────────────────────
