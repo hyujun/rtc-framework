@@ -13,11 +13,13 @@ ur5e_hand_driver/
 │   ├── hand_packets.hpp          ← 와이어 포맷 구조체, 인코딩/디코딩 헬퍼
 │   ├── hand_udp_codec.hpp        ← 공개 코덱 API (allocation-free, noexcept)
 │   ├── hand_controller.hpp       ← 핵심 드라이버 (event-driven, busy skip, sensor decimation)
-│   └── hand_failure_detector.hpp ← 손 통신 장애 감지기 (v5.8.0)
+│   ├── hand_failure_detector.hpp ← 손 통신 장애 감지기 (v5.8.0)
+│   └── fingertip_ft_inferencer.hpp ← ONNX 기반 핑거팁 F/T 추론 (v5.15.0)
 ├── src/
 │   └── hand_udp_node.cpp         ← ROS2 노드 (HandController + FailureDetector)
 ├── config/
-│   └── hand_udp_node.yaml        ← 노드 파라미터 설정 (ros__parameters)
+│   ├── hand_udp_node.yaml        ← 노드 파라미터 설정 (ros__parameters)
+│   └── fingertip_ft_inferencer.yaml ← ONNX 모델 경로 + 캘리브레이션 설정
 ├── launch/
 │   └── hand_udp.launch.py        ← Hand UDP 런치
 ├── CMakeLists.txt

@@ -47,7 +47,7 @@ rtc_controller_interface/
                 ▼
 ┌─────────────────────────────────────────────────────────┐
 │  RTControllerInterface (추상 기반 클래스)                 │  ← 이 패키지
-│  - Compute(), SetRobotTarget(), SetHandTarget()          │
+│  - Compute(), SetDeviceTarget(), InitializeHoldPosition() │
 │  - LoadConfig(), UpdateGainsFromMsg()                    │
 │  - E-STOP 인터페이스                                     │
 ├─────────────────────────────────────────────────────────┤
@@ -76,8 +76,7 @@ rtc_controller_interface/
 
 ```cpp
 [[nodiscard]] virtual ControllerOutput Compute(const ControllerState& state) noexcept = 0;
-virtual void SetRobotTarget(std::span<const double, kNumRobotJoints> target) noexcept = 0;
-virtual void SetHandTarget(std::span<const float, kNumHandMotors> target) noexcept = 0;
+virtual void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept = 0;
 virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 [[nodiscard]] virtual std::string_view Name() const noexcept = 0;
 ```
@@ -85,9 +84,8 @@ virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 | 메서드 | 호출 빈도 | 설명 |
 |--------|----------|------|
 | `Compute` | 500 Hz (RT 루프) | 제어 연산 → `ControllerOutput` 반환 |
-| `SetRobotTarget` | 이벤트 (센서 스레드) | 6-DOF 로봇 목표 설정 |
-| `SetHandTarget` | 이벤트 (센서 스레드) | 10-모터 핸드 목표 설정 |
-| `InitializeHoldPosition` | 1회 (첫 상태 수신) | 현재 위치를 타겟으로 초기화 |
+| `SetDeviceTarget` | 이벤트 (센서 스레드) | 가변 크기 디바이스 목표 설정 (`device_idx`: 0=로봇, 1=핸드 등) |
+| `InitializeHoldPosition` | 1회 (첫 상태 수신) | 현재 위치를 타겟으로 초기화 (auto-hold) |
 | `Name` | UI/로깅 | 사람이 읽을 수 있는 이름 |
 
 #### 가상 메서드 (기본 구현 제공)
@@ -115,6 +113,14 @@ virtual void UpdateGainsFromMsg(std::span<const double> gains) noexcept { (void)
 > 1. `cfg["topics"]` → `ParseTopicConfig()` (없으면 기본 토픽 유지)
 > 2. `cfg["enable_ur5e"]`/`cfg["enable_hand"]` → deprecated 경고 출력 후 무시
 
+#### 디바이스 설정 메서드
+
+| 메서드 | 접근 | 설명 |
+|--------|------|------|
+| `SetDeviceNameConfigs(map)` | public | 디바이스 이름/URDF/관절 한계 설정 → `OnDeviceConfigsSet()` 호출 |
+| `GetDeviceNameConfig(name)` | public const | 디바이스 이름으로 설정 조회 (`nullptr` = 미등록) |
+| `OnDeviceConfigsSet()` | protected virtual | 하위 클래스 오버라이드: URDF 기구학 해석 (tip_link → end_id) |
+
 #### 설정 접근자 & 보호 유틸리티
 
 | 메서드 | 접근 | 설명 |
@@ -126,7 +132,8 @@ virtual void UpdateGainsFromMsg(std::span<const double> gains) noexcept { (void)
 #### 보호 멤버 변수
 
 ```cpp
-TopicConfig topic_config_;                     // LoadConfig()에서 설정됨
+TopicConfig topic_config_;                                      // LoadConfig()에서 설정됨
+std::map<std::string, DeviceNameConfig> device_name_configs_;   // SetDeviceNameConfigs()에서 설정됨
 ```
 
 ---
@@ -245,22 +252,23 @@ my_controller:
 
 #### 구독 역할 (SubscribeRole)
 
-| 역할 | 설명 |
-|------|------|
-| `joint_state` | 로봇 관절 상태 |
-| `hand_state` | 핸드 모터 상태 |
-| `goal` / `target` | 목표 위치 (target은 하위 호환) |
+| 역할 | enum | 설명 |
+|------|------|------|
+| `state` | `kState` | 디바이스 관절 상태 |
+| `sensor_state` | `kSensorState` | 센서 상태 (핸드 등) |
+| `target` | `kTarget` | 목표 위치 |
+| `joint_state`, `hand_state`, `goal` | — | 하위 호환 별칭 |
 
 #### 퍼블리시 역할 (PublishRole)
 
-| 역할 | 설명 |
-|------|------|
-| `position_command` | 위치 커맨드 |
-| `torque_command` | 토크 커맨드 |
-| `hand_command` | 핸드 모터 커맨드 |
-| `task_position` | 태스크 공간 위치 (FK) |
-| `trajectory_state` | 궤적 상태 |
-| `controller_state` | 컨트롤러 내부 상태 |
+| 역할 | enum | 설명 |
+|------|------|------|
+| `joint_command` | `kJointCommand` | 관절/모터 커맨드 |
+| `ros2_command` | `kRos2Command` | ROS2 표준 커맨드 (Float64MultiArray) |
+| `task_position` | `kTaskPosition` | 태스크 공간 위치 (FK) |
+| `trajectory_state` | `kTrajectoryState` | 궤적 상태 |
+| `controller_state` | `kControllerState` | 컨트롤러 내부 상태 |
+| `position_command`, `torque_command`, `hand_command` | — | 하위 호환 별칭 |
 
 **기본 토픽 설정** (`MakeDefaultTopicConfig()` 하드코딩):
 
@@ -282,31 +290,36 @@ hand.subscribe: /hand/joint_states (kHandState)
 
 #### ControllerState (Compute 입력)
 
+일반화된 멀티 디바이스 구조 (`kMaxDevices = 4`):
+
 | 필드 | 타입 | 설명 |
 |------|------|------|
-| `robot.positions[6]` | `double` | 관절 각도 (rad) |
-| `robot.velocities[6]` | `double` | 관절 각속도 (rad/s) |
-| `robot.torques[6]` | `double` | 관절 토크 (N·m, 선택) |
-| `robot.tcp_position[3]` | `double` | TCP 위치 (m, FK 결과) |
-| `hand.motor_positions[10]` | `float` | 모터 각도 |
-| `hand.sensor_data[88]` | `int32_t` | 필터링된 센서 데이터 (post-LPF) |
-| `hand.sensor_data_raw[88]` | `int32_t` | 원시 센서 데이터 (pre-LPF) |
-| `hand.valid` | `bool` | 핸드 데이터 유효성 |
-| `dt` | `double` | 시간 간격 (0.002s @500Hz) — ⚠️ `robot.dt`와 동일 필수 |
-| `iteration` | `uint64_t` | 루프 카운터 — ⚠️ `robot.iteration`과 동일 필수 |
+| `devices[4]` | `DeviceState[]` | 디바이스별 상태 배열 |
+| `devices[i].positions[64]` | `double` | 관절 각도 (rad) |
+| `devices[i].velocities[64]` | `double` | 관절 각속도 (rad/s) |
+| `devices[i].efforts[64]` | `double` | 토크/힘 (N·m) |
+| `devices[i].sensor_data[128]` | `int32_t` | 센서 데이터 (filtered) |
+| `devices[i].sensor_data_raw[128]` | `int32_t` | 원시 센서 데이터 |
+| `devices[i].num_channels` | `int` | 유효 채널 수 |
+| `devices[i].valid` | `bool` | 데이터 유효성 |
+| `num_devices` | `int` | 활성 디바이스 수 |
+| `dt` | `double` | 시간 간격 (0.002s @500Hz) |
+| `iteration` | `uint64_t` | 루프 카운터 |
 
 #### ControllerOutput (Compute 출력)
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
-| `robot_commands[6]` | `double` | 관절 커맨드 (위치 또는 토크, `command_type`에 따라) |
-| `hand_commands[10]` | `float` | 핸드 모터 커맨드 |
+| `devices[4]` | `DeviceOutput[]` | 디바이스별 출력 배열 |
+| `devices[i].commands[64]` | `double` | 커맨드 (위치 또는 토크) |
+| `devices[i].goal_positions[64]` | `double` | 스텝 목표 (로깅용) |
+| `devices[i].target_positions[64]` | `double` | 궤적 위치 (로깅용) |
+| `devices[i].target_velocities[64]` | `double` | 궤적 속도 (로깅용) |
+| `devices[i].num_channels` | `int` | 유효 채널 수 |
 | `actual_task_positions[6]` | `double` | TCP 위치 + RPY (FK) |
 | `valid` | `bool` | `false`면 커맨드 무시 |
 | `command_type` | `CommandType` | `kPosition` 또는 `kTorque` |
-| `goal_positions[6]` | `double` | 스텝 목표 (로깅용) |
-| `target_velocities[6]` | `double` | 궤적 보간 속도 (로깅용) |
-| `hand_goal_positions[10]` | `float` | 핸드 스텝 목표 (로깅용) |
+| `num_devices` | `int` | 활성 디바이스 수 |
 
 ---
 

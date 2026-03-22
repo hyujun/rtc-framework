@@ -305,12 +305,16 @@ rtc_communication  ← 전송 추상화 계층
 
 ### 데이터 흐름 예시 (핸드 드라이버)
 
+`ur5e_hand_driver`는 포트 55151에서 요청-응답 폴링 방식으로 동작합니다:
+
 ```
 ur5e_hand_driver
     ↓ Transceiver<HandUdpCodec> 생성
     ↓ StartRecv() → jthread 수신 루프 (Core 5, SCHED_FIFO 65)
     │
     ├─→ RecvLoop: UDP 수신 → HandUdpCodec::Decode → HandState 스냅샷 갱신
+    │   └─→ 프로토콜: WritePosition(43B) → ReadVelocity(43B) → ReadSensor0-3(67B×4)
+    │       └─→ /hand/joint_states: [positions:10][velocities:10][sensors:44] @100Hz
     │
     └─→ Send: 모터 커맨드 인코딩 → UDP 송신 (할당 없음)
 ```

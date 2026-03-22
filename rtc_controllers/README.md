@@ -332,13 +332,23 @@ RTC_REGISTER_CONTROLLER(
 | **계산량** | 최소 | 중간 | 중간 | 높음 |
 | **스레드 안전** | 없음 | try_lock + atomic | try_lock + atomic | try_lock + atomic |
 
+### 런타임 게인 레이아웃 (`~/controller_gains` 토픽)
+
+| 컨트롤러 | 게인 형식 | 수 |
+|---------|----------|---|
+| **PController** | `[kp×6]` | 6 |
+| **JointPDController** | `[kp×6, kd×6, gravity(0/1), coriolis(0/1), trajectory_speed]` | 15 |
+| **ClikController** | `[kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1)]` | 10 |
+| **OperationalSpaceController** | `[kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, gravity(0/1), traj_speed, traj_ang_speed]` | 16 |
+
 ### RT 안전 보장 (전체 공통)
 
-모든 컨트롤러의 RT 경로 메서드 (`Compute`, `SetRobotTarget`, `SetHandTarget`, `InitializeHoldPosition`)는:
+모든 컨트롤러의 RT 경로 메서드 (`Compute`, `SetDeviceTarget`, `InitializeHoldPosition`)는:
 - `noexcept` 보장
 - 생성자에서 모든 Pinocchio/Eigen 버퍼 사전 할당 (RT 경로에서 동적 할당 없음)
-- `SetRobotTarget()`은 `std::try_to_lock` 비차단 뮤텍스 사용 (RT 스레드 차단 불가)
+- `SetDeviceTarget()`은 `std::lock_guard` 사용, `Compute()`는 `std::try_to_lock` (RT 스레드 차단 불가)
 - `new_target_` 플래그는 `memory_order_acquire/release` 원자적 동기화
+- Eigen: `noalias()` 사용, 고정 크기 행렬(3×3, 6×6) 스택 할당
 
 ---
 

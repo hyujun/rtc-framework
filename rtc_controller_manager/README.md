@@ -111,11 +111,12 @@ rtc_controller_manager/
 
 | 트리거 | 조건 | 결과 |
 |--------|------|------|
-| 초기화 타임아웃 | `init_timeout_sec` 내 state 미수신 | FATAL + 노드 종료 |
-| 디바이스 타임아웃 | `device_timeouts`에 등록된 state 토픽 갱신 gap 초과 | 글로벌 E-STOP |
-| 연속 오버런 | ≥10회 연속 RT 루프 오버런 | 글로벌 E-STOP |
-| 상태 모니터 실패 | `RtcStatusMonitor` 장애 감지 | 글로벌 E-STOP |
-| 핸드 통신 실패 | UDP 수신 타임아웃 지속 | E-STOP 플래그 설정 |
+| `init_timeout` | `init_timeout_sec` 내 state 미수신 | `TriggerGlobalEstop("init_timeout")` + 노드 종료 |
+| `robot_timeout` | `/joint_states` >100ms 미갱신 (CheckTimeouts 50Hz) | `TriggerGlobalEstop("robot_timeout")` |
+| `hand_timeout` | `/hand/joint_states` >200ms 미갱신 | `TriggerGlobalEstop("hand_timeout")` |
+| `consecutive_overrun` | ≥10회 연속 RT 루프 오버런 | `TriggerGlobalEstop("consecutive_overrun")` |
+| 상태 모니터 실패 | Safety/tracking 위반, 관절 한계 (10Hz) | `TriggerGlobalEstop(failure_type)` |
+| `hand_failure` | UDP 영/중복 데이터 감지 (50Hz) | `TriggerGlobalEstop("hand_failure")` |
 
 ### 오버런 복구
 
@@ -198,18 +199,37 @@ if (lock.owns_lock()) {
   ros__parameters:
     control_rate: 500.0
     initial_controller: "joint_pd_controller"
+    init_timeout_sec: 30.0
     auto_hold_position: true
     enable_estop: true
     device_timeout_names: ["ur5e"]
-    device_timeout_values: [100.0]
+    device_timeout_values: [100.0]       # ms
     enable_logging: true
-    robot_joint_names:
-      - "shoulder_pan_joint"
-      - "shoulder_lift_joint"
-      - "elbow_joint"
-      - "wrist_1_joint"
-      - "wrist_2_joint"
-      - "wrist_3_joint"
+    enable_timing_log: true
+    enable_device_log: true
+    max_log_sessions: 10
+
+    # 디바이스 설정 (토픽 그룹명으로 키)
+    devices:
+      ur5e:
+        joint_state_names:
+          - "shoulder_pan_joint"
+          - "shoulder_lift_joint"
+          - "elbow_joint"
+          - "wrist_1_joint"
+          - "wrist_2_joint"
+          - "wrist_3_joint"
+        urdf:
+          package: "ur5e_description"
+          path: "robots/ur5e/urdf/ur5e.urdf"
+          root_link: "base_link"
+          tip_link: "wrist_3_link"
+        joint_limits:
+          max_velocity:     [2.0, 2.0, 3.0, 3.0, 3.0, 3.0]
+          max_acceleration: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+          max_torque:       [150.0, 150.0, 150.0, 28.0, 28.0, 28.0]
+          position_lower:   [-6.28, -6.28, -3.14, -6.28, -6.28, -6.28]
+          position_upper:   [6.28, 6.28, 3.14, 6.28, 6.28, 6.28]
 ```
 
 ---
