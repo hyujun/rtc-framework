@@ -75,8 +75,6 @@ demo_joint_controller:
   robot_kp: [120.0, 120.0, 100.0, 80.0, 80.0, 80.0]
   hand_kp: [50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
   command_type: "position"
-  enable_ur5e: true
-  enable_hand: true
 ```
 
 ---
@@ -238,12 +236,11 @@ ros2 run ur5e_bringup motion_editor_gui
 /**:
   ros__parameters:
     control_rate: 500.0
-    enable_ur5e: true
-    enable_hand: false
     initial_controller: "demo_joint_controller"
     auto_hold_position: true
     enable_estop: true
-    robot_timeout_ms: 100.0
+    device_timeout_names: ["ur5e"]
+    device_timeout_values: [100.0]
     enable_logging: true
     robot_joint_names:
       - "shoulder_pan_joint"

@@ -80,7 +80,7 @@ rtc_controller_manager/
 - 1000 이터레이션마다 타이밍 서머리 출력
 
 ### 워치독 (50 Hz, 매 10번째 tick)
-- 마지막 관절 상태 갱신 이후 `robot_timeout_ms` 초과 시 E-STOP
+- `device_timeouts`에 등록된 각 디바이스 그룹의 state 토픽 수신 간격이 timeout 초과 시 E-STOP
 
 ---
 
@@ -111,8 +111,8 @@ rtc_controller_manager/
 
 | 트리거 | 조건 | 결과 |
 |--------|------|------|
-| 초기화 타임아웃 | `init_timeout_sec` 내 joint_states 미수신 | FATAL + 노드 종료 |
-| 로봇 타임아웃 | joint_states 갱신 > `robot_timeout_ms` | 글로벌 E-STOP |
+| 초기화 타임아웃 | `init_timeout_sec` 내 state 미수신 | FATAL + 노드 종료 |
+| 디바이스 타임아웃 | `device_timeouts`에 등록된 state 토픽 갱신 gap 초과 | 글로벌 E-STOP |
 | 연속 오버런 | ≥10회 연속 RT 루프 오버런 | 글로벌 E-STOP |
 | 상태 모니터 실패 | `RtcStatusMonitor` 장애 감지 | 글로벌 E-STOP |
 | 핸드 통신 실패 | UDP 수신 타임아웃 지속 | E-STOP 플래그 설정 |
@@ -179,10 +179,9 @@ if (lock.owns_lock()) {
 |---------|--------|------|
 | `control_rate` | `500.0` | 제어 주파수 (Hz) |
 | `initial_controller` | `"joint_pd_controller"` | 시작 컨트롤러 |
-| `enable_ur5e` | `true` | UR5e 로봇 활성화 |
-| `enable_hand` | `false` | 핸드 활성화 |
 | `auto_hold_position` | `true` | 타겟 없을 때 현재 위치 유지 |
-| `robot_timeout_ms` | `100.0` | 관절 상태 타임아웃 (ms) |
+| `device_timeout_names` | `["ur5e"]` | E-STOP 감시 대상 디바이스 그룹 (topics 키와 매칭) |
+| `device_timeout_values` | `[100.0]` | 각 그룹의 state 토픽 타임아웃 (ms) |
 | `enable_estop` | `true` | E-STOP 활성화 |
 | `enable_logging` | `true` | CSV 로깅 활성화 |
 | `init_timeout_sec` | `30.0` | 초기화 타임아웃 (초) |
@@ -198,12 +197,11 @@ if (lock.owns_lock()) {
 /**:
   ros__parameters:
     control_rate: 500.0
-    enable_ur5e: true
-    enable_hand: false
     initial_controller: "joint_pd_controller"
     auto_hold_position: true
     enable_estop: true
-    robot_timeout_ms: 100.0
+    device_timeout_names: ["ur5e"]
+    device_timeout_values: [100.0]
     enable_logging: true
     robot_joint_names:
       - "shoulder_pan_joint"

@@ -197,8 +197,8 @@ init_timeout_sec: 5.0
 enable_status_monitor: false  # true for real robot
 estop:
   enable_estop: true
-  robot_timeout_ms: 100.0
-  hand_timeout_ms: 200.0     # 0 to disable hand E-STOP
+  device_timeout_names: ["ur5e"]      # matches topics group names
+  device_timeout_values: [100.0]      # ms — state topic gap triggers E-STOP
   safe_position: [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]
 ```
 

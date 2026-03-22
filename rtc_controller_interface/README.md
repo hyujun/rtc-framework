@@ -112,24 +112,21 @@ virtual void UpdateGainsFromMsg(std::span<const double> gains) noexcept { (void)
 | `GetCommandType` | `kPosition` | `kPosition` 또는 `kTorque` |
 
 > **`LoadConfig()` 기본 구현 동작:**
-> 1. `cfg["enable_ur5e"]` → `per_controller_device_flags_.enable_ur5e` (nullopt = 전역 설정 상속)
-> 2. `cfg["enable_hand"]` → `per_controller_device_flags_.enable_hand` (nullopt = 전역 설정 상속)
-> 3. `cfg["topics"]` → `ParseTopicConfig()` (없으면 기본 토픽 유지)
+> 1. `cfg["topics"]` → `ParseTopicConfig()` (없으면 기본 토픽 유지)
+> 2. `cfg["enable_ur5e"]`/`cfg["enable_hand"]` → deprecated 경고 출력 후 무시
 
 #### 설정 접근자 & 보호 유틸리티
 
 | 메서드 | 접근 | 설명 |
 |--------|------|------|
 | `GetTopicConfig()` | public const | 컨트롤러별 토픽 라우팅 설정 반환 |
-| `GetPerControllerDeviceFlags()` | public const | 디바이스 활성화 오버라이드 (nullopt = 전역 상속) |
-| `ParseTopicConfig(YAML::Node&)` | protected static | YAML `topics.ur5e`/`topics.hand` 파싱 |
-| `MakeDefaultTopicConfig()` | protected static | 하드코딩된 기본 토픽 설정 생성 |
+| `ParseTopicConfig(YAML::Node&)` | protected static | YAML `topics:` 하위의 모든 디바이스 그룹을 동적 파싱 |
+| `MakeDefaultTopicConfig()` | protected static | 기본 토픽 설정 생성 (ur5e만 포함) |
 
 #### 보호 멤버 변수
 
 ```cpp
 TopicConfig topic_config_;                     // LoadConfig()에서 설정됨
-PerControllerDeviceFlags per_controller_device_flags_;  // LoadConfig()에서 설정됨
 ```
 
 ---
@@ -227,8 +224,6 @@ target_link_libraries(my_exe
 
 ```yaml
 my_controller:
-  enable_ur5e: true
-  enable_hand: true
   topics:
     ur5e:
       subscribe:
