@@ -23,12 +23,11 @@
     # ── Logging configuration ─────────────────────────────────────────────────
     enable_logging: true
     enable_timing_log: true
-    enable_robot_log: true
-    enable_hand_log: true
+    enable_device_log: true          # auto-creates per-device log files
     log_dir: ""
     max_log_sessions: 10
 
-    # ── Joint names (UR5e URDF active joints) ─────────────────────────────────
+    # ── Joint names (channel count = array length) ──────────────────────────
     robot_joint_names:
       - "shoulder_pan_joint"
       - "shoulder_lift_joint"
@@ -36,6 +35,24 @@
       - "wrist_1_joint"
       - "wrist_2_joint"
       - "wrist_3_joint"
+
+    hand_joint_names:
+      - "thumb_cmc_aa"
+      - "thumb_cmc_fe"
+      - "thumb_mcp_fe"
+      - "index_mcp_aa"
+      - "index_mcp_fe"
+      - "index_dip_fe"
+      - "middle_mcp_aa"
+      - "middle_mcp_fe"
+      - "middle_dip_fe"
+      - "ring_mcp_fe"
+
+    hand_sensor_names:
+      - "thumb_baro"
+      - "index_baro"
+      - "middle_baro"
+      - "ring_baro"
 
     # ── Joint limits ──────────────────────────────────────────────────────────
     joint_limits:

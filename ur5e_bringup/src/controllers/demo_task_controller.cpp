@@ -166,26 +166,27 @@ ControllerOutput DemoTaskController::Compute(
   ControllerOutput output;
   output.num_devices = state.num_devices;
   auto & out0 = output.devices[0];
-  out0.num_channels = kNumRobotJoints;
+  const int nc0 = dev0.num_channels;
+  out0.num_channels = nc0;
 
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+  for (int i = 0; i < nc0; ++i) {
     out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
   }
-  ClampCommands(out0.target_velocities, kNumRobotJoints, kMaxJointVelocity);
+  ClampCommands(out0.target_velocities, nc0, kMaxJointVelocity);
 
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+  for (int i = 0; i < nc0; ++i) {
     out0.commands[i] = dev0.positions[i] + out0.target_velocities[i] * dt;
   }
   for (std::size_t i = 0; i < 3; ++i) {
     out0.target_positions[i] = traj_state.pose.translation()[static_cast<Eigen::Index>(i)];
   }
-  for (std::size_t i = 3; i < kNumRobotJoints; ++i) {
+  for (int i = 3; i < nc0; ++i) {
     out0.target_positions[i] = null_target_[i];
   }
   for (std::size_t i = 0; i < 3; ++i) {
     out0.goal_positions[i] = tcp_target_[i];
   }
-  for (std::size_t i = 3; i < kNumRobotJoints; ++i) {
+  for (int i = 3; i < nc0; ++i) {
     out0.goal_positions[i] = null_target_[i];
   }
 
@@ -201,17 +202,18 @@ ControllerOutput DemoTaskController::Compute(
   // ── Step 8: Hand P control ────────────────────────────────────────────────
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto & dev1 = state.devices[1];
+    const int nc1 = dev1.num_channels;
     auto & out1 = output.devices[1];
-    out1.num_channels = kNumHandMotors;
-    for (int i = 0; i < kNumHandMotors; ++i) {
+    out1.num_channels = nc1;
+    for (int i = 0; i < nc1; ++i) {
       const auto idx = static_cast<std::size_t>(i);
       const double error = device_targets_[1][idx] - dev1.positions[idx];
       out1.commands[idx] =
         dev1.positions[idx] +
         static_cast<double>(gains_.hand_kp[idx]) * error * state.dt;
     }
-    ClampCommands(out1.commands, kNumHandMotors, kMaxHandVelocity);
-    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+    ClampCommands(out1.commands, nc1, kMaxHandVelocity);
+    for (int i = 0; i < nc1; ++i) {
       out1.goal_positions[i] = device_targets_[1][i];
     }
   }
@@ -331,8 +333,9 @@ ControllerOutput DemoTaskController::ComputeEstop(
   ControllerOutput output;
   output.num_devices = state.num_devices;
   auto & out0 = output.devices[0];
-  out0.num_channels = kNumRobotJoints;
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+  const int nc0 = dev0.num_channels;
+  out0.num_channels = nc0;
+  for (int i = 0; i < nc0; ++i) {
     out0.commands[i] = dev0.positions[i] +
       std::clamp(kSafePosition[i] - dev0.positions[i],
                      -kMaxJointVelocity, kMaxJointVelocity) *

@@ -26,9 +26,10 @@ ControllerOutput PController::Compute(const ControllerState & state) noexcept
   // Device 0 (robot arm): P control
   const auto & dev0 = state.devices[0];
   auto & out0 = output.devices[0];
-  out0.num_channels = kNumRobotJoints;
+  const int nc0 = dev0.num_channels;
+  out0.num_channels = nc0;
 
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+  for (int i = 0; i < nc0; ++i) {
     const double error = device_targets_[0][i] - dev0.positions[i];
     out0.commands[i] = dev0.positions[i] + gains_.kp[i] * error * state.dt;
     q_[static_cast<Eigen::Index>(i)] = dev0.positions[i];
@@ -45,21 +46,22 @@ ControllerOutput PController::Compute(const ControllerState & state) noexcept
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
 
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+  for (int i = 0; i < nc0; ++i) {
     out0.target_positions[i] = device_targets_[0][i];
     out0.goal_positions[i] = device_targets_[0][i];
   }
 
   // Device 1 (hand): pass-through goals
   if (state.num_devices > 1) {
+    const int nc1 = state.devices[1].num_channels;
     auto & out1 = output.devices[1];
-    out1.num_channels = kNumHandMotors;
-    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+    out1.num_channels = nc1;
+    for (int i = 0; i < nc1; ++i) {
       out1.goal_positions[i] = device_targets_[1][i];
     }
   }
 
-  ClampCommands(out0.commands, kNumRobotJoints);
+  ClampCommands(out0.commands, nc0);
   output.command_type = command_type_;
   return output;
 }

@@ -78,9 +78,10 @@ ControllerOutput JointPDController::Compute(
   ControllerOutput output;
   output.num_devices = state.num_devices;
   auto & out0 = output.devices[0];
-  out0.num_channels = kNumRobotJoints;
+  const int nc0 = dev0.num_channels;
+  out0.num_channels = nc0;
 
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+  for (int i = 0; i < nc0; ++i) {
     const double e  = traj_state.positions[i] - dev0.positions[i];
     const double de = (e - prev_error_[i]) / dt;
 
@@ -100,7 +101,7 @@ ControllerOutput JointPDController::Compute(
     prev_error_[i] = e;
   }
 
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+  for (int i = 0; i < nc0; ++i) {
     out0.target_positions[i] = traj_state.positions[i];
     out0.goal_positions[i] = device_targets_[0][i];
     out0.target_velocities[i] = traj_state.velocities[i];
@@ -108,14 +109,15 @@ ControllerOutput JointPDController::Compute(
 
   // Device 1 (hand): pass-through goals
   if (state.num_devices > 1) {
+    const int nc1 = state.devices[1].num_channels;
     auto & out1 = output.devices[1];
-    out1.num_channels = kNumHandMotors;
-    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+    out1.num_channels = nc1;
+    for (int i = 0; i < nc1; ++i) {
       out1.goal_positions[i] = device_targets_[1][i];
     }
   }
 
-  ClampCommands(out0.commands, kNumRobotJoints, command_type_);
+  ClampCommands(out0.commands, nc0, command_type_);
 
   // TCP pose output (task_positions: [x, y, z, roll, pitch, yaw])
   const auto last_joint =
@@ -287,20 +289,21 @@ ControllerOutput JointPDController::ComputeEstop(
   ControllerOutput output;
   output.num_devices = state.num_devices;
   auto & out0 = output.devices[0];
-  out0.num_channels = kNumRobotJoints;
+  const int nc0 = dev0.num_channels;
+  out0.num_channels = nc0;
 
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+  for (int i = 0; i < nc0; ++i) {
     const double e  = kSafePosition[i] - dev0.positions[i];
     const double de = (e - prev_error_[i]) / dt;
     out0.commands[i] = gains_.kp[i] * e + gains_.kd[i] * de;
     prev_error_[i] = e;
   }
 
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+  for (int i = 0; i < nc0; ++i) {
     out0.target_positions[i] = kSafePosition[i];
     out0.goal_positions[i] = kSafePosition[i];
   }
-  ClampCommands(out0.commands, kNumRobotJoints, command_type_);
+  ClampCommands(out0.commands, nc0, command_type_);
   new_target_.store(true, std::memory_order_relaxed);
   return output;
 }

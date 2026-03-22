@@ -179,35 +179,37 @@ ControllerOutput ClikController::Compute(
   ControllerOutput output;
   output.num_devices = state.num_devices;
   auto & out0 = output.devices[0];
-  out0.num_channels = kNumRobotJoints;
+  const int nc0 = dev0.num_channels;
+  out0.num_channels = nc0;
 
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+  for (int i = 0; i < nc0; ++i) {
     out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
   }
-  ClampVelocity(out0.target_velocities, kNumRobotJoints);
+  ClampVelocity(out0.target_velocities, nc0);
 
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+  for (int i = 0; i < nc0; ++i) {
     out0.commands[i] = dev0.positions[i] + out0.target_velocities[i] * dt;
   }
   for (std::size_t i = 0; i < 3; ++i) {
     out0.target_positions[i] = traj_state.pose.translation()[static_cast<Eigen::Index>(i)];
   }
-  for (std::size_t i = 3; i < kNumRobotJoints; ++i) {
+  for (int i = 3; i < nc0; ++i) {
     out0.target_positions[i] = null_target_[i];
   }
   // goal_positions: task-space goal in [0..2], null-space goal in [3..5]
   for (std::size_t i = 0; i < 3; ++i) {
     out0.goal_positions[i] = tcp_target_[i];
   }
-  for (std::size_t i = 3; i < kNumRobotJoints; ++i) {
+  for (int i = 3; i < nc0; ++i) {
     out0.goal_positions[i] = null_target_[i];
   }
 
   // Device 1 (hand): pass-through goals
   if (state.num_devices > 1) {
+    const int nc1 = state.devices[1].num_channels;
     auto & out1 = output.devices[1];
-    out1.num_channels = kNumHandMotors;
-    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+    out1.num_channels = nc1;
+    for (int i = 0; i < nc1; ++i) {
       out1.goal_positions[i] = device_targets_[1][i];
     }
   }
@@ -341,8 +343,9 @@ ControllerOutput ClikController::ComputeEstop(
   ControllerOutput output;
   output.num_devices = state.num_devices;
   auto & out0 = output.devices[0];
-  out0.num_channels = kNumRobotJoints;
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+  const int nc0 = dev0.num_channels;
+  out0.num_channels = nc0;
+  for (int i = 0; i < nc0; ++i) {
     out0.commands[i] = dev0.positions[i] +
       std::clamp(kSafePosition[i] - dev0.positions[i],
                      -kMaxJointVelocity, kMaxJointVelocity) *

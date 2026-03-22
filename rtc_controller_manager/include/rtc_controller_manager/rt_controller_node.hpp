@@ -218,6 +218,7 @@ private:
   std::vector<std::string> robot_joint_names_;
   std::vector<std::string> hand_motor_names_;
   std::vector<std::string> fingertip_names_;
+  std::vector<std::string> hand_sensor_names_;
 
   // Per-device reorder maps (indexed by device slot)
   struct DeviceReorderMap {

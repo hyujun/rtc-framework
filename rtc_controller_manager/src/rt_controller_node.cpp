@@ -151,6 +151,7 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("enable_timing_log", true);
   declare_parameter("enable_robot_log", true);
   declare_parameter("enable_hand_log", true);
+  declare_parameter("enable_device_log", true);
   declare_parameter("enable_estop", true);
   declare_parameter("enable_status_monitor", false);
   declare_parameter("init_timeout_sec", 5.0);
@@ -164,7 +165,9 @@ void RtControllerNode::DeclareAndLoadParameters()
   // Joint/Motor/Fingertip names (v5.14.0 named messaging)
   declare_parameter("robot_joint_names", std::vector<std::string>{});
   declare_parameter("hand_motor_names", std::vector<std::string>{});
+  declare_parameter("hand_joint_names", std::vector<std::string>{});
   declare_parameter("hand_fingertip_names", std::vector<std::string>{});
+  declare_parameter("hand_sensor_names", std::vector<std::string>{});
 
 
   control_rate_ = get_parameter("control_rate").as_double();
@@ -289,10 +292,9 @@ void RtControllerNode::DeclareAndLoadParameters()
     urtc::CleanupOldSessions(logging_root, max_sessions);
 
     const bool enable_timing = get_parameter("enable_timing_log").as_bool();
-    const bool enable_robot  = get_parameter("enable_robot_log").as_bool()
-                               && active_groups_.contains("ur5e");
-    const bool enable_hand   = get_parameter("enable_hand_log").as_bool()
-                               && active_groups_.contains("hand");
+    const bool enable_device = get_parameter("enable_device_log").as_bool();
+    const bool enable_robot  = enable_device && active_groups_.contains("ur5e");
+    const bool enable_hand   = enable_device && active_groups_.contains("hand");
     const auto ctrl_dir = session_dir / "controller";
     std::filesystem::create_directories(ctrl_dir);
 
@@ -304,11 +306,20 @@ void RtControllerNode::DeclareAndLoadParameters()
         ? (ctrl_dir / "hand_log.csv").string() : "";
 
     const auto yaml_joint_names = get_parameter("robot_joint_names").as_string_array();
-    const auto yaml_motor_names = get_parameter("hand_motor_names").as_string_array();
-    const auto yaml_fingertip_names = get_parameter("hand_fingertip_names").as_string_array();
+    auto yaml_motor_names = get_parameter("hand_joint_names").as_string_array();
+    if (yaml_motor_names.empty()) {
+      yaml_motor_names = get_parameter("hand_motor_names").as_string_array();
+    }
+    auto yaml_sensor_names = get_parameter("hand_sensor_names").as_string_array();
+    if (yaml_sensor_names.empty()) {
+      yaml_sensor_names = get_parameter("hand_fingertip_names").as_string_array();
+    }
     logger_ = std::make_unique<urtc::DataLogger>(
         timing_path, robot_path, hand_path,
-        yaml_joint_names, yaml_motor_names, yaml_fingertip_names);
+        yaml_joint_names, yaml_motor_names, yaml_sensor_names,
+        static_cast<int>(yaml_joint_names.empty() ? urtc::kNumRobotJoints : yaml_joint_names.size()),
+        static_cast<int>(yaml_motor_names.empty() ? urtc::kNumHandMotors : yaml_motor_names.size()),
+        static_cast<int>(yaml_sensor_names.size() * urtc::kSensorValuesPerFingertip));
     RCLCPP_INFO(get_logger(),
         "Logging to: %s/controller/ (max_sessions=%d)",
         session_dir.string().c_str(), max_sessions);
@@ -1293,10 +1304,17 @@ void RtControllerNode::ClearGlobalEstop() noexcept
 
 void RtControllerNode::LoadAndValidateJointNames()
 {
-  // 1. YAML에서 이름 로드
+  // 1. YAML에서 이름 로드 (hand_joint_names → hand_motor_names fallback)
   robot_joint_names_ = get_parameter("robot_joint_names").as_string_array();
-  hand_motor_names_  = get_parameter("hand_motor_names").as_string_array();
-  fingertip_names_   = get_parameter("hand_fingertip_names").as_string_array();
+  hand_motor_names_  = get_parameter("hand_joint_names").as_string_array();
+  if (hand_motor_names_.empty()) {
+    hand_motor_names_ = get_parameter("hand_motor_names").as_string_array();
+  }
+  hand_sensor_names_ = get_parameter("hand_sensor_names").as_string_array();
+  if (hand_sensor_names_.empty()) {
+    hand_sensor_names_ = get_parameter("hand_fingertip_names").as_string_array();
+  }
+  fingertip_names_   = hand_sensor_names_;
 
   // 비어있으면 기본값 사용
   if (robot_joint_names_.empty()) {
@@ -1311,12 +1329,11 @@ void RtControllerNode::LoadAndValidateJointNames()
     fingertip_names_ = urtc::kDefaultFingertipNames;
   }
 
-  // 2. 개수 검증
+  // 2. 개수 검증 (warn only — runtime count may differ from compile-time default)
   if (robot_joint_names_.size() != static_cast<std::size_t>(urtc::kNumRobotJoints)) {
-    RCLCPP_ERROR(get_logger(),
-                 "robot_joint_names has %zu entries (expected %d) — using defaults",
-                 robot_joint_names_.size(), urtc::kNumRobotJoints);
-    robot_joint_names_ = urtc::kDefaultRobotJointNames;
+    RCLCPP_WARN(get_logger(),
+                "robot_joint_names has %zu entries (default %d) — using YAML count",
+                robot_joint_names_.size(), urtc::kNumRobotJoints);
   }
 
   // 3. URDF active joint 검증
@@ -1402,12 +1419,11 @@ void RtControllerNode::LoadAndValidateJointNames()
                 }
                 return s;
               }().c_str());
-  // Hand motor 개수 검증
+  // Hand motor 개수 검증 (warn only — runtime count may differ from compile-time default)
   if (hand_motor_names_.size() != static_cast<std::size_t>(urtc::kNumHandMotors)) {
-    RCLCPP_ERROR(get_logger(),
-                 "hand_motor_names has %zu entries (expected %d) — using defaults",
-                 hand_motor_names_.size(), urtc::kNumHandMotors);
-    hand_motor_names_ = urtc::kDefaultHandMotorNames;
+    RCLCPP_WARN(get_logger(),
+                "hand_motor_names has %zu entries (default %d) — using YAML count",
+                hand_motor_names_.size(), urtc::kNumHandMotors);
   }
 
   RCLCPP_INFO(get_logger(), "Hand motors (%zu): [%s]",

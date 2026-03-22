@@ -25,16 +25,17 @@ ControllerOutput DemoJointController::Compute(const ControllerState & state) noe
 
   const auto & dev0 = state.devices[0];
   auto & out0 = output.devices[0];
-  out0.num_channels = kNumRobotJoints;
+  const int nc0 = dev0.num_channels;
+  out0.num_channels = nc0;
 
   // ── Robot arm P control (identical to PController) ────────────────────────
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+  for (int i = 0; i < nc0; ++i) {
     const double error = device_targets_[0][i] - dev0.positions[i];
     out0.commands[i] =
       dev0.positions[i] + gains_.robot_kp[i] * error * state.dt;
     q_[static_cast<Eigen::Index>(i)] = dev0.positions[i];
   }
-  ClampCommands(out0.commands, kNumRobotJoints, kMaxJointVelocity);
+  ClampCommands(out0.commands, nc0, kMaxJointVelocity);
 
   // ── Forward kinematics for task-space logging ─────────────────────────────
   pinocchio::forwardKinematics(model_, data_, q_);
@@ -48,24 +49,25 @@ ControllerOutput DemoJointController::Compute(const ControllerState & state) noe
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
 
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+  for (int i = 0; i < nc0; ++i) {
     out0.target_positions[i] = device_targets_[0][i];
     out0.goal_positions[i] = device_targets_[0][i];
   }
 
-  // ── Hand motor P control (same formula applied to 10 hand motors) ─────────
+  // ── Hand motor P control (same formula applied to hand motors) ─────────
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto & dev1 = state.devices[1];
+    const int nc1 = dev1.num_channels;
     auto & out1 = output.devices[1];
-    out1.num_channels = kNumHandMotors;
-    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+    out1.num_channels = nc1;
+    for (int i = 0; i < nc1; ++i) {
       const double error = device_targets_[1][i] - dev1.positions[i];
       out1.commands[i] =
         dev1.positions[i] +
         static_cast<double>(gains_.hand_kp[i]) * error * state.dt;
     }
-    ClampCommands(out1.commands, kNumHandMotors, kMaxHandVelocity);
-    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+    ClampCommands(out1.commands, nc1, kMaxHandVelocity);
+    for (int i = 0; i < nc1; ++i) {
       out1.goal_positions[i] = device_targets_[1][i];
     }
   }

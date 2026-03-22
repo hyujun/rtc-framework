@@ -14,9 +14,9 @@
 namespace rtc {
 
 // ── Compile-time constants ─────────────────────────────────────────────────────
-inline constexpr int kNumRobotJoints = 6;
+inline constexpr int kNumRobotJoints = 6;  // default channel count (UR5e); runtime count from YAML
 inline constexpr int kMaxRobotDOF            = 12;   // max joints for generic robots
-inline constexpr int kNumHandMotors          = 10;
+inline constexpr int kNumHandMotors          = 10;  // default channel count; runtime count from YAML
 inline constexpr int kMaxDeviceChannels      = 64;   // max channels for generic devices
 inline constexpr int kMaxSensorChannels      = 128;  // max sensor data channels
 inline constexpr int kMaxInferenceValues     = 64;   // max inference output values
