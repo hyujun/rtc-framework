@@ -21,13 +21,6 @@
 
 namespace rtc {
 
-// Cache line size determination (C++17 hardware destructive interference size)
-#ifdef __cpp_lib_hardware_interference_size
-  constexpr std::size_t kCacheLineSize = std::hardware_destructive_interference_size;
-#else
-  constexpr std::size_t kCacheLineSize = 64;
-#endif
-
 // Per-device log data slot (used in LogEntry for each device group)
 struct DeviceLogSlot {
   int num_channels{0};
@@ -90,9 +83,9 @@ class SpscLogBuffer {
     const std::size_t next = (head + 1) & (N - 1);  // Fast modulo using bitwise AND
 
     // Use cached tail_ index to minimize atomic operations and cache bouncing
-    if (next == cached_tail_) {
+    if (next == cached_tail_) [[unlikely]] {
       cached_tail_ = tail_.load(std::memory_order_acquire);
-      if (next == cached_tail_) {
+      if (next == cached_tail_) [[unlikely]] {
         drop_count_.fetch_add(1, std::memory_order_relaxed);
         return false;  // buffer full — entry dropped
       }

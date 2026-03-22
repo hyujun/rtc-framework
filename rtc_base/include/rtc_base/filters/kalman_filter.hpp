@@ -68,6 +68,8 @@ namespace rtc {
 
 template <std::size_t N>
 class KalmanFilterN {
+  static_assert(N > 0, "KalmanFilterN: N must be at least 1");
+
  public:
   // ── Parameters ────────────────────────────────────────────────────────────
 

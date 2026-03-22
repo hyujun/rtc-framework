@@ -362,6 +362,14 @@ rtc_controller_interface  ← 추상 인터페이스 + 레지스트리
 
 ---
 
+## 최적화 내역 (v0.1.1)
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **controller_registry** | `Instance()` 메서드에 `noexcept` 추가 (Meyer's singleton은 예외를 throw하지 않음) |
+
+---
+
 ## 라이선스
 
 MIT License — 자세한 내용은 [LICENSE](../LICENSE) 파일을 참조하세요.

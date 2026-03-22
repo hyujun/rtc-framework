@@ -437,6 +437,14 @@ colcon build --packages-select rtc_mujoco_sim --symlink-install \
 
 ---
 
+## 최적화 내역 (v5.16.1)
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **코드 검증** | C++20 표준 및 컴파일러 경고 플래그 확인 완료 — 이미 적용됨 |
+
+---
+
 ## 라이선스
 
 MIT License

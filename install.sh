@@ -1,6 +1,9 @@
 #!/bin/bash
 # install.sh — RTC (Real-Time Controller) Installation
 #
+# Requires: GCC 10+ or Clang 13+ (C++20 support).
+# All C++ packages use CMAKE_CXX_STANDARD 20 with strict compiler warnings.
+#
 # Usage:
 #   ./install.sh              # full installation (default)
 #   ./install.sh sim          # MuJoCo simulation only
@@ -1206,10 +1209,10 @@ print_summary() {
   echo "  See: docs/VSCODE_DEBUGGING.md"
   echo ""
   echo -e "${CYAN}${BOLD}── Documentation ───────────────────────────────────────${NC}"
+  echo "  docs/CLAUDE.md           — full API and architecture reference"
   echo "  docs/VSCODE_DEBUGGING.md — VS Code GDB debugging guide"
   echo "  docs/RT_OPTIMIZATION.md  — RT tuning guide"
-  echo "  docs/CHANGELOG.md        — version history"
-  echo "  CLAUDE.md                — full API and architecture reference"
+  echo "  docs/SHELL_SCRIPTS.md    — shell scripts usage guide"
   echo ""
 }
 

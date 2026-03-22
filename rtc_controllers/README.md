@@ -392,6 +392,15 @@ rtc_controllers  ← 4개 내장 컨트롤러 구현
 
 ---
 
+## 최적화 내역 (v0.1.1)
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **p_controller.hpp** | include 순서 수정 — project header를 최상단으로 이동 (Google C++ style) |
+| **joint_space_trajectory.hpp** | `static_assert(N > 0)` 추가 — 템플릿 파라미터 컴파일 타임 검증 |
+
+---
+
 ## 라이선스
 
 MIT License — 자세한 내용은 [LICENSE](../LICENSE) 파일을 참조하세요.

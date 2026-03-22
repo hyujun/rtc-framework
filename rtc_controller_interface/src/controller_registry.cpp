@@ -3,7 +3,7 @@
 namespace rtc
 {
 
-ControllerRegistry & ControllerRegistry::Instance()
+ControllerRegistry & ControllerRegistry::Instance() noexcept
 {
   static ControllerRegistry instance;
   return instance;

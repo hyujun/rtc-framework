@@ -1,11 +1,7 @@
 #ifndef RTC_CONTROLLERS_P_CONTROLLER_H_
 #define RTC_CONTROLLERS_P_CONTROLLER_H_
 
-#include <array>
-#include <span>
-#include <string>
-#include <string_view>
-#include <vector>
+#include "rtc_controller_interface/rt_controller_interface.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -20,7 +16,11 @@
 
 #include <Eigen/Core>
 
-#include "rtc_controller_interface/rt_controller_interface.hpp"
+#include <array>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace rtc
 {

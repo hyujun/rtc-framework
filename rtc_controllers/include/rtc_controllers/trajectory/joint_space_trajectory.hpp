@@ -12,6 +12,8 @@ namespace trajectory
 
 template<std::size_t N>
 class JointSpaceTrajectory {
+  static_assert(N > 0, "JointSpaceTrajectory: N must be at least 1");
+
 public:
   struct State
   {

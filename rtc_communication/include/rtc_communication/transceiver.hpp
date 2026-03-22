@@ -12,6 +12,11 @@
 // All hot-path operations (recv, decode, send) are allocation-free
 // and safe for SCHED_FIFO real-time threads.
 
+#include "rtc_base/threading/thread_config.hpp"
+#include "rtc_base/threading/thread_utils.hpp"
+#include "rtc_communication/packet_codec.hpp"
+#include "rtc_communication/transport_interface.hpp"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -21,11 +26,6 @@
 #include <mutex>
 #include <thread>
 #include <utility>
-
-#include "rtc_base/threading/thread_config.hpp"
-#include "rtc_base/threading/thread_utils.hpp"
-#include "rtc_communication/packet_codec.hpp"
-#include "rtc_communication/transport_interface.hpp"
 
 namespace rtc {
 
@@ -114,10 +114,10 @@ class Transceiver {
     // Buffer slightly larger than the recv packet to detect oversized datagrams.
     std::array<uint8_t, sizeof(RecvPacket) + 64> buffer{};
 
-    while (!stop_token.stop_requested()) {
+    while (!stop_token.stop_requested()) [[likely]] {
       const ssize_t n = transport_->Recv(buffer);
-      if (n < 0) continue;  // timeout or transport closed -- recheck stop
-      if (static_cast<std::size_t>(n) < sizeof(RecvPacket)) continue;
+      if (n < 0) [[unlikely]] continue;  // timeout or transport closed
+      if (static_cast<std::size_t>(n) < sizeof(RecvPacket)) [[unlikely]] continue;
 
       State state{};
       if (Codec::Decode(

@@ -26,14 +26,6 @@
 
 namespace rtc {
 
-// Cache line size (shared with log_buffer.hpp)
-#ifdef __cpp_lib_hardware_interference_size
-  inline constexpr std::size_t kPublishCacheLineSize =
-      std::hardware_destructive_interference_size;
-#else
-  inline constexpr std::size_t kPublishCacheLineSize = 64;
-#endif
-
 // Snapshot of all data needed for ROS2 publishing in one control tick.
 // Populated by the RT loop (producer), consumed by the publish thread.
 struct PublishSnapshot {
@@ -75,9 +67,9 @@ class SpscPublishBuffer {
     const std::size_t head = head_.load(std::memory_order_relaxed);
     const std::size_t next = (head + 1) & (N - 1);
 
-    if (next == cached_tail_) {
+    if (next == cached_tail_) [[unlikely]] {
       cached_tail_ = tail_.load(std::memory_order_acquire);
-      if (next == cached_tail_) {
+      if (next == cached_tail_) [[unlikely]] {
         drop_count_.fetch_add(1, std::memory_order_relaxed);
         return false;
       }
@@ -112,13 +104,13 @@ class SpscPublishBuffer {
   std::array<PublishSnapshot, N> buffer_{};
 
   // Separate cache lines to avoid false sharing between producer and consumer.
-  alignas(kPublishCacheLineSize) std::atomic<std::size_t> head_{0};
+  alignas(kCacheLineSize) std::atomic<std::size_t> head_{0};
   std::size_t cached_tail_{0};
 
-  alignas(kPublishCacheLineSize) std::atomic<std::size_t> tail_{0};
+  alignas(kCacheLineSize) std::atomic<std::size_t> tail_{0};
   std::size_t cached_head_{0};
 
-  alignas(kPublishCacheLineSize) std::atomic<uint64_t> drop_count_{0};
+  alignas(kCacheLineSize) std::atomic<uint64_t> drop_count_{0};
 };
 
 // 512 slots ≈ 1 s at 500 Hz.  Matches ControlLogBuffer capacity.

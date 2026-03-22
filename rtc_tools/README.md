@@ -336,6 +336,14 @@ sudo apt install python3-pyqt5   # motion_editor_gui만 필요
 
 ---
 
+## 최적화 내역 (v5.16.1)
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **코드 검증** | Python 패키지 — 종속성 및 스크립트 구조 확인 완료 |
+
+---
+
 ## 라이선스
 
 MIT License

@@ -1,6 +1,10 @@
 #!/bin/bash
 # build.sh — RTC (Real-Time Controller) Build Script
 #
+# All C++ packages require C++20 (CMAKE_CXX_STANDARD 20) and strict compiler
+# warnings (-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion),
+# configured individually in each package's CMakeLists.txt.
+#
 # Usage:
 #   ./build.sh                              # full build (robot + sim)
 #   ./build.sh sim                          # simulation only (MuJoCo required)
