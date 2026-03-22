@@ -6,7 +6,6 @@
 #include "rtc_base/threading/publish_buffer.hpp"
 #include "rtc_controller_manager/controller_timing_profiler.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
-#include <ur5e_hand_driver/hand_controller.hpp>
 #include <rtc_status_monitor/rtc_status_monitor.hpp>
 
 // ── ROS2 ─────────────────────────────────────────────────────────────────────
@@ -91,9 +90,6 @@ private:
 
   void PublishEstopStatus(bool estopped);
 
-  // Save hand communication & timing statistics to JSON on shutdown.
-  void SaveHandStats() const;
-
   /// Trigger a global E-Stop that propagates to all subsystems.
   /// Safe to call from any thread. Idempotent — second call is a no-op.
   void TriggerGlobalEstop(std::string_view reason) noexcept;
@@ -131,9 +127,12 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr            active_ctrl_name_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr current_gains_pub_;
 
-  // JointCommand publisher (MuJoCo / external simulator)
-  rclcpp::Publisher<rtc_msgs::msg::JointCommand>::SharedPtr     joint_command_pub_;
-  rtc_msgs::msg::JointCommand                                   joint_command_msg_;  // pre-allocated
+  // JointCommand publishers (created from controller YAML kJointCommand roles)
+  struct JointCommandPublisherEntry {
+    rclcpp::Publisher<rtc_msgs::msg::JointCommand>::SharedPtr publisher;
+    rtc_msgs::msg::JointCommand msg;  // pre-allocated
+  };
+  std::unordered_map<std::string, JointCommandPublisherEntry> joint_command_publishers_;
 
   // Per-controller topic config cache (index = controller index)
   std::vector<rtc::TopicConfig> controller_topic_configs_;
@@ -169,19 +168,11 @@ private:
   std::unique_ptr<rtc::RtcStatusMonitor> status_monitor_;
   bool enable_status_monitor_{false};
 
-  // ── Hand Controller ──────────────────────────────────────────────────────
-  std::unique_ptr<rtc::HandController> hand_controller_;
-  bool enable_hand_{false};
-  // RT-local hand state cache — updated from HandController or sim each tick
+  // ── Hand state (ROS topic subscription) ──────────────────────────────────
+  // Updated from /hand/joint_states (JointState) subscription — same path for
+  // both real (ur5e_hand_driver) and sim (rtc_mujoco_sim).
+  mutable std::mutex hand_state_mutex_;
   rtc::HandState cached_hand_state_{};
-
-  // ── Hand Simulation (ROS topic, MuJoCo fake response) ────────────────────
-  bool hand_sim_enabled_{false};
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr  hand_sim_cmd_pub_;
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr hand_sim_state_sub_;
-  std_msgs::msg::Float64MultiArray hand_sim_cmd_msg_;  // pre-allocated
-  mutable std::mutex sim_hand_mutex_;
-  rtc::HandState sim_hand_state_{};
 
   // ── Shared state (guarded by per-domain mutexes) ──────────────────────────
   std::array<double, rtc::kNumRobotJoints> current_positions_{};

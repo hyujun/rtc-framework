@@ -93,7 +93,7 @@ def launch_setup(context, *args, **kwargs):
     sim_config = PathJoinSubstitution(
         [pkg_sim,  'config', 'mujoco_simulator.yaml'])
     ctrl_config = PathJoinSubstitution(
-        [pkg_bringup, 'config', 'ur5e_robot.yaml'])
+        [pkg_bringup, 'config', 'ur5e_sim.yaml'])
 
     # ur5e_hand_driver is optional — may not be built in sim-only installs
     hand_config = None
@@ -146,7 +146,7 @@ def launch_setup(context, *args, **kwargs):
     try:
         ctrl_yaml_path = os.path.join(
             get_package_share_directory('ur5e_bringup'),
-            'config', 'ur5e_robot.yaml')
+            'config', 'ur5e_sim.yaml')
         with open(ctrl_yaml_path, 'r') as f:
             ctrl_yaml = yaml.safe_load(f)
         control_rate = (ctrl_yaml.get('/**', {})
@@ -174,31 +174,6 @@ def launch_setup(context, *args, **kwargs):
         ctrl_overrides['kd'] = float(kd)
 
     ctrl_overrides['log_dir'] = session_dir
-
-    use_fake_hand = LaunchConfiguration('use_fake_hand').perform(context)
-    if use_fake_hand.lower() in ('true', '1', 'yes'):
-        ctrl_overrides['use_fake_hand'] = True
-
-    # Fake hand response: pass MuJoCo config to rt_controller
-    sim_yaml_path = os.path.join(
-        get_package_share_directory('rtc_mujoco_sim'),
-        'config', 'mujoco_simulator.yaml')
-    try:
-        with open(sim_yaml_path, 'r') as f:
-            sim_yaml = yaml.safe_load(f)
-        fake_hand = (sim_yaml.get('mujoco_simulator', {})
-                     .get('ros__parameters', {})
-                     .get('fake_hand_response', {}))
-        if fake_hand.get('enable', False):
-            ctrl_overrides['hand_sim_enabled'] = True
-            ctrl_overrides['hand_command_topic'] = fake_hand.get(
-                'command_topic', '/hand/command')
-            ctrl_overrides['hand_state_topic'] = fake_hand.get(
-                'state_topic', '/hand/joint_states')
-            ctrl_overrides['target_ip'] = ''
-            ctrl_overrides['target_port'] = 0
-    except Exception:
-        pass
 
     if ctrl_overrides:
         ctrl_params.append(ctrl_overrides)
@@ -389,15 +364,6 @@ def generate_launch_description():
         )
     )
 
-    use_fake_hand_arg = DeclareLaunchArgument(
-        'use_fake_hand',
-        default_value='false',
-        description=(
-            'Use fake hand echo-back mode (no UDP/ROS communication). '
-            'Command is echoed back as position state immediately.'
-        )
-    )
-
     return LaunchDescription([
         # Arguments
         model_path_arg,
@@ -411,7 +377,6 @@ def generate_launch_description():
         use_yaml_servo_gains_arg,
         max_log_sessions_arg,
         use_cpu_affinity_arg,
-        use_fake_hand_arg,
         # Nodes (via OpaqueFunction for conditional parameter loading)
         OpaqueFunction(function=launch_setup),
     ])

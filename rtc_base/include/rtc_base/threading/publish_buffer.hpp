@@ -67,7 +67,6 @@ struct PublishSnapshot {
   // ── Device flags (resolved per-controller) ─────────────────────────────
   bool ur5e_enabled{false};
   bool device_enabled{false};
-  bool device_sim_enabled{false};
 };
 
 // SPSC ring buffer of capacity N entries (N must be a power of 2).

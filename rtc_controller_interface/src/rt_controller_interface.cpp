@@ -10,21 +10,27 @@ namespace rtc
 namespace
 {
 const std::unordered_map<std::string, SubscribeRole> kSubscribeRoleMap = {
-  {"joint_state",  SubscribeRole::kJointState},
-  {"hand_state",   SubscribeRole::kHandState},
-  {"goal",         SubscribeRole::kGoal},
-  {"target",       SubscribeRole::kGoal},       // backward compat
+  {"state",         SubscribeRole::kState},
+  {"sensor_state",  SubscribeRole::kSensorState},
+  {"target",        SubscribeRole::kTarget},
+  // backward compat
+  {"joint_state",   SubscribeRole::kState},
+  {"hand_state",    SubscribeRole::kState},
+  {"goal",          SubscribeRole::kTarget},
 };
 
 const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
-  // Category 3: Control Command
-  {"position_command",  PublishRole::kPositionCommand},
-  {"torque_command",    PublishRole::kTorqueCommand},
-  {"hand_command",      PublishRole::kHandCommand},
-  // Category 4: Logging/Monitoring
+  // Control Command
+  {"joint_command",     PublishRole::kJointCommand},
+  {"ros2_command",      PublishRole::kRos2Command},
+  // Logging/Monitoring
   {"task_position",     PublishRole::kTaskPosition},
   {"trajectory_state",  PublishRole::kTrajectoryState},
   {"controller_state",  PublishRole::kControllerState},
+  // backward compat
+  {"position_command",  PublishRole::kRos2Command},
+  {"torque_command",    PublishRole::kRos2Command},
+  {"hand_command",      PublishRole::kJointCommand},
 };
 
 // Parse subscribe/publish arrays from a YAML device group node (ur5e or hand).
@@ -73,12 +79,12 @@ TopicConfig RTControllerInterface::MakeDefaultTopicConfig()
 
   // ── ur5e device group (default topics) ──
   cfg.ur5e.subscribe = {
-    {"/joint_states",                SubscribeRole::kJointState},
-    {"/ur5e/target_joint_positions", SubscribeRole::kGoal},
+    {"/joint_states",                SubscribeRole::kState},
+    {"/ur5e/target_joint_positions", SubscribeRole::kTarget},
   };
   cfg.ur5e.publish = {
-    {"/forward_position_controller/commands", PublishRole::kPositionCommand,  kNumRobotJoints},
-    {"/forward_torque_controller/commands",   PublishRole::kTorqueCommand,    kNumRobotJoints},
+    {"/ur5e/joint_command",                   PublishRole::kJointCommand,     kNumRobotJoints},
+    {"/forward_position_controller/commands", PublishRole::kRos2Command,      kNumRobotJoints},
     {"/ur5e/current_task_position",           PublishRole::kTaskPosition,     6},
     {"/ur5e/trajectory_state",                PublishRole::kTrajectoryState,  18},
     {"/ur5e/controller_state",                PublishRole::kControllerState,  18},
@@ -86,7 +92,7 @@ TopicConfig RTControllerInterface::MakeDefaultTopicConfig()
 
   // ── hand device group (default topics) ──
   cfg.hand.subscribe = {
-    {"/hand/joint_states", SubscribeRole::kHandState},
+    {"/hand/joint_states", SubscribeRole::kState},
   };
 
   return cfg;

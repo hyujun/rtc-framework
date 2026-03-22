@@ -132,20 +132,19 @@ struct ControllerOutput {
 // ── Topic configuration for per-controller subscribe/publish routing ─────────
 
 enum class SubscribeRole {
-  kJointState,      // 카테고리 2: 로봇 현재 상태 (sensor_msgs/JointState)
-  kHandState,       // 카테고리 2: 핸드 현재 상태 (Float64MultiArray)
-  kGoal,            // 카테고리 1: 궤적 최종 목표 (Float64MultiArray)
+  kState,           // sensor_msgs/JointState (ur5e & hand 공통)
+  kSensorState,     // Float64MultiArray (센서 전용, e.g. 촉각)
+  kTarget,          // Float64MultiArray (외부 목표)
 };
 
 enum class PublishRole {
-  // 카테고리 3: Control Command
-  kPositionCommand,    // 로봇 위치 명령 (Float64MultiArray)
-  kTorqueCommand,      // 로봇 토크 명령 (Float64MultiArray)
-  kHandCommand,        // 핸드 모터 명령 (Float64MultiArray)
-  // 카테고리 4: Logging/Monitoring
+  // Control Command
+  kJointCommand,       // rtc_msgs/JointCommand (통합 명령)
+  kRos2Command,        // Float64MultiArray (ros2_control 전용)
+  // Logging/Monitoring
   kTaskPosition,       // 현재 TCP 위치 (Float64MultiArray, size=6)
-  kTrajectoryState,    // 궤적 보간 상태 (Float64MultiArray, size=18: goal[6]+traj_pos[6]+traj_vel[6])
-  kControllerState,    // 제어기 내부 상태 (Float64MultiArray, size=18: actual_pos[6]+actual_vel[6]+command[6])
+  kTrajectoryState,    // 궤적 보간 상태 (Float64MultiArray, size=18)
+  kControllerState,    // 제어기 내부 상태 (Float64MultiArray, size=18)
 };
 
 struct SubscribeTopicEntry {
@@ -187,30 +186,29 @@ struct TopicConfig {
 
 // ── Device classification helpers ────────────────────────────────────────────
 
-inline bool IsHandSubscribeRole(SubscribeRole r) noexcept {
-  return r == SubscribeRole::kHandState;
+inline bool IsHandSubscribeRole(SubscribeRole /*r*/) noexcept {
+  return false;  // deprecated — device grouping handles hand vs ur5e distinction
 }
 
-inline bool IsHandPublishRole(PublishRole r) noexcept {
-  return r == PublishRole::kHandCommand;
+inline bool IsHandPublishRole(PublishRole /*r*/) noexcept {
+  return false;  // deprecated — device grouping handles hand vs ur5e distinction
 }
 
 // ── Role → string conversion (for ROS2 parameter exposure) ──────────────────
 
 inline const char * SubscribeRoleToString(SubscribeRole role) noexcept {
   switch (role) {
-    case SubscribeRole::kJointState: return "joint_state";
-    case SubscribeRole::kHandState:  return "hand_state";
-    case SubscribeRole::kGoal:       return "goal";
+    case SubscribeRole::kState:       return "state";
+    case SubscribeRole::kSensorState: return "sensor_state";
+    case SubscribeRole::kTarget:      return "target";
   }
   return "unknown";
 }
 
 inline const char * PublishRoleToString(PublishRole role) noexcept {
   switch (role) {
-    case PublishRole::kPositionCommand: return "position_command";
-    case PublishRole::kTorqueCommand:   return "torque_command";
-    case PublishRole::kHandCommand:     return "hand_command";
+    case PublishRole::kJointCommand:    return "joint_command";
+    case PublishRole::kRos2Command:     return "ros2_command";
     case PublishRole::kTaskPosition:    return "task_position";
     case PublishRole::kTrajectoryState: return "trajectory_state";
     case PublishRole::kControllerState: return "controller_state";

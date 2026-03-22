@@ -71,6 +71,11 @@
       - "middle"
       - "ring"
 
+    # ── ROS2 토픽 설정 ──────────────────────────────────────────────────
+    command_topic: "/hand/joint_command"  # JointCommand 구독 (rt_controller → hand)
+    state_topic: "/hand/joint_states"    # JointState 발행 (motor pos/vel)
+    sensor_topic: "/hand/sensor_states"  # Float64MultiArray 발행 (촉각 센서)
+
     # ── Standalone 전용 설정 (hand_udp_node 단독 실행 시) ────────────────
     publish_rate: 100.0               # /hand/joint_states 퍼블리시 주기 (Hz)
 

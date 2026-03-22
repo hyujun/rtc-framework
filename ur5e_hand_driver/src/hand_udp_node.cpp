@@ -4,8 +4,10 @@
 #include <rtc_base/threading/thread_utils.hpp>
 
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
+#include <rtc_msgs/msg/joint_command.hpp>
 #include <rtc_msgs/msg/hand_force_torque_state.hpp>
 #include <rtc_msgs/msg/fingertip_force_torque.hpp>
 
@@ -178,9 +180,19 @@ class HandUdpNode : public rclcpp::Node {
                   fd_cfg.failure_threshold);
     }
 
+    // ── Topic names (configurable) ────────────────────────────────────
+    declare_parameter("command_topic", std::string("/hand/joint_command"));
+    declare_parameter("state_topic", std::string("/hand/joint_states"));
+    declare_parameter("sensor_topic", std::string("/hand/sensor_states"));
+    const std::string cmd_topic = get_parameter("command_topic").as_string();
+    const std::string state_topic = get_parameter("state_topic").as_string();
+    const std::string sensor_topic = get_parameter("sensor_topic").as_string();
+
     // ── ROS2 pub/sub ───────────────────────────────────────────────────
-    state_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
-        "/hand/joint_states", 10);
+    joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
+        state_topic, 10);
+    sensor_state_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
+        sensor_topic, 10);
     link_status_pub_ = create_publisher<std_msgs::msg::Bool>(
         "/hand/link_status", 10);
     link_fail_threshold_ = static_cast<uint64_t>(
@@ -192,6 +204,24 @@ class HandUdpNode : public rclcpp::Node {
           "/hand/force_torque_state", 10);
     }
 
+    // JointCommand subscription (from rt_controller or external)
+    joint_command_sub_ = create_subscription<rtc_msgs::msg::JointCommand>(
+        cmd_topic, 10,
+        [this](rtc_msgs::msg::JointCommand::SharedPtr msg) {
+          if (msg->values.size() < static_cast<std::size_t>(urtc::kNumHandMotors)) {
+            RCLCPP_WARN(get_logger(),
+                        "JointCommand values size %zu (expected %d)",
+                        msg->values.size(), urtc::kNumHandMotors);
+            return;
+          }
+          std::array<float, urtc::kNumHandMotors> cmd;
+          for (std::size_t i = 0; i < static_cast<std::size_t>(urtc::kNumHandMotors); ++i) {
+            cmd[i] = static_cast<float>(msg->values[i]);
+          }
+          controller_->SetTargetPositions(cmd);
+        });
+
+    // Backward-compatible Float64MultiArray command (legacy)
     command_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
         "/hand/command", 10,
         [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
@@ -205,6 +235,7 @@ class HandUdpNode : public rclcpp::Node {
     // Hand motor names 로드 및 로그
     auto motor_names = get_parameter("hand_motor_names").as_string_array();
     if (motor_names.empty()) { motor_names = urtc::kDefaultHandMotorNames; }
+    joint_names_ = motor_names;
     auto fingertip_names = get_parameter("hand_fingertip_names").as_string_array();
     if (fingertip_names.empty()) { fingertip_names = urtc::kDefaultFingertipNames; }
 
@@ -236,19 +267,31 @@ class HandUdpNode : public rclcpp::Node {
 
     const urtc::HandState snapshot = controller_->GetLatestState();
 
-    // Publish: [10 positions] + [10 velocities] + [44 sensors]
-    std_msgs::msg::Float64MultiArray msg;
+    // Publisher 1: sensor_msgs/JointState (motor positions + velocities)
+    sensor_msgs::msg::JointState js_msg;
+    js_msg.header.stamp = this->now();
+    js_msg.name = joint_names_;
+    js_msg.position.resize(urtc::kNumHandMotors);
+    js_msg.velocity.resize(urtc::kNumHandMotors);
+    for (int i = 0; i < urtc::kNumHandMotors; ++i) {
+      js_msg.position[static_cast<std::size_t>(i)] =
+          static_cast<double>(snapshot.motor_positions[static_cast<std::size_t>(i)]);
+      js_msg.velocity[static_cast<std::size_t>(i)] =
+          static_cast<double>(snapshot.motor_velocities[static_cast<std::size_t>(i)]);
+    }
+    joint_state_pub_->publish(js_msg);
+
+    // Publisher 2: Float64MultiArray (sensor data)
     const int num_sensors = snapshot.num_fingertips * urtc::kSensorValuesPerFingertip;
-    msg.data.reserve(static_cast<std::size_t>(urtc::kNumHandMotors * 2 + num_sensors));
-
-    for (int i = 0; i < urtc::kNumHandMotors; ++i)
-      msg.data.push_back(static_cast<double>(snapshot.motor_positions[static_cast<std::size_t>(i)]));
-    for (int i = 0; i < urtc::kNumHandMotors; ++i)
-      msg.data.push_back(static_cast<double>(snapshot.motor_velocities[static_cast<std::size_t>(i)]));
-    for (int i = 0; i < num_sensors; ++i)
-      msg.data.push_back(static_cast<double>(snapshot.sensor_data[static_cast<std::size_t>(i)]));
-
-    state_pub_->publish(msg);
+    if (num_sensors > 0) {
+      std_msgs::msg::Float64MultiArray sensor_msg;
+      sensor_msg.data.resize(static_cast<std::size_t>(num_sensors));
+      for (int i = 0; i < num_sensors; ++i) {
+        sensor_msg.data[static_cast<std::size_t>(i)] =
+            static_cast<double>(snapshot.sensor_data[static_cast<std::size_t>(i)]);
+      }
+      sensor_state_pub_->publish(sensor_msg);
+    }
 
     // F/T inference 결과 발행
     if (ft_pub_ && controller_->ft_inference_enabled()) {
@@ -440,9 +483,12 @@ class HandUdpNode : public rclcpp::Node {
   std::unique_ptr<urtc::HandController>      controller_;
   std::unique_ptr<urtc::HandFailureDetector> failure_detector_;
 
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr    state_pub_;
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr command_sub_;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr         joint_state_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr     sensor_state_pub_;
+  rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr      joint_command_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr  command_sub_;  // legacy
   rclcpp::TimerBase::SharedPtr publish_timer_;
+  std::vector<std::string> joint_names_;
 
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr link_status_pub_;
   rclcpp::Publisher<rtc_msgs::msg::HandForceTorqueState>::SharedPtr ft_pub_;

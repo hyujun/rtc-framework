@@ -1,27 +1,28 @@
-# ur5e_robot.yaml — UR5e-specific configuration for RTC framework
-# ROS2 Humble / Jazzy compatible flat parameter structure
+# ur5e_sim.yaml — UR5e simulation configuration for RTC framework
+# Used by sim.launch.py (MuJoCo simulation mode)
+# For real robot, use ur5e_robot.yaml instead
 /**:
   ros__parameters:
     # ── Control rate ──────────────────────────────────────────────────────────
     control_rate: 500.0              # Hz — timer period = 1e6/rate us
 
-    # ── Device activation (global defaults) ───────────────────────────────────
+    # ── Device activation ────────────────────────────────────────────────────
     enable_ur5e: true              # UR5e robot arm communication
-    enable_hand: false             # Hand communication (default: disabled)
+    enable_hand: true              # Hand communication (enabled for simulation)
 
     # ── Initial controller ────────────────────────────────────────────────────
     initial_controller: "demo_joint_controller"
 
     # ── Initialization timeout ────────────────────────────────────────────────
-    init_timeout_sec: 30.0           # E-STOP + shutdown if no robot/target data (sec)
+    init_timeout_sec: 0.0            # Disabled for simulation (no real hardware init)
 
     # ── Auto-hold position ────────────────────────────────────────────────────
     auto_hold_position: true         # Auto-target current position when no external goal
 
-    # ── E-STOP configuration ─────────────────────────────────────────────────
-    enable_estop: true               # E-STOP timeout monitoring
-    robot_timeout_ms: 100.0          # /joint_states gap triggers E-STOP (ms)
-    hand_timeout_ms: 200.0           # /hand/joint_states gap triggers E-STOP (ms)
+    # ── E-STOP configuration (relaxed for simulation) ────────────────────────
+    enable_estop: false              # Disabled for simulation
+    robot_timeout_ms: 10000.0        # Relaxed timeout (sim startup delay)
+    hand_timeout_ms: 10000.0         # Relaxed timeout (sim startup delay)
 
     # ── Logging configuration ─────────────────────────────────────────────────
     enable_logging: true
@@ -52,5 +53,3 @@
         joint_4: [-6.28, 6.28]       # Wrist 2
         joint_5: [-6.28, 6.28]       # Wrist 3
 
-    # ── Status Monitor ────────────────────────────────────────────────────────
-    enable_status_monitor: false

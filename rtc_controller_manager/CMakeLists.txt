@@ -33,10 +33,6 @@ find_package(rtc_communication REQUIRED)
 find_package(rtc_status_monitor REQUIRED)
 find_package(rtc_msgs REQUIRED)
 
-find_package(rtc_inference REQUIRED)
-find_package(ur5e_hand_driver REQUIRED)
-find_package(rtc_msgs REQUIRED)
-
 # ── Static library ────────────────────────────────────────────────────────────
 add_library(rtc_controller_manager_lib STATIC
   src/rt_controller_node.cpp
@@ -56,9 +52,6 @@ ament_target_dependencies(rtc_controller_manager_lib
   rtc_base
   rtc_communication
   rtc_status_monitor
-  rtc_msgs
-  rtc_inference
-  ur5e_hand_driver
   rtc_msgs
 )
 target_link_libraries(rtc_controller_manager_lib
@@ -111,8 +104,6 @@ ament_export_dependencies(
   rtc_communication
   rtc_status_monitor
   rtc_msgs
-  rtc_inference
-  ur5e_hand_driver
   pinocchio
   yaml-cpp
 )

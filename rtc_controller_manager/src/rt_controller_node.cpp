@@ -92,10 +92,6 @@ RtControllerNode::~RtControllerNode()
   StopRtLoop();
   StopPublishLoop();
 
-  if (hand_controller_) {
-    SaveHandStats();
-    hand_controller_->Stop();
-  }
   if (status_monitor_) {
     status_monitor_->stop();
   }
@@ -104,105 +100,6 @@ RtControllerNode::~RtControllerNode()
     logger_->DrainBuffer(log_buffer_);
     logger_->Flush();
   }
-}
-
-// ── Hand stats export (mirrors HandUdpNode::SaveCommStats) ───────────────────
-void RtControllerNode::SaveHandStats() const
-{
-  if (!hand_controller_) return;
-
-  const auto stats = hand_controller_->comm_stats();
-  const auto elapsed = std::chrono::steady_clock::now() - log_start_time_;
-  const double elapsed_sec = std::chrono::duration<double>(elapsed).count();
-  const double avg_rate_hz = (elapsed_sec > 0.0)
-      ? static_cast<double>(stats.total_cycles) / elapsed_sec : 0.0;
-
-  std::string output_dir;
-  const char* session_env = std::getenv("UR5E_SESSION_DIR");
-  if (session_env != nullptr && session_env[0] != '\0') {
-    output_dir = std::string(session_env) + "/hand";
-  } else {
-    output_dir = "/tmp";
-  }
-
-  const std::string path = output_dir + "/hand_udp_stats.json";
-  std::ofstream ofs(path);
-  if (!ofs.is_open()) return;
-
-  const auto ts = hand_controller_->timing_stats();
-
-  const bool is_bulk = (hand_controller_->communication_mode() ==
-                        urtc::HandCommunicationMode::kBulk);
-  const char* mode_str = is_bulk ? "bulk" : "individual";
-
-  ofs << std::fixed
-      << "{\n"
-      << "  \"comm_stats\": {\n"
-      << "    \"communication_mode\": \"" << mode_str << "\",\n"
-      << "    \"recv_timeout_ms\": " << std::setprecision(3) << hand_controller_->recv_timeout_ms() << ",\n"
-      << "    \"total_cycles\": "     << stats.total_cycles    << ",\n"
-      << "    \"recv_ok\": "          << stats.recv_ok         << ",\n"
-      << "    \"recv_timeout\": "     << stats.recv_timeout     << ",\n"
-      << "    \"recv_error\": "       << stats.recv_error       << ",\n"
-      << "    \"event_skip_count\": " << stats.event_skip_count << ",\n"
-      << "    \"avg_rate_hz\": "      << std::setprecision(2) << avg_rate_hz  << ",\n"
-      << "    \"elapsed_sec\": "      << std::setprecision(2) << elapsed_sec  << "\n"
-      << "  },\n"
-      << "  \"timing_stats\": {\n"
-      << "    \"count\": " << ts.count << ",\n"
-      << "    \"total_us\": {"
-      << " \"mean\": " << std::setprecision(1) << ts.mean_us
-      << ", \"min\": "  << ts.min_us
-      << ", \"max\": "  << ts.max_us
-      << ", \"stddev\": " << ts.stddev_us
-      << ", \"p95\": "  << ts.p95_us
-      << ", \"p99\": "  << ts.p99_us
-      << " },\n"
-      << "    \"write_us\": {"
-      << " \"mean\": " << ts.write.mean_us
-      << ", \"min\": " << ts.write.min_us
-      << ", \"max\": " << ts.write.max_us
-      << " },\n";
-
-  if (is_bulk) {
-    ofs << "    \"read_all_motor_us\": {"
-        << " \"mean\": " << ts.read_all_motor.mean_us
-        << ", \"min\": " << ts.read_all_motor.min_us
-        << ", \"max\": " << ts.read_all_motor.max_us
-        << " },\n"
-        << "    \"read_all_sensor_us\": {"
-        << " \"mean\": " << ts.read_all_sensor.mean_us
-        << ", \"min\": " << ts.read_all_sensor.min_us
-        << ", \"max\": " << ts.read_all_sensor.max_us
-        << ", \"sensor_cycles\": " << ts.sensor_cycle_count
-        << " },\n";
-  } else {
-    ofs << "    \"read_pos_us\": {"
-        << " \"mean\": " << ts.read_pos.mean_us
-        << ", \"min\": " << ts.read_pos.min_us
-        << ", \"max\": " << ts.read_pos.max_us
-        << " },\n"
-        << "    \"read_vel_us\": {"
-        << " \"mean\": " << ts.read_vel.mean_us
-        << ", \"min\": " << ts.read_vel.min_us
-        << ", \"max\": " << ts.read_vel.max_us
-        << " },\n"
-        << "    \"read_sensor_us\": {"
-        << " \"mean\": " << ts.read_sensor.mean_us
-        << ", \"min\": " << ts.read_sensor.min_us
-        << ", \"max\": " << ts.read_sensor.max_us
-        << ", \"sensor_cycles\": " << ts.sensor_cycle_count
-        << " },\n";
-  }
-
-  ofs << "    \"over_budget\": " << ts.over_budget << "\n"
-      << "  }\n"
-      << "}\n";
-  ofs.close();
-
-  RCLCPP_INFO(get_logger(),
-      "Hand stats saved to %s (cycles=%lu, rate=%.1f Hz)",
-      path.c_str(), stats.total_cycles, avg_rate_hz);
 }
 
 // ── Session directory helpers ─────────────────────────────────────────────────
@@ -264,33 +161,15 @@ void RtControllerNode::DeclareAndLoadParameters()
   // ── 디바이스 활성화 플래그 (글로벌 기본값) ────────────────────────────────
   declare_parameter("enable_ur5e", true);
   declare_parameter("enable_hand", false);
-  declare_parameter("use_fake_hand", false);  // launch argument로만 전달
   global_device_flags_.enable_ur5e = get_parameter("enable_ur5e").as_bool();
   global_device_flags_.enable_hand = get_parameter("enable_hand").as_bool();
 
-  // JointCommand 발행 (MuJoCo / 외부 시뮬레이터 연동)
-  declare_parameter("joint_command_topic", std::string("/ur5e/joint_command"));
-
-  // Hand simulation (MuJoCo fake response 연동)
-  declare_parameter("hand_sim_enabled", false);
-  declare_parameter("hand_command_topic", std::string("/hand/command"));
-  declare_parameter("hand_state_topic", std::string("/hand/joint_states"));
 
   // Joint/Motor/Fingertip names (v5.14.0 named messaging)
   declare_parameter("robot_joint_names", std::vector<std::string>{});
   declare_parameter("hand_motor_names", std::vector<std::string>{});
   declare_parameter("hand_fingertip_names", std::vector<std::string>{});
 
-  // F/T inference (ONNX Runtime) — hand_udp_config YAML에서 로드
-  declare_parameter("ft_inferencer.enabled", false);
-  declare_parameter("ft_inferencer.num_fingertips", 4);
-  declare_parameter("ft_inferencer.model_paths", std::vector<std::string>{});
-  declare_parameter("ft_inferencer.calibration_enabled", true);
-  declare_parameter("ft_inferencer.calibration_samples", 500);
-  for (const auto& ft_name : {"thumb", "index", "middle", "ring"}) {
-    declare_parameter("ft_inferencer." + std::string(ft_name) + "_max",
-                      std::vector<double>(16, 1.0));
-  }
 
   control_rate_ = get_parameter("control_rate").as_double();
   budget_us_ = 1.0e6 / control_rate_;  // tick budget in µs (e.g., 2000.0 at 500 Hz)
@@ -357,189 +236,9 @@ void RtControllerNode::DeclareAndLoadParameters()
     robot_timeout_ = std::chrono::milliseconds(0);
   }
 
-  // ── Hand Controller (직접 UDP 통신, event-driven) ──────────────────────────
-  // hand_udp_node.yaml의 파라미터를 launch에서 로드
-  declare_parameter("target_ip", std::string(""));
-  declare_parameter("target_port", 0);
-  declare_parameter("recv_timeout_ms", 10.0);
-  declare_parameter("enable_write_ack", false);
-  declare_parameter("sensor_decimation", 1);
-  declare_parameter("communication_mode", std::string{"individual"});
-  declare_parameter("baro_lpf_enabled", false);
-  declare_parameter("baro_lpf_cutoff_hz", 30.0);
-  declare_parameter("tof_lpf_enabled", false);
-  declare_parameter("tof_lpf_cutoff_hz", 15.0);
-
-  const std::string hand_ip = get_parameter("target_ip").as_string();
-  const int hand_port = static_cast<int>(get_parameter("target_port").as_int());
-  hand_sim_enabled_ = get_parameter("hand_sim_enabled").as_bool();
-  const bool use_fake_hand = get_parameter("use_fake_hand").as_bool();
-
-  // F/T inferencer config 로드 (fake/real 공통)
-  auto load_ft_config = [this]() {
-    urtc::FingertipFTInferencer::Config cfg;
-    cfg.enabled = get_parameter("ft_inferencer.enabled").as_bool();
-    cfg.num_fingertips = static_cast<int>(
-        get_parameter("ft_inferencer.num_fingertips").as_int());
-    cfg.model_paths = get_parameter("ft_inferencer.model_paths").as_string_array();
-
-    // Resolve relative model paths against ur5e_hand_driver package's models/ directory
-    {
-      const std::string models_dir =
-          ament_index_cpp::get_package_share_directory("ur5e_hand_driver") + "/models/";
-      for (auto& p : cfg.model_paths) {
-        if (!p.empty() && p[0] != '/') {
-          p = models_dir + p;
-        }
-      }
-    }
-
-    cfg.calibration_enabled = get_parameter("ft_inferencer.calibration_enabled").as_bool();
-    cfg.calibration_samples = static_cast<int>(
-        get_parameter("ft_inferencer.calibration_samples").as_int());
-    const std::array<const char*, 4> ft_param_names = {"thumb", "index", "middle", "ring"};
-    for (int f = 0; f < 4 && f < cfg.num_fingertips; ++f) {
-      auto max_vec = get_parameter(
-          "ft_inferencer." + std::string(ft_param_names[static_cast<std::size_t>(f)]) + "_max")
-          .as_double_array();
-      for (int b = 0; b < urtc::kFTInputSize && b < static_cast<int>(max_vec.size()); ++b) {
-        cfg.input_max[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
-            static_cast<float>(max_vec[static_cast<std::size_t>(b)]);
-      }
-    }
-    return cfg;
-  };
-
-  // Hand 전체 비활성 시 모든 hand 통신 skip
+  // Hand 비활성 시 로그
   if (!global_device_flags_.enable_hand) {
-    hand_sim_enabled_ = false;
-    enable_hand_ = false;
     RCLCPP_INFO(get_logger(), "Hand disabled (enable_hand=false)");
-  } else if (use_fake_hand) {
-    // Fake mode: echo-back HandController (UDP 소켓 없이 내부 echo-back)
-    hand_sim_enabled_ = false;
-    const auto cfgs = rtc::SelectThreadConfigs();
-    const auto fake_ft_names = get_parameter("hand_fingertip_names").as_string_array();
-    const auto ft_config = load_ft_config();
-    hand_controller_ = std::make_unique<urtc::HandController>(
-        "", 0, cfgs.udp_recv, 10, false, 1, urtc::kDefaultNumFingertips, true,
-        fake_ft_names, urtc::HandCommunicationMode::kIndividual,
-        false, 15.0, false, 30.0, ft_config);
-    static_cast<void>(hand_controller_->Start());
-    enable_hand_ = true;
-    RCLCPP_INFO(get_logger(), "HandController started in FAKE mode (echo-back, ft=%s)",
-                ft_config.enabled ? "enabled" : "disabled");
-  } else {
-    enable_hand_ = !hand_ip.empty() && hand_port > 0 && !hand_sim_enabled_;
-  }
-
-  if (hand_sim_enabled_ && global_device_flags_.enable_hand) {
-    // ROS 토픽 기반 핸드 통신 (MuJoCo fake response 연동)
-    const std::string hand_cmd_topic = get_parameter("hand_command_topic").as_string();
-    const std::string hand_state_topic = get_parameter("hand_state_topic").as_string();
-
-    hand_sim_cmd_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
-        hand_cmd_topic, rclcpp::QoS(10));
-    hand_sim_cmd_msg_.data.resize(10, 0.0);
-
-    rclcpp::SubscriptionOptions sub_opts;
-    sub_opts.callback_group = cb_group_sensor_;
-    hand_sim_state_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
-        hand_state_topic, rclcpp::QoS(10),
-        [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-          if (msg->data.size() < 10) { return; }
-          std::lock_guard lock(sim_hand_mutex_);
-
-          if (hand_state_map_built_) {
-            // 이름 기반 reorder: source index → internal index
-            const std::size_t n = std::min(hand_state_reorder_.size(),
-                                           msg->data.size());
-            for (std::size_t src_i = 0; src_i < n; ++src_i) {
-              const int idx = hand_state_reorder_[src_i];
-              if (idx >= 0 && idx < urtc::kNumHandMotors) {
-                const auto uidx = static_cast<std::size_t>(idx);
-                sim_hand_state_.motor_positions[uidx] =
-                    static_cast<float>(msg->data[src_i]);
-              }
-            }
-            // Velocities: [10..19] (same reorder)
-            constexpr std::size_t vel_offset = urtc::kNumHandMotors;
-            for (std::size_t src_i = 0; src_i < n
-                     && (vel_offset + src_i) < msg->data.size(); ++src_i) {
-              const int idx = hand_state_reorder_[src_i];
-              if (idx >= 0 && idx < urtc::kNumHandMotors) {
-                sim_hand_state_.motor_velocities[static_cast<std::size_t>(idx)] =
-                    static_cast<float>(msg->data[vel_offset + src_i]);
-              }
-            }
-          } else {
-            // Positional fallback (이름 매핑 미빌드 시)
-            for (std::size_t i = 0; i < urtc::kNumHandMotors && i < msg->data.size(); ++i) {
-              sim_hand_state_.motor_positions[i] = static_cast<float>(msg->data[i]);
-            }
-            constexpr std::size_t vel_offset = urtc::kNumHandMotors;
-            for (std::size_t i = 0; i < urtc::kNumHandMotors
-                     && (vel_offset + i) < msg->data.size(); ++i) {
-              sim_hand_state_.motor_velocities[i] =
-                  static_cast<float>(msg->data[vel_offset + i]);
-            }
-          }
-
-          // Sensors: [20..63] (4 fingertips × 11 values) — always positional
-          constexpr std::size_t sensor_offset = urtc::kNumHandMotors * 2;
-          const std::size_t num_sensor_values = msg->data.size() > sensor_offset
-              ? msg->data.size() - sensor_offset : 0;
-          for (std::size_t i = 0; i < num_sensor_values
-                   && i < sim_hand_state_.sensor_data.size(); ++i) {
-            sim_hand_state_.sensor_data[i] =
-                static_cast<int32_t>(msg->data[sensor_offset + i]);
-          }
-          sim_hand_state_.valid = true;
-        },
-        sub_opts);
-
-    RCLCPP_INFO(get_logger(),
-        "Hand simulation mode: cmd=%s, state=%s (UDP disabled)",
-        hand_cmd_topic.c_str(), hand_state_topic.c_str());
-  } else if (enable_hand_ && !hand_controller_) {
-    const double hand_recv_timeout =
-        get_parameter("recv_timeout_ms").as_double();
-    const bool hand_write_ack = get_parameter("enable_write_ack").as_bool();
-    const int sensor_decimation = static_cast<int>(
-        get_parameter("sensor_decimation").as_int());
-    const auto hand_ft_names = get_parameter("hand_fingertip_names").as_string_array();
-    const std::string hand_comm_mode_str = get_parameter("communication_mode").as_string();
-    const auto hand_comm_mode = (hand_comm_mode_str == "bulk")
-        ? urtc::HandCommunicationMode::kBulk
-        : urtc::HandCommunicationMode::kIndividual;
-    const bool baro_lpf_enabled = get_parameter("baro_lpf_enabled").as_bool();
-    const double baro_lpf_cutoff_hz = get_parameter("baro_lpf_cutoff_hz").as_double();
-    const bool tof_lpf_enabled = get_parameter("tof_lpf_enabled").as_bool();
-    const double tof_lpf_cutoff_hz = get_parameter("tof_lpf_cutoff_hz").as_double();
-    const auto cfgs = rtc::SelectThreadConfigs();
-    const auto ft_config = load_ft_config();
-
-    hand_controller_ = std::make_unique<urtc::HandController>(
-        hand_ip, hand_port, cfgs.udp_recv,
-        hand_recv_timeout, hand_write_ack, sensor_decimation,
-        urtc::kDefaultNumFingertips, false, hand_ft_names, hand_comm_mode,
-        tof_lpf_enabled, tof_lpf_cutoff_hz,
-        baro_lpf_enabled, baro_lpf_cutoff_hz, ft_config);
-    hand_controller_->SetEstopFlag(&global_estop_);
-
-    if (hand_controller_->Start()) {
-      RCLCPP_INFO(get_logger(), "HandController started: %s:%d (event-driven)",
-                  hand_ip.c_str(), hand_port);
-      if (!hand_controller_->IsSensorInitialized()) {
-        RCLCPP_WARN(get_logger(),
-            "Hand sensor init failed — sensors may remain in NN mode");
-      }
-    } else {
-      RCLCPP_ERROR(get_logger(), "HandController failed to start: %s:%d",
-                   hand_ip.c_str(), hand_port);
-      hand_controller_.reset();
-      enable_hand_ = false;
-    }
   }
 
   std::string urdf_path = "";
@@ -661,7 +360,7 @@ void RtControllerNode::CreateSubscriptions()
     if (any_ur5e) {
       for (const auto & entry : tc.ur5e.subscribe) {
         switch (entry.role) {
-          case urtc::SubscribeRole::kJointState:
+          case urtc::SubscribeRole::kState:
             if (created_joint_state_topics.insert(entry.topic_name).second) {
               auto sub = create_subscription<sensor_msgs::msg::JointState>(
                 entry.topic_name, 10,
@@ -670,11 +369,11 @@ void RtControllerNode::CreateSubscriptions()
                 },
                 sub_options);
               topic_subscriptions_.push_back(sub);
-              RCLCPP_INFO(get_logger(), "  Subscribe [ur5e/joint_state]: %s",
+              RCLCPP_INFO(get_logger(), "  Subscribe [ur5e/state]: %s",
                           entry.topic_name.c_str());
             }
             break;
-          case urtc::SubscribeRole::kGoal:
+          case urtc::SubscribeRole::kTarget:
             if (created_target_topics.insert(entry.topic_name).second) {
               auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
                 entry.topic_name, 10,
@@ -683,7 +382,7 @@ void RtControllerNode::CreateSubscriptions()
                 },
                 sub_options);
               topic_subscriptions_.push_back(sub);
-              RCLCPP_INFO(get_logger(), "  Subscribe [ur5e/goal]: %s",
+              RCLCPP_INFO(get_logger(), "  Subscribe [ur5e/target]: %s",
                           entry.topic_name.c_str());
             }
             break;
@@ -697,16 +396,68 @@ void RtControllerNode::CreateSubscriptions()
     if (any_hand) {
       for (const auto & entry : tc.hand.subscribe) {
         switch (entry.role) {
-          case urtc::SubscribeRole::kHandState:
-            if (hand_sim_enabled_) {
-              RCLCPP_INFO(get_logger(), "  Subscribe [hand/hand_state]: %s (via ROS — sim)",
-                          entry.topic_name.c_str());
-            } else {
-              RCLCPP_INFO(get_logger(), "  Subscribe [hand/hand_state]: %s (direct UDP/fake)",
+          case urtc::SubscribeRole::kState:
+            if (created_joint_state_topics.insert(entry.topic_name).second) {
+              auto sub = create_subscription<sensor_msgs::msg::JointState>(
+                entry.topic_name, 10,
+                [this](sensor_msgs::msg::JointState::SharedPtr msg) {
+                  if (msg->position.size() < 1) { return; }
+                  std::lock_guard lock(hand_state_mutex_);
+
+                  if (hand_state_map_built_) {
+                    const std::size_t n = std::min(hand_state_reorder_.size(),
+                                                   msg->position.size());
+                    for (std::size_t src_i = 0; src_i < n; ++src_i) {
+                      const int idx = hand_state_reorder_[src_i];
+                      if (idx >= 0 && idx < urtc::kNumHandMotors) {
+                        const auto uidx = static_cast<std::size_t>(idx);
+                        cached_hand_state_.motor_positions[uidx] =
+                            static_cast<float>(msg->position[src_i]);
+                        if (src_i < msg->velocity.size()) {
+                          cached_hand_state_.motor_velocities[uidx] =
+                              static_cast<float>(msg->velocity[src_i]);
+                        }
+                      }
+                    }
+                  } else {
+                    for (std::size_t i = 0; i < urtc::kNumHandMotors
+                             && i < msg->position.size(); ++i) {
+                      cached_hand_state_.motor_positions[i] =
+                          static_cast<float>(msg->position[i]);
+                    }
+                    for (std::size_t i = 0; i < urtc::kNumHandMotors
+                             && i < msg->velocity.size(); ++i) {
+                      cached_hand_state_.motor_velocities[i] =
+                          static_cast<float>(msg->velocity[i]);
+                    }
+                  }
+                  cached_hand_state_.valid = true;
+                },
+                sub_options);
+              topic_subscriptions_.push_back(sub);
+              RCLCPP_INFO(get_logger(), "  Subscribe [hand/state]: %s",
                           entry.topic_name.c_str());
             }
             break;
-          case urtc::SubscribeRole::kGoal:
+          case urtc::SubscribeRole::kSensorState:
+            if (created_joint_state_topics.insert(entry.topic_name).second) {
+              auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
+                entry.topic_name, 10,
+                [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+                  std::lock_guard lock(hand_state_mutex_);
+                  for (std::size_t i = 0; i < msg->data.size()
+                           && i < cached_hand_state_.sensor_data.size(); ++i) {
+                    cached_hand_state_.sensor_data[i] =
+                        static_cast<int32_t>(msg->data[i]);
+                  }
+                },
+                sub_options);
+              topic_subscriptions_.push_back(sub);
+              RCLCPP_INFO(get_logger(), "  Subscribe [hand/sensor_state]: %s",
+                          entry.topic_name.c_str());
+            }
+            break;
+          case urtc::SubscribeRole::kTarget:
             if (created_target_topics.insert(entry.topic_name).second) {
               auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
                 entry.topic_name, 10,
@@ -715,11 +466,9 @@ void RtControllerNode::CreateSubscriptions()
                 },
                 sub_options);
               topic_subscriptions_.push_back(sub);
-              RCLCPP_INFO(get_logger(), "  Subscribe [hand/goal]: %s",
+              RCLCPP_INFO(get_logger(), "  Subscribe [hand/target]: %s",
                           entry.topic_name.c_str());
             }
-            break;
-          default:
             break;
         }
       }
@@ -744,8 +493,9 @@ void RtControllerNode::CreateSubscriptions()
           }
           hold_state.robot.dt = 1.0 / control_rate_;
           hold_state.dt = hold_state.robot.dt;
-          if (hand_controller_) {
-            hold_state.hand = hand_controller_->GetLatestState();
+          {
+            std::lock_guard lock(hand_state_mutex_);
+            hold_state.hand = cached_hand_state_;
           }
           controllers_[idx]->InitializeHoldPosition(hold_state);
         }
@@ -800,25 +550,40 @@ void RtControllerNode::CreatePublishers()
 
   // Helper: create a publisher for a publish entry if not already created.
   auto create_pub = [&](const urtc::PublishTopicEntry & entry,
-                        const char * device_prefix) {
-    if (topic_publishers_.count(entry.topic_name) > 0) {
-      return;
+                        const char * device_prefix,
+                        bool is_hand) {
+    switch (entry.role) {
+      case urtc::PublishRole::kJointCommand: {
+        // JointCommand publisher (rtc_msgs/JointCommand)
+        if (joint_command_publishers_.count(entry.topic_name) > 0) { return; }
+        JointCommandPublisherEntry jce;
+        jce.publisher = create_publisher<rtc_msgs::msg::JointCommand>(
+            entry.topic_name, cmd_qos);
+        if (!is_hand) {
+          jce.msg.joint_names = robot_joint_names_;
+          jce.msg.values.resize(urtc::kNumRobotJoints, 0.0);
+        } else {
+          jce.msg.joint_names = hand_motor_names_;
+          jce.msg.values.resize(urtc::kNumHandMotors, 0.0);
+        }
+        jce.msg.command_type = "position";
+        joint_command_publishers_[entry.topic_name] = std::move(jce);
+        RCLCPP_INFO(get_logger(), "  Publish [%s/joint_command]: %s (JointCommand)",
+                    device_prefix, entry.topic_name.c_str());
+        return;
+      }
+      default:
+        break;
     }
-    // hand_sim_enabled_ 시 kHandCommand는 hand_sim_cmd_pub_ (RELIABLE)이 담당
-    // — BEST_EFFORT 중복 publisher 생성 방지 (MuJoCo subscriber QoS 호환)
-    if (entry.role == urtc::PublishRole::kHandCommand && hand_sim_enabled_) {
-      return;
-    }
+
+    // Float64MultiArray publishers (kRos2Command, kTaskPosition, etc.)
+    if (topic_publishers_.count(entry.topic_name) > 0) { return; }
 
     int data_size = entry.data_size;
     if (data_size <= 0) {
       switch (entry.role) {
-        case urtc::PublishRole::kPositionCommand:
-        case urtc::PublishRole::kTorqueCommand:
-          data_size = urtc::kNumRobotJoints;
-          break;
-        case urtc::PublishRole::kHandCommand:
-          data_size = urtc::kNumHandMotors;
+        case urtc::PublishRole::kRos2Command:
+          data_size = is_hand ? urtc::kNumHandMotors : urtc::kNumRobotJoints;
           break;
         case urtc::PublishRole::kTaskPosition:
           data_size = 6;
@@ -826,6 +591,9 @@ void RtControllerNode::CreatePublishers()
         case urtc::PublishRole::kTrajectoryState:
         case urtc::PublishRole::kControllerState:
           data_size = 18;
+          break;
+        default:
+          data_size = 6;
           break;
       }
     }
@@ -845,30 +613,13 @@ void RtControllerNode::CreatePublishers()
   for (const auto & tc : controller_topic_configs_) {
     if (any_ur5e) {
       for (const auto & entry : tc.ur5e.publish) {
-        create_pub(entry, "ur5e");
+        create_pub(entry, "ur5e", false);
       }
     }
     if (any_hand) {
       for (const auto & entry : tc.hand.publish) {
-        create_pub(entry, "hand");
+        create_pub(entry, "hand", true);
       }
-    }
-  }
-
-  // ── JointCommand publisher (MuJoCo / 외부 시뮬레이터용) ────────────────────
-  {
-    const std::string jc_topic = get_parameter("joint_command_topic").as_string();
-    if (!jc_topic.empty()) {
-      joint_command_pub_ = create_publisher<rtc_msgs::msg::JointCommand>(
-          jc_topic, cmd_qos);
-
-      // Pre-allocate message
-      joint_command_msg_.joint_names = robot_joint_names_;
-      joint_command_msg_.values.resize(urtc::kNumRobotJoints, 0.0);
-      joint_command_msg_.command_type = "position";
-
-      RCLCPP_INFO(get_logger(), "  Publish [joint_command]: %s (JointCommand msg)",
-                  jc_topic.c_str());
     }
   }
 
@@ -1081,12 +832,10 @@ void RtControllerNode::ControlLoop()
     if (!init_complete_ && init_timeout_ticks_ > 0 &&
         ++init_wait_ticks_ > init_timeout_ticks_) {
       RCLCPP_FATAL(get_logger(),
-          "Initialization timeout (%.1f s): robot=%d, target=%d, hand=%s",
+          "Initialization timeout (%.1f s): robot=%d, target=%d",
           static_cast<double>(init_timeout_ticks_) / control_rate_,
           state_received_.load(std::memory_order_relaxed) ? 1 : 0,
-          target_received_.load(std::memory_order_relaxed) ? 1 : 0,
-          hand_sim_enabled_ ? "sim" :
-          (enable_hand_ ? (hand_controller_ && hand_controller_->IsRunning() ? "running" : "stopped") : "disabled"));
+          target_received_.load(std::memory_order_relaxed) ? 1 : 0);
       TriggerGlobalEstop("init_timeout");
       rclcpp::shutdown();
     }
@@ -1110,12 +859,10 @@ void RtControllerNode::ControlLoop()
       hold_state.robot.dt = 1.0 / control_rate_;
       hold_state.dt = hold_state.robot.dt;
 
-      // Hand state도 읽기
-      if (hand_controller_) {
-        hold_state.hand = hand_controller_->GetLatestState();
-      } else if (hand_sim_enabled_) {
-        std::lock_guard lock(sim_hand_mutex_);
-        hold_state.hand = sim_hand_state_;
+      // Hand state — ROS 토픽에서 읽기
+      {
+        std::lock_guard lock(hand_state_mutex_);
+        hold_state.hand = cached_hand_state_;
       }
 
       int idx = active_controller_idx_.load(std::memory_order_acquire);
@@ -1135,12 +882,10 @@ void RtControllerNode::ControlLoop()
       if (!init_complete_ && init_timeout_ticks_ > 0 &&
           ++init_wait_ticks_ > init_timeout_ticks_) {
         RCLCPP_FATAL(get_logger(),
-            "Initialization timeout (%.1f s): robot=%d, target=%d, hand=%s",
+            "Initialization timeout (%.1f s): robot=%d, target=%d",
             static_cast<double>(init_timeout_ticks_) / control_rate_,
             1,
-            target_received_.load(std::memory_order_relaxed) ? 1 : 0,
-            hand_sim_enabled_ ? "sim" :
-            (enable_hand_ ? (hand_controller_ && hand_controller_->IsRunning() ? "running" : "stopped") : "disabled"));
+            target_received_.load(std::memory_order_relaxed) ? 1 : 0);
         TriggerGlobalEstop("init_timeout");
         rclcpp::shutdown();
       }
@@ -1169,14 +914,10 @@ void RtControllerNode::ControlLoop()
   state.robot.velocities = cached_velocities_;
   state.robot.torques = cached_torques_;
 
-  // Hand state — HandController 또는 ROS 토픽에서 읽기
-  if (hand_controller_) {
-    cached_hand_state_ = hand_controller_->GetLatestState();
-  } else if (hand_sim_enabled_) {
-    std::unique_lock lock(sim_hand_mutex_, std::try_to_lock);
-    if (lock.owns_lock()) {
-      cached_hand_state_ = sim_hand_state_;
-    }
+  // Hand state — ROS 토픽에서 읽기 (try_lock으로 RT 안전)
+  {
+    std::unique_lock lock(hand_state_mutex_, std::try_to_lock);
+    // lock 실패 시 이전 사이클 데이터 재사용 (≤2ms 지연, 제어에 무해)
   }
   state.hand = cached_hand_state_;
 
@@ -1215,7 +956,6 @@ void RtControllerNode::ControlLoop()
     snap.active_controller_idx = active_idx;
     snap.ur5e_enabled          = active_df.enable_ur5e;
     snap.device_enabled        = active_df.enable_hand;
-    snap.device_sim_enabled    = hand_sim_enabled_;
     // Copy robot arrays (size 6 → size kMaxRobotDOF)
     for (std::size_t i = 0; i < urtc::kNumRobotJoints; ++i) {
       snap.robot_commands[i]        = output.robot_commands[i];
@@ -1232,17 +972,8 @@ void RtControllerNode::ControlLoop()
     static_cast<void>(publish_buffer_.Push(snap));
   }
 
-  // ── Phase 3.5: hand command 전송 (RT path — condvar notify, ~100ns) ────
-  // HandController::SendCommandAndRequestStates()는 non-blocking condvar
-  // notify로 hand UDP EventLoop를 깨움. 실제 I/O는 hand thread에서 수행.
-  // hand_sim_cmd_pub_ publish는 publish thread로 이동됨 (snap.hand_sim_enabled).
-  {
-    const auto & active_df_35 = controller_device_flags_[
-        static_cast<std::size_t>(active_idx)];
-    if (active_df_35.enable_hand && hand_controller_) {
-      hand_controller_->SendCommandAndRequestStates(output.hand_commands);
-    }
-  }
+  // Hand commands are now published via JointCommand topics in PublishLoopEntry()
+  // — no direct HandController ownership in rt_controller_node.
 
   const auto t3 = std::chrono::steady_clock::now();  // end of publish
 
@@ -1315,15 +1046,6 @@ void RtControllerNode::ControlLoop()
     }
     entry.num_sensor_channels = urtc::kMaxHandSensors;
     entry.num_fingertips = state.hand.num_fingertips;
-    // F/T inference 결과 (hand_controller_가 있고 활성화된 경우)
-    if (hand_controller_ && hand_controller_->ft_inference_enabled()) {
-      const auto ft_state = hand_controller_->GetLatestFTState();
-      for (std::size_t i = 0; i < ft_state.ft_data.size() && i < entry.inference_output.size(); ++i) {
-        entry.inference_output[i] = ft_state.ft_data[i];
-      }
-      entry.inference_valid = ft_state.valid;
-      entry.num_inference_values = static_cast<int>(ft_state.ft_data.size());
-    }
     static_cast<void>(log_buffer_.Push(entry));  // silently drops if buffer is full
   }
 
@@ -1478,29 +1200,54 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
     const auto & active_tc = controller_topic_configs_[
         static_cast<std::size_t>(snap.active_controller_idx)];
 
+    // Shared timestamp for JointCommand messages
+    const auto sec  = static_cast<int32_t>(snap.stamp_ns / 1'000'000'000L);
+    const auto nsec = static_cast<uint32_t>(snap.stamp_ns % 1'000'000'000L);
+    const char * cmd_type_str =
+        (snap.command_type == urtc::CommandType::kTorque) ? "torque" : "position";
+
     // Helper: publish a single topic entry from snapshot data
-    auto publish_entry = [&](const urtc::PublishTopicEntry & pt) {
+    auto publish_entry = [&](const urtc::PublishTopicEntry & pt, bool is_hand) {
+      switch (pt.role) {
+        case urtc::PublishRole::kJointCommand: {
+          auto jc_it = joint_command_publishers_.find(pt.topic_name);
+          if (jc_it == joint_command_publishers_.end()) { return; }
+          auto & jce = jc_it->second;
+          jce.msg.header.stamp.sec = sec;
+          jce.msg.header.stamp.nanosec = nsec;
+          jce.msg.command_type = cmd_type_str;
+          if (!is_hand) {
+            std::copy_n(snap.robot_commands.begin(), snap.num_robot_joints,
+                        jce.msg.values.begin());
+          } else {
+            for (std::size_t i = 0; i < urtc::kNumHandMotors
+                     && i < snap.device_commands.size(); ++i) {
+              jce.msg.values[i] = static_cast<double>(snap.device_commands[i]);
+            }
+          }
+          jce.publisher->publish(jce.msg);
+          return;
+        }
+        default:
+          break;
+      }
+
       auto it = topic_publishers_.find(pt.topic_name);
       if (it == topic_publishers_.end()) { return; }
-
       auto & pe = it->second;
+
       switch (pt.role) {
-        case urtc::PublishRole::kPositionCommand:
-          if (snap.command_type == urtc::CommandType::kPosition) {
-            std::copy(snap.robot_commands.begin(), snap.robot_commands.end(),
-                      pe.msg.data.begin());
-            pe.publisher->publish(pe.msg);
+        case urtc::PublishRole::kRos2Command:
+          if (!is_hand) {
+            std::copy_n(snap.robot_commands.begin(), snap.num_robot_joints,
+                        pe.msg.data.begin());
+          } else {
+            for (std::size_t i = 0; i < urtc::kNumHandMotors
+                     && i < snap.device_commands.size(); ++i) {
+              pe.msg.data[i] = static_cast<double>(snap.device_commands[i]);
+            }
           }
-          break;
-        case urtc::PublishRole::kTorqueCommand:
-          if (snap.command_type == urtc::CommandType::kTorque) {
-            std::copy(snap.robot_commands.begin(), snap.robot_commands.end(),
-                      pe.msg.data.begin());
-            pe.publisher->publish(pe.msg);
-          }
-          break;
-        case urtc::PublishRole::kHandCommand:
-          // Hand command는 RT 경로에서 HandController로 직접 전송 (Phase 3.5)
+          pe.publisher->publish(pe.msg);
           break;
         case urtc::PublishRole::kTaskPosition:
           std::copy(snap.actual_task_positions.begin(),
@@ -1520,43 +1267,23 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           std::copy_n(snap.robot_commands.begin(), 6, pe.msg.data.begin() + 12);
           pe.publisher->publish(pe.msg);
           break;
+        default:
+          break;
       }
     };
 
     // Publish ur5e topics
     if (snap.ur5e_enabled) {
       for (const auto & pt : active_tc.ur5e.publish) {
-        publish_entry(pt);
+        publish_entry(pt, false);
       }
     }
 
-    // Publish hand topics (ROS only — hand UDP is handled in RT Phase 3.5)
+    // Publish hand topics
     if (snap.device_enabled) {
       for (const auto & pt : active_tc.hand.publish) {
-        publish_entry(pt);
+        publish_entry(pt, true);
       }
-    }
-
-    // JointCommand publish (MuJoCo / external simulator)
-    if (joint_command_pub_) {
-      // Convert monotonic ns → ROS2 Time
-      const auto sec  = static_cast<int32_t>(snap.stamp_ns / 1'000'000'000L);
-      const auto nsec = static_cast<uint32_t>(snap.stamp_ns % 1'000'000'000L);
-      joint_command_msg_.header.stamp.sec = sec;
-      joint_command_msg_.header.stamp.nanosec = nsec;
-      joint_command_msg_.command_type =
-          (snap.command_type == urtc::CommandType::kTorque) ? "torque" : "position";
-      std::copy(snap.robot_commands.begin(), snap.robot_commands.end(),
-                joint_command_msg_.values.begin());
-      joint_command_pub_->publish(joint_command_msg_);
-    }
-
-    // Hand sim command (MuJoCo fake hand — ROS topic)
-    if (snap.device_sim_enabled && hand_sim_cmd_pub_) {
-      for (std::size_t i = 0; i < 10 && i < snap.device_commands.size(); ++i) {
-        hand_sim_cmd_msg_.data[i] = static_cast<double>(snap.device_commands[i]);
-      }
-      hand_sim_cmd_pub_->publish(hand_sim_cmd_msg_);
     }
   }
 }

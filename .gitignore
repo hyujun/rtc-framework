@@ -32,3 +32,4 @@ Thumbs.db
 *.orig
 .agents/
 skills-lock.json
+MUJOCO_LOG.TXT
