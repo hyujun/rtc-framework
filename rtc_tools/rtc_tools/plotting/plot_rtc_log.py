@@ -532,7 +532,7 @@ def plot_device_velocities(df, save_dir=None):
         print('  Skipping hand velocities plot (columns not found)')
         return
 
-    n_motors = len(actual_cols)
+    n_motors = len(vel_cols)
     nrows, ncols_g = _auto_subplot_grid(n_motors)
     fig, axes = plt.subplots(nrows, ncols_g, figsize=(5 * ncols_g, 4 * nrows))
     fig.suptitle('Device Motor Velocities', fontsize=16, fontweight='bold')
