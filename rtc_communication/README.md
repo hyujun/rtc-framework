@@ -13,7 +13,8 @@ RTC 프레임워크의 **헤더 전용(header-only) 통신 추상화 계층**입
 - 생성 후 동적 할당 없음 — RT-safe I/O
 - 모든 I/O 메서드 `noexcept` 보장
 - RAII 기반 소켓 수명 관리
-- C++20 Concept 기반 코덱 추상화
+- C++20 Concept 기반 코덱 추상화 (`std::jthread`, `std::stop_token`, `std::span`)
+- `[[likely]]/[[unlikely]]` 분기 힌트로 수신 루프 최적화
 - 향후 CAN-FD, EtherCAT, RS485 확장 지원
 
 ---
@@ -62,6 +63,17 @@ rtc_communication/
 │   Bind (수신) / Connect (송신)  │
 └────────────────────────────────┘
 ```
+
+---
+
+## 최적화 내역 (v5.16.1)
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **CMakeLists.txt** | C++20 표준 명시, 엄격 컴파일러 경고 플래그 추가 |
+| **transceiver.hpp** | include 순서 수정 (project → stdlib), `[[likely]]/[[unlikely]]` 분기 힌트 추가 |
+| **udp_transport.hpp** | 미사용 `<string_view>` include 제거 |
+| **README.md** | PacketCodec Concept 문서 정확성 수정 (Encode는 선택 사항 명시) |
 
 ---
 
@@ -156,7 +168,9 @@ transport->Open();
 | `Codec::RecvPacket` | `trivially_copyable` | 수신 패킷 와이어 포맷 |
 | `Codec::SendPacket` | `trivially_copyable` | 송신 패킷 와이어 포맷 |
 | `Codec::State` | — | 디코딩된 애플리케이션 상태 |
-| `Codec::Decode(span, State&)` | static | 바이트 → State 파싱 |
+| `Codec::Decode(span, State&)` | static | **필수.** 바이트 → State 파싱 |
+
+> **참고:** Concept은 `Decode`만 필수로 요구합니다. `Encode`는 선택 사항이며, 없으면 `EncodePacket<T>()` 헬퍼를 사용합니다.
 
 **헬퍼 함수:**
 

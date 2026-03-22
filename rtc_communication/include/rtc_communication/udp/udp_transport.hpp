@@ -3,8 +3,8 @@
 
 #include "rtc_communication/transport_interface.hpp"
 #include "rtc_communication/udp/udp_socket.hpp"
+
 #include <string>
-#include <string_view>
 
 namespace rtc {
 
