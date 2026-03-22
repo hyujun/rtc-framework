@@ -80,15 +80,20 @@ rtc_msgs/
 
 ### `FingertipSensor.msg`
 
-단일 핑거팁 센서 데이터 메시지 — 8개 기압(barometer) 센서와 3개 ToF 센서로 구성됩니다.
+단일 핑거팁 센서 데이터 메시지 — 8개 기압(barometer) 센서, 3개 ToF 센서, 추론 결과를 포함합니다.
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
-| `name` | `string` | 핑거팁 이름 |
+| `name` | `string` | 핑거팁 이름 (예: `"index"`, `"thumb"`) |
 | `barometer` | `float32[8]` | 기압 센서 값 (하드웨어 고정 8개) |
 | `tof` | `float32[3]` | ToF 거리 센서 값 (하드웨어 고정 3개) |
+| `F` | `float32[3]` | 추정 힘 벡터 [Fx, Fy, Fz] (추론 모델 출력) |
+| `u` | `float32[3]` | 추정 변위 벡터 [ux, uy, uz] (추론 모델 출력) |
+| `contact_flag` | `float32` | 접촉 감지 플래그 (0.0 = 비접촉, 1.0 = 접촉) |
 
-- 핑거팁 당 8개 barometer + 3개 ToF는 하드웨어 사양에 의해 고정되어 있습니다.
+- 핑거팁 당 8개 barometer + 3개 ToF는 하드웨어 사양에 의해 고정되어 있습니다 (`kSensorValuesPerFingertip = 11`).
+- `F`, `u`, `contact_flag`는 ONNX 추론 모델의 출력으로, 원시 센서 데이터와 함께 전달됩니다.
+- 대역폭 최적화를 위해 `Header` 필드를 포함하지 않으며, 상위 `HandSensorState.msg`의 header를 사용합니다.
 
 ### `HandSensorState.msg`
 
@@ -101,7 +106,7 @@ rtc_msgs/
 
 ### `FingertipForceTorque.msg`
 
-단일 핑거팁의 ONNX 모델 기반 힘/토크 추론 결과입니다 (13개 출력값에 대응).
+단일 핑거팁의 ONNX 모델 기반 힘/토크 추론 결과입니다 (`kFTValuesPerFingertip = 13`개 출력값에 대응).
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
@@ -114,7 +119,13 @@ rtc_msgs/
 | `force_y` | `float32` | Fy 스칼라 성분 [N] |
 | `force_z` | `float32` | Fz 스칼라 성분 [N] |
 
+**ONNX 모델 출력 레이아웃** (13 values):
+```
+[contact(1), F(3), u(3), Fn(3), Fx(1), Fy(1), Fz(1)]
+```
+
 > 대역폭 최적화를 위해 `Header` 필드를 포함하지 않습니다. 타임스탬프는 상위 `HandForceTorqueState.msg`의 header를 사용합니다.
+> 벡터(`force`, `direction`, `normal_force`)와 스칼라(`force_x/y/z`) 이중 표현으로 다양한 사용처를 지원합니다.
 
 ### `HandForceTorqueState.msg`
 
@@ -140,6 +151,21 @@ source install/setup.bash
 
 ---
 
+## 메시지 계층 구조
+
+```
+커맨드 (로봇으로 송신)                상태 (로봇에서 수신 — 원시 센서)
+├── JointCommand (float64, 고정밀)    ├── HandMotorState (위치 + 속도)
+└── HandCommand  (float32, 경량)      └── HandSensorState
+                                          └── FingertipSensor[] (barometer + ToF + 추론)
+
+                                     상태 (로봇에서 수신 — 추론 결과)
+                                     └── HandForceTorqueState
+                                         └── FingertipForceTorque[] (접촉 + 힘/토크)
+```
+
+---
+
 ## 의존성 그래프 내 위치
 
 **독립 패키지** — ROS2 패키지 의존성은 `std_msgs`만 존재합니다.
@@ -148,10 +174,10 @@ source install/setup.bash
 rtc_msgs   ← std_msgs (ROS2 기본 메시지)
     ↑
     ├── rtc_controller_interface (컨트롤러 타입 정의)
-    ├── rtc_controller_manager   (JointCommand 구독)
+    ├── rtc_controller_manager   (JointCommand 퍼블리시)
     ├── rtc_status_monitor       (상태 모니터링)
-    ├── rtc_mujoco_sim           (시뮬레이션 연동)
-    └── ur5e_hand_driver         (핸드 커맨드/피드백)
+    ├── rtc_mujoco_sim           (JointCommand 구독 → 시뮬레이션)
+    └── ur5e_hand_driver         (핸드 센서/F·T 퍼블리시)
 ```
 
 ### 사용처

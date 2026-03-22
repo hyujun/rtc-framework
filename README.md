@@ -19,7 +19,7 @@
 
 | 패키지 | 버전 | 설명 | 빌드 |
 |--------|------|------|------|
-| [`rtc_msgs`](rtc_msgs/) | 5.16.0 | 커스텀 ROS2 메시지 7종 (JointCommand, HandMotorCommand, HandMotorFeedback, FingertipSensors, FingertipForceTorque, SystemStatus, ControllerDiagnostics) | ament_cmake |
+| [`rtc_msgs`](rtc_msgs/) | 5.16.0 | 커스텀 ROS2 메시지 7종 (JointCommand, HandCommand, HandMotorState, FingertipSensor, HandSensorState, FingertipForceTorque, HandForceTorqueState) | ament_cmake |
 | [`rtc_base`](rtc_base/) | 5.16.0 | 헤더-전용 RT 인프라: 타입, SeqLock, SPSC 버퍼, 스레딩(4/6/8/10/12/16코어), Bessel/Kalman 필터, CSV 로깅 | ament_cmake |
 | [`rtc_communication`](rtc_communication/) | 5.16.0 | 헤더-전용 전송 계층 추상화: TransportInterface, UdpSocket RAII, PacketCodec concept, Transceiver 템플릿 | ament_cmake |
 | [`rtc_controller_interface`](rtc_controller_interface/) | 0.1.0 | 추상 컨트롤러 인터페이스 (Strategy 패턴) + Singleton 레지스트리 (가변 DOF) | ament_cmake |
@@ -28,8 +28,8 @@
 | [`rtc_status_monitor`](rtc_status_monitor/) | 5.16.0 | 비-RT 10Hz 안전 감시 (로봇 모드, 추적 오차, 관절 한계) + lock-free RT 접근자 | ament_cmake |
 | [`rtc_inference`](rtc_inference/) | 5.16.0 | 헤더-전용 RT-안전 추론 엔진: ONNX Runtime IoBinding, 사전 할당 버퍼, 배치/다중 모델 | ament_cmake |
 | [`rtc_mujoco_sim`](rtc_mujoco_sim/) | 5.16.0 | MuJoCo 3.x 물리 시뮬레이터: FreeRun/SyncStep, GLFW 뷰어, fake_hand 1차 필터 | ament_cmake |
-| [`rtc_digital_twin`](rtc_digital_twin/) | — | RViz2 디지털 트윈 시각화 | ament_python |
-| [`rtc_tools`](rtc_tools/) | 5.16.0 | Python 유틸리티: controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf, hand_udp_sender | ament_python |
+| [`rtc_digital_twin`](rtc_digital_twin/) | 5.16.0 | RViz2 디지털 트윈 시각화: 500Hz→60Hz 통합 관절 상태 + 핑거팁 센서 마커 | ament_python |
+| [`rtc_tools`](rtc_tools/) | 5.16.0 | Python 유틸리티 7종: controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf, hand_udp_sender, hand_data_plot, session_dir | ament_python |
 | [`rtc_scripts`](rtc_scripts/) | 5.16.0 | RT 시스템 설정 스크립트 (PREEMPT_RT 커널, CPU 격리, IRQ 어피니티, 네트워크 최적화) | ament_cmake |
 
 ### 로봇 고유 패키지 (ur5e_*)
@@ -37,7 +37,7 @@
 | 패키지 | 버전 | 설명 | 빌드 |
 |--------|------|------|------|
 | [`ur5e_description`](ur5e_description/) | 5.16.0 | UR5e URDF/MJCF/메시 — Pinocchio/RViz/MuJoCo 겸용 | ament_cmake |
-| [`ur5e_hand_driver`](ur5e_hand_driver/) | 5.16.0 | 10-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서 44ch | ament_cmake |
+| [`ur5e_hand_driver`](ur5e_hand_driver/) | 5.16.0 | 10-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서 44ch, ONNX F/T 추론 | ament_cmake |
 | [`ur5e_bringup`](ur5e_bringup/) | 5.16.0 | UR5e launch/config + 데모 컨트롤러 (DemoJoint, DemoTask) + CPU 격리/DDS 핀닝 | ament_cmake |
 
 ### 의존성 그래프
@@ -77,9 +77,15 @@ ur5e_description (독립)
 - **OperationalSpaceController**: 6-DOF Cartesian PD + SO(3) 회전 제어, Pinocchio log3 오차
 
 ### 안전 시스템
-- **글로벌 E-STOP**: 로봇/핸드 타임아웃 + 상태 모니터 + 핸드 실패 감지 → 통합 비상 정지
-- **상태 모니터**: 10Hz 비-RT 감시 (로봇 모드, 추적 오차, 관절 한계, watchdog)
-- **Init 타임아웃**: 데이터 미수신 시 자동 셧다운
+- **글로벌 E-STOP**: `atomic<bool>` + `compare_exchange_strong` 기반 통합 비상 정지 — 6개 트리거 소스:
+  - `init_timeout`: 초기화 시간 내 state 미수신 → 노드 종료
+  - `robot_timeout`: `/joint_states` >100ms 미갱신 (CheckTimeouts 50Hz)
+  - `hand_timeout`: `/hand/joint_states` >200ms 미갱신
+  - `consecutive_overrun`: ≥10회 연속 RT 루프 오버런
+  - `status_monitor`: Safety/tracking 위반, 관절 한계 (10Hz)
+  - `hand_failure`: UDP 영/중복 데이터 감지 (50Hz)
+- **상태 모니터**: 10Hz 비-RT 감시 (10개 장애 유형 + 3개 경고 유형, lock-free RT 접근자)
+- **자동 복구**: protective_stop, 프로그램 연결 끊김에 대해 선택적 자동 복구 지원
 
 ### 시뮬레이션 & 추론
 - **MuJoCo 3.x 시뮬레이터**: FreeRun/SyncStep 모드, GLFW 인터랙티브 뷰어 (40+ 키보드 단축키), fake_hand 시뮬레이션
@@ -200,7 +206,7 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 
 | 서브디렉토리 | 내용 |
 |---|---|
-| `controller/` | timing_log.csv (6열: 타이밍), robot_log.csv (49열: 관절 상태), device_log.csv (87열: 핸드/센서) |
+| `controller/` | timing_log.csv (6열: 타이밍), `<device>_log.csv` (디바이스별: 관절/센서/추론) |
 | `monitor/` | ur5e_failure_*.log, controller_stats.json |
 | `device/` | hand_udp_stats.json |
 | `sim/` | screenshot_*.ppm (MuJoCo 전용) |

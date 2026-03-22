@@ -240,6 +240,26 @@ source install/setup.bash
 
 ---
 
+## E-STOP 시스템 연동
+
+모니터가 장애를 감지하면 RT 컨트롤러(`RtControllerNode`)가 원자적 상태를 읽어 글로벌 E-STOP을 트리거합니다:
+
+```
+rtc_status_monitor (10 Hz)              RtControllerNode (500 Hz)
+──────────────────────────              ─────────────────────────
+kEstop (비상 정지)           →  getFailure()  →  TriggerGlobalEstop()
+kSafetyViolation (안전 위반) →  getFailure()  →  TriggerGlobalEstop()
+kTrackingError (추적 오차)   →  getFailure()  →  TriggerGlobalEstop()
+kJointLimitViolation         →  getFailure()  →  TriggerGlobalEstop()
+kWatchdogTimeout             →  getFailure()  →  TriggerGlobalEstop()
+kProtectiveStop              →  getFailure()  →  (자동 복구 가능)
+kProgramDisconnected         →  getFailure()  →  (자동 복구 가능)
+```
+
+> `registerOnFailure()` 콜백으로 `TriggerGlobalEstop(failure_type)`을 등록하면 장애 감지 즉시 E-STOP이 작동합니다.
+
+---
+
 ## 의존성 그래프 내 위치
 
 ```

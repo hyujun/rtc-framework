@@ -16,8 +16,11 @@ UR5e 로봇의 모델 description 파일 패키지입니다.
 ```
 robots/ur5e/
 ├── mjcf/           # MuJoCo 물리 시뮬레이션 모델 (MJCF)
-│   ├── ur5e.xml    # UR5e 로봇 MJCF (capsule geometry + position actuators)
-│   └── scene.xml   # 씬 파일 (지면 + 조명 + ur5e.xml include)
+│   ├── ur5e.xml              # UR5e 로봇 MJCF (capsule geometry + position actuators)
+│   ├── hand.xml              # 10-DOF 커스텀 핸드 MJCF (cylinder geometry)
+│   ├── scene.xml             # 씬 파일 (지면 + 조명 + ur5e.xml include)
+│   ├── scene_with_hand.xml   # 로봇+핸드 통합 씬
+│   └── ur5e_with_hand.xml    # 로봇+핸드 통합 모델
 │
 ├── urdf/           # Pinocchio / RViz / ros2_control용 URDF
 │   └── ur5e.urdf   # ← 빌드 시 xacro로 자동 생성 (빌드 전 없음)
