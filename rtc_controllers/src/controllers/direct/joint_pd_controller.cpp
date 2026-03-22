@@ -28,6 +28,20 @@ JointPDController::JointPDController(
   trajectory_.initialize({}, {}, 0.0);
 }
 
+void JointPDController::OnDeviceConfigsSet()
+{
+  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg && cfg->joint_limits) {
+    max_joint_velocity_ = cfg->joint_limits->max_velocity;
+    max_joint_torque_   = cfg->joint_limits->max_torque;
+  }
+  if (max_joint_velocity_.empty()) {
+    max_joint_velocity_.assign(kMaxDeviceChannels, 2.0);
+  }
+  if (max_joint_torque_.empty()) {
+    max_joint_torque_.assign(kMaxDeviceChannels, 150.0);
+  }
+}
+
 // ── RTControllerInterface implementation ─────────────────────────────────────
 
 ControllerOutput JointPDController::Compute(
@@ -350,12 +364,14 @@ void JointPDController::UpdateDynamics(const DeviceState & dev) noexcept
 }
 
 void JointPDController::ClampCommands(
-  std::array<double, kMaxDeviceChannels>& cmds, int n, CommandType type) noexcept
+  std::array<double, kMaxDeviceChannels>& cmds, int n, CommandType type) const noexcept
 {
-  const double limit = (type == CommandType::kTorque)
-                            ? kMaxJointTorque : kMaxJointVelocity;
+  const auto& limits = (type == CommandType::kTorque)
+                            ? max_joint_torque_ : max_joint_velocity_;
   for (int i = 0; i < n; ++i) {
-    cmds[i] = std::clamp(cmds[i], -limit, limit);
+    const auto ui = static_cast<std::size_t>(i);
+    const double lim = (ui < limits.size()) ? limits[ui] : 2.0;
+    cmds[i] = std::clamp(cmds[i], -lim, lim);
   }
 }
 

@@ -8,6 +8,7 @@
 #include <concepts>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -142,6 +143,32 @@ struct ControllerOutput {
   std::array<double, 6> actual_task_positions{};  // TCP FK result
   bool        valid{true};
   CommandType command_type{CommandType::kPosition};
+};
+
+// ── Per-device name + URDF configuration ─────────────────────────────────────
+
+struct DeviceUrdfConfig {
+  std::string package;     // ament package name (e.g. "ur5e_description")
+  std::string path;        // relative to package share dir (e.g. "robots/ur5e/urdf/ur5e.urdf")
+  std::string root_link;   // kinematic chain root link name
+  std::string tip_link;    // end-effector link name (for FK/IK frame)
+};
+
+struct DeviceJointLimits {
+  std::vector<double> max_velocity;      // per-joint (rad/s)
+  std::vector<double> max_acceleration;  // per-joint (rad/s²), optional
+  std::vector<double> max_torque;        // per-joint (Nm), optional
+  std::vector<double> position_lower;    // per-joint lower bound (rad)
+  std::vector<double> position_upper;    // per-joint upper bound (rad)
+};
+
+struct DeviceNameConfig {
+  std::string device_name;
+  std::vector<std::string> joint_state_names;
+  std::vector<std::string> joint_command_names;  // empty → defaults to joint_state_names
+  std::vector<std::string> sensor_names;
+  std::optional<DeviceUrdfConfig> urdf;          // nullopt if no URDF for this device
+  std::optional<DeviceJointLimits> joint_limits;  // nullopt if no limits configured
 };
 
 // ── Topic configuration for per-controller subscribe/publish routing ─────────

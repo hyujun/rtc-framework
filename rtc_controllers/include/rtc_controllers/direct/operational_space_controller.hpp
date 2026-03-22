@@ -102,6 +102,7 @@ public:
   // gains layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1),
   //                trajectory_speed, trajectory_angular_speed]
   void LoadConfig(const YAML::Node & cfg) override;
+  void OnDeviceConfigsSet() override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
   [[nodiscard]] std::vector<double> GetCurrentGains() const noexcept override;
   [[nodiscard]] CommandType GetCommandType() const noexcept override {return command_type_;}
@@ -167,15 +168,15 @@ private:
 
   static constexpr std::array<double, kNumRobotJoints> kSafePosition{
     0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
-  static constexpr double kMaxJointVelocity{2.0};
+  std::vector<double> max_joint_velocity_;
 
   CommandType command_type_{CommandType::kTorque};
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState & state) noexcept;
 
-  static void ClampVelocity(
-    std::array<double, kMaxDeviceChannels>& dq, int n) noexcept;
+  void ClampVelocity(
+    std::array<double, kMaxDeviceChannels>& dq, int n) const noexcept;
 
   static Eigen::Matrix3d RpyToMatrix(double roll, double pitch, double yaw) noexcept;
 };

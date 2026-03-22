@@ -18,6 +18,30 @@ DemoJointController::DemoJointController(std::string_view urdf_path, Gains gains
   q_      = Eigen::VectorXd::Zero(model_.nv);
 }
 
+void DemoJointController::OnDeviceConfigsSet()
+{
+  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
+    if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
+      if (model_.existFrame(cfg->urdf->tip_link)) {
+        auto fid = model_.getFrameId(cfg->urdf->tip_link);
+        end_id_ = model_.frames[fid].parentJoint;
+      }
+    }
+    if (cfg->joint_limits && !cfg->joint_limits->max_velocity.empty()) {
+      device_max_velocity_[0] = cfg->joint_limits->max_velocity;
+    }
+  }
+  if (auto* cfg = GetDeviceNameConfig("hand"); cfg && cfg->joint_limits) {
+    if (!cfg->joint_limits->max_velocity.empty()) {
+      device_max_velocity_[1] = cfg->joint_limits->max_velocity;
+    }
+  }
+  // Fallback defaults
+  for (auto& v : device_max_velocity_) {
+    if (v.empty()) v.assign(kMaxDeviceChannels, 2.0);
+  }
+}
+
 ControllerOutput DemoJointController::Compute(const ControllerState & state) noexcept
 {
   ControllerOutput output;
@@ -35,7 +59,7 @@ ControllerOutput DemoJointController::Compute(const ControllerState & state) noe
       dev0.positions[i] + gains_.robot_kp[i] * error * state.dt;
     q_[static_cast<Eigen::Index>(i)] = dev0.positions[i];
   }
-  ClampCommands(out0.commands, nc0, kMaxJointVelocity);
+  ClampCommands(out0.commands, nc0, device_max_velocity_[0]);
 
   // ── Forward kinematics for task-space logging ─────────────────────────────
   pinocchio::forwardKinematics(model_, data_, q_);
@@ -66,7 +90,7 @@ ControllerOutput DemoJointController::Compute(const ControllerState & state) noe
         dev1.positions[i] +
         static_cast<double>(gains_.hand_kp[i]) * error * state.dt;
     }
-    ClampCommands(out1.commands, nc1, kMaxHandVelocity);
+    ClampCommands(out1.commands, nc1, device_max_velocity_[1]);
     for (int i = 0; i < nc1; ++i) {
       out1.goal_positions[i] = device_targets_[1][i];
     }
@@ -116,10 +140,13 @@ void DemoJointController::InitializeHoldPosition(
 }
 
 void DemoJointController::ClampCommands(
-  std::array<double, kMaxDeviceChannels>& commands, int n, double limit) noexcept
+  std::array<double, kMaxDeviceChannels>& commands, int n,
+  const std::vector<double>& limits) noexcept
 {
   for (int i = 0; i < n; ++i) {
-    commands[i] = std::clamp(commands[i], -limit, limit);
+    const auto ui = static_cast<std::size_t>(i);
+    const double lim = (ui < limits.size()) ? limits[ui] : 2.0;
+    commands[i] = std::clamp(commands[i], -lim, lim);
   }
 }
 

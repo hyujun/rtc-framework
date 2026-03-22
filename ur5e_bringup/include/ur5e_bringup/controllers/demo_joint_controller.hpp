@@ -37,11 +37,11 @@ using rtc::CommandType;
 //
 // Robot arm control law (identical to PController):
 //   robot_command[i] = current_pos[i] + robot_kp[i] * (robot_target[i] - current_pos[i]) * dt
-//   Output clamped to [-kMaxJointVelocity, +kMaxJointVelocity] rad/s
+//   Output clamped to per-joint velocity limits from device config
 //
 // Hand motor control law (same formula applied to hand motors):
 //   hand_command[i] = hand_pos[i] + hand_kp[i] * (hand_target[i] - hand_pos[i]) * dt
-//   Output clamped to [-kMaxHandVelocity, +kMaxHandVelocity] rad/s
+//   Output clamped to per-joint velocity limits from device config
 //
 // Target message layout for /target_joint_positions (Float64MultiArray):
 //   data[0..5]  : robot arm joint targets (rad)
@@ -78,6 +78,7 @@ public:
   // ── Controller registry hooks ────────────────────────────────────────────
   // gains layout: [robot_kp×6, hand_kp×10] = 16 values
   void LoadConfig(const YAML::Node & cfg) override;
+  void OnDeviceConfigsSet() override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
   [[nodiscard]] std::vector<double> GetCurrentGains() const noexcept override;
   [[nodiscard]] CommandType GetCommandType() const noexcept override {return command_type_;}
@@ -96,11 +97,10 @@ private:
 
   CommandType command_type_{CommandType::kPosition};
 
-  // Clamps each command to [-limit, +limit].
-  static constexpr double kMaxJointVelocity = 2.0;   // rad/s
-  static constexpr double kMaxHandVelocity  = 1.0;   // rad/s
+  std::array<std::vector<double>, ControllerState::kMaxDevices> device_max_velocity_;
   static void ClampCommands(
-    std::array<double, kMaxDeviceChannels>& commands, int n, double limit) noexcept;
+    std::array<double, kMaxDeviceChannels>& commands, int n,
+    const std::vector<double>& limits) noexcept;
 };
 
 }  // namespace ur5e_bringup

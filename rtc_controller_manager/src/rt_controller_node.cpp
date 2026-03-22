@@ -39,7 +39,9 @@ namespace urtc = rtc;
 
 // ── Constructor / destructor ──────────────────────────────────────────────────
 RtControllerNode::RtControllerNode()
-: Node("rt_controller"), logger_(nullptr)
+: Node("rt_controller",
+       rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true)),
+  logger_(nullptr)
 {
   CreateCallbackGroups();
   DeclareAndLoadParameters();
@@ -149,8 +151,6 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("log_dir", std::string(""));  // launch 파일이 세션 디렉토리로 덮어씀
   declare_parameter("max_log_sessions", 10);
   declare_parameter("enable_timing_log", true);
-  declare_parameter("enable_robot_log", true);
-  declare_parameter("enable_hand_log", true);
   declare_parameter("enable_device_log", true);
   declare_parameter("enable_estop", true);
   declare_parameter("enable_status_monitor", false);
@@ -162,12 +162,8 @@ void RtControllerNode::DeclareAndLoadParameters()
   declare_parameter("device_timeout_names", std::vector<std::string>{});
   declare_parameter("device_timeout_values", std::vector<double>{});
 
-  // Joint/Motor/Fingertip names (v5.14.0 named messaging)
-  declare_parameter("robot_joint_names", std::vector<std::string>{});
-  declare_parameter("hand_motor_names", std::vector<std::string>{});
-  declare_parameter("hand_joint_names", std::vector<std::string>{});
-  declare_parameter("hand_fingertip_names", std::vector<std::string>{});
-  declare_parameter("hand_sensor_names", std::vector<std::string>{});
+  // Device name configuration is loaded after active_groups_ are known
+  // (see LoadDeviceNameConfigs() call below)
 
 
   control_rate_ = get_parameter("control_rate").as_double();
@@ -180,24 +176,33 @@ void RtControllerNode::DeclareAndLoadParameters()
   enable_estop_ = get_parameter("enable_estop").as_bool();
   enable_status_monitor_ = get_parameter("enable_status_monitor").as_bool();
 
-  // NOTE: Logging setup is deferred until after controller loading,
-  // because active_groups_ must be known to determine which logs to create.
+  // NOTE: Logging setup and device name configs are deferred until after
+  // controller loading, because active_groups_ must be known first.
 
-  std::string urdf_path = "";
-  try {
-    std::string share_dir =
-      ament_index_cpp::get_package_share_directory("ur5e_description");
-    urdf_path = share_dir + "/robots/ur5e/urdf/ur5e.urdf";
-  } catch (const std::exception & e) {
-    RCLCPP_WARN(get_logger(), "Could not resolve urdf path: %s", e.what());
+  // Resolve URDF path from devices config (auto-declared from YAML overrides)
+  std::string urdf_path;
+  {
+    // Scan for first device with URDF config
+    const auto params = list_parameters({"devices"}, 10);
+    for (const auto & prefix : params.prefixes) {
+      const std::string pkg_key = prefix + ".urdf.package";
+      const std::string path_key = prefix + ".urdf.path";
+      if (has_parameter(pkg_key) && has_parameter(path_key)) {
+        try {
+          const auto pkg = get_parameter(pkg_key).as_string();
+          const auto rel = get_parameter(path_key).as_string();
+          urdf_path = ament_index_cpp::get_package_share_directory(pkg) + "/" + rel;
+          RCLCPP_INFO(get_logger(), "URDF path from devices config: %s", urdf_path.c_str());
+        } catch (const std::exception & e) {
+          RCLCPP_WARN(get_logger(), "Failed to resolve URDF from devices config: %s", e.what());
+        }
+        break;
+      }
+    }
+    if (urdf_path.empty()) {
+      RCLCPP_WARN(get_logger(), "No URDF configured in devices — controllers may lack kinematics");
+    }
   }
-
-  // ── Joint name loading & URDF validation (v5.14.0) ─────────────────────
-  LoadAndValidateJointNames();
-
-  // hand_motor_names_ 기반 identity map 빌드 (sim/UDP 모두 동일 이름 순서 사용)
-  // Build device reorder maps from joint names for known groups
-  // (robot reorder is built on first message; hand identity map built here)
 
   // ── Instantiate and configure all registered controllers ─────────────────
   // Controllers are registered via RTC_REGISTER_CONTROLLER() macro at static
@@ -270,12 +275,23 @@ void RtControllerNode::DeclareAndLoadParameters()
     }
   }
 
-  // Build device reorder maps for known groups
-  if (auto it = group_slot_map_.find("hand"); it != group_slot_map_.end()) {
-    BuildDeviceReorderMap(it->second, hand_motor_names_);
+  // ── Load device name configs (needs active_groups_) ─────────────────────
+  LoadDeviceNameConfigs();
+
+  // Pass device configs to all controllers
+  for (auto& ctrl : controllers_) {
+    ctrl->SetDeviceNameConfigs(device_name_configs_);
   }
 
-  // ── Deferred logging setup (needs active_groups_) ────────────────────────
+  // Build device reorder maps for groups with known joint names
+  for (const auto& [name, slot] : group_slot_map_) {
+    auto it = device_name_configs_.find(name);
+    if (it != device_name_configs_.end() && !it->second.joint_state_names.empty()) {
+      BuildDeviceReorderMap(slot, it->second.joint_state_names);
+    }
+  }
+
+  // ── Deferred logging setup (needs active_groups_ + device_name_configs_) ─
   if (enable_logging_) {
     const std::string log_dir_param = get_parameter("log_dir").as_string();
     const int max_sessions = get_parameter("max_log_sessions").as_int();
@@ -293,33 +309,38 @@ void RtControllerNode::DeclareAndLoadParameters()
 
     const bool enable_timing = get_parameter("enable_timing_log").as_bool();
     const bool enable_device = get_parameter("enable_device_log").as_bool();
-    const bool enable_robot  = enable_device && active_groups_.contains("ur5e");
-    const bool enable_hand   = enable_device && active_groups_.contains("hand");
     const auto ctrl_dir = session_dir / "controller";
     std::filesystem::create_directories(ctrl_dir);
 
     const std::string timing_path = enable_timing
         ? (ctrl_dir / "timing_log.csv").string() : "";
-    const std::string robot_path = enable_robot
-        ? (ctrl_dir / "robot_log.csv").string() : "";
-    const std::string hand_path = enable_hand
-        ? (ctrl_dir / "hand_log.csv").string() : "";
 
-    const auto yaml_joint_names = get_parameter("robot_joint_names").as_string_array();
-    auto yaml_motor_names = get_parameter("hand_joint_names").as_string_array();
-    if (yaml_motor_names.empty()) {
-      yaml_motor_names = get_parameter("hand_motor_names").as_string_array();
+    // Build per-device log configs from device_name_configs_
+    std::vector<urtc::DeviceLogConfig> log_configs;
+    // Ensure ordering matches group_slot_map_ (sorted by slot index)
+    std::vector<std::pair<std::string, int>> sorted_groups(
+        group_slot_map_.begin(), group_slot_map_.end());
+    std::sort(sorted_groups.begin(), sorted_groups.end(),
+        [](const auto& a, const auto& b) { return a.second < b.second; });
+
+    for (const auto& [gname, slot] : sorted_groups) {
+      if (!enable_device) continue;
+      urtc::DeviceLogConfig dlc;
+      dlc.device_name = gname;
+      dlc.path = ctrl_dir / (gname + "_log.csv");
+      auto it = device_name_configs_.find(gname);
+      if (it != device_name_configs_.end()) {
+        dlc.joint_names = it->second.joint_state_names;
+        dlc.sensor_names = it->second.sensor_names;
+        dlc.num_channels = static_cast<int>(it->second.joint_state_names.size());
+        dlc.num_sensor_channels = static_cast<int>(
+            it->second.sensor_names.size() * urtc::kSensorValuesPerFingertip);
+      }
+      log_configs.push_back(std::move(dlc));
     }
-    auto yaml_sensor_names = get_parameter("hand_sensor_names").as_string_array();
-    if (yaml_sensor_names.empty()) {
-      yaml_sensor_names = get_parameter("hand_fingertip_names").as_string_array();
-    }
+
     logger_ = std::make_unique<urtc::DataLogger>(
-        timing_path, robot_path, hand_path,
-        yaml_joint_names, yaml_motor_names, yaml_sensor_names,
-        static_cast<int>(yaml_joint_names.empty() ? urtc::kNumRobotJoints : yaml_joint_names.size()),
-        static_cast<int>(yaml_motor_names.empty() ? urtc::kNumHandMotors : yaml_motor_names.size()),
-        static_cast<int>(yaml_sensor_names.size() * urtc::kSensorValuesPerFingertip));
+        timing_path, std::move(log_configs));
     RCLCPP_INFO(get_logger(),
         "Logging to: %s/controller/ (max_sessions=%d)",
         session_dir.string().c_str(), max_sessions);
@@ -532,12 +553,12 @@ void RtControllerNode::CreatePublishers()
         JointCommandPublisherEntry jce;
         jce.publisher = create_publisher<rtc_msgs::msg::JointCommand>(
             entry.topic_name, cmd_qos);
-        if (slot == 0) {
-          jce.msg.joint_names = robot_joint_names_;
-          jce.msg.values.resize(robot_joint_names_.size(), 0.0);
-        } else {
-          jce.msg.joint_names = hand_motor_names_;
-          jce.msg.values.resize(hand_motor_names_.size(), 0.0);
+        {
+          auto cfg_it = device_name_configs_.find(group_name);
+          if (cfg_it != device_name_configs_.end()) {
+            jce.msg.joint_names = cfg_it->second.joint_command_names;
+            jce.msg.values.resize(cfg_it->second.joint_command_names.size(), 0.0);
+          }
         }
         jce.msg.command_type = "position";
         joint_command_publishers_[entry.topic_name] = std::move(jce);
@@ -556,9 +577,12 @@ void RtControllerNode::CreatePublishers()
     if (data_size <= 0) {
       switch (entry.role) {
         case urtc::PublishRole::kRos2Command:
-          data_size = (slot == 0)
-              ? static_cast<int>(robot_joint_names_.size())
-              : static_cast<int>(hand_motor_names_.size());
+          {
+            auto cfg_it = device_name_configs_.find(group_name);
+            data_size = (cfg_it != device_name_configs_.end())
+                ? static_cast<int>(cfg_it->second.joint_command_names.size())
+                : 6;
+          }
           break;
         case urtc::PublishRole::kTaskPosition:
           data_size = 6;
@@ -1300,159 +1324,266 @@ void RtControllerNode::ClearGlobalEstop() noexcept
   estop_reason_.clear();
 }
 
-// ── Joint name loading & URDF validation (v5.14.0) ──────────────────────────
+// ── Device name configuration loading ────────────────────────────────────────
 
-void RtControllerNode::LoadAndValidateJointNames()
+void RtControllerNode::LoadDeviceNameConfigs()
 {
-  // 1. YAML에서 이름 로드 (hand_joint_names → hand_motor_names fallback)
-  robot_joint_names_ = get_parameter("robot_joint_names").as_string_array();
-  hand_motor_names_  = get_parameter("hand_joint_names").as_string_array();
-  if (hand_motor_names_.empty()) {
-    hand_motor_names_ = get_parameter("hand_motor_names").as_string_array();
-  }
-  hand_sensor_names_ = get_parameter("hand_sensor_names").as_string_array();
-  if (hand_sensor_names_.empty()) {
-    hand_sensor_names_ = get_parameter("hand_fingertip_names").as_string_array();
-  }
-  fingertip_names_   = hand_sensor_names_;
-
-  // 비어있으면 기본값 사용
-  if (robot_joint_names_.empty()) {
-    robot_joint_names_ = urtc::kDefaultRobotJointNames;
-    RCLCPP_WARN(get_logger(),
-                "No robot_joint_names in YAML — using defaults");
-  }
-  if (hand_motor_names_.empty()) {
-    hand_motor_names_ = urtc::kDefaultHandMotorNames;
-  }
-  if (fingertip_names_.empty()) {
-    fingertip_names_ = urtc::kDefaultFingertipNames;
+  // Build reverse lookup: slot index → group name
+  slot_to_group_name_.resize(static_cast<std::size_t>(group_slot_map_.size()));
+  for (const auto& [name, slot] : group_slot_map_) {
+    slot_to_group_name_[static_cast<std::size_t>(slot)] = name;
   }
 
-  // 2. 개수 검증 (warn only — runtime count may differ from compile-time default)
-  if (robot_joint_names_.size() != static_cast<std::size_t>(urtc::kNumRobotJoints)) {
-    RCLCPP_WARN(get_logger(),
-                "robot_joint_names has %zu entries (default %d) — using YAML count",
-                robot_joint_names_.size(), urtc::kNumRobotJoints);
-  }
+  // For each active device group, read its config from parameters
+  for (const auto& group_name : active_groups_) {
+    urtc::DeviceNameConfig cfg;
+    cfg.device_name = group_name;
 
-  // 3. URDF active joint 검증
-  std::string urdf_path;
-  try {
-    urdf_path = ament_index_cpp::get_package_share_directory("ur5e_description") +
-                "/robots/ur5e/urdf/ur5e.urdf";
-  } catch (...) {
-    RCLCPP_WARN(get_logger(), "Cannot resolve URDF path — skipping joint name validation");
-    return;
-  }
+    const std::string prefix = "devices." + group_name;
 
-  try {
-    pinocchio::Model model;
-    pinocchio::urdf::buildModel(urdf_path, model);
-
-    // Pinocchio model_.names[0] = "universe" (고정), [1..njoints-1] = 실제 조인트
-    std::vector<std::string> urdf_joint_names;
-    for (int j = 1; j < model.njoints; ++j) {
-      urdf_joint_names.push_back(model.names[static_cast<std::size_t>(j)]);
+    // joint_state_names (required for meaningful name mapping)
+    const std::string jsn_key = prefix + ".joint_state_names";
+    if (has_parameter(jsn_key)) {
+      cfg.joint_state_names = get_parameter(jsn_key).as_string_array();
     }
 
-    // 비교: YAML의 각 이름이 URDF에 존재하는지
-    bool all_found = true;
-    bool order_match = true;
-    for (std::size_t i = 0; i < robot_joint_names_.size(); ++i) {
-      auto it = std::find(urdf_joint_names.begin(), urdf_joint_names.end(),
-                          robot_joint_names_[i]);
-      if (it == urdf_joint_names.end()) {
-        RCLCPP_ERROR(get_logger(),
-                     "YAML joint '%s' NOT FOUND in URDF",
-                     robot_joint_names_[i].c_str());
-        all_found = false;
-      } else {
-        const auto urdf_idx = static_cast<std::size_t>(
-            std::distance(urdf_joint_names.begin(), it));
-        if (urdf_idx != i) {
-          order_match = false;
+    // joint_command_names (optional — defaults to joint_state_names)
+    const std::string jcn_key = prefix + ".joint_command_names";
+    if (has_parameter(jcn_key)) {
+      cfg.joint_command_names = get_parameter(jcn_key).as_string_array();
+    }
+    if (cfg.joint_command_names.empty()) {
+      cfg.joint_command_names = cfg.joint_state_names;
+    }
+
+    // sensor_names (optional)
+    const std::string sn_key = prefix + ".sensor_names";
+    if (has_parameter(sn_key)) {
+      cfg.sensor_names = get_parameter(sn_key).as_string_array();
+    }
+
+    // joint_limits (optional block — per-joint arrays)
+    {
+      const auto nj = cfg.joint_state_names.size();
+      const std::string lp = prefix + ".joint_limits";
+
+      auto read_double_array = [&](const std::string& key) -> std::vector<double> {
+        if (!has_parameter(key)) return {};
+        return get_parameter(key).as_double_array();
+      };
+
+      auto vel  = read_double_array(lp + ".max_velocity");
+      auto acc  = read_double_array(lp + ".max_acceleration");
+      auto trq  = read_double_array(lp + ".max_torque");
+      auto plo  = read_double_array(lp + ".position_lower");
+      auto pup  = read_double_array(lp + ".position_upper");
+
+      // Only create limits if at least one array was provided
+      if (!vel.empty() || !acc.empty() || !trq.empty() || !plo.empty() || !pup.empty()) {
+        rtc::DeviceJointLimits lim;
+        auto validate_size = [&](const std::string& name, std::vector<double>& v) {
+          if (!v.empty() && v.size() != nj) {
+            RCLCPP_ERROR(get_logger(),
+                         "[%s] joint_limits.%s size (%zu) != joint_state_names size (%zu)",
+                         group_name.c_str(), name.c_str(), v.size(), nj);
+            v.clear();
+          }
+        };
+        validate_size("max_velocity", vel);
+        validate_size("max_acceleration", acc);
+        validate_size("max_torque", trq);
+        validate_size("position_lower", plo);
+        validate_size("position_upper", pup);
+
+        lim.max_velocity     = std::move(vel);
+        lim.max_acceleration = std::move(acc);
+        lim.max_torque       = std::move(trq);
+        lim.position_lower   = std::move(plo);
+        lim.position_upper   = std::move(pup);
+        cfg.joint_limits     = std::move(lim);
+
+        RCLCPP_INFO(get_logger(), "[%s] Joint limits loaded from YAML", group_name.c_str());
+      }
+    }
+
+    // URDF config (optional block)
+    const std::string urdf_pkg_key = prefix + ".urdf.package";
+    const std::string urdf_path_key = prefix + ".urdf.path";
+    if (has_parameter(urdf_pkg_key) && has_parameter(urdf_path_key)) {
+      urtc::DeviceUrdfConfig urdf_cfg;
+      urdf_cfg.package = get_parameter(urdf_pkg_key).as_string();
+      urdf_cfg.path = get_parameter(urdf_path_key).as_string();
+
+      const std::string root_key = prefix + ".urdf.root_link";
+      if (has_parameter(root_key)) {
+        urdf_cfg.root_link = get_parameter(root_key).as_string();
+      }
+      const std::string tip_key = prefix + ".urdf.tip_link";
+      if (has_parameter(tip_key)) {
+        urdf_cfg.tip_link = get_parameter(tip_key).as_string();
+      }
+
+      // Validate joint names against URDF
+      try {
+        const std::string full_urdf_path =
+            ament_index_cpp::get_package_share_directory(urdf_cfg.package) +
+            "/" + urdf_cfg.path;
+
+        pinocchio::Model model;
+        pinocchio::urdf::buildModel(full_urdf_path, model);
+
+        // Extract URDF joint names (skip universe at index 0)
+        std::vector<std::string> urdf_joint_names;
+        for (int j = 1; j < model.njoints; ++j) {
+          urdf_joint_names.push_back(model.names[static_cast<std::size_t>(j)]);
         }
+
+        // Check all joint_state_names exist in URDF
+        bool all_found = true;
+        bool order_match = true;
+        for (std::size_t i = 0; i < cfg.joint_state_names.size(); ++i) {
+          auto it = std::find(urdf_joint_names.begin(), urdf_joint_names.end(),
+                              cfg.joint_state_names[i]);
+          if (it == urdf_joint_names.end()) {
+            RCLCPP_ERROR(get_logger(), "[%s] YAML joint '%s' NOT FOUND in URDF",
+                         group_name.c_str(), cfg.joint_state_names[i].c_str());
+            all_found = false;
+          } else {
+            const auto urdf_idx = static_cast<std::size_t>(
+                std::distance(urdf_joint_names.begin(), it));
+            if (urdf_idx != i) { order_match = false; }
+          }
+        }
+
+        if (!all_found) {
+          std::string avail;
+          for (const auto& n : urdf_joint_names) { avail += "  " + n + "\n"; }
+          RCLCPP_ERROR(get_logger(),
+                       "[%s] Joint name mismatch with URDF.\nAvailable URDF joints:\n%s",
+                       group_name.c_str(), avail.c_str());
+        } else if (!order_match) {
+          RCLCPP_WARN(get_logger(),
+                      "[%s] Joint name order differs from URDF — verify gains/limits match YAML order",
+                      group_name.c_str());
+        } else {
+          RCLCPP_INFO(get_logger(),
+                      "[%s] Joint names validated against URDF (%zu joints)",
+                      group_name.c_str(), cfg.joint_state_names.size());
+        }
+
+        // Validate root_link and tip_link exist in URDF frames
+        if (!urdf_cfg.root_link.empty()) {
+          if (!model.existFrame(urdf_cfg.root_link)) {
+            RCLCPP_WARN(get_logger(), "[%s] root_link '%s' not found in URDF frames",
+                        group_name.c_str(), urdf_cfg.root_link.c_str());
+          }
+        }
+        if (!urdf_cfg.tip_link.empty()) {
+          if (!model.existFrame(urdf_cfg.tip_link)) {
+            RCLCPP_WARN(get_logger(), "[%s] tip_link '%s' not found in URDF frames",
+                        group_name.c_str(), urdf_cfg.tip_link.c_str());
+          } else {
+            RCLCPP_INFO(get_logger(), "[%s] tip_link: %s",
+                        group_name.c_str(), urdf_cfg.tip_link.c_str());
+          }
+        }
+
+        // ── Merge joint limits with URDF ──────────────────────────────────
+        // Build YAML→URDF index mapping
+        const int nj = static_cast<int>(cfg.joint_state_names.size());
+        std::vector<int> yaml_to_urdf(static_cast<std::size_t>(nj), -1);
+        for (int i = 0; i < nj; ++i) {
+          auto it = std::find(urdf_joint_names.begin(), urdf_joint_names.end(),
+                              cfg.joint_state_names[static_cast<std::size_t>(i)]);
+          if (it != urdf_joint_names.end()) {
+            yaml_to_urdf[static_cast<std::size_t>(i)] =
+                static_cast<int>(std::distance(urdf_joint_names.begin(), it));
+          }
+        }
+
+        if (cfg.joint_limits) {
+          auto& lim = *cfg.joint_limits;
+          for (int i = 0; i < nj; ++i) {
+            const auto ui = static_cast<std::size_t>(i);
+            if (yaml_to_urdf[ui] < 0) continue;
+            const auto uidx = yaml_to_urdf[ui] + 1;  // +1: skip universe joint
+
+            if (!lim.position_lower.empty())
+              lim.position_lower[ui] = std::max(lim.position_lower[ui],
+                                                model.lowerPositionLimit[uidx]);
+            if (!lim.position_upper.empty())
+              lim.position_upper[ui] = std::min(lim.position_upper[ui],
+                                                model.upperPositionLimit[uidx]);
+            if (!lim.max_velocity.empty())
+              lim.max_velocity[ui] = std::min(lim.max_velocity[ui],
+                                              model.velocityLimit[uidx]);
+            if (!lim.max_torque.empty())
+              lim.max_torque[ui] = std::min(lim.max_torque[ui],
+                                            model.effortLimit[uidx]);
+          }
+          RCLCPP_INFO(get_logger(),
+                      "[%s] Joint limits merged with URDF (tighter bounds applied)",
+                      group_name.c_str());
+        } else {
+          // No YAML limits → create from URDF only
+          rtc::DeviceJointLimits lim;
+          lim.position_lower.resize(static_cast<std::size_t>(nj));
+          lim.position_upper.resize(static_cast<std::size_t>(nj));
+          lim.max_velocity.resize(static_cast<std::size_t>(nj));
+          lim.max_torque.resize(static_cast<std::size_t>(nj));
+          for (int i = 0; i < nj; ++i) {
+            const auto ui = static_cast<std::size_t>(i);
+            if (yaml_to_urdf[ui] < 0) continue;
+            const auto uidx = yaml_to_urdf[ui] + 1;
+            lim.position_lower[ui] = model.lowerPositionLimit[uidx];
+            lim.position_upper[ui] = model.upperPositionLimit[uidx];
+            lim.max_velocity[ui]   = model.velocityLimit[uidx];
+            lim.max_torque[ui]     = model.effortLimit[uidx];
+          }
+          cfg.joint_limits = std::move(lim);
+          RCLCPP_INFO(get_logger(),
+                      "[%s] Joint limits loaded from URDF (no YAML overrides)",
+                      group_name.c_str());
+        }
+      } catch (const std::exception& e) {
+        RCLCPP_WARN(get_logger(), "[%s] URDF validation failed: %s",
+                    group_name.c_str(), e.what());
       }
+
+      cfg.urdf = std::move(urdf_cfg);
     }
 
-    if (!all_found) {
-      // 사용 가능한 URDF 조인트 목록 출력
-      std::string avail;
-      for (const auto& n : urdf_joint_names) { avail += "  " + n + "\n"; }
-      RCLCPP_ERROR(get_logger(),
-                   "Joint name mismatch — falling back to defaults.\n"
-                   "Available URDF joints:\n%s", avail.c_str());
-      robot_joint_names_ = urtc::kDefaultRobotJointNames;
-    } else if (!order_match) {
-      // 이름은 모두 존재하지만 순서가 다름
-      std::string remap_info;
-      for (std::size_t i = 0; i < robot_joint_names_.size(); ++i) {
-        auto it = std::find(urdf_joint_names.begin(), urdf_joint_names.end(),
-                            robot_joint_names_[i]);
-        const auto urdf_idx = static_cast<std::size_t>(
-            std::distance(urdf_joint_names.begin(), it));
-        remap_info += "  YAML[" + std::to_string(i) + "] \"" +
-                      robot_joint_names_[i] + "\" → URDF index " +
-                      std::to_string(urdf_idx) + "\n";
-      }
-      RCLCPP_WARN(get_logger(),
-                   "Joint name ORDER mismatch between YAML and URDF:\n%s"
-                   "Verify gains/limits match the YAML order.",
-                   remap_info.c_str());
-    } else {
-      RCLCPP_INFO(get_logger(),
-                  "Joint names validated: YAML matches URDF (%zu/%zu)",
-                  robot_joint_names_.size(), urdf_joint_names.size());
+    // Log device config summary
+    {
+      auto join = [](const std::vector<std::string>& v) {
+        std::string s;
+        for (std::size_t i = 0; i < v.size(); ++i) {
+          if (i > 0) s += ", ";
+          s += v[i];
+        }
+        return s;
+      };
+      RCLCPP_INFO(get_logger(), "Device '%s': joints(%zu)=[%s], sensors(%zu)=[%s]%s",
+                  group_name.c_str(),
+                  cfg.joint_state_names.size(), join(cfg.joint_state_names).c_str(),
+                  cfg.sensor_names.size(), join(cfg.sensor_names).c_str(),
+                  cfg.urdf ? " [URDF]" : "");
     }
-  } catch (const std::exception& e) {
-    RCLCPP_WARN(get_logger(), "URDF validation failed: %s", e.what());
-  }
 
-  // 로그 출력
-  RCLCPP_INFO(get_logger(), "Robot joints: [%s]",
-              [&]{
-                std::string s;
-                for (std::size_t i = 0; i < robot_joint_names_.size(); ++i) {
-                  if (i > 0) s += ", ";
-                  s += robot_joint_names_[i];
-                }
-                return s;
-              }().c_str());
-  // Hand motor 개수 검증 (warn only — runtime count may differ from compile-time default)
-  if (hand_motor_names_.size() != static_cast<std::size_t>(urtc::kNumHandMotors)) {
-    RCLCPP_WARN(get_logger(),
-                "hand_motor_names has %zu entries (default %d) — using YAML count",
-                hand_motor_names_.size(), urtc::kNumHandMotors);
+    device_name_configs_[group_name] = std::move(cfg);
   }
-
-  RCLCPP_INFO(get_logger(), "Hand motors (%zu): [%s]",
-              hand_motor_names_.size(),
-              [&]{
-                std::string s;
-                for (std::size_t i = 0; i < hand_motor_names_.size(); ++i) {
-                  if (i > 0) s += ", ";
-                  s += hand_motor_names_[i];
-                }
-                return s;
-              }().c_str());
-  RCLCPP_INFO(get_logger(), "Fingertips (%zu): [%s]",
-              fingertip_names_.size(),
-              [&]{
-                std::string s;
-                for (std::size_t i = 0; i < fingertip_names_.size(); ++i) {
-                  if (i > 0) s += ", ";
-                  s += fingertip_names_[i];
-                }
-                return s;
-              }().c_str());
 }
 
 void RtControllerNode::BuildDeviceReorderMap(
     int device_slot, const std::vector<std::string>& msg_names)
 {
-  // Determine reference names based on slot
-  const auto& ref_names = (device_slot == 0) ? robot_joint_names_ : hand_motor_names_;
+  // Look up reference names from device config via slot → group name
+  const auto slot_idx = static_cast<std::size_t>(device_slot);
+  if (slot_idx >= slot_to_group_name_.size()) return;
+  const auto& group_name = slot_to_group_name_[slot_idx];
+  auto it = device_name_configs_.find(group_name);
+  if (it == device_name_configs_.end()) return;
+  const auto& ref_names = it->second.joint_state_names;
   if (ref_names.empty()) return;
 
   auto& map = device_reorder_maps_[device_slot];

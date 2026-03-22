@@ -13,60 +13,49 @@
 
 namespace rtc {
 
-// Writes control data to three separate CSV files in a non-RT (logging) thread:
-//   - timing_log:  per-phase timing breakdown (6 columns)
-//   - robot_log:   robot joint states (variable columns — 4-category: goal/state/command/trajectory)
-//   - device_log:  device motor states + sensor data (variable columns — 4-category)
+// Per-device log configuration — passed to DataLogger at construction time.
+struct DeviceLogConfig {
+  std::string device_name;
+  std::filesystem::path path;                // CSV file path (empty = disabled)
+  std::vector<std::string> joint_names;      // for CSV header labels
+  std::vector<std::string> sensor_names;     // for CSV header labels
+  int num_channels{0};                       // expected joint channel count
+  int num_sensor_channels{0};                // expected sensor channel count
+};
+
+// Writes control data to per-device CSV files + a timing CSV in a non-RT thread:
+//   - timing_log:     per-phase timing breakdown
+//   - <device>_log:   per-device joint states, sensor data, commands
 //
-// All three files share the same timestamp column for post-hoc join.
-// Copy is disabled; move is enabled for deferred construction.
-//
+// All files share the same timestamp column for post-hoc join.
 // All methods are defined inline to keep rtc_base header-only.
 class DataLogger {
 public:
-  /// Construct with paths for each log file.  Pass an empty path to disable
-  /// that particular log category.
-  /// joint_names/motor_names/fingertip_names are used for CSV headers (v5.14.0).
-  /// Empty vectors → numeric index fallback.
-  /// num_robot_joints / num_device_channels control how many columns are written.
   DataLogger(const std::filesystem::path & timing_path,
-             const std::filesystem::path & robot_path,
-             const std::filesystem::path & device_path,
-             const std::vector<std::string>& joint_names = {},
-             const std::vector<std::string>& motor_names = {},
-             const std::vector<std::string>& fingertip_names = {},
-             int num_robot_joints = kNumRobotJoints,
-             int num_device_channels = kNumHandMotors,
-             int num_sensor_channels = 0,
+             std::vector<DeviceLogConfig> device_configs,
              int num_inference_values = 0)
-      : joint_names_(joint_names),
-        motor_names_(motor_names),
-        fingertip_names_(fingertip_names),
-        num_robot_joints_(num_robot_joints),
-        num_device_channels_(num_device_channels),
-        num_sensor_channels_(num_sensor_channels),
-        num_inference_values_(num_inference_values),
-        num_fingertips_(fingertip_names.empty()
-                            ? kDefaultNumFingertips
-                            : static_cast<int>(fingertip_names.size()))
+      : device_configs_(std::move(device_configs)),
+        num_inference_values_(num_inference_values)
   {
-    if (num_fingertips_ > kMaxFingertips) { num_fingertips_ = kMaxFingertips; }
-    if (num_robot_joints_ > kMaxRobotDOF) { num_robot_joints_ = kMaxRobotDOF; }
-    if (num_device_channels_ > kMaxDeviceChannels) { num_device_channels_ = kMaxDeviceChannels; }
-    if (num_sensor_channels_ > kMaxSensorChannels) { num_sensor_channels_ = kMaxSensorChannels; }
-    if (num_inference_values_ > kMaxInferenceValues) { num_inference_values_ = kMaxInferenceValues; }
+    if (num_inference_values_ > kMaxInferenceValues) {
+      num_inference_values_ = kMaxInferenceValues;
+    }
 
     if (!timing_path.empty()) {
       timing_file_.open(timing_path);
       if (timing_file_.is_open()) { WriteTimingHeader(); }
     }
-    if (!robot_path.empty()) {
-      robot_file_.open(robot_path);
-      if (robot_file_.is_open()) { WriteRobotHeader(); }
-    }
-    if (!device_path.empty()) {
-      device_file_.open(device_path);
-      if (device_file_.is_open()) { WriteDeviceHeader(); }
+
+    device_files_.resize(device_configs_.size());
+    for (std::size_t i = 0; i < device_configs_.size(); ++i) {
+      auto& cfg = device_configs_[i];
+      if (cfg.num_channels > kMaxDeviceChannels) cfg.num_channels = kMaxDeviceChannels;
+      if (cfg.num_sensor_channels > kMaxSensorChannels) cfg.num_sensor_channels = kMaxSensorChannels;
+
+      if (!cfg.path.empty()) {
+        device_files_[i].open(cfg.path);
+        if (device_files_[i].is_open()) { WriteDeviceHeader(i); }
+      }
     }
   }
 
@@ -77,25 +66,28 @@ public:
   DataLogger(DataLogger &&) = default;
   DataLogger &operator=(DataLogger &&) = default;
 
-  // Write one log entry to all open files.
   void LogEntry(const rtc::LogEntry &entry) {
     WriteTimingRow(entry);
-    WriteRobotRow(entry);
-    WriteDeviceRow(entry);
+    for (std::size_t i = 0; i < device_files_.size(); ++i) {
+      WriteDeviceRow(i, entry);
+    }
   }
 
   void Flush() {
     if (timing_file_.is_open()) { timing_file_.flush(); }
-    if (robot_file_.is_open())  { robot_file_.flush(); }
-    if (device_file_.is_open()) { device_file_.flush(); }
+    for (auto& f : device_files_) {
+      if (f.is_open()) { f.flush(); }
+    }
   }
 
   [[nodiscard]] bool IsOpen() const {
-    return timing_file_.is_open() || robot_file_.is_open() || device_file_.is_open();
+    if (timing_file_.is_open()) return true;
+    for (const auto& f : device_files_) {
+      if (f.is_open()) return true;
+    }
+    return false;
   }
 
-  // Drains all pending entries from the ring buffer and writes them.
-  // Must be called exclusively from the log thread — never from the RT thread.
   void DrainBuffer(ControlLogBuffer &buf) {
     rtc::LogEntry entry;
     while (buf.Pop(entry)) {
@@ -105,30 +97,22 @@ public:
 
 private:
   std::ofstream timing_file_;
-  std::ofstream robot_file_;
-  std::ofstream device_file_;
+  std::vector<std::ofstream> device_files_;
+  std::vector<DeviceLogConfig> device_configs_;
+  int num_inference_values_{0};
 
-  // 이름 벡터 (v5.14.0)
-  std::vector<std::string> joint_names_;
-  std::vector<std::string> motor_names_;
-  std::vector<std::string> fingertip_names_;
-  int num_robot_joints_;
-  int num_device_channels_;
-  int num_sensor_channels_;
-  int num_inference_values_;
-  int num_fingertips_;
-
-  // 조인트 이름 또는 인덱스 문자열 반환
-  std::string JointLabel(std::size_t i) const {
-    return (i < joint_names_.size()) ? joint_names_[i] : std::to_string(i);
+  // Joint/sensor name label helper — falls back to numeric index
+  std::string JointLabel(std::size_t dev_idx, std::size_t i) const {
+    if (dev_idx < device_configs_.size() && i < device_configs_[dev_idx].joint_names.size()) {
+      return device_configs_[dev_idx].joint_names[i];
+    }
+    return std::to_string(i);
   }
-  std::string MotorLabel(std::size_t i) const {
-    return (i < motor_names_.size()) ? motor_names_[i] : std::to_string(i);
-  }
-  std::string FingertipLabel(int f) const {
-    return (static_cast<std::size_t>(f) < fingertip_names_.size())
-               ? fingertip_names_[static_cast<std::size_t>(f)]
-               : "f" + std::to_string(f);
+  std::string SensorLabel(std::size_t dev_idx, std::size_t i) const {
+    if (dev_idx < device_configs_.size() && i < device_configs_[dev_idx].sensor_names.size()) {
+      return device_configs_[dev_idx].sensor_names[i];
+    }
+    return std::to_string(i);
   }
 
   // ── Timing CSV ──────────────────────────────────────────────────────────────
@@ -153,130 +137,126 @@ private:
                  << '\n';
   }
 
-  // ── Robot CSV ───────────────────────────────────────────────────────────────
-  // 4-카테고리 순서: Goal → Current State → Command → Trajectory
-  void WriteRobotHeader() {
-    const int nj = num_robot_joints_;
-    robot_file_ << "timestamp";
-    // 카테고리 1: Goal State
-    for (int i = 0; i < nj; ++i) {
-      robot_file_ << ",goal_pos_" << JointLabel(static_cast<std::size_t>(i));
+  // ── Per-device CSV ──────────────────────────────────────────────────────────
+  void WriteDeviceHeader(std::size_t dev_idx) {
+    auto& f = device_files_[dev_idx];
+    const auto& cfg = device_configs_[dev_idx];
+    const int nc = cfg.num_channels;
+    const int ns = cfg.num_sensor_channels;
+
+    f << "timestamp"
+      << ",valid";
+
+    // Goal State
+    for (int i = 0; i < nc; ++i) {
+      f << ",goal_pos_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
     }
-    // 카테고리 2: Current State
-    for (int i = 0; i < nj; ++i) {
-      robot_file_ << ",actual_pos_" << JointLabel(static_cast<std::size_t>(i));
+    // Current State
+    for (int i = 0; i < nc; ++i) {
+      f << ",actual_pos_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
     }
-    for (int i = 0; i < nj; ++i) {
-      robot_file_ << ",actual_vel_" << JointLabel(static_cast<std::size_t>(i));
+    for (int i = 0; i < nc; ++i) {
+      f << ",actual_vel_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
     }
-    for (int i = 0; i < nj; ++i) {
-      robot_file_ << ",actual_torque_" << JointLabel(static_cast<std::size_t>(i));
+    for (int i = 0; i < nc; ++i) {
+      f << ",actual_torque_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
     }
-    for (int i = 0; i < 6; ++i)               { robot_file_ << ",task_pos_" << i; }
-    // 카테고리 3: Control Command
-    for (int i = 0; i < nj; ++i) {
-      robot_file_ << ",command_" << JointLabel(static_cast<std::size_t>(i));
+
+    // Task position (shared, only for first device)
+    if (dev_idx == 0) {
+      for (int i = 0; i < 6; ++i) { f << ",task_pos_" << i; }
     }
-    robot_file_ << ",command_type";
-    // 카테고리 4: Trajectory State
-    for (int i = 0; i < nj; ++i) {
-      robot_file_ << ",traj_pos_" << JointLabel(static_cast<std::size_t>(i));
+
+    // Sensor data
+    for (int i = 0; i < ns; ++i) {
+      f << ",sensor_raw_" << i;
     }
-    for (int i = 0; i < nj; ++i) {
-      robot_file_ << ",traj_vel_" << JointLabel(static_cast<std::size_t>(i));
+    for (int i = 0; i < ns; ++i) {
+      f << ",sensor_" << i;
     }
-    robot_file_ << '\n';
+
+    // Inference output (only for first device with sensors, or last device)
+    if (dev_idx == device_configs_.size() - 1) {
+      f << ",inference_valid";
+      for (int i = 0; i < num_inference_values_; ++i) {
+        f << ",inference_" << i;
+      }
+    }
+
+    // Control Command
+    for (int i = 0; i < nc; ++i) {
+      f << ",command_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
+    }
+
+    if (dev_idx == 0) {
+      f << ",command_type";
+    }
+
+    // Trajectory State
+    for (int i = 0; i < nc; ++i) {
+      f << ",traj_pos_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
+    }
+    for (int i = 0; i < nc; ++i) {
+      f << ",traj_vel_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
+    }
+
+    f << '\n';
   }
 
-  void WriteRobotRow(const rtc::LogEntry &e) {
-    if (!robot_file_.is_open()) { return; }
-    // devices[0] = robot (first device group, typically "ur5e")
-    const auto & d = e.devices[0];
-    const int nj = std::min(d.num_channels, num_robot_joints_);
-    robot_file_ << std::fixed << std::setprecision(6) << e.timestamp;
-    // 카테고리 1: Goal State
-    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << d.goal_positions[static_cast<std::size_t>(i)]; }
-    // 카테고리 2: Current State
-    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << d.actual_positions[static_cast<std::size_t>(i)]; }
-    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << d.actual_velocities[static_cast<std::size_t>(i)]; }
-    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << d.efforts[static_cast<std::size_t>(i)]; }
-    for (const auto v : e.actual_task_positions)   { robot_file_ << ',' << v; }
-    // 카테고리 3: Control Command
-    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << d.commands[static_cast<std::size_t>(i)]; }
-    robot_file_ << ',' << (e.command_type == CommandType::kPosition ? 0 : 1);
-    // 카테고리 4: Trajectory State
-    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << d.trajectory_positions[static_cast<std::size_t>(i)]; }
-    for (int i = 0; i < nj; ++i) { robot_file_ << ',' << d.trajectory_velocities[static_cast<std::size_t>(i)]; }
-    robot_file_ << '\n';
-  }
+  void WriteDeviceRow(std::size_t dev_idx, const rtc::LogEntry &e) {
+    auto& f = device_files_[dev_idx];
+    if (!f.is_open()) { return; }
+    if (static_cast<int>(dev_idx) >= e.num_devices) { return; }
 
-  // ── Device CSV ────────────────────────────────────────────────────────────────
-  // 4-카테고리 순서: Goal → Current State → Command
-  void WriteDeviceHeader() {
-    const int nc = num_device_channels_;
-    device_file_ << "timestamp"
-                 << ",device_valid";
-    // 카테고리 1: Goal State
-    for (int i = 0; i < nc; ++i) {
-      device_file_ << ",device_goal_" << MotorLabel(static_cast<std::size_t>(i));
-    }
-    // 카테고리 2: Current State
-    for (int i = 0; i < nc; ++i) {
-      device_file_ << ",device_actual_" << MotorLabel(static_cast<std::size_t>(i));
-    }
-    for (int i = 0; i < nc; ++i) {
-      device_file_ << ",device_vel_" << MotorLabel(static_cast<std::size_t>(i));
-    }
-    // Sensor data: raw (pre-LPF)
-    for (int i = 0; i < num_sensor_channels_; ++i) {
-      device_file_ << ",sensor_raw_" << i;
-    }
-    // Sensor data: filtered (post-LPF)
-    for (int i = 0; i < num_sensor_channels_; ++i) {
-      device_file_ << ",sensor_" << i;
-    }
-    // Inference output
-    device_file_ << ",inference_valid";
-    for (int i = 0; i < num_inference_values_; ++i) {
-      device_file_ << ",inference_" << i;
-    }
-    // 카테고리 3: Control Command
-    for (int i = 0; i < nc; ++i) {
-      device_file_ << ",device_cmd_" << MotorLabel(static_cast<std::size_t>(i));
-    }
-    device_file_ << '\n';
-  }
+    const auto& cfg = device_configs_[dev_idx];
+    const auto & d = e.devices[dev_idx];
+    const int nc = std::min(d.num_channels, cfg.num_channels);
 
-  void WriteDeviceRow(const rtc::LogEntry &e) {
-    if (!device_file_.is_open()) { return; }
-    // devices[1] = device (second device group, typically "hand")
-    const auto & d = (e.num_devices > 1) ? e.devices[1] : e.devices[0];
-    const int nc = std::min(d.num_channels, num_device_channels_);
-    device_file_ << std::fixed << std::setprecision(6) << e.timestamp
-                 << ',' << (d.valid ? 1 : 0);
-    // 카테고리 1: Goal State
-    for (int i = 0; i < nc; ++i) { device_file_ << ',' << d.goal_positions[static_cast<std::size_t>(i)]; }
-    // 카테고리 2: Current State
-    for (int i = 0; i < nc; ++i) { device_file_ << ',' << d.actual_positions[static_cast<std::size_t>(i)]; }
-    for (int i = 0; i < nc; ++i) { device_file_ << ',' << d.actual_velocities[static_cast<std::size_t>(i)]; }
-    // Sensor data: raw (pre-LPF)
+    f << std::fixed << std::setprecision(6) << e.timestamp
+      << ',' << (d.valid ? 1 : 0);
+
+    // Goal State
+    for (int i = 0; i < nc; ++i) { f << ',' << d.goal_positions[static_cast<std::size_t>(i)]; }
+    // Current State
+    for (int i = 0; i < nc; ++i) { f << ',' << d.actual_positions[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nc; ++i) { f << ',' << d.actual_velocities[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nc; ++i) { f << ',' << d.efforts[static_cast<std::size_t>(i)]; }
+
+    // Task position (shared, only for first device)
+    if (dev_idx == 0) {
+      for (const auto v : e.actual_task_positions) { f << ',' << v; }
+    }
+
+    // Sensor data
     const int ns = d.num_sensor_channels;
     for (int i = 0; i < ns; ++i) {
-      device_file_ << ',' << d.sensor_data_raw[static_cast<std::size_t>(i)];
+      f << ',' << d.sensor_data_raw[static_cast<std::size_t>(i)];
     }
-    // Sensor data: filtered (post-LPF)
     for (int i = 0; i < ns; ++i) {
-      device_file_ << ',' << d.sensor_data[static_cast<std::size_t>(i)];
+      f << ',' << d.sensor_data[static_cast<std::size_t>(i)];
     }
-    // Inference output
-    device_file_ << ',' << (e.inference_valid ? 1 : 0);
-    const int ni = e.num_inference_values;
-    for (int i = 0; i < ni; ++i) {
-      device_file_ << ',' << e.inference_output[static_cast<std::size_t>(i)];
+
+    // Inference output (last device only)
+    if (dev_idx == device_configs_.size() - 1) {
+      f << ',' << (e.inference_valid ? 1 : 0);
+      const int ni = e.num_inference_values;
+      for (int i = 0; i < ni; ++i) {
+        f << ',' << e.inference_output[static_cast<std::size_t>(i)];
+      }
     }
-    // 카테고리 3: Control Command
-    for (int i = 0; i < nc; ++i) { device_file_ << ',' << d.commands[static_cast<std::size_t>(i)]; }
-    device_file_ << '\n';
+
+    // Control Command
+    for (int i = 0; i < nc; ++i) { f << ',' << d.commands[static_cast<std::size_t>(i)]; }
+
+    if (dev_idx == 0) {
+      f << ',' << (e.command_type == CommandType::kPosition ? 0 : 1);
+    }
+
+    // Trajectory State
+    for (int i = 0; i < nc; ++i) { f << ',' << d.trajectory_positions[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nc; ++i) { f << ',' << d.trajectory_velocities[static_cast<std::size_t>(i)]; }
+
+    f << '\n';
   }
 };
 

@@ -109,6 +109,7 @@ public:
   // ── Controller registry hooks ────────────────────────────────────────────
   // gains layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10] = 20 values
   void LoadConfig(const YAML::Node & cfg) override;
+  void OnDeviceConfigsSet() override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
   [[nodiscard]] std::vector<double> GetCurrentGains() const noexcept override;
   [[nodiscard]] CommandType GetCommandType() const noexcept override {return command_type_;}
@@ -173,8 +174,7 @@ private:
 
   static constexpr std::array<double, kNumRobotJoints> kSafePosition{
     0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
-  static constexpr double kMaxJointVelocity{2.0};
-  static constexpr double kMaxHandVelocity{1.0};
+  std::array<std::vector<double>, ControllerState::kMaxDevices> device_max_velocity_;
 
   CommandType command_type_{CommandType::kPosition};
 
@@ -182,7 +182,8 @@ private:
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState & state) noexcept;
 
   static void ClampCommands(
-    std::array<double, kMaxDeviceChannels>& cmds, int n, double limit) noexcept;
+    std::array<double, kMaxDeviceChannels>& cmds, int n,
+    const std::vector<double>& limits) noexcept;
 };
 
 }  // namespace ur5e_bringup

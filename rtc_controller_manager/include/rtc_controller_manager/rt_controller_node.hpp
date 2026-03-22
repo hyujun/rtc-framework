@@ -79,8 +79,8 @@ private:
   void DeviceTargetCallback(int device_slot,
       std_msgs::msg::Float64MultiArray::SharedPtr msg);
 
-  // ── Joint name validation (v5.14.0) ──────────────────────────────────────
-  void LoadAndValidateJointNames();
+  // ── Device name configuration ────────────────────────────────────────────
+  void LoadDeviceNameConfigs();
   void BuildDeviceReorderMap(int device_slot,
       const std::vector<std::string>& msg_names);
 
@@ -214,11 +214,9 @@ private:
   std::atomic<bool> state_received_{false};
   std::atomic<bool> target_received_{false};
 
-  // ── Named joint mapping (v5.14.0) ────────────────────────────────────────
-  std::vector<std::string> robot_joint_names_;
-  std::vector<std::string> hand_motor_names_;
-  std::vector<std::string> fingertip_names_;
-  std::vector<std::string> hand_sensor_names_;
+  // ── Per-device name configuration ────────────────────────────────────────
+  std::map<std::string, rtc::DeviceNameConfig> device_name_configs_;
+  std::vector<std::string> slot_to_group_name_;  // reverse: slot index → group name
 
   // Per-device reorder maps (indexed by device slot)
   struct DeviceReorderMap {

@@ -36,6 +36,29 @@ DemoTaskController::DemoTaskController(std::string_view urdf_path, Gains gains)
   pos_error_6d_ = Eigen::Matrix<double, 6, 1>::Zero();
 }
 
+void DemoTaskController::OnDeviceConfigsSet()
+{
+  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
+    if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
+      if (model_.existFrame(cfg->urdf->tip_link)) {
+        auto fid = model_.getFrameId(cfg->urdf->tip_link);
+        end_id_ = model_.frames[fid].parentJoint;
+      }
+    }
+    if (cfg->joint_limits && !cfg->joint_limits->max_velocity.empty()) {
+      device_max_velocity_[0] = cfg->joint_limits->max_velocity;
+    }
+  }
+  if (auto* cfg = GetDeviceNameConfig("hand"); cfg && cfg->joint_limits) {
+    if (!cfg->joint_limits->max_velocity.empty()) {
+      device_max_velocity_[1] = cfg->joint_limits->max_velocity;
+    }
+  }
+  for (auto& v : device_max_velocity_) {
+    if (v.empty()) v.assign(kMaxDeviceChannels, 2.0);
+  }
+}
+
 // ── RTControllerInterface implementation ────────────────────────────────────
 
 ControllerOutput DemoTaskController::Compute(
@@ -172,7 +195,7 @@ ControllerOutput DemoTaskController::Compute(
   for (int i = 0; i < nc0; ++i) {
     out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
   }
-  ClampCommands(out0.target_velocities, nc0, kMaxJointVelocity);
+  ClampCommands(out0.target_velocities, nc0, device_max_velocity_[0]);
 
   for (int i = 0; i < nc0; ++i) {
     out0.commands[i] = dev0.positions[i] + out0.target_velocities[i] * dt;
@@ -212,7 +235,7 @@ ControllerOutput DemoTaskController::Compute(
         dev1.positions[idx] +
         static_cast<double>(gains_.hand_kp[idx]) * error * state.dt;
     }
-    ClampCommands(out1.commands, nc1, kMaxHandVelocity);
+    ClampCommands(out1.commands, nc1, device_max_velocity_[1]);
     for (int i = 0; i < nc1; ++i) {
       out1.goal_positions[i] = device_targets_[1][i];
     }
@@ -353,19 +376,23 @@ ControllerOutput DemoTaskController::ComputeEstop(
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
   for (int i = 0; i < nc0; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    const double lim = (ui < device_max_velocity_[0].size()) ? device_max_velocity_[0][ui] : 2.0;
     out0.commands[i] = dev0.positions[i] +
-      std::clamp(kSafePosition[i] - dev0.positions[i],
-                     -kMaxJointVelocity, kMaxJointVelocity) *
+      std::clamp(kSafePosition[i] - dev0.positions[i], -lim, lim) *
       ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
   }
   return output;
 }
 
 void DemoTaskController::ClampCommands(
-  std::array<double, kMaxDeviceChannels>& cmds, int n, double limit) noexcept
+  std::array<double, kMaxDeviceChannels>& cmds, int n,
+  const std::vector<double>& limits) noexcept
 {
   for (int i = 0; i < n; ++i) {
-    cmds[i] = std::clamp(cmds[i], -limit, limit);
+    const auto ui = static_cast<std::size_t>(i);
+    const double lim = (ui < limits.size()) ? limits[ui] : 2.0;
+    cmds[i] = std::clamp(cmds[i], -lim, lim);
   }
 }
 

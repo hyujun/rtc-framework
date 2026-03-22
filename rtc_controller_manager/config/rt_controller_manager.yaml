@@ -1,5 +1,4 @@
 # rt_controller_manager.yaml — generic controller manager configuration
-# Extracted from rtc_controller_manager.yaml (robot-agnostic parts)
 /**:
   ros__parameters:
     # ── Control rate ─────────────────────────────────────────────────────────────
@@ -14,17 +13,8 @@
     # ── Auto-hold position ─────────────────────────────────────────────────────
     auto_hold_position: true
 
-    # ── JointCommand topic (MuJoCo / external simulator) ──────────────────────
-    joint_command_topic: "/ur5e/joint_command"
-
-    # ── Hand simulation (MuJoCo fake response) ────────────────────────────────
-    hand_sim_enabled: false
-    hand_command_topic: "/hand/command"
-    hand_state_topic: "/hand/joint_states"
-
     # ── E-STOP settings ─────────────────────────────────────────────────────────
     enable_estop: true
-    # device_timeouts: matches topics group names, watches state topic for gaps
     device_timeout_names: ["ur5e"]
     device_timeout_values: [100.0]
 
@@ -35,26 +25,28 @@
     log_dir: ""
     max_log_sessions: 10
 
-    # ── Joint names (channel count = array length) ─────────────────────────────
-    robot_joint_names:
-      - "shoulder_pan_joint"
-      - "shoulder_lift_joint"
-      - "elbow_joint"
-      - "wrist_1_joint"
-      - "wrist_2_joint"
-      - "wrist_3_joint"
-
-    # ── Joint limits ─────────────────────────────────────────────────────────────
-    joint_limits:
-      max_velocity: 2.0
-      max_acceleration: 5.0
-      position_limits:
-        joint_0: [-6.28, 6.28]
-        joint_1: [-6.28, 6.28]
-        joint_2: [-3.14, 3.14]
-        joint_3: [-6.28, 6.28]
-        joint_4: [-6.28, 6.28]
-        joint_5: [-6.28, 6.28]
+    # ── Device configuration (keyed by controller topic group name) ─────────
+    devices:
+      ur5e:
+        joint_state_names:
+          - "shoulder_pan_joint"
+          - "shoulder_lift_joint"
+          - "elbow_joint"
+          - "wrist_1_joint"
+          - "wrist_2_joint"
+          - "wrist_3_joint"
+        sensor_names: []
+        urdf:
+          package: "ur5e_description"
+          path: "robots/ur5e/urdf/ur5e.urdf"
+          root_link: "base_link"
+          tip_link: "wrist_3_link"
+        joint_limits:
+          max_velocity:     [2.0, 2.0, 3.0, 3.0, 3.0, 3.0]
+          max_acceleration: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+          max_torque:       [150.0, 150.0, 150.0, 28.0, 28.0, 28.0]
+          position_lower:   [-6.28, -6.28, -3.14, -6.28, -6.28, -6.28]
+          position_upper:   [6.28, 6.28, 3.14, 6.28, 6.28, 6.28]
 
     # ── Status Monitor (optional, non-RT) ─────────────────────────────────────
     enable_status_monitor: false

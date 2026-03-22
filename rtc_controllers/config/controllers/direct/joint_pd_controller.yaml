@@ -36,7 +36,3 @@ joint_pd_controller:
         - topic: "/ur5e/controller_state"
           role: "controller_state"
           data_size: 18
-    hand:
-      subscribe:
-        - topic: "/hand/joint_states"
-          role: "state"

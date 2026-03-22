@@ -74,6 +74,7 @@ public:
 
   // ── Controller registry hooks ──────────────────────────────────────────────
   void LoadConfig(const YAML::Node & cfg) override;
+  void OnDeviceConfigsSet() override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
   [[nodiscard]] std::vector<double> GetCurrentGains() const noexcept override;
   [[nodiscard]] CommandType GetCommandType() const noexcept override
@@ -96,8 +97,8 @@ public:
 private:
   static constexpr std::array<double, kNumRobotJoints> kSafePosition{
     0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
-  static constexpr double kMaxJointVelocity{2.0};
-  static constexpr double kMaxJointTorque{150.0};
+  std::vector<double> max_joint_velocity_;
+  std::vector<double> max_joint_torque_;
 
   // ── Pinocchio model and work buffers ───────────────────────────────────────
   pinocchio::Model model_;
@@ -134,8 +135,8 @@ private:
 
   void UpdateDynamics(const DeviceState & dev) noexcept;
 
-  static void ClampCommands(
-    std::array<double, kMaxDeviceChannels>& cmds, int n, CommandType type) noexcept;
+  void ClampCommands(
+    std::array<double, kMaxDeviceChannels>& cmds, int n, CommandType type) const noexcept;
 };
 
 }  // namespace rtc

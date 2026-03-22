@@ -30,6 +30,24 @@ OperationalSpaceController::OperationalSpaceController(
   tcp_vel_.setZero();
 }
 
+void OperationalSpaceController::OnDeviceConfigsSet()
+{
+  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
+    if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
+      if (model_.existFrame(cfg->urdf->tip_link)) {
+        auto fid = model_.getFrameId(cfg->urdf->tip_link);
+        end_id_ = model_.frames[fid].parentJoint;
+      }
+    }
+    if (cfg->joint_limits) {
+      max_joint_velocity_ = cfg->joint_limits->max_velocity;
+    }
+  }
+  if (max_joint_velocity_.empty()) {
+    max_joint_velocity_.assign(kMaxDeviceChannels, 2.0);
+  }
+}
+
 // ── RTControllerInterface implementation ────────────────────────────────────
 
 ControllerOutput OperationalSpaceController::Compute(
@@ -269,19 +287,21 @@ ControllerOutput OperationalSpaceController::ComputeEstop(
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
   for (int i = 0; i < nc0; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    const double lim = (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : 2.0;
     out0.commands[i] = dev0.positions[i] +
-      std::clamp(kSafePosition[i] - dev0.positions[i],
-                     -kMaxJointVelocity, kMaxJointVelocity) *
-      dt;
+      std::clamp(kSafePosition[i] - dev0.positions[i], -lim, lim) * dt;
   }
   return output;
 }
 
 void OperationalSpaceController::ClampVelocity(
-  std::array<double, kMaxDeviceChannels>& dq, int n) noexcept
+  std::array<double, kMaxDeviceChannels>& dq, int n) const noexcept
 {
   for (int i = 0; i < n; ++i) {
-    dq[i] = std::clamp(dq[i], -kMaxJointVelocity, kMaxJointVelocity);
+    const auto ui = static_cast<std::size_t>(i);
+    const double lim = (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : 2.0;
+    dq[i] = std::clamp(dq[i], -lim, lim);
   }
 }
 

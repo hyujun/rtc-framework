@@ -7,6 +7,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <map>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -92,8 +93,30 @@ public:
     return topic_config_;
   }
 
+  // ── Device name configuration ──────────────────────────────────────────
+  //   SetDeviceNameConfigs() is called by RtControllerNode after all
+  //   controllers are constructed and device configs are loaded from YAML.
+  //   After setting, OnDeviceConfigsSet() is called for controllers to
+  //   resolve kinematics (e.g. end_id_ from tip_link).
+  void SetDeviceNameConfigs(std::map<std::string, DeviceNameConfig> configs)
+  {
+    device_name_configs_ = std::move(configs);
+    OnDeviceConfigsSet();
+  }
+
+  [[nodiscard]] const DeviceNameConfig* GetDeviceNameConfig(
+      const std::string& device_name) const noexcept
+  {
+    auto it = device_name_configs_.find(device_name);
+    return (it != device_name_configs_.end()) ? &it->second : nullptr;
+  }
+
 protected:
   RTControllerInterface();
+
+  // Called after SetDeviceNameConfigs(). Override to resolve URDF-based
+  // kinematics (e.g. tip_link → end_id_).
+  virtual void OnDeviceConfigsSet() {}
 
   // Parses the "topics" section of a controller YAML node.
   // Called by the base LoadConfig(); subclasses that override LoadConfig()
@@ -104,6 +127,7 @@ protected:
   static TopicConfig MakeDefaultTopicConfig();
 
   TopicConfig topic_config_;
+  std::map<std::string, DeviceNameConfig> device_name_configs_;
 };
 
 }  // namespace rtc

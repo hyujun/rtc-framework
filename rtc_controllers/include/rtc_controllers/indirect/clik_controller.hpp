@@ -106,6 +106,7 @@ public:
   // ── Controller registry hooks ────────────────────────────────────────────
   // gains layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1)]
   void LoadConfig(const YAML::Node & cfg) override;
+  void OnDeviceConfigsSet() override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
   [[nodiscard]] std::vector<double> GetCurrentGains() const noexcept override;
   [[nodiscard]] CommandType GetCommandType() const noexcept override {return command_type_;}
@@ -177,15 +178,15 @@ private:
 
   static constexpr std::array<double, kNumRobotJoints> kSafePosition{
     0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
-  static constexpr double kMaxJointVelocity{2.0};
+  std::vector<double> max_joint_velocity_;
 
   CommandType command_type_{CommandType::kPosition};
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState & state) noexcept;
 
-  static void ClampVelocity(
-    std::array<double, kMaxDeviceChannels>& dq, int n) noexcept;
+  void ClampVelocity(
+    std::array<double, kMaxDeviceChannels>& dq, int n) const noexcept;
 };
 
 }  // namespace rtc

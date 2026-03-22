@@ -63,6 +63,7 @@ public:
   // ── Controller registry hooks ────────────────────────────────────────────
   // gains layout: [kp×6]
   void LoadConfig(const YAML::Node & cfg) override;
+  void OnDeviceConfigsSet() override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
   [[nodiscard]] std::vector<double> GetCurrentGains() const noexcept override;
   [[nodiscard]] CommandType GetCommandType() const noexcept override {return command_type_;}
@@ -83,10 +84,9 @@ private:
 
   CommandType command_type_{CommandType::kPosition};
 
-  // Clamps each command to [-kMaxJointVelocity, +kMaxJointVelocity].
-  static constexpr double kMaxJointVelocity = 2.0;  // rad/s
-  static void ClampCommands(
-    std::array<double, kMaxDeviceChannels>& commands, int n) noexcept;
+  std::vector<double> max_joint_velocity_;
+  void ClampCommands(
+    std::array<double, kMaxDeviceChannels>& commands, int n) const noexcept;
 };
 
 }  // namespace rtc

@@ -18,6 +18,24 @@ PController::PController(std::string_view urdf_path, Gains gains)
   q_ = Eigen::VectorXd::Zero(model_.nv);
 }
 
+void PController::OnDeviceConfigsSet()
+{
+  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
+    if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
+      if (model_.existFrame(cfg->urdf->tip_link)) {
+        auto fid = model_.getFrameId(cfg->urdf->tip_link);
+        end_id_ = model_.frames[fid].parentJoint;
+      }
+    }
+    if (cfg->joint_limits) {
+      max_joint_velocity_ = cfg->joint_limits->max_velocity;
+    }
+  }
+  if (max_joint_velocity_.empty()) {
+    max_joint_velocity_.assign(kMaxDeviceChannels, 2.0);
+  }
+}
+
 ControllerOutput PController::Compute(const ControllerState & state) noexcept
 {
   ControllerOutput output;
@@ -89,10 +107,12 @@ void PController::InitializeHoldPosition(
 }
 
 void PController::ClampCommands(
-  std::array<double, kMaxDeviceChannels>& commands, int n) noexcept
+  std::array<double, kMaxDeviceChannels>& commands, int n) const noexcept
 {
   for (int i = 0; i < n; ++i) {
-    commands[i] = std::clamp(commands[i], -kMaxJointVelocity, kMaxJointVelocity);
+    const auto ui = static_cast<std::size_t>(i);
+    const double lim = (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : 2.0;
+    commands[i] = std::clamp(commands[i], -lim, lim);
   }
 }
 
