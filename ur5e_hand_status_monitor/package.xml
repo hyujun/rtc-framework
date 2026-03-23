@@ -1,12 +1,11 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>rtc_controller_manager</name>
+  <name>ur5e_hand_status_monitor</name>
   <version>0.1.0</version>
   <description>
-    RT Controller Manager — generic 500 Hz real-time controller node.
-    Manages controller lifecycle, RT loop, publish offload, and logging.
-    Phase 3 of the RTC restructuring (extracted from rtc_controller_manager).
+    UR5e + Hand status monitor — extends RtcStatusMonitor with hand device
+    monitoring (motor/sensor data quality, message rate, timeout detection).
   </description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
@@ -15,20 +14,9 @@
 
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
-  <depend>std_msgs</depend>
-  <depend>yaml-cpp</depend>
-  <depend>ament_index_cpp</depend>
-
-  <!-- RTC packages (Phase 1-2) -->
-  <depend>rtc_controller_interface</depend>
-  <depend>rtc_controllers</depend>
   <depend>rtc_base</depend>
-  <depend>rtc_communication</depend>
+  <depend>rtc_status_monitor</depend>
   <depend>rtc_msgs</depend>
-  <depend>ur5e_hand_status_monitor</depend>
-
-  <!-- Pinocchio for URDF validation -->
-  <depend>pinocchio</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

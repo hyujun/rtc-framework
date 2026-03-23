@@ -170,7 +170,7 @@ class HandUdpNode : public rclcpp::Node {
 
       const auto cfgs = urtc::SelectThreadConfigs();
       failure_detector_ = std::make_unique<urtc::HandFailureDetector>(
-          *controller_, fd_cfg, cfgs.hand_failure);
+          *controller_, fd_cfg, cfgs.status_monitor);
       failure_detector_->SetFailureCallback(
           [this](const std::string& reason) {
             RCLCPP_ERROR(get_logger(), "Hand failure detected: %s", reason.c_str());

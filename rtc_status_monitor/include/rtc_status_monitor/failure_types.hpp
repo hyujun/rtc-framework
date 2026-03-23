@@ -28,6 +28,10 @@ enum class FailureType : uint8_t {
   kHardwareFault,
   kTrackingError,
   kJointLimitViolation,
+  kHandTimeout,
+  kHandMotorDataFault,
+  kHandSensorDataFault,
+  kHandRateLow,
 };
 
 // ── WarningType ──────────────────────────────────────────────────────────────
@@ -37,6 +41,7 @@ enum class WarningType : uint8_t {
   kJointLimitProximity,
   kTrackingErrorHigh,
   kHighLatency,
+  kHandRateDegraded,
 };
 
 // ── FailureContext ────────────────────────────────────────────────────────────
@@ -98,6 +103,10 @@ enum class URSafetyMode : int32_t {
     case FailureType::kHardwareFault:      return "HARDWARE_FAULT";
     case FailureType::kTrackingError:      return "TRACKING_ERROR";
     case FailureType::kJointLimitViolation:return "JOINT_LIMIT_VIOLATION";
+    case FailureType::kHandTimeout:        return "HAND_TIMEOUT";
+    case FailureType::kHandMotorDataFault: return "HAND_MOTOR_DATA_FAULT";
+    case FailureType::kHandSensorDataFault:return "HAND_SENSOR_DATA_FAULT";
+    case FailureType::kHandRateLow:        return "HAND_RATE_LOW";
   }
   return "UNKNOWN";
 }
@@ -109,6 +118,7 @@ enum class URSafetyMode : int32_t {
     case WarningType::kJointLimitProximity: return "JOINT_LIMIT_PROXIMITY";
     case WarningType::kTrackingErrorHigh:  return "TRACKING_ERROR_HIGH";
     case WarningType::kHighLatency:        return "HIGH_LATENCY";
+    case WarningType::kHandRateDegraded:   return "HAND_RATE_DEGRADED";
   }
   return "UNKNOWN";
 }

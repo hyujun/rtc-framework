@@ -6,9 +6,7 @@
 #include "rtc_base/threading/publish_buffer.hpp"
 #include "rtc_controller_manager/controller_timing_profiler.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
-#include <rtc_status_monitor/rtc_status_monitor.hpp>
-#include <ur5e_hand_driver/hand_controller.hpp>
-#include <ur5e_hand_driver/hand_failure_detector.hpp>
+#include <ur5e_hand_status_monitor/ur5e_hand_status_monitor.hpp>
 
 // ── ROS2 ─────────────────────────────────────────────────────────────────────
 #include <rclcpp/rclcpp.hpp>
@@ -90,11 +88,6 @@ private:
   void LoadDeviceNameConfigs();
   void BuildDeviceReorderMap(int device_slot,
       const std::vector<std::string>& msg_names);
-
-  // ── Hand in-process integration ──────────────────────────────────────────
-  void InitHandController();
-  void UpdateHandStateFromController();
-  void SendHandCommand(const rtc::ControllerOutput& output);
 
   // ── RT loop (clock_nanosleep) ─────────────────────────────────────────────
   void RtLoopEntry(const rtc::ThreadConfig& cfg);
@@ -230,7 +223,7 @@ private:
   rtc::ControllerTimingProfiler      timing_profiler_{};         // Compute() timing
 
   // ── Status Monitor (optional, non-RT) ──────────────────────────────────────
-  std::unique_ptr<rtc::RtcStatusMonitor> status_monitor_;
+  std::unique_ptr<rtc::Ur5eHandStatusMonitor> status_monitor_;
   bool enable_status_monitor_{false};
 
   // ── Shared state ──────────────────────────────────────────────────────────
@@ -275,12 +268,6 @@ private:
   // ── Global E-Stop ──────────────────────────────────────────────────────────
   std::atomic<bool> global_estop_{false};
   std::string       estop_reason_;
-
-  // ── Hand in-process integration ──────────────────────────────────────────
-  std::unique_ptr<rtc::HandController>      hand_controller_;
-  std::unique_ptr<rtc::HandFailureDetector> hand_failure_detector_;
-  int  hand_device_slot_{-1};
-  bool hand_inprocess_enabled_{false};
 
   // ── Per-tick timing & overrun detection ──────────────────────────────────
   std::chrono::steady_clock::time_point prev_loop_start_{};

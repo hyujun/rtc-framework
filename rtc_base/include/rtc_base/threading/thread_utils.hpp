@@ -609,7 +609,6 @@ struct SystemThreadConfigs
   ThreadConfig aux;
   ThreadConfig publish;         // Non-RT publish offload thread
   ThreadConfig status_monitor;  // Non-RT status monitor (10 Hz)
-  ThreadConfig hand_failure;    // Non-RT hand failure detector (50 Hz)
 };
 
   // Validate SystemThreadConfigs for conflicts and invalid configurations.
@@ -635,7 +634,6 @@ struct SystemThreadConfigs
     errors += ValidateThreadConfig(configs.aux);
     errors += ValidateThreadConfig(configs.publish);
     errors += ValidateThreadConfig(configs.status_monitor);
-    errors += ValidateThreadConfig(configs.hand_failure);
 
     // Collect all configs with names for conflict analysis
     struct NamedConfig
@@ -651,7 +649,6 @@ struct SystemThreadConfigs
         {"aux", &configs.aux},
         {"publish", &configs.publish},
         {"status_monitor", &configs.status_monitor},
-        {"hand_failure", &configs.hand_failure},
     }};
 
     auto is_rt = [](const ThreadConfig *c)
@@ -710,35 +707,35 @@ struct SystemThreadConfigs
     {
       return {kRtControlConfig16Core, kSensorConfig16Core, kUdpRecvConfig16Core,
               kLoggingConfig16Core, kAuxConfig16Core, kPublishConfig16Core,
-              kStatusMonitorConfig16Core, kHandFailureConfig16Core};
+              kStatusMonitorConfig16Core};
     }
     if (ncpu >= 12)
     {
       return {kRtControlConfig12Core, kSensorConfig12Core, kUdpRecvConfig12Core,
               kLoggingConfig12Core, kAuxConfig12Core, kPublishConfig12Core,
-              kStatusMonitorConfig12Core, kHandFailureConfig12Core};
+              kStatusMonitorConfig12Core};
     }
     if (ncpu >= 10)
     {
       return {kRtControlConfig10Core, kSensorConfig10Core, kUdpRecvConfig10Core,
               kLoggingConfig10Core, kAuxConfig10Core, kPublishConfig10Core,
-              kStatusMonitorConfig10Core, kHandFailureConfig10Core};
+              kStatusMonitorConfig10Core};
     }
     if (ncpu >= 8)
     {
       return {kRtControlConfig8Core, kSensorConfig8Core, kUdpRecvConfig8Core,
               kLoggingConfig8Core, kAuxConfig8Core, kPublishConfig8Core,
-              kStatusMonitorConfig8Core, kHandFailureConfig8Core};
+              kStatusMonitorConfig8Core};
     }
     if (ncpu >= 6)
     {
       return {kRtControlConfig, kSensorConfig, kUdpRecvConfig,
               kLoggingConfig, kAuxConfig, kPublishConfig,
-              kStatusMonitorConfig, kHandFailureConfig};
+              kStatusMonitorConfig};
     }
     return {kRtControlConfig4Core, kSensorConfig4Core, kUdpRecvConfig4Core,
             kLoggingConfig4Core, kAuxConfig4Core, kPublishConfig4Core,
-            kStatusMonitorConfig4Core, kHandFailureConfig4Core};
+            kStatusMonitorConfig4Core};
   }
 
 } // namespace rtc

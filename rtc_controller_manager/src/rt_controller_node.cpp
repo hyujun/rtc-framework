@@ -59,7 +59,7 @@ RtControllerNode::RtControllerNode()
 
   // ── Status Monitor (optional) ────────────────────────────────────────────
   if (enable_status_monitor_) {
-    status_monitor_ = std::make_unique<rtc::RtcStatusMonitor>(
+    status_monitor_ = std::make_unique<rtc::Ur5eHandStatusMonitor>(
         shared_from_this());
 
     status_monitor_->registerOnFailure(
@@ -76,7 +76,7 @@ RtControllerNode::RtControllerNode()
 
     const auto cfgs = rtc::SelectThreadConfigs();
     status_monitor_->start(cfgs.status_monitor);
-    RCLCPP_INFO(get_logger(), "RtcStatusMonitor started (10 Hz, Core %d)",
+    RCLCPP_INFO(get_logger(), "Ur5eHandStatusMonitor started (10 Hz, Core %d)",
                 cfgs.status_monitor.cpu_core);
   }
 
@@ -92,9 +92,6 @@ RtControllerNode::~RtControllerNode()
   // Stop RT loop + publish thread (idempotent — safe if already stopped by main)
   StopRtLoop();
   StopPublishLoop();
-
-  if (hand_failure_detector_) { hand_failure_detector_->Stop(); }
-  if (hand_controller_) { hand_controller_->Stop(); }
 
   if (status_monitor_) {
     status_monitor_->stop();
@@ -167,27 +164,6 @@ void RtControllerNode::DeclareAndLoadParameters()
   safe_declare("init_timeout_sec", rclcpp::ParameterValue(5.0));
   safe_declare("auto_hold_position", rclcpp::ParameterValue(true));
   safe_declare("initial_controller", rclcpp::ParameterValue(std::string("joint_pd_controller")));
-
-  // ── Hand in-process integration ─────────────────────────────────────────────
-  safe_declare("hand_inprocess_enabled", rclcpp::ParameterValue(false));
-  safe_declare("hand_target_ip", rclcpp::ParameterValue(std::string("192.168.1.2")));
-  safe_declare("hand_target_port", rclcpp::ParameterValue(55151));
-  safe_declare("hand_recv_timeout_ms", rclcpp::ParameterValue(0.4));
-  safe_declare("hand_communication_mode", rclcpp::ParameterValue(std::string("bulk")));
-  safe_declare("hand_sensor_decimation", rclcpp::ParameterValue(3));
-  safe_declare("hand_use_fake_hand", rclcpp::ParameterValue(false));
-  safe_declare("hand_baro_lpf_enabled", rclcpp::ParameterValue(false));
-  safe_declare("hand_baro_lpf_cutoff_hz", rclcpp::ParameterValue(30.0));
-  safe_declare("hand_tof_lpf_enabled", rclcpp::ParameterValue(false));
-  safe_declare("hand_tof_lpf_cutoff_hz", rclcpp::ParameterValue(15.0));
-  safe_declare("hand_enable_failure_detector", rclcpp::ParameterValue(true));
-  safe_declare("hand_failure_threshold", rclcpp::ParameterValue(5));
-  safe_declare("hand_check_motor", rclcpp::ParameterValue(true));
-  safe_declare("hand_check_sensor", rclcpp::ParameterValue(true));
-  safe_declare("hand_min_rate_hz", rclcpp::ParameterValue(30.0));
-  safe_declare("hand_rate_fail_threshold", rclcpp::ParameterValue(5));
-  safe_declare("hand_check_link", rclcpp::ParameterValue(true));
-  safe_declare("hand_link_fail_threshold", rclcpp::ParameterValue(10));
 
   // ── Device timeouts (replaces robot_timeout_ms / enable_ur5e / enable_hand) ─
   safe_declare("device_timeout_names", rclcpp::ParameterValue(std::vector<std::string>{}));
@@ -321,9 +297,6 @@ void RtControllerNode::DeclareAndLoadParameters()
       BuildDeviceReorderMap(slot, it->second.joint_state_names);
     }
   }
-
-  // ── Hand in-process integration (needs active_groups_ + group_slot_map_) ──
-  InitHandController();
 
   // ── Deferred logging setup (needs active_groups_ + device_name_configs_) ─
   if (enable_logging_) {
@@ -472,17 +445,6 @@ void RtControllerNode::CreateSubscriptions()
 
       for (const auto & entry : group.subscribe) {
         if (!created_topics.insert(entry.topic_name).second) continue;
-
-        // Hand in-process: skip DDS subscriptions for state/sensor
-        // (data comes via SeqLock in UpdateHandStateFromController)
-        if (hand_inprocess_enabled_ && group_name == "hand" &&
-            (entry.role == urtc::SubscribeRole::kState ||
-             entry.role == urtc::SubscribeRole::kSensorState)) {
-          RCLCPP_INFO(get_logger(),
-              "  [Hand in-process] Skip DDS sub: %s (slot %d)",
-              entry.topic_name.c_str(), slot);
-          continue;
-        }
 
         DeviceTimeoutEntry * dt_ptr = find_timeout_entry(entry.topic_name);
 
@@ -995,11 +957,6 @@ void RtControllerNode::ControlLoop()
   // Global E-Stop: controller Compute() handles safe-position internally.
   // We still run the full loop to keep logging and timing active.
 
-  // ── Phase 0.5: Hand in-process state update (SeqLock → device_states_) ──
-  if (hand_inprocess_enabled_ && hand_controller_ && hand_device_slot_ >= 0) {
-    UpdateHandStateFromController();
-  }
-
   // ── Phase 1: non-blocking state acquisition ────────────────────────────
   // try_lock avoids blocking the RT thread when the sensor thread holds the
   // mutex.  On contention the previous cycle's cached data is reused
@@ -1087,11 +1044,6 @@ void RtControllerNode::ControlLoop()
     snap.num_groups = gi;
 
     static_cast<void>(publish_buffer_.Push(snap));
-  }
-
-  // ── Phase 3.5: Hand in-process command (condvar notify, ~1µs) ──────────
-  if (hand_inprocess_enabled_ && hand_controller_ && hand_device_slot_ >= 0) {
-    SendHandCommand(output);
   }
 
   const auto t3 = std::chrono::steady_clock::now();  // end of publish
@@ -1824,188 +1776,3 @@ void RtControllerNode::BuildDeviceReorderMap(
               device_slot, msg_names.size());
 }
 
-// ── Hand in-process integration ───────────────────────────────────────────────
-
-void RtControllerNode::InitHandController()
-{
-  hand_inprocess_enabled_ = get_parameter("hand_inprocess_enabled").as_bool();
-  if (!hand_inprocess_enabled_) return;
-
-  // Find "hand" in active_groups_
-  auto it = group_slot_map_.find("hand");
-  if (it == group_slot_map_.end()) {
-    RCLCPP_WARN(get_logger(),
-        "hand_inprocess_enabled=true but no 'hand' group in active controllers — "
-        "disabling hand in-process");
-    hand_inprocess_enabled_ = false;
-    return;
-  }
-  hand_device_slot_ = it->second;
-
-  // ── Load hand parameters ─────────────────────────────────────────────────
-  const std::string target_ip = get_parameter("hand_target_ip").as_string();
-  const int target_port = static_cast<int>(get_parameter("hand_target_port").as_int());
-  const double recv_timeout_ms = get_parameter("hand_recv_timeout_ms").as_double();
-  const int sensor_decimation = static_cast<int>(
-      get_parameter("hand_sensor_decimation").as_int());
-  const bool use_fake_hand = get_parameter("hand_use_fake_hand").as_bool();
-
-  const std::string comm_mode_str = get_parameter("hand_communication_mode").as_string();
-  const auto comm_mode = (comm_mode_str == "bulk")
-      ? urtc::HandCommunicationMode::kBulk
-      : urtc::HandCommunicationMode::kIndividual;
-
-  const bool baro_lpf_enabled = get_parameter("hand_baro_lpf_enabled").as_bool();
-  const double baro_lpf_cutoff_hz = get_parameter("hand_baro_lpf_cutoff_hz").as_double();
-  const bool tof_lpf_enabled = get_parameter("hand_tof_lpf_enabled").as_bool();
-  const double tof_lpf_cutoff_hz = get_parameter("hand_tof_lpf_cutoff_hz").as_double();
-
-  // Fingertip names from device config
-  std::vector<std::string> ft_names;
-  auto cfg_it = device_name_configs_.find("hand");
-  if (cfg_it != device_name_configs_.end()) {
-    ft_names = cfg_it->second.sensor_names;
-  }
-  if (ft_names.empty()) {
-    ft_names = urtc::kDefaultFingertipNames;
-  }
-
-  // ── FT Inferencer config ────────────────────────────────────────────────
-  urtc::FingertipFTInferencer::Config ft_config;
-  if (has_parameter("ft_inferencer.enabled")) {
-    ft_config.enabled = get_parameter("ft_inferencer.enabled").as_bool();
-    ft_config.num_fingertips = static_cast<int>(
-        get_parameter("ft_inferencer.num_fingertips").as_int());
-    ft_config.history_length = static_cast<int>(
-        get_parameter("ft_inferencer.history_length").as_int());
-    if (has_parameter("ft_inferencer.model_paths")) {
-      ft_config.model_paths = get_parameter("ft_inferencer.model_paths").as_string_array();
-    }
-    ft_config.calibration_enabled = get_parameter("ft_inferencer.calibration_enabled").as_bool();
-    ft_config.calibration_samples = static_cast<int>(
-        get_parameter("ft_inferencer.calibration_samples").as_int());
-
-    const std::array<const char*, 4> ft_param_names = {"thumb", "index", "middle", "ring"};
-    for (int f = 0; f < 4 && f < ft_config.num_fingertips; ++f) {
-      const std::string key =
-          "ft_inferencer." + std::string(ft_param_names[static_cast<std::size_t>(f)]) + "_max";
-      if (has_parameter(key)) {
-        auto max_vec = get_parameter(key).as_double_array();
-        for (int b = 0; b < urtc::kFTInputSize && b < static_cast<int>(max_vec.size()); ++b) {
-          ft_config.input_max[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
-              static_cast<float>(max_vec[static_cast<std::size_t>(b)]);
-        }
-      }
-    }
-  }
-
-  // ── Create HandController ───────────────────────────────────────────────
-  const auto cfgs = urtc::SelectThreadConfigs();
-
-  hand_controller_ = std::make_unique<urtc::HandController>(
-      target_ip, target_port, cfgs.udp_recv, recv_timeout_ms,
-      false /* enable_write_ack: deprecated */, sensor_decimation,
-      urtc::kDefaultNumFingertips, use_fake_hand, ft_names, comm_mode,
-      tof_lpf_enabled, tof_lpf_cutoff_hz,
-      baro_lpf_enabled, baro_lpf_cutoff_hz, ft_config);
-
-  hand_controller_->SetEstopFlag(&global_estop_);
-
-  if (!hand_controller_->Start()) {
-    RCLCPP_ERROR(get_logger(),
-        "Hand in-process: HandController Start() failed (%s:%d)",
-        target_ip.c_str(), target_port);
-    hand_controller_.reset();
-    hand_inprocess_enabled_ = false;
-    return;
-  }
-
-  // ── Failure Detector ────────────────────────────────────────────────────
-  const bool enable_fd = get_parameter("hand_enable_failure_detector").as_bool();
-  if (enable_fd) {
-    urtc::HandFailureDetector::Config fd_cfg;
-    fd_cfg.failure_threshold = static_cast<int>(
-        get_parameter("hand_failure_threshold").as_int());
-    fd_cfg.check_motor = get_parameter("hand_check_motor").as_bool();
-    fd_cfg.check_sensor = get_parameter("hand_check_sensor").as_bool();
-    fd_cfg.min_rate_hz = get_parameter("hand_min_rate_hz").as_double();
-    fd_cfg.rate_fail_threshold = static_cast<int>(
-        get_parameter("hand_rate_fail_threshold").as_int());
-    fd_cfg.check_link = get_parameter("hand_check_link").as_bool();
-    fd_cfg.link_fail_threshold = static_cast<int>(
-        get_parameter("hand_link_fail_threshold").as_int());
-
-    hand_failure_detector_ = std::make_unique<urtc::HandFailureDetector>(
-        *hand_controller_, fd_cfg, cfgs.hand_failure);
-    hand_failure_detector_->SetFailureCallback(
-        [this](const std::string& reason) {
-          RCLCPP_ERROR(get_logger(),
-              "Hand in-process failure: %s", reason.c_str());
-          TriggerGlobalEstop("hand_failure:" + reason);
-        });
-    hand_failure_detector_->Start();
-  }
-
-  RCLCPP_INFO(get_logger(),
-      "Hand in-process: enabled (%s:%d, mode=%s, decimation=%d, slot=%d)",
-      target_ip.c_str(), target_port, comm_mode_str.c_str(),
-      sensor_decimation, hand_device_slot_);
-}
-
-void RtControllerNode::UpdateHandStateFromController()
-{
-  const auto state = hand_controller_->GetLatestState();
-  if (!state.valid) return;
-
-  {
-    std::lock_guard lock(device_state_mutex_);
-    auto& ds = device_states_[hand_device_slot_];
-    ds.num_channels = urtc::kNumHandMotors;
-    for (int i = 0; i < urtc::kNumHandMotors; ++i) {
-      ds.positions[i] = static_cast<double>(
-          state.motor_positions[static_cast<std::size_t>(i)]);
-      ds.velocities[i] = static_cast<double>(
-          state.motor_velocities[static_cast<std::size_t>(i)]);
-    }
-    ds.num_sensor_channels =
-        state.num_fingertips * urtc::kSensorValuesPerFingertip;
-    for (int i = 0; i < ds.num_sensor_channels; ++i) {
-      ds.sensor_data[i] = state.sensor_data[static_cast<std::size_t>(i)];
-      ds.sensor_data_raw[i] = state.sensor_data_raw[static_cast<std::size_t>(i)];
-    }
-    ds.valid = true;
-  }
-
-  state_received_.store(true, std::memory_order_release);
-
-  // Update device timeout entry (E-STOP watchdog)
-  for (auto& dt : device_timeouts_) {
-    if (dt.group_name == "hand") {
-      dt.last_update = std::chrono::steady_clock::now();
-      dt.received = true;
-    }
-  }
-}
-
-void RtControllerNode::SendHandCommand(const urtc::ControllerOutput& output)
-{
-  const int active_idx = active_controller_idx_.load(std::memory_order_acquire);
-  const auto& active_tc = controller_topic_configs_[
-      static_cast<std::size_t>(active_idx)];
-
-  int hand_gi = -1;
-  int gi = 0;
-  for (const auto& [gname, ggroup] : active_tc.groups) {
-    if (gname == "hand") { hand_gi = gi; break; }
-    ++gi;
-  }
-  if (hand_gi < 0) return;
-
-  const auto& dout = output.devices[hand_gi];
-  std::array<float, urtc::kNumHandMotors> cmd{};
-  for (int i = 0; i < std::min(dout.num_channels, urtc::kNumHandMotors); ++i) {
-    cmd[static_cast<std::size_t>(i)] =
-        static_cast<float>(dout.commands[static_cast<std::size_t>(i)]);
-  }
-  hand_controller_->SendCommandAndRequestStates(cmd);
-}

@@ -77,9 +77,8 @@ inline const ThreadConfig kPublishConfig{
     .name           = "rt_publish"
 };
 
-// ── Non-RT monitoring threads (6-core) ──────────────────────────────────────
-// Status monitor (10 Hz) and hand failure detector (50 Hz) are both non-RT.
-// They share Core 4 with logging — all are SCHED_OTHER and I/O-light.
+// ── Non-RT monitoring thread (6-core) ───────────────────────────────────────
+// Status monitor (10 Hz) is non-RT. Shares Core 4 with logging.
 
 inline const ThreadConfig kStatusMonitorConfig{
     .cpu_core       = 4,
@@ -87,14 +86,6 @@ inline const ThreadConfig kStatusMonitorConfig{
     .sched_priority = 0,
     .nice_value     = -2,
     .name           = "status_mon"
-};
-
-inline const ThreadConfig kHandFailureConfig{
-    .cpu_core       = 4,
-    .sched_policy   = SCHED_OTHER,
-    .sched_priority = 0,
-    .nice_value     = -2,
-    .name           = "hand_detect"
 };
 
 // ── 8-core configuration ────────────────────────────────────────────────────
@@ -154,8 +145,8 @@ inline const ThreadConfig kPublishConfig8Core{
     .name           = "rt_publish"
 };
 
-// ── Non-RT monitoring threads (8-core) ──────────────────────────────────────
-// With 8 cores, monitoring threads get Core 6 (shared with aux).
+// ── Non-RT monitoring thread (8-core) ───────────────────────────────────────
+// With 8 cores, monitoring thread gets Core 6 (shared with aux).
 
 inline const ThreadConfig kStatusMonitorConfig8Core{
     .cpu_core       = 6,
@@ -163,14 +154,6 @@ inline const ThreadConfig kStatusMonitorConfig8Core{
     .sched_priority = 0,
     .nice_value     = -2,
     .name           = "status_mon"
-};
-
-inline const ThreadConfig kHandFailureConfig8Core{
-    .cpu_core       = 6,
-    .sched_policy   = SCHED_OTHER,
-    .sched_priority = 0,
-    .nice_value     = -2,
-    .name           = "hand_detect"
 };
 
 // ── 4-core fallback ─────────────────────────────────────────────────────────
@@ -227,8 +210,8 @@ inline const ThreadConfig kPublishConfig4Core{
     .name           = "rt_publish"
 };
 
-// ── Non-RT monitoring threads (4-core) ──────────────────────────────────────
-// With 4 cores, monitoring threads share Core 3 with logging + aux.
+// ── Non-RT monitoring thread (4-core) ───────────────────────────────────────
+// With 4 cores, monitoring thread shares Core 3 with logging + aux.
 
 inline const ThreadConfig kStatusMonitorConfig4Core{
     .cpu_core       = 3,
@@ -236,14 +219,6 @@ inline const ThreadConfig kStatusMonitorConfig4Core{
     .sched_priority = 0,
     .nice_value     = 0,
     .name           = "status_mon"
-};
-
-inline const ThreadConfig kHandFailureConfig4Core{
-    .cpu_core       = 3,
-    .sched_policy   = SCHED_OTHER,
-    .sched_priority = 0,
-    .nice_value     = 0,
-    .name           = "hand_detect"
 };
 
 // ── 10-core configuration ───────────────────────────────────────────────────
@@ -305,7 +280,7 @@ inline const ThreadConfig kPublishConfig10Core{
     .name           = "rt_publish"
 };
 
-// ── Non-RT monitoring threads (10-core) ────────────────────────────────────
+// ── Non-RT monitoring thread (10-core) ─────────────────────────────────────
 
 inline const ThreadConfig kStatusMonitorConfig10Core{
     .cpu_core       = 9,
@@ -313,14 +288,6 @@ inline const ThreadConfig kStatusMonitorConfig10Core{
     .sched_priority = 0,
     .nice_value     = -2,
     .name           = "status_mon"
-};
-
-inline const ThreadConfig kHandFailureConfig10Core{
-    .cpu_core       = 9,
-    .sched_policy   = SCHED_OTHER,
-    .sched_priority = 0,
-    .nice_value     = -2,
-    .name           = "hand_detect"
 };
 
 // ── 12-core configuration ───────────────────────────────────────────────────
@@ -384,8 +351,8 @@ inline const ThreadConfig kPublishConfig12Core{
     .name           = "rt_publish"
 };
 
-// ── Non-RT monitoring threads (12-core) ────────────────────────────────────
-// Share Core 10 with logging — all SCHED_OTHER and I/O-light.
+// ── Non-RT monitoring thread (12-core) ─────────────────────────────────────
+// Shares Core 10 with logging — SCHED_OTHER and I/O-light.
 
 inline const ThreadConfig kStatusMonitorConfig12Core{
     .cpu_core       = 10,
@@ -393,14 +360,6 @@ inline const ThreadConfig kStatusMonitorConfig12Core{
     .sched_priority = 0,
     .nice_value     = -2,
     .name           = "status_mon"
-};
-
-inline const ThreadConfig kHandFailureConfig12Core{
-    .cpu_core       = 10,
-    .sched_policy   = SCHED_OTHER,
-    .sched_priority = 0,
-    .nice_value     = -2,
-    .name           = "hand_detect"
 };
 
 // ── 16-core configuration ───────────────────────────────────────────────────
@@ -465,8 +424,8 @@ inline const ThreadConfig kPublishConfig16Core{
     .name           = "rt_publish"
 };
 
-// ── Non-RT monitoring threads (16-core) ────────────────────────────────────
-// Share Core 10 with logging — all SCHED_OTHER and I/O-light.
+// ── Non-RT monitoring thread (16-core) ─────────────────────────────────────
+// Shares Core 10 with logging — SCHED_OTHER and I/O-light.
 
 inline const ThreadConfig kStatusMonitorConfig16Core{
     .cpu_core       = 10,
@@ -474,14 +433,6 @@ inline const ThreadConfig kStatusMonitorConfig16Core{
     .sched_priority = 0,
     .nice_value     = -2,
     .name           = "status_mon"
-};
-
-inline const ThreadConfig kHandFailureConfig16Core{
-    .cpu_core       = 10,
-    .sched_policy   = SCHED_OTHER,
-    .sched_priority = 0,
-    .nice_value     = -2,
-    .name           = "hand_detect"
 };
 
 // ── Simulation core assignment (Tier 3, no RT scheduling) ────────────────────

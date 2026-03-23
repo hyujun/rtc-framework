@@ -20,7 +20,7 @@ from launch.actions import (
     SetEnvironmentVariable,
     TimerAction,
 )
-from launch.conditions import IfCondition, UnlessCondition
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -108,15 +108,6 @@ def generate_launch_description():
         description='[Deprecated — use use_mock_hardware] Alias kept for compatibility'
     )
 
-    hand_inprocess_arg = DeclareLaunchArgument(
-        'hand_inprocess',
-        default_value='true',
-        description=(
-            'Hand in-process mode: true = HandController owned by rt_controller_node '
-            '(SeqLock, ~50ns latency), false = separate hand_udp_node process (DDS topics)'
-        )
-    )
-
     use_cpu_affinity_arg = DeclareLaunchArgument(
         'use_cpu_affinity',
         default_value='true',
@@ -133,11 +124,11 @@ def generate_launch_description():
         'ur5e_robot.yaml'
     ])
 
-    # Status Monitor config (rtc_status_monitor package)
+    # Status Monitor config (ur5e_hand_status_monitor package)
     status_monitor_config = PathJoinSubstitution([
-        FindPackageShare('rtc_status_monitor'),
+        FindPackageShare('ur5e_hand_status_monitor'),
         'config',
-        'rtc_status_monitor.yaml'
+        'ur5e_hand_status_monitor.yaml'
     ])
 
     # Hand UDP config (ur5e_hand_driver package)
@@ -259,8 +250,6 @@ def generate_launch_description():
         parameters=[
             ur_control_config,
             status_monitor_config,
-            hand_udp_config,
-            ft_inferencer_config,
             {
                 'log_dir': session_dir,
                 'status_monitor.log_output_dir':
@@ -282,14 +271,12 @@ def generate_launch_description():
             ft_inferencer_config,
         ],
         emulate_tty=True,
-        condition=UnlessCondition(LaunchConfiguration('hand_inprocess')),
     )
 
     return LaunchDescription([
         robot_ip_arg,
         use_mock_hardware_arg,
         use_fake_hardware_arg,
-        hand_inprocess_arg,
         use_cpu_affinity_arg,
         set_session_dir,
         set_rmw,

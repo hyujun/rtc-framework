@@ -10,6 +10,7 @@
 #   ./install.sh robot        # Real robot deps + build (no RT setup)
 #   ./install.sh robot --all  # Real robot deps + build + RT setup
 #   ./install.sh robot --rt   # RT setup only (skip deps/build)
+#   ./install.sh --all --skip-rt  # deps + build, no RT setup
 #   ./install.sh --help       # Show this help
 
 set -e
@@ -99,6 +100,7 @@ show_help() {
   echo "  -j, --jobs N      Limit parallel workers for colcon (e.g. -j 4)"
   echo "  --skip-deps       Skip installing apt system dependencies"
   echo "  --skip-build      Skip compiling the packages (only download/setup)"
+  echo "  --skip-rt         Skip RT system setup (overrides --all)"
   echo "  --skip-debug      Skip GDB/debugger tools installation"
   echo "  --ptrace-scope    Set ptrace_scope=0 for VS Code Attach debugger"
   echo "                    (Required for 'Attach to Node' launch configuration)"
@@ -167,6 +169,10 @@ while [[ $# -gt 0 ]]; do
       DO_RT=1
       SKIP_DEPS=1
       SKIP_BUILD=1
+      shift
+      ;;
+    --skip-rt)
+      DO_RT=0
       shift
       ;;
     --skip-debug)
@@ -736,7 +742,7 @@ build_package() {
   if [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]]; then
     PACKAGES=("${CUSTOM_PACKAGES[@]}")
   else
-    PACKAGES=(rtc_msgs rtc_base rtc_communication rtc_controller_interface rtc_controllers rtc_controller_manager rtc_status_monitor rtc_inference rtc_scripts ur5e_description ur5e_hand_driver ur5e_bringup rtc_tools)
+    PACKAGES=(rtc_msgs rtc_base rtc_communication rtc_controller_interface rtc_controllers rtc_controller_manager rtc_status_monitor rtc_inference rtc_scripts ur5e_description ur5e_hand_driver ur5e_hand_status_monitor ur5e_bringup rtc_tools)
     if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
       PACKAGES+=(rtc_mujoco_sim)
     fi
