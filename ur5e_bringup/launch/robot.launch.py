@@ -20,7 +20,7 @@ from launch.actions import (
     SetEnvironmentVariable,
     TimerAction,
 )
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -106,6 +106,15 @@ def generate_launch_description():
         'use_fake_hardware',
         default_value='false',
         description='[Deprecated — use use_mock_hardware] Alias kept for compatibility'
+    )
+
+    hand_inprocess_arg = DeclareLaunchArgument(
+        'hand_inprocess',
+        default_value='true',
+        description=(
+            'Hand in-process mode: true = HandController owned by rt_controller_node '
+            '(SeqLock, ~50ns latency), false = separate hand_udp_node process (DDS topics)'
+        )
     )
 
     use_cpu_affinity_arg = DeclareLaunchArgument(
@@ -273,12 +282,14 @@ def generate_launch_description():
             ft_inferencer_config,
         ],
         emulate_tty=True,
+        condition=UnlessCondition(LaunchConfiguration('hand_inprocess')),
     )
 
     return LaunchDescription([
         robot_ip_arg,
         use_mock_hardware_arg,
         use_fake_hardware_arg,
+        hand_inprocess_arg,
         use_cpu_affinity_arg,
         set_session_dir,
         set_rmw,

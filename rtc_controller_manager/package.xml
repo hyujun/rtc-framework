@@ -26,6 +26,7 @@
   <depend>rtc_communication</depend>
   <depend>rtc_status_monitor</depend>
   <depend>rtc_msgs</depend>
+  <depend>ur5e_hand_driver</depend>
 
   <!-- Pinocchio for URDF validation -->
   <depend>pinocchio</depend>
