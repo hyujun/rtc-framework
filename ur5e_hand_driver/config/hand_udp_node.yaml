@@ -16,8 +16,9 @@
 #     3. Read all sensors(cmd=0x19) → request 3B & recv 259B (4 fingers)
 #
 # Standalone 모드 ROS2 토픽:
-#   pub: /hand/joint_states  [positions:10 + velocities:10 + sensors:44] = 64 doubles
-#   sub: /hand/command        motor_commands[10] (0.0–1.0)
+#   pub: /hand/joint_states    JointState (positions:10 + velocities:10)
+#   pub: /hand/sensor_states  HandSensorState (FingertipSensor[] per fingertip)
+#   sub: /hand/command         motor_commands[10] (0.0–1.0)
 
 /**:
   ros__parameters:
@@ -74,7 +75,8 @@
     # ── ROS2 토픽 설정 ──────────────────────────────────────────────────
     command_topic: "/hand/joint_command"  # JointCommand 구독 (rt_controller → hand)
     state_topic: "/hand/joint_states"    # JointState 발행 (motor pos/vel)
-    sensor_topic: "/hand/sensor_states"  # Float64MultiArray 발행 (촉각 센서)
+    sensor_topic: "/hand/sensor_states"  # HandSensorState 발행 (촉각 센서 raw + 추론)
+    link_status_topic: "/hand/link_status"  # Bool 발행 (UDP 링크 상태)
 
     # ── Standalone 전용 설정 (hand_udp_node 단독 실행 시) ────────────────
     publish_rate: 100.0               # /hand/joint_states 퍼블리시 주기 (Hz)

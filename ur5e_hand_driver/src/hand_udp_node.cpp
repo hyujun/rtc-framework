@@ -8,8 +8,8 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <rtc_msgs/msg/joint_command.hpp>
-#include <rtc_msgs/msg/hand_force_torque_state.hpp>
-#include <rtc_msgs/msg/fingertip_force_torque.hpp>
+#include <rtc_msgs/msg/hand_sensor_state.hpp>
+#include <rtc_msgs/msg/fingertip_sensor.hpp>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -184,25 +184,23 @@ class HandUdpNode : public rclcpp::Node {
     declare_parameter("command_topic", std::string("/hand/joint_command"));
     declare_parameter("state_topic", std::string("/hand/joint_states"));
     declare_parameter("sensor_topic", std::string("/hand/sensor_states"));
+    declare_parameter("link_status_topic", std::string("/hand/link_status"));
     const std::string cmd_topic = get_parameter("command_topic").as_string();
     const std::string state_topic = get_parameter("state_topic").as_string();
     const std::string sensor_topic = get_parameter("sensor_topic").as_string();
+    const std::string link_status_topic = get_parameter("link_status_topic").as_string();
 
     // ── ROS2 pub/sub ───────────────────────────────────────────────────
     joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
         state_topic, 10);
-    sensor_state_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
+    sensor_state_pub_ = create_publisher<rtc_msgs::msg::HandSensorState>(
         sensor_topic, 10);
     link_status_pub_ = create_publisher<std_msgs::msg::Bool>(
-        "/hand/link_status", 10);
+        link_status_topic, 10);
     link_fail_threshold_ = static_cast<uint64_t>(
         get_parameter("link_fail_threshold").as_int());
 
-    // F/T state publisher
-    if (ft_config.enabled) {
-      ft_pub_ = create_publisher<rtc_msgs::msg::HandForceTorqueState>(
-          "/hand/force_torque_state", 10);
-    }
+    ft_enabled_ = ft_config.enabled;
 
     // JointCommand subscription (from rt_controller or external)
     joint_command_sub_ = create_subscription<rtc_msgs::msg::JointCommand>(
@@ -281,46 +279,50 @@ class HandUdpNode : public rclcpp::Node {
     }
     joint_state_pub_->publish(js_msg);
 
-    // Publisher 2: Float64MultiArray (sensor data)
-    const int num_sensors = snapshot.num_fingertips * urtc::kSensorValuesPerFingertip;
-    if (num_sensors > 0) {
-      std_msgs::msg::Float64MultiArray sensor_msg;
-      sensor_msg.data.resize(static_cast<std::size_t>(num_sensors));
-      for (int i = 0; i < num_sensors; ++i) {
-        sensor_msg.data[static_cast<std::size_t>(i)] =
-            static_cast<double>(snapshot.sensor_data[static_cast<std::size_t>(i)]);
-      }
-      sensor_state_pub_->publish(sensor_msg);
-    }
+    // Publisher 2: HandSensorState (raw sensor + inference 통합)
+    if (snapshot.num_fingertips > 0) {
+      rtc_msgs::msg::HandSensorState sensor_msg;
+      sensor_msg.header.stamp = this->now();
 
-    // F/T inference 결과 발행
-    if (ft_pub_ && controller_->ft_inference_enabled()) {
-      const auto ft_state = controller_->GetLatestFTState();
-      if (ft_state.valid) {
-        rtc_msgs::msg::HandForceTorqueState ft_msg;
-        ft_msg.header.stamp = this->now();
-        const auto ft_names_list = get_parameter("hand_fingertip_names").as_string_array();
-        for (int f = 0; f < ft_state.num_fingertips; ++f) {
-          rtc_msgs::msg::FingertipForceTorque ft;
-          ft.name = (static_cast<std::size_t>(f) < ft_names_list.size())
-              ? ft_names_list[static_cast<std::size_t>(f)]
-              : "f" + std::to_string(f);
-          const int base = f * urtc::kFTValuesPerFingertip;
-          // Output: [contact(1), F(3), u(3), Fn(3), Fx(1), Fy(1), Fz(1)]
-          ft.contact = (ft_state.ft_data[static_cast<std::size_t>(base)] > 0.5f);
+      const auto ft_names_list = get_parameter("hand_fingertip_names").as_string_array();
+
+      // FT inference 결과 (available 시에만)
+      urtc::FingertipFTState ft_state{};
+      const bool ft_valid = ft_enabled_ && controller_->ft_inference_enabled()
+          && (ft_state = controller_->GetLatestFTState()).valid;
+
+      for (int f = 0; f < snapshot.num_fingertips; ++f) {
+        rtc_msgs::msg::FingertipSensor fs;
+        fs.name = (static_cast<std::size_t>(f) < ft_names_list.size())
+            ? ft_names_list[static_cast<std::size_t>(f)]
+            : "f" + std::to_string(f);
+
+        // Raw sensor data: barometer[8] + tof[3]
+        const int sensor_base = f * urtc::kSensorValuesPerFingertip;
+        for (int b = 0; b < urtc::kBarometerCount; ++b) {
+          fs.barometer[static_cast<std::size_t>(b)] = static_cast<float>(
+              snapshot.sensor_data[static_cast<std::size_t>(sensor_base + b)]);
+        }
+        for (int t = 0; t < urtc::kTofCount; ++t) {
+          fs.tof[static_cast<std::size_t>(t)] = static_cast<float>(
+              snapshot.sensor_data[static_cast<std::size_t>(
+                  sensor_base + urtc::kBarometerCount + t)]);
+        }
+
+        // Inference results: F, u, contact_flag
+        if (ft_valid && f < ft_state.num_fingertips) {
+          const int ft_base = f * urtc::kFTValuesPerFingertip;
+          fs.contact_flag = ft_state.ft_data[static_cast<std::size_t>(ft_base)];
           for (int j = 0; j < 3; ++j) {
             const auto ju = static_cast<std::size_t>(j);
-            ft.force[ju]        = ft_state.ft_data[static_cast<std::size_t>(base + 1 + j)];
-            ft.direction[ju]    = ft_state.ft_data[static_cast<std::size_t>(base + 4 + j)];
-            ft.normal_force[ju] = ft_state.ft_data[static_cast<std::size_t>(base + 7 + j)];
+            fs.f[ju] = ft_state.ft_data[static_cast<std::size_t>(ft_base + 1 + j)];
+            fs.u[ju] = ft_state.ft_data[static_cast<std::size_t>(ft_base + 4 + j)];
           }
-          ft.force_x = ft_state.ft_data[static_cast<std::size_t>(base + 10)];
-          ft.force_y = ft_state.ft_data[static_cast<std::size_t>(base + 11)];
-          ft.force_z = ft_state.ft_data[static_cast<std::size_t>(base + 12)];
-          ft_msg.fingertips.push_back(ft);
         }
-        ft_pub_->publish(ft_msg);
+
+        sensor_msg.fingertips.push_back(fs);
       }
+      sensor_state_pub_->publish(sensor_msg);
     }
 
     // UDP link status 발행
@@ -484,14 +486,14 @@ class HandUdpNode : public rclcpp::Node {
   std::unique_ptr<urtc::HandFailureDetector> failure_detector_;
 
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr         joint_state_pub_;
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr     sensor_state_pub_;
+  rclcpp::Publisher<rtc_msgs::msg::HandSensorState>::SharedPtr      sensor_state_pub_;
   rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr      joint_command_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr  command_sub_;  // legacy
   rclcpp::TimerBase::SharedPtr publish_timer_;
   std::vector<std::string> joint_names_;
 
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr link_status_pub_;
-  rclcpp::Publisher<rtc_msgs::msg::HandForceTorqueState>::SharedPtr ft_pub_;
+  bool ft_enabled_{false};
   uint64_t            link_fail_threshold_{10};
   bool                prev_link_ok_{true};
 
