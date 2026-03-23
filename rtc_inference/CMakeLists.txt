@@ -23,16 +23,19 @@ find_package(onnxruntime QUIET)
 if(onnxruntime_FOUND)
   set(HAS_ONNXRUNTIME TRUE)
 else()
+  # Discover versioned subdirectories under /opt/onnxruntime (e.g. onnxruntime-linux-x64-1.17.1)
+  file(GLOB _ORT_OPT_DIRS "/opt/onnxruntime/onnxruntime-*")
   find_library(ONNXRUNTIME_LIB onnxruntime
-    HINTS /opt/onnxruntime/lib /usr/local/lib
-          /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu)
+    HINTS ${_ORT_OPT_DIRS}
+          /opt/onnxruntime /usr/local
+          /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu
+    PATH_SUFFIXES lib)
   find_path(ONNXRUNTIME_INCLUDE onnxruntime_cxx_api.h
-    HINTS
-      /opt/onnxruntime/include/onnxruntime/core/session
-      /usr/include/onnxruntime/core/session
-      /usr/local/include/onnxruntime/core/session
-      /usr/include/onnxruntime
-      /usr/local/include/onnxruntime)
+    HINTS ${_ORT_OPT_DIRS}
+          /opt/onnxruntime /usr/local /usr
+    PATH_SUFFIXES
+      include/onnxruntime/core/session
+      include/onnxruntime)
   if(ONNXRUNTIME_LIB AND ONNXRUNTIME_INCLUDE)
     set(HAS_ONNXRUNTIME TRUE)
   endif()
