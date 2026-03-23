@@ -261,6 +261,20 @@ def generate_launch_description():
         emulate_tty=True,
     )
 
+    # ── Hand UDP driver node ──────────────────────────────────────────────────
+    # Publishes /hand/joint_states and /hand/sensor_states for rt_controller.
+    hand_udp_node = Node(
+        package='ur5e_hand_driver',
+        executable='hand_udp_node',
+        name='hand_udp_node',
+        output='screen',
+        parameters=[
+            hand_udp_config,
+            ft_inferencer_config,
+        ],
+        emulate_tty=True,
+    )
+
     return LaunchDescription([
         robot_ip_arg,
         use_mock_hardware_arg,
@@ -272,6 +286,7 @@ def generate_launch_description():
         enable_cpu_shield,
         ur_driver_launch_action,
         pin_ur_driver,
+        hand_udp_node,
         rt_controller_node,
         pin_rt_controller_dds,
     ])
