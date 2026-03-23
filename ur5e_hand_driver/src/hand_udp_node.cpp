@@ -34,7 +34,11 @@ namespace urtc = rtc;
 // Owns a HandController that polls the hand device:
 //   write position → read position → read velocity → read sensors × 4
 //
-// Publishes full state on /hand/joint_states.
+// Publishes full state directly from EventLoop callback (no timer).
+// This eliminates the 100 Hz timer bottleneck — state is published at the
+// EventLoop rate (500 Hz when driven by rt_controller).
+//
+// Pre-allocated messages avoid dynamic allocation on the publish path.
 // Receives commands on /hand/command.
 class HandUdpNode : public rclcpp::Node {
  public:
@@ -42,6 +46,8 @@ class HandUdpNode : public rclcpp::Node {
     // ── Parameters ─────────────────────────────────────────────────────
     declare_parameter("target_ip",       std::string{"192.168.1.2"});
     declare_parameter("target_port",     55151);
+    // publish_rate kept for backward compatibility but no longer used for timer.
+    // Controls link_status decimation: link status published every (EventLoop Hz / publish_rate) cycles.
     declare_parameter("publish_rate",    100.0);
     declare_parameter("recv_timeout_ms", 10.0);
     // enable_write_ack is deprecated — echo is always consumed for RT safety.
@@ -84,7 +90,6 @@ class HandUdpNode : public rclcpp::Node {
 
     const std::string target_ip       = get_parameter("target_ip").as_string();
     const int         target_port     = static_cast<int>(get_parameter("target_port").as_int());
-    const double      rate            = get_parameter("publish_rate").as_double();
     const double      recv_timeout_ms = get_parameter("recv_timeout_ms").as_double();
     // ── Communication mode ──────────────────────────────────────────────
     const std::string comm_mode_str = get_parameter("communication_mode").as_string();
@@ -136,16 +141,59 @@ class HandUdpNode : public rclcpp::Node {
 
     // ── HandController ─────────────────────────────────────────────────
     const auto ft_names = get_parameter("hand_fingertip_names").as_string_array();
+    num_fingertips_ = urtc::kDefaultNumFingertips;
     controller_ = std::make_unique<urtc::HandController>(
         target_ip, target_port, urtc::kUdpRecvConfig, recv_timeout_ms,
         false /* enable_write_ack: deprecated */, 1,
-        urtc::kDefaultNumFingertips, false, ft_names, comm_mode,
+        num_fingertips_, false, ft_names, comm_mode,
         tof_lpf_enabled, tof_lpf_cutoff_hz,
         baro_lpf_enabled, baro_lpf_cutoff_hz, ft_config);
 
-    controller_->SetCallback([this](const urtc::HandState& /*state*/) {
-      data_received_.store(true, std::memory_order_relaxed);
-    });
+    // ── Topic names (configurable) ────────────────────────────────────
+    declare_parameter("command_topic", std::string("/hand/joint_command"));
+    declare_parameter("state_topic", std::string("/hand/joint_states"));
+    declare_parameter("sensor_topic", std::string("/hand/sensor_states"));
+    declare_parameter("link_status_topic", std::string("/hand/link_status"));
+    const std::string cmd_topic = get_parameter("command_topic").as_string();
+    const std::string state_topic = get_parameter("state_topic").as_string();
+    const std::string sensor_topic = get_parameter("sensor_topic").as_string();
+    const std::string link_status_topic = get_parameter("link_status_topic").as_string();
+
+    // ── ROS2 pub/sub ───────────────────────────────────────────────────
+    joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
+        state_topic, 10);
+    sensor_state_pub_ = create_publisher<rtc_msgs::msg::HandSensorState>(
+        sensor_topic, 10);
+    link_status_pub_ = create_publisher<std_msgs::msg::Bool>(
+        link_status_topic, 10);
+    link_fail_threshold_ = static_cast<uint64_t>(
+        get_parameter("link_fail_threshold").as_int());
+
+    ft_enabled_ = ft_config.enabled;
+
+    // ── Hand motor/fingertip names ──────────────────────────────────────
+    auto motor_names = get_parameter("hand_motor_names").as_string_array();
+    if (motor_names.empty()) { motor_names = urtc::kDefaultHandMotorNames; }
+    joint_names_ = motor_names;
+    auto fingertip_names = get_parameter("hand_fingertip_names").as_string_array();
+    if (fingertip_names.empty()) { fingertip_names = urtc::kDefaultFingertipNames; }
+    fingertip_names_ = fingertip_names;
+
+    // ── Link status decimation ─────────────────────────────────────────
+    // link_status는 500Hz로 보낼 필요 없음 — publish_rate 기준으로 decimation.
+    const double publish_rate = get_parameter("publish_rate").as_double();
+    // EventLoop rate assumed 500Hz; decimation = 500/publish_rate (e.g. 500/100=5)
+    link_decimation_ = std::max(1, static_cast<int>(500.0 / publish_rate));
+
+    // ── Pre-allocate ROS2 messages (non-RT, 1회만 할당) ─────────────────
+    PreallocateMessages();
+
+    // ── Set EventLoop callback: direct publish (no timer) ───────────────
+    controller_->SetCallback(
+        [this](const urtc::HandState& state,
+               const urtc::FingertipFTState& ft_state) {
+          PublishFromEventLoop(state, ft_state);
+        });
 
     if (!controller_->Start()) {
       RCLCPP_ERROR(get_logger(),
@@ -181,28 +229,6 @@ class HandUdpNode : public rclcpp::Node {
                   fd_cfg.failure_threshold);
     }
 
-    // ── Topic names (configurable) ────────────────────────────────────
-    declare_parameter("command_topic", std::string("/hand/joint_command"));
-    declare_parameter("state_topic", std::string("/hand/joint_states"));
-    declare_parameter("sensor_topic", std::string("/hand/sensor_states"));
-    declare_parameter("link_status_topic", std::string("/hand/link_status"));
-    const std::string cmd_topic = get_parameter("command_topic").as_string();
-    const std::string state_topic = get_parameter("state_topic").as_string();
-    const std::string sensor_topic = get_parameter("sensor_topic").as_string();
-    const std::string link_status_topic = get_parameter("link_status_topic").as_string();
-
-    // ── ROS2 pub/sub ───────────────────────────────────────────────────
-    joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
-        state_topic, 10);
-    sensor_state_pub_ = create_publisher<rtc_msgs::msg::HandSensorState>(
-        sensor_topic, 10);
-    link_status_pub_ = create_publisher<std_msgs::msg::Bool>(
-        link_status_topic, 10);
-    link_fail_threshold_ = static_cast<uint64_t>(
-        get_parameter("link_fail_threshold").as_int());
-
-    ft_enabled_ = ft_config.enabled;
-
     // JointCommand subscription (from rt_controller or external)
     joint_command_sub_ = create_subscription<rtc_msgs::msg::JointCommand>(
         cmd_topic, 10,
@@ -227,17 +253,6 @@ class HandUdpNode : public rclcpp::Node {
           OnCommand(std::move(msg));
         });
 
-    const auto period = std::chrono::microseconds(
-        static_cast<int>(1'000'000.0 / rate));
-    publish_timer_ = create_wall_timer(period, [this]() { PublishState(); });
-
-    // Hand motor names 로드 및 로그
-    auto motor_names = get_parameter("hand_motor_names").as_string_array();
-    if (motor_names.empty()) { motor_names = urtc::kDefaultHandMotorNames; }
-    joint_names_ = motor_names;
-    auto fingertip_names = get_parameter("hand_fingertip_names").as_string_array();
-    if (fingertip_names.empty()) { fingertip_names = urtc::kDefaultFingertipNames; }
-
     {
       std::string names_str;
       for (std::size_t i = 0; i < motor_names.size(); ++i) {
@@ -250,8 +265,8 @@ class HandUdpNode : public rclcpp::Node {
     }
 
     RCLCPP_INFO(get_logger(),
-                "HandUdpNode: target %s:%d, pub %.0f Hz, mode=%s",
-                target_ip.c_str(), target_port, rate, comm_mode_str.c_str());
+                "HandUdpNode: target %s:%d, direct publish from EventLoop, mode=%s",
+                target_ip.c_str(), target_port, comm_mode_str.c_str());
   }
 
   ~HandUdpNode() override {
@@ -261,60 +276,68 @@ class HandUdpNode : public rclcpp::Node {
   }
 
  private:
-  void PublishState() {
-    if (!data_received_.load(std::memory_order_relaxed)) return;
+  // Pre-allocate ROS2 messages once in the constructor (non-RT).
+  // This avoids dynamic allocation on the EventLoop publish path.
+  void PreallocateMessages() {
+    // JointState message
+    js_msg_.name = joint_names_;
+    js_msg_.position.resize(urtc::kNumHandMotors);
+    js_msg_.velocity.resize(urtc::kNumHandMotors);
 
-    const urtc::HandState snapshot = controller_->GetLatestState();
-
-    // Publisher 1: sensor_msgs/JointState (motor positions + velocities)
-    sensor_msgs::msg::JointState js_msg;
-    js_msg.header.stamp = this->now();
-    js_msg.name = joint_names_;
-    js_msg.position.resize(urtc::kNumHandMotors);
-    js_msg.velocity.resize(urtc::kNumHandMotors);
-    for (int i = 0; i < urtc::kNumHandMotors; ++i) {
-      js_msg.position[static_cast<std::size_t>(i)] =
-          static_cast<double>(snapshot.motor_positions[static_cast<std::size_t>(i)]);
-      js_msg.velocity[static_cast<std::size_t>(i)] =
-          static_cast<double>(snapshot.motor_velocities[static_cast<std::size_t>(i)]);
+    // HandSensorState message — pre-allocate fingertips array
+    sensor_msg_.fingertips.resize(static_cast<std::size_t>(num_fingertips_));
+    for (int f = 0; f < num_fingertips_; ++f) {
+      auto& fs = sensor_msg_.fingertips[static_cast<std::size_t>(f)];
+      fs.name = (static_cast<std::size_t>(f) < fingertip_names_.size())
+          ? fingertip_names_[static_cast<std::size_t>(f)]
+          : "f" + std::to_string(f);
     }
-    joint_state_pub_->publish(js_msg);
+  }
 
-    // Publisher 2: HandSensorState (raw sensor + inference 통합)
-    if (snapshot.num_fingertips > 0) {
-      rtc_msgs::msg::HandSensorState sensor_msg;
-      sensor_msg.header.stamp = this->now();
+  // Called directly from EventLoop thread — publishes state at EventLoop rate.
+  // Uses pre-allocated messages to avoid dynamic allocation.
+  //
+  // NOTE: publish() may trigger DDS serialization which is not strictly RT-safe,
+  // but the overhead is small (~10-20µs for these message sizes) and acceptable
+  // within the 2ms EventLoop budget.
+  void PublishFromEventLoop(const urtc::HandState& state,
+                            const urtc::FingertipFTState& ft_state) {
+    // ── JointState (motor positions + velocities) ──────────────────────
+    js_msg_.header.stamp = this->now();
+    for (int i = 0; i < urtc::kNumHandMotors; ++i) {
+      const auto iu = static_cast<std::size_t>(i);
+      js_msg_.position[iu] =
+          static_cast<double>(state.motor_positions[iu]);
+      js_msg_.velocity[iu] =
+          static_cast<double>(state.motor_velocities[iu]);
+    }
+    joint_state_pub_->publish(js_msg_);
 
-      const auto ft_names_list = get_parameter("hand_fingertip_names").as_string_array();
+    // ── HandSensorState (sensor + inference) ───────────────────────────
+    if (state.num_fingertips > 0) {
+      sensor_msg_.header.stamp = this->now();
 
-      // FT inference 결과 (available 시에만)
-      urtc::FingertipFTState ft_state{};
-      const bool ft_valid = ft_enabled_ && controller_->ft_inference_enabled()
-          && (ft_state = controller_->GetLatestFTState()).valid;
+      const bool ft_valid = ft_enabled_ && ft_state.valid;
 
-      for (int f = 0; f < snapshot.num_fingertips; ++f) {
-        rtc_msgs::msg::FingertipSensor fs;
-        fs.name = (static_cast<std::size_t>(f) < ft_names_list.size())
-            ? ft_names_list[static_cast<std::size_t>(f)]
-            : "f" + std::to_string(f);
+      for (int f = 0; f < state.num_fingertips &&
+           f < static_cast<int>(sensor_msg_.fingertips.size()); ++f) {
+        auto& fs = sensor_msg_.fingertips[static_cast<std::size_t>(f)];
 
-        // Filtered sensor data: barometer[8] + tof[3]
         const int sensor_base = f * urtc::kSensorValuesPerFingertip;
         for (int b = 0; b < urtc::kBarometerCount; ++b) {
           const auto bu = static_cast<std::size_t>(b);
           const auto si = static_cast<std::size_t>(sensor_base + b);
-          fs.barometer[bu] = static_cast<float>(snapshot.sensor_data[si]);
-          fs.barometer_raw[bu] = static_cast<float>(snapshot.sensor_data_raw[si]);
+          fs.barometer[bu] = static_cast<float>(state.sensor_data[si]);
+          fs.barometer_raw[bu] = static_cast<float>(state.sensor_data_raw[si]);
         }
         for (int t = 0; t < urtc::kTofCount; ++t) {
           const auto tu = static_cast<std::size_t>(t);
           const auto si = static_cast<std::size_t>(
               sensor_base + urtc::kBarometerCount + t);
-          fs.tof[tu] = static_cast<float>(snapshot.sensor_data[si]);
-          fs.tof_raw[tu] = static_cast<float>(snapshot.sensor_data_raw[si]);
+          fs.tof[tu] = static_cast<float>(state.sensor_data[si]);
+          fs.tof_raw[tu] = static_cast<float>(state.sensor_data_raw[si]);
         }
 
-        // Inference results: F, u, contact_flag, inference_enable
         if (ft_valid && f < ft_state.num_fingertips
             && ft_state.per_fingertip_valid[static_cast<std::size_t>(f)]) {
           const int ft_base = f * urtc::kFTValuesPerFingertip;
@@ -327,31 +350,36 @@ class HandUdpNode : public rclcpp::Node {
           }
         } else {
           fs.inference_enable = false;
+          fs.contact_flag = 0.0f;
+          fs.f = {};
+          fs.u = {};
         }
-
-        sensor_msg.fingertips.push_back(fs);
       }
-      sensor_state_pub_->publish(sensor_msg);
+      sensor_state_pub_->publish(sensor_msg_);
     }
 
-    // UDP link status 발행
-    const uint64_t failures = controller_->consecutive_recv_failures();
-    const bool link_ok = (failures < link_fail_threshold_);
-    if (link_ok != prev_link_ok_) {
-      if (link_ok) {
-        RCLCPP_INFO(get_logger(), "Hand UDP link UP (recovered)");
-      } else {
-        RCLCPP_WARN(get_logger(),
-                    "Hand UDP link DOWN (consecutive_recv_failures=%lu)",
-                    static_cast<unsigned long>(failures));
-      }
-      prev_link_ok_ = link_ok;
-    }
-    std_msgs::msg::Bool link_msg;
-    link_msg.data = link_ok;
-    link_status_pub_->publish(link_msg);
+    // ── Link status (decimated — not every cycle) ──────────────────────
+    ++link_cycle_counter_;
+    if (link_cycle_counter_ >= link_decimation_) {
+      link_cycle_counter_ = 0;
 
-    if (++publish_count_ % 100 == 0) {
+      const uint64_t failures = controller_->consecutive_recv_failures();
+      const bool link_ok = (failures < link_fail_threshold_);
+      if (link_ok != prev_link_ok_) {
+        if (link_ok) {
+          RCLCPP_INFO(get_logger(), "Hand UDP link UP (recovered)");
+        } else {
+          RCLCPP_WARN(get_logger(),
+                      "Hand UDP link DOWN (consecutive_recv_failures=%lu)",
+                      static_cast<unsigned long>(failures));
+        }
+        prev_link_ok_ = link_ok;
+      }
+      link_msg_.data = link_ok;
+      link_status_pub_->publish(link_msg_);
+    }
+
+    if (++publish_count_ % 500 == 0) {
       RCLCPP_DEBUG(get_logger(), "cycles: %zu",
                    controller_->cycle_count());
     }
@@ -498,15 +526,24 @@ class HandUdpNode : public rclcpp::Node {
   rclcpp::Publisher<rtc_msgs::msg::HandSensorState>::SharedPtr      sensor_state_pub_;
   rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr      joint_command_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr  command_sub_;  // legacy
-  rclcpp::TimerBase::SharedPtr publish_timer_;
   std::vector<std::string> joint_names_;
+  std::vector<std::string> fingertip_names_;
+  int num_fingertips_{urtc::kDefaultNumFingertips};
 
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr link_status_pub_;
   bool ft_enabled_{false};
   uint64_t            link_fail_threshold_{10};
   bool                prev_link_ok_{true};
 
-  std::atomic<bool>   data_received_{false};
+  // Pre-allocated messages (populated once in constructor, values overwritten per cycle)
+  sensor_msgs::msg::JointState           js_msg_;
+  rtc_msgs::msg::HandSensorState         sensor_msg_;
+  std_msgs::msg::Bool                    link_msg_;
+
+  // Link status decimation (500Hz → publish_rate Hz)
+  int link_decimation_{5};     // default: 500/100 = 5
+  int link_cycle_counter_{0};
+
   std::size_t         publish_count_{0};
 
   std::chrono::steady_clock::time_point start_time_{std::chrono::steady_clock::now()};

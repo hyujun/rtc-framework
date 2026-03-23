@@ -426,7 +426,7 @@ class HandTimingProfiler {
 
 class HandController {
  public:
-  using StateCallback = std::function<void(const HandState&)>;
+  using StateCallback = std::function<void(const HandState&, const FingertipFTState&)>;
 
   // 통신 통계 (recv 성공/타임아웃/에러 및 총 사이클 수)
   struct HandCommStats {
@@ -657,6 +657,9 @@ class HandController {
       }
 
       state_seqlock_.Store(fake_state);
+      if (callback_) {
+        callback_(fake_state, ft_seqlock_.Load());
+      }
       cycle_count_.fetch_add(1, std::memory_order_relaxed);
       return;
     }
@@ -1238,7 +1241,7 @@ class HandController {
 
         // Update shared state (lock-free SeqLock)
         state_seqlock_.Store(state);
-        if (callback_) { callback_(state); }
+        if (callback_) { callback_(state, ft_seqlock_.Load()); }
 
         const auto t4 = std::chrono::steady_clock::now();  // 전체 완료
 
@@ -1316,7 +1319,7 @@ class HandController {
 
         // Update shared state (lock-free SeqLock)
         state_seqlock_.Store(state);
-        if (callback_) { callback_(state); }
+        if (callback_) { callback_(state, ft_seqlock_.Load()); }
 
         const auto t5 = std::chrono::steady_clock::now();  // 전체 완료
 
