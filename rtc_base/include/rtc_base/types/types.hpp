@@ -9,7 +9,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
-#include <new>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -18,12 +17,8 @@
 namespace rtc {
 
 // ── Hardware cache line size (shared across all threading primitives) ─────────
-#ifdef __cpp_lib_hardware_interference_size
-inline constexpr std::size_t kCacheLineSize =
-    std::hardware_destructive_interference_size;
-#else
+// Use a fixed constant to avoid -Winterference-size across compiler/CPU combos.
 inline constexpr std::size_t kCacheLineSize = 64;
-#endif
 
 // ── Compile-time constants ─────────────────────────────────────────────────────
 inline constexpr int kNumRobotJoints = 6;  // default channel count (UR5e); runtime count from YAML

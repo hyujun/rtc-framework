@@ -1106,7 +1106,7 @@ class HandController {
   //
   // RT safety: No printf/stdout — debug data available via HandTimingProfiler.
   void EventLoop(std::stop_token stop_token) {
-    ApplyThreadConfig(thread_cfg_);
+    (void)ApplyThreadConfig(thread_cfg_);
 
     const bool is_bulk = (communication_mode_ == HandCommunicationMode::kBulk);
 

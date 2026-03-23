@@ -80,7 +80,7 @@ public:
 private:
   void DetectLoop(std::stop_token st) {
     using std::chrono_literals::operator""ms;
-    ApplyThreadConfigWithFallback(thread_cfg_);
+    (void)ApplyThreadConfigWithFallback(thread_cfg_);
     prev_rate_check_ = std::chrono::steady_clock::now();
     prev_cycle_count_ = controller_.cycle_count();
 
