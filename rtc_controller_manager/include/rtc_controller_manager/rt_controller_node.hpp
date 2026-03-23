@@ -17,7 +17,6 @@
 #include <std_msgs/msg/string.hpp>
 #include <rtc_msgs/msg/joint_command.hpp>
 #include <rtc_msgs/msg/gui_position.hpp>
-#include <rtc_msgs/msg/device_joint_state.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/msg/device_state_log.hpp>
 #include <rtc_msgs/msg/device_sensor_log.hpp>
@@ -155,8 +154,6 @@ private:
   };
   std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::GuiPosition>>
       gui_position_publishers_;
-  std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::DeviceJointState>>
-      joint_state_publishers_;
   std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::RobotTarget>>
       robot_target_publishers_;
   std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::DeviceStateLog>>

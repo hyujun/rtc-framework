@@ -27,7 +27,6 @@ const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
   // GUI / Monitoring
   {"gui_position",       PublishRole::kGuiPosition},
   // Topic-based State/Command/Goal/Log
-  {"joint_state",        PublishRole::kJointState},
   {"robot_target",       PublishRole::kRobotTarget},
   // backward compat
   {"joint_goal",         PublishRole::kRobotTarget},
@@ -92,7 +91,6 @@ TopicConfig RTControllerInterface::MakeDefaultTopicConfig()
     {"/ur5e/joint_command",                   PublishRole::kJointCommand,     kNumRobotJoints},
     {"/forward_position_controller/commands", PublishRole::kRos2Command,      kNumRobotJoints},
     {"/ur5e/gui_position",                    PublishRole::kGuiPosition,      0},
-    {"/ur5e/joint_state",                     PublishRole::kJointState,       0},
     {"/ur5e/robot_target",                    PublishRole::kRobotTarget,      0},
     {"/ur5e/state_log",                       PublishRole::kDeviceStateLog,   0},
   };

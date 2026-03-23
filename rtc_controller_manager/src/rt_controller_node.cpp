@@ -593,7 +593,7 @@ void RtControllerNode::CreatePublishers()
         break;
     }
 
-    // ── Typed message publishers (GuiPosition, DeviceJointState, etc.) ──────
+    // ── Typed message publishers (GuiPosition, RobotTarget, etc.) ───────────
     auto cfg_it = device_name_configs_.find(group_name);
     const auto & joint_names = (cfg_it != device_name_configs_.end())
         ? cfg_it->second.joint_state_names : std::vector<std::string>{};
@@ -616,19 +616,6 @@ void RtControllerNode::CreatePublishers()
         pe.msg.joint_positions.resize(n, 0.0);
         gui_position_publishers_[entry.topic_name] = std::move(pe);
         log_pub("gui_position");
-        return;
-      }
-      case urtc::PublishRole::kJointState: {
-        if (joint_state_publishers_.count(entry.topic_name) > 0) { return; }
-        TypedPublisherEntry<rtc_msgs::msg::DeviceJointState> pe;
-        pe.publisher = create_publisher<rtc_msgs::msg::DeviceJointState>(
-            entry.topic_name, cmd_qos);
-        pe.msg.joint_names.assign(joint_names.begin(), joint_names.end());
-        pe.msg.positions.resize(n, 0.0);
-        pe.msg.velocities.resize(n, 0.0);
-        pe.msg.efforts.resize(n, 0.0);
-        joint_state_publishers_[entry.topic_name] = std::move(pe);
-        log_pub("joint_state");
         return;
       }
       case urtc::PublishRole::kRobotTarget: {
@@ -1364,21 +1351,6 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           std::copy(snap.actual_task_positions.begin(),
                     snap.actual_task_positions.end(),
                     m.task_positions.begin());
-          it->second.publisher->publish(m);
-          return;
-        }
-        case urtc::PublishRole::kJointState: {
-          auto it = joint_state_publishers_.find(pt.topic_name);
-          if (it == joint_state_publishers_.end()) { return; }
-          auto & m = it->second.msg;
-          m.header.stamp.sec = sec;
-          m.header.stamp.nanosec = nsec;
-          const int n = std::min(nc, static_cast<int>(m.positions.size()));
-          for (int i = 0; i < n; ++i) {
-            m.positions[i] = gc.actual_positions[i];
-            m.velocities[i] = gc.actual_velocities[i];
-            m.efforts[i] = gc.efforts[i];
-          }
           it->second.publisher->publish(m);
           return;
         }

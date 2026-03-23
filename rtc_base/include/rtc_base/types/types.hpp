@@ -213,7 +213,6 @@ enum class PublishRole {
   // GUI / Monitoring
   kGuiPosition,        // rtc_msgs/GuiPosition (joint_pos + task_pos)
   // Topic-based State/Command/Goal/Log
-  kJointState,         // rtc_msgs/DeviceJointState (device별 관절 상태)
   kRobotTarget,        // rtc_msgs/RobotTarget (joint/task 목표)
   kDeviceStateLog,     // rtc_msgs/DeviceStateLog (통합 상태 로그)
   kDeviceSensorLog,    // rtc_msgs/DeviceSensorLog (센서 + inference 로그)
@@ -291,7 +290,6 @@ struct TopicConfig {
     case PublishRole::kJointCommand:    return "joint_command";
     case PublishRole::kRos2Command:     return "ros2_command";
     case PublishRole::kGuiPosition:     return "gui_position";
-    case PublishRole::kJointState:      return "joint_state";
     case PublishRole::kRobotTarget:     return "robot_target";
     case PublishRole::kDeviceStateLog:  return "device_state_log";
     case PublishRole::kDeviceSensorLog: return "device_sensor_log";
