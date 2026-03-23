@@ -1,6 +1,7 @@
 # rtc_controller_interface
 
 ![version](https://img.shields.io/badge/version-v0.1.0-blue)
+![C++20](https://img.shields.io/badge/C++-20-blue)
 
 > 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)

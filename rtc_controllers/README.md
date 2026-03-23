@@ -373,7 +373,7 @@ colcon build --packages-select rtc_controllers
 source install/setup.bash
 ```
 
-공유 라이브러리(`librtc_controllers.so`)가 생성됩니다.
+정적 라이브러리(`librtc_controllers.a`)가 생성됩니다. `--whole-archive` 링킹으로 정적 초기화 등록이 보존됩니다.
 
 ---
 
