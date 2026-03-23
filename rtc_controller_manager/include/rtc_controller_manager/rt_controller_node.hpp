@@ -18,9 +18,10 @@
 #include <rtc_msgs/msg/joint_command.hpp>
 #include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/msg/device_joint_state.hpp>
-#include <rtc_msgs/msg/joint_goal.hpp>
+#include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/msg/device_state_log.hpp>
 #include <rtc_msgs/msg/device_sensor_log.hpp>
+#include <rtc_msgs/msg/hand_sensor_state.hpp>
 
 // ── C++ stdlib ────────────────────────────────────────────────────────────────
 #include <array>
@@ -81,8 +82,10 @@ private:
       sensor_msgs::msg::JointState::SharedPtr msg);
   void DeviceSensorCallback(int device_slot,
       std_msgs::msg::Float64MultiArray::SharedPtr msg);
+  void HandSensorStateCallback(int device_slot,
+      rtc_msgs::msg::HandSensorState::SharedPtr msg);
   void DeviceTargetCallback(int device_slot,
-      std_msgs::msg::Float64MultiArray::SharedPtr msg);
+      rtc_msgs::msg::RobotTarget::SharedPtr msg);
 
   // ── Device name configuration ────────────────────────────────────────────
   void LoadDeviceNameConfigs();
@@ -154,8 +157,8 @@ private:
       gui_position_publishers_;
   std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::DeviceJointState>>
       joint_state_publishers_;
-  std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::JointGoal>>
-      joint_goal_publishers_;
+  std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::RobotTarget>>
+      robot_target_publishers_;
   std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::DeviceStateLog>>
       device_state_log_publishers_;
   std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::DeviceSensorLog>>

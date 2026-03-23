@@ -15,7 +15,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray, Int32, Bool
 from sensor_msgs.msg import JointState
-from rtc_msgs.msg import GuiPosition
+from rtc_msgs.msg import GuiPosition, RobotTarget
 import tkinter as tk
 from tkinter import ttk, font as tkfont
 import threading
@@ -96,9 +96,9 @@ class DemoControllerGUI(Node):
 
         # Publishers
         self.robot_cmd_pub = self.create_publisher(
-            Float64MultiArray, '/ur5e/target_joint_positions', 10)
+            RobotTarget, '/ur5e/joint_goal', 10)
         self.hand_cmd_pub = self.create_publisher(
-            Float64MultiArray, '/hand/target_joint_positions', 10)
+            RobotTarget, '/hand/joint_goal', 10)
         self.type_pub = self.create_publisher(
             Int32, '/ur5e/controller_type', 10)
         self.gains_pub = self.create_publisher(
@@ -911,27 +911,33 @@ class DemoControllerGUI(Node):
 
     def _publish_target(self):
         idx = self.selected_ctrl.get()
+        is_joint = JOINT_SPACE.get(idx, True)
+
+        robot_msg = RobotTarget()
         try:
-            if JOINT_SPACE.get(idx, True):
-                robot_values = [math.radians(float(e.get()))
-                                for e in self._joint_target_entries]
+            if is_joint:
+                robot_msg.goal_type = 'joint'
+                robot_msg.joint_target = [
+                    math.radians(float(e.get()))
+                    for e in self._joint_target_entries]
             else:
-                robot_values = []
+                robot_msg.goal_type = 'task'
+                task_values = []
                 for i, e in enumerate(self._task_target_entries):
                     v = float(e.get())
                     if i >= 3:
                         v = math.radians(v)
-                    robot_values.append(v)
-
+                    task_values.append(v)
+                robot_msg.task_target = task_values
         except ValueError:
             self.get_logger().error("Invalid numerical input for target.")
             return
 
-        robot_msg = Float64MultiArray()
-        robot_msg.data = robot_values
         self.robot_cmd_pub.publish(robot_msg)
+        data = robot_msg.joint_target if is_joint else list(robot_msg.task_target)
         self.get_logger().info(
-            f"Sent robot cmd: {[f'{v:.4f}' for v in robot_values]}")
+            f"Sent robot cmd ({robot_msg.goal_type}): "
+            f"{[f'{v:.4f}' for v in data]}")
 
         try:
             hand_values = [math.radians(float(e.get()))
@@ -939,8 +945,9 @@ class DemoControllerGUI(Node):
         except ValueError:
             self.get_logger().error("Invalid numerical input for hand target.")
             return
-        hand_msg = Float64MultiArray()
-        hand_msg.data = hand_values
+        hand_msg = RobotTarget()
+        hand_msg.goal_type = 'joint'
+        hand_msg.joint_target = hand_values
         self.hand_cmd_pub.publish(hand_msg)
         self.get_logger().info(
             f"Sent hand cmd: {[f'{v:.4f}' for v in hand_values]}")

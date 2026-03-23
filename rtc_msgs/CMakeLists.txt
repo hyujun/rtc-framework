@@ -15,7 +15,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/HandForceTorqueState.msg"
   "msg/GuiPosition.msg"
   "msg/DeviceJointState.msg"
-  "msg/JointGoal.msg"
+  "msg/RobotTarget.msg"
   "msg/DeviceStateLog.msg"
   "msg/DeviceSensorLog.msg"
   DEPENDENCIES std_msgs

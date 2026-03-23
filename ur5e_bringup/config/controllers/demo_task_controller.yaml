@@ -1,15 +1,15 @@
 demo_task_controller:
   # ── CLIK gains (robot arm task-space control) ──────────────────────────────
-  kp: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]   # Cartesian proportional gain (6-DOF)
-  damping: 0.01                           # Damped pseudoinverse lambda (singularity stabilization)
-  trajectory_speed: 0.1                   # TCP max translational speed (m/s)
+  kp: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0] # Cartesian proportional gain (6-DOF)
+  damping: 0.01 # Damped pseudoinverse lambda (singularity stabilization)
+  trajectory_speed: 0.1 # TCP max translational speed (m/s)
 
   # ── Null-space configuration ────────────────────────────────────────────────
-  enable_null_space: true                 # Enable null-space joint centering
-  null_kp: 0.5                            # Null-space proportional gain
+  enable_null_space: true # Enable null-space joint centering
+  null_kp: 0.5 # Null-space proportional gain
 
   # ── 6-DOF mode ──────────────────────────────────────────────────────────────
-  control_6dof: false                     # false=3-DOF (position only), true=6-DOF (position+orientation)
+  control_6dof: false # false=3-DOF (position only), true=6-DOF (position+orientation)
 
   # ── Hand motor P gains (10 motors) ──────────────────────────────────────────
   hand_kp: [50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
@@ -17,12 +17,11 @@ demo_task_controller:
   # ── Output type ─────────────────────────────────────────────────────────────
   command_type: "position"
 
-
   # ── Topic configuration ─────────────────────────────────────────────────────
   topics:
     ur5e:
       subscribe:
-        - topic: "/ur5e/target_joint_positions"
+        - topic: "/ur5e/joint_goal"
           role: "target"
         - topic: "/joint_states"
           role: "state"
@@ -36,13 +35,11 @@ demo_task_controller:
           role: "gui_position"
         - topic: "/ur5e/joint_state"
           role: "joint_state"
-        - topic: "/ur5e/joint_goal"
-          role: "joint_goal"
         - topic: "/ur5e/state_log"
           role: "device_state_log"
     hand:
       subscribe:
-        - topic: "/hand/target_joint_positions"
+        - topic: "/hand/joint_goal"
           role: "target"
         - topic: "/hand/joint_states"
           role: "state"
@@ -53,8 +50,6 @@ demo_task_controller:
           role: "joint_command"
         - topic: "/hand/joint_state"
           role: "joint_state"
-        - topic: "/hand/joint_goal"
-          role: "joint_goal"
         - topic: "/hand/state_log"
           role: "device_state_log"
         - topic: "/hand/sensor_log"

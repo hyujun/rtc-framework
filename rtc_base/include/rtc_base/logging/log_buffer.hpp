@@ -35,6 +35,7 @@ struct DeviceLogSlot {
   std::array<float, kMaxSensorChannels>  sensor_data_raw{};
   int num_sensor_channels{0};
   bool valid{false};
+  GoalType goal_type{GoalType::kJoint};
 };
 
 // One row of the control log, split across CSV files by the DataLogger.

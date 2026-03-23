@@ -89,8 +89,9 @@ inline constexpr int kFTHistoryLength      = 12;                   // FIFO histo
 
 // Fingertip F/T 추론 결과 (SeqLock 호환: trivially_copyable)
 struct FingertipFTState {
-  static constexpr int kMaxFTValues = kMaxFingertips * kFTValuesPerFingertip;  // 48
+  static constexpr int kMaxFTValues = kMaxFingertips * kFTValuesPerFingertip;  // 56
   std::array<float, kMaxFTValues> ft_data{};
+  std::array<bool, kMaxFingertips> per_fingertip_valid{};  // per-fingertip inference ready
   int  num_fingertips{0};
   bool valid{false};
 };
@@ -124,6 +125,10 @@ struct DeviceState {
   std::array<int32_t, kMaxSensorChannels> sensor_data{};     // post-filter
   std::array<int32_t, kMaxSensorChannels> sensor_data_raw{}; // pre-filter
   int num_sensor_channels{0};
+  // Inference (force/displacement per fingertip)
+  std::array<float, kMaxInferenceValues> inference_data{};   // [contact,F(3),u(3)] × fingertips
+  std::array<bool, kMaxFingertips> inference_enable{};       // per-fingertip flag
+  int num_inference_fingertips{0};
   bool valid{false};
 };
 
@@ -136,6 +141,15 @@ struct ControllerState {
 };
 
 enum class CommandType { kPosition, kTorque };
+enum class GoalType : uint8_t { kJoint, kTask };
+
+[[nodiscard]] inline constexpr const char * GoalTypeToString(GoalType g) noexcept {
+  switch (g) {
+    case GoalType::kJoint: return "joint";
+    case GoalType::kTask:  return "task";
+  }
+  return "unknown";
+}
 
 // Unified device output — per-device commands, goals, and trajectory data
 struct DeviceOutput {
@@ -144,6 +158,7 @@ struct DeviceOutput {
   std::array<double, kMaxDeviceChannels> goal_positions{};
   std::array<double, kMaxDeviceChannels> target_positions{};    // trajectory interpolated
   std::array<double, kMaxDeviceChannels> target_velocities{};
+  GoalType goal_type{GoalType::kJoint};
 };
 
 struct ControllerOutput {
@@ -199,7 +214,7 @@ enum class PublishRole {
   kGuiPosition,        // rtc_msgs/GuiPosition (joint_pos + task_pos)
   // Topic-based State/Command/Goal/Log
   kJointState,         // rtc_msgs/DeviceJointState (device별 관절 상태)
-  kJointGoal,          // rtc_msgs/JointGoal (joint/task 목표)
+  kRobotTarget,        // rtc_msgs/RobotTarget (joint/task 목표)
   kDeviceStateLog,     // rtc_msgs/DeviceStateLog (통합 상태 로그)
   kDeviceSensorLog,    // rtc_msgs/DeviceSensorLog (센서 + inference 로그)
 };
@@ -277,7 +292,7 @@ struct TopicConfig {
     case PublishRole::kRos2Command:     return "ros2_command";
     case PublishRole::kGuiPosition:     return "gui_position";
     case PublishRole::kJointState:      return "joint_state";
-    case PublishRole::kJointGoal:       return "joint_goal";
+    case PublishRole::kRobotTarget:     return "robot_target";
     case PublishRole::kDeviceStateLog:  return "device_state_log";
     case PublishRole::kDeviceSensorLog: return "device_sensor_log";
   }

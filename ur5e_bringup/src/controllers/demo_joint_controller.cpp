@@ -51,6 +51,7 @@ ControllerOutput DemoJointController::Compute(const ControllerState & state) noe
   auto & out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
+  out0.goal_type = GoalType::kJoint;
 
   // ── Robot arm P control (identical to PController) ────────────────────────
   for (int i = 0; i < nc0; ++i) {
@@ -85,6 +86,7 @@ ControllerOutput DemoJointController::Compute(const ControllerState & state) noe
     const int nc1 = dev1.num_channels;
     auto & out1 = output.devices[1];
     out1.num_channels = nc1;
+    out1.goal_type = GoalType::kJoint;
     for (int i = 0; i < nc1; ++i) {
       const double error = device_targets_[1][i] - dev1.positions[i];
       out1.commands[i] =
@@ -101,16 +103,30 @@ ControllerOutput DemoJointController::Compute(const ControllerState & state) noe
     const int num_fingertips = num_sensor_ch / rtc::kSensorValuesPerFingertip;
     for (int f = 0; f < num_fingertips && f < rtc::kMaxFingertips; ++f) {
       const int base = f * rtc::kSensorValuesPerFingertip;
-      // barometer[8] + tof[3] per fingertip
-      [[maybe_unused]] const int32_t * baro = &dev1.sensor_data[base];
-      [[maybe_unused]] const int32_t * tof  = &dev1.sensor_data[base + rtc::kBarometerCount];
+      const int32_t * baro = &dev1.sensor_data[base];
+      const int32_t * tof  = &dev1.sensor_data[base + rtc::kBarometerCount];
 
-      // Inference output placeholders (populated when inference is ready)
-      [[maybe_unused]] std::array<float, 3> F{};             // 추정 힘 [Fx, Fy, Fz]
-      [[maybe_unused]] std::array<float, 3> u{};             // 추정 변위 [ux, uy, uz]
-      [[maybe_unused]] float contact_flag = 0.0f;            // 접촉 판별 플래그
+      std::array<float, 3> F{};
+      std::array<float, 3> u{};
+      float contact_flag = 0.0f;
 
-      // TODO: F, u, contact_flag = inference(baro, tof)
+      if (dev1.inference_enable[static_cast<std::size_t>(f)]) {
+        const int ft_base = f * rtc::kFTValuesPerFingertip;
+        contact_flag = dev1.inference_data[static_cast<std::size_t>(ft_base)];
+        for (int j = 0; j < 3; ++j) {
+          F[static_cast<std::size_t>(j)] =
+              dev1.inference_data[static_cast<std::size_t>(ft_base + 1 + j)];
+          u[static_cast<std::size_t>(j)] =
+              dev1.inference_data[static_cast<std::size_t>(ft_base + 4 + j)];
+        }
+      }
+
+      // baro, tof, F, u, contact_flag available for control logic
+      static_cast<void>(baro);
+      static_cast<void>(tof);
+      static_cast<void>(F);
+      static_cast<void>(u);
+      static_cast<void>(contact_flag);
     }
   }
 

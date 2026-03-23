@@ -298,27 +298,35 @@ class HandUdpNode : public rclcpp::Node {
             ? ft_names_list[static_cast<std::size_t>(f)]
             : "f" + std::to_string(f);
 
-        // Raw sensor data: barometer[8] + tof[3]
+        // Filtered sensor data: barometer[8] + tof[3]
         const int sensor_base = f * urtc::kSensorValuesPerFingertip;
         for (int b = 0; b < urtc::kBarometerCount; ++b) {
-          fs.barometer[static_cast<std::size_t>(b)] = static_cast<float>(
-              snapshot.sensor_data[static_cast<std::size_t>(sensor_base + b)]);
+          const auto bu = static_cast<std::size_t>(b);
+          const auto si = static_cast<std::size_t>(sensor_base + b);
+          fs.barometer[bu] = static_cast<float>(snapshot.sensor_data[si]);
+          fs.barometer_raw[bu] = static_cast<float>(snapshot.sensor_data_raw[si]);
         }
         for (int t = 0; t < urtc::kTofCount; ++t) {
-          fs.tof[static_cast<std::size_t>(t)] = static_cast<float>(
-              snapshot.sensor_data[static_cast<std::size_t>(
-                  sensor_base + urtc::kBarometerCount + t)]);
+          const auto tu = static_cast<std::size_t>(t);
+          const auto si = static_cast<std::size_t>(
+              sensor_base + urtc::kBarometerCount + t);
+          fs.tof[tu] = static_cast<float>(snapshot.sensor_data[si]);
+          fs.tof_raw[tu] = static_cast<float>(snapshot.sensor_data_raw[si]);
         }
 
-        // Inference results: F, u, contact_flag
-        if (ft_valid && f < ft_state.num_fingertips) {
+        // Inference results: F, u, contact_flag, inference_enable
+        if (ft_valid && f < ft_state.num_fingertips
+            && ft_state.per_fingertip_valid[static_cast<std::size_t>(f)]) {
           const int ft_base = f * urtc::kFTValuesPerFingertip;
+          fs.inference_enable = true;
           fs.contact_flag = ft_state.ft_data[static_cast<std::size_t>(ft_base)];
           for (int j = 0; j < 3; ++j) {
             const auto ju = static_cast<std::size_t>(j);
             fs.f[ju] = ft_state.ft_data[static_cast<std::size_t>(ft_base + 1 + j)];
             fs.u[ju] = ft_state.ft_data[static_cast<std::size_t>(ft_base + 4 + j)];
           }
+        } else {
+          fs.inference_enable = false;
         }
 
         sensor_msg.fingertips.push_back(fs);

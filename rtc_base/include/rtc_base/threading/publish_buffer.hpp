@@ -48,6 +48,7 @@ struct PublishSnapshot {
     std::array<float, kMaxInferenceValues> inference_output{};
     bool inference_valid{false};
     int num_inference_values{0};
+    GoalType goal_type{GoalType::kJoint};
   };
   std::array<GroupCommandSlot, kMaxGroups> group_commands{};
   int num_groups{0};
@@ -55,7 +56,7 @@ struct PublishSnapshot {
   // ── Shared data (group-independent) ────────────────────────────────────
   CommandType command_type{CommandType::kPosition};
   std::array<double, 6> actual_task_positions{};
-  // Per-group task goals (6-DOF, for kJointGoal / kDeviceStateLog)
+  // Per-group task goals (6-DOF, for kRobotTarget / kDeviceStateLog)
   std::array<std::array<double, 6>, kMaxGroups> task_goals{};
 
   // JointCommand header stamp (monotonic nanoseconds)

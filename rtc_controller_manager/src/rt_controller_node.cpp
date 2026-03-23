@@ -466,10 +466,10 @@ void RtControllerNode::CreateSubscriptions()
             break;
           }
           case urtc::SubscribeRole::kSensorState: {
-            auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
+            auto sub = create_subscription<rtc_msgs::msg::HandSensorState>(
               entry.topic_name, 10,
-              [this, slot](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-                DeviceSensorCallback(slot, std::move(msg));
+              [this, slot](rtc_msgs::msg::HandSensorState::SharedPtr msg) {
+                HandSensorStateCallback(slot, std::move(msg));
               },
               sub_options);
             topic_subscriptions_.push_back(sub);
@@ -478,9 +478,9 @@ void RtControllerNode::CreateSubscriptions()
             break;
           }
           case urtc::SubscribeRole::kTarget: {
-            auto sub = create_subscription<std_msgs::msg::Float64MultiArray>(
+            auto sub = create_subscription<rtc_msgs::msg::RobotTarget>(
               entry.topic_name, 10,
-              [this, slot](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+              [this, slot](rtc_msgs::msg::RobotTarget::SharedPtr msg) {
                 DeviceTargetCallback(slot, std::move(msg));
               },
               sub_options);
@@ -631,16 +631,16 @@ void RtControllerNode::CreatePublishers()
         log_pub("joint_state");
         return;
       }
-      case urtc::PublishRole::kJointGoal: {
-        if (joint_goal_publishers_.count(entry.topic_name) > 0) { return; }
-        TypedPublisherEntry<rtc_msgs::msg::JointGoal> pe;
-        pe.publisher = create_publisher<rtc_msgs::msg::JointGoal>(
+      case urtc::PublishRole::kRobotTarget: {
+        if (robot_target_publishers_.count(entry.topic_name) > 0) { return; }
+        TypedPublisherEntry<rtc_msgs::msg::RobotTarget> pe;
+        pe.publisher = create_publisher<rtc_msgs::msg::RobotTarget>(
             entry.topic_name, cmd_qos);
         pe.msg.joint_names.assign(joint_names.begin(), joint_names.end());
-        pe.msg.joint_goal.resize(n, 0.0);
+        pe.msg.joint_target.resize(n, 0.0);
         pe.msg.goal_type = "joint";
-        joint_goal_publishers_[entry.topic_name] = std::move(pe);
-        log_pub("joint_goal");
+        robot_target_publishers_[entry.topic_name] = std::move(pe);
+        log_pub("robot_target");
         return;
       }
       case urtc::PublishRole::kDeviceStateLog: {
@@ -843,21 +843,33 @@ void RtControllerNode::DeviceJointStateCallback(
 }
 
 void RtControllerNode::DeviceTargetCallback(
-    int device_slot, std_msgs::msg::Float64MultiArray::SharedPtr msg)
+    int device_slot, rtc_msgs::msg::RobotTarget::SharedPtr msg)
 {
-  if (msg->data.empty()) return;
+  // Select data source based on goal_type
+  const double * data_ptr = nullptr;
+  int data_size = 0;
+
+  if (msg->goal_type == "task") {
+    data_ptr = msg->task_target.data();
+    data_size = static_cast<int>(msg->task_target.size());
+  } else {
+    // Default to joint target
+    if (msg->joint_target.empty()) return;
+    data_ptr = msg->joint_target.data();
+    data_size = static_cast<int>(msg->joint_target.size());
+  }
+
   {
     std::lock_guard lock(target_mutex_);
-    const int n = std::min(static_cast<int>(msg->data.size()),
-                           urtc::kMaxDeviceChannels);
+    const int n = std::min(data_size, urtc::kMaxDeviceChannels);
     for (int i = 0; i < n; ++i) {
-      device_targets_[device_slot][i] = msg->data[i];
+      device_targets_[device_slot][i] = data_ptr[i];
     }
   }
   target_received_.store(true, std::memory_order_release);
   int idx = active_controller_idx_.load(std::memory_order_acquire);
   controllers_[idx]->SetDeviceTarget(device_slot,
-      std::span<const double>(msg->data.data(), msg->data.size()));
+      std::span<const double>(data_ptr, static_cast<std::size_t>(data_size)));
 }
 
 // ── 50 Hz watchdog (E-STOP) ───────────────────────────────────────────────────
@@ -984,6 +996,9 @@ void RtControllerNode::ControlLoop()
     dev.sensor_data = cache.sensor_data;
     dev.sensor_data_raw = cache.sensor_data_raw;
     dev.num_sensor_channels = cache.num_sensor_channels;
+    dev.inference_data = cache.inference_data;
+    dev.inference_enable = cache.inference_enable;
+    dev.num_inference_fingertips = cache.num_inference_fingertips;
     dev.valid = cache.valid;
     ++di;
   }
@@ -1031,12 +1046,24 @@ void RtControllerNode::ControlLoop()
       gc.goal_positions = dout.goal_positions;
       gc.target_positions = dout.target_positions;
       gc.target_velocities = dout.target_velocities;
+      gc.goal_type = dout.goal_type;
       gc.actual_positions = dstate.positions;
       gc.actual_velocities = dstate.velocities;
       gc.efforts = dstate.efforts;
       gc.sensor_data = dstate.sensor_data;
       gc.sensor_data_raw = dstate.sensor_data_raw;
       gc.num_sensor_channels = dstate.num_sensor_channels;
+      // Inference output for DeviceSensorLog
+      if (dstate.num_inference_fingertips > 0) {
+        gc.inference_valid = true;
+        gc.num_inference_values =
+            dstate.num_inference_fingertips * urtc::kFTValuesPerFingertip;
+        for (int i = 0; i < gc.num_inference_values &&
+             i < static_cast<int>(gc.inference_output.size()); ++i) {
+          gc.inference_output[static_cast<std::size_t>(i)] =
+              dstate.inference_data[static_cast<std::size_t>(i)];
+        }
+      }
       // task_goals: copy from actual_task_positions (set by controller FK)
       snap.task_goals[gi] = output.actual_task_positions;
       ++gi;
@@ -1108,6 +1135,7 @@ void RtControllerNode::ControlLoop()
         dl.trajectory_positions[j] = dout.target_positions[j];
         dl.trajectory_velocities[j] = dout.target_velocities[j];
       }
+      dl.goal_type = dout.goal_type;
       dl.num_sensor_channels = dstate.num_sensor_channels;
       for (int j = 0; j < dstate.num_sensor_channels; ++j) {
         dl.sensor_data[j] = static_cast<float>(dstate.sensor_data[j]);
@@ -1115,6 +1143,23 @@ void RtControllerNode::ControlLoop()
       }
     }
     entry.num_devices = state.num_devices;
+
+    // Inference output for sensor log (from hand device, typically device index 1)
+    for (int dvi = 0; dvi < state.num_devices; ++dvi) {
+      const auto& dstate = state.devices[dvi];
+      if (dstate.num_inference_fingertips > 0) {
+        entry.inference_valid = true;
+        entry.num_inference_values =
+            dstate.num_inference_fingertips * urtc::kFTValuesPerFingertip;
+        for (int j = 0; j < entry.num_inference_values &&
+             j < static_cast<int>(entry.inference_output.size()); ++j) {
+          entry.inference_output[static_cast<std::size_t>(j)] =
+              dstate.inference_data[static_cast<std::size_t>(j)];
+        }
+        break;  // only one device has inference
+      }
+    }
+
     static_cast<void>(log_buffer_.Push(entry));  // silently drops if buffer is full
   }
 
@@ -1337,19 +1382,19 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           it->second.publisher->publish(m);
           return;
         }
-        case urtc::PublishRole::kJointGoal: {
-          auto it = joint_goal_publishers_.find(pt.topic_name);
-          if (it == joint_goal_publishers_.end()) { return; }
+        case urtc::PublishRole::kRobotTarget: {
+          auto it = robot_target_publishers_.find(pt.topic_name);
+          if (it == robot_target_publishers_.end()) { return; }
           auto & m = it->second.msg;
           m.header.stamp.sec = sec;
           m.header.stamp.nanosec = nsec;
-          const int n = std::min(nc, static_cast<int>(m.joint_goal.size()));
+          const int n = std::min(nc, static_cast<int>(m.joint_target.size()));
           for (int i = 0; i < n; ++i) {
-            m.joint_goal[i] = gc.goal_positions[i];
+            m.joint_target[i] = gc.goal_positions[i];
           }
           std::copy(snap.task_goals[group_idx].begin(),
                     snap.task_goals[group_idx].end(),
-                    m.task_goal.begin());
+                    m.task_target.begin());
           it->second.publisher->publish(m);
           return;
         }
@@ -1360,6 +1405,7 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           m.header.stamp.sec = sec;
           m.header.stamp.nanosec = nsec;
           m.command_type = cmd_type_str;
+          m.goal_type = urtc::GoalTypeToString(gc.goal_type);
           const int n = std::min(nc, static_cast<int>(m.actual_positions.size()));
           for (int i = 0; i < n; ++i) {
             m.actual_positions[i] = gc.actual_positions[i];
@@ -1452,6 +1498,54 @@ void RtControllerNode::DeviceSensorCallback(
   }
   ds.num_sensor_channels = static_cast<int>(
       std::min(msg->data.size(), static_cast<std::size_t>(urtc::kMaxSensorChannels)));
+}
+
+void RtControllerNode::HandSensorStateCallback(
+    int device_slot, rtc_msgs::msg::HandSensorState::SharedPtr msg)
+{
+  std::lock_guard lock(device_state_mutex_);
+  auto& ds = device_states_[device_slot];
+
+  const int n_ft = static_cast<int>(msg->fingertips.size());
+  for (int f = 0; f < n_ft && f < urtc::kMaxFingertips; ++f) {
+    const auto& fs = msg->fingertips[static_cast<std::size_t>(f)];
+    const int base = f * urtc::kSensorValuesPerFingertip;
+
+    // Filtered sensor data
+    for (int b = 0; b < urtc::kBarometerCount; ++b) {
+      ds.sensor_data[static_cast<std::size_t>(base + b)] =
+          static_cast<int32_t>(fs.barometer[static_cast<std::size_t>(b)]);
+    }
+    for (int t = 0; t < urtc::kTofCount; ++t) {
+      ds.sensor_data[static_cast<std::size_t>(base + urtc::kBarometerCount + t)] =
+          static_cast<int32_t>(fs.tof[static_cast<std::size_t>(t)]);
+    }
+
+    // Raw sensor data
+    for (int b = 0; b < urtc::kBarometerCount; ++b) {
+      ds.sensor_data_raw[static_cast<std::size_t>(base + b)] =
+          static_cast<int32_t>(fs.barometer_raw[static_cast<std::size_t>(b)]);
+    }
+    for (int t = 0; t < urtc::kTofCount; ++t) {
+      ds.sensor_data_raw[static_cast<std::size_t>(base + urtc::kBarometerCount + t)] =
+          static_cast<int32_t>(fs.tof_raw[static_cast<std::size_t>(t)]);
+    }
+
+    // Inference data
+    ds.inference_enable[static_cast<std::size_t>(f)] = fs.inference_enable;
+    if (fs.inference_enable) {
+      const int ft_base = f * urtc::kFTValuesPerFingertip;
+      ds.inference_data[static_cast<std::size_t>(ft_base)]     = fs.contact_flag;
+      for (int j = 0; j < 3; ++j) {
+        const auto ju = static_cast<std::size_t>(j);
+        ds.inference_data[static_cast<std::size_t>(ft_base + 1 + j)] = fs.f[ju];
+        ds.inference_data[static_cast<std::size_t>(ft_base + 4 + j)] = fs.u[ju];
+      }
+    }
+  }
+
+  ds.num_sensor_channels = n_ft * urtc::kSensorValuesPerFingertip;
+  ds.num_inference_fingertips = n_ft;
 }
 
 // ── Global E-Stop ──────────────────────────────────────────────────────────────

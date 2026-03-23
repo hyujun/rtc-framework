@@ -391,6 +391,7 @@ class FingertipFTInferencer {
         result.ft_data[static_cast<std::size_t>(ft_base + 4)] = u[0];
         result.ft_data[static_cast<std::size_t>(ft_base + 5)] = u[1];
         result.ft_data[static_cast<std::size_t>(ft_base + 6)] = u[2];
+        result.per_fingertip_valid[static_cast<std::size_t>(f)] = true;
       }
 
       result.num_fingertips = n;

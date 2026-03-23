@@ -232,7 +232,7 @@ private:
     f << ',' << (e.command_type == CommandType::kPosition ? 0 : 1);
 
     // Goal
-    f << ",joint";  // TODO: goal_type from controller
+    f << ',' << GoalTypeToString(d.goal_type);
     for (int i = 0; i < nc; ++i) { f << ',' << d.goal_positions[static_cast<std::size_t>(i)]; }
     for (const auto v : e.actual_task_positions) { f << ',' << v; }  // task_goal placeholder
 

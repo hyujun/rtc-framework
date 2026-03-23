@@ -27,7 +27,7 @@ rtc_msgs/
     ├── HandForceTorqueState.msg  ← 전체 핸드 힘/토크 상태
     ├── GuiPosition.msg           ← GUI 표시용 관절/태스크 위치
     ├── DeviceJointState.msg      ← 디바이스 관절 상태 (위치/속도/토크)
-    ├── JointGoal.msg             ← 관절/태스크 공간 목표
+    ├── RobotTarget.msg             ← 관절/태스크 공간 목표
     ├── DeviceStateLog.msg        ← 디바이스 상태 종합 로그
     └── DeviceSensorLog.msg       ← 디바이스 센서 로그
 ```
@@ -164,7 +164,7 @@ GUI 디스플레이를 위한 현재 관절 및 태스크 공간 위치입니다
 | `velocities` | `float64[]` | 관절 속도 (rad/s) |
 | `efforts` | `float64[]` | 관절 토크 (N·m) |
 
-### `JointGoal.msg`
+### `RobotTarget.msg`
 
 관절 공간 또는 태스크 공간의 목표 위치입니다.
 
@@ -173,8 +173,8 @@ GUI 디스플레이를 위한 현재 관절 및 태스크 공간 위치입니다
 | `header` | `std_msgs/Header` | 타임스탬프 및 프레임 ID |
 | `goal_type` | `string` | `"joint"` 또는 `"task"` |
 | `joint_names` | `string[]` | 관절 이름 배열 |
-| `joint_goal` | `float64[]` | 관절 공간 목표 (rad) |
-| `task_goal` | `float64[6]` | 태스크 공간 목표 [x, y, z, roll, pitch, yaw] |
+| `joint_target` | `float64[]` | 관절 공간 목표 (rad) |
+| `task_target` | `float64[6]` | 태스크 공간 목표 [x, y, z, roll, pitch, yaw] |
 
 ### `DeviceStateLog.msg`
 
@@ -231,7 +231,7 @@ source install/setup.bash
                                           └── FingertipSensor[] (barometer + ToF + 추론)
 
 목표 & GUI                            상태 (추론 결과)
-├── JointGoal (관절/태스크 목표)        └── HandForceTorqueState
+├── RobotTarget (관절/태스크 목표)        └── HandForceTorqueState
 └── GuiPosition (관절 + TCP 위치)          └── FingertipForceTorque[] (접촉 + 힘/토크)
 
 로깅
