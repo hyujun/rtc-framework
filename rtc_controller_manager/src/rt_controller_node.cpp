@@ -143,23 +143,31 @@ void RtControllerNode::CreateCallbackGroups()
 // ── Initialisation helpers ────────────────────────────────────────────────────
 void RtControllerNode::DeclareAndLoadParameters()
 {
-  declare_parameter("control_rate", 500.0);
-  declare_parameter("kp", 5.0);
-  declare_parameter("kd", 0.5);
-  declare_parameter("enable_logging", true);
-  declare_parameter("log_dir", std::string(""));  // launch 파일이 세션 디렉토리로 덮어씀
-  declare_parameter("max_log_sessions", 10);
-  declare_parameter("enable_timing_log", true);
-  declare_parameter("enable_device_log", true);
-  declare_parameter("enable_estop", true);
-  declare_parameter("enable_status_monitor", false);
-  declare_parameter("init_timeout_sec", 5.0);
-  declare_parameter("auto_hold_position", true);
-  declare_parameter("initial_controller", "joint_pd_controller");
+  // Helper: declare only if not already auto-declared from YAML overrides.
+  // (NodeOptions::automatically_declare_parameters_from_overrides is enabled.)
+  auto safe_declare = [this](const std::string& name, const rclcpp::ParameterValue& val) {
+    if (!has_parameter(name)) {
+      declare_parameter(name, val);
+    }
+  };
+
+  safe_declare("control_rate", rclcpp::ParameterValue(500.0));
+  safe_declare("kp", rclcpp::ParameterValue(5.0));
+  safe_declare("kd", rclcpp::ParameterValue(0.5));
+  safe_declare("enable_logging", rclcpp::ParameterValue(true));
+  safe_declare("log_dir", rclcpp::ParameterValue(std::string("")));  // launch 파일이 세션 디렉토리로 덮어씀
+  safe_declare("max_log_sessions", rclcpp::ParameterValue(10));
+  safe_declare("enable_timing_log", rclcpp::ParameterValue(true));
+  safe_declare("enable_device_log", rclcpp::ParameterValue(true));
+  safe_declare("enable_estop", rclcpp::ParameterValue(true));
+  safe_declare("enable_status_monitor", rclcpp::ParameterValue(false));
+  safe_declare("init_timeout_sec", rclcpp::ParameterValue(5.0));
+  safe_declare("auto_hold_position", rclcpp::ParameterValue(true));
+  safe_declare("initial_controller", rclcpp::ParameterValue(std::string("joint_pd_controller")));
 
   // ── Device timeouts (replaces robot_timeout_ms / enable_ur5e / enable_hand) ─
-  declare_parameter("device_timeout_names", std::vector<std::string>{});
-  declare_parameter("device_timeout_values", std::vector<double>{});
+  safe_declare("device_timeout_names", rclcpp::ParameterValue(std::vector<std::string>{}));
+  safe_declare("device_timeout_values", rclcpp::ParameterValue(std::vector<double>{}));
 
   // Device name configuration is loaded after active_groups_ are known
   // (see LoadDeviceNameConfigs() call below)
