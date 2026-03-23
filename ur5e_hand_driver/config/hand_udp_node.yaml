@@ -31,9 +31,9 @@
     # rt_controller 통합 + standalone 공용
     target_ip: "192.168.1.2"          # 핸드 컨트롤러 IP (빈 문자열 → hand 비활성)
     target_port: 55151                # 핸드 컨트롤러 포트 (0 → hand 비활성)
-    recv_timeout_ms: 0.4              # ppoll 수신 타임아웃 (ms), sub-ms 지원: 0.4 → 400µs
+    recv_timeout_ms: 0.05              # ppoll 수신 타임아웃 (ms), sub-ms 지원: 0.4 → 400µs
     # enable_write_ack: deprecated — write echo는 항상 수신 (RT 안전성)
-    sensor_decimation: 3              # N cycle마다 센서 읽기 (1=매번, 3=3cycle마다)
+    sensor_decimation: 1              # N cycle마다 센서 읽기 (1=매번, 3=3cycle마다)
                                       # decimation=3: 센서 사이클 빈도↓ → over_budget↓
                                       # 센서 skip 시 이전 캐시 데이터 유지
 
@@ -41,10 +41,10 @@
     # 유효 센서 샘플링 레이트 = 500 / sensor_decimation
     # cutoff는 유효 레이트의 절반 미만이어야 함
     # 예: decimation=3 → 유효 ~167Hz → cutoff < 83Hz
-    baro_lpf_enabled: false           # Barometer 센서 Low-Pass Filter 활성화
-    baro_lpf_cutoff_hz: 30.0          # Barometer LPF 차단 주파수 (Hz)
+    baro_lpf_enabled: true           # Barometer 센서 Low-Pass Filter 활성화
+    baro_lpf_cutoff_hz: 100.0          # Barometer LPF 차단 주파수 (Hz)
                                       # 접촉/파지 역학 대역폭 고려 30Hz 권장
-    tof_lpf_enabled: false            # VL53L4CD TOF 센서 Low-Pass Filter 활성화
+    tof_lpf_enabled: true            # VL53L4CD TOF 센서 Low-Pass Filter 활성화
     tof_lpf_cutoff_hz: 15.0           # TOF LPF 차단 주파수 (Hz)
                                       # 거리 측정 노이즈 제거 15Hz 권장
 
@@ -82,7 +82,7 @@
     publish_rate: 100.0               # /hand/joint_states 퍼블리시 주기 (Hz)
 
     # ── Failure Detector 설정 (50Hz non-RT jthread) ────────────────────────
-    enable_failure_detector: true     # Failure detector 활성화
+    enable_failure_detector: false     # Failure detector 활성화
     failure_threshold: 5              # 연속 감지 횟수 임계값 (all-zero 또는 중복 데이터)
     check_motor: true                 # 모터 position 데이터 검사
     check_sensor: true                # 센서 데이터 검사

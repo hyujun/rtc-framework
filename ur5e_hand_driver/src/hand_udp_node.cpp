@@ -13,6 +13,7 @@
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
+#include <pthread.h>   // pthread_setaffinity_np
 #include <sys/mman.h>  // mlockall
 
 #include <array>
@@ -506,6 +507,19 @@ class HandUdpNode : public rclcpp::Node {
 int main(int argc, char** argv) {
   if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
     fprintf(stderr, "[WARN] hand_udp_node: mlockall failed\n");
+  }
+
+  // Pin main thread (ROS2 executor, DDS) to Core 0-1 (OS/DDS cores).
+  // EventLoop thread has its own affinity (Core 5, SCHED_FIFO 65).
+  // Without this, the executor could land on isolated RT cores (2-5).
+  {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(0, &cpuset);
+    CPU_SET(1, &cpuset);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
+      fprintf(stderr, "[WARN] hand_udp_node: main thread CPU affinity failed\n");
+    }
   }
 
   rclcpp::init(argc, argv);
