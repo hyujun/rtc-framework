@@ -56,7 +56,7 @@ FingertipState[] fingertips
 - **rt_controller_node.cpp** (`DeviceSensorCallback`): `Float64MultiArray` → `HandState` 구독으로 변경
   - `DeviceStateCache::sensor_data[]` 매핑 로직 수정
 - **digital_twin_node.py** (`_sensor_cb`): `Float64MultiArray` → `HandState` 구독으로 변경
-- **controller YAML들** (`demo_task_controller.yaml`, `demo_joint_controller.yaml`): 토픽/타입 설정 업데이트
+- **controller YAML들** (`demo_task_controller.yaml`, `demo_joint_controller.yaml`): 토픽 이름은 `/hand/sensor_states` 유지, 메시지 타입만 `HandState`로 변경
 
 ### Step 4: 구 메시지 삭제
 - `FingertipSensor.msg` 삭제
@@ -85,7 +85,7 @@ FingertipState[] fingertips
 | `ur5e_hand_driver/src/hand_udp_node.cpp` | 수정 (publisher 통합) |
 | `rtc_controller_manager/src/rt_controller_node.cpp` | 수정 (subscriber 변경) |
 | `rtc_digital_twin/rtc_digital_twin/digital_twin_node.py` | 수정 (subscriber 변경) |
-| `ur5e_bringup/config/controllers/*.yaml` | 수정 (토픽/타입) |
+| `ur5e_bringup/config/controllers/*.yaml` | 수정 (토픽 이름 유지, 메시지 타입만 변경) |
 | `rtc_msgs/README.md` | 수정 |
 | `rtc_msgs/CHANGELOG.md` | 수정 |
 | `README.md` | 수정 |
@@ -94,4 +94,4 @@ FingertipState[] fingertips
 ## 주의사항
 - `sensor_data`는 현재 `int32_t[]`로 저장됨 → `float32` barometer/tof로 캐스팅 필요
 - FT inference 비활성 시에도 `HandState`는 발행하되, 추론 필드는 기본값
-- 토픽 이름은 `/hand/state`로 통합 (기존 `/hand/sensor_states` + `/hand/force_torque_state` 대체)
+- 토픽 이름은 `/hand/sensor_states`로 유지 (메시지 타입만 `HandState`로 변경, 기존 `/hand/force_torque_state`는 통합 후 삭제)
