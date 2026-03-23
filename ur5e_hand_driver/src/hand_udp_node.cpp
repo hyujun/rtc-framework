@@ -184,9 +184,11 @@ class HandUdpNode : public rclcpp::Node {
     declare_parameter("command_topic", std::string("/hand/joint_command"));
     declare_parameter("state_topic", std::string("/hand/joint_states"));
     declare_parameter("sensor_topic", std::string("/hand/sensor_states"));
+    declare_parameter("link_status_topic", std::string("/hand/link_status"));
     const std::string cmd_topic = get_parameter("command_topic").as_string();
     const std::string state_topic = get_parameter("state_topic").as_string();
     const std::string sensor_topic = get_parameter("sensor_topic").as_string();
+    const std::string link_status_topic = get_parameter("link_status_topic").as_string();
 
     // ── ROS2 pub/sub ───────────────────────────────────────────────────
     joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
@@ -194,7 +196,7 @@ class HandUdpNode : public rclcpp::Node {
     sensor_state_pub_ = create_publisher<rtc_msgs::msg::HandSensorState>(
         sensor_topic, 10);
     link_status_pub_ = create_publisher<std_msgs::msg::Bool>(
-        "/hand/link_status", 10);
+        link_status_topic, 10);
     link_fail_threshold_ = static_cast<uint64_t>(
         get_parameter("link_fail_threshold").as_int());
 
