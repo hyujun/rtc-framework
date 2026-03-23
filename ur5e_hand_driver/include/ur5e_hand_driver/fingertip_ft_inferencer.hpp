@@ -65,6 +65,7 @@ class FingertipFTInferencer {
       int /*num_fingertips*/) noexcept { return {}; }
   [[nodiscard]] bool is_initialized() const noexcept { return false; }
   [[nodiscard]] bool is_calibrated() const noexcept { return false; }
+  [[nodiscard]] int  num_models() const noexcept { return 0; }
   [[nodiscard]] int  calibration_count() const noexcept { return 0; }
   [[nodiscard]] int  calibration_target() const noexcept { return 0; }
   [[nodiscard]] std::array<std::array<float, kBarometerCount>, kMaxFingertips>
@@ -405,6 +406,7 @@ class FingertipFTInferencer {
 
   [[nodiscard]] bool is_initialized() const noexcept { return initialized_; }
   [[nodiscard]] bool is_calibrated() const noexcept { return calibrated_; }
+  [[nodiscard]] int  num_models() const noexcept { return num_active_; }
   [[nodiscard]] int  calibration_count() const noexcept { return calibration_count_; }
   [[nodiscard]] int  calibration_target() const noexcept {
     return config_.calibration_samples;
