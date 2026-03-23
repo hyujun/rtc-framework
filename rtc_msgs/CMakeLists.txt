@@ -7,12 +7,8 @@ find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/JointCommand.msg"
-  "msg/HandCommand.msg"
-  "msg/HandMotorState.msg"
   "msg/FingertipSensor.msg"
   "msg/HandSensorState.msg"
-  "msg/FingertipForceTorque.msg"
-  "msg/HandForceTorqueState.msg"
   "msg/GuiPosition.msg"
   "msg/DeviceJointState.msg"
   "msg/RobotTarget.msg"
