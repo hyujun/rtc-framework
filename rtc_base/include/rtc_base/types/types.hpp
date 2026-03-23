@@ -200,10 +200,13 @@ enum class PublishRole {
   // Control Command
   kJointCommand,       // rtc_msgs/JointCommand (통합 명령)
   kRos2Command,        // Float64MultiArray (ros2_control 전용)
-  // Logging/Monitoring
-  kTaskPosition,       // 현재 TCP 위치 (Float64MultiArray, size=6)
-  kTrajectoryState,    // 궤적 보간 상태 (Float64MultiArray, size=18)
-  kControllerState,    // 제어기 내부 상태 (Float64MultiArray, size=18)
+  // GUI / Monitoring
+  kGuiPosition,        // rtc_msgs/GuiPosition (joint_pos + task_pos)
+  // Topic-based State/Command/Goal/Log
+  kJointState,         // rtc_msgs/DeviceJointState (device별 관절 상태)
+  kJointGoal,          // rtc_msgs/JointGoal (joint/task 목표)
+  kDeviceStateLog,     // rtc_msgs/DeviceStateLog (통합 상태 로그)
+  kDeviceSensorLog,    // rtc_msgs/DeviceSensorLog (센서 + inference 로그)
 };
 
 struct SubscribeTopicEntry {
@@ -277,9 +280,11 @@ struct TopicConfig {
   switch (role) {
     case PublishRole::kJointCommand:    return "joint_command";
     case PublishRole::kRos2Command:     return "ros2_command";
-    case PublishRole::kTaskPosition:    return "task_position";
-    case PublishRole::kTrajectoryState: return "trajectory_state";
-    case PublishRole::kControllerState: return "controller_state";
+    case PublishRole::kGuiPosition:     return "gui_position";
+    case PublishRole::kJointState:      return "joint_state";
+    case PublishRole::kJointGoal:       return "joint_goal";
+    case PublishRole::kDeviceStateLog:  return "device_state_log";
+    case PublishRole::kDeviceSensorLog: return "device_sensor_log";
   }
   return "unknown";
 }

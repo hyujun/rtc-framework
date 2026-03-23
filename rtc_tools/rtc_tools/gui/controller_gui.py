@@ -15,6 +15,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray, Int32, Bool
 from sensor_msgs.msg import JointState
+from rtc_msgs.msg import GuiPosition
 import tkinter as tk
 from tkinter import ttk, font as tkfont
 import threading
@@ -116,8 +117,8 @@ class ControllerGUI(Node):
         self.create_subscription(JointState, '/joint_states',
                                  self._joint_state_cb, 10)
         self.current_task_positions = [0.0] * 6
-        self.create_subscription(Float64MultiArray, '/ur5e/current_task_position',
-                                 self._task_pos_cb, 10)
+        self.create_subscription(GuiPosition, '/ur5e/gui_position',
+                                 self._gui_pos_cb, 10)
 
         self.estop_active = False
         self.create_subscription(Bool, '/system/estop_status',
@@ -142,9 +143,9 @@ class ControllerGUI(Node):
         if len(msg.position) >= NUM_JOINTS:
             self.current_positions = list(msg.position[:NUM_JOINTS])
 
-    def _task_pos_cb(self, msg: Float64MultiArray):
-        if len(msg.data) >= 6:
-            self.current_task_positions = list(msg.data[:6])
+    def _gui_pos_cb(self, msg: GuiPosition):
+        if len(msg.task_positions) >= 6:
+            self.current_task_positions = list(msg.task_positions[:6])
 
     def _estop_cb(self, msg: Bool):
         self.estop_active = msg.data

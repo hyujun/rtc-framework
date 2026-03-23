@@ -121,13 +121,16 @@ ControllerOutput JointPDController::Compute(
     out0.target_velocities[i] = traj_state.velocities[i];
   }
 
-  // Device 1 (hand): pass-through goals
-  if (state.num_devices > 1) {
-    const int nc1 = state.devices[1].num_channels;
-    auto & out1 = output.devices[1];
-    out1.num_channels = nc1;
-    for (int i = 0; i < nc1; ++i) {
-      out1.goal_positions[i] = device_targets_[1][i];
+  // Device 1+ : pass-through goals
+  for (int d = 1; d < state.num_devices; ++d) {
+    const auto & devN = state.devices[d];
+    auto & outN = output.devices[d];
+    const int ncN = devN.num_channels;
+    outN.num_channels = ncN;
+    for (int i = 0; i < ncN; ++i) {
+      outN.commands[i] = device_targets_[d][i];
+      outN.target_positions[i] = device_targets_[d][i];
+      outN.goal_positions[i] = device_targets_[d][i];
     }
   }
 

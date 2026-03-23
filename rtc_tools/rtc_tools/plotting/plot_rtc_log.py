@@ -58,13 +58,35 @@ def _detect_num_channels(df, prefix):
     return len([c for c in df.columns if c.startswith(prefix)])
 
 
-def _auto_subplot_grid(n, max_cols=3):
-    """Calculate (nrows, ncols) for a dynamic subplot grid."""
+def _auto_subplot_grid(n, max_cols=None):
+    """Calculate optimal (nrows, ncols) for n subplots.
+
+    Picks the layout closest to square with ncols >= nrows.
+    Allows a small number of empty cells to avoid tall 1-column layouts.
+
+    Examples:
+      1 → (1,1)   2 → (1,2)   3 → (1,3)   4 → (2,2)
+      5 → (2,3)   6 → (2,3)   7 → (3,3)   8 → (2,4)
+      9 → (3,3)  10 → (2,5)  12 → (3,4)  16 → (4,4)
+    """
     import math
-    if n == 0:
+    if n <= 0:
         return (1, 1)
-    ncols = min(n, max_cols)
+    if n <= 3:
+        return (1, n)
+
+    if max_cols is not None:
+        ncols = min(n, max_cols)
+        nrows = math.ceil(n / ncols)
+        return (nrows, ncols)
+
+    # Start from ceil(sqrt(n)) columns and pick ncols >= nrows
+    ncols = math.ceil(math.sqrt(n))
     nrows = math.ceil(n / ncols)
+    # Ensure wider-than-tall
+    if nrows > ncols:
+        nrows, ncols = ncols, nrows
+        nrows = math.ceil(n / ncols)
     return (nrows, ncols)
 
 
@@ -269,9 +291,11 @@ def plot_robot_commands(df, save_dir=None):
 def plot_robot_torques(df, save_dir=None):
     """Figure 4: Robot actual torques."""
     torque_cols, display_names = _detect_joint_columns(df, 'actual_torque_')
+    if not torque_cols:
+        torque_cols, display_names = _detect_joint_columns(df, 'effort_')
     n_joints = len(torque_cols)
     if n_joints == 0:
-        print('  Skipping torque plot (actual_torque_* columns not found)')
+        print('  Skipping torque plot (actual_torque_*/effort_* columns not found)')
         return
 
     nrows, ncols = _auto_subplot_grid(n_joints)
@@ -1118,9 +1142,22 @@ def print_timing_statistics(df):
 # ── Auto-detect & Main ────────────────────────────────────────────────────
 
 def detect_log_type(filepath):
-    """Detect log type from filename prefix."""
+    """Detect log type from filename pattern.
+
+    New patterns (topic-role based):
+      *_state_log.csv  → state_log  (DeviceStateLog fields)
+      *_sensor_log.csv → sensor_log (DeviceSensorLog fields)
+    Legacy patterns (backward compat):
+      robot_log*.csv   → robot
+      device_log*.csv / hand_log*.csv → device
+      timing_log*.csv  → timing
+    """
     stem = Path(filepath).stem
-    if stem.startswith('robot_log'):
+    if stem.endswith('state_log'):
+        return 'state_log'
+    elif stem.endswith('sensor_log'):
+        return 'sensor_log'
+    elif stem.startswith('robot_log'):
         return 'robot'
     elif stem.startswith('device_log') or stem.startswith('hand_log'):
         return 'device'
@@ -1186,7 +1223,8 @@ def main():
     log_type = detect_log_type(args.csv_file)
     if log_type == 'unknown':
         print(f'Error: Cannot detect log type from filename: {args.csv_file}')
-        print('Expected: robot_log*.csv, device_log*.csv, hand_log*.csv, or timing_log*.csv')
+        print('Expected: *_state_log.csv, *_sensor_log.csv, timing_log*.csv, '
+              'robot_log*.csv, device_log*.csv, hand_log*.csv')
         sys.exit(1)
 
     print(f'Loading ({log_type}): {args.csv_file}')
@@ -1198,7 +1236,7 @@ def main():
     if args.save_dir:
         Path(args.save_dir).mkdir(parents=True, exist_ok=True)
 
-    if log_type == 'robot':
+    if log_type in ('robot', 'state_log'):
         print_robot_statistics(df)
         if not args.stats:
             plot_robot_positions(df, args.save_dir)
@@ -1211,6 +1249,19 @@ def main():
                 plot_robot_torques(df, args.save_dir)
             if args.task_pos:
                 plot_robot_task_position(df, args.save_dir)
+    elif log_type == 'sensor_log':
+        print_device_statistics(df)
+        if not args.stats:
+            plot_device_sensors(df, args.save_dir)
+            if args.raw:
+                raw_labels = _detect_fingertip_labels_raw(df)
+                plot_device_sensors_raw(df, raw_labels, args.save_dir)
+            if args.ft:
+                ft_labels = _detect_ft_labels(df)
+                plot_device_ft_output(df, ft_labels, args.save_dir)
+            if args.sensor_compare:
+                raw_labels = _detect_fingertip_labels_raw(df)
+                plot_device_sensor_comparison(df, raw_labels, args.save_dir)
     elif log_type == 'device':
         print_device_statistics(df)
         if not args.stats:

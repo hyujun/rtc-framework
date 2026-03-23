@@ -18,6 +18,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Float64MultiArray
+from rtc_msgs.msg import GuiPosition
 
 # ── 상수 ──────────────────────────────────────────────────────────────────────
 NUM_JOINTS = 6
@@ -1455,8 +1456,8 @@ class ROSNode(Node):
             self.hand_callback, qos)
 
         self.task_pos_sub = self.create_subscription(
-            Float64MultiArray, '/ur5e/current_task_position',
-            self.task_pos_callback, qos)
+            GuiPosition, '/ur5e/gui_position',
+            self.gui_pos_callback, qos)
 
         self.estop_sub = self.create_subscription(
             Bool, '/system/estop_status', self.estop_callback, qos)
@@ -1480,9 +1481,9 @@ class ROSNode(Node):
             h = np.array(msg.position[:NUM_HAND_MOTORS])
             self.gui.update_hand_state(h)
 
-    def task_pos_callback(self, msg):
-        if len(msg.data) >= 6:
-            self.gui.update_task_position(np.array(msg.data[:6]))
+    def gui_pos_callback(self, msg: GuiPosition):
+        if len(msg.task_positions) >= 6:
+            self.gui.update_task_position(np.array(msg.task_positions[:6]))
 
     def estop_callback(self, msg):
         self.gui.update_estop(msg.data)

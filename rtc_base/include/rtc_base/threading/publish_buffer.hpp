@@ -39,6 +39,15 @@ struct PublishSnapshot {
     std::array<double, kMaxDeviceChannels> target_velocities{};
     std::array<double, kMaxDeviceChannels> actual_positions{};
     std::array<double, kMaxDeviceChannels> actual_velocities{};
+    std::array<double, kMaxDeviceChannels> efforts{};
+    // Sensor data (hand device)
+    std::array<int32_t, kMaxSensorChannels> sensor_data{};
+    std::array<int32_t, kMaxSensorChannels> sensor_data_raw{};
+    int num_sensor_channels{0};
+    // Inference output
+    std::array<float, kMaxInferenceValues> inference_output{};
+    bool inference_valid{false};
+    int num_inference_values{0};
   };
   std::array<GroupCommandSlot, kMaxGroups> group_commands{};
   int num_groups{0};
@@ -46,6 +55,8 @@ struct PublishSnapshot {
   // ── Shared data (group-independent) ────────────────────────────────────
   CommandType command_type{CommandType::kPosition};
   std::array<double, 6> actual_task_positions{};
+  // Per-group task goals (6-DOF, for kJointGoal / kDeviceStateLog)
+  std::array<std::array<double, 6>, kMaxGroups> task_goals{};
 
   // JointCommand header stamp (monotonic nanoseconds)
   int64_t stamp_ns{0};

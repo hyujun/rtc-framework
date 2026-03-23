@@ -13,19 +13,26 @@
 
 namespace rtc {
 
-// Per-device log configuration — passed to DataLogger at construction time.
+// Per-log-file configuration — one per CSV file created by DataLogger.
+// Each config corresponds to a publish role (kDeviceStateLog or kDeviceSensorLog)
+// in the active controller's YAML topic configuration.
 struct DeviceLogConfig {
   std::string device_name;
-  std::filesystem::path path;                // CSV file path (empty = disabled)
-  std::vector<std::string> joint_names;      // for CSV header labels
-  std::vector<std::string> sensor_names;     // for CSV header labels
-  int num_channels{0};                       // expected joint channel count
-  int num_sensor_channels{0};                // expected sensor channel count
+  PublishRole role{PublishRole::kDeviceStateLog};
+  int device_index{0};                         // LogEntry.devices[] index
+  std::filesystem::path path;                  // CSV file path (empty = disabled)
+  std::vector<std::string> joint_names;        // for CSV header labels
+  std::vector<std::string> sensor_names;       // for CSV header labels
+  int num_channels{0};                         // expected joint channel count
+  int num_sensor_channels{0};                  // expected sensor channel count
 };
 
-// Writes control data to per-device CSV files + a timing CSV in a non-RT thread:
-//   - timing_log:     per-phase timing breakdown
-//   - <device>_log:   per-device joint states, sensor data, commands
+// Writes control data to role-based CSV files + a timing CSV in a non-RT thread.
+//
+// File creation is driven by the controller YAML's publish roles:
+//   - kDeviceStateLog  → {group}_state_log.csv  (state+cmd+goal+traj+task_pos)
+//   - kDeviceSensorLog → {group}_sensor_log.csv (sensor+inference)
+//   - timing_log.csv is always created if timing_path is non-empty.
 //
 // All files share the same timestamp column for post-hoc join.
 // All methods are defined inline to keep rtc_base header-only.
@@ -54,7 +61,18 @@ public:
 
       if (!cfg.path.empty()) {
         device_files_[i].open(cfg.path);
-        if (device_files_[i].is_open()) { WriteDeviceHeader(i); }
+        if (device_files_[i].is_open()) {
+          switch (cfg.role) {
+            case PublishRole::kDeviceStateLog:
+              WriteStateLogHeader(i);
+              break;
+            case PublishRole::kDeviceSensorLog:
+              WriteSensorLogHeader(i);
+              break;
+            default:
+              break;
+          }
+        }
       }
     }
   }
@@ -69,7 +87,17 @@ public:
   void LogEntry(const rtc::LogEntry &entry) {
     WriteTimingRow(entry);
     for (std::size_t i = 0; i < device_files_.size(); ++i) {
-      WriteDeviceRow(i, entry);
+      if (!device_files_[i].is_open()) continue;
+      switch (device_configs_[i].role) {
+        case PublishRole::kDeviceStateLog:
+          WriteStateLogRow(i, entry);
+          break;
+        case PublishRole::kDeviceSensorLog:
+          WriteSensorLogRow(i, entry);
+          break;
+        default:
+          break;
+      }
     }
   }
 
@@ -101,7 +129,7 @@ private:
   std::vector<DeviceLogConfig> device_configs_;
   int num_inference_values_{0};
 
-  // Joint/sensor name label helper — falls back to numeric index
+  // Label helpers — fall back to numeric index
   std::string JointLabel(std::size_t dev_idx, std::size_t i) const {
     if (dev_idx < device_configs_.size() && i < device_configs_[dev_idx].joint_names.size()) {
       return device_configs_[dev_idx].joint_names[i];
@@ -137,155 +165,159 @@ private:
                  << '\n';
   }
 
-  // ── Per-device CSV ──────────────────────────────────────────────────────────
-  void WriteDeviceHeader(std::size_t dev_idx) {
-    auto& f = device_files_[dev_idx];
-    const auto& cfg = device_configs_[dev_idx];
+  // ── StateLog CSV (DeviceStateLog) ───────────────────────────────────────────
+  void WriteStateLogHeader(std::size_t idx) {
+    auto& f = device_files_[idx];
+    const auto& cfg = device_configs_[idx];
     const int nc = cfg.num_channels;
-    const int ns = cfg.num_sensor_channels;
 
-    // Devices with sensors (e.g. hand) use device-name prefix so that
-    // plot_rtc_log.py can distinguish columns per device type.
+    f << "timestamp";
+
+    // State
+    for (int i = 0; i < nc; ++i) {
+      f << ",actual_pos_" << JointLabel(idx, static_cast<std::size_t>(i));
+    }
+    for (int i = 0; i < nc; ++i) {
+      f << ",actual_vel_" << JointLabel(idx, static_cast<std::size_t>(i));
+    }
+    for (int i = 0; i < nc; ++i) {
+      f << ",effort_" << JointLabel(idx, static_cast<std::size_t>(i));
+    }
+
+    // Command
+    for (int i = 0; i < nc; ++i) {
+      f << ",command_" << JointLabel(idx, static_cast<std::size_t>(i));
+    }
+    f << ",command_type";
+
+    // Goal
+    f << ",goal_type";
+    for (int i = 0; i < nc; ++i) {
+      f << ",joint_goal_" << JointLabel(idx, static_cast<std::size_t>(i));
+    }
+    for (int i = 0; i < 6; ++i) { f << ",task_goal_" << i; }
+
+    // Trajectory
+    for (int i = 0; i < nc; ++i) {
+      f << ",traj_pos_" << JointLabel(idx, static_cast<std::size_t>(i));
+    }
+    for (int i = 0; i < nc; ++i) {
+      f << ",traj_vel_" << JointLabel(idx, static_cast<std::size_t>(i));
+    }
+
+    // Task-space FK
+    for (int i = 0; i < 6; ++i) { f << ",task_pos_" << i; }
+
+    f << '\n';
+  }
+
+  void WriteStateLogRow(std::size_t idx, const rtc::LogEntry &e) {
+    auto& f = device_files_[idx];
+    const auto& cfg = device_configs_[idx];
+    const int di = cfg.device_index;
+    if (di >= e.num_devices) { return; }
+
+    const auto & d = e.devices[di];
+    const int nc = std::min(d.num_channels, cfg.num_channels);
+
+    f << std::fixed << std::setprecision(6) << e.timestamp;
+
+    // State
+    for (int i = 0; i < nc; ++i) { f << ',' << d.actual_positions[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nc; ++i) { f << ',' << d.actual_velocities[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nc; ++i) { f << ',' << d.efforts[static_cast<std::size_t>(i)]; }
+
+    // Command
+    for (int i = 0; i < nc; ++i) { f << ',' << d.commands[static_cast<std::size_t>(i)]; }
+    f << ',' << (e.command_type == CommandType::kPosition ? 0 : 1);
+
+    // Goal
+    f << ",joint";  // TODO: goal_type from controller
+    for (int i = 0; i < nc; ++i) { f << ',' << d.goal_positions[static_cast<std::size_t>(i)]; }
+    for (const auto v : e.actual_task_positions) { f << ',' << v; }  // task_goal placeholder
+
+    // Trajectory
+    for (int i = 0; i < nc; ++i) { f << ',' << d.trajectory_positions[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nc; ++i) { f << ',' << d.trajectory_velocities[static_cast<std::size_t>(i)]; }
+
+    // Task-space FK
+    for (const auto v : e.actual_task_positions) { f << ',' << v; }
+
+    f << '\n';
+  }
+
+  // ── SensorLog CSV (DeviceSensorLog) ─────────────────────────────────────────
+  void WriteSensorLogHeader(std::size_t idx) {
+    auto& f = device_files_[idx];
+    const auto& cfg = device_configs_[idx];
+
     const bool has_sensors = !cfg.sensor_names.empty();
-    const std::string dp = has_sensors ? cfg.device_name + "_" : "";
 
-    f << "timestamp"
-      << "," << dp << "valid";
+    f << "timestamp";
 
-    // Goal State
-    for (int i = 0; i < nc; ++i) {
-      f << "," << dp << "goal_pos_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
-    }
-    // Current State
-    for (int i = 0; i < nc; ++i) {
-      f << "," << dp << "actual_pos_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
-    }
-    for (int i = 0; i < nc; ++i) {
-      f << "," << dp << "actual_vel_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
-    }
-    for (int i = 0; i < nc; ++i) {
-      f << "," << dp << "actual_torque_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
-    }
-
-    // Task position (shared, only for first device)
-    if (dev_idx == 0) {
-      for (int i = 0; i < 6; ++i) { f << ",task_pos_" << i; }
-    }
-
-    // Sensor data
+    // Raw sensor data
     if (has_sensors) {
-      // Structured naming: baro_raw_{label}_{ch}, tof_raw_{label}_{ch}
       for (const auto& sn : cfg.sensor_names) {
         for (int b = 0; b < kBarometerCount; ++b) { f << ",baro_raw_" << sn << "_" << b; }
         for (int t = 0; t < kTofCount; ++t)        { f << ",tof_raw_" << sn << "_" << t; }
       }
+      // Filtered sensor data
       for (const auto& sn : cfg.sensor_names) {
         for (int b = 0; b < kBarometerCount; ++b) { f << ",baro_" << sn << "_" << b; }
         for (int t = 0; t < kTofCount; ++t)        { f << ",tof_" << sn << "_" << t; }
       }
     } else {
-      // Numeric fallback for devices without named sensors
+      const int ns = cfg.num_sensor_channels;
       for (int i = 0; i < ns; ++i) { f << ",sensor_raw_" << i; }
       for (int i = 0; i < ns; ++i) { f << ",sensor_" << i; }
     }
 
-    // Inference output (last device only)
-    if (dev_idx == device_configs_.size() - 1) {
-      f << ",ft_valid";
-      if (has_sensors && num_inference_values_ > 0) {
-        // 3-head F/T model: 7 outputs per fingertip
-        const char* const kFtComp[] = {
-          "contact", "fx", "fy", "fz", "ux", "uy", "uz"};
-        constexpr int kFtCompCount = 7;
-        int idx = 0;
-        for (const auto& sn : cfg.sensor_names) {
-          for (int c = 0; c < kFtCompCount && idx < num_inference_values_; ++c, ++idx) {
-            f << ",ft_" << sn << "_" << kFtComp[c];
-          }
+    // Inference output
+    f << ",inference_valid";
+    if (has_sensors && num_inference_values_ > 0) {
+      const char* const kFtComp[] = {
+        "contact", "fx", "fy", "fz", "ux", "uy", "uz"};
+      constexpr int kFtCompCount = 7;
+      int ft_idx = 0;
+      for (const auto& sn : cfg.sensor_names) {
+        for (int c = 0; c < kFtCompCount && ft_idx < num_inference_values_; ++c, ++ft_idx) {
+          f << ",ft_" << sn << "_" << kFtComp[c];
         }
-        // Remaining values (if model has extra outputs)
-        for (; idx < num_inference_values_; ++idx) { f << ",inference_" << idx; }
-      } else {
-        for (int i = 0; i < num_inference_values_; ++i) { f << ",inference_" << i; }
       }
-    }
-
-    // Control Command — use "cmd" for device log, "command" for robot log
-    for (int i = 0; i < nc; ++i) {
-      if (has_sensors) {
-        f << "," << dp << "cmd_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
-      } else {
-        f << ",command_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
-      }
-    }
-
-    if (dev_idx == 0) {
-      f << ",command_type";
-    }
-
-    // Trajectory State
-    for (int i = 0; i < nc; ++i) {
-      f << "," << dp << "traj_pos_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
-    }
-    for (int i = 0; i < nc; ++i) {
-      f << "," << dp << "traj_vel_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
+      for (; ft_idx < num_inference_values_; ++ft_idx) { f << ",inference_" << ft_idx; }
+    } else {
+      for (int i = 0; i < num_inference_values_; ++i) { f << ",inference_" << i; }
     }
 
     f << '\n';
   }
 
-  void WriteDeviceRow(std::size_t dev_idx, const rtc::LogEntry &e) {
-    auto& f = device_files_[dev_idx];
-    if (!f.is_open()) { return; }
-    if (static_cast<int>(dev_idx) >= e.num_devices) { return; }
+  void WriteSensorLogRow(std::size_t idx, const rtc::LogEntry &e) {
+    auto& f = device_files_[idx];
+    const auto& cfg = device_configs_[idx];
+    const int di = cfg.device_index;
+    if (di >= e.num_devices) { return; }
 
-    const auto& cfg = device_configs_[dev_idx];
-    const auto & d = e.devices[dev_idx];
-    const int nc = std::min(d.num_channels, cfg.num_channels);
-
-    f << std::fixed << std::setprecision(6) << e.timestamp
-      << ',' << (d.valid ? 1 : 0);
-
-    // Goal State
-    for (int i = 0; i < nc; ++i) { f << ',' << d.goal_positions[static_cast<std::size_t>(i)]; }
-    // Current State
-    for (int i = 0; i < nc; ++i) { f << ',' << d.actual_positions[static_cast<std::size_t>(i)]; }
-    for (int i = 0; i < nc; ++i) { f << ',' << d.actual_velocities[static_cast<std::size_t>(i)]; }
-    for (int i = 0; i < nc; ++i) { f << ',' << d.efforts[static_cast<std::size_t>(i)]; }
-
-    // Task position (shared, only for first device)
-    if (dev_idx == 0) {
-      for (const auto v : e.actual_task_positions) { f << ',' << v; }
-    }
-
-    // Sensor data
+    const auto & d = e.devices[di];
     const int ns = d.num_sensor_channels;
+
+    f << std::fixed << std::setprecision(6) << e.timestamp;
+
+    // Raw sensor data
     for (int i = 0; i < ns; ++i) {
       f << ',' << d.sensor_data_raw[static_cast<std::size_t>(i)];
     }
+    // Filtered sensor data
     for (int i = 0; i < ns; ++i) {
       f << ',' << d.sensor_data[static_cast<std::size_t>(i)];
     }
 
-    // Inference output (last device only)
-    if (dev_idx == device_configs_.size() - 1) {
-      f << ',' << (e.inference_valid ? 1 : 0);
-      const int ni = e.num_inference_values;
-      for (int i = 0; i < ni; ++i) {
-        f << ',' << e.inference_output[static_cast<std::size_t>(i)];
-      }
+    // Inference output
+    f << ',' << (e.inference_valid ? 1 : 0);
+    const int ni = e.num_inference_values;
+    for (int i = 0; i < ni; ++i) {
+      f << ',' << e.inference_output[static_cast<std::size_t>(i)];
     }
-
-    // Control Command
-    for (int i = 0; i < nc; ++i) { f << ',' << d.commands[static_cast<std::size_t>(i)]; }
-
-    if (dev_idx == 0) {
-      f << ',' << (e.command_type == CommandType::kPosition ? 0 : 1);
-    }
-
-    // Trajectory State
-    for (int i = 0; i < nc; ++i) { f << ',' << d.trajectory_positions[static_cast<std::size_t>(i)]; }
-    for (int i = 0; i < nc; ++i) { f << ',' << d.trajectory_velocities[static_cast<std::size_t>(i)]; }
 
     f << '\n';
   }

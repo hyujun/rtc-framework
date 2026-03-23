@@ -19,12 +19,11 @@ p_controller:
           role: "joint_command"
         - topic: "/forward_position_controller/commands"
           role: "ros2_command"
-        - topic: "/ur5e/current_task_position"
-          role: "task_position"
-          data_size: 6
-        - topic: "/ur5e/trajectory_state"
-          role: "trajectory_state"
-          data_size: 18
-        - topic: "/ur5e/controller_state"
-          role: "controller_state"
-          data_size: 18
+        - topic: "/ur5e/gui_position"
+          role: "gui_position"
+        - topic: "/ur5e/joint_state"
+          role: "joint_state"
+        - topic: "/ur5e/joint_goal"
+          role: "joint_goal"
+        - topic: "/ur5e/state_log"
+          role: "device_state_log"

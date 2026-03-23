@@ -75,6 +75,7 @@ ControllerOutput DemoJointController::Compute(const ControllerState & state) noe
 
   for (int i = 0; i < nc0; ++i) {
     out0.target_positions[i] = device_targets_[0][i];
+    out0.target_velocities[i] = gains_.robot_kp[i] * (device_targets_[0][i] - dev0.positions[i]);
     out0.goal_positions[i] = device_targets_[0][i];
   }
 
@@ -89,11 +90,11 @@ ControllerOutput DemoJointController::Compute(const ControllerState & state) noe
       out1.commands[i] =
         dev1.positions[i] +
         static_cast<double>(gains_.hand_kp[i]) * error * state.dt;
-    }
-    ClampCommands(out1.commands, nc1, device_max_velocity_[1]);
-    for (int i = 0; i < nc1; ++i) {
+      out1.target_positions[i] = device_targets_[1][i];
+      out1.target_velocities[i] = static_cast<double>(gains_.hand_kp[i]) * error;
       out1.goal_positions[i] = device_targets_[1][i];
     }
+    ClampCommands(out1.commands, nc1, device_max_velocity_[1]);
 
     // ── Hand sensor data (per-fingertip) ──────────────────────────────────
     const int num_sensor_ch = dev1.num_sensor_channels;

@@ -32,15 +32,14 @@ demo_task_controller:
         - topic: "/forward_position_controller/commands"
           role: "ros2_command"
           data_size: 6
-        - topic: "/ur5e/current_task_position"
-          role: "task_position"
-          data_size: 6
-        - topic: "/ur5e/trajectory_state"
-          role: "trajectory_state"
-          data_size: 18
-        - topic: "/ur5e/controller_state"
-          role: "controller_state"
-          data_size: 18
+        - topic: "/ur5e/gui_position"
+          role: "gui_position"
+        - topic: "/ur5e/joint_state"
+          role: "joint_state"
+        - topic: "/ur5e/joint_goal"
+          role: "joint_goal"
+        - topic: "/ur5e/state_log"
+          role: "device_state_log"
     hand:
       subscribe:
         - topic: "/hand/target_joint_positions"
@@ -52,3 +51,11 @@ demo_task_controller:
       publish:
         - topic: "/hand/joint_command"
           role: "joint_command"
+        - topic: "/hand/joint_state"
+          role: "joint_state"
+        - topic: "/hand/joint_goal"
+          role: "joint_goal"
+        - topic: "/hand/state_log"
+          role: "device_state_log"
+        - topic: "/hand/sensor_log"
+          role: "device_sensor_log"

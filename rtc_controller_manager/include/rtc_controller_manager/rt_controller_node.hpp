@@ -18,6 +18,11 @@
 #include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <rtc_msgs/msg/joint_command.hpp>
+#include <rtc_msgs/msg/gui_position.hpp>
+#include <rtc_msgs/msg/device_joint_state.hpp>
+#include <rtc_msgs/msg/joint_goal.hpp>
+#include <rtc_msgs/msg/device_state_log.hpp>
+#include <rtc_msgs/msg/device_sensor_log.hpp>
 
 // ── C++ stdlib ────────────────────────────────────────────────────────────────
 #include <array>
@@ -145,6 +150,23 @@ private:
     rtc_msgs::msg::JointCommand msg;  // pre-allocated
   };
   std::unordered_map<std::string, JointCommandPublisherEntry> joint_command_publishers_;
+
+  // Typed publishers for new topic roles
+  template <typename MsgT>
+  struct TypedPublisherEntry {
+    typename rclcpp::Publisher<MsgT>::SharedPtr publisher;
+    MsgT msg;  // pre-allocated
+  };
+  std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::GuiPosition>>
+      gui_position_publishers_;
+  std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::DeviceJointState>>
+      joint_state_publishers_;
+  std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::JointGoal>>
+      joint_goal_publishers_;
+  std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::DeviceStateLog>>
+      device_state_log_publishers_;
+  std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::DeviceSensorLog>>
+      device_sensor_log_publishers_;
 
   // Per-controller topic config cache (index = controller index)
   std::vector<rtc::TopicConfig> controller_topic_configs_;

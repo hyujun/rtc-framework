@@ -22,16 +22,19 @@ const std::unordered_map<std::string, SubscribeRole> kSubscribeRoleMap = {
 
 const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
   // Control Command
-  {"joint_command",     PublishRole::kJointCommand},
-  {"ros2_command",      PublishRole::kRos2Command},
-  // Logging/Monitoring
-  {"task_position",     PublishRole::kTaskPosition},
-  {"trajectory_state",  PublishRole::kTrajectoryState},
-  {"controller_state",  PublishRole::kControllerState},
+  {"joint_command",      PublishRole::kJointCommand},
+  {"ros2_command",       PublishRole::kRos2Command},
+  // GUI / Monitoring
+  {"gui_position",       PublishRole::kGuiPosition},
+  // Topic-based State/Command/Goal/Log
+  {"joint_state",        PublishRole::kJointState},
+  {"joint_goal",         PublishRole::kJointGoal},
+  {"device_state_log",   PublishRole::kDeviceStateLog},
+  {"device_sensor_log",  PublishRole::kDeviceSensorLog},
   // backward compat
-  {"position_command",  PublishRole::kRos2Command},
-  {"torque_command",    PublishRole::kRos2Command},
-  {"hand_command",      PublishRole::kJointCommand},
+  {"position_command",   PublishRole::kRos2Command},
+  {"torque_command",     PublishRole::kRos2Command},
+  {"hand_command",       PublishRole::kJointCommand},
 };
 
 // Parse subscribe/publish arrays from a YAML device group node (ur5e or hand).
@@ -86,9 +89,10 @@ TopicConfig RTControllerInterface::MakeDefaultTopicConfig()
   cfg.groups["ur5e"].publish = {
     {"/ur5e/joint_command",                   PublishRole::kJointCommand,     kNumRobotJoints},
     {"/forward_position_controller/commands", PublishRole::kRos2Command,      kNumRobotJoints},
-    {"/ur5e/current_task_position",           PublishRole::kTaskPosition,     6},
-    {"/ur5e/trajectory_state",                PublishRole::kTrajectoryState,  18},
-    {"/ur5e/controller_state",                PublishRole::kControllerState,  18},
+    {"/ur5e/gui_position",                    PublishRole::kGuiPosition,      0},
+    {"/ur5e/joint_state",                     PublishRole::kJointState,       0},
+    {"/ur5e/joint_goal",                      PublishRole::kJointGoal,        0},
+    {"/ur5e/state_log",                       PublishRole::kDeviceStateLog,   0},
   };
 
   // hand is NOT included by default — add via YAML topics section to activate.

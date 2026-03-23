@@ -349,28 +349,44 @@ void RtControllerNode::DeclareAndLoadParameters()
     const std::string timing_path = enable_timing
         ? (ctrl_dir / "timing_log.csv").string() : "";
 
-    // Build per-device log configs from device_name_configs_
+    // Build log configs dynamically from initial controller's topic config.
+    // Each publish entry with kDeviceStateLog or kDeviceSensorLog role
+    // creates a separate CSV file.
     std::vector<urtc::DeviceLogConfig> log_configs;
-    // Ensure ordering matches group_slot_map_ (sorted by slot index)
-    std::vector<std::pair<std::string, int>> sorted_groups(
-        group_slot_map_.begin(), group_slot_map_.end());
-    std::sort(sorted_groups.begin(), sorted_groups.end(),
-        [](const auto& a, const auto& b) { return a.second < b.second; });
+    if (enable_device && !controller_topic_configs_.empty()) {
+      const int init_idx = active_controller_idx_.load(std::memory_order_relaxed);
+      const auto& init_tc = controller_topic_configs_[
+          static_cast<std::size_t>(init_idx)];
 
-    for (const auto& [gname, slot] : sorted_groups) {
-      if (!enable_device) continue;
-      urtc::DeviceLogConfig dlc;
-      dlc.device_name = gname;
-      dlc.path = ctrl_dir / (gname + "_log.csv");
-      auto it = device_name_configs_.find(gname);
-      if (it != device_name_configs_.end()) {
-        dlc.joint_names = it->second.joint_state_names;
-        dlc.sensor_names = it->second.sensor_names;
-        dlc.num_channels = static_cast<int>(it->second.joint_state_names.size());
-        dlc.num_sensor_channels = static_cast<int>(
-            it->second.sensor_names.size() * urtc::kSensorValuesPerFingertip);
+      int gi = 0;
+      for (const auto& [gname, group] : init_tc.groups) {
+        for (const auto& pt : group.publish) {
+          if (pt.role != urtc::PublishRole::kDeviceStateLog &&
+              pt.role != urtc::PublishRole::kDeviceSensorLog) continue;
+
+          urtc::DeviceLogConfig dlc;
+          dlc.device_name = gname;
+          dlc.role = pt.role;
+          dlc.device_index = gi;
+
+          // "/ur5e/state_log" → "ur5e_state_log.csv"
+          std::string fname = pt.topic_name;
+          std::replace(fname.begin(), fname.end(), '/', '_');
+          if (!fname.empty() && fname.front() == '_') fname.erase(0, 1);
+          dlc.path = ctrl_dir / (fname + ".csv");
+
+          auto it = device_name_configs_.find(gname);
+          if (it != device_name_configs_.end()) {
+            dlc.joint_names = it->second.joint_state_names;
+            dlc.sensor_names = it->second.sensor_names;
+            dlc.num_channels = static_cast<int>(it->second.joint_state_names.size());
+            dlc.num_sensor_channels = static_cast<int>(
+                it->second.sensor_names.size() * urtc::kSensorValuesPerFingertip);
+          }
+          log_configs.push_back(std::move(dlc));
+        }
+        ++gi;
       }
-      log_configs.push_back(std::move(dlc));
     }
 
     logger_ = std::make_unique<urtc::DataLogger>(
@@ -615,7 +631,90 @@ void RtControllerNode::CreatePublishers()
         break;
     }
 
-    // Float64MultiArray publishers (kRos2Command, kTaskPosition, etc.)
+    // ── Typed message publishers (GuiPosition, DeviceJointState, etc.) ──────
+    auto cfg_it = device_name_configs_.find(group_name);
+    const auto & joint_names = (cfg_it != device_name_configs_.end())
+        ? cfg_it->second.joint_state_names : std::vector<std::string>{};
+    const auto & sensor_names = (cfg_it != device_name_configs_.end())
+        ? cfg_it->second.sensor_names : std::vector<std::string>{};
+    const auto n = joint_names.size();
+
+    auto log_pub = [&](const char * role_str) {
+      RCLCPP_INFO(get_logger(), "  Publish [%s/%s]: %s",
+                  group_name.c_str(), role_str, entry.topic_name.c_str());
+    };
+
+    switch (entry.role) {
+      case urtc::PublishRole::kGuiPosition: {
+        if (gui_position_publishers_.count(entry.topic_name) > 0) { return; }
+        TypedPublisherEntry<rtc_msgs::msg::GuiPosition> pe;
+        pe.publisher = create_publisher<rtc_msgs::msg::GuiPosition>(
+            entry.topic_name, cmd_qos);
+        pe.msg.joint_names.assign(joint_names.begin(), joint_names.end());
+        pe.msg.joint_positions.resize(n, 0.0);
+        gui_position_publishers_[entry.topic_name] = std::move(pe);
+        log_pub("gui_position");
+        return;
+      }
+      case urtc::PublishRole::kJointState: {
+        if (joint_state_publishers_.count(entry.topic_name) > 0) { return; }
+        TypedPublisherEntry<rtc_msgs::msg::DeviceJointState> pe;
+        pe.publisher = create_publisher<rtc_msgs::msg::DeviceJointState>(
+            entry.topic_name, cmd_qos);
+        pe.msg.joint_names.assign(joint_names.begin(), joint_names.end());
+        pe.msg.positions.resize(n, 0.0);
+        pe.msg.velocities.resize(n, 0.0);
+        pe.msg.efforts.resize(n, 0.0);
+        joint_state_publishers_[entry.topic_name] = std::move(pe);
+        log_pub("joint_state");
+        return;
+      }
+      case urtc::PublishRole::kJointGoal: {
+        if (joint_goal_publishers_.count(entry.topic_name) > 0) { return; }
+        TypedPublisherEntry<rtc_msgs::msg::JointGoal> pe;
+        pe.publisher = create_publisher<rtc_msgs::msg::JointGoal>(
+            entry.topic_name, cmd_qos);
+        pe.msg.joint_names.assign(joint_names.begin(), joint_names.end());
+        pe.msg.joint_goal.resize(n, 0.0);
+        pe.msg.goal_type = "joint";
+        joint_goal_publishers_[entry.topic_name] = std::move(pe);
+        log_pub("joint_goal");
+        return;
+      }
+      case urtc::PublishRole::kDeviceStateLog: {
+        if (device_state_log_publishers_.count(entry.topic_name) > 0) { return; }
+        TypedPublisherEntry<rtc_msgs::msg::DeviceStateLog> pe;
+        pe.publisher = create_publisher<rtc_msgs::msg::DeviceStateLog>(
+            entry.topic_name, cmd_qos);
+        pe.msg.joint_names.assign(joint_names.begin(), joint_names.end());
+        pe.msg.actual_positions.resize(n, 0.0);
+        pe.msg.actual_velocities.resize(n, 0.0);
+        pe.msg.efforts.resize(n, 0.0);
+        pe.msg.commands.resize(n, 0.0);
+        pe.msg.command_type = "position";
+        pe.msg.goal_type = "joint";
+        pe.msg.joint_goal.resize(n, 0.0);
+        pe.msg.trajectory_positions.resize(n, 0.0);
+        pe.msg.trajectory_velocities.resize(n, 0.0);
+        device_state_log_publishers_[entry.topic_name] = std::move(pe);
+        log_pub("device_state_log");
+        return;
+      }
+      case urtc::PublishRole::kDeviceSensorLog: {
+        if (device_sensor_log_publishers_.count(entry.topic_name) > 0) { return; }
+        TypedPublisherEntry<rtc_msgs::msg::DeviceSensorLog> pe;
+        pe.publisher = create_publisher<rtc_msgs::msg::DeviceSensorLog>(
+            entry.topic_name, cmd_qos);
+        pe.msg.sensor_names.assign(sensor_names.begin(), sensor_names.end());
+        device_sensor_log_publishers_[entry.topic_name] = std::move(pe);
+        log_pub("device_sensor_log");
+        return;
+      }
+      default:
+        break;
+    }
+
+    // Float64MultiArray publishers (kRos2Command)
     if (topic_publishers_.count(entry.topic_name) > 0) { return; }
 
     int data_size = entry.data_size;
@@ -623,18 +722,11 @@ void RtControllerNode::CreatePublishers()
       switch (entry.role) {
         case urtc::PublishRole::kRos2Command:
           {
-            auto cfg_it = device_name_configs_.find(group_name);
-            data_size = (cfg_it != device_name_configs_.end())
-                ? static_cast<int>(cfg_it->second.joint_command_names.size())
+            auto cfg_it2 = device_name_configs_.find(group_name);
+            data_size = (cfg_it2 != device_name_configs_.end())
+                ? static_cast<int>(cfg_it2->second.joint_command_names.size())
                 : 6;
           }
-          break;
-        case urtc::PublishRole::kTaskPosition:
-          data_size = 6;
-          break;
-        case urtc::PublishRole::kTrajectoryState:
-        case urtc::PublishRole::kControllerState:
-          data_size = 18;
           break;
         default:
           data_size = 6;
@@ -976,13 +1068,20 @@ void RtControllerNode::ControlLoop()
       if (gi >= urtc::PublishSnapshot::kMaxGroups) break;
       auto& gc = snap.group_commands[gi];
       const auto& dout = output.devices[gi];
+      const auto& dstate = state.devices[gi];
       gc.num_channels = dout.num_channels;
       gc.commands = dout.commands;
       gc.goal_positions = dout.goal_positions;
       gc.target_positions = dout.target_positions;
       gc.target_velocities = dout.target_velocities;
-      gc.actual_positions = state.devices[gi].positions;
-      gc.actual_velocities = state.devices[gi].velocities;
+      gc.actual_positions = dstate.positions;
+      gc.actual_velocities = dstate.velocities;
+      gc.efforts = dstate.efforts;
+      gc.sensor_data = dstate.sensor_data;
+      gc.sensor_data_raw = dstate.sensor_data_raw;
+      gc.num_sensor_channels = dstate.num_sensor_channels;
+      // task_goals: copy from actual_task_positions (set by controller FK)
+      snap.task_goals[gi] = output.actual_task_positions;
       ++gi;
     }
     snap.num_groups = gi;
@@ -1226,6 +1325,9 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
 
     // Helper: publish a single topic entry from snapshot data
     auto publish_entry = [&](const urtc::PublishTopicEntry & pt, int group_idx) {
+      const auto & gc = snap.group_commands[group_idx];
+      const int nc = gc.num_channels;
+
       switch (pt.role) {
         case urtc::PublishRole::kJointCommand: {
           auto jc_it = joint_command_publishers_.find(pt.topic_name);
@@ -1234,59 +1336,119 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           jce.msg.header.stamp.sec = sec;
           jce.msg.header.stamp.nanosec = nsec;
           jce.msg.command_type = cmd_type_str;
-          const auto & gc = snap.group_commands[group_idx];
-          for (int i = 0; i < gc.num_channels
+          for (int i = 0; i < nc
                    && i < static_cast<int>(jce.msg.values.size()); ++i) {
             jce.msg.values[i] = gc.commands[i];
           }
           jce.publisher->publish(jce.msg);
           return;
         }
-        default:
-          break;
-      }
-
-      auto it = topic_publishers_.find(pt.topic_name);
-      if (it == topic_publishers_.end()) { return; }
-      auto & pe = it->second;
-
-      switch (pt.role) {
         case urtc::PublishRole::kRos2Command: {
-          const auto & gc = snap.group_commands[group_idx];
-          for (int i = 0; i < gc.num_channels
+          auto it = topic_publishers_.find(pt.topic_name);
+          if (it == topic_publishers_.end()) { return; }
+          auto & pe = it->second;
+          for (int i = 0; i < nc
                    && i < static_cast<int>(pe.msg.data.size()); ++i) {
             pe.msg.data[i] = gc.commands[i];
           }
           pe.publisher->publish(pe.msg);
-          break;
+          return;
         }
-        case urtc::PublishRole::kTaskPosition:
+        case urtc::PublishRole::kGuiPosition: {
+          auto it = gui_position_publishers_.find(pt.topic_name);
+          if (it == gui_position_publishers_.end()) { return; }
+          auto & m = it->second.msg;
+          m.header.stamp.sec = sec;
+          m.header.stamp.nanosec = nsec;
+          const int n = std::min(nc, static_cast<int>(m.joint_positions.size()));
+          for (int i = 0; i < n; ++i) {
+            m.joint_positions[i] = gc.actual_positions[i];
+          }
           std::copy(snap.actual_task_positions.begin(),
                     snap.actual_task_positions.end(),
-                    pe.msg.data.begin());
-          pe.publisher->publish(pe.msg);
-          break;
-        case urtc::PublishRole::kTrajectoryState: {
-          const auto & gc = snap.group_commands[group_idx];
-          const int n = std::min(gc.num_channels, 6);
-          for (int i = 0; i < n; ++i) {
-            pe.msg.data[i] = gc.goal_positions[i];
-            pe.msg.data[i + 6] = gc.target_positions[i];
-            pe.msg.data[i + 12] = gc.target_velocities[i];
-          }
-          pe.publisher->publish(pe.msg);
-          break;
+                    m.task_positions.begin());
+          it->second.publisher->publish(m);
+          return;
         }
-        case urtc::PublishRole::kControllerState: {
-          const auto & gc = snap.group_commands[group_idx];
-          const int n = std::min(gc.num_channels, 6);
+        case urtc::PublishRole::kJointState: {
+          auto it = joint_state_publishers_.find(pt.topic_name);
+          if (it == joint_state_publishers_.end()) { return; }
+          auto & m = it->second.msg;
+          m.header.stamp.sec = sec;
+          m.header.stamp.nanosec = nsec;
+          const int n = std::min(nc, static_cast<int>(m.positions.size()));
           for (int i = 0; i < n; ++i) {
-            pe.msg.data[i] = gc.actual_positions[i];
-            pe.msg.data[i + 6] = gc.actual_velocities[i];
-            pe.msg.data[i + 12] = gc.commands[i];
+            m.positions[i] = gc.actual_positions[i];
+            m.velocities[i] = gc.actual_velocities[i];
+            m.efforts[i] = gc.efforts[i];
           }
-          pe.publisher->publish(pe.msg);
-          break;
+          it->second.publisher->publish(m);
+          return;
+        }
+        case urtc::PublishRole::kJointGoal: {
+          auto it = joint_goal_publishers_.find(pt.topic_name);
+          if (it == joint_goal_publishers_.end()) { return; }
+          auto & m = it->second.msg;
+          m.header.stamp.sec = sec;
+          m.header.stamp.nanosec = nsec;
+          const int n = std::min(nc, static_cast<int>(m.joint_goal.size()));
+          for (int i = 0; i < n; ++i) {
+            m.joint_goal[i] = gc.goal_positions[i];
+          }
+          std::copy(snap.task_goals[group_idx].begin(),
+                    snap.task_goals[group_idx].end(),
+                    m.task_goal.begin());
+          it->second.publisher->publish(m);
+          return;
+        }
+        case urtc::PublishRole::kDeviceStateLog: {
+          auto it = device_state_log_publishers_.find(pt.topic_name);
+          if (it == device_state_log_publishers_.end()) { return; }
+          auto & m = it->second.msg;
+          m.header.stamp.sec = sec;
+          m.header.stamp.nanosec = nsec;
+          m.command_type = cmd_type_str;
+          const int n = std::min(nc, static_cast<int>(m.actual_positions.size()));
+          for (int i = 0; i < n; ++i) {
+            m.actual_positions[i] = gc.actual_positions[i];
+            m.actual_velocities[i] = gc.actual_velocities[i];
+            m.efforts[i] = gc.efforts[i];
+            m.commands[i] = gc.commands[i];
+            m.joint_goal[i] = gc.goal_positions[i];
+            m.trajectory_positions[i] = gc.target_positions[i];
+            m.trajectory_velocities[i] = gc.target_velocities[i];
+          }
+          std::copy(snap.task_goals[group_idx].begin(),
+                    snap.task_goals[group_idx].end(),
+                    m.task_goal.begin());
+          std::copy(snap.actual_task_positions.begin(),
+                    snap.actual_task_positions.end(),
+                    m.actual_task_positions.begin());
+          it->second.publisher->publish(m);
+          return;
+        }
+        case urtc::PublishRole::kDeviceSensorLog: {
+          auto it = device_sensor_log_publishers_.find(pt.topic_name);
+          if (it == device_sensor_log_publishers_.end()) { return; }
+          auto & m = it->second.msg;
+          m.header.stamp.sec = sec;
+          m.header.stamp.nanosec = nsec;
+          const int ns = gc.num_sensor_channels;
+          m.sensor_data_raw.resize(static_cast<std::size_t>(ns));
+          m.sensor_data.resize(static_cast<std::size_t>(ns));
+          for (int i = 0; i < ns; ++i) {
+            m.sensor_data_raw[i] = gc.sensor_data_raw[i];
+            m.sensor_data[i] = gc.sensor_data[i];
+          }
+          m.inference_valid = gc.inference_valid;
+          if (gc.inference_valid && gc.num_inference_values > 0) {
+            m.inference_output.resize(static_cast<std::size_t>(gc.num_inference_values));
+            for (int i = 0; i < gc.num_inference_values; ++i) {
+              m.inference_output[i] = gc.inference_output[i];
+            }
+          }
+          it->second.publisher->publish(m);
+          return;
         }
         default:
           break;

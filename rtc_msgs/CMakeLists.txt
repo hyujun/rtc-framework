@@ -13,6 +13,11 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/HandSensorState.msg"
   "msg/FingertipForceTorque.msg"
   "msg/HandForceTorqueState.msg"
+  "msg/GuiPosition.msg"
+  "msg/DeviceJointState.msg"
+  "msg/JointGoal.msg"
+  "msg/DeviceStateLog.msg"
+  "msg/DeviceSensorLog.msg"
   DEPENDENCIES std_msgs
 )
 

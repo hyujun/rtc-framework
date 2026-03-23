@@ -234,11 +234,11 @@ ControllerOutput DemoTaskController::Compute(
       out1.commands[idx] =
         dev1.positions[idx] +
         static_cast<double>(gains_.hand_kp[idx]) * error * state.dt;
+      out1.target_positions[idx] = device_targets_[1][idx];
+      out1.target_velocities[idx] = static_cast<double>(gains_.hand_kp[idx]) * error;
+      out1.goal_positions[idx] = device_targets_[1][idx];
     }
     ClampCommands(out1.commands, nc1, device_max_velocity_[1]);
-    for (int i = 0; i < nc1; ++i) {
-      out1.goal_positions[i] = device_targets_[1][i];
-    }
 
     // ── Hand sensor data (per-fingertip) ──────────────────────────────────
     const int num_sensor_ch = dev1.num_sensor_channels;
