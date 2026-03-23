@@ -274,7 +274,7 @@ my_controller:
 **기본 토픽 설정** (`MakeDefaultTopicConfig()` 하드코딩):
 
 ```
-ur5e.subscribe: /joint_states (kJointState), /ur5e/target_joint_positions (kGoal)
+ur5e.subscribe: /joint_states (kState), /ur5e/target_joint_positions (kTarget)
 ur5e.publish:   /forward_position_controller/commands (kPositionCommand, 6)
                 /forward_torque_controller/commands (kTorqueCommand, 6)
                 /ur5e/current_task_position (kTaskPosition, 6)

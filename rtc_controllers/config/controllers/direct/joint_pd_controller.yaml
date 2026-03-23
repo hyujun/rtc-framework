@@ -29,8 +29,6 @@ joint_pd_controller:
           role: "ros2_command"
         - topic: "/ur5e/gui_position"
           role: "gui_position"
-        - topic: "/ur5e/joint_state"
-          role: "joint_state"
         - topic: "/ur5e/robot_target"
           role: "robot_target"
         - topic: "/ur5e/state_log"

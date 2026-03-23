@@ -33,8 +33,6 @@ demo_task_controller:
           data_size: 6
         - topic: "/ur5e/gui_position"
           role: "gui_position"
-        - topic: "/ur5e/joint_state"
-          role: "joint_state"
         - topic: "/ur5e/state_log"
           role: "device_state_log"
     hand:
@@ -48,8 +46,6 @@ demo_task_controller:
       publish:
         - topic: "/hand/joint_command"
           role: "joint_command"
-        - topic: "/hand/joint_state"
-          role: "joint_state"
         - topic: "/hand/state_log"
           role: "device_state_log"
         - topic: "/hand/sensor_log"
