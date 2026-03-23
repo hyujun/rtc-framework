@@ -34,10 +34,17 @@ robots/ur5e/
     │   ├── wrist1.dae
     │   ├── wrist2.dae
     │   └── wrist3.dae
-    └── collision/  # STL (단순화, 충돌 감지용)
-        ├── base.stl, shoulder.stl, upperarm.stl
-        ├── forearm.stl, wrist1.stl, wrist2.stl, wrist3.stl
+    ├── collision/  # STL (단순화, 충돌 감지용)
+    │   ├── base.stl, shoulder.stl, upperarm.stl
+    │   ├── forearm.stl, wrist1.stl, wrist2.stl, wrist3.stl
+    └── assets/     # OBJ (MuJoCo MJCF 시각화용, 24 files, ~30MB)
+        ├── base_0.obj, base_1.obj
+        ├── shoulder_0.obj, shoulder_1.obj, shoulder_2.obj
+        ├── upperarm_0.obj, ..., wrist3.obj
 ```
+
+> `hand.urdf.xacro`: 10-DOF 핸드 모델 (기하학적 프리미티브 사용, 메시 없음)
+> `ur5e_with_hand.urdf.xacro`: UR5e + 핸드 결합 모델 (tool0 프레임에 fixed joint로 연결)
 
 ### 관절 사양
 

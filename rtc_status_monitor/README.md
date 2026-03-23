@@ -76,6 +76,12 @@ rtc_status_monitor/
 | `kHardwareFault` | 하드웨어 상태 이상 | 불가 |
 | `kTrackingError` | 위치/속도 추적 오차 > fault 임계값 | 불가 |
 | `kJointLimitViolation` | 관절 위치가 fault 마진 내 진입 | 불가 |
+| `kHandTimeout` | `/hand/joint_states` 수신 타임아웃 | 불가 |
+| `kHandMotorDataFault` | 핸드 모터 전-영/중복 데이터 감지 | 불가 |
+| `kHandSensorDataFault` | 핸드 센서 전-영/중복 데이터 감지 | 불가 |
+| `kHandRateLow` | 핸드 메시지 레이트 < 최소 허용 Hz | 불가 |
+
+> 핸드 관련 장애 유형은 `ur5e_hand_status_monitor` 패키지에서 확장 사용됩니다.
 
 ## 경고 유형 (WarningType)
 
@@ -84,6 +90,7 @@ rtc_status_monitor/
 | `kJointLimitProximity` | 관절 위치가 warn 마진 내 진입 |
 | `kTrackingErrorHigh` | 추적 오차 > warn 임계값 (fault 미만) |
 | `kHighLatency` | 예약됨 (미사용) |
+| `kHandRateDegraded` | 핸드 메시지 레이트 저하 (fault 미만) |
 
 ---
 

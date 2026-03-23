@@ -29,7 +29,7 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 
 ## Repository Structure
 
-16 ROS2 packages at repo root (no `src/`). 13 `rtc_*` (robot-agnostic) + 3 `ur5e_*` (robot-specific). Each has its own `README.md` with detailed API and configuration.
+17 ROS2 packages at repo root (no `src/`). 13 `rtc_*` (robot-agnostic) + 4 `ur5e_*` (robot-specific). Each has its own `README.md` with detailed API and configuration.
 
 ### Package Summary
 
@@ -49,6 +49,7 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 | `rtc_digital_twin` | Python | RViz2 visualization (joint_state → robot model) |
 | `ur5e_description` | Data | URDF + MJCF + meshes (DAE/STL). Pinocchio/RViz/MuJoCo compatible |
 | `ur5e_hand_driver` | Executable | UDP request-response driver (SeqLock state, ppoll sub-ms timeout, 44ch tactile sensors) |
+| `ur5e_hand_status_monitor` | Shared lib | Robot+hand integrated monitor: motor/sensor data quality checks, rate monitoring, lock-free RT accessors |
 | `ur5e_bringup` | Launch/Config | robot.launch.py, sim.launch.py + DemoJoint/DemoTask controllers |
 
 ### Dependency Graph
@@ -64,6 +65,7 @@ rtc_msgs, rtc_base (independent)
   └── rtc_mujoco_sim ← MuJoCo 3.x (optional)
 
 ur5e_hand_driver ← rtc_communication, rtc_inference, rtc_base
+ur5e_hand_status_monitor ← rtc_status_monitor, rtc_base, rtc_msgs
 ur5e_bringup ← rtc_controller_manager, ur5e_hand_driver, ur5e_description
 ```
 

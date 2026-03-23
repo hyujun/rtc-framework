@@ -1,6 +1,8 @@
 # rtc_tools
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스 (v5.16.0)의 일부입니다.
+![version](https://img.shields.io/badge/version-v5.16.0-blue)
+
+> 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
 > 설치/빌드: [Root README](../README.md)
 
 UR5e RT Controller 스택의 **Python 개발 유틸리티 패키지**입니다. 컨트롤러 GUI, 모션 편집기, 궤적 시각화, UDP 손 통신, 모델 검증 도구를 포함합니다.
@@ -19,6 +21,8 @@ rtc_tools/
 │   │   └── plot_rtc_log.py               ← Matplotlib 로그 시각화 (v4)
 │   ├── validation/
 │   │   └── compare_mjcf_urdf.py         ← MJCF vs URDF 파라미터 비교 검증 (v5.7.0+)
+│   ├── conversion/
+│   │   └── urdf_to_mjcf.py             ← URDF/XACRO → MJCF 변환
 │   └── utils/
 │       ├── hand_udp_sender_example.py   ← 10-DOF 손 UDP 프로토콜 라이브러리 + 예제
 │       ├── session_dir.py               ← 세션 디렉토리 유틸리티 (v5.10.0, RTC_SESSION_DIR 관리)

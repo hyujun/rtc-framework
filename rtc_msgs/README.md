@@ -7,7 +7,7 @@
 
 ## 개요
 
-RT Controller 스택을 위한 **커스텀 ROS2 메시지 정의** 패키지입니다. 로봇 암 관절 커맨드, 핸드 모터 커맨드/피드백, 핑거팁 센서 데이터, 핑거팁 힘/토크 추론 결과를 위한 메시지 타입을 정의합니다.
+RT Controller 스택을 위한 **커스텀 ROS2 메시지 정의** 패키지입니다. 로봇 암 관절 커맨드, 핸드 모터 커맨드/피드백, 핑거팁 센서 데이터, 핑거팁 힘/토크 추론 결과, GUI 표시, 디바이스 로깅을 위한 12종 메시지 타입을 정의합니다.
 
 ---
 
@@ -24,7 +24,12 @@ rtc_msgs/
     ├── FingertipSensor.msg       ← 단일 핑거팁 센서 (기압 + ToF)
     ├── HandSensorState.msg       ← 전체 핸드 센서 상태
     ├── FingertipForceTorque.msg  ← 단일 핑거팁 힘/토크 추론 결과
-    └── HandForceTorqueState.msg  ← 전체 핸드 힘/토크 상태
+    ├── HandForceTorqueState.msg  ← 전체 핸드 힘/토크 상태
+    ├── GuiPosition.msg           ← GUI 표시용 관절/태스크 위치
+    ├── DeviceJointState.msg      ← 디바이스 관절 상태 (위치/속도/토크)
+    ├── JointGoal.msg             ← 관절/태스크 공간 목표
+    ├── DeviceStateLog.msg        ← 디바이스 상태 종합 로그
+    └── DeviceSensorLog.msg       ← 디바이스 센서 로그
 ```
 
 ---
@@ -136,6 +141,71 @@ rtc_msgs/
 | `header` | `std_msgs/Header` | 타임스탬프 및 프레임 ID |
 | `fingertips` | `FingertipForceTorque[]` | 핑거팁 힘/토크 추론 배열 |
 
+### `GuiPosition.msg`
+
+GUI 디스플레이를 위한 현재 관절 및 태스크 공간 위치입니다.
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `header` | `std_msgs/Header` | 타임스탬프 및 프레임 ID |
+| `joint_names` | `string[]` | 관절 이름 배열 |
+| `joint_positions` | `float64[]` | 현재 관절 위치 (rad) |
+| `task_positions` | `float64[6]` | TCP 위치 [x, y, z, roll, pitch, yaw] (FK) |
+
+### `DeviceJointState.msg`
+
+디바이스별 관절 상태 — 위치, 속도, 토크를 포함합니다.
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `header` | `std_msgs/Header` | 타임스탬프 및 프레임 ID |
+| `joint_names` | `string[]` | 관절 이름 배열 |
+| `positions` | `float64[]` | 관절 위치 (rad) |
+| `velocities` | `float64[]` | 관절 속도 (rad/s) |
+| `efforts` | `float64[]` | 관절 토크 (N·m) |
+
+### `JointGoal.msg`
+
+관절 공간 또는 태스크 공간의 목표 위치입니다.
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `header` | `std_msgs/Header` | 타임스탬프 및 프레임 ID |
+| `goal_type` | `string` | `"joint"` 또는 `"task"` |
+| `joint_names` | `string[]` | 관절 이름 배열 |
+| `joint_goal` | `float64[]` | 관절 공간 목표 (rad) |
+| `task_goal` | `float64[6]` | 태스크 공간 목표 [x, y, z, roll, pitch, yaw] |
+
+### `DeviceStateLog.msg`
+
+디바이스 상태, 커맨드, 목표, 궤적을 통합한 로깅 메시지입니다.
+
+| 카테고리 | 필드 | 타입 | 설명 |
+|---------|------|------|------|
+| **상태** | `actual_positions` | `float64[]` | 현재 관절 위치 |
+| | `actual_velocities` | `float64[]` | 현재 관절 속도 |
+| | `efforts` | `float64[]` | 현재 관절 토크 |
+| **커맨드** | `commands` | `float64[]` | 전송된 커맨드 |
+| | `command_type` | `string` | `"position"` 또는 `"torque"` |
+| **목표** | `joint_goal` | `float64[]` | 관절 공간 목표 |
+| | `task_goal` | `float64[6]` | 태스크 공간 목표 |
+| **궤적** | `trajectory_positions` | `float64[]` | 궤적 레퍼런스 위치 |
+| | `trajectory_velocities` | `float64[]` | 궤적 레퍼런스 속도 |
+| **FK** | `actual_task_positions` | `float64[6]` | 순기구학 TCP 위치 |
+
+### `DeviceSensorLog.msg`
+
+원시/필터링 센서 데이터와 추론 출력을 포함하는 로깅 메시지입니다.
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `header` | `std_msgs/Header` | 타임스탬프 및 프레임 ID |
+| `sensor_names` | `string[]` | 센서 이름 배열 |
+| `sensor_data_raw` | `int32[]` | 원시 센서 값 |
+| `sensor_data` | `int32[]` | 필터링된 센서 값 |
+| `inference_valid` | `bool` | 추론 출력 유효성 |
+| `inference_output` | `float32[]` | 추론 결과 (F/T/contact) |
+
 ---
 
 ## 빌드
@@ -156,12 +226,17 @@ source install/setup.bash
 ```
 커맨드 (로봇으로 송신)                상태 (로봇에서 수신 — 원시 센서)
 ├── JointCommand (float64, 고정밀)    ├── HandMotorState (위치 + 속도)
-└── HandCommand  (float32, 경량)      └── HandSensorState
+└── HandCommand  (float32, 경량)      ├── DeviceJointState (위치 + 속도 + 토크)
+                                      └── HandSensorState
                                           └── FingertipSensor[] (barometer + ToF + 추론)
 
-                                     상태 (로봇에서 수신 — 추론 결과)
-                                     └── HandForceTorqueState
-                                         └── FingertipForceTorque[] (접촉 + 힘/토크)
+목표 & GUI                            상태 (추론 결과)
+├── JointGoal (관절/태스크 목표)        └── HandForceTorqueState
+└── GuiPosition (관절 + TCP 위치)          └── FingertipForceTorque[] (접촉 + 힘/토크)
+
+로깅
+├── DeviceStateLog (상태 + 커맨드 + 목표 + 궤적 통합)
+└── DeviceSensorLog (원시/필터 센서 + 추론 출력)
 ```
 
 ---

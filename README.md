@@ -13,7 +13,7 @@
 
 ## 패키지 구성
 
-16개 ROS2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`)와 로봇 고유 패키지(`ur5e_*`)로 분리됩니다. 각 패키지는 자체 `README.md`를 포함합니다.
+17개 ROS2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`)와 로봇 고유 패키지(`ur5e_*`)로 분리됩니다. 각 패키지는 자체 `README.md`를 포함합니다.
 
 ### 로봇 비의존적 프레임워크 (rtc_*)
 
@@ -38,6 +38,7 @@
 |--------|------|------|------|
 | [`ur5e_description`](ur5e_description/) | 5.16.0 | UR5e URDF/MJCF/메시 — Pinocchio/RViz/MuJoCo 겸용 | ament_cmake |
 | [`ur5e_hand_driver`](ur5e_hand_driver/) | 5.16.0 | 10-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서 44ch, ONNX F/T 추론 | ament_cmake |
+| [`ur5e_hand_status_monitor`](ur5e_hand_status_monitor/) | 0.1.0 | 로봇+핸드 통합 상태 모니터: 모터/센서 데이터 품질 검사, 레이트 감시, lock-free RT 접근자 | ament_cmake |
 | [`ur5e_bringup`](ur5e_bringup/) | 5.16.0 | UR5e launch/config + 데모 컨트롤러 (DemoJoint, DemoTask) + CPU 격리/DDS 핀닝 | ament_cmake |
 
 ### 의존성 그래프
@@ -57,6 +58,7 @@ rtc_msgs, rtc_base (독립)
 
 ur5e_description (독립)
   ├── ur5e_hand_driver ← rtc_communication, rtc_inference, rtc_base
+  ├── ur5e_hand_status_monitor ← rtc_status_monitor, rtc_base, rtc_msgs
   └── ur5e_bringup ← rtc_controller_manager, ur5e_hand_driver, ur5e_description
 ```
 

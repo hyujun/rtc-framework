@@ -41,10 +41,11 @@ rtc_digital_twin/
 
 ### 구독
 
-| 토픽 | 타입 | 주파수 | 설명 |
-|------|------|--------|------|
-| `/joint_states` | `JointState` | 500 Hz | UR5e 6-DOF 관절 상태 |
-| `/hand/joint_states` | `Float64MultiArray` | 100 Hz | [pos:10][vel:10][sensors:44] |
+| 토픽 | 타입 | 주파수 | QoS | 설명 |
+|------|------|--------|-----|------|
+| `/joint_states` | `JointState` | 500 Hz | BEST_EFFORT, depth=1 | UR5e 6-DOF 관절 상태 |
+| `/hand/joint_states` | `JointState` | 100 Hz | BEST_EFFORT, depth=1 | 핸드 모터 위치/속도 (10 DOF) |
+| `/hand/sensor_states` | `Float64MultiArray` | 100 Hz | BEST_EFFORT, depth=1 | 핑거팁 센서 (4×11 = 44 값) |
 
 ### 퍼블리시
 
@@ -90,10 +91,13 @@ ros2 launch rtc_digital_twin digital_twin.launch.py use_rviz:=false
 |--------|------|
 | `rclpy` | ROS2 Python 클라이언트 |
 | `sensor_msgs` | JointState 메시지 |
+| `std_msgs` | Float64MultiArray |
 | `visualization_msgs` | MarkerArray |
-| `ur5e_description` | URDF 모델 |
+| `geometry_msgs` | Point, Vector3, Quaternion |
+| `ur5e_description` | URDF 모델 (로봇+핸드) |
 | `robot_state_publisher` | URDF → TF 변환 |
 | `rviz2` | 3D 시각화 |
+| `xacro` | URDF 매크로 처리 |
 
 ---
 
@@ -104,6 +108,22 @@ cd ~/ur_ws
 colcon build --packages-select rtc_digital_twin
 source install/setup.bash
 ```
+
+---
+
+## 주요 컴포넌트
+
+### DigitalTwinNode (`digital_twin_node.py`)
+
+- 500 Hz 입력을 캐싱하고 설정된 디스플레이 레이트(기본 60 Hz)로 통합 퍼블리시
+- 유연한 관절 이름→인덱스 매핑으로 메시지 순서에 무관하게 동작
+- 로봇(6 DOF) + 핸드(10 DOF) 관절 상태를 단일 `JointState`로 결합
+
+### SensorVisualizer (`sensor_visualizer.py`)
+
+- 핑거팁별 8개 기압 센서 → 크기/색상 비례 Sphere 마커 (2×4 격자 배치)
+- 핑거팁별 3개 ToF 센서 → 길이/색상 비례 Arrow 마커 (Z축 방향)
+- 마커 프레임: `{fingertip_name}_tip_link`, 수명: 100 ms
 
 ---
 
