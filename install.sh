@@ -5,10 +5,11 @@
 # All C++ packages use CMAKE_CXX_STANDARD 20 with strict compiler warnings.
 #
 # Usage:
-#   ./install.sh              # full installation (default)
+#   ./install.sh              # deps + build (default, no RT setup)
 #   ./install.sh sim          # MuJoCo simulation only
-#   ./install.sh robot        # Real robot only
-#   ./install.sh full         # Explicit full installation
+#   ./install.sh robot        # Real robot deps + build (no RT setup)
+#   ./install.sh robot --all  # Real robot deps + build + RT setup
+#   ./install.sh robot --rt   # RT setup only (skip deps/build)
 #   ./install.sh --help       # Show this help
 
 set -e
@@ -60,7 +61,7 @@ BUILD_TYPE="Release"
 PARALLEL_JOBS=""
 SKIP_DEPS=0
 SKIP_BUILD=0
-SKIP_RT=0
+DO_RT=0
 SKIP_DEBUG_SETUP=0
 CUSTOM_PACKAGES=()
 MJ_DIR=""
@@ -84,6 +85,12 @@ show_help() {
   echo "  full   — Complete installation (default)"
   echo "             Installs: everything above"
   echo ""
+  echo "Scope:"
+  echo "  --all             Install everything: deps + build + RT system setup"
+  echo "  --rt              RT system setup only (skip deps and build)"
+  echo "                    Configures: RT permissions, IRQ affinity, UDP optimization,"
+  echo "                    NVIDIA RT setup, CPU governor, kernel params"
+  echo ""
   echo "Options:"
   echo "  -d, --debug       Build with CMAKE_BUILD_TYPE=Debug"
   echo "  -r, --release     Build with CMAKE_BUILD_TYPE=Release (default)"
@@ -92,7 +99,6 @@ show_help() {
   echo "  -j, --jobs N      Limit parallel workers for colcon (e.g. -j 4)"
   echo "  --skip-deps       Skip installing apt system dependencies"
   echo "  --skip-build      Skip compiling the packages (only download/setup)"
-  echo "  --skip-rt         Skip configuring RT permissions, IRQ affinity, UDP optimization, NVIDIA setup, and CPU governor"
   echo "  --skip-debug      Skip GDB/debugger tools installation"
   echo "  --ptrace-scope    Set ptrace_scope=0 for VS Code Attach debugger"
   echo "                    (Required for 'Attach to Node' launch configuration)"
@@ -101,9 +107,10 @@ show_help() {
   echo ""
   echo "Examples:"
   echo "  chmod +x install.sh"
-  echo "  ./install.sh sim"
-  echo "  ./install.sh robot --skip-deps"
-  echo "  ./install.sh full -c -j 4"
+  echo "  ./install.sh sim                # deps + build (simulation only)"
+  echo "  ./install.sh robot --all        # deps + build + RT setup (real robot)"
+  echo "  ./install.sh robot --rt         # RT setup only (already built)"
+  echo "  ./install.sh full -c -j 4       # clean build, 4 parallel jobs"
   echo ""
   exit 0
 }
@@ -152,8 +159,14 @@ while [[ $# -gt 0 ]]; do
       SKIP_BUILD=1
       shift
       ;;
-    --skip-rt)
-      SKIP_RT=1
+    --all)
+      DO_RT=1
+      shift
+      ;;
+    --rt)
+      DO_RT=1
+      SKIP_DEPS=1
+      SKIP_BUILD=1
       shift
       ;;
     --skip-debug)
@@ -1269,7 +1282,7 @@ else
   info "Skipping colcon build (--skip-build)"
 fi
 
-if [[ "$SKIP_RT" -eq 0 ]]; then
+if [[ "$DO_RT" -eq 1 ]]; then
   case "$MODE" in
     robot|full)
       install_cset_tools
@@ -1281,9 +1294,14 @@ if [[ "$SKIP_RT" -eq 0 ]]; then
       setup_nvidia_rt
       setup_cpu_governor
       ;;
+    sim)
+      info "Skipping RT setup (sim mode does not require RT configuration)"
+      ;;
   esac
 else
-  info "Skipping RT permissions, IRQ affinity, UDP optimization, NVIDIA setup, and CPU governor (--skip-rt)"
+  if [[ "$MODE" == "robot" || "$MODE" == "full" ]]; then
+    info "RT setup skipped (use --all or --rt to configure RT permissions, kernel params, etc.)"
+  fi
 fi
 
 verify_installation
