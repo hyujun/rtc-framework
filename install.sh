@@ -721,7 +721,7 @@ build_package() {
   if [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]]; then
     PACKAGES=("${CUSTOM_PACKAGES[@]}")
   else
-    PACKAGES=(rtc_msgs rtc_base ur5e_description rtc_status_monitor rtc_controller_manager ur5e_hand_driver rtc_tools)
+    PACKAGES=(rtc_msgs rtc_base rtc_communication rtc_inference ur5e_description rtc_status_monitor rtc_controller_manager ur5e_hand_driver rtc_tools)
     if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
       PACKAGES+=(rtc_mujoco_sim)
     fi
