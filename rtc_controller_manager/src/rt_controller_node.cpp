@@ -1358,7 +1358,12 @@ void RtControllerNode::LoadDeviceNameConfigs()
     // sensor_names (optional)
     const std::string sn_key = prefix + ".sensor_names";
     if (has_parameter(sn_key)) {
-      cfg.sensor_names = get_parameter(sn_key).as_string_array();
+      try {
+        cfg.sensor_names = get_parameter(sn_key).as_string_array();
+      } catch (const rclcpp::ParameterTypeException&) {
+        // Empty YAML array [] has no type — treat as empty
+        cfg.sensor_names.clear();
+      }
     }
 
     // joint_limits (optional block — per-joint arrays)
