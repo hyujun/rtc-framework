@@ -144,22 +144,27 @@ private:
     const int nc = cfg.num_channels;
     const int ns = cfg.num_sensor_channels;
 
+    // Devices with sensors (e.g. hand) use device-name prefix so that
+    // plot_rtc_log.py can distinguish columns per device type.
+    const bool has_sensors = !cfg.sensor_names.empty();
+    const std::string dp = has_sensors ? cfg.device_name + "_" : "";
+
     f << "timestamp"
-      << ",valid";
+      << "," << dp << "valid";
 
     // Goal State
     for (int i = 0; i < nc; ++i) {
-      f << ",goal_pos_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
+      f << "," << dp << "goal_pos_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
     }
     // Current State
     for (int i = 0; i < nc; ++i) {
-      f << ",actual_pos_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
+      f << "," << dp << "actual_pos_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
     }
     for (int i = 0; i < nc; ++i) {
-      f << ",actual_vel_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
+      f << "," << dp << "actual_vel_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
     }
     for (int i = 0; i < nc; ++i) {
-      f << ",actual_torque_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
+      f << "," << dp << "actual_torque_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
     }
 
     // Task position (shared, only for first device)
@@ -168,24 +173,50 @@ private:
     }
 
     // Sensor data
-    for (int i = 0; i < ns; ++i) {
-      f << ",sensor_raw_" << i;
-    }
-    for (int i = 0; i < ns; ++i) {
-      f << ",sensor_" << i;
+    if (has_sensors) {
+      // Structured naming: baro_raw_{label}_{ch}, tof_raw_{label}_{ch}
+      for (const auto& sn : cfg.sensor_names) {
+        for (int b = 0; b < kBarometerCount; ++b) { f << ",baro_raw_" << sn << "_" << b; }
+        for (int t = 0; t < kTofCount; ++t)        { f << ",tof_raw_" << sn << "_" << t; }
+      }
+      for (const auto& sn : cfg.sensor_names) {
+        for (int b = 0; b < kBarometerCount; ++b) { f << ",baro_" << sn << "_" << b; }
+        for (int t = 0; t < kTofCount; ++t)        { f << ",tof_" << sn << "_" << t; }
+      }
+    } else {
+      // Numeric fallback for devices without named sensors
+      for (int i = 0; i < ns; ++i) { f << ",sensor_raw_" << i; }
+      for (int i = 0; i < ns; ++i) { f << ",sensor_" << i; }
     }
 
-    // Inference output (only for first device with sensors, or last device)
+    // Inference output (last device only)
     if (dev_idx == device_configs_.size() - 1) {
-      f << ",inference_valid";
-      for (int i = 0; i < num_inference_values_; ++i) {
-        f << ",inference_" << i;
+      f << ",ft_valid";
+      if (has_sensors && num_inference_values_ > 0) {
+        // 3-head F/T model: 7 outputs per fingertip
+        const char* const kFtComp[] = {
+          "contact", "fx", "fy", "fz", "ux", "uy", "uz"};
+        constexpr int kFtCompCount = 7;
+        int idx = 0;
+        for (const auto& sn : cfg.sensor_names) {
+          for (int c = 0; c < kFtCompCount && idx < num_inference_values_; ++c, ++idx) {
+            f << ",ft_" << sn << "_" << kFtComp[c];
+          }
+        }
+        // Remaining values (if model has extra outputs)
+        for (; idx < num_inference_values_; ++idx) { f << ",inference_" << idx; }
+      } else {
+        for (int i = 0; i < num_inference_values_; ++i) { f << ",inference_" << i; }
       }
     }
 
-    // Control Command
+    // Control Command — use "cmd" for device log, "command" for robot log
     for (int i = 0; i < nc; ++i) {
-      f << ",command_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
+      if (has_sensors) {
+        f << "," << dp << "cmd_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
+      } else {
+        f << ",command_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
+      }
     }
 
     if (dev_idx == 0) {
@@ -194,10 +225,10 @@ private:
 
     // Trajectory State
     for (int i = 0; i < nc; ++i) {
-      f << ",traj_pos_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
+      f << "," << dp << "traj_pos_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
     }
     for (int i = 0; i < nc; ++i) {
-      f << ",traj_vel_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
+      f << "," << dp << "traj_vel_" << JointLabel(dev_idx, static_cast<std::size_t>(i));
     }
 
     f << '\n';
