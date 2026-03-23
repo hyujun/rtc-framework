@@ -399,6 +399,8 @@ setup_workspace() {
   sudo apt-get install -y \
       ${ROS_PKG_PREFIX}-ament-cmake \
       ${ROS_PKG_PREFIX}-ament-cmake-gtest \
+      ${ROS_PKG_PREFIX}-ament-lint-auto \
+      ${ROS_PKG_PREFIX}-ament-lint-common \
       ${ROS_PKG_PREFIX}-controller-manager-msgs \
       python3-colcon-common-extensions \
       python3-vcstool \
