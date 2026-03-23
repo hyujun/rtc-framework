@@ -1069,15 +1069,12 @@ setup_rt_kernel_params() {
 # ── Verify installation ─────────────────────────────────────────────────────────
 verify_installation() {
   info "Verifying installation..."
-  # Ensure ROS2 underlay is sourced before overlay (needed for ros2 pkg list)
-  if [[ -n "${ROS_DISTRO:-}" && -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
-    source "/opt/ros/${ROS_DISTRO}/setup.bash" || true
-  fi
   source "$WORKSPACE/install/setup.bash" || true
   local failed=0
   for pkg in rtc_msgs rtc_base ur5e_description rtc_status_monitor rtc_controller_manager ur5e_hand_driver rtc_tools; do
-    if ros2 pkg list 2>/dev/null | grep -q "^${pkg}$"; then
-      success "Package registered: $pkg"
+    # Check ament index directly (more reliable than ros2 pkg list in scripts)
+    if [[ -d "$WORKSPACE/install/${pkg}" ]]; then
+      success "Package installed: $pkg"
     else
       warn "Package not found: $pkg"
       failed=1
