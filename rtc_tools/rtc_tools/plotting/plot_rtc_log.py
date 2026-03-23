@@ -898,8 +898,9 @@ def print_device_statistics(df):
     print(f'Duration: {duration:.2f} s | Samples: {len(df)}'
           f' | Rate: {len(df) / duration:.1f} Hz')
 
-    valid_ratio = df['hand_valid'].sum() / len(df) * 100
-    print(f'Hand valid: {valid_ratio:.1f}%')
+    if 'hand_valid' in df.columns:
+        valid_ratio = df['hand_valid'].sum() / len(df) * 100
+        print(f'Hand valid: {valid_ratio:.1f}%')
 
     goal_cols, _ = _detect_joint_columns(df, 'hand_goal_pos_')
     actual_cols, motor_names = _detect_joint_columns(df, 'hand_actual_pos_')

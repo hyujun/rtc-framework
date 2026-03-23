@@ -399,6 +399,8 @@ setup_workspace() {
   sudo apt-get install -y \
       ${ROS_PKG_PREFIX}-ament-cmake \
       ${ROS_PKG_PREFIX}-ament-cmake-gtest \
+      ${ROS_PKG_PREFIX}-ament-lint-auto \
+      ${ROS_PKG_PREFIX}-ament-lint-common \
       ${ROS_PKG_PREFIX}-controller-manager-msgs \
       python3-colcon-common-extensions \
       python3-vcstool \
@@ -721,7 +723,7 @@ build_package() {
   if [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]]; then
     PACKAGES=("${CUSTOM_PACKAGES[@]}")
   else
-    PACKAGES=(rtc_msgs rtc_base ur5e_description rtc_status_monitor rtc_controller_manager ur5e_hand_driver rtc_tools)
+    PACKAGES=(rtc_msgs rtc_base rtc_communication rtc_controller_interface rtc_controllers rtc_controller_manager rtc_status_monitor rtc_inference rtc_scripts ur5e_description ur5e_hand_driver ur5e_bringup rtc_tools)
     if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
       PACKAGES+=(rtc_mujoco_sim)
     fi
@@ -1070,8 +1072,9 @@ verify_installation() {
   source "$WORKSPACE/install/setup.bash" || true
   local failed=0
   for pkg in rtc_msgs rtc_base ur5e_description rtc_status_monitor rtc_controller_manager ur5e_hand_driver rtc_tools; do
-    if ros2 pkg list 2>/dev/null | grep -q "^${pkg}$"; then
-      success "Package registered: $pkg"
+    # Check ament index directly (more reliable than ros2 pkg list in scripts)
+    if [[ -d "$WORKSPACE/install/${pkg}" ]]; then
+      success "Package installed: $pkg"
     else
       warn "Package not found: $pkg"
       failed=1

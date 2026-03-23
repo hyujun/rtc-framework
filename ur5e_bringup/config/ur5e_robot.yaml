@@ -37,7 +37,6 @@
           - "wrist_1_joint"
           - "wrist_2_joint"
           - "wrist_3_joint"
-        sensor_names: []
         urdf:
           package: "ur5e_description"
           path: "robots/ur5e/urdf/ur5e.urdf"
@@ -70,6 +69,29 @@
           max_velocity:   [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
           position_lower: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
           position_upper: [1.57, 1.57, 1.57, 1.57, 1.57, 1.57, 1.57, 1.57, 1.57, 1.57]
+
+    # ── Hand in-process integration ──────────────────────────────────────────
+    # true: HandController directly owned by rt_controller_node (SeqLock, ~50ns)
+    # false: separate hand_udp_node process (DDS topics, ~1-3ms)
+    hand_inprocess_enabled: true
+    hand_target_ip: "192.168.1.2"
+    hand_target_port: 55151
+    hand_recv_timeout_ms: 0.4
+    hand_communication_mode: "bulk"
+    hand_sensor_decimation: 3
+    hand_use_fake_hand: false
+    hand_baro_lpf_enabled: false
+    hand_baro_lpf_cutoff_hz: 30.0
+    hand_tof_lpf_enabled: false
+    hand_tof_lpf_cutoff_hz: 15.0
+    hand_enable_failure_detector: true
+    hand_failure_threshold: 5
+    hand_check_motor: true
+    hand_check_sensor: true
+    hand_min_rate_hz: 30.0
+    hand_rate_fail_threshold: 5
+    hand_check_link: true
+    hand_link_fail_threshold: 10
 
     # ── Status Monitor ────────────────────────────────────────────────────────
     enable_status_monitor: false
