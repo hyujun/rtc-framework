@@ -258,6 +258,13 @@ def plot_robot_positions(df, save_dir=None):
     # 하위 호환: 이전 CSV의 target_pos_ 컬럼 지원
     legacy_cols, _ = _detect_joint_columns(df, 'target_pos_') if not traj_cols else ([], [])
 
+    # GUI joint goal overlay: goal_type=="joint" 구간만 표시
+    joint_goal_cols, _ = _detect_joint_columns(df, 'joint_goal_')
+    has_goal_type = 'goal_type' in df.columns
+    joint_goal_mask = None
+    if joint_goal_cols and has_goal_type:
+        joint_goal_mask = df['goal_type'] == 'joint'
+
     for i in range(n_joints):
         ax = axes[i]
         t = df['timestamp']
@@ -273,6 +280,13 @@ def plot_robot_positions(df, save_dir=None):
         if goal_cols:
             ax.plot(t, df[goal_cols[i]], label='Goal',
                     linestyle=':', linewidth=1.5, alpha=0.8)
+
+        # Joint goal from GUI (goal_type=="joint" 구간만)
+        if joint_goal_cols and i < len(joint_goal_cols) and joint_goal_mask is not None:
+            jg = df[joint_goal_cols[i]].copy()
+            jg[~joint_goal_mask] = np.nan
+            ax.plot(t, jg, label='Joint Goal (GUI)',
+                    linestyle='-.', linewidth=1.5, alpha=0.7, color='C4')
 
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Position (rad)')
@@ -433,11 +447,28 @@ def plot_robot_task_position(df, save_dir=None):
     fig, axes = plt.subplots(3, 1, figsize=(14, 10))
     fig.suptitle('TCP Task-Space Position', fontsize=16, fontweight='bold')
 
+    # Task goal overlay: goal_type=="task" 구간만 표시
+    has_goal_type = 'goal_type' in df.columns
+    has_task_goal = _has_columns(df, 'task_goal_', 3)
+    task_goal_mask = None
+    if has_task_goal and has_goal_type:
+        task_goal_mask = df['goal_type'] == 'task'
+
     t = df['timestamp']
     for i in range(3):
         ax = axes[i]
         ax.plot(t, df[f'task_pos_{i}'], label=f'{labels[i]}',
                 linewidth=1.5)
+
+        # Task goal from GUI (goal_type=="task" 구간만)
+        if task_goal_mask is not None:
+            tg = df[f'task_goal_{i}'].copy()
+            tg[~task_goal_mask] = np.nan
+            unit = 'm' if i < 3 else 'rad'
+            ax.plot(t, tg, label=f'Task Goal (GUI)',
+                    linestyle='-.', linewidth=1.5,
+                    alpha=0.7, color='C4')
+
         ax.set_ylabel(f'{labels[i]} (m)')
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
@@ -1018,6 +1049,115 @@ def plot_device_sensor_comparison(df, fingertip_labels, save_dir=None):
     plt.close()
 
 
+def plot_sensor_barometer_combined(df, save_dir=None):
+    """Barometer filtered + raw overlay per fingertip."""
+    raw_labels = _detect_fingertip_labels_raw(df)
+    filt_labels = _detect_fingertip_labels(df)
+    if not raw_labels and not filt_labels:
+        print('  Skipping barometer combined plot (columns not found)')
+        return
+
+    # raw/filtered 라벨 합집합 (순서 유지)
+    all_labels = list(dict.fromkeys(
+        (filt_labels or []) + (raw_labels or [])))
+    num_ft = len(all_labels)
+
+    nrows, ncols = _auto_subplot_grid(num_ft)
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(5 * ncols, 4 * nrows))
+    fig.suptitle('Barometer: Filtered + Raw',
+                 fontsize=16, fontweight='bold')
+    axes = np.atleast_1d(axes).flatten()
+
+    t = df['timestamp']
+    colors = plt.cm.tab10.colors
+
+    for f_idx, label in enumerate(all_labels):
+        ax = axes[f_idx]
+        for b in range(16):
+            color = colors[b % len(colors)]
+            raw_col = f'baro_raw_{label}_{b}'
+            filt_col = f'baro_{label}_{b}'
+            if raw_col in df.columns:
+                ax.plot(t, df[raw_col], alpha=0.3, linewidth=0.6,
+                        color=color)
+            if filt_col in df.columns:
+                ax.plot(t, df[filt_col], alpha=1.0, linewidth=0.8,
+                        color=color, label=f'B{b}')
+        ax.set_title(f'{label} (solid=filtered, faint=raw)')
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel('Pressure')
+        ax.legend(fontsize=6, ncol=4)
+        ax.grid(True, alpha=0.3)
+
+    # 빈 subplot 숨기기
+    for idx in range(num_ft, len(axes)):
+        axes[idx].set_visible(False)
+
+    plt.tight_layout()
+    if save_dir:
+        path = Path(save_dir) / 'sensor_barometer.png'
+        plt.savefig(path, dpi=300, bbox_inches='tight')
+        print(f'Saved: {path}')
+    else:
+        plt.show()
+    plt.close()
+
+
+def plot_sensor_tof_combined(df, save_dir=None):
+    """ToF filtered + raw overlay per fingertip."""
+    raw_labels = _detect_fingertip_labels_raw(df)
+    filt_labels = _detect_fingertip_labels(df)
+    if not raw_labels and not filt_labels:
+        print('  Skipping ToF combined plot (columns not found)')
+        return
+
+    all_labels = list(dict.fromkeys(
+        (filt_labels or []) + (raw_labels or [])))
+    num_ft = len(all_labels)
+
+    nrows, ncols = _auto_subplot_grid(num_ft)
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(5 * ncols, 4 * nrows))
+    fig.suptitle('ToF: Filtered + Raw',
+                 fontsize=16, fontweight='bold')
+    axes = np.atleast_1d(axes).flatten()
+
+    t = df['timestamp']
+    colors = plt.cm.tab10.colors
+
+    for f_idx, label in enumerate(all_labels):
+        ax = axes[f_idx]
+        for t_idx in range(8):
+            color = colors[t_idx % len(colors)]
+            raw_col = f'tof_raw_{label}_{t_idx}'
+            filt_col = f'tof_{label}_{t_idx}'
+            if raw_col in df.columns:
+                ax.plot(t, df[raw_col], alpha=0.3, linewidth=0.8,
+                        color=color)
+            if filt_col in df.columns:
+                ax.plot(t, df[filt_col], alpha=1.0, linewidth=1.2,
+                        color=color, label=f'ToF{t_idx}',
+                        marker='.', markersize=1)
+        ax.set_title(f'{label} (solid=filtered, faint=raw)')
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel('Distance')
+        ax.legend(fontsize=7)
+        ax.grid(True, alpha=0.3)
+
+    for idx in range(num_ft, len(axes)):
+        axes[idx].set_visible(False)
+
+    plt.tight_layout()
+    if save_dir:
+        path = Path(save_dir) / 'sensor_tof.png'
+        plt.savefig(path, dpi=300, bbox_inches='tight')
+        print(f'Saved: {path}')
+    else:
+        plt.show()
+    plt.close()
+
+
 def print_device_statistics(df):
     """Print hand trajectory statistics."""
     duration = df['timestamp'].iloc[-1] - df['timestamp'].iloc[0]
@@ -1379,42 +1519,43 @@ def main():
         if not args.stats:
             plot_robot_positions(df, args.save_dir)
             plot_robot_velocities(df, args.save_dir)
+            plot_robot_torques(df, args.save_dir)
+            # goal_type=="task" 데이터가 존재하면 자동 표시
+            has_task_goal = ('goal_type' in df.columns
+                            and (df['goal_type'] == 'task').any())
+            if args.task_pos or has_task_goal:
+                plot_robot_task_position(df, args.save_dir)
             if args.error:
                 plot_robot_tracking_error(df, args.save_dir)
             if args.command:
                 plot_robot_commands(df, args.save_dir)
-            if args.torque:
-                plot_robot_torques(df, args.save_dir)
-            if args.task_pos:
-                plot_robot_task_position(df, args.save_dir)
     elif log_type == 'sensor_log':
         print_device_statistics(df)
         if not args.stats:
-            plot_device_sensors(df, args.save_dir)
-            if args.raw:
-                raw_labels = _detect_fingertip_labels_raw(df)
-                plot_device_sensors_raw(df, raw_labels, args.save_dir)
-            if args.ft:
-                ft_labels = _detect_ft_labels(df)
-                plot_device_ft_output(df, ft_labels, args.save_dir)
+            # 기본: barometer combined, tof combined, ft output
+            plot_sensor_barometer_combined(df, args.save_dir)
+            plot_sensor_tof_combined(df, args.save_dir)
+            ft_labels = _detect_ft_labels(df)
+            plot_device_ft_output(df, ft_labels, args.save_dir)
+            # 옵트인: 레거시 개별 plots
             if args.sensor_compare:
                 raw_labels = _detect_fingertip_labels_raw(df)
-                plot_device_sensor_comparison(df, raw_labels, args.save_dir)
+                plot_device_sensor_comparison(
+                    df, raw_labels, args.save_dir)
     elif log_type == 'device':
         print_device_statistics(df)
         if not args.stats:
             plot_device_positions(df, args.save_dir)
             plot_device_velocities(df, args.save_dir)
-            plot_device_sensors(df, args.save_dir)
-            if args.raw:
-                raw_labels = _detect_fingertip_labels_raw(df)
-                plot_device_sensors_raw(df, raw_labels, args.save_dir)
-            if args.ft:
-                ft_labels = _detect_ft_labels(df)
-                plot_device_ft_output(df, ft_labels, args.save_dir)
+            # 기본: barometer combined, tof combined, ft output
+            plot_sensor_barometer_combined(df, args.save_dir)
+            plot_sensor_tof_combined(df, args.save_dir)
+            ft_labels = _detect_ft_labels(df)
+            plot_device_ft_output(df, ft_labels, args.save_dir)
             if args.sensor_compare:
                 raw_labels = _detect_fingertip_labels_raw(df)
-                plot_device_sensor_comparison(df, raw_labels, args.save_dir)
+                plot_device_sensor_comparison(
+                    df, raw_labels, args.save_dir)
     elif log_type == 'timing':
         print_timing_statistics(df)
         if not args.stats:
