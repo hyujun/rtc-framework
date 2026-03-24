@@ -17,8 +17,8 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Bool, Float64MultiArray
-from rtc_msgs.msg import GuiPosition
+from std_msgs.msg import Bool
+from rtc_msgs.msg import GuiPosition, RobotTarget
 
 # ── 상수 ──────────────────────────────────────────────────────────────────────
 NUM_JOINTS = 6
@@ -1464,10 +1464,10 @@ class ROSNode(Node):
 
         # ── Publishers ────────────────────────────────────────────────
         self.cmd_pub = self.create_publisher(
-            Float64MultiArray, '/ur5e/target_joint_positions', qos)
+            RobotTarget, '/ur5e/joint_goal', qos)
 
         self.hand_cmd_pub = self.create_publisher(
-            Float64MultiArray, '/hand/target_joint_positions', qos)
+            RobotTarget, '/hand/joint_goal', qos)
 
         self.get_logger().info("Motion Editor ROS Node started")
 
@@ -1489,16 +1489,18 @@ class ROSNode(Node):
         self.gui.update_estop(msg.data)
 
     def publish_pose(self, pose):
-        msg = Float64MultiArray()
-        msg.data = pose.tolist()
+        msg = RobotTarget()
+        msg.goal_type = "joint"
+        msg.joint_target = pose.tolist()
         self.cmd_pub.publish(msg)
         self.get_logger().info(f"Published UR5e pose: {pose}")
 
     def publish_hand_pose(self, hand_pose):
         if np.linalg.norm(hand_pose) < 0.001:
             return
-        msg = Float64MultiArray()
-        msg.data = hand_pose.tolist()
+        msg = RobotTarget()
+        msg.goal_type = "joint"
+        msg.joint_target = hand_pose.tolist()
         self.hand_cmd_pub.publish(msg)
         self.get_logger().info(f"Published hand pose: {hand_pose}")
 
