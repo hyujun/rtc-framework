@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-plot_rtc_log.py - v4
+plot_rtc_log.py - v5
 
 Visualize robot trajectory data from split CSV logs (4-category convention).
 
@@ -14,16 +14,16 @@ CSV 컬럼 카테고리:
   - robot_log*.csv → Robot 모드
   - hand_log*.csv  → Hand 모드
 
-v4 변경사항:
-  - 파일 이름 변경: plot_ur_trajectory.py → plot_ur_log.py
-  - Hand raw sensor (pre-LPF) 플롯 추가 (--raw)
-  - Hand F/T inference 출력 플롯 추가 (--ft)
-  - Raw vs Filtered 센서 비교 플롯 추가 (--sensor-compare)
-  - Agg backend 최적화 (--save-dir 지정 시)
-  - 컬럼 감지 결과 캐싱
+v5 변경사항:
+  - sensor_log CSV 컬럼 수 불일치 자동 복구 (헤더 < 데이터 행)
+  - 누락된 inference 헤더 컬럼 자동 재구성
+  - duration=0 시 ZeroDivisionError 방지
+  - 레거시 CSV (inference 헤더 누락) 하위 호환
 """
 
 import os
+import csv
+import io
 import numpy as np
 import math
 import pandas as pd
@@ -33,6 +33,104 @@ import sys
 
 # matplotlib.pyplot는 main()에서 backend 설정 후 import (Agg 최적화)
 plt = None
+
+
+# ── sensor_log CSV 복구 ────────────────────────────────────────────────────
+# 레거시 CSV에서 헤더(90 cols)와 데이터(118 cols) 수가 불일치하는 경우,
+# 누락된 inference 컬럼 이름을 재구성하여 정상 로드한다.
+
+# DataLogger 상수와 동일
+_BARO_COUNT = 8
+_TOF_COUNT = 3
+_SENSORS_PER_FT = _BARO_COUNT + _TOF_COUNT   # 11
+_FT_COMPS = ['contact', 'fx', 'fy', 'fz', 'ux', 'uy', 'uz']
+_FT_VALUES_PER_FT = len(_FT_COMPS)           # 7
+_VALUES_PER_FT = 2 * _SENSORS_PER_FT + _FT_VALUES_PER_FT  # 29
+
+
+def _detect_csv_column_mismatch(filepath):
+    """CSV 헤더와 데이터 행의 컬럼 수 차이를 감지.
+
+    Returns (header_count, data_count, header_line).
+    두 값이 같으면 불일치 없음.
+    """
+    with open(filepath, 'r') as f:
+        reader = csv.reader(f)
+        header = next(reader, None)
+        if header is None:
+            return (0, 0, [])
+        header_count = len(header)
+        # 첫 10개 데이터 행에서 최대 컬럼 수 감지
+        data_count = header_count
+        for _, row in zip(range(10), reader):
+            if len(row) > data_count:
+                data_count = len(row)
+    return (header_count, data_count, header)
+
+
+def _rebuild_sensor_log_header(original_header, data_col_count):
+    """헤더에 누락된 inference 컬럼을 재구성하여 data_col_count에 맞춤.
+
+    원본 헤더 구조: timestamp, [raw sensors], [filtered sensors], inference_valid
+    누락된 부분: ft_{label}_{comp} 컬럼들 (inference output)
+
+    fingertip 라벨은 기존 baro_raw_{label}_{idx} 헤더에서 추출.
+    """
+    missing = data_col_count - len(original_header)
+    if missing <= 0:
+        return original_header
+
+    # fingertip 라벨 추출 (baro_raw_{label}_0 패턴)
+    ft_labels = []
+    for col in original_header:
+        if col.startswith('baro_raw_') and col.endswith('_0'):
+            label = col[len('baro_raw_'):-len('_0')]
+            ft_labels.append(label)
+
+    # inference 컬럼 이름 생성
+    inference_cols = []
+    if ft_labels:
+        for label in ft_labels:
+            for comp in _FT_COMPS:
+                inference_cols.append(f'ft_{label}_{comp}')
+    else:
+        # fingertip 라벨을 찾을 수 없으면 generic 이름 사용
+        inference_cols = [f'inference_{i}' for i in range(missing)]
+
+    # 필요한 수만큼만 추가
+    inference_cols = inference_cols[:missing]
+    # 부족하면 generic으로 채움
+    while len(inference_cols) < missing:
+        inference_cols.append(f'inference_{len(inference_cols)}')
+
+    return original_header + inference_cols
+
+
+def _load_sensor_log_csv(filepath):
+    """sensor_log CSV를 로드. 컬럼 수 불일치 시 자동 복구.
+
+    Returns (df, repaired: bool).
+    """
+    header_count, data_count, original_header = _detect_csv_column_mismatch(filepath)
+
+    if header_count == 0:
+        raise pd.errors.EmptyDataError(f'Empty CSV: {filepath}')
+
+    if header_count >= data_count:
+        # 불일치 없음 — 정상 로드
+        df = pd.read_csv(filepath)
+        return df, False
+
+    # 컬럼 수 불일치 — 헤더 복구
+    print(f'  Detected column mismatch: header has {header_count} cols, '
+          f'data has {data_count} cols (missing {data_count - header_count} inference cols)')
+    new_header = _rebuild_sensor_log_header(original_header, data_count)
+    print(f'  Reconstructed header: added {len(new_header) - header_count} inference columns')
+
+    # 헤더를 건너뛰고 데이터만 로드, 복구된 헤더 적용
+    df = pd.read_csv(filepath, header=0, names=new_header, skiprows=1,
+                     on_bad_lines='warn')
+    return df, True
 
 
 # ── 컬럼 감지 캐시 ──────────────────────────────────────────────────────────
@@ -408,9 +506,10 @@ def plot_robot_tracking_error(df, save_dir=None):
 def print_robot_statistics(df):
     """Print robot trajectory statistics."""
     duration = df['timestamp'].iloc[-1] - df['timestamp'].iloc[0]
+    rate = len(df) / duration if duration > 0 else 0.0
     print('\n=== Robot Trajectory Statistics ===')
     print(f'Duration: {duration:.2f} s | Samples: {len(df)}'
-          f' | Rate: {len(df) / duration:.1f} Hz')
+          f' | Rate: {rate:.1f} Hz')
 
     # trajectory 컬럼 결정 (named 또는 numeric)
     traj_pos_cols, traj_names = _detect_joint_columns(df, 'traj_pos_')
@@ -918,9 +1017,10 @@ def plot_device_sensor_comparison(df, fingertip_labels, save_dir=None):
 def print_device_statistics(df):
     """Print hand trajectory statistics."""
     duration = df['timestamp'].iloc[-1] - df['timestamp'].iloc[0]
+    rate = len(df) / duration if duration > 0 else 0.0
     print('\n=== Hand Trajectory Statistics ===')
     print(f'Duration: {duration:.2f} s | Samples: {len(df)}'
-          f' | Rate: {len(df) / duration:.1f} Hz')
+          f' | Rate: {rate:.1f} Hz')
 
     if 'hand_valid' in df.columns:
         valid_ratio = df['hand_valid'].sum() / len(df) * 100
@@ -1229,7 +1329,13 @@ def main():
 
     print(f'Loading ({log_type}): {args.csv_file}')
     try:
-        df = pd.read_csv(args.csv_file)
+        if log_type in ('sensor_log', 'device'):
+            # sensor_log/device: 컬럼 수 불일치 자동 복구 시도
+            df, repaired = _load_sensor_log_csv(args.csv_file)
+            if repaired:
+                print(f'  Loaded {len(df)} rows (header repaired).')
+        else:
+            df = pd.read_csv(args.csv_file)
     except pd.errors.EmptyDataError:
         print(f'Error: CSV file is empty or has no columns: {args.csv_file}')
         print('The log file may not have been written (e.g. controller crashed before logging).')
@@ -1241,6 +1347,10 @@ def main():
             print(f'Error: No valid rows after skipping malformed lines: {args.csv_file}')
             sys.exit(1)
         print(f'Loaded {len(df)} valid rows (some malformed lines were skipped).')
+
+    if df.empty:
+        print(f'Error: No valid data rows in {args.csv_file}')
+        sys.exit(1)
 
     # 새 DataFrame 로드 시 컬럼 감지 캐시 초기화
     _invalidate_column_cache()
