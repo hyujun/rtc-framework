@@ -195,9 +195,41 @@ class HandUdpNode : public rclcpp::Node {
           PublishFromEventLoop(state, ft_state);
         });
 
+    // ── Subscriptions (Start 실패와 무관하게 항상 생성) ────────────────
+    // Start() 실패 시에도 구독을 생성하여 ros2 topic info에서 subscriber 확인 가능.
+    // 구독이 없으면 subscriber=0으로 표시되어 문제 진단이 어려워짐.
+
+    // JointCommand subscription (from rt_controller or external)
+    joint_command_sub_ = create_subscription<rtc_msgs::msg::JointCommand>(
+        cmd_topic, 10,
+        [this](rtc_msgs::msg::JointCommand::SharedPtr msg) {
+          if (!controller_->IsRunning()) {
+            return;  // Start 실패 시 명령 무시 (EventLoop 미동작)
+          }
+          if (msg->values.size() < static_cast<std::size_t>(urtc::kNumHandMotors)) {
+            RCLCPP_WARN(get_logger(),
+                        "JointCommand values size %zu (expected %d)",
+                        msg->values.size(), urtc::kNumHandMotors);
+            return;
+          }
+          std::array<float, urtc::kNumHandMotors> cmd;
+          for (std::size_t i = 0; i < static_cast<std::size_t>(urtc::kNumHandMotors); ++i) {
+            cmd[i] = static_cast<float>(msg->values[i]);
+          }
+          controller_->SetTargetPositions(cmd);
+        });
+
+    // Backward-compatible Float64MultiArray command (legacy)
+    command_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
+        "/hand/command", 10,
+        [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+          OnCommand(std::move(msg));
+        });
+
     if (!controller_->Start()) {
       RCLCPP_ERROR(get_logger(),
-                   "Failed to start HandController to %s:%d",
+                   "Failed to start HandController to %s:%d  "
+                   "(subscriptions created — check ros2 topic info for diagnostics)",
                    target_ip.c_str(), target_port);
       return;
     }
@@ -228,30 +260,6 @@ class HandUdpNode : public rclcpp::Node {
       RCLCPP_INFO(get_logger(), "HandFailureDetector started (50 Hz, threshold=%d)",
                   fd_cfg.failure_threshold);
     }
-
-    // JointCommand subscription (from rt_controller or external)
-    joint_command_sub_ = create_subscription<rtc_msgs::msg::JointCommand>(
-        cmd_topic, 10,
-        [this](rtc_msgs::msg::JointCommand::SharedPtr msg) {
-          if (msg->values.size() < static_cast<std::size_t>(urtc::kNumHandMotors)) {
-            RCLCPP_WARN(get_logger(),
-                        "JointCommand values size %zu (expected %d)",
-                        msg->values.size(), urtc::kNumHandMotors);
-            return;
-          }
-          std::array<float, urtc::kNumHandMotors> cmd;
-          for (std::size_t i = 0; i < static_cast<std::size_t>(urtc::kNumHandMotors); ++i) {
-            cmd[i] = static_cast<float>(msg->values[i]);
-          }
-          controller_->SetTargetPositions(cmd);
-        });
-
-    // Backward-compatible Float64MultiArray command (legacy)
-    command_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
-        "/hand/command", 10,
-        [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-          OnCommand(std::move(msg));
-        });
 
     {
       std::string names_str;
