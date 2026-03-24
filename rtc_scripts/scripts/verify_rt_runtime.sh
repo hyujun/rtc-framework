@@ -301,11 +301,11 @@ check_process_discovery() {
   _section "1/7" "Process Discovery"
   _category_start "process_discovery"
 
-  # rt_controller 프로세스 찾기
-  CONTROLLER_PID=$(pgrep -x rt_controller 2>/dev/null | head -1 || true)
+  # rt_controller 프로세스 찾기 (ur5e_rt_controller 등 변형 실행 파일명도 포함)
+  CONTROLLER_PID=$(pgrep -f '(^|/)rt_controller$|(^|/)ur5e_rt_controller$' 2>/dev/null | head -1 || true)
 
   if [[ -z "$CONTROLLER_PID" ]]; then
-    _fail "rt_controller 프로세스 미발견 — 제어기가 실행 중이 아닙니다"
+    _fail "rt_controller / ur5e_rt_controller 프로세스 미발견 — 제어기가 실행 중이 아닙니다"
     _category_update "process_discovery" "FAIL"
     _category_set_detail "process_discovery" "not running"
     return 1

@@ -200,8 +200,13 @@ class HandUdpNode : public rclcpp::Node {
     // 구독이 없으면 subscriber=0으로 표시되어 문제 진단이 어려워짐.
 
     // JointCommand subscription (from rt_controller or external)
+    // rt_controller publishes with BEST_EFFORT + depth 1 for minimal DDS overhead.
+    // Subscriber must match: RELIABLE sub cannot connect to BEST_EFFORT pub.
+    rclcpp::QoS cmd_sub_qos{10};
+    cmd_sub_qos.best_effort();
+
     joint_command_sub_ = create_subscription<rtc_msgs::msg::JointCommand>(
-        cmd_topic, 10,
+        cmd_topic, cmd_sub_qos,
         [this](rtc_msgs::msg::JointCommand::SharedPtr msg) {
           if (!controller_->IsRunning()) {
             return;  // Start 실패 시 명령 무시 (EventLoop 미동작)
