@@ -157,8 +157,11 @@ PHYSICAL_CORES="$TOTAL_CORES"
 declare -a EXPECTED_THREADS
 
 build_expected_threads() {
+  # thread_config.hpp / SelectThreadConfigs() 기반 기대값
+  # 형식: "thread_name:expected_cpu:expected_policy:expected_priority"
   EXPECTED_THREADS=()
   if [[ "$PHYSICAL_CORES" -ge 16 ]]; then
+    # Core 0-1: OS, Core 2-3: RT, Core 4-8: cset shield, Core 9-11: system
     EXPECTED_THREADS=(
       "rt_control:2:1:90"
       "sensor_io:3:1:70"
@@ -167,9 +170,9 @@ build_expected_threads() {
       "aux:11:0:0"
       "rt_publish:11:0:0"
       "status_mon:10:0:0"
-      "hand_detect:10:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 12 ]]; then
+    # Core 0-1: OS, Core 2-6: cset shield, Core 7-11: system
     EXPECTED_THREADS=(
       "rt_control:7:1:90"
       "sensor_io:8:1:70"
@@ -178,9 +181,9 @@ build_expected_threads() {
       "aux:11:0:0"
       "rt_publish:11:0:0"
       "status_mon:10:0:0"
-      "hand_detect:10:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 10 ]]; then
+    # Core 0-1: OS, Core 2-6: cset shield, Core 7-9: system (shared Core 9)
     EXPECTED_THREADS=(
       "rt_control:7:1:90"
       "sensor_io:8:1:70"
@@ -189,9 +192,9 @@ build_expected_threads() {
       "aux:9:0:0"
       "rt_publish:9:0:0"
       "status_mon:9:0:0"
-      "hand_detect:9:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 8 ]]; then
+    # Core 0-1: OS, Core 2-6: RT threads (no cset shield)
     EXPECTED_THREADS=(
       "rt_control:2:1:90"
       "sensor_io:3:1:70"
@@ -200,9 +203,9 @@ build_expected_threads() {
       "aux:6:0:0"
       "rt_publish:6:0:0"
       "status_mon:6:0:0"
-      "hand_detect:6:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 6 ]]; then
+    # Core 0-1: OS, Core 2-5: RT threads, udp_recv shares Core 5 with aux
     EXPECTED_THREADS=(
       "rt_control:2:1:90"
       "sensor_io:3:1:70"
@@ -211,10 +214,9 @@ build_expected_threads() {
       "aux:5:0:0"
       "rt_publish:5:0:0"
       "status_mon:4:0:0"
-      "hand_detect:4:0:0"
     )
   else
-    # 4-core fallback
+    # 4-core fallback: Core 0: OS, Core 1-3: RT, udp_recv shares Core 2
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "sensor_io:2:1:70"
@@ -223,7 +225,6 @@ build_expected_threads() {
       "aux:3:0:0"
       "rt_publish:3:0:0"
       "status_mon:3:0:0"
-      "hand_detect:3:0:0"
     )
   fi
 }
