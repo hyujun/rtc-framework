@@ -69,8 +69,7 @@ do_on() {
   local mode="${1:-robot}"
 
   if [[ "$EUID" -ne 0 ]]; then
-    error "Root privileges required. Run: sudo $0 on --${mode}"
-    exit 1
+    fatal "Root privileges required. Run: sudo $0 on --${mode}"
   fi
 
   local phys_cores
@@ -136,8 +135,12 @@ do_on() {
     if [[ -d "$shield_dir" ]]; then
       if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then
         # cgroup v2: cpuset 컨트롤러 활성화
-        echo "+cpuset" > "${cpuset_root}/cgroup.subtree_control" 2>/dev/null || true
-        echo "$shield_cores" > "${shield_dir}/cpuset.cpus" 2>/dev/null || true
+        echo "+cpuset" > "${cpuset_root}/cgroup.subtree_control" 2>/dev/null || {
+          warn "Failed to enable cpuset controller on cgroup v2"
+        }
+        echo "$shield_cores" > "${shield_dir}/cpuset.cpus" 2>/dev/null || {
+          warn "Failed to set cpuset.cpus=${shield_cores} in cgroup v2"
+        }
         echo "0" > "${shield_dir}/cpuset.mems" 2>/dev/null || true
       else
         # cgroup v1
@@ -151,16 +154,13 @@ do_on() {
     fi
   fi
 
-  error "No isolation mechanism available (cset not installed, cpuset not accessible)"
-  error "Install: sudo apt-get install -y cpuset"
-  return 1
+  fatal "No isolation mechanism available (cset not installed, cpuset not accessible). Install: sudo apt-get install -y cpuset"
 }
 
 # ── Command: off ─────────────────────────────────────────────────────────────
 do_off() {
   if [[ "$EUID" -ne 0 ]]; then
-    error "Root privileges required. Run: sudo $0 off"
-    exit 1
+    fatal "Root privileges required. Run: sudo $0 off"
   fi
 
   # Restore default RT throttling (950000µs per 1000000µs period = 95%)

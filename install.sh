@@ -27,23 +27,13 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-# ── Helper functions (인자 파싱 전에 정의 — error() 등에서 사용) ────────────────
-info()    { echo -e "${BLUE}▶ $*${NC}"; }
-success() { echo -e "${GREEN}✔ $*${NC}"; }
-warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
-error()   { echo -e "${RED}✘ $*${NC}"; exit 1; }
-
 # ── 공통 유틸리티 라이브러리 (get_physical_cores, compute_cpu_layout 등) ──────
 _RT_COMMON="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/lib/rt_common.sh"
 if [[ -f "$_RT_COMMON" ]]; then
   # shellcheck source=rtc_scripts/scripts/lib/rt_common.sh
   source "$_RT_COMMON"
+  make_logger "INSTALL" emoji
 fi
-# rt_common.sh가 bracket 스타일 로깅을 정의하므로 install.sh 이모지 스타일로 복원
-info()    { echo -e "${BLUE}▶ $*${NC}"; }
-success() { echo -e "${GREEN}✔ $*${NC}"; }
-warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
-error()   { echo -e "${RED}✘ $*${NC}"; exit 1; }
 
 # ── apt-get update 이중 호출 방지 ─────────────────────────────────────────────
 _LAST_APT_UPDATE=0
@@ -212,42 +202,7 @@ echo ""
 echo -e "  Mode : ${CYAN}${BOLD}${MODE_DESC}${NC}"
 echo ""
 
-# ── CPU shield 자동 관리 (빌드 전) ──────────────────────────────────────────
-# cset shield가 활성이면 자동 해제하여 전체 코어로 빌드한다.
-auto_release_cpu_shield() {
-  local isolated
-  isolated=$(cat /sys/devices/system/cpu/isolated 2>/dev/null || echo "")
-
-  if [[ -z "$isolated" ]]; then
-    return 0
-  fi
-
-  local available total
-  available=$(nproc)
-  total=$(nproc --all)
-  warn "CPU 격리 감지: Core ${isolated} 격리 중 (${available}/${total} 코어 사용 가능)"
-
-  local SHIELD_SCRIPT="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/cpu_shield.sh"
-  if command -v cset &>/dev/null && cset shield -s 2>/dev/null | grep -q "user"; then
-    info "cset shield 감지 → 빌드를 위해 자동 해제 중..."
-    if [[ -f "$SHIELD_SCRIPT" ]]; then
-      sudo bash "$SHIELD_SCRIPT" off 2>/dev/null || sudo cset shield --reset 2>/dev/null || true
-    else
-      sudo cset shield --reset 2>/dev/null || true
-    fi
-    success "CPU 격리 해제 완료 — 전체 ${total} 코어로 빌드합니다"
-    return 0
-  fi
-
-  if grep -q "isolcpus=" /proc/cmdline 2>/dev/null; then
-    warn "isolcpus GRUB 파라미터 감지 — 재부팅 없이 해제 불가"
-    warn "빌드에 ${available}/${total} 코어만 사용됩니다"
-    warn "권장: isolcpus를 GRUB에서 제거하고 cset shield 방식으로 전환하세요"
-    return 0
-  fi
-
-  return 0
-}
+# auto_release_cpu_shield() — rt_common.sh에서 제공
 
 # ── System info (physical vs logical core detection) ──────────────────────────
 {
@@ -263,27 +218,7 @@ auto_release_cpu_shield() {
   echo ""
 }
 
-# ── Common: Workspace structure check ──────────────────────────────────────────
-check_workspace_structure() {
-  info "Checking workspace directory structure..."
-  local SCRIPT_DIR
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  local SRC_DIR
-  SRC_DIR="$(dirname "$SCRIPT_DIR")"
-  local DETECTED_WS
-  DETECTED_WS="$(dirname "$SRC_DIR")"
-
-  if [[ "$(basename "$SRC_DIR")" != "src" ]]; then
-    echo -e "${RED}✘ Invalid directory structure. ROS2 packages must be located inside a 'src' directory.${NC}"
-    echo -e "  Expected: ${BOLD}<workspace_dir>/src/<repository_name>${NC}"
-    echo -e "  Current:  ${BOLD}${SCRIPT_DIR}${NC}"
-    echo -e "  Example:  mkdir -p ~/ros2_ws/ur5e_ws/src && mv ${SCRIPT_DIR} ~/ros2_ws/ur5e_ws/src/"
-    exit 1
-  fi
-
-  WORKSPACE="$DETECTED_WS"
-  success "Workspace correctly configured at: $WORKSPACE"
-}
+# check_workspace_structure() — rt_common.sh에서 제공 (WORKSPACE 전역 변수 설정)
 
 # ── ROS2 Installation (when not found) ────────────────────────────────────────
 install_ros2() {
@@ -571,14 +506,16 @@ install_mujoco() {
       libglu1-mesa-dev \
       > /dev/null
 
-  local TMP_TAR="/tmp/mujoco-${MJ_VERSION}-linux-x86_64.tar.gz"
-  local DL_URL="https://github.com/google-deepmind/mujoco/releases/download/${MJ_VERSION}/mujoco-${MJ_VERSION}-linux-x86_64.tar.gz"
+  local ARCH
+  ARCH=$(uname -m)
+  local TMP_TAR="/tmp/mujoco-${MJ_VERSION}-linux-${ARCH}.tar.gz"
+  local DL_URL="https://github.com/google-deepmind/mujoco/releases/download/${MJ_VERSION}/mujoco-${MJ_VERSION}-linux-${ARCH}.tar.gz"
 
   info "Downloading MuJoCo ${MJ_VERSION}..."
   if ! wget -q --show-progress -O "$TMP_TAR" "$DL_URL"; then
     warn "Download failed. Install MuJoCo manually:"
     warn "  wget $DL_URL"
-    warn "  sudo tar -xzf mujoco-${MJ_VERSION}-linux-x86_64.tar.gz -C /opt/"
+    warn "  sudo tar -xzf mujoco-${MJ_VERSION}-linux-${ARCH}.tar.gz -C /opt/"
     MJ_DIR=""
     return
   fi
@@ -635,7 +572,7 @@ install_vscode_debug_tools() {
   success "GDB installed"
 
   # ── ptrace_scope: Attach to running process ────────────────────────────
-  # VS Code의 'Attach to Node' 누시엕 쫐피구는 GDB ptrace 사용.
+  # VS Code의 'Attach to Node' 런치 구성은 GDB ptrace를 사용합니다.
   # Ubuntu 기본값 ptrace_scope=1은 자식 프로세스 외 attach 거부.
   local PTRACE_CURRENT
   PTRACE_CURRENT=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo "unknown")
@@ -678,17 +615,19 @@ setup_package() {
 
   if [[ -d "$REPO_NAME" && "$SCRIPT_DIR" == "$WORKSPACE/src/$REPO_NAME" ]]; then
     info "Repository already present at $WORKSPACE/src/$REPO_NAME — skipping clone"
-  elif [[ ! -d "ur5e-rt-controller" ]]; then
-    info "Cloning ur5e-rt-controller..."
-    git clone https://github.com/hyujun/ur5e-rt-controller.git
-    REPO_NAME="ur5e-rt-controller"
+  elif [[ ! -d "rtc-framework" ]]; then
+    info "Cloning rtc-framework..."
+    git clone https://github.com/hyujun/rtc-framework.git
+    REPO_NAME="rtc-framework"
   else
-    warn "ur5e-rt-controller already exists — skipping clone"
-    REPO_NAME="ur5e-rt-controller"
+    warn "rtc-framework already exists — skipping clone"
+    REPO_NAME="rtc-framework"
   fi
 
   # Symlink packages from repo root into workspace src/
-  for pkg in rtc_msgs rtc_base ur5e_description rtc_status_monitor rtc_controller_manager ur5e_hand_driver rtc_mujoco_sim rtc_tools; do
+  local all_pkgs
+  read -r -a all_pkgs <<< "$(get_base_packages) $(get_robot_packages)"
+  for pkg in "${all_pkgs[@]}"; do
     if [[ ! -e "$pkg" ]]; then
       ln -s "${REPO_NAME}/$pkg" "$pkg"
     fi
@@ -742,7 +681,9 @@ build_package() {
   if [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]]; then
     PACKAGES=("${CUSTOM_PACKAGES[@]}")
   else
-    PACKAGES=(rtc_msgs rtc_base rtc_communication rtc_controller_interface rtc_controllers rtc_controller_manager rtc_status_monitor rtc_inference rtc_scripts ur5e_description ur5e_hand_driver ur5e_hand_status_monitor ur5e_bringup rtc_tools)
+    read -r -a BASE <<< "$(get_base_packages)"
+    read -r -a ROBOT <<< "$(get_robot_packages)"
+    PACKAGES=("${BASE[@]}" "${ROBOT[@]}")
     if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
       PACKAGES+=(rtc_mujoco_sim)
     fi
@@ -886,7 +827,7 @@ setup_udp_optimization() {
 
   if [[ ! -f "$SCRIPT" ]]; then
     warn "setup_udp_optimization.sh not found — skipping UDP optimization"
-    warn "Run manually after build: sudo $WORKSPACE/src/ur5e-rt-controller/rtc_scripts/scripts/setup_udp_optimization.sh"
+    warn "Run manually after build: sudo $WORKSPACE/src/rtc-framework/rtc_scripts/scripts/setup_udp_optimization.sh"
     return
   fi
 
@@ -916,7 +857,7 @@ setup_nvidia_rt() {
 
   if [[ ! -f "$SCRIPT" ]]; then
     warn "setup_nvidia_rt.sh not found — skipping NVIDIA RT setup"
-    warn "Run manually: sudo $WORKSPACE/src/ur5e-rt-controller/rtc_scripts/scripts/setup_nvidia_rt.sh"
+    warn "Run manually: sudo $WORKSPACE/src/rtc-framework/rtc_scripts/scripts/setup_nvidia_rt.sh"
     return
   fi
 
@@ -936,59 +877,20 @@ setup_nvidia_rt() {
 # NVIDIA GPU가 있는 시스템은 setup_nvidia_rt.sh [10/11]에서 처리.
 # NVIDIA가 없는 시스템에서도 powersave → performance 전환이 필요하다.
 setup_cpu_governor() {
-  # NVIDIA GPU가 있으면 setup_nvidia_rt.sh에서 이미 처리됨
+  # NVIDIA GPU가 있는 시스템은 setup_nvidia_rt.sh에서 호출됨
   if lspci 2>/dev/null | grep -qi 'nvidia'; then
     return
   fi
-
-  # cpufreq 디렉토리가 없으면 고정 클럭 CPU (VM 등)
-  if [[ ! -d /sys/devices/system/cpu/cpu0/cpufreq ]]; then
-    return
-  fi
-
-  # 현재 governor 확인
-  local non_perf=0
-  for gov_file in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-    if [[ -f "$gov_file" ]]; then
-      local gov
-      gov=$(cat "$gov_file" 2>/dev/null)
-      [[ "$gov" != "performance" ]] && ((non_perf++)) || true
+  local SCRIPT="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/setup_cpu_governor.sh"
+  if [[ -f "$SCRIPT" ]]; then
+    info "Setting CPU governor to performance..."
+    if sudo bash "$SCRIPT"; then
+      success "CPU governor configured"
+    else
+      warn "CPU governor setup failed — continuing"
     fi
-  done
-
-  if [[ "$non_perf" -eq 0 ]]; then
-    success "CPU governor: all cores already set to performance"
-    return
-  fi
-
-  info "Setting CPU governor to performance (${non_perf} cores need change)..."
-
-  # 즉시 적용
-  for gov_file in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-    echo "performance" | sudo tee "$gov_file" > /dev/null 2>&1 || true
-  done
-
-  # systemd 서비스로 영구 적용
-  local GOV_SERVICE="/etc/systemd/system/cpu-governor-performance.service"
-  if [[ ! -f "$GOV_SERVICE" ]]; then
-    sudo tee "$GOV_SERVICE" > /dev/null << 'GOVEOF'
-[Unit]
-Description=Set CPU governor to performance for RT kernel
-After=multi-user.target
-
-[Service]
-Type=oneshot
-ExecStart=/bin/bash -c 'if command -v cpupower &>/dev/null; then cpupower frequency-set -g performance; else for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$f" 2>/dev/null || true; done; fi'
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-GOVEOF
-    sudo timeout 30 systemctl daemon-reload || true
-    sudo systemctl enable cpu-governor-performance.service 2>/dev/null || true
-    success "CPU governor → performance (service enabled for persistence)"
   else
-    success "CPU governor → performance (service already exists)"
+    warn "setup_cpu_governor.sh not found — skipping"
   fi
 }
 
@@ -997,91 +899,16 @@ GOVEOF
 # NVIDIA 시스템은 setup_nvidia_rt.sh [3/11]에서도 같은 GRUB 파라미터를 설정하지만,
 # "이미 존재" 로 건너뛰므로 중복 문제는 없다.
 setup_rt_kernel_params() {
-  # rt_common.sh의 compute_cpu_layout 사용
-  compute_cpu_layout
-
-  # ── RT_CORES 계산 (SMT 시블링 포함) ──
-  # rt_common.sh의 compute_expected_isolated() 재사용 (get_os_logical_cpus + _format_cpu_range)
-  local RT_CORES
-  RT_CORES=$(compute_expected_isolated)
-
-  info "RT kernel params: RT_CORES=${RT_CORES}, OS_CORES=${OS_CORES_DESC}"
-
-  # ── 1) GRUB 커널 파라미터 ──
-  local GRUB_FILE="/etc/default/grub"
-  if [[ -f "$GRUB_FILE" ]]; then
-    declare -A GRUB_PARAMS_WITH_VALUE=(
-      ["nohz_full"]="${RT_CORES}"
-      ["rcu_nocbs"]="${RT_CORES}"
-      ["processor.max_cstate"]="1"
-      ["clocksource"]="tsc"
-      ["tsc"]="reliable"
-      ["nmi_watchdog"]="0"
-    )
-    local -a GRUB_PARAMS_WITHOUT_VALUE=("threadirqs" "nosoftlockup")
-    local GRUB_VAR="GRUB_CMDLINE_LINUX_DEFAULT"
-    local CURRENT_CMDLINE=""
-    if grep -q "^${GRUB_VAR}=" "$GRUB_FILE"; then
-      CURRENT_CMDLINE=$(grep "^${GRUB_VAR}=" "$GRUB_FILE" | sed "s/^${GRUB_VAR}=\"\(.*\)\"/\1/")
-    fi
-
-    local GRUB_MODIFIED=0
-    local NEW_CMDLINE="$CURRENT_CMDLINE"
-
-    local param value
-    for param in "${!GRUB_PARAMS_WITH_VALUE[@]}"; do
-      value="${GRUB_PARAMS_WITH_VALUE[$param]}"
-      if ! echo "$NEW_CMDLINE" | grep -qE "(^| )${param}="; then
-        NEW_CMDLINE="${NEW_CMDLINE:+${NEW_CMDLINE} }${param}=${value}"
-        GRUB_MODIFIED=1
-        info "  GRUB 추가: ${param}=${value}"
-      fi
-    done
-    for param in "${GRUB_PARAMS_WITHOUT_VALUE[@]}"; do
-      if ! echo "$NEW_CMDLINE" | grep -qE "(^| )${param}( |$)"; then
-        NEW_CMDLINE="${NEW_CMDLINE:+${NEW_CMDLINE} }${param}"
-        GRUB_MODIFIED=1
-        info "  GRUB 추가: ${param}"
-      fi
-    done
-
-    if [[ "$GRUB_MODIFIED" -eq 1 ]]; then
-      # 백업
-      sudo cp "$GRUB_FILE" "${GRUB_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
-
-      if grep -q "^${GRUB_VAR}=" "$GRUB_FILE"; then
-        local ESCAPED_CMDLINE
-        ESCAPED_CMDLINE=$(printf '%s' "$NEW_CMDLINE" | sed 's/[&#\\/]/\\&/g')
-        sudo sed -i "s#^${GRUB_VAR}=.*#${GRUB_VAR}=\"${ESCAPED_CMDLINE}\"#" "$GRUB_FILE"
-      else
-        echo "${GRUB_VAR}=\"${NEW_CMDLINE}\"" | sudo tee -a "$GRUB_FILE" > /dev/null
-      fi
-
-      sudo update-grub 2>/dev/null || true
-      success "GRUB RT 파라미터 설정 완료 (재부팅 필요)"
+  local SCRIPT="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/setup_grub_rt.sh"
+  if [[ -f "$SCRIPT" ]]; then
+    info "Configuring GRUB RT kernel parameters..."
+    if sudo bash "$SCRIPT"; then
+      success "GRUB RT parameters configured"
     else
-      success "GRUB RT 파라미터: 이미 모두 설정됨"
+      warn "GRUB RT setup failed — continuing"
     fi
   else
-    warn "GRUB 설정 파일(${GRUB_FILE})을 찾을 수 없습니다 — 건너뜀"
-  fi
-
-  # ── 2) sched_rt_runtime_us = -1 (RT 스로틀링 해제) ──
-  local RT_RUNTIME
-  RT_RUNTIME=$(cat /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null || echo "")
-  if [[ "$RT_RUNTIME" != "-1" ]]; then
-    sudo sysctl -w kernel.sched_rt_runtime_us=-1 > /dev/null 2>&1 || true
-    # 영구 설정
-    local SYSCTL_RT="/etc/sysctl.d/99-rt-sched.conf"
-    if [[ ! -f "$SYSCTL_RT" ]] || ! grep -q "sched_rt_runtime_us" "$SYSCTL_RT" 2>/dev/null; then
-      echo "kernel.sched_rt_runtime_us=-1" | sudo tee "$SYSCTL_RT" > /dev/null
-      success "sched_rt_runtime_us=-1 설정 완료 (즉시 + 영구)"
-    else
-      sudo sysctl -w kernel.sched_rt_runtime_us=-1 > /dev/null 2>&1 || true
-      success "sched_rt_runtime_us=-1 즉시 적용 (영구 설정 이미 존재)"
-    fi
-  else
-    success "sched_rt_runtime_us: 이미 -1 (RT 스로틀링 없음)"
+    warn "setup_grub_rt.sh not found — skipping GRUB RT setup"
   fi
 }
 
@@ -1090,7 +917,9 @@ verify_installation() {
   info "Verifying installation..."
   source "$WORKSPACE/install/setup.bash" || true
   local failed=0
-  for pkg in rtc_msgs rtc_base ur5e_description rtc_status_monitor rtc_controller_manager ur5e_hand_driver rtc_tools; do
+  local all_pkgs
+  read -r -a all_pkgs <<< "$(get_base_packages) $(get_robot_packages)"
+  for pkg in "${all_pkgs[@]}"; do
     # Check ament index directly (more reliable than ros2 pkg list in scripts)
     if [[ -d "$WORKSPACE/install/${pkg}" ]]; then
       success "Package installed: $pkg"
@@ -1243,7 +1072,7 @@ print_summary() {
 # ══════════════════════════════════════════════════════════════════════════════
 
 if [[ "$SKIP_DEPS" -eq 0 ]]; then
-  check_workspace_structure
+  check_workspace_structure "$INSTALL_SCRIPT_DIR"
   check_prerequisites
   setup_workspace
 
@@ -1276,7 +1105,7 @@ if [[ "$SKIP_DEPS" -eq 0 ]]; then
   fi
 else
   info "Skipping system dependencies installation (--skip-deps)"
-  check_workspace_structure
+  check_workspace_structure "$INSTALL_SCRIPT_DIR"
 fi
 
 setup_package

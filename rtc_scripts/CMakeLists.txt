@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(rtc_scripts VERSION 5.16.0 LANGUAGES)
+project(rtc_scripts VERSION 5.17.0 LANGUAGES)
 
 find_package(ament_cmake REQUIRED)
 
@@ -7,6 +7,9 @@ install(PROGRAMS
   scripts/setup_irq_affinity.sh
   scripts/setup_udp_optimization.sh
   scripts/setup_nvidia_rt.sh
+  scripts/setup_grub_rt.sh
+  scripts/setup_display_rt.sh
+  scripts/setup_cpu_governor.sh
   scripts/build_rt_kernel.sh
   scripts/check_rt_setup.sh
   scripts/cpu_shield.sh
