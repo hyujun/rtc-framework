@@ -6,7 +6,6 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
-#include <std_msgs/msg/float64_multi_array.hpp>
 #include <rtc_msgs/msg/joint_command.hpp>
 #include <rtc_msgs/msg/hand_sensor_state.hpp>
 #include <rtc_msgs/msg/fingertip_sensor.hpp>
@@ -237,12 +236,9 @@ class HandUdpNode : public rclcpp::Node {
           controller_->SetTargetPositions(cmd);
         });
 
-    // Backward-compatible Float64MultiArray command (legacy)
-    command_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
-        "/hand/command", 10,
-        [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-          OnCommand(std::move(msg));
-        });
+    // Legacy Float64MultiArray subscription (/hand/command) removed.
+    // rt_controller and mujoco_sim both use JointCommand on /hand/joint_command.
+    // See: git log for migration history.
 
     if (!controller_->Start()) {
       RCLCPP_ERROR(get_logger(),
@@ -529,29 +525,12 @@ class HandUdpNode : public rclcpp::Node {
                 stats.recv_timeout, stats.recv_error, avg_rate_hz);
   }
 
-  void OnCommand(std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-    if (msg->data.size() != static_cast<std::size_t>(urtc::kNumHandMotors)) {
-      RCLCPP_WARN(get_logger(),
-                  "Unexpected command size %zu (expected %d)",
-                  msg->data.size(), urtc::kNumHandMotors);
-      return;
-    }
-
-    std::array<float, urtc::kNumHandMotors> cmd;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(urtc::kNumHandMotors); ++i) {
-      cmd[i] = static_cast<float>(msg->data[i]);
-    }
-
-    controller_->SetTargetPositions(cmd);
-  }
-
   std::unique_ptr<urtc::HandController>      controller_;
   std::unique_ptr<urtc::HandFailureDetector> failure_detector_;
 
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr         joint_state_pub_;
   rclcpp::Publisher<rtc_msgs::msg::HandSensorState>::SharedPtr      sensor_state_pub_;
   rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr      joint_command_sub_;
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr  command_sub_;  // legacy
   std::vector<std::string> joint_names_;
   std::vector<std::string> fingertip_names_;
   int num_fingertips_{urtc::kDefaultNumFingertips};

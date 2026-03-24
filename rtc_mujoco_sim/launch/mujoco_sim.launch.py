@@ -230,7 +230,7 @@ def launch_setup(context, *args, **kwargs):
             hand_cfg = robot_resp.get('hand', {})
             ctrl_overrides['hand_sim_enabled'] = True
             ctrl_overrides['hand_command_topic'] = hand_cfg.get(
-                'command_topic', '/hand/command')
+                'command_topic', '/hand/joint_command')
             ctrl_overrides['hand_state_topic'] = hand_cfg.get(
                 'state_topic', '/hand/joint_states')
             ctrl_overrides['target_ip'] = ''
@@ -243,7 +243,7 @@ def launch_setup(context, *args, **kwargs):
             hand_cfg = fake_resp.get('hand', {})
             ctrl_overrides['hand_sim_enabled'] = True
             ctrl_overrides['hand_command_topic'] = hand_cfg.get(
-                'command_topic', '/hand/command')
+                'command_topic', '/hand/joint_command')
             ctrl_overrides['hand_state_topic'] = hand_cfg.get(
                 'state_topic', '/hand/joint_states')
             ctrl_overrides['target_ip'] = ''
