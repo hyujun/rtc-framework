@@ -450,6 +450,17 @@ void RtControllerNode::CreateSubscriptions()
   };
 
   // ── Create subscriptions for all active device groups ────────────────────
+  //
+  // QoS strategy per role:
+  //   kState / kSensorState → BEST_EFFORT, depth 2
+  //     500 Hz sensor streams: only latest value matters. BEST_EFFORT avoids
+  //     DDS retransmit overhead. Depth 2 absorbs 1-tick scheduling jitter.
+  //     NOTE: BEST_EFFORT sub connects to both RELIABLE and BEST_EFFORT pubs.
+  //   kTarget → RELIABLE, depth 10
+  //     Sporadic goal commands that must not be lost.
+  rclcpp::QoS sensor_sub_qos{2};
+  sensor_sub_qos.best_effort();
+
   std::set<std::string> created_topics;
 
   for (const auto & tc : controller_topic_configs_) {
@@ -466,7 +477,7 @@ void RtControllerNode::CreateSubscriptions()
         switch (entry.role) {
           case urtc::SubscribeRole::kState: {
             auto sub = create_subscription<sensor_msgs::msg::JointState>(
-              entry.topic_name, 10,
+              entry.topic_name, sensor_sub_qos,
               [this, slot, dt_idx](sensor_msgs::msg::JointState::SharedPtr msg) {
                 DeviceJointStateCallback(slot, std::move(msg));
                 if (dt_idx >= 0) {
@@ -476,19 +487,19 @@ void RtControllerNode::CreateSubscriptions()
               },
               sub_options);
             topic_subscriptions_.push_back(sub);
-            RCLCPP_INFO(get_logger(), "  Subscribe [%s/state]: %s (slot %d)",
+            RCLCPP_INFO(get_logger(), "  Subscribe [%s/state]: %s (slot %d, BEST_EFFORT/2)",
                         group_name.c_str(), entry.topic_name.c_str(), slot);
             break;
           }
           case urtc::SubscribeRole::kSensorState: {
             auto sub = create_subscription<rtc_msgs::msg::HandSensorState>(
-              entry.topic_name, 10,
+              entry.topic_name, sensor_sub_qos,
               [this, slot](rtc_msgs::msg::HandSensorState::SharedPtr msg) {
                 HandSensorStateCallback(slot, std::move(msg));
               },
               sub_options);
             topic_subscriptions_.push_back(sub);
-            RCLCPP_INFO(get_logger(), "  Subscribe [%s/sensor_state]: %s (slot %d)",
+            RCLCPP_INFO(get_logger(), "  Subscribe [%s/sensor_state]: %s (slot %d, BEST_EFFORT/2)",
                         group_name.c_str(), entry.topic_name.c_str(), slot);
             break;
           }

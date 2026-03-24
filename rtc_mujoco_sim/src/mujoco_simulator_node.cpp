@@ -205,7 +205,9 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     const auto num_groups = sim_->NumGroups();
     group_handles_.resize(num_groups);
 
-    rclcpp::QoS cmd_qos{10};
+    // BEST_EFFORT + depth 1: rt_controller publishes commands with BEST_EFFORT/1.
+    // Only the latest command matters — stale commands cause lag.
+    rclcpp::QoS cmd_qos{1};
     cmd_qos.best_effort();
 
     for (std::size_t idx = 0; idx < num_groups; ++idx) {
@@ -224,9 +226,12 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
       const std::string& cmd_topic = group_configs_[idx].command_topic;
       const std::string& state_topic = group_configs_[idx].state_topic;
 
-      // Publisher
+      // Publisher: BEST_EFFORT + depth 1 for high-rate sim state (matches hand_udp_node).
+      // rt_controller subscribes with BEST_EFFORT — compatible with both RELIABLE and BE pubs.
+      rclcpp::QoS state_pub_qos{1};
+      state_pub_qos.best_effort();
       h.state_pub = create_publisher<sensor_msgs::msg::JointState>(
-          state_topic, rclcpp::QoS(10));
+          state_topic, state_pub_qos);
 
       // Subscriber (JointCommand for all groups)
       h.cmd_sub = create_subscription<rtc_msgs::msg::JointCommand>(

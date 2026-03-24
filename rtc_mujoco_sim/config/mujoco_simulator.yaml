@@ -71,7 +71,7 @@ mujoco_simulator:
           - middle_mcp_fe
           - middle_dip_fe
           - ring_mcp_fe
-        command_topic: "/hand/command"
+        command_topic: "/hand/joint_command"
         state_topic: "/hand/joint_states"
 
     # ── Fake Response (LPF 에코백, MuJoCo 물리 아님) ─────────────────────────
@@ -93,7 +93,7 @@ mujoco_simulator:
     #       - middle_dip_fe
     #       - ring_mcp_fe
     #     # state_joint_names: 비우면 command_joint_names와 동일
-    #     command_topic: "/hand/command"
+    #     command_topic: "/hand/joint_command"
     #     state_topic: "/hand/joint_states"
     #     filter_alpha: 0.1
 

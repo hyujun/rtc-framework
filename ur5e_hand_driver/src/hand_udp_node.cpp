@@ -6,7 +6,6 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
-#include <std_msgs/msg/float64_multi_array.hpp>
 #include <rtc_msgs/msg/joint_command.hpp>
 #include <rtc_msgs/msg/hand_sensor_state.hpp>
 #include <rtc_msgs/msg/fingertip_sensor.hpp>
@@ -160,12 +159,23 @@ class HandUdpNode : public rclcpp::Node {
     const std::string link_status_topic = get_parameter("link_status_topic").as_string();
 
     // ── ROS2 pub/sub ───────────────────────────────────────────────────
+    // BEST_EFFORT + depth 1: 500 Hz RT sensor data — only latest value matters.
+    // Eliminates DDS ACK/NACK/retransmit overhead on the EventLoop publish path.
+    // Subscribers (rt_controller) MUST also use BEST_EFFORT to connect.
+    rclcpp::QoS sensor_pub_qos{1};
+    sensor_pub_qos.best_effort();
+
     joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
-        state_topic, 10);
+        state_topic, sensor_pub_qos);
     sensor_state_pub_ = create_publisher<rtc_msgs::msg::HandSensorState>(
-        sensor_topic, 10);
+        sensor_topic, sensor_pub_qos);
+
+    // Link status: RELIABLE + TRANSIENT_LOCAL + depth 1.
+    // Low-rate (~100 Hz decimated), latch ensures late subscribers get last status.
+    rclcpp::QoS link_pub_qos{1};
+    link_pub_qos.transient_local();
     link_status_pub_ = create_publisher<std_msgs::msg::Bool>(
-        link_status_topic, 10);
+        link_status_topic, link_pub_qos);
     link_fail_threshold_ = static_cast<uint64_t>(
         get_parameter("link_fail_threshold").as_int());
 
@@ -202,7 +212,9 @@ class HandUdpNode : public rclcpp::Node {
     // JointCommand subscription (from rt_controller or external)
     // rt_controller publishes with BEST_EFFORT + depth 1 for minimal DDS overhead.
     // Subscriber must match: RELIABLE sub cannot connect to BEST_EFFORT pub.
-    rclcpp::QoS cmd_sub_qos{10};
+    // BEST_EFFORT + depth 1: rt_controller publishes with BEST_EFFORT/1,
+    // only the latest command matters — stale commands in queue cause lag.
+    rclcpp::QoS cmd_sub_qos{1};
     cmd_sub_qos.best_effort();
 
     joint_command_sub_ = create_subscription<rtc_msgs::msg::JointCommand>(
@@ -224,12 +236,9 @@ class HandUdpNode : public rclcpp::Node {
           controller_->SetTargetPositions(cmd);
         });
 
-    // Backward-compatible Float64MultiArray command (legacy)
-    command_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
-        "/hand/command", 10,
-        [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-          OnCommand(std::move(msg));
-        });
+    // Legacy Float64MultiArray subscription (/hand/command) removed.
+    // rt_controller and mujoco_sim both use JointCommand on /hand/joint_command.
+    // See: git log for migration history.
 
     if (!controller_->Start()) {
       RCLCPP_ERROR(get_logger(),
@@ -516,29 +525,12 @@ class HandUdpNode : public rclcpp::Node {
                 stats.recv_timeout, stats.recv_error, avg_rate_hz);
   }
 
-  void OnCommand(std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-    if (msg->data.size() != static_cast<std::size_t>(urtc::kNumHandMotors)) {
-      RCLCPP_WARN(get_logger(),
-                  "Unexpected command size %zu (expected %d)",
-                  msg->data.size(), urtc::kNumHandMotors);
-      return;
-    }
-
-    std::array<float, urtc::kNumHandMotors> cmd;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(urtc::kNumHandMotors); ++i) {
-      cmd[i] = static_cast<float>(msg->data[i]);
-    }
-
-    controller_->SetTargetPositions(cmd);
-  }
-
   std::unique_ptr<urtc::HandController>      controller_;
   std::unique_ptr<urtc::HandFailureDetector> failure_detector_;
 
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr         joint_state_pub_;
   rclcpp::Publisher<rtc_msgs::msg::HandSensorState>::SharedPtr      sensor_state_pub_;
   rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr      joint_command_sub_;
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr  command_sub_;  // legacy
   std::vector<std::string> joint_names_;
   std::vector<std::string> fingertip_names_;
   int num_fingertips_{urtc::kDefaultNumFingertips};
