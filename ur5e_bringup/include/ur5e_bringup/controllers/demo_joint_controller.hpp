@@ -32,6 +32,7 @@ using rtc::RTControllerInterface;
 using rtc::ControllerOutput;
 using rtc::ControllerState;
 using rtc::CommandType;
+using rtc::GoalType;
 
 // Unified Proportional (P) position controller for UR5e arm + hand.
 //
