@@ -47,7 +47,7 @@ rtc_scripts/
 | `setup_nvidia_rt.sh` | NVIDIA GPU DKMS, modprobe, GRUB, IRQ, X11 설정 | 필수 | 1155 |
 | `cpu_shield.sh` | 런타임 CPU 격리 (Tier 1/2, robot/sim 모드) | on/off 시 | 339 |
 | `check_rt_setup.sh` | 정적 환경 검증 (커널, CPU, IRQ, 네트워크 등) | 선택 | 1072 |
-| `verify_rt_runtime.sh` | 실행 중 스레드 스케줄링/어피니티/메모리 검증 | 선택 | 976 |
+| `verify_rt_runtime.sh` | 실행 중 스레드 스케줄링/어피니티/메모리 검증 | 선택 | 1019 |
 
 ---
 
