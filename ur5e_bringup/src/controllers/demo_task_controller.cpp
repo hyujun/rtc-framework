@@ -223,22 +223,46 @@ ControllerOutput DemoTaskController::Compute(
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
 
-  // ── Step 8: Hand P control ────────────────────────────────────────────────
+  // ── Step 8: Hand trajectory ──────────────────────────────────────────────
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto & dev1 = state.devices[1];
     const int nc1 = dev1.num_channels;
     auto & out1 = output.devices[1];
     out1.num_channels = nc1;
     out1.goal_type = GoalType::kJoint;
+
+    if (hand_new_target_.load(std::memory_order_acquire)) {
+      trajectory::JointSpaceTrajectory<kNumHandMotors>::State start_state;
+      trajectory::JointSpaceTrajectory<kNumHandMotors>::State goal_state;
+
+      double max_dist = 0.0;
+      for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+        start_state.positions[i]     = dev1.positions[i];
+        start_state.velocities[i]    = 0.0;
+        start_state.accelerations[i] = 0.0;
+
+        goal_state.positions[i]     = device_targets_[1][i];
+        goal_state.velocities[i]    = 0.0;
+        goal_state.accelerations[i] = 0.0;
+
+        max_dist = std::max(max_dist,
+          std::abs(device_targets_[1][i] - dev1.positions[i]));
+      }
+
+      const double duration = std::max(0.01, max_dist / gains_.hand_trajectory_speed);
+      hand_trajectory_.initialize(start_state, goal_state, duration);
+      hand_trajectory_time_ = 0.0;
+      hand_new_target_.store(false, std::memory_order_relaxed);
+    }
+
+    const auto hand_traj = hand_trajectory_.compute(hand_trajectory_time_);
+    hand_trajectory_time_ += dt;
+
     for (int i = 0; i < nc1; ++i) {
-      const auto idx = static_cast<std::size_t>(i);
-      const double error = device_targets_[1][idx] - dev1.positions[idx];
-      out1.commands[idx] =
-        dev1.positions[idx] +
-        static_cast<double>(gains_.hand_kp[idx]) * error * state.dt;
-      out1.target_positions[idx] = device_targets_[1][idx];
-      out1.target_velocities[idx] = static_cast<double>(gains_.hand_kp[idx]) * error;
-      out1.goal_positions[idx] = device_targets_[1][idx];
+      out1.commands[i] = hand_traj.positions[i];
+      out1.target_positions[i] = hand_traj.positions[i];
+      out1.target_velocities[i] = hand_traj.velocities[i];
+      out1.goal_positions[i] = device_targets_[1][i];
     }
     ClampCommands(out1.commands, nc1, device_max_velocity_[1]);
 
@@ -318,6 +342,9 @@ void DemoTaskController::SetDeviceTarget(
     for (int i = 0; i < n; ++i) {
       device_targets_[device_idx][i] = target[i];
     }
+    if (device_idx == 1) {
+      hand_new_target_.store(true, std::memory_order_release);
+    }
   }
 }
 
@@ -351,6 +378,17 @@ void DemoTaskController::InitializeHoldPosition(
     if (!dev.valid) continue;
     for (int i = 0; i < dev.num_channels && i < kMaxDeviceChannels; ++i) {
       device_targets_[d][i] = dev.positions[i];
+    }
+    if (d == 1) {
+      trajectory::JointSpaceTrajectory<kNumHandMotors>::State hold_state;
+      for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+        hold_state.positions[i]     = dev.positions[i];
+        hold_state.velocities[i]    = 0.0;
+        hold_state.accelerations[i] = 0.0;
+      }
+      hand_trajectory_.initialize(hold_state, hold_state, 0.01);
+      hand_trajectory_time_ = 0.0;
+      hand_new_target_.store(false, std::memory_order_relaxed);
     }
   }
 }
@@ -440,6 +478,9 @@ void DemoTaskController::LoadConfig(const YAML::Node & cfg)
       gains_.hand_kp[i] = cfg["hand_kp"][i].as<float>();
     }
   }
+  if (cfg["hand_trajectory_speed"]) {
+    gains_.hand_trajectory_speed = cfg["hand_trajectory_speed"].as<double>();
+  }
 
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
@@ -449,7 +490,7 @@ void DemoTaskController::LoadConfig(const YAML::Node & cfg)
 
 void DemoTaskController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
 {
-  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10] = 20
+  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10, hand_trajectory_speed] = 21
   if (gains.size() < 10) {return;}
   for (std::size_t i = 0; i < 6; ++i) {
     gains_.kp[i] = gains[i];
@@ -464,13 +505,16 @@ void DemoTaskController::UpdateGainsFromMsg(std::span<const double> gains) noexc
       gains_.hand_kp[i] = static_cast<float>(gains[10 + i]);
     }
   }
+  if (gains.size() >= 21) {
+    gains_.hand_trajectory_speed = gains[20];
+  }
 }
 
 std::vector<double> DemoTaskController::GetCurrentGains() const noexcept
 {
-  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10] = 20
+  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10, hand_trajectory_speed] = 21
   std::vector<double> v;
-  v.reserve(20);
+  v.reserve(21);
   v.insert(v.end(), gains_.kp.begin(), gains_.kp.end());
   v.push_back(gains_.damping);
   v.push_back(gains_.null_kp);
@@ -479,6 +523,7 @@ std::vector<double> DemoTaskController::GetCurrentGains() const noexcept
   for (const float h : gains_.hand_kp) {
     v.push_back(static_cast<double>(h));
   }
+  v.push_back(gains_.hand_trajectory_speed);
   return v;
 }
 

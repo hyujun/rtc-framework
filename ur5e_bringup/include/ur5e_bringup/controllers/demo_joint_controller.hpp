@@ -2,6 +2,8 @@
 #define UR5E_BRINGUP_CONTROLLERS_DEMO_JOINT_CONTROLLER_H_
 
 #include <array>
+#include <atomic>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -21,6 +23,7 @@
 #include <Eigen/Core>
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
+#include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 
 namespace ur5e_bringup
 {
@@ -33,6 +36,7 @@ using rtc::ControllerOutput;
 using rtc::ControllerState;
 using rtc::CommandType;
 using rtc::GoalType;
+namespace trajectory = rtc::trajectory;
 
 // Unified Proportional (P) position controller for UR5e arm + hand.
 //
@@ -57,6 +61,8 @@ public:
     std::array<float, kNumHandMotors>   hand_kp{{
       50.0f, 50.0f, 50.0f, 50.0f, 50.0f,
       50.0f, 50.0f, 50.0f, 50.0f, 50.0f}};
+    double trajectory_speed{1.0};
+    double hand_trajectory_speed{1.0};
   };
 
   explicit DemoJointController(std::string_view urdf_path);
@@ -97,6 +103,15 @@ private:
   Eigen::VectorXd       q_;
 
   CommandType command_type_{CommandType::kPosition};
+
+  // ── Trajectory ───────────────────────────────────────────────────────────
+  std::mutex target_mutex_;
+  std::atomic<bool> robot_new_target_{false};
+  std::atomic<bool> hand_new_target_{false};
+  trajectory::JointSpaceTrajectory<kNumRobotJoints> robot_trajectory_;
+  trajectory::JointSpaceTrajectory<kNumHandMotors>  hand_trajectory_;
+  double robot_trajectory_time_{0.0};
+  double hand_trajectory_time_{0.0};
 
   std::array<std::vector<double>, ControllerState::kMaxDevices> device_max_velocity_;
   static void ClampCommands(

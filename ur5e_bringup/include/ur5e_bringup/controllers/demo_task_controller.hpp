@@ -16,6 +16,7 @@
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
 
 #include <Eigen/Cholesky>   // LDLT
@@ -85,6 +86,7 @@ public:
     std::array<float, kNumHandMotors> hand_kp{{
       50.0f, 50.0f, 50.0f, 50.0f, 50.0f,
       50.0f, 50.0f, 50.0f, 50.0f, 50.0f}};
+    double hand_trajectory_speed{1.0};
   };
 
   /// @param urdf_path  Absolute path to the UR5e URDF file.
@@ -168,6 +170,9 @@ private:
   std::mutex target_mutex_;
   trajectory::TaskSpaceTrajectory trajectory_;
   double trajectory_time_{0.0};
+  trajectory::JointSpaceTrajectory<kNumHandMotors> hand_trajectory_;
+  double hand_trajectory_time_{0.0};
+  std::atomic<bool> hand_new_target_{false};
 
   // ── E-STOP ────────────────────────────────────────────────────────────────
   std::atomic<bool> estopped_{false};
