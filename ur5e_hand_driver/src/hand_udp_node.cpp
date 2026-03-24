@@ -160,12 +160,23 @@ class HandUdpNode : public rclcpp::Node {
     const std::string link_status_topic = get_parameter("link_status_topic").as_string();
 
     // ── ROS2 pub/sub ───────────────────────────────────────────────────
+    // BEST_EFFORT + depth 1: 500 Hz RT sensor data — only latest value matters.
+    // Eliminates DDS ACK/NACK/retransmit overhead on the EventLoop publish path.
+    // Subscribers (rt_controller) MUST also use BEST_EFFORT to connect.
+    rclcpp::QoS sensor_pub_qos{1};
+    sensor_pub_qos.best_effort();
+
     joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
-        state_topic, 10);
+        state_topic, sensor_pub_qos);
     sensor_state_pub_ = create_publisher<rtc_msgs::msg::HandSensorState>(
-        sensor_topic, 10);
+        sensor_topic, sensor_pub_qos);
+
+    // Link status: RELIABLE + TRANSIENT_LOCAL + depth 1.
+    // Low-rate (~100 Hz decimated), latch ensures late subscribers get last status.
+    rclcpp::QoS link_pub_qos{1};
+    link_pub_qos.transient_local();
     link_status_pub_ = create_publisher<std_msgs::msg::Bool>(
-        link_status_topic, 10);
+        link_status_topic, link_pub_qos);
     link_fail_threshold_ = static_cast<uint64_t>(
         get_parameter("link_fail_threshold").as_int());
 
@@ -202,7 +213,9 @@ class HandUdpNode : public rclcpp::Node {
     // JointCommand subscription (from rt_controller or external)
     // rt_controller publishes with BEST_EFFORT + depth 1 for minimal DDS overhead.
     // Subscriber must match: RELIABLE sub cannot connect to BEST_EFFORT pub.
-    rclcpp::QoS cmd_sub_qos{10};
+    // BEST_EFFORT + depth 1: rt_controller publishes with BEST_EFFORT/1,
+    // only the latest command matters — stale commands in queue cause lag.
+    rclcpp::QoS cmd_sub_qos{1};
     cmd_sub_qos.best_effort();
 
     joint_command_sub_ = create_subscription<rtc_msgs::msg::JointCommand>(
