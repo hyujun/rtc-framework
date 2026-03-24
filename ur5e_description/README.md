@@ -2,7 +2,7 @@
 
 ![version](https://img.shields.io/badge/version-v5.16.0-blue)
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스의 일부입니다.
+> 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
 > 설치/빌드: [Root README](../README.md)
 
 UR5e 로봇의 모델 description 파일 패키지입니다.
