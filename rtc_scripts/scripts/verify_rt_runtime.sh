@@ -302,7 +302,9 @@ check_process_discovery() {
   _category_start "process_discovery"
 
   # rt_controller 프로세스 찾기 (ur5e_rt_controller 등 변형 실행 파일명도 포함)
-  CONTROLLER_PID=$(pgrep -f '(^|/)rt_controller$|(^|/)ur5e_rt_controller$' 2>/dev/null | head -1 || true)
+  # pgrep -f는 전체 커맨드라인에 매칭. ROS2 실행 시 --ros-args 등이 붙으므로
+  # $ 앵커 대신 공백 또는 문자열 끝( |$)으로 실행파일명의 끝을 매칭.
+  CONTROLLER_PID=$(pgrep -f '(^|/)(ur5e_)?rt_controller( |$)' 2>/dev/null | head -1 || true)
 
   if [[ -z "$CONTROLLER_PID" ]]; then
     _fail "rt_controller / ur5e_rt_controller 프로세스 미발견 — 제어기가 실행 중이 아닙니다"
