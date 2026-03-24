@@ -48,6 +48,13 @@
     tof_lpf_cutoff_hz: 15.0           # TOF LPF 차단 주파수 (Hz)
                                       # 거리 측정 노이즈 제거 15Hz 권장
 
+    # ── Barometer drift detection (one-shot, OLS) ──────────────────────
+    # 시작 후 drift_window_size 샘플(5초 at 500Hz)을 축적하여 1회 판정.
+    # |slope| > drift_threshold인 센서가 있으면 1초 간격으로 stderr 경고.
+    drift_detection_enabled: false     # Drift detection 활성화
+    drift_threshold: 5.0               # |slope| 임계값 (units/sample-index)
+    drift_window_size: 2500            # OLS 윈도우 크기 (samples, 500Hz 기준 5초)
+
     # ── 통신 모드 ────────────────────────────────────────────────────────
     communication_mode: "bulk"        # "individual": 0x11+0x12+0x14~0x17 (6 round-trips)
                                       # "bulk":       0x10+0x19 (2 round-trips)

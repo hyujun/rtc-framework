@@ -74,6 +74,11 @@ class HandUdpNode : public rclcpp::Node {
     declare_parameter("tof_lpf_enabled", false);
     declare_parameter("tof_lpf_cutoff_hz", 15.0);
 
+    // Drift detection (one-shot)
+    declare_parameter("drift_detection_enabled", false);
+    declare_parameter("drift_threshold", 5.0);
+    declare_parameter("drift_window_size", 2500);
+
     // F/T inference
     declare_parameter("ft_inferencer.enabled", false);
     declare_parameter("ft_inferencer.num_fingertips", 4);
@@ -138,6 +143,12 @@ class HandUdpNode : public rclcpp::Node {
       }
     }
 
+    // ── Drift detection ────────────────────────────────────────────────
+    const bool   drift_enabled     = get_parameter("drift_detection_enabled").as_bool();
+    const double drift_threshold   = get_parameter("drift_threshold").as_double();
+    const int    drift_window_size = static_cast<int>(
+        get_parameter("drift_window_size").as_int());
+
     // ── HandController ─────────────────────────────────────────────────
     const auto ft_names = get_parameter("hand_fingertip_names").as_string_array();
     num_fingertips_ = urtc::kDefaultNumFingertips;
@@ -146,7 +157,8 @@ class HandUdpNode : public rclcpp::Node {
         false /* enable_write_ack: deprecated */, 1,
         num_fingertips_, false, ft_names, comm_mode,
         tof_lpf_enabled, tof_lpf_cutoff_hz,
-        baro_lpf_enabled, baro_lpf_cutoff_hz, ft_config);
+        baro_lpf_enabled, baro_lpf_cutoff_hz, ft_config,
+        drift_enabled, drift_threshold, drift_window_size);
 
     // ── Topic names (configurable) ────────────────────────────────────
     declare_parameter("command_topic", std::string("/hand/joint_command"));
@@ -501,6 +513,15 @@ class HandUdpNode : public rclcpp::Node {
           << " },\n";
     }
 
+    // Sensor processing timing (filter + drift detection)
+    if (ts.sensor_cycle_count > 0) {
+      ofs << "    \"sensor_proc_us\": {"
+          << " \"mean\": " << ts.sensor_proc.mean_us
+          << ", \"min\": " << ts.sensor_proc.min_us
+          << ", \"max\": " << ts.sensor_proc.max_us
+          << " },\n";
+    }
+
     // F/T inference timing
     if (ts.ft_infer_count > 0) {
       ofs << "    \"ft_infer_us\": {"
@@ -511,7 +532,9 @@ class HandUdpNode : public rclcpp::Node {
           << " },\n";
     }
 
-    ofs << "    \"over_budget\": " << ts.over_budget << "\n"
+    ofs << "    \"actual_sensor_rate_hz\": " << std::setprecision(1)
+        << controller_->actual_sensor_rate_hz() << ",\n"
+        << "    \"over_budget\": " << ts.over_budget << "\n"
         << "  }\n"
         << "}\n";
     ofs.close();

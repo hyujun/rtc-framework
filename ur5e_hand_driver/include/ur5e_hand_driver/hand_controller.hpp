@@ -54,6 +54,8 @@
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/timing/timing_profiler_base.hpp"
 #include "rtc_base/filters/bessel_filter.hpp"
+#include "rtc_base/filters/sensor_rate_estimator.hpp"
+#include "rtc_base/filters/sliding_trend_detector.hpp"
 #include "ur5e_hand_driver/fingertip_ft_inferencer.hpp"
 #include "ur5e_hand_driver/hand_packets.hpp"
 #include "ur5e_hand_driver/hand_udp_codec.hpp"
@@ -101,6 +103,9 @@ class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
     uint64_t   individual_count{0};
     uint64_t   bulk_count{0};
 
+    // Sensor processing phase (filter + drift detection, excl. FT)
+    PhaseStats sensor_proc;
+
     // F/T inference phase
     PhaseStats ft_infer;
     uint64_t   ft_infer_count{0};  // FT 추론이 실행된 cycle 수
@@ -116,6 +121,7 @@ class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
     // Bulk mode phases
     double read_all_motor_us{0.0};
     double read_all_sensor_us{0.0};  // 0 if sensor decimation skipped
+    double sensor_proc_us{0.0};      // filter + drift detection (excl. FT)
     double ft_infer_us{0.0};  // 0 if FT inference disabled or not run
     double total_us{0.0};
     bool   is_sensor_cycle{false};
@@ -150,6 +156,12 @@ class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
         UpdatePhase(read_sensor_sum_, read_sensor_min_, read_sensor_max_,
                     t.read_sensor_us);
       }
+    }
+
+    // Sensor processing phase (공통 — bulk/individual 무관, sensor cycle만)
+    if (t.is_sensor_cycle) {
+      UpdatePhase(sensor_proc_sum_, sensor_proc_min_, sensor_proc_max_,
+                  t.sensor_proc_us);
     }
 
     // F/T inference phase (공통 — bulk/individual 무관)
@@ -200,6 +212,12 @@ class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
       }
     }
 
+    // Sensor processing stats (filter + drift detection)
+    if (s.sensor_cycle_count > 0) {
+      s.sensor_proc = LoadPhaseStats(sensor_proc_sum_, sensor_proc_min_,
+                                     sensor_proc_max_, s.sensor_cycle_count);
+    }
+
     // F/T inference stats
     s.ft_infer_count = ft_infer_count_.load(std::memory_order_relaxed);
     if (s.ft_infer_count > 0) {
@@ -225,23 +243,24 @@ class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
           "HandUDP timing [bulk]: count=%lu  mean=%.0f\xc2\xb5s  min=%.0f\xc2\xb5s"
           "  max=%.0f\xc2\xb5s  p95=%.0f\xc2\xb5s  p99=%.0f\xc2\xb5s"
           "  over_budget=%lu (%.1f%%)"
-          "  | write=%.0f  all_motor=%.0f  all_sensor=%.0f\xc2\xb5s",
+          "  | write=%.0f  all_motor=%.0f  all_sensor=%.0f  proc=%.0f\xc2\xb5s",
           static_cast<unsigned long>(s.count),
           s.mean_us, s.min_us, s.max_us, s.p95_us, s.p99_us,
           static_cast<unsigned long>(s.over_budget), over_pct,
-          s.write.mean_us, s.read_all_motor.mean_us, s.read_all_sensor.mean_us);
+          s.write.mean_us, s.read_all_motor.mean_us, s.read_all_sensor.mean_us,
+          s.sensor_proc.mean_us);
     } else {
       std::snprintf(
           buf, sizeof(buf),
           "HandUDP timing: count=%lu  mean=%.0f\xc2\xb5s  min=%.0f\xc2\xb5s"
           "  max=%.0f\xc2\xb5s  p95=%.0f\xc2\xb5s  p99=%.0f\xc2\xb5s"
           "  over_budget=%lu (%.1f%%)"
-          "  | write=%.0f  pos=%.0f  vel=%.0f  sensor=%.0f\xc2\xb5s",
+          "  | write=%.0f  pos=%.0f  vel=%.0f  sensor=%.0f  proc=%.0f\xc2\xb5s",
           static_cast<unsigned long>(s.count),
           s.mean_us, s.min_us, s.max_us, s.p95_us, s.p99_us,
           static_cast<unsigned long>(s.over_budget), over_pct,
           s.write.mean_us, s.read_pos.mean_us, s.read_vel.mean_us,
-          s.read_sensor.mean_us);
+          s.read_sensor.mean_us, s.sensor_proc.mean_us);
     }
 
     // FT inference stats (조건부 출력)
@@ -266,6 +285,7 @@ class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
     is_bulk_mode_.store(false, std::memory_order_relaxed);
     individual_count_.store(0, std::memory_order_relaxed);
     bulk_count_.store(0, std::memory_order_relaxed);
+    ResetPhase(sensor_proc_sum_, sensor_proc_min_, sensor_proc_max_);
     ResetPhase(ft_infer_sum_, ft_infer_min_, ft_infer_max_);
     ft_infer_count_.store(0, std::memory_order_relaxed);
   }
@@ -296,6 +316,10 @@ class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
   // Per-mode cycle counts
   std::atomic<uint64_t> individual_count_{0};
   std::atomic<uint64_t> bulk_count_{0};
+  // Sensor processing phase accumulators (filter + drift detection)
+  std::atomic<double> sensor_proc_sum_{0.0};
+  std::atomic<double> sensor_proc_min_{1e9};
+  std::atomic<double> sensor_proc_max_{0.0};
   // F/T inference phase accumulators
   std::atomic<double> ft_infer_sum_{0.0};
   std::atomic<double> ft_infer_min_{1e9};
@@ -333,7 +357,10 @@ class HandController {
       double tof_lpf_cutoff_hz = 15.0,
       bool baro_lpf_enabled = false,
       double baro_lpf_cutoff_hz = 30.0,
-      FingertipFTInferencer::Config ft_config = {}) noexcept
+      FingertipFTInferencer::Config ft_config = {},
+      bool drift_detection_enabled = false,
+      double drift_threshold = 5.0,
+      int drift_window_size = 2500) noexcept
       : target_ip_(std::move(target_ip)),
         target_port_(target_port),
         thread_cfg_(thread_cfg),
@@ -350,9 +377,10 @@ class HandController {
         tof_lpf_cutoff_hz_(tof_lpf_cutoff_hz),
         baro_lpf_enabled_(baro_lpf_enabled),
         baro_lpf_cutoff_hz_(baro_lpf_cutoff_hz),
-        ft_config_(std::move(ft_config))
-        // baro_filter_active_, baro_filter_, tof_filter_active_, tof_filter_
-        // are value-initialized (false / default)
+        ft_config_(std::move(ft_config)),
+        drift_detection_enabled_(drift_detection_enabled),
+        drift_threshold_(drift_threshold),
+        drift_window_size_(drift_window_size)
   {
     // fingertip_names 갯수로 num_fingertips_ 결정
     const int name_count = static_cast<int>(fingertip_names_.size());
@@ -452,14 +480,18 @@ class HandController {
       sensor_init_ok_ = InitializeSensors();
     }
 
-    // 센서 LPF 초기화 (effective rate = 500Hz / sensor_decimation)
+    // 센서 rate estimator 초기화 (nominal 500Hz, warmup 후 실측 rate로 filter 재초기화)
     if (num_fingertips_ > 0) {
-      const double effective_rate =
-          500.0 / static_cast<double>(sensor_decimation_);
+      constexpr double kNominalRateHz = 500.0;
+      sensor_rate_estimator_.Init(kNominalRateHz);
+
+      // 센서 LPF 초기 Init (nominal rate 기반 — warmup 후 실측 rate로 재초기화)
+      const double nominal_effective_rate =
+          kNominalRateHz / static_cast<double>(sensor_decimation_);
 
       if (baro_lpf_enabled_) {
         try {
-          baro_filter_.Init(baro_lpf_cutoff_hz_, effective_rate);
+          baro_filter_.Init(baro_lpf_cutoff_hz_, nominal_effective_rate);
           baro_filter_active_ = true;
         } catch (...) {
           baro_filter_active_ = false;
@@ -468,11 +500,18 @@ class HandController {
 
       if (tof_lpf_enabled_) {
         try {
-          tof_filter_.Init(tof_lpf_cutoff_hz_, effective_rate);
+          tof_filter_.Init(tof_lpf_cutoff_hz_, nominal_effective_rate);
           tof_filter_active_ = true;
         } catch (...) {
           tof_filter_active_ = false;
         }
+      }
+
+      // Drift detector 초기화 (one-shot: window_size 샘플 축적 후 1회 판정)
+      if (drift_detection_enabled_) {
+        drift_detector_.Init(
+            static_cast<std::size_t>(drift_window_size_),
+            drift_threshold_);
       }
     }
 
@@ -634,6 +673,11 @@ class HandController {
   // 설정된 recv timeout (ms) 반환
   [[nodiscard]] double recv_timeout_ms() const noexcept {
     return recv_timeout_ms_;
+  }
+
+  // 실측 sensor sampling rate (Hz). SensorRateEstimator 기반.
+  [[nodiscard]] double actual_sensor_rate_hz() const noexcept {
+    return sensor_rate_estimator_.rate_hz();
   }
 
  private:
@@ -1087,14 +1131,27 @@ class HandController {
 
         const auto t2 = std::chrono::steady_clock::now();  // read_all_motor 완료
 
-        // 3. Read all sensors (0x19, 3B → 259B) — decimation 적용
+        // 3. Read all sensors (0x19, 3B → 259B) — UDP I/O only
         if (is_sensor_cycle) {
           if (RequestAllSensorRead(cached_sensor_data.data(), num_fingertips_,
                                    hand_packets::SensorMode::kRaw)) {
             any_recv_ok = true;
           }
+        }
+
+        const auto t3 = std::chrono::steady_clock::now();  // sensor I/O 완료 (순수 UDP)
+
+        // 4. Sensor processing (filter + drift detection + FT inference)
+        if (is_sensor_cycle) {
           cached_sensor_data_raw = cached_sensor_data;   // raw 사본 보존 (LPF 이전)
+
+          // SensorRateEstimator + BesselFilter delayed re-init
+          SensorProcessingPreFilter();
+
           ApplySensorFilters(cached_sensor_data);
+
+          // One-shot drift detection (raw 데이터 기반)
+          OneShotDriftDetection(cached_sensor_data_raw);
 
           // F/T 추론 (캘리브레이션 또는 추론)
           if (ft_enabled_) {
@@ -1110,7 +1167,7 @@ class HandController {
           }
         }
 
-        const auto t3 = std::chrono::steady_clock::now();  // read_all_sensor + FT 완료
+        const auto t4 = std::chrono::steady_clock::now();  // processing 완료
 
         // 항상 캐시된 센서 데이터를 state에 복사
         state.sensor_data_raw = cached_sensor_data_raw;
@@ -1122,17 +1179,18 @@ class HandController {
         state_seqlock_.Store(state);
         if (callback_) { callback_(state, ft_seqlock_.Load()); }
 
-        const auto t4 = std::chrono::steady_clock::now();  // 전체 완료
+        const auto t5 = std::chrono::steady_clock::now();  // 전체 완료
 
         // ── Timing profiler 업데이트 (bulk) ──
         HandTimingProfiler::PhaseTiming pt;
         pt.is_bulk_mode       = true;
         pt.write_us           = std::chrono::duration<double, std::micro>(t1 - t0).count();
         pt.read_all_motor_us  = std::chrono::duration<double, std::micro>(t2 - t1).count();
-        pt.read_all_sensor_us = std::chrono::duration<double, std::micro>(t3 - t2).count()
+        pt.read_all_sensor_us = std::chrono::duration<double, std::micro>(t3 - t2).count();
+        pt.sensor_proc_us     = std::chrono::duration<double, std::micro>(t4 - t3).count()
                                 - ft_infer_elapsed_us;  // FT 시간 제외 (별도 추적)
         pt.ft_infer_us        = ft_infer_elapsed_us;
-        pt.total_us           = std::chrono::duration<double, std::micro>(t4 - t0).count();
+        pt.total_us           = std::chrono::duration<double, std::micro>(t5 - t0).count();
         pt.is_sensor_cycle    = is_sensor_cycle;
         timing_profiler_.Update(pt);
 
@@ -1160,8 +1218,7 @@ class HandController {
 
         const auto t3 = std::chrono::steady_clock::now();  // read_vel 완료
 
-        // 4. Read sensors — sensor_decimation_ cycle마다 수행, 나머지는 캐시 사용
-        //    각 센서도 request → response → cmd 검증 패턴 (RequestSensorRead 내부)
+        // 4. Read sensors — UDP I/O only (decimation 적용)
         if (is_sensor_cycle) {
           for (int i = 0; i < num_fingertips_; ++i) {
             auto cmd = hand_packets::SensorCommand(i);
@@ -1172,8 +1229,21 @@ class HandController {
               any_recv_ok = true;
             }
           }
+        }
+
+        const auto t4 = std::chrono::steady_clock::now();  // sensor I/O 완료 (순수 UDP)
+
+        // 5. Sensor processing (filter + drift detection + FT inference)
+        if (is_sensor_cycle) {
           cached_sensor_data_raw = cached_sensor_data;   // raw 사본 보존 (LPF 이전)
+
+          // SensorRateEstimator + BesselFilter delayed re-init
+          SensorProcessingPreFilter();
+
           ApplySensorFilters(cached_sensor_data);
+
+          // One-shot drift detection (raw 데이터 기반)
+          OneShotDriftDetection(cached_sensor_data_raw);
 
           // F/T 추론 (캘리브레이션 또는 추론)
           if (ft_enabled_) {
@@ -1189,7 +1259,7 @@ class HandController {
           }
         }
 
-        const auto t4 = std::chrono::steady_clock::now();  // read_sensor + FT 완료
+        const auto t5 = std::chrono::steady_clock::now();  // processing 완료
 
         // 항상 캐시된 센서 데이터를 state에 복사
         state.sensor_data_raw = cached_sensor_data_raw;
@@ -1201,17 +1271,18 @@ class HandController {
         state_seqlock_.Store(state);
         if (callback_) { callback_(state, ft_seqlock_.Load()); }
 
-        const auto t5 = std::chrono::steady_clock::now();  // 전체 완료
+        const auto t6 = std::chrono::steady_clock::now();  // 전체 완료
 
         // ── Timing profiler 업데이트 (individual) ──
         HandTimingProfiler::PhaseTiming pt;
         pt.write_us       = std::chrono::duration<double, std::micro>(t1 - t0).count();
         pt.read_pos_us    = std::chrono::duration<double, std::micro>(t2 - t1).count();
         pt.read_vel_us    = std::chrono::duration<double, std::micro>(t3 - t2).count();
-        pt.read_sensor_us = std::chrono::duration<double, std::micro>(t4 - t3).count()
+        pt.read_sensor_us = std::chrono::duration<double, std::micro>(t4 - t3).count();
+        pt.sensor_proc_us = std::chrono::duration<double, std::micro>(t5 - t4).count()
                             - ft_infer_elapsed_us;  // FT 시간 제외 (별도 추적)
         pt.ft_infer_us    = ft_infer_elapsed_us;
-        pt.total_us       = std::chrono::duration<double, std::micro>(t5 - t0).count();
+        pt.total_us       = std::chrono::duration<double, std::micro>(t6 - t0).count();
         pt.is_sensor_cycle = is_sensor_cycle;
         timing_profiler_.Update(pt);
       }
@@ -1227,6 +1298,91 @@ class HandController {
       }
 
       busy_.store(false, std::memory_order_release);
+    }
+  }
+
+  // ── SensorRateEstimator tick + BesselFilter delayed re-init ──────────────
+  // sensor cycle마다 호출. warmup 완료 후 실측 rate로 filter 계수를 1회 재초기화.
+  void SensorProcessingPreFilter() noexcept {
+    sensor_rate_estimator_.Tick();
+
+    // BesselFilter delayed re-init: warmup 완료 후 실측 rate로 1회 재초기화
+    if (!filter_reinited_ && sensor_rate_estimator_.warmed_up()) {
+      const double actual_rate =
+          sensor_rate_estimator_.rate_hz()
+          / static_cast<double>(sensor_decimation_);
+      if (baro_filter_active_) {
+        try {
+          baro_filter_.Init(baro_lpf_cutoff_hz_, actual_rate);
+        } catch (...) {}
+      }
+      if (tof_filter_active_) {
+        try {
+          tof_filter_.Init(tof_lpf_cutoff_hz_, actual_rate);
+        } catch (...) {}
+      }
+      filter_reinited_ = true;
+    }
+  }
+
+  // ── One-shot drift detection (raw baro 데이터 기반) ────────────────────
+  // window_size 샘플 축적 후 1회 판정. 이후 Update() 호출 중단.
+  // drift 발견 시 1Hz 간격으로 stderr 경고 (노드 수명 동안 지속).
+  void OneShotDriftDetection(
+      const std::array<int32_t, kMaxHandSensors>& sensor_data_raw) noexcept {
+    if (!drift_detection_enabled_) return;
+
+    // Phase 1: 축적 (window가 가득 찰 때까지)
+    if (!drift_detector_.window_full()) {
+      // Extract baro raw into flat double array (8ch × num_fingertips)
+      std::array<double, kMaxBaroChannels> baro_raw{};
+      for (int f = 0; f < num_fingertips_; ++f) {
+        const int sensor_base = f * kSensorValuesPerFingertip;
+        const int baro_base   = f * kBarometerCount;
+        for (int b = 0; b < kBarometerCount; ++b) {
+          baro_raw[static_cast<std::size_t>(baro_base + b)] =
+              static_cast<double>(
+                  sensor_data_raw[static_cast<std::size_t>(sensor_base + b)]);
+        }
+      }
+
+      auto result = drift_detector_.Update(baro_raw);
+
+      // Phase 2: window 가득 참 → 결과 캐시 (1회만 실행)
+      if (result.window_full) {
+        drift_result_ = result;
+        const int num_baro = num_fingertips_ * kBarometerCount;
+        drift_detected_ = false;
+        for (int i = 0; i < num_baro; ++i) {
+          if (result.drift_flags[static_cast<std::size_t>(i)]) {
+            drift_detected_ = true;
+            break;
+          }
+        }
+      }
+    }
+
+    // Phase 3: drift 발견 시 1Hz throttled warning (노드 수명 동안 지속)
+    if (drift_detected_) {
+      ThrottledDriftWarning();
+    }
+  }
+
+  // ── Throttled drift warning (1Hz, stderr) ──────────────────────────────
+  // NOTE: fprintf on RT thread is not strictly RT-safe, but drift is an
+  // abnormal condition and 1Hz rate is acceptable for operator notification.
+  void ThrottledDriftWarning() noexcept {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_drift_warn_time_ < std::chrono::seconds(1)) return;
+    last_drift_warn_time_ = now;
+
+    const int num_baro = num_fingertips_ * kBarometerCount;
+    for (int i = 0; i < num_baro; ++i) {
+      if (drift_result_.drift_flags[static_cast<std::size_t>(i)]) {
+        fprintf(stderr,
+                "[WARN] barometer sensor(id:%d) detect drift (slope=%.3f)\n",
+                i, drift_result_.slopes[static_cast<std::size_t>(i)]);
+      }
     }
   }
 
@@ -1337,6 +1493,19 @@ class HandController {
   std::unique_ptr<FingertipFTInferencer> ft_inferencer_;
   SeqLock<FingertipFTState> ft_seqlock_{};  // EventLoop(writer) ↔ 외부(reader)
   bool ft_enabled_{false};
+
+  // ── SensorRateEstimator (실측 sampling rate) ──
+  SensorRateEstimator sensor_rate_estimator_;
+  bool filter_reinited_{false};  // BesselFilter re-init 완료 플래그
+
+  // ── Drift detection (one-shot) ──
+  bool   drift_detection_enabled_{false};
+  double drift_threshold_{5.0};
+  int    drift_window_size_{2500};
+  SlidingTrendDetector<kMaxBaroChannels, 2500> drift_detector_;
+  SlidingTrendDetector<kMaxBaroChannels, 2500>::Result drift_result_{};
+  bool   drift_detected_{false};
+  std::chrono::steady_clock::time_point last_drift_warn_time_{};
 
   std::jthread event_thread_;
 };
