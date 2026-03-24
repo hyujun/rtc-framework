@@ -94,6 +94,32 @@ public:
   [[nodiscard]] Gains get_gains() const noexcept {return gains_;}
 
 private:
+  // ── Phase 1→2 intermediate: parsed sensor data ──────────────────────────
+  struct FingertipSensorData {
+    std::array<int32_t, rtc::kBarometerCount> baro{};
+    std::array<int32_t, 3> tof{};
+    std::array<float, 3> force{};
+    std::array<float, 3> displacement{};
+    float contact_flag{0.0f};
+    bool valid{false};
+  };
+  std::array<FingertipSensorData, rtc::kMaxFingertips> fingertip_data_{};
+  int num_active_fingertips_{0};
+
+  // ── Phase 2→3 intermediate: computed trajectory results ─────────────────
+  struct ComputedTrajectory {
+    std::array<double, kMaxDeviceChannels> positions{};
+    std::array<double, kMaxDeviceChannels> velocities{};
+  };
+  ComputedTrajectory robot_computed_{};
+  ComputedTrajectory hand_computed_{};
+
+  // ── 3-phase pipeline ────────────────────────────────────────────────────
+  void ReadState(const ControllerState & state) noexcept;
+  void ComputeControl(const ControllerState & state, double dt) noexcept;
+  [[nodiscard]] ControllerOutput WriteOutput(const ControllerState & state, double dt) noexcept;
+
+  // ── Internal state ──────────────────────────────────────────────────────
   Gains gains_;
   std::array<std::array<double, rtc::kMaxDeviceChannels>, ControllerState::kMaxDevices> device_targets_{};
 

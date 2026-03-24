@@ -132,6 +132,31 @@ public:
   }
 
 private:
+  // ── Phase 1→2 intermediate: parsed sensor data ──────────────────────────
+  struct FingertipSensorData {
+    std::array<int32_t, rtc::kBarometerCount> baro{};
+    std::array<int32_t, 3> tof{};
+    std::array<float, 3> force{};
+    std::array<float, 3> displacement{};
+    float contact_flag{0.0f};
+    bool valid{false};
+  };
+  std::array<FingertipSensorData, rtc::kMaxFingertips> fingertip_data_{};
+  int num_active_fingertips_{0};
+
+  // ── Phase 2→3 intermediate: computed trajectory results ─────────────────
+  struct ComputedTrajectory {
+    std::array<double, kMaxDeviceChannels> positions{};
+    std::array<double, kMaxDeviceChannels> velocities{};
+  };
+  ComputedTrajectory hand_computed_{};
+  bool estop_active_{false};
+
+  // ── 3-phase pipeline ────────────────────────────────────────────────────
+  void ReadState(const ControllerState & state) noexcept;
+  void ComputeControl(const ControllerState & state, double dt) noexcept;
+  [[nodiscard]] ControllerOutput WriteOutput(const ControllerState & state, double dt) noexcept;
+
   // ── Pinocchio model + pre-allocated Data ─────────────────────────────────
   pinocchio::Model      model_;
   pinocchio::Data       data_;
@@ -169,6 +194,7 @@ private:
   std::atomic<bool> new_target_{false};
   std::mutex target_mutex_;
   trajectory::TaskSpaceTrajectory trajectory_;
+  trajectory::TaskSpaceTrajectory::State traj_state_{};
   double trajectory_time_{0.0};
   trajectory::JointSpaceTrajectory<kNumHandMotors> hand_trajectory_;
   double hand_trajectory_time_{0.0};

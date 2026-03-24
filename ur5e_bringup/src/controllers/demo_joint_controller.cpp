@@ -44,18 +44,70 @@ void DemoJointController::OnDeviceConfigsSet()
 
 ControllerOutput DemoJointController::Compute(const ControllerState & state) noexcept
 {
-  ControllerOutput output;
-  output.num_devices = state.num_devices;
-
-  const auto & dev0 = state.devices[0];
-  auto & out0 = output.devices[0];
-  const int nc0 = dev0.num_channels;
-  out0.num_channels = nc0;
-  out0.goal_type = GoalType::kJoint;
-
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
+  ReadState(state);
+  ComputeControl(state, dt);
+  return WriteOutput(state, dt);
+}
 
-  // ── Robot arm trajectory ──────────────────────────────────────────────────
+// ── Phase 1: Read joint states + sensor data ────────────────────────────────
+
+void DemoJointController::ReadState(const ControllerState & state) noexcept
+{
+  // Robot arm joint positions → Eigen vector (for FK logging)
+  const auto & dev0 = state.devices[0];
+  const int nc0 = dev0.num_channels;
+  for (int i = 0; i < nc0; ++i) {
+    q_[static_cast<Eigen::Index>(i)] = dev0.positions[i];
+  }
+
+  // Hand sensor data (per-fingertip)
+  num_active_fingertips_ = 0;
+  if (state.num_devices > 1 && state.devices[1].valid) {
+    const auto & dev1 = state.devices[1];
+    const int num_sensor_ch = dev1.num_sensor_channels;
+    const int num_fingertips = num_sensor_ch / rtc::kSensorValuesPerFingertip;
+    num_active_fingertips_ = std::min(num_fingertips, static_cast<int>(rtc::kMaxFingertips));
+
+    for (int f = 0; f < num_active_fingertips_; ++f) {
+      auto & ft = fingertip_data_[static_cast<std::size_t>(f)];
+      const int base = f * rtc::kSensorValuesPerFingertip;
+
+      for (int j = 0; j < static_cast<int>(rtc::kBarometerCount); ++j) {
+        ft.baro[static_cast<std::size_t>(j)] = dev1.sensor_data[base + j];
+      }
+      for (int j = 0; j < 3; ++j) {
+        ft.tof[static_cast<std::size_t>(j)] =
+            dev1.sensor_data[base + static_cast<int>(rtc::kBarometerCount) + j];
+      }
+
+      ft.valid = dev1.inference_enable[static_cast<std::size_t>(f)];
+      if (ft.valid) {
+        const int ft_base = f * rtc::kFTValuesPerFingertip;
+        ft.contact_flag = dev1.inference_data[static_cast<std::size_t>(ft_base)];
+        for (int j = 0; j < 3; ++j) {
+          ft.force[static_cast<std::size_t>(j)] =
+              dev1.inference_data[static_cast<std::size_t>(ft_base + 1 + j)];
+          ft.displacement[static_cast<std::size_t>(j)] =
+              dev1.inference_data[static_cast<std::size_t>(ft_base + 4 + j)];
+        }
+      } else {
+        ft.contact_flag = 0.0f;
+        ft.force = {};
+        ft.displacement = {};
+      }
+    }
+  }
+}
+
+// ── Phase 2: Compute control (trajectory + sensor-based logic) ──────────────
+
+void DemoJointController::ComputeControl(
+  const ControllerState & state, double dt) noexcept
+{
+  const auto & dev0 = state.devices[0];
+
+  // ── Robot arm trajectory ────────────────────────────────────────────────
   if (robot_new_target_.load(std::memory_order_acquire)) {
     std::unique_lock lock(target_mutex_, std::try_to_lock);
     if (lock.owns_lock()) {
@@ -86,37 +138,14 @@ ControllerOutput DemoJointController::Compute(const ControllerState & state) noe
   const auto robot_traj = robot_trajectory_.compute(robot_trajectory_time_);
   robot_trajectory_time_ += dt;
 
-  for (int i = 0; i < nc0; ++i) {
-    out0.commands[i] = robot_traj.positions[i];
-    q_[static_cast<Eigen::Index>(i)] = dev0.positions[i];
-  }
-  ClampCommands(out0.commands, nc0, device_max_velocity_[0]);
-
-  // ── Forward kinematics for task-space logging ─────────────────────────────
-  pinocchio::forwardKinematics(model_, data_, q_);
-  const pinocchio::SE3 & tcp = data_.oMi[end_id_];
-  Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
-
-  output.actual_task_positions[0] = tcp.translation().x();
-  output.actual_task_positions[1] = tcp.translation().y();
-  output.actual_task_positions[2] = tcp.translation().z();
-  output.actual_task_positions[3] = rpy[0];
-  output.actual_task_positions[4] = rpy[1];
-  output.actual_task_positions[5] = rpy[2];
-
-  for (int i = 0; i < nc0; ++i) {
-    out0.target_positions[i] = robot_traj.positions[i];
-    out0.target_velocities[i] = robot_traj.velocities[i];
-    out0.goal_positions[i] = device_targets_[0][i];
+  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+    robot_computed_.positions[i] = robot_traj.positions[i];
+    robot_computed_.velocities[i] = robot_traj.velocities[i];
   }
 
-  // ── Hand motor trajectory ─────────────────────────────────────────────────
+  // ── Hand motor trajectory ──────────────────────────────────────────────
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto & dev1 = state.devices[1];
-    const int nc1 = dev1.num_channels;
-    auto & out1 = output.devices[1];
-    out1.num_channels = nc1;
-    out1.goal_type = GoalType::kJoint;
 
     if (hand_new_target_.load(std::memory_order_acquire)) {
       std::unique_lock lock(target_mutex_, std::try_to_lock);
@@ -148,44 +177,66 @@ ControllerOutput DemoJointController::Compute(const ControllerState & state) noe
     const auto hand_traj = hand_trajectory_.compute(hand_trajectory_time_);
     hand_trajectory_time_ += dt;
 
+    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+      hand_computed_.positions[i] = hand_traj.positions[i];
+      hand_computed_.velocities[i] = hand_traj.velocities[i];
+    }
+  }
+
+  // ── Sensor-based control logic (확장 포인트) ────────────────────────────
+  // fingertip_data_[0..num_active_fingertips_-1] 에 파싱된 센서 데이터 사용 가능
+  // robot_computed_, hand_computed_ 보정 가능
+}
+
+// ── Phase 3: Write output ────────────────────────────────────────────────────
+
+ControllerOutput DemoJointController::WriteOutput(
+  const ControllerState & state, double /*dt*/) noexcept
+{
+  ControllerOutput output;
+  output.num_devices = state.num_devices;
+
+  // ── Robot arm output ────────────────────────────────────────────────────
+  const auto & dev0 = state.devices[0];
+  auto & out0 = output.devices[0];
+  const int nc0 = dev0.num_channels;
+  out0.num_channels = nc0;
+  out0.goal_type = GoalType::kJoint;
+
+  for (int i = 0; i < nc0; ++i) {
+    out0.commands[i] = robot_computed_.positions[i];
+    out0.target_positions[i] = robot_computed_.positions[i];
+    out0.target_velocities[i] = robot_computed_.velocities[i];
+    out0.goal_positions[i] = device_targets_[0][i];
+  }
+  ClampCommands(out0.commands, nc0, device_max_velocity_[0]);
+
+  // ── Forward kinematics for task-space logging ──────────────────────────
+  pinocchio::forwardKinematics(model_, data_, q_);
+  const pinocchio::SE3 & tcp = data_.oMi[end_id_];
+  Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
+
+  output.actual_task_positions[0] = tcp.translation().x();
+  output.actual_task_positions[1] = tcp.translation().y();
+  output.actual_task_positions[2] = tcp.translation().z();
+  output.actual_task_positions[3] = rpy[0];
+  output.actual_task_positions[4] = rpy[1];
+  output.actual_task_positions[5] = rpy[2];
+
+  // ── Hand output ────────────────────────────────────────────────────────
+  if (state.num_devices > 1 && state.devices[1].valid) {
+    const int nc1 = state.devices[1].num_channels;
+    auto & out1 = output.devices[1];
+    out1.num_channels = nc1;
+    out1.goal_type = GoalType::kJoint;
+
     for (int i = 0; i < nc1; ++i) {
-      out1.commands[i] = hand_traj.positions[i];
-      out1.target_positions[i] = hand_traj.positions[i];
-      out1.target_velocities[i] = hand_traj.velocities[i];
+      out1.commands[i] = hand_computed_.positions[i];
+      out1.target_positions[i] = hand_computed_.positions[i];
+      out1.target_velocities[i] = hand_computed_.velocities[i];
       out1.goal_positions[i] = device_targets_[1][i];
     }
     ClampCommands(out1.commands, nc1, device_max_velocity_[1]);
-
-    // ── Hand sensor data (per-fingertip) ──────────────────────────────────
-    const int num_sensor_ch = dev1.num_sensor_channels;
-    const int num_fingertips = num_sensor_ch / rtc::kSensorValuesPerFingertip;
-    for (int f = 0; f < num_fingertips && f < rtc::kMaxFingertips; ++f) {
-      const int base = f * rtc::kSensorValuesPerFingertip;
-      const int32_t * baro = &dev1.sensor_data[base];
-      const int32_t * tof  = &dev1.sensor_data[base + rtc::kBarometerCount];
-
-      std::array<float, 3> F{};
-      std::array<float, 3> u{};
-      float contact_flag = 0.0f;
-
-      if (dev1.inference_enable[static_cast<std::size_t>(f)]) {
-        const int ft_base = f * rtc::kFTValuesPerFingertip;
-        contact_flag = dev1.inference_data[static_cast<std::size_t>(ft_base)];
-        for (int j = 0; j < 3; ++j) {
-          F[static_cast<std::size_t>(j)] =
-              dev1.inference_data[static_cast<std::size_t>(ft_base + 1 + j)];
-          u[static_cast<std::size_t>(j)] =
-              dev1.inference_data[static_cast<std::size_t>(ft_base + 4 + j)];
-        }
-      }
-
-      // baro, tof, F, u, contact_flag available for control logic
-      static_cast<void>(baro);
-      static_cast<void>(tof);
-      static_cast<void>(F);
-      static_cast<void>(u);
-      static_cast<void>(contact_flag);
-    }
   }
 
   output.command_type = command_type_;
