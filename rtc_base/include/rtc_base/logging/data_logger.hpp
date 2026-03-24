@@ -218,27 +218,31 @@ private:
     if (di >= e.num_devices) { return; }
 
     const auto & d = e.devices[di];
-    const int nc = std::min(d.num_channels, cfg.num_channels);
+    // Use header-consistent column count from config.  If runtime channels
+    // are fewer (e.g. device not yet connected), pad with zeros so the CSV
+    // row always has the same number of fields as the header.
+    const int nc = cfg.num_channels;
+    const int na = d.num_channels;
 
     f << std::fixed << std::setprecision(6) << e.timestamp;
 
     // State
-    for (int i = 0; i < nc; ++i) { f << ',' << d.actual_positions[static_cast<std::size_t>(i)]; }
-    for (int i = 0; i < nc; ++i) { f << ',' << d.actual_velocities[static_cast<std::size_t>(i)]; }
-    for (int i = 0; i < nc; ++i) { f << ',' << d.efforts[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nc; ++i) { f << ',' << (i < na ? d.actual_positions[static_cast<std::size_t>(i)] : 0.0); }
+    for (int i = 0; i < nc; ++i) { f << ',' << (i < na ? d.actual_velocities[static_cast<std::size_t>(i)] : 0.0); }
+    for (int i = 0; i < nc; ++i) { f << ',' << (i < na ? d.efforts[static_cast<std::size_t>(i)] : 0.0); }
 
     // Command
-    for (int i = 0; i < nc; ++i) { f << ',' << d.commands[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nc; ++i) { f << ',' << (i < na ? d.commands[static_cast<std::size_t>(i)] : 0.0); }
     f << ',' << (e.command_type == CommandType::kPosition ? 0 : 1);
 
     // Goal
     f << ',' << GoalTypeToString(d.goal_type);
-    for (int i = 0; i < nc; ++i) { f << ',' << d.goal_positions[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nc; ++i) { f << ',' << (i < na ? d.goal_positions[static_cast<std::size_t>(i)] : 0.0); }
     for (const auto v : e.actual_task_positions) { f << ',' << v; }  // task_goal placeholder
 
     // Trajectory
-    for (int i = 0; i < nc; ++i) { f << ',' << d.trajectory_positions[static_cast<std::size_t>(i)]; }
-    for (int i = 0; i < nc; ++i) { f << ',' << d.trajectory_velocities[static_cast<std::size_t>(i)]; }
+    for (int i = 0; i < nc; ++i) { f << ',' << (i < na ? d.trajectory_positions[static_cast<std::size_t>(i)] : 0.0); }
+    for (int i = 0; i < nc; ++i) { f << ',' << (i < na ? d.trajectory_velocities[static_cast<std::size_t>(i)] : 0.0); }
 
     // Task-space FK
     for (const auto v : e.actual_task_positions) { f << ',' << v; }

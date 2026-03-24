@@ -519,9 +519,11 @@ def print_robot_statistics(df):
 
     if traj_pos_cols and actual_pos_cols:
         print('\nPosition Tracking Error (RMS):')
-        for i in range(len(traj_pos_cols)):
-            err = df[traj_pos_cols[i]] - df[actual_pos_cols[i]]
-            rms = np.sqrt(np.mean(err ** 2))
+        for i in range(min(len(traj_pos_cols), len(actual_pos_cols))):
+            traj_s = pd.to_numeric(df[traj_pos_cols[i]], errors='coerce')
+            act_s = pd.to_numeric(df[actual_pos_cols[i]], errors='coerce')
+            err = traj_s - act_s
+            rms = np.sqrt(np.nanmean(err ** 2))
             print(f'  Joint {i} ({traj_names[i]}): '
                   f'{rms:.6f} rad ({np.rad2deg(rms):.4f} deg)')
 
@@ -532,9 +534,11 @@ def print_robot_statistics(df):
 
     if traj_vel_cols and actual_vel_cols:
         print('\nVelocity Tracking Error (RMS):')
-        for i in range(len(traj_vel_cols)):
-            err = df[traj_vel_cols[i]] - df[actual_vel_cols[i]]
-            rms = np.sqrt(np.mean(err ** 2))
+        for i in range(min(len(traj_vel_cols), len(actual_vel_cols))):
+            traj_s = pd.to_numeric(df[traj_vel_cols[i]], errors='coerce')
+            act_s = pd.to_numeric(df[actual_vel_cols[i]], errors='coerce')
+            err = traj_s - act_s
+            rms = np.sqrt(np.nanmean(err ** 2))
             print(f'  Joint {i} ({traj_names[i]}): {rms:.6f} rad/s')
 
     if 'command_type' in df.columns:
@@ -1031,8 +1035,10 @@ def print_device_statistics(df):
     if goal_cols and actual_cols:
         print('\nPosition Tracking Error (RMS):')
         for i in range(min(len(goal_cols), len(actual_cols))):
-            err = df[goal_cols[i]] - df[actual_cols[i]]
-            rms = np.sqrt(np.mean(err ** 2))
+            goal_s = pd.to_numeric(df[goal_cols[i]], errors='coerce')
+            act_s = pd.to_numeric(df[actual_cols[i]], errors='coerce')
+            err = goal_s - act_s
+            rms = np.sqrt(np.nanmean(err ** 2))
             print(f'  Motor {i} ({motor_names[i]}): {rms:.6f}')
 
     # Sensor summary (filtered 컬럼만, raw 제외)
@@ -1354,6 +1360,16 @@ def main():
 
     # 새 DataFrame 로드 시 컬럼 감지 캐시 초기화
     _invalidate_column_cache()
+
+    # 숫자여야 할 컬럼에 문자열이 섞여 있을 경우 (레거시 CSV에서
+    # 컬럼 수 불일치로 goal_type 문자열이 밀려 들어간 경우) 숫자로 변환.
+    # goal_type, command_type 등 알려진 문자열/정수 컬럼은 제외.
+    _str_cols = {'goal_type', 'command_type'}
+    for col in df.columns:
+        if col in _str_cols or col == 'timestamp':
+            continue
+        if df[col].dtype == object:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
 
     if args.save_dir:
         Path(args.save_dir).mkdir(parents=True, exist_ok=True)
