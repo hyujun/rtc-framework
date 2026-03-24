@@ -1234,6 +1234,13 @@ def main():
         print(f'Error: CSV file is empty or has no columns: {args.csv_file}')
         print('The log file may not have been written (e.g. controller crashed before logging).')
         sys.exit(1)
+    except pd.errors.ParserError as e:
+        print(f'Warning: CSV parse error — retrying with on_bad_lines="warn": {e}')
+        df = pd.read_csv(args.csv_file, on_bad_lines='warn')
+        if df.empty:
+            print(f'Error: No valid rows after skipping malformed lines: {args.csv_file}')
+            sys.exit(1)
+        print(f'Loaded {len(df)} valid rows (some malformed lines were skipped).')
 
     # 새 DataFrame 로드 시 컬럼 감지 캐시 초기화
     _invalidate_column_cache()
