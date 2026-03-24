@@ -1228,7 +1228,12 @@ def main():
         sys.exit(1)
 
     print(f'Loading ({log_type}): {args.csv_file}')
-    df = pd.read_csv(args.csv_file)
+    try:
+        df = pd.read_csv(args.csv_file)
+    except pd.errors.EmptyDataError:
+        print(f'Error: CSV file is empty or has no columns: {args.csv_file}')
+        print('The log file may not have been written (e.g. controller crashed before logging).')
+        sys.exit(1)
 
     # 새 DataFrame 로드 시 컬럼 감지 캐시 초기화
     _invalidate_column_cache()
