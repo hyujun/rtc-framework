@@ -417,7 +417,9 @@ void RtControllerNode::DeclareAndLoadParameters()
       "Unknown initial_controller '%s', defaulting to joint_pd_controller",
       initial_ctrl.c_str());
     const auto pd_it = name_to_idx.find("joint_pd_controller");
-    active_controller_idx_.store(pd_it != name_to_idx.end() ? pd_it->second : 1);
+    const int fallback = (pd_it != name_to_idx.end() &&
+        pd_it->second < static_cast<int>(controllers_.size())) ? pd_it->second : 0;
+    active_controller_idx_.store(fallback);
   }
 }
 
@@ -426,12 +428,14 @@ void RtControllerNode::CreateSubscriptions()
   auto sub_options = rclcpp::SubscriptionOptions();
   sub_options.callback_group = cb_group_sensor_;
 
-  // ── Helper: find DeviceTimeoutEntry for a given state topic ──────────────
-  auto find_timeout_entry = [this](const std::string & topic) -> DeviceTimeoutEntry* {
-    for (auto & dt : device_timeouts_) {
-      if (dt.state_topic == topic) return &dt;
+  // ── Helper: find DeviceTimeoutEntry index for a given state topic ────────
+  // Return index into device_timeouts_ (stable across reallocations) instead
+  // of a raw pointer, which becomes dangling if the vector reallocates.
+  auto find_timeout_idx = [this](const std::string & topic) -> int {
+    for (std::size_t i = 0; i < device_timeouts_.size(); ++i) {
+      if (device_timeouts_[i].state_topic == topic) return static_cast<int>(i);
     }
-    return nullptr;
+    return -1;
   };
 
   // ── Create subscriptions for all active device groups ────────────────────
@@ -446,17 +450,17 @@ void RtControllerNode::CreateSubscriptions()
       for (const auto & entry : group.subscribe) {
         if (!created_topics.insert(entry.topic_name).second) continue;
 
-        DeviceTimeoutEntry * dt_ptr = find_timeout_entry(entry.topic_name);
+        const int dt_idx = find_timeout_idx(entry.topic_name);
 
         switch (entry.role) {
           case urtc::SubscribeRole::kState: {
             auto sub = create_subscription<sensor_msgs::msg::JointState>(
               entry.topic_name, 10,
-              [this, slot, dt_ptr](sensor_msgs::msg::JointState::SharedPtr msg) {
+              [this, slot, dt_idx](sensor_msgs::msg::JointState::SharedPtr msg) {
                 DeviceJointStateCallback(slot, std::move(msg));
-                if (dt_ptr) {
-                  dt_ptr->last_update = std::chrono::steady_clock::now();
-                  dt_ptr->received = true;
+                if (dt_idx >= 0) {
+                  device_timeouts_[dt_idx].last_update = std::chrono::steady_clock::now();
+                  device_timeouts_[dt_idx].received = true;
                 }
               },
               sub_options);
