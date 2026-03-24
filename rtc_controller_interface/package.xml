@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>rtc_controller_interface</name>
-  <version>0.1.0</version>
+  <version>5.16.0</version>
   <description>Abstract controller interface (Strategy pattern) for the RTC framework.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
@@ -11,7 +11,6 @@
 
   <depend>rtc_base</depend>
   <depend>rtc_msgs</depend>
-  <depend>sensor_msgs</depend>
   <depend>pinocchio</depend>
   <depend>yaml-cpp</depend>
 

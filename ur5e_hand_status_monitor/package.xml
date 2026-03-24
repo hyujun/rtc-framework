@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>ur5e_hand_status_monitor</name>
-  <version>0.1.0</version>
+  <version>5.16.0</version>
   <description>
     UR5e + Hand status monitor — extends RtcStatusMonitor with hand device
     monitoring (motor/sensor data quality, message rate, timeout detection).
