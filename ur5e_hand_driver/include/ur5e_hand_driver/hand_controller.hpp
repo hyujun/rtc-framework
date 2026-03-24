@@ -52,6 +52,7 @@
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/threading/seqlock.hpp"
+#include "rtc_base/timing/timing_profiler_base.hpp"
 #include "rtc_base/filters/bessel_filter.hpp"
 #include "ur5e_hand_driver/fingertip_ft_inferencer.hpp"
 #include "ur5e_hand_driver/hand_packets.hpp"
@@ -68,6 +69,7 @@ enum class HandCommunicationMode {
 // ── HandTimingProfiler ────────────────────────────────────────────────────────
 //
 // EventLoop의 per-phase 소요시간을 측정하고 히스토그램 기반 통계를 유지.
+// TimingProfilerBase<50,100,2000>을 상속하여 공통 histogram/percentile 로직 재사용.
 //
 // Phase별 측정:
 //   Individual: write → read_pos → read_vel → read_sensor → total
@@ -77,33 +79,12 @@ enum class HandCommunicationMode {
 //   Update()는 EventLoop 스레드에서만 호출 (single producer).
 //   GetStats() / Summary()는 어떤 스레드에서든 호출 가능 (relaxed atomic).
 //
-class HandTimingProfiler {
+class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
  public:
-  // 히스토그램: 0–5000µs, 100µs 버킷. 마지막 버킷은 overflow (≥5000µs).
-  static constexpr int    kBuckets = 50;
-  static constexpr int    kBucketWidthUs = 100;
-  static constexpr double kBudgetUs = 2000.0;  // 500Hz = 2ms 예산
+  using PhaseStats = typename TimingProfilerBase<50, 100, 2000>::PhaseStats;
 
-  // Per-phase 평균 통계
-  struct PhaseStats {
-    double mean_us{0.0};
-    double min_us{0.0};
-    double max_us{0.0};
-  };
-
-  // 전체 통계 스냅샷
-  struct Stats {
-    uint64_t count{0};
-    double   min_us{0.0};
-    double   max_us{0.0};
-    double   mean_us{0.0};
-    double   stddev_us{0.0};
-    double   p95_us{0.0};
-    double   p99_us{0.0};
-    double   last_us{0.0};
-    uint64_t over_budget{0};
-    std::array<uint64_t, kBuckets + 1> histogram{};
-
+  // 전체 통계 스냅샷 (BaseStats 확장)
+  struct Stats : BaseStats {
     // Per-phase 평균 (individual mode)
     PhaseStats write;
     PhaseStats read_pos;
@@ -115,6 +96,10 @@ class HandTimingProfiler {
     PhaseStats read_all_motor;
     PhaseStats read_all_sensor;
     bool       is_bulk_mode{false};
+
+    // Per-mode cycle counts (모드 전환 시 정확한 mean 계산용)
+    uint64_t   individual_count{0};
+    uint64_t   bulk_count{0};
 
     // F/T inference phase
     PhaseStats ft_infer;
@@ -140,35 +125,15 @@ class HandTimingProfiler {
   // ── Update (single-producer: EventLoop thread) ────────────────────────────
 
   void Update(const PhaseTiming& t) noexcept {
-    count_.fetch_add(1, std::memory_order_relaxed);
-
-    AtomicMin(min_us_, t.total_us);
-    AtomicMax(max_us_, t.total_us);
-    last_us_.store(t.total_us, std::memory_order_relaxed);
-
-    // Single-producer RMW — relaxed load+store is safe
-    sum_us_.store(
-        sum_us_.load(std::memory_order_relaxed) + t.total_us,
-        std::memory_order_relaxed);
-    sum_sq_us_.store(
-        sum_sq_us_.load(std::memory_order_relaxed) + t.total_us * t.total_us,
-        std::memory_order_relaxed);
-
-    if (t.total_us > kBudgetUs) {
-      over_budget_.fetch_add(1, std::memory_order_relaxed);
-    }
-
-    const int bucket = std::min(
-        static_cast<int>(t.total_us / static_cast<double>(kBucketWidthUs)),
-        kBuckets);
-    histogram_[static_cast<std::size_t>(bucket)].fetch_add(
-        1, std::memory_order_relaxed);
+    // Base class: total histogram/min/max/sum 업데이트
+    UpdateTotal(t.total_us);
 
     // Per-phase 누적
     UpdatePhase(write_sum_, write_min_, write_max_, t.write_us);
 
     if (t.is_bulk_mode) {
       is_bulk_mode_.store(true, std::memory_order_relaxed);
+      bulk_count_.fetch_add(1, std::memory_order_relaxed);
       UpdatePhase(read_all_motor_sum_, read_all_motor_min_, read_all_motor_max_,
                   t.read_all_motor_us);
       if (t.is_sensor_cycle) {
@@ -177,6 +142,7 @@ class HandTimingProfiler {
                     t.read_all_sensor_us);
       }
     } else {
+      individual_count_.fetch_add(1, std::memory_order_relaxed);
       UpdatePhase(read_pos_sum_, read_pos_min_, read_pos_max_, t.read_pos_us);
       UpdatePhase(read_vel_sum_, read_vel_min_, read_vel_max_, t.read_vel_us);
       if (t.is_sensor_cycle) {
@@ -197,31 +163,30 @@ class HandTimingProfiler {
 
   [[nodiscard]] Stats GetStats() const noexcept {
     Stats s;
-    s.count = count_.load(std::memory_order_relaxed);
-    s.min_us = min_us_.load(std::memory_order_relaxed);
-    s.max_us = max_us_.load(std::memory_order_relaxed);
-    s.last_us = last_us_.load(std::memory_order_relaxed);
-    s.over_budget = over_budget_.load(std::memory_order_relaxed);
+    // Base stats (count, min, max, mean, stddev, percentiles, histogram)
+    static_cast<BaseStats&>(s) = GetBaseStats();
+
+    s.individual_count = individual_count_.load(std::memory_order_relaxed);
+    s.bulk_count = bulk_count_.load(std::memory_order_relaxed);
 
     if (s.count > 0) {
-      s.mean_us = sum_us_.load(std::memory_order_relaxed) /
-                  static_cast<double>(s.count);
-      const double var =
-          sum_sq_us_.load(std::memory_order_relaxed) /
-          static_cast<double>(s.count) - s.mean_us * s.mean_us;
-      s.stddev_us = (var > 0.0) ? std::sqrt(var) : 0.0;
-
+      // write는 모든 cycle에서 실행 → 전체 count로 나눔
       s.write = LoadPhaseStats(write_sum_, write_min_, write_max_, s.count);
+    }
+
+    // Individual mode phases — individual_count로 나눔
+    if (s.individual_count > 0) {
       s.read_pos = LoadPhaseStats(read_pos_sum_, read_pos_min_, read_pos_max_,
-                                  s.count);
+                                  s.individual_count);
       s.read_vel = LoadPhaseStats(read_vel_sum_, read_vel_min_, read_vel_max_,
-                                  s.count);
+                                  s.individual_count);
     }
 
     s.is_bulk_mode = is_bulk_mode_.load(std::memory_order_relaxed);
-    if (s.is_bulk_mode && s.count > 0) {
+    // Bulk mode phases — bulk_count로 나눔
+    if (s.bulk_count > 0) {
       s.read_all_motor = LoadPhaseStats(read_all_motor_sum_, read_all_motor_min_,
-                                        read_all_motor_max_, s.count);
+                                        read_all_motor_max_, s.bulk_count);
     }
 
     s.sensor_cycle_count = sensor_cycle_count_.load(std::memory_order_relaxed);
@@ -242,12 +207,6 @@ class HandTimingProfiler {
                                   s.ft_infer_count);
     }
 
-    for (int b = 0; b <= kBuckets; ++b) {
-      s.histogram[static_cast<std::size_t>(b)] =
-          histogram_[static_cast<std::size_t>(b)].load(
-              std::memory_order_relaxed);
-    }
-    ComputePercentiles(s);
     return s;
   }
 
@@ -296,105 +255,22 @@ class HandTimingProfiler {
   }
 
   void Reset() noexcept {
-    count_.store(0, std::memory_order_relaxed);
-    min_us_.store(1e9, std::memory_order_relaxed);
-    max_us_.store(0.0, std::memory_order_relaxed);
-    last_us_.store(0.0, std::memory_order_relaxed);
-    sum_us_.store(0.0, std::memory_order_relaxed);
-    sum_sq_us_.store(0.0, std::memory_order_relaxed);
-    over_budget_.store(0, std::memory_order_relaxed);
-    for (auto& b : histogram_) b.store(0, std::memory_order_relaxed);
-
-    write_sum_.store(0.0, std::memory_order_relaxed);
-    write_min_.store(1e9, std::memory_order_relaxed);
-    write_max_.store(0.0, std::memory_order_relaxed);
-    read_pos_sum_.store(0.0, std::memory_order_relaxed);
-    read_pos_min_.store(1e9, std::memory_order_relaxed);
-    read_pos_max_.store(0.0, std::memory_order_relaxed);
-    read_vel_sum_.store(0.0, std::memory_order_relaxed);
-    read_vel_min_.store(1e9, std::memory_order_relaxed);
-    read_vel_max_.store(0.0, std::memory_order_relaxed);
-    read_sensor_sum_.store(0.0, std::memory_order_relaxed);
-    read_sensor_min_.store(1e9, std::memory_order_relaxed);
-    read_sensor_max_.store(0.0, std::memory_order_relaxed);
-    read_all_motor_sum_.store(0.0, std::memory_order_relaxed);
-    read_all_motor_min_.store(1e9, std::memory_order_relaxed);
-    read_all_motor_max_.store(0.0, std::memory_order_relaxed);
-    read_all_sensor_sum_.store(0.0, std::memory_order_relaxed);
-    read_all_sensor_min_.store(1e9, std::memory_order_relaxed);
-    read_all_sensor_max_.store(0.0, std::memory_order_relaxed);
+    ResetBase();
+    ResetPhase(write_sum_, write_min_, write_max_);
+    ResetPhase(read_pos_sum_, read_pos_min_, read_pos_max_);
+    ResetPhase(read_vel_sum_, read_vel_min_, read_vel_max_);
+    ResetPhase(read_sensor_sum_, read_sensor_min_, read_sensor_max_);
+    ResetPhase(read_all_motor_sum_, read_all_motor_min_, read_all_motor_max_);
+    ResetPhase(read_all_sensor_sum_, read_all_sensor_min_, read_all_sensor_max_);
     sensor_cycle_count_.store(0, std::memory_order_relaxed);
     is_bulk_mode_.store(false, std::memory_order_relaxed);
-    ft_infer_sum_.store(0.0, std::memory_order_relaxed);
-    ft_infer_min_.store(1e9, std::memory_order_relaxed);
-    ft_infer_max_.store(0.0, std::memory_order_relaxed);
+    individual_count_.store(0, std::memory_order_relaxed);
+    bulk_count_.store(0, std::memory_order_relaxed);
+    ResetPhase(ft_infer_sum_, ft_infer_min_, ft_infer_max_);
     ft_infer_count_.store(0, std::memory_order_relaxed);
   }
 
  private:
-  static void ComputePercentiles(Stats& s) noexcept {
-    if (s.count == 0) return;
-    const uint64_t p95_target = (s.count * 95) / 100;
-    const uint64_t p99_target = (s.count * 99) / 100;
-
-    uint64_t cumulative = 0;
-    bool p95_done = false, p99_done = false;
-
-    for (int b = 0; b <= kBuckets; ++b) {
-      cumulative += s.histogram[static_cast<std::size_t>(b)];
-      if (!p95_done && cumulative >= p95_target) {
-        s.p95_us = static_cast<double>(b * kBucketWidthUs);
-        p95_done = true;
-      }
-      if (!p99_done && cumulative >= p99_target) {
-        s.p99_us = static_cast<double>(b * kBucketWidthUs);
-        p99_done = true;
-      }
-      if (p95_done && p99_done) break;
-    }
-  }
-
-  static void AtomicMin(std::atomic<double>& a, double v) noexcept {
-    double old = a.load(std::memory_order_relaxed);
-    while (v < old &&
-           !a.compare_exchange_weak(old, v, std::memory_order_relaxed)) {}
-  }
-
-  static void AtomicMax(std::atomic<double>& a, double v) noexcept {
-    double old = a.load(std::memory_order_relaxed);
-    while (v > old &&
-           !a.compare_exchange_weak(old, v, std::memory_order_relaxed)) {}
-  }
-
-  void UpdatePhase(std::atomic<double>& sum, std::atomic<double>& min_val,
-                   std::atomic<double>& max_val, double us) noexcept {
-    sum.store(sum.load(std::memory_order_relaxed) + us,
-              std::memory_order_relaxed);
-    AtomicMin(min_val, us);
-    AtomicMax(max_val, us);
-  }
-
-  [[nodiscard]] static PhaseStats LoadPhaseStats(
-      const std::atomic<double>& sum, const std::atomic<double>& min_val,
-      const std::atomic<double>& max_val, uint64_t count) noexcept {
-    PhaseStats ps;
-    ps.mean_us = sum.load(std::memory_order_relaxed) /
-                 static_cast<double>(count);
-    ps.min_us = min_val.load(std::memory_order_relaxed);
-    ps.max_us = max_val.load(std::memory_order_relaxed);
-    return ps;
-  }
-
-  // Total 통계
-  std::atomic<uint64_t> count_{0};
-  std::atomic<double>   min_us_{1e9};
-  std::atomic<double>   max_us_{0.0};
-  std::atomic<double>   last_us_{0.0};
-  std::atomic<double>   sum_us_{0.0};
-  std::atomic<double>   sum_sq_us_{0.0};
-  std::atomic<uint64_t> over_budget_{0};
-  std::array<std::atomic<uint64_t>, kBuckets + 1> histogram_{};
-
   // Per-phase 누적 (sum + min + max)
   std::atomic<double> write_sum_{0.0};
   std::atomic<double> write_min_{1e9};
@@ -417,6 +293,9 @@ class HandTimingProfiler {
   std::atomic<double> read_all_sensor_max_{0.0};
   std::atomic<uint64_t> sensor_cycle_count_{0};
   std::atomic<bool> is_bulk_mode_{false};
+  // Per-mode cycle counts
+  std::atomic<uint64_t> individual_count_{0};
+  std::atomic<uint64_t> bulk_count_{0};
   // F/T inference phase accumulators
   std::atomic<double> ft_infer_sum_{0.0};
   std::atomic<double> ft_infer_min_{1e9};
@@ -1250,7 +1129,8 @@ class HandController {
         pt.is_bulk_mode       = true;
         pt.write_us           = std::chrono::duration<double, std::micro>(t1 - t0).count();
         pt.read_all_motor_us  = std::chrono::duration<double, std::micro>(t2 - t1).count();
-        pt.read_all_sensor_us = std::chrono::duration<double, std::micro>(t3 - t2).count();
+        pt.read_all_sensor_us = std::chrono::duration<double, std::micro>(t3 - t2).count()
+                                - ft_infer_elapsed_us;  // FT 시간 제외 (별도 추적)
         pt.ft_infer_us        = ft_infer_elapsed_us;
         pt.total_us           = std::chrono::duration<double, std::micro>(t4 - t0).count();
         pt.is_sensor_cycle    = is_sensor_cycle;
@@ -1328,7 +1208,8 @@ class HandController {
         pt.write_us       = std::chrono::duration<double, std::micro>(t1 - t0).count();
         pt.read_pos_us    = std::chrono::duration<double, std::micro>(t2 - t1).count();
         pt.read_vel_us    = std::chrono::duration<double, std::micro>(t3 - t2).count();
-        pt.read_sensor_us = std::chrono::duration<double, std::micro>(t4 - t3).count();
+        pt.read_sensor_us = std::chrono::duration<double, std::micro>(t4 - t3).count()
+                            - ft_infer_elapsed_us;  // FT 시간 제외 (별도 추적)
         pt.ft_infer_us    = ft_infer_elapsed_us;
         pt.total_us       = std::chrono::duration<double, std::micro>(t5 - t0).count();
         pt.is_sensor_cycle = is_sensor_cycle;
