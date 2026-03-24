@@ -362,8 +362,19 @@ void RtControllerNode::DeclareAndLoadParameters()
       }
     }
 
+    // Compute max inference values from sensor configs so the CSV header
+    // includes inference columns (previously defaulted to 0, causing
+    // column count mismatch: header had 0 inference cols but data rows had N).
+    int max_inference = 0;
+    for (const auto& lc : log_configs) {
+      if (lc.role == urtc::PublishRole::kDeviceSensorLog && !lc.sensor_names.empty()) {
+        const int niv = static_cast<int>(lc.sensor_names.size()) * urtc::kFTValuesPerFingertip;
+        if (niv > max_inference) max_inference = niv;
+      }
+    }
+
     logger_ = std::make_unique<urtc::DataLogger>(
-        timing_path, std::move(log_configs));
+        timing_path, std::move(log_configs), max_inference);
     RCLCPP_INFO(get_logger(),
         "Logging to: %s/controller/ (max_sessions=%d)",
         session_dir.string().c_str(), max_sessions);
