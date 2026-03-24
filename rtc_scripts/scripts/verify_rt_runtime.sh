@@ -158,73 +158,76 @@ declare -a EXPECTED_THREADS
 
 build_expected_threads() {
   # thread_config.hpp / SelectThreadConfigs() 기반 기대값
-  # 형식: "thread_name:expected_cpu:expected_policy:expected_priority"
+  # 형식: "thread_name:expected_cpu:expected_policy:expected_priority[:optional]"
+  # optional 필드가 있으면 해당 스레드 미발견 시 WARN 대신 SKIP 처리.
+  #   - udp_recv:   Transceiver 사용 시에만 생성 (현재 미사용)
+  #   - status_mon: enable_status_monitor=true 일 때만 생성
   EXPECTED_THREADS=()
   if [[ "$PHYSICAL_CORES" -ge 16 ]]; then
     # Core 0-1: OS, Core 2-3: RT, Core 4-8: cset shield, Core 9-11: system
     EXPECTED_THREADS=(
       "rt_control:2:1:90"
       "sensor_io:3:1:70"
-      "udp_recv:9:1:65"
+      "udp_recv:9:1:65:optional"
       "logger:10:0:0"
       "aux:11:0:0"
       "rt_publish:11:0:0"
-      "status_mon:10:0:0"
+      "status_mon:10:0:0:optional"
     )
   elif [[ "$PHYSICAL_CORES" -ge 12 ]]; then
     # Core 0-1: OS, Core 2-6: cset shield, Core 7-11: system
     EXPECTED_THREADS=(
       "rt_control:7:1:90"
       "sensor_io:8:1:70"
-      "udp_recv:9:1:65"
+      "udp_recv:9:1:65:optional"
       "logger:10:0:0"
       "aux:11:0:0"
       "rt_publish:11:0:0"
-      "status_mon:10:0:0"
+      "status_mon:10:0:0:optional"
     )
   elif [[ "$PHYSICAL_CORES" -ge 10 ]]; then
     # Core 0-1: OS, Core 2-6: cset shield, Core 7-9: system (shared Core 9)
     EXPECTED_THREADS=(
       "rt_control:7:1:90"
       "sensor_io:8:1:70"
-      "udp_recv:9:1:65"
+      "udp_recv:9:1:65:optional"
       "logger:9:0:0"
       "aux:9:0:0"
       "rt_publish:9:0:0"
-      "status_mon:9:0:0"
+      "status_mon:9:0:0:optional"
     )
   elif [[ "$PHYSICAL_CORES" -ge 8 ]]; then
     # Core 0-1: OS, Core 2-6: RT threads (no cset shield)
     EXPECTED_THREADS=(
       "rt_control:2:1:90"
       "sensor_io:3:1:70"
-      "udp_recv:4:1:65"
+      "udp_recv:4:1:65:optional"
       "logger:5:0:0"
       "aux:6:0:0"
       "rt_publish:6:0:0"
-      "status_mon:6:0:0"
+      "status_mon:6:0:0:optional"
     )
   elif [[ "$PHYSICAL_CORES" -ge 6 ]]; then
     # Core 0-1: OS, Core 2-5: RT threads, udp_recv shares Core 5 with aux
     EXPECTED_THREADS=(
       "rt_control:2:1:90"
       "sensor_io:3:1:70"
-      "udp_recv:5:1:65"
+      "udp_recv:5:1:65:optional"
       "logger:4:0:0"
       "aux:5:0:0"
       "rt_publish:5:0:0"
-      "status_mon:4:0:0"
+      "status_mon:4:0:0:optional"
     )
   else
     # 4-core fallback: Core 0: OS, Core 1-3: RT, udp_recv shares Core 2
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "sensor_io:2:1:70"
-      "udp_recv:2:1:65"
+      "udp_recv:2:1:65:optional"
       "logger:3:0:0"
       "aux:3:0:0"
       "rt_publish:3:0:0"
-      "status_mon:3:0:0"
+      "status_mon:3:0:0:optional"
     )
   fi
 }
@@ -264,7 +267,9 @@ get_thread_sched_priority() {
   if command -v chrt &>/dev/null; then
     local out
     out=$(chrt -p "$tid" 2>/dev/null) || return 1
-    echo "$out" | grep -i "priority" | grep -oE "[0-9]+"
+    # "pid 44607's current scheduling priority: 90"
+    # Extract only the number after the colon (priority value), not the pid
+    echo "$out" | grep -i "priority" | sed 's/.*: *//'
   fi
 }
 
@@ -357,18 +362,53 @@ check_process_discovery() {
 
   _pass "총 스레드: ${thread_count}개"
 
-  # 알려진 스레드 매칭 결과
+  # 알려진 스레드 매칭 결과 — optional 스레드 미발견은 SKIP 처리
+  local required_count=0
+  local required_found=0
+  local optional_missing=0
+  for entry in "${EXPECTED_THREADS[@]}"; do
+    local ename eopt
+    ename=$(echo "$entry" | cut -d: -f1)
+    eopt=$(echo "$entry" | cut -d: -f5 -s)
+    if [[ "$eopt" == "optional" ]]; then
+      if [[ -z "${THREAD_TIDS[$ename]:-}" ]]; then
+        ((optional_missing++)) || true
+      fi
+    else
+      ((required_count++)) || true
+      if [[ -n "${THREAD_TIDS[$ename]:-}" ]]; then
+        ((required_found++)) || true
+      fi
+    fi
+  done
+
   local expected_count=${#EXPECTED_THREADS[@]}
   if [[ "$known_count" -eq "$expected_count" ]]; then
     _pass "thread_config.hpp 스레드 전체 감지: ${known_count}/${expected_count}"
+  elif [[ "$required_found" -eq "$required_count" ]]; then
+    _pass "필수 스레드 전체 감지: ${required_found}/${required_count}"
+    # optional 스레드 미발견은 정보성 표시
+    for entry in "${EXPECTED_THREADS[@]}"; do
+      local ename eopt
+      ename=$(echo "$entry" | cut -d: -f1)
+      eopt=$(echo "$entry" | cut -d: -f5 -s)
+      if [[ "$eopt" == "optional" && -z "${THREAD_TIDS[$ename]:-}" ]]; then
+        _skip "  선택적 스레드 미활성: ${ename}"
+      fi
+    done
   elif [[ "$known_count" -gt 0 ]]; then
     _warn "thread_config.hpp 스레드 일부 감지: ${known_count}/${expected_count}"
-    # 누락된 스레드 표시
+    # 누락된 필수 스레드 표시
     for entry in "${EXPECTED_THREADS[@]}"; do
-      local ename
+      local ename eopt
       ename=$(echo "$entry" | cut -d: -f1)
+      eopt=$(echo "$entry" | cut -d: -f5 -s)
       if [[ -z "${THREAD_TIDS[$ename]:-}" ]]; then
-        _warn "  미발견: ${ename}"
+        if [[ "$eopt" == "optional" ]]; then
+          _skip "  선택적 스레드 미활성: ${ename}"
+        else
+          _warn "  미발견: ${ename}"
+        fi
       fi
     done
     _category_update "process_discovery" "WARN"
