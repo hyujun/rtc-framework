@@ -39,6 +39,7 @@ using rtc::RTControllerInterface;
 using rtc::ControllerOutput;
 using rtc::ControllerState;
 using rtc::CommandType;
+using rtc::GoalType;
 namespace trajectory = rtc::trajectory;
 
 /// Demo Task-Space Controller: CLIK (arm) + P control (hand).

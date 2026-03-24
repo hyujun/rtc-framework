@@ -171,10 +171,10 @@ def generate_launch_description():
     ur_driver_launch_action = OpaqueFunction(function=_launch_setup)
 
     # ── CPU Shield ────────────────────────────────────────────────────────────
-    _pkg_prefix = get_package_share_directory('rtc_controller_manager')
+    _pkg_prefix = get_package_share_directory('rtc_scripts')
     _shield_script = os.path.join(
         os.path.dirname(os.path.dirname(_pkg_prefix)),
-        'lib', 'rtc_controller_manager', 'cpu_shield.sh')
+        'lib', 'rtc_scripts', 'cpu_shield.sh')
 
     enable_cpu_shield = ExecuteProcess(
         cmd=[
