@@ -191,6 +191,10 @@ private:
     std::array<int32_t, rtc::kMaxSensorChannels> sensor_data{};
     std::array<int32_t, rtc::kMaxSensorChannels> sensor_data_raw{};
     int num_sensor_channels{0};
+    // Inference (force/displacement per fingertip)
+    std::array<float, rtc::kMaxInferenceValues> inference_data{};
+    std::array<bool, rtc::kMaxFingertips> inference_enable{};
+    int num_inference_fingertips{0};
     bool valid{false};
   };
   std::array<DeviceStateCache, kMaxDevices> device_states_{};
