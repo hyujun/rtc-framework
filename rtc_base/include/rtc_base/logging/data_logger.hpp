@@ -299,24 +299,31 @@ private:
     if (di >= e.num_devices) { return; }
 
     const auto & d = e.devices[di];
-    const int ns = d.num_sensor_channels;
+    // Use the header-consistent column count from config, NOT the dynamic
+    // value from the message.  If runtime fingertip count exceeds config,
+    // extra channels are truncated; if fewer, zeros are padded.
+    const int ns_header = cfg.num_sensor_channels;
+    const int ns_actual = d.num_sensor_channels;
+    const int ns = ns_header > 0 ? ns_header : ns_actual;
 
     f << std::fixed << std::setprecision(6) << e.timestamp;
 
     // Raw sensor data
     for (int i = 0; i < ns; ++i) {
-      f << ',' << d.sensor_data_raw[static_cast<std::size_t>(i)];
+      f << ',' << (i < ns_actual ? d.sensor_data_raw[static_cast<std::size_t>(i)] : 0.0f);
     }
     // Filtered sensor data
     for (int i = 0; i < ns; ++i) {
-      f << ',' << d.sensor_data[static_cast<std::size_t>(i)];
+      f << ',' << (i < ns_actual ? d.sensor_data[static_cast<std::size_t>(i)] : 0.0f);
     }
 
-    // Inference output
+    // Inference output — also clamp to header column count
     f << ',' << (e.inference_valid ? 1 : 0);
-    const int ni = e.num_inference_values;
+    const int ni_header = num_inference_values_;
+    const int ni_actual = e.num_inference_values;
+    const int ni = ni_header > 0 ? ni_header : ni_actual;
     for (int i = 0; i < ni; ++i) {
-      f << ',' << e.inference_output[static_cast<std::size_t>(i)];
+      f << ',' << (i < ni_actual ? e.inference_output[static_cast<std::size_t>(i)] : 0.0f);
     }
 
     f << '\n';
