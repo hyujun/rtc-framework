@@ -130,7 +130,7 @@ void DemoJointController::ComputeControl(
 
       // Duration from trajectory_speed, then enforce max trajectory velocity.
       // Quintic rest-to-rest peak velocity = (15/8) * max_dist / T.
-      const double T_speed = max_dist / gains_.trajectory_speed;
+      const double T_speed = max_dist / gains_.robot_trajectory_speed;
       const double T_vel = (gains_.robot_max_traj_velocity > 0.0)
           ? (1.875 * max_dist / gains_.robot_max_traj_velocity)
           : 0.0;
@@ -337,24 +337,8 @@ void DemoJointController::LoadConfig(const YAML::Node & cfg)
   RTControllerInterface::LoadConfig(cfg);
   if (!cfg) { return; }
 
-  if (cfg["robot_kp"] && cfg["robot_kp"].IsSequence() &&
-      cfg["robot_kp"].size() == static_cast<std::size_t>(kNumRobotJoints))
-  {
-    for (std::size_t i = 0; i < static_cast<std::size_t>(kNumRobotJoints); ++i) {
-      gains_.robot_kp[i] = cfg["robot_kp"][i].as<double>();
-    }
-  }
-
-  if (cfg["hand_kp"] && cfg["hand_kp"].IsSequence() &&
-      cfg["hand_kp"].size() == static_cast<std::size_t>(kNumHandMotors))
-  {
-    for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors); ++i) {
-      gains_.hand_kp[i] = cfg["hand_kp"][i].as<float>();
-    }
-  }
-
-  if (cfg["trajectory_speed"]) {
-    gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();
+  if (cfg["robot_trajectory_speed"]) {
+    gains_.robot_trajectory_speed = cfg["robot_trajectory_speed"].as<double>();
   }
   if (cfg["hand_trajectory_speed"]) {
     gains_.hand_trajectory_speed = cfg["hand_trajectory_speed"].as<double>();
@@ -374,47 +358,32 @@ void DemoJointController::LoadConfig(const YAML::Node & cfg)
 
 void DemoJointController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
 {
-  // layout: [robot_kp×6, hand_kp×10, trajectory_speed, hand_trajectory_speed,
-  //          robot_max_traj_velocity, hand_max_traj_velocity] = 20 values
-  constexpr std::size_t kRobot = static_cast<std::size_t>(kNumRobotJoints);
-  constexpr std::size_t kHand  = static_cast<std::size_t>(kNumHandMotors);
-
-  if (gains.size() < kRobot) { return; }
-  for (std::size_t i = 0; i < kRobot; ++i) {
-    gains_.robot_kp[i] = gains[i];
+  // layout: [robot_trajectory_speed, hand_trajectory_speed,
+  //          robot_max_traj_velocity, hand_max_traj_velocity] = 4 values
+  if (gains.size() >= 1) {
+    gains_.robot_trajectory_speed = gains[0];
   }
-  if (gains.size() >= kRobot + kHand) {
-    for (std::size_t i = 0; i < kHand; ++i) {
-      gains_.hand_kp[i] = static_cast<float>(gains[kRobot + i]);
-    }
+  if (gains.size() >= 2) {
+    gains_.hand_trajectory_speed = gains[1];
   }
-  if (gains.size() >= kRobot + kHand + 1) {
-    gains_.trajectory_speed = gains[kRobot + kHand];
+  if (gains.size() >= 3) {
+    gains_.robot_max_traj_velocity = gains[2];
   }
-  if (gains.size() >= kRobot + kHand + 2) {
-    gains_.hand_trajectory_speed = gains[kRobot + kHand + 1];
-  }
-  if (gains.size() >= kRobot + kHand + 3) {
-    gains_.robot_max_traj_velocity = gains[kRobot + kHand + 2];
-  }
-  if (gains.size() >= kRobot + kHand + 4) {
-    gains_.hand_max_traj_velocity = gains[kRobot + kHand + 3];
+  if (gains.size() >= 4) {
+    gains_.hand_max_traj_velocity = gains[3];
   }
 }
 
 std::vector<double> DemoJointController::GetCurrentGains() const noexcept
 {
-  // layout: [robot_kp×6, hand_kp×10, trajectory_speed, hand_trajectory_speed,
-  //          robot_max_traj_velocity, hand_max_traj_velocity] = 20 values
-  std::vector<double> out;
-  out.reserve(static_cast<std::size_t>(kNumRobotJoints + kNumHandMotors) + 4);
-  for (const double v : gains_.robot_kp) { out.push_back(v); }
-  for (const float  v : gains_.hand_kp)  { out.push_back(static_cast<double>(v)); }
-  out.push_back(gains_.trajectory_speed);
-  out.push_back(gains_.hand_trajectory_speed);
-  out.push_back(gains_.robot_max_traj_velocity);
-  out.push_back(gains_.hand_max_traj_velocity);
-  return out;
+  // layout: [robot_trajectory_speed, hand_trajectory_speed,
+  //          robot_max_traj_velocity, hand_max_traj_velocity] = 4 values
+  return {
+    gains_.robot_trajectory_speed,
+    gains_.hand_trajectory_speed,
+    gains_.robot_max_traj_velocity,
+    gains_.hand_max_traj_velocity,
+  };
 }
 
 }  // namespace ur5e_bringup

@@ -1,24 +1,29 @@
 demo_task_controller:
   # ── CLIK gains (robot arm task-space control) ──────────────────────────────
-  kp: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0] # Cartesian proportional gain (6-DOF)
-  damping: 0.01 # Damped pseudoinverse lambda (singularity stabilization)
-  trajectory_speed: 0.1 # TCP max translational speed (m/s)
+  kp_translation: [1.0, 1.0, 1.0]   # Translation proportional gain (x, y, z) [1/s]
+  kp_rotation: [1.0, 1.0, 1.0]      # Rotation proportional gain (rx, ry, rz) [1/s]
+  damping: 0.01                      # Damped pseudoinverse lambda (singularity stabilization)
 
   # ── Null-space configuration ────────────────────────────────────────────────
-  enable_null_space: true # Enable null-space joint centering
-  null_kp: 0.5 # Null-space proportional gain
+  enable_null_space: true            # Enable null-space joint centering
+  null_kp: 0.5                       # Null-space proportional gain
 
   # ── 6-DOF mode ──────────────────────────────────────────────────────────────
-  control_6dof: false # false=3-DOF (position only), true=6-DOF (position+orientation)
+  control_6dof: false                # false=3-DOF (position only), true=6-DOF (position+orientation)
+
+  # ── Trajectory speed ───────────────────────────────────────────────────────
+  # Desired speed for trajectory duration calculation.
+  # Duration = max_dist / trajectory_speed.
+  trajectory_speed: 0.1              # TCP max translational speed [m/s]
+  trajectory_angular_speed: 0.5      # TCP max rotational speed [rad/s] (6-DOF mode)
+  hand_trajectory_speed: 1.0         # Hand motor trajectory speed [rad/s]
 
   # ── Trajectory velocity limits ──────────────────────────────────────────────
-  # Max peak TCP velocity during task-space quintic trajectory [m/s].
+  # Max peak velocity during quintic trajectory.
   # Duration is extended so that peak velocity ≤ this limit.
-  max_traj_velocity: 0.5
-  hand_max_traj_velocity: 2.0
-
-  # ── Hand motor P gains (10 motors) ──────────────────────────────────────────
-  hand_kp: [50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
+  # (quintic rest-to-rest peak = 15/8 × Δ / T)
+  max_traj_velocity: 0.5             # Max TCP translational velocity [m/s]
+  hand_max_traj_velocity: 2.0        # Max hand motor velocity [rad/s]
 
   # ── Output type ─────────────────────────────────────────────────────────────
   command_type: "position"

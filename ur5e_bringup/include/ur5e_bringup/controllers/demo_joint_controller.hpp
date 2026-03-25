@@ -38,33 +38,27 @@ using rtc::CommandType;
 using rtc::GoalType;
 namespace trajectory = rtc::trajectory;
 
-// Unified Proportional (P) position controller for UR5e arm + hand.
+// Unified trajectory-based position controller for UR5e arm + hand.
 //
-// Robot arm control law (identical to PController):
-//   robot_command[i] = current_pos[i] + robot_kp[i] * (robot_target[i] - current_pos[i]) * dt
-//   Output clamped to per-joint velocity limits from device config
-//
-// Hand motor control law (same formula applied to hand motors):
-//   hand_command[i] = hand_pos[i] + hand_kp[i] * (hand_target[i] - hand_pos[i]) * dt
-//   Output clamped to per-joint velocity limits from device config
+// Generates quintic rest-to-rest trajectories to smoothly move from the
+// current position to each new target. No proportional gain is applied;
+// the trajectory output is sent directly as the position command.
 //
 // Target message layout for /target_joint_positions (Float64MultiArray):
 //   data[0..5]  : robot arm joint targets (rad)
 //   data[6..15] : hand motor targets (rad), optional — ignored if size < 16
 //
-// Gains layout for UpdateGainsFromMsg: [robot_kp×6, hand_kp×10] = 16 values
+// Gains layout for UpdateGainsFromMsg:
+//   [robot_trajectory_speed, hand_trajectory_speed,
+//    robot_max_traj_velocity, hand_max_traj_velocity] = 4 values
 class DemoJointController final : public RTControllerInterface {
 public:
   struct Gains
   {
-    std::array<double, kNumRobotJoints> robot_kp{{120.0, 120.0, 100.0, 80.0, 80.0, 80.0}};
-    std::array<float, kNumHandMotors>   hand_kp{{
-      50.0f, 50.0f, 50.0f, 50.0f, 50.0f,
-      50.0f, 50.0f, 50.0f, 50.0f, 50.0f}};
-    double trajectory_speed{1.0};
-    double hand_trajectory_speed{1.0};
-    double robot_max_traj_velocity{3.14};  ///< Max joint velocity during trajectory [rad/s]
-    double hand_max_traj_velocity{2.0};    ///< Max hand motor velocity during trajectory [rad/s]
+    double robot_trajectory_speed{1.0};       ///< Desired joint speed for trajectory duration [rad/s]
+    double hand_trajectory_speed{1.0};        ///< Desired hand speed for trajectory duration [rad/s]
+    double robot_max_traj_velocity{3.14};     ///< Max joint velocity during trajectory [rad/s]
+    double hand_max_traj_velocity{2.0};       ///< Max hand motor velocity during trajectory [rad/s]
   };
 
   explicit DemoJointController(std::string_view urdf_path);
@@ -85,7 +79,8 @@ public:
   }
 
   // ── Controller registry hooks ────────────────────────────────────────────
-  // gains layout: [robot_kp×6, hand_kp×10] = 16 values
+  // gains layout: [robot_trajectory_speed, hand_trajectory_speed,
+  //                robot_max_traj_velocity, hand_max_traj_velocity] = 4 values
   void LoadConfig(const YAML::Node & cfg) override;
   void OnDeviceConfigsSet() override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;

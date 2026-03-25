@@ -1,10 +1,9 @@
 demo_joint_controller:
-  # ── UR5e robot arm P gains ([Base, Shoulder, Elbow, Wrist1, Wrist2, Wrist3]) ─
-  # command = current_pos + kp * error * dt (incremental position step)
-  robot_kp: [120.0, 120.0, 100.0, 80.0, 80.0, 80.0]
-
-  # ── Hand motor P gains (10 motors) ──────────────────────────────────────────
-  hand_kp: [50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
+  # ── Trajectory speed ───────────────────────────────────────────────────────
+  # Desired joint speed for trajectory duration calculation [rad/s].
+  # Duration = max_joint_dist / trajectory_speed.
+  robot_trajectory_speed: 1.0
+  hand_trajectory_speed: 1.0
 
   # ── Trajectory velocity limits ──────────────────────────────────────────────
   # Max peak joint velocity during quintic trajectory [rad/s].

@@ -164,19 +164,21 @@ void DemoTaskController::ComputeControl(
         goal_pose.translation() = Eigen::Vector3d(tcp_target_[0], tcp_target_[1], tcp_target_[2]);
       }
 
-      double max_dist = (goal_pose.translation() - start_pose.translation()).norm();
+      const double trans_dist = (goal_pose.translation() - start_pose.translation()).norm();
+      // Duration from translational trajectory_speed and velocity limit.
+      // Quintic rest-to-rest peak velocity = (15/8) * dist / T.
+      const double T_speed_trans = trans_dist / gains_.trajectory_speed;
+      const double T_vel_trans = (gains_.max_traj_velocity > 0.0)
+          ? (1.875 * trans_dist / gains_.max_traj_velocity)
+          : 0.0;
+      double duration = std::max({0.01, T_speed_trans, T_vel_trans});
+
       if (gains_.control_6dof) {
         double angular_dist = pinocchio::log3(start_pose.rotation().transpose() *
             goal_pose.rotation()).norm();
-        max_dist = std::max(max_dist, angular_dist * 0.2);
+        const double T_speed_rot = angular_dist / gains_.trajectory_angular_speed;
+        duration = std::max(duration, T_speed_rot);
       }
-      // Duration from trajectory_speed, then enforce max trajectory velocity.
-      // Quintic rest-to-rest peak velocity = (15/8) * max_dist / T.
-      const double T_speed = max_dist / gains_.trajectory_speed;
-      const double T_vel = (gains_.max_traj_velocity > 0.0)
-          ? (1.875 * max_dist / gains_.max_traj_velocity)
-          : 0.0;
-      double duration = std::max({0.01, T_speed, T_vel});
 
       trajectory_.initialize(start_pose, pinocchio::Motion::Zero(),
                              goal_pose, pinocchio::Motion::Zero(),
@@ -213,8 +215,9 @@ void DemoTaskController::ComputeControl(
     Jpinv_6d_.noalias() = J_full_.transpose() * JJt_inv_6d_;
 
     Eigen::Matrix<double, 6, 1> kp_vec_6d;
-    for (std::size_t i = 0; i < 6; ++i) {
-      kp_vec_6d[static_cast<Eigen::Index>(i)] = gains_.kp[i];
+    for (std::size_t i = 0; i < 3; ++i) {
+      kp_vec_6d[static_cast<Eigen::Index>(i)] = gains_.kp_translation[i];
+      kp_vec_6d[static_cast<Eigen::Index>(i + 3)] = gains_.kp_rotation[i];
     }
 
     Eigen::Matrix<double, 6, 1> task_vel_6d = kp_vec_6d.cwiseProduct(pos_error_6d_);
@@ -229,7 +232,7 @@ void DemoTaskController::ComputeControl(
     JJt_inv_.noalias() = ldlt_.solve(Eigen::Matrix3d::Identity());
     Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
 
-    Eigen::Vector3d kp_vec(gains_.kp[0], gains_.kp[1], gains_.kp[2]);
+    Eigen::Vector3d kp_vec(gains_.kp_translation[0], gains_.kp_translation[1], gains_.kp_translation[2]);
     Eigen::Vector3d task_vel = kp_vec.cwiseProduct(pos_error_) + traj_state_.velocity.linear();
     dq_.noalias() = Jpinv_ * task_vel;
   }
@@ -554,26 +557,28 @@ void DemoTaskController::LoadConfig(const YAML::Node & cfg)
   RTControllerInterface::LoadConfig(cfg);
   if (!cfg) {return;}
 
-  // CLIK gains
-  if (cfg["kp"] && cfg["kp"].IsSequence()) {
-    std::size_t n = std::min<std::size_t>(cfg["kp"].size(), 6);
+  // CLIK gains — translation / rotation separated
+  if (cfg["kp_translation"] && cfg["kp_translation"].IsSequence()) {
+    std::size_t n = std::min<std::size_t>(cfg["kp_translation"].size(), 3);
     for (std::size_t i = 0; i < n; ++i) {
-      gains_.kp[i] = cfg["kp"][i].as<double>();
+      gains_.kp_translation[i] = cfg["kp_translation"][i].as<double>();
+    }
+  }
+  if (cfg["kp_rotation"] && cfg["kp_rotation"].IsSequence()) {
+    std::size_t n = std::min<std::size_t>(cfg["kp_rotation"].size(), 3);
+    for (std::size_t i = 0; i < n; ++i) {
+      gains_.kp_rotation[i] = cfg["kp_rotation"][i].as<double>();
     }
   }
   if (cfg["damping"]) {gains_.damping = cfg["damping"].as<double>();}
   if (cfg["null_kp"]) {gains_.null_kp = cfg["null_kp"].as<double>();}
   if (cfg["enable_null_space"]) {gains_.enable_null_space = cfg["enable_null_space"].as<bool>();}
-  if (cfg["trajectory_speed"]) {gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();}
   if (cfg["control_6dof"]) {gains_.control_6dof = cfg["control_6dof"].as<bool>();}
 
-  // Hand gains
-  if (cfg["hand_kp"] && cfg["hand_kp"].IsSequence() &&
-      cfg["hand_kp"].size() == static_cast<std::size_t>(kNumHandMotors))
-  {
-    for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors); ++i) {
-      gains_.hand_kp[i] = cfg["hand_kp"][i].as<float>();
-    }
+  // Trajectory speed
+  if (cfg["trajectory_speed"]) {gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();}
+  if (cfg["trajectory_angular_speed"]) {
+    gains_.trajectory_angular_speed = cfg["trajectory_angular_speed"].as<double>();
   }
   if (cfg["hand_trajectory_speed"]) {
     gains_.hand_trajectory_speed = cfg["hand_trajectory_speed"].as<double>();
@@ -593,47 +598,43 @@ void DemoTaskController::LoadConfig(const YAML::Node & cfg)
 
 void DemoTaskController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
 {
-  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1),
-  //          hand_kp×10, hand_trajectory_speed, max_traj_velocity, hand_max_traj_velocity] = 23
+  // layout: [kp_translation×3, kp_rotation×3, damping, null_kp,
+  //          enable_null_space(0/1), control_6dof(0/1),
+  //          trajectory_speed, trajectory_angular_speed,
+  //          hand_trajectory_speed, max_traj_velocity, hand_max_traj_velocity] = 15
   if (gains.size() < 10) {return;}
-  for (std::size_t i = 0; i < 6; ++i) {
-    gains_.kp[i] = gains[i];
+  for (std::size_t i = 0; i < 3; ++i) {
+    gains_.kp_translation[i] = gains[i];
+    gains_.kp_rotation[i] = gains[3 + i];
   }
   gains_.damping = gains[6];
   gains_.null_kp = gains[7];
   gains_.enable_null_space = gains[8] > 0.5;
   gains_.control_6dof = gains[9] > 0.5;
 
-  if (gains.size() >= 20) {
-    for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors); ++i) {
-      gains_.hand_kp[i] = static_cast<float>(gains[10 + i]);
-    }
-  }
-  if (gains.size() >= 21) {
-    gains_.hand_trajectory_speed = gains[20];
-  }
-  if (gains.size() >= 22) {
-    gains_.max_traj_velocity = gains[21];
-  }
-  if (gains.size() >= 23) {
-    gains_.hand_max_traj_velocity = gains[22];
-  }
+  if (gains.size() >= 11) {gains_.trajectory_speed = gains[10];}
+  if (gains.size() >= 12) {gains_.trajectory_angular_speed = gains[11];}
+  if (gains.size() >= 13) {gains_.hand_trajectory_speed = gains[12];}
+  if (gains.size() >= 14) {gains_.max_traj_velocity = gains[13];}
+  if (gains.size() >= 15) {gains_.hand_max_traj_velocity = gains[14];}
 }
 
 std::vector<double> DemoTaskController::GetCurrentGains() const noexcept
 {
-  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1),
-  //          hand_kp×10, hand_trajectory_speed, max_traj_velocity, hand_max_traj_velocity] = 23
+  // layout: [kp_translation×3, kp_rotation×3, damping, null_kp,
+  //          enable_null_space(0/1), control_6dof(0/1),
+  //          trajectory_speed, trajectory_angular_speed,
+  //          hand_trajectory_speed, max_traj_velocity, hand_max_traj_velocity] = 15
   std::vector<double> v;
-  v.reserve(23);
-  v.insert(v.end(), gains_.kp.begin(), gains_.kp.end());
+  v.reserve(15);
+  v.insert(v.end(), gains_.kp_translation.begin(), gains_.kp_translation.end());
+  v.insert(v.end(), gains_.kp_rotation.begin(), gains_.kp_rotation.end());
   v.push_back(gains_.damping);
   v.push_back(gains_.null_kp);
   v.push_back(gains_.enable_null_space ? 1.0 : 0.0);
   v.push_back(gains_.control_6dof ? 1.0 : 0.0);
-  for (const float h : gains_.hand_kp) {
-    v.push_back(static_cast<double>(h));
-  }
+  v.push_back(gains_.trajectory_speed);
+  v.push_back(gains_.trajectory_angular_speed);
   v.push_back(gains_.hand_trajectory_speed);
   v.push_back(gains_.max_traj_velocity);
   v.push_back(gains_.hand_max_traj_velocity);

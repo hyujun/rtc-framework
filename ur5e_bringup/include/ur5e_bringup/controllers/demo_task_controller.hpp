@@ -68,25 +68,28 @@ namespace trajectory = rtc::trajectory;
 ///   - 6-DOF mode: `target[0..2]` = TCP position [x,y,z], `target[3..5]` = [roll,pitch,yaw]
 ///
 /// ### Gains layout for UpdateGainsFromMsg
-///   `[kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10]` = 20 values
+///   `[kp_translation×3, kp_rotation×3, damping, null_kp, enable_null_space(0/1),
+///    control_6dof(0/1), trajectory_speed, trajectory_angular_speed,
+///    hand_trajectory_speed, max_traj_velocity, hand_max_traj_velocity]` = 15 values
 class DemoTaskController final : public RTControllerInterface {
 public:
   // ── Gain / feature configuration ─────────────────────────────────────────
   struct Gains
   {
-    // Arm (CLIK) gains
-    std::array<double, 6> kp{{1.0, 1.0, 1.0, 1.0, 1.0, 1.0}}; ///< Cartesian position/orientation gain [1/s]
+    // Arm (CLIK) gains — translation / rotation separated
+    std::array<double, 3> kp_translation{{1.0, 1.0, 1.0}}; ///< Translation proportional gain (x,y,z) [1/s]
+    std::array<double, 3> kp_rotation{{1.0, 1.0, 1.0}};    ///< Rotation proportional gain (rx,ry,rz) [1/s]
     double damping{0.01};            ///< Damping factor λ for J^#
     double null_kp{0.5};             ///< Null-space joint-centering gain [1/s]
     bool   enable_null_space{true};  ///< Enable null-space secondary task
-    double trajectory_speed{0.1};    ///< Max translational speed for trajectory [m/s]
     bool   control_6dof{false};      ///< Enable 6-DOF (translation + orientation) control
 
-    // Hand gains
-    std::array<float, kNumHandMotors> hand_kp{{
-      50.0f, 50.0f, 50.0f, 50.0f, 50.0f,
-      50.0f, 50.0f, 50.0f, 50.0f, 50.0f}};
-    double hand_trajectory_speed{1.0};
+    // Trajectory speed
+    double trajectory_speed{0.1};           ///< TCP translational speed for trajectory duration [m/s]
+    double trajectory_angular_speed{0.5};   ///< TCP rotational speed for trajectory duration [rad/s]
+    double hand_trajectory_speed{1.0};      ///< Hand motor speed for trajectory duration [rad/s]
+
+    // Trajectory velocity limits
     double max_traj_velocity{0.5};       ///< Max TCP velocity during task-space trajectory [m/s]
     double hand_max_traj_velocity{2.0};  ///< Max hand motor velocity during trajectory [rad/s]
   };
@@ -112,7 +115,10 @@ public:
   void SetHandEstop(bool active)                 noexcept override;
 
   // ── Controller registry hooks ────────────────────────────────────────────
-  // gains layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10] = 20 values
+  // gains layout: [kp_translation×3, kp_rotation×3, damping, null_kp,
+  //                enable_null_space(0/1), control_6dof(0/1),
+  //                trajectory_speed, trajectory_angular_speed,
+  //                hand_trajectory_speed, max_traj_velocity, hand_max_traj_velocity] = 15 values
   void LoadConfig(const YAML::Node & cfg) override;
   void OnDeviceConfigsSet() override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;

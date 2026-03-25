@@ -54,37 +54,43 @@ for _grp_name, _motors in HAND_FINGER_GROUPS:
 
 # Gain definitions per controller
 # Each entry: (label, size, defaults, is_bool)
-#   DemoJoint: [robot_kp x6, hand_kp x10]
-#   DemoTask:  [kp x6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp x10]
+#   DemoJoint: [robot_traj_speed, hand_traj_speed, robot_max_traj_vel, hand_max_traj_vel]
+#   DemoTask:  [kp_translation x3, kp_rotation x3, damping, null_kp,
+#               enable_null_space(0/1), control_6dof(0/1),
+#               traj_speed, traj_angular_speed, hand_traj_speed,
+#               max_traj_vel, hand_max_traj_vel]
 GAIN_DEFS = {
     "demo_joint_controller": [
-        ("robot_kp",        6, [120.0, 120.0, 100.0, 80.0, 80.0, 80.0], False),
-        ("hand_kp",        10, [50.0] * 10, False),
+        ("robot_traj_speed",    1, [1.0],  False),
+        ("hand_traj_speed",     1, [1.0],  False),
+        ("robot_max_traj_vel",  1, [3.14], False),
+        ("hand_max_traj_vel",   1, [2.0],  False),
     ],
     "demo_task_controller": [
-        ("kp",              6, [1.0] * 6,  False),
-        ("damping",         1, [0.01],      False),
-        ("null_kp",         1, [0.5],       False),
-        ("null space",      1, [1],         True),
-        ("control 6dof",    1, [0],         True),
-        ("hand_kp",        10, [50.0] * 10, False),
+        ("kp_translation",      3, [1.0] * 3, False),
+        ("kp_rotation",         3, [1.0] * 3, False),
+        ("damping",             1, [0.01],     False),
+        ("null_kp",             1, [0.5],      False),
+        ("null space",          1, [1],        True),
+        ("control 6dof",        1, [0],        True),
+        ("traj_speed",          1, [0.1],      False),
+        ("traj_angular_speed",  1, [0.5],      False),
+        ("hand_traj_speed",     1, [1.0],      False),
+        ("max_traj_vel",        1, [0.5],      False),
+        ("hand_max_traj_vel",   1, [2.0],      False),
     ],
 }
 
 GAIN_COL_HEADERS = {
-    "demo_joint_controller": ["J1", "J2", "J3", "J4", "J5", "J6",
-                              "H1", "H2", "H3", "H4"],
-    "demo_task_controller":  ["J1", "J2", "J3", "J4", "J5", "J6",
-                              "H1", "H2", "H3", "H4"],
+    "demo_joint_controller": [],
+    "demo_task_controller":  ["x / rx", "y / ry", "z / rz"],
 }
 
 GAIN_ROW_NAMES = {
-    "demo_joint_controller": {
-        "robot_kp": ["base", "shoulder", "elbow", "wrist1", "wrist2", "wrist3"],
-        "hand_kp": [n.split('_', 1)[1] for n in HAND_MOTOR_NAMES],
-    },
+    "demo_joint_controller": {},
     "demo_task_controller": {
-        "hand_kp": [n.split('_', 1)[1] for n in HAND_MOTOR_NAMES],
+        "kp_translation": ["x", "y", "z"],
+        "kp_rotation": ["rx", "ry", "rz"],
     },
 }
 
