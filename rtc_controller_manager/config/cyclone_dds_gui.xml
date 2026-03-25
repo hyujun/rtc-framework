@@ -5,8 +5,8 @@
 
   Ensures cross-version compatibility between Jazzy (24.04) GUI and
   Humble (22.04) robot nodes by:
-  1. Disabling SharedMemory (cross-machine, not applicable)
-  2. Setting permissive standards conformance for CDR encoding tolerance
+  1. Forcing CycloneDDS as RMW (set by run_gui.sh)
+  2. Disabling SharedMemory (cross-machine, not applicable)
 -->
 <CycloneDDS>
   <Domain>
@@ -19,10 +19,6 @@
     <SharedMemory>
       <Enable>false</Enable>
     </SharedMemory>
-
-    <Compatibility>
-      <StandardsConformance>permissive</StandardsConformance>
-    </Compatibility>
 
     <Tracing>
       <Verbosity>warning</Verbosity>

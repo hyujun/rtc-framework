@@ -6,6 +6,11 @@
 
   Loaded automatically via CYCLONEDDS_URI env var set in launch files.
   Reference: https://cyclonedds.io/docs/cyclonedds/latest/config/index.html
+
+  NOTE: Do NOT add <Compatibility><StandardsConformance> here — it is
+  unsupported in CycloneDDS 0.10.x (Humble) and causes domain creation
+  failure. Cross-version compat is handled on the Jazzy GUI side only
+  (see cyclone_dds_gui.xml).
 -->
 <CycloneDDS>
   <Domain>
@@ -18,10 +23,6 @@
     <SharedMemory>
       <Enable>false</Enable>
     </SharedMemory>
-
-    <Compatibility>
-      <StandardsConformance>permissive</StandardsConformance>
-    </Compatibility>
 
     <Tracing>
       <Verbosity>warning</Verbosity>
