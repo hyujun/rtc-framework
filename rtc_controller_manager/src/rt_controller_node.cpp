@@ -520,7 +520,12 @@ void RtControllerNode::CreateSubscriptions()
     }
   }
 
-  // ── Fixed control subscriptions (always present) ──────────────────────────
+  // ── GUI control subscriptions (use aux callback group to avoid blocking
+  //    sensor callbacks, which would stall device_timeouts_ updates and
+  //    trigger E-STOP during controller switch / gains update) ──────────────
+  auto aux_sub_options = rclcpp::SubscriptionOptions();
+  aux_sub_options.callback_group = cb_group_aux_;
+
   controller_selector_sub_ = create_subscription<std_msgs::msg::Int32>(
       "/ur5e/controller_type", 10,
     [this](std_msgs::msg::Int32::SharedPtr msg) {
@@ -559,7 +564,7 @@ void RtControllerNode::CreateSubscriptions()
         RCLCPP_WARN(get_logger(), "Invalid controller index: %d", idx);
       }
       },
-      sub_options);
+      aux_sub_options);
 
   controller_gains_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
       "/ur5e/controller_gains", 10,
@@ -569,7 +574,7 @@ void RtControllerNode::CreateSubscriptions()
       RCLCPP_INFO(get_logger(), "Gains updated for %s",
         controllers_[static_cast<std::size_t>(idx)]->Name().data());
       },
-      sub_options);
+      aux_sub_options);
 
   request_gains_sub_ = create_subscription<std_msgs::msg::Bool>(
       "/ur5e/request_gains", 10,
@@ -582,7 +587,7 @@ void RtControllerNode::CreateSubscriptions()
       RCLCPP_INFO(get_logger(), "Published current gains for %s (%zu values)",
         controllers_[static_cast<std::size_t>(idx)]->Name().data(), gains.size());
       },
-      sub_options);
+      aux_sub_options);
 }
 
 void RtControllerNode::CreatePublishers()
