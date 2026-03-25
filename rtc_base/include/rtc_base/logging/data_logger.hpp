@@ -238,7 +238,7 @@ private:
     // Goal
     f << ',' << GoalTypeToString(d.goal_type);
     for (int i = 0; i < nc; ++i) { f << ',' << (i < na ? d.goal_positions[static_cast<std::size_t>(i)] : 0.0); }
-    for (const auto v : e.actual_task_positions) { f << ',' << v; }  // task_goal placeholder
+    for (const auto v : e.task_goal_positions) { f << ',' << v; }
 
     // Trajectory
     for (int i = 0; i < nc; ++i) { f << ',' << (i < na ? d.trajectory_positions[static_cast<std::size_t>(i)] : 0.0); }

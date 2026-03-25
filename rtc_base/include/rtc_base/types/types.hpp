@@ -168,6 +168,7 @@ struct ControllerOutput {
 
   // Shared fields (not per-device)
   std::array<double, 6> actual_task_positions{};  // TCP FK result
+  std::array<double, 6> task_goal_positions{};    // task-space goal target from GUI
   bool        valid{true};
   CommandType command_type{CommandType::kPosition};
 };

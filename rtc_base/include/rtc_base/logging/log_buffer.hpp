@@ -53,6 +53,7 @@ struct LogEntry {
 
   // ── Shared ─────────────────────────────────────────────────────────────
   std::array<double, 6> actual_task_positions{};
+  std::array<double, 6> task_goal_positions{};
   CommandType command_type{CommandType::kPosition};
 
   // ── Per-device data ────────────────────────────────────────────────────

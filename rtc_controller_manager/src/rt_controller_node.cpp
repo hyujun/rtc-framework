@@ -1077,8 +1077,8 @@ void RtControllerNode::ControlLoop()
               dstate.inference_data[static_cast<std::size_t>(i)];
         }
       }
-      // task_goals: copy from actual_task_positions (set by controller FK)
-      snap.task_goals[gi] = output.actual_task_positions;
+      // task_goals: copy from controller's task goal target
+      snap.task_goals[gi] = output.task_goal_positions;
       ++gi;
     }
     snap.num_groups = gi;
@@ -1130,6 +1130,7 @@ void RtControllerNode::ControlLoop()
     entry.t_total_us         = t_total_us;
     entry.jitter_us          = jitter_us;
     entry.actual_task_positions = output.actual_task_positions;
+    entry.task_goal_positions  = output.task_goal_positions;
     entry.command_type       = output.command_type;
 
     // Per-device logging
