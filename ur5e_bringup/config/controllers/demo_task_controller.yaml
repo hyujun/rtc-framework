@@ -11,6 +11,12 @@ demo_task_controller:
   # ── 6-DOF mode ──────────────────────────────────────────────────────────────
   control_6dof: false # false=3-DOF (position only), true=6-DOF (position+orientation)
 
+  # ── Trajectory velocity limits ──────────────────────────────────────────────
+  # Max peak TCP velocity during task-space quintic trajectory [m/s].
+  # Duration is extended so that peak velocity ≤ this limit.
+  max_traj_velocity: 0.5
+  hand_max_traj_velocity: 2.0
+
   # ── Hand motor P gains (10 motors) ──────────────────────────────────────────
   hand_kp: [50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
 

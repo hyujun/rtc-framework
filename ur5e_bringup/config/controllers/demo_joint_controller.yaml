@@ -6,6 +6,13 @@ demo_joint_controller:
   # ── Hand motor P gains (10 motors) ──────────────────────────────────────────
   hand_kp: [50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
 
+  # ── Trajectory velocity limits ──────────────────────────────────────────────
+  # Max peak joint velocity during quintic trajectory [rad/s].
+  # Duration is extended so that peak velocity ≤ this limit.
+  # (quintic rest-to-rest peak = 15/8 × Δq / T)
+  robot_max_traj_velocity: 3.14
+  hand_max_traj_velocity: 2.0
+
   # ── Output type ─────────────────────────────────────────────────────────────
   command_type: "position"
 

@@ -87,6 +87,8 @@ public:
       50.0f, 50.0f, 50.0f, 50.0f, 50.0f,
       50.0f, 50.0f, 50.0f, 50.0f, 50.0f}};
     double hand_trajectory_speed{1.0};
+    double max_traj_velocity{0.5};       ///< Max TCP velocity during task-space trajectory [m/s]
+    double hand_max_traj_velocity{2.0};  ///< Max hand motor velocity during trajectory [rad/s]
   };
 
   /// @param urdf_path  Absolute path to the UR5e URDF file.
@@ -171,6 +173,7 @@ private:
   Eigen::MatrixXd Jpinv_;
   Eigen::MatrixXd N_;
   Eigen::VectorXd dq_;
+  Eigen::VectorXd traj_dq_;       // feedforward-only trajectory velocity (for logging)
   Eigen::VectorXd null_err_;
   Eigen::VectorXd null_dq_;
   Eigen::Vector3d pos_error_;

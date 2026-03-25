@@ -1069,6 +1069,8 @@ void RtControllerNode::ControlLoop()
       gc.goal_positions = dout.goal_positions;
       gc.target_positions = dout.target_positions;
       gc.target_velocities = dout.target_velocities;
+      gc.trajectory_positions = dout.trajectory_positions;
+      gc.trajectory_velocities = dout.trajectory_velocities;
       gc.goal_type = dout.goal_type;
       gc.actual_positions = dstate.positions;
       gc.actual_velocities = dstate.velocities;
@@ -1156,8 +1158,8 @@ void RtControllerNode::ControlLoop()
         dl.actual_velocities[j] = dstate.velocities[j];
         dl.efforts[j] = dstate.efforts[j];
         dl.commands[j] = dout.commands[j];
-        dl.trajectory_positions[j] = dout.target_positions[j];
-        dl.trajectory_velocities[j] = dout.target_velocities[j];
+        dl.trajectory_positions[j] = dout.trajectory_positions[j];
+        dl.trajectory_velocities[j] = dout.trajectory_velocities[j];
       }
       dl.goal_type = dout.goal_type;
       dl.num_sensor_channels = dstate.num_sensor_channels;
@@ -1422,8 +1424,8 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
             m.efforts[i] = gc.efforts[i];
             m.commands[i] = gc.commands[i];
             m.joint_goal[i] = gc.goal_positions[i];
-            m.trajectory_positions[i] = gc.target_positions[i];
-            m.trajectory_velocities[i] = gc.target_velocities[i];
+            m.trajectory_positions[i] = gc.trajectory_positions[i];
+            m.trajectory_velocities[i] = gc.trajectory_velocities[i];
           }
           std::copy(snap.task_goals[group_idx].begin(),
                     snap.task_goals[group_idx].end(),
