@@ -17,7 +17,12 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 from visualization_msgs.msg import MarkerArray
 
-from rtc_digital_twin.urdf_validator import parse_required_joints, validate_joints
+from rtc_digital_twin.urdf_validator import (
+    classify_joints,
+    compute_mimic_positions,
+    JointClassification,
+    validate_joints,
+)
 
 
 @dataclass
@@ -59,17 +64,32 @@ class DigitalTwinNode(Node):
         num_sources = self.get_parameter('num_sources').value
         robot_description = self.get_parameter('robot_description').value
 
-        # ── URDF joint validation ────────────────────────────────────────
+        # ── URDF joint classification ─────────────────────────────────────
+        self.declare_parameter('auto_compute_mimic', True)
+        self._auto_compute_mimic = self.get_parameter('auto_compute_mimic').value
+
+        self._joint_classification: JointClassification | None = None
         self._required_joints: set[str] = set()
         self._validation_done = False
         if robot_description:
             try:
-                self._required_joints = parse_required_joints(robot_description)
-                self.get_logger().info(
-                    f'URDF required joints ({len(self._required_joints)}): '
-                    f'{sorted(self._required_joints)}')
+                self._joint_classification = classify_joints(robot_description)
+                self._required_joints = self._joint_classification.active_names
+                logger = self.get_logger()
+                logger.info(
+                    f'Active joints ({len(self._joint_classification.active)}): '
+                    f'{sorted(self._joint_classification.active.keys())}')
+                if self._joint_classification.passive_mimic:
+                    logger.info(
+                        f'Mimic joints ({len(self._joint_classification.passive_mimic)}): '
+                        f'{sorted(self._joint_classification.passive_mimic.keys())}')
+                if self._joint_classification.passive_closed_chain:
+                    logger.info(
+                        f'Closed-chain joints '
+                        f'({len(self._joint_classification.passive_closed_chain)}): '
+                        f'{sorted(self._joint_classification.passive_closed_chain.keys())}')
             except Exception as e:
-                self.get_logger().warn(f'Failed to parse URDF for validation: {e}')
+                self.get_logger().warn(f'Failed to parse URDF for classification: {e}')
 
         # ── QoS — RELIABLE, depth 10 ────────────────────────────────────
         qos = QoSProfile(
@@ -240,6 +260,19 @@ class DigitalTwinNode(Node):
                 js.name.extend(cache.joint_names)
             js.position.extend(cache.positions)
             js.velocity.extend(cache.velocities)
+
+        # Auto-compute mimic joint positions
+        if (self._auto_compute_mimic
+                and self._joint_classification
+                and self._joint_classification.passive_mimic):
+            positions_map = dict(zip(js.name, js.position))
+            mimic_positions = compute_mimic_positions(
+                self._joint_classification, positions_map)
+            for name, pos in mimic_positions.items():
+                if name not in positions_map:
+                    js.name.append(name)
+                    js.position.append(pos)
+                    js.velocity.append(0.0)
 
         self._joint_pub.publish(js)
 
