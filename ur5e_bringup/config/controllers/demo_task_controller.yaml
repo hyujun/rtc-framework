@@ -23,6 +23,7 @@ demo_task_controller:
   # Duration is extended so that peak velocity ≤ this limit.
   # (quintic rest-to-rest peak = 15/8 × Δ / T)
   max_traj_velocity: 0.5             # Max TCP translational velocity [m/s]
+  max_traj_angular_velocity: 1.0     # Max TCP angular velocity [rad/s] (6-DOF mode)
   hand_max_traj_velocity: 2.0        # Max hand motor velocity [rad/s]
 
   # ── Output type ─────────────────────────────────────────────────────────────

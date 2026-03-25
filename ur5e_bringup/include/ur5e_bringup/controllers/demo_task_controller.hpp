@@ -70,7 +70,8 @@ namespace trajectory = rtc::trajectory;
 /// ### Gains layout for UpdateGainsFromMsg
 ///   `[kp_translation×3, kp_rotation×3, damping, null_kp, enable_null_space(0/1),
 ///    control_6dof(0/1), trajectory_speed, trajectory_angular_speed,
-///    hand_trajectory_speed, max_traj_velocity, hand_max_traj_velocity]` = 15 values
+///    hand_trajectory_speed, max_traj_velocity, max_traj_angular_velocity,
+///    hand_max_traj_velocity]` = 16 values
 class DemoTaskController final : public RTControllerInterface {
 public:
   // ── Gain / feature configuration ─────────────────────────────────────────
@@ -90,8 +91,9 @@ public:
     double hand_trajectory_speed{1.0};      ///< Hand motor speed for trajectory duration [rad/s]
 
     // Trajectory velocity limits
-    double max_traj_velocity{0.5};       ///< Max TCP velocity during task-space trajectory [m/s]
-    double hand_max_traj_velocity{2.0};  ///< Max hand motor velocity during trajectory [rad/s]
+    double max_traj_velocity{0.5};             ///< Max TCP velocity during task-space trajectory [m/s]
+    double max_traj_angular_velocity{1.0};     ///< Max TCP angular velocity during trajectory [rad/s]
+    double hand_max_traj_velocity{2.0};        ///< Max hand motor velocity during trajectory [rad/s]
   };
 
   /// @param urdf_path  Absolute path to the UR5e URDF file.
@@ -118,7 +120,8 @@ public:
   // gains layout: [kp_translation×3, kp_rotation×3, damping, null_kp,
   //                enable_null_space(0/1), control_6dof(0/1),
   //                trajectory_speed, trajectory_angular_speed,
-  //                hand_trajectory_speed, max_traj_velocity, hand_max_traj_velocity] = 15 values
+  //                hand_trajectory_speed, max_traj_velocity,
+  //                max_traj_angular_velocity, hand_max_traj_velocity] = 16 values
   void LoadConfig(const YAML::Node & cfg) override;
   void OnDeviceConfigsSet() override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;

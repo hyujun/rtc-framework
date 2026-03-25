@@ -58,7 +58,7 @@ for _grp_name, _motors in HAND_FINGER_GROUPS:
 #   DemoTask:  [kp_translation x3, kp_rotation x3, damping, null_kp,
 #               enable_null_space(0/1), control_6dof(0/1),
 #               traj_speed, traj_angular_speed, hand_traj_speed,
-#               max_traj_vel, hand_max_traj_vel]
+#               max_traj_vel, max_traj_angular_vel, hand_max_traj_vel]
 GAIN_DEFS = {
     "demo_joint_controller": [
         ("robot_traj_speed",    1, [1.0],  False),
@@ -76,8 +76,9 @@ GAIN_DEFS = {
         ("traj_speed",          1, [0.1],      False),
         ("traj_angular_speed",  1, [0.5],      False),
         ("hand_traj_speed",     1, [1.0],      False),
-        ("max_traj_vel",        1, [0.5],      False),
-        ("hand_max_traj_vel",   1, [2.0],      False),
+        ("max_traj_vel",            1, [0.5],  False),
+        ("max_traj_angular_vel",    1, [1.0],  False),
+        ("hand_max_traj_vel",       1, [2.0],  False),
     ],
 }
 

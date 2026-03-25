@@ -177,7 +177,10 @@ void DemoTaskController::ComputeControl(
         double angular_dist = pinocchio::log3(start_pose.rotation().transpose() *
             goal_pose.rotation()).norm();
         const double T_speed_rot = angular_dist / gains_.trajectory_angular_speed;
-        duration = std::max(duration, T_speed_rot);
+        const double T_vel_rot = (gains_.max_traj_angular_velocity > 0.0)
+            ? (1.875 * angular_dist / gains_.max_traj_angular_velocity)
+            : 0.0;
+        duration = std::max({duration, T_speed_rot, T_vel_rot});
       }
 
       trajectory_.initialize(start_pose, pinocchio::Motion::Zero(),
@@ -586,6 +589,9 @@ void DemoTaskController::LoadConfig(const YAML::Node & cfg)
   if (cfg["max_traj_velocity"]) {
     gains_.max_traj_velocity = cfg["max_traj_velocity"].as<double>();
   }
+  if (cfg["max_traj_angular_velocity"]) {
+    gains_.max_traj_angular_velocity = cfg["max_traj_angular_velocity"].as<double>();
+  }
   if (cfg["hand_max_traj_velocity"]) {
     gains_.hand_max_traj_velocity = cfg["hand_max_traj_velocity"].as<double>();
   }
@@ -601,7 +607,8 @@ void DemoTaskController::UpdateGainsFromMsg(std::span<const double> gains) noexc
   // layout: [kp_translation×3, kp_rotation×3, damping, null_kp,
   //          enable_null_space(0/1), control_6dof(0/1),
   //          trajectory_speed, trajectory_angular_speed,
-  //          hand_trajectory_speed, max_traj_velocity, hand_max_traj_velocity] = 15
+  //          hand_trajectory_speed, max_traj_velocity,
+  //          max_traj_angular_velocity, hand_max_traj_velocity] = 16
   if (gains.size() < 10) {return;}
   for (std::size_t i = 0; i < 3; ++i) {
     gains_.kp_translation[i] = gains[i];
@@ -616,7 +623,8 @@ void DemoTaskController::UpdateGainsFromMsg(std::span<const double> gains) noexc
   if (gains.size() >= 12) {gains_.trajectory_angular_speed = gains[11];}
   if (gains.size() >= 13) {gains_.hand_trajectory_speed = gains[12];}
   if (gains.size() >= 14) {gains_.max_traj_velocity = gains[13];}
-  if (gains.size() >= 15) {gains_.hand_max_traj_velocity = gains[14];}
+  if (gains.size() >= 15) {gains_.max_traj_angular_velocity = gains[14];}
+  if (gains.size() >= 16) {gains_.hand_max_traj_velocity = gains[15];}
 }
 
 std::vector<double> DemoTaskController::GetCurrentGains() const noexcept
@@ -624,9 +632,10 @@ std::vector<double> DemoTaskController::GetCurrentGains() const noexcept
   // layout: [kp_translation×3, kp_rotation×3, damping, null_kp,
   //          enable_null_space(0/1), control_6dof(0/1),
   //          trajectory_speed, trajectory_angular_speed,
-  //          hand_trajectory_speed, max_traj_velocity, hand_max_traj_velocity] = 15
+  //          hand_trajectory_speed, max_traj_velocity,
+  //          max_traj_angular_velocity, hand_max_traj_velocity] = 16
   std::vector<double> v;
-  v.reserve(15);
+  v.reserve(16);
   v.insert(v.end(), gains_.kp_translation.begin(), gains_.kp_translation.end());
   v.insert(v.end(), gains_.kp_rotation.begin(), gains_.kp_rotation.end());
   v.push_back(gains_.damping);
@@ -637,6 +646,7 @@ std::vector<double> DemoTaskController::GetCurrentGains() const noexcept
   v.push_back(gains_.trajectory_angular_speed);
   v.push_back(gains_.hand_trajectory_speed);
   v.push_back(gains_.max_traj_velocity);
+  v.push_back(gains_.max_traj_angular_velocity);
   v.push_back(gains_.hand_max_traj_velocity);
   return v;
 }
