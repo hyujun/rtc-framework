@@ -1,6 +1,6 @@
 # ur5e_bringup
 
-![version](https://img.shields.io/badge/version-v5.16.0-blue)
+![version](https://img.shields.io/badge/version-v5.17.0-blue)
 
 > 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)

@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>rtc_status_monitor</name>
-  <version>5.16.0</version>
+  <version>5.17.0</version>
   <description>Non-RT status monitor for RTC framework — monitors robot mode, safety mode, tracking errors, joint limits, and publishes diagnostics.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>

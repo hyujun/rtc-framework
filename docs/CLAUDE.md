@@ -91,7 +91,7 @@ struct ControllerState { RobotState robot; HandState hand; double dt; uint64_t i
 struct ControllerOutput { robot_commands[6], hand_commands[10], actual_target_positions[6], actual_task_positions[6], valid, command_type, goal_positions[6], target_velocities[6], hand_goal_positions[10] };
 ```
 
-### Threading Model (v5.16.0, 6-core)
+### Threading Model (v5.17.0, 6-core)
 
 | Thread | Core | Scheduler | Priority | Role |
 |--------|------|-----------|----------|------|
@@ -315,7 +315,7 @@ If `ApplyThreadConfig()` fails, the node continues at SCHED_OTHER with a `[WARN]
 
 ---
 
-## Optimization Summary (v5.16.1)
+## Optimization Summary (v5.17.0)
 
 Cross-cutting optimizations applied to all 16 packages:
 

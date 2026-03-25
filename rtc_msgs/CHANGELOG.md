@@ -3,6 +3,15 @@
 이 문서는 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 형식을 따르며,
 [Semantic Versioning](https://semver.org/lang/ko/)을 준수합니다.
 
+## [5.17.0] - 2026-03-25
+
+### 변경 (Changed)
+
+- 워크스페이스 전체 버전 v5.17.0 통일
+- 문서 최신화 (README.md, package.xml)
+
+---
+
 ## [5.14.0] - 2026-03-14
 
 ### 추가 (Added)

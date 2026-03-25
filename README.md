@@ -1,7 +1,7 @@
 # RTC (Real-Time Control) Framework
 
 ![CI](https://github.com/hyujun/rtc-framework/actions/workflows/ros2-advanced-ci.yml/badge.svg)
-[![codecov](https://codecov.io/gh/hyujun/rtc-framework/branch/master/graph/badge.svg)](https://codecov.io/gh/hyujun/rtc-framework)
+[![codecov](https://codecov.io/gh/hyujun/rtc-framework/branch/main/graph/badge.svg)](https://codecov.io/gh/hyujun/rtc-framework)
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 ![ROS2 Jazzy](https://img.shields.io/badge/ROS2-Jazzy-green)
 
@@ -19,27 +19,27 @@
 
 | 패키지 | 버전 | 설명 | 빌드 |
 |--------|------|------|------|
-| [`rtc_msgs`](rtc_msgs/) | 5.16.0 | 커스텀 ROS2 메시지 7종 (JointCommand, FingertipSensor, HandSensorState, GuiPosition, RobotTarget, DeviceStateLog, DeviceSensorLog) | ament_cmake |
-| [`rtc_base`](rtc_base/) | 5.16.0 | 헤더-전용 RT 인프라: 타입, SeqLock, SPSC 버퍼, 스레딩(4/6/8/10/12/16코어), Bessel/Kalman 필터, CSV 로깅 | ament_cmake |
-| [`rtc_communication`](rtc_communication/) | 5.16.0 | 헤더-전용 전송 계층 추상화: TransportInterface, UdpSocket RAII, PacketCodec concept, Transceiver 템플릿 | ament_cmake |
-| [`rtc_controller_interface`](rtc_controller_interface/) | 0.1.0 | 추상 컨트롤러 인터페이스 (Strategy 패턴) + Singleton 레지스트리 (가변 DOF) | ament_cmake |
-| [`rtc_controllers`](rtc_controllers/) | 0.1.0 | 범용 제어기 4종 (P, JointPD, CLIK, OSC) + 퀸틱 궤적 생성기 | ament_cmake |
-| [`rtc_controller_manager`](rtc_controller_manager/) | 0.1.0 | 500Hz RT 루프 (clock_nanosleep) + 컨트롤러 라이프사이클 + SPSC publish offload + E-STOP | ament_cmake |
-| [`rtc_status_monitor`](rtc_status_monitor/) | 5.16.0 | 비-RT 10Hz 안전 감시 (로봇 모드, 추적 오차, 관절 한계) + lock-free RT 접근자 | ament_cmake |
-| [`rtc_inference`](rtc_inference/) | 5.16.0 | 헤더-전용 RT-안전 추론 엔진: ONNX Runtime IoBinding, 사전 할당 버퍼, 배치/다중 모델 | ament_cmake |
-| [`rtc_mujoco_sim`](rtc_mujoco_sim/) | 5.16.0 | MuJoCo 3.x 물리 시뮬레이터: FreeRun/SyncStep, GLFW 뷰어, fake_hand 1차 필터 | ament_cmake |
-| [`rtc_digital_twin`](rtc_digital_twin/) | 5.16.0 | RViz2 디지털 트윈 시각화: 500Hz→60Hz 통합 관절 상태 + 핑거팁 센서 마커 | ament_python |
-| [`rtc_tools`](rtc_tools/) | 5.16.0 | Python 유틸리티 7종: controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf, hand_udp_sender, hand_data_plot, session_dir | ament_python |
-| [`rtc_scripts`](rtc_scripts/) | 5.16.0 | RT 시스템 설정 스크립트 (PREEMPT_RT 커널, CPU 격리, IRQ 어피니티, 네트워크 최적화) | ament_cmake |
+| [`rtc_msgs`](rtc_msgs/) | 5.17.0 | 커스텀 ROS2 메시지 7종 (JointCommand, FingertipSensor, HandSensorState, GuiPosition, RobotTarget, DeviceStateLog, DeviceSensorLog) | ament_cmake |
+| [`rtc_base`](rtc_base/) | 5.17.0 | 헤더-전용 RT 인프라: 타입, SeqLock, SPSC 버퍼, 스레딩(4/6/8/10/12/16코어), Bessel/Kalman 필터, CSV 로깅 | ament_cmake |
+| [`rtc_communication`](rtc_communication/) | 5.17.0 | 헤더-전용 전송 계층 추상화: TransportInterface, UdpSocket RAII, PacketCodec concept, Transceiver 템플릿 | ament_cmake |
+| [`rtc_controller_interface`](rtc_controller_interface/) | 5.17.0 | 추상 컨트롤러 인터페이스 (Strategy 패턴) + Singleton 레지스트리 (가변 DOF) | ament_cmake |
+| [`rtc_controllers`](rtc_controllers/) | 5.17.0 | 범용 제어기 4종 (P, JointPD, CLIK, OSC) + 퀸틱 궤적 생성기 | ament_cmake |
+| [`rtc_controller_manager`](rtc_controller_manager/) | 5.17.0 | 500Hz RT 루프 (clock_nanosleep) + 컨트롤러 라이프사이클 + SPSC publish offload + E-STOP | ament_cmake |
+| [`rtc_status_monitor`](rtc_status_monitor/) | 5.17.0 | 비-RT 10Hz 안전 감시 (로봇 모드, 추적 오차, 관절 한계) + lock-free RT 접근자 | ament_cmake |
+| [`rtc_inference`](rtc_inference/) | 5.17.0 | 헤더-전용 RT-안전 추론 엔진: ONNX Runtime IoBinding, 사전 할당 버퍼, 배치/다중 모델 | ament_cmake |
+| [`rtc_mujoco_sim`](rtc_mujoco_sim/) | 5.17.0 | MuJoCo 3.x 물리 시뮬레이터: FreeRun/SyncStep, GLFW 뷰어, fake_hand 1차 필터 | ament_cmake |
+| [`rtc_digital_twin`](rtc_digital_twin/) | 5.17.0 | RViz2 디지털 트윈 시각화: 500Hz→60Hz 통합 관절 상태 + 핑거팁 센서 마커 | ament_python |
+| [`rtc_tools`](rtc_tools/) | 5.17.0 | Python 유틸리티 7종: controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf, hand_udp_sender, hand_data_plot, session_dir | ament_python |
+| [`rtc_scripts`](rtc_scripts/) | 5.17.0 | RT 시스템 설정 스크립트 (PREEMPT_RT 커널, CPU 격리, IRQ 어피니티, 네트워크 최적화) | ament_cmake |
 
 ### 로봇 고유 패키지 (ur5e_*)
 
 | 패키지 | 버전 | 설명 | 빌드 |
 |--------|------|------|------|
-| [`ur5e_description`](ur5e_description/) | 5.16.0 | UR5e URDF/MJCF/메시 — Pinocchio/RViz/MuJoCo 겸용 | ament_cmake |
-| [`ur5e_hand_driver`](ur5e_hand_driver/) | 5.16.0 | 10-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서 44ch, ONNX F/T 추론 | ament_cmake |
-| [`ur5e_hand_status_monitor`](ur5e_hand_status_monitor/) | 0.1.0 | 로봇+핸드 통합 상태 모니터: 모터/센서 데이터 품질 검사, 레이트 감시, lock-free RT 접근자 | ament_cmake |
-| [`ur5e_bringup`](ur5e_bringup/) | 5.16.0 | UR5e launch/config + 데모 컨트롤러 (DemoJoint, DemoTask) + CPU 격리/DDS 핀닝 | ament_cmake |
+| [`ur5e_description`](ur5e_description/) | 5.17.0 | UR5e URDF/MJCF/메시 — Pinocchio/RViz/MuJoCo 겸용 | ament_cmake |
+| [`ur5e_hand_driver`](ur5e_hand_driver/) | 5.17.0 | 10-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서 44ch, ONNX F/T 추론 | ament_cmake |
+| [`ur5e_hand_status_monitor`](ur5e_hand_status_monitor/) | 5.17.0 | 로봇+핸드 통합 상태 모니터: 모터/센서 데이터 품질 검사, 레이트 감시, lock-free RT 접근자 | ament_cmake |
+| [`ur5e_bringup`](ur5e_bringup/) | 5.17.0 | UR5e launch/config + 데모 컨트롤러 (DemoJoint, DemoTask) + CPU 격리/DDS 핀닝 | ament_cmake |
 
 ### 의존성 그래프
 
@@ -185,7 +185,7 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 [rtc_status_monitor]  10Hz 비-RT 안전 감시 → 글로벌 E-STOP
 ```
 
-### 스레딩 모델 (v5.16.0, 6코어 기준)
+### 스레딩 모델 (v5.17.0, 6코어 기준)
 
 | 스레드 | 타입 | 코어 | 스케줄러 | 우선순위 | 역할 |
 |--------|------|------|----------|----------|------|
