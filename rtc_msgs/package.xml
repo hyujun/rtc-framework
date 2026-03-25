@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>rtc_msgs</name>
-  <version>5.16.0</version>
+  <version>5.17.0</version>
   <description>
     Custom ROS2 message definitions for the RT controller stack.
     Named joint commands, hand motor commands, fingertip sensor states,

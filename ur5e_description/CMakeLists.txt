@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ur5e_description VERSION 5.16.0)
+project(ur5e_description VERSION 5.17.0)
 
 find_package(ament_cmake REQUIRED)
 

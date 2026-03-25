@@ -1,4 +1,4 @@
-# 실시간 최적화 가이드 (v5.16.0)
+# 실시간 최적화 가이드 (v5.17.0)
 
 **RTC (Real-Time Controller) 병렬 컴퓨팅 아키텍처 상세 문서**
 
@@ -56,7 +56,7 @@ SingleThreadedExecutor (1개 스레드)
 3. **CPU Migration**: OS가 스레드를 다른 코어로 이동 → cache miss
 4. **RT 우선순위 미설정**: SCHED_OTHER 기본 정책 사용
 
-### v4.2.0 → v5.16.0 (현재)
+### v4.2.0 → v5.17.0 (현재)
 
 ```
 rt_loop (Core 2, SCHED_FIFO prio 90) ← std::jthread, clock_nanosleep
@@ -79,7 +79,7 @@ aux_executor (Core 5, SCHED_OTHER) ← ROS2 Executor
   └─ estop_pub_
 ```
 
-**v5.16.0 개선사항** (v4.2.0 기반):
+**v5.17.0 개선사항** (v4.2.0 기반):
 1. **clock_nanosleep RT 루프**: `create_wall_timer()` → `clock_nanosleep(TIMER_ABSTIME)` — executor dispatch 지터 제거
 2. **Publish 오프로드**: SPSC 버퍼 + 전용 publish thread — DDS 직렬화/syscall RT 경로에서 제거
 3. **Executor 축소**: 4개 → 3개 (rt_executor 제거, jthread 대체)
@@ -411,7 +411,7 @@ cat /proc/interrupts | grep -E "(CPU0|CPU1)"  # 대부분의 IRQ가 Core 0-1에 
 
 ```cpp
 void RtControllerNode::CreateCallbackGroups() {
-  // cb_group_rt_ 제거 (v5.16.0) — ControlLoop() + CheckTimeouts()는
+  // cb_group_rt_ 제거 (v5.17.0) — ControlLoop() + CheckTimeouts()는
   // RtLoopEntry() jthread에서 clock_nanosleep으로 직접 실행
   cb_group_sensor_ = create_callback_group(
       rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -424,7 +424,7 @@ void RtControllerNode::CreateCallbackGroups() {
 
 **MutuallyExclusive**: 같은 그룹 내 콜백은 순차 실행 (thread-safe)
 
-### RT 루프 (v5.16.0, clock_nanosleep 기반)
+### RT 루프 (v5.17.0, clock_nanosleep 기반)
 
 ```cpp
 void RtControllerNode::RtLoopEntry(const ThreadConfig& cfg) {
@@ -449,7 +449,7 @@ void RtControllerNode::RtLoopEntry(const ThreadConfig& cfg) {
 }
 ```
 
-> **v5.16.0**: `create_wall_timer()` + `cb_group_rt_` 제거. `clock_nanosleep(TIMER_ABSTIME)` 절대시간
+> **v5.17.0**: `create_wall_timer()` + `cb_group_rt_` 제거. `clock_nanosleep(TIMER_ABSTIME)` 절대시간
 > 루프로 대체하여 executor dispatch 지터 ~50-200μs 제거. CheckTimeouts()는 매 10틱 inline 호출.
 
 ### 구독자 할당
@@ -534,7 +534,7 @@ inline bool ApplyThreadConfig(const ThreadConfig& cfg) noexcept {
 }
 ```
 
-### main() 함수 (`rt_controller_main.cpp`, v5.16.0)
+### main() 함수 (`rt_controller_main.cpp`, v5.17.0)
 
 ```cpp
 int main(int argc, char** argv) {
@@ -575,7 +575,7 @@ int main(int argc, char** argv) {
 }
 ```
 
-> **v5.16.0 변경**: `rt_executor` 제거. `StartRtLoop()` / `StartPublishLoop()`이
+> **v5.17.0 변경**: `rt_executor` 제거. `StartRtLoop()` / `StartPublishLoop()`이
 > `clock_nanosleep` jthread와 SPSC publish thread를 각각 관리. Executor 4개 → 3개.
 
 ---
@@ -592,7 +592,7 @@ PID=$(pgrep -f rt_controller)
 ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 ```
 
-**출력 예시 (v5.16.0)**:
+**출력 예시 (v5.17.0)**:
 ```
   PID   TID CLS RTPRIO PSR COMMAND
  1234  1234  TS      -   0 rt_controller  (메인 스레드)
@@ -973,6 +973,6 @@ grep -E "[0-9]{3,}\.[0-9]{3} us" trace.txt
 
 ---
 
-**최종 업데이트**: 2026-03-24
+**최종 업데이트**: 2026-03-25
 **작성자**: RTC Framework Team
-**버전**: v5.16.0 (v4.2.0 기반 → v5.16.0: clock_nanosleep RT loop + SPSC publish offload + overrun recovery + CPU 코어 할당 최적화 + 모니터링 스레드 + NVIDIA DKMS RT 커널 우회 + CPU governor 자동 설정)
+**버전**: v5.17.0 (v4.2.0 기반 → v5.17.0: clock_nanosleep RT loop + SPSC publish offload + overrun recovery + CPU 코어 할당 최적화 + 모니터링 스레드 + NVIDIA DKMS RT 커널 우회 + CPU governor 자동 설정)

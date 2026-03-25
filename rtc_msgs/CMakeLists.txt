@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(rtc_msgs VERSION 5.16.0 LANGUAGES C CXX)
+project(rtc_msgs VERSION 5.17.0 LANGUAGES C CXX)
 
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)

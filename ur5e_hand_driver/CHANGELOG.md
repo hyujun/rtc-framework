@@ -5,6 +5,15 @@
 
 ---
 
+## [5.17.0] - 2026-03-25
+
+### 변경 (Changed)
+
+- 워크스페이스 전체 버전 v5.17.0 통일
+- 문서 최신화 (README.md, package.xml)
+
+---
+
 ## [5.15.1] - 2026-03-18
 
 ### 변경 (Changed) — Sub-ms recv timeout: SO_RCVTIMEO → ppoll

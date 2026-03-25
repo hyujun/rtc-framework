@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>ur5e_bringup</name>
-  <version>5.16.0</version>
+  <version>5.17.0</version>
   <description>UR5e-specific launch, config, and demo controllers for RTC framework.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>

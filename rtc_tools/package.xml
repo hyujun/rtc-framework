@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>rtc_tools</name>
-  <version>5.16.0</version>
+  <version>5.17.0</version>
   <description>Python development utilities for the UR5e RT controller stack: log plotter, controller GUI, motion editor GUI, MJCF/URDF validator, and UDP hand data tools.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>

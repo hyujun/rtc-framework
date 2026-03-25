@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>rtc_controller_manager</name>
-  <version>5.16.0</version>
+  <version>5.17.0</version>
   <description>
     RT Controller Manager — generic 500 Hz real-time controller node.
     Manages controller lifecycle, RT loop, publish offload, and logging.
