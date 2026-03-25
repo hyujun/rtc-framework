@@ -104,7 +104,9 @@ struct ControllerOutput { robot_commands[6], hand_commands[10], actual_target_po
 | status_monitor | 4 | SCHED_OTHER | nice -2 | 10Hz status monitor |
 | hand_failure | 4 | SCHED_OTHER | nice -2 | 50Hz hand failure detector |
 
-Core 0-1: OS/DDS/IRQ (isolcpus=2-5). Auto-selects 4/6/8/10/12/16-core layouts via `SelectThreadConfigs()`.
+Core 0-1: OS/DDS/IRQ (isolcpus=2-5). DDS threads pinned to Core 0-1 via taskset (robot.launch.py).
+CycloneDDS performance config (`cyclone_dds.xml`): multicast disabled, socket buffers 8MB/2MB, write batching 8μs, NackDelay 10ms, synchronous delivery.
+Auto-selects 4/6/8/10/12/16-core layouts via `SelectThreadConfigs()`.
 
 ### Lock-Free Primitives
 

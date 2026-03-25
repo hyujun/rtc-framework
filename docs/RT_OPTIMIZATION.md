@@ -870,29 +870,24 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export CYCLONEDDS_URI=file://$(ros2 pkg prefix rtc_controller_manager)/share/rtc_controller_manager/config/cyclone_dds.xml
 ```
 
-**`cyclone_dds.xml`** 주요 최적화 항목:
-```xml
-<CycloneDDS>
-  <Domain>
-    <General>
-      <!-- 단일 호스트: 멀티캐스트 비활성화로 IGMP 오버헤드 제거 -->
-      <AllowMulticast>false</AllowMulticast>
-    </General>
-    <Internal>
-      <!-- Write batching: 8μs 간격으로 시스콜 횟수 감소 -->
-      <WriteBatchFlushInterval>8 us</WriteBatchFlushInterval>
-      <!-- NACK 지연 최소화: 100ms → 10ms -->
-      <NackDelay>10 ms</NackDelay>
-      <!-- 소켓 수신 버퍼: 8MB (sysctl rmem_max 이하) -->
-      <SocketReceiveBufferSize>8 MB</SocketReceiveBufferSize>
-      <!-- 동기 전달: subscriber 콜백 지연 최소화 -->
-      <SynchronousDeliveryLatencyBound>inf</SynchronousDeliveryLatencyBound>
-    </Internal>
-    <!-- NOTE: CycloneDDS 0.11+ (Jazzy)에서 <Internal><Threads> 제거됨.
-         DDS 스레드 affinity는 taskset으로 처리 (robot.launch.py 참조). -->
-  </Domain>
-</CycloneDDS>
-```
+**`cyclone_dds.xml`** 주요 최적화 항목 (전체 설정: `rtc_controller_manager/config/cyclone_dds.xml`):
+
+| 설정 | 값 | 효과 |
+|------|-----|------|
+| `AllowMulticast` | `false` | 단일 호스트에서 IGMP 오버헤드 제거 |
+| `LeaseDuration` | `5s` | 죽은 participant 빠른 감지 (기본 10s) |
+| `SPDPInterval` | `1s` | 시작 시 빠른 discovery (기본 30s) |
+| `WriteBatchFlushInterval` | `8 μs` | 시스콜 횟수 감소 |
+| `NackDelay` | `10 ms` | 재전송 속도 10x 향상 (기본 100ms) |
+| `PreEmptiveAckDelay` | `10 ms` | 갭 감지 시 빠른 응답 |
+| `HeartbeatInterval` | `100 ms` | 안정적 손실 감지 |
+| `SocketReceiveBufferSize` | `8 MB` | DDS 버스트 수용 (sysctl rmem_max 이하) |
+| `SocketSendBufferSize` | `2 MB` | 송신 버퍼 확보 |
+| `SynchronousDeliveryLatencyBound` | `inf` | subscriber 콜백 wake-up 지연 제거 |
+| `MaxQueuedRexmitMessages` | `256` | 버스트 퍼블리시 시 패킷 병합 |
+
+> **NOTE**: CycloneDDS 0.11+ (Jazzy)에서 `<Internal><Threads>` 제거됨.
+> DDS 스레드 affinity는 `taskset`으로 처리 (`robot.launch.py` 참조).
 
 #### Fast DDS
 ```xml

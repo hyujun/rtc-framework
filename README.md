@@ -137,7 +137,7 @@ cd ~/ur_ws && colcon build --symlink-install && source install/setup.bash
 # MuJoCo 시뮬레이션
 ros2 launch rtc_mujoco_sim mujoco_sim.launch.py
 
-# 실제 로봇
+# 실제 로봇 (CycloneDDS 성능 최적화 설정 자동 로드)
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ros2 launch ur5e_bringup robot.launch.py robot_ip:=192.168.1.10
 
@@ -198,7 +198,9 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 | `status_monitor` | jthread | 4 | SCHED_OTHER | nice -2 | 10Hz 상태 감시 |
 | `hand_failure` | jthread | 4 | SCHED_OTHER | nice -2 | 50Hz 핸드 실패 감지 |
 
-> Core 0–1: OS, DDS, NIC IRQ (isolcpus=2-5 권장). 8/10/12/16코어 레이아웃은 `rtc_base` README 참조.
+> Core 0–1: OS, DDS, NIC IRQ (isolcpus=2-5 권장). DDS 스레드는 `taskset`으로 Core 0-1에 자동 핀닝.
+> CycloneDDS 성능 최적화: 멀티캐스트 비활성화, 소켓 버퍼 확대, write batching, NACK 지연 최소화.
+> 8/10/12/16코어 레이아웃은 `rtc_base` README 참조.
 
 ---
 

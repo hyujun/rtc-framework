@@ -323,12 +323,16 @@ cat /proc/irq/<NUM>/smp_affinity        # "3" = Core 0,1
 |----------|------|-----|
 | Interrupt coalescing | `rx-usecs` | 0 (즉시 인터럽트) |
 | Offload 비활성화 | GRO, TSO, GSO | off |
-| sysctl 버퍼 | `rmem_max`, `wmem_max` | 증가 |
-| sysctl 네트워크 | `netdev_max_backlog` | 증가 |
+| sysctl 버퍼 | `rmem_max`, `wmem_max` | 2GB (DDS가 setsockopt으로 확보) |
+| sysctl 버퍼 | `rmem_default`, `wmem_default` | 212992 (Linux 기본값 유지) |
+| sysctl 네트워크 | `netdev_max_backlog` | 5000 |
+
+> CycloneDDS의 `SocketReceiveBufferSize`(8MB)는 이 스크립트가 설정하는 `rmem_max`(2GB) 이하여야 합니다.
+> CycloneDDS 설정은 `rtc_controller_manager/config/cyclone_dds.xml` 참조.
 
 **영구 적용**:
 - `rtc-udp-optimization` systemd oneshot 서비스로 부팅 시 ethtool 설정 자동 적용
-- `/etc/sysctl.d/` 설정 파일로 sysctl 값 영구 저장
+- `/etc/sysctl.d/99-ros2-udp.conf` 설정 파일로 sysctl 값 영구 저장
 
 **멱등성**: 이미 적용된 설정은 건너뛰고, 변경이 필요한 경우에만 적용합니다.
 
