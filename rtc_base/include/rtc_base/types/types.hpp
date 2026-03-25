@@ -8,7 +8,6 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <map>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -168,6 +167,7 @@ struct ControllerOutput {
 
   // Shared fields (not per-device)
   std::array<double, 6> actual_task_positions{};  // TCP FK result
+  std::array<double, 6> task_goal_positions{};    // task-space goal target from GUI
   bool        valid{true};
   CommandType command_type{CommandType::kPosition};
 };
@@ -237,23 +237,37 @@ struct DeviceTopicGroup {
 };
 
 // Dynamic topic configuration: groups keyed by device name ("ur5e", "hand", …)
+// Uses a vector of pairs to preserve YAML insertion order.  Device indices
+// throughout the system (ControllerState, ControllerOutput, LogEntry, CSV)
+// are derived from the iteration order of this container, so alphabetical
+// reordering (as std::map would do) breaks the mapping.
 struct TopicConfig {
-  std::map<std::string, DeviceTopicGroup> groups;
+  std::vector<std::pair<std::string, DeviceTopicGroup>> groups;
+
+  // Insert-or-access by name (preserves insertion order for new entries).
+  DeviceTopicGroup& operator[](const std::string& name) {
+    for (auto& [n, g] : groups) { if (n == name) return g; }
+    groups.emplace_back(name, DeviceTopicGroup{});
+    return groups.back().second;
+  }
 
   // True if the named group exists and has at least one topic entry.
   [[nodiscard]] bool HasGroup(const std::string& name) const noexcept {
-    auto it = groups.find(name);
-    return it != groups.end() &&
-           (!it->second.subscribe.empty() || !it->second.publish.empty());
+    for (const auto& [n, g] : groups) {
+      if (n == name) return !g.subscribe.empty() || !g.publish.empty();
+    }
+    return false;
   }
 
   // True if the named group has a subscribe entry with the given role.
   [[nodiscard]] bool HasSubscribeRole(
       const std::string& group_name, SubscribeRole role) const noexcept {
-    auto it = groups.find(group_name);
-    if (it == groups.end()) return false;
-    for (const auto& e : it->second.subscribe) {
-      if (e.role == role) return true;
+    for (const auto& [n, g] : groups) {
+      if (n != group_name) continue;
+      for (const auto& e : g.subscribe) {
+        if (e.role == role) return true;
+      }
+      return false;
     }
     return false;
   }
@@ -265,10 +279,12 @@ struct TopicConfig {
   // Call only during initialisation, not from the 500 Hz control loop.
   [[nodiscard]] std::string GetSubscribeTopicName(
       const std::string& group_name, SubscribeRole role) const {
-    auto it = groups.find(group_name);
-    if (it == groups.end()) return {};
-    for (const auto& e : it->second.subscribe) {
-      if (e.role == role) return e.topic_name;
+    for (const auto& [n, g] : groups) {
+      if (n != group_name) continue;
+      for (const auto& e : g.subscribe) {
+        if (e.role == role) return e.topic_name;
+      }
+      return {};
     }
     return {};
   }

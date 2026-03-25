@@ -240,6 +240,8 @@ void RtControllerNode::DeclareAndLoadParameters()
     // alias (e.g. "pd_controller") so either form works as initial_controller.
     name_to_idx[std::string(ctrl->Name())] = static_cast<int>(i);
     name_to_idx[entry.config_key] = static_cast<int>(i);
+    controller_name_to_idx_[std::string(ctrl->Name())] = static_cast<int>(i);
+    controller_name_to_idx_[entry.config_key] = static_cast<int>(i);
 
     controllers_.push_back(std::move(ctrl));
   }
@@ -520,11 +522,21 @@ void RtControllerNode::CreateSubscriptions()
     }
   }
 
-  // ── Fixed control subscriptions (always present) ──────────────────────────
-  controller_selector_sub_ = create_subscription<std_msgs::msg::Int32>(
+  // ── GUI control subscriptions (use aux callback group to avoid blocking
+  //    sensor callbacks, which would stall device_timeouts_ updates and
+  //    trigger E-STOP during controller switch / gains update) ──────────────
+  auto aux_sub_options = rclcpp::SubscriptionOptions();
+  aux_sub_options.callback_group = cb_group_aux_;
+
+  controller_selector_sub_ = create_subscription<std_msgs::msg::String>(
       "/ur5e/controller_type", 10,
-    [this](std_msgs::msg::Int32::SharedPtr msg) {
-      int idx = msg->data;
+    [this](std_msgs::msg::String::SharedPtr msg) {
+      const auto it = controller_name_to_idx_.find(msg->data);
+      if (it == controller_name_to_idx_.end()) {
+        RCLCPP_WARN(get_logger(), "Unknown controller name: '%s'", msg->data.c_str());
+        return;
+      }
+      const int idx = it->second;
       if (idx >= 0 && idx < static_cast<int>(controllers_.size())) {
         // 컨트롤러 전환 시 현재 위치로 hold position 초기화 (target 공백 방지)
         if (auto_hold_position_ &&
@@ -555,11 +567,9 @@ void RtControllerNode::CreateSubscriptions()
         std_msgs::msg::String ctrl_name_msg;
         ctrl_name_msg.data = std::string(controllers_[idx]->Name());
         active_ctrl_name_pub_->publish(ctrl_name_msg);
-      } else {
-        RCLCPP_WARN(get_logger(), "Invalid controller index: %d", idx);
       }
       },
-      sub_options);
+      aux_sub_options);
 
   controller_gains_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
       "/ur5e/controller_gains", 10,
@@ -569,7 +579,7 @@ void RtControllerNode::CreateSubscriptions()
       RCLCPP_INFO(get_logger(), "Gains updated for %s",
         controllers_[static_cast<std::size_t>(idx)]->Name().data());
       },
-      sub_options);
+      aux_sub_options);
 
   request_gains_sub_ = create_subscription<std_msgs::msg::Bool>(
       "/ur5e/request_gains", 10,
@@ -582,7 +592,7 @@ void RtControllerNode::CreateSubscriptions()
       RCLCPP_INFO(get_logger(), "Published current gains for %s (%zu values)",
         controllers_[static_cast<std::size_t>(idx)]->Name().data(), gains.size());
       },
-      sub_options);
+      aux_sub_options);
 }
 
 void RtControllerNode::CreatePublishers()
@@ -1077,8 +1087,8 @@ void RtControllerNode::ControlLoop()
               dstate.inference_data[static_cast<std::size_t>(i)];
         }
       }
-      // task_goals: copy from actual_task_positions (set by controller FK)
-      snap.task_goals[gi] = output.actual_task_positions;
+      // task_goals: copy from controller's task goal target
+      snap.task_goals[gi] = output.task_goal_positions;
       ++gi;
     }
     snap.num_groups = gi;
@@ -1130,6 +1140,7 @@ void RtControllerNode::ControlLoop()
     entry.t_total_us         = t_total_us;
     entry.jitter_us          = jitter_us;
     entry.actual_task_positions = output.actual_task_positions;
+    entry.task_goal_positions  = output.task_goal_positions;
     entry.command_type       = output.command_type;
 
     // Per-device logging

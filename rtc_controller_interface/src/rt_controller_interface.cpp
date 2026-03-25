@@ -83,11 +83,11 @@ TopicConfig RTControllerInterface::MakeDefaultTopicConfig()
   TopicConfig cfg;
 
   // ── ur5e device group (default topics) ──
-  cfg.groups["ur5e"].subscribe = {
+  cfg["ur5e"].subscribe = {
     {"/joint_states",                SubscribeRole::kState},
     {"/ur5e/target_joint_positions", SubscribeRole::kTarget},
   };
-  cfg.groups["ur5e"].publish = {
+  cfg["ur5e"].publish = {
     {"/ur5e/joint_command",                   PublishRole::kJointCommand,     kNumRobotJoints},
     {"/forward_position_controller/commands", PublishRole::kRos2Command,      kNumRobotJoints},
     {"/ur5e/gui_position",                    PublishRole::kGuiPosition,      0},
@@ -116,7 +116,7 @@ TopicConfig RTControllerInterface::ParseTopicConfig(const YAML::Node & topics_no
   for (auto it = topics_node.begin(); it != topics_node.end(); ++it) {
     const std::string group_name = it->first.as<std::string>();
     if (!it->second.IsMap()) { continue; }
-    ParseDeviceTopicGroup(it->second, cfg.groups[group_name]);
+    ParseDeviceTopicGroup(it->second, cfg[group_name]);
   }
 
   return cfg;

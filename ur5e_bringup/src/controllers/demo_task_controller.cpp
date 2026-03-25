@@ -336,6 +336,22 @@ ControllerOutput DemoTaskController::WriteOutput(
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
 
+  // Task goal target from GUI
+  output.task_goal_positions[0] = tcp_target_[0];
+  output.task_goal_positions[1] = tcp_target_[1];
+  output.task_goal_positions[2] = tcp_target_[2];
+  if (gains_.control_6dof) {
+    Eigen::Vector3d goal_rpy = pinocchio::rpy::matrixToRpy(
+        tcp_target_pose_.rotation());
+    output.task_goal_positions[3] = goal_rpy[0];
+    output.task_goal_positions[4] = goal_rpy[1];
+    output.task_goal_positions[5] = goal_rpy[2];
+  } else {
+    output.task_goal_positions[3] = rpy[0];
+    output.task_goal_positions[4] = rpy[1];
+    output.task_goal_positions[5] = rpy[2];
+  }
+
   // ── Hand output ────────────────────────────────────────────────────────
   if (state.num_devices > 1 && state.devices[1].valid) {
     const int nc1 = state.devices[1].num_channels;

@@ -223,6 +223,9 @@ ControllerOutput DemoJointController::WriteOutput(
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
 
+  // Joint mode: no explicit task goal from GUI, mirror FK result
+  output.task_goal_positions = output.actual_task_positions;
+
   // ── Hand output ────────────────────────────────────────────────────────
   if (state.num_devices > 1 && state.devices[1].valid) {
     const int nc1 = state.devices[1].num_channels;

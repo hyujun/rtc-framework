@@ -46,6 +46,8 @@ demo_task_controller:
       publish:
         - topic: "/hand/joint_command"
           role: "joint_command"
+        - topic: "/hand/gui_position"
+          role: "gui_position"
         - topic: "/hand/state_log"
           role: "device_state_log"
         - topic: "/hand/sensor_log"
