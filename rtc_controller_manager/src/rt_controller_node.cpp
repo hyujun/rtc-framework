@@ -637,7 +637,7 @@ void RtControllerNode::CreatePublishers()
         if (gui_position_publishers_.count(entry.topic_name) > 0) { return; }
         TypedPublisherEntry<rtc_msgs::msg::GuiPosition> pe;
         pe.publisher = create_publisher<rtc_msgs::msg::GuiPosition>(
-            entry.topic_name, cmd_qos);
+            entry.topic_name, 10);
         pe.msg.joint_names.assign(joint_names.begin(), joint_names.end());
         pe.msg.joint_positions.resize(n, 0.0);
         gui_position_publishers_[entry.topic_name] = std::move(pe);
