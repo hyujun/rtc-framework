@@ -166,8 +166,7 @@ private:
   std::atomic<bool> estopped_{false};
   std::atomic<bool> hand_estopped_{false};
 
-  static constexpr std::array<double, kNumRobotJoints> kSafePosition{
-    0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
+  std::vector<double> safe_position_;
   std::vector<double> max_joint_velocity_;
 
   CommandType command_type_{CommandType::kTorque};

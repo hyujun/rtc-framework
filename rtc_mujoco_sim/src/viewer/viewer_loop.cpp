@@ -39,8 +39,12 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_COMPAT_PROFILE);
 
+  constexpr int kDefaultWindowWidth  = 1280;
+  constexpr int kDefaultWindowHeight = 960;
+  const char* window_title = cfg_.window_title.empty()
+      ? "MuJoCo Simulator" : cfg_.window_title.c_str();
   GLFWwindow* window =
-      glfwCreateWindow(1280, 960, "UR5e MuJoCo Simulator", nullptr, nullptr);
+      glfwCreateWindow(kDefaultWindowWidth, kDefaultWindowHeight, window_title, nullptr, nullptr);
   if (!window) {
     fprintf(stderr, "[MuJoCoSimulator] glfwCreateWindow failed\n");
     glfwTerminate();
@@ -58,10 +62,13 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
   mjv_makeScene(model_, &scn, 2000);
   mjr_makeContext(model_, &con, mjFONTSCALE_100);
 
+  constexpr double kDefaultCameraDistance  = 2.5;
+  constexpr double kDefaultCameraAzimuth   = 90.0;
+  constexpr double kDefaultCameraElevation = -20.0;
   cam.type      = mjCAMERA_FREE;
-  cam.distance  = 2.5;
-  cam.azimuth   = 90.0;
-  cam.elevation = -20.0;
+  cam.distance  = kDefaultCameraDistance;
+  cam.azimuth   = kDefaultCameraAzimuth;
+  cam.elevation = kDefaultCameraElevation;
 
   // ── Visualisation-only mjData (only qpos is synced from physics thread) ────
   mjData* vis_data = mj_makeData(model_);

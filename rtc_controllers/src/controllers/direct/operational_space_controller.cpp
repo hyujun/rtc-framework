@@ -32,7 +32,8 @@ OperationalSpaceController::OperationalSpaceController(
 
 void OperationalSpaceController::OnDeviceConfigsSet()
 {
-  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
+  const auto primary = GetPrimaryDeviceName();
+  if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       if (model_.existFrame(cfg->urdf->tip_link)) {
         auto fid = model_.getFrameId(cfg->urdf->tip_link);
@@ -42,9 +43,15 @@ void OperationalSpaceController::OnDeviceConfigsSet()
     if (cfg->joint_limits) {
       max_joint_velocity_ = cfg->joint_limits->max_velocity;
     }
+    if (!cfg->safe_position.empty()) {
+      safe_position_ = cfg->safe_position;
+    }
   }
   if (max_joint_velocity_.empty()) {
-    max_joint_velocity_.assign(kMaxDeviceChannels, 2.0);
+    max_joint_velocity_.assign(kMaxDeviceChannels, kDefaultMaxJointVelocity);
+  }
+  if (safe_position_.empty()) {
+    safe_position_.assign(kMaxDeviceChannels, 0.0);
   }
 }
 
@@ -76,7 +83,7 @@ ControllerOutput OperationalSpaceController::Compute(
   // ── Step 3: current task-space velocity  tcp_vel = J * dq ────────────────
   tcp_vel_.noalias() = J_full_ * v_;
 
-  const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
+  const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
   const pinocchio::SE3 & tcp = data_.oMi[end_id_];
 
   // ── Step 3.5: initialise trajectory on new target (after FK) ─────────────
@@ -282,7 +289,7 @@ void OperationalSpaceController::SetHandEstop(bool active) noexcept
 ControllerOutput OperationalSpaceController::ComputeEstop(
   const ControllerState & state) noexcept
 {
-  const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
+  const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
   const auto & dev0 = state.devices[0];
   ControllerOutput output;
   output.num_devices = state.num_devices;
@@ -291,9 +298,10 @@ ControllerOutput OperationalSpaceController::ComputeEstop(
   out0.num_channels = nc0;
   for (int i = 0; i < nc0; ++i) {
     const auto ui = static_cast<std::size_t>(i);
-    const double lim = (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : 2.0;
+    const double lim = (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : kDefaultMaxJointVelocity;
+    const double sp = (ui < safe_position_.size()) ? safe_position_[ui] : 0.0;
     out0.commands[i] = dev0.positions[i] +
-      std::clamp(kSafePosition[i] - dev0.positions[i], -lim, lim) * dt;
+      std::clamp(sp - dev0.positions[i], -lim, lim) * dt;
   }
   return output;
 }
@@ -303,7 +311,7 @@ void OperationalSpaceController::ClampVelocity(
 {
   for (int i = 0; i < n; ++i) {
     const auto ui = static_cast<std::size_t>(i);
-    const double lim = (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : 2.0;
+    const double lim = (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : kDefaultMaxJointVelocity;
     dq[i] = std::clamp(dq[i], -lim, lim);
   }
 }

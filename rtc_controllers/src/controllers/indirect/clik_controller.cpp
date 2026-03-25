@@ -38,7 +38,8 @@ ClikController::ClikController(std::string_view urdf_path, Gains gains)
 
 void ClikController::OnDeviceConfigsSet()
 {
-  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
+  const auto primary = GetPrimaryDeviceName();
+  if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       if (model_.existFrame(cfg->urdf->tip_link)) {
         auto fid = model_.getFrameId(cfg->urdf->tip_link);
@@ -48,9 +49,20 @@ void ClikController::OnDeviceConfigsSet()
     if (cfg->joint_limits) {
       max_joint_velocity_ = cfg->joint_limits->max_velocity;
     }
+    if (!cfg->safe_position.empty()) {
+      safe_position_ = cfg->safe_position;
+      // Also use safe_position as null-space reference if available
+      for (std::size_t i = 0; i < std::min(cfg->safe_position.size(),
+           null_target_.size()); ++i) {
+        null_target_[i] = cfg->safe_position[i];
+      }
+    }
   }
   if (max_joint_velocity_.empty()) {
-    max_joint_velocity_.assign(kMaxDeviceChannels, 2.0);
+    max_joint_velocity_.assign(kMaxDeviceChannels, kDefaultMaxJointVelocity);
+  }
+  if (safe_position_.empty()) {
+    safe_position_.assign(kMaxDeviceChannels, 0.0);
   }
 }
 
@@ -122,7 +134,7 @@ ControllerOutput ClikController::Compute(
     }
   }
 
-  const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
+  const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
   auto traj_state = trajectory_.compute(trajectory_time_);
   trajectory_time_ += dt;
 
@@ -368,10 +380,11 @@ ControllerOutput ClikController::ComputeEstop(
   out0.num_channels = nc0;
   for (int i = 0; i < nc0; ++i) {
     const auto ui = static_cast<std::size_t>(i);
-    const double lim = (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : 2.0;
+    const double lim = (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : kDefaultMaxJointVelocity;
+    const double sp = (ui < safe_position_.size()) ? safe_position_[ui] : 0.0;
     out0.commands[i] = dev0.positions[i] +
-      std::clamp(kSafePosition[i] - dev0.positions[i], -lim, lim) *
-      ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
+      std::clamp(sp - dev0.positions[i], -lim, lim) *
+      ((state.dt > 0.0) ? state.dt : GetDefaultDt());
   }
   return output;
 }
@@ -381,7 +394,7 @@ void ClikController::ClampVelocity(
 {
   for (int i = 0; i < n; ++i) {
     const auto ui = static_cast<std::size_t>(i);
-    const double lim = (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : 2.0;
+    const double lim = (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : kDefaultMaxJointVelocity;
     dq[i] = std::clamp(dq[i], -lim, lim);
   }
 }

@@ -129,6 +129,7 @@ class MuJoCoSimulator {
 
   struct Config {
     std::string model_path;
+    std::string window_title;            // viewer window title (empty = "MuJoCo Simulator")
     bool        enable_viewer{true};
     double      sync_timeout_ms{50.0};   // command wait timeout
     double      max_rtf{0.0};           // 0.0 = unlimited

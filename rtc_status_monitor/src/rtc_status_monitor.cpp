@@ -176,8 +176,11 @@ void RtcStatusMonitor::DeclareAndLoadParameters() {
   log_output_dir_ = declare("log_output_dir", std::string(""));
 
   if (log_output_dir_.empty()) {
-    // UR5E_SESSION_DIR 환경변수에서 세션 디렉토리 읽기
-    const char* session_env = std::getenv("UR5E_SESSION_DIR");
+    // RTC_SESSION_DIR 환경변수에서 세션 디렉토리 읽기 (UR5E_SESSION_DIR fallback)
+    const char* session_env = std::getenv("RTC_SESSION_DIR");
+    if (!session_env || session_env[0] == '\0') {
+      session_env = std::getenv("UR5E_SESSION_DIR");  // backward compat
+    }
     if (session_env != nullptr && session_env[0] != '\0') {
       log_output_dir_ = std::string(session_env) + "/monitor";
     } else {

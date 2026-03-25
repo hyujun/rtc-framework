@@ -27,6 +27,10 @@ inline constexpr int kMaxDeviceChannels      = 64;   // max channels for generic
 inline constexpr int kMaxSensorChannels      = 128;  // max sensor data channels
 inline constexpr int kMaxInferenceValues     = 64;   // max inference output values
 
+// Default fallback limits (used when device config is unavailable)
+inline constexpr double kDefaultMaxJointVelocity = 2.0;   // rad/s
+inline constexpr double kDefaultMaxJointTorque   = 150.0;  // N·m
+
 // Fingertip 수: YAML에서 런타임 설정 가능. 배열 크기는 kMaxFingertips로 고정.
 inline constexpr int kDefaultNumFingertips   = 4;    // YAML 미설정 시 기본값
 inline constexpr int kMaxFingertips          = 8;    // 배열 상한 (RT 경로 힙 할당 방지)
@@ -198,6 +202,7 @@ struct DeviceNameConfig {
   std::vector<std::string> sensor_names;
   std::optional<DeviceUrdfConfig> urdf;          // nullopt if no URDF for this device
   std::optional<DeviceJointLimits> joint_limits;  // nullopt if no limits configured
+  std::vector<double> safe_position;              // E-STOP target position (per-joint, rad)
 };
 
 // ── Topic configuration for per-controller subscribe/publish routing ─────────

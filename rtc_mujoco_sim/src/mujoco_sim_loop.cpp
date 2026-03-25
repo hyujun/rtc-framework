@@ -86,7 +86,8 @@ void MuJoCoSimulator::UpdateVizBuffer() noexcept {
 }
 
 void MuJoCoSimulator::UpdateRtf(uint64_t step) noexcept {
-  if (step % 200 != 0) { return; }
+  constexpr uint64_t kRtfUpdateInterval = 200;
+  if (step % kRtfUpdateInterval != 0) { return; }
   const auto   wall_now = std::chrono::steady_clock::now();
   const double wall_dt  =
       std::chrono::duration<double>(wall_now - rtf_wall_start_).count();
@@ -304,7 +305,8 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
 
     UpdateRtf(step);
     ThrottleIfNeeded();
-    if ((step % 8 == 0) && cfg_.enable_viewer) { UpdateVizBuffer(); }
+    constexpr uint64_t kVizUpdateInterval = 8;  // ~62.5 Hz at 500 Hz physics
+    if ((step % kVizUpdateInterval == 0) && cfg_.enable_viewer) { UpdateVizBuffer(); }
   }
 
   fprintf(stdout,

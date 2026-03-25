@@ -1,6 +1,9 @@
 # rt_controller_manager.yaml — generic controller manager configuration
 /**:
   ros__parameters:
+    # ── Robot namespace (used for manager-level topics) ────────────────────────
+    robot_namespace: "ur5e"
+
     # ── Control rate ─────────────────────────────────────────────────────────────
     control_rate: 500.0              # Hz
 
@@ -36,6 +39,7 @@
           - "wrist_2_joint"
           - "wrist_3_joint"
         sensor_names: []
+        safe_position: [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
         urdf:
           package: "ur5e_description"
           path: "robots/ur5e/urdf/ur5e.urdf"

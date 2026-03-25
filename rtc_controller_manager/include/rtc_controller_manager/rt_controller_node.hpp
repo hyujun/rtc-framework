@@ -275,6 +275,7 @@ private:
   double      control_rate_{500.0};
   bool        enable_logging_{true};
   bool        enable_estop_{true};
+  std::string robot_ns_{"ur5e"};  // robot namespace for manager-level topics
 
   std::size_t loop_count_{0};
 

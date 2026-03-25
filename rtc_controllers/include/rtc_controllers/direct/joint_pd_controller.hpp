@@ -95,8 +95,7 @@ public:
   }
 
 private:
-  static constexpr std::array<double, kNumRobotJoints> kSafePosition{
-    0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
+  std::vector<double> safe_position_;
   std::vector<double> max_joint_velocity_;
   std::vector<double> max_joint_torque_;
 

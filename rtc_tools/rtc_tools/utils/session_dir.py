@@ -21,7 +21,9 @@ def get_session_dir() -> Optional[str]:
     Returns:
         세션 디렉토리 경로 문자열, 미설정 시 None
     """
-    val = os.environ.get('UR5E_SESSION_DIR', '')
+    val = os.environ.get('RTC_SESSION_DIR', '')
+    if not val:
+        val = os.environ.get('UR5E_SESSION_DIR', '')  # backward compat
     return val if val else None
 
 

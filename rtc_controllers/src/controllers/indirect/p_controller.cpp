@@ -20,7 +20,8 @@ PController::PController(std::string_view urdf_path, Gains gains)
 
 void PController::OnDeviceConfigsSet()
 {
-  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
+  const auto primary = GetPrimaryDeviceName();
+  if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       if (model_.existFrame(cfg->urdf->tip_link)) {
         auto fid = model_.getFrameId(cfg->urdf->tip_link);
@@ -32,7 +33,7 @@ void PController::OnDeviceConfigsSet()
     }
   }
   if (max_joint_velocity_.empty()) {
-    max_joint_velocity_.assign(kMaxDeviceChannels, 2.0);
+    max_joint_velocity_.assign(kMaxDeviceChannels, kDefaultMaxJointVelocity);
   }
 }
 
@@ -115,7 +116,7 @@ void PController::ClampCommands(
 {
   for (int i = 0; i < n; ++i) {
     const auto ui = static_cast<std::size_t>(i);
-    const double lim = (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : 2.0;
+    const double lim = (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : kDefaultMaxJointVelocity;
     commands[i] = std::clamp(commands[i], -lim, lim);
   }
 }

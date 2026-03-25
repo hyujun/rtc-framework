@@ -111,6 +111,25 @@ public:
     return (it != device_name_configs_.end()) ? &it->second : nullptr;
   }
 
+  // Returns the name of the primary device (first group in topic config).
+  // Use instead of hardcoding "ur5e" to support arbitrary robot names.
+  [[nodiscard]] std::string GetPrimaryDeviceName() const noexcept
+  {
+    if (!topic_config_.groups.empty()) {
+      return topic_config_.groups.front().first;
+    }
+    if (!device_name_configs_.empty()) {
+      return device_name_configs_.begin()->first;
+    }
+    return {};
+  }
+
+  // Set the control loop rate (Hz). Called by the manager at init time.
+  void SetControlRate(double hz) noexcept { control_rate_ = hz; }
+  [[nodiscard]] double GetDefaultDt() const noexcept {
+    return (control_rate_ > 0.0) ? (1.0 / control_rate_) : 0.002;
+  }
+
 protected:
   RTControllerInterface();
 
@@ -123,11 +142,12 @@ protected:
   // should call RTControllerInterface::LoadConfig(cfg) to inherit this.
   static TopicConfig ParseTopicConfig(const YAML::Node & topics_node);
 
-  // Default topic configuration — matches the original hard-coded topics.
-  static TopicConfig MakeDefaultTopicConfig();
+  // Default topic configuration — device_name determines topic namespace.
+  static TopicConfig MakeDefaultTopicConfig(const std::string& device_name = "ur5e");
 
   TopicConfig topic_config_;
   std::map<std::string, DeviceNameConfig> device_name_configs_;
+  double control_rate_{500.0};
 };
 
 }  // namespace rtc

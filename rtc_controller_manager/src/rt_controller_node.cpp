@@ -107,7 +107,7 @@ RtControllerNode::~RtControllerNode()
 std::filesystem::path RtControllerNode::ResolveAndSetupSessionDir()
 {
   // Dynamically resolve workspace logging dir using ament_index
-  std::string default_logging_root = "/tmp/ur5e_logging_data";
+  std::string default_logging_root = "/tmp/" + robot_ns_ + "_logging_data";
   try {
     std::string share_dir =
       ament_index_cpp::get_package_share_directory("rtc_controller_manager");
@@ -166,6 +166,7 @@ void RtControllerNode::DeclareAndLoadParameters()
   safe_declare("initial_controller", rclcpp::ParameterValue(std::string("joint_pd_controller")));
   safe_declare("use_sim_time_sync", rclcpp::ParameterValue(false));
   safe_declare("sim_sync_timeout_sec", rclcpp::ParameterValue(5.0));
+  safe_declare("robot_namespace", rclcpp::ParameterValue(std::string("ur5e")));
 
   // ── Device timeouts (replaces robot_timeout_ms / enable_ur5e / enable_hand) ─
   safe_declare("device_timeout_names", rclcpp::ParameterValue(std::vector<std::string>{}));
@@ -186,6 +187,7 @@ void RtControllerNode::DeclareAndLoadParameters()
   enable_status_monitor_ = get_parameter("enable_status_monitor").as_bool();
   use_sim_time_sync_ = get_parameter("use_sim_time_sync").as_bool();
   sim_sync_timeout_sec_ = get_parameter("sim_sync_timeout_sec").as_double();
+  robot_ns_ = get_parameter("robot_namespace").as_string();
 
   // NOTE: Logging setup and device name configs are deferred until after
   // controller loading, because active_groups_ must be known first.
@@ -291,8 +293,9 @@ void RtControllerNode::DeclareAndLoadParameters()
   // ── Load device name configs (needs active_groups_) ─────────────────────
   LoadDeviceNameConfigs();
 
-  // Pass device configs to all controllers
+  // Pass control rate and device configs to all controllers
   for (auto& ctrl : controllers_) {
+    ctrl->SetControlRate(control_rate_);
     ctrl->SetDeviceNameConfigs(device_name_configs_);
   }
 
@@ -533,7 +536,7 @@ void RtControllerNode::CreateSubscriptions()
   aux_sub_options.callback_group = cb_group_aux_;
 
   controller_selector_sub_ = create_subscription<std_msgs::msg::String>(
-      "/ur5e/controller_type", 10,
+      "/" + robot_ns_ + "/controller_type", 10,
     [this](std_msgs::msg::String::SharedPtr msg) {
       const auto it = controller_name_to_idx_.find(msg->data);
       if (it == controller_name_to_idx_.end()) {
@@ -576,7 +579,7 @@ void RtControllerNode::CreateSubscriptions()
       aux_sub_options);
 
   controller_gains_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
-      "/ur5e/controller_gains", 10,
+      "/" + robot_ns_ + "/controller_gains", 10,
     [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
       const int idx = active_controller_idx_.load(std::memory_order_acquire);
       controllers_[static_cast<std::size_t>(idx)]->UpdateGainsFromMsg(msg->data);
@@ -586,7 +589,7 @@ void RtControllerNode::CreateSubscriptions()
       aux_sub_options);
 
   request_gains_sub_ = create_subscription<std_msgs::msg::Bool>(
-      "/ur5e/request_gains", 10,
+      "/" + robot_ns_ + "/request_gains", 10,
     [this](std_msgs::msg::Bool::SharedPtr /*msg*/) {
       const int idx = active_controller_idx_.load(std::memory_order_acquire);
       const auto gains = controllers_[static_cast<std::size_t>(idx)]->GetCurrentGains();
@@ -708,19 +711,12 @@ void RtControllerNode::CreatePublishers()
 
     int data_size = entry.data_size;
     if (data_size <= 0) {
-      switch (entry.role) {
-        case urtc::PublishRole::kRos2Command:
-          {
-            auto cfg_it2 = device_name_configs_.find(group_name);
-            data_size = (cfg_it2 != device_name_configs_.end())
-                ? static_cast<int>(cfg_it2->second.joint_command_names.size())
-                : 6;
-          }
-          break;
-        default:
-          data_size = 6;
-          break;
-      }
+      // Derive data size from device config instead of hardcoding
+      auto cfg_it2 = device_name_configs_.find(group_name);
+      const int device_joints = (cfg_it2 != device_name_configs_.end())
+          ? static_cast<int>(cfg_it2->second.joint_command_names.size())
+          : rtc::kNumRobotJoints;
+      data_size = device_joints;
     }
 
     PublisherEntry pe;
@@ -765,10 +761,10 @@ void RtControllerNode::CreatePublishers()
   rclcpp::QoS latch_qos{1};
   latch_qos.transient_local();
   active_ctrl_name_pub_ =
-    create_publisher<std_msgs::msg::String>("/ur5e/active_controller_name", latch_qos);
+    create_publisher<std_msgs::msg::String>("/" + robot_ns_ + "/active_controller_name", latch_qos);
 
   current_gains_pub_ =
-    create_publisher<std_msgs::msg::Float64MultiArray>("/ur5e/current_gains", 10);
+    create_publisher<std_msgs::msg::Float64MultiArray>("/" + robot_ns_ + "/current_gains", 10);
 }
 
 // ── Expose topic configuration as read-only ROS2 parameters ─────────────────
@@ -836,8 +832,9 @@ void RtControllerNode::CreateTimers()
 
   // Drain the SPSC log ring buffer from the log thread (Core 4).
   // File I/O stays entirely out of the 500 Hz RT thread.
+  static constexpr auto kLogDrainPeriod = 10ms;
   drain_timer_ =
-    create_wall_timer(10ms, [this]() {DrainLog();}, cb_group_log_);
+    create_wall_timer(kLogDrainPeriod, [this]() {DrainLog();}, cb_group_log_);
 }
 
 // ── Subscription callbacks (unified per-device) ──────────────────────────────
@@ -1229,7 +1226,8 @@ void RtControllerNode::ControlLoop()
   // The actual std::string allocation + RCLCPP_INFO happens in DrainLog()
   // on the non-RT log thread (Core 4), keeping the RT path free of heap
   // allocation and potential syscalls.
-  if (loop_count_ % 1000 == 0) {
+  static constexpr std::size_t kTimingSummaryInterval = 1000;
+  if (loop_count_ % kTimingSummaryInterval == 0) {
     print_timing_summary_.store(true, std::memory_order_relaxed);
   }
 }
@@ -1314,7 +1312,8 @@ void RtControllerNode::RtLoopEntry(const urtc::ThreadConfig& cfg)
 
       ControlLoop();
 
-      if (enable_estop_ && ++timeout_tick % 10 == 0) {
+      static constexpr int kWatchdogCheckDivisor = 10;  // 50 Hz at 500 Hz loop
+      if (enable_estop_ && ++timeout_tick % kWatchdogCheckDivisor == 0) {
         CheckTimeouts();
       }
     }
@@ -1364,7 +1363,8 @@ void RtControllerNode::RtLoopEntry(const urtc::ThreadConfig& cfg)
 
       ControlLoop();
 
-      if (enable_estop_ && ++timeout_tick % 10 == 0) {
+      static constexpr int kWatchdogCheckDivisor = 10;  // 50 Hz at 500 Hz loop
+      if (enable_estop_ && ++timeout_tick % kWatchdogCheckDivisor == 0) {
         CheckTimeouts();
       }
     }
@@ -1751,6 +1751,26 @@ void RtControllerNode::LoadDeviceNameConfigs()
         cfg.joint_limits     = std::move(lim);
 
         RCLCPP_INFO(get_logger(), "[%s] Joint limits loaded from YAML", group_name.c_str());
+      }
+    }
+
+    // safe_position (optional — E-STOP target, per-joint)
+    {
+      const std::string sp_key = prefix + ".safe_position";
+      if (has_parameter(sp_key)) {
+        cfg.safe_position = get_parameter(sp_key).as_double_array();
+        if (!cfg.safe_position.empty() &&
+            cfg.safe_position.size() != cfg.joint_state_names.size()) {
+          RCLCPP_ERROR(get_logger(),
+                       "[%s] safe_position size (%zu) != joint_state_names size (%zu)",
+                       group_name.c_str(), cfg.safe_position.size(),
+                       cfg.joint_state_names.size());
+          cfg.safe_position.clear();
+        }
+        if (!cfg.safe_position.empty()) {
+          RCLCPP_INFO(get_logger(), "[%s] Safe position loaded from YAML",
+                      group_name.c_str());
+        }
       }
     }
 

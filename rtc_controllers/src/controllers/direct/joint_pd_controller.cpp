@@ -30,15 +30,24 @@ JointPDController::JointPDController(
 
 void JointPDController::OnDeviceConfigsSet()
 {
-  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg && cfg->joint_limits) {
-    max_joint_velocity_ = cfg->joint_limits->max_velocity;
-    max_joint_torque_   = cfg->joint_limits->max_torque;
+  const auto primary = GetPrimaryDeviceName();
+  if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
+    if (cfg->joint_limits) {
+      max_joint_velocity_ = cfg->joint_limits->max_velocity;
+      max_joint_torque_   = cfg->joint_limits->max_torque;
+    }
+    if (!cfg->safe_position.empty()) {
+      safe_position_ = cfg->safe_position;
+    }
   }
   if (max_joint_velocity_.empty()) {
-    max_joint_velocity_.assign(kMaxDeviceChannels, 2.0);
+    max_joint_velocity_.assign(kMaxDeviceChannels, kDefaultMaxJointVelocity);
   }
   if (max_joint_torque_.empty()) {
-    max_joint_torque_.assign(kMaxDeviceChannels, 150.0);
+    max_joint_torque_.assign(kMaxDeviceChannels, kDefaultMaxJointTorque);
+  }
+  if (safe_position_.empty()) {
+    safe_position_.assign(kMaxDeviceChannels, 0.0);
   }
 }
 
@@ -53,7 +62,7 @@ ControllerOutput JointPDController::Compute(
     return out;
   }
 
-  const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
+  const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
   const auto & dev0 = state.devices[0];
 
   UpdateDynamics(dev0);
@@ -300,7 +309,7 @@ std::vector<double> JointPDController::GetCurrentGains() const noexcept
 ControllerOutput JointPDController::ComputeEstop(
   const ControllerState & state) noexcept
 {
-  const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
+  const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
   const auto & dev0 = state.devices[0];
 
   ControllerOutput output;
@@ -310,15 +319,15 @@ ControllerOutput JointPDController::ComputeEstop(
   out0.num_channels = nc0;
 
   for (int i = 0; i < nc0; ++i) {
-    const double e  = kSafePosition[i] - dev0.positions[i];
+    const double e  = safe_position_[static_cast<std::size_t>(i)] - dev0.positions[i];
     const double de = (e - prev_error_[i]) / dt;
     out0.commands[i] = gains_.kp[i] * e + gains_.kd[i] * de;
     prev_error_[i] = e;
   }
 
   for (int i = 0; i < nc0; ++i) {
-    out0.target_positions[i] = kSafePosition[i];
-    out0.goal_positions[i] = kSafePosition[i];
+    out0.target_positions[i] = safe_position_[static_cast<std::size_t>(i)];
+    out0.goal_positions[i] = safe_position_[static_cast<std::size_t>(i)];
   }
   ClampCommands(out0.commands, nc0, command_type_);
   new_target_.store(true, std::memory_order_relaxed);
@@ -373,7 +382,7 @@ void JointPDController::ClampCommands(
                             ? max_joint_torque_ : max_joint_velocity_;
   for (int i = 0; i < n; ++i) {
     const auto ui = static_cast<std::size_t>(i);
-    const double lim = (ui < limits.size()) ? limits[ui] : 2.0;
+    const double lim = (ui < limits.size()) ? limits[ui] : kDefaultMaxJointVelocity;
     cmds[i] = std::clamp(cmds[i], -lim, lim);
   }
 }

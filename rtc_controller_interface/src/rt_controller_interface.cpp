@@ -75,27 +75,26 @@ void ParseDeviceTopicGroup(
 }  // namespace
 
 RTControllerInterface::RTControllerInterface()
-: topic_config_(MakeDefaultTopicConfig())
+: topic_config_(MakeDefaultTopicConfig("ur5e"))
 {}
 
-TopicConfig RTControllerInterface::MakeDefaultTopicConfig()
+TopicConfig RTControllerInterface::MakeDefaultTopicConfig(
+    const std::string& device_name)
 {
   TopicConfig cfg;
+  const std::string ns = "/" + device_name;
 
-  // ── ur5e device group (default topics) ──
-  cfg["ur5e"].subscribe = {
-    {"/joint_states",                SubscribeRole::kState},
-    {"/ur5e/target_joint_positions", SubscribeRole::kTarget},
+  cfg[device_name].subscribe = {
+    {"/joint_states",                       SubscribeRole::kState},
+    {ns + "/target_joint_positions",        SubscribeRole::kTarget},
   };
-  cfg["ur5e"].publish = {
-    {"/ur5e/joint_command",                   PublishRole::kJointCommand,     kNumRobotJoints},
-    {"/forward_position_controller/commands", PublishRole::kRos2Command,      kNumRobotJoints},
-    {"/ur5e/gui_position",                    PublishRole::kGuiPosition,      0},
-    {"/ur5e/robot_target",                    PublishRole::kRobotTarget,      0},
-    {"/ur5e/state_log",                       PublishRole::kDeviceStateLog,   0},
+  cfg[device_name].publish = {
+    {ns + "/joint_command",                             PublishRole::kJointCommand,     kNumRobotJoints},
+    {"/forward_position_controller/commands",           PublishRole::kRos2Command,      kNumRobotJoints},
+    {ns + "/gui_position",                              PublishRole::kGuiPosition,      0},
+    {ns + "/robot_target",                              PublishRole::kRobotTarget,      0},
+    {ns + "/state_log",                                 PublishRole::kDeviceStateLog,   0},
   };
-
-  // hand is NOT included by default — add via YAML topics section to activate.
 
   return cfg;
 }
