@@ -128,7 +128,13 @@ void DemoJointController::ComputeControl(
           std::abs(device_targets_[0][i] - dev0.positions[i]));
       }
 
-      const double duration = std::max(0.01, max_dist / gains_.trajectory_speed);
+      // Duration from trajectory_speed, then enforce max trajectory velocity.
+      // Quintic rest-to-rest peak velocity = (15/8) * max_dist / T.
+      const double T_speed = max_dist / gains_.trajectory_speed;
+      const double T_vel = (gains_.robot_max_traj_velocity > 0.0)
+          ? (1.875 * max_dist / gains_.robot_max_traj_velocity)
+          : 0.0;
+      const double duration = std::max({0.01, T_speed, T_vel});
       robot_trajectory_.initialize(start_state, goal_state, duration);
       robot_trajectory_time_ = 0.0;
       robot_new_target_.store(false, std::memory_order_relaxed);
@@ -167,7 +173,11 @@ void DemoJointController::ComputeControl(
             std::abs(device_targets_[1][i] - dev1.positions[i]));
         }
 
-        const double duration = std::max(0.01, max_dist / gains_.hand_trajectory_speed);
+        const double T_speed = max_dist / gains_.hand_trajectory_speed;
+        const double T_vel = (gains_.hand_max_traj_velocity > 0.0)
+            ? (1.875 * max_dist / gains_.hand_max_traj_velocity)
+            : 0.0;
+        const double duration = std::max({0.01, T_speed, T_vel});
         hand_trajectory_.initialize(start_state, goal_state, duration);
         hand_trajectory_time_ = 0.0;
         hand_new_target_.store(false, std::memory_order_relaxed);
@@ -207,6 +217,8 @@ ControllerOutput DemoJointController::WriteOutput(
     out0.commands[i] = robot_computed_.positions[i];
     out0.target_positions[i] = robot_computed_.positions[i];
     out0.target_velocities[i] = robot_computed_.velocities[i];
+    out0.trajectory_positions[i] = robot_computed_.positions[i];
+    out0.trajectory_velocities[i] = robot_computed_.velocities[i];
     out0.goal_positions[i] = device_targets_[0][i];
   }
   ClampCommands(out0.commands, nc0, device_max_velocity_[0]);
@@ -237,6 +249,8 @@ ControllerOutput DemoJointController::WriteOutput(
       out1.commands[i] = hand_computed_.positions[i];
       out1.target_positions[i] = hand_computed_.positions[i];
       out1.target_velocities[i] = hand_computed_.velocities[i];
+      out1.trajectory_positions[i] = hand_computed_.positions[i];
+      out1.trajectory_velocities[i] = hand_computed_.velocities[i];
       out1.goal_positions[i] = device_targets_[1][i];
     }
     ClampCommands(out1.commands, nc1, device_max_velocity_[1]);
@@ -345,6 +359,12 @@ void DemoJointController::LoadConfig(const YAML::Node & cfg)
   if (cfg["hand_trajectory_speed"]) {
     gains_.hand_trajectory_speed = cfg["hand_trajectory_speed"].as<double>();
   }
+  if (cfg["robot_max_traj_velocity"]) {
+    gains_.robot_max_traj_velocity = cfg["robot_max_traj_velocity"].as<double>();
+  }
+  if (cfg["hand_max_traj_velocity"]) {
+    gains_.hand_max_traj_velocity = cfg["hand_max_traj_velocity"].as<double>();
+  }
 
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
@@ -354,7 +374,8 @@ void DemoJointController::LoadConfig(const YAML::Node & cfg)
 
 void DemoJointController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
 {
-  // layout: [robot_kp×6, hand_kp×10, trajectory_speed, hand_trajectory_speed] = 18 values
+  // layout: [robot_kp×6, hand_kp×10, trajectory_speed, hand_trajectory_speed,
+  //          robot_max_traj_velocity, hand_max_traj_velocity] = 20 values
   constexpr std::size_t kRobot = static_cast<std::size_t>(kNumRobotJoints);
   constexpr std::size_t kHand  = static_cast<std::size_t>(kNumHandMotors);
 
@@ -373,17 +394,26 @@ void DemoJointController::UpdateGainsFromMsg(std::span<const double> gains) noex
   if (gains.size() >= kRobot + kHand + 2) {
     gains_.hand_trajectory_speed = gains[kRobot + kHand + 1];
   }
+  if (gains.size() >= kRobot + kHand + 3) {
+    gains_.robot_max_traj_velocity = gains[kRobot + kHand + 2];
+  }
+  if (gains.size() >= kRobot + kHand + 4) {
+    gains_.hand_max_traj_velocity = gains[kRobot + kHand + 3];
+  }
 }
 
 std::vector<double> DemoJointController::GetCurrentGains() const noexcept
 {
-  // layout: [robot_kp×6, hand_kp×10, trajectory_speed, hand_trajectory_speed] = 18 values
+  // layout: [robot_kp×6, hand_kp×10, trajectory_speed, hand_trajectory_speed,
+  //          robot_max_traj_velocity, hand_max_traj_velocity] = 20 values
   std::vector<double> out;
-  out.reserve(static_cast<std::size_t>(kNumRobotJoints + kNumHandMotors) + 2);
+  out.reserve(static_cast<std::size_t>(kNumRobotJoints + kNumHandMotors) + 4);
   for (const double v : gains_.robot_kp) { out.push_back(v); }
   for (const float  v : gains_.hand_kp)  { out.push_back(static_cast<double>(v)); }
   out.push_back(gains_.trajectory_speed);
   out.push_back(gains_.hand_trajectory_speed);
+  out.push_back(gains_.robot_max_traj_velocity);
+  out.push_back(gains_.hand_max_traj_velocity);
   return out;
 }
 

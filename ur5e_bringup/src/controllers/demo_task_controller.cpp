@@ -26,6 +26,7 @@ DemoTaskController::DemoTaskController(std::string_view urdf_path, Gains gains)
   Jpinv_ = Eigen::MatrixXd::Zero(model_.nv, 3);
   N_ = Eigen::MatrixXd::Identity(model_.nv, model_.nv);
   dq_ = Eigen::VectorXd::Zero(model_.nv);
+  traj_dq_ = Eigen::VectorXd::Zero(model_.nv);
   null_err_ = Eigen::VectorXd::Zero(model_.nv);
   null_dq_ = Eigen::VectorXd::Zero(model_.nv);
   pos_error_ = Eigen::Vector3d::Zero();
@@ -169,7 +170,13 @@ void DemoTaskController::ComputeControl(
             goal_pose.rotation()).norm();
         max_dist = std::max(max_dist, angular_dist * 0.2);
       }
-      double duration = std::max(0.01, max_dist / gains_.trajectory_speed);
+      // Duration from trajectory_speed, then enforce max trajectory velocity.
+      // Quintic rest-to-rest peak velocity = (15/8) * max_dist / T.
+      const double T_speed = max_dist / gains_.trajectory_speed;
+      const double T_vel = (gains_.max_traj_velocity > 0.0)
+          ? (1.875 * max_dist / gains_.max_traj_velocity)
+          : 0.0;
+      double duration = std::max({0.01, T_speed, T_vel});
 
       trajectory_.initialize(start_pose, pinocchio::Motion::Zero(),
                              goal_pose, pinocchio::Motion::Zero(),
@@ -227,6 +234,16 @@ void DemoTaskController::ComputeControl(
     dq_.noalias() = Jpinv_ * task_vel;
   }
 
+  // ── Feedforward-only trajectory velocity (for logging) ────────────────
+  if (gains_.control_6dof) {
+    Eigen::Matrix<double, 6, 1> ff_vel_6d;
+    ff_vel_6d.head<3>() = traj_state_.velocity.linear();
+    ff_vel_6d.tail<3>() = tcp_pose.rotation() * traj_state_.velocity.angular();
+    traj_dq_.noalias() = Jpinv_6d_ * ff_vel_6d;
+  } else {
+    traj_dq_.noalias() = Jpinv_ * traj_state_.velocity.linear();
+  }
+
   // ── Null-space secondary task ──────────────────────────────────────────
   if (gains_.enable_null_space && !gains_.control_6dof) {
     N_.setIdentity();
@@ -263,7 +280,11 @@ void DemoTaskController::ComputeControl(
           std::abs(device_targets_[1][i] - dev1.positions[i]));
       }
 
-      const double duration = std::max(0.01, max_dist / gains_.hand_trajectory_speed);
+      const double T_speed = max_dist / gains_.hand_trajectory_speed;
+      const double T_vel = (gains_.hand_max_traj_velocity > 0.0)
+          ? (1.875 * max_dist / gains_.hand_max_traj_velocity)
+          : 0.0;
+      const double duration = std::max({0.01, T_speed, T_vel});
       hand_trajectory_.initialize(start_state, goal_state, duration);
       hand_trajectory_time_ = 0.0;
       hand_new_target_.store(false, std::memory_order_relaxed);
@@ -312,6 +333,10 @@ ControllerOutput DemoTaskController::WriteOutput(
 
   for (int i = 0; i < nc0; ++i) {
     out0.commands[i] = dev0.positions[i] + out0.target_velocities[i] * dt;
+    // Pure trajectory feedforward velocity (without Kp error / null-space)
+    out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
+    // Trajectory-implied joint position = current + feedforward * dt
+    out0.trajectory_positions[i] = dev0.positions[i] + out0.trajectory_velocities[i] * dt;
   }
   for (std::size_t i = 0; i < 3; ++i) {
     out0.target_positions[i] = traj_state_.pose.translation()[static_cast<Eigen::Index>(i)];
@@ -363,6 +388,8 @@ ControllerOutput DemoTaskController::WriteOutput(
       out1.commands[i] = hand_computed_.positions[i];
       out1.target_positions[i] = hand_computed_.positions[i];
       out1.target_velocities[i] = hand_computed_.velocities[i];
+      out1.trajectory_positions[i] = hand_computed_.positions[i];
+      out1.trajectory_velocities[i] = hand_computed_.velocities[i];
       out1.goal_positions[i] = device_targets_[1][i];
     }
     ClampCommands(out1.commands, nc1, device_max_velocity_[1]);
@@ -551,6 +578,12 @@ void DemoTaskController::LoadConfig(const YAML::Node & cfg)
   if (cfg["hand_trajectory_speed"]) {
     gains_.hand_trajectory_speed = cfg["hand_trajectory_speed"].as<double>();
   }
+  if (cfg["max_traj_velocity"]) {
+    gains_.max_traj_velocity = cfg["max_traj_velocity"].as<double>();
+  }
+  if (cfg["hand_max_traj_velocity"]) {
+    gains_.hand_max_traj_velocity = cfg["hand_max_traj_velocity"].as<double>();
+  }
 
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
@@ -560,7 +593,8 @@ void DemoTaskController::LoadConfig(const YAML::Node & cfg)
 
 void DemoTaskController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
 {
-  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10, hand_trajectory_speed] = 21
+  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1),
+  //          hand_kp×10, hand_trajectory_speed, max_traj_velocity, hand_max_traj_velocity] = 23
   if (gains.size() < 10) {return;}
   for (std::size_t i = 0; i < 6; ++i) {
     gains_.kp[i] = gains[i];
@@ -578,13 +612,20 @@ void DemoTaskController::UpdateGainsFromMsg(std::span<const double> gains) noexc
   if (gains.size() >= 21) {
     gains_.hand_trajectory_speed = gains[20];
   }
+  if (gains.size() >= 22) {
+    gains_.max_traj_velocity = gains[21];
+  }
+  if (gains.size() >= 23) {
+    gains_.hand_max_traj_velocity = gains[22];
+  }
 }
 
 std::vector<double> DemoTaskController::GetCurrentGains() const noexcept
 {
-  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10, hand_trajectory_speed] = 21
+  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1),
+  //          hand_kp×10, hand_trajectory_speed, max_traj_velocity, hand_max_traj_velocity] = 23
   std::vector<double> v;
-  v.reserve(21);
+  v.reserve(23);
   v.insert(v.end(), gains_.kp.begin(), gains_.kp.end());
   v.push_back(gains_.damping);
   v.push_back(gains_.null_kp);
@@ -594,6 +635,8 @@ std::vector<double> DemoTaskController::GetCurrentGains() const noexcept
     v.push_back(static_cast<double>(h));
   }
   v.push_back(gains_.hand_trajectory_speed);
+  v.push_back(gains_.max_traj_velocity);
+  v.push_back(gains_.hand_max_traj_velocity);
   return v;
 }
 

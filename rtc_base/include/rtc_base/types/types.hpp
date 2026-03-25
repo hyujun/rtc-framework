@@ -155,8 +155,10 @@ struct DeviceOutput {
   int num_channels{0};
   std::array<double, kMaxDeviceChannels> commands{};
   std::array<double, kMaxDeviceChannels> goal_positions{};
-  std::array<double, kMaxDeviceChannels> target_positions{};    // trajectory interpolated
-  std::array<double, kMaxDeviceChannels> target_velocities{};
+  std::array<double, kMaxDeviceChannels> target_positions{};    // controller-specific target
+  std::array<double, kMaxDeviceChannels> target_velocities{};   // controller-specific target vel
+  std::array<double, kMaxDeviceChannels> trajectory_positions{}; // pure trajectory reference position
+  std::array<double, kMaxDeviceChannels> trajectory_velocities{};// pure trajectory reference velocity
   GoalType goal_type{GoalType::kJoint};
 };
 

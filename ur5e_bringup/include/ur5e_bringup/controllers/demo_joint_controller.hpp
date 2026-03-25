@@ -63,6 +63,8 @@ public:
       50.0f, 50.0f, 50.0f, 50.0f, 50.0f}};
     double trajectory_speed{1.0};
     double hand_trajectory_speed{1.0};
+    double robot_max_traj_velocity{3.14};  ///< Max joint velocity during trajectory [rad/s]
+    double hand_max_traj_velocity{2.0};    ///< Max hand motor velocity during trajectory [rad/s]
   };
 
   explicit DemoJointController(std::string_view urdf_path);

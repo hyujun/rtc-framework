@@ -37,6 +37,8 @@ struct PublishSnapshot {
     std::array<double, kMaxDeviceChannels> goal_positions{};
     std::array<double, kMaxDeviceChannels> target_positions{};
     std::array<double, kMaxDeviceChannels> target_velocities{};
+    std::array<double, kMaxDeviceChannels> trajectory_positions{};
+    std::array<double, kMaxDeviceChannels> trajectory_velocities{};
     std::array<double, kMaxDeviceChannels> actual_positions{};
     std::array<double, kMaxDeviceChannels> actual_velocities{};
     std::array<double, kMaxDeviceChannels> efforts{};
