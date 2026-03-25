@@ -1,6 +1,6 @@
 # VS Code Debugging Guide
 
-이 문서는 `ur5e-rt-controller` 프로젝트에서 VS Code + GDB를 사용하여 C++ 노드를 디버깅하는 방법을 설명합니다.
+이 문서는 `rtc-framework` 프로젝트에서 VS Code + GDB를 사용하여 C++ 노드를 디버깅하는 방법을 설명합니다.
 
 ---
 
@@ -105,7 +105,7 @@ VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다.
 ```json
 "args": [
   "--ros-args",
-  "--params-file", "/home/user/ros2_ws/ur5e_ws/src/ur5e-rt-controller/rtc_controller_manager/config/rt_controller_manager.yaml"
+  "--params-file", "/home/user/ros2_ws/ur5e_ws/src/rtc-framework/rtc_controller_manager/config/rt_controller_manager.yaml"
 ]
 ```
 

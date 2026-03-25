@@ -2,7 +2,7 @@
 
 ![version](https://img.shields.io/badge/version-v0.1.0-blue)
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스의 일부입니다.
+> 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 
 ## 개요
@@ -29,7 +29,7 @@ rtc_controller_manager/
 │   ├── rt_controller_main.hpp             ← 재사용 가능 진입점 함수
 │   └── controller_timing_profiler.hpp     ← 락-프리 타이밍 프로파일러
 ├── src/
-│   ├── rt_controller_node.cpp             ← 노드 구현 (1827 lines)
+│   ├── rt_controller_node.cpp             ← 노드 구현 (1870 lines)
 │   ├── rt_controller_main.cpp             ← main() 진입점
 │   └── rt_controller_main_impl.cpp        ← RtControllerMain() 구현
 └── config/

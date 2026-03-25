@@ -5,7 +5,7 @@
 > 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
 > 설치/빌드: [Root README](../README.md)
 
-UR5e RT Controller 스택의 **Python 개발 유틸리티 패키지**입니다. 컨트롤러 GUI, 모션 편집기, 궤적 시각화, UDP 손 통신, 모델 검증 도구를 포함합니다.
+RTC 프레임워크의 **Python 개발 유틸리티 패키지**입니다. 컨트롤러 GUI, 모션 편집기, 궤적 시각화, UDP 손 통신, 모델 검증 도구를 포함합니다.
 
 ## 개요
 

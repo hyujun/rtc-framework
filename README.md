@@ -1,7 +1,7 @@
 # RTC (Real-Time Control) Framework
 
-![CI](https://github.com/hyujun/ur5e-rt-controller/actions/workflows/ros2-advanced-ci.yml/badge.svg)
-[![codecov](https://codecov.io/gh/hyujun/ur5e-rt-controller/branch/master/graph/badge.svg)](https://codecov.io/gh/hyujun/ur5e-rt-controller)
+![CI](https://github.com/hyujun/rtc-framework/actions/workflows/ros2-advanced-ci.yml/badge.svg)
+[![codecov](https://codecov.io/gh/hyujun/rtc-framework/branch/master/graph/badge.svg)](https://codecov.io/gh/hyujun/rtc-framework)
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 ![ROS2 Jazzy](https://img.shields.io/badge/ROS2-Jazzy-green)
 
@@ -13,13 +13,13 @@
 
 ## 패키지 구성
 
-17개 ROS2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`)와 로봇 고유 패키지(`ur5e_*`)로 분리됩니다. 각 패키지는 자체 `README.md`를 포함합니다.
+16개 ROS2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`)와 로봇 고유 패키지(`ur5e_*`)로 분리됩니다. 각 패키지는 자체 `README.md`를 포함합니다.
 
 ### 로봇 비의존적 프레임워크 (rtc_*)
 
 | 패키지 | 버전 | 설명 | 빌드 |
 |--------|------|------|------|
-| [`rtc_msgs`](rtc_msgs/) | 5.16.0 | 커스텀 ROS2 메시지 7종 (JointCommand, HandCommand, HandMotorState, FingertipSensor, HandSensorState, FingertipForceTorque, HandForceTorqueState) | ament_cmake |
+| [`rtc_msgs`](rtc_msgs/) | 5.16.0 | 커스텀 ROS2 메시지 7종 (JointCommand, FingertipSensor, HandSensorState, GuiPosition, RobotTarget, DeviceStateLog, DeviceSensorLog) | ament_cmake |
 | [`rtc_base`](rtc_base/) | 5.16.0 | 헤더-전용 RT 인프라: 타입, SeqLock, SPSC 버퍼, 스레딩(4/6/8/10/12/16코어), Bessel/Kalman 필터, CSV 로깅 | ament_cmake |
 | [`rtc_communication`](rtc_communication/) | 5.16.0 | 헤더-전용 전송 계층 추상화: TransportInterface, UdpSocket RAII, PacketCodec concept, Transceiver 템플릿 | ament_cmake |
 | [`rtc_controller_interface`](rtc_controller_interface/) | 0.1.0 | 추상 컨트롤러 인터페이스 (Strategy 패턴) + Singleton 레지스트리 (가변 DOF) | ament_cmake |

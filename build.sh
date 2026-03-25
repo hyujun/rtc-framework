@@ -16,87 +16,13 @@
 
 set -e
 
-# ── Colors ─────────────────────────────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-# ── Helper functions ───────────────────────────────────────────────────────────
-info()    { echo -e "${BLUE}▶ $*${NC}"; }
-success() { echo -e "${GREEN}✔ $*${NC}"; }
-warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
-error()   { echo -e "${RED}✘ $*${NC}"; exit 1; }
-
-# ── CPU shield 자동 관리 (빌드 전) ──────────────────────────────────────────
-# cset shield가 활성이면 자동 해제하여 전체 코어로 빌드한다.
-# isolcpus(GRUB 고정)는 재부팅 없이 해제 불가 → 경고만 출력.
-auto_release_cpu_shield() {
-  local isolated
-  isolated=$(cat /sys/devices/system/cpu/isolated 2>/dev/null || echo "")
-
-  if [[ -z "$isolated" ]]; then
-    return 0  # 격리 없음 → 전체 코어 사용 가능
-  fi
-
-  local available total
-  available=$(nproc)
-  total=$(nproc --all)
-  warn "CPU 격리 감지: Core ${isolated} 격리 중 (${available}/${total} 코어 사용 가능)"
-
-  # Case 1: cset shield 활성 → 자동 해제
-  local SCRIPT_DIR_BUILD
-  SCRIPT_DIR_BUILD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  local SHIELD_SCRIPT="${SCRIPT_DIR_BUILD}/rtc_scripts/scripts/cpu_shield.sh"
-  if command -v cset &>/dev/null && cset shield -s 2>/dev/null | grep -q "user"; then
-    info "cset shield 감지 → 빌드를 위해 자동 해제 중..."
-    if [[ -f "$SHIELD_SCRIPT" ]]; then
-      sudo bash "$SHIELD_SCRIPT" off 2>/dev/null || sudo cset shield --reset 2>/dev/null || true
-    else
-      sudo cset shield --reset 2>/dev/null || true
-    fi
-    success "CPU 격리 해제 완료 — 전체 ${total} 코어로 빌드합니다"
-    return 0
-  fi
-
-  # Case 2: isolcpus (GRUB 고정) → 해제 불가, 경고만
-  if grep -q "isolcpus=" /proc/cmdline 2>/dev/null; then
-    warn "isolcpus GRUB 파라미터 감지 — 재부팅 없이 해제 불가"
-    warn "빌드에 ${available}/${total} 코어만 사용됩니다"
-    warn "권장: isolcpus를 GRUB에서 제거하고 cset shield 방식으로 전환하세요"
-    return 0
-  fi
-
-  return 0
-}
-
-# ── ROS2 auto-source ─────────────────────────────────────────────────────────
-# ros2 커맨드가 PATH에 없으면 /opt/ros/ 에서 탐색 후 자동 소싱.
-# build.sh만 실행해도 빌드 후 ros2 launch 등 사용 가능.
-ensure_ros2_sourced() {
-  if command -v ros2 &>/dev/null; then
-    return 0
-  fi
-
-  warn "ros2 command not found in PATH. Searching /opt/ros/ ..."
-  if [[ -d /opt/ros ]]; then
-    for _distro in jazzy humble iron rolling; do
-      if [[ -f "/opt/ros/${_distro}/setup.bash" ]]; then
-        info "Found ROS2 ${_distro} at /opt/ros/${_distro} — sourcing setup.bash ..."
-        # shellcheck disable=SC1090
-        # NOTE: set -e 하에서 setup.bash 내부 non-zero 반환 방지
-        source "/opt/ros/${_distro}/setup.bash" || true
-        success "ROS2 ${_distro} sourced"
-        return 0
-      fi
-    done
-  fi
-
-  error "ROS2 not found. Install ROS2 or source setup.bash before running build.sh"
-}
+# ── 공통 유틸리티 라이브러리 ──────────────────────────────────────────────
+_SCRIPT_DIR_BUILD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_RT_COMMON="${_SCRIPT_DIR_BUILD}/rtc_scripts/scripts/lib/rt_common.sh"
+if [[ -f "$_RT_COMMON" ]]; then
+  source "$_RT_COMMON"
+fi
+make_logger "BUILD" emoji
 
 # ── Workspace overlay auto-source ────────────────────────────────────────────
 # 기존 빌드 결과가 있으면 workspace overlay를 소싱하여
@@ -108,28 +34,6 @@ source_workspace_overlay() {
     # shellcheck disable=SC1090
     source "$ws_setup" || true
   fi
-}
-
-# ── Common: Workspace structure check ──────────────────────────────────────────
-check_workspace_structure() {
-  info "Checking workspace directory structure..."
-  local SCRIPT_DIR
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  local SRC_DIR
-  SRC_DIR="$(dirname "$SCRIPT_DIR")"
-  local DETECTED_WS
-  DETECTED_WS="$(dirname "$SRC_DIR")"
-
-  if [[ "$(basename "$SRC_DIR")" != "src" ]]; then
-    echo -e "${RED}✘ Invalid directory structure. ROS2 packages must be located inside a 'src' directory.${NC}"
-    echo -e "  Expected: ${BOLD}<workspace_dir>/src/<repository_name>${NC}"
-    echo -e "  Current:  ${BOLD}${SCRIPT_DIR}${NC}"
-    echo -e "  Example:  mkdir -p ~/ros2_ws/ur5e_ws/src && mv ${SCRIPT_DIR} ~/ros2_ws/ur5e_ws/src/"
-    exit 1
-  fi
-
-  WORKSPACE="$DETECTED_WS"
-  success "Workspace correctly configured at: $WORKSPACE"
 }
 
 # ── Mode & argument parsing ────────────────────────────────────────────────────
@@ -293,7 +197,7 @@ echo ""
 ensure_ros2_sourced
 
 # ── Workspace detection ────────────────────────────────────────────────────────
-check_workspace_structure
+check_workspace_structure "$_SCRIPT_DIR_BUILD"
 
 # ── Workspace overlay (기존 빌드 결과 소싱) ───────────────────────────────────
 source_workspace_overlay
@@ -304,14 +208,8 @@ if [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]]; then
   info "Using custom package list"
 else
   # ── Base packages (build order matters for colcon dependency resolution) ──
-  BASE_PACKAGES=(
-    rtc_msgs rtc_base rtc_communication rtc_controller_interface
-    rtc_controllers rtc_controller_manager rtc_status_monitor
-    rtc_inference rtc_scripts rtc_tools
-  )
-  ROBOT_PACKAGES=(
-    ur5e_description ur5e_hand_driver ur5e_hand_status_monitor ur5e_bringup
-  )
+  read -r -a BASE_PACKAGES <<< "$(get_base_packages)"
+  read -r -a ROBOT_PACKAGES <<< "$(get_robot_packages)"
 
   case "$MODE" in
     robot)
@@ -331,7 +229,7 @@ else
 fi
 
 # ── CPU shield auto-release (빌드 전 격리 해제) ────────────────────────────────
-auto_release_cpu_shield
+auto_release_cpu_shield "${_SCRIPT_DIR_BUILD}/rtc_scripts/scripts/cpu_shield.sh"
 
 # ── Build ──────────────────────────────────────────────────────────────────────
 info "Building: ${PACKAGES[*]}"
@@ -383,12 +281,11 @@ fi
 
 # ONNX Runtime: /opt/onnxruntime 수동 설치 경로 cmake 전파
 if [[ -d "/opt/onnxruntime" ]]; then
-  CMAKE_ARGS+=("-DCMAKE_PREFIX_PATH=/opt/onnxruntime")
+  existing_prefix="${CMAKE_PREFIX_PATH:-}"
+  CMAKE_ARGS+=("-DCMAKE_PREFIX_PATH=${existing_prefix:+${existing_prefix};}/opt/onnxruntime")
 fi
 
-if [[ ${#CMAKE_ARGS[@]} -gt 0 ]]; then
-  COLCON_ARGS+=("--cmake-args" "${CMAKE_ARGS[@]}")
-fi
+COLCON_ARGS+=("--cmake-args" "${CMAKE_ARGS[@]}")
 
 colcon build "${COLCON_ARGS[@]}" || error "Build failed!"
 

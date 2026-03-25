@@ -2,7 +2,7 @@
 
 ![version](https://img.shields.io/badge/version-v5.16.0-blue)
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스의 일부입니다.
+> 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 
 ## 개요
@@ -32,8 +32,12 @@ rtc_base/
     │   ├── data_logger.hpp        ← CSV 파일 로거
     │   └── session_dir.hpp        ← 세션 디렉토리 관리
     ├── filters/
-    │   ├── bessel_filter.hpp      ← 4차 Bessel 저역통과 필터
-    │   └── kalman_filter.hpp      ← 이산시간 칼만 필터
+    │   ├── bessel_filter.hpp          ← 4차 Bessel 저역통과 필터
+    │   ├── kalman_filter.hpp          ← 이산시간 칼만 필터
+    │   ├── sensor_rate_estimator.hpp  ← EMA 기반 센서 샘플링 레이트 추정
+    │   └── sliding_trend_detector.hpp ← O(1) 슬라이딩 윈도우 OLS 드리프트 감지
+    ├── timing/
+    │   └── timing_profiler_base.hpp   ← 락-프리 히스토그램 기반 타이밍 프로파일러
     └── threading/
         ├── thread_config.hpp      ← CPU 코어별 스레드 레이아웃 프리셋
         ├── thread_utils.hpp       ← 스레드 구성/검증 유틸리티

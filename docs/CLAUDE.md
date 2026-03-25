@@ -29,7 +29,7 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 
 ## Repository Structure
 
-17 ROS2 packages at repo root (no `src/`). 13 `rtc_*` (robot-agnostic) + 4 `ur5e_*` (robot-specific). Each has its own `README.md` with detailed API and configuration.
+16 ROS2 packages at repo root (no `src/`). 12 `rtc_*` (robot-agnostic) + 4 `ur5e_*` (robot-specific). Each has its own `README.md` with detailed API and configuration.
 
 ### Package Summary
 
@@ -42,7 +42,7 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 | `rtc_controller_manager` | Executable | `RtControllerNode`: clock_nanosleep RT loop, SPSC publish offload, 3-CSV logging, global E-STOP, controller lifecycle |
 | `rtc_inference` | Header-only | `InferenceEngine` abstract, `OnnxEngine` (IoBinding, pre-allocated buffers), `RunModels()` batch helper |
 | `rtc_status_monitor` | Shared lib | 10Hz monitor: robot mode, safety mode, tracking error, joint limits. Lock-free RT accessors (`isReady()`, `getFailure()`) |
-| `rtc_msgs` | Messages | 7 types: JointCommand, HandMotorCommand, HandMotorFeedback, FingertipSensors, FingertipForceTorque, SystemStatus, ControllerDiagnostics |
+| `rtc_msgs` | Messages | 7 types: JointCommand, FingertipSensor, HandSensorState, GuiPosition, RobotTarget, DeviceStateLog, DeviceSensorLog |
 | `rtc_mujoco_sim` | Executable | MuJoCo 3.x wrapper: FreeRun/SyncStep, GLFW viewer (40+ shortcuts), fake_hand 1st-order filter, position servo gains |
 | `rtc_tools` | Python | controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf, hand_udp_sender, hand_data_plot |
 | `rtc_scripts` | Shell | PREEMPT_RT kernel build, CPU shield (cset), IRQ affinity, UDP optimization, NVIDIA RT coexistence |
@@ -315,7 +315,7 @@ If `ApplyThreadConfig()` fails, the node continues at SCHED_OTHER with a `[WARN]
 
 ## Optimization Summary (v5.16.1)
 
-Cross-cutting optimizations applied to all 15 packages:
+Cross-cutting optimizations applied to all 16 packages:
 
 ### Build System
 - All C++ packages explicitly set `CMAKE_CXX_STANDARD 20` + `CMAKE_CXX_STANDARD_REQUIRED ON`

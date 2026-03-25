@@ -24,11 +24,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/rt_common.sh"
 make_logger "IRQ"
 
-# error()를 exit 포함 버전으로 재정의
-error() { echo -e "${RED}[IRQ]${NC} $*" >&2; exit 1; }
-
 # ── Root check ────────────────────────────────────────────────────────────────
-require_root "$@"
+require_root
 
 # ── CPU affinity mask ─────────────────────────────────────────────────────────
 # compute_cpu_layout()는 TOTAL_CORES, LOGICAL_CORES, IRQ_AFFINITY_MASK,
@@ -54,7 +51,7 @@ fi
 NIC="${1:-}"
 if [[ -z "$NIC" ]]; then
   NIC=$(detect_physical_nic)
-  [[ -z "$NIC" ]] && error "No physical network interface found. Specify one: sudo $0 <NIC>"
+  [[ -z "$NIC" ]] && fatal "No physical network interface found. Specify one: sudo $0 <NIC>"
   warn "Auto-detected physical NIC: ${NIC}  (specify explicitly if wrong: sudo $0 <NIC>)"
 fi
 

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(rtc_controller_interface VERSION 0.1.0 LANGUAGES CXX)
+project(rtc_controller_interface VERSION 5.16.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,7 +20,6 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rtc_base REQUIRED)
 find_package(rtc_msgs REQUIRED)
-find_package(sensor_msgs REQUIRED)
 find_package(pinocchio REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
@@ -36,7 +35,6 @@ target_include_directories(rtc_controller_interface PUBLIC
 ament_target_dependencies(rtc_controller_interface
   rtc_base
   rtc_msgs
-  sensor_msgs
   pinocchio
 )
 target_link_libraries(rtc_controller_interface yaml-cpp)
@@ -58,7 +56,6 @@ ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
   rtc_base
   rtc_msgs
-  sensor_msgs
   pinocchio
   yaml-cpp
 )

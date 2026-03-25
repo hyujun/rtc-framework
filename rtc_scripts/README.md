@@ -1,19 +1,20 @@
 # rtc_scripts
 
-![version](https://img.shields.io/badge/version-v5.16.0-blue)
+![version](https://img.shields.io/badge/version-v5.17.0-blue)
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스의 일부입니다.
+> 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 
 ## 개요
 
-RTC 프레임워크의 **로봇 비의존(robot-agnostic) RT 시스템 구성 및 검증 스크립트 모음**입니다. PREEMPT_RT 커널 빌드, CPU 격리, IRQ 어피니티, 네트워크 최적화, NVIDIA 공존 설정, 환경 검증을 위한 7개 핵심 스크립트와 공유 라이브러리를 제공합니다.
+RTC 프레임워크의 **로봇 비의존(robot-agnostic) RT 시스템 구성 및 검증 스크립트 모음**입니다. PREEMPT_RT 커널 빌드, CPU 격리, IRQ 어피니티, 네트워크 최적화, NVIDIA 공존 설정, 환경 검증을 위한 **10개 핵심 스크립트**와 공유 라이브러리를 제공합니다.
 
 **설계 목표:**
 - 500 Hz 실시간 제어에서 200 µs 이하 지터 달성
 - 2코어 VM부터 16코어+ 시스템까지 자동 적응
 - 멱등(idempotent) — 재실행 시 이미 적용된 설정 건너뜀
 - 설정과 검증 분리 (setup vs. check/verify)
+- 관심사 분리 — 각 스크립트가 단일 책임 수행
 
 ---
 
@@ -29,6 +30,9 @@ rtc_scripts/
     ├── build_rt_kernel.sh                ← PREEMPT_RT 커널 빌드/설치
     ├── setup_irq_affinity.sh             ← IRQ 어피니티 설정
     ├── setup_udp_optimization.sh         ← NIC/네트워크 스택 최적화
+    ├── setup_grub_rt.sh                  ← GRUB RT 커널 파라미터 관리 (NEW)
+    ├── setup_display_rt.sh               ← RT 환경 디스플레이 최적화 (NEW)
+    ├── setup_cpu_governor.sh             ← CPU governor performance 설정 (NEW)
     ├── setup_nvidia_rt.sh                ← NVIDIA GPU + RT 공존 설정
     ├── cpu_shield.sh                     ← 동적 CPU 격리 (cset/cgroup)
     ├── check_rt_setup.sh                 ← 정적 RT 환경 검증 (9개 카테고리)
@@ -39,30 +43,79 @@ rtc_scripts/
 
 ## 스크립트 요약
 
-| 스크립트 | 용도 | sudo | 라인 |
-|---------|------|------|------|
-| `build_rt_kernel.sh` | PREEMPT_RT 커널 다운로드/패치/빌드/설치 | 필수 | 1057 |
-| `setup_irq_affinity.sh` | 하드웨어 IRQ를 OS 코어에 고정 | 필수 | 190 |
-| `setup_udp_optimization.sh` | NIC 코얼레싱, 오프로드 비활성화, sysctl 최적화 | 필수 | 188 |
-| `setup_nvidia_rt.sh` | NVIDIA GPU DKMS, modprobe, GRUB, IRQ, X11 설정 | 필수 | 1155 |
-| `cpu_shield.sh` | 런타임 CPU 격리 (Tier 1/2, robot/sim 모드) | on/off 시 | 339 |
-| `check_rt_setup.sh` | 정적 환경 검증 (커널, CPU, IRQ, 네트워크 등) | 선택 | 1072 |
-| `verify_rt_runtime.sh` | 실행 중 스레드 스케줄링/어피니티/메모리 검증 | 선택 | 976 |
+### 설정 스크립트 (Setup)
+
+| 스크립트 | 용도 | sudo |
+|---------|------|------|
+| `build_rt_kernel.sh` | PREEMPT_RT 커널 다운로드/패치/빌드/설치 (7단계) | 필수 |
+| `setup_irq_affinity.sh` | 하드웨어 IRQ를 OS 코어에 고정 (SMT-aware) | 필수 |
+| `setup_udp_optimization.sh` | NIC 코얼레싱, 오프로드 비활성화, sysctl 최적화 + systemd 서비스 | 필수 |
+| `setup_grub_rt.sh` | GRUB RT 커널 파라미터 관리 + sched_rt_runtime_us 설정 | 필수 |
+| `setup_display_rt.sh` | X11 안티 티어링 + compositor 우선순위 부스트 | 필수 |
+| `setup_cpu_governor.sh` | CPU governor → performance 모드 + systemd 서비스 | 필수 |
+| `setup_nvidia_rt.sh` | NVIDIA GPU DKMS, modprobe, IRQ, persistence (7단계) | 필수 |
+
+### 런타임 스크립트 (Runtime)
+
+| 스크립트 | 용도 | sudo |
+|---------|------|------|
+| `cpu_shield.sh` | 런타임 CPU 격리 (Tier 1/2, robot/sim 모드) | on/off 시 |
+
+### 검증 스크립트 (Verification)
+
+| 스크립트 | 용도 | sudo |
+|---------|------|------|
+| `check_rt_setup.sh` | 정적 환경 검증 — 커널, CPU, IRQ, 네트워크 등 (9개 카테고리) | 선택 |
+| `verify_rt_runtime.sh` | 실행 중 스레드 스케줄링/어피니티/메모리 검증 (7개 카테고리) | 선택 |
 
 ---
 
 ## 공유 라이브러리 (`rt_common.sh`)
 
-모든 스크립트에서 사용하는 핵심 유틸리티입니다.
+모든 스크립트에서 사용하는 핵심 유틸리티입니다. `build.sh`, `install.sh`에서도 공유됩니다.
+
+### CPU 감지 함수
 
 | 함수 | 설명 |
 |------|------|
 | `get_physical_cores()` | 물리 코어 수 감지 (SMT/HT 제외) |
-| `detect_physical_nic()` | 물리 NIC 자동 탐색 (가상 인터페이스 제외) |
 | `compute_cpu_layout()` | 코어 수 기반 RT 레이아웃 계산 (IRQ 마스크, OS/RT 코어) |
-| `compute_expected_isolated()` | `isolcpus` 기대값 계산 (SMT 형제 포함) |
-| `write_file_if_changed()` | 멱등 파일 쓰기 (변경 시에만 백업+덮어쓰기) |
-| `make_logger PREFIX` | 접두사 기반 로깅 함수 생성 (info/warn/error/success) |
+| `compute_irq_affinity_mask()` | SMT-aware IRQ affinity bitmask 계산 (HT 시블링 포함) |
+| `compute_expected_isolated()` | `isolcpus` 기대값 계산 (SMT 시블링 포함 범위 표기) |
+| `get_os_logical_cpus()` | OS 물리 코어에 속하는 논리 CPU 번호 목록 |
+
+### NIC/네트워크 함수
+
+| 함수 | 설명 |
+|------|------|
+| `detect_physical_nic()` | 물리 NIC 자동 탐색 (가상 인터페이스 제외) |
+
+### 로깅 함수
+
+| 함수 | 설명 |
+|------|------|
+| `setup_colors()` | 터미널 색상 변수 초기화 (비-TTY 환경에서는 빈 문자열) |
+| `make_logger PREFIX [STYLE]` | 로깅 프리픽스+스타일 설정. `bracket` (기본): `[PREFIX] msg`, `emoji`: `▶ msg` |
+| `info()` / `warn()` / `error()` / `success()` / `section()` | 색상별 로깅 |
+| `fatal()` | 에러 메시지 출력 후 `exit 1` (error + exit 통합) |
+
+### 파일/시스템 유틸리티
+
+| 함수 | 설명 |
+|------|------|
+| `require_root()` | root 권한 확인 (실패 시 `fatal`) |
+| `write_file_if_changed()` | 멱등 파일 쓰기 (동일 시 skip, 다를 시 백업+덮어쓰기) |
+| `create_oneshot_service()` | systemd oneshot 서비스 생성 헬퍼 |
+| `auto_release_cpu_shield()` | 빌드 전 CPU shield 자동 해제 |
+| `check_workspace_structure()` | ROS2 워크스페이스 디렉토리 구조 검증 |
+| `ensure_ros2_sourced()` | ROS2 환경 자동 탐색 및 소싱 |
+
+### 패키지 리스트 함수
+
+| 함수 | 설명 |
+|------|------|
+| `get_base_packages()` | 기본 RTC 패키지 리스트 (build.sh/install.sh 공유) |
+| `get_robot_packages()` | 로봇 전용 패키지 리스트 |
 
 ---
 
@@ -80,24 +133,37 @@ sudo ./build_rt_kernel.sh --verify     # 단계별 진단
 sudo ./build_rt_kernel.sh --force-step 5  # 5단계부터 강제 재시작
 ```
 
-**7단계 파이프라인:**
-
-| 단계 | 작업 | 검증 |
-|------|------|------|
-| 1/7 | 빌드 패키지 설치 | `dpkg -s` 검사 |
-| 2/7 | 커널 소스 + RT 패치 다운로드 | 파일 존재 확인 |
-| 3/7 | 패치 적용 | `.rt_patched` 마커 |
-| 4/7 | 커널 설정 (`CONFIG_PREEMPT_RT=y`) | `.config` 확인 |
-| 5/7 | `make bindeb-pkg` 빌드 | `.deb` 존재 확인 |
-| 6/7 | `dpkg -i` 설치 | `dpkg -l` 확인 |
-| 7/7 | GRUB 기본 부팅 설정 | grub.cfg 확인 |
-
 **지원 커널:**
 
 | Ubuntu | 커널 | RT 패치 |
 |--------|------|---------|
 | 24.04 | 6.8.2 | 6.8.2-rt11 |
 | 22.04 | 6.6.127 | 6.6.127-rt69 |
+
+---
+
+### setup_grub_rt.sh (NEW)
+
+GRUB RT 커널 파라미터의 **단일 진실 원천(single source of truth)**입니다. `install.sh`와 `setup_nvidia_rt.sh`에서 호출됩니다.
+
+```bash
+sudo ./setup_grub_rt.sh
+```
+
+**관리하는 파라미터:**
+
+| 파라미터 | 값 | 효과 |
+|---------|-----|------|
+| `nohz_full` | RT 코어 범위 | RT 코어에서 타이머 틱 제거 |
+| `rcu_nocbs` | RT 코어 범위 | RT 코어에서 RCU 콜백 제거 |
+| `processor.max_cstate` | 1 | 깊은 C-state 진입 방지 |
+| `clocksource` | tsc | HPET 대비 50-100x 빠른 타이머 |
+| `tsc` | reliable | TSC 불안정 감지 비활성화 |
+| `nmi_watchdog` | 0 | NMI 인터럽트 제거 |
+| `threadirqs` | (없음) | IRQ 핸들러 스레드화 |
+| `nosoftlockup` | (없음) | soft lockup 경고 방지 |
+
+추가: `sched_rt_runtime_us=-1` 즉시 + 영구 적용
 
 ---
 
@@ -110,7 +176,8 @@ sudo ./setup_irq_affinity.sh              # NIC 자동 감지
 sudo ./setup_irq_affinity.sh enp3s0       # NIC 지정
 ```
 
-- NIC 및 모든 하드웨어 IRQ를 OS 코어 (Core 0 또는 0-1)에 고정
+- **SMT-aware**: HT 시블링까지 포함한 IRQ affinity mask 계산
+- NIC 및 모든 하드웨어 IRQ를 OS 코어에 고정
 - 타이머 IRQ 0은 제외
 - 적용 후 RT 코어에 잔여 IRQ가 없는지 검증
 
@@ -130,23 +197,63 @@ sudo ./setup_udp_optimization.sh          # NIC 자동 감지
 | 2 | GRO/LRO/TSO/GSO 비활성화 | 지연 시간 감소 |
 | 3 | RX/TX 링 버퍼 1024 | DDS 패킷에 적합 |
 | 4 | sysctl rmem_max=2GB, netdev_max_backlog=5000 | 버스트 부하 대응 |
+| 5 | systemd 서비스 생성 | 부팅 시 ethtool 설정 자동 재적용 |
+
+sysctl 설정은 `/etc/sysctl.d/99-ros2-udp.conf`로 영구 적용됩니다.
+ethtool 설정은 systemd oneshot 서비스로 부팅 시 자동 재적용됩니다.
+
+---
+
+### setup_display_rt.sh (NEW)
+
+RT 환경에서 디스플레이 안정성을 확보합니다.
+
+```bash
+sudo ./setup_display_rt.sh
+```
+
+- X11 안티 티어링 (`ForceFullCompositionPipeline`)
+- Compositor 우선순위 부스트 (nice -10)
+- Wayland/X11/headless 자동 감지
+
+---
+
+### setup_cpu_governor.sh (NEW)
+
+CPU governor를 performance 모드로 설정합니다.
+
+```bash
+sudo ./setup_cpu_governor.sh
+```
+
+- 모든 CPU governor를 performance로 즉시 변경
+- systemd 서비스로 부팅 시 자동 적용
+- cpupower 도구 자동 설치 시도
+- Intel P-state / Turbo Boost 상태 리포팅
 
 ---
 
 ### setup_nvidia_rt.sh
 
-NVIDIA GPU와 PREEMPT_RT 커널의 안정적 공존을 설정합니다 (11단계).
+NVIDIA GPU와 PREEMPT_RT 커널의 안정적 공존을 설정합니다 (7단계).
 
 ```bash
 sudo ./setup_nvidia_rt.sh
 ```
 
-**주요 설정:**
-- modprobe: `NVreg_EnableGpuFirmware=0`, `NVreg_PreserveVideoMemoryAllocations=1`
-- GRUB: `nohz_full`, `rcu_nocbs`, `processor.max_cstate=1`, `clocksource=tsc`, `nmi_watchdog=0`
-- NVIDIA IRQ 어피니티 systemd 서비스 (부팅 시 자동 적용)
-- X11 안티 티어링 (`ForceFullCompositionPipeline`)
-- NVIDIA persistence 모드 (`nvidia-smi -pm 1`)
+**7단계 프로세스:**
+
+| 단계 | 내용 |
+|------|------|
+| 1/7 | Pre-flight checks (Ubuntu, RT 커널, NVIDIA GPU, CPU 레이아웃) |
+| 2/7 | NVIDIA modprobe 설정 (`NVreg_EnableGpuFirmware=0`) |
+| 3/7 | NVIDIA IRQ affinity systemd 서비스 |
+| 4/7 | nvidia-smi persistence mode 활성화 |
+| 5/7 | nouveau 블랙리스트 |
+| 6/7 | NVIDIA DKMS 모듈 빌드 (RT 커널용) |
+| 7/7 | 연관 스크립트 호출 + 검증 요약 |
+
+> Stage 7에서 `setup_grub_rt.sh`, `setup_display_rt.sh`, `setup_cpu_governor.sh`를 자동 호출합니다.
 
 ---
 
@@ -168,16 +275,6 @@ cpu_shield.sh status             # 상태 확인 (sudo 불필요)
 | Tier 1 (RT-critical) | rt_control + sensor_io | 항상 |
 | Tier 2 (RT-support) | udp_recv + logging + aux | `--robot` 모드만 |
 | Tier 3 (Flexible) | sim, monitoring, build | 격리 안 함 |
-
-**코어 수별 격리 범위:**
-
-| 코어 | `--robot` | `--sim` |
-|------|-----------|---------|
-| ≤4 | 1-3 | 1-2 |
-| 5-7 | 2-5 | 2-3 |
-| 8-9 | 2-6 | 2-3 |
-| 10-15 | 2-6 | 2-3 |
-| ≥16 | 4-8 | 4-5 |
 
 > Launch 파일 (`robot.launch.py`, `sim.launch.py`)에서 자동 호출됩니다.
 
@@ -245,9 +342,12 @@ RT 컨트롤러 실행 중 스레드 상태를 검증합니다.
 ```
 [1회 설정]
   build_rt_kernel.sh → 재부팅
+  setup_grub_rt.sh              ← GRUB RT 파라미터
   setup_irq_affinity.sh
   setup_udp_optimization.sh
-  setup_nvidia_rt.sh (선택)
+  setup_cpu_governor.sh         ← CPU governor
+  setup_nvidia_rt.sh (선택)     ← NVIDIA GPU 설정 + 위 3개 자동 호출
+  setup_display_rt.sh (선택)    ← 디스플레이 최적화
 
 [빌드 전 검증]
   check_rt_setup.sh --summary
@@ -296,17 +396,25 @@ source install/setup.bash
 ```
 rtc_scripts  ← 독립 (ament_cmake만 의존)
     ↑
-    ├── ur5e_bringup    (launch 파일에서 cpu_shield.sh 호출)
-    └── 빌드 시스템     (build.sh에서 check_rt_setup.sh 호출)
+    ├── build.sh / install.sh  (rt_common.sh 공유 함수 사용)
+    ├── ur5e_bringup           (launch 파일에서 cpu_shield.sh 호출)
+    └── 빌드 시스템            (build.sh에서 check_rt_setup.sh 호출)
 ```
 
 ---
 
-## 최적화 내역 (v5.16.1)
+## 최적화 내역 (v5.17.0)
 
 | 영역 | 변경 내용 |
 |------|----------|
-| **코드 검증** | 쉘 스크립트 패키지 — 스크립트 구조 확인 완료 |
+| **관심사 분리** | `setup_nvidia_rt.sh`에서 GRUB/디스플레이/governor를 별도 스크립트로 분리 (11→7단계) |
+| **코드 중복 제거** | `auto_release_cpu_shield()`, `check_workspace_structure()`, `ensure_ros2_sourced()` → `rt_common.sh`로 통합 |
+| **에러 처리 통일** | `fatal()` 함수 추가, 모든 스크립트에서 일관된 exit 동작 |
+| **SMT-aware IRQ mask** | `compute_irq_affinity_mask()` — HT 시블링까지 포함한 정확한 affinity mask |
+| **로깅 스타일 통합** | `make_logger PREFIX [bracket\|emoji]` — 스타일 선택 가능 |
+| **패키지 리스트 통합** | `get_base_packages()`, `get_robot_packages()` — build.sh/install.sh 공유 |
+| **ethtool 영구 적용** | `setup_udp_optimization.sh` — systemd 서비스로 부팅 시 자동 재적용 |
+| **systemd 헬퍼** | `create_oneshot_service()` — 서비스 생성 보일러플레이트 제거 |
 
 ---
 

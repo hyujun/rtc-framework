@@ -2,7 +2,7 @@
 
 ![version](https://img.shields.io/badge/version-v5.16.0-blue)
 
-> 이 패키지는 [UR5e RT Controller](../README.md) 워크스페이스의 일부입니다.
+> 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
 > 설치/빌드: [Root README](../README.md)
 
 UR5e 로봇의 모델 description 파일 패키지입니다.
@@ -37,7 +37,7 @@ robots/ur5e/
     ├── collision/  # STL (단순화, 충돌 감지용)
     │   ├── base.stl, shoulder.stl, upperarm.stl
     │   ├── forearm.stl, wrist1.stl, wrist2.stl, wrist3.stl
-    └── assets/     # OBJ (MuJoCo MJCF 시각화용, 24 files, ~30MB)
+    └── assets/     # OBJ (MuJoCo MJCF 시각화용, 20 files)
         ├── base_0.obj, base_1.obj
         ├── shoulder_0.obj, shoulder_1.obj, shoulder_2.obj
         ├── upperarm_0.obj, ..., wrist3.obj
