@@ -240,6 +240,8 @@ void RtControllerNode::DeclareAndLoadParameters()
     // alias (e.g. "pd_controller") so either form works as initial_controller.
     name_to_idx[std::string(ctrl->Name())] = static_cast<int>(i);
     name_to_idx[entry.config_key] = static_cast<int>(i);
+    controller_name_to_idx_[std::string(ctrl->Name())] = static_cast<int>(i);
+    controller_name_to_idx_[entry.config_key] = static_cast<int>(i);
 
     controllers_.push_back(std::move(ctrl));
   }
@@ -526,10 +528,15 @@ void RtControllerNode::CreateSubscriptions()
   auto aux_sub_options = rclcpp::SubscriptionOptions();
   aux_sub_options.callback_group = cb_group_aux_;
 
-  controller_selector_sub_ = create_subscription<std_msgs::msg::Int32>(
+  controller_selector_sub_ = create_subscription<std_msgs::msg::String>(
       "/ur5e/controller_type", 10,
-    [this](std_msgs::msg::Int32::SharedPtr msg) {
-      int idx = msg->data;
+    [this](std_msgs::msg::String::SharedPtr msg) {
+      const auto it = controller_name_to_idx_.find(msg->data);
+      if (it == controller_name_to_idx_.end()) {
+        RCLCPP_WARN(get_logger(), "Unknown controller name: '%s'", msg->data.c_str());
+        return;
+      }
+      const int idx = it->second;
       if (idx >= 0 && idx < static_cast<int>(controllers_.size())) {
         // 컨트롤러 전환 시 현재 위치로 hold position 초기화 (target 공백 방지)
         if (auto_hold_position_ &&
@@ -560,8 +567,6 @@ void RtControllerNode::CreateSubscriptions()
         std_msgs::msg::String ctrl_name_msg;
         ctrl_name_msg.data = std::string(controllers_[idx]->Name());
         active_ctrl_name_pub_->publish(ctrl_name_msg);
-      } else {
-        RCLCPP_WARN(get_logger(), "Invalid controller index: %d", idx);
       }
       },
       aux_sub_options);

@@ -122,7 +122,7 @@ private:
   std::vector<rclcpp::SubscriptionBase::SharedPtr> topic_subscriptions_;
 
   // Fixed control subscriptions (always present)
-  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr              controller_selector_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr             controller_selector_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr  controller_gains_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr               request_gains_sub_;
 
@@ -163,6 +163,10 @@ private:
 
   // Per-controller topic config cache (index = controller index)
   std::vector<rtc::TopicConfig> controller_topic_configs_;
+
+  // Controller name → index lookup (populated once at startup)
+  // Maps both display names ("DemoJointController") and config keys ("demo_joint_controller")
+  std::unordered_map<std::string, int> controller_name_to_idx_;
 
   // ── Dynamic device group management ──────────────────────────────────────
   std::set<std::string> active_groups_;           // union of all controller groups

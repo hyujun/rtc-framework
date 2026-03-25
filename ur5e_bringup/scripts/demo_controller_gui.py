@@ -13,29 +13,29 @@ import math
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float64MultiArray, Int32, Bool
+from std_msgs.msg import Float64MultiArray, String, Bool
 from rtc_msgs.msg import GuiPosition, RobotTarget
 import tkinter as tk
 from tkinter import ttk, font as tkfont
 import threading
 
 CONTROLLER_TYPES = {
-    4: "Demo Joint Controller",
-    5: "Demo Task Controller",
+    "demo_joint_controller": "Demo Joint Controller",
+    "demo_task_controller":  "Demo Task Controller",
 }
 
 TARGET_LABELS = {
-    4: ["q1 (deg)", "q2 (deg)", "q3 (deg)", "q4 (deg)", "q5 (deg)", "q6 (deg)"],
-    5: ["X (m)", "Y (m)", "Z (m)", "Roll (deg) / q4_null", "Pitch (deg) / q5_null", "Yaw (deg) / q6_null"],
+    "demo_joint_controller": ["q1 (deg)", "q2 (deg)", "q3 (deg)", "q4 (deg)", "q5 (deg)", "q6 (deg)"],
+    "demo_task_controller":  ["X (m)", "Y (m)", "Z (m)", "Roll (deg) / q4_null", "Pitch (deg) / q5_null", "Yaw (deg) / q6_null"],
 }
 
 ANGLE_INDICES = {
-    4: [0, 1, 2, 3, 4, 5],
-    5: [3, 4, 5],
+    "demo_joint_controller": [0, 1, 2, 3, 4, 5],
+    "demo_task_controller":  [3, 4, 5],
 }
 
 # True -> joint space, False -> task space
-JOINT_SPACE = {4: True, 5: False}
+JOINT_SPACE = {"demo_joint_controller": True, "demo_task_controller": False}
 
 NUM_JOINTS = 6
 NUM_HAND_MOTORS = 10
@@ -57,11 +57,11 @@ for _grp_name, _motors in HAND_FINGER_GROUPS:
 #   DemoJoint: [robot_kp x6, hand_kp x10]
 #   DemoTask:  [kp x6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp x10]
 GAIN_DEFS = {
-    4: [
+    "demo_joint_controller": [
         ("robot_kp",        6, [120.0, 120.0, 100.0, 80.0, 80.0, 80.0], False),
         ("hand_kp",        10, [50.0] * 10, False),
     ],
-    5: [
+    "demo_task_controller": [
         ("kp",              6, [1.0] * 6,  False),
         ("damping",         1, [0.01],      False),
         ("null_kp",         1, [0.5],       False),
@@ -72,18 +72,18 @@ GAIN_DEFS = {
 }
 
 GAIN_COL_HEADERS = {
-    4: ["J1", "J2", "J3", "J4", "J5", "J6",
-        "H1", "H2", "H3", "H4"],
-    5: ["J1", "J2", "J3", "J4", "J5", "J6",
-        "H1", "H2", "H3", "H4"],
+    "demo_joint_controller": ["J1", "J2", "J3", "J4", "J5", "J6",
+                              "H1", "H2", "H3", "H4"],
+    "demo_task_controller":  ["J1", "J2", "J3", "J4", "J5", "J6",
+                              "H1", "H2", "H3", "H4"],
 }
 
 GAIN_ROW_NAMES = {
-    4: {
+    "demo_joint_controller": {
         "robot_kp": ["base", "shoulder", "elbow", "wrist1", "wrist2", "wrist3"],
         "hand_kp": [n.split('_', 1)[1] for n in HAND_MOTOR_NAMES],
     },
-    5: {
+    "demo_task_controller": {
         "hand_kp": [n.split('_', 1)[1] for n in HAND_MOTOR_NAMES],
     },
 }
@@ -99,7 +99,7 @@ class DemoControllerGUI(Node):
         self.hand_cmd_pub = self.create_publisher(
             RobotTarget, '/hand/joint_goal', 10)
         self.type_pub = self.create_publisher(
-            Int32, '/ur5e/controller_type', 10)
+            String, '/ur5e/controller_type', 10)
         self.gains_pub = self.create_publisher(
             Float64MultiArray, '/ur5e/controller_gains', 10)
         self.request_gains_pub = self.create_publisher(
@@ -295,7 +295,7 @@ class DemoControllerGUI(Node):
         ctrl_frame = ttk.LabelFrame(scrollable_frame, text="Controller", padding=4)
         ctrl_frame.pack(fill='x', padx=8, pady=2)
 
-        self.selected_ctrl = tk.IntVar(value=4)
+        self.selected_ctrl = tk.StringVar(value="demo_joint_controller")
         btn_row = tk.Frame(ctrl_frame, bg='#1e1e2e')
         btn_row.pack(fill='x')
         for idx, name in CONTROLLER_TYPES.items():
@@ -782,11 +782,11 @@ class DemoControllerGUI(Node):
     def _on_switch_controller(self):
         idx = self.selected_ctrl.get()
 
-        msg = Int32()
+        msg = String()
         msg.data = idx
         self.type_pub.publish(msg)
         self.get_logger().info(
-            f"Switched to controller {idx}: {CONTROLLER_TYPES[idx]}")
+            f"Switched to controller: {CONTROLLER_TYPES[idx]}")
 
         self._ctrl_status.set(f"Active: {CONTROLLER_TYPES[idx]}")
         self._rebuild_gains_ui(idx)
