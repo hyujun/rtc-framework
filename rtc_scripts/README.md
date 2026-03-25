@@ -196,11 +196,13 @@ sudo ./setup_udp_optimization.sh          # NIC 자동 감지
 | 1 | 인터럽트 코얼레싱 비활성화 | 즉시 인터럽트 전달 |
 | 2 | GRO/LRO/TSO/GSO 비활성화 | 지연 시간 감소 |
 | 3 | RX/TX 링 버퍼 1024 | DDS 패킷에 적합 |
-| 4 | sysctl rmem_max=2GB, netdev_max_backlog=5000 | 버스트 부하 대응 |
+| 4 | sysctl rmem_max/wmem_max=2GB, default=212992, backlog=5000 | DDS 소켓 버퍼 상한 확대 |
 | 5 | systemd 서비스 생성 | 부팅 시 ethtool 설정 자동 재적용 |
 
 sysctl 설정은 `/etc/sysctl.d/99-ros2-udp.conf`로 영구 적용됩니다.
 ethtool 설정은 systemd oneshot 서비스로 부팅 시 자동 재적용됩니다.
+
+> CycloneDDS `SocketReceiveBufferSize`(8MB)는 `rmem_max`(2GB) 이하여야 합니다. CycloneDDS 설정: `rtc_controller_manager/config/cyclone_dds.xml`
 
 ---
 

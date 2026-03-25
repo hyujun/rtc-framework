@@ -1,8 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  cyclone_dds.xml — CycloneDDS configuration for RT Controller Manager
-  Restricts DDS internal threads to non-RT cores, preventing DDS recv/send
-  threads from preempting RT threads.
+  cyclone_dds.xml — CycloneDDS performance-optimized configuration
+  for RT Controller Manager (500Hz control loop).
+
+  Optimizations:
+    1. Multicast disabled — localhost/single-host only, eliminates IGMP overhead
+    2. Socket buffers enlarged — matches kernel sysctl (setup_udp_optimization.sh)
+    3. Discovery tuning — reduced lease/heartbeat for faster failover
+    4. Internal write batching — reduces syscall overhead on publish path
+    5. Nack delay minimized — faster reliable data delivery
+
+  Thread affinity: handled by taskset in robot.launch.py (CycloneDDS 0.11+
+  removed <Internal><Threads> XML support).
 
   Loaded automatically via CYCLONEDDS_URI env var set in launch files.
   Reference: https://cyclonedds.io/docs/cyclonedds/latest/config/index.html
@@ -11,16 +20,70 @@
   <Domain>
     <General>
       <Interfaces>
-        <NetworkInterface autodetermine="true" multicast="default"/>
+        <!-- Single physical NIC; disable multicast to avoid IGMP join/leave
+             overhead. All ROS 2 nodes run on the same host. -->
+        <NetworkInterface autodetermine="true" multicast="false"/>
       </Interfaces>
+
+      <!-- Disable multicast discovery — use unicast SPDP only.
+           Eliminates periodic multicast heartbeat traffic that can cause
+           recv-thread wake-ups and interfere with RT scheduling. -->
+      <AllowMulticast>false</AllowMulticast>
+
+      <!-- Max message size aligned with typical DDS RTPS fragment size.
+           Default 65500 is fine for our small-payload topics. -->
+      <MaxMessageSize>65500</MaxMessageSize>
+      <FragmentSize>4000</FragmentSize>
     </General>
+
+    <!-- ── Discovery tuning ─────────────────────────────────────────── -->
+    <Discovery>
+      <!-- Shorter participant lease: detect dead participants in 5s
+           instead of default 10s. Reduces stale reader/writer entries. -->
+      <LeaseDuration>5s</LeaseDuration>
+
+      <!-- Faster SPDP announcements at startup for quicker discovery,
+           then back off. Default is 30s which is too slow for bringup. -->
+      <SPDPInterval>1s</SPDPInterval>
+    </Discovery>
+
+    <!-- ── Reliability / latency tuning ─────────────────────────────── -->
+    <Internal>
+      <!-- Write batching: flush after 8μs max wait. Balances between
+           immediate flush (high syscall rate) and large batch (latency).
+           For 500Hz (2ms period), 8μs is negligible. -->
+      <WriteBatchFlushInterval>8 us</WriteBatchFlushInterval>
+
+      <!-- NACK response delay: minimize for faster retransmission.
+           Default 100ms is far too high for RT control. -->
+      <NackDelay>10 ms</NackDelay>
+
+      <!-- Pre-emptive NACK delay: respond quickly to gaps. -->
+      <PreEmptiveAckDelay>10 ms</PreEmptiveAckDelay>
+
+      <!-- Heartbeat interval for reliable writers.
+           Lower = faster loss detection, slightly more overhead.
+           100ms is good balance for 500Hz publish. -->
+      <HeartbeatInterval>100 ms</HeartbeatInterval>
+
+      <!-- Squash multiple writes into fewer network packets when
+           publishing bursts (e.g., 6-DOF commands + state). -->
+      <MaxQueuedRexmitMessages>256</MaxQueuedRexmitMessages>
+
+      <!-- Socket receive buffer: 8MB to handle burst traffic.
+           Must be ≤ net.core.rmem_max (set by setup_udp_optimization.sh). -->
+      <SocketReceiveBufferSize>8 MB</SocketReceiveBufferSize>
+
+      <!-- Socket send buffer: 2MB — our outgoing traffic is small. -->
+      <SocketSendBufferSize>2 MB</SocketSendBufferSize>
+
+      <!-- Deliver data synchronously when possible, reducing
+           thread wake-up latency for subscriber callbacks. -->
+      <SynchronousDeliveryLatencyBound>inf</SynchronousDeliveryLatencyBound>
+    </Internal>
 
     <Tracing>
       <Verbosity>warning</Verbosity>
     </Tracing>
-
-    <!-- NOTE: <Internal><Threads> is NOT supported in CycloneDDS 0.11+
-         (Jazzy). DDS thread affinity is handled by taskset in launch
-         files instead. -->
   </Domain>
 </CycloneDDS>

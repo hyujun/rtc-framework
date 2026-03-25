@@ -34,7 +34,7 @@ rtc_controller_manager/
 │   └── rt_controller_main_impl.cpp        ← RtControllerMain() 구현
 └── config/
     ├── rt_controller_manager.yaml         ← 제어 루프 설정
-    └── cyclone_dds.xml                    ← CycloneDDS RT 설정
+    └── cyclone_dds.xml                    ← CycloneDDS RT 성능 최적화 설정
 ```
 
 ---
@@ -281,10 +281,31 @@ rtc_controller_manager  ← 500 Hz RT 제어 실행 엔진
 
 ---
 
+## 설정 파일 상세
+
+### cyclone_dds.xml
+
+CycloneDDS RT 성능 최적화 설정입니다. `CYCLONEDDS_URI` 환경변수로 자동 로드됩니다.
+
+| 최적화 | 설정 | 효과 |
+|--------|------|------|
+| 멀티캐스트 비활성화 | `AllowMulticast=false` | IGMP 오버헤드 제거 (단일 호스트) |
+| Discovery 튜닝 | `LeaseDuration=5s`, `SPDPInterval=1s` | 빠른 participant 감지 |
+| Write batching | `WriteBatchFlushInterval=8μs` | 시스콜 횟수 감소 |
+| 재전송 최적화 | `NackDelay=10ms`, `HeartbeatInterval=100ms` | 기본 100ms → 10ms |
+| 소켓 버퍼 | recv 8MB / send 2MB | DDS 버스트 수용 |
+| 동기 전달 | `SynchronousDeliveryLatencyBound=inf` | 콜백 wake-up 지연 제거 |
+
+> DDS 스레드 affinity는 `taskset`으로 처리 (CycloneDDS 0.11+에서 XML `<Threads>` 제거됨).
+> `robot.launch.py`에서 비-SCHED_FIFO 스레드를 Core 0-1에 자동 핀닝합니다.
+
+---
+
 ## 최적화 내역 (v0.1.1)
 
 | 영역 | 변경 내용 |
 |------|----------|
+| **cyclone_dds.xml** | RT 성능 최적화: 멀티캐스트 비활성화, 소켓 버퍼 확대, write batching, NACK/heartbeat 튜닝, 동기 전달 |
 | **rt_controller_node.cpp** | 미사용 `<ctime>` include 제거 |
 
 ---
