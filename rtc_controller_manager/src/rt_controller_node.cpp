@@ -164,6 +164,8 @@ void RtControllerNode::DeclareAndLoadParameters()
   safe_declare("init_timeout_sec", rclcpp::ParameterValue(5.0));
   safe_declare("auto_hold_position", rclcpp::ParameterValue(true));
   safe_declare("initial_controller", rclcpp::ParameterValue(std::string("joint_pd_controller")));
+  safe_declare("use_sim_time_sync", rclcpp::ParameterValue(false));
+  safe_declare("sim_sync_timeout_sec", rclcpp::ParameterValue(5.0));
 
   // ── Device timeouts (replaces robot_timeout_ms / enable_ur5e / enable_hand) ─
   safe_declare("device_timeout_names", rclcpp::ParameterValue(std::vector<std::string>{}));
@@ -182,6 +184,8 @@ void RtControllerNode::DeclareAndLoadParameters()
   enable_logging_ = get_parameter("enable_logging").as_bool();
   enable_estop_ = get_parameter("enable_estop").as_bool();
   enable_status_monitor_ = get_parameter("enable_status_monitor").as_bool();
+  use_sim_time_sync_ = get_parameter("use_sim_time_sync").as_bool();
+  sim_sync_timeout_sec_ = get_parameter("sim_sync_timeout_sec").as_double();
 
   // NOTE: Logging setup and device name configs are deferred until after
   // controller loading, because active_groups_ must be known first.
@@ -740,6 +744,20 @@ void RtControllerNode::CreatePublishers()
     }
   }
 
+  // ── Digital Twin republishers (RELIABLE, depth 10) ──────────────────────
+  {
+    rclcpp::QoS dt_qos{10};
+    dt_qos.reliable();
+    for (const auto& [group_name, slot] : group_slot_map_) {
+      std::string dt_topic = "/" + group_name + "/digital_twin/joint_states";
+      digital_twin_publishers_[dt_topic] =
+          create_publisher<sensor_msgs::msg::JointState>(dt_topic, dt_qos);
+      slot_to_dt_topic_[slot] = dt_topic;
+      RCLCPP_INFO(get_logger(), "  Digital Twin publish: %s (RELIABLE/10)",
+                  dt_topic.c_str());
+    }
+  }
+
   // ── Fixed publishers (always present) ─────────────────────────────────────
   estop_pub_ =
     create_publisher<std_msgs::msg::Bool>("/system/estop_status", 10);
@@ -863,6 +881,23 @@ void RtControllerNode::DeviceJointStateCallback(
   }
   ds.valid = true;
   state_received_.store(true, std::memory_order_release);
+
+  // Forward to digital twin (RELIABLE republish)
+  {
+    auto dt_it = slot_to_dt_topic_.find(device_slot);
+    if (dt_it != slot_to_dt_topic_.end()) {
+      auto pub_it = digital_twin_publishers_.find(dt_it->second);
+      if (pub_it != digital_twin_publishers_.end()) {
+        pub_it->second->publish(*msg);
+      }
+    }
+  }
+
+  // Simulation sync: wake rt_loop immediately on fresh state
+  if (use_sim_time_sync_) {
+    state_fresh_.store(true, std::memory_order_release);
+    state_cv_.notify_one();
+  }
 }
 
 void RtControllerNode::DeviceTargetCallback(
@@ -1241,63 +1276,97 @@ void RtControllerNode::DrainLog()
 void RtControllerNode::RtLoopEntry(const urtc::ThreadConfig& cfg)
 {
   urtc::ApplyThreadConfig(cfg);
-
-  const int64_t period_ns = static_cast<int64_t>(1.0e9 / control_rate_);
-  struct timespec next_wake{};
-  clock_gettime(CLOCK_MONOTONIC, &next_wake);
   rt_loop_running_.store(true, std::memory_order_release);
 
   uint32_t timeout_tick = 0;
 
-  while (rt_loop_running_.load(std::memory_order_acquire) && rclcpp::ok()) {
-    // Advance to next absolute wake time
-    next_wake.tv_nsec += period_ns;
-    if (next_wake.tv_nsec >= 1'000'000'000L) {
-      next_wake.tv_sec  += next_wake.tv_nsec / 1'000'000'000L;
-      next_wake.tv_nsec %= 1'000'000'000L;
+  if (use_sim_time_sync_) {
+    // ═══ Simulation mode: CV-based wakeup on state arrival ═══
+    const auto sim_timeout =
+        std::chrono::duration<double>(sim_sync_timeout_sec_);
+
+    RCLCPP_INFO(get_logger(),
+        "RT loop: simulation sync mode (CV wakeup, timeout=%.1f s)",
+        sim_sync_timeout_sec_);
+
+    while (rt_loop_running_.load(std::memory_order_acquire) && rclcpp::ok()) {
+      bool woken = false;
+      {
+        std::unique_lock lock(state_cv_mutex_);
+        woken = state_cv_.wait_for(lock, sim_timeout, [this] {
+          return state_fresh_.load(std::memory_order_acquire)
+              || !rt_loop_running_.load(std::memory_order_acquire);
+        });
+        state_fresh_.store(false, std::memory_order_release);
+      }
+
+      if (!rt_loop_running_.load(std::memory_order_acquire)) { break; }
+
+      if (!woken) {
+        RCLCPP_FATAL(get_logger(),
+            "Simulation sync timeout (%.1f s): no /joint_states received — "
+            "simulator may have crashed. Shutting down.",
+            sim_sync_timeout_sec_);
+        TriggerGlobalEstop("sim_sync_timeout");
+        rclcpp::shutdown();
+        return;
+      }
+
+      ControlLoop();
+
+      if (enable_estop_ && ++timeout_tick % 10 == 0) {
+        CheckTimeouts();
+      }
     }
+  } else {
+    // ═══ Real robot mode: deterministic clock_nanosleep 500 Hz ═══
+    const int64_t period_ns = static_cast<int64_t>(1.0e9 / control_rate_);
+    struct timespec next_wake{};
+    clock_gettime(CLOCK_MONOTONIC, &next_wake);
 
-    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next_wake, nullptr);
-
-    // ── Overrun detection & recovery ──────────────────────────────────────
-    // If ControlLoop() took longer than one period, next_wake is already in
-    // the past.  clock_nanosleep returns immediately → burst.  We detect
-    // this by checking how far behind we are and skip missed ticks.
-    struct timespec now_ts{};
-    clock_gettime(CLOCK_MONOTONIC, &now_ts);
-    const int64_t now_ns  = now_ts.tv_sec  * 1'000'000'000L + now_ts.tv_nsec;
-    const int64_t wake_ns = next_wake.tv_sec * 1'000'000'000L + next_wake.tv_nsec;
-    const int64_t lag_ns  = now_ns - wake_ns;
-
-    if (lag_ns > period_ns) {
-      // Skip missed ticks — realign to the next period boundary
-      const int64_t missed_ticks = lag_ns / period_ns;
-      const int64_t advance_ns   = missed_ticks * period_ns;
-      next_wake.tv_nsec += static_cast<long>(advance_ns);
+    while (rt_loop_running_.load(std::memory_order_acquire) && rclcpp::ok()) {
+      // Advance to next absolute wake time
+      next_wake.tv_nsec += period_ns;
       if (next_wake.tv_nsec >= 1'000'000'000L) {
         next_wake.tv_sec  += next_wake.tv_nsec / 1'000'000'000L;
         next_wake.tv_nsec %= 1'000'000'000L;
       }
-      overrun_count_.fetch_add(1, std::memory_order_relaxed);
-      skip_count_.fetch_add(static_cast<uint64_t>(missed_ticks),
-                            std::memory_order_relaxed);
 
-      // Consecutive overrun safety — E-STOP if sustained
-      const auto consecutive =
-          consecutive_overruns_.fetch_add(1, std::memory_order_relaxed) + 1;
-      if (consecutive >= kMaxConsecutiveOverruns) {
-        TriggerGlobalEstop("consecutive_overrun");
+      clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next_wake, nullptr);
+
+      // ── Overrun detection & recovery ────────────────────────────────────
+      struct timespec now_ts{};
+      clock_gettime(CLOCK_MONOTONIC, &now_ts);
+      const int64_t now_ns  = now_ts.tv_sec  * 1'000'000'000L + now_ts.tv_nsec;
+      const int64_t wake_ns = next_wake.tv_sec * 1'000'000'000L + next_wake.tv_nsec;
+      const int64_t lag_ns  = now_ns - wake_ns;
+
+      if (lag_ns > period_ns) {
+        const int64_t missed_ticks = lag_ns / period_ns;
+        const int64_t advance_ns   = missed_ticks * period_ns;
+        next_wake.tv_nsec += static_cast<long>(advance_ns);
+        if (next_wake.tv_nsec >= 1'000'000'000L) {
+          next_wake.tv_sec  += next_wake.tv_nsec / 1'000'000'000L;
+          next_wake.tv_nsec %= 1'000'000'000L;
+        }
+        overrun_count_.fetch_add(1, std::memory_order_relaxed);
+        skip_count_.fetch_add(static_cast<uint64_t>(missed_ticks),
+                              std::memory_order_relaxed);
+
+        const auto consecutive =
+            consecutive_overruns_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (consecutive >= kMaxConsecutiveOverruns) {
+          TriggerGlobalEstop("consecutive_overrun");
+        }
+      } else {
+        consecutive_overruns_.store(0, std::memory_order_relaxed);
       }
-    } else {
-      // Normal tick — reset consecutive counter
-      consecutive_overruns_.store(0, std::memory_order_relaxed);
-    }
 
-    ControlLoop();
+      ControlLoop();
 
-    // CheckTimeouts() — every 10th tick (= 50 Hz)
-    if (enable_estop_ && ++timeout_tick % 10 == 0) {
-      CheckTimeouts();
+      if (enable_estop_ && ++timeout_tick % 10 == 0) {
+        CheckTimeouts();
+      }
     }
   }
 }

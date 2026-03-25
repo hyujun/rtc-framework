@@ -1,48 +1,50 @@
-# digital_twin.yaml — Digital Twin RViz2 visualization parameters
+# digital_twin.yaml — Generalized Digital Twin configuration
+#
+# Subscribes to one or more JointState topics (RELIABLE, depth 10),
+# merges them, and publishes a combined JointState for robot_state_publisher.
+# Validates received joints against URDF (excluding fixed/mimic joints).
 
 /**:
   ros__parameters:
-    display_rate: 60.0          # Hz — RViz refresh rate
-    enable_hand: true           # Enable hand visualization
+    display_rate: 60.0                          # Hz — combined JointState publish rate
+    output_topic: "/digital_twin/joint_states"  # Combined output for robot_state_publisher
 
-    # Subscribe topics
-    robot_joint_states_topic: "/joint_states"
-    hand_joint_states_topic: "/hand/joint_states"
+    # ── Joint state sources ──────────────────────────────────────────────
+    num_sources: 1
 
-    # Robot joint names (URDF joint order)
-    robot_joint_names:
-      - "shoulder_pan_joint"
-      - "shoulder_lift_joint"
-      - "elbow_joint"
-      - "wrist_1_joint"
-      - "wrist_2_joint"
-      - "wrist_3_joint"
+    source_0.topic: "/ur5e/digital_twin/joint_states"
+    source_0.joint_names: []          # empty = accept all joints from topic
 
-    # Hand motor names (URDF joint order, 1:1 with Float64MultiArray index)
-    hand_motor_names:
-      - "thumb_cmc_aa"
-      - "thumb_cmc_fe"
-      - "thumb_mcp_fe"
-      - "index_mcp_aa"
-      - "index_mcp_fe"
-      - "index_dip_fe"
-      - "middle_mcp_aa"
-      - "middle_mcp_fe"
-      - "middle_dip_fe"
-      - "ring_mcp_fe"
+    # Example: multi-source (uncomment for UR5e + hand)
+    # num_sources: 2
+    # source_0.topic: "/ur5e/digital_twin/joint_states"
+    # source_0.joint_names:
+    #   - "shoulder_pan_joint"
+    #   - "shoulder_lift_joint"
+    #   - "elbow_joint"
+    #   - "wrist_1_joint"
+    #   - "wrist_2_joint"
+    #   - "wrist_3_joint"
+    # source_1.topic: "/hand/digital_twin/joint_states"
+    # source_1.joint_names:
+    #   - "thumb_cmc_aa"
+    #   - "thumb_cmc_fe"
+    #   - "thumb_mcp_fe"
+    #   - "index_mcp_aa"
+    #   - "index_mcp_fe"
+    #   - "index_dip_fe"
+    #   - "middle_mcp_aa"
+    #   - "middle_mcp_fe"
+    #   - "middle_dip_fe"
+    #   - "ring_mcp_fe"
 
-    # Fingertip names for sensor visualization
-    fingertip_names:
-      - "thumb"
-      - "index"
-      - "middle"
-      - "ring"
-
-    # Sensor visualization settings
-    sensor_viz:
-      barometer_min: 0.0          # Min pressure (normalization lower bound)
-      barometer_max: 1000.0       # Max pressure (normalization upper bound)
-      barometer_sphere_min: 0.002 # Min sphere radius (m)
-      barometer_sphere_max: 0.008 # Max sphere radius (m)
-      tof_max_distance: 0.2       # ToF max display distance (m)
-      tof_arrow_scale: 0.003      # Arrow shaft width (m)
+    # ── Sensor visualization (optional — omit to disable) ────────────────
+    # sensor_viz.sensor_topic: "/hand/sensor_states"
+    # sensor_viz.marker_topic: "/digital_twin/fingertip_markers"
+    # sensor_viz.fingertip_names: ["thumb", "index", "middle", "ring"]
+    # sensor_viz.barometer_min: 0.0
+    # sensor_viz.barometer_max: 1000.0
+    # sensor_viz.barometer_sphere_min: 0.002
+    # sensor_viz.barometer_sphere_max: 0.008
+    # sensor_viz.tof_max_distance: 0.2
+    # sensor_viz.tof_arrow_scale: 0.003

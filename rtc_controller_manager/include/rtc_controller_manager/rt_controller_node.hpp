@@ -26,6 +26,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -161,6 +162,14 @@ private:
   std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::DeviceSensorLog>>
       device_sensor_log_publishers_;
 
+  // ── Digital Twin JointState republishers (RELIABLE, depth 10) ────────────
+  // key = "/{group}/digital_twin/joint_states"
+  std::unordered_map<std::string,
+      rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr>
+      digital_twin_publishers_;
+  // group_slot → digital_twin topic name mapping
+  std::unordered_map<int, std::string> slot_to_dt_topic_;
+
   // Per-controller topic config cache (index = controller index)
   std::vector<rtc::TopicConfig> controller_topic_configs_;
 
@@ -254,6 +263,13 @@ private:
     bool built{false};
   };
   std::array<DeviceReorderMap, kMaxDevices> device_reorder_maps_{};
+
+  // ── Simulation sync (CV-based wakeup) ──────────────────────────────────
+  bool                    use_sim_time_sync_{false};
+  double                  sim_sync_timeout_sec_{5.0};
+  std::mutex              state_cv_mutex_;
+  std::condition_variable state_cv_;
+  std::atomic<bool>       state_fresh_{false};
 
   // ── Parameters ────────────────────────────────────────────────────────────
   double      control_rate_{500.0};

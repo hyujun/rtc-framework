@@ -19,7 +19,7 @@ setup(
     zip_safe=True,
     maintainer='Junho Park',
     maintainer_email='jeryblueput@gmail.com',
-    description='Digital Twin RViz2 visualization for UR5e + Custom Hand',
+    description='Generalized Digital Twin RViz2 visualization for any URDF robot',
     license='MIT',
     entry_points={
         'console_scripts': [

@@ -218,6 +218,8 @@ enum class PublishRole {
   kRobotTarget,        // rtc_msgs/RobotTarget (joint/task 목표)
   kDeviceStateLog,     // rtc_msgs/DeviceStateLog (통합 상태 로그)
   kDeviceSensorLog,    // rtc_msgs/DeviceSensorLog (센서 + inference 로그)
+  // Digital Twin
+  kDigitalTwinState,   // sensor_msgs/JointState (RELIABLE republish for digital twin)
 };
 
 struct SubscribeTopicEntry {
@@ -311,6 +313,7 @@ struct TopicConfig {
     case PublishRole::kRobotTarget:     return "robot_target";
     case PublishRole::kDeviceStateLog:  return "device_state_log";
     case PublishRole::kDeviceSensorLog: return "device_sensor_log";
+    case PublishRole::kDigitalTwinState: return "digital_twin_state";
   }
   return "unknown";
 }

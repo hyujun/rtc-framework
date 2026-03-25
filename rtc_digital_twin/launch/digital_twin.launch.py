@@ -1,83 +1,95 @@
-"""Launch file for UR5e + Hand Digital Twin RViz2 visualization.
+"""Generalized Digital Twin launch file.
 
-Nodes launched:
-  1. robot_state_publisher — loads combined URDF, subscribes to
+Launches:
+  1. robot_state_publisher — loads URDF/xacro, subscribes to
      /digital_twin/joint_states, publishes TF tree
-  2. digital_twin_node — subscribes to /joint_states & /hand/joint_states,
-     publishes combined JointState + MarkerArray at display_rate Hz
+  2. digital_twin_node — subscribes to configurable JointState sources,
+     merges and publishes combined JointState, validates URDF joints
   3. rviz2 (optional) — RViz2 with pre-configured display settings
 
 Usage:
-  ros2 launch rtc_digital_twin digital_twin.launch.py
-  ros2 launch rtc_digital_twin digital_twin.launch.py enable_hand:=false
-  ros2 launch rtc_digital_twin digital_twin.launch.py display_rate:=30.0
-  ros2 launch rtc_digital_twin digital_twin.launch.py use_rviz:=false
+  # Package-based URDF (UR5e + hand)
+  ros2 launch rtc_digital_twin digital_twin.launch.py \
+      robot_description_package:=ur5e_description \
+      robot_description_path:=robots/ur5e/urdf/ur5e_with_hand.urdf.xacro
+
+  # Absolute path URDF
+  ros2 launch rtc_digital_twin digital_twin.launch.py \
+      robot_description_file:=/path/to/robot.urdf
+
+  # Custom config + no RViz
+  ros2 launch rtc_digital_twin digital_twin.launch.py \
+      robot_description_package:=ur5e_description \
+      robot_description_path:=robots/ur5e/urdf/ur5e.urdf \
+      config_file:=/path/to/my_config.yaml \
+      use_rviz:=false
 """
 
 import os
+import subprocess
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
-from launch.substitutions import (
-    Command,
-    FindExecutable,
-    LaunchConfiguration,
-    PathJoinSubstitution,
-)
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
-from launch_ros.substitutions import FindPackageShare
 
 
-def generate_launch_description():
-    # ── Paths ────────────────────────────────────────────────────────────
-    description_share = FindPackageShare('ur5e_description')
-    digital_twin_share = FindPackageShare('rtc_digital_twin')
+def launch_setup(context, *args, **kwargs):
+    # ── Resolve robot description ─────────────────────────────────────────
+    desc_file = LaunchConfiguration('robot_description_file').perform(context)
+    desc_pkg = LaunchConfiguration('robot_description_package').perform(context)
+    desc_path = LaunchConfiguration('robot_description_path').perform(context)
 
-    urdf_xacro_path = PathJoinSubstitution([
-        description_share, 'robots', 'ur5e', 'urdf', 'ur5e_with_hand.urdf.xacro',
-    ])
+    if desc_file:
+        urdf_path = desc_file
+    elif desc_pkg and desc_path:
+        pkg_share = get_package_share_directory(desc_pkg)
+        urdf_path = os.path.join(pkg_share, desc_path)
+    else:
+        raise RuntimeError(
+            'Must provide robot_description_file OR '
+            'robot_description_package + robot_description_path')
 
-    config_yaml_path = PathJoinSubstitution([
-        digital_twin_share, 'config', 'digital_twin.yaml',
-    ])
+    if not os.path.isfile(urdf_path):
+        raise RuntimeError(f'Robot description file not found: {urdf_path}')
 
-    rviz_config_path = PathJoinSubstitution([
-        digital_twin_share, 'config', 'digital_twin.rviz',
-    ])
+    # ── Process xacro or read URDF directly ───────────────────────────────
+    if urdf_path.endswith('.xacro'):
+        robot_description = subprocess.check_output(
+            ['xacro', urdf_path], text=True)
+    else:
+        with open(urdf_path, 'r') as f:
+            robot_description = f.read()
 
-    # ── Launch arguments ─────────────────────────────────────────────────
-    declare_use_rviz = DeclareLaunchArgument(
-        'use_rviz', default_value='true',
-        description='Launch RViz2 with pre-configured display',
-    )
-    declare_display_rate = DeclareLaunchArgument(
-        'display_rate', default_value='60.0',
-        description='RViz display refresh rate (Hz)',
-    )
-    declare_enable_hand = DeclareLaunchArgument(
-        'enable_hand', default_value='true',
-        description='Enable hand visualization',
-    )
+    # ── Config file ───────────────────────────────────────────────────────
+    config_file = LaunchConfiguration('config_file').perform(context)
+    if not config_file:
+        config_file = os.path.join(
+            get_package_share_directory('rtc_digital_twin'),
+            'config', 'digital_twin.yaml')
 
-    use_rviz = LaunchConfiguration('use_rviz')
-    display_rate = LaunchConfiguration('display_rate')
-    enable_hand = LaunchConfiguration('enable_hand')
+    # ── RViz config ───────────────────────────────────────────────────────
+    rviz_config = LaunchConfiguration('rviz_config').perform(context)
+    if not rviz_config:
+        rviz_config = os.path.join(
+            get_package_share_directory('rtc_digital_twin'),
+            'config', 'digital_twin.rviz')
 
-    # ── xacro → URDF string ─────────────────────────────────────────────
-    robot_description_content = Command([
-        FindExecutable(name='xacro'), ' ', urdf_xacro_path,
-    ])
+    # ── Display rate override ─────────────────────────────────────────────
+    display_rate = LaunchConfiguration('display_rate').perform(context)
+    dt_overrides = {}
+    if display_rate:
+        dt_overrides['display_rate'] = float(display_rate)
 
-    # ── robot_state_publisher ────────────────────────────────────────────
+    # ── robot_state_publisher ─────────────────────────────────────────────
     robot_state_publisher_node = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
         namespace='digital_twin',
         parameters=[{
-            'robot_description': ParameterValue(robot_description_content, value_type=str),
+            'robot_description': robot_description,
             'publish_frequency': 60.0,
         }],
         remappings=[
@@ -86,36 +98,65 @@ def generate_launch_description():
         output='screen',
     )
 
-    # ── digital_twin_node ────────────────────────────────────────────────
+    # ── digital_twin_node ─────────────────────────────────────────────────
+    dt_params = [
+        config_file,
+        {'robot_description': robot_description},
+    ]
+    if dt_overrides:
+        dt_params.append(dt_overrides)
+
     digital_twin_node = Node(
         package='rtc_digital_twin',
         executable='digital_twin_node',
         name='digital_twin_node',
-        parameters=[
-            config_yaml_path,
-            {
-                'display_rate': display_rate,
-                'enable_hand': enable_hand,
-            },
-        ],
+        parameters=dt_params,
         output='screen',
     )
 
-    # ── rviz2 (conditional) ──────────────────────────────────────────────
+    # ── rviz2 (conditional) ───────────────────────────────────────────────
+    use_rviz = LaunchConfiguration('use_rviz')
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
         name='rviz2',
-        arguments=['-d', rviz_config_path],
+        arguments=['-d', rviz_config],
         condition=IfCondition(use_rviz),
         output='screen',
     )
 
+    return [robot_state_publisher_node, digital_twin_node, rviz_node]
+
+
+def generate_launch_description():
     return LaunchDescription([
-        declare_use_rviz,
-        declare_display_rate,
-        declare_enable_hand,
-        robot_state_publisher_node,
-        digital_twin_node,
-        rviz_node,
+        DeclareLaunchArgument(
+            'robot_description_file', default_value='',
+            description='Absolute path to URDF/xacro file',
+        ),
+        DeclareLaunchArgument(
+            'robot_description_package', default_value='',
+            description='Package containing the robot description',
+        ),
+        DeclareLaunchArgument(
+            'robot_description_path', default_value='',
+            description='Relative path within the description package',
+        ),
+        DeclareLaunchArgument(
+            'config_file', default_value='',
+            description='Path to digital_twin YAML config (empty = default)',
+        ),
+        DeclareLaunchArgument(
+            'use_rviz', default_value='true',
+            description='Launch RViz2',
+        ),
+        DeclareLaunchArgument(
+            'rviz_config', default_value='',
+            description='Path to RViz config file (empty = default)',
+        ),
+        DeclareLaunchArgument(
+            'display_rate', default_value='',
+            description='Override display_rate from YAML',
+        ),
+        OpaqueFunction(function=launch_setup),
     ])

@@ -4,9 +4,9 @@
   <name>rtc_digital_twin</name>
   <version>5.16.0</version>
   <description>
-    Digital Twin RViz2 visualization for UR5e + Custom Hand.
-    Subscribes to /joint_states and /hand/joint_states, publishes
-    combined joint states at 60Hz for robot_state_publisher + RViz2.
+    Generalized Digital Twin RViz2 visualization.
+    Subscribes to configurable JointState topics, publishes combined
+    state for robot_state_publisher + RViz2. Works with any URDF/xacro.
   </description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
@@ -19,7 +19,6 @@
   <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>builtin_interfaces</exec_depend>
-  <exec_depend>ur5e_description</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>rviz2</exec_depend>
   <exec_depend>xacro</exec_depend>
