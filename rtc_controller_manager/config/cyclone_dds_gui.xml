@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  cyclone_dds_gui.xml — CycloneDDS configuration for remote GUI nodes
+  (demo_controller_gui, motion_editor_gui)
+
+  Ensures cross-version compatibility between Jazzy (24.04) GUI and
+  Humble (22.04) robot nodes by:
+  1. Disabling SharedMemory (cross-machine, not applicable)
+  2. Setting permissive standards conformance for CDR encoding tolerance
+-->
+<CycloneDDS>
+  <Domain>
+    <General>
+      <Interfaces>
+        <NetworkInterface autodetermine="true" multicast="default"/>
+      </Interfaces>
+    </General>
+
+    <SharedMemory>
+      <Enable>false</Enable>
+    </SharedMemory>
+
+    <Compatibility>
+      <StandardsConformance>permissive</StandardsConformance>
+    </Compatibility>
+
+    <Tracing>
+      <Verbosity>warning</Verbosity>
+    </Tracing>
+  </Domain>
+</CycloneDDS>

@@ -15,6 +15,14 @@
       </Interfaces>
     </General>
 
+    <SharedMemory>
+      <Enable>false</Enable>
+    </SharedMemory>
+
+    <Compatibility>
+      <StandardsConformance>permissive</StandardsConformance>
+    </Compatibility>
+
     <Tracing>
       <Verbosity>warning</Verbosity>
     </Tracing>
