@@ -5,16 +5,12 @@ mujoco_sim.launch.py — MuJoCo 시뮬레이션 런치 파일
 기존 실제 로봇 런치(ur_control.launch.py)와 동일한 ROS2 토픽 구조를 사용하므로
 rt_controller 노드를 수정 없이 그대로 실행합니다.
 
-시뮬레이션 모드:
-  free_run  — 최대 속도로 물리 진행 (알고리즘 검증, 궤적 생성)
-  sync_step — 제어기 명령 1회 수신 후 1 step 진행 (연산 시간 직접 측정)
+시뮬레이션:
+  Synchronous loop — state 발행 → command 대기 → step → throttle(max_rtf)
 
 사용법:
   # 기본 (YAML 설정 사용)
   ros2 launch rtc_mujoco_sim mujoco_sim.launch.py
-
-  # sync_step 모드로 오버라이드
-  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step
 
   # Headless 모드 (디스플레이 없는 환경)
   ros2 launch rtc_mujoco_sim mujoco_sim.launch.py enable_viewer:=false
@@ -141,20 +137,10 @@ def launch_setup(context, *args, **kwargs):
     if model_path != '':
         sim_overrides['model_path'] = model_path
 
-    sim_mode = LaunchConfiguration('sim_mode').perform(context)
-    if sim_mode != '':
-        sim_overrides['sim_mode'] = sim_mode
-
     enable_viewer = LaunchConfiguration('enable_viewer').perform(context)
     if enable_viewer != '':
-        # Convert string to bool
         sim_overrides['enable_viewer'] = enable_viewer.lower() in (
             'true', '1', 'yes')
-
-    publish_decimation = LaunchConfiguration(
-        'publish_decimation').perform(context)
-    if publish_decimation != '':
-        sim_overrides['publish_decimation'] = int(publish_decimation)
 
     sync_timeout_ms = LaunchConfiguration('sync_timeout_ms').perform(context)
     if sync_timeout_ms != '':
@@ -207,6 +193,9 @@ def launch_setup(context, *args, **kwargs):
 
     # 세션 디렉토리를 log_dir로 전달 (rt_controller가 session_dir 내에서 로깅)
     ctrl_overrides['log_dir'] = session_dir
+
+    # Simulation sync: CV-based wakeup for rt_loop
+    ctrl_overrides['use_sim_time_sync'] = True
 
     # use_fake_hand launch argument → rt_controller 파라미터로 전달
     use_fake_hand = LaunchConfiguration('use_fake_hand').perform(context)
@@ -344,16 +333,6 @@ def generate_launch_description():
         ),
     )
 
-    sim_mode_arg = DeclareLaunchArgument(
-        'sim_mode',
-        default_value='',
-        description=(
-            'Override sim_mode from YAML. '
-            'Empty → use YAML value (free_run). '
-            'Options: "free_run" (max speed) or "sync_step" (1:1 sync)'
-        ),
-    )
-
     enable_viewer_arg = DeclareLaunchArgument(
         'enable_viewer',
         default_value='',
@@ -364,23 +343,13 @@ def generate_launch_description():
         ),
     )
 
-    publish_decimation_arg = DeclareLaunchArgument(
-        'publish_decimation',
-        default_value='',
-        description=(
-            'Override publish_decimation from YAML. '
-            'Empty → use YAML value (1). '
-            'free_run only: publish /joint_states every N physics steps'
-        ),
-    )
-
     sync_timeout_ms_arg = DeclareLaunchArgument(
         'sync_timeout_ms',
         default_value='',
         description=(
             'Override sync_timeout_ms from YAML. '
             'Empty → use YAML value (50.0). '
-            'sync_step only: command wait timeout in milliseconds'
+            'Command wait timeout per step in milliseconds'
         ),
     )
 
@@ -452,9 +421,7 @@ def generate_launch_description():
     return LaunchDescription([
         # Arguments
         model_path_arg,
-        sim_mode_arg,
         enable_viewer_arg,
-        publish_decimation_arg,
         sync_timeout_ms_arg,
         max_rtf_arg,
         kp_arg,

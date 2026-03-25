@@ -10,13 +10,8 @@ mujoco_simulator:
     # ── Model ────────────────────────────────────────────────────────────────
     model_path: "robots/ur5e/mjcf/scene_with_hand.xml"
 
-    # ── Simulation mode ───────────────────────────────────────────────────────
-    sim_mode: "sync_step"
-
-    # free_run only: publish state every N physics steps.
-    publish_decimation: 1
-
-    # sync_step only: max time to wait for a controller command (ms).
+    # ── Sync timeout ─────────────────────────────────────────────────────────
+    # Max time to wait for a controller command per step (ms).
     sync_timeout_ms: 50.0
 
     # ── Max Real-Time Factor ──────────────────────────────────────────────────

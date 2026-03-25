@@ -490,12 +490,11 @@ bool MuJoCoSimulator::Initialize() noexcept {
 
   fprintf(stdout,
           "[MuJoCoSimulator] Loaded '%s'  nq=%d nv=%d nu=%d  groups=%zu"
-          "  command_joints=%d  dt=%.4f s  mode=%s\n",
+          "  command_joints=%d  dt=%.4f s\n",
           cfg_.model_path.c_str(),
           model_->nq, model_->nv, model_->nu,
           groups_.size(), total_cmd_joints,
-          xml_timestep_,
-          cfg_.mode == SimMode::kFreeRun ? "free_run" : "sync_step");
+          xml_timestep_);
 
   return true;
 }
@@ -505,11 +504,7 @@ bool MuJoCoSimulator::Initialize() noexcept {
 void MuJoCoSimulator::Start() noexcept {
   if (running_.exchange(true)) { return; }
 
-  if (cfg_.mode == SimMode::kFreeRun) {
-    sim_thread_ = std::jthread([this](std::stop_token st) { SimLoopFreeRun(st); });
-  } else {
-    sim_thread_ = std::jthread([this](std::stop_token st) { SimLoopSyncStep(st); });
-  }
+  sim_thread_ = std::jthread([this](std::stop_token st) { SimLoop(st); });
   if (cfg_.enable_viewer) {
     viewer_thread_ = std::jthread([this](std::stop_token st) { ViewerLoop(st); });
   }
@@ -537,7 +532,7 @@ void MuJoCoSimulator::SetCommand(std::size_t group_idx,
   if (!g.is_robot) return;
   { std::lock_guard lock(g.cmd_mutex); g.pending_cmd = cmd; }
   g.cmd_pending.store(true, std::memory_order_release);
-  if (cfg_.mode == SimMode::kSyncStep && g.is_primary) {
+  if (g.is_primary) {
     sync_cv_.notify_one();
   }
 }

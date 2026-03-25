@@ -1,6 +1,6 @@
 // ── mujoco_sim_loop.cpp ────────────────────────────────────────────────────────
-// Physics helpers (ReadState, PreparePhysicsStep, RTF, etc.) and both
-// simulation loops: SimLoopFreeRun and SimLoopSyncStep.
+// Physics helpers (ReadState, PreparePhysicsStep, RTF, etc.) and the
+// synchronous simulation loop (SimLoop).
 // Multi-group: iterates over robot groups for command/state/actuator ops.
 // ──────────────────────────────────────────────────────────────────────────────
 #include "rtc_mujoco_sim/mujoco_simulator.hpp"
@@ -228,71 +228,10 @@ void MuJoCoSimulator::HandleReset() noexcept {
   fprintf(stdout, "[MuJoCoSimulator] Reset to initial pose\n");
 }
 
-// ── SimLoopFreeRun ─────────────────────────────────────────────────────────────
+// ── SimLoop ─────────────────────────────────────────────────────────────────────
+// Synchronous simulation: publish state → wait for command → step → throttle.
 
-void MuJoCoSimulator::SimLoopFreeRun(std::stop_token stop) noexcept {
-  if (!model_ || !data_) { return; }
-
-  const auto decim = static_cast<uint64_t>(
-      cfg_.publish_decimation > 0 ? cfg_.publish_decimation : 1);
-  uint64_t step = 0;
-
-  const auto loop_start = std::chrono::steady_clock::now();
-  rtf_wall_start_      = loop_start;  rtf_sim_start_      = data_->time;
-  throttle_wall_start_ = loop_start;  throttle_sim_start_ = data_->time;
-  throttle_rtf_        = current_max_rtf_.load(std::memory_order_relaxed);
-
-  while (!stop.stop_requested() && running_.load()) {
-    // ── Pause (with step_once support) ────────────────────────────────────
-    if (paused_.load(std::memory_order_relaxed)) {
-      {
-        std::unique_lock lock(sync_mutex_);
-        sync_cv_.wait_for(lock, std::chrono::milliseconds(10), [this, &stop] {
-          return !paused_.load(std::memory_order_relaxed)
-              || step_once_.load(std::memory_order_relaxed)
-              || stop.stop_requested()
-              || !running_.load();
-        });
-      }
-      if (!step_once_.exchange(false, std::memory_order_acq_rel)) {
-        continue;
-      }
-    }
-    // ── Reset ─────────────────────────────────────────────────────────────
-    if (reset_requested_.exchange(false, std::memory_order_acq_rel)) {
-      HandleReset();
-      step = 0;
-      continue;
-    }
-    // ── Command (all robot groups) ────────────────────────────────────────
-    ApplyCommand();
-    // ── Physics step ──────────────────────────────────────────────────────
-    PreparePhysicsStep();
-    mj_step(model_, data_);
-    ClearContactForces();
-    ReadSolverStats();
-
-    ++step;
-    step_count_.store(step, std::memory_order_relaxed);
-    sim_time_sec_.store(data_->time, std::memory_order_relaxed);
-
-    if (step % decim == 0) {
-      ReadState();
-      InvokeStateCallback();
-    }
-    UpdateRtf(step);
-    ThrottleIfNeeded();
-    if ((step % 8 == 0) && cfg_.enable_viewer) { UpdateVizBuffer(); }
-  }
-
-  fprintf(stdout,
-          "[MuJoCoSimulator] FreeRun exited — steps=%lu  sim_time=%.3f s\n",
-          static_cast<unsigned long>(step_count_.load()), sim_time_sec_.load());
-}
-
-// ── SimLoopSyncStep ────────────────────────────────────────────────────────────
-
-void MuJoCoSimulator::SimLoopSyncStep(std::stop_token stop) noexcept {
+void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
   if (!model_ || !data_) { return; }
 
   const auto timeout = std::chrono::milliseconds(
@@ -369,7 +308,7 @@ void MuJoCoSimulator::SimLoopSyncStep(std::stop_token stop) noexcept {
   }
 
   fprintf(stdout,
-          "[MuJoCoSimulator] SyncStep exited — steps=%lu  sim_time=%.3f s\n",
+          "[MuJoCoSimulator] SimLoop exited — steps=%lu  sim_time=%.3f s\n",
           static_cast<unsigned long>(step_count_.load()), sim_time_sec_.load());
 }
 

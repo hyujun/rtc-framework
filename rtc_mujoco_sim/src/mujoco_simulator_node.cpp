@@ -51,10 +51,10 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     sim_->Start();
 
     RCLCPP_INFO(get_logger(),
-                "MuJoCo simulator ready — model: %s  mode: %s  viewer: %s  groups: %zu",
-                model_path_.c_str(), sim_mode_.c_str(),
+                "MuJoCo simulator ready — model: %s  viewer: %s  groups: %zu  max_rtf: %.1f",
+                model_path_.c_str(),
                 enable_viewer_ ? "ON" : "OFF",
-                sim_->NumGroups());
+                sim_->NumGroups(), max_rtf_);
   }
 
   ~MuJoCoSimulatorNode() override {
@@ -66,8 +66,6 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   void DeclareAndLoadParameters() {
     declare_parameter("model_path", std::string(""));
     declare_parameter("enable_viewer", true);
-    declare_parameter("sim_mode", std::string("free_run"));
-    declare_parameter("publish_decimation", 1);
     declare_parameter("sync_timeout_ms", 50.0);
     declare_parameter("max_rtf", 0.0);
     declare_parameter("control_rate", 500.0);
@@ -84,8 +82,6 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
 
     model_path_          = get_parameter("model_path").as_string();
     enable_viewer_       = get_parameter("enable_viewer").as_bool();
-    sim_mode_            = get_parameter("sim_mode").as_string();
-    publish_decimation_  = static_cast<int>(get_parameter("publish_decimation").as_int());
     sync_timeout_ms_     = get_parameter("sync_timeout_ms").as_double();
     max_rtf_             = get_parameter("max_rtf").as_double();
     control_rate_        = get_parameter("control_rate").as_double();
@@ -154,22 +150,9 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
 
   // ── Simulator creation ───────────────────────────────────────────────────────
   void CreateSimulator() {
-    const urtc::MuJoCoSimulator::SimMode mode =
-        (sim_mode_ == "sync_step")
-            ? urtc::MuJoCoSimulator::SimMode::kSyncStep
-            : urtc::MuJoCoSimulator::SimMode::kFreeRun;
-
-    if (sim_mode_ != "free_run" && sim_mode_ != "sync_step") {
-      RCLCPP_WARN(get_logger(),
-                  "Unknown sim_mode '%s' — defaulting to 'free_run'",
-                  sim_mode_.c_str());
-    }
-
     urtc::MuJoCoSimulator::Config cfg{
         .model_path          = model_path_,
-        .mode                = mode,
         .enable_viewer       = enable_viewer_,
-        .publish_decimation  = publish_decimation_,
         .sync_timeout_ms     = sync_timeout_ms_,
         .max_rtf             = max_rtf_,
         .physics_timestep    = physics_timestep_,
@@ -389,8 +372,6 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   // Parameters
   std::string model_path_;
   bool        enable_viewer_{true};
-  std::string sim_mode_{"free_run"};
-  int         publish_decimation_{1};
   double      sync_timeout_ms_{50.0};
   double      max_rtf_{0.0};
   double      control_rate_{500.0};

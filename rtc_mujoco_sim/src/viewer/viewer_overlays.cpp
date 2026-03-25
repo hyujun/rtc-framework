@@ -74,8 +74,7 @@ void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp,
       "Integrator\nSolver\nIterations\nResidual");
   std::snprintf(values, sizeof(values),
       "%s\n%s\n%.1fx\n%s\n%.2f s\n%lu\n%d/%s\n%s\n%s\n%s\n%s\n%d/%d\n%.2e",
-      vs.sim->GetSimMode() == MuJoCoSimulator::SimMode::kFreeRun
-          ? "free_run" : "sync_step",
+      "sync",
       cam_str,
       static_cast<double>(cur_rtf), limit_str,
       vs.sim->SimTimeSec(),

@@ -110,10 +110,9 @@ struct JointGroup {
 //
 // Thread-safe wrapper around a MuJoCo physics model with multi-group support.
 //
-// Simulation modes:
-//   kFreeRun  — advances mj_step() as fast as possible (up to max_rtf).
-//   kSyncStep — publishes state, waits for one command, steps once.
-//               Step latency ≈ controller Compute() time.
+// Simulation loop:
+//   Publishes state, waits for one command, steps once, throttles by max_rtf.
+//   Step latency ≈ controller Compute() time + DDS round-trip.
 //
 // Joint groups (robot_response / fake_response):
 //   Each group has independent command/state buffers, control mode, and topics.
@@ -126,19 +125,12 @@ struct JointGroup {
 //
 class MuJoCoSimulator {
  public:
-  enum class SimMode {
-    kFreeRun,   // Maximum speed (throttled by max_rtf)
-    kSyncStep,  // 1:1 synchronised with controller commands
-  };
-
   using StateCallback = JointGroup::StateCallback;
 
   struct Config {
     std::string model_path;
-    SimMode     mode{SimMode::kFreeRun};
     bool        enable_viewer{true};
-    int         publish_decimation{1};   // kFreeRun: publish every N steps
-    double      sync_timeout_ms{50.0};   // kSyncStep: command wait timeout
+    double      sync_timeout_ms{50.0};   // command wait timeout
     double      max_rtf{0.0};           // 0.0 = unlimited
     double      physics_timestep{0.0};
 
@@ -291,8 +283,6 @@ class MuJoCoSimulator {
     sync_cv_.notify_all();
   }
 
-  [[nodiscard]] SimMode GetSimMode() const noexcept { return cfg_.mode; }
-
   void EnableGravity(bool enable) noexcept {
     if (gravity_locked_by_servo_.load(std::memory_order_relaxed)) {
       return;
@@ -425,8 +415,7 @@ class MuJoCoSimulator {
   void PreparePhysicsStep() noexcept;
   void ClearContactForces() noexcept;
 
-  void SimLoopFreeRun(std::stop_token stop) noexcept;
-  void SimLoopSyncStep(std::stop_token stop) noexcept;
+  void SimLoop(std::stop_token stop) noexcept;
   void ViewerLoop(std::stop_token stop) noexcept;
 };
 

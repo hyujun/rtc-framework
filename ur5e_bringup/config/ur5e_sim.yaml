@@ -15,6 +15,10 @@
     # ── Auto-hold position ────────────────────────────────────────────────────
     auto_hold_position: true # Auto-target current position when no external goal
 
+    # ── Simulation sync ──────────────────────────────────────────────────────
+    use_sim_time_sync: true       # CV-based wakeup (sim), false = clock_nanosleep (real)
+    sim_sync_timeout_sec: 5.0     # Shutdown if no state received within timeout
+
     # ── E-STOP configuration (relaxed for simulation) ────────────────────────
     enable_estop: false # Disabled for simulation
     device_timeout_names: ["ur5e", "hand"]

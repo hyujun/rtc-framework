@@ -6,9 +6,6 @@ Usage:
   # Default (uses YAML config)
   ros2 launch ur5e_bringup sim.launch.py
 
-  # sync_step mode override
-  ros2 launch ur5e_bringup sim.launch.py sim_mode:=sync_step
-
   # Headless mode (no display)
   ros2 launch ur5e_bringup sim.launch.py enable_viewer:=false
 
@@ -24,7 +21,7 @@ Usage:
 
 Nodes launched:
   1. mujoco_simulator_node  — MuJoCo physics simulator (replaces UR driver)
-  2. rt_controller          — 500Hz controller (unchanged)
+  2. rt_controller          — 500Hz controller (CV-based wakeup in sim mode)
 """
 
 import os
@@ -112,19 +109,10 @@ def launch_setup(context, *args, **kwargs):
     if model_path != '':
         sim_overrides['model_path'] = model_path
 
-    sim_mode = LaunchConfiguration('sim_mode').perform(context)
-    if sim_mode != '':
-        sim_overrides['sim_mode'] = sim_mode
-
     enable_viewer = LaunchConfiguration('enable_viewer').perform(context)
     if enable_viewer != '':
         sim_overrides['enable_viewer'] = enable_viewer.lower() in (
             'true', '1', 'yes')
-
-    publish_decimation = LaunchConfiguration(
-        'publish_decimation').perform(context)
-    if publish_decimation != '':
-        sim_overrides['publish_decimation'] = int(publish_decimation)
 
     sync_timeout_ms = LaunchConfiguration('sync_timeout_ms').perform(context)
     if sync_timeout_ms != '':
@@ -268,16 +256,6 @@ def generate_launch_description():
         ),
     )
 
-    sim_mode_arg = DeclareLaunchArgument(
-        'sim_mode',
-        default_value='',
-        description=(
-            'Override sim_mode from YAML. '
-            'Empty -> use YAML value (free_run). '
-            'Options: "free_run" (max speed) or "sync_step" (1:1 sync)'
-        ),
-    )
-
     enable_viewer_arg = DeclareLaunchArgument(
         'enable_viewer',
         default_value='',
@@ -288,23 +266,13 @@ def generate_launch_description():
         ),
     )
 
-    publish_decimation_arg = DeclareLaunchArgument(
-        'publish_decimation',
-        default_value='',
-        description=(
-            'Override publish_decimation from YAML. '
-            'Empty -> use YAML value (1). '
-            'free_run only: publish /joint_states every N physics steps'
-        ),
-    )
-
     sync_timeout_ms_arg = DeclareLaunchArgument(
         'sync_timeout_ms',
         default_value='',
         description=(
             'Override sync_timeout_ms from YAML. '
             'Empty -> use YAML value (50.0). '
-            'sync_step only: command wait timeout in milliseconds'
+            'Command wait timeout per step in milliseconds'
         ),
     )
 
@@ -367,9 +335,7 @@ def generate_launch_description():
     return LaunchDescription([
         # Arguments
         model_path_arg,
-        sim_mode_arg,
         enable_viewer_arg,
-        publish_decimation_arg,
         sync_timeout_ms_arg,
         max_rtf_arg,
         kp_arg,
