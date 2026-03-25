@@ -14,7 +14,6 @@ import math
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray, Int32, Bool
-from sensor_msgs.msg import JointState
 from rtc_msgs.msg import GuiPosition, RobotTarget
 import tkinter as tk
 from tkinter import ttk, font as tkfont
@@ -108,8 +107,6 @@ class DemoControllerGUI(Node):
 
         # Subscriptions
         self.current_positions = [0.0] * NUM_JOINTS
-        self.create_subscription(JointState, '/joint_states',
-                                 self._joint_state_cb, 10)
         self.current_task_positions = [0.0] * 6
         self.create_subscription(GuiPosition, '/ur5e/gui_position',
                                  self._gui_pos_cb, 10)
@@ -122,10 +119,10 @@ class DemoControllerGUI(Node):
         self.create_subscription(Float64MultiArray, '/ur5e/current_gains',
                                  self._current_gains_cb, 10)
 
-        # Hand state subscription
+        # Hand state subscription via gui_position topic
         self.current_hand_positions = [0.0] * NUM_HAND_MOTORS
-        self.create_subscription(JointState, '/hand/joint_states',
-                                 self._hand_state_cb, 10)
+        self.create_subscription(GuiPosition, '/hand/gui_position',
+                                 self._hand_gui_pos_cb, 10)
 
         # 5 Hz refresh timer
         self._refresh_timer = self.create_timer(0.2, self._refresh_current_display)
@@ -138,20 +135,18 @@ class DemoControllerGUI(Node):
 
     # ---- ROS callbacks -------------------------------------------------------
 
-    def _joint_state_cb(self, msg: JointState):
-        if len(msg.position) >= NUM_JOINTS:
-            self.current_positions = list(msg.position[:NUM_JOINTS])
-
     def _gui_pos_cb(self, msg: GuiPosition):
+        if len(msg.joint_positions) >= NUM_JOINTS:
+            self.current_positions = list(msg.joint_positions[:NUM_JOINTS])
         if len(msg.task_positions) >= 6:
             self.current_task_positions = list(msg.task_positions[:6])
 
+    def _hand_gui_pos_cb(self, msg: GuiPosition):
+        if len(msg.joint_positions) >= NUM_HAND_MOTORS:
+            self.current_hand_positions = list(msg.joint_positions[:NUM_HAND_MOTORS])
+
     def _estop_cb(self, msg: Bool):
         self.estop_active = msg.data
-
-    def _hand_state_cb(self, msg: JointState):
-        if len(msg.position) >= NUM_HAND_MOTORS:
-            self.current_hand_positions = list(msg.position[:NUM_HAND_MOTORS])
 
     def _current_gains_cb(self, msg: Float64MultiArray):
         if not self._pending_load_gains:

@@ -16,7 +16,6 @@ from PyQt5.QtGui import QBrush, QColor, QFont
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool
 from rtc_msgs.msg import GuiPosition, RobotTarget
 
@@ -1448,16 +1447,13 @@ class ROSNode(Node):
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
 
         # ── Subscribers ───────────────────────────────────────────────
-        self.joint_sub = self.create_subscription(
-            JointState, '/joint_states', self.joint_callback, qos)
-
-        self.hand_sub = self.create_subscription(
-            JointState, '/hand/joint_states',
-            self.hand_callback, qos)
-
         self.task_pos_sub = self.create_subscription(
             GuiPosition, '/ur5e/gui_position',
             self.gui_pos_callback, qos)
+
+        self.hand_gui_pos_sub = self.create_subscription(
+            GuiPosition, '/hand/gui_position',
+            self.hand_gui_pos_callback, qos)
 
         self.estop_sub = self.create_subscription(
             Bool, '/system/estop_status', self.estop_callback, qos)
@@ -1471,19 +1467,15 @@ class ROSNode(Node):
 
         self.get_logger().info("Motion Editor ROS Node started")
 
-    def joint_callback(self, msg):
-        if len(msg.position) >= NUM_JOINTS:
-            q = np.array(msg.position[:NUM_JOINTS])
-            self.gui.update_joints(q)
-
-    def hand_callback(self, msg):
-        if len(msg.position) >= NUM_HAND_MOTORS:
-            h = np.array(msg.position[:NUM_HAND_MOTORS])
-            self.gui.update_hand_state(h)
-
     def gui_pos_callback(self, msg: GuiPosition):
+        if len(msg.joint_positions) >= NUM_JOINTS:
+            self.gui.update_joints(np.array(msg.joint_positions[:NUM_JOINTS]))
         if len(msg.task_positions) >= 6:
             self.gui.update_task_position(np.array(msg.task_positions[:6]))
+
+    def hand_gui_pos_callback(self, msg: GuiPosition):
+        if len(msg.joint_positions) >= NUM_HAND_MOTORS:
+            self.gui.update_hand_state(np.array(msg.joint_positions[:NUM_HAND_MOTORS]))
 
     def estop_callback(self, msg):
         self.gui.update_estop(msg.data)
