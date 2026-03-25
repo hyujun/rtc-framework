@@ -747,23 +747,20 @@ done
 
 **원인 3**: DDS 스레드가 RT 코어 사용
 ```bash
-# CycloneDDS의 경우 설정 파일 생성
-cat > ~/cyclonedds.xml << 'EOF'
-<CycloneDDS>
-  <Domain>
-    <Tracing>
-      <Verbosity>warning</Verbosity>
-    </Tracing>
-  </Domain>
-  <Internal>
-    <Threads>
-      <ThreadAffinityMask>0x3</ThreadAffinityMask>  <!-- Core 0-1 -->
-    </Threads>
-  </Internal>
-</CycloneDDS>
-EOF
+# CycloneDDS 0.11+ (Jazzy): <Internal><Threads> XML은 더 이상 지원되지 않음.
+# 대신 taskset으로 DDS 스레드를 비-RT 코어에 고정 (robot.launch.py에서 자동 처리).
+# 수동 확인:
+PID=$(pgrep -nf "rt_controller")
+for TID in $(ls /proc/$PID/task/); do
+  COMM=$(cat /proc/$PID/task/$TID/comm 2>/dev/null)
+  POLICY=$(chrt -p $TID 2>/dev/null | grep -o "SCHED_FIFO" || echo "OTHER")
+  CPUS=$(taskset -cp $TID 2>/dev/null | awk -F: '{print $2}')
+  echo "  TID=$TID  comm=$COMM  policy=$POLICY  cpus=$CPUS"
+done
 
-export CYCLONEDDS_URI=file://$HOME/cyclonedds.xml
+# CycloneDDS XML 설정은 rtc_controller_manager/config/cyclone_dds.xml 참조
+# (멀티캐스트 비활성화, 소켓 버퍼 확대, write batching 등 성능 최적화 포함)
+export CYCLONEDDS_URI=file://$(ros2 pkg prefix rtc_controller_manager)/share/rtc_controller_manager/config/cyclone_dds.xml
 ```
 
 ### NVIDIA DKMS 빌드 실패 (RT 커널)
@@ -870,18 +867,29 @@ GRUB_CMDLINE_LINUX_DEFAULT="quiet splash isolcpus=1-3 nohz_full=1-3 rcu_nocbs=1-
 #### CycloneDDS (권장)
 ```bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-export CYCLONEDDS_URI=file://$HOME/cyclonedds.xml
+export CYCLONEDDS_URI=file://$(ros2 pkg prefix rtc_controller_manager)/share/rtc_controller_manager/config/cyclone_dds.xml
 ```
 
-**`cyclonedds.xml`**:
+**`cyclone_dds.xml`** 주요 최적화 항목:
 ```xml
 <CycloneDDS>
   <Domain>
+    <General>
+      <!-- 단일 호스트: 멀티캐스트 비활성화로 IGMP 오버헤드 제거 -->
+      <AllowMulticast>false</AllowMulticast>
+    </General>
     <Internal>
-      <Threads>
-        <ThreadAffinityMask>0x3</ThreadAffinityMask>  <!-- Core 0-1 -->
-      </Threads>
+      <!-- Write batching: 8μs 간격으로 시스콜 횟수 감소 -->
+      <WriteBatchFlushInterval>8 us</WriteBatchFlushInterval>
+      <!-- NACK 지연 최소화: 100ms → 10ms -->
+      <NackDelay>10 ms</NackDelay>
+      <!-- 소켓 수신 버퍼: 8MB (sysctl rmem_max 이하) -->
+      <SocketReceiveBufferSize>8 MB</SocketReceiveBufferSize>
+      <!-- 동기 전달: subscriber 콜백 지연 최소화 -->
+      <SynchronousDeliveryLatencyBound>inf</SynchronousDeliveryLatencyBound>
     </Internal>
+    <!-- NOTE: CycloneDDS 0.11+ (Jazzy)에서 <Internal><Threads> 제거됨.
+         DDS 스레드 affinity는 taskset으로 처리 (robot.launch.py 참조). -->
   </Domain>
 </CycloneDDS>
 ```
@@ -928,10 +936,10 @@ sudo sysctl -p /etc/sysctl.d/99-realtime.conf
 ```bash
 # UDP 버퍼 크기 증가 (ROS 2 DDS + 핸드 UDP 통신)
 # setup_udp_optimization.sh에서 자동 설정됨 (/etc/sysctl.d/99-ros2-udp.conf)
-sudo sysctl -w net.core.rmem_max=2147483647
-sudo sysctl -w net.core.rmem_default=2147483647
+sudo sysctl -w net.core.rmem_max=2147483647     # DDS가 setsockopt으로 필요한 만큼 확보
+sudo sysctl -w net.core.rmem_default=212992      # Linux 기본값 유지 (모든 소켓에 거대 버퍼 할당 방지)
 sudo sysctl -w net.core.wmem_max=2147483647
-sudo sysctl -w net.core.wmem_default=2147483647
+sudo sysctl -w net.core.wmem_default=212992
 sudo sysctl -w net.core.netdev_max_backlog=5000
 ```
 
