@@ -79,7 +79,33 @@ def _launch_setup(context):
             'initial_joint_controller': 'forward_position_controller',
         }.items()
     )
-    return [ur_driver_launch]
+    # ── Activate forward_position_controller (mock hardware only) ────────────
+    # For real robots, the UR driver's controller_stopper_node handles activation
+    # via initial_joint_controller when play is pressed on the teach pendant.
+    # For mock hardware, there is no controller_stopper, so we must switch manually.
+    actions = [ur_driver_launch]
+    if mock_enabled == 'true':
+        activate_fwd_controller = TimerAction(
+            period=3.0,
+            actions=[
+                ExecuteProcess(
+                    cmd=[
+                        'bash', '-c',
+                        'echo "[RT] Switching to forward_position_controller (mock mode)..."; '
+                        'ros2 service call /controller_manager/switch_controller '
+                        '  controller_manager_msgs/srv/SwitchController '
+                        '  "{activate_controllers: [forward_position_controller], '
+                        '    deactivate_controllers: [scaled_joint_trajectory_controller], '
+                        '    strictness: 1}" '
+                        '  && echo "[RT] forward_position_controller activated" '
+                        '  || echo "[RT] WARNING: controller switch failed"'
+                    ],
+                    output='screen',
+                )
+            ]
+        )
+        actions.append(activate_fwd_controller)
+    return actions
 
 
 def generate_launch_description():
@@ -202,31 +228,6 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('use_cpu_affinity'))
     )
 
-    # ── Activate forward_position_controller for rt_controller command bridge ─
-    # The rt_controller publishes to /forward_position_controller/commands.
-    # UR driver defaults to scaled_joint_trajectory_controller; switch so that
-    # position commands reach the hardware interface (critical for mock hardware).
-    # Use ros2 service call (not ros2 control) since ros2controlcli may not be installed.
-    activate_fwd_controller = TimerAction(
-        period=3.0,
-        actions=[
-            ExecuteProcess(
-                cmd=[
-                    'bash', '-c',
-                    'echo "[RT] Switching to forward_position_controller..."; '
-                    'ros2 service call /controller_manager/switch_controller '
-                    '  controller_manager_msgs/srv/SwitchController '
-                    '  "{activate_controllers: [forward_position_controller], '
-                    '    deactivate_controllers: [scaled_joint_trajectory_controller], '
-                    '    strictness: 1}" '
-                    '  && echo "[RT] forward_position_controller activated" '
-                    '  || echo "[RT] WARNING: controller switch failed"'
-                ],
-                output='screen',
-            )
-        ]
-    )
-
     # ── UR driver CPU pinning ─────────────────────────────────────────────────
     pin_ur_driver = TimerAction(
         period=3.0,
@@ -315,7 +316,6 @@ def generate_launch_description():
         set_cyclone_uri,
         enable_cpu_shield,
         ur_driver_launch_action,
-        activate_fwd_controller,
         pin_ur_driver,
         hand_udp_node,
         rt_controller_node,
