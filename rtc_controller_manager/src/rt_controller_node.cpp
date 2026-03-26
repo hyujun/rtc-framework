@@ -2005,7 +2005,9 @@ void RtControllerNode::LoadDeviceNameConfigs()
           for (int i = 0; i < nj; ++i) {
             const auto ui = static_cast<std::size_t>(i);
             if (yaml_to_urdf[ui] < 0) continue;
-            const auto uidx = yaml_to_urdf[ui] + 1;  // +1: skip universe joint
+            // urdf_joint_names already skips universe (built from j=1),
+            // so yaml_to_urdf[ui] is the direct index into q/v limit vectors.
+            const auto uidx = yaml_to_urdf[ui];
 
             if (!lim.position_lower.empty())
               lim.position_lower[ui] = std::max(lim.position_lower[ui],
@@ -2033,7 +2035,7 @@ void RtControllerNode::LoadDeviceNameConfigs()
           for (int i = 0; i < nj; ++i) {
             const auto ui = static_cast<std::size_t>(i);
             if (yaml_to_urdf[ui] < 0) continue;
-            const auto uidx = yaml_to_urdf[ui] + 1;
+            const auto uidx = yaml_to_urdf[ui];
             lim.position_lower[ui] = model.lowerPositionLimit[uidx];
             lim.position_upper[ui] = model.upperPositionLimit[uidx];
             lim.max_velocity[ui]   = model.velocityLimit[uidx];
