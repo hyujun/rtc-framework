@@ -103,14 +103,11 @@ class DigitalTwinNode(Node):
         for i in range(num_sources):
             prefix = f'source_{i}'
             self.declare_parameter(f'{prefix}.topic', '')
-            self.declare_parameter(
-                f'{prefix}.joint_names',
-                rclpy.Parameter.Type.STRING_ARRAY,
-            )
+            self.declare_parameter(f'{prefix}.joint_names', [''])
 
             topic = self.get_parameter(f'{prefix}.topic').value
             raw = self.get_parameter(f'{prefix}.joint_names').value
-            joint_names = list(raw) if raw else []
+            joint_names = [n for n in (raw or []) if n]
 
             if not topic:
                 self.get_logger().warn(f'source_{i}.topic is empty, skipping')
@@ -135,10 +132,7 @@ class DigitalTwinNode(Node):
             if sensor_topic:
                 self.declare_parameter('sensor_viz.marker_topic',
                                        '/digital_twin/fingertip_markers')
-                self.declare_parameter(
-                    'sensor_viz.fingertip_names',
-                    rclpy.Parameter.Type.STRING_ARRAY,
-                )
+                self.declare_parameter('sensor_viz.fingertip_names', [''])
                 self.declare_parameter('sensor_viz.barometer_min', 0.0)
                 self.declare_parameter('sensor_viz.barometer_max', 1000.0)
                 self.declare_parameter('sensor_viz.barometer_sphere_min', 0.002)
@@ -148,7 +142,7 @@ class DigitalTwinNode(Node):
 
                 marker_topic = self.get_parameter('sensor_viz.marker_topic').value
                 raw_tips = self.get_parameter('sensor_viz.fingertip_names').value
-                fingertip_names = list(raw_tips) if raw_tips else []
+                fingertip_names = [n for n in (raw_tips or []) if n]
 
                 sensor_viz_config = {
                     'barometer_min': self.get_parameter(
