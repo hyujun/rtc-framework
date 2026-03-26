@@ -148,6 +148,7 @@ private:
   struct JointCommandPublisherEntry {
     rclcpp::Publisher<rtc_msgs::msg::JointCommand>::SharedPtr publisher;
     rtc_msgs::msg::JointCommand msg;  // pre-allocated
+    std::vector<int> reorder_map;     // config (joint_state_names) → command order
   };
   std::unordered_map<std::string, JointCommandPublisherEntry> joint_command_publishers_;
 

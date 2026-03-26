@@ -618,8 +618,26 @@ void RtControllerNode::CreatePublishers()
         {
           auto cfg_it = device_name_configs_.find(group_name);
           if (cfg_it != device_name_configs_.end()) {
-            jce.msg.joint_names = cfg_it->second.joint_command_names;
-            jce.msg.values.resize(cfg_it->second.joint_command_names.size(), 0.0);
+            const auto& state_names = cfg_it->second.joint_state_names;
+            const auto& cmd_names   = cfg_it->second.joint_command_names;
+            jce.msg.joint_names = cmd_names;
+            jce.msg.values.resize(cmd_names.size(), 0.0);
+            // Build reorder map: config (joint_state_names) → command order
+            if (!state_names.empty() && !cmd_names.empty()
+                && state_names != cmd_names) {
+              jce.reorder_map.resize(cmd_names.size(), -1);
+              for (std::size_t ci = 0; ci < cmd_names.size(); ++ci) {
+                for (std::size_t si = 0; si < state_names.size(); ++si) {
+                  if (cmd_names[ci] == state_names[si]) {
+                    jce.reorder_map[ci] = static_cast<int>(si);
+                    break;
+                  }
+                }
+              }
+              RCLCPP_INFO(get_logger(),
+                          "  [%s] kJointCommand reorder map built (%zu → %zu)",
+                          group_name.c_str(), state_names.size(), cmd_names.size());
+            }
           }
         }
         jce.msg.command_type = "position";
@@ -1519,9 +1537,19 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           jce.msg.header.stamp.sec = sec;
           jce.msg.header.stamp.nanosec = nsec;
           jce.msg.command_type = cmd_type_str;
-          for (int i = 0; i < nc
-                   && i < static_cast<int>(jce.msg.values.size()); ++i) {
-            jce.msg.values[i] = gc.commands[i];
+          const int n = std::min(nc, static_cast<int>(jce.msg.values.size()));
+          if (!jce.reorder_map.empty()) {
+            // Reorder from joint_state_names order → joint_command_names order
+            for (int i = 0; i < n; ++i) {
+              const int src = (i < static_cast<int>(jce.reorder_map.size()))
+                              ? jce.reorder_map[i] : -1;
+              jce.msg.values[i] = (src >= 0 && src < nc)
+                                  ? gc.commands[src] : 0.0;
+            }
+          } else {
+            for (int i = 0; i < n; ++i) {
+              jce.msg.values[i] = gc.commands[i];
+            }
           }
           jce.publisher->publish(jce.msg);
           return;
