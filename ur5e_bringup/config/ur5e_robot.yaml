@@ -18,7 +18,7 @@
     enable_estop: true # E-STOP timeout monitoring
     # device_timeouts: matches topics group names, watches state topic for gaps
     device_timeout_names: ["ur5e", "hand"]
-    device_timeout_values: [100.0, 100.0] # ms
+    device_timeout_values: [1000.0, 1000.0] # ms
 
     # ── Logging configuration ─────────────────────────────────────────────────
     enable_logging: true
@@ -40,9 +40,9 @@
         # forward_position_controller receives Float64MultiArray in
         # ros2_control interface order (alphabetical).
         joint_command_names:
-          - "elbow_joint"
-          - "shoulder_lift_joint"
           - "shoulder_pan_joint"
+          - "shoulder_lift_joint"
+          - "elbow_joint"
           - "wrist_1_joint"
           - "wrist_2_joint"
           - "wrist_3_joint"

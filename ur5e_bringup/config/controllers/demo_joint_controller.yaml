@@ -2,8 +2,8 @@ demo_joint_controller:
   # ── Trajectory speed ───────────────────────────────────────────────────────
   # Desired joint speed for trajectory duration calculation [rad/s].
   # Duration = max_joint_dist / trajectory_speed.
-  robot_trajectory_speed: 1.0
-  hand_trajectory_speed: 1.0
+  robot_trajectory_speed: 0.5
+  hand_trajectory_speed: 0.5
 
   # ── Trajectory velocity limits ──────────────────────────────────────────────
   # Max peak joint velocity during quintic trajectory [rad/s].

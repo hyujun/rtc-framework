@@ -1,15 +1,15 @@
 demo_task_controller:
   # ── CLIK gains (robot arm task-space control) ──────────────────────────────
-  kp_translation: [1.0, 1.0, 1.0]   # Translation proportional gain (x, y, z) [1/s]
-  kp_rotation: [1.0, 1.0, 1.0]      # Rotation proportional gain (rx, ry, rz) [1/s]
+  kp_translation: [15.0, 15.0, 15.0]   # Translation proportional gain (x, y, z) [1/s]
+  kp_rotation: [5.0, 5.0, 5.0]      # Rotation proportional gain (rx, ry, rz) [1/s]
   damping: 0.01                      # Damped pseudoinverse lambda (singularity stabilization)
 
   # ── Null-space configuration ────────────────────────────────────────────────
-  enable_null_space: true            # Enable null-space joint centering
+  enable_null_space: false            # Enable null-space joint centering
   null_kp: 0.5                       # Null-space proportional gain
 
   # ── 6-DOF mode ──────────────────────────────────────────────────────────────
-  control_6dof: false                # false=3-DOF (position only), true=6-DOF (position+orientation)
+  control_6dof: true                # false=3-DOF (position only), true=6-DOF (position+orientation)
 
   # ── Trajectory speed ───────────────────────────────────────────────────────
   # Desired speed for trajectory duration calculation.
