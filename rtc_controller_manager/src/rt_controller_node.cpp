@@ -719,9 +719,18 @@ void RtControllerNode::CreatePublishers()
       data_size = device_joints;
     }
 
+    // ros2_control controllers (e.g. forward_position_controller) require
+    // RELIABLE QoS; use RELIABLE for kRos2Command, BEST_EFFORT for others.
+    rclcpp::QoS ros2_cmd_qos{1};
+    if (entry.role == urtc::PublishRole::kRos2Command) {
+      ros2_cmd_qos.reliable();
+    } else {
+      ros2_cmd_qos.best_effort();
+    }
+
     PublisherEntry pe;
     pe.publisher = create_publisher<std_msgs::msg::Float64MultiArray>(
-        entry.topic_name, cmd_qos);
+        entry.topic_name, ros2_cmd_qos);
     pe.msg.data.resize(static_cast<std::size_t>(data_size), 0.0);
     topic_publishers_[entry.topic_name] = std::move(pe);
 
