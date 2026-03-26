@@ -76,6 +76,7 @@ def _launch_setup(context):
             'use_mock_hardware': mock_enabled,
             'use_fake_hardware': mock_enabled,
             'launch_rviz': 'false',
+            'initial_joint_controller': 'forward_position_controller',
         }.items()
     )
     return [ur_driver_launch]
@@ -183,7 +184,13 @@ def generate_launch_description():
             '  ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); '
             '  if [ -z "$ISOLATED" ]; then '
             '    echo "[RT] CPU shield not active — enabling robot mode..."; '
-            f'    sudo "{_shield_script}" on --robot; '
+            '    if sudo -n true 2>/dev/null; then '
+            f'      sudo "{_shield_script}" on --robot; '
+            '    else '
+            '      echo "[RT] WARNING: sudo requires a password — skipping CPU shield. '
+            'Configure passwordless sudo for cpu_shield.sh or run: '
+            f'sudo {_shield_script} on --robot"; '
+            '    fi; '
             '  else '
             '    echo "[RT] CPU shield already active: Core $ISOLATED isolated"; '
             '  fi; '
@@ -193,6 +200,31 @@ def generate_launch_description():
         ],
         output='screen',
         condition=IfCondition(LaunchConfiguration('use_cpu_affinity'))
+    )
+
+    # ── Activate forward_position_controller for rt_controller command bridge ─
+    # The rt_controller publishes to /forward_position_controller/commands.
+    # UR driver defaults to scaled_joint_trajectory_controller; switch so that
+    # position commands reach the hardware interface (critical for mock hardware).
+    # Use ros2 service call (not ros2 control) since ros2controlcli may not be installed.
+    activate_fwd_controller = TimerAction(
+        period=3.0,
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    'bash', '-c',
+                    'echo "[RT] Switching to forward_position_controller..."; '
+                    'ros2 service call /controller_manager/switch_controller '
+                    '  controller_manager_msgs/srv/SwitchController '
+                    '  "{activate_controllers: [forward_position_controller], '
+                    '    deactivate_controllers: [scaled_joint_trajectory_controller], '
+                    '    strictness: 1}" '
+                    '  && echo "[RT] forward_position_controller activated" '
+                    '  || echo "[RT] WARNING: controller switch failed"'
+                ],
+                output='screen',
+            )
+        ]
     )
 
     # ── UR driver CPU pinning ─────────────────────────────────────────────────
@@ -283,6 +315,7 @@ def generate_launch_description():
         set_cyclone_uri,
         enable_cpu_shield,
         ur_driver_launch_action,
+        activate_fwd_controller,
         pin_ur_driver,
         hand_udp_node,
         rt_controller_node,

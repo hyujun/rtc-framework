@@ -132,6 +132,10 @@ private:
   struct PublisherEntry {
     rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr publisher;
     std_msgs::msg::Float64MultiArray msg;
+    // Reorder map: output index → input (gc.commands) index.
+    // Built from joint_state_names → joint_command_names mapping.
+    // Empty when no reorder is needed (names are identical or absent).
+    std::vector<int> reorder_map;
   };
   std::unordered_map<std::string, PublisherEntry> topic_publishers_;
 
@@ -164,9 +168,11 @@ private:
 
   // ── Digital Twin JointState republishers (RELIABLE, depth 10) ────────────
   // key = "/{group}/digital_twin/joint_states"
-  std::unordered_map<std::string,
-      rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr>
-      digital_twin_publishers_;
+  struct DigitalTwinEntry {
+    rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr publisher;
+    sensor_msgs::msg::JointState msg;  // pre-allocated with config joint_state_names
+  };
+  std::unordered_map<std::string, DigitalTwinEntry> digital_twin_publishers_;
   // group_slot → digital_twin topic name mapping
   std::unordered_map<int, std::string> slot_to_dt_topic_;
 

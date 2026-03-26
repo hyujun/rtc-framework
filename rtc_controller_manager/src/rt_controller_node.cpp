@@ -719,10 +719,45 @@ void RtControllerNode::CreatePublishers()
       data_size = device_joints;
     }
 
+    // ros2_control controllers (e.g. forward_position_controller) require
+    // RELIABLE QoS; use RELIABLE for kRos2Command, BEST_EFFORT for others.
+    rclcpp::QoS ros2_cmd_qos{1};
+    if (entry.role == urtc::PublishRole::kRos2Command) {
+      ros2_cmd_qos.reliable();
+    } else {
+      ros2_cmd_qos.best_effort();
+    }
+
     PublisherEntry pe;
     pe.publisher = create_publisher<std_msgs::msg::Float64MultiArray>(
-        entry.topic_name, cmd_qos);
+        entry.topic_name, ros2_cmd_qos);
     pe.msg.data.resize(static_cast<std::size_t>(data_size), 0.0);
+
+    // Build reorder map: joint_state_names → joint_command_names
+    if (entry.role == urtc::PublishRole::kRos2Command) {
+      auto cfg_it3 = device_name_configs_.find(group_name);
+      if (cfg_it3 != device_name_configs_.end()) {
+        const auto& state_names = cfg_it3->second.joint_state_names;
+        const auto& cmd_names   = cfg_it3->second.joint_command_names;
+        if (!state_names.empty() && !cmd_names.empty()
+            && state_names != cmd_names) {
+          // reorder_map[out_i] = index into gc.commands (joint_state_names order)
+          pe.reorder_map.resize(cmd_names.size(), -1);
+          for (std::size_t ci = 0; ci < cmd_names.size(); ++ci) {
+            for (std::size_t si = 0; si < state_names.size(); ++si) {
+              if (cmd_names[ci] == state_names[si]) {
+                pe.reorder_map[ci] = static_cast<int>(si);
+                break;
+              }
+            }
+          }
+          RCLCPP_INFO(get_logger(),
+                      "  [%s] kRos2Command reorder map built (%zu → %zu)",
+                      group_name.c_str(), state_names.size(), cmd_names.size());
+        }
+      }
+    }
+
     topic_publishers_[entry.topic_name] = std::move(pe);
 
     const char * role_str = urtc::PublishRoleToString(entry.role);
@@ -746,8 +781,19 @@ void RtControllerNode::CreatePublishers()
     dt_qos.reliable();
     for (const auto& [group_name, slot] : group_slot_map_) {
       std::string dt_topic = "/" + group_name + "/digital_twin/joint_states";
-      digital_twin_publishers_[dt_topic] =
+      DigitalTwinEntry dte;
+      dte.publisher =
           create_publisher<sensor_msgs::msg::JointState>(dt_topic, dt_qos);
+      // Pre-allocate message with config joint_state_names order
+      auto cfg_it = device_name_configs_.find(group_name);
+      if (cfg_it != device_name_configs_.end()) {
+        const auto& names = cfg_it->second.joint_state_names;
+        dte.msg.name.assign(names.begin(), names.end());
+        dte.msg.position.resize(names.size(), 0.0);
+        dte.msg.velocity.resize(names.size(), 0.0);
+        dte.msg.effort.resize(names.size(), 0.0);
+      }
+      digital_twin_publishers_[dt_topic] = std::move(dte);
       slot_to_dt_topic_[slot] = dt_topic;
       RCLCPP_INFO(get_logger(), "  Digital Twin publish: %s (RELIABLE/10)",
                   dt_topic.c_str());
@@ -879,13 +925,21 @@ void RtControllerNode::DeviceJointStateCallback(
   ds.valid = true;
   state_received_.store(true, std::memory_order_release);
 
-  // Forward to digital twin (RELIABLE republish)
+  // Forward to digital twin (RELIABLE republish, config joint order)
   {
     auto dt_it = slot_to_dt_topic_.find(device_slot);
     if (dt_it != slot_to_dt_topic_.end()) {
       auto pub_it = digital_twin_publishers_.find(dt_it->second);
       if (pub_it != digital_twin_publishers_.end()) {
-        pub_it->second->publish(*msg);
+        auto& dte = pub_it->second;
+        dte.msg.header = msg->header;
+        const auto n = dte.msg.name.size();
+        for (std::size_t i = 0; i < n; ++i) {
+          dte.msg.position[i] = ds.positions[i];
+          dte.msg.velocity[i] = ds.velocities[i];
+          dte.msg.effort[i]   = ds.efforts[i];
+        }
+        dte.publisher->publish(dte.msg);
       }
     }
   }
@@ -914,17 +968,49 @@ void RtControllerNode::DeviceTargetCallback(
     data_size = static_cast<int>(msg->joint_target.size());
   }
 
+  // Reorder by joint_names if provided (same pattern as BuildDeviceReorderMap)
+  std::array<double, urtc::kMaxDeviceChannels> reordered{};
+  const double * ordered_ptr = data_ptr;
+  int ordered_size = data_size;
+
+  if (msg->goal_type != "task" && !msg->joint_names.empty()) {
+    const auto slot_idx = static_cast<std::size_t>(device_slot);
+    if (slot_idx < slot_to_group_name_.size()) {
+      const auto& group_name = slot_to_group_name_[slot_idx];
+      auto it = device_name_configs_.find(group_name);
+      if (it != device_name_configs_.end()) {
+        const auto& ref_names = it->second.joint_state_names;
+        if (!ref_names.empty()) {
+          // Map msg joint_names order → config joint_state_names order
+          for (std::size_t msg_i = 0; msg_i < msg->joint_names.size() &&
+               msg_i < msg->joint_target.size(); ++msg_i) {
+            for (std::size_t ref_i = 0; ref_i < ref_names.size(); ++ref_i) {
+              if (msg->joint_names[msg_i] == ref_names[ref_i]) {
+                reordered[ref_i] = msg->joint_target[msg_i];
+                break;
+              }
+            }
+          }
+          ordered_ptr = reordered.data();
+          ordered_size = std::min(static_cast<int>(ref_names.size()),
+                                  urtc::kMaxDeviceChannels);
+        }
+      }
+    }
+  }
+
   {
     std::lock_guard lock(target_mutex_);
-    const int n = std::min(data_size, urtc::kMaxDeviceChannels);
+    const int n = std::min(ordered_size, urtc::kMaxDeviceChannels);
     for (int i = 0; i < n; ++i) {
-      device_targets_[device_slot][i] = data_ptr[i];
+      device_targets_[device_slot][i] = ordered_ptr[i];
     }
   }
   target_received_.store(true, std::memory_order_release);
   int idx = active_controller_idx_.load(std::memory_order_acquire);
   controllers_[idx]->SetDeviceTarget(device_slot,
-      std::span<const double>(data_ptr, static_cast<std::size_t>(data_size)));
+      std::span<const double>(ordered_ptr,
+                              static_cast<std::size_t>(ordered_size)));
 }
 
 // ── 50 Hz watchdog (E-STOP) ───────────────────────────────────────────────────
@@ -1439,9 +1525,19 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           auto it = topic_publishers_.find(pt.topic_name);
           if (it == topic_publishers_.end()) { return; }
           auto & pe = it->second;
-          for (int i = 0; i < nc
-                   && i < static_cast<int>(pe.msg.data.size()); ++i) {
-            pe.msg.data[i] = gc.commands[i];
+          const int n = std::min(nc, static_cast<int>(pe.msg.data.size()));
+          if (!pe.reorder_map.empty()) {
+            // Reorder from joint_state_names order → joint_command_names order
+            for (int i = 0; i < n; ++i) {
+              const int src = (i < static_cast<int>(pe.reorder_map.size()))
+                              ? pe.reorder_map[i] : -1;
+              pe.msg.data[i] = (src >= 0 && src < nc)
+                               ? gc.commands[src] : 0.0;
+            }
+          } else {
+            for (int i = 0; i < n; ++i) {
+              pe.msg.data[i] = gc.commands[i];
+            }
           }
           pe.publisher->publish(pe.msg);
           return;

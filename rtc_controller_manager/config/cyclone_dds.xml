@@ -4,11 +4,9 @@
   for RT Controller Manager (500Hz control loop).
 
   Optimizations:
-    1. Multicast disabled — localhost/single-host only, eliminates IGMP overhead
-    2. Socket buffers enlarged — matches kernel sysctl (setup_udp_optimization.sh)
-    3. Discovery tuning — reduced lease/heartbeat for faster failover
-    4. Internal write batching — reduces syscall overhead on publish path
-    5. Nack delay minimized — faster reliable data delivery
+    1. Multicast enabled — supports multi-host discovery across network
+    2. Discovery tuning — reduced lease/heartbeat for faster failover
+    3. Nack delay minimized — faster reliable data delivery
 
   Thread affinity: handled by taskset in robot.launch.py (CycloneDDS 0.11+
   removed <Internal><Threads> XML support).
@@ -20,20 +18,19 @@
   <Domain>
     <General>
       <Interfaces>
-        <!-- Single physical NIC; disable multicast to avoid IGMP join/leave
-             overhead. All ROS 2 nodes run on the same host. -->
-        <NetworkInterface autodetermine="true" multicast="false"/>
+        <!-- Auto-detect NIC; multicast enabled for multi-host discovery
+             (control PC ↔ monitoring PC on same subnet). -->
+        <NetworkInterface autodetermine="true" multicast="true"/>
       </Interfaces>
 
-      <!-- Disable multicast discovery — use unicast SPDP only.
-           Eliminates periodic multicast heartbeat traffic that can cause
-           recv-thread wake-ups and interfere with RT scheduling. -->
-      <AllowMulticast>false</AllowMulticast>
+      <!-- Allow multicast for SPDP discovery so nodes on different hosts
+           can find each other. Data delivery uses unicast. -->
+      <AllowMulticast>spdp</AllowMulticast>
 
       <!-- Max message size aligned with typical DDS RTPS fragment size.
            Default 65500 is fine for our small-payload topics. -->
-      <MaxMessageSize>65500</MaxMessageSize>
-      <FragmentSize>4000</FragmentSize>
+      <MaxMessageSize>65500 B</MaxMessageSize>
+      <FragmentSize>4000 B</FragmentSize>
     </General>
 
     <!-- ── Discovery tuning ─────────────────────────────────────────── -->
@@ -49,11 +46,6 @@
 
     <!-- ── Reliability / latency tuning ─────────────────────────────── -->
     <Internal>
-      <!-- Write batching: flush after 8μs max wait. Balances between
-           immediate flush (high syscall rate) and large batch (latency).
-           For 500Hz (2ms period), 8μs is negligible. -->
-      <WriteBatchFlushInterval>8 us</WriteBatchFlushInterval>
-
       <!-- NACK response delay: minimize for faster retransmission.
            Default 100ms is far too high for RT control. -->
       <NackDelay>10 ms</NackDelay>
@@ -69,13 +61,6 @@
       <!-- Squash multiple writes into fewer network packets when
            publishing bursts (e.g., 6-DOF commands + state). -->
       <MaxQueuedRexmitMessages>256</MaxQueuedRexmitMessages>
-
-      <!-- Socket receive buffer: 8MB to handle burst traffic.
-           Must be ≤ net.core.rmem_max (set by setup_udp_optimization.sh). -->
-      <SocketReceiveBufferSize>8 MB</SocketReceiveBufferSize>
-
-      <!-- Socket send buffer: 2MB — our outgoing traffic is small. -->
-      <SocketSendBufferSize>2 MB</SocketSendBufferSize>
 
       <!-- Deliver data synchronously when possible, reducing
            thread wake-up latency for subscriber callbacks. -->
