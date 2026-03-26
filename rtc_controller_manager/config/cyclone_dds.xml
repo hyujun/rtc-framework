@@ -4,7 +4,7 @@
   for RT Controller Manager (500Hz control loop).
 
   Optimizations:
-    1. Multicast disabled — localhost/single-host only, eliminates IGMP overhead
+    1. Multicast enabled — supports multi-host discovery across network
     2. Discovery tuning — reduced lease/heartbeat for faster failover
     3. Nack delay minimized — faster reliable data delivery
 
@@ -18,15 +18,14 @@
   <Domain>
     <General>
       <Interfaces>
-        <!-- Single physical NIC; disable multicast to avoid IGMP join/leave
-             overhead. All ROS 2 nodes run on the same host. -->
-        <NetworkInterface autodetermine="true" multicast="false"/>
+        <!-- Auto-detect NIC; multicast enabled for multi-host discovery
+             (control PC ↔ monitoring PC on same subnet). -->
+        <NetworkInterface autodetermine="true" multicast="true"/>
       </Interfaces>
 
-      <!-- Disable multicast discovery — use unicast SPDP only.
-           Eliminates periodic multicast heartbeat traffic that can cause
-           recv-thread wake-ups and interfere with RT scheduling. -->
-      <AllowMulticast>false</AllowMulticast>
+      <!-- Allow multicast for SPDP discovery so nodes on different hosts
+           can find each other. Data delivery uses unicast. -->
+      <AllowMulticast>spdp</AllowMulticast>
 
       <!-- Max message size aligned with typical DDS RTPS fragment size.
            Default 65500 is fine for our small-payload topics. -->
