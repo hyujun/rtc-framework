@@ -219,6 +219,8 @@ private:
   static constexpr std::array<double, kNumRobotJoints> kSafePosition{
     0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
   std::array<std::vector<double>, ControllerState::kMaxDevices> device_max_velocity_;
+  std::array<std::vector<double>, ControllerState::kMaxDevices> device_position_lower_;
+  std::array<std::vector<double>, ControllerState::kMaxDevices> device_position_upper_;
 
   CommandType command_type_{CommandType::kPosition};
 
@@ -226,8 +228,9 @@ private:
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState & state) noexcept;
 
   static void ClampCommands(
-    std::array<double, kMaxDeviceChannels>& cmds, int n,
-    const std::vector<double>& limits) noexcept;
+    std::array<double, kMaxDeviceChannels>& commands, int n,
+    const std::vector<double>& lower,
+    const std::vector<double>& upper) noexcept;
 };
 
 }  // namespace ur5e_bringup
