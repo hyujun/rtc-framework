@@ -31,6 +31,11 @@ HAND_FINGER_GROUPS = [
 ]
 HAND_MOTOR_NAMES = [m for _, motors in HAND_FINGER_GROUPS for m in motors]
 
+ROBOT_JOINT_NAMES = [
+    "shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
+    "wrist_1_joint", "wrist_2_joint", "wrist_3_joint",
+]
+
 # 컬럼 인덱스
 COL_NUM = 0           # # (체크박스)
 COL_NAME = 1          # Name
@@ -1483,6 +1488,7 @@ class ROSNode(Node):
     def publish_pose(self, pose):
         msg = RobotTarget()
         msg.goal_type = "joint"
+        msg.joint_names = ROBOT_JOINT_NAMES
         msg.joint_target = pose.tolist()
         self.cmd_pub.publish(msg)
         self.get_logger().info(f"Published UR5e pose: {pose}")
@@ -1492,6 +1498,7 @@ class ROSNode(Node):
             return
         msg = RobotTarget()
         msg.goal_type = "joint"
+        msg.joint_names = HAND_MOTOR_NAMES
         msg.joint_target = hand_pose.tolist()
         self.hand_cmd_pub.publish(msg)
         self.get_logger().info(f"Published hand pose: {hand_pose}")
