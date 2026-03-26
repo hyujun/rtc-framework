@@ -42,6 +42,22 @@ def launch_setup(context, *args, **kwargs):
     desc_pkg = LaunchConfiguration('robot_description_package').perform(context)
     desc_path = LaunchConfiguration('robot_description_path').perform(context)
 
+    # Fallback to YAML config if launch args are empty
+    if not desc_file and not desc_pkg and not desc_path:
+        config_file = LaunchConfiguration('config_file').perform(context)
+        if not config_file:
+            config_file = os.path.join(
+                get_package_share_directory('rtc_digital_twin'),
+                'config', 'digital_twin.yaml')
+
+        import yaml
+        with open(config_file, 'r') as f:
+            cfg = yaml.safe_load(f)
+        params = cfg.get('/**', {}).get('ros__parameters', {})
+        desc_file = params.get('robot_description_file', '')
+        desc_pkg = params.get('robot_description_package', '')
+        desc_path = params.get('robot_description_path', '')
+
     if desc_file:
         urdf_path = desc_file
     elif desc_pkg and desc_path:
@@ -50,7 +66,8 @@ def launch_setup(context, *args, **kwargs):
     else:
         raise RuntimeError(
             'Must provide robot_description_file OR '
-            'robot_description_package + robot_description_path')
+            'robot_description_package + robot_description_path. '
+            'Set via launch args or in the YAML config file.')
 
     if not os.path.isfile(urdf_path):
         raise RuntimeError(f'Robot description file not found: {urdf_path}')

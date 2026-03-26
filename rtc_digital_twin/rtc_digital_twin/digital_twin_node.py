@@ -103,10 +103,14 @@ class DigitalTwinNode(Node):
         for i in range(num_sources):
             prefix = f'source_{i}'
             self.declare_parameter(f'{prefix}.topic', '')
-            self.declare_parameter(f'{prefix}.joint_names', [])
+            self.declare_parameter(f'{prefix}.joint_names', [''])
 
             topic = self.get_parameter(f'{prefix}.topic').value
-            joint_names = list(self.get_parameter(f'{prefix}.joint_names').value or [])
+            try:
+                raw = self.get_parameter(f'{prefix}.joint_names').value
+                joint_names = [n for n in (raw or []) if n]
+            except rclpy.exceptions.ParameterUninitializedException:
+                joint_names = []
 
             if not topic:
                 self.get_logger().warn(f'source_{i}.topic is empty, skipping')
@@ -131,7 +135,7 @@ class DigitalTwinNode(Node):
             if sensor_topic:
                 self.declare_parameter('sensor_viz.marker_topic',
                                        '/digital_twin/fingertip_markers')
-                self.declare_parameter('sensor_viz.fingertip_names', [])
+                self.declare_parameter('sensor_viz.fingertip_names', [''])
                 self.declare_parameter('sensor_viz.barometer_min', 0.0)
                 self.declare_parameter('sensor_viz.barometer_max', 1000.0)
                 self.declare_parameter('sensor_viz.barometer_sphere_min', 0.002)
@@ -140,8 +144,11 @@ class DigitalTwinNode(Node):
                 self.declare_parameter('sensor_viz.tof_arrow_scale', 0.003)
 
                 marker_topic = self.get_parameter('sensor_viz.marker_topic').value
-                fingertip_names = list(
-                    self.get_parameter('sensor_viz.fingertip_names').value)
+                try:
+                    raw_tips = self.get_parameter('sensor_viz.fingertip_names').value
+                    fingertip_names = [n for n in (raw_tips or []) if n]
+                except rclpy.exceptions.ParameterUninitializedException:
+                    fingertip_names = []
 
                 sensor_viz_config = {
                     'barometer_min': self.get_parameter(
@@ -241,11 +248,20 @@ class DigitalTwinNode(Node):
 
     def _publish_display(self):
         """Timer callback — publish combined JointState + optional markers."""
-        # Check if any source has data
-        if not any(s.data_received for s in self._sources):
-            return
-
         now = self.get_clock().now().to_msg()
+
+        # If no data received yet, publish all URDF joints at position 0
+        if not any(s.data_received for s in self._sources):
+            if self._joint_classification:
+                js = JointState()
+                js.header.stamp = now
+                all_joints = sorted(self._joint_classification.active_names
+                                    | self._joint_classification.passive_names)
+                js.name = all_joints
+                js.position = [0.0] * len(all_joints)
+                js.velocity = [0.0] * len(all_joints)
+                self._joint_pub.publish(js)
+            return
 
         # Merge all sources into a single JointState
         js = JointState()
