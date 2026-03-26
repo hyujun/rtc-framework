@@ -248,11 +248,20 @@ class DigitalTwinNode(Node):
 
     def _publish_display(self):
         """Timer callback — publish combined JointState + optional markers."""
-        # Check if any source has data
-        if not any(s.data_received for s in self._sources):
-            return
-
         now = self.get_clock().now().to_msg()
+
+        # If no data received yet, publish all URDF joints at position 0
+        if not any(s.data_received for s in self._sources):
+            if self._joint_classification:
+                js = JointState()
+                js.header.stamp = now
+                all_joints = sorted(self._joint_classification.active_names
+                                    | self._joint_classification.passive_names)
+                js.name = all_joints
+                js.position = [0.0] * len(all_joints)
+                js.velocity = [0.0] * len(all_joints)
+                self._joint_pub.publish(js)
+            return
 
         # Merge all sources into a single JointState
         js = JointState()
