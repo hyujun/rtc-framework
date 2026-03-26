@@ -454,11 +454,19 @@ def plot_robot_task_position(df, save_dir=None):
     if has_task_goal and has_goal_type:
         task_goal_mask = df['goal_type'] == 'task'
 
+    has_traj_task = _has_columns(df, 'traj_task_pos_', 3)
+
     t = df['timestamp']
     for i in range(3):
         ax = axes[i]
-        ax.plot(t, df[f'task_pos_{i}'], label=f'{labels[i]}',
+        ax.plot(t, df[f'task_pos_{i}'], label=f'Actual {labels[i]}',
                 linewidth=1.5)
+
+        # Task-space trajectory reference
+        if has_traj_task:
+            ax.plot(t, df[f'traj_task_pos_{i}'],
+                    label='Trajectory Ref', linestyle='--',
+                    linewidth=1.5, alpha=0.8, color='C1')
 
         # Task goal from GUI (goal_type=="task" 구간만)
         if task_goal_mask is not None:
@@ -527,6 +535,59 @@ def plot_robot_tracking_error(df, save_dir=None):
     plt.tight_layout()
     if save_dir:
         path = Path(save_dir) / 'robot_tracking_error.png'
+        plt.savefig(path, dpi=300, bbox_inches='tight')
+        print(f'Saved: {path}')
+    else:
+        plt.show()
+    plt.close()
+
+
+def plot_robot_task_tracking_error(df, save_dir=None):
+    """Task-space tracking error (trajectory reference - actual TCP)."""
+    if not _has_columns(df, 'traj_task_pos_', 3) or not _has_columns(df, 'task_pos_', 3):
+        print('  Skipping task tracking error plot (traj_task_pos_* columns not found)')
+        return
+
+    pos_labels = ['X', 'Y', 'Z']
+    rot_labels = ['Roll', 'Pitch', 'Yaw']
+    has_rot = _has_columns(df, 'traj_task_pos_', 6) and _has_columns(df, 'task_pos_', 6)
+    nrows = 2 if has_rot else 1
+    fig, axes = plt.subplots(nrows, 1, figsize=(14, 5 * nrows))
+    fig.suptitle('Task-Space Tracking Error (Trajectory Ref - Actual)',
+                 fontsize=16, fontweight='bold')
+    if nrows == 1:
+        axes = [axes]
+
+    t = df['timestamp']
+
+    # Position error (m)
+    ax = axes[0]
+    for i in range(3):
+        err = df[f'traj_task_pos_{i}'] - df[f'task_pos_{i}']
+        ax.plot(t, err, label=pos_labels[i], alpha=0.8, linewidth=1.2)
+    ax.set_ylabel('Position Error (m)')
+    ax.set_title('Translation Tracking Error')
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+    ax.axhline(y=0, color='k', linewidth=0.5)
+
+    # Orientation error (rad)
+    if has_rot:
+        ax = axes[1]
+        for i in range(3):
+            err = df[f'traj_task_pos_{i + 3}'] - df[f'task_pos_{i + 3}']
+            ax.plot(t, err, label=rot_labels[i], alpha=0.8, linewidth=1.2)
+        ax.set_ylabel('Orientation Error (rad)')
+        ax.set_title('Rotation Tracking Error')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+        ax.axhline(y=0, color='k', linewidth=0.5)
+
+    axes[-1].set_xlabel('Time (s)')
+
+    plt.tight_layout()
+    if save_dir:
+        path = Path(save_dir) / 'robot_task_tracking_error.png'
         plt.savefig(path, dpi=300, bbox_inches='tight')
         print(f'Saved: {path}')
     else:
@@ -1525,6 +1586,7 @@ def main():
                             and (df['goal_type'] == 'task').any())
             if args.task_pos or has_task_goal:
                 plot_robot_task_position(df, args.save_dir)
+                plot_robot_task_tracking_error(df, args.save_dir)
             if args.error:
                 plot_robot_tracking_error(df, args.save_dir)
             if args.command:

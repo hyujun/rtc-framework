@@ -1284,6 +1284,8 @@ void RtControllerNode::ControlLoop()
     entry.jitter_us          = jitter_us;
     entry.actual_task_positions = output.actual_task_positions;
     entry.task_goal_positions  = output.task_goal_positions;
+    entry.trajectory_task_positions  = output.trajectory_task_positions;
+    entry.trajectory_task_velocities = output.trajectory_task_velocities;
     entry.command_type       = output.command_type;
 
     // Per-device logging

@@ -403,6 +403,25 @@ ControllerOutput DemoTaskController::WriteOutput(
     output.task_goal_positions[5] = rpy[2];
   }
 
+  // ── Task-space trajectory reference ─────────────────────────────────
+  {
+    const Eigen::Vector3d traj_pos = traj_state_.pose.translation();
+    Eigen::Vector3d traj_rpy = pinocchio::rpy::matrixToRpy(traj_state_.pose.rotation());
+    output.trajectory_task_positions[0] = traj_pos[0];
+    output.trajectory_task_positions[1] = traj_pos[1];
+    output.trajectory_task_positions[2] = traj_pos[2];
+    output.trajectory_task_positions[3] = traj_rpy[0];
+    output.trajectory_task_positions[4] = traj_rpy[1];
+    output.trajectory_task_positions[5] = traj_rpy[2];
+
+    output.trajectory_task_velocities[0] = traj_state_.velocity.linear()[0];
+    output.trajectory_task_velocities[1] = traj_state_.velocity.linear()[1];
+    output.trajectory_task_velocities[2] = traj_state_.velocity.linear()[2];
+    output.trajectory_task_velocities[3] = traj_state_.velocity.angular()[0];
+    output.trajectory_task_velocities[4] = traj_state_.velocity.angular()[1];
+    output.trajectory_task_velocities[5] = traj_state_.velocity.angular()[2];
+  }
+
   // ── Hand output ────────────────────────────────────────────────────────
   if (state.num_devices > 1 && state.devices[1].valid) {
     const int nc1 = state.devices[1].num_channels;
