@@ -205,6 +205,10 @@ private:
       f << ",traj_vel_" << JointLabel(idx, static_cast<std::size_t>(i));
     }
 
+    // Task-space trajectory reference
+    for (int i = 0; i < 6; ++i) { f << ",traj_task_pos_" << i; }
+    for (int i = 0; i < 6; ++i) { f << ",traj_task_vel_" << i; }
+
     // Task-space FK
     for (int i = 0; i < 6; ++i) { f << ",task_pos_" << i; }
 
@@ -243,6 +247,10 @@ private:
     // Trajectory
     for (int i = 0; i < nc; ++i) { f << ',' << (i < na ? d.trajectory_positions[static_cast<std::size_t>(i)] : 0.0); }
     for (int i = 0; i < nc; ++i) { f << ',' << (i < na ? d.trajectory_velocities[static_cast<std::size_t>(i)] : 0.0); }
+
+    // Task-space trajectory reference
+    for (const auto v : e.trajectory_task_positions) { f << ',' << v; }
+    for (const auto v : e.trajectory_task_velocities) { f << ',' << v; }
 
     // Task-space FK
     for (const auto v : e.actual_task_positions) { f << ',' << v; }
