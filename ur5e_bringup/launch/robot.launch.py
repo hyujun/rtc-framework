@@ -206,6 +206,7 @@ def generate_launch_description():
     # The rt_controller publishes to /forward_position_controller/commands.
     # UR driver defaults to scaled_joint_trajectory_controller; switch so that
     # position commands reach the hardware interface (critical for mock hardware).
+    # Use ros2 service call (not ros2 control) since ros2controlcli may not be installed.
     activate_fwd_controller = TimerAction(
         period=3.0,
         actions=[
@@ -213,9 +214,11 @@ def generate_launch_description():
                 cmd=[
                     'bash', '-c',
                     'echo "[RT] Switching to forward_position_controller..."; '
-                    'ros2 control switch_controllers '
-                    '  --deactivate scaled_joint_trajectory_controller '
-                    '  --activate forward_position_controller '
+                    'ros2 service call /controller_manager/switch_controller '
+                    '  controller_manager_msgs/srv/SwitchController '
+                    '  "{activate_controllers: [forward_position_controller], '
+                    '    deactivate_controllers: [scaled_joint_trajectory_controller], '
+                    '    strictness: 1}" '
                     '  && echo "[RT] forward_position_controller activated" '
                     '  || echo "[RT] WARNING: controller switch failed"'
                 ],
