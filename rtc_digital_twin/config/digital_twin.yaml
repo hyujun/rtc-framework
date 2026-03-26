@@ -6,6 +6,13 @@
 
 /**:
   ros__parameters:
+    # ── Robot description ──────────────────────────────────────────────
+    # Option 1: Package-based path (package name + relative path)
+    robot_description_package: ""               # e.g. "ur5e_description"
+    robot_description_path: ""                  # e.g. "robots/ur5e/urdf/ur5e_with_hand.urdf.xacro"
+    # Option 2: Absolute file path
+    robot_description_file: ""                  # e.g. "/path/to/robot.urdf"
+
     display_rate: 60.0                          # Hz — combined JointState publish rate
     output_topic: "/digital_twin/joint_states"  # Combined output for robot_state_publisher
 
