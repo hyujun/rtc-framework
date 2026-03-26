@@ -76,6 +76,7 @@ def _launch_setup(context):
             'use_mock_hardware': mock_enabled,
             'use_fake_hardware': mock_enabled,
             'launch_rviz': 'false',
+            'initial_joint_controller': 'forward_position_controller',
         }.items()
     )
     return [ur_driver_launch]
