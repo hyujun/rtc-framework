@@ -137,9 +137,12 @@ private:
   double hand_trajectory_time_{0.0};
 
   std::array<std::vector<double>, ControllerState::kMaxDevices> device_max_velocity_;
+  std::array<std::vector<double>, ControllerState::kMaxDevices> device_position_lower_;
+  std::array<std::vector<double>, ControllerState::kMaxDevices> device_position_upper_;
   static void ClampCommands(
     std::array<double, kMaxDeviceChannels>& commands, int n,
-    const std::vector<double>& limits) noexcept;
+    const std::vector<double>& lower,
+    const std::vector<double>& upper) noexcept;
 };
 
 }  // namespace ur5e_bringup
