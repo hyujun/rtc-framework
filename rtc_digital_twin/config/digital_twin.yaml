@@ -20,7 +20,7 @@
     num_sources: 1
 
     source_0.topic: "/ur5e/digital_twin/joint_states"
-    source_0.joint_names: []          # empty = accept all joints from topic
+    source_0.joint_names: [""]        # empty/"" = accept all joints from topic
 
     # Example: multi-source (uncomment for UR5e + hand)
     # num_sources: 2

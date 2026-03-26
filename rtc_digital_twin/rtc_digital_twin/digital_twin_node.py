@@ -106,8 +106,11 @@ class DigitalTwinNode(Node):
             self.declare_parameter(f'{prefix}.joint_names', [''])
 
             topic = self.get_parameter(f'{prefix}.topic').value
-            raw = self.get_parameter(f'{prefix}.joint_names').value
-            joint_names = [n for n in (raw or []) if n]
+            try:
+                raw = self.get_parameter(f'{prefix}.joint_names').value
+                joint_names = [n for n in (raw or []) if n]
+            except rclpy.exceptions.ParameterUninitializedException:
+                joint_names = []
 
             if not topic:
                 self.get_logger().warn(f'source_{i}.topic is empty, skipping')
@@ -141,8 +144,11 @@ class DigitalTwinNode(Node):
                 self.declare_parameter('sensor_viz.tof_arrow_scale', 0.003)
 
                 marker_topic = self.get_parameter('sensor_viz.marker_topic').value
-                raw_tips = self.get_parameter('sensor_viz.fingertip_names').value
-                fingertip_names = [n for n in (raw_tips or []) if n]
+                try:
+                    raw_tips = self.get_parameter('sensor_viz.fingertip_names').value
+                    fingertip_names = [n for n in (raw_tips or []) if n]
+                except rclpy.exceptions.ParameterUninitializedException:
+                    fingertip_names = []
 
                 sensor_viz_config = {
                     'barometer_min': self.get_parameter(
