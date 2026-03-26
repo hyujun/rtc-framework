@@ -202,6 +202,28 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('use_cpu_affinity'))
     )
 
+    # ── Activate forward_position_controller for rt_controller command bridge ─
+    # The rt_controller publishes to /forward_position_controller/commands.
+    # UR driver defaults to scaled_joint_trajectory_controller; switch so that
+    # position commands reach the hardware interface (critical for mock hardware).
+    activate_fwd_controller = TimerAction(
+        period=3.0,
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    'bash', '-c',
+                    'echo "[RT] Switching to forward_position_controller..."; '
+                    'ros2 control switch_controllers '
+                    '  --deactivate scaled_joint_trajectory_controller '
+                    '  --activate forward_position_controller '
+                    '  && echo "[RT] forward_position_controller activated" '
+                    '  || echo "[RT] WARNING: controller switch failed"'
+                ],
+                output='screen',
+            )
+        ]
+    )
+
     # ── UR driver CPU pinning ─────────────────────────────────────────────────
     pin_ur_driver = TimerAction(
         period=3.0,
@@ -290,6 +312,7 @@ def generate_launch_description():
         set_cyclone_uri,
         enable_cpu_shield,
         ur_driver_launch_action,
+        activate_fwd_controller,
         pin_ur_driver,
         hand_udp_node,
         rt_controller_node,
