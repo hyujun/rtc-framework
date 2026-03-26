@@ -299,13 +299,9 @@ void RtControllerNode::DeclareAndLoadParameters()
     ctrl->SetDeviceNameConfigs(device_name_configs_);
   }
 
-  // Build device reorder maps for groups with known joint names
-  for (const auto& [name, slot] : group_slot_map_) {
-    auto it = device_name_configs_.find(name);
-    if (it != device_name_configs_.end() && !it->second.joint_state_names.empty()) {
-      BuildDeviceReorderMap(slot, it->second.joint_state_names);
-    }
-  }
+  // NOTE: Device reorder maps are built lazily on the first real message
+  // with joint names (see DeviceJointStateCallback). The map is used ONLY
+  // for digital twin publishing — device_states_ always stays in device order.
 
   // ── Deferred logging setup (needs active_groups_ + device_name_configs_) ─
   if (enable_logging_) {
@@ -889,6 +885,8 @@ void RtControllerNode::DeviceJointStateCallback(
 {
   if (msg->position.empty()) return;
 
+  // Build reorder map from the first real message with names
+  // (used ONLY for digital twin publishing, NOT for device_states_ storage)
   auto& reorder = device_reorder_maps_[device_slot];
   if (!msg->name.empty() && !reorder.built_from_msg) {
     BuildDeviceReorderMap(device_slot, msg->name);
@@ -899,34 +897,24 @@ void RtControllerNode::DeviceJointStateCallback(
   auto& ds = device_states_[device_slot];
   ds.num_channels = static_cast<int>(msg->position.size());
 
-  if (reorder.built && !msg->name.empty()) {
-    for (std::size_t src = 0; src < msg->position.size() &&
-         src < reorder.reorder.size(); ++src) {
-      const int idx = reorder.reorder[src];
-      if (idx >= 0 && idx < urtc::kMaxDeviceChannels) {
-        ds.positions[idx] = msg->position[src];
-        if (src < msg->velocity.size()) ds.velocities[idx] = msg->velocity[src];
-        if (src < msg->effort.size()) ds.efforts[idx] = msg->effort[src];
-      }
-    }
-  } else {
-    for (std::size_t i = 0; i < msg->position.size() &&
-         i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
-      ds.positions[i] = msg->position[i];
-    }
-    for (std::size_t i = 0; i < msg->velocity.size() &&
-         i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
-      ds.velocities[i] = msg->velocity[i];
-    }
-    for (std::size_t i = 0; i < msg->effort.size() &&
-         i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
-      ds.efforts[i] = msg->effort[i];
-    }
+  // Always store in device/message order — controller and command path need this
+  for (std::size_t i = 0; i < msg->position.size() &&
+       i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
+    ds.positions[i] = msg->position[i];
+  }
+  for (std::size_t i = 0; i < msg->velocity.size() &&
+       i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
+    ds.velocities[i] = msg->velocity[i];
+  }
+  for (std::size_t i = 0; i < msg->effort.size() &&
+       i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
+    ds.efforts[i] = msg->effort[i];
   }
   ds.valid = true;
   state_received_.store(true, std::memory_order_release);
 
   // Forward to digital twin (RELIABLE republish, config joint order)
+  // Apply reorder map here to convert device order → config name order
   {
     auto dt_it = slot_to_dt_topic_.find(device_slot);
     if (dt_it != slot_to_dt_topic_.end()) {
@@ -935,10 +923,26 @@ void RtControllerNode::DeviceJointStateCallback(
         auto& dte = pub_it->second;
         dte.msg.header = msg->header;
         const auto n = dte.msg.name.size();
-        for (std::size_t i = 0; i < n; ++i) {
-          dte.msg.position[i] = ds.positions[i];
-          dte.msg.velocity[i] = ds.velocities[i];
-          dte.msg.effort[i]   = ds.efforts[i];
+        if (reorder.built_from_msg) {
+          // Reorder: device/msg order → config joint_state_names order
+          for (std::size_t src = 0; src < msg->position.size() &&
+               src < reorder.reorder.size(); ++src) {
+            const int idx = reorder.reorder[src];
+            if (idx >= 0 && static_cast<std::size_t>(idx) < n) {
+              dte.msg.position[idx] = msg->position[src];
+              if (src < msg->velocity.size())
+                dte.msg.velocity[idx] = msg->velocity[src];
+              if (src < msg->effort.size())
+                dte.msg.effort[idx] = msg->effort[src];
+            }
+          }
+        } else {
+          // No reorder map from real message — pass through as-is
+          for (std::size_t i = 0; i < n; ++i) {
+            dte.msg.position[i] = ds.positions[i];
+            dte.msg.velocity[i] = ds.velocities[i];
+            dte.msg.effort[i]   = ds.efforts[i];
+          }
         }
         dte.publisher->publish(dte.msg);
       }
