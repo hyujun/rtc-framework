@@ -299,13 +299,9 @@ void RtControllerNode::DeclareAndLoadParameters()
     ctrl->SetDeviceNameConfigs(device_name_configs_);
   }
 
-  // Build device reorder maps for groups with known joint names
-  for (const auto& [name, slot] : group_slot_map_) {
-    auto it = device_name_configs_.find(name);
-    if (it != device_name_configs_.end() && !it->second.joint_state_names.empty()) {
-      BuildDeviceReorderMap(slot, it->second.joint_state_names);
-    }
-  }
+  // NOTE: Device reorder maps are built lazily on the first real message
+  // with joint names (see DeviceJointStateCallback). The map converts
+  // device-message order → config (joint_state_names) order for device_states_.
 
   // ── Deferred logging setup (needs active_groups_ + device_name_configs_) ─
   if (enable_logging_) {
@@ -622,8 +618,26 @@ void RtControllerNode::CreatePublishers()
         {
           auto cfg_it = device_name_configs_.find(group_name);
           if (cfg_it != device_name_configs_.end()) {
-            jce.msg.joint_names = cfg_it->second.joint_command_names;
-            jce.msg.values.resize(cfg_it->second.joint_command_names.size(), 0.0);
+            const auto& state_names = cfg_it->second.joint_state_names;
+            const auto& cmd_names   = cfg_it->second.joint_command_names;
+            jce.msg.joint_names = cmd_names;
+            jce.msg.values.resize(cmd_names.size(), 0.0);
+            // Build reorder map: config (joint_state_names) → command order
+            if (!state_names.empty() && !cmd_names.empty()
+                && state_names != cmd_names) {
+              jce.reorder_map.resize(cmd_names.size(), -1);
+              for (std::size_t ci = 0; ci < cmd_names.size(); ++ci) {
+                for (std::size_t si = 0; si < state_names.size(); ++si) {
+                  if (cmd_names[ci] == state_names[si]) {
+                    jce.reorder_map[ci] = static_cast<int>(si);
+                    break;
+                  }
+                }
+              }
+              RCLCPP_INFO(get_logger(),
+                          "  [%s] kJointCommand reorder map built (%zu → %zu)",
+                          group_name.c_str(), state_names.size(), cmd_names.size());
+            }
           }
         }
         jce.msg.command_type = "position";
@@ -889,26 +903,34 @@ void RtControllerNode::DeviceJointStateCallback(
 {
   if (msg->position.empty()) return;
 
+  // Build reorder map from the first real message that carries joint names.
+  // Maps device-message index → config (joint_state_names) index so that
+  // device_states_ is always stored in config order.
   auto& reorder = device_reorder_maps_[device_slot];
-  if (!reorder.built && !msg->name.empty()) {
+  if (!msg->name.empty() && !reorder.built_from_msg) {
     BuildDeviceReorderMap(device_slot, msg->name);
+    reorder.built_from_msg = true;
   }
 
   std::lock_guard lock(device_state_mutex_);
   auto& ds = device_states_[device_slot];
   ds.num_channels = static_cast<int>(msg->position.size());
 
-  if (reorder.built && !msg->name.empty()) {
+  if (reorder.built_from_msg) {
+    // Reorder: device/msg order → config (joint_state_names) order.
+    // Controller, GUI, digital twin all consume device_states_ in config order.
     for (std::size_t src = 0; src < msg->position.size() &&
          src < reorder.reorder.size(); ++src) {
       const int idx = reorder.reorder[src];
       if (idx >= 0 && idx < urtc::kMaxDeviceChannels) {
         ds.positions[idx] = msg->position[src];
         if (src < msg->velocity.size()) ds.velocities[idx] = msg->velocity[src];
-        if (src < msg->effort.size()) ds.efforts[idx] = msg->effort[src];
+        if (src < msg->effort.size())   ds.efforts[idx]    = msg->effort[src];
       }
     }
   } else {
+    // No reorder map yet (first message or device sends no names).
+    // Assume device-message order matches config order.
     for (std::size_t i = 0; i < msg->position.size() &&
          i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
       ds.positions[i] = msg->position[i];
@@ -925,7 +947,8 @@ void RtControllerNode::DeviceJointStateCallback(
   ds.valid = true;
   state_received_.store(true, std::memory_order_release);
 
-  // Forward to digital twin (RELIABLE republish, config joint order)
+  // Forward to digital twin (RELIABLE republish, config joint order).
+  // device_states_ is already in config order, so copy directly.
   {
     auto dt_it = slot_to_dt_topic_.find(device_slot);
     if (dt_it != slot_to_dt_topic_.end()) {
@@ -1514,9 +1537,19 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           jce.msg.header.stamp.sec = sec;
           jce.msg.header.stamp.nanosec = nsec;
           jce.msg.command_type = cmd_type_str;
-          for (int i = 0; i < nc
-                   && i < static_cast<int>(jce.msg.values.size()); ++i) {
-            jce.msg.values[i] = gc.commands[i];
+          const int n = std::min(nc, static_cast<int>(jce.msg.values.size()));
+          if (!jce.reorder_map.empty()) {
+            // Reorder from joint_state_names order → joint_command_names order
+            for (int i = 0; i < n; ++i) {
+              const int src = (i < static_cast<int>(jce.reorder_map.size()))
+                              ? jce.reorder_map[i] : -1;
+              jce.msg.values[i] = (src >= 0 && src < nc)
+                                  ? gc.commands[src] : 0.0;
+            }
+          } else {
+            for (int i = 0; i < n; ++i) {
+              jce.msg.values[i] = gc.commands[i];
+            }
           }
           jce.publisher->publish(jce.msg);
           return;
@@ -2051,7 +2084,7 @@ void RtControllerNode::BuildDeviceReorderMap(
   if (ref_names.empty()) return;
 
   auto& map = device_reorder_maps_[device_slot];
-  map.reorder.resize(msg_names.size(), -1);
+  map.reorder.assign(msg_names.size(), -1);  // clear + resize (was resize, kept stale data)
 
   for (std::size_t msg_i = 0; msg_i < msg_names.size(); ++msg_i) {
     for (std::size_t ref_i = 0; ref_i < ref_names.size(); ++ref_i) {
@@ -2062,7 +2095,7 @@ void RtControllerNode::BuildDeviceReorderMap(
     }
   }
   map.built = true;
-  RCLCPP_INFO(get_logger(), "Built device reorder map for slot %d (%zu names)",
-              device_slot, msg_names.size());
+  RCLCPP_INFO(get_logger(), "Built device reorder map for slot %d (%zu msg names → %zu ref names)",
+              device_slot, msg_names.size(), ref_names.size());
 }
 

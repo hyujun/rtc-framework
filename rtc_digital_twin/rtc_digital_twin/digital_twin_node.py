@@ -215,12 +215,20 @@ class DigitalTwinNode(Node):
                     cache.positions = [0.0] * len(msg.name)
                     cache.velocities = [0.0] * len(msg.name)
 
-                # Update with latest data (pass-through)
-                if msg.name:
+                # Update with latest data — use name-based pairing when
+                # both name and position arrays are present and same length
+                if msg.name and len(msg.name) == len(msg.position):
                     cache.received_names = list(msg.name)
-                cache.positions = list(msg.position)
-                if msg.velocity:
-                    cache.velocities = list(msg.velocity)
+                    cache.positions = list(msg.position)
+                    if msg.velocity and len(msg.velocity) == len(msg.name):
+                        cache.velocities = list(msg.velocity)
+                    else:
+                        cache.velocities = [0.0] * len(msg.name)
+                elif msg.position:
+                    # Fallback: position-only update (no names change)
+                    n = min(len(msg.position), len(cache.positions))
+                    for i in range(n):
+                        cache.positions[i] = msg.position[i]
             else:
                 # Static mode: reorder by name→idx mapping
                 for i, name in enumerate(msg.name):
