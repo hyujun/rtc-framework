@@ -36,6 +36,10 @@ ROBOT_JOINT_NAMES = [
     "wrist_1_joint", "wrist_2_joint", "wrist_3_joint",
 ]
 
+# Lookup tables for joint_names → display index mapping
+_ROBOT_NAME_TO_IDX = {n: i for i, n in enumerate(ROBOT_JOINT_NAMES)}
+_HAND_NAME_TO_IDX = {n: i for i, n in enumerate(HAND_MOTOR_NAMES)}
+
 # 컬럼 인덱스
 COL_NUM = 0           # # (체크박스)
 COL_NAME = 1          # Name
@@ -1474,13 +1478,27 @@ class ROSNode(Node):
 
     def gui_pos_callback(self, msg: GuiPosition):
         if len(msg.joint_positions) >= NUM_JOINTS:
-            self.gui.update_joints(np.array(msg.joint_positions[:NUM_JOINTS]))
+            if msg.joint_names and len(msg.joint_names) >= NUM_JOINTS:
+                reordered = [0.0] * NUM_JOINTS
+                for mi, name in enumerate(msg.joint_names[:NUM_JOINTS]):
+                    if name in _ROBOT_NAME_TO_IDX:
+                        reordered[_ROBOT_NAME_TO_IDX[name]] = msg.joint_positions[mi]
+                self.gui.update_joints(np.array(reordered))
+            else:
+                self.gui.update_joints(np.array(msg.joint_positions[:NUM_JOINTS]))
         if len(msg.task_positions) >= 6:
             self.gui.update_task_position(np.array(msg.task_positions[:6]))
 
     def hand_gui_pos_callback(self, msg: GuiPosition):
         if len(msg.joint_positions) >= NUM_HAND_MOTORS:
-            self.gui.update_hand_state(np.array(msg.joint_positions[:NUM_HAND_MOTORS]))
+            if msg.joint_names and len(msg.joint_names) >= NUM_HAND_MOTORS:
+                reordered = [0.0] * NUM_HAND_MOTORS
+                for mi, name in enumerate(msg.joint_names[:NUM_HAND_MOTORS]):
+                    if name in _HAND_NAME_TO_IDX:
+                        reordered[_HAND_NAME_TO_IDX[name]] = msg.joint_positions[mi]
+                self.gui.update_hand_state(np.array(reordered))
+            else:
+                self.gui.update_hand_state(np.array(msg.joint_positions[:NUM_HAND_MOTORS]))
 
     def estop_callback(self, msg):
         self.gui.update_estop(msg.data)
