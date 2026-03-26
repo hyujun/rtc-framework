@@ -890,8 +890,9 @@ void RtControllerNode::DeviceJointStateCallback(
   if (msg->position.empty()) return;
 
   auto& reorder = device_reorder_maps_[device_slot];
-  if (!reorder.built && !msg->name.empty()) {
+  if (!msg->name.empty() && !reorder.built_from_msg) {
     BuildDeviceReorderMap(device_slot, msg->name);
+    reorder.built_from_msg = true;
   }
 
   std::lock_guard lock(device_state_mutex_);
@@ -2051,7 +2052,7 @@ void RtControllerNode::BuildDeviceReorderMap(
   if (ref_names.empty()) return;
 
   auto& map = device_reorder_maps_[device_slot];
-  map.reorder.resize(msg_names.size(), -1);
+  map.reorder.assign(msg_names.size(), -1);  // clear + resize (was resize, kept stale data)
 
   for (std::size_t msg_i = 0; msg_i < msg_names.size(); ++msg_i) {
     for (std::size_t ref_i = 0; ref_i < ref_names.size(); ++ref_i) {
@@ -2062,7 +2063,7 @@ void RtControllerNode::BuildDeviceReorderMap(
     }
   }
   map.built = true;
-  RCLCPP_INFO(get_logger(), "Built device reorder map for slot %d (%zu names)",
-              device_slot, msg_names.size());
+  RCLCPP_INFO(get_logger(), "Built device reorder map for slot %d (%zu msg names → %zu ref names)",
+              device_slot, msg_names.size(), ref_names.size());
 }
 

@@ -267,6 +267,7 @@ private:
   struct DeviceReorderMap {
     std::vector<int> reorder;
     bool built{false};
+    bool built_from_msg{false};  // true only when built from actual device msg
   };
   std::array<DeviceReorderMap, kMaxDevices> device_reorder_maps_{};
 
