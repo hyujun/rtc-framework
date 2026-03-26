@@ -168,9 +168,11 @@ private:
 
   // ── Digital Twin JointState republishers (RELIABLE, depth 10) ────────────
   // key = "/{group}/digital_twin/joint_states"
-  std::unordered_map<std::string,
-      rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr>
-      digital_twin_publishers_;
+  struct DigitalTwinEntry {
+    rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr publisher;
+    sensor_msgs::msg::JointState msg;  // pre-allocated with config joint_state_names
+  };
+  std::unordered_map<std::string, DigitalTwinEntry> digital_twin_publishers_;
   // group_slot → digital_twin topic name mapping
   std::unordered_map<int, std::string> slot_to_dt_topic_;
 

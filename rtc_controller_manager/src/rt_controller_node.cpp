@@ -781,8 +781,19 @@ void RtControllerNode::CreatePublishers()
     dt_qos.reliable();
     for (const auto& [group_name, slot] : group_slot_map_) {
       std::string dt_topic = "/" + group_name + "/digital_twin/joint_states";
-      digital_twin_publishers_[dt_topic] =
+      DigitalTwinEntry dte;
+      dte.publisher =
           create_publisher<sensor_msgs::msg::JointState>(dt_topic, dt_qos);
+      // Pre-allocate message with config joint_state_names order
+      auto cfg_it = device_name_configs_.find(group_name);
+      if (cfg_it != device_name_configs_.end()) {
+        const auto& names = cfg_it->second.joint_state_names;
+        dte.msg.name.assign(names.begin(), names.end());
+        dte.msg.position.resize(names.size(), 0.0);
+        dte.msg.velocity.resize(names.size(), 0.0);
+        dte.msg.effort.resize(names.size(), 0.0);
+      }
+      digital_twin_publishers_[dt_topic] = std::move(dte);
       slot_to_dt_topic_[slot] = dt_topic;
       RCLCPP_INFO(get_logger(), "  Digital Twin publish: %s (RELIABLE/10)",
                   dt_topic.c_str());
@@ -914,13 +925,21 @@ void RtControllerNode::DeviceJointStateCallback(
   ds.valid = true;
   state_received_.store(true, std::memory_order_release);
 
-  // Forward to digital twin (RELIABLE republish)
+  // Forward to digital twin (RELIABLE republish, config joint order)
   {
     auto dt_it = slot_to_dt_topic_.find(device_slot);
     if (dt_it != slot_to_dt_topic_.end()) {
       auto pub_it = digital_twin_publishers_.find(dt_it->second);
       if (pub_it != digital_twin_publishers_.end()) {
-        pub_it->second->publish(*msg);
+        auto& dte = pub_it->second;
+        dte.msg.header = msg->header;
+        const auto n = dte.msg.name.size();
+        for (std::size_t i = 0; i < n; ++i) {
+          dte.msg.position[i] = ds.positions[i];
+          dte.msg.velocity[i] = ds.velocities[i];
+          dte.msg.effort[i]   = ds.efforts[i];
+        }
+        dte.publisher->publish(dte.msg);
       }
     }
   }
