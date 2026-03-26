@@ -132,6 +132,10 @@ private:
   struct PublisherEntry {
     rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr publisher;
     std_msgs::msg::Float64MultiArray msg;
+    // Reorder map: output index → input (gc.commands) index.
+    // Built from joint_state_names → joint_command_names mapping.
+    // Empty when no reorder is needed (names are identical or absent).
+    std::vector<int> reorder_map;
   };
   std::unordered_map<std::string, PublisherEntry> topic_publishers_;
 

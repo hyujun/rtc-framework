@@ -40,6 +40,11 @@ JOINT_SPACE = {"demo_joint_controller": True, "demo_task_controller": False}
 NUM_JOINTS = 6
 NUM_HAND_MOTORS = 10
 
+ROBOT_JOINT_NAMES = [
+    "shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
+    "wrist_1_joint", "wrist_2_joint", "wrist_3_joint",
+]
+
 # Hand finger groups
 HAND_FINGER_GROUPS = [
     ("Thumb",  ["thumb_cmc_aa", "thumb_cmc_fe", "thumb_mcp_fe"]),
@@ -916,6 +921,7 @@ class DemoControllerGUI(Node):
         is_joint = JOINT_SPACE.get(idx, True)
 
         robot_msg = RobotTarget()
+        robot_msg.joint_names = ROBOT_JOINT_NAMES
         try:
             if is_joint:
                 robot_msg.goal_type = 'joint'
@@ -949,6 +955,7 @@ class DemoControllerGUI(Node):
             return
         hand_msg = RobotTarget()
         hand_msg.goal_type = 'joint'
+        hand_msg.joint_names = HAND_MOTOR_NAMES
         hand_msg.joint_target = hand_values
         self.hand_cmd_pub.publish(hand_msg)
         self.get_logger().info(
