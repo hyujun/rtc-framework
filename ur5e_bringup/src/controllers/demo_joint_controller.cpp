@@ -81,6 +81,9 @@ void DemoJointController::ReadState(const ControllerState & state) noexcept
     q_[static_cast<Eigen::Index>(i)] = dev0.positions[i];
   }
 
+  // Hand motor data: dev1.motor_positions[], motor_velocities[], motor_efforts[]
+  // available via state.devices[1].motor_* (populated from /hand/motor_states)
+
   // Hand sensor data (per-fingertip)
   num_active_fingertips_ = 0;
   if (state.num_devices > 1 && state.devices[1].valid) {

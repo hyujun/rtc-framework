@@ -66,7 +66,7 @@
 
     # ── 모터/핑거팁 이름 (v5.14.0 named messaging) ──────────────────────
     # 비어있으면 기본 이름 사용.
-    hand_joint_names:
+    joint_state_names:
       - "thumb_cmc_aa"
       - "thumb_cmc_fe"
       - "thumb_mcp_fe"
@@ -78,7 +78,7 @@
       - "middle_dip_fe"
       - "ring_mcp_fe"
     
-    hand_motor_names:
+    motor_state_names:
       - "motor_1"
       - "motor_2"
       - "motor_3"

@@ -22,8 +22,10 @@ struct DeviceLogConfig {
   int device_index{0};                         // LogEntry.devices[] index
   std::filesystem::path path;                  // CSV file path (empty = disabled)
   std::vector<std::string> joint_names;        // for CSV header labels
+  std::vector<std::string> motor_names;        // for CSV motor header labels
   std::vector<std::string> sensor_names;       // for CSV header labels
   int num_channels{0};                         // expected joint channel count
+  int num_motor_channels{0};                   // expected motor channel count
   int num_sensor_channels{0};                  // expected sensor channel count
 };
 
@@ -136,6 +138,12 @@ private:
     }
     return std::to_string(i);
   }
+  std::string MotorLabel(std::size_t dev_idx, std::size_t i) const {
+    if (dev_idx < device_configs_.size() && i < device_configs_[dev_idx].motor_names.size()) {
+      return device_configs_[dev_idx].motor_names[i];
+    }
+    return "m" + std::to_string(i);
+  }
   std::string SensorLabel(std::size_t dev_idx, std::size_t i) const {
     if (dev_idx < device_configs_.size() && i < device_configs_[dev_idx].sensor_names.size()) {
       return device_configs_[dev_idx].sensor_names[i];
@@ -212,6 +220,18 @@ private:
     // Task-space FK
     for (int i = 0; i < 6; ++i) { f << ",task_pos_" << i; }
 
+    // Motor state (optional — only if motor_names configured)
+    const int nmc = cfg.num_motor_channels;
+    for (int i = 0; i < nmc; ++i) {
+      f << ",motor_pos_" << MotorLabel(idx, static_cast<std::size_t>(i));
+    }
+    for (int i = 0; i < nmc; ++i) {
+      f << ",motor_vel_" << MotorLabel(idx, static_cast<std::size_t>(i));
+    }
+    for (int i = 0; i < nmc; ++i) {
+      f << ",motor_eff_" << MotorLabel(idx, static_cast<std::size_t>(i));
+    }
+
     f << '\n';
   }
 
@@ -254,6 +274,13 @@ private:
 
     // Task-space FK
     for (const auto v : e.actual_task_positions) { f << ',' << v; }
+
+    // Motor state
+    const int nmc = cfg.num_motor_channels;
+    const int nma = d.num_motor_channels;
+    for (int i = 0; i < nmc; ++i) { f << ',' << (i < nma ? d.motor_positions[static_cast<std::size_t>(i)] : 0.0); }
+    for (int i = 0; i < nmc; ++i) { f << ',' << (i < nma ? d.motor_velocities[static_cast<std::size_t>(i)] : 0.0); }
+    for (int i = 0; i < nmc; ++i) { f << ',' << (i < nma ? d.motor_efforts[static_cast<std::size_t>(i)] : 0.0); }
 
     f << '\n';
   }

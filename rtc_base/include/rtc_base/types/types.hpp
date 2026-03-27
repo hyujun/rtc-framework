@@ -127,6 +127,11 @@ struct DeviceState {
   std::array<double, kMaxDeviceChannels> positions{};
   std::array<double, kMaxDeviceChannels> velocities{};
   std::array<double, kMaxDeviceChannels> efforts{};          // torques for robot arm
+  // Motor-space data (separate from joint-space, e.g. hand motor encoder values)
+  int num_motor_channels{0};
+  std::array<double, kMaxDeviceChannels> motor_positions{};
+  std::array<double, kMaxDeviceChannels> motor_velocities{};
+  std::array<double, kMaxDeviceChannels> motor_efforts{};    // motor currents
   std::array<int32_t, kMaxSensorChannels> sensor_data{};     // post-filter
   std::array<int32_t, kMaxSensorChannels> sensor_data_raw{}; // pre-filter
   int num_sensor_channels{0};
@@ -203,6 +208,7 @@ struct DeviceNameConfig {
   std::string device_name;
   std::vector<std::string> joint_state_names;
   std::vector<std::string> joint_command_names;  // empty → defaults to joint_state_names
+  std::vector<std::string> motor_state_names;   // motor-space names (e.g. motor_1..10)
   std::vector<std::string> sensor_names;
   std::optional<DeviceUrdfConfig> urdf;          // nullopt if no URDF for this device
   std::optional<DeviceJointLimits> joint_limits;  // nullopt if no limits configured
@@ -213,6 +219,7 @@ struct DeviceNameConfig {
 
 enum class SubscribeRole {
   kState,           // sensor_msgs/JointState (ur5e & hand 공통)
+  kMotorState,      // sensor_msgs/JointState (motor-space state, e.g. /hand/motor_states)
   kSensorState,     // Float64MultiArray (센서 전용, e.g. 촉각)
   kTarget,          // Float64MultiArray (외부 목표)
 };
@@ -308,6 +315,7 @@ struct TopicConfig {
 [[nodiscard]] inline constexpr const char * SubscribeRoleToString(SubscribeRole role) noexcept {
   switch (role) {
     case SubscribeRole::kState:       return "state";
+    case SubscribeRole::kMotorState:  return "motor_state";
     case SubscribeRole::kSensorState: return "sensor_state";
     case SubscribeRole::kTarget:      return "target";
   }

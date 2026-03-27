@@ -12,6 +12,7 @@ namespace
 {
 const std::unordered_map<std::string, SubscribeRole> kSubscribeRoleMap = {
   {"state",         SubscribeRole::kState},
+  {"motor_state",   SubscribeRole::kMotorState},
   {"sensor_state",  SubscribeRole::kSensorState},
   {"target",        SubscribeRole::kTarget},
   // backward compat

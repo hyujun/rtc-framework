@@ -117,6 +117,9 @@ void DemoTaskController::ReadState(const ControllerState & state) noexcept
 
   tcp_position_ = {tcp[0], tcp[1], tcp[2]};
 
+  // Hand motor data: dev1.motor_positions[], motor_velocities[], motor_efforts[]
+  // available via state.devices[1].motor_* (populated from /hand/motor_states)
+
   // Hand sensor data (per-fingertip)
   num_active_fingertips_ = 0;
   if (state.num_devices > 1 && state.devices[1].valid) {

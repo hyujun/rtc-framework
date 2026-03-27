@@ -356,8 +356,10 @@ void RtControllerNode::DeclareAndLoadParameters()
           auto it = device_name_configs_.find(gname);
           if (it != device_name_configs_.end()) {
             dlc.joint_names = it->second.joint_state_names;
+            dlc.motor_names = it->second.motor_state_names;
             dlc.sensor_names = it->second.sensor_names;
             dlc.num_channels = static_cast<int>(it->second.joint_state_names.size());
+            dlc.num_motor_channels = static_cast<int>(it->second.motor_state_names.size());
             dlc.num_sensor_channels = static_cast<int>(
                 it->second.sensor_names.size() * urtc::kSensorValuesPerFingertip);
           }
@@ -493,6 +495,22 @@ void RtControllerNode::CreateSubscriptions()
               sub_options);
             topic_subscriptions_.push_back(sub);
             RCLCPP_INFO(get_logger(), "  Subscribe [%s/state]: %s (slot %d, BEST_EFFORT/2)",
+                        group_name.c_str(), entry.topic_name.c_str(), slot);
+            break;
+          }
+          case urtc::SubscribeRole::kMotorState: {
+            auto sub = create_subscription<sensor_msgs::msg::JointState>(
+              entry.topic_name, sensor_sub_qos,
+              [this, slot, dt_idx](sensor_msgs::msg::JointState::SharedPtr msg) {
+                DeviceMotorStateCallback(slot, std::move(msg));
+                if (dt_idx >= 0) {
+                  device_timeouts_[dt_idx].last_update = std::chrono::steady_clock::now();
+                  device_timeouts_[dt_idx].received = true;
+                }
+              },
+              sub_options);
+            topic_subscriptions_.push_back(sub);
+            RCLCPP_INFO(get_logger(), "  Subscribe [%s/motor_state]: %s (slot %d, BEST_EFFORT/2)",
                         group_name.c_str(), entry.topic_name.c_str(), slot);
             break;
           }
@@ -702,6 +720,16 @@ void RtControllerNode::CreatePublishers()
         pe.msg.joint_goal.resize(n, 0.0);
         pe.msg.trajectory_positions.resize(n, 0.0);
         pe.msg.trajectory_velocities.resize(n, 0.0);
+        // Motor state fields (optional — populated if motor_state_names configured)
+        if (cfg_it != device_name_configs_.end() &&
+            !cfg_it->second.motor_state_names.empty()) {
+          const auto& mnames = cfg_it->second.motor_state_names;
+          const auto nm = mnames.size();
+          pe.msg.motor_names.assign(mnames.begin(), mnames.end());
+          pe.msg.motor_positions.resize(nm, 0.0);
+          pe.msg.motor_velocities.resize(nm, 0.0);
+          pe.msg.motor_efforts.resize(nm, 0.0);
+        }
         device_state_log_publishers_[entry.topic_name] = std::move(pe);
         log_pub("device_state_log");
         return;
@@ -974,6 +1002,29 @@ void RtControllerNode::DeviceJointStateCallback(
   }
 }
 
+void RtControllerNode::DeviceMotorStateCallback(
+    int device_slot, sensor_msgs::msg::JointState::SharedPtr msg)
+{
+  if (msg->position.empty()) return;
+
+  std::lock_guard lock(device_state_mutex_);
+  auto& ds = device_states_[device_slot];
+  ds.num_motor_channels = static_cast<int>(msg->position.size());
+
+  for (std::size_t i = 0; i < msg->position.size() &&
+       i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
+    ds.motor_positions[i] = msg->position[i];
+  }
+  for (std::size_t i = 0; i < msg->velocity.size() &&
+       i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
+    ds.motor_velocities[i] = msg->velocity[i];
+  }
+  for (std::size_t i = 0; i < msg->effort.size() &&
+       i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
+    ds.motor_efforts[i] = msg->effort[i];
+  }
+}
+
 void RtControllerNode::DeviceTargetCallback(
     int device_slot, rtc_msgs::msg::RobotTarget::SharedPtr msg)
 {
@@ -1157,6 +1208,10 @@ void RtControllerNode::ControlLoop()
     dev.positions = cache.positions;
     dev.velocities = cache.velocities;
     dev.efforts = cache.efforts;
+    dev.num_motor_channels = cache.num_motor_channels;
+    dev.motor_positions = cache.motor_positions;
+    dev.motor_velocities = cache.motor_velocities;
+    dev.motor_efforts = cache.motor_efforts;
     dev.sensor_data = cache.sensor_data;
     dev.sensor_data_raw = cache.sensor_data_raw;
     dev.num_sensor_channels = cache.num_sensor_channels;
@@ -1216,6 +1271,10 @@ void RtControllerNode::ControlLoop()
       gc.actual_positions = dstate.positions;
       gc.actual_velocities = dstate.velocities;
       gc.efforts = dstate.efforts;
+      gc.num_motor_channels = dstate.num_motor_channels;
+      gc.motor_positions = dstate.motor_positions;
+      gc.motor_velocities = dstate.motor_velocities;
+      gc.motor_efforts = dstate.motor_efforts;
       gc.sensor_data = dstate.sensor_data;
       gc.sensor_data_raw = dstate.sensor_data_raw;
       gc.num_sensor_channels = dstate.num_sensor_channels;
@@ -1305,6 +1364,12 @@ void RtControllerNode::ControlLoop()
         dl.trajectory_velocities[j] = dout.trajectory_velocities[j];
       }
       dl.goal_type = dout.goal_type;
+      dl.num_motor_channels = dstate.num_motor_channels;
+      for (int j = 0; j < dstate.num_motor_channels; ++j) {
+        dl.motor_positions[j] = dstate.motor_positions[j];
+        dl.motor_velocities[j] = dstate.motor_velocities[j];
+        dl.motor_efforts[j] = dstate.motor_efforts[j];
+      }
       dl.num_sensor_channels = dstate.num_sensor_channels;
       for (int j = 0; j < dstate.num_sensor_channels; ++j) {
         dl.sensor_data[j] = static_cast<float>(dstate.sensor_data[j]);
@@ -1633,6 +1698,14 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           std::copy(snap.actual_task_positions.begin(),
                     snap.actual_task_positions.end(),
                     m.actual_task_positions.begin());
+          // Motor state fields
+          const int nm = std::min(gc.num_motor_channels,
+                                  static_cast<int>(m.motor_positions.size()));
+          for (int i = 0; i < nm; ++i) {
+            m.motor_positions[i] = gc.motor_positions[i];
+            m.motor_velocities[i] = gc.motor_velocities[i];
+            m.motor_efforts[i] = gc.motor_efforts[i];
+          }
           it->second.publisher->publish(m);
           return;
         }
@@ -1828,6 +1901,16 @@ void RtControllerNode::LoadDeviceNameConfigs()
     }
     if (cfg.joint_command_names.empty()) {
       cfg.joint_command_names = cfg.joint_state_names;
+    }
+
+    // motor_state_names (optional — motor-space names for /hand/motor_states)
+    const std::string msn_key = prefix + ".motor_state_names";
+    if (has_parameter(msn_key)) {
+      try {
+        cfg.motor_state_names = get_parameter(msn_key).as_string_array();
+      } catch (const rclcpp::ParameterTypeException&) {
+        cfg.motor_state_names.clear();
+      }
     }
 
     // sensor_names (optional)

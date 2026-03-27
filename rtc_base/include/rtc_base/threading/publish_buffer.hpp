@@ -42,6 +42,11 @@ struct PublishSnapshot {
     std::array<double, kMaxDeviceChannels> actual_positions{};
     std::array<double, kMaxDeviceChannels> actual_velocities{};
     std::array<double, kMaxDeviceChannels> efforts{};
+    // Motor-space data (hand motor encoder values)
+    int num_motor_channels{0};
+    std::array<double, kMaxDeviceChannels> motor_positions{};
+    std::array<double, kMaxDeviceChannels> motor_velocities{};
+    std::array<double, kMaxDeviceChannels> motor_efforts{};
     // Sensor data (hand device)
     std::array<int32_t, kMaxSensorChannels> sensor_data{};
     std::array<int32_t, kMaxSensorChannels> sensor_data_raw{};

@@ -31,6 +31,11 @@ struct DeviceLogSlot {
   std::array<double, kMaxDeviceChannels> commands{};
   std::array<double, kMaxDeviceChannels> trajectory_positions{};
   std::array<double, kMaxDeviceChannels> trajectory_velocities{};
+  // Motor-space data
+  int num_motor_channels{0};
+  std::array<double, kMaxDeviceChannels> motor_positions{};
+  std::array<double, kMaxDeviceChannels> motor_velocities{};
+  std::array<double, kMaxDeviceChannels> motor_efforts{};
   std::array<float, kMaxSensorChannels>  sensor_data{};
   std::array<float, kMaxSensorChannels>  sensor_data_raw{};
   int num_sensor_channels{0};

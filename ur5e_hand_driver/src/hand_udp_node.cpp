@@ -61,8 +61,9 @@ class HandUdpNode : public rclcpp::Node {
     declare_parameter("check_link", true);
     declare_parameter("link_fail_threshold", 10);
 
-    // Hand motor/fingertip names (이름 기반 매핑용)
-    declare_parameter("hand_motor_names", std::vector<std::string>{});
+    // Hand joint/motor/fingertip names (이름 기반 매핑용)
+    declare_parameter("joint_state_names", std::vector<std::string>{});
+    declare_parameter("motor_state_names", std::vector<std::string>{});
     declare_parameter("hand_fingertip_names", std::vector<std::string>{});
 
     // Communication mode: "individual" (0x11+0x12+0x14~0x17) or "bulk" (0x10+0x19)
@@ -70,9 +71,6 @@ class HandUdpNode : public rclcpp::Node {
 
     // Joint mode: "motor" (mode=0x00, raw encoder) or "joint" (mode=0x01, joint-space)
     declare_parameter("joint_mode", std::string{"motor"});
-
-    // Hand joint names (joint-space naming, for /hand/joint_states)
-    declare_parameter("hand_joint_names", std::vector<std::string>{});
 
     // Sensor LPF
     declare_parameter("baro_lpf_enabled", false);
@@ -217,10 +215,10 @@ class HandUdpNode : public rclcpp::Node {
     ft_enabled_ = ft_config.enabled;
 
     // ── Hand joint/motor/fingertip names ────────────────────────────────
-    auto joint_names = get_parameter("hand_joint_names").as_string_array();
+    auto joint_names = get_parameter("joint_state_names").as_string_array();
     if (joint_names.empty()) { joint_names = urtc::kDefaultHandMotorNames; }
     joint_names_ = joint_names;
-    auto motor_names = get_parameter("hand_motor_names").as_string_array();
+    auto motor_names = get_parameter("motor_state_names").as_string_array();
     if (motor_names.empty()) { motor_names = urtc::kDefaultHandMotorNames; }
     motor_names_ = motor_names;
     auto fingertip_names = get_parameter("hand_fingertip_names").as_string_array();
@@ -375,7 +373,7 @@ class HandUdpNode : public rclcpp::Node {
     const bool is_joint = (state.received_joint_mode ==
         static_cast<uint8_t>(urtc::hand_packets::JointMode::kJoint));
 
-    // /hand/joint_states (hand_joint_names)
+    // /hand/joint_states (joint_state_names)
     joint_js_msg_.header.stamp = stamp;
     for (int i = 0; i < urtc::kNumHandMotors; ++i) {
       const auto iu = static_cast<std::size_t>(i);
@@ -386,7 +384,7 @@ class HandUdpNode : public rclcpp::Node {
     }
     joint_state_pub_->publish(joint_js_msg_);
 
-    // /hand/motor_states (hand_motor_names + effort=current)
+    // /hand/motor_states (motor_state_names + effort=current)
     motor_js_msg_.header.stamp = stamp;
     for (int i = 0; i < urtc::kNumHandMotors; ++i) {
       const auto iu = static_cast<std::size_t>(i);

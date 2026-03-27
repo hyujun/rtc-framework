@@ -69,6 +69,17 @@
           - "middle_mcp_fe"
           - "middle_dip_fe"
           - "ring_mcp_fe"
+        motor_state_names:
+          - "motor_1"
+          - "motor_2"
+          - "motor_3"
+          - "motor_4"
+          - "motor_5"
+          - "motor_6"
+          - "motor_7"
+          - "motor_8"
+          - "motor_9"
+          - "motor_10"
         sensor_names:
           - "thumb"
           - "index"

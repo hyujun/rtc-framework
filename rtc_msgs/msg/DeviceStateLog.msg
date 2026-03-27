@@ -27,3 +27,9 @@ float64[] trajectory_velocities  # [N]
 
 # ── Task-space FK ──────────────────────────────────────────────────────────
 float64[6] actual_task_positions # [x, y, z, roll, pitch, yaw]
+
+# ── Motor State (optional, empty if no motor_state_names configured) ──────
+string[]  motor_names            # [M]
+float64[] motor_positions        # [M]
+float64[] motor_velocities       # [M]
+float64[] motor_efforts          # [M] (motor currents)

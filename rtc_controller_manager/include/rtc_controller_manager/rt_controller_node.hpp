@@ -80,6 +80,8 @@ private:
   // ── Subscription callbacks (unified per-device) ──────────────────────────
   void DeviceJointStateCallback(int device_slot,
       sensor_msgs::msg::JointState::SharedPtr msg);
+  void DeviceMotorStateCallback(int device_slot,
+      sensor_msgs::msg::JointState::SharedPtr msg);
   void DeviceSensorCallback(int device_slot,
       std_msgs::msg::Float64MultiArray::SharedPtr msg);
   void HandSensorStateCallback(int device_slot,
@@ -208,6 +210,11 @@ private:
     std::array<double, rtc::kMaxDeviceChannels> positions{};
     std::array<double, rtc::kMaxDeviceChannels> velocities{};
     std::array<double, rtc::kMaxDeviceChannels> efforts{};
+    // Motor-space data (separate from joint-space)
+    int num_motor_channels{0};
+    std::array<double, rtc::kMaxDeviceChannels> motor_positions{};
+    std::array<double, rtc::kMaxDeviceChannels> motor_velocities{};
+    std::array<double, rtc::kMaxDeviceChannels> motor_efforts{};
     std::array<int32_t, rtc::kMaxSensorChannels> sensor_data{};
     std::array<int32_t, rtc::kMaxSensorChannels> sensor_data_raw{};
     int num_sensor_channels{0};
