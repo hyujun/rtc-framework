@@ -68,8 +68,11 @@ class HandUdpNode : public rclcpp::Node {
     // Communication mode: "individual" (0x11+0x12+0x14~0x17) or "bulk" (0x10+0x19)
     declare_parameter("communication_mode", std::string{"individual"});
 
-    // Write mode: "motor" (mode=0x00, raw encoder) or "joint" (mode=0x01, joint-space)
-    declare_parameter("write_mode", std::string{"motor"});
+    // Joint mode: "motor" (mode=0x00, raw encoder) or "joint" (mode=0x01, joint-space)
+    declare_parameter("joint_mode", std::string{"motor"});
+
+    // Hand joint names (joint-space naming, for /hand/joint_states)
+    declare_parameter("hand_joint_names", std::vector<std::string>{});
 
     // Sensor LPF
     declare_parameter("baro_lpf_enabled", false);
@@ -104,11 +107,11 @@ class HandUdpNode : public rclcpp::Node {
         ? urtc::HandCommunicationMode::kBulk
         : urtc::HandCommunicationMode::kIndividual;
 
-    // ── Write mode ───────────────────────────────────────────────────────
-    const std::string write_mode_str = get_parameter("write_mode").as_string();
-    const auto write_mode = (write_mode_str == "joint")
-        ? urtc::hand_packets::WriteMode::kJointPosition
-        : urtc::hand_packets::WriteMode::kMotorPosition;
+    // ── Joint mode ──────────────────────────────────────────────────────
+    const std::string joint_mode_str = get_parameter("joint_mode").as_string();
+    const auto joint_mode = (joint_mode_str == "joint")
+        ? urtc::hand_packets::JointMode::kJoint
+        : urtc::hand_packets::JointMode::kMotor;
 
     // ── Sensor LPF ────────────────────────────────────────────────────────
     const bool   baro_lpf_enabled   = get_parameter("baro_lpf_enabled").as_bool();
@@ -164,18 +167,20 @@ class HandUdpNode : public rclcpp::Node {
     controller_ = std::make_unique<urtc::HandController>(
         target_ip, target_port, urtc::kUdpRecvConfig, recv_timeout_ms,
         false /* enable_write_ack: deprecated */, 1,
-        num_fingertips_, false, ft_names, comm_mode, write_mode,
+        num_fingertips_, false, ft_names, comm_mode, joint_mode,
         tof_lpf_enabled, tof_lpf_cutoff_hz,
         baro_lpf_enabled, baro_lpf_cutoff_hz, ft_config,
         drift_enabled, drift_threshold, drift_window_size);
 
     // ── Topic names (configurable) ────────────────────────────────────
     declare_parameter("command_topic", std::string("/hand/joint_command"));
-    declare_parameter("state_topic", std::string("/hand/joint_states"));
+    declare_parameter("joint_state_topic", std::string("/hand/joint_states"));
+    declare_parameter("motor_state_topic", std::string("/hand/motor_states"));
     declare_parameter("sensor_topic", std::string("/hand/sensor_states"));
     declare_parameter("link_status_topic", std::string("/hand/link_status"));
     const std::string cmd_topic = get_parameter("command_topic").as_string();
-    const std::string state_topic = get_parameter("state_topic").as_string();
+    const std::string joint_state_topic = get_parameter("joint_state_topic").as_string();
+    const std::string motor_state_topic = get_parameter("motor_state_topic").as_string();
     const std::string sensor_topic = get_parameter("sensor_topic").as_string();
     const std::string link_status_topic = get_parameter("link_status_topic").as_string();
 
@@ -187,7 +192,9 @@ class HandUdpNode : public rclcpp::Node {
     sensor_pub_qos.best_effort();
 
     joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
-        state_topic, sensor_pub_qos);
+        joint_state_topic, sensor_pub_qos);
+    motor_state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
+        motor_state_topic, sensor_pub_qos);
     sensor_state_pub_ = create_publisher<rtc_msgs::msg::HandSensorState>(
         sensor_topic, sensor_pub_qos);
 
@@ -209,10 +216,13 @@ class HandUdpNode : public rclcpp::Node {
 
     ft_enabled_ = ft_config.enabled;
 
-    // ── Hand motor/fingertip names ──────────────────────────────────────
+    // ── Hand joint/motor/fingertip names ────────────────────────────────
+    auto joint_names = get_parameter("hand_joint_names").as_string_array();
+    if (joint_names.empty()) { joint_names = urtc::kDefaultHandMotorNames; }
+    joint_names_ = joint_names;
     auto motor_names = get_parameter("hand_motor_names").as_string_array();
     if (motor_names.empty()) { motor_names = urtc::kDefaultHandMotorNames; }
-    joint_names_ = motor_names;
+    motor_names_ = motor_names;
     auto fingertip_names = get_parameter("hand_fingertip_names").as_string_array();
     if (fingertip_names.empty()) { fingertip_names = urtc::kDefaultFingertipNames; }
     fingertip_names_ = fingertip_names;
@@ -315,9 +325,9 @@ class HandUdpNode : public rclcpp::Node {
     }
 
     RCLCPP_INFO(get_logger(),
-                "HandUdpNode: target %s:%d, direct publish from EventLoop, comm=%s, write=%s",
+                "HandUdpNode: target %s:%d, direct publish from EventLoop, comm=%s, joint_mode=%s",
                 target_ip.c_str(), target_port, comm_mode_str.c_str(),
-                write_mode_str.c_str());
+                joint_mode_str.c_str());
   }
 
   ~HandUdpNode() override {
@@ -330,10 +340,15 @@ class HandUdpNode : public rclcpp::Node {
   // Pre-allocate ROS2 messages once in the constructor (non-RT).
   // This avoids dynamic allocation on the EventLoop publish path.
   void PreallocateMessages() {
-    // JointState message
-    js_msg_.name = joint_names_;
-    js_msg_.position.resize(urtc::kNumHandMotors);
-    js_msg_.velocity.resize(urtc::kNumHandMotors);
+    // JointState messages (dual: joint + motor)
+    joint_js_msg_.name = joint_names_;
+    joint_js_msg_.position.resize(urtc::kNumHandMotors);
+    joint_js_msg_.velocity.resize(urtc::kNumHandMotors);
+
+    motor_js_msg_.name = motor_names_;
+    motor_js_msg_.position.resize(urtc::kNumHandMotors);
+    motor_js_msg_.velocity.resize(urtc::kNumHandMotors);
+    motor_js_msg_.effort.resize(urtc::kNumHandMotors);
 
     // HandSensorState message — pre-allocate fingertips array
     sensor_msg_.fingertips.resize(static_cast<std::size_t>(num_fingertips_));
@@ -353,16 +368,36 @@ class HandUdpNode : public rclcpp::Node {
   // within the 2ms EventLoop budget.
   void PublishFromEventLoop(const urtc::HandState& state,
                             const urtc::FingertipFTState& ft_state) {
-    // ── JointState (motor positions + velocities) ──────────────────────
-    js_msg_.header.stamp = this->now();
+    // ── Dual JointState publish (joint + motor) ────────────────────────
+    // Route data based on received_joint_mode from response packet.
+    // The matching topic gets real data; the other gets zeros.
+    const auto stamp = this->now();
+    const bool is_joint = (state.received_joint_mode ==
+        static_cast<uint8_t>(urtc::hand_packets::JointMode::kJoint));
+
+    // /hand/joint_states (hand_joint_names)
+    joint_js_msg_.header.stamp = stamp;
     for (int i = 0; i < urtc::kNumHandMotors; ++i) {
       const auto iu = static_cast<std::size_t>(i);
-      js_msg_.position[iu] =
-          static_cast<double>(state.motor_positions[iu]);
-      js_msg_.velocity[iu] =
-          static_cast<double>(state.motor_velocities[iu]);
+      joint_js_msg_.position[iu] = is_joint
+          ? static_cast<double>(state.motor_positions[iu]) : 0.0;
+      joint_js_msg_.velocity[iu] = is_joint
+          ? static_cast<double>(state.motor_velocities[iu]) : 0.0;
     }
-    joint_state_pub_->publish(js_msg_);
+    joint_state_pub_->publish(joint_js_msg_);
+
+    // /hand/motor_states (hand_motor_names + effort=current)
+    motor_js_msg_.header.stamp = stamp;
+    for (int i = 0; i < urtc::kNumHandMotors; ++i) {
+      const auto iu = static_cast<std::size_t>(i);
+      motor_js_msg_.position[iu] = !is_joint
+          ? static_cast<double>(state.motor_positions[iu]) : 0.0;
+      motor_js_msg_.velocity[iu] = !is_joint
+          ? static_cast<double>(state.motor_velocities[iu]) : 0.0;
+      motor_js_msg_.effort[iu] = !is_joint
+          ? static_cast<double>(state.motor_currents[iu]) : 0.0;
+    }
+    motor_state_pub_->publish(motor_js_msg_);
 
     // ── HandSensorState (sensor + inference) ───────────────────────────
     if (state.num_fingertips > 0) {
@@ -468,13 +503,13 @@ class HandUdpNode : public rclcpp::Node {
 
     const bool is_bulk = (controller_->communication_mode() == urtc::HandCommunicationMode::kBulk);
     const char* mode_str = is_bulk ? "bulk" : "individual";
-    const bool is_joint = (controller_->write_mode() == urtc::hand_packets::WriteMode::kJointPosition);
-    const char* write_str = is_joint ? "joint" : "motor";
+    const bool is_joint = (controller_->joint_mode() == urtc::hand_packets::JointMode::kJoint);
+    const char* joint_str = is_joint ? "joint" : "motor";
 
     ofs << "{\n"
         << "  \"comm_stats\": {\n"
         << "    \"communication_mode\": \"" << mode_str << "\",\n"
-        << "    \"write_mode\": \"" << write_str << "\",\n"
+        << "    \"joint_mode\": \"" << joint_str << "\",\n"
         << "    \"recv_timeout_ms\": " << std::fixed << std::setprecision(3) << controller_->recv_timeout_ms() << ",\n"
         << "    \"total_cycles\": "    << stats.total_cycles   << ",\n"
         << "    \"recv_ok\": "         << stats.recv_ok        << ",\n"
@@ -573,10 +608,12 @@ class HandUdpNode : public rclcpp::Node {
   std::unique_ptr<urtc::HandFailureDetector> failure_detector_;
 
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr         joint_state_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr         motor_state_pub_;
   rclcpp::Publisher<rtc_msgs::msg::HandSensorState>::SharedPtr      sensor_state_pub_;
   rclcpp::Publisher<rtc_msgs::msg::HandSensorState>::SharedPtr      sensor_monitor_pub_;
   rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr      joint_command_sub_;
   std::vector<std::string> joint_names_;
+  std::vector<std::string> motor_names_;
   std::vector<std::string> fingertip_names_;
   int num_fingertips_{urtc::kDefaultNumFingertips};
 
@@ -586,7 +623,8 @@ class HandUdpNode : public rclcpp::Node {
   bool                prev_link_ok_{true};
 
   // Pre-allocated messages (populated once in constructor, values overwritten per cycle)
-  sensor_msgs::msg::JointState           js_msg_;
+  sensor_msgs::msg::JointState           joint_js_msg_;
+  sensor_msgs::msg::JointState           motor_js_msg_;
   rtc_msgs::msg::HandSensorState         sensor_msg_;
   std_msgs::msg::Bool                    link_msg_;
 

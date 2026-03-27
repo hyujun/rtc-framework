@@ -42,12 +42,12 @@ inline void EncodeReadRequest(
 
 // Encode a motor read-request packet (3 bytes, header only).
 // Read position/velocity requests only need the header — no data payload required.
-// write_mode selects motor (0x00) or joint (0x01) data from firmware.
+// joint_mode selects motor (0x00) or joint (0x01) data from firmware.
 inline void EncodeMotorReadRequest(
     hand_packets::Command cmd,
     std::array<uint8_t, kSensorRequestBytes>& out,
-    hand_packets::WriteMode write_mode = hand_packets::WriteMode::kMotorPosition) noexcept {
-  auto pkt = hand_packets::MakeMotorReadRequest(cmd, write_mode);
+    hand_packets::JointMode joint_mode = hand_packets::JointMode::kMotor) noexcept {
+  auto pkt = hand_packets::MakeMotorReadRequest(cmd, joint_mode);
   hand_packets::SerializeSensorRequest(pkt, out);
 }
 
@@ -71,11 +71,11 @@ inline void EncodeSetSensorMode(
 }
 
 // Encode a bulk motor read-request packet (3 bytes, cmd=0x10).
-// write_mode selects motor (0x00) or joint (0x01) data from firmware.
+// joint_mode selects motor (0x00) or joint (0x01) data from firmware.
 inline void EncodeReadAllMotorsRequest(
     std::array<uint8_t, kAllMotorRequestBytes>& out,
-    hand_packets::WriteMode write_mode = hand_packets::WriteMode::kMotorPosition) noexcept {
-  auto pkt = hand_packets::MakeReadAllMotorsRequest(write_mode);
+    hand_packets::JointMode joint_mode = hand_packets::JointMode::kMotor) noexcept {
+  auto pkt = hand_packets::MakeReadAllMotorsRequest(joint_mode);
   hand_packets::SerializeSensorRequest(pkt, out);
 }
 
@@ -88,12 +88,12 @@ inline void EncodeReadAllSensorsRequest(
 }
 
 // Encode a write-position packet (43 bytes).
-// write_mode selects motor (0x00, default) or joint (0x01) position interpretation.
+// joint_mode selects motor (0x00, default) or joint (0x01) position interpretation.
 inline void EncodeWritePosition(
     const std::array<float, kNumHandMotors>& positions,
     std::array<uint8_t, kMotorPacketBytes>& out,
-    hand_packets::WriteMode write_mode = hand_packets::WriteMode::kMotorPosition) noexcept {
-  auto pkt = hand_packets::MakeWritePosition(positions, write_mode);
+    hand_packets::JointMode joint_mode = hand_packets::JointMode::kMotor) noexcept {
+  auto pkt = hand_packets::MakeWritePosition(positions, joint_mode);
   hand_packets::SerializePacket(pkt, out);
 }
 
@@ -140,18 +140,19 @@ inline void EncodeWritePosition(
   return true;
 }
 
-// Decode a bulk motor response (123 bytes), extracting positions[10] and velocities[10].
+// Decode a bulk motor response (123 bytes), extracting positions[10], velocities[10], currents[10].
 // Data layout: grouped [pos0..9, vel0..9, cur0..9].
 [[nodiscard]] inline bool DecodeAllMotorResponse(
     const uint8_t* buf, std::size_t len,
     uint8_t& cmd_out, uint8_t& mode_out,
     std::array<float, hand_packets::kMotorDataCount>& positions,
-    std::array<float, hand_packets::kMotorDataCount>& velocities) noexcept {
+    std::array<float, hand_packets::kMotorDataCount>& velocities,
+    std::array<float, hand_packets::kMotorDataCount>& currents) noexcept {
   hand_packets::AllMotorResponsePacket pkt{};
   if (!hand_packets::DecodeAllMotorResponse(buf, len, pkt)) return false;
   cmd_out  = pkt.cmd;
   mode_out = pkt.mode;
-  hand_packets::ExtractAllMotorFloats(pkt, positions, velocities);
+  hand_packets::ExtractAllMotorFloats(pkt, positions, velocities, currents);
   return true;
 }
 

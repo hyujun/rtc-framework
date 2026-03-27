@@ -113,10 +113,12 @@ struct RobotState {
 struct HandState {
   std::array<float, kNumHandMotors>    motor_positions{};
   std::array<float, kNumHandMotors>    motor_velocities{};
+  std::array<float, kNumHandMotors>    motor_currents{};
   std::array<int32_t, kMaxHandSensors> sensor_data{};
   std::array<int32_t, kMaxHandSensors> sensor_data_raw{};
   int  num_fingertips{kDefaultNumFingertips};
   bool valid{false};
+  uint8_t received_joint_mode{0x00};  // 0x00=motor, 0x01=joint (from response packet)
 };
 
 // Unified device state — used for all device groups (robot arm, hand, gripper, …)

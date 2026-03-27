@@ -104,8 +104,8 @@ class HandUdpTransport {
       const std::array<float, kNumHandMotors>& cmd,
       std::array<uint8_t, hand_packets::kMotorPacketSize>& send_buf,
       std::array<uint8_t, hand_packets::kMotorPacketSize>& echo_buf,
-      hand_packets::WriteMode write_mode = hand_packets::WriteMode::kMotorPosition) noexcept {
-    hand_udp_codec::EncodeWritePosition(cmd, send_buf, write_mode);
+      hand_packets::JointMode joint_mode = hand_packets::JointMode::kMotor) noexcept {
+    hand_udp_codec::EncodeWritePosition(cmd, send_buf, joint_mode);
     sendto(socket_fd_, send_buf.data(), send_buf.size(), 0,
            reinterpret_cast<const sockaddr*>(&target_addr_),
            sizeof(target_addr_));
@@ -134,9 +134,9 @@ class HandUdpTransport {
   // Send a fire-and-forget write position (e.g. for E-Stop zero command).
   void WritePositionFireAndForget(
       const std::array<float, kNumHandMotors>& cmd,
-      hand_packets::WriteMode write_mode = hand_packets::WriteMode::kMotorPosition) noexcept {
+      hand_packets::JointMode joint_mode = hand_packets::JointMode::kMotor) noexcept {
     std::array<uint8_t, hand_packets::kMotorPacketSize> buf{};
-    hand_udp_codec::EncodeWritePosition(cmd, buf, write_mode);
+    hand_udp_codec::EncodeWritePosition(cmd, buf, joint_mode);
     sendto(socket_fd_, buf.data(), buf.size(), 0,
            reinterpret_cast<const sockaddr*>(&target_addr_),
            sizeof(target_addr_));
@@ -146,11 +146,12 @@ class HandUdpTransport {
   [[nodiscard]] bool RequestMotorRead(
       hand_packets::Command cmd,
       std::array<float, hand_packets::kMotorDataCount>& out,
-      hand_packets::WriteMode write_mode = hand_packets::WriteMode::kMotorPosition) noexcept {
+      hand_packets::JointMode joint_mode = hand_packets::JointMode::kMotor,
+      hand_packets::JointMode* received_mode = nullptr) noexcept {
     std::array<uint8_t, hand_packets::kSensorRequestSize> send_buf{};
     std::array<uint8_t, hand_packets::kMotorPacketSize> recv_buf{};
 
-    hand_udp_codec::EncodeMotorReadRequest(cmd, send_buf, write_mode);
+    hand_udp_codec::EncodeMotorReadRequest(cmd, send_buf, joint_mode);
 
     const ssize_t sent = sendto(
         socket_fd_, send_buf.data(), send_buf.size(), 0,
@@ -190,9 +191,11 @@ class HandUdpTransport {
         ++comm_stats_.cmd_mismatch;
         continue;
       }
-      if (mode_out != static_cast<uint8_t>(write_mode)) {
+      if (mode_out != static_cast<uint8_t>(joint_mode)) {
         ++comm_stats_.mode_mismatch;
-        continue;
+      }
+      if (received_mode) {
+        *received_mode = static_cast<hand_packets::JointMode>(mode_out);
       }
       return true;
     }
@@ -260,11 +263,13 @@ class HandUdpTransport {
   [[nodiscard]] bool RequestAllMotorRead(
       std::array<float, hand_packets::kMotorDataCount>& positions,
       std::array<float, hand_packets::kMotorDataCount>& velocities,
-      hand_packets::WriteMode write_mode = hand_packets::WriteMode::kMotorPosition) noexcept {
+      std::array<float, hand_packets::kMotorDataCount>& currents,
+      hand_packets::JointMode joint_mode = hand_packets::JointMode::kMotor,
+      hand_packets::JointMode* received_mode = nullptr) noexcept {
     std::array<uint8_t, hand_packets::kAllMotorRequestSize> send_buf{};
     std::array<uint8_t, hand_packets::kAllMotorResponseSize> recv_buf{};
 
-    hand_udp_codec::EncodeReadAllMotorsRequest(send_buf, write_mode);
+    hand_udp_codec::EncodeReadAllMotorsRequest(send_buf, joint_mode);
 
     const ssize_t sent = sendto(
         socket_fd_, send_buf.data(), send_buf.size(), 0,
@@ -297,16 +302,18 @@ class HandUdpTransport {
       uint8_t cmd_out, mode_out;
       if (!hand_udp_codec::DecodeAllMotorResponse(
               recv_buf.data(), static_cast<std::size_t>(recvd),
-              cmd_out, mode_out, positions, velocities)) {
+              cmd_out, mode_out, positions, velocities, currents)) {
         continue;
       }
       if (cmd_out != static_cast<uint8_t>(hand_packets::Command::kReadAllMotors)) {
         ++comm_stats_.cmd_mismatch;
         continue;
       }
-      if (mode_out != static_cast<uint8_t>(write_mode)) {
+      if (mode_out != static_cast<uint8_t>(joint_mode)) {
         ++comm_stats_.mode_mismatch;
-        continue;
+      }
+      if (received_mode) {
+        *received_mode = static_cast<hand_packets::JointMode>(mode_out);
       }
       return true;
     }

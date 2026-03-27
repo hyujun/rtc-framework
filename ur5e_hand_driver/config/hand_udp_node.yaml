@@ -16,9 +16,10 @@
 #     3. Read all sensors(cmd=0x19) → request 3B & recv 259B (4 fingers)
 #
 # Standalone 모드 ROS2 토픽:
-#   pub: /hand/joint_states    JointState (positions:10 + velocities:10)
-#   pub: /hand/sensor_states  HandSensorState (FingertipSensor[] per fingertip)
-#   sub: /hand/command         motor_commands[10] (0.0–1.0)
+#   pub: /hand/joint_states    JointState (joint-space pos:10 + vel:10)
+#   pub: /hand/motor_states    JointState (motor pos:10 + vel:10 + effort=cur:10)
+#   pub: /hand/sensor_states   HandSensorState (FingertipSensor[] per fingertip)
+#   sub: /hand/joint_command   JointCommand (values[10], 0.0–1.0)
 
 /**:
   ros__parameters:
@@ -59,13 +60,13 @@
     communication_mode: "bulk"        # "individual": 0x11+0x12+0x14~0x17 (6 round-trips)
                                       # "bulk":       0x10+0x19 (2 round-trips)
 
-    # ── 쓰기 모드 (WritePosition mode 필드) ────────────────────────────
-    write_mode: "motor"               # "motor": mode=0x00, raw motor encoder position
+    # ── Joint 모드 (joint command의 mode 필드) ──────────────────────────
+    joint_mode: "motor"               # "motor": mode=0x00, raw motor encoder position
                                       # "joint": mode=0x01, joint-space position (gear-ratio mapped)
 
     # ── 모터/핑거팁 이름 (v5.14.0 named messaging) ──────────────────────
     # 비어있으면 기본 이름 사용.
-    hand_motor_names:
+    hand_joint_names:
       - "thumb_cmc_aa"
       - "thumb_cmc_fe"
       - "thumb_mcp_fe"
@@ -76,6 +77,18 @@
       - "middle_mcp_fe"
       - "middle_dip_fe"
       - "ring_mcp_fe"
+    
+    hand_motor_names:
+      - "motor_1"
+      - "motor_2"
+      - "motor_3"
+      - "motor_4"
+      - "motor_5"
+      - "motor_6"
+      - "motor_7"
+      - "motor_8"
+      - "motor_9"
+      - "motor_10"
 
     hand_fingertip_names:
       - "thumb"
@@ -84,10 +97,11 @@
       - "ring"
 
     # ── ROS2 토픽 설정 ──────────────────────────────────────────────────
-    command_topic: "/hand/joint_command"  # JointCommand 구독 (rt_controller → hand)
-    state_topic: "/hand/joint_states"    # JointState 발행 (motor pos/vel)
-    sensor_topic: "/hand/sensor_states"  # HandSensorState 발행 (촉각 센서 raw + 추론)
-    link_status_topic: "/hand/link_status"  # Bool 발행 (UDP 링크 상태)
+    command_topic: "/hand/joint_command"      # JointCommand 구독 (rt_controller → hand)
+    joint_state_topic: "/hand/joint_states"   # JointState 발행 (joint pos/vel), hand_joint_names 사용
+    motor_state_topic: "/hand/motor_states"   # JointState 발행 (motor pos/vel/cur), hand_motor_names 사용
+    sensor_topic: "/hand/sensor_states"       # HandSensorState 발행 (촉각 센서 raw + 추론)
+    link_status_topic: "/hand/link_status"    # Bool 발행 (UDP 링크 상태)
 
     # ── Standalone 전용 설정 (hand_udp_node 단독 실행 시) ────────────────
     publish_rate: 100.0               # /hand/joint_states 퍼블리시 주기 (Hz)
