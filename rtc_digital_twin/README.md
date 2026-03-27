@@ -68,7 +68,7 @@ rtc_digital_twin/
 | 토픽 | 타입 | QoS | 설명 |
 |------|------|-----|------|
 | `source_N.topic` (YAML 정의) | `JointState` | RELIABLE, depth=10 | rt_controller가 republish한 조인트 상태 |
-| `sensor_viz.sensor_topic` (선택) | `Float64MultiArray` | RELIABLE, depth=10 | 핑거팁 센서 데이터 |
+| `sensor_viz.sensor_topic` (선택) | `HandSensorState` | RELIABLE, depth=10 | 핑거팁 센서 데이터 (rtc_msgs) |
 
 ### 퍼블리시
 
@@ -190,7 +190,9 @@ source install/setup.bash
 
 ### URDFValidator (`urdf_validator.py`)
 
-- `parse_required_joints(urdf_xml)`: URDF XML에서 `fixed`/`mimic` 조인트를 제외한 필수 조인트 set 추출
+- `classify_joints(urdf_xml)`: URDF XML을 파싱하여 `active`, `passive_mimic`, `passive_closed_chain`, `fixed` 관절로 분류
+- `parse_required_joints(urdf_xml)`: active 관절 이름 set 추출 (fixed/mimic/closed-chain 제외)
+- `compute_mimic_positions(classification, positions)`: mimic 관절 위치 자동 계산 (multiplier × master + offset)
 - `validate_joints(required, received)`: 커버리지 비교 → (covered, missing) 반환
 
 ### SensorVisualizer (`sensor_visualizer.py`) — 선택적

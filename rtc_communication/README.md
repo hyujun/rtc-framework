@@ -66,14 +66,22 @@ rtc_communication/
 
 ---
 
-## 최적화 내역 (v5.16.1)
+## 변경 내역
+
+### v5.17.0
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **Transceiver** | `send_count()` 원자적 카운터 추가 — 송신 패킷 수 추적 |
+| **UdpTransport** | `direct_socket()` 접근자 추가 — 하위 소켓 직접 참조 |
+
+### v5.16.1
 
 | 영역 | 변경 내용 |
 |------|----------|
 | **CMakeLists.txt** | C++20 표준 명시, 엄격 컴파일러 경고 플래그 추가 |
 | **transceiver.hpp** | include 순서 수정 (project → stdlib), `[[likely]]/[[unlikely]]` 분기 힌트 추가 |
 | **udp_transport.hpp** | 미사용 `<string_view>` include 제거 |
-| **README.md** | PacketCodec Concept 문서 정확성 수정 (Encode는 선택 사항 명시) |
 
 ---
 

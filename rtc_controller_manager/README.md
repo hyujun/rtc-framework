@@ -185,8 +185,13 @@ if (lock.owns_lock()) {
 | `device_timeout_values` | `[100.0]` | 각 그룹의 state 토픽 타임아웃 (ms) |
 | `enable_estop` | `true` | E-STOP 활성화 |
 | `enable_logging` | `true` | CSV 로깅 활성화 |
+| `enable_timing_log` | `true` | 타이밍 CSV 로깅 활성화 |
+| `enable_device_log` | `true` | 디바이스별 CSV 로깅 활성화 |
+| `max_log_sessions` | `10` | 최대 로그 세션 보관 수 |
 | `init_timeout_sec` | `30.0` | 초기화 타임아웃 (초) |
 | `hand_sim_enabled` | `false` | 핸드 시뮬레이션 (ROS 토픽) |
+| `enable_status_monitor` | `false` | 핸드 상태 모니터링 활성화 |
+| `use_sim_time_sync` | `false` | MuJoCo 동기 루프 CV 기반 wakeup |
 
 ---
 
@@ -245,13 +250,13 @@ if (lock.owns_lock()) {
 | `rtc_controller_interface` | 컨트롤러 추상 인터페이스 + 레지스트리 |
 | `rtc_controllers` | 내장 컨트롤러 (P, JointPD, CLIK, OSC) |
 | `rtc_base` | 로깅, 스레딩, 타입, SPSC 버퍼 |
-| `rtc_communication` | 통신 유틸리티 |
-| `rtc_status_monitor` | 상태 모니터링 (선택) |
-| `rtc_msgs` | JointCommand 커스텀 메시지 |
-| `rtc_inference` | ONNX F/T 추론 |
-| `ur5e_hand_driver` | 핸드 하드웨어 인터페이스 |
-| `pinocchio` | URDF 검증 |
-| `yaml-cpp` | YAML 파싱 |
+| `rtc_communication` | 네트워크 통신 (UDP 트랜시버) |
+| `rtc_status_monitor` | 10 Hz 비-RT 상태 모니터링 (선택적 compose) |
+| `rtc_msgs` | JointCommand, DeviceStateLog, DeviceSensorLog 커스텀 메시지 |
+| `rtc_inference` | ONNX Runtime 기반 F/T 추론 엔진 |
+| `pinocchio` | URDF 기구학 검증 |
+| `yaml-cpp` | YAML 설정 파싱 |
+| `ament_index_cpp` | 패키지 리소스 경로 탐색 |
 
 ---
 
@@ -301,12 +306,23 @@ CycloneDDS RT 성능 최적화 설정입니다. `CYCLONEDDS_URI` 환경변수로
 
 ---
 
-## 최적화 내역 (v0.1.1)
+## 변경 내역
+
+### v5.17.0
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **동적 토픽 라우팅** | 컨트롤러별 `TopicConfig` YAML 기반 다중 디바이스 그룹 구독/퍼블리시 자동 생성 |
+| **디바이스 타임아웃** | `device_timeout_names`/`device_timeout_values` 파라미터로 디바이스별 E-STOP 워치독 설정 |
+| **Digital Twin republish** | 각 디바이스 그룹의 JointState를 RELIABLE QoS로 자동 republish (`/{group}/digital_twin/joint_states`) |
+| **sim_time_sync** | `use_sim_time_sync: true` 설정 시 MuJoCo CV 기반 wakeup (round-trip ~1ms → ~0.35ms) |
+| **DeviceStateLog/DeviceSensorLog** | 모터 공간 데이터, 궤적 레퍼런스, 추론 결과 포함 통합 로그 퍼블리시 |
+
+### v0.1.1
 
 | 영역 | 변경 내용 |
 |------|----------|
 | **cyclone_dds.xml** | RT 성능 최적화: 멀티캐스트 비활성화, 소켓 버퍼 확대, write batching, NACK/heartbeat 튜닝, 동기 전달 |
-| **rt_controller_node.cpp** | 미사용 `<ctime>` include 제거 |
 
 ---
 

@@ -255,32 +255,37 @@ my_controller:
 
 | 역할 | enum | 설명 |
 |------|------|------|
-| `state` | `kState` | 디바이스 관절 상태 |
-| `sensor_state` | `kSensorState` | 센서 상태 (핸드 등) |
-| `target` | `kTarget` | 목표 위치 |
+| `state` | `kState` | 디바이스 관절 상태 (JointState) |
+| `motor_state` | `kMotorState` | 모터 공간 상태 (JointState) |
+| `sensor_state` | `kSensorState` | 센서 상태 (Float64MultiArray) |
+| `target` | `kTarget` | 목표 위치 (Float64MultiArray) |
 | `joint_state`, `hand_state`, `goal` | — | 하위 호환 별칭 |
 
 #### 퍼블리시 역할 (PublishRole)
 
 | 역할 | enum | 설명 |
 |------|------|------|
-| `joint_command` | `kJointCommand` | 관절/모터 커맨드 |
+| `joint_command` | `kJointCommand` | 관절/모터 커맨드 (JointCommand) |
 | `ros2_command` | `kRos2Command` | ROS2 표준 커맨드 (Float64MultiArray) |
-| `task_position` | `kTaskPosition` | 태스크 공간 위치 (FK) |
-| `trajectory_state` | `kTrajectoryState` | 궤적 상태 |
-| `controller_state` | `kControllerState` | 컨트롤러 내부 상태 |
+| `gui_position` | `kGuiPosition` | GUI 표시용 위치 (GuiPosition) |
+| `robot_target` | `kRobotTarget` | 관절/태스크 목표 (RobotTarget) |
+| `device_state_log` | `kDeviceStateLog` | 통합 상태 로그 (DeviceStateLog) |
+| `device_sensor_log` | `kDeviceSensorLog` | 센서 + 추론 로그 (DeviceSensorLog) |
+| `digital_twin_state` | `kDigitalTwinState` | 디지털 트윈 RELIABLE republish (JointState) |
 | `position_command`, `torque_command`, `hand_command` | — | 하위 호환 별칭 |
 
 **기본 토픽 설정** (`MakeDefaultTopicConfig()` 하드코딩):
 
 ```
 ur5e.subscribe: /joint_states (kState), /ur5e/target_joint_positions (kTarget)
-ur5e.publish:   /forward_position_controller/commands (kPositionCommand, 6)
-                /forward_torque_controller/commands (kTorqueCommand, 6)
-                /ur5e/current_task_position (kTaskPosition, 6)
-                /ur5e/trajectory_state (kTrajectoryState, 18)
-                /ur5e/controller_state (kControllerState, 18)
-hand.subscribe: /hand/joint_states (kHandState)
+ur5e.publish:   /ur5e/joint_command (kJointCommand, 6)
+                /forward_position_controller/commands (kRos2Command, 6)
+                /ur5e/gui_position (kGuiPosition, 6)
+                /ur5e/robot_target (kRobotTarget, 6)
+                /ur5e/device_state_log (kDeviceStateLog)
+                /ur5e/device_sensor_log (kDeviceSensorLog)
+                /ur5e/digital_twin/joint_states (kDigitalTwinState)
+hand.subscribe: /hand/joint_states (kState)
 ```
 
 > topics 섹션이 YAML에 없으면 위 기본값이 사용됩니다. 폐기된 flat format (`topics.subscribe`) 사용 시 마이그레이션 에러가 발생합니다.
@@ -314,10 +319,16 @@ hand.subscribe: /hand/joint_states (kHandState)
 | `devices[4]` | `DeviceOutput[]` | 디바이스별 출력 배열 |
 | `devices[i].commands[64]` | `double` | 커맨드 (위치 또는 토크) |
 | `devices[i].goal_positions[64]` | `double` | 스텝 목표 (로깅용) |
-| `devices[i].target_positions[64]` | `double` | 궤적 위치 (로깅용) |
-| `devices[i].target_velocities[64]` | `double` | 궤적 속도 (로깅용) |
+| `devices[i].target_positions[64]` | `double` | 컨트롤러별 타겟 위치 (로깅용) |
+| `devices[i].target_velocities[64]` | `double` | 컨트롤러별 타겟 속도 (로깅용) |
+| `devices[i].trajectory_positions[64]` | `double` | 순수 궤적 레퍼런스 위치 |
+| `devices[i].trajectory_velocities[64]` | `double` | 순수 궤적 레퍼런스 속도 |
+| `devices[i].goal_type` | `GoalType` | `kJoint` 또는 `kTask` |
 | `devices[i].num_channels` | `int` | 유효 채널 수 |
 | `actual_task_positions[6]` | `double` | TCP 위치 + RPY (FK) |
+| `task_goal_positions[6]` | `double` | 태스크 공간 목표 (GUI 전송) |
+| `trajectory_task_positions[6]` | `double` | 태스크 공간 궤적 레퍼런스 위치 |
+| `trajectory_task_velocities[6]` | `double` | 태스크 공간 궤적 속도 |
 | `valid` | `bool` | `false`면 커맨드 무시 |
 | `command_type` | `CommandType` | `kPosition` 또는 `kTorque` |
 | `num_devices` | `int` | 활성 디바이스 수 |
@@ -363,11 +374,24 @@ rtc_controller_interface  ← 추상 인터페이스 + 레지스트리
 
 ---
 
-## 최적화 내역 (v0.1.1)
+## 변경 내역
+
+### v5.17.0
 
 | 영역 | 변경 내용 |
 |------|----------|
-| **controller_registry** | `Instance()` 메서드에 `noexcept` 추가 (Meyer's singleton은 예외를 throw하지 않음) |
+| **PublishRole 재설계** | `kTaskPosition`, `kTrajectoryState`, `kControllerState` → `kGuiPosition`, `kRobotTarget`, `kDeviceStateLog`, `kDeviceSensorLog`, `kDigitalTwinState` |
+| **SubscribeRole 확장** | `kMotorState` 역할 추가 |
+| **TopicConfig** | `std::map` → `std::vector<std::pair>` (YAML 삽입 순서 보존) |
+| **ControllerOutput 확장** | `task_goal_positions`, `trajectory_task_positions`, `trajectory_task_velocities` 추가 |
+| **DeviceOutput 확장** | `trajectory_positions`, `trajectory_velocities`, `goal_type` 추가 |
+| **DeviceNameConfig 확장** | `joint_command_names`, `motor_state_names`, `safe_position` 추가 |
+
+### v0.1.1
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **controller_registry** | `Instance()` 메서드에 `noexcept` 추가 |
 
 ---
 
