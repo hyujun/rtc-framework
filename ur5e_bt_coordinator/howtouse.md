@@ -1,5 +1,7 @@
 # ur5e_bt_coordinator 사용 가이드
 
+![version](https://img.shields.io/badge/version-v5.17.0-blue)
+
 BehaviorTree 기반 UR5e + Hand 비실시간 태스크 코디네이터.
 500Hz RT 제어 루프 외부에서 20Hz로 동작하며, ROS2 토픽을 통해 RT Controller와 통신한다.
 
