@@ -73,6 +73,7 @@ class HandController {
       bool use_fake_hand = false,
       const std::vector<std::string>& fingertip_names = {},
       HandCommunicationMode communication_mode = HandCommunicationMode::kIndividual,
+      hand_packets::WriteMode write_mode = hand_packets::WriteMode::kMotorPosition,
       bool tof_lpf_enabled = false,
       double tof_lpf_cutoff_hz = 15.0,
       bool baro_lpf_enabled = false,
@@ -90,6 +91,7 @@ class HandController {
                          ? kDefaultFingertipNames
                          : fingertip_names),
         communication_mode_(communication_mode),
+        write_mode_(write_mode),
         ft_config_(std::move(ft_config)),
         transport_(std::move(target_ip), target_port, recv_timeout_ms),
         sensor_processor_(HandSensorProcessorConfig{
@@ -309,6 +311,10 @@ class HandController {
     return communication_mode_;
   }
 
+  [[nodiscard]] hand_packets::WriteMode write_mode() const noexcept {
+    return write_mode_;
+  }
+
   [[nodiscard]] double recv_timeout_ms() const noexcept {
     return transport_.recv_timeout_ms();
   }
@@ -350,7 +356,7 @@ class HandController {
       // E-Stop check
       if (estop_flag_ && estop_flag_->load(std::memory_order_acquire)) {
         std::array<float, kNumHandMotors> zeros{};
-        transport_.WritePositionFireAndForget(zeros);
+        transport_.WritePositionFireAndForget(zeros, write_mode_);
         busy_.store(false, std::memory_order_release);
         break;
       }
@@ -363,7 +369,7 @@ class HandController {
       const auto t0 = std::chrono::steady_clock::now();
 
       // 1. Write position + recv echo
-      if (transport_.WritePositionWithEcho(pending_cmd, send_buf, echo_buf)) {
+      if (transport_.WritePositionWithEcho(pending_cmd, send_buf, echo_buf, write_mode_)) {
         any_recv_ok = true;
       }
 
@@ -376,7 +382,7 @@ class HandController {
 
       if (is_bulk) {
         // ── Bulk mode ─────────────────────────────────────────────────────
-        if (transport_.RequestAllMotorRead(motor_pos_buf, motor_vel_buf)) {
+        if (transport_.RequestAllMotorRead(motor_pos_buf, motor_vel_buf, write_mode_)) {
           std::copy_n(motor_pos_buf.begin(), kNumHandMotors,
                       state.motor_positions.begin());
           std::copy_n(motor_vel_buf.begin(), kNumHandMotors,
@@ -430,7 +436,7 @@ class HandController {
 
       } else {
         // ── Individual mode ───────────────────────────────────────────────
-        if (transport_.RequestMotorRead(hand_packets::Command::kReadPosition, motor_pos_buf)) {
+        if (transport_.RequestMotorRead(hand_packets::Command::kReadPosition, motor_pos_buf, write_mode_)) {
           std::copy_n(motor_pos_buf.begin(), kNumHandMotors,
                       state.motor_positions.begin());
           any_recv_ok = true;
@@ -438,7 +444,7 @@ class HandController {
 
         const auto t2 = std::chrono::steady_clock::now();
 
-        if (transport_.RequestMotorRead(hand_packets::Command::kReadVelocity, motor_vel_buf)) {
+        if (transport_.RequestMotorRead(hand_packets::Command::kReadVelocity, motor_vel_buf, write_mode_)) {
           std::copy_n(motor_vel_buf.begin(), kNumHandMotors,
                       state.motor_velocities.begin());
           any_recv_ok = true;
@@ -529,6 +535,7 @@ class HandController {
   bool use_fake_hand_;
   std::vector<std::string> fingertip_names_;
   HandCommunicationMode communication_mode_;
+  hand_packets::WriteMode write_mode_;
   bool sensor_init_ok_{false};
 
   // F/T inferencer config (before transport_ for initializer list order)

@@ -68,15 +68,21 @@ static_assert(kAllMotorResponseSize == 123, "Bulk motor response must be 123 byt
 static_assert(kAllSensorResponseSize == 259, "Bulk sensor response must be 259 bytes");
 
 // ── State mode (response mode field) ────────────────────────────────────────
-enum class StateMode : uint8_t {
-  kMotor           = 0,
-  kFingertipSensor = 1,
-};
+// For motor-related commands (0x01, 0x10, 0x11, 0x12):
+//   mode 0x00 = motor position, 0x01 = joint position (same as WriteMode)
+// For sensor-related commands (0x04, 0x14-0x17, 0x19):
+//   mode 0x00 = Raw, 0x01 = NN (same as SensorMode)
 
 // ── Sensor sub-mode ─────────────────────────────────────────────────────────
 enum class SensorMode : uint8_t {
   kRaw = 0,
   kNn  = 1,
+};
+
+// ── Write mode (mode field for WritePosition command) ───────────────────────
+enum class WriteMode : uint8_t {
+  kMotorPosition = 0x00,  // raw motor encoder position (default, backward-compatible)
+  kJointPosition = 0x01,  // joint-space position (gear-ratio mapped by firmware)
 };
 
 // ── Command definitions ─────────────────────────────────────────────────────
@@ -205,11 +211,13 @@ inline MotorPacket MakeReadRequest(Command cmd) noexcept {
 
 // Build a motor read-request packet (header only, 3 bytes).
 // Read position/velocity requests only need the header — no data payload required.
-inline SensorRequestPacket MakeMotorReadRequest(Command cmd) noexcept {
+// write_mode selects motor (0x00) or joint (0x01) data from firmware.
+inline SensorRequestPacket MakeMotorReadRequest(
+    Command cmd, WriteMode write_mode = WriteMode::kMotorPosition) noexcept {
   SensorRequestPacket pkt{};
   pkt.id   = kDeviceId;
   pkt.cmd  = static_cast<uint8_t>(cmd);
-  pkt.mode = kDefaultMode;
+  pkt.mode = static_cast<uint8_t>(write_mode);
   return pkt;
 }
 
@@ -235,12 +243,14 @@ inline SensorRequestPacket MakeSetSensorMode(SensorMode sensor_mode) noexcept {
 }
 
 // Build a write-position packet with float data.
+// write_mode selects motor (0x00, default) or joint (0x01) position interpretation.
 inline MotorPacket MakeWritePosition(
-    const std::array<float, kNumHandMotors>& positions) noexcept {
+    const std::array<float, kNumHandMotors>& positions,
+    WriteMode write_mode = WriteMode::kMotorPosition) noexcept {
   MotorPacket pkt{};
   pkt.id   = kDeviceId;
   pkt.cmd  = static_cast<uint8_t>(Command::kWritePosition);
-  pkt.mode = kDefaultMode;
+  pkt.mode = static_cast<uint8_t>(write_mode);
   for (std::size_t i = 0; i < kNumHandMotors; ++i) {
     pkt.data[i] = FloatToUint32(positions[i]);
   }
@@ -304,11 +314,13 @@ inline void ExtractSensorValuesRaw(
 }
 
 // Build a bulk motor read-request packet (3 bytes, header only).
-inline SensorRequestPacket MakeReadAllMotorsRequest() noexcept {
+// write_mode selects motor (0x00) or joint (0x01) data from firmware.
+inline SensorRequestPacket MakeReadAllMotorsRequest(
+    WriteMode write_mode = WriteMode::kMotorPosition) noexcept {
   SensorRequestPacket pkt{};
   pkt.id   = kDeviceId;
   pkt.cmd  = static_cast<uint8_t>(Command::kReadAllMotors);
-  pkt.mode = kDefaultMode;
+  pkt.mode = static_cast<uint8_t>(write_mode);
   return pkt;
 }
 

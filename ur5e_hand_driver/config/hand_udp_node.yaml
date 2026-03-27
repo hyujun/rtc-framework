@@ -59,6 +59,10 @@
     communication_mode: "bulk"        # "individual": 0x11+0x12+0x14~0x17 (6 round-trips)
                                       # "bulk":       0x10+0x19 (2 round-trips)
 
+    # ── 쓰기 모드 (WritePosition mode 필드) ────────────────────────────
+    write_mode: "motor"               # "motor": mode=0x00, raw motor encoder position
+                                      # "joint": mode=0x01, joint-space position (gear-ratio mapped)
+
     # ── 모터/핑거팁 이름 (v5.14.0 named messaging) ──────────────────────
     # 비어있으면 기본 이름 사용.
     hand_motor_names:

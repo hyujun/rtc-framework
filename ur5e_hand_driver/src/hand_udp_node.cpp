@@ -68,6 +68,9 @@ class HandUdpNode : public rclcpp::Node {
     // Communication mode: "individual" (0x11+0x12+0x14~0x17) or "bulk" (0x10+0x19)
     declare_parameter("communication_mode", std::string{"individual"});
 
+    // Write mode: "motor" (mode=0x00, raw encoder) or "joint" (mode=0x01, joint-space)
+    declare_parameter("write_mode", std::string{"motor"});
+
     // Sensor LPF
     declare_parameter("baro_lpf_enabled", false);
     declare_parameter("baro_lpf_cutoff_hz", 30.0);
@@ -100,6 +103,12 @@ class HandUdpNode : public rclcpp::Node {
     const auto comm_mode = (comm_mode_str == "bulk")
         ? urtc::HandCommunicationMode::kBulk
         : urtc::HandCommunicationMode::kIndividual;
+
+    // ── Write mode ───────────────────────────────────────────────────────
+    const std::string write_mode_str = get_parameter("write_mode").as_string();
+    const auto write_mode = (write_mode_str == "joint")
+        ? urtc::hand_packets::WriteMode::kJointPosition
+        : urtc::hand_packets::WriteMode::kMotorPosition;
 
     // ── Sensor LPF ────────────────────────────────────────────────────────
     const bool   baro_lpf_enabled   = get_parameter("baro_lpf_enabled").as_bool();
@@ -155,7 +164,7 @@ class HandUdpNode : public rclcpp::Node {
     controller_ = std::make_unique<urtc::HandController>(
         target_ip, target_port, urtc::kUdpRecvConfig, recv_timeout_ms,
         false /* enable_write_ack: deprecated */, 1,
-        num_fingertips_, false, ft_names, comm_mode,
+        num_fingertips_, false, ft_names, comm_mode, write_mode,
         tof_lpf_enabled, tof_lpf_cutoff_hz,
         baro_lpf_enabled, baro_lpf_cutoff_hz, ft_config,
         drift_enabled, drift_threshold, drift_window_size);
@@ -306,8 +315,9 @@ class HandUdpNode : public rclcpp::Node {
     }
 
     RCLCPP_INFO(get_logger(),
-                "HandUdpNode: target %s:%d, direct publish from EventLoop, mode=%s",
-                target_ip.c_str(), target_port, comm_mode_str.c_str());
+                "HandUdpNode: target %s:%d, direct publish from EventLoop, comm=%s, write=%s",
+                target_ip.c_str(), target_port, comm_mode_str.c_str(),
+                write_mode_str.c_str());
   }
 
   ~HandUdpNode() override {
@@ -458,10 +468,13 @@ class HandUdpNode : public rclcpp::Node {
 
     const bool is_bulk = (controller_->communication_mode() == urtc::HandCommunicationMode::kBulk);
     const char* mode_str = is_bulk ? "bulk" : "individual";
+    const bool is_joint = (controller_->write_mode() == urtc::hand_packets::WriteMode::kJointPosition);
+    const char* write_str = is_joint ? "joint" : "motor";
 
     ofs << "{\n"
         << "  \"comm_stats\": {\n"
         << "    \"communication_mode\": \"" << mode_str << "\",\n"
+        << "    \"write_mode\": \"" << write_str << "\",\n"
         << "    \"recv_timeout_ms\": " << std::fixed << std::setprecision(3) << controller_->recv_timeout_ms() << ",\n"
         << "    \"total_cycles\": "    << stats.total_cycles   << ",\n"
         << "    \"recv_ok\": "         << stats.recv_ok        << ",\n"
