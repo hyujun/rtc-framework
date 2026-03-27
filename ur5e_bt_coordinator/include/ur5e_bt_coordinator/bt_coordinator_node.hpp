@@ -43,6 +43,11 @@ private:
   // Parameters
   std::string tree_file_;
   double tick_rate_hz_{20.0};
+  bool repeat_{false};
+  double repeat_delay_s_{1.0};
+
+  // Repeat state
+  rclcpp::TimerBase::SharedPtr repeat_timer_;
 };
 
 }  // namespace rtc_bt

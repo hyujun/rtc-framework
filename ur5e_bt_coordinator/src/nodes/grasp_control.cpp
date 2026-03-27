@@ -1,8 +1,8 @@
 #include "ur5e_bt_coordinator/action_nodes/grasp_control.hpp"
+#include "ur5e_bt_coordinator/bt_utils.hpp"
 
 #include <algorithm>
 #include <cmath>
-#include <sstream>
 
 namespace rtc_bt {
 
@@ -32,7 +32,7 @@ BT::NodeStatus GraspControl::onStart()
   start_time_ = std::chrono::steady_clock::now();
 
   auto pinch_str = getInput<std::string>("pinch_motors").value_or("0,1,2,3");
-  pinch_motor_indices_ = ParseMotorIndices(pinch_str);
+  pinch_motor_indices_ = ParseCsvList<int>(pinch_str);
 
   if (mode_ == "open" || mode_ == "preset") {
     auto target = getInput<std::vector<double>>("target_positions");
@@ -55,9 +55,7 @@ BT::NodeStatus GraspControl::onStart()
 
 BT::NodeStatus GraspControl::onRunning()
 {
-  auto elapsed = std::chrono::steady_clock::now() - start_time_;
-  double elapsed_s = std::chrono::duration<double>(elapsed).count();
-  if (elapsed_s > timeout_s_) {
+  if (ElapsedSeconds(start_time_) > timeout_s_) {
     return BT::NodeStatus::FAILURE;
   }
 
@@ -103,19 +101,6 @@ BT::NodeStatus GraspControl::onRunning()
   }
 
   return BT::NodeStatus::RUNNING;
-}
-
-std::vector<int> GraspControl::ParseMotorIndices(const std::string& str)
-{
-  std::vector<int> indices;
-  std::istringstream ss(str);
-  std::string token;
-  while (std::getline(ss, token, ',')) {
-    try {
-      indices.push_back(std::stoi(token));
-    } catch (...) {}
-  }
-  return indices;
 }
 
 }  // namespace rtc_bt

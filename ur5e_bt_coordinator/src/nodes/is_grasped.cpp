@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_grasped.hpp"
+#include "ur5e_bt_coordinator/bt_utils.hpp"
 
 namespace rtc_bt {
 
@@ -21,13 +22,7 @@ BT::NodeStatus IsGrasped::tick()
   int min_ft = getInput<int>("min_fingertips").value_or(2);
 
   auto forces = bridge_->GetFingertipForces();
-  int count = 0;
-  for (const auto& ft : forces) {
-    if (ft.inference_enable && ft.contact_flag > 0.5f &&
-        ft.Magnitude() > static_cast<float>(threshold)) {
-      ++count;
-    }
-  }
+  int count = CountActiveContacts(forces, static_cast<float>(threshold));
 
   return (count >= min_ft) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
 }

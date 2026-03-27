@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/action_nodes/track_trajectory.hpp"
+#include "ur5e_bt_coordinator/bt_utils.hpp"
 
 namespace rtc_bt {
 
@@ -34,8 +35,7 @@ BT::NodeStatus TrackTrajectory::onStart()
 
 BT::NodeStatus TrackTrajectory::onRunning()
 {
-  auto elapsed = std::chrono::steady_clock::now() - start_time_;
-  if (std::chrono::duration<double>(elapsed).count() > timeout_s_) {
+  if (ElapsedSeconds(start_time_) > timeout_s_) {
     return BT::NodeStatus::FAILURE;
   }
 

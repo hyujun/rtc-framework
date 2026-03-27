@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/action_nodes/switch_controller.hpp"
+#include "ur5e_bt_coordinator/bt_utils.hpp"
 
 namespace rtc_bt {
 
@@ -35,8 +36,7 @@ BT::NodeStatus SwitchController::onRunning()
     return BT::NodeStatus::SUCCESS;
   }
 
-  auto elapsed = std::chrono::steady_clock::now() - start_time_;
-  if (std::chrono::duration<double>(elapsed).count() > timeout_s_) {
+  if (ElapsedSeconds(start_time_) > timeout_s_) {
     return BT::NodeStatus::FAILURE;
   }
   return BT::NodeStatus::RUNNING;

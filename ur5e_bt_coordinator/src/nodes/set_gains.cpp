@@ -1,6 +1,5 @@
 #include "ur5e_bt_coordinator/action_nodes/set_gains.hpp"
-
-#include <sstream>
+#include "ur5e_bt_coordinator/bt_utils.hpp"
 
 namespace rtc_bt {
 
@@ -55,7 +54,7 @@ BT::NodeStatus SetGains::tick()
 
   auto kp_t = getInput<std::string>("kp_translation");
   if (kp_t && !kp_t->empty()) {
-    auto vals = ParseDoubleList(kp_t.value());
+    auto vals = ParseCsvList<double>(kp_t.value());
     for (std::size_t i = 0; i < std::min(vals.size(), std::size_t{3}); ++i) {
       gains[i] = vals[i];
     }
@@ -63,7 +62,7 @@ BT::NodeStatus SetGains::tick()
 
   auto kp_r = getInput<std::string>("kp_rotation");
   if (kp_r && !kp_r->empty()) {
-    auto vals = ParseDoubleList(kp_r.value());
+    auto vals = ParseCsvList<double>(kp_r.value());
     for (std::size_t i = 0; i < std::min(vals.size(), std::size_t{3}); ++i) {
       gains[3 + i] = vals[i];
     }
@@ -89,19 +88,6 @@ BT::NodeStatus SetGains::tick()
 
   bridge_->PublishGains(gains);
   return BT::NodeStatus::SUCCESS;
-}
-
-std::vector<double> SetGains::ParseDoubleList(const std::string& str)
-{
-  std::vector<double> result;
-  std::istringstream ss(str);
-  std::string token;
-  while (std::getline(ss, token, ',')) {
-    try {
-      result.push_back(std::stod(token));
-    } catch (...) {}
-  }
-  return result;
 }
 
 }  // namespace rtc_bt

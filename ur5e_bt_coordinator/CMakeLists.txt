@@ -28,6 +28,10 @@ add_library(bt_nodes SHARED
   src/nodes/is_force_above.cpp
   src/nodes/is_grasped.cpp
   src/nodes/is_object_detected.cpp
+  src/nodes/move_finger.cpp
+  src/nodes/flex_extend_finger.cpp
+  src/nodes/set_hand_pose.cpp
+  src/nodes/ur5e_hold_pose.cpp
 )
 target_include_directories(bt_nodes PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

@@ -37,8 +37,6 @@ public:
 
 private:
   std::shared_ptr<BtRosBridge> bridge_;
-
-  static std::vector<double> ParseDoubleList(const std::string& str);
 };
 
 }  // namespace rtc_bt

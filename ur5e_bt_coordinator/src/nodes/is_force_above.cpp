@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
+#include "ur5e_bt_coordinator/bt_utils.hpp"
 
 namespace rtc_bt {
 
@@ -23,14 +24,7 @@ BT::NodeStatus IsForceAbove::tick()
   int sustained_ms = getInput<int>("sustained_ms").value_or(0);
 
   auto forces = bridge_->GetFingertipForces();
-  int count = 0;
-  for (const auto& ft : forces) {
-    if (ft.inference_enable && ft.contact_flag > 0.5f &&
-        ft.Magnitude() > static_cast<float>(threshold)) {
-      ++count;
-    }
-  }
-
+  int count = CountActiveContacts(forces, static_cast<float>(threshold));
   bool condition_met = (count >= min_ft);
 
   if (sustained_ms <= 0) {

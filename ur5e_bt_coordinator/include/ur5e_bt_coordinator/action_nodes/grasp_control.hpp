@@ -51,8 +51,6 @@ private:
   double timeout_s_{8.0};
   double tick_dt_{0.05};  // 20 Hz default
   std::chrono::steady_clock::time_point start_time_;
-
-  static std::vector<int> ParseMotorIndices(const std::string& str);
 };
 
 }  // namespace rtc_bt

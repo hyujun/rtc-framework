@@ -42,6 +42,7 @@ Fingertip force 데이터는 `hand_udp_node`가 publish하는
 |------|------|-------------|
 | Pick and Place | `trees/pick_and_place.xml` | Vision 기반 물체 감지, approach, force-based grasp, transport, release |
 | Towel Unfold | `trees/towel_unfold.xml` | 수건 edge 감지, pinch grasp, lift, compliance sweep, release |
+| Hand Motions | `trees/hand_motions.xml` | UR5e 자세 유지 + Hand 가감속 opposition/wave 데모 |
 
 ## BT Nodes
 
@@ -58,6 +59,10 @@ Fingertip force 데이터는 `hand_udp_node`가 publish하는
 | `ComputeOffsetPose` | SyncAction | Pose에 XYZ offset 적용 (approach, lift, retreat 계산) |
 | `ComputeSweepTrajectory` | SyncAction | Arc sweep 경로 waypoint 생성 (towel unfold용) |
 | `WaitDuration` | StatefulAction | 지정 시간 대기 |
+| `MoveFinger` | StatefulAction | 특정 손가락을 명명된 포즈로 이동 (시간 기반 완료) |
+| `FlexExtendFinger` | StatefulAction | 손가락 flex→extend 1 cycle (duration/2씩 2-phase) |
+| `SetHandPose` | StatefulAction | 전체 Hand 10-DoF를 명명된 포즈로 이동 |
+| `UR5eHoldPose` | StatefulAction | UR5e 목표 자세 도달 후 영구 RUNNING (halt까지 유지) |
 
 ### Condition Nodes
 
@@ -90,13 +95,17 @@ colcon build --packages-select ur5e_bt_coordinator
 ## Usage
 
 ```bash
-# Pick and Place
+# Pick and Place (1회 실행)
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
   --ros-args -p tree_file:=pick_and_place.xml -p tick_rate_hz:=20.0
 
 # Towel Unfold
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
   --ros-args -p tree_file:=towel_unfold.xml
+
+# Pick and Place 반복 실행
+ros2 run ur5e_bt_coordinator bt_coordinator_node \
+  --ros-args -p tree_file:=pick_and_place.xml -p repeat:=true -p repeat_delay_s:=2.0
 ```
 
 ### Parameters
@@ -105,6 +114,8 @@ ros2 run ur5e_bt_coordinator bt_coordinator_node \
 |-----------|---------|-------------|
 | `tree_file` | `pick_and_place.xml` | BT XML 파일명 (`trees/` 디렉토리 기준) |
 | `tick_rate_hz` | `20.0` | BT tick 주기 [Hz] |
+| `repeat` | `false` | `true`면 트리 SUCCESS 완료 후 자동 반복 (FAILURE 시 정지) |
+| `repeat_delay_s` | `1.0` | 반복 시 재시작 전 대기 시간 [s] |
 
 ### Blackboard Variables
 
@@ -124,16 +135,18 @@ ur5e_bt_coordinator/
 ├── config/bt_coordinator.yaml       # ROS2 parameters
 ├── trees/
 │   ├── pick_and_place.xml           # Scene A: object grasping
-│   └── towel_unfold.xml             # Scene B: towel unfolding
+│   ├── towel_unfold.xml             # Scene B: towel unfolding
+│   └── hand_motions.xml             # Scene C: hand dexterity demo
 ├── include/ur5e_bt_coordinator/
 │   ├── bt_types.hpp                 # Pose6D, FingertipForce, BT conversions
 │   ├── bt_ros_bridge.hpp            # ROS topic ↔ BT bridge
 │   ├── bt_coordinator_node.hpp      # Main node
-│   ├── action_nodes/                # 9 action node headers
+│   ├── hand_pose_config.hpp         # Hand/UR5e 포즈 lookup map, 손가락-관절 인덱스 매핑
+│   ├── action_nodes/                # 13 action node headers
 │   └── condition_nodes/             # 3 condition node headers
 └── src/
     ├── main.cpp                     # Entry point
     ├── bt_coordinator_node.cpp      # Node initialization, BT tick loop
     ├── bt_ros_bridge.cpp            # Topic subscriptions and publishers
-    └── nodes/                       # 12 node implementations
+    └── nodes/                       # 16 node implementations
 ```

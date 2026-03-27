@@ -10,6 +10,10 @@
 #include "ur5e_bt_coordinator/action_nodes/switch_controller.hpp"
 #include "ur5e_bt_coordinator/action_nodes/track_trajectory.hpp"
 #include "ur5e_bt_coordinator/action_nodes/wait_duration.hpp"
+#include "ur5e_bt_coordinator/action_nodes/move_finger.hpp"
+#include "ur5e_bt_coordinator/action_nodes/flex_extend_finger.hpp"
+#include "ur5e_bt_coordinator/action_nodes/set_hand_pose.hpp"
+#include "ur5e_bt_coordinator/action_nodes/ur5e_hold_pose.hpp"
 
 // Condition nodes
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
@@ -52,6 +56,8 @@ void BtCoordinatorNode::DeclareParameters()
 {
   tree_file_ = declare_parameter("tree_file", "pick_and_place.xml");
   tick_rate_hz_ = declare_parameter("tick_rate_hz", 20.0);
+  repeat_ = declare_parameter("repeat", false);
+  repeat_delay_s_ = declare_parameter("repeat_delay_s", 1.0);
 }
 
 void BtCoordinatorNode::RegisterBtNodes()
@@ -68,6 +74,12 @@ void BtCoordinatorNode::RegisterBtNodes()
   factory_.registerNodeType<ComputeOffsetPose>("ComputeOffsetPose");
   factory_.registerNodeType<ComputeSweepTrajectory>("ComputeSweepTrajectory");
   factory_.registerNodeType<WaitDuration>("WaitDuration");
+
+  // ── Hand demo nodes ─────────────────────────────────────────────────
+  factory_.registerNodeType<MoveFinger>("MoveFinger", bridge);
+  factory_.registerNodeType<FlexExtendFinger>("FlexExtendFinger", bridge);
+  factory_.registerNodeType<SetHandPose>("SetHandPose", bridge);
+  factory_.registerNodeType<UR5eHoldPose>("UR5eHoldPose", bridge);
 
   // ── Condition nodes ───────────────────────────────────────────────────
   factory_.registerNodeType<IsForceAbove>("IsForceAbove", bridge);
@@ -104,7 +116,23 @@ void BtCoordinatorNode::TickCallback()
 
   if (status == BT::NodeStatus::SUCCESS) {
     RCLCPP_INFO(get_logger(), "[BtCoordinator] Tree completed: SUCCESS");
-    tick_timer_->cancel();
+    if (repeat_) {
+      RCLCPP_INFO(get_logger(), "[BtCoordinator] Restarting tree in %.1f s...",
+                  repeat_delay_s_);
+      tick_timer_->cancel();
+      repeat_timer_ = create_wall_timer(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::duration<double>(repeat_delay_s_)),
+          [this]() {
+            repeat_timer_->cancel();
+            tree_->haltTree();
+            tree_->rootBlackboard()->unset("object_pose");
+            RCLCPP_INFO(get_logger(), "[BtCoordinator] Tree restarted");
+            tick_timer_->reset();
+          });
+    } else {
+      tick_timer_->cancel();
+    }
   } else if (status == BT::NodeStatus::FAILURE) {
     RCLCPP_WARN(get_logger(), "[BtCoordinator] Tree completed: FAILURE");
     tick_timer_->cancel();
