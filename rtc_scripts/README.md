@@ -30,9 +30,9 @@ rtc_scripts/
     ├── build_rt_kernel.sh                ← PREEMPT_RT 커널 빌드/설치
     ├── setup_irq_affinity.sh             ← IRQ 어피니티 설정
     ├── setup_udp_optimization.sh         ← NIC/네트워크 스택 최적화
-    ├── setup_grub_rt.sh                  ← GRUB RT 커널 파라미터 관리 (NEW)
-    ├── setup_display_rt.sh               ← RT 환경 디스플레이 최적화 (NEW)
-    ├── setup_cpu_governor.sh             ← CPU governor performance 설정 (NEW)
+    ├── setup_grub_rt.sh                  ← GRUB RT 커널 파라미터 관리 (v5.17.0)
+    ├── setup_display_rt.sh               ← RT 환경 디스플레이 최적화 (v5.17.0)
+    ├── setup_cpu_governor.sh             ← CPU governor performance 설정 (v5.17.0)
     ├── setup_nvidia_rt.sh                ← NVIDIA GPU + RT 공존 설정
     ├── cpu_shield.sh                     ← 동적 CPU 격리 (cset/cgroup)
     ├── check_rt_setup.sh                 ← 정적 RT 환경 검증 (9개 카테고리)
@@ -142,7 +142,7 @@ sudo ./build_rt_kernel.sh --force-step 5  # 5단계부터 강제 재시작
 
 ---
 
-### setup_grub_rt.sh (NEW)
+### setup_grub_rt.sh (v5.17.0)
 
 GRUB RT 커널 파라미터의 **단일 진실 원천(single source of truth)**입니다. `install.sh`와 `setup_nvidia_rt.sh`에서 호출됩니다.
 
@@ -206,7 +206,7 @@ ethtool 설정은 systemd oneshot 서비스로 부팅 시 자동 재적용됩니
 
 ---
 
-### setup_display_rt.sh (NEW)
+### setup_display_rt.sh (v5.17.0)
 
 RT 환경에서 디스플레이 안정성을 확보합니다.
 
@@ -220,7 +220,7 @@ sudo ./setup_display_rt.sh
 
 ---
 
-### setup_cpu_governor.sh (NEW)
+### setup_cpu_governor.sh (v5.17.0)
 
 CPU governor를 performance 모드로 설정합니다.
 

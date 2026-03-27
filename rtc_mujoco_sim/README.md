@@ -50,9 +50,10 @@ rtc_mujoco_sim  ← ur5e_description에서 모델 참조 (ament_index + package:
 
 ### robot_response (MuJoCo 물리 시뮬레이션)
 
-- YAML에 명시된 `joint_names`를 XML의 hinge+actuator 조인트와 **양방향 완전 일치 검증**
+- YAML에 명시된 `command_joint_names`를 XML의 hinge+actuator 조인트와 **양방향 완전 일치 검증**
   - YAML에 있는데 XML에 없음 → **FAIL**
   - XML에 있는데 YAML에 없음 → **FAIL**
+- `state_joint_names`로 state publish 시 관절 이름/순서를 별도 지정 가능 (빈 배열 = XML 전체)
 - 이름 기반 qpos/qvel/actuator 인덱스 매핑 (비연속 인덱스 지원)
 - 그룹별 독립 command/state 버퍼, control mode, servo gains
 - 첫 번째 robot 그룹이 동기 루프의 primary 대기 대상
@@ -180,7 +181,14 @@ mujoco_simulator:
     robot_response:
       groups: ["ur5e", "hand"]
       ur5e:
-        joint_names:
+        command_joint_names:
+          - shoulder_pan_joint
+          - shoulder_lift_joint
+          - elbow_joint
+          - wrist_1_joint
+          - wrist_2_joint
+          - wrist_3_joint
+        state_joint_names:         # state publish용 (빈 배열 = XML 전체)
           - shoulder_pan_joint
           - shoulder_lift_joint
           - elbow_joint
@@ -190,7 +198,7 @@ mujoco_simulator:
         command_topic: "/ur5e/joint_command"
         state_topic: "/joint_states"
       hand:
-        joint_names:
+        command_joint_names:
           - thumb_cmc_aa
           - thumb_cmc_fe
           - thumb_mcp_fe
@@ -231,8 +239,8 @@ rt_controller:
 ```yaml
 robot_response:
   groups: ["ur5e", "hand"]
-  ur5e: { joint_names: [...], command_topic: "/ur5e/joint_command", state_topic: "/joint_states" }
-  hand: { joint_names: [...], command_topic: "/hand/command", state_topic: "/hand/joint_states" }
+  ur5e: { command_joint_names: [...], state_joint_names: [...], command_topic: "/ur5e/joint_command", state_topic: "/joint_states" }
+  hand: { command_joint_names: [...], command_topic: "/hand/command", state_topic: "/hand/joint_states" }
 ```
 
 **Case 2: ur5e만 물리, hand는 LPF** (scene.xml 사용, hand 조인트 없음)
@@ -240,10 +248,10 @@ robot_response:
 ```yaml
 robot_response:
   groups: ["ur5e"]
-  ur5e: { joint_names: [...], command_topic: "/ur5e/joint_command", state_topic: "/joint_states" }
+  ur5e: { command_joint_names: [...], command_topic: "/ur5e/joint_command", state_topic: "/joint_states" }
 fake_response:
   groups: ["hand"]
-  hand: { joint_names: [...], command_topic: "/hand/command", state_topic: "/hand/joint_states", filter_alpha: 0.1 }
+  hand: { command_joint_names: [...], command_topic: "/hand/command", state_topic: "/hand/joint_states", filter_alpha: 0.1 }
 ```
 
 **Case 3: 다른 로봇 (kuka 등)**
@@ -252,10 +260,12 @@ fake_response:
 robot_response:
   groups: ["kuka"]
   kuka:
-    joint_names: [kuka_joint_1, kuka_joint_2, kuka_joint_3, ...]
+    command_joint_names: [kuka_joint_1, kuka_joint_2, kuka_joint_3, ...]
     command_topic: "/kuka/joint_command"
     state_topic: "/kuka/joint_states"
 ```
+
+> **참고:** `joint_names`는 `command_joint_names` 미지정 시 하위 호환 대체로 사용됩니다. `state_joint_names`가 빈 배열이면 command_joint_names와 동일하게 사용됩니다.
 
 ---
 

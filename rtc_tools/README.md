@@ -340,7 +340,17 @@ sudo apt install python3-pyqt5   # motion_editor_gui만 필요
 
 ---
 
-## 최적화 내역 (v5.16.1)
+## 변경 내역
+
+### v5.17.0
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **plot_rtc_log** | `plot_ur_trajectory` → `plot_rtc_log`로 이름 변경 (legacy alias 유지) |
+| **세션 디렉토리** | `RTC_SESSION_DIR` 환경변수 기반 통합 경로 관리 (`UR5E_SESSION_DIR` 폴백) |
+| **hand_data_plot** | 센서 수 자동 감지, `--sensors-only`/`--motors-only` 플래그 추가 |
+
+### v5.16.1
 
 | 영역 | 변경 내용 |
 |------|----------|

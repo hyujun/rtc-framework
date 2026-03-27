@@ -97,10 +97,11 @@ p_controller:
 **제어 법칙:**
 
 ```
-τ[i] = kp[i] × e[i] + kd[i] × ė[i]  [+ g(q)[i]]  [+ C(q,v)·v[i]]
+τ[i] = ff_vel[i] + kp[i] × e[i] + kd[i] × ė[i]  [+ g(q)[i]]  [+ C(q,v)·v[i]]
 
 여기서 e = trajectory_setpoint - current_position
       ė = (e - e_prev) / dt
+      ff_vel = trajectory_velocity (5차 다항식 피드포워드)
 ```
 
 **게인 구조체:**
@@ -392,7 +393,18 @@ rtc_controllers  ← 4개 내장 컨트롤러 구현
 
 ---
 
-## 최적화 내역 (v0.1.1)
+## 변경 내역
+
+### v5.17.0
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **JointPDController** | 피드포워드 속도 (`ff_vel`) 항 추가 — 궤적 추적 정확도 향상 |
+| **DeviceOutput 확장** | `trajectory_positions`/`trajectory_velocities` 필드 활용 — 궤적 레퍼런스와 컨트롤러 타겟 분리 |
+| **ControllerOutput 확장** | `task_goal_positions`, `trajectory_task_positions`/`velocities` 필드 활용 (CLIK/OSC) |
+| **DeviceNameConfig** | `safe_position` 기반 E-STOP 위치 설정 (YAML 로드), `OnDeviceConfigsSet()` 오버라이드에서 max_velocity 캐싱 |
+
+### v0.1.1
 
 | 영역 | 변경 내용 |
 |------|----------|

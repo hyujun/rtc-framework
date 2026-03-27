@@ -29,7 +29,7 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 
 ## Repository Structure
 
-16 ROS2 packages at repo root (no `src/`). 12 `rtc_*` (robot-agnostic) + 4 `ur5e_*` (robot-specific). Each has its own `README.md` with detailed API and configuration.
+17 ROS2 packages at repo root (no `src/`). 12 `rtc_*` (robot-agnostic) + 5 `ur5e_*` (robot-specific). Each has its own `README.md` with detailed API and configuration.
 
 ### Package Summary
 
@@ -50,6 +50,7 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 | `ur5e_description` | Data | URDF + MJCF + meshes (DAE/STL). Pinocchio/RViz/MuJoCo compatible |
 | `ur5e_hand_driver` | Executable | UDP request-response driver (SeqLock state, ppoll sub-ms timeout, 44ch tactile sensors) |
 | `ur5e_hand_status_monitor` | Shared lib | Robot+hand integrated monitor: motor/sensor data quality checks, rate monitoring, lock-free RT accessors |
+| `ur5e_bt_coordinator` | Executable | BehaviorTree.CPP v4 non-RT task coordinator (20 Hz, UR5e + hand integrated motions) |
 | `ur5e_bringup` | Launch/Config | robot.launch.py, sim.launch.py + DemoJoint/DemoTask controllers |
 
 ### Dependency Graph
@@ -66,6 +67,7 @@ rtc_msgs, rtc_base (independent)
 
 ur5e_hand_driver ← rtc_communication, rtc_inference, rtc_base
 ur5e_hand_status_monitor ← rtc_status_monitor, rtc_base, rtc_msgs
+ur5e_bt_coordinator ← rtc_msgs, BehaviorTree.CPP v4
 ur5e_bringup ← rtc_controller_manager, ur5e_hand_driver, ur5e_description
 ```
 
@@ -122,16 +124,16 @@ Auto-selects 4/6/8/10/12/16-core layouts via `SelectThreadConfigs()`.
 | JointPDController (idx 1) | Direct (torque) | Joint | PD + Pinocchio RNEA gravity/Coriolis + JointSpaceTrajectory quintic |
 | ClikController (idx 2) | Indirect (position) | Cartesian 3/6-DOF | Damped Jacobian pseudoinverse + null-space + TaskSpaceTrajectory SE3 quintic |
 | OSC (idx 3) | Direct (torque) | Cartesian 6-DOF | Full pose (pos + SO(3)) + TaskSpaceTrajectory SE3 quintic |
-| DemoJointController (idx 4) | Indirect | Joint + Hand | Arm P(6-DOF) + Hand P(10-DOF) |
-| DemoTaskController (idx 5) | Indirect | Cartesian + Hand | CLIK arm + Hand P + E-STOP |
+| DemoJointController (idx 4) | Indirect | Joint + Hand | Quintic rest-to-rest trajectory (arm 6-DOF + hand 10-DOF) |
+| DemoTaskController (idx 5) | Indirect | Cartesian + Hand | CLIK arm + Quintic trajectory + Hand trajectory + E-STOP |
 
 **Gains layout** (via `~/controller_gains` topic):
 - PController: `[kp×6]` (6 values)
 - JointPD: `[kp×6, kd×6, gravity(0/1), coriolis(0/1), trajectory_speed]` (15)
 - CLIK: `[kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1)]` (10)
 - OSC: `[kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, gravity(0/1), traj_speed, traj_ang_speed]` (16)
-- DemoJoint: `[robot_kp×6, hand_kp×10]` (16)
-- DemoTask: `[kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), hand_kp×10]` (20)
+- DemoJoint: `[robot_trajectory_speed, hand_trajectory_speed, robot_max_traj_velocity, hand_max_traj_velocity]` (4)
+- DemoTask: `[kp_translation×3, kp_rotation×3, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), trajectory_speed, trajectory_angular_speed, hand_trajectory_speed, max_traj_velocity, max_traj_angular_velocity, hand_max_traj_velocity]` (16)
 
 ### RtControllerNode Key Methods
 
@@ -154,11 +156,15 @@ Auto-selects 4/6/8/10/12/16-core layouts via `SelectThreadConfigs()`.
 ### Hand UDP Protocol
 
 Request-response polling on port 55151 (jthread, Core 5, SCHED_FIFO/65):
-1. WritePosition (43B send + 43B echo) → motor positions
-2. ReadVelocity (43B send + 43B recv) → motor velocities
-3. ReadSensor0-3 (3B send + 67B recv × 4) → 44 sensor values (decimated every N cycles)
 
-`/hand/joint_states` layout: `[positions:10][velocities:10][sensors:44]` (64 doubles at 100Hz)
+**Individual mode**: WritePosition (43B echo) → ReadVelocity → ReadSensor0-3 (decimated)
+**Bulk mode** (`communication_mode: "bulk"`): WritePosition (43B echo) → ReadAllMotors(0x10, 123B) → ReadAllSensors(0x19, 267B)
+
+Published topics (v5.17.0):
+- `/hand/joint_states` (`sensor_msgs/JointState`) — joint-space positions/velocities
+- `/hand/motor_states` (`sensor_msgs/JointState`) — motor-space positions/velocities/currents
+- `/hand/sensor_states` (`rtc_msgs/HandSensorState`) — fingertip sensors + F/T inference
+- `/hand/joint_command` (`rtc_msgs/JointCommand`) — subscribed motor commands
 
 ---
 
@@ -168,12 +174,12 @@ Request-response polling on port 55151 (jthread, Core 5, SCHED_FIFO/65):
 |-------|------|-----|-------------|
 | `/joint_states` | JointState | Sub | 6-DOF positions + velocities |
 | `/target_joint_positions` | Float64MultiArray | Sub | Interpretation varies by controller |
-| `/hand/joint_states` | Float64MultiArray | Sub | 64 doubles: [pos:10][vel:10][sensors:44] |
-| `/hand/command` | Float64MultiArray | Sub | 10 normalized motor commands (0.0–1.0) |
+| `/hand/joint_states` | JointState | Sub | Hand joint-space positions/velocities |
+| `/hand/motor_states` | JointState | Sub | Hand motor-space positions/velocities/currents |
+| `/hand/sensor_states` | HandSensorState | Sub | Fingertip sensors (barometer + ToF) + F/T inference |
+| `/hand/joint_command` | JointCommand | Sub | 10 normalized motor commands (0.0–1.0) |
 | `/forward_position_controller/commands` | Float64MultiArray | Pub | 6 position commands (rad) |
 | `/forward_torque_controller/commands` | Float64MultiArray | Pub | 6 torque commands (Nm) |
-| `/rt_controller/trajectory_state` | Float64MultiArray | Pub | 18: goal[6]+traj_pos[6]+traj_vel[6] |
-| `/rt_controller/controller_state` | Float64MultiArray | Pub | 18: actual_pos[6]+vel[6]+cmd[6] |
 | `/system/estop_status` | Bool | Pub | true = E-STOP active |
 | `~/controller_type` | Int32 | Sub | Runtime switch: 0=P, 1=PD, 2=CLIK, 3=OSC, 4=Hand |
 | `~/controller_gains` | Float64MultiArray | Sub | Dynamic gain update (layout per controller) |
@@ -224,7 +230,9 @@ use_yaml_servo_gains: false   # true = apply YAML servo_kp/kd
 target_ip: "192.168.1.2"
 target_port: 55151
 recv_timeout_ms: 0.4         # ppoll sub-ms timeout
-publish_rate: 100.0
+communication_mode: "bulk"   # "bulk" or "individual"
+joint_mode: "motor"          # "motor" or "joint"
+sensor_decimation: 4         # N cycle마다 센서 읽기
 enable_failure_detector: true
 ```
 
@@ -287,7 +295,7 @@ logging_data/YYMMDD_HHMM/
 │   ├── robot_log.csv      (49 cols: timestamp, goal_pos, actual_pos, actual_vel, torque, task_pos, command, traj_pos, traj_vel)
 │   └── device_log.csv     (87 cols: timestamp, device_valid, goal, cmd, actual, vel, sensors per fingertip)
 ├── monitor/               (failure logs, controller_stats.json)
-├── device/                (hand_udp_stats.json)
+├── hand/                  (hand_udp_stats.json)
 ├── sim/                   (screenshot_*.ppm)
 ├── plots/                 (rtc_tools output)
 └── motions/               (motion editor output)
@@ -317,7 +325,7 @@ If `ApplyThreadConfig()` fails, the node continues at SCHED_OTHER with a `[WARN]
 
 ## Optimization Summary (v5.17.0)
 
-Cross-cutting optimizations applied to all 16 packages:
+Cross-cutting optimizations applied to all 17 packages:
 
 ### Build System
 - All C++ packages explicitly set `CMAKE_CXX_STANDARD 20` + `CMAKE_CXX_STANDARD_REQUIRED ON`
@@ -338,6 +346,6 @@ Cross-cutting optimizations applied to all 16 packages:
 | `std::array` buffer | `rtc_base` | `session_dir.hpp` — safer timestamp buffer |
 
 ### Documentation
-- All 15 packages have `"최적화 내역"` (optimization changelog) section in README.md
+- All 17 packages have `"최적화 내역"` (optimization changelog) section in README.md
 - RT-safety warnings documented on non-RT-safe functions (`GetSubscribeTopicName()`)
 - Kalman filter accessor preconditions documented (`i < N`)

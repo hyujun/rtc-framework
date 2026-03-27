@@ -23,7 +23,9 @@ robots/ur5e/
 │   └── ur5e_with_hand.xml    # 로봇+핸드 통합 모델
 │
 ├── urdf/           # Pinocchio / RViz / ros2_control용 URDF
-│   └── ur5e.urdf   # ← 빌드 시 xacro로 자동 생성 (빌드 전 없음)
+│   ├── ur5e.urdf             # UR5e 로봇 URDF (UR 공식 xacro에서 사전 생성)
+│   ├── hand.urdf.xacro       # 10-DOF 커스텀 핸드 (기하학적 프리미티브)
+│   └── ur5e_with_hand.urdf.xacro  # 로봇+핸드 결합 모델
 │
 └── meshes/         # UR 공식 메시 파일
     ├── visual/     # DAE (Collada, CAD 기반 고해상도 시각화)
@@ -37,21 +39,22 @@ robots/ur5e/
     ├── collision/  # STL (단순화, 충돌 감지용)
     │   ├── base.stl, shoulder.stl, upperarm.stl
     │   ├── forearm.stl, wrist1.stl, wrist2.stl, wrist3.stl
-    └── assets/     # OBJ (MuJoCo MJCF 시각화용, 20 files)
-        ├── base_0.obj, base_1.obj
-        ├── shoulder_0.obj, shoulder_1.obj, shoulder_2.obj
-        ├── upperarm_0.obj, ..., wrist3.obj
+    └── assets/     # OBJ (MuJoCo MJCF 시각화용, 20개 파일)
+        ├── base_0.obj, base_1.obj                          # 2
+        ├── shoulder_0.obj, ..., shoulder_2.obj              # 3
+        ├── upperarm_0.obj, ..., upperarm_3.obj              # 4
+        ├── forearm_0.obj, ..., forearm_3.obj                # 4
+        ├── wrist1_0.obj, ..., wrist1_2.obj                  # 3
+        ├── wrist2_0.obj, ..., wrist2_2.obj                  # 3
+        └── wrist3.obj                                       # 1
 ```
-
-> `hand.urdf.xacro`: 10-DOF 핸드 모델 (기하학적 프리미티브 사용, 메시 없음)
-> `ur5e_with_hand.urdf.xacro`: UR5e + 핸드 결합 모델 (tool0 프레임에 fixed joint로 연결)
 
 ### 관절 사양
 
 | 관절 | 타입 | 위치 한계 (rad) | 최대 속도 (rad/s) | 최대 토크 (Nm) |
 |------|------|----------------|-------------------|----------------|
-| shoulder_pan_joint | revolute | ±2π | 2.0944 | 150.0 |
-| shoulder_lift_joint | revolute | ±2π | 2.0944 | 150.0 |
+| shoulder_pan_joint | revolute | ±2π | 3.1416 | 150.0 |
+| shoulder_lift_joint | revolute | ±2π | 3.1416 | 150.0 |
 | elbow_joint | revolute | ±π | 3.1416 | 150.0 |
 | wrist_1_joint | revolute | ±2π | 3.1416 | 28.0 |
 | wrist_2_joint | revolute | ±2π | 3.1416 | 28.0 |
@@ -131,7 +134,7 @@ robots/ur5e/urdf/ur5e_with_hand.urdf.xacro  # 로봇 + 핸드 조합
 # Mesh
 robots/ur5e/meshes/visual/*.dae     # 시각화용 (7 files)
 robots/ur5e/meshes/collision/*.stl  # 충돌용 (7 files)
-robots/ur5e/meshes/assets/*.obj     # MJCF 시각화용 (24 files)
+robots/ur5e/meshes/assets/*.obj     # MJCF 시각화용 (20 files)
 ```
 
 ---
@@ -191,7 +194,17 @@ ur5e_description  ← 독립 (MJCF/URDF/메시 제공)
 
 ---
 
-## 최적화 내역 (v5.16.1)
+## 변경 내역
+
+### v5.17.0
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **URDF 구조** | `ur5e.urdf` 사전 생성 포함, `hand.urdf.xacro`/`ur5e_with_hand.urdf.xacro` 추가 |
+| **관절 사양** | shoulder_pan/lift 최대 속도 수정: 2.0944 → 3.1416 rad/s (URDF 실제 값 반영) |
+| **메시 에셋** | assets 디렉토리 파일 수 명확화: 20개 OBJ 파일 |
+
+### v5.16.1
 
 | 영역 | 변경 내용 |
 |------|----------|

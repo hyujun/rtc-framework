@@ -147,8 +147,12 @@ GUI 디스플레이를 위한 현재 관절 및 태스크 공간 위치입니다
 | **궤적** | `trajectory_positions` | `float64[]` | 궤적 레퍼런스 위치 (N) |
 | | `trajectory_velocities` | `float64[]` | 궤적 레퍼런스 속도 (N) |
 | **FK** | `actual_task_positions` | `float64[6]` | 순기구학 TCP 위치 |
+| **모터** | `motor_names` | `string[]` | 모터 이름 (M개, 선택적) |
+| | `motor_positions` | `float64[]` | 모터 위치 (M) |
+| | `motor_velocities` | `float64[]` | 모터 속도 (M) |
+| | `motor_efforts` | `float64[]` | 모터 전류 (M) |
 
-- 모든 동적 배열은 `joint_names`와 동일한 크기(N)를 갖습니다.
+- 모든 동적 배열은 `joint_names`와 동일한 크기(N)를 갖습니다 (모터 필드는 `motor_names` 크기 M).
 - CSV 열 순서: **Goal → Current State → Command → Trajectory** 분류법을 따릅니다.
 
 ---
@@ -231,7 +235,18 @@ rtc_msgs   ← std_msgs (ROS2 기본 메시지)
 
 ---
 
-## 최적화 내역 (v5.16.1)
+## 변경 내역
+
+### v5.17.0
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **DeviceStateLog** | 모터 공간 필드 추가 (`motor_names`, `motor_positions`, `motor_velocities`, `motor_efforts`) |
+| **DeviceSensorLog** | 핑거팁 센서 로깅 + 추론 출력 통합 메시지 신규 추가 |
+| **GuiPosition** | 관절/태스크 위치 통합 GUI 표시 메시지 신규 추가 |
+| **RobotTarget** | 관절/태스크 공간 목표 메시지 신규 추가 |
+
+### v5.16.1
 
 | 영역 | 변경 내용 |
 |------|----------|

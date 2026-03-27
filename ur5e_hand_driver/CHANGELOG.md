@@ -7,8 +7,19 @@
 
 ## [5.17.0] - 2026-03-25
 
+### 추가 (Added)
+
+- **Bulk 통신 모드**: `communication_mode: "bulk"` — `ReadAllMotors`(0x10) + `ReadAllSensors`(0x19) 벌크 읽기 지원
+- **JointMode 선택**: `joint_mode: "motor"/"joint"` — 모터/관절 공간 명령 모드
+- **HandSensorProcessor 분리**: 센서 후처리 파이프라인 독립 클래스 (LPF, rate estimation, drift detection)
+- **HandUdpTransport 분리**: 저수준 UDP 소켓 관리 + 프로토콜 요청 독립 클래스
+- **링크 건강 검사**: HandFailureDetector에 `check_link`/`link_fail_threshold` 추가
+
 ### 변경 (Changed)
 
+- **ROS2 토픽 타입 변경**: `Float64MultiArray` → `JointState`(관절/모터) + `HandSensorState`(센서) + `JointCommand`(명령)
+- **토픽 분리**: 단일 `/hand/joint_states` → `/hand/joint_states` + `/hand/motor_states` + `/hand/sensor_states` + `/hand/sensor_states/monitor` + `/hand/link_status`
+- **HandTimingProfiler 확장**: `sensor_proc_us`, `ft_infer_us` 단계 추가, Bulk 모드 단계 추가
 - 워크스페이스 전체 버전 v5.17.0 통일
 - 문서 최신화 (README.md, package.xml)
 

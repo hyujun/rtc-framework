@@ -13,7 +13,7 @@
 
 ## 패키지 구성
 
-16개 ROS2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`)와 로봇 고유 패키지(`ur5e_*`)로 분리됩니다. 각 패키지는 자체 `README.md`를 포함합니다.
+17개 ROS2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`)와 로봇 고유 패키지(`ur5e_*`)로 분리됩니다. 각 패키지는 자체 `README.md`를 포함합니다.
 
 ### 로봇 비의존적 프레임워크 (rtc_*)
 
@@ -39,6 +39,7 @@
 | [`ur5e_description`](ur5e_description/) | 5.17.0 | UR5e URDF/MJCF/메시 — Pinocchio/RViz/MuJoCo 겸용 | ament_cmake |
 | [`ur5e_hand_driver`](ur5e_hand_driver/) | 5.17.0 | 10-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서 44ch, ONNX F/T 추론 | ament_cmake |
 | [`ur5e_hand_status_monitor`](ur5e_hand_status_monitor/) | 5.17.0 | 로봇+핸드 통합 상태 모니터: 모터/센서 데이터 품질 검사, 레이트 감시, lock-free RT 접근자 | ament_cmake |
+| [`ur5e_bt_coordinator`](ur5e_bt_coordinator/) | 0.1.0 | BehaviorTree.CPP v4 기반 비-RT 태스크 코디네이터 (20 Hz, UR5e + 핸드 통합 모션) | ament_cmake |
 | [`ur5e_bringup`](ur5e_bringup/) | 5.17.0 | UR5e launch/config + 데모 컨트롤러 (DemoJoint, DemoTask) + CPU 격리/DDS 핀닝 | ament_cmake |
 
 ### 의존성 그래프
@@ -59,6 +60,7 @@ rtc_msgs, rtc_base (독립)
 ur5e_description (독립)
   ├── ur5e_hand_driver ← rtc_communication, rtc_inference, rtc_base
   ├── ur5e_hand_status_monitor ← rtc_status_monitor, rtc_base, rtc_msgs
+  ├── ur5e_bt_coordinator ← rtc_msgs, BehaviorTree.CPP v4
   └── ur5e_bringup ← rtc_controller_manager, ur5e_hand_driver, ur5e_description
 ```
 
@@ -86,7 +88,7 @@ ur5e_description (독립)
   - `consecutive_overrun`: ≥10회 연속 RT 루프 오버런
   - `status_monitor`: Safety/tracking 위반, 관절 한계 (10Hz)
   - `hand_failure`: UDP 영/중복 데이터 감지 (50Hz)
-- **상태 모니터**: 10Hz 비-RT 감시 (10개 장애 유형 + 3개 경고 유형, lock-free RT 접근자)
+- **상태 모니터**: 10Hz 비-RT 감시 (13개 장애 유형 + 4개 경고 유형, lock-free RT 접근자)
 - **자동 복구**: protective_stop, 프로그램 연결 끊김에 대해 선택적 자동 복구 지원
 
 ### 시뮬레이션 & 추론
@@ -154,7 +156,6 @@ ros2 launch ur5e_hand_driver hand_udp.launch.py target_ip:=192.168.1.2
 ros2 topic hz /forward_position_controller/commands   # RT 루프 주기 (~500Hz)
 ros2 topic echo /system/estop_status                  # E-STOP 상태 (true = 활성)
 ros2 topic echo /sim/status                           # MuJoCo: [step, time, rtf, paused]
-ros2 topic echo /rt_controller/trajectory_state       # 궤적 보간 상태
 ros2 param list /rt_controller | grep controllers     # 토픽 파라미터 확인
 
 # RT 스레드 상태 확인
@@ -212,7 +213,7 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 |---|---|
 | `controller/` | timing_log.csv (6열: 타이밍), `<device>_log.csv` (디바이스별: 관절/센서/추론) |
 | `monitor/` | ur5e_failure_*.log, controller_stats.json |
-| `device/` | hand_udp_stats.json |
+| `hand/` | hand_udp_stats.json |
 | `sim/` | screenshot_*.ppm (MuJoCo 전용) |
 | `plots/`, `motions/` | rtc_tools 출력 |
 

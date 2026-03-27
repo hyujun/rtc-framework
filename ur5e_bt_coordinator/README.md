@@ -1,5 +1,9 @@
 # ur5e_bt_coordinator
 
+![version](https://img.shields.io/badge/version-v5.17.0-blue)
+
+> 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
+
 BehaviorTree 기반 task coordinator for UR5e + Hand system.
 
 500 Hz RT 제어 루프 밖에서 실행되는 non-RT 노드로, BehaviorTree.CPP v4를 사용하여
@@ -74,10 +78,14 @@ Fingertip force 데이터는 `hand_udp_node`가 publish하는
 
 ## Dependencies
 
-- `ros-jazzy-behaviortree-cpp` (BehaviorTree.CPP v4)
-- `rtc_msgs` (GuiPosition, HandSensorState, FingertipSensor)
-- `geometry_msgs` (PoseStamped — vision interface)
-- `tf2` (quaternion → RPY 변환)
+| 의존성 | 용도 |
+|--------|------|
+| `rclcpp` | ROS2 C++ 클라이언트 |
+| `behaviortree_cpp` | BehaviorTree.CPP v4 (`ros-jazzy-behaviortree-cpp`) |
+| `std_msgs` | Float64MultiArray, String, Bool |
+| `geometry_msgs` | PoseStamped (vision 인터페이스) |
+| `rtc_msgs` | GuiPosition, HandSensorState, FingertipSensor |
+| `tf2` | 쿼터니언 → RPY 변환 |
 
 ## Build
 
@@ -102,6 +110,10 @@ ros2 run ur5e_bt_coordinator bt_coordinator_node \
 # Towel Unfold
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
   --ros-args -p tree_file:=towel_unfold.xml
+
+# Hand Motions Demo (UR5e 자세 유지 + 가감속 opposition/wave)
+ros2 run ur5e_bt_coordinator bt_coordinator_node \
+  --ros-args -p tree_file:=hand_motions.xml
 
 # Pick and Place 반복 실행
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
@@ -139,6 +151,7 @@ ur5e_bt_coordinator/
 │   └── hand_motions.xml             # Scene C: hand dexterity demo
 ├── include/ur5e_bt_coordinator/
 │   ├── bt_types.hpp                 # Pose6D, FingertipForce, BT conversions
+│   ├── bt_utils.hpp                 # 유틸리티 함수
 │   ├── bt_ros_bridge.hpp            # ROS topic ↔ BT bridge
 │   ├── bt_coordinator_node.hpp      # Main node
 │   ├── hand_pose_config.hpp         # Hand/UR5e 포즈 lookup map, 손가락-관절 인덱스 매핑
@@ -150,3 +163,9 @@ ur5e_bt_coordinator/
     ├── bt_ros_bridge.cpp            # Topic subscriptions and publishers
     └── nodes/                       # 16 node implementations
 ```
+
+---
+
+## 라이선스
+
+MIT License — 자세한 내용은 [LICENSE](../LICENSE) 파일을 참조하세요.
