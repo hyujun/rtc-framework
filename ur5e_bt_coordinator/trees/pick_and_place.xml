@@ -1,0 +1,123 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="PickAndPlace">
+    <Sequence name="main">
+
+      <!-- ======================================================== -->
+      <!-- Phase 1: Detect object via vision                         -->
+      <!-- ======================================================== -->
+      <RetryUntilSuccessful num_attempts="10">
+        <Sequence name="detect">
+          <WaitDuration duration_s="0.5"/>
+          <IsObjectDetected pose="{object_pose}"/>
+        </Sequence>
+      </RetryUntilSuccessful>
+
+      <!-- ======================================================== -->
+      <!-- Phase 2: Pre-shape hand (open) and move above object      -->
+      <!-- ======================================================== -->
+      <GraspControl mode="open"
+                    target_positions="0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0"
+                    timeout_s="5.0"/>
+
+      <ComputeOffsetPose input_pose="{object_pose}"
+                         offset_z="0.04"
+                         output_pose="{approach_pose}"/>
+
+      <MoveToPose target="{approach_pose}"
+                  position_tolerance="0.003"
+                  orientation_tolerance="0.05"
+                  timeout_s="10.0"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 3: Slow descend to object                           -->
+      <!-- ======================================================== -->
+      <SetGains trajectory_speed="0.05"
+                max_traj_velocity="0.1"/>
+
+      <MoveToPose target="{object_pose}"
+                  position_tolerance="0.002"
+                  orientation_tolerance="0.05"
+                  timeout_s="8.0"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 4: Force-based grasp                                -->
+      <!-- Close hand until fingertip force exceeds threshold        -->
+      <!-- ======================================================== -->
+      <Parallel success_count="1" failure_count="1">
+        <GraspControl mode="close"
+                      close_speed="0.3"
+                      max_position="1.4"
+                      timeout_s="10.0"/>
+        <RetryUntilSuccessful num_attempts="200">
+          <Sequence>
+            <WaitDuration duration_s="0.05"/>
+            <IsForceAbove threshold_N="1.5"
+                          min_fingertips="2"
+                          sustained_ms="200"/>
+          </Sequence>
+        </RetryUntilSuccessful>
+      </Parallel>
+
+      <!-- Verify grasp -->
+      <WaitDuration duration_s="0.3"/>
+      <IsGrasped force_threshold_N="1.0"
+                 min_fingertips="2"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 5: Lift object                                      -->
+      <!-- ======================================================== -->
+      <SetGains trajectory_speed="0.08"
+                max_traj_velocity="0.2"/>
+
+      <ComputeOffsetPose input_pose="{object_pose}"
+                         offset_z="0.12"
+                         output_pose="{lift_pose}"/>
+      <MoveToPose target="{lift_pose}"
+                  position_tolerance="0.005"
+                  timeout_s="6.0"/>
+
+      <!-- Verify still grasped after lift -->
+      <IsGrasped force_threshold_N="0.8"
+                 min_fingertips="2"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 6: Transport to goal position                       -->
+      <!-- place_pose must be set in Blackboard before tree starts   -->
+      <!-- ======================================================== -->
+      <SetGains trajectory_speed="0.1"
+                max_traj_velocity="0.3"/>
+
+      <MoveToPose target="{place_pose}"
+                  position_tolerance="0.005"
+                  timeout_s="12.0"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 7: Lower and release                                -->
+      <!-- ======================================================== -->
+      <ComputeOffsetPose input_pose="{place_pose}"
+                         offset_z="-0.05"
+                         output_pose="{lower_pose}"/>
+      <SetGains trajectory_speed="0.05"/>
+      <MoveToPose target="{lower_pose}"
+                  position_tolerance="0.003"
+                  timeout_s="6.0"/>
+
+      <GraspControl mode="open"
+                    target_positions="0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0"
+                    timeout_s="3.0"/>
+      <WaitDuration duration_s="0.5"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 8: Retreat upward                                   -->
+      <!-- ======================================================== -->
+      <ComputeOffsetPose input_pose="{place_pose}"
+                         offset_z="0.08"
+                         output_pose="{retreat_pose}"/>
+      <SetGains trajectory_speed="0.1"/>
+      <MoveToPose target="{retreat_pose}"
+                  position_tolerance="0.005"
+                  timeout_s="6.0"/>
+
+    </Sequence>
+  </BehaviorTree>
+</root>

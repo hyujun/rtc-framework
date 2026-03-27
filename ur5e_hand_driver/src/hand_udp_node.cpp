@@ -182,6 +182,13 @@ class HandUdpNode : public rclcpp::Node {
     sensor_state_pub_ = create_publisher<rtc_msgs::msg::HandSensorState>(
         sensor_topic, sensor_pub_qos);
 
+    // RELIABLE + depth 10: non-RT monitoring topic for BT / external nodes.
+    // Publishes the same HandSensorState at 500 Hz but with RELIABLE QoS,
+    // so non-RT subscribers (e.g. BT coordinator) can connect without
+    // interfering with the BEST_EFFORT RT control path.
+    sensor_monitor_pub_ = create_publisher<rtc_msgs::msg::HandSensorState>(
+        sensor_topic + "/monitor", rclcpp::QoS{10});
+
     // Link status: RELIABLE + TRANSIENT_LOCAL + depth 1.
     // Low-rate (~100 Hz decimated), latch ensures late subscribers get last status.
     rclcpp::QoS link_pub_qos{1};
@@ -390,6 +397,7 @@ class HandUdpNode : public rclcpp::Node {
         }
       }
       sensor_state_pub_->publish(sensor_msg_);
+      sensor_monitor_pub_->publish(sensor_msg_);
     }
 
     // ── Link status (decimated — not every cycle) ──────────────────────
@@ -553,6 +561,7 @@ class HandUdpNode : public rclcpp::Node {
 
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr         joint_state_pub_;
   rclcpp::Publisher<rtc_msgs::msg::HandSensorState>::SharedPtr      sensor_state_pub_;
+  rclcpp::Publisher<rtc_msgs::msg::HandSensorState>::SharedPtr      sensor_monitor_pub_;
   rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr      joint_command_sub_;
   std::vector<std::string> joint_names_;
   std::vector<std::string> fingertip_names_;

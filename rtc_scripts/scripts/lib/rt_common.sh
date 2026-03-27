@@ -458,5 +458,5 @@ get_base_packages() {
 }
 
 get_robot_packages() {
-  echo "ur5e_description ur5e_hand_driver ur5e_hand_status_monitor ur5e_bringup"
+  echo "ur5e_description ur5e_hand_driver ur5e_hand_status_monitor ur5e_bringup ur5e_bt_coordinator"
 }

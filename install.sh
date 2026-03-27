@@ -430,6 +430,17 @@ install_pinocchio() {
   fi
 }
 
+# ── BehaviorTree.CPP (BT coordinator) ──────────────────────────────────────────
+install_behaviortree() {
+  info "Installing BehaviorTree.CPP (${ROS_PKG_PREFIX})..."
+  if sudo apt-get install -y ${ROS_PKG_PREFIX}-behaviortree-cpp >/dev/null 2>&1; then
+    success "BehaviorTree.CPP installed via ${ROS_PKG_PREFIX}-behaviortree-cpp"
+  else
+    warn "${ROS_PKG_PREFIX}-behaviortree-cpp not found — ur5e_bt_coordinator will not build"
+    warn "Install manually: sudo apt install ${ROS_PKG_PREFIX}-behaviortree-cpp"
+  fi
+}
+
 # ── MuJoCo 3.x (sim + full) ────────────────────────────────────────────────────
 MJ_VERSION="3.2.4"
 [[ -z "$MJ_DIR" ]] && MJ_DIR="/opt/mujoco-${MJ_VERSION}"
@@ -1079,6 +1090,8 @@ if [[ "$SKIP_DEPS" -eq 0 ]]; then
   install_python_base_deps
 
   install_onnxruntime
+
+  install_behaviortree
 
   case "$MODE" in
     sim)

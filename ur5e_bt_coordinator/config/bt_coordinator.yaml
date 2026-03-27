@@ -1,0 +1,16 @@
+bt_coordinator:
+  ros__parameters:
+    # ── BT configuration ─────────────────────────────────────────────────────
+    tree_file: "pick_and_place.xml"   # XML file in trees/ directory
+    tick_rate_hz: 20.0                # BT tick frequency [Hz]
+
+    # ── Blackboard initial values (set before tree starts) ────────────────
+    # These can be overridden at runtime via parameter updates.
+    #
+    # place_pose for pick_and_place scene:
+    #   place_pose: "0.3;-0.3;0.15;3.14;0.0;0.0"
+    #
+    # sweep parameters for towel_unfold scene:
+    #   sweep_direction_x: 1.0
+    #   sweep_direction_y: 0.0
+    #   sweep_distance: 0.3
