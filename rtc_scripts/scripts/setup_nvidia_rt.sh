@@ -284,8 +284,7 @@ echo \"nvidia-irq-affinity: pinned \${PINNED} NVIDIA IRQs (affinity mask: 0x\${A
 # 두 스크립트는 병행 사용 가능 (setup_irq_affinity.sh가 더 넓은 범위를 커버).
 IRQ_SERVICE_CONTENT="[Unit]
 Description=Pin NVIDIA IRQs to OS cores for RT kernel
-After=nvidia-persistenced.service
-After=multi-user.target
+After=sysinit.target nvidia-persistenced.service
 
 [Service]
 Type=oneshot
@@ -343,8 +342,7 @@ fi
 
 PERSIST_SERVICE_CONTENT="[Unit]
 Description=NVIDIA Persistence Mode for RT kernel
-After=nvidia-persistenced.service
-After=multi-user.target
+After=sysinit.target nvidia-persistenced.service
 
 [Service]
 Type=oneshot

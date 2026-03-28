@@ -159,12 +159,13 @@ create_governor_service() {
   read -r -d '' service_content <<'UNIT' || true
 [Unit]
 Description=Set CPU governor to performance for RT kernel
-After=multi-user.target
+After=sysinit.target systemd-modules-load.service
+ConditionPathIsDirectory=/sys/devices/system/cpu/cpu0/cpufreq
 
 [Service]
 Type=oneshot
 # cpupower가 있으면 사용, 없으면 sysfs 직접 설정
-ExecStart=/bin/bash -c 'if command -v cpupower &>/dev/null; then cpupower frequency-set -g performance; else for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$f" 2>/dev/null || true; done; fi'
+ExecStart=/bin/bash -c 'if [ -x /usr/bin/cpupower ]; then /usr/bin/cpupower frequency-set -g performance; else for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$f" 2>/dev/null || true; done; fi'
 RemainAfterExit=yes
 
 [Install]
