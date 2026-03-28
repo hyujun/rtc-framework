@@ -167,6 +167,19 @@ enum class GoalType : uint8_t { kJoint, kTask };
   return "unknown";
 }
 
+// Grasp detection state — trivially copyable, RT-safe (SPSC buffer 호환)
+struct GraspStateData {
+  std::array<float, kMaxFingertips> force_magnitude{};
+  std::array<float, kMaxFingertips> contact_flag{};
+  std::array<bool, kMaxFingertips>  inference_valid{};
+  int   num_fingertips{0};
+  int   num_active_contacts{0};
+  float max_force{0.0f};
+  bool  grasp_detected{false};
+  float force_threshold{1.0f};
+  int   min_fingertips_for_grasp{2};
+};
+
 // Unified device output — per-device commands, goals, and trajectory data
 struct DeviceOutput {
   int num_channels{0};
@@ -191,6 +204,7 @@ struct ControllerOutput {
   std::array<double, 6> trajectory_task_velocities{};  // task-space trajectory velocity
   bool        valid{true};
   CommandType command_type{CommandType::kPosition};
+  GraspStateData grasp_state{};
 };
 
 // ── Per-device name + URDF configuration ─────────────────────────────────────
@@ -242,6 +256,8 @@ enum class PublishRole {
   kDeviceSensorLog,    // rtc_msgs/DeviceSensorLog (센서 + inference 로그)
   // Digital Twin
   kDigitalTwinState,   // sensor_msgs/JointState (RELIABLE republish for digital twin)
+  // Grasp State
+  kGraspState,         // rtc_msgs/GraspState (BT coordinator용 grasp 상태)
 };
 
 struct SubscribeTopicEntry {
@@ -337,6 +353,7 @@ struct TopicConfig {
     case PublishRole::kDeviceStateLog:  return "device_state_log";
     case PublishRole::kDeviceSensorLog: return "device_sensor_log";
     case PublishRole::kDigitalTwinState: return "digital_twin_state";
+    case PublishRole::kGraspState:      return "grasp_state";
   }
   return "unknown";
 }

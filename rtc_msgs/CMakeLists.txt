@@ -13,6 +13,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/RobotTarget.msg"
   "msg/DeviceStateLog.msg"
   "msg/DeviceSensorLog.msg"
+  "msg/GraspState.msg"
   DEPENDENCIES std_msgs
 )
 

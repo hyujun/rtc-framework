@@ -744,6 +744,16 @@ void RtControllerNode::CreatePublishers()
         log_pub("device_sensor_log");
         return;
       }
+      case urtc::PublishRole::kGraspState: {
+        if (grasp_state_publishers_.count(entry.topic_name) > 0) { return; }
+        TypedPublisherEntry<rtc_msgs::msg::GraspState> pe;
+        pe.publisher = create_publisher<rtc_msgs::msg::GraspState>(
+            entry.topic_name, rclcpp::QoS{10});
+        pe.msg.fingertip_names.assign(sensor_names.begin(), sensor_names.end());
+        grasp_state_publishers_[entry.topic_name] = std::move(pe);
+        log_pub("grasp_state");
+        return;
+      }
       default:
         break;
     }
@@ -1306,6 +1316,8 @@ void RtControllerNode::ControlLoop()
       }
       // task_goals: copy from controller's task goal target
       snap.task_goals[gi] = output.task_goal_positions;
+      // Grasp state from controller output
+      gc.grasp_state = output.grasp_state;
       ++gi;
     }
     snap.num_groups = gi;
@@ -1770,6 +1782,31 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
               m.inference_output[i] = gc.inference_output[i];
             }
           }
+          it->second.publisher->publish(m);
+          return;
+        }
+        case urtc::PublishRole::kGraspState: {
+          auto it = grasp_state_publishers_.find(pt.topic_name);
+          if (it == grasp_state_publishers_.end()) { return; }
+          auto & m = it->second.msg;
+          m.header.stamp.sec = sec;
+          m.header.stamp.nanosec = nsec;
+          const auto& gs = gc.grasp_state;
+          const auto nf = static_cast<std::size_t>(
+              std::min(gs.num_fingertips, static_cast<int>(urtc::kMaxFingertips)));
+          m.force_magnitude.resize(nf);
+          m.contact_flag.resize(nf);
+          m.inference_valid.resize(nf);
+          for (std::size_t i = 0; i < nf; ++i) {
+            m.force_magnitude[i] = gs.force_magnitude[i];
+            m.contact_flag[i]    = gs.contact_flag[i];
+            m.inference_valid[i] = gs.inference_valid[i];
+          }
+          m.num_active_contacts = gs.num_active_contacts;
+          m.max_force           = gs.max_force;
+          m.grasp_detected      = gs.grasp_detected;
+          m.force_threshold     = gs.force_threshold;
+          m.min_fingertips      = gs.min_fingertips_for_grasp;
           it->second.publisher->publish(m);
           return;
         }

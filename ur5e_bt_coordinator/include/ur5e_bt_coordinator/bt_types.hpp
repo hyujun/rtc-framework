@@ -2,7 +2,6 @@
 
 #include <behaviortree_cpp/bt_factory.h>
 
-#include <array>
 #include <cmath>
 #include <sstream>
 #include <string>
@@ -28,16 +27,23 @@ struct Pose6D {
   }
 };
 
-// ── Fingertip force data (parsed from HandSensorState) ──────────────────────
-struct FingertipForce {
-  std::string name;
-  float fx{0.0f}, fy{0.0f}, fz{0.0f};
-  float contact_flag{0.0f};
-  bool inference_enable{false};
+// ── Cached grasp state (from /hand/grasp_state, computed at 500Hz) ──────────
+struct CachedGraspState {
+  // Per-fingertip
+  struct Fingertip {
+    std::string name;
+    float force_magnitude{0.0f};  // |F| [N]
+    float contact_flag{0.0f};     // contact probability (0.0~1.0)
+    bool  inference_valid{false};
+  };
+  std::vector<Fingertip> fingertips;
 
-  float Magnitude() const {
-    return std::sqrt(fx * fx + fy * fy + fz * fz);
-  }
+  // Aggregate (pre-computed by controller at 500Hz)
+  int   num_active_contacts{0};
+  float max_force{0.0f};
+  bool  grasp_detected{false};
+  float force_threshold{1.0f};
+  int   min_fingertips{2};
 };
 
 // ── Constants ───────────────────────────────────────────────────────────────

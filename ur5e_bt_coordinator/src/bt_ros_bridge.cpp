@@ -32,21 +32,28 @@ BtRosBridge::BtRosBridge(rclcpp::Node::SharedPtr node)
             msg->joint_positions.begin(), msg->joint_positions.end());
       });
 
-  sensor_monitor_sub_ = node_->create_subscription<rtc_msgs::msg::HandSensorState>(
-      "/hand/sensor_states/monitor", rclcpp::QoS{10},
-      [this](rtc_msgs::msg::HandSensorState::SharedPtr msg) {
+  grasp_state_sub_ = node_->create_subscription<rtc_msgs::msg::GraspState>(
+      "/hand/grasp_state", rclcpp::QoS{10},
+      [this](rtc_msgs::msg::GraspState::SharedPtr msg) {
         std::lock_guard lock(state_mutex_);
-        fingertip_forces_.resize(msg->fingertips.size());
-        for (std::size_t i = 0; i < msg->fingertips.size(); ++i) {
-          auto& dst = fingertip_forces_[i];
-          const auto& src = msg->fingertips[i];
-          dst.name = src.name;
-          dst.fx = src.f[0];
-          dst.fy = src.f[1];
-          dst.fz = src.f[2];
-          dst.contact_flag = src.contact_flag;
-          dst.inference_enable = src.inference_enable;
+        // CachedGraspState — primary data store
+        const auto n = msg->force_magnitude.size();
+        grasp_state_.fingertips.resize(n);
+        for (std::size_t i = 0; i < n; ++i) {
+          auto& ft = grasp_state_.fingertips[i];
+          ft.name = (i < msg->fingertip_names.size())
+                    ? msg->fingertip_names[i] : "";
+          ft.force_magnitude = msg->force_magnitude[i];
+          ft.contact_flag = (i < msg->contact_flag.size())
+                            ? msg->contact_flag[i] : 0.0f;
+          ft.inference_valid = (i < msg->inference_valid.size())
+                               ? msg->inference_valid[i] : false;
         }
+        grasp_state_.num_active_contacts = msg->num_active_contacts;
+        grasp_state_.max_force           = msg->max_force;
+        grasp_state_.grasp_detected      = msg->grasp_detected;
+        grasp_state_.force_threshold     = msg->force_threshold;
+        grasp_state_.min_fingertips      = msg->min_fingertips;
       });
 
   vision_sub_ = node_->create_subscription<geometry_msgs::msg::PoseStamped>(
@@ -115,9 +122,9 @@ std::vector<double> BtRosBridge::GetHandJointPositions() const {
   return hand_joint_positions_;
 }
 
-std::vector<FingertipForce> BtRosBridge::GetFingertipForces() const {
+CachedGraspState BtRosBridge::GetGraspState() const {
   std::lock_guard lock(state_mutex_);
-  return fingertip_forces_;
+  return grasp_state_;
 }
 
 bool BtRosBridge::GetObjectPose(Pose6D& pose) const {

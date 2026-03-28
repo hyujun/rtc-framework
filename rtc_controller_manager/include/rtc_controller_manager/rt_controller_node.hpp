@@ -20,6 +20,7 @@
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/msg/device_state_log.hpp>
 #include <rtc_msgs/msg/device_sensor_log.hpp>
+#include <rtc_msgs/msg/grasp_state.hpp>
 #include <rtc_msgs/msg/hand_sensor_state.hpp>
 
 // ── C++ stdlib ────────────────────────────────────────────────────────────────
@@ -168,6 +169,8 @@ private:
       device_state_log_publishers_;
   std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::DeviceSensorLog>>
       device_sensor_log_publishers_;
+  std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::GraspState>>
+      grasp_state_publishers_;
 
   // ── Digital Twin JointState republishers (RELIABLE, depth 10) ────────────
   // key = "/{group}/digital_twin/joint_states"

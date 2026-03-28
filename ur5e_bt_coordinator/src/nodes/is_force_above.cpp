@@ -1,5 +1,6 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
-#include "ur5e_bt_coordinator/bt_utils.hpp"
+
+#include <cmath>
 
 namespace rtc_bt {
 
@@ -19,12 +20,29 @@ BT::PortsList IsForceAbove::providedPorts()
 
 BT::NodeStatus IsForceAbove::tick()
 {
-  double threshold = getInput<double>("threshold_N").value_or(1.5);
-  int min_ft = getInput<int>("min_fingertips").value_or(2);
-  int sustained_ms = getInput<int>("sustained_ms").value_or(0);
+  const double threshold = getInput<double>("threshold_N").value_or(1.5);
+  const int min_ft = getInput<int>("min_fingertips").value_or(2);
+  const int sustained_ms = getInput<int>("sustained_ms").value_or(0);
 
-  auto forces = bridge_->GetFingertipForces();
-  int count = CountActiveContacts(forces, static_cast<float>(threshold));
+  // Use 500Hz pre-computed grasp state from controller
+  auto gs = bridge_->GetGraspState();
+
+  int count;
+  if (std::abs(threshold - static_cast<double>(gs.force_threshold)) < 0.01 &&
+      min_ft == gs.min_fingertips) {
+    // Controller defaults match — use pre-computed aggregate
+    count = gs.num_active_contacts;
+  } else {
+    // Custom threshold — recount from per-fingertip data
+    count = 0;
+    for (const auto& ft : gs.fingertips) {
+      if (ft.inference_valid && ft.contact_flag > 0.5f &&
+          ft.force_magnitude > static_cast<float>(threshold)) {
+        ++count;
+      }
+    }
+  }
+
   bool condition_met = (count >= min_ft);
 
   if (sustained_ms <= 0) {

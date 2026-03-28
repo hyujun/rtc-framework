@@ -52,3 +52,5 @@ demo_joint_controller:
           role: "device_state_log"
         - topic: "/hand/sensor_log"
           role: "device_sensor_log"
+        - topic: "/hand/grasp_state"
+          role: "grasp_state"

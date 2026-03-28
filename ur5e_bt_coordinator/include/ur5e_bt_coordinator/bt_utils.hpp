@@ -75,20 +75,4 @@ inline void ApplyPartialHandTarget(
   bridge.PublishHandTarget(current);
 }
 
-// ── Force counting ──────────────────────────────────────────────────────────
-
-/// Count fingertips with active contact above a force threshold.
-inline int CountActiveContacts(
-    const std::vector<FingertipForce>& forces, float threshold)
-{
-  int count = 0;
-  for (const auto& ft : forces) {
-    if (ft.inference_enable && ft.contact_flag > 0.5f &&
-        ft.Magnitude() > threshold) {
-      ++count;
-    }
-  }
-  return count;
-}
-
 }  // namespace rtc_bt

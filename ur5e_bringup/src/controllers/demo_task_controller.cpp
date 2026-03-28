@@ -2,6 +2,7 @@
 #include "ur5e_bringup/controllers/demo_task_controller.hpp"
 
 #include <algorithm>
+#include <cmath>     // std::sqrt
 #include <cstddef>
 #include <pinocchio/math/rpy.hpp>
 
@@ -328,9 +329,51 @@ void DemoTaskController::ComputeControl(
     }
   }
 
-  // ── Sensor-based control logic (확장 포인트) ────────────────────────────
-  // fingertip_data_[0..num_active_fingertips_-1] 에 파싱된 센서 데이터 사용 가능
-  // dq_, hand_computed_ 보정 가능
+  // ── Grasp detection + ContactStopHand (500Hz) ────────────────────────
+  {
+    constexpr float kContactThreshold = 0.5f;
+    constexpr float kForceThreshold   = 1.0f;
+    constexpr int   kMinFingertips    = 2;
+
+    float max_force = 0.0f;
+    int active_count = 0;
+
+    for (int f = 0; f < num_active_fingertips_; ++f) {
+      const auto idx = static_cast<std::size_t>(f);
+      const auto& ft = fingertip_data_[idx];
+      const float mag = std::sqrt(
+          ft.force[0]*ft.force[0] +
+          ft.force[1]*ft.force[1] +
+          ft.force[2]*ft.force[2]);
+
+      grasp_state_.force_magnitude[idx] = mag;
+      grasp_state_.contact_flag[idx]    = ft.contact_flag;
+      grasp_state_.inference_valid[idx] = ft.valid;
+
+      if (mag > max_force) max_force = mag;
+      if (ft.valid && ft.contact_flag > kContactThreshold && mag > kForceThreshold) {
+        ++active_count;
+      }
+    }
+    grasp_state_.num_fingertips           = num_active_fingertips_;
+    grasp_state_.num_active_contacts      = active_count;
+    grasp_state_.max_force                = max_force;
+    grasp_state_.force_threshold          = kForceThreshold;
+    grasp_state_.min_fingertips_for_grasp = kMinFingertips;
+    grasp_state_.grasp_detected           = (active_count >= kMinFingertips);
+
+    // ContactStopHand: 힘 감지 시 hand trajectory 출력을 현재 위치로 동결
+    // → BT tick(50ms) 사이에도 과도한 hand closure 방지
+    if (active_count > 0 && max_force > kForceThreshold) {
+      if (state.num_devices > 1 && state.devices[1].valid) {
+        const auto& dev1 = state.devices[1];
+        for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors); ++i) {
+          hand_computed_.positions[i] = dev1.positions[i];
+          hand_computed_.velocities[i] = 0.0;
+        }
+      }
+    }
+  }
 }
 
 // ── Phase 3: Write output ────────────────────────────────────────────────────
@@ -444,6 +487,7 @@ ControllerOutput DemoTaskController::WriteOutput(
   }
 
   output.command_type = command_type_;
+  output.grasp_state = grasp_state_;
   return output;
 }
 
