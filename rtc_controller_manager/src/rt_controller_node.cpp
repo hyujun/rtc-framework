@@ -1158,6 +1158,20 @@ void RtControllerNode::ControlLoop()
       }
       hold_state.dt = 1.0 / control_rate_;
 
+      // Wait until ALL devices have valid state before initializing hold
+      // position. This prevents sending zero commands to devices (e.g. hand)
+      // whose current position is not yet known.
+      bool all_devices_valid = true;
+      for (int d = 0; d < hold_state.num_devices; ++d) {
+        if (!hold_state.devices[d].valid) {
+          all_devices_valid = false;
+          break;
+        }
+      }
+      if (!all_devices_valid) {
+        return;  // Wait for all devices to report state
+      }
+
       controllers_[idx]->InitializeHoldPosition(hold_state);
 
       target_received_.store(true, std::memory_order_release);
@@ -1599,6 +1613,10 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
 
       switch (pt.role) {
         case urtc::PublishRole::kJointCommand: {
+          // Skip publishing when the controller has no output for this
+          // device (nc=0). This prevents sending zero-filled commands
+          // before the device state is known (e.g. hand not yet valid).
+          if (nc <= 0) { return; }
           auto jc_it = joint_command_publishers_.find(pt.topic_name);
           if (jc_it == joint_command_publishers_.end()) { return; }
           auto & jce = jc_it->second;

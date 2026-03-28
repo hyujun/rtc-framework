@@ -199,6 +199,12 @@ class HandController {
     estop_flag_ = flag;
   }
 
+  // ── State readiness ─────────────────────────────────────────────────────
+
+  /// True after at least one successful state read from the hand hardware.
+  /// Write commands are suppressed until this returns true.
+  [[nodiscard]] bool HasStateBeenRead() const noexcept { return state_read_once_; }
+
   // ── Event-driven API (called from ControlLoop) ─────────────────────────
 
   void SendCommandAndRequestStates(
@@ -335,8 +341,18 @@ class HandController {
     std::array<int32_t, kMaxHandSensors> cached_sensor_data{};
     int sensor_cycle_counter = 0;
 
+    // First cycle: run immediately (no condvar wait) to read initial state
+    // before any write command is sent. This ensures:
+    //   1. Hand current position is known before any command
+    //   2. /hand/joint_states is published for rt_controller auto-hold
+    //   3. No zero-command jump on startup
+    bool first_cycle = true;
+
     while (!stop_token.stop_requested()) {
-      {
+      if (first_cycle) {
+        // First cycle: skip condvar wait, run read-only immediately
+        first_cycle = false;
+      } else {
         std::unique_lock lock(event_mutex_);
         event_cv_.wait(lock, [&] {
           return event_pending_ || stop_token.stop_requested();
@@ -364,9 +380,13 @@ class HandController {
       const auto t0 = std::chrono::steady_clock::now();
 
       // 1. Write position + recv echo (always kJoint)
-      if (transport_.WritePositionWithEcho(pending_cmd, send_buf, echo_buf,
-                                           hand_packets::JointMode::kJoint)) {
-        any_recv_ok = true;
+      // Skip write until first state has been read — prevents sending
+      // uninitialized/zero commands before knowing the hand position.
+      if (state_read_once_) {
+        if (transport_.WritePositionWithEcho(pending_cmd, send_buf, echo_buf,
+                                             hand_packets::JointMode::kJoint)) {
+          any_recv_ok = true;
+        }
       }
 
       const auto t1 = std::chrono::steady_clock::now();
@@ -436,6 +456,10 @@ class HandController {
         state.sensor_data = cached_sensor_data;
         state.num_fingertips = num_fingertips_;
         state.valid = any_recv_ok;
+
+        if (any_recv_ok && !state_read_once_) {
+          state_read_once_ = true;
+        }
 
         state_seqlock_.Store(state);
         if (callback_) { callback_(state, ft_seqlock_.Load()); }
@@ -522,6 +546,10 @@ class HandController {
         state.num_fingertips = num_fingertips_;
         state.valid = any_recv_ok;
 
+        if (any_recv_ok && !state_read_once_) {
+          state_read_once_ = true;
+        }
+
         state_seqlock_.Store(state);
         if (callback_) { callback_(state, ft_seqlock_.Load()); }
 
@@ -605,6 +633,7 @@ class HandController {
 
   // Shared state
   std::atomic<bool> running_{false};
+  bool state_read_once_{false};  // True after first successful state read
   StateCallback     callback_;
   SeqLock<HandState> state_seqlock_{};
   std::atomic<std::size_t> cycle_count_{0};
