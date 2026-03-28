@@ -557,6 +557,12 @@ install_python_deps() {
       > /dev/null
   success "Python dependencies installed via apt"
 
+  # mujoco Python bindings (not available via apt — always install via pip)
+  info "Installing mujoco Python bindings (pip)..."
+  python3 -m pip install --quiet "mujoco>=3.0.0" \
+    || warn "mujoco pip install failed — urdf_to_mjcf will not work without it"
+  success "mujoco Python bindings installed"
+
   # apt packages are installed into the system Python's site-packages.
   # A venv created WITHOUT --system-site-packages cannot see them.
   # Install the same packages via pip so they are importable inside the venv.
@@ -568,6 +574,7 @@ install_python_deps() {
         numpy \
         scipy \
         PyQt5 \
+        "mujoco>=3.0.0" \
       || warn "One or more pip installs failed — check output above"
     success "Python dependencies installed in venv"
   fi
