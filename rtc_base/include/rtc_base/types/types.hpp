@@ -111,9 +111,15 @@ struct RobotState {
 };
 
 struct HandState {
+  // Motor-space (from kMotor read)
   std::array<float, kNumHandMotors>    motor_positions{};
   std::array<float, kNumHandMotors>    motor_velocities{};
   std::array<float, kNumHandMotors>    motor_currents{};
+  // Joint-space (from kJoint read)
+  std::array<float, kNumHandMotors>    joint_positions{};
+  std::array<float, kNumHandMotors>    joint_velocities{};
+  std::array<float, kNumHandMotors>    joint_currents{};
+  // Sensor
   std::array<int32_t, kMaxHandSensors> sensor_data{};
   std::array<int32_t, kMaxHandSensors> sensor_data_raw{};
   int  num_fingertips{kDefaultNumFingertips};

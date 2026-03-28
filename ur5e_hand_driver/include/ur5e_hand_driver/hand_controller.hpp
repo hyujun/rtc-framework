@@ -73,7 +73,6 @@ class HandController {
       bool use_fake_hand = false,
       const std::vector<std::string>& fingertip_names = {},
       HandCommunicationMode communication_mode = HandCommunicationMode::kIndividual,
-      hand_packets::JointMode joint_mode = hand_packets::JointMode::kMotor,
       bool tof_lpf_enabled = false,
       double tof_lpf_cutoff_hz = 15.0,
       bool baro_lpf_enabled = false,
@@ -91,7 +90,6 @@ class HandController {
                          ? kDefaultFingertipNames
                          : fingertip_names),
         communication_mode_(communication_mode),
-        joint_mode_(joint_mode),
         ft_config_(std::move(ft_config)),
         transport_(std::move(target_ip), target_port, recv_timeout_ms),
         sensor_processor_(HandSensorProcessorConfig{
@@ -311,10 +309,6 @@ class HandController {
     return communication_mode_;
   }
 
-  [[nodiscard]] hand_packets::JointMode joint_mode() const noexcept {
-    return joint_mode_;
-  }
-
   [[nodiscard]] double recv_timeout_ms() const noexcept {
     return transport_.recv_timeout_ms();
   }
@@ -357,7 +351,7 @@ class HandController {
       // E-Stop check
       if (estop_flag_ && estop_flag_->load(std::memory_order_acquire)) {
         std::array<float, kNumHandMotors> zeros{};
-        transport_.WritePositionFireAndForget(zeros, joint_mode_);
+        transport_.WritePositionFireAndForget(zeros, hand_packets::JointMode::kJoint);
         busy_.store(false, std::memory_order_release);
         break;
       }
@@ -369,8 +363,9 @@ class HandController {
 
       const auto t0 = std::chrono::steady_clock::now();
 
-      // 1. Write position + recv echo
-      if (transport_.WritePositionWithEcho(pending_cmd, send_buf, echo_buf, joint_mode_)) {
+      // 1. Write position + recv echo (always kJoint)
+      if (transport_.WritePositionWithEcho(pending_cmd, send_buf, echo_buf,
+                                           hand_packets::JointMode::kJoint)) {
         any_recv_ok = true;
       }
 
@@ -383,9 +378,10 @@ class HandController {
 
       if (is_bulk) {
         // ── Bulk mode ─────────────────────────────────────────────────────
+        // 2. Read all motors (motor-space: kMotor)
         hand_packets::JointMode received_mode{};
         if (transport_.RequestAllMotorRead(motor_pos_buf, motor_vel_buf, motor_cur_buf,
-                                           joint_mode_, &received_mode)) {
+                                           hand_packets::JointMode::kMotor, &received_mode)) {
           std::copy_n(motor_pos_buf.begin(), kNumHandMotors,
                       state.motor_positions.begin());
           std::copy_n(motor_vel_buf.begin(), kNumHandMotors,
@@ -398,6 +394,24 @@ class HandController {
 
         const auto t2 = std::chrono::steady_clock::now();
 
+        // 3. Read all motors (joint-space: kJoint) — pos/vel/cur
+        {
+          std::array<float, hand_packets::kMotorDataCount> jp_buf{}, jv_buf{}, jc_buf{};
+          if (transport_.RequestAllMotorRead(jp_buf, jv_buf, jc_buf,
+                                              hand_packets::JointMode::kJoint)) {
+            std::copy_n(jp_buf.begin(), kNumHandMotors,
+                        state.joint_positions.begin());
+            std::copy_n(jv_buf.begin(), kNumHandMotors,
+                        state.joint_velocities.begin());
+            std::copy_n(jc_buf.begin(), kNumHandMotors,
+                        state.joint_currents.begin());
+            any_recv_ok = true;
+          }
+        }
+
+        const auto t2j = std::chrono::steady_clock::now();
+
+        // 4. Read all sensors
         if (is_sensor_cycle) {
           if (transport_.RequestAllSensorRead(cached_sensor_data.data(), num_fingertips_,
                                               hand_packets::SensorMode::kRaw)) {
@@ -429,22 +443,24 @@ class HandController {
         const auto t5 = std::chrono::steady_clock::now();
 
         HandTimingProfiler::PhaseTiming pt;
-        pt.is_bulk_mode       = true;
-        pt.write_us           = std::chrono::duration<double, std::micro>(t1 - t0).count();
-        pt.read_all_motor_us  = std::chrono::duration<double, std::micro>(t2 - t1).count();
-        pt.read_all_sensor_us = std::chrono::duration<double, std::micro>(t3 - t2).count();
-        pt.sensor_proc_us     = std::chrono::duration<double, std::micro>(t4 - t3).count()
-                                - ft_infer_elapsed_us;
-        pt.ft_infer_us        = ft_infer_elapsed_us;
-        pt.total_us           = std::chrono::duration<double, std::micro>(t5 - t0).count();
-        pt.is_sensor_cycle    = is_sensor_cycle;
+        pt.is_bulk_mode            = true;
+        pt.write_us                = std::chrono::duration<double, std::micro>(t1 - t0).count();
+        pt.read_all_motor_us       = std::chrono::duration<double, std::micro>(t2 - t1).count();
+        pt.read_all_joint_motor_us = std::chrono::duration<double, std::micro>(t2j - t2).count();
+        pt.read_all_sensor_us      = std::chrono::duration<double, std::micro>(t3 - t2j).count();
+        pt.sensor_proc_us          = std::chrono::duration<double, std::micro>(t4 - t3).count()
+                                     - ft_infer_elapsed_us;
+        pt.ft_infer_us             = ft_infer_elapsed_us;
+        pt.total_us                = std::chrono::duration<double, std::micro>(t5 - t0).count();
+        pt.is_sensor_cycle         = is_sensor_cycle;
         timing_profiler_.Update(pt);
 
       } else {
         // ── Individual mode ───────────────────────────────────────────────
+        // 2. Read motor position (kMotor)
         hand_packets::JointMode received_mode{};
         if (transport_.RequestMotorRead(hand_packets::Command::kReadPosition, motor_pos_buf,
-                                        joint_mode_, &received_mode)) {
+                                        hand_packets::JointMode::kMotor, &received_mode)) {
           std::copy_n(motor_pos_buf.begin(), kNumHandMotors,
                       state.motor_positions.begin());
           state.received_joint_mode = static_cast<uint8_t>(received_mode);
@@ -453,8 +469,22 @@ class HandController {
 
         const auto t2 = std::chrono::steady_clock::now();
 
+        // 3. Read joint position (kJoint)
+        {
+          std::array<float, hand_packets::kMotorDataCount> jp_buf{};
+          if (transport_.RequestMotorRead(hand_packets::Command::kReadPosition, jp_buf,
+                                          hand_packets::JointMode::kJoint)) {
+            std::copy_n(jp_buf.begin(), kNumHandMotors,
+                        state.joint_positions.begin());
+            any_recv_ok = true;
+          }
+        }
+
+        const auto t2j = std::chrono::steady_clock::now();
+
+        // 4. Read motor velocity (kMotor)
         if (transport_.RequestMotorRead(hand_packets::Command::kReadVelocity, motor_vel_buf,
-                                        joint_mode_)) {
+                                        hand_packets::JointMode::kMotor)) {
           std::copy_n(motor_vel_buf.begin(), kNumHandMotors,
                       state.motor_velocities.begin());
           any_recv_ok = true;
@@ -462,6 +492,7 @@ class HandController {
 
         const auto t3 = std::chrono::steady_clock::now();
 
+        // 5. Read sensors
         if (is_sensor_cycle) {
           for (int i = 0; i < num_fingertips_; ++i) {
             auto cmd = hand_packets::SensorCommand(i);
@@ -497,15 +528,16 @@ class HandController {
         const auto t6 = std::chrono::steady_clock::now();
 
         HandTimingProfiler::PhaseTiming pt;
-        pt.write_us       = std::chrono::duration<double, std::micro>(t1 - t0).count();
-        pt.read_pos_us    = std::chrono::duration<double, std::micro>(t2 - t1).count();
-        pt.read_vel_us    = std::chrono::duration<double, std::micro>(t3 - t2).count();
-        pt.read_sensor_us = std::chrono::duration<double, std::micro>(t4 - t3).count();
-        pt.sensor_proc_us = std::chrono::duration<double, std::micro>(t5 - t4).count()
-                            - ft_infer_elapsed_us;
-        pt.ft_infer_us    = ft_infer_elapsed_us;
-        pt.total_us       = std::chrono::duration<double, std::micro>(t6 - t0).count();
-        pt.is_sensor_cycle = is_sensor_cycle;
+        pt.write_us          = std::chrono::duration<double, std::micro>(t1 - t0).count();
+        pt.read_pos_us       = std::chrono::duration<double, std::micro>(t2 - t1).count();
+        pt.read_joint_pos_us = std::chrono::duration<double, std::micro>(t2j - t2).count();
+        pt.read_vel_us       = std::chrono::duration<double, std::micro>(t3 - t2j).count();
+        pt.read_sensor_us    = std::chrono::duration<double, std::micro>(t4 - t3).count();
+        pt.sensor_proc_us    = std::chrono::duration<double, std::micro>(t5 - t4).count()
+                               - ft_infer_elapsed_us;
+        pt.ft_infer_us       = ft_infer_elapsed_us;
+        pt.total_us          = std::chrono::duration<double, std::micro>(t6 - t0).count();
+        pt.is_sensor_cycle   = is_sensor_cycle;
         timing_profiler_.Update(pt);
       }
 
@@ -545,7 +577,6 @@ class HandController {
   bool use_fake_hand_;
   std::vector<std::string> fingertip_names_;
   HandCommunicationMode communication_mode_;
-  hand_packets::JointMode joint_mode_;
   bool sensor_init_ok_{false};
 
   // F/T inferencer config (before transport_ for initializer list order)
