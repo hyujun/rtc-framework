@@ -66,6 +66,12 @@ ControllerOutput DemoJointController::Compute(const ControllerState & state) noe
 {
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
   ReadState(state);
+  estop_active_ = estopped_.load(std::memory_order_acquire);
+  if (estop_active_) {
+    auto out = ComputeEstop(state);
+    out.command_type = command_type_;
+    return out;
+  }
   ComputeControl(state, dt);
   return WriteOutput(state, dt);
 }
@@ -409,6 +415,81 @@ std::vector<double> DemoJointController::GetCurrentGains() const noexcept
     gains_.robot_max_traj_velocity,
     gains_.hand_max_traj_velocity,
   };
+}
+
+// ── E-STOP ──────────────────────────────────────────────────────────────────
+
+void DemoJointController::TriggerEstop() noexcept
+{
+  estopped_.store(true, std::memory_order_release);
+}
+
+void DemoJointController::ClearEstop() noexcept
+{
+  estopped_.store(false, std::memory_order_release);
+}
+
+bool DemoJointController::IsEstopped() const noexcept
+{
+  return estopped_.load(std::memory_order_acquire);
+}
+
+void DemoJointController::SetHandEstop(bool active) noexcept
+{
+  hand_estopped_.store(active, std::memory_order_release);
+}
+
+ControllerOutput DemoJointController::ComputeEstop(
+  const ControllerState & state) noexcept
+{
+  const auto & dev0 = state.devices[0];
+  ControllerOutput output;
+  output.num_devices = state.num_devices;
+
+  // Robot arm: move toward safe position with velocity limit
+  auto & out0 = output.devices[0];
+  const int nc0 = dev0.num_channels;
+  out0.num_channels = nc0;
+  out0.goal_type = GoalType::kJoint;
+  for (int i = 0; i < nc0; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    const double lim = (ui < device_max_velocity_[0].size()) ? device_max_velocity_[0][ui] : 2.0;
+    out0.commands[i] = dev0.positions[i] +
+      std::clamp(kSafePosition[i] - dev0.positions[i], -lim, lim) *
+      ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
+    out0.goal_positions[i] = kSafePosition[i];
+    out0.target_positions[i] = out0.commands[i];
+    out0.trajectory_positions[i] = out0.commands[i];
+  }
+
+  // Hand: hold current position during E-Stop
+  if (state.num_devices > 1 && state.devices[1].valid) {
+    const auto & dev1 = state.devices[1];
+    const int nc1 = dev1.num_channels;
+    auto & out1 = output.devices[1];
+    out1.num_channels = nc1;
+    out1.goal_type = GoalType::kJoint;
+    for (int i = 0; i < nc1; ++i) {
+      out1.commands[i] = dev1.positions[i];
+      out1.goal_positions[i] = dev1.positions[i];
+      out1.target_positions[i] = dev1.positions[i];
+      out1.trajectory_positions[i] = dev1.positions[i];
+    }
+  }
+
+  // FK for task-space logging (same as normal path)
+  pinocchio::forwardKinematics(model_, data_, q_);
+  const pinocchio::SE3 & tcp = data_.oMi[end_id_];
+  Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
+  output.actual_task_positions[0] = tcp.translation().x();
+  output.actual_task_positions[1] = tcp.translation().y();
+  output.actual_task_positions[2] = tcp.translation().z();
+  output.actual_task_positions[3] = rpy[0];
+  output.actual_task_positions[4] = rpy[1];
+  output.actual_task_positions[5] = rpy[2];
+  output.task_goal_positions = output.actual_task_positions;
+
+  return output;
 }
 
 }  // namespace ur5e_bringup

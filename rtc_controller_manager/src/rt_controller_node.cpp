@@ -1158,6 +1158,20 @@ void RtControllerNode::ControlLoop()
       }
       hold_state.dt = 1.0 / control_rate_;
 
+      // Wait until ALL devices have valid state before initializing hold
+      // position. This prevents sending zero commands to devices (e.g. hand)
+      // whose current position is not yet known.
+      bool all_devices_valid = true;
+      for (int d = 0; d < hold_state.num_devices; ++d) {
+        if (!hold_state.devices[d].valid) {
+          all_devices_valid = false;
+          break;
+        }
+      }
+      if (!all_devices_valid) {
+        return;  // Wait for all devices to report state
+      }
+
       controllers_[idx]->InitializeHoldPosition(hold_state);
 
       target_received_.store(true, std::memory_order_release);
@@ -1261,6 +1275,7 @@ void RtControllerNode::ControlLoop()
       const auto& dout = output.devices[gi];
       const auto& dstate = state.devices[gi];
       gc.num_channels = dout.num_channels;
+      gc.actual_num_channels = dstate.num_channels;
       gc.commands = dout.commands;
       gc.goal_positions = dout.goal_positions;
       gc.target_positions = dout.target_positions;
@@ -1598,6 +1613,10 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
 
       switch (pt.role) {
         case urtc::PublishRole::kJointCommand: {
+          // Skip publishing when the controller has no output for this
+          // device (nc=0). This prevents sending zero-filled commands
+          // before the device state is known (e.g. hand not yet valid).
+          if (nc <= 0) { return; }
           auto jc_it = joint_command_publishers_.find(pt.topic_name);
           if (jc_it == joint_command_publishers_.end()) { return; }
           auto & jce = jc_it->second;
@@ -1648,13 +1667,26 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           auto & m = it->second.msg;
           m.header.stamp.sec = sec;
           m.header.stamp.nanosec = nsec;
-          const int n = std::min(nc, static_cast<int>(m.joint_positions.size()));
-          for (int i = 0; i < n; ++i) {
+          // Use actual_num_channels (from device state) instead of nc
+          // (from controller output) so that GUI always reflects the
+          // latest device state even when the controller skips the
+          // device (e.g., E-Stop, hand not yet valid in controller).
+          const int n_actual = std::min(
+              gc.actual_num_channels,
+              static_cast<int>(m.joint_positions.size()));
+          for (int i = 0; i < n_actual; ++i) {
             m.joint_positions[i] = gc.actual_positions[i];
           }
-          std::copy(snap.actual_task_positions.begin(),
-                    snap.actual_task_positions.end(),
-                    m.task_positions.begin());
+          // actual_task_positions is a snapshot-level field containing only the
+          // robot arm FK result. Copy it only for the robot group (index 0);
+          // other devices (e.g. hand) have no FK and should report zeros.
+          if (group_idx == 0) {
+            std::copy(snap.actual_task_positions.begin(),
+                      snap.actual_task_positions.end(),
+                      m.task_positions.begin());
+          } else {
+            m.task_positions.fill(0.0);
+          }
           it->second.publisher->publish(m);
           return;
         }
@@ -1682,22 +1714,31 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           m.header.stamp.nanosec = nsec;
           m.command_type = cmd_type_str;
           m.goal_type = urtc::GoalTypeToString(gc.goal_type);
-          const int n = std::min(nc, static_cast<int>(m.actual_positions.size()));
+          // Use the larger of controller output channels and device state
+          // channels so that actual_positions are always logged even when
+          // the controller skips a device (E-Stop, valid=false).
+          const int n = std::min(
+              std::max(nc, gc.actual_num_channels),
+              static_cast<int>(m.actual_positions.size()));
           for (int i = 0; i < n; ++i) {
             m.actual_positions[i] = gc.actual_positions[i];
             m.actual_velocities[i] = gc.actual_velocities[i];
             m.efforts[i] = gc.efforts[i];
-            m.commands[i] = gc.commands[i];
-            m.joint_goal[i] = gc.goal_positions[i];
-            m.trajectory_positions[i] = gc.trajectory_positions[i];
-            m.trajectory_velocities[i] = gc.trajectory_velocities[i];
+            m.commands[i] = (i < nc) ? gc.commands[i] : 0.0;
+            m.joint_goal[i] = (i < nc) ? gc.goal_positions[i] : 0.0;
+            m.trajectory_positions[i] = (i < nc) ? gc.trajectory_positions[i] : 0.0;
+            m.trajectory_velocities[i] = (i < nc) ? gc.trajectory_velocities[i] : 0.0;
           }
           std::copy(snap.task_goals[group_idx].begin(),
                     snap.task_goals[group_idx].end(),
                     m.task_goal.begin());
-          std::copy(snap.actual_task_positions.begin(),
-                    snap.actual_task_positions.end(),
-                    m.actual_task_positions.begin());
+          if (group_idx == 0) {
+            std::copy(snap.actual_task_positions.begin(),
+                      snap.actual_task_positions.end(),
+                      m.actual_task_positions.begin());
+          } else {
+            m.actual_task_positions.fill(0.0);
+          }
           // Motor state fields
           const int nm = std::min(gc.num_motor_channels,
                                   static_cast<int>(m.motor_positions.size()));

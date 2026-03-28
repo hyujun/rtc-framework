@@ -574,6 +574,7 @@ ControllerOutput DemoTaskController::ComputeEstop(
   auto & out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
+  out0.goal_type = GoalType::kJoint;
   for (int i = 0; i < nc0; ++i) {
     const auto ui = static_cast<std::size_t>(i);
     const double lim = (ui < device_max_velocity_[0].size()) ? device_max_velocity_[0][ui] : 2.0;
@@ -581,6 +582,22 @@ ControllerOutput DemoTaskController::ComputeEstop(
       std::clamp(kSafePosition[i] - dev0.positions[i], -lim, lim) *
       ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
   }
+
+  // Hand: hold current position during E-Stop
+  if (state.num_devices > 1 && state.devices[1].valid) {
+    const auto & dev1 = state.devices[1];
+    const int nc1 = dev1.num_channels;
+    auto & out1 = output.devices[1];
+    out1.num_channels = nc1;
+    out1.goal_type = GoalType::kJoint;
+    for (int i = 0; i < nc1; ++i) {
+      out1.commands[i] = dev1.positions[i];
+      out1.goal_positions[i] = dev1.positions[i];
+      out1.target_positions[i] = dev1.positions[i];
+      out1.trajectory_positions[i] = dev1.positions[i];
+    }
+  }
+
   return output;
 }
 

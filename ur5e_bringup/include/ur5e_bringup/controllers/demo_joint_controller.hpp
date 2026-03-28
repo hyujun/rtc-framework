@@ -78,6 +78,11 @@ public:
     return "DemoJointController";
   }
 
+  void TriggerEstop()                            noexcept override;
+  void ClearEstop()                              noexcept override;
+  [[nodiscard]] bool IsEstopped() const          noexcept override;
+  void SetHandEstop(bool active)                 noexcept override;
+
   // ── Controller registry hooks ────────────────────────────────────────────
   // gains layout: [robot_trajectory_speed, hand_trajectory_speed,
   //                robot_max_traj_velocity, hand_max_traj_velocity] = 4 values
@@ -143,6 +148,16 @@ private:
     std::array<double, kMaxDeviceChannels>& commands, int n,
     const std::vector<double>& lower,
     const std::vector<double>& upper) noexcept;
+
+  // ── E-STOP ────────────────────────────────────────────────────────────────
+  std::atomic<bool> estopped_{false};
+  std::atomic<bool> hand_estopped_{false};
+  bool estop_active_{false};
+
+  static constexpr std::array<double, kNumRobotJoints> kSafePosition{
+    0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
+
+  [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState & state) noexcept;
 };
 
 }  // namespace ur5e_bringup
