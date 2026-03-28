@@ -1261,6 +1261,7 @@ void RtControllerNode::ControlLoop()
       const auto& dout = output.devices[gi];
       const auto& dstate = state.devices[gi];
       gc.num_channels = dout.num_channels;
+      gc.actual_num_channels = dstate.num_channels;
       gc.commands = dout.commands;
       gc.goal_positions = dout.goal_positions;
       gc.target_positions = dout.target_positions;
@@ -1648,8 +1649,14 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           auto & m = it->second.msg;
           m.header.stamp.sec = sec;
           m.header.stamp.nanosec = nsec;
-          const int n = std::min(nc, static_cast<int>(m.joint_positions.size()));
-          for (int i = 0; i < n; ++i) {
+          // Use actual_num_channels (from device state) instead of nc
+          // (from controller output) so that GUI always reflects the
+          // latest device state even when the controller skips the
+          // device (e.g., E-Stop, hand not yet valid in controller).
+          const int n_actual = std::min(
+              gc.actual_num_channels,
+              static_cast<int>(m.joint_positions.size()));
+          for (int i = 0; i < n_actual; ++i) {
             m.joint_positions[i] = gc.actual_positions[i];
           }
           std::copy(snap.actual_task_positions.begin(),
@@ -1682,15 +1689,20 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           m.header.stamp.nanosec = nsec;
           m.command_type = cmd_type_str;
           m.goal_type = urtc::GoalTypeToString(gc.goal_type);
-          const int n = std::min(nc, static_cast<int>(m.actual_positions.size()));
+          // Use the larger of controller output channels and device state
+          // channels so that actual_positions are always logged even when
+          // the controller skips a device (E-Stop, valid=false).
+          const int n = std::min(
+              std::max(nc, gc.actual_num_channels),
+              static_cast<int>(m.actual_positions.size()));
           for (int i = 0; i < n; ++i) {
             m.actual_positions[i] = gc.actual_positions[i];
             m.actual_velocities[i] = gc.actual_velocities[i];
             m.efforts[i] = gc.efforts[i];
-            m.commands[i] = gc.commands[i];
-            m.joint_goal[i] = gc.goal_positions[i];
-            m.trajectory_positions[i] = gc.trajectory_positions[i];
-            m.trajectory_velocities[i] = gc.trajectory_velocities[i];
+            m.commands[i] = (i < nc) ? gc.commands[i] : 0.0;
+            m.joint_goal[i] = (i < nc) ? gc.goal_positions[i] : 0.0;
+            m.trajectory_positions[i] = (i < nc) ? gc.trajectory_positions[i] : 0.0;
+            m.trajectory_velocities[i] = (i < nc) ? gc.trajectory_velocities[i] : 0.0;
           }
           std::copy(snap.task_goals[group_idx].begin(),
                     snap.task_goals[group_idx].end(),

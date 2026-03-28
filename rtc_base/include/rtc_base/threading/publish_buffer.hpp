@@ -32,7 +32,8 @@ struct PublishSnapshot {
   // ── Per-group data slots (RT-safe fixed-size) ──────────────────────────
   static constexpr int kMaxGroups = 4;
   struct GroupCommandSlot {
-    int num_channels{0};
+    int num_channels{0};          // from controller output (command channels)
+    int actual_num_channels{0};   // from device state (state channels for GUI)
     std::array<double, kMaxDeviceChannels> commands{};
     std::array<double, kMaxDeviceChannels> goal_positions{};
     std::array<double, kMaxDeviceChannels> target_positions{};
