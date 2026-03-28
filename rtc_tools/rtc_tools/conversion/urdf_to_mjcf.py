@@ -299,6 +299,62 @@ def resolve_package_uris(urdf_xml: str) -> str:
     return re.sub(r"package://([^/]+)/([^\s\"'<>]+)", _replace, urdf_xml)
 
 
+def resolve_mesh_paths(urdf_xml: str, urdf_dir: Path, meshdir: Path) -> str:
+    """Resolve relative mesh filenames in URDF to absolute paths.
+
+    MuJoCo resolves mesh paths relative to the XML file location.  Since we
+    write the URDF to a temporary directory for compilation, any relative
+    mesh references would break.  This function converts them to absolute
+    paths so MuJoCo can find the files regardless of working directory.
+
+    Search order for each mesh filename:
+      1. Already absolute or ``package://`` → skip
+      2. Relative to the original URDF directory
+      3. Directly inside *meshdir*
+      4. Recursively under *meshdir* (handles subdirectories like
+         ``collision/``, ``visual/``)
+    """
+    root = ET.fromstring(urdf_xml)
+    meshdir = meshdir.resolve()
+    urdf_dir = urdf_dir.resolve()
+
+    for geom in root.iter("geometry"):
+        mesh_elem = geom.find("mesh")
+        if mesh_elem is None:
+            continue
+
+        filename = mesh_elem.get("filename", "")
+        if not filename or filename.startswith("package://"):
+            continue
+
+        fpath = Path(filename)
+        if fpath.is_absolute() and fpath.exists():
+            continue
+
+        # Try resolving the relative path
+        resolved = None
+
+        # 1) Relative to original URDF directory
+        candidate = urdf_dir / filename
+        if candidate.exists():
+            resolved = candidate
+        else:
+            # 2) Directly in meshdir
+            candidate = meshdir / fpath.name
+            if candidate.exists():
+                resolved = candidate
+            else:
+                # 3) Recursive search under meshdir
+                matches = list(meshdir.rglob(fpath.name))
+                if matches:
+                    resolved = matches[0]
+
+        if resolved is not None:
+            mesh_elem.set("filename", str(resolved.resolve()))
+
+    return ET.tostring(root, encoding="unicode", xml_declaration=True)
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # Directory Convention Helpers
 # ════════════════════════════════════════════════════════════════════════════
@@ -673,6 +729,10 @@ def convert_urdf_to_mjcf(
         urdf_xml = input_path.read_text()
 
     urdf_xml = resolve_package_uris(urdf_xml)
+
+    # Resolve relative mesh paths to absolute so MuJoCo can find them
+    # from the temporary URDF file location
+    urdf_xml = resolve_mesh_paths(urdf_xml, input_path.parent, meshdir)
 
     # ── Step 2: Classify joints ────────────────────────────────────────
     classification = classify_joints(urdf_xml)

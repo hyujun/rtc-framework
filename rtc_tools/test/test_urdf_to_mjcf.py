@@ -20,6 +20,7 @@ from rtc_tools.conversion.urdf_to_mjcf import (
     _add_actuators,
     _clean_mesh_paths,
     _fix_compiler,
+    resolve_mesh_paths,
 )
 
 
@@ -595,3 +596,115 @@ class TestResolveRobotDirPaths:
 
         _, _, meshdir = resolve_robot_dir_paths(robot_dir)
         assert meshdir.name == "meshes"
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Mesh Path Resolution Tests
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestResolveMeshPaths:
+    URDF_WITH_MESH = """\
+<robot name="test">
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <mesh filename="{filename}"/>
+      </geometry>
+    </visual>
+  </link>
+</robot>
+"""
+
+    def test_relative_to_urdf_dir(self, tmp_path):
+        """Mesh path relative to the original URDF directory is resolved."""
+        urdf_dir = tmp_path / "urdf"
+        urdf_dir.mkdir()
+        meshes_dir = tmp_path / "meshes"
+        meshes_dir.mkdir()
+        # Mesh file exists relative to urdf_dir
+        (tmp_path / "meshes" / "base.STL").write_text("")
+
+        urdf_xml = self.URDF_WITH_MESH.format(filename="../meshes/base.STL")
+        result = resolve_mesh_paths(urdf_xml, urdf_dir, meshes_dir)
+
+        root = ET.fromstring(result)
+        resolved = root.find(".//mesh").get("filename")
+        assert Path(resolved).is_absolute()
+        assert resolved.endswith("base.STL")
+
+    def test_filename_only_found_in_meshdir(self, tmp_path):
+        """Bare filename found directly in meshdir."""
+        urdf_dir = tmp_path / "urdf"
+        urdf_dir.mkdir()
+        meshes_dir = tmp_path / "meshes"
+        meshes_dir.mkdir()
+        (meshes_dir / "thumb_link4.STL").write_text("")
+
+        urdf_xml = self.URDF_WITH_MESH.format(filename="thumb_link4.STL")
+        result = resolve_mesh_paths(urdf_xml, urdf_dir, meshes_dir)
+
+        root = ET.fromstring(result)
+        resolved = root.find(".//mesh").get("filename")
+        assert Path(resolved).is_absolute()
+        assert resolved.endswith("thumb_link4.STL")
+
+    def test_filename_found_in_subdirectory(self, tmp_path):
+        """Bare filename found recursively under meshdir subdirectory."""
+        urdf_dir = tmp_path / "urdf"
+        urdf_dir.mkdir()
+        meshes_dir = tmp_path / "meshes"
+        collision_dir = meshes_dir / "collision"
+        collision_dir.mkdir(parents=True)
+        (collision_dir / "base_link.STL").write_text("")
+
+        urdf_xml = self.URDF_WITH_MESH.format(filename="base_link.STL")
+        result = resolve_mesh_paths(urdf_xml, urdf_dir, meshes_dir)
+
+        root = ET.fromstring(result)
+        resolved = root.find(".//mesh").get("filename")
+        assert Path(resolved).is_absolute()
+        assert "collision" in resolved
+        assert resolved.endswith("base_link.STL")
+
+    def test_package_uri_untouched(self, tmp_path):
+        """package:// URIs are left as-is (handled by resolve_package_uris)."""
+        urdf_xml = self.URDF_WITH_MESH.format(
+            filename="package://my_pkg/meshes/base.STL",
+        )
+        result = resolve_mesh_paths(urdf_xml, tmp_path, tmp_path)
+
+        root = ET.fromstring(result)
+        assert root.find(".//mesh").get("filename") == "package://my_pkg/meshes/base.STL"
+
+    def test_absolute_path_untouched(self, tmp_path):
+        """Already-absolute paths are left as-is."""
+        abs_path = str(tmp_path / "base.STL")
+        (tmp_path / "base.STL").write_text("")
+
+        urdf_xml = self.URDF_WITH_MESH.format(filename=abs_path)
+        result = resolve_mesh_paths(urdf_xml, tmp_path, tmp_path)
+
+        root = ET.fromstring(result)
+        assert root.find(".//mesh").get("filename") == abs_path
+
+    def test_multiple_meshes_resolved(self, tmp_path):
+        """Multiple mesh references are all resolved."""
+        urdf_dir = tmp_path / "urdf"
+        urdf_dir.mkdir()
+        meshes_dir = tmp_path / "meshes"
+        meshes_dir.mkdir()
+        (meshes_dir / "link1.STL").write_text("")
+        (meshes_dir / "link2.STL").write_text("")
+
+        urdf_xml = """\
+<robot name="test">
+  <link name="l1"><visual><geometry><mesh filename="link1.STL"/></geometry></visual></link>
+  <link name="l2"><collision><geometry><mesh filename="link2.STL"/></geometry></collision></link>
+</robot>
+"""
+        result = resolve_mesh_paths(urdf_xml, urdf_dir, meshes_dir)
+        root = ET.fromstring(result)
+        meshes = root.findall(".//mesh")
+        assert len(meshes) == 2
+        for m in meshes:
+            assert Path(m.get("filename")).is_absolute()
