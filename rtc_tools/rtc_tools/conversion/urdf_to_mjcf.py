@@ -749,22 +749,25 @@ def convert_urdf_to_mjcf(
         )
 
     # ── Step 4: Write temp URDF & compile with MuJoCo ─────────────────
+    #
+    # MuJoCo resolves mesh filenames relative to the XML file location.
+    # Write the temp URDF inside meshdir so that bare filenames like
+    # "thumb_link4.STL" are found next to it.  If meshdir has
+    # subdirectories (collision/, visual/) the resolve_mesh_paths step
+    # above already converted those to absolute paths.
     import mujoco
 
-    tmp_dir = tempfile.mkdtemp(prefix="urdf_to_mjcf_")
-    tmp_urdf = Path(tmp_dir) / "robot.urdf"
-    tmp_urdf.write_text(urdf_xml)
-
-    print(f"\nLoading URDF into MuJoCo...")
-    original_dir = os.getcwd()
+    tmp_urdf = meshdir / ".tmp_urdf_to_mjcf.urdf"
     try:
-        os.chdir(meshdir)
+        tmp_urdf.write_text(urdf_xml)
+
+        print(f"\nLoading URDF into MuJoCo...")
         model = mujoco.MjModel.from_xml_path(str(tmp_urdf))
-    except Exception as e:
+    except mujoco.FatalError as e:
         print(f"Error: MuJoCo failed to compile URDF: {e}", file=sys.stderr)
         sys.exit(1)
     finally:
-        os.chdir(original_dir)
+        tmp_urdf.unlink(missing_ok=True)
 
     # ── Step 5: Save raw MJCF ─────────────────────────────────────────
     output_path = output_path.resolve()
