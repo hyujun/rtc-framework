@@ -1677,9 +1677,16 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           for (int i = 0; i < n_actual; ++i) {
             m.joint_positions[i] = gc.actual_positions[i];
           }
-          std::copy(snap.actual_task_positions.begin(),
-                    snap.actual_task_positions.end(),
-                    m.task_positions.begin());
+          // actual_task_positions is a snapshot-level field containing only the
+          // robot arm FK result. Copy it only for the robot group (index 0);
+          // other devices (e.g. hand) have no FK and should report zeros.
+          if (group_idx == 0) {
+            std::copy(snap.actual_task_positions.begin(),
+                      snap.actual_task_positions.end(),
+                      m.task_positions.begin());
+          } else {
+            m.task_positions.fill(0.0);
+          }
           it->second.publisher->publish(m);
           return;
         }
@@ -1725,9 +1732,13 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           std::copy(snap.task_goals[group_idx].begin(),
                     snap.task_goals[group_idx].end(),
                     m.task_goal.begin());
-          std::copy(snap.actual_task_positions.begin(),
-                    snap.actual_task_positions.end(),
-                    m.actual_task_positions.begin());
+          if (group_idx == 0) {
+            std::copy(snap.actual_task_positions.begin(),
+                      snap.actual_task_positions.end(),
+                      m.actual_task_positions.begin());
+          } else {
+            m.actual_task_positions.fill(0.0);
+          }
           // Motor state fields
           const int nm = std::min(gc.num_motor_channels,
                                   static_cast<int>(m.motor_positions.size()));
