@@ -32,12 +32,14 @@ class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
     // Per-phase (individual mode)
     PhaseStats write;
     PhaseStats read_pos;
+    PhaseStats read_joint_pos;
     PhaseStats read_vel;
     PhaseStats read_sensor;
     uint64_t   sensor_cycle_count{0};
 
     // Per-phase (bulk mode)
     PhaseStats read_all_motor;
+    PhaseStats read_all_joint_motor;
     PhaseStats read_all_sensor;
     bool       is_bulk_mode{false};
 
@@ -58,10 +60,12 @@ class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
     double write_us{0.0};
     // Individual mode phases
     double read_pos_us{0.0};
+    double read_joint_pos_us{0.0};
     double read_vel_us{0.0};
     double read_sensor_us{0.0};
     // Bulk mode phases
     double read_all_motor_us{0.0};
+    double read_all_joint_motor_us{0.0};
     double read_all_sensor_us{0.0};
     double sensor_proc_us{0.0};
     double ft_infer_us{0.0};
@@ -82,6 +86,8 @@ class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
       bulk_count_.fetch_add(1, std::memory_order_relaxed);
       UpdatePhase(read_all_motor_sum_, read_all_motor_min_, read_all_motor_max_,
                   t.read_all_motor_us);
+      UpdatePhase(read_all_joint_motor_sum_, read_all_joint_motor_min_,
+                  read_all_joint_motor_max_, t.read_all_joint_motor_us);
       if (t.is_sensor_cycle) {
         sensor_cycle_count_.fetch_add(1, std::memory_order_relaxed);
         UpdatePhase(read_all_sensor_sum_, read_all_sensor_min_, read_all_sensor_max_,
@@ -90,6 +96,8 @@ class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
     } else {
       individual_count_.fetch_add(1, std::memory_order_relaxed);
       UpdatePhase(read_pos_sum_, read_pos_min_, read_pos_max_, t.read_pos_us);
+      UpdatePhase(read_joint_pos_sum_, read_joint_pos_min_, read_joint_pos_max_,
+                  t.read_joint_pos_us);
       UpdatePhase(read_vel_sum_, read_vel_min_, read_vel_max_, t.read_vel_us);
       if (t.is_sensor_cycle) {
         sensor_cycle_count_.fetch_add(1, std::memory_order_relaxed);
@@ -125,6 +133,8 @@ class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
     if (s.individual_count > 0) {
       s.read_pos = LoadPhaseStats(read_pos_sum_, read_pos_min_, read_pos_max_,
                                   s.individual_count);
+      s.read_joint_pos = LoadPhaseStats(read_joint_pos_sum_, read_joint_pos_min_,
+                                        read_joint_pos_max_, s.individual_count);
       s.read_vel = LoadPhaseStats(read_vel_sum_, read_vel_min_, read_vel_max_,
                                   s.individual_count);
     }
@@ -133,6 +143,9 @@ class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
     if (s.bulk_count > 0) {
       s.read_all_motor = LoadPhaseStats(read_all_motor_sum_, read_all_motor_min_,
                                         read_all_motor_max_, s.bulk_count);
+      s.read_all_joint_motor = LoadPhaseStats(read_all_joint_motor_sum_,
+                                              read_all_joint_motor_min_,
+                                              read_all_joint_motor_max_, s.bulk_count);
     }
 
     s.sensor_cycle_count = sensor_cycle_count_.load(std::memory_order_relaxed);
@@ -175,24 +188,27 @@ class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
           "HandUDP timing [bulk]: count=%lu  mean=%.0f\xc2\xb5s  min=%.0f\xc2\xb5s"
           "  max=%.0f\xc2\xb5s  p95=%.0f\xc2\xb5s  p99=%.0f\xc2\xb5s"
           "  over_budget=%lu (%.1f%%)"
-          "  | write=%.0f  all_motor=%.0f  all_sensor=%.0f  proc=%.0f\xc2\xb5s",
+          "  | write=%.0f  all_motor=%.0f  all_joint_motor=%.0f"
+          "  all_sensor=%.0f  proc=%.0f\xc2\xb5s",
           static_cast<unsigned long>(s.count),
           s.mean_us, s.min_us, s.max_us, s.p95_us, s.p99_us,
           static_cast<unsigned long>(s.over_budget), over_pct,
-          s.write.mean_us, s.read_all_motor.mean_us, s.read_all_sensor.mean_us,
-          s.sensor_proc.mean_us);
+          s.write.mean_us, s.read_all_motor.mean_us,
+          s.read_all_joint_motor.mean_us,
+          s.read_all_sensor.mean_us, s.sensor_proc.mean_us);
     } else {
       std::snprintf(
           buf, sizeof(buf),
           "HandUDP timing: count=%lu  mean=%.0f\xc2\xb5s  min=%.0f\xc2\xb5s"
           "  max=%.0f\xc2\xb5s  p95=%.0f\xc2\xb5s  p99=%.0f\xc2\xb5s"
           "  over_budget=%lu (%.1f%%)"
-          "  | write=%.0f  pos=%.0f  vel=%.0f  sensor=%.0f  proc=%.0f\xc2\xb5s",
+          "  | write=%.0f  pos=%.0f  joint_pos=%.0f  vel=%.0f"
+          "  sensor=%.0f  proc=%.0f\xc2\xb5s",
           static_cast<unsigned long>(s.count),
           s.mean_us, s.min_us, s.max_us, s.p95_us, s.p99_us,
           static_cast<unsigned long>(s.over_budget), over_pct,
-          s.write.mean_us, s.read_pos.mean_us, s.read_vel.mean_us,
-          s.read_sensor.mean_us, s.sensor_proc.mean_us);
+          s.write.mean_us, s.read_pos.mean_us, s.read_joint_pos.mean_us,
+          s.read_vel.mean_us, s.read_sensor.mean_us, s.sensor_proc.mean_us);
     }
 
     if (s.ft_infer_count > 0) {
@@ -208,9 +224,11 @@ class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
     ResetBase();
     ResetPhase(write_sum_, write_min_, write_max_);
     ResetPhase(read_pos_sum_, read_pos_min_, read_pos_max_);
+    ResetPhase(read_joint_pos_sum_, read_joint_pos_min_, read_joint_pos_max_);
     ResetPhase(read_vel_sum_, read_vel_min_, read_vel_max_);
     ResetPhase(read_sensor_sum_, read_sensor_min_, read_sensor_max_);
     ResetPhase(read_all_motor_sum_, read_all_motor_min_, read_all_motor_max_);
+    ResetPhase(read_all_joint_motor_sum_, read_all_joint_motor_min_, read_all_joint_motor_max_);
     ResetPhase(read_all_sensor_sum_, read_all_sensor_min_, read_all_sensor_max_);
     sensor_cycle_count_.store(0, std::memory_order_relaxed);
     is_bulk_mode_.store(false, std::memory_order_relaxed);
@@ -228,6 +246,9 @@ class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
   std::atomic<double> read_pos_sum_{0.0};
   std::atomic<double> read_pos_min_{1e9};
   std::atomic<double> read_pos_max_{0.0};
+  std::atomic<double> read_joint_pos_sum_{0.0};
+  std::atomic<double> read_joint_pos_min_{1e9};
+  std::atomic<double> read_joint_pos_max_{0.0};
   std::atomic<double> read_vel_sum_{0.0};
   std::atomic<double> read_vel_min_{1e9};
   std::atomic<double> read_vel_max_{0.0};
@@ -237,6 +258,9 @@ class HandTimingProfiler : public TimingProfilerBase<50, 100, 2000> {
   std::atomic<double> read_all_motor_sum_{0.0};
   std::atomic<double> read_all_motor_min_{1e9};
   std::atomic<double> read_all_motor_max_{0.0};
+  std::atomic<double> read_all_joint_motor_sum_{0.0};
+  std::atomic<double> read_all_joint_motor_min_{1e9};
+  std::atomic<double> read_all_joint_motor_max_{0.0};
   std::atomic<double> read_all_sensor_sum_{0.0};
   std::atomic<double> read_all_sensor_min_{1e9};
   std::atomic<double> read_all_sensor_max_{0.0};

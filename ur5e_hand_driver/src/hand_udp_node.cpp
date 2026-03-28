@@ -69,9 +69,6 @@ class HandUdpNode : public rclcpp::Node {
     // Communication mode: "individual" (0x11+0x12+0x14~0x17) or "bulk" (0x10+0x19)
     declare_parameter("communication_mode", std::string{"individual"});
 
-    // Joint mode: "motor" (mode=0x00, raw encoder) or "joint" (mode=0x01, joint-space)
-    declare_parameter("joint_mode", std::string{"motor"});
-
     // Sensor LPF
     declare_parameter("baro_lpf_enabled", false);
     declare_parameter("baro_lpf_cutoff_hz", 30.0);
@@ -104,12 +101,6 @@ class HandUdpNode : public rclcpp::Node {
     const auto comm_mode = (comm_mode_str == "bulk")
         ? urtc::HandCommunicationMode::kBulk
         : urtc::HandCommunicationMode::kIndividual;
-
-    // ── Joint mode ──────────────────────────────────────────────────────
-    const std::string joint_mode_str = get_parameter("joint_mode").as_string();
-    const auto joint_mode = (joint_mode_str == "joint")
-        ? urtc::hand_packets::JointMode::kJoint
-        : urtc::hand_packets::JointMode::kMotor;
 
     // ── Sensor LPF ────────────────────────────────────────────────────────
     const bool   baro_lpf_enabled   = get_parameter("baro_lpf_enabled").as_bool();
@@ -165,7 +156,7 @@ class HandUdpNode : public rclcpp::Node {
     controller_ = std::make_unique<urtc::HandController>(
         target_ip, target_port, urtc::kUdpRecvConfig, recv_timeout_ms,
         false /* enable_write_ack: deprecated */, 1,
-        num_fingertips_, false, ft_names, comm_mode, joint_mode,
+        num_fingertips_, false, ft_names, comm_mode,
         tof_lpf_enabled, tof_lpf_cutoff_hz,
         baro_lpf_enabled, baro_lpf_cutoff_hz, ft_config,
         drift_enabled, drift_threshold, drift_window_size);
@@ -323,9 +314,8 @@ class HandUdpNode : public rclcpp::Node {
     }
 
     RCLCPP_INFO(get_logger(),
-                "HandUdpNode: target %s:%d, direct publish from EventLoop, comm=%s, joint_mode=%s",
-                target_ip.c_str(), target_port, comm_mode_str.c_str(),
-                joint_mode_str.c_str());
+                "HandUdpNode: target %s:%d, direct publish from EventLoop, comm=%s",
+                target_ip.c_str(), target_port, comm_mode_str.c_str());
   }
 
   ~HandUdpNode() override {
@@ -342,6 +332,7 @@ class HandUdpNode : public rclcpp::Node {
     joint_js_msg_.name = joint_names_;
     joint_js_msg_.position.resize(urtc::kNumHandMotors);
     joint_js_msg_.velocity.resize(urtc::kNumHandMotors);
+    joint_js_msg_.effort.resize(urtc::kNumHandMotors);
 
     motor_js_msg_.name = motor_names_;
     motor_js_msg_.position.resize(urtc::kNumHandMotors);
@@ -367,33 +358,27 @@ class HandUdpNode : public rclcpp::Node {
   void PublishFromEventLoop(const urtc::HandState& state,
                             const urtc::FingertipFTState& ft_state) {
     // ── Dual JointState publish (joint + motor) ────────────────────────
-    // Route data based on received_joint_mode from response packet.
-    // The matching topic gets real data; the other gets zeros.
+    // Always publish both: joint-space from kJoint read, motor-space from kMotor read.
+    // If a read failed, the corresponding fields remain zero-initialized.
     const auto stamp = this->now();
-    const bool is_joint = (state.received_joint_mode ==
-        static_cast<uint8_t>(urtc::hand_packets::JointMode::kJoint));
 
-    // /hand/joint_states (joint_state_names)
+    // /hand/joint_states (joint-space: position/velocity/effort from kJoint read)
     joint_js_msg_.header.stamp = stamp;
     for (int i = 0; i < urtc::kNumHandMotors; ++i) {
       const auto iu = static_cast<std::size_t>(i);
-      joint_js_msg_.position[iu] = is_joint
-          ? static_cast<double>(state.motor_positions[iu]) : 0.0;
-      joint_js_msg_.velocity[iu] = is_joint
-          ? static_cast<double>(state.motor_velocities[iu]) : 0.0;
+      joint_js_msg_.position[iu] = static_cast<double>(state.joint_positions[iu]);
+      joint_js_msg_.velocity[iu] = static_cast<double>(state.joint_velocities[iu]);
+      joint_js_msg_.effort[iu]   = static_cast<double>(state.joint_currents[iu]);
     }
     joint_state_pub_->publish(joint_js_msg_);
 
-    // /hand/motor_states (motor_state_names + effort=current)
+    // /hand/motor_states (motor-space: position/velocity/effort from kMotor read)
     motor_js_msg_.header.stamp = stamp;
     for (int i = 0; i < urtc::kNumHandMotors; ++i) {
       const auto iu = static_cast<std::size_t>(i);
-      motor_js_msg_.position[iu] = !is_joint
-          ? static_cast<double>(state.motor_positions[iu]) : 0.0;
-      motor_js_msg_.velocity[iu] = !is_joint
-          ? static_cast<double>(state.motor_velocities[iu]) : 0.0;
-      motor_js_msg_.effort[iu] = !is_joint
-          ? static_cast<double>(state.motor_currents[iu]) : 0.0;
+      motor_js_msg_.position[iu] = static_cast<double>(state.motor_positions[iu]);
+      motor_js_msg_.velocity[iu] = static_cast<double>(state.motor_velocities[iu]);
+      motor_js_msg_.effort[iu]   = static_cast<double>(state.motor_currents[iu]);
     }
     motor_state_pub_->publish(motor_js_msg_);
 
@@ -501,13 +486,10 @@ class HandUdpNode : public rclcpp::Node {
 
     const bool is_bulk = (controller_->communication_mode() == urtc::HandCommunicationMode::kBulk);
     const char* mode_str = is_bulk ? "bulk" : "individual";
-    const bool is_joint = (controller_->joint_mode() == urtc::hand_packets::JointMode::kJoint);
-    const char* joint_str = is_joint ? "joint" : "motor";
 
     ofs << "{\n"
         << "  \"comm_stats\": {\n"
         << "    \"communication_mode\": \"" << mode_str << "\",\n"
-        << "    \"joint_mode\": \"" << joint_str << "\",\n"
         << "    \"recv_timeout_ms\": " << std::fixed << std::setprecision(3) << controller_->recv_timeout_ms() << ",\n"
         << "    \"total_cycles\": "    << stats.total_cycles   << ",\n"
         << "    \"recv_ok\": "         << stats.recv_ok        << ",\n"
@@ -542,6 +524,11 @@ class HandUdpNode : public rclcpp::Node {
           << ", \"min\": " << ts.read_all_motor.min_us
           << ", \"max\": " << ts.read_all_motor.max_us
           << " },\n"
+          << "    \"read_all_joint_motor_us\": {"
+          << " \"mean\": " << ts.read_all_joint_motor.mean_us
+          << ", \"min\": " << ts.read_all_joint_motor.min_us
+          << ", \"max\": " << ts.read_all_joint_motor.max_us
+          << " },\n"
           << "    \"read_all_sensor_us\": {"
           << " \"mean\": " << ts.read_all_sensor.mean_us
           << ", \"min\": " << ts.read_all_sensor.min_us
@@ -553,6 +540,11 @@ class HandUdpNode : public rclcpp::Node {
           << " \"mean\": " << ts.read_pos.mean_us
           << ", \"min\": " << ts.read_pos.min_us
           << ", \"max\": " << ts.read_pos.max_us
+          << " },\n"
+          << "    \"read_joint_pos_us\": {"
+          << " \"mean\": " << ts.read_joint_pos.mean_us
+          << ", \"min\": " << ts.read_joint_pos.min_us
+          << ", \"max\": " << ts.read_joint_pos.max_us
           << " },\n"
           << "    \"read_vel_us\": {"
           << " \"mean\": " << ts.read_vel.mean_us
