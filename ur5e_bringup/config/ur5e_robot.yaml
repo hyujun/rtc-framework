@@ -37,8 +37,8 @@
           - "wrist_1_joint"
           - "wrist_2_joint"
           - "wrist_3_joint"
-        # forward_position_controller receives Float64MultiArray in
-        # ros2_control interface order (alphabetical).
+        # forward_position_controller receives Float64MultiArray.
+        # Order matches joint_state_names; reorder map handles interface mapping.
         joint_command_names:
           - "shoulder_pan_joint"
           - "shoulder_lift_joint"
