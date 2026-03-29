@@ -14,6 +14,7 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
 #include <pinocchio/multibody/data.hpp>
 #include <pinocchio/multibody/model.hpp>
@@ -129,6 +130,8 @@ private:
   pinocchio::Model      model_;
   pinocchio::Data       data_;
   pinocchio::JointIndex end_id_{0};
+  pinocchio::FrameIndex tip_frame_id_{0};
+  bool                  use_frame_fk_{false};  // true when tip_link resolves to an operational frame
   Eigen::VectorXd       q_;
 
   CommandType command_type_{CommandType::kPosition};
