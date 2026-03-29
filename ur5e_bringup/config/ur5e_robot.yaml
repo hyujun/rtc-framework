@@ -40,17 +40,17 @@
         # forward_position_controller receives Float64MultiArray in
         # ros2_control interface order (alphabetical).
         joint_command_names:
-          - "elbow_joint"
-          - "shoulder_lift_joint"
           - "shoulder_pan_joint"
+          - "shoulder_lift_joint"
+          - "elbow_joint"
           - "wrist_1_joint"
           - "wrist_2_joint"
           - "wrist_3_joint"
         urdf:
           package: "ur5e_description"
           path: "robots/ur5e/urdf/ur5e.urdf"
-          root_link: "base_link"
-          tip_link: "flange"
+          root_link: "base"
+          tip_link: "tool0"
         joint_limits:
           max_velocity:     [2.0, 2.0, 3.0, 3.0, 3.0, 3.0]
           max_acceleration: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
