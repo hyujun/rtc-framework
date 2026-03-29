@@ -29,6 +29,12 @@ void DemoJointController::OnDeviceConfigsSet()
         use_frame_fk_ = true;
       }
     }
+    if (cfg->urdf && !cfg->urdf->root_link.empty()) {
+      if (model_.existFrame(cfg->urdf->root_link)) {
+        root_frame_id_ = model_.getFrameId(cfg->urdf->root_link);
+        use_root_frame_ = true;
+      }
+    }
     if (cfg->joint_limits) {
       if (!cfg->joint_limits->max_velocity.empty()) {
         device_max_velocity_[0] = cfg->joint_limits->max_velocity;
@@ -305,6 +311,10 @@ ControllerOutput DemoJointController::WriteOutput(
   } else {
     tcp = data_.oMi[end_id_];
   }
+  if (use_root_frame_) {
+    pinocchio::updateFramePlacement(model_, data_, root_frame_id_);
+    tcp = data_.oMf[root_frame_id_].actInv(tcp);
+  }
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
 
   output.actual_task_positions[0] = tcp.translation().x();
@@ -536,6 +546,10 @@ ControllerOutput DemoJointController::ComputeEstop(
     tcp = data_.oMf[tip_frame_id_];
   } else {
     tcp = data_.oMi[end_id_];
+  }
+  if (use_root_frame_) {
+    pinocchio::updateFramePlacement(model_, data_, root_frame_id_);
+    tcp = data_.oMf[root_frame_id_].actInv(tcp);
   }
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
   output.actual_task_positions[0] = tcp.translation().x();

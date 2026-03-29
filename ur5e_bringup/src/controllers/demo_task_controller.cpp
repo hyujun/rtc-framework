@@ -48,6 +48,12 @@ void DemoTaskController::OnDeviceConfigsSet()
         use_frame_fk_ = true;
       }
     }
+    if (cfg->urdf && !cfg->urdf->root_link.empty()) {
+      if (model_.existFrame(cfg->urdf->root_link)) {
+        root_frame_id_ = model_.getFrameId(cfg->urdf->root_link);
+        use_root_frame_ = true;
+      }
+    }
     if (cfg->joint_limits) {
       if (!cfg->joint_limits->max_velocity.empty()) {
         device_max_velocity_[0] = cfg->joint_limits->max_velocity;
@@ -112,11 +118,20 @@ void DemoTaskController::ReadState(const ControllerState & state) noexcept
     pinocchio::getJointJacobian(model_, data_, end_id_,
                                  pinocchio::LOCAL_WORLD_ALIGNED, J_full_);
   }
+  if (use_root_frame_) {
+    pinocchio::updateFramePlacement(model_, data_, root_frame_id_);
+    const Eigen::Matrix3d R_root_T = data_.oMf[root_frame_id_].rotation().transpose();
+    J_full_.topRows(3)    = R_root_T * J_full_.topRows(3);
+    J_full_.bottomRows(3) = R_root_T * J_full_.bottomRows(3);
+  }
   J_pos_.noalias() = J_full_.topRows(3);
 
   // Initialize target on first call
-  const pinocchio::SE3 tcp_pose = use_frame_fk_ ? data_.oMf[tip_frame_id_]
-                                                 : data_.oMi[end_id_];
+  pinocchio::SE3 tcp_pose = use_frame_fk_ ? data_.oMf[tip_frame_id_]
+                                           : data_.oMi[end_id_];
+  if (use_root_frame_) {
+    tcp_pose = data_.oMf[root_frame_id_].actInv(tcp_pose);
+  }
   const Eigen::Vector3d tcp = tcp_pose.translation();
   if (!target_initialized_) {
     tcp_target_pose_ = tcp_pose;
@@ -180,8 +195,11 @@ void DemoTaskController::ComputeControl(
   const auto & dev0 = state.devices[0];
 
   // ── Task-space trajectory ──────────────────────────────────────────────
-  const pinocchio::SE3 tcp_pose = use_frame_fk_ ? data_.oMf[tip_frame_id_]
-                                                 : data_.oMi[end_id_];
+  pinocchio::SE3 tcp_pose = use_frame_fk_ ? data_.oMf[tip_frame_id_]
+                                           : data_.oMi[end_id_];
+  if (use_root_frame_) {
+    tcp_pose = data_.oMf[root_frame_id_].actInv(tcp_pose);
+  }
   const Eigen::Vector3d tcp = tcp_pose.translation();
 
   if (new_target_.load(std::memory_order_acquire)) {
@@ -433,8 +451,11 @@ ControllerOutput DemoTaskController::WriteOutput(
   }
 
   // ── Task-space logging ─────────────────────────────────────────────────
-  const pinocchio::SE3 & tcp_current = use_frame_fk_ ? data_.oMf[tip_frame_id_]
-                                                      : data_.oMi[end_id_];
+  pinocchio::SE3 tcp_current = use_frame_fk_ ? data_.oMf[tip_frame_id_]
+                                              : data_.oMi[end_id_];
+  if (use_root_frame_) {
+    tcp_current = data_.oMf[root_frame_id_].actInv(tcp_current);
+  }
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp_current.rotation());
   output.actual_task_positions[0] = tcp_current.translation().x();
   output.actual_task_positions[1] = tcp_current.translation().y();
@@ -561,6 +582,10 @@ void DemoTaskController::InitializeHoldPosition(
     tcp_pose = data_.oMf[tip_frame_id_];
   } else {
     tcp_pose = data_.oMi[end_id_];
+  }
+  if (use_root_frame_) {
+    pinocchio::updateFramePlacement(model_, data_, root_frame_id_);
+    tcp_pose = data_.oMf[root_frame_id_].actInv(tcp_pose);
   }
 
   std::lock_guard lock(target_mutex_);

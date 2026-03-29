@@ -132,6 +132,8 @@ private:
   pinocchio::JointIndex end_id_{0};
   pinocchio::FrameIndex tip_frame_id_{0};
   bool                  use_frame_fk_{false};  // true when tip_link resolves to an operational frame
+  pinocchio::FrameIndex root_frame_id_{0};
+  bool                  use_root_frame_{false}; // true when root_link resolves to an operational frame
   Eigen::VectorXd       q_;
 
   CommandType command_type_{CommandType::kPosition};
