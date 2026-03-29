@@ -90,10 +90,10 @@ BtRosBridge::BtRosBridge(rclcpp::Node::SharedPtr node)
 
   // ── Publishers ──────────────────────────────────────────────────────────
 
-  arm_target_pub_ = node_->create_publisher<std_msgs::msg::Float64MultiArray>(
+  arm_target_pub_ = node_->create_publisher<rtc_msgs::msg::RobotTarget>(
       "/ur5e/joint_goal", rclcpp::QoS{10});
 
-  hand_target_pub_ = node_->create_publisher<std_msgs::msg::Float64MultiArray>(
+  hand_target_pub_ = node_->create_publisher<rtc_msgs::msg::RobotTarget>(
       "/hand/joint_goal", rclcpp::QoS{10});
 
   gains_pub_ = node_->create_publisher<std_msgs::msg::Float64MultiArray>(
@@ -147,21 +147,27 @@ bool BtRosBridge::IsEstopped() const {
 // ── Publishers ────────────────────────────────────────────────────────────
 
 void BtRosBridge::PublishArmTarget(const Pose6D& target) {
-  std_msgs::msg::Float64MultiArray msg;
-  msg.data = {target.x, target.y, target.z,
-              target.roll, target.pitch, target.yaw};
+  rtc_msgs::msg::RobotTarget msg;
+  msg.header.stamp = node_->now();
+  msg.goal_type = "task";
+  msg.task_target = {target.x, target.y, target.z,
+                     target.roll, target.pitch, target.yaw};
   arm_target_pub_->publish(msg);
 }
 
 void BtRosBridge::PublishArmJointTarget(const std::vector<double>& target) {
-  std_msgs::msg::Float64MultiArray msg;
-  msg.data = target;
+  rtc_msgs::msg::RobotTarget msg;
+  msg.header.stamp = node_->now();
+  msg.goal_type = "joint";
+  msg.joint_target.assign(target.begin(), target.end());
   arm_target_pub_->publish(msg);
 }
 
 void BtRosBridge::PublishHandTarget(const std::vector<double>& target) {
-  std_msgs::msg::Float64MultiArray msg;
-  msg.data = target;
+  rtc_msgs::msg::RobotTarget msg;
+  msg.header.stamp = node_->now();
+  msg.goal_type = "joint";
+  msg.joint_target.assign(target.begin(), target.end());
   hand_target_pub_->publish(msg);
 }
 
