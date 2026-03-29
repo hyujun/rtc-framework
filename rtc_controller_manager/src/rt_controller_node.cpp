@@ -57,28 +57,9 @@ RtControllerNode::RtControllerNode()
     active_ctrl_name_pub_->publish(ctrl_name_msg);
   }
 
-  // ── Status Monitor (optional) ────────────────────────────────────────────
-  if (enable_status_monitor_) {
-    status_monitor_ = std::make_unique<rtc::Ur5eHandStatusMonitor>(
-        shared_from_this());
-
-    status_monitor_->registerOnFailure(
-        [this](rtc::FailureType type,
-               const rtc::FailureContext & ctx) {
-          (void)type;
-          TriggerGlobalEstop(ctx.description);
-        });
-
-    status_monitor_->registerOnReady(
-        [this]() {
-          RCLCPP_INFO(get_logger(), "StatusMonitor: system ready");
-        });
-
-    const auto cfgs = rtc::SelectThreadConfigs();
-    status_monitor_->start(cfgs.status_monitor);
-    RCLCPP_INFO(get_logger(), "Ur5eHandStatusMonitor started (10 Hz, Core %d)",
-                cfgs.status_monitor.cpu_core);
-  }
+  // Status Monitor initialization is deferred to InitStatusMonitor(),
+  // which must be called after make_shared completes (shared_from_this()
+  // requires a valid shared_ptr owner).
 
   RCLCPP_INFO(get_logger(), "RtControllerNode ready — %.0f Hz, E-STOP: %s",
               control_rate_, enable_estop_ ? "ON" : "OFF");
@@ -101,6 +82,34 @@ RtControllerNode::~RtControllerNode()
     logger_->DrainBuffer(log_buffer_);
     logger_->Flush();
   }
+}
+
+// ── Deferred Status Monitor init (requires shared_from_this) ─────────────────
+void RtControllerNode::InitStatusMonitor()
+{
+  if (!enable_status_monitor_) {
+    return;
+  }
+
+  status_monitor_ = std::make_unique<rtc::Ur5eHandStatusMonitor>(
+      shared_from_this());
+
+  status_monitor_->registerOnFailure(
+      [this](rtc::FailureType type,
+             const rtc::FailureContext & ctx) {
+        (void)type;
+        TriggerGlobalEstop(ctx.description);
+      });
+
+  status_monitor_->registerOnReady(
+      [this]() {
+        RCLCPP_INFO(get_logger(), "StatusMonitor: system ready");
+      });
+
+  const auto cfgs = rtc::SelectThreadConfigs();
+  status_monitor_->start(cfgs.status_monitor);
+  RCLCPP_INFO(get_logger(), "Ur5eHandStatusMonitor started (10 Hz, Core %d)",
+              cfgs.status_monitor.cpu_core);
 }
 
 // ── Session directory helpers ─────────────────────────────────────────────────

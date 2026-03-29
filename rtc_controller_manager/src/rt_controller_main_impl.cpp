@@ -61,6 +61,10 @@ int RtControllerMain(int argc, char ** argv)
 
   auto node = std::make_shared<RtControllerNode>();
 
+  // Status Monitor requires shared_from_this(), so it must be initialized
+  // after make_shared completes (not inside the constructor).
+  node->InitStatusMonitor();
+
   // Select thread configs based on physical core count
   const auto cfgs = SelectThreadConfigs();
 
