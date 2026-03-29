@@ -54,6 +54,10 @@ public:
   RtControllerNode();
   ~RtControllerNode() override;
 
+  // Must be called after make_shared<RtControllerNode>() completes.
+  // Initializes components that require shared_from_this() (e.g. StatusMonitor).
+  void InitStatusMonitor();
+
   // Public accessors for main() to retrieve callback groups
   rclcpp::CallbackGroup::SharedPtr GetSensorGroup() const {return cb_group_sensor_;}
   rclcpp::CallbackGroup::SharedPtr GetLogGroup()    const {return cb_group_log_;}

@@ -57,28 +57,9 @@ RtControllerNode::RtControllerNode()
     active_ctrl_name_pub_->publish(ctrl_name_msg);
   }
 
-  // ── Status Monitor (optional) ────────────────────────────────────────────
-  if (enable_status_monitor_) {
-    status_monitor_ = std::make_unique<rtc::Ur5eHandStatusMonitor>(
-        shared_from_this());
-
-    status_monitor_->registerOnFailure(
-        [this](rtc::FailureType type,
-               const rtc::FailureContext & ctx) {
-          (void)type;
-          TriggerGlobalEstop(ctx.description);
-        });
-
-    status_monitor_->registerOnReady(
-        [this]() {
-          RCLCPP_INFO(get_logger(), "StatusMonitor: system ready");
-        });
-
-    const auto cfgs = rtc::SelectThreadConfigs();
-    status_monitor_->start(cfgs.status_monitor);
-    RCLCPP_INFO(get_logger(), "Ur5eHandStatusMonitor started (10 Hz, Core %d)",
-                cfgs.status_monitor.cpu_core);
-  }
+  // Status Monitor initialization is deferred to InitStatusMonitor(),
+  // which must be called after make_shared completes (shared_from_this()
+  // requires a valid shared_ptr owner).
 
   RCLCPP_INFO(get_logger(), "RtControllerNode ready — %.0f Hz, E-STOP: %s",
               control_rate_, enable_estop_ ? "ON" : "OFF");
@@ -101,6 +82,34 @@ RtControllerNode::~RtControllerNode()
     logger_->DrainBuffer(log_buffer_);
     logger_->Flush();
   }
+}
+
+// ── Deferred Status Monitor init (requires shared_from_this) ─────────────────
+void RtControllerNode::InitStatusMonitor()
+{
+  if (!enable_status_monitor_) {
+    return;
+  }
+
+  status_monitor_ = std::make_unique<rtc::Ur5eHandStatusMonitor>(
+      shared_from_this());
+
+  status_monitor_->registerOnFailure(
+      [this](rtc::FailureType type,
+             const rtc::FailureContext & ctx) {
+        (void)type;
+        TriggerGlobalEstop(ctx.description);
+      });
+
+  status_monitor_->registerOnReady(
+      [this]() {
+        RCLCPP_INFO(get_logger(), "StatusMonitor: system ready");
+      });
+
+  const auto cfgs = rtc::SelectThreadConfigs();
+  status_monitor_->start(cfgs.status_monitor);
+  RCLCPP_INFO(get_logger(), "Ur5eHandStatusMonitor started (10 Hz, Core %d)",
+              cfgs.status_monitor.cpu_core);
 }
 
 // ── Session directory helpers ─────────────────────────────────────────────────
@@ -446,12 +455,13 @@ void RtControllerNode::CreateSubscriptions()
   auto sub_options = rclcpp::SubscriptionOptions();
   sub_options.callback_group = cb_group_sensor_;
 
-  // ── Helper: find DeviceTimeoutEntry index for a given state topic ────────
-  // Return index into device_timeouts_ (stable across reallocations) instead
-  // of a raw pointer, which becomes dangling if the vector reallocates.
-  auto find_timeout_idx = [this](const std::string & topic) -> int {
+  // ── Helper: find DeviceTimeoutEntry index for a given group name ─────────
+  // Any subscription within the same device group can update the timeout,
+  // preventing false E-STOPs when one topic (e.g. kState) drops momentarily
+  // but other topics (kMotorState, kSensorState) remain active.
+  auto find_timeout_idx_by_group = [this](const std::string & group) -> int {
     for (std::size_t i = 0; i < device_timeouts_.size(); ++i) {
-      if (device_timeouts_[i].state_topic == topic) return static_cast<int>(i);
+      if (device_timeouts_[i].group_name == group) return static_cast<int>(i);
     }
     return -1;
   };
@@ -475,11 +485,10 @@ void RtControllerNode::CreateSubscriptions()
       if (!active_groups_.contains(group_name)) continue;
 
       const int slot = group_slot_map_[group_name];
+      const int dt_idx = find_timeout_idx_by_group(group_name);
 
       for (const auto & entry : group.subscribe) {
         if (!created_topics.insert(entry.topic_name).second) continue;
-
-        const int dt_idx = find_timeout_idx(entry.topic_name);
 
         switch (entry.role) {
           case urtc::SubscribeRole::kState: {
@@ -517,8 +526,12 @@ void RtControllerNode::CreateSubscriptions()
           case urtc::SubscribeRole::kSensorState: {
             auto sub = create_subscription<rtc_msgs::msg::HandSensorState>(
               entry.topic_name, sensor_sub_qos,
-              [this, slot](rtc_msgs::msg::HandSensorState::SharedPtr msg) {
+              [this, slot, dt_idx](rtc_msgs::msg::HandSensorState::SharedPtr msg) {
                 HandSensorStateCallback(slot, std::move(msg));
+                if (dt_idx >= 0) {
+                  device_timeouts_[dt_idx].last_update = std::chrono::steady_clock::now();
+                  device_timeouts_[dt_idx].received = true;
+                }
               },
               sub_options);
             topic_subscriptions_.push_back(sub);

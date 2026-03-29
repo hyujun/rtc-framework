@@ -9,6 +9,7 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/algorithm/frames.hpp>       // updateFramePlacement, getFrameJacobian
 #include <pinocchio/algorithm/jacobian.hpp>     // computeJointJacobians, getJointJacobian
 #include <pinocchio/algorithm/kinematics.hpp>   // forwardKinematics (via computeJointJacobians)
 #include <pinocchio/multibody/data.hpp>
@@ -173,6 +174,10 @@ private:
   pinocchio::Model      model_;
   pinocchio::Data       data_;
   pinocchio::JointIndex end_id_{0};
+  pinocchio::FrameIndex tip_frame_id_{0};
+  bool                  use_frame_fk_{false};  // true when tip_link resolves to an operational frame
+  pinocchio::FrameIndex root_frame_id_{0};
+  bool                  use_root_frame_{false}; // true when root_link resolves to an operational frame
 
   // ── Pre-allocated Eigen work buffers — zero heap alloc on the RT path ────
   Eigen::VectorXd q_;

@@ -24,8 +24,15 @@ void DemoJointController::OnDeviceConfigsSet()
   if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       if (model_.existFrame(cfg->urdf->tip_link)) {
-        auto fid = model_.getFrameId(cfg->urdf->tip_link);
-        end_id_ = model_.frames[fid].parentJoint;
+        tip_frame_id_ = model_.getFrameId(cfg->urdf->tip_link);
+        end_id_ = model_.frames[tip_frame_id_].parentJoint;
+        use_frame_fk_ = true;
+      }
+    }
+    if (cfg->urdf && !cfg->urdf->root_link.empty()) {
+      if (model_.existFrame(cfg->urdf->root_link)) {
+        root_frame_id_ = model_.getFrameId(cfg->urdf->root_link);
+        use_root_frame_ = true;
       }
     }
     if (cfg->joint_limits) {
@@ -297,7 +304,17 @@ ControllerOutput DemoJointController::WriteOutput(
 
   // ── Forward kinematics for task-space logging ──────────────────────────
   pinocchio::forwardKinematics(model_, data_, q_);
-  const pinocchio::SE3 & tcp = data_.oMi[end_id_];
+  pinocchio::SE3 tcp;
+  if (use_frame_fk_) {
+    pinocchio::updateFramePlacement(model_, data_, tip_frame_id_);
+    tcp = data_.oMf[tip_frame_id_];
+  } else {
+    tcp = data_.oMi[end_id_];
+  }
+  if (use_root_frame_) {
+    pinocchio::updateFramePlacement(model_, data_, root_frame_id_);
+    tcp = data_.oMf[root_frame_id_].actInv(tcp);
+  }
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
 
   output.actual_task_positions[0] = tcp.translation().x();
@@ -523,7 +540,17 @@ ControllerOutput DemoJointController::ComputeEstop(
 
   // FK for task-space logging (same as normal path)
   pinocchio::forwardKinematics(model_, data_, q_);
-  const pinocchio::SE3 & tcp = data_.oMi[end_id_];
+  pinocchio::SE3 tcp;
+  if (use_frame_fk_) {
+    pinocchio::updateFramePlacement(model_, data_, tip_frame_id_);
+    tcp = data_.oMf[tip_frame_id_];
+  } else {
+    tcp = data_.oMi[end_id_];
+  }
+  if (use_root_frame_) {
+    pinocchio::updateFramePlacement(model_, data_, root_frame_id_);
+    tcp = data_.oMf[root_frame_id_].actInv(tcp);
+  }
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
   output.actual_task_positions[0] = tcp.translation().x();
   output.actual_task_positions[1] = tcp.translation().y();
