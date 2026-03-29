@@ -55,13 +55,16 @@ class SensorVisualizer:
         self.tof_max_dist = config.get('tof_max_distance', 0.2)
         self.tof_arrow_scale = config.get('tof_arrow_scale', 0.003)
 
-        # Force config
-        self.force_arrow_scale = config.get('force_arrow_scale', 0.01)
+        # Force config (F max ≈ 10 → 0.003 × 10 = 0.03m = 30mm)
+        self.force_arrow_scale = config.get('force_arrow_scale', 0.003)
         self.force_arrow_shaft = config.get('force_arrow_shaft', 0.003)
 
-        # Displacement config
-        self.disp_arrow_scale = config.get('displacement_arrow_scale', 0.05)
+        # Displacement config (u max ≈ 20 → 0.0015 × 20 = 0.03m = 30mm)
+        self.disp_arrow_scale = config.get('displacement_arrow_scale', 0.0015)
         self.disp_arrow_shaft = config.get('displacement_arrow_shaft', 0.002)
+
+        # Contact threshold (same as inferencer: contact_prob < 0.1 → no contact)
+        self.contact_threshold = config.get('contact_threshold', 0.1)
 
         # Contact config
         self.contact_sphere_radius = config.get('contact_sphere_radius', 0.005)
@@ -100,18 +103,30 @@ class SensorVisualizer:
                     markers.markers.append(marker)
                     marker_id += 1
 
-            # Force → 3D Arrow (only when inference is active)
-            if ft.inference_enable:
+            # Force + Displacement → 3D Arrow (only when contact detected)
+            has_contact = (ft.inference_enable
+                           and float(ft.contact_flag) >= self.contact_threshold)
+            if has_contact:
                 marker = self._make_force_arrow(
                     frame_id, marker_id, name, ft.f, stamp)
                 markers.markers.append(marker)
                 marker_id += 1
 
-                # Displacement → 3D Arrow
                 marker = self._make_displacement_arrow(
                     frame_id, marker_id, name, ft.u, stamp)
                 markers.markers.append(marker)
                 marker_id += 1
+            else:
+                # Delete stale arrows when contact lost
+                for ns_suffix in ('_force', '_displacement'):
+                    marker = Marker()
+                    marker.header.frame_id = frame_id
+                    marker.header.stamp = stamp
+                    marker.ns = f'{name}{ns_suffix}'
+                    marker.id = marker_id
+                    marker.action = Marker.DELETE
+                    markers.markers.append(marker)
+                    marker_id += 1
 
             # Contact → Sphere
             marker = self._make_contact_sphere(
