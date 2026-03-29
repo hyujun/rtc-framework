@@ -7,6 +7,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/msg/grasp_state.hpp>
+#include <rtc_msgs/msg/robot_target.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -78,8 +79,8 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr             estop_sub_;
 
   // ── Publishers ────────────────────────────────────────────────────────────
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr arm_target_pub_;
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr hand_target_pub_;
+  rclcpp::Publisher<rtc_msgs::msg::RobotTarget>::SharedPtr arm_target_pub_;
+  rclcpp::Publisher<rtc_msgs::msg::RobotTarget>::SharedPtr hand_target_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr gains_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr            select_ctrl_pub_;
 
