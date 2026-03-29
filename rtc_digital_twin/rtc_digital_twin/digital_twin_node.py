@@ -14,8 +14,9 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64MultiArray
 from visualization_msgs.msg import MarkerArray
+
+from rtc_msgs.msg import HandSensorState
 
 from rtc_digital_twin.urdf_validator import (
     classify_joints,
@@ -129,6 +130,7 @@ class DigitalTwinNode(Node):
         self._sensor_viz_active = False
         self._sensor_viz = None
         self._sensor_pub = None
+        self._fingertip_data = []
         try:
             self.declare_parameter('sensor_viz.sensor_topic', '')
             sensor_topic = self.get_parameter('sensor_viz.sensor_topic').value
@@ -138,10 +140,16 @@ class DigitalTwinNode(Node):
                 self.declare_parameter('sensor_viz.fingertip_names', [''])
                 self.declare_parameter('sensor_viz.barometer_min', 0.0)
                 self.declare_parameter('sensor_viz.barometer_max', 1000.0)
-                self.declare_parameter('sensor_viz.barometer_sphere_min', 0.002)
-                self.declare_parameter('sensor_viz.barometer_sphere_max', 0.008)
+                self.declare_parameter('sensor_viz.barometer_arrow_max_length', 0.015)
+                self.declare_parameter('sensor_viz.barometer_arrow_scale', 0.0008)
+                self.declare_parameter('sensor_viz.tof_enabled', False)
                 self.declare_parameter('sensor_viz.tof_max_distance', 0.2)
                 self.declare_parameter('sensor_viz.tof_arrow_scale', 0.003)
+                self.declare_parameter('sensor_viz.force_arrow_scale', 0.01)
+                self.declare_parameter('sensor_viz.force_arrow_shaft', 0.003)
+                self.declare_parameter('sensor_viz.displacement_arrow_scale', 0.05)
+                self.declare_parameter('sensor_viz.displacement_arrow_shaft', 0.002)
+                self.declare_parameter('sensor_viz.contact_sphere_radius', 0.005)
 
                 marker_topic = self.get_parameter('sensor_viz.marker_topic').value
                 try:
@@ -155,25 +163,36 @@ class DigitalTwinNode(Node):
                         'sensor_viz.barometer_min').value,
                     'barometer_max': self.get_parameter(
                         'sensor_viz.barometer_max').value,
-                    'barometer_sphere_min': self.get_parameter(
-                        'sensor_viz.barometer_sphere_min').value,
-                    'barometer_sphere_max': self.get_parameter(
-                        'sensor_viz.barometer_sphere_max').value,
+                    'barometer_arrow_max_length': self.get_parameter(
+                        'sensor_viz.barometer_arrow_max_length').value,
+                    'barometer_arrow_scale': self.get_parameter(
+                        'sensor_viz.barometer_arrow_scale').value,
+                    'tof_enabled': self.get_parameter(
+                        'sensor_viz.tof_enabled').value,
                     'tof_max_distance': self.get_parameter(
                         'sensor_viz.tof_max_distance').value,
                     'tof_arrow_scale': self.get_parameter(
                         'sensor_viz.tof_arrow_scale').value,
+                    'force_arrow_scale': self.get_parameter(
+                        'sensor_viz.force_arrow_scale').value,
+                    'force_arrow_shaft': self.get_parameter(
+                        'sensor_viz.force_arrow_shaft').value,
+                    'displacement_arrow_scale': self.get_parameter(
+                        'sensor_viz.displacement_arrow_scale').value,
+                    'displacement_arrow_shaft': self.get_parameter(
+                        'sensor_viz.displacement_arrow_shaft').value,
+                    'contact_sphere_radius': self.get_parameter(
+                        'sensor_viz.contact_sphere_radius').value,
                 }
 
                 from rtc_digital_twin.sensor_visualizer import SensorVisualizer
                 self._sensor_viz = SensorVisualizer(
                     fingertip_names, sensor_viz_config)
 
-                n_tips = len(fingertip_names)
-                self._fingertip_sensors = [[0.0] * 11 for _ in range(n_tips)]
+                self._fingertip_data = [None] * len(fingertip_names)
 
                 self.create_subscription(
-                    Float64MultiArray, sensor_topic, self._sensor_cb, qos)
+                    HandSensorState, sensor_topic, self._sensor_cb, qos)
                 self._sensor_pub = self.create_publisher(
                     MarkerArray, marker_topic, 10)
                 self._sensor_viz_active = True
@@ -243,16 +262,11 @@ class DigitalTwinNode(Node):
 
         return callback
 
-    def _sensor_cb(self, msg: Float64MultiArray):
-        """Cache latest fingertip sensor data."""
-        data = msg.data
-        n_tips = len(self._fingertip_sensors)
-        expected = n_tips * 11
-        if len(data) < expected:
-            return
+    def _sensor_cb(self, msg: HandSensorState):
+        """Cache latest fingertip sensor data from HandSensorState."""
+        n_tips = min(len(msg.fingertips), len(self._fingertip_data))
         for i in range(n_tips):
-            offset = i * 11
-            self._fingertip_sensors[i] = list(data[offset:offset + 11])
+            self._fingertip_data[i] = msg.fingertips[i]
 
     def _publish_display(self):
         """Timer callback — publish combined JointState + optional markers."""
@@ -303,7 +317,7 @@ class DigitalTwinNode(Node):
         # Sensor visualization
         if self._sensor_viz_active and self._sensor_viz:
             markers = self._sensor_viz.create_markers(
-                self._fingertip_sensors, now)
+                self._fingertip_data, now)
             self._sensor_pub.publish(markers)
 
     def _validate_joints(self):
