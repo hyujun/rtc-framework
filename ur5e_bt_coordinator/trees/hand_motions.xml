@@ -182,13 +182,13 @@
   </BehaviorTree>
 
   <!-- ================================================================== -->
-  <!-- FullDemo: UR5e 자세 유지 + Hand 데모 (Opposition → Wave)             -->
+  <!-- FullDemo: UR5e 초기 위치 유지 + Hand 데모 (Opposition → Wave)        -->
   <!-- ================================================================== -->
   <BehaviorTree ID="FullDemo">
     <!-- success_count=1: Hand 시퀀스 완료 시 종료 (UR5e halt) -->
     <Parallel success_count="1" failure_count="1">
-      <!-- UR5e: 데모 자세 도달 후 영구 RUNNING -->
-      <UR5eHoldPose pose="demo_pose"/>
+      <!-- UR5e: 초기 위치(home)로 이동 후 모션 종료까지 대기 -->
+      <UR5eHoldPose pose="home_pose"/>
 
       <!-- Hand: Opposition → Wave 순차 실행 -->
       <Sequence name="HandDemoSequence">

@@ -56,6 +56,7 @@ inline const std::map<std::string, HandPose> kHandPoses = {
 using ArmPose = std::array<double, kArmDofCount>;
 
 inline const std::map<std::string, ArmPose> kUR5ePoses = {
+    {"home_pose", {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}},
     {"demo_pose", {0.0, -1.57, 1.57, -1.57, -1.57, 0.0}},
 };
 // TODO: 하드웨어 캘리브레이션 후 placeholder 값 교체
