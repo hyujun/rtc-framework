@@ -48,13 +48,29 @@
     #   - "middle_dip_fe"
     #   - "ring_mcp_fe"
 
-    # ── Sensor visualization (optional — omit to disable) ────────────────
-    # sensor_viz.sensor_topic: "/hand/sensor_states"
-    # sensor_viz.marker_topic: "/digital_twin/fingertip_markers"
-    # sensor_viz.fingertip_names: ["thumb", "index", "middle", "ring"]
-    # sensor_viz.barometer_min: 0.0
-    # sensor_viz.barometer_max: 1000.0
-    # sensor_viz.barometer_sphere_min: 0.002
-    # sensor_viz.barometer_sphere_max: 0.008
-    # sensor_viz.tof_max_distance: 0.2
-    # sensor_viz.tof_arrow_scale: 0.003
+    # ── Sensor visualization ────────────────────────────────────────────
+    sensor_viz.sensor_topic: "/hand/sensor_states/monitor"
+    sensor_viz.marker_topic: "/digital_twin/fingertip_markers"
+    sensor_viz.fingertip_names: ["thumb", "index", "middle", "ring"]
+
+    # Barometer: +Z Arrow markers (2×4 grid, 1mm spacing)
+    sensor_viz.barometer_min: 0.0
+    sensor_viz.barometer_max: 1000.0
+    sensor_viz.barometer_arrow_max_length: 0.015    # max arrow length (m)
+    sensor_viz.barometer_arrow_scale: 0.0008        # arrow shaft diameter (m)
+
+    # ToF: +Z Arrow markers (disabled by default)
+    sensor_viz.tof_enabled: false
+    sensor_viz.tof_max_distance: 0.2
+    sensor_viz.tof_arrow_scale: 0.003
+
+    # Force (F): 3D Arrow marker
+    sensor_viz.force_arrow_scale: 0.01              # length per Newton (m/N)
+    sensor_viz.force_arrow_shaft: 0.003             # shaft diameter (m)
+
+    # Displacement (u): 3D Arrow marker
+    sensor_viz.displacement_arrow_scale: 0.05       # length per unit (m)
+    sensor_viz.displacement_arrow_shaft: 0.002      # shaft diameter (m)
+
+    # Contact: Sphere overlay at fingertip origin
+    sensor_viz.contact_sphere_radius: 0.005         # sphere radius (m)
