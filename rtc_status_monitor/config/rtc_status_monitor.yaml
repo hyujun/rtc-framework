@@ -1,4 +1,4 @@
-# rtc_status_monitor.yaml — v5.2.2
+# rtc_status_monitor.yaml — v5.17.0
 # UR5e 상태 모니터링 설정
 /**:
   ros__parameters:
@@ -26,6 +26,28 @@
       joint_limit_warn_margin_deg:  5.0      # 한계에서 경고 마진 (도)
       joint_limit_fault_margin_deg: 1.0      # 한계에서 고장 마진 (도)
 
+      # ── 관절 한계 (rad) ─────────────────────────────────────────────────────
+      # UR5e 기본 관절 한계. 관절별 lower/upper를 오버라이드 가능.
+      joint_limits:
+        joint_0:
+          lower: -6.2832                     # -360 deg
+          upper:  6.2832                     # +360 deg
+        joint_1:
+          lower: -6.2832
+          upper:  6.2832
+        joint_2:
+          lower: -3.1416                     # -180 deg (elbow)
+          upper:  3.1416                     # +180 deg
+        joint_3:
+          lower: -6.2832
+          upper:  6.2832
+        joint_4:
+          lower: -6.2832
+          upper:  6.2832
+        joint_5:
+          lower: -6.2832
+          upper:  6.2832
+
       # ── 자동 복구 ───────────────────────────────────────────────────────────
       auto_recovery: false                   # protective stop 자동 해제 (주의!)
       max_recovery_attempts: 3               # 최대 복구 시도 횟수
@@ -35,5 +57,5 @@
       enable_controller_stats: true          # 컨트롤러별 패킷/타임아웃/활성시간 통계 수집
 
       # ── 실패 로깅 ───────────────────────────────────────────────────────────
-      log_output_dir: ""                     # 빈 문자열: UR5E_SESSION_DIR/monitor/ 사용
-                                             # launch 파일이 세션 디렉토리 경로로 덮어씀
+      log_output_dir: ""                     # 빈 문자열: RTC_SESSION_DIR/monitor/ 사용
+                                             # (RTC_SESSION_DIR 없으면 UR5E_SESSION_DIR → ~/.ros → /tmp)

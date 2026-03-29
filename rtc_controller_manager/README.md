@@ -7,14 +7,15 @@
 
 ## 개요
 
-RTC 프레임워크의 **500 Hz 실시간 컨트롤러 노드** 패키지입니다. 컨트롤러 수명 관리, 결정론적 제어 루프, 퍼블리시 오프로드, CSV 로깅, E-STOP 안전 메커니즘을 통합 관리합니다. Phase 3 구조 개편을 통해 로봇에 독립적(robot-agnostic)으로 설계되었습니다.
+RTC 프레임워크의 **500 Hz 실시간 제어 루프 매니저** 패키지입니다. 컨트롤러 수명 관리, 결정론적 제어 루프, 퍼블리시 오프로드, CSV 로깅, E-STOP 안전 메커니즘을 통합 관리합니다. Phase 3 구조 개편을 통해 로봇에 독립적(robot-agnostic)으로 설계되었습니다.
 
 **핵심 기능:**
-- `clock_nanosleep` 기반 500 Hz 결정론적 제어 루프
+- `clock_nanosleep` 기반 500 Hz 결정론적 제어 루프 (실제 로봇) / CV 기반 동기 루프 (시뮬레이션)
 - 락-프리 SPSC 버퍼를 통한 퍼블리시/로깅 오프로드
-- 런타임 컨트롤러 전환 (atomic index swap)
-- 멀티 코어 스레드 분리 (5+ 스레드, CPU 어피니티)
+- 런타임 컨트롤러 전환 (atomic index swap, 컨트롤러 이름 문자열 기반)
+- 멀티 코어 스레드 분리 (5개 스레드, CPU 어피니티)
 - 글로벌 E-STOP + 연속 오버런 감지
+- 컨트롤러별 TopicConfig YAML 기반 동적 토픽 라우팅
 
 ---
 
@@ -25,62 +26,72 @@ rtc_controller_manager/
 ├── CMakeLists.txt
 ├── package.xml
 ├── include/rtc_controller_manager/
-│   ├── rt_controller_node.hpp             ← 메인 노드 클래스
-│   ├── rt_controller_main.hpp             ← 재사용 가능 진입점 함수
-│   └── controller_timing_profiler.hpp     ← 락-프리 타이밍 프로파일러
+│   ├── rt_controller_node.hpp             <- 메인 노드 클래스
+│   ├── rt_controller_main.hpp             <- 재사용 가능 진입점 함수
+│   └── controller_timing_profiler.hpp     <- 락-프리 타이밍 프로파일러
 ├── src/
-│   ├── rt_controller_node.cpp             ← 노드 구현 (1870 lines)
-│   ├── rt_controller_main.cpp             ← main() 진입점
-│   └── rt_controller_main_impl.cpp        ← RtControllerMain() 구현
+│   ├── rt_controller_node.cpp             <- 노드 구현
+│   ├── rt_controller_main.cpp             <- main() 진입점
+│   └── rt_controller_main_impl.cpp        <- RtControllerMain() 구현
 └── config/
-    ├── rt_controller_manager.yaml         ← 제어 루프 설정
-    └── cyclone_dds.xml                    ← CycloneDDS RT 성능 최적화 설정
+    ├── rt_controller_manager.yaml         <- 제어 루프 설정
+    └── cyclone_dds.xml                    <- CycloneDDS RT 성능 최적화 설정
 ```
 
 ---
 
-## 스레딩 모델
+## 스레딩 아키텍처
 
-5개 이상의 스레드가 CPU 코어에 분리 배치됩니다.
+5개의 스레드가 CPU 코어에 분리 배치됩니다. `SelectThreadConfigs()`가 물리 코어 수에 따라 설정을 자동 선택합니다.
 
 | 스레드 | 코어 | 스케줄러 | 주파수 | 역할 |
 |--------|------|----------|--------|------|
 | **rt_loop** | 2 | SCHED_FIFO 90 | 500 Hz + 50 Hz | `clock_nanosleep` 제어 루프 + 워치독 |
-| **publish_thread** | 5 | SCHED_OTHER -3 | 이벤트 | SPSC 드레인 → ROS2 `publish()` |
-| **sensor_executor** | 3 | SCHED_FIFO 70 | 이벤트 | `/joint_states`, 타겟, 핸드 구독 |
-| **log_executor** | 4 | SCHED_OTHER -5 | 100 Hz | `SpscLogBuffer` → CSV 드레인 |
-| **aux_executor** | 5 | SCHED_OTHER | 이벤트 | E-STOP 상태 퍼블리시 |
+| **sensor_executor** | 3 | SCHED_FIFO 70 | 이벤트 | 디바이스별 JointState, MotorState, SensorState, Target 구독 |
+| **log_executor** | 4 | SCHED_OTHER -5 | 100 Hz | `SpscLogBuffer` -> CSV 드레인 + 타이밍 서머리 출력 |
+| **publish_thread** | 5 | SCHED_OTHER -3 | 이벤트 | SPSC 드레인 -> ROS2 `publish()` (모든 DDS 직렬화/시스콜 처리) |
+| **aux_executor** | 5 | SCHED_OTHER 0 | 이벤트 | 컨트롤러 전환, 게인 업데이트, E-STOP 상태 퍼블리시 |
 
 > `mlockall(MCL_CURRENT | MCL_FUTURE)`를 `rclcpp::init()` 전에 호출하여 페이지 폴트를 방지합니다.
+
+**초기화 순서 (`RtControllerMain()`):**
+1. `mlockall()` -> `rclcpp::init()` -> 노드 생성
+2. `InitStatusMonitor()` (shared_from_this 필요, 생성자 이후 호출)
+3. `StartRtLoop()` + `StartPublishLoop()` (jthread 시작)
+4. sensor/log/aux executor 스레드 생성 -> spin
 
 ---
 
 ## 제어 루프 흐름 (500 Hz, 2 ms/tick)
 
 ### Phase 0: 준비 검사
-- `state_received_` 플래그 확인 → 타임아웃 시 E-STOP
-- Auto-hold 모드: 외부 타겟 없으면 현재 위치를 타겟으로 초기화
+- `state_received_` 플래그 확인 -> 타임아웃 시 E-STOP + 노드 종료
+- Auto-hold 모드: 외부 타겟 없으면 모든 디바이스가 valid 상태일 때 현재 위치를 타겟으로 초기화
+- `init_complete_` 이후 정상 루프 진입
 
-### Phase 1: 비차단 상태 획득 (~50-100 µs)
-- `try_lock`으로 관절 위치/속도/토크 캐시 갱신 (실패 시 이전 값 재사용, ≤2 ms stale)
-- 핸드 상태 읽기 (실제 UDP 또는 시뮬레이션 ROS 토픽)
-- `try_lock`으로 타겟 스냅샷
+### Phase 1: 비차단 상태 획득
+- `try_lock`으로 전체 디바이스 상태 캐시 갱신 (실패 시 이전 값 재사용)
+- 활성 컨트롤러의 TopicConfig.groups 순서대로 `cached_device_states_` -> `ControllerState.devices[]` 복사
+- `try_lock`으로 타겟 스냅샷 (`device_target_snapshots_`)
 
-### Phase 2: 제어 연산 (~0.5-5 µs)
+### Phase 2: 제어 연산
 - `timing_profiler_.MeasuredCompute(controller, state)`
-- 활성 컨트롤러의 `Compute()` 호출 → `ControllerOutput` 반환
+- 활성 컨트롤러의 `Compute()` 호출 -> `ControllerOutput` 반환
+- 벽시계 시간 히스토그램 자동 수집 (20 버킷, 100us 간격)
 
-### Phase 3: 퍼블리시 오프로드 (~0.2 µs, 락-프리)
-- `PublishSnapshot` 생성 → `publish_buffer_.Push()` (SPSC O(1))
-- 핸드 커맨드 전송 (condvar notify, ~100 ns)
+### Phase 3: 퍼블리시 오프로드 (락-프리)
+- `PublishSnapshot` 생성 -> `publish_buffer_.Push()` (SPSC O(1))
+- 그룹별 commands, actual, motor, sensor, inference 데이터 포함
+- `publish_thread`가 드레인하여 모든 ROS2 publish() 처리
 
-### Phase 4: 타이밍 & 로깅 (~1-2 µs)
-- 위상별 소요 시간 계산 + 지터 측정
-- `LogEntry` → `log_buffer_.Push()` (SPSC)
-- 1000 이터레이션마다 타이밍 서머리 출력
+### Phase 4: 타이밍 & 로깅
+- 위상별 소요 시간 계산 (state_acquire, compute, publish) + 지터 측정
+- `LogEntry` -> `log_buffer_.Push()` (SPSC)
+- 1000 이터레이션마다 타이밍 서머리 출력 신호 (실제 출력은 log_executor에서)
 
 ### 워치독 (50 Hz, 매 10번째 tick)
 - `device_timeouts`에 등록된 각 디바이스 그룹의 state 토픽 수신 간격이 timeout 초과 시 E-STOP
+- 같은 디바이스 그룹 내 kState, kMotorState, kSensorState 구독 모두 timeout 갱신 (일부 토픽 드롭 허용)
 
 ---
 
@@ -89,19 +100,24 @@ rtc_controller_manager/
 ### 로딩 (시작 시)
 
 1. `ControllerRegistry::Instance().GetEntries()` 조회
-2. 각 컨트롤러: 팩토리로 인스턴스 생성 → `LoadConfig(YAML)` → `controllers_` 벡터에 추가
-3. `initial_controller` 파라미터로 초기 활성 컨트롤러 선택
+2. 각 컨트롤러: 팩토리로 인스턴스 생성 -> `LoadConfig(YAML)` -> `controllers_` 벡터에 추가
+3. 컨트롤러 이름과 config_key 양쪽을 `controller_name_to_idx_` 맵에 등록
+4. `initial_controller` 파라미터로 초기 활성 컨트롤러 선택
 
-### 런타임 전환 (`/ur5e/controller_type` 구독)
+### 런타임 전환 (`/{robot_ns}/controller_type` 구독, String 타입)
 
-1. 인덱스 유효성 검증
+1. `controller_name_to_idx_` 맵에서 이름/config_key로 인덱스 조회
 2. Auto-hold: 현재 위치로 `InitializeHoldPosition()` 호출
-3. `active_controller_idx_.store(idx, memory_order_release)` — atomic 전환
-4. `/ur5e/active_controller_name` 퍼블리시 (TRANSIENT_LOCAL)
+3. `active_controller_idx_.store(idx, memory_order_release)` -- atomic 전환
+4. `/{robot_ns}/active_controller_name` 퍼블리시 (TRANSIENT_LOCAL)
 
-### 게인 업데이트 (`/ur5e/controller_gains` 구독)
+### 게인 업데이트 (`/{robot_ns}/controller_gains` 구독)
 
-활성 컨트롤러의 `UpdateGainsFromMsg()` 호출 → 런타임 게인 변경
+활성 컨트롤러의 `UpdateGainsFromMsg()` 호출 -> 런타임 게인 변경
+
+### 게인 조회 (`/{robot_ns}/request_gains` 구독)
+
+`/{robot_ns}/current_gains`에 현재 게인 배열 퍼블리시
 
 ---
 
@@ -112,40 +128,45 @@ rtc_controller_manager/
 | 트리거 | 조건 | 결과 |
 |--------|------|------|
 | `init_timeout` | `init_timeout_sec` 내 state 미수신 | `TriggerGlobalEstop("init_timeout")` + 노드 종료 |
-| `robot_timeout` | `/joint_states` >100ms 미갱신 (CheckTimeouts 50Hz) | `TriggerGlobalEstop("robot_timeout")` |
-| `hand_timeout` | `/hand/joint_states` >200ms 미갱신 | `TriggerGlobalEstop("hand_timeout")` |
-| `consecutive_overrun` | ≥10회 연속 RT 루프 오버런 | `TriggerGlobalEstop("consecutive_overrun")` |
-| 상태 모니터 실패 | Safety/tracking 위반, 관절 한계 (10Hz) | `TriggerGlobalEstop(failure_type)` |
-| `hand_failure` | UDP 영/중복 데이터 감지 (50Hz) | `TriggerGlobalEstop("hand_failure")` |
+| `{group}_timeout` | 디바이스 그룹의 state 토픽이 설정된 ms 초과 미갱신 (50Hz 워치독) | `TriggerGlobalEstop("{group}_timeout")` |
+| `consecutive_overrun` | >= 10회 연속 RT 루프 오버런 | `TriggerGlobalEstop("consecutive_overrun")` |
+| `sim_sync_timeout` | 시뮬레이션 모드에서 CV 타임아웃 (state 미수신) | `TriggerGlobalEstop("sim_sync_timeout")` + 노드 종료 |
+| 상태 모니터 실패 | `Ur5eHandStatusMonitor` 콜백 (`enable_status_monitor: true` 시) | `TriggerGlobalEstop(failure_description)` |
+
+### 글로벌 E-STOP 동작
+
+- `TriggerGlobalEstop()`: 멱등(idempotent), `compare_exchange_strong`으로 1회만 실행
+- 모든 컨트롤러에 `TriggerEstop()` + `SetHandEstop(true)` 전파
+- `/system/estop_status`에 `true` 퍼블리시
+- RT 루프는 E-STOP 후에도 계속 실행 (타이밍/로깅 유지)
 
 ### 오버런 복구
 
 - 누락된 tick 건너뛰기 (burst 없음, 주기 재정렬)
-- `overrun_count_`, `skip_count_` 원자적 카운트
-- RT 루프는 E-STOP 후에도 계속 실행 (타이밍/로깅 유지)
+- `overrun_count_`, `skip_count_`, `consecutive_overruns_` 원자적 카운트
+- `compute_overrun_count_`: ControlLoop() 자체가 tick 예산 초과한 횟수
 
 ### 비차단 뮤텍스 패턴
 
 ```cpp
-std::unique_lock lock(state_mutex_, std::try_to_lock);
+std::unique_lock lock(device_state_mutex_, std::try_to_lock);
 if (lock.owns_lock()) {
-    cached_positions_ = current_positions_;  // 갱신
-} else {
-    // 이전 사이클 캐시 재사용 (≤2 ms stale)
+    cached_device_states_ = device_states_;  // 갱신
 }
+// else: 이전 사이클 캐시 재사용
 ```
 
 ---
 
 ## 타이밍 프로파일러 (`controller_timing_profiler.hpp`)
 
-컨트롤러 `Compute()` 호출의 락-프리 타이밍 통계를 수집합니다.
+컨트롤러 `Compute()` 호출의 락-프리 타이밍 통계를 수집합니다. `TimingProfilerBase<20, 100, 2000>`을 상속합니다.
 
 | 항목 | 설명 |
 |------|------|
-| 히스토그램 | 20개 버킷 (100 µs 간격, 0-2000 µs) + 오버플로 버킷 |
+| 히스토그램 | 20개 버킷 (100 us 간격, 0-2000 us) + 오버플로 버킷 |
 | 통계 | min, max, mean, stddev, p95, p99 |
-| 예산 초과 | 2000 µs (500 Hz = 2 ms) 초과 횟수 |
+| 예산 초과 | 2000 us (500 Hz = 2 ms) 초과 횟수 |
 
 ---
 
@@ -153,45 +174,92 @@ if (lock.owns_lock()) {
 
 ### 고정 구독
 
-| 토픽 | 타입 | 설명 |
-|------|------|------|
-| `/ur5e/controller_type` | `Int32` | 컨트롤러 인덱스 전환 |
-| `/ur5e/controller_gains` | `Float64MultiArray` | 활성 컨트롤러 게인 업데이트 |
-| `/ur5e/request_gains` | `Bool` | 현재 게인 요청 |
+| 토픽 | 타입 | 콜백 그룹 | 설명 |
+|------|------|-----------|------|
+| `/{robot_ns}/controller_type` | `String` | aux | 컨트롤러 이름으로 전환 |
+| `/{robot_ns}/controller_gains` | `Float64MultiArray` | aux | 활성 컨트롤러 게인 업데이트 |
+| `/{robot_ns}/request_gains` | `Bool` | aux | 현재 게인 요청 |
 
 ### 고정 퍼블리셔
 
-| 토픽 | 타입 | 설명 |
-|------|------|------|
-| `/system/estop_status` | `Bool` | 글로벌 E-STOP 상태 |
-| `/ur5e/active_controller_name` | `String` | 활성 컨트롤러 이름 (TRANSIENT_LOCAL) |
-| `/ur5e/current_gains` | `Float64MultiArray` | 현재 게인 응답 |
-| `/ur5e/joint_command` | `JointCommand` | MuJoCo 시뮬레이터용 관절 커맨드 |
+| 토픽 | 타입 | QoS | 설명 |
+|------|------|-----|------|
+| `/system/estop_status` | `Bool` | RELIABLE/10 | 글로벌 E-STOP 상태 |
+| `/{robot_ns}/active_controller_name` | `String` | TRANSIENT_LOCAL/1 | 활성 컨트롤러 이름 |
+| `/{robot_ns}/current_gains` | `Float64MultiArray` | RELIABLE/10 | 현재 게인 응답 |
 
-### 동적 구독/퍼블리셔
+### 동적 구독 (컨트롤러 TopicConfig 기반)
 
-컨트롤러별 `TopicConfig` YAML에 따라 동적으로 생성됩니다:
-- 관절 상태, 타겟, 핸드 상태 구독
-- 위치/토크 커맨드, 태스크 위치, 궤적/컨트롤러 상태 퍼블리시
+| 역할 | 메시지 타입 | QoS | 설명 |
+|------|------------|-----|------|
+| `kState` | `JointState` | BEST_EFFORT/2 | 디바이스 관절 상태 |
+| `kMotorState` | `JointState` | BEST_EFFORT/2 | 모터 공간 상태 |
+| `kSensorState` | `HandSensorState` | BEST_EFFORT/2 | 촉각 센서 상태 |
+| `kTarget` | `RobotTarget` | RELIABLE/10 | 관절/태스크 목표 |
 
-### 주요 파라미터
+### 동적 퍼블리셔 (컨트롤러 TopicConfig 기반)
 
-| 파라미터 | 기본값 | 설명 |
-|---------|--------|------|
-| `control_rate` | `500.0` | 제어 주파수 (Hz) |
-| `initial_controller` | `"joint_pd_controller"` | 시작 컨트롤러 |
-| `auto_hold_position` | `true` | 타겟 없을 때 현재 위치 유지 |
-| `device_timeout_names` | `["ur5e"]` | E-STOP 감시 대상 디바이스 그룹 (topics 키와 매칭) |
-| `device_timeout_values` | `[100.0]` | 각 그룹의 state 토픽 타임아웃 (ms) |
-| `enable_estop` | `true` | E-STOP 활성화 |
-| `enable_logging` | `true` | CSV 로깅 활성화 |
-| `enable_timing_log` | `true` | 타이밍 CSV 로깅 활성화 |
-| `enable_device_log` | `true` | 디바이스별 CSV 로깅 활성화 |
-| `max_log_sessions` | `10` | 최대 로그 세션 보관 수 |
-| `init_timeout_sec` | `30.0` | 초기화 타임아웃 (초) |
-| `hand_sim_enabled` | `false` | 핸드 시뮬레이션 (ROS 토픽) |
-| `enable_status_monitor` | `false` | 핸드 상태 모니터링 활성화 |
-| `use_sim_time_sync` | `false` | MuJoCo 동기 루프 CV 기반 wakeup |
+| 역할 | 메시지 타입 | QoS | 설명 |
+|------|------------|-----|------|
+| `kJointCommand` | `JointCommand` | BEST_EFFORT/1 | 관절 커맨드 (position/torque) |
+| `kRos2Command` | `Float64MultiArray` | RELIABLE/1 | ros2_control 호환 커맨드 |
+| `kGuiPosition` | `GuiPosition` | RELIABLE/10 | GUI 현재 위치 표시 |
+| `kRobotTarget` | `RobotTarget` | BEST_EFFORT/1 | 목표 위치 퍼블리시 |
+| `kDeviceStateLog` | `DeviceStateLog` | BEST_EFFORT/1 | 관절/모터 상태 + 궤적 로그 |
+| `kDeviceSensorLog` | `DeviceSensorLog` | BEST_EFFORT/1 | 센서 데이터 + 추론 결과 로그 |
+| `kGraspState` | `GraspState` | RELIABLE/10 | 그래스프 감지 상태 |
+
+### Digital Twin 자동 퍼블리셔
+
+각 디바이스 그룹에 대해 `/{group}/digital_twin/joint_states` (RELIABLE/10) JointState를 자동 생성합니다. 설정 순서(joint_state_names)로 재정렬된 관절 데이터를 republish합니다.
+
+---
+
+## 파라미터 레퍼런스
+
+코드에서 `DeclareAndLoadParameters()`로 선언되는 모든 파라미터입니다.
+
+| 파라미터 | 타입 | 코드 기본값 | 설명 |
+|---------|------|------------|------|
+| `robot_namespace` | string | `"ur5e"` | 매니저 레벨 토픽 네임스페이스 (`/{robot_ns}/...`) |
+| `control_rate` | double | `500.0` | 제어 주파수 (Hz) |
+| `initial_controller` | string | `"joint_pd_controller"` | 시작 컨트롤러 (이름 또는 config_key) |
+| `init_timeout_sec` | double | `5.0` | 초기화 타임아웃 (초). state 미수신 시 E-STOP |
+| `auto_hold_position` | bool | `true` | 타겟 없을 때 현재 위치 자동 유지 |
+| `enable_estop` | bool | `true` | E-STOP 워치독 활성화 |
+| `device_timeout_names` | string[] | `[]` | E-STOP 감시 대상 디바이스 그룹 이름 |
+| `device_timeout_values` | double[] | `[]` | 각 그룹의 state 토픽 타임아웃 (ms) |
+| `enable_logging` | bool | `true` | CSV 로깅 활성화 |
+| `enable_timing_log` | bool | `true` | 타이밍 CSV 로깅 활성화 |
+| `enable_device_log` | bool | `true` | 디바이스별 CSV 로깅 활성화 |
+| `log_dir` | string | `""` | 로그 디렉토리 (빈 문자열이면 자동 생성) |
+| `max_log_sessions` | int | `10` | 최대 로그 세션 보관 수 |
+| `enable_status_monitor` | bool | `false` | Ur5eHandStatusMonitor 활성화 (10 Hz) |
+| `use_sim_time_sync` | bool | `false` | MuJoCo 동기 루프 CV 기반 wakeup 모드 |
+| `sim_sync_timeout_sec` | double | `5.0` | 시뮬레이션 동기 타임아웃 (초) |
+| `kp` | double | `5.0` | (레거시) 기본 P 게인 |
+| `kd` | double | `0.5` | (레거시) 기본 D 게인 |
+
+### devices 블록 파라미터 (devices.{group_name}.* )
+
+| 파라미터 | 타입 | 필수 | 설명 |
+|---------|------|------|------|
+| `joint_state_names` | string[] | 권장 | 관절 이름 (설정 순서 기준, 리오더링 기준) |
+| `joint_command_names` | string[] | 선택 | 커맨드 관절 이름 (미지정 시 joint_state_names 사용) |
+| `motor_state_names` | string[] | 선택 | 모터 공간 관절 이름 |
+| `sensor_names` | string[] | 선택 | 센서 이름 (촉각 핑거팁 등) |
+| `safe_position` | double[] | 선택 | E-STOP 시 안전 위치 (관절 수와 동일) |
+| `urdf.package` | string | 선택 | URDF 패키지 이름 |
+| `urdf.path` | string | 선택 | 패키지 내 URDF 상대 경로 |
+| `urdf.root_link` | string | 선택 | URDF 루트 링크 |
+| `urdf.tip_link` | string | 선택 | URDF 엔드이펙터 링크 |
+| `joint_limits.max_velocity` | double[] | 선택 | 최대 관절 속도 (URDF와 병합: 더 작은 값 적용) |
+| `joint_limits.max_acceleration` | double[] | 선택 | 최대 관절 가속도 |
+| `joint_limits.max_torque` | double[] | 선택 | 최대 관절 토크 (URDF와 병합) |
+| `joint_limits.position_lower` | double[] | 선택 | 관절 위치 하한 (URDF와 병합: 더 큰 값 적용) |
+| `joint_limits.position_upper` | double[] | 선택 | 관절 위치 상한 (URDF와 병합: 더 작은 값 적용) |
+
+> URDF가 설정된 디바이스의 경우, YAML joint_limits와 URDF limits를 병합하여 더 보수적인 값을 적용합니다. YAML에 joint_limits가 없으면 URDF 값만 사용합니다.
 
 ---
 
@@ -202,19 +270,26 @@ if (lock.owns_lock()) {
 ```yaml
 /**:
   ros__parameters:
+    robot_namespace: "ur5e"
     control_rate: 500.0
     initial_controller: "joint_pd_controller"
     init_timeout_sec: 30.0
     auto_hold_position: true
+
     enable_estop: true
     device_timeout_names: ["ur5e"]
     device_timeout_values: [100.0]       # ms
+
     enable_logging: true
     enable_timing_log: true
     enable_device_log: true
+    log_dir: ""
     max_log_sessions: 10
 
-    # 디바이스 설정 (토픽 그룹명으로 키)
+    enable_status_monitor: false
+    use_sim_time_sync: false
+    sim_sync_timeout_sec: 5.0
+
     devices:
       ur5e:
         joint_state_names:
@@ -224,6 +299,8 @@ if (lock.owns_lock()) {
           - "wrist_1_joint"
           - "wrist_2_joint"
           - "wrist_3_joint"
+        sensor_names: []
+        safe_position: [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
         urdf:
           package: "ur5e_description"
           path: "robots/ur5e/urdf/ur5e.urdf"
@@ -237,6 +314,19 @@ if (lock.owns_lock()) {
           position_upper:   [6.28, 6.28, 3.14, 6.28, 6.28, 6.28]
 ```
 
+### cyclone_dds.xml
+
+CycloneDDS RT 성능 최적화 설정입니다. `CYCLONEDDS_URI` 환경변수로 자동 로드됩니다.
+
+| 최적화 | 설정 | 효과 |
+|--------|------|------|
+| 멀티캐스트 | `AllowMulticast=spdp` | SPDP discovery만 멀티캐스트 (데이터는 유니캐스트) |
+| Discovery 튜닝 | `LeaseDuration=5s`, `SPDPInterval=1s` | 빠른 participant 감지 |
+| NACK/Heartbeat | `NackDelay=10ms`, `HeartbeatInterval=100ms` | 빠른 재전송 |
+| 동기 전달 | `SynchronousDeliveryLatencyBound=inf` | 콜백 wake-up 지연 제거 |
+
+> DDS 스레드 affinity는 `taskset`으로 처리 (CycloneDDS 0.11+에서 XML `<Threads>` 제거됨).
+
 ---
 
 ## 의존성
@@ -248,13 +338,12 @@ if (lock.owns_lock()) {
 | `sensor_msgs` | JointState 메시지 |
 | `std_msgs` | Bool, Int32, String, Float64MultiArray |
 | `rtc_controller_interface` | 컨트롤러 추상 인터페이스 + 레지스트리 |
-| `rtc_controllers` | 내장 컨트롤러 (P, JointPD, CLIK, OSC) |
-| `rtc_base` | 로깅, 스레딩, 타입, SPSC 버퍼 |
+| `rtc_controllers` | 내장 컨트롤러 (팩토리 등록) |
+| `rtc_base` | 로깅, 스레딩, 타입, SPSC 버퍼, 세션 디렉토리 |
 | `rtc_communication` | 네트워크 통신 (UDP 트랜시버) |
-| `rtc_status_monitor` | 10 Hz 비-RT 상태 모니터링 (선택적 compose) |
-| `rtc_msgs` | JointCommand, DeviceStateLog, DeviceSensorLog 커스텀 메시지 |
-| `rtc_inference` | ONNX Runtime 기반 F/T 추론 엔진 |
-| `pinocchio` | URDF 기구학 검증 |
+| `rtc_msgs` | JointCommand, GuiPosition, RobotTarget, DeviceStateLog, DeviceSensorLog, GraspState, HandSensorState |
+| `ur5e_hand_status_monitor` | 10 Hz 비-RT 상태 모니터링 (선택적, `enable_status_monitor`) |
+| `pinocchio` | URDF 기구학 검증 + joint limits 병합 |
 | `yaml-cpp` | YAML 설정 파싱 |
 | `ament_index_cpp` | 패키지 리소스 경로 탐색 |
 
@@ -263,7 +352,7 @@ if (lock.owns_lock()) {
 ## 빌드
 
 ```bash
-cd ~/ur_ws
+cd ~/ros2_ws/rtc_ws
 colcon build --packages-select rtc_controller_manager
 source install/setup.bash
 ```
@@ -278,54 +367,14 @@ source install/setup.bash
 
 ```
 rtc_base + rtc_controller_interface + rtc_controllers + rtc_communication
-    ↓
-rtc_controller_manager  ← 500 Hz RT 제어 실행 엔진
-    ↑
-    └── ur5e_bringup  (로봇별 진입점 + launch 파일)
+    |
+rtc_controller_manager  <- 500 Hz RT 제어 실행 엔진
+    ^
+    +-- ur5e_bringup  (로봇별 진입점 + launch 파일)
 ```
-
----
-
-## 설정 파일 상세
-
-### cyclone_dds.xml
-
-CycloneDDS RT 성능 최적화 설정입니다. `CYCLONEDDS_URI` 환경변수로 자동 로드됩니다.
-
-| 최적화 | 설정 | 효과 |
-|--------|------|------|
-| 멀티캐스트 비활성화 | `AllowMulticast=false` | IGMP 오버헤드 제거 (단일 호스트) |
-| Discovery 튜닝 | `LeaseDuration=5s`, `SPDPInterval=1s` | 빠른 participant 감지 |
-| Write batching | `WriteBatchFlushInterval=8μs` | 시스콜 횟수 감소 |
-| 재전송 최적화 | `NackDelay=10ms`, `HeartbeatInterval=100ms` | 기본 100ms → 10ms |
-| 소켓 버퍼 | recv 8MB / send 2MB | DDS 버스트 수용 |
-| 동기 전달 | `SynchronousDeliveryLatencyBound=inf` | 콜백 wake-up 지연 제거 |
-
-> DDS 스레드 affinity는 `taskset`으로 처리 (CycloneDDS 0.11+에서 XML `<Threads>` 제거됨).
-> `robot.launch.py`에서 비-SCHED_FIFO 스레드를 Core 0-1에 자동 핀닝합니다.
-
----
-
-## 변경 내역
-
-### v5.17.0
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **동적 토픽 라우팅** | 컨트롤러별 `TopicConfig` YAML 기반 다중 디바이스 그룹 구독/퍼블리시 자동 생성 |
-| **디바이스 타임아웃** | `device_timeout_names`/`device_timeout_values` 파라미터로 디바이스별 E-STOP 워치독 설정 |
-| **Digital Twin republish** | 각 디바이스 그룹의 JointState를 RELIABLE QoS로 자동 republish (`/{group}/digital_twin/joint_states`) |
-| **sim_time_sync** | `use_sim_time_sync: true` 설정 시 MuJoCo CV 기반 wakeup (round-trip ~1ms → ~0.35ms) |
-| **DeviceStateLog/DeviceSensorLog** | 모터 공간 데이터, 궤적 레퍼런스, 추론 결과 포함 통합 로그 퍼블리시 |
-
-### v0.1.1
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **cyclone_dds.xml** | RT 성능 최적화: 멀티캐스트 비활성화, 소켓 버퍼 확대, write batching, NACK/heartbeat 튜닝, 동기 전달 |
 
 ---
 
 ## 라이선스
 
-MIT License — 자세한 내용은 [LICENSE](../LICENSE) 파일을 참조하세요.
+MIT License -- 자세한 내용은 [LICENSE](../LICENSE) 파일을 참조하세요.

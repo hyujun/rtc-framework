@@ -19,14 +19,21 @@
     # ── E-STOP settings ─────────────────────────────────────────────────────────
     enable_estop: true
     device_timeout_names: ["ur5e"]
-    device_timeout_values: [100.0]
+    device_timeout_values: [100.0]   # ms
 
     # ── Logging settings ─────────────────────────────────────────────────────────
     enable_logging: true
     enable_timing_log: true
     enable_device_log: true
-    log_dir: ""
+    log_dir: ""                      # empty = auto-resolve from workspace
     max_log_sessions: 10
+
+    # ── Simulation sync (CV-based wakeup for MuJoCo) ─────────────────────────
+    use_sim_time_sync: false
+    sim_sync_timeout_sec: 5.0
+
+    # ── Status Monitor (optional, non-RT) ─────────────────────────────────────
+    enable_status_monitor: false
 
     # ── Device configuration (keyed by controller topic group name) ─────────
     devices:
@@ -51,6 +58,3 @@
           max_torque:       [150.0, 150.0, 150.0, 28.0, 28.0, 28.0]
           position_lower:   [-6.28, -6.28, -3.14, -6.28, -6.28, -6.28]
           position_upper:   [6.28, 6.28, 3.14, 6.28, 6.28, 6.28]
-
-    # ── Status Monitor (optional, non-RT) ─────────────────────────────────────
-    enable_status_monitor: false

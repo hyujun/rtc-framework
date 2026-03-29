@@ -1,12 +1,12 @@
 """
-mujoco_sim.launch.py — MuJoCo 시뮬레이션 런치 파일
+mujoco_sim.launch.py -- MuJoCo simulation launch file
 =====================================================
 
 기존 실제 로봇 런치(ur_control.launch.py)와 동일한 ROS2 토픽 구조를 사용하므로
 rt_controller 노드를 수정 없이 그대로 실행합니다.
 
 시뮬레이션:
-  Synchronous loop — state 발행 → command 대기 → step → throttle(max_rtf)
+  Synchronous loop -- state 발행 -> command 대기 -> step -> throttle(max_rtf)
 
 사용법:
   # 기본 (YAML 설정 사용)
@@ -26,9 +26,8 @@ rt_controller 노드를 수정 없이 그대로 실행합니다.
   ros2 launch rtc_mujoco_sim mujoco_sim.launch.py max_rtf:=10.0
 
 실행되는 노드:
-  1. mujoco_simulator_node  — MuJoCo 물리 시뮬레이터 (UR 드라이버 역할 대체)
-  2. rt_controller       — 기존 500Hz PD 제어기 (코드 변경 없음)
-  3. monitor_data_health.py  — 데이터 헬스 모니터
+  1. mujoco_simulator_node  -- MuJoCo 물리 시뮬레이터 (UR 드라이버 역할 대체)
+  2. rt_controller          -- 기존 500Hz PD 제어기 (코드 변경 없음)
 
 목표 위치 발행 (별도 터미널):
   ros2 topic pub /ur5e/target_joint_positions std_msgs/msg/Float64MultiArray \\
@@ -39,7 +38,7 @@ rt_controller 노드를 수정 없이 그대로 실행합니다.
   ros2 topic echo /system/estop_status   # E-STOP 상태
   ros2 topic echo /sim/status            # 시뮬레이터 상태 (steps, sim_time)
 
-연산 시간 로그 분석 (sync_step 실행 후):
+연산 시간 로그 분석:
   python3 -c "
   import pandas as pd, glob, os
   sessions = sorted(glob.glob(os.path.expanduser('~/ros2_ws/ur5e_ws/logging_data/??????_????')))

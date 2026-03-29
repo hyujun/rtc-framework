@@ -35,7 +35,7 @@
       enable_controller_stats: true          # 컨트롤러별 패킷/타임아웃/활성시간 통계 수집
 
       # ── 실패 로깅 ───────────────────────────────────────────────────────────
-      log_output_dir: ""                     # 빈 문자열: UR5E_SESSION_DIR/monitor/ 사용
+      log_output_dir: ""                     # 빈 문자열: RTC_SESSION_DIR/monitor/ 사용 (fallback: UR5E_SESSION_DIR)
 
       # ── Hand device monitoring ──────────────────────────────────────────────
       hand:

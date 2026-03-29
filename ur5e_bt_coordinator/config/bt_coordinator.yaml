@@ -1,18 +1,20 @@
 bt_coordinator:
   ros__parameters:
-    # ── BT configuration ─────────────────────────────────────────────────────
-    tree_file: "pick_and_place.xml"   # XML file in trees/ directory
-    tick_rate_hz: 20.0                # BT tick frequency [Hz]
-    repeat: false                     # true면 트리 완료 후 자동 반복
-    repeat_delay_s: 1.0              # 반복 시 대기 시간 [s]
+    # ── BT 설정 ──────────────────────────────────────────────────────────────
+    # DeclareParameters()에서 선언되는 4개 파라미터
+    tree_file: "pick_and_place.xml"   # trees/ 디렉토리 내 XML 파일명
+    tick_rate_hz: 20.0                # BT tick 주기 [Hz]
+    repeat: false                     # true: SUCCESS 완료 후 자동 반복, FAILURE 시 정지
+    repeat_delay_s: 1.0               # 반복 시 재시작 전 대기 시간 [s]
 
-    # ── Blackboard initial values (set before tree starts) ────────────────
-    # These can be overridden at runtime via parameter updates.
+    # ── Blackboard 초기값 (참고용, ROS 파라미터가 아님) ──────────────────────
+    # 아래 값들은 코드에서 ROS 파라미터로 읽지 않는다.
+    # BT XML 내에서 설정하거나, 외부에서 Blackboard에 직접 주입해야 한다.
     #
-    # place_pose for pick_and_place scene:
-    #   place_pose: "0.3;-0.3;0.15;3.14;0.0;0.0"
+    # pick_and_place.xml 용:
+    #   place_pose: "0.3;-0.3;0.15;3.14;0.0;0.0"   (Blackboard 변수)
     #
-    # sweep parameters for towel_unfold scene:
-    #   sweep_direction_x: 1.0
-    #   sweep_direction_y: 0.0
-    #   sweep_distance: 0.3
+    # towel_unfold.xml 용:
+    #   sweep_direction_x: 1.0    (Blackboard 변수)
+    #   sweep_direction_y: 0.0    (Blackboard 변수)
+    #   sweep_distance: 0.3       (Blackboard 변수)

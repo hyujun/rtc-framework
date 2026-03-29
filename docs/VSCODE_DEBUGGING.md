@@ -14,6 +14,7 @@
 6. [변수 및 메모리 검사](#6-변수-및-메모리-검사)
 7. [GDB 콘솔 직접 사용](#7-gdb-콘솔-직접-사용)
 8. [자주 발생하는 문제](#8-자주-발생하는-문제)
+9. [VS Code 설정 파일 생성](#vs-code-설정-파일-생성)
 
 ---
 
@@ -65,8 +66,8 @@ echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
 ### 방법 B — 터미널 직접 실행
 
 ```bash
-cd /home/user/ros2_ws/ur5e_ws
-source /opt/ros/jazzy/setup.bash
+cd /home/junho/ros2_ws/rtc_ws
+source /opt/ros/${ROS_DISTRO}/setup.bash   # Humble 또는 Jazzy
 colcon build --symlink-install \
   --cmake-args -DCMAKE_BUILD_TYPE=Debug \
                -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -105,7 +106,7 @@ VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다.
 ```json
 "args": [
   "--ros-args",
-  "--params-file", "/home/user/ros2_ws/ur5e_ws/src/rtc-framework/rtc_controller_manager/config/rt_controller_manager.yaml"
+  "--params-file", "/home/junho/ros2_ws/rtc_ws/src/rtc-framework/rtc_controller_manager/config/rt_controller_manager.yaml"
 ]
 ```
 
@@ -125,8 +126,8 @@ VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다.
 먼저 터미널에서 노드를 정상적으로 실행합니다:
 
 ```bash
-cd /home/user/ros2_ws/ur5e_ws
-source /opt/ros/jazzy/setup.bash && source install/setup.bash
+cd /home/junho/ros2_ws/rtc_ws
+source /opt/ros/${ROS_DISTRO}/setup.bash && source install/setup.bash  # Humble 또는 Jazzy
 ros2 launch ur5e_bringup robot.launch.py
 ```
 
@@ -387,11 +388,153 @@ ros2 node list
 
 ---
 
+## VS Code 설정 파일 생성
+
+이 프로젝트에는 `.vscode/` 설정 파일이 포함되어 있지 않으므로, 디버깅에 필요한 파일을 직접 생성해야 합니다.
+
+### `.vscode/launch.json`
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "C++: Launch rt_controller (Debug)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/../../install/rtc_controller_manager/lib/rtc_controller_manager/rt_controller",
+      "args": [
+        "--ros-args",
+        "--params-file", "${workspaceFolder}/rtc_controller_manager/config/rt_controller_manager.yaml"
+      ],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}/../../",
+      "environment": [],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "setupCommands": [
+        { "text": "-enable-pretty-printing", "ignoreFailures": true }
+      ],
+      "preLaunchTask": "colcon: Build All (Debug)",
+      "sourceFileMap": {}
+    },
+    {
+      "name": "C++: Launch mujoco_simulator_node (Debug)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/../../install/rtc_mujoco_sim/lib/rtc_mujoco_sim/mujoco_simulator_node",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}/../../",
+      "environment": [],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "setupCommands": [
+        { "text": "-enable-pretty-printing", "ignoreFailures": true }
+      ],
+      "preLaunchTask": "colcon: Build All (Debug)",
+      "sourceFileMap": {}
+    },
+    {
+      "name": "C++: Attach to Node (Pick Process)",
+      "type": "cppdbg",
+      "request": "attach",
+      "program": "",
+      "processId": "${command:pickProcess}",
+      "MIMode": "gdb",
+      "setupCommands": [
+        { "text": "-enable-pretty-printing", "ignoreFailures": true }
+      ]
+    }
+  ]
+}
+```
+
+> [!NOTE]
+> `program` 경로는 `colcon build --symlink-install` 후 `install/<패키지>/lib/<패키지>/` 아래에 생성되는 바이너리를 가리킵니다.
+> `${workspaceFolder}`는 `.vscode/`가 위치한 `rtc-framework/` 디렉토리이므로, 워크스페이스 루트(`rtc_ws/`)까지 `../../`로 이동합니다.
+
+### `.vscode/tasks.json`
+
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "colcon: Build All (Debug)",
+      "type": "shell",
+      "command": "source /opt/ros/${ROS_DISTRO}/setup.bash && colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+      "options": {
+        "cwd": "/home/junho/ros2_ws/rtc_ws"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "colcon: Build All (Release)",
+      "type": "shell",
+      "command": "source /opt/ros/${ROS_DISTRO}/setup.bash && colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+      "options": {
+        "cwd": "/home/junho/ros2_ws/rtc_ws"
+      },
+      "group": "build",
+      "problemMatcher": ["$gcc"]
+    }
+  ]
+}
+```
+
+### `.vscode/c_cpp_properties.json`
+
+```json
+{
+  "configurations": [
+    {
+      "name": "Linux",
+      "includePath": [
+        "${workspaceFolder}/**/include",
+        "/opt/ros/${ROS_DISTRO}/include/**",
+        "/home/junho/ros2_ws/rtc_ws/install/**/include/**"
+      ],
+      "compileCommands": "/home/junho/ros2_ws/rtc_ws/build/compile_commands.json",
+      "cStandard": "c17",
+      "cppStandard": "c++20",
+      "intelliSenseMode": "linux-gcc-x64"
+    }
+  ],
+  "version": 4
+}
+```
+
+> [!TIP]
+> `compile_commands.json`을 워크스페이스 루트에 모으려면 빌드 후 다음을 실행하세요:
+> ```bash
+> cd /home/junho/ros2_ws/rtc_ws
+> jq -s 'add' build/*/compile_commands.json > build/compile_commands.json
+> ```
+
+### `.vscode/settings.json`
+
+```json
+{
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "files.associations": {
+    "*.hpp": "cpp",
+    "*.h": "cpp"
+  }
+}
+```
+
+---
+
 ## 관련 파일
 
 | 파일 | 역할 |
 |------|------|
-| [`.vscode/launch.json`](../.vscode/launch.json) | 디버그 실행 구성 |
-| [`.vscode/tasks.json`](../.vscode/tasks.json) | 빌드/테스트 태스크 |
-| [`.vscode/c_cpp_properties.json`](../.vscode/c_cpp_properties.json) | IntelliSense 설정 |
-| [`.vscode/settings.json`](../.vscode/settings.json) | 워크스페이스 설정 |
+| `.vscode/launch.json` | 디버그 실행 구성 (직접 생성 필요) |
+| `.vscode/tasks.json` | 빌드/테스트 태스크 (직접 생성 필요) |
+| `.vscode/c_cpp_properties.json` | IntelliSense 설정 (직접 생성 필요) |
+| `.vscode/settings.json` | 워크스페이스 설정 (직접 생성 필요) |

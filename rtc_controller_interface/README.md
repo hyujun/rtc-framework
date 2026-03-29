@@ -1,79 +1,37 @@
 # rtc_controller_interface
 
-![version](https://img.shields.io/badge/version-v5.17.0-blue)
-![C++20](https://img.shields.io/badge/C++-20-blue)
-
 > 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
-> 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 
 ## 개요
 
-RTC 프레임워크의 **컨트롤러 추상 인터페이스 및 플러그인 레지스트리** 패키지입니다. Strategy 패턴을 사용하여 모든 제어 알고리즘이 구현해야 하는 추상 기반 클래스(`RTControllerInterface`)와, 정적 초기화 시점에 컨트롤러를 등록하는 싱글톤 레지스트리(`ControllerRegistry`)를 제공합니다.
-
-**핵심 설계 원칙:**
-- RT 경로의 모든 가상 메서드에 `noexcept` 보장
-- YAML 기반 컨트롤러별 설정 및 토픽 라우팅
-- 매크로 기반 자동 등록 (`RTC_REGISTER_CONTROLLER`)
-- 컨트롤러별 디바이스 활성화 오버라이드
+RTC 프레임워크의 **컨트롤러 추상 인터페이스 및 플러그인 레지스트리**를 제공하는 공유 C++ 라이브러리(`librtc_controller_interface.so`)입니다. Strategy 패턴을 사용하여 모든 제어 알고리즘이 구현해야 하는 추상 기반 클래스(`RTControllerInterface`)와, 정적 초기화 시점에 컨트롤러를 자동 등록하는 싱글톤 레지스트리(`ControllerRegistry`), 그리고 등록 매크로(`RTC_REGISTER_CONTROLLER`)를 제공합니다.
 
 ---
 
-## 패키지 구조
+## 핵심 컴포넌트
 
-```
-rtc_controller_interface/
-├── CMakeLists.txt
-├── package.xml
-├── include/rtc_controller_interface/
-│   ├── rt_controller_interface.hpp    ← 추상 컨트롤러 인터페이스
-│   ├── controller_registry.hpp        ← 싱글톤 플러그인 레지스트리 + 등록 매크로
-│   └── controller_types.hpp           ← rtc_base 타입 재수출
-└── src/
-    ├── rt_controller_interface.cpp    ← 인터페이스 구현 (YAML 파싱)
-    └── controller_registry.cpp        ← 레지스트리 싱글톤 구현
-```
+### 헤더 파일
 
----
+| 파일 | 설명 |
+|------|------|
+| `include/rtc_controller_interface/rt_controller_interface.hpp` | 추상 컨트롤러 인터페이스 (`RTControllerInterface`) |
+| `include/rtc_controller_interface/controller_registry.hpp` | 싱글톤 레지스트리 (`ControllerRegistry`) + `RTC_REGISTER_CONTROLLER` 매크로 |
+| `include/rtc_controller_interface/controller_types.hpp` | `rtc_base/types/types.hpp` 재수출 (편의 헤더) |
 
-## 아키텍처
+### 소스 파일
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  rtc_controller_manager (RtControllerNode)              │
-│  - 500 Hz RT 루프에서 Compute() 호출                     │
-│  - LoadConfig()로 YAML 설정 로딩                         │
-│  - Registry에서 컨트롤러 팩토리 조회                      │
-└───────────────┬─────────────────────────────────────────┘
-                │ 사용 (composition)
-                ▼
-┌─────────────────────────────────────────────────────────┐
-│  RTControllerInterface (추상 기반 클래스)                 │  ← 이 패키지
-│  - Compute(), SetDeviceTarget(), InitializeHoldPosition() │
-│  - LoadConfig(), UpdateGainsFromMsg()                    │
-│  - E-STOP 인터페이스                                     │
-├─────────────────────────────────────────────────────────┤
-│  ControllerRegistry (싱글톤)                             │
-│  - RTC_REGISTER_CONTROLLER 매크로로 등록                  │
-│  - GetEntries()로 등록된 컨트롤러 조회                    │
-└───────────────┬─────────────────────────────────────────┘
-                ▲ 구현 (상속)
-                │
-┌───────────────┴─────────────────────────────────────────┐
-│  rtc_controllers (구현체)                                │
-│  - PController, JointPDController                        │
-│  - ClikController, OperationalSpaceController            │
-└─────────────────────────────────────────────────────────┘
-```
+| 파일 | 설명 |
+|------|------|
+| `src/rt_controller_interface.cpp` | 기본 생성자, `LoadConfig()`, `ParseTopicConfig()`, `MakeDefaultTopicConfig()` 구현 |
+| `src/controller_registry.cpp` | Meyer's 싱글톤 `Instance()` 및 `Register()` 구현 |
 
 ---
 
-## 컴포넌트 상세
+## RTControllerInterface (추상 기반 클래스)
 
-### RTControllerInterface (`rt_controller_interface.hpp`)
+`rtc` 네임스페이스에 정의되며, 복사/이동이 금지(`delete`)된 추상 클래스입니다.
 
-모든 컨트롤러가 구현해야 하는 추상 기반 클래스입니다.
-
-#### 순수 가상 메서드 (반드시 구현, 모두 `noexcept`)
+### 순수 가상 메서드 (반드시 구현, 모두 `noexcept`)
 
 ```cpp
 [[nodiscard]] virtual ControllerOutput Compute(const ControllerState& state) noexcept = 0;
@@ -82,89 +40,94 @@ virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 [[nodiscard]] virtual std::string_view Name() const noexcept = 0;
 ```
 
-| 메서드 | 호출 빈도 | 설명 |
+| 메서드 | 설명 |
+|--------|------|
+| `Compute` | RT 루프에서 호출되는 제어 연산. `ControllerOutput` 반환 |
+| `SetDeviceTarget` | 디바이스 인덱스 및 가변 크기 목표값 설정 |
+| `InitializeHoldPosition` | 현재 위치를 타겟으로 초기화 (auto-hold) |
+| `Name` | 사람이 읽을 수 있는 컨트롤러 이름 반환 |
+
+### 가상 메서드 (기본 구현 제공)
+
+| 메서드 | 기본 동작 | 설명 |
 |--------|----------|------|
-| `Compute` | 500 Hz (RT 루프) | 제어 연산 → `ControllerOutput` 반환 |
-| `SetDeviceTarget` | 이벤트 (센서 스레드) | 가변 크기 디바이스 목표 설정 (`device_idx`: 0=로봇, 1=핸드 등) |
-| `InitializeHoldPosition` | 1회 (첫 상태 수신) | 현재 위치를 타겟으로 초기화 (auto-hold) |
-| `Name` | UI/로깅 | 사람이 읽을 수 있는 이름 |
-
-#### 가상 메서드 (기본 구현 제공)
-
-```cpp
-virtual void TriggerEstop() noexcept {}
-virtual void ClearEstop() noexcept {}
-[[nodiscard]] virtual bool IsEstopped() const noexcept { return false; }
-virtual void SetHandEstop(bool) noexcept {}
-virtual void LoadConfig(const YAML::Node& cfg);           // ⚠️ non-noexcept (throw 가능)
-virtual void UpdateGainsFromMsg(std::span<const double> gains) noexcept { (void)gains; }
-[[nodiscard]] virtual std::vector<double> GetCurrentGains() const noexcept { return {}; }
-[[nodiscard]] virtual CommandType GetCommandType() const noexcept { return CommandType::kPosition; }
-```
-
-| 메서드 | 기본값 | 설명 |
-|--------|--------|------|
-| E-STOP (4개) | no-op | 비상 정지 인터페이스 (필요 시 오버라이드) |
-| `LoadConfig` | 디바이스 플래그 + 토픽 파싱 | **하위 클래스는 `super::LoadConfig()` 먼저 호출** 후 게인 파싱 |
-| `UpdateGainsFromMsg` | no-op | 런타임 게인 업데이트 (배열 레이아웃은 컨트롤러별 문서화) |
-| `GetCurrentGains` | `{}` | 현재 게인 반환 (GUI "Load Gain" 기능용) |
-| `GetCommandType` | `kPosition` | `kPosition` 또는 `kTorque` |
+| `TriggerEstop()` | no-op | 비상 정지 트리거 |
+| `ClearEstop()` | no-op | 비상 정지 해제 |
+| `IsEstopped()` | `false` 반환 | 비상 정지 상태 확인 |
+| `SetHandEstop(bool)` | no-op | 핸드 비상 정지 설정 |
+| `LoadConfig(const YAML::Node&)` | 디바이스 플래그 경고 + 토픽 파싱 | YAML 설정 로드. `noexcept`가 아님 (throw 가능) |
+| `UpdateGainsFromMsg(span<const double>)` | no-op | 런타임 게인 업데이트 |
+| `GetCurrentGains()` | `{}` 반환 | 현재 게인 배열 반환 |
+| `GetCommandType()` | `CommandType::kPosition` | 커맨드 타입 (`kPosition` 또는 `kTorque`) |
 
 > **`LoadConfig()` 기본 구현 동작:**
-> 1. `cfg["topics"]` → `ParseTopicConfig()` (없으면 기본 토픽 유지)
-> 2. `cfg["enable_ur5e"]`/`cfg["enable_hand"]` → deprecated 경고 출력 후 무시
+> 1. `cfg["enable_ur5e"]` / `cfg["enable_hand"]` 존재 시 deprecated 경고 출력 후 무시
+> 2. `cfg["topics"]` 존재 시 `ParseTopicConfig()` 호출, 없으면 기본 토픽 유지
+>
+> 하위 클래스에서 오버라이드 시 `RTControllerInterface::LoadConfig(cfg)`를 먼저 호출해야 토픽 설정이 적용됩니다.
 
-#### 디바이스 설정 메서드
+### 디바이스 설정 메서드
 
 | 메서드 | 접근 | 설명 |
 |--------|------|------|
-| `SetDeviceNameConfigs(map)` | public | 디바이스 이름/URDF/관절 한계 설정 → `OnDeviceConfigsSet()` 호출 |
-| `GetDeviceNameConfig(name)` | public const | 디바이스 이름으로 설정 조회 (`nullptr` = 미등록) |
-| `OnDeviceConfigsSet()` | protected virtual | 하위 클래스 오버라이드: URDF 기구학 해석 (tip_link → end_id) |
+| `SetDeviceNameConfigs(map)` | public | 디바이스 이름/설정 맵 저장 후 `OnDeviceConfigsSet()` 호출 |
+| `GetDeviceNameConfig(name)` | public const | 디바이스 이름으로 설정 조회. 미등록 시 `nullptr` 반환 |
+| `OnDeviceConfigsSet()` | protected virtual | 하위 클래스 오버라이드 포인트 (예: URDF 기구학 해석) |
+| `GetPrimaryDeviceName()` | public const | 토픽 설정의 첫 번째 디바이스 이름 반환 (하드코딩 방지용) |
 
-#### 설정 접근자 & 보호 유틸리티
+### 제어 주기 설정
+
+| 메서드 | 설명 |
+|--------|------|
+| `SetControlRate(double hz)` | 제어 루프 주파수 설정 (매니저가 초기화 시 호출) |
+| `GetDefaultDt()` | `1.0 / control_rate_` 반환. `control_rate_`이 0 이하이면 0.002 반환 |
+
+### 토픽 설정 접근
 
 | 메서드 | 접근 | 설명 |
 |--------|------|------|
 | `GetTopicConfig()` | public const | 컨트롤러별 토픽 라우팅 설정 반환 |
-| `ParseTopicConfig(YAML::Node&)` | protected static | YAML `topics:` 하위의 모든 디바이스 그룹을 동적 파싱 |
-| `MakeDefaultTopicConfig()` | protected static | 기본 토픽 설정 생성 (ur5e만 포함) |
+| `ParseTopicConfig(YAML::Node)` | protected static | YAML `topics:` 하위의 모든 디바이스 그룹을 동적 파싱 |
+| `MakeDefaultTopicConfig(device_name)` | protected static | 기본 토픽 설정 생성. `device_name` 기본값은 `"ur5e"` |
 
-#### 보호 멤버 변수
+### 보호 멤버 변수
 
 ```cpp
-TopicConfig topic_config_;                                      // LoadConfig()에서 설정됨
-std::map<std::string, DeviceNameConfig> device_name_configs_;   // SetDeviceNameConfigs()에서 설정됨
+TopicConfig topic_config_;                                      // 기본값: MakeDefaultTopicConfig("ur5e")
+std::map<std::string, DeviceNameConfig> device_name_configs_;   // SetDeviceNameConfigs()에서 설정
+double control_rate_{500.0};                                    // SetControlRate()에서 설정
 ```
 
 ---
 
-### ControllerRegistry (`controller_registry.hpp`)
+## ControllerRegistry (싱글톤 레지스트리)
 
-Meyer's 싱글톤 패턴 기반 컨트롤러 레지스트리입니다.
+Meyer's 싱글톤 패턴 기반의 컨트롤러 레지스트리입니다. 정적 초기화 시점(`main()` 이전)에 `Register()`가 호출되고, 노드 시작 시 `GetEntries()`로 등록된 컨트롤러를 조회합니다.
 
-#### ControllerEntry 구조체
+### ControllerEntry 구조체
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
-| `config_key` | `string` | YAML 파일명 스템 (예: `"p_controller"`) |
-| `config_subdir` | `string` | 설정 하위 디렉토리 (`"direct/"` 또는 `"indirect/"`) |
-| `config_package` | `string` | 설정 YAML을 소유하는 ament 패키지 |
-| `factory` | `function<unique_ptr<RTControllerInterface>(const string&)>` | URDF 경로 → 컨트롤러 인스턴스 팩토리 |
+| `config_key` | `std::string` | YAML 파일명 스템 (예: `"p_controller"`) |
+| `config_subdir` | `std::string` | 설정 하위 디렉토리 (예: `"direct/"`, `"indirect/"`) |
+| `config_package` | `std::string` | 설정 YAML을 소유하는 ament 패키지명 |
+| `factory` | `function<unique_ptr<RTControllerInterface>(const string&)>` | URDF 경로를 받아 컨트롤러 인스턴스를 생성하는 팩토리 |
 
-#### API
+### API
 
 | 메서드 | 설명 |
 |--------|------|
-| `Instance()` | 싱글톤 인스턴스 반환 (static) |
-| `Register(ControllerEntry)` | 컨트롤러 등록 (정적 초기화 시점) |
-| `GetEntries()` | 등록된 컨트롤러 목록 반환 (`noexcept`) |
+| `Instance()` | 싱글톤 인스턴스 반환 (`noexcept`, static) |
+| `Register(ControllerEntry)` | 컨트롤러 엔트리를 `entries_` 벡터에 추가 |
+| `GetEntries()` | 등록된 컨트롤러 목록 반환 (`noexcept`, const 참조) |
 
 ---
 
-### RTC_REGISTER_CONTROLLER 매크로
+## RTC_REGISTER_CONTROLLER 매크로
 
-컨트롤러를 정적 초기화 시점에 자동 등록하는 매크로입니다.
+컨트롤러를 정적 초기화 시점에 자동 등록하는 매크로입니다. `controller_registry.hpp`에 정의되어 있습니다.
+
+### 사용법
 
 ```cpp
 RTC_REGISTER_CONTROLLER(config_key, config_subdir, config_package, FactoryExpr)
@@ -173,13 +136,13 @@ RTC_REGISTER_CONTROLLER(config_key, config_subdir, config_package, FactoryExpr)
 | 파라미터 | 타입 | 예시 |
 |---------|------|------|
 | `config_key` | 식별자 (따옴표 없음) | `p_controller` |
-| `config_subdir` | 문자열 | `"indirect/"` |
-| `config_package` | 문자열 | `"rtc_controllers"` |
+| `config_subdir` | 문자열 리터럴 | `"indirect/"` |
+| `config_package` | 문자열 리터럴 | `"rtc_controllers"` |
 | `FactoryExpr` | 코드 표현식 | `std::make_unique<PController>(urdf)` |
 
 > `urdf` 변수는 매크로가 생성하는 람다의 파라미터 `(const std::string& urdf)`로 자동 제공됩니다.
 
-**매크로 전개:**
+### 매크로 전개 예시
 
 ```cpp
 // 입력
@@ -198,11 +161,11 @@ namespace {
       }
     });
     return true;
-  }();  // IIFE — main() 이전 실행
+  }();  // IIFE - main() 이전 실행
 }
 ```
 
-**설정 파일 경로 생성 규칙:**
+### 설정 파일 경로 규칙
 
 ```
 <config_package>/config/<config_subdir><config_key>.yaml
@@ -210,25 +173,26 @@ namespace {
 
 예: `rtc_controllers/config/indirect/p_controller.yaml`
 
-**정적 라이브러리 링커 스트립 방지:**
+### 정적 라이브러리 링커 스트립 방지
 
-정적 라이브러리에 포함된 컨트롤러는 외부 참조가 없으면 링커가 제거합니다. 두 가지 해결법:
+정적 라이브러리에 포함된 컨트롤러는 외부 참조가 없으면 링커가 제거할 수 있습니다. 해결 방법:
 
 ```cpp
-// 방법 1: Force 함수 (같은 TU에서 정의)
+// 방법 1: Force 함수 정의 후 main()에서 호출
 namespace rtc { void ForcePControllerRegistration() {} }
-// → main()에서 호출
 
-// 방법 2: --whole-archive (CMakeLists.txt)
+// 방법 2: --whole-archive 링커 플래그
 target_link_libraries(my_exe
   PRIVATE -Wl,--whole-archive rtc_controllers -Wl,--no-whole-archive)
 ```
 
 ---
 
-### 토픽 설정 시스템
+## 토픽 설정 시스템
 
-각 컨트롤러는 YAML을 통해 독립적인 ROS2 토픽 라우팅을 설정할 수 있습니다.
+각 컨트롤러는 YAML을 통해 디바이스별 ROS2 토픽 라우팅을 설정할 수 있습니다. `TopicConfig`는 `std::vector<std::pair<std::string, DeviceTopicGroup>>` 구조로, YAML 삽입 순서를 보존합니다.
+
+### YAML 형식
 
 ```yaml
 my_controller:
@@ -236,102 +200,69 @@ my_controller:
     ur5e:
       subscribe:
         - topic: "/joint_states"
-          role: "joint_state"
+          role: "state"
         - topic: "/ur5e/target_joint_positions"
-          role: "goal"
+          role: "target"
       publish:
-        - topic: "/forward_position_controller/commands"
-          role: "position_command"
-        - topic: "/ur5e/current_task_position"
-          role: "task_position"
+        - topic: "/ur5e/joint_command"
+          role: "joint_command"
           data_size: 6
     hand:
       subscribe:
         - topic: "/hand/joint_states"
-          role: "hand_state"
+          role: "state"
 ```
 
-#### 구독 역할 (SubscribeRole)
+> 폐기된 flat format (`topics.subscribe`를 직접 사용)은 마이그레이션 에러를 발생시킵니다.
 
-| 역할 | enum | 설명 |
-|------|------|------|
+### 구독 역할 (SubscribeRole)
+
+| YAML 역할 문자열 | enum 값 | 설명 |
+|-----------------|---------|------|
 | `state` | `kState` | 디바이스 관절 상태 (JointState) |
 | `motor_state` | `kMotorState` | 모터 공간 상태 (JointState) |
 | `sensor_state` | `kSensorState` | 센서 상태 (Float64MultiArray) |
-| `target` | `kTarget` | 목표 위치 (Float64MultiArray) |
-| `joint_state`, `hand_state`, `goal` | — | 하위 호환 별칭 |
+| `target` | `kTarget` | 외부 목표 (Float64MultiArray) |
+| `joint_state` | `kState` | 하위 호환 별칭 |
+| `hand_state` | `kState` | 하위 호환 별칭 |
+| `goal` | `kTarget` | 하위 호환 별칭 |
 
-#### 퍼블리시 역할 (PublishRole)
+### 퍼블리시 역할 (PublishRole)
 
-| 역할 | enum | 설명 |
-|------|------|------|
-| `joint_command` | `kJointCommand` | 관절/모터 커맨드 (JointCommand) |
+| YAML 역할 문자열 | enum 값 | 설명 |
+|-----------------|---------|------|
+| `joint_command` | `kJointCommand` | 통합 관절 커맨드 (JointCommand) |
 | `ros2_command` | `kRos2Command` | ROS2 표준 커맨드 (Float64MultiArray) |
 | `gui_position` | `kGuiPosition` | GUI 표시용 위치 (GuiPosition) |
 | `robot_target` | `kRobotTarget` | 관절/태스크 목표 (RobotTarget) |
 | `device_state_log` | `kDeviceStateLog` | 통합 상태 로그 (DeviceStateLog) |
 | `device_sensor_log` | `kDeviceSensorLog` | 센서 + 추론 로그 (DeviceSensorLog) |
-| `digital_twin_state` | `kDigitalTwinState` | 디지털 트윈 RELIABLE republish (JointState) |
-| `position_command`, `torque_command`, `hand_command` | — | 하위 호환 별칭 |
+| `grasp_state` | `kGraspState` | BT coordinator용 grasp 상태 (GraspState) |
+| `joint_goal` | `kRobotTarget` | 하위 호환 별칭 |
+| `position_command` | `kRos2Command` | 하위 호환 별칭 |
+| `torque_command` | `kRos2Command` | 하위 호환 별칭 |
+| `hand_command` | `kJointCommand` | 하위 호환 별칭 |
 
-**기본 토픽 설정** (`MakeDefaultTopicConfig()` 하드코딩):
+> 참고: `kDigitalTwinState` 역할은 `PublishRole` enum에 정의되어 있지만, YAML 역할 문자열 매핑에는 등록되어 있지 않아 YAML을 통해 직접 설정할 수 없습니다.
+
+### 기본 토픽 설정
+
+`MakeDefaultTopicConfig("ur5e")` 호출 시 생성되는 기본 토픽:
 
 ```
-ur5e.subscribe: /joint_states (kState), /ur5e/target_joint_positions (kTarget)
-ur5e.publish:   /ur5e/joint_command (kJointCommand, 6)
-                /forward_position_controller/commands (kRos2Command, 6)
-                /ur5e/gui_position (kGuiPosition, 6)
-                /ur5e/robot_target (kRobotTarget, 6)
-                /ur5e/device_state_log (kDeviceStateLog)
-                /ur5e/device_sensor_log (kDeviceSensorLog)
-                /ur5e/digital_twin/joint_states (kDigitalTwinState)
-hand.subscribe: /hand/joint_states (kState)
+ur5e.subscribe:
+  /joint_states                          (kState)
+  /ur5e/target_joint_positions           (kTarget)
+
+ur5e.publish:
+  /ur5e/joint_command                    (kJointCommand, data_size=6)
+  /forward_position_controller/commands  (kRos2Command,  data_size=6)
+  /ur5e/gui_position                     (kGuiPosition)
+  /ur5e/robot_target                     (kRobotTarget)
+  /ur5e/state_log                        (kDeviceStateLog)
 ```
 
-> topics 섹션이 YAML에 없으면 위 기본값이 사용됩니다. 폐기된 flat format (`topics.subscribe`) 사용 시 마이그레이션 에러가 발생합니다.
-
----
-
-### 핵심 데이터 구조 (`rtc_base/types/types.hpp`에서 정의)
-
-#### ControllerState (Compute 입력)
-
-일반화된 멀티 디바이스 구조 (`kMaxDevices = 4`):
-
-| 필드 | 타입 | 설명 |
-|------|------|------|
-| `devices[4]` | `DeviceState[]` | 디바이스별 상태 배열 |
-| `devices[i].positions[64]` | `double` | 관절 각도 (rad) |
-| `devices[i].velocities[64]` | `double` | 관절 각속도 (rad/s) |
-| `devices[i].efforts[64]` | `double` | 토크/힘 (N·m) |
-| `devices[i].sensor_data[128]` | `int32_t` | 센서 데이터 (filtered) |
-| `devices[i].sensor_data_raw[128]` | `int32_t` | 원시 센서 데이터 |
-| `devices[i].num_channels` | `int` | 유효 채널 수 |
-| `devices[i].valid` | `bool` | 데이터 유효성 |
-| `num_devices` | `int` | 활성 디바이스 수 |
-| `dt` | `double` | 시간 간격 (0.002s @500Hz) |
-| `iteration` | `uint64_t` | 루프 카운터 |
-
-#### ControllerOutput (Compute 출력)
-
-| 필드 | 타입 | 설명 |
-|------|------|------|
-| `devices[4]` | `DeviceOutput[]` | 디바이스별 출력 배열 |
-| `devices[i].commands[64]` | `double` | 커맨드 (위치 또는 토크) |
-| `devices[i].goal_positions[64]` | `double` | 스텝 목표 (로깅용) |
-| `devices[i].target_positions[64]` | `double` | 컨트롤러별 타겟 위치 (로깅용) |
-| `devices[i].target_velocities[64]` | `double` | 컨트롤러별 타겟 속도 (로깅용) |
-| `devices[i].trajectory_positions[64]` | `double` | 순수 궤적 레퍼런스 위치 |
-| `devices[i].trajectory_velocities[64]` | `double` | 순수 궤적 레퍼런스 속도 |
-| `devices[i].goal_type` | `GoalType` | `kJoint` 또는 `kTask` |
-| `devices[i].num_channels` | `int` | 유효 채널 수 |
-| `actual_task_positions[6]` | `double` | TCP 위치 + RPY (FK) |
-| `task_goal_positions[6]` | `double` | 태스크 공간 목표 (GUI 전송) |
-| `trajectory_task_positions[6]` | `double` | 태스크 공간 궤적 레퍼런스 위치 |
-| `trajectory_task_velocities[6]` | `double` | 태스크 공간 궤적 속도 |
-| `valid` | `bool` | `false`면 커맨드 무시 |
-| `command_type` | `CommandType` | `kPosition` 또는 `kTorque` |
-| `num_devices` | `int` | 활성 디바이스 수 |
+> YAML에 `topics` 섹션이 없으면 위 기본값이 사용됩니다.
 
 ---
 
@@ -340,61 +271,15 @@ hand.subscribe: /hand/joint_states (kState)
 | 의존성 | 용도 |
 |--------|------|
 | `ament_cmake` | 빌드 시스템 |
-| `rtc_base` | 공유 데이터 타입, 상수 |
+| `rtc_base` | 공유 데이터 타입 (`ControllerState`, `ControllerOutput`, `TopicConfig`, `DeviceNameConfig` 등) |
 | `rtc_msgs` | 커스텀 ROS2 메시지 |
-| `sensor_msgs` | JointState 메시지 |
 | `pinocchio` | 로보틱스 기구학/동역학 (하위 패키지에 전이적 제공) |
 | `yaml-cpp` | YAML 설정 파싱 |
 
----
-
-## 빌드
-
-```bash
-cd ~/ur_ws
-colcon build --packages-select rtc_controller_interface
-source install/setup.bash
-```
-
-공유 라이브러리(`librtc_controller_interface.so`)가 생성됩니다.
-
----
-
-## 의존성 그래프 내 위치
-
-```
-rtc_base + rtc_msgs + pinocchio + yaml-cpp
-    ↓
-rtc_controller_interface  ← 추상 인터페이스 + 레지스트리
-    ↑
-    ├── rtc_controllers        (4개 컨트롤러 구현)
-    ├── rtc_controller_manager (레지스트리 조회 + Compute 호출)
-    └── ur5e_bringup           (커스텀 컨트롤러 등록)
-```
-
----
-
-## 변경 내역
-
-### v5.17.0
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **PublishRole 재설계** | `kTaskPosition`, `kTrajectoryState`, `kControllerState` → `kGuiPosition`, `kRobotTarget`, `kDeviceStateLog`, `kDeviceSensorLog`, `kDigitalTwinState` |
-| **SubscribeRole 확장** | `kMotorState` 역할 추가 |
-| **TopicConfig** | `std::map` → `std::vector<std::pair>` (YAML 삽입 순서 보존) |
-| **ControllerOutput 확장** | `task_goal_positions`, `trajectory_task_positions`, `trajectory_task_velocities` 추가 |
-| **DeviceOutput 확장** | `trajectory_positions`, `trajectory_velocities`, `goal_type` 추가 |
-| **DeviceNameConfig 확장** | `joint_command_names`, `motor_state_names`, `safe_position` 추가 |
-
-### v0.1.1
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **controller_registry** | `Instance()` 메서드에 `noexcept` 추가 |
+테스트 의존성: `ament_lint_auto`, `ament_lint_common`
 
 ---
 
 ## 라이선스
 
-MIT License — 자세한 내용은 [LICENSE](../LICENSE) 파일을 참조하세요.
+MIT License

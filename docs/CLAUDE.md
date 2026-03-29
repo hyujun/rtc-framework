@@ -14,9 +14,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ./build.sh -p rtc_base    # single package
 
 # Run
-ros2 launch rtc_mujoco_sim mujoco_sim.launch.py                              # MuJoCo sim
+ros2 launch ur5e_bringup sim.launch.py                                        # MuJoCo sim
 ros2 launch ur5e_bringup robot.launch.py robot_ip:=192.168.1.10              # real robot
-ros2 launch ur5e_bringup robot.launch.py use_fake_hardware:=true             # fake HW
+ros2 launch ur5e_bringup robot.launch.py use_mock_hardware:=true             # mock HW (Jazzy)
+ros2 launch ur5e_bringup robot.launch.py use_fake_hardware:=true             # fake HW (Humble)
 ros2 launch ur5e_hand_driver hand_udp.launch.py target_ip:=192.168.1.2      # hand only
 
 # Monitor
@@ -35,40 +36,44 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 
 | Package | Type | Key Content |
 |---------|------|-------------|
-| `rtc_base` | Header-only | Types (`RobotState`, `ControllerOutput`), SeqLock, SPSC buffers, threading (4/6/8/10/12/16-core), Bessel/Kalman filters, DataLogger, session_dir |
+| `rtc_base` | Header-only | Types (`ControllerState`, `DeviceState`, `ControllerOutput`), SeqLock, SPSC buffers, threading (4/6/8/10/12/16-core), Bessel/Kalman filters, DataLogger, session_dir |
 | `rtc_communication` | Header-only | `TransportInterface` (abstract), `UdpSocket` RAII, `PacketCodec` concept, `Transceiver<T,C>` template |
-| `rtc_controller_interface` | Library | `RTControllerInterface` abstract base (Init/Compute/SetTarget — all noexcept), `ControllerRegistry` singleton |
+| `rtc_controller_interface` | Library | `RTControllerInterface` abstract base (Compute/SetDeviceTarget/InitializeHoldPosition/Name -- all noexcept), `ControllerRegistry` singleton, `RTC_REGISTER_CONTROLLER` macro |
 | `rtc_controllers` | Library | PController, JointPDController (Pinocchio RNEA), ClikController (Jacobian IK), OSC (6-DOF Cartesian PD) + quintic trajectory |
-| `rtc_controller_manager` | Executable | `RtControllerNode`: clock_nanosleep RT loop, SPSC publish offload, 3-CSV logging, global E-STOP, controller lifecycle |
+| `rtc_controller_manager` | Executable | `RtControllerNode`: clock_nanosleep RT loop, SPSC publish offload, CSV logging, global E-STOP, controller lifecycle, digital twin auto-republish |
 | `rtc_inference` | Header-only | `InferenceEngine` abstract, `OnnxEngine` (IoBinding, pre-allocated buffers), `RunModels()` batch helper |
-| `rtc_status_monitor` | Shared lib | 10Hz monitor: robot mode, safety mode, tracking error, joint limits. Lock-free RT accessors (`isReady()`, `getFailure()`) |
-| `rtc_msgs` | Messages | 7 types: JointCommand, FingertipSensor, HandSensorState, GuiPosition, RobotTarget, DeviceStateLog, DeviceSensorLog |
-| `rtc_mujoco_sim` | Executable | MuJoCo 3.x wrapper: FreeRun/SyncStep, GLFW viewer (40+ shortcuts), fake_hand 1st-order filter, position servo gains |
-| `rtc_tools` | Python | controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf, hand_udp_sender, hand_data_plot |
+| `rtc_status_monitor` | Shared lib | 10Hz monitor: robot mode, safety mode, tracking error, joint limits (per-joint overrides). Lock-free RT accessors (`isReady()`, `getFailure()`) |
+| `rtc_msgs` | Messages | 8 types: JointCommand, FingertipSensor, HandSensorState, GraspState, GuiPosition, RobotTarget, DeviceStateLog, DeviceSensorLog |
+| `rtc_mujoco_sim` | Executable | MuJoCo 3.x wrapper: sync-step loop, GLFW viewer (40+ shortcuts), multi-group architecture (robot_response + fake_response), position servo gains |
+| `rtc_tools` | Python | controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf, hand_udp_sender, hand_data_plot, session_dir |
 | `rtc_scripts` | Shell | PREEMPT_RT kernel build, CPU shield (cset), IRQ affinity, UDP optimization, NVIDIA RT coexistence |
-| `rtc_digital_twin` | Python | RViz2 visualization (joint_state → robot model) |
-| `ur5e_description` | Data | URDF + MJCF + meshes (DAE/STL). Pinocchio/RViz/MuJoCo compatible |
-| `ur5e_hand_driver` | Executable | UDP request-response driver (SeqLock state, ppoll sub-ms timeout, 44ch tactile sensors) |
+| `rtc_digital_twin` | Python | RViz2 visualization (multi-source JointState merge, URDF mimic auto-compute, fingertip sensor MarkerArray) |
+| `ur5e_description` | Data | URDF + MJCF + meshes (DAE/STL/OBJ). Pinocchio/RViz/MuJoCo compatible |
+| `ur5e_hand_driver` | Executable | UDP event-driven driver (SeqLock state, ppoll sub-ms timeout, dual motor+joint read, ONNX F/T inference) |
 | `ur5e_hand_status_monitor` | Shared lib | Robot+hand integrated monitor: motor/sensor data quality checks, rate monitoring, lock-free RT accessors |
-| `ur5e_bt_coordinator` | Executable | BehaviorTree.CPP v4 non-RT task coordinator (20 Hz, UR5e + hand integrated motions) |
-| `ur5e_bringup` | Launch/Config | robot.launch.py, sim.launch.py + DemoJoint/DemoTask controllers |
+| `ur5e_bt_coordinator` | Executable | BehaviorTree.CPP v4 non-RT task coordinator (20 Hz, pick-and-place / towel unfold / hand motions) |
+| `ur5e_bringup` | Launch/Config | robot.launch.py, sim.launch.py, hand.launch.py + DemoJoint/DemoTask controllers + GUI tools |
 
 ### Dependency Graph
 
 ```
 rtc_msgs, rtc_base (independent)
-  ├── rtc_communication ← rtc_base
-  ├── rtc_inference ← rtc_base
-  ├── rtc_controller_interface ← rtc_base, rtc_msgs
-  │   └── rtc_controllers ← rtc_controller_interface, Pinocchio
-  │       └── rtc_controller_manager ← rtc_controllers, rtc_communication, rtc_status_monitor
-  ├── rtc_status_monitor ← rtc_base, rtc_msgs
-  └── rtc_mujoco_sim ← MuJoCo 3.x (optional)
+  +-- rtc_communication <-- rtc_base
+  +-- rtc_inference <-- rtc_base
+  +-- rtc_controller_interface <-- rtc_base, rtc_msgs
+  |     +-- rtc_controllers <-- rtc_controller_interface, Pinocchio
+  |           +-- rtc_controller_manager <-- rtc_controllers, rtc_communication, rtc_status_monitor
+  +-- rtc_status_monitor <-- rtc_base, rtc_msgs
+  +-- rtc_mujoco_sim <-- MuJoCo 3.x (optional)
+  +-- rtc_digital_twin (independent, Python)
+  +-- rtc_tools (independent, Python)
+  +-- rtc_scripts (independent, shell)
 
-ur5e_hand_driver ← rtc_communication, rtc_inference, rtc_base
-ur5e_hand_status_monitor ← rtc_status_monitor, rtc_base, rtc_msgs
-ur5e_bt_coordinator ← rtc_msgs, BehaviorTree.CPP v4
-ur5e_bringup ← rtc_controller_manager, ur5e_hand_driver, ur5e_description
+ur5e_description (independent)
+  +-- ur5e_hand_driver <-- rtc_communication, rtc_inference, rtc_base
+  +-- ur5e_hand_status_monitor <-- rtc_status_monitor, rtc_base, rtc_msgs
+  +-- ur5e_bt_coordinator <-- rtc_msgs, BehaviorTree.CPP v4
+  +-- ur5e_bringup <-- rtc_controller_manager, ur5e_hand_driver, ur5e_description
 ```
 
 ---
@@ -79,206 +84,335 @@ ur5e_bringup ← rtc_controller_manager, ur5e_hand_driver, ur5e_description
 
 ```cpp
 // Key constants
-kCacheLineSize = 64;  // unified cache line size (types.hpp, shared by SeqLock/SPSC)
-kNumRobotJoints = 6;  kMaxRobotDOF = 12;
-kNumHandMotors = 10;  kDefaultNumFingertips = 4;
-kSensorValuesPerFingertip = 11;  // 8 barometer + 3 ToF
-kMaxHandSensors = 88;  kMaxDeviceChannels = 64;  kMaxSensorChannels = 128;
+kCacheLineSize = 64;
+kNumRobotJoints = 6;  kMaxRobotDOF = 12;  kMaxDeviceChannels = 64;  kMaxSensorChannels = 128;
+kNumHandMotors = 10;  kDefaultNumFingertips = 4;  kMaxFingertips = 8;
+kBarometerCount = 8;  kTofCount = 3;  kSensorValuesPerFingertip = 11;
+kMaxHandSensors = 88;  kFTValuesPerFingertip = 7;  // contact(1)+F(3)+u(3)
+kDefaultMaxJointVelocity = 2.0;  kDefaultMaxJointTorque = 150.0;
 
 enum class CommandType { kPosition, kTorque };
+enum class GoalType : uint8_t { kJoint, kTask };
 
+// Generalized device types (variable DOF)
+struct DeviceState     { positions[64], velocities[64], efforts[64],
+                         motor_positions[64], motor_velocities[64], motor_efforts[64],
+                         sensor_data[128], sensor_data_raw[128],
+                         inference_data[64], inference_enable[8] };
+struct ControllerState { devices[4], num_devices, dt, iteration };
+struct DeviceOutput    { commands[64], goal_positions[64], target_positions[64],
+                         target_velocities[64], trajectory_positions[64], trajectory_velocities[64], goal_type };
+struct ControllerOutput { devices[4], actual_task_positions[6], task_goal_positions[6],
+                          trajectory_task_positions[6], trajectory_task_velocities[6],
+                          valid, command_type, grasp_state };
+struct GraspStateData  { force_magnitude[8], contact_flag[8], inference_valid[8],
+                         num_active_contacts, max_force, grasp_detected,
+                         force_threshold, min_fingertips_for_grasp };
+
+// Legacy types (still present, UR5e-specific)
 struct RobotState     { positions[6], velocities[6], torques[6], tcp_position[3], dt, iteration };
 struct HandState      { motor_positions[10], motor_velocities[10], sensor_data[88], sensor_data_raw[88], num_fingertips, valid };
-struct ControllerState { RobotState robot; HandState hand; double dt; uint64_t iteration; };
-struct ControllerOutput { robot_commands[6], hand_commands[10], actual_target_positions[6], actual_task_positions[6], valid, command_type, goal_positions[6], target_velocities[6], hand_goal_positions[10] };
 ```
 
-### Threading Model (v5.17.0, 6-core)
+### Threading Model (6-core)
 
 | Thread | Core | Scheduler | Priority | Role |
 |--------|------|-----------|----------|------|
 | rt_loop | 2 | SCHED_FIFO | 90 | clock_nanosleep 500Hz ControlLoop + 50Hz CheckTimeouts |
-| sensor_executor | 3 | SCHED_FIFO | 70 | /joint_states, /target_joint_positions subscribers |
+| sensor_executor | 3 | SCHED_FIFO | 70 | JointState, MotorState, SensorState, Target subscribers |
 | log_executor | 4 | SCHED_OTHER | nice -5 | CSV 3-file logging (SpscLogBuffer drain) |
-| publish_thread | 5 | SCHED_OTHER | nice -3 | SPSC → ROS2 publish offload |
-| aux_executor | 5 | SCHED_OTHER | 0 | E-STOP status publisher |
-| udp_recv | 5 | SCHED_FIFO | 65 | Hand UDP receiver |
+| publish_thread | 5 | SCHED_OTHER | nice -3 | SPSC -> ROS2 publish offload |
+| aux_executor | 5 | SCHED_OTHER | 0 | Controller switching, gain updates, E-STOP publisher |
+| udp_recv | 5 | SCHED_FIFO | 65 | Hand UDP receiver (ur5e_hand_driver) |
 | status_monitor | 4 | SCHED_OTHER | nice -2 | 10Hz status monitor |
 | hand_failure | 4 | SCHED_OTHER | nice -2 | 50Hz hand failure detector |
 
-Core 0-1: OS/DDS/IRQ (isolcpus=2-5). DDS threads pinned to Core 0-1 via taskset (robot.launch.py).
-CycloneDDS performance config (`cyclone_dds.xml`): multicast disabled, socket buffers 8MB/2MB, write batching 8μs, NackDelay 10ms, synchronous delivery.
+Core 0-1: OS/DDS/IRQ (isolcpus=2-5). DDS threads pinned to Core 0-1 via taskset.
 Auto-selects 4/6/8/10/12/16-core layouts via `SelectThreadConfigs()`.
 
 ### Lock-Free Primitives
 
-- **SeqLock<T>**: Single-writer/multi-reader. `Store()` wait-free, `Load()` lock-free with retry. Requires `is_trivially_copyable_v<T>`. Uses unified `kCacheLineSize` from `types.hpp`.
-- **SpscLogBuffer<512>** / **SpscPublishBuffer<512>**: SPSC ring buffers. Cache-line aligned (`alignas(kCacheLineSize)`), bitwise AND modulus, local index caching. Push is wait-free noexcept with `[[unlikely]]` branch hints on full-buffer paths; drops on full.
-- **Atomic E-STOP**: `std::atomic<bool> global_estop_` — seq_cst by default for cross-thread visibility.
+| Pattern | Where | Rule |
+|---------|-------|------|
+| **SeqLock<T>** | HandState sharing | Single-writer/multi-reader. `Store()` wait-free, `Load()` lock-free with retry. Requires `is_trivially_copyable_v<T>`. |
+| **SpscLogBuffer<512> / SpscPublishBuffer<512>** | RT->log/publish offload | Power-of-2 size, bitwise AND modulus, local index caching. Push is wait-free noexcept; drops on full. |
+| **atomic<bool>** | E-STOP flags | `seq_cst` default, no mutex on RT path |
+| **jthread + stop_token** | MuJoCo sim, UDP receiver, RT loop | Cooperative cancellation |
+| **try_lock** | viz_mutex, target_mutex, device_state_mutex | Never block RT thread |
+| **acquire/release atomics** | SPSC head/tail, RT status flags | Producer-consumer sync |
 
-### Controller Implementations
+---
+
+## Controller Implementations
 
 | Controller | Type | Space | Key Feature |
 |------------|------|-------|-------------|
-| PController (idx 0) | Indirect (position) | Joint | `q + kp*error*dt` incremental step |
-| JointPDController (idx 1) | Direct (torque) | Joint | PD + Pinocchio RNEA gravity/Coriolis + JointSpaceTrajectory quintic |
-| ClikController (idx 2) | Indirect (position) | Cartesian 3/6-DOF | Damped Jacobian pseudoinverse + null-space + TaskSpaceTrajectory SE3 quintic |
-| OSC (idx 3) | Direct (torque) | Cartesian 6-DOF | Full pose (pos + SO(3)) + TaskSpaceTrajectory SE3 quintic |
-| DemoJointController (idx 4) | Indirect | Joint + Hand | Quintic rest-to-rest trajectory (arm 6-DOF + hand 10-DOF) |
-| DemoTaskController (idx 5) | Indirect | Cartesian + Hand | CLIK arm + Quintic trajectory + Hand trajectory + E-STOP |
+| PController | Indirect (position) | Joint | `q + kp*error*dt` incremental step |
+| JointPDController | Direct (torque) | Joint | PD + Pinocchio RNEA gravity/Coriolis + feedforward velocity + JointSpaceTrajectory quintic |
+| ClikController | Indirect (position) | Cartesian 3/6-DOF | Damped Jacobian pseudoinverse (LDLT) + null-space + TaskSpaceTrajectory SE3 quintic |
+| OSC | Direct (torque) | Cartesian 6-DOF | Full pose (pos + SO(3) log3) + TaskSpaceTrajectory SE3 quintic + PartialPivLU |
+| DemoJointController | Indirect | Joint + Hand | Quintic rest-to-rest trajectory (arm 6-DOF + hand 10-DOF), ContactStopHand |
+| DemoTaskController | Indirect | Cartesian + Hand | CLIK arm + Quintic trajectory + Hand trajectory + E-STOP |
 
-**Gains layout** (via `~/controller_gains` topic):
-- PController: `[kp×6]` (6 values)
-- JointPD: `[kp×6, kd×6, gravity(0/1), coriolis(0/1), trajectory_speed]` (15)
-- CLIK: `[kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1)]` (10)
-- OSC: `[kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, gravity(0/1), traj_speed, traj_ang_speed]` (16)
-- DemoJoint: `[robot_trajectory_speed, hand_trajectory_speed, robot_max_traj_velocity, hand_max_traj_velocity]` (4)
-- DemoTask: `[kp_translation×3, kp_rotation×3, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), trajectory_speed, trajectory_angular_speed, hand_trajectory_speed, max_traj_velocity, max_traj_angular_velocity, hand_max_traj_velocity]` (16)
+### Gains Layout (via `~/controller_gains` topic)
 
-### RtControllerNode Key Methods
+| Controller | Layout | Count |
+|------------|--------|-------|
+| **PController** | `[kp x 6]` | 6 |
+| **JointPDController** | `[kp x 6, kd x 6, gravity(0/1), coriolis(0/1), trajectory_speed]` | 15 |
+| **ClikController** | `[kp x 6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1)]` | 10 |
+| **OSC** | `[kp_pos x 3, kd_pos x 3, kp_rot x 3, kd_rot x 3, damping, gravity(0/1), traj_speed, traj_ang_speed]` | 16 |
+| **DemoJoint** | `[robot_trajectory_speed, hand_trajectory_speed, robot_max_traj_velocity, hand_max_traj_velocity]` | 4 |
+| **DemoTask** | `[kp_trans x 3, kp_rot x 3, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), traj_speed, traj_angular_speed, hand_traj_speed, max_vel, max_angular_vel, hand_max_vel]` | 16 |
 
-- `ControlLoop()` (500Hz): global_estop check → assemble ControllerState → Compute() → push PublishSnapshot to SPSC → push LogEntry to log buffer
-- `CheckTimeouts()` (50Hz): `/joint_states` >100ms → robot_timeout E-STOP, `/hand/joint_states` >200ms → hand_timeout E-STOP
-- `TriggerGlobalEstop(reason)`: atomic flag + controller E-Stop + hand E-Stop + log
-- `RtLoopEntry()`: clock_nanosleep + overrun recovery (skip missed ticks, consecutive overrun → E-STOP)
-- `PublishLoopEntry()`: drains ControlPublishBuffer → ROS2 publish
+---
+
+## RtControllerNode Key Methods
+
+- `ControlLoop()` (500Hz): global_estop check -> assemble ControllerState from cached device states -> `Compute()` -> push PublishSnapshot to SPSC -> push LogEntry to log buffer
+- `CheckTimeouts()` (50Hz): per-group device state timeout checks (dynamic, based on `device_timeout_names`/`device_timeout_values`) -> `TriggerGlobalEstop("{group}_timeout")`
+- `TriggerGlobalEstop(reason)`: idempotent via `compare_exchange_strong`, propagates to all controllers + hand E-Stop
+- `RtLoopEntry()`: clock_nanosleep + overrun recovery (skip missed ticks, consecutive overrun >= 10 -> E-STOP)
+- `PublishLoopEntry()`: drains ControlPublishBuffer -> ROS2 publish (all DDS serialization off RT path)
 
 ### E-STOP Triggers
 
 | Source | Condition | Action |
 |--------|-----------|--------|
-| CheckTimeouts (50Hz) | /joint_states >100ms | `TriggerGlobalEstop("robot_timeout")` |
-| CheckTimeouts (50Hz) | /hand/joint_states >200ms | `TriggerGlobalEstop("hand_timeout")` |
-| UR5eStatusMonitor (10Hz) | Safety violation, tracking error, joint limit | `TriggerGlobalEstop(failure_type)` |
-| HandFailureDetector (50Hz) | Zero/duplicate data | `TriggerGlobalEstop("hand_failure")` |
-| Init timeout | No data within init_timeout_sec | `TriggerGlobalEstop("init_timeout")` + shutdown |
-
-### Hand UDP Protocol
-
-Request-response polling on port 55151 (jthread, Core 5, SCHED_FIFO/65):
-
-**Individual mode**: WritePosition (43B echo) → ReadVelocity → ReadSensor0-3 (decimated)
-**Bulk mode** (`communication_mode: "bulk"`): WritePosition (43B echo) → ReadAllMotors(0x10, 123B) → ReadAllSensors(0x19, 267B)
-
-Published topics (v5.17.0):
-- `/hand/joint_states` (`sensor_msgs/JointState`) — joint-space positions/velocities
-- `/hand/motor_states` (`sensor_msgs/JointState`) — motor-space positions/velocities/currents
-- `/hand/sensor_states` (`rtc_msgs/HandSensorState`) — fingertip sensors + F/T inference
-- `/hand/joint_command` (`rtc_msgs/JointCommand`) — subscribed motor commands
+| CheckTimeouts (50Hz) | `{group}` state topic exceeds configured ms | `TriggerGlobalEstop("{group}_timeout")` |
+| Init timeout | No data within `init_timeout_sec` | `TriggerGlobalEstop("init_timeout")` + shutdown |
+| Consecutive overrun | >= 10 consecutive RT loop overruns | `TriggerGlobalEstop("consecutive_overrun")` |
+| Sim sync timeout | CV-based wakeup timeout (sim mode) | `TriggerGlobalEstop("sim_sync_timeout")` + shutdown |
+| StatusMonitor (10Hz) | Safety violation, tracking error, joint limit | `TriggerGlobalEstop(failure_description)` |
+| HandFailureDetector (50Hz) | Zero/duplicate data, low rate, link down | `TriggerGlobalEstop("hand_failure")` |
 
 ---
 
 ## ROS2 Topics
 
+### Fixed Topics (RtControllerNode)
+
 | Topic | Type | Dir | Description |
 |-------|------|-----|-------------|
-| `/joint_states` | JointState | Sub | 6-DOF positions + velocities |
-| `/target_joint_positions` | Float64MultiArray | Sub | Interpretation varies by controller |
-| `/hand/joint_states` | JointState | Sub | Hand joint-space positions/velocities |
-| `/hand/motor_states` | JointState | Sub | Hand motor-space positions/velocities/currents |
-| `/hand/sensor_states` | HandSensorState | Sub | Fingertip sensors (barometer + ToF) + F/T inference |
-| `/hand/joint_command` | JointCommand | Sub | 10 normalized motor commands (0.0–1.0) |
-| `/forward_position_controller/commands` | Float64MultiArray | Pub | 6 position commands (rad) |
-| `/forward_torque_controller/commands` | Float64MultiArray | Pub | 6 torque commands (Nm) |
+| `/{ns}/controller_type` | **String** | Sub | Runtime switch by controller name (e.g. "p_controller", "clik_controller") |
+| `/{ns}/controller_gains` | Float64MultiArray | Sub | Dynamic gain update (layout per controller) |
+| `/{ns}/request_gains` | Bool | Sub | Request current gains |
+| `/{ns}/active_controller_name` | String | Pub | Active controller (TRANSIENT_LOCAL) |
+| `/{ns}/current_gains` | Float64MultiArray | Pub | Current gains response |
 | `/system/estop_status` | Bool | Pub | true = E-STOP active |
-| `~/controller_type` | Int32 | Sub | Runtime switch: 0=P, 1=PD, 2=CLIK, 3=OSC, 4=Hand |
-| `~/controller_gains` | Float64MultiArray | Sub | Dynamic gain update (layout per controller) |
-| `/sim/status` | Float64MultiArray | Pub | [step_count, sim_time, rtf, paused] |
 
-**`/target_joint_positions` interpretation**:
+### Dynamic Topics (per controller TopicConfig)
+
+| Subscribe Role | Message Type | Description |
+|----------------|-------------|-------------|
+| `kState` | JointState | Device joint-space state |
+| `kMotorState` | JointState | Motor-space state |
+| `kSensorState` | HandSensorState | Tactile sensor state |
+| `kTarget` | RobotTarget | Joint/task space goal |
+
+| Publish Role | Message Type | Description |
+|-------------|-------------|-------------|
+| `kJointCommand` | JointCommand | Joint command (position/torque) |
+| `kRos2Command` | Float64MultiArray | ros2_control compatible command |
+| `kGuiPosition` | GuiPosition | GUI current position display |
+| `kRobotTarget` | RobotTarget | Target position publish |
+| `kDeviceStateLog` | DeviceStateLog | State + command + trajectory log |
+| `kDeviceSensorLog` | DeviceSensorLog | Sensor + inference log |
+| `kGraspState` | GraspState | Grasp detection state (500Hz) |
+
+### Digital Twin Auto-Republish
+
+Per device group: `/{group}/digital_twin/joint_states` (JointState, RELIABLE/10) -- reordered joint data for RViz2 visualization.
+
+### Hand UDP Driver Topics
+
+| Topic | Type | Dir | Description |
+|-------|------|-----|-------------|
+| `/hand/joint_states` | JointState | Pub | Joint-space positions/velocities (kJoint read) |
+| `/hand/motor_states` | JointState | Pub | Motor-space positions/velocities/currents (kMotor read) |
+| `/hand/sensor_states` | HandSensorState | Pub | Fingertip sensors + F/T inference (BEST_EFFORT) |
+| `/hand/sensor_states/monitor` | HandSensorState | Pub | Same data, RELIABLE QoS for non-RT subscribers |
+| `/hand/link_status` | Bool | Pub | UDP link status |
+| `/hand/joint_command` | JointCommand | Sub | 10 normalized motor commands |
+
+### MuJoCo Simulator Topics
+
+| Topic | Type | Dir | Description |
+|-------|------|-----|-------------|
+| `<group.state_topic>` | JointState | Pub | Per-group state (robot: every physics step, fake: 100Hz) |
+| `<group.command_topic>` | JointCommand | Sub | Per-group command (auto position/torque mode switching) |
+| `/sim/status` | Float64MultiArray | Pub | `[step_count, sim_time, rtf, paused]` (1Hz) |
+
+### `/target_joint_positions` Interpretation (legacy)
+
 - P/JointPD: joint angles (rad)
-- CLIK: `[x,y,z, null_q3,null_q4,null_q5]`
+- CLIK (`control_6dof=false`): `[x,y,z, null_q3,null_q4,null_q5]`
+- CLIK (`control_6dof=true`): `[x,y,z, roll,pitch,yaw]`
 - OSC: `[x,y,z, roll,pitch,yaw]`
 - DemoJoint: `data[0-5]` robot joints, `data[6-15]` hand motors (optional)
 
 ---
 
-## Configuration
+## Configuration Quick Reference
 
-### rt_controller_manager.yaml (key params)
+### rt_controller_manager.yaml
 
 ```yaml
-control_rate: 500.0          # Hz
+robot_namespace: "ur5e"
+control_rate: 500.0
+initial_controller: "joint_pd_controller"    # name or config_key
+init_timeout_sec: 5.0
+auto_hold_position: true
+use_sim_time_sync: false       # true for MuJoCo CV-based wakeup
+sim_sync_timeout_sec: 5.0      # sim sync CV timeout
+
+enable_estop: true
+device_timeout_names: ["ur5e"]      # dynamic device-group based
+device_timeout_values: [100.0]      # ms per group
+
 enable_logging: true
 enable_timing_log: true
-enable_robot_log: true
 enable_device_log: true
+log_dir: ""
 max_log_sessions: 10
-init_timeout_sec: 5.0
-enable_status_monitor: false  # true for real robot
-estop:
-  enable_estop: true
-  device_timeout_names: ["ur5e"]      # matches topics group names
-  device_timeout_values: [100.0]      # ms — state topic gap triggers E-STOP
-  safe_position: [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]
+enable_status_monitor: false         # true for real robot
+
+devices:
+  ur5e:
+    joint_state_names: [shoulder_pan_joint, ..., wrist_3_joint]
+    safe_position: [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
+    urdf: { package: "ur5e_description", path: "robots/ur5e/urdf/ur5e.urdf",
+            root_link: "base_link", tip_link: "wrist_3_link" }
+    joint_limits:
+      max_velocity: [2.0, 2.0, 3.0, 3.0, 3.0, 3.0]
+      max_torque: [150.0, 150.0, 150.0, 28.0, 28.0, 28.0]
 ```
 
-### mujoco_simulator.yaml (key params)
+### mujoco_simulator.yaml
 
 ```yaml
-sim_mode: "sync_step"        # "free_run" or "sync_step"
-max_rtf: 1.0                 # 0.0 = unlimited
+model_path: "robots/ur5e/mjcf/scene_with_hand.xml"
+sync_timeout_ms: 50.0           # command wait timeout (ms)
+max_rtf: 1.0                    # 0.0 = unlimited
 enable_viewer: true
-enable_hand_sim: true
-physics_timestep: 0.002      # validates against XML
-use_yaml_servo_gains: false   # true = apply YAML servo_kp/kd
+physics_timestep: 0.002         # validates against XML
+use_yaml_servo_gains: false     # true = apply YAML servo_kp/kd
+
+robot_response:
+  groups: ["ur5e", "hand"]
+  ur5e: { command_joint_names: [...], state_topic: "/joint_states", command_topic: "/ur5e/joint_command" }
+  hand: { command_joint_names: [...], state_topic: "/hand/joint_states", command_topic: "/hand/joint_command" }
+# fake_response:   # alternative: LPF echo-back for devices not in MuJoCo XML
 ```
 
-### hand_udp_node.yaml (key params)
+### hand_udp_node.yaml
 
 ```yaml
 target_ip: "192.168.1.2"
 target_port: 55151
-recv_timeout_ms: 0.4         # ppoll sub-ms timeout
-communication_mode: "bulk"   # "bulk" or "individual"
-joint_mode: "motor"          # "motor" or "joint"
-sensor_decimation: 4         # N cycle마다 센서 읽기
+recv_timeout_ms: 0.4             # ppoll sub-ms timeout (default 0.4)
+communication_mode: "bulk"       # "bulk" (default) or "individual"
 enable_failure_detector: true
+# Note: sensor_decimation is fixed at 1 in code. joint_mode param is unused.
+```
+
+### rtc_status_monitor.yaml
+
+```yaml
+status_monitor:
+  watchdog_timeout_sec: 1.0
+  tracking_error_pos_warn_rad: 0.05
+  tracking_error_pos_fault_rad: 0.15
+  joint_limit_warn_margin_deg: 5.0
+  joint_limit_fault_margin_deg: 1.0
+  joint_limits:                    # per-joint overrides (rad)
+    joint_0: { lower: -6.2832, upper: 6.2832 }
+    joint_2: { lower: -3.1416, upper: 3.1416 }  # elbow
+  auto_recovery: false
+  enable_controller_stats: true
+```
+
+### digital_twin.yaml
+
+```yaml
+display_rate: 60.0
+output_topic: "/digital_twin/joint_states"
+auto_compute_mimic: true          # URDF mimic joints auto-calculated
+num_sources: 2
+source_0.topic: "/ur5e/digital_twin/joint_states"
+source_1.topic: "/hand/digital_twin/joint_states"
+# sensor_viz block enables fingertip MarkerArray visualization
 ```
 
 ---
 
-## Adding a Custom Controller (4 steps)
+## Hand UDP Protocol
 
-1. **Header**: `rtc_controllers/include/rtc_controllers/indirect/my_controller.hpp`
-   - Inherit `RTControllerInterface`, implement `Compute()`, `SetRobotTarget()`, `Name()` — all `noexcept`
-2. **Implementation**: `rtc_controllers/src/indirect/my_controller.cpp`
-   - `LoadConfig()` for YAML, `UpdateGainsFromMsg()` for runtime gains
-3. **YAML**: `rtc_controllers/config/controllers/indirect/my_controller.yaml`
-4. **Register**: Add one entry to `MakeControllerEntries()` in `rtc_controller_manager/src/rt_controller_node.cpp`
+Event-driven on port 55151 (jthread, Core 5, SCHED_FIFO/65):
+
+**Bulk mode** (default, `communication_mode: "bulk"`):
+1. WritePosition (0x01, kJoint) -> 43B send + 43B echo recv
+2. ReadAllMotors (0x10, kMotor) -> 3B send -> 123B recv (pos+vel+cur x10)
+3. ReadAllMotors (0x10, kJoint) -> 3B send -> 123B recv (pos+vel+cur x10)
+4. ReadAllSensors (0x19) -> 3B send -> 259B recv (4 fingertips x 16 int32)
+
+**Individual mode** (`communication_mode: "individual"`):
+1. WritePosition (0x01, kJoint) -> 43B send + 43B echo recv
+2. ReadPosition (0x11, kMotor) -> 3B send -> 43B recv
+3. ReadPosition (0x11, kJoint) -> 3B send -> 43B recv
+4. ReadVelocity (0x12, kMotor) -> 3B send -> 43B recv
+5. ReadSensor0-3 (0x14-0x17) -> 3B send -> 67B recv x 4
+
+ONNX F/T inference runs per sensor cycle when calibrated: input `float32[1, 12, 16]` -> output contact(1) + F(3) + u(3) per fingertip.
 
 ---
 
-## Code Conventions
+## Message Types (`rtc_msgs`) -- 8 types
 
-- **Namespace**: `rtc` (all packages)
-- **Naming**: Google C++ Style — `snake_case` members with trailing `_`
-- **`noexcept` on all RT paths**: exceptions in 500Hz loop terminate the process (intentional)
-- **C++20**: `std::jthread`, `std::stop_token`, `std::span`, `std::string_view`, `std::concepts`, designated initializers, `[[likely]]/[[unlikely]]`, `constexpr` functions
-- **`[[nodiscard]]`** on all functions returning status/error information (e.g. `ApplyThreadConfig()`, `IsRunning()`)
-- **`[[likely]]/[[unlikely]]`** on hot-path branch hints (SPSC buffer full checks, recv loop)
-- **`static_assert`** on template parameters (`BesselFilterN<N>`, `KalmanFilterN<N>`, `JointSpaceTrajectory<N>` — all require `N > 0`)
-- **Include order**: project → ROS2/third-party → C++ stdlib
-- **Separate mutexes**: `state_mutex_`, `target_mutex_`, `hand_mutex_` — never hold more than one
-- **Trajectory race fix**: `SetRobotTarget()` uses `lock_guard`, `Compute()` uses `try_to_lock` (never blocks RT)
-- **Eigen**: all buffers pre-allocated in constructor, `noalias()` to avoid temporaries, zero heap on 500Hz path
-- **Pinocchio headers**: `#pragma GCC diagnostic push/pop` to suppress warnings
-- **Compiler flags**: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion` (set in each package's CMakeLists.txt with `CMAKE_CXX_STANDARD 20`)
+| Message | Key Fields | Usage |
+|---------|-----------|-------|
+| `JointCommand` | joint_names[], values[], command_type ("position"/"torque") | Robot arm commands |
+| `FingertipSensor` | barometer[8], tof[3], barometer_raw[8], tof_raw[3], f[3], u[3], contact_flag, inference_enable | Single fingertip sensor + inference |
+| `HandSensorState` | header, fingertips[] (FingertipSensor array) | All fingertips aggregated |
+| `GraspState` | fingertip_names[], force_magnitude[], contact_flag[], num_active_contacts, max_force, grasp_detected | 500Hz grasp detection for BT coordinator |
+| `GuiPosition` | joint_names[], joint_positions[], task_positions[6] | GUI display |
+| `RobotTarget` | goal_type ("joint"/"task"), joint_target[], task_target[6] | Goal commands |
+| `DeviceStateLog` | actual_positions[], commands[], trajectory_positions[], motor_positions[] | CSV logging |
+| `DeviceSensorLog` | sensor_data_raw[], sensor_data[], inference_output[] | CSV logging |
 
-### Concurrency Patterns
+---
 
-| Pattern | Where | Rule |
-|---------|-------|------|
-| SPSC Ring Buffer | SpscLogBuffer, SpscPublishBuffer | power-of-2 size, bitwise AND modulus, local index caching |
-| SeqLock | HandState sharing | trivially copyable T, wait-free write, lock-free read |
-| atomic<bool> | E-STOP flags | seq_cst default, no mutex on RT path |
-| jthread + stop_token | MuJoCo sim, UDP receiver, RT loop | cooperative cancellation |
-| try_lock | viz_mutex, target_mutex, ref_mutex | never block RT/SimLoop thread |
-| acquire/release atomics | SPSC head/tail, RT status flags | producer-consumer sync |
+## Common Modification Patterns
+
+### Adding a New Controller
+
+1. **Header**: `rtc_controllers/include/rtc_controllers/{direct|indirect}/my_controller.hpp`
+   - Inherit `RTControllerInterface`, implement `Compute()`, `SetDeviceTarget()`, `InitializeHoldPosition()`, `Name()` -- all `noexcept`
+2. **Implementation**: `rtc_controllers/src/controllers/{direct|indirect}/my_controller.cpp`
+   - `LoadConfig()` for YAML, `UpdateGainsFromMsg()` for runtime gains
+3. **YAML**: `rtc_controllers/config/controllers/{direct|indirect}/my_controller.yaml`
+   - Must include `topics:` section for device-group topic routing
+4. **Register**: Add `RTC_REGISTER_CONTROLLER(my_controller, "indirect/", "rtc_controllers", ...)` in a source file linked into the controller library
+
+For robot-specific controllers (e.g. DemoJoint/DemoTask), place in `ur5e_bringup/` instead and register in `ur5e_bringup/src/controllers/controller_registration.cpp`.
+
+### Adding a New Message Type
+
+1. Create `rtc_msgs/msg/MyMessage.msg`
+2. Add to `CMakeLists.txt` in `rosidl_generate_interfaces()`
+3. Build: `colcon build --packages-select rtc_msgs`
+4. If used in publish offload: add `PublishRole` enum value in `rtc_base/types/types.hpp`, add YAML role string mapping in `rtc_controller_interface/src/rt_controller_interface.cpp`
+
+### Adding a New Device Group
+
+1. Add device config block in `rt_controller_manager.yaml` under `devices:`
+2. Add timeout entry in `device_timeout_names` / `device_timeout_values`
+3. Add topic routing in each controller's YAML `topics:` section
+4. Controller must handle the new device index in `Compute()` / `SetDeviceTarget()`
 
 ### Adding a New Thread
 
-1. Define `ThreadConfig` constants for all core tiers (4/6/8/10/12/16)
+1. Define `ThreadConfig` constants for all core tiers (4/6/8/10/12/16) in `rtc_base/threading/thread_config.hpp`
 2. Add field to `SystemThreadConfigs` struct
 3. Update `ValidateSystemThreadConfigs()` and `SelectThreadConfigs()`
 4. Call `ApplyThreadConfig()` at thread entry
@@ -286,22 +420,109 @@ enable_failure_detector: true
 
 ---
 
+## Data Flow Diagram
+
+```
+[Robot HW / MuJoCo Sim]
+    |  /joint_states (JointState, BEST_EFFORT/2)
+    v
+[rtc_controller_manager: RtControllerNode]
+    |  RT loop (clock_nanosleep 500Hz, or CV-based sim sync)
+    |  Controller: rtc_controllers (P / JointPD / CLIK / OSC / DemoJoint / DemoTask)
+    |  State acquisition: try_lock on cached device states
+    +----> SPSC -----> [publish_thread] -----> /forward_position_controller/commands
+    |                                    +---> /{group}/digital_twin/joint_states (RELIABLE)
+    |                                    +---> /hand/grasp_state (GraspState)
+    +----> SPSC -----> [log_executor] -------> CSV 3-file (timing, per-device state, per-device sensor)
+    +----> E-STOP ---> /system/estop_status
+
+[Hand HW] <--UDP event-driven--> [ur5e_hand_driver] <--SeqLock--> [ControlLoop]
+                                    +---> /hand/joint_states, /hand/motor_states, /hand/sensor_states
+
+[rtc_digital_twin]
+    /{group}/digital_twin/joint_states (RELIABLE) --merge--> /digital_twin/joint_states --> RViz2
+
+[ur5e_bt_coordinator]
+    subscribes: /ur5e/gui_position, /hand/grasp_state, /system/estop_status
+    publishes: /ur5e/joint_goal, /hand/joint_goal, /ur5e/select_controller, /ur5e/gains
+```
+
+---
+
 ## Session Logging Structure
 
 ```
 logging_data/YYMMDD_HHMM/
-├── controller/
-│   ├── timing_log.csv     (7 cols: timestamp, t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us)
-│   ├── robot_log.csv      (49 cols: timestamp, goal_pos, actual_pos, actual_vel, torque, task_pos, command, traj_pos, traj_vel)
-│   └── device_log.csv     (87 cols: timestamp, device_valid, goal, cmd, actual, vel, sensors per fingertip)
-├── monitor/               (failure logs, controller_stats.json)
-├── hand/                  (hand_udp_stats.json)
-├── sim/                   (screenshot_*.ppm)
-├── plots/                 (rtc_tools output)
-└── motions/               (motion editor output)
++-- controller/
+|   +-- timing_log.csv        (timestamp, t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us)
+|   +-- {device}_state_log.csv (per-device: goal, actual, command, trajectory, motor)
+|   +-- {device}_sensor_log.csv (per-device: raw/filtered sensor + inference)
++-- monitor/                   (failure logs, controller_stats.json)
++-- hand/                      (hand_udp_stats.json)
++-- sim/                       (screenshot_*.ppm)
++-- plots/                     (rtc_tools output)
++-- motions/                   (motion editor output)
 ```
 
-CSV column ordering follows 4-category taxonomy: **Goal → Current State → Command → Trajectory**.
+Session dir propagated via `RTC_SESSION_DIR` (or `UR5E_SESSION_DIR` fallback) env var.
+
+---
+
+## Debugging & Troubleshooting
+
+### Common Issues
+
+| Symptom | Likely Cause | Fix |
+|---------|-------------|-----|
+| `ApplyThreadConfig()` warns | Missing `realtime` group or RT privileges | `sudo usermod -aG realtime $USER` + re-login |
+| E-STOP fires immediately on startup | `init_timeout_sec` too short or no data source | Set `init_timeout_sec: 0.0` for sim, increase for real robot |
+| High jitter (>200us) | DDS threads on RT cores | Check `taskset` pinning in launch, verify `isolcpus` |
+| Hand timeout E-STOP | UDP link down or `recv_timeout_ms` too low | Check network, set `recv_timeout_ms: 0.4` |
+| Controller not found | Name mismatch | Use config_key (e.g. "p_controller") or Name() (e.g. "PController") |
+| MuJoCo XML joint mismatch | `command_joint_names` != XML actuator joints | Bidirectional exact match required for robot_response groups |
+
+### Useful Debug Commands
+
+```bash
+# Check RT thread layout
+PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
+
+# Check topic rates
+ros2 topic hz /joint_states
+ros2 topic hz /forward_position_controller/commands
+
+# Check controller parameters (introspection)
+ros2 param list /rt_controller
+
+# Check E-STOP
+ros2 topic echo /system/estop_status
+
+# MuJoCo sim status
+ros2 topic echo /sim/status
+
+# Verify RT setup
+./rtc_scripts/scripts/check_rt_setup.sh --summary
+
+# Verify runtime threads
+./rtc_scripts/scripts/verify_rt_runtime.sh --summary
+```
+
+---
+
+## Code Conventions
+
+- **Namespace**: `rtc` (all packages)
+- **Naming**: Google C++ Style -- `snake_case` members with trailing `_`
+- **`noexcept` on all RT paths**: exceptions in 500Hz loop terminate the process (intentional)
+- **C++20**: `std::jthread`, `std::stop_token`, `std::span`, `std::string_view`, `std::concepts`, designated initializers, `[[likely]]/[[unlikely]]`, `constexpr`
+- **`[[nodiscard]]`** on functions returning status/error (`ApplyThreadConfig()`, `IsRunning()`, `Compute()`)
+- **`static_assert`** on template parameters (`BesselFilterN<N>`, `KalmanFilterN<N>`, `JointSpaceTrajectory<N>` -- all require `N > 0`)
+- **Include order**: project -> ROS2/third-party -> C++ stdlib
+- **Separate mutexes**: `state_mutex_`, `target_mutex_`, `hand_mutex_` -- never hold more than one
+- **Trajectory race fix**: `SetDeviceTarget()` uses `lock_guard`, `Compute()` uses `try_to_lock` (never blocks RT)
+- **Eigen**: all buffers pre-allocated in constructor, `noalias()` to avoid temporaries, zero heap on 500Hz path
+- **Pinocchio headers**: `#pragma GCC diagnostic push/pop` to suppress warnings
+- **Compiler flags**: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion` (C++20 standard)
 
 ---
 
@@ -314,38 +535,32 @@ echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
 # Re-login required. Verify: ulimit -r (99), ulimit -l (unlimited)
 ```
 
-Optional CPU isolation for max RT performance:
+Optional CPU isolation:
 ```bash
-# GRUB_CMDLINE_LINUX_DEFAULT (6-core): isolcpus=2-5 nohz_full=2-5 rcu_nocbs=2-5
+# GRUB_CMDLINE_LINUX_DEFAULT (6-core): nohz_full=2-5 rcu_nocbs=2-5
+# For dynamic isolation without reboot: sudo cpu_shield.sh on --robot
 ```
 
 If `ApplyThreadConfig()` fails, the node continues at SCHED_OTHER with a `[WARN]` log (increased jitter).
 
 ---
 
-## Optimization Summary (v5.17.0)
+## Key File Locations
 
-Cross-cutting optimizations applied to all 17 packages:
-
-### Build System
-- All C++ packages explicitly set `CMAKE_CXX_STANDARD 20` + `CMAKE_CXX_STANDARD_REQUIRED ON`
-- Strict compiler warning flags (`-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`)
-
-### Code Quality
-| Optimization | Packages Affected | Description |
-|-------------|-------------------|-------------|
-| `kCacheLineSize` unified | `rtc_base` | Single definition in `types.hpp`, removed duplicates from SeqLock/SPSC |
-| `[[likely]]/[[unlikely]]` | `rtc_base`, `rtc_communication` | Branch hints on SPSC buffer full paths, recv loop |
-| `[[nodiscard]]` | `rtc_base`, `rtc_controller_interface` | `ApplyThreadConfig()`, `ControllerRegistry::Instance()` |
-| `constexpr` | `rtc_base` | `SubscribeRoleToString()`, `PublishRoleToString()`, `ComputeBiquad()` |
-| `static_assert(N > 0)` | `rtc_base`, `rtc_controllers` | `BesselFilterN`, `KalmanFilterN`, `JointSpaceTrajectory` |
-| `noexcept` | `rtc_controller_interface` | `ControllerRegistry::Instance()` |
-| Include order | `rtc_communication`, `rtc_controllers` | Google style compliance (project → third-party → stdlib) |
-| Unused includes | `rtc_communication`, `rtc_controller_manager` | Removed `<string_view>`, `<ctime>` |
-| `TriviallyCopyableType` concept | `rtc_base` | New concept for lock-free primitive type constraints |
-| `std::array` buffer | `rtc_base` | `session_dir.hpp` — safer timestamp buffer |
-
-### Documentation
-- All 17 packages have `"최적화 내역"` (optimization changelog) section in README.md
-- RT-safety warnings documented on non-RT-safe functions (`GetSubscribeTopicName()`)
-- Kalman filter accessor preconditions documented (`i < N`)
+| What | Path |
+|------|------|
+| Core types & constants | `rtc_base/include/rtc_base/types/types.hpp` |
+| Thread configs (all tiers) | `rtc_base/include/rtc_base/threading/thread_config.hpp` |
+| Controller abstract base | `rtc_controller_interface/include/rtc_controller_interface/rt_controller_interface.hpp` |
+| Controller registry | `rtc_controller_interface/include/rtc_controller_interface/controller_registry.hpp` |
+| RT control loop | `rtc_controller_manager/src/rt_controller_node.cpp` |
+| Built-in controller registration | `rtc_controllers/src/controller_registration.cpp` |
+| Demo controller registration | `ur5e_bringup/src/controllers/controller_registration.cpp` |
+| Main YAML config (robot) | `ur5e_bringup/config/ur5e_robot.yaml` |
+| Main YAML config (sim) | `ur5e_bringup/config/ur5e_sim.yaml` |
+| MuJoCo sim config | `rtc_mujoco_sim/config/mujoco_simulator.yaml` |
+| Hand driver config | `ur5e_hand_driver/config/hand_udp_node.yaml` |
+| CycloneDDS config | `rtc_controller_manager/config/cyclone_dds.xml` |
+| UR5e URDF | `ur5e_description/robots/ur5e/urdf/ur5e.urdf` |
+| MuJoCo scene (with hand) | `ur5e_description/robots/ur5e/mjcf/scene_with_hand.xml` |
+| BT trees | `ur5e_bt_coordinator/trees/*.xml` |

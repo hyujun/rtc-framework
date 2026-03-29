@@ -260,7 +260,7 @@ ur5e_hand_status_monitor  ← 로봇 + 핸드 통합 모니터
 
 | 영역 | 변경 내용 |
 |------|----------|
-| **핸드 장애 유형** | `kHandTimeout`(31), `kHandMotorDataFault`(32), `kHandSensorDataFault`(33), `kHandRateLow`(34) 열거값 명시 |
+| **핸드 장애 유형** | `kHandTimeout`(10), `kHandMotorDataFault`(11), `kHandSensorDataFault`(12), `kHandRateLow`(13) 열거값 명시 |
 | **경고 유형** | `kHandRateDegraded` 경고 (첫 번째 레이트 저하 감지 시) |
 | **구독 토픽** | `/hand/sensor_states` 타입을 `rtc_msgs/HandSensorState`로 변경 |
 

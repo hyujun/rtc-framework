@@ -2,8 +2,8 @@
 # ─────────────────────────────────────────────
 # Launch with:
 #   ros2 launch rtc_mujoco_sim mujoco_sim.launch.py
-#   ros2 launch rtc_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step
 #   ros2 launch rtc_mujoco_sim mujoco_sim.launch.py enable_viewer:=false
+#   ros2 launch rtc_mujoco_sim mujoco_sim.launch.py max_rtf:=10.0
 
 mujoco_simulator:
   ros__parameters:
@@ -29,12 +29,10 @@ mujoco_simulator:
     servo_kd: [400.0, 400.0, 400.0, 100.0, 100.0, 100.0]
 
     # ── Robot Response (MuJoCo 물리 시뮬레이션) ──────────────────────────────
-    # joint_names 합집합 == XML 전체 joints (양방향 완전 일치 필수)
-    # 하나라도 다르면 Initialize() FAIL.
-    # ── Robot Response (MuJoCo 물리 시뮬레이션) ──────────────────────────────
     # command_joint_names: actuator 매칭용 (XML joint name). 합집합 == XML 전체 joints 필수.
     # state_joint_names:   state publish용 (XML joint name). 비우면 XML 전체 사용.
     # joint_names:         하위호환 — command_joint_names 미지정 시 대체 사용.
+    # 하나라도 다르면 Initialize() FAIL.
     robot_response:
       groups: ["ur5e", "hand"]
       ur5e:

@@ -15,6 +15,7 @@
 
     display_rate: 60.0                          # Hz — combined JointState publish rate
     output_topic: "/digital_twin/joint_states"  # Combined output for robot_state_publisher
+    auto_compute_mimic: true                    # Auto-compute mimic joint positions from URDF
 
     # ── Joint state sources ──────────────────────────────────────────────
     num_sources: 2
