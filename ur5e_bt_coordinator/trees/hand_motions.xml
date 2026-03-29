@@ -77,7 +77,13 @@
                    op_duration="{op_duration}"
                    use_home_return="{use_home_return}"/>
           <!-- decay: 가속 (최소 0.3s 보장) -->
-          <Script code="op_duration := max(op_duration * 0.7, 0.3)"/>
+          <Script code="op_duration := op_duration * 0.7"/>
+          <Fallback>
+            <Precondition if="op_duration >= 0.3" else="FAILURE">
+              <AlwaysSuccess/>
+            </Precondition>
+            <Script code="op_duration := 0.3"/>
+          </Fallback>
         </Sequence>
       </Repeat>
 
@@ -104,7 +110,13 @@
                    op_duration="{op_duration}"
                    use_home_return="{use_home_return}"/>
           <!-- accel_factor (1/0.7 ≈ 1.4): 감속 (최대 1.5s 보장) -->
-          <Script code="op_duration := min(op_duration * 1.4, 1.5)"/>
+          <Script code="op_duration := op_duration * 1.4"/>
+          <Fallback>
+            <Precondition if="op_duration &lt;= 1.5" else="FAILURE">
+              <AlwaysSuccess/>
+            </Precondition>
+            <Script code="op_duration := 1.5"/>
+          </Fallback>
         </Sequence>
       </Repeat>
 
@@ -128,7 +140,13 @@
           <FlexExtendFinger finger_name="middle" duration="{wave_duration}"/>
           <FlexExtendFinger finger_name="ring"   duration="{wave_duration}"/>
           <!-- 가속 (최소 0.3s 보장) -->
-          <Script code="wave_duration := max(wave_duration * 0.7, 0.3)"/>
+          <Script code="wave_duration := wave_duration * 0.7"/>
+          <Fallback>
+            <Precondition if="wave_duration >= 0.3" else="FAILURE">
+              <AlwaysSuccess/>
+            </Precondition>
+            <Script code="wave_duration := 0.3"/>
+          </Fallback>
         </Sequence>
       </Repeat>
 
@@ -150,7 +168,13 @@
           <FlexExtendFinger finger_name="middle" duration="{wave_duration}"/>
           <FlexExtendFinger finger_name="ring"   duration="{wave_duration}"/>
           <!-- 감속 (최대 2.0s 보장) -->
-          <Script code="wave_duration := min(wave_duration * 1.4, 2.0)"/>
+          <Script code="wave_duration := wave_duration * 1.4"/>
+          <Fallback>
+            <Precondition if="wave_duration &lt;= 2.0" else="FAILURE">
+              <AlwaysSuccess/>
+            </Precondition>
+            <Script code="wave_duration := 2.0"/>
+          </Fallback>
         </Sequence>
       </Repeat>
 
