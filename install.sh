@@ -66,11 +66,11 @@ show_help() {
   echo ""
   echo "Modes:"
   echo "  sim    — MuJoCo simulation only"
-  echo "             Installs: ROS2 build tools, Pinocchio, MuJoCo 3.x"
+  echo "             Installs: ROS2 build tools, Pinocchio, tinyxml2, yaml-cpp, MuJoCo 3.x"
   echo "             Skips:    UR robot driver, RT scheduling permissions"
   echo ""
   echo "  robot  — Real robot only"
-  echo "             Installs: ROS2 build tools, UR driver, Pinocchio, RT permissions"
+  echo "             Installs: ROS2 build tools, UR driver, Pinocchio, tinyxml2, yaml-cpp, RT permissions"
   echo "             Skips:    MuJoCo"
   echo ""
   echo "  full   — Complete installation (default)"
@@ -400,9 +400,15 @@ install_python_base_deps() {
   fi
 }
 
-# ── Pinocchio (all modes — needed by ClikController / DemoTaskController / OSC) ──
+# ── Pinocchio + urdf_pinocchio_bridge deps ────────────────────────────────────
+# Pinocchio: needed by ClikController / DemoTaskController / OSC / urdf_pinocchio_bridge
+# tinyxml2, yaml-cpp: needed by urdf_pinocchio_bridge
 install_pinocchio() {
-  info "Installing Pinocchio (model-based controllers, ${ROS_PKG_PREFIX})..."
+  info "Installing Pinocchio and urdf_pinocchio_bridge dependencies..."
+  sudo apt-get install -y libtinyxml2-dev libyaml-cpp-dev > /dev/null
+  success "tinyxml2 and yaml-cpp installed (urdf_pinocchio_bridge)"
+
+  info "Installing Pinocchio (${ROS_PKG_PREFIX})..."
   if sudo apt-get install -y ${ROS_PKG_PREFIX}-pinocchio >/dev/null 2>&1; then
     success "Pinocchio installed via ${ROS_PKG_PREFIX}-pinocchio"
   else
