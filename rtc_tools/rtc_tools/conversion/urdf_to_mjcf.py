@@ -540,6 +540,56 @@ def _add_actuators(
     return count
 
 
+def _add_parent_child_collision_excludes(
+    mjcf_root: ET.Element, urdf_xml: str,
+) -> int:
+    """Add ``<contact><exclude>`` pairs for all parent–child links.
+
+    URDF joints define parent→child link relationships.  In MuJoCo the
+    corresponding bodies often overlap at the joint frame, producing
+    unwanted contact forces.  This function adds ``<exclude>`` elements
+    to suppress those collisions.
+
+    Returns:
+        Number of exclude pairs added.
+    """
+    root = ET.fromstring(urdf_xml)
+
+    pairs: list[tuple[str, str]] = []
+    for jelem in root.findall("joint"):
+        parent_elem = jelem.find("parent")
+        child_elem = jelem.find("child")
+        if parent_elem is None or child_elem is None:
+            continue
+        parent_link = parent_elem.get("link", "")
+        child_link = child_elem.get("link", "")
+        if parent_link and child_link:
+            pairs.append((parent_link, child_link))
+
+    if not pairs:
+        return 0
+
+    # Deduplicate while preserving order
+    seen: set[tuple[str, str]] = set()
+    unique_pairs: list[tuple[str, str]] = []
+    for pair in pairs:
+        if pair not in seen:
+            seen.add(pair)
+            unique_pairs.append(pair)
+
+    contact = mjcf_root.find("contact")
+    if contact is None:
+        contact = ET.SubElement(mjcf_root, "contact")
+
+    count = 0
+    for parent_link, child_link in unique_pairs:
+        attrib = {"body1": parent_link, "body2": child_link}
+        contact.append(_make_element("exclude", attrib))
+        count += 1
+
+    return count
+
+
 def _clean_mesh_paths(mjcf_root: ET.Element) -> None:
     """Strip directory prefixes from mesh file attributes (keep filename only)."""
     for mesh_elem in mjcf_root.iter("mesh"):
@@ -560,7 +610,10 @@ def postprocess_mjcf(
     mjcf_path: Path,
     classification: JointClassification,
     meshdir: Path,
-) -> tuple[int, int]:
+    *,
+    disable_parent_child_collision: bool = False,
+    urdf_xml: str = "",
+) -> tuple[int, int, int]:
     """Post-process raw MuJoCo MJCF output.
 
     - Fixes ``<compiler>`` meshdir to a relative path.
@@ -568,9 +621,10 @@ def postprocess_mjcf(
     - Inserts ``<equality>`` constraints for passive joints.
     - Generates ``<actuator>`` entries for active joints only.
     - Strips absolute paths from mesh file references.
+    - Optionally adds ``<contact><exclude>`` for parent–child link pairs.
 
     Returns:
-        (num_equality_constraints, num_actuators)
+        (num_equality_constraints, num_actuators, num_collision_excludes)
     """
     tree = ET.parse(str(mjcf_path))
     root = tree.getroot()
@@ -584,10 +638,14 @@ def postprocess_mjcf(
     n_eq = _add_equality_constraints(root, classification)
     n_act = _add_actuators(root, classification)
 
+    n_excl = 0
+    if disable_parent_child_collision and urdf_xml:
+        n_excl = _add_parent_child_collision_excludes(root, urdf_xml)
+
     ET.indent(tree, space="  ")
     tree.write(str(mjcf_path), encoding="unicode", xml_declaration=True)
 
-    return n_eq, n_act
+    return n_eq, n_act, n_excl
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -668,7 +726,9 @@ def print_classification(classification: JointClassification) -> None:
     print(", ".join(classification.fixed) if classification.fixed else "-")
 
 
-def print_model_stats(model: "mujoco.MjModel", n_eq: int, n_act: int) -> None:
+def print_model_stats(
+    model: "mujoco.MjModel", n_eq: int, n_act: int, n_excl: int = 0,
+) -> None:
     """Print MuJoCo model statistics."""
     print(f"\nModel statistics:")
     print(f"  Bodies:      {model.nbody}")
@@ -678,6 +738,8 @@ def print_model_stats(model: "mujoco.MjModel", n_eq: int, n_act: int) -> None:
     print(f"  Meshes:      {model.nmesh}")
     print(f"  Actuators:   {n_act}")
     print(f"  Equality:    {n_eq}")
+    if n_excl > 0:
+        print(f"  Excludes:    {n_excl}")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -691,6 +753,7 @@ def convert_urdf_to_mjcf(
     meshdir: Optional[Path] = None,
     generate_scene_file: bool = False,
     run_validation: bool = False,
+    disable_parent_child_collision: bool = False,
 ) -> Path:
     """Convert a URDF/XACRO file to MuJoCo MJCF XML.
 
@@ -702,6 +765,9 @@ def convert_urdf_to_mjcf(
         meshdir: Directory containing mesh files.
         generate_scene_file: If True, also generate ``scene.xml``.
         run_validation: If True, run ``compare_mjcf_urdf`` after conversion.
+        disable_parent_child_collision: If True, add ``<contact><exclude>``
+            pairs for all parent–child link connections to prevent
+            collision between adjacent links.
 
     Returns:
         Path to the generated MJCF XML file.
@@ -775,10 +841,16 @@ def convert_urdf_to_mjcf(
     mujoco.mj_saveLastXML(str(output_path), model)
 
     # ── Step 6: Post-process MJCF ─────────────────────────────────────
-    n_eq, n_act = postprocess_mjcf(output_path, classification, meshdir)
+    n_eq, n_act, n_excl = postprocess_mjcf(
+        output_path,
+        classification,
+        meshdir,
+        disable_parent_child_collision=disable_parent_child_collision,
+        urdf_xml=urdf_xml,
+    )
 
     print(f"\nMJCF saved: {output_path}")
-    print_model_stats(model, n_eq, n_act)
+    print_model_stats(model, n_eq, n_act, n_excl)
 
     # ── Step 7: Generate scene.xml ────────────────────────────────────
     if generate_scene_file:
@@ -899,6 +971,14 @@ Examples:
         action="store_true",
         help="Run MJCF ↔ URDF parameter comparison after conversion.",
     )
+    parser.add_argument(
+        "--disable-parent-child-collision",
+        action="store_true",
+        help=(
+            "Add <contact><exclude> pairs for every parent–child link "
+            "connection to prevent collision between adjacent bodies."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -927,6 +1007,7 @@ Examples:
         meshdir=meshdir,
         generate_scene_file=args.scene,
         run_validation=args.validate,
+        disable_parent_child_collision=args.disable_parent_child_collision,
     )
 
 
