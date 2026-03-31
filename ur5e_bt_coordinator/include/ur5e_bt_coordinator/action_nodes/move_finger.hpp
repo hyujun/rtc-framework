@@ -9,38 +9,36 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace rtc_bt {
 
 /// 특정 손가락을 명명된 포즈로 이동시키는 BT Action Node.
 ///
-/// 하위 Hand 컨트롤러가 quintic polynomial trajectory를 내부 생성하므로,
-/// 이 노드는 목표 관절각 + duration만 전달하고 시간 기반으로 완료를 판정한다.
+/// RT 컨트롤러와 동일한 quintic trajectory duration 공식으로 소요 시간을
+/// 추정하여 완료를 판정한다.
 ///
 /// Input ports:
 ///   - finger_name (string): 손가락 이름 ("thumb" | "index" | "middle" | "ring")
 ///   - pose (string): 명명된 포즈 (hand_pose_config에서 lookup)
-///   - duration (double): trajectory 실행 시간 [s]
+///   - hand_trajectory_speed (double): trajectory speed [rad/s] (기본 1.0)
+///   - hand_max_traj_velocity (double): max trajectory velocity [rad/s] (기본 2.0)
 class MoveFinger : public BT::StatefulActionNode {
 public:
   MoveFinger(const std::string& name, const BT::NodeConfig& config,
              std::shared_ptr<BtRosBridge> bridge);
 
-  /// @brief BT 포트 정의
   static BT::PortsList providedPorts();
 
-  /// @brief 포즈 lookup 후 Hand 컨트롤러에 목표 전달
   BT::NodeStatus onStart() override;
-
-  /// @brief 경과 시간 확인, duration 도달 시 SUCCESS
   BT::NodeStatus onRunning() override;
-
-  /// @brief halt 로깅
   void onHalted() override;
 
 private:
   std::shared_ptr<BtRosBridge> bridge_;
-  double duration_{1.0};
+  double duration_{0.01};
+  HandPose target_pose_{};
+  std::vector<int> joint_indices_;
   std::chrono::steady_clock::time_point start_time_;
 };
 

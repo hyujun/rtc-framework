@@ -9,7 +9,7 @@ UR5e + 10-DoF Hand 시스템을 위한 BehaviorTree 기반 task coordinator.
 
 ## 개요
 
-`bt_coordinator` 노드는 설정된 BT XML 트리를 로드하고, 지정된 주기(기본 20 Hz)로
+`bt_coordinator` 노드는 설정된 BT XML 트리를 로드하고, 지정된 주기(기본 100 Hz)로
 tick하면서 BT 노드들을 실행한다. 각 BT 노드는 `BtRosBridge`를 통해 ROS2 topic으로
 RT 제어 레이어와 통신하며, 기존 컨트롤러 코드를 수정하지 않는다.
 
@@ -18,7 +18,7 @@ E-STOP이 활성화되면 트리 tick이 자동으로 일시 정지된다.
 ## 아키텍처
 
 ```
-bt_coordinator (non-RT, 20 Hz)
+bt_coordinator (non-RT, 100 Hz)
   │
   │ publish                          subscribe
   ├─ /ur5e/joint_goal ──────────►  RtControllerNode (500 Hz RT)
@@ -91,10 +91,11 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 | `ComputeOffsetPose` | SyncAction | Pose에 XYZ offset 적용 (approach, lift, retreat 계산) | `input_pose`, `offset_x`(0.0), `offset_y`(0.0), `offset_z`(0.0) → 출력: `output_pose` |
 | `ComputeSweepTrajectory` | SyncAction | Arc sweep 경로 waypoint 생성 (towel unfold용, sinusoidal arc 프로파일) | `start_pose`, `direction_x`(1.0), `direction_y`(0.0), `distance`(0.3), `arc_height`(0.05), `num_waypoints`(8) → 출력: `waypoints` |
 | `WaitDuration` | StatefulAction | 지정 시간 대기 | `duration_s`(0.5) |
-| `MoveFinger` | StatefulAction | 특정 손가락을 명명된 포즈로 이동 (시간 기반 완료, partial hand update) | `finger_name`, `pose`, `duration`(1.0) |
-| `FlexExtendFinger` | StatefulAction | 손가락 flex→extend 1 cycle (duration/2씩 2-phase, 최소 0.3s 보장) | `finger_name`, `duration`(1.0) |
-| `SetHandPose` | StatefulAction | 전체 Hand 10-DoF를 명명된 포즈로 이동 (시간 기반 완료) | `pose`, `duration`(1.0) |
+| `MoveFinger` | StatefulAction | 특정 손가락을 명명된 포즈로 이동 (trajectory duration 추정 기반 완료, partial hand update) | `finger_name`, `pose`, `hand_trajectory_speed`(1.0), `hand_max_traj_velocity`(2.0) |
+| `FlexExtendFinger` | StatefulAction | 손가락 flex→extend 1 cycle (2-phase, phase별 trajectory duration 추정) | `finger_name`, `hand_trajectory_speed`(1.0), `hand_max_traj_velocity`(2.0) |
+| `SetHandPose` | StatefulAction | 전체 Hand 10-DoF를 명명된 포즈로 이동 (trajectory duration 추정 기반 완료) | `pose`, `hand_trajectory_speed`(1.0), `hand_max_traj_velocity`(2.0) |
 | `UR5eHoldPose` | StatefulAction | UR5e 목표 자세 도달 후 영구 RUNNING (halt까지 유지) | `pose` |
+| `MoveOpposition` | StatefulAction | Opposition 동작 (thumb+target 포즈, 비-target home 리셋, trajectory duration 추정 완료) | `thumb_pose`, `target_finger`, `target_pose`, `hand_trajectory_speed`(1.0), `hand_max_traj_velocity`(2.0) |
 
 ### Condition 노드
 
@@ -111,7 +112,7 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 | 파라미터 | 기본값 | 설명 |
 |----------|--------|------|
 | `tree_file` | `"pick_and_place.xml"` | BT XML 파일명 (`trees/` 디렉토리 기준) |
-| `tick_rate_hz` | `20.0` | BT tick 주기 [Hz] |
+| `tick_rate_hz` | `100.0` | BT tick 주기 [Hz] |
 | `repeat` | `false` | `true`면 트리 SUCCESS 완료 후 자동 반복 (FAILURE 시 정지) |
 | `repeat_delay_s` | `1.0` | 반복 시 재시작 전 대기 시간 [s] |
 
@@ -206,7 +207,7 @@ colcon build --packages-select ur5e_bt_coordinator
 ```bash
 # Pick and Place (1회 실행)
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
-  --ros-args -p tree_file:=pick_and_place.xml -p tick_rate_hz:=20.0
+  --ros-args -p tree_file:=pick_and_place.xml -p tick_rate_hz:=100.0
 
 # Towel Unfold
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
@@ -240,13 +241,13 @@ ur5e_bt_coordinator/
 │   ├── bt_ros_bridge.hpp            # ROS topic ↔ BT bridge 헤더
 │   ├── bt_coordinator_node.hpp      # 메인 노드 헤더
 │   ├── hand_pose_config.hpp         # Hand/UR5e 포즈 lookup map, 손가락-관절 인덱스 매핑
-│   ├── action_nodes/                # 13개 action 노드 헤더
+│   ├── action_nodes/                # 14개 action 노드 헤더
 │   └── condition_nodes/             # 3개 condition 노드 헤더
 └── src/
     ├── main.cpp                     # 진입점
     ├── bt_coordinator_node.cpp      # 노드 초기화, BT tick 루프
     ├── bt_ros_bridge.cpp            # Topic 구독 및 발행
-    └── nodes/                       # 16개 노드 구현체
+    └── nodes/                       # 17개 노드 구현체
 ```
 
 ---

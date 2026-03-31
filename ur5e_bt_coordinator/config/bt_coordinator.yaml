@@ -3,7 +3,7 @@ bt_coordinator:
     # ── BT 설정 ──────────────────────────────────────────────────────────────
     # DeclareParameters()에서 선언되는 4개 파라미터
     tree_file: "pick_and_place.xml"   # trees/ 디렉토리 내 XML 파일명
-    tick_rate_hz: 20.0                # BT tick 주기 [Hz]
+    tick_rate_hz: 100.0               # BT tick 주기 [Hz]
     repeat: false                     # true: SUCCESS 완료 후 자동 반복, FAILURE 시 정지
     repeat_delay_s: 1.0               # 반복 시 재시작 전 대기 시간 [s]
 

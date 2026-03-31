@@ -9,32 +9,29 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace rtc_bt {
 
 /// 특정 손가락의 flex → extend 1회 cycle을 수행하는 BT Action Node.
 ///
-/// duration/2 동안 flex 포즈로 이동, 이후 duration/2 동안 home(extend)으로 복귀.
-/// 하위 컨트롤러가 quintic trajectory를 수행하므로 BT 노드에서는 보간하지 않는다.
+/// flex 포즈로 이동 후 trajectory 완료 시 home(extend)으로 복귀한다.
+/// 각 phase의 소요 시간은 RT 컨트롤러와 동일한 quintic trajectory duration
+/// 공식으로 추정한다.
 ///
 /// Input ports:
 ///   - finger_name (string): 손가락 이름
-///   - duration (double): flex+extend 전체 시간 [s] (min: kMinDuration)
+///   - hand_trajectory_speed (double): trajectory speed [rad/s] (기본 1.0)
+///   - hand_max_traj_velocity (double): max trajectory velocity [rad/s] (기본 2.0)
 class FlexExtendFinger : public BT::StatefulActionNode {
 public:
   FlexExtendFinger(const std::string& name, const BT::NodeConfig& config,
                    std::shared_ptr<BtRosBridge> bridge);
 
-  /// @brief BT 포트 정의
   static BT::PortsList providedPorts();
 
-  /// @brief flex 타겟 전송 (Phase 1 시작)
   BT::NodeStatus onStart() override;
-
-  /// @brief 시간 기반 phase 전환: FLEX → EXTEND → SUCCESS
   BT::NodeStatus onRunning() override;
-
-  /// @brief halt 로깅
   void onHalted() override;
 
 private:
@@ -42,9 +39,14 @@ private:
 
   std::shared_ptr<BtRosBridge> bridge_;
   std::string finger_name_;
-  double duration_{1.0};
+  double speed_{1.0};
+  double max_vel_{2.0};
   Phase phase_{Phase::kFlex};
-  bool extend_sent_{false};
+  double flex_duration_{0.01};
+  double extend_duration_{0.01};
+  HandPose flex_target_{};
+  HandPose home_target_{};
+  std::vector<int> joint_indices_;
   std::chrono::steady_clock::time_point start_time_;
 };
 

@@ -3,7 +3,7 @@
 ![version](https://img.shields.io/badge/version-v5.17.0-blue)
 
 BehaviorTree 기반 UR5e + Hand 비실시간 태스크 코디네이터.
-500Hz RT 제어 루프 외부에서 20Hz로 동작하며, ROS2 토픽을 통해 RT Controller와 통신한다.
+500Hz RT 제어 루프 외부에서 100Hz로 동작하며, ROS2 토픽을 통해 RT Controller와 통신한다.
 
 ---
 
@@ -359,46 +359,73 @@ RT Controller의 게인을 동적으로 변경한다. 설정하지 않은 필드
 
 #### MoveFinger
 
-특정 손가락을 명명된 포즈로 이동한다. 하위 컨트롤러가 quintic trajectory를 수행하므로, 목표 관절각과 duration만 전달하고 시간 기반으로 완료를 판정한다.
+특정 손가락을 명명된 포즈로 이동한다. RT 컨트롤러와 동일한 quintic trajectory duration 공식으로 소요 시간을 추정하여 완료를 판정한다.
 
 ```xml
 <MoveFinger finger_name="thumb"
             pose="thumb_index_oppose"
-            duration="{op_duration}"/>
+            hand_trajectory_speed="{hand_speed}"
+            hand_max_traj_velocity="{hand_max_vel}"/>
 ```
 
 | 포트 | 타입 | 기본값 | 설명 |
 |------|------|--------|------|
 | `finger_name` | string | (필수) | 손가락 이름 (`"thumb"` / `"index"` / `"middle"` / `"ring"`) |
 | `pose` | string | (필수) | 명명된 타겟 포즈 (`hand_pose_config.hpp`에서 lookup) |
-| `duration` | double | 1.0 s | Trajectory 실행 시간 |
+| `hand_trajectory_speed` | double | 1.0 rad/s | RT 컨트롤러 trajectory speed (duration 추정에 사용) |
+| `hand_max_traj_velocity` | double | 2.0 rad/s | RT 컨트롤러 max trajectory velocity |
 
 #### FlexExtendFinger
 
-특정 손가락의 flex → extend 1회 cycle을 수행한다. duration/2 동안 flex 포즈로 이동, 이후 duration/2 동안 home(extend)으로 복귀한다.
+특정 손가락의 flex → extend 1회 cycle을 수행한다. flex 포즈로 이동 후 trajectory 완료 시 home(extend)으로 복귀한다. 각 phase의 소요 시간은 RT 컨트롤러와 동일한 공식으로 추정한다.
 
 ```xml
 <FlexExtendFinger finger_name="index"
-                  duration="{wave_duration}"/>
+                  hand_trajectory_speed="{hand_speed}"
+                  hand_max_traj_velocity="{hand_max_vel}"/>
 ```
 
 | 포트 | 타입 | 기본값 | 설명 |
 |------|------|--------|------|
 | `finger_name` | string | (필수) | 손가락 이름 |
-| `duration` | double | 1.0 s | Flex+Extend 전체 시간 (min: 0.3s) |
+| `hand_trajectory_speed` | double | 1.0 rad/s | RT 컨트롤러 trajectory speed |
+| `hand_max_traj_velocity` | double | 2.0 rad/s | RT 컨트롤러 max trajectory velocity |
 
 #### SetHandPose
 
-Hand 전체 10-DoF를 명명된 포즈로 이동한다.
+Hand 전체 10-DoF를 명명된 포즈로 이동한다. RT 컨트롤러와 동일한 quintic trajectory duration 공식으로 소요 시간을 추정하여 완료를 판정한다.
 
 ```xml
-<SetHandPose pose="home" duration="{op_duration}"/>
+<SetHandPose pose="home"
+             hand_trajectory_speed="{hand_speed}"
+             hand_max_traj_velocity="{hand_max_vel}"/>
 ```
 
 | 포트 | 타입 | 기본값 | 설명 |
 |------|------|--------|------|
 | `pose` | string | (필수) | 명명된 Hand 포즈 (예: `"home"`, `"full_flex"`) |
-| `duration` | double | 1.0 s | Trajectory 실행 시간 |
+| `hand_trajectory_speed` | double | 1.0 rad/s | RT 컨트롤러 trajectory speed |
+| `hand_max_traj_velocity` | double | 2.0 rad/s | RT 컨트롤러 max trajectory velocity |
+
+#### MoveOpposition
+
+엄지 + 대상 손가락 opposition 동작을 수행한다. 비-target 손가락은 자동으로 home으로 리셋되어 잔류 문제를 방지한다.
+
+```xml
+<MoveOpposition thumb_pose="thumb_index_oppose"
+                target_finger="index"
+                target_pose="index_oppose"
+                hand_trajectory_speed="{hand_speed}"
+                hand_max_traj_velocity="{hand_max_vel}"/>
+```
+
+| 포트 | 타입 | 기본값 | 설명 |
+|------|------|--------|------|
+| `thumb_pose` | string | (필수) | 엄지 포즈 이름 |
+| `target_finger` | string | (필수) | 대상 손가락 이름 (`"index"` / `"middle"` / `"ring"`) |
+| `target_pose` | string | (필수) | 대상 손가락 포즈 이름 |
+| `hand_trajectory_speed` | double | 1.0 rad/s | RT 컨트롤러 trajectory speed |
+| `hand_max_traj_velocity` | double | 2.0 rad/s | RT 컨트롤러 max trajectory velocity |
 
 #### UR5eHoldPose
 

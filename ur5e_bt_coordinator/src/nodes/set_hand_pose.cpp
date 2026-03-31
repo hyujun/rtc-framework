@@ -15,7 +15,10 @@ BT::PortsList SetHandPose::providedPorts()
 {
   return {
     BT::InputPort<std::string>("pose", "명명된 Hand 포즈 (예: home, full_flex)"),
-    BT::InputPort<double>("duration", 1.0, "Trajectory duration [s]"),
+    BT::InputPort<double>("hand_trajectory_speed", kDefaultHandTrajectorySpeed,
+                           "Trajectory speed [rad/s]"),
+    BT::InputPort<double>("hand_max_traj_velocity", kDefaultHandMaxTrajVelocity,
+                           "Max trajectory velocity [rad/s]"),
   };
 }
 
@@ -26,16 +29,28 @@ BT::NodeStatus SetHandPose::onStart()
     throw BT::RuntimeError("SetHandPose: missing pose: ", pose_name.error());
   }
 
-  duration_ = getInput<double>("duration").value_or(1.0);
+  const double speed = getInput<double>("hand_trajectory_speed")
+                           .value_or(kDefaultHandTrajectorySpeed);
+  const double max_vel = getInput<double>("hand_max_traj_velocity")
+                             .value_or(kDefaultHandMaxTrajVelocity);
 
   const auto& target = LookupOrThrow(kHandPoses, pose_name.value(), "SetHandPose");
+  target_vec_.assign(target.begin(), target.end());
 
-  std::vector<double> target_vec(target.begin(), target.end());
-  bridge_->PublishHandTarget(target_vec);
+  // 현재 위치 읽기 → trajectory duration 추정
+  auto current = bridge_->GetHandJointPositions();
+  if (current.size() < static_cast<std::size_t>(kHandDofCount)) {
+    current.resize(kHandDofCount, 0.0);
+  }
+
+  duration_ = EstimateHandTrajectoryDuration(current, target_vec_, speed, max_vel);
+
+  // 목표 전송
+  bridge_->PublishHandTarget(target_vec_);
 
   RCLCPP_INFO(rclcpp::get_logger("bt"),
-              "[SetHandPose] pose=%s duration=%.2fs",
-              pose_name.value().c_str(), duration_);
+              "[SetHandPose] pose=%s estimated_duration=%.3fs (speed=%.2f)",
+              pose_name.value().c_str(), duration_, speed);
 
   start_time_ = std::chrono::steady_clock::now();
   return BT::NodeStatus::RUNNING;

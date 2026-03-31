@@ -14,6 +14,7 @@
 #include "ur5e_bt_coordinator/action_nodes/flex_extend_finger.hpp"
 #include "ur5e_bt_coordinator/action_nodes/set_hand_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/ur5e_hold_pose.hpp"
+#include "ur5e_bt_coordinator/action_nodes/move_opposition.hpp"
 
 // Condition nodes
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
@@ -80,6 +81,7 @@ void BtCoordinatorNode::RegisterBtNodes()
   factory_.registerNodeType<FlexExtendFinger>("FlexExtendFinger", bridge);
   factory_.registerNodeType<SetHandPose>("SetHandPose", bridge);
   factory_.registerNodeType<UR5eHoldPose>("UR5eHoldPose", bridge);
+  factory_.registerNodeType<MoveOpposition>("MoveOpposition", bridge);
 
   // ── Condition nodes ───────────────────────────────────────────────────
   factory_.registerNodeType<IsForceAbove>("IsForceAbove", bridge);

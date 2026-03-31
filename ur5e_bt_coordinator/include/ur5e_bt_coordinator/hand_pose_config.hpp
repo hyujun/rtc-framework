@@ -11,7 +11,7 @@ namespace rtc_bt {
 // ── 상수 ────────────────────────────────────────────────────────────────────
 inline constexpr int kHandDofCount = 10;
 inline constexpr int kArmDofCount = 6;
-inline constexpr double kMinDuration = 0.3;  // 최소 허용 duration [s]
+inline constexpr double kMinDuration = 0.1;  // 최소 허용 duration [s]
 
 // ── 손가락-관절 인덱스 매핑 ─────────────────────────────────────────────────
 // | Finger | Joints                                  | DoF | Index |
@@ -21,10 +21,13 @@ inline constexpr double kMinDuration = 0.3;  // 최소 허용 duration [s]
 // | Middle | MCP abd/add, MCP flex/ext, DIP flex/ext | 3   | 6–8   |
 // | Ring   | MCP flex/ext                            | 1   | 9     |
 inline const std::map<std::string, std::vector<int>> kFingerJointIndices = {
-    {"thumb",  {0, 1, 2}},
-    {"index",  {3, 4, 5}},
-    {"middle", {6, 7, 8}},
-    {"ring",   {9}},
+    {"thumb",      {0, 1, 2}},
+    {"thumb_mcp",  {2}},
+    {"index",      {3, 4, 5}},
+    {"index_dip",  {5}},
+    {"middle",     {6, 7, 8}},
+    {"middle_dip", {8}},
+    {"ring",       {9}},
 };
 
 // ── Hand 포즈 (10-DoF) ─────────────────────────────────────────────────────
@@ -46,8 +49,11 @@ inline const std::map<std::string, HandPose> kHandPoses = {
 
     // Flex 타겟 (FlexExtendFinger용, 손가락별)
     {"thumb_flex",           {0.5, 1.0, 0.8,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0}},
+    {"thumb_mcp_flex",       {0.0, 0.0, 0.8,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0}},
     {"index_flex",           {0.0, 0.0, 0.0,  0.0, 1.0, 0.8,  0.0, 0.0, 0.0,  0.0}},
+    {"index_dip_flex",       {0.0, 0.0, 0.0,  0.0, 0.0, 0.8,  0.0, 0.0, 0.0,  0.0}},
     {"middle_flex",          {0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 1.0, 0.8,  0.0}},
+    {"middle_dip_flex",      {0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.8,  0.0}},
     {"ring_flex",            {0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  1.0}},
 };
 // TODO: 하드웨어 캘리브레이션 후 placeholder 값 교체

@@ -1,198 +1,258 @@
 <!-- file: trees/hand_motions.xml -->
 <!-- UR5e + 10-DoF Hand Demo: Opposition + FlexExtend Wave -->
 <!-- BehaviorTree.CPP v4 syntax -->
+<!-- 가감속은 SetGains hand_trajectory_speed로 제어, -->
+<!-- 노드 완료는 RT 컨트롤러 trajectory duration 추정 기반 -->
 
 <root BTCPP_format="4" main_tree_to_execute="FullDemo">
 
   <!-- ================================================================== -->
   <!-- SingleOpposition: 엄지 + 대상 손가락 opposition → 조건부 home 복귀   -->
+  <!--   비-target 손가락은 자동으로 home 리셋 (MoveOpposition 내부)         -->
   <!-- ================================================================== -->
   <BehaviorTree ID="SingleOpposition">
     <Sequence>
-      <!-- 엄지와 대상 손가락을 동시에 opposition 포즈로 이동 -->
-      <Parallel success_count="2" failure_count="1">
-        <MoveFinger finger_name="thumb"            pose="{op_thumb_pose}"   duration="{op_duration}"/>
-        <MoveFinger finger_name="{op_target_finger}" pose="{op_target_pose}" duration="{op_duration}"/>
-      </Parallel>
+      <MoveOpposition thumb_pose="{op_thumb_pose}"
+                      target_finger="{op_target_finger}"
+                      target_pose="{op_target_pose}"
+                      hand_trajectory_speed="{hand_speed}"
+                      hand_max_traj_velocity="{hand_max_vel}"/>
 
       <!-- use_home_return == true 일 때만 home 포즈로 복귀 -->
       <Fallback>
         <Precondition if="use_home_return == false" else="FAILURE">
           <AlwaysSuccess/>
         </Precondition>
-        <SetHandPose pose="home" duration="{op_duration}"/>
+        <SetHandPose pose="home"
+                     hand_trajectory_speed="{hand_speed}"
+                     hand_max_traj_velocity="{hand_max_vel}"/>
       </Fallback>
     </Sequence>
   </BehaviorTree>
 
   <!-- ================================================================== -->
-  <!-- OppositionDemo: 가감속 Opposition (Phase 1→2→3)                     -->
+  <!-- OppositionCycle: index → middle → ring 1회 순회                      -->
   <!-- ================================================================== -->
-  <BehaviorTree ID="OppositionDemo">
+  <BehaviorTree ID="OppositionCycle">
     <Sequence>
-
-      <!-- 초기값 설정 -->
-      <Script code="op_duration := 1.5; use_home_return := true"/>
-
-      <!-- ── Phase 1: 느리게, home 경유 (1회 순회) ── -->
       <SubTree ID="SingleOpposition"
                op_thumb_pose="thumb_index_oppose"
                op_target_finger="index"
                op_target_pose="index_oppose"
-               op_duration="{op_duration}"
+               hand_speed="{hand_speed}"
+               hand_max_vel="{hand_max_vel}"
                use_home_return="{use_home_return}"/>
       <SubTree ID="SingleOpposition"
                op_thumb_pose="thumb_middle_oppose"
                op_target_finger="middle"
                op_target_pose="middle_oppose"
-               op_duration="{op_duration}"
+               hand_speed="{hand_speed}"
+               hand_max_vel="{hand_max_vel}"
                use_home_return="{use_home_return}"/>
       <SubTree ID="SingleOpposition"
                op_thumb_pose="thumb_ring_oppose"
                op_target_finger="ring"
                op_target_pose="ring_oppose"
-               op_duration="{op_duration}"
+               hand_speed="{hand_speed}"
+               hand_max_vel="{hand_max_vel}"
+               use_home_return="{use_home_return}"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ================================================================== -->
+  <!-- OppositionDemo: 가감속 Opposition (Phase 1→2→3)                     -->
+  <!--   가감속은 SetGains hand_trajectory_speed로 RT 컨트롤러와 동기화     -->
+  <!-- ================================================================== -->
+  <BehaviorTree ID="OppositionDemo">
+    <Sequence>
+
+      <!-- 초기값 설정 -->
+      <Script code="hand_speed := 0.5; hand_max_vel := 2.0; use_home_return := true"/>
+
+      <!-- ── Phase 1: 느리게, home 경유 (1회 순회) ── -->
+      <SetGains hand_trajectory_speed="0.5"/>
+      <SubTree ID="OppositionCycle"
+               hand_speed="{hand_speed}"
+               hand_max_vel="{hand_max_vel}"
                use_home_return="{use_home_return}"/>
 
-      <!-- ── Phase 2: 점점 빨라짐, home 생략 (3회 순회) ── -->
+      <!-- ── Phase 2: 가속, home 생략 (3회 순회) ── -->
       <Script code="use_home_return := false"/>
       <Repeat num_cycles="3">
         <Sequence>
-          <SubTree ID="SingleOpposition"
-                   op_thumb_pose="thumb_index_oppose"
-                   op_target_finger="index"
-                   op_target_pose="index_oppose"
-                   op_duration="{op_duration}"
+          <SubTree ID="OppositionCycle"
+                   hand_speed="{hand_speed}"
+                   hand_max_vel="{hand_max_vel}"
                    use_home_return="{use_home_return}"/>
-          <SubTree ID="SingleOpposition"
-                   op_thumb_pose="thumb_middle_oppose"
-                   op_target_finger="middle"
-                   op_target_pose="middle_oppose"
-                   op_duration="{op_duration}"
-                   use_home_return="{use_home_return}"/>
-          <SubTree ID="SingleOpposition"
-                   op_thumb_pose="thumb_ring_oppose"
-                   op_target_finger="ring"
-                   op_target_pose="ring_oppose"
-                   op_duration="{op_duration}"
-                   use_home_return="{use_home_return}"/>
-          <!-- decay: 가속 (최소 0.3s 보장) -->
-          <Script code="op_duration := op_duration * 0.7"/>
+          <!-- 가속: speed × 1.42857 (≈ 1/0.7), RT 컨트롤러도 동기화 -->
+          <Script code="hand_speed := hand_speed * 1.42857"/>
           <Fallback>
-            <Precondition if="op_duration >= 0.3" else="FAILURE">
+            <Precondition if="hand_speed &lt;= 3.0" else="FAILURE">
               <AlwaysSuccess/>
             </Precondition>
-            <Script code="op_duration := 0.3"/>
+            <Script code="hand_speed := 3.0"/>
           </Fallback>
+          <SetGains hand_trajectory_speed="{hand_speed}"/>
         </Sequence>
       </Repeat>
 
-      <!-- ── Phase 3: 점점 느려짐, home 경유 복원 (3회 순회) ── -->
+      <!-- ── Phase 3: 감속, home 경유 복원 (3회 순회) ── -->
       <Script code="use_home_return := true"/>
       <Repeat num_cycles="3">
         <Sequence>
-          <SubTree ID="SingleOpposition"
-                   op_thumb_pose="thumb_index_oppose"
-                   op_target_finger="index"
-                   op_target_pose="index_oppose"
-                   op_duration="{op_duration}"
+          <SubTree ID="OppositionCycle"
+                   hand_speed="{hand_speed}"
+                   hand_max_vel="{hand_max_vel}"
                    use_home_return="{use_home_return}"/>
-          <SubTree ID="SingleOpposition"
-                   op_thumb_pose="thumb_middle_oppose"
-                   op_target_finger="middle"
-                   op_target_pose="middle_oppose"
-                   op_duration="{op_duration}"
-                   use_home_return="{use_home_return}"/>
-          <SubTree ID="SingleOpposition"
-                   op_thumb_pose="thumb_ring_oppose"
-                   op_target_finger="ring"
-                   op_target_pose="ring_oppose"
-                   op_duration="{op_duration}"
-                   use_home_return="{use_home_return}"/>
-          <!-- accel_factor (1/0.7 ≈ 1.4): 감속 (최대 1.5s 보장) -->
-          <Script code="op_duration := op_duration * 1.4"/>
+          <!-- 감속: speed × 0.7 (정확한 역수), RT 컨트롤러도 동기화 -->
+          <Script code="hand_speed := hand_speed * 0.7"/>
           <Fallback>
-            <Precondition if="op_duration &lt;= 1.5" else="FAILURE">
+            <Precondition if="hand_speed >= 0.5" else="FAILURE">
               <AlwaysSuccess/>
             </Precondition>
-            <Script code="op_duration := 1.5"/>
+            <Script code="hand_speed := 0.5"/>
           </Fallback>
+          <SetGains hand_trajectory_speed="{hand_speed}"/>
         </Sequence>
       </Repeat>
+
+      <!-- 기본 속도 복원 -->
+      <SetGains hand_trajectory_speed="1.0"/>
 
     </Sequence>
   </BehaviorTree>
 
   <!-- ================================================================== -->
   <!-- WaveDemo: 가감속 Flexion/Extension Wave (Phase 1→2→3)               -->
+  <!--   가감속은 SetGains hand_trajectory_speed로 RT 컨트롤러와 동기화     -->
   <!-- ================================================================== -->
   <BehaviorTree ID="WaveDemo">
     <Sequence>
 
       <!-- 초기값 설정 -->
-      <Script code="wave_duration := 2.0"/>
+      <Script code="hand_speed := 0.5; hand_max_vel := 2.0"/>
 
       <!-- ── Phase 1: 순차, 점점 빠르게 (3회) ── -->
+      <SetGains hand_trajectory_speed="0.5"/>
       <Repeat num_cycles="3">
         <Sequence name="AcceleratingWave">
-          <FlexExtendFinger finger_name="thumb"  duration="{wave_duration}"/>
-          <FlexExtendFinger finger_name="index"  duration="{wave_duration}"/>
-          <FlexExtendFinger finger_name="middle" duration="{wave_duration}"/>
-          <FlexExtendFinger finger_name="ring"   duration="{wave_duration}"/>
-          <!-- 가속 (최소 0.3s 보장) -->
-          <Script code="wave_duration := wave_duration * 0.7"/>
+          <FlexExtendFinger finger_name="thumb"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
+          <FlexExtendFinger finger_name="index"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
+          <FlexExtendFinger finger_name="middle"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
+          <FlexExtendFinger finger_name="ring"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
+          <!-- 가속: speed × 1.42857, 최대 3.0 -->
+          <Script code="hand_speed := hand_speed * 1.42857"/>
           <Fallback>
-            <Precondition if="wave_duration >= 0.3" else="FAILURE">
+            <Precondition if="hand_speed &lt;= 3.0" else="FAILURE">
               <AlwaysSuccess/>
             </Precondition>
-            <Script code="wave_duration := 0.3"/>
+            <Script code="hand_speed := 3.0"/>
           </Fallback>
+          <SetGains hand_trajectory_speed="{hand_speed}"/>
         </Sequence>
       </Repeat>
 
       <!-- ── Phase 2: 동시, 최고 속도 (3회) ── -->
       <Repeat num_cycles="3">
         <Parallel success_count="4" failure_count="1" name="SimultaneousFastWave">
-          <FlexExtendFinger finger_name="thumb"  duration="{wave_duration}"/>
-          <FlexExtendFinger finger_name="index"  duration="{wave_duration}"/>
-          <FlexExtendFinger finger_name="middle" duration="{wave_duration}"/>
-          <FlexExtendFinger finger_name="ring"   duration="{wave_duration}"/>
+          <FlexExtendFinger finger_name="thumb"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
+          <FlexExtendFinger finger_name="index"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
+          <FlexExtendFinger finger_name="middle"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
+          <FlexExtendFinger finger_name="ring"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
         </Parallel>
       </Repeat>
 
       <!-- ── Phase 3: 순차, 점점 느려짐 (3회) ── -->
       <Repeat num_cycles="3">
         <Sequence name="DeceleratingWave">
-          <FlexExtendFinger finger_name="thumb"  duration="{wave_duration}"/>
-          <FlexExtendFinger finger_name="index"  duration="{wave_duration}"/>
-          <FlexExtendFinger finger_name="middle" duration="{wave_duration}"/>
-          <FlexExtendFinger finger_name="ring"   duration="{wave_duration}"/>
-          <!-- 감속 (최대 2.0s 보장) -->
-          <Script code="wave_duration := wave_duration * 1.4"/>
+          <FlexExtendFinger finger_name="thumb"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
+          <FlexExtendFinger finger_name="index"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
+          <FlexExtendFinger finger_name="middle"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
+          <FlexExtendFinger finger_name="ring"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
+          <!-- 감속: speed × 0.7, 최소 0.5 -->
+          <Script code="hand_speed := hand_speed * 0.7"/>
           <Fallback>
-            <Precondition if="wave_duration &lt;= 2.0" else="FAILURE">
+            <Precondition if="hand_speed >= 0.5" else="FAILURE">
               <AlwaysSuccess/>
             </Precondition>
-            <Script code="wave_duration := 2.0"/>
+            <Script code="hand_speed := 0.5"/>
           </Fallback>
+          <SetGains hand_trajectory_speed="{hand_speed}"/>
         </Sequence>
       </Repeat>
+
+      <!-- 기본 속도 복원 -->
+      <SetGains hand_trajectory_speed="1.0"/>
 
     </Sequence>
   </BehaviorTree>
 
   <!-- ================================================================== -->
-  <!-- FullDemo: UR5e 초기 위치 유지 + Hand 데모 (Opposition → Wave)        -->
+  <!-- FingerArticulationDemo: 관절별 flex/extend 순차 시연                 -->
+  <!--   thumb MCP f/e → index DIP f/e → index full f/e →                  -->
+  <!--   middle DIP f/e → middle full f/e                                  -->
+  <!-- ================================================================== -->
+  <BehaviorTree ID="FingerArticulationDemo">
+    <Sequence>
+      <FlexExtendFinger finger_name="thumb_mcp"
+                        hand_trajectory_speed="{hand_speed}"
+                        hand_max_traj_velocity="{hand_max_vel}"/>
+      <FlexExtendFinger finger_name="index_dip"
+                        hand_trajectory_speed="{hand_speed}"
+                        hand_max_traj_velocity="{hand_max_vel}"/>
+      <FlexExtendFinger finger_name="index"
+                        hand_trajectory_speed="{hand_speed}"
+                        hand_max_traj_velocity="{hand_max_vel}"/>
+      <FlexExtendFinger finger_name="middle_dip"
+                        hand_trajectory_speed="{hand_speed}"
+                        hand_max_traj_velocity="{hand_max_vel}"/>
+      <FlexExtendFinger finger_name="middle"
+                        hand_trajectory_speed="{hand_speed}"
+                        hand_max_traj_velocity="{hand_max_vel}"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ================================================================== -->
+  <!-- FullDemo: UR5e 데모 자세 유지 + Hand 데모                            -->
+  <!--   Opposition → FingerArticulation → Wave                            -->
   <!-- ================================================================== -->
   <BehaviorTree ID="FullDemo">
     <!-- success_count=1: Hand 시퀀스 완료 시 종료 (UR5e halt) -->
     <Parallel success_count="1" failure_count="1">
-      <!-- UR5e: 초기 위치(home)로 이동 후 모션 종료까지 대기 -->
-      <UR5eHoldPose pose="home_pose"/>
+      <!-- UR5e: 데모 자세로 이동 후 모션 종료까지 대기 -->
+      <UR5eHoldPose pose="demo_pose"/>
 
-      <!-- Hand: Opposition → Wave 순차 실행 -->
+      <!-- Hand: Opposition → FingerArticulation → Wave 순차 실행 -->
       <Sequence name="HandDemoSequence">
+        <Script code="hand_speed := 1.0; hand_max_vel := 2.0"/>
         <SubTree ID="OppositionDemo"/>
+        <SubTree ID="FingerArticulationDemo"
+                 hand_speed="{hand_speed}"
+                 hand_max_vel="{hand_max_vel}"/>
         <SubTree ID="WaveDemo"/>
       </Sequence>
     </Parallel>

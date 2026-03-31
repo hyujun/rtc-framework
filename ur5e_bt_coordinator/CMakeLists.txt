@@ -32,6 +32,7 @@ add_library(bt_nodes SHARED
   src/nodes/flex_extend_finger.cpp
   src/nodes/set_hand_pose.cpp
   src/nodes/ur5e_hold_pose.cpp
+  src/nodes/move_opposition.cpp
 )
 target_include_directories(bt_nodes PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

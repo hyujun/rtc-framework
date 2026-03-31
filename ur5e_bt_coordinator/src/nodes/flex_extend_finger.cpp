@@ -17,7 +17,10 @@ BT::PortsList FlexExtendFinger::providedPorts()
 {
   return {
     BT::InputPort<std::string>("finger_name", "손가락 이름 (thumb/index/middle/ring)"),
-    BT::InputPort<double>("duration", 1.0, "Flex+Extend 전체 시간 [s]"),
+    BT::InputPort<double>("hand_trajectory_speed", kDefaultHandTrajectorySpeed,
+                           "Trajectory speed [rad/s]"),
+    BT::InputPort<double>("hand_max_traj_velocity", kDefaultHandMaxTrajVelocity,
+                           "Max trajectory velocity [rad/s]"),
   };
 }
 
@@ -29,49 +32,65 @@ BT::NodeStatus FlexExtendFinger::onStart()
   }
   finger_name_ = finger_name.value();
 
-  duration_ = getInput<double>("duration").value_or(1.0);
-  // 안전 clamp: 최소 duration 보장
-  duration_ = std::max(duration_, kMinDuration);
+  speed_ = getInput<double>("hand_trajectory_speed")
+               .value_or(kDefaultHandTrajectorySpeed);
+  max_vel_ = getInput<double>("hand_max_traj_velocity")
+                 .value_or(kDefaultHandMaxTrajVelocity);
 
-  // Phase 1 (Flex): 해당 손가락을 flex 타겟으로 이동
+  // 포즈 lookup
   const std::string flex_pose_name = finger_name_ + "_flex";
-  const auto& flex_pose = LookupOrThrow(kHandPoses, flex_pose_name, "FlexExtendFinger");
-  const auto& joint_indices = LookupOrThrow(kFingerJointIndices, finger_name_, "FlexExtendFinger");
+  flex_target_ = LookupOrThrow(kHandPoses, flex_pose_name, "FlexExtendFinger");
+  home_target_ = LookupOrThrow(kHandPoses, std::string("home"), "FlexExtendFinger");
+  joint_indices_ = LookupOrThrow(kFingerJointIndices, finger_name_, "FlexExtendFinger");
 
-  ApplyPartialHandTarget(*bridge_, flex_pose, joint_indices);
+  // 현재 위치 → flex duration 추정
+  auto current = bridge_->GetHandJointPositions();
+  if (current.size() < static_cast<std::size_t>(kHandDofCount)) {
+    current.resize(kHandDofCount, 0.0);
+  }
+
+  flex_duration_ = EstimateHandTrajectoryDuration(
+      current, flex_target_, joint_indices_, speed_, max_vel_);
+  extend_duration_ = 0.01;  // extend phase 시작 시 재계산
+
+  // Phase 1 (Flex): flex 타겟 전송
+  ApplyPartialHandTarget(*bridge_, flex_target_, joint_indices_);
 
   RCLCPP_INFO(rclcpp::get_logger("bt"),
-              "[FlexExtendFinger] finger=%s duration=%.2fs (flex phase: %.2fs)",
-              finger_name_.c_str(), duration_, duration_ / 2.0);
+              "[FlexExtendFinger] finger=%s flex_duration=%.3fs (speed=%.2f)",
+              finger_name_.c_str(), flex_duration_, speed_);
 
   phase_ = Phase::kFlex;
-  extend_sent_ = false;
   start_time_ = std::chrono::steady_clock::now();
   return BT::NodeStatus::RUNNING;
 }
 
 BT::NodeStatus FlexExtendFinger::onRunning()
 {
-  double elapsed_s = ElapsedSeconds(start_time_);
-  double half_duration = duration_ / 2.0;
+  const double elapsed = ElapsedSeconds(start_time_);
 
   // Phase 전환: FLEX → EXTEND
-  if (phase_ == Phase::kFlex && elapsed_s >= half_duration && !extend_sent_) {
-    const auto& home_pose = LookupOrThrow(kHandPoses, std::string("home"), "FlexExtendFinger");
-    const auto& joint_indices = LookupOrThrow(kFingerJointIndices, finger_name_, "FlexExtendFinger");
+  if (phase_ == Phase::kFlex && elapsed >= flex_duration_) {
+    // 현재 위치 다시 읽어서 extend duration 추정
+    auto current = bridge_->GetHandJointPositions();
+    if (current.size() < static_cast<std::size_t>(kHandDofCount)) {
+      current.resize(kHandDofCount, 0.0);
+    }
 
-    ApplyPartialHandTarget(*bridge_, home_pose, joint_indices);
+    extend_duration_ = EstimateHandTrajectoryDuration(
+        current, home_target_, joint_indices_, speed_, max_vel_);
+
+    ApplyPartialHandTarget(*bridge_, home_target_, joint_indices_);
 
     RCLCPP_INFO(rclcpp::get_logger("bt"),
-                "[FlexExtendFinger] finger=%s extend phase (%.2fs)",
-                finger_name_.c_str(), half_duration);
+                "[FlexExtendFinger] finger=%s extend phase (%.3fs)",
+                finger_name_.c_str(), extend_duration_);
 
     phase_ = Phase::kExtend;
-    extend_sent_ = true;
   }
 
-  // 전체 duration 완료
-  if (elapsed_s >= duration_) {
+  // 전체 완료
+  if (phase_ == Phase::kExtend && elapsed >= flex_duration_ + extend_duration_) {
     return BT::NodeStatus::SUCCESS;
   }
   return BT::NodeStatus::RUNNING;
