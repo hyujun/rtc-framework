@@ -1,16 +1,22 @@
-<root BTCPP_format="4">
+<!-- file: trees/towel_unfold.xml -->
+<!-- UR5e + Hand Towel Unfold demo -->
+<!-- BehaviorTree.CPP v4 syntax -->
+<!-- Prerequisite: sweep_direction_x/y, sweep_distance in Blackboard -->
+
+<root BTCPP_format="4" main_tree_to_execute="TowelUnfold">
+
+  <include path="common_motions.xml"/>
+
   <BehaviorTree ID="TowelUnfold">
     <Sequence name="main">
 
       <!-- ======================================================== -->
       <!-- Phase 1: Detect towel edge via vision                     -->
       <!-- ======================================================== -->
-      <RetryUntilSuccessful num_attempts="10">
-        <Sequence name="detect_edge">
-          <WaitDuration duration_s="0.5"/>
-          <IsObjectDetected pose="{edge_pose}"/>
-        </Sequence>
-      </RetryUntilSuccessful>
+      <SubTree ID="DetectObject"
+               pose="{edge_pose}"
+               num_attempts="10"
+               wait_s="0.5"/>
 
       <!-- ======================================================== -->
       <!-- Phase 2: Pre-shape hand for pinch and approach edge       -->
@@ -20,27 +26,27 @@
                     target_positions="0.3;0.0;0.0;0.3;0.0;0.0;0.0;0.0;0.0;0.0"
                     timeout_s="3.0"/>
 
-      <ComputeOffsetPose input_pose="{edge_pose}"
-                         offset_z="0.05"
-                         output_pose="{approach_pose}"/>
-
-      <MoveToPose target="{approach_pose}"
-                  position_tolerance="0.003"
-                  orientation_tolerance="0.05"
-                  timeout_s="10.0"/>
+      <SubTree ID="ApproachFromAbove"
+               target_pose="{edge_pose}"
+               offset_z="0.05"
+               pos_tol="0.003"
+               ori_tol="0.05"
+               timeout_s="10.0"
+               approach_pose="{approach_pose}"/>
 
       <!-- ======================================================== -->
       <!-- Phase 3: Descend to edge and pinch grasp                  -->
       <!-- ======================================================== -->
-      <SetGains trajectory_speed="0.03"
-                max_traj_velocity="0.08"/>
-
-      <MoveToPose target="{edge_pose}"
-                  position_tolerance="0.002"
-                  orientation_tolerance="0.05"
-                  timeout_s="8.0"/>
+      <SubTree ID="SlowDescend"
+               target_pose="{edge_pose}"
+               traj_speed="0.03"
+               max_traj_vel="0.08"
+               pos_tol="0.002"
+               ori_tol="0.05"
+               timeout_s="8.0"/>
 
       <!-- Pinch grasp — low force for thin fabric -->
+      <!-- pinch_motors 사용하므로 ForceGrasp SubTree 대신 인라인 -->
       <Parallel success_count="1" failure_count="1">
         <GraspControl mode="pinch"
                       close_speed="0.2"
@@ -64,20 +70,16 @@
       <!-- ======================================================== -->
       <!-- Phase 4: Lift towel edge                                  -->
       <!-- ======================================================== -->
-      <SetGains trajectory_speed="0.05"
-                max_traj_velocity="0.15"/>
-
-      <ComputeOffsetPose input_pose="{edge_pose}"
-                         offset_z="0.25"
-                         output_pose="{lift_pose}"/>
-
-      <MoveToPose target="{lift_pose}"
-                  position_tolerance="0.005"
-                  timeout_s="8.0"/>
-
-      <!-- Verify still grasped after lift -->
-      <IsGrasped force_threshold_N="0.2"
-                 min_fingertips="1"/>
+      <SubTree ID="LiftAndVerify"
+               base_pose="{edge_pose}"
+               offset_z="0.25"
+               traj_speed="0.05"
+               max_traj_vel="0.15"
+               pos_tol="0.005"
+               timeout_s="8.0"
+               verify_force_N="0.2"
+               verify_min_tips="1"
+               lift_pose="{lift_pose}"/>
 
       <!-- ======================================================== -->
       <!-- Phase 5: Sweep to unfold                                  -->
@@ -88,7 +90,6 @@
                 trajectory_speed="0.08"
                 max_traj_velocity="0.2"/>
 
-      <!-- sweep_direction_x/y should be set in Blackboard -->
       <ComputeSweepTrajectory start_pose="{lift_pose}"
                               direction_x="{sweep_direction_x}"
                               direction_y="{sweep_direction_y}"
@@ -108,7 +109,6 @@
                 kp_rotation="5.0,5.0,5.0"
                 trajectory_speed="0.05"/>
 
-      <!-- Compute current TCP as sweep end -->
       <ComputeOffsetPose input_pose="{lift_pose}"
                          offset_z="-0.20"
                          output_pose="{place_edge_pose}"/>
@@ -117,22 +117,17 @@
                   position_tolerance="0.005"
                   timeout_s="8.0"/>
 
-      <GraspControl mode="open"
-                    target_positions="0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0"
-                    timeout_s="3.0"/>
-
       <!-- ======================================================== -->
-      <!-- Phase 7: Retreat                                          -->
+      <!-- Phase 7: Release and retreat                              -->
       <!-- ======================================================== -->
-      <ComputeOffsetPose input_pose="{place_edge_pose}"
-                         offset_z="0.10"
-                         output_pose="{retreat_pose}"/>
-
-      <SetGains trajectory_speed="0.1"/>
-      <MoveToPose target="{retreat_pose}"
-                  position_tolerance="0.005"
-                  timeout_s="6.0"/>
+      <SubTree ID="ReleaseAndRetreat"
+               base_pose="{place_edge_pose}"
+               retreat_z="0.10"
+               retreat_speed="0.1"
+               timeout_s="6.0"
+               retreat_pose="{retreat_pose}"/>
 
     </Sequence>
   </BehaviorTree>
+
 </root>

@@ -72,9 +72,10 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 
 | 트리 | 파일 | 설명 |
 |------|------|------|
+| Common Motions | `trees/common_motions.xml` | 재사용 가능한 공통 모션 SubTree 라이브러리 (DetectObject, ForceGrasp, LiftAndVerify 등) |
 | Pick and Place | `trees/pick_and_place.xml` | Vision 기반 물체 감지 → approach → force-based grasp → lift → transport → lower/release → retreat |
 | Towel Unfold | `trees/towel_unfold.xml` | 수건 edge 감지 → pinch pre-shape → approach → pinch grasp → lift → compliant sweep → lower/release → retreat |
-| Hand Motions | `trees/hand_motions.xml` | UR5e 자세 유지(UR5eHoldPose) + Hand 가감속 opposition/wave 데모 (OppositionDemo → WaveDemo) |
+| Hand Motions | `trees/hand_motions.xml` | UR5e 자세 유지 + Hand 데모 (OppositionDemo → FingerArticulationDemo → WaveDemo) |
 
 ## BT 노드
 
@@ -131,32 +132,42 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 
 ### Hand/UR5e 포즈 설정 (`hand_pose_config.hpp`)
 
-코드 내 `kHandPoses` 맵에 정의된 명명 포즈 (10-DoF):
+포즈 값은 **도(°) 단위**로 작성하고, `DegToRad()` 래퍼로 자동 rad 변환된다:
+
+```cpp
+{"my_pose", DegToRad(HandPose{30.0, 60.0, 45.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0})},
+```
+
+`kHandPoses` 맵에 정의된 명명 포즈 (10-DoF):
 
 | 포즈 이름 | 용도 |
 |-----------|------|
-| `home` | 기본 포즈 (전체 0) |
+| `home` | 기본 포즈 (전체 0°) |
 | `full_flex` | 전체 손가락 flexion |
 | `thumb_index_oppose` / `index_oppose` | 엄지-검지 opposition |
 | `thumb_middle_oppose` / `middle_oppose` | 엄지-중지 opposition |
 | `thumb_ring_oppose` / `ring_oppose` | 엄지-약지 opposition |
-| `thumb_flex` / `index_flex` / `middle_flex` / `ring_flex` | FlexExtendFinger용 flex 타겟 |
+| `thumb_flex` / `index_flex` / `middle_flex` / `ring_flex` | FlexExtendFinger용 flex 타겟 (전체 손가락) |
+| `thumb_mcp_flex` / `index_dip_flex` / `middle_dip_flex` | FlexExtendFinger용 flex 타겟 (단일 관절) |
 
 `kUR5ePoses` 맵에 정의된 UR5e 포즈 (6-DoF):
 
 | 포즈 이름 | 용도 |
 |-----------|------|
-| `home_pose` | 기본 자세 |
-| `demo_pose` | 데모 자세 |
+| `home_pose` | 기본 자세 (0°) |
+| `demo_pose` | 데모 자세 (0, -90, 90, -90, -90, 0°) |
 
 손가락-관절 인덱스 매핑 (`kFingerJointIndices`):
 
-| 손가락 | 관절 | DoF | 인덱스 |
-|--------|------|-----|--------|
-| thumb | CMC abd/add, CMC flex/ext, MCP flex/ext | 3 | 0-2 |
-| index | MCP abd/add, MCP flex/ext, DIP flex/ext | 3 | 3-5 |
-| middle | MCP abd/add, MCP flex/ext, DIP flex/ext | 3 | 6-8 |
-| ring | MCP flex/ext | 1 | 9 |
+| 이름 | 관절 | DoF | 인덱스 |
+|------|------|-----|--------|
+| `thumb` | CMC abd/add, CMC flex/ext, MCP flex/ext | 3 | 0-2 |
+| `thumb_mcp` | MCP flex/ext | 1 | 2 |
+| `index` | MCP abd/add, MCP flex/ext, DIP flex/ext | 3 | 3-5 |
+| `index_dip` | DIP flex/ext | 1 | 5 |
+| `middle` | MCP abd/add, MCP flex/ext, DIP flex/ext | 3 | 6-8 |
+| `middle_dip` | DIP flex/ext | 1 | 8 |
+| `ring` | MCP flex/ext | 1 | 9 |
 
 ## SetGains 배열 레이아웃
 
@@ -232,6 +243,7 @@ ros2 run ur5e_bt_coordinator bt_coordinator_node \
 ur5e_bt_coordinator/
 ├── config/bt_coordinator.yaml       # ROS2 파라미터
 ├── trees/
+│   ├── common_motions.xml           # 재사용 가능 공통 모션 SubTree
 │   ├── pick_and_place.xml           # 물체 파지 시나리오
 │   ├── towel_unfold.xml             # 수건 펼치기 시나리오
 │   └── hand_motions.xml             # Hand 민첩성 데모 시나리오

@@ -1,0 +1,124 @@
+<!-- file: trees/common_motions.xml -->
+<!-- Reusable motion SubTrees for pick-and-place / manipulation tasks -->
+<!-- BehaviorTree.CPP v4 syntax -->
+<!-- Usage: <include path="common_motions.xml"/> in main tree file -->
+
+<root BTCPP_format="4">
+
+  <!-- ================================================================== -->
+  <!-- DetectObject: 재시도 기반 물체 감지                                   -->
+  <!--   Ports: pose (output), num_attempts, wait_s                       -->
+  <!-- ================================================================== -->
+  <BehaviorTree ID="DetectObject">
+    <RetryUntilSuccessful num_attempts="{num_attempts}">
+      <Sequence>
+        <WaitDuration duration_s="{wait_s}"/>
+        <IsObjectDetected pose="{pose}"/>
+      </Sequence>
+    </RetryUntilSuccessful>
+  </BehaviorTree>
+
+  <!-- ================================================================== -->
+  <!-- ApproachFromAbove: 목표 위 오프셋으로 접근                            -->
+  <!--   Ports: target_pose, offset_z, pos_tol, ori_tol, timeout_s        -->
+  <!--          approach_pose (output)                                     -->
+  <!-- ================================================================== -->
+  <BehaviorTree ID="ApproachFromAbove">
+    <Sequence>
+      <ComputeOffsetPose input_pose="{target_pose}"
+                         offset_z="{offset_z}"
+                         output_pose="{approach_pose}"/>
+      <MoveToPose target="{approach_pose}"
+                  position_tolerance="{pos_tol}"
+                  orientation_tolerance="{ori_tol}"
+                  timeout_s="{timeout_s}"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ================================================================== -->
+  <!-- SlowDescend: 저속 게인 설정 후 목표로 이동                            -->
+  <!--   Ports: target_pose, traj_speed, max_traj_vel,                    -->
+  <!--          pos_tol, ori_tol, timeout_s                               -->
+  <!-- ================================================================== -->
+  <BehaviorTree ID="SlowDescend">
+    <Sequence>
+      <SetGains trajectory_speed="{traj_speed}"
+                max_traj_velocity="{max_traj_vel}"/>
+      <MoveToPose target="{target_pose}"
+                  position_tolerance="{pos_tol}"
+                  orientation_tolerance="{ori_tol}"
+                  timeout_s="{timeout_s}"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ================================================================== -->
+  <!-- ForceGrasp: 힘 감지 기반 파지 (병렬 close + 힘 감지 + 검증)          -->
+  <!--   Ports: grasp_mode, close_speed, max_position, grasp_timeout_s,   -->
+  <!--          threshold_N, min_fingertips, sustained_ms,                -->
+  <!--          verify_force_N, verify_min_tips                           -->
+  <!-- ================================================================== -->
+  <BehaviorTree ID="ForceGrasp">
+    <Sequence>
+      <Parallel success_count="1" failure_count="1">
+        <GraspControl mode="{grasp_mode}"
+                      close_speed="{close_speed}"
+                      max_position="{max_position}"
+                      timeout_s="{grasp_timeout_s}"/>
+        <RetryUntilSuccessful num_attempts="200">
+          <Sequence>
+            <WaitDuration duration_s="0.05"/>
+            <IsForceAbove threshold_N="{threshold_N}"
+                          min_fingertips="{min_fingertips}"
+                          sustained_ms="{sustained_ms}"/>
+          </Sequence>
+        </RetryUntilSuccessful>
+      </Parallel>
+      <WaitDuration duration_s="0.3"/>
+      <IsGrasped force_threshold_N="{verify_force_N}"
+                 min_fingertips="{verify_min_tips}"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ================================================================== -->
+  <!-- LiftAndVerify: 리프트 후 파지 검증                                   -->
+  <!--   Ports: base_pose, offset_z, traj_speed, max_traj_vel,            -->
+  <!--          pos_tol, timeout_s, verify_force_N, verify_min_tips,      -->
+  <!--          lift_pose (output)                                        -->
+  <!-- ================================================================== -->
+  <BehaviorTree ID="LiftAndVerify">
+    <Sequence>
+      <SetGains trajectory_speed="{traj_speed}"
+                max_traj_velocity="{max_traj_vel}"/>
+      <ComputeOffsetPose input_pose="{base_pose}"
+                         offset_z="{offset_z}"
+                         output_pose="{lift_pose}"/>
+      <MoveToPose target="{lift_pose}"
+                  position_tolerance="{pos_tol}"
+                  timeout_s="{timeout_s}"/>
+      <IsGrasped force_threshold_N="{verify_force_N}"
+                 min_fingertips="{verify_min_tips}"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ================================================================== -->
+  <!-- ReleaseAndRetreat: 핸드 오픈 + 상방 후퇴                             -->
+  <!--   Ports: base_pose, retreat_z, retreat_speed, timeout_s,           -->
+  <!--          retreat_pose (output)                                     -->
+  <!-- ================================================================== -->
+  <BehaviorTree ID="ReleaseAndRetreat">
+    <Sequence>
+      <GraspControl mode="open"
+                    target_positions="0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0"
+                    timeout_s="3.0"/>
+      <WaitDuration duration_s="0.3"/>
+      <ComputeOffsetPose input_pose="{base_pose}"
+                         offset_z="{retreat_z}"
+                         output_pose="{retreat_pose}"/>
+      <SetGains trajectory_speed="{retreat_speed}"/>
+      <MoveToPose target="{retreat_pose}"
+                  position_tolerance="0.005"
+                  timeout_s="{timeout_s}"/>
+    </Sequence>
+  </BehaviorTree>
+
+</root>
