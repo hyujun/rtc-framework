@@ -1,0 +1,118 @@
+<?xml version="1.0"?>
+<!-- arm_with_mimic.urdf — 5-DoF arm + 2-finger parallel gripper (테스트용)
+     base_link → link_1 → ... → link_5 → gripper_base → finger_left / finger_right
+     finger_right_joint이 finger_left_joint을 mimic (multiplier=-1)
+     transmission은 arm 관절 + finger_left만 → finger_right는 passive+mimic -->
+<robot name="arm_with_mimic">
+
+  <!-- ── Arm links ─────────────────────────────────────────────── -->
+  <link name="base_link">
+    <inertial><mass value="5.0"/><origin xyz="0 0 0.05"/><inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+  </link>
+  <link name="link_1">
+    <inertial><mass value="3.0"/><origin xyz="0 0 0.15"/><inertia ixx="0.005" ixy="0" ixz="0" iyy="0.005" iyz="0" izz="0.003"/></inertial>
+  </link>
+  <link name="link_2">
+    <inertial><mass value="2.5"/><origin xyz="0 0 0.2"/><inertia ixx="0.004" ixy="0" ixz="0" iyy="0.004" iyz="0" izz="0.002"/></inertial>
+  </link>
+  <link name="link_3">
+    <inertial><mass value="2.0"/><origin xyz="0 0 0.15"/><inertia ixx="0.003" ixy="0" ixz="0" iyy="0.003" iyz="0" izz="0.002"/></inertial>
+  </link>
+  <link name="link_4">
+    <inertial><mass value="1.5"/><origin xyz="0 0 0.1"/><inertia ixx="0.002" ixy="0" ixz="0" iyy="0.002" iyz="0" izz="0.001"/></inertial>
+  </link>
+  <link name="link_5">
+    <inertial><mass value="1.0"/><origin xyz="0 0 0.08"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+  </link>
+
+  <!-- ── Gripper links ─────────────────────────────────────────── -->
+  <link name="gripper_base">
+    <inertial><mass value="0.3"/><origin xyz="0 0 0.02"/><inertia ixx="0.0005" ixy="0" ixz="0" iyy="0.0005" iyz="0" izz="0.0005"/></inertial>
+  </link>
+  <link name="finger_left">
+    <inertial><mass value="0.1"/><origin xyz="0 0.02 0"/><inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/></inertial>
+  </link>
+  <link name="finger_right">
+    <inertial><mass value="0.1"/><origin xyz="0 -0.02 0"/><inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/></inertial>
+  </link>
+
+  <!-- ── Arm joints ────────────────────────────────────────────── -->
+  <joint name="joint_1" type="revolute">
+    <parent link="base_link"/><child link="link_1"/>
+    <origin xyz="0 0 0.1"/><axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="100" velocity="2"/>
+  </joint>
+  <joint name="joint_2" type="revolute">
+    <parent link="link_1"/><child link="link_2"/>
+    <origin xyz="0 0 0.3"/><axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="100" velocity="2"/>
+  </joint>
+  <joint name="joint_3" type="revolute">
+    <parent link="link_2"/><child link="link_3"/>
+    <origin xyz="0 0 0.4"/><axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="80" velocity="2.5"/>
+  </joint>
+  <joint name="joint_4" type="revolute">
+    <parent link="link_3"/><child link="link_4"/>
+    <origin xyz="0 0 0.3"/><axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="50" velocity="3"/>
+  </joint>
+  <joint name="joint_5" type="revolute">
+    <parent link="link_4"/><child link="link_5"/>
+    <origin xyz="0 0 0.2"/><axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="50" velocity="3"/>
+  </joint>
+
+  <!-- ── Gripper joints ────────────────────────────────────────── -->
+  <joint name="gripper_base_joint" type="fixed">
+    <parent link="link_5"/><child link="gripper_base"/>
+    <origin xyz="0 0 0.16"/>
+  </joint>
+
+  <joint name="finger_left_joint" type="prismatic">
+    <parent link="gripper_base"/><child link="finger_left"/>
+    <origin xyz="0 0 0.04"/><axis xyz="0 1 0"/>
+    <limit lower="0.0" upper="0.04" effort="20" velocity="0.5"/>
+  </joint>
+
+  <joint name="finger_right_joint" type="prismatic">
+    <parent link="gripper_base"/><child link="finger_right"/>
+    <origin xyz="0 0 0.04"/><axis xyz="0 1 0"/>
+    <limit lower="-0.04" upper="0.0" effort="20" velocity="0.5"/>
+    <mimic joint="finger_left_joint" multiplier="-1" offset="0"/>
+  </joint>
+
+  <!-- ── Transmissions (finger_right 제외 → mimic이므로 passive) ── -->
+  <transmission name="trans_1">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint_1"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_1"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans_2">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint_2"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_2"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans_3">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint_3"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_3"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans_4">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint_4"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_4"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans_5">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint_5"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_5"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans_finger_left">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="finger_left_joint"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_finger_left"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <!-- finger_right_joint에는 transmission이 없음 → passive (mimic) -->
+
+</robot>

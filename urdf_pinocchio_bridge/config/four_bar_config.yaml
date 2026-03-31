@@ -1,0 +1,17 @@
+# four_bar_config.yaml — 4-bar linkage closed-chain용 설정
+urdf_path: "../test/urdf/four_bar.urdf"
+root_joint_type: "fixed"
+
+closed_chains:
+  - name: "four_bar_loop"
+    link_a: "link_b"
+    link_b: "link_c"
+    contact_type: "6D"
+    offset_a:
+      xyz: [0.0, 0.0, 0.0]
+      rpy: [0.0, 0.0, 0.0]
+    offset_b:
+      xyz: [0.3, 0.0, 0.0]
+      rpy: [0.0, 0.0, 0.0]
+    baumgarte_kp: 10.0
+    baumgarte_kd: 6.32

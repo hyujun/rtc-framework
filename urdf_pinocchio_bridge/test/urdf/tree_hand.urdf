@@ -1,0 +1,168 @@
+<?xml version="1.0"?>
+<!-- tree_hand.urdf — 4-finger branching hand (테스트용)
+     palm_link에서 4개 finger (thumb, index, middle, ring) 분기
+     각 finger: 2~3 revolute joint → tip_link -->
+<robot name="tree_hand">
+
+  <!-- ── Palm ──────────────────────────────────────────────────── -->
+  <link name="palm_link">
+    <inertial>
+      <mass value="0.5"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       Thumb (3 joints)
+       ══════════════════════════════════════════════════════════════ -->
+  <link name="thumb_proximal">
+    <inertial><mass value="0.05"/><origin xyz="0 0 0.02"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+  </link>
+  <link name="thumb_middle">
+    <inertial><mass value="0.04"/><origin xyz="0 0 0.015"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+  </link>
+  <link name="thumb_tip">
+    <inertial><mass value="0.03"/><origin xyz="0 0 0.01"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+  </link>
+
+  <joint name="thumb_joint_1" type="revolute">
+    <parent link="palm_link"/><child link="thumb_proximal"/>
+    <origin xyz="-0.03 0.02 0.05" rpy="0 0.5 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.0" upper="1.5" effort="5" velocity="3"/>
+  </joint>
+  <joint name="thumb_joint_2" type="revolute">
+    <parent link="thumb_proximal"/><child link="thumb_middle"/>
+    <origin xyz="0 0 0.04" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.5" upper="1.5" effort="5" velocity="3"/>
+  </joint>
+  <joint name="thumb_joint_3" type="revolute">
+    <parent link="thumb_middle"/><child link="thumb_tip"/>
+    <origin xyz="0 0 0.03" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.5" upper="1.5" effort="3" velocity="3"/>
+  </joint>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       Index finger (3 joints)
+       ══════════════════════════════════════════════════════════════ -->
+  <link name="index_proximal">
+    <inertial><mass value="0.04"/><origin xyz="0 0 0.02"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+  </link>
+  <link name="index_middle">
+    <inertial><mass value="0.03"/><origin xyz="0 0 0.015"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+  </link>
+  <link name="index_tip">
+    <inertial><mass value="0.02"/><origin xyz="0 0 0.01"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+  </link>
+
+  <joint name="index_joint_1" type="revolute">
+    <parent link="palm_link"/><child link="index_proximal"/>
+    <origin xyz="0.01 0 0.08" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.5" upper="1.5" effort="5" velocity="3"/>
+  </joint>
+  <joint name="index_joint_2" type="revolute">
+    <parent link="index_proximal"/><child link="index_middle"/>
+    <origin xyz="0 0 0.04" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.2" upper="1.5" effort="3" velocity="3"/>
+  </joint>
+  <joint name="index_joint_3" type="revolute">
+    <parent link="index_middle"/><child link="index_tip"/>
+    <origin xyz="0 0 0.03" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.2" upper="1.5" effort="2" velocity="3"/>
+  </joint>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       Middle finger (2 joints)
+       ══════════════════════════════════════════════════════════════ -->
+  <link name="middle_proximal">
+    <inertial><mass value="0.04"/><origin xyz="0 0 0.02"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+  </link>
+  <link name="middle_tip">
+    <inertial><mass value="0.02"/><origin xyz="0 0 0.01"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+  </link>
+
+  <joint name="middle_joint_1" type="revolute">
+    <parent link="palm_link"/><child link="middle_proximal"/>
+    <origin xyz="0.03 0 0.08" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.5" upper="1.5" effort="5" velocity="3"/>
+  </joint>
+  <joint name="middle_joint_2" type="revolute">
+    <parent link="middle_proximal"/><child link="middle_tip"/>
+    <origin xyz="0 0 0.05" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.2" upper="1.5" effort="3" velocity="3"/>
+  </joint>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       Ring finger (2 joints)
+       ══════════════════════════════════════════════════════════════ -->
+  <link name="ring_proximal">
+    <inertial><mass value="0.04"/><origin xyz="0 0 0.02"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+  </link>
+  <link name="ring_tip">
+    <inertial><mass value="0.02"/><origin xyz="0 0 0.01"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+  </link>
+
+  <joint name="ring_joint_1" type="revolute">
+    <parent link="palm_link"/><child link="ring_proximal"/>
+    <origin xyz="0.05 0 0.08" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.5" upper="1.5" effort="5" velocity="3"/>
+  </joint>
+  <joint name="ring_joint_2" type="revolute">
+    <parent link="ring_proximal"/><child link="ring_tip"/>
+    <origin xyz="0 0 0.05" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.2" upper="1.5" effort="3" velocity="3"/>
+  </joint>
+
+  <!-- ── Transmissions ─────────────────────────────────────────── -->
+  <transmission name="trans_thumb_1"><type>transmission_interface/SimpleTransmission</type>
+    <joint name="thumb_joint_1"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_thumb_1"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans_thumb_2"><type>transmission_interface/SimpleTransmission</type>
+    <joint name="thumb_joint_2"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_thumb_2"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans_thumb_3"><type>transmission_interface/SimpleTransmission</type>
+    <joint name="thumb_joint_3"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_thumb_3"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans_index_1"><type>transmission_interface/SimpleTransmission</type>
+    <joint name="index_joint_1"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_index_1"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans_index_2"><type>transmission_interface/SimpleTransmission</type>
+    <joint name="index_joint_2"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_index_2"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans_index_3"><type>transmission_interface/SimpleTransmission</type>
+    <joint name="index_joint_3"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_index_3"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans_middle_1"><type>transmission_interface/SimpleTransmission</type>
+    <joint name="middle_joint_1"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_middle_1"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans_middle_2"><type>transmission_interface/SimpleTransmission</type>
+    <joint name="middle_joint_2"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_middle_2"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans_ring_1"><type>transmission_interface/SimpleTransmission</type>
+    <joint name="ring_joint_1"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_ring_1"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans_ring_2"><type>transmission_interface/SimpleTransmission</type>
+    <joint name="ring_joint_2"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_ring_2"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+
+</robot>

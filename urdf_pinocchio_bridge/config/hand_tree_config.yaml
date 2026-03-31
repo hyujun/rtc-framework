@@ -1,0 +1,20 @@
+# hand_tree_config.yaml — 4-finger tree hand용 설정
+urdf_path: "../test/urdf/tree_hand.urdf"
+root_joint_type: "fixed"
+
+tree_models:
+  - name: "hand"
+    root_link: "palm_link"
+    tip_links:
+      - "thumb_tip"
+      - "index_tip"
+      - "middle_tip"
+      - "ring_tip"
+
+sub_models:
+  - name: "thumb"
+    root_link: "palm_link"
+    tip_link: "thumb_tip"
+  - name: "index"
+    root_link: "palm_link"
+    tip_link: "index_tip"

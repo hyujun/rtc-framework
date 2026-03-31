@@ -1,0 +1,11 @@
+# serial_arm_config.yaml — 6-DoF serial arm용 설정
+urdf_path: "../test/urdf/serial_6dof.urdf"
+root_joint_type: "fixed"
+
+sub_models:
+  - name: "arm"
+    root_link: "base_link"
+    tip_link: "tool_link"
+  - name: "arm_partial"
+    root_link: "link_2"
+    tip_link: "link_5"

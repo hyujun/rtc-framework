@@ -1,0 +1,94 @@
+<?xml version="1.0"?>
+<!-- four_bar.urdf — 4-bar linkage closed-chain (테스트용)
+     구조:
+       base_link ──(joint_a: revolute)──▶ link_a ──(joint_ab: revolute)──▶ link_b
+       base_link ──(joint_c: revolute)──▶ link_c ──(loop_closure_joint: fixed)──▶ link_b
+
+     joint_ab과 loop_closure_joint가 link_b에서 만나 폐쇄 체인을 형성.
+     <loop_joint> 커스텀 태그로 폐쇄 정보 명시. -->
+<robot name="four_bar">
+
+  <!-- ── Links ─────────────────────────────────────────────────── -->
+  <link name="base_link">
+    <inertial>
+      <mass value="10.0"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
+    </inertial>
+  </link>
+
+  <link name="link_a">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0.15 0 0"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+
+  <link name="link_b">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0.15 0 0"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+
+  <link name="link_c">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0.15 0 0"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+
+  <!-- ── Joints ────────────────────────────────────────────────── -->
+  <!-- 경로 1: base → link_a → link_b -->
+  <joint name="joint_a" type="revolute">
+    <parent link="base_link"/><child link="link_a"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.0" upper="2.0" effort="50" velocity="3"/>
+  </joint>
+
+  <joint name="joint_ab" type="revolute">
+    <parent link="link_a"/><child link="link_b"/>
+    <origin xyz="0.3 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.0" upper="2.0" effort="50" velocity="3"/>
+  </joint>
+
+  <!-- 경로 2: base → link_c (link_b에 loop로 연결) -->
+  <joint name="joint_c" type="revolute">
+    <parent link="base_link"/><child link="link_c"/>
+    <origin xyz="0.3 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.0" upper="2.0" effort="50" velocity="3"/>
+  </joint>
+
+  <!-- 폐쇄 조인트: heuristic 감지 대상 (이름에 "loop" + type="fixed") -->
+  <joint name="loop_closure_joint" type="fixed">
+    <parent link="link_c"/><child link="link_b"/>
+    <origin xyz="0.3 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ── 커스텀 <loop_joint> 태그 (명시적 폐쇄 체인 정보) ──────── -->
+  <loop_joint name="four_bar_loop" link1="link_b" link2="link_c" type="6D"/>
+
+  <!-- ── Transmissions ─────────────────────────────────────────── -->
+  <transmission name="trans_a">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint_a"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_a"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans_ab">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint_ab"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_ab"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+  <transmission name="trans_c">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="joint_c"><hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface></joint>
+    <actuator name="motor_c"><mechanicalReduction>1</mechanicalReduction></actuator>
+  </transmission>
+
+</robot>
