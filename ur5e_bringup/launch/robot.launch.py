@@ -1,5 +1,12 @@
 # robot.launch.py - UR5e real robot bringup
 #
+# Launch order (event-driven):
+#   1. Environment vars (RMW, CycloneDDS, session dir)
+#   2. CPU shield, UR driver, hand_udp_node  (parallel)
+#   3. Readiness gate: polls /joint_states and /hand/joint_states publishers
+#   4. rt_controller_node starts ONLY after gate exits successfully
+#   5. DDS thread pinning runs 5 s after rt_controller starts
+#
 # Core allocation optimizations applied:
 #   C) UR driver process pinned to Core 0-1 via delayed taskset (use_cpu_affinity:=true)
 #   D) rt_controller DDS threads pinned to Core 0-1 (prevents 100-350us jitter on Jazzy)
@@ -16,11 +23,14 @@ from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
     IncludeLaunchDescription,
+    LogInfo,
     OpaqueFunction,
+    RegisterEventHandler,
     SetEnvironmentVariable,
     TimerAction,
 )
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit, OnProcessStart
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -306,18 +316,90 @@ def generate_launch_description():
         emulate_tty=True,
     )
 
+    # ── Readiness gate ────────────────────────────────────────────────────────
+    # Polls until UR driver publishes /joint_states AND hand_udp_node publishes
+    # /hand/joint_states.  rt_controller_node is chained to start only after
+    # this gate process exits successfully (via OnProcessExit event handler).
+    comm_readiness_gate = ExecuteProcess(
+        cmd=[
+            'bash', '-c',
+            # --- Wait for /joint_states publisher (UR driver) ---
+            'echo "[RT] Readiness gate: waiting for communication nodes..."; '
+            'timeout 30 bash -c \''
+            'while ! ros2 topic info /joint_states 2>/dev/null '
+            '  | grep -q "Publisher count: [1-9]"; do sleep 0.5; done\' '
+            '  && echo "[RT]   /joint_states publisher OK" '
+            '  || { echo "[RT] FATAL: /joint_states not available after 30 s"; exit 1; }; '
+            # --- Wait for /hand/joint_states publisher (hand_udp_node) ---
+            'timeout 30 bash -c \''
+            'while ! ros2 topic info /hand/joint_states 2>/dev/null '
+            '  | grep -q "Publisher count: [1-9]"; do sleep 0.5; done\' '
+            '  && echo "[RT]   /hand/joint_states publisher OK" '
+            '  || { echo "[RT] FATAL: /hand/joint_states not available after 30 s"; exit 1; }; '
+            # --- Wait for forward_position_controller subscriber (ros2_control) ---
+            'timeout 30 bash -c \''
+            'while ! ros2 topic info /forward_position_controller/commands 2>/dev/null '
+            '  | grep -q "Subscription count: [1-9]"; do sleep 0.5; done\' '
+            '  && echo "[RT]   forward_position_controller subscriber OK" '
+            '  || echo "[RT] WARNING: forward_position_controller not ready after 30 s '
+            '(will activate later via controller_stopper or mock switch)"; '
+            'echo "[RT] All communication nodes ready"'
+        ],
+        output='screen',
+    )
+
+    # ── Event-driven launch chain ─────────────────────────────────────────────
+    # Gate starts only after hand_udp_node process is running (ensures DDS
+    # endpoint is registered before polling).  rt_controller starts only after
+    # the gate exits with success.  DDS thread pinning fires 5 s after
+    # rt_controller starts.
+    start_gate_after_hand = RegisterEventHandler(
+        OnProcessStart(
+            target_action=hand_udp_node,
+            on_start=[
+                LogInfo(msg='[RT] hand_udp_node started — launching readiness gate'),
+                comm_readiness_gate,
+            ],
+        )
+    )
+
+    start_rt_after_gate = RegisterEventHandler(
+        OnProcessExit(
+            target_action=comm_readiness_gate,
+            on_exit=[
+                LogInfo(msg='[RT] Readiness gate passed — launching rt_controller'),
+                rt_controller_node,
+            ],
+        )
+    )
+
+    start_dds_pin_after_rt = RegisterEventHandler(
+        OnProcessStart(
+            target_action=rt_controller_node,
+            on_start=[pin_rt_controller_dds],
+        )
+    )
+
     return LaunchDescription([
+        # 1) Arguments
         robot_ip_arg,
         use_mock_hardware_arg,
         use_fake_hardware_arg,
         use_cpu_affinity_arg,
+        # 2) Environment
         set_session_dir,
         set_rmw,
         set_cyclone_uri,
+        # 3) Infrastructure (parallel)
         enable_cpu_shield,
         ur_driver_launch_action,
         pin_ur_driver,
         hand_udp_node,
-        rt_controller_node,
-        pin_rt_controller_dds,
+        # 4) Event-driven chain:
+        #    hand_udp_node started → comm_readiness_gate
+        #    → gate exits OK → rt_controller_node
+        #    → rt_controller started → pin_rt_controller_dds
+        start_gate_after_hand,
+        start_rt_after_gate,
+        start_dds_pin_after_rt,
     ])
