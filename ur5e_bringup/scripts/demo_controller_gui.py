@@ -402,6 +402,18 @@ class DemoControllerGUI(Node):
         style.configure('Preset.TButton', background='#cba6f7',
                         foreground='#1e1e2e', font=('Segoe UI', 9, 'bold'))
         style.map('Preset.TButton', background=[('active', '#f5c2e7')])
+        style.configure('Treeview', background='#313244', foreground='#cdd6f4',
+                        fieldbackground='#313244', font=('Segoe UI', 9))
+        style.configure('Treeview.Heading', background='#45475a',
+                        foreground='#cdd6f4', font=('Segoe UI', 9, 'bold'))
+        style.map('Treeview',
+                  background=[('selected', '#585b70')],
+                  foreground=[('selected', '#cdd6f4')])
+        style.configure('TCombobox', fieldbackground='#313244',
+                        background='#313244', foreground='#cdd6f4')
+        style.map('TCombobox',
+                  fieldbackground=[('readonly', '#313244')],
+                  foreground=[('readonly', '#cdd6f4')])
 
         # Scrollable wrapper
         outer_frame = tk.Frame(self.root, bg='#1e1e2e')
