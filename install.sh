@@ -647,15 +647,6 @@ setup_package() {
     warn "rtc-framework already exists — skipping clone"
     REPO_NAME="rtc-framework"
   fi
-
-  # Symlink packages from repo root into workspace src/
-  local all_pkgs
-  read -r -a all_pkgs <<< "$(get_base_packages) $(get_robot_packages)"
-  for pkg in "${all_pkgs[@]}"; do
-    if [[ ! -e "$pkg" ]]; then
-      ln -s "${REPO_NAME}/$pkg" "$pkg"
-    fi
-  done
 }
 
 # ── Build ──────────────────────────────────────────────────────────────────────
