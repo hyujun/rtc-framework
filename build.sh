@@ -24,18 +24,6 @@ if [[ -f "$_RT_COMMON" ]]; then
 fi
 make_logger "BUILD" emoji
 
-# ── Workspace overlay auto-source ────────────────────────────────────────────
-# 기존 빌드 결과가 있으면 workspace overlay를 소싱하여
-# colcon build가 기존 패키지 의존성(rtc_msgs 등)을 찾을 수 있게 한다.
-source_workspace_overlay() {
-  local ws_setup="${WORKSPACE}/install/setup.bash"
-  if [[ -f "$ws_setup" ]]; then
-    info "기존 workspace overlay 소싱: ${ws_setup}"
-    # shellcheck disable=SC1090
-    source "$ws_setup" || true
-  fi
-}
-
 # ── Mode & argument parsing ────────────────────────────────────────────────────
 MODE="full"
 MJ_DIR=""
@@ -200,9 +188,6 @@ ensure_ros2_sourced
 
 # ── Workspace detection ────────────────────────────────────────────────────────
 check_workspace_structure "$_SCRIPT_DIR_BUILD"
-
-# ── Workspace overlay (기존 빌드 결과 소싱) ───────────────────────────────────
-source_workspace_overlay
 
 # ── Package selection by mode ──────────────────────────────────────────────────
 if [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]]; then
