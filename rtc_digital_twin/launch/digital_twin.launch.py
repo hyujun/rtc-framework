@@ -38,12 +38,38 @@ from launch_ros.actions import Node
 
 def launch_setup(context, *args, **kwargs):
     # ── Resolve robot description ─────────────────────────────────────────
+    pinocchio_config = LaunchConfiguration('pinocchio_config').perform(context)
     desc_file = LaunchConfiguration('robot_description_file').perform(context)
     desc_pkg = LaunchConfiguration('robot_description_package').perform(context)
     desc_path = LaunchConfiguration('robot_description_path').perform(context)
 
-    # Fallback to YAML config if launch args are empty
-    if not desc_file and not desc_pkg and not desc_path:
+    robot_description = None
+
+    # Priority 1: pinocchio_config (urdf_pinocchio_bridge YAML)
+    if pinocchio_config:
+        from rtc_digital_twin.urdf_config_loader import load_robot_description
+        robot_description = load_robot_description(pinocchio_config)
+
+    # Priority 2: explicit launch args
+    if robot_description is None and (desc_file or (desc_pkg and desc_path)):
+        if desc_file:
+            urdf_path = desc_file
+        else:
+            pkg_share = get_package_share_directory(desc_pkg)
+            urdf_path = os.path.join(pkg_share, desc_path)
+
+        if not os.path.isfile(urdf_path):
+            raise RuntimeError(f'Robot description file not found: {urdf_path}')
+
+        if urdf_path.endswith('.xacro'):
+            robot_description = subprocess.check_output(
+                ['xacro', urdf_path], text=True)
+        else:
+            with open(urdf_path, 'r') as f:
+                robot_description = f.read()
+
+    # Priority 3: fallback to YAML config parameters
+    if robot_description is None:
         config_file = LaunchConfiguration('config_file').perform(context)
         if not config_file:
             config_file = os.path.join(
@@ -54,31 +80,40 @@ def launch_setup(context, *args, **kwargs):
         with open(config_file, 'r') as f:
             cfg = yaml.safe_load(f)
         params = cfg.get('/**', {}).get('ros__parameters', {})
-        desc_file = params.get('robot_description_file', '')
-        desc_pkg = params.get('robot_description_package', '')
-        desc_path = params.get('robot_description_path', '')
 
-    if desc_file:
-        urdf_path = desc_file
-    elif desc_pkg and desc_path:
-        pkg_share = get_package_share_directory(desc_pkg)
-        urdf_path = os.path.join(pkg_share, desc_path)
-    else:
-        raise RuntimeError(
-            'Must provide robot_description_file OR '
-            'robot_description_package + robot_description_path. '
-            'Set via launch args or in the YAML config file.')
+        # 3a: pinocchio_config_path in YAML
+        yaml_pinocchio = params.get('pinocchio_config_path', '')
+        if yaml_pinocchio:
+            from rtc_digital_twin.urdf_config_loader import load_robot_description
+            robot_description = load_robot_description(yaml_pinocchio)
 
-    if not os.path.isfile(urdf_path):
-        raise RuntimeError(f'Robot description file not found: {urdf_path}')
+        # 3b: robot_description_file / package+path in YAML
+        if robot_description is None:
+            desc_file = params.get('robot_description_file', '')
+            desc_pkg = params.get('robot_description_package', '')
+            desc_path = params.get('robot_description_path', '')
 
-    # ── Process xacro or read URDF directly ───────────────────────────────
-    if urdf_path.endswith('.xacro'):
-        robot_description = subprocess.check_output(
-            ['xacro', urdf_path], text=True)
-    else:
-        with open(urdf_path, 'r') as f:
-            robot_description = f.read()
+            if desc_file:
+                urdf_path = desc_file
+            elif desc_pkg and desc_path:
+                pkg_share = get_package_share_directory(desc_pkg)
+                urdf_path = os.path.join(pkg_share, desc_path)
+            else:
+                raise RuntimeError(
+                    'Must provide pinocchio_config, robot_description_file, '
+                    'or robot_description_package + robot_description_path. '
+                    'Set via launch args or in the YAML config file.')
+
+            if not os.path.isfile(urdf_path):
+                raise RuntimeError(
+                    f'Robot description file not found: {urdf_path}')
+
+            if urdf_path.endswith('.xacro'):
+                robot_description = subprocess.check_output(
+                    ['xacro', urdf_path], text=True)
+            else:
+                with open(urdf_path, 'r') as f:
+                    robot_description = f.read()
 
     # ── Config file ───────────────────────────────────────────────────────
     config_file = LaunchConfiguration('config_file').perform(context)
@@ -147,6 +182,10 @@ def launch_setup(context, *args, **kwargs):
 
 def generate_launch_description():
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'pinocchio_config', default_value='',
+            description='Path to urdf_pinocchio_bridge YAML config file',
+        ),
         DeclareLaunchArgument(
             'robot_description_file', default_value='',
             description='Absolute path to URDF/xacro file',

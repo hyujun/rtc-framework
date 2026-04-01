@@ -18,6 +18,7 @@ from visualization_msgs.msg import MarkerArray
 
 from rtc_msgs.msg import HandSensorState
 
+from rtc_digital_twin.urdf_config_loader import load_robot_description
 from rtc_digital_twin.urdf_validator import (
     classify_joints,
     compute_mimic_positions,
@@ -59,11 +60,23 @@ class DigitalTwinNode(Node):
         self.declare_parameter('output_topic', '/digital_twin/joint_states')
         self.declare_parameter('num_sources', 1)
         self.declare_parameter('robot_description', '')
+        self.declare_parameter('pinocchio_config_path', '')
 
         display_rate = self.get_parameter('display_rate').value
         output_topic = self.get_parameter('output_topic').value
         num_sources = self.get_parameter('num_sources').value
         robot_description = self.get_parameter('robot_description').value
+
+        # Load robot_description from pinocchio config if not provided directly
+        pinocchio_config_path = self.get_parameter('pinocchio_config_path').value
+        if not robot_description and pinocchio_config_path:
+            try:
+                robot_description = load_robot_description(pinocchio_config_path)
+                self.get_logger().info(
+                    f'Loaded robot_description from pinocchio config: '
+                    f'{pinocchio_config_path}')
+            except (FileNotFoundError, ValueError) as e:
+                self.get_logger().error(f'Failed to load pinocchio config: {e}')
 
         # ── URDF joint classification ─────────────────────────────────────
         self.declare_parameter('auto_compute_mimic', True)
