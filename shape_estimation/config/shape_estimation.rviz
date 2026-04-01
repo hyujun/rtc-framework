@@ -1,0 +1,77 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Normal Cell Count: 0
+      Cell Size: 0.1
+      Color: 160; 160; 164
+
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Shape Point Cloud
+      Enabled: true
+      Topic:
+        Value: /shape/point_cloud
+        Depth: 1
+        Reliability Policy: Best Effort
+      Color Transformer: FlatColor
+      Color: 0; 255; 255
+      Size (Pixels): 5
+      Style: Points
+      Decay Time: 0
+
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Shape Primitive
+      Enabled: true
+      Topic:
+        Value: /shape/primitive_marker
+        Depth: 1
+        Reliability Policy: Reliable
+
+    - Class: rviz_default_plugins/MarkerArray
+      Name: ToF Beams
+      Enabled: true
+      Topic:
+        Value: /shape/tof_beams
+        Depth: 1
+        Reliability Policy: Best Effort
+
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Curvature Text
+      Enabled: true
+      Topic:
+        Value: /shape/curvature_text
+        Depth: 1
+        Reliability Policy: Best Effort
+
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: base_link
+    Frame Rate: 30
+
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 0.8
+      Focal Point:
+        X: 0.3
+        Y: 0
+        Z: 0.3
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 0.5
+      Yaw: 2.0
+
+Window Geometry:
+  Width: 1200
+  Height: 800
