@@ -117,9 +117,12 @@ struct GraspStateData  { force_magnitude[8], contact_flag[8], inference_valid[8]
                          num_active_contacts, max_force, grasp_detected,
                          force_threshold, min_fingertips_for_grasp };
 
-// Legacy types (still present, UR5e-specific)
+// Legacy types (still present, UR5e-specific — will be removed in PR3)
 struct RobotState     { positions[6], velocities[6], torques[6], tcp_position[3], dt, iteration };
-struct HandState      { motor_positions[10], motor_velocities[10], sensor_data[88], sensor_data_raw[88], num_fingertips, valid };
+struct HandState      { motor_positions[10], motor_velocities[10], motor_currents[10],
+                        joint_positions[10], joint_velocities[10], joint_currents[10],
+                        sensor_data[88], sensor_data_raw[88],
+                        num_fingertips, valid, received_joint_mode };
 ```
 
 ### Threading Model (6-core)
@@ -572,3 +575,4 @@ If `ApplyThreadConfig()` fails, the node continues at SCHED_OTHER with a `[WARN]
 | UR5e URDF | `ur5e_description/robots/ur5e/urdf/ur5e.urdf` |
 | MuJoCo scene (with hand) | `ur5e_description/robots/ur5e/mjcf/scene_with_hand.xml` |
 | BT trees | `ur5e_bt_coordinator/trees/*.xml` |
+| Supplementary docs | `docs/` (RT_OPTIMIZATION.md, SHELL_SCRIPTS.md, VSCODE_DEBUGGING.md) |
