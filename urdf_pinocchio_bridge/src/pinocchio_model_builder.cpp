@@ -120,17 +120,17 @@ void PinocchioModelBuilder::BuildReducedModels()
     // 잠글 관절 계산
     auto joints_to_lock_names = extractor_->ComputeJointsToLock(def);
 
-    // YAML passive_joints도 잠금 대상에 추가 (체인 내에 있더라도)
+    // YAML passive_joints는 무조건 잠금 대상에 추가
+    // (체인 내/외 구분 없이 — transmission 없는 URDF에서도 올바르게 동작)
     for (const auto & pj : config_.passive_joints) {
       auto it = std::find(joints_to_lock_names.begin(), joints_to_lock_names.end(), pj);
       if (it == joints_to_lock_names.end()) {
-        // 체인 내 passive 관절도 잠금
-        auto jit = std::find(def.joint_names.begin(), def.joint_names.end(), pj);
-        if (jit != def.joint_names.end()) {
-          joints_to_lock_names.push_back(pj);
-          // actuated 목록에서 제거
-          def.joint_names.erase(jit);
-        }
+        joints_to_lock_names.push_back(pj);
+      }
+      // 체인 내 passive 관절이면 actuated 목록에서 제거
+      auto jit = std::find(def.joint_names.begin(), def.joint_names.end(), pj);
+      if (jit != def.joint_names.end()) {
+        def.joint_names.erase(jit);
       }
     }
 
@@ -155,15 +155,15 @@ void PinocchioModelBuilder::BuildTreeModels()
 
     auto joints_to_lock_names = extractor_->ComputeJointsToLock(def);
 
-    // passive 관절 잠금
+    // passive 관절 잠금 (체인 내/외 구분 없이)
     for (const auto & pj : config_.passive_joints) {
       auto it = std::find(joints_to_lock_names.begin(), joints_to_lock_names.end(), pj);
       if (it == joints_to_lock_names.end()) {
-        auto jit = std::find(def.joint_names.begin(), def.joint_names.end(), pj);
-        if (jit != def.joint_names.end()) {
-          joints_to_lock_names.push_back(pj);
-          def.joint_names.erase(jit);
-        }
+        joints_to_lock_names.push_back(pj);
+      }
+      auto jit = std::find(def.joint_names.begin(), def.joint_names.end(), pj);
+      if (jit != def.joint_names.end()) {
+        def.joint_names.erase(jit);
       }
     }
 

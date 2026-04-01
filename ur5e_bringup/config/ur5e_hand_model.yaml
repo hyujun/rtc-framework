@@ -1,0 +1,48 @@
+# ur5e_hand_model.yaml — urdf_pinocchio_bridge model topology config
+#
+# Defines sub-models and tree-models for the combined UR5e + 10-DOF hand URDF.
+# urdf_path is NOT included here — it comes from the device YAML
+# (devices.ur5e.urdf.package + path), keeping the URDF source as a single
+# source of truth in the device config.
+#
+# Usage in controller YAML:
+#   model_config: "ur5e_hand_model.yaml"
+
+root_joint_type: "fixed"
+
+# ── Arm sub-model (6-DOF serial chain) ──────────────────────────────────────
+# Extracts base_link → tool0 chain.  All joints outside this chain
+# (including the 10 hand joints listed in passive_joints) are locked
+# at their reference configuration.
+sub_models:
+  - name: "arm"
+    root_link: "base"
+    tip_link: "tool0"
+
+# ── Hand tree-model (10-DOF branching, placeholder) ─────────────────────────
+# Uncomment when hand FK/Jacobian is needed in the controller.
+# When active, arm joints become locked and hand joints are free.
+# tree_models:
+#   - name: "hand"
+#     root_link: "hand_base_link"
+#     tip_links:
+#       - "thumb_tip_link"
+#       - "index_tip_link"
+#       - "middle_tip_link"
+#       - "ring_tip_link"
+
+# ── Passive joints (locked in all sub/tree models) ──────────────────────────
+# Hand joints — locked when building the arm sub-model.
+# Required because the combined URDF has no <transmission> tags,
+# so the bridge cannot auto-detect which joints to lock.
+passive_joints:
+  - "thumb_cmc_aa"
+  - "thumb_cmc_fe"
+  - "thumb_mcp_fe"
+  - "index_mcp_aa"
+  - "index_mcp_fe"
+  - "index_dip_fe"
+  - "middle_mcp_aa"
+  - "middle_mcp_fe"
+  - "middle_dip_fe"
+  - "ring_mcp_fe"

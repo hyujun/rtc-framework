@@ -17,6 +17,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -31,6 +32,7 @@ set(Python3_FIND_VIRTUALENV STANDARD)
 find_package(Python3 COMPONENTS Interpreter Development NumPy)
 
 find_package(pinocchio REQUIRED)
+find_package(urdf_pinocchio_bridge REQUIRED)
 find_package(rtc_controller_manager REQUIRED)
 
 # ── Static library: demo controllers ──────────────────────────────────────────
@@ -46,6 +48,7 @@ target_include_directories(${PROJECT_NAME}_demo_controllers PUBLIC
 )
 
 ament_target_dependencies(${PROJECT_NAME}_demo_controllers
+  ament_index_cpp
   rclcpp
   std_msgs
   sensor_msgs
@@ -54,6 +57,7 @@ ament_target_dependencies(${PROJECT_NAME}_demo_controllers
   rtc_base
   rtc_msgs
   pinocchio
+  urdf_pinocchio_bridge
 )
 
 target_link_libraries(${PROJECT_NAME}_demo_controllers
@@ -126,6 +130,7 @@ install(
 # ── Export ─────────────────────────────────────────────────────────────────────
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
+  ament_index_cpp
   rclcpp
   std_msgs
   sensor_msgs
@@ -134,6 +139,7 @@ ament_export_dependencies(
   rtc_base
   rtc_msgs
   pinocchio
+  urdf_pinocchio_bridge
   yaml-cpp
 )
 ament_export_include_directories(include)

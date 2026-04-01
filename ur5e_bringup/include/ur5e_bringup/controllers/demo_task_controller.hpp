@@ -3,19 +3,8 @@
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 
-// Suppress warnings emitted by Pinocchio / Eigen headers
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wshadow"
-#pragma GCC diagnostic ignored "-Wpedantic"
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/algorithm/frames.hpp>       // updateFramePlacement, getFrameJacobian
-#include <pinocchio/algorithm/jacobian.hpp>     // computeJointJacobians, getJointJacobian
-#include <pinocchio/algorithm/kinematics.hpp>   // forwardKinematics (via computeJointJacobians)
-#include <pinocchio/multibody/data.hpp>
-#include <pinocchio/multibody/model.hpp>
-#include <pinocchio/parsers/urdf.hpp>
-#pragma GCC diagnostic pop
+#include "urdf_pinocchio_bridge/pinocchio_model_builder.hpp"
+#include "urdf_pinocchio_bridge/rt_model_handle.hpp"
 
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
@@ -25,6 +14,7 @@
 
 #include <array>
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <string>
@@ -170,14 +160,17 @@ private:
   void ComputeControl(const ControllerState & state, double dt) noexcept;
   [[nodiscard]] ControllerOutput WriteOutput(const ControllerState & state, double dt) noexcept;
 
-  // ── Pinocchio model + pre-allocated Data ─────────────────────────────────
-  pinocchio::Model      model_;
-  pinocchio::Data       data_;
-  pinocchio::JointIndex end_id_{0};
+  // ── urdf_pinocchio_bridge ────────────────────────────────────────────
+  std::string urdf_path_;  // stored from constructor, used in LoadConfig
+  std::unique_ptr<urdf_pinocchio_bridge::PinocchioModelBuilder> builder_;
+  std::unique_ptr<urdf_pinocchio_bridge::RtModelHandle> arm_handle_;
   pinocchio::FrameIndex tip_frame_id_{0};
-  bool                  use_frame_fk_{false};  // true when tip_link resolves to an operational frame
   pinocchio::FrameIndex root_frame_id_{0};
-  bool                  use_root_frame_{false}; // true when root_link resolves to an operational frame
+  bool                  use_root_frame_{false};
+  // TODO: hand tree-model handle (placeholder)
+  // std::unique_ptr<urdf_pinocchio_bridge::RtModelHandle> hand_handle_;
+
+  void InitArmModel(const urdf_pinocchio_bridge::ModelConfig & config);
 
   // ── Pre-allocated Eigen work buffers — zero heap alloc on the RT path ────
   Eigen::VectorXd q_;

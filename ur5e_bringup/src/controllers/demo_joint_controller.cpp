@@ -2,7 +2,16 @@
 
 #include <algorithm>  // std::copy, std::clamp
 #include <cmath>     // std::sqrt
+
+#include <ament_index_cpp/get_package_share_directory.hpp>
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/math/rpy.hpp>
+#pragma GCC diagnostic pop
 
 namespace ur5e_bringup
 {
@@ -11,27 +20,34 @@ DemoJointController::DemoJointController(std::string_view urdf_path)
 : DemoJointController(urdf_path, Gains{}) {}
 
 DemoJointController::DemoJointController(std::string_view urdf_path, Gains gains)
-: gains_(gains), data_(pinocchio::Model{})
+: gains_(gains), urdf_path_(urdf_path)
 {
-  pinocchio::urdf::buildModel(std::string(urdf_path), model_);
-  data_   = pinocchio::Data(model_);
-  end_id_ = static_cast<pinocchio::JointIndex>(model_.njoints - 1);
-  q_      = Eigen::VectorXd::Zero(model_.nv);
+  // Model is built in LoadConfig() (bridge YAML driven) or InitArmModel().
+  // Constructor only stores urdf_path for later use.
+}
+
+void DemoJointController::InitArmModel(
+  const urdf_pinocchio_bridge::ModelConfig & config)
+{
+  namespace upb = urdf_pinocchio_bridge;
+  builder_ = std::make_unique<upb::PinocchioModelBuilder>(config);
+  arm_handle_ = std::make_unique<upb::RtModelHandle>(
+    builder_->GetReducedModel("arm"));
 }
 
 void DemoJointController::OnDeviceConfigsSet()
 {
   if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
-      if (model_.existFrame(cfg->urdf->tip_link)) {
-        tip_frame_id_ = model_.getFrameId(cfg->urdf->tip_link);
-        end_id_ = model_.frames[tip_frame_id_].parentJoint;
-        use_frame_fk_ = true;
+      auto fid = arm_handle_->GetFrameId(cfg->urdf->tip_link);
+      if (fid != 0) {  // 0 = universe (not found)
+        tip_frame_id_ = fid;
       }
     }
     if (cfg->urdf && !cfg->urdf->root_link.empty()) {
-      if (model_.existFrame(cfg->urdf->root_link)) {
-        root_frame_id_ = model_.getFrameId(cfg->urdf->root_link);
+      auto fid = arm_handle_->GetFrameId(cfg->urdf->root_link);
+      if (fid != 0) {
+        root_frame_id_ = fid;
         use_root_frame_ = true;
       }
     }
@@ -88,12 +104,9 @@ ControllerOutput DemoJointController::Compute(const ControllerState & state) noe
 
 void DemoJointController::ReadState(const ControllerState & state) noexcept
 {
-  // Robot arm joint positions → Eigen vector (for FK logging)
+  // Robot arm joint positions (used for FK logging in WriteOutput)
   const auto & dev0 = state.devices[0];
-  const int nc0 = dev0.num_channels;
-  for (int i = 0; i < nc0; ++i) {
-    q_[static_cast<Eigen::Index>(i)] = dev0.positions[i];
-  }
+  (void)dev0;  // positions accessed directly via span in WriteOutput
 
   // Hand motor data: dev1.motor_positions[], motor_velocities[], motor_efforts[]
   // available via state.devices[1].motor_* (populated from /hand/motor_states)
@@ -303,17 +316,12 @@ ControllerOutput DemoJointController::WriteOutput(
   ClampCommands(out0.commands, nc0, device_position_lower_[0], device_position_upper_[0]);
 
   // ── Forward kinematics for task-space logging ──────────────────────────
-  pinocchio::forwardKinematics(model_, data_, q_);
-  pinocchio::SE3 tcp;
-  if (use_frame_fk_) {
-    pinocchio::updateFramePlacement(model_, data_, tip_frame_id_);
-    tcp = data_.oMf[tip_frame_id_];
-  } else {
-    tcp = data_.oMi[end_id_];
-  }
+  std::span<const double> q_span(dev0.positions.data(),
+    static_cast<std::size_t>(nc0));
+  arm_handle_->ComputeForwardKinematics(q_span);
+  pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
   if (use_root_frame_) {
-    pinocchio::updateFramePlacement(model_, data_, root_frame_id_);
-    tcp = data_.oMf[root_frame_id_].actInv(tcp);
+    tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
   }
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
 
@@ -429,6 +437,25 @@ void DemoJointController::LoadConfig(const YAML::Node & cfg)
   RTControllerInterface::LoadConfig(cfg);
   if (!cfg) { return; }
 
+  // ── Build arm model from bridge YAML config ────────────────────────────
+  namespace upb = urdf_pinocchio_bridge;
+  if (cfg["model_config"]) {
+    const auto yaml_name = cfg["model_config"].as<std::string>();
+    const auto yaml_path =
+      ament_index_cpp::get_package_share_directory("ur5e_bringup")
+      + "/config/" + yaml_name;
+    auto model_cfg = upb::PinocchioModelBuilder::LoadModelConfig(yaml_path);
+    model_cfg.urdf_path = urdf_path_;  // override with device YAML's resolved path
+    InitArmModel(model_cfg);
+  } else if (!urdf_path_.empty()) {
+    // Fallback: arm-only URDF, no sub-model extraction
+    upb::ModelConfig model_cfg;
+    model_cfg.urdf_path = urdf_path_;
+    model_cfg.root_joint_type = "fixed";
+    model_cfg.sub_models.push_back({"arm", "base_link", "tool0"});
+    InitArmModel(model_cfg);
+  }
+
   if (cfg["robot_trajectory_speed"]) {
     gains_.robot_trajectory_speed = cfg["robot_trajectory_speed"].as<double>();
   }
@@ -539,17 +566,12 @@ ControllerOutput DemoJointController::ComputeEstop(
   }
 
   // FK for task-space logging (same as normal path)
-  pinocchio::forwardKinematics(model_, data_, q_);
-  pinocchio::SE3 tcp;
-  if (use_frame_fk_) {
-    pinocchio::updateFramePlacement(model_, data_, tip_frame_id_);
-    tcp = data_.oMf[tip_frame_id_];
-  } else {
-    tcp = data_.oMi[end_id_];
-  }
+  std::span<const double> q_span(dev0.positions.data(),
+    static_cast<std::size_t>(nc0));
+  arm_handle_->ComputeForwardKinematics(q_span);
+  pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
   if (use_root_frame_) {
-    pinocchio::updateFramePlacement(model_, data_, root_frame_id_);
-    tcp = data_.oMf[root_frame_id_].actInv(tcp);
+    tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
   }
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
   output.actual_task_positions[0] = tcp.translation().x();

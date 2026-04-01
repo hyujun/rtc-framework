@@ -48,7 +48,7 @@
           - "wrist_3_joint"
         urdf:
           package: "ur5e_description"
-          path: "robots/ur5e/urdf/ur5e.urdf"
+          path: "robots/ur5e/urdf/ur5e_with_hand.urdf"
           root_link: "base"
           tip_link: "tool0"
         joint_limits:

@@ -36,6 +36,7 @@ ur5e_bringup/
 ├── config/
 │   ├── ur5e_robot.yaml                 <- 실제 로봇 RTC 프레임워크 설정
 │   ├── ur5e_sim.yaml                   <- 시뮬레이션 전용 설정
+│   ├── ur5e_hand_model.yaml            <- urdf_pinocchio_bridge 모델 토폴로지
 │   └── controllers/
 │       ├── demo_joint_controller.yaml  <- DemoJoint 게인/토픽
 │       └── demo_task_controller.yaml   <- DemoTask 게인/토픽
@@ -47,6 +48,66 @@ ur5e_bringup/
     ├── demo_controller_gui.py          <- 컨트롤러 튜닝 GUI (tkinter)
     └── motion_editor_gui.py            <- 모션 에디터 GUI (PyQt5)
 ```
+
+---
+
+## 기구학 모델 설정 (urdf_pinocchio_bridge)
+
+데모 컨트롤러는 `urdf_pinocchio_bridge` 패키지를 통해 Pinocchio 기구학 모델을 구축합니다. 설정은 3개의 YAML 파일로 분리되어 있으며, 각각 독립적인 역할을 담당합니다.
+
+### 설정 파일 역할 분리
+
+| 설정 파일 | 역할 | 변경 시점 |
+|----------|------|----------|
+| `ur5e_robot.yaml` (device) | URDF 경로, 조작 프레임 (`root_link`/`tip_link`), joint limits | 로봇/시뮬레이션 전환 시 |
+| `ur5e_hand_model.yaml` (bridge) | 모델 토폴로지 (`sub_models`, `passive_joints`) | 로봇 하드웨어 구성 변경 시 |
+| `demo_*_controller.yaml` | `model_config` 참조 + 제어 게인 | 튜닝 시 |
+
+### 데이터 흐름
+
+```
+ur5e_robot.yaml                  controller.yaml          ur5e_hand_model.yaml
+┌──────────────────┐             ┌────────────────┐       ┌─────────────────────┐
+│ devices.ur5e:    │             │ model_config:  │       │ sub_models:         │
+│   urdf:          │             │  "ur5e_hand_   │──────→│   arm: base→tool0   │
+│     package+path─┼──(urdf)──→  │   model.yaml"  │       │ passive_joints:     │
+│   root_link ─────┼──(frame)──→ └────────────────┘       │   [10 hand joints]  │
+│   tip_link ──────┼──(frame)──→                          └─────────────────────┘
+└──────────────────┘
+        │                                │                          │
+  ament resolve                    ament resolve              LoadModelConfig
+        │                                │                          │
+        ▼                                ▼                          ▼
+  Constructor(urdf_path)  ──→  LoadConfig(): InitArmModel()  ──→  OnDeviceConfigsSet()
+  (urdf_path_ 저장)            (Builder + RtModelHandle 생성)      (tip/root frame 조회)
+```
+
+1. **Constructor**: 프레임워크가 device YAML에서 해석한 URDF 절대경로(`urdf_path`)를 저장만 합니다.
+2. **LoadConfig()**: 컨트롤러 YAML의 `model_config` 필드에서 bridge YAML 경로를 읽고, `PinocchioModelBuilder`로 arm sub-model을 구축합니다. URDF 경로는 1단계에서 저장한 `urdf_path_`로 override합니다.
+3. **OnDeviceConfigsSet()**: device YAML의 `root_link`/`tip_link`를 arm sub-model에서 프레임 인덱스로 조회하여 FK/Jacobian 연산 기준점으로 설정합니다.
+
+### bridge YAML 예시 (`ur5e_hand_model.yaml`)
+
+```yaml
+root_joint_type: "fixed"
+
+sub_models:
+  - name: "arm"
+    root_link: "base"       # URDF kinematic chain 시작
+    tip_link: "tool0"       # chain 끝 (hand 이전)
+
+# tree_models:              # placeholder — hand FK 필요 시 활성화
+#   - name: "hand"
+#     root_link: "hand_base_link"
+#     tip_links: [thumb_tip_link, index_tip_link, middle_tip_link, ring_tip_link]
+
+passive_joints:             # arm sub-model에서 lock할 관절
+  - "thumb_cmc_aa"
+  - "thumb_cmc_fe"
+  # ... (10개 hand joints)
+```
+
+`urdf_path`는 bridge YAML에 포함하지 않습니다 — device YAML (`devices.ur5e.urdf.package` + `path`)이 단일 소스입니다.
 
 ---
 
@@ -285,9 +346,9 @@ ros2 run ur5e_bringup motion_editor_gui
         joint_command_names: [shoulder_pan_joint, ..., wrist_3_joint]  # 6 (생략 시 joint_state_names 사용)
         urdf:
           package: "ur5e_description"
-          path: "robots/ur5e/urdf/ur5e.urdf"
-          root_link: "base"
-          tip_link: "tool0"
+          path: "robots/ur5e/urdf/ur5e_with_hand.urdf"  # UR5e + 10-DOF hand 통합 URDF
+          root_link: "base"       # FK/Jacobian 기준 프레임
+          tip_link: "tool0"       # end-effector 프레임
         joint_limits:
           max_velocity: [2.0, 2.0, 3.0, 3.0, 3.0, 3.0]
           max_acceleration: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
@@ -310,7 +371,7 @@ ros2 run ur5e_bringup motion_editor_gui
 - `device_timeout_values: [10000.0, 10000.0]` (시작 시 여유)
 - `joint_command_names` 생략 (`joint_state_names`과 동일하므로)
 - 핸드에 `motor_state_names` 없음 (MuJoCo가 직접 position 제공)
-- URDF 링크명: `root_link: "base_link"`, `tip_link: "flange"` (MuJoCo URDF 기준)
+- URDF 조작 프레임: `root_link: "base_link"`, `tip_link: "flange"` (MuJoCo URDF 기준)
 
 ---
 
@@ -319,13 +380,15 @@ ros2 run ur5e_bringup motion_editor_gui
 | 의존성 | 용도 |
 |--------|------|
 | `ament_cmake` | 빌드 시스템 |
+| `ament_index_cpp` | 패키지 경로 해석 (bridge YAML 로드) |
 | `rclcpp` | ROS2 클라이언트 |
 | `rtc_controller_interface` | 컨트롤러 추상 인터페이스 |
 | `rtc_controllers` | 내장 컨트롤러 |
 | `rtc_controller_manager` | RT 제어 루프 |
 | `rtc_base` | 타입, 스레딩 |
 | `rtc_msgs` | 커스텀 메시지 |
-| `pinocchio` | 기구학 (FK, Jacobian) |
+| `urdf_pinocchio_bridge` | URDF→Pinocchio 모델 빌더 + RT-safe handle |
+| `pinocchio` | 기구학 (FK, Jacobian) — bridge가 transitively 제공 |
 | `yaml-cpp` | YAML 파싱 |
 | `sensor_msgs` | JointState |
 | `std_msgs` | 표준 메시지 |
@@ -356,15 +419,19 @@ source install/setup.bash
 
 ```
 rtc_controller_manager + rtc_controllers + rtc_scripts + ur5e_description
-    |
-ur5e_bringup  <- UR5e 로봇별 통합 패키지
+    |                                                         |
+    |   urdf_pinocchio_bridge (URDF→Pinocchio 모델)           |
+    |       |                                                 |
+ur5e_bringup  <- UR5e 로봇별 통합 패키지 ────────────────────┘
     |
     ├── robot.launch.py  -> UR 드라이버 + RT 컨트롤러 + CPU 격리
     ├── sim.launch.py    -> MuJoCo + RT 컨트롤러 + CPU 격리
-    ├── DemoJointController (index 4)
-    ├── DemoTaskController (index 5)
-    ├── demo_controller_gui
-    └── motion_editor_gui
+    ├── DemoJointController (index 4)  ─┐
+    ├── DemoTaskController (index 5)   ─┤── RtModelHandle (arm sub-model)
+    ├── demo_controller_gui             │
+    └── motion_editor_gui               │
+                                        │
+    config/ur5e_hand_model.yaml ────────┘  (모델 토폴로지)
 ```
 
 ---
