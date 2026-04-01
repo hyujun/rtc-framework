@@ -8,6 +8,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(behaviortree_cpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rtc_msgs REQUIRED)
 find_package(tf2 REQUIRED)
@@ -52,11 +53,23 @@ target_include_directories(bt_coordinator_node PRIVATE
 )
 target_link_libraries(bt_coordinator_node bt_nodes)
 ament_target_dependencies(bt_coordinator_node
+  rclcpp behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs tf2 ament_index_cpp
+)
+
+# ── Executable: offline tree validator ─────────────────────────────────────
+add_executable(validate_tree
+  src/validate_tree.cpp
+)
+target_include_directories(validate_tree PRIVATE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+target_link_libraries(validate_tree bt_nodes)
+ament_target_dependencies(validate_tree
   rclcpp behaviortree_cpp std_msgs geometry_msgs rtc_msgs tf2 ament_index_cpp
 )
 
 # ── Install ────────────────────────────────────────────────────────────────
-install(TARGETS bt_coordinator_node
+install(TARGETS bt_coordinator_node validate_tree
   DESTINATION lib/${PROJECT_NAME}
 )
 install(TARGETS bt_nodes

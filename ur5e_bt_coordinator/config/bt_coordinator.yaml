@@ -1,20 +1,36 @@
 bt_coordinator:
   ros__parameters:
     # ── BT 설정 ──────────────────────────────────────────────────────────────
-    # DeclareParameters()에서 선언되는 4개 파라미터
-    tree_file: "pick_and_place.xml"   # trees/ 디렉토리 내 XML 파일명
+    tree_file: "pick_and_place.xml"   # trees/ 디렉토리 내 XML 파일명 (절대 경로도 지원)
     tick_rate_hz: 100.0               # BT tick 주기 [Hz]
     repeat: false                     # true: SUCCESS 완료 후 자동 반복, FAILURE 시 정지
     repeat_delay_s: 1.0               # 반복 시 재시작 전 대기 시간 [s]
 
-    # ── Blackboard 초기값 (참고용, ROS 파라미터가 아님) ──────────────────────
-    # 아래 값들은 코드에서 ROS 파라미터로 읽지 않는다.
-    # BT XML 내에서 설정하거나, 외부에서 Blackboard에 직접 주입해야 한다.
+    # ── 런타임 제어 ──────────────────────────────────────────────────────────
+    # ros2 param set /bt_coordinator paused true    → 일시 정지
+    # ros2 param set /bt_coordinator step_mode true → 단계별 디버깅
+    # ros2 service call /bt_coordinator/step std_srvs/srv/Trigger → 한 틱 실행
+    # ros2 param set /bt_coordinator tree_file "towel_unfold.xml" → 트리 전환
+    paused: false                     # true: BT 틱 일시 정지
+    step_mode: false                  # true: 자동 틱 비활성, ~/step 서비스로 수동 틱
+
+    # ── Groot2 모니터링 ──────────────────────────────────────────────────────
+    # Groot2 연결: groot2_port > 0 이면 해당 포트에서 ZMQ publisher 활성화
+    # Groot2 GUI에서 localhost:<port>로 연결하여 실시간 BT 모니터링 가능
+    groot2_port: 0                    # 0 = 비활성, 1667 = Groot2 기본 포트
+
+    # ── Watchdog (토픽 헬스 모니터링) ────────────────────────────────────────
+    watchdog_timeout_s: 2.0           # 토픽 타임아웃 [s] (이 시간 동안 메시지 없으면 경고)
+    watchdog_interval_s: 5.0          # 헬스 체크 주기 [s] (0 = 비활성)
+
+    # ── Blackboard 초기값 ────────────────────────────────────────────────────
+    # bb.<key> 형식으로 선언하면 트리 로드 후 Blackboard에 자동 주입됨
+    # 타입은 YAML 값에서 자동 추론 (string, double, int, bool)
     #
     # pick_and_place.xml 용:
-    #   place_pose: "0.3;-0.3;0.15;3.14;0.0;0.0"   (Blackboard 변수)
+    bb.place_pose: "0.3;-0.3;0.15;3.14;0.0;0.0"
     #
     # towel_unfold.xml 용:
-    #   sweep_direction_x: 1.0    (Blackboard 변수)
-    #   sweep_direction_y: 0.0    (Blackboard 변수)
-    #   sweep_distance: 0.3       (Blackboard 변수)
+    # bb.sweep_direction_x: 1.0
+    # bb.sweep_direction_y: 0.0
+    # bb.sweep_distance: 0.3

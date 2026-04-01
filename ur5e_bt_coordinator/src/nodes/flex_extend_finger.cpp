@@ -37,10 +37,10 @@ BT::NodeStatus FlexExtendFinger::onStart()
   max_vel_ = getInput<double>("hand_max_traj_velocity")
                  .value_or(kDefaultHandMaxTrajVelocity);
 
-  // 포즈 lookup
+  // 포즈 lookup (bridge pose library 사용)
   const std::string flex_pose_name = finger_name_ + "_flex";
-  flex_target_ = LookupOrThrow(kHandPoses, flex_pose_name, "FlexExtendFinger");
-  home_target_ = LookupOrThrow(kHandPoses, std::string("home"), "FlexExtendFinger");
+  flex_target_ = bridge_->GetHandPose(flex_pose_name);
+  home_target_ = bridge_->GetHandPose("home");
   joint_indices_ = LookupOrThrow(kFingerJointIndices, finger_name_, "FlexExtendFinger");
 
   // 현재 위치 → flex duration 추정

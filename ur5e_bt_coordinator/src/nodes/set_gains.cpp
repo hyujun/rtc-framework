@@ -13,6 +13,10 @@ BT::PortsList SetGains::providedPorts()
   return {
     BT::InputPort<std::string>("kp_translation", "", "e.g. \"5.0,5.0,5.0\""),
     BT::InputPort<std::string>("kp_rotation", "", "e.g. \"3.0,3.0,3.0\""),
+    BT::InputPort<double>("damping", "Damping ratio (default 0.01)"),
+    BT::InputPort<double>("null_kp", "Null-space stiffness (default 0.5)"),
+    BT::InputPort<bool>("enable_null_space", "Enable null-space control"),
+    BT::InputPort<bool>("control_6dof", "Enable 6-DoF control"),
     BT::InputPort<double>("trajectory_speed"),
     BT::InputPort<double>("trajectory_angular_speed"),
     BT::InputPort<double>("max_traj_velocity"),
@@ -67,6 +71,18 @@ BT::NodeStatus SetGains::tick()
       gains[3 + i] = vals[i];
     }
   }
+
+  auto damp = getInput<double>("damping");
+  if (damp) gains[6] = damp.value();
+
+  auto nkp = getInput<double>("null_kp");
+  if (nkp) gains[7] = nkp.value();
+
+  auto ens = getInput<bool>("enable_null_space");
+  if (ens) gains[8] = ens.value() ? 1.0 : 0.0;
+
+  auto c6d = getInput<bool>("control_6dof");
+  if (c6d) gains[9] = c6d.value() ? 1.0 : 0.0;
 
   auto ts = getInput<double>("trajectory_speed");
   if (ts) gains[10] = ts.value();

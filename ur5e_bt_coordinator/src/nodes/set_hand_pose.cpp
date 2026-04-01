@@ -34,7 +34,7 @@ BT::NodeStatus SetHandPose::onStart()
   const double max_vel = getInput<double>("hand_max_traj_velocity")
                              .value_or(kDefaultHandMaxTrajVelocity);
 
-  const auto& target = LookupOrThrow(kHandPoses, pose_name.value(), "SetHandPose");
+  const auto& target = bridge_->GetHandPose(pose_name.value());
   target_vec_.assign(target.begin(), target.end());
 
   // 현재 위치 읽기 → trajectory duration 추정

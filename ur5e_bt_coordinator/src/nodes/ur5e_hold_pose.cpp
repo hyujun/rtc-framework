@@ -25,7 +25,7 @@ BT::NodeStatus UR5eHoldPose::onStart()
     throw BT::RuntimeError("UR5eHoldPose: missing pose: ", pose_name.error());
   }
 
-  const auto& target = LookupOrThrow(kUR5ePoses, pose_name.value(), "UR5eHoldPose");
+  const auto& target = bridge_->GetArmPose(pose_name.value());
 
   std::vector<double> target_vec(target.begin(), target.end());
   bridge_->PublishArmJointTarget(target_vec);

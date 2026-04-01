@@ -46,8 +46,8 @@ BT::NodeStatus MoveOpposition::onStart()
   const double max_vel = getInput<double>("hand_max_traj_velocity")
                              .value_or(kDefaultHandMaxTrajVelocity);
 
-  const auto& thumb_pose = LookupOrThrow(kHandPoses, thumb_pose_name.value(), "MoveOpposition");
-  const auto& target_pose = LookupOrThrow(kHandPoses, target_pose_name.value(), "MoveOpposition");
+  const auto& thumb_pose = bridge_->GetHandPose(thumb_pose_name.value());
+  const auto& target_pose = bridge_->GetHandPose(target_pose_name.value());
   const auto& target_indices = LookupOrThrow(kFingerJointIndices, target_finger.value(), "MoveOpposition");
 
   // 현재 위치 읽기
@@ -60,7 +60,7 @@ BT::NodeStatus MoveOpposition::onStart()
   ApplyOppositionTarget(*bridge_, thumb_pose, target_pose, target_indices);
 
   // 전체 10-DoF 기준 duration 추정 (비-target의 home 복귀 이동도 포함)
-  const auto& home = kHandPoses.at("home");
+  const auto& home = bridge_->GetHandPose("home");
   std::vector<double> full_target(home.begin(), home.end());
   for (int idx : kFingerJointIndices.at("thumb")) {
     full_target[static_cast<std::size_t>(idx)] = thumb_pose[static_cast<std::size_t>(idx)];

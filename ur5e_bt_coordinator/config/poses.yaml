@@ -1,0 +1,39 @@
+bt_coordinator:
+  ros__parameters:
+    # ── Hand 포즈 (10-DoF, 단위: degree → 로드 시 radian 변환) ──────────────
+    # | Finger | Joints                                  | DoF | Index |
+    # |--------|-----------------------------------------|-----|-------|
+    # | Thumb  | CMC abd/add, CMC flex/ext, MCP flex/ext | 3   | 0–2   |
+    # | Index  | MCP abd/add, MCP flex/ext, DIP flex/ext | 3   | 3–5   |
+    # | Middle | MCP abd/add, MCP flex/ext, DIP flex/ext | 3   | 6–8   |
+    # | Ring   | MCP flex/ext                            | 1   | 9     |
+    #
+    # 형식: hand_pose.<이름>: [10개 값 (deg)]
+    # 재컴파일 없이 이 파일만 수정하면 포즈 튜닝 가능
+
+    # 기본 포즈
+    hand_pose.home:       [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
+    hand_pose.full_flex:  [30.0, 60.0, 45.0,  0.0, 60.0, 45.0,  0.0, 60.0, 45.0,  60.0]
+
+    # Opposition 포즈: 엄지 → 각 손가락
+    hand_pose.thumb_index_oppose:   [15.0, 45.0, 35.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
+    hand_pose.index_oppose:         [0.0, 0.0, 0.0,  -5.0, 40.0, 30.0,  0.0, 0.0, 0.0,  0.0]
+    hand_pose.thumb_middle_oppose:  [25.0, 40.0, 30.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
+    hand_pose.middle_oppose:        [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  -5.0, 40.0, 30.0,  0.0]
+    hand_pose.thumb_ring_oppose:    [30.0, 35.0, 25.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
+    hand_pose.ring_oppose:          [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  45.0]
+
+    # Flex 타겟 (FlexExtendFinger용, 손가락별)
+    hand_pose.thumb_flex:      [30.0, 60.0, 45.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
+    hand_pose.thumb_mcp_flex:  [0.0, 0.0, 45.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
+    hand_pose.index_flex:      [0.0, 0.0, 0.0,  0.0, 60.0, 45.0,  0.0, 0.0, 0.0,  0.0]
+    hand_pose.index_dip_flex:  [0.0, 0.0, 0.0,  0.0, 0.0, 45.0,  0.0, 0.0, 0.0,  0.0]
+    hand_pose.middle_flex:     [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 60.0, 45.0,  0.0]
+    hand_pose.middle_dip_flex: [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 45.0,  0.0]
+    hand_pose.ring_flex:       [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  60.0]
+
+    # ── UR5e 포즈 (6-DoF, 단위: degree → 로드 시 radian 변환) ──────────────
+    # 형식: arm_pose.<이름>: [6개 값 (deg)]
+
+    arm_pose.home_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]

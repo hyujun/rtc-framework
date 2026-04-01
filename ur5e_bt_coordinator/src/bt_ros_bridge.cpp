@@ -3,74 +3,107 @@
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
 
+#include <cmath>
+
 namespace rtc_bt {
 
 BtRosBridge::BtRosBridge(rclcpp::Node::SharedPtr node)
   : node_(std::move(node))
 {
+  // Initialize pose maps from compile-time defaults
+  hand_poses_ = kHandPoses;
+  arm_poses_ = kUR5ePoses;
+
   // ── Subscribers (all RELIABLE QoS) ──────────────────────────────────────
 
   arm_gui_sub_ = node_->create_subscription<rtc_msgs::msg::GuiPosition>(
       "/ur5e/gui_position", rclcpp::QoS{10},
       [this](rtc_msgs::msg::GuiPosition::SharedPtr msg) {
-        std::lock_guard lock(state_mutex_);
-        tcp_pose_.x = msg->task_positions[0];
-        tcp_pose_.y = msg->task_positions[1];
-        tcp_pose_.z = msg->task_positions[2];
-        tcp_pose_.roll  = msg->task_positions[3];
-        tcp_pose_.pitch = msg->task_positions[4];
-        tcp_pose_.yaw   = msg->task_positions[5];
-        arm_joint_positions_.assign(
-            msg->joint_positions.begin(), msg->joint_positions.end());
+        {
+          std::lock_guard lock(state_mutex_);
+          tcp_pose_.x = msg->task_positions[0];
+          tcp_pose_.y = msg->task_positions[1];
+          tcp_pose_.z = msg->task_positions[2];
+          tcp_pose_.roll  = msg->task_positions[3];
+          tcp_pose_.pitch = msg->task_positions[4];
+          tcp_pose_.yaw   = msg->task_positions[5];
+          arm_joint_positions_.assign(
+              msg->joint_positions.begin(), msg->joint_positions.end());
+        }
+        {
+          std::lock_guard lock(health_mutex_);
+          arm_gui_last_ = std::chrono::steady_clock::now();
+          arm_gui_received_ = true;
+        }
       });
 
   hand_gui_sub_ = node_->create_subscription<rtc_msgs::msg::GuiPosition>(
       "/hand/gui_position", rclcpp::QoS{10},
       [this](rtc_msgs::msg::GuiPosition::SharedPtr msg) {
-        std::lock_guard lock(state_mutex_);
-        hand_joint_positions_.assign(
-            msg->joint_positions.begin(), msg->joint_positions.end());
+        {
+          std::lock_guard lock(state_mutex_);
+          hand_joint_positions_.assign(
+              msg->joint_positions.begin(), msg->joint_positions.end());
+        }
+        {
+          std::lock_guard lock(health_mutex_);
+          hand_gui_last_ = std::chrono::steady_clock::now();
+          hand_gui_received_ = true;
+        }
       });
 
   grasp_state_sub_ = node_->create_subscription<rtc_msgs::msg::GraspState>(
       "/hand/grasp_state", rclcpp::QoS{10},
       [this](rtc_msgs::msg::GraspState::SharedPtr msg) {
-        std::lock_guard lock(state_mutex_);
-        // CachedGraspState — primary data store
-        const auto n = msg->force_magnitude.size();
-        grasp_state_.fingertips.resize(n);
-        for (std::size_t i = 0; i < n; ++i) {
-          auto& ft = grasp_state_.fingertips[i];
-          ft.name = (i < msg->fingertip_names.size())
-                    ? msg->fingertip_names[i] : "";
-          ft.force_magnitude = msg->force_magnitude[i];
-          ft.contact_flag = (i < msg->contact_flag.size())
-                            ? msg->contact_flag[i] : 0.0f;
-          ft.inference_valid = (i < msg->inference_valid.size())
-                               ? msg->inference_valid[i] : false;
+        {
+          std::lock_guard lock(state_mutex_);
+          const auto n = msg->force_magnitude.size();
+          grasp_state_.fingertips.resize(n);
+          for (std::size_t i = 0; i < n; ++i) {
+            auto& ft = grasp_state_.fingertips[i];
+            ft.name = (i < msg->fingertip_names.size())
+                      ? msg->fingertip_names[i] : "";
+            ft.force_magnitude = msg->force_magnitude[i];
+            ft.contact_flag = (i < msg->contact_flag.size())
+                              ? msg->contact_flag[i] : 0.0f;
+            ft.inference_valid = (i < msg->inference_valid.size())
+                                 ? msg->inference_valid[i] : false;
+          }
+          grasp_state_.num_active_contacts = msg->num_active_contacts;
+          grasp_state_.max_force           = msg->max_force;
+          grasp_state_.grasp_detected      = msg->grasp_detected;
+          grasp_state_.force_threshold     = msg->force_threshold;
+          grasp_state_.min_fingertips      = msg->min_fingertips;
         }
-        grasp_state_.num_active_contacts = msg->num_active_contacts;
-        grasp_state_.max_force           = msg->max_force;
-        grasp_state_.grasp_detected      = msg->grasp_detected;
-        grasp_state_.force_threshold     = msg->force_threshold;
-        grasp_state_.min_fingertips      = msg->min_fingertips;
+        {
+          std::lock_guard lock(health_mutex_);
+          grasp_state_last_ = std::chrono::steady_clock::now();
+          grasp_state_received_ = true;
+        }
       });
 
   vision_sub_ = node_->create_subscription<geometry_msgs::msg::PoseStamped>(
       "/vision/object_pose", rclcpp::QoS{10},
       [this](geometry_msgs::msg::PoseStamped::SharedPtr msg) {
-        std::lock_guard lock(state_mutex_);
-        object_pose_.x = msg->pose.position.x;
-        object_pose_.y = msg->pose.position.y;
-        object_pose_.z = msg->pose.position.z;
+        {
+          std::lock_guard lock(state_mutex_);
+          object_pose_.x = msg->pose.position.x;
+          object_pose_.y = msg->pose.position.y;
+          object_pose_.z = msg->pose.position.z;
 
-        // Quaternion → RPY
-        tf2::Quaternion q(
-            msg->pose.orientation.x, msg->pose.orientation.y,
-            msg->pose.orientation.z, msg->pose.orientation.w);
-        tf2::Matrix3x3 m(q);
-        m.getRPY(object_pose_.roll, object_pose_.pitch, object_pose_.yaw);
-        object_detected_ = true;
+          // Quaternion → RPY
+          tf2::Quaternion q(
+              msg->pose.orientation.x, msg->pose.orientation.y,
+              msg->pose.orientation.z, msg->pose.orientation.w);
+          tf2::Matrix3x3 m(q);
+          m.getRPY(object_pose_.roll, object_pose_.pitch, object_pose_.yaw);
+          object_detected_ = true;
+        }
+        {
+          std::lock_guard lock(health_mutex_);
+          vision_last_ = std::chrono::steady_clock::now();
+          vision_received_ = true;
+        }
       });
 
   active_ctrl_sub_ = node_->create_subscription<std_msgs::msg::String>(
@@ -84,8 +117,15 @@ BtRosBridge::BtRosBridge(rclcpp::Node::SharedPtr node)
   estop_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
       "/system/estop_status", rclcpp::QoS{10},
       [this](std_msgs::msg::Bool::SharedPtr msg) {
-        std::lock_guard lock(state_mutex_);
-        estopped_ = msg->data;
+        {
+          std::lock_guard lock(state_mutex_);
+          estopped_ = msg->data;
+        }
+        {
+          std::lock_guard lock(health_mutex_);
+          estop_last_ = std::chrono::steady_clock::now();
+          estop_received_ = true;
+        }
       });
 
   // ── Publishers ──────────────────────────────────────────────────────────
@@ -181,6 +221,136 @@ void BtRosBridge::PublishSelectController(const std::string& name) {
   std_msgs::msg::String msg;
   msg.data = name;
   select_ctrl_pub_->publish(msg);
+}
+
+// ── Pose library ──────────────────────────────────────────────────────────
+
+void BtRosBridge::LoadPoseOverrides(rclcpp::Node::SharedPtr node)
+{
+  // Discover hand_pose.* parameters
+  auto hand_result = node->list_parameters({"hand_pose"}, 1);
+  int hand_count = 0;
+  for (const auto& param_name : hand_result.names) {
+    // param_name = "hand_pose.home" → pose_name = "home"
+    const std::string prefix = "hand_pose.";
+    if (param_name.size() <= prefix.size()) continue;
+    std::string pose_name = param_name.substr(prefix.size());
+
+    try {
+      auto vals = node->get_parameter(param_name).as_double_array();
+      if (vals.size() != static_cast<std::size_t>(kHandDofCount)) {
+        RCLCPP_WARN(node->get_logger(),
+                    "[PoseLibrary] hand_pose.%s has %zu values (expected %d), skipped",
+                    pose_name.c_str(), vals.size(), kHandDofCount);
+        continue;
+      }
+      HandPose pose{};
+      for (int i = 0; i < kHandDofCount; ++i) {
+        pose[i] = vals[i] * kDeg2Rad;
+      }
+      hand_poses_[pose_name] = pose;
+      ++hand_count;
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(node->get_logger(),
+                  "[PoseLibrary] Failed to load hand_pose.%s: %s",
+                  pose_name.c_str(), e.what());
+    }
+  }
+
+  // Discover arm_pose.* parameters
+  auto arm_result = node->list_parameters({"arm_pose"}, 1);
+  int arm_count = 0;
+  for (const auto& param_name : arm_result.names) {
+    const std::string prefix = "arm_pose.";
+    if (param_name.size() <= prefix.size()) continue;
+    std::string pose_name = param_name.substr(prefix.size());
+
+    try {
+      auto vals = node->get_parameter(param_name).as_double_array();
+      if (vals.size() != static_cast<std::size_t>(kArmDofCount)) {
+        RCLCPP_WARN(node->get_logger(),
+                    "[PoseLibrary] arm_pose.%s has %zu values (expected %d), skipped",
+                    pose_name.c_str(), vals.size(), kArmDofCount);
+        continue;
+      }
+      ArmPose pose{};
+      for (int i = 0; i < kArmDofCount; ++i) {
+        pose[i] = vals[i] * kDeg2Rad;
+      }
+      arm_poses_[pose_name] = pose;
+      ++arm_count;
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(node->get_logger(),
+                  "[PoseLibrary] Failed to load arm_pose.%s: %s",
+                  pose_name.c_str(), e.what());
+    }
+  }
+
+  RCLCPP_INFO(node->get_logger(),
+              "[PoseLibrary] Loaded %d hand poses, %d arm poses "
+              "(total: %zu hand, %zu arm)",
+              hand_count, arm_count, hand_poses_.size(), arm_poses_.size());
+}
+
+const HandPose& BtRosBridge::GetHandPose(const std::string& name) const
+{
+  auto it = hand_poses_.find(name);
+  if (it == hand_poses_.end()) {
+    throw BT::RuntimeError("PoseLibrary: unknown hand pose: " + name);
+  }
+  return it->second;
+}
+
+const ArmPose& BtRosBridge::GetArmPose(const std::string& name) const
+{
+  auto it = arm_poses_.find(name);
+  if (it == arm_poses_.end()) {
+    throw BT::RuntimeError("PoseLibrary: unknown arm pose: " + name);
+  }
+  return it->second;
+}
+
+// ── Topic health watchdog ─────────────────────────────────────────────────
+
+std::vector<TopicHealth> BtRosBridge::GetTopicHealth(double timeout_s) const
+{
+  std::lock_guard lock(health_mutex_);
+  auto now = std::chrono::steady_clock::now();
+
+  auto make_health = [&](const std::string& name, bool received, TimePoint last) {
+    TopicHealth h;
+    h.name = name;
+    h.received = received;
+    if (received) {
+      h.seconds_since_last =
+          std::chrono::duration<double>(now - last).count();
+      h.healthy = (h.seconds_since_last <= timeout_s);
+    }
+    return h;
+  };
+
+  return {
+    make_health("/ur5e/gui_position",  arm_gui_received_,     arm_gui_last_),
+    make_health("/hand/gui_position",  hand_gui_received_,    hand_gui_last_),
+    make_health("/hand/grasp_state",   grasp_state_received_, grasp_state_last_),
+    make_health("/vision/object_pose", vision_received_,      vision_last_),
+    make_health("/system/estop_status", estop_received_,      estop_last_),
+  };
+}
+
+bool BtRosBridge::AreTopicsHealthy(double timeout_s) const
+{
+  std::lock_guard lock(health_mutex_);
+  auto now = std::chrono::steady_clock::now();
+
+  auto is_ok = [&](bool received, TimePoint last) {
+    if (!received) return false;
+    return std::chrono::duration<double>(now - last).count() <= timeout_s;
+  };
+
+  // Critical topics: arm + hand position feedback
+  return is_ok(arm_gui_received_, arm_gui_last_) &&
+         is_ok(hand_gui_received_, hand_gui_last_);
 }
 
 }  // namespace rtc_bt

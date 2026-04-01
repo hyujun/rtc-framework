@@ -59,7 +59,10 @@ std::vector<T> ParseCsvList(const std::string& str)
       } else if constexpr (std::is_same_v<T, double>) {
         result.push_back(std::stod(token));
       }
-    } catch (...) {}
+    } catch (...) {
+      throw BT::RuntimeError("ParseCsvList: invalid token '" + token +
+                             "' in string '" + str + "'");
+    }
   }
   return result;
 }
@@ -131,13 +134,14 @@ inline double EstimateHandTrajectoryDuration(
 
 /// Opposition 전용: thumb + target 손가락만 목표 포즈, 나머지는 home으로 리셋.
 /// 비-target 손가락 잔류 문제를 방지한다.
+/// Bridge의 pose library에서 home 포즈를 읽는다.
 inline void ApplyOppositionTarget(
     BtRosBridge& bridge,
     const HandPose& thumb_pose,
     const HandPose& target_pose,
     const std::vector<int>& target_indices)
 {
-  const auto& home = kHandPoses.at("home");
+  const auto& home = bridge.GetHandPose("home");
   std::vector<double> cmd(home.begin(), home.end());
   // thumb 관절 덮어쓰기
   for (int idx : kFingerJointIndices.at("thumb")) {

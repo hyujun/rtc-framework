@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ur5e_bt_coordinator/bt_types.hpp"
+#include "ur5e_bt_coordinator/hand_pose_config.hpp"
 
 #include <behaviortree_cpp/bt_factory.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -12,17 +13,29 @@
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
 
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <vector>
 
 namespace rtc_bt {
 
+/// Topic health status for watchdog monitoring.
+struct TopicHealth {
+  std::string name;
+  bool received{false};            ///< true if at least one message received
+  double seconds_since_last{-1.0}; ///< -1 means never received
+  bool healthy{false};             ///< true if within timeout
+};
+
 /// Bridges ROS2 topics to/from the BT Blackboard.
 ///
 /// Subscribers cache the latest value from each RELIABLE topic.
 /// BT nodes read/write via the public accessors (mutex-protected).
 /// Publishers send commands to the RT control layer.
+/// Also provides:
+///   - Pose library (runtime-configurable hand/arm poses)
+///   - Topic health watchdog
 class BtRosBridge {
 public:
   explicit BtRosBridge(rclcpp::Node::SharedPtr node);
@@ -67,6 +80,32 @@ public:
   /// Publish controller switch command
   void PublishSelectController(const std::string& name);
 
+  // ── Pose library (runtime-configurable) ───────────────────────────────────
+
+  /// Load hand/arm pose overrides from ROS2 parameters (deg → rad conversion).
+  /// Parameters format: hand_pose.<name> = [double array], arm_pose.<name> = [double array]
+  void LoadPoseOverrides(rclcpp::Node::SharedPtr node);
+
+  /// Lookup a hand pose by name. Falls back to compile-time defaults.
+  const HandPose& GetHandPose(const std::string& name) const;
+
+  /// Lookup an arm pose by name. Falls back to compile-time defaults.
+  const ArmPose& GetArmPose(const std::string& name) const;
+
+  /// Get the full hand pose map (for iteration/validation).
+  const std::map<std::string, HandPose>& GetHandPoses() const { return hand_poses_; }
+
+  /// Get the full arm pose map.
+  const std::map<std::string, ArmPose>& GetArmPoses() const { return arm_poses_; }
+
+  // ── Topic health watchdog ─────────────────────────────────────────────────
+
+  /// Get health status for all monitored topics.
+  std::vector<TopicHealth> GetTopicHealth(double timeout_s = 2.0) const;
+
+  /// Check if all critical topics (arm_gui, hand_gui) are healthy.
+  bool AreTopicsHealthy(double timeout_s = 2.0) const;
+
 private:
   rclcpp::Node::SharedPtr node_;
 
@@ -94,6 +133,24 @@ private:
   bool object_detected_{false};
   std::string active_controller_;
   bool estopped_{false};
+
+  // ── Topic health timestamps ───────────────────────────────────────────────
+  using TimePoint = std::chrono::steady_clock::time_point;
+  mutable std::mutex health_mutex_;
+  TimePoint arm_gui_last_{};
+  bool arm_gui_received_{false};
+  TimePoint hand_gui_last_{};
+  bool hand_gui_received_{false};
+  TimePoint grasp_state_last_{};
+  bool grasp_state_received_{false};
+  TimePoint vision_last_{};
+  bool vision_received_{false};
+  TimePoint estop_last_{};
+  bool estop_received_{false};
+
+  // ── Pose library ──────────────────────────────────────────────────────────
+  std::map<std::string, HandPose> hand_poses_;
+  std::map<std::string, ArmPose> arm_poses_;
 };
 
 }  // namespace rtc_bt
