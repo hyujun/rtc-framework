@@ -1,7 +1,14 @@
 #include "rtc_controllers/indirect/p_controller.hpp"
 
 #include <algorithm> // std::copy, std::clamp
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/math/rpy.hpp>
+#pragma GCC diagnostic pop
 
 namespace rtc
 {
@@ -10,12 +17,18 @@ PController::PController(std::string_view urdf_path)
 : PController(urdf_path, Gains{}) {}
 
 PController::PController(std::string_view urdf_path, Gains gains)
-: gains_(gains), data_(pinocchio::Model{})
+: gains_(gains)
 {
-  pinocchio::urdf::buildModel(std::string(urdf_path), model_);
-  data_ = pinocchio::Data(model_);
-  end_id_ = static_cast<pinocchio::JointIndex>(model_.njoints - 1);
-  q_ = Eigen::VectorXd::Zero(model_.nv);
+  urdf_pinocchio_bridge::ModelConfig config;
+  config.urdf_path = std::string(urdf_path);
+  config.root_joint_type = "fixed";
+
+  urdf_pinocchio_bridge::PinocchioModelBuilder builder(config);
+  model_ptr_ = builder.GetFullModel();
+  handle_ = std::make_unique<urdf_pinocchio_bridge::RtModelHandle>(model_ptr_);
+
+  // Default: use the last frame in the model as tip
+  tip_frame_id_ = static_cast<pinocchio::FrameIndex>(model_ptr_->nframes - 1);
 }
 
 void PController::OnDeviceConfigsSet()
@@ -23,9 +36,9 @@ void PController::OnDeviceConfigsSet()
   const auto primary = GetPrimaryDeviceName();
   if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
-      if (model_.existFrame(cfg->urdf->tip_link)) {
-        auto fid = model_.getFrameId(cfg->urdf->tip_link);
-        end_id_ = model_.frames[fid].parentJoint;
+      auto fid = handle_->GetFrameId(cfg->urdf->tip_link);
+      if (fid != 0) {
+        tip_frame_id_ = fid;
       }
     }
     if (cfg->joint_limits) {
@@ -48,14 +61,18 @@ ControllerOutput PController::Compute(const ControllerState & state) noexcept
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
 
+  // Build q span for FK
+  std::array<double, kMaxDeviceChannels> q_buf{};
   for (int i = 0; i < nc0; ++i) {
     const double error = device_targets_[0][i] - dev0.positions[i];
     out0.commands[i] = dev0.positions[i] + gains_.kp[i] * error * state.dt;
-    q_[static_cast<Eigen::Index>(i)] = dev0.positions[i];
+    q_buf[static_cast<std::size_t>(i)] = dev0.positions[i];
   }
 
-  pinocchio::forwardKinematics(model_, data_, q_);
-  const pinocchio::SE3 & tcp = data_.oMi[end_id_];
+  const auto nv = handle_->nv();
+  std::span<const double> q_span(q_buf.data(), static_cast<std::size_t>(nv));
+  handle_->ComputeForwardKinematics(q_span);
+  const pinocchio::SE3 & tcp = handle_->GetFramePlacement(tip_frame_id_);
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
 
   output.actual_task_positions[0] = tcp.translation().x();

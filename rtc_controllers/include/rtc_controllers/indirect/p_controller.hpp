@@ -3,20 +3,13 @@
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wshadow"
-#pragma GCC diagnostic ignored "-Wpedantic"
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/algorithm/kinematics.hpp>
-#include <pinocchio/multibody/data.hpp>
-#include <pinocchio/multibody/model.hpp>
-#include <pinocchio/parsers/urdf.hpp>
-#pragma GCC diagnostic pop
+#include <urdf_pinocchio_bridge/pinocchio_model_builder.hpp>
+#include <urdf_pinocchio_bridge/rt_model_handle.hpp>
 
 #include <Eigen/Core>
 
 #include <array>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -77,10 +70,10 @@ private:
   Gains gains_;
   std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices> device_targets_{};
 
-  pinocchio::Model model_;
-  pinocchio::Data data_;
-  pinocchio::JointIndex end_id_{0};
-  Eigen::VectorXd q_;
+  // ── Pinocchio via urdf_pinocchio_bridge ────────────────────────────────────
+  std::shared_ptr<const pinocchio::Model> model_ptr_;
+  std::unique_ptr<urdf_pinocchio_bridge::RtModelHandle> handle_;
+  pinocchio::FrameIndex tip_frame_id_{0};
 
   CommandType command_type_{CommandType::kPosition};
 

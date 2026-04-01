@@ -3,7 +3,15 @@
 
 #include <algorithm>
 #include <cstddef>
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/math/rpy.hpp>
+#include <pinocchio/spatial/explog.hpp>
+#pragma GCC diagnostic pop
 
 namespace rtc
 {
@@ -11,28 +19,36 @@ namespace rtc
 // ── Constructor ─────────────────────────────────────────────────────────────
 
 ClikController::ClikController(std::string_view urdf_path, Gains gains)
-: data_(pinocchio::Model{}), gains_(gains)
+: gains_(gains)
 {
-  pinocchio::urdf::buildModel(std::string(urdf_path), model_);
-  data_ = pinocchio::Data(model_);
-  end_id_ = static_cast<pinocchio::JointIndex>(model_.njoints - 1);
+  urdf_pinocchio_bridge::ModelConfig config;
+  config.urdf_path = std::string(urdf_path);
+  config.root_joint_type = "fixed";
+
+  urdf_pinocchio_bridge::PinocchioModelBuilder builder(config);
+  model_ptr_ = builder.GetFullModel();
+  handle_ = std::make_unique<urdf_pinocchio_bridge::RtModelHandle>(model_ptr_);
+
+  // Default: use the last frame in the model as tip
+  tip_frame_id_ = static_cast<pinocchio::FrameIndex>(model_ptr_->nframes - 1);
+
+  const int nv = handle_->nv();
 
   // Pre-allocate all Eigen buffers to their final sizes.
-  q_ = Eigen::VectorXd::Zero(model_.nv);
-  J_full_ = Eigen::MatrixXd::Zero(6, model_.nv);
-  J_pos_ = Eigen::MatrixXd::Zero(3, model_.nv);
+  J_full_ = Eigen::MatrixXd::Zero(6, nv);
+  J_pos_ = Eigen::MatrixXd::Zero(3, nv);
   JJt_ = Eigen::Matrix3d::Zero();
   JJt_inv_ = Eigen::Matrix3d::Zero();
-  Jpinv_ = Eigen::MatrixXd::Zero(model_.nv, 3);
-  N_ = Eigen::MatrixXd::Identity(model_.nv, model_.nv);
-  dq_ = Eigen::VectorXd::Zero(model_.nv);
-  null_err_ = Eigen::VectorXd::Zero(model_.nv);
-  null_dq_ = Eigen::VectorXd::Zero(model_.nv);
+  Jpinv_ = Eigen::MatrixXd::Zero(nv, 3);
+  N_ = Eigen::MatrixXd::Identity(nv, nv);
+  dq_ = Eigen::VectorXd::Zero(nv);
+  null_err_ = Eigen::VectorXd::Zero(nv);
+  null_dq_ = Eigen::VectorXd::Zero(nv);
   pos_error_ = Eigen::Vector3d::Zero();
 
   JJt_6d_ = Eigen::Matrix<double, 6, 6>::Zero();
   JJt_inv_6d_ = Eigen::Matrix<double, 6, 6>::Zero();
-  Jpinv_6d_ = Eigen::MatrixXd::Zero(model_.nv, 6);
+  Jpinv_6d_ = Eigen::MatrixXd::Zero(nv, 6);
   pos_error_6d_ = Eigen::Matrix<double, 6, 1>::Zero();
 }
 
@@ -41,9 +57,9 @@ void ClikController::OnDeviceConfigsSet()
   const auto primary = GetPrimaryDeviceName();
   if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
-      if (model_.existFrame(cfg->urdf->tip_link)) {
-        auto fid = model_.getFrameId(cfg->urdf->tip_link);
-        end_id_ = model_.frames[fid].parentJoint;
+      auto fid = handle_->GetFrameId(cfg->urdf->tip_link);
+      if (fid != 0) {
+        tip_frame_id_ = fid;
       }
     }
     if (cfg->joint_limits) {
@@ -77,22 +93,25 @@ ControllerOutput ClikController::Compute(
     return out;
   }
 
-  // ── Step 1: copy joint state into Eigen vector ───────────────────────────
+  const int nv = handle_->nv();
+
+  // ── Step 1: copy joint state into q buffer ──────────────────────────────
   const auto & dev0 = state.devices[0];
-  for (Eigen::Index i = 0; i < model_.nv; ++i) {
-    q_[i] = dev0.positions[static_cast<std::size_t>(i)];
+  std::array<double, kMaxDeviceChannels> q_buf{};
+  for (int i = 0; i < nv; ++i) {
+    q_buf[static_cast<std::size_t>(i)] = dev0.positions[static_cast<std::size_t>(i)];
   }
+  std::span<const double> q_span(q_buf.data(), static_cast<std::size_t>(nv));
 
   // ── Step 2: FK + Jacobians ───────────────────────────────────────────────
-  // computeJointJacobians performs FK internally — data_.oMi is updated.
-  pinocchio::computeJointJacobians(model_, data_, q_);
-  pinocchio::getJointJacobian(model_, data_, end_id_,
-                               pinocchio::LOCAL_WORLD_ALIGNED, J_full_);
+  // ComputeJacobians performs FK internally and updates frame placements.
+  handle_->ComputeJacobians(q_span);
+  handle_->GetFrameJacobian(tip_frame_id_, pinocchio::LOCAL_WORLD_ALIGNED, J_full_);
   // Translational Jacobian: rows 0..2
   J_pos_.noalias() = J_full_.topRows(3);
 
   // ── Step 3: Cartesian position/orientation error ──────────────────────────
-  const pinocchio::SE3 tcp_pose = data_.oMi[end_id_];
+  const pinocchio::SE3 & tcp_pose = handle_->GetFramePlacement(tip_frame_id_);
   const Eigen::Vector3d tcp = tcp_pose.translation();
 
   if (!target_initialized_) {
@@ -196,8 +215,8 @@ ControllerOutput ClikController::Compute(
     N_.setIdentity();
     N_.noalias() -= Jpinv_ * J_pos_;
 
-    for (Eigen::Index i = 0; i < model_.nv; ++i) {
-      null_err_[i] = null_target_[static_cast<std::size_t>(i)] -
+    for (int i = 0; i < nv; ++i) {
+      null_err_[static_cast<Eigen::Index>(i)] = null_target_[static_cast<std::size_t>(i)] -
         dev0.positions[static_cast<std::size_t>(i)];
     }
     null_dq_.noalias() = N_ * null_err_;
@@ -247,7 +266,7 @@ ControllerOutput ClikController::Compute(
     }
   }
 
-  const pinocchio::SE3 & tcp_current = data_.oMi[end_id_];
+  const pinocchio::SE3 & tcp_current = handle_->GetFramePlacement(tip_frame_id_);
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp_current.rotation());
   output.actual_task_positions[0] = tcp_current.translation().x();
   output.actual_task_positions[1] = tcp_current.translation().y();
@@ -309,12 +328,16 @@ void ClikController::InitializeHoldPosition(
   const ControllerState & state) noexcept
 {
   const auto & dev0 = state.devices[0];
+  const int nv = handle_->nv();
+
   // Compute current TCP position/pose via FK and set as target
-  for (Eigen::Index i = 0; i < model_.nv; ++i) {
-    q_[i] = dev0.positions[static_cast<std::size_t>(i)];
+  std::array<double, kMaxDeviceChannels> q_buf{};
+  for (int i = 0; i < nv; ++i) {
+    q_buf[static_cast<std::size_t>(i)] = dev0.positions[static_cast<std::size_t>(i)];
   }
-  pinocchio::forwardKinematics(model_, data_, q_);
-  const pinocchio::SE3 & tcp_pose = data_.oMi[end_id_];
+  std::span<const double> q_span(q_buf.data(), static_cast<std::size_t>(nv));
+  handle_->ComputeForwardKinematics(q_span);
+  const pinocchio::SE3 & tcp_pose = handle_->GetFramePlacement(tip_frame_id_);
 
   std::lock_guard lock(target_mutex_);
   tcp_target_pose_ = tcp_pose;
