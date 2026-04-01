@@ -4,6 +4,7 @@
 #include "rtc_base/logging/data_logger.hpp"
 #include "rtc_base/logging/log_buffer.hpp"
 #include "rtc_base/threading/publish_buffer.hpp"
+#include "rtc_base/threading/thread_config.hpp"
 #include "rtc_controller_manager/controller_timing_profiler.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 // ── ROS2 ─────────────────────────────────────────────────────────────────────
