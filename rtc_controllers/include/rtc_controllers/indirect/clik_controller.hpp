@@ -3,17 +3,17 @@
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 
+#include <urdf_pinocchio_bridge/pinocchio_model_builder.hpp>
+#include <urdf_pinocchio_bridge/rt_model_handle.hpp>
+
 // Suppress warnings emitted by Pinocchio / Eigen headers
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/algorithm/jacobian.hpp>     // computeJointJacobians, getJointJacobian
-#include <pinocchio/algorithm/kinematics.hpp>   // forwardKinematics (via computeJointJacobians)
-#include <pinocchio/multibody/data.hpp>
-#include <pinocchio/multibody/model.hpp>
-#include <pinocchio/parsers/urdf.hpp>
+#include <pinocchio/spatial/se3.hpp>
+#include <pinocchio/spatial/motion.hpp>
 #pragma GCC diagnostic pop
 
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
@@ -23,6 +23,7 @@
 
 #include <array>
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <string>
@@ -58,18 +59,6 @@ namespace rtc
 ///   - `target[0..2]` = desired TCP position  [x, y, z]  in world frame (m)
 ///   - `target[3..5]` = null-space reference joints 3–5 (rad);
 ///                      joints 0–2 use `kNullTarget` as reference
-///
-/// ### Usage — swap into rt_controller.cpp
-/// @code
-///   // 1. Include this header instead of pd_controller.hpp
-///   // 2. Change controller_ member type to RTControllerInterface
-///   // 3. Initialise:
-///   //      controller_(std::make_unique<rtc::ClikController>(
-///   //          "$(ros2 pkg prefix ur5e_description)/share/ur5e_description/robots/ur5e/urdf/ur5e.urdf",
-///   //          rtc::ClikController::Gains{
-///   //              .kp = 1.0, .damping = 0.01, .null_kp = 0.5}))
-///   // 4. Remove the set_gains() call in DeclareAndLoadParameters()
-/// @endcode
 class ClikController final : public RTControllerInterface {
 public:
   // ── Gain / feature configuration ─────────────────────────────────────────
@@ -83,7 +72,7 @@ public:
     bool   control_6dof{false};      ///< Enable 6-DOF (translation + orientation) control
   };
 
-  /// @param urdf_path  Absolute path to the UR5e URDF file.
+  /// @param urdf_path  Absolute path to the robot URDF file.
   /// @param gains      Gains and feature flags.
   /// @throws std::runtime_error  if the URDF cannot be parsed.
   explicit ClikController(std::string_view urdf_path, Gains gains);
@@ -128,13 +117,12 @@ public:
   }
 
 private:
-  // ── Pinocchio model + pre-allocated Data ─────────────────────────────────
-  pinocchio::Model      model_;
-  pinocchio::Data       data_;
-  pinocchio::JointIndex end_id_{0};   ///< last joint index (end-effector)
+  // ── Pinocchio via urdf_pinocchio_bridge ──────────────────────────────────
+  std::shared_ptr<const pinocchio::Model> model_ptr_;
+  std::unique_ptr<urdf_pinocchio_bridge::RtModelHandle> handle_;
+  pinocchio::FrameIndex tip_frame_id_{0};
 
   // ── Pre-allocated Eigen work buffers — zero heap alloc on the RT path ────
-  Eigen::VectorXd q_;          ///< nv: joint positions
   Eigen::MatrixXd J_full_;     ///< 6×nv: full spatial Jacobian (LOCAL_WORLD_ALIGNED)
   Eigen::MatrixXd J_pos_;      ///< 3×nv: translational part of J_full_
   Eigen::Matrix3d JJt_;        ///< 3×3: J_pos * J_pos^T + λ²I

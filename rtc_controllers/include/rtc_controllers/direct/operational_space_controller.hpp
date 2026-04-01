@@ -3,19 +3,17 @@
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 
+#include <urdf_pinocchio_bridge/pinocchio_model_builder.hpp>
+#include <urdf_pinocchio_bridge/rt_model_handle.hpp>
+
 // Suppress warnings emitted by Pinocchio / Eigen headers
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/algorithm/jacobian.hpp>     // computeJointJacobians, getJointJacobian
-#include <pinocchio/algorithm/kinematics.hpp>   // forwardKinematics
-#include <pinocchio/algorithm/rnea.hpp>         // computeGeneralizedGravity
-#include <pinocchio/multibody/data.hpp>
-#include <pinocchio/multibody/model.hpp>
-#include <pinocchio/parsers/urdf.hpp>
-#include <pinocchio/spatial/explog.hpp>         // pinocchio::log3 — SO(3) logarithm
+#include <pinocchio/spatial/se3.hpp>
+#include <pinocchio/spatial/motion.hpp>
 #pragma GCC diagnostic pop
 
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
@@ -25,6 +23,7 @@
 
 #include <array>
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <string>
@@ -76,7 +75,7 @@ public:
     double trajectory_angular_speed{0.5};   ///< Max angular speed for trajectory [rad/s]
   };
 
-  /// @param urdf_path  Absolute path to the UR5e URDF file.
+  /// @param urdf_path  Absolute path to the robot URDF file.
   /// @param gains      PD gains and feature flags.
   /// @throws std::runtime_error  if the URDF cannot be parsed.
   explicit OperationalSpaceController(
@@ -124,14 +123,14 @@ public:
   }
 
 private:
-  // ── Pinocchio model + pre-allocated Data ─────────────────────────────────
-  pinocchio::Model      model_;
-  pinocchio::Data       data_;
-  pinocchio::JointIndex end_id_{0};   ///< last joint index (end-effector)
+  // ── Pinocchio via urdf_pinocchio_bridge ──────────────────────────────────
+  std::shared_ptr<const pinocchio::Model> model_ptr_;
+  std::unique_ptr<urdf_pinocchio_bridge::RtModelHandle> handle_;
+  pinocchio::FrameIndex tip_frame_id_{0};
 
   // ── Pre-allocated Eigen work buffers ─────────────────────────────────────
-  Eigen::VectorXd q_;        ///< nv: joint positions
-  Eigen::VectorXd v_;        ///< nv: joint velocities
+  Eigen::VectorXd q_;        ///< nv: joint positions (for gravity only)
+  Eigen::VectorXd v_;        ///< nv: joint velocities (for gravity only)
 
   Eigen::MatrixXd J_full_;   ///< 6×nv: full spatial Jacobian (LOCAL_WORLD_ALIGNED)
 

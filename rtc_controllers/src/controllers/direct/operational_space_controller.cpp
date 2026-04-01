@@ -3,7 +3,15 @@
 
 #include <algorithm>
 #include <cstddef>
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/math/rpy.hpp>
+#include <pinocchio/spatial/explog.hpp>
+#pragma GCC diagnostic pop
 
 namespace rtc
 {
@@ -12,18 +20,27 @@ namespace rtc
 
 OperationalSpaceController::OperationalSpaceController(
   std::string_view urdf_path, Gains gains)
-: data_(pinocchio::Model{}), gains_(gains)
+: gains_(gains)
 {
-  pinocchio::urdf::buildModel(std::string(urdf_path), model_);
-  data_ = pinocchio::Data(model_);
-  end_id_ = static_cast<pinocchio::JointIndex>(model_.njoints - 1);
+  urdf_pinocchio_bridge::ModelConfig config;
+  config.urdf_path = std::string(urdf_path);
+  config.root_joint_type = "fixed";
+
+  urdf_pinocchio_bridge::PinocchioModelBuilder builder(config);
+  model_ptr_ = builder.GetFullModel();
+  handle_ = std::make_unique<urdf_pinocchio_bridge::RtModelHandle>(model_ptr_);
+
+  // Default: use the last frame in the model as tip
+  tip_frame_id_ = static_cast<pinocchio::FrameIndex>(model_ptr_->nframes - 1);
+
+  const int nv = handle_->nv();
 
   // Pre-allocate all Eigen buffers to their final sizes.
-  q_ = Eigen::VectorXd::Zero(model_.nv);
-  v_ = Eigen::VectorXd::Zero(model_.nv);
-  J_full_ = Eigen::MatrixXd::Zero(6, model_.nv);
-  Jpinv_ = Eigen::MatrixXd::Zero(model_.nv, 6);
-  dq_ = Eigen::VectorXd::Zero(model_.nv);
+  q_ = Eigen::VectorXd::Zero(nv);
+  v_ = Eigen::VectorXd::Zero(nv);
+  J_full_ = Eigen::MatrixXd::Zero(6, nv);
+  Jpinv_ = Eigen::MatrixXd::Zero(nv, 6);
+  dq_ = Eigen::VectorXd::Zero(nv);
   JJt_.setZero();
   task_err_.setZero();
   task_vel_.setZero();
@@ -35,9 +52,9 @@ void OperationalSpaceController::OnDeviceConfigsSet()
   const auto primary = GetPrimaryDeviceName();
   if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
-      if (model_.existFrame(cfg->urdf->tip_link)) {
-        auto fid = model_.getFrameId(cfg->urdf->tip_link);
-        end_id_ = model_.frames[fid].parentJoint;
+      auto fid = handle_->GetFrameId(cfg->urdf->tip_link);
+      if (fid != 0) {
+        tip_frame_id_ = fid;
       }
     }
     if (cfg->joint_limits) {
@@ -66,25 +83,31 @@ ControllerOutput OperationalSpaceController::Compute(
     return out;
   }
 
-  // ── Step 1: copy joint state into Eigen vectors ──────────────────────────
+  const int nv = handle_->nv();
+
+  // ── Step 1: copy joint state into buffers ───────────────────────────────
   const auto & dev0 = state.devices[0];
-  for (Eigen::Index i = 0; i < model_.nv; ++i) {
+  std::array<double, kMaxDeviceChannels> q_buf{};
+  std::array<double, kMaxDeviceChannels> v_buf{};
+  for (int i = 0; i < nv; ++i) {
     const auto ui = static_cast<std::size_t>(i);
-    q_[i] = dev0.positions[ui];
-    v_[i] = dev0.velocities[ui];
+    q_buf[ui] = dev0.positions[ui];
+    v_buf[ui] = dev0.velocities[ui];
   }
+  std::span<const double> q_span(q_buf.data(), static_cast<std::size_t>(nv));
+  std::span<const double> v_span(v_buf.data(), static_cast<std::size_t>(nv));
 
   // ── Step 2: FK + full Jacobian ────────────────────────────────────────────
-  // computeJointJacobians also performs FK — data_.oMi is updated.
-  pinocchio::computeJointJacobians(model_, data_, q_);
-  pinocchio::getJointJacobian(model_, data_, end_id_,
-                               pinocchio::LOCAL_WORLD_ALIGNED, J_full_);
+  // ComputeJacobians performs FK internally and updates frame placements.
+  handle_->ComputeJacobians(q_span);
+  handle_->GetFrameJacobian(tip_frame_id_, pinocchio::LOCAL_WORLD_ALIGNED, J_full_);
 
   // ── Step 3: current task-space velocity  tcp_vel = J * dq ────────────────
-  tcp_vel_.noalias() = J_full_ * v_;
+  Eigen::Map<const Eigen::VectorXd> v_eigen(v_buf.data(), nv);
+  tcp_vel_.noalias() = J_full_ * v_eigen;
 
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
-  const pinocchio::SE3 & tcp = data_.oMi[end_id_];
+  const pinocchio::SE3 & tcp = handle_->GetFramePlacement(tip_frame_id_);
 
   // ── Step 3.5: initialise trajectory on new target (after FK) ─────────────
   if (new_target_.load(std::memory_order_acquire)) {
@@ -149,9 +172,8 @@ ControllerOutput OperationalSpaceController::Compute(
 
   // ── Step 8: optional gravity compensation ────────────────────────────────
   if (gains_.enable_gravity_compensation) {
-    const Eigen::VectorXd & g =
-      pinocchio::computeGeneralizedGravity(model_, data_, q_);
-    dq_ += g;
+    handle_->ComputeGeneralizedGravity(q_span);
+    dq_ += handle_->GetGeneralizedGravity();
   }
 
   // ── Step 9: clamp joint velocity and integrate ────────────────────────────
@@ -227,11 +249,15 @@ void OperationalSpaceController::InitializeHoldPosition(
   const ControllerState & state) noexcept
 {
   const auto & dev0 = state.devices[0];
-  for (Eigen::Index i = 0; i < model_.nv; ++i) {
-    q_[i] = dev0.positions[static_cast<std::size_t>(i)];
+  const int nv = handle_->nv();
+
+  std::array<double, kMaxDeviceChannels> q_buf{};
+  for (int i = 0; i < nv; ++i) {
+    q_buf[static_cast<std::size_t>(i)] = dev0.positions[static_cast<std::size_t>(i)];
   }
-  pinocchio::computeJointJacobians(model_, data_, q_);
-  const pinocchio::SE3 & tcp = data_.oMi[end_id_];
+  std::span<const double> q_span(q_buf.data(), static_cast<std::size_t>(nv));
+  handle_->ComputeJacobians(q_span);
+  const pinocchio::SE3 & tcp = handle_->GetFramePlacement(tip_frame_id_);
 
   std::lock_guard lock(target_mutex_);
   goal_pose_ = tcp;

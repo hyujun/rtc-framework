@@ -3,23 +3,14 @@
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wshadow"
-#pragma GCC diagnostic ignored "-Wpedantic"
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/algorithm/jacobian.hpp>
-#include <pinocchio/algorithm/kinematics.hpp>
-#include <pinocchio/algorithm/rnea.hpp>
-#include <pinocchio/multibody/data.hpp>
-#include <pinocchio/multibody/model.hpp>
-#include <pinocchio/parsers/urdf.hpp>
-#pragma GCC diagnostic pop
+#include <urdf_pinocchio_bridge/pinocchio_model_builder.hpp>
+#include <urdf_pinocchio_bridge/rt_model_handle.hpp>
 
 #include <Eigen/Core>
 
 #include <array>
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <string_view>
@@ -99,12 +90,11 @@ private:
   std::vector<double> max_joint_velocity_;
   std::vector<double> max_joint_torque_;
 
-  // ── Pinocchio model and work buffers ───────────────────────────────────────
-  pinocchio::Model model_;
-  pinocchio::Data  data_;
+  // ── Pinocchio via urdf_pinocchio_bridge ────────────────────────────────────
+  std::shared_ptr<const pinocchio::Model> model_ptr_;
+  std::unique_ptr<urdf_pinocchio_bridge::RtModelHandle> handle_;
+  pinocchio::FrameIndex tip_frame_id_{0};
 
-  Eigen::VectorXd q_;
-  Eigen::VectorXd v_;
   Eigen::VectorXd coriolis_forces_;
   Eigen::MatrixXd jacobian_;
 

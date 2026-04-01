@@ -87,6 +87,7 @@ void RtModelHandle::ComputeJacobians(std::span<const double> q) noexcept
 {
   CopyToEigen(q, q_);
   pinocchio::computeJointJacobians(*model_, data_, q_);
+  pinocchio::updateFramePlacements(*model_, data_);
 }
 
 void RtModelHandle::GetFrameJacobian(
@@ -127,6 +128,21 @@ void RtModelHandle::ComputeNonLinearEffects(
   CopyToEigen(q, q_);
   CopyToEigen(v, v_);
   pinocchio::nonLinearEffects(*model_, data_, q_, v_);
+}
+
+void RtModelHandle::ComputeGeneralizedGravity(std::span<const double> q) noexcept
+{
+  CopyToEigen(q, q_);
+  pinocchio::computeGeneralizedGravity(*model_, data_, q_);
+}
+
+void RtModelHandle::ComputeCoriolisMatrix(
+  std::span<const double> q,
+  std::span<const double> v) noexcept
+{
+  CopyToEigen(q, q_);
+  CopyToEigen(v, v_);
+  pinocchio::computeCoriolisMatrix(*model_, data_, q_, v_);
 }
 
 void RtModelHandle::ComputeMassMatrix(std::span<const double> q) noexcept
@@ -188,6 +204,16 @@ Eigen::Ref<const Eigen::VectorXd> RtModelHandle::GetDdq() const noexcept
 Eigen::Ref<const Eigen::VectorXd> RtModelHandle::GetNonLinearEffects() const noexcept
 {
   return data_.nle;
+}
+
+Eigen::Ref<const Eigen::VectorXd> RtModelHandle::GetGeneralizedGravity() const noexcept
+{
+  return data_.g;
+}
+
+Eigen::Ref<const Eigen::MatrixXd> RtModelHandle::GetCoriolisMatrix() const noexcept
+{
+  return data_.C;
 }
 
 Eigen::Ref<const Eigen::MatrixXd> RtModelHandle::GetMassMatrix() const noexcept

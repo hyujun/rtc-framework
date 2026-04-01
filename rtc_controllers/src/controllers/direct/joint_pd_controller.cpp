@@ -2,7 +2,14 @@
 
 #include <algorithm>
 #include <cstddef>
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/math/rpy.hpp>
+#pragma GCC diagnostic pop
 
 namespace rtc
 {
@@ -15,15 +22,22 @@ JointPDController::JointPDController(std::string_view urdf_path)
 JointPDController::JointPDController(
   std::string_view urdf_path,
   Gains gains)
-: data_(pinocchio::Model{}), gains_(gains)
+: gains_(gains)
 {
-  pinocchio::urdf::buildModel(std::string(urdf_path), model_);
-  data_ = pinocchio::Data(model_);
+  urdf_pinocchio_bridge::ModelConfig config;
+  config.urdf_path = std::string(urdf_path);
+  config.root_joint_type = "fixed";
 
-  q_ = pinocchio::neutral(model_);
-  v_ = Eigen::VectorXd::Zero(model_.nv);
-  coriolis_forces_ = Eigen::VectorXd::Zero(model_.nv);
-  jacobian_ = Eigen::MatrixXd::Zero(6, model_.nv);
+  urdf_pinocchio_bridge::PinocchioModelBuilder builder(config);
+  model_ptr_ = builder.GetFullModel();
+  handle_ = std::make_unique<urdf_pinocchio_bridge::RtModelHandle>(model_ptr_);
+
+  // Default: use the last frame in the model as tip
+  tip_frame_id_ = static_cast<pinocchio::FrameIndex>(model_ptr_->nframes - 1);
+
+  const int nv = handle_->nv();
+  coriolis_forces_ = Eigen::VectorXd::Zero(nv);
+  jacobian_ = Eigen::MatrixXd::Zero(6, nv);
 
   trajectory_.initialize({}, {}, 0.0);
 }
@@ -146,9 +160,7 @@ ControllerOutput JointPDController::Compute(
   ClampCommands(out0.commands, nc0, command_type_);
 
   // TCP pose output (task_positions: [x, y, z, roll, pitch, yaw])
-  const auto last_joint =
-    static_cast<pinocchio::JointIndex>(model_.njoints - 1);
-  const pinocchio::SE3 & tcp = data_.oMi[last_joint];
+  const pinocchio::SE3 & tcp = handle_->GetFramePlacement(tip_frame_id_);
   const Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
   output.actual_task_positions[0] = tcp.translation().x();
   output.actual_task_positions[1] = tcp.translation().y();
@@ -336,42 +348,48 @@ ControllerOutput JointPDController::ComputeEstop(
 
 void JointPDController::UpdateDynamics(const DeviceState & dev) noexcept
 {
-  const std::size_t nv = static_cast<std::size_t>(model_.nv);
-  const std::size_t n  = std::min(static_cast<std::size_t>(kNumRobotJoints), nv);
+  const int nv = handle_->nv();
+  const std::size_t n = std::min(static_cast<std::size_t>(kNumRobotJoints),
+                                 static_cast<std::size_t>(nv));
 
+  std::array<double, kMaxDeviceChannels> q_buf{};
+  std::array<double, kMaxDeviceChannels> v_buf{};
   for (std::size_t i = 0; i < n; ++i) {
-    q_[static_cast<Eigen::Index>(i)] = dev.positions[i];
-    v_[static_cast<Eigen::Index>(i)] = dev.velocities[i];
+    q_buf[i] = dev.positions[i];
+    v_buf[i] = dev.velocities[i];
   }
+  std::span<const double> q_span(q_buf.data(), static_cast<std::size_t>(nv));
+  std::span<const double> v_span(v_buf.data(), static_cast<std::size_t>(nv));
 
   // ── Gravity torque g(q) ─────────────────────────────────────────────────
   if (gains_.enable_gravity_compensation) {
-    const Eigen::VectorXd & g =
-      pinocchio::computeGeneralizedGravity(model_, data_, q_);
+    handle_->ComputeGeneralizedGravity(q_span);
+    const auto & g = handle_->GetGeneralizedGravity();
     for (std::size_t i = 0; i < n; ++i) {
       gravity_torques_[i] = g[static_cast<Eigen::Index>(i)];
     }
   }
 
   // ── Forward kinematics (FK) ──────────────────────────────────────────────
-  pinocchio::forwardKinematics(model_, data_, q_, v_);
+  handle_->ComputeForwardKinematics(q_span, v_span);
 
   // ── TCP position cache ───────────────────────────────────────────────────
-  const auto last_joint =
-    static_cast<pinocchio::JointIndex>(model_.njoints - 1);
-  const pinocchio::SE3 & tcp = data_.oMi[last_joint];
+  const pinocchio::SE3 & tcp = handle_->GetFramePlacement(tip_frame_id_);
   tcp_position_[0] = tcp.translation()[0];
   tcp_position_[1] = tcp.translation()[1];
   tcp_position_[2] = tcp.translation()[2];
 
   // ── Jacobian ─────────────────────────────────────────────────────────────
-  pinocchio::computeJointJacobian(model_, data_, q_, last_joint, jacobian_);
+  handle_->ComputeJacobians(q_span);
+  handle_->GetFrameJacobian(tip_frame_id_, pinocchio::LOCAL_WORLD_ALIGNED, jacobian_);
 
   // ── Coriolis/centrifugal C(q,v)·v ────────────────────────────────────────
   if (gains_.enable_coriolis_compensation) {
-    const Eigen::MatrixXd & C =
-      pinocchio::computeCoriolisMatrix(model_, data_, q_, v_);
-    coriolis_forces_.noalias() = C * v_;
+    handle_->ComputeCoriolisMatrix(q_span, v_span);
+    const auto & C = handle_->GetCoriolisMatrix();
+    // Reconstruct v as Eigen vector to compute C * v
+    Eigen::Map<const Eigen::VectorXd> v_eigen(v_buf.data(), nv);
+    coriolis_forces_.noalias() = C * v_eigen;
   }
 }
 

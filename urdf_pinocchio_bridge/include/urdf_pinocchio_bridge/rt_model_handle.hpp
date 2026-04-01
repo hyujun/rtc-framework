@@ -72,7 +72,7 @@ public:
   void ComputeForwardKinematics(
     std::span<const double> q, std::span<const double> v) noexcept;
 
-  /// 전체 관절 자코비안 계산: q → data_.J
+  /// 전체 관절 자코비안 계산: q → data_.J, oMf 갱신 포함
   void ComputeJacobians(std::span<const double> q) noexcept;
 
   /// 특정 프레임 자코비안 추출 (ComputeJacobians 후 호출)
@@ -98,6 +98,14 @@ public:
 
   /// 비선형 효과: nle = C(q,v)·v + g(q)
   void ComputeNonLinearEffects(
+    std::span<const double> q,
+    std::span<const double> v) noexcept;
+
+  /// 일반화 중력 벡터: g(q)
+  void ComputeGeneralizedGravity(std::span<const double> q) noexcept;
+
+  /// 코리올리 행렬: C(q, v) — C(q,v)·v 는 GetCoriolisMatrix() * v 로 계산
+  void ComputeCoriolisMatrix(
     std::span<const double> q,
     std::span<const double> v) noexcept;
 
@@ -132,6 +140,12 @@ public:
 
   /// 비선형 효과 벡터
   [[nodiscard]] Eigen::Ref<const Eigen::VectorXd> GetNonLinearEffects() const noexcept;
+
+  /// 일반화 중력 벡터
+  [[nodiscard]] Eigen::Ref<const Eigen::VectorXd> GetGeneralizedGravity() const noexcept;
+
+  /// 코리올리 행렬 C(q, v) — nv × nv
+  [[nodiscard]] Eigen::Ref<const Eigen::MatrixXd> GetCoriolisMatrix() const noexcept;
 
   /// 질량 행렬 (upper triangular → 대칭화 필요)
   [[nodiscard]] Eigen::Ref<const Eigen::MatrixXd> GetMassMatrix() const noexcept;
