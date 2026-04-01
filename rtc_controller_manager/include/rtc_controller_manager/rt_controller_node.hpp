@@ -6,8 +6,6 @@
 #include "rtc_base/threading/publish_buffer.hpp"
 #include "rtc_controller_manager/controller_timing_profiler.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
-#include <ur5e_hand_status_monitor/ur5e_hand_status_monitor.hpp>
-
 // ── ROS2 ─────────────────────────────────────────────────────────────────────
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -53,10 +51,6 @@ class RtControllerNode : public rclcpp::Node
 public:
   RtControllerNode();
   ~RtControllerNode() override;
-
-  // Must be called after make_shared<RtControllerNode>() completes.
-  // Initializes components that require shared_from_this() (e.g. StatusMonitor).
-  void InitStatusMonitor();
 
   // Public accessors for main() to retrieve callback groups
   rclcpp::CallbackGroup::SharedPtr GetSensorGroup() const {return cb_group_sensor_;}
@@ -259,10 +253,6 @@ private:
   std::unique_ptr<rtc::DataLogger> logger_;
   rtc::ControlLogBuffer              log_buffer_{};              // SPSC ring buffer
   rtc::ControllerTimingProfiler      timing_profiler_{};         // Compute() timing
-
-  // ── Status Monitor (optional, non-RT) ──────────────────────────────────────
-  std::unique_ptr<rtc::Ur5eHandStatusMonitor> status_monitor_;
-  bool enable_status_monitor_{false};
 
   // ── Shared state ──────────────────────────────────────────────────────────
   // All device state is now in device_states_[] / cached_device_states_[]

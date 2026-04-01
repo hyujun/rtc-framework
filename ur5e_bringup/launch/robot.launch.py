@@ -161,13 +161,6 @@ def generate_launch_description():
         'ur5e_robot.yaml'
     ])
 
-    # Status Monitor config (ur5e_hand_status_monitor package)
-    status_monitor_config = PathJoinSubstitution([
-        FindPackageShare('ur5e_hand_status_monitor'),
-        'config',
-        'ur5e_hand_status_monitor.yaml'
-    ])
-
     # Hand UDP config (ur5e_hand_driver package)
     hand_udp_config = PathJoinSubstitution([
         FindPackageShare('ur5e_hand_driver'),
@@ -292,11 +285,8 @@ def generate_launch_description():
         output='screen',
         parameters=[
             ur_control_config,
-            status_monitor_config,
             {
                 'log_dir': session_dir,
-                'status_monitor.log_output_dir':
-                    os.path.join(session_dir, 'monitor'),
             },
         ],
         emulate_tty=True,

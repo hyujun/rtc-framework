@@ -74,42 +74,11 @@ RtControllerNode::~RtControllerNode()
   StopRtLoop();
   StopPublishLoop();
 
-  if (status_monitor_) {
-    status_monitor_->stop();
-  }
   if (logger_) {
     // 종료 시 drain_timer_가 멈춘 후에도 ring buffer에 남은 항목을 모두 기록
     logger_->DrainBuffer(log_buffer_);
     logger_->Flush();
   }
-}
-
-// ── Deferred Status Monitor init (requires shared_from_this) ─────────────────
-void RtControllerNode::InitStatusMonitor()
-{
-  if (!enable_status_monitor_) {
-    return;
-  }
-
-  status_monitor_ = std::make_unique<rtc::Ur5eHandStatusMonitor>(
-      shared_from_this());
-
-  status_monitor_->registerOnFailure(
-      [this](rtc::FailureType type,
-             const rtc::FailureContext & ctx) {
-        (void)type;
-        TriggerGlobalEstop(ctx.description);
-      });
-
-  status_monitor_->registerOnReady(
-      [this]() {
-        RCLCPP_INFO(get_logger(), "StatusMonitor: system ready");
-      });
-
-  const auto cfgs = rtc::SelectThreadConfigs();
-  status_monitor_->start(cfgs.status_monitor);
-  RCLCPP_INFO(get_logger(), "Ur5eHandStatusMonitor started (10 Hz, Core %d)",
-              cfgs.status_monitor.cpu_core);
 }
 
 // ── Session directory helpers ─────────────────────────────────────────────────
@@ -169,7 +138,6 @@ void RtControllerNode::DeclareAndLoadParameters()
   safe_declare("enable_timing_log", rclcpp::ParameterValue(true));
   safe_declare("enable_device_log", rclcpp::ParameterValue(true));
   safe_declare("enable_estop", rclcpp::ParameterValue(true));
-  safe_declare("enable_status_monitor", rclcpp::ParameterValue(false));
   safe_declare("init_timeout_sec", rclcpp::ParameterValue(5.0));
   safe_declare("auto_hold_position", rclcpp::ParameterValue(true));
   safe_declare("initial_controller", rclcpp::ParameterValue(std::string("joint_pd_controller")));
@@ -193,7 +161,6 @@ void RtControllerNode::DeclareAndLoadParameters()
   auto_hold_position_ = get_parameter("auto_hold_position").as_bool();
   enable_logging_ = get_parameter("enable_logging").as_bool();
   enable_estop_ = get_parameter("enable_estop").as_bool();
-  enable_status_monitor_ = get_parameter("enable_status_monitor").as_bool();
   use_sim_time_sync_ = get_parameter("use_sim_time_sync").as_bool();
   sim_sync_timeout_sec_ = get_parameter("sim_sync_timeout_sec").as_double();
   robot_ns_ = get_parameter("robot_namespace").as_string();

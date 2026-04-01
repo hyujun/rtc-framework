@@ -161,7 +161,6 @@ build_expected_threads() {
   # 형식: "thread_name:expected_cpu:expected_policy:expected_priority[:optional]"
   # optional 필드가 있으면 해당 스레드 미발견 시 WARN 대신 SKIP 처리.
   #   - udp_recv:   Transceiver 사용 시에만 생성 (현재 미사용)
-  #   - status_mon: enable_status_monitor=true 일 때만 생성
   EXPECTED_THREADS=()
   if [[ "$PHYSICAL_CORES" -ge 16 ]]; then
     # Core 0-1: OS, Core 2-3: RT, Core 4-8: cset shield, Core 9-11: system
@@ -172,7 +171,6 @@ build_expected_threads() {
       "logger:10:0:0"
       "aux:11:0:0"
       "rt_publish:11:0:0"
-      "status_mon:10:0:0:optional"
     )
   elif [[ "$PHYSICAL_CORES" -ge 12 ]]; then
     # Core 0-1: OS, Core 2-6: cset shield, Core 7-11: system
@@ -183,7 +181,6 @@ build_expected_threads() {
       "logger:10:0:0"
       "aux:11:0:0"
       "rt_publish:11:0:0"
-      "status_mon:10:0:0:optional"
     )
   elif [[ "$PHYSICAL_CORES" -ge 10 ]]; then
     # Core 0-1: OS, Core 2-6: cset shield, Core 7-9: system (shared Core 9)
@@ -194,7 +191,6 @@ build_expected_threads() {
       "logger:9:0:0"
       "aux:9:0:0"
       "rt_publish:9:0:0"
-      "status_mon:9:0:0:optional"
     )
   elif [[ "$PHYSICAL_CORES" -ge 8 ]]; then
     # Core 0-1: OS, Core 2-6: RT threads (no cset shield)
@@ -205,7 +201,6 @@ build_expected_threads() {
       "logger:5:0:0"
       "aux:6:0:0"
       "rt_publish:6:0:0"
-      "status_mon:6:0:0:optional"
     )
   elif [[ "$PHYSICAL_CORES" -ge 6 ]]; then
     # Core 0-1: OS, Core 2-5: RT threads, udp_recv shares Core 5 with aux
@@ -216,7 +211,6 @@ build_expected_threads() {
       "logger:4:0:0"
       "aux:5:0:0"
       "rt_publish:5:0:0"
-      "status_mon:4:0:0:optional"
     )
   else
     # 4-core fallback: Core 0: OS, Core 1-3: RT, udp_recv shares Core 2
@@ -227,7 +221,6 @@ build_expected_threads() {
       "logger:3:0:0"
       "aux:3:0:0"
       "rt_publish:3:0:0"
-      "status_mon:3:0:0:optional"
     )
   fi
 }

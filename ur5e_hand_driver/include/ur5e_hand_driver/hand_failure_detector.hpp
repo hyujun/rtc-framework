@@ -45,7 +45,7 @@ public:
   /// @param thread_cfg   Thread scheduling / CPU affinity configuration.
   explicit HandFailureDetector(HandController& controller,
                                Config cfg = Config{},
-                               ThreadConfig thread_cfg = kStatusMonitorConfig)
+                               ThreadConfig thread_cfg = kLoggingConfig)
     : controller_(controller), cfg_(cfg), thread_cfg_(thread_cfg) {}
 
   ~HandFailureDetector() { Stop(); }

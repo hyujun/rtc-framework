@@ -271,7 +271,7 @@ do_status() {
     info "    Core 0-1: OS / DDS / NIC IRQ"
     info "    Core 2:   rt_control (SCHED_FIFO 90)"
     info "    Core 3:   sensor_io (SCHED_FIFO 70)"
-    info "    Core 4:   logger + status_mon + hand_detect"
+    info "    Core 4:   logger + hand_detect"
     info "    Core 5:   udp_recv + aux"
   else
     info "  Expected layout (${phys_cores}-core):"

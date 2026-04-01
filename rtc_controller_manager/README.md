@@ -56,9 +56,8 @@ rtc_controller_manager/
 
 **초기화 순서 (`RtControllerMain()`):**
 1. `mlockall()` -> `rclcpp::init()` -> 노드 생성
-2. `InitStatusMonitor()` (shared_from_this 필요, 생성자 이후 호출)
-3. `StartRtLoop()` + `StartPublishLoop()` (jthread 시작)
-4. sensor/log/aux executor 스레드 생성 -> spin
+2. `StartRtLoop()` + `StartPublishLoop()` (jthread 시작)
+3. sensor/log/aux executor 스레드 생성 -> spin
 
 ---
 
@@ -131,7 +130,6 @@ rtc_controller_manager/
 | `{group}_timeout` | 디바이스 그룹의 state 토픽이 설정된 ms 초과 미갱신 (50Hz 워치독) | `TriggerGlobalEstop("{group}_timeout")` |
 | `consecutive_overrun` | >= 10회 연속 RT 루프 오버런 | `TriggerGlobalEstop("consecutive_overrun")` |
 | `sim_sync_timeout` | 시뮬레이션 모드에서 CV 타임아웃 (state 미수신) | `TriggerGlobalEstop("sim_sync_timeout")` + 노드 종료 |
-| 상태 모니터 실패 | `Ur5eHandStatusMonitor` 콜백 (`enable_status_monitor: true` 시) | `TriggerGlobalEstop(failure_description)` |
 
 ### 글로벌 E-STOP 동작
 
@@ -234,7 +232,6 @@ if (lock.owns_lock()) {
 | `enable_device_log` | bool | `true` | 디바이스별 CSV 로깅 활성화 |
 | `log_dir` | string | `""` | 로그 디렉토리 (빈 문자열이면 자동 생성) |
 | `max_log_sessions` | int | `10` | 최대 로그 세션 보관 수 |
-| `enable_status_monitor` | bool | `false` | Ur5eHandStatusMonitor 활성화 (10 Hz) |
 | `use_sim_time_sync` | bool | `false` | MuJoCo 동기 루프 CV 기반 wakeup 모드 |
 | `sim_sync_timeout_sec` | double | `5.0` | 시뮬레이션 동기 타임아웃 (초) |
 | `kp` | double | `5.0` | (레거시) 기본 P 게인 |
@@ -286,7 +283,6 @@ if (lock.owns_lock()) {
     log_dir: ""
     max_log_sessions: 10
 
-    enable_status_monitor: false
     use_sim_time_sync: false
     sim_sync_timeout_sec: 5.0
 
@@ -342,7 +338,6 @@ CycloneDDS RT 성능 최적화 설정입니다. `CYCLONEDDS_URI` 환경변수로
 | `rtc_base` | 로깅, 스레딩, 타입, SPSC 버퍼, 세션 디렉토리 |
 | `rtc_communication` | 네트워크 통신 (UDP 트랜시버) |
 | `rtc_msgs` | JointCommand, GuiPosition, RobotTarget, DeviceStateLog, DeviceSensorLog, GraspState, HandSensorState |
-| `ur5e_hand_status_monitor` | 10 Hz 비-RT 상태 모니터링 (선택적, `enable_status_monitor`) |
 | `pinocchio` | URDF 기구학 검증 + joint limits 병합 |
 | `yaml-cpp` | YAML 설정 파싱 |
 | `ament_index_cpp` | 패키지 리소스 경로 탐색 |

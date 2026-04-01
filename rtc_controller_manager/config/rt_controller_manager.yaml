@@ -32,9 +32,6 @@
     use_sim_time_sync: false
     sim_sync_timeout_sec: 5.0
 
-    # ── Status Monitor (optional, non-RT) ─────────────────────────────────────
-    enable_status_monitor: false
-
     # ── Device configuration (keyed by controller topic group name) ─────────
     devices:
       ur5e:

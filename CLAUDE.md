@@ -30,7 +30,7 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 
 ## Repository Structure
 
-20 ROS2 packages at repo root (no `src/`). 12 `rtc_*` (robot-agnostic) + 1 bridge (`urdf_pinocchio_bridge`) + 2 shape estimation (`shape_estimation_*`) + 5 `ur5e_*` (robot-specific). Each has its own `README.md` with detailed API and configuration.
+18 ROS2 packages at repo root (no `src/`). 11 `rtc_*` (robot-agnostic) + 1 bridge (`urdf_pinocchio_bridge`) + 2 shape estimation (`shape_estimation_*`) + 4 `ur5e_*` (robot-specific). Each has its own `README.md` with detailed API and configuration.
 
 ### Package Summary
 
@@ -42,7 +42,6 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 | `rtc_controllers` | Library | PController, JointPDController (Pinocchio RNEA), ClikController (Jacobian IK), OSC (6-DOF Cartesian PD) + quintic trajectory |
 | `rtc_controller_manager` | Executable | `RtControllerNode`: clock_nanosleep RT loop, SPSC publish offload, CSV logging, global E-STOP, controller lifecycle, digital twin auto-republish |
 | `rtc_inference` | Header-only | `InferenceEngine` abstract, `OnnxEngine` (IoBinding, pre-allocated buffers), `RunModels()` batch helper |
-| `rtc_status_monitor` | Shared lib | 10Hz monitor: robot mode, safety mode, tracking error, joint limits (per-joint overrides). Lock-free RT accessors (`isReady()`, `getFailure()`) |
 | `rtc_msgs` | Messages | 8 types: JointCommand, FingertipSensor, HandSensorState, GraspState, GuiPosition, RobotTarget, DeviceStateLog, DeviceSensorLog |
 | `rtc_mujoco_sim` | Executable | MuJoCo 3.x wrapper: sync-step loop, GLFW viewer (40+ shortcuts), multi-group architecture (robot_response + fake_response), position servo gains |
 | `rtc_tools` | Python | controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf, hand_udp_sender, hand_data_plot, session_dir |
@@ -53,7 +52,6 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 | `shape_estimation` | Executable | ToF-based shape estimation: voxel point cloud, least-squares primitive fitting (sphere/cylinder/plane/box) |
 | `ur5e_description` | Data | URDF + MJCF + meshes (DAE/STL/OBJ). Pinocchio/RViz/MuJoCo compatible |
 | `ur5e_hand_driver` | Executable | UDP event-driven driver (SeqLock state, ppoll sub-ms timeout, dual motor+joint read, ONNX F/T inference) |
-| `ur5e_hand_status_monitor` | Shared lib | Robot+hand integrated monitor: motor/sensor data quality checks, rate monitoring, lock-free RT accessors |
 | `ur5e_bt_coordinator` | Executable | BehaviorTree.CPP v4 non-RT task coordinator (20 Hz, pick-and-place / towel unfold / hand motions) |
 | `ur5e_bringup` | Launch/Config | robot.launch.py, sim.launch.py, hand.launch.py + DemoJoint/DemoTask controllers + GUI tools |
 
@@ -65,8 +63,7 @@ rtc_msgs, rtc_base (independent)
   +-- rtc_inference <-- rtc_base
   +-- rtc_controller_interface <-- rtc_base, rtc_msgs
   |     +-- rtc_controllers <-- rtc_controller_interface, urdf_pinocchio_bridge
-  |           +-- rtc_controller_manager <-- rtc_controllers, rtc_communication, rtc_status_monitor
-  +-- rtc_status_monitor <-- rtc_base, rtc_msgs
+  |           +-- rtc_controller_manager <-- rtc_controllers, rtc_communication
   +-- rtc_mujoco_sim <-- MuJoCo 3.x (optional)
   +-- rtc_digital_twin (independent, Python)
   +-- rtc_tools (independent, Python)
@@ -79,7 +76,6 @@ shape_estimation_msgs (independent)
 
 ur5e_description (independent)
   +-- ur5e_hand_driver <-- rtc_communication, rtc_inference, rtc_base
-  +-- ur5e_hand_status_monitor <-- rtc_status_monitor, rtc_base, rtc_msgs
   +-- ur5e_bt_coordinator <-- rtc_msgs, BehaviorTree.CPP v4
   +-- ur5e_bringup <-- rtc_controller_manager, ur5e_hand_driver, ur5e_description
 ```
@@ -135,8 +131,6 @@ struct HandState      { motor_positions[10], motor_velocities[10], motor_current
 | publish_thread | 5 | SCHED_OTHER | nice -3 | SPSC -> ROS2 publish offload |
 | aux_executor | 5 | SCHED_OTHER | 0 | Controller switching, gain updates, E-STOP publisher |
 | udp_recv | 5 | SCHED_FIFO | 65 | Hand UDP receiver (ur5e_hand_driver) |
-| status_monitor | 4 | SCHED_OTHER | nice -2 | 10Hz status monitor |
-| hand_failure | 4 | SCHED_OTHER | nice -2 | 50Hz hand failure detector |
 
 Core 0-1: OS/DDS/IRQ (isolcpus=2-5). DDS threads pinned to Core 0-1 via taskset.
 Auto-selects 4/6/8/10/12/16-core layouts via `SelectThreadConfigs()`.
@@ -194,8 +188,6 @@ Auto-selects 4/6/8/10/12/16-core layouts via `SelectThreadConfigs()`.
 | Init timeout | No data within `init_timeout_sec` | `TriggerGlobalEstop("init_timeout")` + shutdown |
 | Consecutive overrun | >= 10 consecutive RT loop overruns | `TriggerGlobalEstop("consecutive_overrun")` |
 | Sim sync timeout | CV-based wakeup timeout (sim mode) | `TriggerGlobalEstop("sim_sync_timeout")` + shutdown |
-| StatusMonitor (10Hz) | Safety violation, tracking error, joint limit | `TriggerGlobalEstop(failure_description)` |
-| HandFailureDetector (50Hz) | Zero/duplicate data, low rate, link down | `TriggerGlobalEstop("hand_failure")` |
 
 ---
 
@@ -286,8 +278,6 @@ enable_timing_log: true
 enable_device_log: true
 log_dir: ""
 max_log_sessions: 10
-enable_status_monitor: false         # true for real robot
-
 devices:
   ur5e:
     joint_state_names: [shoulder_pan_joint, ..., wrist_3_joint]
@@ -325,22 +315,6 @@ recv_timeout_ms: 0.4             # ppoll sub-ms timeout (default 0.4)
 communication_mode: "bulk"       # "bulk" (default) or "individual"
 enable_failure_detector: true
 # Note: sensor_decimation is fixed at 1 in code. joint_mode param is unused.
-```
-
-### rtc_status_monitor.yaml
-
-```yaml
-status_monitor:
-  watchdog_timeout_sec: 1.0
-  tracking_error_pos_warn_rad: 0.05
-  tracking_error_pos_fault_rad: 0.15
-  joint_limit_warn_margin_deg: 5.0
-  joint_limit_fault_margin_deg: 1.0
-  joint_limits:                    # per-joint overrides (rad)
-    joint_0: { lower: -6.2832, upper: 6.2832 }
-    joint_2: { lower: -3.1416, upper: 3.1416 }  # elbow
-  auto_recovery: false
-  enable_controller_stats: true
 ```
 
 ### digital_twin.yaml

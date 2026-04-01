@@ -13,7 +13,7 @@
 
 ## 패키지 구성
 
-20개 ROS2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`), 유틸리티(`urdf_pinocchio_bridge`), 형상 추정(`shape_estimation_*`), 로봇 고유 패키지(`ur5e_*`)로 분리됩니다. 각 패키지는 자체 `README.md`를 포함합니다.
+18개 ROS2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`), 유틸리티(`urdf_pinocchio_bridge`), 형상 추정(`shape_estimation_*`), 로봇 고유 패키지(`ur5e_*`)로 분리됩니다. 각 패키지는 자체 `README.md`를 포함합니다.
 
 ### 로봇 비의존적 프레임워크 (rtc_*)
 
@@ -25,7 +25,6 @@
 | [`rtc_controller_interface`](rtc_controller_interface/) | 5.17.0 | 추상 컨트롤러 인터페이스 (Strategy 패턴) + Singleton 레지스트리 (가변 DOF) | ament_cmake |
 | [`rtc_controllers`](rtc_controllers/) | 5.17.0 | 범용 제어기 4종 (P, JointPD, CLIK, OSC) + 퀸틱 궤적 생성기 | ament_cmake |
 | [`rtc_controller_manager`](rtc_controller_manager/) | 5.17.0 | 500Hz RT 루프 (clock_nanosleep) + 컨트롤러 라이프사이클 + SPSC publish offload + E-STOP | ament_cmake |
-| [`rtc_status_monitor`](rtc_status_monitor/) | 5.17.0 | 비-RT 10Hz 안전 감시 (로봇 모드, 추적 오차, 관절 한계) + lock-free RT 접근자 | ament_cmake |
 | [`rtc_inference`](rtc_inference/) | 5.17.0 | 헤더-전용 RT-안전 추론 엔진: ONNX Runtime IoBinding, 사전 할당 버퍼, 배치/다중 모델 | ament_cmake |
 | [`rtc_mujoco_sim`](rtc_mujoco_sim/) | 5.17.0 | MuJoCo 3.x 물리 시뮬레이터: 멀티 그룹 물리, GLFW 뷰어, fake_hand 1차 필터, `max_rtf` 속도 제어 | ament_cmake |
 | [`rtc_digital_twin`](rtc_digital_twin/) | 5.17.0 | RViz2 디지털 트윈 시각화: 다중 소스 관절 상태 통합, mimic 자동 계산, 핑거팁 센서 Arrow/Sphere 마커 | ament_python |
@@ -51,7 +50,6 @@
 |--------|------|------|------|
 | [`ur5e_description`](ur5e_description/) | 5.17.0 | UR5e URDF/MJCF/메시 — Pinocchio/RViz/MuJoCo 겸용 | ament_cmake |
 | [`ur5e_hand_driver`](ur5e_hand_driver/) | 5.17.0 | 10-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서 44ch, ONNX F/T 추론 | ament_cmake |
-| [`ur5e_hand_status_monitor`](ur5e_hand_status_monitor/) | 5.17.0 | 로봇+핸드 통합 상태 모니터: 모터/센서 데이터 품질 검사, 레이트 감시, lock-free RT 접근자 | ament_cmake |
 | [`ur5e_bt_coordinator`](ur5e_bt_coordinator/) | 0.1.0 | BehaviorTree.CPP v4 기반 비-RT 태스크 코디네이터 (20 Hz, UR5e + 핸드 통합 모션) | ament_cmake |
 | [`ur5e_bringup`](ur5e_bringup/) | 5.17.0 | UR5e launch/config + 데모 컨트롤러 (DemoJoint, DemoTask) + CPU 격리/DDS 핀닝 | ament_cmake |
 
@@ -63,8 +61,7 @@ rtc_msgs, rtc_base (독립)
   ├── rtc_inference ← rtc_base
   ├── rtc_controller_interface ← rtc_base, rtc_msgs
   │   └── rtc_controllers ← rtc_controller_interface, urdf_pinocchio_bridge
-  │       └── rtc_controller_manager ← rtc_controllers, rtc_communication, rtc_status_monitor
-  ├── rtc_status_monitor ← rtc_base, rtc_msgs
+  │       └── rtc_controller_manager ← rtc_controllers, rtc_communication
   ├── rtc_mujoco_sim ← MuJoCo 3.x (optional)
   ├── rtc_digital_twin (독립, Python)
   ├── rtc_tools (독립, Python)
@@ -77,7 +74,6 @@ shape_estimation_msgs (독립)
 
 ur5e_description (독립)
   ├── ur5e_hand_driver ← rtc_communication, rtc_inference, rtc_base
-  ├── ur5e_hand_status_monitor ← rtc_status_monitor, rtc_base, rtc_msgs
   ├── ur5e_bt_coordinator ← rtc_msgs, BehaviorTree.CPP v4
   └── ur5e_bringup ← rtc_controller_manager, ur5e_hand_driver, ur5e_description
 ```
@@ -104,9 +100,6 @@ ur5e_description (독립)
   - `{group}_timeout`: 디바이스 그룹별 state 토픽 갱신 타임아웃 (CheckTimeouts 50Hz, YAML 설정)
   - `sim_sync_timeout`: 시뮬레이션 동기화 타임아웃 (`use_sim_time_sync` 모드)
   - `consecutive_overrun`: ≥10회 연속 RT 루프 오버런
-  - `status_monitor`: Safety/tracking 위반, 관절 한계 (10Hz)
-  - `hand_failure`: UDP 영/중복 데이터 감지 (50Hz)
-- **상태 모니터**: 10Hz 비-RT 감시 (14개 장애 유형 + 4개 경고 유형, lock-free RT 접근자, 관절 한계 감시)
 - **자동 복구**: protective_stop, 프로그램 연결 끊김에 대해 선택적 자동 복구 지원
 
 ### 시뮬레이션 & 추론
@@ -201,7 +194,6 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 [핸드 HW] ←UDP 직접 소유→ [ur5e_hand_driver] ← SeqLock ← [ControlLoop]
 
 [rtc_inference]   RT-안전 ONNX 추론 (IoBinding, 사전 할당)
-[rtc_status_monitor]  10Hz 비-RT 안전 감시 → 글로벌 E-STOP
 ```
 
 ### 스레딩 모델 (v5.17.0, 6코어 기준)
@@ -214,8 +206,6 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 | `publish_thread` | jthread (SPSC drain) | 5 | SCHED_OTHER | nice -3 | ROS2 publish offload (ControlPublishBuffer) |
 | `aux_executor` | ROS2 Executor | 5 | SCHED_OTHER | 0 | E-STOP 상태 퍼블리시 |
 | `udp_recv` | jthread | 5 | SCHED_FIFO | 65 | 핸드 UDP 수신 (ur5e_hand_driver) |
-| `status_monitor` | jthread | 4 | SCHED_OTHER | nice -2 | 10Hz 상태 감시 |
-| `hand_failure` | jthread | 4 | SCHED_OTHER | nice -2 | 50Hz 핸드 실패 감지 |
 
 > Core 0–1: OS, DDS, NIC IRQ (isolcpus=2-5 권장). DDS 스레드는 `taskset`으로 Core 0-1에 자동 핀닝.
 > CycloneDDS 성능 최적화: 멀티캐스트 비활성화, 소켓 버퍼 확대, write batching, NACK 지연 최소화.

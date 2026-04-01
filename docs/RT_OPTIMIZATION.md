@@ -79,7 +79,6 @@ aux_executor (Core 5, SCHED_OTHER) <- ROS2 Executor
 | 2 | RT Control | SCHED_FIFO | 90 | `rt_control` | 500Hz + 50Hz E-STOP |
 | 3 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` | joint_state, target, hand 콜백 |
 | 4 | Logging | SCHED_OTHER | nice -5 | `logger` | 100Hz CSV drain |
-| 4 | Status Monitor | SCHED_OTHER | nice -2 | `status_mon` | 10Hz 상태 모니터 |
 | 5 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` | SPSC drain -> publish |
 | 5 | UDP recv | SCHED_FIFO | 65 | `udp_recv` | Hand UDP 수신 |
 | 5 | Aux | SCHED_OTHER | nice 0 | `aux` | E-STOP publisher |
@@ -97,7 +96,6 @@ aux_executor (Core 5, SCHED_OTHER) <- ROS2 Executor
 | 3 | Logging | SCHED_OTHER | nice -5 | `logger` |
 | 3 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
 | 3 | Aux | SCHED_OTHER | nice 0 | `aux` |
-| 3 | Status Monitor | SCHED_OTHER | nice 0 | `status_mon` |
 
 **isolcpus 설정**: `isolcpus=1-3 nohz_full=1-3 rcu_nocbs=1-3`
 
@@ -112,7 +110,6 @@ aux_executor (Core 5, SCHED_OTHER) <- ROS2 Executor
 | 5 | Logging | SCHED_OTHER | nice -5 | `logger` |
 | 6 | Aux | SCHED_OTHER | nice 0 | `aux` |
 | 6 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
-| 6 | Status Monitor | SCHED_OTHER | nice -2 | `status_mon` |
 
 **isolcpus 설정**: `isolcpus=2-6 nohz_full=2-6 rcu_nocbs=2-6`
 
@@ -130,7 +127,6 @@ aux_executor (Core 5, SCHED_OTHER) <- ROS2 Executor
 | 9 | Logging | SCHED_OTHER | nice -5 | `logger` |
 | 9 | Aux | SCHED_OTHER | nice 0 | `aux` |
 | 9 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
-| 9 | Status Monitor | SCHED_OTHER | nice -2 | `status_mon` |
 
 ### 12-Core 시스템 (cset shield)
 
@@ -144,7 +140,6 @@ aux_executor (Core 5, SCHED_OTHER) <- ROS2 Executor
 | 8 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` |
 | 9 | UDP recv | SCHED_FIFO | 65 | `udp_recv` |
 | 10 | Logging | SCHED_OTHER | nice -5 | `logger` |
-| 10 | Status Monitor | SCHED_OTHER | nice -2 | `status_mon` |
 | 11 | Aux | SCHED_OTHER | nice 0 | `aux` |
 | 11 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
 
@@ -160,7 +155,6 @@ aux_executor (Core 5, SCHED_OTHER) <- ROS2 Executor
 | 4-8 | cset shield "user" | - | - | 예약 |
 | 9 | UDP recv | SCHED_FIFO | 65 | `udp_recv` |
 | 10 | Logging | SCHED_OTHER | nice -5 | `logger` |
-| 10 | Status Monitor | SCHED_OTHER | nice -2 | `status_mon` |
 | 11 | Aux | SCHED_OTHER | nice 0 | `aux` |
 | 11 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
 
@@ -176,8 +170,6 @@ SCHED_FIFO prio 65 (udp_recv)        <- Hand UDP 수신
 SCHED_OTHER nice -5 (logger)         <- I/O bound
            |
 SCHED_OTHER nice -3 (rt_publish)     <- publish 오프로드
-           |
-SCHED_OTHER nice -2 (status_mon)     <- 상태 모니터 (10 Hz)
            |
 SCHED_OTHER nice 0  (aux)            <- 보조 작업
 ```
@@ -567,14 +559,6 @@ inline const ThreadConfig kPublishConfig{
     .name           = "rt_publish"
 };
 
-inline const ThreadConfig kStatusMonitorConfig{
-    .cpu_core       = 4,
-    .sched_policy   = SCHED_OTHER,
-    .sched_priority = 0,
-    .nice_value     = -2,
-    .name           = "status_mon"
-};
-
 // ... kRtControlConfig4Core, kRtControlConfig8Core, kRtControlConfig10Core,
 //     kRtControlConfig12Core, kRtControlConfig16Core 등도 동일 구조로 정의
 }
@@ -590,7 +574,6 @@ struct SystemThreadConfigs {
   ThreadConfig logging;
   ThreadConfig aux;
   ThreadConfig publish;
-  ThreadConfig status_monitor;
 };
 
 inline SystemThreadConfigs SelectThreadConfigs() noexcept {
@@ -651,10 +634,7 @@ int RtControllerMain(int argc, char** argv) {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<RtControllerNode>();
 
-  // 3. StatusMonitor 초기화 (shared_from_this() 필요하므로 make_shared 후 호출)
-  node->InitStatusMonitor();
-
-  // 4. 물리 코어 수에 따라 스레드 설정 자동 선택
+  // 3. 물리 코어 수에 따라 스레드 설정 자동 선택
   const auto cfgs = SelectThreadConfigs();
 
   // 5. RT loop + Publish offload (jthread, executor 미사용)
@@ -708,7 +688,6 @@ ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
  1234  1237  FF     70   3 sensor_io          <- Core 3, FIFO 70 (ROS2 Executor)
  1234  1238  TS      -   4 logger             <- Core 4, OTHER   (ROS2 Executor)
  1234  1239  TS      -   5 aux                <- Core 5, OTHER   (ROS2 Executor)
- 1234  1240  TS      -   4 status_mon         <- Core 4, OTHER (10 Hz)
 ```
 
 **CLS 값**:

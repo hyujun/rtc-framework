@@ -19,7 +19,6 @@ namespace rtc {
 // 세션 디렉토리 구조:
 //   logging_data/YYMMDD_HHMM/
 //     controller/   — rt_controller CSV 로그
-//     monitor/      — status_monitor 장애/통계
 //     device/       — device 통신 통계
 //     sim/          — mujoco 스크린샷
 //     plots/        — 플롯 출력

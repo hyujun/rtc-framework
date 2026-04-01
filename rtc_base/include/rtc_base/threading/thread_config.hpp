@@ -77,17 +77,6 @@ inline const ThreadConfig kPublishConfig{
     .name           = "rt_publish"
 };
 
-// ── Non-RT monitoring thread (6-core) ───────────────────────────────────────
-// Status monitor (10 Hz) is non-RT. Shares Core 4 with logging.
-
-inline const ThreadConfig kStatusMonitorConfig{
-    .cpu_core       = 4,
-    .sched_policy   = SCHED_OTHER,
-    .sched_priority = 0,
-    .nice_value     = -2,
-    .name           = "status_mon"
-};
-
 // ── 8-core configuration ────────────────────────────────────────────────────
 // Core 0-1: OS / DDS / NIC IRQ  (isolated by isolcpus=2-6)
 // Core 2:   RT Control           (500 Hz ControlLoop + 50 Hz E-STOP watchdog)
@@ -145,17 +134,6 @@ inline const ThreadConfig kPublishConfig8Core{
     .name           = "rt_publish"
 };
 
-// ── Non-RT monitoring thread (8-core) ───────────────────────────────────────
-// With 8 cores, monitoring thread gets Core 6 (shared with aux).
-
-inline const ThreadConfig kStatusMonitorConfig8Core{
-    .cpu_core       = 6,
-    .sched_policy   = SCHED_OTHER,
-    .sched_priority = 0,
-    .nice_value     = -2,
-    .name           = "status_mon"
-};
-
 // ── 4-core fallback ─────────────────────────────────────────────────────────
 // Core 0:   OS / DDS / IRQ
 // Core 1:   RT Control
@@ -208,17 +186,6 @@ inline const ThreadConfig kPublishConfig4Core{
     .sched_priority = 0,
     .nice_value     = -3,
     .name           = "rt_publish"
-};
-
-// ── Non-RT monitoring thread (4-core) ───────────────────────────────────────
-// With 4 cores, monitoring thread shares Core 3 with logging + aux.
-
-inline const ThreadConfig kStatusMonitorConfig4Core{
-    .cpu_core       = 3,
-    .sched_policy   = SCHED_OTHER,
-    .sched_priority = 0,
-    .nice_value     = 0,
-    .name           = "status_mon"
 };
 
 // ── 10-core configuration ───────────────────────────────────────────────────
@@ -278,16 +245,6 @@ inline const ThreadConfig kPublishConfig10Core{
     .sched_priority = 0,
     .nice_value     = -3,
     .name           = "rt_publish"
-};
-
-// ── Non-RT monitoring thread (10-core) ─────────────────────────────────────
-
-inline const ThreadConfig kStatusMonitorConfig10Core{
-    .cpu_core       = 9,
-    .sched_policy   = SCHED_OTHER,
-    .sched_priority = 0,
-    .nice_value     = -2,
-    .name           = "status_mon"
 };
 
 // ── 12-core configuration ───────────────────────────────────────────────────
@@ -351,17 +308,6 @@ inline const ThreadConfig kPublishConfig12Core{
     .name           = "rt_publish"
 };
 
-// ── Non-RT monitoring thread (12-core) ─────────────────────────────────────
-// Shares Core 10 with logging — SCHED_OTHER and I/O-light.
-
-inline const ThreadConfig kStatusMonitorConfig12Core{
-    .cpu_core       = 10,
-    .sched_policy   = SCHED_OTHER,
-    .sched_priority = 0,
-    .nice_value     = -2,
-    .name           = "status_mon"
-};
-
 // ── 16-core configuration ───────────────────────────────────────────────────
 // cset shield isolates Core 4-8 → "user" cpuset (0 tasks).
 // rt_controller lives in "system" cpuset (Core 0-3, 9-21).
@@ -422,17 +368,6 @@ inline const ThreadConfig kPublishConfig16Core{
     .sched_priority = 0,
     .nice_value     = -3,
     .name           = "rt_publish"
-};
-
-// ── Non-RT monitoring thread (16-core) ─────────────────────────────────────
-// Shares Core 10 with logging — SCHED_OTHER and I/O-light.
-
-inline const ThreadConfig kStatusMonitorConfig16Core{
-    .cpu_core       = 10,
-    .sched_policy   = SCHED_OTHER,
-    .sched_priority = 0,
-    .nice_value     = -2,
-    .name           = "status_mon"
 };
 
 // ── Simulation core assignment (Tier 3, no RT scheduling) ────────────────────
