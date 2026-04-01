@@ -1,5 +1,6 @@
 // ── UrdfAnalyzer 구현 ────────────────────────────────────────────────────────
 #include "urdf_pinocchio_bridge/urdf_analyzer.hpp"
+#include "urdf_pinocchio_bridge/xacro_processor.hpp"
 
 #include <tinyxml2.h>
 
@@ -17,15 +18,20 @@ namespace urdf_pinocchio_bridge
 UrdfAnalyzer::UrdfAnalyzer(std::string_view urdf_file_path)
 : urdf_file_path_(urdf_file_path)
 {
-  // 파일 읽기
-  std::ifstream ifs(urdf_file_path_);
-  if (!ifs.is_open()) {
-    throw std::runtime_error(
-      "UrdfAnalyzer: URDF 파일을 열 수 없습니다: " + urdf_file_path_);
+  if (IsXacroFile(urdf_file_path_)) {
+    // xacro 전처리 → URDF XML 문자열
+    urdf_xml_string_ = ProcessXacro(urdf_file_path_);
+  } else {
+    // 일반 URDF 파일 읽기
+    std::ifstream ifs(urdf_file_path_);
+    if (!ifs.is_open()) {
+      throw std::runtime_error(
+        "UrdfAnalyzer: URDF 파일을 열 수 없습니다: " + urdf_file_path_);
+    }
+    std::ostringstream oss;
+    oss << ifs.rdbuf();
+    urdf_xml_string_ = oss.str();
   }
-  std::ostringstream oss;
-  oss << ifs.rdbuf();
-  urdf_xml_string_ = oss.str();
 
   ParseUrdfXml(urdf_xml_string_);
 }

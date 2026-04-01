@@ -29,6 +29,7 @@ add_library(${PROJECT_NAME} SHARED
   src/kinematic_chain_extractor.cpp
   src/pinocchio_model_builder.cpp
   src/rt_model_handle.cpp
+  src/xacro_processor.cpp
 )
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -103,6 +104,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_rt_model_handle test/test_rt_model_handle.cpp)
   target_link_libraries(test_rt_model_handle ${PROJECT_NAME})
+
+  ament_add_gtest(test_xacro_processor test/test_xacro_processor.cpp)
+  target_link_libraries(test_xacro_processor ${PROJECT_NAME})
 endif()
 
 ament_package()

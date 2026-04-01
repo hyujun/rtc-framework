@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<!--
+  테스트용 자립형 xacro 파일.
+  매크로, 인자, 수학 표현식 사용.
+  결과: base_link + 3개 revolute segment (4링크, 3관절).
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="simple_xacro_robot">
+
+  <xacro:arg name="link_length" default="0.5"/>
+
+  <!-- 단일 revolute segment 매크로 -->
+  <xacro:macro name="revolute_segment" params="index parent length">
+    <link name="link_${index}">
+      <inertial>
+        <mass value="1.0"/>
+        <origin xyz="0 0 ${length/2}" rpy="0 0 0"/>
+        <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
+      </inertial>
+    </link>
+    <joint name="joint_${index}" type="revolute">
+      <parent link="${parent}"/>
+      <child link="link_${index}"/>
+      <origin xyz="0 0 ${length}" rpy="0 0 0"/>
+      <axis xyz="0 0 1"/>
+      <limit lower="-3.14" upper="3.14" effort="100" velocity="1.0"/>
+    </joint>
+    <transmission name="trans_${index}">
+      <type>transmission_interface/SimpleTransmission</type>
+      <joint name="joint_${index}">
+        <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      </joint>
+      <actuator name="motor_${index}">
+        <mechanicalReduction>1</mechanicalReduction>
+      </actuator>
+    </transmission>
+  </xacro:macro>
+
+  <!-- 베이스 링크 -->
+  <link name="base_link">
+    <inertial>
+      <mass value="5.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.05" ixy="0" ixz="0" iyy="0.05" iyz="0" izz="0.05"/>
+    </inertial>
+  </link>
+
+  <!-- 3개 revolute segment 생성 -->
+  <xacro:revolute_segment index="1" parent="base_link" length="$(arg link_length)"/>
+  <xacro:revolute_segment index="2" parent="link_1" length="$(arg link_length)"/>
+  <xacro:revolute_segment index="3" parent="link_2" length="$(arg link_length)"/>
+
+</robot>

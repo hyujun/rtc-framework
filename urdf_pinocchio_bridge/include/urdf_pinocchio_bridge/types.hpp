@@ -151,6 +151,9 @@ struct ModelConfig
   std::string urdf_path;          // 파일 경로
   std::string urdf_xml_string;    // 또는 XML 문자열 직접 제공
 
+  // xacro 인자 (urdf_path가 .xacro 파일일 때 key:=value로 전달)
+  std::unordered_map<std::string, std::string> xacro_args;
+
   // root joint 타입 ("fixed" | "floating")
   std::string root_joint_type{"fixed"};
 

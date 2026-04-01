@@ -1,5 +1,6 @@
 // ── PinocchioModelBuilder 구현 ───────────────────────────────────────────────
 #include "urdf_pinocchio_bridge/pinocchio_model_builder.hpp"
+#include "urdf_pinocchio_bridge/xacro_processor.hpp"
 
 // Pinocchio 헤더 (경고 억제)
 #pragma GCC diagnostic push
@@ -47,12 +48,17 @@ PinocchioModelBuilder::PinocchioModelBuilder(const ModelConfig & config)
 
 void PinocchioModelBuilder::Build()
 {
-  // (1) URDF 분석
-  if (!config_.urdf_path.empty()) {
-    analyzer_ = std::make_unique<UrdfAnalyzer>(config_.urdf_path);
-  } else if (!config_.urdf_xml_string.empty()) {
+  // (0) xacro 파일이면 전처리 → XML 문자열로 변환
+  if (!config_.urdf_path.empty() && IsXacroFile(config_.urdf_path)) {
+    config_.urdf_xml_string = ProcessXacro(config_.urdf_path, config_.xacro_args);
+  }
+
+  // (1) URDF 분석 (XML 문자열 우선)
+  if (!config_.urdf_xml_string.empty()) {
     analyzer_ = std::make_unique<UrdfAnalyzer>(
       config_.urdf_xml_string, UrdfAnalyzer::FromXmlTag{});
+  } else if (!config_.urdf_path.empty()) {
+    analyzer_ = std::make_unique<UrdfAnalyzer>(config_.urdf_path);
   } else {
     throw std::runtime_error("PinocchioModelBuilder: urdf_path 또는 urdf_xml_string 필요");
   }
@@ -74,21 +80,24 @@ void PinocchioModelBuilder::BuildFullModel()
 {
   full_model_ = std::make_shared<pinocchio::Model>();
 
+  // XML 문자열 우선 (xacro 전처리 결과 포함)
+  const bool use_xml = !config_.urdf_xml_string.empty();
+
   if (config_.root_joint_type == "floating") {
     // 플로팅 베이스 (모바일/휴머노이드)
-    if (!config_.urdf_path.empty()) {
-      pinocchio::urdf::buildModel(
-        config_.urdf_path, pinocchio::JointModelFreeFlyer(), *full_model_);
-    } else {
+    if (use_xml) {
       pinocchio::urdf::buildModelFromXML(
         config_.urdf_xml_string, pinocchio::JointModelFreeFlyer(), *full_model_);
+    } else {
+      pinocchio::urdf::buildModel(
+        config_.urdf_path, pinocchio::JointModelFreeFlyer(), *full_model_);
     }
   } else {
     // 고정 베이스 (기본)
-    if (!config_.urdf_path.empty()) {
-      pinocchio::urdf::buildModel(config_.urdf_path, *full_model_);
-    } else {
+    if (use_xml) {
       pinocchio::urdf::buildModelFromXML(config_.urdf_xml_string, *full_model_);
+    } else {
+      pinocchio::urdf::buildModel(config_.urdf_path, *full_model_);
     }
   }
 }
@@ -380,6 +389,13 @@ ModelConfig PinocchioModelBuilder::LoadModelConfig(std::string_view yaml_path)
       std::filesystem::path yaml_dir =
         std::filesystem::path(std::string(yaml_path)).parent_path();
       cfg.urdf_path = (yaml_dir / cfg.urdf_path).string();
+    }
+  }
+
+  // xacro_args
+  if (root["xacro_args"]) {
+    for (const auto & kv : root["xacro_args"]) {
+      cfg.xacro_args[kv.first.as<std::string>()] = kv.second.as<std::string>();
     }
   }
 
