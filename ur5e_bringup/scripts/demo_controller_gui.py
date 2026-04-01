@@ -9,14 +9,16 @@ Demo Controller GUI (ur5e_bringup)
 - E-STOP status indicator via /system/estop_status
 - Hand motor target UI for both Demo Joint and Demo Task controllers
 """
+import json
 import math
+import os
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray, String, Bool
-from rtc_msgs.msg import GuiPosition, RobotTarget
+from rtc_msgs.msg import GuiPosition, GraspState, RobotTarget
 import tkinter as tk
-from tkinter import ttk, font as tkfont
+from tkinter import ttk, font as tkfont, messagebox
 import threading
 
 CONTROLLER_TYPES = {
@@ -60,6 +62,46 @@ for _grp_name, _motors in HAND_FINGER_GROUPS:
 # Lookup tables for joint_names → display index mapping
 _ROBOT_NAME_TO_IDX = {n: i for i, n in enumerate(ROBOT_JOINT_NAMES)}
 _HAND_NAME_TO_IDX = {n: i for i, n in enumerate(HAND_MOTOR_NAMES)}
+
+# Fingertip names matching controller order (4 fingertips)
+FINGERTIP_NAMES = ["Thumb", "Index", "Middle", "Ring"]
+
+# Default hand presets (positions in degrees for readability, converted to rad at runtime)
+_DEFAULT_PRESETS = {
+    "open_flat": {
+        "type": "open",
+        "positions_deg": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "grasp_time": 1.0,
+    },
+    "power_grasp": {
+        "type": "close",
+        "positions_deg": [30.0, 60.0, 50.0, 15.0, 70.0, 50.0, 15.0, 70.0, 50.0, 60.0],
+        "grasp_time": 2.0,
+    },
+    "pinch_grasp": {
+        "type": "close",
+        "positions_deg": [40.0, 50.0, 40.0, 20.0, 55.0, 40.0, 0.0, 0.0, 0.0, 0.0],
+        "grasp_time": 1.5,
+    },
+}
+
+# hand_trajectory_speed index inside the flat gains array per controller
+_HAND_TRAJ_SPEED_IDX = {
+    "demo_joint_controller": 1,   # gains[1]
+    "demo_task_controller": 12,   # gains[12] (after 3+3+1+1+1+1+1+1)
+}
+
+
+def _resolve_preset_path() -> str:
+    """Resolve hand_presets.json path using the workspace logging directory."""
+    session_dir = os.environ.get('RTC_SESSION_DIR') or os.environ.get('UR5E_SESSION_DIR')
+    if session_dir:
+        logging_root = os.path.dirname(session_dir)
+    else:
+        logging_root = os.path.expanduser('~/ros2_ws/ur5e_ws/logging_data')
+    os.makedirs(logging_root, exist_ok=True)
+    return os.path.join(logging_root, 'hand_presets.json')
+
 
 # Gain definitions per controller
 # Each entry: (label, size, defaults, is_bool)
@@ -140,6 +182,25 @@ class DemoControllerGUI(Node):
         self.create_subscription(GuiPosition, '/hand/gui_position',
                                  self._hand_gui_pos_cb, 10)
 
+        # Grasp state subscription
+        self._grasp_detected = False
+        self._grasp_num_active = 0
+        self._grasp_max_force = 0.0
+        self._grasp_force_threshold = 1.0
+        self._grasp_min_fingertips = 2
+        self._grasp_force_mag = [0.0] * len(FINGERTIP_NAMES)
+        self._grasp_contact_flag = [0.0] * len(FINGERTIP_NAMES)
+        self._grasp_inference_valid = [False] * len(FINGERTIP_NAMES)
+        self.create_subscription(GraspState, '/hand/grasp_state',
+                                 self._grasp_state_cb, 10)
+
+        # Hand presets (loaded from JSON)
+        self._preset_path = _resolve_preset_path()
+        self._presets = self._load_presets()
+
+        # Cached current gains (updated via request/response)
+        self._cached_gains: list[float] | None = None
+
         # 5 Hz refresh timer
         self._refresh_timer = self.create_timer(0.2, self._refresh_current_display)
 
@@ -178,7 +239,44 @@ class DemoControllerGUI(Node):
     def _estop_cb(self, msg: Bool):
         self.estop_active = msg.data
 
+    def _grasp_state_cb(self, msg: GraspState):
+        self._grasp_detected = msg.grasp_detected
+        self._grasp_num_active = msg.num_active_contacts
+        self._grasp_max_force = msg.max_force
+        self._grasp_force_threshold = msg.force_threshold
+        self._grasp_min_fingertips = msg.min_fingertips
+        n = min(len(msg.force_magnitude), len(FINGERTIP_NAMES))
+        for i in range(n):
+            self._grasp_force_mag[i] = msg.force_magnitude[i]
+            self._grasp_contact_flag[i] = msg.contact_flag[i]
+            self._grasp_inference_valid[i] = msg.inference_valid[i]
+
+    # ---- Preset persistence -----------------------------------------------------
+
+    def _load_presets(self) -> dict:
+        try:
+            with open(self._preset_path, 'r') as f:
+                data = json.load(f)
+            if isinstance(data, dict) and data:
+                return data
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        # Write defaults
+        self._save_presets_to_file(_DEFAULT_PRESETS)
+        return dict(_DEFAULT_PRESETS)
+
+    def _save_presets_to_file(self, presets: dict | None = None):
+        if presets is None:
+            presets = self._presets
+        try:
+            os.makedirs(os.path.dirname(self._preset_path), exist_ok=True)
+            with open(self._preset_path, 'w') as f:
+                json.dump(presets, f, indent=2)
+        except OSError as e:
+            self.get_logger().error(f"Failed to save presets: {e}")
+
     def _current_gains_cb(self, msg: Float64MultiArray):
+        self._cached_gains = list(msg.data)
         if not self._pending_load_gains:
             return
         self._pending_load_gains = False
@@ -226,6 +324,37 @@ class DemoControllerGUI(Node):
                 self._estop_label.config(
                     text="  NORMAL  ", fg='#1e1e2e', bg='#a6e3a1')
 
+        # Grasp state display
+        if hasattr(self, '_grasp_detected_label'):
+            if self._grasp_detected:
+                self._grasp_detected_label.config(
+                    text="  GRASP DETECTED  ", bg='#a6e3a1', fg='#1e1e2e')
+            else:
+                self._grasp_detected_label.config(
+                    text="  NO GRASP  ", bg='#585b70', fg='#cdd6f4')
+            self._grasp_active_label.config(
+                text=f"{self._grasp_num_active}")
+            self._grasp_maxforce_label.config(
+                text=f"{self._grasp_max_force:.2f} N")
+            self._grasp_threshold_label.config(
+                text=f"{self._grasp_force_threshold:.2f} N")
+            self._grasp_minfinger_label.config(
+                text=f"{self._grasp_min_fingertips}")
+
+        if hasattr(self, '_ft_force_labels'):
+            for i in range(len(FINGERTIP_NAMES)):
+                self._ft_force_labels[i].config(
+                    text=f"{self._grasp_force_mag[i]:.2f} N")
+                cf = self._grasp_contact_flag[i]
+                contact_color = '#a6e3a1' if cf > 0.5 else '#585b70'
+                self._ft_contact_labels[i].config(
+                    text=f"{cf:.2f}", bg=contact_color,
+                    fg='#1e1e2e' if cf > 0.5 else '#cdd6f4')
+                iv = self._grasp_inference_valid[i]
+                self._ft_valid_labels[i].config(
+                    text="OK" if iv else "--",
+                    fg='#a6e3a1' if iv else '#f38ba8')
+
     # ---- GUI build -----------------------------------------------------------
 
     def _run_gui(self):
@@ -263,6 +392,16 @@ class DemoControllerGUI(Node):
         style.configure('TEntry', fieldbackground='#313244',
                         foreground='#cdd6f4', insertcolor='#cdd6f4')
         style.configure('TSeparator', background='#45475a')
+        style.configure('TNotebook', background='#1e1e2e', borderwidth=0)
+        style.configure('TNotebook.Tab', background='#313244',
+                        foreground='#cdd6f4', padding=[10, 4],
+                        font=('Segoe UI', 9, 'bold'))
+        style.map('TNotebook.Tab',
+                  background=[('selected', '#89b4fa')],
+                  foreground=[('selected', '#1e1e2e')])
+        style.configure('Preset.TButton', background='#cba6f7',
+                        foreground='#1e1e2e', font=('Segoe UI', 9, 'bold'))
+        style.map('Preset.TButton', background=[('active', '#f5c2e7')])
 
         # Scrollable wrapper
         outer_frame = tk.Frame(self.root, bg='#1e1e2e')
@@ -321,8 +460,22 @@ class DemoControllerGUI(Node):
                  bg='#1e1e2e', fg='#cdd6f4',
                  font=('Segoe UI', 9)).pack(side='right', padx=(0, 4))
 
+        # ── Notebook (Tabs) ──────────────────────────────────────────────
+        notebook = ttk.Notebook(scrollable_frame)
+        notebook.pack(fill='both', expand=True, padx=8, pady=2)
+
+        control_tab = tk.Frame(notebook, bg='#1e1e2e')
+        notebook.add(control_tab, text='  Control  ')
+
+        grasp_tab = tk.Frame(notebook, bg='#1e1e2e')
+        notebook.add(grasp_tab, text='  Grasp  ')
+
+        # ══════════════════════════════════════════════════════════════════
+        #  CONTROL TAB (existing UI)
+        # ══════════════════════════════════════════════════════════════════
+
         # Controller Selection (only Demo Joint / Demo Task)
-        ctrl_frame = ttk.LabelFrame(scrollable_frame, text="Controller", padding=4)
+        ctrl_frame = ttk.LabelFrame(control_tab, text="Controller", padding=4)
         ctrl_frame.pack(fill='x', padx=8, pady=2)
 
         self.selected_ctrl = tk.StringVar(value="demo_joint_controller")
@@ -345,7 +498,7 @@ class DemoControllerGUI(Node):
                  font=('Segoe UI', 9, 'italic')).pack()
 
         # Gains
-        self._gains_frame = ttk.LabelFrame(scrollable_frame, text="Gains", padding=4)
+        self._gains_frame = ttk.LabelFrame(control_tab, text="Gains", padding=4)
         self._gains_frame.pack(fill='x', padx=8, pady=2)
 
         self._gain_entries: list = []
@@ -373,7 +526,7 @@ class DemoControllerGUI(Node):
         self._gains_applied_inner.pack(fill='x', padx=2, pady=(0, 2))
 
         # Target Inputs
-        pos_frame = ttk.LabelFrame(scrollable_frame, text="Target Inputs",
+        pos_frame = ttk.LabelFrame(control_tab, text="Target Inputs",
                                    padding=4)
         pos_frame.pack(fill='both', expand=True, padx=8, pady=2)
 
@@ -522,7 +675,7 @@ class DemoControllerGUI(Node):
                 self._hand_step_btns.append([btn_m, btn_p])
 
         # Current Status
-        status_frame = ttk.LabelFrame(scrollable_frame, text="Current Status", padding=4)
+        status_frame = ttk.LabelFrame(control_tab, text="Current Status", padding=4)
         status_frame.pack(fill='both', expand=False, padx=8, pady=2)
 
         # Left: controller-dependent state
@@ -610,13 +763,18 @@ class DemoControllerGUI(Node):
                 self._hand_state_labels_values.append(val_lbl)
 
         # Action Buttons
-        btn_frame = tk.Frame(scrollable_frame, bg='#1e1e2e')
+        btn_frame = tk.Frame(control_tab, bg='#1e1e2e')
         btn_frame.pack(pady=4)
         ttk.Button(btn_frame, text="Copy Current → Target",
                    command=self._copy_current_to_target).pack(side='left', padx=4)
         ttk.Button(btn_frame, text="Send Command",
                    style='Send.TButton',
                    command=self._publish_target).pack(side='left', padx=4)
+
+        # ══════════════════════════════════════════════════════════════════
+        #  GRASP TAB
+        # ══════════════════════════════════════════════════════════════════
+        self._build_grasp_tab(grasp_tab)
 
         # Initial gains build + initial enable/disable state
         self._rebuild_gains_ui(4)
@@ -625,6 +783,165 @@ class DemoControllerGUI(Node):
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._gui_ready.set()
         self.root.mainloop()
+
+    # ---- Grasp tab builder -----------------------------------------------------
+
+    def _build_grasp_tab(self, parent: tk.Frame):
+        hdr_font = tkfont.Font(family='Segoe UI', size=9, weight='bold')
+        mono_font = ('Courier New', 9, 'bold')
+
+        # ── Grasp State Monitor ─────────────────────────────────────────
+        state_frame = ttk.LabelFrame(parent, text="Grasp State", padding=4)
+        state_frame.pack(fill='x', padx=8, pady=(4, 2))
+
+        # Top row: big indicator + aggregate values
+        top_row = tk.Frame(state_frame, bg='#1e1e2e')
+        top_row.pack(fill='x', pady=(0, 4))
+
+        self._grasp_detected_label = tk.Label(
+            top_row, text="  NO GRASP  ", bg='#585b70', fg='#cdd6f4',
+            font=('Segoe UI', 11, 'bold'), padx=8, pady=4)
+        self._grasp_detected_label.pack(side='left', padx=(4, 12))
+
+        agg_frame = tk.Frame(top_row, bg='#1e1e2e')
+        agg_frame.pack(side='left', fill='x')
+
+        agg_items = [
+            ("Active Contacts:", '_grasp_active_label', "0"),
+            ("Max Force:", '_grasp_maxforce_label', "0.00 N"),
+            ("Threshold:", '_grasp_threshold_label', "1.00 N"),
+            ("Min Fingers:", '_grasp_minfinger_label', "2"),
+        ]
+        for i, (text, attr, default) in enumerate(agg_items):
+            tk.Label(agg_frame, text=text, bg='#1e1e2e', fg='#cdd6f4',
+                     font=('Segoe UI', 8), anchor='e').grid(
+                row=i // 2, column=(i % 2) * 2, padx=(8, 2), pady=1, sticky='e')
+            lbl = tk.Label(agg_frame, text=default, bg='#313244', fg='#f9e2af',
+                           font=mono_font, width=10, anchor='center')
+            lbl.grid(row=i // 2, column=(i % 2) * 2 + 1, padx=(0, 8), pady=1)
+            setattr(self, attr, lbl)
+
+        # Per-fingertip table
+        ttk.Separator(state_frame, orient='horizontal').pack(fill='x', pady=2)
+
+        ft_frame = tk.Frame(state_frame, bg='#1e1e2e')
+        ft_frame.pack(fill='x', padx=4)
+
+        # Header row
+        for c, txt in enumerate(["Finger", "Force (N)", "Contact", "Valid"]):
+            tk.Label(ft_frame, text=txt, bg='#1e1e2e', fg='#89b4fa',
+                     font=hdr_font, width=10, anchor='center').grid(
+                row=0, column=c, padx=2, pady=(0, 2))
+
+        self._ft_force_labels: list[tk.Label] = []
+        self._ft_contact_labels: list[tk.Label] = []
+        self._ft_valid_labels: list[tk.Label] = []
+
+        for i, name in enumerate(FINGERTIP_NAMES):
+            tk.Label(ft_frame, text=name, bg='#1e1e2e', fg='#f9e2af',
+                     font=hdr_font, width=10, anchor='center').grid(
+                row=i + 1, column=0, padx=2, pady=1)
+
+            fl = tk.Label(ft_frame, text="0.00 N", bg='#313244', fg='#cdd6f4',
+                          font=mono_font, width=10, anchor='center')
+            fl.grid(row=i + 1, column=1, padx=2, pady=1)
+            self._ft_force_labels.append(fl)
+
+            cl = tk.Label(ft_frame, text="0.00", bg='#585b70', fg='#cdd6f4',
+                          font=mono_font, width=10, anchor='center')
+            cl.grid(row=i + 1, column=2, padx=2, pady=1)
+            self._ft_contact_labels.append(cl)
+
+            vl = tk.Label(ft_frame, text="--", bg='#1e1e2e', fg='#f38ba8',
+                          font=mono_font, width=10, anchor='center')
+            vl.grid(row=i + 1, column=3, padx=2, pady=1)
+            self._ft_valid_labels.append(vl)
+
+        # ── Hand Posture Presets ─────────────────────────────────────────
+        preset_frame = ttk.LabelFrame(parent, text="Hand Posture Presets", padding=4)
+        preset_frame.pack(fill='both', expand=True, padx=8, pady=(2, 4))
+
+        # Preset Treeview
+        tree_frame = tk.Frame(preset_frame, bg='#1e1e2e')
+        tree_frame.pack(fill='both', expand=True, padx=4, pady=(0, 4))
+
+        columns = ('type', 'grasp_time', 'positions')
+        self._preset_tree = ttk.Treeview(
+            tree_frame, columns=columns, show='tree headings',
+            height=6, selectmode='browse')
+        self._preset_tree.heading('#0', text='Name', anchor='w')
+        self._preset_tree.heading('type', text='Type', anchor='center')
+        self._preset_tree.heading('grasp_time', text='Time (s)', anchor='center')
+        self._preset_tree.heading('positions', text='Positions (deg)', anchor='w')
+        self._preset_tree.column('#0', width=120, minwidth=80)
+        self._preset_tree.column('type', width=60, minwidth=50, anchor='center')
+        self._preset_tree.column('grasp_time', width=70, minwidth=50, anchor='center')
+        self._preset_tree.column('positions', width=400, minwidth=200)
+
+        tree_scroll = ttk.Scrollbar(tree_frame, orient='vertical',
+                                     command=self._preset_tree.yview)
+        self._preset_tree.configure(yscrollcommand=tree_scroll.set)
+        self._preset_tree.pack(side='left', fill='both', expand=True)
+        tree_scroll.pack(side='right', fill='y')
+
+        self._refresh_preset_tree()
+
+        # Input row for new preset
+        input_frame = tk.Frame(preset_frame, bg='#1e1e2e')
+        input_frame.pack(fill='x', padx=4, pady=2)
+
+        tk.Label(input_frame, text="Name:", bg='#1e1e2e', fg='#cdd6f4',
+                 font=('Segoe UI', 8)).pack(side='left', padx=(0, 2))
+        self._preset_name_entry = ttk.Entry(input_frame, width=14, justify='center')
+        self._preset_name_entry.pack(side='left', padx=2)
+
+        tk.Label(input_frame, text="Type:", bg='#1e1e2e', fg='#cdd6f4',
+                 font=('Segoe UI', 8)).pack(side='left', padx=(8, 2))
+        self._preset_type_var = tk.StringVar(value="open")
+        self._preset_type_combo = ttk.Combobox(
+            input_frame, textvariable=self._preset_type_var,
+            values=["open", "close"], width=6, state='readonly')
+        self._preset_type_combo.pack(side='left', padx=2)
+
+        tk.Label(input_frame, text="Grasp Time (s):", bg='#1e1e2e', fg='#cdd6f4',
+                 font=('Segoe UI', 8)).pack(side='left', padx=(8, 2))
+        self._preset_time_entry = ttk.Entry(input_frame, width=6, justify='center')
+        self._preset_time_entry.insert(0, "1.0")
+        self._preset_time_entry.pack(side='left', padx=2)
+
+        # Action buttons
+        action_frame = tk.Frame(preset_frame, bg='#1e1e2e')
+        action_frame.pack(fill='x', padx=4, pady=(2, 0))
+
+        ttk.Button(action_frame, text="Send Preset",
+                   style='Send.TButton',
+                   command=self._send_preset).pack(side='left', padx=4)
+        ttk.Button(action_frame, text="Save Current Pos",
+                   style='Preset.TButton',
+                   command=self._save_current_as_preset).pack(side='left', padx=4)
+        ttk.Button(action_frame, text="Save Target Pos",
+                   style='Preset.TButton',
+                   command=self._save_target_as_preset).pack(side='left', padx=4)
+        ttk.Button(action_frame, text="Delete",
+                   command=self._delete_preset).pack(side='left', padx=4)
+
+        # Preset file path display
+        tk.Label(preset_frame, text=f"Preset file: {self._preset_path}",
+                 bg='#1e1e2e', fg='#585b70',
+                 font=('Segoe UI', 7, 'italic')).pack(anchor='w', padx=4, pady=(4, 0))
+
+    def _refresh_preset_tree(self):
+        for item in self._preset_tree.get_children():
+            self._preset_tree.delete(item)
+        for name, data in self._presets.items():
+            pos_str = ", ".join(f"{v:.1f}" for v in data.get('positions_deg', []))
+            self._preset_tree.insert(
+                '', 'end', iid=name, text=name,
+                values=(
+                    data.get('type', 'open'),
+                    f"{data.get('grasp_time', 1.0):.1f}",
+                    pos_str,
+                ))
 
     # ---- Gains UI helpers ----------------------------------------------------
 
@@ -978,6 +1295,129 @@ class DemoControllerGUI(Node):
         self.hand_cmd_pub.publish(hand_msg)
         self.get_logger().info(
             f"Sent hand cmd: {[f'{v:.4f}' for v in hand_values]}")
+
+    # ---- Preset actions --------------------------------------------------------
+
+    def _get_selected_preset(self) -> tuple[str, dict] | None:
+        sel = self._preset_tree.selection()
+        if not sel:
+            messagebox.showwarning("No Selection", "Select a preset first.")
+            return None
+        name = sel[0]
+        return name, self._presets[name]
+
+    def _send_preset(self):
+        result = self._get_selected_preset()
+        if result is None:
+            return
+        name, data = result
+        positions_deg = data.get('positions_deg', [0.0] * NUM_HAND_MOTORS)
+        grasp_time = data.get('grasp_time', 1.0)
+        positions_rad = [math.radians(d) for d in positions_deg]
+
+        # Calculate required hand_trajectory_speed from grasp_time
+        max_dist = 0.0
+        for target, current in zip(positions_rad, self.current_hand_positions):
+            max_dist = max(max_dist, abs(target - current))
+
+        if max_dist > 0.001 and grasp_time > 0.01:
+            hand_traj_speed = max_dist / grasp_time
+        else:
+            hand_traj_speed = 1.0
+
+        # Update gains with the new hand_trajectory_speed
+        ctrl = self.selected_ctrl.get()
+        speed_idx = _HAND_TRAJ_SPEED_IDX.get(ctrl)
+        if speed_idx is not None:
+            # Read current gains from UI entries to build the full gains vector
+            gains_values: list[float] = []
+            for widgets, is_bool in zip(self._gain_entries, self._gain_is_bool):
+                for w in widgets:
+                    try:
+                        gains_values.append(float(w.get()))
+                    except ValueError:
+                        gains_values.append(0.0)
+
+            if speed_idx < len(gains_values):
+                gains_values[speed_idx] = hand_traj_speed
+                gains_msg = Float64MultiArray()
+                gains_msg.data = gains_values
+                self.gains_pub.publish(gains_msg)
+                self.get_logger().info(
+                    f"Preset '{name}': set hand_traj_speed={hand_traj_speed:.4f} "
+                    f"rad/s (grasp_time={grasp_time:.2f}s, max_dist={max_dist:.4f})")
+
+        # Publish hand target
+        hand_msg = RobotTarget()
+        hand_msg.goal_type = 'joint'
+        hand_msg.joint_names = HAND_MOTOR_NAMES
+        hand_msg.joint_target = positions_rad
+        self.hand_cmd_pub.publish(hand_msg)
+        self.get_logger().info(
+            f"Sent preset '{name}' ({data.get('type', 'open')}): "
+            f"{[f'{v:.2f}' for v in positions_deg]} deg")
+
+        # Also update the hand target entries on the Control tab
+        self._set_hand_target_entries(positions_rad)
+
+    def _save_current_as_preset(self):
+        name = self._preset_name_entry.get().strip()
+        if not name:
+            messagebox.showwarning("Missing Name", "Enter a preset name.")
+            return
+        try:
+            grasp_time = float(self._preset_time_entry.get())
+        except ValueError:
+            messagebox.showerror("Invalid Time", "Grasp time must be a number.")
+            return
+
+        positions_deg = [math.degrees(v) for v in self.current_hand_positions]
+        self._presets[name] = {
+            "type": self._preset_type_var.get(),
+            "positions_deg": [round(v, 2) for v in positions_deg],
+            "grasp_time": round(grasp_time, 3),
+        }
+        self._save_presets_to_file()
+        self._refresh_preset_tree()
+        self.get_logger().info(f"Saved preset '{name}' from current hand positions")
+
+    def _save_target_as_preset(self):
+        name = self._preset_name_entry.get().strip()
+        if not name:
+            messagebox.showwarning("Missing Name", "Enter a preset name.")
+            return
+        try:
+            grasp_time = float(self._preset_time_entry.get())
+        except ValueError:
+            messagebox.showerror("Invalid Time", "Grasp time must be a number.")
+            return
+        try:
+            positions_deg = [float(e.get()) for e in self._hand_target_entries]
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Hand target entries contain invalid values.")
+            return
+
+        self._presets[name] = {
+            "type": self._preset_type_var.get(),
+            "positions_deg": [round(v, 2) for v in positions_deg],
+            "grasp_time": round(grasp_time, 3),
+        }
+        self._save_presets_to_file()
+        self._refresh_preset_tree()
+        self.get_logger().info(f"Saved preset '{name}' from target entries")
+
+    def _delete_preset(self):
+        result = self._get_selected_preset()
+        if result is None:
+            return
+        name, _ = result
+        if not messagebox.askyesno("Confirm Delete",
+                                   f"Delete preset '{name}'?"):
+            return
+        del self._presets[name]
+        self._save_presets_to_file()
+        self._refresh_preset_tree()
+        self.get_logger().info(f"Deleted preset '{name}'")
 
     def _on_close(self):
         self.root.destroy()
