@@ -454,7 +454,7 @@ WantedBy=${wanted_by}"
 # ── 공통 패키지 리스트 (build.sh / install.sh 공유) ─────────────────────────
 # 이 함수들은 패키지 리스트의 single source of truth를 제공한다.
 get_base_packages() {
-  echo "rtc_msgs rtc_base rtc_communication rtc_controller_interface urdf_pinocchio_bridge rtc_controllers rtc_controller_manager rtc_status_monitor rtc_inference rtc_scripts rtc_tools"
+  echo "rtc_msgs rtc_base rtc_communication rtc_controller_interface urdf_pinocchio_bridge rtc_controllers rtc_controller_manager rtc_status_monitor rtc_inference rtc_scripts rtc_tools shape_estimation_msgs shape_estimation"
 }
 
 get_robot_packages() {

@@ -30,7 +30,7 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 
 ## Repository Structure
 
-17 ROS2 packages at repo root (no `src/`). 12 `rtc_*` (robot-agnostic) + 5 `ur5e_*` (robot-specific). Each has its own `README.md` with detailed API and configuration.
+20 ROS2 packages at repo root (no `src/`). 12 `rtc_*` (robot-agnostic) + 1 bridge (`urdf_pinocchio_bridge`) + 2 shape estimation (`shape_estimation_*`) + 5 `ur5e_*` (robot-specific). Each has its own `README.md` with detailed API and configuration.
 
 ### Package Summary
 
@@ -48,6 +48,9 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 | `rtc_tools` | Python | controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf, hand_udp_sender, hand_data_plot, session_dir |
 | `rtc_scripts` | Shell | PREEMPT_RT kernel build, CPU shield (cset), IRQ affinity, UDP optimization, NVIDIA RT coexistence |
 | `rtc_digital_twin` | Python | RViz2 visualization (multi-source JointState merge, URDF mimic auto-compute, fingertip sensor MarkerArray) |
+| `urdf_pinocchio_bridge` | Library | Robot-agnostic URDF parser + Pinocchio model builder, YAML-based chain extraction config |
+| `shape_estimation_msgs` | Messages | 4 types: ToFReadings, TipPoses, ToFSnapshot, ShapeEstimate |
+| `shape_estimation` | Executable | ToF-based shape estimation: voxel point cloud, least-squares primitive fitting (sphere/cylinder/plane/box) |
 | `ur5e_description` | Data | URDF + MJCF + meshes (DAE/STL/OBJ). Pinocchio/RViz/MuJoCo compatible |
 | `ur5e_hand_driver` | Executable | UDP event-driven driver (SeqLock state, ppoll sub-ms timeout, dual motor+joint read, ONNX F/T inference) |
 | `ur5e_hand_status_monitor` | Shared lib | Robot+hand integrated monitor: motor/sensor data quality checks, rate monitoring, lock-free RT accessors |
@@ -61,13 +64,18 @@ rtc_msgs, rtc_base (independent)
   +-- rtc_communication <-- rtc_base
   +-- rtc_inference <-- rtc_base
   +-- rtc_controller_interface <-- rtc_base, rtc_msgs
-  |     +-- rtc_controllers <-- rtc_controller_interface, Pinocchio
+  |     +-- rtc_controllers <-- rtc_controller_interface, urdf_pinocchio_bridge
   |           +-- rtc_controller_manager <-- rtc_controllers, rtc_communication, rtc_status_monitor
   +-- rtc_status_monitor <-- rtc_base, rtc_msgs
   +-- rtc_mujoco_sim <-- MuJoCo 3.x (optional)
   +-- rtc_digital_twin (independent, Python)
   +-- rtc_tools (independent, Python)
   +-- rtc_scripts (independent, shell)
+
+urdf_pinocchio_bridge <-- Pinocchio, tinyxml2, yaml-cpp
+
+shape_estimation_msgs (independent)
+  +-- shape_estimation <-- shape_estimation_msgs, Eigen3
 
 ur5e_description (independent)
   +-- ur5e_hand_driver <-- rtc_communication, rtc_inference, rtc_base

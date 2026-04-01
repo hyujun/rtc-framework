@@ -13,7 +13,7 @@
 
 ## 패키지 구성
 
-17개 ROS2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`)와 로봇 고유 패키지(`ur5e_*`)로 분리됩니다. 각 패키지는 자체 `README.md`를 포함합니다.
+20개 ROS2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`), 유틸리티(`urdf_pinocchio_bridge`), 형상 추정(`shape_estimation_*`), 로봇 고유 패키지(`ur5e_*`)로 분리됩니다. 각 패키지는 자체 `README.md`를 포함합니다.
 
 ### 로봇 비의존적 프레임워크 (rtc_*)
 
@@ -32,6 +32,19 @@
 | [`rtc_tools`](rtc_tools/) | 5.17.0 | Python 유틸리티 7종: controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf, hand_udp_sender, hand_data_plot, session_dir | ament_python |
 | [`rtc_scripts`](rtc_scripts/) | 5.17.0 | RT 시스템 설정 스크립트 (PREEMPT_RT 커널, CPU 격리, IRQ 어피니티, 네트워크 최적화) | ament_cmake |
 
+### 브릿지 패키지
+
+| 패키지 | 버전 | 설명 | 빌드 |
+|--------|------|------|------|
+| [`urdf_pinocchio_bridge`](urdf_pinocchio_bridge/) | 5.17.0 | 로봇 비의존적 URDF 파서 + Pinocchio 모델 빌더, YAML 기반 체인 추출 설정 | ament_cmake |
+
+### 형상 추정 패키지 (shape_estimation_*)
+
+| 패키지 | 버전 | 설명 | 빌드 |
+|--------|------|------|------|
+| [`shape_estimation_msgs`](shape_estimation_msgs/) | 5.17.0 | ToF 기반 형상 추정용 커스텀 ROS2 메시지 4종 (ToFReadings, TipPoses, ToFSnapshot, ShapeEstimate) | ament_cmake |
+| [`shape_estimation`](shape_estimation/) | 5.17.0 | ToF 센서 기반 형상 추정: 복셀 포인트 누적, 최소제곱 프리미티브 피팅 (구/실린더/평면/박스) | ament_cmake |
+
 ### 로봇 고유 패키지 (ur5e_*)
 
 | 패키지 | 버전 | 설명 | 빌드 |
@@ -49,13 +62,18 @@ rtc_msgs, rtc_base (독립)
   ├── rtc_communication ← rtc_base
   ├── rtc_inference ← rtc_base
   ├── rtc_controller_interface ← rtc_base, rtc_msgs
-  │   └── rtc_controllers ← rtc_controller_interface, Pinocchio
+  │   └── rtc_controllers ← rtc_controller_interface, urdf_pinocchio_bridge
   │       └── rtc_controller_manager ← rtc_controllers, rtc_communication, rtc_status_monitor
   ├── rtc_status_monitor ← rtc_base, rtc_msgs
   ├── rtc_mujoco_sim ← MuJoCo 3.x (optional)
   ├── rtc_digital_twin (독립, Python)
   ├── rtc_tools (독립, Python)
   └── rtc_scripts (독립, shell)
+
+urdf_pinocchio_bridge ← Pinocchio, tinyxml2, yaml-cpp
+
+shape_estimation_msgs (독립)
+  └── shape_estimation ← shape_estimation_msgs, Eigen3
 
 ur5e_description (독립)
   ├── ur5e_hand_driver ← rtc_communication, rtc_inference, rtc_base
