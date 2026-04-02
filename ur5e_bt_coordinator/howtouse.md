@@ -1,7 +1,5 @@
 # ur5e_bt_coordinator 사용 가이드
 
-![version](https://img.shields.io/badge/version-v5.17.0-blue)
-
 BehaviorTree 기반 UR5e + Hand 비실시간 태스크 코디네이터.
 500Hz RT 제어 루프 외부에서 100Hz로 동작하며, ROS2 토픽을 통해 RT Controller와 통신한다.
 
@@ -15,9 +13,10 @@ BehaviorTree 기반 UR5e + Hand 비실시간 태스크 코디네이터.
 |--------|------|
 | `rclcpp` | ROS2 C++ 클라이언트 |
 | `behaviortree_cpp` | BehaviorTree.CPP v4 (`ros-jazzy-behaviortree-cpp`) |
-| `std_msgs`, `geometry_msgs` | ROS2 표준 메시지 |
-| `rtc_msgs` | 커스텀 메시지 (GuiPosition, GraspState) |
+| `std_msgs`, `std_srvs`, `geometry_msgs` | ROS2 표준 메시지 및 서비스 |
+| `rtc_msgs` | 커스텀 메시지 (GuiPosition, GraspState, RobotTarget) |
 | `tf2` | 쿼터니언 → RPY 변환 |
+| `ament_index_cpp` | 패키지 share 디렉토리 탐색 |
 
 ### 사전 실행 필요 노드
 
@@ -45,7 +44,9 @@ source install/setup.bash
 
 ```bash
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
-  --ros-args --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/bt_coordinator.yaml
+  --ros-args \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/bt_coordinator.yaml \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
 ```
 
 ### 트리 파일 지정 실행
@@ -53,33 +54,40 @@ ros2 run ur5e_bt_coordinator bt_coordinator_node \
 ```bash
 # Pick and Place
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
-  --ros-args -p tree_file:=pick_and_place.xml
+  --ros-args -p tree_file:=pick_and_place.xml \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
 
 # Towel Unfold
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
-  --ros-args -p tree_file:=towel_unfold.xml
+  --ros-args -p tree_file:=towel_unfold.xml \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
 
 # Hand Motions Demo (UR5e 자세 유지 + 가감속 opposition/wave)
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
-  --ros-args -p tree_file:=hand_motions.xml
+  --ros-args -p tree_file:=hand_motions.xml \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
 ```
 
 ### Blackboard 초기값과 함께 실행
+
+`bb.<key>` 형식의 ROS2 파라미터가 트리 로드 후 Blackboard에 자동 주입된다.
 
 ```bash
 # Pick and Place — place_pose 지정 필수
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
   --ros-args \
   -p tree_file:=pick_and_place.xml \
-  -p place_pose:="0.3;-0.3;0.15;3.14;0.0;0.0"
+  -p bb.place_pose:="0.3;-0.3;0.15;3.14;0.0;0.0" \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
 
 # Towel Unfold — sweep 파라미터 지정 필수
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
   --ros-args \
   -p tree_file:=towel_unfold.xml \
-  -p sweep_direction_x:=1.0 \
-  -p sweep_direction_y:=0.0 \
-  -p sweep_distance:=0.3
+  -p bb.sweep_direction_x:=1.0 \
+  -p bb.sweep_direction_y:=0.0 \
+  -p bb.sweep_distance:=0.3 \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
 ```
 
 ### 반복 실행
@@ -94,7 +102,8 @@ ros2 run ur5e_bt_coordinator bt_coordinator_node \
   -p tree_file:=pick_and_place.xml \
   -p repeat:=true \
   -p repeat_delay_s:=2.0 \
-  -p place_pose:="0.3;-0.3;0.15;3.14;0.0;0.0"
+  -p bb.place_pose:="0.3;-0.3;0.15;3.14;0.0;0.0" \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
 ```
 
 반복 시 동작:
@@ -103,33 +112,83 @@ ros2 run ur5e_bt_coordinator bt_coordinator_node \
 3. 비전 관련 blackboard 변수(`object_pose`) 초기화하여 재감지 유도
 4. 트리를 처음부터 다시 실행
 
-### 런타임 파라미터 변경
-
-트리 시작 전에 Blackboard 값을 외부에서 설정할 수 있다:
+### 런타임 제어
 
 ```bash
-ros2 param set /bt_coordinator place_pose "0.3;-0.3;0.15;3.14;0.0;0.0"
+# 일시 정지 / 재개
+ros2 param set /bt_coordinator paused true
+ros2 param set /bt_coordinator paused false
+
+# 트리 핫스왑 (재시작 없이 다른 트리로 전환)
+ros2 param set /bt_coordinator tree_file "towel_unfold.xml"
+
+# 반복 모드 활성화
+ros2 param set /bt_coordinator repeat true
+
+# Step 모드: 한 틱씩 수동 진행
+ros2 param set /bt_coordinator step_mode true
+ros2 service call /bt_coordinator/step std_srvs/srv/Trigger
+
+# Blackboard 변수 런타임 설정
+ros2 param set /bt_coordinator bb.place_pose "0.3;-0.3;0.15;3.14;0.0;0.0"
+```
+
+### 오프라인 트리 검증
+
+ROS 실행 없이 BT XML의 구문 및 포트 정합성을 검증할 수 있다:
+
+```bash
+ros2 run ur5e_bt_coordinator validate_tree pick_and_place.xml
+# Exit code: 0=valid, 1=invalid, 2=file not found
 ```
 
 ---
 
 ## 4. 설정 파일
 
-`config/bt_coordinator.yaml`:
+### `config/bt_coordinator.yaml`
 
 ```yaml
 bt_coordinator:
   ros__parameters:
-    tree_file: "pick_and_place.xml"   # trees/ 디렉토리 내 XML 파일명
+    tree_file: "pick_and_place.xml"   # trees/ 디렉토리 내 XML 파일명 (절대 경로도 지원)
     tick_rate_hz: 100.0               # BT tick 주기 [Hz]
     repeat: false                     # true면 트리 완료 후 자동 반복
     repeat_delay_s: 1.0              # 반복 시 대기 시간 [s]
 
-    # Blackboard 초기값 (트리에서 필요한 변수를 여기서 설정)
-    # place_pose: "0.3;-0.3;0.15;3.14;0.0;0.0"
-    # sweep_direction_x: 1.0
-    # sweep_direction_y: 0.0
-    # sweep_distance: 0.3
+    # 런타임 제어
+    paused: false                     # true: BT tick 일시 정지
+    step_mode: false                  # true: 자동 tick 비활성, ~/step 서비스로 수동 tick
+
+    # Groot2 모니터링
+    groot2_port: 0                    # 0 = 비활성, 1667 = Groot2 기본 포트
+
+    # Watchdog (토픽 헬스 모니터링)
+    watchdog_timeout_s: 2.0           # 토픽 타임아웃 [s]
+    watchdog_interval_s: 5.0          # 헬스 체크 주기 [s] (0 = 비활성)
+
+    # Blackboard 초기값 (bb.<key> 형식으로 트리에 자동 주입)
+    bb.place_pose: "0.3;-0.3;0.15;3.14;0.0;0.0"
+    # bb.sweep_direction_x: 1.0
+    # bb.sweep_direction_y: 0.0
+    # bb.sweep_distance: 0.3
+```
+
+### `config/poses.yaml`
+
+Hand/UR5e 포즈를 재컴파일 없이 튜닝할 수 있다. 값은 **도(deg) 단위**로 작성하고, 로드 시 자동으로 radian 변환된다.
+
+```yaml
+bt_coordinator:
+  ros__parameters:
+    hand_pose.home: [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
+    hand_pose.thumb_index_oppose: [15.0, 45.0, 35.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
+    arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
+```
+
+런타임에도 변경 가능:
+```bash
+ros2 param set /bt_coordinator hand_pose.home "[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]"
 ```
 
 ---
@@ -151,8 +210,8 @@ bt_coordinator:
 
 | 토픽 | 타입 | 설명 |
 |------|------|------|
-| `/ur5e/joint_goal` | `std_msgs/Float64MultiArray` | 팔 태스크 공간 목표 [x,y,z,roll,pitch,yaw] |
-| `/hand/joint_goal` | `std_msgs/Float64MultiArray` | 손 모터 목표 [m0..m9] |
+| `/ur5e/joint_goal` | `rtc_msgs/RobotTarget` | 팔 task-space 또는 joint-space 목표 |
+| `/hand/joint_goal` | `rtc_msgs/RobotTarget` | 손 10-DoF 모터 목표 |
 | `/ur5e/gains` | `std_msgs/Float64MultiArray` | 게인 업데이트 (16개 요소) |
 | `/ur5e/select_controller` | `std_msgs/String` | 컨트롤러 전환 명령 |
 
@@ -896,11 +955,14 @@ FullDemo (Parallel, success_count=1)
 
 | 변경 내용 | 수정 파일 | 빌드 필요 |
 |-----------|----------|----------|
-| 새 포즈 추가 | `hand_pose_config.hpp` | O (헤더 변경) |
+| 기존 포즈 튜닝 | `config/poses.yaml` | X (런타임 오버라이드) |
+| 새 포즈 추가 (컴파일타임) | `hand_pose_config.hpp` | O (헤더 변경) |
+| 새 포즈 추가 (런타임) | `config/poses.yaml` | X (기존 이름 덮어쓰기만 가능) |
 | 새 관절 그룹 추가 | `hand_pose_config.hpp` | O |
 | 새 BT 트리 추가 | `trees/*.xml` | X (XML은 런타임 로드) |
 | 공통 SubTree 추가 | `trees/common_motions.xml` | X |
-| 새 UR5e 포즈 추가 | `hand_pose_config.hpp` | O |
+| 새 UR5e 포즈 추가 (컴파일타임) | `hand_pose_config.hpp` | O |
+| 새 UR5e 포즈 추가 (런타임) | `config/poses.yaml` | X |
 
 ---
 
@@ -928,4 +990,15 @@ ros2 param get /bt_coordinator tree_file
 
 # 활성 컨트롤러 확인
 ros2 topic echo /ur5e/active_controller_name
+
+# Step 모드로 한 틱씩 디버깅
+ros2 param set /bt_coordinator step_mode true
+ros2 service call /bt_coordinator/step std_srvs/srv/Trigger
+
+# Groot2 시각화 (포트 1667)
+# 노드 시작 시 -p groot2_port:=1667 옵션 사용, Groot2 GUI에서 localhost:1667 연결
+
+# 오프라인 트리 검증 (ROS 실행 불필요)
+ros2 run ur5e_bt_coordinator validate_tree pick_and_place.xml
+ros2 run ur5e_bt_coordinator validate_tree towel_unfold.xml
 ```
