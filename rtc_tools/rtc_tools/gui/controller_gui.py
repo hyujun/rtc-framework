@@ -807,6 +807,7 @@ class ControllerGUI(Node):
 
     def _on_close(self):
         self.root.destroy()
+        self.destroy_node()
         rclpy.shutdown()
 
 
@@ -819,6 +820,7 @@ def main(args=None):
         pass
     finally:
         if rclpy.ok():
+            node.destroy_node()
             rclpy.shutdown()
 
 
