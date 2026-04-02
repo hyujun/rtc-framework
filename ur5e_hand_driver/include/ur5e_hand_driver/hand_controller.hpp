@@ -354,12 +354,19 @@ class HandController {
         first_cycle = false;
       } else {
         std::unique_lock lock(event_mutex_);
-        event_cv_.wait(lock, [&] {
+        // Use wait_for instead of wait to prevent deadlock on startup:
+        // rt_controller needs continuous /hand/joint_states to initialize
+        // auto-hold, but only publishes /hand/joint_command after init.
+        // Timeout ensures read cycles continue even without commands.
+        static constexpr auto kEventTimeout = std::chrono::milliseconds(20);
+        event_cv_.wait_for(lock, kEventTimeout, [&] {
           return event_pending_ || stop_token.stop_requested();
         });
         if (stop_token.stop_requested()) break;
-        pending_cmd = staged_cmd_;
-        event_pending_ = false;
+        if (event_pending_) {
+          pending_cmd = staged_cmd_;
+          event_pending_ = false;
+        }
       }
 
       busy_.store(true, std::memory_order_release);
