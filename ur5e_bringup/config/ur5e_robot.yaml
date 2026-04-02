@@ -27,6 +27,45 @@
     log_dir: ""
     max_log_sessions: 10
 
+    # ── System URDF + model topology (shared by all controllers) ──────────
+    urdf:
+      package: "ur5e_description"
+      path: "robots/ur5e/urdf/ur5e_with_hand.urdf"
+      root_joint_type: "fixed"
+      # ── Arm sub-model (6-DOF serial chain) ──────────────────────────────
+      # Name matches device group "ur5e". Extracts base → tool0 chain.
+      # All joints outside this chain (including hand passive_joints)
+      # are locked at their reference configuration.
+      sub_models:
+        - name: "ur5e"
+          root_link: "base"
+          tip_link: "tool0"
+      # ── Hand tree-model (10-DOF branching) ──────────────────────────────
+      # Uncomment when hand FK/Jacobian is needed in controllers.
+      # Name matches device group "hand".
+      # tree_models:
+      #   - name: "hand"
+      #     root_link: "hand_base_link"
+      #     tip_links:
+      #       - "thumb_tip_link"
+      #       - "index_tip_link"
+      #       - "middle_tip_link"
+      #       - "ring_tip_link"
+      # ── Passive joints (locked in all sub/tree models) ──────────────────
+      # Hand joints — locked when building the arm sub-model.
+      # Required because the combined URDF has no <transmission> tags.
+      passive_joints:
+        - "thumb_cmc_aa"
+        - "thumb_cmc_fe"
+        - "thumb_mcp_fe"
+        - "index_mcp_aa"
+        - "index_mcp_fe"
+        - "index_dip_fe"
+        - "middle_mcp_aa"
+        - "middle_mcp_fe"
+        - "middle_dip_fe"
+        - "ring_mcp_fe"
+
     # ── Device configuration (keyed by controller topic group name) ─────────
     devices:
       ur5e:
@@ -46,11 +85,6 @@
           - "wrist_1_joint"
           - "wrist_2_joint"
           - "wrist_3_joint"
-        urdf:
-          package: "ur5e_description"
-          path: "robots/ur5e/urdf/ur5e_with_hand.urdf"
-          root_link: "base"
-          tip_link: "tool0"
         joint_limits:
           max_velocity:     [2.0, 2.0, 3.0, 3.0, 3.0, 3.0]
           max_acceleration: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]

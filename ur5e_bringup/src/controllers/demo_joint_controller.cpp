@@ -31,9 +31,47 @@ void DemoJointController::InitArmModel(
 {
   namespace upb = urdf_pinocchio_bridge;
   builder_ = std::make_unique<upb::PinocchioModelBuilder>(config);
+
+  // Resolve sub-model name: match primary device name, fallback to "arm"
+  const auto primary = GetPrimaryDeviceName();
+  std::string model_name = "arm";
+  for (const auto& sm : config.sub_models) {
+    if (sm.name == primary) { model_name = primary; break; }
+  }
   arm_handle_ = std::make_unique<upb::RtModelHandle>(
-    builder_->GetReducedModel("arm"));
+    builder_->GetReducedModel(model_name));
 }
+
+// ── Hand tree-model initialization (commented out — enable when hand FK needed)
+//
+// void DemoJointController::InitHandModel(
+//   const urdf_pinocchio_bridge::ModelConfig & config)
+// {
+//   namespace upb = urdf_pinocchio_bridge;
+//   // "hand" tree_model: name matches device name
+//   hand_handle_ = std::make_unique<upb::RtModelHandle>(
+//     builder_->GetTreeModel("hand"));
+//
+//   // Resolve fingertip frame IDs from tree_model tip_links
+//   const auto* sys_cfg = GetSystemModelConfig();
+//   if (sys_cfg) {
+//     for (const auto& tm : sys_cfg->tree_models) {
+//       if (tm.name == "hand") {
+//         for (std::size_t i = 0; i < std::min(tm.tip_links.size(), kNumFingertips); ++i) {
+//           fingertip_frame_ids_[i] = hand_handle_->GetFrameId(tm.tip_links[i]);
+//         }
+//         break;
+//       }
+//     }
+//   }
+//
+//   // Pre-allocate hand joint vector
+//   hand_q_ = Eigen::VectorXd::Zero(hand_handle_->nq());
+//
+//   // Initialize position/rotation buffers
+//   for (auto& p : fingertip_positions_) p = Eigen::Vector3d::Zero();
+//   for (auto& r : fingertip_rotations_) r = Eigen::Matrix3d::Identity();
+// }
 
 void DemoJointController::OnDeviceConfigsSet()
 {
@@ -243,6 +281,28 @@ void DemoJointController::ComputeControl(
     }
   }
 
+  // ── Hand fingertip FK (tree model) ──────────────────────────────────
+  // Compute forward kinematics for each fingertip using the hand tree-model.
+  // This gives 3D positions and orientations of thumb, index, middle, ring tips
+  // in the hand base frame — useful for grasp planning and contact estimation.
+  //
+  // if (hand_handle_ && state.num_devices > 1 && state.devices[1].valid) {
+  //   const auto& dev1 = state.devices[1];
+  //   const int hand_nq = hand_handle_->nq();
+  //   for (int i = 0; i < hand_nq; ++i) {
+  //     hand_q_[i] = dev1.positions[i];
+  //   }
+  //   hand_handle_->ComputeForwardKinematics(
+  //     std::span<const double>(hand_q_.data(), static_cast<std::size_t>(hand_nq)));
+  //   for (std::size_t f = 0; f < kNumFingertips; ++f) {
+  //     if (fingertip_frame_ids_[f] != 0) {
+  //       const auto& placement = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
+  //       fingertip_positions_[f] = placement.translation();
+  //       fingertip_rotations_[f] = placement.rotation();
+  //     }
+  //   }
+  // }
+
   // ── Grasp detection + ContactStopHand (500Hz) ────────────────────────
   {
     constexpr float kContactThreshold = 0.5f;
@@ -437,15 +497,20 @@ void DemoJointController::LoadConfig(const YAML::Node & cfg)
   RTControllerInterface::LoadConfig(cfg);
   if (!cfg) { return; }
 
-  // ── Build arm model from bridge YAML config ────────────────────────────
+  // ── Build arm model from system model config or bridge YAML ──────────────
   namespace upb = urdf_pinocchio_bridge;
-  if (cfg["model_config"]) {
+  const auto* sys_cfg = GetSystemModelConfig();
+  if (sys_cfg && !sys_cfg->urdf_path.empty() && !sys_cfg->sub_models.empty()) {
+    // System-level ModelConfig (top-level "urdf:" YAML section)
+    InitArmModel(*sys_cfg);
+  } else if (cfg["model_config"]) {
+    // Fallback: separate model config YAML file (backward compatibility)
     const auto yaml_name = cfg["model_config"].as<std::string>();
     const auto yaml_path =
       ament_index_cpp::get_package_share_directory("ur5e_bringup")
       + "/config/" + yaml_name;
     auto model_cfg = upb::PinocchioModelBuilder::LoadModelConfig(yaml_path);
-    model_cfg.urdf_path = urdf_path_;  // override with device YAML's resolved path
+    model_cfg.urdf_path = urdf_path_;
     InitArmModel(model_cfg);
   } else if (!urdf_path_.empty()) {
     // Fallback: arm-only URDF, no sub-model extraction

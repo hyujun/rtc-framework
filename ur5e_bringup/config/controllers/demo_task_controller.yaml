@@ -1,7 +1,4 @@
 demo_task_controller:
-  # ── Model configuration (urdf_pinocchio_bridge) ────────────────────────────
-  model_config: "ur5e_hand_model.yaml"
-
   # ── CLIK gains (robot arm task-space control) ──────────────────────────────
   kp_translation: [15.0, 15.0, 15.0]   # Translation proportional gain (x, y, z) [1/s]
   kp_rotation: [5.0, 5.0, 5.0]      # Rotation proportional gain (rx, ry, rz) [1/s]

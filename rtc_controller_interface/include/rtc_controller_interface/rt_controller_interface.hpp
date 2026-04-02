@@ -8,9 +8,13 @@
 #include <yaml-cpp/yaml.h>
 
 #include <map>
+#include <memory>
 #include <span>
 #include <string_view>
 #include <vector>
+
+// Forward declaration — full definition only needed in .cpp
+namespace urdf_pinocchio_bridge { struct ModelConfig; }
 
 namespace rtc
 {
@@ -21,7 +25,7 @@ namespace rtc
 // exception thrown inside a 500 Hz timer would terminate the process.
 class RTControllerInterface {
 public:
-  virtual ~RTControllerInterface() = default;
+  ~RTControllerInterface();
 
   RTControllerInterface(const RTControllerInterface &)            = delete;
   RTControllerInterface & operator=(const RTControllerInterface &) = delete;
@@ -124,6 +128,15 @@ public:
     return {};
   }
 
+  // ── System model configuration ──────────────────────────────────────────
+  //   SetSystemModelConfig() is called by RtControllerNode after controllers
+  //   are constructed, passing the system-level URDF + model topology
+  //   (sub_models, tree_models, passive_joints) parsed from the top-level
+  //   "urdf:" YAML section.  Controllers can override OnSystemModelConfigSet()
+  //   to build Pinocchio models from the shared config.
+  void SetSystemModelConfig(const urdf_pinocchio_bridge::ModelConfig & config);
+  [[nodiscard]] const urdf_pinocchio_bridge::ModelConfig* GetSystemModelConfig() const noexcept;
+
   // Set the control loop rate (Hz). Called by the manager at init time.
   void SetControlRate(double hz) noexcept { control_rate_ = hz; }
   [[nodiscard]] double GetDefaultDt() const noexcept {
@@ -137,6 +150,10 @@ protected:
   // kinematics (e.g. tip_link → end_id_).
   virtual void OnDeviceConfigsSet() {}
 
+  // Called after SetSystemModelConfig(). Override to build Pinocchio models
+  // from the system-level URDF + model topology (sub_models, tree_models).
+  virtual void OnSystemModelConfigSet() {}
+
   // Parses the "topics" section of a controller YAML node.
   // Called by the base LoadConfig(); subclasses that override LoadConfig()
   // should call RTControllerInterface::LoadConfig(cfg) to inherit this.
@@ -147,6 +164,7 @@ protected:
 
   TopicConfig topic_config_;
   std::map<std::string, DeviceNameConfig> device_name_configs_;
+  std::unique_ptr<urdf_pinocchio_bridge::ModelConfig> system_model_config_;
   double control_rate_{500.0};
 };
 

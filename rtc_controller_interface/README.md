@@ -75,6 +75,16 @@ virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 | `OnDeviceConfigsSet()` | protected virtual | 하위 클래스 오버라이드 포인트 (예: URDF 기구학 해석) |
 | `GetPrimaryDeviceName()` | public const | 토픽 설정의 첫 번째 디바이스 이름 반환 (하드코딩 방지용) |
 
+### 시스템 모델 설정 메서드
+
+| 메서드 | 접근 | 설명 |
+|--------|------|------|
+| `SetSystemModelConfig(config)` | public | 시스템 레벨 `ModelConfig`를 복사 저장 후 `OnSystemModelConfigSet()` 호출 |
+| `GetSystemModelConfig()` | public const noexcept | 저장된 `ModelConfig` 포인터 반환. 미설정 시 `nullptr` |
+| `OnSystemModelConfigSet()` | protected virtual | 하위 클래스 오버라이드 포인트 (예: arm sub-model 구축) |
+
+> **`SetSystemModelConfig()`** 은 `RtControllerNode`가 컨트롤러 인스턴스 생성 직후, `LoadConfig()` 호출 이전에 실행합니다. 따라서 `LoadConfig()` 내에서 `GetSystemModelConfig()`로 시스템 URDF 경로, sub_models, tree_models, passive_joints 정보에 접근할 수 있습니다.
+
 ### 제어 주기 설정
 
 | 메서드 | 설명 |
@@ -95,6 +105,7 @@ virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 ```cpp
 TopicConfig topic_config_;                                      // 기본값: MakeDefaultTopicConfig("ur5e")
 std::map<std::string, DeviceNameConfig> device_name_configs_;   // SetDeviceNameConfigs()에서 설정
+std::unique_ptr<urdf_pinocchio_bridge::ModelConfig> system_model_config_;  // SetSystemModelConfig()에서 설정
 double control_rate_{500.0};                                    // SetControlRate()에서 설정
 ```
 
@@ -273,6 +284,7 @@ ur5e.publish:
 | `ament_cmake` | 빌드 시스템 |
 | `rtc_base` | 공유 데이터 타입 (`ControllerState`, `ControllerOutput`, `TopicConfig`, `DeviceNameConfig` 등) |
 | `rtc_msgs` | 커스텀 ROS2 메시지 |
+| `urdf_pinocchio_bridge` | URDF→Pinocchio 모델 빌더 + `ModelConfig` 타입 (시스템 모델 설정) |
 | `pinocchio` | 로보틱스 기구학/동역학 (하위 패키지에 전이적 제공) |
 | `yaml-cpp` | YAML 설정 파싱 |
 

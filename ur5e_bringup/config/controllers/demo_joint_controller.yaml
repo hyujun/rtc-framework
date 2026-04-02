@@ -1,9 +1,4 @@
 demo_joint_controller:
-  # ── Model configuration (urdf_pinocchio_bridge) ────────────────────────────
-  # Relative to ur5e_bringup/config/. Defines sub-model topology.
-  # URDF path comes from the device config (devices.ur5e.urdf.*).
-  model_config: "ur5e_hand_model.yaml"
-
   # ── Trajectory speed ───────────────────────────────────────────────────────
   # Desired joint speed for trajectory duration calculation [rad/s].
   # Duration = max_joint_dist / trajectory_speed.

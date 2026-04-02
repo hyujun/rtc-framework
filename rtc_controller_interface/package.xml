@@ -11,6 +11,7 @@
 
   <depend>rtc_base</depend>
   <depend>rtc_msgs</depend>
+  <depend>urdf_pinocchio_bridge</depend>
   <depend>pinocchio</depend>
   <depend>yaml-cpp</depend>
 

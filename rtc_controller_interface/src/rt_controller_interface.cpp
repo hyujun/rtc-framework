@@ -1,4 +1,5 @@
 #include "rtc_controller_interface/rt_controller_interface.hpp"
+#include "urdf_pinocchio_bridge/types.hpp"
 
 #include <iostream>
 #include <stdexcept>
@@ -79,6 +80,21 @@ void ParseDeviceTopicGroup(
 RTControllerInterface::RTControllerInterface()
 : topic_config_(MakeDefaultTopicConfig("ur5e"))
 {}
+
+RTControllerInterface::~RTControllerInterface() = default;
+
+void RTControllerInterface::SetSystemModelConfig(
+    const urdf_pinocchio_bridge::ModelConfig & config)
+{
+  system_model_config_ = std::make_unique<urdf_pinocchio_bridge::ModelConfig>(config);
+  OnSystemModelConfigSet();
+}
+
+const urdf_pinocchio_bridge::ModelConfig*
+RTControllerInterface::GetSystemModelConfig() const noexcept
+{
+  return system_model_config_.get();
+}
 
 TopicConfig RTControllerInterface::MakeDefaultTopicConfig(
     const std::string& device_name)

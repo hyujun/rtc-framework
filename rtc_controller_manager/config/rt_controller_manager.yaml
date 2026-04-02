@@ -32,6 +32,12 @@
     use_sim_time_sync: false
     sim_sync_timeout_sec: 5.0
 
+    # ── System URDF (shared by all controllers) ─────────────────────────────
+    urdf:
+      package: "ur5e_description"
+      path: "robots/ur5e/urdf/ur5e.urdf"
+      root_joint_type: "fixed"
+
     # ── Device configuration (keyed by controller topic group name) ─────────
     devices:
       ur5e:
@@ -45,8 +51,6 @@
         sensor_names: []
         safe_position: [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
         urdf:
-          package: "ur5e_description"
-          path: "robots/ur5e/urdf/ur5e.urdf"
           root_link: "base_link"
           tip_link: "wrist_3_link"
         joint_limits:

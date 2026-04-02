@@ -26,8 +26,9 @@
   <depend>rtc_communication</depend>
   <depend>rtc_msgs</depend>
 
-  <!-- Pinocchio for URDF validation -->
+  <!-- Pinocchio + URDF model bridge -->
   <depend>pinocchio</depend>
+  <depend>urdf_pinocchio_bridge</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

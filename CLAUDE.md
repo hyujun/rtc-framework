@@ -61,7 +61,7 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 rtc_msgs, rtc_base (independent)
   +-- rtc_communication <-- rtc_base
   +-- rtc_inference <-- rtc_base
-  +-- rtc_controller_interface <-- rtc_base, rtc_msgs
+  +-- rtc_controller_interface <-- rtc_base, rtc_msgs, urdf_pinocchio_bridge
   |     +-- rtc_controllers <-- rtc_controller_interface, urdf_pinocchio_bridge
   |           +-- rtc_controller_manager <-- rtc_controllers, rtc_communication
   +-- rtc_mujoco_sim <-- MuJoCo 3.x (optional)
@@ -278,12 +278,24 @@ enable_timing_log: true
 enable_device_log: true
 log_dir: ""
 max_log_sessions: 10
+
+# System URDF + model topology (shared by all controllers)
+urdf:
+  package: "ur5e_description"
+  path: "robots/ur5e/urdf/ur5e_with_hand.urdf"
+  root_joint_type: "fixed"
+  sub_models:                          # name = device group name
+    - { name: "ur5e", root_link: "base", tip_link: "tool0" }
+  # tree_models:                       # enable when hand FK needed
+  #   - { name: "hand", root_link: "hand_base_link",
+  #       tip_links: [thumb_tip_link, index_tip_link, ...] }
+  passive_joints: [thumb_cmc_aa, ..., ring_mcp_fe]
+
 devices:
   ur5e:
     joint_state_names: [shoulder_pan_joint, ..., wrist_3_joint]
     safe_position: [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
-    urdf: { package: "ur5e_description", path: "robots/ur5e/urdf/ur5e.urdf",
-            root_link: "base_link", tip_link: "wrist_3_link" }
+    # root_link/tip_link auto-resolved from urdf.sub_models by device name
     joint_limits:
       max_velocity: [2.0, 2.0, 3.0, 3.0, 3.0, 3.0]
       max_torque: [150.0, 150.0, 150.0, 28.0, 28.0, 28.0]
@@ -393,7 +405,8 @@ For robot-specific controllers (e.g. DemoJoint/DemoTask), place in `ur5e_bringup
 1. Add device config block in `rt_controller_manager.yaml` under `devices:`
 2. Add timeout entry in `device_timeout_names` / `device_timeout_values`
 3. Add topic routing in each controller's YAML `topics:` section
-4. Controller must handle the new device index in `Compute()` / `SetDeviceTarget()`
+4. If the device has kinematics: add matching `sub_models` or `tree_models` entry under `urdf:` (name = device group name). `root_link`/`tip_link` will auto-resolve from the model config.
+5. Controller must handle the new device index in `Compute()` / `SetDeviceTarget()`
 
 ### Adding a New Thread
 

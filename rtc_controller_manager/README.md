@@ -96,10 +96,27 @@ rtc_controller_manager/
 
 ## 컨트롤러 관리
 
+### 시스템 URDF + ModelConfig 파싱
+
+노드 초기화 시 최상위 `urdf:` 파라미터 섹션에서 시스템 레벨 URDF 경로와 모델 토폴로지를 파싱합니다.
+
+```
+urdf.package + urdf.path → ament resolve → 절대 URDF 경로
+urdf.root_joint_type     → "fixed" | "floating"
+urdf.sub_models          → [{name, root_link, tip_link}, ...]   (직렬 체인)
+urdf.tree_models         → [{name, root_link, tip_links[]}, ...] (분기 체인)
+urdf.passive_joints      → [string, ...]                         (잠금 관절)
+```
+
+- `sub_models`/`tree_models`의 `name`은 `devices` 블록의 디바이스 그룹 이름과 매칭됩니다
+- 디바이스별 `root_link`/`tip_link` 미지정 시 시스템 `sub_models`/`tree_models`에서 자동 해석
+- 디바이스별 URDF 경로 미지정 시 시스템 URDF 경로를 폴백으로 사용
+- **하위 호환**: 최상위 `urdf:` 없으면 기존 `devices.{group}.urdf` 에서 읽기
+
 ### 로딩 (시작 시)
 
 1. `ControllerRegistry::Instance().GetEntries()` 조회
-2. 각 컨트롤러: 팩토리로 인스턴스 생성 -> `LoadConfig(YAML)` -> `controllers_` 벡터에 추가
+2. 각 컨트롤러: 팩토리로 인스턴스 생성 -> `SetSystemModelConfig()` -> `LoadConfig(YAML)` -> `controllers_` 벡터에 추가
 3. 컨트롤러 이름과 config_key 양쪽을 `controller_name_to_idx_` 맵에 등록
 4. `initial_controller` 파라미터로 초기 활성 컨트롤러 선택
 
@@ -237,6 +254,19 @@ if (lock.owns_lock()) {
 | `kp` | double | `5.0` | (레거시) 기본 P 게인 |
 | `kd` | double | `0.5` | (레거시) 기본 D 게인 |
 
+### urdf 블록 파라미터 (시스템 레벨 URDF 설정)
+
+| 파라미터 | 타입 | 필수 | 설명 |
+|---------|------|------|------|
+| `urdf.package` | string | 선택 | URDF가 포함된 ament 패키지명 |
+| `urdf.path` | string | 선택 | 패키지 내 URDF 상대 경로 |
+| `urdf.root_joint_type` | string | 선택 | `"fixed"` 또는 `"floating"` (기본: `"fixed"`) |
+| `urdf.sub_models` | list | 선택 | 직렬 체인 모델 목록 (name/root_link/tip_link) |
+| `urdf.tree_models` | list | 선택 | 분기 체인 모델 목록 (name/root_link/tip_links[]) |
+| `urdf.passive_joints` | string[] | 선택 | 모든 모델에서 잠금할 관절 이름 |
+
+> `sub_models`/`tree_models`의 `name`은 `devices` 블록의 디바이스 그룹 이름과 매칭됩니다. 이를 통해 디바이스별 `root_link`/`tip_link`를 자동 해석할 수 있습니다.
+
 ### devices 블록 파라미터 (devices.{group_name}.* )
 
 | 파라미터 | 타입 | 필수 | 설명 |
@@ -286,6 +316,12 @@ if (lock.owns_lock()) {
     use_sim_time_sync: false
     sim_sync_timeout_sec: 5.0
 
+    # System URDF (shared by all controllers)
+    urdf:
+      package: "ur5e_description"
+      path: "robots/ur5e/urdf/ur5e.urdf"
+      root_joint_type: "fixed"
+
     devices:
       ur5e:
         joint_state_names:
@@ -298,8 +334,6 @@ if (lock.owns_lock()) {
         sensor_names: []
         safe_position: [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
         urdf:
-          package: "ur5e_description"
-          path: "robots/ur5e/urdf/ur5e.urdf"
           root_link: "base_link"
           tip_link: "wrist_3_link"
         joint_limits:
@@ -338,6 +372,7 @@ CycloneDDS RT 성능 최적화 설정입니다. `CYCLONEDDS_URI` 환경변수로
 | `rtc_base` | 로깅, 스레딩, 타입, SPSC 버퍼, 세션 디렉토리 |
 | `rtc_communication` | 네트워크 통신 (UDP 트랜시버) |
 | `rtc_msgs` | JointCommand, GuiPosition, RobotTarget, DeviceStateLog, DeviceSensorLog, GraspState, HandSensorState |
+| `urdf_pinocchio_bridge` | URDF→Pinocchio 모델 빌더 + `ModelConfig` 타입 (시스템 모델 설정) |
 | `pinocchio` | URDF 기구학 검증 + joint limits 병합 |
 | `yaml-cpp` | YAML 설정 파싱 |
 | `ament_index_cpp` | 패키지 리소스 경로 탐색 |

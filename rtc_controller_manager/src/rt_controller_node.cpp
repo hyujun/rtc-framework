@@ -168,28 +168,69 @@ void RtControllerNode::DeclareAndLoadParameters()
   // NOTE: Logging setup and device name configs are deferred until after
   // controller loading, because active_groups_ must be known first.
 
-  // Resolve URDF path from devices config (auto-declared from YAML overrides)
+  // ── Resolve system URDF and model topology ─────────────────────────────────
+  // Priority: top-level "urdf:" section → fallback to first device with URDF.
   std::string urdf_path;
   {
-    // Scan for first device with URDF config
-    const auto params = list_parameters({"devices"}, 10);
-    for (const auto & prefix : params.prefixes) {
-      const std::string pkg_key = prefix + ".urdf.package";
-      const std::string path_key = prefix + ".urdf.path";
-      if (has_parameter(pkg_key) && has_parameter(path_key)) {
-        try {
-          const auto pkg = get_parameter(pkg_key).as_string();
-          const auto rel = get_parameter(path_key).as_string();
-          urdf_path = ament_index_cpp::get_package_share_directory(pkg) + "/" + rel;
-          RCLCPP_INFO(get_logger(), "URDF path from devices config: %s", urdf_path.c_str());
-        } catch (const std::exception & e) {
-          RCLCPP_WARN(get_logger(), "Failed to resolve URDF from devices config: %s", e.what());
+    // 1) Top-level urdf section (preferred)
+    if (has_parameter("urdf.package") && has_parameter("urdf.path")) {
+      try {
+        const auto pkg = get_parameter("urdf.package").as_string();
+        const auto rel = get_parameter("urdf.path").as_string();
+        urdf_path = ament_index_cpp::get_package_share_directory(pkg) + "/" + rel;
+        system_model_config_.urdf_path = urdf_path;
+
+        if (has_parameter("urdf.root_joint_type")) {
+          system_model_config_.root_joint_type =
+              get_parameter("urdf.root_joint_type").as_string();
         }
-        break;
+
+        ParseSubModels(system_model_config_);
+        ParseTreeModels(system_model_config_);
+
+        if (has_parameter("urdf.passive_joints")) {
+          system_model_config_.passive_joints =
+              get_parameter("urdf.passive_joints").as_string_array();
+        }
+
+        RCLCPP_INFO(get_logger(),
+            "System URDF: %s (%zu sub_models, %zu tree_models, %zu passive_joints)",
+            urdf_path.c_str(),
+            system_model_config_.sub_models.size(),
+            system_model_config_.tree_models.size(),
+            system_model_config_.passive_joints.size());
+      } catch (const std::exception & e) {
+        RCLCPP_WARN(get_logger(),
+            "Failed to resolve system URDF config: %s", e.what());
       }
     }
+
+    // 2) Fallback: scan devices for first URDF config (backward compatibility)
     if (urdf_path.empty()) {
-      RCLCPP_WARN(get_logger(), "No URDF configured in devices — controllers may lack kinematics");
+      const auto params = list_parameters({"devices"}, 10);
+      for (const auto & prefix : params.prefixes) {
+        const std::string pkg_key = prefix + ".urdf.package";
+        const std::string path_key = prefix + ".urdf.path";
+        if (has_parameter(pkg_key) && has_parameter(path_key)) {
+          try {
+            const auto pkg = get_parameter(pkg_key).as_string();
+            const auto rel = get_parameter(path_key).as_string();
+            urdf_path = ament_index_cpp::get_package_share_directory(pkg) + "/" + rel;
+            system_model_config_.urdf_path = urdf_path;
+            RCLCPP_INFO(get_logger(),
+                "URDF path from devices config (fallback): %s", urdf_path.c_str());
+          } catch (const std::exception & e) {
+            RCLCPP_WARN(get_logger(),
+                "Failed to resolve URDF from devices config: %s", e.what());
+          }
+          break;
+        }
+      }
+    }
+
+    if (urdf_path.empty()) {
+      RCLCPP_WARN(get_logger(),
+          "No URDF configured — controllers may lack kinematics");
     }
   }
 
@@ -203,6 +244,11 @@ void RtControllerNode::DeclareAndLoadParameters()
   for (std::size_t i = 0; i < entries.size(); ++i) {
     const auto & entry = entries[i];
     auto ctrl = entry.factory(urdf_path);
+
+    // Pass system model config before LoadConfig so controllers can use it
+    if (!system_model_config_.urdf_path.empty()) {
+      ctrl->SetSystemModelConfig(system_model_config_);
+    }
 
     // Config path: <config_package>/config/controllers/<subdir>/<key>.yaml
     try {
@@ -1929,6 +1975,62 @@ void RtControllerNode::ClearGlobalEstop() noexcept
   estop_reason_.clear();
 }
 
+// ── System model configuration parsing ──────────────────────────────────────
+
+void RtControllerNode::ParseSubModels(
+    urdf_pinocchio_bridge::ModelConfig & config)
+{
+  // ROS2 flattens YAML arrays-of-objects to prefixed params:
+  //   urdf.sub_models.0.name, urdf.sub_models.0.root_link, ...
+  const auto params = list_parameters({"urdf.sub_models"}, 10);
+  std::set<std::string> seen;
+  for (const auto & prefix : params.prefixes) {
+    const std::string name_key = prefix + ".name";
+    const std::string root_key = prefix + ".root_link";
+    const std::string tip_key  = prefix + ".tip_link";
+    if (!has_parameter(name_key) || !has_parameter(root_key) || !has_parameter(tip_key)) {
+      continue;
+    }
+    const auto name = get_parameter(name_key).as_string();
+    if (!seen.insert(name).second) continue;  // deduplicate
+    urdf_pinocchio_bridge::SubModelConfig sm;
+    sm.name = name;
+    sm.root_link = get_parameter(root_key).as_string();
+    sm.tip_link = get_parameter(tip_key).as_string();
+    config.sub_models.push_back(std::move(sm));
+  }
+}
+
+void RtControllerNode::ParseTreeModels(
+    urdf_pinocchio_bridge::ModelConfig & config)
+{
+  const auto params = list_parameters({"urdf.tree_models"}, 10);
+  std::set<std::string> seen;
+  for (const auto & prefix : params.prefixes) {
+    const std::string name_key = prefix + ".name";
+    const std::string root_key = prefix + ".root_link";
+    if (!has_parameter(name_key) || !has_parameter(root_key)) continue;
+    const auto name = get_parameter(name_key).as_string();
+    if (!seen.insert(name).second) continue;
+
+    urdf_pinocchio_bridge::TreeModelConfig tm;
+    tm.name = name;
+    tm.root_link = get_parameter(root_key).as_string();
+
+    // tip_links: try as string_array first (ROS2 YAML sequence)
+    const std::string tips_key = prefix + ".tip_links";
+    if (has_parameter(tips_key)) {
+      try {
+        tm.tip_links = get_parameter(tips_key).as_string_array();
+      } catch (const rclcpp::ParameterTypeException&) {
+        // Might be flattened as individual params — skip
+      }
+    }
+
+    config.tree_models.push_back(std::move(tm));
+  }
+}
+
 // ── Device name configuration loading ────────────────────────────────────────
 
 void RtControllerNode::LoadDeviceNameConfigs()
@@ -2047,28 +2149,67 @@ void RtControllerNode::LoadDeviceNameConfigs()
     }
 
     // URDF config (optional block)
+    // Priority: per-device urdf.package/path → system-level urdf
+    // root_link/tip_link: per-device → auto-resolve from sub_models/tree_models
     const std::string urdf_pkg_key = prefix + ".urdf.package";
     const std::string urdf_path_key = prefix + ".urdf.path";
-    if (has_parameter(urdf_pkg_key) && has_parameter(urdf_path_key)) {
-      urtc::DeviceUrdfConfig urdf_cfg;
-      urdf_cfg.package = get_parameter(urdf_pkg_key).as_string();
-      urdf_cfg.path = get_parameter(urdf_path_key).as_string();
 
+    bool has_per_device_urdf = has_parameter(urdf_pkg_key) && has_parameter(urdf_path_key);
+    bool has_system_urdf = !system_model_config_.urdf_path.empty();
+    bool has_per_device_links = has_parameter(prefix + ".urdf.root_link") ||
+                                has_parameter(prefix + ".urdf.tip_link");
+
+    if (has_per_device_urdf || has_system_urdf || has_per_device_links) {
+      urtc::DeviceUrdfConfig urdf_cfg;
+
+      // Resolve URDF package/path
+      if (has_per_device_urdf) {
+        urdf_cfg.package = get_parameter(urdf_pkg_key).as_string();
+        urdf_cfg.path = get_parameter(urdf_path_key).as_string();
+      }
+
+      // Resolve root_link / tip_link: per-device override first
       const std::string root_key = prefix + ".urdf.root_link";
+      const std::string tip_key = prefix + ".urdf.tip_link";
       if (has_parameter(root_key)) {
         urdf_cfg.root_link = get_parameter(root_key).as_string();
       }
-      const std::string tip_key = prefix + ".urdf.tip_link";
       if (has_parameter(tip_key)) {
         urdf_cfg.tip_link = get_parameter(tip_key).as_string();
       }
 
-      // Validate joint names against URDF
-      try {
-        const std::string full_urdf_path =
-            ament_index_cpp::get_package_share_directory(urdf_cfg.package) +
-            "/" + urdf_cfg.path;
+      // Auto-resolve from system sub_models/tree_models by device name
+      if (urdf_cfg.root_link.empty() || urdf_cfg.tip_link.empty()) {
+        for (const auto& sm : system_model_config_.sub_models) {
+          if (sm.name == group_name) {
+            if (urdf_cfg.root_link.empty()) urdf_cfg.root_link = sm.root_link;
+            if (urdf_cfg.tip_link.empty()) urdf_cfg.tip_link = sm.tip_link;
+            break;
+          }
+        }
+      }
+      if (urdf_cfg.root_link.empty()) {
+        for (const auto& tm : system_model_config_.tree_models) {
+          if (tm.name == group_name) {
+            urdf_cfg.root_link = tm.root_link;
+            // tree_model has multiple tip_links — leave tip_link empty
+            break;
+          }
+        }
+      }
 
+      // Resolve full URDF path for validation
+      std::string full_urdf_path;
+      if (!urdf_cfg.package.empty()) {
+        full_urdf_path = ament_index_cpp::get_package_share_directory(urdf_cfg.package) +
+            "/" + urdf_cfg.path;
+      } else if (has_system_urdf) {
+        full_urdf_path = system_model_config_.urdf_path;
+      }
+
+      // Validate joint names against URDF
+      if (!full_urdf_path.empty()) {
+        try {
         pinocchio::Model model;
         pinocchio::urdf::buildModel(full_urdf_path, model);
 
@@ -2187,10 +2328,11 @@ void RtControllerNode::LoadDeviceNameConfigs()
                       "[%s] Joint limits loaded from URDF (no YAML overrides)",
                       group_name.c_str());
         }
-      } catch (const std::exception& e) {
-        RCLCPP_WARN(get_logger(), "[%s] URDF validation failed: %s",
-                    group_name.c_str(), e.what());
-      }
+        } catch (const std::exception& e) {
+          RCLCPP_WARN(get_logger(), "[%s] URDF validation failed: %s",
+                      group_name.c_str(), e.what());
+        }
+      }  // if (!full_urdf_path.empty())
 
       cfg.urdf = std::move(urdf_cfg);
     }

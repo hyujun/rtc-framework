@@ -7,6 +7,7 @@
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_controller_manager/controller_timing_profiler.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
+#include "urdf_pinocchio_bridge/types.hpp"
 // ── ROS2 ─────────────────────────────────────────────────────────────────────
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -88,6 +89,11 @@ private:
       rtc_msgs::msg::HandSensorState::SharedPtr msg);
   void DeviceTargetCallback(int device_slot,
       rtc_msgs::msg::RobotTarget::SharedPtr msg);
+
+  // ── System model configuration (top-level "urdf:" YAML) ──────────────────
+  void ParseSystemModelConfig(urdf_pinocchio_bridge::ModelConfig & config);
+  void ParseSubModels(urdf_pinocchio_bridge::ModelConfig & config);
+  void ParseTreeModels(urdf_pinocchio_bridge::ModelConfig & config);
 
   // ── Device name configuration ────────────────────────────────────────────
   void LoadDeviceNameConfigs();
@@ -264,6 +270,9 @@ private:
   std::atomic<bool> print_timing_summary_{false};
   std::atomic<bool> state_received_{false};
   std::atomic<bool> target_received_{false};
+
+  // ── System-level model configuration (top-level "urdf:" YAML section) ────
+  urdf_pinocchio_bridge::ModelConfig system_model_config_;
 
   // ── Per-device name configuration ────────────────────────────────────────
   std::map<std::string, rtc::DeviceNameConfig> device_name_configs_;
