@@ -18,21 +18,20 @@ set -e
 # ── Script directory (absolute path, safe across cd) ──────────────────────────
 INSTALL_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# ── Colors ─────────────────────────────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
-
 # ── 공통 유틸리티 라이브러리 (get_physical_cores, compute_cpu_layout 등) ──────
 _RT_COMMON="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/lib/rt_common.sh"
 if [[ -f "$_RT_COMMON" ]]; then
   # shellcheck source=rtc_scripts/scripts/lib/rt_common.sh
   source "$_RT_COMMON"
   make_logger "INSTALL" emoji
+else
+  # fallback: rt_common.sh 없을 때 최소 색상/로거 정의
+  RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+  BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+  info()    { echo -e "${BLUE}▶ $*${NC}"; }
+  warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
+  error()   { echo -e "${RED}✘ $*${NC}" >&2; exit 1; }
+  success() { echo -e "${GREEN}✔ $*${NC}"; }
 fi
 
 # ── apt-get update 이중 호출 방지 ─────────────────────────────────────────────
@@ -46,16 +45,10 @@ apt_update_if_stale() {
 }
 
 # ── Mode & argument parsing ────────────────────────────────────────────────────
-MODE="full"
-CLEAN_BUILD=0
-BUILD_TYPE="Release"
-PARALLEL_JOBS=""
 SKIP_DEPS=0
 SKIP_BUILD=0
 DO_RT=0
 SKIP_DEBUG_SETUP=0
-CUSTOM_PACKAGES=()
-MJ_DIR=""
 SET_PTRACE_SCOPE=0
 
 show_help() {
@@ -107,42 +100,19 @@ show_help() {
   exit 0
 }
 
+# 공통 옵션 파싱 (rt_common.sh parse_common_args)
+parse_common_args "$@"
+MODE="$_COMMON_MODE"
+BUILD_TYPE="$_COMMON_BUILD_TYPE"
+CLEAN_BUILD="$_COMMON_CLEAN_BUILD"
+PARALLEL_JOBS="$_COMMON_PARALLEL_JOBS"
+MJ_DIR="$_COMMON_MJ_DIR"
+CUSTOM_PACKAGES=("${_COMMON_CUSTOM_PACKAGES[@]}")
+set -- "${REMAINING_ARGS[@]}"
+
+# install.sh 고유 옵션 파싱
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    sim|simulation)
-      MODE=sim
-      shift
-      ;;
-    robot|realrobot|real)
-      MODE=robot
-      shift
-      ;;
-    full|all)
-      MODE=full
-      shift
-      ;;
-    -d|--debug)
-      BUILD_TYPE="Debug"
-      shift
-      ;;
-    -r|--release)
-      BUILD_TYPE="Release"
-      shift
-      ;;
-    -c|--clean)
-      CLEAN_BUILD=1
-      shift
-      ;;
-    -p|--packages)
-      [[ -z "${2:-}" ]] && error "--packages requires a comma-separated list"
-      IFS=',' read -r -a CUSTOM_PACKAGES <<< "$2"
-      shift 2
-      ;;
-    -j|--jobs)
-      [[ -z "${2:-}" ]] && error "--jobs requires a number"
-      PARALLEL_JOBS="$2"
-      shift 2
-      ;;
     --skip-deps)
       SKIP_DEPS=1
       shift
@@ -172,11 +142,6 @@ while [[ $# -gt 0 ]]; do
     --ptrace-scope)
       SET_PTRACE_SCOPE=1
       shift
-      ;;
-    --mujoco)
-      [[ -z "${2:-}" ]] && error "--mujoco requires a path argument"
-      MJ_DIR="$2"
-      shift 2
       ;;
     -h|--help|help)
       show_help
@@ -337,12 +302,11 @@ check_prerequisites() {
   fi
 
   # ── venv compatibility check ─────────────────────────────────────────────────
-  if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  if is_venv_active; then
     warn "Active virtual environment: ${VIRTUAL_ENV}"
-    warn "ROS2 colcon builds and apt-installed Python packages are system-level."
-    warn "For best compatibility create your venv with:"
+    warn "System apt packages may not be visible. Recommended:"
     warn "  python3 -m venv .venv --system-site-packages"
-    warn "This script will also pip-install Python deps into the venv as a fallback."
+    warn "Python deps will also be pip-installed into the venv as fallback."
   fi
 }
 
@@ -388,12 +352,8 @@ install_python_base_deps() {
       > /dev/null
   success "python3-dev and python3-numpy installed"
 
-  # If a venv is active, eigenpy's cmake may pick the venv Python which lacks
-  # numpy. Install numpy inside the venv as well to cover that case.
-  if [[ -n "${VIRTUAL_ENV:-}" ]]; then
-    warn "Virtual environment detected: ${VIRTUAL_ENV}"
-    warn "apt packages (python3-numpy etc.) are NOT visible inside the venv unless"
-    warn "it was created with --system-site-packages. Installing numpy via pip too."
+  # venv 내부에서 eigenpy cmake가 numpy를 못 찾는 문제 대비 pip install
+  if is_venv_active; then
     info "Installing numpy and Cython inside the active venv..."
     python3 -m pip install numpy Cython --quiet || true
     success "numpy and Cython installed in venv"
@@ -569,10 +529,8 @@ install_python_deps() {
     || warn "mujoco pip install failed — urdf_to_mjcf will not work without it"
   success "mujoco Python bindings installed"
 
-  # apt packages are installed into the system Python's site-packages.
-  # A venv created WITHOUT --system-site-packages cannot see them.
-  # Install the same packages via pip so they are importable inside the venv.
-  if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  # venv 내부에서 apt 패키지가 보이지 않을 수 있으므로 pip으로도 설치
+  if is_venv_active; then
     info "Installing Python dependencies inside the active venv (pip)..."
     python3 -m pip install --quiet \
         matplotlib \
@@ -649,72 +607,18 @@ setup_package() {
   fi
 }
 
-# ── Build ──────────────────────────────────────────────────────────────────────
+# ── Build (build.sh에 위임) ───────────────────────────────────────────────────
 build_package() {
-  info "Building all ur5e packages..."
-  cd "$WORKSPACE"
+  info "Building packages via build.sh..."
 
-  if [[ "$CLEAN_BUILD" -eq 1 ]]; then
-    info "Cleaning previous build artifacts..."
-    rm -rf build/ install/ log/
-  fi
+  local BUILD_ARGS=("$MODE" "--no-banner")
+  [[ "$BUILD_TYPE" == "Debug" ]] && BUILD_ARGS+=("--debug")
+  [[ "$CLEAN_BUILD" -eq 1 ]] && BUILD_ARGS+=("--clean")
+  [[ -n "$PARALLEL_JOBS" ]] && BUILD_ARGS+=("--jobs" "$PARALLEL_JOBS")
+  [[ -n "$MJ_DIR" ]] && BUILD_ARGS+=("--mujoco" "$MJ_DIR")
+  [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]] && BUILD_ARGS+=("--packages" "$(IFS=','; echo "${CUSTOM_PACKAGES[*]}")")
 
-  local CMAKE_ARGS=("-DCMAKE_BUILD_TYPE=${BUILD_TYPE}")
-
-  # When a venv is active, CMake's FindPython prefers the venv Python, which
-  # may lack numpy and cause eigenpy's cmake to fail. Force system Python so
-  # pinocchio/eigenpy find the apt-installed numpy.
-  if [[ -n "${VIRTUAL_ENV:-}" ]]; then
-    local SYS_PYTHON
-    SYS_PYTHON=$(command -v python3 || true)
-    # Resolve the real system python, not the venv symlink
-    SYS_PYTHON=$(readlink -f "${SYS_PYTHON}" 2>/dev/null || echo "${SYS_PYTHON}")
-    if [[ "$SYS_PYTHON" == "${VIRTUAL_ENV}"* ]]; then
-      # Still pointing inside venv — use /usr/bin/python3 directly
-      SYS_PYTHON="/usr/bin/python3"
-    fi
-    CMAKE_ARGS+=("-DPython3_EXECUTABLE=${SYS_PYTHON}")
-    CMAKE_ARGS+=("-DPython3_FIND_VIRTUALENV=STANDARD")
-    warn "Venv detected — cmake will use system Python: ${SYS_PYTHON}"
-  fi
-
-  # compile_commands.json: Debug 빌드 시 자동 활성화 — .vscode/c_cpp_properties.json IntelliSense 연동
-  if [[ "$BUILD_TYPE" == "Debug" ]]; then
-    CMAKE_ARGS+=("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
-    info "compile_commands.json generation enabled (VS Code IntelliSense)"
-  fi
-
-  if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
-    # MuJoCo binary release (tarball) does NOT include lib/cmake/mujoco/.
-    # Pass mujoco_ROOT so CMakeLists.txt can locate the .so and headers via find_library.
-    CMAKE_ARGS+=("-Dmujoco_ROOT=${MJ_DIR}")
-    info "MuJoCo root: ${MJ_DIR}"
-  fi
-
-  # Build order: rtc_base first (header-only, no deps), then the rest
-  local PACKAGES=()
-  if [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]]; then
-    PACKAGES=("${CUSTOM_PACKAGES[@]}")
-  else
-    read -r -a BASE <<< "$(get_base_packages)"
-    read -r -a ROBOT <<< "$(get_robot_packages)"
-    PACKAGES=("${BASE[@]}" "${ROBOT[@]}")
-    if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
-      PACKAGES+=(rtc_mujoco_sim)
-    fi
-  fi
-
-  local COLCON_ARGS=("--packages-select" "${PACKAGES[@]}" "--symlink-install")
-
-  if [[ -n "$PARALLEL_JOBS" ]]; then
-    COLCON_ARGS+=("--parallel-workers" "$PARALLEL_JOBS")
-  fi
-
-  if [[ ${#CMAKE_ARGS[@]} -gt 0 ]]; then
-    COLCON_ARGS+=("--cmake-args" "${CMAKE_ARGS[@]}")
-  fi
-
-  colcon build "${COLCON_ARGS[@]}" || error "Build failed!"
+  bash "${INSTALL_SCRIPT_DIR}/build.sh" "${BUILD_ARGS[@]}" || error "Build failed!"
 
   # 빌드 후 최신 overlay 소싱 (verify_installation 등 후속 작업용)
   source "${WORKSPACE}/install/setup.bash" || true
@@ -1010,10 +914,10 @@ print_summary() {
       echo ""
       echo "  # Full system launch (replace IP as needed)"
       echo "  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
-      echo "  ros2 launch rtc_controller_manager ur_control.launch.py robot_ip:=192.168.1.10"
+      echo "  ros2 launch ur5e_bringup robot.launch.py robot_ip:=192.168.1.10"
       echo ""
       echo "  # Fake hardware (no physical robot — for testing)"
-      echo "  ros2 launch rtc_controller_manager ur_control.launch.py use_fake_hardware:=true"
+      echo "  ros2 launch ur5e_bringup robot.launch.py use_fake_hardware:=true"
       echo ""
       echo "  # Hand UDP nodes only"
       echo "  ros2 launch ur5e_hand_driver hand_udp.launch.py"
@@ -1034,14 +938,13 @@ print_summary() {
       echo ""
       echo "  # Real robot"
       echo "  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
-      echo "  ros2 launch rtc_controller_manager ur_control.launch.py robot_ip:=192.168.1.10"
+      echo "  ros2 launch ur5e_bringup robot.launch.py robot_ip:=192.168.1.10"
       echo ""
       echo "  # MuJoCo simulation"
-      echo "  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py"
-      echo "  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py sim_mode:=sync_step"
+      echo "  ros2 launch ur5e_bringup sim.launch.py"
       echo ""
       echo "  # Fake hardware (no robot, no simulation)"
-      echo "  ros2 launch rtc_controller_manager ur_control.launch.py use_fake_hardware:=true"
+      echo "  ros2 launch ur5e_bringup robot.launch.py use_fake_hardware:=true"
       echo ""
       echo "  # Hand UDP only"
       echo "  ros2 launch ur5e_hand_driver hand_udp.launch.py"

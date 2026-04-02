@@ -69,7 +69,7 @@ _define_log_functions() {
     # emoji 스타일: build.sh / install.sh 호환
     eval 'info()    { echo -e "${BLUE}▶ $*${NC}"; }'
     eval 'warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }'
-    eval 'error()   { echo -e "${RED}✘ $*${NC}" >&2; }'
+    eval 'error()   { echo -e "${RED}✘ $*${NC}" >&2; exit 1; }'
     eval 'success() { echo -e "${GREEN}✔ $*${NC}"; }'
     eval 'section() { echo -e "${CYAN}── $*${NC}"; }'
   else
@@ -77,7 +77,7 @@ _define_log_functions() {
     local p="$_RT_LOG_PREFIX"
     eval "info()    { echo -e \"\${GREEN}[${p}]\${NC} \$*\"; }"
     eval "warn()    { echo -e \"\${YELLOW}[${p}]\${NC} \$*\"; }"
-    eval "error()   { echo -e \"\${RED}[${p}]\${NC} \$*\" >&2; }"
+    eval "error()   { echo -e \"\${RED}[${p}]\${NC} \$*\" >&2; exit 1; }"
     eval "success() { echo -e \"\${GREEN}[${p}]\${NC} \$*\"; }"
     eval "section() { echo -e \"\${BLUE}[${p}]\${NC} \$*\"; }"
   fi
@@ -449,6 +449,81 @@ WantedBy=${wanted_by}"
     return 0  # 생성/변경됨
   fi
   return 1  # 이미 동일
+}
+
+# ── Venv detection helpers ──────────────────────────────────────────────────
+# venv 활성 여부 확인
+is_venv_active() {
+  [[ -n "${VIRTUAL_ENV:-}" ]]
+}
+
+# venv 내에서도 시스템 Python 경로를 반환
+# eigenpy/pinocchio cmake가 apt-installed numpy를 찾을 수 있도록 함
+get_system_python() {
+  local py
+  py=$(command -v python3 2>/dev/null || echo "/usr/bin/python3")
+  py=$(readlink -f "$py" 2>/dev/null || echo "$py")
+  # venv 내부 Python이면 시스템 Python으로 대체
+  if is_venv_active && [[ "$py" == "${VIRTUAL_ENV}"* ]]; then
+    py="/usr/bin/python3"
+  fi
+  echo "$py"
+}
+
+# ── 공통 argument parsing (build.sh / install.sh 공유) ─────────────────────
+# 공통 옵션을 파싱하고 전역 변수에 설정한다.
+# 각 스크립트 고유 옵션은 REMAINING_ARGS 배열로 반환된다.
+# 사용법:
+#   parse_common_args "$@"
+#   MODE="$_COMMON_MODE" BUILD_TYPE="$_COMMON_BUILD_TYPE" ...
+#   set -- "${REMAINING_ARGS[@]}"  # 나머지 인자로 재설정
+_COMMON_MODE="full"
+_COMMON_BUILD_TYPE="Release"
+_COMMON_CLEAN_BUILD=0
+_COMMON_PARALLEL_JOBS=""
+_COMMON_MJ_DIR=""
+_COMMON_CUSTOM_PACKAGES=()
+REMAINING_ARGS=()
+
+parse_common_args() {
+  _COMMON_MODE="full"
+  _COMMON_BUILD_TYPE="Release"
+  _COMMON_CLEAN_BUILD=0
+  _COMMON_PARALLEL_JOBS=""
+  _COMMON_MJ_DIR=""
+  _COMMON_CUSTOM_PACKAGES=()
+  REMAINING_ARGS=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      robot|real|realrobot)
+        _COMMON_MODE=robot; shift ;;
+      sim|simulation)
+        _COMMON_MODE=sim; shift ;;
+      full)
+        _COMMON_MODE=full; shift ;;
+      -d|--debug)
+        _COMMON_BUILD_TYPE="Debug"; shift ;;
+      -r|--release)
+        _COMMON_BUILD_TYPE="Release"; shift ;;
+      -c|--clean)
+        _COMMON_CLEAN_BUILD=1; shift ;;
+      -p|--packages)
+        [[ -z "${2:-}" ]] && fatal "--packages requires a comma-separated list"
+        IFS=',' read -r -a _COMMON_CUSTOM_PACKAGES <<< "$2"
+        shift 2 ;;
+      -j|--jobs)
+        [[ -z "${2:-}" ]] && fatal "--jobs requires a number"
+        _COMMON_PARALLEL_JOBS="$2"
+        shift 2 ;;
+      --mujoco)
+        [[ -z "${2:-}" ]] && fatal "--mujoco requires a path argument"
+        _COMMON_MJ_DIR="$2"
+        shift 2 ;;
+      *)
+        REMAINING_ARGS+=("$1"); shift ;;
+    esac
+  done
 }
 
 # ── 공통 패키지 리스트 (build.sh / install.sh 공유) ─────────────────────────

@@ -25,14 +25,9 @@ fi
 make_logger "BUILD" emoji
 
 # ── Mode & argument parsing ────────────────────────────────────────────────────
-MODE="full"
-MJ_DIR=""
-BUILD_TYPE="Release"
-CLEAN_BUILD=0
-CUSTOM_PACKAGES=()
-PARALLEL_JOBS=""
 NO_SYMLINK=0
 EXPORT_COMPILE_COMMANDS=0
+SHOW_BANNER=1
 
 # Default MuJoCo search path
 MJ_DEFAULT="/opt/mujoco-3.2.4"
@@ -68,6 +63,7 @@ show_help() {
   echo "  -e, --export-compile-commands  Generate compile_commands.json for VS Code"
   echo "                             IntelliSense and clangd (sets CMAKE_EXPORT_COMPILE_COMMANDS=ON)"
   echo "  --no-symlink               Do not use --symlink-install"
+  echo "  --no-banner                Suppress the build banner (used by install.sh)"
   echo "  --mujoco <path>            Path to MuJoCo install dir (e.g. /opt/mujoco-3.2.4)"
   echo "                             Auto-detected from $MJ_DEFAULT if not specified"
   echo "  --help                     Show this help"
@@ -80,42 +76,19 @@ show_help() {
   echo ""
 }
 
+# 공통 옵션 파싱 (rt_common.sh parse_common_args)
+parse_common_args "$@"
+MODE="$_COMMON_MODE"
+BUILD_TYPE="$_COMMON_BUILD_TYPE"
+CLEAN_BUILD="$_COMMON_CLEAN_BUILD"
+PARALLEL_JOBS="$_COMMON_PARALLEL_JOBS"
+MJ_DIR="$_COMMON_MJ_DIR"
+CUSTOM_PACKAGES=("${_COMMON_CUSTOM_PACKAGES[@]}")
+set -- "${REMAINING_ARGS[@]}"
+
+# build.sh 고유 옵션 파싱
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    robot|real|realrobot)
-      MODE=robot
-      shift
-      ;;
-    sim|simulation)
-      MODE=sim
-      shift
-      ;;
-    full|all)
-      MODE=full
-      shift
-      ;;
-    -d|--debug)
-      BUILD_TYPE="Debug"
-      shift
-      ;;
-    -r|--release)
-      BUILD_TYPE="Release"
-      shift
-      ;;
-    -c|--clean)
-      CLEAN_BUILD=1
-      shift
-      ;;
-    -p|--packages)
-      [[ -z "${2:-}" ]] && error "--packages requires a comma-separated list"
-      IFS=',' read -r -a CUSTOM_PACKAGES <<< "$2"
-      shift 2
-      ;;
-    -j|--jobs)
-      [[ -z "${2:-}" ]] && error "--jobs requires a number"
-      PARALLEL_JOBS="$2"
-      shift 2
-      ;;
     -e|--export-compile-commands)
       EXPORT_COMPILE_COMMANDS=1
       shift
@@ -124,10 +97,9 @@ while [[ $# -gt 0 ]]; do
       NO_SYMLINK=1
       shift
       ;;
-    --mujoco)
-      [[ -z "${2:-}" ]] && error "--mujoco requires a path argument"
-      MJ_DIR="$2"
-      shift 2
+    --no-banner)
+      SHOW_BANNER=0
+      shift
       ;;
     -h|--help|help)
       show_help
@@ -174,14 +146,16 @@ case "$MODE" in
   full)  MODE_DESC="Full        (all packages)" ;;
 esac
 
-echo ""
-echo -e "${BOLD}${BLUE}╔══════════════════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}${BLUE}║       RTC (Real-Time Controller) — Build Script      ║${NC}"
-echo -e "${BOLD}${BLUE}╚══════════════════════════════════════════════════════╝${NC}"
-echo ""
-echo -e "  Mode : ${CYAN}${BOLD}${MODE_DESC}${NC}"
-echo -e "  Build: ${CYAN}${BOLD}${BUILD_TYPE}${NC}"
-echo ""
+if [[ "$SHOW_BANNER" -eq 1 ]]; then
+  echo ""
+  echo -e "${BOLD}${BLUE}╔══════════════════════════════════════════════════════╗${NC}"
+  echo -e "${BOLD}${BLUE}║       RTC (Real-Time Controller) — Build Script      ║${NC}"
+  echo -e "${BOLD}${BLUE}╚══════════════════════════════════════════════════════╝${NC}"
+  echo ""
+  echo -e "  Mode : ${CYAN}${BOLD}${MODE_DESC}${NC}"
+  echo -e "  Build: ${CYAN}${BOLD}${BUILD_TYPE}${NC}"
+  echo ""
+fi
 
 # ── ROS2 environment ──────────────────────────────────────────────────────────
 ensure_ros2_sourced
@@ -238,12 +212,8 @@ fi
 # When a venv is active, CMake's FindPython picks the venv Python, which may
 # lack numpy headers and cause eigenpy/pinocchio cmake configuration to fail.
 # Force system Python so pinocchio/eigenpy find the apt-installed numpy.
-if [[ -n "${VIRTUAL_ENV:-}" ]]; then
-  SYS_PYTHON=$(command -v python3 || true)
-  SYS_PYTHON=$(readlink -f "${SYS_PYTHON}" 2>/dev/null || echo "${SYS_PYTHON}")
-  if [[ "$SYS_PYTHON" == "${VIRTUAL_ENV}"* ]]; then
-    SYS_PYTHON="/usr/bin/python3"
-  fi
+if is_venv_active; then
+  SYS_PYTHON=$(get_system_python)
   CMAKE_ARGS+=("-DPython3_EXECUTABLE=${SYS_PYTHON}")
   CMAKE_ARGS+=("-DPython3_FIND_VIRTUALENV=STANDARD")
   warn "Venv detected — cmake will use system Python: ${SYS_PYTHON}"
