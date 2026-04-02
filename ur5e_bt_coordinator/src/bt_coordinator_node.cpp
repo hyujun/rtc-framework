@@ -105,15 +105,27 @@ void BtCoordinatorNode::Initialize()
 
 void BtCoordinatorNode::DeclareParameters()
 {
-  tree_file_ = declare_parameter("tree_file", "pick_and_place.xml");
-  tick_rate_hz_ = declare_parameter("tick_rate_hz", 20.0);
-  repeat_ = declare_parameter("repeat", false);
-  repeat_delay_s_ = declare_parameter("repeat_delay_s", 1.0);
-  paused_ = declare_parameter("paused", false);
-  step_mode_ = declare_parameter("step_mode", false);
-  groot2_port_ = declare_parameter("groot2_port", 0);
-  watchdog_timeout_s_ = declare_parameter("watchdog_timeout_s", 2.0);
-  watchdog_interval_s_ = declare_parameter("watchdog_interval_s", 5.0);
+  // When automatically_declare_parameters_from_overrides is true (for dynamic
+  // params like bb.*, hand_pose.*, arm_pose.*), parameters from --params-file
+  // are auto-declared before this function runs. Use get_parameter() for those
+  // already declared, declare_parameter() otherwise.
+  auto safe_declare = [this](const std::string& name, auto default_value) {
+    using T = decltype(default_value);
+    if (has_parameter(name)) {
+      return get_parameter(name).get_value<T>();
+    }
+    return declare_parameter<T>(name, default_value);
+  };
+
+  tree_file_ = safe_declare("tree_file", std::string("pick_and_place.xml"));
+  tick_rate_hz_ = safe_declare("tick_rate_hz", 20.0);
+  repeat_ = safe_declare("repeat", false);
+  repeat_delay_s_ = safe_declare("repeat_delay_s", 1.0);
+  paused_ = safe_declare("paused", false);
+  step_mode_ = safe_declare("step_mode", false);
+  groot2_port_ = safe_declare("groot2_port", 0);
+  watchdog_timeout_s_ = safe_declare("watchdog_timeout_s", 2.0);
+  watchdog_interval_s_ = safe_declare("watchdog_interval_s", 5.0);
 }
 
 void BtCoordinatorNode::RegisterBtNodes()
