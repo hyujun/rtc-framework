@@ -394,9 +394,9 @@ install_python_base_deps() {
     warn "Virtual environment detected: ${VIRTUAL_ENV}"
     warn "apt packages (python3-numpy etc.) are NOT visible inside the venv unless"
     warn "it was created with --system-site-packages. Installing numpy via pip too."
-    info "Installing numpy inside the active venv..."
-    python3 -m pip install numpy --quiet || true
-    success "numpy installed in venv"
+    info "Installing numpy and Cython inside the active venv..."
+    python3 -m pip install numpy Cython --quiet || true
+    success "numpy and Cython installed in venv"
   fi
 }
 
