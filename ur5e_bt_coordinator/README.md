@@ -112,27 +112,67 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 
 | 파라미터 | 기본값 | 설명 |
 |----------|--------|------|
-| `tree_file` | `"pick_and_place.xml"` | BT XML 파일명 (`trees/` 디렉토리 기준) |
+| `tree_file` | `"pick_and_place.xml"` | BT XML 파일명 (`trees/` 디렉토리 기준, 절대 경로도 지원) |
 | `tick_rate_hz` | `100.0` | BT tick 주기 [Hz] |
 | `repeat` | `false` | `true`면 트리 SUCCESS 완료 후 자동 반복 (FAILURE 시 정지) |
 | `repeat_delay_s` | `1.0` | 반복 시 재시작 전 대기 시간 [s] |
+| `paused` | `false` | `true`면 BT tick 일시 정지 |
+| `step_mode` | `false` | `true`면 자동 tick 비활성, `~/step` 서비스로 수동 tick |
+| `groot2_port` | `0` | Groot2 ZMQ 포트 (0 = 비활성, 1667 = Groot2 기본 포트) |
+| `watchdog_timeout_s` | `2.0` | 토픽 수신 타임아웃 [s] (이 시간 동안 메시지 없으면 경고) |
+| `watchdog_interval_s` | `5.0` | 헬스 체크 주기 [s] (0 = 비활성) |
 
 반복 모드에서 트리 재시작 시 `object_pose` blackboard 변수가 자동으로 초기화된다.
 
-### Blackboard 변수
+### 런타임 제어
 
-트리 실행 전 Blackboard에 설정해야 하는 변수:
+```bash
+# 일시 정지 / 재개
+ros2 param set /bt_coordinator paused true
+ros2 param set /bt_coordinator paused false
+
+# 트리 핫스왑 (재시작 없이 다른 트리로 전환)
+ros2 param set /bt_coordinator tree_file "towel_unfold.xml"
+
+# 반복 모드 활성화
+ros2 param set /bt_coordinator repeat true
+
+# Step 모드: 한 틱씩 수동 진행
+ros2 param set /bt_coordinator step_mode true
+ros2 service call /bt_coordinator/step std_srvs/srv/Trigger
+```
+
+### Blackboard 변수 (`bb.*` 파라미터)
+
+YAML의 `bb.<key>` 형식으로 선언하면 트리 로드 후 Blackboard에 자동 주입된다.
+타입은 YAML 값에서 자동 추론 (string, double, int, bool).
 
 **Pick and Place (`pick_and_place.xml`):**
-- `place_pose`: 물체를 놓을 목표 pose (형식: `"x;y;z;roll;pitch;yaw"`)
+- `bb.place_pose`: 물체를 놓을 목표 pose (형식: `"x;y;z;roll;pitch;yaw"`)
 
 **Towel Unfold (`towel_unfold.xml`):**
-- `sweep_direction_x`, `sweep_direction_y`: sweep 방향 벡터
-- `sweep_distance`: sweep 거리 [m]
+- `bb.sweep_direction_x`, `bb.sweep_direction_y`: sweep 방향 벡터
+- `bb.sweep_distance`: sweep 거리 [m]
 
-### Hand/UR5e 포즈 설정 (`hand_pose_config.hpp`)
+### Hand/UR5e 포즈 설정
 
-포즈 값은 **도(°) 단위**로 작성하고, `DegToRad()` 래퍼로 자동 rad 변환된다:
+포즈는 두 곳에서 정의할 수 있다:
+
+1. **컴파일타임 기본값** (`hand_pose_config.hpp`) — 코드 내 `kHandPoses`, `kUR5ePoses` 맵
+2. **런타임 오버라이드** (`config/poses.yaml`) — 재컴파일 없이 포즈 튜닝 가능
+
+`poses.yaml`에서 `hand_pose.<이름>` / `arm_pose.<이름>` 형식으로 선언하면 컴파일타임 기본값을 덮어쓴다.
+값은 **도(deg) 단위**로 작성하고, 로드 시 자동으로 radian 변환된다.
+
+```yaml
+# 예: 엄지-검지 opposition 포즈 조정
+hand_pose.thumb_index_oppose: [15.0, 45.0, 35.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
+arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
+```
+
+#### 컴파일타임 포즈 (`hand_pose_config.hpp`)
+
+포즈 값은 **도(°) 단위**로 작성하고, `DegToRad()` 래퍼로 컴파일 타임에 자동 rad 변환된다:
 
 ```cpp
 {"my_pose", DegToRad(HandPose{30.0, 60.0, 45.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0})},
@@ -195,6 +235,7 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 | `rclcpp` | ROS2 C++ 클라이언트 |
 | `behaviortree_cpp` | BehaviorTree.CPP v4 (`ros-jazzy-behaviortree-cpp`) |
 | `std_msgs` | Float64MultiArray, String, Bool |
+| `std_srvs` | Trigger (step 모드 서비스) |
 | `geometry_msgs` | PoseStamped (vision 인터페이스) |
 | `rtc_msgs` | GuiPosition, GraspState, RobotTarget |
 | `tf2` | 쿼터니언 → RPY 변환 |
@@ -215,33 +256,55 @@ colcon build --packages-select ur5e_bt_coordinator
 
 ## 실행
 
-```bash
-# Pick and Place (1회 실행)
-ros2 run ur5e_bt_coordinator bt_coordinator_node \
-  --ros-args -p tree_file:=pick_and_place.xml -p tick_rate_hz:=100.0
+RT 컨트롤러와 시뮬레이터(또는 실제 로봇)가 먼저 실행되어 있어야 한다:
 
-# Towel Unfold
+```bash
+# 사전 실행: MuJoCo 시뮬레이션
+ros2 launch ur5e_bringup sim.launch.py
+```
+
+```bash
+# Pick and Place (기본, YAML 설정 + 포즈 파일 사용)
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
-  --ros-args -p tree_file:=towel_unfold.xml
+  --ros-args \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/bt_coordinator.yaml \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
+
+# Towel Unfold (Blackboard 변수 지정)
+ros2 run ur5e_bt_coordinator bt_coordinator_node \
+  --ros-args -p tree_file:=towel_unfold.xml \
+  -p bb.sweep_direction_x:=1.0 \
+  -p bb.sweep_direction_y:=0.0 \
+  -p bb.sweep_distance:=0.3 \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
 
 # Hand Motions Demo (UR5e 자세 유지 + 가감속 opposition/wave)
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
-  --ros-args -p tree_file:=hand_motions.xml
+  --ros-args -p tree_file:=hand_motions.xml \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
 
 # Pick and Place 반복 실행
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
-  --ros-args -p tree_file:=pick_and_place.xml -p repeat:=true -p repeat_delay_s:=2.0
+  --ros-args -p tree_file:=pick_and_place.xml -p repeat:=true -p repeat_delay_s:=2.0 \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
 
-# YAML 설정 파일 사용
+# Groot2 시각화 연결 (포트 1667)
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
-  --ros-args --params-file config/bt_coordinator.yaml
+  --ros-args -p groot2_port:=1667 \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/bt_coordinator.yaml \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
+
+# 오프라인 트리 검증 (ROS 실행 불필요)
+ros2 run ur5e_bt_coordinator validate_tree pick_and_place.xml
 ```
 
 ## 파일 구조
 
 ```
 ur5e_bt_coordinator/
-├── config/bt_coordinator.yaml       # ROS2 파라미터
+├── config/
+│   ├── bt_coordinator.yaml          # ROS2 파라미터 (트리, tick rate, 런타임 제어, bb.*)
+│   └── poses.yaml                   # Hand/UR5e 포즈 오버라이드 (deg 단위, 재컴파일 불필요)
 ├── trees/
 │   ├── common_motions.xml           # 재사용 가능 공통 모션 SubTree
 │   ├── pick_and_place.xml           # 물체 파지 시나리오
@@ -257,8 +320,9 @@ ur5e_bt_coordinator/
 │   └── condition_nodes/             # 3개 condition 노드 헤더
 └── src/
     ├── main.cpp                     # 진입점
-    ├── bt_coordinator_node.cpp      # 노드 초기화, BT tick 루프
-    ├── bt_ros_bridge.cpp            # Topic 구독 및 발행
+    ├── bt_coordinator_node.cpp      # 노드 초기화, BT tick 루프, 런타임 트리 전환
+    ├── bt_ros_bridge.cpp            # Topic 구독/발행, 포즈 라이브러리, 토픽 헬스 모니터링
+    ├── validate_tree.cpp            # 오프라인 트리 XML 검증 도구
     └── nodes/                       # 17개 노드 구현체
 ```
 
