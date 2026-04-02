@@ -84,6 +84,20 @@ if(BUILD_TESTING)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(test_quintic_blend_trajectory test/test_quintic_blend_trajectory.cpp)
+  target_link_libraries(test_quintic_blend_trajectory rtc_controllers)
+
+  ament_add_gtest(test_quintic_spline_trajectory test/test_quintic_spline_trajectory.cpp)
+  target_link_libraries(test_quintic_spline_trajectory rtc_controllers)
+
+  ament_add_gtest(test_task_space_blend_trajectory test/test_task_space_blend_trajectory.cpp)
+  target_link_libraries(test_task_space_blend_trajectory rtc_controllers)
+
+  ament_add_gtest(test_task_space_spline_trajectory test/test_task_space_spline_trajectory.cpp)
+  target_link_libraries(test_task_space_spline_trajectory rtc_controllers)
 endif()
 
 ament_package()
