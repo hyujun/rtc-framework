@@ -114,12 +114,12 @@ TEST_F(UrdfAnalyzerSerialTest, JointMeta)
 
 TEST_F(UrdfAnalyzerSerialTest, InvalidLinkThrows)
 {
-  EXPECT_THROW(analyzer_->GetLinkIndex("nonexistent_link"), std::out_of_range);
+  EXPECT_THROW((void)analyzer_->GetLinkIndex("nonexistent_link"), std::out_of_range);
 }
 
 TEST_F(UrdfAnalyzerSerialTest, InvalidJointThrows)
 {
-  EXPECT_THROW(analyzer_->GetJointType("nonexistent_joint"), std::out_of_range);
+  EXPECT_THROW((void)analyzer_->GetJointType("nonexistent_joint"), std::out_of_range);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

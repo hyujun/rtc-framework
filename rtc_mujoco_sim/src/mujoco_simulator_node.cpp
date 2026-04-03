@@ -152,6 +152,7 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   void CreateSimulator() {
     urtc::MuJoCoSimulator::Config cfg{
         .model_path          = model_path_,
+        .window_title        = {},
         .enable_viewer       = enable_viewer_,
         .sync_timeout_ms     = sync_timeout_ms_,
         .max_rtf             = max_rtf_,

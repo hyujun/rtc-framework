@@ -53,7 +53,8 @@ RtControllerNode::RtControllerNode()
   {
     std_msgs::msg::String ctrl_name_msg;
     ctrl_name_msg.data = std::string(
-      controllers_[active_controller_idx_.load(std::memory_order_acquire)]->Name());
+      controllers_[static_cast<std::size_t>(
+          active_controller_idx_.load(std::memory_order_acquire))]->Name());
     active_ctrl_name_pub_->publish(ctrl_name_msg);
   }
 
@@ -328,7 +329,7 @@ void RtControllerNode::DeclareAndLoadParameters()
   // ── Deferred logging setup (needs active_groups_ + device_name_configs_) ─
   if (enable_logging_) {
     const std::string log_dir_param = get_parameter("log_dir").as_string();
-    const int max_sessions = get_parameter("max_log_sessions").as_int();
+    const int max_sessions = static_cast<int>(get_parameter("max_log_sessions").as_int());
 
     std::filesystem::path session_dir;
     if (!log_dir_param.empty()) {
@@ -510,8 +511,9 @@ void RtControllerNode::CreateSubscriptions()
               [this, slot, dt_idx](sensor_msgs::msg::JointState::SharedPtr msg) {
                 DeviceJointStateCallback(slot, std::move(msg));
                 if (dt_idx >= 0) {
-                  device_timeouts_[dt_idx].last_update = std::chrono::steady_clock::now();
-                  device_timeouts_[dt_idx].received = true;
+                  const auto dti = static_cast<std::size_t>(dt_idx);
+                  device_timeouts_[dti].last_update = std::chrono::steady_clock::now();
+                  device_timeouts_[dti].received = true;
                 }
               },
               sub_options);
@@ -526,8 +528,9 @@ void RtControllerNode::CreateSubscriptions()
               [this, slot, dt_idx](sensor_msgs::msg::JointState::SharedPtr msg) {
                 DeviceMotorStateCallback(slot, std::move(msg));
                 if (dt_idx >= 0) {
-                  device_timeouts_[dt_idx].last_update = std::chrono::steady_clock::now();
-                  device_timeouts_[dt_idx].received = true;
+                  const auto dti = static_cast<std::size_t>(dt_idx);
+                  device_timeouts_[dti].last_update = std::chrono::steady_clock::now();
+                  device_timeouts_[dti].received = true;
                 }
               },
               sub_options);
@@ -542,8 +545,9 @@ void RtControllerNode::CreateSubscriptions()
               [this, slot, dt_idx](rtc_msgs::msg::HandSensorState::SharedPtr msg) {
                 HandSensorStateCallback(slot, std::move(msg));
                 if (dt_idx >= 0) {
-                  device_timeouts_[dt_idx].last_update = std::chrono::steady_clock::now();
-                  device_timeouts_[dt_idx].received = true;
+                  const auto dti = static_cast<std::size_t>(dt_idx);
+                  device_timeouts_[dti].last_update = std::chrono::steady_clock::now();
+                  device_timeouts_[dti].received = true;
                 }
               },
               sub_options);
@@ -585,15 +589,16 @@ void RtControllerNode::CreateSubscriptions()
       }
       const int idx = it->second;
       if (idx >= 0 && idx < static_cast<int>(controllers_.size())) {
+        const auto uidx = static_cast<std::size_t>(idx);
         // 컨트롤러 전환 시 현재 위치로 hold position 초기화 (target 공백 방지)
         if (auto_hold_position_ &&
             state_received_.load(std::memory_order_acquire)) {
           urtc::ControllerState hold_state{};
           {
             std::lock_guard lock(device_state_mutex_);
-            int di = 0;
-            for (const auto& [gname, ggroup] : controller_topic_configs_[idx].groups) {
-              const int slot = group_slot_map_.at(gname);
+            std::size_t di = 0;
+            for (const auto& [gname, ggroup] : controller_topic_configs_[uidx].groups) {
+              const auto slot = static_cast<std::size_t>(group_slot_map_.at(gname));
               auto& dev = hold_state.devices[di];
               const auto& cache = device_states_[slot];
               dev.num_channels = cache.num_channels;
@@ -603,16 +608,16 @@ void RtControllerNode::CreateSubscriptions()
               dev.valid = cache.valid;
               ++di;
             }
-            hold_state.num_devices = di;
+            hold_state.num_devices = static_cast<int>(di);
           }
           hold_state.dt = 1.0 / control_rate_;
-          controllers_[idx]->InitializeHoldPosition(hold_state);
+          controllers_[uidx]->InitializeHoldPosition(hold_state);
         }
         active_controller_idx_.store(idx, std::memory_order_release);
         RCLCPP_INFO(get_logger(), "Switched to controller: %s",
-                      controllers_[idx]->Name().data());
+                      controllers_[uidx]->Name().data());
         std_msgs::msg::String ctrl_name_msg;
-        ctrl_name_msg.data = std::string(controllers_[idx]->Name());
+        ctrl_name_msg.data = std::string(controllers_[uidx]->Name());
         active_ctrl_name_pub_->publish(ctrl_name_msg);
       }
       },
@@ -651,8 +656,6 @@ void RtControllerNode::CreatePublishers()
   // Helper: create a publisher for a publish entry if not already created.
   auto create_pub = [&](const urtc::PublishTopicEntry & entry,
                         const std::string & group_name) {
-    const int slot = group_slot_map_[group_name];
-
     switch (entry.role) {
       case urtc::PublishRole::kJointCommand: {
         if (joint_command_publishers_.count(entry.topic_name) > 0) { return; }
@@ -970,14 +973,15 @@ void RtControllerNode::DeviceJointStateCallback(
   // Build reorder map from the first real message that carries joint names.
   // Maps device-message index → config (joint_state_names) index so that
   // device_states_ is always stored in config order.
-  auto& reorder = device_reorder_maps_[device_slot];
+  const auto uslot = static_cast<std::size_t>(device_slot);
+  auto& reorder = device_reorder_maps_[uslot];
   if (!msg->name.empty() && !reorder.built_from_msg) {
     BuildDeviceReorderMap(device_slot, msg->name);
     reorder.built_from_msg = true;
   }
 
   std::lock_guard lock(device_state_mutex_);
-  auto& ds = device_states_[device_slot];
+  auto& ds = device_states_[uslot];
   ds.num_channels = static_cast<int>(msg->position.size());
 
   if (reorder.built_from_msg) {
@@ -987,9 +991,10 @@ void RtControllerNode::DeviceJointStateCallback(
          src < reorder.reorder.size(); ++src) {
       const int idx = reorder.reorder[src];
       if (idx >= 0 && idx < urtc::kMaxDeviceChannels) {
-        ds.positions[idx] = msg->position[src];
-        if (src < msg->velocity.size()) ds.velocities[idx] = msg->velocity[src];
-        if (src < msg->effort.size())   ds.efforts[idx]    = msg->effort[src];
+        const auto uidx = static_cast<std::size_t>(idx);
+        ds.positions[uidx] = msg->position[src];
+        if (src < msg->velocity.size()) ds.velocities[uidx] = msg->velocity[src];
+        if (src < msg->effort.size())   ds.efforts[uidx]    = msg->effort[src];
       }
     }
   } else {
@@ -1044,7 +1049,7 @@ void RtControllerNode::DeviceMotorStateCallback(
   if (msg->position.empty()) return;
 
   std::lock_guard lock(device_state_mutex_);
-  auto& ds = device_states_[device_slot];
+  auto& ds = device_states_[static_cast<std::size_t>(device_slot)];
   ds.num_motor_channels = static_cast<int>(msg->position.size());
 
   for (std::size_t i = 0; i < msg->position.size() &&
@@ -1112,13 +1117,13 @@ void RtControllerNode::DeviceTargetCallback(
   {
     std::lock_guard lock(target_mutex_);
     const int n = std::min(ordered_size, urtc::kMaxDeviceChannels);
-    for (int i = 0; i < n; ++i) {
-      device_targets_[device_slot][i] = ordered_ptr[i];
+    for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i) {
+      device_targets_[static_cast<std::size_t>(device_slot)][i] = ordered_ptr[i];
     }
   }
   target_received_.store(true, std::memory_order_release);
-  int idx = active_controller_idx_.load(std::memory_order_acquire);
-  controllers_[idx]->SetDeviceTarget(device_slot,
+  const int idx = active_controller_idx_.load(std::memory_order_acquire);
+  controllers_[static_cast<std::size_t>(idx)]->SetDeviceTarget(device_slot,
       std::span<const double>(ordered_ptr,
                               static_cast<std::size_t>(ordered_size)));
 }
@@ -1170,17 +1175,17 @@ void RtControllerNode::ControlLoop()
   // Auto-hold: 외부 goal 미수신 시 현재 위치를 목표로 자동 설정
   if (!target_received_.load(std::memory_order_acquire)) {
     if (auto_hold_position_) {
-      int idx = active_controller_idx_.load(std::memory_order_acquire);
-      const auto & active_tc = controller_topic_configs_[
-          static_cast<std::size_t>(idx)];
+      const int idx = active_controller_idx_.load(std::memory_order_acquire);
+      const auto uidx = static_cast<std::size_t>(idx);
+      const auto & active_tc = controller_topic_configs_[uidx];
 
       // state는 수신됨 — 현재 위치를 읽어 target으로 초기화
       urtc::ControllerState hold_state{};
       {
         std::lock_guard lock(device_state_mutex_);
-        int di = 0;
+        std::size_t di = 0;
         for (const auto& [gname, ggroup] : active_tc.groups) {
-          const int slot = group_slot_map_.at(gname);
+          const auto slot = static_cast<std::size_t>(group_slot_map_.at(gname));
           auto& dev = hold_state.devices[di];
           const auto& cache = device_states_[slot];
           dev.num_channels = cache.num_channels;
@@ -1190,7 +1195,7 @@ void RtControllerNode::ControlLoop()
           dev.valid = cache.valid;
           ++di;
         }
-        hold_state.num_devices = di;
+        hold_state.num_devices = static_cast<int>(di);
       }
       hold_state.dt = 1.0 / control_rate_;
 
@@ -1198,7 +1203,7 @@ void RtControllerNode::ControlLoop()
       // position. This prevents sending zero commands to devices (e.g. hand)
       // whose current position is not yet known.
       bool all_devices_valid = true;
-      for (int d = 0; d < hold_state.num_devices; ++d) {
+      for (std::size_t d = 0; d < static_cast<std::size_t>(hold_state.num_devices); ++d) {
         if (!hold_state.devices[d].valid) {
           all_devices_valid = false;
           break;
@@ -1208,12 +1213,12 @@ void RtControllerNode::ControlLoop()
         return;  // Wait for all devices to report state
       }
 
-      controllers_[idx]->InitializeHoldPosition(hold_state);
+      controllers_[uidx]->InitializeHoldPosition(hold_state);
 
       target_received_.store(true, std::memory_order_release);
       RCLCPP_INFO(get_logger(),
           "Auto-hold: initialized target from current position (%s)",
-          controllers_[idx]->Name().data());
+          controllers_[uidx]->Name().data());
     } else {
       // auto_hold 비활성: 기존 동작 (timeout까지 대기)
       if (!init_complete_ && init_timeout_ticks_ > 0 &&
@@ -1249,9 +1254,9 @@ void RtControllerNode::ControlLoop()
       cached_device_states_ = device_states_;
     }
   }
-  int di = 0;
+  std::size_t di = 0;
   for (const auto& [gname, ggroup] : active_tc.groups) {
-    const int slot = group_slot_map_.at(gname);
+    const auto slot = static_cast<std::size_t>(group_slot_map_.at(gname));
     auto& dev = state.devices[di];
     const auto& cache = cached_device_states_[slot];
     dev.num_channels = cache.num_channels;
@@ -1271,7 +1276,7 @@ void RtControllerNode::ControlLoop()
     dev.valid = cache.valid;
     ++di;
   }
-  state.num_devices = di;
+  state.num_devices = static_cast<int>(di);
 
   {
     std::unique_lock lock(target_mutex_, std::try_to_lock);
@@ -1285,11 +1290,12 @@ void RtControllerNode::ControlLoop()
   const auto t1 = std::chrono::steady_clock::now();  // end of state acquisition
 
   // ── Phase 2: compute control law ───────────────────────────────────────
-  int active_idx = active_controller_idx_.load(std::memory_order_acquire);
+  const int active_idx = active_controller_idx_.load(std::memory_order_acquire);
 
   // Measure Compute() wall-clock time via ControllerTimingProfiler.
   const urtc::ControllerOutput output =
-    timing_profiler_.MeasuredCompute(*controllers_[active_idx], state);
+    timing_profiler_.MeasuredCompute(
+        *controllers_[static_cast<std::size_t>(active_idx)], state);
 
   const auto t2 = std::chrono::steady_clock::now();  // end of compute
 
@@ -1304,9 +1310,9 @@ void RtControllerNode::ControlLoop()
     snap.active_controller_idx = active_idx;
 
     // Per-group commands → group_commands slots
-    int gi = 0;
-    for (const auto & [gname, ggroup] : active_tc.groups) {
-      if (gi >= urtc::PublishSnapshot::kMaxGroups) break;
+    std::size_t gi = 0;
+    for ([[maybe_unused]] const auto & [gname, ggroup] : active_tc.groups) {
+      if (gi >= static_cast<std::size_t>(urtc::PublishSnapshot::kMaxGroups)) break;
       auto& gc = snap.group_commands[gi];
       const auto& dout = output.devices[gi];
       const auto& dstate = state.devices[gi];
@@ -1334,10 +1340,9 @@ void RtControllerNode::ControlLoop()
         gc.inference_valid = true;
         gc.num_inference_values =
             dstate.num_inference_fingertips * urtc::kFTValuesPerFingertip;
-        for (int i = 0; i < gc.num_inference_values &&
-             i < static_cast<int>(gc.inference_output.size()); ++i) {
-          gc.inference_output[static_cast<std::size_t>(i)] =
-              dstate.inference_data[static_cast<std::size_t>(i)];
+        const auto niv = static_cast<std::size_t>(gc.num_inference_values);
+        for (std::size_t i = 0; i < niv && i < gc.inference_output.size(); ++i) {
+          gc.inference_output[i] = dstate.inference_data[i];
         }
       }
       // task_goals: copy from controller's task goal target
@@ -1346,7 +1351,7 @@ void RtControllerNode::ControlLoop()
       gc.grasp_state = output.grasp_state;
       ++gi;
     }
-    snap.num_groups = gi;
+    snap.num_groups = static_cast<int>(gi);
 
     static_cast<void>(publish_buffer_.Push(snap));
   }
@@ -1401,13 +1406,13 @@ void RtControllerNode::ControlLoop()
     entry.command_type       = output.command_type;
 
     // Per-device logging
-    for (int dvi = 0; dvi < state.num_devices; ++dvi) {
+    for (std::size_t dvi = 0; dvi < static_cast<std::size_t>(state.num_devices); ++dvi) {
       auto& dl = entry.devices[dvi];
       const auto& dout = output.devices[dvi];
       const auto& dstate = state.devices[dvi];
       dl.num_channels = dout.num_channels;
       dl.valid = dstate.valid;
-      for (int j = 0; j < dout.num_channels; ++j) {
+      for (std::size_t j = 0; j < static_cast<std::size_t>(dout.num_channels); ++j) {
         dl.goal_positions[j] = dout.goal_positions[j];
         dl.actual_positions[j] = dstate.positions[j];
         dl.actual_velocities[j] = dstate.velocities[j];
@@ -1418,13 +1423,13 @@ void RtControllerNode::ControlLoop()
       }
       dl.goal_type = dout.goal_type;
       dl.num_motor_channels = dstate.num_motor_channels;
-      for (int j = 0; j < dstate.num_motor_channels; ++j) {
+      for (std::size_t j = 0; j < static_cast<std::size_t>(dstate.num_motor_channels); ++j) {
         dl.motor_positions[j] = dstate.motor_positions[j];
         dl.motor_velocities[j] = dstate.motor_velocities[j];
         dl.motor_efforts[j] = dstate.motor_efforts[j];
       }
       dl.num_sensor_channels = dstate.num_sensor_channels;
-      for (int j = 0; j < dstate.num_sensor_channels; ++j) {
+      for (std::size_t j = 0; j < static_cast<std::size_t>(dstate.num_sensor_channels); ++j) {
         dl.sensor_data[j] = static_cast<float>(dstate.sensor_data[j]);
         dl.sensor_data_raw[j] = static_cast<float>(dstate.sensor_data_raw[j]);
       }
@@ -1432,16 +1437,15 @@ void RtControllerNode::ControlLoop()
     entry.num_devices = state.num_devices;
 
     // Inference output for sensor log (from hand device, typically device index 1)
-    for (int dvi = 0; dvi < state.num_devices; ++dvi) {
+    for (std::size_t dvi = 0; dvi < static_cast<std::size_t>(state.num_devices); ++dvi) {
       const auto& dstate = state.devices[dvi];
       if (dstate.num_inference_fingertips > 0) {
         entry.inference_valid = true;
         entry.num_inference_values =
             dstate.num_inference_fingertips * urtc::kFTValuesPerFingertip;
-        for (int j = 0; j < entry.num_inference_values &&
-             j < static_cast<int>(entry.inference_output.size()); ++j) {
-          entry.inference_output[static_cast<std::size_t>(j)] =
-              dstate.inference_data[static_cast<std::size_t>(j)];
+        const auto niv = static_cast<std::size_t>(entry.num_inference_values);
+        for (std::size_t j = 0; j < niv && j < entry.inference_output.size(); ++j) {
+          entry.inference_output[j] = dstate.inference_data[j];
         }
         break;  // only one device has inference
       }
@@ -1502,7 +1506,7 @@ void RtControllerNode::DrainLog()
 
 void RtControllerNode::RtLoopEntry(const urtc::ThreadConfig& cfg)
 {
-  urtc::ApplyThreadConfig(cfg);
+  static_cast<void>(urtc::ApplyThreadConfig(cfg));
   rt_loop_running_.store(true, std::memory_order_release);
 
   uint32_t timeout_tick = 0;
@@ -1624,7 +1628,7 @@ void RtControllerNode::StopRtLoop()
 
 void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
 {
-  urtc::ApplyThreadConfig(cfg);
+  static_cast<void>(urtc::ApplyThreadConfig(cfg));
   publish_running_.store(true, std::memory_order_release);
 
   urtc::PublishSnapshot snap{};
@@ -1645,7 +1649,7 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
         (snap.command_type == urtc::CommandType::kTorque) ? "torque" : "position";
 
     // Helper: publish a single topic entry from snapshot data
-    auto publish_entry = [&](const urtc::PublishTopicEntry & pt, int group_idx) {
+    auto publish_entry = [&](const urtc::PublishTopicEntry & pt, std::size_t group_idx) {
       const auto & gc = snap.group_commands[group_idx];
       const int nc = gc.num_channels;
 
@@ -1661,17 +1665,17 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           jce.msg.header.stamp.sec = sec;
           jce.msg.header.stamp.nanosec = nsec;
           jce.msg.command_type = cmd_type_str;
-          const int n = std::min(nc, static_cast<int>(jce.msg.values.size()));
+          const auto n = std::min(static_cast<std::size_t>(nc), jce.msg.values.size());
           if (!jce.reorder_map.empty()) {
             // Reorder from joint_state_names order → joint_command_names order
-            for (int i = 0; i < n; ++i) {
-              const int src = (i < static_cast<int>(jce.reorder_map.size()))
+            for (std::size_t i = 0; i < n; ++i) {
+              const int src = (i < jce.reorder_map.size())
                               ? jce.reorder_map[i] : -1;
               jce.msg.values[i] = (src >= 0 && src < nc)
-                                  ? gc.commands[src] : 0.0;
+                                  ? gc.commands[static_cast<std::size_t>(src)] : 0.0;
             }
           } else {
-            for (int i = 0; i < n; ++i) {
+            for (std::size_t i = 0; i < n; ++i) {
               jce.msg.values[i] = gc.commands[i];
             }
           }
@@ -1682,17 +1686,17 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           auto it = topic_publishers_.find(pt.topic_name);
           if (it == topic_publishers_.end()) { return; }
           auto & pe = it->second;
-          const int n = std::min(nc, static_cast<int>(pe.msg.data.size()));
+          const auto n = std::min(static_cast<std::size_t>(nc), pe.msg.data.size());
           if (!pe.reorder_map.empty()) {
             // Reorder from joint_state_names order → joint_command_names order
-            for (int i = 0; i < n; ++i) {
-              const int src = (i < static_cast<int>(pe.reorder_map.size()))
+            for (std::size_t i = 0; i < n; ++i) {
+              const int src = (i < pe.reorder_map.size())
                               ? pe.reorder_map[i] : -1;
               pe.msg.data[i] = (src >= 0 && src < nc)
-                               ? gc.commands[src] : 0.0;
+                               ? gc.commands[static_cast<std::size_t>(src)] : 0.0;
             }
           } else {
-            for (int i = 0; i < n; ++i) {
+            for (std::size_t i = 0; i < n; ++i) {
               pe.msg.data[i] = gc.commands[i];
             }
           }
@@ -1709,10 +1713,10 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           // (from controller output) so that GUI always reflects the
           // latest device state even when the controller skips the
           // device (e.g., E-Stop, hand not yet valid in controller).
-          const int n_actual = std::min(
-              gc.actual_num_channels,
-              static_cast<int>(m.joint_positions.size()));
-          for (int i = 0; i < n_actual; ++i) {
+          const auto n_actual = std::min(
+              static_cast<std::size_t>(gc.actual_num_channels),
+              m.joint_positions.size());
+          for (std::size_t i = 0; i < n_actual; ++i) {
             m.joint_positions[i] = gc.actual_positions[i];
           }
           // actual_task_positions is a snapshot-level field containing only the
@@ -1734,8 +1738,8 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           auto & m = it->second.msg;
           m.header.stamp.sec = sec;
           m.header.stamp.nanosec = nsec;
-          const int n = std::min(nc, static_cast<int>(m.joint_target.size()));
-          for (int i = 0; i < n; ++i) {
+          const auto n = std::min(static_cast<std::size_t>(nc), m.joint_target.size());
+          for (std::size_t i = 0; i < n; ++i) {
             m.joint_target[i] = gc.goal_positions[i];
           }
           std::copy(snap.task_goals[group_idx].begin(),
@@ -1755,17 +1759,18 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           // Use the larger of controller output channels and device state
           // channels so that actual_positions are always logged even when
           // the controller skips a device (E-Stop, valid=false).
-          const int n = std::min(
-              std::max(nc, gc.actual_num_channels),
-              static_cast<int>(m.actual_positions.size()));
-          for (int i = 0; i < n; ++i) {
+          const auto unc = static_cast<std::size_t>(nc);
+          const auto n = std::min(
+              std::max(unc, static_cast<std::size_t>(gc.actual_num_channels)),
+              m.actual_positions.size());
+          for (std::size_t i = 0; i < n; ++i) {
             m.actual_positions[i] = gc.actual_positions[i];
             m.actual_velocities[i] = gc.actual_velocities[i];
             m.efforts[i] = gc.efforts[i];
-            m.commands[i] = (i < nc) ? gc.commands[i] : 0.0;
-            m.joint_goal[i] = (i < nc) ? gc.goal_positions[i] : 0.0;
-            m.trajectory_positions[i] = (i < nc) ? gc.trajectory_positions[i] : 0.0;
-            m.trajectory_velocities[i] = (i < nc) ? gc.trajectory_velocities[i] : 0.0;
+            m.commands[i] = (i < unc) ? gc.commands[i] : 0.0;
+            m.joint_goal[i] = (i < unc) ? gc.goal_positions[i] : 0.0;
+            m.trajectory_positions[i] = (i < unc) ? gc.trajectory_positions[i] : 0.0;
+            m.trajectory_velocities[i] = (i < unc) ? gc.trajectory_velocities[i] : 0.0;
           }
           std::copy(snap.task_goals[group_idx].begin(),
                     snap.task_goals[group_idx].end(),
@@ -1778,9 +1783,10 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
             m.actual_task_positions.fill(0.0);
           }
           // Motor state fields
-          const int nm = std::min(gc.num_motor_channels,
-                                  static_cast<int>(m.motor_positions.size()));
-          for (int i = 0; i < nm; ++i) {
+          const auto nm = std::min(
+              static_cast<std::size_t>(gc.num_motor_channels),
+              m.motor_positions.size());
+          for (std::size_t i = 0; i < nm; ++i) {
             m.motor_positions[i] = gc.motor_positions[i];
             m.motor_velocities[i] = gc.motor_velocities[i];
             m.motor_efforts[i] = gc.motor_efforts[i];
@@ -1794,17 +1800,18 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           auto & m = it->second.msg;
           m.header.stamp.sec = sec;
           m.header.stamp.nanosec = nsec;
-          const int ns = gc.num_sensor_channels;
-          m.sensor_data_raw.resize(static_cast<std::size_t>(ns));
-          m.sensor_data.resize(static_cast<std::size_t>(ns));
-          for (int i = 0; i < ns; ++i) {
+          const auto uns = static_cast<std::size_t>(gc.num_sensor_channels);
+          m.sensor_data_raw.resize(uns);
+          m.sensor_data.resize(uns);
+          for (std::size_t i = 0; i < uns; ++i) {
             m.sensor_data_raw[i] = gc.sensor_data_raw[i];
             m.sensor_data[i] = gc.sensor_data[i];
           }
           m.inference_valid = gc.inference_valid;
           if (gc.inference_valid && gc.num_inference_values > 0) {
-            m.inference_output.resize(static_cast<std::size_t>(gc.num_inference_values));
-            for (int i = 0; i < gc.num_inference_values; ++i) {
+            const auto univ = static_cast<std::size_t>(gc.num_inference_values);
+            m.inference_output.resize(univ);
+            for (std::size_t i = 0; i < univ; ++i) {
               m.inference_output[i] = gc.inference_output[i];
             }
           }
@@ -1842,8 +1849,8 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
     };
 
     // Publish all device groups uniformly
-    int group_idx = 0;
-    for (const auto & [group_name, group] : active_tc.groups) {
+    std::size_t group_idx = 0;
+    for ([[maybe_unused]] const auto & [group_name, group] : active_tc.groups) {
       for (const auto & pt : group.publish) {
         publish_entry(pt, group_idx);
       }
@@ -1879,7 +1886,7 @@ void RtControllerNode::DeviceSensorCallback(
     int device_slot, std_msgs::msg::Float64MultiArray::SharedPtr msg)
 {
   std::lock_guard lock(device_state_mutex_);
-  auto& ds = device_states_[device_slot];
+  auto& ds = device_states_[static_cast<std::size_t>(device_slot)];
   for (std::size_t i = 0; i < msg->data.size() &&
        i < static_cast<std::size_t>(urtc::kMaxSensorChannels); ++i) {
     ds.sensor_data[i] = static_cast<int32_t>(msg->data[i]);
@@ -1892,7 +1899,7 @@ void RtControllerNode::HandSensorStateCallback(
     int device_slot, rtc_msgs::msg::HandSensorState::SharedPtr msg)
 {
   std::lock_guard lock(device_state_mutex_);
-  auto& ds = device_states_[device_slot];
+  auto& ds = device_states_[static_cast<std::size_t>(device_slot)];
 
   const int n_ft = static_cast<int>(msg->fingertips.size());
   for (int f = 0; f < n_ft && f < urtc::kMaxFingertips; ++f) {
@@ -2370,7 +2377,7 @@ void RtControllerNode::BuildDeviceReorderMap(
   const auto& ref_names = it->second.joint_state_names;
   if (ref_names.empty()) return;
 
-  auto& map = device_reorder_maps_[device_slot];
+  auto& map = device_reorder_maps_[static_cast<std::size_t>(device_slot)];
   map.reorder.assign(msg_names.size(), -1);  // clear + resize (was resize, kept stale data)
 
   for (std::size_t msg_i = 0; msg_i < msg_names.size(); ++msg_i) {

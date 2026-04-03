@@ -47,7 +47,10 @@ RtModelHandle::RtModelHandle(
 
   // 구속 동역학 초기화
   if (!constraint_models_.empty()) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     pinocchio::initConstraintDynamics(*model_, data_, constraint_models_);
+#pragma GCC diagnostic pop
   }
 }
 
@@ -164,9 +167,12 @@ void RtModelHandle::ComputeConstraintDynamics(
   CopyToEigen(q, q_);
   CopyToEigen(v, v_);
   CopyToEigen(tau, tau_);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
   pinocchio::constraintDynamics(
     *model_, data_, q_, v_, tau_,
     constraint_models_, constraint_datas_);
+#pragma GCC diagnostic pop
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

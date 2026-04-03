@@ -62,7 +62,6 @@ int main(int argc, char * argv[])
 
   // (1) YAML 설정 → 모델 구축
   upb::PinocchioModelBuilder builder(argv[1]);
-  const auto & config = builder.GetConfig();
   const auto & analyzer = builder.GetAnalyzer();
 
   std::cout << "URDF 루트 링크: " << analyzer.GetRootLinkName() << "\n";

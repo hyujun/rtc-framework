@@ -48,7 +48,7 @@ class TimingProfilerBase {
     double   p99_us{0.0};
     double   last_us{0.0};
     uint64_t over_budget{0};
-    std::array<uint64_t, Buckets + 1> histogram{};
+    std::array<uint64_t, static_cast<std::size_t>(Buckets + 1)> histogram{};
   };
 
   // Per-phase mean/min/max (used by subclasses for phase-level tracking)
@@ -220,7 +220,7 @@ class TimingProfilerBase {
   std::atomic<double>   sum_us_{0.0};
   std::atomic<double>   sum_sq_us_{0.0};
   std::atomic<uint64_t> over_budget_{0};
-  std::array<std::atomic<uint64_t>, kBuckets + 1> histogram_{};
+  std::array<std::atomic<uint64_t>, static_cast<std::size_t>(kBuckets + 1)> histogram_{};
 };
 
 }  // namespace rtc

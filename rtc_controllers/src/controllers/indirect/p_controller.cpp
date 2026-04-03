@@ -63,10 +63,10 @@ ControllerOutput PController::Compute(const ControllerState & state) noexcept
 
   // Build q span for FK
   std::array<double, kMaxDeviceChannels> q_buf{};
-  for (int i = 0; i < nc0; ++i) {
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     const double error = device_targets_[0][i] - dev0.positions[i];
     out0.commands[i] = dev0.positions[i] + gains_.kp[i] * error * state.dt;
-    q_buf[static_cast<std::size_t>(i)] = dev0.positions[i];
+    q_buf[i] = dev0.positions[i];
   }
 
   const auto nv = handle_->nv();
@@ -82,19 +82,19 @@ ControllerOutput PController::Compute(const ControllerState & state) noexcept
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
 
-  for (int i = 0; i < nc0; ++i) {
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.target_positions[i] = device_targets_[0][i];
     out0.target_velocities[i] = gains_.kp[i] * (device_targets_[0][i] - dev0.positions[i]);
     out0.goal_positions[i] = device_targets_[0][i];
   }
 
   // Device 1+ : pass-through goals
-  for (int d = 1; d < state.num_devices; ++d) {
+  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
     const auto & devN = state.devices[d];
     auto & outN = output.devices[d];
     const int ncN = devN.num_channels;
     outN.num_channels = ncN;
-    for (int i = 0; i < ncN; ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(ncN); ++i) {
       outN.commands[i] = device_targets_[d][i];
       outN.target_positions[i] = device_targets_[d][i];
       outN.goal_positions[i] = device_targets_[d][i];
@@ -110,19 +110,20 @@ void PController::SetDeviceTarget(
   int device_idx, std::span<const double> target) noexcept
 {
   if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) return;
-  const int n = std::min(static_cast<int>(target.size()), kMaxDeviceChannels);
-  for (int i = 0; i < n; ++i) {
-    device_targets_[device_idx][i] = target[i];
+  const auto ud = static_cast<std::size_t>(device_idx);
+  const std::size_t n = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
+  for (std::size_t i = 0; i < n; ++i) {
+    device_targets_[ud][i] = target[i];
   }
 }
 
 void PController::InitializeHoldPosition(
   const ControllerState & state) noexcept
 {
-  for (int d = 0; d < state.num_devices; ++d) {
+  for (std::size_t d = 0; d < static_cast<std::size_t>(state.num_devices); ++d) {
     const auto & dev = state.devices[d];
     if (!dev.valid && d > 0) continue;
-    for (int i = 0; i < dev.num_channels && i < kMaxDeviceChannels; ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) && i < static_cast<std::size_t>(kMaxDeviceChannels); ++i) {
       device_targets_[d][i] = dev.positions[i];
     }
   }
@@ -131,9 +132,8 @@ void PController::InitializeHoldPosition(
 void PController::ClampCommands(
   std::array<double, kMaxDeviceChannels>& commands, int n) const noexcept
 {
-  for (int i = 0; i < n; ++i) {
-    const auto ui = static_cast<std::size_t>(i);
-    const double lim = (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : kDefaultMaxJointVelocity;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i) {
+    const double lim = (i < max_joint_velocity_.size()) ? max_joint_velocity_[i] : kDefaultMaxJointVelocity;
     commands[i] = std::clamp(commands[i], -lim, lim);
   }
 }

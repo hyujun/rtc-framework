@@ -160,6 +160,9 @@ private:
   void ComputeControl(const ControllerState & state, double dt) noexcept;
   [[nodiscard]] ControllerOutput WriteOutput(const ControllerState & state, double dt) noexcept;
 
+  // ── Controller state (gains before urdf_path to match constructor init order) ─
+  Gains gains_;
+
   // ── urdf_pinocchio_bridge ────────────────────────────────────────────
   std::string urdf_path_;  // stored from constructor, used in LoadConfig
   std::unique_ptr<urdf_pinocchio_bridge::PinocchioModelBuilder> builder_;
@@ -202,7 +205,6 @@ private:
   Eigen::LDLT<Eigen::Matrix<double, 6, 6>> ldlt_6d_;
 
   // ── Controller state ──────────────────────────────────────────────────────
-  Gains gains_;
   pinocchio::SE3 tcp_target_pose_{pinocchio::SE3::Identity()};
   std::array<double, 3> tcp_target_{};
   std::array<double, kNumRobotJoints> null_target_{0.0, -1.57, 1.57, -1.57, -1.57, 0.0};

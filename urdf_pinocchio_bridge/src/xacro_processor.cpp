@@ -33,8 +33,11 @@ std::string ProcessXacro(
   cmd += " 2>&1";
 
   // popen으로 실행
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wignored-attributes"
   std::unique_ptr<FILE, decltype(& pclose)> pipe(
     popen(cmd.c_str(), "r"), pclose);  // NOLINT(cert-env33-c)
+#pragma GCC diagnostic pop
 
   if (!pipe) {
     throw std::runtime_error(

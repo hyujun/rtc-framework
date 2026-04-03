@@ -305,7 +305,6 @@ public:
 
       // Transform velocities from wp[0] frame to segment start frame (wp[k])
       pinocchio::SE3 T_0_k = waypoints[0].pose.actInv(waypoints[k].pose);
-      pinocchio::SE3 T_0_k1 = waypoints[0].pose.actInv(waypoints[k + 1].pose);
 
       // v in wp[k] frame = T_0_k^{-1}.act(v in wp[0] frame)
       Eigen::Matrix<double, 6, 1> v_start_local = T_0_k.actInv(

@@ -20,8 +20,8 @@ SubModelDefinition KinematicChainExtractor::ExtractSubModel(
   std::string_view tip_link) const
 {
   // 링크 존재 확인 (없으면 GetLinkIndex에서 throw)
-  analyzer_.GetLinkIndex(root_link);
-  analyzer_.GetLinkIndex(tip_link);
+  (void)analyzer_.GetLinkIndex(root_link);
+  (void)analyzer_.GetLinkIndex(tip_link);
 
   auto link_path = analyzer_.FindPath(root_link, tip_link);
   if (link_path.empty()) {
@@ -45,7 +45,7 @@ TreeModelDefinition KinematicChainExtractor::ExtractTreeModel(
   std::string_view root_link,
   const std::vector<std::string> & tip_links) const
 {
-  analyzer_.GetLinkIndex(root_link);
+  (void)analyzer_.GetLinkIndex(root_link);
 
   TreeModelDefinition def;
   def.name = name;

@@ -183,12 +183,12 @@ ControllerOutput OperationalSpaceController::Compute(
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
 
-  for (int i = 0; i < nc0; ++i) {
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
   }
   ClampVelocity(out0.target_velocities, nc0);
 
-  for (int i = 0; i < nc0; ++i) {
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.commands[i] = dev0.positions[i] + out0.target_velocities[i] * dt;
   }
   for (std::size_t i = 0; i < 6; ++i) {
@@ -197,12 +197,12 @@ ControllerOutput OperationalSpaceController::Compute(
   }
 
   // Device 1+ : pass-through goals
-  for (int d = 1; d < state.num_devices; ++d) {
+  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
     const auto & devN = state.devices[d];
     auto & outN = output.devices[d];
     const int ncN = devN.num_channels;
     outN.num_channels = ncN;
-    for (int i = 0; i < ncN; ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(ncN); ++i) {
       outN.commands[i] = device_targets_[d][i];
       outN.target_positions[i] = device_targets_[d][i];
       outN.goal_positions[i] = device_targets_[d][i];
@@ -227,8 +227,8 @@ void OperationalSpaceController::SetDeviceTarget(
   if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) return;
   if (device_idx == 0) {
     std::lock_guard lock(target_mutex_);
-    const int n = std::min(static_cast<int>(target.size()), 6);
-    for (int i = 0; i < n; ++i) {
+    const std::size_t n = std::min(target.size(), std::size_t{6});
+    for (std::size_t i = 0; i < n; ++i) {
       pose_target_[i] = target[i];
     }
     if (n >= 6) {
@@ -238,9 +238,10 @@ void OperationalSpaceController::SetDeviceTarget(
     }
     new_target_.store(true, std::memory_order_release);
   } else {
-    const int n = std::min(static_cast<int>(target.size()), kMaxDeviceChannels);
-    for (int i = 0; i < n; ++i) {
-      device_targets_[device_idx][i] = target[i];
+    const auto ud = static_cast<std::size_t>(device_idx);
+    const std::size_t n = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
+    for (std::size_t i = 0; i < n; ++i) {
+      device_targets_[ud][i] = target[i];
     }
   }
 }
@@ -275,10 +276,10 @@ void OperationalSpaceController::InitializeHoldPosition(
                          tcp, pinocchio::Motion::Zero(), 0.01);
   trajectory_time_ = 0.0;
 
-  for (int d = 1; d < state.num_devices; ++d) {
+  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
     const auto & dev = state.devices[d];
     if (!dev.valid) continue;
-    for (int i = 0; i < dev.num_channels && i < kMaxDeviceChannels; ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) && i < static_cast<std::size_t>(kMaxDeviceChannels); ++i) {
       device_targets_[d][i] = dev.positions[i];
     }
   }
@@ -322,10 +323,9 @@ ControllerOutput OperationalSpaceController::ComputeEstop(
   auto & out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
-  for (int i = 0; i < nc0; ++i) {
-    const auto ui = static_cast<std::size_t>(i);
-    const double lim = (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : kDefaultMaxJointVelocity;
-    const double sp = (ui < safe_position_.size()) ? safe_position_[ui] : 0.0;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+    const double lim = (i < max_joint_velocity_.size()) ? max_joint_velocity_[i] : kDefaultMaxJointVelocity;
+    const double sp = (i < safe_position_.size()) ? safe_position_[i] : 0.0;
     out0.commands[i] = dev0.positions[i] +
       std::clamp(sp - dev0.positions[i], -lim, lim) * dt;
   }
@@ -335,9 +335,8 @@ ControllerOutput OperationalSpaceController::ComputeEstop(
 void OperationalSpaceController::ClampVelocity(
   std::array<double, kMaxDeviceChannels>& dq, int n) const noexcept
 {
-  for (int i = 0; i < n; ++i) {
-    const auto ui = static_cast<std::size_t>(i);
-    const double lim = (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : kDefaultMaxJointVelocity;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i) {
+    const double lim = (i < max_joint_velocity_.size()) ? max_joint_velocity_[i] : kDefaultMaxJointVelocity;
     dq[i] = std::clamp(dq[i], -lim, lim);
   }
 }

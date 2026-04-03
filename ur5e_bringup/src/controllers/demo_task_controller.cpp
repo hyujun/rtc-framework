@@ -197,27 +197,27 @@ void DemoTaskController::ReadState(const ControllerState & state) noexcept
     const int num_fingertips = num_sensor_ch / rtc::kSensorValuesPerFingertip;
     num_active_fingertips_ = std::min(num_fingertips, static_cast<int>(rtc::kMaxFingertips));
 
-    for (int f = 0; f < num_active_fingertips_; ++f) {
-      auto & ft = fingertip_data_[static_cast<std::size_t>(f)];
-      const int base = f * rtc::kSensorValuesPerFingertip;
+    for (std::size_t f = 0; f < static_cast<std::size_t>(num_active_fingertips_); ++f) {
+      auto & ft = fingertip_data_[f];
+      const std::size_t base = f * rtc::kSensorValuesPerFingertip;
 
-      for (int j = 0; j < static_cast<int>(rtc::kBarometerCount); ++j) {
-        ft.baro[static_cast<std::size_t>(j)] = dev1.sensor_data[base + j];
+      for (std::size_t j = 0; j < rtc::kBarometerCount; ++j) {
+        ft.baro[j] = dev1.sensor_data[base + j];
       }
-      for (int j = 0; j < 3; ++j) {
-        ft.tof[static_cast<std::size_t>(j)] =
-            dev1.sensor_data[base + static_cast<int>(rtc::kBarometerCount) + j];
+      for (std::size_t j = 0; j < 3; ++j) {
+        ft.tof[j] =
+            dev1.sensor_data[base + rtc::kBarometerCount + j];
       }
 
-      ft.valid = dev1.inference_enable[static_cast<std::size_t>(f)];
+      ft.valid = dev1.inference_enable[f];
       if (ft.valid) {
-        const int ft_base = f * rtc::kFTValuesPerFingertip;
-        ft.contact_flag = dev1.inference_data[static_cast<std::size_t>(ft_base)];
-        for (int j = 0; j < 3; ++j) {
-          ft.force[static_cast<std::size_t>(j)] =
-              dev1.inference_data[static_cast<std::size_t>(ft_base + 1 + j)];
-          ft.displacement[static_cast<std::size_t>(j)] =
-              dev1.inference_data[static_cast<std::size_t>(ft_base + 4 + j)];
+        const std::size_t ft_base = f * rtc::kFTValuesPerFingertip;
+        ft.contact_flag = dev1.inference_data[ft_base];
+        for (std::size_t j = 0; j < 3; ++j) {
+          ft.force[j] =
+              dev1.inference_data[ft_base + 1 + j];
+          ft.displacement[j] =
+              dev1.inference_data[ft_base + 4 + j];
         }
       } else {
         ft.contact_flag = 0.0f;
@@ -491,12 +491,12 @@ ControllerOutput DemoTaskController::WriteOutput(
   out0.num_channels = nc0;
   out0.goal_type = GoalType::kTask;
 
-  for (int i = 0; i < nc0; ++i) {
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
   }
   ClampCommands(out0.target_velocities, nc0, device_position_lower_[0], device_position_upper_[0]);
 
-  for (int i = 0; i < nc0; ++i) {
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.commands[i] = dev0.positions[i] + out0.target_velocities[i] * dt;
     // Pure trajectory feedforward velocity (without Kp error / null-space)
     out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
@@ -506,13 +506,13 @@ ControllerOutput DemoTaskController::WriteOutput(
   for (std::size_t i = 0; i < 3; ++i) {
     out0.target_positions[i] = traj_state_.pose.translation()[static_cast<Eigen::Index>(i)];
   }
-  for (int i = 3; i < nc0; ++i) {
+  for (std::size_t i = 3; i < static_cast<std::size_t>(nc0); ++i) {
     out0.target_positions[i] = null_target_[i];
   }
   for (std::size_t i = 0; i < 3; ++i) {
     out0.goal_positions[i] = tcp_target_[i];
   }
-  for (int i = 3; i < nc0; ++i) {
+  for (std::size_t i = 3; i < static_cast<std::size_t>(nc0); ++i) {
     out0.goal_positions[i] = null_target_[i];
   }
 
@@ -571,7 +571,7 @@ ControllerOutput DemoTaskController::WriteOutput(
     out1.num_channels = nc1;
     out1.goal_type = GoalType::kJoint;
 
-    for (int i = 0; i < nc1; ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
       out1.commands[i] = hand_computed_.positions[i];
       out1.target_positions[i] = hand_computed_.positions[i];
       out1.target_velocities[i] = hand_computed_.velocities[i];
@@ -613,19 +613,19 @@ void DemoTaskController::SetDeviceTarget(
         tcp_target_pose_.rotation() = q.matrix();
       }
     } else {
-      const int n = std::min(static_cast<int>(target.size()), static_cast<int>(kNumRobotJoints));
-      for (int i = 0; i < std::min(n, 3); ++i) {
+      const std::size_t n = std::min(target.size(), static_cast<std::size_t>(kNumRobotJoints));
+      for (std::size_t i = 0; i < std::min(n, std::size_t{3}); ++i) {
         tcp_target_[i] = target[i];
       }
-      for (int i = 3; i < n; ++i) {
+      for (std::size_t i = 3; i < n; ++i) {
         null_target_[i] = target[i];
       }
     }
     new_target_.store(true, std::memory_order_release);
   } else {
-    const int n = std::min(static_cast<int>(target.size()), kMaxDeviceChannels);
-    for (int i = 0; i < n; ++i) {
-      device_targets_[device_idx][i] = target[i];
+    const std::size_t n = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
+    for (std::size_t i = 0; i < n; ++i) {
+      device_targets_[static_cast<std::size_t>(device_idx)][i] = target[i];
     }
     if (device_idx == 1) {
       hand_new_target_.store(true, std::memory_order_release);
@@ -660,10 +660,10 @@ void DemoTaskController::InitializeHoldPosition(
                          tcp_pose, pinocchio::Motion::Zero(), 0.01);
   trajectory_time_ = 0.0;
 
-  for (int d = 1; d < state.num_devices; ++d) {
+  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
     const auto & dev = state.devices[d];
     if (!dev.valid) continue;
-    for (int i = 0; i < dev.num_channels && i < kMaxDeviceChannels; ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) && i < kMaxDeviceChannels; ++i) {
       device_targets_[d][i] = dev.positions[i];
     }
     if (d == 1) {
@@ -717,9 +717,8 @@ ControllerOutput DemoTaskController::ComputeEstop(
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
   out0.goal_type = GoalType::kJoint;
-  for (int i = 0; i < nc0; ++i) {
-    const auto ui = static_cast<std::size_t>(i);
-    const double lim = (ui < device_max_velocity_[0].size()) ? device_max_velocity_[0][ui] : 2.0;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+    const double lim = (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
     out0.commands[i] = dev0.positions[i] +
       std::clamp(kSafePosition[i] - dev0.positions[i], -lim, lim) *
       ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
@@ -732,7 +731,7 @@ ControllerOutput DemoTaskController::ComputeEstop(
     auto & out1 = output.devices[1];
     out1.num_channels = nc1;
     out1.goal_type = GoalType::kJoint;
-    for (int i = 0; i < nc1; ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
       out1.commands[i] = dev1.positions[i];
       out1.goal_positions[i] = dev1.positions[i];
       out1.target_positions[i] = dev1.positions[i];
@@ -748,10 +747,9 @@ void DemoTaskController::ClampCommands(
   const std::vector<double>& lower,
   const std::vector<double>& upper) noexcept
 {
-  for (int i = 0; i < n; ++i) {
-    const auto ui = static_cast<std::size_t>(i);
-    const double lo = (ui < lower.size()) ? lower[ui] : -6.2832;
-    const double hi = (ui < upper.size()) ? upper[ui] :  6.2832;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i) {
+    const double lo = (i < lower.size()) ? lower[i] : -6.2832;
+    const double hi = (i < upper.size()) ? upper[i] :  6.2832;
     commands[i] = std::clamp(commands[i], lo, hi);
   }
 }

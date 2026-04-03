@@ -161,12 +161,12 @@ void DemoJointController::ReadState(const ControllerState & state) noexcept
       auto & ft = fingertip_data_[static_cast<std::size_t>(f)];
       const int base = f * rtc::kSensorValuesPerFingertip;
 
-      for (int j = 0; j < static_cast<int>(rtc::kBarometerCount); ++j) {
-        ft.baro[static_cast<std::size_t>(j)] = dev1.sensor_data[base + j];
+      for (std::size_t j = 0; j < rtc::kBarometerCount; ++j) {
+        ft.baro[j] = dev1.sensor_data[static_cast<std::size_t>(base) + j];
       }
-      for (int j = 0; j < 3; ++j) {
-        ft.tof[static_cast<std::size_t>(j)] =
-            dev1.sensor_data[base + static_cast<int>(rtc::kBarometerCount) + j];
+      for (std::size_t j = 0; j < 3; ++j) {
+        ft.tof[j] =
+            dev1.sensor_data[static_cast<std::size_t>(base) + rtc::kBarometerCount + j];
       }
 
       ft.valid = dev1.inference_enable[static_cast<std::size_t>(f)];
@@ -365,7 +365,7 @@ ControllerOutput DemoJointController::WriteOutput(
   out0.num_channels = nc0;
   out0.goal_type = GoalType::kJoint;
 
-  for (int i = 0; i < nc0; ++i) {
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.commands[i] = robot_computed_.positions[i];
     out0.target_positions[i] = robot_computed_.positions[i];
     out0.target_velocities[i] = robot_computed_.velocities[i];
@@ -402,7 +402,7 @@ ControllerOutput DemoJointController::WriteOutput(
     out1.num_channels = nc1;
     out1.goal_type = GoalType::kJoint;
 
-    for (int i = 0; i < nc1; ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
       out1.commands[i] = hand_computed_.positions[i];
       out1.target_positions[i] = hand_computed_.positions[i];
       out1.target_velocities[i] = hand_computed_.velocities[i];
@@ -425,8 +425,8 @@ void DemoJointController::SetDeviceTarget(
   const int n = std::min(static_cast<int>(target.size()), kMaxDeviceChannels);
   {
     std::lock_guard lock(target_mutex_);
-    for (int i = 0; i < n; ++i) {
-      device_targets_[device_idx][i] = target[i];
+    for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i) {
+      device_targets_[static_cast<std::size_t>(device_idx)][i] = target[i];
     }
   }
   if (device_idx == 0) {
@@ -457,10 +457,10 @@ void DemoJointController::InitializeHoldPosition(
   }
 
   // Hand
-  for (int d = 1; d < state.num_devices; ++d) {
+  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
     const auto & dev = state.devices[d];
     if (!dev.valid) continue;
-    for (int i = 0; i < dev.num_channels && i < kMaxDeviceChannels; ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) && i < kMaxDeviceChannels; ++i) {
       device_targets_[d][i] = dev.positions[i];
     }
     if (d == 1) {
@@ -482,10 +482,9 @@ void DemoJointController::ClampCommands(
   const std::vector<double>& lower,
   const std::vector<double>& upper) noexcept
 {
-  for (int i = 0; i < n; ++i) {
-    const auto ui = static_cast<std::size_t>(i);
-    const double lo = (ui < lower.size()) ? lower[ui] : -6.2832;
-    const double hi = (ui < upper.size()) ? upper[ui] :  6.2832;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i) {
+    const double lo = (i < lower.size()) ? lower[i] : -6.2832;
+    const double hi = (i < upper.size()) ? upper[i] :  6.2832;
     commands[i] = std::clamp(commands[i], lo, hi);
   }
 }
@@ -604,9 +603,8 @@ ControllerOutput DemoJointController::ComputeEstop(
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
   out0.goal_type = GoalType::kJoint;
-  for (int i = 0; i < nc0; ++i) {
-    const auto ui = static_cast<std::size_t>(i);
-    const double lim = (ui < device_max_velocity_[0].size()) ? device_max_velocity_[0][ui] : 2.0;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+    const double lim = (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
     out0.commands[i] = dev0.positions[i] +
       std::clamp(kSafePosition[i] - dev0.positions[i], -lim, lim) *
       ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
@@ -622,7 +620,7 @@ ControllerOutput DemoJointController::ComputeEstop(
     auto & out1 = output.devices[1];
     out1.num_channels = nc1;
     out1.goal_type = GoalType::kJoint;
-    for (int i = 0; i < nc1; ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
       out1.commands[i] = dev1.positions[i];
       out1.goal_positions[i] = dev1.positions[i];
       out1.target_positions[i] = dev1.positions[i];

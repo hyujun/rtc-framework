@@ -118,7 +118,7 @@ ControllerOutput JointPDController::Compute(
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
 
-  for (int i = 0; i < nc0; ++i) {
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     const double e  = traj_state.positions[i] - dev0.positions[i];
     const double de = (e - prev_error_[i]) / dt;
 
@@ -138,19 +138,19 @@ ControllerOutput JointPDController::Compute(
     prev_error_[i] = e;
   }
 
-  for (int i = 0; i < nc0; ++i) {
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.target_positions[i] = traj_state.positions[i];
     out0.goal_positions[i] = device_targets_[0][i];
     out0.target_velocities[i] = traj_state.velocities[i];
   }
 
   // Device 1+ : pass-through goals
-  for (int d = 1; d < state.num_devices; ++d) {
+  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
     const auto & devN = state.devices[d];
     auto & outN = output.devices[d];
     const int ncN = devN.num_channels;
     outN.num_channels = ncN;
-    for (int i = 0; i < ncN; ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(ncN); ++i) {
       outN.commands[i] = device_targets_[d][i];
       outN.target_positions[i] = device_targets_[d][i];
       outN.goal_positions[i] = device_targets_[d][i];
@@ -177,16 +177,17 @@ void JointPDController::SetDeviceTarget(
   int device_idx, std::span<const double> target) noexcept
 {
   if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) return;
-  const int n = std::min(static_cast<int>(target.size()), kMaxDeviceChannels);
+  const std::size_t n = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
   if (device_idx == 0) {
     std::lock_guard lock(target_mutex_);
-    for (int i = 0; i < n; ++i) {
+    for (std::size_t i = 0; i < n; ++i) {
       device_targets_[0][i] = target[i];
     }
     new_target_.store(true, std::memory_order_release);
   } else {
-    for (int i = 0; i < n; ++i) {
-      device_targets_[device_idx][i] = target[i];
+    const auto ud = static_cast<std::size_t>(device_idx);
+    for (std::size_t i = 0; i < n; ++i) {
+      device_targets_[ud][i] = target[i];
     }
   }
 }
@@ -210,10 +211,10 @@ void JointPDController::InitializeHoldPosition(
   prev_error_ = {};
   new_target_.store(false, std::memory_order_relaxed);
 
-  for (int d = 1; d < state.num_devices; ++d) {
+  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
     const auto & dev = state.devices[d];
     if (!dev.valid) continue;
-    for (int i = 0; i < dev.num_channels && i < kMaxDeviceChannels; ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) && i < static_cast<std::size_t>(kMaxDeviceChannels); ++i) {
       device_targets_[d][i] = dev.positions[i];
     }
   }
@@ -330,16 +331,16 @@ ControllerOutput JointPDController::ComputeEstop(
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
 
-  for (int i = 0; i < nc0; ++i) {
-    const double e  = safe_position_[static_cast<std::size_t>(i)] - dev0.positions[i];
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+    const double e  = safe_position_[i] - dev0.positions[i];
     const double de = (e - prev_error_[i]) / dt;
     out0.commands[i] = gains_.kp[i] * e + gains_.kd[i] * de;
     prev_error_[i] = e;
   }
 
-  for (int i = 0; i < nc0; ++i) {
-    out0.target_positions[i] = safe_position_[static_cast<std::size_t>(i)];
-    out0.goal_positions[i] = safe_position_[static_cast<std::size_t>(i)];
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+    out0.target_positions[i] = safe_position_[i];
+    out0.goal_positions[i] = safe_position_[i];
   }
   ClampCommands(out0.commands, nc0, command_type_);
   new_target_.store(true, std::memory_order_relaxed);
@@ -398,9 +399,8 @@ void JointPDController::ClampCommands(
 {
   const auto& limits = (type == CommandType::kTorque)
                             ? max_joint_torque_ : max_joint_velocity_;
-  for (int i = 0; i < n; ++i) {
-    const auto ui = static_cast<std::size_t>(i);
-    const double lim = (ui < limits.size()) ? limits[ui] : kDefaultMaxJointVelocity;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i) {
+    const double lim = (i < limits.size()) ? limits[i] : kDefaultMaxJointVelocity;
     cmds[i] = std::clamp(cmds[i], -lim, lim);
   }
 }
