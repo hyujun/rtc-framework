@@ -135,8 +135,6 @@ jobs:
       env:
         # Ubuntu 24.04의 cppcheck 2.13.0 성능 이슈 차단 우회
         AMENT_CPPCHECK_ALLOW_SLOW_VERSIONS: 1
-        # GTest TEST() 매크로를 파싱하지 못하는 cppcheck syntaxError 억제
-        AMENT_CPPCHECK_ADDITIONAL_ARGS: --suppress=syntaxError:*test*
 
   # ============================================================
   #  Python Tests (rtc_tools, rtc_digital_twin)

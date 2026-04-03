@@ -21,7 +21,12 @@ find_package(ament_cmake REQUIRED)
 find_package(pinocchio REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
-find_package(tinyxml2 REQUIRED)
+find_package(tinyxml2 QUIET)
+if(NOT tinyxml2_FOUND)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(tinyxml2 REQUIRED IMPORTED_TARGET tinyxml2)
+  add_library(tinyxml2::tinyxml2 ALIAS PkgConfig::tinyxml2)
+endif()
 
 # ── Library ───────────────────────────────────────────────────────────────────
 add_library(${PROJECT_NAME} SHARED
