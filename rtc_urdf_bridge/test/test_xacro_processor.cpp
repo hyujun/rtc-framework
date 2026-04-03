@@ -1,14 +1,14 @@
 // ── Xacro 전처리 테스트 ─────────────────────────────────────────────────────
-#include "urdf_pinocchio_bridge/xacro_processor.hpp"
-#include "urdf_pinocchio_bridge/urdf_analyzer.hpp"
-#include "urdf_pinocchio_bridge/pinocchio_model_builder.hpp"
+#include "rtc_urdf_bridge/xacro_processor.hpp"
+#include "rtc_urdf_bridge/urdf_analyzer.hpp"
+#include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
 #include <gtest/gtest.h>
 
 #include <filesystem>
 #include <string>
 
-namespace upb = urdf_pinocchio_bridge;
+namespace rub = rtc_urdf_bridge;
 
 static std::string TestUrdfPath(const std::string & filename)
 {
@@ -22,17 +22,17 @@ static std::string TestUrdfPath(const std::string & filename)
 
 TEST(XacroProcessorTest, IsXacroFilePositive)
 {
-  EXPECT_TRUE(upb::IsXacroFile("robot.urdf.xacro"));
-  EXPECT_TRUE(upb::IsXacroFile("robot.xacro"));
-  EXPECT_TRUE(upb::IsXacroFile("/full/path/to/model.urdf.xacro"));
+  EXPECT_TRUE(rub::IsXacroFile("robot.urdf.xacro"));
+  EXPECT_TRUE(rub::IsXacroFile("robot.xacro"));
+  EXPECT_TRUE(rub::IsXacroFile("/full/path/to/model.urdf.xacro"));
 }
 
 TEST(XacroProcessorTest, IsXacroFileNegative)
 {
-  EXPECT_FALSE(upb::IsXacroFile("robot.urdf"));
-  EXPECT_FALSE(upb::IsXacroFile("robot.xml"));
-  EXPECT_FALSE(upb::IsXacroFile(""));
-  EXPECT_FALSE(upb::IsXacroFile("xacro"));
+  EXPECT_FALSE(rub::IsXacroFile("robot.urdf"));
+  EXPECT_FALSE(rub::IsXacroFile("robot.xml"));
+  EXPECT_FALSE(rub::IsXacroFile(""));
+  EXPECT_FALSE(rub::IsXacroFile("xacro"));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -41,7 +41,7 @@ TEST(XacroProcessorTest, IsXacroFileNegative)
 
 TEST(XacroProcessorTest, ProcessSimpleXacro)
 {
-  auto xml = upb::ProcessXacro(TestUrdfPath("simple_robot.urdf.xacro"));
+  auto xml = rub::ProcessXacro(TestUrdfPath("simple_robot.urdf.xacro"));
 
   // 출력 비어있지 않음
   EXPECT_FALSE(xml.empty());
@@ -62,7 +62,7 @@ TEST(XacroProcessorTest, ProcessSimpleXacro)
 TEST(XacroProcessorTest, ProcessXacroWithArgs)
 {
   std::unordered_map<std::string, std::string> args = {{"link_length", "1.0"}};
-  auto xml = upb::ProcessXacro(TestUrdfPath("simple_robot.urdf.xacro"), args);
+  auto xml = rub::ProcessXacro(TestUrdfPath("simple_robot.urdf.xacro"), args);
 
   EXPECT_FALSE(xml.empty());
   EXPECT_NE(xml.find("<robot"), std::string::npos);
@@ -71,7 +71,7 @@ TEST(XacroProcessorTest, ProcessXacroWithArgs)
 TEST(XacroProcessorTest, NonexistentFileThrows)
 {
   EXPECT_THROW(
-    upb::ProcessXacro("/nonexistent/path/robot.xacro"),
+    rub::ProcessXacro("/nonexistent/path/robot.xacro"),
     std::runtime_error);
 }
 
@@ -84,10 +84,10 @@ class UrdfAnalyzerXacroTest : public ::testing::Test
 protected:
   void SetUp() override
   {
-    analyzer_ = std::make_unique<upb::UrdfAnalyzer>(
+    analyzer_ = std::make_unique<rub::UrdfAnalyzer>(
       TestUrdfPath("simple_robot.urdf.xacro"));
   }
-  std::unique_ptr<upb::UrdfAnalyzer> analyzer_;
+  std::unique_ptr<rub::UrdfAnalyzer> analyzer_;
 };
 
 TEST_F(UrdfAnalyzerXacroTest, RootLinkDetection)
@@ -115,13 +115,13 @@ class ModelBuilderXacroTest : public ::testing::Test
 protected:
   void SetUp() override
   {
-    upb::ModelConfig cfg;
+    rub::ModelConfig cfg;
     cfg.urdf_path = TestUrdfPath("simple_robot.urdf.xacro");
     cfg.root_joint_type = "fixed";
     cfg.sub_models.push_back({"arm", "base_link", "link_3"});
-    builder_ = std::make_unique<upb::PinocchioModelBuilder>(cfg);
+    builder_ = std::make_unique<rub::PinocchioModelBuilder>(cfg);
   }
-  std::unique_ptr<upb::PinocchioModelBuilder> builder_;
+  std::unique_ptr<rub::PinocchioModelBuilder> builder_;
 };
 
 TEST_F(ModelBuilderXacroTest, FullModelDimensions)
@@ -142,13 +142,13 @@ TEST_F(ModelBuilderXacroTest, ReducedModelDimensions)
 
 TEST_F(ModelBuilderXacroTest, XacroWithArgs)
 {
-  upb::ModelConfig cfg;
+  rub::ModelConfig cfg;
   cfg.urdf_path = TestUrdfPath("simple_robot.urdf.xacro");
   cfg.root_joint_type = "fixed";
   cfg.xacro_args = {{"link_length", "1.0"}};
   cfg.sub_models.push_back({"arm", "base_link", "link_3"});
 
-  upb::PinocchioModelBuilder builder(cfg);
+  rub::PinocchioModelBuilder builder(cfg);
   auto model = builder.GetFullModel();
 
   // 토폴로지 동일: nq=3

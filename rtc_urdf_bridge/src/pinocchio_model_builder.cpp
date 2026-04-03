@@ -1,6 +1,6 @@
 // ── PinocchioModelBuilder 구현 ───────────────────────────────────────────────
-#include "urdf_pinocchio_bridge/pinocchio_model_builder.hpp"
-#include "urdf_pinocchio_bridge/xacro_processor.hpp"
+#include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
+#include "rtc_urdf_bridge/xacro_processor.hpp"
 
 // Pinocchio 헤더 (경고 억제)
 #pragma GCC diagnostic push
@@ -23,7 +23,7 @@
 #include <sstream>
 #include <stdexcept>
 
-namespace urdf_pinocchio_bridge
+namespace rtc_urdf_bridge
 {
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -485,4 +485,4 @@ ModelConfig PinocchioModelBuilder::LoadModelConfig(std::string_view yaml_path)
   return cfg;
 }
 
-}  // namespace urdf_pinocchio_bridge
+}  // namespace rtc_urdf_bridge

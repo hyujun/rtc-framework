@@ -105,7 +105,7 @@ virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 ```cpp
 TopicConfig topic_config_;                                      // 기본값: MakeDefaultTopicConfig("ur5e")
 std::map<std::string, DeviceNameConfig> device_name_configs_;   // SetDeviceNameConfigs()에서 설정
-std::unique_ptr<urdf_pinocchio_bridge::ModelConfig> system_model_config_;  // SetSystemModelConfig()에서 설정
+std::unique_ptr<rtc_urdf_bridge::ModelConfig> system_model_config_;  // SetSystemModelConfig()에서 설정
 double control_rate_{500.0};                                    // SetControlRate()에서 설정
 ```
 
@@ -284,7 +284,7 @@ ur5e.publish:
 | `ament_cmake` | 빌드 시스템 |
 | `rtc_base` | 공유 데이터 타입 (`ControllerState`, `ControllerOutput`, `TopicConfig`, `DeviceNameConfig` 등) |
 | `rtc_msgs` | 커스텀 ROS2 메시지 |
-| `urdf_pinocchio_bridge` | URDF→Pinocchio 모델 빌더 + `ModelConfig` 타입 (시스템 모델 설정) |
+| `rtc_urdf_bridge` | URDF→Pinocchio 모델 빌더 + `ModelConfig` 타입 (시스템 모델 설정) |
 | `pinocchio` | 로보틱스 기구학/동역학 (하위 패키지에 전이적 제공) |
 | `yaml-cpp` | YAML 설정 파싱 |
 

@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>urdf_pinocchio_bridge</name>
+  <name>rtc_urdf_bridge</name>
   <version>5.17.0</version>
   <description>Robot-agnostic URDF parser and Pinocchio model builder for RT control loops.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>

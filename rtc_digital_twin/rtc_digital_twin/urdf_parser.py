@@ -1,8 +1,8 @@
 """Robot-agnostic URDF parser for Digital Twin visualization.
 
-Inspired by urdf_pinocchio_bridge's UrdfAnalyzer (C++), this module provides
+Inspired by rtc_urdf_bridge's UrdfAnalyzer (C++), this module provides
 a self-contained Python implementation for URDF loading, link graph construction,
-and joint classification — without depending on urdf_pinocchio_bridge.
+and joint classification — without depending on rtc_urdf_bridge.
 
 Typical usage::
 
@@ -47,7 +47,7 @@ class MimicParams:
 
 @dataclass(frozen=True)
 class JointMeta:
-    """Joint metadata (modeled after urdf_pinocchio_bridge's JointMeta).
+    """Joint metadata (modeled after rtc_urdf_bridge's JointMeta).
 
     Attributes:
         name: Joint name from URDF.
@@ -75,7 +75,7 @@ class JointMeta:
 
 @dataclass
 class LinkNode:
-    """Adjacency-list node (modeled after urdf_pinocchio_bridge's LinkNode).
+    """Adjacency-list node (modeled after rtc_urdf_bridge's LinkNode).
 
     Attributes:
         link_name: Link name from URDF.
@@ -128,7 +128,7 @@ _MOVABLE_TYPES = frozenset({
 class UrdfParser:
     """Robot-agnostic URDF parser for digital twin visualization.
 
-    Implements a parsing pipeline inspired by urdf_pinocchio_bridge's
+    Implements a parsing pipeline inspired by rtc_urdf_bridge's
     UrdfAnalyzer:
 
     1. URDF loading (file path with xacro auto-detection, or XML string)

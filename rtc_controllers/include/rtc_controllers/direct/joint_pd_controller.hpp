@@ -3,8 +3,8 @@
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 
-#include <urdf_pinocchio_bridge/pinocchio_model_builder.hpp>
-#include <urdf_pinocchio_bridge/rt_model_handle.hpp>
+#include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
+#include <rtc_urdf_bridge/rt_model_handle.hpp>
 
 #include <Eigen/Core>
 
@@ -90,9 +90,9 @@ private:
   std::vector<double> max_joint_velocity_;
   std::vector<double> max_joint_torque_;
 
-  // ── Pinocchio via urdf_pinocchio_bridge ────────────────────────────────────
+  // ── Pinocchio via rtc_urdf_bridge ────────────────────────────────────
   std::shared_ptr<const pinocchio::Model> model_ptr_;
-  std::unique_ptr<urdf_pinocchio_bridge::RtModelHandle> handle_;
+  std::unique_ptr<rtc_urdf_bridge::RtModelHandle> handle_;
   pinocchio::FrameIndex tip_frame_id_{0};
 
   Eigen::VectorXd coriolis_forces_;

@@ -1,4 +1,4 @@
-// ── urdf_pinocchio_bridge: 범용 URDF→Pinocchio 모델 라이브러리 ──────────────
+// ── rtc_urdf_bridge: 범용 URDF→Pinocchio 모델 라이브러리 ──────────────
 #pragma once
 
 #include <Eigen/Core>
@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace urdf_pinocchio_bridge
+namespace rtc_urdf_bridge
 {
 
 // ── URDF 관절 타입 분류 ──────────────────────────────────────────────────────
@@ -171,4 +171,4 @@ struct ModelConfig
   std::unordered_map<std::string, double> lock_reference_config;
 };
 
-}  // namespace urdf_pinocchio_bridge
+}  // namespace rtc_urdf_bridge

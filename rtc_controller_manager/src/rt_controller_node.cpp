@@ -1985,7 +1985,7 @@ void RtControllerNode::ClearGlobalEstop() noexcept
 // ── System model configuration parsing ──────────────────────────────────────
 
 void RtControllerNode::ParseSubModels(
-    urdf_pinocchio_bridge::ModelConfig & config)
+    rtc_urdf_bridge::ModelConfig & config)
 {
   // ROS2 flattens YAML arrays-of-objects to prefixed params:
   //   urdf.sub_models.0.name, urdf.sub_models.0.root_link, ...
@@ -2000,7 +2000,7 @@ void RtControllerNode::ParseSubModels(
     }
     const auto name = get_parameter(name_key).as_string();
     if (!seen.insert(name).second) continue;  // deduplicate
-    urdf_pinocchio_bridge::SubModelConfig sm;
+    rtc_urdf_bridge::SubModelConfig sm;
     sm.name = name;
     sm.root_link = get_parameter(root_key).as_string();
     sm.tip_link = get_parameter(tip_key).as_string();
@@ -2009,7 +2009,7 @@ void RtControllerNode::ParseSubModels(
 }
 
 void RtControllerNode::ParseTreeModels(
-    urdf_pinocchio_bridge::ModelConfig & config)
+    rtc_urdf_bridge::ModelConfig & config)
 {
   const auto params = list_parameters({"urdf.tree_models"}, 10);
   std::set<std::string> seen;
@@ -2020,7 +2020,7 @@ void RtControllerNode::ParseTreeModels(
     const auto name = get_parameter(name_key).as_string();
     if (!seen.insert(name).second) continue;
 
-    urdf_pinocchio_bridge::TreeModelConfig tm;
+    rtc_urdf_bridge::TreeModelConfig tm;
     tm.name = name;
     tm.root_link = get_parameter(root_key).as_string();
 

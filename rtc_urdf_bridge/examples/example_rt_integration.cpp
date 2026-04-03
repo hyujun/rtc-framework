@@ -1,5 +1,5 @@
 // ── example_rt_integration.cpp ──────────────────────────────────────────────
-// 외부 패키지의 RT 제어 루프에서 urdf_pinocchio_bridge를 사용하는 전형적 패턴.
+// 외부 패키지의 RT 제어 루프에서 rtc_urdf_bridge를 사용하는 전형적 패턴.
 //
 // [Phase 1] 초기화 (non-RT)
 //   - YAML → URDF 분석 → 모델 구축 → Handle 생성
@@ -16,16 +16,16 @@
 // [부록] 외부 패키지 CMake 사용법:
 //
 //   # robot_control/CMakeLists.txt:
-//   find_package(urdf_pinocchio_bridge REQUIRED)
+//   find_package(rtc_urdf_bridge REQUIRED)
 //   target_link_libraries(my_controller
-//     PUBLIC urdf_pinocchio_bridge::urdf_pinocchio_bridge)
+//     PUBLIC rtc_urdf_bridge::rtc_urdf_bridge)
 //
 //   # robot_control/package.xml:
-//   <depend>urdf_pinocchio_bridge</depend>
+//   <depend>rtc_urdf_bridge</depend>
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#include "urdf_pinocchio_bridge/pinocchio_model_builder.hpp"
-#include "urdf_pinocchio_bridge/rt_model_handle.hpp"
+#include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
+#include "rtc_urdf_bridge/rt_model_handle.hpp"
 
 // Pinocchio SE3 로그용
 #pragma GCC diagnostic push
@@ -46,7 +46,7 @@
 #include <string>
 #include <vector>
 
-namespace upb = urdf_pinocchio_bridge;
+namespace rub = rtc_urdf_bridge;
 
 int main(int argc, char * argv[])
 {
@@ -61,7 +61,7 @@ int main(int argc, char * argv[])
   std::cout << "=== Phase 1: 초기화 (non-RT) ===\n\n";
 
   // (1) YAML 설정 → 모델 구축
-  upb::PinocchioModelBuilder builder(argv[1]);
+  rub::PinocchioModelBuilder builder(argv[1]);
   const auto & analyzer = builder.GetAnalyzer();
 
   std::cout << "URDF 루트 링크: " << analyzer.GetRootLinkName() << "\n";
@@ -69,24 +69,24 @@ int main(int argc, char * argv[])
 
   // (2) Full model handle (항상 생성)
   auto full_model = builder.GetFullModel();
-  upb::RtModelHandle full_handle(full_model);
+  rub::RtModelHandle full_handle(full_model);
   std::cout << "Full model: nq=" << full_handle.nq() << ", nv=" << full_handle.nv() << "\n";
 
   // (3) YAML에 정의된 서브모델별 handle 동적 생성 (이름 하드코딩 없음)
   //     pin::Model 수명 > RtModelHandle 수명 (Builder scope > handle map scope)
-  std::map<std::string, upb::RtModelHandle> sub_handles;
+  std::map<std::string, rub::RtModelHandle> sub_handles;
   for (const auto & name : builder.GetSubModelNames()) {
     auto model = builder.GetReducedModel(name);
-    sub_handles.emplace(name, upb::RtModelHandle(model));
+    sub_handles.emplace(name, rub::RtModelHandle(model));
     std::cout << "서브모델 '" << name << "': nq=" << model->nq
               << ", nv=" << model->nv << "\n";
   }
 
   // (4) YAML에 정의된 트리모델별 handle
-  std::map<std::string, upb::RtModelHandle> tree_handles;
+  std::map<std::string, rub::RtModelHandle> tree_handles;
   for (const auto & name : builder.GetTreeModelNames()) {
     auto model = builder.GetTreeModel(name);
-    tree_handles.emplace(name, upb::RtModelHandle(model));
+    tree_handles.emplace(name, rub::RtModelHandle(model));
     std::cout << "트리모델 '" << name << "': nq=" << model->nq
               << ", nv=" << model->nv << "\n";
   }

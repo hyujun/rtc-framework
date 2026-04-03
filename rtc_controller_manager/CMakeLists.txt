@@ -24,7 +24,7 @@ find_package(std_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(pinocchio REQUIRED)
-find_package(urdf_pinocchio_bridge REQUIRED)
+find_package(rtc_urdf_bridge REQUIRED)
 
 # RTC packages
 find_package(rtc_controller_interface REQUIRED)
@@ -52,7 +52,7 @@ ament_target_dependencies(rtc_controller_manager_lib
   rtc_base
   rtc_communication
   rtc_msgs
-  urdf_pinocchio_bridge
+  rtc_urdf_bridge
 )
 target_link_libraries(rtc_controller_manager_lib
   yaml-cpp
@@ -103,7 +103,7 @@ ament_export_dependencies(
   rtc_base
   rtc_communication
   rtc_msgs
-  urdf_pinocchio_bridge
+  rtc_urdf_bridge
   pinocchio
   yaml-cpp
 )

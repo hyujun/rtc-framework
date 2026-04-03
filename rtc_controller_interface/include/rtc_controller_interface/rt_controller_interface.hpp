@@ -14,7 +14,7 @@
 #include <vector>
 
 // Forward declaration — full definition only needed in .cpp
-namespace urdf_pinocchio_bridge { struct ModelConfig; }
+namespace rtc_urdf_bridge { struct ModelConfig; }
 
 namespace rtc
 {
@@ -134,8 +134,8 @@ public:
   //   (sub_models, tree_models, passive_joints) parsed from the top-level
   //   "urdf:" YAML section.  Controllers can override OnSystemModelConfigSet()
   //   to build Pinocchio models from the shared config.
-  void SetSystemModelConfig(const urdf_pinocchio_bridge::ModelConfig & config);
-  [[nodiscard]] const urdf_pinocchio_bridge::ModelConfig* GetSystemModelConfig() const noexcept;
+  void SetSystemModelConfig(const rtc_urdf_bridge::ModelConfig & config);
+  [[nodiscard]] const rtc_urdf_bridge::ModelConfig* GetSystemModelConfig() const noexcept;
 
   // Set the control loop rate (Hz). Called by the manager at init time.
   void SetControlRate(double hz) noexcept { control_rate_ = hz; }
@@ -164,7 +164,7 @@ protected:
 
   TopicConfig topic_config_;
   std::map<std::string, DeviceNameConfig> device_name_configs_;
-  std::unique_ptr<urdf_pinocchio_bridge::ModelConfig> system_model_config_;
+  std::unique_ptr<rtc_urdf_bridge::ModelConfig> system_model_config_;
   double control_rate_{500.0};
 };
 

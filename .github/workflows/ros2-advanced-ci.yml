@@ -30,11 +30,11 @@ env:
     rtc_controllers
     ur5e_bringup
     ur5e_hand_driver
-    urdf_pinocchio_bridge
+    rtc_urdf_bridge
     shape_estimation
   TEST_PACKAGES: >-
     rtc_controllers
-    urdf_pinocchio_bridge
+    rtc_urdf_bridge
     shape_estimation
   PYTHON_TEST_PACKAGES: >-
     rtc_tools
@@ -127,7 +127,7 @@ jobs:
         PACKAGES=(
           rtc_base rtc_communication rtc_controller_interface
           rtc_controller_manager rtc_controllers rtc_inference
-          rtc_msgs urdf_pinocchio_bridge ur5e_bringup ur5e_hand_driver
+          rtc_msgs rtc_urdf_bridge ur5e_bringup ur5e_hand_driver
         )
 
         ERRORS=0
@@ -376,7 +376,7 @@ jobs:
       if: always()
       run: |
         # 빌드 실패 시 coverage 디렉토리가 없으면 skip
-        if [ ! -d "build/rtc_controllers" ] && [ ! -d "build/urdf_pinocchio_bridge" ]; then
+        if [ ! -d "build/rtc_controllers" ] && [ ! -d "build/rtc_urdf_bridge" ]; then
           echo "::warning::build directories not found — skipping coverage"
           exit 0
         fi
@@ -395,7 +395,7 @@ jobs:
 
         # 테스트가 있는 패키지별로 coverage 수집
         COVERAGE_DIRS=""
-        for pkg in rtc_controllers urdf_pinocchio_bridge shape_estimation; do
+        for pkg in rtc_controllers rtc_urdf_bridge shape_estimation; do
           if [ -d "build/$pkg" ]; then
             COVERAGE_DIRS="$COVERAGE_DIRS --directory build/$pkg"
           fi
@@ -436,8 +436,8 @@ jobs:
           '*/rtc_controllers/include/*' \
           '*/rtc_controllers/src/*' \
           '*/rtc_inference/include/*' \
-          '*/urdf_pinocchio_bridge/include/*' \
-          '*/urdf_pinocchio_bridge/src/*' \
+          '*/rtc_urdf_bridge/include/*' \
+          '*/rtc_urdf_bridge/src/*' \
           '*/ur5e_bringup/include/*' \
           '*/ur5e_bringup/src/*' \
           '*/ur5e_hand_driver/include/*' \
@@ -597,7 +597,7 @@ jobs:
           'rtc_controller_interface/src/.*\.cpp' \
           'rtc_controller_manager/src/.*\.cpp' \
           'rtc_controllers/src/.*\.cpp' \
-          'urdf_pinocchio_bridge/src/.*\.cpp' \
+          'rtc_urdf_bridge/src/.*\.cpp' \
           'ur5e_bringup/src/.*\.cpp' \
           'ur5e_hand_driver/src/.*\.cpp' \
           'shape_estimation/src/.*\.cpp' 2>&1 | \

@@ -372,7 +372,7 @@ CycloneDDS RT 성능 최적화 설정입니다. `CYCLONEDDS_URI` 환경변수로
 | `rtc_base` | 로깅, 스레딩, 타입, SPSC 버퍼, 세션 디렉토리 |
 | `rtc_communication` | 네트워크 통신 (UDP 트랜시버) |
 | `rtc_msgs` | JointCommand, GuiPosition, RobotTarget, DeviceStateLog, DeviceSensorLog, GraspState, HandSensorState |
-| `urdf_pinocchio_bridge` | URDF→Pinocchio 모델 빌더 + `ModelConfig` 타입 (시스템 모델 설정) |
+| `rtc_urdf_bridge` | URDF→Pinocchio 모델 빌더 + `ModelConfig` 타입 (시스템 모델 설정) |
 | `pinocchio` | URDF 기구학 검증 + joint limits 병합 |
 | `yaml-cpp` | YAML 설정 파싱 |
 | `ament_index_cpp` | 패키지 리소스 경로 탐색 |

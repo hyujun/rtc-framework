@@ -19,13 +19,13 @@ PController::PController(std::string_view urdf_path)
 PController::PController(std::string_view urdf_path, Gains gains)
 : gains_(gains)
 {
-  urdf_pinocchio_bridge::ModelConfig config;
+  rtc_urdf_bridge::ModelConfig config;
   config.urdf_path = std::string(urdf_path);
   config.root_joint_type = "fixed";
 
-  urdf_pinocchio_bridge::PinocchioModelBuilder builder(config);
+  rtc_urdf_bridge::PinocchioModelBuilder builder(config);
   model_ptr_ = builder.GetFullModel();
-  handle_ = std::make_unique<urdf_pinocchio_bridge::RtModelHandle>(model_ptr_);
+  handle_ = std::make_unique<rtc_urdf_bridge::RtModelHandle>(model_ptr_);
 
   // Default: use the last frame in the model as tip
   tip_frame_id_ = static_cast<pinocchio::FrameIndex>(model_ptr_->nframes - 1);

@@ -1,7 +1,7 @@
 // ── RtModelHandle: RT-safe Pinocchio 래퍼 ────────────────────────────────────
 #pragma once
 
-#include "urdf_pinocchio_bridge/types.hpp"
+#include "rtc_urdf_bridge/types.hpp"
 
 // Pinocchio 헤더 (경고 억제)
 #pragma GCC diagnostic push
@@ -21,7 +21,7 @@
 #include <string_view>
 #include <vector>
 
-namespace urdf_pinocchio_bridge
+namespace rtc_urdf_bridge
 {
 
 /// RT-safe Pinocchio wrapper.
@@ -189,4 +189,4 @@ private:
   std::vector<pinocchio::RigidConstraintData> constraint_datas_;
 };
 
-}  // namespace urdf_pinocchio_bridge
+}  // namespace rtc_urdf_bridge

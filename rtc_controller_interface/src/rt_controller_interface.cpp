@@ -1,5 +1,5 @@
 #include "rtc_controller_interface/rt_controller_interface.hpp"
-#include "urdf_pinocchio_bridge/types.hpp"
+#include "rtc_urdf_bridge/types.hpp"
 
 #include <iostream>
 #include <stdexcept>
@@ -84,13 +84,13 @@ RTControllerInterface::RTControllerInterface()
 RTControllerInterface::~RTControllerInterface() = default;
 
 void RTControllerInterface::SetSystemModelConfig(
-    const urdf_pinocchio_bridge::ModelConfig & config)
+    const rtc_urdf_bridge::ModelConfig & config)
 {
-  system_model_config_ = std::make_unique<urdf_pinocchio_bridge::ModelConfig>(config);
+  system_model_config_ = std::make_unique<rtc_urdf_bridge::ModelConfig>(config);
   OnSystemModelConfigSet();
 }
 
-const urdf_pinocchio_bridge::ModelConfig*
+const rtc_urdf_bridge::ModelConfig*
 RTControllerInterface::GetSystemModelConfig() const noexcept
 {
   return system_model_config_.get();

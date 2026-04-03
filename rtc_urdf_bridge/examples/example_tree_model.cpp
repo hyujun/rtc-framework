@@ -8,14 +8,14 @@
 // 사용법: ./example_tree_model <yaml_config_path>
 // ─────────────────────────────────────────────────────────────────────────────
 
-#include "urdf_pinocchio_bridge/pinocchio_model_builder.hpp"
-#include "urdf_pinocchio_bridge/rt_model_handle.hpp"
+#include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
+#include "rtc_urdf_bridge/rt_model_handle.hpp"
 
 #include <cstdlib>
 #include <iostream>
 #include <vector>
 
-namespace upb = urdf_pinocchio_bridge;
+namespace rub = rtc_urdf_bridge;
 
 int main(int argc, char * argv[])
 {
@@ -24,10 +24,10 @@ int main(int argc, char * argv[])
     return EXIT_FAILURE;
   }
 
-  std::cout << "=== urdf_pinocchio_bridge: 트리모델 사용법 ===\n\n";
+  std::cout << "=== rtc_urdf_bridge: 트리모델 사용법 ===\n\n";
 
   // ── (1) Builder 생성 ──────────────────────────────────────────────────────
-  upb::PinocchioModelBuilder builder(argv[1]);
+  rub::PinocchioModelBuilder builder(argv[1]);
 
   auto tree_names = builder.GetTreeModelNames();
   std::cout << "[1] 등록된 트리모델 수: " << tree_names.size() << "\n";
@@ -47,7 +47,7 @@ int main(int argc, char * argv[])
     std::cout << "\n";
 
     // ── (3) tool frame_id 매핑 ──────────────────────────────────────────────
-    upb::RtModelHandle handle(model);
+    rub::RtModelHandle handle(model);
 
     std::cout << "\n[3] Tip frame ID 매핑:\n";
     std::vector<pinocchio::FrameIndex> tip_fids;

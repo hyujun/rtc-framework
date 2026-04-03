@@ -1,9 +1,9 @@
 // ── PinocchioModelBuilder: YAML + URDF → Pinocchio 모델 구축 ────────────────
 #pragma once
 
-#include "urdf_pinocchio_bridge/types.hpp"
-#include "urdf_pinocchio_bridge/urdf_analyzer.hpp"
-#include "urdf_pinocchio_bridge/kinematic_chain_extractor.hpp"
+#include "rtc_urdf_bridge/types.hpp"
+#include "rtc_urdf_bridge/urdf_analyzer.hpp"
+#include "rtc_urdf_bridge/kinematic_chain_extractor.hpp"
 
 // Pinocchio 헤더 (경고 억제)
 #pragma GCC diagnostic push
@@ -22,7 +22,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace urdf_pinocchio_bridge
+namespace rtc_urdf_bridge
 {
 
 /// YAML 설정 + URDF 분석 결과로 Pinocchio 모델 빌드.
@@ -128,4 +128,4 @@ private:
   std::vector<pinocchio::RigidConstraintModel> constraint_models_;
 };
 
-}  // namespace urdf_pinocchio_bridge
+}  // namespace rtc_urdf_bridge

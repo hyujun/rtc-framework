@@ -20,7 +20,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rtc_base REQUIRED)
 find_package(rtc_msgs REQUIRED)
-find_package(urdf_pinocchio_bridge REQUIRED)
+find_package(rtc_urdf_bridge REQUIRED)
 find_package(pinocchio REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
@@ -36,7 +36,7 @@ target_include_directories(rtc_controller_interface PUBLIC
 ament_target_dependencies(rtc_controller_interface
   rtc_base
   rtc_msgs
-  urdf_pinocchio_bridge
+  rtc_urdf_bridge
   pinocchio
 )
 target_link_libraries(rtc_controller_interface yaml-cpp)
@@ -58,7 +58,7 @@ ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
   rtc_base
   rtc_msgs
-  urdf_pinocchio_bridge
+  rtc_urdf_bridge
   pinocchio
   yaml-cpp
 )

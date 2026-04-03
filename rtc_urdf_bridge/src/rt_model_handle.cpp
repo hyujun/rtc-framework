@@ -1,5 +1,5 @@
 // ── RtModelHandle 구현 ──────────────────────────────────────────────────────
-#include "urdf_pinocchio_bridge/rt_model_handle.hpp"
+#include "rtc_urdf_bridge/rt_model_handle.hpp"
 
 // Pinocchio 알고리즘 헤더 (경고 억제)
 #pragma GCC diagnostic push
@@ -20,7 +20,7 @@
 #include <algorithm>
 #include <cstring>
 
-namespace urdf_pinocchio_bridge
+namespace rtc_urdf_bridge
 {
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -266,4 +266,4 @@ double RtModelHandle::ComputeMimicPosition(
   return multiplier * mimicked_q + offset;
 }
 
-}  // namespace urdf_pinocchio_bridge
+}  // namespace rtc_urdf_bridge

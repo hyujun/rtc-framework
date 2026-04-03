@@ -14,7 +14,7 @@
   <depend>rtc_msgs</depend>
   <depend>eigen</depend>
   <depend>pinocchio</depend>
-  <depend>urdf_pinocchio_bridge</depend>
+  <depend>rtc_urdf_bridge</depend>
   <depend>yaml-cpp</depend>
 
   <test_depend>ament_lint_auto</test_depend>

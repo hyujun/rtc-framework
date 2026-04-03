@@ -1,6 +1,6 @@
 // ── KinematicChainExtractor 테스트 ───────────────────────────────────────────
-#include "urdf_pinocchio_bridge/kinematic_chain_extractor.hpp"
-#include "urdf_pinocchio_bridge/urdf_analyzer.hpp"
+#include "rtc_urdf_bridge/kinematic_chain_extractor.hpp"
+#include "rtc_urdf_bridge/urdf_analyzer.hpp"
 
 #include <gtest/gtest.h>
 
@@ -8,7 +8,7 @@
 #include <filesystem>
 #include <string>
 
-namespace upb = urdf_pinocchio_bridge;
+namespace rub = rtc_urdf_bridge;
 
 static std::string TestUrdfPath(const std::string & filename)
 {
@@ -25,11 +25,11 @@ class ChainExtractorSerialTest : public ::testing::Test
 protected:
   void SetUp() override
   {
-    analyzer_ = std::make_unique<upb::UrdfAnalyzer>(TestUrdfPath("serial_6dof.urdf"));
-    extractor_ = std::make_unique<upb::KinematicChainExtractor>(*analyzer_);
+    analyzer_ = std::make_unique<rub::UrdfAnalyzer>(TestUrdfPath("serial_6dof.urdf"));
+    extractor_ = std::make_unique<rub::KinematicChainExtractor>(*analyzer_);
   }
-  std::unique_ptr<upb::UrdfAnalyzer> analyzer_;
-  std::unique_ptr<upb::KinematicChainExtractor> extractor_;
+  std::unique_ptr<rub::UrdfAnalyzer> analyzer_;
+  std::unique_ptr<rub::KinematicChainExtractor> extractor_;
 };
 
 TEST_F(ChainExtractorSerialTest, FullChainExtraction)
@@ -86,11 +86,11 @@ class ChainExtractorTreeTest : public ::testing::Test
 protected:
   void SetUp() override
   {
-    analyzer_ = std::make_unique<upb::UrdfAnalyzer>(TestUrdfPath("tree_hand.urdf"));
-    extractor_ = std::make_unique<upb::KinematicChainExtractor>(*analyzer_);
+    analyzer_ = std::make_unique<rub::UrdfAnalyzer>(TestUrdfPath("tree_hand.urdf"));
+    extractor_ = std::make_unique<rub::KinematicChainExtractor>(*analyzer_);
   }
-  std::unique_ptr<upb::UrdfAnalyzer> analyzer_;
-  std::unique_ptr<upb::KinematicChainExtractor> extractor_;
+  std::unique_ptr<rub::UrdfAnalyzer> analyzer_;
+  std::unique_ptr<rub::KinematicChainExtractor> extractor_;
 };
 
 TEST_F(ChainExtractorTreeTest, FullTreeExtraction)
@@ -147,11 +147,11 @@ class ChainExtractorMimicTest : public ::testing::Test
 protected:
   void SetUp() override
   {
-    analyzer_ = std::make_unique<upb::UrdfAnalyzer>(TestUrdfPath("arm_with_mimic.urdf"));
-    extractor_ = std::make_unique<upb::KinematicChainExtractor>(*analyzer_);
+    analyzer_ = std::make_unique<rub::UrdfAnalyzer>(TestUrdfPath("arm_with_mimic.urdf"));
+    extractor_ = std::make_unique<rub::KinematicChainExtractor>(*analyzer_);
   }
-  std::unique_ptr<upb::UrdfAnalyzer> analyzer_;
-  std::unique_ptr<upb::KinematicChainExtractor> extractor_;
+  std::unique_ptr<rub::UrdfAnalyzer> analyzer_;
+  std::unique_ptr<rub::KinematicChainExtractor> extractor_;
 };
 
 TEST_F(ChainExtractorMimicTest, ArmOnlySubModel)

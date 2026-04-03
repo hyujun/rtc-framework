@@ -23,7 +23,7 @@ find_package(rtc_base REQUIRED)
 find_package(rtc_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(pinocchio REQUIRED)
-find_package(urdf_pinocchio_bridge REQUIRED)
+find_package(rtc_urdf_bridge REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 # ── Library ───────────────────────────────────────────────────────────────────
@@ -43,7 +43,7 @@ ament_target_dependencies(rtc_controllers
   rtc_base
   rtc_msgs
   pinocchio
-  urdf_pinocchio_bridge
+  rtc_urdf_bridge
 )
 target_link_libraries(rtc_controllers yaml-cpp Eigen3::Eigen)
 
@@ -74,7 +74,7 @@ ament_export_dependencies(
   rtc_msgs
   Eigen3
   pinocchio
-  urdf_pinocchio_bridge
+  rtc_urdf_bridge
   yaml-cpp
 )
 ament_export_include_directories(include)

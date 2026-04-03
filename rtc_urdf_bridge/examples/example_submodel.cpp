@@ -8,14 +8,14 @@
 // 사용법: ./example_submodel <yaml_config_path>
 // ─────────────────────────────────────────────────────────────────────────────
 
-#include "urdf_pinocchio_bridge/pinocchio_model_builder.hpp"
-#include "urdf_pinocchio_bridge/rt_model_handle.hpp"
+#include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
+#include "rtc_urdf_bridge/rt_model_handle.hpp"
 
 #include <cstdlib>
 #include <iostream>
 #include <vector>
 
-namespace upb = urdf_pinocchio_bridge;
+namespace rub = rtc_urdf_bridge;
 
 int main(int argc, char * argv[])
 {
@@ -24,10 +24,10 @@ int main(int argc, char * argv[])
     return EXIT_FAILURE;
   }
 
-  std::cout << "=== urdf_pinocchio_bridge: 서브모델 사용법 ===\n\n";
+  std::cout << "=== rtc_urdf_bridge: 서브모델 사용법 ===\n\n";
 
   // ── (1) Builder 생성 ──────────────────────────────────────────────────────
-  upb::PinocchioModelBuilder builder(argv[1]);
+  rub::PinocchioModelBuilder builder(argv[1]);
 
   auto full_model = builder.GetFullModel();
   std::cout << "[1] Full model: nq=" << full_model->nq
@@ -59,8 +59,8 @@ int main(int argc, char * argv[])
     auto sub_model = builder.GetReducedModel(first_sub_name);
     const auto & def = builder.GetSubModelDefinition(first_sub_name);
 
-    upb::RtModelHandle full_handle(full_model);
-    upb::RtModelHandle sub_handle(sub_model);
+    rub::RtModelHandle full_handle(full_model);
+    rub::RtModelHandle sub_handle(sub_model);
 
     // 전체 모델용 q (모든 관절 = 0.2 rad)
     std::vector<double> q_full(static_cast<std::size_t>(full_handle.nq()), 0.2);
@@ -91,8 +91,8 @@ int main(int argc, char * argv[])
     auto model_a = builder.GetReducedModel(sub_names[0]);
     auto model_b = builder.GetReducedModel(sub_names[1]);
 
-    upb::RtModelHandle handle_a(model_a);
-    upb::RtModelHandle handle_b(model_b);
+    rub::RtModelHandle handle_a(model_a);
+    rub::RtModelHandle handle_b(model_b);
 
     std::vector<double> q_a(static_cast<std::size_t>(handle_a.nq()), 0.5);
     std::vector<double> q_b(static_cast<std::size_t>(handle_b.nq()), -0.3);

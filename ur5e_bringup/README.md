@@ -50,9 +50,9 @@ ur5e_bringup/
 
 ---
 
-## 기구학 모델 설정 (urdf_pinocchio_bridge)
+## 기구학 모델 설정 (rtc_urdf_bridge)
 
-데모 컨트롤러는 `urdf_pinocchio_bridge` 패키지를 통해 Pinocchio 기구학 모델을 구축합니다. URDF 경로와 모델 토폴로지(`sub_models`, `tree_models`, `passive_joints`)는 모두 `ur5e_robot.yaml` / `ur5e_sim.yaml`의 최상위 `urdf:` 섹션에 통합 정의됩니다.
+데모 컨트롤러는 `rtc_urdf_bridge` 패키지를 통해 Pinocchio 기구학 모델을 구축합니다. URDF 경로와 모델 토폴로지(`sub_models`, `tree_models`, `passive_joints`)는 모두 `ur5e_robot.yaml` / `ur5e_sim.yaml`의 최상위 `urdf:` 섹션에 통합 정의됩니다.
 
 ### 설정 구조
 
@@ -406,7 +406,7 @@ ros2 run ur5e_bringup motion_editor_gui
 | `rtc_controller_manager` | RT 제어 루프 |
 | `rtc_base` | 타입, 스레딩 |
 | `rtc_msgs` | 커스텀 메시지 |
-| `urdf_pinocchio_bridge` | URDF→Pinocchio 모델 빌더 + RT-safe handle |
+| `rtc_urdf_bridge` | URDF→Pinocchio 모델 빌더 + RT-safe handle |
 | `pinocchio` | 기구학 (FK, Jacobian) — bridge가 transitively 제공 |
 | `yaml-cpp` | YAML 파싱 |
 | `sensor_msgs` | JointState |
@@ -439,7 +439,7 @@ source install/setup.bash
 ```
 rtc_controller_manager + rtc_controllers + rtc_scripts + ur5e_description
     |                                                         |
-    |   urdf_pinocchio_bridge (URDF→Pinocchio 모델)           |
+    |   rtc_urdf_bridge (URDF→Pinocchio 모델)           |
     |       |                                                 |
 ur5e_bringup  <- UR5e 로봇별 통합 패키지 ────────────────────┘
     |

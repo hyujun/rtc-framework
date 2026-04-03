@@ -1,11 +1,11 @@
 // ── PinocchioModelBuilder 테스트 ─────────────────────────────────────────────
-#include "urdf_pinocchio_bridge/pinocchio_model_builder.hpp"
+#include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
 #include <gtest/gtest.h>
 
 #include <filesystem>
 
-namespace upb = urdf_pinocchio_bridge;
+namespace rub = rtc_urdf_bridge;
 
 static std::string TestUrdfPath(const std::string & filename)
 {
@@ -22,14 +22,14 @@ class ModelBuilderSerialTest : public ::testing::Test
 protected:
   void SetUp() override
   {
-    upb::ModelConfig cfg;
+    rub::ModelConfig cfg;
     cfg.urdf_path = TestUrdfPath("serial_6dof.urdf");
     cfg.root_joint_type = "fixed";
     cfg.sub_models.push_back({"arm", "base_link", "tool_link"});
     cfg.sub_models.push_back({"partial", "link_2", "link_5"});
-    builder_ = std::make_unique<upb::PinocchioModelBuilder>(cfg);
+    builder_ = std::make_unique<rub::PinocchioModelBuilder>(cfg);
   }
-  std::unique_ptr<upb::PinocchioModelBuilder> builder_;
+  std::unique_ptr<rub::PinocchioModelBuilder> builder_;
 };
 
 TEST_F(ModelBuilderSerialTest, FullModelDimensions)
@@ -82,11 +82,11 @@ class ModelBuilderTreeTest : public ::testing::Test
 protected:
   void SetUp() override
   {
-    upb::ModelConfig cfg;
+    rub::ModelConfig cfg;
     cfg.urdf_path = TestUrdfPath("tree_hand.urdf");
     cfg.root_joint_type = "fixed";
 
-    upb::TreeModelConfig tc;
+    rub::TreeModelConfig tc;
     tc.name = "hand";
     tc.root_link = "palm_link";
     tc.tip_links = {"thumb_tip", "index_tip", "middle_tip", "ring_tip"};
@@ -94,9 +94,9 @@ protected:
 
     cfg.sub_models.push_back({"thumb", "palm_link", "thumb_tip"});
 
-    builder_ = std::make_unique<upb::PinocchioModelBuilder>(cfg);
+    builder_ = std::make_unique<rub::PinocchioModelBuilder>(cfg);
   }
-  std::unique_ptr<upb::PinocchioModelBuilder> builder_;
+  std::unique_ptr<rub::PinocchioModelBuilder> builder_;
 };
 
 TEST_F(ModelBuilderTreeTest, FullModelDimensions)
@@ -135,15 +135,15 @@ class ModelBuilderMimicTest : public ::testing::Test
 protected:
   void SetUp() override
   {
-    upb::ModelConfig cfg;
+    rub::ModelConfig cfg;
     cfg.urdf_path = TestUrdfPath("arm_with_mimic.urdf");
     cfg.root_joint_type = "fixed";
     // finger_right_joint은 mimic → 자동으로 passive에 추가됨
     cfg.sub_models.push_back({"arm", "base_link", "link_5"});
     cfg.sub_models.push_back({"arm_gripper", "base_link", "finger_left"});
-    builder_ = std::make_unique<upb::PinocchioModelBuilder>(cfg);
+    builder_ = std::make_unique<rub::PinocchioModelBuilder>(cfg);
   }
-  std::unique_ptr<upb::PinocchioModelBuilder> builder_;
+  std::unique_ptr<rub::PinocchioModelBuilder> builder_;
 };
 
 TEST_F(ModelBuilderMimicTest, FullModelHasMimicJoint)
@@ -173,13 +173,13 @@ TEST_F(ModelBuilderMimicTest, ArmGripperExcludesMimicJoint)
 
 TEST(ModelBuilderErrorTest, EmptyConfigThrows)
 {
-  upb::ModelConfig cfg;  // urdf_path도 xml도 없음
-  EXPECT_THROW({ upb::PinocchioModelBuilder builder(cfg); }, std::runtime_error);
+  rub::ModelConfig cfg;  // urdf_path도 xml도 없음
+  EXPECT_THROW({ rub::PinocchioModelBuilder builder(cfg); }, std::runtime_error);
 }
 
 TEST(ModelBuilderErrorTest, BadUrdfPathThrows)
 {
-  upb::ModelConfig cfg;
+  rub::ModelConfig cfg;
   cfg.urdf_path = "/nonexistent/path/robot.urdf";
-  EXPECT_THROW({ upb::PinocchioModelBuilder builder(cfg); }, std::runtime_error);
+  EXPECT_THROW({ rub::PinocchioModelBuilder builder(cfg); }, std::runtime_error);
 }

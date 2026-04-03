@@ -14,7 +14,7 @@
   <depend>rtc_base</depend>
   <depend>rtc_msgs</depend>
   <depend>pinocchio</depend>
-  <depend>urdf_pinocchio_bridge</depend>
+  <depend>rtc_urdf_bridge</depend>
   <depend>yaml-cpp</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>

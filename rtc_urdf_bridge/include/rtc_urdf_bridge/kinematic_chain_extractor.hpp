@@ -1,14 +1,14 @@
 // ── KinematicChainExtractor: 서브모델/트리모델 체인 추출 ─────────────────────
 #pragma once
 
-#include "urdf_pinocchio_bridge/types.hpp"
-#include "urdf_pinocchio_bridge/urdf_analyzer.hpp"
+#include "rtc_urdf_bridge/types.hpp"
+#include "rtc_urdf_bridge/urdf_analyzer.hpp"
 
 #include <string>
 #include <string_view>
 #include <vector>
 
-namespace urdf_pinocchio_bridge
+namespace rtc_urdf_bridge
 {
 
 /// 분석된 URDF 트리에서 서브모델(root→tip 단일 체인) 및
@@ -58,4 +58,4 @@ private:
   static void DeduplicatePreserveOrder(std::vector<std::string> & vec);
 };
 
-}  // namespace urdf_pinocchio_bridge
+}  // namespace rtc_urdf_bridge

@@ -27,10 +27,10 @@ DemoJointController::DemoJointController(std::string_view urdf_path, Gains gains
 }
 
 void DemoJointController::InitArmModel(
-  const urdf_pinocchio_bridge::ModelConfig & config)
+  const rtc_urdf_bridge::ModelConfig & config)
 {
-  namespace upb = urdf_pinocchio_bridge;
-  builder_ = std::make_unique<upb::PinocchioModelBuilder>(config);
+  namespace rub = rtc_urdf_bridge;
+  builder_ = std::make_unique<rub::PinocchioModelBuilder>(config);
 
   // Resolve sub-model name: match primary device name, fallback to "arm"
   const auto primary = GetPrimaryDeviceName();
@@ -38,18 +38,18 @@ void DemoJointController::InitArmModel(
   for (const auto& sm : config.sub_models) {
     if (sm.name == primary) { model_name = primary; break; }
   }
-  arm_handle_ = std::make_unique<upb::RtModelHandle>(
+  arm_handle_ = std::make_unique<rub::RtModelHandle>(
     builder_->GetReducedModel(model_name));
 }
 
 // ── Hand tree-model initialization (commented out — enable when hand FK needed)
 //
 // void DemoJointController::InitHandModel(
-//   const urdf_pinocchio_bridge::ModelConfig & config)
+//   const rtc_urdf_bridge::ModelConfig & config)
 // {
-//   namespace upb = urdf_pinocchio_bridge;
+//   namespace rub = rtc_urdf_bridge;
 //   // "hand" tree_model: name matches device name
-//   hand_handle_ = std::make_unique<upb::RtModelHandle>(
+//   hand_handle_ = std::make_unique<rub::RtModelHandle>(
 //     builder_->GetTreeModel("hand"));
 //
 //   // Resolve fingertip frame IDs from tree_model tip_links
@@ -497,7 +497,7 @@ void DemoJointController::LoadConfig(const YAML::Node & cfg)
   if (!cfg) { return; }
 
   // ── Build arm model from system model config or bridge YAML ──────────────
-  namespace upb = urdf_pinocchio_bridge;
+  namespace rub = rtc_urdf_bridge;
   const auto* sys_cfg = GetSystemModelConfig();
   if (sys_cfg && !sys_cfg->urdf_path.empty() && !sys_cfg->sub_models.empty()) {
     // System-level ModelConfig (top-level "urdf:" YAML section)
@@ -508,12 +508,12 @@ void DemoJointController::LoadConfig(const YAML::Node & cfg)
     const auto yaml_path =
       ament_index_cpp::get_package_share_directory("ur5e_bringup")
       + "/config/" + yaml_name;
-    auto model_cfg = upb::PinocchioModelBuilder::LoadModelConfig(yaml_path);
+    auto model_cfg = rub::PinocchioModelBuilder::LoadModelConfig(yaml_path);
     model_cfg.urdf_path = urdf_path_;
     InitArmModel(model_cfg);
   } else if (!urdf_path_.empty()) {
     // Fallback: arm-only URDF, no sub-model extraction
-    upb::ModelConfig model_cfg;
+    rub::ModelConfig model_cfg;
     model_cfg.urdf_path = urdf_path_;
     model_cfg.root_joint_type = "fixed";
     model_cfg.sub_models.push_back({"arm", "base_link", "tool0"});

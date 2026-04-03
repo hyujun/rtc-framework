@@ -1,11 +1,11 @@
 // ── KinematicChainExtractor 구현 ─────────────────────────────────────────────
-#include "urdf_pinocchio_bridge/kinematic_chain_extractor.hpp"
+#include "rtc_urdf_bridge/kinematic_chain_extractor.hpp"
 
 #include <algorithm>
 #include <stdexcept>
 #include <unordered_set>
 
-namespace urdf_pinocchio_bridge
+namespace rtc_urdf_bridge
 {
 
 KinematicChainExtractor::KinematicChainExtractor(const UrdfAnalyzer & analyzer)
@@ -182,4 +182,4 @@ void KinematicChainExtractor::DeduplicatePreserveOrder(std::vector<std::string> 
   vec.erase(end, vec.end());
 }
 
-}  // namespace urdf_pinocchio_bridge
+}  // namespace rtc_urdf_bridge

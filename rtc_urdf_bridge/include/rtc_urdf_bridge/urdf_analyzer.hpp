@@ -1,7 +1,7 @@
 // ── UrdfAnalyzer: URDF 파싱 + kinematic 토폴로지 분석 ────────────────────────
 #pragma once
 
-#include "urdf_pinocchio_bridge/types.hpp"
+#include "rtc_urdf_bridge/types.hpp"
 
 #include <string>
 #include <string_view>
@@ -9,7 +9,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace urdf_pinocchio_bridge
+namespace rtc_urdf_bridge
 {
 
 /// 임의의 URDF XML을 파싱하여 링크-관절 인접 그래프를 구축하고,
@@ -134,4 +134,4 @@ private:
   std::vector<int> depth_;
 };
 
-}  // namespace urdf_pinocchio_bridge
+}  // namespace rtc_urdf_bridge

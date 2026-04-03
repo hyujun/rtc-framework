@@ -1,6 +1,6 @@
 // ── RtModelHandle 테스트 ────────────────────────────────────────────────────
-#include "urdf_pinocchio_bridge/pinocchio_model_builder.hpp"
-#include "urdf_pinocchio_bridge/rt_model_handle.hpp"
+#include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
+#include "rtc_urdf_bridge/rt_model_handle.hpp"
 
 #include <gtest/gtest.h>
 
@@ -8,7 +8,7 @@
 #include <filesystem>
 #include <vector>
 
-namespace upb = urdf_pinocchio_bridge;
+namespace rub = rtc_urdf_bridge;
 
 static std::string TestUrdfPath(const std::string & filename)
 {
@@ -44,14 +44,14 @@ class RtModelHandleSerialTest : public ::testing::Test
 protected:
   void SetUp() override
   {
-    upb::ModelConfig cfg;
+    rub::ModelConfig cfg;
     cfg.urdf_path = TestUrdfPath("serial_6dof.urdf");
     cfg.root_joint_type = "fixed";
-    builder_ = std::make_unique<upb::PinocchioModelBuilder>(cfg);
-    handle_ = std::make_unique<upb::RtModelHandle>(builder_->GetFullModel());
+    builder_ = std::make_unique<rub::PinocchioModelBuilder>(cfg);
+    handle_ = std::make_unique<rub::RtModelHandle>(builder_->GetFullModel());
   }
-  std::unique_ptr<upb::PinocchioModelBuilder> builder_;
-  std::unique_ptr<upb::RtModelHandle> handle_;
+  std::unique_ptr<rub::PinocchioModelBuilder> builder_;
+  std::unique_ptr<rub::RtModelHandle> handle_;
 };
 
 TEST_F(RtModelHandleSerialTest, Dimensions)
@@ -172,16 +172,16 @@ TEST_F(RtModelHandleSerialTest, NonexistentFrameReturnsZero)
 
 TEST(RtModelHandleFKConsistency, SubModelVsFullModel)
 {
-  upb::ModelConfig cfg;
+  rub::ModelConfig cfg;
   cfg.urdf_path = TestUrdfPath("serial_6dof.urdf");
   cfg.root_joint_type = "fixed";
   cfg.sub_models.push_back({"arm", "base_link", "tool_link"});
-  upb::PinocchioModelBuilder builder(cfg);
+  rub::PinocchioModelBuilder builder(cfg);
 
   // full model handle
-  upb::RtModelHandle full_handle(builder.GetFullModel());
+  rub::RtModelHandle full_handle(builder.GetFullModel());
   // sub-model handle (arm = 전체 체인이므로 동일한 결과 기대)
-  upb::RtModelHandle arm_handle(builder.GetReducedModel("arm"));
+  rub::RtModelHandle arm_handle(builder.GetReducedModel("arm"));
 
   // 임의의 설정값
   std::vector<double> q = {0.1, -0.3, 0.5, -0.2, 0.4, -0.1};
@@ -206,12 +206,12 @@ TEST(RtModelHandleFKConsistency, SubModelVsFullModel)
 
 TEST(RtModelHandleTreeTest, MultipleTipFK)
 {
-  upb::ModelConfig cfg;
+  rub::ModelConfig cfg;
   cfg.urdf_path = TestUrdfPath("tree_hand.urdf");
   cfg.root_joint_type = "fixed";
-  upb::PinocchioModelBuilder builder(cfg);
+  rub::PinocchioModelBuilder builder(cfg);
 
-  upb::RtModelHandle handle(builder.GetFullModel());
+  rub::RtModelHandle handle(builder.GetFullModel());
   EXPECT_EQ(handle.nq(), 10);
 
   std::vector<double> q(10, 0.3);
@@ -235,10 +235,10 @@ TEST(RtModelHandleTreeTest, MultipleTipFK)
 TEST(RtModelHandleMimicTest, ComputeMimicPosition)
 {
   // q_mimic = -1.0 * 0.5 + 0.0 = -0.5
-  double result = upb::RtModelHandle::ComputeMimicPosition(0.5, -1.0, 0.0);
+  double result = rub::RtModelHandle::ComputeMimicPosition(0.5, -1.0, 0.0);
   EXPECT_DOUBLE_EQ(result, -0.5);
 
   // q_mimic = 2.0 * 0.3 + 0.1 = 0.7
-  result = upb::RtModelHandle::ComputeMimicPosition(0.3, 2.0, 0.1);
+  result = rub::RtModelHandle::ComputeMimicPosition(0.3, 2.0, 0.1);
   EXPECT_DOUBLE_EQ(result, 0.7);
 }

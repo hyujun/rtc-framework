@@ -1,5 +1,5 @@
 // ── Xacro 전처리 유틸리티 구현 ───────────────────────────────────────────────
-#include "urdf_pinocchio_bridge/xacro_processor.hpp"
+#include "rtc_urdf_bridge/xacro_processor.hpp"
 
 #include <array>
 #include <cstdio>
@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace urdf_pinocchio_bridge
+namespace rtc_urdf_bridge
 {
 
 bool IsXacroFile(std::string_view file_path) noexcept
@@ -76,4 +76,4 @@ std::string ProcessXacro(
   return output;
 }
 
-}  // namespace urdf_pinocchio_bridge
+}  // namespace rtc_urdf_bridge

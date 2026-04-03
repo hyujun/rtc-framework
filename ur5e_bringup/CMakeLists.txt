@@ -32,7 +32,7 @@ set(Python3_FIND_VIRTUALENV STANDARD)
 find_package(Python3 COMPONENTS Interpreter Development NumPy)
 
 find_package(pinocchio REQUIRED)
-find_package(urdf_pinocchio_bridge REQUIRED)
+find_package(rtc_urdf_bridge REQUIRED)
 find_package(rtc_controller_manager REQUIRED)
 
 # ── Static library: demo controllers ──────────────────────────────────────────
@@ -57,7 +57,7 @@ ament_target_dependencies(${PROJECT_NAME}_demo_controllers
   rtc_base
   rtc_msgs
   pinocchio
-  urdf_pinocchio_bridge
+  rtc_urdf_bridge
 )
 
 target_link_libraries(${PROJECT_NAME}_demo_controllers
@@ -139,7 +139,7 @@ ament_export_dependencies(
   rtc_base
   rtc_msgs
   pinocchio
-  urdf_pinocchio_bridge
+  rtc_urdf_bridge
   yaml-cpp
 )
 ament_export_include_directories(include)

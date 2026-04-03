@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(urdf_pinocchio_bridge VERSION 5.17.0 LANGUAGES CXX)
+project(rtc_urdf_bridge VERSION 5.17.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -87,7 +87,7 @@ install(
 
 # ── Export ────────────────────────────────────────────────────────────────────
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(pinocchio Eigen3 yaml-cpp)
+ament_export_dependencies(pinocchio Eigen3 yaml-cpp tinyxml2)
 ament_export_include_directories(include)
 
 # ── Tests ────────────────────────────────────────────────────────────────────

@@ -5,7 +5,7 @@
 #include <string_view>
 #include <unordered_map>
 
-namespace urdf_pinocchio_bridge
+namespace rtc_urdf_bridge
 {
 
 /// 파일 경로가 .xacro 확장자인지 확인
@@ -21,4 +21,4 @@ namespace urdf_pinocchio_bridge
   const std::string & file_path,
   const std::unordered_map<std::string, std::string> & xacro_args = {});
 
-}  // namespace urdf_pinocchio_bridge
+}  // namespace rtc_urdf_bridge

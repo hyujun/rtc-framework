@@ -360,13 +360,13 @@ install_python_base_deps() {
   fi
 }
 
-# ── Pinocchio + urdf_pinocchio_bridge deps ────────────────────────────────────
-# Pinocchio: needed by ClikController / DemoTaskController / OSC / urdf_pinocchio_bridge
-# tinyxml2, yaml-cpp: needed by urdf_pinocchio_bridge
+# ── Pinocchio + rtc_urdf_bridge deps ────────────────────────────────────
+# Pinocchio: needed by ClikController / DemoTaskController / OSC / rtc_urdf_bridge
+# tinyxml2, yaml-cpp: needed by rtc_urdf_bridge
 install_pinocchio() {
-  info "Installing Pinocchio and urdf_pinocchio_bridge dependencies..."
+  info "Installing Pinocchio and rtc_urdf_bridge dependencies..."
   sudo apt-get install -y libtinyxml2-dev libyaml-cpp-dev > /dev/null
-  success "tinyxml2 and yaml-cpp installed (urdf_pinocchio_bridge)"
+  success "tinyxml2 and yaml-cpp installed (rtc_urdf_bridge)"
 
   info "Installing Pinocchio (${ROS_PKG_PREFIX})..."
   if sudo apt-get install -y ${ROS_PKG_PREFIX}-pinocchio >/dev/null 2>&1; then

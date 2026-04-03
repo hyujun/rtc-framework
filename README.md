@@ -13,7 +13,7 @@
 
 ## 패키지 구성
 
-18개 ROS2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`), 유틸리티(`urdf_pinocchio_bridge`), 형상 추정(`shape_estimation_*`), 로봇 고유 패키지(`ur5e_*`)로 분리됩니다. 각 패키지는 자체 `README.md`를 포함합니다.
+18개 ROS2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`), 형상 추정(`shape_estimation_*`), 로봇 고유 패키지(`ur5e_*`)로 분리됩니다. 각 패키지는 자체 `README.md`를 포함합니다.
 
 ### 로봇 비의존적 프레임워크 (rtc_*)
 
@@ -35,7 +35,7 @@
 
 | 패키지 | 버전 | 설명 | 빌드 |
 |--------|------|------|------|
-| [`urdf_pinocchio_bridge`](urdf_pinocchio_bridge/) | 5.17.0 | 로봇 비의존적 URDF 파서 + Pinocchio 모델 빌더, YAML 기반 체인 추출 설정 | ament_cmake |
+| [`rtc_urdf_bridge`](rtc_urdf_bridge/) | 5.17.0 | 로봇 비의존적 URDF 파서 + Pinocchio 모델 빌더, YAML 기반 체인 추출 설정 | ament_cmake |
 
 ### 형상 추정 패키지 (shape_estimation_*)
 
@@ -60,14 +60,14 @@ rtc_msgs, rtc_base (독립)
   ├── rtc_communication ← rtc_base
   ├── rtc_inference ← rtc_base
   ├── rtc_controller_interface ← rtc_base, rtc_msgs
-  │   └── rtc_controllers ← rtc_controller_interface, urdf_pinocchio_bridge
+  │   └── rtc_controllers ← rtc_controller_interface, rtc_urdf_bridge
   │       └── rtc_controller_manager ← rtc_controllers, rtc_communication
   ├── rtc_mujoco_sim ← MuJoCo 3.x (optional)
   ├── rtc_digital_twin (독립, Python)
   ├── rtc_tools (독립, Python)
   └── rtc_scripts (독립, shell)
 
-urdf_pinocchio_bridge ← Pinocchio, tinyxml2, yaml-cpp
+rtc_urdf_bridge ← Pinocchio, tinyxml2, yaml-cpp
 
 shape_estimation_msgs (독립)
   └── shape_estimation ← shape_estimation_msgs, Eigen3

@@ -1,6 +1,6 @@
 // ── UrdfAnalyzer 구현 ────────────────────────────────────────────────────────
-#include "urdf_pinocchio_bridge/urdf_analyzer.hpp"
-#include "urdf_pinocchio_bridge/xacro_processor.hpp"
+#include "rtc_urdf_bridge/urdf_analyzer.hpp"
+#include "rtc_urdf_bridge/xacro_processor.hpp"
 
 #include <tinyxml2.h>
 
@@ -11,7 +11,7 @@
 #include <sstream>
 #include <stdexcept>
 
-namespace urdf_pinocchio_bridge
+namespace rtc_urdf_bridge
 {
 
 // ── 생성자 (파일 경로) ───────────────────────────────────────────────────────
@@ -488,4 +488,4 @@ const std::string & UrdfAnalyzer::GetUrdfFilePath() const noexcept
   return urdf_file_path_;
 }
 
-}  // namespace urdf_pinocchio_bridge
+}  // namespace rtc_urdf_bridge

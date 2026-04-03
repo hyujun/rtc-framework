@@ -1,5 +1,5 @@
 // ── example_basic_usage.cpp ──────────────────────────────────────────────────
-// urdf_pinocchio_bridge 기본 사용법:
+// rtc_urdf_bridge 기본 사용법:
 //   1. YAML 설정 → URDF 로드 → 분석
 //   2. Pinocchio 모델 구축
 //   3. RtModelHandle로 FK, Jacobian, nle 계산
@@ -7,8 +7,8 @@
 // 사용법: ./example_basic_usage <yaml_config_path>
 // ─────────────────────────────────────────────────────────────────────────────
 
-#include "urdf_pinocchio_bridge/pinocchio_model_builder.hpp"
-#include "urdf_pinocchio_bridge/rt_model_handle.hpp"
+#include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
+#include "rtc_urdf_bridge/rt_model_handle.hpp"
 
 #include <Eigen/Core>
 
@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-namespace upb = urdf_pinocchio_bridge;
+namespace rub = rtc_urdf_bridge;
 
 int main(int argc, char * argv[])
 {
@@ -27,10 +27,10 @@ int main(int argc, char * argv[])
   }
 
   // ── (1) YAML 설정 로드 + URDF 분석 + 모델 구축 ────────────────────────────
-  std::cout << "=== urdf_pinocchio_bridge: 기본 사용법 ===\n\n";
+  std::cout << "=== rtc_urdf_bridge: 기본 사용법 ===\n\n";
   std::cout << "[1] YAML 설정 파일: " << argv[1] << "\n";
 
-  upb::PinocchioModelBuilder builder(argv[1]);
+  rub::PinocchioModelBuilder builder(argv[1]);
 
   // ── (2) URDF 분석 결과 출력 ───────────────────────────────────────────────
   const auto & analyzer = builder.GetAnalyzer();
@@ -71,7 +71,7 @@ int main(int argc, char * argv[])
   std::cout << "  nframes: " << full_model->nframes << "\n";
 
   // ── (4) RtModelHandle 생성 + FK ───────────────────────────────────────────
-  upb::RtModelHandle handle(full_model);
+  rub::RtModelHandle handle(full_model);
 
   // neutral config에서 FK
   std::vector<double> q(static_cast<std::size_t>(handle.nq()), 0.0);

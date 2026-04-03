@@ -10,8 +10,8 @@
 #include <string_view>
 #include <vector>
 
-#include "urdf_pinocchio_bridge/pinocchio_model_builder.hpp"
-#include "urdf_pinocchio_bridge/rt_model_handle.hpp"
+#include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
+#include "rtc_urdf_bridge/rt_model_handle.hpp"
 
 #include <Eigen/Core>
 
@@ -119,25 +119,25 @@ private:
   Gains gains_;
   std::array<std::array<double, rtc::kMaxDeviceChannels>, ControllerState::kMaxDevices> device_targets_{};
 
-  // ── urdf_pinocchio_bridge ────────────────────────────────────────────
+  // ── rtc_urdf_bridge ────────────────────────────────────────────
   std::string urdf_path_;  // stored from constructor, used in LoadConfig
-  std::unique_ptr<urdf_pinocchio_bridge::PinocchioModelBuilder> builder_;
-  std::unique_ptr<urdf_pinocchio_bridge::RtModelHandle> arm_handle_;
+  std::unique_ptr<rtc_urdf_bridge::PinocchioModelBuilder> builder_;
+  std::unique_ptr<rtc_urdf_bridge::RtModelHandle> arm_handle_;
   pinocchio::FrameIndex tip_frame_id_{0};
   pinocchio::FrameIndex root_frame_id_{0};
   bool                  use_root_frame_{false};
   // ── Hand tree-model for fingertip FK ──────────────────────────────────
   // Uncomment when hand FK/Jacobian is needed. Requires tree_models config
   // with name matching the hand device group (e.g. "hand").
-  // std::unique_ptr<urdf_pinocchio_bridge::RtModelHandle> hand_handle_;
+  // std::unique_ptr<rtc_urdf_bridge::RtModelHandle> hand_handle_;
   // static constexpr std::size_t kNumFingertips = 4;
   // std::array<pinocchio::FrameIndex, kNumFingertips> fingertip_frame_ids_{};
   // std::array<Eigen::Vector3d, kNumFingertips> fingertip_positions_{};
   // std::array<Eigen::Matrix3d, kNumFingertips> fingertip_rotations_{};
   // Eigen::VectorXd hand_q_;  // pre-allocated for hand FK
 
-  void InitArmModel(const urdf_pinocchio_bridge::ModelConfig & config);
-  // void InitHandModel(const urdf_pinocchio_bridge::ModelConfig & config);
+  void InitArmModel(const rtc_urdf_bridge::ModelConfig & config);
+  // void InitHandModel(const rtc_urdf_bridge::ModelConfig & config);
 
   CommandType command_type_{CommandType::kPosition};
 

@@ -1,12 +1,12 @@
 // ── UrdfAnalyzer 테스트 ──────────────────────────────────────────────────────
-#include "urdf_pinocchio_bridge/urdf_analyzer.hpp"
+#include "rtc_urdf_bridge/urdf_analyzer.hpp"
 
 #include <gtest/gtest.h>
 
 #include <filesystem>
 #include <string>
 
-namespace upb = urdf_pinocchio_bridge;
+namespace rub = rtc_urdf_bridge;
 
 // 테스트 URDF 경로 헬퍼
 static std::string TestUrdfPath(const std::string & filename)
@@ -25,9 +25,9 @@ class UrdfAnalyzerSerialTest : public ::testing::Test
 protected:
   void SetUp() override
   {
-    analyzer_ = std::make_unique<upb::UrdfAnalyzer>(TestUrdfPath("serial_6dof.urdf"));
+    analyzer_ = std::make_unique<rub::UrdfAnalyzer>(TestUrdfPath("serial_6dof.urdf"));
   }
-  std::unique_ptr<upb::UrdfAnalyzer> analyzer_;
+  std::unique_ptr<rub::UrdfAnalyzer> analyzer_;
 };
 
 TEST_F(UrdfAnalyzerSerialTest, RootLinkDetection)
@@ -54,7 +54,7 @@ TEST_F(UrdfAnalyzerSerialTest, ActuatedJoints)
   EXPECT_EQ(actuated.size(), 6u);
   // 모든 revolute 관절이 actuated
   for (const auto & j : actuated) {
-    EXPECT_EQ(analyzer_->GetJointType(j), upb::UrdfJointType::kRevolute);
+    EXPECT_EQ(analyzer_->GetJointType(j), rub::UrdfJointType::kRevolute);
   }
 }
 
@@ -108,7 +108,7 @@ TEST_F(UrdfAnalyzerSerialTest, JointMeta)
   const auto & meta = analyzer_->GetJointMeta("joint_3");
   EXPECT_EQ(meta.parent_link, "link_2");
   EXPECT_EQ(meta.child_link, "link_3");
-  EXPECT_EQ(meta.type, upb::UrdfJointType::kRevolute);
+  EXPECT_EQ(meta.type, rub::UrdfJointType::kRevolute);
   EXPECT_NEAR(meta.upper, 3.14159, 1e-4);
 }
 
@@ -131,9 +131,9 @@ class UrdfAnalyzerTreeTest : public ::testing::Test
 protected:
   void SetUp() override
   {
-    analyzer_ = std::make_unique<upb::UrdfAnalyzer>(TestUrdfPath("tree_hand.urdf"));
+    analyzer_ = std::make_unique<rub::UrdfAnalyzer>(TestUrdfPath("tree_hand.urdf"));
   }
-  std::unique_ptr<upb::UrdfAnalyzer> analyzer_;
+  std::unique_ptr<rub::UrdfAnalyzer> analyzer_;
 };
 
 TEST_F(UrdfAnalyzerTreeTest, RootLink)
@@ -170,9 +170,9 @@ class UrdfAnalyzerFourBarTest : public ::testing::Test
 protected:
   void SetUp() override
   {
-    analyzer_ = std::make_unique<upb::UrdfAnalyzer>(TestUrdfPath("four_bar.urdf"));
+    analyzer_ = std::make_unique<rub::UrdfAnalyzer>(TestUrdfPath("four_bar.urdf"));
   }
-  std::unique_ptr<upb::UrdfAnalyzer> analyzer_;
+  std::unique_ptr<rub::UrdfAnalyzer> analyzer_;
 };
 
 TEST_F(UrdfAnalyzerFourBarTest, ClosedChainDetection)
@@ -206,9 +206,9 @@ class UrdfAnalyzerMimicTest : public ::testing::Test
 protected:
   void SetUp() override
   {
-    analyzer_ = std::make_unique<upb::UrdfAnalyzer>(TestUrdfPath("arm_with_mimic.urdf"));
+    analyzer_ = std::make_unique<rub::UrdfAnalyzer>(TestUrdfPath("arm_with_mimic.urdf"));
   }
-  std::unique_ptr<upb::UrdfAnalyzer> analyzer_;
+  std::unique_ptr<rub::UrdfAnalyzer> analyzer_;
 };
 
 TEST_F(UrdfAnalyzerMimicTest, MimicJointDetection)
@@ -231,8 +231,8 @@ TEST_F(UrdfAnalyzerMimicTest, PassiveVsActuated)
 
 TEST_F(UrdfAnalyzerMimicTest, JointTypes)
 {
-  EXPECT_EQ(analyzer_->GetJointType("finger_left_joint"), upb::UrdfJointType::kPrismatic);
-  EXPECT_EQ(analyzer_->GetJointType("finger_right_joint"), upb::UrdfJointType::kPrismatic);
+  EXPECT_EQ(analyzer_->GetJointType("finger_left_joint"), rub::UrdfJointType::kPrismatic);
+  EXPECT_EQ(analyzer_->GetJointType("finger_right_joint"), rub::UrdfJointType::kPrismatic);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -255,7 +255,7 @@ TEST(UrdfAnalyzerXmlTest, FromXmlString)
     </robot>
   )";
 
-  upb::UrdfAnalyzer analyzer(xml, upb::UrdfAnalyzer::FromXmlTag{});
+  rub::UrdfAnalyzer analyzer(xml, rub::UrdfAnalyzer::FromXmlTag{});
   EXPECT_EQ(analyzer.GetRootLinkName(), "world");
   EXPECT_EQ(analyzer.GetNumLinks(), 2u);
   EXPECT_EQ(analyzer.GetActuatedJointNames().size(), 1u);
@@ -264,13 +264,13 @@ TEST(UrdfAnalyzerXmlTest, FromXmlString)
 TEST(UrdfAnalyzerXmlTest, EmptyXmlThrows)
 {
   EXPECT_THROW(
-    upb::UrdfAnalyzer("", upb::UrdfAnalyzer::FromXmlTag{}),
+    rub::UrdfAnalyzer("", rub::UrdfAnalyzer::FromXmlTag{}),
     std::runtime_error);
 }
 
 TEST(UrdfAnalyzerXmlTest, MalformedXmlThrows)
 {
   EXPECT_THROW(
-    upb::UrdfAnalyzer("<robot><broken", upb::UrdfAnalyzer::FromXmlTag{}),
+    rub::UrdfAnalyzer("<robot><broken", rub::UrdfAnalyzer::FromXmlTag{}),
     std::runtime_error);
 }
