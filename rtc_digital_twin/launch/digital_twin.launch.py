@@ -152,7 +152,33 @@ def launch_setup(context, *args, **kwargs):
         output='screen',
     )
 
-    return [robot_state_publisher_node, digital_twin_node, rviz_node]
+    # ── joint_gui_node (conditional) ────────────────────────────────────
+    use_joint_gui = LaunchConfiguration('use_joint_gui')
+
+    # Read joint_gui params from YAML config
+    import yaml as _yaml
+    with open(config_file, 'r') as _f:
+        _cfg = _yaml.safe_load(_f)
+    _gui_params = _cfg.get('/**', {}).get('ros__parameters', {})
+    gui_output_topic = _gui_params.get('joint_gui.output_topic',
+                                       '/joint_gui/joint_states')
+    gui_publish_rate = _gui_params.get('joint_gui.publish_rate', 10.0)
+
+    joint_gui_node = Node(
+        package='rtc_digital_twin',
+        executable='joint_gui_node',
+        name='joint_gui_node',
+        parameters=[{
+            'robot_description': robot_description,
+            'joint_gui.output_topic': gui_output_topic,
+            'joint_gui.publish_rate': gui_publish_rate,
+        }],
+        condition=IfCondition(use_joint_gui),
+        output='screen',
+    )
+
+    return [robot_state_publisher_node, digital_twin_node, rviz_node,
+            joint_gui_node]
 
 
 def generate_launch_description():
@@ -184,6 +210,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'display_rate', default_value='',
             description='Override display_rate from YAML',
+        ),
+        DeclareLaunchArgument(
+            'use_joint_gui', default_value='false',
+            description='Launch Joint State Publisher GUI',
         ),
         OpaqueFunction(function=launch_setup),
     ])

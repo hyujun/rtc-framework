@@ -24,6 +24,7 @@ setup(
     entry_points={
         'console_scripts': [
             'digital_twin_node = rtc_digital_twin.digital_twin_node:main',
+            'joint_gui_node = rtc_digital_twin.joint_gui:main',
         ],
     },
 )

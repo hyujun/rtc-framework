@@ -49,6 +49,11 @@
     #   - "middle_dip_fe"
     #   - "ring_mcp_fe"
 
+    # ── Joint State Publisher GUI (optional) ────────────────────────────
+    joint_gui.enabled: false                    # true = launch GUI node
+    joint_gui.output_topic: "/joint_gui/joint_states"   # JointState output topic
+    joint_gui.publish_rate: 10.0                # Hz — GUI publish rate
+
     # ── Sensor visualization ────────────────────────────────────────────
     sensor_viz.sensor_topic: "/hand/sensor_states/monitor"
     sensor_viz.marker_topic: "/digital_twin/fingertip_markers"
