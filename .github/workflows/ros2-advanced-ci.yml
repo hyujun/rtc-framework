@@ -2,9 +2,9 @@ name: ROS2 Advanced CI
 
 on:
   push:
-    branches: [master, develop]
+    branches: [main]
   pull_request:
-    branches: [master]
+    branches: [main]
 
 # 동일 브랜치 중복 실행 방지 — 새 push 시 이전 실행 자동 취소
 concurrency:
@@ -31,7 +31,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        path: src/ur5e-rt-controller
+        path: src/rtc-framework
 
     - name: Setup ROS2 ${{ matrix.ros_distro }}
       uses: ros-tooling/setup-ros@v0.7
@@ -43,19 +43,26 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y \
           ros-${{ matrix.ros_distro }}-pinocchio \
-          ros-${{ matrix.ros_distro }}-ur-robot-driver \
-          ros-${{ matrix.ros_distro }}-realtime-tools
+          libyaml-cpp-dev \
+          libtinyxml2-dev \
+          libeigen3-dev
 
     - name: Run Linter
       uses: ros-tooling/action-ros-lint@v0.1
       with:
         linter: ${{ matrix.linter }}
         package-name: |
-          ur5e_rt_base
-          ur5e_rt_controller
-          ur5e_hand_udp
-          ur5e_status_monitor
-        workspace-directory: src/ur5e-rt-controller
+          rtc_base
+          rtc_communication
+          rtc_controller_interface
+          rtc_controller_manager
+          rtc_controllers
+          rtc_inference
+          rtc_msgs
+          urdf_pinocchio_bridge
+          ur5e_bringup
+          ur5e_hand_driver
+        workspace-directory: src/rtc-framework
       env:
         # Ubuntu 24.04의 cppcheck 2.13.0 성능 이슈 차단 우회
         AMENT_CPPCHECK_ALLOW_SLOW_VERSIONS: 1
@@ -103,22 +110,26 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y \
           ros-${{ matrix.ros_distro }}-pinocchio \
-          ros-${{ matrix.ros_distro }}-ur-robot-driver \
-          ros-${{ matrix.ros_distro }}-ur-msgs \
-          ros-${{ matrix.ros_distro }}-ur-description \
-          ros-${{ matrix.ros_distro }}-realtime-tools \
+          libyaml-cpp-dev \
+          libtinyxml2-dev \
+          libeigen3-dev \
           lcov
 
     - name: Build Packages (with coverage flags)
       run: |
         source /opt/ros/${{ matrix.ros_distro }}/setup.bash
-        # --packages-up-to: ur5e_description 등 의존성 자동 해결
+        # MuJoCo/BT/ONNX 패키지 제외 (CI에 해당 라이브러리 미설치)
         colcon build \
-          --packages-up-to ur5e_rt_controller ur5e_hand_udp ur5e_tools \
+          --packages-up-to \
+            rtc_controller_manager \
+            rtc_controllers \
+            ur5e_bringup \
+            ur5e_hand_driver \
+            urdf_pinocchio_bridge \
+            shape_estimation \
           --cmake-args \
             -DCMAKE_BUILD_TYPE=Debug \
             -DBUILD_TESTING=ON \
-            -DCMAKE_POLICY_DEFAULT_CMP0167=OLD \
             '-DCMAKE_CXX_FLAGS=--coverage -fprofile-arcs -ftest-coverage' \
             '-DCMAKE_C_FLAGS=--coverage' \
             '-DCMAKE_EXE_LINKER_FLAGS=--coverage' \
@@ -129,7 +140,10 @@ jobs:
         source /opt/ros/${{ matrix.ros_distro }}/setup.bash
         source install/setup.bash
         colcon test \
-          --packages-select ur5e_rt_controller ur5e_hand_udp \
+          --packages-select \
+            rtc_controllers \
+            urdf_pinocchio_bridge \
+            shape_estimation \
           --event-handlers console_cohesion+ \
           --return-code-on-test-failure
 
@@ -143,8 +157,8 @@ jobs:
       if: always()
       run: |
         # 빌드 실패 시 coverage 디렉토리가 없으면 skip
-        if [ ! -d "build/ur5e_rt_controller" ]; then
-          echo "::warning::build/ur5e_rt_controller not found — skipping coverage"
+        if [ ! -d "build/rtc_controllers" ] && [ ! -d "build/urdf_pinocchio_bridge" ]; then
+          echo "::warning::build directories not found — skipping coverage"
           exit 0
         fi
 
@@ -158,22 +172,30 @@ jobs:
           BRANCH_RC="--rc lcov_branch_coverage=1"
         fi
 
+        # 테스트가 있는 패키지별로 coverage 수집
+        COVERAGE_DIRS=""
+        for pkg in rtc_controllers urdf_pinocchio_bridge shape_estimation; do
+          if [ -d "build/$pkg" ]; then
+            COVERAGE_DIRS="$COVERAGE_DIRS --directory build/$pkg"
+          fi
+        done
+
         if [ "$LCOV_MAJOR" -ge 2 ]; then
           # lcov 2.x: --initial 제거됨, --capture만 사용
           lcov --capture \
-            --directory build/ur5e_rt_controller \
+            $COVERAGE_DIRS \
             --output-file coverage_merged.info \
             $BRANCH_RC \
             --ignore-errors mismatch
         else
           # lcov 1.x: baseline + test coverage 병합
           lcov --capture --initial \
-            --directory build/ur5e_rt_controller \
+            $COVERAGE_DIRS \
             --output-file coverage_base.info \
             $BRANCH_RC
 
           lcov --capture \
-            --directory build/ur5e_rt_controller \
+            $COVERAGE_DIRS \
             --output-file coverage_test.info \
             $BRANCH_RC
 
@@ -183,19 +205,31 @@ jobs:
             $BRANCH_RC
         fi
 
-        # 프로젝트 소스 코드만 추출 (--extract: 명시적 포함 방식)
+        # 프로젝트 소스 코드만 추출
         lcov --extract coverage_merged.info \
-          '*/ur5e_rt_controller/include/*' \
-          '*/ur5e_rt_controller/src/*' \
-          '*/ur5e_rt_base/include/*' \
-          '*/ur5e_hand_udp/include/*' \
-          '*/ur5e_hand_udp/src/*' \
+          '*/rtc_base/include/*' \
+          '*/rtc_communication/include/*' \
+          '*/rtc_controller_interface/include/*' \
+          '*/rtc_controller_interface/src/*' \
+          '*/rtc_controller_manager/src/*' \
+          '*/rtc_controllers/include/*' \
+          '*/rtc_controllers/src/*' \
+          '*/rtc_inference/include/*' \
+          '*/urdf_pinocchio_bridge/include/*' \
+          '*/urdf_pinocchio_bridge/src/*' \
+          '*/ur5e_bringup/include/*' \
+          '*/ur5e_bringup/src/*' \
+          '*/ur5e_hand_driver/include/*' \
+          '*/ur5e_hand_driver/src/*' \
+          '*/shape_estimation/include/*' \
+          '*/shape_estimation/src/*' \
           --output-file coverage_extracted.info \
           $BRANCH_RC
 
         # 테스트 코드 자체는 제외
         lcov --remove coverage_extracted.info \
           '*/test/*' \
+          '*/examples/*' \
           --output-file coverage_filtered.info \
           $BRANCH_RC
 
@@ -210,7 +244,7 @@ jobs:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: ./coverage_filtered.info
         flags: unittests-${{ matrix.ros_distro }}
-        name: ur5e-rt-controller-${{ matrix.ros_distro }}
+        name: rtc-framework-${{ matrix.ros_distro }}
         fail_ci_if_error: false
 
     - name: Upload Artifacts
@@ -250,17 +284,23 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y \
           ros-humble-pinocchio \
-          ros-humble-ur-robot-driver \
-          ros-humble-realtime-tools
+          libyaml-cpp-dev \
+          libtinyxml2-dev \
+          libeigen3-dev
 
     - name: Build Packages
       run: |
         source /opt/ros/humble/setup.bash
         colcon build \
-          --packages-up-to ur5e_rt_controller ur5e_hand_udp \
+          --packages-up-to \
+            rtc_controller_manager \
+            rtc_controllers \
+            ur5e_bringup \
+            ur5e_hand_driver \
+            urdf_pinocchio_bridge \
+            shape_estimation \
           --cmake-args \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_POLICY_DEFAULT_CMP0167=OLD
+            -DCMAKE_BUILD_TYPE=Release
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
@@ -308,18 +348,24 @@ jobs:
         sudo apt-get install -y \
           clang-tidy \
           ros-${{ matrix.ros_distro }}-pinocchio \
-          ros-${{ matrix.ros_distro }}-ur-robot-driver \
-          ros-${{ matrix.ros_distro }}-realtime-tools
+          libyaml-cpp-dev \
+          libtinyxml2-dev \
+          libeigen3-dev
 
     - name: Build with compile_commands.json
       run: |
         source /opt/ros/${{ matrix.ros_distro }}/setup.bash
         colcon build \
-          --packages-up-to ur5e_rt_controller ur5e_hand_udp \
+          --packages-up-to \
+            rtc_controller_manager \
+            rtc_controllers \
+            ur5e_bringup \
+            ur5e_hand_driver \
+            urdf_pinocchio_bridge \
+            shape_estimation \
           --cmake-args \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_POLICY_DEFAULT_CMP0167=OLD
+            -DCMAKE_BUILD_TYPE=Debug
 
     - name: Merge compile_commands.json
       run: |
@@ -339,8 +385,13 @@ jobs:
         echo "=== Clang-Tidy Analysis ==="
         # run-clang-tidy: 병렬 실행으로 성능 향상
         run-clang-tidy -p . -quiet \
-          'ur5e_rt_controller/src/.*\.cpp' \
-          'ur5e_hand_udp/src/.*\.cpp' 2>&1 | \
+          'rtc_controller_interface/src/.*\.cpp' \
+          'rtc_controller_manager/src/.*\.cpp' \
+          'rtc_controllers/src/.*\.cpp' \
+          'urdf_pinocchio_bridge/src/.*\.cpp' \
+          'ur5e_bringup/src/.*\.cpp' \
+          'ur5e_hand_driver/src/.*\.cpp' \
+          'shape_estimation/src/.*\.cpp' 2>&1 | \
           tee clang-tidy-output.txt || true
 
         # 경고/에러 요약
