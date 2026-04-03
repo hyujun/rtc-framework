@@ -3,8 +3,6 @@
 #include <gtest/gtest.h>
 #include <cmath>
 
-// NOLINTNEXTLINE - cppcheck cannot parse GTest TEST() macros
-// cppcheck-suppress syntaxError
 namespace rtc::trajectory
 {
 

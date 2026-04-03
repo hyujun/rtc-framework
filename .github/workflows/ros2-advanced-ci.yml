@@ -117,24 +117,41 @@ jobs:
         version: ${{ matrix.ros_distro }}-lint-v2
 
     - name: Run cppcheck
-      uses: ros-tooling/action-ros-lint@v0.1
-      with:
-        linter: cppcheck
-        package-name: |
-          rtc_base
-          rtc_communication
-          rtc_controller_interface
-          rtc_controller_manager
-          rtc_controllers
-          rtc_inference
-          rtc_msgs
-          urdf_pinocchio_bridge
-          ur5e_bringup
-          ur5e_hand_driver
-        workspace-directory: src/rtc-framework
       env:
-        # Ubuntu 24.04의 cppcheck 2.13.0 성능 이슈 차단 우회
         AMENT_CPPCHECK_ALLOW_SLOW_VERSIONS: 1
+      run: |
+        source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+        cd src/rtc-framework
+
+        # test/ 디렉토리를 제외한 소스 파일만 cppcheck 실행
+        PACKAGES=(
+          rtc_base rtc_communication rtc_controller_interface
+          rtc_controller_manager rtc_controllers rtc_inference
+          rtc_msgs urdf_pinocchio_bridge ur5e_bringup ur5e_hand_driver
+        )
+
+        ERRORS=0
+        for pkg in "${PACKAGES[@]}"; do
+          if [ ! -d "$pkg" ]; then continue; fi
+          echo "=== Checking $pkg ==="
+
+          # include/ 와 src/ 디렉토리만 검사 (test/ 제외)
+          DIRS=""
+          [ -d "$pkg/include" ] && DIRS="$DIRS $pkg/include"
+          [ -d "$pkg/src" ] && DIRS="$DIRS $pkg/src"
+
+          if [ -z "$DIRS" ]; then
+            echo "  No include/ or src/ — skipped"
+            continue
+          fi
+
+          ament_cppcheck $DIRS || ERRORS=$((ERRORS + 1))
+        done
+
+        if [ "$ERRORS" -gt 0 ]; then
+          echo "::error::cppcheck found errors in $ERRORS package(s)"
+          exit 1
+        fi
 
   # ============================================================
   #  Python Tests (rtc_tools, rtc_digital_twin)

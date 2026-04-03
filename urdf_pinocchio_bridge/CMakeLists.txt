@@ -87,7 +87,7 @@ install(
 
 # ── Export ────────────────────────────────────────────────────────────────────
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(pinocchio Eigen3 yaml-cpp tinyxml2)
+ament_export_dependencies(pinocchio Eigen3 yaml-cpp)
 ament_export_include_directories(include)
 
 # ── Tests ────────────────────────────────────────────────────────────────────
