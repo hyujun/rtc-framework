@@ -134,6 +134,8 @@ class MuJoCoSimulator {
     double      sync_timeout_ms{50.0};   // command wait timeout
     double      max_rtf{0.0};           // 0.0 = unlimited
     double      physics_timestep{0.0};
+    int         n_substeps{1};          // substeps per control cycle (1 = legacy)
+    double      viewer_refresh_rate{60.0}; // viewer target refresh rate (Hz)
 
     // 글로벌 servo gain (그룹별 미지정 시 상속)
     bool   use_yaml_servo_gains{false};
@@ -315,6 +317,10 @@ class MuJoCoSimulator {
     return rtf_.load(std::memory_order_relaxed);
   }
   [[nodiscard]] double   GetPhysicsTimestep() const noexcept { return xml_timestep_; }
+  [[nodiscard]] int      GetNumSubsteps()    const noexcept { return cfg_.n_substeps; }
+  [[nodiscard]] double   GetPhysicsLoad()    const noexcept {
+    return physics_load_.load(std::memory_order_relaxed);
+  }
 
  private:
   Config   cfg_;
@@ -367,6 +373,9 @@ class MuJoCoSimulator {
   std::chrono::steady_clock::time_point rtf_wall_start_{};
   double                                rtf_sim_start_{0.0};
   std::atomic<double>                   rtf_{0.0};
+  std::atomic<double>                   physics_load_{0.0};
+  uint64_t                              viz_update_interval_{8};
+  int                                   viewer_sleep_ms_{16};
 
   // ── Max-RTF throttle (sim thread only) ───────────────────────────────────
   std::chrono::steady_clock::time_point throttle_wall_start_{};

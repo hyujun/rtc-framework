@@ -5,6 +5,7 @@
 #include "rtc_mujoco_sim/mujoco_simulator.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <memory>
 #include <set>
@@ -408,6 +409,53 @@ bool MuJoCoSimulator::Initialize() noexcept {
               "[MuJoCoSimulator] physics_timestep OK: %.6f s (%.1f Hz)\n",
               xml_timestep_, 1.0 / xml_timestep_);
     }
+  }
+
+  // ── Substep validation & timestep override ──────────────────────────────
+  if (cfg_.n_substeps < 1) {
+    fprintf(stderr,
+            "[MuJoCoSimulator] ERROR: n_substeps=%d must be >= 1, "
+            "falling back to 1\n", cfg_.n_substeps);
+    cfg_.n_substeps = 1;
+  }
+
+  if (cfg_.n_substeps > 1) {
+    const double substep_dt =
+        xml_timestep_ / static_cast<double>(cfg_.n_substeps);
+    model_->opt.timestep = static_cast<mjtNum>(substep_dt);
+    fprintf(stdout,
+            "[MuJoCoSimulator] Substepping: n_substeps=%d  "
+            "control_period=%.4f s (%.1f Hz)  substep_dt=%.6f s (%.1f Hz)\n",
+            cfg_.n_substeps,
+            xml_timestep_, 1.0 / xml_timestep_,
+            substep_dt, 1.0 / substep_dt);
+  } else {
+    fprintf(stdout,
+            "[MuJoCoSimulator] Substepping: n_substeps=1  "
+            "physics_dt=%.4f s (%.1f Hz)\n",
+            xml_timestep_, 1.0 / xml_timestep_);
+  }
+
+  // ── Viewer refresh rate ─────────────────────────────────────────────────
+  if (cfg_.viewer_refresh_rate <= 0.0) {
+    fprintf(stderr,
+            "[MuJoCoSimulator] ERROR: viewer_refresh_rate=%.1f must be > 0, "
+            "falling back to 60.0\n", cfg_.viewer_refresh_rate);
+    cfg_.viewer_refresh_rate = 60.0;
+  }
+  {
+    const double interval =
+        1.0 / (xml_timestep_ * cfg_.viewer_refresh_rate);
+    viz_update_interval_ = std::max(static_cast<uint64_t>(1),
+        static_cast<uint64_t>(std::round(interval)));
+    viewer_sleep_ms_ = std::max(1,
+        static_cast<int>(std::round(1000.0 / cfg_.viewer_refresh_rate)));
+    fprintf(stdout,
+            "[MuJoCoSimulator] Viewer: target=%.0f Hz  "
+            "viz_update_interval=%lu steps  render_sleep=%d ms\n",
+            cfg_.viewer_refresh_rate,
+            static_cast<unsigned long>(viz_update_interval_),
+            viewer_sleep_ms_);
   }
 
   // ── Per-group servo gains & initial positions ───────────────────────────

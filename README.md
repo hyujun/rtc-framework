@@ -26,7 +26,7 @@
 | [`rtc_controllers`](rtc_controllers/) | 5.17.0 | 범용 제어기 4종 (P, JointPD, CLIK, OSC) + 퀸틱 궤적 생성기 | ament_cmake |
 | [`rtc_controller_manager`](rtc_controller_manager/) | 5.17.0 | 500Hz RT 루프 (clock_nanosleep) + 컨트롤러 라이프사이클 + SPSC publish offload + E-STOP | ament_cmake |
 | [`rtc_inference`](rtc_inference/) | 5.17.0 | 헤더-전용 RT-안전 추론 엔진: ONNX Runtime IoBinding, 사전 할당 버퍼, 배치/다중 모델 | ament_cmake |
-| [`rtc_mujoco_sim`](rtc_mujoco_sim/) | 5.17.0 | MuJoCo 3.x 물리 시뮬레이터: 멀티 그룹 물리, GLFW 뷰어, fake_hand 1차 필터, `max_rtf` 속도 제어 | ament_cmake |
+| [`rtc_mujoco_sim`](rtc_mujoco_sim/) | 5.18.0 | MuJoCo 3.x 물리 시뮬레이터: 멀티 그룹 물리, GLFW 뷰어, fake_hand 1차 필터, `max_rtf` 속도 제어, `n_substeps` 서브스텝 | ament_cmake |
 | [`rtc_digital_twin`](rtc_digital_twin/) | 5.17.0 | RViz2 디지털 트윈 시각화: 다중 소스 관절 상태 통합, mimic 자동 계산, 핑거팁 센서 Arrow/Sphere 마커 | ament_python |
 | [`rtc_tools`](rtc_tools/) | 5.17.0 | Python 유틸리티 7종: controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf, hand_udp_sender, hand_data_plot, session_dir | ament_python |
 | [`rtc_scripts`](rtc_scripts/) | 5.17.0 | RT 시스템 설정 스크립트 (PREEMPT_RT 커널, CPU 격리, IRQ 어피니티, 네트워크 최적화) | ament_cmake |
@@ -103,7 +103,7 @@ ur5e_description (독립)
 - **자동 복구**: protective_stop, 프로그램 연결 끊김에 대해 선택적 자동 복구 지원
 
 ### 시뮬레이션 & 추론
-- **MuJoCo 3.x 시뮬레이터**: FreeRun/SyncStep 모드, GLFW 인터랙티브 뷰어 (40+ 키보드 단축키), fake_hand 시뮬레이션, `max_rtf` 속도 제어
+- **MuJoCo 3.x 시뮬레이터**: 동기식 루프, GLFW 인터랙티브 뷰어 (40+ 키보드 단축키), fake_hand 시뮬레이션, `max_rtf` 속도 제어, `n_substeps` 서브스텝으로 물리 해상도 조절
 - **RT-안전 ONNX 추론**: IoBinding + 사전 할당 버퍼로 RT 경로 힙 할당 제거, 배치/다중 모델 지원
 
 ### 통신 & 로깅

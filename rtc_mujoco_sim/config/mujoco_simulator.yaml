@@ -19,9 +19,11 @@ mujoco_simulator:
 
     # ── Viewer ───────────────────────────────────────────────────────────────
     enable_viewer: true
+    viewer_refresh_rate: 60.0  # Hz — viewer target refresh rate (affects both viz buffer and render loop)
 
     # ── Physics Timestep ──────────────────────────────────────────────────────
-    physics_timestep: 0.002 # seconds  (= 500 Hz)
+    physics_timestep: 0.002 # seconds — control period (constant)
+    n_substeps: 3           # physics substeps per control cycle (substep_dt = physics_timestep / n_substeps)
 
     # ── Position Servo Gains (글로벌 기본값) ──────────────────────────────────
     use_yaml_servo_gains: false

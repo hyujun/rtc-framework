@@ -70,6 +70,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     declare_parameter("max_rtf", 0.0);
     declare_parameter("control_rate", 500.0);
     declare_parameter("physics_timestep", 0.0);
+    declare_parameter("n_substeps", 1);
+    declare_parameter("viewer_refresh_rate", 60.0);
     declare_parameter("use_yaml_servo_gains", false);
     declare_parameter("servo_kp",
                       std::vector<double>{500.0, 500.0, 500.0, 150.0, 150.0, 150.0});
@@ -86,6 +88,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     max_rtf_             = get_parameter("max_rtf").as_double();
     control_rate_        = get_parameter("control_rate").as_double();
     physics_timestep_    = get_parameter("physics_timestep").as_double();
+    n_substeps_          = get_parameter("n_substeps").as_int();
+    viewer_refresh_rate_ = get_parameter("viewer_refresh_rate").as_double();
     use_yaml_servo_gains_ = get_parameter("use_yaml_servo_gains").as_bool();
     servo_kp_ = get_parameter("servo_kp").as_double_array();
     servo_kd_ = get_parameter("servo_kd").as_double_array();
@@ -157,6 +161,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
         .sync_timeout_ms     = sync_timeout_ms_,
         .max_rtf             = max_rtf_,
         .physics_timestep    = physics_timestep_,
+        .n_substeps          = static_cast<int>(n_substeps_),
+        .viewer_refresh_rate = viewer_refresh_rate_,
         .use_yaml_servo_gains = use_yaml_servo_gains_,
         .servo_kp            = servo_kp_,
         .servo_kd            = servo_kd_,
@@ -377,6 +383,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   double      max_rtf_{0.0};
   double      control_rate_{500.0};
   double      physics_timestep_{0.0};
+  int64_t     n_substeps_{1};
+  double      viewer_refresh_rate_{60.0};
   bool        use_yaml_servo_gains_{false};
   std::vector<double> servo_kp_;
   std::vector<double> servo_kd_;

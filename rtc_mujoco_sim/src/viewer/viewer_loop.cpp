@@ -239,7 +239,7 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
 
     glfwSwapBuffers(window);
     glfwPollEvents();
-    std::this_thread::sleep_for(std::chrono::milliseconds(16));  // ~60 Hz
+    std::this_thread::sleep_for(std::chrono::milliseconds(viewer_sleep_ms_));
   }
 
   // ── Cleanup ────────────────────────────────────────────────────────────────

@@ -78,19 +78,34 @@ rtc_mujoco_sim  ← ur5e_description에서 모델 참조 (ament_index + package:
 
 ## 시뮬레이션 루프
 
-동기식 루프로 동작합니다. 매 스텝마다 state 퍼블리시 → command 대기 → 물리 스텝을 순서대로 수행하며, `max_rtf`로 속도를 제한합니다.
+동기식 루프로 동작합니다. 매 스텝마다 state 퍼블리시 → command 대기 → 물리 서브스텝을 순서대로 수행하며, `max_rtf`로 속도를 제한합니다.
 
 ```
 SimLoop → 모든 robot 그룹의 state 퍼블리시
         → primary 그룹의 command 대기 (sync_timeout_ms)
-        → 모든 robot 그룹의 command 적용
-        → PreparePhysicsStep() (actuator 모드/solver 파라미터/중력/외력 적용)
-        → mj_step()
-        → ClearContactForces()
+        → 모든 robot 그룹의 command 적용 (ApplyCommand, 1회)
+        → for sub in [0, n_substeps):
+        │     PreparePhysicsStep() (actuator 모드/solver 파라미터/중력/외력)
+        │     mj_step()            (substep_dt = physics_timestep / n_substeps)
+        │     ClearContactForces()
         → ReadSolverStats()
         → ThrottleIfNeeded(max_rtf)
         → (반복)
 ```
+
+### Substepping
+
+`n_substeps` 파라미터로 한 제어 주기 내 물리 스텝 횟수를 제어합니다. 제어 주기(`physics_timestep`)는 변하지 않고, MuJoCo의 실제 step 크기(`substep_dt`)만 작아집니다.
+
+| n_substeps | substep_dt | 제어 주기 | 효과 |
+|-----------|-----------|----------|------|
+| `1` (기본) | 2.0ms | 2.0ms (500Hz) | 기존 동작과 동일 |
+| `4` | 0.5ms | 2.0ms (500Hz) | 물리 해상도 4배 향상 |
+| `10` | 0.2ms | 2.0ms (500Hz) | contact-rich 시나리오 안정성 극대화 |
+
+- `ApplyCommand()`는 루프 밖에서 1회만 호출 — 서브스텝 중간에 ctrl 값 변경 없음
+- `StepOnce` (`>` 버튼)은 N substeps 전부 실행 = 1 제어 주기 진행
+- **Physics Load** = substep 루프 wall time / 제어 주기 (뷰어 상단에 표시, >100%면 실시간 유지 불가)
 
 rt_controller는 `use_sim_time_sync: true` 설정 시 `condition_variable` 기반으로 state 도착 즉시 wakeup하여 ControlLoop를 실행합니다. 기존 `clock_nanosleep` 대비 round-trip 지연이 ~1ms → ~0.35ms로 감소합니다.
 
@@ -172,7 +187,8 @@ mujoco_simulator:
     sync_timeout_ms: 50.0        # 명령 대기 타임아웃 (ms)
     max_rtf: 1.0                 # 최대 실시간 비율 (0.0 = 무제한)
     enable_viewer: true          # GLFW 3D 뷰어 활성화
-    physics_timestep: 0.002      # seconds (= 500 Hz)
+    physics_timestep: 0.002      # seconds — control period (constant)
+    n_substeps: 1                # physics substeps per control cycle (substep_dt = physics_timestep / n_substeps)
 
     # Position servo 게인 (글로벌 기본값)
     use_yaml_servo_gains: false
@@ -246,7 +262,8 @@ rt_controller:
 | `sync_timeout_ms` | double | `50.0` | primary 그룹 command 대기 타임아웃 (ms) |
 | `max_rtf` | double | `0.0` | 최대 실시간 비율 (0.0 = 무제한) |
 | `control_rate` | double | `500.0` | 런치 파일에서 전달. physics_timestep 검증용 |
-| `physics_timestep` | double | `0.0` | 0.0이면 XML 값 사용. 양수면 XML과 불일치 시 경고 |
+| `physics_timestep` | double | `0.0` | 0.0이면 XML 값 사용. 양수면 XML과 불일치 시 경고. 제어 주기를 의미 |
+| `n_substeps` | int | `1` | 제어 주기당 물리 서브스텝 수. `substep_dt = physics_timestep / n_substeps`. 1이면 기존 동작 |
 | `use_yaml_servo_gains` | bool | `false` | `true`=YAML servo_kp/kd, `false`=XML gainprm/biasprm |
 | `servo_kp` | double[] | `[500, 500, 500, 150, 150, 150]` | Position servo P 게인 (글로벌) |
 | `servo_kd` | double[] | `[400, 400, 400, 100, 100, 100]` | Position servo D 게인 (글로벌) |
@@ -358,6 +375,30 @@ ros2 topic hz /hand/joint_states
 
 ---
 
+## 뷰어 상태 오버레이
+
+뷰어 우상단에 항상 표시되는 상태 패널의 항목:
+
+| 항목 | 설명 |
+|------|------|
+| Mode | 동기 모드 (`sync`) |
+| Camera | 카메라 모드 (Free/Tracking/Fixed:name) |
+| RTF | 실시간 비율 |
+| Limit | max_rtf 설정값 |
+| Sim Time | 시뮬레이션 경과 시간 |
+| Steps | 누적 제어 스텝 수 |
+| Contacts | 활성 접촉 수 / on\|OFF |
+| Gravity | ON / OFF / OFF(lock) |
+| Status | running / PAUSED / perturb |
+| Integrator | Euler / RK4 / Implicit / ImplFast |
+| Solver | PGS / CG / Newton |
+| Iterations | 사용된 / 최대 solver 반복 |
+| Residual | solver 잔차 |
+| Substeps | `n_substeps (substep_dt ms)` — 예: `4 (0.50ms)` |
+| Physics Load | substep 루프 wall time / 제어 주기 (%) — 100% 초과 시 실시간 유지 불가 |
+
+---
+
 ## 뷰어 단축키
 
 ### 키보드
@@ -454,6 +495,8 @@ auto steps    = sim->StepCount();
 auto rtf      = sim->GetRtf();
 auto solver   = sim->GetSolverStats();
 auto n_groups = sim->NumGroups();
+auto n_sub    = sim->GetNumSubsteps();    // n_substeps 값
+auto load     = sim->GetPhysicsLoad();    // physics wall time / control period
 ```
 
 ---
@@ -531,6 +574,7 @@ colcon build --packages-select rtc_mujoco_sim --symlink-install \
 
 | 버전 | 변경 내용 |
 |------|----------|
+| **v5.18.0** | `n_substeps` 파라미터 추가 — 제어 주기당 `mj_step` 호출 횟수 제어. Physics Load 측정 및 뷰어 상태 오버레이에 Substeps/Physics Load 표시 추가. |
 | **v5.17.0** | `SimMode` enum (`free_run`/`sync_step`) 제거 → 동기식 단일 루프로 통합. rt_controller CV 기반 wakeup (`use_sim_time_sync`) 지원. `publish_decimation` 파라미터 제거. |
 | **v5.16.1** | C++20 표준 및 컴파일러 경고 플래그 확인 완료 |
 

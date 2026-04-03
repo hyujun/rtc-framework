@@ -53,6 +53,10 @@ void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp,
   }
 
   const auto ss  = vs.sim->GetSolverStats();
+  const int  n_sub = vs.sim->GetNumSubsteps();
+  const double substep_dt_ms =
+      vs.model ? static_cast<double>(vs.model->opt.timestep) * 1e3 : 0.0;
+  const double phys_load_pct = vs.sim->GetPhysicsLoad() * 100.0;
   const int  ii  = IntIdx(vs);
   const int  si  = SolIdx(vs);
   const int  ci  = CamIdx(vs);
@@ -71,9 +75,10 @@ void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp,
   char labels[512], values[512];
   std::snprintf(labels, sizeof(labels),
       "Mode\nCamera\nRTF\nLimit\nSim Time\nSteps\nContacts\nGravity\nStatus\n"
-      "Integrator\nSolver\nIterations\nResidual");
+      "Integrator\nSolver\nIterations\nResidual\nSubsteps\nPhysics Load");
   std::snprintf(values, sizeof(values),
-      "%s\n%s\n%.1fx\n%s\n%.2f s\n%lu\n%d/%s\n%s\n%s\n%s\n%s\n%d/%d\n%.2e",
+      "%s\n%s\n%.1fx\n%s\n%.2f s\n%lu\n%d/%s\n%s\n%s\n%s\n%s\n%d/%d\n%.2e\n"
+      "%d (%.2fms)\n%.1f%%",
       "sync",
       cam_str,
       static_cast<double>(cur_rtf), limit_str,
@@ -85,7 +90,9 @@ void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp,
       is_paused ? "PAUSED" : (perturbing ? "perturb" : "running"),
       kIntNames[ii], kSolNames[si],
       ss.iter, vs.sim->GetSolverIterations(),
-      ss.improvement);
+      ss.improvement,
+      n_sub, substep_dt_ms,
+      phys_load_pct);
 
   mjr_overlay(mjFONT_NORMAL, mjGRID_TOPRIGHT, vp, labels, values, vs.con);
 }

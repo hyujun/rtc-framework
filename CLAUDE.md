@@ -308,7 +308,8 @@ model_path: "robots/ur5e/mjcf/scene_with_hand.xml"
 sync_timeout_ms: 50.0           # command wait timeout (ms)
 max_rtf: 1.0                    # 0.0 = unlimited
 enable_viewer: true
-physics_timestep: 0.002         # validates against XML
+physics_timestep: 0.002         # control period (constant), validates against XML
+n_substeps: 1                   # substeps per control cycle (substep_dt = physics_timestep / n_substeps)
 use_yaml_servo_gains: false     # true = apply YAML servo_kp/kd
 
 robot_response:

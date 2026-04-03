@@ -292,11 +292,18 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
       step = 0;
       continue;
     }
-    // 3. Apply commands from ALL robot groups and step
+    // 3. Apply commands from ALL robot groups and substep
     ApplyCommand();
-    PreparePhysicsStep();
-    mj_step(model_, data_);
-    ClearContactForces();
+    const auto step_start = std::chrono::steady_clock::now();
+    for (int sub = 0; sub < cfg_.n_substeps; ++sub) {
+      PreparePhysicsStep();
+      mj_step(model_, data_);
+      ClearContactForces();
+    }
+    const double step_wall_sec = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - step_start).count();
+    physics_load_.store(step_wall_sec / xml_timestep_,
+                        std::memory_order_relaxed);
     ReadSolverStats();
 
     ++step;
@@ -305,8 +312,7 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
 
     UpdateRtf(step);
     ThrottleIfNeeded();
-    constexpr uint64_t kVizUpdateInterval = 8;  // ~62.5 Hz at 500 Hz physics
-    if ((step % kVizUpdateInterval == 0) && cfg_.enable_viewer) { UpdateVizBuffer(); }
+    if ((step % viz_update_interval_ == 0) && cfg_.enable_viewer) { UpdateVizBuffer(); }
   }
 
   fprintf(stdout,
