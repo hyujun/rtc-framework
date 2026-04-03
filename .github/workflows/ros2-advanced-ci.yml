@@ -3,25 +3,92 @@ name: ROS2 Advanced CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'rtc_scripts/**'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'rtc_scripts/**'
+      - 'LICENSE'
+      - '.gitignore'
 
 # 동일 브랜치 중복 실행 방지 — 새 push 시 이전 실행 자동 취소
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # 모든 job에서 공유하는 패키지 목록
+  CI_PACKAGES: >-
+    rtc_controller_manager
+    rtc_controllers
+    ur5e_bringup
+    ur5e_hand_driver
+    urdf_pinocchio_bridge
+    shape_estimation
+  TEST_PACKAGES: >-
+    rtc_controllers
+    urdf_pinocchio_bridge
+    shape_estimation
+  PYTHON_TEST_PACKAGES: >-
+    rtc_tools
+    rtc_digital_twin
+
 jobs:
   # ============================================================
-  #  C++ Linting (distro matrix)
+  #  변경 감지 — 후속 job 실행 여부 결정
+  # ============================================================
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      cpp: ${{ steps.filter.outputs.cpp }}
+      python: ${{ steps.filter.outputs.python }}
+      urdf: ${{ steps.filter.outputs.urdf }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dorny/paths-filter@v3
+      id: filter
+      with:
+        filters: |
+          cpp:
+            - '**/*.hpp'
+            - '**/*.cpp'
+            - '**/*.h'
+            - '**/CMakeLists.txt'
+            - '**/package.xml'
+            - '**/*.yaml'
+            - '**/*.yml'
+            - '**/*.xml'
+            - '**/*.urdf'
+            - '**/*.msg'
+            - '**/*.srv'
+          python:
+            - 'rtc_tools/**/*.py'
+            - 'rtc_digital_twin/**/*.py'
+          urdf:
+            - 'ur5e_description/**/*.urdf'
+            - 'ur5e_description/**/*.xacro'
+            - 'ur5e_description/**/*.xml'
+
+  # ============================================================
+  #  C++ Linting (cppcheck only — clang-tidy가 상위 호환)
+  #  cpplint 제거: clang-tidy의 readability/modernize/bugprone가
+  #  cpplint 검사 범위를 포함하며, CPPLINT.cfg에서 이미 6개 필터 비활성화
   # ============================================================
   lint-cpp:
-    name: C++ Lint (${{ matrix.linter }}, ${{ matrix.ros_distro }})
+    name: C++ Lint (cppcheck, ${{ matrix.ros_distro }})
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04]
-        linter: [cpplint, cppcheck]
         include:
           - os: ubuntu-22.04
             ros_distro: humble
@@ -38,19 +105,20 @@ jobs:
       with:
         required-ros-distributions: ${{ matrix.ros_distro }}
 
-    - name: Install Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          ros-${{ matrix.ros_distro }}-pinocchio \
-          libyaml-cpp-dev \
-          libtinyxml2-dev \
+    - name: Cache apt packages
+      uses: awalsh128/cache-apt-pkgs-action@latest
+      with:
+        packages: >-
+          ros-${{ matrix.ros_distro }}-pinocchio
+          libyaml-cpp-dev
+          libtinyxml2-dev
           libeigen3-dev
+        version: ${{ matrix.ros_distro }}-lint-v1
 
-    - name: Run Linter
+    - name: Run cppcheck
       uses: ros-tooling/action-ros-lint@v0.1
       with:
-        linter: ${{ matrix.linter }}
+        linter: cppcheck
         package-name: |
           rtc_base
           rtc_communication
@@ -68,10 +136,125 @@ jobs:
         AMENT_CPPCHECK_ALLOW_SLOW_VERSIONS: 1
 
   # ============================================================
+  #  Python Tests (rtc_tools, rtc_digital_twin)
+  # ============================================================
+  python-test:
+    name: Python Test (${{ matrix.ros_distro }})
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            ros_distro: humble
+          - os: ubuntu-24.04
+            ros_distro: jazzy
+      fail-fast: false
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup ROS2 ${{ matrix.ros_distro }}
+      uses: ros-tooling/setup-ros@v0.7
+      with:
+        required-ros-distributions: ${{ matrix.ros_distro }}
+
+    - name: Upgrade colcon
+      run: pip install -U colcon-cmake colcon-core
+
+    - name: Install Python test dependencies
+      run: pip install pytest
+
+    - name: Build Python packages
+      run: |
+        source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+        colcon build \
+          --packages-select $PYTHON_TEST_PACKAGES \
+          --packages-up-to $PYTHON_TEST_PACKAGES
+
+    - name: Run Python tests
+      run: |
+        source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+        source install/setup.bash
+        colcon test \
+          --packages-select $PYTHON_TEST_PACKAGES \
+          --event-handlers console_cohesion+ \
+          --return-code-on-test-failure
+
+    - name: Show Test Results
+      if: always()
+      run: |
+        source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+        colcon test-result --all --verbose || true
+
+  # ============================================================
+  #  URDF Validation (check_urdf + xacro processing)
+  # ============================================================
+  urdf-validation:
+    name: URDF Validation
+    needs: changes
+    if: needs.changes.outputs.urdf == 'true' || needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup ROS2
+      uses: ros-tooling/setup-ros@v0.7
+      with:
+        required-ros-distributions: jazzy
+
+    - name: Install URDF tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          ros-jazzy-xacro \
+          ros-jazzy-urdf \
+          liburdfdom-tools
+
+    - name: Validate pre-built URDF files
+      run: |
+        source /opt/ros/jazzy/setup.bash
+        echo "=== Validating ur5e.urdf ==="
+        check_urdf ur5e_description/robots/ur5e/urdf/ur5e.urdf
+
+        echo ""
+        echo "=== Validating ur5e_with_hand.urdf ==="
+        check_urdf ur5e_description/robots/ur5e/urdf/ur5e_with_hand.urdf
+
+    - name: Validate xacro → URDF pipeline
+      run: |
+        source /opt/ros/jazzy/setup.bash
+
+        # ur5e_description 패키지 경로를 환경에 등록
+        export AMENT_PREFIX_PATH="$PWD/ur5e_description:$AMENT_PREFIX_PATH"
+
+        echo "=== Processing ur5e_with_hand.urdf.xacro ==="
+        xacro ur5e_description/robots/ur5e/urdf/ur5e_with_hand.urdf.xacro \
+          -o /tmp/ur5e_with_hand_generated.urdf
+
+        echo "=== Validating generated URDF ==="
+        check_urdf /tmp/ur5e_with_hand_generated.urdf
+
+    - name: Check URDF consistency (xacro output vs committed file)
+      run: |
+        # xacro 출력과 커밋된 URDF의 구조적 일관성 검증
+        # (공백/주석 차이 무시, 링크/조인트 수 비교)
+        COMMITTED=$(grep -c '<joint' ur5e_description/robots/ur5e/urdf/ur5e_with_hand.urdf || true)
+        GENERATED=$(grep -c '<joint' /tmp/ur5e_with_hand_generated.urdf || true)
+        echo "Committed URDF joints: $COMMITTED"
+        echo "Generated URDF joints: $GENERATED"
+        if [ "$COMMITTED" != "$GENERATED" ]; then
+          echo "::warning::Joint count mismatch — committed ($COMMITTED) vs generated ($GENERATED). Consider regenerating ur5e_with_hand.urdf"
+        fi
+
+  # ============================================================
   #  Build, Test & Coverage (distro matrix)
+  #  + compile_commands.json을 artifact로 공유 → clang-tidy 재사용
   # ============================================================
   build-test-coverage:
     name: Build & Test (${{ matrix.ros_distro }})
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -105,45 +288,57 @@ jobs:
         restore-keys: |
           colcon-${{ matrix.ros_distro }}-
 
-    - name: Install Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          ros-${{ matrix.ros_distro }}-pinocchio \
-          libyaml-cpp-dev \
-          libtinyxml2-dev \
-          libeigen3-dev \
+    - name: Cache apt packages
+      uses: awalsh128/cache-apt-pkgs-action@latest
+      with:
+        packages: >-
+          ros-${{ matrix.ros_distro }}-pinocchio
+          libyaml-cpp-dev
+          libtinyxml2-dev
+          libeigen3-dev
           lcov
+        version: ${{ matrix.ros_distro }}-build-v1
 
-    - name: Build Packages (with coverage flags)
+    - name: Build Packages (with coverage + compile_commands)
       run: |
         source /opt/ros/${{ matrix.ros_distro }}/setup.bash
         # MuJoCo/BT/ONNX 패키지 제외 (CI에 해당 라이브러리 미설치)
         colcon build \
-          --packages-up-to \
-            rtc_controller_manager \
-            rtc_controllers \
-            ur5e_bringup \
-            ur5e_hand_driver \
-            urdf_pinocchio_bridge \
-            shape_estimation \
+          --packages-up-to $CI_PACKAGES \
           --cmake-args \
             -DCMAKE_BUILD_TYPE=Debug \
             -DBUILD_TESTING=ON \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             '-DCMAKE_CXX_FLAGS=--coverage -fprofile-arcs -ftest-coverage' \
             '-DCMAKE_C_FLAGS=--coverage' \
             '-DCMAKE_EXE_LINKER_FLAGS=--coverage' \
             '-DCMAKE_SHARED_LINKER_FLAGS=--coverage'
+
+    - name: Merge & upload compile_commands.json
+      run: |
+        python3 -c "
+        import json, glob
+        commands = []
+        for f in glob.glob('build/*/compile_commands.json'):
+            with open(f) as fh:
+                commands.extend(json.load(fh))
+        with open('compile_commands.json', 'w') as fh:
+            json.dump(commands, fh, indent=2)
+        "
+
+    - name: Upload compile_commands.json
+      uses: actions/upload-artifact@v4
+      with:
+        name: compile-commands-${{ matrix.ros_distro }}
+        path: compile_commands.json
+        retention-days: 1
 
     - name: Run Tests
       run: |
         source /opt/ros/${{ matrix.ros_distro }}/setup.bash
         source install/setup.bash
         colcon test \
-          --packages-select \
-            rtc_controllers \
-            urdf_pinocchio_bridge \
-            shape_estimation \
+          --packages-select $TEST_PACKAGES \
           --event-handlers console_cohesion+ \
           --return-code-on-test-failure
 
@@ -255,11 +450,12 @@ jobs:
         path: log/
 
   # ============================================================
-  #  CodeQL Security Scan (humble only — 언어 분석이므로 distro 무관)
+  #  CodeQL Security Scan — main push만 (PR 제외)
   # ============================================================
   codeql:
     name: CodeQL Security Scan
     runs-on: ubuntu-22.04
+    if: github.event_name == 'push'
     permissions:
       security-events: write
     steps:
@@ -279,26 +475,21 @@ jobs:
     - name: Upgrade colcon
       run: pip install -U colcon-cmake colcon-core
 
-    - name: Install Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          ros-humble-pinocchio \
-          libyaml-cpp-dev \
-          libtinyxml2-dev \
+    - name: Cache apt packages
+      uses: awalsh128/cache-apt-pkgs-action@latest
+      with:
+        packages: >-
+          ros-humble-pinocchio
+          libyaml-cpp-dev
+          libtinyxml2-dev
           libeigen3-dev
+        version: humble-codeql-v1
 
     - name: Build Packages
       run: |
         source /opt/ros/humble/setup.bash
         colcon build \
-          --packages-up-to \
-            rtc_controller_manager \
-            rtc_controllers \
-            ur5e_bringup \
-            ur5e_hand_driver \
-            urdf_pinocchio_bridge \
-            shape_estimation \
+          --packages-up-to $CI_PACKAGES \
           --cmake-args \
             -DCMAKE_BUILD_TYPE=Release
 
@@ -306,79 +497,67 @@ jobs:
       uses: github/codeql-action/analyze@v3
 
   # ============================================================
-  #  Clang-Tidy Analysis (distro matrix)
+  #  Clang-Tidy Analysis — jazzy 1회만 (정적 분석은 distro 무관)
+  #  build-test의 compile_commands.json 재사용
   # ============================================================
   clang-tidy:
-    name: Clang-Tidy (${{ matrix.ros_distro }})
-    runs-on: ${{ matrix.os }}
+    name: Clang-Tidy
+    needs: [changes, build-test-coverage]
+    if: needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-24.04
     continue-on-error: true
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            ros_distro: humble
-          - os: ubuntu-24.04
-            ros_distro: jazzy
-      fail-fast: false
     steps:
     - uses: actions/checkout@v4
 
-    - name: Setup ROS2 ${{ matrix.ros_distro }}
+    - name: Setup ROS2 Jazzy
       uses: ros-tooling/setup-ros@v0.7
       with:
-        required-ros-distributions: ${{ matrix.ros_distro }}
+        required-ros-distributions: jazzy
 
     - name: Upgrade colcon
       run: pip install -U colcon-cmake colcon-core
 
-    # colcon 빌드 캐시 (build-test-coverage와 별도 키 — cmake args 다름)
+    # build-test-coverage와 동일 빌드 캐시 공유 (같은 키)
     - name: Cache colcon workspace
       uses: actions/cache@v4
       with:
         path: |
           build/
           install/
-        key: colcon-tidy-${{ matrix.ros_distro }}-${{ hashFiles('**/CMakeLists.txt', '**/package.xml') }}
+        key: colcon-jazzy-${{ hashFiles('**/CMakeLists.txt', '**/package.xml') }}
         restore-keys: |
-          colcon-tidy-${{ matrix.ros_distro }}-
+          colcon-jazzy-
 
-    - name: Install Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          clang-tidy \
-          ros-${{ matrix.ros_distro }}-pinocchio \
-          libyaml-cpp-dev \
-          libtinyxml2-dev \
+    - name: Cache apt packages
+      uses: awalsh128/cache-apt-pkgs-action@latest
+      with:
+        packages: >-
+          clang-tidy
+          ros-jazzy-pinocchio
+          libyaml-cpp-dev
+          libtinyxml2-dev
           libeigen3-dev
+        version: jazzy-tidy-v1
 
-    - name: Build with compile_commands.json
-      run: |
-        source /opt/ros/${{ matrix.ros_distro }}/setup.bash
-        colcon build \
-          --packages-up-to \
-            rtc_controller_manager \
-            rtc_controllers \
-            ur5e_bringup \
-            ur5e_hand_driver \
-            urdf_pinocchio_bridge \
-            shape_estimation \
-          --cmake-args \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DCMAKE_BUILD_TYPE=Debug
+    - name: Download compile_commands.json
+      uses: actions/download-artifact@v4
+      with:
+        name: compile-commands-jazzy
 
-    - name: Merge compile_commands.json
+    # 캐시 miss 시에만 빌드 (캐시 hit → build/ 이미 존재)
+    - name: Build (cache miss fallback)
       run: |
-        # 모든 패키지의 compile_commands.json 병합
-        python3 -c "
-        import json, glob
-        commands = []
-        for f in glob.glob('build/*/compile_commands.json'):
-            with open(f) as fh:
-                commands.extend(json.load(fh))
-        with open('compile_commands.json', 'w') as fh:
-            json.dump(commands, fh, indent=2)
-        "
+        if [ ! -d "build" ] || [ -z "$(ls -A build/ 2>/dev/null)" ]; then
+          echo "Cache miss — rebuilding"
+          source /opt/ros/jazzy/setup.bash
+          colcon build \
+            --packages-up-to $CI_PACKAGES \
+            --cmake-args \
+              -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+              -DCMAKE_BUILD_TYPE=Debug
+        else
+          echo "Cache hit — skipping build"
+        fi
 
     - name: Run clang-tidy
       run: |
@@ -404,7 +583,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: clang-tidy-report-${{ matrix.ros_distro }}
+        name: clang-tidy-report
         path: clang-tidy-output.txt
 
   # ============================================================
