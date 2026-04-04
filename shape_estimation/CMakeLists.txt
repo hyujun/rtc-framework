@@ -38,6 +38,7 @@ target_include_directories(shape_estimation_core PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(shape_estimation_core Eigen3::Eigen)
+ament_target_dependencies(shape_estimation_core rclcpp)
 set_target_properties(shape_estimation_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # ── ROS library (core + ROS 래핑) ────────────────────────────────────────────

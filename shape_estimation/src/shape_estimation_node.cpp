@@ -115,6 +115,13 @@ ShapeEstimationNode::ShapeEstimationNode()
   } else {
     RCLCPP_INFO(get_logger(), "ShapeEstimationNode 초기화 완료. 순수 추정 모드");
   }
+
+  RCLCPP_INFO(get_logger(),
+              "설정: voxel_res=%.3fm, max_points=%d, expiry=%.1fs, "
+              "min_fit_points=%d, pub_rate=%.1fHz, viz_rate=%.1fHz",
+              cloud_config.voxel_resolution_m, cloud_config.max_points,
+              cloud_config.expiry_duration_sec, min_points_for_fitting_,
+              publish_rate_hz_, viz_rate_hz);
 }
 
 void ShapeEstimationNode::DeclareParameters() {
@@ -198,6 +205,18 @@ void ShapeEstimationNode::SnapshotCallback(
 
   // msg → 내부 구조체 변환 (센서 위치, 표면점, 곡률 계산 포함)
   latest_snapshot_ = ConvertFromMsg(*msg);
+
+  // 유효 센서 수 확인
+  int valid_count = 0;
+  for (int i = 0; i < kTotalSensors; ++i) {
+    if (latest_snapshot_.readings[static_cast<size_t>(i)].valid) {
+      ++valid_count;
+    }
+  }
+  if (valid_count == 0) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                         "빈 snapshot 수신 (유효 센서 0개)");
+  }
   has_snapshot_ = true;
 
   // ���인트 클라우드 누적
@@ -206,6 +225,9 @@ void ShapeEstimationNode::SnapshotCallback(
 
   // Snapshot 시계열 저장 (돌출 구조 gap 분석용)
   snapshot_history_.Push(latest_snapshot_);
+
+  RCLCPP_DEBUG(get_logger(), "SnapshotCallback: valid_sensors=%d, cloud_size=%d",
+               valid_count, voxel_cloud_.Size());
 
   // 형상 추정
   latest_estimate_ = EstimateShape();
@@ -261,9 +283,21 @@ ShapeEstimate ShapeEstimationNode::EstimateShape() {
     // fast와 fitted 결과 결합: fitted 결과가 더 신뢰도가 높으면 사용
     if (fitted_result.type != ShapeType::kUnknown &&
         fitted_result.confidence >= fast_result.confidence) {
+      RCLCPP_DEBUG(get_logger(),
+                   "EstimateShape: fitted=%s(%.2f) 선택 (fast=%s(%.2f), points=%zu)",
+                   ShapeTypeToString(fitted_result.type).data(),
+                   fitted_result.confidence,
+                   ShapeTypeToString(fast_result.type).data(),
+                   fast_result.confidence, points.size());
       return fitted_result;
     }
   }
+
+  RCLCPP_DEBUG(get_logger(),
+               "EstimateShape: fast=%s(%.2f) 사용 (cloud=%d/%d)",
+               ShapeTypeToString(fast_result.type).data(),
+               fast_result.confidence,
+               voxel_cloud_.Size(), min_points_for_fitting_);
 
   return fast_result;
 }
@@ -516,6 +550,7 @@ void ShapeEstimationNode::ExploreLoopCallback() {
 
   // E-STOP 검사
   if (estop_active_) {
+    RCLCPP_WARN(get_logger(), "E-STOP 활성 상태에서 탐색 중단");
     motion_generator_.Abort();
     SendActionResult(false, "E-STOP triggered");
     StopExploration();
@@ -608,7 +643,7 @@ void ShapeEstimationNode::SendActionResult(
     RCLCPP_INFO(get_logger(), "탐색 취소: %s", message.c_str());
   } else {
     active_goal_handle_->abort(result);
-    RCLCPP_WARN(get_logger(), "탐색 실패: %s", message.c_str());
+    RCLCPP_ERROR(get_logger(), "탐색 실패: %s", message.c_str());
   }
 }
 

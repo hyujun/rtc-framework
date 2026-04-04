@@ -5,7 +5,11 @@
 #include <sstream>
 #include <string>
 
+#include <rclcpp/logging.hpp>
+
 namespace shape_estimation {
+
+static const auto kLogger = rclcpp::get_logger("ExplorationMotion");
 
 // ── 유틸 ────────────────────────────────────────────────────────────────────
 
@@ -48,6 +52,13 @@ void ExplorationMotionGenerator::Start(
   } else {
     approach_direction_ = Eigen::Vector3d::UnitX();
   }
+
+  RCLCPP_INFO(kLogger,
+              "탐색 시작: object=[%.3f, %.3f, %.3f], "
+              "approach_dir=[%.3f, %.3f, %.3f], dist=%.3f",
+              object_position[0], object_position[1], object_position[2],
+              approach_direction_.x(), approach_direction_.y(),
+              approach_direction_.z(), dist);
 
   // Sweep 상태 초기화
   sweep_position_ = 0.0;
@@ -94,6 +105,9 @@ StepResult ExplorationMotionGenerator::Step(
     phase_ = ExplorePhase::kFailed;
     result.phase = phase_;
     result.status_message = "max_total_time exceeded";
+    RCLCPP_ERROR(kLogger,
+                 "전체 시간 초과 (%.1fs >= %.1fs) → FAILED",
+                 stats_.elapsed_sec, config_.max_total_time_sec);
     return result;
   }
 
@@ -105,12 +119,15 @@ StepResult ExplorationMotionGenerator::Step(
         phase_elapsed_ = 0.0;
         result.phase = phase_;
         result.status_message = "ToF sensors detected → SERVO";
+        RCLCPP_INFO(kLogger, "Phase: APPROACH → SERVO (%.1fs)", phase_elapsed_);
         // Servo로 전이 즉시 servo goal 생성
         result.goal = GenerateServo(snapshot, current_pose);
       } else if (phase_elapsed_ >= config_.approach_timeout_sec) {
         phase_ = ExplorePhase::kFailed;
         result.phase = phase_;
         result.status_message = "approach timeout";
+        RCLCPP_WARN(kLogger, "Approach 타임아웃 (%.1fs) → FAILED",
+                    config_.approach_timeout_sec);
       } else {
         result.goal = GenerateApproach(snapshot, current_pose);
         result.status_message = "approaching object";
@@ -126,6 +143,7 @@ StepResult ExplorationMotionGenerator::Step(
         sweep_direction_ = 1;
         result.phase = phase_;
         result.status_message = "servo converged → SWEEP_X";
+        RCLCPP_INFO(kLogger, "Phase: SERVO → SWEEP_X (converged, %.1fs)", phase_elapsed_);
         result.goal = GenerateSweep(snapshot, current_pose);
       } else if (phase_elapsed_ >= config_.servo_timeout_sec) {
         // Servo 타임아웃이어도 sweep으로 진행
@@ -135,6 +153,8 @@ StepResult ExplorationMotionGenerator::Step(
         sweep_direction_ = 1;
         result.phase = phase_;
         result.status_message = "servo timeout → SWEEP_X";
+        RCLCPP_WARN(kLogger, "Servo 타임아웃 (%.1fs) → SWEEP_X",
+                    config_.servo_timeout_sec);
         result.goal = GenerateSweep(snapshot, current_pose);
       } else {
         result.goal = GenerateServo(snapshot, current_pose);
@@ -152,6 +172,7 @@ StepResult ExplorationMotionGenerator::Step(
         sweep_direction_ = 1;
         result.phase = phase_;
         result.status_message = "sweep X done → SWEEP_Y";
+        RCLCPP_INFO(kLogger, "Phase: SWEEP_X → SWEEP_Y");
       }
       result.goal = GenerateSweep(snapshot, current_pose);
       if (result.status_message.empty()) {
@@ -168,6 +189,7 @@ StepResult ExplorationMotionGenerator::Step(
         tilt_step_count_ = 0;
         result.phase = phase_;
         result.status_message = "sweep Y done → TILT";
+        RCLCPP_INFO(kLogger, "Phase: SWEEP_Y → TILT");
       }
       result.goal = GenerateSweep(snapshot, current_pose);
       if (result.status_message.empty()) {
@@ -182,6 +204,7 @@ StepResult ExplorationMotionGenerator::Step(
         phase_elapsed_ = 0.0;
         result.phase = phase_;
         result.status_message = "tilt done → EVALUATE";
+        RCLCPP_INFO(kLogger, "Phase: TILT → EVALUATE");
       } else {
         result.goal = GenerateTilt(snapshot, current_pose);
         result.status_message = "tilting";
@@ -200,10 +223,14 @@ StepResult ExplorationMotionGenerator::Step(
             << ShapeTypeToString(current_estimate.type)
             << " (conf=" << static_cast<int>(current_estimate.confidence * 100) << "%)";
         result.status_message = oss.str();
+        RCLCPP_INFO(kLogger, "탐색 성공: %s", result.status_message.c_str());
       } else if (stats_.sweep_cycles_completed >= config_.max_sweep_cycles) {
         phase_ = ExplorePhase::kFailed;
         result.phase = phase_;
         result.status_message = "max sweep cycles reached";
+        RCLCPP_WARN(kLogger,
+                    "최대 sweep cycle 도달 (%u >= %u) → FAILED",
+                    stats_.sweep_cycles_completed, config_.max_sweep_cycles);
       } else {
         // 추가 sweep 사이클 실행
         stats_.sweep_cycles_completed++;
@@ -217,6 +244,10 @@ StepResult ExplorationMotionGenerator::Step(
         oss << "need more data, cycle " << static_cast<int>(stats_.sweep_cycles_completed)
             << " → SWEEP_X";
         result.status_message = oss.str();
+        RCLCPP_WARN(kLogger,
+                    "Evaluate: confidence=%.2f, points=%u → 추가 sweep (cycle %u)",
+                    current_estimate.confidence, current_estimate.num_points_used,
+                    stats_.sweep_cycles_completed);
       }
       break;
     }
@@ -280,6 +311,10 @@ TaskSpaceGoal ExplorationMotionGenerator::GenerateServo(
   goal.pose[1] += approach_direction_.y() * step;
   goal.pose[2] += approach_direction_.z() * step;
   goal.valid = true;
+
+  RCLCPP_DEBUG(kLogger,
+               "Servo: mean_dist=%.4f, target=%.4f, step=%.4f",
+               mean_dist, config_.servo_target_distance, step);
 
   return goal;
 }
@@ -381,6 +416,9 @@ bool ExplorationMotionGenerator::ValidateGoal(
   // 1) max step size 검사
   const double step_dist = Norm3(goal.pose, current);
   if (step_dist > config_.max_step_size) {
+    RCLCPP_WARN(kLogger,
+                "ValidateGoal: step_dist=%.4f > max=%.4f → 거부",
+                step_dist, config_.max_step_size);
     return false;
   }
 
@@ -393,6 +431,9 @@ bool ExplorationMotionGenerator::ValidateGoal(
     // 현재 ToF 거리에서 전진량을 빼면 예상 거리
     const double predicted_dist = mean_dist - forward_step;
     if (predicted_dist < config_.min_distance) {
+      RCLCPP_WARN(kLogger,
+                  "ValidateGoal: predicted_dist=%.4f < min=%.4f → 거부",
+                  predicted_dist, config_.min_distance);
       return false;
     }
   }

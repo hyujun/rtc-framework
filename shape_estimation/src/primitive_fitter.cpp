@@ -4,6 +4,8 @@
 #include <cmath>
 #include <limits>
 
+#include <rclcpp/logging.hpp>
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
@@ -13,6 +15,8 @@
 #pragma GCC diagnostic pop
 
 namespace shape_estimation {
+
+static const auto kLogger = rclcpp::get_logger("PrimitiveFitter");
 
 PrimitiveFitter::PrimitiveFitter() : PrimitiveFitter(Config{}) {}
 
@@ -55,6 +59,7 @@ ShapeEstimate PrimitiveFitter::FitSphere(
   if (n < config_.min_points_sphere) {
     result.type = ShapeType::kUnknown;
     result.confidence = 0.0;
+    RCLCPP_WARN(kLogger, "구 피팅: 포인트 부족 (%d < %d)", n, config_.min_points_sphere);
     return result;
   }
 
@@ -80,6 +85,7 @@ ShapeEstimate PrimitiveFitter::FitSphere(
   if (r_sq <= 0.0) {
     result.type = ShapeType::kUnknown;
     result.confidence = 0.0;
+    RCLCPP_WARN(kLogger, "구 피팅: 음수 반지름² (r²=%.6f)", r_sq);
     return result;
   }
   result.radius = std::sqrt(r_sq);
@@ -93,6 +99,12 @@ ShapeEstimate PrimitiveFitter::FitSphere(
   const double rms = std::sqrt(residual_sum / static_cast<double>(n));
   result.confidence = std::max(0.0, 1.0 - rms / result.radius);
   result.num_points_used = static_cast<uint32_t>(n);
+
+  RCLCPP_DEBUG(kLogger,
+               "구 피팅: center=[%.3f, %.3f, %.3f], r=%.4f, "
+               "RMS=%.4f, confidence=%.2f, n=%d",
+               result.center.x(), result.center.y(), result.center.z(),
+               result.radius, rms, result.confidence, n);
 
   return result;
 }
@@ -110,6 +122,7 @@ ShapeEstimate PrimitiveFitter::FitCylinder(
   if (n < config_.min_points_cylinder) {
     result.type = ShapeType::kUnknown;
     result.confidence = 0.0;
+    RCLCPP_WARN(kLogger, "실린더 피팅: 포인트 부족 (%d < %d)", n, config_.min_points_cylinder);
     return result;
   }
 
@@ -157,6 +170,7 @@ ShapeEstimate PrimitiveFitter::FitCylinder(
   if (r_sq <= 0.0) {
     result.type = ShapeType::kUnknown;
     result.confidence = 0.0;
+    RCLCPP_WARN(kLogger, "실린더 피팅: 음수 반지름² (r²=%.6f)", r_sq);
     return result;
   }
 
@@ -177,6 +191,12 @@ ShapeEstimate PrimitiveFitter::FitCylinder(
   result.confidence = std::max(0.0, 1.0 - rms / result.radius);
   result.num_points_used = static_cast<uint32_t>(n);
 
+  RCLCPP_DEBUG(kLogger,
+               "실린더 피팅: r=%.4f, axis=[%.3f, %.3f, %.3f], "
+               "RMS=%.4f, confidence=%.2f, n=%d",
+               result.radius, axis.x(), axis.y(), axis.z(),
+               rms, result.confidence, n);
+
   return result;
 }
 
@@ -192,6 +212,7 @@ ShapeEstimate PrimitiveFitter::FitPlane(
   if (n < config_.min_points_plane) {
     result.type = ShapeType::kUnknown;
     result.confidence = 0.0;
+    RCLCPP_WARN(kLogger, "평면 피팅: 포인트 부족 (%d < %d)", n, config_.min_points_plane);
     return result;
   }
 
@@ -238,6 +259,12 @@ ShapeEstimate PrimitiveFitter::FitPlane(
   result.confidence = 0.5 * thickness_conf + 0.5 * normal_consistency;
   result.num_points_used = static_cast<uint32_t>(n);
 
+  RCLCPP_DEBUG(kLogger,
+               "평면 피팅: normal=[%.3f, %.3f, %.3f], RMS=%.4f, "
+               "normal_consistency=%.2f, confidence=%.2f, n=%d",
+               normal.x(), normal.y(), normal.z(),
+               rms, normal_consistency, result.confidence, n);
+
   return result;
 }
 
@@ -253,6 +280,7 @@ ShapeEstimate PrimitiveFitter::FitBox(
   if (n < config_.min_points_box) {
     result.type = ShapeType::kUnknown;
     result.confidence = 0.0;
+    RCLCPP_WARN(kLogger, "박스 피팅: 포인트 부족 (%d < %d)", n, config_.min_points_box);
     return result;
   }
 
@@ -298,6 +326,12 @@ ShapeEstimate PrimitiveFitter::FitBox(
   result.confidence = (avg_dim > 1e-6) ? std::max(0.0, 1.0 - rms / avg_dim) : 0.0;
   result.num_points_used = static_cast<uint32_t>(n);
 
+  RCLCPP_DEBUG(kLogger,
+               "박스 피팅: dims=[%.4f, %.4f, %.4f], "
+               "RMS=%.4f, confidence=%.2f, n=%d",
+               result.dimensions.x(), result.dimensions.y(), result.dimensions.z(),
+               rms, result.confidence, n);
+
   return result;
 }
 
@@ -338,6 +372,9 @@ ShapeEstimate PrimitiveFitter::FitBestPrimitive(
   if (candidates.empty()) {
     ShapeEstimate result;
     result.type = ShapeType::kUnknown;
+    RCLCPP_WARN(kLogger,
+                "FitBestPrimitive: 모든 피팅 실패 (n=%zu) → Unknown",
+                points.size());
     return result;
   }
 
@@ -354,7 +391,15 @@ ShapeEstimate PrimitiveFitter::FitBestPrimitive(
 
   auto result = best->estimate;
   if (result.confidence < config_.min_confidence) {
+    RCLCPP_WARN(kLogger,
+                "FitBestPrimitive: 최고 confidence(%.2f) < 최소(%.2f) → Unknown",
+                result.confidence, config_.min_confidence);
     result.type = ShapeType::kUnknown;
+  } else {
+    RCLCPP_DEBUG(kLogger,
+                 "FitBestPrimitive: 선택=%s, confidence=%.2f, candidates=%zu",
+                 ShapeTypeToString(result.type).data(), result.confidence,
+                 candidates.size());
   }
 
   return result;

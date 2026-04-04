@@ -4,7 +4,11 @@
 #include <cmath>
 #include <limits>
 
+#include <rclcpp/logging.hpp>
+
 namespace shape_estimation {
+
+static const auto kLogger = rclcpp::get_logger("VoxelPointCloud");
 
 VoxelPointCloud::VoxelPointCloud() : VoxelPointCloud(Config{}) {}
 
@@ -13,6 +17,7 @@ VoxelPointCloud::VoxelPointCloud(const Config& config)
       expiry_ns_(static_cast<uint64_t>(config.expiry_duration_sec * 1.0e9)) {}
 
 void VoxelPointCloud::AddSnapshot(const ToFSnapshot& snapshot) {
+  [[maybe_unused]] const auto size_before = voxels_.size();
   for (int i = 0; i < kTotalSensors; ++i) {
     if (!snapshot.readings[static_cast<size_t>(i)].valid) {
       continue;
@@ -48,6 +53,9 @@ void VoxelPointCloud::AddSnapshot(const ToFSnapshot& snapshot) {
     } else {
       // 신규 추가 (max_points 초과 시 oldest 제거)
       if (static_cast<int>(voxels_.size()) >= config_.max_points) {
+        RCLCPP_WARN_ONCE(kLogger,
+                         "최대 포인트 도달 (%d) → FIFO eviction 시작",
+                         config_.max_points);
         // oldest timestamp를 가진 엔트리 제거
         auto oldest_it = voxels_.begin();
         uint64_t oldest_ts = std::numeric_limits<uint64_t>::max();
@@ -69,6 +77,8 @@ void VoxelPointCloud::AddSnapshot(const ToFSnapshot& snapshot) {
       voxels_.emplace(key, entry);
     }
   }
+  RCLCPP_DEBUG(kLogger, "AddSnapshot: 신규=%zu, 총=%zu",
+               voxels_.size() - size_before, voxels_.size());
 }
 
 void VoxelPointCloud::RemoveExpired(uint64_t current_time_ns) {
@@ -76,6 +86,7 @@ void VoxelPointCloud::RemoveExpired(uint64_t current_time_ns) {
     return;
   }
 
+  const auto size_before = voxels_.size();
   for (auto it = voxels_.begin(); it != voxels_.end();) {
     if (current_time_ns > it->second.point.timestamp_ns &&
         (current_time_ns - it->second.point.timestamp_ns) > expiry_ns_) {
@@ -83,6 +94,11 @@ void VoxelPointCloud::RemoveExpired(uint64_t current_time_ns) {
     } else {
       ++it;
     }
+  }
+  const auto removed = size_before - voxels_.size();
+  if (removed > 0) {
+    RCLCPP_DEBUG(kLogger, "RemoveExpired: %zu개 제거, 잔여=%zu",
+                 removed, voxels_.size());
   }
 }
 

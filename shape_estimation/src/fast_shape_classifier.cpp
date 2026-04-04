@@ -2,7 +2,11 @@
 
 #include <cmath>
 
+#include <rclcpp/logging.hpp>
+
 namespace shape_estimation {
+
+static const auto kLogger = rclcpp::get_logger("FastShapeClassifier");
 
 FastShapeClassifier::FastShapeClassifier() : FastShapeClassifier(Config{}) {}
 
@@ -36,6 +40,7 @@ ShapeEstimate FastShapeClassifier::Classify(
   if (n_valid < 2) {
     result.type = ShapeType::kUnknown;
     result.confidence = 0.0;
+    RCLCPP_WARN(kLogger, "유효 곡률 부족 (n_valid=%d < 2) → Unknown", n_valid);
     return result;
   }
 
@@ -92,6 +97,12 @@ ShapeEstimate FastShapeClassifier::Classify(
     result.type = ShapeType::kUnknown;
     result.confidence = 0.0;
   }
+
+  RCLCPP_DEBUG(kLogger,
+               "분류 결과: type=%s, confidence=%.2f, "
+               "kappa_avg=%.2f, kappa_std=%.2f, n_valid=%d",
+               ShapeTypeToString(result.type).data(), result.confidence,
+               kappa_avg, kappa_std, n_valid);
 
   return result;
 }

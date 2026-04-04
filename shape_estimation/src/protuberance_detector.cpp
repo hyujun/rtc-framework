@@ -4,7 +4,11 @@
 #include <cmath>
 #include <numeric>
 
+#include <rclcpp/logging.hpp>
+
 namespace shape_estimation {
+
+static const auto kLogger = rclcpp::get_logger("ProtuberanceDetector");
 
 ProtuberanceDetector::ProtuberanceDetector(const ProtuberanceConfig& config)
     : config_(config) {}
@@ -25,6 +29,8 @@ ProtuberanceResult ProtuberanceDetector::Detect(
 
   // Unknown 타입이면 탐지 불가
   if (fitted_primitive.type == ShapeType::kUnknown || points.empty()) {
+    RCLCPP_WARN(kLogger, "돌출 탐지 스킵: %s",
+                points.empty() ? "포인트 없음" : "primitive=Unknown");
     return result;
   }
 
@@ -42,6 +48,8 @@ ProtuberanceResult ProtuberanceDetector::Detect(
     }
     result.base_residual_rms =
         residuals.empty() ? 0.0 : std::sqrt(sum_sq / static_cast<double>(residuals.size()));
+    RCLCPP_DEBUG(kLogger, "돌출 없음: base_residual_rms=%.4f, points=%zu",
+                 result.base_residual_rms, points.size());
     return result;
   }
 
@@ -81,6 +89,12 @@ ProtuberanceResult ProtuberanceDetector::Detect(
   }
   result.base_residual_rms =
       count > 0 ? std::sqrt(sum_sq / static_cast<double>(count)) : 0.0;
+
+  RCLCPP_DEBUG(kLogger,
+               "돌출 탐지 완료: %zu개 protuberance, "
+               "base_rms=%.4f, gaps=%zu",
+               result.protuberances.size(), result.base_residual_rms,
+               gaps.size());
 
   return result;
 }
@@ -159,6 +173,9 @@ ProtuberanceDetector::ClusterNegativeResiduals(
 
   const auto n = negative_indices.size();
   if (n < config_.min_cluster_points) {
+    RCLCPP_DEBUG(kLogger,
+                 "클러스터링: 음의 잔차 포인트 부족 (%zu < %u)",
+                 n, config_.min_cluster_points);
     return {};
   }
 
@@ -407,6 +424,14 @@ Protuberance ProtuberanceDetector::BuildProtuberance(
   prot.confidence = confidence;
   prot.num_points = num_points;
   prot.has_gap = has_gap;
+
+  RCLCPP_DEBUG(kLogger,
+               "BuildProtuberance: centroid=[%.3f, %.3f, %.3f], "
+               "depth=%.4f, extent=%.4f, confidence=%.2f, "
+               "n=%u, has_gap=%d",
+               centroid.x(), centroid.y(), centroid.z(),
+               mean_abs_residual, extent, confidence,
+               num_points, has_gap ? 1 : 0);
 
   return prot;
 }
