@@ -27,11 +27,14 @@ Typical usage::
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from dataclasses import dataclass, field
+
+logger = logging.getLogger('rtc_digital_twin.urdf_parser')
 
 
 # ── Data classes ─────────────────────────────────────────────────────────────
@@ -159,12 +162,15 @@ class UrdfParser:
         if urdf_path:
             urdf_path = os.path.abspath(urdf_path)
             if not os.path.isfile(urdf_path):
+                logger.error('URDF file not found: %s', urdf_path)
                 raise FileNotFoundError(
                     f'URDF file not found: {urdf_path}')
             if urdf_path.endswith('.xacro'):
+                logger.debug('Processing xacro: %s', urdf_path)
                 urdf_xml = subprocess.check_output(
                     ['xacro', urdf_path], text=True)
             else:
+                logger.debug('Loading URDF: %s', urdf_path)
                 with open(urdf_path, 'r') as f:
                     urdf_xml = f.read()
 
@@ -298,6 +304,10 @@ class UrdfParser:
         required = self._classification.active_names
         covered = required & received
         missing = required - received
+        if missing:
+            logger.debug(
+                'Joint validation: %d/%d covered, %d missing',
+                len(covered), len(required), len(missing))
         return covered, missing
 
     # ── Internal parsing pipeline ────────────────────────────────────────────
@@ -306,11 +316,20 @@ class UrdfParser:
         """Run the full parsing pipeline (called once from __init__)."""
         root = ET.fromstring(self._urdf_xml)
         self._robot_name = root.get('name', '')
+        logger.debug('Parsing URDF: robot_name=%s', self._robot_name)
 
         self._collect_links(root)
         self._parse_joints(root)
         self._build_adjacency_graph()
         self._classify_joints()
+
+        c = self._classification
+        logger.info(
+            'URDF parsed: %s — %d links, %d joints '
+            '(active=%d, mimic=%d, closed_chain=%d, fixed=%d)',
+            self._robot_name, len(self._link_nodes), len(self._joint_meta),
+            len(c.active), len(c.passive_mimic),
+            len(c.passive_closed_chain), len(c.fixed))
 
     def _collect_links(self, root: ET.Element) -> None:
         """Step 1: Collect all <link> elements into LinkNode list."""
@@ -434,9 +453,12 @@ class UrdfParser:
 
         # Detect closed-chain joints (child_link referenced by 2+ joints)
         closed_chain_indices: set[int] = set()
-        for indices in child_link_joints.values():
+        for child_link, indices in child_link_joints.items():
             if len(indices) <= 1:
                 continue
+            logger.debug(
+                'Closed-chain candidate: link=%s shared by %d joints',
+                child_link, len(indices))
             first_tree = True
             for i in indices:
                 if movable_joints[i].mimic is not None:

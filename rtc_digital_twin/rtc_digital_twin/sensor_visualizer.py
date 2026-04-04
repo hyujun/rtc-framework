@@ -4,11 +4,14 @@ Visualizes barometer, ToF, force (F), displacement (u), and contact state
 from HandSensorState/FingertipSensor messages as RViz markers.
 """
 
+import logging
 import math
 
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point, Vector3
 from std_msgs.msg import ColorRGBA
+
+logger = logging.getLogger('rtc_digital_twin.sensor_visualizer')
 
 
 class SensorVisualizer:
@@ -69,6 +72,12 @@ class SensorVisualizer:
         # Contact config
         self.contact_sphere_radius = config.get('contact_sphere_radius', 0.005)
 
+        logger.info(
+            'SensorVisualizer initialized: %d fingertips, '
+            'baro_range=[%.0f, %.0f], tof=%s',
+            len(fingertip_names), self.baro_min, self.baro_max,
+            'enabled' if self.tof_enabled else 'disabled')
+
     def create_markers(self, fingertip_sensors, stamp):
         """Create MarkerArray from FingertipSensor messages.
 
@@ -84,6 +93,7 @@ class SensorVisualizer:
         for i, name in enumerate(self.fingertip_names):
             ft = fingertip_sensors[i] if i < len(fingertip_sensors) else None
             if ft is None:
+                logger.debug('Fingertip %s: no data', name)
                 continue
 
             frame_id = f'{name}_tip_link'

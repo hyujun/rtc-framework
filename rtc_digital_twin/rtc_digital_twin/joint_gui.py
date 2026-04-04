@@ -274,13 +274,22 @@ class JointGuiNode(Node):
             raise RuntimeError('robot_description parameter is required')
 
         # Parse URDF
-        parser = UrdfParser.from_xml(robot_description)
+        self.get_logger().debug('Parsing URDF for joint discovery...')
+        try:
+            parser = UrdfParser.from_xml(robot_description)
+        except Exception as e:
+            self.get_logger().fatal(f'Failed to parse URDF: {e}')
+            raise
+
         active_names = parser.get_active_joint_names()  # sorted
         self._joint_metas = [
             parser.get_joint_meta(name) for name in active_names]
 
         self.get_logger().info(
-            f'Joint GUI: {len(self._joint_metas)} active joints')
+            f'Joint GUI: {len(self._joint_metas)} active joints, '
+            f'output={output_topic}, rate={publish_rate}Hz')
+        self.get_logger().debug(
+            f'Active joints: {active_names}')
 
         # Publisher
         self._pub = self.create_publisher(JointState, output_topic, 10)
@@ -328,9 +337,14 @@ def main(args=None):
     spin_timer.timeout.connect(lambda: rclpy.spin_once(node, timeout_sec=0))
     spin_timer.start(10)
 
+    node.get_logger().info('Joint GUI window opened')
+
     try:
         app.exec_()
+    except KeyboardInterrupt:
+        node.get_logger().info('Shutting down (KeyboardInterrupt)')
     finally:
+        node.get_logger().info('Joint GUI shutting down')
         node.destroy_node()
         rclpy.try_shutdown()
 
