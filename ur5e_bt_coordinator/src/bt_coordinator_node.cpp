@@ -170,9 +170,11 @@ void BtCoordinatorNode::LoadTree()
   }
 
   if (!std::filesystem::exists(tree_path)) {
-    RCLCPP_ERROR(get_logger(), "Tree file not found: %s", tree_path.c_str());
+    RCLCPP_FATAL(get_logger(), "[BtCoordinator] Tree file not found: %s", tree_path.c_str());
     throw std::runtime_error("BT tree file not found: " + tree_path.string());
   }
+
+  RCLCPP_DEBUG(get_logger(), "[BtCoordinator] Loading tree from: %s", tree_path.c_str());
 
   tree_ = std::make_unique<BT::Tree>(
       factory_.createTreeFromFile(tree_path.string()));
@@ -238,6 +240,8 @@ void BtCoordinatorNode::TickCallback()
   }
 
   auto status = tree_->tickOnce();
+  RCLCPP_DEBUG(get_logger(), "[BtCoordinator] tick -> %s",
+               BT::toStr(status).c_str());
 
   if (status == BT::NodeStatus::SUCCESS) {
     RCLCPP_INFO(get_logger(), "[BtCoordinator] Tree completed: SUCCESS");
@@ -314,15 +318,25 @@ void BtCoordinatorNode::WatchdogCheck()
 {
   auto health = bridge_->GetTopicHealth(watchdog_timeout_s_);
 
+  bool any_critical_down = false;
   for (const auto& h : health) {
     if (!h.received) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
                             "[Watchdog] %s: no messages received yet", h.name.c_str());
+      any_critical_down = true;
     } else if (!h.healthy) {
       RCLCPP_WARN(get_logger(),
                   "[Watchdog] %s: stale (%.1fs since last message, timeout=%.1fs)",
                   h.name.c_str(), h.seconds_since_last, watchdog_timeout_s_);
+      any_critical_down = true;
+    } else {
+      RCLCPP_DEBUG(get_logger(), "[Watchdog] %s: healthy (%.2fs ago)",
+                   h.name.c_str(), h.seconds_since_last);
     }
+  }
+
+  if (!any_critical_down) {
+    RCLCPP_DEBUG(get_logger(), "[Watchdog] all topics healthy");
   }
 }
 
@@ -407,12 +421,14 @@ void BtCoordinatorNode::StepCallback(
     std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
   if (!tree_) {
+    RCLCPP_ERROR(get_logger(), "[Step] no tree loaded");
     response->success = false;
     response->message = "No tree loaded";
     return;
   }
 
   if (bridge_->IsEstopped()) {
+    RCLCPP_WARN(get_logger(), "[Step] E-STOP active, cannot tick");
     response->success = false;
     response->message = "E-STOP active";
     return;

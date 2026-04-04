@@ -1,8 +1,14 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
 
+#include <rclcpp/rclcpp.hpp>
+
 #include <cmath>
 
 namespace rtc_bt {
+
+namespace {
+auto logger() { return rclcpp::get_logger("bt"); }
+}  // namespace
 
 IsForceAbove::IsForceAbove(const std::string& name, const BT::NodeConfig& config,
                            std::shared_ptr<BtRosBridge> bridge)
@@ -45,7 +51,14 @@ BT::NodeStatus IsForceAbove::tick()
 
   bool condition_met = (count >= min_ft);
 
+  RCLCPP_DEBUG(logger(),
+               "[IsForceAbove] count=%d/%d max_force=%.2fN threshold=%.2fN",
+               count, min_ft, gs.max_force, threshold);
+
   if (sustained_ms <= 0) {
+    if (condition_met) {
+      RCLCPP_INFO(logger(), "[IsForceAbove] triggered (%d fingertips >= %.2fN)", count, threshold);
+    }
     return condition_met ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
   }
 
@@ -54,10 +67,13 @@ BT::NodeStatus IsForceAbove::tick()
     if (!sustained_active_) {
       sustained_start_ = std::chrono::steady_clock::now();
       sustained_active_ = true;
+      RCLCPP_DEBUG(logger(), "[IsForceAbove] sustained check started (%dms required)", sustained_ms);
     }
     auto elapsed = std::chrono::steady_clock::now() - sustained_start_;
     if (std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
         >= sustained_ms) {
+      RCLCPP_INFO(logger(), "[IsForceAbove] sustained condition met (%dms, %d fingertips)",
+                  sustained_ms, count);
       sustained_active_ = false;
       return BT::NodeStatus::SUCCESS;
     }

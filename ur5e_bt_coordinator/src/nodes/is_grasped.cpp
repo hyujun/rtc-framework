@@ -1,6 +1,12 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_grasped.hpp"
 
+#include <rclcpp/rclcpp.hpp>
+
 namespace rtc_bt {
+
+namespace {
+auto logger() { return rclcpp::get_logger("bt"); }
+}  // namespace
 
 IsGrasped::IsGrasped(const std::string& name, const BT::NodeConfig& config,
                      std::shared_ptr<BtRosBridge> bridge)
@@ -26,6 +32,12 @@ BT::NodeStatus IsGrasped::tick()
   // If BT threshold/min_fingertips match controller defaults, use aggregate directly
   if (std::abs(threshold - static_cast<double>(gs.force_threshold)) < 0.01 &&
       min_ft == gs.min_fingertips) {
+    RCLCPP_DEBUG(logger(), "[IsGrasped] grasp_detected=%s contacts=%d max_force=%.2fN",
+                 gs.grasp_detected ? "true" : "false", gs.num_active_contacts, gs.max_force);
+    if (gs.grasp_detected) {
+      RCLCPP_INFO(logger(), "[IsGrasped] grasp confirmed (contacts=%d max_force=%.2fN)",
+                  gs.num_active_contacts, gs.max_force);
+    }
     return gs.grasp_detected ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
   }
 
@@ -37,7 +49,14 @@ BT::NodeStatus IsGrasped::tick()
       ++count;
     }
   }
-  return (count >= min_ft) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+
+  bool grasped = (count >= min_ft);
+  RCLCPP_DEBUG(logger(), "[IsGrasped] count=%d/%d threshold=%.2fN", count, min_ft, threshold);
+  if (grasped) {
+    RCLCPP_INFO(logger(), "[IsGrasped] grasp confirmed (custom: %d fingertips >= %.2fN)",
+                count, threshold);
+  }
+  return grasped ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
 }
 
 }  // namespace rtc_bt

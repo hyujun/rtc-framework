@@ -1,7 +1,13 @@
 #include "ur5e_bt_coordinator/action_nodes/set_gains.hpp"
 #include "ur5e_bt_coordinator/bt_utils.hpp"
 
+#include <rclcpp/rclcpp.hpp>
+
 namespace rtc_bt {
+
+namespace {
+auto logger() { return rclcpp::get_logger("bt"); }
+}  // namespace
 
 SetGains::SetGains(const std::string& name, const BT::NodeConfig& config,
                    std::shared_ptr<BtRosBridge> bridge)
@@ -32,6 +38,7 @@ BT::NodeStatus SetGains::tick()
   // If full_gains provided, use it directly
   auto full = getInput<std::vector<double>>("full_gains");
   if (full && full->size() >= 10) {
+    RCLCPP_INFO(logger(), "[SetGains] publishing full_gains (%zu values)", full->size());
     bridge_->PublishGains(full.value());
     return BT::NodeStatus::SUCCESS;
   }
@@ -102,6 +109,11 @@ BT::NodeStatus SetGains::tick()
   auto hmtv = getInput<double>("hand_max_traj_velocity");
   if (hmtv) gains[15] = hmtv.value();
 
+  RCLCPP_INFO(logger(),
+              "[SetGains] kp_t=[%.1f,%.1f,%.1f] kp_r=[%.1f,%.1f,%.1f] "
+              "traj_speed=%.2f hand_speed=%.2f",
+              gains[0], gains[1], gains[2], gains[3], gains[4], gains[5],
+              gains[10], gains[12]);
   bridge_->PublishGains(gains);
   return BT::NodeStatus::SUCCESS;
 }

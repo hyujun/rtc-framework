@@ -87,7 +87,7 @@ class DigitalTwinNode(Node):
                         f'({len(self._joint_classification.passive_closed_chain)}): '
                         f'{sorted(self._joint_classification.passive_closed_chain.keys())}')
             except Exception as e:
-                self.get_logger().warn(f'Failed to parse URDF for classification: {e}')
+                self.get_logger().error(f'Failed to parse URDF for classification: {e}')
 
         # ── QoS — RELIABLE, depth 10 ────────────────────────────────────
         qos = QoSProfile(
@@ -113,6 +113,9 @@ class DigitalTwinNode(Node):
             if not topic:
                 self.get_logger().warn(f'source_{i}.topic is empty, skipping')
                 continue
+
+            self.get_logger().debug(
+                f'source_{i}: topic={topic}, joint_names={joint_names or "(dynamic)"}')
 
             cache = JointStateCache(topic=topic, joint_names=joint_names)
             self._sources.append(cache)
@@ -195,9 +198,12 @@ class DigitalTwinNode(Node):
                 self._sensor_viz_active = True
 
                 self.get_logger().info(
-                    f'Sensor visualization enabled: {sensor_topic} -> {marker_topic}')
-        except Exception:
-            pass
+                    f'Sensor visualization enabled: {sensor_topic} -> {marker_topic} '
+                    f'({len(fingertip_names)} fingertips)')
+        except Exception as e:
+            if sensor_topic:
+                self.get_logger().error(
+                    f'Failed to initialize sensor visualization: {e}')
 
         # ── Publisher ────────────────────────────────────────────────────
         self._joint_pub = self.create_publisher(JointState, output_topic, 10)
@@ -225,6 +231,9 @@ class DigitalTwinNode(Node):
             if cache.dynamic:
                 # Dynamic mode: accept all joints, grow cache on first message
                 if not cache.data_received and msg.name:
+                    self.get_logger().debug(
+                        f'Source {source_idx} ({cache.topic}): first message, '
+                        f'{len(msg.name)} joints')
                     cache.received_names = list(msg.name)
                     cache.name_to_idx = {
                         name: i for i, name in enumerate(msg.name)}
@@ -255,6 +264,9 @@ class DigitalTwinNode(Node):
                         if msg.velocity and i < len(msg.velocity):
                             cache.velocities[idx] = msg.velocity[i]
 
+            if not cache.data_received:
+                self.get_logger().info(
+                    f'Source {source_idx} ({cache.topic}): receiving data')
             cache.data_received = True
 
         return callback
@@ -375,7 +387,7 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        pass
+        node.get_logger().info('Shutting down (KeyboardInterrupt)')
     finally:
         node.destroy_node()
         rclpy.try_shutdown()
