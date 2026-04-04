@@ -31,6 +31,7 @@
 #include <onnxruntime_cxx_api.h>
 #endif
 
+#include <rclcpp/clock.hpp>
 #include <rclcpp/logging.hpp>
 
 #include "rtc_base/types/types.hpp"
@@ -396,7 +397,17 @@ class FingertipFTInferencer {
 
       result.num_fingertips = n;
       result.valid = all_ready;
+    } catch (const std::exception& e) {
+      static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
+      RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("FT-Inferencer"),
+                            steady_clock, 5000,
+                            "FT inference exception: %s", e.what());
+      result.valid = false;
     } catch (...) {
+      static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
+      RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("FT-Inferencer"),
+                            steady_clock, 5000,
+                            "FT inference unknown exception (result invalidated)");
       result.valid = false;
     }
 

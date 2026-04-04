@@ -20,6 +20,8 @@
 #include <thread>
 #include <utility>
 
+#include <rclcpp/logging.hpp>
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -61,35 +63,52 @@ class HandUdpTransport {
   // ── Socket lifecycle ──────────────────────────────────────────────────────
 
   [[nodiscard]] bool Open() noexcept {
+    const auto logger = rclcpp::get_logger("HandUdpTransport");
+
     socket_fd_ = socket(AF_INET, SOCK_DGRAM, 0);
-    if (socket_fd_ < 0) return false;
+    if (socket_fd_ < 0) {
+      RCLCPP_ERROR(logger, "UDP socket creation failed (errno=%d: %s)",
+                   errno, strerror(errno));
+      return false;
+    }
 
     std::memset(&target_addr_, 0, sizeof(target_addr_));
     target_addr_.sin_family = AF_INET;
     target_addr_.sin_port   = htons(static_cast<uint16_t>(target_port_));
     if (inet_pton(AF_INET, target_ip_.c_str(), &target_addr_.sin_addr) <= 0) {
+      RCLCPP_ERROR(logger, "Invalid target IP address: %s", target_ip_.c_str());
       close(socket_fd_);
       socket_fd_ = -1;
       return false;
     }
 
     constexpr int kUdpBufSize = 65536;
-    setsockopt(socket_fd_, SOL_SOCKET, SO_RCVBUF, &kUdpBufSize, sizeof(kUdpBufSize));
-    setsockopt(socket_fd_, SOL_SOCKET, SO_SNDBUF, &kUdpBufSize, sizeof(kUdpBufSize));
+    if (setsockopt(socket_fd_, SOL_SOCKET, SO_RCVBUF, &kUdpBufSize, sizeof(kUdpBufSize)) != 0) {
+      RCLCPP_WARN(logger, "setsockopt SO_RCVBUF failed (errno=%d)", errno);
+    }
+    if (setsockopt(socket_fd_, SOL_SOCKET, SO_SNDBUF, &kUdpBufSize, sizeof(kUdpBufSize)) != 0) {
+      RCLCPP_WARN(logger, "setsockopt SO_SNDBUF failed (errno=%d)", errno);
+    }
 
     // Safety fallback SO_RCVTIMEO (ppoll is primary timeout mechanism)
     {
       struct timeval tv{};
       tv.tv_sec  = 0;
       tv.tv_usec = 100'000;  // 100ms safety fallback
-      setsockopt(socket_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+      if (setsockopt(socket_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) {
+        RCLCPP_WARN(logger, "setsockopt SO_RCVTIMEO failed (errno=%d)", errno);
+      }
     }
 
+    RCLCPP_INFO(logger, "UDP socket opened: %s:%d (recv_timeout=%.2fms)",
+                target_ip_.c_str(), target_port_, recv_timeout_ms_);
     return true;
   }
 
   void Close() noexcept {
     if (socket_fd_ >= 0) {
+      RCLCPP_DEBUG(rclcpp::get_logger("HandUdpTransport"),
+                   "UDP socket closed (%s:%d)", target_ip_.c_str(), target_port_);
       close(socket_fd_);
       socket_fd_ = -1;
     }
@@ -396,13 +415,20 @@ class HandUdpTransport {
   [[nodiscard]] bool InitializeSensors(
       int max_retries = 5,
       int retry_interval_ms = 100) noexcept {
+    const auto logger = rclcpp::get_logger("HandUdpTransport");
     for (int attempt = 0; attempt < max_retries; ++attempt) {
       if (RequestSetSensorMode(hand_packets::SensorMode::kRaw)) {
+        RCLCPP_INFO(logger, "Sensor mode set to RAW (attempt %d/%d)",
+                    attempt + 1, max_retries);
         return true;
       }
+      RCLCPP_WARN(logger, "Sensor mode switch retry %d/%d failed",
+                  attempt + 1, max_retries);
       std::this_thread::sleep_for(
           std::chrono::milliseconds(retry_interval_ms));
     }
+    RCLCPP_ERROR(logger, "Sensor mode switch to RAW failed after %d retries",
+                 max_retries);
     return false;
   }
 

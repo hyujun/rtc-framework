@@ -479,7 +479,10 @@ class HandUdpNode : public rclcpp::Node {
 
     const std::string path = output_dir + "/hand_udp_stats.json";
     std::ofstream ofs(path);
-    if (!ofs.is_open()) return;
+    if (!ofs.is_open()) {
+      RCLCPP_WARN(get_logger(), "Failed to save hand stats to %s", path.c_str());
+      return;
+    }
 
     // 타이밍 통계
     const auto ts = controller_->timing_stats();
@@ -628,8 +631,12 @@ class HandUdpNode : public rclcpp::Node {
 };
 
 int main(int argc, char** argv) {
+  rclcpp::init(argc, argv);
+
+  const auto logger = rclcpp::get_logger("hand_udp_node");
+
   if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
-    fprintf(stderr, "[WARN] hand_udp_node: mlockall failed\n");
+    RCLCPP_WARN(logger, "mlockall failed (errno=%d: %s)", errno, strerror(errno));
   }
 
   // Pin main thread (ROS2 executor, DDS) to Core 0-1 (OS/DDS cores).
@@ -641,11 +648,10 @@ int main(int argc, char** argv) {
     CPU_SET(0, &cpuset);
     CPU_SET(1, &cpuset);
     if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
-      fprintf(stderr, "[WARN] hand_udp_node: main thread CPU affinity failed\n");
+      RCLCPP_WARN(logger, "Main thread CPU affinity failed (errno=%d)", errno);
     }
   }
 
-  rclcpp::init(argc, argv);
   rclcpp::spin(std::make_shared<HandUdpNode>());
   rclcpp::shutdown();
   return 0;

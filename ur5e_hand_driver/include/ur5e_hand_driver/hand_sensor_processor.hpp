@@ -13,7 +13,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
+
+#include <rclcpp/logging.hpp>
 
 #include "rtc_base/types/types.hpp"
 #include "rtc_base/filters/bessel_filter.hpp"
@@ -57,12 +58,15 @@ class HandSensorProcessor {
     const double nominal_effective_rate =
         kNominalRateHz / static_cast<double>(sensor_decimation_);
 
+    const auto logger = rclcpp::get_logger("HandSensorProcessor");
+
     if (baro_lpf_enabled_) {
       try {
         baro_filter_.Init(baro_lpf_cutoff_hz_, nominal_effective_rate);
         baro_filter_active_ = true;
       } catch (...) {
         baro_filter_active_ = false;
+        RCLCPP_WARN(logger, "Barometer LPF init failed (disabled)");
       }
     }
 
@@ -72,6 +76,7 @@ class HandSensorProcessor {
         tof_filter_active_ = true;
       } catch (...) {
         tof_filter_active_ = false;
+        RCLCPP_WARN(logger, "TOF LPF init failed (disabled)");
       }
     }
 
@@ -80,6 +85,12 @@ class HandSensorProcessor {
           static_cast<std::size_t>(drift_window_size_),
           drift_threshold_);
     }
+
+    RCLCPP_INFO(logger,
+                "SensorProcessor initialized: baro_lpf=%s, tof_lpf=%s, drift=%s",
+                baro_filter_active_ ? "ON" : "OFF",
+                tof_filter_active_ ? "ON" : "OFF",
+                drift_detection_enabled_ ? "ON" : "OFF");
   }
 
   // Called every sensor cycle: rate estimator tick + delayed BesselFilter re-init.
@@ -93,12 +104,20 @@ class HandSensorProcessor {
       if (baro_filter_active_) {
         try {
           baro_filter_.Init(baro_lpf_cutoff_hz_, actual_rate);
-        } catch (...) {}
+        } catch (...) {
+          RCLCPP_WARN_ONCE(rclcpp::get_logger("HandSensorProcessor"),
+                           "Barometer BesselFilter re-init failed at actual rate %.1f Hz",
+                           actual_rate);
+        }
       }
       if (tof_filter_active_) {
         try {
           tof_filter_.Init(tof_lpf_cutoff_hz_, actual_rate);
-        } catch (...) {}
+        } catch (...) {
+          RCLCPP_WARN_ONCE(rclcpp::get_logger("HandSensorProcessor"),
+                           "TOF BesselFilter re-init failed at actual rate %.1f Hz",
+                           actual_rate);
+        }
       }
       filter_reinited_ = true;
     }
@@ -197,7 +216,7 @@ class HandSensorProcessor {
   }
 
  private:
-  // NOTE: fprintf on RT thread is not strictly RT-safe, but drift is an
+  // NOTE: RCLCPP logging on RT thread is not strictly RT-safe, but drift is an
   // abnormal condition and 1Hz rate is acceptable for operator notification.
   void ThrottledDriftWarning() noexcept {
     const auto now = std::chrono::steady_clock::now();
@@ -207,9 +226,9 @@ class HandSensorProcessor {
     const int num_baro = num_fingertips_ * kBarometerCount;
     for (int i = 0; i < num_baro; ++i) {
       if (drift_result_.drift_flags[static_cast<std::size_t>(i)]) {
-        fprintf(stderr,
-                "[WARN] barometer sensor(id:%d) detect drift (slope=%.3f)\n",
-                i, drift_result_.slopes[static_cast<std::size_t>(i)]);
+        RCLCPP_WARN(rclcpp::get_logger("HandSensorProcessor"),
+                    "Barometer sensor(id:%d) drift detected (slope=%.3f)",
+                    i, drift_result_.slopes[static_cast<std::size_t>(i)]);
       }
     }
   }

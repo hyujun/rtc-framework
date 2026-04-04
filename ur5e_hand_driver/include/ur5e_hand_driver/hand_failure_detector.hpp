@@ -10,6 +10,8 @@
 //
 // On failure, invokes a registered callback (typically triggers global E-Stop).
 
+#include <rclcpp/logging.hpp>
+
 #include "ur5e_hand_driver/hand_controller.hpp"
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
@@ -62,6 +64,8 @@ public:
     if (running_.load(std::memory_order_relaxed)) return;
     running_.store(true, std::memory_order_relaxed);
     thread_ = std::jthread([this](std::stop_token st) { DetectLoop(st); });
+    RCLCPP_DEBUG(rclcpp::get_logger("HandFailureDetector"),
+                 "Detector thread started (50 Hz)");
   }
 
   /// Stop the detector thread.
@@ -71,6 +75,8 @@ public:
       thread_.request_stop();
       thread_.join();
     }
+    RCLCPP_DEBUG(rclcpp::get_logger("HandFailureDetector"),
+                 "Detector thread stopped");
   }
 
   [[nodiscard]] bool failed() const noexcept {
@@ -80,7 +86,13 @@ public:
 private:
   void DetectLoop(std::stop_token st) {
     using std::chrono_literals::operator""ms;
-    (void)ApplyThreadConfigWithFallback(thread_cfg_);
+    {
+      auto [ok, msg] = ApplyThreadConfigWithFallback(thread_cfg_);
+      if (!ok) {
+        RCLCPP_WARN(rclcpp::get_logger("HandFailureDetector"),
+                    "Thread config apply failed: %s", msg.c_str());
+      }
+    }
     prev_rate_check_ = std::chrono::steady_clock::now();
     prev_cycle_count_ = controller_.cycle_count();
 
@@ -130,10 +142,16 @@ private:
     prev_motor_valid_ = true;
 
     if (motor_zero_count_ >= cfg_.failure_threshold) {
+      RCLCPP_WARN(rclcpp::get_logger("HandFailureDetector"),
+                  "Motor all-zero detected (count=%d, threshold=%d)",
+                  motor_zero_count_, cfg_.failure_threshold);
       RaiseFailure("hand_motor_all_zero (count=" +
                    std::to_string(motor_zero_count_) + ")");
     }
     if (motor_dup_count_ >= cfg_.failure_threshold) {
+      RCLCPP_WARN(rclcpp::get_logger("HandFailureDetector"),
+                  "Motor duplicate detected (count=%d, threshold=%d)",
+                  motor_dup_count_, cfg_.failure_threshold);
       RaiseFailure("hand_motor_duplicate (count=" +
                    std::to_string(motor_dup_count_) + ")");
     }
@@ -162,10 +180,16 @@ private:
     prev_sensor_valid_ = true;
 
     if (sensor_zero_count_ >= cfg_.failure_threshold) {
+      RCLCPP_WARN(rclcpp::get_logger("HandFailureDetector"),
+                  "Sensor all-zero detected (count=%d, threshold=%d)",
+                  sensor_zero_count_, cfg_.failure_threshold);
       RaiseFailure("hand_sensor_all_zero (count=" +
                    std::to_string(sensor_zero_count_) + ")");
     }
     if (sensor_dup_count_ >= cfg_.failure_threshold) {
+      RCLCPP_WARN(rclcpp::get_logger("HandFailureDetector"),
+                  "Sensor duplicate detected (count=%d, threshold=%d)",
+                  sensor_dup_count_, cfg_.failure_threshold);
       RaiseFailure("hand_sensor_duplicate (count=" +
                    std::to_string(sensor_dup_count_) + ")");
     }
@@ -189,6 +213,9 @@ private:
     }
 
     if (rate_fail_count_ >= cfg_.rate_fail_threshold) {
+      RCLCPP_WARN(rclcpp::get_logger("HandFailureDetector"),
+                  "Polling rate low: %.1f Hz (min=%.1f Hz, fail_count=%d)",
+                  rate_hz, cfg_.min_rate_hz, rate_fail_count_);
       RaiseFailure("hand_polling_rate_low (rate=" +
                    std::to_string(rate_hz) + " Hz, min=" +
                    std::to_string(cfg_.min_rate_hz) + " Hz)");
@@ -198,6 +225,9 @@ private:
   void CheckLink() {
     const uint64_t failures = controller_.consecutive_recv_failures();
     if (failures >= static_cast<uint64_t>(cfg_.link_fail_threshold)) {
+      RCLCPP_WARN(rclcpp::get_logger("HandFailureDetector"),
+                  "UDP link down (consecutive_recv_failures=%lu, threshold=%d)",
+                  static_cast<unsigned long>(failures), cfg_.link_fail_threshold);
       RaiseFailure("hand_udp_link_down (consecutive_recv_failures=" +
                    std::to_string(failures) + ")");
     }

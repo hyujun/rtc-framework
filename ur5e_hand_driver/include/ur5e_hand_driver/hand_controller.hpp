@@ -38,6 +38,7 @@
 #include <utility>
 #include <vector>
 
+#include <rclcpp/clock.hpp>
 #include <rclcpp/logging.hpp>
 
 #include "rtc_base/types/types.hpp"
@@ -156,25 +157,41 @@ class HandController {
 
     if (use_fake_hand_) {
       running_.store(true, std::memory_order_release);
+      RCLCPP_INFO(rclcpp::get_logger("HandController"),
+                  "HandController started in FAKE mode (num_fingertips=%d)",
+                  num_fingertips_);
       return true;
     }
 
-    if (!transport_.Open()) return false;
+    if (!transport_.Open()) {
+      RCLCPP_ERROR(rclcpp::get_logger("HandController"),
+                   "UDP socket open failed");
+      return false;
+    }
 
     // Sensor initialization: NN -> RAW mode
     if (num_fingertips_ > 0) {
       sensor_init_ok_ = transport_.InitializeSensors();
+      if (!sensor_init_ok_) {
+        RCLCPP_WARN(rclcpp::get_logger("HandController"),
+                    "Sensor initialization failed (sensor_init_ok=false)");
+      }
     }
 
     // Sensor processor initialization (rate estimator, filters, drift detector)
     if (num_fingertips_ > 0) {
       sensor_processor_.Init();
+      RCLCPP_DEBUG(rclcpp::get_logger("HandController"),
+                   "Sensor processor initialized");
     }
 
     running_.store(true, std::memory_order_release);
     event_thread_ = std::jthread([this](std::stop_token st) {
       EventLoop(std::move(st));
     });
+    RCLCPP_INFO(rclcpp::get_logger("HandController"),
+                "EventLoop thread started (mode=%s)",
+                communication_mode_ == HandCommunicationMode::kBulk ? "bulk" : "individual");
 
     return true;
   }
@@ -185,6 +202,9 @@ class HandController {
     event_thread_.request_stop();
     event_cv_.notify_all();
     transport_.Close();
+    RCLCPP_INFO(rclcpp::get_logger("HandController"),
+                "HandController stopped (cycles=%zu)",
+                cycle_count_.load(std::memory_order_relaxed));
   }
 
   // ── Callback ───────────────────────────────────────────────────────────
@@ -326,7 +346,10 @@ class HandController {
  private:
   // Event-driven loop: condvar wait -> write + read -> sensor processing -> state publish.
   void EventLoop(std::stop_token stop_token) {
-    (void)ApplyThreadConfig(thread_cfg_);
+    if (!ApplyThreadConfig(thread_cfg_)) {
+      RCLCPP_WARN(rclcpp::get_logger("HandController"),
+                  "EventLoop: ApplyThreadConfig failed (running at default priority)");
+    }
 
     const bool is_bulk = (communication_mode_ == HandCommunicationMode::kBulk);
 
@@ -373,6 +396,8 @@ class HandController {
 
       // E-Stop check
       if (estop_flag_ && estop_flag_->load(std::memory_order_acquire)) {
+        RCLCPP_WARN(rclcpp::get_logger("HandController"),
+                    "EventLoop: E-Stop active, sending zero command and exiting");
         std::array<float, kNumHandMotors> zeros{};
         transport_.WritePositionFireAndForget(zeros, hand_packets::JointMode::kJoint);
         busy_.store(false, std::memory_order_release);
@@ -466,6 +491,8 @@ class HandController {
 
         if (any_recv_ok && !state_read_once_) {
           state_read_once_ = true;
+          RCLCPP_INFO(rclcpp::get_logger("HandController"),
+                      "First hand state received (write commands now enabled)");
         }
 
         state_seqlock_.Store(state);
@@ -555,6 +582,8 @@ class HandController {
 
         if (any_recv_ok && !state_read_once_) {
           state_read_once_ = true;
+          RCLCPP_INFO(rclcpp::get_logger("HandController"),
+                      "First hand state received (write commands now enabled)");
         }
 
         state_seqlock_.Store(state);
@@ -582,7 +611,16 @@ class HandController {
       if (any_recv_ok) {
         consecutive_recv_failures_.store(0, std::memory_order_relaxed);
       } else {
-        consecutive_recv_failures_.fetch_add(1, std::memory_order_relaxed);
+        const auto failures = consecutive_recv_failures_.fetch_add(
+            1, std::memory_order_relaxed) + 1;
+        if (failures >= 5) {
+          static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
+          RCLCPP_WARN_THROTTLE(rclcpp::get_logger("HandController"),
+                               steady_clock,
+                               1000,  // 1Hz throttle
+                               "EventLoop: consecutive recv failures=%lu",
+                               static_cast<unsigned long>(failures));
+        }
       }
 
       busy_.store(false, std::memory_order_release);
