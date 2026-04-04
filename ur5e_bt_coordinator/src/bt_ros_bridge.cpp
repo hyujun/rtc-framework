@@ -192,6 +192,9 @@ void BtRosBridge::PublishArmTarget(const Pose6D& target) {
   msg.goal_type = "task";
   msg.task_target = {target.x, target.y, target.z,
                      target.roll, target.pitch, target.yaw};
+  RCLCPP_DEBUG(node_->get_logger(),
+               "[BtRosBridge] PublishArmTarget task=[%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
+               target.x, target.y, target.z, target.roll, target.pitch, target.yaw);
   arm_target_pub_->publish(msg);
 }
 
@@ -200,6 +203,8 @@ void BtRosBridge::PublishArmJointTarget(const std::vector<double>& target) {
   msg.header.stamp = node_->now();
   msg.goal_type = "joint";
   msg.joint_target.assign(target.begin(), target.end());
+  RCLCPP_DEBUG(node_->get_logger(),
+               "[BtRosBridge] PublishArmJointTarget (%zu joints)", target.size());
   arm_target_pub_->publish(msg);
 }
 
@@ -208,6 +213,8 @@ void BtRosBridge::PublishHandTarget(const std::vector<double>& target) {
   msg.header.stamp = node_->now();
   msg.goal_type = "joint";
   msg.joint_target.assign(target.begin(), target.end());
+  RCLCPP_DEBUG(node_->get_logger(),
+               "[BtRosBridge] PublishHandTarget (%zu motors)", target.size());
   hand_target_pub_->publish(msg);
 }
 
@@ -220,6 +227,8 @@ void BtRosBridge::PublishGains(const std::vector<double>& gains) {
 void BtRosBridge::PublishSelectController(const std::string& name) {
   std_msgs::msg::String msg;
   msg.data = name;
+  RCLCPP_DEBUG(node_->get_logger(),
+               "[BtRosBridge] PublishSelectController: %s", name.c_str());
   select_ctrl_pub_->publish(msg);
 }
 

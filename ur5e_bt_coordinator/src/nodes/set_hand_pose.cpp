@@ -59,6 +59,7 @@ BT::NodeStatus SetHandPose::onStart()
 BT::NodeStatus SetHandPose::onRunning()
 {
   if (ElapsedSeconds(start_time_) >= duration_) {
+    RCLCPP_INFO(rclcpp::get_logger("bt"), "[SetHandPose] complete (%.3fs)", duration_);
     return BT::NodeStatus::SUCCESS;
   }
   return BT::NodeStatus::RUNNING;

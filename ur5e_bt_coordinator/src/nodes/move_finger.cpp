@@ -66,6 +66,7 @@ BT::NodeStatus MoveFinger::onStart()
 BT::NodeStatus MoveFinger::onRunning()
 {
   if (ElapsedSeconds(start_time_) >= duration_) {
+    RCLCPP_INFO(rclcpp::get_logger("bt"), "[MoveFinger] complete (%.3fs)", duration_);
     return BT::NodeStatus::SUCCESS;
   }
   return BT::NodeStatus::RUNNING;

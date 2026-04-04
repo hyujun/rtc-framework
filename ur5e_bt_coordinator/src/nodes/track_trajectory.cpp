@@ -1,7 +1,13 @@
 #include "ur5e_bt_coordinator/action_nodes/track_trajectory.hpp"
 #include "ur5e_bt_coordinator/bt_utils.hpp"
 
+#include <rclcpp/rclcpp.hpp>
+
 namespace rtc_bt {
+
+namespace {
+auto logger() { return rclcpp::get_logger("bt"); }
+}  // namespace
 
 TrackTrajectory::TrackTrajectory(const std::string& name, const BT::NodeConfig& config,
                                  std::shared_ptr<BtRosBridge> bridge)
@@ -21,6 +27,7 @@ BT::NodeStatus TrackTrajectory::onStart()
 {
   auto wp = getInput<std::vector<Pose6D>>("waypoints");
   if (!wp || wp->empty()) {
+    RCLCPP_ERROR(logger(), "[TrackTrajectory] missing or empty waypoints");
     throw BT::RuntimeError("TrackTrajectory: missing or empty waypoints");
   }
   waypoints_ = wp.value();
@@ -29,6 +36,9 @@ BT::NodeStatus TrackTrajectory::onStart()
   current_idx_ = 0;
   start_time_ = std::chrono::steady_clock::now();
 
+  RCLCPP_INFO(logger(), "[TrackTrajectory] %zu waypoints tol=%.4f timeout=%.1fs",
+              waypoints_.size(), pos_tol_, timeout_s_);
+
   bridge_->PublishArmTarget(waypoints_[0]);
   return BT::NodeStatus::RUNNING;
 }
@@ -36,6 +46,8 @@ BT::NodeStatus TrackTrajectory::onStart()
 BT::NodeStatus TrackTrajectory::onRunning()
 {
   if (ElapsedSeconds(start_time_) > timeout_s_) {
+    RCLCPP_WARN(logger(), "[TrackTrajectory] timeout (%.1fs) at waypoint %zu/%zu",
+                timeout_s_, current_idx_, waypoints_.size());
     return BT::NodeStatus::FAILURE;
   }
 
@@ -45,12 +57,22 @@ BT::NodeStatus TrackTrajectory::onRunning()
   if (err < pos_tol_) {
     ++current_idx_;
     if (current_idx_ >= waypoints_.size()) {
+      RCLCPP_INFO(logger(), "[TrackTrajectory] all %zu waypoints reached (elapsed=%.2fs)",
+                  waypoints_.size(), ElapsedSeconds(start_time_));
       return BT::NodeStatus::SUCCESS;
     }
+    RCLCPP_DEBUG(logger(), "[TrackTrajectory] waypoint %zu/%zu reached (err=%.4f)",
+                 current_idx_, waypoints_.size(), err);
     bridge_->PublishArmTarget(waypoints_[current_idx_]);
   }
 
   return BT::NodeStatus::RUNNING;
+}
+
+void TrackTrajectory::onHalted()
+{
+  RCLCPP_INFO(logger(), "[TrackTrajectory] halted at waypoint %zu/%zu (elapsed=%.2fs)",
+              current_idx_, waypoints_.size(), ElapsedSeconds(start_time_));
 }
 
 }  // namespace rtc_bt

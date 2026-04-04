@@ -1,8 +1,14 @@
 #include "ur5e_bt_coordinator/action_nodes/compute_sweep_trajectory.hpp"
 
+#include <rclcpp/rclcpp.hpp>
+
 #include <cmath>
 
 namespace rtc_bt {
+
+namespace {
+auto logger() { return rclcpp::get_logger("bt"); }
+}  // namespace
 
 BT::PortsList ComputeSweepTrajectory::providedPorts()
 {
@@ -21,6 +27,7 @@ BT::NodeStatus ComputeSweepTrajectory::tick()
 {
   auto start = getInput<Pose6D>("start_pose");
   if (!start) {
+    RCLCPP_ERROR(logger(), "[ComputeSweepTrajectory] missing start_pose port");
     throw BT::RuntimeError("ComputeSweepTrajectory: missing start_pose");
   }
 
@@ -51,6 +58,10 @@ BT::NodeStatus ComputeSweepTrajectory::tick()
 
     waypoints.push_back(wp);
   }
+
+  RCLCPP_INFO(logger(),
+              "[ComputeSweepTrajectory] %d waypoints, distance=%.3fm arc_height=%.3fm dir=[%.2f, %.2f]",
+              n, distance, arc_height, dir_x, dir_y);
 
   setOutput("waypoints", waypoints);
   return BT::NodeStatus::SUCCESS;

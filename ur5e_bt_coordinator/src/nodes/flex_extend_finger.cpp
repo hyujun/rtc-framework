@@ -91,6 +91,9 @@ BT::NodeStatus FlexExtendFinger::onRunning()
 
   // 전체 완료
   if (phase_ == Phase::kExtend && elapsed >= flex_duration_ + extend_duration_) {
+    RCLCPP_INFO(rclcpp::get_logger("bt"),
+                "[FlexExtendFinger] complete finger=%s (total=%.3fs)",
+                finger_name_.c_str(), flex_duration_ + extend_duration_);
     return BT::NodeStatus::SUCCESS;
   }
   return BT::NodeStatus::RUNNING;

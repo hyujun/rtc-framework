@@ -25,7 +25,7 @@ public:
 
   BT::NodeStatus onStart() override;
   BT::NodeStatus onRunning() override;
-  void onHalted() override {}
+  void onHalted() override;
 
 private:
   std::shared_ptr<BtRosBridge> bridge_;
