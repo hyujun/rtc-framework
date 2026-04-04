@@ -37,17 +37,13 @@
       path: "robots/ur5e/urdf/ur5e_with_hand.urdf"
       root_joint_type: "fixed"
       sub_models:
-        - name: "ur5e"
+        ur5e:
           root_link: "base_link"
           tip_link: "flange"
       tree_models:
-        - name: "hand"
+        hand:
           root_link: "hand_base_link"
-          tip_links:
-            - "thumb_tip_link"
-            - "index_tip_link"
-            - "middle_tip_link"
-            - "ring_tip_link"
+          tip_links: ["thumb_tip_link", "index_tip_link", "middle_tip_link", "ring_tip_link"]
       # passive_joints:
       #   - "thumb_cmc_aa"
       #   - "thumb_cmc_fe"

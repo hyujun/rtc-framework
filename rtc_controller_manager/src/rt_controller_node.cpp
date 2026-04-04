@@ -1987,21 +1987,28 @@ void RtControllerNode::ClearGlobalEstop() noexcept
 void RtControllerNode::ParseSubModels(
     rtc_urdf_bridge::ModelConfig & config)
 {
-  // ROS2 flattens YAML arrays-of-objects to prefixed params:
-  //   urdf.sub_models.0.name, urdf.sub_models.0.root_link, ...
+  // YAML map format (Jazzy-compatible):
+  //   urdf.sub_models.<name>.root_link, urdf.sub_models.<name>.tip_link
+  //
+  // The map key IS the sub-model name, so no separate "name" field is needed.
+  // list_parameters() returns prefixes like "urdf.sub_models.<name>".
+
   const auto params = list_parameters({"urdf.sub_models"}, 10);
-  std::set<std::string> seen;
+
   for (const auto & prefix : params.prefixes) {
-    const std::string name_key = prefix + ".name";
+    // Skip the "urdf.sub_models" prefix itself — we want child prefixes
+    if (prefix == "urdf.sub_models") continue;
+
+    // Extract model name from prefix: "urdf.sub_models.<name>" → "<name>"
+    const std::string model_name = prefix.substr(std::string("urdf.sub_models.").size());
+    if (model_name.empty()) continue;
+
     const std::string root_key = prefix + ".root_link";
     const std::string tip_key  = prefix + ".tip_link";
-    if (!has_parameter(name_key) || !has_parameter(root_key) || !has_parameter(tip_key)) {
-      continue;
-    }
-    const auto name = get_parameter(name_key).as_string();
-    if (!seen.insert(name).second) continue;  // deduplicate
+    if (!has_parameter(root_key) || !has_parameter(tip_key)) continue;
+
     rtc_urdf_bridge::SubModelConfig sm;
-    sm.name = name;
+    sm.name = model_name;
     sm.root_link = get_parameter(root_key).as_string();
     sm.tip_link = get_parameter(tip_key).as_string();
     config.sub_models.push_back(std::move(sm));
@@ -2011,20 +2018,24 @@ void RtControllerNode::ParseSubModels(
 void RtControllerNode::ParseTreeModels(
     rtc_urdf_bridge::ModelConfig & config)
 {
+  // YAML map format (Jazzy-compatible):
+  //   urdf.tree_models.<name>.root_link, urdf.tree_models.<name>.tip_links
+
   const auto params = list_parameters({"urdf.tree_models"}, 10);
-  std::set<std::string> seen;
+
   for (const auto & prefix : params.prefixes) {
-    const std::string name_key = prefix + ".name";
+    if (prefix == "urdf.tree_models") continue;
+
+    const std::string model_name = prefix.substr(std::string("urdf.tree_models.").size());
+    if (model_name.empty()) continue;
+
     const std::string root_key = prefix + ".root_link";
-    if (!has_parameter(name_key) || !has_parameter(root_key)) continue;
-    const auto name = get_parameter(name_key).as_string();
-    if (!seen.insert(name).second) continue;
+    if (!has_parameter(root_key)) continue;
 
     rtc_urdf_bridge::TreeModelConfig tm;
-    tm.name = name;
+    tm.name = model_name;
     tm.root_link = get_parameter(root_key).as_string();
 
-    // tip_links: try as string_array first (ROS2 YAML sequence)
     const std::string tips_key = prefix + ".tip_links";
     if (has_parameter(tips_key)) {
       try {
