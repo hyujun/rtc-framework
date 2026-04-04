@@ -877,18 +877,22 @@ class DemoControllerGUI(Node):
         tree_frame = tk.Frame(preset_frame, bg='#1e1e2e')
         tree_frame.pack(fill='both', expand=True, padx=4, pady=(0, 4))
 
-        columns = ('type', 'grasp_time', 'positions')
+        columns = ('type', 'controller', 'grasp_time', 'robot_target', 'positions')
         self._preset_tree = ttk.Treeview(
             tree_frame, columns=columns, show='tree headings',
             height=6, selectmode='browse')
         self._preset_tree.heading('#0', text='Name', anchor='w')
         self._preset_tree.heading('type', text='Type', anchor='center')
+        self._preset_tree.heading('controller', text='Controller', anchor='center')
         self._preset_tree.heading('grasp_time', text='Time (s)', anchor='center')
-        self._preset_tree.heading('positions', text='Positions (deg)', anchor='w')
-        self._preset_tree.column('#0', width=120, minwidth=80)
-        self._preset_tree.column('type', width=60, minwidth=50, anchor='center')
-        self._preset_tree.column('grasp_time', width=70, minwidth=50, anchor='center')
-        self._preset_tree.column('positions', width=400, minwidth=200)
+        self._preset_tree.heading('robot_target', text='Robot Target', anchor='w')
+        self._preset_tree.heading('positions', text='Hand (deg)', anchor='w')
+        self._preset_tree.column('#0', width=100, minwidth=70)
+        self._preset_tree.column('type', width=50, minwidth=40, anchor='center')
+        self._preset_tree.column('controller', width=80, minwidth=60, anchor='center')
+        self._preset_tree.column('grasp_time', width=55, minwidth=40, anchor='center')
+        self._preset_tree.column('robot_target', width=220, minwidth=120)
+        self._preset_tree.column('positions', width=280, minwidth=150)
 
         tree_scroll = ttk.Scrollbar(tree_frame, orient='vertical',
                                      command=self._preset_tree.yview)
@@ -921,6 +925,35 @@ class DemoControllerGUI(Node):
         self._preset_time_entry.insert(0, "1.0")
         self._preset_time_entry.pack(side='left', padx=2)
 
+        # Robot inclusion row
+        robot_input_frame = tk.Frame(preset_frame, bg='#1e1e2e')
+        robot_input_frame.pack(fill='x', padx=4, pady=2)
+
+        self._preset_include_robot_var = tk.BooleanVar(value=False)
+        self._preset_include_robot_cb = ttk.Checkbutton(
+            robot_input_frame, text="Include Robot",
+            variable=self._preset_include_robot_var,
+            command=self._on_preset_include_robot_toggle)
+        self._preset_include_robot_cb.pack(side='left', padx=(0, 8))
+
+        tk.Label(robot_input_frame, text="Controller:", bg='#1e1e2e', fg='#cdd6f4',
+                 font=('Segoe UI', 8)).pack(side='left', padx=(0, 2))
+        self._preset_ctrl_var = tk.StringVar(value="demo_joint_controller")
+        self._preset_ctrl_combo = ttk.Combobox(
+            robot_input_frame, textvariable=self._preset_ctrl_var,
+            values=list(CONTROLLER_TYPES.keys()), width=22, state='disabled')
+        self._preset_ctrl_combo.pack(side='left', padx=2)
+        self._preset_ctrl_combo.bind('<<ComboboxSelected>>',
+                                     self._on_preset_ctrl_combo_change)
+
+        tk.Label(robot_input_frame, text="Goal:", bg='#1e1e2e', fg='#cdd6f4',
+                 font=('Segoe UI', 8)).pack(side='left', padx=(8, 2))
+        self._preset_goal_type_var = tk.StringVar(value="joint")
+        self._preset_goal_type_combo = ttk.Combobox(
+            robot_input_frame, textvariable=self._preset_goal_type_var,
+            values=["joint", "task"], width=6, state='disabled')
+        self._preset_goal_type_combo.pack(side='left', padx=2)
+
         # Action buttons
         action_frame = tk.Frame(preset_frame, bg='#1e1e2e')
         action_frame.pack(fill='x', padx=4, pady=(2, 0))
@@ -942,16 +975,42 @@ class DemoControllerGUI(Node):
                  bg='#1e1e2e', fg='#585b70',
                  font=('Segoe UI', 7, 'italic')).pack(anchor='w', padx=4, pady=(4, 0))
 
+    def _on_preset_include_robot_toggle(self):
+        state = 'readonly' if self._preset_include_robot_var.get() else 'disabled'
+        self._preset_ctrl_combo.configure(state=state)
+        self._preset_goal_type_combo.configure(state=state)
+        if self._preset_include_robot_var.get():
+            # Sync with currently selected controller
+            ctrl = self.selected_ctrl.get()
+            self._preset_ctrl_var.set(ctrl)
+            self._preset_goal_type_var.set(
+                'joint' if JOINT_SPACE.get(ctrl, True) else 'task')
+
+    def _on_preset_ctrl_combo_change(self, _event=None):
+        ctrl = self._preset_ctrl_var.get()
+        self._preset_goal_type_var.set(
+            'joint' if JOINT_SPACE.get(ctrl, True) else 'task')
+
     def _refresh_preset_tree(self):
         for item in self._preset_tree.get_children():
             self._preset_tree.delete(item)
         for name, data in self._presets.items():
             pos_str = ", ".join(f"{v:.1f}" for v in data.get('positions_deg', []))
+            ctrl = data.get('controller')
+            ctrl_short = ctrl.replace('demo_', '').replace('_controller', '') if ctrl else "\u2014"
+            robot_tgt = data.get('robot_target')
+            if robot_tgt and len(robot_tgt) == NUM_JOINTS:
+                goal = data.get('robot_goal_type', 'joint')
+                robot_str = f"[{goal}] " + ", ".join(f"{v:.2f}" for v in robot_tgt)
+            else:
+                robot_str = "\u2014"
             self._preset_tree.insert(
                 '', 'end', iid=name, text=name,
                 values=(
                     data.get('type', 'open'),
+                    ctrl_short,
                     f"{data.get('grasp_time', 1.0):.1f}",
+                    robot_str,
                     pos_str,
                 ))
 
@@ -1323,6 +1382,41 @@ class DemoControllerGUI(Node):
         if result is None:
             return
         name, data = result
+
+        # ── Robot target (if present) ──────────────────────────────────
+        ctrl_name = data.get('controller')
+        if ctrl_name and ctrl_name in CONTROLLER_TYPES:
+            # Switch controller if needed
+            if self.selected_ctrl.get() != ctrl_name:
+                self.selected_ctrl.set(ctrl_name)
+                self._on_switch_controller()
+
+            goal_type = data.get(
+                'robot_goal_type',
+                'joint' if JOINT_SPACE.get(ctrl_name, True) else 'task')
+            robot_target_vals = data.get('robot_target', [])
+
+            if len(robot_target_vals) == NUM_JOINTS:
+                robot_msg = RobotTarget()
+                robot_msg.joint_names = ROBOT_JOINT_NAMES
+                if goal_type == 'joint':
+                    robot_msg.goal_type = 'joint'
+                    robot_msg.joint_target = [
+                        math.radians(v) for v in robot_target_vals]
+                    self._set_joint_target_entries(robot_msg.joint_target)
+                else:
+                    robot_msg.goal_type = 'task'
+                    task_values = [
+                        math.radians(v) if i >= 3 else v
+                        for i, v in enumerate(robot_target_vals)]
+                    robot_msg.task_target = task_values
+                    self._set_task_target_entries(task_values)
+                self.robot_cmd_pub.publish(robot_msg)
+                self.get_logger().info(
+                    f"Preset '{name}': sent robot target ({goal_type}): "
+                    f"{[f'{v:.2f}' for v in robot_target_vals]}")
+
+        # ── Hand target ────────────���───────────────────────────────────
         positions_deg = data.get('positions_deg', [0.0] * NUM_HAND_MOTORS)
         grasp_time = data.get('grasp_time', 1.0)
         positions_rad = [math.radians(d) for d in positions_deg]
@@ -1341,7 +1435,6 @@ class DemoControllerGUI(Node):
         ctrl = self.selected_ctrl.get()
         speed_idx = _HAND_TRAJ_SPEED_IDX.get(ctrl)
         if speed_idx is not None:
-            # Read current gains from UI entries to build the full gains vector
             gains_values: list[float] = []
             for widgets, is_bool in zip(self._gain_entries, self._gain_is_bool):
                 for w in widgets:
@@ -1384,14 +1477,27 @@ class DemoControllerGUI(Node):
             return
 
         positions_deg = [math.degrees(v) for v in self.current_hand_positions]
-        self._presets[name] = {
+        preset_data = {
             "type": self._preset_type_var.get(),
             "positions_deg": [round(v, 2) for v in positions_deg],
             "grasp_time": round(grasp_time, 3),
         }
+        if self._preset_include_robot_var.get():
+            ctrl = self._preset_ctrl_var.get()
+            goal_type = self._preset_goal_type_var.get()
+            preset_data["controller"] = ctrl
+            preset_data["robot_goal_type"] = goal_type
+            if goal_type == "joint":
+                preset_data["robot_target"] = [
+                    round(math.degrees(v), 4) for v in self.current_positions]
+            else:
+                preset_data["robot_target"] = [
+                    round(v, 4) if i < 3 else round(math.degrees(v), 4)
+                    for i, v in enumerate(self.current_task_positions)]
+        self._presets[name] = preset_data
         self._save_presets_to_file()
         self._refresh_preset_tree()
-        self.get_logger().info(f"Saved preset '{name}' from current hand positions")
+        self.get_logger().info(f"Saved preset '{name}' from current positions")
 
     def _save_target_as_preset(self):
         name = self._preset_name_entry.get().strip()
@@ -1409,11 +1515,35 @@ class DemoControllerGUI(Node):
             messagebox.showerror("Invalid Input", "Hand target entries contain invalid values.")
             return
 
-        self._presets[name] = {
+        preset_data = {
             "type": self._preset_type_var.get(),
             "positions_deg": [round(v, 2) for v in positions_deg],
             "grasp_time": round(grasp_time, 3),
         }
+        if self._preset_include_robot_var.get():
+            ctrl = self._preset_ctrl_var.get()
+            goal_type = self._preset_goal_type_var.get()
+            preset_data["controller"] = ctrl
+            preset_data["robot_goal_type"] = goal_type
+            if goal_type == "joint":
+                try:
+                    preset_data["robot_target"] = [
+                        round(float(e.get()), 4)
+                        for e in self._joint_target_entries]
+                except ValueError:
+                    messagebox.showerror(
+                        "Invalid Input", "Joint target entries contain invalid values.")
+                    return
+            else:
+                try:
+                    preset_data["robot_target"] = [
+                        round(float(e.get()), 4)
+                        for e in self._task_target_entries]
+                except ValueError:
+                    messagebox.showerror(
+                        "Invalid Input", "Task target entries contain invalid values.")
+                    return
+        self._presets[name] = preset_data
         self._save_presets_to_file()
         self._refresh_preset_tree()
         self.get_logger().info(f"Saved preset '{name}' from target entries")
