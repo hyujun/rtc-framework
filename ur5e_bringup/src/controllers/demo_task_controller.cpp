@@ -140,6 +140,65 @@ void DemoTaskController::OnDeviceConfigsSet()
   }
 }
 
+// ── Virtual TCP computation ─────────────────────────────────────────────────
+
+void DemoTaskController::ComputeVirtualTcp(
+  const pinocchio::SE3& T_base_tcp) noexcept
+{
+  vtcp_valid_ = false;
+  if (!hand_handle_ || gains_.virtual_tcp_mode == VirtualTcpMode::kDisabled) return;
+
+  switch (gains_.virtual_tcp_mode) {
+    case VirtualTcpMode::kCentroid: {
+      Eigen::Vector3d sum = Eigen::Vector3d::Zero();
+      int count = 0;
+      for (std::size_t f = 0; f < kNumFingertips; ++f) {
+        if (fingertip_frame_ids_[f] != 0) {
+          sum += hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]).translation();
+          ++count;
+        }
+      }
+      if (count == 0) return;
+      T_tcp_vtcp_.translation() = sum / static_cast<double>(count);
+      T_tcp_vtcp_.rotation().setIdentity();
+      break;
+    }
+    case VirtualTcpMode::kWeighted: {
+      Eigen::Vector3d sum = Eigen::Vector3d::Zero();
+      double total_weight = 0.0;
+      for (std::size_t f = 0; f < kNumFingertips; ++f) {
+        if (fingertip_frame_ids_[f] == 0) continue;
+        const auto& ft = fingertip_data_[f];
+        double w = 1.0;  // base weight (ensures non-zero even without contact)
+        if (ft.valid) {
+          w += static_cast<double>(std::sqrt(
+              ft.force[0]*ft.force[0] +
+              ft.force[1]*ft.force[1] +
+              ft.force[2]*ft.force[2]));
+        }
+        sum += w * hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]).translation();
+        total_weight += w;
+      }
+      if (total_weight <= 0.0) return;
+      T_tcp_vtcp_.translation() = sum / total_weight;
+      T_tcp_vtcp_.rotation().setIdentity();
+      break;
+    }
+    case VirtualTcpMode::kConstant: {
+      T_tcp_vtcp_.translation() = Eigen::Vector3d(
+        gains_.virtual_tcp_offset[0],
+        gains_.virtual_tcp_offset[1],
+        gains_.virtual_tcp_offset[2]);
+      T_tcp_vtcp_.rotation().setIdentity();
+      break;
+    }
+    default: return;
+  }
+
+  vtcp_pose_ = T_base_tcp.act(T_tcp_vtcp_);
+  vtcp_valid_ = true;
+}
+
 // ── RTControllerInterface implementation ────────────────────────────────────
 
 ControllerOutput DemoTaskController::Compute(
@@ -238,17 +297,60 @@ void DemoTaskController::ComputeControl(
 
   const auto & dev0 = state.devices[0];
 
-  // ── Task-space trajectory ──────────────────────────────────────────────
+  // ── Arm TCP pose ──────────────────────────────────────────────────────
   pinocchio::SE3 tcp_pose = arm_handle_->GetFramePlacement(tip_frame_id_);
   if (use_root_frame_) {
     tcp_pose = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_pose);
   }
-  const Eigen::Vector3d tcp = tcp_pose.translation();
 
+  // ── Hand FK + Virtual TCP (must run before CLIK) ──────────────────────
+  if (hand_handle_ && state.num_devices > 1 && state.devices[1].valid) {
+    const auto& dev1 = state.devices[1];
+    const auto hand_nq = static_cast<std::size_t>(hand_handle_->nq());
+    for (std::size_t i = 0; i < hand_nq; ++i) {
+      hand_q_[static_cast<Eigen::Index>(i)] = dev1.positions[i];
+    }
+    hand_handle_->ComputeForwardKinematics(
+      std::span<const double>(hand_q_.data(), hand_nq));
+
+    // Fingertip world poses (monitoring — always computed)
+    for (std::size_t f = 0; f < kNumFingertips; ++f) {
+      if (fingertip_frame_ids_[f] != 0) {
+        const auto& T_hand_ft = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
+        const pinocchio::SE3 T_base_ft = tcp_pose.act(T_hand_ft);
+        fingertip_positions_[f] = T_base_ft.translation();
+        fingertip_rotations_[f] = T_base_ft.rotation();
+      }
+    }
+
+    // Virtual TCP computation
+    ComputeVirtualTcp(tcp_pose);
+  }
+
+  // ── Control pose: virtual TCP or tool0 ────────────────────────────────
+  pinocchio::SE3 control_pose = tcp_pose;
+  if (vtcp_valid_) {
+    control_pose = vtcp_pose_;
+
+    // Modify Jacobian: J_vtcp_lin = J_tcp_lin - skew(offset) * J_tcp_ang
+    const Eigen::Vector3d offset =
+        vtcp_pose_.translation() - tcp_pose.translation();
+    skew_buf_ <<       0.0, -offset(2),  offset(1),
+                 offset(2),        0.0, -offset(0),
+                -offset(1),  offset(0),        0.0;
+    J_full_.topRows(3) -= skew_buf_ * J_full_.bottomRows(3);
+    J_pos_.noalias() = J_full_.topRows(3);
+  }
+
+  const Eigen::Vector3d ctrl_pos = control_pose.translation();
+
+  tcp_position_ = {ctrl_pos[0], ctrl_pos[1], ctrl_pos[2]};
+
+  // ── Task-space trajectory ──────────────────────────────────────────────
   if (new_target_.load(std::memory_order_acquire)) {
     std::unique_lock lock(target_mutex_, std::try_to_lock);
     if (lock.owns_lock()) {
-      pinocchio::SE3 start_pose = tcp_pose;
+      pinocchio::SE3 start_pose = control_pose;
       pinocchio::SE3 goal_pose;
 
       if (gains_.control_6dof) {
@@ -290,11 +392,11 @@ void DemoTaskController::ComputeControl(
   trajectory_time_ += dt;
 
   // ── Cartesian error ────────────────────────────────────────────────────
-  pinocchio::SE3 T_current_desired = tcp_pose.actInv(traj_state_.pose);
+  pinocchio::SE3 T_current_desired = control_pose.actInv(traj_state_.pose);
   pinocchio::Motion twist_error = pinocchio::log6(T_current_desired);
 
-  Eigen::Vector3d p_err = traj_state_.pose.translation() - tcp;
-  Eigen::Vector3d r_err = tcp_pose.rotation() * twist_error.angular();
+  Eigen::Vector3d p_err = traj_state_.pose.translation() - ctrl_pos;
+  Eigen::Vector3d r_err = control_pose.rotation() * twist_error.angular();
 
   pos_error_6d_.head<3>() = p_err;
   pos_error_6d_.tail<3>() = r_err;
@@ -319,7 +421,7 @@ void DemoTaskController::ComputeControl(
 
     Eigen::Matrix<double, 6, 1> task_vel_6d = kp_vec_6d.cwiseProduct(pos_error_6d_);
     task_vel_6d.head<3>() += traj_state_.velocity.linear();
-    task_vel_6d.tail<3>() += tcp_pose.rotation() * traj_state_.velocity.angular();
+    task_vel_6d.tail<3>() += control_pose.rotation() * traj_state_.velocity.angular();
 
     dq_.noalias() = Jpinv_6d_ * task_vel_6d;
   } else {
@@ -338,7 +440,7 @@ void DemoTaskController::ComputeControl(
   if (gains_.control_6dof) {
     Eigen::Matrix<double, 6, 1> ff_vel_6d;
     ff_vel_6d.head<3>() = traj_state_.velocity.linear();
-    ff_vel_6d.tail<3>() = tcp_pose.rotation() * traj_state_.velocity.angular();
+    ff_vel_6d.tail<3>() = control_pose.rotation() * traj_state_.velocity.angular();
     traj_dq_.noalias() = Jpinv_6d_ * ff_vel_6d;
   } else {
     traj_dq_.noalias() = Jpinv_ * traj_state_.velocity.linear();
@@ -396,33 +498,6 @@ void DemoTaskController::ComputeControl(
     for (std::size_t i = 0; i < kNumHandMotors; ++i) {
       hand_computed_.positions[i] = hand_traj.positions[i];
       hand_computed_.velocities[i] = hand_traj.velocities[i];
-    }
-  }
-
-  // ── Hand fingertip FK (tree model) — base-to-fingertip ──────────────
-  if (hand_handle_ && state.num_devices > 1 && state.devices[1].valid) {
-    const auto& dev1 = state.devices[1];
-    const auto hand_nq = static_cast<std::size_t>(hand_handle_->nq());
-    for (std::size_t i = 0; i < hand_nq; ++i) {
-      hand_q_[static_cast<Eigen::Index>(i)] = dev1.positions[i];
-    }
-    hand_handle_->ComputeForwardKinematics(
-      std::span<const double>(hand_q_.data(), hand_nq));
-
-    // Arm TCP pose (already computed in ReadState via ComputeJacobians)
-    pinocchio::SE3 T_base_tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
-    if (use_root_frame_) {
-      T_base_tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(T_base_tcp);
-    }
-
-    // Chain: T_base_fingertip = T_base_tcp * T_hand_fingertip
-    for (std::size_t f = 0; f < kNumFingertips; ++f) {
-      if (fingertip_frame_ids_[f] != 0) {
-        const auto& T_hand_ft = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
-        const pinocchio::SE3 T_base_ft = T_base_tcp.act(T_hand_ft);
-        fingertip_positions_[f] = T_base_ft.translation();
-        fingertip_rotations_[f] = T_base_ft.rotation();
-      }
     }
   }
 
@@ -525,10 +600,12 @@ ControllerOutput DemoTaskController::WriteOutput(
   if (use_root_frame_) {
     tcp_current = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_current);
   }
-  Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp_current.rotation());
-  output.actual_task_positions[0] = tcp_current.translation().x();
-  output.actual_task_positions[1] = tcp_current.translation().y();
-  output.actual_task_positions[2] = tcp_current.translation().z();
+  // Log virtual TCP pose when active, otherwise raw TCP
+  pinocchio::SE3 log_pose = vtcp_valid_ ? vtcp_pose_ : tcp_current;
+  Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(log_pose.rotation());
+  output.actual_task_positions[0] = log_pose.translation().x();
+  output.actual_task_positions[1] = log_pose.translation().y();
+  output.actual_task_positions[2] = log_pose.translation().z();
   output.actual_task_positions[3] = rpy[0];
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
@@ -649,19 +726,33 @@ void DemoTaskController::InitializeHoldPosition(
     tcp_pose = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_pose);
   }
 
+  // Virtual TCP: compute hold_pose from fingertip kinematics if enabled
+  pinocchio::SE3 hold_pose = tcp_pose;
+  if (hand_handle_ && state.num_devices > 1 && state.devices[1].valid) {
+    const auto& dev1 = state.devices[1];
+    const auto hand_nq = static_cast<std::size_t>(hand_handle_->nq());
+    for (std::size_t i = 0; i < hand_nq; ++i) {
+      hand_q_[static_cast<Eigen::Index>(i)] = dev1.positions[i];
+    }
+    hand_handle_->ComputeForwardKinematics(
+      std::span<const double>(hand_q_.data(), hand_nq));
+    ComputeVirtualTcp(tcp_pose);
+    if (vtcp_valid_) { hold_pose = vtcp_pose_; }
+  }
+
   std::lock_guard lock(target_mutex_);
-  tcp_target_pose_ = tcp_pose;
-  tcp_target_ = {tcp_pose.translation()[0],
-                 tcp_pose.translation()[1],
-                 tcp_pose.translation()[2]};
+  tcp_target_pose_ = hold_pose;
+  tcp_target_ = {hold_pose.translation()[0],
+                 hold_pose.translation()[1],
+                 hold_pose.translation()[2]};
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
     null_target_[i] = dev0.positions[i];
   }
   target_initialized_ = true;
   new_target_.store(false, std::memory_order_relaxed);
 
-  trajectory_.initialize(tcp_pose, pinocchio::Motion::Zero(),
-                         tcp_pose, pinocchio::Motion::Zero(), 0.01);
+  trajectory_.initialize(hold_pose, pinocchio::Motion::Zero(),
+                         hold_pose, pinocchio::Motion::Zero(), 0.01);
   trajectory_time_ = 0.0;
 
   for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
@@ -828,6 +919,25 @@ void DemoTaskController::LoadConfig(const YAML::Node & cfg)
   }
   if (cfg["hand_max_traj_velocity"]) {
     gains_.hand_max_traj_velocity = cfg["hand_max_traj_velocity"].as<double>();
+  }
+
+  // ── Virtual TCP configuration ──────────────────────────────────────────
+  if (cfg["virtual_tcp_mode"]) {
+    const auto mode_str = cfg["virtual_tcp_mode"].as<std::string>();
+    if (mode_str == "centroid") {
+      gains_.virtual_tcp_mode = VirtualTcpMode::kCentroid;
+    } else if (mode_str == "weighted") {
+      gains_.virtual_tcp_mode = VirtualTcpMode::kWeighted;
+    } else if (mode_str == "constant") {
+      gains_.virtual_tcp_mode = VirtualTcpMode::kConstant;
+    } else {
+      gains_.virtual_tcp_mode = VirtualTcpMode::kDisabled;
+    }
+  }
+  if (cfg["virtual_tcp_offset"] && cfg["virtual_tcp_offset"].IsSequence()) {
+    for (std::size_t i = 0; i < 3 && i < cfg["virtual_tcp_offset"].size(); ++i) {
+      gains_.virtual_tcp_offset[i] = cfg["virtual_tcp_offset"][i].as<double>();
+    }
   }
 
   if (cfg["command_type"]) {

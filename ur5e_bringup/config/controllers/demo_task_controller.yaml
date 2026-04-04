@@ -26,6 +26,11 @@ demo_task_controller:
   max_traj_angular_velocity: 1.0     # Max TCP angular velocity [rad/s] (6-DOF mode)
   hand_max_traj_velocity: 6.28       # Max hand motor velocity [rad/s]
 
+  # ── Virtual TCP (fingertip-based control point) ─────────────────────────────
+  # Mode: "disabled" (default), "centroid", "weighted", "constant"
+  virtual_tcp_mode: "disabled"
+  virtual_tcp_offset: [0.0, 0.0, 0.0]   # constant mode: [x, y, z] in TCP frame [m]
+
   # ── Output type ─────────────────────────────────────────────────────────────
   command_type: "position"
 

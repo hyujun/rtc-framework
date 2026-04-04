@@ -190,10 +190,34 @@ q_cmd = q + clamp(dq, +/-v_max) * dt
 | `max_traj_velocity` | `0.5` m/s | 최대 TCP 병진 속도 |
 | `max_traj_angular_velocity` | `1.0` rad/s | 최대 TCP 각속도 |
 | `hand_max_traj_velocity` | `2.0` rad/s | 핸드 최대 속도 |
+| `virtual_tcp_mode` | `"disabled"` | Virtual TCP 모드 (아래 참조) |
+| `virtual_tcp_offset` | `[0, 0, 0]` | Constant 모드 오프셋 [x,y,z] (TCP 프레임, m) |
 | `command_type` | `"position"` | 출력 타입 |
 
 **게인 업데이트 레이아웃 (16개 요소):**
 `[kp_trans*3, kp_rot*3, damping, null_kp, enable_null(0/1), control_6dof(0/1), traj_speed, traj_angular_speed, hand_traj_speed, max_vel, max_angular_vel, hand_max_vel]`
+
+#### Virtual TCP (핑거팁 기반 제어점)
+
+기본적으로 CLIK는 tool0 (TCP) 프레임을 제어점으로 사용합니다. Virtual TCP를 활성화하면 핑거팁 기구학으로부터 계산된 가상 TCP 프레임을 제어점으로 사용합니다.
+
+```
+T_base_vtcp = T_base_tcp(q_arm) * T_tcp_vtcp(q_hand)
+
+J_vtcp_linear  = J_tcp_linear - skew(R_tcp * d) * J_tcp_angular
+J_vtcp_angular = J_tcp_angular
+```
+
+여기서 `d = T_tcp_vtcp.translation()`이고, hand joint은 arm CLIK 관점에서 상수로 취급됩니다. Hand joint이 변하면 virtual TCP도 매 루프에서 자동으로 갱신됩니다.
+
+| 모드 | `virtual_tcp_mode` | 설명 |
+|------|-------------------|------|
+| 비활성화 | `"disabled"` | tool0을 제어점으로 사용 (기본값) |
+| Centroid | `"centroid"` | 4개 핑거팁 위치의 평균을 virtual TCP position으로 사용 |
+| Weighted | `"weighted"` | 접촉력(contact force) 기반 가중 평균 — 접촉 중인 핑거팁에 가중치 부여 |
+| Constant | `"constant"` | `virtual_tcp_offset`으로 지정한 고정 오프셋 (TCP 프레임 기준) |
+
+> **주의:** Centroid/Weighted 모드는 `tree_models`가 활성화되어 있어야 합니다 (hand FK 필요).
 
 **E-STOP:** 안전 위치 `[0, -1.57, 1.57, -1.57, -1.57, 0]` rad로 이동, 핸드는 현재 위치 유지
 

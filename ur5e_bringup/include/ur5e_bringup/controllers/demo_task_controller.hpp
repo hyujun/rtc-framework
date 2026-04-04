@@ -24,6 +24,14 @@
 namespace ur5e_bringup
 {
 
+/// Virtual TCP computation mode for fingertip-based control point.
+enum class VirtualTcpMode : uint8_t {
+  kDisabled,   ///< Use tool0 as control point (default)
+  kCentroid,   ///< Fingertip position centroid
+  kWeighted,   ///< Contact-force weighted fingertip centroid
+  kConstant    ///< Fixed offset from TCP frame (YAML configured)
+};
+
 using rtc::kNumRobotJoints;
 using rtc::kNumHandMotors;
 using rtc::kMaxDeviceChannels;
@@ -85,6 +93,10 @@ public:
     double max_traj_velocity{0.5};             ///< Max TCP velocity during task-space trajectory [m/s]
     double max_traj_angular_velocity{1.0};     ///< Max TCP angular velocity during trajectory [rad/s]
     double hand_max_traj_velocity{2.0};        ///< Max hand motor velocity during trajectory [rad/s]
+
+    // Virtual TCP (fingertip-based control point)
+    VirtualTcpMode virtual_tcp_mode{VirtualTcpMode::kDisabled};
+    std::array<double, 3> virtual_tcp_offset{{0.0, 0.0, 0.0}};  ///< Constant mode: [x,y,z] in TCP frame [m]
   };
 
   /// @param urdf_path  Absolute path to the UR5e URDF file.
@@ -174,9 +186,18 @@ private:
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> hand_handle_;
   static constexpr std::size_t kNumFingertips = 4;
   std::array<pinocchio::FrameIndex, kNumFingertips> fingertip_frame_ids_{};
+  std::array<pinocchio::SE3, kNumFingertips> T_tcp_fingertip_{};
   std::array<Eigen::Vector3d, kNumFingertips> fingertip_positions_{};
   std::array<Eigen::Matrix3d, kNumFingertips> fingertip_rotations_{};
   Eigen::VectorXd hand_q_;  // pre-allocated for hand FK
+
+  // ── Virtual TCP (fingertip-based control point) ───────────────────────
+  pinocchio::SE3 T_tcp_vtcp_{pinocchio::SE3::Identity()};   ///< TCP → virtual TCP transform
+  pinocchio::SE3 vtcp_pose_{pinocchio::SE3::Identity()};    ///< World-frame virtual TCP pose (cached)
+  bool vtcp_valid_{false};                                    ///< Virtual TCP computed successfully
+  Eigen::Matrix3d skew_buf_{Eigen::Matrix3d::Zero()};        ///< Jacobian modification buffer
+
+  void ComputeVirtualTcp(const pinocchio::SE3& T_base_tcp) noexcept;
 
   void InitArmModel(const rtc_urdf_bridge::ModelConfig & config);
   void InitHandModel(const rtc_urdf_bridge::ModelConfig & config);
