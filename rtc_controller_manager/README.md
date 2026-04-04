@@ -103,12 +103,12 @@ rtc_controller_manager/
 ```
 urdf.package + urdf.path → ament resolve → 절대 URDF 경로
 urdf.root_joint_type     → "fixed" | "floating"
-urdf.sub_models          → [{name, root_link, tip_link}, ...]   (직렬 체인)
-urdf.tree_models         → [{name, root_link, tip_links[]}, ...] (분기 체인)
+urdf.sub_models.<name>   → {root_link, tip_link}                (직렬 체인, map 키 = 모델명)
+urdf.tree_models.<name>  → {root_link, tip_links[]}             (분기 체인, map 키 = 모델명)
 urdf.passive_joints      → [string, ...]                         (잠금 관절)
 ```
 
-- `sub_models`/`tree_models`의 `name`은 `devices` 블록의 디바이스 그룹 이름과 매칭됩니다
+- `sub_models`/`tree_models`의 map 키(모델명)는 `devices` 블록의 디바이스 그룹 이름과 매칭됩니다
 - 디바이스별 `root_link`/`tip_link` 미지정 시 시스템 `sub_models`/`tree_models`에서 자동 해석
 - 디바이스별 URDF 경로 미지정 시 시스템 URDF 경로를 폴백으로 사용
 - **하위 호환**: 최상위 `urdf:` 없으면 기존 `devices.{group}.urdf` 에서 읽기
@@ -261,11 +261,11 @@ if (lock.owns_lock()) {
 | `urdf.package` | string | 선택 | URDF가 포함된 ament 패키지명 |
 | `urdf.path` | string | 선택 | 패키지 내 URDF 상대 경로 |
 | `urdf.root_joint_type` | string | 선택 | `"fixed"` 또는 `"floating"` (기본: `"fixed"`) |
-| `urdf.sub_models` | list | 선택 | 직렬 체인 모델 목록 (name/root_link/tip_link) |
-| `urdf.tree_models` | list | 선택 | 분기 체인 모델 목록 (name/root_link/tip_links[]) |
+| `urdf.sub_models.<name>` | map | 선택 | 직렬 체인 모델 (root_link/tip_link). map 키가 모델명 |
+| `urdf.tree_models.<name>` | map | 선택 | 분기 체인 모델 (root_link/tip_links[]). map 키가 모델명 |
 | `urdf.passive_joints` | string[] | 선택 | 모든 모델에서 잠금할 관절 이름 |
 
-> `sub_models`/`tree_models`의 `name`은 `devices` 블록의 디바이스 그룹 이름과 매칭됩니다. 이를 통해 디바이스별 `root_link`/`tip_link`를 자동 해석할 수 있습니다.
+> `sub_models`/`tree_models`의 map 키(모델명)는 `devices` 블록의 디바이스 그룹 이름과 매칭됩니다. 이를 통해 디바이스별 `root_link`/`tip_link`를 자동 해석할 수 있습니다.
 
 ### devices 블록 파라미터 (devices.{group_name}.* )
 

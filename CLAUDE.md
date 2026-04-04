@@ -284,11 +284,11 @@ urdf:
   package: "ur5e_description"
   path: "robots/ur5e/urdf/ur5e_with_hand.urdf"
   root_joint_type: "fixed"
-  sub_models:                          # name = device group name
-    - { name: "ur5e", root_link: "base", tip_link: "tool0" }
+  sub_models:                          # map key = device group name
+    ur5e: { root_link: "base", tip_link: "tool0" }
   # tree_models:                       # enable when hand FK needed
-  #   - { name: "hand", root_link: "hand_base_link",
-  #       tip_links: [thumb_tip_link, index_tip_link, ...] }
+  #   hand: { root_link: "hand_base_link",
+  #           tip_links: [thumb_tip_link, index_tip_link, ...] }
   passive_joints: [thumb_cmc_aa, ..., ring_mcp_fe]
 
 devices:
@@ -406,7 +406,7 @@ For robot-specific controllers (e.g. DemoJoint/DemoTask), place in `ur5e_bringup
 1. Add device config block in `rt_controller_manager.yaml` under `devices:`
 2. Add timeout entry in `device_timeout_names` / `device_timeout_values`
 3. Add topic routing in each controller's YAML `topics:` section
-4. If the device has kinematics: add matching `sub_models` or `tree_models` entry under `urdf:` (name = device group name). `root_link`/`tip_link` will auto-resolve from the model config.
+4. If the device has kinematics: add matching `sub_models` or `tree_models` entry under `urdf:` (map key = device group name). `root_link`/`tip_link` will auto-resolve from the model config.
 5. Controller must handle the new device index in `Compute()` / `SetDeviceTarget()`
 
 ### Adding a New Thread

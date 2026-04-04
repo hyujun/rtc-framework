@@ -102,11 +102,11 @@ urdf:
   path: "robots/ur5e/urdf/ur5e_with_hand.urdf"
   root_joint_type: "fixed"
   sub_models:
-    - name: "ur5e"            # = devices.ur5e
+    ur5e:                     # map 키 = devices.ur5e 그룹명
       root_link: "base"
       tip_link: "tool0"
   # tree_models:              # hand FK 필요 시 활성화
-  #   - name: "hand"          # = devices.hand
+  #   hand:                   # map 키 = devices.hand 그룹명
   #     root_link: "hand_base_link"
   #     tip_links: [thumb_tip_link, index_tip_link, middle_tip_link, ring_tip_link]
   passive_joints:             # arm sub-model에서 lock할 관절
@@ -375,11 +375,11 @@ ros2 run ur5e_bringup motion_editor_gui
       path: "robots/ur5e/urdf/ur5e_with_hand.urdf"
       root_joint_type: "fixed"
       sub_models:
-        - name: "ur5e"            # = devices.ur5e
+        ur5e:                     # map 키 = devices.ur5e 그룹명
           root_link: "base"
           tip_link: "tool0"
       # tree_models:              # hand FK 필요 시 활성화
-      #   - name: "hand"
+      #   hand:                   # map 키 = devices.hand 그룹명
       #     root_link: "hand_base_link"
       #     tip_links: [thumb_tip_link, index_tip_link, ...]
       passive_joints:
