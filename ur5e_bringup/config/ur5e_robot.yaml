@@ -41,30 +41,29 @@
           root_link: "base"
           tip_link: "tool0"
       # ── Hand tree-model (10-DOF branching) ──────────────────────────────
-      # Uncomment when hand FK/Jacobian is needed in controllers.
       # Name matches device group "hand".
-      # tree_models:
-      #   - name: "hand"
-      #     root_link: "hand_base_link"
-      #     tip_links:
-      #       - "thumb_tip_link"
-      #       - "index_tip_link"
-      #       - "middle_tip_link"
-      #       - "ring_tip_link"
+      tree_models:
+        - name: "hand"
+          root_link: "hand_base_link"
+          tip_links:
+            - "thumb_tip_link"
+            - "index_tip_link"
+            - "middle_tip_link"
+            - "ring_tip_link"
       # ── Passive joints (locked in all sub/tree models) ──────────────────
       # Hand joints — locked when building the arm sub-model.
       # Required because the combined URDF has no <transmission> tags.
-      passive_joints:
-        - "thumb_cmc_aa"
-        - "thumb_cmc_fe"
-        - "thumb_mcp_fe"
-        - "index_mcp_aa"
-        - "index_mcp_fe"
-        - "index_dip_fe"
-        - "middle_mcp_aa"
-        - "middle_mcp_fe"
-        - "middle_dip_fe"
-        - "ring_mcp_fe"
+      # passive_joints:
+      #   - "thumb_cmc_aa"
+      #   - "thumb_cmc_fe"
+      #   - "thumb_mcp_fe"
+      #   - "index_mcp_aa"
+      #   - "index_mcp_fe"
+      #   - "index_dip_fe"
+      #   - "middle_mcp_aa"
+      #   - "middle_mcp_fe"
+      #   - "middle_dip_fe"
+      #   - "ring_mcp_fe"
 
     # ── Device configuration (keyed by controller topic group name) ─────────
     devices:

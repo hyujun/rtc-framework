@@ -42,36 +42,35 @@ void DemoJointController::InitArmModel(
     builder_->GetReducedModel(model_name));
 }
 
-// ── Hand tree-model initialization (commented out — enable when hand FK needed)
-//
-// void DemoJointController::InitHandModel(
-//   const rtc_urdf_bridge::ModelConfig & config)
-// {
-//   namespace rub = rtc_urdf_bridge;
-//   // "hand" tree_model: name matches device name
-//   hand_handle_ = std::make_unique<rub::RtModelHandle>(
-//     builder_->GetTreeModel("hand"));
-//
-//   // Resolve fingertip frame IDs from tree_model tip_links
-//   const auto* sys_cfg = GetSystemModelConfig();
-//   if (sys_cfg) {
-//     for (const auto& tm : sys_cfg->tree_models) {
-//       if (tm.name == "hand") {
-//         for (std::size_t i = 0; i < std::min(tm.tip_links.size(), kNumFingertips); ++i) {
-//           fingertip_frame_ids_[i] = hand_handle_->GetFrameId(tm.tip_links[i]);
-//         }
-//         break;
-//       }
-//     }
-//   }
-//
-//   // Pre-allocate hand joint vector
-//   hand_q_ = Eigen::VectorXd::Zero(hand_handle_->nq());
-//
-//   // Initialize position/rotation buffers
-//   for (auto& p : fingertip_positions_) p = Eigen::Vector3d::Zero();
-//   for (auto& r : fingertip_rotations_) r = Eigen::Matrix3d::Identity();
-// }
+// ── Hand tree-model initialization ──────────────────────────────────────────
+void DemoJointController::InitHandModel(
+  const rtc_urdf_bridge::ModelConfig & /*config*/)
+{
+  namespace rub = rtc_urdf_bridge;
+  // "hand" tree_model: name matches device name
+  hand_handle_ = std::make_unique<rub::RtModelHandle>(
+    builder_->GetTreeModel("hand"));
+
+  // Resolve fingertip frame IDs from tree_model tip_links
+  const auto* sys_cfg = GetSystemModelConfig();
+  if (sys_cfg) {
+    for (const auto& tm : sys_cfg->tree_models) {
+      if (tm.name == "hand") {
+        for (std::size_t i = 0; i < std::min(tm.tip_links.size(), kNumFingertips); ++i) {
+          fingertip_frame_ids_[i] = hand_handle_->GetFrameId(tm.tip_links[i]);
+        }
+        break;
+      }
+    }
+  }
+
+  // Pre-allocate hand joint vector
+  hand_q_ = Eigen::VectorXd::Zero(hand_handle_->nq());
+
+  // Initialize position/rotation buffers
+  for (auto& p : fingertip_positions_) p = Eigen::Vector3d::Zero();
+  for (auto& r : fingertip_rotations_) r = Eigen::Matrix3d::Identity();
+}
 
 void DemoJointController::OnDeviceConfigsSet()
 {
@@ -281,27 +280,36 @@ void DemoJointController::ComputeControl(
     }
   }
 
-  // ── Hand fingertip FK (tree model) ──────────────────────────────────
-  // Compute forward kinematics for each fingertip using the hand tree-model.
-  // This gives 3D positions and orientations of thumb, index, middle, ring tips
-  // in the hand base frame — useful for grasp planning and contact estimation.
-  //
-  // if (hand_handle_ && state.num_devices > 1 && state.devices[1].valid) {
-  //   const auto& dev1 = state.devices[1];
-  //   const int hand_nq = hand_handle_->nq();
-  //   for (int i = 0; i < hand_nq; ++i) {
-  //     hand_q_[i] = dev1.positions[i];
-  //   }
-  //   hand_handle_->ComputeForwardKinematics(
-  //     std::span<const double>(hand_q_.data(), static_cast<std::size_t>(hand_nq)));
-  //   for (std::size_t f = 0; f < kNumFingertips; ++f) {
-  //     if (fingertip_frame_ids_[f] != 0) {
-  //       const auto& placement = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
-  //       fingertip_positions_[f] = placement.translation();
-  //       fingertip_rotations_[f] = placement.rotation();
-  //     }
-  //   }
-  // }
+  // ── Hand fingertip FK (tree model) — base-to-fingertip ──────────────
+  if (hand_handle_ && state.num_devices > 1 && state.devices[1].valid) {
+    const auto& dev1 = state.devices[1];
+    const auto hand_nq = static_cast<std::size_t>(hand_handle_->nq());
+    for (std::size_t i = 0; i < hand_nq; ++i) {
+      hand_q_[static_cast<Eigen::Index>(i)] = dev1.positions[i];
+    }
+    hand_handle_->ComputeForwardKinematics(
+      std::span<const double>(hand_q_.data(), hand_nq));
+
+    // Arm FK: base -> tcp (tool0)
+    const int nc0 = dev0.num_channels;
+    std::span<const double> q_span(dev0.positions.data(),
+      static_cast<std::size_t>(nc0));
+    arm_handle_->ComputeForwardKinematics(q_span);
+    pinocchio::SE3 T_base_tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
+    if (use_root_frame_) {
+      T_base_tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(T_base_tcp);
+    }
+
+    // Chain: T_base_fingertip = T_base_tcp * T_hand_fingertip
+    for (std::size_t f = 0; f < kNumFingertips; ++f) {
+      if (fingertip_frame_ids_[f] != 0) {
+        const auto& T_hand_ft = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
+        const pinocchio::SE3 T_base_ft = T_base_tcp.act(T_hand_ft);
+        fingertip_positions_[f] = T_base_ft.translation();
+        fingertip_rotations_[f] = T_base_ft.rotation();
+      }
+    }
+  }
 
   // ── Grasp detection + ContactStopHand (500Hz) ────────────────────────
   {
@@ -518,6 +526,11 @@ void DemoJointController::LoadConfig(const YAML::Node & cfg)
     model_cfg.root_joint_type = "fixed";
     model_cfg.sub_models.push_back({"arm", "base_link", "tool0"});
     InitArmModel(model_cfg);
+  }
+
+  // ── Build hand tree-model if configured ─────────────────────────────
+  if (sys_cfg && !sys_cfg->tree_models.empty()) {
+    InitHandModel(*sys_cfg);
   }
 
   if (cfg["robot_trajectory_speed"]) {

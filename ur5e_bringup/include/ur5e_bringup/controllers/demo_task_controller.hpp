@@ -171,17 +171,15 @@ private:
   pinocchio::FrameIndex root_frame_id_{0};
   bool                  use_root_frame_{false};
   // ── Hand tree-model for fingertip FK ──────────────────────────────────
-  // Uncomment when hand FK/Jacobian is needed. Requires tree_models config
-  // with name matching the hand device group (e.g. "hand").
-  // std::unique_ptr<rtc_urdf_bridge::RtModelHandle> hand_handle_;
-  // static constexpr std::size_t kNumFingertips = 4;
-  // std::array<pinocchio::FrameIndex, kNumFingertips> fingertip_frame_ids_{};
-  // std::array<Eigen::Vector3d, kNumFingertips> fingertip_positions_{};
-  // std::array<Eigen::Matrix3d, kNumFingertips> fingertip_rotations_{};
-  // Eigen::VectorXd hand_q_;  // pre-allocated for hand FK
+  std::unique_ptr<rtc_urdf_bridge::RtModelHandle> hand_handle_;
+  static constexpr std::size_t kNumFingertips = 4;
+  std::array<pinocchio::FrameIndex, kNumFingertips> fingertip_frame_ids_{};
+  std::array<Eigen::Vector3d, kNumFingertips> fingertip_positions_{};
+  std::array<Eigen::Matrix3d, kNumFingertips> fingertip_rotations_{};
+  Eigen::VectorXd hand_q_;  // pre-allocated for hand FK
 
   void InitArmModel(const rtc_urdf_bridge::ModelConfig & config);
-  // void InitHandModel(const rtc_urdf_bridge::ModelConfig & config);
+  void InitHandModel(const rtc_urdf_bridge::ModelConfig & config);
 
   // ── Pre-allocated Eigen work buffers — zero heap alloc on the RT path ────
   Eigen::VectorXd q_;
