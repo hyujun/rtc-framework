@@ -1,0 +1,25 @@
+# 탐색 모션 + 형상 추정 통합 Action
+#
+# GUI 또는 BT에서 호출. 물체 주변을 자동 탐색하면서
+# ToF 기반 형상 추정을 수행하고, confidence 임계값 도달 시 결과를 반환한다.
+
+# ── Goal ─────────────────────────────────────────────────────────────────────
+geometry_msgs/Point object_position     # base_link 기준 물체 위치
+bool use_current_object_pose false      # true → /object/pose_estimate 토픽 사용
+float64 confidence_threshold 0.0        # 0이면 YAML 기본값 사용
+float64 max_time_sec 0.0               # 0이면 YAML 기본값 사용
+---
+# ── Result ───────────────────────────────────────────────────────────────────
+bool success
+string message
+shape_estimation_msgs/ShapeEstimate estimate
+float64 elapsed_sec
+uint32 total_snapshots_processed
+uint8 sweep_cycles_completed
+---
+# ── Feedback ─────────────────────────────────────────────────────────────────
+uint8 current_phase                     # ExplorePhase enum 값
+shape_estimation_msgs/ShapeEstimate current_estimate
+float64 elapsed_sec
+uint32 num_points_collected
+string status_message

@@ -27,4 +27,11 @@ namespace shape_estimation {
     const ToFSnapshot& snapshot,
     const std_msgs::msg::Header& header);
 
+/// 내부 ShapeEstimate → ROS msg 변환 (곡률 + 돌출 구조 정보 포함)
+[[nodiscard]] shape_estimation_msgs::msg::ShapeEstimate ToMsg(
+    const ShapeEstimate& estimate,
+    const ToFSnapshot& snapshot,
+    const ProtuberanceResult& protuberance,
+    const std_msgs::msg::Header& header);
+
 }  // namespace shape_estimation

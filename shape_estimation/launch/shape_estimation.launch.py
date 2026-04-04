@@ -22,21 +22,18 @@ def generate_launch_description():
         ]),
         description='RViz 설정 파일 경로')
 
+    config_file_arg = DeclareLaunchArgument(
+        'config_file',
+        default_value=PathJoinSubstitution([
+            pkg_share, 'config', 'shape_estimation_node.yaml'
+        ]),
+        description='shape_estimation_node YAML 설정 파일 경로')
+
     shape_node = Node(
         package='shape_estimation',
         executable='shape_estimation_node',
         name='shape_estimation_node',
-        parameters=[{
-            'voxel_resolution': 0.002,
-            'max_points': 2048,
-            'point_expiry_sec': 5.0,
-            'flat_curvature_threshold': 5.0,
-            'curvature_uniformity_threshold': 2.0,
-            'min_points_for_fitting': 10,
-            'publish_rate_hz': 10.0,
-            'viz_rate_hz': 5.0,
-            'frame_id': 'base_link',
-        }],
+        parameters=[LaunchConfiguration('config_file')],
         output='screen',
     )
 
@@ -51,6 +48,7 @@ def generate_launch_description():
     return LaunchDescription([
         use_rviz_arg,
         rviz_config_arg,
+        config_file_arg,
         shape_node,
         rviz_node,
     ])

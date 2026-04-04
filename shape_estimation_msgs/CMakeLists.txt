@@ -7,12 +7,15 @@ find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 
+find_package(action_msgs REQUIRED)
+
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ToFReadings.msg"
   "msg/TipPoses.msg"
   "msg/ToFSnapshot.msg"
   "msg/ShapeEstimate.msg"
-  DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
+  "action/ExploreShape.action"
+  DEPENDENCIES std_msgs geometry_msgs builtin_interfaces action_msgs
 )
 
 ament_package()

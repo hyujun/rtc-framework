@@ -32,3 +32,13 @@ uint32 num_points_used
 # 3개 손가락의 로컬 곡률 (실시간 값)
 float64[3] local_curvatures
 bool[3] curvature_valid
+
+# 돌출 구조 정보
+bool has_protuberance
+geometry_msgs/Point protuberance_centroid
+geometry_msgs/Vector3 protuberance_direction
+float64 protuberance_depth
+float64 protuberance_extent
+float64 protuberance_confidence
+bool protuberance_has_gap
+uint32 protuberance_num_points

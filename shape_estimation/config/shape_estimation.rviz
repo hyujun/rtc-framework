@@ -54,6 +54,14 @@ Visualization Manager:
         Depth: 1
         Reliability Policy: Best Effort
 
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Explore Status
+      Enabled: true
+      Topic:
+        Value: /shape/explore_status
+        Depth: 1
+        Reliability Policy: Best Effort
+
   Global Options:
     Background Color: 48; 48; 48
     Fixed Frame: base_link

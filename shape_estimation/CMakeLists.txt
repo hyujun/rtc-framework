@@ -21,12 +21,17 @@ find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(shape_estimation_msgs REQUIRED)
+find_package(rclcpp_action REQUIRED)
+find_package(rtc_msgs REQUIRED)
 
 # ── Core library (ROS 비의존) ─────────────────────────────────────────────────
 add_library(shape_estimation_core STATIC
   src/voxel_point_cloud.cpp
   src/fast_shape_classifier.cpp
   src/primitive_fitter.cpp
+  src/exploration_motion.cpp
+  src/snapshot_history.cpp
+  src/protuberance_detector.cpp
 )
 target_include_directories(shape_estimation_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -47,8 +52,8 @@ target_include_directories(shape_estimation_ros PUBLIC
 )
 target_link_libraries(shape_estimation_ros shape_estimation_core)
 ament_target_dependencies(shape_estimation_ros
-  rclcpp std_msgs std_srvs sensor_msgs geometry_msgs
-  visualization_msgs shape_estimation_msgs
+  rclcpp rclcpp_action std_msgs std_srvs sensor_msgs geometry_msgs
+  visualization_msgs shape_estimation_msgs rtc_msgs
 )
 set_target_properties(shape_estimation_ros PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -74,8 +79,8 @@ install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 # ── Export ────────────────────────────────────────────────────────────────────
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
-  rclcpp Eigen3 std_msgs std_srvs sensor_msgs
-  geometry_msgs visualization_msgs shape_estimation_msgs
+  rclcpp rclcpp_action Eigen3 std_msgs std_srvs sensor_msgs
+  geometry_msgs visualization_msgs shape_estimation_msgs rtc_msgs
 )
 ament_export_include_directories(include)
 
@@ -90,6 +95,12 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_tof_shape test/test_tof_shape.cpp)
   target_link_libraries(test_tof_shape shape_estimation_core)
+
+  ament_add_gtest(test_exploration_motion test/test_exploration_motion.cpp)
+  target_link_libraries(test_exploration_motion shape_estimation_core)
+
+  ament_add_gtest(test_protuberance_detector test/test_protuberance_detector.cpp)
+  target_link_libraries(test_protuberance_detector shape_estimation_core)
 endif()
 
 ament_package()

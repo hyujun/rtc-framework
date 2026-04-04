@@ -329,15 +329,255 @@ visualization_msgs::msg::MarkerArray BuildPrimitiveMarkers(
 
 // ── BuildDeleteAllMarkers ────────────────────────────────────────────────────
 
+visualization_msgs::msg::MarkerArray BuildExploreStatusMarkers(
+    ExplorePhase phase,
+    const ExplorationStats& stats,
+    const ShapeEstimate& current_estimate,
+    const std::array<double, 6>& current_ee_pose,
+    const builtin_interfaces::msg::Time& stamp,
+    const std::string& frame_id) {
+  visualization_msgs::msg::MarkerArray ma;
+
+  // 현재 EE 위치에 phase 텍스트 표시
+  visualization_msgs::msg::Marker m;
+  m.header.frame_id = frame_id;
+  m.header.stamp = stamp;
+  m.ns = "explore_status";
+  m.id = 0;
+  m.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+  m.action = visualization_msgs::msg::Marker::ADD;
+
+  m.pose.position.x = current_ee_pose[0];
+  m.pose.position.y = current_ee_pose[1];
+  m.pose.position.z = current_ee_pose[2] + 0.08;
+  m.scale.z = 0.015;
+
+  std::ostringstream oss;
+  oss << "[" << ExplorePhaseToString(phase) << "] "
+      << std::fixed;
+  oss.precision(1);
+  oss << stats.elapsed_sec << "s"
+      << " pts=" << stats.total_snapshots
+      << " goals=" << stats.goals_sent;
+  if (current_estimate.type != ShapeType::kUnknown) {
+    oss << " | " << ShapeTypeToString(current_estimate.type)
+        << " " << static_cast<int>(current_estimate.confidence * 100) << "%";
+  }
+  m.text = oss.str();
+
+  // Phase에 따른 색상
+  switch (phase) {
+    case ExplorePhase::kApproach:
+    case ExplorePhase::kServo:
+      m.color = MakeColor(1.0F, 1.0F, 0.0F, 1.0F);  // 노랑
+      break;
+    case ExplorePhase::kSweepX:
+    case ExplorePhase::kSweepY:
+    case ExplorePhase::kTilt:
+      m.color = MakeColor(0.0F, 0.8F, 1.0F, 1.0F);  // 하늘색
+      break;
+    case ExplorePhase::kEvaluate:
+      m.color = MakeColor(1.0F, 0.5F, 0.0F, 1.0F);  // 주황
+      break;
+    case ExplorePhase::kSucceeded:
+      m.color = MakeColor(0.0F, 1.0F, 0.0F, 1.0F);  // 초록
+      break;
+    case ExplorePhase::kFailed:
+    case ExplorePhase::kAborted:
+      m.color = MakeColor(1.0F, 0.0F, 0.0F, 1.0F);  // 빨강
+      break;
+    default:
+      m.color = MakeColor(0.5F, 0.5F, 0.5F, 1.0F);  // 회색
+      break;
+  }
+
+  m.lifetime.sec = 0;
+  m.lifetime.nanosec = 300'000'000;  // 300ms
+  ma.markers.push_back(std::move(m));
+
+  return ma;
+}
+
+// ── BuildTargetGoalMarker ─────��──────────────────────────────────��───────────
+
+visualization_msgs::msg::MarkerArray BuildTargetGoalMarker(
+    const TaskSpaceGoal& goal,
+    const builtin_interfaces::msg::Time& stamp,
+    const std::string& frame_id) {
+  visualization_msgs::msg::MarkerArray ma;
+
+  if (!goal.valid) {
+    visualization_msgs::msg::Marker m;
+    m.ns = "target_goal";
+    m.id = 0;
+    m.action = visualization_msgs::msg::Marker::DELETE;
+    ma.markers.push_back(std::move(m));
+    return ma;
+  }
+
+  // 목표 위치에 작은 구
+  visualization_msgs::msg::Marker m;
+  m.header.frame_id = frame_id;
+  m.header.stamp = stamp;
+  m.ns = "target_goal";
+  m.id = 0;
+  m.type = visualization_msgs::msg::Marker::SPHERE;
+  m.action = visualization_msgs::msg::Marker::ADD;
+
+  m.pose.position.x = goal.pose[0];
+  m.pose.position.y = goal.pose[1];
+  m.pose.position.z = goal.pose[2];
+  m.pose.orientation.w = 1.0;
+
+  m.scale.x = m.scale.y = m.scale.z = 0.008;  // 8mm 구
+  m.color = MakeColor(1.0F, 0.0F, 1.0F, 0.8F);  // 보라색
+  m.lifetime.sec = 0;
+  m.lifetime.nanosec = 300'000'000;
+  ma.markers.push_back(std::move(m));
+
+  return ma;
+}
+
+// ── BuildProtuberanceMarkers ────────────────────────────────────────────────
+
+visualization_msgs::msg::MarkerArray BuildProtuberanceMarkers(
+    const ProtuberanceResult& result,
+    const ShapeEstimate& /*primitive*/,
+    const builtin_interfaces::msg::Time& stamp,
+    const std::string& frame_id) {
+  visualization_msgs::msg::MarkerArray ma;
+
+  if (!result.detected || result.protuberances.empty()) {
+    // DELETE 마커
+    for (int i = 0; i < 4; ++i) {
+      visualization_msgs::msg::Marker m;
+      m.header.stamp = stamp;
+      m.header.frame_id = frame_id;
+      m.ns = (i == 0) ? "protuberance" :
+             (i == 1) ? "protuberance_dir" :
+             (i == 2) ? "protuberance_text" : "protuberance_gap";
+      m.id = 0;
+      m.action = visualization_msgs::msg::Marker::DELETE;
+      ma.markers.push_back(std::move(m));
+    }
+    return ma;
+  }
+
+  // 가장 신뢰도 높은 1개만 시각화
+  const auto& best = result.protuberances.front();
+
+  // Marker 0: 돌출부 위치 (구)
+  {
+    visualization_msgs::msg::Marker m;
+    m.header.stamp = stamp;
+    m.header.frame_id = frame_id;
+    m.ns = "protuberance";
+    m.id = 0;
+    m.type = visualization_msgs::msg::Marker::SPHERE;
+    m.action = visualization_msgs::msg::Marker::ADD;
+    m.pose.position = ToPoint(best.centroid);
+    m.pose.orientation.w = 1.0;
+    m.scale.x = m.scale.y = m.scale.z = 0.010;  // 10mm 구
+
+    if (best.confidence > 0.7) {
+      m.color = MakeColor(1.0F, 0.0F, 0.0F, 0.8F);  // 빨강
+    } else if (best.confidence > 0.4) {
+      m.color = MakeColor(1.0F, 0.5F, 0.0F, 0.8F);  // 주황
+    } else {
+      m.color = MakeColor(1.0F, 1.0F, 0.0F, 0.8F);  // 노랑
+    }
+
+    ma.markers.push_back(std::move(m));
+  }
+
+  // Marker 1: 돌출 방향 화살표
+  {
+    visualization_msgs::msg::Marker m;
+    m.header.stamp = stamp;
+    m.header.frame_id = frame_id;
+    m.ns = "protuberance_dir";
+    m.id = 0;
+    m.type = visualization_msgs::msg::Marker::ARROW;
+    m.action = visualization_msgs::msg::Marker::ADD;
+    m.points.push_back(ToPoint(best.centroid));
+    m.points.push_back(ToPoint(best.centroid + 0.030 * best.direction));
+    m.scale.x = 0.003;  // shaft diameter
+    m.scale.y = 0.006;  // head diameter
+    m.color = MakeColor(1.0F, 0.0F, 0.0F, 0.8F);
+
+    ma.markers.push_back(std::move(m));
+  }
+
+  // Marker 2: 텍스트
+  {
+    visualization_msgs::msg::Marker m;
+    m.header.stamp = stamp;
+    m.header.frame_id = frame_id;
+    m.ns = "protuberance_text";
+    m.id = 0;
+    m.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+    m.action = visualization_msgs::msg::Marker::ADD;
+    m.pose.position = ToPoint(
+        best.centroid + Eigen::Vector3d(0, 0, 0.02));
+    m.pose.orientation.w = 1.0;
+    m.scale.z = 0.010;
+
+    std::ostringstream oss;
+    oss << "HANDLE? depth=" << static_cast<int>(best.protrusion_depth * 1000.0)
+        << "mm ext=" << static_cast<int>(best.extent_along_surface * 1000.0)
+        << "mm (conf:" << static_cast<int>(best.confidence * 100.0) << "%)";
+    if (best.has_gap) {
+      oss << " +GAP";
+    }
+    m.text = oss.str();
+    m.color = MakeColor(1.0F, 1.0F, 1.0F, 1.0F);
+
+    ma.markers.push_back(std::move(m));
+  }
+
+  // Marker 3: Gap 위치 (gap 동반 시만)
+  if (best.has_gap) {
+    visualization_msgs::msg::Marker m;
+    m.header.stamp = stamp;
+    m.header.frame_id = frame_id;
+    m.ns = "protuberance_gap";
+    m.id = 0;
+    m.type = visualization_msgs::msg::Marker::SPHERE;
+    m.action = visualization_msgs::msg::Marker::ADD;
+    m.pose.position = ToPoint(best.centroid);
+    m.pose.orientation.w = 1.0;
+    m.scale.x = m.scale.y = m.scale.z = 0.015;  // 15mm (gap 영역)
+    m.color = MakeColor(1.0F, 0.5F, 0.0F, 0.3F);  // 반투명 주황
+
+    ma.markers.push_back(std::move(m));
+  } else {
+    visualization_msgs::msg::Marker m;
+    m.ns = "protuberance_gap";
+    m.id = 0;
+    m.action = visualization_msgs::msg::Marker::DELETE;
+    ma.markers.push_back(std::move(m));
+  }
+
+  return ma;
+}
+
+// ── BuildDeleteAllMarkers ────────���───────────────────────────���───────────────
+
 visualization_msgs::msg::MarkerArray BuildDeleteAllMarkers() {
   visualization_msgs::msg::MarkerArray ma;
 
-  const std::array<std::pair<std::string, int>, 5> ns_ids = {{
+  const std::array<std::pair<std::string, int>, 11> ns_ids = {{
       {"tof_beams", kTotalSensors},
       {"curvature_text", kNumFingers},
       {"shape_primitive", 1},
       {"shape_axis", 1},
       {"shape_text", 1},
+      {"explore_status", 1},
+      {"target_goal", 1},
+      {"protuberance", 1},
+      {"protuberance_dir", 1},
+      {"protuberance_text", 1},
+      {"protuberance_gap", 1},
   }};
 
   for (const auto& [ns, count] : ns_ids) {

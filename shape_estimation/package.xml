@@ -21,6 +21,8 @@
   <depend>geometry_msgs</depend>
   <depend>visualization_msgs</depend>
   <depend>shape_estimation_msgs</depend>
+  <depend>rclcpp_action</depend>
+  <depend>rtc_msgs</depend>
 
   <build_depend>eigen</build_depend>
 

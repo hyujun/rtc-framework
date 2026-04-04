@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <string_view>
+#include <vector>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -121,6 +122,49 @@ struct PointWithNormal {
   Eigen::Vector3d normal{Eigen::Vector3d::Zero()};
   double curvature{0.0};
   uint64_t timestamp_ns{0};
+};
+
+// ── 돌출 구조 탐지 ──────────────────────────────────────────────────────────
+
+// 단일 돌출 구조 정보
+struct Protuberance {
+  Eigen::Vector3d centroid{Eigen::Vector3d::Zero()};   // 돌출부 중심 (월드 프레임)
+  Eigen::Vector3d direction{Eigen::Vector3d::Zero()};  // 돌출 방향 (표면 바깥)
+  double extent_along_surface{0.0};  // 표면 방향 크기 [m]
+  double protrusion_depth{0.0};      // 돌출 깊이 [m]
+  double confidence{0.0};            // [0, 1]
+  uint32_t num_points{0};            // 클러스터 포인트 수
+  bool has_gap{false};               // gap 패턴 동반 여부
+};
+
+// 돌출 구조 탐지 결과
+struct ProtuberanceResult {
+  bool detected{false};
+  std::vector<Protuberance> protuberances;  // 다중 돌출 가능
+  double base_residual_rms{0.0};            // 돌출부 제외 시 잔차 RMS [m]
+};
+
+// 탐지 설정
+struct ProtuberanceConfig {
+  // 잔차 클러스터 판정
+  double residual_threshold{-0.005};     // [m] 음의 잔차 임계값
+  uint32_t min_cluster_points{3};        // 최소 클러스터 포인트 수
+  double cluster_radius{0.015};          // [m] 공간적 연결 반경
+
+  // Gap 판정
+  double gap_distance_jump{0.020};       // [m] gap 전후 거리 차이 임계값
+  uint32_t min_gap_invalid_count{2};     // 연속 invalid 최소 수
+
+  // 곡률 급변 판정
+  double curvature_jump_threshold{15.0}; // [1/m] 곡률 급변 임계값
+
+  // Gap-클러스터 연결
+  double gap_cluster_association_radius{0.020};  // [m]
+
+  // 신뢰도 가중치
+  double weight_num_points{0.3};
+  double weight_depth{0.4};
+  double weight_gap{0.3};
 };
 
 }  // namespace shape_estimation

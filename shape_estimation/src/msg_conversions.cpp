@@ -136,4 +136,33 @@ shape_estimation_msgs::msg::ShapeEstimate ToMsg(
   return msg;
 }
 
+// ── ToMsg (ShapeEstimate + 곡률 + 돌출 구조) ────────────────────────────────
+
+shape_estimation_msgs::msg::ShapeEstimate ToMsg(
+    const ShapeEstimate& estimate,
+    const ToFSnapshot& snapshot,
+    const ProtuberanceResult& protuberance,
+    const std_msgs::msg::Header& header) {
+  auto msg = ToMsg(estimate, snapshot, header);
+
+  if (protuberance.detected && !protuberance.protuberances.empty()) {
+    // 가장 신뢰도 높은 1개만 publish
+    const auto& best = protuberance.protuberances.front();
+    msg.has_protuberance = true;
+    msg.protuberance_centroid.x = best.centroid.x();
+    msg.protuberance_centroid.y = best.centroid.y();
+    msg.protuberance_centroid.z = best.centroid.z();
+    msg.protuberance_direction.x = best.direction.x();
+    msg.protuberance_direction.y = best.direction.y();
+    msg.protuberance_direction.z = best.direction.z();
+    msg.protuberance_depth = best.protrusion_depth;
+    msg.protuberance_extent = best.extent_along_surface;
+    msg.protuberance_confidence = best.confidence;
+    msg.protuberance_has_gap = best.has_gap;
+    msg.protuberance_num_points = best.num_points;
+  }
+
+  return msg;
+}
+
 }  // namespace shape_estimation
