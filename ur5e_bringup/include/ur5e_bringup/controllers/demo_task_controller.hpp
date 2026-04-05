@@ -70,7 +70,8 @@ namespace trajectory = rtc::trajectory;
 ///   `[kp_translation×3, kp_rotation×3, damping, null_kp, enable_null_space(0/1),
 ///    control_6dof(0/1), trajectory_speed, trajectory_angular_speed,
 ///    hand_trajectory_speed, max_traj_velocity, max_traj_angular_velocity,
-///    hand_max_traj_velocity]` = 16 values
+///    hand_max_traj_velocity, grasp_contact_threshold, grasp_force_threshold,
+///    grasp_min_fingertips]` = 19 values
 class DemoTaskController final : public RTControllerInterface {
 public:
   // ── Gain / feature configuration ─────────────────────────────────────────
@@ -97,6 +98,11 @@ public:
     // Virtual TCP (fingertip-based control point)
     VirtualTcpMode virtual_tcp_mode{VirtualTcpMode::kDisabled};
     std::array<double, 3> virtual_tcp_offset{{0.0, 0.0, 0.0}};  ///< Constant mode: [x,y,z] in TCP frame [m]
+
+    // Grasp detection parameters
+    float grasp_contact_threshold{0.5f};      ///< Contact probability threshold (0.0~1.0)
+    float grasp_force_threshold{1.0f};        ///< Force magnitude threshold [N]
+    int   grasp_min_fingertips{2};            ///< Min fingertips for grasp detection
   };
 
   /// @param urdf_path  Absolute path to the UR5e URDF file.
@@ -124,7 +130,9 @@ public:
   //                enable_null_space(0/1), control_6dof(0/1),
   //                trajectory_speed, trajectory_angular_speed,
   //                hand_trajectory_speed, max_traj_velocity,
-  //                max_traj_angular_velocity, hand_max_traj_velocity] = 16 values
+  //                max_traj_angular_velocity, hand_max_traj_velocity,
+  //                grasp_contact_threshold, grasp_force_threshold,
+  //                grasp_min_fingertips] = 19 values
   void LoadConfig(const YAML::Node & cfg) override;
   void OnDeviceConfigsSet() override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;

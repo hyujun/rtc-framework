@@ -520,9 +520,9 @@ void DemoTaskController::ComputeControl(
 
   // ── Grasp detection + ContactStopHand (500Hz) ────────────────────────
   {
-    constexpr float kContactThreshold = 0.5f;
-    constexpr float kForceThreshold   = 1.0f;
-    constexpr int   kMinFingertips    = 2;
+    const float contact_thresh = gains_.grasp_contact_threshold;
+    const float force_thresh   = gains_.grasp_force_threshold;
+    const int   min_fingers    = gains_.grasp_min_fingertips;
 
     float max_force = 0.0f;
     int active_count = 0;
@@ -540,20 +540,20 @@ void DemoTaskController::ComputeControl(
       grasp_state_.inference_valid[idx] = ft.valid;
 
       if (mag > max_force) max_force = mag;
-      if (ft.valid && ft.contact_flag > kContactThreshold && mag > kForceThreshold) {
+      if (ft.valid && ft.contact_flag > contact_thresh && mag > force_thresh) {
         ++active_count;
       }
     }
     grasp_state_.num_fingertips           = num_active_fingertips_;
     grasp_state_.num_active_contacts      = active_count;
     grasp_state_.max_force                = max_force;
-    grasp_state_.force_threshold          = kForceThreshold;
-    grasp_state_.min_fingertips_for_grasp = kMinFingertips;
-    grasp_state_.grasp_detected           = (active_count >= kMinFingertips);
+    grasp_state_.force_threshold          = force_thresh;
+    grasp_state_.min_fingertips_for_grasp = min_fingers;
+    grasp_state_.grasp_detected           = (active_count >= min_fingers);
 
     // ContactStopHand: 힘 감지 시 hand trajectory 출력을 현재 위치로 동결
     // → BT tick(50ms) 사이에도 과도한 hand closure 방지
-    if (active_count > 0 && max_force > kForceThreshold) {
+    if (active_count > 0 && max_force > force_thresh) {
       if (state.num_devices > 1 && state.devices[1].valid) {
         const auto& dev1 = state.devices[1];
         for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors); ++i) {
@@ -957,6 +957,17 @@ void DemoTaskController::LoadConfig(const YAML::Node & cfg)
     }
   }
 
+  // Grasp detection parameters
+  if (cfg["grasp_contact_threshold"]) {
+    gains_.grasp_contact_threshold = cfg["grasp_contact_threshold"].as<float>();
+  }
+  if (cfg["grasp_force_threshold"]) {
+    gains_.grasp_force_threshold = cfg["grasp_force_threshold"].as<float>();
+  }
+  if (cfg["grasp_min_fingertips"]) {
+    gains_.grasp_min_fingertips = cfg["grasp_min_fingertips"].as<int>();
+  }
+
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
     command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
@@ -969,7 +980,9 @@ void DemoTaskController::UpdateGainsFromMsg(std::span<const double> gains) noexc
   //          enable_null_space(0/1), control_6dof(0/1),
   //          trajectory_speed, trajectory_angular_speed,
   //          hand_trajectory_speed, max_traj_velocity,
-  //          max_traj_angular_velocity, hand_max_traj_velocity] = 16
+  //          max_traj_angular_velocity, hand_max_traj_velocity,
+  //          grasp_contact_threshold, grasp_force_threshold,
+  //          grasp_min_fingertips] = 19
   if (gains.size() < 10) {return;}
   for (std::size_t i = 0; i < 3; ++i) {
     gains_.kp_translation[i] = gains[i];
@@ -986,6 +999,9 @@ void DemoTaskController::UpdateGainsFromMsg(std::span<const double> gains) noexc
   if (gains.size() >= 14) {gains_.max_traj_velocity = gains[13];}
   if (gains.size() >= 15) {gains_.max_traj_angular_velocity = gains[14];}
   if (gains.size() >= 16) {gains_.hand_max_traj_velocity = gains[15];}
+  if (gains.size() >= 17) {gains_.grasp_contact_threshold = static_cast<float>(gains[16]);}
+  if (gains.size() >= 18) {gains_.grasp_force_threshold = static_cast<float>(gains[17]);}
+  if (gains.size() >= 19) {gains_.grasp_min_fingertips = static_cast<int>(gains[18]);}
 }
 
 std::vector<double> DemoTaskController::GetCurrentGains() const noexcept
@@ -994,9 +1010,11 @@ std::vector<double> DemoTaskController::GetCurrentGains() const noexcept
   //          enable_null_space(0/1), control_6dof(0/1),
   //          trajectory_speed, trajectory_angular_speed,
   //          hand_trajectory_speed, max_traj_velocity,
-  //          max_traj_angular_velocity, hand_max_traj_velocity] = 16
+  //          max_traj_angular_velocity, hand_max_traj_velocity,
+  //          grasp_contact_threshold, grasp_force_threshold,
+  //          grasp_min_fingertips] = 19
   std::vector<double> v;
-  v.reserve(16);
+  v.reserve(19);
   v.insert(v.end(), gains_.kp_translation.begin(), gains_.kp_translation.end());
   v.insert(v.end(), gains_.kp_rotation.begin(), gains_.kp_rotation.end());
   v.push_back(gains_.damping);
@@ -1009,6 +1027,9 @@ std::vector<double> DemoTaskController::GetCurrentGains() const noexcept
   v.push_back(gains_.max_traj_velocity);
   v.push_back(gains_.max_traj_angular_velocity);
   v.push_back(gains_.hand_max_traj_velocity);
+  v.push_back(static_cast<double>(gains_.grasp_contact_threshold));
+  v.push_back(static_cast<double>(gains_.grasp_force_threshold));
+  v.push_back(static_cast<double>(gains_.grasp_min_fingertips));
   return v;
 }
 

@@ -12,6 +12,11 @@ demo_joint_controller:
   robot_max_traj_velocity: 3.14
   hand_max_traj_velocity: 6.28
 
+  # ── Grasp detection ─────────────────────────────────────────────────────────
+  grasp_contact_threshold: 0.5   # Contact probability threshold (0.0~1.0)
+  grasp_force_threshold: 1.0     # Force magnitude threshold [N]
+  grasp_min_fingertips: 2        # Min fingertips for grasp detection
+
   # ── Output type ─────────────────────────────────────────────────────────────
   command_type: "position"
 

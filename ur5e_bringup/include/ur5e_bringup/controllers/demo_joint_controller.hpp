@@ -43,7 +43,9 @@ namespace trajectory = rtc::trajectory;
 //
 // Gains layout for UpdateGainsFromMsg:
 //   [robot_trajectory_speed, hand_trajectory_speed,
-//    robot_max_traj_velocity, hand_max_traj_velocity] = 4 values
+//    robot_max_traj_velocity, hand_max_traj_velocity,
+//    grasp_contact_threshold, grasp_force_threshold,
+//    grasp_min_fingertips] = 7 values
 class DemoJointController final : public RTControllerInterface {
 public:
   struct Gains
@@ -52,6 +54,11 @@ public:
     double hand_trajectory_speed{1.0};        ///< Desired hand speed for trajectory duration [rad/s]
     double robot_max_traj_velocity{3.14};     ///< Max joint velocity during trajectory [rad/s]
     double hand_max_traj_velocity{2.0};       ///< Max hand motor velocity during trajectory [rad/s]
+
+    // Grasp detection parameters
+    float grasp_contact_threshold{0.5f};      ///< Contact probability threshold (0.0~1.0)
+    float grasp_force_threshold{1.0f};        ///< Force magnitude threshold [N]
+    int   grasp_min_fingertips{2};            ///< Min fingertips for grasp detection
   };
 
   explicit DemoJointController(std::string_view urdf_path);
@@ -78,7 +85,9 @@ public:
 
   // ── Controller registry hooks ────────────────────────────────────────────
   // gains layout: [robot_trajectory_speed, hand_trajectory_speed,
-  //                robot_max_traj_velocity, hand_max_traj_velocity] = 4 values
+  //                robot_max_traj_velocity, hand_max_traj_velocity,
+  //                grasp_contact_threshold, grasp_force_threshold,
+  //                grasp_min_fingertips] = 7 values
   void LoadConfig(const YAML::Node & cfg) override;
   void OnDeviceConfigsSet() override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;

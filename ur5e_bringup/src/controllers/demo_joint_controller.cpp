@@ -322,9 +322,9 @@ void DemoJointController::ComputeControl(
 
   // ── Grasp detection + ContactStopHand (500Hz) ────────────────────────
   {
-    constexpr float kContactThreshold = 0.5f;
-    constexpr float kForceThreshold   = 1.0f;
-    constexpr int   kMinFingertips    = 2;
+    const float contact_thresh = gains_.grasp_contact_threshold;
+    const float force_thresh   = gains_.grasp_force_threshold;
+    const int   min_fingers    = gains_.grasp_min_fingertips;
 
     float max_force = 0.0f;
     int active_count = 0;
@@ -342,20 +342,20 @@ void DemoJointController::ComputeControl(
       grasp_state_.inference_valid[idx] = ft.valid;
 
       if (mag > max_force) max_force = mag;
-      if (ft.valid && ft.contact_flag > kContactThreshold && mag > kForceThreshold) {
+      if (ft.valid && ft.contact_flag > contact_thresh && mag > force_thresh) {
         ++active_count;
       }
     }
     grasp_state_.num_fingertips           = num_active_fingertips_;
     grasp_state_.num_active_contacts      = active_count;
     grasp_state_.max_force                = max_force;
-    grasp_state_.force_threshold          = kForceThreshold;
-    grasp_state_.min_fingertips_for_grasp = kMinFingertips;
-    grasp_state_.grasp_detected           = (active_count >= kMinFingertips);
+    grasp_state_.force_threshold          = force_thresh;
+    grasp_state_.min_fingertips_for_grasp = min_fingers;
+    grasp_state_.grasp_detected           = (active_count >= min_fingers);
 
     // ContactStopHand: 힘 감지 시 hand trajectory 출력을 현재 위치로 동결
     // → BT tick(50ms) 사이에도 과도한 hand closure 방지
-    if (active_count > 0 && max_force > kForceThreshold) {
+    if (active_count > 0 && max_force > force_thresh) {
       if (state.num_devices > 1 && state.devices[1].valid) {
         const auto& dev1 = state.devices[1];
         for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors); ++i) {
@@ -555,6 +555,17 @@ void DemoJointController::LoadConfig(const YAML::Node & cfg)
     gains_.hand_max_traj_velocity = cfg["hand_max_traj_velocity"].as<double>();
   }
 
+  // Grasp detection parameters
+  if (cfg["grasp_contact_threshold"]) {
+    gains_.grasp_contact_threshold = cfg["grasp_contact_threshold"].as<float>();
+  }
+  if (cfg["grasp_force_threshold"]) {
+    gains_.grasp_force_threshold = cfg["grasp_force_threshold"].as<float>();
+  }
+  if (cfg["grasp_min_fingertips"]) {
+    gains_.grasp_min_fingertips = cfg["grasp_min_fingertips"].as<int>();
+  }
+
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
     command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
@@ -564,7 +575,9 @@ void DemoJointController::LoadConfig(const YAML::Node & cfg)
 void DemoJointController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
 {
   // layout: [robot_trajectory_speed, hand_trajectory_speed,
-  //          robot_max_traj_velocity, hand_max_traj_velocity] = 4 values
+  //          robot_max_traj_velocity, hand_max_traj_velocity,
+  //          grasp_contact_threshold, grasp_force_threshold,
+  //          grasp_min_fingertips] = 7 values
   if (gains.size() >= 1) {
     gains_.robot_trajectory_speed = gains[0];
   }
@@ -577,17 +590,31 @@ void DemoJointController::UpdateGainsFromMsg(std::span<const double> gains) noex
   if (gains.size() >= 4) {
     gains_.hand_max_traj_velocity = gains[3];
   }
+  if (gains.size() >= 5) {
+    gains_.grasp_contact_threshold = static_cast<float>(gains[4]);
+  }
+  if (gains.size() >= 6) {
+    gains_.grasp_force_threshold = static_cast<float>(gains[5]);
+  }
+  if (gains.size() >= 7) {
+    gains_.grasp_min_fingertips = static_cast<int>(gains[6]);
+  }
 }
 
 std::vector<double> DemoJointController::GetCurrentGains() const noexcept
 {
   // layout: [robot_trajectory_speed, hand_trajectory_speed,
-  //          robot_max_traj_velocity, hand_max_traj_velocity] = 4 values
+  //          robot_max_traj_velocity, hand_max_traj_velocity,
+  //          grasp_contact_threshold, grasp_force_threshold,
+  //          grasp_min_fingertips] = 7 values
   return {
     gains_.robot_trajectory_speed,
     gains_.hand_trajectory_speed,
     gains_.robot_max_traj_velocity,
     gains_.hand_max_traj_velocity,
+    static_cast<double>(gains_.grasp_contact_threshold),
+    static_cast<double>(gains_.grasp_force_threshold),
+    static_cast<double>(gains_.grasp_min_fingertips),
   };
 }
 
