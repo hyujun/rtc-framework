@@ -137,10 +137,10 @@ BtRosBridge::BtRosBridge(rclcpp::Node::SharedPtr node)
       "/hand/joint_goal", rclcpp::QoS{10});
 
   gains_pub_ = node_->create_publisher<std_msgs::msg::Float64MultiArray>(
-      "/ur5e/gains", rclcpp::QoS{10});
+      "/ur5e/controller_gains", rclcpp::QoS{10});
 
   select_ctrl_pub_ = node_->create_publisher<std_msgs::msg::String>(
-      "/ur5e/select_controller", rclcpp::QoS{10});
+      "/ur5e/controller_type", rclcpp::QoS{10});
 
   RCLCPP_INFO(node_->get_logger(), "[BtRosBridge] Initialized");
 }

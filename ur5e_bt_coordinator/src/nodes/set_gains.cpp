@@ -48,19 +48,20 @@ BT::NodeStatus SetGains::tick()
   // [kp_t×3, kp_r×3, damping, null_kp, en_null, en_6dof,
   //  traj_speed, traj_ang_speed, hand_traj_speed,
   //  max_traj_vel, max_traj_ang_vel, hand_max_traj_vel]
+  // Defaults must match demo_task_controller.yaml to avoid silent gain resets
   std::vector<double> gains = {
-    15.0, 15.0, 15.0,   // kp_translation
-    5.0, 5.0, 5.0,      // kp_rotation
+    40.0, 40.0, 40.0,   // kp_translation
+    20.0, 20.0, 20.0,   // kp_rotation
     0.01,                // damping
     0.5,                 // null_kp
     0.0,                 // enable_null_space
     1.0,                 // control_6dof
     0.1,                 // trajectory_speed
-    0.5,                 // trajectory_angular_speed
-    1.0,                 // hand_trajectory_speed
+    0.78,                // trajectory_angular_speed
+    3.14,                // hand_trajectory_speed
     0.5,                 // max_traj_velocity
-    1.0,                 // max_traj_angular_velocity
-    2.0,                 // hand_max_traj_velocity
+    1.57,                // max_traj_angular_velocity
+    6.28,                // hand_max_traj_velocity
   };
 
   auto kp_t = getInput<std::string>("kp_translation");
