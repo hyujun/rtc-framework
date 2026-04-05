@@ -212,7 +212,7 @@ ros2 param set /bt_coordinator hand_pose.home "[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.
 |------|------|------|
 | `/ur5e/joint_goal` | `rtc_msgs/RobotTarget` | 팔 task-space 또는 joint-space 목표 |
 | `/hand/joint_goal` | `rtc_msgs/RobotTarget` | 손 10-DoF 모터 목표 |
-| `/ur5e/gains` | `std_msgs/Float64MultiArray` | 게인 업데이트 (16개 요소) |
+| `/ur5e/gains` | `std_msgs/Float64MultiArray` | 게인 업데이트 (DemoTask 19개 / DemoJoint 7개 요소) |
 | `/ur5e/select_controller` | `std_msgs/String` | 컨트롤러 전환 명령 |
 
 ---
@@ -347,10 +347,13 @@ RT Controller의 게인을 동적으로 변경한다. 설정하지 않은 필드
 | `max_traj_velocity` | double | 최대 궤적 속도 [m/s] |
 | `max_traj_angular_velocity` | double | 최대 궤적 각속도 |
 | `hand_max_traj_velocity` | double | 손 최대 궤적 속도 |
-| `full_gains` | vector\<double\> | 16개 요소 전체 게인 직접 지정 |
+| `full_gains` | vector\<double\> | 전체 게인 직접 지정 (DemoTask 19개 / DemoJoint 7개 요소) |
 
-**게인 배열 레이아웃 (16개 요소):**
-`[kp_trans×3, kp_rot×3, damping, null_kp, enable_null, control_6dof, traj_speed, traj_angular_speed, hand_traj_speed, max_vel, max_angular_vel, hand_max_vel]`
+**게인 배열 레이아웃 (DemoTaskController 19개 요소):**
+`[kp_trans×3, kp_rot×3, damping, null_kp, enable_null, control_6dof, traj_speed, traj_angular_speed, hand_traj_speed, max_vel, max_angular_vel, hand_max_vel, grasp_contact_threshold, grasp_force_threshold, grasp_min_fingertips]`
+
+**게인 배열 레이아웃 (DemoJointController 7개 요소):**
+`[robot_traj_speed, hand_traj_speed, robot_max_traj_vel, hand_max_traj_vel, grasp_contact_threshold, grasp_force_threshold, grasp_min_fingertips]`
 
 #### SwitchController
 

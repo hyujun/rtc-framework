@@ -54,7 +54,7 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 |-------|------------|------|
 | `/ur5e/joint_goal` | `rtc_msgs/RobotTarget` | Arm task-space 또는 joint-space 목표 |
 | `/hand/joint_goal` | `rtc_msgs/RobotTarget` | Hand 10-DoF 모터 목표 |
-| `/ur5e/gains` | `std_msgs/Float64MultiArray` | 컨트롤러 gain 업데이트 (16개 요소) |
+| `/ur5e/gains` | `std_msgs/Float64MultiArray` | 컨트롤러 gain 업데이트 (DemoTask 19개 / DemoJoint 7개 요소) |
 | `/ur5e/select_controller` | `std_msgs/String` | 컨트롤러 전환 명령 |
 
 ### 구독 (Subscribe)
@@ -87,7 +87,7 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 | `MoveToJoints` | StatefulAction | Joint-space 목표 이동, per-joint tolerance 도달 판정 | `target`, `tolerance`(0.01), `timeout_s`(10.0) |
 | `GraspControl` | StatefulAction | Hand open/close/pinch/preset 제어, 점진적 닫기 지원 | `mode`(close), `target_positions`, `close_speed`(0.3), `max_position`(1.4), `pinch_motors`("0,1,2,3"), `timeout_s`(8.0) |
 | `TrackTrajectory` | StatefulAction | Waypoint 시퀀스 순차 추적 (sweep motion 등) | `waypoints`, `position_tolerance`(0.01), `timeout_s`(30.0) |
-| `SetGains` | SyncAction | 컨트롤러 gain 동적 변경 (16개 요소 배열) | `kp_translation`, `kp_rotation`, `trajectory_speed`, `trajectory_angular_speed`, `max_traj_velocity`, `max_traj_angular_velocity`, `hand_trajectory_speed`, `hand_max_traj_velocity`, `full_gains` |
+| `SetGains` | SyncAction | 컨트롤러 gain 동적 변경 (DemoTask 19개 / DemoJoint 7개 요소 배열) | `kp_translation`, `kp_rotation`, `trajectory_speed`, `trajectory_angular_speed`, `max_traj_velocity`, `max_traj_angular_velocity`, `hand_trajectory_speed`, `hand_max_traj_velocity`, `full_gains` |
 | `SwitchController` | StatefulAction | 활성 컨트롤러 전환 (joint ↔ task) | `controller_name`, `timeout_s`(3.0) |
 | `ComputeOffsetPose` | SyncAction | Pose에 XYZ offset 적용 (approach, lift, retreat 계산) | `input_pose`, `offset_x`(0.0), `offset_y`(0.0), `offset_z`(0.0) → 출력: `output_pose` |
 | `ComputeSweepTrajectory` | SyncAction | Arc sweep 경로 waypoint 생성 (towel unfold용, sinusoidal arc 프로파일) | `start_pose`, `direction_x`(1.0), `direction_y`(0.0), `distance`(0.3), `arc_height`(0.05), `num_waypoints`(8) → 출력: `waypoints` |
@@ -211,7 +211,9 @@ arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
 
 ## SetGains 배열 레이아웃
 
-`SetGains` 노드가 발행하는 16개 요소 gain 배열 (DemoTaskController 기준):
+`SetGains` 노드가 발행하는 gain 배열.
+
+**DemoTaskController (19개 요소):**
 
 | 인덱스 | 필드 | 기본값 |
 |--------|------|--------|
@@ -227,6 +229,21 @@ arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
 | 13 | `max_traj_velocity` | 0.5 |
 | 14 | `max_traj_angular_velocity` | 1.0 |
 | 15 | `hand_max_traj_velocity` | 2.0 |
+| 16 | `grasp_contact_threshold` | 0.5 |
+| 17 | `grasp_force_threshold` | 1.0 |
+| 18 | `grasp_min_fingertips` | 2 |
+
+**DemoJointController (7개 요소):**
+
+| 인덱스 | 필드 | 기본값 |
+|--------|------|--------|
+| 0 | `robot_trajectory_speed` | 0.78 |
+| 1 | `hand_trajectory_speed` | 3.14 |
+| 2 | `robot_max_traj_velocity` | 3.14 |
+| 3 | `hand_max_traj_velocity` | 6.28 |
+| 4 | `grasp_contact_threshold` | 0.5 |
+| 5 | `grasp_force_threshold` | 1.0 |
+| 6 | `grasp_min_fingertips` | 2 |
 
 ## 의존성
 
