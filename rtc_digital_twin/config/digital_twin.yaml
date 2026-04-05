@@ -8,8 +8,8 @@
   ros__parameters:
     # ── Robot description ──────────────────────────────────────────────
     # Option 1: Package-based path (package name + relative path)
-    robot_description_package: ""               # e.g. "ur5e_description"
-    robot_description_path: ""                  # e.g. "robots/ur5e/urdf/ur5e_with_hand.urdf.xacro"
+    robot_description_package: "ur5e_description"               # e.g. "ur5e_description"
+    robot_description_path: "robots/ur5e/urdf/ur5e_with_hand.urdf.xacro"                  # e.g. "robots/ur5e/urdf/ur5e_with_hand.urdf.xacro"
     # Option 2: Absolute file path
     robot_description_file: ""                  # e.g. "/path/to/robot.urdf"
 

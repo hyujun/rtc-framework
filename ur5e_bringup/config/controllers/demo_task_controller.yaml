@@ -1,7 +1,7 @@
 demo_task_controller:
   # ── CLIK gains (robot arm task-space control) ──────────────────────────────
-  kp_translation: [15.0, 15.0, 15.0]   # Translation proportional gain (x, y, z) [1/s]
-  kp_rotation: [5.0, 5.0, 5.0]      # Rotation proportional gain (rx, ry, rz) [1/s]
+  kp_translation: [40.0, 40.0, 40.0]   # Translation proportional gain (x, y, z) [1/s]
+  kp_rotation: [20.0, 20.0, 20.0]      # Rotation proportional gain (rx, ry, rz) [1/s]
   damping: 0.01                      # Damped pseudoinverse lambda (singularity stabilization)
 
   # ── Null-space configuration ────────────────────────────────────────────────
@@ -28,8 +28,8 @@ demo_task_controller:
 
   # ── Virtual TCP (fingertip-based control point) ─────────────────────────────
   # Mode: "disabled" (default), "centroid", "weighted", "constant"
-  virtual_tcp_mode: "disabled"
-  virtual_tcp_offset: [0.0, 0.0, 0.0]   # constant mode: [x, y, z] in TCP frame [m]
+  virtual_tcp_mode: "centroid"
+  virtual_tcp_offset: [0.0, 0.0, 0.1]   # constant mode: [x, y, z] in TCP frame [m]
 
   # ── Output type ─────────────────────────────────────────────────────────────
   command_type: "position"
