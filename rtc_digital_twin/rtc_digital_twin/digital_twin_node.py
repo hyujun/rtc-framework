@@ -16,7 +16,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import JointState
 from visualization_msgs.msg import MarkerArray
 
-from rtc_msgs.msg import HandSensorState
+from rtc_msgs.msg import GuiPosition, HandSensorState
 
 from rtc_digital_twin.urdf_parser import UrdfParser, JointClassification
 
@@ -205,6 +205,77 @@ class DigitalTwinNode(Node):
                 self.get_logger().error(
                     f'Failed to initialize sensor visualization: {e}')
 
+        # ── TCP visualization (optional) ─────────────────────────────────
+        self._tcp_viz_active = False
+        self._tcp_viz = None
+        self._tcp_marker_pub = None
+        self._tcp_tf_broadcaster = None
+        self._tcp_task_positions = None   # cached [x, y, z, r, p, y]
+        self._tcp_goal_positions = None   # cached goal (from RobotTarget)
+        tcp_source_topic = ''
+        try:
+            self.declare_parameter('tcp_viz.source_topic', '')
+            tcp_source_topic = self.get_parameter('tcp_viz.source_topic').value
+            if tcp_source_topic:
+                self.declare_parameter('tcp_viz.marker_topic',
+                                       '/digital_twin/tcp_markers')
+                self.declare_parameter('tcp_viz.frame_id', 'base')
+                self.declare_parameter('tcp_viz.broadcast_tf', True)
+                self.declare_parameter('tcp_viz.tf_child_frame', 'virtual_tcp')
+                self.declare_parameter('tcp_viz.sphere_radius', 0.012)
+                self.declare_parameter('tcp_viz.axes_length', 0.05)
+                self.declare_parameter('tcp_viz.axes_shaft', 0.004)
+                self.declare_parameter('tcp_viz.show_goal', True)
+                self.declare_parameter('tcp_viz.goal_sphere_radius', 0.010)
+
+                tcp_marker_topic = self.get_parameter(
+                    'tcp_viz.marker_topic').value
+                tcp_viz_config = {
+                    'frame_id': self.get_parameter('tcp_viz.frame_id').value,
+                    'sphere_radius': self.get_parameter(
+                        'tcp_viz.sphere_radius').value,
+                    'axes_length': self.get_parameter(
+                        'tcp_viz.axes_length').value,
+                    'axes_shaft': self.get_parameter(
+                        'tcp_viz.axes_shaft').value,
+                    'show_goal': self.get_parameter(
+                        'tcp_viz.show_goal').value,
+                    'goal_sphere_radius': self.get_parameter(
+                        'tcp_viz.goal_sphere_radius').value,
+                }
+
+                from rtc_digital_twin.tcp_visualizer import TcpVisualizer
+                self._tcp_viz = TcpVisualizer(tcp_viz_config)
+
+                # Subscribe to GuiPosition for TCP data
+                be_qos = QoSProfile(
+                    reliability=ReliabilityPolicy.BEST_EFFORT,
+                    history=HistoryPolicy.KEEP_LAST,
+                    depth=10,
+                )
+                self.create_subscription(
+                    GuiPosition, tcp_source_topic, self._tcp_cb, be_qos)
+                self._tcp_marker_pub = self.create_publisher(
+                    MarkerArray, tcp_marker_topic, 10)
+
+                # TF broadcaster (optional)
+                self._tcp_broadcast_tf = self.get_parameter(
+                    'tcp_viz.broadcast_tf').value
+                self._tcp_tf_child_frame = self.get_parameter(
+                    'tcp_viz.tf_child_frame').value
+                if self._tcp_broadcast_tf:
+                    from tf2_ros import TransformBroadcaster
+                    self._tcp_tf_broadcaster = TransformBroadcaster(self)
+
+                self._tcp_viz_active = True
+                self.get_logger().info(
+                    f'TCP visualization enabled: {tcp_source_topic} -> '
+                    f'{tcp_marker_topic} (tf={self._tcp_broadcast_tf})')
+        except Exception as e:
+            if tcp_source_topic:
+                self.get_logger().error(
+                    f'Failed to initialize TCP visualization: {e}')
+
         # ── Publisher ────────────────────────────────────────────────────
         self._joint_pub = self.create_publisher(JointState, output_topic, 10)
 
@@ -271,6 +342,10 @@ class DigitalTwinNode(Node):
 
         return callback
 
+    def _tcp_cb(self, msg: GuiPosition):
+        """Cache latest TCP task-space data from GuiPosition."""
+        self._tcp_task_positions = list(msg.task_positions)
+
     def _sensor_cb(self, msg: HandSensorState):
         """Cache latest fingertip sensor data from HandSensorState."""
         n_tips = min(len(msg.fingertips), len(self._fingertip_data))
@@ -329,6 +404,20 @@ class DigitalTwinNode(Node):
             markers = self._sensor_viz.create_markers(
                 self._fingertip_data, now)
             self._sensor_pub.publish(markers)
+
+        # TCP visualization
+        if self._tcp_viz_active and self._tcp_viz \
+                and self._tcp_task_positions is not None:
+            tcp_markers = self._tcp_viz.create_markers(
+                self._tcp_task_positions, now, self._tcp_goal_positions)
+            self._tcp_marker_pub.publish(tcp_markers)
+
+            if self._tcp_tf_broadcaster is not None:
+                tf_msg = self._tcp_viz.create_tf(
+                    self._tcp_task_positions, now,
+                    self._tcp_tf_child_frame)
+                if tf_msg is not None:
+                    self._tcp_tf_broadcaster.sendTransform(tf_msg)
 
     def _validate_joints(self):
         """Periodic validation: check received joints against URDF."""
