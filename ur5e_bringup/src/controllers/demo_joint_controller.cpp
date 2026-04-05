@@ -56,6 +56,12 @@ void DemoJointController::InitHandModel(
   if (sys_cfg) {
     for (const auto& tm : sys_cfg->tree_models) {
       if (tm.name == "hand") {
+        if (!tm.root_link.empty()) {
+          hand_root_frame_id_ = hand_handle_->GetFrameId(tm.root_link);
+          if (hand_root_frame_id_ != 0) {
+            use_hand_root_frame_ = true;
+          }
+        }
         for (std::size_t i = 0; i < std::min(tm.tip_links.size(), kNumFingertips); ++i) {
           fingertip_frame_ids_[i] = hand_handle_->GetFrameId(tm.tip_links[i]);
         }
@@ -303,7 +309,10 @@ void DemoJointController::ComputeControl(
     // Chain: T_base_fingertip = T_base_tcp * T_hand_fingertip
     for (std::size_t f = 0; f < kNumFingertips; ++f) {
       if (fingertip_frame_ids_[f] != 0) {
-        const auto& T_hand_ft = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
+        auto T_hand_ft = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
+        if (use_hand_root_frame_) {
+          T_hand_ft = hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(T_hand_ft);
+        }
         const pinocchio::SE3 T_base_ft = T_base_tcp.act(T_hand_ft);
         fingertip_positions_[f] = T_base_ft.translation();
         fingertip_rotations_[f] = T_base_ft.rotation();
