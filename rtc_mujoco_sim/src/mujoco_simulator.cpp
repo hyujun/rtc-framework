@@ -248,6 +248,40 @@ bool MuJoCoSimulator::ValidateAndMapStateJoints() noexcept {
   return true;
 }
 
+// ── Sensor name → MuJoCo index mapping ────────────────────────────────────────
+
+void MuJoCoSimulator::MapSensorInfos(
+    JointGroup& group,
+    const std::vector<std::string>& sensor_names) noexcept {
+  group.sensor_infos.clear();
+  int total_dim = 0;
+
+  for (const auto& sname : sensor_names) {
+    const int sid = mj_name2id(model_, mjOBJ_SENSOR, sname.c_str());
+    if (sid < 0) {
+      fprintf(stderr,
+              "[MuJoCoSimulator] WARNING: group '%s' — sensor '%s' not found in XML, skipped\n",
+              group.name.c_str(), sname.c_str());
+      continue;
+    }
+
+    JointGroup::SensorInfo info;
+    info.name = sname;
+    info.type = model_->sensor_type[sid];
+    info.adr  = model_->sensor_adr[sid];
+    info.dim  = model_->sensor_dim[sid];
+    total_dim += info.dim;
+
+    fprintf(stdout,
+            "[MuJoCoSimulator] [%s] sensor '%s' → type=%d  adr=%d  dim=%d\n",
+            group.name.c_str(), sname.c_str(), info.type, info.adr, info.dim);
+
+    group.sensor_infos.push_back(std::move(info));
+  }
+
+  group.sensor_buffer.resize(static_cast<std::size_t>(total_dim), 0.0);
+}
+
 // ── Initialization ─────────────────────────────────────────────────────────────
 
 bool MuJoCoSimulator::Initialize() noexcept {
@@ -343,6 +377,7 @@ bool MuJoCoSimulator::Initialize() noexcept {
     g->is_robot            = gc.is_robot;
     g->command_topic       = gc.command_topic;
     g->state_topic         = gc.state_topic;
+    g->sensor_topic        = gc.sensor_topic;
     g->filter_alpha        = gc.filter_alpha;
 
     // Resolve state_joint_names: prefer explicit, fallback to XML all joints
@@ -391,6 +426,14 @@ bool MuJoCoSimulator::Initialize() noexcept {
   // ── Validate state joints against XML ──────────────────────────────────
   if (!ValidateAndMapStateJoints()) {
     return false;
+  }
+
+  // ── Map sensor infos per group ─────────────────────────────────────────
+  for (std::size_t gi = 0; gi < groups_.size(); ++gi) {
+    const auto& gc = cfg_.groups[gi];
+    if (!gc.sensor_names.empty()) {
+      MapSensorInfos(*groups_[gi], gc.sensor_names);
+    }
   }
 
   // ── Physics timestep ────────────────────────────────────────────────────
@@ -527,12 +570,14 @@ bool MuJoCoSimulator::Initialize() noexcept {
   int total_cmd_joints = 0;
   for (const auto& g : groups_) {
     if (g->is_robot) total_cmd_joints += g->num_command_joints;
-    fprintf(stdout, "[MuJoCoSimulator] Group '%s': %s  cmd_joints=%d  state_joints=%d  cmd=%s  state=%s%s\n",
+    fprintf(stdout, "[MuJoCoSimulator] Group '%s': %s  cmd_joints=%d  state_joints=%d  sensors=%zu  cmd=%s  state=%s  sensor=%s%s\n",
             g->name.c_str(),
             g->is_robot ? "ROBOT" : "FAKE",
             g->num_command_joints, g->num_state_joints,
+            g->sensor_infos.size(),
             g->command_topic.c_str(),
             g->state_topic.c_str(),
+            g->sensor_topic.empty() ? "(none)" : g->sensor_topic.c_str(),
             g->is_primary ? "  [PRIMARY]" : "");
   }
 
@@ -589,6 +634,24 @@ void MuJoCoSimulator::SetStateCallback(std::size_t group_idx,
                                         StateCallback cb) noexcept {
   if (group_idx >= groups_.size()) return;
   groups_[group_idx]->state_cb = std::move(cb);
+}
+
+void MuJoCoSimulator::SetSensorCallback(std::size_t group_idx,
+                                          JointGroup::SensorCallback cb) noexcept {
+  if (group_idx >= groups_.size()) return;
+  groups_[group_idx]->sensor_cb = std::move(cb);
+}
+
+const std::vector<JointGroup::SensorInfo>& MuJoCoSimulator::GetSensorInfos(
+    std::size_t group_idx) const noexcept {
+  static const std::vector<JointGroup::SensorInfo> empty;
+  if (group_idx >= groups_.size()) return empty;
+  return groups_[group_idx]->sensor_infos;
+}
+
+bool MuJoCoSimulator::HasSensors(std::size_t group_idx) const noexcept {
+  if (group_idx >= groups_.size()) return false;
+  return !groups_[group_idx]->sensor_infos.empty();
 }
 
 std::vector<double> MuJoCoSimulator::GetPositions(std::size_t group_idx) const noexcept {

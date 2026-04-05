@@ -4,6 +4,8 @@ project(rtc_msgs VERSION 5.17.0 LANGUAGES C CXX)
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/JointCommand.msg"
@@ -14,7 +16,10 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/DeviceStateLog.msg"
   "msg/DeviceSensorLog.msg"
   "msg/GraspState.msg"
-  DEPENDENCIES std_msgs
+  "msg/SimSensor.msg"
+  "msg/SimSensorState.msg"
+  "msg/ToFSnapshot.msg"
+  DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
 )
 
 ament_package()

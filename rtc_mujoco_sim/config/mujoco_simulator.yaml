@@ -54,6 +54,8 @@ mujoco_simulator:
           - wrist_3_joint
         command_topic: "/ur5e/joint_command"
         state_topic: "/joint_states"
+        # sensor_topic: "/ur5e/sim_sensors"   # uncomment + add sensor_names to enable
+        # sensor_names: []                     # XML sensor names for this group
       hand:
         command_joint_names:
           - thumb_cmc_aa
@@ -68,6 +70,8 @@ mujoco_simulator:
           - ring_mcp_fe
         command_topic: "/hand/joint_command"
         state_topic: "/hand/joint_states"
+        # sensor_topic: "/hand/sim_sensors"   # uncomment + add sensor_names to enable
+        # sensor_names: []                     # XML sensor names for this group
 
     # ── Fake Response (LPF 에코백, MuJoCo 물리 아님) ─────────────────────────
     # robot_response와 같은 그룹 이름 중복 불가.

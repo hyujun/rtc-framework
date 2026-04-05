@@ -33,6 +33,10 @@ struct JointGroupConfig {
   double filter_alpha{0.1};               // fake_response용 LPF 계수
   std::vector<double> servo_kp;           // 비어있으면 글로벌 값 상속
   std::vector<double> servo_kd;
+
+  // ── Sensor publishing (optional) ──────────────────────────────
+  std::string sensor_topic;                    // 빈 문자열이면 센서 publish 안 함
+  std::vector<std::string> sensor_names;       // XML sensor names (빈 경우 = 그룹에 센서 없음)
 };
 
 // ── JointGroup ───────────────────────────────────────────────────────────────
@@ -94,9 +98,25 @@ struct JointGroup {
   std::vector<double> fake_target;
   mutable std::mutex  fake_mutex;
 
+  // ── Sensor info (populated during Initialize from XML) ─────────
+  struct SensorInfo {
+    std::string name;
+    int type{0};       // mjtSensor enum
+    int adr{0};        // index into data_->sensordata
+    int dim{0};        // number of scalar outputs
+  };
+  std::vector<SensorInfo> sensor_infos;
+  std::vector<double> sensor_buffer;   // flat readback buffer [sum(dims)]
+
+  using SensorCallback = std::function<void(
+      const std::vector<SensorInfo>& infos,
+      const std::vector<double>& values)>;
+  SensorCallback sensor_cb{nullptr};
+
   // ── ROS2 토픽 ──────────────────────────────────────────────────
   std::string command_topic;
   std::string state_topic;
+  std::string sensor_topic;
 
   // Non-copyable, non-movable (due to mutex members)
   JointGroup() = default;
@@ -170,6 +190,14 @@ class MuJoCoSimulator {
 
   // Register the state callback for a specific group.
   void SetStateCallback(std::size_t group_idx, StateCallback cb) noexcept;
+
+  // Register the sensor callback for a specific group.
+  void SetSensorCallback(std::size_t group_idx, JointGroup::SensorCallback cb) noexcept;
+
+  // Sensor accessors.
+  [[nodiscard]] const std::vector<JointGroup::SensorInfo>& GetSensorInfos(
+      std::size_t group_idx) const noexcept;
+  [[nodiscard]] bool HasSensors(std::size_t group_idx) const noexcept;
 
   [[nodiscard]] std::vector<double> GetPositions(std::size_t group_idx)  const noexcept;
   [[nodiscard]] std::vector<double> GetVelocities(std::size_t group_idx) const noexcept;
@@ -413,11 +441,16 @@ class MuJoCoSimulator {
   bool MapGroupIndices(JointGroup& group) noexcept;
   // 단일 그룹의 state용 인덱스 매핑
   bool MapStateIndices(JointGroup& group) noexcept;
+  // 그룹의 sensor_names를 XML 센서와 매핑
+  void MapSensorInfos(JointGroup& group,
+                      const std::vector<std::string>& sensor_names) noexcept;
 
   void ApplyCommand() noexcept;
   void ReadState() noexcept;
+  void ReadSensors() noexcept;
   void ReadSolverStats() noexcept;
   void InvokeStateCallback() noexcept;
+  void InvokeSensorCallback() noexcept;
   void UpdateVizBuffer() noexcept;
   void UpdateRtf(uint64_t step) noexcept;
   void ThrottleIfNeeded() noexcept;

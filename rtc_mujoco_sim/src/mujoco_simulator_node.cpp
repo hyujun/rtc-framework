@@ -11,6 +11,8 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <rtc_msgs/msg/joint_command.hpp>
+#include <rtc_msgs/msg/sim_sensor_state.hpp>
+#include <rtc_msgs/msg/sim_sensor.hpp>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -27,6 +29,7 @@ namespace urtc = rtc;
 
 struct GroupRosHandles {
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr state_pub;
+  rclcpp::Publisher<rtc_msgs::msg::SimSensorState>::SharedPtr sensor_pub;
   rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr cmd_sub;
   rclcpp::TimerBase::SharedPtr fake_timer;  // fake groups only
   std::size_t group_idx{0};
@@ -106,6 +109,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
       gc.state_joint_names = get_parameter("robot_response." + gname + ".state_joint_names").as_string_array();
       gc.command_topic = get_parameter("robot_response." + gname + ".command_topic").as_string();
       gc.state_topic = get_parameter("robot_response." + gname + ".state_topic").as_string();
+      gc.sensor_topic = get_parameter("robot_response." + gname + ".sensor_topic").as_string();
+      gc.sensor_names = get_parameter("robot_response." + gname + ".sensor_names").as_string_array();
 
       // Optional per-group servo gains
       try {
@@ -130,6 +135,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
       gc.state_joint_names = get_parameter("fake_response." + gname + ".state_joint_names").as_string_array();
       gc.command_topic = get_parameter("fake_response." + gname + ".command_topic").as_string();
       gc.state_topic = get_parameter("fake_response." + gname + ".state_topic").as_string();
+      gc.sensor_topic = get_parameter("fake_response." + gname + ".sensor_topic").as_string();
+      gc.sensor_names = get_parameter("fake_response." + gname + ".sensor_names").as_string_array();
       gc.filter_alpha = get_parameter("fake_response." + gname + ".filter_alpha").as_double();
 
       group_configs_.push_back(std::move(gc));
@@ -150,6 +157,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     declare_parameter(prefix + "state_joint_names", std::vector<std::string>{});
     declare_parameter(prefix + "command_topic", std::string(""));
     declare_parameter(prefix + "state_topic", std::string(""));
+    declare_parameter(prefix + "sensor_topic", std::string(""));
+    declare_parameter(prefix + "sensor_names", std::vector<std::string>{});
   }
 
   // ── Simulator creation ───────────────────────────────────────────────────────
@@ -241,11 +250,27 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
             });
       }
 
+      // Sensor publisher + callback (robot groups with sensors only)
+      const std::string& sensor_topic = group_configs_[idx].sensor_topic;
+      if (is_robot && !sensor_topic.empty() && sim_->HasSensors(idx)) {
+        rclcpp::QoS sensor_qos{1};
+        sensor_qos.best_effort();
+        h.sensor_pub = create_publisher<rtc_msgs::msg::SimSensorState>(
+            sensor_topic, sensor_qos);
+
+        sim_->SetSensorCallback(idx,
+            [this, idx](const std::vector<urtc::JointGroup::SensorInfo>& infos,
+                        const std::vector<double>& values) {
+              PublishGroupSensors(idx, infos, values);
+            });
+      }
+
       RCLCPP_INFO(get_logger(),
-                  "Group[%zu] '%s' %s — cmd: %s  state: %s  cmd_joints: %d  state_joints: %d",
+                  "Group[%zu] '%s' %s — cmd: %s  state: %s  sensor: %s  cmd_joints: %d  state_joints: %d",
                   idx, group_configs_[idx].name.c_str(),
                   is_robot ? "ROBOT" : "FAKE",
                   cmd_topic.c_str(), state_topic.c_str(),
+                  sensor_topic.empty() ? "(none)" : sensor_topic.c_str(),
                   sim_->NumGroupJoints(idx), sim_->NumStateJoints(idx));
     }
   }
@@ -325,6 +350,26 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     msg.velocity = velocities;
     msg.effort   = efforts;
     group_handles_[group_idx].state_pub->publish(msg);
+  }
+
+  void PublishGroupSensors(
+      std::size_t group_idx,
+      const std::vector<urtc::JointGroup::SensorInfo>& infos,
+      const std::vector<double>& values) {
+    if (group_idx >= group_handles_.size() || !group_handles_[group_idx].sensor_pub) return;
+    auto msg = rtc_msgs::msg::SimSensorState();
+    msg.header.stamp = now();
+    int offset = 0;
+    for (const auto& info : infos) {
+      rtc_msgs::msg::SimSensor s;
+      s.name = info.name;
+      s.sensor_type = info.type;
+      s.values.assign(values.begin() + offset,
+                      values.begin() + offset + info.dim);
+      offset += info.dim;
+      msg.sensors.push_back(std::move(s));
+    }
+    group_handles_[group_idx].sensor_pub->publish(msg);
   }
 
   void PublishFakeState(std::size_t group_idx) {

@@ -44,6 +44,28 @@ void MuJoCoSimulator::ReadState() noexcept {
   }
 }
 
+void MuJoCoSimulator::ReadSensors() noexcept {
+  if (!model_ || !data_ || model_->nsensor <= 0) { return; }
+  for (auto& g : groups_) {
+    if (!g->is_robot) continue;
+    if (g->sensor_infos.empty()) continue;
+    std::size_t offset = 0;
+    for (const auto& si : g->sensor_infos) {
+      for (int d = 0; d < si.dim; ++d) {
+        g->sensor_buffer[offset++] = data_->sensordata[si.adr + d];
+      }
+    }
+  }
+}
+
+void MuJoCoSimulator::InvokeSensorCallback() noexcept {
+  for (auto& g : groups_) {
+    if (!g->is_robot) continue;
+    if (g->sensor_infos.empty() || !g->sensor_cb) continue;
+    g->sensor_cb(g->sensor_infos, g->sensor_buffer);
+  }
+}
+
 void MuJoCoSimulator::ReadSolverStats() noexcept {
   if (!data_) { return; }
   SolverStats s{};
@@ -272,9 +294,11 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
       step = 0;
       continue;
     }
-    // 1. Publish current state for ALL robot groups
+    // 1. Publish current state (and sensors) for ALL robot groups
     ReadState();
+    ReadSensors();
     InvokeStateCallback();
+    InvokeSensorCallback();
 
     // 2. Wait for command from PRIMARY group
     {
