@@ -86,9 +86,8 @@
     # Publishes MarkerArray (sphere + axes) and optionally broadcasts TF.
     tcp_viz.source_topic: "/ur5e/gui_position"      # GuiPosition topic
     tcp_viz.marker_topic: "/digital_twin/tcp_markers"
-    tcp_viz.frame_id: "base"                        # marker reference frame (task_positions are in base frame)
+    tcp_viz.frame_id: "base"                        # parent TF frame
     tcp_viz.broadcast_tf: true                      # broadcast virtual_tcp TF
-    tcp_viz.tf_parent_frame: "tool0"                # TF parent frame (tool0 → virtual_tcp)
     tcp_viz.tf_child_frame: "virtual_tcp"           # TF child frame name
 
     # TCP sphere (current position)
