@@ -2,6 +2,7 @@
 #include "rtc_controller_manager/rt_controller_node.hpp"
 
 #include "rtc_controller_interface/controller_registry.hpp"
+#include "rtc_urdf_bridge/xacro_processor.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rtc_base/logging/session_dir.hpp>
@@ -2229,7 +2230,12 @@ void RtControllerNode::LoadDeviceNameConfigs()
       if (!full_urdf_path.empty()) {
         try {
         pinocchio::Model model;
-        pinocchio::urdf::buildModel(full_urdf_path, model);
+        if (rtc_urdf_bridge::IsXacroFile(full_urdf_path)) {
+          const auto urdf_xml = rtc_urdf_bridge::ProcessXacro(full_urdf_path);
+          pinocchio::urdf::buildModelFromXML(urdf_xml, model);
+        } else {
+          pinocchio::urdf::buildModel(full_urdf_path, model);
+        }
 
         // Extract URDF joint names (skip universe at index 0)
         std::vector<std::string> urdf_joint_names;
