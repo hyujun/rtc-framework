@@ -80,3 +80,23 @@
 
     # Contact: Sphere overlay at fingertip origin
     sensor_viz.contact_sphere_radius: 0.005         # sphere radius (m)
+
+    # ── TCP visualization ───────────────────────────────────────────────
+    # Subscribes to GuiPosition for task-space TCP data (actual + goal).
+    # Publishes MarkerArray (sphere + axes) and optionally broadcasts TF.
+    tcp_viz.source_topic: "/ur5e/gui_position"      # GuiPosition topic
+    tcp_viz.marker_topic: "/digital_twin/tcp_markers"
+    tcp_viz.frame_id: "base"                        # parent TF frame
+    tcp_viz.broadcast_tf: true                      # broadcast virtual_tcp TF
+    tcp_viz.tf_child_frame: "virtual_tcp"           # TF child frame name
+
+    # TCP sphere (current position)
+    tcp_viz.sphere_radius: 0.012                    # sphere radius (m)
+
+    # TCP axes (orientation arrows)
+    tcp_viz.axes_length: 0.05                       # axis arrow length (m)
+    tcp_viz.axes_shaft: 0.004                       # axis arrow shaft diameter (m)
+
+    # Goal sphere (target position, semi-transparent)
+    tcp_viz.show_goal: true
+    tcp_viz.goal_sphere_radius: 0.010               # goal sphere radius (m)
