@@ -34,7 +34,7 @@
     # ── System URDF + model topology (shared by all controllers) ──────────
     urdf:
       package: "ur5e_description"
-      path: "robots/ur5e/urdf/ur5e_with_hand.urdf.xacro"
+      path: "robots/ur5e_hand_tmp/urdf/ur5e_with_hand.urdf.xacro"
       root_joint_type: "fixed"
       sub_models:
         ur5e:

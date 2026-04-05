@@ -10,7 +10,7 @@
   <xacro:include filename="$(find ur5e_description)/robots/ur5e/urdf/ur5e.urdf"/>
 
   <!-- Custom Hand model -->
-  <xacro:include filename="$(find ur5e_description)/robots/ur5e/urdf/hand.urdf.xacro"/>
+  <xacro:include filename="$(find ur5e_description)/robots/hand_tmp/urdf/hand.urdf.xacro"/>
 
   <!-- Attach hand to tool0 -->
   <joint name="tool0_to_hand" type="fixed">
