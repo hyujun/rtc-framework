@@ -3,10 +3,24 @@
 
 #include <rclcpp/rclcpp.hpp>
 
+#include <cctype>
+
 namespace rtc_bt {
 
 namespace {
 auto logger() { return rclcpp::get_logger("bt"); }
+
+// Normalize controller name for comparison: strip underscores and lowercase.
+// e.g. "demo_task_controller" and "DemoTaskController" both become "demotaskcontroller".
+std::string NormalizeName(const std::string& s) {
+  std::string result;
+  result.reserve(s.size());
+  for (char c : s) {
+    if (c != '_') result.push_back(
+        static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+  return result;
+}
 }  // namespace
 
 SwitchController::SwitchController(const std::string& name, const BT::NodeConfig& config,
@@ -34,7 +48,7 @@ BT::NodeStatus SwitchController::onStart()
   start_time_ = std::chrono::steady_clock::now();
 
   auto current = bridge_->GetActiveController();
-  if (current == target_name_) {
+  if (NormalizeName(current) == NormalizeName(target_name_)) {
     RCLCPP_DEBUG(logger(), "[SwitchController] already active: %s", target_name_.c_str());
     return BT::NodeStatus::SUCCESS;
   }
@@ -47,7 +61,7 @@ BT::NodeStatus SwitchController::onStart()
 
 BT::NodeStatus SwitchController::onRunning()
 {
-  if (bridge_->GetActiveController() == target_name_) {
+  if (NormalizeName(bridge_->GetActiveController()) == NormalizeName(target_name_)) {
     RCLCPP_INFO(logger(), "[SwitchController] active: %s (elapsed=%.2fs)",
                 target_name_.c_str(), ElapsedSeconds(start_time_));
     return BT::NodeStatus::SUCCESS;
