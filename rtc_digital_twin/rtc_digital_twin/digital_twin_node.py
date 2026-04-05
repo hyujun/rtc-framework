@@ -221,6 +221,7 @@ class DigitalTwinNode(Node):
                                        '/digital_twin/tcp_markers')
                 self.declare_parameter('tcp_viz.frame_id', 'base')
                 self.declare_parameter('tcp_viz.broadcast_tf', True)
+                self.declare_parameter('tcp_viz.tf_parent_frame', 'tool0')
                 self.declare_parameter('tcp_viz.tf_child_frame', 'virtual_tcp')
                 self.declare_parameter('tcp_viz.sphere_radius', 0.012)
                 self.declare_parameter('tcp_viz.axes_length', 0.05)
@@ -261,11 +262,17 @@ class DigitalTwinNode(Node):
                 # TF broadcaster (optional)
                 self._tcp_broadcast_tf = self.get_parameter(
                     'tcp_viz.broadcast_tf').value
+                self._tcp_tf_parent_frame = self.get_parameter(
+                    'tcp_viz.tf_parent_frame').value
                 self._tcp_tf_child_frame = self.get_parameter(
                     'tcp_viz.tf_child_frame').value
                 if self._tcp_broadcast_tf:
-                    from tf2_ros import TransformBroadcaster
+                    from tf2_ros import TransformBroadcaster, Buffer, \
+                        TransformListener
                     self._tcp_tf_broadcaster = TransformBroadcaster(self)
+                    self._tcp_tf_buffer = Buffer()
+                    self._tcp_tf_listener = TransformListener(
+                        self._tcp_tf_buffer, self)
 
                 self._tcp_viz_active = True
                 self.get_logger().info(
@@ -413,11 +420,29 @@ class DigitalTwinNode(Node):
             self._tcp_marker_pub.publish(tcp_markers)
 
             if self._tcp_tf_broadcaster is not None:
-                tf_msg = self._tcp_viz.create_tf(
-                    self._tcp_task_positions, now,
-                    self._tcp_tf_child_frame)
-                if tf_msg is not None:
-                    self._tcp_tf_broadcaster.sendTransform(tf_msg)
+                # Look up base → tool0 (parent frame) to compute relative TF
+                T_base_parent = None
+                try:
+                    t = self._tcp_tf_buffer.lookup_transform(
+                        self._tcp_viz.frame_id,
+                        self._tcp_tf_parent_frame,
+                        rclpy.time.Time())
+                    tr = t.transform.translation
+                    ro = t.transform.rotation
+                    T_base_parent = (
+                        (tr.x, tr.y, tr.z),
+                        (ro.x, ro.y, ro.z, ro.w))
+                except Exception:
+                    pass  # TF not yet available, skip this cycle
+
+                if T_base_parent is not None:
+                    tf_msg = self._tcp_viz.create_tf(
+                        self._tcp_task_positions, now,
+                        self._tcp_tf_parent_frame,
+                        self._tcp_tf_child_frame,
+                        T_base_parent)
+                    if tf_msg is not None:
+                        self._tcp_tf_broadcaster.sendTransform(tf_msg)
 
     def _validate_joints(self):
         """Periodic validation: check received joints against URDF."""

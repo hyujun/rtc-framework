@@ -101,13 +101,22 @@ class TcpVisualizer:
         return markers
 
     def create_tf(self, task_positions, stamp,
-                  child_frame: str) -> TransformStamped | None:
-        """Create TF TransformStamped from task_positions.
+                  parent_frame: str,
+                  child_frame: str,
+                  T_base_parent=None) -> TransformStamped | None:
+        """Create TF TransformStamped for parent_frame → child_frame.
+
+        When T_base_parent is provided, computes the relative transform:
+          T_parent_child = inv(T_base_parent) * T_base_child
+        Otherwise falls back to broadcasting in base frame directly.
 
         Args:
-            task_positions: [x, y, z, roll, pitch, yaw]
+            task_positions: [x, y, z, roll, pitch, yaw] in base frame
             stamp: ROS2 Time message
-            child_frame: child frame name (e.g. 'virtual_tcp')
+            parent_frame: TF parent frame (e.g. 'tool0')
+            child_frame: TF child frame (e.g. 'virtual_tcp')
+            T_base_parent: optional (translation, quaternion) tuple for
+                           base→parent transform. quaternion = (x, y, z, w)
         Returns:
             TransformStamped or None if data insufficient
         """
@@ -125,20 +134,47 @@ class TcpVisualizer:
         pitch = float(task_positions[4]) if len(task_positions) > 4 else 0.0
         yaw = float(task_positions[5]) if len(task_positions) > 5 else 0.0
 
+        # T_base_child: base → virtual_tcp
+        qx_c, qy_c, qz_c, qw_c = self._rpy_to_quaternion(roll, pitch, yaw)
+        R_base_child = self._quat_to_matrix(qx_c, qy_c, qz_c, qw_c)
+        t_base_child = [x, y, z]
+
+        if T_base_parent is not None:
+            # Compute relative: T_parent_child = inv(T_base_parent) * T_base_child
+            (tp, qp) = T_base_parent  # tp=(x,y,z), qp=(x,y,z,w)
+            R_base_parent = self._quat_to_matrix(qp[0], qp[1], qp[2], qp[3])
+            t_base_parent = [tp[0], tp[1], tp[2]]
+
+            # inv(R_base_parent)
+            R_parent_base = self._transpose3(R_base_parent)
+            # t_rel = R_parent_base * (t_child - t_parent)
+            dx = t_base_child[0] - t_base_parent[0]
+            dy = t_base_child[1] - t_base_parent[1]
+            dz = t_base_child[2] - t_base_parent[2]
+            tx = R_parent_base[0][0]*dx + R_parent_base[0][1]*dy + R_parent_base[0][2]*dz
+            ty = R_parent_base[1][0]*dx + R_parent_base[1][1]*dy + R_parent_base[1][2]*dz
+            tz = R_parent_base[2][0]*dx + R_parent_base[2][1]*dy + R_parent_base[2][2]*dz
+            # R_rel = R_parent_base * R_base_child
+            R_rel = self._matmul3(R_parent_base, R_base_child)
+            qx_r, qy_r, qz_r, qw_r = self._matrix_to_quat(R_rel)
+
+            out_t = (tx, ty, tz)
+            out_q = (qx_r, qy_r, qz_r, qw_r)
+        else:
+            out_t = (x, y, z)
+            out_q = (qx_c, qy_c, qz_c, qw_c)
+
         tf = TransformStamped()
         tf.header.stamp = stamp
-        tf.header.frame_id = self.frame_id
+        tf.header.frame_id = parent_frame
         tf.child_frame_id = child_frame
-        tf.transform.translation.x = x
-        tf.transform.translation.y = y
-        tf.transform.translation.z = z
-
-        # RPY → quaternion
-        qx, qy, qz, qw = self._rpy_to_quaternion(roll, pitch, yaw)
-        tf.transform.rotation.x = qx
-        tf.transform.rotation.y = qy
-        tf.transform.rotation.z = qz
-        tf.transform.rotation.w = qw
+        tf.transform.translation.x = out_t[0]
+        tf.transform.translation.y = out_t[1]
+        tf.transform.translation.z = out_t[2]
+        tf.transform.rotation.x = out_q[0]
+        tf.transform.rotation.y = out_q[1]
+        tf.transform.rotation.z = out_q[2]
+        tf.transform.rotation.w = out_q[3]
 
         return tf
 
@@ -211,3 +247,62 @@ class TcpVisualizer:
         qz = cr * cp * sy - sr * sp * cy
         qw = cr * cp * cy + sr * sp * sy
         return qx, qy, qz, qw
+
+    @staticmethod
+    def _quat_to_matrix(qx, qy, qz, qw):
+        """Quaternion (x, y, z, w) → 3x3 rotation matrix."""
+        xx, yy, zz = qx*qx, qy*qy, qz*qz
+        xy, xz, yz = qx*qy, qx*qz, qy*qz
+        wx, wy, wz = qw*qx, qw*qy, qw*qz
+        return [
+            [1 - 2*(yy+zz),     2*(xy-wz),     2*(xz+wy)],
+            [    2*(xy+wz), 1 - 2*(xx+zz),     2*(yz-wx)],
+            [    2*(xz-wy),     2*(yz+wx), 1 - 2*(xx+yy)],
+        ]
+
+    @staticmethod
+    def _transpose3(m):
+        """Transpose a 3x3 matrix (list of lists)."""
+        return [
+            [m[0][0], m[1][0], m[2][0]],
+            [m[0][1], m[1][1], m[2][1]],
+            [m[0][2], m[1][2], m[2][2]],
+        ]
+
+    @staticmethod
+    def _matmul3(a, b):
+        """Multiply two 3x3 matrices."""
+        return [
+            [sum(a[i][k]*b[k][j] for k in range(3)) for j in range(3)]
+            for i in range(3)
+        ]
+
+    @staticmethod
+    def _matrix_to_quat(m):
+        """3x3 rotation matrix → quaternion (x, y, z, w)."""
+        tr = m[0][0] + m[1][1] + m[2][2]
+        if tr > 0:
+            s = 2.0 * math.sqrt(tr + 1.0)
+            w = 0.25 * s
+            x = (m[2][1] - m[1][2]) / s
+            y = (m[0][2] - m[2][0]) / s
+            z = (m[1][0] - m[0][1]) / s
+        elif m[0][0] > m[1][1] and m[0][0] > m[2][2]:
+            s = 2.0 * math.sqrt(1.0 + m[0][0] - m[1][1] - m[2][2])
+            w = (m[2][1] - m[1][2]) / s
+            x = 0.25 * s
+            y = (m[0][1] + m[1][0]) / s
+            z = (m[0][2] + m[2][0]) / s
+        elif m[1][1] > m[2][2]:
+            s = 2.0 * math.sqrt(1.0 + m[1][1] - m[0][0] - m[2][2])
+            w = (m[0][2] - m[2][0]) / s
+            x = (m[0][1] + m[1][0]) / s
+            y = 0.25 * s
+            z = (m[1][2] + m[2][1]) / s
+        else:
+            s = 2.0 * math.sqrt(1.0 + m[2][2] - m[0][0] - m[1][1])
+            w = (m[1][0] - m[0][1]) / s
+            x = (m[0][2] + m[2][0]) / s
+            y = (m[1][2] + m[2][1]) / s
+            z = 0.25 * s
+        return x, y, z, w
