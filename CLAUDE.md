@@ -42,13 +42,13 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 | `rtc_controllers` | Library | PController, JointPDController (Pinocchio RNEA), ClikController (Jacobian IK), OSC (6-DOF Cartesian PD) + quintic trajectory |
 | `rtc_controller_manager` | Executable | `RtControllerNode`: clock_nanosleep RT loop, SPSC publish offload, CSV logging, global E-STOP, controller lifecycle, digital twin auto-republish |
 | `rtc_inference` | Header-only | `InferenceEngine` abstract, `OnnxEngine` (IoBinding, pre-allocated buffers), `RunModels()` batch helper |
-| `rtc_msgs` | Messages | 8 types: JointCommand, FingertipSensor, HandSensorState, GraspState, GuiPosition, RobotTarget, DeviceStateLog, DeviceSensorLog |
+| `rtc_msgs` | Messages | JointCommand, FingertipSensor, HandSensorState, GraspState, GuiPosition, RobotTarget, DeviceStateLog, DeviceSensorLog, ToFSnapshot |
 | `rtc_mujoco_sim` | Executable | MuJoCo 3.x wrapper: sync-step loop, GLFW viewer (40+ shortcuts), multi-group architecture (robot_response + fake_response), position servo gains |
 | `rtc_tools` | Python | controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf, hand_udp_sender, hand_data_plot, session_dir |
 | `rtc_scripts` | Shell | PREEMPT_RT kernel build, CPU shield (cset), IRQ affinity, UDP optimization, NVIDIA RT coexistence |
 | `rtc_digital_twin` | Python | RViz2 visualization (multi-source JointState merge, URDF mimic auto-compute, fingertip sensor MarkerArray) |
 | `rtc_urdf_bridge` | Library | Robot-agnostic URDF parser + Pinocchio model builder, YAML-based chain extraction config |
-| `shape_estimation_msgs` | Messages | 4 types: ToFReadings, TipPoses, ToFSnapshot, ShapeEstimate |
+| `shape_estimation_msgs` | Messages | 3 types: ToFReadings, TipPoses, ShapeEstimate (ToFSnapshot → rtc_msgs로 이동) |
 | `shape_estimation` | Executable | ToF-based shape estimation: voxel point cloud, least-squares primitive fitting (sphere/cylinder/plane/box) |
 | `ur5e_description` | Data | URDF + MJCF + meshes (DAE/STL/OBJ). Pinocchio/RViz/MuJoCo compatible |
 | `ur5e_hand_driver` | Executable | UDP event-driven driver (SeqLock state, ppoll sub-ms timeout, dual motor+joint read, ONNX F/T inference) |
@@ -365,7 +365,7 @@ ONNX F/T inference runs per sensor cycle when calibrated: input `float32[1, 12, 
 
 ---
 
-## Message Types (`rtc_msgs`) -- 8 types
+## Message Types (`rtc_msgs`)
 
 | Message | Key Fields | Usage |
 |---------|-----------|-------|
@@ -377,6 +377,7 @@ ONNX F/T inference runs per sensor cycle when calibrated: input `float32[1, 12, 
 | `RobotTarget` | goal_type ("joint"/"task"), joint_target[], task_target[6] | Goal commands |
 | `DeviceStateLog` | actual_positions[], commands[], trajectory_positions[], motor_positions[] | CSV logging |
 | `DeviceSensorLog` | sensor_data_raw[], sensor_data[], inference_output[] | CSV logging |
+| `ToFSnapshot` | stamp, distances[6], valid[6], tip_poses[3] (geometry_msgs/Pose) | ToF + fingertip SE3 for shape estimation |
 
 ---
 

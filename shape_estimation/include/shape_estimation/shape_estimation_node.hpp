@@ -19,7 +19,7 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <shape_estimation_msgs/action/explore_shape.hpp>
 #include <shape_estimation_msgs/msg/shape_estimate.hpp>
-#include <shape_estimation_msgs/msg/to_f_snapshot.hpp>
+#include <rtc_msgs/msg/to_f_snapshot.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -48,7 +48,7 @@ class ShapeEstimationNode : public rclcpp::Node {
   enum class State { kStopped, kRunning, kPaused, kSingleShot };
 
   // ── 기존 콜백 ─────────────────────────────────────────────────────────────
-  void SnapshotCallback(shape_estimation_msgs::msg::ToFSnapshot::SharedPtr msg);
+  void SnapshotCallback(rtc_msgs::msg::ToFSnapshot::SharedPtr msg);
   void TriggerCallback(std_msgs::msg::String::SharedPtr msg);
   void ClearCallback(
       const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
@@ -77,7 +77,7 @@ class ShapeEstimationNode : public rclcpp::Node {
 
   // ── ROS 인터페이스 (기존) ──────────────────────────────────────────────────
   // Subscribers
-  rclcpp::Subscription<shape_estimation_msgs::msg::ToFSnapshot>::SharedPtr snapshot_sub_;
+  rclcpp::Subscription<rtc_msgs::msg::ToFSnapshot>::SharedPtr snapshot_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr trigger_sub_;
 
   // Publishers

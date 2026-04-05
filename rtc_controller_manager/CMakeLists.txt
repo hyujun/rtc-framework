@@ -32,7 +32,6 @@ find_package(rtc_controllers REQUIRED)
 find_package(rtc_base REQUIRED)
 find_package(rtc_communication REQUIRED)
 find_package(rtc_msgs REQUIRED)
-find_package(shape_estimation_msgs REQUIRED)
 
 # ── Static library ────────────────────────────────────────────────────────────
 add_library(rtc_controller_manager_lib STATIC
@@ -53,7 +52,6 @@ ament_target_dependencies(rtc_controller_manager_lib
   rtc_base
   rtc_communication
   rtc_msgs
-  shape_estimation_msgs
   rtc_urdf_bridge
 )
 target_link_libraries(rtc_controller_manager_lib
@@ -105,7 +103,6 @@ ament_export_dependencies(
   rtc_base
   rtc_communication
   rtc_msgs
-  shape_estimation_msgs
   rtc_urdf_bridge
   pinocchio
   yaml-cpp

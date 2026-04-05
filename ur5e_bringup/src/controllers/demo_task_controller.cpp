@@ -566,15 +566,19 @@ void DemoTaskController::ComputeControl(
 
   // ── ToF snapshot (3 fingers × 2 sensors: tof[1]=A, tof[2]=B) ───────────
   {
-    constexpr int kNumTofFingers = rtc::ToFSnapshotData::kNumFingers;  // 3
+    constexpr int kNumTofFingers = 3;          // thumb, index, middle (hand-specific)
+    constexpr int kSensorsPerFinger = 2;       // A/B pair
     constexpr double kMmToM = 0.001;
     tof_snapshot_ = {};
 
     if (hand_handle_ && num_active_fingertips_ >= kNumTofFingers) {
+      tof_snapshot_.num_fingers = kNumTofFingers;
+      tof_snapshot_.sensors_per_finger = kSensorsPerFinger;
+
       for (int f = 0; f < kNumTofFingers; ++f) {
         const auto fi = static_cast<std::size_t>(f);
         const auto& ft = fingertip_data_[fi];
-        const int si = f * rtc::ToFSnapshotData::kSensorsPerFinger;
+        const int si = f * kSensorsPerFinger;
 
         // tof[1] → sensor A, tof[2] → sensor B (tof[0] 제외)
         const double d_a = static_cast<double>(ft.tof[1]) * kMmToM;

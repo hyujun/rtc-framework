@@ -786,10 +786,10 @@ void RtControllerNode::CreatePublishers()
       }
       case urtc::PublishRole::kToFSnapshot: {
         if (tof_snapshot_publishers_.count(entry.topic_name) > 0) { return; }
-        TypedPublisherEntry<shape_estimation_msgs::msg::ToFSnapshot> pe;
+        TypedPublisherEntry<rtc_msgs::msg::ToFSnapshot> pe;
         rclcpp::QoS qos{5};
         qos.best_effort();
-        pe.publisher = create_publisher<shape_estimation_msgs::msg::ToFSnapshot>(
+        pe.publisher = create_publisher<rtc_msgs::msg::ToFSnapshot>(
             entry.topic_name, qos);
         tof_snapshot_publishers_[entry.topic_name] = std::move(pe);
         log_pub("tof_snapshot");
@@ -1864,14 +1864,20 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           auto & m = it->second.msg;
           m.stamp.sec = sec;
           m.stamp.nanosec = nsec;
-          for (int i = 0; i < urtc::ToFSnapshotData::kTotalSensors; ++i) {
+          const auto& ts = gc.tof_snapshot;
+          const int total_sensors = std::min(
+              ts.num_fingers * ts.sensors_per_finger,
+              static_cast<int>(m.distances.size()));
+          const int num_poses = std::min(
+              ts.num_fingers, static_cast<int>(m.tip_poses.size()));
+          for (int i = 0; i < total_sensors; ++i) {
             const auto ui = static_cast<std::size_t>(i);
-            m.distances[ui] = gc.tof_snapshot.distances[ui];
-            m.valid[ui]     = gc.tof_snapshot.valid[ui];
+            m.distances[ui] = ts.distances[ui];
+            m.valid[ui]     = ts.valid[ui];
           }
-          for (int f = 0; f < urtc::ToFSnapshotData::kNumFingers; ++f) {
+          for (int f = 0; f < num_poses; ++f) {
             const auto fi = static_cast<std::size_t>(f);
-            const auto& src = gc.tof_snapshot.tip_poses[fi];
+            const auto& src = ts.tip_poses[fi];
             auto& dst = m.tip_poses[fi];
             dst.position.x = src.position[0];
             dst.position.y = src.position[1];

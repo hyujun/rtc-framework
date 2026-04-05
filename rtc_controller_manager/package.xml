@@ -25,7 +25,6 @@
   <depend>rtc_base</depend>
   <depend>rtc_communication</depend>
   <depend>rtc_msgs</depend>
-  <depend>shape_estimation_msgs</depend>
 
   <!-- Pinocchio + URDF model bridge -->
   <depend>pinocchio</depend>

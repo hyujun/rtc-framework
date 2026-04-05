@@ -7,7 +7,7 @@
 
 ## 개요
 
-RTC 프레임워크를 위한 **커스텀 ROS2 메시지 정의** 패키지입니다. 로봇 암 관절 커맨드, 핑거팁 센서 데이터 (원시/필터링), 추론 결과 (힘/변위/접촉), 파지 상태 판정, GUI 표시, 디바이스 상태/센서 로깅을 위한 **8종** 메시지 타입을 정의합니다.
+RTC 프레임워크를 위한 **커스텀 ROS2 메시지 정의** 패키지입니다. 로봇 암 관절 커맨드, 핑거팁 센서 데이터 (원시/필터링), 추론 결과 (힘/변위/접촉), 파지 상태 판정, ToF 스냅샷, GUI 표시, 디바이스 상태/센서 로깅을 위한 메시지 타입을 정의합니다.
 
 **핵심 특징:**
 - 로봇 비의존적(robot-agnostic) 메시지 설계
@@ -34,7 +34,8 @@ rtc_msgs/
     ├── GuiPosition.msg        <- GUI 표시용 관절/태스크 위치
     ├── RobotTarget.msg        <- 관절/태스크 공간 목표
     ├── DeviceStateLog.msg     <- 디바이스 상태 종합 로그
-    └── DeviceSensorLog.msg    <- 디바이스 센서 로그
+    ├── DeviceSensorLog.msg    <- 디바이스 센서 로그
+    └── ToFSnapshot.msg        <- ToF 센서 + 핑거팁 SE3 자세 통합 스냅샷
 ```
 
 ---
@@ -44,6 +45,8 @@ rtc_msgs/
 | 의존성 | 용도 |
 |--------|------|
 | `std_msgs` | `Header` 메시지 타입 (타임스탬프 + 프레임 ID) |
+| `geometry_msgs` | `Pose` 메시지 타입 (ToFSnapshot 핑거팁 자세) |
+| `builtin_interfaces` | `Time` 타입 (ToFSnapshot 타임스탬프) |
 | `ament_cmake` | 빌드 시스템 |
 | `rosidl_default_generators` | 메시지 C++/Python 코드 생성 |
 | `ament_lint_auto` | 테스트 의존성 (lint 자동화) |
@@ -198,6 +201,22 @@ GUI 디스플레이를 위한 현재 관절 및 태스크 공간 위치입니다
 
 ---
 
+### `ToFSnapshot.msg`
+
+ToF 측정값 + 핑거팁 자세를 하나의 메시지로 통합합니다. RT 컨트롤러에서 동일 제어 사이클의 데이터를 묶어 publish합니다. shape_estimation 노드의 주 입력 데이터입니다.
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `stamp` | `builtin_interfaces/Time` | 타임스탬프 |
+| `distances` | `float64[6]` | ToF 센서 거리 [m] (thumb_A, thumb_B, index_A, index_B, middle_A, middle_B) |
+| `valid` | `bool[6]` | ToF 센서 유효성 플래그 |
+| `tip_poses` | `geometry_msgs/Pose[3]` | 핑거팁 SE3 자세 (thumb, index, middle, 월드 프레임) |
+
+- 컨트롤러 YAML의 `topics:` 섹션에서 `role: "tof_snapshot"`으로 등록하여 사용합니다.
+- `shape_estimation_msgs`에서 로봇 독립성을 위해 이동된 메시지입니다.
+
+---
+
 ## 빌드
 
 ```bash
@@ -226,9 +245,9 @@ source install/setup.bash
     └── 집계: grasp_detected/max_force  └── GuiPosition
                                             (관절 + TCP 위치)
 
-로깅 (CSV 세션 기록)
-├── DeviceStateLog
-│   (상태 + 커맨드 + 목표 + 궤적 + 모터 통합)
+로깅 (CSV 세션 기록)                ToF 스냅샷 (형상 추정용)
+├── DeviceStateLog                  └── ToFSnapshot
+│   (상태 + 커맨드 + 목표 + 궤적)      (ToF 거리[6] + 핑거팁 SE3[3])
 └── DeviceSensorLog
     (원시/필터 센서 + 추론 출력)
 ```

@@ -12,7 +12,6 @@ find_package(action_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ToFReadings.msg"
   "msg/TipPoses.msg"
-  "msg/ToFSnapshot.msg"
   "msg/ShapeEstimate.msg"
   "action/ExploreShape.action"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces action_msgs

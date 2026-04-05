@@ -56,10 +56,10 @@ ShapeEstimationNode::ShapeEstimationNode()
   sub_options.callback_group = cb_group_;
 
   // ── Subscribers ────────────────────────────────────────────────────────────
-  snapshot_sub_ = create_subscription<shape_estimation_msgs::msg::ToFSnapshot>(
+  snapshot_sub_ = create_subscription<rtc_msgs::msg::ToFSnapshot>(
       "/tof/snapshot",
       rclcpp::SensorDataQoS().keep_last(5),
-      [this](shape_estimation_msgs::msg::ToFSnapshot::SharedPtr msg) {
+      [this](rtc_msgs::msg::ToFSnapshot::SharedPtr msg) {
         SnapshotCallback(std::move(msg));
       },
       sub_options);
@@ -198,7 +198,7 @@ void ShapeEstimationNode::DeclareParameters() {
 // ═════════════════════════════════════════════════════════════════════════════
 
 void ShapeEstimationNode::SnapshotCallback(
-    shape_estimation_msgs::msg::ToFSnapshot::SharedPtr msg) {
+    rtc_msgs::msg::ToFSnapshot::SharedPtr msg) {
   if (state_ != State::kRunning && state_ != State::kSingleShot) {
     return;
   }

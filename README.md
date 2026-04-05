@@ -41,7 +41,7 @@
 
 | 패키지 | 버전 | 설명 | 빌드 |
 |--------|------|------|------|
-| [`shape_estimation_msgs`](shape_estimation_msgs/) | 5.17.0 | ToF 기반 형상 추정용 커스텀 ROS2 메시지 4종 (ToFReadings, TipPoses, ToFSnapshot, ShapeEstimate) | ament_cmake |
+| [`shape_estimation_msgs`](shape_estimation_msgs/) | 5.17.0 | ToF 기반 형상 추정용 커스텀 ROS2 메시지 3종 (ToFReadings, TipPoses, ShapeEstimate) + ExploreShape 액션 | ament_cmake |
 | [`shape_estimation`](shape_estimation/) | 5.17.0 | ToF 센서 기반 형상 추정: 복셀 포인트 누적, 최소제곱 프리미티브 피팅 (구/실린더/평면/박스) | ament_cmake |
 
 ### 로봇 고유 패키지 (ur5e_*)

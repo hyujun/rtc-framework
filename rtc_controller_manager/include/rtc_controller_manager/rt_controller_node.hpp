@@ -22,7 +22,7 @@
 #include <rtc_msgs/msg/device_sensor_log.hpp>
 #include <rtc_msgs/msg/grasp_state.hpp>
 #include <rtc_msgs/msg/hand_sensor_state.hpp>
-#include <shape_estimation_msgs/msg/to_f_snapshot.hpp>
+#include <rtc_msgs/msg/to_f_snapshot.hpp>
 
 // ── C++ stdlib ────────────────────────────────────────────────────────────────
 #include <array>
@@ -177,7 +177,7 @@ private:
       device_sensor_log_publishers_;
   std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::GraspState>>
       grasp_state_publishers_;
-  std::unordered_map<std::string, TypedPublisherEntry<shape_estimation_msgs::msg::ToFSnapshot>>
+  std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::ToFSnapshot>>
       tof_snapshot_publishers_;
 
   // ── Digital Twin JointState republishers (RELIABLE, depth 10) ────────────

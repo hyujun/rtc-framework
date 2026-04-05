@@ -22,7 +22,7 @@ static Eigen::Vector3d PositionFromMsg(const geometry_msgs::msg::Point& p) {
 
 // ── ConvertFromMsg ───────────────────────────────────────────────────────────
 
-ToFSnapshot ConvertFromMsg(const shape_estimation_msgs::msg::ToFSnapshot& msg) {
+ToFSnapshot ConvertFromMsg(const rtc_msgs::msg::ToFSnapshot& msg) {
   ToFSnapshot snapshot;
 
   // 타임스탬프

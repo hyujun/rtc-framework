@@ -181,23 +181,26 @@ struct GraspStateData {
 };
 
 // ToF snapshot data — trivially copyable, RT-safe (SPSC buffer 호환)
-// 3 fingers (thumb, index, middle), 각 2개 ToF 센서 (A/B pair: tof[1], tof[2])
+// 상한값(kMax*) 기반 고정 배열 + 런타임 num_fingers/sensors_per_finger
 struct ToFSnapshotData {
-  static constexpr int kNumFingers = 3;       // thumb, index, middle
-  static constexpr int kSensorsPerFinger = 2;  // A, B pair
-  static constexpr int kTotalSensors = 6;      // kNumFingers * kSensorsPerFinger
+  static constexpr int kMaxFingers = kMaxFingertips;  // 8
+  static constexpr int kMaxSensorsPerFinger = kTofCount;  // 3
+  static constexpr int kMaxTotalSensors = kMaxFingers * kMaxSensorsPerFinger;  // 24
 
-  // 거리 [m], 순서: thumb_A, thumb_B, index_A, index_B, middle_A, middle_B
-  std::array<double, kTotalSensors> distances{};
-  std::array<bool, kTotalSensors> valid{};
+  // 거리 [m]
+  std::array<double, kMaxTotalSensors> distances{};
+  std::array<bool, kMaxTotalSensors> valid{};
 
-  // Fingertip SE3 poses (thumb, index, middle) — world frame
+  // Fingertip SE3 poses — world frame
   struct Pose {
     std::array<double, 3> position{};
     std::array<double, 4> quaternion{1.0, 0.0, 0.0, 0.0};  // w, x, y, z
   };
-  std::array<Pose, kNumFingers> tip_poses{};
-  bool populated{false};  // true when controller has valid ToF + FK data
+  std::array<Pose, kMaxFingers> tip_poses{};
+
+  int  num_fingers{0};          // 실제 사용 핑거 수
+  int  sensors_per_finger{0};   // 실제 핑거당 센서 수
+  bool populated{false};        // true when controller has valid ToF + FK data
 };
 
 // Unified device output — per-device commands, goals, and trajectory data
@@ -280,7 +283,7 @@ enum class PublishRole {
   // Grasp State
   kGraspState,         // rtc_msgs/GraspState (BT coordinator용 grasp 상태)
   // ToF Snapshot
-  kToFSnapshot,        // shape_estimation_msgs/ToFSnapshot (ToF + fingertip SE3)
+  kToFSnapshot,        // rtc_msgs/ToFSnapshot (ToF + fingertip SE3)
 };
 
 struct SubscribeTopicEntry {

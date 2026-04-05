@@ -106,7 +106,7 @@ ROS 비의존 순수 C++ FSM 기반 탐색 모션 생성기. `enable_exploration
 
 | Topic | Type | QoS | Description |
 |-------|------|-----|-------------|
-| `/tof/snapshot` | `shape_estimation_msgs/ToFSnapshot` | SensorData(5) | ToF + fingertip pose @500Hz |
+| `/tof/snapshot` | `rtc_msgs/ToFSnapshot` | SensorData(5) | ToF + fingertip pose @500Hz |
 | `/shape/trigger` | `std_msgs/String` | Reliable | `start`/`stop`/`pause`/`resume`/`single` |
 | `/ur5e/gui_position` | `rtc_msgs/GuiPosition` | SensorData | Current EE pose (exploration) |
 | `/system/estop_status` | `std_msgs/Bool` | Reliable | E-STOP signal |
@@ -170,8 +170,8 @@ ros2 action send_goal /shape/explore shape_estimation_msgs/action/ExploreShape \
 
 | Package | Purpose |
 |---------|---------|
-| `shape_estimation_msgs` | ToF/Shape/Explore message & action types (4 msg + 1 action) |
-| `rtc_msgs` | GuiPosition, RobotTarget messages |
+| `shape_estimation_msgs` | Shape/Explore message & action types (3 msg + 1 action) |
+| `rtc_msgs` | GuiPosition, RobotTarget, ToFSnapshot messages |
 | `Eigen3` | Linear algebra (SVD, PCA, geometry) |
 | `rclcpp` / `rclcpp_action` | ROS 2 C++ client + action server |
 | `sensor_msgs` | PointCloud2 |
