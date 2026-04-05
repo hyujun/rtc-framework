@@ -77,6 +77,12 @@ void DemoTaskController::InitHandModel(
   if (sys_cfg) {
     for (const auto& tm : sys_cfg->tree_models) {
       if (tm.name == "hand") {
+        if (!tm.root_link.empty()) {
+          hand_root_frame_id_ = hand_handle_->GetFrameId(tm.root_link);
+          if (hand_root_frame_id_ != 0) {
+            use_hand_root_frame_ = true;
+          }
+        }
         for (std::size_t i = 0; i < std::min(tm.tip_links.size(), kNumFingertips); ++i) {
           fingertip_frame_ids_[i] = hand_handle_->GetFrameId(tm.tip_links[i]);
         }
@@ -154,7 +160,11 @@ void DemoTaskController::ComputeVirtualTcp(
       int count = 0;
       for (std::size_t f = 0; f < kNumFingertips; ++f) {
         if (fingertip_frame_ids_[f] != 0) {
-          sum += hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]).translation();
+          auto ft_pose = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
+          if (use_hand_root_frame_) {
+            ft_pose = hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(ft_pose);
+          }
+          sum += ft_pose.translation();
           ++count;
         }
       }
@@ -176,7 +186,11 @@ void DemoTaskController::ComputeVirtualTcp(
               ft.force[1]*ft.force[1] +
               ft.force[2]*ft.force[2]));
         }
-        sum += w * hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]).translation();
+        auto ft_pose = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
+        if (use_hand_root_frame_) {
+          ft_pose = hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(ft_pose);
+        }
+        sum += w * ft_pose.translation();
         total_weight += w;
       }
       if (total_weight <= 0.0) return;
@@ -316,7 +330,10 @@ void DemoTaskController::ComputeControl(
     // Fingertip world poses (monitoring — always computed)
     for (std::size_t f = 0; f < kNumFingertips; ++f) {
       if (fingertip_frame_ids_[f] != 0) {
-        const auto& T_hand_ft = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
+        auto T_hand_ft = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
+        if (use_hand_root_frame_) {
+          T_hand_ft = hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(T_hand_ft);
+        }
         const pinocchio::SE3 T_base_ft = tcp_pose.act(T_hand_ft);
         fingertip_positions_[f] = T_base_ft.translation();
         fingertip_rotations_[f] = T_base_ft.rotation();

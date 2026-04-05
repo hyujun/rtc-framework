@@ -186,6 +186,8 @@ private:
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> hand_handle_;
   static constexpr std::size_t kNumFingertips = 4;
   std::array<pinocchio::FrameIndex, kNumFingertips> fingertip_frame_ids_{};
+  pinocchio::FrameIndex hand_root_frame_id_{0};
+  bool use_hand_root_frame_{false};
   std::array<pinocchio::SE3, kNumFingertips> T_tcp_fingertip_{};
   std::array<Eigen::Vector3d, kNumFingertips> fingertip_positions_{};
   std::array<Eigen::Matrix3d, kNumFingertips> fingertip_rotations_{};
