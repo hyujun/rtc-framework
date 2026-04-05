@@ -784,6 +784,17 @@ void RtControllerNode::CreatePublishers()
         log_pub("grasp_state");
         return;
       }
+      case urtc::PublishRole::kToFSnapshot: {
+        if (tof_snapshot_publishers_.count(entry.topic_name) > 0) { return; }
+        TypedPublisherEntry<shape_estimation_msgs::msg::ToFSnapshot> pe;
+        rclcpp::QoS qos{5};
+        qos.best_effort();
+        pe.publisher = create_publisher<shape_estimation_msgs::msg::ToFSnapshot>(
+            entry.topic_name, qos);
+        tof_snapshot_publishers_[entry.topic_name] = std::move(pe);
+        log_pub("tof_snapshot");
+        return;
+      }
       default:
         break;
     }
@@ -1350,6 +1361,8 @@ void RtControllerNode::ControlLoop()
       snap.task_goals[gi] = output.task_goal_positions;
       // Grasp state from controller output
       gc.grasp_state = output.grasp_state;
+      // ToF snapshot from controller output
+      gc.tof_snapshot = output.tof_snapshot;
       ++gi;
     }
     snap.num_groups = static_cast<int>(gi);
@@ -1841,6 +1854,33 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           m.grasp_detected      = gs.grasp_detected;
           m.force_threshold     = gs.force_threshold;
           m.min_fingertips      = gs.min_fingertips_for_grasp;
+          it->second.publisher->publish(m);
+          return;
+        }
+        case urtc::PublishRole::kToFSnapshot: {
+          if (!gc.tof_snapshot.populated) { return; }
+          auto it = tof_snapshot_publishers_.find(pt.topic_name);
+          if (it == tof_snapshot_publishers_.end()) { return; }
+          auto & m = it->second.msg;
+          m.stamp.sec = sec;
+          m.stamp.nanosec = nsec;
+          for (int i = 0; i < urtc::ToFSnapshotData::kTotalSensors; ++i) {
+            const auto ui = static_cast<std::size_t>(i);
+            m.distances[ui] = gc.tof_snapshot.distances[ui];
+            m.valid[ui]     = gc.tof_snapshot.valid[ui];
+          }
+          for (int f = 0; f < urtc::ToFSnapshotData::kNumFingers; ++f) {
+            const auto fi = static_cast<std::size_t>(f);
+            const auto& src = gc.tof_snapshot.tip_poses[fi];
+            auto& dst = m.tip_poses[fi];
+            dst.position.x = src.position[0];
+            dst.position.y = src.position[1];
+            dst.position.z = src.position[2];
+            dst.orientation.w = src.quaternion[0];
+            dst.orientation.x = src.quaternion[1];
+            dst.orientation.y = src.quaternion[2];
+            dst.orientation.z = src.quaternion[3];
+          }
           it->second.publisher->publish(m);
           return;
         }

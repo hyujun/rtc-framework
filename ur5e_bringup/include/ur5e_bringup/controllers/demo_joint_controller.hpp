@@ -110,6 +110,7 @@ private:
   std::array<FingertipSensorData, rtc::kMaxFingertips> fingertip_data_{};
   int num_active_fingertips_{0};
   rtc::GraspStateData grasp_state_{};
+  rtc::ToFSnapshotData tof_snapshot_{};
 
   // ── Phase 2→3 intermediate: computed trajectory results ─────────────────
   struct ComputedTrajectory {

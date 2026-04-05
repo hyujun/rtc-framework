@@ -59,6 +59,8 @@ struct PublishSnapshot {
     GoalType goal_type{GoalType::kJoint};
     // Grasp state (from controller output)
     GraspStateData grasp_state{};
+    // ToF snapshot (from controller output)
+    ToFSnapshotData tof_snapshot{};
   };
   std::array<GroupCommandSlot, kMaxGroups> group_commands{};
   int num_groups{0};

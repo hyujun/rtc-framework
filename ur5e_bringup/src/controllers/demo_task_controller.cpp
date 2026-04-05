@@ -563,6 +563,37 @@ void DemoTaskController::ComputeControl(
       }
     }
   }
+
+  // ── ToF snapshot (3 fingers × 2 sensors: tof[1]=A, tof[2]=B) ───────────
+  {
+    constexpr int kNumTofFingers = rtc::ToFSnapshotData::kNumFingers;  // 3
+    constexpr double kMmToM = 0.001;
+    tof_snapshot_ = {};
+
+    if (hand_handle_ && num_active_fingertips_ >= kNumTofFingers) {
+      for (int f = 0; f < kNumTofFingers; ++f) {
+        const auto fi = static_cast<std::size_t>(f);
+        const auto& ft = fingertip_data_[fi];
+        const int si = f * rtc::ToFSnapshotData::kSensorsPerFinger;
+
+        // tof[1] → sensor A, tof[2] → sensor B (tof[0] 제외)
+        const double d_a = static_cast<double>(ft.tof[1]) * kMmToM;
+        const double d_b = static_cast<double>(ft.tof[2]) * kMmToM;
+        tof_snapshot_.distances[static_cast<std::size_t>(si)]     = d_a;
+        tof_snapshot_.distances[static_cast<std::size_t>(si + 1)] = d_b;
+        tof_snapshot_.valid[static_cast<std::size_t>(si)]     = (d_a > 0.0);
+        tof_snapshot_.valid[static_cast<std::size_t>(si + 1)] = (d_b > 0.0);
+
+        // Fingertip SE3 pose → position + quaternion
+        auto& pose = tof_snapshot_.tip_poses[fi];
+        const auto& pos = fingertip_positions_[fi];
+        pose.position = {pos[0], pos[1], pos[2]};
+        const Eigen::Quaterniond quat(fingertip_rotations_[fi]);
+        pose.quaternion = {quat.w(), quat.x(), quat.y(), quat.z()};
+      }
+      tof_snapshot_.populated = true;
+    }
+  }
 }
 
 // ── Phase 3: Write output ────────────────────────────────────────────────────
@@ -682,6 +713,7 @@ ControllerOutput DemoTaskController::WriteOutput(
 
   output.command_type = command_type_;
   output.grasp_state = grasp_state_;
+  output.tof_snapshot = tof_snapshot_;
   return output;
 }
 

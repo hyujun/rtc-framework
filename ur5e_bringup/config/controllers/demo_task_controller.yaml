@@ -78,3 +78,5 @@ demo_task_controller:
           role: "device_sensor_log"
         - topic: "/hand/grasp_state"
           role: "grasp_state"
+        - topic: "/tof/snapshot"
+          role: "tof_snapshot"

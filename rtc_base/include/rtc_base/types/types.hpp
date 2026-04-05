@@ -180,6 +180,26 @@ struct GraspStateData {
   int   min_fingertips_for_grasp{2};
 };
 
+// ToF snapshot data — trivially copyable, RT-safe (SPSC buffer 호환)
+// 3 fingers (thumb, index, middle), 각 2개 ToF 센서 (A/B pair: tof[1], tof[2])
+struct ToFSnapshotData {
+  static constexpr int kNumFingers = 3;       // thumb, index, middle
+  static constexpr int kSensorsPerFinger = 2;  // A, B pair
+  static constexpr int kTotalSensors = 6;      // kNumFingers * kSensorsPerFinger
+
+  // 거리 [m], 순서: thumb_A, thumb_B, index_A, index_B, middle_A, middle_B
+  std::array<double, kTotalSensors> distances{};
+  std::array<bool, kTotalSensors> valid{};
+
+  // Fingertip SE3 poses (thumb, index, middle) — world frame
+  struct Pose {
+    std::array<double, 3> position{};
+    std::array<double, 4> quaternion{1.0, 0.0, 0.0, 0.0};  // w, x, y, z
+  };
+  std::array<Pose, kNumFingers> tip_poses{};
+  bool populated{false};  // true when controller has valid ToF + FK data
+};
+
 // Unified device output — per-device commands, goals, and trajectory data
 struct DeviceOutput {
   int num_channels{0};
@@ -205,6 +225,7 @@ struct ControllerOutput {
   bool        valid{true};
   CommandType command_type{CommandType::kPosition};
   GraspStateData grasp_state{};
+  ToFSnapshotData tof_snapshot{};
 };
 
 // ── Per-device name + URDF configuration ─────────────────────────────────────
@@ -258,6 +279,8 @@ enum class PublishRole {
   kDigitalTwinState,   // sensor_msgs/JointState (RELIABLE republish for digital twin)
   // Grasp State
   kGraspState,         // rtc_msgs/GraspState (BT coordinator용 grasp 상태)
+  // ToF Snapshot
+  kToFSnapshot,        // shape_estimation_msgs/ToFSnapshot (ToF + fingertip SE3)
 };
 
 struct SubscribeTopicEntry {
@@ -354,6 +377,7 @@ struct TopicConfig {
     case PublishRole::kDeviceSensorLog: return "device_sensor_log";
     case PublishRole::kDigitalTwinState: return "digital_twin_state";
     case PublishRole::kGraspState:      return "grasp_state";
+    case PublishRole::kToFSnapshot:    return "tof_snapshot";
   }
   return "unknown";
 }
