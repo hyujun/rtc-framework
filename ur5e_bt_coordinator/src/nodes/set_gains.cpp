@@ -37,18 +37,62 @@ BT::NodeStatus SetGains::tick()
 {
   // If full_gains provided, use it directly
   auto full = getInput<std::vector<double>>("full_gains");
-  if (full && full->size() >= 10) {
+  if (full && full->size() >= 4) {
     RCLCPP_INFO(logger(), "[SetGains] publishing full_gains (%zu values)", full->size());
     bridge_->PublishGains(full.value());
     return BT::NodeStatus::SUCCESS;
   }
 
-  // Build partial gains: DemoTaskController layout (16 values)
-  // Start with defaults that preserve current behavior
+  const auto active = bridge_->GetActiveController();
+  const bool is_joint = (active == "DemoJointController" ||
+                         active == "demo_joint_controller");
+
+  if (is_joint) {
+    return BuildDemoJointGains();
+  }
+  return BuildDemoTaskGains();
+}
+
+BT::NodeStatus SetGains::BuildDemoJointGains()
+{
+  // DemoJointController layout (7 values):
+  // [robot_trajectory_speed, hand_trajectory_speed,
+  //  robot_max_traj_velocity, hand_max_traj_velocity,
+  //  grasp_contact_threshold, grasp_force_threshold,
+  //  grasp_min_fingertips]
+  std::vector<double> gains = {
+    0.1,    // robot_trajectory_speed
+    3.14,   // hand_trajectory_speed
+    0.5,    // robot_max_traj_velocity
+    6.28,   // hand_max_traj_velocity
+  };
+
+  auto ts = getInput<double>("trajectory_speed");
+  if (ts) gains[0] = ts.value();
+
+  auto hts = getInput<double>("hand_trajectory_speed");
+  if (hts) gains[1] = hts.value();
+
+  auto mtv = getInput<double>("max_traj_velocity");
+  if (mtv) gains[2] = mtv.value();
+
+  auto hmtv = getInput<double>("hand_max_traj_velocity");
+  if (hmtv) gains[3] = hmtv.value();
+
+  RCLCPP_INFO(logger(),
+              "[SetGains] DemoJoint: robot_speed=%.2f hand_speed=%.2f "
+              "max_vel=%.2f hand_max_vel=%.2f",
+              gains[0], gains[1], gains[2], gains[3]);
+  bridge_->PublishGains(gains);
+  return BT::NodeStatus::SUCCESS;
+}
+
+BT::NodeStatus SetGains::BuildDemoTaskGains()
+{
+  // DemoTaskController layout (16 values):
   // [kp_t×3, kp_r×3, damping, null_kp, en_null, en_6dof,
   //  traj_speed, traj_ang_speed, hand_traj_speed,
   //  max_traj_vel, max_traj_ang_vel, hand_max_traj_vel]
-  // Defaults must match demo_task_controller.yaml to avoid silent gain resets
   std::vector<double> gains = {
     40.0, 40.0, 40.0,   // kp_translation
     20.0, 20.0, 20.0,   // kp_rotation
@@ -111,7 +155,7 @@ BT::NodeStatus SetGains::tick()
   if (hmtv) gains[15] = hmtv.value();
 
   RCLCPP_INFO(logger(),
-              "[SetGains] kp_t=[%.1f,%.1f,%.1f] kp_r=[%.1f,%.1f,%.1f] "
+              "[SetGains] DemoTask: kp_t=[%.1f,%.1f,%.1f] kp_r=[%.1f,%.1f,%.1f] "
               "traj_speed=%.2f hand_speed=%.2f",
               gains[0], gains[1], gains[2], gains[3], gains[4], gains[5],
               gains[10], gains[12]);
