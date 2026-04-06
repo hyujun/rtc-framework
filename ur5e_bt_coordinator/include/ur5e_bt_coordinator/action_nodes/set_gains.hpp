@@ -11,29 +11,36 @@ namespace rtc_bt {
 
 /// Publish a gain update to the active controller.
 ///
-/// Gain layout (16 values for DemoTaskController):
+/// Automatically detects the active controller and builds the appropriate
+/// gain layout:
+///
+/// DemoTaskController (16 values):
 ///   [kp_translation×3, kp_rotation×3, damping, null_kp,
 ///    enable_null_space(0/1), control_6dof(0/1),
 ///    trajectory_speed, trajectory_angular_speed,
 ///    hand_trajectory_speed, max_traj_velocity,
 ///    max_traj_angular_velocity, hand_max_traj_velocity]
 ///
-/// This node allows setting individual fields; unset fields keep current values.
+/// DemoJointController (7 values):
+///   [robot_trajectory_speed, hand_trajectory_speed,
+///    robot_max_traj_velocity, hand_max_traj_velocity,
+///    grasp_contact_threshold, grasp_force_threshold,
+///    grasp_min_fingertips]
 ///
 /// Input ports:
-///   - kp_translation (string): "5.0,5.0,5.0" (optional)
-///   - kp_rotation (string): "3.0,3.0,3.0" (optional)
-///   - damping (double): damping ratio (optional, default 0.01)
-///   - null_kp (double): null-space stiffness (optional, default 0.5)
-///   - enable_null_space (bool): enable null-space control (optional, default false)
-///   - control_6dof (bool): enable 6-DoF control (optional, default true)
+///   - kp_translation (string): "5.0,5.0,5.0" (DemoTask only, optional)
+///   - kp_rotation (string): "3.0,3.0,3.0" (DemoTask only, optional)
+///   - damping (double): damping ratio (DemoTask only, optional, default 0.01)
+///   - null_kp (double): null-space stiffness (DemoTask only, optional, default 0.5)
+///   - enable_null_space (bool): enable null-space control (DemoTask only, optional)
+///   - control_6dof (bool): enable 6-DoF control (DemoTask only, optional)
 ///   - trajectory_speed (double): [m/s] (optional)
-///   - trajectory_angular_speed (double): [rad/s] (optional)
+///   - trajectory_angular_speed (double): [rad/s] (DemoTask only, optional)
 ///   - max_traj_velocity (double): [m/s] (optional)
-///   - max_traj_angular_velocity (double): [rad/s] (optional)
+///   - max_traj_angular_velocity (double): [rad/s] (DemoTask only, optional)
 ///   - hand_trajectory_speed (double): [rad/s] (optional)
 ///   - hand_max_traj_velocity (double): [rad/s] (optional)
-///   - full_gains (vector<double>): complete 16-element array (optional, overrides all)
+///   - full_gains (vector<double>): complete gain array (optional, overrides all)
 class SetGains : public BT::SyncActionNode {
 public:
   SetGains(const std::string& name, const BT::NodeConfig& config,
@@ -44,6 +51,9 @@ public:
   BT::NodeStatus tick() override;
 
 private:
+  BT::NodeStatus BuildDemoJointGains();
+  BT::NodeStatus BuildDemoTaskGains();
+
   std::shared_ptr<BtRosBridge> bridge_;
 };
 
