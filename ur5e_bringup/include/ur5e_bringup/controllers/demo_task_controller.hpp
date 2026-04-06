@@ -98,6 +98,7 @@ public:
     // Virtual TCP (fingertip-based control point)
     VirtualTcpMode virtual_tcp_mode{VirtualTcpMode::kDisabled};
     std::array<double, 3> virtual_tcp_offset{{0.0, 0.0, 0.0}};  ///< Constant mode: [x,y,z] in TCP frame [m]
+    std::array<double, 3> virtual_tcp_orientation{{0.0, 0.0, 0.0}};  ///< RPY [rad] orientation of vtcp in TCP frame
 
     // Grasp detection parameters
     float grasp_contact_threshold{0.5f};      ///< Contact probability threshold (0.0~1.0)

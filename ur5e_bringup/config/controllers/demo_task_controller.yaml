@@ -30,6 +30,7 @@ demo_task_controller:
   # Mode: "disabled" (default), "centroid", "weighted", "constant"
   virtual_tcp_mode: "centroid"
   virtual_tcp_offset: [0.0, 0.0, 0.1]   # constant mode: [x, y, z] in TCP frame [m]
+  virtual_tcp_orientation: [-3.14159, 1.5708, 0.0]  # RPY [rad] orientation of vtcp in TCP frame
 
   # ── Grasp detection ─────────────────────────────────────────────────────────
   grasp_contact_threshold: 0.5   # Contact probability threshold (0.0~1.0)
