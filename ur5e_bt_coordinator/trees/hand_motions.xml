@@ -1,5 +1,5 @@
 <!-- file: trees/hand_motions.xml -->
-<!-- UR5e + 10-DoF Hand Demo: Opposition + FlexExtend Wave -->
+<!-- UR5e + 10-DoF Hand Demo: Opposition + FlexExtend Wave (with articulation) -->
 <!-- BehaviorTree.CPP v4 syntax -->
 <!-- 가감속은 SetGains hand_trajectory_speed로 제어, -->
 <!-- 노드 완료는 RT 컨트롤러 trajectory duration 추정 기반 -->
@@ -124,22 +124,34 @@
 
   <!-- ================================================================== -->
   <!-- WaveDemo: 가감속 Flexion/Extension Wave (Phase 1→2→3)               -->
+  <!--   관절별 articulation (thumb_mcp, index_dip, middle_dip) 포함        -->
+  <!--   공통 변수: num_cycles, hand_init_speed, hand_max_speed             -->
   <!--   가감속은 SetGains hand_trajectory_speed로 RT 컨트롤러와 동기화     -->
   <!-- ================================================================== -->
   <BehaviorTree ID="WaveDemo">
     <Sequence>
 
-      <!-- 초기값 설정 -->
-      <Script code="hand_speed := 0.5; hand_max_vel := 2.0"/>
+      <!-- 공통 변수 설정 (여기서 한 번만 변경하면 전체 적용) -->
+      <Script code="num_cycles := 4; hand_init_speed := 0.7854; hand_max_speed := 3.1415; hand_max_vel := 6.2832"/>
+      <Script code="hand_speed := hand_init_speed"/>
 
-      <!-- ── Phase 1: 순차, 점점 빠르게 (3회) ── -->
-      <SetGains hand_trajectory_speed="0.5"/>
-      <Repeat num_cycles="3">
+      <!-- ── Phase 1: 순차, 점점 빠르게 ── -->
+      <SetGains hand_trajectory_speed="{hand_init_speed}"/>
+      <Repeat num_cycles="{num_cycles}">
         <Sequence name="AcceleratingWave">
+          <FlexExtendFinger finger_name="thumb_mcp"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
           <FlexExtendFinger finger_name="thumb"
                             hand_trajectory_speed="{hand_speed}"
                             hand_max_traj_velocity="{hand_max_vel}"/>
+          <FlexExtendFinger finger_name="index_dip"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
           <FlexExtendFinger finger_name="index"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
+          <FlexExtendFinger finger_name="middle_dip"
                             hand_trajectory_speed="{hand_speed}"
                             hand_max_traj_velocity="{hand_max_vel}"/>
           <FlexExtendFinger finger_name="middle"
@@ -148,25 +160,34 @@
           <FlexExtendFinger finger_name="ring"
                             hand_trajectory_speed="{hand_speed}"
                             hand_max_traj_velocity="{hand_max_vel}"/>
-          <!-- 가속: speed × 1.42857, 최대 3.0 -->
+          <!-- 가속: speed × 1.42857, 최대 hand_max_speed -->
           <Script code="hand_speed := hand_speed * 1.42857"/>
           <Fallback>
-            <Precondition if="hand_speed &lt;= 3.0" else="FAILURE">
+            <Precondition if="hand_speed &lt;= hand_max_speed" else="FAILURE">
               <AlwaysSuccess/>
             </Precondition>
-            <Script code="hand_speed := 3.0"/>
+            <Script code="hand_speed := hand_max_speed"/>
           </Fallback>
           <SetGains hand_trajectory_speed="{hand_speed}"/>
         </Sequence>
       </Repeat>
 
-      <!-- ── Phase 2: 동시, 최고 속도 (3회) ── -->
-      <Repeat num_cycles="3">
-        <Parallel success_count="4" failure_count="1" name="SimultaneousFastWave">
+      <!-- ── Phase 2: 동시, 최고 속도 ── -->
+      <Repeat num_cycles="{num_cycles}">
+        <Parallel success_count="7" failure_count="1" name="SimultaneousFastWave">
+          <FlexExtendFinger finger_name="thumb_mcp"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
           <FlexExtendFinger finger_name="thumb"
                             hand_trajectory_speed="{hand_speed}"
                             hand_max_traj_velocity="{hand_max_vel}"/>
+          <FlexExtendFinger finger_name="index_dip"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
           <FlexExtendFinger finger_name="index"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
+          <FlexExtendFinger finger_name="middle_dip"
                             hand_trajectory_speed="{hand_speed}"
                             hand_max_traj_velocity="{hand_max_vel}"/>
           <FlexExtendFinger finger_name="middle"
@@ -178,13 +199,22 @@
         </Parallel>
       </Repeat>
 
-      <!-- ── Phase 3: 순차, 점점 느려짐 (3회) ── -->
-      <Repeat num_cycles="3">
+      <!-- ── Phase 3: 순차, 점점 느려짐 ── -->
+      <Repeat num_cycles="{num_cycles}">
         <Sequence name="DeceleratingWave">
+          <FlexExtendFinger finger_name="thumb_mcp"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
           <FlexExtendFinger finger_name="thumb"
                             hand_trajectory_speed="{hand_speed}"
                             hand_max_traj_velocity="{hand_max_vel}"/>
+          <FlexExtendFinger finger_name="index_dip"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
           <FlexExtendFinger finger_name="index"
+                            hand_trajectory_speed="{hand_speed}"
+                            hand_max_traj_velocity="{hand_max_vel}"/>
+          <FlexExtendFinger finger_name="middle_dip"
                             hand_trajectory_speed="{hand_speed}"
                             hand_max_traj_velocity="{hand_max_vel}"/>
           <FlexExtendFinger finger_name="middle"
@@ -193,13 +223,13 @@
           <FlexExtendFinger finger_name="ring"
                             hand_trajectory_speed="{hand_speed}"
                             hand_max_traj_velocity="{hand_max_vel}"/>
-          <!-- 감속: speed × 0.7, 최소 0.5 -->
+          <!-- 감속: speed × 0.7, 최소 hand_init_speed -->
           <Script code="hand_speed := hand_speed * 0.7"/>
           <Fallback>
-            <Precondition if="hand_speed >= 0.5" else="FAILURE">
+            <Precondition if="hand_speed >= hand_init_speed" else="FAILURE">
               <AlwaysSuccess/>
             </Precondition>
-            <Script code="hand_speed := 0.5"/>
+            <Script code="hand_speed := hand_init_speed"/>
           </Fallback>
           <SetGains hand_trajectory_speed="{hand_speed}"/>
         </Sequence>
@@ -208,31 +238,6 @@
       <!-- 기본 속도 복원 -->
       <SetGains hand_trajectory_speed="1.0"/>
 
-    </Sequence>
-  </BehaviorTree>
-
-  <!-- ================================================================== -->
-  <!-- FingerArticulationDemo: 관절별 flex/extend 순차 시연                 -->
-  <!--   thumb MCP f/e → index DIP f/e → index full f/e →                  -->
-  <!--   middle DIP f/e → middle full f/e                                  -->
-  <!-- ================================================================== -->
-  <BehaviorTree ID="FingerArticulationDemo">
-    <Sequence>
-      <FlexExtendFinger finger_name="thumb_mcp"
-                        hand_trajectory_speed="{hand_speed}"
-                        hand_max_traj_velocity="{hand_max_vel}"/>
-      <FlexExtendFinger finger_name="index_dip"
-                        hand_trajectory_speed="{hand_speed}"
-                        hand_max_traj_velocity="{hand_max_vel}"/>
-      <FlexExtendFinger finger_name="index"
-                        hand_trajectory_speed="{hand_speed}"
-                        hand_max_traj_velocity="{hand_max_vel}"/>
-      <FlexExtendFinger finger_name="middle_dip"
-                        hand_trajectory_speed="{hand_speed}"
-                        hand_max_traj_velocity="{hand_max_vel}"/>
-      <FlexExtendFinger finger_name="middle"
-                        hand_trajectory_speed="{hand_speed}"
-                        hand_max_traj_velocity="{hand_max_vel}"/>
     </Sequence>
   </BehaviorTree>
 
@@ -248,11 +253,8 @@
 
       <!-- Hand: Opposition → FingerArticulation → Wave 순차 실행 -->
       <Sequence name="HandDemoSequence">
-        <Script code="hand_speed := 1.0; hand_max_vel := 2.0"/>
+        <Script code="hand_speed := 0.7854; hand_max_vel := 3.1415"/>
         <SubTree ID="OppositionDemo"/>
-        <SubTree ID="FingerArticulationDemo"
-                 hand_speed="{hand_speed}"
-                 hand_max_vel="{hand_max_vel}"/>
         <SubTree ID="WaveDemo"/>
       </Sequence>
     </Parallel>
