@@ -248,6 +248,51 @@ bool MuJoCoSimulator::ValidateAndMapStateJoints() noexcept {
   return true;
 }
 
+// ── XML sensor discovery (always logged) ──────────────────────────────────────
+
+void MuJoCoSimulator::LogAllXmlSensors() const noexcept {
+  if (!model_ || model_->nsensor <= 0) {
+    fprintf(stdout, "[MuJoCoSimulator] XML sensors: none\n");
+    return;
+  }
+
+  fprintf(stdout, "[MuJoCoSimulator] XML sensors found (%d):\n", model_->nsensor);
+  for (int i = 0; i < model_->nsensor; ++i) {
+    const char* name = mj_id2name(model_, mjOBJ_SENSOR, i);
+    const int   type = model_->sensor_type[i];
+    const int   dim  = model_->sensor_dim[i];
+    const int   adr  = model_->sensor_adr[i];
+    const int   objtype = model_->sensor_objtype[i];
+    const int   objid   = model_->sensor_objid[i];
+
+    // Resolve attached object name (site, body, joint, etc.)
+    const char* obj_name = nullptr;
+    if (objid >= 0 && objtype > 0) {
+      obj_name = mj_id2name(model_, objtype, objid);
+    }
+
+    fprintf(stdout,
+            "  [%d] \"%s\"  type=%d  dim=%d  adr=%d  obj=%s\n",
+            i,
+            name ? name : "(unnamed)",
+            type, dim, adr,
+            obj_name ? obj_name : "(none)");
+  }
+}
+
+std::vector<std::string> MuJoCoSimulator::CollectAllXmlSensorNames() const noexcept {
+  std::vector<std::string> names;
+  if (!model_) return names;
+  names.reserve(static_cast<std::size_t>(model_->nsensor));
+  for (int i = 0; i < model_->nsensor; ++i) {
+    const char* name = mj_id2name(model_, mjOBJ_SENSOR, i);
+    if (name) {
+      names.emplace_back(name);
+    }
+  }
+  return names;
+}
+
 // ── Sensor name → MuJoCo index mapping ────────────────────────────────────────
 
 void MuJoCoSimulator::MapSensorInfos(
@@ -428,10 +473,28 @@ bool MuJoCoSimulator::Initialize() noexcept {
     return false;
   }
 
+  // ── Log all XML sensors (always, regardless of YAML config) ─────────
+  LogAllXmlSensors();
+
   // ── Map sensor infos per group ─────────────────────────────────────────
   for (std::size_t gi = 0; gi < groups_.size(); ++gi) {
     const auto& gc = cfg_.groups[gi];
-    if (!gc.sensor_names.empty()) {
+    if (gc.sensor_names.empty()) continue;
+
+    // "auto" keyword: map ALL XML sensors to this group
+    if (gc.sensor_names.size() == 1 && gc.sensor_names[0] == "auto") {
+      auto all_names = CollectAllXmlSensorNames();
+      if (all_names.empty()) {
+        fprintf(stdout,
+                "[MuJoCoSimulator] [%s] sensor_names='auto' but no sensors in XML\n",
+                gc.name.c_str());
+      } else {
+        fprintf(stdout,
+                "[MuJoCoSimulator] [%s] sensor_names='auto' → mapping all %zu XML sensors\n",
+                gc.name.c_str(), all_names.size());
+        MapSensorInfos(*groups_[gi], all_names);
+      }
+    } else {
       MapSensorInfos(*groups_[gi], gc.sensor_names);
     }
   }
