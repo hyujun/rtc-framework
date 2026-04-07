@@ -154,7 +154,7 @@ ControllerOutput ClikController::Compute(
   }
 
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
-  auto traj_state = trajectory_.compute(trajectory_time_);
+  auto traj_state = trajectory_.compute(trajectory_time_, dt);
   trajectory_time_ += dt;
 
   tcp_position_ = {tcp[0], tcp[1], tcp[2]};

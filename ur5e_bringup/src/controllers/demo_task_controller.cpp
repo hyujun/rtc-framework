@@ -392,7 +392,10 @@ void DemoTaskController::ComputeControl(
         goal_pose.translation() = Eigen::Vector3d(tcp_target_[0], tcp_target_[1], tcp_target_[2]);
       }
 
-      const double trans_dist = (goal_pose.translation() - start_pose.translation()).norm();
+      const Eigen::Vector3d start_pos = start_pose.translation();
+      const Eigen::Vector3d goal_pos = goal_pose.translation();
+      const double trans_dist = (goal_pos - start_pos).norm();
+
       // Duration from translational trajectory_speed and velocity limit.
       // Quintic rest-to-rest peak velocity = (15/8) * dist / T.
       const double T_speed_trans = trans_dist / gains_.trajectory_speed;
@@ -401,27 +404,79 @@ void DemoTaskController::ComputeControl(
           : 0.0;
       double duration = std::max({0.01, T_speed_trans, T_vel_trans});
 
+      // Angular distance via AngleAxisd (stable at θ → π, unlike log3)
+      constexpr double kPiSafetyMargin = 0.15;  // rad ≈ 8.6°
+      double angular_dist = 0.0;
+      Eigen::Vector3d rot_axis = Eigen::Vector3d::UnitZ();  // fallback
+      bool split_trajectory = false;
+
       if (gains_.control_6dof) {
-        double angular_dist = pinocchio::log3(start_pose.rotation().transpose() *
-            goal_pose.rotation()).norm();
+        const Eigen::AngleAxisd aa(
+            start_pose.rotation().transpose() * goal_pose.rotation());
+        angular_dist = aa.angle();       // always in [0, π]
+        rot_axis = aa.axis();
+
         const double T_speed_rot = angular_dist / gains_.trajectory_angular_speed;
         const double T_vel_rot = (gains_.max_traj_angular_velocity > 0.0)
             ? (1.875 * angular_dist / gains_.max_traj_angular_velocity)
             : 0.0;
         duration = std::max({duration, T_speed_rot, T_vel_rot});
+
+        split_trajectory = (angular_dist > M_PI - kPiSafetyMargin);
       }
 
-      trajectory_.initialize(start_pose, pinocchio::Motion::Zero(),
-                             goal_pose, pinocchio::Motion::Zero(),
-                             duration);
+      if (split_trajectory) {
+        // ── π-rotation defense: split into 2 rest-to-rest segments ──
+        const double half_angle = angular_dist * 0.5;
+        const Eigen::Matrix3d R_mid = start_pose.rotation() *
+            Eigen::AngleAxisd(half_angle, rot_axis).toRotationMatrix();
+
+        pinocchio::SE3 mid_pose;
+        mid_pose.translation() = 0.5 * (start_pos + goal_pos);
+        mid_pose.rotation() = R_mid;
+
+        // Segment 1: start → mid (half distances)
+        const double half_trans = trans_dist * 0.5;
+        const double T1_speed_t = half_trans / gains_.trajectory_speed;
+        const double T1_vel_t = (gains_.max_traj_velocity > 0.0)
+            ? (1.875 * half_trans / gains_.max_traj_velocity) : 0.0;
+        const double T1_speed_r = half_angle / gains_.trajectory_angular_speed;
+        const double T1_vel_r = (gains_.max_traj_angular_velocity > 0.0)
+            ? (1.875 * half_angle / gains_.max_traj_angular_velocity) : 0.0;
+        const double dur1 = std::max({0.01, T1_speed_t, T1_vel_t, T1_speed_r, T1_vel_r});
+
+        // Segment 2: mid → goal (same half distances for symmetric split)
+        const double dur2 = dur1;
+
+        trajectory_.initialize(start_pose, pinocchio::Motion::Zero(),
+                               mid_pose, pinocchio::Motion::Zero(), dur1);
+        pending_goal_pose_ = goal_pose;
+        pending_duration_ = dur2;
+        has_pending_segment_ = true;
+      } else {
+        trajectory_.initialize(start_pose, pinocchio::Motion::Zero(),
+                               goal_pose, pinocchio::Motion::Zero(),
+                               duration);
+        has_pending_segment_ = false;
+      }
 
       trajectory_time_ = 0.0;
       new_target_.store(false, std::memory_order_relaxed);
     }
   }
 
-  traj_state_ = trajectory_.compute(trajectory_time_);
+  traj_state_ = trajectory_.compute(trajectory_time_, dt);
   trajectory_time_ += dt;
+
+  // ── Segment transition (π-rotation defense) ────────────────────────────
+  if (has_pending_segment_ && trajectory_time_ >= trajectory_.duration()) {
+    pinocchio::SE3 mid_pose = trajectory_.compute(trajectory_.duration()).pose;
+    trajectory_.initialize(mid_pose, pinocchio::Motion::Zero(),
+                           pending_goal_pose_, pinocchio::Motion::Zero(),
+                           pending_duration_);
+    trajectory_time_ = 0.0;
+    has_pending_segment_ = false;
+  }
 
   // ── Cartesian error ────────────────────────────────────────────────────
   pinocchio::SE3 T_current_desired = control_pose.actInv(traj_state_.pose);
@@ -436,7 +491,8 @@ void DemoTaskController::ComputeControl(
     r_err = twist_error.angular();
   } else {
     // Default: world-aligned frame (matches LOCAL_WORLD_ALIGNED Jacobian)
-    p_err = traj_state_.pose.translation() - ctrl_pos;
+    // Use log6 for both linear and angular to preserve position-rotation coupling (V⁻¹p)
+    p_err = control_pose.rotation() * twist_error.linear();
     r_err = control_pose.rotation() * twist_error.angular();
   }
 
@@ -467,8 +523,8 @@ void DemoTaskController::ComputeControl(
       task_vel_6d.head<3>() += traj_state_.velocity.linear();
       task_vel_6d.tail<3>() += traj_state_.velocity.angular();
     } else {
-      // Default: world-aligned feedforward
-      task_vel_6d.head<3>() += traj_state_.velocity.linear();
+      // Default: world-aligned feedforward (local → world via R_current)
+      task_vel_6d.head<3>() += control_pose.rotation() * traj_state_.velocity.linear();
       task_vel_6d.tail<3>() += control_pose.rotation() * traj_state_.velocity.angular();
     }
 
@@ -481,24 +537,31 @@ void DemoTaskController::ComputeControl(
     Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
 
     Eigen::Vector3d kp_vec(gains_.kp_translation[0], gains_.kp_translation[1], gains_.kp_translation[2]);
-    // In both vtcp and world frame cases, traj_state_.velocity.linear() is already
-    // consistent with the error frame (local for vtcp, world-aligned for default)
-    Eigen::Vector3d task_vel = kp_vec.cwiseProduct(pos_error_) + traj_state_.velocity.linear();
+    // Feedforward: local frame velocity → world-aligned via R_current
+    // (vtcp case uses pos_error_ from log6 local frame directly, matching vtcp-frame Jacobian)
+    Eigen::Vector3d ff_vel = use_vtcp_frame
+        ? Eigen::Vector3d(traj_state_.velocity.linear())
+        : Eigen::Vector3d(control_pose.rotation() * traj_state_.velocity.linear());
+    Eigen::Vector3d task_vel = kp_vec.cwiseProduct(pos_error_) + ff_vel;
     dq_.noalias() = Jpinv_ * task_vel;
   }
 
   // ── Feedforward-only trajectory velocity (for logging) ────────────────
   if (gains_.control_6dof) {
     Eigen::Matrix<double, 6, 1> ff_vel_6d;
-    ff_vel_6d.head<3>() = traj_state_.velocity.linear();
     if (use_vtcp_frame) {
+      ff_vel_6d.head<3>() = traj_state_.velocity.linear();
       ff_vel_6d.tail<3>() = traj_state_.velocity.angular();
     } else {
+      ff_vel_6d.head<3>() = control_pose.rotation() * traj_state_.velocity.linear();
       ff_vel_6d.tail<3>() = control_pose.rotation() * traj_state_.velocity.angular();
     }
     traj_dq_.noalias() = Jpinv_6d_ * ff_vel_6d;
   } else {
-    traj_dq_.noalias() = Jpinv_ * traj_state_.velocity.linear();
+    Eigen::Vector3d ff_lin = use_vtcp_frame
+        ? Eigen::Vector3d(traj_state_.velocity.linear())
+        : Eigen::Vector3d(control_pose.rotation() * traj_state_.velocity.linear());
+    traj_dq_.noalias() = Jpinv_ * ff_lin;
   }
 
   // ── Null-space secondary task ──────────────────────────────────────────
@@ -849,6 +912,7 @@ void DemoTaskController::InitializeHoldPosition(
   trajectory_.initialize(hold_pose, pinocchio::Motion::Zero(),
                          hold_pose, pinocchio::Motion::Zero(), 0.01);
   trajectory_time_ = 0.0;
+  has_pending_segment_ = false;
 
   for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
     const auto & dev = state.devices[d];

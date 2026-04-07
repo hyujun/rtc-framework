@@ -129,7 +129,7 @@ ControllerOutput OperationalSpaceController::Compute(
     }
   }
 
-  const auto traj_state = trajectory_.compute(trajectory_time_);
+  const auto traj_state = trajectory_.compute(trajectory_time_, dt);
   trajectory_time_ += dt;
 
   // ── Step 4: 6D pose error w.r.t. trajectory setpoint ─────────────────────

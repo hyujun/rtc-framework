@@ -34,6 +34,7 @@ public:
   TaskSpaceTrajectory()
   {
     pose_start_.setIdentity();
+    Jexp_prev_.setZero();
   }
 
   void initialize(
@@ -45,6 +46,7 @@ public:
   {
     duration_ = duration;
     pose_start_ = start_pose;
+    has_prev_Jexp_ = false;
 
     // We wish to interpolate in the tangent space of start_pose.
     // Let delta_X = log6(start_pose^-1 * goal_pose) -> a 6D vector (linear, angular)
@@ -70,7 +72,11 @@ public:
     }
   }
 
-  State compute(double time) const
+  /// @param time  Trajectory time [s]
+  /// @param dt    Control period [s] for dJexp/dt numerical differentiation.
+  ///              If <= 0 or on the first tick after initialize(), the dJexp/dt
+  ///              term is omitted (falls back to the Jexp*a approximation).
+  State compute(double time, double dt = 0.0)
   {
     State state;
     Eigen::Matrix<double, 6, 1> p;
@@ -96,8 +102,16 @@ public:
 
     state.velocity = pinocchio::Motion(Jexp * v);
 
-    // Approximate acceleration as Jexp * a + \dot{Jext} * v \approx Jexp * a
-    state.acceleration = pinocchio::Motion(Jexp * a);
+    // Acceleration: Jexp * a + dJexp/dt * v
+    // dJexp/dt is computed via finite difference from the previous tick.
+    if (has_prev_Jexp_ && dt > 0.0) {
+      Eigen::Matrix<double, 6, 6> Jexp_dot = (Jexp - Jexp_prev_) * (1.0 / dt);
+      state.acceleration = pinocchio::Motion(Jexp * a + Jexp_dot * v);
+    } else {
+      state.acceleration = pinocchio::Motion(Jexp * a);
+    }
+    Jexp_prev_ = Jexp;
+    has_prev_Jexp_ = true;
 
     return state;
   }
@@ -108,6 +122,10 @@ private:
   std::array<QuinticPolynomial, 6> polynomials_;
   pinocchio::SE3 pose_start_;
   double duration_{0.0};
+
+  // dJexp/dt numerical differentiation state
+  Eigen::Matrix<double, 6, 6> Jexp_prev_;
+  bool has_prev_Jexp_{false};
 };
 
 }  // namespace trajectory

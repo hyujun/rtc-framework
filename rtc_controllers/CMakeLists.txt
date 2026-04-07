@@ -98,6 +98,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_task_space_spline_trajectory test/test_task_space_spline_trajectory.cpp)
   target_link_libraries(test_task_space_spline_trajectory rtc_controllers)
+
+  ament_add_gtest(test_task_space_trajectory test/test_task_space_trajectory.cpp)
+  target_link_libraries(test_task_space_trajectory rtc_controllers)
 endif()
 
 ament_package()

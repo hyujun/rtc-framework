@@ -248,6 +248,11 @@ private:
   trajectory::TaskSpaceTrajectory trajectory_;
   trajectory::TaskSpaceTrajectory::State traj_state_{};
   double trajectory_time_{0.0};
+
+  // ── Multi-segment trajectory (π-rotation defense) ──────────────
+  pinocchio::SE3 pending_goal_pose_{pinocchio::SE3::Identity()};
+  double pending_duration_{0.0};
+  bool has_pending_segment_{false};
   trajectory::JointSpaceTrajectory<kNumHandMotors> hand_trajectory_;
   double hand_trajectory_time_{0.0};
   std::atomic<bool> hand_new_target_{false};
