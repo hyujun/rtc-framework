@@ -19,6 +19,50 @@
 
 namespace rtc {
 
+// ── SolverConfig ─────────────────────────────────────────────────────────────
+// MuJoCo constraint solver parameters loaded from YAML (solver_param.yaml).
+// XML <option> 속성이 명시적으로 설정된 경우 XML 값이 우선됩니다.
+
+struct SolverConfig {
+  // Algorithm selection
+  std::string solver{"Newton"};         // "PGS", "CG", "Newton"
+  std::string cone{"pyramidal"};        // "pyramidal", "elliptic"
+  std::string jacobian{"auto"};         // "dense", "sparse", "auto"
+  std::string integrator{"Euler"};      // "Euler", "RK4", "implicit", "implicitfast"
+
+  // Iteration parameters
+  int    iterations{100};
+  double tolerance{1e-8};
+  int    ls_iterations{50};
+  double ls_tolerance{0.01};
+  int    noslip_iterations{0};
+  double noslip_tolerance{1e-6};
+  int    ccd_iterations{50};
+  double ccd_tolerance{1e-6};
+  int    sdf_iterations{10};
+  int    sdf_initpoints{40};
+
+  // Physics
+  double impratio{1.0};
+
+  // Flags
+  bool warmstart{true};
+  bool refsafe{true};
+  bool island{false};
+  bool eulerdamp{true};
+  bool filterparent{true};
+
+  // Contact override
+  struct ContactOverride {
+    bool   enable{false};
+    double o_margin{0.0};
+    std::array<double, 2> o_solref{0.02, 1.0};
+    std::array<double, 5> o_solimp{0.9, 0.95, 0.001, 0.5, 2.0};
+    std::array<double, 5> o_friction{1.0, 1.0, 0.005, 0.0001, 0.0001};
+  };
+  ContactOverride contact_override;
+};
+
 // ── JointGroupConfig ─────────────────────────────────────────────────────────
 // Per-group configuration loaded from YAML (robot_response / fake_response).
 
@@ -162,6 +206,9 @@ class MuJoCoSimulator {
     std::vector<double> servo_kp{500.0, 500.0, 500.0, 150.0, 150.0, 150.0};
     std::vector<double> servo_kd{400.0, 400.0, 400.0, 100.0, 100.0, 100.0};
 
+    // Solver 설정 (solver_param.yaml, XML 우선)
+    SolverConfig solver_config;
+
     // 멀티 그룹 설정 (robot_response + fake_response)
     std::vector<JointGroupConfig> groups;
   };
@@ -286,6 +333,28 @@ class MuJoCoSimulator {
     return contacts_enabled_.load(std::memory_order_relaxed);
   }
 
+  void SetCone(int cone) noexcept {
+    solver_cone_.store(cone, std::memory_order_relaxed);
+  }
+  [[nodiscard]] int GetCone() const noexcept {
+    return solver_cone_.load(std::memory_order_relaxed);
+  }
+
+  void SetImpratio(double ratio) noexcept {
+    solver_impratio_.store(ratio < 0.0 ? 1.0 : ratio, std::memory_order_relaxed);
+  }
+  [[nodiscard]] double GetImpratio() const noexcept {
+    return solver_impratio_.load(std::memory_order_relaxed);
+  }
+
+  void SetNoslipIterations(int iters) noexcept {
+    solver_noslip_iterations_.store(
+        std::max(0, std::min(iters, 1000)), std::memory_order_relaxed);
+  }
+  [[nodiscard]] int GetNoslipIterations() const noexcept {
+    return solver_noslip_iterations_.load(std::memory_order_relaxed);
+  }
+
   // ── Physics controls (thread-safe) ────────────────────────────────────────
 
   void Pause()   noexcept { paused_.store(true,  std::memory_order_relaxed); }
@@ -373,12 +442,21 @@ class MuJoCoSimulator {
   std::atomic<bool>   gravity_enabled_{false};
   double              original_gravity_z_{-9.81};
 
-  // ── Physics solver atomics ────────────────────────────────────────────────
+  // ── Physics solver atomics (runtime-changeable via viewer/API) ─────────────
   std::atomic<int>    solver_integrator_{mjINT_EULER};
   std::atomic<int>    solver_type_{mjSOL_NEWTON};
   std::atomic<int>    solver_iterations_{100};
   std::atomic<double> solver_tolerance_{1e-8};
   std::atomic<bool>   contacts_enabled_{true};
+
+  // ── Physics solver atomics (additional, from solver_param.yaml) ───────────
+  std::atomic<int>    solver_cone_{mjCONE_PYRAMIDAL};
+  std::atomic<int>    solver_jacobian_{mjJAC_AUTO};
+  std::atomic<int>    solver_ls_iterations_{50};
+  std::atomic<double> solver_ls_tolerance_{0.01};
+  std::atomic<int>    solver_noslip_iterations_{0};
+  std::atomic<double> solver_noslip_tolerance_{1e-6};
+  std::atomic<double> solver_impratio_{1.0};
 
   // ── Solver statistics ─────────────────────────────────────────────────────
   mutable std::mutex solver_stats_mutex_;
@@ -448,6 +526,10 @@ class MuJoCoSimulator {
   // 그룹의 sensor_names를 XML 센서와 매핑
   void MapSensorInfos(JointGroup& group,
                       const std::vector<std::string>& sensor_names) noexcept;
+
+  // MJCF XML의 <option> 요소를 파싱하여 명시적으로 설정된 속성 이름 집합을 반환.
+  // XML에 없는 속성에 대해서만 SolverConfig(YAML) 값을 적용하기 위한 헬퍼.
+  void ApplySolverConfig() noexcept;
 
   void ApplyCommand() noexcept;
   void ReadState() noexcept;

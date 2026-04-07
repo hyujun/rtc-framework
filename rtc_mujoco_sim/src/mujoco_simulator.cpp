@@ -4,6 +4,8 @@
 // ──────────────────────────────────────────────────────────────────────────────
 #include "rtc_mujoco_sim/mujoco_simulator.hpp"
 
+#include <tinyxml2.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -348,11 +350,25 @@ bool MuJoCoSimulator::Initialize() noexcept {
 
   original_gravity_z_ = static_cast<double>(model_->opt.gravity[2]);
 
+  // Store XML solver defaults into atomics (may be overwritten by ApplySolverConfig)
   solver_integrator_.store(model_->opt.integrator, std::memory_order_relaxed);
   solver_type_.store(model_->opt.solver, std::memory_order_relaxed);
   solver_iterations_.store(model_->opt.iterations, std::memory_order_relaxed);
   solver_tolerance_.store(static_cast<double>(model_->opt.tolerance),
                           std::memory_order_relaxed);
+  solver_cone_.store(model_->opt.cone, std::memory_order_relaxed);
+  solver_jacobian_.store(model_->opt.jacobian, std::memory_order_relaxed);
+  solver_ls_iterations_.store(model_->opt.ls_iterations, std::memory_order_relaxed);
+  solver_ls_tolerance_.store(static_cast<double>(model_->opt.ls_tolerance),
+                             std::memory_order_relaxed);
+  solver_noslip_iterations_.store(model_->opt.noslip_iterations, std::memory_order_relaxed);
+  solver_noslip_tolerance_.store(static_cast<double>(model_->opt.noslip_tolerance),
+                                 std::memory_order_relaxed);
+  solver_impratio_.store(static_cast<double>(model_->opt.impratio),
+                         std::memory_order_relaxed);
+
+  // Apply YAML solver config with XML priority
+  ApplySolverConfig();
 
   viz_qpos_.assign(static_cast<std::size_t>(model_->nq), 0.0);
   ext_xfrc_.assign(static_cast<std::size_t>(model_->nbody) * 6, 0.0);
@@ -653,6 +669,247 @@ bool MuJoCoSimulator::Initialize() noexcept {
           xml_timestep_);
 
   return true;
+}
+
+// ── ApplySolverConfig ─────────────────────────────────────────────────────────
+// Parse the MJCF XML to detect which <option> attributes are explicitly set.
+// For attributes NOT present in XML, apply YAML (SolverConfig) values.
+// For attributes present in XML, keep the XML values (already in model_->opt).
+
+void MuJoCoSimulator::ApplySolverConfig() noexcept {
+  const auto& sc = cfg_.solver_config;
+
+  // ── Parse XML to find explicit <option> attributes ────────────────────────
+  std::set<std::string> xml_attrs;
+  {
+    tinyxml2::XMLDocument doc;
+    if (doc.LoadFile(cfg_.model_path.c_str()) == tinyxml2::XML_SUCCESS) {
+      const auto* root = doc.RootElement();
+      if (root) {
+        const auto* option = root->FirstChildElement("option");
+        if (option) {
+          for (const auto* attr = option->FirstAttribute();
+               attr != nullptr; attr = attr->Next()) {
+            xml_attrs.insert(attr->Name());
+          }
+        }
+      }
+    } else {
+      fprintf(stderr,
+              "[MuJoCoSimulator] WARNING: Could not re-parse XML for <option> detection, "
+              "using YAML solver config as fallback for all parameters\n");
+    }
+  }
+
+  // ── Helper: string → MuJoCo enum ─────────────────────────────────────────
+  auto parse_solver = [](const std::string& s) -> int {
+    if (s == "PGS")    return mjSOL_PGS;
+    if (s == "CG")     return mjSOL_CG;
+    if (s == "Newton")  return mjSOL_NEWTON;
+    return mjSOL_NEWTON;
+  };
+  auto parse_cone = [](const std::string& s) -> int {
+    if (s == "elliptic")  return mjCONE_ELLIPTIC;
+    if (s == "pyramidal") return mjCONE_PYRAMIDAL;
+    return mjCONE_PYRAMIDAL;
+  };
+  auto parse_jacobian = [](const std::string& s) -> int {
+    if (s == "dense")  return mjJAC_DENSE;
+    if (s == "sparse") return mjJAC_SPARSE;
+    if (s == "auto")   return mjJAC_AUTO;
+    return mjJAC_AUTO;
+  };
+  auto parse_integrator = [](const std::string& s) -> int {
+    if (s == "Euler")        return mjINT_EULER;
+    if (s == "RK4")          return mjINT_RK4;
+    if (s == "implicit")     return mjINT_IMPLICIT;
+    if (s == "implicitfast") return mjINT_IMPLICITFAST;
+    return mjINT_EULER;
+  };
+
+  // ── Apply YAML values where XML did not set them ──────────────────────────
+  // For each parameter: if the attribute name is NOT in xml_attrs, apply YAML.
+
+  if (!xml_attrs.count("solver")) {
+    const int v = parse_solver(sc.solver);
+    model_->opt.solver = v;
+    solver_type_.store(v, std::memory_order_relaxed);
+  }
+  if (!xml_attrs.count("cone")) {
+    const int v = parse_cone(sc.cone);
+    model_->opt.cone = v;
+    solver_cone_.store(v, std::memory_order_relaxed);
+  }
+  if (!xml_attrs.count("jacobian")) {
+    const int v = parse_jacobian(sc.jacobian);
+    model_->opt.jacobian = v;
+    solver_jacobian_.store(v, std::memory_order_relaxed);
+  }
+  if (!xml_attrs.count("integrator")) {
+    const int v = parse_integrator(sc.integrator);
+    model_->opt.integrator = static_cast<mjtIntegrator>(v);
+    solver_integrator_.store(v, std::memory_order_relaxed);
+  }
+  if (!xml_attrs.count("iterations")) {
+    model_->opt.iterations = sc.iterations;
+    solver_iterations_.store(sc.iterations, std::memory_order_relaxed);
+  }
+  if (!xml_attrs.count("tolerance")) {
+    model_->opt.tolerance = static_cast<mjtNum>(sc.tolerance);
+    solver_tolerance_.store(sc.tolerance, std::memory_order_relaxed);
+  }
+  if (!xml_attrs.count("ls_iterations")) {
+    model_->opt.ls_iterations = sc.ls_iterations;
+    solver_ls_iterations_.store(sc.ls_iterations, std::memory_order_relaxed);
+  }
+  if (!xml_attrs.count("ls_tolerance")) {
+    model_->opt.ls_tolerance = static_cast<mjtNum>(sc.ls_tolerance);
+    solver_ls_tolerance_.store(sc.ls_tolerance, std::memory_order_relaxed);
+  }
+  if (!xml_attrs.count("noslip_iterations")) {
+    model_->opt.noslip_iterations = sc.noslip_iterations;
+    solver_noslip_iterations_.store(sc.noslip_iterations, std::memory_order_relaxed);
+  }
+  if (!xml_attrs.count("noslip_tolerance")) {
+    model_->opt.noslip_tolerance = static_cast<mjtNum>(sc.noslip_tolerance);
+    solver_noslip_tolerance_.store(sc.noslip_tolerance, std::memory_order_relaxed);
+  }
+  // MuJoCo version compatibility: ccd_iterations/ccd_tolerance (>=3.2.0, version 320+)
+  // vs mpr_iterations/mpr_tolerance (older, <3.2.0)
+#if defined(mjVERSION_HEADER) && mjVERSION_HEADER >= 320
+  if (!xml_attrs.count("ccd_iterations")) {
+    model_->opt.ccd_iterations = sc.ccd_iterations;
+  }
+  if (!xml_attrs.count("ccd_tolerance")) {
+    model_->opt.ccd_tolerance = static_cast<mjtNum>(sc.ccd_tolerance);
+  }
+#else
+  if (!xml_attrs.count("mpr_iterations")) {
+    model_->opt.mpr_iterations = sc.ccd_iterations;
+  }
+  if (!xml_attrs.count("mpr_tolerance")) {
+    model_->opt.mpr_tolerance = static_cast<mjtNum>(sc.ccd_tolerance);
+  }
+#endif
+  if (!xml_attrs.count("sdf_iterations")) {
+    model_->opt.sdf_iterations = sc.sdf_iterations;
+  }
+  if (!xml_attrs.count("sdf_initpoints")) {
+    model_->opt.sdf_initpoints = sc.sdf_initpoints;
+  }
+  if (!xml_attrs.count("impratio")) {
+    model_->opt.impratio = static_cast<mjtNum>(sc.impratio);
+    solver_impratio_.store(sc.impratio, std::memory_order_relaxed);
+  }
+
+  // ── Flags (via enableflags/disableflags bitfields) ────────────────────────
+  // These flags are set in <flag> element, not <option>, so parse separately.
+  {
+    tinyxml2::XMLDocument doc;
+    std::set<std::string> flag_attrs;
+    if (doc.LoadFile(cfg_.model_path.c_str()) == tinyxml2::XML_SUCCESS) {
+      const auto* root = doc.RootElement();
+      if (root) {
+        const auto* flag_elem = root->FirstChildElement("flag");
+        if (flag_elem) {
+          for (const auto* attr = flag_elem->FirstAttribute();
+               attr != nullptr; attr = attr->Next()) {
+            flag_attrs.insert(attr->Name());
+          }
+        }
+      }
+    }
+
+    // warmstart, refsafe, eulerdamp, filterparent are all mjDSBL_ bits
+    // (disabled = flag set, enabled = flag cleared)
+    if (!flag_attrs.count("warmstart")) {
+      if (sc.warmstart) {
+        model_->opt.disableflags &= ~mjDSBL_WARMSTART;
+      } else {
+        model_->opt.disableflags |= mjDSBL_WARMSTART;
+      }
+    }
+    if (!flag_attrs.count("refsafe")) {
+      if (sc.refsafe) {
+        model_->opt.disableflags &= ~mjDSBL_REFSAFE;
+      } else {
+        model_->opt.disableflags |= mjDSBL_REFSAFE;
+      }
+    }
+    if (!flag_attrs.count("island")) {
+      if (sc.island) {
+        model_->opt.enableflags |= mjENBL_ISLAND;
+      } else {
+        model_->opt.enableflags &= ~mjENBL_ISLAND;
+      }
+    }
+    if (!flag_attrs.count("eulerdamp")) {
+      if (sc.eulerdamp) {
+        model_->opt.disableflags &= ~mjDSBL_EULERDAMP;
+      } else {
+        model_->opt.disableflags |= mjDSBL_EULERDAMP;
+      }
+    }
+    if (!flag_attrs.count("filterparent")) {
+      if (sc.filterparent) {
+        model_->opt.disableflags &= ~mjDSBL_FILTERPARENT;
+      } else {
+        model_->opt.disableflags |= mjDSBL_FILTERPARENT;
+      }
+    }
+    if (!flag_attrs.count("override")) {
+      if (sc.contact_override.enable) {
+        model_->opt.enableflags |= mjENBL_OVERRIDE;
+      } else {
+        model_->opt.enableflags &= ~mjENBL_OVERRIDE;
+      }
+    }
+  }
+
+  // ── Contact override parameters ───────────────────────────────────────────
+  if (sc.contact_override.enable || (model_->opt.enableflags & mjENBL_OVERRIDE)) {
+    model_->opt.o_margin = static_cast<mjtNum>(sc.contact_override.o_margin);
+    for (int i = 0; i < 2; ++i) {
+      model_->opt.o_solref[i] =
+          static_cast<mjtNum>(sc.contact_override.o_solref[static_cast<std::size_t>(i)]);
+    }
+    for (int i = 0; i < 5; ++i) {
+      model_->opt.o_solimp[i] =
+          static_cast<mjtNum>(sc.contact_override.o_solimp[static_cast<std::size_t>(i)]);
+      model_->opt.o_friction[i] =
+          static_cast<mjtNum>(sc.contact_override.o_friction[static_cast<std::size_t>(i)]);
+    }
+  }
+
+  // ── Log summary ───────────────────────────────────────────────────────────
+  static constexpr const char* kSolverNames[] = {"PGS", "CG", "Newton"};
+  static constexpr const char* kConeNames[]   = {"Pyramidal", "Elliptic"};
+  static constexpr const char* kIntNames[]    = {"Euler", "RK4", "Implicit", "ImplicitFast"};
+
+  const int sol = model_->opt.solver;
+  const int cone = model_->opt.cone;
+  const int integ = model_->opt.integrator;
+
+  fprintf(stdout,
+          "[MuJoCoSimulator] Solver config: solver=%s  cone=%s  integrator=%s  "
+          "iterations=%d  tolerance=%.1e  impratio=%.1f  noslip_iter=%d\n",
+          (sol >= 0 && sol <= 2) ? kSolverNames[sol] : "?",
+          (cone >= 0 && cone <= 1) ? kConeNames[cone] : "?",
+          (integ >= 0 && integ <= 3) ? kIntNames[integ] : "?",
+          model_->opt.iterations,
+          static_cast<double>(model_->opt.tolerance),
+          static_cast<double>(model_->opt.impratio),
+          model_->opt.noslip_iterations);
+
+  if (!xml_attrs.empty()) {
+    fprintf(stdout, "[MuJoCoSimulator] XML <option> explicit attrs:");
+    for (const auto& a : xml_attrs) {
+      fprintf(stdout, " %s", a.c_str());
+    }
+    fprintf(stdout, "\n");
+  } else {
+    fprintf(stdout, "[MuJoCoSimulator] XML <option> not found — all solver params from YAML\n");
+  }
 }
 
 // ── Thread lifecycle ───────────────────────────────────────────────────────────

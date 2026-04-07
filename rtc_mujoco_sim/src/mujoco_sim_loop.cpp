@@ -180,6 +180,18 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
   model_->opt.iterations = solver_iterations_.load(std::memory_order_relaxed);
   model_->opt.tolerance  =
       static_cast<mjtNum>(solver_tolerance_.load(std::memory_order_relaxed));
+  model_->opt.cone =
+      static_cast<mjtCone>(solver_cone_.load(std::memory_order_relaxed));
+  model_->opt.jacobian =
+      static_cast<mjtJacobian>(solver_jacobian_.load(std::memory_order_relaxed));
+  model_->opt.ls_iterations = solver_ls_iterations_.load(std::memory_order_relaxed);
+  model_->opt.ls_tolerance  =
+      static_cast<mjtNum>(solver_ls_tolerance_.load(std::memory_order_relaxed));
+  model_->opt.noslip_iterations = solver_noslip_iterations_.load(std::memory_order_relaxed);
+  model_->opt.noslip_tolerance  =
+      static_cast<mjtNum>(solver_noslip_tolerance_.load(std::memory_order_relaxed));
+  model_->opt.impratio =
+      static_cast<mjtNum>(solver_impratio_.load(std::memory_order_relaxed));
 
   // 2. Contact enable / disable
   if (contacts_enabled_.load(std::memory_order_relaxed)) {

@@ -1,0 +1,165 @@
+# MuJoCo Constraint Solver Parameter Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# XML 우선순위 규칙:
+#   MJCF XML의 <option> 요소에 명시적으로 설정된 속성은 이 YAML 값보다 우선합니다.
+#   XML에 해당 속성이 없는 경우에만 이 YAML의 값이 적용됩니다.
+#
+# 예시:
+#   XML: <option solver="CG" iterations="50"/>
+#   YAML: solver: "Newton", iterations: 100, cone: "elliptic"
+#   결과: solver=CG (XML), iterations=50 (XML), cone=elliptic (YAML fallback)
+#
+# 참조: MuJoCo 3.x 공식 문서 — Modeling/Computation 챕터
+# ─────────────────────────────────────────────────────────────────────────────
+
+mujoco_simulator:
+  ros__parameters:
+    solver:
+      # ════════════════════════════════════════════════════════════════════════
+      # Algorithm Selection (알고리즘 선택)
+      # ════════════════════════════════════════════════════════════════════════
+
+      # constraint solver 알고리즘
+      #   "Newton"  — quadratic convergence, 대부분 5~20회 iteration 내 수렴 (권장)
+      #   "CG"      — setup cost 없음, island discovery 활성화 시 멀티스레드 병렬화 가능
+      #   "PGS"     — sub-linear convergence, DoF > constraint 수일 때 적합
+      solver: "Newton"
+
+      # 마찰 원뿔(friction cone) 모델
+      #   "pyramidal" — 일부 알고리즘에서 성능 이점, 큰 impratio 사용 시 비권장
+      #   "elliptic"  — 물리적으로 더 정확, contact slip 억제에 유리
+      cone: "elliptic"
+
+      # constraint Jacobian 표현 방식
+      #   "auto"   — MuJoCo가 DoF/constraint 비율에 따라 자동 선택
+      #   "dense"  — 밀집 행렬 (소규모 모델에 유리)
+      #   "sparse" — 희소 행렬 (대규모 모델에 유리)
+      jacobian: "auto"
+
+      # 적분기(integrator) 선택
+      #   "Euler"        — 1차 오일러 적분 (기본값, 가장 빠름)
+      #   "RK4"          — 4차 Runge-Kutta (정밀하지만 느림)
+      #   "implicit"     — implicit Euler (관절 damping이 큰 모델에 안정적)
+      #   "implicitfast" — implicit의 근사 버전 (implicit보다 빠름)
+      integrator: "implicit"
+
+      # ════════════════════════════════════════════════════════════════════════
+      # Iteration Parameters (반복 계산 파라미터)
+      # ════════════════════════════════════════════════════════════════════════
+
+      # 메인 constraint solver 최대 반복 횟수
+      #   Newton 기준 보통 5~20회면 충분. 값이 크면 정확하지만 느림
+      iterations: 20
+
+      # 메인 solver 조기 종료 threshold
+      #   PGS: cost 개선량 기준, CG/Newton: min(cost 개선, gradient norm) 기준
+      #   작을수록 정밀하지만 더 많은 iteration 필요
+      tolerance: 1.0e-8
+
+      # CG/Newton linesearch 최대 반복 횟수
+      #   총 linesearch 횟수 <= iterations x ls_iterations
+      ls_iterations: 20
+
+      # linesearch 조기 종료 threshold
+      ls_tolerance: 0.01
+
+      # Noslip 후처리 solver 최대 반복 (0 = 비활성화)
+      #   마찰 방향의 slip/drift를 억제하는 추가 solver
+      #   매니퓰레이션/파지 작업에서 10~20 설정 권장
+      #   주의: PGS 기반이므로 추가 연산 비용 발생
+      noslip_iterations: 0
+
+      # Noslip solver 조기 종료 threshold
+      noslip_tolerance: 1.0e-6
+
+      # Convex collision detection 최대 반복 횟수
+      ccd_iterations: 50
+
+      # Convex collision 조기 종료 threshold
+      ccd_tolerance: 1.0e-6
+
+      # SDF(Signed Distance Field) collision 반복 횟수
+      sdf_iterations: 10
+
+      # SDF 초기 탐색 포인트 수
+      sdf_initpoints: 40
+
+      # ════════════════════════════════════════════════════════════════════════
+      # Physics Parameters (물리 파라미터)
+      # ════════════════════════════════════════════════════════════════════════
+
+      # elliptic cone에서 마찰/법선 impedance 비율
+      #   1.0 = 기본값 (마찰과 법선 동일)
+      #   >1  = 마찰력이 상대적으로 "단단"해짐 (slip 억제)
+      #   매니퓰레이션에서 5~10 권장, elliptic cone과 함께 사용
+      impratio: 1.0
+
+      # ════════════════════════════════════════════════════════════════════════
+      # Solver Flags (솔버 플래그)
+      # ════════════════════════════════════════════════════════════════════════
+
+      # 이전 timestep의 constraint force로 solver 초기화
+      #   true  = 연속 시뮬레이션에서 수렴 가속 (기본값)
+      #   false = RL 환경에서 state 리셋 또는 비연속적 상태 평가 시 필수
+      warmstart: true
+
+      # solref[0] < 2*timestep 시 자동 보정 (불안정 방지)
+      #   true  = 안전한 기본값 (권장)
+      #   false = 의도적으로 매우 단단한(stiff) contact 필요 시
+      refsafe: true
+
+      # constraint island discovery
+      #   true  = CG solver에서 멀티스레드 병렬화 가능
+      #   false = 기본값, 단일 스레드
+      island: false
+
+      # Euler integrator에서 joint damping을 implicit 처리
+      #   true  = 큰 damping 값에서도 안정적 (기본값)
+      #   false = 순수 explicit damping
+      eulerdamp: true
+
+      # 부모-자식 body 간 collision 필터링
+      #   true  = 기본값, 불필요한 자기충돌 방지
+      #   false = 모든 body 쌍에 대해 collision 검사
+      filterparent: true
+
+      # ════════════════════════════════════════════════════════════════════════
+      # Contact Override (접촉 파라미터 일괄 덮어쓰기)
+      # ════════════════════════════════════════════════════════════════════════
+      #
+      # enable=true 시 모든 활성 contact pair에 대해 아래 값이
+      # 개별 geom의 solref/solimp/friction을 대체합니다.
+      # equality/limit/friction constraint에는 적용되지 않습니다.
+      #
+      # 용도: 전체 scene의 contact 특성을 빠르게 튜닝하거나,
+      #       domain randomization에서 일괄 변경할 때 유용합니다.
+
+      contact_override:
+        # 활성화 여부 (MuJoCo의 <flag override="enable"/> 에 대응)
+        enable: false
+
+        # override용 contact margin (미터)
+        #   접촉 감지 확장 거리. 0.0 = geom 표면에서만 감지
+        o_margin: 0.0
+
+        # override용 solref [timeconst, dampratio]
+        #   [0] timeconst (초) — 접촉 시정수. 작을수록 단단한 contact. >= 2*timestep 권장
+        #   [1] dampratio — 감쇠비. 1.0=임계감쇠, <1 진동, >1 과감쇠
+        o_solref: [0.02, 1.0]
+
+        # override용 solimp [d0, dwidth, width, midpoint, power]
+        #   [0] d0 (dmin)     — r=0에서의 impedance (0~1). 접촉 시작점의 constraint 강도
+        #   [1] dwidth (dmax) — 큰 위반에서의 impedance 최대값 (0~1)
+        #   [2] width         — d0→dwidth 전이 영역의 폭 (미터)
+        #   [3] midpoint      — 전이 sigmoid의 중간점 위치 (0~1)
+        #   [4] power         — 전이 sigmoid의 거듭제곱 (>=1, 1=선형, 2=quadratic)
+        o_solimp: [0.9, 0.95, 0.001, 0.5, 2.0]
+
+        # override용 friction [tangent1, tangent2, spin, roll1, roll2]
+        #   [0] tangent1 — 1차 접선 마찰 계수
+        #   [1] tangent2 — 2차 접선 마찰 계수
+        #   [2] spin     — 회전(torsional) 마찰 계수
+        #   [3] roll1    — 1차 구름(rolling) 마찰 계수
+        #   [4] roll2    — 2차 구름(rolling) 마찰 계수
+        o_friction: [1.0, 1.0, 0.005, 0.0001, 0.0001]

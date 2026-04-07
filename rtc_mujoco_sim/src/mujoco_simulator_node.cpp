@@ -81,6 +81,36 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     declare_parameter("servo_kd",
                       std::vector<double>{400.0, 400.0, 400.0, 100.0, 100.0, 100.0});
 
+    // ── Solver parameters (solver_param.yaml) ─────────────────────────────────
+    declare_parameter("solver.solver",            std::string("Newton"));
+    declare_parameter("solver.cone",              std::string("pyramidal"));
+    declare_parameter("solver.jacobian",          std::string("auto"));
+    declare_parameter("solver.integrator",        std::string("Euler"));
+    declare_parameter("solver.iterations",        100);
+    declare_parameter("solver.tolerance",         1e-8);
+    declare_parameter("solver.ls_iterations",     50);
+    declare_parameter("solver.ls_tolerance",      0.01);
+    declare_parameter("solver.noslip_iterations",  0);
+    declare_parameter("solver.noslip_tolerance",  1e-6);
+    declare_parameter("solver.ccd_iterations",    50);
+    declare_parameter("solver.ccd_tolerance",     1e-6);
+    declare_parameter("solver.sdf_iterations",    10);
+    declare_parameter("solver.sdf_initpoints",    40);
+    declare_parameter("solver.impratio",          1.0);
+    declare_parameter("solver.warmstart",         true);
+    declare_parameter("solver.refsafe",           true);
+    declare_parameter("solver.island",            false);
+    declare_parameter("solver.eulerdamp",         true);
+    declare_parameter("solver.filterparent",      true);
+    declare_parameter("solver.contact_override.enable",    false);
+    declare_parameter("solver.contact_override.o_margin",  0.0);
+    declare_parameter("solver.contact_override.o_solref",
+                      std::vector<double>{0.02, 1.0});
+    declare_parameter("solver.contact_override.o_solimp",
+                      std::vector<double>{0.9, 0.95, 0.001, 0.5, 2.0});
+    declare_parameter("solver.contact_override.o_friction",
+                      std::vector<double>{1.0, 1.0, 0.005, 0.0001, 0.0001});
+
     // robot_response / fake_response group names
     declare_parameter("robot_response.groups", std::vector<std::string>{});
     declare_parameter("fake_response.groups", std::vector<std::string>{});
@@ -96,6 +126,45 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     use_yaml_servo_gains_ = get_parameter("use_yaml_servo_gains").as_bool();
     servo_kp_ = get_parameter("servo_kp").as_double_array();
     servo_kd_ = get_parameter("servo_kd").as_double_array();
+
+    // Load solver config
+    solver_config_.solver      = get_parameter("solver.solver").as_string();
+    solver_config_.cone        = get_parameter("solver.cone").as_string();
+    solver_config_.jacobian    = get_parameter("solver.jacobian").as_string();
+    solver_config_.integrator  = get_parameter("solver.integrator").as_string();
+    solver_config_.iterations  = static_cast<int>(get_parameter("solver.iterations").as_int());
+    solver_config_.tolerance   = get_parameter("solver.tolerance").as_double();
+    solver_config_.ls_iterations = static_cast<int>(get_parameter("solver.ls_iterations").as_int());
+    solver_config_.ls_tolerance  = get_parameter("solver.ls_tolerance").as_double();
+    solver_config_.noslip_iterations = static_cast<int>(get_parameter("solver.noslip_iterations").as_int());
+    solver_config_.noslip_tolerance  = get_parameter("solver.noslip_tolerance").as_double();
+    solver_config_.ccd_iterations = static_cast<int>(get_parameter("solver.ccd_iterations").as_int());
+    solver_config_.ccd_tolerance  = get_parameter("solver.ccd_tolerance").as_double();
+    solver_config_.sdf_iterations = static_cast<int>(get_parameter("solver.sdf_iterations").as_int());
+    solver_config_.sdf_initpoints = static_cast<int>(get_parameter("solver.sdf_initpoints").as_int());
+    solver_config_.impratio    = get_parameter("solver.impratio").as_double();
+    solver_config_.warmstart   = get_parameter("solver.warmstart").as_bool();
+    solver_config_.refsafe     = get_parameter("solver.refsafe").as_bool();
+    solver_config_.island      = get_parameter("solver.island").as_bool();
+    solver_config_.eulerdamp   = get_parameter("solver.eulerdamp").as_bool();
+    solver_config_.filterparent = get_parameter("solver.filterparent").as_bool();
+    solver_config_.contact_override.enable   = get_parameter("solver.contact_override.enable").as_bool();
+    solver_config_.contact_override.o_margin = get_parameter("solver.contact_override.o_margin").as_double();
+    {
+      auto v = get_parameter("solver.contact_override.o_solref").as_double_array();
+      for (std::size_t i = 0; i < std::min(v.size(), std::size_t{2}); ++i)
+        solver_config_.contact_override.o_solref[i] = v[i];
+    }
+    {
+      auto v = get_parameter("solver.contact_override.o_solimp").as_double_array();
+      for (std::size_t i = 0; i < std::min(v.size(), std::size_t{5}); ++i)
+        solver_config_.contact_override.o_solimp[i] = v[i];
+    }
+    {
+      auto v = get_parameter("solver.contact_override.o_friction").as_double_array();
+      for (std::size_t i = 0; i < std::min(v.size(), std::size_t{5}); ++i)
+        solver_config_.contact_override.o_friction[i] = v[i];
+    }
 
     // Parse robot_response groups
     auto robot_groups = get_parameter("robot_response.groups").as_string_array();
@@ -175,6 +244,7 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
         .use_yaml_servo_gains = use_yaml_servo_gains_,
         .servo_kp            = servo_kp_,
         .servo_kd            = servo_kd_,
+        .solver_config       = solver_config_,
         .groups              = group_configs_,
     };
     sim_ = std::make_unique<urtc::MuJoCoSimulator>(std::move(cfg));
@@ -433,6 +503,7 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   bool        use_yaml_servo_gains_{false};
   std::vector<double> servo_kp_;
   std::vector<double> servo_kd_;
+  urtc::SolverConfig  solver_config_;
 };
 
 // ── Entry point ────────────────────────────────────────────────────────────────

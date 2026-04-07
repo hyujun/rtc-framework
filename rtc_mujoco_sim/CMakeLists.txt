@@ -23,6 +23,8 @@ find_package(sensor_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(rtc_msgs REQUIRED)
 find_package(rtc_base REQUIRED)
+find_package(tinyxml2_vendor QUIET)
+find_package(tinyxml2 REQUIRED)
 
 # ── mujoco_simulator_node (optional — requires MuJoCo 3.x C++ library) ────────
 # Install MuJoCo (binary tarball — no cmake config included):
@@ -82,7 +84,7 @@ if(mujoco_FOUND)
     rtc_msgs
     rtc_base
   )
-  target_link_libraries(mujoco_simulator_node mujoco::mujoco)
+  target_link_libraries(mujoco_simulator_node mujoco::mujoco tinyxml2::tinyxml2)
 
   if(glfw3_FOUND)
     message(STATUS "GLFW found — MuJoCo viewer enabled")

@@ -19,6 +19,7 @@
   <depend>ament_index_cpp</depend>
   <depend>rtc_msgs</depend>
   <depend>rtc_base</depend>
+  <depend>tinyxml2</depend>
 
   <!-- Robot model files (MJCF, URDF, meshes) -->
   <exec_depend>ur5e_description</exec_depend>

@@ -128,7 +128,9 @@ def launch_setup(context, *args, **kwargs):
         pass
 
     # ── Build simulator parameters (YAML first, then conditional overrides) ───
-    sim_params = [sim_config]
+    solver_config = PathJoinSubstitution(
+        [pkg_sim,  'config', 'solver_param.yaml'])
+    sim_params = [sim_config, solver_config]
     sim_overrides = {}
 
     # Check each launch argument - only add to overrides if explicitly provided
