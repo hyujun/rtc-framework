@@ -193,7 +193,21 @@ void OnKey(GLFWwindow* w, int key, int /*scan*/, int action, int /*mods*/) noexc
   case GLFW_KEY_C:  s->opt->flags[mjVIS_CONTACTPOINT] ^= 1;  break;
   case GLFW_KEY_F:  s->opt->flags[mjVIS_CONTACTFORCE]  ^= 1;  break;
   case GLFW_KEY_T:  s->opt->flags[mjVIS_TRANSPARENT]   ^= 1;  break;
-  case GLFW_KEY_J:  s->opt->flags[mjVIS_JOINT]          ^= 1;  break;
+  case GLFW_KEY_J:
+    if (s->shift_held) {
+      s->show_joint_frames = !s->show_joint_frames;
+      fprintf(stdout, "[Viewer] Joint frames %s\n",
+              s->show_joint_frames ? "ON" : "OFF");
+    } else {
+      s->opt->flags[mjVIS_JOINT] ^= 1;
+    }
+    break;
+  case GLFW_KEY_B:
+    s->show_link_frames = !s->show_link_frames;
+    s->opt->frame = s->show_link_frames ? mjFRAME_BODY : mjFRAME_NONE;
+    fprintf(stdout, "[Viewer] Link frames %s\n",
+            s->show_link_frames ? "ON" : "OFF");
+    break;
   case GLFW_KEY_U:  s->opt->flags[mjVIS_ACTUATOR]       ^= 1;  break;
   case GLFW_KEY_E:  s->opt->flags[mjVIS_INERTIA]        ^= 1;  break;
   case GLFW_KEY_W:  s->opt->flags[mjVIS_COM]             ^= 1;  break;
@@ -230,6 +244,8 @@ void OnKey(GLFWwindow* w, int key, int /*scan*/, int action, int /*mods*/) noexc
   // ── Reset options / camera ─────────────────────────────────────────────────
   case GLFW_KEY_BACKSPACE:
     mjv_defaultOption(s->opt);
+    s->show_link_frames = false;
+    s->show_joint_frames = false;
     break;
 
   case GLFW_KEY_ESCAPE:

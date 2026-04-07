@@ -54,6 +54,10 @@ struct ViewerState {
   bool show_model_info{false};    // F10: model statistics overlay
   bool take_screenshot{false};    // P:  write PPM to logging_data/
 
+  // ── Frame visualization toggles ───────────────────────────────────────────
+  bool show_link_frames{false};   // B: body/link coordinate frames (opt->frame)
+  bool show_joint_frames{false};  // Shift+J: custom joint coordinate frames
+
   // ── Camera mode ────────────────────────────────────────────────────────────
   CameraMode cam_mode{CameraMode::kFree};
   int        fixed_cam_idx{0};  // index into model cameras when kFixed
@@ -90,6 +94,9 @@ void RenderSolverOverlay   (const ViewerState& vs, const mjrRect& vp) noexcept;
 void RenderSensorOverlay   (const ViewerState& vs, const mjrRect& vp) noexcept;
 void RenderModelInfoOverlay(const ViewerState& vs, const mjrRect& vp) noexcept;
 void RenderRtfProfiler     (const ViewerState& vs, const mjrRect& vp) noexcept;
+
+// ── Frame visualization (defined in viewer_overlays.cpp) ─────────────────────
+void AddJointFrameGeoms(ViewerState& vs) noexcept;
 
 // ── Callback functions (defined in viewer_callbacks.cpp) ─────────────────────
 void OnKey        (GLFWwindow* w, int key, int scan, int action, int mods) noexcept;

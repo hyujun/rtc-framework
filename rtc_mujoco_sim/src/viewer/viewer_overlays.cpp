@@ -75,10 +75,10 @@ void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp,
   char labels[512], values[512];
   std::snprintf(labels, sizeof(labels),
       "Mode\nCamera\nRTF\nLimit\nSim Time\nSteps\nContacts\nGravity\nStatus\n"
-      "Integrator\nSolver\nIterations\nResidual\nSubsteps\nPhysics Load");
+      "Integrator\nSolver\nIterations\nResidual\nSubsteps\nPhysics Load\nFrames");
   std::snprintf(values, sizeof(values),
       "%s\n%s\n%.1fx\n%s\n%.2f s\n%lu\n%d/%s\n%s\n%s\n%s\n%s\n%d/%d\n%.2e\n"
-      "%d (%.2fms)\n%.1f%%",
+      "%d (%.2fms)\n%.1f%%\nLink:%s Joint:%s",
       "sync",
       cam_str,
       static_cast<double>(cur_rtf), limit_str,
@@ -92,7 +92,9 @@ void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp,
       ss.iter, vs.sim->GetSolverIterations(),
       ss.improvement,
       n_sub, substep_dt_ms,
-      phys_load_pct);
+      phys_load_pct,
+      vs.show_link_frames ? "ON" : "OFF",
+      vs.show_joint_frames ? "ON" : "OFF");
 
   mjr_overlay(mjFONT_NORMAL, mjGRID_TOPRIGHT, vp, labels, values, vs.con);
 }
@@ -164,53 +166,74 @@ void RenderHelpOverlay(const ViewerState& vs, const mjrRect& vp, int page) noexc
     mjr_overlay(mjFONT_NORMAL, mjGRID_TOPLEFT, vp, keys, vals, vs.con);
 
   } else {
-    // ── Page 2: Visualisation / Rendering / Perturb / Other ─────────────────
-    char keys[800], vals[800];
+    // ── Page 2: Geometry / Frames / Physics Viz / Rendering / Overlays /
+    //            Perturbation / Other ────────────────────────────────────────
+    char keys[1024], vals[1024];
     std::snprintf(keys, sizeof(keys),
         "Help 2/2  (F1=close)\n"
-        "C\nF\n0/V\n1..5\nJ\nU\nE\nW\nL\nA\nX\nT\nBackspace\n"
+        "── Geometry ──\n"
+        "0/V\n1..5\nT\nX\n"
+        "── Frames ──\n"
+        "B\nJ\nShift+J\n"
+        "── Physics Viz ──\n"
+        "C\nF\nU\nE\nW\nL\nA\n"
+        "── Rendering ──\n"
         "F5\nF6\nF7\nF8\n"
+        "── Overlays ──\n"
         "F3\nF9\nF10\n"
+        "── Perturbation ──\n"
         "Dbl-click\nCtrl+L drag\nCtrl+R drag\nCtrl+Sh+R\n"
-        "P");
+        "── Other ──\n"
+        "P\nBackspace");
     std::snprintf(vals, sizeof(vals),
+        "\n"
+        "\n"
+        "Geom group 0 [%s]\n"
+        "Geom groups 1-5\n"
+        "Transparent [%s]\n"
+        "Convex hulls [%s]\n"
+        "\n"
+        "Link frames [%s]\n"
+        "Joint axes [%s]\n"
+        "Joint frames [%s]\n"
         "\n"
         "Contact points [%s]\n"
         "Contact forces [%s]\n"
-        "Geom group 0 [%s]\n"
-        "Geom groups 1-5\n"
-        "Joints [%s]\n"
         "Actuators [%s]\n"
         "Inertia [%s]\n"
         "CoM [%s]\n"
         "Lights [%s]\n"
         "Tendons [%s]\n"
-        "Convex hulls [%s]\n"
-        "Transparent [%s]\n"
-        "Reset vis\n"
+        "\n"
         "Wireframe [%s]\n"
         "Shadows [%s]\n"
         "Skybox [%s]\n"
         "Reflections [%s]\n"
+        "\n"
         "RTF profiler\n"
         "Sensors\n"
         "Model info\n"
+        "\n"
         "Select body\n"
         "Torque\n"
         "Force XZ\n"
         "Force XY\n"
-        "Screenshot",
+        "\n"
+        "Screenshot\n"
+        "Reset all vis",
+        vs.opt->geomgroup[0]              ? "ON" : "OFF",
+        vs.opt->flags[mjVIS_TRANSPARENT]  ? "ON" : "OFF",
+        vs.opt->flags[mjVIS_CONVEXHULL]   ? "ON" : "OFF",
+        vs.show_link_frames               ? "ON" : "OFF",
+        vs.opt->flags[mjVIS_JOINT]        ? "ON" : "OFF",
+        vs.show_joint_frames              ? "ON" : "OFF",
         vs.opt->flags[mjVIS_CONTACTPOINT] ? "ON" : "OFF",
         vs.opt->flags[mjVIS_CONTACTFORCE] ? "ON" : "OFF",
-        vs.opt->geomgroup[0]              ? "ON" : "OFF",
-        vs.opt->flags[mjVIS_JOINT]        ? "ON" : "OFF",
         vs.opt->flags[mjVIS_ACTUATOR]     ? "ON" : "OFF",
         vs.opt->flags[mjVIS_INERTIA]      ? "ON" : "OFF",
         vs.opt->flags[mjVIS_COM]          ? "ON" : "OFF",
         vs.opt->flags[mjVIS_LIGHT]        ? "ON" : "OFF",
         vs.opt->flags[mjVIS_TENDON]       ? "ON" : "OFF",
-        vs.opt->flags[mjVIS_CONVEXHULL]   ? "ON" : "OFF",
-        vs.opt->flags[mjVIS_TRANSPARENT]  ? "ON" : "OFF",
         vs.scn->flags[mjRND_WIREFRAME]    ? "ON" : "OFF",
         vs.scn->flags[mjRND_SHADOW]       ? "ON" : "OFF",
         vs.scn->flags[mjRND_SKYBOX]       ? "ON" : "OFF",
@@ -321,6 +344,62 @@ void RenderRtfProfiler(const ViewerState& vs, const mjrRect& vp) noexcept {
   const int fw = vp.width  / 3;
   const int fh = vp.height / 3;
   mjr_figure(mjrRect{vp.width - fw, 0, fw, fh}, vs.fig_profiler, vs.con);
+}
+
+// ── AddJointFrameGeoms ────────────────────────────────────────────────────────
+// Adds XYZ axis cylinders (RGB) at each joint position using the parent body's
+// rotation matrix.  Called between mjv_updateScene() and mjr_render().
+void AddJointFrameGeoms(ViewerState& vs) noexcept {
+  if (!vs.show_joint_frames || !vs.model || !vs.vis_data || !vs.scn) { return; }
+
+  constexpr float kAxisLength = 0.08f;   // metres
+  constexpr float kAxisWidth  = 0.004f;  // cylinder radius
+  constexpr float kAlpha      = 0.85f;
+
+  // RGBA per axis: X=Red, Y=Green, Z=Blue
+  static constexpr float kColors[3][4] = {
+      {1.0f, 0.2f, 0.2f, kAlpha},
+      {0.2f, 1.0f, 0.2f, kAlpha},
+      {0.2f, 0.2f, 1.0f, kAlpha},
+  };
+
+  const int njnt = vs.model->njnt;
+  for (int j = 0; j < njnt; ++j) {
+    const int body_id = vs.model->jnt_bodyid[j];
+    const double* anchor = vs.vis_data->xanchor + 3 * j;
+    const double* xmat   = vs.vis_data->xmat + 9 * body_id;
+
+    for (int axis = 0; axis < 3; ++axis) {
+      if (vs.scn->ngeom >= vs.scn->maxgeom) { return; }
+
+      // Direction = column of body rotation matrix (row-major 3x3)
+      const double dx = xmat[3 * 0 + axis];
+      const double dy = xmat[3 * 1 + axis];
+      const double dz = xmat[3 * 2 + axis];
+
+      const double end[3] = {
+          anchor[0] + kAxisLength * dx,
+          anchor[1] + kAxisLength * dy,
+          anchor[2] + kAxisLength * dz,
+      };
+
+      mjvGeom* g = vs.scn->geoms + vs.scn->ngeom;
+      mjv_initGeom(g, mjGEOM_NONE, nullptr, nullptr, nullptr, nullptr);
+      mjv_makeConnector(g, mjGEOM_CAPSULE, kAxisWidth,
+                        anchor[0], anchor[1], anchor[2],
+                        end[0], end[1], end[2]);
+
+      g->rgba[0] = kColors[axis][0];
+      g->rgba[1] = kColors[axis][1];
+      g->rgba[2] = kColors[axis][2];
+      g->rgba[3] = kColors[axis][3];
+
+      // Mark as decoration (cat = mjCAT_DECOR) so it renders in all passes
+      g->category = mjCAT_DECOR;
+
+      ++vs.scn->ngeom;
+    }
+  }
 }
 
 }  // namespace rtc
