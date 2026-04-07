@@ -3,6 +3,7 @@
 #include <behaviortree_cpp/bt_factory.h>
 
 #include <cmath>
+#include <cstdint>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -44,6 +45,13 @@ struct CachedGraspState {
   bool  grasp_detected{false};
   float force_threshold{1.0f};
   int   min_fingertips{2};
+
+  // Force-PI grasp controller state (grasp_controller_type == "force_pi")
+  uint8_t grasp_phase{0};                      // GraspPhase enum (0=Idle..5=Releasing)
+  float grasp_target_force{0.0f};              // active target force [N]
+  std::vector<float> finger_s;                 // grasp parameter per finger [0,1]
+  std::vector<float> finger_filtered_force;    // filtered force per finger [N]
+  std::vector<float> finger_force_error;       // force error per finger [N]
 };
 
 // ── Constants ───────────────────────────────────────────────────────────────

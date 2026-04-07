@@ -14,18 +14,22 @@ namespace rtc_bt {
 /// Automatically detects the active controller and builds the appropriate
 /// gain layout:
 ///
-/// DemoTaskController (16 values):
+/// DemoTaskController (19 values + optional 2 for Force-PI):
 ///   [kp_translation×3, kp_rotation×3, damping, null_kp,
 ///    enable_null_space(0/1), control_6dof(0/1),
 ///    trajectory_speed, trajectory_angular_speed,
 ///    hand_trajectory_speed, max_traj_velocity,
-///    max_traj_angular_velocity, hand_max_traj_velocity]
+///    max_traj_angular_velocity, hand_max_traj_velocity,
+///    grasp_contact_threshold, grasp_force_threshold,
+///    grasp_min_fingertips,
+///    (grasp_command, grasp_target_force)]
 ///
-/// DemoJointController (7 values):
+/// DemoJointController (7 values + optional 2 for Force-PI):
 ///   [robot_trajectory_speed, hand_trajectory_speed,
 ///    robot_max_traj_velocity, hand_max_traj_velocity,
 ///    grasp_contact_threshold, grasp_force_threshold,
-///    grasp_min_fingertips]
+///    grasp_min_fingertips,
+///    (grasp_command, grasp_target_force)]
 ///
 /// Input ports:
 ///   - kp_translation (string): "5.0,5.0,5.0" (DemoTask only, optional)
@@ -41,6 +45,8 @@ namespace rtc_bt {
 ///   - hand_trajectory_speed (double): [rad/s] (optional)
 ///   - hand_max_traj_velocity (double): [rad/s] (optional)
 ///   - full_gains (vector<double>): complete gain array (optional, overrides all)
+///   - grasp_command (int): 0=none, 1=grasp, 2=release (Force-PI, optional)
+///   - grasp_target_force (double): target grip force [N] (Force-PI, default 2.0)
 class SetGains : public BT::SyncActionNode {
 public:
   SetGains(const std::string& name, const BT::NodeConfig& config,

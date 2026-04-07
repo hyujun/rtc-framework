@@ -74,6 +74,15 @@ BtRosBridge::BtRosBridge(rclcpp::Node::SharedPtr node)
           grasp_state_.grasp_detected      = msg->grasp_detected;
           grasp_state_.force_threshold     = msg->force_threshold;
           grasp_state_.min_fingertips      = msg->min_fingertips;
+          // Force-PI fields
+          grasp_state_.grasp_phase        = msg->grasp_phase;
+          grasp_state_.grasp_target_force = msg->grasp_target_force;
+          grasp_state_.finger_s.assign(
+              msg->finger_s.begin(), msg->finger_s.end());
+          grasp_state_.finger_filtered_force.assign(
+              msg->finger_filtered_force.begin(), msg->finger_filtered_force.end());
+          grasp_state_.finger_force_error.assign(
+              msg->finger_force_error.begin(), msg->finger_force_error.end());
         }
         {
           std::lock_guard lock(health_mutex_);

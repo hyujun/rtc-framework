@@ -106,4 +106,94 @@
     </Sequence>
   </BehaviorTree>
 
+  <!-- ============================================================== -->
+  <!-- ForcePIPickAndPlace: Force-PI adaptive grasp variant            -->
+  <!-- Uses controller-internal state machine for force-controlled     -->
+  <!-- grasping instead of BT-side incremental closing.                -->
+  <!-- Prerequisite: grasp_controller_type: "force_pi" in YAML        -->
+  <!-- ============================================================== -->
+  <BehaviorTree ID="ForcePIPickAndPlace">
+    <Sequence name="main">
+
+      <!-- Phase 1: Detect object via vision -->
+      <SubTree ID="DetectObject"
+               pose="{object_pose}"
+               num_attempts="10"
+               wait_s="0.5"/>
+
+      <!-- Phase 2: Pre-shape hand (open) and move above object -->
+      <GraspControl mode="open"
+                    target_positions="0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0"
+                    timeout_s="5.0"/>
+
+      <SubTree ID="ApproachFromAbove"
+               target_pose="{object_pose}"
+               offset_z="0.04"
+               pos_tol="0.003"
+               ori_tol="0.05"
+               timeout_s="10.0"
+               approach_pose="{approach_pose}"/>
+
+      <!-- Phase 3: Slow descend to object -->
+      <SubTree ID="SlowDescend"
+               target_pose="{object_pose}"
+               traj_speed="0.05"
+               max_traj_vel="0.1"
+               pos_tol="0.002"
+               ori_tol="0.05"
+               timeout_s="8.0"/>
+
+      <!-- Phase 4: Force-PI adaptive grasp -->
+      <SubTree ID="ForcePIGrasp"
+               target_force_N="2.0"
+               grasp_timeout_ms="10000"/>
+
+      <!-- Phase 5: Lift and verify holding -->
+      <SetGains trajectory_speed="0.08"
+                max_traj_velocity="0.2"/>
+
+      <ComputeOffsetPose input_pose="{object_pose}"
+                         offset_z="0.12"
+                         output_pose="{lift_pose}"/>
+
+      <MoveToPose target="{lift_pose}"
+                  position_tolerance="0.005"
+                  timeout_s="6.0"/>
+
+      <IsGraspPhase phase="holding"/>
+
+      <!-- Phase 6: Transport to goal position -->
+      <SetGains trajectory_speed="0.1"
+                max_traj_velocity="0.3"/>
+
+      <MoveToPose target="{place_pose}"
+                  position_tolerance="0.005"
+                  timeout_s="12.0"/>
+
+      <!-- Phase 7: Lower to release height -->
+      <ComputeOffsetPose input_pose="{place_pose}"
+                         offset_z="-0.05"
+                         output_pose="{lower_pose}"/>
+      <SetGains trajectory_speed="0.05"/>
+      <MoveToPose target="{lower_pose}"
+                  position_tolerance="0.003"
+                  timeout_s="6.0"/>
+
+      <!-- Phase 8: Force-PI release and retreat -->
+      <SubTree ID="ForcePIRelease"
+               release_timeout_ms="5000"/>
+
+      <WaitDuration duration_s="0.3"/>
+
+      <ComputeOffsetPose input_pose="{place_pose}"
+                         offset_z="0.08"
+                         output_pose="{retreat_pose}"/>
+      <SetGains trajectory_speed="0.1"/>
+      <MoveToPose target="{retreat_pose}"
+                  position_tolerance="0.005"
+                  timeout_s="6.0"/>
+
+    </Sequence>
+  </BehaviorTree>
+
 </root>

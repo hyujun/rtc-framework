@@ -66,6 +66,19 @@ _HAND_NAME_TO_IDX = {n: i for i, n in enumerate(HAND_MOTOR_NAMES)}
 # Fingertip names matching controller order (4 fingertips)
 FINGERTIP_NAMES = ["Thumb", "Index", "Middle", "Ring"]
 
+# Force-PI grasp controller: 3 fingers only (no ring)
+FORCE_PI_FINGER_NAMES = ["Thumb", "Index", "Middle"]
+
+# GraspPhase enum → (display_text, bg_color, fg_color)
+GRASP_PHASE_NAMES = {
+    0: ("IDLE",        "#585b70", "#cdd6f4"),
+    1: ("APPROACHING", "#89b4fa", "#1e1e2e"),
+    2: ("CONTACT",     "#f9e2af", "#1e1e2e"),
+    3: ("FORCE CTRL",  "#fab387", "#1e1e2e"),
+    4: ("HOLDING",     "#a6e3a1", "#1e1e2e"),
+    5: ("RELEASING",   "#f38ba8", "#1e1e2e"),
+}
+
 # Default hand presets (positions in degrees for readability, converted to rad at runtime)
 _DEFAULT_PRESETS = {
     "open_flat": {
@@ -116,6 +129,9 @@ GAIN_DEFS = {
         ("hand_traj_speed",     1, [1.0],  False),
         ("robot_max_traj_vel",  1, [3.14], False),
         ("hand_max_traj_vel",   1, [2.0],  False),
+        ("grasp_contact_thresh", 1, [0.5], False),
+        ("grasp_force_thresh",  1, [1.0],  False),
+        ("grasp_min_fingertips", 1, [2],   False),
     ],
     "demo_task_controller": [
         ("kp_translation",      3, [1.0] * 3, False),
@@ -130,6 +146,9 @@ GAIN_DEFS = {
         ("max_traj_vel",            1, [0.5],  False),
         ("max_traj_angular_vel",    1, [1.0],  False),
         ("hand_max_traj_vel",       1, [2.0],  False),
+        ("grasp_contact_thresh", 1, [0.5],     False),
+        ("grasp_force_thresh",  1, [1.0],      False),
+        ("grasp_min_fingertips", 1, [2],       False),
     ],
 }
 
@@ -191,6 +210,12 @@ class DemoControllerGUI(Node):
         self._grasp_force_mag = [0.0] * len(FINGERTIP_NAMES)
         self._grasp_contact_flag = [0.0] * len(FINGERTIP_NAMES)
         self._grasp_inference_valid = [False] * len(FINGERTIP_NAMES)
+        # Force-PI grasp controller state
+        self._grasp_phase = 0
+        self._grasp_target_force_val = 0.0
+        self._fp_finger_s = [0.0] * len(FORCE_PI_FINGER_NAMES)
+        self._fp_filtered_force = [0.0] * len(FORCE_PI_FINGER_NAMES)
+        self._fp_force_error = [0.0] * len(FORCE_PI_FINGER_NAMES)
         self.create_subscription(GraspState, '/hand/grasp_state',
                                  self._grasp_state_cb, 10)
 
@@ -250,6 +275,14 @@ class DemoControllerGUI(Node):
             self._grasp_force_mag[i] = msg.force_magnitude[i]
             self._grasp_contact_flag[i] = msg.contact_flag[i]
             self._grasp_inference_valid[i] = msg.inference_valid[i]
+        # Force-PI fields
+        self._grasp_phase = msg.grasp_phase
+        self._grasp_target_force_val = msg.grasp_target_force
+        n_fp = min(len(msg.finger_s), len(FORCE_PI_FINGER_NAMES))
+        for i in range(n_fp):
+            self._fp_finger_s[i] = msg.finger_s[i]
+            self._fp_filtered_force[i] = msg.finger_filtered_force[i]
+            self._fp_force_error[i] = msg.finger_force_error[i]
 
     # ---- Preset persistence -----------------------------------------------------
 
@@ -354,6 +387,32 @@ class DemoControllerGUI(Node):
                 self._ft_valid_labels[i].config(
                     text="OK" if iv else "--",
                     fg='#a6e3a1' if iv else '#f38ba8')
+
+        # Force-PI state display
+        if hasattr(self, '_fp_phase_label'):
+            phase_info = GRASP_PHASE_NAMES.get(
+                self._grasp_phase, ("UNKNOWN", "#585b70", "#cdd6f4"))
+            self._fp_phase_label.config(
+                text=f"  {phase_info[0]}  ",
+                bg=phase_info[1], fg=phase_info[2])
+            self._fp_target_force_display.config(
+                text=f"{self._grasp_target_force_val:.2f} N")
+
+            for i in range(len(FORCE_PI_FINGER_NAMES)):
+                self._fp_s_labels[i].config(
+                    text=f"{self._fp_finger_s[i]:.3f}")
+                self._fp_filt_labels[i].config(
+                    text=f"{self._fp_filtered_force[i]:.2f} N")
+                err = self._fp_force_error[i]
+                err_color = ('#a6e3a1' if abs(err) < 0.2
+                             else '#f9e2af' if abs(err) < 0.5
+                             else '#f38ba8')
+                self._fp_err_labels[i].config(
+                    text=f"{err:+.2f} N", fg=err_color)
+                # f_desired = f_measured + f_error
+                f_desired = self._fp_filtered_force[i] + err
+                self._fp_desired_labels[i].config(
+                    text=f"{f_desired:.2f} N")
 
     # ---- GUI build -----------------------------------------------------------
 
@@ -869,6 +928,89 @@ class DemoControllerGUI(Node):
             vl.grid(row=i + 1, column=3, padx=2, pady=1)
             self._ft_valid_labels.append(vl)
 
+        # ── Force-PI Grasp Controller ──────────────────────────────────
+        fp_frame = ttk.LabelFrame(parent, text="Force-PI Grasp Controller", padding=4)
+        fp_frame.pack(fill='x', padx=8, pady=(2, 2))
+
+        # Phase + target force row
+        fp_top = tk.Frame(fp_frame, bg='#1e1e2e')
+        fp_top.pack(fill='x', pady=(0, 4))
+
+        tk.Label(fp_top, text="Phase:", bg='#1e1e2e', fg='#cdd6f4',
+                 font=('Segoe UI', 8)).pack(side='left', padx=(4, 2))
+        self._fp_phase_label = tk.Label(
+            fp_top, text="  IDLE  ", bg='#585b70', fg='#cdd6f4',
+            font=('Segoe UI', 10, 'bold'), padx=6, pady=2)
+        self._fp_phase_label.pack(side='left', padx=(0, 12))
+
+        tk.Label(fp_top, text="Target:", bg='#1e1e2e', fg='#cdd6f4',
+                 font=('Segoe UI', 8)).pack(side='left', padx=(0, 2))
+        self._fp_target_force_display = tk.Label(
+            fp_top, text="0.00 N", bg='#313244', fg='#f9e2af',
+            font=mono_font, width=8, anchor='center')
+        self._fp_target_force_display.pack(side='left', padx=(0, 4))
+
+        # Per-finger table (3 fingers)
+        ttk.Separator(fp_frame, orient='horizontal').pack(fill='x', pady=2)
+        fp_tbl = tk.Frame(fp_frame, bg='#1e1e2e')
+        fp_tbl.pack(fill='x', padx=4)
+
+        for c, txt in enumerate(["Finger", "s", "Filtered F", "F Error", "F Desired"]):
+            tk.Label(fp_tbl, text=txt, bg='#1e1e2e', fg='#89b4fa',
+                     font=hdr_font, width=10, anchor='center').grid(
+                row=0, column=c, padx=2, pady=(0, 2))
+
+        self._fp_s_labels: list[tk.Label] = []
+        self._fp_filt_labels: list[tk.Label] = []
+        self._fp_err_labels: list[tk.Label] = []
+        self._fp_desired_labels: list[tk.Label] = []
+
+        for i, name in enumerate(FORCE_PI_FINGER_NAMES):
+            tk.Label(fp_tbl, text=name, bg='#1e1e2e', fg='#f9e2af',
+                     font=hdr_font, width=10, anchor='center').grid(
+                row=i + 1, column=0, padx=2, pady=1)
+
+            sl = tk.Label(fp_tbl, text="0.000", bg='#313244', fg='#cdd6f4',
+                          font=mono_font, width=10, anchor='center')
+            sl.grid(row=i + 1, column=1, padx=2, pady=1)
+            self._fp_s_labels.append(sl)
+
+            fl = tk.Label(fp_tbl, text="0.00 N", bg='#313244', fg='#cdd6f4',
+                          font=mono_font, width=10, anchor='center')
+            fl.grid(row=i + 1, column=2, padx=2, pady=1)
+            self._fp_filt_labels.append(fl)
+
+            el = tk.Label(fp_tbl, text="+0.00 N", bg='#313244', fg='#a6e3a1',
+                          font=mono_font, width=10, anchor='center')
+            el.grid(row=i + 1, column=3, padx=2, pady=1)
+            self._fp_err_labels.append(el)
+
+            dl = tk.Label(fp_tbl, text="0.00 N", bg='#313244', fg='#cdd6f4',
+                          font=mono_font, width=10, anchor='center')
+            dl.grid(row=i + 1, column=4, padx=2, pady=1)
+            self._fp_desired_labels.append(dl)
+
+        # Command row: Grasp/Release buttons + target force input
+        ttk.Separator(fp_frame, orient='horizontal').pack(fill='x', pady=2)
+        cmd_frame = tk.Frame(fp_frame, bg='#1e1e2e')
+        cmd_frame.pack(fill='x', padx=4, pady=(2, 0))
+
+        ttk.Button(cmd_frame, text="\u25b6 Grasp", style='Send.TButton',
+                   command=lambda: self._send_grasp_command(1)).pack(
+            side='left', padx=4)
+        ttk.Button(cmd_frame, text="\u25a0 Release",
+                   command=lambda: self._send_grasp_command(2)).pack(
+            side='left', padx=4)
+
+        tk.Label(cmd_frame, text="Target Force:", bg='#1e1e2e', fg='#cdd6f4',
+                 font=('Segoe UI', 8)).pack(side='left', padx=(16, 2))
+        self._grasp_target_force_entry = ttk.Entry(
+            cmd_frame, width=6, justify='center')
+        self._grasp_target_force_entry.insert(0, "2.0")
+        self._grasp_target_force_entry.pack(side='left', padx=2)
+        tk.Label(cmd_frame, text="N", bg='#1e1e2e', fg='#cdd6f4',
+                 font=('Segoe UI', 8)).pack(side='left')
+
         # ── Hand Posture Presets ─────────────────────────────────────────
         preset_frame = ttk.LabelFrame(parent, text="Hand Posture Presets", padding=4)
         preset_frame.pack(fill='both', expand=True, padx=8, pady=(2, 4))
@@ -1247,7 +1389,8 @@ class DemoControllerGUI(Node):
         self.get_logger().info(
             f"Loaded gains for {ctrl_name}: {[f'{v:.4f}' for v in data]}")
 
-    def _publish_gains(self):
+    def _collect_gain_values(self) -> list[float] | None:
+        """Collect current gain values from UI widgets. Returns None on error."""
         values: list[float] = []
         for widgets, is_bool in zip(self._gain_entries, self._gain_is_bool):
             for w in widgets:
@@ -1256,7 +1399,13 @@ class DemoControllerGUI(Node):
                 except ValueError:
                     self.get_logger().error(
                         "Invalid gain value — check all fields.")
-                    return
+                    return None
+        return values
+
+    def _publish_gains(self):
+        values = self._collect_gain_values()
+        if values is None:
+            return
 
         msg = Float64MultiArray()
         msg.data = values
@@ -1267,6 +1416,30 @@ class DemoControllerGUI(Node):
             f"Applied gains for {ctrl_name}: {[f'{v:.4f}' for v in values]}")
 
         self._update_applied_display()
+
+    def _send_grasp_command(self, cmd: int):
+        """Send grasp command (1=grasp, 2=release) via gains message.
+
+        Appends grasp_command + grasp_target_force to the base gains array
+        so the controller receives the full expected layout.
+        """
+        base = self._collect_gain_values()
+        if base is None:
+            return
+        try:
+            target_force = float(self._grasp_target_force_entry.get())
+        except (ValueError, AttributeError):
+            target_force = 2.0
+
+        base.extend([float(cmd), target_force])
+
+        msg = Float64MultiArray()
+        msg.data = base
+        self.gains_pub.publish(msg)
+
+        cmd_name = "Grasp" if cmd == 1 else "Release"
+        self.get_logger().info(
+            f"Sent {cmd_name} command (target_force={target_force:.2f} N)")
 
     def _copy_current_to_target(self):
         idx = self.selected_ctrl.get()

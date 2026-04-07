@@ -18,6 +18,7 @@
 
 // Condition nodes
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
+#include "ur5e_bt_coordinator/condition_nodes/is_grasp_phase.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_grasped.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_object_detected.hpp"
 
@@ -152,6 +153,7 @@ void BtCoordinatorNode::RegisterBtNodes()
 
   // ── Condition nodes ───────────────────────────────────────────────────
   factory_.registerNodeType<IsForceAbove>("IsForceAbove", bridge);
+  factory_.registerNodeType<IsGraspPhase>("IsGraspPhase", bridge);
   factory_.registerNodeType<IsGrasped>("IsGrasped", bridge);
   factory_.registerNodeType<IsObjectDetected>("IsObjectDetected", bridge);
 }

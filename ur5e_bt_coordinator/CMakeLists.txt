@@ -27,6 +27,7 @@ add_library(bt_nodes SHARED
   src/nodes/compute_sweep_trajectory.cpp
   src/nodes/wait_duration.cpp
   src/nodes/is_force_above.cpp
+  src/nodes/is_grasp_phase.cpp
   src/nodes/is_grasped.cpp
   src/nodes/is_object_detected.cpp
   src/nodes/move_finger.cpp

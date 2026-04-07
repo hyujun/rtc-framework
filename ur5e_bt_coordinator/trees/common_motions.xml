@@ -101,6 +101,51 @@
   </BehaviorTree>
 
   <!-- ================================================================== -->
+  <!-- ForcePIGrasp: Adaptive PI force-controlled grasp                   -->
+  <!--   Controller 내부 state machine이 force control 수행                 -->
+  <!--   Ports: target_force_N, grasp_timeout_ms                          -->
+  <!-- ================================================================== -->
+  <BehaviorTree ID="ForcePIGrasp">
+    <Sequence>
+      <!-- Send grasp command via gains -->
+      <SetGains grasp_command="1"
+                grasp_target_force="{target_force_N}"/>
+
+      <!-- Wait for Holding phase (force converged) -->
+      <Timeout msec="{grasp_timeout_ms}">
+        <RetryUntilSuccessful num_attempts="-1">
+          <Sequence>
+            <WaitDuration duration_s="0.05"/>
+            <IsGraspPhase phase="holding"/>
+          </Sequence>
+        </RetryUntilSuccessful>
+      </Timeout>
+
+      <!-- Verify: still holding after brief settle -->
+      <WaitDuration duration_s="0.3"/>
+      <IsGraspPhase phase="holding"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ================================================================== -->
+  <!-- ForcePIRelease: Release via Force-PI controller                     -->
+  <!--   Ports: release_timeout_ms                                        -->
+  <!-- ================================================================== -->
+  <BehaviorTree ID="ForcePIRelease">
+    <Sequence>
+      <SetGains grasp_command="2"/>
+      <Timeout msec="{release_timeout_ms}">
+        <RetryUntilSuccessful num_attempts="-1">
+          <Sequence>
+            <WaitDuration duration_s="0.05"/>
+            <IsGraspPhase phase="idle"/>
+          </Sequence>
+        </RetryUntilSuccessful>
+      </Timeout>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ================================================================== -->
   <!-- ReleaseAndRetreat: 핸드 오픈 + 상방 후퇴                             -->
   <!--   Ports: base_pose, retreat_z, retreat_speed, timeout_s,           -->
   <!--          retreat_pose (output)                                     -->

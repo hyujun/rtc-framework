@@ -30,6 +30,8 @@ BT::PortsList SetGains::providedPorts()
     BT::InputPort<double>("hand_trajectory_speed"),
     BT::InputPort<double>("hand_max_traj_velocity"),
     BT::InputPort<std::vector<double>>("full_gains"),
+    BT::InputPort<int>("grasp_command", 0, "0=none, 1=grasp, 2=release (Force-PI)"),
+    BT::InputPort<double>("grasp_target_force", 2.0, "Target grip force [N] (Force-PI)"),
   };
 }
 
@@ -55,16 +57,20 @@ BT::NodeStatus SetGains::tick()
 
 BT::NodeStatus SetGains::BuildDemoJointGains()
 {
-  // DemoJointController layout (7 values):
+  // DemoJointController layout (7 + optional 2 values):
   // [robot_trajectory_speed, hand_trajectory_speed,
   //  robot_max_traj_velocity, hand_max_traj_velocity,
   //  grasp_contact_threshold, grasp_force_threshold,
-  //  grasp_min_fingertips]
+  //  grasp_min_fingertips,
+  //  (grasp_command, grasp_target_force)]   ← optional Force-PI
   std::vector<double> gains = {
-    0.1,    // robot_trajectory_speed
-    3.14,   // hand_trajectory_speed
-    0.5,    // robot_max_traj_velocity
-    6.28,   // hand_max_traj_velocity
+    0.1,    // [0] robot_trajectory_speed
+    3.14,   // [1] hand_trajectory_speed
+    0.5,    // [2] robot_max_traj_velocity
+    6.28,   // [3] hand_max_traj_velocity
+    0.5,    // [4] grasp_contact_threshold
+    1.0,    // [5] grasp_force_threshold
+    2.0,    // [6] grasp_min_fingertips
   };
 
   auto ts = getInput<double>("trajectory_speed");
@@ -79,6 +85,17 @@ BT::NodeStatus SetGains::BuildDemoJointGains()
   auto hmtv = getInput<double>("hand_max_traj_velocity");
   if (hmtv) gains[3] = hmtv.value();
 
+  // Force-PI grasp command (one-shot, only appended when non-zero)
+  auto gcmd = getInput<int>("grasp_command");
+  if (gcmd && gcmd.value() != 0) {
+    auto gtf = getInput<double>("grasp_target_force");
+    gains.push_back(static_cast<double>(gcmd.value()));
+    gains.push_back(gtf.value_or(2.0));
+    RCLCPP_INFO(logger(),
+                "[SetGains] DemoJoint: grasp_command=%d target_force=%.2f",
+                gcmd.value(), gains.back());
+  }
+
   RCLCPP_INFO(logger(),
               "[SetGains] DemoJoint: robot_speed=%.2f hand_speed=%.2f "
               "max_vel=%.2f hand_max_vel=%.2f",
@@ -89,23 +106,29 @@ BT::NodeStatus SetGains::BuildDemoJointGains()
 
 BT::NodeStatus SetGains::BuildDemoTaskGains()
 {
-  // DemoTaskController layout (16 values):
+  // DemoTaskController layout (19 + optional 2 values):
   // [kp_t×3, kp_r×3, damping, null_kp, en_null, en_6dof,
   //  traj_speed, traj_ang_speed, hand_traj_speed,
-  //  max_traj_vel, max_traj_ang_vel, hand_max_traj_vel]
+  //  max_traj_vel, max_traj_ang_vel, hand_max_traj_vel,
+  //  grasp_contact_threshold, grasp_force_threshold,
+  //  grasp_min_fingertips,
+  //  (grasp_command, grasp_target_force)]   ← optional Force-PI
   std::vector<double> gains = {
-    40.0, 40.0, 40.0,   // kp_translation
-    20.0, 20.0, 20.0,   // kp_rotation
-    0.01,                // damping
-    0.5,                 // null_kp
-    0.0,                 // enable_null_space
-    1.0,                 // control_6dof
-    0.1,                 // trajectory_speed
-    0.78,                // trajectory_angular_speed
-    3.14,                // hand_trajectory_speed
-    0.5,                 // max_traj_velocity
-    1.57,                // max_traj_angular_velocity
-    6.28,                // hand_max_traj_velocity
+    40.0, 40.0, 40.0,   // [0-2]  kp_translation
+    20.0, 20.0, 20.0,   // [3-5]  kp_rotation
+    0.01,                // [6]    damping
+    0.5,                 // [7]    null_kp
+    0.0,                 // [8]    enable_null_space
+    1.0,                 // [9]    control_6dof
+    0.1,                 // [10]   trajectory_speed
+    0.78,                // [11]   trajectory_angular_speed
+    3.14,                // [12]   hand_trajectory_speed
+    0.5,                 // [13]   max_traj_velocity
+    1.57,                // [14]   max_traj_angular_velocity
+    6.28,                // [15]   hand_max_traj_velocity
+    0.5,                 // [16]   grasp_contact_threshold
+    1.0,                 // [17]   grasp_force_threshold
+    2.0,                 // [18]   grasp_min_fingertips
   };
 
   auto kp_t = getInput<std::string>("kp_translation");
@@ -153,6 +176,17 @@ BT::NodeStatus SetGains::BuildDemoTaskGains()
 
   auto hmtv = getInput<double>("hand_max_traj_velocity");
   if (hmtv) gains[15] = hmtv.value();
+
+  // Force-PI grasp command (one-shot, only appended when non-zero)
+  auto gcmd = getInput<int>("grasp_command");
+  if (gcmd && gcmd.value() != 0) {
+    auto gtf = getInput<double>("grasp_target_force");
+    gains.push_back(static_cast<double>(gcmd.value()));
+    gains.push_back(gtf.value_or(2.0));
+    RCLCPP_INFO(logger(),
+                "[SetGains] DemoTask: grasp_command=%d target_force=%.2f",
+                gcmd.value(), gains.back());
+  }
 
   RCLCPP_INFO(logger(),
               "[SetGains] DemoTask: kp_t=[%.1f,%.1f,%.1f] kp_r=[%.1f,%.1f,%.1f] "
