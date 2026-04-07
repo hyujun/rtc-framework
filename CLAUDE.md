@@ -228,6 +228,7 @@ Session dir env: `RTC_SESSION_DIR` (or `UR5E_SESSION_DIR` fallback).
 - **Include order**: project -> ROS2/third-party -> C++ stdlib
 - **Eigen**: pre-allocated buffers, `noalias()`, zero heap on 500Hz path
 - **Compiler flags**: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`
+- **ROS2 Node**: Prefer `rclcpp_lifecycle::LifecycleNode` over `rclcpp::Node` for managed state transitions (unconfigured → inactive → active → finalized)
 
 ---
 

@@ -178,8 +178,8 @@ q_cmd = q + clamp(dq, +/-v_max) * dt
 
 | 파라미터 | YAML 기본값 | 설명 |
 |---------|------------|------|
-| `kp_translation` | `[15.0, 15.0, 15.0]` | 위치 비례 게인 (x, y, z) [1/s] |
-| `kp_rotation` | `[5.0, 5.0, 5.0]` | 자세 비례 게인 (rx, ry, rz) [1/s] |
+| `kp_translation` | `[400.0, 400.0, 400.0]` | 위치 비례 게인 (x, y, z) [1/s] |
+| `kp_rotation` | `[200.0, 200.0, 200.0]` | 자세 비례 게인 (rx, ry, rz) [1/s] |
 | `damping` | `0.01` | 의사역행렬 감쇠 계수 lambda |
 | `null_kp` | `0.5` | 영공간 관절 센터링 게인 |
 | `enable_null_space` | `false` | 영공간 활성화 (3-DOF 모드에서만 동작) |

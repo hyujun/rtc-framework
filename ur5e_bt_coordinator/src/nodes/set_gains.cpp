@@ -114,8 +114,8 @@ BT::NodeStatus SetGains::BuildDemoTaskGains()
   //  grasp_min_fingertips,
   //  (grasp_command, grasp_target_force)]   ← optional Force-PI
   std::vector<double> gains = {
-    40.0, 40.0, 40.0,   // [0-2]  kp_translation
-    20.0, 20.0, 20.0,   // [3-5]  kp_rotation
+    400.0, 400.0, 400.0,   // [0-2]  kp_translation
+    200.0, 200.0, 200.0,   // [3-5]  kp_rotation
     0.01,                // [6]    damping
     0.5,                 // [7]    null_kp
     0.0,                 // [8]    enable_null_space

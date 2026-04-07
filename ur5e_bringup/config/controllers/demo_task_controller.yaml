@@ -1,7 +1,7 @@
 demo_task_controller:
   # ── CLIK gains (robot arm task-space control) ──────────────────────────────
-  kp_translation: [40.0, 40.0, 40.0]   # Translation proportional gain (x, y, z) [1/s]
-  kp_rotation: [20.0, 20.0, 20.0]      # Rotation proportional gain (rx, ry, rz) [1/s]
+  kp_translation: [400.0, 400.0, 400.0]   # Translation proportional gain (x, y, z) [1/s]
+  kp_rotation: [200.0, 200.0, 200.0]      # Rotation proportional gain (rx, ry, rz) [1/s]
   damping: 0.005                      # Damped pseudoinverse lambda (singularity stabilization)
 
   # ── Null-space configuration ────────────────────────────────────────────────
