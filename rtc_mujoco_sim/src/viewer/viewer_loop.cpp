@@ -129,12 +129,13 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
       "  Camera     : TAB=cycle  Left=orbit  Right=pan  Scroll=zoom  Esc=reset\n"
       "  Physics    : G=gravity  N=contacts\n"
       "  Solver     : I=integrator  S=solver  ]/[=iterations  F4=stats\n"
-      "  Visualise  : C=cpoints  F=cforces  0-5=geomgroups  J=joints\n"
+      "  Frames     : B=link frames  J=joint axes  Shift+J=joint frames\n"
+      "  Visualise  : C=cpoints  F=cforces  0-5=geomgroups\n"
       "               U=actuators  E=inertia  W=sites  L=lights  A=tendons  X=hulls\n"
       "               T=transp  F5=wireframe  F6=shadow  F7=skybox  F8=reflect\n"
       "  Overlays   : F3=profiler  F9=sensors  F10=modelinfo\n"
       "  Perturb    : Dbl-click=select  Ctrl+Left=torque  Ctrl+Right=force\n"
-      "  Other      : P=screenshot\n");
+      "  Other      : P=screenshot  Backspace=reset vis\n");
 
   // ── Render loop ────────────────────────────────────────────────────────────
   while (!stop.stop_requested() && running_.load() &&
@@ -162,6 +163,7 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
     const mjrRect viewport{0, 0, width, height};
 
     mjv_updateScene(model_, vis_data, &opt, &vs.pert, &cam, mjCAT_ALL, &scn);
+    AddJointFrameGeoms(vs);
     mjr_render(viewport, &scn, &con);
 
     // ── Overlays ──────────────────────────────────────────────────────────
