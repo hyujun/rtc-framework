@@ -55,7 +55,8 @@ mujoco_simulator:
         command_topic: "/ur5e/joint_command"
         state_topic: "/joint_states"
         # sensor_topic: "/ur5e/sim_sensors"   # uncomment + add sensor_names to enable
-        # sensor_names: []                     # XML sensor names for this group
+        # sensor_names: ["auto"]               # "auto" = all XML sensors, or list specific names
+        # sensor_names: ["ft_sensor"]          # example: explicit sensor names
       hand:
         command_joint_names:
           - thumb_cmc_aa
@@ -71,7 +72,7 @@ mujoco_simulator:
         command_topic: "/hand/joint_command"
         state_topic: "/hand/joint_states"
         # sensor_topic: "/hand/sim_sensors"   # uncomment + add sensor_names to enable
-        # sensor_names: []                     # XML sensor names for this group
+        # sensor_names: ["auto"]               # "auto" = all XML sensors, or list specific names
 
     # ── Fake Response (LPF 에코백, MuJoCo 물리 아님) ─────────────────────────
     # robot_response와 같은 그룹 이름 중복 불가.

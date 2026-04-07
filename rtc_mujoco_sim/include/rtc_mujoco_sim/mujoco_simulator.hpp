@@ -441,6 +441,10 @@ class MuJoCoSimulator {
   bool MapGroupIndices(JointGroup& group) noexcept;
   // 단일 그룹의 state용 인덱스 매핑
   bool MapStateIndices(JointGroup& group) noexcept;
+  // XML에 정의된 모든 센서를 로그로 출력 (YAML 설정과 무관하게 항상 호출)
+  void LogAllXmlSensors() const noexcept;
+  // "auto" 키워드 시 XML 전체 센서 이름 목록 반환
+  std::vector<std::string> CollectAllXmlSensorNames() const noexcept;
   // 그룹의 sensor_names를 XML 센서와 매핑
   void MapSensorInfos(JointGroup& group,
                       const std::vector<std::string>& sensor_names) noexcept;
