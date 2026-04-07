@@ -663,7 +663,11 @@ ControllerOutput DemoTaskController::WriteOutput(
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
   }
-  ClampCommands(out0.target_velocities, nc0, device_position_lower_[0], device_position_upper_[0]);
+  // Clamp joint velocities by max velocity limits (symmetric ±max_vel)
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+    const double lim = (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
+    out0.target_velocities[i] = std::clamp(out0.target_velocities[i], -lim, lim);
+  }
 
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.commands[i] = dev0.positions[i] + out0.target_velocities[i] * dt;
