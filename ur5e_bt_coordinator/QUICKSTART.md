@@ -23,24 +23,17 @@ ros2 launch ur5e_bringup robot.launch.py robot_ip:=192.168.1.10
 ## 3. 기본 실행
 
 ```bash
-# Pick-and-Place 태스크 (기본)
-ros2 run ur5e_bt_coordinator bt_coordinator_node \
-  --ros-args \
-  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/bt_coordinator.yaml \
-  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
+# 기본 실행 (hand_motions.xml, YAML + 포즈 자동 로드)
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py
 
-# 다른 태스크 실행
-ros2 run ur5e_bt_coordinator bt_coordinator_node \
-  --ros-args -p tree_file:=towel_unfold.xml \
-             -p bb.sweep_direction_x:=1.0 \
-             -p bb.sweep_direction_y:=0.0 \
-             -p bb.sweep_distance:=0.3 \
-  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
+# Pick and Place
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place.xml
 
-# Hand Motions Demo
-ros2 run ur5e_bt_coordinator bt_coordinator_node \
-  --ros-args -p tree_file:=hand_motions.xml \
-  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
+# Towel Unfold
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=towel_unfold.xml
+
+# Hand Motions with repeat
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=hand_motions.xml repeat:=true
 ```
 
 ## 4. 런타임 제어
@@ -65,10 +58,7 @@ ros2 param set /bt_coordinator step_mode true
 ros2 service call /bt_coordinator/step std_srvs/srv/Trigger
 
 # Groot2 시각화 (포트 1667)
-ros2 run ur5e_bt_coordinator bt_coordinator_node \
-  --ros-args -p groot2_port:=1667 \
-  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/bt_coordinator.yaml \
-  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py groot2_port:=1667
 
 # 오프라인 트리 검증 (ROS 실행 불필요)
 ros2 run ur5e_bt_coordinator validate_tree pick_and_place.xml
@@ -82,8 +72,11 @@ ros2 run ur5e_bt_coordinator validate_tree pick_and_place.xml
 # 예: 엄지-검지 opposition 포즈 조정
 hand_pose.thumb_index_oppose: [15.0, 45.0, 35.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
 
-# 예: UR5e 데모 자세 조정
+# 예: UR5e 자세 조정 (12개 포즈 사용 가능: home_pose, demo_pose, ready,
+# table_top, front_reach, side_reach, handover, stow, look_up, look_down,
+# pick_ready, elevated)
 arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
+arm_pose.ready: [0.0, -90.0, 0.0, -90.0, -90.0, 0.0]
 ```
 
 런타임에도 변경 가능:

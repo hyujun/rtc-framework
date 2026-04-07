@@ -80,7 +80,7 @@ install(TARGETS bt_nodes
 install(DIRECTORY include/
   DESTINATION include
 )
-install(DIRECTORY config trees
+install(DIRECTORY config launch trees
   DESTINATION share/${PROJECT_NAME}
 )
 

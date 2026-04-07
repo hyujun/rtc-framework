@@ -9,7 +9,7 @@ UR5e + 10-DoF Hand 시스템을 위한 BehaviorTree 기반 task coordinator.
 
 ## 개요
 
-`bt_coordinator` 노드는 설정된 BT XML 트리를 로드하고, 지정된 주기(기본 100 Hz)로
+`bt_coordinator` 노드는 설정된 BT XML 트리를 로드하고, 지정된 주기(기본 80 Hz)로
 tick하면서 BT 노드들을 실행한다. 각 BT 노드는 `BtRosBridge`를 통해 ROS2 topic으로
 RT 제어 레이어와 통신하며, 기존 컨트롤러 코드를 수정하지 않는다.
 
@@ -18,7 +18,7 @@ E-STOP이 활성화되면 트리 tick이 자동으로 일시 정지된다.
 ## 아키텍처
 
 ```
-bt_coordinator (non-RT, 100 Hz)
+bt_coordinator (non-RT, 80 Hz)
   │
   │ publish                          subscribe
   ├─ /ur5e/joint_goal ──────────►  RtControllerNode (500 Hz RT)
@@ -54,7 +54,7 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 |-------|------------|------|
 | `/ur5e/joint_goal` | `rtc_msgs/RobotTarget` | Arm task-space 또는 joint-space 목표 |
 | `/hand/joint_goal` | `rtc_msgs/RobotTarget` | Hand 10-DoF 모터 목표 |
-| `/ur5e/gains` | `std_msgs/Float64MultiArray` | 컨트롤러 gain 업데이트 (DemoTask 19개 / DemoJoint 7개 요소) |
+| `/ur5e/controller_gains` | `std_msgs/Float64MultiArray` | 컨트롤러 gain 업데이트 (DemoTask 16개 / DemoJoint 4개 요소) |
 | `/ur5e/select_controller` | `std_msgs/String` | 컨트롤러 전환 명령 |
 
 ### 구독 (Subscribe)
@@ -75,7 +75,7 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 | Common Motions | `trees/common_motions.xml` | 재사용 가능한 공통 모션 SubTree 라이브러리 (DetectObject, ForceGrasp, LiftAndVerify 등) |
 | Pick and Place | `trees/pick_and_place.xml` | Vision 기반 물체 감지 → approach → force-based grasp → lift → transport → lower/release → retreat |
 | Towel Unfold | `trees/towel_unfold.xml` | 수건 edge 감지 → pinch pre-shape → approach → pinch grasp → lift → compliant sweep → lower/release → retreat |
-| Hand Motions | `trees/hand_motions.xml` | UR5e 자세 유지 + Hand 데모 (OppositionDemo → FingerArticulationDemo → WaveDemo) |
+| Hand Motions | `trees/hand_motions.xml` | UR5e 자세 유지 + Hand 데모 (OppositionDemo → WaveDemo) |
 
 ## BT 노드
 
@@ -87,7 +87,7 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 | `MoveToJoints` | StatefulAction | Joint-space 목표 이동, per-joint tolerance 도달 판정 | `target`, `tolerance`(0.01), `timeout_s`(10.0) |
 | `GraspControl` | StatefulAction | Hand open/close/pinch/preset 제어, 점진적 닫기 지원 | `mode`(close), `target_positions`, `close_speed`(0.3), `max_position`(1.4), `pinch_motors`("0,1,2,3"), `timeout_s`(8.0) |
 | `TrackTrajectory` | StatefulAction | Waypoint 시퀀스 순차 추적 (sweep motion 등) | `waypoints`, `position_tolerance`(0.01), `timeout_s`(30.0) |
-| `SetGains` | SyncAction | 컨트롤러 gain 동적 변경 (DemoTask 19개 / DemoJoint 7개 요소 배열) | `kp_translation`, `kp_rotation`, `trajectory_speed`, `trajectory_angular_speed`, `max_traj_velocity`, `max_traj_angular_velocity`, `hand_trajectory_speed`, `hand_max_traj_velocity`, `full_gains` |
+| `SetGains` | SyncAction | 컨트롤러 gain 동적 변경 (DemoTask 16개 / DemoJoint 4개 요소 배열) | `kp_translation`, `kp_rotation`, `damping`, `null_kp`, `enable_null_space`, `control_6dof`, `trajectory_speed`, `trajectory_angular_speed`, `max_traj_velocity`, `max_traj_angular_velocity`, `hand_trajectory_speed`, `hand_max_traj_velocity`, `full_gains` |
 | `SwitchController` | StatefulAction | 활성 컨트롤러 전환 (joint ↔ task) | `controller_name`, `timeout_s`(3.0) |
 | `ComputeOffsetPose` | SyncAction | Pose에 XYZ offset 적용 (approach, lift, retreat 계산) | `input_pose`, `offset_x`(0.0), `offset_y`(0.0), `offset_z`(0.0) → 출력: `output_pose` |
 | `ComputeSweepTrajectory` | SyncAction | Arc sweep 경로 waypoint 생성 (towel unfold용, sinusoidal arc 프로파일) | `start_pose`, `direction_x`(1.0), `direction_y`(0.0), `distance`(0.3), `arc_height`(0.05), `num_waypoints`(8) → 출력: `waypoints` |
@@ -112,8 +112,8 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 
 | 파라미터 | 기본값 | 설명 |
 |----------|--------|------|
-| `tree_file` | `"pick_and_place.xml"` | BT XML 파일명 (`trees/` 디렉토리 기준, 절대 경로도 지원) |
-| `tick_rate_hz` | `100.0` | BT tick 주기 [Hz] |
+| `tree_file` | `"hand_motions.xml"` | BT XML 파일명 (`trees/` 디렉토리 기준, 절대 경로도 지원) |
+| `tick_rate_hz` | `80.0` | BT tick 주기 [Hz] |
 | `repeat` | `false` | `true`면 트리 SUCCESS 완료 후 자동 반복 (FAILURE 시 정지) |
 | `repeat_delay_s` | `1.0` | 반복 시 재시작 전 대기 시간 [s] |
 | `paused` | `false` | `true`면 BT tick 일시 정지 |
@@ -190,12 +190,27 @@ arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
 | `thumb_flex` / `index_flex` / `middle_flex` / `ring_flex` | FlexExtendFinger용 flex 타겟 (전체 손가락) |
 | `thumb_mcp_flex` / `index_dip_flex` / `middle_dip_flex` | FlexExtendFinger용 flex 타겟 (단일 관절) |
 
-`kUR5ePoses` 맵에 정의된 UR5e 포즈 (6-DoF):
+`kUR5ePoses` 맵에 정의된 UR5e 포즈 (6-DoF, 컴파일타임):
 
 | 포즈 이름 | 용도 |
 |-----------|------|
-| `home_pose` | 기본 자세 (0°) |
+| `home_pose` | 기본 자세 (전체 0°) |
 | `demo_pose` | 데모 자세 (0, -90, 90, -90, -90, 0°) |
+
+`poses.yaml`에 정의된 UR5e 런타임 포즈 (6-DoF):
+
+| 포즈 이름 | 용도 |
+|-----------|------|
+| `ready` | 작업 준비 자세 (팔을 세운 상태에서 약간 앞으로) |
+| `table_top` | 테이블 위 작업 자세 |
+| `front_reach` | 전방 수평 도달 |
+| `side_reach` | 측면 도달 (왼쪽) |
+| `handover` | 핸드오버 자세 (사람에게 물체 전달) |
+| `stow` | 컴팩트 수납 자세 (로봇 몸쪽으로 접기) |
+| `look_up` | 상향 관찰 (end-effector가 위를 향함) |
+| `look_down` | 하향 관찰 (end-effector가 아래를 향함) |
+| `pick_ready` | 픽업 대기 (테이블 위 물체 집기 직전) |
+| `elevated` | 높은 위치 (물체를 들어올린 상태) |
 
 손가락-관절 인덱스 매핑 (`kFingerJointIndices`):
 
@@ -213,37 +228,31 @@ arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
 
 `SetGains` 노드가 발행하는 gain 배열.
 
-**DemoTaskController (19개 요소):**
+**DemoTaskController (16개 요소):**
 
 | 인덱스 | 필드 | 기본값 |
 |--------|------|--------|
-| 0-2 | `kp_translation` (X, Y, Z) | 15.0, 15.0, 15.0 |
-| 3-5 | `kp_rotation` (R, P, Y) | 5.0, 5.0, 5.0 |
+| 0-2 | `kp_translation` (X, Y, Z) | 40.0, 40.0, 40.0 |
+| 3-5 | `kp_rotation` (R, P, Y) | 20.0, 20.0, 20.0 |
 | 6 | `damping` | 0.01 |
 | 7 | `null_kp` | 0.5 |
 | 8 | `enable_null_space` | 0.0 |
 | 9 | `control_6dof` | 1.0 |
 | 10 | `trajectory_speed` | 0.1 |
-| 11 | `trajectory_angular_speed` | 0.5 |
-| 12 | `hand_trajectory_speed` | 1.0 |
+| 11 | `trajectory_angular_speed` | 0.78 |
+| 12 | `hand_trajectory_speed` | 3.14 |
 | 13 | `max_traj_velocity` | 0.5 |
-| 14 | `max_traj_angular_velocity` | 1.0 |
-| 15 | `hand_max_traj_velocity` | 2.0 |
-| 16 | `grasp_contact_threshold` | 0.5 |
-| 17 | `grasp_force_threshold` | 1.0 |
-| 18 | `grasp_min_fingertips` | 2 |
+| 14 | `max_traj_angular_velocity` | 1.57 |
+| 15 | `hand_max_traj_velocity` | 6.28 |
 
-**DemoJointController (7개 요소):**
+**DemoJointController (4개 요소):**
 
 | 인덱스 | 필드 | 기본값 |
 |--------|------|--------|
-| 0 | `robot_trajectory_speed` | 0.78 |
+| 0 | `robot_trajectory_speed` | 0.1 |
 | 1 | `hand_trajectory_speed` | 3.14 |
-| 2 | `robot_max_traj_velocity` | 3.14 |
+| 2 | `robot_max_traj_velocity` | 0.5 |
 | 3 | `hand_max_traj_velocity` | 6.28 |
-| 4 | `grasp_contact_threshold` | 0.5 |
-| 5 | `grasp_force_threshold` | 1.0 |
-| 6 | `grasp_min_fingertips` | 2 |
 
 ## 의존성
 
@@ -280,8 +289,43 @@ RT 컨트롤러와 시뮬레이터(또는 실제 로봇)가 먼저 실행되어 
 ros2 launch ur5e_bringup sim.launch.py
 ```
 
+### Launch 파일 (권장)
+
 ```bash
-# Pick and Place (기본, YAML 설정 + 포즈 파일 사용)
+# 기본 실행 (hand_motions.xml, YAML 설정 + 포즈 자동 로드)
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py
+
+# Pick and Place
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place.xml
+
+# Towel Unfold
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=towel_unfold.xml
+
+# 반복 실행
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place.xml repeat:=true repeat_delay:=2.0
+
+# Groot2 시각화 연결
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py groot2_port:=1667
+
+# 일시정지 상태로 시작 (step 모드 디버깅용)
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py paused:=true
+```
+
+**Launch arguments:**
+
+| Argument | 기본값 | 설명 |
+|----------|--------|------|
+| `tree` | (YAML 기본값) | BT tree XML 파일명 |
+| `tick_rate` | 0 (=YAML 80Hz) | BT tick 주기 [Hz] |
+| `repeat` | (YAML 기본값) | SUCCESS 시 자동 반복 |
+| `repeat_delay` | 0 (=YAML 1.0s) | 반복 전 대기 시간 [s] |
+| `paused` | (YAML 기본값) | 일시정지 상태로 시작 |
+| `groot2_port` | 0 (비활성) | Groot2 ZMQ 포트 |
+
+### 직접 실행 (ros2 run)
+
+```bash
+# YAML 설정 + 포즈 파일을 직접 지정
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
   --ros-args \
   --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/bt_coordinator.yaml \
@@ -295,22 +339,6 @@ ros2 run ur5e_bt_coordinator bt_coordinator_node \
   -p bb.sweep_distance:=0.3 \
   --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
 
-# Hand Motions Demo (UR5e 자세 유지 + 가감속 opposition/wave)
-ros2 run ur5e_bt_coordinator bt_coordinator_node \
-  --ros-args -p tree_file:=hand_motions.xml \
-  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
-
-# Pick and Place 반복 실행
-ros2 run ur5e_bt_coordinator bt_coordinator_node \
-  --ros-args -p tree_file:=pick_and_place.xml -p repeat:=true -p repeat_delay_s:=2.0 \
-  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
-
-# Groot2 시각화 연결 (포트 1667)
-ros2 run ur5e_bt_coordinator bt_coordinator_node \
-  --ros-args -p groot2_port:=1667 \
-  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/bt_coordinator.yaml \
-  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
-
 # 오프라인 트리 검증 (ROS 실행 불필요)
 ros2 run ur5e_bt_coordinator validate_tree pick_and_place.xml
 ```
@@ -322,6 +350,8 @@ ur5e_bt_coordinator/
 ├── config/
 │   ├── bt_coordinator.yaml          # ROS2 파라미터 (트리, tick rate, 런타임 제어, bb.*)
 │   └── poses.yaml                   # Hand/UR5e 포즈 오버라이드 (deg 단위, 재컴파일 불필요)
+├── launch/
+│   └── bt_coordinator.launch.py     # Launch 파일 (YAML + poses 자동 로드, launch arg 지원)
 ├── trees/
 │   ├── common_motions.xml           # 재사용 가능 공통 모션 SubTree
 │   ├── pick_and_place.xml           # 물체 파지 시나리오
