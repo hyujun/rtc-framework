@@ -14,22 +14,23 @@ demo_task_controller:
   # ── Trajectory speed ───────────────────────────────────────────────────────
   # Desired speed for trajectory duration calculation.
   # Duration = max_dist / trajectory_speed.
-  trajectory_speed: 0.1              # TCP max translational speed [m/s]
-  trajectory_angular_speed: 0.78      # TCP max rotational speed [rad/s] (6-DOF mode)
+  trajectory_speed: 0.01              # TCP max translational speed [m/s]
+  trajectory_angular_speed: 0.08727   # TCP max rotational speed [rad/s] (6-DOF mode)
   hand_trajectory_speed: 3.14         # Hand motor trajectory speed [rad/s]
 
   # ── Trajectory velocity limits ──────────────────────────────────────────────
   # Max peak velocity during quintic trajectory.
   # Duration is extended so that peak velocity ≤ this limit.
   # (quintic rest-to-rest peak = 15/8 × Δ / T)
-  max_traj_velocity: 0.5             # Max TCP translational velocity [m/s]
-  max_traj_angular_velocity: 1.57     # Max TCP angular velocity [rad/s] (6-DOF mode)
+  max_traj_velocity: 0.1              # Max TCP translational velocity [m/s]
+  max_traj_angular_velocity: 0.7854   # Max TCP angular velocity [rad/s] (6-DOF mode)
   hand_max_traj_velocity: 6.28       # Max hand motor velocity [rad/s]
 
   # ── Virtual TCP (fingertip-based control point) ─────────────────────────────
   # Mode: "disabled" (default), "centroid", "weighted", "constant"
   virtual_tcp_mode: "centroid"
   virtual_tcp_offset: [0.0, 0.0, 0.1]   # constant mode: [x, y, z] in TCP frame [m]
+  virtual_tcp_orientation: [1.5708, 0.0, -1.5708]  # RPY [rad] orientation of vtcp in TCP frame
 
   # ── Grasp detection ─────────────────────────────────────────────────────────
   grasp_contact_threshold: 0.5   # Contact probability threshold (0.0~1.0)

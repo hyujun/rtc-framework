@@ -154,6 +154,12 @@ void DemoTaskController::ComputeVirtualTcp(
   vtcp_valid_ = false;
   if (!hand_handle_ || gains_.virtual_tcp_mode == VirtualTcpMode::kDisabled) return;
 
+  // Pre-compute vtcp orientation from RPY config (applied to all modes)
+  const Eigen::Matrix3d R_tcp_vtcp = pinocchio::rpy::rpyToMatrix(
+      gains_.virtual_tcp_orientation[0],
+      gains_.virtual_tcp_orientation[1],
+      gains_.virtual_tcp_orientation[2]);
+
   switch (gains_.virtual_tcp_mode) {
     case VirtualTcpMode::kCentroid: {
       Eigen::Vector3d sum = Eigen::Vector3d::Zero();
@@ -170,7 +176,7 @@ void DemoTaskController::ComputeVirtualTcp(
       }
       if (count == 0) return;
       T_tcp_vtcp_.translation() = sum / static_cast<double>(count);
-      T_tcp_vtcp_.rotation().setIdentity();
+      T_tcp_vtcp_.rotation() = R_tcp_vtcp;
       break;
     }
     case VirtualTcpMode::kWeighted: {
@@ -195,7 +201,7 @@ void DemoTaskController::ComputeVirtualTcp(
       }
       if (total_weight <= 0.0) return;
       T_tcp_vtcp_.translation() = sum / total_weight;
-      T_tcp_vtcp_.rotation().setIdentity();
+      T_tcp_vtcp_.rotation() = R_tcp_vtcp;
       break;
     }
     case VirtualTcpMode::kConstant: {
@@ -203,7 +209,7 @@ void DemoTaskController::ComputeVirtualTcp(
         gains_.virtual_tcp_offset[0],
         gains_.virtual_tcp_offset[1],
         gains_.virtual_tcp_offset[2]);
-      T_tcp_vtcp_.rotation().setIdentity();
+      T_tcp_vtcp_.rotation() = R_tcp_vtcp;
       break;
     }
     default: return;
@@ -346,16 +352,25 @@ void DemoTaskController::ComputeControl(
 
   // ── Control pose: virtual TCP or tool0 ────────────────────────────────
   pinocchio::SE3 control_pose = tcp_pose;
+  bool use_vtcp_frame = false;
   if (vtcp_valid_) {
     control_pose = vtcp_pose_;
+    use_vtcp_frame = true;
 
-    // Modify Jacobian: J_vtcp_lin = J_tcp_lin - skew(offset) * J_tcp_ang
+    // Modify translational Jacobian for offset: J_vtcp_lin = J_tcp_lin - skew(offset) * J_tcp_ang
     const Eigen::Vector3d offset =
         vtcp_pose_.translation() - tcp_pose.translation();
     skew_buf_ <<       0.0, -offset(2),  offset(1),
                  offset(2),        0.0, -offset(0),
                 -offset(1),  offset(0),        0.0;
     J_full_.topRows(3) -= skew_buf_ * J_full_.bottomRows(3);
+
+    // Rotate full Jacobian from world-aligned frame to vtcp frame
+    // J_full_ is LOCAL_WORLD_ALIGNED (world frame) → R_vtcp^T * J for vtcp frame
+    const Eigen::Matrix3d R_vtcp_T = vtcp_pose_.rotation().transpose();
+    J_full_.topRows(3) = R_vtcp_T * J_full_.topRows(3);
+    J_full_.bottomRows(3) = R_vtcp_T * J_full_.bottomRows(3);
+
     J_pos_.noalias() = J_full_.topRows(3);
   }
 
@@ -412,8 +427,18 @@ void DemoTaskController::ComputeControl(
   pinocchio::SE3 T_current_desired = control_pose.actInv(traj_state_.pose);
   pinocchio::Motion twist_error = pinocchio::log6(T_current_desired);
 
-  Eigen::Vector3d p_err = traj_state_.pose.translation() - ctrl_pos;
-  Eigen::Vector3d r_err = control_pose.rotation() * twist_error.angular();
+  Eigen::Vector3d p_err;
+  Eigen::Vector3d r_err;
+  if (use_vtcp_frame) {
+    // Jacobian is in vtcp frame → error must also be in vtcp frame (local)
+    // log6 returns twist in local (control_pose = vtcp) frame — use directly
+    p_err = twist_error.linear();
+    r_err = twist_error.angular();
+  } else {
+    // Default: world-aligned frame (matches LOCAL_WORLD_ALIGNED Jacobian)
+    p_err = traj_state_.pose.translation() - ctrl_pos;
+    r_err = control_pose.rotation() * twist_error.angular();
+  }
 
   pos_error_6d_.head<3>() = p_err;
   pos_error_6d_.tail<3>() = r_err;
@@ -437,8 +462,15 @@ void DemoTaskController::ComputeControl(
     }
 
     Eigen::Matrix<double, 6, 1> task_vel_6d = kp_vec_6d.cwiseProduct(pos_error_6d_);
-    task_vel_6d.head<3>() += traj_state_.velocity.linear();
-    task_vel_6d.tail<3>() += control_pose.rotation() * traj_state_.velocity.angular();
+    if (use_vtcp_frame) {
+      // Trajectory velocity is in local (vtcp) frame — matches Jacobian frame
+      task_vel_6d.head<3>() += traj_state_.velocity.linear();
+      task_vel_6d.tail<3>() += traj_state_.velocity.angular();
+    } else {
+      // Default: world-aligned feedforward
+      task_vel_6d.head<3>() += traj_state_.velocity.linear();
+      task_vel_6d.tail<3>() += control_pose.rotation() * traj_state_.velocity.angular();
+    }
 
     dq_.noalias() = Jpinv_6d_ * task_vel_6d;
   } else {
@@ -449,6 +481,8 @@ void DemoTaskController::ComputeControl(
     Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
 
     Eigen::Vector3d kp_vec(gains_.kp_translation[0], gains_.kp_translation[1], gains_.kp_translation[2]);
+    // In both vtcp and world frame cases, traj_state_.velocity.linear() is already
+    // consistent with the error frame (local for vtcp, world-aligned for default)
     Eigen::Vector3d task_vel = kp_vec.cwiseProduct(pos_error_) + traj_state_.velocity.linear();
     dq_.noalias() = Jpinv_ * task_vel;
   }
@@ -457,7 +491,11 @@ void DemoTaskController::ComputeControl(
   if (gains_.control_6dof) {
     Eigen::Matrix<double, 6, 1> ff_vel_6d;
     ff_vel_6d.head<3>() = traj_state_.velocity.linear();
-    ff_vel_6d.tail<3>() = control_pose.rotation() * traj_state_.velocity.angular();
+    if (use_vtcp_frame) {
+      ff_vel_6d.tail<3>() = traj_state_.velocity.angular();
+    } else {
+      ff_vel_6d.tail<3>() = control_pose.rotation() * traj_state_.velocity.angular();
+    }
     traj_dq_.noalias() = Jpinv_6d_ * ff_vel_6d;
   } else {
     traj_dq_.noalias() = Jpinv_ * traj_state_.velocity.linear();
@@ -625,7 +663,11 @@ ControllerOutput DemoTaskController::WriteOutput(
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
   }
-  ClampCommands(out0.target_velocities, nc0, device_position_lower_[0], device_position_upper_[0]);
+  // Clamp joint velocities by max velocity limits (symmetric ±max_vel)
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+    const double lim = (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
+    out0.target_velocities[i] = std::clamp(out0.target_velocities[i], -lim, lim);
+  }
 
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.commands[i] = dev0.positions[i] + out0.target_velocities[i] * dt;
@@ -990,6 +1032,11 @@ void DemoTaskController::LoadConfig(const YAML::Node & cfg)
   if (cfg["virtual_tcp_offset"] && cfg["virtual_tcp_offset"].IsSequence()) {
     for (std::size_t i = 0; i < 3 && i < cfg["virtual_tcp_offset"].size(); ++i) {
       gains_.virtual_tcp_offset[i] = cfg["virtual_tcp_offset"][i].as<double>();
+    }
+  }
+  if (cfg["virtual_tcp_orientation"] && cfg["virtual_tcp_orientation"].IsSequence()) {
+    for (std::size_t i = 0; i < 3 && i < cfg["virtual_tcp_orientation"].size(); ++i) {
+      gains_.virtual_tcp_orientation[i] = cfg["virtual_tcp_orientation"][i].as<double>();
     }
   }
 
