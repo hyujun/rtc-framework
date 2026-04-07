@@ -353,14 +353,40 @@ void DemoJointController::ComputeControl(
     grasp_state_.min_fingertips_for_grasp = min_fingers;
     grasp_state_.grasp_detected           = (active_count >= min_fingers);
 
-    // ContactStopHand: 힘 감지 시 hand trajectory 출력을 현재 위치로 동결
-    // → BT tick(50ms) 사이에도 과도한 hand closure 방지
-    if (active_count > 0 && max_force > force_thresh) {
-      if (state.num_devices > 1 && state.devices[1].valid) {
-        const auto& dev1 = state.devices[1];
-        for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors); ++i) {
-          hand_computed_.positions[i] = dev1.positions[i];
-          hand_computed_.velocities[i] = 0.0;
+    // Hand grasp control: force_pi (adaptive PI) or contact_stop (binary freeze)
+    if (grasp_controller_ && grasp_controller_type_ == "force_pi") {
+      // Build force input: 3 fingers의 force magnitude
+      std::array<double, rtc::grasp::kNumGraspFingers> f_raw{};
+      for (int f = 0; f < rtc::grasp::kNumGraspFingers; ++f) {
+        f_raw[static_cast<std::size_t>(f)] =
+          static_cast<double>(grasp_state_.force_magnitude[static_cast<std::size_t>(f)]);
+      }
+
+      const auto commands = grasp_controller_->Update(
+        std::span<const double, rtc::grasp::kNumGraspFingers>(f_raw), dt);
+
+      if (grasp_controller_->phase() != rtc::grasp::GraspPhase::kIdle) {
+        // Force PI 활성: fingers 0-2 (joints 0-8) 덮어쓰기
+        for (int f = 0; f < rtc::grasp::kNumGraspFingers; ++f) {
+          for (int j = 0; j < rtc::grasp::kDoFPerFinger; ++j) {
+            const auto mi = static_cast<std::size_t>(
+              kFingerJointMap[static_cast<std::size_t>(f)][static_cast<std::size_t>(j)]);
+            hand_computed_.positions[mi] = commands.q[static_cast<std::size_t>(f)][static_cast<std::size_t>(j)];
+            hand_computed_.velocities[mi] = 0.0;
+          }
+        }
+        // joint 9 (ring)는 trajectory 출력 그대로 유지
+      }
+    } else {
+      // ContactStopHand: 힘 감지 시 hand trajectory 출력을 현재 위치로 동결
+      // → BT tick(50ms) 사이에도 과도한 hand closure 방지
+      if (active_count > 0 && max_force > force_thresh) {
+        if (state.num_devices > 1 && state.devices[1].valid) {
+          const auto& dev1 = state.devices[1];
+          for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors); ++i) {
+            hand_computed_.positions[i] = dev1.positions[i];
+            hand_computed_.velocities[i] = 0.0;
+          }
         }
       }
     }
@@ -463,6 +489,19 @@ ControllerOutput DemoJointController::WriteOutput(
       out1.goal_positions[i] = device_targets_[1][i];
     }
     ClampCommands(out1.commands, nc1, device_position_lower_[1], device_position_upper_[1]);
+  }
+
+  // Populate force-PI grasp state if active
+  if (grasp_controller_ && grasp_controller_type_ == "force_pi") {
+    grasp_state_.grasp_phase = static_cast<uint8_t>(grasp_controller_->phase());
+    grasp_state_.grasp_target_force = static_cast<float>(grasp_controller_->target_force());
+    const auto& fs = grasp_controller_->finger_states();
+    for (int f = 0; f < rtc::grasp::kNumGraspFingers; ++f) {
+      const auto idx = static_cast<std::size_t>(f);
+      grasp_state_.finger_s[idx] = static_cast<float>(fs[idx].s);
+      grasp_state_.finger_filtered_force[idx] = static_cast<float>(fs[idx].f_measured);
+      grasp_state_.finger_force_error[idx] = static_cast<float>(fs[idx].f_desired - fs[idx].f_measured);
+    }
   }
 
   output.command_type = command_type_;
@@ -606,6 +645,64 @@ void DemoJointController::LoadConfig(const YAML::Node & cfg)
     const auto s = cfg["command_type"].as<std::string>();
     command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
+
+  // ── Force-PI grasp controller ─────────────────────────────────────────
+  if (cfg["grasp_controller_type"]) {
+    grasp_controller_type_ = cfg["grasp_controller_type"].as<std::string>();
+  }
+  if (grasp_controller_type_ == "force_pi" && cfg["force_pi_grasp"]) {
+    auto fp = cfg["force_pi_grasp"];
+    rtc::grasp::GraspParams gp;
+
+    if (fp["Kp_base"])               gp.Kp_base = fp["Kp_base"].as<double>();
+    if (fp["Ki_base"])               gp.Ki_base = fp["Ki_base"].as<double>();
+    if (fp["alpha_ema"])             gp.alpha_ema = fp["alpha_ema"].as<double>();
+    if (fp["beta"])                  gp.beta = fp["beta"].as<double>();
+    if (fp["f_contact_threshold"])   gp.f_contact_threshold = fp["f_contact_threshold"].as<double>();
+    if (fp["f_target"])              gp.f_target = fp["f_target"].as<double>();
+    if (fp["f_ramp_rate"])           gp.f_ramp_rate = fp["f_ramp_rate"].as<double>();
+    if (fp["ds_max"])                gp.ds_max = fp["ds_max"].as<double>();
+    if (fp["delta_s_max"])           gp.delta_s_max = fp["delta_s_max"].as<double>();
+    if (fp["integral_clamp"])        gp.integral_clamp = fp["integral_clamp"].as<double>();
+    if (fp["approach_speed"])        gp.approach_speed = fp["approach_speed"].as<double>();
+    if (fp["release_speed"])         gp.release_speed = fp["release_speed"].as<double>();
+    if (fp["settle_epsilon"])        gp.settle_epsilon = fp["settle_epsilon"].as<double>();
+    if (fp["settle_time"])           gp.settle_time = fp["settle_time"].as<double>();
+    if (fp["contact_settle_time"])   gp.contact_settle_time = fp["contact_settle_time"].as<double>();
+    if (fp["df_slip_threshold"])     gp.df_slip_threshold = fp["df_slip_threshold"].as<double>();
+    if (fp["grip_tightening_ratio"]) gp.grip_tightening_ratio = fp["grip_tightening_ratio"].as<double>();
+    if (fp["f_max_multiplier"])      gp.f_max_multiplier = fp["f_max_multiplier"].as<double>();
+    if (fp["lpf_cutoff_hz"])         gp.lpf_cutoff_hz = fp["lpf_cutoff_hz"].as<double>();
+
+    // control_rate_hz from base class (set by controller manager)
+    gp.control_rate_hz = 1.0 / GetDefaultDt();
+
+    // Per-finger postures
+    std::array<rtc::grasp::FingerConfig, rtc::grasp::kNumGraspFingers> fconfigs;
+    if (fp["fingers"]) {
+      const std::array<std::string, 3> names = {"thumb", "index", "middle"};
+      for (int i = 0; i < rtc::grasp::kNumGraspFingers; ++i) {
+        if (fp["fingers"][names[static_cast<std::size_t>(i)]]) {
+          auto fn = fp["fingers"][names[static_cast<std::size_t>(i)]];
+          if (fn["q_open"]) {
+            auto seq = fn["q_open"];
+            for (int j = 0; j < rtc::grasp::kDoFPerFinger && j < static_cast<int>(seq.size()); ++j) {
+              fconfigs[static_cast<std::size_t>(i)].q_open[static_cast<std::size_t>(j)] = seq[j].as<double>();
+            }
+          }
+          if (fn["q_close"]) {
+            auto seq = fn["q_close"];
+            for (int j = 0; j < rtc::grasp::kDoFPerFinger && j < static_cast<int>(seq.size()); ++j) {
+              fconfigs[static_cast<std::size_t>(i)].q_close[static_cast<std::size_t>(j)] = seq[j].as<double>();
+            }
+          }
+        }
+      }
+    }
+
+    grasp_controller_ = std::make_unique<rtc::grasp::GraspController>();
+    grasp_controller_->Init(fconfigs, gp);
+  }
 }
 
 void DemoJointController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
@@ -613,7 +710,8 @@ void DemoJointController::UpdateGainsFromMsg(std::span<const double> gains) noex
   // layout: [robot_trajectory_speed, hand_trajectory_speed,
   //          robot_max_traj_velocity, hand_max_traj_velocity,
   //          grasp_contact_threshold, grasp_force_threshold,
-  //          grasp_min_fingertips] = 7 values
+  //          grasp_min_fingertips,
+  //          grasp_command, grasp_target_force] = 9 values
   if (gains.size() >= 1) {
     gains_.robot_trajectory_speed = gains[0];
   }
@@ -635,6 +733,16 @@ void DemoJointController::UpdateGainsFromMsg(std::span<const double> gains) noex
   if (gains.size() >= 7) {
     gains_.grasp_min_fingertips = static_cast<int>(gains[6]);
   }
+  // grasp_command: 0=none, 1=grasp, 2=release
+  if (gains.size() >= 8 && grasp_controller_) {
+    const int cmd = static_cast<int>(gains[7]);
+    if (cmd == 1) {
+      grasp_controller_->CommandGrasp(
+        (gains.size() >= 9) ? gains[8] : 0.0);
+    } else if (cmd == 2) {
+      grasp_controller_->CommandRelease();
+    }
+  }
 }
 
 std::vector<double> DemoJointController::GetCurrentGains() const noexcept
@@ -642,7 +750,8 @@ std::vector<double> DemoJointController::GetCurrentGains() const noexcept
   // layout: [robot_trajectory_speed, hand_trajectory_speed,
   //          robot_max_traj_velocity, hand_max_traj_velocity,
   //          grasp_contact_threshold, grasp_force_threshold,
-  //          grasp_min_fingertips] = 7 values
+  //          grasp_min_fingertips,
+  //          grasp_command, grasp_target_force] = 9 values
   return {
     gains_.robot_trajectory_speed,
     gains_.hand_trajectory_speed,
@@ -651,6 +760,8 @@ std::vector<double> DemoJointController::GetCurrentGains() const noexcept
     static_cast<double>(gains_.grasp_contact_threshold),
     static_cast<double>(gains_.grasp_force_threshold),
     static_cast<double>(gains_.grasp_min_fingertips),
+    0.0,  // grasp_command (read-only: always 0)
+    grasp_controller_ ? grasp_controller_->target_force() : 0.0,
   };
 }
 

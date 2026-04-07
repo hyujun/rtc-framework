@@ -15,3 +15,10 @@ float32   max_force             # 전체 핑거팁 중 최대 force magnitude
 bool      grasp_detected        # num_active_contacts >= min_fingertips
 float32   force_threshold       # 감지에 사용된 threshold [N]
 int32     min_fingertips        # grasp 판정 최소 핑거팁 수
+
+# Force-PI grasp controller state (grasp_controller_type == "force_pi" 전용)
+uint8     grasp_phase           # GraspPhase enum (0=Idle..5=Releasing)
+float32[] finger_s              # grasp parameter per finger [0,1]
+float32[] finger_filtered_force # filtered force per finger [N]
+float32[] finger_force_error    # force error per finger [N]
+float32   grasp_target_force    # active target force [N]

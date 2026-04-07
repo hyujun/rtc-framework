@@ -32,6 +32,7 @@ add_library(rtc_controllers STATIC
   src/controllers/indirect/clik_controller.cpp
   src/controllers/direct/joint_pd_controller.cpp
   src/controllers/direct/operational_space_controller.cpp
+  src/controllers/grasp/grasp_controller.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -101,6 +102,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_task_space_trajectory test/test_task_space_trajectory.cpp)
   target_link_libraries(test_task_space_trajectory rtc_controllers)
+
+  ament_add_gtest(test_grasp_controller test/test_grasp_controller.cpp)
+  target_link_libraries(test_grasp_controller rtc_controllers)
 endif()
 
 ament_package()

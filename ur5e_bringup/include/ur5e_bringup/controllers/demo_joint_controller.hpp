@@ -16,6 +16,7 @@
 #include <Eigen/Core>
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
+#include "rtc_controllers/grasp/grasp_controller.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 
 namespace ur5e_bringup
@@ -45,7 +46,8 @@ namespace trajectory = rtc::trajectory;
 //   [robot_trajectory_speed, hand_trajectory_speed,
 //    robot_max_traj_velocity, hand_max_traj_velocity,
 //    grasp_contact_threshold, grasp_force_threshold,
-//    grasp_min_fingertips] = 7 values
+//    grasp_min_fingertips,
+//    grasp_command, grasp_target_force] = 9 values
 class DemoJointController final : public RTControllerInterface {
 public:
   struct Gains
@@ -87,7 +89,8 @@ public:
   // gains layout: [robot_trajectory_speed, hand_trajectory_speed,
   //                robot_max_traj_velocity, hand_max_traj_velocity,
   //                grasp_contact_threshold, grasp_force_threshold,
-  //                grasp_min_fingertips] = 7 values
+  //                grasp_min_fingertips,
+  //                grasp_command, grasp_target_force] = 9 values
   void LoadConfig(const YAML::Node & cfg) override;
   void OnDeviceConfigsSet() override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
@@ -167,6 +170,14 @@ private:
     std::array<double, kMaxDeviceChannels>& commands, int n,
     const std::vector<double>& lower,
     const std::vector<double>& upper) noexcept;
+
+  // ── Grasp controller (force_pi mode) ──────────────────────────────────────
+  std::string grasp_controller_type_{"contact_stop"};
+  std::unique_ptr<rtc::grasp::GraspController> grasp_controller_;
+  /// Finger index → hand motor indices mapping (thumb, index, middle)
+  static constexpr std::array<std::array<int, 3>, 3> kFingerJointMap{{
+    {0, 1, 2}, {3, 4, 5}, {6, 7, 8}
+  }};
 
   // ── E-STOP ────────────────────────────────────────────────────────────────
   std::atomic<bool> estopped_{false};

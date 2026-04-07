@@ -178,6 +178,13 @@ struct GraspStateData {
   bool  grasp_detected{false};
   float force_threshold{1.0f};
   int   min_fingertips_for_grasp{2};
+
+  // Force-PI grasp controller state (grasp_controller_type == "force_pi" 전용)
+  uint8_t grasp_phase{0};                                      // GraspPhase enum
+  std::array<float, kMaxFingertips> finger_s{};                // grasp parameter [0,1]
+  std::array<float, kMaxFingertips> finger_filtered_force{};   // filtered force [N]
+  std::array<float, kMaxFingertips> finger_force_error{};      // force error [N]
+  float grasp_target_force{0.0f};                              // active target force [N]
 };
 
 // ToF snapshot data — trivially copyable, RT-safe (SPSC buffer 호환)

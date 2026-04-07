@@ -1854,6 +1854,17 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg)
           m.grasp_detected      = gs.grasp_detected;
           m.force_threshold     = gs.force_threshold;
           m.min_fingertips      = gs.min_fingertips_for_grasp;
+          // Force-PI grasp controller fields
+          m.grasp_phase = gs.grasp_phase;
+          m.grasp_target_force = gs.grasp_target_force;
+          m.finger_s.resize(nf);
+          m.finger_filtered_force.resize(nf);
+          m.finger_force_error.resize(nf);
+          for (std::size_t i = 0; i < nf; ++i) {
+            m.finger_s[i]              = gs.finger_s[i];
+            m.finger_filtered_force[i] = gs.finger_filtered_force[i];
+            m.finger_force_error[i]    = gs.finger_force_error[i];
+          }
           it->second.publisher->publish(m);
           return;
         }

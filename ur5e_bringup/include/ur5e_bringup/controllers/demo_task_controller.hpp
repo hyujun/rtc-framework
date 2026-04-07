@@ -6,6 +6,7 @@
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
 
+#include "rtc_controllers/grasp/grasp_controller.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
 
@@ -71,7 +72,7 @@ namespace trajectory = rtc::trajectory;
 ///    control_6dof(0/1), trajectory_speed, trajectory_angular_speed,
 ///    hand_trajectory_speed, max_traj_velocity, max_traj_angular_velocity,
 ///    hand_max_traj_velocity, grasp_contact_threshold, grasp_force_threshold,
-///    grasp_min_fingertips]` = 19 values
+///    grasp_min_fingertips, grasp_command, grasp_target_force]` = 21 values
 class DemoTaskController final : public RTControllerInterface {
 public:
   // ── Gain / feature configuration ─────────────────────────────────────────
@@ -133,7 +134,8 @@ public:
   //                hand_trajectory_speed, max_traj_velocity,
   //                max_traj_angular_velocity, hand_max_traj_velocity,
   //                grasp_contact_threshold, grasp_force_threshold,
-  //                grasp_min_fingertips] = 19 values
+  //                grasp_min_fingertips,
+  //                grasp_command, grasp_target_force] = 21 values
   void LoadConfig(const YAML::Node & cfg) override;
   void OnDeviceConfigsSet() override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
@@ -256,6 +258,13 @@ private:
   trajectory::JointSpaceTrajectory<kNumHandMotors> hand_trajectory_;
   double hand_trajectory_time_{0.0};
   std::atomic<bool> hand_new_target_{false};
+
+  // ── Grasp controller (force_pi mode) ──────────────────────────────────────
+  std::string grasp_controller_type_{"contact_stop"};
+  std::unique_ptr<rtc::grasp::GraspController> grasp_controller_;
+  static constexpr std::array<std::array<int, 3>, 3> kFingerJointMap{{
+    {0, 1, 2}, {3, 4, 5}, {6, 7, 8}
+  }};
 
   // ── E-STOP ────────────────────────────────────────────────────────────────
   std::atomic<bool> estopped_{false};
