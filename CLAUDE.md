@@ -39,10 +39,10 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 | `rtc_base` | Header-only | Types (`ControllerState`, `DeviceState`, `ControllerOutput`), SeqLock, SPSC buffers, threading (4/6/8/10/12/16-core), Bessel/Kalman filters, DataLogger, session_dir |
 | `rtc_communication` | Header-only | `TransportInterface` (abstract), `UdpSocket` RAII, `PacketCodec` concept, `Transceiver<T,C>` template |
 | `rtc_controller_interface` | Library | `RTControllerInterface` abstract base (Compute/SetDeviceTarget/InitializeHoldPosition/Name -- all noexcept), `ControllerRegistry` singleton, `RTC_REGISTER_CONTROLLER` macro |
-| `rtc_controllers` | Library | PController, JointPDController (Pinocchio RNEA), ClikController (Jacobian IK), OSC (6-DOF Cartesian PD) + quintic trajectory |
+| `rtc_controllers` | Library | PController, JointPDController (Pinocchio RNEA), ClikController (Jacobian IK), OSC (6-DOF Cartesian PD) + quintic trajectory + GraspController (adaptive PI force control) |
 | `rtc_controller_manager` | Executable | `RtControllerNode`: clock_nanosleep RT loop, SPSC publish offload, CSV logging, global E-STOP, controller lifecycle, digital twin auto-republish |
 | `rtc_inference` | Header-only | `InferenceEngine` abstract, `OnnxEngine` (IoBinding, pre-allocated buffers), `RunModels()` batch helper |
-| `rtc_msgs` | Messages | JointCommand, FingertipSensor, HandSensorState, GraspState, GuiPosition, RobotTarget, DeviceStateLog, DeviceSensorLog, ToFSnapshot |
+| `rtc_msgs` | Messages | JointCommand, FingertipSensor, HandSensorState, GraspState, GuiPosition, RobotTarget, DeviceStateLog, DeviceSensorLog, ToFSnapshot, SimSensor, SimSensorState |
 | `rtc_mujoco_sim` | Executable | MuJoCo 3.x wrapper: sync-step loop, GLFW viewer (40+ shortcuts), multi-group architecture (robot_response + fake_response), position servo gains |
 | `rtc_tools` | Python | controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf, hand_udp_sender, hand_data_plot, session_dir |
 | `rtc_scripts` | Shell | PREEMPT_RT kernel build, CPU shield (cset), IRQ affinity, UDP optimization, NVIDIA RT coexistence |
@@ -111,7 +111,10 @@ struct ControllerOutput { devices[4], actual_task_positions[6], task_goal_positi
                           valid, command_type, grasp_state };
 struct GraspStateData  { force_magnitude[8], contact_flag[8], inference_valid[8],
                          num_active_contacts, max_force, grasp_detected,
-                         force_threshold, min_fingertips_for_grasp };
+                         force_threshold, min_fingertips_for_grasp,
+                         // Force-PI grasp controller state (force_pi mode only)
+                         grasp_phase(uint8_t), finger_s[8], finger_filtered_force[8],
+                         finger_force_error[8], grasp_target_force };
 
 // Legacy types (still present, UR5e-specific — will be removed in PR3)
 struct RobotState     { positions[6], velocities[6], torques[6], tcp_position[3], dt, iteration };
@@ -156,8 +159,9 @@ Auto-selects 4/6/8/10/12/16-core layouts via `SelectThreadConfigs()`.
 | JointPDController | Direct (torque) | Joint | PD + Pinocchio RNEA gravity/Coriolis + feedforward velocity + JointSpaceTrajectory quintic |
 | ClikController | Indirect (position) | Cartesian 3/6-DOF | Damped Jacobian pseudoinverse (LDLT) + null-space + TaskSpaceTrajectory SE3 quintic |
 | OSC | Direct (torque) | Cartesian 6-DOF | Full pose (pos + SO(3) log3) + TaskSpaceTrajectory SE3 quintic + PartialPivLU |
-| DemoJointController | Indirect | Joint + Hand | Quintic rest-to-rest trajectory (arm 6-DOF + hand 10-DOF), ContactStopHand |
-| DemoTaskController | Indirect | Cartesian + Hand | CLIK arm + Quintic trajectory + Hand trajectory + E-STOP |
+| GraspController | N/A (internal) | Hand fingers | Adaptive PI force control, 6-state FSM (Idle/Approaching/Contact/ForceControl/Holding/Releasing), per-finger stiffness EMA, Bessel LPF |
+| DemoJointController | Indirect | Joint + Hand | Quintic rest-to-rest trajectory (arm 6-DOF + hand 10-DOF), ContactStopHand or Force-PI grasp (`grasp_controller_type` YAML) |
+| DemoTaskController | Indirect | Cartesian + Hand | CLIK arm + Quintic trajectory + Hand trajectory + E-STOP, ContactStopHand or Force-PI grasp (`grasp_controller_type` YAML) |
 
 ### Gains Layout (via `~/controller_gains` topic)
 
@@ -167,8 +171,20 @@ Auto-selects 4/6/8/10/12/16-core layouts via `SelectThreadConfigs()`.
 | **JointPDController** | `[kp x 6, kd x 6, gravity(0/1), coriolis(0/1), trajectory_speed]` | 15 |
 | **ClikController** | `[kp x 6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1)]` | 10 |
 | **OSC** | `[kp_pos x 3, kd_pos x 3, kp_rot x 3, kd_rot x 3, damping, gravity(0/1), traj_speed, traj_ang_speed]` | 16 |
-| **DemoJoint** | `[robot_trajectory_speed, hand_trajectory_speed, robot_max_traj_velocity, hand_max_traj_velocity]` | 4 |
-| **DemoTask** | `[kp_trans x 3, kp_rot x 3, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), traj_speed, traj_angular_speed, hand_traj_speed, max_vel, max_angular_vel, hand_max_vel]` | 16 |
+| **DemoJoint** | `[robot_trajectory_speed, hand_trajectory_speed, robot_max_traj_velocity, hand_max_traj_velocity]` + grasp gains via YAML | 4+ |
+| **DemoTask** | `[kp_trans x 3, kp_rot x 3, damping, null_kp, enable_null_space(0/1), control_6dof(0/1), traj_speed, traj_angular_speed, hand_traj_speed, max_vel, max_angular_vel, hand_max_vel]` + grasp gains via YAML | 16+ |
+
+### Grasp Controller (Force-PI)
+
+Internal controller used by DemoJoint/DemoTask (not a standalone registered controller). Selected via `grasp_controller_type: "force_pi"` in YAML (default: `"contact_stop"`).
+
+**State Machine**: `kIdle` -> `kApproaching` (position ramp) -> `kContact` (wait all fingers + settle) -> `kForceControl` (PI regulation + force ramp) -> `kHolding` (anomaly monitoring) -> `kReleasing` (reverse ramp)
+
+**Key Parameters** (`rtc_controllers/grasp/grasp_types.hpp`):
+- PI gains: `Kp_base=0.02`, `Ki_base=0.002` with adaptive stiffness EMA (`alpha_ema=0.95`, `beta=0.3`)
+- Force thresholds: `f_contact=0.2N`, `f_target=2.0N`, `f_ramp_rate=1.0 N/s`
+- Safety: `ds_max=0.05/s`, `delta_s_max=0.15` deformation guard, slip detection (`df_slip_threshold=5.0 N/s`)
+- 3 fingers x 3 DOF, interpolates `q_open`/`q_close` via scalar `s in [0,1]`
 
 ---
 
@@ -319,6 +335,23 @@ robot_response:
 # fake_response:   # alternative: LPF echo-back for devices not in MuJoCo XML
 ```
 
+### solver_param.yaml (MuJoCo constraint solver)
+
+```yaml
+solver:
+  solver: "Newton"           # Newton / CG / PGS
+  cone: "elliptic"           # pyramidal / elliptic
+  jacobian: "auto"           # auto / dense / sparse
+  integrator: "implicit"     # Euler / RK4 / implicit / implicitfast
+  iterations: 20             # main solver max iterations
+  tolerance: 1.0e-8
+  noslip_iterations: 0       # 0 = disabled; 10-20 for manipulation
+  impratio: 1.0              # friction/normal impedance ratio (5-10 for manipulation)
+  warmstart: true
+  contact_override:
+    enable: false             # override all contact solref/solimp/friction
+```
+
 ### hand_udp_node.yaml
 
 ```yaml
@@ -378,6 +411,8 @@ ONNX F/T inference runs per sensor cycle when calibrated: input `float32[1, 12, 
 | `DeviceStateLog` | actual_positions[], commands[], trajectory_positions[], motor_positions[] | CSV logging |
 | `DeviceSensorLog` | sensor_data_raw[], sensor_data[], inference_output[] | CSV logging |
 | `ToFSnapshot` | stamp, distances[6], valid[6], tip_poses[3] (geometry_msgs/Pose) | ToF + fingertip SE3 for shape estimation |
+| `SimSensor` | name, sensor_type (mjtSensor enum), values[] | Single MuJoCo sensor output |
+| `SimSensorState` | header, sensors[] (SimSensor array) | Aggregated MuJoCo sensor data per device group |
 
 ---
 
@@ -563,5 +598,10 @@ If `ApplyThreadConfig()` fails, the node continues at SCHED_OTHER with a `[WARN]
 | CycloneDDS config | `rtc_controller_manager/config/cyclone_dds.xml` |
 | UR5e URDF | `ur5e_description/robots/ur5e/urdf/ur5e.urdf` |
 | MuJoCo scene (with hand) | `ur5e_description/robots/ur5e/mjcf/scene_with_hand.xml` |
+| Grasp controller types/params | `rtc_controllers/include/rtc_controllers/grasp/grasp_types.hpp` |
+| Grasp controller implementation | `rtc_controllers/include/rtc_controllers/grasp/grasp_controller.hpp` |
+| MuJoCo solver params config | `rtc_mujoco_sim/config/solver_param.yaml` |
 | BT trees | `ur5e_bt_coordinator/trees/*.xml` |
+| BT coordinator launch | `ur5e_bt_coordinator/launch/bt_coordinator.launch.py` |
+| Arm poses (BT) | `ur5e_bt_coordinator/config/poses.yaml` |
 | Supplementary docs | `docs/` (RT_OPTIMIZATION.md, SHELL_SCRIPTS.md, VSCODE_DEBUGGING.md) |
