@@ -2,6 +2,7 @@
 #include "rtc_controllers/direct/operational_space_controller.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 
 #pragma GCC diagnostic push
@@ -41,6 +42,7 @@ OperationalSpaceController::OperationalSpaceController(
   J_full_ = Eigen::MatrixXd::Zero(6, nv);
   Jpinv_ = Eigen::MatrixXd::Zero(nv, 6);
   dq_ = Eigen::VectorXd::Zero(nv);
+  traj_dq_ = Eigen::VectorXd::Zero(nv);
   JJt_.setZero();
   task_err_.setZero();
   task_vel_.setZero();
@@ -113,32 +115,90 @@ ControllerOutput OperationalSpaceController::Compute(
   if (new_target_.load(std::memory_order_acquire)) {
     std::unique_lock lock(target_mutex_, std::try_to_lock);
     if (lock.owns_lock()) {
-      const double trans_dist =
-        (goal_pose_.translation() - tcp.translation()).norm();
-      const double ang_dist =
-        pinocchio::log3(goal_pose_.rotation() * tcp.rotation().transpose()).norm();
-      const double duration = std::max(
-        0.01,
-        std::max(trans_dist / gains_.trajectory_speed,
-                 ang_dist / gains_.trajectory_angular_speed));
+      const Eigen::Vector3d start_pos = tcp.translation();
+      const Eigen::Vector3d goal_pos = goal_pose_.translation();
+      const double trans_dist = (goal_pos - start_pos).norm();
 
-      trajectory_.initialize(tcp, pinocchio::Motion::Zero(), goal_pose_, pinocchio::Motion::Zero(),
-          duration);
+      // Duration from translational trajectory_speed and velocity limit.
+      // Quintic rest-to-rest peak velocity = (15/8) * dist / T.
+      const double T_speed_trans = trans_dist / gains_.trajectory_speed;
+      const double T_vel_trans = (gains_.max_traj_velocity > 0.0)
+          ? (1.875 * trans_dist / gains_.max_traj_velocity)
+          : 0.0;
+      double duration = std::max({0.01, T_speed_trans, T_vel_trans});
+
+      // Angular distance via AngleAxisd (stable at θ → π, unlike log3)
+      constexpr double kPiSafetyMargin = 0.15;  // rad ≈ 8.6°
+      const Eigen::AngleAxisd aa(
+          tcp.rotation().transpose() * goal_pose_.rotation());
+      const double angular_dist = aa.angle();       // always in [0, π]
+      const Eigen::Vector3d rot_axis = aa.axis();
+
+      const double T_speed_rot = angular_dist / gains_.trajectory_angular_speed;
+      const double T_vel_rot = (gains_.max_traj_angular_velocity > 0.0)
+          ? (1.875 * angular_dist / gains_.max_traj_angular_velocity)
+          : 0.0;
+      duration = std::max({duration, T_speed_rot, T_vel_rot});
+
+      const bool split_trajectory = (angular_dist > M_PI - kPiSafetyMargin);
+
+      if (split_trajectory) {
+        // ── π-rotation defense: split into 2 rest-to-rest segments ──
+        const double half_angle = angular_dist * 0.5;
+        const Eigen::Matrix3d R_mid = tcp.rotation() *
+            Eigen::AngleAxisd(half_angle, rot_axis).toRotationMatrix();
+
+        pinocchio::SE3 mid_pose;
+        mid_pose.translation() = 0.5 * (start_pos + goal_pos);
+        mid_pose.rotation() = R_mid;
+
+        // Segment 1: start → mid (half distances)
+        const double half_trans = trans_dist * 0.5;
+        const double T1_speed_t = half_trans / gains_.trajectory_speed;
+        const double T1_vel_t = (gains_.max_traj_velocity > 0.0)
+            ? (1.875 * half_trans / gains_.max_traj_velocity) : 0.0;
+        const double T1_speed_r = half_angle / gains_.trajectory_angular_speed;
+        const double T1_vel_r = (gains_.max_traj_angular_velocity > 0.0)
+            ? (1.875 * half_angle / gains_.max_traj_angular_velocity) : 0.0;
+        const double dur1 = std::max({0.01, T1_speed_t, T1_vel_t, T1_speed_r, T1_vel_r});
+
+        trajectory_.initialize(tcp, pinocchio::Motion::Zero(),
+                               mid_pose, pinocchio::Motion::Zero(), dur1);
+        pending_goal_pose_ = goal_pose_;
+        pending_duration_ = dur1;  // symmetric split
+        has_pending_segment_ = true;
+      } else {
+        trajectory_.initialize(tcp, pinocchio::Motion::Zero(),
+                               goal_pose_, pinocchio::Motion::Zero(),
+                               duration);
+        has_pending_segment_ = false;
+      }
+
       trajectory_time_ = 0.0;
       new_target_.store(false, std::memory_order_relaxed);
     }
   }
 
-  const auto traj_state = trajectory_.compute(trajectory_time_, dt);
+  traj_state_ = trajectory_.compute(trajectory_time_, dt);
   trajectory_time_ += dt;
+
+  // ── Segment transition (π-rotation defense) ────────────────────────────
+  if (has_pending_segment_ && trajectory_time_ >= trajectory_.duration()) {
+    pinocchio::SE3 mid_pose = trajectory_.compute(trajectory_.duration()).pose;
+    trajectory_.initialize(mid_pose, pinocchio::Motion::Zero(),
+                           pending_goal_pose_, pinocchio::Motion::Zero(),
+                           pending_duration_);
+    trajectory_time_ = 0.0;
+    has_pending_segment_ = false;
+  }
 
   // ── Step 4: 6D pose error w.r.t. trajectory setpoint ─────────────────────
   // 3D position error
-  const Eigen::Vector3d pos_err = traj_state.pose.translation() - tcp.translation();
+  const Eigen::Vector3d pos_err = traj_state_.pose.translation() - tcp.translation();
   tcp_position_ = {tcp.translation()[0], tcp.translation()[1], tcp.translation()[2]};
 
   // 3D orientation error via SO(3) logarithm
-  const Eigen::Matrix3d R_err = traj_state.pose.rotation() * tcp.rotation().transpose();
+  const Eigen::Matrix3d R_err = traj_state_.pose.rotation() * tcp.rotation().transpose();
   const Eigen::Vector3d rot_err = pinocchio::log3(R_err);
 
   task_err_.head<3>() = pos_err;
@@ -155,9 +215,9 @@ ControllerOutput OperationalSpaceController::Compute(
   Eigen::Vector3d kp_r(gains_.kp_rot[0], gains_.kp_rot[1], gains_.kp_rot[2]);
   Eigen::Vector3d kd_r(gains_.kd_rot[0], gains_.kd_rot[1], gains_.kd_rot[2]);
 
-  task_vel_.head<3>() = kp_p.cwiseProduct(pos_err) + traj_state.velocity.linear() -
+  task_vel_.head<3>() = kp_p.cwiseProduct(pos_err) + traj_state_.velocity.linear() -
     kd_p.cwiseProduct(tcp_vel_.head<3>());
-  task_vel_.tail<3>() = kp_r.cwiseProduct(rot_err) + traj_state.velocity.angular() -
+  task_vel_.tail<3>() = kp_r.cwiseProduct(rot_err) + traj_state_.velocity.angular() -
     kd_r.cwiseProduct(tcp_vel_.tail<3>());
 
   // ── Step 6: Damped pseudoinverse  J^# = J^T (J J^T + λ²I₆)^{−1} ─────────
@@ -169,6 +229,14 @@ ControllerOutput OperationalSpaceController::Compute(
 
   // ── Step 7: joint velocity from task-space velocity ───────────────────────
   dq_.noalias() = Jpinv_ * task_vel_;
+
+  // ── Feedforward-only trajectory velocity (for logging) ────────────────
+  {
+    Eigen::Matrix<double, 6, 1> ff_vel_6d;
+    ff_vel_6d.head<3>() = traj_state_.velocity.linear();
+    ff_vel_6d.tail<3>() = traj_state_.velocity.angular();
+    traj_dq_.noalias() = Jpinv_ * ff_vel_6d;
+  }
 
   // ── Step 8: optional gravity compensation ────────────────────────────────
   if (gains_.enable_gravity_compensation) {
@@ -182,6 +250,7 @@ ControllerOutput OperationalSpaceController::Compute(
   auto & out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
+  out0.goal_type = GoalType::kTask;
 
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
@@ -190,6 +259,10 @@ ControllerOutput OperationalSpaceController::Compute(
 
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.commands[i] = dev0.positions[i] + out0.target_velocities[i] * dt;
+    // Pure trajectory feedforward velocity (without PD error)
+    out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
+    // Trajectory-implied joint position = current + feedforward * dt
+    out0.trajectory_positions[i] = dev0.positions[i] + out0.trajectory_velocities[i] * dt;
   }
   for (std::size_t i = 0; i < 6; ++i) {
     out0.target_positions[i] = pose_target_[i];
@@ -216,6 +289,36 @@ ControllerOutput OperationalSpaceController::Compute(
   output.actual_task_positions[3] = rpy_current[0];
   output.actual_task_positions[4] = rpy_current[1];
   output.actual_task_positions[5] = rpy_current[2];
+
+  // Task-space goal target
+  {
+    Eigen::Vector3d goal_rpy = pinocchio::rpy::matrixToRpy(goal_pose_.rotation());
+    output.task_goal_positions[0] = pose_target_[0];
+    output.task_goal_positions[1] = pose_target_[1];
+    output.task_goal_positions[2] = pose_target_[2];
+    output.task_goal_positions[3] = goal_rpy[0];
+    output.task_goal_positions[4] = goal_rpy[1];
+    output.task_goal_positions[5] = goal_rpy[2];
+  }
+
+  // Task-space trajectory reference
+  {
+    const Eigen::Vector3d traj_pos = traj_state_.pose.translation();
+    Eigen::Vector3d traj_rpy = pinocchio::rpy::matrixToRpy(traj_state_.pose.rotation());
+    output.trajectory_task_positions[0] = traj_pos[0];
+    output.trajectory_task_positions[1] = traj_pos[1];
+    output.trajectory_task_positions[2] = traj_pos[2];
+    output.trajectory_task_positions[3] = traj_rpy[0];
+    output.trajectory_task_positions[4] = traj_rpy[1];
+    output.trajectory_task_positions[5] = traj_rpy[2];
+
+    output.trajectory_task_velocities[0] = traj_state_.velocity.linear()[0];
+    output.trajectory_task_velocities[1] = traj_state_.velocity.linear()[1];
+    output.trajectory_task_velocities[2] = traj_state_.velocity.linear()[2];
+    output.trajectory_task_velocities[3] = traj_state_.velocity.angular()[0];
+    output.trajectory_task_velocities[4] = traj_state_.velocity.angular()[1];
+    output.trajectory_task_velocities[5] = traj_state_.velocity.angular()[2];
+  }
 
   output.command_type = command_type_;
   return output;
@@ -275,6 +378,7 @@ void OperationalSpaceController::InitializeHoldPosition(
   trajectory_.initialize(tcp, pinocchio::Motion::Zero(),
                          tcp, pinocchio::Motion::Zero(), 0.01);
   trajectory_time_ = 0.0;
+  has_pending_segment_ = false;
 
   for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
     const auto & dev = state.devices[d];
@@ -376,6 +480,12 @@ void OperationalSpaceController::LoadConfig(const YAML::Node & cfg)
   if (cfg["trajectory_angular_speed"]) {
     gains_.trajectory_angular_speed = cfg["trajectory_angular_speed"].as<double>();
   }
+  if (cfg["max_traj_velocity"]) {
+    gains_.max_traj_velocity = cfg["max_traj_velocity"].as<double>();
+  }
+  if (cfg["max_traj_angular_velocity"]) {
+    gains_.max_traj_angular_velocity = cfg["max_traj_angular_velocity"].as<double>();
+  }
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
     command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
@@ -385,7 +495,8 @@ void OperationalSpaceController::LoadConfig(const YAML::Node & cfg)
 void OperationalSpaceController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
 {
   // layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1),
-  //          trajectory_speed, trajectory_angular_speed]
+  //          trajectory_speed, trajectory_angular_speed,
+  //          max_traj_velocity, max_traj_angular_velocity] = 18
   if (gains.size() < 14) {return;}
   for (std::size_t i = 0; i < 3; ++i) {
     gains_.kp_pos[i] = gains[i];
@@ -403,14 +514,17 @@ void OperationalSpaceController::UpdateGainsFromMsg(std::span<const double> gain
   gains_.enable_gravity_compensation = gains[13] > 0.5;
   if (gains.size() >= 15) {gains_.trajectory_speed = gains[14];}
   if (gains.size() >= 16) {gains_.trajectory_angular_speed = gains[15];}
+  if (gains.size() >= 17) {gains_.max_traj_velocity = gains[16];}
+  if (gains.size() >= 18) {gains_.max_traj_angular_velocity = gains[17];}
 }
 
 std::vector<double> OperationalSpaceController::GetCurrentGains() const noexcept
 {
   // layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1),
-  //          trajectory_speed, trajectory_angular_speed]
+  //          trajectory_speed, trajectory_angular_speed,
+  //          max_traj_velocity, max_traj_angular_velocity] = 18
   std::vector<double> v;
-  v.reserve(16);
+  v.reserve(18);
   v.insert(v.end(), gains_.kp_pos.begin(), gains_.kp_pos.end());
   v.insert(v.end(), gains_.kd_pos.begin(), gains_.kd_pos.end());
   v.insert(v.end(), gains_.kp_rot.begin(), gains_.kp_rot.end());
@@ -419,6 +533,8 @@ std::vector<double> OperationalSpaceController::GetCurrentGains() const noexcept
   v.push_back(gains_.enable_gravity_compensation ? 1.0 : 0.0);
   v.push_back(gains_.trajectory_speed);
   v.push_back(gains_.trajectory_angular_speed);
+  v.push_back(gains_.max_traj_velocity);
+  v.push_back(gains_.max_traj_angular_velocity);
   return v;
 }
 
