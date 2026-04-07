@@ -2,6 +2,7 @@
 #include "rtc_controllers/indirect/clik_controller.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 
 #pragma GCC diagnostic push
@@ -42,6 +43,7 @@ ClikController::ClikController(std::string_view urdf_path, Gains gains)
   Jpinv_ = Eigen::MatrixXd::Zero(nv, 3);
   N_ = Eigen::MatrixXd::Identity(nv, nv);
   dq_ = Eigen::VectorXd::Zero(nv);
+  traj_dq_ = Eigen::VectorXd::Zero(nv);
   null_err_ = Eigen::VectorXd::Zero(nv);
   null_dq_ = Eigen::VectorXd::Zero(nv);
   pos_error_ = Eigen::Vector3d::Zero();
@@ -136,17 +138,70 @@ ControllerOutput ClikController::Compute(
         goal_pose.translation() = Eigen::Vector3d(tcp_target_[0], tcp_target_[1], tcp_target_[2]);
       }
 
-      double max_dist = (goal_pose.translation() - start_pose.translation()).norm();
-      if (gains_.control_6dof) {
-        double angular_dist = pinocchio::log3(start_pose.rotation().transpose() *
-            goal_pose.rotation()).norm();
-        max_dist = std::max(max_dist, angular_dist * 0.2);
-      }
-      double duration = std::max(0.01, max_dist / gains_.trajectory_speed);
+      const Eigen::Vector3d start_pos = start_pose.translation();
+      const Eigen::Vector3d goal_pos = goal_pose.translation();
+      const double trans_dist = (goal_pos - start_pos).norm();
 
-      trajectory_.initialize(start_pose, pinocchio::Motion::Zero(),
-                             goal_pose, pinocchio::Motion::Zero(),
-                             duration);
+      // Duration from translational trajectory_speed and velocity limit.
+      // Quintic rest-to-rest peak velocity = (15/8) * dist / T.
+      const double T_speed_trans = trans_dist / gains_.trajectory_speed;
+      const double T_vel_trans = (gains_.max_traj_velocity > 0.0)
+          ? (1.875 * trans_dist / gains_.max_traj_velocity)
+          : 0.0;
+      double duration = std::max({0.01, T_speed_trans, T_vel_trans});
+
+      // Angular distance via AngleAxisd (stable at θ → π, unlike log3)
+      constexpr double kPiSafetyMargin = 0.15;  // rad ≈ 8.6°
+      double angular_dist = 0.0;
+      Eigen::Vector3d rot_axis = Eigen::Vector3d::UnitZ();  // fallback
+      bool split_trajectory = false;
+
+      if (gains_.control_6dof) {
+        const Eigen::AngleAxisd aa(
+            start_pose.rotation().transpose() * goal_pose.rotation());
+        angular_dist = aa.angle();       // always in [0, π]
+        rot_axis = aa.axis();
+
+        const double T_speed_rot = angular_dist / gains_.trajectory_angular_speed;
+        const double T_vel_rot = (gains_.max_traj_angular_velocity > 0.0)
+            ? (1.875 * angular_dist / gains_.max_traj_angular_velocity)
+            : 0.0;
+        duration = std::max({duration, T_speed_rot, T_vel_rot});
+
+        split_trajectory = (angular_dist > M_PI - kPiSafetyMargin);
+      }
+
+      if (split_trajectory) {
+        // ── π-rotation defense: split into 2 rest-to-rest segments ──
+        const double half_angle = angular_dist * 0.5;
+        const Eigen::Matrix3d R_mid = start_pose.rotation() *
+            Eigen::AngleAxisd(half_angle, rot_axis).toRotationMatrix();
+
+        pinocchio::SE3 mid_pose;
+        mid_pose.translation() = 0.5 * (start_pos + goal_pos);
+        mid_pose.rotation() = R_mid;
+
+        // Segment 1: start → mid (half distances)
+        const double half_trans = trans_dist * 0.5;
+        const double T1_speed_t = half_trans / gains_.trajectory_speed;
+        const double T1_vel_t = (gains_.max_traj_velocity > 0.0)
+            ? (1.875 * half_trans / gains_.max_traj_velocity) : 0.0;
+        const double T1_speed_r = half_angle / gains_.trajectory_angular_speed;
+        const double T1_vel_r = (gains_.max_traj_angular_velocity > 0.0)
+            ? (1.875 * half_angle / gains_.max_traj_angular_velocity) : 0.0;
+        const double dur1 = std::max({0.01, T1_speed_t, T1_vel_t, T1_speed_r, T1_vel_r});
+
+        trajectory_.initialize(start_pose, pinocchio::Motion::Zero(),
+                               mid_pose, pinocchio::Motion::Zero(), dur1);
+        pending_goal_pose_ = goal_pose;
+        pending_duration_ = dur1;  // symmetric split
+        has_pending_segment_ = true;
+      } else {
+        trajectory_.initialize(start_pose, pinocchio::Motion::Zero(),
+                               goal_pose, pinocchio::Motion::Zero(),
+                               duration);
+        has_pending_segment_ = false;
+      }
 
       trajectory_time_ = 0.0;
       new_target_.store(false, std::memory_order_relaxed);
@@ -154,22 +209,30 @@ ControllerOutput ClikController::Compute(
   }
 
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
-  auto traj_state = trajectory_.compute(trajectory_time_, dt);
+  traj_state_ = trajectory_.compute(trajectory_time_, dt);
   trajectory_time_ += dt;
+
+  // ── Segment transition (π-rotation defense) ────────────────────────────
+  if (has_pending_segment_ && trajectory_time_ >= trajectory_.duration()) {
+    pinocchio::SE3 mid_pose = trajectory_.compute(trajectory_.duration()).pose;
+    trajectory_.initialize(mid_pose, pinocchio::Motion::Zero(),
+                           pending_goal_pose_, pinocchio::Motion::Zero(),
+                           pending_duration_);
+    trajectory_time_ = 0.0;
+    has_pending_segment_ = false;
+  }
 
   tcp_position_ = {tcp[0], tcp[1], tcp[2]};
 
   // Positional error is trajectory - current
   // Rotation error is computed using log6/log3
-  pinocchio::SE3 T_current_desired = tcp_pose.actInv(traj_state.pose); // relative pose
+  pinocchio::SE3 T_current_desired = tcp_pose.actInv(traj_state_.pose); // relative pose
   pinocchio::Motion twist_error = pinocchio::log6(T_current_desired);
 
   // The twist_error is the spatial velocity needed in the LOCAL frame to reach target.
   // Converting it to the LOCAL_WORLD_ALIGNED frame (where J_full_ is expressed).
-  Eigen::Vector3d p_err = traj_state.pose.translation() - tcp;
-  Eigen::Vector3d r_err = twist_error.angular();
-  // We can just use p_err in world frame and r_err in world frame:
-  r_err = tcp_pose.rotation() * twist_error.angular();
+  Eigen::Vector3d p_err = tcp_pose.rotation() * twist_error.linear();
+  Eigen::Vector3d r_err = tcp_pose.rotation() * twist_error.angular();
 
   pos_error_6d_.head<3>() = p_err;
   pos_error_6d_.tail<3>() = r_err;
@@ -187,14 +250,15 @@ ControllerOutput ClikController::Compute(
     Jpinv_6d_.noalias() = J_full_.transpose() * JJt_inv_6d_;
 
     Eigen::Matrix<double, 6, 1> kp_vec_6d;
-    for (std::size_t i = 0; i < 6; ++i) {
-      kp_vec_6d[static_cast<Eigen::Index>(i)] = gains_.kp[i];
+    for (std::size_t i = 0; i < 3; ++i) {
+      kp_vec_6d[static_cast<Eigen::Index>(i)] = gains_.kp_translation[i];
+      kp_vec_6d[static_cast<Eigen::Index>(i + 3)] = gains_.kp_rotation[i];
     }
 
     Eigen::Matrix<double, 6, 1> task_vel_6d = kp_vec_6d.cwiseProduct(pos_error_6d_);
-    // Feedforward
-    task_vel_6d.head<3>() += traj_state.velocity.linear();
-    task_vel_6d.tail<3>() += tcp_pose.rotation() * traj_state.velocity.angular(); // to world frame
+    // Feedforward: local → world-aligned via R_current
+    task_vel_6d.head<3>() += tcp_pose.rotation() * traj_state_.velocity.linear();
+    task_vel_6d.tail<3>() += tcp_pose.rotation() * traj_state_.velocity.angular();
 
     dq_.noalias() = Jpinv_6d_ * task_vel_6d;
   } else {
@@ -205,9 +269,20 @@ ControllerOutput ClikController::Compute(
     JJt_inv_.noalias() = ldlt_.solve(Eigen::Matrix3d::Identity());
     Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
 
-    Eigen::Vector3d kp_vec(gains_.kp[0], gains_.kp[1], gains_.kp[2]);
-    Eigen::Vector3d task_vel = kp_vec.cwiseProduct(pos_error_) + traj_state.velocity.linear();
+    Eigen::Vector3d kp_vec(gains_.kp_translation[0], gains_.kp_translation[1], gains_.kp_translation[2]);
+    Eigen::Vector3d task_vel = kp_vec.cwiseProduct(pos_error_) +
+        tcp_pose.rotation() * traj_state_.velocity.linear();
     dq_.noalias() = Jpinv_ * task_vel;
+  }
+
+  // ── Feedforward-only trajectory velocity (for logging) ────────────────
+  if (gains_.control_6dof) {
+    Eigen::Matrix<double, 6, 1> ff_vel_6d;
+    ff_vel_6d.head<3>() = tcp_pose.rotation() * traj_state_.velocity.linear();
+    ff_vel_6d.tail<3>() = tcp_pose.rotation() * traj_state_.velocity.angular();
+    traj_dq_.noalias() = Jpinv_6d_ * ff_vel_6d;
+  } else {
+    traj_dq_.noalias() = Jpinv_ * (tcp_pose.rotation() * traj_state_.velocity.linear());
   }
 
   // ── Step 6: Null-space secondary task ────────────────────────────────────
@@ -230,6 +305,7 @@ ControllerOutput ClikController::Compute(
   auto & out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
+  out0.goal_type = GoalType::kTask;
 
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
@@ -238,9 +314,13 @@ ControllerOutput ClikController::Compute(
 
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.commands[i] = dev0.positions[i] + out0.target_velocities[i] * dt;
+    // Pure trajectory feedforward velocity (without Kp error / null-space)
+    out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
+    // Trajectory-implied joint position = current + feedforward * dt
+    out0.trajectory_positions[i] = dev0.positions[i] + out0.trajectory_velocities[i] * dt;
   }
   for (std::size_t i = 0; i < 3; ++i) {
-    out0.target_positions[i] = traj_state.pose.translation()[static_cast<Eigen::Index>(i)];
+    out0.target_positions[i] = traj_state_.pose.translation()[static_cast<Eigen::Index>(i)];
   }
   for (std::size_t i = 3; i < static_cast<std::size_t>(nc0); ++i) {
     out0.target_positions[i] = null_target_[i];
@@ -274,6 +354,41 @@ ControllerOutput ClikController::Compute(
   output.actual_task_positions[3] = rpy[0];
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
+
+  // Task-space goal target
+  output.task_goal_positions[0] = tcp_target_[0];
+  output.task_goal_positions[1] = tcp_target_[1];
+  output.task_goal_positions[2] = tcp_target_[2];
+  if (gains_.control_6dof) {
+    Eigen::Vector3d goal_rpy = pinocchio::rpy::matrixToRpy(
+        tcp_target_pose_.rotation());
+    output.task_goal_positions[3] = goal_rpy[0];
+    output.task_goal_positions[4] = goal_rpy[1];
+    output.task_goal_positions[5] = goal_rpy[2];
+  } else {
+    output.task_goal_positions[3] = rpy[0];
+    output.task_goal_positions[4] = rpy[1];
+    output.task_goal_positions[5] = rpy[2];
+  }
+
+  // Task-space trajectory reference
+  {
+    const Eigen::Vector3d traj_pos = traj_state_.pose.translation();
+    Eigen::Vector3d traj_rpy = pinocchio::rpy::matrixToRpy(traj_state_.pose.rotation());
+    output.trajectory_task_positions[0] = traj_pos[0];
+    output.trajectory_task_positions[1] = traj_pos[1];
+    output.trajectory_task_positions[2] = traj_pos[2];
+    output.trajectory_task_positions[3] = traj_rpy[0];
+    output.trajectory_task_positions[4] = traj_rpy[1];
+    output.trajectory_task_positions[5] = traj_rpy[2];
+
+    output.trajectory_task_velocities[0] = traj_state_.velocity.linear()[0];
+    output.trajectory_task_velocities[1] = traj_state_.velocity.linear()[1];
+    output.trajectory_task_velocities[2] = traj_state_.velocity.linear()[2];
+    output.trajectory_task_velocities[3] = traj_state_.velocity.angular()[0];
+    output.trajectory_task_velocities[4] = traj_state_.velocity.angular()[1];
+    output.trajectory_task_velocities[5] = traj_state_.velocity.angular()[2];
+  }
 
   output.command_type = command_type_;
   return output;
@@ -356,6 +471,7 @@ void ClikController::InitializeHoldPosition(
   trajectory_.initialize(tcp_pose, pinocchio::Motion::Zero(),
                          tcp_pose, pinocchio::Motion::Zero(), 0.01);
   trajectory_time_ = 0.0;
+  has_pending_segment_ = false;
 
   for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
     const auto & dev = state.devices[d];
@@ -427,17 +543,37 @@ void ClikController::LoadConfig(const YAML::Node & cfg)
 {
   RTControllerInterface::LoadConfig(cfg);
   if (!cfg) {return;}
-  if (cfg["kp"] && cfg["kp"].IsSequence()) {
-    std::size_t n = std::min<std::size_t>(cfg["kp"].size(), 6);
-    for (std::size_t i = 0; i < n; ++i) {
-      gains_.kp[i] = cfg["kp"][i].as<double>();
-    }
-  }
+
+  // CLIK gains — translation / rotation separated
+  auto load3 = [](const YAML::Node & n, std::array<double, 3> & arr) {
+      if (n && n.IsSequence() && n.size() >= 3) {
+        for (std::size_t i = 0; i < 3; ++i) {
+          arr[i] = n[i].as<double>();
+        }
+      }
+    };
+  load3(cfg["kp_translation"], gains_.kp_translation);
+  load3(cfg["kp_rotation"], gains_.kp_rotation);
+
   if (cfg["damping"]) {gains_.damping = cfg["damping"].as<double>();}
   if (cfg["null_kp"]) {gains_.null_kp = cfg["null_kp"].as<double>();}
   if (cfg["enable_null_space"]) {gains_.enable_null_space = cfg["enable_null_space"].as<bool>();}
-  if (cfg["trajectory_speed"]) {gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();}
   if (cfg["control_6dof"]) {gains_.control_6dof = cfg["control_6dof"].as<bool>();}
+
+  // Trajectory speed
+  if (cfg["trajectory_speed"]) {gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();}
+  if (cfg["trajectory_angular_speed"]) {
+    gains_.trajectory_angular_speed = cfg["trajectory_angular_speed"].as<double>();
+  }
+
+  // Trajectory velocity limits
+  if (cfg["max_traj_velocity"]) {
+    gains_.max_traj_velocity = cfg["max_traj_velocity"].as<double>();
+  }
+  if (cfg["max_traj_angular_velocity"]) {
+    gains_.max_traj_angular_velocity = cfg["max_traj_angular_velocity"].as<double>();
+  }
+
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
     command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
@@ -446,27 +582,44 @@ void ClikController::LoadConfig(const YAML::Node & cfg)
 
 void ClikController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
 {
-  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1)]
+  // layout: [kp_translation×3, kp_rotation×3, damping, null_kp,
+  //          enable_null_space(0/1), control_6dof(0/1),
+  //          trajectory_speed, trajectory_angular_speed,
+  //          max_traj_velocity, max_traj_angular_velocity] = 14
   if (gains.size() < 10) {return;}
-  for (std::size_t i = 0; i < 6; ++i) {
-    gains_.kp[i] = gains[i];
+  for (std::size_t i = 0; i < 3; ++i) {
+    gains_.kp_translation[i] = gains[i];
+    gains_.kp_rotation[i] = gains[3 + i];
   }
   gains_.damping = gains[6];
   gains_.null_kp = gains[7];
   gains_.enable_null_space = gains[8] > 0.5;
   gains_.control_6dof = gains[9] > 0.5;
+
+  if (gains.size() >= 11) {gains_.trajectory_speed = gains[10];}
+  if (gains.size() >= 12) {gains_.trajectory_angular_speed = gains[11];}
+  if (gains.size() >= 13) {gains_.max_traj_velocity = gains[12];}
+  if (gains.size() >= 14) {gains_.max_traj_angular_velocity = gains[13];}
 }
 
 std::vector<double> ClikController::GetCurrentGains() const noexcept
 {
-  // layout: [kp×6, damping, null_kp, enable_null_space(0/1), control_6dof(0/1)]
+  // layout: [kp_translation×3, kp_rotation×3, damping, null_kp,
+  //          enable_null_space(0/1), control_6dof(0/1),
+  //          trajectory_speed, trajectory_angular_speed,
+  //          max_traj_velocity, max_traj_angular_velocity] = 14
   std::vector<double> v;
-  v.reserve(10);
-  v.insert(v.end(), gains_.kp.begin(), gains_.kp.end());
+  v.reserve(14);
+  v.insert(v.end(), gains_.kp_translation.begin(), gains_.kp_translation.end());
+  v.insert(v.end(), gains_.kp_rotation.begin(), gains_.kp_rotation.end());
   v.push_back(gains_.damping);
   v.push_back(gains_.null_kp);
   v.push_back(gains_.enable_null_space ? 1.0 : 0.0);
   v.push_back(gains_.control_6dof ? 1.0 : 0.0);
+  v.push_back(gains_.trajectory_speed);
+  v.push_back(gains_.trajectory_angular_speed);
+  v.push_back(gains_.max_traj_velocity);
+  v.push_back(gains_.max_traj_angular_velocity);
   return v;
 }
 
