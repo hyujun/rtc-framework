@@ -25,8 +25,15 @@ BT::NodeStatus IsVisionTargetReady::tick()
 {
   Pose6D pose;
   if (bridge_->GetWorldTargetPose(pose)) {
+    // Use current TCP orientation (position only from vision)
+    auto tcp = bridge_->GetTcpPose();
+    pose.roll  = tcp.roll;
+    pose.pitch = tcp.pitch;
+    pose.yaw   = tcp.yaw;
+
     RCLCPP_INFO(logger(),
-                "[IsVisionTargetReady] target at [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
+                "[IsVisionTargetReady] target pos=[%.3f, %.3f, %.3f] "
+                "orient(tcp)=[%.3f, %.3f, %.3f]",
                 pose.x, pose.y, pose.z, pose.roll, pose.pitch, pose.yaw);
     setOutput("pose", pose);
     return BT::NodeStatus::SUCCESS;

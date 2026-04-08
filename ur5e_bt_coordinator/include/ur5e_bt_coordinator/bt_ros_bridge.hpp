@@ -58,8 +58,9 @@ public:
   /// Latest vision object pose from /vision/object_pose
   bool GetObjectPose(Pose6D& pose) const;
 
-  /// Latest world target pose from /world_target_info (Polygon).
-  /// Returns false if topic not received or all coordinates are zero.
+  /// Latest world target position from /world_target_info (Polygon).
+  /// Returns position only (orientation zeroed). Returns false if topic
+  /// not received or all coordinates are zero.
   bool GetWorldTargetPose(Pose6D& pose) const;
 
   /// Active controller name

@@ -13,9 +13,10 @@ namespace rtc_bt {
 /// Returns SUCCESS if a valid Polygon message has been received on
 /// /world_target_info with at least one non-zero point.
 /// Returns FAILURE if the topic has not been published or all points are zero.
+/// Orientation is taken from the current TCP pose (position only from vision).
 ///
 /// Output ports:
-///   - pose (Pose6D): world target pose (points[0]=position, points[1]=orientation)
+///   - pose (Pose6D): world target pose (position from vision, orientation from TCP)
 class IsVisionTargetReady : public BT::ConditionNode {
 public:
   IsVisionTargetReady(const std::string& name, const BT::NodeConfig& config,

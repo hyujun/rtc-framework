@@ -134,20 +134,13 @@ BtRosBridge::BtRosBridge(rclcpp::Node::SharedPtr node)
           if (all_zero) {
             world_target_valid_ = false;
           } else {
-            // points[0] = position (x, y, z)
+            // points[0] = position (x, y, z) only
             world_target_pose_.x = static_cast<double>(msg->points[0].x);
             world_target_pose_.y = static_cast<double>(msg->points[0].y);
             world_target_pose_.z = static_cast<double>(msg->points[0].z);
-            // points[1] = orientation (roll, pitch, yaw), if available
-            if (msg->points.size() >= 2) {
-              world_target_pose_.roll  = static_cast<double>(msg->points[1].x);
-              world_target_pose_.pitch = static_cast<double>(msg->points[1].y);
-              world_target_pose_.yaw   = static_cast<double>(msg->points[1].z);
-            } else {
-              world_target_pose_.roll  = 0.0;
-              world_target_pose_.pitch = 0.0;
-              world_target_pose_.yaw   = 0.0;
-            }
+            world_target_pose_.roll  = 0.0;
+            world_target_pose_.pitch = 0.0;
+            world_target_pose_.yaw   = 0.0;
             world_target_valid_ = true;
           }
         }
