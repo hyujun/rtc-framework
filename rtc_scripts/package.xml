@@ -3,7 +3,7 @@
 <package format="3">
   <name>rtc_scripts</name>
   <version>5.17.0</version>
-  <description>Robot-agnostic RT system setup and verification scripts for RTC framework.</description>
+  <description>Robot-agnostic RT system setup and verification scripts for RTC framework. PREEMPT_RT kernel build, CPU shield, IRQ affinity, UDP optimization, NVIDIA RT coexistence, and runtime verification.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>

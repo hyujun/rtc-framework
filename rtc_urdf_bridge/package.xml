@@ -3,7 +3,7 @@
 <package format="3">
   <name>rtc_urdf_bridge</name>
   <version>5.17.0</version>
-  <description>Robot-agnostic URDF parser and Pinocchio model builder for RT control loops.</description>
+  <description>Robot-agnostic URDF parser and Pinocchio model builder for RT control loops. Supports full/reduced/tree models, closed-chain constraints, and RT-safe model handles (noexcept, zero-heap).</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
 

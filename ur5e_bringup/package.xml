@@ -3,7 +3,7 @@
 <package format="3">
   <name>ur5e_bringup</name>
   <version>5.17.0</version>
-  <description>UR5e-specific launch, config, and demo controllers for RTC framework.</description>
+  <description>UR5e-specific launch files, YAML configs, and demo controllers (DemoJointController, DemoTaskController) for RTC framework. Includes robot/sim launch, GUI tools, and CPU affinity setup.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
@@ -20,6 +20,7 @@
   <depend>std_msgs</depend>
   <depend>rtc_controller_manager</depend>
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>python3-pyqt5</exec_depend>
   <exec_depend>rtc_scripts</exec_depend>
   <exec_depend>ur5e_description</exec_depend>
   <exec_depend>ur5e_hand_driver</exec_depend>

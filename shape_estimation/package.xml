@@ -4,10 +4,10 @@
   <name>shape_estimation</name>
   <version>5.17.0</version>
   <description>
-    ToF-based object shape estimation for UR5e + custom hand system.
-    Estimates shape primitives (sphere, cylinder, plane, box) from
-    fingertip ToF sensor readings using voxel-based point cloud
-    accumulation and least-squares primitive fitting.
+    ToF-based object shape estimation node. Estimates shape primitives
+    (sphere, cylinder, plane, box) from fingertip ToF sensor readings
+    using voxel-based point cloud accumulation and least-squares
+    primitive fitting. Publishes MarkerArray for RViz2 visualization.
   </description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>

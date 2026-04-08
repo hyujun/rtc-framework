@@ -3,7 +3,7 @@
 <package format="3">
   <name>ur5e_hand_driver</name>
   <version>5.17.0</version>
-  <description>Event-driven UDP bridge for the 10-DOF custom hand (44 tactile sensors): request-response polling driver with SeqLock, sensor decimation, and fingertip F/T inference.</description>
+  <description>Event-driven UDP driver for the 10-DOF custom hand (44 tactile sensors): request-response polling with SeqLock state, Bessel-filtered sensor decimation, and ONNX-based fingertip F/T inference.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
 

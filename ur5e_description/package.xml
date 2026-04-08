@@ -4,17 +4,19 @@
   <name>ur5e_description</name>
   <version>5.17.0</version>
   <description>
-    Robot model description files for UR5e:
-    - MJCF models for MuJoCo simulation (robots/ur5e/mjcf/)
-    - URDF for Pinocchio / RViz / ros2_control (robots/ur5e/urdf/)
-    - Mesh files from UR official ROS2 Description (robots/ur5e/meshes/)
+    Robot model description files for UR5e + custom hand:
+    - UR5e arm: URDF (robots/ur5e/urdf/), MJCF (robots/ur5e/mjcf/), meshes (DAE/STL/OBJ)
+    - Custom hand: URDF xacro (robots/hand_tmp/urdf/), MJCF (robots/hand_tmp/mjcf/)
+    - Combined: URDF xacro + MJCF scene (robots/ur5e_hand_tmp/)
   </description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <!-- No build dependencies: self-contained data package -->
+  <!-- No build dependencies: ur5e.urdf is pre-generated -->
+  <!-- xacro needed at runtime to process ur5e_with_hand.urdf.xacro -->
+  <exec_depend>xacro</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
