@@ -4,9 +4,9 @@
   <name>rtc_msgs</name>
   <version>5.17.0</version>
   <description>
-    Custom ROS2 message definitions for the RT controller stack.
-    Named joint commands, hand motor commands, fingertip sensor states,
-    and fingertip force-torque inference messages.
+    Custom ROS2 message definitions for the RTC framework (11 messages).
+    JointCommand, HandSensorState, GraspState, GuiPosition, RobotTarget,
+    DeviceStateLog, DeviceSensorLog, SimSensor, SimSensorState, ToFSnapshot.
   </description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>

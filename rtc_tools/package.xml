@@ -3,7 +3,7 @@
 <package format="3">
   <name>rtc_tools</name>
   <version>5.17.0</version>
-  <description>Python development utilities for the UR5e RT controller stack: log plotter, controller GUI, motion editor GUI, MJCF/URDF validator, and UDP hand data tools.</description>
+  <description>Python development utilities for the RTC framework: log plotter (plot_rtc_log), controller GUI, MJCF/URDF comparison tool, and URDF-to-MJCF converter.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
 
@@ -15,6 +15,7 @@
   <exec_depend>rtc_msgs</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-mujoco</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

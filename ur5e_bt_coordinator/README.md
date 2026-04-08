@@ -76,6 +76,8 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 | Pick and Place | `trees/pick_and_place.xml` | Vision 기반 물체 감지 → approach → force-based grasp → lift → transport → lower/release → retreat |
 | Towel Unfold | `trees/towel_unfold.xml` | 수건 edge 감지 → pinch pre-shape → approach → pinch grasp → lift → compliant sweep → lower/release → retreat |
 | Hand Motions | `trees/hand_motions.xml` | UR5e 자세 유지 + Hand 데모 (OppositionDemo → WaveDemo) |
+| Vision Approach | `trees/vision_approach.xml` | Vision 기반 approach 데모 (arm-only, 핸드 미사용) |
+| Shape Inspect | `trees/shape_inspect.xml` | ToF 센서 기반 shape estimation 워크플로우 (start → wait → stop → evaluate) |
 
 ## BT 노드
 
@@ -97,6 +99,8 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 | `SetHandPose` | StatefulAction | 전체 Hand 10-DoF를 명명된 포즈로 이동 (trajectory duration 추정 기반 완료) | `pose`, `hand_trajectory_speed`(1.0), `hand_max_traj_velocity`(2.0) |
 | `UR5eHoldPose` | StatefulAction | UR5e 목표 자세 도달 후 영구 RUNNING (halt까지 유지) | `pose` |
 | `MoveOpposition` | StatefulAction | Opposition 동작 (thumb+target 포즈, 비-target home 리셋, trajectory duration 추정 완료) | `thumb_pose`, `target_finger`, `target_pose`, `hand_trajectory_speed`(1.0), `hand_max_traj_velocity`(2.0) |
+| `TriggerShapeEstimation` | SyncAction | Shape estimation 시작/정지 제어 (서비스 호출) | `action`(start/stop) |
+| `WaitShapeResult` | StatefulAction | Shape estimation 결과 대기 (confidence 임계값 도달까지) | `min_confidence`(0.8), `timeout_s`(10.0) |
 
 ### Condition 노드
 
@@ -105,6 +109,9 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 | `IsForceAbove` | Fingertip force가 threshold 초과 여부 확인 (500Hz 사전 계산 활용, sustained 판정 지원) | `threshold_N`(1.5), `min_fingertips`(2), `sustained_ms`(0) |
 | `IsGrasped` | 물체 파지 상태 확인 (500Hz 사전 계산된 grasp_detected 활용) | `force_threshold_N`(1.0), `min_fingertips`(2) |
 | `IsObjectDetected` | Vision 결과 수신 여부 확인 | 출력: `pose` |
+| `IsGraspPhase` | Force-PI grasp phase 상태 확인 (GraspState.grasp_phase 비교) | `expected_phase` |
+| `IsVisionTargetReady` | Vision target 데이터 유효성 확인 (최신 데이터 존재 여부) | — |
+| `CheckShapeType` | ShapeEstimate 결과에서 shape 타입 추출 및 비교 | `expected_type`, 출력: `shape_type` |
 
 ## 설정 파일
 

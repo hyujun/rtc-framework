@@ -4,9 +4,9 @@
   <name>rtc_digital_twin</name>
   <version>5.17.0</version>
   <description>
-    Generalized Digital Twin RViz2 visualization.
-    Subscribes to configurable JointState topics, publishes combined
-    state for robot_state_publisher + RViz2. Works with any URDF/xacro.
+    Generalized Digital Twin RViz2 visualization for any URDF-based robot.
+    Multi-source JointState merging, mimic joint auto-computation, sensor/TCP
+    visualization (MarkerArray), and optional Qt joint GUI.
   </description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
@@ -25,6 +25,7 @@
   <exec_depend>rviz2</exec_depend>
   <exec_depend>xacro</exec_depend>
   <exec_depend>python_qt_binding</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

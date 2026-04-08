@@ -3,7 +3,7 @@
 <package format="3">
   <name>rtc_controllers</name>
   <version>5.17.0</version>
-  <description>Generic robot controllers (P, CLIK, JointPD, OSC) for the RTC framework.</description>
+  <description>Generic robot controllers for the RTC framework: PController, ClikController, JointPDController, OperationalSpaceController, and GraspController (adaptive PI force control).</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
 
@@ -19,6 +19,7 @@
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

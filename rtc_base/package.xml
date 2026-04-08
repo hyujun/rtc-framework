@@ -3,7 +3,7 @@
 <package format="3">
   <name>rtc_base</name>
   <version>5.17.0</version>
-  <description>Header-only RT infrastructure library for RTC framework. Types, threading, logging, filters.</description>
+  <description>Header-only C++20 RT infrastructure library for RTC framework. Shared types, SeqLock, SPSC buffers, Bessel/Kalman filters, thread configs (4/6/8/10/12/16-core), timing profiler, CSV data logger.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>

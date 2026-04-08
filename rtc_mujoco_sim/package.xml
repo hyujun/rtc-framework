@@ -4,9 +4,9 @@
   <name>rtc_mujoco_sim</name>
   <version>5.17.0</version>
   <description>
-    MuJoCo 3.x physics simulation for UR5e with interactive GLFW viewer.
-    Replaces the UR driver during development — publishes /joint_states
-    and /sim/status, subscribes to /forward_position_controller/commands.
+    MuJoCo 3.x physics simulation with interactive GLFW viewer.
+    Multi-group support (robot physics + fake LPF echo-back), configurable
+    servo gains, runtime solver tuning, and sensor data publishing.
   </description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>

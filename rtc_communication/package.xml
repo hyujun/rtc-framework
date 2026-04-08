@@ -3,7 +3,7 @@
 <package format="3">
   <name>rtc_communication</name>
   <version>5.17.0</version>
-  <description>Transport abstraction layer for RTC framework. Supports UDP, with planned CAN-FD, EtherCAT, RS485 support.</description>
+  <description>Header-only transport abstraction layer for RTC framework. UDP transport with RT-safe packet codec and full-duplex transceiver template.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>

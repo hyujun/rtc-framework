@@ -3,15 +3,21 @@ project(ur5e_description VERSION 5.17.0)
 
 find_package(ament_cmake REQUIRED)
 
-# ── URDF generation (xacro → ur5e.urdf at build time) ─────────────────────────
+# ── Data-only package ─────────────────────────────────────────────────────────
 #
-# Requires:  ros-jazzy-ur-description  ros-jazzy-xacro
+# ur5e.urdf is pre-generated from the official UR description xacro.
+# No build-time processing is needed.
+#
+# To regenerate ur5e.urdf (optional):
 #   sudo apt install -y ros-jazzy-ur-description ros-jazzy-xacro
+#   xacro <ur_description_path>/ur5e.urdf.xacro ...
 #
-# The generated URDF uses the official UR kinematics / physical parameters
-# (joint_limits.yaml, default_kinematics.yaml, physical_parameters.yaml) from
-# the ur_description package.  Mesh references point to this package's own
-# meshes/ur5e/{visual,collision}/ directory via package:// URI.
+# ur5e_with_hand.urdf.xacro is processed at runtime by xacro (exec_depend).
+#
+# Directory layout:
+#   robots/ur5e/          -- UR5e arm (URDF, MJCF, meshes)
+#   robots/hand_tmp/      -- Custom hand (URDF xacro, MJCF)
+#   robots/ur5e_hand_tmp/ -- Combined arm+hand (URDF xacro, MJCF scene)
 #
 
 # ── Install robot model files ──────────────────────────────────────────────────

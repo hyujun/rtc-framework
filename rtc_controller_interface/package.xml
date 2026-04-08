@@ -3,7 +3,7 @@
 <package format="3">
   <name>rtc_controller_interface</name>
   <version>5.17.0</version>
-  <description>Abstract controller interface (Strategy pattern) for the RTC framework.</description>
+  <description>Abstract controller interface (Strategy pattern) and singleton ControllerRegistry for the RTC framework. RTControllerInterface base class with RTC_REGISTER_CONTROLLER macro.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
 
