@@ -226,8 +226,17 @@ class DemoControllerGUI(Node):
         # Cached current gains (updated via request/response)
         self._cached_gains: list[float] | None = None
 
-        # 5 Hz refresh timer
-        self._refresh_timer = self.create_timer(0.2, self._refresh_current_display)
+        # Dirty-check caches for GUI refresh (avoid redundant Tk redraws)
+        self._prev_status = [''] * 6
+        self._prev_task = [''] * 6
+        self._prev_hand = [''] * NUM_HAND_MOTORS
+        self._prev_estop = ''
+        self._prev_grasp_detected = ''
+        self._prev_grasp_agg = ['', '', '', '']
+        self._prev_ft = [['', '', ''] for _ in range(len(FINGERTIP_NAMES))]
+        self._prev_fp_phase = ''
+        self._prev_fp_target = ''
+        self._prev_fp_fingers = [['', '', '', ''] for _ in range(len(FORCE_PI_FINGER_NAMES))]
 
         # GUI in a daemon thread
         self._gui_ready = threading.Event()
@@ -315,41 +324,49 @@ class DemoControllerGUI(Node):
         self._pending_load_gains = False
         self.root.after(0, self._fill_gains_from_data, list(msg.data))
 
-    def _refresh_current_display(self):
-        if hasattr(self, '_status_labels_values'):
-            idx = self.selected_ctrl.get()
-            if JOINT_SPACE.get(idx, True):
-                for i in range(NUM_JOINTS):
-                    val_rad = self.current_positions[i]
-                    val_deg = math.degrees(val_rad)
-                    self._status_labels_values[i].config(text=f"{val_rad:.4f} rad  ({val_deg:.2f}°)")
-            else:
-                for i in range(6):
-                    val = self.current_task_positions[i]
-                    if i < 3:
-                        self._status_labels_values[i].config(text=f"{val:.4f} m")
-                    else:
-                        val_deg = math.degrees(val)
-                        self._status_labels_values[i].config(text=f"{val:.4f} rad  ({val_deg:.2f}°)")
+    def _schedule_refresh(self):
+        """Periodic GUI refresh scheduled on the Tk event loop (thread-safe)."""
+        self._refresh_current_display()
+        self.root.after(200, self._schedule_refresh)
 
-        if hasattr(self, '_task_state_labels_values'):
+    def _refresh_current_display(self):
+        """Update display labels with dirty checking. Only redraws changed values."""
+        # ── Joint / Task status ──
+        idx = self.selected_ctrl.get()
+        if JOINT_SPACE.get(idx, True):
+            for i in range(NUM_JOINTS):
+                val_rad = self.current_positions[i]
+                text = f"{val_rad:.4f} rad  ({math.degrees(val_rad):.2f}°)"
+                if self._prev_status[i] != text:
+                    self._prev_status[i] = text
+                    self._status_labels_values[i].config(text=text)
+        else:
             for i in range(6):
                 val = self.current_task_positions[i]
-                if i < 3:
-                    self._task_state_labels_values[i].config(text=f"{val:.4f} m")
-                else:
-                    val_deg = math.degrees(val)
-                    self._task_state_labels_values[i].config(
-                        text=f"{val:.4f} rad  ({val_deg:.2f}°)")
+                text = f"{val:.4f} m" if i < 3 else f"{val:.4f} rad  ({math.degrees(val):.2f}°)"
+                if self._prev_status[i] != text:
+                    self._prev_status[i] = text
+                    self._status_labels_values[i].config(text=text)
 
-        if hasattr(self, '_hand_state_labels_values'):
-            for i in range(NUM_HAND_MOTORS):
-                val_rad = self.current_hand_positions[i]
-                val_deg = math.degrees(val_rad)
-                self._hand_state_labels_values[i].config(
-                    text=f"{val_deg:.2f}°")
+        # ── Task state ──
+        for i in range(6):
+            val = self.current_task_positions[i]
+            text = f"{val:.4f} m" if i < 3 else f"{val:.4f} rad  ({math.degrees(val):.2f}°)"
+            if self._prev_task[i] != text:
+                self._prev_task[i] = text
+                self._task_state_labels_values[i].config(text=text)
 
-        if hasattr(self, '_estop_label'):
+        # ── Hand state ──
+        for i in range(NUM_HAND_MOTORS):
+            text = f"{math.degrees(self.current_hand_positions[i]):.2f}°"
+            if self._prev_hand[i] != text:
+                self._prev_hand[i] = text
+                self._hand_state_labels_values[i].config(text=text)
+
+        # ── E-STOP ──
+        estop_key = '1' if self.estop_active else '0'
+        if self._prev_estop != estop_key:
+            self._prev_estop = estop_key
             if self.estop_active:
                 self._estop_label.config(
                     text="  E-STOP ACTIVE  ", fg='#1e1e2e', bg='#f38ba8')
@@ -357,62 +374,93 @@ class DemoControllerGUI(Node):
                 self._estop_label.config(
                     text="  NORMAL  ", fg='#1e1e2e', bg='#a6e3a1')
 
-        # Grasp state display
-        if hasattr(self, '_grasp_detected_label'):
+        # ── Grasp state ──
+        grasp_key = '1' if self._grasp_detected else '0'
+        if self._prev_grasp_detected != grasp_key:
+            self._prev_grasp_detected = grasp_key
             if self._grasp_detected:
                 self._grasp_detected_label.config(
                     text="  GRASP DETECTED  ", bg='#a6e3a1', fg='#1e1e2e')
             else:
                 self._grasp_detected_label.config(
                     text="  NO GRASP  ", bg='#585b70', fg='#cdd6f4')
-            self._grasp_active_label.config(
-                text=f"{self._grasp_num_active}")
-            self._grasp_maxforce_label.config(
-                text=f"{self._grasp_max_force:.2f} N")
-            self._grasp_threshold_label.config(
-                text=f"{self._grasp_force_threshold:.2f} N")
-            self._grasp_minfinger_label.config(
-                text=f"{self._grasp_min_fingertips}")
 
-        if hasattr(self, '_ft_force_labels'):
-            for i in range(len(FINGERTIP_NAMES)):
-                self._ft_force_labels[i].config(
-                    text=f"{self._grasp_force_mag[i]:.2f} N")
-                cf = self._grasp_contact_flag[i]
+        agg_texts = [
+            f"{self._grasp_num_active}",
+            f"{self._grasp_max_force:.2f} N",
+            f"{self._grasp_force_threshold:.2f} N",
+            f"{self._grasp_min_fingertips}",
+        ]
+        agg_labels = [self._grasp_active_label, self._grasp_maxforce_label,
+                      self._grasp_threshold_label, self._grasp_minfinger_label]
+        for i, (text, lbl) in enumerate(zip(agg_texts, agg_labels)):
+            if self._prev_grasp_agg[i] != text:
+                self._prev_grasp_agg[i] = text
+                lbl.config(text=text)
+
+        # ── Per-fingertip ──
+        for i in range(len(FINGERTIP_NAMES)):
+            force_text = f"{self._grasp_force_mag[i]:.2f} N"
+            if self._prev_ft[i][0] != force_text:
+                self._prev_ft[i][0] = force_text
+                self._ft_force_labels[i].config(text=force_text)
+
+            cf = self._grasp_contact_flag[i]
+            contact_text = f"{cf:.2f}"
+            if self._prev_ft[i][1] != contact_text:
+                self._prev_ft[i][1] = contact_text
                 contact_color = '#a6e3a1' if cf > 0.5 else '#585b70'
                 self._ft_contact_labels[i].config(
-                    text=f"{cf:.2f}", bg=contact_color,
+                    text=contact_text, bg=contact_color,
                     fg='#1e1e2e' if cf > 0.5 else '#cdd6f4')
-                iv = self._grasp_inference_valid[i]
-                self._ft_valid_labels[i].config(
-                    text="OK" if iv else "--",
-                    fg='#a6e3a1' if iv else '#f38ba8')
 
-        # Force-PI state display
-        if hasattr(self, '_fp_phase_label'):
+            iv = self._grasp_inference_valid[i]
+            valid_text = "OK" if iv else "--"
+            if self._prev_ft[i][2] != valid_text:
+                self._prev_ft[i][2] = valid_text
+                self._ft_valid_labels[i].config(
+                    text=valid_text, fg='#a6e3a1' if iv else '#f38ba8')
+
+        # ── Force-PI state ──
+        phase_key = str(self._grasp_phase)
+        if self._prev_fp_phase != phase_key:
+            self._prev_fp_phase = phase_key
             phase_info = GRASP_PHASE_NAMES.get(
                 self._grasp_phase, ("UNKNOWN", "#585b70", "#cdd6f4"))
             self._fp_phase_label.config(
                 text=f"  {phase_info[0]}  ",
                 bg=phase_info[1], fg=phase_info[2])
-            self._fp_target_force_display.config(
-                text=f"{self._grasp_target_force_val:.2f} N")
 
-            for i in range(len(FORCE_PI_FINGER_NAMES)):
-                self._fp_s_labels[i].config(
-                    text=f"{self._fp_finger_s[i]:.3f}")
-                self._fp_filt_labels[i].config(
-                    text=f"{self._fp_filtered_force[i]:.2f} N")
-                err = self._fp_force_error[i]
+        target_text = f"{self._grasp_target_force_val:.2f} N"
+        if self._prev_fp_target != target_text:
+            self._prev_fp_target = target_text
+            self._fp_target_force_display.config(text=target_text)
+
+        for i in range(len(FORCE_PI_FINGER_NAMES)):
+            s_text = f"{self._fp_finger_s[i]:.3f}"
+            if self._prev_fp_fingers[i][0] != s_text:
+                self._prev_fp_fingers[i][0] = s_text
+                self._fp_s_labels[i].config(text=s_text)
+
+            filt_text = f"{self._fp_filtered_force[i]:.2f} N"
+            if self._prev_fp_fingers[i][1] != filt_text:
+                self._prev_fp_fingers[i][1] = filt_text
+                self._fp_filt_labels[i].config(text=filt_text)
+
+            err = self._fp_force_error[i]
+            err_text = f"{err:+.2f} N"
+            if self._prev_fp_fingers[i][2] != err_text:
+                self._prev_fp_fingers[i][2] = err_text
                 err_color = ('#a6e3a1' if abs(err) < 0.2
                              else '#f9e2af' if abs(err) < 0.5
                              else '#f38ba8')
-                self._fp_err_labels[i].config(
-                    text=f"{err:+.2f} N", fg=err_color)
-                # f_desired = f_measured + f_error
-                f_desired = self._fp_filtered_force[i] + err
-                self._fp_desired_labels[i].config(
-                    text=f"{f_desired:.2f} N")
+                self._fp_err_labels[i].config(text=err_text, fg=err_color)
+
+            f_desired = self._fp_filtered_force[i] + err
+            desired_text = f"{f_desired:.2f} N"
+            if self._prev_fp_fingers[i][3] != desired_text:
+                self._prev_fp_fingers[i][3] = desired_text
+                self._fp_desired_labels[i].config(text=desired_text)
 
     # ---- GUI build -----------------------------------------------------------
 
@@ -847,12 +895,14 @@ class DemoControllerGUI(Node):
         # ══════════════════════════════════════════════════════════════════
         self._build_grasp_tab(grasp_tab)
 
-        # Initial gains build + initial enable/disable state
-        self._rebuild_gains_ui(4)
-        self._update_target_inputs_state(4)
+        # Pre-build gains panels for all controllers (avoids destroy/recreate on switch)
+        self._prebuild_gains_panels()
+        self._show_gains_panel("demo_joint_controller")
+        self._update_target_inputs_state("demo_joint_controller")
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._gui_ready.set()
+        self._schedule_refresh()
         self.root.mainloop()
 
     # ---- Grasp tab builder -----------------------------------------------------
@@ -1158,143 +1208,173 @@ class DemoControllerGUI(Node):
 
     # ---- Gains UI helpers ----------------------------------------------------
 
-    def _rebuild_gains_ui(self, ctrl_idx: int):
-        for w in self._gains_inner.winfo_children():
-            w.destroy()
-        for w in self._gains_applied_inner.winfo_children():
-            w.destroy()
-        self._gain_entries.clear()
-        self._gain_is_bool.clear()
-        self._applied_label_widgets.clear()
+    def _prebuild_gains_panels(self):
+        """Pre-build gains UI for all controllers to avoid destroy/recreate on switch."""
+        self._gains_panels = {}
+        self._active_gains_ctrl = None
 
-        defs = GAIN_DEFS.get(ctrl_idx, [])
-        headers = GAIN_COL_HEADERS.get(ctrl_idx, [])
-        if not defs:
-            return
+        for ctrl_idx in CONTROLLER_TYPES:
+            panel_frame = tk.Frame(self._gains_inner, bg='#1e1e2e')
+            applied_frame = tk.Frame(self._gains_applied_inner, bg='#1e1e2e')
 
-        max_size = max(size for _, size, _, _ in defs)
+            entries = []
+            is_bool_list = []
+            applied_labels = []
 
-        # Editable inputs
-        if max_size > 1:
-            for j, h in enumerate(headers):
-                tk.Label(self._gains_inner, text=h,
-                         bg='#1e1e2e', fg='#89b4fa',
-                         font=('Segoe UI', 8, 'bold'),
-                         width=7, anchor='center').grid(
-                    row=0, column=j + 1, padx=2)
+            defs = GAIN_DEFS.get(ctrl_idx, [])
+            headers = GAIN_COL_HEADERS.get(ctrl_idx, [])
+            if not defs:
+                self._gains_panels[ctrl_idx] = {
+                    'frame': panel_frame, 'applied_frame': applied_frame,
+                    'entries': entries, 'is_bool': is_bool_list,
+                    'applied_labels': applied_labels,
+                }
+                continue
 
-        array_row = 1
-        scalar_frame = None
-        row_names_map = GAIN_ROW_NAMES.get(ctrl_idx, {})
+            max_size = max(size for _, size, _, _ in defs)
+            row_names_map = GAIN_ROW_NAMES.get(ctrl_idx, {})
 
-        for label, size, defaults, is_bool in defs:
-            if size > 1:
-                names = row_names_map.get(label)
-                if names:
-                    for j, name in enumerate(names):
-                        tk.Label(self._gains_inner, text=name,
-                                 bg='#1e1e2e', fg='#f9e2af',
-                                 font=('Segoe UI', 7),
-                                 width=7, anchor='center').grid(
-                            row=array_row, column=j + 1, padx=2)
+            # Editable inputs
+            if max_size > 1:
+                for j, h in enumerate(headers):
+                    tk.Label(panel_frame, text=h,
+                             bg='#1e1e2e', fg='#89b4fa',
+                             font=('Segoe UI', 8, 'bold'),
+                             width=7, anchor='center').grid(
+                        row=0, column=j + 1, padx=2)
+
+            array_row = 1
+            scalar_frame = None
+
+            for label, size, defaults, is_bool in defs:
+                if size > 1:
+                    names = row_names_map.get(label)
+                    if names:
+                        for j, name in enumerate(names):
+                            tk.Label(panel_frame, text=name,
+                                     bg='#1e1e2e', fg='#f9e2af',
+                                     font=('Segoe UI', 7),
+                                     width=7, anchor='center').grid(
+                                row=array_row, column=j + 1, padx=2)
+                        array_row += 1
+
+                    tk.Label(panel_frame, text=label + ':',
+                             bg='#1e1e2e', fg='#cdd6f4',
+                             font=('Segoe UI', 8), anchor='e').grid(
+                        row=array_row, column=0, sticky='e', padx=(8, 4), pady=1)
+                    row_widgets = []
+                    for j in range(size):
+                        ent = ttk.Entry(panel_frame, width=7, justify='center')
+                        ent.insert(0, str(defaults[j]))
+                        ent.grid(row=array_row, column=j + 1, padx=2, pady=1)
+                        row_widgets.append(ent)
+                    entries.append(row_widgets)
+                    is_bool_list.append(False)
                     array_row += 1
-
-                tk.Label(self._gains_inner, text=label + ':',
-                         bg='#1e1e2e', fg='#cdd6f4',
-                         font=('Segoe UI', 8), anchor='e').grid(
-                    row=array_row, column=0, sticky='e', padx=(8, 4), pady=1)
-                row_widgets = []
-                for j in range(size):
-                    ent = ttk.Entry(self._gains_inner, width=7, justify='center')
-                    ent.insert(0, str(defaults[j]))
-                    ent.grid(row=array_row, column=j + 1, padx=2, pady=1)
-                    row_widgets.append(ent)
-                self._gain_entries.append(row_widgets)
-                self._gain_is_bool.append(False)
-                array_row += 1
-            else:
-                if scalar_frame is None:
-                    scalar_frame = tk.Frame(self._gains_inner, bg='#1e1e2e')
-                    scalar_frame.grid(row=array_row, column=0,
-                                      columnspan=max_size + 1,
-                                      sticky='w', pady=(6, 0))
-                frm = tk.Frame(scalar_frame, bg='#1e1e2e')
-                frm.pack(side='left', padx=8)
-                tk.Label(frm, text=label,
-                         bg='#1e1e2e', fg='#cdd6f4',
-                         font=('Segoe UI', 8)).pack(anchor='w')
-                if is_bool:
-                    var = tk.IntVar(value=int(defaults[0]))
-                    ttk.Checkbutton(frm, variable=var).pack(anchor='w')
-                    self._gain_entries.append([var])
                 else:
-                    ent = ttk.Entry(frm, width=8, justify='center')
-                    ent.insert(0, str(defaults[0]))
-                    ent.pack()
-                    self._gain_entries.append([ent])
-                self._gain_is_bool.append(is_bool)
+                    if scalar_frame is None:
+                        scalar_frame = tk.Frame(panel_frame, bg='#1e1e2e')
+                        scalar_frame.grid(row=array_row, column=0,
+                                          columnspan=max_size + 1,
+                                          sticky='w', pady=(6, 0))
+                    frm = tk.Frame(scalar_frame, bg='#1e1e2e')
+                    frm.pack(side='left', padx=8)
+                    tk.Label(frm, text=label,
+                             bg='#1e1e2e', fg='#cdd6f4',
+                             font=('Segoe UI', 8)).pack(anchor='w')
+                    if is_bool:
+                        var = tk.IntVar(value=int(defaults[0]))
+                        ttk.Checkbutton(frm, variable=var).pack(anchor='w')
+                        entries.append([var])
+                    else:
+                        ent = ttk.Entry(frm, width=8, justify='center')
+                        ent.insert(0, str(defaults[0]))
+                        ent.pack()
+                        entries.append([ent])
+                    is_bool_list.append(is_bool)
 
-        # Applied display (read-only mirror)
-        tk.Label(self._gains_applied_inner, text="(press Apply Gains to update)",
-                 bg='#1e1e2e', fg='#585b70',
-                 font=('Segoe UI', 7, 'italic')).grid(
-            row=0, column=0, columnspan=max_size + 1, sticky='w')
+            # Applied display (read-only mirror)
+            tk.Label(applied_frame, text="(press Apply Gains to update)",
+                     bg='#1e1e2e', fg='#585b70',
+                     font=('Segoe UI', 7, 'italic')).grid(
+                row=0, column=0, columnspan=max_size + 1, sticky='w')
 
-        if max_size > 1:
-            for j, h in enumerate(headers):
-                tk.Label(self._gains_applied_inner, text=h,
-                         bg='#1e1e2e', fg='#585b70',
-                         font=('Segoe UI', 8, 'bold'),
-                         width=7, anchor='center').grid(
-                    row=1, column=j + 1, padx=2)
+            if max_size > 1:
+                for j, h in enumerate(headers):
+                    tk.Label(applied_frame, text=h,
+                             bg='#1e1e2e', fg='#585b70',
+                             font=('Segoe UI', 8, 'bold'),
+                             width=7, anchor='center').grid(
+                        row=1, column=j + 1, padx=2)
 
-        array_row_a = 2
-        scalar_frame_a = None
+            array_row_a = 2
+            scalar_frame_a = None
 
-        for label, size, defaults, is_bool in defs:
-            if size > 1:
-                names = row_names_map.get(label)
-                if names:
-                    for j, name in enumerate(names):
-                        tk.Label(self._gains_applied_inner, text=name,
-                                 bg='#1e1e2e', fg='#585b70',
-                                 font=('Segoe UI', 7),
-                                 width=7, anchor='center').grid(
-                            row=array_row_a, column=j + 1, padx=2)
+            for label, size, defaults, is_bool in defs:
+                if size > 1:
+                    names = row_names_map.get(label)
+                    if names:
+                        for j, name in enumerate(names):
+                            tk.Label(applied_frame, text=name,
+                                     bg='#1e1e2e', fg='#585b70',
+                                     font=('Segoe UI', 7),
+                                     width=7, anchor='center').grid(
+                                row=array_row_a, column=j + 1, padx=2)
+                        array_row_a += 1
+
+                    tk.Label(applied_frame, text=label + ':',
+                             bg='#1e1e2e', fg='#585b70',
+                             font=('Segoe UI', 8), anchor='e').grid(
+                        row=array_row_a, column=0, sticky='e',
+                        padx=(8, 4), pady=1)
+                    row_labels = []
+                    for j in range(size):
+                        lbl = tk.Label(applied_frame, text='---',
+                                       bg='#1e1e2e', fg='#585b70',
+                                       font=('Courier New', 8),
+                                       width=7, anchor='center')
+                        lbl.grid(row=array_row_a, column=j + 1, padx=2, pady=1)
+                        row_labels.append(lbl)
+                    applied_labels.append(row_labels)
                     array_row_a += 1
-
-                tk.Label(self._gains_applied_inner, text=label + ':',
-                         bg='#1e1e2e', fg='#585b70',
-                         font=('Segoe UI', 8), anchor='e').grid(
-                    row=array_row_a, column=0, sticky='e',
-                    padx=(8, 4), pady=1)
-                row_labels = []
-                for j in range(size):
-                    lbl = tk.Label(self._gains_applied_inner, text='---',
+                else:
+                    if scalar_frame_a is None:
+                        scalar_frame_a = tk.Frame(applied_frame, bg='#1e1e2e')
+                        scalar_frame_a.grid(row=array_row_a, column=0,
+                                            columnspan=max_size + 1,
+                                            sticky='w', pady=(4, 0))
+                    frm = tk.Frame(scalar_frame_a, bg='#1e1e2e')
+                    frm.pack(side='left', padx=8)
+                    tk.Label(frm, text=label,
+                             bg='#1e1e2e', fg='#585b70',
+                             font=('Segoe UI', 8)).pack(anchor='w')
+                    lbl = tk.Label(frm, text='---',
                                    bg='#1e1e2e', fg='#585b70',
-                                   font=('Courier New', 8),
-                                   width=7, anchor='center')
-                    lbl.grid(row=array_row_a, column=j + 1, padx=2, pady=1)
-                    row_labels.append(lbl)
-                self._applied_label_widgets.append(row_labels)
-                array_row_a += 1
-            else:
-                if scalar_frame_a is None:
-                    scalar_frame_a = tk.Frame(self._gains_applied_inner,
-                                              bg='#1e1e2e')
-                    scalar_frame_a.grid(row=array_row_a, column=0,
-                                        columnspan=max_size + 1,
-                                        sticky='w', pady=(4, 0))
-                frm = tk.Frame(scalar_frame_a, bg='#1e1e2e')
-                frm.pack(side='left', padx=8)
-                tk.Label(frm, text=label,
-                         bg='#1e1e2e', fg='#585b70',
-                         font=('Segoe UI', 8)).pack(anchor='w')
-                lbl = tk.Label(frm, text='---',
-                               bg='#1e1e2e', fg='#585b70',
-                               font=('Courier New', 8))
-                lbl.pack(anchor='w')
-                self._applied_label_widgets.append([lbl])
+                                   font=('Courier New', 8))
+                    lbl.pack(anchor='w')
+                    applied_labels.append([lbl])
+
+            self._gains_panels[ctrl_idx] = {
+                'frame': panel_frame, 'applied_frame': applied_frame,
+                'entries': entries, 'is_bool': is_bool_list,
+                'applied_labels': applied_labels,
+            }
+
+    def _show_gains_panel(self, ctrl_idx: str):
+        """Show the pre-built gains panel for the given controller (instant swap)."""
+        if self._active_gains_ctrl == ctrl_idx:
+            return
+        if self._active_gains_ctrl is not None:
+            old = self._gains_panels[self._active_gains_ctrl]
+            old['frame'].pack_forget()
+            old['applied_frame'].pack_forget()
+        panel = self._gains_panels[ctrl_idx]
+        panel['frame'].pack(fill='x')
+        panel['applied_frame'].pack(fill='x', padx=2, pady=(0, 2))
+        self._gain_entries = panel['entries']
+        self._gain_is_bool = panel['is_bool']
+        self._applied_label_widgets = panel['applied_labels']
+        self._active_gains_ctrl = ctrl_idx
 
     def _update_applied_display(self):
         for widgets, applied_labels, is_bool in zip(
@@ -1336,7 +1416,7 @@ class DemoControllerGUI(Node):
 
     def _on_ctrl_radio_change(self):
         idx = self.selected_ctrl.get()
-        self._rebuild_gains_ui(idx)
+        self._show_gains_panel(idx)
         self._update_target_inputs_state(idx)
 
     def _on_switch_controller(self):
@@ -1349,7 +1429,7 @@ class DemoControllerGUI(Node):
             f"Switched to controller: {CONTROLLER_TYPES[idx]}")
 
         self._ctrl_status.set(f"Active: {CONTROLLER_TYPES[idx]}")
-        self._rebuild_gains_ui(idx)
+        self._show_gains_panel(idx)
         self._update_target_inputs_state(idx)
 
         _task_status_names = ["X (m)", "Y (m)", "Z (m)", "Roll", "Pitch", "Yaw"]
