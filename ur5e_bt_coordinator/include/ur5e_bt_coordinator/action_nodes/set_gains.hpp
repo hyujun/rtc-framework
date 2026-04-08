@@ -47,6 +47,10 @@ namespace rtc_bt {
 ///   - full_gains (vector<double>): complete gain array (optional, overrides all)
 ///   - grasp_command (int): 0=none, 1=grasp, 2=release (Force-PI, optional)
 ///   - grasp_target_force (double): target grip force [N] (Force-PI, default 2.0)
+///   - current_gains (vector<double>): previously loaded gains from
+///     SwitchController (optional). When present, these are used as the base
+///     values instead of hard-coded defaults. Only ports explicitly set in
+///     the BT XML will override the corresponding gain values.
 class SetGains : public BT::SyncActionNode {
 public:
   SetGains(const std::string& name, const BT::NodeConfig& config,

@@ -69,6 +69,24 @@ public:
   /// E-STOP status
   bool IsEstopped() const;
 
+  // ── Gains query (request/response via controller manager) ─────────────────
+
+  /// Request current gains from the active controller.
+  /// Publishes a Bool to /{ns}/request_gains, response arrives on
+  /// /{ns}/current_gains and is cached internally.
+  void RequestCurrentGains();
+
+  /// Return the most recently cached gains (from current_gains topic).
+  /// Returns empty vector if no gains have been received yet.
+  std::vector<double> GetCachedGains() const;
+
+  /// True if at least one current_gains message has been received
+  /// since the last call to RequestCurrentGains().
+  bool HasCachedGains() const;
+
+  /// Clear the cached gains (called before a new request to detect fresh arrival).
+  void ClearCachedGains();
+
   // ── Publishers (send commands) ────────────────────────────────────────────
 
   /// Publish arm task-space target [x,y,z,roll,pitch,yaw]
@@ -122,12 +140,14 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::Polygon>::SharedPtr     world_target_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr           active_ctrl_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr             estop_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr current_gains_sub_;
 
   // ── Publishers ────────────────────────────────────────────────────────────
   rclcpp::Publisher<rtc_msgs::msg::RobotTarget>::SharedPtr arm_target_pub_;
   rclcpp::Publisher<rtc_msgs::msg::RobotTarget>::SharedPtr hand_target_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr gains_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr            select_ctrl_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr              request_gains_pub_;
 
   // ── Cached state ──────────────────────────────────────────────────────────
   mutable std::mutex state_mutex_;
@@ -139,6 +159,8 @@ private:
   bool world_target_valid_{false};
   std::string active_controller_;
   bool estopped_{false};
+  std::vector<double> cached_gains_;
+  bool cached_gains_valid_{false};
 
   // ── Topic health timestamps ───────────────────────────────────────────────
   using TimePoint = std::chrono::steady_clock::time_point;

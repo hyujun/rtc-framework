@@ -33,6 +33,10 @@ BT::PortsList SwitchController::providedPorts()
   return {
     BT::InputPort<std::string>("controller_name"),
     BT::InputPort<double>("timeout_s", 3.0, "Timeout [s]"),
+    BT::InputPort<bool>("load_gains", true,
+                         "Request current gains after switch"),
+    BT::OutputPort<std::vector<double>>("current_gains",
+                                        "Gains loaded from controller"),
   };
 }
 
@@ -45,32 +49,73 @@ BT::NodeStatus SwitchController::onStart()
   }
   target_name_ = name.value();
   timeout_s_ = getInput<double>("timeout_s").value_or(3.0);
+  load_gains_ = getInput<bool>("load_gains").value_or(true);
+  switch_confirmed_ = false;
+  gains_requested_ = false;
   start_time_ = std::chrono::steady_clock::now();
 
   auto current = bridge_->GetActiveController();
   if (NormalizeName(current) == NormalizeName(target_name_)) {
     RCLCPP_DEBUG(logger(), "[SwitchController] already active: %s", target_name_.c_str());
+    switch_confirmed_ = true;
+    if (load_gains_) {
+      bridge_->ClearCachedGains();
+      bridge_->RequestCurrentGains();
+      gains_requested_ = true;
+      return BT::NodeStatus::RUNNING;
+    }
     return BT::NodeStatus::SUCCESS;
   }
 
-  RCLCPP_INFO(logger(), "[SwitchController] switching: %s -> %s (timeout=%.1fs)",
-              current.c_str(), target_name_.c_str(), timeout_s_);
+  RCLCPP_INFO(logger(), "[SwitchController] switching: %s -> %s (timeout=%.1fs, load_gains=%s)",
+              current.c_str(), target_name_.c_str(), timeout_s_,
+              load_gains_ ? "true" : "false");
   bridge_->PublishSelectController(target_name_);
   return BT::NodeStatus::RUNNING;
 }
 
 BT::NodeStatus SwitchController::onRunning()
 {
-  if (NormalizeName(bridge_->GetActiveController()) == NormalizeName(target_name_)) {
-    RCLCPP_INFO(logger(), "[SwitchController] active: %s (elapsed=%.2fs)",
-                target_name_.c_str(), ElapsedSeconds(start_time_));
+  // Phase 1: wait for controller switch confirmation
+  if (!switch_confirmed_) {
+    if (NormalizeName(bridge_->GetActiveController()) == NormalizeName(target_name_)) {
+      switch_confirmed_ = true;
+      RCLCPP_INFO(logger(), "[SwitchController] active: %s (elapsed=%.2fs)",
+                  target_name_.c_str(), ElapsedSeconds(start_time_));
+
+      if (load_gains_) {
+        bridge_->ClearCachedGains();
+        bridge_->RequestCurrentGains();
+        gains_requested_ = true;
+        return BT::NodeStatus::RUNNING;
+      }
+      return BT::NodeStatus::SUCCESS;
+    }
+
+    if (ElapsedSeconds(start_time_) > timeout_s_) {
+      RCLCPP_ERROR(logger(), "[SwitchController] timeout switching to %s (%.1fs)",
+                   target_name_.c_str(), timeout_s_);
+      return BT::NodeStatus::FAILURE;
+    }
+    return BT::NodeStatus::RUNNING;
+  }
+
+  // Phase 2: wait for gains response (load_gains=true)
+  if (gains_requested_ && bridge_->HasCachedGains()) {
+    auto gains = bridge_->GetCachedGains();
+    setOutput("current_gains", gains);
+    RCLCPP_INFO(logger(),
+                "[SwitchController] loaded %zu gains from %s",
+                gains.size(), target_name_.c_str());
     return BT::NodeStatus::SUCCESS;
   }
 
   if (ElapsedSeconds(start_time_) > timeout_s_) {
-    RCLCPP_ERROR(logger(), "[SwitchController] timeout switching to %s (%.1fs)",
-                 target_name_.c_str(), timeout_s_);
-    return BT::NodeStatus::FAILURE;
+    RCLCPP_WARN(logger(),
+                "[SwitchController] gains response timeout for %s, "
+                "continuing without cached gains",
+                target_name_.c_str());
+    return BT::NodeStatus::SUCCESS;
   }
   return BT::NodeStatus::RUNNING;
 }
