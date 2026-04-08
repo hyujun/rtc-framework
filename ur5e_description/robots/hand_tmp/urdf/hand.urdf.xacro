@@ -118,17 +118,17 @@
   <xacro:finger_link name="thumb_mcp_fe_link" length="0.030"/>
   <xacro:fingertip_link name="thumb_tip_link"/>
 
-  <!-- thumb_cmc_aa: abduction/adduction (Y-axis rotation) -->
+  <!-- thumb_cmc_aa: abduction/adduction (X-axis rotation) -->
   <xacro:finger_joint name="thumb_cmc_aa"
     parent="hand_base_link" child="thumb_cmc_aa_link"
     origin_xyz="-0.035 -0.03 0.025" origin_rpy="0 -0.3 0"
-    axis_xyz="0 1 0"/>
+    axis_xyz="1 0 0"/>
 
-  <!-- thumb_cmc_fe: flexion/extension (X-axis rotation) -->
+  <!-- thumb_cmc_fe: flexion/extension (Y-axis rotation) -->
   <xacro:finger_joint name="thumb_cmc_fe"
     parent="thumb_cmc_aa_link" child="thumb_cmc_fe_link"
     origin_xyz="0 0 0.030" origin_rpy="0 0 0"
-    axis_xyz="1 0 0"/>
+    axis_xyz="0 1 0"/>
 
   <!-- thumb_mcp_fe: flexion/extension -->
   <xacro:finger_joint name="thumb_mcp_fe"
