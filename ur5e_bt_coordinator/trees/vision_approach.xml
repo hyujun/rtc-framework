@@ -3,7 +3,7 @@
 <!-- BehaviorTree.CPP v4 syntax -->
 <!--
   Flow:
-    1. Switch to demo_joint_controller, move to vision_ready pose
+    1. Switch to demo_joint_controller, move to table_top pose
     2. Wait for /world_target_info (Polygon) with valid non-zero data
     3. Switch to demo_task_controller, move 10cm above detected object
 -->
@@ -14,22 +14,29 @@
     <Sequence name="main">
 
       <!-- ======================================================== -->
-      <!-- Phase 1: Move to vision-ready joint pose                  -->
+      <!-- Phase 1: Move to table_top joint pose                     -->
+      <!--   Switch to joint-space controller (demo_joint_controller)-->
+      <!--   and move to the table_top pose defined in poses.yaml.   -->
+      <!--   This positions the arm for downward observation of the  -->
+      <!--   workspace before vision detection begins.               -->
       <!-- ======================================================== -->
       <SwitchController controller_name="demo_joint_controller"
-                        timeout_s="3.0"/>
+                        timeout_s="3.0"
+                        current_gains="{current_gains}"/>
 
-      <SetGains trajectory_speed="0.15"
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.15"
                 max_traj_velocity="0.5"/>
 
-      <MoveToJoints target="0.0;-0.87;1.74;-2.44;-1.57;0.0"
+      <MoveToJoints pose_name="table_top"
                     tolerance="0.01"
                     timeout_s="15.0"/>
 
       <!-- ======================================================== -->
-      <!-- Phase 2: Wait for valid vision data from                  -->
-      <!--          /world_target_info (geometry_msgs/Polygon)       -->
-      <!--          Retries until data is non-zero and published.    -->
+      <!-- Phase 2: Wait for valid vision data                       -->
+      <!--   Poll /world_target_info (geometry_msgs/Polygon) every   -->
+      <!--   0.5s, up to 60 attempts (30s total). Succeeds when the  -->
+      <!--   topic publishes non-zero object pose data.              -->
       <!-- ======================================================== -->
       <RetryUntilSuccessful num_attempts="60">
         <Sequence>
@@ -40,18 +47,26 @@
 
       <!-- ======================================================== -->
       <!-- Phase 3: Switch to task-space controller                  -->
+      <!--   Switch to demo_task_controller for Cartesian-space      -->
+      <!--   motion. Loads current gains into blackboard so that     -->
+      <!--   subsequent SetGains only overrides specified values.    -->
       <!-- ======================================================== -->
       <SwitchController controller_name="demo_task_controller"
-                        timeout_s="3.0"/>
+                        timeout_s="3.0"
+                        current_gains="{current_gains}"/>
 
       <!-- ======================================================== -->
-      <!-- Phase 4: Move to 10cm above the detected object           -->
+      <!-- Phase 4: Approach detected object from above              -->
+      <!--   Compute a pose 10cm above the detected object and move  -->
+      <!--   there in task-space. This is the final pre-grasp        -->
+      <!--   position before any manipulation begins.                -->
       <!-- ======================================================== -->
       <ComputeOffsetPose input_pose="{object_pose}"
                          offset_z="0.10"
                          output_pose="{approach_pose}"/>
 
-      <SetGains trajectory_speed="0.1"
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.1"
                 max_traj_velocity="0.3"/>
 
       <MoveToPose target="{approach_pose}"

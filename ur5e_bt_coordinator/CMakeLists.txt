@@ -11,6 +11,7 @@ find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rtc_msgs REQUIRED)
+find_package(shape_estimation_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 
 # ── Library: all BT nodes + ROS bridge ─────────────────────────────────────
@@ -35,13 +36,16 @@ add_library(bt_nodes SHARED
   src/nodes/set_hand_pose.cpp
   src/nodes/ur5e_hold_pose.cpp
   src/nodes/move_opposition.cpp
+  src/nodes/trigger_shape_estimation.cpp
+  src/nodes/wait_shape_result.cpp
+  src/nodes/check_shape_type.cpp
 )
 target_include_directories(bt_nodes PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
 ament_target_dependencies(bt_nodes
-  rclcpp behaviortree_cpp std_msgs geometry_msgs rtc_msgs
+  rclcpp behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs
 )
 
 # ── Executable: coordinator node ───────────────────────────────────────────
@@ -54,7 +58,7 @@ target_include_directories(bt_coordinator_node PRIVATE
 )
 target_link_libraries(bt_coordinator_node bt_nodes)
 ament_target_dependencies(bt_coordinator_node
-  rclcpp behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs ament_index_cpp
+  rclcpp behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs ament_index_cpp
 )
 
 # ── Executable: offline tree validator ─────────────────────────────────────
@@ -66,7 +70,7 @@ target_include_directories(validate_tree PRIVATE
 )
 target_link_libraries(validate_tree bt_nodes)
 ament_target_dependencies(validate_tree
-  rclcpp behaviortree_cpp std_msgs geometry_msgs rtc_msgs ament_index_cpp
+  rclcpp behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs ament_index_cpp
 )
 
 # ── Install ────────────────────────────────────────────────────────────────
@@ -84,5 +88,63 @@ install(DIRECTORY include/
 install(DIRECTORY config launch trees
   DESTINATION share/${PROJECT_NAME}
 )
+
+# ── Tests ──────────────────────────────────────────────────────────────────
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  # Tier 1: Pure computation tests (no ROS2 fixture needed)
+  set(TIER1_TESTS
+    test_bt_types
+    test_bt_utils
+    test_compute_offset_pose
+    test_compute_sweep_trajectory
+    test_wait_duration
+  )
+  foreach(test_name ${TIER1_TESTS})
+    ament_add_gtest(${test_name} test/${test_name}.cpp)
+    target_link_libraries(${test_name} bt_nodes)
+    target_include_directories(${test_name} PRIVATE
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test>
+    )
+    ament_target_dependencies(${test_name}
+      rclcpp behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs
+    )
+  endforeach()
+
+  # Tier 2: ROS2 test fixture tests (use test_helpers.hpp)
+  set(TIER2_TESTS
+    test_move_to_pose
+    test_move_to_joints
+    test_switch_controller
+    test_set_gains
+    test_grasp_control
+    test_condition_nodes
+    test_hand_nodes
+    test_shape_nodes
+  )
+  foreach(test_name ${TIER2_TESTS})
+    ament_add_gtest(${test_name} test/${test_name}.cpp)
+    target_link_libraries(${test_name} bt_nodes)
+    target_include_directories(${test_name} PRIVATE
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test>
+    )
+    ament_target_dependencies(${test_name}
+      rclcpp behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs
+    )
+  endforeach()
+
+  # Tier 3: XML tree validation
+  ament_add_gtest(test_tree_validation test/test_tree_validation.cpp)
+  target_link_libraries(test_tree_validation bt_nodes)
+  target_include_directories(test_tree_validation PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test>
+  )
+  ament_target_dependencies(test_tree_validation
+    rclcpp behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs ament_index_cpp
+  )
+endif()
 
 ament_package()

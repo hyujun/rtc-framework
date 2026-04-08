@@ -22,7 +22,8 @@ MoveToJoints::MoveToJoints(const std::string& name, const BT::NodeConfig& config
 BT::PortsList MoveToJoints::providedPorts()
 {
   return {
-    BT::InputPort<std::vector<double>>("target"),
+    BT::InputPort<std::vector<double>>("target", "Joint target [rad] (ignored if pose_name set)"),
+    BT::InputPort<std::string>("pose_name", "Named arm pose from poses.yaml (overrides target)"),
     BT::InputPort<double>("tolerance", 0.01, "Per-joint tolerance [rad]"),
     BT::InputPort<double>("timeout_s", 10.0, "Timeout [s]"),
   };
@@ -30,12 +31,19 @@ BT::PortsList MoveToJoints::providedPorts()
 
 BT::NodeStatus MoveToJoints::onStart()
 {
-  auto target = getInput<std::vector<double>>("target");
-  if (!target) {
-    RCLCPP_ERROR(logger(), "[MoveToJoints] missing target port: %s", target.error().c_str());
-    throw BT::RuntimeError("MoveToJoints: missing target: ", target.error());
+  auto pose_name = getInput<std::string>("pose_name");
+  if (pose_name) {
+    const auto& pose = bridge_->GetArmPose(pose_name.value());
+    target_.assign(pose.begin(), pose.end());
+  } else {
+    auto target = getInput<std::vector<double>>("target");
+    if (!target) {
+      RCLCPP_ERROR(logger(), "[MoveToJoints] missing target or pose_name port: %s",
+                   target.error().c_str());
+      throw BT::RuntimeError("MoveToJoints: missing target or pose_name: ", target.error());
+    }
+    target_ = target.value();
   }
-  target_ = target.value();
   tolerance_ = getInput<double>("tolerance").value_or(0.01);
   timeout_s_ = getInput<double>("timeout_s").value_or(10.0);
   start_time_ = std::chrono::steady_clock::now();

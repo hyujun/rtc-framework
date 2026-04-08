@@ -1,0 +1,144 @@
+<!-- file: trees/shape_inspect.xml -->
+<!-- UR5e Shape Inspection demo (arm + ToF shape estimation) -->
+<!-- BehaviorTree.CPP v4 syntax -->
+<!--
+  Flow:
+    1. Move to ready pose via joint-space controller
+    2. Wait for vision target (object position)
+    3. Switch to task-space controller
+    4. Move to inspection position (offset above object, orientation preserved)
+    5. Start shape estimation (clear + start)
+    6. Wait for confident shape result
+    7. Stop estimation and extract shape type to blackboard
+    ── (future: shape-based action branching goes here) ──
+    N. Return to ready pose
+-->
+
+<root BTCPP_format="4" main_tree_to_execute="ShapeInspect">
+
+  <BehaviorTree ID="ShapeInspect">
+    <Sequence name="main">
+
+      <!-- ======================================================== -->
+      <!-- Phase 1: Move to ready pose (joint-space)                 -->
+      <!--   Switch to demo_joint_controller and move to the ready   -->
+      <!--   pose defined in poses.yaml. This is the starting        -->
+      <!--   position for the inspection task.                       -->
+      <!-- ======================================================== -->
+      <SwitchController controller_name="demo_joint_controller"
+                        timeout_s="3.0"
+                        current_gains="{current_gains}"/>
+
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.15"
+                max_traj_velocity="0.5"/>
+
+      <MoveToJoints pose_name="ready"
+                    tolerance="0.01"
+                    timeout_s="15.0"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 2: Wait for vision data                             -->
+      <!--   Poll /world_target_info every 0.5s, up to 60 attempts  -->
+      <!--   (30s total). Succeeds when the topic publishes a valid  -->
+      <!--   non-zero object position. Orientation is taken from the -->
+      <!--   current TCP pose.                                       -->
+      <!-- ======================================================== -->
+      <RetryUntilSuccessful num_attempts="60">
+        <Sequence>
+          <WaitDuration duration_s="0.5"/>
+          <IsVisionTargetReady pose="{object_pose}"/>
+        </Sequence>
+      </RetryUntilSuccessful>
+
+      <!-- ======================================================== -->
+      <!-- Phase 3: Switch to task-space controller                  -->
+      <!--   Switch to demo_task_controller for Cartesian-space      -->
+      <!--   motion. Loads current gains into blackboard.            -->
+      <!-- ======================================================== -->
+      <SwitchController controller_name="demo_task_controller"
+                        timeout_s="3.0"
+                        current_gains="{current_gains}"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 4: Move to inspection position                      -->
+      <!--   Compute an offset pose above the detected object        -->
+      <!--   (x/y/z offsets from blackboard, default z=+0.05m).     -->
+      <!--   Orientation is preserved from the current TCP pose.     -->
+      <!--   Move there at moderate speed for safe approach.         -->
+      <!-- ======================================================== -->
+      <ComputeOffsetPose input_pose="{object_pose}"
+                         offset_x="{inspect_offset_x}"
+                         offset_y="{inspect_offset_y}"
+                         offset_z="{inspect_offset_z}"
+                         output_pose="{inspect_pose}"/>
+
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.08"
+                max_traj_velocity="0.2"/>
+
+      <MoveToPose target="{inspect_pose}"
+                  position_tolerance="0.003"
+                  orientation_tolerance="0.05"
+                  timeout_s="12.0"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 5: Start shape estimation                           -->
+      <!--   Clear accumulated point cloud and previous estimates,   -->
+      <!--   then start the shape estimation pipeline. The ToF       -->
+      <!--   sensors on the hand begin accumulating surface points.  -->
+      <!-- ======================================================== -->
+      <TriggerShapeEstimation command="start"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 6: Wait for shape result                            -->
+      <!--   Poll /shape/estimate until confidence meets threshold   -->
+      <!--   or timeout expires. On success, the full ShapeEstimate  -->
+      <!--   message is stored in {shape_estimate} on the Blackboard.-->
+      <!-- ======================================================== -->
+      <WaitShapeResult confidence_threshold="0.7"
+                       timeout_s="10.0"
+                       estimate="{shape_estimate}"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 7: Stop estimation and evaluate shape               -->
+      <!--   Stop the estimation pipeline, then extract shape_type   -->
+      <!--   and shape_name to the Blackboard for downstream use.    -->
+      <!--   Future: add shape-based branching (Fallback/Switch)     -->
+      <!--   between this phase and the return phase.                -->
+      <!-- ======================================================== -->
+      <TriggerShapeEstimation command="stop"/>
+
+      <CheckShapeType estimate="{shape_estimate}"
+                      shape_type="{shape_type}"
+                      shape_name="{shape_name}"
+                      confidence="{shape_confidence}"/>
+
+      <!-- ======================================================== -->
+      <!-- (Expansion point: shape-based action branching)           -->
+      <!--   Insert SubTrees here that branch on {shape_type} or    -->
+      <!--   {shape_name} for shape-specific manipulation.           -->
+      <!-- ======================================================== -->
+
+      <!-- ======================================================== -->
+      <!-- Phase N: Return to ready pose                             -->
+      <!--   Always return to the ready pose at the end of the       -->
+      <!--   inspection sequence, regardless of shape result.        -->
+      <!--   Switch back to joint-space controller for safe return.  -->
+      <!-- ======================================================== -->
+      <SwitchController controller_name="demo_joint_controller"
+                        timeout_s="3.0"
+                        current_gains="{current_gains}"/>
+
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.15"
+                max_traj_velocity="0.5"/>
+
+      <MoveToJoints pose_name="ready"
+                    tolerance="0.01"
+                    timeout_s="15.0"/>
+
+    </Sequence>
+  </BehaviorTree>
+
+</root>

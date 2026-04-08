@@ -174,6 +174,21 @@ BtRosBridge::BtRosBridge(rclcpp::Node::SharedPtr node)
   request_gains_pub_ = node_->create_publisher<std_msgs::msg::Bool>(
       "/ur5e/request_gains", rclcpp::QoS{10});
 
+  // ── Shape estimation ──────────────────────────────────────────────────
+
+  shape_estimate_sub_ = node_->create_subscription<shape_estimation_msgs::msg::ShapeEstimate>(
+      "/shape/estimate", rclcpp::QoS{10},
+      [this](shape_estimation_msgs::msg::ShapeEstimate::SharedPtr msg) {
+        std::lock_guard lock(state_mutex_);
+        shape_estimate_ = *msg;
+        shape_estimate_valid_ = true;
+      });
+
+  shape_trigger_pub_ = node_->create_publisher<std_msgs::msg::String>(
+      "/shape/trigger", rclcpp::QoS{10});
+
+  shape_clear_client_ = node_->create_client<std_srvs::srv::Trigger>("/shape/clear");
+
   RCLCPP_INFO(node_->get_logger(), "[BtRosBridge] Initialized");
 }
 
@@ -300,6 +315,42 @@ void BtRosBridge::PublishSelectController(const std::string& name) {
   RCLCPP_DEBUG(node_->get_logger(),
                "[BtRosBridge] PublishSelectController: %s", name.c_str());
   select_ctrl_pub_->publish(msg);
+}
+
+// ── Shape estimation ──────────────────────────────────────────────────────
+
+void BtRosBridge::PublishShapeTrigger(const std::string& command) {
+  std_msgs::msg::String msg;
+  msg.data = command;
+  RCLCPP_INFO(node_->get_logger(), "[BtRosBridge] ShapeTrigger: %s", command.c_str());
+  shape_trigger_pub_->publish(msg);
+}
+
+void BtRosBridge::CallShapeClear() {
+  if (!shape_clear_client_->service_is_ready()) {
+    RCLCPP_WARN(node_->get_logger(), "[BtRosBridge] /shape/clear service not available");
+    return;
+  }
+  auto request = std::make_shared<std_srvs::srv::Trigger::Request>();
+  shape_clear_client_->async_send_request(request,
+      [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
+        auto result = future.get();
+        RCLCPP_INFO(node_->get_logger(), "[BtRosBridge] /shape/clear: %s",
+                    result->success ? "OK" : result->message.c_str());
+      });
+}
+
+bool BtRosBridge::GetShapeEstimate(shape_estimation_msgs::msg::ShapeEstimate& out) const {
+  std::lock_guard lock(state_mutex_);
+  if (!shape_estimate_valid_) return false;
+  out = shape_estimate_;
+  return true;
+}
+
+void BtRosBridge::ClearShapeEstimate() {
+  std::lock_guard lock(state_mutex_);
+  shape_estimate_ = shape_estimation_msgs::msg::ShapeEstimate{};
+  shape_estimate_valid_ = false;
 }
 
 // ── Pose library ──────────────────────────────────────────────────────────

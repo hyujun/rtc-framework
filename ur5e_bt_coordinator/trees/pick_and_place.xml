@@ -11,7 +11,30 @@
     <Sequence name="main">
 
       <!-- ======================================================== -->
-      <!-- Phase 1: Detect object via vision                         -->
+      <!-- Phase 1: Move to table_top joint pose                     -->
+      <!--   Switch to joint-space controller (demo_joint_controller)-->
+      <!--   and move to the table_top pose defined in poses.yaml.   -->
+      <!--   This positions the arm for downward observation of the  -->
+      <!--   workspace before vision detection begins.               -->
+      <!-- ======================================================== -->
+      <SwitchController controller_name="demo_joint_controller"
+                        timeout_s="3.0"
+                        current_gains="{current_gains}"/>
+
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.15"
+                max_traj_velocity="0.5"/>
+
+      <MoveToJoints pose_name="table_top"
+                    tolerance="0.01"
+                    timeout_s="15.0"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 2: Detect object via vision                         -->
+      <!--   Use DetectObject SubTree to poll the vision system.     -->
+      <!--   Retries up to 10 attempts at 0.5s intervals (5s total). -->
+      <!--   On success, stores the detected 6-DOF pose in           -->
+      <!--   {object_pose} on the Blackboard.                        -->
       <!-- ======================================================== -->
       <SubTree ID="DetectObject"
                pose="{object_pose}"
@@ -19,7 +42,19 @@
                wait_s="0.5"/>
 
       <!-- ======================================================== -->
-      <!-- Phase 2: Pre-shape hand (open) and move above object      -->
+      <!-- Phase 3: Switch to task-space controller                  -->
+      <!--   Switch to demo_task_controller for Cartesian-space      -->
+      <!--   motion. Loads current gains into blackboard so that     -->
+      <!--   subsequent SetGains only overrides specified values.    -->
+      <!-- ======================================================== -->
+      <SwitchController controller_name="demo_task_controller"
+                        timeout_s="3.0"
+                        current_gains="{current_gains}"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 4: Pre-shape hand and approach from above           -->
+      <!--   Open all fingers to prepare for grasping, then move     -->
+      <!--   to 4cm above the detected object in task-space.         -->
       <!-- ======================================================== -->
       <GraspControl mode="open"
                     target_positions="0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0"
@@ -34,7 +69,9 @@
                approach_pose="{approach_pose}"/>
 
       <!-- ======================================================== -->
-      <!-- Phase 3: Slow descend to object                           -->
+      <!-- Phase 5: Slow descend to object                           -->
+      <!--   Reduce trajectory speed for precise final approach.     -->
+      <!--   Move directly to the object pose with tight tolerance.  -->
       <!-- ======================================================== -->
       <SubTree ID="SlowDescend"
                target_pose="{object_pose}"
@@ -45,7 +82,10 @@
                timeout_s="8.0"/>
 
       <!-- ======================================================== -->
-      <!-- Phase 4: Force-based grasp                                -->
+      <!-- Phase 6: Force-based grasp                                -->
+      <!--   Close fingers at 0.3 rad/s until force threshold 1.5N  -->
+      <!--   is sustained for 200ms on at least 2 fingertips.       -->
+      <!--   Verify grasp with 1.0N threshold on 2 fingertips.      -->
       <!-- ======================================================== -->
       <SubTree ID="ForceGrasp"
                grasp_mode="close"
@@ -59,7 +99,10 @@
                verify_min_tips="2"/>
 
       <!-- ======================================================== -->
-      <!-- Phase 5: Lift object                                      -->
+      <!-- Phase 7: Lift object and verify grasp                     -->
+      <!--   Lift 12cm above the object pose at moderate speed.      -->
+      <!--   After reaching lift height, verify the object is still  -->
+      <!--   grasped (0.8N on 2 fingertips).                         -->
       <!-- ======================================================== -->
       <SubTree ID="LiftAndVerify"
                base_pose="{object_pose}"
@@ -73,9 +116,12 @@
                lift_pose="{lift_pose}"/>
 
       <!-- ======================================================== -->
-      <!-- Phase 6: Transport to goal position                       -->
+      <!-- Phase 8: Transport to goal position                       -->
+      <!--   Move to {place_pose} (set in Blackboard before tree     -->
+      <!--   starts) at moderate speed for safe transport.            -->
       <!-- ======================================================== -->
-      <SetGains trajectory_speed="0.1"
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.1"
                 max_traj_velocity="0.3"/>
 
       <MoveToPose target="{place_pose}"
@@ -83,7 +129,9 @@
                   timeout_s="12.0"/>
 
       <!-- ======================================================== -->
-      <!-- Phase 7: Lower to release height                          -->
+      <!-- Phase 9: Lower to release height                          -->
+      <!--   Descend 5cm below the place pose at slow speed for      -->
+      <!--   gentle placement of the object on the surface.          -->
       <!-- ======================================================== -->
       <ComputeOffsetPose input_pose="{place_pose}"
                          offset_z="-0.05"
@@ -94,7 +142,9 @@
                   timeout_s="6.0"/>
 
       <!-- ======================================================== -->
-      <!-- Phase 8: Release and retreat                              -->
+      <!-- Phase 10: Release and retreat                             -->
+      <!--   Open all fingers to release the object, then retreat    -->
+      <!--   8cm upward to clear the workspace.                      -->
       <!-- ======================================================== -->
       <SubTree ID="ReleaseAndRetreat"
                base_pose="{place_pose}"
@@ -108,20 +158,60 @@
 
   <!-- ============================================================== -->
   <!-- ForcePIPickAndPlace: Force-PI adaptive grasp variant            -->
-  <!-- Uses controller-internal state machine for force-controlled     -->
-  <!-- grasping instead of BT-side incremental closing.                -->
-  <!-- Prerequisite: grasp_controller_type: "force_pi" in YAML        -->
+  <!--   Uses controller-internal PI force state machine instead of   -->
+  <!--   BT-side incremental finger closing. The controller handles   -->
+  <!--   contact detection, force ramping, and slip recovery.         -->
+  <!--   Prerequisite: grasp_controller_type: "force_pi" in YAML     -->
   <!-- ============================================================== -->
   <BehaviorTree ID="ForcePIPickAndPlace">
     <Sequence name="main">
 
-      <!-- Phase 1: Detect object via vision -->
+      <!-- ======================================================== -->
+      <!-- Phase 1: Move to table_top joint pose                     -->
+      <!--   Switch to joint-space controller (demo_joint_controller)-->
+      <!--   and move to the table_top pose defined in poses.yaml.   -->
+      <!--   This positions the arm for downward observation of the  -->
+      <!--   workspace before vision detection begins.               -->
+      <!-- ======================================================== -->
+      <SwitchController controller_name="demo_joint_controller"
+                        timeout_s="3.0"
+                        current_gains="{current_gains}"/>
+
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.15"
+                max_traj_velocity="0.5"/>
+
+      <MoveToJoints pose_name="table_top"
+                    tolerance="0.01"
+                    timeout_s="15.0"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 2: Detect object via vision                         -->
+      <!--   Use DetectObject SubTree to poll the vision system.     -->
+      <!--   Retries up to 10 attempts at 0.5s intervals (5s total). -->
+      <!--   On success, stores the detected 6-DOF pose in           -->
+      <!--   {object_pose} on the Blackboard.                        -->
+      <!-- ======================================================== -->
       <SubTree ID="DetectObject"
                pose="{object_pose}"
                num_attempts="10"
                wait_s="0.5"/>
 
-      <!-- Phase 2: Pre-shape hand (open) and move above object -->
+      <!-- ======================================================== -->
+      <!-- Phase 3: Switch to task-space controller                  -->
+      <!--   Switch to demo_task_controller for Cartesian-space      -->
+      <!--   motion. Loads current gains into blackboard so that     -->
+      <!--   subsequent SetGains only overrides specified values.    -->
+      <!-- ======================================================== -->
+      <SwitchController controller_name="demo_task_controller"
+                        timeout_s="3.0"
+                        current_gains="{current_gains}"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 4: Pre-shape hand and approach from above           -->
+      <!--   Open all fingers to prepare for grasping, then move     -->
+      <!--   to 4cm above the detected object in task-space.         -->
+      <!-- ======================================================== -->
       <GraspControl mode="open"
                     target_positions="0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0"
                     timeout_s="5.0"/>
@@ -134,7 +224,11 @@
                timeout_s="10.0"
                approach_pose="{approach_pose}"/>
 
-      <!-- Phase 3: Slow descend to object -->
+      <!-- ======================================================== -->
+      <!-- Phase 5: Slow descend to object                           -->
+      <!--   Reduce trajectory speed for precise final approach.     -->
+      <!--   Move directly to the object pose with tight tolerance.  -->
+      <!-- ======================================================== -->
       <SubTree ID="SlowDescend"
                target_pose="{object_pose}"
                traj_speed="0.05"
@@ -143,13 +237,25 @@
                ori_tol="0.05"
                timeout_s="8.0"/>
 
-      <!-- Phase 4: Force-PI adaptive grasp -->
+      <!-- ======================================================== -->
+      <!-- Phase 6: Force-PI adaptive grasp                          -->
+      <!--   Trigger the controller's internal Force-PI state        -->
+      <!--   machine (Approaching -> Contact -> ForceControl ->      -->
+      <!--   Holding). Target force 2.0N with 10s timeout.           -->
+      <!--   Verifies the controller reaches Holding phase.          -->
+      <!-- ======================================================== -->
       <SubTree ID="ForcePIGrasp"
                target_force_N="2.0"
                grasp_timeout_ms="10000"/>
 
-      <!-- Phase 5: Lift and verify holding -->
-      <SetGains trajectory_speed="0.08"
+      <!-- ======================================================== -->
+      <!-- Phase 7: Lift and verify holding                          -->
+      <!--   Lift 12cm above the object pose. After reaching lift    -->
+      <!--   height, verify the Force-PI controller is still in      -->
+      <!--   Holding phase (anomaly monitor active).                 -->
+      <!-- ======================================================== -->
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.08"
                 max_traj_velocity="0.2"/>
 
       <ComputeOffsetPose input_pose="{object_pose}"
@@ -162,15 +268,24 @@
 
       <IsGraspPhase phase="holding"/>
 
-      <!-- Phase 6: Transport to goal position -->
-      <SetGains trajectory_speed="0.1"
+      <!-- ======================================================== -->
+      <!-- Phase 8: Transport to goal position                       -->
+      <!--   Move to {place_pose} (set in Blackboard before tree     -->
+      <!--   starts) at moderate speed for safe transport.            -->
+      <!-- ======================================================== -->
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.1"
                 max_traj_velocity="0.3"/>
 
       <MoveToPose target="{place_pose}"
                   position_tolerance="0.005"
                   timeout_s="12.0"/>
 
-      <!-- Phase 7: Lower to release height -->
+      <!-- ======================================================== -->
+      <!-- Phase 9: Lower to release height                          -->
+      <!--   Descend 5cm below the place pose at slow speed for      -->
+      <!--   gentle placement of the object on the surface.          -->
+      <!-- ======================================================== -->
       <ComputeOffsetPose input_pose="{place_pose}"
                          offset_z="-0.05"
                          output_pose="{lower_pose}"/>
@@ -179,7 +294,12 @@
                   position_tolerance="0.003"
                   timeout_s="6.0"/>
 
-      <!-- Phase 8: Force-PI release and retreat -->
+      <!-- ======================================================== -->
+      <!-- Phase 10: Force-PI release and retreat                    -->
+      <!--   Command the Force-PI controller to release (transition  -->
+      <!--   to Idle phase), wait for completion, then retreat 8cm   -->
+      <!--   upward to clear the workspace.                          -->
+      <!-- ======================================================== -->
       <SubTree ID="ForcePIRelease"
                release_timeout_ms="5000"/>
 

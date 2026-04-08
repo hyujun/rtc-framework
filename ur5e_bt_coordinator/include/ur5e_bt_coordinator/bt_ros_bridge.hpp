@@ -9,9 +9,11 @@
 #include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/msg/grasp_state.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
+#include <shape_estimation_msgs/msg/shape_estimate.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/trigger.hpp>
 
 #include <chrono>
 #include <mutex>
@@ -107,6 +109,21 @@ public:
   /// Publish controller switch command
   void PublishSelectController(const std::string& name);
 
+  // ── Shape estimation ────────────────────────────────────────────────────
+
+  /// Publish trigger command to /shape/trigger ("start", "stop", etc.)
+  void PublishShapeTrigger(const std::string& command);
+
+  /// Call /shape/clear service (async, non-blocking)
+  void CallShapeClear();
+
+  /// Get the latest cached ShapeEstimate message.
+  /// Returns false if no estimate has been received yet.
+  bool GetShapeEstimate(shape_estimation_msgs::msg::ShapeEstimate& out) const;
+
+  /// Clear the cached shape estimate (called before a new estimation session).
+  void ClearShapeEstimate();
+
   // ── Pose library (runtime-configurable) ───────────────────────────────────
 
   /// Load hand/arm pose overrides from ROS2 parameters (deg → rad conversion).
@@ -144,6 +161,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr           active_ctrl_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr             estop_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr current_gains_sub_;
+  rclcpp::Subscription<shape_estimation_msgs::msg::ShapeEstimate>::SharedPtr shape_estimate_sub_;
 
   // ── Publishers ────────────────────────────────────────────────────────────
   rclcpp::Publisher<rtc_msgs::msg::RobotTarget>::SharedPtr arm_target_pub_;
@@ -151,6 +169,8 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr gains_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr            select_ctrl_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr              request_gains_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr            shape_trigger_pub_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr              shape_clear_client_;
 
   // ── Cached state ──────────────────────────────────────────────────────────
   mutable std::mutex state_mutex_;
@@ -165,6 +185,8 @@ private:
   std::vector<double> last_hand_target_;
   std::vector<double> cached_gains_;
   bool cached_gains_valid_{false};
+  shape_estimation_msgs::msg::ShapeEstimate shape_estimate_;
+  bool shape_estimate_valid_{false};
 
   // ── Topic health timestamps ───────────────────────────────────────────────
   using TimePoint = std::chrono::steady_clock::time_point;

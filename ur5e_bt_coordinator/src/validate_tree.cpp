@@ -24,9 +24,13 @@
 #include "ur5e_bt_coordinator/action_nodes/set_hand_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/ur5e_hold_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_opposition.hpp"
+#include "ur5e_bt_coordinator/action_nodes/trigger_shape_estimation.hpp"
+#include "ur5e_bt_coordinator/action_nodes/wait_shape_result.hpp"
+#include "ur5e_bt_coordinator/condition_nodes/check_shape_type.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_grasped.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_object_detected.hpp"
+#include "ur5e_bt_coordinator/condition_nodes/is_vision_target_ready.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <behaviortree_cpp/bt_factory.h>
@@ -90,11 +94,15 @@ int main(int argc, char** argv)
   factory.registerNodeType<rtc_bt::SetHandPose>("SetHandPose", null_bridge);
   factory.registerNodeType<rtc_bt::UR5eHoldPose>("UR5eHoldPose", null_bridge);
   factory.registerNodeType<rtc_bt::MoveOpposition>("MoveOpposition", null_bridge);
+  factory.registerNodeType<rtc_bt::TriggerShapeEstimation>("TriggerShapeEstimation", null_bridge);
+  factory.registerNodeType<rtc_bt::WaitShapeResult>("WaitShapeResult", null_bridge);
 
   // Condition nodes
   factory.registerNodeType<rtc_bt::IsForceAbove>("IsForceAbove", null_bridge);
   factory.registerNodeType<rtc_bt::IsGrasped>("IsGrasped", null_bridge);
   factory.registerNodeType<rtc_bt::IsObjectDetected>("IsObjectDetected", null_bridge);
+  factory.registerNodeType<rtc_bt::IsVisionTargetReady>("IsVisionTargetReady", null_bridge);
+  factory.registerNodeType<rtc_bt::CheckShapeType>("CheckShapeType", null_bridge);
 
   try {
     auto tree = factory.createTreeFromFile(tree_path.string());

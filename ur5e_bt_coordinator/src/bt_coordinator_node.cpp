@@ -15,6 +15,8 @@
 #include "ur5e_bt_coordinator/action_nodes/set_hand_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/ur5e_hold_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_opposition.hpp"
+#include "ur5e_bt_coordinator/action_nodes/trigger_shape_estimation.hpp"
+#include "ur5e_bt_coordinator/action_nodes/wait_shape_result.hpp"
 
 // Condition nodes
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
@@ -22,6 +24,7 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_grasped.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_object_detected.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_vision_target_ready.hpp"
+#include "ur5e_bt_coordinator/condition_nodes/check_shape_type.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -152,12 +155,17 @@ void BtCoordinatorNode::RegisterBtNodes()
   factory_.registerNodeType<UR5eHoldPose>("UR5eHoldPose", bridge);
   factory_.registerNodeType<MoveOpposition>("MoveOpposition", bridge);
 
+  // ── Shape estimation nodes ──────────────────────────────────────────
+  factory_.registerNodeType<TriggerShapeEstimation>("TriggerShapeEstimation", bridge);
+  factory_.registerNodeType<WaitShapeResult>("WaitShapeResult", bridge);
+
   // ── Condition nodes ───────────────────────────────────────────────────
   factory_.registerNodeType<IsForceAbove>("IsForceAbove", bridge);
   factory_.registerNodeType<IsGraspPhase>("IsGraspPhase", bridge);
   factory_.registerNodeType<IsGrasped>("IsGrasped", bridge);
   factory_.registerNodeType<IsObjectDetected>("IsObjectDetected", bridge);
   factory_.registerNodeType<IsVisionTargetReady>("IsVisionTargetReady", bridge);
+  factory_.registerNodeType<CheckShapeType>("CheckShapeType", bridge);
 }
 
 void BtCoordinatorNode::LoadTree()

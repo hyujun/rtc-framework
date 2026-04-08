@@ -1,6 +1,7 @@
 #pragma once
 
 #include <behaviortree_cpp/bt_factory.h>
+#include <shape_estimation_msgs/msg/shape_estimate.hpp>
 
 #include <cmath>
 #include <cstdint>

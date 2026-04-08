@@ -14,6 +14,7 @@ namespace rtc_bt {
 ///
 /// Input ports:
 ///   - target (std::vector<double>): joint target [q0..q5] in rad
+///   - pose_name (string): named arm pose from poses.yaml (overrides target)
 ///   - tolerance (double): per-joint tolerance [rad] (default 0.01)
 ///   - timeout_s (double): timeout [s] (default 10.0)
 class MoveToJoints : public BT::StatefulActionNode {

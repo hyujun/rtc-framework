@@ -1,14 +1,18 @@
 <!-- file: trees/hand_motions.xml -->
 <!-- UR5e + 10-DoF Hand Demo: Opposition + FlexExtend Wave (with articulation) -->
 <!-- BehaviorTree.CPP v4 syntax -->
-<!-- 가감속은 SetGains hand_trajectory_speed로 제어, -->
-<!-- 노드 완료는 RT 컨트롤러 trajectory duration 추정 기반 -->
+<!-- Trajectory speed is controlled via SetGains hand_trajectory_speed.       -->
+<!-- Node completion is based on RT controller trajectory duration estimation. -->
 
 <root BTCPP_format="4" main_tree_to_execute="FullDemo">
 
   <!-- ================================================================== -->
-  <!-- SingleOpposition: 엄지 + 대상 손가락 opposition → 조건부 home 복귀   -->
-  <!--   비-target 손가락은 자동으로 home 리셋 (MoveOpposition 내부)         -->
+  <!-- SingleOpposition: Single finger opposition motion                   -->
+  <!--   Moves thumb + target finger into opposition pose simultaneously.  -->
+  <!--   Non-target fingers are automatically reset to home by             -->
+  <!--   MoveOpposition internally.                                        -->
+  <!--   If use_home_return is true, returns all fingers to home pose      -->
+  <!--   after the opposition motion completes.                            -->
   <!-- ================================================================== -->
   <BehaviorTree ID="SingleOpposition">
     <Sequence>
@@ -31,7 +35,10 @@
   </BehaviorTree>
 
   <!-- ================================================================== -->
-  <!-- OppositionCycle: index → middle → ring 1회 순회                      -->
+  <!-- OppositionCycle: One full opposition cycle (index -> middle -> ring) -->
+  <!--   Sequentially opposes the thumb against each finger in order.      -->
+  <!--   Each SubTree inherits hand_speed, hand_max_vel, and               -->
+  <!--   use_home_return from the parent Blackboard.                       -->
   <!-- ================================================================== -->
   <BehaviorTree ID="OppositionCycle">
     <Sequence>
@@ -60,9 +67,14 @@
   </BehaviorTree>
 
   <!-- ================================================================== -->
-  <!-- OppositionDemo: 가감속 Opposition (Phase 1→2→3)                     -->
-  <!--   공통 변수: num_cycles, hand_init_speed, hand_max_speed             -->
-  <!--   가감속은 SetGains hand_trajectory_speed로 RT 컨트롤러와 동기화     -->
+  <!-- OppositionDemo: Three-phase opposition with acceleration ramp       -->
+  <!--   Phase 1: Slow cycle with home return between each opposition.     -->
+  <!--   Phase 2: Accelerating cycles without home return (speed ramps     -->
+  <!--            up by x1.43 per cycle, capped at hand_max_speed).        -->
+  <!--   Phase 3: Decelerating cycles with home return restored (speed     -->
+  <!--            ramps down by x0.7 per cycle, floored at init speed).    -->
+  <!--   All speed changes are applied via SetGains hand_trajectory_speed  -->
+  <!--   to stay synchronized with the RT controller.                      -->
   <!-- ================================================================== -->
   <BehaviorTree ID="OppositionDemo">
     <Sequence>
@@ -125,10 +137,14 @@
   </BehaviorTree>
 
   <!-- ================================================================== -->
-  <!-- WaveDemo: 가감속 Flexion/Extension Wave (Phase 1→2→3)               -->
-  <!--   관절별 articulation (thumb_mcp, index_dip, middle_dip) 포함        -->
-  <!--   공통 변수: num_cycles, hand_init_speed, hand_max_speed             -->
-  <!--   가감속은 SetGains hand_trajectory_speed로 RT 컨트롤러와 동기화     -->
+  <!-- WaveDemo: Three-phase flex/extend wave with acceleration ramp       -->
+  <!--   Exercises each finger joint (including per-joint articulation:    -->
+  <!--   thumb_mcp, index_dip, middle_dip) in a sequential wave pattern.  -->
+  <!--   Phase 1: Sequential wave with increasing speed (x1.43/cycle).    -->
+  <!--   Phase 2: Simultaneous parallel wave at maximum speed.            -->
+  <!--   Phase 3: Sequential wave with decreasing speed (x0.7/cycle).    -->
+  <!--   All speed changes are applied via SetGains hand_trajectory_speed  -->
+  <!--   to stay synchronized with the RT controller.                      -->
   <!-- ================================================================== -->
   <BehaviorTree ID="WaveDemo">
     <Sequence>
@@ -244,8 +260,11 @@
   </BehaviorTree>
 
   <!-- ================================================================== -->
-  <!-- FullDemo: UR5e 데모 자세 유지 + Hand 데모                            -->
-  <!--   Opposition → Wave 순차 실행                                       -->
+  <!-- FullDemo: Combined arm hold + hand demo                             -->
+  <!--   Runs UR5eHoldPose (demo_pose) in parallel with the hand           -->
+  <!--   sequence (OppositionDemo -> WaveDemo). The arm holds its pose     -->
+  <!--   via Parallel until the hand sequence completes (success_count=1), -->
+  <!--   then UR5eHoldPose is halted automatically.                        -->
   <!-- ================================================================== -->
   <BehaviorTree ID="FullDemo">
     <!-- success_count=1: Hand 시퀀스 완료 시 종료 (UR5e halt) -->
