@@ -72,4 +72,39 @@ endif()
 ament_export_include_directories(include)
 ament_export_dependencies(rtc_base rtc_communication rtc_inference rtc_msgs)
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  # ── Tier 1: Pure computation tests (no ROS2 node, no network) ──────────────
+  ament_add_gtest(test_hand_packets test/test_hand_packets.cpp)
+  target_include_directories(test_hand_packets PRIVATE include)
+  ament_target_dependencies(test_hand_packets rtc_base)
+
+  ament_add_gtest(test_hand_udp_codec test/test_hand_udp_codec.cpp)
+  target_include_directories(test_hand_udp_codec PRIVATE include)
+  ament_target_dependencies(test_hand_udp_codec rtc_base)
+
+  ament_add_gtest(test_hand_timing_profiler test/test_hand_timing_profiler.cpp)
+  target_include_directories(test_hand_timing_profiler PRIVATE include)
+  ament_target_dependencies(test_hand_timing_profiler rtc_base)
+
+  ament_add_gtest(test_hand_sensor_processor test/test_hand_sensor_processor.cpp)
+  target_include_directories(test_hand_sensor_processor PRIVATE include)
+  ament_target_dependencies(test_hand_sensor_processor rtc_base rclcpp)
+
+  # ── Tier 2: Component integration tests (fake_hand mode) ──────────────────
+  ament_add_gtest(test_hand_controller test/test_hand_controller.cpp)
+  target_include_directories(test_hand_controller PRIVATE include)
+  ament_target_dependencies(test_hand_controller rtc_base rtc_inference rclcpp)
+
+  ament_add_gtest(test_hand_failure_detector test/test_hand_failure_detector.cpp)
+  target_include_directories(test_hand_failure_detector PRIVATE include)
+  ament_target_dependencies(test_hand_failure_detector rtc_base rtc_inference rclcpp)
+
+  # ── Tier 3: FT inferencer stub tests ──────────────────────────────────────
+  ament_add_gtest(test_fingertip_ft_inferencer test/test_fingertip_ft_inferencer.cpp)
+  target_include_directories(test_fingertip_ft_inferencer PRIVATE include)
+  ament_target_dependencies(test_fingertip_ft_inferencer rtc_base rtc_inference rclcpp)
+endif()
+
 ament_package()
