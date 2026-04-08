@@ -18,6 +18,7 @@
 
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -169,9 +170,39 @@ public:
   [[nodiscard]] static double ComputeMimicPosition(
     double mimicked_q, double multiplier, double offset) noexcept;
 
+  // ── 관절 순서 재배열 (Non-RT 설정) ────────────────────────────────────────
+
+  /// 외부 관절 이름 순서 설정 (예: YAML joint_state_names).
+  /// 설정 후 모든 compute 함수에 전달되는 q/v/a/tau는 이 순서로 해석됨.
+  /// @param external_joint_names 호출자 측 관절 이름 순서
+  /// @return true 모든 이름을 모델에서 찾은 경우; false 하나라도 없으면 (매핑 미설정)
+  /// @note Non-RT. init 시 1회 호출. thread-per-handle 전제.
+  [[nodiscard]] bool SetJointOrder(
+    std::span<const std::string> external_joint_names);
+
+  /// reorder 매핑 활성 여부
+  [[nodiscard]] bool HasJointReorder() const noexcept;
+
+  /// Pinocchio 내부 관절 이름 순서 반환 (디버깅용).
+  [[nodiscard]] std::vector<std::string> GetPinocchioJointNames() const;
+
+  /// Pinocchio 순서 벡터 → 외부 순서 span으로 재배열 (출력용).
+  /// @param pinocchio_vec Pinocchio v-space 벡터 (GetTau, GetDdq 등)
+  /// @param external_out 외부 순서 출력 버퍼 (크기 >= v_reorder_map_ 크기)
+  void ReorderOutput(
+    Eigen::Ref<const Eigen::VectorXd> pinocchio_vec,
+    std::span<double> external_out) const noexcept;
+
 private:
-  /// std::span → Eigen::VectorXd 복사 (noexcept, 인라인)
+  /// std::span → Eigen::VectorXd 직접 복사 (noexcept, memcpy)
   void CopyToEigen(std::span<const double> src, Eigen::VectorXd & dst) noexcept;
+
+  /// span → Eigen 복사 (reorder_map이 비어있으면 CopyToEigen fallback).
+  /// reorder_map[i] = Pinocchio 벡터 내 대상 인덱스.
+  void CopyToEigenReordered(
+    std::span<const double> src,
+    Eigen::VectorXd & dst,
+    const std::vector<int> & reorder_map) noexcept;
 
   // ── 내부 데이터 ────────────────────────────────────────────────────────────
   std::shared_ptr<const pinocchio::Model> model_;
@@ -187,6 +218,10 @@ private:
   // 폐쇄 체인 구속
   std::vector<pinocchio::RigidConstraintModel> constraint_models_;
   std::vector<pinocchio::RigidConstraintData> constraint_datas_;
+
+  // ── 관절 순서 재배열 매핑 (비어있으면 비활성) ──────────────────────────────
+  std::vector<int> q_reorder_map_;   ///< external[i] → Pinocchio q index
+  std::vector<int> v_reorder_map_;   ///< external[i] → Pinocchio v index
 };
 
 }  // namespace rtc_urdf_bridge
