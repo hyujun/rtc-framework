@@ -146,6 +146,17 @@ BtRosBridge::BtRosBridge(rclcpp::Node::SharedPtr node)
         }
       });
 
+  current_gains_sub_ = node_->create_subscription<std_msgs::msg::Float64MultiArray>(
+      "/ur5e/current_gains", rclcpp::QoS{10},
+      [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+        std::lock_guard lock(state_mutex_);
+        cached_gains_ = msg->data;
+        cached_gains_valid_ = true;
+        RCLCPP_DEBUG(node_->get_logger(),
+                     "[BtRosBridge] Received current_gains (%zu values)",
+                     msg->data.size());
+      });
+
   // ── Publishers ──────────────────────────────────────────────────────────
 
   arm_target_pub_ = node_->create_publisher<rtc_msgs::msg::RobotTarget>(
@@ -159,6 +170,9 @@ BtRosBridge::BtRosBridge(rclcpp::Node::SharedPtr node)
 
   select_ctrl_pub_ = node_->create_publisher<std_msgs::msg::String>(
       "/ur5e/controller_type", rclcpp::QoS{10});
+
+  request_gains_pub_ = node_->create_publisher<std_msgs::msg::Bool>(
+      "/ur5e/request_gains", rclcpp::QoS{10});
 
   RCLCPP_INFO(node_->get_logger(), "[BtRosBridge] Initialized");
 }
@@ -204,6 +218,31 @@ std::string BtRosBridge::GetActiveController() const {
 bool BtRosBridge::IsEstopped() const {
   std::lock_guard lock(state_mutex_);
   return estopped_;
+}
+
+// ── Gains query ──────────────────────────────────────────────────────────
+
+void BtRosBridge::RequestCurrentGains() {
+  std_msgs::msg::Bool msg;
+  msg.data = true;
+  request_gains_pub_->publish(msg);
+  RCLCPP_DEBUG(node_->get_logger(), "[BtRosBridge] RequestCurrentGains published");
+}
+
+std::vector<double> BtRosBridge::GetCachedGains() const {
+  std::lock_guard lock(state_mutex_);
+  return cached_gains_;
+}
+
+bool BtRosBridge::HasCachedGains() const {
+  std::lock_guard lock(state_mutex_);
+  return cached_gains_valid_;
+}
+
+void BtRosBridge::ClearCachedGains() {
+  std::lock_guard lock(state_mutex_);
+  cached_gains_.clear();
+  cached_gains_valid_ = false;
 }
 
 // ── Publishers ────────────────────────────────────────────────────────────

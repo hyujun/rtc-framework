@@ -32,6 +32,8 @@ BT::PortsList SetGains::providedPorts()
     BT::InputPort<std::vector<double>>("full_gains"),
     BT::InputPort<int>("grasp_command", 0, "0=none, 1=grasp, 2=release (Force-PI)"),
     BT::InputPort<double>("grasp_target_force", 2.0, "Target grip force [N] (Force-PI)"),
+    BT::InputPort<std::vector<double>>("current_gains",
+                                       "Cached gains from SwitchController"),
   };
 }
 
@@ -63,15 +65,28 @@ BT::NodeStatus SetGains::BuildDemoJointGains()
   //  grasp_contact_threshold, grasp_force_threshold,
   //  grasp_min_fingertips,
   //  (grasp_command, grasp_target_force)]   ← optional Force-PI
-  std::vector<double> gains = {
-    0.1,    // [0] robot_trajectory_speed
-    3.14,   // [1] hand_trajectory_speed
-    0.5,    // [2] robot_max_traj_velocity
-    6.28,   // [3] hand_max_traj_velocity
-    0.5,    // [4] grasp_contact_threshold
-    1.0,    // [5] grasp_force_threshold
-    2.0,    // [6] grasp_min_fingertips
-  };
+  constexpr std::size_t kBaseSize = 7;
+
+  // Use cached gains as base if available and correctly sized
+  auto cached = getInput<std::vector<double>>("current_gains");
+  const bool use_cached = cached && cached->size() >= kBaseSize;
+
+  std::vector<double> gains = use_cached
+    ? std::vector<double>(cached->begin(),
+                          cached->begin() + static_cast<std::ptrdiff_t>(kBaseSize))
+    : std::vector<double>{
+        0.1,    // [0] robot_trajectory_speed
+        3.14,   // [1] hand_trajectory_speed
+        0.5,    // [2] robot_max_traj_velocity
+        6.28,   // [3] hand_max_traj_velocity
+        0.5,    // [4] grasp_contact_threshold
+        1.0,    // [5] grasp_force_threshold
+        2.0,    // [6] grasp_min_fingertips
+      };
+
+  if (use_cached) {
+    RCLCPP_INFO(logger(), "[SetGains] DemoJoint: using cached gains as base");
+  }
 
   auto ts = getInput<double>("trajectory_speed");
   if (ts) gains[0] = ts.value();
@@ -113,23 +128,36 @@ BT::NodeStatus SetGains::BuildDemoTaskGains()
   //  grasp_contact_threshold, grasp_force_threshold,
   //  grasp_min_fingertips,
   //  (grasp_command, grasp_target_force)]   ← optional Force-PI
-  std::vector<double> gains = {
-    400.0, 400.0, 400.0,   // [0-2]  kp_translation
-    200.0, 200.0, 200.0,   // [3-5]  kp_rotation
-    0.01,                // [6]    damping
-    0.5,                 // [7]    null_kp
-    0.0,                 // [8]    enable_null_space
-    1.0,                 // [9]    control_6dof
-    0.1,                 // [10]   trajectory_speed
-    0.78,                // [11]   trajectory_angular_speed
-    3.14,                // [12]   hand_trajectory_speed
-    0.5,                 // [13]   max_traj_velocity
-    1.57,                // [14]   max_traj_angular_velocity
-    6.28,                // [15]   hand_max_traj_velocity
-    0.5,                 // [16]   grasp_contact_threshold
-    1.0,                 // [17]   grasp_force_threshold
-    2.0,                 // [18]   grasp_min_fingertips
-  };
+  constexpr std::size_t kBaseSize = 19;
+
+  // Use cached gains as base if available and correctly sized
+  auto cached = getInput<std::vector<double>>("current_gains");
+  const bool use_cached = cached && cached->size() >= kBaseSize;
+
+  std::vector<double> gains = use_cached
+    ? std::vector<double>(cached->begin(),
+                          cached->begin() + static_cast<std::ptrdiff_t>(kBaseSize))
+    : std::vector<double>{
+        400.0, 400.0, 400.0,   // [0-2]  kp_translation
+        200.0, 200.0, 200.0,   // [3-5]  kp_rotation
+        0.01,                // [6]    damping
+        0.5,                 // [7]    null_kp
+        0.0,                 // [8]    enable_null_space
+        1.0,                 // [9]    control_6dof
+        0.1,                 // [10]   trajectory_speed
+        0.78,                // [11]   trajectory_angular_speed
+        3.14,                // [12]   hand_trajectory_speed
+        0.5,                 // [13]   max_traj_velocity
+        1.57,                // [14]   max_traj_angular_velocity
+        6.28,                // [15]   hand_max_traj_velocity
+        0.5,                 // [16]   grasp_contact_threshold
+        1.0,                 // [17]   grasp_force_threshold
+        2.0,                 // [18]   grasp_min_fingertips
+      };
+
+  if (use_cached) {
+    RCLCPP_INFO(logger(), "[SetGains] DemoTask: using cached gains as base");
+  }
 
   auto kp_t = getInput<std::string>("kp_translation");
   if (kp_t && !kp_t->empty()) {
