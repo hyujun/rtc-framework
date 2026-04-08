@@ -1,8 +1,5 @@
 #include "ur5e_bt_coordinator/bt_ros_bridge.hpp"
 
-#include <tf2/LinearMath/Matrix3x3.h>
-#include <tf2/LinearMath/Quaternion.h>
-
 #include <cmath>
 
 namespace rtc_bt {
@@ -88,30 +85,6 @@ BtRosBridge::BtRosBridge(rclcpp::Node::SharedPtr node)
           std::lock_guard lock(health_mutex_);
           grasp_state_last_ = std::chrono::steady_clock::now();
           grasp_state_received_ = true;
-        }
-      });
-
-  vision_sub_ = node_->create_subscription<geometry_msgs::msg::PoseStamped>(
-      "/vision/object_pose", rclcpp::QoS{10},
-      [this](geometry_msgs::msg::PoseStamped::SharedPtr msg) {
-        {
-          std::lock_guard lock(state_mutex_);
-          object_pose_.x = msg->pose.position.x;
-          object_pose_.y = msg->pose.position.y;
-          object_pose_.z = msg->pose.position.z;
-
-          // Quaternion → RPY
-          tf2::Quaternion q(
-              msg->pose.orientation.x, msg->pose.orientation.y,
-              msg->pose.orientation.z, msg->pose.orientation.w);
-          tf2::Matrix3x3 m(q);
-          m.getRPY(object_pose_.roll, object_pose_.pitch, object_pose_.yaw);
-          object_detected_ = true;
-        }
-        {
-          std::lock_guard lock(health_mutex_);
-          vision_last_ = std::chrono::steady_clock::now();
-          vision_received_ = true;
         }
       });
 
@@ -213,10 +186,7 @@ CachedGraspState BtRosBridge::GetGraspState() const {
 }
 
 bool BtRosBridge::GetObjectPose(Pose6D& pose) const {
-  std::lock_guard lock(state_mutex_);
-  if (!object_detected_) return false;
-  pose = object_pose_;
-  return true;
+  return GetWorldTargetPose(pose);
 }
 
 bool BtRosBridge::GetWorldTargetPose(Pose6D& pose) const {
@@ -394,7 +364,6 @@ std::vector<TopicHealth> BtRosBridge::GetTopicHealth(double timeout_s) const
     make_health("/ur5e/gui_position",   arm_gui_received_,        arm_gui_last_),
     make_health("/hand/gui_position",   hand_gui_received_,       hand_gui_last_),
     make_health("/hand/grasp_state",    grasp_state_received_,    grasp_state_last_),
-    make_health("/vision/object_pose",  vision_received_,         vision_last_),
     make_health("/world_target_info",   world_target_received_,   world_target_last_),
     make_health("/system/estop_status", estop_received_,          estop_last_),
   };

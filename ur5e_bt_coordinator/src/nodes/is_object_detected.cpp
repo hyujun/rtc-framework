@@ -24,9 +24,16 @@ BT::NodeStatus IsObjectDetected::tick()
 {
   Pose6D pose;
   if (bridge_->GetObjectPose(pose)) {
+    // Position only from /world_target_info; use current TCP orientation
+    auto tcp = bridge_->GetTcpPose();
+    pose.roll  = tcp.roll;
+    pose.pitch = tcp.pitch;
+    pose.yaw   = tcp.yaw;
+
     RCLCPP_INFO(logger(),
-                "[IsObjectDetected] object at [%.3f, %.3f, %.3f]",
-                pose.x, pose.y, pose.z);
+                "[IsObjectDetected] object at [%.3f, %.3f, %.3f] "
+                "orient(tcp)=[%.3f, %.3f, %.3f]",
+                pose.x, pose.y, pose.z, pose.roll, pose.pitch, pose.yaw);
     setOutput("pose", pose);
     return BT::NodeStatus::SUCCESS;
   }
