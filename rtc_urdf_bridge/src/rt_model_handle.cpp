@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <string>
 
 namespace rtc_urdf_bridge
 {
@@ -66,13 +67,28 @@ void RtModelHandle::CopyToEigen(
   std::memcpy(dst.data(), src.data(), static_cast<std::size_t>(n) * sizeof(double));
 }
 
+void RtModelHandle::CopyToEigenReordered(
+  std::span<const double> src,
+  Eigen::VectorXd & dst,
+  const std::vector<int> & reorder_map) noexcept
+{
+  if (reorder_map.empty()) {
+    CopyToEigen(src, dst);
+    return;
+  }
+  auto n = std::min(src.size(), reorder_map.size());
+  for (std::size_t i = 0; i < n; ++i) {
+    dst[reorder_map[i]] = src[i];
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // RT-safe compute 함수
 // ═══════════════════════════════════════════════════════════════════════════════
 
 void RtModelHandle::ComputeForwardKinematics(std::span<const double> q) noexcept
 {
-  CopyToEigen(q, q_);
+  CopyToEigenReordered(q, q_, q_reorder_map_);
   pinocchio::forwardKinematics(*model_, data_, q_);
   pinocchio::updateFramePlacements(*model_, data_);
 }
@@ -80,15 +96,15 @@ void RtModelHandle::ComputeForwardKinematics(std::span<const double> q) noexcept
 void RtModelHandle::ComputeForwardKinematics(
   std::span<const double> q, std::span<const double> v) noexcept
 {
-  CopyToEigen(q, q_);
-  CopyToEigen(v, v_);
+  CopyToEigenReordered(q, q_, q_reorder_map_);
+  CopyToEigenReordered(v, v_, v_reorder_map_);
   pinocchio::forwardKinematics(*model_, data_, q_, v_);
   pinocchio::updateFramePlacements(*model_, data_);
 }
 
 void RtModelHandle::ComputeJacobians(std::span<const double> q) noexcept
 {
-  CopyToEigen(q, q_);
+  CopyToEigenReordered(q, q_, q_reorder_map_);
   pinocchio::computeJointJacobians(*model_, data_, q_);
   pinocchio::updateFramePlacements(*model_, data_);
 }
@@ -107,9 +123,9 @@ void RtModelHandle::ComputeInverseDynamics(
   std::span<const double> v,
   std::span<const double> a) noexcept
 {
-  CopyToEigen(q, q_);
-  CopyToEigen(v, v_);
-  CopyToEigen(a, a_);
+  CopyToEigenReordered(q, q_, q_reorder_map_);
+  CopyToEigenReordered(v, v_, v_reorder_map_);
+  CopyToEigenReordered(a, a_, v_reorder_map_);
   pinocchio::rnea(*model_, data_, q_, v_, a_);
 }
 
@@ -118,9 +134,9 @@ void RtModelHandle::ComputeForwardDynamics(
   std::span<const double> v,
   std::span<const double> tau) noexcept
 {
-  CopyToEigen(q, q_);
-  CopyToEigen(v, v_);
-  CopyToEigen(tau, tau_);
+  CopyToEigenReordered(q, q_, q_reorder_map_);
+  CopyToEigenReordered(v, v_, v_reorder_map_);
+  CopyToEigenReordered(tau, tau_, v_reorder_map_);
   pinocchio::aba(*model_, data_, q_, v_, tau_);
 }
 
@@ -128,14 +144,14 @@ void RtModelHandle::ComputeNonLinearEffects(
   std::span<const double> q,
   std::span<const double> v) noexcept
 {
-  CopyToEigen(q, q_);
-  CopyToEigen(v, v_);
+  CopyToEigenReordered(q, q_, q_reorder_map_);
+  CopyToEigenReordered(v, v_, v_reorder_map_);
   pinocchio::nonLinearEffects(*model_, data_, q_, v_);
 }
 
 void RtModelHandle::ComputeGeneralizedGravity(std::span<const double> q) noexcept
 {
-  CopyToEigen(q, q_);
+  CopyToEigenReordered(q, q_, q_reorder_map_);
   pinocchio::computeGeneralizedGravity(*model_, data_, q_);
 }
 
@@ -143,14 +159,14 @@ void RtModelHandle::ComputeCoriolisMatrix(
   std::span<const double> q,
   std::span<const double> v) noexcept
 {
-  CopyToEigen(q, q_);
-  CopyToEigen(v, v_);
+  CopyToEigenReordered(q, q_, q_reorder_map_);
+  CopyToEigenReordered(v, v_, v_reorder_map_);
   pinocchio::computeCoriolisMatrix(*model_, data_, q_, v_);
 }
 
 void RtModelHandle::ComputeMassMatrix(std::span<const double> q) noexcept
 {
-  CopyToEigen(q, q_);
+  CopyToEigenReordered(q, q_, q_reorder_map_);
   pinocchio::crba(*model_, data_, q_);
   // crba는 upper triangular만 채움 → 대칭화
   data_.M.triangularView<Eigen::StrictlyLower>() =
@@ -164,9 +180,9 @@ void RtModelHandle::ComputeConstraintDynamics(
 {
   if (constraint_models_.empty()) return;
 
-  CopyToEigen(q, q_);
-  CopyToEigen(v, v_);
-  CopyToEigen(tau, tau_);
+  CopyToEigenReordered(q, q_, q_reorder_map_);
+  CopyToEigenReordered(v, v_, v_reorder_map_);
+  CopyToEigenReordered(tau, tau_, v_reorder_map_);
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
   pinocchio::constraintDynamics(
@@ -264,6 +280,85 @@ double RtModelHandle::ComputeMimicPosition(
   double mimicked_q, double multiplier, double offset) noexcept
 {
   return multiplier * mimicked_q + offset;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 관절 순서 재배열
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool RtModelHandle::SetJointOrder(
+  std::span<const std::string> external_joint_names)
+{
+  std::vector<int> q_map;
+  std::vector<int> v_map;
+
+  for (const auto & name : external_joint_names) {
+    if (!model_->existJointName(name)) {
+      return false;
+    }
+    auto jid = model_->getJointId(name);
+    auto pin_q_start = model_->idx_qs[jid];
+    auto pin_v_start = model_->idx_vs[jid];
+    auto nq_j = model_->nqs[jid];
+    auto nv_j = model_->nvs[jid];
+
+    for (int k = 0; k < nq_j; ++k) {
+      q_map.push_back(static_cast<int>(pin_q_start + k));
+    }
+    for (int k = 0; k < nv_j; ++k) {
+      v_map.push_back(static_cast<int>(pin_v_start + k));
+    }
+  }
+
+  // identity 순서이면 매핑 생략 (zero-overhead)
+  bool is_identity = (static_cast<int>(q_map.size()) == model_->nq);
+  if (is_identity) {
+    for (std::size_t i = 0; i < q_map.size(); ++i) {
+      if (q_map[i] != static_cast<int>(i)) { is_identity = false; break; }
+    }
+  }
+
+  if (is_identity) {
+    q_reorder_map_.clear();
+    v_reorder_map_.clear();
+  } else {
+    q_reorder_map_ = std::move(q_map);
+    v_reorder_map_ = std::move(v_map);
+  }
+  return true;
+}
+
+bool RtModelHandle::HasJointReorder() const noexcept
+{
+  return !q_reorder_map_.empty();
+}
+
+std::vector<std::string> RtModelHandle::GetPinocchioJointNames() const
+{
+  std::vector<std::string> names;
+  // names[0] = "universe" (skip)
+  names.reserve(static_cast<std::size_t>(model_->njoints - 1));
+  for (int i = 1; i < model_->njoints; ++i) {
+    names.push_back(model_->names[static_cast<std::size_t>(i)]);
+  }
+  return names;
+}
+
+void RtModelHandle::ReorderOutput(
+  Eigen::Ref<const Eigen::VectorXd> pinocchio_vec,
+  std::span<double> external_out) const noexcept
+{
+  if (v_reorder_map_.empty()) {
+    auto n = std::min(static_cast<Eigen::Index>(external_out.size()),
+                      pinocchio_vec.size());
+    std::memcpy(external_out.data(), pinocchio_vec.data(),
+                static_cast<std::size_t>(n) * sizeof(double));
+    return;
+  }
+  auto n = std::min(external_out.size(), v_reorder_map_.size());
+  for (std::size_t i = 0; i < n; ++i) {
+    external_out[i] = pinocchio_vec[v_reorder_map_[i]];
+  }
 }
 
 }  // namespace rtc_urdf_bridge

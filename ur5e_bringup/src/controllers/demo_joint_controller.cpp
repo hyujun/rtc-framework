@@ -51,6 +51,11 @@ void DemoJointController::InitHandModel(
   hand_handle_ = std::make_unique<rub::RtModelHandle>(
     builder_->GetTreeModel("hand"));
 
+  // Set joint reorder mapping: YAML joint_state_names → Pinocchio model order
+  if (auto* hand_cfg = GetDeviceNameConfig("hand"); hand_cfg) {
+    hand_handle_->SetJointOrder(hand_cfg->joint_state_names);
+  }
+
   // Resolve fingertip frame IDs from tree_model tip_links
   const auto* sys_cfg = GetSystemModelConfig();
   if (sys_cfg) {

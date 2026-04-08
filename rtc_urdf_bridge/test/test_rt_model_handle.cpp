@@ -6,6 +6,8 @@
 
 #include <cmath>
 #include <filesystem>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace rub = rtc_urdf_bridge;
@@ -225,6 +227,146 @@ TEST(RtModelHandleTreeTest, MultipleTipFK)
     EXPECT_FALSE(std::isnan(pos.x())) << tip;
     EXPECT_FALSE(std::isnan(pos.y())) << tip;
     EXPECT_FALSE(std::isnan(pos.z())) << tip;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Joint reorder 테스트
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class RtModelHandleReorderTest : public ::testing::Test
+{
+protected:
+  void SetUp() override
+  {
+    rub::ModelConfig cfg;
+    cfg.urdf_path = TestUrdfPath("tree_hand.urdf");
+    cfg.root_joint_type = "fixed";
+    builder_ = std::make_unique<rub::PinocchioModelBuilder>(cfg);
+  }
+  std::unique_ptr<rub::PinocchioModelBuilder> builder_;
+};
+
+TEST_F(RtModelHandleReorderTest, ReorderedFKMatchesDirect)
+{
+  // tree_hand.urdf: palm_link → thumb(3), index(3), middle(2), ring(2)
+  // Pinocchio 알파벳 DFS 순서: index(3), middle(2), ring(2), thumb(3)
+  // 외부 순서 (thumb first):
+  std::vector<std::string> external_order = {
+    "thumb_joint_1", "thumb_joint_2", "thumb_joint_3",
+    "index_joint_1", "index_joint_2", "index_joint_3",
+    "middle_joint_1", "middle_joint_2",
+    "ring_joint_1", "ring_joint_2"
+  };
+
+  // 외부 순서로 thumb만 0.5, 0.3, 0.2 설정
+  std::vector<double> external_q = {
+    0.5, 0.3, 0.2,    // thumb
+    0.0, 0.0, 0.0,    // index
+    0.0, 0.0,          // middle
+    0.0, 0.0           // ring
+  };
+
+  // (1) Reorder handle
+  rub::RtModelHandle reorder_handle(builder_->GetFullModel());
+  ASSERT_TRUE(reorder_handle.SetJointOrder(external_order));
+  EXPECT_TRUE(reorder_handle.HasJointReorder());
+  reorder_handle.ComputeForwardKinematics(external_q);
+
+  // (2) Direct handle — Pinocchio 순서로 수동 배치
+  // Pinocchio 순서: index(0,1,2), middle(3,4), ring(5,6), thumb(7,8,9)
+  rub::RtModelHandle direct_handle(builder_->GetFullModel());
+  auto pin_names = direct_handle.GetPinocchioJointNames();
+  ASSERT_EQ(pin_names.size(), 10u);
+
+  // Pinocchio 순서에 맞게 q 벡터 구성
+  std::vector<double> pinocchio_q(10, 0.0);
+  // thumb 값을 Pinocchio 인덱스에 배치
+  for (std::size_t i = 0; i < pin_names.size(); ++i) {
+    if (pin_names[i] == "thumb_joint_1") pinocchio_q[i] = 0.5;
+    if (pin_names[i] == "thumb_joint_2") pinocchio_q[i] = 0.3;
+    if (pin_names[i] == "thumb_joint_3") pinocchio_q[i] = 0.2;
+  }
+  direct_handle.ComputeForwardKinematics(pinocchio_q);
+
+  // (3) 모든 fingertip 위치가 일치
+  for (const auto & tip : {"thumb_tip", "index_tip", "middle_tip", "ring_tip"}) {
+    auto fid_r = reorder_handle.GetFrameId(tip);
+    auto fid_d = direct_handle.GetFrameId(tip);
+    ASSERT_GT(fid_r, 0u) << tip;
+    auto pos_r = reorder_handle.GetFramePosition(fid_r);
+    auto pos_d = direct_handle.GetFramePosition(fid_d);
+    EXPECT_NEAR(pos_r.x(), pos_d.x(), 1e-10) << tip;
+    EXPECT_NEAR(pos_r.y(), pos_d.y(), 1e-10) << tip;
+    EXPECT_NEAR(pos_r.z(), pos_d.z(), 1e-10) << tip;
+  }
+}
+
+TEST_F(RtModelHandleReorderTest, SetJointOrderReturnsFalseForBadName)
+{
+  rub::RtModelHandle handle(builder_->GetFullModel());
+  std::vector<std::string> bad_names = {"thumb_joint_1", "nonexistent_joint"};
+  EXPECT_FALSE(handle.SetJointOrder(bad_names));
+  EXPECT_FALSE(handle.HasJointReorder());
+}
+
+TEST_F(RtModelHandleReorderTest, IdentityOrderSkipsReorder)
+{
+  rub::RtModelHandle handle(builder_->GetFullModel());
+  // Pinocchio 내부 순서와 동일한 순서 전달
+  auto pin_names = handle.GetPinocchioJointNames();
+  ASSERT_TRUE(handle.SetJointOrder(pin_names));
+  // identity이므로 reorder 비활성
+  EXPECT_FALSE(handle.HasJointReorder());
+}
+
+TEST_F(RtModelHandleReorderTest, ReorderedJacobianMatchesDirect)
+{
+  std::vector<std::string> external_order = {
+    "thumb_joint_1", "thumb_joint_2", "thumb_joint_3",
+    "index_joint_1", "index_joint_2", "index_joint_3",
+    "middle_joint_1", "middle_joint_2",
+    "ring_joint_1", "ring_joint_2"
+  };
+
+  std::vector<double> external_q = {
+    0.5, 0.3, 0.2, 0.1, -0.1, 0.4,
+    0.2, -0.1, 0.3, 0.1
+  };
+
+  // (1) Reorder handle
+  rub::RtModelHandle reorder_handle(builder_->GetFullModel());
+  ASSERT_TRUE(reorder_handle.SetJointOrder(external_order));
+  reorder_handle.ComputeJacobians(external_q);
+
+  // (2) Direct handle — Pinocchio 순서 q
+  rub::RtModelHandle direct_handle(builder_->GetFullModel());
+  auto pin_names = direct_handle.GetPinocchioJointNames();
+  std::vector<double> pinocchio_q(10, 0.0);
+  // 이름 기반 매핑
+  std::unordered_map<std::string, double> name_val;
+  for (std::size_t i = 0; i < external_order.size(); ++i) {
+    name_val[external_order[i]] = external_q[i];
+  }
+  for (std::size_t i = 0; i < pin_names.size(); ++i) {
+    pinocchio_q[i] = name_val[pin_names[i]];
+  }
+  direct_handle.ComputeJacobians(pinocchio_q);
+
+  // (3) thumb_tip Jacobian 비교
+  auto fid_r = reorder_handle.GetFrameId("thumb_tip");
+  auto fid_d = direct_handle.GetFrameId("thumb_tip");
+  Eigen::MatrixXd J_r = Eigen::MatrixXd::Zero(6, 10);
+  Eigen::MatrixXd J_d = Eigen::MatrixXd::Zero(6, 10);
+  reorder_handle.GetFrameJacobian(fid_r, pinocchio::LOCAL_WORLD_ALIGNED, J_r);
+  direct_handle.GetFrameJacobian(fid_d, pinocchio::LOCAL_WORLD_ALIGNED, J_d);
+
+  // Jacobian 값이 동일 (Pinocchio 내부 순서로 출력됨)
+  for (Eigen::Index r = 0; r < 6; ++r) {
+    for (Eigen::Index c = 0; c < 10; ++c) {
+      EXPECT_NEAR(J_r(r, c), J_d(r, c), 1e-10)
+        << "row=" << r << " col=" << c;
+    }
   }
 }
 
