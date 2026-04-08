@@ -30,6 +30,7 @@ add_library(bt_nodes SHARED
   src/nodes/is_grasp_phase.cpp
   src/nodes/is_grasped.cpp
   src/nodes/is_object_detected.cpp
+  src/nodes/is_vision_target_ready.cpp
   src/nodes/move_finger.cpp
   src/nodes/flex_extend_finger.cpp
   src/nodes/set_hand_pose.cpp

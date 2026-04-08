@@ -4,6 +4,7 @@
 #include "ur5e_bt_coordinator/hand_pose_config.hpp"
 
 #include <behaviortree_cpp/bt_factory.h>
+#include <geometry_msgs/msg/polygon.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rtc_msgs/msg/gui_position.hpp>
@@ -56,6 +57,10 @@ public:
 
   /// Latest vision object pose from /vision/object_pose
   bool GetObjectPose(Pose6D& pose) const;
+
+  /// Latest world target pose from /world_target_info (Polygon).
+  /// Returns false if topic not received or all coordinates are zero.
+  bool GetWorldTargetPose(Pose6D& pose) const;
 
   /// Active controller name
   std::string GetActiveController() const;
@@ -114,6 +119,7 @@ private:
   rclcpp::Subscription<rtc_msgs::msg::GuiPosition>::SharedPtr      hand_gui_sub_;
   rclcpp::Subscription<rtc_msgs::msg::GraspState>::SharedPtr       grasp_state_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr vision_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::Polygon>::SharedPtr     world_target_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr           active_ctrl_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr             estop_sub_;
 
@@ -131,6 +137,8 @@ private:
   CachedGraspState grasp_state_;
   Pose6D object_pose_;
   bool object_detected_{false};
+  Pose6D world_target_pose_;
+  bool world_target_valid_{false};
   std::string active_controller_;
   bool estopped_{false};
 
@@ -145,6 +153,8 @@ private:
   bool grasp_state_received_{false};
   TimePoint vision_last_{};
   bool vision_received_{false};
+  TimePoint world_target_last_{};
+  bool world_target_received_{false};
   TimePoint estop_last_{};
   bool estop_received_{false};
 
