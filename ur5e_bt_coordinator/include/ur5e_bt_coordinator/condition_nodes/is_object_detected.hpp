@@ -10,10 +10,11 @@ namespace rtc_bt {
 
 /// Check if vision has detected an object and output its pose.
 ///
-/// Returns SUCCESS if /vision/object_pose has been received.
+/// Returns SUCCESS if /world_target_info has valid (non-zero) data.
+/// Position from /world_target_info, orientation from current TCP pose.
 ///
 /// Output ports:
-///   - pose (Pose6D): detected object pose
+///   - pose (Pose6D): detected object pose (position from vision, orientation from TCP)
 class IsObjectDetected : public BT::ConditionNode {
 public:
   IsObjectDetected(const std::string& name, const BT::NodeConfig& config,

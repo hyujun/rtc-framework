@@ -5,7 +5,6 @@
 
 #include <behaviortree_cpp/bt_factory.h>
 #include <geometry_msgs/msg/polygon.hpp>
-#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/msg/grasp_state.hpp>
@@ -55,7 +54,8 @@ public:
   /// Cached grasp state from /hand/grasp_state (500Hz pre-computed)
   CachedGraspState GetGraspState() const;
 
-  /// Latest vision object pose from /vision/object_pose
+  /// Latest vision object pose from /world_target_info (position only).
+  /// Orientation is zeroed; callers should fill from current TCP if needed.
   bool GetObjectPose(Pose6D& pose) const;
 
   /// Latest world target position from /world_target_info (Polygon).
@@ -119,7 +119,6 @@ private:
   rclcpp::Subscription<rtc_msgs::msg::GuiPosition>::SharedPtr      arm_gui_sub_;
   rclcpp::Subscription<rtc_msgs::msg::GuiPosition>::SharedPtr      hand_gui_sub_;
   rclcpp::Subscription<rtc_msgs::msg::GraspState>::SharedPtr       grasp_state_sub_;
-  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr vision_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Polygon>::SharedPtr     world_target_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr           active_ctrl_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr             estop_sub_;
@@ -136,8 +135,6 @@ private:
   std::vector<double> arm_joint_positions_;
   std::vector<double> hand_joint_positions_;
   CachedGraspState grasp_state_;
-  Pose6D object_pose_;
-  bool object_detected_{false};
   Pose6D world_target_pose_;
   bool world_target_valid_{false};
   std::string active_controller_;
@@ -152,8 +149,6 @@ private:
   bool hand_gui_received_{false};
   TimePoint grasp_state_last_{};
   bool grasp_state_received_{false};
-  TimePoint vision_last_{};
-  bool vision_received_{false};
   TimePoint world_target_last_{};
   bool world_target_received_{false};
   TimePoint estop_last_{};

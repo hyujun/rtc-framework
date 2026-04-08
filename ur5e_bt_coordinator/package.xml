@@ -15,7 +15,6 @@
   <depend>std_srvs</depend>
   <depend>geometry_msgs</depend>
   <depend>rtc_msgs</depend>
-  <depend>tf2</depend>
   <build_depend>ament_index_cpp</build_depend>
 
   <export>
