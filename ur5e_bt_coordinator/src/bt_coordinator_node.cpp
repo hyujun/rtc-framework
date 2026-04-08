@@ -21,6 +21,7 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_grasp_phase.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_grasped.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_object_detected.hpp"
+#include "ur5e_bt_coordinator/condition_nodes/is_vision_target_ready.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -156,6 +157,7 @@ void BtCoordinatorNode::RegisterBtNodes()
   factory_.registerNodeType<IsGraspPhase>("IsGraspPhase", bridge);
   factory_.registerNodeType<IsGrasped>("IsGrasped", bridge);
   factory_.registerNodeType<IsObjectDetected>("IsObjectDetected", bridge);
+  factory_.registerNodeType<IsVisionTargetReady>("IsVisionTargetReady", bridge);
 }
 
 void BtCoordinatorNode::LoadTree()

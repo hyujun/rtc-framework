@@ -115,6 +115,42 @@ BtRosBridge::BtRosBridge(rclcpp::Node::SharedPtr node)
         }
       });
 
+  world_target_sub_ = node_->create_subscription<geometry_msgs::msg::Polygon>(
+      "/world_target_info", rclcpp::QoS{10},
+      [this](geometry_msgs::msg::Polygon::SharedPtr msg) {
+        if (msg->points.empty()) return;
+
+        // Check if all coordinates are zero (data not ready)
+        bool all_zero = true;
+        for (const auto& pt : msg->points) {
+          if (pt.x != 0.0f || pt.y != 0.0f || pt.z != 0.0f) {
+            all_zero = false;
+            break;
+          }
+        }
+
+        {
+          std::lock_guard lock(state_mutex_);
+          if (all_zero) {
+            world_target_valid_ = false;
+          } else {
+            // points[0] = position (x, y, z) only
+            world_target_pose_.x = static_cast<double>(msg->points[0].x);
+            world_target_pose_.y = static_cast<double>(msg->points[0].y);
+            world_target_pose_.z = static_cast<double>(msg->points[0].z);
+            world_target_pose_.roll  = 0.0;
+            world_target_pose_.pitch = 0.0;
+            world_target_pose_.yaw   = 0.0;
+            world_target_valid_ = true;
+          }
+        }
+        {
+          std::lock_guard lock(health_mutex_);
+          world_target_last_ = std::chrono::steady_clock::now();
+          world_target_received_ = true;
+        }
+      });
+
   active_ctrl_sub_ = node_->create_subscription<std_msgs::msg::String>(
       "/ur5e/active_controller_name",
       rclcpp::QoS{1}.transient_local(),
@@ -180,6 +216,13 @@ bool BtRosBridge::GetObjectPose(Pose6D& pose) const {
   std::lock_guard lock(state_mutex_);
   if (!object_detected_) return false;
   pose = object_pose_;
+  return true;
+}
+
+bool BtRosBridge::GetWorldTargetPose(Pose6D& pose) const {
+  std::lock_guard lock(state_mutex_);
+  if (!world_target_valid_) return false;
+  pose = world_target_pose_;
   return true;
 }
 
@@ -348,11 +391,12 @@ std::vector<TopicHealth> BtRosBridge::GetTopicHealth(double timeout_s) const
   };
 
   return {
-    make_health("/ur5e/gui_position",  arm_gui_received_,     arm_gui_last_),
-    make_health("/hand/gui_position",  hand_gui_received_,    hand_gui_last_),
-    make_health("/hand/grasp_state",   grasp_state_received_, grasp_state_last_),
-    make_health("/vision/object_pose", vision_received_,      vision_last_),
-    make_health("/system/estop_status", estop_received_,      estop_last_),
+    make_health("/ur5e/gui_position",   arm_gui_received_,        arm_gui_last_),
+    make_health("/hand/gui_position",   hand_gui_received_,       hand_gui_last_),
+    make_health("/hand/grasp_state",    grasp_state_received_,    grasp_state_last_),
+    make_health("/vision/object_pose",  vision_received_,         vision_last_),
+    make_health("/world_target_info",   world_target_received_,   world_target_last_),
+    make_health("/system/estop_status", estop_received_,          estop_last_),
   };
 }
 
