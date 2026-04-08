@@ -34,3 +34,6 @@ Thumbs.db
 .agents/
 skills-lock.json
 MUJOCO_LOG.TXT
+
+# Claude Code local overrides
+.claude.local.md

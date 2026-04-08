@@ -116,11 +116,11 @@ Core 0-1: OS/DDS/IRQ. Auto-selects 4/6/8/10/12/16-core layouts via `SelectThread
 | Controller | Layout | Count |
 |------------|--------|-------|
 | PController | `[kp x 6]` | 6 |
-| JointPDController | `[kp x 6, kd x 6, gravity, coriolis, traj_speed]` | 15 |
-| ClikController | `[kp x 6, damping, null_kp, null_space, 6dof]` | 10 |
-| OSC | `[kp_pos x 3, kd_pos x 3, kp_rot x 3, kd_rot x 3, damping, gravity, traj_speed, traj_ang_speed]` | 16 |
-| DemoJoint | `[robot_traj_speed, hand_traj_speed, robot_max_vel, hand_max_vel]` + grasp via YAML | 4+ |
-| DemoTask | `[kp_trans x 3, kp_rot x 3, damping, null_kp, null_space, 6dof, traj_speed, traj_ang_speed, hand_traj_speed, max_vel, max_ang_vel, hand_max_vel]` + grasp via YAML | 16+ |
+| JointPDController | `[kp x 6, kd x 6, gravity(0/1), coriolis(0/1), traj_speed]` | 15 |
+| ClikController | `[kp_trans x 3, kp_rot x 3, damping, null_kp, null_space(0/1), 6dof(0/1), traj_speed, traj_ang_speed, max_vel, max_ang_vel]` | 14 |
+| OSC | `[kp_pos x 3, kd_pos x 3, kp_rot x 3, kd_rot x 3, damping, gravity(0/1), traj_speed, traj_ang_speed, max_vel, max_ang_vel]` | 18 |
+| DemoJoint | `[robot_traj_speed, hand_traj_speed, robot_max_vel, hand_max_vel, grasp_contact_thresh, grasp_force_thresh, grasp_min_fingertips, grasp_cmd(0/1/2), grasp_target_force]` | 9 |
+| DemoTask | `[kp_trans x 3, kp_rot x 3, damping, null_kp, null_space(0/1), 6dof(0/1), traj_speed, traj_ang_speed, hand_traj_speed, max_vel, max_ang_vel, hand_max_vel, grasp_contact_thresh, grasp_force_thresh, grasp_min_fingertips, grasp_cmd(0/1/2), grasp_target_force]` | 21 |
 
 ### GraspController (Force-PI, internal only)
 
@@ -259,6 +259,36 @@ ros2 topic hz /forward_position_controller/commands
 ros2 topic echo /system/estop_status
 ./rtc_scripts/scripts/check_rt_setup.sh --summary
 ```
+
+---
+
+## Testing
+
+```bash
+# All tests
+colcon test --event-handlers console_direct+
+colcon test-result --verbose
+
+# Single package
+colcon test --packages-select ur5e_bt_coordinator --event-handlers console_direct+
+
+# Single test (C++)
+colcon test --packages-select rtc_controllers --ctest-args -R test_grasp_controller
+
+# Single test (Python)
+colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
+```
+
+Test files by package (30 total):
+
+| Package | Tests | Framework |
+|---------|-------|-----------|
+| `ur5e_bt_coordinator` | 14 C++ tests (`test/test_*.cpp`) | GTest |
+| `rtc_controllers` | 6 C++ tests (trajectory + grasp) | GTest |
+| `rtc_urdf_bridge` | 5 C++ tests (URDF/model parsing) | GTest |
+| `shape_estimation` | 3 C++ tests (ToF + exploration) | GTest |
+| `rtc_digital_twin` | 1 Python test | pytest |
+| `rtc_tools` | 1 Python test | pytest |
 
 ---
 
