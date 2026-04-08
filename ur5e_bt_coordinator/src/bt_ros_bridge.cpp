@@ -270,6 +270,10 @@ void BtRosBridge::PublishArmJointTarget(const std::vector<double>& target) {
 }
 
 void BtRosBridge::PublishHandTarget(const std::vector<double>& target) {
+  {
+    std::lock_guard lock(state_mutex_);
+    last_hand_target_ = target;
+  }
   rtc_msgs::msg::RobotTarget msg;
   msg.header.stamp = node_->now();
   msg.goal_type = "joint";
@@ -277,6 +281,11 @@ void BtRosBridge::PublishHandTarget(const std::vector<double>& target) {
   RCLCPP_DEBUG(node_->get_logger(),
                "[BtRosBridge] PublishHandTarget (%zu motors)", target.size());
   hand_target_pub_->publish(msg);
+}
+
+std::vector<double> BtRosBridge::GetLastHandTarget() const {
+  std::lock_guard lock(state_mutex_);
+  return last_hand_target_;
 }
 
 void BtRosBridge::PublishGains(const std::vector<double>& gains) {

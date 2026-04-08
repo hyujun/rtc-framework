@@ -69,20 +69,26 @@ std::vector<T> ParseCsvList(const std::string& str)
 
 // ── Partial hand joint update ───────────────────────────────────────────────
 
-/// Read current hand state, overlay specific finger joints, and publish.
+/// Read last hand target (or current position as fallback), overlay specific
+/// finger joints, and publish.  Non-target joints keep moving toward their
+/// previously commanded targets instead of freezing at the current position.
 inline void ApplyPartialHandTarget(
     BtRosBridge& bridge,
     const HandPose& target_pose,
     const std::vector<int>& joint_indices)
 {
-  auto current = bridge.GetHandJointPositions();
-  if (current.size() < static_cast<std::size_t>(kHandDofCount)) {
-    current.resize(kHandDofCount, 0.0);
+  auto base = bridge.GetLastHandTarget();
+  if (base.size() < static_cast<std::size_t>(kHandDofCount)) {
+    // First publish in this session — fall back to current position
+    base = bridge.GetHandJointPositions();
+    if (base.size() < static_cast<std::size_t>(kHandDofCount)) {
+      base.resize(kHandDofCount, 0.0);
+    }
   }
   for (int idx : joint_indices) {
-    current[idx] = target_pose[idx];
+    base[idx] = target_pose[idx];
   }
-  bridge.PublishHandTarget(current);
+  bridge.PublishHandTarget(base);
 }
 
 // ── Trajectory duration estimation ─────────────────────────────────────────

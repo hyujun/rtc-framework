@@ -51,6 +51,9 @@ public:
   /// Current hand joint positions from /hand/gui_position
   std::vector<double> GetHandJointPositions() const;
 
+  /// Last published hand target (empty if never published)
+  std::vector<double> GetLastHandTarget() const;
+
   /// Cached grasp state from /hand/grasp_state (500Hz pre-computed)
   CachedGraspState GetGraspState() const;
 
@@ -159,6 +162,7 @@ private:
   bool world_target_valid_{false};
   std::string active_controller_;
   bool estopped_{false};
+  std::vector<double> last_hand_target_;
   std::vector<double> cached_gains_;
   bool cached_gains_valid_{false};
 
