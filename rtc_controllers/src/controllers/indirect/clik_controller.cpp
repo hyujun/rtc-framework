@@ -256,9 +256,9 @@ ControllerOutput ClikController::Compute(
     }
 
     Eigen::Matrix<double, 6, 1> task_vel_6d = kp_vec_6d.cwiseProduct(pos_error_6d_);
-    // Feedforward: local → world-aligned via R_current
-    task_vel_6d.head<3>() += tcp_pose.rotation() * traj_state_.velocity.linear();
-    task_vel_6d.tail<3>() += tcp_pose.rotation() * traj_state_.velocity.angular();
+    // Feedforward: trajectory local → world-aligned via R_trajectory (not R_current)
+    task_vel_6d.head<3>() += traj_state_.pose.rotation() * traj_state_.velocity.linear();
+    task_vel_6d.tail<3>() += traj_state_.pose.rotation() * traj_state_.velocity.angular();
 
     dq_.noalias() = Jpinv_6d_ * task_vel_6d;
   } else {
@@ -271,18 +271,18 @@ ControllerOutput ClikController::Compute(
 
     Eigen::Vector3d kp_vec(gains_.kp_translation[0], gains_.kp_translation[1], gains_.kp_translation[2]);
     Eigen::Vector3d task_vel = kp_vec.cwiseProduct(pos_error_) +
-        tcp_pose.rotation() * traj_state_.velocity.linear();
+        traj_state_.pose.rotation() * traj_state_.velocity.linear();
     dq_.noalias() = Jpinv_ * task_vel;
   }
 
   // ── Feedforward-only trajectory velocity (for logging) ────────────────
   if (gains_.control_6dof) {
     Eigen::Matrix<double, 6, 1> ff_vel_6d;
-    ff_vel_6d.head<3>() = tcp_pose.rotation() * traj_state_.velocity.linear();
-    ff_vel_6d.tail<3>() = tcp_pose.rotation() * traj_state_.velocity.angular();
+    ff_vel_6d.head<3>() = traj_state_.pose.rotation() * traj_state_.velocity.linear();
+    ff_vel_6d.tail<3>() = traj_state_.pose.rotation() * traj_state_.velocity.angular();
     traj_dq_.noalias() = Jpinv_6d_ * ff_vel_6d;
   } else {
-    traj_dq_.noalias() = Jpinv_ * (tcp_pose.rotation() * traj_state_.velocity.linear());
+    traj_dq_.noalias() = Jpinv_ * (traj_state_.pose.rotation() * traj_state_.velocity.linear());
   }
 
   // ── Step 6: Null-space secondary task ────────────────────────────────────
