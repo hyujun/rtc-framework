@@ -198,6 +198,40 @@ void DemoJointController::ReadState(const ControllerState & state) noexcept
   }
 }
 
+// ── Virtual TCP computation ─────────────────────────────────────────────────
+
+void DemoJointController::UpdateVirtualTcp(
+  const pinocchio::SE3& T_base_tcp) noexcept
+{
+  vtcp_valid_ = false;
+  if (!hand_handle_ || gains_.vtcp.mode == VirtualTcpMode::kDisabled) return;
+
+  // Build fingertip inputs from hand model FK (already computed in ComputeControl)
+  for (std::size_t f = 0; f < kNumFingertips; ++f) {
+    vtcp_inputs_[f].active = (fingertip_frame_ids_[f] != 0);
+    if (!vtcp_inputs_[f].active) continue;
+    auto ft_pose = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
+    if (use_hand_root_frame_) {
+      ft_pose = hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(ft_pose);
+    }
+    vtcp_inputs_[f].position_in_tcp = ft_pose.translation();
+    // Force magnitude for weighted mode
+    const auto& ft = fingertip_data_[f];
+    vtcp_inputs_[f].force_magnitude = ft.valid
+        ? static_cast<double>(std::sqrt(
+              ft.force[0]*ft.force[0] +
+              ft.force[1]*ft.force[1] +
+              ft.force[2]*ft.force[2]))
+        : 0.0;
+  }
+
+  const auto result = ComputeVirtualTcp(gains_.vtcp, T_base_tcp, vtcp_inputs_);
+  if (result.valid) {
+    vtcp_pose_  = result.world_pose;
+    vtcp_valid_ = true;
+  }
+}
+
 // ── Phase 2: Compute control (trajectory + sensor-based logic) ──────────────
 
 void DemoJointController::ComputeControl(
@@ -323,6 +357,9 @@ void DemoJointController::ComputeControl(
         fingertip_rotations_[f] = T_base_ft.rotation();
       }
     }
+
+    // Virtual TCP computation (uses hand FK data computed above)
+    UpdateVirtualTcp(T_base_tcp);
   }
 
   // ── Grasp detection + ContactStopHand (500Hz) ────────────────────────
@@ -466,11 +503,13 @@ ControllerOutput DemoJointController::WriteOutput(
   if (use_root_frame_) {
     tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
   }
-  Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
+  // Log virtual TCP pose when active, otherwise raw TCP
+  const pinocchio::SE3& log_pose = vtcp_valid_ ? vtcp_pose_ : tcp;
+  Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(log_pose.rotation());
 
-  output.actual_task_positions[0] = tcp.translation().x();
-  output.actual_task_positions[1] = tcp.translation().y();
-  output.actual_task_positions[2] = tcp.translation().z();
+  output.actual_task_positions[0] = log_pose.translation().x();
+  output.actual_task_positions[1] = log_pose.translation().y();
+  output.actual_task_positions[2] = log_pose.translation().z();
   output.actual_task_positions[3] = rpy[0];
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
@@ -633,6 +672,30 @@ void DemoJointController::LoadConfig(const YAML::Node & cfg)
   }
   if (cfg["hand_max_traj_velocity"]) {
     gains_.hand_max_traj_velocity = cfg["hand_max_traj_velocity"].as<double>();
+  }
+
+  // ── Virtual TCP configuration ──────────────────────────────────────────
+  if (cfg["virtual_tcp_mode"]) {
+    const auto mode_str = cfg["virtual_tcp_mode"].as<std::string>();
+    if (mode_str == "centroid") {
+      gains_.vtcp.mode = VirtualTcpMode::kCentroid;
+    } else if (mode_str == "weighted") {
+      gains_.vtcp.mode = VirtualTcpMode::kWeighted;
+    } else if (mode_str == "constant") {
+      gains_.vtcp.mode = VirtualTcpMode::kConstant;
+    } else {
+      gains_.vtcp.mode = VirtualTcpMode::kDisabled;
+    }
+  }
+  if (cfg["virtual_tcp_offset"] && cfg["virtual_tcp_offset"].IsSequence()) {
+    for (std::size_t i = 0; i < 3 && i < cfg["virtual_tcp_offset"].size(); ++i) {
+      gains_.vtcp.offset[i] = cfg["virtual_tcp_offset"][i].as<double>();
+    }
+  }
+  if (cfg["virtual_tcp_orientation"] && cfg["virtual_tcp_orientation"].IsSequence()) {
+    for (std::size_t i = 0; i < 3 && i < cfg["virtual_tcp_orientation"].size(); ++i) {
+      gains_.vtcp.orientation[i] = cfg["virtual_tcp_orientation"][i].as<double>();
+    }
   }
 
   // Grasp detection parameters
