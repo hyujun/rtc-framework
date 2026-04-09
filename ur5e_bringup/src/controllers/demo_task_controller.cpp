@@ -486,13 +486,17 @@ void DemoTaskController::ComputeControl(
 
     Eigen::Matrix<double, 6, 1> task_vel_6d = kp_vec_6d.cwiseProduct(pos_error_6d_);
     if (use_vtcp_frame) {
-      // Trajectory velocity is in local (vtcp) frame — matches Jacobian frame
-      task_vel_6d.head<3>() += traj_state_.velocity.linear();
-      task_vel_6d.tail<3>() += traj_state_.velocity.angular();
+      // Trajectory velocity is in trajectory-pose local frame.
+      // Jacobian is in current vtcp frame → rotate trajectory local → vtcp frame.
+      const Eigen::Matrix3d R_vtcp_traj =
+          control_pose.rotation().transpose() * traj_state_.pose.rotation();
+      task_vel_6d.head<3>() += R_vtcp_traj * traj_state_.velocity.linear();
+      task_vel_6d.tail<3>() += R_vtcp_traj * traj_state_.velocity.angular();
     } else {
-      // Default: world-aligned feedforward (local → world via R_current)
-      task_vel_6d.head<3>() += control_pose.rotation() * traj_state_.velocity.linear();
-      task_vel_6d.tail<3>() += control_pose.rotation() * traj_state_.velocity.angular();
+      // Trajectory velocity is in trajectory-pose local frame.
+      // Jacobian is LOCAL_WORLD_ALIGNED → rotate trajectory local → world.
+      task_vel_6d.head<3>() += traj_state_.pose.rotation() * traj_state_.velocity.linear();
+      task_vel_6d.tail<3>() += traj_state_.pose.rotation() * traj_state_.velocity.angular();
     }
 
     dq_.noalias() = Jpinv_6d_ * task_vel_6d;
@@ -504,11 +508,15 @@ void DemoTaskController::ComputeControl(
     Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
 
     Eigen::Vector3d kp_vec(gains_.kp_translation[0], gains_.kp_translation[1], gains_.kp_translation[2]);
-    // Feedforward: local frame velocity → world-aligned via R_current
-    // (vtcp case uses pos_error_ from log6 local frame directly, matching vtcp-frame Jacobian)
-    Eigen::Vector3d ff_vel = use_vtcp_frame
-        ? Eigen::Vector3d(traj_state_.velocity.linear())
-        : Eigen::Vector3d(control_pose.rotation() * traj_state_.velocity.linear());
+    // Feedforward: trajectory local → Jacobian frame (vtcp or world-aligned)
+    Eigen::Vector3d ff_vel;
+    if (use_vtcp_frame) {
+      const Eigen::Matrix3d R_vtcp_traj =
+          control_pose.rotation().transpose() * traj_state_.pose.rotation();
+      ff_vel = R_vtcp_traj * traj_state_.velocity.linear();
+    } else {
+      ff_vel = traj_state_.pose.rotation() * traj_state_.velocity.linear();
+    }
     Eigen::Vector3d task_vel = kp_vec.cwiseProduct(pos_error_) + ff_vel;
     dq_.noalias() = Jpinv_ * task_vel;
   }
@@ -517,17 +525,24 @@ void DemoTaskController::ComputeControl(
   if (gains_.control_6dof) {
     Eigen::Matrix<double, 6, 1> ff_vel_6d;
     if (use_vtcp_frame) {
-      ff_vel_6d.head<3>() = traj_state_.velocity.linear();
-      ff_vel_6d.tail<3>() = traj_state_.velocity.angular();
+      const Eigen::Matrix3d R_vtcp_traj =
+          control_pose.rotation().transpose() * traj_state_.pose.rotation();
+      ff_vel_6d.head<3>() = R_vtcp_traj * traj_state_.velocity.linear();
+      ff_vel_6d.tail<3>() = R_vtcp_traj * traj_state_.velocity.angular();
     } else {
-      ff_vel_6d.head<3>() = control_pose.rotation() * traj_state_.velocity.linear();
-      ff_vel_6d.tail<3>() = control_pose.rotation() * traj_state_.velocity.angular();
+      ff_vel_6d.head<3>() = traj_state_.pose.rotation() * traj_state_.velocity.linear();
+      ff_vel_6d.tail<3>() = traj_state_.pose.rotation() * traj_state_.velocity.angular();
     }
     traj_dq_.noalias() = Jpinv_6d_ * ff_vel_6d;
   } else {
-    Eigen::Vector3d ff_lin = use_vtcp_frame
-        ? Eigen::Vector3d(traj_state_.velocity.linear())
-        : Eigen::Vector3d(control_pose.rotation() * traj_state_.velocity.linear());
+    Eigen::Vector3d ff_lin;
+    if (use_vtcp_frame) {
+      const Eigen::Matrix3d R_vtcp_traj =
+          control_pose.rotation().transpose() * traj_state_.pose.rotation();
+      ff_lin = R_vtcp_traj * traj_state_.velocity.linear();
+    } else {
+      ff_lin = traj_state_.pose.rotation() * traj_state_.velocity.linear();
+    }
     traj_dq_.noalias() = Jpinv_ * ff_lin;
   }
 
