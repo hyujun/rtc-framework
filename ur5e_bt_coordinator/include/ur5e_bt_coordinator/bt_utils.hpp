@@ -91,6 +91,17 @@ inline void ApplyPartialHandTarget(
   bridge.PublishHandTarget(base);
 }
 
+// ── Gain extraction ────────────────────────────────────────────────────
+
+/// current_gains 벡터에서 hand_max_traj_velocity를 추출한다.
+/// DemoTask(19+): index 15, DemoJoint(7+): index 3, 그 외 기본값.
+inline double ExtractHandMaxTrajVelocity(const std::vector<double>& gains)
+{
+  if (gains.size() >= 19) return gains[15];  // DemoTask layout
+  if (gains.size() >= 7)  return gains[3];   // DemoJoint layout
+  return kDefaultHandMaxTrajVelocity;
+}
+
 // ── Trajectory duration estimation ─────────────────────────────────────────
 
 /// RT 컨트롤러와 동일한 공식으로 hand trajectory duration을 추정한다.

@@ -19,8 +19,8 @@ BT::PortsList FlexExtendFinger::providedPorts()
     BT::InputPort<std::string>("finger_name", "손가락 이름 (thumb/index/middle/ring)"),
     BT::InputPort<double>("hand_trajectory_speed", kDefaultHandTrajectorySpeed,
                            "Trajectory speed [rad/s]"),
-    BT::InputPort<double>("hand_max_traj_velocity", kDefaultHandMaxTrajVelocity,
-                           "Max trajectory velocity [rad/s]"),
+    BT::InputPort<std::vector<double>>("current_gains", "{current_gains}",
+                                       "Cached gains from SwitchController"),
   };
 }
 
@@ -34,8 +34,10 @@ BT::NodeStatus FlexExtendFinger::onStart()
 
   speed_ = getInput<double>("hand_trajectory_speed")
                .value_or(kDefaultHandTrajectorySpeed);
-  max_vel_ = getInput<double>("hand_max_traj_velocity")
-                 .value_or(kDefaultHandMaxTrajVelocity);
+  auto cached = getInput<std::vector<double>>("current_gains");
+  max_vel_ = (cached && !cached->empty())
+      ? ExtractHandMaxTrajVelocity(cached.value())
+      : kDefaultHandMaxTrajVelocity;
 
   // 포즈 lookup (bridge pose library 사용)
   const std::string flex_pose_name = finger_name_ + "_flex";

@@ -49,7 +49,7 @@ TEST_F(SetGainsTest, DemoJointWithSpeedOverride)
   Spin();
 
   auto tree = CreateTree(
-      R"(<SetGains trajectory_speed="0.15" max_traj_velocity="0.5"/>)");
+      R"(<SetGains trajectory_speed="0.15"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 }
 

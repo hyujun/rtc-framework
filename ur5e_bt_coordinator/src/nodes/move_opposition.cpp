@@ -19,8 +19,8 @@ BT::PortsList MoveOpposition::providedPorts()
     BT::InputPort<std::string>("target_pose", "대상 손가락 포즈 이름"),
     BT::InputPort<double>("hand_trajectory_speed", kDefaultHandTrajectorySpeed,
                            "Trajectory speed [rad/s]"),
-    BT::InputPort<double>("hand_max_traj_velocity", kDefaultHandMaxTrajVelocity,
-                           "Max trajectory velocity [rad/s]"),
+    BT::InputPort<std::vector<double>>("current_gains", "{current_gains}",
+                                       "Cached gains from SwitchController"),
   };
 }
 
@@ -43,8 +43,10 @@ BT::NodeStatus MoveOpposition::onStart()
 
   const double speed = getInput<double>("hand_trajectory_speed")
                            .value_or(kDefaultHandTrajectorySpeed);
-  const double max_vel = getInput<double>("hand_max_traj_velocity")
-                             .value_or(kDefaultHandMaxTrajVelocity);
+  auto cached = getInput<std::vector<double>>("current_gains");
+  const double max_vel = (cached && !cached->empty())
+      ? ExtractHandMaxTrajVelocity(cached.value())
+      : kDefaultHandMaxTrajVelocity;
 
   const auto& thumb_pose = bridge_->GetHandPose(thumb_pose_name.value());
   const auto& target_pose = bridge_->GetHandPose(target_pose_name.value());

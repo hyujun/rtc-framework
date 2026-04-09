@@ -37,14 +37,12 @@
 
   <!-- ================================================================== -->
   <!-- SlowDescend: 저속 게인 설정 후 목표로 이동                            -->
-  <!--   Ports: target_pose, traj_speed, max_traj_vel,                    -->
-  <!--          pos_tol, ori_tol, timeout_s                               -->
+  <!--   Ports: target_pose, traj_speed, pos_tol, ori_tol, timeout_s     -->
   <!-- ================================================================== -->
   <BehaviorTree ID="SlowDescend">
     <Sequence>
       <SetGains current_gains="{current_gains}"
-                trajectory_speed="{traj_speed}"
-                max_traj_velocity="{max_traj_vel}"/>
+                trajectory_speed="{traj_speed}"/>
       <MoveToPose target="{target_pose}"
                   position_tolerance="{pos_tol}"
                   orientation_tolerance="{ori_tol}"
@@ -82,15 +80,13 @@
 
   <!-- ================================================================== -->
   <!-- LiftAndVerify: 리프트 후 파지 검증                                   -->
-  <!--   Ports: base_pose, offset_z, traj_speed, max_traj_vel,            -->
-  <!--          pos_tol, timeout_s, verify_force_N, verify_min_tips,      -->
-  <!--          lift_pose (output)                                        -->
+  <!--   Ports: base_pose, offset_z, traj_speed, pos_tol, timeout_s,     -->
+  <!--          verify_force_N, verify_min_tips, lift_pose (output)       -->
   <!-- ================================================================== -->
   <BehaviorTree ID="LiftAndVerify">
     <Sequence>
       <SetGains current_gains="{current_gains}"
-                trajectory_speed="{traj_speed}"
-                max_traj_velocity="{max_traj_vel}"/>
+                trajectory_speed="{traj_speed}"/>
       <ComputeOffsetPose input_pose="{base_pose}"
                          offset_z="{offset_z}"
                          output_pose="{lift_pose}"/>

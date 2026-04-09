@@ -136,8 +136,7 @@ TEST_F(HandNodeTest, FlexExtendFinger_CompletesFlexExtendCycle)
 
   auto tree = CreateTree(
       R"(<FlexExtendFinger finger_name="thumb"
-                           hand_trajectory_speed="100.0"
-                           hand_max_traj_velocity="100.0"/>)");
+                           hand_trajectory_speed="100.0"/>)");
 
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 

@@ -31,6 +31,10 @@ namespace rtc_bt {
 ///    grasp_min_fingertips,
 ///    (grasp_command, grasp_target_force)]
 ///
+/// NOTE: max_traj_velocity, max_traj_angular_velocity, hand_max_traj_velocity
+/// are NOT configurable from BT. They are always taken from current_gains
+/// (loaded by SwitchController) or from hard-coded defaults.
+///
 /// Input ports:
 ///   - kp_translation (string): "5.0,5.0,5.0" (DemoTask only, optional)
 ///   - kp_rotation (string): "3.0,3.0,3.0" (DemoTask only, optional)
@@ -40,10 +44,7 @@ namespace rtc_bt {
 ///   - control_6dof (bool): enable 6-DoF control (DemoTask only, optional)
 ///   - trajectory_speed (double): [m/s] (optional)
 ///   - trajectory_angular_speed (double): [rad/s] (DemoTask only, optional)
-///   - max_traj_velocity (double): [m/s] (optional)
-///   - max_traj_angular_velocity (double): [rad/s] (DemoTask only, optional)
 ///   - hand_trajectory_speed (double): [rad/s] (optional)
-///   - hand_max_traj_velocity (double): [rad/s] (optional)
 ///   - full_gains (vector<double>): complete gain array (optional, overrides all)
 ///   - grasp_command (int): 0=none, 1=grasp, 2=release (Force-PI, optional)
 ///   - grasp_target_force (double): target grip force [N] (Force-PI, default 2.0)
