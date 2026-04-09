@@ -192,7 +192,7 @@
 
       <!-- ── Phase 2: 동시, 최고 속도 ── -->
       <Repeat num_cycles="{num_cycles}">
-        <Parallel success_count="7" failure_count="1" name="SimultaneousFastWave">
+        <Parallel success_count="7" failure_count="7" name="SimultaneousFastWave">
           <FlexExtendFinger finger_name="thumb_mcp"
                             hand_trajectory_speed="{hand_speed}"
                             hand_max_traj_velocity="{hand_max_vel}"/>
