@@ -1,0 +1,171 @@
+<!-- file: trees/search_motion.xml -->
+<!-- UR5e Search Motion demo (arm sweep + tilt, no ToF sensor required) -->
+<!-- BehaviorTree.CPP v4 syntax -->
+<!--
+  Flow:
+    1. Move to ready pose via joint-space controller
+    2. Wait for vision target (/world_target_info publish by user)
+    3. Switch to task-space controller
+    4. Move to inspection position (offset above object)
+    5. Search motion:
+       5a. Approach — descend closer to object
+       5b. X-direction sweep (lateral scan)
+       5c. Y-direction sweep (lateral scan)
+       5d. Tilt scan (multi-angle observation)
+    6. Return to ready pose
+
+  Usage:
+    # Terminal 1: MuJoCo sim + RT controller
+    ros2 launch ur5e_bringup sim.launch.py
+
+    # Terminal 2: BT coordinator with this tree
+    ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=search_motion.xml
+
+    # Terminal 3: Publish vision target (user)
+    ros2 topic pub /world_target_info geometry_msgs/msg/Polygon \
+      "{points: [{x: 0.4, y: 0.0, z: 0.15}]}" - -once
+-->
+
+<root BTCPP_format="4" main_tree_to_execute="SearchMotion">
+
+  <BehaviorTree ID="SearchMotion">
+    <Sequence name="main">
+
+      <!-- ======================================================== -->
+      <!-- Phase 1: Move to ready pose (joint-space)                 -->
+      <!-- ======================================================== -->
+      <SwitchController controller_name="demo_joint_controller"
+                        timeout_s="3.0"
+                        current_gains="{current_gains}"/>
+
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.15"
+                max_traj_velocity="0.5"/>
+
+      <MoveToJoints pose_name="ready"
+                    tolerance="0.01"
+                    timeout_s="15.0"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 2: Wait for vision target                           -->
+      <!--   User publishes /world_target_info with object x,y,z    -->
+      <!-- ======================================================== -->
+      <RetryUntilSuccessful num_attempts="60">
+        <Sequence>
+          <WaitDuration duration_s="0.5"/>
+          <IsVisionTargetReady pose="{object_pose}"/>
+        </Sequence>
+      </RetryUntilSuccessful>
+
+      <!-- ======================================================== -->
+      <!-- Phase 3: Switch to task-space controller                  -->
+      <!-- ======================================================== -->
+      <SwitchController controller_name="demo_task_controller"
+                        timeout_s="3.0"
+                        current_gains="{current_gains}"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 4: Move to inspection position (above object)       -->
+      <!-- ======================================================== -->
+      <ComputeOffsetPose input_pose="{object_pose}"
+                         offset_x="{inspect_offset_x}"
+                         offset_y="{inspect_offset_y}"
+                         offset_z="{inspect_offset_z}"
+                         output_pose="{inspect_pose}"/>
+
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.08"
+                max_traj_velocity="0.2"/>
+
+      <MoveToPose target="{inspect_pose}"
+                  position_tolerance="0.003"
+                  orientation_tolerance="0.05"
+                  timeout_s="12.0"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 5a: Approach — descend closer to object             -->
+      <!--   Lower 3cm from inspection pose for closer observation   -->
+      <!-- ======================================================== -->
+      <ComputeOffsetPose input_pose="{inspect_pose}"
+                         offset_z="-0.03"
+                         output_pose="{approach_pose}"/>
+
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.05"
+                max_traj_velocity="0.10"/>
+
+      <MoveToPose target="{approach_pose}"
+                  position_tolerance="0.003"
+                  orientation_tolerance="0.05"
+                  timeout_s="8.0"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 5b: X-direction sweep                               -->
+      <!--   Lateral scan ±30mm in local X direction                 -->
+      <!-- ======================================================== -->
+      <GetCurrentPose pose="{sweep_start_x}"/>
+
+      <ComputeSweepTrajectory start_pose="{sweep_start_x}"
+                              direction_x="1.0"
+                              direction_y="0.0"
+                              distance="0.06"
+                              arc_height="0.0"
+                              num_waypoints="10"
+                              waypoints="{sweep_waypoints_x}"/>
+
+      <TrackTrajectory waypoints="{sweep_waypoints_x}"
+                       position_tolerance="0.005"
+                       timeout_s="15.0"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 5c: Y-direction sweep                               -->
+      <!--   Lateral scan ±30mm in local Y direction                 -->
+      <!-- ======================================================== -->
+      <GetCurrentPose pose="{sweep_start_y}"/>
+
+      <ComputeSweepTrajectory start_pose="{sweep_start_y}"
+                              direction_x="0.0"
+                              direction_y="1.0"
+                              distance="0.06"
+                              arc_height="0.0"
+                              num_waypoints="10"
+                              waypoints="{sweep_waypoints_y}"/>
+
+      <TrackTrajectory waypoints="{sweep_waypoints_y}"
+                       position_tolerance="0.005"
+                       timeout_s="15.0"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 5d: Tilt scan (multi-angle observation)             -->
+      <!--   Oscillate roll/pitch ±15° around current pose           -->
+      <!-- ======================================================== -->
+      <GetCurrentPose pose="{tilt_base}"/>
+
+      <ComputeTiltSequence base_pose="{tilt_base}"
+                           amplitude_deg="15.0"
+                           num_steps="6"
+                           waypoints="{tilt_waypoints}"/>
+
+      <TrackTrajectory waypoints="{tilt_waypoints}"
+                       position_tolerance="0.005"
+                       timeout_s="15.0"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 6: Return to ready pose                             -->
+      <!-- ======================================================== -->
+      <SwitchController controller_name="demo_joint_controller"
+                        timeout_s="3.0"
+                        current_gains="{current_gains}"/>
+
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.15"
+                max_traj_velocity="0.5"/>
+
+      <MoveToJoints pose_name="ready"
+                    tolerance="0.01"
+                    timeout_s="15.0"/>
+
+    </Sequence>
+  </BehaviorTree>
+
+</root>

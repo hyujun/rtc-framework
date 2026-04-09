@@ -5,6 +5,8 @@
 
 #include "ur5e_bt_coordinator/action_nodes/compute_offset_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/compute_sweep_trajectory.hpp"
+#include "ur5e_bt_coordinator/action_nodes/compute_tilt_sequence.hpp"
+#include "ur5e_bt_coordinator/action_nodes/get_current_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/flex_extend_finger.hpp"
 #include "ur5e_bt_coordinator/action_nodes/grasp_control.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_finger.hpp"
@@ -49,6 +51,8 @@ protected:
     factory_.registerNodeType<SwitchController>("SwitchController", null_bridge);
     factory_.registerNodeType<ComputeOffsetPose>("ComputeOffsetPose");
     factory_.registerNodeType<ComputeSweepTrajectory>("ComputeSweepTrajectory");
+    factory_.registerNodeType<ComputeTiltSequence>("ComputeTiltSequence");
+    factory_.registerNodeType<GetCurrentPose>("GetCurrentPose", null_bridge);
     factory_.registerNodeType<WaitDuration>("WaitDuration");
     factory_.registerNodeType<MoveFinger>("MoveFinger", null_bridge);
     factory_.registerNodeType<FlexExtendFinger>("FlexExtendFinger", null_bridge);
@@ -133,6 +137,12 @@ TEST_F(TreeValidationTest, VisionApproach)
 {
   auto count = ValidateTree("vision_approach.xml");
   EXPECT_GT(count, 0u) << "vision_approach.xml should have nodes";
+}
+
+TEST_F(TreeValidationTest, SearchMotion)
+{
+  auto count = ValidateTree("search_motion.xml");
+  EXPECT_GT(count, 0u) << "search_motion.xml should have nodes";
 }
 
 TEST_F(TreeValidationTest, InvalidXmlThrows)
