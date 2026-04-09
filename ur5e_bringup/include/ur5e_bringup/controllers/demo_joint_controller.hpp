@@ -10,6 +10,7 @@
 #include <string_view>
 #include <vector>
 
+#include "ur5e_bringup/controllers/virtual_tcp.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
 
@@ -56,6 +57,9 @@ public:
     double hand_trajectory_speed{1.0};        ///< Desired hand speed for trajectory duration [rad/s]
     double robot_max_traj_velocity{3.14};     ///< Max joint velocity during trajectory [rad/s]
     double hand_max_traj_velocity{2.0};       ///< Max hand motor velocity during trajectory [rad/s]
+
+    // Virtual TCP (fingertip-based control point)
+    VirtualTcpConfig vtcp;
 
     // Grasp detection parameters
     float grasp_contact_threshold{0.5f};      ///< Contact probability threshold (0.0~1.0)
@@ -148,6 +152,13 @@ private:
   std::array<Eigen::Vector3d, kNumFingertips> fingertip_positions_{};
   std::array<Eigen::Matrix3d, kNumFingertips> fingertip_rotations_{};
   Eigen::VectorXd hand_q_;  // pre-allocated for hand FK
+
+  // ── Virtual TCP (fingertip-based control point) ───────────────────────
+  pinocchio::SE3 vtcp_pose_{pinocchio::SE3::Identity()};    ///< World-frame virtual TCP pose (cached)
+  bool vtcp_valid_{false};                                    ///< Virtual TCP computed successfully
+  std::array<FingertipVtcpInput, kNumFingertips> vtcp_inputs_{};  ///< Pre-allocated
+
+  void UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp) noexcept;
 
   void InitArmModel(const rtc_urdf_bridge::ModelConfig & config);
   void InitHandModel(const rtc_urdf_bridge::ModelConfig & config);

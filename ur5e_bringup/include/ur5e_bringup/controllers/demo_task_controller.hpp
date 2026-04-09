@@ -1,6 +1,7 @@
 // ── Includes: project header first, then third-party, then C++ stdlib ──────────
 #pragma once
 
+#include "ur5e_bringup/controllers/virtual_tcp.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
@@ -24,14 +25,6 @@
 
 namespace ur5e_bringup
 {
-
-/// Virtual TCP computation mode for fingertip-based control point.
-enum class VirtualTcpMode : uint8_t {
-  kDisabled,   ///< Use tool0 as control point (default)
-  kCentroid,   ///< Fingertip position centroid
-  kWeighted,   ///< Contact-force weighted fingertip centroid
-  kConstant    ///< Fixed offset from TCP frame (YAML configured)
-};
 
 using rtc::kNumRobotJoints;
 using rtc::kNumHandMotors;
@@ -97,9 +90,7 @@ public:
     double hand_max_traj_velocity{2.0};        ///< Max hand motor velocity during trajectory [rad/s]
 
     // Virtual TCP (fingertip-based control point)
-    VirtualTcpMode virtual_tcp_mode{VirtualTcpMode::kDisabled};
-    std::array<double, 3> virtual_tcp_offset{{0.0, 0.0, 0.0}};  ///< Constant mode: [x,y,z] in TCP frame [m]
-    std::array<double, 3> virtual_tcp_orientation{{0.0, 0.0, 0.0}};  ///< RPY [rad] orientation of vtcp in TCP frame
+    VirtualTcpConfig vtcp;
 
     // Grasp detection parameters
     float grasp_contact_threshold{0.5f};      ///< Contact probability threshold (0.0~1.0)
@@ -210,8 +201,9 @@ private:
   pinocchio::SE3 vtcp_pose_{pinocchio::SE3::Identity()};    ///< World-frame virtual TCP pose (cached)
   bool vtcp_valid_{false};                                    ///< Virtual TCP computed successfully
   Eigen::Matrix3d skew_buf_{Eigen::Matrix3d::Zero()};        ///< Jacobian modification buffer
+  std::array<FingertipVtcpInput, kNumFingertips> vtcp_inputs_{};  ///< Pre-allocated
 
-  void ComputeVirtualTcp(const pinocchio::SE3& T_base_tcp) noexcept;
+  void UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp) noexcept;
 
   void InitArmModel(const rtc_urdf_bridge::ModelConfig & config);
   void InitHandModel(const rtc_urdf_bridge::ModelConfig & config);

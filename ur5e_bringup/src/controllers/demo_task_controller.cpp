@@ -153,75 +153,37 @@ void DemoTaskController::OnDeviceConfigsSet()
 
 // ── Virtual TCP computation ─────────────────────────────────────────────────
 
-void DemoTaskController::ComputeVirtualTcp(
+void DemoTaskController::UpdateVirtualTcp(
   const pinocchio::SE3& T_base_tcp) noexcept
 {
   vtcp_valid_ = false;
-  if (!hand_handle_ || gains_.virtual_tcp_mode == VirtualTcpMode::kDisabled) return;
+  if (!hand_handle_ || gains_.vtcp.mode == VirtualTcpMode::kDisabled) return;
 
-  // Pre-compute vtcp orientation from RPY config (applied to all modes)
-  const Eigen::Matrix3d R_tcp_vtcp = pinocchio::rpy::rpyToMatrix(
-      gains_.virtual_tcp_orientation[0],
-      gains_.virtual_tcp_orientation[1],
-      gains_.virtual_tcp_orientation[2]);
-
-  switch (gains_.virtual_tcp_mode) {
-    case VirtualTcpMode::kCentroid: {
-      Eigen::Vector3d sum = Eigen::Vector3d::Zero();
-      int count = 0;
-      for (std::size_t f = 0; f < kNumFingertips; ++f) {
-        if (fingertip_frame_ids_[f] != 0) {
-          auto ft_pose = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
-          if (use_hand_root_frame_) {
-            ft_pose = hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(ft_pose);
-          }
-          sum += ft_pose.translation();
-          ++count;
-        }
-      }
-      if (count == 0) return;
-      T_tcp_vtcp_.translation() = sum / static_cast<double>(count);
-      T_tcp_vtcp_.rotation() = R_tcp_vtcp;
-      break;
+  // Build fingertip inputs from hand model FK
+  for (std::size_t f = 0; f < kNumFingertips; ++f) {
+    vtcp_inputs_[f].active = (fingertip_frame_ids_[f] != 0);
+    if (!vtcp_inputs_[f].active) continue;
+    auto ft_pose = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
+    if (use_hand_root_frame_) {
+      ft_pose = hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(ft_pose);
     }
-    case VirtualTcpMode::kWeighted: {
-      Eigen::Vector3d sum = Eigen::Vector3d::Zero();
-      double total_weight = 0.0;
-      for (std::size_t f = 0; f < kNumFingertips; ++f) {
-        if (fingertip_frame_ids_[f] == 0) continue;
-        const auto& ft = fingertip_data_[f];
-        double w = 1.0;  // base weight (ensures non-zero even without contact)
-        if (ft.valid) {
-          w += static_cast<double>(std::sqrt(
+    vtcp_inputs_[f].position_in_tcp = ft_pose.translation();
+    // Force magnitude for weighted mode
+    const auto& ft = fingertip_data_[f];
+    vtcp_inputs_[f].force_magnitude = ft.valid
+        ? static_cast<double>(std::sqrt(
               ft.force[0]*ft.force[0] +
               ft.force[1]*ft.force[1] +
-              ft.force[2]*ft.force[2]));
-        }
-        auto ft_pose = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
-        if (use_hand_root_frame_) {
-          ft_pose = hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(ft_pose);
-        }
-        sum += w * ft_pose.translation();
-        total_weight += w;
-      }
-      if (total_weight <= 0.0) return;
-      T_tcp_vtcp_.translation() = sum / total_weight;
-      T_tcp_vtcp_.rotation() = R_tcp_vtcp;
-      break;
-    }
-    case VirtualTcpMode::kConstant: {
-      T_tcp_vtcp_.translation() = Eigen::Vector3d(
-        gains_.virtual_tcp_offset[0],
-        gains_.virtual_tcp_offset[1],
-        gains_.virtual_tcp_offset[2]);
-      T_tcp_vtcp_.rotation() = R_tcp_vtcp;
-      break;
-    }
-    default: return;
+              ft.force[2]*ft.force[2]))
+        : 0.0;
   }
 
-  vtcp_pose_ = T_base_tcp.act(T_tcp_vtcp_);
-  vtcp_valid_ = true;
+  const auto result = ComputeVirtualTcp(gains_.vtcp, T_base_tcp, vtcp_inputs_);
+  if (result.valid) {
+    T_tcp_vtcp_ = result.T_tcp_vtcp;
+    vtcp_pose_  = result.world_pose;
+    vtcp_valid_ = true;
+  }
 }
 
 // ── RTControllerInterface implementation ────────────────────────────────────
@@ -352,7 +314,7 @@ void DemoTaskController::ComputeControl(
     }
 
     // Virtual TCP computation
-    ComputeVirtualTcp(tcp_pose);
+    UpdateVirtualTcp(tcp_pose);
   }
 
   // ── Control pose: virtual TCP or tool0 ────────────────────────────────
@@ -935,7 +897,7 @@ void DemoTaskController::InitializeHoldPosition(
     }
     hand_handle_->ComputeForwardKinematics(
       std::span<const double>(hand_q_.data(), hand_nq));
-    ComputeVirtualTcp(tcp_pose);
+    UpdateVirtualTcp(tcp_pose);
     if (vtcp_valid_) { hold_pose = vtcp_pose_; }
   }
 
@@ -1125,23 +1087,23 @@ void DemoTaskController::LoadConfig(const YAML::Node & cfg)
   if (cfg["virtual_tcp_mode"]) {
     const auto mode_str = cfg["virtual_tcp_mode"].as<std::string>();
     if (mode_str == "centroid") {
-      gains_.virtual_tcp_mode = VirtualTcpMode::kCentroid;
+      gains_.vtcp.mode = VirtualTcpMode::kCentroid;
     } else if (mode_str == "weighted") {
-      gains_.virtual_tcp_mode = VirtualTcpMode::kWeighted;
+      gains_.vtcp.mode = VirtualTcpMode::kWeighted;
     } else if (mode_str == "constant") {
-      gains_.virtual_tcp_mode = VirtualTcpMode::kConstant;
+      gains_.vtcp.mode = VirtualTcpMode::kConstant;
     } else {
-      gains_.virtual_tcp_mode = VirtualTcpMode::kDisabled;
+      gains_.vtcp.mode = VirtualTcpMode::kDisabled;
     }
   }
   if (cfg["virtual_tcp_offset"] && cfg["virtual_tcp_offset"].IsSequence()) {
     for (std::size_t i = 0; i < 3 && i < cfg["virtual_tcp_offset"].size(); ++i) {
-      gains_.virtual_tcp_offset[i] = cfg["virtual_tcp_offset"][i].as<double>();
+      gains_.vtcp.offset[i] = cfg["virtual_tcp_offset"][i].as<double>();
     }
   }
   if (cfg["virtual_tcp_orientation"] && cfg["virtual_tcp_orientation"].IsSequence()) {
     for (std::size_t i = 0; i < 3 && i < cfg["virtual_tcp_orientation"].size(); ++i) {
-      gains_.virtual_tcp_orientation[i] = cfg["virtual_tcp_orientation"][i].as<double>();
+      gains_.vtcp.orientation[i] = cfg["virtual_tcp_orientation"][i].as<double>();
     }
   }
 
