@@ -92,6 +92,10 @@ if(BUILD_TESTING)
   target_include_directories(test_hand_sensor_processor PRIVATE include)
   ament_target_dependencies(test_hand_sensor_processor rtc_base rclcpp)
 
+  ament_add_gtest(test_hand_udp_transport test/test_hand_udp_transport.cpp)
+  target_include_directories(test_hand_udp_transport PRIVATE include)
+  ament_target_dependencies(test_hand_udp_transport rtc_base rclcpp)
+
   # ── Tier 2: Component integration tests (fake_hand mode) ──────────────────
   ament_add_gtest(test_hand_controller test/test_hand_controller.cpp)
   target_include_directories(test_hand_controller PRIVATE include)

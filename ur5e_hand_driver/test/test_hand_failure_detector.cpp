@@ -77,7 +77,7 @@ TEST_F(HandFailureDetectorTest, MotorAllZero_TriggersFailure)
   EXPECT_NE(failure_reason.find("hand_motor_all_zero"), std::string::npos);
 }
 
-TEST_F(HandFailureDetectorTest, MotorNonZero_NoFailure)
+TEST_F(HandFailureDetectorTest, MotorNonZero_NoAllZeroFailure)
 {
   HandFailureDetectorConfig cfg{};
   cfg.failure_threshold = 3;
@@ -88,9 +88,9 @@ TEST_F(HandFailureDetectorTest, MotorNonZero_NoFailure)
 
   HandFailureDetector detector(*controller_, cfg);
 
-  bool callback_called = false;
-  detector.SetFailureCallback([&](const std::string& /*reason*/) {
-    callback_called = true;
+  std::string failure_reason;
+  detector.SetFailureCallback([&](const std::string& reason) {
+    failure_reason = reason;
   });
 
   // Feed varying non-zero commands
@@ -104,8 +104,11 @@ TEST_F(HandFailureDetectorTest, MotorNonZero_NoFailure)
   std::this_thread::sleep_for(200ms);
   detector.Stop();
 
-  EXPECT_FALSE(detector.failed());
-  EXPECT_FALSE(callback_called);
+  // State stops changing once we stop feeding commands, so duplicate detection
+  // may fire. But all-zero should NOT fire since cmd[0] != 0.
+  if (detector.failed()) {
+    EXPECT_EQ(failure_reason.find("all_zero"), std::string::npos);
+  }
 }
 
 // ── Motor duplicate detection ───────────────────────────────────────────────

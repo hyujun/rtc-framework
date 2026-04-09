@@ -57,9 +57,16 @@ TEST_F(FingertipFTInferencerTest, CalibrationCount_Zero)
   EXPECT_EQ(inferencer_.calibration_count(), 0);
 }
 
-TEST_F(FingertipFTInferencerTest, CalibrationTarget_Zero)
+TEST_F(FingertipFTInferencerTest, CalibrationTarget_Default)
 {
+  // Before InitFT(), calibration_target returns the default config value.
+  // Real impl (HAS_ONNXRUNTIME): config_.calibration_samples = 500
+  // Stub: returns 0
+#ifdef HAS_ONNXRUNTIME
+  EXPECT_EQ(inferencer_.calibration_target(), 500);
+#else
   EXPECT_EQ(inferencer_.calibration_target(), 0);
+#endif
 }
 
 TEST_F(FingertipFTInferencerTest, Infer_ReturnsInvalid)
@@ -122,5 +129,92 @@ TEST(FingertipFTState, MaxFTValues)
 {
   EXPECT_EQ(FingertipFTState::kMaxFTValues, kMaxFingertips * kFTValuesPerFingertip);
 }
+
+// ── InitFT with enabled=true but no model paths ────────────────────────────
+
+TEST(FingertipFTInferencerInit, EnabledNoModels_InitializedFalse)
+{
+  FingertipFTInferencer inf;
+  FingertipFTInferencer::Config cfg{};
+  cfg.enabled = true;  // enabled but no model_paths
+  cfg.num_fingertips = 4;
+  EXPECT_NO_THROW(inf.InitFT(cfg));
+  EXPECT_FALSE(inf.is_initialized());  // no models loaded
+}
+
+TEST(FingertipFTInferencerInit, EnabledNoModels_InferReturnsInvalid)
+{
+  FingertipFTInferencer inf;
+  FingertipFTInferencer::Config cfg{};
+  cfg.enabled = true;
+  cfg.num_fingertips = 4;
+  inf.InitFT(cfg);
+
+  std::array<int32_t, kMaxHandSensors> sensor_data{};
+  const auto result = inf.Infer(sensor_data, 4);
+  EXPECT_FALSE(result.valid);
+}
+
+// ── FeedCalibration on uninitialized inferencer ─────────────────────────────
+
+TEST(FingertipFTInferencerInit, FeedCalibration_Uninitialized)
+{
+  FingertipFTInferencer inf;
+  std::array<int32_t, kMaxHandSensors> sensor_data{};
+  // Should not crash on uninitialized inferencer
+  [[maybe_unused]] bool result = inf.FeedCalibration(sensor_data, 4);
+}
+
+// ── Config custom values ───────────────────────────────────────────────────
+
+TEST(FingertipFTInferencerConfig, CustomValues)
+{
+  FingertipFTInferencer::Config cfg{};
+  cfg.enabled = true;
+  cfg.num_fingertips = 2;
+  cfg.history_length = 8;
+  cfg.calibration_enabled = false;
+  cfg.calibration_samples = 100;
+
+  EXPECT_TRUE(cfg.enabled);
+  EXPECT_EQ(cfg.num_fingertips, 2);
+  EXPECT_EQ(cfg.history_length, 8);
+  EXPECT_FALSE(cfg.calibration_enabled);
+  EXPECT_EQ(cfg.calibration_samples, 100);
+}
+
+// ── InitFT with calibration disabled — immediately calibrated ───────────────
+
+#ifdef HAS_ONNXRUNTIME
+TEST(FingertipFTInferencerInit, CalibrationDisabled_ImmediatelyCalibrated)
+{
+  FingertipFTInferencer inf;
+  FingertipFTInferencer::Config cfg{};
+  cfg.enabled = true;
+  cfg.num_fingertips = 4;
+  cfg.calibration_enabled = false;
+  inf.InitFT(cfg);
+
+  // With calibration disabled, should be immediately calibrated
+  // (even though no models loaded)
+  EXPECT_TRUE(inf.is_calibrated());
+}
+
+TEST(FingertipFTInferencerInit, CalibrationEnabled_NotCalibratedInitially)
+{
+  FingertipFTInferencer inf;
+  FingertipFTInferencer::Config cfg{};
+  cfg.enabled = true;
+  cfg.num_fingertips = 4;
+  cfg.calibration_enabled = true;
+  cfg.calibration_samples = 10;
+  inf.InitFT(cfg);
+
+  // With calibration enabled, should not be calibrated until samples fed
+  EXPECT_FALSE(inf.is_calibrated());
+  EXPECT_EQ(inf.calibration_count(), 0);
+  EXPECT_EQ(inf.calibration_target(), 10);
+}
+#endif
 
 }  // namespace rtc::test

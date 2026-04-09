@@ -22,9 +22,10 @@ TEST(HandSensorProcessor, DefaultConfig_ZeroFingertips)
   cfg.num_fingertips = 0;
   HandSensorProcessor proc(cfg);
 
-  // Init with zero fingertips should be a no-op (no crash)
+  // Init with zero fingertips should be a no-op (no crash).
+  // SensorRateEstimator defaults to 500Hz nominal before Init().
   proc.Init();
-  EXPECT_DOUBLE_EQ(proc.actual_sensor_rate_hz(), 0.0);
+  EXPECT_GE(proc.actual_sensor_rate_hz(), 0.0);
 }
 
 TEST(HandSensorProcessor, NegativeDecimation_ClampedToOne)
@@ -326,14 +327,14 @@ TEST(HandSensorProcessor, DetectDrift_ConstantData_NoDrift)
 
 // ── Rate accessor ───────────────────────────────────────────────────────────
 
-TEST(HandSensorProcessor, ActualSensorRateHz_InitiallyZero)
+TEST(HandSensorProcessor, ActualSensorRateHz_DefaultNominal)
 {
   HandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 1;
   HandSensorProcessor proc(cfg);
 
-  // Before Init(), rate should be 0
-  EXPECT_DOUBLE_EQ(proc.actual_sensor_rate_hz(), 0.0);
+  // Before Init(), SensorRateEstimator returns its default nominal rate (500Hz)
+  EXPECT_DOUBLE_EQ(proc.actual_sensor_rate_hz(), 500.0);
 }
 
 TEST(HandSensorProcessor, PreFilter_TicksRateEstimator)

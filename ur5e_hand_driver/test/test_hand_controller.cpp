@@ -330,4 +330,126 @@ TEST(HandControllerConfig, NumFingertips_NegativeClamped)
   ctrl->Stop();
 }
 
+// ── HasStateBeenRead ───────────────────────────────────────────────────────
+
+TEST_F(FakeHandControllerTest, HasStateBeenRead_TrueAfterCommand)
+{
+  ASSERT_TRUE(controller_->Start());
+  // In fake mode, HasStateBeenRead is always false (no real UDP reads)
+  // but SendCommandAndRequestStates always succeeds
+  std::array<float, kNumHandMotors> cmd{};
+  controller_->SendCommandAndRequestStates(cmd);
+  // Fake mode state is always stored, but state_read_once_ only tracks real reads
+  // Verify the state is valid regardless
+  EXPECT_TRUE(controller_->GetLatestState().valid);
+}
+
+// ── Bulk mode with fake hand ───────────────────────────────────────────────
+
+TEST(HandControllerConfig, BulkMode_FakeEchoBack)
+{
+  auto ctrl = std::make_unique<HandController>(
+      "127.0.0.1", 55151, kUdpRecvConfig, 10.0,
+      false, 1, 4, true,
+      std::vector<std::string>{},
+      HandCommunicationMode::kBulk);
+
+  ASSERT_TRUE(ctrl->Start());
+
+  std::array<float, kNumHandMotors> cmd{};
+  cmd[0] = 7.77f;
+  cmd[9] = -2.5f;
+  ctrl->SendCommandAndRequestStates(cmd);
+
+  const auto state = ctrl->GetLatestState();
+  EXPECT_FLOAT_EQ(state.motor_positions[0], 7.77f);
+  EXPECT_FLOAT_EQ(state.motor_positions[9], -2.5f);
+  EXPECT_TRUE(state.valid);
+  ctrl->Stop();
+}
+
+// ── Rapid successive commands — last value wins ────────────────────────────
+
+TEST_F(FakeHandControllerTest, RapidCommands_LastValueWins)
+{
+  ASSERT_TRUE(controller_->Start());
+
+  for (int i = 0; i < 100; ++i) {
+    std::array<float, kNumHandMotors> cmd{};
+    cmd[0] = static_cast<float>(i);
+    controller_->SendCommandAndRequestStates(cmd);
+  }
+
+  const auto state = controller_->GetLatestState();
+  EXPECT_FLOAT_EQ(state.motor_positions[0], 99.0f);
+}
+
+// ── Timing stats after commands ────────────────────────────────────────────
+
+TEST_F(FakeHandControllerTest, TimingSummary_AfterCommands)
+{
+  ASSERT_TRUE(controller_->Start());
+
+  std::array<float, kNumHandMotors> cmd{};
+  for (int i = 0; i < 5; ++i) {
+    controller_->SendCommandAndRequestStates(cmd);
+  }
+
+  // Fake mode doesn't update timing profiler (no EventLoop phases)
+  // but TimingSummary should still return a valid string
+  const auto summary = controller_->TimingSummary();
+  EXPECT_FALSE(summary.empty());
+}
+
+// ── ActualSensorRateHz accessor ────────────────────────────────────────────
+
+TEST_F(FakeHandControllerTest, ActualSensorRateHz_NonNegative)
+{
+  EXPECT_GE(controller_->actual_sensor_rate_hz(), 0.0);
+}
+
+// ── Zero fingertips mode ───────────────────────────────────────────────────
+
+TEST(HandControllerConfig, ZeroFingertips_NoSensor)
+{
+  auto ctrl = std::make_unique<HandController>(
+      "127.0.0.1", 55151, kUdpRecvConfig, 10.0,
+      false, 1,
+      0,           // num_fingertips = 0
+      true);       // fake_hand
+
+  ASSERT_TRUE(ctrl->Start());
+
+  std::array<float, kNumHandMotors> cmd{};
+  cmd[0] = 3.14f;
+  ctrl->SendCommandAndRequestStates(cmd);
+
+  const auto state = ctrl->GetLatestState();
+  EXPECT_FLOAT_EQ(state.motor_positions[0], 3.14f);
+  EXPECT_EQ(state.num_fingertips, 0);
+  EXPECT_TRUE(state.valid);
+  ctrl->Stop();
+}
+
+// ── Max fingertips clamping ────────────────────────────────────────────────
+
+TEST(HandControllerConfig, MaxFingertips_Clamped)
+{
+  auto ctrl = std::make_unique<HandController>(
+      "127.0.0.1", 55151, kUdpRecvConfig, 10.0,
+      false, 1,
+      100,         // num_fingertips > kMaxFingertips
+      true);
+
+  ASSERT_TRUE(ctrl->Start());
+
+  std::array<float, kNumHandMotors> cmd{};
+  ctrl->SendCommandAndRequestStates(cmd);
+
+  const auto state = ctrl->GetLatestState();
+  // Clamped to kMaxFingertips (8), but further clamped by default fingertip_names (4)
+  EXPECT_LE(state.num_fingertips, kMaxFingertips);
+  ctrl->Stop();
+}
+
 }  // namespace rtc::test

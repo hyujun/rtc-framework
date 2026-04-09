@@ -551,4 +551,108 @@ TEST(HandPacketsLegacy, ExtractFloats_IsExtractMotorFloats)
   EXPECT_EQ(out1, out2);
 }
 
+// ── MakeReadAllMotorsRequest with JointMode ────────────────────────────────
+
+TEST(HandPacketsEncode, MakeReadAllMotorsRequest_JointMode)
+{
+  const auto pkt = MakeReadAllMotorsRequest(JointMode::kJoint);
+  EXPECT_EQ(pkt.id, kDeviceId);
+  EXPECT_EQ(pkt.cmd, static_cast<uint8_t>(Command::kReadAllMotors));
+  EXPECT_EQ(pkt.mode, static_cast<uint8_t>(JointMode::kJoint));
+}
+
+// ── MakeReadAllSensorsRequest with NnMode ──────────────────────────────────
+
+TEST(HandPacketsEncode, MakeReadAllSensorsRequest_NnMode)
+{
+  const auto pkt = MakeReadAllSensorsRequest(SensorMode::kNn);
+  EXPECT_EQ(pkt.id, kDeviceId);
+  EXPECT_EQ(pkt.cmd, static_cast<uint8_t>(Command::kReadAllSensors));
+  EXPECT_EQ(pkt.mode, static_cast<uint8_t>(SensorMode::kNn));
+}
+
+// ── Struct layout static assertions (runtime verification) ─────────────────
+
+TEST(HandPacketsLayout, StructSizes)
+{
+  EXPECT_EQ(sizeof(MotorPacket), kMotorPacketSize);
+  EXPECT_EQ(sizeof(SensorRequestPacket), kSensorRequestSize);
+  EXPECT_EQ(sizeof(SensorResponsePacket), kSensorResponseSize);
+  EXPECT_EQ(sizeof(AllMotorResponsePacket), kAllMotorResponseSize);
+  EXPECT_EQ(sizeof(AllSensorResponsePacket), kAllSensorResponseSize);
+}
+
+TEST(HandPacketsLayout, TriviallyCopyable)
+{
+  EXPECT_TRUE(std::is_trivially_copyable_v<MotorPacket>);
+  EXPECT_TRUE(std::is_trivially_copyable_v<SensorRequestPacket>);
+  EXPECT_TRUE(std::is_trivially_copyable_v<SensorResponsePacket>);
+  EXPECT_TRUE(std::is_trivially_copyable_v<AllMotorResponsePacket>);
+  EXPECT_TRUE(std::is_trivially_copyable_v<AllSensorResponsePacket>);
+}
+
+// ── Command enum raw values ────────────────────────────────────────────────
+
+TEST(HandPacketsEnums, CommandRawValues)
+{
+  EXPECT_EQ(static_cast<uint8_t>(Command::kWritePosition), 0x01);
+  EXPECT_EQ(static_cast<uint8_t>(Command::kSetSensorMode), 0x04);
+  EXPECT_EQ(static_cast<uint8_t>(Command::kReadAllMotors), 0x10);
+  EXPECT_EQ(static_cast<uint8_t>(Command::kReadPosition), 0x11);
+  EXPECT_EQ(static_cast<uint8_t>(Command::kReadVelocity), 0x12);
+  EXPECT_EQ(static_cast<uint8_t>(Command::kReadAllSensors), 0x19);
+}
+
+// ── MakeWritePosition with all same values ─────────────────────────────────
+
+TEST(HandPacketsEncode, MakeWritePosition_AllSameValue)
+{
+  std::array<float, kNumHandMotors> positions{};
+  positions.fill(1.234f);
+
+  const auto pkt = MakeWritePosition(positions);
+  for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+    EXPECT_FLOAT_EQ(Uint32ToFloat(pkt.data[i]), 1.234f);
+  }
+}
+
+// ── ExtractAllSensorValuesRaw with fewer fingertips ────────────────────────
+
+TEST(HandPacketsExtract, ExtractAllSensorValuesRaw_SingleFinger)
+{
+  AllSensorResponsePacket pkt{};
+  pkt.data.fill(0);
+
+  // Fill only finger 0
+  for (int b = 0; b < kBarometerCount; ++b) {
+    pkt.data[static_cast<std::size_t>(b)] = static_cast<int32_t>(b + 1);
+  }
+  for (int t = 0; t < kTofCount; ++t) {
+    pkt.data[static_cast<std::size_t>(kBarometerCount + kReservedCount + t)] =
+        static_cast<int32_t>((t + 1) * 10);
+  }
+
+  std::array<int32_t, kSensorValuesPerFingertip> out{};
+  ExtractAllSensorValuesRaw(pkt, out.data(), 1);  // only 1 finger
+
+  for (int b = 0; b < kBarometerCount; ++b) {
+    EXPECT_EQ(out[static_cast<std::size_t>(b)], b + 1);
+  }
+  for (int t = 0; t < kTofCount; ++t) {
+    EXPECT_EQ(out[static_cast<std::size_t>(kBarometerCount + t)], (t + 1) * 10);
+  }
+}
+
+// ── Zero fingertips extraction ─────────────────────────────────────────────
+
+TEST(HandPacketsExtract, ExtractAllSensorValuesRaw_ZeroFingertips)
+{
+  AllSensorResponsePacket pkt{};
+  pkt.data.fill(999);
+  int32_t out = -1;
+  // Should be a no-op (no crash, out unchanged)
+  ExtractAllSensorValuesRaw(pkt, &out, 0);
+  EXPECT_EQ(out, -1);
+}
+
 }  // namespace rtc::hand_packets::test

@@ -359,4 +359,85 @@ TEST(HandUdpCodecRoundtrip, WritePosition_EncodeDecodeRoundtrip)
   }
 }
 
+// ── Bulk sensor decode: too-short buffer ────────────────────────────────────
+
+TEST(HandUdpCodecDecode, DecodeAllSensorResponseRaw_TooShort)
+{
+  std::array<uint8_t, 258> buf{};
+  uint8_t cmd, mode;
+  std::array<int32_t, kDefaultNumFingertips * kSensorValuesPerFingertip> out{};
+  EXPECT_FALSE(DecodeAllSensorResponseRaw(buf.data(), buf.size(),
+                                          cmd, mode,
+                                          out.data(), kDefaultNumFingertips));
+}
+
+// ── Sensor mode encode-decode roundtrip ─────────────────────────────────────
+
+TEST(HandUdpCodecRoundtrip, SensorMode_EncodeVerify)
+{
+  std::array<uint8_t, kSensorRequestBytes> buf{};
+  EncodeSetSensorMode(hand_packets::SensorMode::kNn, buf);
+
+  EXPECT_EQ(buf[0], hand_packets::kDeviceId);
+  EXPECT_EQ(buf[1], static_cast<uint8_t>(hand_packets::Command::kSetSensorMode));
+  EXPECT_EQ(buf[2], static_cast<uint8_t>(hand_packets::SensorMode::kNn));
+}
+
+// ── Bulk motor encode with JointMode::kJoint ────────────────────────────────
+
+TEST(HandUdpCodecEncode, EncodeReadAllMotorsRequest_JointMode)
+{
+  std::array<uint8_t, kAllMotorRequestBytes> buf{};
+  EncodeReadAllMotorsRequest(buf, hand_packets::JointMode::kJoint);
+
+  EXPECT_EQ(buf[2], static_cast<uint8_t>(hand_packets::JointMode::kJoint));
+}
+
+// ── Bulk sensor encode with NnMode ──────────────────────────────────────────
+
+TEST(HandUdpCodecEncode, EncodeReadAllSensorsRequest_NnMode)
+{
+  std::array<uint8_t, kAllSensorRequestBytes> buf{};
+  EncodeReadAllSensorsRequest(buf, hand_packets::SensorMode::kNn);
+
+  EXPECT_EQ(buf[2], static_cast<uint8_t>(hand_packets::SensorMode::kNn));
+}
+
+// ── DecodeMotorResponse with wrong cmd: still decodes bytes ─────────────────
+
+TEST(HandUdpCodecDecode, DecodeMotorResponse_AnyCmd)
+{
+  // Build packet with kReadVelocity cmd
+  hand_packets::MotorPacket src{};
+  src.id = hand_packets::kDeviceId;
+  src.cmd = static_cast<uint8_t>(hand_packets::Command::kReadVelocity);
+  src.mode = static_cast<uint8_t>(hand_packets::JointMode::kMotor);
+  src.data[0] = hand_packets::FloatToUint32(99.9f);
+
+  std::array<uint8_t, hand_packets::kMotorPacketSize> buf{};
+  std::memcpy(buf.data(), &src, hand_packets::kMotorPacketSize);
+
+  uint8_t cmd_out{}, mode_out{};
+  std::array<float, hand_packets::kMotorDataCount> data_out{};
+  ASSERT_TRUE(DecodeMotorResponse(buf.data(), buf.size(),
+                                  cmd_out, mode_out, data_out));
+  EXPECT_EQ(cmd_out, static_cast<uint8_t>(hand_packets::Command::kReadVelocity));
+  EXPECT_FLOAT_EQ(data_out[0], 99.9f);
+}
+
+// ── Protocol constant aliases ───────────────────────────────────────────────
+
+TEST(HandUdpCodecConstants, Aliases)
+{
+  EXPECT_EQ(kMotorPacketBytes, 43u);
+  EXPECT_EQ(kSensorRequestBytes, 3u);
+  EXPECT_EQ(kSensorResponseBytes, 67u);
+  EXPECT_EQ(kAllMotorRequestBytes, 3u);
+  EXPECT_EQ(kAllMotorResponseBytes, 123u);
+  EXPECT_EQ(kAllSensorRequestBytes, 3u);
+  EXPECT_EQ(kAllSensorResponseBytes, 259u);
+  EXPECT_EQ(kMaxPacketBytes, 259u);
+  EXPECT_EQ(kPacketBytes, kMotorPacketBytes);  // legacy alias
+}
+
 }  // namespace rtc::hand_udp_codec::test
