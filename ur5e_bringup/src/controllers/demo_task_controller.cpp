@@ -54,6 +54,7 @@ void DemoTaskController::InitArmModel(
   Jpinv_ = Eigen::MatrixXd::Zero(nv, 3);
   N_ = Eigen::MatrixXd::Identity(nv, nv);
   dq_ = Eigen::VectorXd::Zero(nv);
+  desired_q_ = Eigen::VectorXd::Zero(nv);
   traj_dq_ = Eigen::VectorXd::Zero(nv);
   null_err_ = Eigen::VectorXd::Zero(nv);
   null_dq_ = Eigen::VectorXd::Zero(nv);
@@ -428,6 +429,10 @@ void DemoTaskController::ComputeControl(
       }
 
       trajectory_time_ = 0.0;
+      // Initialize desired_q_ from current actual joint positions
+      for (int i = 0; i < arm_handle_->nv(); ++i) {
+        desired_q_[i] = dev0.positions[static_cast<std::size_t>(i)];
+      }
       new_target_.store(false, std::memory_order_relaxed);
     }
   }
@@ -738,11 +743,11 @@ ControllerOutput DemoTaskController::WriteOutput(
   }
 
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.commands[i] = dev0.positions[i] + out0.target_velocities[i] * dt;
+    desired_q_[static_cast<Eigen::Index>(i)] += out0.target_velocities[i] * dt;
+    out0.commands[i] = desired_q_[static_cast<Eigen::Index>(i)];
     // Pure trajectory feedforward velocity (without Kp error / null-space)
     out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
-    // Trajectory-implied joint position = current + feedforward * dt
-    out0.trajectory_positions[i] = dev0.positions[i] + out0.trajectory_velocities[i] * dt;
+    out0.trajectory_positions[i] = desired_q_[static_cast<Eigen::Index>(i)];
   }
   for (std::size_t i = 0; i < 3; ++i) {
     out0.target_positions[i] = traj_state_.pose.translation()[static_cast<Eigen::Index>(i)];
@@ -914,6 +919,13 @@ void DemoTaskController::InitializeHoldPosition(
       std::span<const double>(hand_q_.data(), hand_nq));
     UpdateVirtualTcp(tcp_pose);
     if (vtcp_valid_) { hold_pose = vtcp_pose_; }
+  }
+
+  // Initialize desired_q_ from current actual joint positions
+  if (arm_handle_) {
+    for (int i = 0; i < arm_handle_->nv(); ++i) {
+      desired_q_[i] = dev0.positions[static_cast<std::size_t>(i)];
+    }
   }
 
   std::lock_guard lock(target_mutex_);
