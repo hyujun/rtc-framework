@@ -134,9 +134,12 @@ TEST_F(HandNodeTest, FlexExtendFinger_CompletesFlexExtendCycle)
   PublishHandState({0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
   Spin();
 
+  // Supply current_gains with high hand_max_traj_velocity (index 3 in
+  // DemoJoint layout) so the velocity constraint doesn't dominate duration.
   auto tree = CreateTree(
       R"(<FlexExtendFinger finger_name="thumb"
-                           hand_trajectory_speed="100.0"/>)");
+                           hand_trajectory_speed="100.0"
+                           current_gains="1.0;1.0;1.0;100.0;1.0;1.0;1.0"/>)");
 
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 
