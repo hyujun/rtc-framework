@@ -164,7 +164,8 @@ pos_error = x_traj(t) - FK(q)
 J^# = J^T (J J^T + lambda^2 I)^{-1}
 N   = I - J^# J
 dq  = kp * J^# * pos_error + traj_velocity + null_kp * N * (q_null - q)
-q_cmd = q + clamp(dq, +/-v_max) * dt
+q_des += clamp(dq, +/-v_max) * dt          (trajectory 갱신 시 q_des = q_actual로 초기화)
+q_cmd  = q_des
 ```
 
 **타겟 입력 형식:**

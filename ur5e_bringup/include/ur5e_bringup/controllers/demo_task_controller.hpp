@@ -48,7 +48,8 @@ namespace trajectory = rtc::trajectory;
 ///   J^#          = J^T (J J^T + λ²I)^{−1}         [damped pseudoinverse]
 ///   N            = I − J^# J                        [null-space projector]
 ///   dq           = kp · J^# · pos_error + null_kp · N · (q_null − q)
-///   q_cmd        = q + clamp(dq, ±v_max) * dt
+///   q_des       += clamp(dq, ±v_max) * dt        [q_des = q_actual at trajectory init]
+///   q_cmd        = q_des
 /// @endcode
 ///
 /// ### Hand control law (same as DemoJointController)
@@ -217,6 +218,7 @@ private:
   Eigen::MatrixXd Jpinv_;
   Eigen::MatrixXd N_;
   Eigen::VectorXd dq_;
+  Eigen::VectorXd desired_q_;     ///< nv: integrated desired joint position
   Eigen::VectorXd traj_dq_;       // feedforward-only trajectory velocity (for logging)
   Eigen::VectorXd null_err_;
   Eigen::VectorXd null_dq_;
