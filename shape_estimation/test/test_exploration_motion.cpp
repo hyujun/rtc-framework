@@ -377,3 +377,161 @@ TEST_F(ExplorationMotionTest, MaxTotalTimeTriggersFailure) {
   }
   EXPECT_EQ(gen.CurrentPhase(), se::ExplorePhase::kFailed);
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ExplorePhaseToString 테스트
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST(ExplorePhaseToStringTest, AllPhasesHaveStrings) {
+  EXPECT_EQ(se::ExplorePhaseToString(se::ExplorePhase::kIdle), "IDLE");
+  EXPECT_EQ(se::ExplorePhaseToString(se::ExplorePhase::kApproach), "APPROACH");
+  EXPECT_EQ(se::ExplorePhaseToString(se::ExplorePhase::kServo), "SERVO");
+  EXPECT_EQ(se::ExplorePhaseToString(se::ExplorePhase::kSweepX), "SWEEP_X");
+  EXPECT_EQ(se::ExplorePhaseToString(se::ExplorePhase::kSweepY), "SWEEP_Y");
+  EXPECT_EQ(se::ExplorePhaseToString(se::ExplorePhase::kTilt), "TILT");
+  EXPECT_EQ(se::ExplorePhaseToString(se::ExplorePhase::kEvaluate), "EVALUATE");
+  EXPECT_EQ(se::ExplorePhaseToString(se::ExplorePhase::kSucceeded), "SUCCEEDED");
+  EXPECT_EQ(se::ExplorePhaseToString(se::ExplorePhase::kFailed), "FAILED");
+  EXPECT_EQ(se::ExplorePhaseToString(se::ExplorePhase::kAborted), "ABORTED");
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Stats / Config getter/setter 테스트
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_F(ExplorationMotionTest, StatsTrackProgress) {
+  se::ExplorationMotionGenerator gen(config_);
+  gen.Start(home_pose_, object_pos_);
+
+  auto snap = MakeSnapshot(0.030);
+  auto est = MakeEstimate(0.0, 0);
+
+  // 초기 stats
+  auto stats = gen.Stats();
+  EXPECT_DOUBLE_EQ(stats.elapsed_sec, 0.0);
+  EXPECT_EQ(stats.total_snapshots, 0U);
+  EXPECT_EQ(stats.goals_sent, 0U);
+
+  // 3 step 후 stats 업데이트 확인
+  for (int i = 0; i < 3; ++i) {
+    (void)gen.Step(snap, est, home_pose_, 0.1);
+  }
+  stats = gen.Stats();
+  EXPECT_NEAR(stats.elapsed_sec, 0.3, 0.01);
+  EXPECT_EQ(stats.total_snapshots, 3U);
+  EXPECT_GT(stats.goals_sent, 0U);
+}
+
+TEST_F(ExplorationMotionTest, SetConfigAndGetConfig) {
+  se::ExplorationMotionGenerator gen(config_);
+
+  // GetConfig 확인
+  EXPECT_DOUBLE_EQ(gen.GetConfig().approach_step_size, config_.approach_step_size);
+
+  // SetConfig으로 변경
+  se::ExplorationConfig new_config;
+  new_config.approach_step_size = 0.001;
+  new_config.max_step_size = 0.002;
+  gen.SetConfig(new_config);
+
+  EXPECT_DOUBLE_EQ(gen.GetConfig().approach_step_size, 0.001);
+  EXPECT_DOUBLE_EQ(gen.GetConfig().max_step_size, 0.002);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Servo 타임아웃 테스트
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_F(ExplorationMotionTest, ServoTimeoutTransitionsToSweepX) {
+  config_.servo_timeout_sec = 0.3;
+  config_.servo_converge_tol = 0.001;  // 매우 엄격한 수렴 조건
+  se::ExplorationMotionGenerator gen(config_);
+  gen.Start(home_pose_, object_pos_);
+
+  auto est = MakeEstimate(0.0, 0);
+
+  // Approach → Servo
+  auto snap = MakeSnapshot(0.080);  // 수렴 조건 충족하지 않는 거리
+  (void)gen.Step(snap, est, home_pose_, 0.1);
+  ASSERT_EQ(gen.CurrentPhase(), se::ExplorePhase::kServo);
+
+  // Servo 타임아웃까지 반복 (수렴 안 됨)
+  for (int i = 0; i < 5; ++i) {
+    (void)gen.Step(snap, est, home_pose_, 0.1);
+  }
+  // 타임아웃 후 SweepX로 전이 (Servo 타임아웃은 fail이 아닌 sweep 진행)
+  EXPECT_EQ(gen.CurrentPhase(), se::ExplorePhase::kSweepX);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Evaluate → 재 sweep 사이클 테스트
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_F(ExplorationMotionTest, EvaluateReSweepsOnLowConfidence) {
+  config_.confidence_threshold = 0.9;
+  config_.min_points_for_success = 10;
+  config_.tilt_steps = 1;
+  config_.sweep_width = 0.003;
+  config_.sweep_step_size = 0.003;
+  config_.max_sweep_cycles = 2;
+  se::ExplorationMotionGenerator gen(config_);
+  gen.Start(home_pose_, object_pos_);
+
+  auto snap = MakeSnapshot(0.030);
+  auto est = MakeEstimate(0.3, 5);  // 낮은 confidence
+
+  // Evaluate까지 진행
+  bool reached_evaluate = false;
+  for (int i = 0; i < 50; ++i) {
+    auto result = gen.Step(snap, est, home_pose_, 0.1);
+    if (result.phase == se::ExplorePhase::kEvaluate) {
+      reached_evaluate = true;
+    }
+    // Evaluate 통과 후 SweepX로 재진입하는지 확인
+    if (reached_evaluate && result.phase == se::ExplorePhase::kSweepX) {
+      // 성공: 재 sweep 사이클 시작됨
+      EXPECT_EQ(gen.Stats().sweep_cycles_completed, 1U);
+      return;
+    }
+  }
+  // Evaluate에 도달했어야 함
+  EXPECT_TRUE(reached_evaluate);
+}
+
+TEST_F(ExplorationMotionTest, EvaluateFailsOnMaxSweepCycles) {
+  config_.confidence_threshold = 0.99;
+  config_.min_points_for_success = 100;
+  config_.tilt_steps = 1;
+  config_.sweep_width = 0.003;
+  config_.sweep_step_size = 0.003;
+  config_.max_sweep_cycles = 1;
+  config_.max_total_time_sec = 60.0;  // 전체 타임아웃은 넉넉하게
+  se::ExplorationMotionGenerator gen(config_);
+  gen.Start(home_pose_, object_pos_);
+
+  auto snap = MakeSnapshot(0.030);
+  auto est = MakeEstimate(0.3, 5);  // 항상 낮은 confidence
+
+  // max_sweep_cycles 도달까지 반복
+  for (int i = 0; i < 200; ++i) {
+    (void)gen.Step(snap, est, home_pose_, 0.01);
+    if (gen.CurrentPhase() == se::ExplorePhase::kFailed) {
+      break;
+    }
+  }
+  EXPECT_EQ(gen.CurrentPhase(), se::ExplorePhase::kFailed);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Idle 상태에서 Step 호출 시 동작 테스트
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_F(ExplorationMotionTest, StepInIdleReturnsIdle) {
+  se::ExplorationMotionGenerator gen(config_);
+  // Start 호출 없이 Step
+  auto snap = MakeSnapshot(0.05);
+  auto est = MakeEstimate(0.0, 0);
+  auto result = gen.Step(snap, est, home_pose_, 0.1);
+  EXPECT_EQ(result.phase, se::ExplorePhase::kIdle);
+  EXPECT_FALSE(result.goal.valid);
+}

@@ -542,6 +542,136 @@ TEST(ProtuberanceDetector, MultipleProtuberances) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// UpdateConfig 테스트
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST(ProtuberanceDetector, UpdateConfigChangesThreshold) {
+  const double radius = 0.040;
+  auto points = MakeCylinderSurfacePoints(radius, 20);
+  auto est = MakeCylinderEstimate(radius);
+
+  // 5mm 돌출 포인트 추가 (기본 residual_threshold=-0.005에서 경계)
+  for (int i = 0; i < 5; ++i) {
+    PointWithNormal p;
+    p.position = Eigen::Vector3d(
+        radius + 0.006, 0.002 * static_cast<double>(i), 0.0);
+    p.normal = Eigen::Vector3d(1, 0, 0);
+    points.push_back(p);
+  }
+
+  ProtuberanceConfig strict_cfg;
+  strict_cfg.residual_threshold = -0.003;  // 3mm 이상이면 돌출로 판정
+  ProtuberanceDetector det(strict_cfg);
+
+  auto result1 = det.Detect(est, points, {});
+  EXPECT_TRUE(result1.detected);
+
+  // threshold를 크게 변경하여 더 이상 돌출로 판정 안 되게 함
+  ProtuberanceConfig lenient_cfg;
+  lenient_cfg.residual_threshold = -0.010;  // 10mm 이상만 돌출
+  det.UpdateConfig(lenient_cfg);
+
+  auto result2 = det.Detect(est, points, {});
+  EXPECT_FALSE(result2.detected);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Box primitive 잔차 / 법선 테스트
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST(ProtuberanceDetector, BoxResidualCorrectSign) {
+  // 박스 표면 포인트 생성 (z=0 평면 근처)
+  std::vector<PointWithNormal> points;
+  for (int i = 0; i < 20; ++i) {
+    PointWithNormal p;
+    const double x = -0.04 + 0.08 * static_cast<double>(i) / 20.0;
+    const double y = -0.03 + 0.06 * static_cast<double>((i * 3) % 20) / 20.0;
+    p.position = Eigen::Vector3d(x, y, 0.0);
+    p.normal = Eigen::Vector3d(0, 0, 1);
+    p.timestamp_ns = static_cast<uint64_t>(i) * 10'000'000ULL;
+    points.push_back(p);
+  }
+
+  ShapeEstimate est;
+  est.type = ShapeType::kBox;
+  est.center = Eigen::Vector3d::Zero();
+  est.dimensions = Eigen::Vector3d(0.10, 0.08, 0.06);
+  est.axis = Eigen::Vector3d::UnitZ();
+  est.confidence = 0.9;
+  est.num_points_used = 20;
+
+  // 박스 표면 밖으로 15mm 돌출된 포인트 추가
+  for (int i = 0; i < 5; ++i) {
+    PointWithNormal p;
+    p.position = Eigen::Vector3d(
+        0.002 * static_cast<double>(i), 0.0, 0.030 + 0.015);  // z face + 15mm
+    p.normal = Eigen::Vector3d(0, 0, 1);
+    points.push_back(p);
+  }
+
+  ProtuberanceConfig cfg;
+  cfg.min_cluster_points = 3;
+  ProtuberanceDetector det(cfg);
+  auto result = det.Detect(est, points, {});
+
+  EXPECT_TRUE(result.detected);
+  ASSERT_FALSE(result.protuberances.empty());
+  EXPECT_GT(result.protuberances[0].protrusion_depth, 0.005);
+}
+
+TEST(ProtuberanceDetector, NoProtuberanceOnCleanBox) {
+  // 박스 내부 포인트만
+  std::vector<PointWithNormal> points;
+  for (int i = 0; i < 20; ++i) {
+    PointWithNormal p;
+    const double x = -0.03 + 0.06 * static_cast<double>(i) / 20.0;
+    const double y = -0.02 + 0.04 * static_cast<double>((i * 3) % 20) / 20.0;
+    p.position = Eigen::Vector3d(x, y, 0.0);
+    p.normal = Eigen::Vector3d(0, 0, 1);
+    points.push_back(p);
+  }
+
+  ShapeEstimate est;
+  est.type = ShapeType::kBox;
+  est.center = Eigen::Vector3d::Zero();
+  est.dimensions = Eigen::Vector3d(0.10, 0.08, 0.06);
+  est.axis = Eigen::Vector3d::UnitZ();
+  est.confidence = 0.9;
+  est.num_points_used = 20;
+
+  ProtuberanceDetector det;
+  auto result = det.Detect(est, points, {});
+  EXPECT_FALSE(result.detected);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Edge case: Unknown primitive / 빈 포인트
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST(ProtuberanceDetector, UnknownPrimitiveReturnsEmpty) {
+  ShapeEstimate est;
+  est.type = ShapeType::kUnknown;
+
+  auto points = MakeCylinderSurfacePoints(0.04, 20);
+  ProtuberanceDetector det;
+  auto result = det.Detect(est, points, {});
+
+  EXPECT_FALSE(result.detected);
+  EXPECT_TRUE(result.protuberances.empty());
+}
+
+TEST(ProtuberanceDetector, EmptyPointsReturnsEmpty) {
+  auto est = MakeCylinderEstimate(0.04);
+  std::vector<PointWithNormal> points;
+
+  ProtuberanceDetector det;
+  auto result = det.Detect(est, points, {});
+
+  EXPECT_FALSE(result.detected);
+  EXPECT_TRUE(result.protuberances.empty());
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // SnapshotHistory 테스트
 // ═════════════════════════════════════════════════════════════════════════════
 

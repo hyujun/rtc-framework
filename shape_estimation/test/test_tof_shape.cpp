@@ -370,3 +370,131 @@ TEST(ShapeTypeTest, ToStringConversion) {
   EXPECT_EQ(se::ShapeTypeToString(se::ShapeType::kPlane), "PLANE");
   EXPECT_EQ(se::ShapeTypeToString(se::ShapeType::kBox), "BOX");
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PrimitiveFitter::FitBox 테스트
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_F(PrimitiveFitterTest, FitsBoxFromCleanPoints) {
+  // 박스 표면 포인트 생성: 0.1 x 0.08 x 0.06 박스, center=(0.3, 0, 0.3)
+  const Eigen::Vector3d center(0.3, 0.0, 0.3);
+  const Eigen::Vector3d half_dims(0.05, 0.04, 0.03);
+  std::vector<se::PointWithNormal> points;
+
+  // 각 면에 포인트 배치
+  auto add_face = [&](int axis, double sign) {
+    Eigen::Vector3d normal = Eigen::Vector3d::Zero();
+    normal(axis) = sign;
+    const int u_axis = (axis + 1) % 3;
+    const int v_axis = (axis + 2) % 3;
+    for (int i = 0; i < 4; ++i) {
+      for (int j = 0; j < 4; ++j) {
+        se::PointWithNormal p;
+        p.position = center;
+        p.position(axis) += sign * half_dims(axis);
+        p.position(u_axis) += half_dims(u_axis) * (static_cast<double>(i) / 3.0 - 0.5) * 2.0;
+        p.position(v_axis) += half_dims(v_axis) * (static_cast<double>(j) / 3.0 - 0.5) * 2.0;
+        p.normal = normal;
+        points.push_back(p);
+      }
+    }
+  };
+
+  // 6면 모두
+  for (int axis = 0; axis < 3; ++axis) {
+    add_face(axis, 1.0);
+    add_face(axis, -1.0);
+  }
+
+  auto result = fitter_.FitBox(points);
+  EXPECT_EQ(result.type, se::ShapeType::kBox);
+  EXPECT_GT(result.confidence, 0.5);
+  EXPECT_NEAR((result.center - center).norm(), 0.0, 0.01);
+  // dimensions의 정렬 순서는 PCA 축 순에 따라 다를 수 있으므로 정렬 후 비교
+  Eigen::Vector3d sorted_dims = result.dimensions;
+  Eigen::Vector3d expected_dims = half_dims * 2.0;
+  std::array<double, 3> sd{sorted_dims(0), sorted_dims(1), sorted_dims(2)};
+  std::array<double, 3> ed{expected_dims(0), expected_dims(1), expected_dims(2)};
+  std::sort(sd.begin(), sd.end());
+  std::sort(ed.begin(), ed.end());
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_NEAR(sd[static_cast<size_t>(i)], ed[static_cast<size_t>(i)], 0.01);
+  }
+}
+
+TEST_F(PrimitiveFitterTest, FitBoxInsufficientPointsReturnsUnknown) {
+  std::vector<se::PointWithNormal> points(3);
+  for (int i = 0; i < 3; ++i) {
+    points[static_cast<size_t>(i)].position = Eigen::Vector3d(
+        static_cast<double>(i) * 0.01, 0, 0);
+  }
+
+  auto result = fitter_.FitBox(points);
+  EXPECT_EQ(result.type, se::ShapeType::kUnknown);
+  EXPECT_DOUBLE_EQ(result.confidence, 0.0);
+}
+
+TEST_F(PrimitiveFitterTest, FitBestPrimitiveWithEmptyPoints) {
+  std::vector<se::PointWithNormal> points;
+  auto result = fitter_.FitBestPrimitive(points);
+  EXPECT_EQ(result.type, se::ShapeType::kUnknown);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FastShapeClassifier: Cylinder 분류 테스트
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_F(FastShapeClassifierTest, ClassifiesCylinder) {
+  // Cylinder 분류 조건: 전체 곡률이 비균일(std > eps_uniform)하지만
+  // index/middle 곡률이 유사하고 flat이 아닌 경우
+  // thumb은 낮은 곡률 → 전체 분산을 높여 Sphere 분기를 회피
+  const double k_cyl = 20.0;
+  std::array<double, se::kNumFingers> curvatures{1.0, k_cyl, k_cyl + 0.5};
+  std::array<bool, se::kNumFingers> valid{true, true, true};
+  auto readings = MakeValidReadings(0.05);
+
+  auto result = classifier_.Classify(curvatures, valid, readings);
+  EXPECT_EQ(result.type, se::ShapeType::kCylinder);
+  EXPECT_GT(result.confidence, 0.0);
+  EXPECT_NEAR(result.radius, 1.0 / ((k_cyl + k_cyl + 0.5) / 2.0), 0.01);
+}
+
+TEST_F(FastShapeClassifierTest, NonUniformCurvatureReturnsUnknown) {
+  // 곡률이 크지만 분산이 크면 분류 불가 → 마지막 else
+  std::array<double, se::kNumFingers> curvatures{10.0, -5.0, 20.0};
+  std::array<bool, se::kNumFingers> valid{true, true, true};
+  auto readings = MakeValidReadings(0.05);
+
+  auto result = classifier_.Classify(curvatures, valid, readings);
+  // kappa_avg ≈ 8.33, kappa_std 큼, index/middle 곡률 차이도 큼
+  EXPECT_EQ(result.type, se::ShapeType::kUnknown);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Default constructor 테스트
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST(DefaultConstructorTest, PrimitiveFitterDefaultConfig) {
+  se::PrimitiveFitter fitter;
+  // 기본 config로 구 피팅 가능
+  std::vector<se::PointWithNormal> points;
+  for (int i = 0; i < 10; ++i) {
+    const double theta = 2.0 * M_PI * static_cast<double>(i) / 10.0;
+    se::PointWithNormal p;
+    p.position = Eigen::Vector3d(0.05 * std::cos(theta), 0.05 * std::sin(theta), 0.0);
+    p.normal = Eigen::Vector3d(std::cos(theta), std::sin(theta), 0.0);
+    points.push_back(p);
+  }
+  auto result = fitter.FitSphere(points);
+  EXPECT_NE(result.type, se::ShapeType::kUnknown);
+}
+
+TEST(DefaultConstructorTest, FastShapeClassifierDefaultConfig) {
+  se::FastShapeClassifier classifier;
+  std::array<double, se::kNumFingers> curvatures{0.1, 0.2, -0.1};
+  std::array<bool, se::kNumFingers> valid{true, true, true};
+  std::array<se::ToFReading, se::kTotalSensors> readings{};
+  for (auto& r : readings) { r.valid = true; r.distance_m = 0.05; }
+  auto result = classifier.Classify(curvatures, valid, readings);
+  EXPECT_EQ(result.type, se::ShapeType::kPlane);
+}
