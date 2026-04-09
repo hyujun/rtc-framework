@@ -79,7 +79,8 @@
                max_traj_vel="0.1"
                pos_tol="0.002"
                ori_tol="0.05"
-               timeout_s="8.0"/>
+               timeout_s="8.0"
+               current_gains="{current_gains}"/>
 
       <!-- ======================================================== -->
       <!-- Phase 6: Force-based grasp                                -->
@@ -113,7 +114,8 @@
                timeout_s="6.0"
                verify_force_N="0.8"
                verify_min_tips="2"
-               lift_pose="{lift_pose}"/>
+               lift_pose="{lift_pose}"
+               current_gains="{current_gains}"/>
 
       <!-- ======================================================== -->
       <!-- Phase 8: Transport to goal position                       -->
@@ -136,7 +138,8 @@
       <ComputeOffsetPose input_pose="{place_pose}"
                          offset_z="-0.05"
                          output_pose="{lower_pose}"/>
-      <SetGains trajectory_speed="0.05"/>
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.05"/>
       <MoveToPose target="{lower_pose}"
                   position_tolerance="0.003"
                   timeout_s="6.0"/>
@@ -151,7 +154,11 @@
                retreat_z="0.08"
                retreat_speed="0.1"
                timeout_s="6.0"
-               retreat_pose="{retreat_pose}"/>
+               retreat_pose="{retreat_pose}"
+               current_gains="{current_gains}"/>
+
+      <!-- Restore original controller gains -->
+      <SetGains current_gains="{current_gains}"/>
 
     </Sequence>
   </BehaviorTree>
@@ -235,7 +242,8 @@
                max_traj_vel="0.1"
                pos_tol="0.002"
                ori_tol="0.05"
-               timeout_s="8.0"/>
+               timeout_s="8.0"
+               current_gains="{current_gains}"/>
 
       <!-- ======================================================== -->
       <!-- Phase 6: Force-PI adaptive grasp                          -->
@@ -246,7 +254,8 @@
       <!-- ======================================================== -->
       <SubTree ID="ForcePIGrasp"
                target_force_N="2.0"
-               grasp_timeout_ms="10000"/>
+               grasp_timeout_ms="10000"
+               current_gains="{current_gains}"/>
 
       <!-- ======================================================== -->
       <!-- Phase 7: Lift and verify holding                          -->
@@ -289,7 +298,8 @@
       <ComputeOffsetPose input_pose="{place_pose}"
                          offset_z="-0.05"
                          output_pose="{lower_pose}"/>
-      <SetGains trajectory_speed="0.05"/>
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.05"/>
       <MoveToPose target="{lower_pose}"
                   position_tolerance="0.003"
                   timeout_s="6.0"/>
@@ -301,17 +311,22 @@
       <!--   upward to clear the workspace.                          -->
       <!-- ======================================================== -->
       <SubTree ID="ForcePIRelease"
-               release_timeout_ms="5000"/>
+               release_timeout_ms="5000"
+               current_gains="{current_gains}"/>
 
       <WaitDuration duration_s="0.3"/>
 
       <ComputeOffsetPose input_pose="{place_pose}"
                          offset_z="0.08"
                          output_pose="{retreat_pose}"/>
-      <SetGains trajectory_speed="0.1"/>
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.1"/>
       <MoveToPose target="{retreat_pose}"
                   position_tolerance="0.005"
                   timeout_s="6.0"/>
+
+      <!-- Restore original controller gains -->
+      <SetGains current_gains="{current_gains}"/>
 
     </Sequence>
   </BehaviorTree>

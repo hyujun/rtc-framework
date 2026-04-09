@@ -11,6 +11,14 @@
     <Sequence name="main">
 
       <!-- ======================================================== -->
+      <!-- Phase 0: Switch controller and load current gains         -->
+      <!--   Store baseline gains for restoration at end of task.   -->
+      <!-- ======================================================== -->
+      <SwitchController controller_name="demo_task_controller"
+                        timeout_s="3.0"
+                        current_gains="{current_gains}"/>
+
+      <!-- ======================================================== -->
       <!-- Phase 1: Detect towel edge via vision                     -->
       <!-- ======================================================== -->
       <SubTree ID="DetectObject"
@@ -43,7 +51,8 @@
                max_traj_vel="0.08"
                pos_tol="0.002"
                ori_tol="0.05"
-               timeout_s="8.0"/>
+               timeout_s="8.0"
+               current_gains="{current_gains}"/>
 
       <!-- Pinch grasp — low force for thin fabric -->
       <!-- pinch_motors 사용하므로 ForceGrasp SubTree 대신 인라인 -->
@@ -79,13 +88,15 @@
                timeout_s="8.0"
                verify_force_N="0.2"
                verify_min_tips="1"
-               lift_pose="{lift_pose}"/>
+               lift_pose="{lift_pose}"
+               current_gains="{current_gains}"/>
 
       <!-- ======================================================== -->
       <!-- Phase 5: Sweep to unfold                                  -->
       <!-- Switch to compliant gains for fabric interaction          -->
       <!-- ======================================================== -->
-      <SetGains kp_translation="5.0,5.0,5.0"
+      <SetGains current_gains="{current_gains}"
+                kp_translation="5.0,5.0,5.0"
                 kp_rotation="3.0,3.0,3.0"
                 trajectory_speed="0.08"
                 max_traj_velocity="0.2"/>
@@ -105,7 +116,8 @@
       <!-- ======================================================== -->
       <!-- Phase 6: Lower and release towel edge                     -->
       <!-- ======================================================== -->
-      <SetGains kp_translation="15.0,15.0,15.0"
+      <SetGains current_gains="{current_gains}"
+                kp_translation="15.0,15.0,15.0"
                 kp_rotation="5.0,5.0,5.0"
                 trajectory_speed="0.05"/>
 
@@ -125,7 +137,13 @@
                retreat_z="0.10"
                retreat_speed="0.1"
                timeout_s="6.0"
-               retreat_pose="{retreat_pose}"/>
+               retreat_pose="{retreat_pose}"
+               current_gains="{current_gains}"/>
+
+      <!-- ======================================================== -->
+      <!-- Cleanup: Restore original controller gains                -->
+      <!-- ======================================================== -->
+      <SetGains current_gains="{current_gains}"/>
 
     </Sequence>
   </BehaviorTree>
