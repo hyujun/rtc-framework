@@ -42,7 +42,8 @@
   <!-- ================================================================== -->
   <BehaviorTree ID="SlowDescend">
     <Sequence>
-      <SetGains trajectory_speed="{traj_speed}"
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="{traj_speed}"
                 max_traj_velocity="{max_traj_vel}"/>
       <MoveToPose target="{target_pose}"
                   position_tolerance="{pos_tol}"
@@ -87,7 +88,8 @@
   <!-- ================================================================== -->
   <BehaviorTree ID="LiftAndVerify">
     <Sequence>
-      <SetGains trajectory_speed="{traj_speed}"
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="{traj_speed}"
                 max_traj_velocity="{max_traj_vel}"/>
       <ComputeOffsetPose input_pose="{base_pose}"
                          offset_z="{offset_z}"
@@ -108,7 +110,8 @@
   <BehaviorTree ID="ForcePIGrasp">
     <Sequence>
       <!-- Send grasp command via gains -->
-      <SetGains grasp_command="1"
+      <SetGains current_gains="{current_gains}"
+                grasp_command="1"
                 grasp_target_force="{target_force_N}"/>
 
       <!-- Wait for Holding phase (force converged) -->
@@ -133,7 +136,8 @@
   <!-- ================================================================== -->
   <BehaviorTree ID="ForcePIRelease">
     <Sequence>
-      <SetGains grasp_command="2"/>
+      <SetGains current_gains="{current_gains}"
+                grasp_command="2"/>
       <Timeout msec="{release_timeout_ms}">
         <RetryUntilSuccessful num_attempts="-1">
           <Sequence>
@@ -159,7 +163,8 @@
       <ComputeOffsetPose input_pose="{base_pose}"
                          offset_z="{retreat_z}"
                          output_pose="{retreat_pose}"/>
-      <SetGains trajectory_speed="{retreat_speed}"/>
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="{retreat_speed}"/>
       <MoveToPose target="{retreat_pose}"
                   position_tolerance="0.005"
                   timeout_s="{timeout_s}"/>
