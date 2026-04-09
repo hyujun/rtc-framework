@@ -89,16 +89,16 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 | `MoveToJoints` | StatefulAction | Joint-space 목표 이동, per-joint tolerance 도달 판정 | `target`, `tolerance`(0.01), `timeout_s`(10.0) |
 | `GraspControl` | StatefulAction | Hand open/close/pinch/preset 제어, 점진적 닫기 지원 | `mode`(close), `target_positions`, `close_speed`(0.3), `max_position`(1.4), `pinch_motors`("0,1,2,3"), `timeout_s`(8.0) |
 | `TrackTrajectory` | StatefulAction | Waypoint 시퀀스 순차 추적 (sweep motion 등) | `waypoints`, `position_tolerance`(0.01), `timeout_s`(30.0) |
-| `SetGains` | SyncAction | 컨트롤러 gain 동적 변경 (DemoTask 16개 / DemoJoint 4개 요소 배열) | `kp_translation`, `kp_rotation`, `damping`, `null_kp`, `enable_null_space`, `control_6dof`, `trajectory_speed`, `trajectory_angular_speed`, `max_traj_velocity`, `max_traj_angular_velocity`, `hand_trajectory_speed`, `hand_max_traj_velocity`, `full_gains` |
+| `SetGains` | SyncAction | 컨트롤러 gain 동적 변경 (DemoTask 19개 / DemoJoint 7개 요소 배열). max_traj_velocity 계열은 current_gains에서 자동 로드 (BT에서 설정 불가) | `kp_translation`, `kp_rotation`, `damping`, `null_kp`, `enable_null_space`, `control_6dof`, `trajectory_speed`, `trajectory_angular_speed`, `hand_trajectory_speed`, `full_gains`, `current_gains` |
 | `SwitchController` | StatefulAction | 활성 컨트롤러 전환 (joint ↔ task) | `controller_name`, `timeout_s`(3.0) |
 | `ComputeOffsetPose` | SyncAction | Pose에 XYZ offset 적용 (approach, lift, retreat 계산) | `input_pose`, `offset_x`(0.0), `offset_y`(0.0), `offset_z`(0.0) → 출력: `output_pose` |
 | `ComputeSweepTrajectory` | SyncAction | Arc sweep 경로 waypoint 생성 (towel unfold용, sinusoidal arc 프로파일) | `start_pose`, `direction_x`(1.0), `direction_y`(0.0), `distance`(0.3), `arc_height`(0.05), `num_waypoints`(8) → 출력: `waypoints` |
 | `WaitDuration` | StatefulAction | 지정 시간 대기 | `duration_s`(0.5) |
-| `MoveFinger` | StatefulAction | 특정 손가락을 명명된 포즈로 이동 (trajectory duration 추정 기반 완료, partial hand update) | `finger_name`, `pose`, `hand_trajectory_speed`(1.0), `hand_max_traj_velocity`(2.0) |
-| `FlexExtendFinger` | StatefulAction | 손가락 flex→extend 1 cycle (2-phase, phase별 trajectory duration 추정) | `finger_name`, `hand_trajectory_speed`(1.0), `hand_max_traj_velocity`(2.0) |
-| `SetHandPose` | StatefulAction | 전체 Hand 10-DoF를 명명된 포즈로 이동 (trajectory duration 추정 기반 완료) | `pose`, `hand_trajectory_speed`(1.0), `hand_max_traj_velocity`(2.0) |
+| `MoveFinger` | StatefulAction | 특정 손가락을 명명된 포즈로 이동 (trajectory duration 추정 기반 완료, partial hand update) | `finger_name`, `pose`, `hand_trajectory_speed`(1.0), `current_gains` |
+| `FlexExtendFinger` | StatefulAction | 손가락 flex→extend 1 cycle (2-phase, phase별 trajectory duration 추정) | `finger_name`, `hand_trajectory_speed`(1.0), `current_gains` |
+| `SetHandPose` | StatefulAction | 전체 Hand 10-DoF를 명명된 포즈로 이동 (trajectory duration 추정 기반 완료) | `pose`, `hand_trajectory_speed`(1.0), `current_gains` |
 | `UR5eHoldPose` | StatefulAction | UR5e 목표 자세 도달 후 영구 RUNNING (halt까지 유지) | `pose` |
-| `MoveOpposition` | StatefulAction | Opposition 동작 (thumb+target 포즈, 비-target home 리셋, trajectory duration 추정 완료) | `thumb_pose`, `target_finger`, `target_pose`, `hand_trajectory_speed`(1.0), `hand_max_traj_velocity`(2.0) |
+| `MoveOpposition` | StatefulAction | Opposition 동작 (thumb+target 포즈, 비-target home 리셋, trajectory duration 추정 완료) | `thumb_pose`, `target_finger`, `target_pose`, `hand_trajectory_speed`(1.0), `current_gains` |
 | `TriggerShapeEstimation` | SyncAction | Shape estimation 시작/정지 제어 (서비스 호출) | `action`(start/stop) |
 | `WaitShapeResult` | StatefulAction | Shape estimation 결과 대기 (confidence 임계값 도달까지) | `min_confidence`(0.8), `timeout_s`(10.0) |
 
@@ -248,18 +248,22 @@ arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
 | 10 | `trajectory_speed` | 0.1 |
 | 11 | `trajectory_angular_speed` | 0.78 |
 | 12 | `hand_trajectory_speed` | 3.14 |
-| 13 | `max_traj_velocity` | 0.5 |
-| 14 | `max_traj_angular_velocity` | 1.57 |
-| 15 | `hand_max_traj_velocity` | 6.28 |
+| 13 | `max_traj_velocity` *(locked)* | 0.5 |
+| 14 | `max_traj_angular_velocity` *(locked)* | 1.57 |
+| 15 | `hand_max_traj_velocity` *(locked)* | 6.28 |
 
-**DemoJointController (4개 요소):**
+> **NOTE**: 인덱스 13-15 (`max_traj_*`)는 BT에서 설정할 수 없습니다. `SwitchController`가 로드한 `current_gains` 값을 그대로 사용하며, `current_gains`가 없는 경우 위 기본값이 적용됩니다.
+
+**DemoJointController (7개 요소):**
 
 | 인덱스 | 필드 | 기본값 |
 |--------|------|--------|
 | 0 | `robot_trajectory_speed` | 0.1 |
 | 1 | `hand_trajectory_speed` | 3.14 |
-| 2 | `robot_max_traj_velocity` | 0.5 |
-| 3 | `hand_max_traj_velocity` | 6.28 |
+| 2 | `robot_max_traj_velocity` *(locked)* | 0.5 |
+| 3 | `hand_max_traj_velocity` *(locked)* | 6.28 |
+
+> **NOTE**: 인덱스 2-3 (`max_traj_*`)는 BT에서 설정할 수 없습니다. `SwitchController`가 로드한 `current_gains` 값을 그대로 사용합니다.
 
 ## 의존성
 

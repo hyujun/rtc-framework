@@ -17,8 +17,8 @@ BT::PortsList SetHandPose::providedPorts()
     BT::InputPort<std::string>("pose", "명명된 Hand 포즈 (예: home, full_flex)"),
     BT::InputPort<double>("hand_trajectory_speed", kDefaultHandTrajectorySpeed,
                            "Trajectory speed [rad/s]"),
-    BT::InputPort<double>("hand_max_traj_velocity", kDefaultHandMaxTrajVelocity,
-                           "Max trajectory velocity [rad/s]"),
+    BT::InputPort<std::vector<double>>("current_gains", "{current_gains}",
+                                       "Cached gains from SwitchController"),
   };
 }
 
@@ -31,8 +31,10 @@ BT::NodeStatus SetHandPose::onStart()
 
   const double speed = getInput<double>("hand_trajectory_speed")
                            .value_or(kDefaultHandTrajectorySpeed);
-  const double max_vel = getInput<double>("hand_max_traj_velocity")
-                             .value_or(kDefaultHandMaxTrajVelocity);
+  auto cached = getInput<std::vector<double>>("current_gains");
+  const double max_vel = (cached && !cached->empty())
+      ? ExtractHandMaxTrajVelocity(cached.value())
+      : kDefaultHandMaxTrajVelocity;
 
   const auto& target = bridge_->GetHandPose(pose_name.value());
   target_vec_.assign(target.begin(), target.end());

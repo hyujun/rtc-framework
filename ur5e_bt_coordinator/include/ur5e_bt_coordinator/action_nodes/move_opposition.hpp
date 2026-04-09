@@ -24,7 +24,8 @@ namespace rtc_bt {
 ///   - target_finger (string): 대상 손가락 이름 ("index" | "middle" | "ring")
 ///   - target_pose (string): 대상 손가락 포즈 이름 (예: "index_oppose")
 ///   - hand_trajectory_speed (double): trajectory speed [rad/s] (기본 1.0)
-///   - hand_max_traj_velocity (double): max trajectory velocity [rad/s] (기본 2.0)
+///   - current_gains (vector<double>): SwitchController에서 로드한 gains
+///     (hand_max_traj_velocity를 추출하여 duration 추정에 사용)
 class MoveOpposition : public BT::StatefulActionNode {
 public:
   MoveOpposition(const std::string& name, const BT::NodeConfig& config,

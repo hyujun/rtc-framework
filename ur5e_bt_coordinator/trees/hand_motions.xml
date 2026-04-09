@@ -19,8 +19,7 @@
       <MoveOpposition thumb_pose="{op_thumb_pose}"
                       target_finger="{op_target_finger}"
                       target_pose="{op_target_pose}"
-                      hand_trajectory_speed="{hand_speed}"
-                      hand_max_traj_velocity="{hand_max_vel}"/>
+                      hand_trajectory_speed="{hand_speed}"/>
 
       <!-- use_home_return == true 일 때만 home 포즈로 복귀 -->
       <Fallback>
@@ -28,8 +27,7 @@
           <AlwaysSuccess/>
         </Precondition>
         <SetHandPose pose="home"
-                     hand_trajectory_speed="{hand_speed}"
-                     hand_max_traj_velocity="{hand_max_vel}"/>
+                     hand_trajectory_speed="{hand_speed}"/>
       </Fallback>
     </Sequence>
   </BehaviorTree>
@@ -37,8 +35,8 @@
   <!-- ================================================================== -->
   <!-- OppositionCycle: One full opposition cycle (index -> middle -> ring) -->
   <!--   Sequentially opposes the thumb against each finger in order.      -->
-  <!--   Each SubTree inherits hand_speed, hand_max_vel, and               -->
-  <!--   use_home_return from the parent Blackboard.                       -->
+  <!--   Each SubTree inherits hand_speed and use_home_return from the      -->
+  <!--   parent Blackboard.                                                -->
   <!-- ================================================================== -->
   <BehaviorTree ID="OppositionCycle">
     <Sequence>
@@ -47,21 +45,18 @@
                op_target_finger="index"
                op_target_pose="index_oppose"
                hand_speed="{hand_speed}"
-               hand_max_vel="{hand_max_vel}"
                use_home_return="{use_home_return}"/>
       <SubTree ID="SingleOpposition"
                op_thumb_pose="thumb_middle_oppose"
                op_target_finger="middle"
                op_target_pose="middle_oppose"
                hand_speed="{hand_speed}"
-               hand_max_vel="{hand_max_vel}"
                use_home_return="{use_home_return}"/>
       <SubTree ID="SingleOpposition"
                op_thumb_pose="thumb_ring_oppose"
                op_target_finger="ring"
                op_target_pose="ring_oppose"
                hand_speed="{hand_speed}"
-               hand_max_vel="{hand_max_vel}"
                use_home_return="{use_home_return}"/>
     </Sequence>
   </BehaviorTree>
@@ -80,14 +75,13 @@
     <Sequence>
 
       <!-- 공통 변수 설정 (여기서 한 번만 변경하면 전체 적용) -->
-      <Script code="num_cycles := 4; hand_init_speed := 0.7854; hand_max_speed := 3.1415; hand_max_vel := 6.2832"/>
+      <Script code="num_cycles := 4; hand_init_speed := 0.7854; hand_max_speed := 3.1415"/>
       <Script code="hand_speed := hand_init_speed; use_home_return := true"/>
 
       <!-- ── Phase 1: 느리게, home 경유 (1회 순회) ── -->
       <SetGains hand_trajectory_speed="{hand_init_speed}"/>
       <SubTree ID="OppositionCycle"
                hand_speed="{hand_speed}"
-               hand_max_vel="{hand_max_vel}"
                use_home_return="{use_home_return}"/>
 
       <!-- ── Phase 2: 가속, home 생략 ── -->
@@ -96,7 +90,6 @@
         <Sequence>
           <SubTree ID="OppositionCycle"
                    hand_speed="{hand_speed}"
-                   hand_max_vel="{hand_max_vel}"
                    use_home_return="{use_home_return}"/>
           <!-- 가속: speed × 1.42857 (≈ 1/0.7), 최대 hand_max_speed -->
           <Script code="hand_speed := hand_speed * 1.42857"/>
@@ -116,7 +109,6 @@
         <Sequence>
           <SubTree ID="OppositionCycle"
                    hand_speed="{hand_speed}"
-                   hand_max_vel="{hand_max_vel}"
                    use_home_return="{use_home_return}"/>
           <!-- 감속: speed × 0.7, 최소 hand_init_speed -->
           <Script code="hand_speed := hand_speed * 0.7"/>
@@ -150,7 +142,7 @@
     <Sequence>
 
       <!-- 공통 변수 설정 (여기서 한 번만 변경하면 전체 적용) -->
-      <Script code="num_cycles := 4; hand_init_speed := 0.7854; hand_max_speed := 3.1415; hand_max_vel := 6.2832"/>
+      <Script code="num_cycles := 4; hand_init_speed := 0.7854; hand_max_speed := 3.1415"/>
       <Script code="hand_speed := hand_init_speed"/>
 
       <!-- ── Phase 1: 순차, 점점 빠르게 ── -->
@@ -158,26 +150,19 @@
       <Repeat num_cycles="{num_cycles}">
         <Sequence name="AcceleratingWave">
           <FlexExtendFinger finger_name="thumb_mcp"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="thumb"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="index_dip"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="index"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="middle_dip"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="middle"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="ring"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <!-- 가속: speed × 1.42857, 최대 hand_max_speed -->
           <Script code="hand_speed := hand_speed * 1.42857"/>
           <Fallback>
@@ -194,26 +179,19 @@
       <Repeat num_cycles="{num_cycles}">
         <Parallel success_count="7" failure_count="7" name="SimultaneousFastWave">
           <FlexExtendFinger finger_name="thumb_mcp"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="thumb"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="index_dip"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="index"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="middle_dip"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="middle"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="ring"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
         </Parallel>
       </Repeat>
 
@@ -221,26 +199,19 @@
       <Repeat num_cycles="{num_cycles}">
         <Sequence name="DeceleratingWave">
           <FlexExtendFinger finger_name="thumb_mcp"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="thumb"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="index_dip"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="index"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="middle_dip"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="middle"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <FlexExtendFinger finger_name="ring"
-                            hand_trajectory_speed="{hand_speed}"
-                            hand_max_traj_velocity="{hand_max_vel}"/>
+                            hand_trajectory_speed="{hand_speed}"/>
           <!-- 감속: speed × 0.7, 최소 hand_init_speed -->
           <Script code="hand_speed := hand_speed * 0.7"/>
           <Fallback>

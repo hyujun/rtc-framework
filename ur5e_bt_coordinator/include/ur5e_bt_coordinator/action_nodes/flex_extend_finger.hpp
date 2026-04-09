@@ -22,7 +22,8 @@ namespace rtc_bt {
 /// Input ports:
 ///   - finger_name (string): 손가락 이름
 ///   - hand_trajectory_speed (double): trajectory speed [rad/s] (기본 1.0)
-///   - hand_max_traj_velocity (double): max trajectory velocity [rad/s] (기본 2.0)
+///   - current_gains (vector<double>): SwitchController에서 로드한 gains
+///     (hand_max_traj_velocity를 추출하여 duration 추정에 사용)
 class FlexExtendFinger : public BT::StatefulActionNode {
 public:
   FlexExtendFinger(const std::string& name, const BT::NodeConfig& config,

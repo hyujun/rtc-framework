@@ -328,14 +328,14 @@ BT Blackboard에서 사용하는 문자열 포맷:
 RT Controller의 게인을 동적으로 변경한다. 설정하지 않은 필드는 현재 값을 유지한다.
 
 ```xml
-<SetGains trajectory_speed="0.05"
-          max_traj_velocity="0.1"/>
+<SetGains trajectory_speed="0.05"/>
 
 <SetGains kp_translation="5.0,5.0,5.0"
           kp_rotation="3.0,3.0,3.0"
-          trajectory_speed="0.08"
-          max_traj_velocity="0.2"/>
+          trajectory_speed="0.08"/>
 ```
+
+> **Note:** `max_traj_velocity`, `max_traj_angular_velocity`, `hand_max_traj_velocity` 포트는 제거되었다. 이 값들은 SwitchController가 설정한 `current_gains`에서 자동으로 로드된다. BT XML에서 직접 설정할 수 없다.
 
 | 포트 | 타입 | 설명 |
 |------|------|------|
@@ -348,16 +348,15 @@ RT Controller의 게인을 동적으로 변경한다. 설정하지 않은 필드
 | `trajectory_speed` | double | 궤적 생성 속도 [m/s] |
 | `trajectory_angular_speed` | double | 궤적 각속도 |
 | `hand_trajectory_speed` | double | 손 궤적 속도 |
-| `max_traj_velocity` | double | 최대 궤적 속도 [m/s] |
-| `max_traj_angular_velocity` | double | 최대 궤적 각속도 |
-| `hand_max_traj_velocity` | double | 손 최대 궤적 속도 |
 | `full_gains` | vector\<double\> | 전체 게인 직접 지정 (DemoTask 16개 / DemoJoint 4개 요소) |
 
 **게인 배열 레이아웃 (DemoTaskController 16개 요소):**
-`[kp_trans×3, kp_rot×3, damping, null_kp, enable_null, control_6dof, traj_speed, traj_angular_speed, hand_traj_speed, max_vel, max_angular_vel, hand_max_vel]`
+`[kp_trans×3, kp_rot×3, damping, null_kp, enable_null, control_6dof, traj_speed, traj_angular_speed, hand_traj_speed, max_vel (locked), max_angular_vel (locked), hand_max_vel (locked)]`
 
 **게인 배열 레이아웃 (DemoJointController 4개 요소):**
-`[robot_traj_speed, hand_traj_speed, robot_max_traj_vel, hand_max_traj_vel]`
+`[robot_traj_speed, hand_traj_speed, robot_max_traj_vel (locked), hand_max_traj_vel (locked)]`
+
+> `(locked)` 필드는 `current_gains`에서 자동으로 로드되며 BT에서 변경할 수 없다.
 
 #### SwitchController
 
@@ -430,8 +429,7 @@ RT Controller의 게인을 동적으로 변경한다. 설정하지 않은 필드
 ```xml
 <MoveFinger finger_name="thumb"
             pose="thumb_index_oppose"
-            hand_trajectory_speed="{hand_speed}"
-            hand_max_traj_velocity="{hand_max_vel}"/>
+            hand_trajectory_speed="{hand_speed}"/>
 ```
 
 | 포트 | 타입 | 기본값 | 설명 |
@@ -439,7 +437,7 @@ RT Controller의 게인을 동적으로 변경한다. 설정하지 않은 필드
 | `finger_name` | string | (필수) | 손가락 이름 (`"thumb"` / `"thumb_mcp"` / `"index"` / `"index_dip"` / `"middle"` / `"middle_dip"` / `"ring"`) |
 | `pose` | string | (필수) | 명명된 타겟 포즈 (`hand_pose_config.hpp`에서 lookup) |
 | `hand_trajectory_speed` | double | 1.0 rad/s | RT 컨트롤러 trajectory speed (duration 추정에 사용) |
-| `hand_max_traj_velocity` | double | 2.0 rad/s | RT 컨트롤러 max trajectory velocity |
+| `current_gains` | vector\<double\> | (자동) | Blackboard `{current_gains}`에서 자동 읽기 (max trajectory velocity 등 포함) |
 
 #### FlexExtendFinger
 

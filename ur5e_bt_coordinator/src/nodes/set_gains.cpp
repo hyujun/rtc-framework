@@ -25,10 +25,7 @@ BT::PortsList SetGains::providedPorts()
     BT::InputPort<bool>("control_6dof", "Enable 6-DoF control"),
     BT::InputPort<double>("trajectory_speed"),
     BT::InputPort<double>("trajectory_angular_speed"),
-    BT::InputPort<double>("max_traj_velocity"),
-    BT::InputPort<double>("max_traj_angular_velocity"),
     BT::InputPort<double>("hand_trajectory_speed"),
-    BT::InputPort<double>("hand_max_traj_velocity"),
     BT::InputPort<std::vector<double>>("full_gains"),
     BT::InputPort<int>("grasp_command", 0, "0=none, 1=grasp, 2=release (Force-PI)"),
     BT::InputPort<double>("grasp_target_force", 2.0, "Target grip force [N] (Force-PI)"),
@@ -94,11 +91,8 @@ BT::NodeStatus SetGains::BuildDemoJointGains()
   auto hts = getInput<double>("hand_trajectory_speed");
   if (hts) gains[1] = hts.value();
 
-  auto mtv = getInput<double>("max_traj_velocity");
-  if (mtv) gains[2] = mtv.value();
-
-  auto hmtv = getInput<double>("hand_max_traj_velocity");
-  if (hmtv) gains[3] = hmtv.value();
+  // max_traj_velocity (gains[2]) and hand_max_traj_velocity (gains[3])
+  // are not overridable — always from current_gains or defaults.
 
   // Force-PI grasp command (one-shot, only appended when non-zero)
   auto gcmd = getInput<int>("grasp_command");
@@ -113,7 +107,7 @@ BT::NodeStatus SetGains::BuildDemoJointGains()
 
   RCLCPP_INFO(logger(),
               "[SetGains] DemoJoint: robot_speed=%.2f hand_speed=%.2f "
-              "max_vel=%.2f hand_max_vel=%.2f",
+              "max_vel=%.2f(locked) hand_max_vel=%.2f(locked)",
               gains[0], gains[1], gains[2], gains[3]);
   bridge_->PublishGains(gains);
   return BT::NodeStatus::SUCCESS;
@@ -196,14 +190,9 @@ BT::NodeStatus SetGains::BuildDemoTaskGains()
   auto hts = getInput<double>("hand_trajectory_speed");
   if (hts) gains[12] = hts.value();
 
-  auto mtv = getInput<double>("max_traj_velocity");
-  if (mtv) gains[13] = mtv.value();
-
-  auto mtav = getInput<double>("max_traj_angular_velocity");
-  if (mtav) gains[14] = mtav.value();
-
-  auto hmtv = getInput<double>("hand_max_traj_velocity");
-  if (hmtv) gains[15] = hmtv.value();
+  // max_traj_velocity (gains[13]), max_traj_angular_velocity (gains[14]),
+  // and hand_max_traj_velocity (gains[15]) are not overridable —
+  // always from current_gains or defaults.
 
   // Force-PI grasp command (one-shot, only appended when non-zero)
   auto gcmd = getInput<int>("grasp_command");

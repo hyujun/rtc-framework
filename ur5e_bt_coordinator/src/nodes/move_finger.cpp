@@ -18,8 +18,8 @@ BT::PortsList MoveFinger::providedPorts()
     BT::InputPort<std::string>("pose", "명명된 타겟 포즈"),
     BT::InputPort<double>("hand_trajectory_speed", kDefaultHandTrajectorySpeed,
                            "Trajectory speed [rad/s]"),
-    BT::InputPort<double>("hand_max_traj_velocity", kDefaultHandMaxTrajVelocity,
-                           "Max trajectory velocity [rad/s]"),
+    BT::InputPort<std::vector<double>>("current_gains", "{current_gains}",
+                                       "Cached gains from SwitchController"),
   };
 }
 
@@ -37,8 +37,10 @@ BT::NodeStatus MoveFinger::onStart()
 
   const double speed = getInput<double>("hand_trajectory_speed")
                            .value_or(kDefaultHandTrajectorySpeed);
-  const double max_vel = getInput<double>("hand_max_traj_velocity")
-                             .value_or(kDefaultHandMaxTrajVelocity);
+  auto cached = getInput<std::vector<double>>("current_gains");
+  const double max_vel = (cached && !cached->empty())
+      ? ExtractHandMaxTrajVelocity(cached.value())
+      : kDefaultHandMaxTrajVelocity;
 
   target_pose_ = bridge_->GetHandPose(pose_name.value());
   joint_indices_ = LookupOrThrow(kFingerJointIndices, finger_name.value(), "MoveFinger");
