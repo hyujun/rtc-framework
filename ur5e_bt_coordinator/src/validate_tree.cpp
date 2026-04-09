@@ -12,6 +12,8 @@
 
 #include "ur5e_bt_coordinator/action_nodes/compute_offset_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/compute_sweep_trajectory.hpp"
+#include "ur5e_bt_coordinator/action_nodes/compute_tilt_sequence.hpp"
+#include "ur5e_bt_coordinator/action_nodes/get_current_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/grasp_control.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_to_joints.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_to_pose.hpp"
@@ -88,6 +90,8 @@ int main(int argc, char** argv)
   factory.registerNodeType<rtc_bt::SwitchController>("SwitchController", null_bridge);
   factory.registerNodeType<rtc_bt::ComputeOffsetPose>("ComputeOffsetPose");
   factory.registerNodeType<rtc_bt::ComputeSweepTrajectory>("ComputeSweepTrajectory");
+  factory.registerNodeType<rtc_bt::ComputeTiltSequence>("ComputeTiltSequence");
+  factory.registerNodeType<rtc_bt::GetCurrentPose>("GetCurrentPose", null_bridge);
   factory.registerNodeType<rtc_bt::WaitDuration>("WaitDuration");
   factory.registerNodeType<rtc_bt::MoveFinger>("MoveFinger", null_bridge);
   factory.registerNodeType<rtc_bt::FlexExtendFinger>("FlexExtendFinger", null_bridge);

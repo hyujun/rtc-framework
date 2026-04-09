@@ -3,6 +3,8 @@
 // Action nodes
 #include "ur5e_bt_coordinator/action_nodes/compute_offset_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/compute_sweep_trajectory.hpp"
+#include "ur5e_bt_coordinator/action_nodes/compute_tilt_sequence.hpp"
+#include "ur5e_bt_coordinator/action_nodes/get_current_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/grasp_control.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_to_joints.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_to_pose.hpp"
@@ -146,6 +148,8 @@ void BtCoordinatorNode::RegisterBtNodes()
   factory_.registerNodeType<SwitchController>("SwitchController", bridge);
   factory_.registerNodeType<ComputeOffsetPose>("ComputeOffsetPose");
   factory_.registerNodeType<ComputeSweepTrajectory>("ComputeSweepTrajectory");
+  factory_.registerNodeType<ComputeTiltSequence>("ComputeTiltSequence");
+  factory_.registerNodeType<GetCurrentPose>("GetCurrentPose", bridge);
   factory_.registerNodeType<WaitDuration>("WaitDuration");
 
   // ── Hand demo nodes ─────────────────────────────────────────────────
