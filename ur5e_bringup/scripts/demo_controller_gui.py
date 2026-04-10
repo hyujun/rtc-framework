@@ -134,8 +134,8 @@ GAIN_DEFS = {
         ("grasp_min_fingertips", 1, [2],   False),
     ],
     "demo_task_controller": [
-        ("kp_translation",      3, [400.0] * 3, False),
-        ("kp_rotation",         3, [200.0] * 3, False),
+        ("kp_translation",      3, [5.0] * 3, False),
+        ("kp_rotation",         3, [2.0] * 3, False),
         ("damping",             1, [0.01],     False),
         ("null_kp",             1, [0.5],      False),
         ("null space",          1, [1],        True),
