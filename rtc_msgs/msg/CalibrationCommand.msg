@@ -1,8 +1,7 @@
 # 센서 캘리브레이션 명령 (확장 가능: 여러 센서 타입을 단일 토픽으로 처리)
 #
 # 사용 예:
-#   ros2 topic pub --once /hand/calibration/command rtc_msgs/msg/CalibrationCommand \
-#     '{sensor_type: 0, action: 0, sample_count: 0}'
+#   ros2 topic pub --once /hand/calibration/command rtc_msgs/msg/CalibrationCommand '{sensor_type: 0, action: 0, sample_count: 0}'
 #
 # 새 센서 타입 추가 절차:
 #   1. 아래 SENSOR_* 상수에 enum 값 추가
