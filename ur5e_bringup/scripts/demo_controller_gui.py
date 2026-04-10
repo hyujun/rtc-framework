@@ -120,44 +120,48 @@ def _resolve_preset_path() -> str:
 
 
 # Gain definitions per controller
-# Each entry: (label, size, defaults, is_bool)
-#   DemoJoint: [robot_traj_speed, hand_traj_speed, robot_max_traj_vel, hand_max_traj_vel]
-#   DemoTask:  [kp_translation x3, kp_rotation x3, damping, null_kp,
-#               enable_null_space(0/1), control_6dof(0/1),
-#               traj_speed, traj_angular_speed, hand_traj_speed,
-#               max_traj_vel, max_traj_angular_vel, hand_max_traj_vel]
+# Each entry: (label, size, defaults, is_bool, group)
+# The flat tuple ORDER is the on-the-wire layout sent to the controller;
+# the `group` field only drives visual placement in the GUI so that arm
+# and hand trajectory params (which are interleaved on the wire) can be
+# displayed in functional clusters.
+#   DemoJoint wire order: [robot_traj_speed, hand_traj_speed,
+#       robot_max_traj_vel, hand_max_traj_vel,
+#       grasp_contact_thresh, grasp_force_thresh, grasp_min_fingertips,
+#       grasp_cmd, grasp_target_force]
+#   DemoTask wire order:  [kp_translation x3, kp_rotation x3, damping, null_kp,
+#       enable_null_space(0/1), control_6dof(0/1),
+#       traj_speed, traj_angular_speed, hand_traj_speed,
+#       max_traj_vel, max_traj_angular_vel, hand_max_traj_vel,
+#       grasp_contact_thresh, grasp_force_thresh, grasp_min_fingertips,
+#       grasp_cmd, grasp_target_force]
 GAIN_DEFS = {
     "demo_joint_controller": [
-        ("robot_traj_speed",    1, [1.0],  False),
-        ("hand_traj_speed",     1, [1.0],  False),
-        ("robot_max_traj_vel",  1, [3.14], False),
-        ("hand_max_traj_vel",   1, [2.0],  False),
-        ("grasp_contact_thresh", 1, [0.5], False),
-        ("grasp_force_thresh",  1, [1.0],  False),
-        ("grasp_min_fingertips", 1, [2],   False),
+        ("robot_traj_speed",     1, [1.0],  False, "Arm Trajectory"),
+        ("hand_traj_speed",      1, [1.0],  False, "Hand Trajectory"),
+        ("robot_max_traj_vel",   1, [3.14], False, "Arm Trajectory"),
+        ("hand_max_traj_vel",    1, [2.0],  False, "Hand Trajectory"),
+        ("grasp_contact_thresh", 1, [0.5],  False, "Grasp Detection"),
+        ("grasp_force_thresh",   1, [1.0],  False, "Grasp Detection"),
+        ("grasp_min_fingertips", 1, [2],    False, "Grasp Detection"),
     ],
     "demo_task_controller": [
-        ("kp_translation",      3, [5.0] * 3, False),
-        ("kp_rotation",         3, [2.0] * 3, False),
-        ("damping",             1, [0.01],     False),
-        ("null_kp",             1, [0.5],      False),
-        ("null space",          1, [1],        True),
-        ("control 6dof",        1, [0],        True),
-        ("traj_speed",          1, [0.1],      False),
-        ("traj_angular_speed",  1, [0.5],      False),
-        ("hand_traj_speed",     1, [1.0],      False),
-        ("max_traj_vel",            1, [0.5],  False),
-        ("max_traj_angular_vel",    1, [1.0],  False),
-        ("hand_max_traj_vel",       1, [2.0],  False),
-        ("grasp_contact_thresh", 1, [0.5],     False),
-        ("grasp_force_thresh",  1, [1.0],      False),
-        ("grasp_min_fingertips", 1, [2],       False),
+        ("kp_translation",       3, [5.0] * 3, False, "CLIK Gains"),
+        ("kp_rotation",          3, [2.0] * 3, False, "CLIK Gains"),
+        ("damping",              1, [0.01],    False, "CLIK Gains"),
+        ("null_kp",              1, [0.5],     False, "CLIK Gains"),
+        ("null_space",           1, [1],       True,  "CLIK Gains"),
+        ("control_6dof",         1, [0],       True,  "CLIK Gains"),
+        ("traj_speed",           1, [0.1],     False, "Arm Trajectory"),
+        ("traj_angular_speed",   1, [0.5],     False, "Arm Trajectory"),
+        ("hand_traj_speed",      1, [1.0],     False, "Hand Trajectory"),
+        ("max_traj_vel",         1, [0.5],     False, "Arm Trajectory"),
+        ("max_traj_angular_vel", 1, [1.0],     False, "Arm Trajectory"),
+        ("hand_max_traj_vel",    1, [2.0],     False, "Hand Trajectory"),
+        ("grasp_contact_thresh", 1, [0.5],     False, "Grasp Detection"),
+        ("grasp_force_thresh",   1, [1.0],     False, "Grasp Detection"),
+        ("grasp_min_fingertips", 1, [2],       False, "Grasp Detection"),
     ],
-}
-
-GAIN_COL_HEADERS = {
-    "demo_joint_controller": [],
-    "demo_task_controller":  ["x / rx", "y / ry", "z / rz"],
 }
 
 GAIN_ROW_NAMES = {
@@ -166,6 +170,32 @@ GAIN_ROW_NAMES = {
         "kp_translation": ["x", "y", "z"],
         "kp_rotation": ["rx", "ry", "rz"],
     },
+}
+
+# Visual placement of gain groups inside the Control tab "Gains" panel.
+# Each inner list is a row of groups packed side-by-side.
+# Groups not listed here fall through to the default one-per-row layout.
+GAIN_GROUP_LAYOUT = {
+    "demo_joint_controller": [
+        ["Arm Trajectory", "Hand Trajectory"],
+    ],
+    "demo_task_controller": [
+        ["CLIK Gains"],
+        ["Arm Trajectory", "Hand Trajectory"],
+    ],
+}
+
+# Groups whose editable widgets are rendered in the Grasp tab's
+# "Grasp Detection" section instead of the Control tab's Gains panel.
+# For these groups the applied mirror is skipped (the per-entry
+# applied_labels slot is an empty list so zip-based iteration in
+# `_update_applied_display` stays aligned).
+GAIN_GROUP_PARENT_GRASP: set[str] = {"Grasp Detection"}
+
+# Per-group override for the maximum number of scalar inputs placed in
+# a single row inside the group box (default: 2 from SCALARS_PER_ROW).
+GROUP_SCALARS_PER_ROW = {
+    "Grasp Detection": 3,
 }
 
 # Sensor calibration entries displayed in the Control tab.
@@ -392,24 +422,15 @@ class DemoControllerGUI(Node):
 
     def _refresh_current_display(self):
         """Update display labels with dirty checking. Only redraws changed values."""
-        # ── Joint / Task status ──
-        idx = self.selected_ctrl.get()
-        if JOINT_SPACE.get(idx, True):
-            for i in range(NUM_JOINTS):
-                val_rad = self.current_positions[i]
-                text = f"{val_rad:.4f} rad  ({math.degrees(val_rad):.2f}°)"
-                if self._prev_status[i] != text:
-                    self._prev_status[i] = text
-                    self._status_labels_values[i].config(text=text)
-        else:
-            for i in range(6):
-                val = self.current_task_positions[i]
-                text = f"{val:.4f} m" if i < 3 else f"{val:.4f} rad  ({math.degrees(val):.2f}°)"
-                if self._prev_status[i] != text:
-                    self._prev_status[i] = text
-                    self._status_labels_values[i].config(text=text)
+        # ── Arm Joint Positions (always q1..q6) ──
+        for i in range(NUM_JOINTS):
+            val_rad = self.current_positions[i]
+            text = f"{val_rad:.4f} rad  ({math.degrees(val_rad):.2f}°)"
+            if self._prev_status[i] != text:
+                self._prev_status[i] = text
+                self._status_labels_values[i].config(text=text)
 
-        # ── Task state ──
+        # ── End-Effector Pose ──
         for i in range(6):
             val = self.current_task_positions[i]
             text = f"{val:.4f} m" if i < 3 else f"{val:.4f} rad  ({math.degrees(val):.2f}°)"
@@ -724,47 +745,6 @@ class DemoControllerGUI(Node):
         self._gains_applied_inner = tk.Frame(self._gains_frame, bg='#1e1e2e')
         self._gains_applied_inner.pack(fill='x', padx=2, pady=(0, 2))
 
-        # ── Sensor Calibration ─────────────────────────────────────────
-        # Triggers recalibration of hand sensors via /hand/calibration/command.
-        # Status updates arrive via /hand/calibration/status subscription.
-        calib_frame = ttk.LabelFrame(
-            control_tab, text="Sensor Calibration", padding=4)
-        calib_frame.pack(fill='x', padx=8, pady=2)
-
-        for entry in SENSOR_CALIBRATIONS:
-            stype = entry["sensor_type"]
-            row = tk.Frame(calib_frame, bg='#1e1e2e')
-            row.pack(fill='x', pady=1)
-
-            tk.Label(row, text=entry["label"],
-                     bg='#1e1e2e', fg='#cdd6f4',
-                     font=('Segoe UI', 9, 'bold'),
-                     width=16, anchor='w').pack(side='left', padx=(2, 4))
-
-            ttk.Button(row, text="Calibrate",
-                       style='Send.TButton',
-                       command=lambda s=stype: self._send_calibration(
-                           s, CalibrationCommand.ACTION_START)).pack(
-                side='left', padx=2)
-            ttk.Button(row, text="Abort",
-                       command=lambda s=stype: self._send_calibration(
-                           s, CalibrationCommand.ACTION_ABORT)).pack(
-                side='left', padx=2)
-
-            status_var = tk.StringVar(value="IDLE")
-            status_lbl = tk.Label(row, textvariable=status_var,
-                                  bg='#1e1e2e', fg='#9399b2',
-                                  font=('Segoe UI', 9),
-                                  width=22, anchor='w')
-            status_lbl.pack(side='left', padx=(8, 2))
-            self._calib_status_vars[stype] = status_var
-            self._calib_status_labels[stype] = status_lbl
-
-            tk.Label(row, text=entry["hint"],
-                     bg='#1e1e2e', fg='#585b70',
-                     font=('Segoe UI', 7, 'italic')).pack(
-                side='left', padx=(4, 0))
-
         # Target Inputs
         pos_frame = ttk.LabelFrame(control_tab, text="Target Inputs",
                                    padding=4)
@@ -914,76 +894,59 @@ class DemoControllerGUI(Node):
                 self._hand_step_entries.append(step_ent)
                 self._hand_step_btns.append([btn_m, btn_p])
 
-        # Current Status
-        status_frame = ttk.LabelFrame(control_tab, text="Current Status", padding=4)
+        # Live Feedback: Arm Joint / End-Effector Pose / Hand Motor
+        status_frame = ttk.LabelFrame(control_tab, text="Live Feedback", padding=4)
         status_frame.pack(fill='both', expand=False, padx=8, pady=2)
+        status_frame.columnconfigure(0, weight=1)
+        status_frame.columnconfigure(1, weight=1)
 
-        # Left: controller-dependent state
-        left_status = tk.Frame(status_frame, bg='#1e1e2e')
-        left_status.pack(side='left', fill='y', padx=(0, 2))
-
-        tk.Label(left_status, text="Controller State",
-                 bg='#1e1e2e', fg='#89b4fa',
-                 font=('Segoe UI', 9, 'bold')).grid(row=0, column=0, columnspan=2, pady=(0, 2))
+        # Row 0, Col 0: Arm Joint Positions (always q1..q6)
+        joint_frame = ttk.LabelFrame(status_frame, text="Arm Joint Positions", padding=4)
+        joint_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 2), pady=(0, 2))
 
         self._status_labels_names: list[tk.Label] = []
         self._status_labels_values: list[tk.Label] = []
 
         for i in range(6):
-            name_lbl = tk.Label(left_status, text=f"J{i+1}:",
+            name_lbl = tk.Label(joint_frame, text=f"J{i+1}:",
                                 bg='#1e1e2e', fg='#cdd6f4', width=8, anchor='e',
                                 font=('Segoe UI', 9, 'bold'))
-            name_lbl.grid(row=i + 1, column=0, padx=(4, 2), pady=1)
+            name_lbl.grid(row=i, column=0, padx=(4, 2), pady=1)
             self._status_labels_names.append(name_lbl)
 
-            val_lbl = tk.Label(left_status, text="0.0000 rad  (0.00°)",
+            val_lbl = tk.Label(joint_frame, text="0.0000 rad  (0.00°)",
                                bg='#313244', fg='#a6e3a1', width=22, anchor='center',
                                font=('Courier New', 9, 'bold'))
-            val_lbl.grid(row=i + 1, column=1, padx=3, pady=1)
+            val_lbl.grid(row=i, column=1, padx=3, pady=1)
             self._status_labels_values.append(val_lbl)
 
-        # Vertical separator
-        ttk.Separator(status_frame, orient='vertical').pack(side='left', fill='y', padx=6)
-
-        # Middle: task state
-        right_status = tk.Frame(status_frame, bg='#1e1e2e')
-        right_status.pack(side='left', fill='y', padx=(2, 0))
-
-        tk.Label(right_status, text="Task State",
-                 bg='#1e1e2e', fg='#89b4fa',
-                 font=('Segoe UI', 9, 'bold')).grid(row=0, column=0, columnspan=2, pady=(0, 2))
+        # Row 0, Col 1: End-Effector Pose (always task-space)
+        ee_frame = ttk.LabelFrame(status_frame, text="End-Effector Pose", padding=4)
+        ee_frame.grid(row=0, column=1, sticky='nsew', padx=(2, 0), pady=(0, 2))
 
         _task_state_row_labels = ["X (m)", "Y (m)", "Z (m)", "Roll", "Pitch", "Yaw"]
         self._task_state_labels_values: list[tk.Label] = []
 
         for i, label in enumerate(_task_state_row_labels):
-            tk.Label(right_status, text=f"{label}:",
+            tk.Label(ee_frame, text=f"{label}:",
                      bg='#1e1e2e', fg='#cdd6f4', width=8, anchor='e',
-                     font=('Segoe UI', 9, 'bold')).grid(row=i + 1, column=0, padx=(4, 2), pady=1)
+                     font=('Segoe UI', 9, 'bold')).grid(row=i, column=0, padx=(4, 2), pady=1)
 
-            val_lbl = tk.Label(right_status, text="0.0000",
+            val_lbl = tk.Label(ee_frame, text="0.0000",
                                bg='#313244', fg='#cba6f7', width=22, anchor='center',
                                font=('Courier New', 9, 'bold'))
-            val_lbl.grid(row=i + 1, column=1, padx=3, pady=1)
+            val_lbl.grid(row=i, column=1, padx=3, pady=1)
             self._task_state_labels_values.append(val_lbl)
 
-        # Vertical separator
-        ttk.Separator(status_frame, orient='vertical').pack(side='left', fill='y', padx=6)
-
-        # Right: hand state
-        hand_status_frame = tk.Frame(status_frame, bg='#1e1e2e')
-        hand_status_frame.pack(side='left', fill='y', padx=(2, 0))
-
-        tk.Label(hand_status_frame, text="Hand State",
-                 bg='#1e1e2e', fg='#89b4fa',
-                 font=('Segoe UI', 9, 'bold')).grid(
-            row=0, column=0, columnspan=len(HAND_FINGER_GROUPS), pady=(0, 2))
+        # Row 1: Hand Motor Positions (full width)
+        hand_status_frame = ttk.LabelFrame(status_frame, text="Hand Motor Positions", padding=4)
+        hand_status_frame.grid(row=1, column=0, columnspan=2, sticky='nsew', pady=(2, 0))
 
         self._hand_state_labels_values: list[tk.Label] = []
 
         for col_idx, (finger_name, motors) in enumerate(HAND_FINGER_GROUPS):
             col_frame = tk.Frame(hand_status_frame, bg='#1e1e2e')
-            col_frame.grid(row=1, column=col_idx, padx=2, sticky='n')
+            col_frame.grid(row=0, column=col_idx, padx=2, sticky='n')
 
             tk.Label(col_frame, text=finger_name,
                      bg='#1e1e2e', fg='#f9e2af',
@@ -1099,6 +1062,18 @@ class DemoControllerGUI(Node):
             vl.grid(row=i + 1, column=3, padx=2, pady=1)
             self._ft_valid_labels.append(vl)
 
+        # ── Grasp Detection Params ──────────────────────────────────────
+        # Swapped per active controller by `_show_gains_panel`. The
+        # actual per-controller widgets (contact_thresh / force_thresh /
+        # min_fingertips) live inside `self._gains_grasp_inner`; the
+        # flat GAIN_DEFS wire order is still honoured because widgets
+        # are appended to `self._gain_entries` during `_prebuild_gains_panels`.
+        grasp_gains_frame = ttk.LabelFrame(
+            parent, text="Grasp Detection", padding=4)
+        grasp_gains_frame.pack(fill='x', padx=8, pady=(2, 2))
+        self._gains_grasp_inner = tk.Frame(grasp_gains_frame, bg='#1e1e2e')
+        self._gains_grasp_inner.pack(fill='x')
+
         # ── Force-PI Grasp Controller ──────────────────────────────────
         fp_frame = ttk.LabelFrame(parent, text="Force-PI Grasp Controller", padding=4)
         fp_frame.pack(fill='x', padx=8, pady=(2, 2))
@@ -1193,18 +1168,63 @@ class DemoControllerGUI(Node):
             font=('Segoe UI', 7, 'italic'),
         ).pack(side='left', padx=(12, 0))
 
-        # ── Hand Posture Presets ─────────────────────────────────────────
-        preset_frame = ttk.LabelFrame(parent, text="Hand Posture Presets", padding=4)
-        preset_frame.pack(fill='both', expand=True, padx=8, pady=(2, 4))
+        # ── Sensor Calibration ─────────────────────────────────────────
+        # Triggers recalibration of hand sensors via /hand/calibration/command.
+        # Status updates arrive via /hand/calibration/status subscription.
+        calib_frame = ttk.LabelFrame(
+            parent, text="Sensor Calibration", padding=4)
+        calib_frame.pack(fill='x', padx=8, pady=2)
 
-        # Preset Treeview
+        for entry in SENSOR_CALIBRATIONS:
+            stype = entry["sensor_type"]
+            row = tk.Frame(calib_frame, bg='#1e1e2e')
+            row.pack(fill='x', pady=1)
+
+            tk.Label(row, text=entry["label"],
+                     bg='#1e1e2e', fg='#cdd6f4',
+                     font=('Segoe UI', 9, 'bold'),
+                     width=16, anchor='w').pack(side='left', padx=(2, 4))
+
+            ttk.Button(row, text="Calibrate",
+                       style='Send.TButton',
+                       command=lambda s=stype: self._send_calibration(
+                           s, CalibrationCommand.ACTION_START)).pack(
+                side='left', padx=2)
+            ttk.Button(row, text="Abort",
+                       command=lambda s=stype: self._send_calibration(
+                           s, CalibrationCommand.ACTION_ABORT)).pack(
+                side='left', padx=2)
+
+            status_var = tk.StringVar(value="IDLE")
+            status_lbl = tk.Label(row, textvariable=status_var,
+                                  bg='#1e1e2e', fg='#9399b2',
+                                  font=('Segoe UI', 9),
+                                  width=22, anchor='w')
+            status_lbl.pack(side='left', padx=(8, 2))
+            self._calib_status_vars[stype] = status_var
+            self._calib_status_labels[stype] = status_lbl
+
+            tk.Label(row, text=entry["hint"],
+                     bg='#1e1e2e', fg='#585b70',
+                     font=('Segoe UI', 7, 'italic')).pack(
+                side='left', padx=(4, 0))
+
+        # ── Hand Posture Presets ─────────────────────────────────────────
+        # Packed with expand=False so the LabelFrame shrinks to its
+        # natural content height (≈1/2 of the previous expand-to-fill
+        # size). The reclaimed space stays at the bottom of the tab.
+        preset_frame = ttk.LabelFrame(parent, text="Hand Posture Presets", padding=4)
+        preset_frame.pack(fill='x', expand=False, padx=8, pady=(2, 4))
+
+        # Preset Treeview — fixed to a 7-row height; the vertical
+        # scrollbar on the right takes over once more presets exist.
         tree_frame = tk.Frame(preset_frame, bg='#1e1e2e')
-        tree_frame.pack(fill='both', expand=True, padx=4, pady=(0, 4))
+        tree_frame.pack(fill='x', expand=False, padx=4, pady=(0, 4))
 
         columns = ('type', 'controller', 'grasp_time', 'robot_target', 'positions')
         self._preset_tree = ttk.Treeview(
             tree_frame, columns=columns, show='tree headings',
-            height=6, selectmode='browse')
+            height=7, selectmode='browse')
         self._preset_tree.heading('#0', text='Name', anchor='w')
         self._preset_tree.heading('type', text='Type', anchor='center')
         self._preset_tree.heading('controller', text='Controller', anchor='center')
@@ -1221,7 +1241,7 @@ class DemoControllerGUI(Node):
         tree_scroll = ttk.Scrollbar(tree_frame, orient='vertical',
                                      command=self._preset_tree.yview)
         self._preset_tree.configure(yscrollcommand=tree_scroll.set)
-        self._preset_tree.pack(side='left', fill='both', expand=True)
+        self._preset_tree.pack(side='left', fill='x', expand=True)
         tree_scroll.pack(side='right', fill='y')
 
         self._refresh_preset_tree()
@@ -1341,153 +1361,220 @@ class DemoControllerGUI(Node):
     # ---- Gains UI helpers ----------------------------------------------------
 
     def _prebuild_gains_panels(self):
-        """Pre-build gains UI for all controllers to avoid destroy/recreate on switch."""
+        """Pre-build gains UI for all controllers to avoid destroy/recreate on switch.
+
+        Gains are placed into functional group boxes ("CLIK Gains",
+        "Arm Trajectory", "Hand Trajectory", "Grasp Detection"). The
+        widget order appended to ``self._gain_entries`` still matches
+        the flat GAIN_DEFS order so ``_collect_gain_values`` /
+        ``_fill_gains_from_data`` continue to produce the correct
+        on-the-wire layout even when groups are interleaved. Groups
+        listed in ``GAIN_GROUP_PARENT_GRASP`` are routed to the Grasp
+        tab (``self._gains_grasp_inner``) instead of the Control tab
+        Gains panel, and their entries get no applied mirror.
+        """
         self._gains_panels = {}
         self._active_gains_ctrl = None
+
+        # Default max scalar inputs per row inside a group box.
+        DEFAULT_SCALARS_PER_ROW = 2
 
         for ctrl_idx in CONTROLLER_TYPES:
             panel_frame = tk.Frame(self._gains_inner, bg='#1e1e2e')
             applied_frame = tk.Frame(self._gains_applied_inner, bg='#1e1e2e')
+            grasp_frame = tk.Frame(self._gains_grasp_inner, bg='#1e1e2e')
 
-            entries = []
-            is_bool_list = []
-            applied_labels = []
+            entries: list = []
+            is_bool_list: list[bool] = []
+            applied_labels: list = []
 
             defs = GAIN_DEFS.get(ctrl_idx, [])
-            headers = GAIN_COL_HEADERS.get(ctrl_idx, [])
+            row_names_map = GAIN_ROW_NAMES.get(ctrl_idx, {})
             if not defs:
                 self._gains_panels[ctrl_idx] = {
                     'frame': panel_frame, 'applied_frame': applied_frame,
+                    'grasp_frame': grasp_frame,
                     'entries': entries, 'is_bool': is_bool_list,
                     'applied_labels': applied_labels,
                 }
                 continue
 
-            max_size = max(size for _, size, _, _ in defs)
-            row_names_map = GAIN_ROW_NAMES.get(ctrl_idx, {})
-
-            # Editable inputs
-            if max_size > 1:
-                for j, h in enumerate(headers):
-                    tk.Label(panel_frame, text=h,
-                             bg='#1e1e2e', fg='#89b4fa',
-                             font=('Segoe UI', 8, 'bold'),
-                             width=7, anchor='center').grid(
-                        row=0, column=j + 1, padx=2)
-
-            array_row = 1
-            scalar_frame = None
-
-            for label, size, defaults, is_bool in defs:
-                if size > 1:
-                    names = row_names_map.get(label)
-                    if names:
-                        for j, name in enumerate(names):
-                            tk.Label(panel_frame, text=name,
-                                     bg='#1e1e2e', fg='#f9e2af',
-                                     font=('Segoe UI', 7),
-                                     width=7, anchor='center').grid(
-                                row=array_row, column=j + 1, padx=2)
-                        array_row += 1
-
-                    tk.Label(panel_frame, text=label + ':',
-                             bg='#1e1e2e', fg='#cdd6f4',
-                             font=('Segoe UI', 8), anchor='e').grid(
-                        row=array_row, column=0, sticky='e', padx=(8, 4), pady=1)
-                    row_widgets = []
-                    for j in range(size):
-                        ent = ttk.Entry(panel_frame, width=7, justify='center')
-                        ent.insert(0, str(defaults[j]))
-                        ent.grid(row=array_row, column=j + 1, padx=2, pady=1)
-                        row_widgets.append(ent)
-                    entries.append(row_widgets)
-                    is_bool_list.append(False)
-                    array_row += 1
+            # Partition groups by destination parent.
+            control_groups: list[str] = []
+            grasp_groups: list[str] = []
+            seen = set()
+            for _, _, _, _, g in defs:
+                if g in seen:
+                    continue
+                seen.add(g)
+                if g in GAIN_GROUP_PARENT_GRASP:
+                    grasp_groups.append(g)
                 else:
-                    if scalar_frame is None:
-                        scalar_frame = tk.Frame(panel_frame, bg='#1e1e2e')
-                        scalar_frame.grid(row=array_row, column=0,
-                                          columnspan=max_size + 1,
-                                          sticky='w', pady=(6, 0))
-                    frm = tk.Frame(scalar_frame, bg='#1e1e2e')
-                    frm.pack(side='left', padx=8)
-                    tk.Label(frm, text=label,
-                             bg='#1e1e2e', fg='#cdd6f4',
-                             font=('Segoe UI', 8)).pack(anchor='w')
-                    if is_bool:
-                        var = tk.IntVar(value=int(defaults[0]))
-                        ttk.Checkbutton(frm, variable=var).pack(anchor='w')
-                        entries.append([var])
+                    control_groups.append(g)
+
+            # Resolve the Control-tab row layout: honor GAIN_GROUP_LAYOUT
+            # for listed groups and append any leftover control groups
+            # as a fallback row. Grasp-destined groups never enter the
+            # control-tab layout.
+            layout = GAIN_GROUP_LAYOUT.get(ctrl_idx)
+            if layout is not None:
+                laid_out = {g for row in layout for g in row}
+                missing = [g for g in control_groups if g not in laid_out]
+                row_layout: list[list[str]] = [
+                    [g for g in row if g not in GAIN_GROUP_PARENT_GRASP]
+                    for row in layout
+                ]
+                row_layout = [r for r in row_layout if r]
+                if missing:
+                    row_layout.append(missing)
+            else:
+                row_layout = [[g] for g in control_groups]
+
+            # Grasp-tab row layout: each grasp group occupies a row.
+            grasp_row_layout: list[list[str]] = [[g] for g in grasp_groups]
+
+            # One LabelFrame per group (editable panel + optional
+            # applied mirror). Inside each group the array_area sits to
+            # the left and the scalar_area to the right, so array-form
+            # gains (kp_*) and related scalars (damping, null_kp, …)
+            # stay on one row.
+            def _make_group_box(parent_row: tk.Widget, title: str) -> dict:
+                box = ttk.LabelFrame(parent_row, text=title, padding=4)
+                box.pack(side='left', anchor='nw', padx=(0, 4))
+                array_area = tk.Frame(box, bg='#1e1e2e')
+                array_area.pack(side='left', anchor='nw')
+                scalar_area = tk.Frame(box, bg='#1e1e2e')
+                scalar_area.pack(side='left', anchor='nw', padx=(12, 0))
+                return {
+                    'array_area': array_area, 'array_row': 0,
+                    'scalar_area': scalar_area,
+                    'scalar_row_frame': None, 'scalar_in_row': 0,
+                    'scalars_per_row': GROUP_SCALARS_PER_ROW.get(
+                        title, DEFAULT_SCALARS_PER_ROW),
+                }
+
+            group_boxes: dict[str, dict] = {}
+            group_boxes_a: dict[str, dict] = {}
+            for row_groups in row_layout:
+                row_frame = tk.Frame(panel_frame, bg='#1e1e2e')
+                row_frame.pack(fill='x', anchor='w', pady=(0, 3))
+                row_frame_a = tk.Frame(applied_frame, bg='#1e1e2e')
+                row_frame_a.pack(fill='x', anchor='w', pady=(0, 3))
+                for g in row_groups:
+                    group_boxes[g] = _make_group_box(row_frame, g)
+                    group_boxes_a[g] = _make_group_box(row_frame_a, g)
+
+            # Grasp-tab rows: editable only, no applied mirror.
+            for row_groups in grasp_row_layout:
+                row_frame_g = tk.Frame(grasp_frame, bg='#1e1e2e')
+                row_frame_g.pack(fill='x', anchor='w', pady=(0, 3))
+                for g in row_groups:
+                    group_boxes[g] = _make_group_box(row_frame_g, g)
+
+            def _place_array(box: dict, label: str, size: int,
+                             defaults: list, editable: bool
+                             ) -> list:
+                """Place an array row inside the group's array_area."""
+                area = box['array_area']
+                row = box['array_row']
+                names = row_names_map.get(label)
+                name_fg = '#f9e2af' if editable else '#585b70'
+                label_fg = '#cdd6f4' if editable else '#585b70'
+                if names:
+                    for j, name in enumerate(names):
+                        tk.Label(area, text=name,
+                                 bg='#1e1e2e', fg=name_fg,
+                                 font=('Segoe UI', 7),
+                                 width=7, anchor='center').grid(
+                            row=row, column=j + 1, padx=2)
+                    row += 1
+                tk.Label(area, text=label + ':',
+                         bg='#1e1e2e', fg=label_fg,
+                         font=('Segoe UI', 8), anchor='e').grid(
+                    row=row, column=0, sticky='e', padx=(8, 4), pady=1)
+                widgets: list = []
+                for j in range(size):
+                    if editable:
+                        ent = ttk.Entry(area, width=7, justify='center')
+                        ent.insert(0, str(defaults[j]))
+                        ent.grid(row=row, column=j + 1, padx=2, pady=1)
+                        widgets.append(ent)
                     else:
-                        ent = ttk.Entry(frm, width=8, justify='center')
-                        ent.insert(0, str(defaults[0]))
-                        ent.pack()
-                        entries.append([ent])
-                    is_bool_list.append(is_bool)
-
-            # Applied display (read-only mirror)
-            tk.Label(applied_frame, text="(press Apply Gains to update)",
-                     bg='#1e1e2e', fg='#585b70',
-                     font=('Segoe UI', 7, 'italic')).grid(
-                row=0, column=0, columnspan=max_size + 1, sticky='w')
-
-            if max_size > 1:
-                for j, h in enumerate(headers):
-                    tk.Label(applied_frame, text=h,
-                             bg='#1e1e2e', fg='#585b70',
-                             font=('Segoe UI', 8, 'bold'),
-                             width=7, anchor='center').grid(
-                        row=1, column=j + 1, padx=2)
-
-            array_row_a = 2
-            scalar_frame_a = None
-
-            for label, size, defaults, is_bool in defs:
-                if size > 1:
-                    names = row_names_map.get(label)
-                    if names:
-                        for j, name in enumerate(names):
-                            tk.Label(applied_frame, text=name,
-                                     bg='#1e1e2e', fg='#585b70',
-                                     font=('Segoe UI', 7),
-                                     width=7, anchor='center').grid(
-                                row=array_row_a, column=j + 1, padx=2)
-                        array_row_a += 1
-
-                    tk.Label(applied_frame, text=label + ':',
-                             bg='#1e1e2e', fg='#585b70',
-                             font=('Segoe UI', 8), anchor='e').grid(
-                        row=array_row_a, column=0, sticky='e',
-                        padx=(8, 4), pady=1)
-                    row_labels = []
-                    for j in range(size):
-                        lbl = tk.Label(applied_frame, text='---',
+                        lbl = tk.Label(area, text='---',
                                        bg='#1e1e2e', fg='#585b70',
                                        font=('Courier New', 8),
                                        width=7, anchor='center')
-                        lbl.grid(row=array_row_a, column=j + 1, padx=2, pady=1)
-                        row_labels.append(lbl)
-                    applied_labels.append(row_labels)
-                    array_row_a += 1
+                        lbl.grid(row=row, column=j + 1, padx=2, pady=1)
+                        widgets.append(lbl)
+                box['array_row'] = row + 1
+                return widgets
+
+            def _next_scalar_slot(box: dict) -> tk.Frame:
+                """Return a new Frame slot within the group's scalar_area,
+                wrapping to a new row after the group's scalars_per_row."""
+                if (box['scalar_row_frame'] is None
+                        or box['scalar_in_row'] >= box['scalars_per_row']):
+                    box['scalar_row_frame'] = tk.Frame(
+                        box['scalar_area'], bg='#1e1e2e')
+                    box['scalar_row_frame'].pack(fill='x', pady=1)
+                    box['scalar_in_row'] = 0
+                frm = tk.Frame(box['scalar_row_frame'], bg='#1e1e2e')
+                frm.pack(side='left', padx=8)
+                box['scalar_in_row'] += 1
+                return frm
+
+            for label, size, defaults, is_bool, group in defs:
+                in_grasp_tab = group in GAIN_GROUP_PARENT_GRASP
+
+                if size > 1:
+                    entries.append(_place_array(
+                        group_boxes[group], label, size, defaults, editable=True))
+                    is_bool_list.append(False)
+                    if in_grasp_tab:
+                        applied_labels.append([])
+                    else:
+                        applied_labels.append(_place_array(
+                            group_boxes_a[group], label, size, defaults,
+                            editable=False))
+                    continue
+
+                # ---- Editable scalar ----
+                frm = _next_scalar_slot(group_boxes[group])
+                tk.Label(frm, text=label,
+                         bg='#1e1e2e', fg='#cdd6f4',
+                         font=('Segoe UI', 8)).pack(anchor='w')
+                if is_bool:
+                    var = tk.IntVar(value=int(defaults[0]))
+                    ttk.Checkbutton(frm, variable=var).pack(anchor='w')
+                    entries.append([var])
                 else:
-                    if scalar_frame_a is None:
-                        scalar_frame_a = tk.Frame(applied_frame, bg='#1e1e2e')
-                        scalar_frame_a.grid(row=array_row_a, column=0,
-                                            columnspan=max_size + 1,
-                                            sticky='w', pady=(4, 0))
-                    frm = tk.Frame(scalar_frame_a, bg='#1e1e2e')
-                    frm.pack(side='left', padx=8)
-                    tk.Label(frm, text=label,
-                             bg='#1e1e2e', fg='#585b70',
-                             font=('Segoe UI', 8)).pack(anchor='w')
-                    lbl = tk.Label(frm, text='---',
-                                   bg='#1e1e2e', fg='#585b70',
-                                   font=('Courier New', 8))
-                    lbl.pack(anchor='w')
-                    applied_labels.append([lbl])
+                    ent = ttk.Entry(frm, width=8, justify='center')
+                    ent.insert(0, str(defaults[0]))
+                    ent.pack()
+                    entries.append([ent])
+                is_bool_list.append(is_bool)
+
+                if in_grasp_tab:
+                    # Grasp-tab groups intentionally have no applied
+                    # mirror; empty slot keeps list alignment for
+                    # `_update_applied_display`.
+                    applied_labels.append([])
+                    continue
+
+                # ---- Applied scalar mirror ----
+                frm_a = _next_scalar_slot(group_boxes_a[group])
+                tk.Label(frm_a, text=label,
+                         bg='#1e1e2e', fg='#585b70',
+                         font=('Segoe UI', 8)).pack(anchor='w')
+                lbl = tk.Label(frm_a, text='---',
+                               bg='#1e1e2e', fg='#585b70',
+                               font=('Courier New', 8))
+                lbl.pack(anchor='w')
+                applied_labels.append([lbl])
 
             self._gains_panels[ctrl_idx] = {
                 'frame': panel_frame, 'applied_frame': applied_frame,
+                'grasp_frame': grasp_frame,
                 'entries': entries, 'is_bool': is_bool_list,
                 'applied_labels': applied_labels,
             }
@@ -1500,9 +1587,11 @@ class DemoControllerGUI(Node):
             old = self._gains_panels[self._active_gains_ctrl]
             old['frame'].pack_forget()
             old['applied_frame'].pack_forget()
+            old['grasp_frame'].pack_forget()
         panel = self._gains_panels[ctrl_idx]
         panel['frame'].pack(fill='x')
         panel['applied_frame'].pack(fill='x', padx=2, pady=(0, 2))
+        panel['grasp_frame'].pack(fill='x')
         self._gain_entries = panel['entries']
         self._gain_is_bool = panel['is_bool']
         self._applied_label_widgets = panel['applied_labels']
