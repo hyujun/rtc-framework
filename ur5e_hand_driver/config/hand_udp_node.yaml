@@ -86,6 +86,15 @@
     sensor_topic: "/hand/sensor_states"       # HandSensorState 발행
     link_status_topic: "/hand/link_status"    # Bool 발행 (UDP 링크 상태)
 
+    # -- Sensor calibration (trigger + status) --
+    # CalibrationCommand 를 publish 하면 ur5e_hand_driver 가 지정 센서의
+    # baseline 재측정을 수행 (현재 barometer 지원).
+    # Status 토픽은 transient_local 이므로 late-join 구독자(GUI)가 최신 상태
+    # 즉시 수신. 진행률은 progress_count / target_count 로 계산.
+    calibration_command_topic: "/hand/calibration/command"
+    calibration_status_topic:  "/hand/calibration/status"
+    calibration_status_rate_hz: 5.0            # 상태 publish 주기 (Hz)
+
     # -- Failure Detector 설정 (50Hz non-RT jthread) --
     enable_failure_detector: true     # Failure detector 활성화
     failure_threshold: 5              # 연속 감지 횟수 임계값

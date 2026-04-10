@@ -212,6 +212,7 @@ class HandUdpTransport {
       }
       if (mode_out != static_cast<uint8_t>(joint_mode)) {
         ++comm_stats_.mode_mismatch;
+        return false;
       }
       if (received_mode) {
         *received_mode = static_cast<hand_packets::JointMode>(mode_out);
@@ -330,6 +331,7 @@ class HandUdpTransport {
       }
       if (mode_out != static_cast<uint8_t>(joint_mode)) {
         ++comm_stats_.mode_mismatch;
+        return false;
       }
       if (received_mode) {
         *received_mode = static_cast<hand_packets::JointMode>(mode_out);

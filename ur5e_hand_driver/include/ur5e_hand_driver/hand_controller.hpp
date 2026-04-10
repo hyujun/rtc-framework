@@ -59,6 +59,31 @@ enum class HandCommunicationMode {
   kBulk,        // 0x10 all motors + 0x19 all sensors
 };
 
+// ── Sensor calibration (matches rtc_msgs::msg::CalibrationCommand/Status) ─
+// Kept independent of rtc_msgs to avoid adding a message dependency in this
+// header. The ROS node is responsible for translating msg enums to these.
+namespace hand_calibration {
+// Sensor types
+constexpr uint8_t kSensorBarometer = 0;
+constexpr uint8_t kSensorFtZero    = 1;  // reserved
+constexpr uint8_t kSensorTofDark   = 2;  // reserved
+// Actions
+constexpr uint8_t kActionStart = 0;
+constexpr uint8_t kActionAbort = 1;
+// States
+constexpr uint8_t kStateIdle     = 0;
+constexpr uint8_t kStateRunning  = 1;
+constexpr uint8_t kStateComplete = 2;
+constexpr uint8_t kStateFailed   = 3;
+}  // namespace hand_calibration
+
+struct CalibrationStatusSnapshot {
+  uint8_t  sensor_type{0};
+  uint8_t  state{hand_calibration::kStateIdle};
+  uint16_t progress_count{0};
+  uint16_t target_count{0};
+};
+
 class HandController {
  public:
   using StateCallback = std::function<void(const HandState&, const FingertipFTState&)>;
@@ -271,6 +296,55 @@ class HandController {
 
   void SetTargetPositions(const std::array<float, kNumHandMotors>& positions) noexcept {
     SendCommandAndRequestStates(positions);
+  }
+
+  // ── Sensor calibration trigger (ROS thread -> EventLoop handoff) ───────
+
+  /// Request a sensor calibration action. Safe to call from ROS subscriber
+  /// threads. The actual reset/state mutation happens on the EventLoop
+  /// thread, so existing sensor data structures stay single-threaded.
+  /// Only one request is in-flight at a time; additional requests before the
+  /// EventLoop consumes the pending one will overwrite it (last-wins).
+  void RequestCalibration(uint8_t sensor_type,
+                          uint8_t action,
+                          uint16_t sample_count) noexcept {
+    pending_calib_.sensor_type  = sensor_type;
+    pending_calib_.action       = action;
+    pending_calib_.sample_count = sample_count;
+    calib_request_pending_.store(true, std::memory_order_release);
+  }
+
+  /// Snapshot of the latest calibration progress for a given sensor.
+  /// Safe to call from any thread (reads EventLoop-owned state via snapshot
+  /// accessors that are either atomic or only mutated in known contexts).
+  [[nodiscard]] CalibrationStatusSnapshot GetCalibrationStatus(
+      uint8_t sensor_type) const noexcept {
+    CalibrationStatusSnapshot snap{};
+    snap.sensor_type = sensor_type;
+    switch (sensor_type) {
+      case hand_calibration::kSensorBarometer: {
+        if (!ft_enabled_ || !ft_inferencer_) {
+          snap.state = hand_calibration::kStateFailed;
+          break;
+        }
+        const int cnt    = ft_inferencer_->calibration_count();
+        const int target = ft_inferencer_->calibration_target();
+        snap.progress_count = static_cast<uint16_t>(cnt < 0 ? 0 : cnt);
+        snap.target_count   = static_cast<uint16_t>(target < 0 ? 0 : target);
+        if (ft_inferencer_->is_calibrated()) {
+          snap.state = hand_calibration::kStateComplete;
+        } else if (cnt > 0) {
+          snap.state = hand_calibration::kStateRunning;
+        } else {
+          snap.state = hand_calibration::kStateIdle;
+        }
+        break;
+      }
+      default:
+        snap.state = hand_calibration::kStateFailed;
+        break;
+    }
+    return snap;
   }
 
   // ── State access ───────────────────────────────────────────────────────
@@ -627,9 +701,47 @@ class HandController {
     }
   }
 
+  // Consume any pending calibration request. Called on EventLoop thread.
+  void DispatchCalibrationRequest() noexcept {
+    if (!calib_request_pending_.load(std::memory_order_acquire)) return;
+    const PendingCalibration req = pending_calib_;
+    calib_request_pending_.store(false, std::memory_order_release);
+
+    switch (req.sensor_type) {
+      case hand_calibration::kSensorBarometer: {
+        if (!ft_inferencer_) {
+          RCLCPP_WARN(rclcpp::get_logger("HandController"),
+                      "Calibration: barometer request ignored (no inferencer)");
+          return;
+        }
+        if (req.action == hand_calibration::kActionStart) {
+          RCLCPP_INFO(rclcpp::get_logger("HandController"),
+                      "Calibration: barometer START (sample_count=%u)",
+                      static_cast<unsigned>(req.sample_count));
+          ft_inferencer_->ResetCalibration(req.sample_count);
+        } else if (req.action == hand_calibration::kActionAbort) {
+          RCLCPP_INFO(rclcpp::get_logger("HandController"),
+                      "Calibration: barometer ABORT (noop)");
+          // Currently barometer cal has no externally-visible abort state;
+          // leaving the in-progress buffers alone is acceptable.
+        }
+        break;
+      }
+      // Future sensors: add cases here.
+      default:
+        RCLCPP_WARN(rclcpp::get_logger("HandController"),
+                    "Calibration: unknown sensor_type=%u",
+                    static_cast<unsigned>(req.sensor_type));
+        break;
+    }
+  }
+
   // Run FT calibration or inference. Returns inference elapsed time in us.
   double RunFTInference(
       const std::array<int32_t, kMaxHandSensors>& sensor_data) noexcept {
+    // Consume any pending calibration request before processing this cycle.
+    DispatchCalibrationRequest();
+
     if (!ft_enabled_ || !ft_inferencer_) return 0.0;
 
     if (!ft_inferencer_->is_calibrated()) {
@@ -685,6 +797,17 @@ class HandController {
 
   // Link health
   std::atomic<uint64_t> consecutive_recv_failures_{0};
+
+  // Pending calibration request (ROS thread -> EventLoop handoff).
+  // Written by RequestCalibration() (arbitrary thread), consumed by
+  // DispatchCalibrationRequest() (EventLoop thread). Last-wins semantics.
+  struct PendingCalibration {
+    uint8_t  sensor_type{0};
+    uint8_t  action{0};
+    uint16_t sample_count{0};
+  };
+  PendingCalibration pending_calib_{};
+  std::atomic<bool>  calib_request_pending_{false};
 
   std::jthread event_thread_;
 };

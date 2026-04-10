@@ -37,7 +37,7 @@ ros2 topic echo /system/estop_status                  # true = E-STOP active
 | `rtc_controllers` | Library | PController, JointPDController, ClikController, OSC, GraspController (adaptive PI force) |
 | `rtc_controller_manager` | Executable | `RtControllerNode`: 500Hz RT loop, SPSC publish offload, CSV logging, E-STOP, digital twin |
 | `rtc_inference` | Header-only | `InferenceEngine` abstract, `OnnxEngine` (IoBinding, pre-allocated buffers) |
-| `rtc_msgs` | Messages | JointCommand, HandSensorState, GraspState, RobotTarget, SimSensor/SimSensorState, etc. |
+| `rtc_msgs` | Messages | JointCommand, HandSensorState, GraspState, RobotTarget, SimSensor/SimSensorState, CalibrationCommand/Status, etc. |
 | `rtc_mujoco_sim` | Executable | MuJoCo 3.x wrapper: sync-step, GLFW viewer, multi-group, position servo |
 | `rtc_tools` | Python | controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf |
 | `rtc_scripts` | Shell | PREEMPT_RT build, CPU shield, IRQ affinity, UDP optimization |
@@ -196,6 +196,94 @@ Key config files (see each file for full parameter documentation):
 1. Define `ThreadConfig` for all core tiers in `rtc_base/threading/thread_config.hpp`
 2. Add to `SystemThreadConfigs`, update `ValidateSystemThreadConfigs()` + `SelectThreadConfigs()`
 3. Call `ApplyThreadConfig()` at thread entry; use SCHED_FIFO for RT threads
+
+### Updating an Existing Package
+
+When modifying code in any package (bug fix, feature addition, refactoring, API change, dependency update, etc.), you **MUST** complete ALL of the following steps before considering the task done. Do not skip any step.
+
+#### 1. Unit Tests — Update & Run
+
+- **Identify affected tests**: Find all test files related to the changed code. Use the test table in the [Testing](#testing) section and check `<package>/test/` directory.
+- **Update existing tests**: If the change modifies public API, function signatures, behavior, or data types, update corresponding test cases to match. Ensure assertions reflect the new expected behavior.
+- **Add new tests**: If the change introduces new functionality (new function, new class, new branch/state), add test cases that cover:
+  - Normal/happy path
+  - Edge cases and boundary conditions
+  - Error handling paths (if applicable)
+- **For C++ tests (GTest)**: Add test entries in `<package>/CMakeLists.txt` under `ament_add_gtest()` if new test files are created.
+- **For Python tests (pytest)**: Ensure new test files follow the `test_*.py` naming convention and are discoverable by pytest.
+- **Run tests and verify**:
+  ```bash
+  # Build the package first
+  ./build.sh -p <package_name>
+
+  # Run tests for the specific package
+  colcon test --packages-select <package_name> --event-handlers console_direct+
+  colcon test-result --verbose
+
+  # If a specific test fails, run it individually to debug
+  # C++:
+  colcon test --packages-select <package_name> --ctest-args -R <test_name>
+  # Python:
+  colcon test --packages-select <package_name> --pytest-args -k <test_name>
+  ```
+- **All tests must pass** before proceeding. If a test failure is unrelated to the current change, note it explicitly but do not ignore it silently.
+
+#### 2. CMakeLists.txt — Verify & Update
+
+- **Source files**: If new `.cpp` files were added or existing ones renamed/removed, update `add_library()` or `add_executable()` target source lists.
+- **Header install**: If new public headers were added, verify they are included in `install(DIRECTORY include/ ...)`.
+- **Dependencies**: If new `find_package()` or `ament_target_dependencies()` are needed (e.g., new ROS2 package dependency, new third-party library), add them.
+- **Test targets**: If new test files were added, add corresponding `ament_add_gtest()` or `ament_add_pytest_test()` entries.
+- **Message generation**: For `rtc_msgs`, if `.msg`/`.srv`/`.action` files were added or removed, update `rosidl_generate_interfaces()`.
+- **Ensure the package builds cleanly** with `./build.sh -p <package_name>` after CMakeLists.txt changes.
+
+#### 3. package.xml — Verify & Update
+
+- **Dependencies**: If new package dependencies were introduced, add the appropriate tags:
+  - `<build_depend>` for build-time only dependencies
+  - `<exec_depend>` for runtime only dependencies
+  - `<depend>` for both build and runtime dependencies
+  - `<test_depend>` for test-only dependencies
+- **Version**: Bump `<version>` if the change is significant (new feature, breaking API change). Follow semantic versioning.
+- **Description**: Update `<description>` if the package scope has changed.
+- **Consistency**: Ensure `package.xml` dependencies match `CMakeLists.txt` `find_package()` calls — they must be in sync.
+
+#### 4. Config Files (YAML) — Verify & Update
+
+- **Parameter changes**: If code changes add, remove, or rename configurable parameters, update all relevant YAML config files:
+  - Controller configs: `rtc_controllers/config/controllers/{direct|indirect}/*.yaml`
+  - Robot/sim configs: `ur5e_bringup/config/ur5e_robot.yaml`, `ur5e_sim.yaml`
+  - MuJoCo configs: `rtc_mujoco_sim/config/*.yaml`
+  - Hand driver config: `ur5e_hand_driver/config/hand_udp_node.yaml`
+  - Digital twin config: `rtc_digital_twin/config/digital_twin.yaml`
+- **Default values**: If default parameter values changed in code, update the corresponding YAML values to remain consistent.
+- **Comments**: Add or update inline YAML comments for new/changed parameters to document valid ranges and units.
+- **Topic routing**: If topic names or device groups changed, update the `topics:` section in affected controller YAMLs.
+
+#### 5. README.md — Verify & Update
+
+- **Each package has its own `README.md`** with detailed API and configuration documentation. Update it to reflect:
+  - New/changed public API (functions, classes, parameters)
+  - Updated usage examples if behavior changed
+  - New/changed configuration parameters and their descriptions
+  - Updated dependency information
+- **If the change affects cross-package behavior**, also update:
+  - This `CLAUDE.md` file (architecture, data flow, tables, key file locations)
+  - Supplementary docs in `docs/` if applicable (RT_OPTIMIZATION.md, SHELL_SCRIPTS.md, etc.)
+
+#### 6. Final Verification
+
+After all updates are complete, perform a final check:
+```bash
+# Build the package (and downstream dependents if API changed)
+./build.sh -p <package_name>
+
+# Run all tests for affected packages
+colcon test --packages-select <package_name> [<dependent_packages>...] --event-handlers console_direct+
+colcon test-result --verbose
+```
+
+If the change touches `rtc_base` or `rtc_msgs` (widely depended-upon packages), build and test all downstream packages per the dependency graph above.
 
 ---
 

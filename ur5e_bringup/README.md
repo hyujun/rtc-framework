@@ -151,6 +151,23 @@ position_output = quintic(t, q_start, q_goal, duration)
 
 **ContactStopHand:** 핑거팁 센서에서 힘 감지 시 핸드 궤적 출력을 현재 위치로 동결하여 과도한 hand closure를 방지합니다.
 
+**Release-Phase Skip (contact_stop 모드 전용):** 사용자가 토픽(`/hand/joint_goal`)으로 손을 여는 방향의 goal을 내린 경우에는 접촉 잔존 힘이 있더라도 contact_stop 동결을 자동으로 건너뜁니다. 아래 3개 조건이 모두 성립해야 release 의도로 인정됩니다 (ε = 0.005 rad 히스테리시스):
+
+- `thumb_cmc_fe`: `target > actual + ε` (각도 증가 = loosening)
+- `index_mcp_fe`: `target < actual − ε` (각도 감소 = loosening)
+- `middle_mcp_fe`: `target < actual − ε` (각도 감소 = loosening)
+
+발동 시 `/rosout` 에 `[contact_stop] SKIP (release) dthumb_fe=... dindex_fe=... dmid_fe=...` 로그가 1초 간격으로 출력됩니다. freeze 가 실제로 적용될 때에는 `[contact_stop] FREEZE ...` 로그가 출력됩니다.
+
+**Force-PI Grasp/Release 버튼 (GUI):** `demo_controller_gui` 의 Grasp 탭에 있는 `▶ Grasp` / `■ Release` 버튼은 **`grasp_controller_type: "force_pi"`** YAML 설정에서만 동작합니다. 기본 `"contact_stop"` 모드에서는 컨트롤러가 명령을 조용히 무시하며, `/rosout` 에 throttled WARN 로그가 출력됩니다:
+
+```
+[grasp] Grasp command ignored: grasp_controller_type='contact_stop'
+  (require 'force_pi' in YAML to enable Grasp/Release buttons)
+```
+
+force_pi 모드에서는 phase 전이(`Idle → Approaching → Contact → ForceControl → Holding → Releasing`)가 `[grasp:force_pi] phase X -> Y target_force=...N` 로그로 출력되며, 500Hz 제어 루프에서는 2초 간격으로 `[grasp] type=... active=.../... max_force=...N` 상태 스냅샷이 출력됩니다.
+
 ---
 
 ### DemoTaskController (Index 5)
@@ -164,7 +181,8 @@ pos_error = x_traj(t) - FK(q)
 J^# = J^T (J J^T + lambda^2 I)^{-1}
 N   = I - J^# J
 dq  = kp * J^# * pos_error + traj_velocity + null_kp * N * (q_null - q)
-q_cmd = q + clamp(dq, +/-v_max) * dt
+q_des += clamp(dq, +/-v_max) * dt          (trajectory 갱신 시 q_des = q_actual로 초기화)
+q_cmd  = q_des
 ```
 
 **타겟 입력 형식:**
@@ -178,8 +196,8 @@ q_cmd = q + clamp(dq, +/-v_max) * dt
 
 | 파라미터 | YAML 기본값 | 설명 |
 |---------|------------|------|
-| `kp_translation` | `[400.0, 400.0, 400.0]` | 위치 비례 게인 (x, y, z) [1/s] |
-| `kp_rotation` | `[200.0, 200.0, 200.0]` | 자세 비례 게인 (rx, ry, rz) [1/s] |
+| `kp_translation` | `[5.0, 5.0, 5.0]` | 위치 비례 게인 (x, y, z) [1/s] |
+| `kp_rotation` | `[2.0, 2.0, 2.0]` | 자세 비례 게인 (rx, ry, rz) [1/s] |
 | `damping` | `0.01` | 의사역행렬 감쇠 계수 lambda |
 | `null_kp` | `0.5` | 영공간 관절 센터링 게인 |
 | `enable_null_space` | `false` | 영공간 활성화 (3-DOF 모드에서만 동작) |

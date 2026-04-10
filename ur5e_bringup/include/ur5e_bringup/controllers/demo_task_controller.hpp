@@ -11,11 +11,16 @@
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
 
+#include <rclcpp/clock.hpp>
+#include <rclcpp/logger.hpp>
+#include <rclcpp/logging.hpp>
+
 #include <Eigen/Cholesky>   // LDLT
 #include <Eigen/Core>
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -48,7 +53,8 @@ namespace trajectory = rtc::trajectory;
 ///   J^#          = J^T (J J^T + λ²I)^{−1}         [damped pseudoinverse]
 ///   N            = I − J^# J                        [null-space projector]
 ///   dq           = kp · J^# · pos_error + null_kp · N · (q_null − q)
-///   q_cmd        = q + clamp(dq, ±v_max) * dt
+///   q_des       += clamp(dq, ±v_max) * dt        [q_des = q_actual at trajectory init]
+///   q_cmd        = q_des
 /// @endcode
 ///
 /// ### Hand control law (same as DemoJointController)
@@ -72,8 +78,8 @@ public:
   struct Gains
   {
     // Arm (CLIK) gains — translation / rotation separated
-    std::array<double, 3> kp_translation{{400.0, 400.0, 400.0}}; ///< Translation proportional gain (x,y,z) [1/s]
-    std::array<double, 3> kp_rotation{{200.0, 200.0, 200.0}};    ///< Rotation proportional gain (rx,ry,rz) [1/s]
+    std::array<double, 3> kp_translation{{5.0, 5.0, 5.0}}; ///< Translation proportional gain (x,y,z) [1/s]
+    std::array<double, 3> kp_rotation{{2.0, 2.0, 2.0}};    ///< Rotation proportional gain (rx,ry,rz) [1/s]
     double damping{0.01};            ///< Damping factor λ for J^#
     double null_kp{0.5};             ///< Null-space joint-centering gain [1/s]
     bool   enable_null_space{true};  ///< Enable null-space secondary task
@@ -217,6 +223,7 @@ private:
   Eigen::MatrixXd Jpinv_;
   Eigen::MatrixXd N_;
   Eigen::VectorXd dq_;
+  Eigen::VectorXd desired_q_;     ///< nv: integrated desired joint position
   Eigen::VectorXd traj_dq_;       // feedforward-only trajectory velocity (for logging)
   Eigen::VectorXd null_err_;
   Eigen::VectorXd null_dq_;
@@ -257,6 +264,21 @@ private:
   static constexpr std::array<std::array<int, 3>, 3> kFingerJointMap{{
     {0, 1, 2}, {3, 4, 5}, {6, 7, 8}
   }};
+
+  /// Hand joint indices (matches ur5e hand joint order in YAML).
+  /// Used by the contact_stop release-phase gate.
+  static constexpr std::size_t kHandIdxThumbCmcFe  = 1;
+  static constexpr std::size_t kHandIdxIndexMcpFe  = 4;
+  static constexpr std::size_t kHandIdxMiddleMcpFe = 7;
+  /// Hysteresis on target↔actual delta to reject sensor noise (rad).
+  static constexpr double kContactStopReleaseEps = 0.005;
+
+  /// Previous grasp phase (for state-transition logging; non-RT critical).
+  uint8_t prev_grasp_phase_{0};
+
+  // ── Logging (throttled, debug only — RT-safe by throttle interval) ───────
+  rclcpp::Logger logger_{rclcpp::get_logger("DemoTaskController")};
+  rclcpp::Clock  log_clock_{RCL_STEADY_TIME};
 
   // ── E-STOP ────────────────────────────────────────────────────────────────
   std::atomic<bool> estopped_{false};

@@ -37,13 +37,19 @@
 
   <!-- ================================================================== -->
   <!-- SlowDescend: 저속 게인 설정 후 목표로 이동                            -->
-  <!--   Ports: target_pose, traj_speed, pos_tol, ori_tol, timeout_s     -->
+  <!--   Ports: target_pose, traj_speed, pos_tol, ori_tol, timeout_s,     -->
+  <!--          constant_z (선택)                                          -->
+  <!--   constant_z가 NaN이 아니면 target_pose의 Z를 이 절대값으로 덮어씀.  -->
+  <!--   NaN(또는 미지정)이면 target_pose를 그대로 사용.                   -->
   <!-- ================================================================== -->
   <BehaviorTree ID="SlowDescend">
     <Sequence>
       <SetGains current_gains="{current_gains}"
                 trajectory_speed="{traj_speed}"/>
-      <MoveToPose target="{target_pose}"
+      <SetPoseZ input_pose="{target_pose}"
+                z="{constant_z}"
+                output_pose="{descend_pose}"/>
+      <MoveToPose target="{descend_pose}"
                   position_tolerance="{pos_tol}"
                   orientation_tolerance="{ori_tol}"
                   timeout_s="{timeout_s}"/>

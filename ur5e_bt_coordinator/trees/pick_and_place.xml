@@ -78,6 +78,7 @@
                pos_tol="0.002"
                ori_tol="0.05"
                timeout_s="8.0"
+               constant_z="{object_final_z}"
                current_gains="{current_gains}"/>
 
       <!-- ======================================================== -->
@@ -237,6 +238,7 @@
                pos_tol="0.002"
                ori_tol="0.05"
                timeout_s="8.0"
+               constant_z="{object_final_z}"
                current_gains="{current_gains}"/>
 
       <!-- ======================================================== -->

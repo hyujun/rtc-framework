@@ -43,6 +43,7 @@ ClikController::ClikController(std::string_view urdf_path, Gains gains)
   Jpinv_ = Eigen::MatrixXd::Zero(nv, 3);
   N_ = Eigen::MatrixXd::Identity(nv, nv);
   dq_ = Eigen::VectorXd::Zero(nv);
+  desired_q_ = Eigen::VectorXd::Zero(nv);
   traj_dq_ = Eigen::VectorXd::Zero(nv);
   null_err_ = Eigen::VectorXd::Zero(nv);
   null_dq_ = Eigen::VectorXd::Zero(nv);
@@ -204,6 +205,10 @@ ControllerOutput ClikController::Compute(
       }
 
       trajectory_time_ = 0.0;
+      // Initialize desired_q_ from current actual joint positions
+      for (int i = 0; i < nv; ++i) {
+        desired_q_[i] = dev0.positions[static_cast<std::size_t>(i)];
+      }
       new_target_.store(false, std::memory_order_relaxed);
     }
   }
@@ -256,9 +261,9 @@ ControllerOutput ClikController::Compute(
     }
 
     Eigen::Matrix<double, 6, 1> task_vel_6d = kp_vec_6d.cwiseProduct(pos_error_6d_);
-    // Feedforward: local → world-aligned via R_current
-    task_vel_6d.head<3>() += tcp_pose.rotation() * traj_state_.velocity.linear();
-    task_vel_6d.tail<3>() += tcp_pose.rotation() * traj_state_.velocity.angular();
+    // Feedforward: trajectory local → world-aligned via R_trajectory (not R_current)
+    task_vel_6d.head<3>() += traj_state_.pose.rotation() * traj_state_.velocity.linear();
+    task_vel_6d.tail<3>() += traj_state_.pose.rotation() * traj_state_.velocity.angular();
 
     dq_.noalias() = Jpinv_6d_ * task_vel_6d;
   } else {
@@ -271,18 +276,18 @@ ControllerOutput ClikController::Compute(
 
     Eigen::Vector3d kp_vec(gains_.kp_translation[0], gains_.kp_translation[1], gains_.kp_translation[2]);
     Eigen::Vector3d task_vel = kp_vec.cwiseProduct(pos_error_) +
-        tcp_pose.rotation() * traj_state_.velocity.linear();
+        traj_state_.pose.rotation() * traj_state_.velocity.linear();
     dq_.noalias() = Jpinv_ * task_vel;
   }
 
   // ── Feedforward-only trajectory velocity (for logging) ────────────────
   if (gains_.control_6dof) {
     Eigen::Matrix<double, 6, 1> ff_vel_6d;
-    ff_vel_6d.head<3>() = tcp_pose.rotation() * traj_state_.velocity.linear();
-    ff_vel_6d.tail<3>() = tcp_pose.rotation() * traj_state_.velocity.angular();
+    ff_vel_6d.head<3>() = traj_state_.pose.rotation() * traj_state_.velocity.linear();
+    ff_vel_6d.tail<3>() = traj_state_.pose.rotation() * traj_state_.velocity.angular();
     traj_dq_.noalias() = Jpinv_6d_ * ff_vel_6d;
   } else {
-    traj_dq_.noalias() = Jpinv_ * (tcp_pose.rotation() * traj_state_.velocity.linear());
+    traj_dq_.noalias() = Jpinv_ * (traj_state_.pose.rotation() * traj_state_.velocity.linear());
   }
 
   // ── Step 6: Null-space secondary task ────────────────────────────────────
@@ -313,11 +318,11 @@ ControllerOutput ClikController::Compute(
   ClampVelocity(out0.target_velocities, nc0);
 
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.commands[i] = dev0.positions[i] + out0.target_velocities[i] * dt;
+    desired_q_[static_cast<Eigen::Index>(i)] += out0.target_velocities[i] * dt;
+    out0.commands[i] = desired_q_[static_cast<Eigen::Index>(i)];
     // Pure trajectory feedforward velocity (without Kp error / null-space)
     out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
-    // Trajectory-implied joint position = current + feedforward * dt
-    out0.trajectory_positions[i] = dev0.positions[i] + out0.trajectory_velocities[i] * dt;
+    out0.trajectory_positions[i] = desired_q_[static_cast<Eigen::Index>(i)];
   }
   for (std::size_t i = 0; i < 3; ++i) {
     out0.target_positions[i] = traj_state_.pose.translation()[static_cast<Eigen::Index>(i)];
@@ -454,6 +459,11 @@ void ClikController::InitializeHoldPosition(
   std::span<const double> q_span(q_buf.data(), static_cast<std::size_t>(nv));
   handle_->ComputeForwardKinematics(q_span);
   const pinocchio::SE3 & tcp_pose = handle_->GetFramePlacement(tip_frame_id_);
+
+  // Initialize desired_q_ from current actual joint positions
+  for (int i = 0; i < nv; ++i) {
+    desired_q_[i] = dev0.positions[static_cast<std::size_t>(i)];
+  }
 
   std::lock_guard lock(target_mutex_);
   tcp_target_pose_ = tcp_pose;

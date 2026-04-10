@@ -51,7 +51,8 @@ namespace rtc
 ///   dq           = kp      * J_pos^# * pos_error          [primary task]
 ///              +   null_kp * N        * (q_null − q)       [secondary task]
 ///
-///   q_cmd        = q + clamp(dq, ±v_max) * dt
+///   q_des       += clamp(dq, ±v_max) * dt        [q_des = q_actual at trajectory init]
+///   q_cmd        = q_des
 /// @endcode
 ///
 /// ### Target convention (`SetRobotTarget` / `/target_joint_positions` topic)
@@ -141,6 +142,7 @@ private:
   Eigen::MatrixXd Jpinv_;      ///< nv×3: damped pseudoinverse J_pos^#
   Eigen::MatrixXd N_;          ///< nv×nv: null-space projector I − J_pos^# J_pos
   Eigen::VectorXd dq_;         ///< nv: joint velocity command
+  Eigen::VectorXd desired_q_;  ///< nv: integrated desired joint position
   Eigen::VectorXd traj_dq_;    ///< nv: feedforward-only trajectory velocity (for logging)
   Eigen::VectorXd null_err_;   ///< nv: (q_null − q_current)
   Eigen::VectorXd null_dq_;    ///< nv: null-space contribution to dq

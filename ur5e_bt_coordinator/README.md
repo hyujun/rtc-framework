@@ -92,6 +92,7 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 | `SetGains` | SyncAction | 컨트롤러 gain 동적 변경 (DemoTask 19개 / DemoJoint 7개 요소 배열). max_traj_velocity 계열은 current_gains에서 자동 로드 (BT에서 설정 불가) | `kp_translation`, `kp_rotation`, `damping`, `null_kp`, `enable_null_space`, `control_6dof`, `trajectory_speed`, `trajectory_angular_speed`, `hand_trajectory_speed`, `full_gains`, `current_gains` |
 | `SwitchController` | StatefulAction | 활성 컨트롤러 전환 (joint ↔ task) | `controller_name`, `timeout_s`(3.0) |
 | `ComputeOffsetPose` | SyncAction | Pose에 XYZ offset 적용 (approach, lift, retreat 계산) | `input_pose`, `offset_x`(0.0), `offset_y`(0.0), `offset_z`(0.0) → 출력: `output_pose` |
+| `SetPoseZ` | SyncAction | Pose의 Z좌표를 절대값으로 덮어씀 (X, Y, 방향 유지). `z`가 NaN(기본값)이면 pass-through. Object final goal의 Z를 고정하는 용도 | `input_pose`, `z`(NaN) → 출력: `output_pose` |
 | `ComputeSweepTrajectory` | SyncAction | Arc sweep 경로 waypoint 생성 (towel unfold용, sinusoidal arc 프로파일) | `start_pose`, `direction_x`(1.0), `direction_y`(0.0), `distance`(0.3), `arc_height`(0.05), `num_waypoints`(8) → 출력: `waypoints` |
 | `WaitDuration` | StatefulAction | 지정 시간 대기 | `duration_s`(0.5) |
 | `MoveFinger` | StatefulAction | 특정 손가락을 명명된 포즈로 이동 (trajectory duration 추정 기반 완료, partial hand update) | `finger_name`, `pose`, `hand_trajectory_speed`(1.0), `current_gains` |
@@ -156,6 +157,13 @@ YAML의 `bb.<key>` 형식으로 선언하면 트리 로드 후 Blackboard에 자
 
 **Pick and Place (`pick_and_place.xml`):**
 - `bb.place_pose`: 물체를 놓을 목표 pose (형식: `"x;y;z;roll;pitch;yaw"`)
+- `bb.object_final_z` (double, 기본 `.nan`): Phase 5 (`SlowDescend`)에서 object
+  final goal의 Z를 이 절대값으로 덮어씀. `.nan`이면 비전 감지 Z를 그대로 사용
+  (pass-through). 테이블 표면이 알려진 경우 등, 고정 Z로 최종 접근하고 싶을 때
+  실제 값(예: `0.085`)을 지정. `SetPoseZ` 노드가 `SlowDescend` 내부에서 Z만
+  교체하며 X, Y, 방향은 감지된 object pose를 그대로 유지한다. Phase 4
+  (ApproachFromAbove)와 Phase 7 (LiftAndVerify)는 원본 `{object_pose}` 기준으로
+  동작하므로 영향이 없다.
 
 **Towel Unfold (`towel_unfold.xml`):**
 - `bb.sweep_direction_x`, `bb.sweep_direction_y`: sweep 방향 벡터

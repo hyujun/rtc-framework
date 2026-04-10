@@ -15,6 +15,7 @@
 #include "ur5e_bt_coordinator/action_nodes/move_to_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/set_gains.hpp"
 #include "ur5e_bt_coordinator/action_nodes/set_hand_pose.hpp"
+#include "ur5e_bt_coordinator/action_nodes/set_pose_z.hpp"
 #include "ur5e_bt_coordinator/action_nodes/switch_controller.hpp"
 #include "ur5e_bt_coordinator/action_nodes/track_trajectory.hpp"
 #include "ur5e_bt_coordinator/action_nodes/trigger_shape_estimation.hpp"
@@ -50,6 +51,7 @@ protected:
     factory_.registerNodeType<SetGains>("SetGains", null_bridge);
     factory_.registerNodeType<SwitchController>("SwitchController", null_bridge);
     factory_.registerNodeType<ComputeOffsetPose>("ComputeOffsetPose");
+    factory_.registerNodeType<SetPoseZ>("SetPoseZ");
     factory_.registerNodeType<ComputeSweepTrajectory>("ComputeSweepTrajectory");
     factory_.registerNodeType<ComputeTiltSequence>("ComputeTiltSequence");
     factory_.registerNodeType<GetCurrentPose>("GetCurrentPose", null_bridge);

@@ -97,6 +97,21 @@ TEST_F(FingertipFTInferencerTest, BaselineOffset_DefaultEmpty)
   }
 }
 
+TEST_F(FingertipFTInferencerTest, ResetCalibration_NoCrash)
+{
+  // Should be safe to call on a freshly constructed inferencer
+  // (both stub and real implementation must be noexcept).
+  EXPECT_NO_THROW(inferencer_.ResetCalibration());
+  EXPECT_NO_THROW(inferencer_.ResetCalibration(10));
+  // After reset, baseline offsets remain all zero.
+  const auto offsets = inferencer_.baseline_offset();
+  for (const auto& finger : offsets) {
+    for (float val : finger) {
+      EXPECT_FLOAT_EQ(val, 0.0f);
+    }
+  }
+}
+
 // ── Config struct defaults ──────────────────────────────────────────────────
 
 TEST(FingertipFTInferencerConfig, Defaults)
