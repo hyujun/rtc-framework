@@ -9,6 +9,8 @@
 #include <rtc_msgs/msg/joint_command.hpp>
 #include <rtc_msgs/msg/hand_sensor_state.hpp>
 #include <rtc_msgs/msg/fingertip_sensor.hpp>
+#include <rtc_msgs/msg/calibration_command.hpp>
+#include <rtc_msgs/msg/calibration_status.hpp>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -167,11 +169,22 @@ class HandUdpNode : public rclcpp::Node {
     declare_parameter("motor_state_topic", std::string("/hand/motor_states"));
     declare_parameter("sensor_topic", std::string("/hand/sensor_states"));
     declare_parameter("link_status_topic", std::string("/hand/link_status"));
+    declare_parameter("calibration_command_topic",
+                      std::string("/hand/calibration/command"));
+    declare_parameter("calibration_status_topic",
+                      std::string("/hand/calibration/status"));
+    declare_parameter("calibration_status_rate_hz", 5.0);
     const std::string cmd_topic = get_parameter("command_topic").as_string();
     const std::string joint_state_topic = get_parameter("joint_state_topic").as_string();
     const std::string motor_state_topic = get_parameter("motor_state_topic").as_string();
     const std::string sensor_topic = get_parameter("sensor_topic").as_string();
     const std::string link_status_topic = get_parameter("link_status_topic").as_string();
+    const std::string calib_cmd_topic =
+        get_parameter("calibration_command_topic").as_string();
+    const std::string calib_status_topic =
+        get_parameter("calibration_status_topic").as_string();
+    const double calib_status_rate_hz =
+        get_parameter("calibration_status_rate_hz").as_double();
 
     // ── ROS2 pub/sub ───────────────────────────────────────────────────
     // BEST_EFFORT + depth 1: 500 Hz RT sensor data — only latest value matters.
@@ -262,6 +275,38 @@ class HandUdpNode : public rclcpp::Node {
           }
           controller_->SetTargetPositions(cmd);
         });
+
+    // ── Sensor calibration command/status ────────────────────────────
+    // Reliable, depth 1: trigger must not be dropped.
+    calib_cmd_sub_ = create_subscription<rtc_msgs::msg::CalibrationCommand>(
+        calib_cmd_topic, rclcpp::QoS(1).reliable(),
+        [this](rtc_msgs::msg::CalibrationCommand::SharedPtr msg) {
+          if (!controller_ || !controller_->IsRunning()) {
+            RCLCPP_WARN(get_logger(),
+                        "Calibration command ignored: controller not running");
+            return;
+          }
+          RCLCPP_INFO(get_logger(),
+                      "Calibration command: sensor_type=%u action=%u sample_count=%u",
+                      static_cast<unsigned>(msg->sensor_type),
+                      static_cast<unsigned>(msg->action),
+                      static_cast<unsigned>(msg->sample_count));
+          controller_->RequestCalibration(msg->sensor_type, msg->action,
+                                          msg->sample_count);
+        });
+
+    // Transient local so late-joining GUIs see latest status immediately.
+    rclcpp::QoS calib_status_qos{1};
+    calib_status_qos.reliable().transient_local();
+    calib_status_pub_ = create_publisher<rtc_msgs::msg::CalibrationStatus>(
+        calib_status_topic, calib_status_qos);
+
+    const int status_period_ms = (calib_status_rate_hz > 0.0)
+        ? static_cast<int>(1000.0 / calib_status_rate_hz)
+        : 200;
+    calib_status_timer_ = create_wall_timer(
+        std::chrono::milliseconds(status_period_ms),
+        [this]() { PublishCalibrationStatus(); });
 
     // Legacy Float64MultiArray subscription (/hand/command) removed.
     // rt_controller and mujoco_sim both use JointCommand on /hand/joint_command.
@@ -455,6 +500,28 @@ class HandUdpNode : public rclcpp::Node {
     }
   }
 
+  // Publish the calibration status for all sensors the node tracks.
+  // Currently only barometer is supported; new sensors require adding
+  // another entry to this list and a case in HandController::GetCalibrationStatus().
+  void PublishCalibrationStatus() {
+    if (!controller_ || !calib_status_pub_) return;
+
+    static constexpr std::array<uint8_t, 1> kTrackedSensors = {
+        urtc::hand_calibration::kSensorBarometer,
+    };
+
+    for (const auto sensor_type : kTrackedSensors) {
+      const auto snap = controller_->GetCalibrationStatus(sensor_type);
+      rtc_msgs::msg::CalibrationStatus msg;
+      msg.header.stamp = this->now();
+      msg.sensor_type    = snap.sensor_type;
+      msg.state          = snap.state;
+      msg.progress_count = snap.progress_count;
+      msg.target_count   = snap.target_count;
+      calib_status_pub_->publish(msg);
+    }
+  }
+
   void SaveCommStats() const {
     if (!controller_) return;
 
@@ -605,6 +672,9 @@ class HandUdpNode : public rclcpp::Node {
   rclcpp::Publisher<rtc_msgs::msg::HandSensorState>::SharedPtr      sensor_state_pub_;
   rclcpp::Publisher<rtc_msgs::msg::HandSensorState>::SharedPtr      sensor_monitor_pub_;
   rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr      joint_command_sub_;
+  rclcpp::Subscription<rtc_msgs::msg::CalibrationCommand>::SharedPtr calib_cmd_sub_;
+  rclcpp::Publisher<rtc_msgs::msg::CalibrationStatus>::SharedPtr    calib_status_pub_;
+  rclcpp::TimerBase::SharedPtr                                      calib_status_timer_;
   std::vector<std::string> joint_names_;
   std::vector<std::string> motor_names_;
   std::vector<std::string> fingertip_names_;

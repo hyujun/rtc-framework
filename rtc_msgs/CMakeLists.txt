@@ -19,6 +19,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/SimSensor.msg"
   "msg/SimSensorState.msg"
   "msg/ToFSnapshot.msg"
+  "msg/CalibrationCommand.msg"
+  "msg/CalibrationStatus.msg"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
 )
 
