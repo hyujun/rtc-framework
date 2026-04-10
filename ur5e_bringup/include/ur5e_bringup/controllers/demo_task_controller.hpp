@@ -73,8 +73,8 @@ public:
   struct Gains
   {
     // Arm (CLIK) gains — translation / rotation separated
-    std::array<double, 3> kp_translation{{400.0, 400.0, 400.0}}; ///< Translation proportional gain (x,y,z) [1/s]
-    std::array<double, 3> kp_rotation{{200.0, 200.0, 200.0}};    ///< Rotation proportional gain (rx,ry,rz) [1/s]
+    std::array<double, 3> kp_translation{{5.0, 5.0, 5.0}}; ///< Translation proportional gain (x,y,z) [1/s]
+    std::array<double, 3> kp_rotation{{2.0, 2.0, 2.0}};    ///< Rotation proportional gain (rx,ry,rz) [1/s]
     double damping{0.01};            ///< Damping factor λ for J^#
     double null_kp{0.5};             ///< Null-space joint-centering gain [1/s]
     bool   enable_null_space{true};  ///< Enable null-space secondary task

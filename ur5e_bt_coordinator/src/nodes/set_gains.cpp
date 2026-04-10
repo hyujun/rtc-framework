@@ -132,8 +132,8 @@ BT::NodeStatus SetGains::BuildDemoTaskGains()
     ? std::vector<double>(cached->begin(),
                           cached->begin() + static_cast<std::ptrdiff_t>(kBaseSize))
     : std::vector<double>{
-        400.0, 400.0, 400.0,   // [0-2]  kp_translation
-        200.0, 200.0, 200.0,   // [3-5]  kp_rotation
+        5.0, 5.0, 5.0,         // [0-2]  kp_translation
+        2.0, 2.0, 2.0,         // [3-5]  kp_rotation
         0.01,                // [6]    damping
         0.5,                 // [7]    null_kp
         0.0,                 // [8]    enable_null_space
