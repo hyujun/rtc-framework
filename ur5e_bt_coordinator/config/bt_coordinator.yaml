@@ -30,6 +30,11 @@ bt_coordinator:
     # pick_and_place.xml 용:
     bb.place_pose: "0.3;-0.3;0.15;3.14;0.0;0.0"
     #
+    # Phase 5 (SlowDescend) 에서 object_pose 의 Z를 덮어쓸 상수 값 [m].
+    # .nan (기본값) 이면 비전 감지 Z를 그대로 사용 (pass-through).
+    # 실제 값 예: 0.085 (테이블 표면 높이 기준 그립 Z)
+    bb.object_final_z: .nan
+    #
     # towel_unfold.xml 용:
     # bb.sweep_direction_x: 1.0
     # bb.sweep_direction_y: 0.0
