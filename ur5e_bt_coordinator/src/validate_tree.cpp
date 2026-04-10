@@ -18,6 +18,7 @@
 #include "ur5e_bt_coordinator/action_nodes/move_to_joints.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_to_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/set_gains.hpp"
+#include "ur5e_bt_coordinator/action_nodes/set_pose_z.hpp"
 #include "ur5e_bt_coordinator/action_nodes/switch_controller.hpp"
 #include "ur5e_bt_coordinator/action_nodes/track_trajectory.hpp"
 #include "ur5e_bt_coordinator/action_nodes/wait_duration.hpp"
@@ -30,6 +31,7 @@
 #include "ur5e_bt_coordinator/action_nodes/wait_shape_result.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/check_shape_type.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
+#include "ur5e_bt_coordinator/condition_nodes/is_grasp_phase.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_grasped.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_object_detected.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_vision_target_ready.hpp"
@@ -89,6 +91,7 @@ int main(int argc, char** argv)
   factory.registerNodeType<rtc_bt::SetGains>("SetGains", null_bridge);
   factory.registerNodeType<rtc_bt::SwitchController>("SwitchController", null_bridge);
   factory.registerNodeType<rtc_bt::ComputeOffsetPose>("ComputeOffsetPose");
+  factory.registerNodeType<rtc_bt::SetPoseZ>("SetPoseZ");
   factory.registerNodeType<rtc_bt::ComputeSweepTrajectory>("ComputeSweepTrajectory");
   factory.registerNodeType<rtc_bt::ComputeTiltSequence>("ComputeTiltSequence");
   factory.registerNodeType<rtc_bt::GetCurrentPose>("GetCurrentPose", null_bridge);
@@ -103,6 +106,7 @@ int main(int argc, char** argv)
 
   // Condition nodes
   factory.registerNodeType<rtc_bt::IsForceAbove>("IsForceAbove", null_bridge);
+  factory.registerNodeType<rtc_bt::IsGraspPhase>("IsGraspPhase", null_bridge);
   factory.registerNodeType<rtc_bt::IsGrasped>("IsGrasped", null_bridge);
   factory.registerNodeType<rtc_bt::IsObjectDetected>("IsObjectDetected", null_bridge);
   factory.registerNodeType<rtc_bt::IsVisionTargetReady>("IsVisionTargetReady", null_bridge);
