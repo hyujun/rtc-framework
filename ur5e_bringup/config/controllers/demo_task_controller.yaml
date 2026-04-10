@@ -26,68 +26,10 @@ demo_task_controller:
   max_traj_angular_velocity: 0.7854   # Max TCP angular velocity [rad/s] (6-DOF mode)
   hand_max_traj_velocity: 6.28       # Max hand motor velocity [rad/s]
 
-  # ── Virtual TCP (fingertip-based control point) ─────────────────────────────
-  # Mode: "disabled" (default), "centroid", "weighted", "constant"
-  virtual_tcp_mode: "centroid"
-  virtual_tcp_offset: [0.0, 0.0, 0.1]   # constant mode: [x, y, z] in TCP frame [m]
-  virtual_tcp_orientation: [1.5708, 0.0, -1.5708]  # RPY [rad] orientation of vtcp in TCP frame
-
-  # ── Grasp detection ─────────────────────────────────────────────────────────
-  grasp_contact_threshold: 0.5   # Contact probability threshold (0.0~1.0)
-  grasp_force_threshold: 1.0     # Force magnitude threshold [N]
-  grasp_min_fingertips: 2        # Min fingertips for grasp detection
-
-  # ── Grasp controller selection ─────────────────────────────────────────────
-  # "contact_stop" (default): force 감지 시 hand position freeze
-  # "force_pi": adaptive PI force controller with state machine
-  grasp_controller_type: "contact_stop"
-
-  # ── Force-PI grasp parameters (grasp_controller_type: "force_pi" 전용) ──
-  force_pi_grasp:
-    # PI gains
-    Kp_base: 0.02               # [1/(N*s)] proportional gain base
-    Ki_base: 0.002              # [1/(N*s^2)] integral gain base
-
-    # Adaptive gain scheduling
-    alpha_ema: 0.95             # stiffness EMA coefficient [0,1]
-    beta: 0.3                   # adaptive gain sensitivity
-
-    # Force thresholds
-    f_contact_threshold: 0.2    # [N] contact detection threshold
-    f_target: 2.0               # [N] target grip force
-    f_ramp_rate: 1.0            # [N/s] force reference ramp rate
-
-    # Rate & saturation limits
-    ds_max: 0.05                # max ds/dt [1/s]
-    delta_s_max: 0.15           # max deformation delta_s after contact
-    integral_clamp: 0.1         # integrator saturation
-
-    # State machine timing
-    approach_speed: 0.2         # [1/s] approaching ds/dt
-    release_speed: 0.3          # [1/s] releasing ds/dt
-    settle_epsilon: 0.1         # [N] force convergence threshold
-    settle_time: 0.3            # [s] convergence hold time
-    contact_settle_time: 0.1    # [s] Contact phase dwell
-
-    # Anomaly detection
-    df_slip_threshold: 5.0      # [N/s] slip df/dt threshold
-    grip_tightening_ratio: 0.15 # force increase ratio on slip
-    f_max_multiplier: 2.0       # max force = f_target * multiplier
-
-    # Force filter
-    lpf_cutoff_hz: 25.0         # Bessel LPF cutoff [Hz]
-
-    # Finger postures [rad] {MCP_AA, MCP_FE, DIP_FE}
-    fingers:
-      thumb:
-        q_open:  [0.0, 0.0, 0.0]
-        q_close: [0.524, 1.047, 0.785]
-      index:
-        q_open:  [0.0, 0.0, 0.0]
-        q_close: [0.0, 1.047, 0.785]
-      middle:
-        q_open:  [0.0, 0.0, 0.0]
-        q_close: [0.0, 1.047, 0.785]
+  # ── Shared parameters ───────────────────────────────────────────────────────
+  # Virtual TCP, grasp detection, and force-PI grasp parameters are loaded from
+  # config/controllers/demo_shared.yaml. To override any shared key locally,
+  # add it under this section — per-controller values take precedence.
 
   # ── Output type ─────────────────────────────────────────────────────────────
   command_type: "position"

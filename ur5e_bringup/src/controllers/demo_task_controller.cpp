@@ -1,6 +1,8 @@
 // ── Includes: project header first, then C++ stdlib ────────────────────────────
 #include "ur5e_bringup/controllers/demo_task_controller.hpp"
 
+#include "ur5e_bringup/controllers/demo_shared_config.hpp"
+
 #include <algorithm>
 #include <cmath>     // std::sqrt
 #include <cstddef>
@@ -1167,101 +1169,23 @@ void DemoTaskController::LoadConfig(const YAML::Node & cfg)
     gains_.hand_max_traj_velocity = cfg["hand_max_traj_velocity"].as<double>();
   }
 
-  // ── Virtual TCP configuration ──────────────────────────────────────────
-  if (cfg["virtual_tcp_mode"]) {
-    const auto mode_str = cfg["virtual_tcp_mode"].as<std::string>();
-    if (mode_str == "centroid") {
-      gains_.vtcp.mode = VirtualTcpMode::kCentroid;
-    } else if (mode_str == "weighted") {
-      gains_.vtcp.mode = VirtualTcpMode::kWeighted;
-    } else if (mode_str == "constant") {
-      gains_.vtcp.mode = VirtualTcpMode::kConstant;
-    } else {
-      gains_.vtcp.mode = VirtualTcpMode::kDisabled;
-    }
-  }
-  if (cfg["virtual_tcp_offset"] && cfg["virtual_tcp_offset"].IsSequence()) {
-    for (std::size_t i = 0; i < 3 && i < cfg["virtual_tcp_offset"].size(); ++i) {
-      gains_.vtcp.offset[i] = cfg["virtual_tcp_offset"][i].as<double>();
-    }
-  }
-  if (cfg["virtual_tcp_orientation"] && cfg["virtual_tcp_orientation"].IsSequence()) {
-    for (std::size_t i = 0; i < 3 && i < cfg["virtual_tcp_orientation"].size(); ++i) {
-      gains_.vtcp.orientation[i] = cfg["virtual_tcp_orientation"][i].as<double>();
-    }
-  }
+  // ── Shared params: defaults from demo_shared.yaml, overridden by cfg ──
+  DemoSharedConfig shared;
+  LoadDemoSharedYamlFile(shared);
+  ApplyDemoSharedConfig(cfg, shared);
 
-  // Grasp detection parameters
-  if (cfg["grasp_contact_threshold"]) {
-    gains_.grasp_contact_threshold = cfg["grasp_contact_threshold"].as<float>();
-  }
-  if (cfg["grasp_force_threshold"]) {
-    gains_.grasp_force_threshold = cfg["grasp_force_threshold"].as<float>();
-  }
-  if (cfg["grasp_min_fingertips"]) {
-    gains_.grasp_min_fingertips = cfg["grasp_min_fingertips"].as<int>();
-  }
+  gains_.vtcp = shared.vtcp;
+  gains_.grasp_contact_threshold = shared.grasp_contact_threshold;
+  gains_.grasp_force_threshold   = shared.grasp_force_threshold;
+  gains_.grasp_min_fingertips    = shared.grasp_min_fingertips;
+  grasp_controller_type_         = shared.grasp_controller_type;
 
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
     command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
 
-  // ── Force-PI grasp controller ─────────────────────────────────────────
-  if (cfg["grasp_controller_type"]) {
-    grasp_controller_type_ = cfg["grasp_controller_type"].as<std::string>();
-  }
-  if (grasp_controller_type_ == "force_pi" && cfg["force_pi_grasp"]) {
-    auto fp = cfg["force_pi_grasp"];
-    rtc::grasp::GraspParams gp;
-
-    if (fp["Kp_base"])               gp.Kp_base = fp["Kp_base"].as<double>();
-    if (fp["Ki_base"])               gp.Ki_base = fp["Ki_base"].as<double>();
-    if (fp["alpha_ema"])             gp.alpha_ema = fp["alpha_ema"].as<double>();
-    if (fp["beta"])                  gp.beta = fp["beta"].as<double>();
-    if (fp["f_contact_threshold"])   gp.f_contact_threshold = fp["f_contact_threshold"].as<double>();
-    if (fp["f_target"])              gp.f_target = fp["f_target"].as<double>();
-    if (fp["f_ramp_rate"])           gp.f_ramp_rate = fp["f_ramp_rate"].as<double>();
-    if (fp["ds_max"])                gp.ds_max = fp["ds_max"].as<double>();
-    if (fp["delta_s_max"])           gp.delta_s_max = fp["delta_s_max"].as<double>();
-    if (fp["integral_clamp"])        gp.integral_clamp = fp["integral_clamp"].as<double>();
-    if (fp["approach_speed"])        gp.approach_speed = fp["approach_speed"].as<double>();
-    if (fp["release_speed"])         gp.release_speed = fp["release_speed"].as<double>();
-    if (fp["settle_epsilon"])        gp.settle_epsilon = fp["settle_epsilon"].as<double>();
-    if (fp["settle_time"])           gp.settle_time = fp["settle_time"].as<double>();
-    if (fp["contact_settle_time"])   gp.contact_settle_time = fp["contact_settle_time"].as<double>();
-    if (fp["df_slip_threshold"])     gp.df_slip_threshold = fp["df_slip_threshold"].as<double>();
-    if (fp["grip_tightening_ratio"]) gp.grip_tightening_ratio = fp["grip_tightening_ratio"].as<double>();
-    if (fp["f_max_multiplier"])      gp.f_max_multiplier = fp["f_max_multiplier"].as<double>();
-    if (fp["lpf_cutoff_hz"])         gp.lpf_cutoff_hz = fp["lpf_cutoff_hz"].as<double>();
-
-    gp.control_rate_hz = 1.0 / GetDefaultDt();
-
-    std::array<rtc::grasp::FingerConfig, rtc::grasp::kNumGraspFingers> fconfigs;
-    if (fp["fingers"]) {
-      const std::array<std::string, 3> names = {"thumb", "index", "middle"};
-      for (int i = 0; i < rtc::grasp::kNumGraspFingers; ++i) {
-        if (fp["fingers"][names[static_cast<std::size_t>(i)]]) {
-          auto fn = fp["fingers"][names[static_cast<std::size_t>(i)]];
-          if (fn["q_open"]) {
-            auto seq = fn["q_open"];
-            for (int j = 0; j < rtc::grasp::kDoFPerFinger && j < static_cast<int>(seq.size()); ++j) {
-              fconfigs[static_cast<std::size_t>(i)].q_open[static_cast<std::size_t>(j)] = seq[j].as<double>();
-            }
-          }
-          if (fn["q_close"]) {
-            auto seq = fn["q_close"];
-            for (int j = 0; j < rtc::grasp::kDoFPerFinger && j < static_cast<int>(seq.size()); ++j) {
-              fconfigs[static_cast<std::size_t>(i)].q_close[static_cast<std::size_t>(j)] = seq[j].as<double>();
-            }
-          }
-        }
-      }
-    }
-
-    grasp_controller_ = std::make_unique<rtc::grasp::GraspController>();
-    grasp_controller_->Init(fconfigs, gp);
-  }
+  BuildGraspController(shared, 1.0 / GetDefaultDt(), grasp_controller_);
 }
 
 void DemoTaskController::UpdateGainsFromMsg(std::span<const double> gains) noexcept

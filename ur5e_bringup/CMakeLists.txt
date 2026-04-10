@@ -39,6 +39,7 @@ find_package(rtc_controller_manager REQUIRED)
 add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/demo_joint_controller.cpp
   src/controllers/demo_task_controller.cpp
+  src/controllers/demo_shared_config.cpp
   src/controllers/controller_registration.cpp
 )
 

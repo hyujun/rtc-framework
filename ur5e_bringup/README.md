@@ -37,6 +37,7 @@ ur5e_bringup/
 │   ├── ur5e_robot.yaml                 <- 실제 로봇 RTC 프레임워크 설정 (URDF + 모델 토폴로지 포함)
 │   ├── ur5e_sim.yaml                   <- 시뮬레이션 전용 설정 (URDF + 모델 토폴로지 포함)
 │   └── controllers/
+│       ├── demo_shared.yaml            <- DemoJoint/DemoTask 공통 파라미터 (vtcp/grasp/force_pi)
 │       ├── demo_joint_controller.yaml  <- DemoJoint 게인/토픽
 │       └── demo_task_controller.yaml   <- DemoTask 게인/토픽
 ├── launch/
@@ -61,6 +62,7 @@ ur5e_bringup/
 | `urdf:` (최상위) | `ur5e_robot.yaml` | URDF 경로, 모델 토폴로지 (sub_models/tree_models/passive_joints) |
 | `devices:` | `ur5e_robot.yaml` | 디바이스별 joint_names, joint_limits, sensor_names |
 | `demo_*_controller.yaml` | 컨트롤러별 YAML | 제어 게인, 토픽 라우팅 |
+| `demo_shared.yaml` | 공통 YAML | DemoJoint/DemoTask 공통 파라미터 (Virtual TCP, grasp 감지, force_pi_grasp) |
 
 > `sub_models`/`tree_models`의 `name`은 `devices` 블록의 디바이스 그룹 이름과 매칭됩니다 (예: sub_model `"ur5e"` = device `"ur5e"`).
 
@@ -114,6 +116,30 @@ urdf:
     - "thumb_cmc_fe"
     # ... (10개 hand joints)
 ```
+
+---
+
+## 공통 파라미터 (`demo_shared.yaml`)
+
+`DemoJointController`와 `DemoTaskController`는 다음 파라미터를 공유합니다. 기본값은 `config/controllers/demo_shared.yaml`에 단일 소스로 정의되며, 두 컨트롤러가 `LoadConfig()` 시점에 동일하게 로드합니다.
+
+| 파라미터 | 설명 |
+|---------|------|
+| `virtual_tcp_mode` / `virtual_tcp_offset` / `virtual_tcp_orientation` | Virtual TCP 설정 (아래 DemoTask 섹션 참조) |
+| `grasp_contact_threshold` / `grasp_force_threshold` / `grasp_min_fingertips` | Grasp 감지 임계값 |
+| `grasp_controller_type` | `"contact_stop"` 또는 `"force_pi"` |
+| `force_pi_grasp.*` | Force-PI grasp 파라미터 + 핑거별 q_open/q_close |
+
+**Override 우선순위:** `demo_shared.yaml` (defaults) → `demo_*_controller.yaml` (per-controller overrides). 컨트롤러별 YAML에 동일 키를 추가하면 해당 컨트롤러에서만 덮어씁니다. 예:
+
+```yaml
+# demo_task_controller.yaml에서만 다른 grasp 임계값을 쓰고 싶을 때
+demo_task_controller:
+  grasp_force_threshold: 2.0   # demo_shared.yaml의 1.0을 override
+  ...
+```
+
+파싱 로직은 `include/ur5e_bringup/controllers/demo_shared_config.hpp` / `src/controllers/demo_shared_config.cpp`의 `ApplyDemoSharedConfig()` / `LoadDemoSharedYamlFile()` / `BuildGraspController()`로 통합되어 있습니다.
 
 ---
 
