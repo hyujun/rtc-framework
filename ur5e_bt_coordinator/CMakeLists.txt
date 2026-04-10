@@ -24,6 +24,7 @@ add_library(bt_nodes SHARED
   src/nodes/set_gains.cpp
   src/nodes/switch_controller.cpp
   src/nodes/compute_offset_pose.cpp
+  src/nodes/set_pose_z.cpp
   src/nodes/compute_sweep_trajectory.cpp
   src/nodes/compute_tilt_sequence.cpp
   src/nodes/get_current_pose.cpp
@@ -100,6 +101,7 @@ if(BUILD_TESTING)
     test_bt_types
     test_bt_utils
     test_compute_offset_pose
+    test_set_pose_z
     test_compute_sweep_trajectory
     test_wait_duration
   )
