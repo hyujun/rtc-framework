@@ -148,7 +148,39 @@ ament_export_include_directories(include)
 # ── Testing ───────────────────────────────────────────────────────────────────
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
+  # Skip style/copyright lints — not useful for unit test sources.
+  set(ament_cmake_copyright_FOUND TRUE)
+  set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  find_package(ament_cmake_gtest REQUIRED)
+  find_package(Eigen3 REQUIRED)
+
+  # ── virtual_tcp header-only tests ──────────────────────────────────────────
+  ament_add_gtest(test_virtual_tcp test/test_virtual_tcp.cpp)
+  target_include_directories(test_virtual_tcp PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${EIGEN3_INCLUDE_DIR}
+  )
+  ament_target_dependencies(test_virtual_tcp
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # ── demo_shared_config tests (links the demo-controllers static lib) ───────
+  ament_add_gtest(test_demo_shared_config test/test_demo_shared_config.cpp)
+  target_link_libraries(test_demo_shared_config
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_demo_shared_config
+    rclcpp
+    rtc_controllers
+    rtc_base
+    pinocchio
+    Eigen3
+  )
 endif()
 
 ament_package()
