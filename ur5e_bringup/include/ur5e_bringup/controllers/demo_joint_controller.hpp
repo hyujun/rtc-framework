@@ -3,6 +3,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -15,6 +16,10 @@
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
 
 #include <Eigen/Core>
+
+#include <rclcpp/clock.hpp>
+#include <rclcpp/logger.hpp>
+#include <rclcpp/logging.hpp>
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/grasp/grasp_controller.hpp"
@@ -189,6 +194,21 @@ private:
   static constexpr std::array<std::array<int, 3>, 3> kFingerJointMap{{
     {0, 1, 2}, {3, 4, 5}, {6, 7, 8}
   }};
+
+  /// Hand joint indices (matches ur5e hand joint order in YAML).
+  /// Used by the contact_stop release-phase gate below.
+  static constexpr std::size_t kHandIdxThumbCmcFe  = 1;
+  static constexpr std::size_t kHandIdxIndexMcpFe  = 4;
+  static constexpr std::size_t kHandIdxMiddleMcpFe = 7;
+  /// Hysteresis on target↔actual delta to reject sensor noise (rad).
+  static constexpr double kContactStopReleaseEps = 0.005;
+
+  /// Previous grasp phase (for state-transition logging; non-RT critical).
+  uint8_t prev_grasp_phase_{0};
+
+  // ── Logging (throttled, debug only — RT-safe by throttle interval) ───────
+  rclcpp::Logger logger_{rclcpp::get_logger("DemoJointController")};
+  rclcpp::Clock  log_clock_{RCL_STEADY_TIME};
 
   // ── E-STOP ────────────────────────────────────────────────────────────────
   std::atomic<bool> estopped_{false};

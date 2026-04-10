@@ -1061,6 +1061,17 @@ class DemoControllerGUI(Node):
         tk.Label(cmd_frame, text="N", bg='#1e1e2e', fg='#cdd6f4',
                  font=('Segoe UI', 8)).pack(side='left')
 
+        # Hint: Grasp/Release buttons only function when the active controller
+        # is loaded with grasp_controller_type: "force_pi" in its YAML.
+        # In "contact_stop" mode the buttons are silently ignored by the
+        # controller (a throttled WARN is emitted on /rosout).
+        tk.Label(
+            cmd_frame,
+            text='(requires grasp_controller_type: "force_pi" in YAML)',
+            bg='#1e1e2e', fg='#f9e2af',
+            font=('Segoe UI', 7, 'italic'),
+        ).pack(side='left', padx=(12, 0))
+
         # ── Hand Posture Presets ─────────────────────────────────────────
         preset_frame = ttk.LabelFrame(parent, text="Hand Posture Presets", padding=4)
         preset_frame.pack(fill='both', expand=True, padx=8, pady=(2, 4))
@@ -1457,15 +1468,34 @@ class DemoControllerGUI(Node):
         for widgets, is_bool in zip(self._gain_entries, self._gain_is_bool):
             for w in widgets:
                 if idx >= len(data):
-                    return
+                    break
                 if is_bool:
                     w.set(1 if data[idx] > 0.5 else 0)
                 else:
                     w.delete(0, tk.END)
                     w.insert(0, f"{data[idx]:.4f}")
                 idx += 1
+            else:
+                continue
+            break
 
         ctrl_name = CONTROLLER_TYPES[self.selected_ctrl.get()]
+
+        # Sync grasp target force entry from loaded gains.
+        # Layout tail (see CLAUDE.md): [..., grasp_command, grasp_target_force].
+        #   demo_joint_controller: target_force is index 8 (9 values total)
+        #   demo_task_controller : target_force is index 20 (21 values total)
+        tf_idx_map = {
+            "demo_joint_controller": 8,
+            "demo_task_controller": 20,
+        }
+        tf_idx = tf_idx_map.get(ctrl_name)
+        if (tf_idx is not None
+                and tf_idx < len(data)
+                and hasattr(self, '_grasp_target_force_entry')):
+            self._grasp_target_force_entry.delete(0, tk.END)
+            self._grasp_target_force_entry.insert(0, f"{data[tf_idx]:.2f}")
+
         self.get_logger().info(
             f"Loaded gains for {ctrl_name}: {[f'{v:.4f}' for v in data]}")
 

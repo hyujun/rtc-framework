@@ -639,6 +639,18 @@ void DemoTaskController::ComputeControl(
     grasp_state_.min_fingertips_for_grasp = min_fingers;
     grasp_state_.grasp_detected           = (active_count >= min_fingers);
 
+    // Periodic grasp status snapshot (2s throttle, debug only).
+    // NOTE: throttled logging on the 500Hz path — the rare allocation
+    // inside rclcpp logging macros is acceptable at this interval.
+    RCLCPP_INFO_THROTTLE(
+      logger_, log_clock_, 2000,
+      "[grasp] type=%s active=%d/%d max_force=%.2fN thresh=%.2fN phase=%d",
+      grasp_controller_type_.c_str(),
+      active_count, num_active_fingertips_,
+      static_cast<double>(max_force),
+      static_cast<double>(force_thresh),
+      grasp_controller_ ? static_cast<int>(grasp_controller_->phase()) : -1);
+
     // Hand grasp control: force_pi (adaptive PI) or contact_stop (binary freeze)
     if (grasp_controller_ && grasp_controller_type_ == "force_pi") {
       std::array<double, rtc::grasp::kNumGraspFingers> f_raw{};
@@ -649,6 +661,17 @@ void DemoTaskController::ComputeControl(
 
       const auto commands = grasp_controller_->Update(
         std::span<const double, rtc::grasp::kNumGraspFingers>(f_raw), dt);
+
+      // Phase-transition log (non-throttled — transitions are rare events)
+      const auto cur_phase = static_cast<uint8_t>(grasp_controller_->phase());
+      if (cur_phase != prev_grasp_phase_) {
+        RCLCPP_INFO(
+          logger_,
+          "[grasp:force_pi] phase %u -> %u target_force=%.2fN",
+          prev_grasp_phase_, cur_phase,
+          grasp_controller_->target_force());
+        prev_grasp_phase_ = cur_phase;
+      }
 
       if (grasp_controller_->phase() != rtc::grasp::GraspPhase::kIdle) {
         for (int f = 0; f < rtc::grasp::kNumGraspFingers; ++f) {
@@ -663,13 +686,47 @@ void DemoTaskController::ComputeControl(
     } else {
       // ContactStopHand: 힘 감지 시 hand trajectory 출력을 현재 위치로 동결
       // → BT tick(50ms) 사이에도 과도한 hand closure 방지
-      if (active_count > 0 && max_force > force_thresh) {
-        if (state.num_devices > 1 && state.devices[1].valid) {
-          const auto& dev1 = state.devices[1];
+      //
+      // Release-phase gate: 사용자가 손을 여는 방향으로 goal을 내린 경우에는
+      // 접촉 잔존 힘이 있더라도 freeze 를 skip 해야 손이 열린다.
+      //   - thumb_cmc_fe: 각도 증가 = loosening → target > actual 이면 release
+      //   - index_mcp_fe: 각도 감소 = loosening → target < actual 이면 release
+      //   - middle_mcp_fe: 각도 감소 = loosening → target < actual 이면 release
+      // 세 조건이 모두 성립할 때만 "release 의도" 로 판단.
+      if (state.num_devices > 1 && state.devices[1].valid) {
+        const auto& dev1 = state.devices[1];
+
+        const double d_thumb  = device_targets_[1][kHandIdxThumbCmcFe]
+                              - dev1.positions[kHandIdxThumbCmcFe];
+        const double d_index  = device_targets_[1][kHandIdxIndexMcpFe]
+                              - dev1.positions[kHandIdxIndexMcpFe];
+        const double d_middle = device_targets_[1][kHandIdxMiddleMcpFe]
+                              - dev1.positions[kHandIdxMiddleMcpFe];
+
+        const bool thumb_releasing  = d_thumb  >  kContactStopReleaseEps;
+        const bool index_releasing  = d_index  < -kContactStopReleaseEps;
+        const bool middle_releasing = d_middle < -kContactStopReleaseEps;
+        const bool release_phase =
+          thumb_releasing && index_releasing && middle_releasing;
+
+        if (release_phase) {
+          RCLCPP_INFO_THROTTLE(
+            logger_, log_clock_, 1000,
+            "[contact_stop] SKIP (release) dthumb_fe=%+.3f dindex_fe=%+.3f dmid_fe=%+.3f",
+            d_thumb, d_index, d_middle);
+        } else if (active_count > 0 && max_force > force_thresh) {
           for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors); ++i) {
             hand_computed_.positions[i] = dev1.positions[i];
             hand_computed_.velocities[i] = 0.0;
           }
+          RCLCPP_INFO_THROTTLE(
+            logger_, log_clock_, 1000,
+            "[contact_stop] FREEZE active=%d max_force=%.2fN "
+            "thumb_fe(a=%.3f,t=%.3f) index_fe(a=%.3f,t=%.3f) mid_fe(a=%.3f,t=%.3f)",
+            active_count, static_cast<double>(max_force),
+            dev1.positions[kHandIdxThumbCmcFe],  device_targets_[1][kHandIdxThumbCmcFe],
+            dev1.positions[kHandIdxIndexMcpFe],  device_targets_[1][kHandIdxIndexMcpFe],
+            dev1.positions[kHandIdxMiddleMcpFe], device_targets_[1][kHandIdxMiddleMcpFe]);
         }
       }
     }
@@ -1237,13 +1294,24 @@ void DemoTaskController::UpdateGainsFromMsg(std::span<const double> gains) noexc
   if (gains.size() >= 18) {gains_.grasp_force_threshold = static_cast<float>(gains[17]);}
   if (gains.size() >= 19) {gains_.grasp_min_fingertips = static_cast<int>(gains[18]);}
   // grasp_command: 0=none, 1=grasp, 2=release
-  if (gains.size() >= 20 && grasp_controller_) {
+  if (gains.size() >= 20) {
     const int cmd = static_cast<int>(gains[19]);
-    if (cmd == 1) {
-      grasp_controller_->CommandGrasp(
-        (gains.size() >= 21) ? gains[20] : 0.0);
-    } else if (cmd == 2) {
-      grasp_controller_->CommandRelease();
+    if (cmd == 1 || cmd == 2) {
+      if (!grasp_controller_) {
+        RCLCPP_WARN_THROTTLE(
+          logger_, log_clock_, 2000,
+          "[grasp] %s command ignored: grasp_controller_type='%s' "
+          "(require 'force_pi' in YAML to enable Grasp/Release buttons)",
+          (cmd == 1) ? "Grasp" : "Release", grasp_controller_type_.c_str());
+      } else if (cmd == 1) {
+        const double target_force = (gains.size() >= 21) ? gains[20] : 0.0;
+        grasp_controller_->CommandGrasp(target_force);
+        RCLCPP_INFO(
+          logger_, "[grasp] CommandGrasp target_force=%.2fN", target_force);
+      } else {
+        grasp_controller_->CommandRelease();
+        RCLCPP_INFO(logger_, "[grasp] CommandRelease");
+      }
     }
   }
 }
