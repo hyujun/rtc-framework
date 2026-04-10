@@ -84,6 +84,10 @@ if(BUILD_TESTING)
   target_include_directories(test_hand_udp_codec PRIVATE include)
   ament_target_dependencies(test_hand_udp_codec rtc_base)
 
+  ament_add_gtest(test_hand_udp_transport test/test_hand_udp_transport.cpp)
+  target_include_directories(test_hand_udp_transport PRIVATE include)
+  ament_target_dependencies(test_hand_udp_transport rtc_base rclcpp)
+
   ament_add_gtest(test_hand_timing_profiler test/test_hand_timing_profiler.cpp)
   target_include_directories(test_hand_timing_profiler PRIVATE include)
   ament_target_dependencies(test_hand_timing_profiler rtc_base)

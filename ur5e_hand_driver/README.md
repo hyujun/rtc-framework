@@ -122,6 +122,8 @@ Write 명령은 항상 `kJoint` 모드로 전송됩니다.
 
 저수준 UDP 소켓 관리. `ppoll()` 기반 sub-ms 수신 타임아웃 (hrtimer on PREEMPT_RT).
 
+**Mode 검증**: 모든 request-response 메서드(`RequestMotorRead`, `RequestAllMotorRead`, `RequestSensorRead`, `RequestAllSensorRead`)는 응답 패킷의 mode 필드가 요청한 mode와 일치하는지 검증합니다. 불일치 시 `comm_stats_.mode_mismatch` 카운터를 증가시키고 `false`를 반환합니다.
+
 ### HandSensorProcessor (`hand_sensor_processor.hpp`)
 
 센서 후처리 파이프라인 (noexcept):
