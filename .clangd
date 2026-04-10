@@ -1,0 +1,28 @@
+CompileFlags:
+  CompilationDatabase: build/
+  Add:
+    - "-std=c++20"
+    - "-Wall"
+    - "-Wextra"
+  Remove:
+    - "-W*"
+
+Diagnostics:
+  UnusedIncludes: Strict
+  ClangTidy:
+    Add:
+      - modernize-*
+      - bugprone-*
+      - performance-*
+      - readability-braces-around-statements
+    Remove:
+      - modernize-use-trailing-return-type
+      - bugprone-easily-swappable-parameters
+
+InlayHints:
+  Enabled: Yes
+  ParameterNames: Yes
+  DeducedTypes: Yes
+
+Hover:
+  ShowAKA: Yes
