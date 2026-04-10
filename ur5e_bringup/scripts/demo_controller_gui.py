@@ -16,7 +16,10 @@ import os
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray, String, Bool
-from rtc_msgs.msg import GuiPosition, GraspState, RobotTarget
+from rtc_msgs.msg import (
+    GuiPosition, GraspState, RobotTarget,
+    CalibrationCommand, CalibrationStatus,
+)
 import tkinter as tk
 from tkinter import ttk, font as tkfont, messagebox
 import threading
@@ -165,6 +168,32 @@ GAIN_ROW_NAMES = {
     },
 }
 
+# Sensor calibration entries displayed in the Control tab.
+# Add a new dict here to expose a new sensor's calibration to the GUI;
+# it must also be handled by HandController::DispatchCalibrationRequest()
+# and reported by HandController::GetCalibrationStatus() on the driver side.
+SENSOR_CALIBRATIONS = [
+    {
+        "label": "Barometer Bias",
+        "sensor_type": CalibrationCommand.SENSOR_BAROMETER,
+        "hint": "~1s, keep fingertips still",
+    },
+]
+
+_CALIB_STATE_NAMES = {
+    CalibrationStatus.STATE_IDLE:     "IDLE",
+    CalibrationStatus.STATE_RUNNING:  "RUNNING",
+    CalibrationStatus.STATE_COMPLETE: "COMPLETE",
+    CalibrationStatus.STATE_FAILED:   "FAILED",
+}
+
+_CALIB_STATE_COLORS = {
+    CalibrationStatus.STATE_IDLE:     "#9399b2",
+    CalibrationStatus.STATE_RUNNING:  "#f9e2af",
+    CalibrationStatus.STATE_COMPLETE: "#a6e3a1",
+    CalibrationStatus.STATE_FAILED:   "#f38ba8",
+}
+
 
 class DemoControllerGUI(Node):
     def __init__(self):
@@ -181,6 +210,19 @@ class DemoControllerGUI(Node):
             Float64MultiArray, '/ur5e/controller_gains', 10)
         self.request_gains_pub = self.create_publisher(
             Bool, '/ur5e/request_gains', 10)
+
+        # Sensor calibration (Control tab)
+        self.calib_cmd_pub = self.create_publisher(
+            CalibrationCommand, '/hand/calibration/command', 1)
+        # sensor_type -> latest CalibrationStatus snapshot
+        self._calib_status: dict[int, CalibrationStatus] = {}
+        # sensor_type -> Tk StringVar (status label text)
+        self._calib_status_vars: dict[int, tk.StringVar] = {}
+        # sensor_type -> tk.Label widget (for colour updates)
+        self._calib_status_labels: dict[int, tk.Label] = {}
+        self.create_subscription(
+            CalibrationStatus, '/hand/calibration/status',
+            self._calib_status_cb, 10)
 
         # Subscriptions
         self.current_positions = [0.0] * NUM_JOINTS
@@ -292,6 +334,25 @@ class DemoControllerGUI(Node):
             self._fp_finger_s[i] = msg.finger_s[i]
             self._fp_filtered_force[i] = msg.finger_filtered_force[i]
             self._fp_force_error[i] = msg.finger_force_error[i]
+
+    # ---- Sensor calibration -----------------------------------------------------
+
+    def _send_calibration(self, sensor_type: int, action: int,
+                          sample_count: int = 0):
+        """Publish a CalibrationCommand for the given sensor."""
+        msg = CalibrationCommand()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.sensor_type  = sensor_type
+        msg.action       = action
+        msg.sample_count = sample_count
+        self.calib_cmd_pub.publish(msg)
+        self.get_logger().info(
+            f"Calibration command published: sensor_type={sensor_type} "
+            f"action={action} sample_count={sample_count}")
+
+    def _calib_status_cb(self, msg: CalibrationStatus):
+        """Store latest status snapshot (label update happens on Tk thread)."""
+        self._calib_status[msg.sensor_type] = msg
 
     # ---- Preset persistence -----------------------------------------------------
 
@@ -461,6 +522,25 @@ class DemoControllerGUI(Node):
             if self._prev_fp_fingers[i][3] != desired_text:
                 self._prev_fp_fingers[i][3] = desired_text
                 self._fp_desired_labels[i].config(text=desired_text)
+
+        # ── Sensor calibration status ──
+        for stype, var in self._calib_status_vars.items():
+            snap = self._calib_status.get(stype)
+            if snap is None:
+                continue
+            state_name = _CALIB_STATE_NAMES.get(snap.state, "?")
+            if snap.state == CalibrationStatus.STATE_RUNNING:
+                text = f"{state_name} {snap.progress_count}/{snap.target_count}"
+            elif snap.state == CalibrationStatus.STATE_COMPLETE:
+                text = f"{state_name} ({snap.target_count} samples)"
+            else:
+                text = state_name
+            if var.get() != text:
+                var.set(text)
+                color = _CALIB_STATE_COLORS.get(snap.state, "#cdd6f4")
+                lbl = self._calib_status_labels.get(stype)
+                if lbl is not None:
+                    lbl.config(fg=color)
 
     # ---- GUI build -----------------------------------------------------------
 
@@ -643,6 +723,47 @@ class DemoControllerGUI(Node):
                  font=('Segoe UI', 8, 'bold')).pack(anchor='w', padx=2)
         self._gains_applied_inner = tk.Frame(self._gains_frame, bg='#1e1e2e')
         self._gains_applied_inner.pack(fill='x', padx=2, pady=(0, 2))
+
+        # ── Sensor Calibration ─────────────────────────────────────────
+        # Triggers recalibration of hand sensors via /hand/calibration/command.
+        # Status updates arrive via /hand/calibration/status subscription.
+        calib_frame = ttk.LabelFrame(
+            control_tab, text="Sensor Calibration", padding=4)
+        calib_frame.pack(fill='x', padx=8, pady=2)
+
+        for entry in SENSOR_CALIBRATIONS:
+            stype = entry["sensor_type"]
+            row = tk.Frame(calib_frame, bg='#1e1e2e')
+            row.pack(fill='x', pady=1)
+
+            tk.Label(row, text=entry["label"],
+                     bg='#1e1e2e', fg='#cdd6f4',
+                     font=('Segoe UI', 9, 'bold'),
+                     width=16, anchor='w').pack(side='left', padx=(2, 4))
+
+            ttk.Button(row, text="Calibrate",
+                       style='Send.TButton',
+                       command=lambda s=stype: self._send_calibration(
+                           s, CalibrationCommand.ACTION_START)).pack(
+                side='left', padx=2)
+            ttk.Button(row, text="Abort",
+                       command=lambda s=stype: self._send_calibration(
+                           s, CalibrationCommand.ACTION_ABORT)).pack(
+                side='left', padx=2)
+
+            status_var = tk.StringVar(value="IDLE")
+            status_lbl = tk.Label(row, textvariable=status_var,
+                                  bg='#1e1e2e', fg='#9399b2',
+                                  font=('Segoe UI', 9),
+                                  width=22, anchor='w')
+            status_lbl.pack(side='left', padx=(8, 2))
+            self._calib_status_vars[stype] = status_var
+            self._calib_status_labels[stype] = status_lbl
+
+            tk.Label(row, text=entry["hint"],
+                     bg='#1e1e2e', fg='#585b70',
+                     font=('Segoe UI', 7, 'italic')).pack(
+                side='left', padx=(4, 0))
 
         # Target Inputs
         pos_frame = ttk.LabelFrame(control_tab, text="Target Inputs",

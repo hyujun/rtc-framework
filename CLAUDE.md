@@ -37,7 +37,7 @@ ros2 topic echo /system/estop_status                  # true = E-STOP active
 | `rtc_controllers` | Library | PController, JointPDController, ClikController, OSC, GraspController (adaptive PI force) |
 | `rtc_controller_manager` | Executable | `RtControllerNode`: 500Hz RT loop, SPSC publish offload, CSV logging, E-STOP, digital twin |
 | `rtc_inference` | Header-only | `InferenceEngine` abstract, `OnnxEngine` (IoBinding, pre-allocated buffers) |
-| `rtc_msgs` | Messages | JointCommand, HandSensorState, GraspState, RobotTarget, SimSensor/SimSensorState, etc. |
+| `rtc_msgs` | Messages | JointCommand, HandSensorState, GraspState, RobotTarget, SimSensor/SimSensorState, CalibrationCommand/Status, etc. |
 | `rtc_mujoco_sim` | Executable | MuJoCo 3.x wrapper: sync-step, GLFW viewer, multi-group, position servo |
 | `rtc_tools` | Python | controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf |
 | `rtc_scripts` | Shell | PREEMPT_RT build, CPU shield, IRQ affinity, UDP optimization |

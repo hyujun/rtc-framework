@@ -61,6 +61,7 @@ class FingertipFTInferencer {
   [[nodiscard]] bool FeedCalibration(
       const std::array<int32_t, kMaxHandSensors>& /*sensor_data*/,
       int /*num_fingertips*/) noexcept { return true; }
+  void ResetCalibration(uint16_t /*sample_count*/ = 0) noexcept {}
   [[nodiscard]] FingertipFTState Infer(
       const std::array<int32_t, kMaxHandSensors>& /*sensor_data*/,
       int /*num_fingertips*/) noexcept { return {}; }
@@ -293,6 +294,24 @@ class FingertipFTInferencer {
       return true;
     }
     return false;
+  }
+
+  /// 캘리브레이션 재시작: 누적 버퍼 + baseline_offset_ 리셋.
+  /// baseline_offset_를 0으로 초기화하여 재수집 중 FT inference가
+  /// 오래된/무효 baseline으로 동작하지 않도록 보장 (is_calibrated()==false
+  /// 동안 Infer()는 일찍 리턴함).
+  /// @param sample_count 0이면 기존 target 유지, >0이면 이번 요청에 한해 override.
+  void ResetCalibration(uint16_t sample_count = 0) noexcept {
+    if (sample_count > 0) {
+      config_.calibration_samples = static_cast<int>(sample_count);
+    }
+    for (auto& s : calibration_sum_) s.fill(0.0);
+    for (auto& b : baseline_offset_) b.fill(0.0f);
+    calibration_count_ = 0;
+    calibrated_ = false;
+    RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+                "Calibration RESET (target=%d samples)",
+                config_.calibration_samples);
   }
 
   // ── Inference (noexcept, allocation-free) ──────────────────────────────────
