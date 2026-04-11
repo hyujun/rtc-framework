@@ -11,7 +11,7 @@ shape_estimation_node:
     min_points_for_fitting: 10       # 피팅 최소 포인트 수
     publish_rate_hz: 10.0            # [Hz] 추정 결과 publish 주기
     viz_rate_hz: 5.0                 # [Hz] 시각화 publish 주기
-    frame_id: "base_link"
+    frame_id: "base"
 
     # ── 돌출 구조 탐지 ─────────────────────────────────────────────────────────
     protuberance:
@@ -38,8 +38,8 @@ shape_estimation_node:
       #  control_6dof(0/1), traj_speed, traj_angular_speed,
       #  hand_traj_speed, max_vel, max_angular_vel, hand_max_vel]
       exploration_gains:
-        kp_translation: [10.0, 10.0, 10.0]
-        kp_rotation: [5.0, 5.0, 5.0]
+        kp_translation: [5.0, 5.0, 5.0]
+        kp_rotation: [2.0, 2.0, 2.0]
         damping: 0.01
         null_kp: 0.0
         enable_null_space: false
