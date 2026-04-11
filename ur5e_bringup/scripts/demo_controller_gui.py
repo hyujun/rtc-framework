@@ -192,6 +192,31 @@ GAIN_GROUP_LAYOUT = {
 # `_update_applied_display` stays aligned).
 GAIN_GROUP_PARENT_GRASP: set[str] = {"Grasp Detection"}
 
+# Base gain count (excluding the trailing [grasp_command, grasp_target_force]
+# pair) for each demo controller. This mirrors ``kBaseSize`` in the BT
+# coordinator's ``set_gains.cpp`` so GUI-sent grasp commands preserve the
+# same "override only the grasp tail, leave the rest of the live gains
+# untouched" semantics that the BT path uses.
+GRASP_BASE_SIZE = {
+    "demo_joint_controller": 7,   # [robot_speed, hand_speed, robot_max_vel,
+                                   #  hand_max_vel, contact_thresh,
+                                   #  force_thresh, min_fingertips]
+    "demo_task_controller": 19,   # [kp_t×3, kp_r×3, damping, null_kp,
+                                   #  en_null, en_6dof, traj_speed,
+                                   #  traj_ang_speed, hand_traj_speed,
+                                   #  max_vel, max_ang_vel, hand_max_vel,
+                                   #  contact_thresh, force_thresh,
+                                   #  min_fingertips]
+}
+
+# Index of the ``grasp_target_force`` field in the full gains layout
+# (``base_size + 1``). Used to sync the Target Force entry widget from
+# incoming ``/ur5e/current_gains`` messages.
+GRASP_TARGET_FORCE_INDEX = {
+    "demo_joint_controller": 8,
+    "demo_task_controller": 20,
+}
+
 # Per-group override for the maximum number of scalar inputs placed in
 # a single row inside the group box (default: 2 from SCALARS_PER_ROW).
 GROUP_SCALARS_PER_ROW = {
@@ -1689,17 +1714,14 @@ class DemoControllerGUI(Node):
                 continue
             break
 
-        ctrl_name = CONTROLLER_TYPES[self.selected_ctrl.get()]
+        ctrl_idx = self.selected_ctrl.get()
+        ctrl_name = CONTROLLER_TYPES[ctrl_idx]
 
         # Sync grasp target force entry from loaded gains.
         # Layout tail (see CLAUDE.md): [..., grasp_command, grasp_target_force].
         #   demo_joint_controller: target_force is index 8 (9 values total)
         #   demo_task_controller : target_force is index 20 (21 values total)
-        tf_idx_map = {
-            "demo_joint_controller": 8,
-            "demo_task_controller": 20,
-        }
-        tf_idx = tf_idx_map.get(ctrl_name)
+        tf_idx = GRASP_TARGET_FORCE_INDEX.get(ctrl_idx)
         if (tf_idx is not None
                 and tf_idx < len(data)
                 and hasattr(self, '_grasp_target_force_entry')):
@@ -1740,12 +1762,39 @@ class DemoControllerGUI(Node):
     def _send_grasp_command(self, cmd: int):
         """Send grasp command (1=grasp, 2=release) via gains message.
 
-        Appends grasp_command + grasp_target_force to the base gains array
-        so the controller receives the full expected layout.
+        Mirrors the BT coordinator's ``SetGains`` "override tail only"
+        semantics: use the controller's live gains (``/ur5e/current_gains``)
+        as the base so unrelated fields — ``hand_trajectory_speed``,
+        ``hand_max_traj_velocity``, ``grasp_*_threshold``, etc. — are
+        preserved instead of being clobbered by whatever happens to be
+        sitting in the Control-tab widgets.
+
+        Fallback order for the base gains:
+          1. ``self._cached_gains`` (latest ``/ur5e/current_gains`` snapshot),
+             truncated to ``GRASP_BASE_SIZE[ctrl_idx]``.
+          2. UI widget values via ``_collect_gain_values()`` (only used when
+             the GUI has never received a ``current_gains`` publication —
+             e.g. just after launch before the user clicks "Load Gains").
         """
-        base = self._collect_gain_values()
-        if base is None:
-            return
+        ctrl_idx = self.selected_ctrl.get()
+        base_size = GRASP_BASE_SIZE.get(ctrl_idx)
+
+        base: list[float] | None = None
+        used_cache = False
+        if (base_size is not None
+                and self._cached_gains is not None
+                and len(self._cached_gains) >= base_size):
+            base = [float(v) for v in self._cached_gains[:base_size]]
+            used_cache = True
+        else:
+            base = self._collect_gain_values()
+            if base is None:
+                return
+            # Trim any trailing values (defensive: widgets should already
+            # match base_size, but older GAIN_DEFS variants may not).
+            if base_size is not None and len(base) > base_size:
+                base = base[:base_size]
+
         try:
             target_force = float(self._grasp_target_force_entry.get())
         except (ValueError, AttributeError):
@@ -1759,7 +1808,8 @@ class DemoControllerGUI(Node):
 
         cmd_name = "Grasp" if cmd == 1 else "Release"
         self.get_logger().info(
-            f"Sent {cmd_name} command (target_force={target_force:.2f} N)")
+            f"Sent {cmd_name} command (target_force={target_force:.2f} N, "
+            f"base={'cached current_gains' if used_cache else 'UI widgets'})")
 
     def _copy_current_to_target(self):
         idx = self.selected_ctrl.get()
