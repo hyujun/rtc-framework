@@ -540,11 +540,15 @@ class HandUdpNode : public rclcpp::Node {
       const uint64_t failures = controller_->consecutive_recv_failures();
       const bool link_ok = (failures < link_fail_threshold_);
       if (link_ok != prev_link_ok_) {
+        // Edge-triggered — fires at most once per transition. Runs on the
+        // HandController EventLoop (SCHED_FIFO) so argument count is kept
+        // minimal: UP takes 0 args, DOWN takes 1 (failure count).
         if (link_ok) {
-          RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(), "Hand UDP link UP (recovered)");
+          RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(),
+                      "Hand UDP link UP");
         } else {
           RCLCPP_WARN(::ur5e_hand_driver::logging::NodeLogger(),
-                      "Hand UDP link DOWN (consecutive_recv_failures=%lu)",
+                      "Hand UDP link DOWN (failures=%lu)",
                       static_cast<unsigned long>(failures));
         }
         prev_link_ok_ = link_ok;

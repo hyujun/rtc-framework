@@ -348,9 +348,11 @@ source install/setup.bash
 
 - `HandController::EventLoop`, `HandUdpTransport::Send/Recv`, `HandSensorProcessor::PreFilter/ApplyFilters`, `FingertipFTInferencer::Infer` 는 모두 **500 Hz UDP 폴링 hot path** 다. 정상 경로의 `INFO`/`WARN` 직접 호출은 **금지** — 반복될 수 있는 메시지는 반드시 `*_THROTTLE` 매크로를 사용한다.
 - **`RCLCPP_*_ONCE` 금지**. `_ONCE` 도 첫 호출에서는 동일한 fmt 포맷 할당을 수행하므로 RT 안전이 아니며, 조건이 다시 참이 될 때 침묵해 버린다. 대신 `*_THROTTLE` 을 `kThrottleIdleMs` 와 함께 사용한다 (예: `HandSensorProcessor::PreFilter` 의 BesselFilter 재초기화 실패 경고).
+- **루프 기반 per-element 로그 금지.** RT 스레드에서 `for` 로 돌며 per-channel 로그를 내보내는 패턴은 1초 주기 throttle 을 만족하더라도 집계 1회로 축소해야 한다. 예: `HandSensorProcessor::ThrottledDriftWarning` 은 플래그된 채널 수 + 첫 위반 id/slope 를 **단 1 개의 `WARN_THROTTLE`** 로만 내보낸다 (최대 길이 고정 → 절단 없음).
+- **RT 핫패스의 포맷 인자 수를 최소화한다.** 엣지 트리거되는 링크 UP/DOWN 조차 arg 0~1개로 유지. 상세 데이터는 `SeqLock` 상태나 `CommStats`/`drift_result_` 구조체 쪽에 쌓아 두고, 필요한 쪽(`SaveCommStats`, 비-RT consumer)이 끌어가도록 한다.
 - THROTTLE 주기는 매직넘버 대신 `hand_logging.hpp` 의 표준 상수를 사용한다.
+- Non-RT 경로(init/shutdown, `HandFailureDetector`, `hand_udp_node` 콜백, `SaveCommStats`) 의 INFO/WARN 은 *최대한 풍부하게* 작성한다. 그렙 한 줄로 세션 결과를 진단할 수 있어야 한다: cycle/rate/ok%/timeout%/err% 등 비율과 실패 원인을 한 줄에 담는다 (`SaveCommStats` 요약 참고).
 - 메시지 본문에 클래스 이름을 박아넣지 않는다. 서브-로거 이름이 곧 식별자다 (`hand.ctrl`).
-- `HandFailureDetector` 와 `hand_udp_node` 의 init/shutdown 코드는 non-RT 컨텍스트 — `RCLCPP_INFO`/`WARN` 를 자유롭게 사용할 수 있다.
 
 ### 서브-로거 네임스페이스
 

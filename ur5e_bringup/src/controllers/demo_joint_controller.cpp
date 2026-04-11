@@ -481,14 +481,20 @@ void DemoJointController::ComputeControl(
             hand_computed_.positions[i] = dev1.positions[i];
             hand_computed_.velocities[i] = 0.0;
           }
+          // Errors (target - actual) encode both the actual position and the
+          // overshoot beyond target in a single number each, so 5 args are
+          // enough to diagnose contact_stop engagement.
+          const double err_thumb =
+              device_targets_[1][kHandIdxThumbCmcFe]  - dev1.positions[kHandIdxThumbCmcFe];
+          const double err_index =
+              device_targets_[1][kHandIdxIndexMcpFe]  - dev1.positions[kHandIdxIndexMcpFe];
+          const double err_middle =
+              device_targets_[1][kHandIdxMiddleMcpFe] - dev1.positions[kHandIdxMiddleMcpFe];
           RCLCPP_INFO_THROTTLE(
             logger_, log_clock_, ::ur5e_bringup::logging::kThrottleFastMs,
-            "[contact_stop] FREEZE active=%d max_force=%.2fN "
-            "thumb_fe(a=%.3f,t=%.3f) index_fe(a=%.3f,t=%.3f) mid_fe(a=%.3f,t=%.3f)",
+            "[contact_stop] FREEZE active=%d fmax=%.2fN err=[%+.3f,%+.3f,%+.3f]",
             active_count, static_cast<double>(max_force),
-            dev1.positions[kHandIdxThumbCmcFe],  device_targets_[1][kHandIdxThumbCmcFe],
-            dev1.positions[kHandIdxIndexMcpFe],  device_targets_[1][kHandIdxIndexMcpFe],
-            dev1.positions[kHandIdxMiddleMcpFe], device_targets_[1][kHandIdxMiddleMcpFe]);
+            err_thumb, err_index, err_middle);
         }
       }
     }

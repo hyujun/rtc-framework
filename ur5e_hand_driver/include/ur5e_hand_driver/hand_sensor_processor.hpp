@@ -227,21 +227,33 @@ class HandSensorProcessor {
   }
 
  private:
-  // NOTE: RCLCPP logging on RT thread is not strictly RT-safe, but drift is an
-  // abnormal condition and 1Hz rate is acceptable for operator notification.
+  // RT hot path (EventLoop thread). A single aggregated WARN (3 args, fixed
+  // length) replaces the former per-channel loop of up to kMaxBaroChannels
+  // RCLCPP_WARN calls. Only the count and the first flagged channel are
+  // reported so the format string has a bounded length and never truncates;
+  // full per-channel slopes are available via drift_result_ for any consumer
+  // that needs them outside the log stream.
   void ThrottledDriftWarning() noexcept {
-    const auto now = std::chrono::steady_clock::now();
-    if (now - last_drift_warn_time_ < std::chrono::seconds(1)) return;
-    last_drift_warn_time_ = now;
-
     const int num_baro = num_fingertips_ * kBarometerCount;
+    int flagged_count = 0;
+    int first_id = -1;
+    double first_slope = 0.0;
     for (int i = 0; i < num_baro; ++i) {
       if (drift_result_.drift_flags[static_cast<std::size_t>(i)]) {
-        RCLCPP_WARN(::ur5e_hand_driver::logging::SensorLogger(),
-                    "Barometer sensor(id:%d) drift detected (slope=%.3f)",
-                    i, drift_result_.slopes[static_cast<std::size_t>(i)]);
+        if (flagged_count == 0) {
+          first_id = i;
+          first_slope = drift_result_.slopes[static_cast<std::size_t>(i)];
+        }
+        ++flagged_count;
       }
     }
+    if (flagged_count == 0) return;
+
+    RCLCPP_WARN_THROTTLE(::ur5e_hand_driver::logging::SensorLogger(),
+                         drift_warn_clock_,
+                         ::ur5e_hand_driver::logging::kThrottleSlowMs,
+                         "Barometer drift: %d ch flagged (first id=%d slope=%.3f)",
+                         flagged_count, first_id, first_slope);
   }
 
   int  num_fingertips_;
@@ -270,11 +282,12 @@ class HandSensorProcessor {
   SlidingTrendDetector<kMaxBaroChannels, 2500> drift_detector_;
   SlidingTrendDetector<kMaxBaroChannels, 2500>::Result drift_result_{};
   bool   drift_detected_{false};
-  std::chrono::steady_clock::time_point last_drift_warn_time_{};
 
-  // Throttle clock for filter re-init failures (RT-safe replacement for
-  // RCLCPP_WARN_ONCE on the PreFilter hot path).
+  // Throttle clocks for RT-path warnings. filter_warn_clock_ replaces
+  // RCLCPP_WARN_ONCE on the PreFilter path; drift_warn_clock_ backs the
+  // single aggregated WARN in ThrottledDriftWarning (no per-channel loop).
   rclcpp::Clock filter_warn_clock_{RCL_STEADY_TIME};
+  rclcpp::Clock drift_warn_clock_{RCL_STEADY_TIME};
 };
 
 }  // namespace rtc
