@@ -194,6 +194,8 @@ position_output = quintic(t, q_start, q_goal, duration)
 
 force_pi 모드에서는 phase 전이(`Idle → Approaching → Contact → ForceControl → Holding → Releasing`)가 `[grasp:force_pi] phase X -> Y target_force=...N` 로그로 출력되며, 500Hz 제어 루프에서는 2초 간격으로 `[grasp] type=... active=.../... max_force=...N` 상태 스냅샷이 출력됩니다.
 
+GUI 의 `▶ Grasp` / `■ Release` 버튼은 BT coordinator 의 `ForcePIGrasp` / `ForcePIRelease` 서브트리와 동일한 "override-tail-only" 시맨틱스를 따릅니다: 버튼을 누르면 최근 수신된 `/ur5e/current_gains` 스냅샷(`_cached_gains`)을 베이스로 삼아 `[grasp_command, grasp_target_force]` 두 값만 덧붙여 publish 합니다. 즉 GUI 위젯의 stale 한 기본값(예: `hand_trajectory_speed`, `hand_max_traj_velocity`, 접촉 감지 임계 등)이 실제 컨트롤러의 live gain 을 덮어쓰지 않습니다. `/ur5e/current_gains` 가 한 번도 publish 되지 않은 초기 상태에서는 종전처럼 GUI 위젯 값을 베이스로 사용합니다 (`demo_controller_gui._send_grasp_command`).
+
 ---
 
 ### DemoTaskController (Index 5)
