@@ -21,6 +21,13 @@
 
 /**:
   ros__parameters:
+    # -- Fake hand 모드 (하드웨어 없이 standalone 테스트용) --
+    # true: UDP 소켓/스레드 없이 command echo, fake_tick_rate_hz 로 상태 publish.
+    # rt_controller 통합 모드에서는 rt_controller 측에서 자체 호출하므로 타이머
+    # 충돌을 피하려면 fake_tick_rate_hz 를 0 으로 설정해 node-side 타이머를 생략.
+    use_fake_hand: false
+    fake_tick_rate_hz: 500.0          # 0 이하이면 타이머 생략
+
     # -- UDP 통신 설정 --
     target_ip: "192.168.1.2"          # 핸드 컨트롤러 IP
     target_port: 55151                # 핸드 컨트롤러 포트

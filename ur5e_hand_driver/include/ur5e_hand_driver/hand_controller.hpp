@@ -258,8 +258,11 @@ class HandController {
     if (use_fake_hand_) {
       HandState fake_state{};
       std::copy(cmd.begin(), cmd.end(), fake_state.motor_positions.begin());
+      std::copy(cmd.begin(), cmd.end(), fake_state.joint_positions.begin());
       fake_state.num_fingertips = num_fingertips_;
       fake_state.valid = true;
+      fake_state.joint_valid = true;
+      fake_state.motor_valid = true;
 
       if (ft_enabled_ && ft_inferencer_) {
         if (!ft_inferencer_->is_calibrated()) {
@@ -515,6 +518,7 @@ class HandController {
           std::copy_n(motor_cur_buf.begin(), kNumHandMotors,
                       state.motor_currents.begin());
           state.received_joint_mode = static_cast<uint8_t>(received_mode);
+          state.motor_valid = true;
           any_recv_ok = true;
         }
 
@@ -531,6 +535,7 @@ class HandController {
                         state.joint_velocities.begin());
             std::copy_n(jc_buf.begin(), kNumHandMotors,
                         state.joint_currents.begin());
+            state.joint_valid = true;
             any_recv_ok = true;
           }
         }
@@ -596,6 +601,7 @@ class HandController {
           std::copy_n(motor_pos_buf.begin(), kNumHandMotors,
                       state.motor_positions.begin());
           state.received_joint_mode = static_cast<uint8_t>(received_mode);
+          state.motor_valid = true;
           any_recv_ok = true;
         }
 
@@ -608,6 +614,7 @@ class HandController {
                                           hand_packets::JointMode::kJoint)) {
             std::copy_n(jp_buf.begin(), kNumHandMotors,
                         state.joint_positions.begin());
+            state.joint_valid = true;
             any_recv_ok = true;
           }
         }

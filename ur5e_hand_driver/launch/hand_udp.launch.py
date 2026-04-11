@@ -47,6 +47,14 @@ def generate_launch_description():
         description='Use fake hand echo-back mock (no UDP socket)',
     )
 
+    fake_tick_rate_hz_arg = DeclareLaunchArgument(
+        'fake_tick_rate_hz',
+        default_value='500.0',
+        description='Internal tick rate for fake hand mode (Hz). '
+                    '0 or negative disables the node-side timer (use when '
+                    'rt_controller drives the fake controller directly).',
+    )
+
     # ── Config files ────────────────────────────────────────────────────
     hand_config = PathJoinSubstitution([
         pkg_share, 'config', 'hand_udp_node.yaml',
@@ -71,6 +79,8 @@ def generate_launch_description():
                 'publish_rate': LaunchConfiguration('publish_rate'),
                 'communication_mode': LaunchConfiguration('communication_mode'),
                 'recv_timeout_ms': LaunchConfiguration('recv_timeout_ms'),
+                'use_fake_hand': LaunchConfiguration('use_fake_hand'),
+                'fake_tick_rate_hz': LaunchConfiguration('fake_tick_rate_hz'),
             },
         ],
         emulate_tty=True,
@@ -83,5 +93,6 @@ def generate_launch_description():
         communication_mode_arg,
         recv_timeout_ms_arg,
         use_fake_hand_arg,
+        fake_tick_rate_hz_arg,
         hand_udp_node,
     ])

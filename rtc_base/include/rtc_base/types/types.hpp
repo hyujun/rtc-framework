@@ -123,7 +123,9 @@ struct HandState {
   std::array<int32_t, kMaxHandSensors> sensor_data{};
   std::array<int32_t, kMaxHandSensors> sensor_data_raw{};
   int  num_fingertips{kDefaultNumFingertips};
-  bool valid{false};
+  bool valid{false};         // any read succeeded this cycle
+  bool joint_valid{false};   // kJoint read succeeded this cycle
+  bool motor_valid{false};   // kMotor read succeeded this cycle
   uint8_t received_joint_mode{0x00};  // 0x00=motor, 0x01=joint (from response packet)
 };
 

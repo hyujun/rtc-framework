@@ -24,6 +24,7 @@
 #include <fstream>
 #include <iomanip>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 
@@ -62,6 +63,10 @@ class HandUdpNode : public rclcpp::Node {
     declare_parameter("rate_fail_threshold", 5);
     declare_parameter("check_link", true);
     declare_parameter("link_fail_threshold", 10);
+
+    // Fake hand 모드 (하드웨어 없는 standalone 테스트용)
+    declare_parameter("use_fake_hand", false);
+    declare_parameter("fake_tick_rate_hz", 500.0);
 
     // Hand joint/motor/fingertip names (이름 기반 매핑용)
     declare_parameter("joint_state_names", std::vector<std::string>{});
@@ -155,10 +160,11 @@ class HandUdpNode : public rclcpp::Node {
     // ── HandController ─────────────────────────────────────────────────
     const auto ft_names = get_parameter("hand_fingertip_names").as_string_array();
     num_fingertips_ = urtc::kDefaultNumFingertips;
+    use_fake_hand_ = get_parameter("use_fake_hand").as_bool();
     controller_ = std::make_unique<urtc::HandController>(
         target_ip, target_port, urtc::kUdpRecvConfig, recv_timeout_ms,
         false /* enable_write_ack: deprecated */, 1,
-        num_fingertips_, false, ft_names, comm_mode,
+        num_fingertips_, use_fake_hand_, ft_names, comm_mode,
         tof_lpf_enabled, tof_lpf_cutoff_hz,
         baro_lpf_enabled, baro_lpf_cutoff_hz, ft_config,
         drift_enabled, drift_threshold, drift_window_size);
@@ -273,6 +279,12 @@ class HandUdpNode : public rclcpp::Node {
           for (std::size_t i = 0; i < static_cast<std::size_t>(urtc::kNumHandMotors); ++i) {
             cmd[i] = static_cast<float>(msg->values[i]);
           }
+          // Cache for fake-mode self-tick (so quiet periods keep echoing the
+          // last commanded target instead of reverting to zeros).
+          if (use_fake_hand_) {
+            std::lock_guard lock(last_cmd_mutex_);
+            last_cmd_ = cmd;
+          }
           controller_->SetTargetPositions(cmd);
         });
 
@@ -320,8 +332,44 @@ class HandUdpNode : public rclcpp::Node {
       return;
     }
 
+    // ── Fake-hand self tick (standalone mode without hardware) ──────────
+    // In fake mode the HandController has no EventLoop thread and its echo
+    // path only fires on SendCommandAndRequestStates(). A node-side wall_timer
+    // calls it at fake_tick_rate_hz so that /hand/joint_states, motor_states,
+    // sensor_states, link_status continue to publish even without incoming
+    // commands. Set fake_tick_rate_hz <= 0 to disable (e.g. when rt_controller
+    // drives the fake controller directly and the tick would be redundant).
+    if (use_fake_hand_) {
+      const double fake_rate = get_parameter("fake_tick_rate_hz").as_double();
+      if (fake_rate > 0.0) {
+        const auto period = std::chrono::nanoseconds(
+            static_cast<int64_t>(1.0e9 / fake_rate));
+        fake_tick_timer_ = create_wall_timer(period, [this]() {
+          if (!controller_ || !controller_->IsRunning()) return;
+          std::array<float, urtc::kNumHandMotors> cmd;
+          {
+            std::lock_guard lock(last_cmd_mutex_);
+            cmd = last_cmd_;
+          }
+          controller_->SendCommandAndRequestStates(cmd);
+        });
+        RCLCPP_WARN(get_logger(),
+                    "HandUdpNode: FAKE mode enabled — no UDP, self-tick=%.1f Hz",
+                    fake_rate);
+      } else {
+        RCLCPP_WARN(get_logger(),
+                    "HandUdpNode: FAKE mode enabled — self-tick disabled "
+                    "(fake_tick_rate_hz=%.1f). Drive SendCommandAndRequestStates "
+                    "externally (e.g. rt_controller ControlLoop).",
+                    fake_rate);
+      }
+    }
+
     // ── Failure Detector (optional) ──────────────────────────────────
-    const bool enable_fd = get_parameter("enable_failure_detector").as_bool();
+    // Skipped in fake mode: no UDP link, no real sensor/motor data — the
+    // detector would immediately flag link_down / rate_fail false positives.
+    const bool enable_fd =
+        get_parameter("enable_failure_detector").as_bool() && !use_fake_hand_;
     if (enable_fd) {
       urtc::HandFailureDetector::Config fd_cfg;
       fd_cfg.failure_threshold = static_cast<int>(
@@ -403,29 +451,36 @@ class HandUdpNode : public rclcpp::Node {
   void PublishFromEventLoop(const urtc::HandState& state,
                             const urtc::FingertipFTState& ft_state) {
     // ── Dual JointState publish (joint + motor) ────────────────────────
-    // Always publish both: joint-space from kJoint read, motor-space from kMotor read.
-    // If a read failed, the corresponding fields remain zero-initialized.
+    // Gate each publish on the corresponding per-subsystem valid flag so that
+    // zero-initialized positions from a failed read are never broadcast.
+    // Downstream consumers (e.g. rt_controller auto_hold_position) latch the
+    // first received state as the hold target; publishing zeros would lock in
+    // a bogus target before the real UDP read succeeds.
     const auto stamp = this->now();
 
     // /hand/joint_states (joint-space: position/velocity/effort from kJoint read)
-    joint_js_msg_.header.stamp = stamp;
-    for (int i = 0; i < urtc::kNumHandMotors; ++i) {
-      const auto iu = static_cast<std::size_t>(i);
-      joint_js_msg_.position[iu] = static_cast<double>(state.joint_positions[iu]);
-      joint_js_msg_.velocity[iu] = static_cast<double>(state.joint_velocities[iu]);
-      joint_js_msg_.effort[iu]   = static_cast<double>(state.joint_currents[iu]);
+    if (state.joint_valid) {
+      joint_js_msg_.header.stamp = stamp;
+      for (int i = 0; i < urtc::kNumHandMotors; ++i) {
+        const auto iu = static_cast<std::size_t>(i);
+        joint_js_msg_.position[iu] = static_cast<double>(state.joint_positions[iu]);
+        joint_js_msg_.velocity[iu] = static_cast<double>(state.joint_velocities[iu]);
+        joint_js_msg_.effort[iu]   = static_cast<double>(state.joint_currents[iu]);
+      }
+      joint_state_pub_->publish(joint_js_msg_);
     }
-    joint_state_pub_->publish(joint_js_msg_);
 
     // /hand/motor_states (motor-space: position/velocity/effort from kMotor read)
-    motor_js_msg_.header.stamp = stamp;
-    for (int i = 0; i < urtc::kNumHandMotors; ++i) {
-      const auto iu = static_cast<std::size_t>(i);
-      motor_js_msg_.position[iu] = static_cast<double>(state.motor_positions[iu]);
-      motor_js_msg_.velocity[iu] = static_cast<double>(state.motor_velocities[iu]);
-      motor_js_msg_.effort[iu]   = static_cast<double>(state.motor_currents[iu]);
+    if (state.motor_valid) {
+      motor_js_msg_.header.stamp = stamp;
+      for (int i = 0; i < urtc::kNumHandMotors; ++i) {
+        const auto iu = static_cast<std::size_t>(i);
+        motor_js_msg_.position[iu] = static_cast<double>(state.motor_positions[iu]);
+        motor_js_msg_.velocity[iu] = static_cast<double>(state.motor_velocities[iu]);
+        motor_js_msg_.effort[iu]   = static_cast<double>(state.motor_currents[iu]);
+      }
+      motor_state_pub_->publish(motor_js_msg_);
     }
-    motor_state_pub_->publish(motor_js_msg_);
 
     // ── HandSensorState (sensor + inference) ───────────────────────────
     if (state.num_fingertips > 0) {
@@ -696,6 +751,12 @@ class HandUdpNode : public rclcpp::Node {
   int link_cycle_counter_{0};
 
   std::size_t         publish_count_{0};
+
+  // Fake-hand standalone support
+  bool                                        use_fake_hand_{false};
+  rclcpp::TimerBase::SharedPtr                fake_tick_timer_;
+  std::mutex                                  last_cmd_mutex_;
+  std::array<float, urtc::kNumHandMotors>     last_cmd_{};
 
   std::chrono::steady_clock::time_point start_time_{std::chrono::steady_clock::now()};
 };
