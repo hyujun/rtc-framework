@@ -1,10 +1,15 @@
 // file: src/nodes/move_finger.cpp
 #include "ur5e_bt_coordinator/action_nodes/move_finger.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 #include "ur5e_bt_coordinator/bt_utils.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
 namespace rtc_bt {
+
+namespace {
+auto logger() { return ::rtc_bt::logging::ActionLogger("move_finger"); }
+}  // namespace
 
 MoveFinger::MoveFinger(const std::string& name, const BT::NodeConfig& config,
                        std::shared_ptr<BtRosBridge> bridge)
@@ -57,8 +62,8 @@ BT::NodeStatus MoveFinger::onStart()
   // 목표 전송
   ApplyPartialHandTarget(*bridge_, target_pose_, joint_indices_);
 
-  RCLCPP_INFO(rclcpp::get_logger("bt"),
-              "[MoveFinger] finger=%s pose=%s estimated_duration=%.3fs (speed=%.2f)",
+  RCLCPP_INFO(logger(),
+              "finger=%s pose=%s estimated_duration=%.3fs (speed=%.2f)",
               finger_name.value().c_str(), pose_name.value().c_str(), duration_, speed);
 
   start_time_ = std::chrono::steady_clock::now();
@@ -68,7 +73,7 @@ BT::NodeStatus MoveFinger::onStart()
 BT::NodeStatus MoveFinger::onRunning()
 {
   if (ElapsedSeconds(start_time_) >= duration_) {
-    RCLCPP_INFO(rclcpp::get_logger("bt"), "[MoveFinger] complete (%.3fs)", duration_);
+    RCLCPP_INFO(logger(), "complete (%.3fs)", duration_);
     return BT::NodeStatus::SUCCESS;
   }
   return BT::NodeStatus::RUNNING;
@@ -76,7 +81,7 @@ BT::NodeStatus MoveFinger::onRunning()
 
 void MoveFinger::onHalted()
 {
-  RCLCPP_INFO(rclcpp::get_logger("bt"), "[MoveFinger] halted");
+  RCLCPP_INFO(logger(), "halted");
 }
 
 }  // namespace rtc_bt

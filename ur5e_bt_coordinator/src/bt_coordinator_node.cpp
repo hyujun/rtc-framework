@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/bt_coordinator_node.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 
 // Action nodes
 #include "ur5e_bt_coordinator/action_nodes/compute_offset_pose.hpp"
@@ -38,6 +39,11 @@
 
 namespace rtc_bt {
 
+namespace {
+auto coord_log()    { return ::rtc_bt::logging::CoordLogger(); }
+auto watchdog_log() { return ::rtc_bt::logging::WatchdogLogger(); }
+}  // namespace
+
 BtCoordinatorNode::BtCoordinatorNode(const rclcpp::NodeOptions& options)
   : rclcpp::Node("bt_coordinator", options)
 {
@@ -64,15 +70,15 @@ void BtCoordinatorNode::Initialize()
   if (groot2_port_ > 0) {
     try {
       groot2_publisher_ = std::make_unique<BT::Groot2Publisher>(*tree_, groot2_port_);
-      RCLCPP_INFO(get_logger(), "[BtCoordinator] Groot2 publisher on port %d", groot2_port_);
+      RCLCPP_INFO(coord_log(), "Groot2 publisher on port %d", groot2_port_);
     } catch (const std::exception& e) {
-      RCLCPP_WARN(get_logger(), "[BtCoordinator] Groot2 init failed: %s", e.what());
+      RCLCPP_WARN(coord_log(), "Groot2 init failed: %s", e.what());
     }
   }
 #else
   if (groot2_port_ > 0) {
-    RCLCPP_WARN(get_logger(),
-                "[BtCoordinator] groot2_port=%d requested but Groot2 not available "
+    RCLCPP_WARN(coord_log(),
+                "groot2_port=%d requested but Groot2 not available "
                 "(BehaviorTree.CPP compiled without ZMQ support)", groot2_port_);
   }
 #endif
@@ -88,7 +94,7 @@ void BtCoordinatorNode::Initialize()
         std::chrono::duration_cast<std::chrono::nanoseconds>(period),
         std::bind(&BtCoordinatorNode::TickCallback, this));
   } else {
-    RCLCPP_INFO(get_logger(), "[BtCoordinator] Step mode enabled — use ~/step service to tick");
+    RCLCPP_INFO(coord_log(), "Step mode enabled — use ~/step service to tick");
   }
 
   // Step mode service (always available)
@@ -109,8 +115,8 @@ void BtCoordinatorNode::Initialize()
         std::bind(&BtCoordinatorNode::WatchdogCheck, this));
   }
 
-  RCLCPP_INFO(get_logger(),
-              "[BtCoordinator] Tree loaded: %s (tick %.1f Hz, %s)",
+  RCLCPP_INFO(coord_log(),
+              "Tree loaded: %s (tick %.1f Hz, %s)",
               tree_file_.c_str(), tick_rate_hz_,
               step_mode_ ? "step mode" : "auto mode");
 }
@@ -192,11 +198,11 @@ void BtCoordinatorNode::LoadTree()
   }
 
   if (!std::filesystem::exists(tree_path)) {
-    RCLCPP_FATAL(get_logger(), "[BtCoordinator] Tree file not found: %s", tree_path.c_str());
+    RCLCPP_FATAL(coord_log(), "Tree file not found: %s", tree_path.c_str());
     throw std::runtime_error("BT tree file not found: " + tree_path.string());
   }
 
-  RCLCPP_DEBUG(get_logger(), "[BtCoordinator] Loading tree from: %s", tree_path.c_str());
+  RCLCPP_DEBUG(coord_log(), "Loading tree from: %s", tree_path.c_str());
 
   tree_ = std::make_unique<BT::Tree>(
       factory_.createTreeFromFile(tree_path.string()));
@@ -218,26 +224,26 @@ void BtCoordinatorNode::InitializeBlackboard()
     switch (param.get_type()) {
       case rclcpp::ParameterType::PARAMETER_STRING:
         bb->set(key, param.as_string());
-        RCLCPP_INFO(get_logger(), "[Blackboard] %s = \"%s\" (string)",
-                    key.c_str(), param.as_string().c_str());
+        RCLCPP_DEBUG(coord_log(), "blackboard: %s = \"%s\" (string)",
+                     key.c_str(), param.as_string().c_str());
         break;
       case rclcpp::ParameterType::PARAMETER_DOUBLE:
         bb->set(key, param.as_double());
-        RCLCPP_INFO(get_logger(), "[Blackboard] %s = %f (double)",
-                    key.c_str(), param.as_double());
+        RCLCPP_DEBUG(coord_log(), "blackboard: %s = %f (double)",
+                     key.c_str(), param.as_double());
         break;
       case rclcpp::ParameterType::PARAMETER_INTEGER:
         bb->set(key, static_cast<int>(param.as_int()));
-        RCLCPP_INFO(get_logger(), "[Blackboard] %s = %ld (int)",
-                    key.c_str(), param.as_int());
+        RCLCPP_DEBUG(coord_log(), "blackboard: %s = %ld (int)",
+                     key.c_str(), param.as_int());
         break;
       case rclcpp::ParameterType::PARAMETER_BOOL:
         bb->set(key, param.as_bool());
-        RCLCPP_INFO(get_logger(), "[Blackboard] %s = %s (bool)",
-                    key.c_str(), param.as_bool() ? "true" : "false");
+        RCLCPP_DEBUG(coord_log(), "blackboard: %s = %s (bool)",
+                     key.c_str(), param.as_bool() ? "true" : "false");
         break;
       default:
-        RCLCPP_WARN(get_logger(), "[Blackboard] %s: unsupported type, skipped",
+        RCLCPP_WARN(coord_log(), "blackboard: %s: unsupported type, skipped",
                     key.c_str());
         break;
     }
@@ -250,26 +256,26 @@ void BtCoordinatorNode::TickCallback()
 
   // Paused check
   if (paused_) {
-    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-                          "[BtCoordinator] Paused (set 'paused' param to false to resume)");
+    RCLCPP_INFO_THROTTLE(coord_log(), *get_clock(),
+                          ::rtc_bt::logging::kThrottleIdleMs,
+                          "Paused (set 'paused' param to false to resume)");
     return;
   }
 
   if (bridge_->IsEstopped()) {
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                          "[BtCoordinator] E-STOP active, tree paused");
+    RCLCPP_WARN_THROTTLE(coord_log(), *get_clock(),
+                          ::rtc_bt::logging::kThrottleSlowMs,
+                          "E-STOP active, tree paused");
     return;
   }
 
   auto status = tree_->tickOnce();
-  RCLCPP_DEBUG(get_logger(), "[BtCoordinator] tick -> %s",
-               BT::toStr(status).c_str());
+  RCLCPP_DEBUG(coord_log(), "tick -> %s", BT::toStr(status).c_str());
 
   if (status == BT::NodeStatus::SUCCESS) {
-    RCLCPP_INFO(get_logger(), "[BtCoordinator] Tree completed: SUCCESS");
+    RCLCPP_INFO(coord_log(), "Tree completed: SUCCESS");
     if (repeat_) {
-      RCLCPP_INFO(get_logger(), "[BtCoordinator] Restarting tree in %.1f s...",
-                  repeat_delay_s_);
+      RCLCPP_INFO(coord_log(), "Restarting tree in %.1f s...", repeat_delay_s_);
       tick_timer_->cancel();
       repeat_timer_ = create_wall_timer(
           std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -278,14 +284,14 @@ void BtCoordinatorNode::TickCallback()
             repeat_timer_->cancel();
             tree_->haltTree();
             tree_->rootBlackboard()->unset("object_pose");
-            RCLCPP_INFO(get_logger(), "[BtCoordinator] Tree restarted");
+            RCLCPP_INFO(coord_log(), "Tree restarted");
             tick_timer_->reset();
           });
     } else {
       tick_timer_->cancel();
     }
   } else if (status == BT::NodeStatus::FAILURE) {
-    RCLCPP_WARN(get_logger(), "[BtCoordinator] Tree completed: FAILURE");
+    RCLCPP_WARN(coord_log(), "Tree completed: FAILURE");
     LogFailureDiagnosis();
     tick_timer_->cancel();
   }
@@ -298,20 +304,17 @@ void BtCoordinatorNode::InstallFailureLogger()
   failure_logger_.reset();
 
   if (!tree_ || !tree_->rootNode()) {
-    RCLCPP_WARN(get_logger(),
-                "[BtCoordinator] InstallFailureLogger: no tree/root — skipped");
+    RCLCPP_WARN(coord_log(), "InstallFailureLogger: no tree/root — skipped");
     return;
   }
 
   try {
-    failure_logger_ = std::make_unique<FailureLogger>(
-        tree_->rootNode(), get_logger());
-    RCLCPP_INFO(get_logger(),
-                "[BtCoordinator] FailureLogger attached — FAILURE transitions "
-                "will be printed via RCLCPP_ERROR");
+    failure_logger_ = std::make_unique<FailureLogger>(tree_->rootNode());
+    RCLCPP_INFO(coord_log(),
+                "FailureLogger attached — FAILURE transitions "
+                "will be printed via RCLCPP_ERROR (logger=bt.fail)");
   } catch (const std::exception& e) {
-    RCLCPP_WARN(get_logger(),
-                "[BtCoordinator] FailureLogger init failed: %s", e.what());
+    RCLCPP_WARN(coord_log(), "FailureLogger init failed: %s", e.what());
   }
 }
 
@@ -319,7 +322,7 @@ void BtCoordinatorNode::LogFailureDiagnosis()
 {
   if (!tree_) return;
 
-  RCLCPP_ERROR(get_logger(), "──── Failure Diagnosis ────");
+  RCLCPP_ERROR(coord_log(), "──── Failure Diagnosis ────");
 
   // Walk the tree and dump every FAILURE-leaf, showing the path from root.
   // A "failed leaf" is a failed node with no failed descendant — this gives
@@ -355,18 +358,18 @@ void BtCoordinatorNode::LogFailureDiagnosis()
     if (status == BT::NodeStatus::FAILURE) {
       const bool is_leaf_failure = !has_failed_descendant(node);
       if (is_leaf_failure) {
-        RCLCPP_ERROR(get_logger(),
+        RCLCPP_ERROR(coord_log(),
                      "%s[FAIL-LEAF] %s (type=%s uid=%u)",
                      indent.c_str(), name.c_str(),
                      node->registrationName().c_str(),
                      static_cast<unsigned>(node->UID()));
         ++failure_count;
       } else {
-        RCLCPP_WARN(get_logger(),
+        RCLCPP_WARN(coord_log(),
                     "%s[FAIL] %s (type=%s uid=%u)",
                     indent.c_str(), name.c_str(),
                     node->registrationName().c_str(),
-                     static_cast<unsigned>(node->UID()));
+                    static_cast<unsigned>(node->UID()));
       }
     }
 
@@ -382,13 +385,13 @@ void BtCoordinatorNode::LogFailureDiagnosis()
   visit(tree_->rootNode(), 0);
 
   if (failure_count == 0) {
-    RCLCPP_WARN(get_logger(),
+    RCLCPP_WARN(coord_log(),
                 "  (no FAIL-LEAF node found — root returned FAILURE without "
                 "a surviving failed descendant; check logs above for the "
                 "last [BT FAIL] line emitted by FailureLogger)");
   }
 
-  RCLCPP_ERROR(get_logger(), "──── End Diagnosis (%d leaf failures) ────",
+  RCLCPP_ERROR(coord_log(), "──── End Diagnosis (%d leaf failures) ────",
                failure_count);
 }
 
@@ -399,22 +402,23 @@ void BtCoordinatorNode::WatchdogCheck()
   bool any_critical_down = false;
   for (const auto& h : health) {
     if (!h.received) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
-                            "[Watchdog] %s: no messages received yet", h.name.c_str());
+      RCLCPP_WARN_THROTTLE(watchdog_log(), *get_clock(),
+                            ::rtc_bt::logging::kThrottleIdleMs,
+                            "%s: no messages received yet", h.name.c_str());
       any_critical_down = true;
     } else if (!h.healthy) {
-      RCLCPP_WARN(get_logger(),
-                  "[Watchdog] %s: stale (%.1fs since last message, timeout=%.1fs)",
+      RCLCPP_WARN(watchdog_log(),
+                  "%s: stale (%.1fs since last message, timeout=%.1fs)",
                   h.name.c_str(), h.seconds_since_last, watchdog_timeout_s_);
       any_critical_down = true;
     } else {
-      RCLCPP_DEBUG(get_logger(), "[Watchdog] %s: healthy (%.2fs ago)",
+      RCLCPP_DEBUG(watchdog_log(), "%s: healthy (%.2fs ago)",
                    h.name.c_str(), h.seconds_since_last);
     }
   }
 
   if (!any_critical_down) {
-    RCLCPP_DEBUG(get_logger(), "[Watchdog] all topics healthy");
+    RCLCPP_DEBUG(watchdog_log(), "all topics healthy");
   }
 }
 
@@ -428,7 +432,7 @@ rcl_interfaces::msg::SetParametersResult BtCoordinatorNode::OnParameterChange(
     if (param.get_name() == "tree_file") {
       // Runtime tree switching
       std::string new_file = param.as_string();
-      RCLCPP_INFO(get_logger(), "[BtCoordinator] Switching tree: %s → %s",
+      RCLCPP_INFO(coord_log(), "Switching tree: %s → %s",
                   tree_file_.c_str(), new_file.c_str());
 
       try {
@@ -457,7 +461,7 @@ rcl_interfaces::msg::SetParametersResult BtCoordinatorNode::OnParameterChange(
           try {
             groot2_publisher_ = std::make_unique<BT::Groot2Publisher>(*tree_, groot2_port_);
           } catch (const std::exception& e) {
-            RCLCPP_WARN(get_logger(), "[BtCoordinator] Groot2 re-init failed: %s", e.what());
+            RCLCPP_WARN(coord_log(), "Groot2 re-init failed: %s", e.what());
           }
         }
 #endif
@@ -470,24 +474,23 @@ rcl_interfaces::msg::SetParametersResult BtCoordinatorNode::OnParameterChange(
           tick_timer_->reset();
         }
 
-        RCLCPP_INFO(get_logger(), "[BtCoordinator] Tree switched to: %s", new_file.c_str());
+        RCLCPP_INFO(coord_log(), "Tree switched to: %s", new_file.c_str());
       } catch (const std::exception& e) {
         result.successful = false;
         result.reason = std::string("Failed to load tree: ") + e.what();
-        RCLCPP_ERROR(get_logger(), "[BtCoordinator] Tree switch failed: %s", e.what());
+        RCLCPP_ERROR(coord_log(), "Tree switch failed: %s", e.what());
       }
     } else if (param.get_name() == "paused") {
       paused_ = param.as_bool();
-      RCLCPP_INFO(get_logger(), "[BtCoordinator] %s",
-                  paused_ ? "Paused" : "Resumed");
+      RCLCPP_INFO(coord_log(), "%s", paused_ ? "Paused" : "Resumed");
     } else if (param.get_name() == "step_mode") {
       step_mode_ = param.as_bool();
       if (step_mode_) {
         if (tick_timer_) tick_timer_->cancel();
-        RCLCPP_INFO(get_logger(), "[BtCoordinator] Step mode ON — use ~/step service");
+        RCLCPP_INFO(coord_log(), "Step mode ON — use ~/step service");
       } else {
         if (tick_timer_) tick_timer_->reset();
-        RCLCPP_INFO(get_logger(), "[BtCoordinator] Step mode OFF — auto ticking resumed");
+        RCLCPP_INFO(coord_log(), "Step mode OFF — auto ticking resumed");
       }
     } else if (param.get_name() == "repeat") {
       repeat_ = param.as_bool();
@@ -506,14 +509,14 @@ void BtCoordinatorNode::StepCallback(
     std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
   if (!tree_) {
-    RCLCPP_ERROR(get_logger(), "[Step] no tree loaded");
+    RCLCPP_ERROR(coord_log(), "step: no tree loaded");
     response->success = false;
     response->message = "No tree loaded";
     return;
   }
 
   if (bridge_->IsEstopped()) {
-    RCLCPP_WARN(get_logger(), "[Step] E-STOP active, cannot tick");
+    RCLCPP_WARN(coord_log(), "step: E-STOP active, cannot tick");
     response->success = false;
     response->message = "E-STOP active";
     return;
@@ -532,7 +535,7 @@ void BtCoordinatorNode::StepCallback(
   response->success = (status != BT::NodeStatus::FAILURE);
   response->message = "Tree status: " + status_str;
 
-  RCLCPP_INFO(get_logger(), "[Step] Tick result: %s", status_str.c_str());
+  RCLCPP_INFO(coord_log(), "step: tick result: %s", status_str.c_str());
 
   if (status == BT::NodeStatus::FAILURE) {
     LogFailureDiagnosis();

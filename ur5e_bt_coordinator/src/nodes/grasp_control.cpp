@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/action_nodes/grasp_control.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 #include "ur5e_bt_coordinator/bt_utils.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -9,7 +10,7 @@
 namespace rtc_bt {
 
 namespace {
-auto logger() { return rclcpp::get_logger("bt"); }
+auto logger() { return ::rtc_bt::logging::ActionLogger("grasp_control"); }
 }  // namespace
 
 GraspControl::GraspControl(const std::string& name, const BT::NodeConfig& config,
@@ -40,13 +41,13 @@ BT::NodeStatus GraspControl::onStart()
   auto pinch_str = getInput<std::string>("pinch_motors").value_or("0,1,2,3");
   pinch_motor_indices_ = ParseCsvList<int>(pinch_str);
 
-  RCLCPP_INFO(logger(), "[GraspControl] mode=%s speed=%.2f max_pos=%.2f timeout=%.1fs",
+  RCLCPP_INFO(logger(), "mode=%s speed=%.2f max_pos=%.2f timeout=%.1fs",
               mode_.c_str(), close_speed_, max_position_, timeout_s_);
 
   if (mode_ == "open" || mode_ == "preset") {
     auto target = getInput<std::vector<double>>("target_positions");
     if (!target) {
-      RCLCPP_ERROR(logger(), "[GraspControl] mode=%s requires target_positions", mode_.c_str());
+      RCLCPP_ERROR(logger(), "mode=%s requires target_positions", mode_.c_str());
       throw BT::RuntimeError("GraspControl: open/preset requires target_positions");
     }
     hand_target_ = target.value();
@@ -57,7 +58,7 @@ BT::NodeStatus GraspControl::onStart()
   // "close" or "pinch": start from current hand position
   hand_target_ = bridge_->GetHandJointPositions();
   if (hand_target_.size() < static_cast<std::size_t>(kHandDof)) {
-    RCLCPP_DEBUG(logger(), "[GraspControl] hand state undersized (%zu), padding to %d",
+    RCLCPP_DEBUG(logger(), "hand state undersized (%zu), padding to %d",
                  hand_target_.size(), kHandDof);
     hand_target_.resize(kHandDof, 0.0);
   }
@@ -68,7 +69,7 @@ BT::NodeStatus GraspControl::onStart()
 BT::NodeStatus GraspControl::onRunning()
 {
   if (ElapsedSeconds(start_time_) > timeout_s_) {
-    RCLCPP_WARN(logger(), "[GraspControl] timeout (%.1fs) mode=%s", timeout_s_, mode_.c_str());
+    RCLCPP_WARN(logger(), "timeout (%.1fs) mode=%s", timeout_s_, mode_.c_str());
     return BT::NodeStatus::FAILURE;
   }
 
@@ -81,11 +82,14 @@ BT::NodeStatus GraspControl::onRunning()
         max_err = std::max(max_err, std::abs(current[i] - hand_target_[i]));
       }
       if (max_err < 0.05) {
-        RCLCPP_INFO(logger(), "[GraspControl] %s complete (max_err=%.4f elapsed=%.2fs)",
+        RCLCPP_INFO(logger(), "%s complete (max_err=%.4f elapsed=%.2fs)",
                     mode_.c_str(), max_err, ElapsedSeconds(start_time_));
         return BT::NodeStatus::SUCCESS;
       }
-      RCLCPP_DEBUG(logger(), "[GraspControl] %s max_err=%.4f", mode_.c_str(), max_err);
+      static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
+      RCLCPP_DEBUG_THROTTLE(logger(), steady_clock,
+                            ::rtc_bt::logging::kThrottleFastMs,
+                            "%s max_err=%.4f", mode_.c_str(), max_err);
     }
     return BT::NodeStatus::RUNNING;
   }
@@ -113,7 +117,7 @@ BT::NodeStatus GraspControl::onRunning()
 
   // All motors at max without external stop → FAILURE (object not grasped)
   if (all_at_max) {
-    RCLCPP_WARN(logger(), "[GraspControl] all motors at max (%.2f) — grasp failed", max_position_);
+    RCLCPP_WARN(logger(), "all motors at max (%.2f) — grasp failed", max_position_);
     return BT::NodeStatus::FAILURE;
   }
 
@@ -122,7 +126,7 @@ BT::NodeStatus GraspControl::onRunning()
 
 void GraspControl::onHalted()
 {
-  RCLCPP_INFO(logger(), "[GraspControl] halted (mode=%s elapsed=%.2fs)",
+  RCLCPP_INFO(logger(), "halted (mode=%s elapsed=%.2fs)",
               mode_.c_str(), ElapsedSeconds(start_time_));
 }
 

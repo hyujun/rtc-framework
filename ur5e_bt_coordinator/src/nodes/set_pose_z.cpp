@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/action_nodes/set_pose_z.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -8,7 +9,7 @@
 namespace rtc_bt {
 
 namespace {
-auto logger() { return rclcpp::get_logger("bt"); }
+auto logger() { return ::rtc_bt::logging::ActionLogger("set_pose_z"); }
 }  // namespace
 
 BT::PortsList SetPoseZ::providedPorts()
@@ -26,7 +27,7 @@ BT::NodeStatus SetPoseZ::tick()
 {
   auto pose = getInput<Pose6D>("input_pose");
   if (!pose) {
-    RCLCPP_ERROR(logger(), "[SetPoseZ] missing input_pose port");
+    RCLCPP_ERROR(logger(), "missing input_pose port");
     throw BT::RuntimeError("SetPoseZ: missing input_pose");
   }
 
@@ -36,11 +37,11 @@ BT::NodeStatus SetPoseZ::tick()
   Pose6D result = pose.value();
   if (std::isnan(z_override)) {
     RCLCPP_DEBUG(logger(),
-                 "[SetPoseZ] disabled (z=NaN), pass-through z=%.3f",
+                 "disabled (z=NaN), pass-through z=%.3f",
                  result.z);
   } else {
     RCLCPP_DEBUG(logger(),
-                 "[SetPoseZ] override z: %.3f -> %.3f",
+                 "override z: %.3f -> %.3f",
                  result.z, z_override);
     result.z = z_override;
   }

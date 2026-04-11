@@ -1,11 +1,12 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_vision_target_ready.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
 namespace rtc_bt {
 
 namespace {
-auto logger() { return rclcpp::get_logger("bt"); }
+auto logger() { return ::rtc_bt::logging::CondLogger("is_vision_target_ready"); }
 }  // namespace
 
 IsVisionTargetReady::IsVisionTargetReady(const std::string& name,
@@ -32,17 +33,15 @@ BT::NodeStatus IsVisionTargetReady::tick()
     pose.yaw   = tcp.yaw;
 
     RCLCPP_INFO(logger(),
-                "[IsVisionTargetReady] target pos=[%.3f, %.3f, %.3f] "
-                "orient(tcp)=[%.3f, %.3f, %.3f]",
+                "target pos=[%.3f, %.3f, %.3f] orient(tcp)=[%.3f, %.3f, %.3f]",
                 pose.x, pose.y, pose.z, pose.roll, pose.pitch, pose.yaw);
     setOutput("pose", pose);
     return BT::NodeStatus::SUCCESS;
   }
   static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
   RCLCPP_WARN_THROTTLE(
-    logger(), steady_clock, 2000,
-    "[IsVisionTargetReady] FAILURE: no valid target pose "
-    "(waiting for /world_target_info)");
+    logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
+    "no valid target pose (waiting for /world_target_info)");
   return BT::NodeStatus::FAILURE;
 }
 

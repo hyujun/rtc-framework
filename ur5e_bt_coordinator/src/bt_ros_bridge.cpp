@@ -1,8 +1,14 @@
 #include "ur5e_bt_coordinator/bt_ros_bridge.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 
 #include <cmath>
 
 namespace rtc_bt {
+
+namespace {
+auto bridge_log() { return ::rtc_bt::logging::BridgeLogger(); }
+auto poses_log()  { return ::rtc_bt::logging::PosesLogger(); }
+}  // namespace
 
 BtRosBridge::BtRosBridge(rclcpp::Node::SharedPtr node)
   : node_(std::move(node))
@@ -152,8 +158,8 @@ BtRosBridge::BtRosBridge(rclcpp::Node::SharedPtr node)
         std::lock_guard lock(state_mutex_);
         cached_gains_ = msg->data;
         cached_gains_valid_ = true;
-        RCLCPP_DEBUG(node_->get_logger(),
-                     "[BtRosBridge] Received current_gains (%zu values)",
+        RCLCPP_DEBUG(bridge_log(),
+                     "received current_gains (%zu values)",
                      msg->data.size());
       });
 
@@ -189,7 +195,7 @@ BtRosBridge::BtRosBridge(rclcpp::Node::SharedPtr node)
 
   shape_clear_client_ = node_->create_client<std_srvs::srv::Trigger>("/shape/clear");
 
-  RCLCPP_INFO(node_->get_logger(), "[BtRosBridge] Initialized");
+  RCLCPP_INFO(bridge_log(), "initialized");
 }
 
 // ── Cached state accessors ────────────────────────────────────────────────
@@ -241,7 +247,7 @@ void BtRosBridge::RequestCurrentGains() {
   std_msgs::msg::Bool msg;
   msg.data = true;
   request_gains_pub_->publish(msg);
-  RCLCPP_DEBUG(node_->get_logger(), "[BtRosBridge] RequestCurrentGains published");
+  RCLCPP_DEBUG(bridge_log(), "request_current_gains published");
 }
 
 std::vector<double> BtRosBridge::GetCachedGains() const {
@@ -268,9 +274,6 @@ void BtRosBridge::PublishArmTarget(const Pose6D& target) {
   msg.goal_type = "task";
   msg.task_target = {target.x, target.y, target.z,
                      target.roll, target.pitch, target.yaw};
-  RCLCPP_DEBUG(node_->get_logger(),
-               "[BtRosBridge] PublishArmTarget task=[%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
-               target.x, target.y, target.z, target.roll, target.pitch, target.yaw);
   arm_target_pub_->publish(msg);
 }
 
@@ -279,8 +282,6 @@ void BtRosBridge::PublishArmJointTarget(const std::vector<double>& target) {
   msg.header.stamp = node_->now();
   msg.goal_type = "joint";
   msg.joint_target.assign(target.begin(), target.end());
-  RCLCPP_DEBUG(node_->get_logger(),
-               "[BtRosBridge] PublishArmJointTarget (%zu joints)", target.size());
   arm_target_pub_->publish(msg);
 }
 
@@ -293,8 +294,6 @@ void BtRosBridge::PublishHandTarget(const std::vector<double>& target) {
   msg.header.stamp = node_->now();
   msg.goal_type = "joint";
   msg.joint_target.assign(target.begin(), target.end());
-  RCLCPP_DEBUG(node_->get_logger(),
-               "[BtRosBridge] PublishHandTarget (%zu motors)", target.size());
   hand_target_pub_->publish(msg);
 }
 
@@ -312,8 +311,7 @@ void BtRosBridge::PublishGains(const std::vector<double>& gains) {
 void BtRosBridge::PublishSelectController(const std::string& name) {
   std_msgs::msg::String msg;
   msg.data = name;
-  RCLCPP_DEBUG(node_->get_logger(),
-               "[BtRosBridge] PublishSelectController: %s", name.c_str());
+  RCLCPP_DEBUG(bridge_log(), "select_controller: %s", name.c_str());
   select_ctrl_pub_->publish(msg);
 }
 
@@ -322,20 +320,20 @@ void BtRosBridge::PublishSelectController(const std::string& name) {
 void BtRosBridge::PublishShapeTrigger(const std::string& command) {
   std_msgs::msg::String msg;
   msg.data = command;
-  RCLCPP_INFO(node_->get_logger(), "[BtRosBridge] ShapeTrigger: %s", command.c_str());
+  RCLCPP_INFO(bridge_log(), "shape_trigger: %s", command.c_str());
   shape_trigger_pub_->publish(msg);
 }
 
 void BtRosBridge::CallShapeClear() {
   if (!shape_clear_client_->service_is_ready()) {
-    RCLCPP_WARN(node_->get_logger(), "[BtRosBridge] /shape/clear service not available");
+    RCLCPP_WARN(bridge_log(), "/shape/clear service not available");
     return;
   }
   auto request = std::make_shared<std_srvs::srv::Trigger::Request>();
   shape_clear_client_->async_send_request(request,
       [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
         auto result = future.get();
-        RCLCPP_INFO(node_->get_logger(), "[BtRosBridge] /shape/clear: %s",
+        RCLCPP_INFO(bridge_log(), "/shape/clear: %s",
                     result->success ? "OK" : result->message.c_str());
       });
 }
@@ -369,8 +367,8 @@ void BtRosBridge::LoadPoseOverrides(rclcpp::Node::SharedPtr node)
     try {
       auto vals = node->get_parameter(param_name).as_double_array();
       if (vals.size() != static_cast<std::size_t>(kHandDofCount)) {
-        RCLCPP_WARN(node->get_logger(),
-                    "[PoseLibrary] hand_pose.%s has %zu values (expected %d), skipped",
+        RCLCPP_WARN(poses_log(),
+                    "hand_pose.%s has %zu values (expected %d), skipped",
                     pose_name.c_str(), vals.size(), kHandDofCount);
         continue;
       }
@@ -381,8 +379,8 @@ void BtRosBridge::LoadPoseOverrides(rclcpp::Node::SharedPtr node)
       hand_poses_[pose_name] = pose;
       ++hand_count;
     } catch (const std::exception& e) {
-      RCLCPP_WARN(node->get_logger(),
-                  "[PoseLibrary] Failed to load hand_pose.%s: %s",
+      RCLCPP_WARN(poses_log(),
+                  "failed to load hand_pose.%s: %s",
                   pose_name.c_str(), e.what());
     }
   }
@@ -398,8 +396,8 @@ void BtRosBridge::LoadPoseOverrides(rclcpp::Node::SharedPtr node)
     try {
       auto vals = node->get_parameter(param_name).as_double_array();
       if (vals.size() != static_cast<std::size_t>(kArmDofCount)) {
-        RCLCPP_WARN(node->get_logger(),
-                    "[PoseLibrary] arm_pose.%s has %zu values (expected %d), skipped",
+        RCLCPP_WARN(poses_log(),
+                    "arm_pose.%s has %zu values (expected %d), skipped",
                     pose_name.c_str(), vals.size(), kArmDofCount);
         continue;
       }
@@ -410,15 +408,14 @@ void BtRosBridge::LoadPoseOverrides(rclcpp::Node::SharedPtr node)
       arm_poses_[pose_name] = pose;
       ++arm_count;
     } catch (const std::exception& e) {
-      RCLCPP_WARN(node->get_logger(),
-                  "[PoseLibrary] Failed to load arm_pose.%s: %s",
+      RCLCPP_WARN(poses_log(),
+                  "failed to load arm_pose.%s: %s",
                   pose_name.c_str(), e.what());
     }
   }
 
-  RCLCPP_INFO(node->get_logger(),
-              "[PoseLibrary] Loaded %d hand poses, %d arm poses "
-              "(total: %zu hand, %zu arm)",
+  RCLCPP_INFO(poses_log(),
+              "loaded %d hand poses, %d arm poses (total: %zu hand, %zu arm)",
               hand_count, arm_count, hand_poses_.size(), arm_poses_.size());
 }
 

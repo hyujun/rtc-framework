@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/action_nodes/switch_controller.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 #include "ur5e_bt_coordinator/bt_utils.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -8,7 +9,7 @@
 namespace rtc_bt {
 
 namespace {
-auto logger() { return rclcpp::get_logger("bt"); }
+auto logger() { return ::rtc_bt::logging::ActionLogger("switch_controller"); }
 
 // Normalize controller name for comparison: strip underscores and lowercase.
 // e.g. "demo_task_controller" and "DemoTaskController" both become "demotaskcontroller".
@@ -44,7 +45,7 @@ BT::NodeStatus SwitchController::onStart()
 {
   auto name = getInput<std::string>("controller_name");
   if (!name) {
-    RCLCPP_ERROR(logger(), "[SwitchController] missing controller_name port");
+    RCLCPP_ERROR(logger(), "missing controller_name port");
     throw BT::RuntimeError("SwitchController: missing controller_name");
   }
   target_name_ = name.value();
@@ -56,7 +57,7 @@ BT::NodeStatus SwitchController::onStart()
 
   auto current = bridge_->GetActiveController();
   if (NormalizeName(current) == NormalizeName(target_name_)) {
-    RCLCPP_DEBUG(logger(), "[SwitchController] already active: %s", target_name_.c_str());
+    RCLCPP_DEBUG(logger(), "already active: %s", target_name_.c_str());
     switch_confirmed_ = true;
     if (load_gains_) {
       bridge_->ClearCachedGains();
@@ -67,7 +68,7 @@ BT::NodeStatus SwitchController::onStart()
     return BT::NodeStatus::SUCCESS;
   }
 
-  RCLCPP_INFO(logger(), "[SwitchController] switching: %s -> %s (timeout=%.1fs, load_gains=%s)",
+  RCLCPP_INFO(logger(), "switching: %s -> %s (timeout=%.1fs, load_gains=%s)",
               current.c_str(), target_name_.c_str(), timeout_s_,
               load_gains_ ? "true" : "false");
   bridge_->PublishSelectController(target_name_);
@@ -80,7 +81,7 @@ BT::NodeStatus SwitchController::onRunning()
   if (!switch_confirmed_) {
     if (NormalizeName(bridge_->GetActiveController()) == NormalizeName(target_name_)) {
       switch_confirmed_ = true;
-      RCLCPP_INFO(logger(), "[SwitchController] active: %s (elapsed=%.2fs)",
+      RCLCPP_INFO(logger(), "active: %s (elapsed=%.2fs)",
                   target_name_.c_str(), ElapsedSeconds(start_time_));
 
       if (load_gains_) {
@@ -94,9 +95,9 @@ BT::NodeStatus SwitchController::onRunning()
 
     if (ElapsedSeconds(start_time_) > timeout_s_) {
       RCLCPP_ERROR(logger(),
-                   "[SwitchController] FAILURE: timeout switching to '%s' "
-                   "after %.1fs (active='%s'). Check that the RT controller "
-                   "manager is running and the target controller is registered.",
+                   "timeout switching to '%s' after %.1fs (active='%s'). "
+                   "Check that the RT controller manager is running and the "
+                   "target controller is registered.",
                    target_name_.c_str(), timeout_s_,
                    bridge_->GetActiveController().c_str());
       return BT::NodeStatus::FAILURE;
@@ -109,15 +110,14 @@ BT::NodeStatus SwitchController::onRunning()
     auto gains = bridge_->GetCachedGains();
     setOutput("current_gains", gains);
     RCLCPP_INFO(logger(),
-                "[SwitchController] loaded %zu gains from %s",
+                "loaded %zu gains from %s",
                 gains.size(), target_name_.c_str());
     return BT::NodeStatus::SUCCESS;
   }
 
   if (ElapsedSeconds(start_time_) > timeout_s_) {
     RCLCPP_WARN(logger(),
-                "[SwitchController] gains response timeout for %s, "
-                "continuing without cached gains",
+                "gains response timeout for %s, continuing without cached gains",
                 target_name_.c_str());
     return BT::NodeStatus::SUCCESS;
   }
@@ -126,7 +126,7 @@ BT::NodeStatus SwitchController::onRunning()
 
 void SwitchController::onHalted()
 {
-  RCLCPP_INFO(logger(), "[SwitchController] halted (target=%s)", target_name_.c_str());
+  RCLCPP_INFO(logger(), "halted (target=%s)", target_name_.c_str());
 }
 
 }  // namespace rtc_bt

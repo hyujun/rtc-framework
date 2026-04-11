@@ -1,5 +1,6 @@
 // file: src/nodes/flex_extend_finger.cpp
 #include "ur5e_bt_coordinator/action_nodes/flex_extend_finger.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 #include "ur5e_bt_coordinator/bt_utils.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -7,6 +8,10 @@
 #include <algorithm>
 
 namespace rtc_bt {
+
+namespace {
+auto logger() { return ::rtc_bt::logging::ActionLogger("flex_extend_finger"); }
+}  // namespace
 
 FlexExtendFinger::FlexExtendFinger(const std::string& name, const BT::NodeConfig& config,
                                    std::shared_ptr<BtRosBridge> bridge)
@@ -58,8 +63,8 @@ BT::NodeStatus FlexExtendFinger::onStart()
   // Phase 1 (Flex): flex 타겟 전송
   ApplyPartialHandTarget(*bridge_, flex_target_, joint_indices_);
 
-  RCLCPP_INFO(rclcpp::get_logger("bt"),
-              "[FlexExtendFinger] finger=%s flex_duration=%.3fs (speed=%.2f)",
+  RCLCPP_INFO(logger(),
+              "finger=%s flex_duration=%.3fs (speed=%.2f)",
               finger_name_.c_str(), flex_duration_, speed_);
 
   phase_ = Phase::kFlex;
@@ -84,8 +89,8 @@ BT::NodeStatus FlexExtendFinger::onRunning()
 
     ApplyPartialHandTarget(*bridge_, home_target_, joint_indices_);
 
-    RCLCPP_INFO(rclcpp::get_logger("bt"),
-                "[FlexExtendFinger] finger=%s extend phase (%.3fs)",
+    RCLCPP_INFO(logger(),
+                "finger=%s extend phase (%.3fs)",
                 finger_name_.c_str(), extend_duration_);
 
     phase_ = Phase::kExtend;
@@ -93,8 +98,8 @@ BT::NodeStatus FlexExtendFinger::onRunning()
 
   // 전체 완료
   if (phase_ == Phase::kExtend && elapsed >= flex_duration_ + extend_duration_) {
-    RCLCPP_INFO(rclcpp::get_logger("bt"),
-                "[FlexExtendFinger] complete finger=%s (total=%.3fs)",
+    RCLCPP_INFO(logger(),
+                "complete finger=%s (total=%.3fs)",
                 finger_name_.c_str(), flex_duration_ + extend_duration_);
     return BT::NodeStatus::SUCCESS;
   }
@@ -103,8 +108,7 @@ BT::NodeStatus FlexExtendFinger::onRunning()
 
 void FlexExtendFinger::onHalted()
 {
-  RCLCPP_INFO(rclcpp::get_logger("bt"), "[FlexExtendFinger] halted (finger=%s)",
-              finger_name_.c_str());
+  RCLCPP_INFO(logger(), "halted (finger=%s)", finger_name_.c_str());
 }
 
 }  // namespace rtc_bt

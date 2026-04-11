@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/action_nodes/compute_offset_pose.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -10,7 +11,7 @@
 namespace rtc_bt {
 
 namespace {
-auto logger() { return rclcpp::get_logger("bt"); }
+auto logger() { return ::rtc_bt::logging::ActionLogger("compute_offset_pose"); }
 
 constexpr double kGimbalEpsilon = 1.0e-3;       // [rad] from ±π/2 (warn band)
 constexpr double kQuatToRpyDegenerate = 1.0e-9; // singularity threshold on m(2,0)
@@ -62,7 +63,7 @@ BT::NodeStatus ComputeOffsetPose::tick()
 {
   auto pose = getInput<Pose6D>("input_pose");
   if (!pose) {
-    RCLCPP_ERROR(logger(), "[ComputeOffsetPose] missing input_pose port");
+    RCLCPP_ERROR(logger(), "missing input_pose port");
     throw BT::RuntimeError("ComputeOffsetPose: missing input_pose");
   }
 
@@ -92,20 +93,20 @@ BT::NodeStatus ComputeOffsetPose::tick()
     QuatToRpy(q_res, result.roll, result.pitch, result.yaw);
     if (std::abs(std::abs(result.pitch) - M_PI_2) < kGimbalEpsilon) {
       RCLCPP_WARN(logger(),
-                  "[ComputeOffsetPose] near gimbal lock: pitch=%.4f rad "
+                  "near gimbal lock: pitch=%.4f rad "
                   "(roll/yaw decomposition is degenerate)",
                   result.pitch);
     }
   } else {
     RCLCPP_ERROR(logger(),
-                 "[ComputeOffsetPose] unknown rotation_mode='%s' "
+                 "unknown rotation_mode='%s' "
                  "(expected 'add' | 'quat_body' | 'quat_world')",
                  mode.c_str());
     return BT::NodeStatus::FAILURE;
   }
 
   RCLCPP_DEBUG(logger(),
-               "[ComputeOffsetPose] mode=%s offset_xyz=[%.3f, %.3f, %.3f] "
+               "mode=%s offset_xyz=[%.3f, %.3f, %.3f] "
                "offset_rpy=[%.3f, %.3f, %.3f] -> "
                "result_xyz=[%.3f, %.3f, %.3f] result_rpy=[%.3f, %.3f, %.3f]",
                mode.c_str(), dx, dy, dz, dr, dp, dy_rot,

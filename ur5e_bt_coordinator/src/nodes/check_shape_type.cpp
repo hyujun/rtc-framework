@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/condition_nodes/check_shape_type.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -8,7 +9,7 @@
 namespace rtc_bt {
 
 namespace {
-auto logger() { return rclcpp::get_logger("bt"); }
+auto logger() { return ::rtc_bt::logging::CondLogger("check_shape_type"); }
 
 std::string ShapeTypeName(uint8_t type) {
   switch (type) {
@@ -51,7 +52,7 @@ BT::NodeStatus CheckShapeType::tick()
 {
   auto estimate = getInput<shape_estimation_msgs::msg::ShapeEstimate>("estimate");
   if (!estimate) {
-    RCLCPP_ERROR(logger(), "[CheckShapeType] missing estimate port: %s",
+    RCLCPP_ERROR(logger(), "missing estimate port: %s",
                  estimate.error().c_str());
     return BT::NodeStatus::FAILURE;
   }
@@ -64,7 +65,7 @@ BT::NodeStatus CheckShapeType::tick()
   setOutput("shape_name", name);
   setOutput("confidence", est.confidence);
 
-  RCLCPP_INFO(logger(), "[CheckShapeType] type=%s (%u), confidence=%.3f, points=%u",
+  RCLCPP_INFO(logger(), "type=%s (%u), confidence=%.3f, points=%u",
               name.c_str(), est.shape_type, est.confidence, est.num_points_used);
 
   // If expected_type is specified, check for match
@@ -73,8 +74,7 @@ BT::NodeStatus CheckShapeType::tick()
     const auto expected_lower = ToLower(expected.value());
     if (expected_lower != name) {
       RCLCPP_WARN(logger(),
-                  "[CheckShapeType] FAILURE: shape mismatch "
-                  "(expected=%s, got=%s, confidence=%.3f)",
+                  "shape mismatch (expected=%s, got=%s, confidence=%.3f)",
                   expected_lower.c_str(), name.c_str(), est.confidence);
       return BT::NodeStatus::FAILURE;
     }

@@ -14,11 +14,10 @@
 /// a specific node failed, while this logger guarantees every FAILURE in the
 /// tree is surfaced even if the node itself is silent.
 
+#include "ur5e_bt_coordinator/bt_logging.hpp"
+
 #include <behaviortree_cpp/loggers/abstract_logger.h>
 #include <behaviortree_cpp/tree_node.h>
-
-#include <rclcpp/logger.hpp>
-#include <rclcpp/logging.hpp>
 
 #include <string>
 
@@ -26,8 +25,8 @@ namespace rtc_bt {
 
 class FailureLogger : public BT::StatusChangeLogger {
 public:
-  FailureLogger(BT::TreeNode* root_node, rclcpp::Logger logger)
-    : BT::StatusChangeLogger(root_node), logger_(logger) {}
+  explicit FailureLogger(BT::TreeNode* root_node)
+    : BT::StatusChangeLogger(root_node) {}
 
   void callback(BT::Duration /*timestamp*/,
                 const BT::TreeNode& node,
@@ -40,7 +39,7 @@ public:
     const std::string display_name =
         node.name().empty() ? "<anon>" : node.name();
     RCLCPP_ERROR(
-      logger_,
+      ::rtc_bt::logging::FailLogger(),
       "[BT FAIL] %s (type=%s uid=%u) %s -> FAILURE",
       display_name.c_str(),
       node.registrationName().c_str(),
@@ -49,9 +48,6 @@ public:
   }
 
   void flush() override {}
-
-private:
-  rclcpp::Logger logger_;
 };
 
 }  // namespace rtc_bt

@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/action_nodes/wait_shape_result.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 #include "ur5e_bt_coordinator/bt_utils.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -6,7 +7,7 @@
 namespace rtc_bt {
 
 namespace {
-auto logger() { return rclcpp::get_logger("bt"); }
+auto logger() { return ::rtc_bt::logging::ActionLogger("wait_shape_result"); }
 
 const char* ShapeTypeName(uint8_t type) {
   switch (type) {
@@ -42,7 +43,7 @@ BT::NodeStatus WaitShapeResult::onStart()
   start_time_ = std::chrono::steady_clock::now();
 
   RCLCPP_INFO(logger(),
-              "[WaitShapeResult] waiting (confidence>=%.2f, timeout=%.1fs)",
+              "waiting (confidence>=%.2f, timeout=%.1fs)",
               confidence_threshold_, timeout_s_);
   return BT::NodeStatus::RUNNING;
 }
@@ -55,17 +56,19 @@ BT::NodeStatus WaitShapeResult::onRunning()
         estimate.shape_type != 0 /* UNKNOWN */) {
       setOutput("estimate", estimate);
       RCLCPP_INFO(logger(),
-                  "[WaitShapeResult] success: %s (confidence=%.3f, points=%u, elapsed=%.2fs)",
+                  "success: %s (confidence=%.3f, points=%u, elapsed=%.2fs)",
                   ShapeTypeName(estimate.shape_type),
                   estimate.confidence, estimate.num_points_used,
                   ElapsedSeconds(start_time_));
       return BT::NodeStatus::SUCCESS;
     }
 
-    RCLCPP_DEBUG(logger(),
-                 "[WaitShapeResult] pending: %s (confidence=%.3f, points=%u)",
-                 ShapeTypeName(estimate.shape_type),
-                 estimate.confidence, estimate.num_points_used);
+    static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
+    RCLCPP_DEBUG_THROTTLE(logger(), steady_clock,
+                          ::rtc_bt::logging::kThrottleFastMs,
+                          "pending: %s (confidence=%.3f, points=%u)",
+                          ShapeTypeName(estimate.shape_type),
+                          estimate.confidence, estimate.num_points_used);
   }
 
   if (ElapsedSeconds(start_time_) > timeout_s_) {
@@ -73,10 +76,10 @@ BT::NodeStatus WaitShapeResult::onRunning()
     if (bridge_->GetShapeEstimate(estimate)) {
       setOutput("estimate", estimate);
       RCLCPP_WARN(logger(),
-                  "[WaitShapeResult] timeout with partial: %s (confidence=%.3f)",
+                  "timeout with partial: %s (confidence=%.3f)",
                   ShapeTypeName(estimate.shape_type), estimate.confidence);
     } else {
-      RCLCPP_WARN(logger(), "[WaitShapeResult] timeout with no estimate");
+      RCLCPP_WARN(logger(), "timeout with no estimate");
     }
     return BT::NodeStatus::FAILURE;
   }
@@ -85,7 +88,7 @@ BT::NodeStatus WaitShapeResult::onRunning()
 
 void WaitShapeResult::onHalted()
 {
-  RCLCPP_INFO(logger(), "[WaitShapeResult] halted (elapsed=%.2fs)",
+  RCLCPP_INFO(logger(), "halted (elapsed=%.2fs)",
               ElapsedSeconds(start_time_));
 }
 

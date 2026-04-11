@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/action_nodes/compute_tilt_sequence.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -7,7 +8,7 @@
 namespace rtc_bt {
 
 namespace {
-auto logger() { return rclcpp::get_logger("bt"); }
+auto logger() { return ::rtc_bt::logging::ActionLogger("compute_tilt_sequence"); }
 constexpr double kDegToRad = M_PI / 180.0;
 }  // namespace
 
@@ -25,7 +26,7 @@ BT::NodeStatus ComputeTiltSequence::tick()
 {
   auto base = getInput<Pose6D>("base_pose");
   if (!base) {
-    RCLCPP_ERROR(logger(), "[ComputeTiltSequence] missing base_pose port");
+    RCLCPP_ERROR(logger(), "missing base_pose port");
     throw BT::RuntimeError("ComputeTiltSequence: missing base_pose");
   }
 
@@ -59,7 +60,7 @@ BT::NodeStatus ComputeTiltSequence::tick()
   waypoints.push_back(b);
 
   RCLCPP_INFO(logger(),
-              "[ComputeTiltSequence] %zu waypoints, amplitude=%.1f deg",
+              "%zu waypoints, amplitude=%.1f deg",
               waypoints.size(), amplitude_deg);
 
   setOutput("waypoints", waypoints);

@@ -1,10 +1,15 @@
 // file: src/nodes/move_opposition.cpp
 #include "ur5e_bt_coordinator/action_nodes/move_opposition.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 #include "ur5e_bt_coordinator/bt_utils.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
 namespace rtc_bt {
+
+namespace {
+auto logger() { return ::rtc_bt::logging::ActionLogger("move_opposition"); }
+}  // namespace
 
 MoveOpposition::MoveOpposition(const std::string& name, const BT::NodeConfig& config,
                                std::shared_ptr<BtRosBridge> bridge)
@@ -72,8 +77,8 @@ BT::NodeStatus MoveOpposition::onStart()
   }
   duration_ = EstimateHandTrajectoryDuration(current, full_target, speed, max_vel);
 
-  RCLCPP_INFO(rclcpp::get_logger("bt"),
-              "[MoveOpposition] thumb=%s target=%s(%s) estimated_duration=%.3fs",
+  RCLCPP_INFO(logger(),
+              "thumb=%s target=%s(%s) estimated_duration=%.3fs",
               thumb_pose_name.value().c_str(), target_finger.value().c_str(),
               target_pose_name.value().c_str(), duration_);
 
@@ -84,7 +89,7 @@ BT::NodeStatus MoveOpposition::onStart()
 BT::NodeStatus MoveOpposition::onRunning()
 {
   if (ElapsedSeconds(start_time_) >= duration_) {
-    RCLCPP_INFO(rclcpp::get_logger("bt"), "[MoveOpposition] complete (%.3fs)", duration_);
+    RCLCPP_INFO(logger(), "complete (%.3fs)", duration_);
     return BT::NodeStatus::SUCCESS;
   }
   return BT::NodeStatus::RUNNING;
@@ -92,7 +97,7 @@ BT::NodeStatus MoveOpposition::onRunning()
 
 void MoveOpposition::onHalted()
 {
-  RCLCPP_INFO(rclcpp::get_logger("bt"), "[MoveOpposition] halted");
+  RCLCPP_INFO(logger(), "halted");
 }
 
 }  // namespace rtc_bt

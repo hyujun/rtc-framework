@@ -1,11 +1,12 @@
 #include "ur5e_bt_coordinator/action_nodes/get_current_pose.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
 namespace rtc_bt {
 
 namespace {
-auto logger() { return rclcpp::get_logger("bt"); }
+auto logger() { return ::rtc_bt::logging::ActionLogger("get_current_pose"); }
 }  // namespace
 
 GetCurrentPose::GetCurrentPose(const std::string& name, const BT::NodeConfig& config,
@@ -24,9 +25,9 @@ BT::NodeStatus GetCurrentPose::tick()
 {
   auto pose = bridge_->GetTcpPose();
 
-  RCLCPP_INFO(logger(),
-              "[GetCurrentPose] pose=[%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
-              pose.x, pose.y, pose.z, pose.roll, pose.pitch, pose.yaw);
+  RCLCPP_DEBUG(logger(),
+               "pose=[%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
+               pose.x, pose.y, pose.z, pose.roll, pose.pitch, pose.yaw);
 
   setOutput("pose", pose);
   return BT::NodeStatus::SUCCESS;

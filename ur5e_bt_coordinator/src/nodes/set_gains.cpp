@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/action_nodes/set_gains.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 #include "ur5e_bt_coordinator/bt_utils.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -6,7 +7,7 @@
 namespace rtc_bt {
 
 namespace {
-auto logger() { return rclcpp::get_logger("bt"); }
+auto logger() { return ::rtc_bt::logging::ActionLogger("set_gains"); }
 }  // namespace
 
 SetGains::SetGains(const std::string& name, const BT::NodeConfig& config,
@@ -39,7 +40,7 @@ BT::NodeStatus SetGains::tick()
   // If full_gains provided, use it directly
   auto full = getInput<std::vector<double>>("full_gains");
   if (full && full->size() >= 4) {
-    RCLCPP_INFO(logger(), "[SetGains] publishing full_gains (%zu values)", full->size());
+    RCLCPP_INFO(logger(), "publishing full_gains (%zu values)", full->size());
     bridge_->PublishGains(full.value());
     return BT::NodeStatus::SUCCESS;
   }
@@ -82,7 +83,7 @@ BT::NodeStatus SetGains::BuildDemoJointGains()
       };
 
   if (use_cached) {
-    RCLCPP_INFO(logger(), "[SetGains] DemoJoint: using cached gains as base");
+    RCLCPP_INFO(logger(), "DemoJoint: using cached gains as base");
   }
 
   auto ts = getInput<double>("trajectory_speed");
@@ -101,12 +102,12 @@ BT::NodeStatus SetGains::BuildDemoJointGains()
     gains.push_back(static_cast<double>(gcmd.value()));
     gains.push_back(gtf.value_or(2.0));
     RCLCPP_INFO(logger(),
-                "[SetGains] DemoJoint: grasp_command=%d target_force=%.2f",
+                "DemoJoint: grasp_command=%d target_force=%.2f",
                 gcmd.value(), gains.back());
   }
 
   RCLCPP_INFO(logger(),
-              "[SetGains] DemoJoint: robot_speed=%.2f hand_speed=%.2f "
+              "DemoJoint: robot_speed=%.2f hand_speed=%.2f "
               "max_vel=%.2f(locked) hand_max_vel=%.2f(locked)",
               gains[0], gains[1], gains[2], gains[3]);
   bridge_->PublishGains(gains);
@@ -150,7 +151,7 @@ BT::NodeStatus SetGains::BuildDemoTaskGains()
       };
 
   if (use_cached) {
-    RCLCPP_INFO(logger(), "[SetGains] DemoTask: using cached gains as base");
+    RCLCPP_INFO(logger(), "DemoTask: using cached gains as base");
   }
 
   auto kp_t = getInput<std::string>("kp_translation");
@@ -201,12 +202,12 @@ BT::NodeStatus SetGains::BuildDemoTaskGains()
     gains.push_back(static_cast<double>(gcmd.value()));
     gains.push_back(gtf.value_or(2.0));
     RCLCPP_INFO(logger(),
-                "[SetGains] DemoTask: grasp_command=%d target_force=%.2f",
+                "DemoTask: grasp_command=%d target_force=%.2f",
                 gcmd.value(), gains.back());
   }
 
   RCLCPP_INFO(logger(),
-              "[SetGains] DemoTask: kp_t=[%.1f,%.1f,%.1f] kp_r=[%.1f,%.1f,%.1f] "
+              "DemoTask: kp_t=[%.1f,%.1f,%.1f] kp_r=[%.1f,%.1f,%.1f] "
               "traj_speed=%.2f hand_speed=%.2f",
               gains[0], gains[1], gains[2], gains[3], gains[4], gains[5],
               gains[10], gains[12]);

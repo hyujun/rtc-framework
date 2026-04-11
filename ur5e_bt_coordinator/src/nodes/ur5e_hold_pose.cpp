@@ -1,10 +1,15 @@
 // file: src/nodes/ur5e_hold_pose.cpp
 #include "ur5e_bt_coordinator/action_nodes/ur5e_hold_pose.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 #include "ur5e_bt_coordinator/bt_utils.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
 namespace rtc_bt {
+
+namespace {
+auto logger() { return ::rtc_bt::logging::ActionLogger("ur5e_hold_pose"); }
+}  // namespace
 
 UR5eHoldPose::UR5eHoldPose(const std::string& name, const BT::NodeConfig& config,
                            std::shared_ptr<BtRosBridge> bridge)
@@ -30,8 +35,7 @@ BT::NodeStatus UR5eHoldPose::onStart()
   std::vector<double> target_vec(target.begin(), target.end());
   bridge_->PublishArmJointTarget(target_vec);
 
-  RCLCPP_INFO(rclcpp::get_logger("bt"),
-              "[UR5eHoldPose] pose=%s", pose_name.value().c_str());
+  RCLCPP_INFO(logger(), "pose=%s", pose_name.value().c_str());
 
   return BT::NodeStatus::RUNNING;
 }
@@ -44,7 +48,7 @@ BT::NodeStatus UR5eHoldPose::onRunning()
 
 void UR5eHoldPose::onHalted()
 {
-  RCLCPP_INFO(rclcpp::get_logger("bt"), "[UR5eHoldPose] halted");
+  RCLCPP_INFO(logger(), "halted");
 }
 
 }  // namespace rtc_bt

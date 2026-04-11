@@ -1,11 +1,12 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_object_detected.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
 namespace rtc_bt {
 
 namespace {
-auto logger() { return rclcpp::get_logger("bt"); }
+auto logger() { return ::rtc_bt::logging::CondLogger("is_object_detected"); }
 }  // namespace
 
 IsObjectDetected::IsObjectDetected(const std::string& name, const BT::NodeConfig& config,
@@ -31,16 +32,15 @@ BT::NodeStatus IsObjectDetected::tick()
     pose.yaw   = tcp.yaw;
 
     RCLCPP_INFO(logger(),
-                "[IsObjectDetected] object at [%.3f, %.3f, %.3f] "
-                "orient(tcp)=[%.3f, %.3f, %.3f]",
+                "object at [%.3f, %.3f, %.3f] orient(tcp)=[%.3f, %.3f, %.3f]",
                 pose.x, pose.y, pose.z, pose.roll, pose.pitch, pose.yaw);
     setOutput("pose", pose);
     return BT::NodeStatus::SUCCESS;
   }
   static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
   RCLCPP_WARN_THROTTLE(
-    logger(), steady_clock, 2000,
-    "[IsObjectDetected] FAILURE: no valid pose on /world_target_info "
+    logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
+    "no valid pose on /world_target_info "
     "(either no message received, or all points are zero)");
   return BT::NodeStatus::FAILURE;
 }

@@ -150,10 +150,76 @@ ros2 param set /bt_coordinator step_mode true
 ros2 service call /bt_coordinator/step std_srvs/srv/Trigger
 ```
 
-### 실패 로그 (FailureLogger)
+## 로깅 (Logging)
+
+### 분류 독트린
+
+| 레벨 | 용도 | 예시 |
+|------|------|------|
+| `FATAL` | 프로세스를 계속 실행할 수 없는 상태 | 트리 파일 없음, 치명적 초기화 실패 |
+| `ERROR` | 복구 불가능한 실패, 사용자 개입 필요 | 필수 포트 누락, 컨트롤러 전환 실패, BT leaf 실패 (FailureLogger) |
+| `WARN` | 복구 가능한 실패/이상 상태, 자동 재시도 중 | 액션 타임아웃, 토픽 stale, gimbal lock 근접 |
+| `INFO` | 사용자가 알아야 할 1 Hz 미만 상태 전환 | 액션 시작/완료/halted, 트리 로드, 컨트롤러 전환 개시 |
+| `DEBUG` | 개발자 진단용 (기본 꺼짐), 20 Hz까지 허용 | 틱 추적, 진행률, watchdog healthy 핑 |
+
+**핵심 규칙**:
+
+- `INFO`/`WARN`/`ERROR`는 **20 Hz 핫패스에서 직접 호출 금지**. 폴링 안에서 반복될 수 있는 메시지는 `*_THROTTLE` 매크로 사용.
+- `DEBUG`는 20 Hz 루프 안에서도 사용 가능. 단, 전용 서브-로거 이름으로 격리되어 기본 꺼져 있어야 한다.
+- 노드 내부 실패 로그에는 `"FAILURE:"` 접두사를 붙이지 않는다. 실패 사실은 `FailureLogger`가 자동으로 `[BT FAIL]` 라인을 찍어주므로, 노드는 실패 *원인의 진단 정보만* 남긴다 (예: `timeout 10.0s pos_err=0.012`).
+- 메시지 본문에 노드 이름을 수동으로 박아넣지 않는다. 서브-로거 이름이 곧 식별자다 (`bt.action.move_to_pose`).
+- THROTTLE 주기는 매직넘버 대신 `bt_logging.hpp`의 표준 상수를 사용한다.
+
+### 서브-로거 네임스페이스
+
+모든 ROS2 로그는 단일 `bt` 로거가 아닌 계층적 서브-로거를 사용한다. 이로써 런타임에 부분 필터링이 가능하다.
+
+| 서브-로거 | 사용처 |
+|-----------|--------|
+| `bt.coord` | `BtCoordinatorNode` (틱 루프, 트리 로드/전환, blackboard, step 모드) |
+| `bt.bridge` | `BtRosBridge` (퍼블리셔/서브스크라이버, 게인 캐시, shape 서비스) |
+| `bt.fail` | `FailureLogger` (모든 BT 노드의 FAILURE 전환) |
+| `bt.watchdog` | 토픽 헬스 워치독 |
+| `bt.poses` | 포즈 라이브러리 로드 |
+| `bt.action.<snake_case>` | Action 노드 (`bt.action.move_to_pose`, `bt.action.grasp_control`, ...) |
+| `bt.cond.<snake_case>` | Condition 노드 (`bt.cond.is_grasped`, `bt.cond.is_force_above`, ...) |
+
+### THROTTLE 주기 표준
+
+`rtc_bt::logging` 네임스페이스에 정의된 상수만 사용한다 (`bt_logging.hpp`):
+
+| 상수 | 값 [ms] | 용도 |
+|------|---------|------|
+| `kThrottleFastMs` | 500 | 고빈도 폴링 노드의 진행 상태 표시 |
+| `kThrottleSlowMs` | 2000 | 일반 반복 경고 (vision target stale 등) |
+| `kThrottleIdleMs` | 10000 | 장기 유휴 상태 (watchdog, paused 핑 등) |
+
+### 실시간 필터링 예시
+
+```bash
+# 특정 액션 노드만 DEBUG 활성화
+ros2 service call /bt_coordinator/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
+  "{levels: [{name: 'bt.action.move_to_pose', level: 10}]}"
+
+# 모든 액션 노드 DEBUG (계층 매칭)
+ros2 service call /bt_coordinator/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
+  "{levels: [{name: 'bt.action', level: 10}]}"
+
+# 워치독만 끄기
+ros2 service call /bt_coordinator/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
+  "{levels: [{name: 'bt.watchdog', level: 50}]}"
+```
+
+콘솔 출력에 로거 이름을 표시하려면 환경변수 설정:
+
+```bash
+export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
+```
+
+### FailureLogger 동작
 
 트리 실행 중 어떤 노드가 `FAILURE` 상태로 전이되면 **실시간으로** 다음과 같은
-로그가 `RCLCPP_ERROR` 레벨로 출력된다:
+로그가 `bt.fail` 서브-로거의 `RCLCPP_ERROR` 레벨로 출력된다:
 
 ```
 [BT FAIL] <node_name> (type=<RegistrationName> uid=<N>) <prev_status> -> FAILURE
@@ -175,11 +241,12 @@ ros2 service call /bt_coordinator/step std_srvs/srv/Trigger
 ──── End Diagnosis (1 leaf failures) ────
 ```
 
-개별 Action/Condition 노드(예: `MoveToPose`, `IsGraspPhase`, `IsGrasped`,
-`IsForceAbove`, `SwitchController`)는 실패 시 진단에 필요한 수치(타임아웃,
-위치/힘 오차, 현재 phase 등)를 `RCLCPP_WARN` 으로 함께 출력한다.
-폴링 노드(RetryUntilSuccessful 안에서 동작)의 경우 로그 플러딩을 막기 위해
-1s 주기로 throttle 된다.
+개별 Action/Condition 노드는 실패 시 진단에 필요한 수치(타임아웃, 위치/힘
+오차, 현재 phase 등)를 `RCLCPP_WARN` 또는 `RCLCPP_ERROR` 로 함께 출력한다.
+이때 메시지에는 `"FAILURE:"` 접두사를 붙이지 않으며, 실패 사실은 `FailureLogger`
+가 자동으로 표시한다. 폴링 노드(RetryUntilSuccessful 안에서 동작)의 경우
+로그 플러딩을 막기 위해 `kThrottleFastMs` 또는 `kThrottleSlowMs` 주기로
+throttle 된다.
 
 ### Blackboard 변수 (`bb.*` 파라미터)
 

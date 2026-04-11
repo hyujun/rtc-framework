@@ -1,10 +1,15 @@
 // file: src/nodes/set_hand_pose.cpp
 #include "ur5e_bt_coordinator/action_nodes/set_hand_pose.hpp"
+#include "ur5e_bt_coordinator/bt_logging.hpp"
 #include "ur5e_bt_coordinator/bt_utils.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
 namespace rtc_bt {
+
+namespace {
+auto logger() { return ::rtc_bt::logging::ActionLogger("set_hand_pose"); }
+}  // namespace
 
 SetHandPose::SetHandPose(const std::string& name, const BT::NodeConfig& config,
                          std::shared_ptr<BtRosBridge> bridge)
@@ -50,8 +55,8 @@ BT::NodeStatus SetHandPose::onStart()
   // 목표 전송
   bridge_->PublishHandTarget(target_vec_);
 
-  RCLCPP_INFO(rclcpp::get_logger("bt"),
-              "[SetHandPose] pose=%s estimated_duration=%.3fs (speed=%.2f)",
+  RCLCPP_INFO(logger(),
+              "pose=%s estimated_duration=%.3fs (speed=%.2f)",
               pose_name.value().c_str(), duration_, speed);
 
   start_time_ = std::chrono::steady_clock::now();
@@ -61,7 +66,7 @@ BT::NodeStatus SetHandPose::onStart()
 BT::NodeStatus SetHandPose::onRunning()
 {
   if (ElapsedSeconds(start_time_) >= duration_) {
-    RCLCPP_INFO(rclcpp::get_logger("bt"), "[SetHandPose] complete (%.3fs)", duration_);
+    RCLCPP_INFO(logger(), "complete (%.3fs)", duration_);
     return BT::NodeStatus::SUCCESS;
   }
   return BT::NodeStatus::RUNNING;
@@ -69,7 +74,7 @@ BT::NodeStatus SetHandPose::onRunning()
 
 void SetHandPose::onHalted()
 {
-  RCLCPP_INFO(rclcpp::get_logger("bt"), "[SetHandPose] halted");
+  RCLCPP_INFO(logger(), "halted");
 }
 
 }  // namespace rtc_bt
