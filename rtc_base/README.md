@@ -476,12 +476,25 @@ logging_data/YYMMDD_HHMM/
 | 함수 | 설명 |
 |------|------|
 | `GenerateSessionTimestamp()` | `YYMMDD_HHMM` 형식 타임스탬프 생성 |
-| `ResolveSessionDir(fallback_root)` | `RTC_SESSION_DIR` -> `UR5E_SESSION_DIR` -> 자동 생성 (`~` 확장 지원) |
+| `ResolveLoggingRoot()` | 3단 체인으로 `logging_data` 루트 경로 결정 (아래 참고) |
+| `ResolveSessionDir()` | env → `ResolveLoggingRoot()` → `YYMMDD_HHMM` 세션 디렉토리 생성 |
 | `EnsureSessionSubdirs(session_dir)` | controller, monitor, device, sim, plots, motions 하위 폴더 생성 |
 | `ListSessionDirs(logging_root)` | `YYMMDD_HHMM` 패턴 디렉토리 정렬 목록 반환 |
 | `CleanupOldSessions(logging_root, max)` | 최대 세션 수 초과 시 오래된 세션 삭제 |
 
+**`ResolveLoggingRoot()` 결정 체인** (위에서 아래로):
+
+1. `$COLCON_PREFIX_PATH` 의 첫 entry 가 쓰기 가능한 디렉토리이면 그 `parent / "logging_data"`
+2. cwd 에서 상위로 올라가며 `install/` + `src/` 쌍이 발견되면 그 디렉토리 `/ "logging_data"`
+3. 최종 폴백: `cwd / "logging_data"`
+
+**`ResolveSessionDir()` 결정 체인**:
+
+1. `$RTC_SESSION_DIR` → `$UR5E_SESSION_DIR` (하위 호환)
+2. `ResolveLoggingRoot() / YYMMDD_HHMM` 을 새로 생성
+
 > **주의:** `ResolveSessionDir()`은 `std::filesystem::filesystem_error`를 throw할 수 있습니다. 초기화 시에만 호출하세요.
+> Python 측 동일 로직은 `rtc_tools.utils.session_dir.resolve_logging_root()` 참고.
 
 ---
 

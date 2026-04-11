@@ -41,7 +41,8 @@ rt_controller 노드를 수정 없이 그대로 실행합니다.
 연산 시간 로그 분석:
   python3 -c "
   import pandas as pd, glob, os
-  sessions = sorted(glob.glob(os.path.expanduser('~/ros2_ws/ur5e_ws/logging_data/??????_????')))
+  from rtc_tools.utils.session_dir import resolve_logging_root
+  sessions = sorted(glob.glob(os.path.join(resolve_logging_root(), '??????_????')))
   if sessions:
       df = pd.read_csv(os.path.join(sessions[-1], 'controller', 'timing_log.csv'))
       print(df['t_compute_us'].describe())
@@ -52,9 +53,6 @@ rt_controller 노드를 수정 없이 그대로 실행합니다.
 """
 
 import os
-import re
-import shutil
-from datetime import datetime
 
 from launch import LaunchDescription
 from launch.actions import (
@@ -70,45 +68,23 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
 
-
-def _resolve_logging_root():
-    """colcon workspace 기반 logging_data 루트 경로 결정."""
-    try:
-        share_dir = get_package_share_directory('rtc_controller_manager')
-        ws_dir = os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.dirname(share_dir))))
-        return os.path.join(ws_dir, 'logging_data')
-    except Exception:
-        return os.path.expanduser('~/ros2_ws/ur5e_ws/logging_data')
-
-
-def _cleanup_old_sessions(logging_root, max_sessions):
-    """YYMMDD_HHMM 패턴 세션 폴더를 max_sessions 개수 이하로 유지."""
-    if not os.path.isdir(logging_root):
-        return
-    pattern = re.compile(r'^\d{6}_\d{4}$')
-    dirs = sorted([
-        d for d in os.listdir(logging_root)
-        if os.path.isdir(os.path.join(logging_root, d)) and pattern.match(d)
-    ])
-    while len(dirs) > max_sessions:
-        oldest = os.path.join(logging_root, dirs.pop(0))
-        shutil.rmtree(oldest, ignore_errors=True)
+from rtc_tools.utils.session_dir import (
+    cleanup_old_sessions,
+    create_session_dir,
+    resolve_logging_root,
+)
 
 
 def launch_setup(context, *args, **kwargs):
     """Setup function executed with launch context for conditional parameter loading."""
 
     # ── 세션 디렉토리 생성 (YYMMDD_HHMM) ─────────────────────────────────────
-    logging_root = _resolve_logging_root()
-    session_ts = datetime.now().strftime('%y%m%d_%H%M')
-    session_dir = os.path.join(logging_root, session_ts)
-    for sub in ('controller', 'monitor', 'hand', 'sim', 'plots', 'motions'):
-        os.makedirs(os.path.join(session_dir, sub), exist_ok=True)
+    logging_root = resolve_logging_root()
+    session_dir = create_session_dir(logging_root)
 
     max_sessions = int(
         LaunchConfiguration('max_log_sessions').perform(context) or '10')
-    _cleanup_old_sessions(logging_root, max_sessions)
+    cleanup_old_sessions(logging_root, max_sessions)
 
     # ── Package paths ─────────────────────────────────────────────────────────
     pkg_sim = FindPackageShare('rtc_mujoco_sim')
@@ -245,14 +221,19 @@ def launch_setup(context, *args, **kwargs):
         ctrl_params.append(ctrl_overrides)
 
     # ── 환경변수: 모든 노드에 세션 디렉토리 전파 ────────────────────────────────
+    # RTC_SESSION_DIR 우선, UR5E_SESSION_DIR 은 하위 호환.
     set_session_dir = SetEnvironmentVariable(
+        name='RTC_SESSION_DIR',
+        value=session_dir
+    )
+    set_session_dir_legacy = SetEnvironmentVariable(
         name='UR5E_SESSION_DIR',
         value=session_dir
     )
 
     # ── [RT] 시뮬레이션 모드 CPU Shield (Tier 1만) ─────────────────────────────
     use_affinity = LaunchConfiguration('use_cpu_affinity').perform(context)
-    actions = [set_session_dir]
+    actions = [set_session_dir, set_session_dir_legacy]
 
     if use_affinity.lower() in ('true', '1', 'yes'):
         enable_sim_cpu_shield = ExecuteProcess(

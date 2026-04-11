@@ -68,7 +68,7 @@ public:
 
 private:
   // ── Session directory helpers ─────────────────────────────────────────────
-  // Resolves session directory from UR5E_SESSION_DIR env var or creates one.
+  // Resolves session directory via rtc::ResolveSessionDir() 3-tier chain.
   std::filesystem::path ResolveAndSetupSessionDir();
 
   // ── Initialisation helpers ────────────────────────────────────────────────

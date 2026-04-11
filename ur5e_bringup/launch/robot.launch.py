@@ -13,9 +13,6 @@
 #   E) CycloneDDS threads restricted to Core 0-1 via CYCLONEDDS_URI env var
 
 import os
-import re
-import shutil
-from datetime import datetime
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -36,30 +33,11 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
-
-def _resolve_logging_root():
-    """colcon workspace logging_data root path."""
-    try:
-        share_dir = get_package_share_directory('ur5e_bringup')
-        ws_dir = os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.dirname(share_dir))))
-        return os.path.join(ws_dir, 'logging_data')
-    except Exception:
-        return os.path.expanduser('~/ros2_ws/ur5e_ws/logging_data')
-
-
-def _cleanup_old_sessions(logging_root, max_sessions):
-    """Keep at most max_sessions session folders (YYMMDD_HHMM pattern)."""
-    if not os.path.isdir(logging_root):
-        return
-    pattern = re.compile(r'^\d{6}_\d{4}$')
-    dirs = sorted([
-        d for d in os.listdir(logging_root)
-        if os.path.isdir(os.path.join(logging_root, d)) and pattern.match(d)
-    ])
-    while len(dirs) > max_sessions:
-        oldest = os.path.join(logging_root, dirs.pop(0))
-        shutil.rmtree(oldest, ignore_errors=True)
+from rtc_tools.utils.session_dir import (
+    cleanup_old_sessions,
+    create_session_dir,
+    resolve_logging_root,
+)
 
 
 def _launch_setup(context):
@@ -120,12 +98,9 @@ def _launch_setup(context):
 
 def generate_launch_description():
     # ── Session directory (YYMMDD_HHMM) ──────────────────────────────────────
-    logging_root = _resolve_logging_root()
-    session_ts = datetime.now().strftime('%y%m%d_%H%M')
-    session_dir = os.path.join(logging_root, session_ts)
-    for sub in ('controller', 'monitor', 'hand', 'sim', 'plots', 'motions'):
-        os.makedirs(os.path.join(session_dir, sub), exist_ok=True)
-    _cleanup_old_sessions(logging_root, 10)
+    logging_root = resolve_logging_root()
+    session_dir = create_session_dir(logging_root)
+    cleanup_old_sessions(logging_root, 10)
 
     # ── Arguments ──────────────────────────────────────────────────────────────
     robot_ip_arg = DeclareLaunchArgument(
@@ -187,7 +162,12 @@ def generate_launch_description():
         value=['file://', cyclone_dds_xml]
     )
 
+    # RTC_SESSION_DIR 우선, UR5E_SESSION_DIR 은 하위 호환을 위해 함께 세팅.
     set_session_dir = SetEnvironmentVariable(
+        name='RTC_SESSION_DIR',
+        value=session_dir
+    )
+    set_session_dir_legacy = SetEnvironmentVariable(
         name='UR5E_SESSION_DIR',
         value=session_dir
     )
@@ -378,6 +358,7 @@ def generate_launch_description():
         use_cpu_affinity_arg,
         # 2) Environment
         set_session_dir,
+        set_session_dir_legacy,
         set_rmw,
         set_cyclone_uri,
         # 3) Infrastructure (parallel)

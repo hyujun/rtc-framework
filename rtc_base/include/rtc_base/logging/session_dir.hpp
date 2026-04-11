@@ -9,7 +9,10 @@
 #include <filesystem>
 #include <regex>
 #include <string>
+#include <string_view>
 #include <vector>
+
+#include <unistd.h>
 
 namespace rtc {
 
@@ -19,12 +22,21 @@ namespace rtc {
 // 세션 디렉토리 구조:
 //   logging_data/YYMMDD_HHMM/
 //     controller/   — rt_controller CSV 로그
-//     device/       — device 통신 통계
+//     monitor/      — 모니터링 로그
+//     device/       — device 통신 통계 / 센서 로그
 //     sim/          — mujoco 스크린샷
 //     plots/        — 플롯 출력
 //     motions/      — 모션 에디터 JSON
 //
-// 환경변수 RTC_SESSION_DIR (fallback: UR5E_SESSION_DIR)로 세션 경로를 전파.
+// 로깅 루트 결정 체인 (ResolveLoggingRoot):
+//   1) $COLCON_PREFIX_PATH 첫 entry 의 parent  (ws/logging_data)
+//   2) cwd 에서 상위로 올라가며 install/+src/ 쌍을 찾음
+//   3) $PWD/logging_data
+//
+// 세션 디렉토리 결정 체인 (ResolveSessionDir):
+//   1) $RTC_SESSION_DIR (fallback: $UR5E_SESSION_DIR)
+//   2) ResolveLoggingRoot() / YYMMDD_HHMM
+//
 // Header-only — rtc_base의 링크 정책 유지.
 
 /// "YYMMDD_HHMM" 형식의 타임스탬프 문자열 생성
@@ -48,17 +60,59 @@ inline void EnsureSessionSubdirs(const std::filesystem::path & session_dir) {
   }
 }
 
-/// RTC_SESSION_DIR 환경변수에서 세션 디렉토리를 읽거나,
-/// 없으면 fallback_logging_root 아래에 새 세션 디렉토리를 생성.
-/// UR5E_SESSION_DIR도 하위 호환을 위해 fallback으로 확인.
+/// 로깅 루트 디렉토리 결정 (env 우선순위 제외, 물리 경로만).
 ///
-/// @param fallback_logging_root  환경변수 미설정 시 사용할 logging_data 루트 경로
+/// 1) $COLCON_PREFIX_PATH 첫 entry 가 쓰기 가능한 dir → parent / "logging_data"
+/// 2) cwd 에서 "/" 까지 올라가며 install/ + src/ 쌍 발견 → that / "logging_data"
+/// 3) cwd / "logging_data"
+inline std::filesystem::path ResolveLoggingRoot() {
+  namespace fs = std::filesystem;
+
+  // 1) COLCON_PREFIX_PATH
+  if (const char* raw = std::getenv("COLCON_PREFIX_PATH"); raw && *raw) {
+    std::string_view view{raw};
+    const auto colon = view.find(':');
+    const std::string first{view.substr(0, colon)};
+    std::error_code ec;
+    if (!first.empty() && fs::is_directory(first, ec) &&
+        ::access(first.c_str(), W_OK) == 0) {
+      return fs::path(first).parent_path() / "logging_data";
+    }
+  }
+
+  // 2) cwd 상위 탐색 (install/ + src/ 쌍)
+  std::error_code err_code;
+  fs::path cwd = fs::current_path(err_code);
+  if (!err_code) {
+    for (fs::path dir = cwd; ; ) {
+      if (fs::is_directory(dir / "install", err_code) &&
+          fs::is_directory(dir / "src", err_code)) {
+        return dir / "logging_data";
+      }
+      fs::path parent = dir.parent_path();
+      if (parent == dir) {
+        break;
+      }
+      dir = std::move(parent);
+    }
+  }
+
+  // 3) cwd 폴백
+  return (cwd.empty() ? fs::path(".") : cwd) / "logging_data";
+}
+
+/// 세션 디렉토리를 결정하고 서브디렉토리까지 생성.
+///
+/// 1) $RTC_SESSION_DIR → $UR5E_SESSION_DIR (하위 호환)
+/// 2) ResolveLoggingRoot() / YYMMDD_HHMM
+///
 /// @return 세션 디렉토리 절대 경로 (e.g. .../logging_data/260314_1430)
-inline std::filesystem::path ResolveSessionDir(
-    const std::string & fallback_logging_root) {
+inline std::filesystem::path ResolveSessionDir() {
   // 1. 환경변수 우선 (RTC_SESSION_DIR → UR5E_SESSION_DIR fallback)
   const char* env = std::getenv("RTC_SESSION_DIR");
-  if (!env) env = std::getenv("UR5E_SESSION_DIR");  // backward compat
+  if (!env) {
+    env = std::getenv("UR5E_SESSION_DIR");  // backward compat
+  }
   if (env != nullptr && env[0] != '\0') {
     std::filesystem::path session_dir{env};
     std::filesystem::create_directories(session_dir);
@@ -66,16 +120,8 @@ inline std::filesystem::path ResolveSessionDir(
     return session_dir;
   }
 
-  // 2. Fallback: 자체 세션 생성
-  std::filesystem::path logging_root{fallback_logging_root};
-  // ~ 확장
-  if (!fallback_logging_root.empty() && fallback_logging_root[0] == '~') {
-    const char* home = std::getenv("HOME");
-    if (home != nullptr) {
-      logging_root = std::string(home) + fallback_logging_root.substr(1);
-    }
-  }
-
+  // 2. 자체 세션 생성 (3단 체인으로 루트 결정)
+  const std::filesystem::path logging_root = ResolveLoggingRoot();
   const std::string ts = GenerateSessionTimestamp();
   std::filesystem::path session_dir = logging_root / ts;
   std::filesystem::create_directories(session_dir);

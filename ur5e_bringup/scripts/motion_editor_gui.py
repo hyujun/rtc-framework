@@ -832,10 +832,9 @@ class MotionTab(QWidget):
         if filename is None:
             default_name = self._current_file or ""
             if not default_name:
-                session = os.environ.get('UR5E_SESSION_DIR', '')
-                if session:
-                    motions_dir = os.path.join(session, 'motions')
-                    os.makedirs(motions_dir, exist_ok=True)
+                from rtc_tools.utils.session_dir import get_session_subdir
+                motions_dir = get_session_subdir('motions')
+                if motions_dir:
                     default_name = motions_dir
             filename, _ = QFileDialog.getSaveFileName(
                 self, "Save Motion", default_name,

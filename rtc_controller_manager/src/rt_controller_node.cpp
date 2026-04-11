@@ -86,25 +86,7 @@ RtControllerNode::~RtControllerNode()
 // ── Session directory helpers ─────────────────────────────────────────────────
 std::filesystem::path RtControllerNode::ResolveAndSetupSessionDir()
 {
-  // Dynamically resolve workspace logging dir using ament_index
-  std::string default_logging_root = "/tmp/" + robot_ns_ + "_logging_data";
-  try {
-    std::string share_dir =
-      ament_index_cpp::get_package_share_directory("rtc_controller_manager");
-    std::filesystem::path ws_path = std::filesystem::path(share_dir)
-      .parent_path()
-      .parent_path()
-      .parent_path()
-      .parent_path();
-    default_logging_root = (ws_path / "logging_data").string();
-  } catch (const std::exception & e) {
-    RCLCPP_WARN(
-        get_logger(),
-        "Could not resolve workspace via ament_index: %s. Using fallback: %s",
-        e.what(), default_logging_root.c_str());
-  }
-
-  return urtc::ResolveSessionDir(default_logging_root);
+  return urtc::ResolveSessionDir();
 }
 
 // ── CallbackGroup creation ────────────────────────────────────────────────────

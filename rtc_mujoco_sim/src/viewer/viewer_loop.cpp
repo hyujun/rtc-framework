@@ -13,17 +13,16 @@
 #include <GLFW/glfw3.h>
 #endif
 
+#include <rtc_base/logging/session_dir.hpp>
+
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>    // getenv
 #include <cstring>
 #include <ctime>
+#include <filesystem>
 #include <thread>
 #include <vector>
-
-#ifdef MUJOCO_HAVE_GLFW
-#include <sys/stat.h>  // mkdir
-#endif
 
 namespace rtc {
 
@@ -201,28 +200,29 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
       mjr_readPixels(rgb.data(), nullptr, viewport, &con);
 
       // 세션 디렉토리 기반 출력 경로 결정
-      char dir[256];
-      const char* session_env = std::getenv("UR5E_SESSION_DIR");
-      if (session_env && session_env[0] != '\0') {
-        std::snprintf(dir, sizeof(dir), "%s/sim", session_env);
-      } else {
-        const char* home = std::getenv("HOME");
-        if (home) {
-          std::snprintf(dir, sizeof(dir),
-                        "%s/ros2_ws/ur5e_ws/logging_data", home);
-        } else {
-          std::strncpy(dir, "/tmp", sizeof(dir) - 1);
-          dir[sizeof(dir) - 1] = '\0';
+      // RTC_SESSION_DIR / UR5E_SESSION_DIR 이 설정돼 있으면 그 아래 sim/,
+      // 아니면 3단 체인으로 해석된 logging_root 아래 sim/ 에 저장.
+      static const std::filesystem::path kSimDir = [] {
+        const char* env = std::getenv("RTC_SESSION_DIR");
+        if (!env) {
+          env = std::getenv("UR5E_SESSION_DIR");
         }
-      }
-      mkdir(dir, 0755);  // no-op if already exists
+        std::filesystem::path base = (env && env[0] != '\0')
+          ? std::filesystem::path(env)
+          : rtc::ResolveLoggingRoot();
+        std::filesystem::path sim = base / "sim";
+        std::error_code err_code;
+        std::filesystem::create_directories(sim, err_code);
+        return sim;
+      }();
 
       char fname[512];
       const auto now  = std::chrono::system_clock::now();
       const auto t    = std::chrono::system_clock::to_time_t(now);
       char       ts[32];
       std::strftime(ts, sizeof(ts), "%H%M%S", std::localtime(&t));
-      std::snprintf(fname, sizeof(fname), "%s/screenshot_%s.ppm", dir, ts);
+      std::snprintf(fname, sizeof(fname), "%s/screenshot_%s.ppm",
+                    kSimDir.c_str(), ts);
 
       // Write binary PPM (flip Y: OpenGL stores bottom-up)
       FILE* f = std::fopen(fname, "wb");

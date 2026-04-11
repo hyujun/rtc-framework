@@ -15,4 +15,15 @@ find_package(ament_cmake REQUIRED)
 
 install(DIRECTORY include/ DESTINATION include)
 ament_export_include_directories(include)
+
+# ── Tests ────────────────────────────────────────────────────────────────────
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(test_session_dir test/test_session_dir.cpp)
+  if(TARGET test_session_dir)
+    target_include_directories(test_session_dir PRIVATE include)
+  endif()
+endif()
+
 ament_package()

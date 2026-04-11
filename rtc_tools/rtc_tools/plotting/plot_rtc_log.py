@@ -1632,7 +1632,8 @@ def main():
                         help='Path to robot_log*.csv, device_log*.csv, or timing_log*.csv')
     parser.add_argument('--save-dir', type=str, default=None,
                         help='Directory to save plots (PNG). '
-                             '미지정 시 UR5E_SESSION_DIR/plots/ 사용')
+                             '미지정 시 RTC_SESSION_DIR/plots/ (없으면 '
+                             '현재 colcon ws logging_data 의 최신 세션) 사용')
     parser.add_argument('--stats', action='store_true',
                         help='Print statistics only (no plots)')
     parser.add_argument('--error', action='store_true',
@@ -1664,11 +1665,28 @@ def main():
         args.ft = True
         args.sensor_compare = True
 
-    # --save-dir 미지정 시 세션 디렉토리의 plots/ 서브디렉토리를 기본값으로 사용
+    # --save-dir 미지정 시 세션 디렉토리의 plots/ 서브디렉토리를 기본값으로 사용.
+    # 환경변수가 없으면 rtc_tools.utils.session_dir 헬퍼로 ws/logging_data 내의
+    # 가장 최근 세션을 찾아 거기에 저장.
     if args.save_dir is None:
-        session = os.environ.get('RTC_SESSION_DIR', os.environ.get('UR5E_SESSION_DIR', ''))
+        from rtc_tools.utils.session_dir import (
+            get_session_dir,
+            resolve_logging_root,
+        )
+        session = get_session_dir()
+        if not session:
+            root = resolve_logging_root()
+            if os.path.isdir(root):
+                candidates = sorted(
+                    d for d in os.listdir(root)
+                    if os.path.isdir(os.path.join(root, d))
+                    and len(d) == 11 and d[6] == '_'
+                )
+                if candidates:
+                    session = os.path.join(root, candidates[-1])
         if session:
             args.save_dir = os.path.join(session, 'plots')
+            os.makedirs(args.save_dir, exist_ok=True)
 
     # Agg backend 최적화: --save-dir 지정 시 GUI 없이 렌더링
     global plt

@@ -301,8 +301,15 @@ If the change touches `rtc_base` or `rtc_msgs` (widely depended-upon packages), 
 [ur5e_bt_coordinator]: subscribes grasp_state/gui_position, publishes goals/gains
 ```
 
-Session logs: `logging_data/YYMMDD_HHMM/{controller,monitor,hand,sim,plots,motions}/`
-Session dir env: `RTC_SESSION_DIR` (or `UR5E_SESSION_DIR` fallback).
+Session logs: `logging_data/YYMMDD_HHMM/{controller,monitor,device,sim,plots,motions}/`
+
+Session/logging root resolution (4-tier chain, shared between `rtc_base/logging/session_dir.hpp` and `rtc_tools.utils.session_dir`):
+1. `$RTC_SESSION_DIR` → `$UR5E_SESSION_DIR` (legacy fallback) — used as-is if set.
+2. `$COLCON_PREFIX_PATH` first entry's parent + `/logging_data` (requires write access).
+3. Walk up from `cwd` looking for `install/` + `src/` siblings → that dir + `/logging_data`.
+4. Final fallback: `$PWD/logging_data`.
+
+Typical use: source `install/setup.bash` in the colcon ws, then `ros2 launch ...` — step 2 keeps all sessions under `{ws}/logging_data` regardless of cwd.
 
 ---
 

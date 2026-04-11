@@ -25,6 +25,8 @@
   <exec_depend>ur5e_description</exec_depend>
   <!-- Hand UDP config (launch에서 hand_udp_node.yaml 참조) -->
   <exec_depend>ur5e_hand_driver</exec_depend>
+  <!-- launch 에서 session 디렉토리 헬퍼 사용 -->
+  <exec_depend>rtc_tools</exec_depend>
 
   <!-- MuJoCo (optional C++ library — not a ROS2 package; install separately)
        https://github.com/google-deepmind/mujoco/releases -->

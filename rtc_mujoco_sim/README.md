@@ -456,7 +456,7 @@ ros2 launch rtc_mujoco_sim mujoco_sim.launch.py use_cpu_affinity:=false
 | `use_cpu_affinity` | `true` | CPU shield (Tier 1 격리) 및 MuJoCo 코어 pinning |
 | `use_fake_hand` | `false` | rt_controller에 fake hand echo-back 모드 전달 |
 
-런치 파일은 `mujoco_simulator_node`와 `rt_controller` 두 노드를 실행합니다. 세션 디렉토리 (`YYMMDD_HHMM`)를 자동 생성하고 `UR5E_SESSION_DIR` 환경변수로 전파합니다. MuJoCo YAML에서 hand 그룹 토픽을 자동으로 읽어 rt_controller에 `hand_command_topic`, `hand_state_topic` 파라미터로 전달합니다.
+런치 파일은 `mujoco_simulator_node`와 `rt_controller` 두 노드를 실행합니다. 세션 디렉토리 (`YYMMDD_HHMM`)를 자동 생성하고 `RTC_SESSION_DIR` (및 하위 호환 `UR5E_SESSION_DIR`) 환경변수로 전파합니다. 세션 루트 결정 로직은 `rtc_tools.utils.session_dir.resolve_logging_root()` 의 4단 체인을 따르며 (자세한 내용은 `rtc_tools/README.md`), 정상 사용자는 `source install/setup.bash` 된 colcon ws 의 `logging_data/` 아래에 누적됩니다. MuJoCo YAML에서 hand 그룹 토픽을 자동으로 읽어 rt_controller에 `hand_command_topic`, `hand_state_topic` 파라미터로 전달합니다.
 
 ---
 

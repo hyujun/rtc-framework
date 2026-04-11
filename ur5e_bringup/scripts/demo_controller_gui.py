@@ -110,11 +110,12 @@ _HAND_TRAJ_SPEED_IDX = {
 
 def _resolve_preset_path() -> str:
     """Resolve hand_presets.json path using the workspace logging directory."""
-    session_dir = os.environ.get('RTC_SESSION_DIR') or os.environ.get('UR5E_SESSION_DIR')
+    from rtc_tools.utils.session_dir import get_session_dir, resolve_logging_root
+    session_dir = get_session_dir()
     if session_dir:
         logging_root = os.path.dirname(session_dir)
     else:
-        logging_root = os.path.expanduser('~/ros2_ws/ur5e_ws/logging_data')
+        logging_root = resolve_logging_root()
     os.makedirs(logging_root, exist_ok=True)
     return os.path.join(logging_root, 'hand_presets.json')
 

@@ -349,17 +349,49 @@ python3 rtc_tools/utils/hand_data_plot.py <csv_file> --timing-only
 
 ### `session_dir.py` — 세션 디렉토리 유틸리티
 
-`RTC_SESSION_DIR` 환경변수를 통해 세션 디렉토리 경로를 관리하는 유틸리티입니다. `UR5E_SESSION_DIR` 환경변수 폴백을 지원합니다.
+C++ `rtc_base/logging/session_dir.hpp` 와 **동일한 4단 체인**으로 세션
+디렉토리를 결정합니다. launch 파일과 CLI 툴이 모두 이 모듈을 사용해 같은
+경로에서 세션을 생성·재사용하도록 하는 것이 목적입니다.
+
+**로깅 루트 결정 (`resolve_logging_root`)**:
+
+1. `$COLCON_PREFIX_PATH` 첫 entry 가 쓰기 가능한 디렉토리이면 그 `parent / "logging_data"`
+2. cwd 에서 상위로 올라가며 `install/` + `src/` 쌍 발견 시 그 디렉토리 `/ "logging_data"`
+3. 최종 폴백: `$PWD / "logging_data"`
+
+**세션 디렉토리 결정 (`get_session_dir` / `create_session_dir`)**:
+
+1. `$RTC_SESSION_DIR` → `$UR5E_SESSION_DIR` (하위 호환)
+2. `resolve_logging_root() / "YYMMDD_HHMM"` 을 새로 생성
 
 ```python
-from rtc_tools.utils.session_dir import get_session_dir, get_session_subdir
+from rtc_tools.utils.session_dir import (
+    resolve_logging_root,
+    create_session_dir,
+    cleanup_old_sessions,
+    get_session_dir,
+    get_or_create_session_dir,
+    get_session_subdir,
+)
 
-session = get_session_dir()              # None if not set
-plots_dir = get_session_subdir('plots')  # .../YYMMDD_HHMM/plots or None
+# launch 파일에서 신규 세션 생성
+root = resolve_logging_root()
+session = create_session_dir(root)
+cleanup_old_sessions(root, max_sessions=10)
+
+# CLI 툴에서 현재 실행 중인 세션에 쓰거나 없으면 새로 만들기
+session = get_or_create_session_dir()
+plots = get_session_subdir('plots')  # 환경변수 읽기 전용, None 반환 가능
 ```
 
-- `get_session_dir()`: `RTC_SESSION_DIR` 또는 `UR5E_SESSION_DIR` 환경변수에서 경로 반환
-- `get_session_subdir(name)`: 세션 디렉토리 내 서브디렉토리 경로 반환 (자동 생성)
+| 함수 | 설명 |
+|------|------|
+| `resolve_logging_root()` | 3단 체인으로 `logging_data` 루트 경로 결정 |
+| `create_session_dir(root=None)` | `YYMMDD_HHMM` 세션과 6개 서브디렉토리 생성 |
+| `cleanup_old_sessions(root, max)` | `YYMMDD_HHMM` 패턴 세션만 대상으로 개수 제한 |
+| `get_session_dir()` | `RTC_SESSION_DIR` / `UR5E_SESSION_DIR` 읽기 (없으면 `None`) |
+| `get_or_create_session_dir()` | env 우선, 없으면 새 세션 생성 |
+| `get_session_subdir(name)` | 현재 세션 하위 폴더 경로 반환 (자동 생성, 세션 미설정 시 `None`) |
 
 ---
 

@@ -22,6 +22,7 @@
   <exec_depend>rclpy</exec_depend>
   <exec_depend>python3-pyqt5</exec_depend>
   <exec_depend>rtc_scripts</exec_depend>
+  <exec_depend>rtc_tools</exec_depend>
   <exec_depend>ur5e_description</exec_depend>
   <exec_depend>ur5e_hand_driver</exec_depend>
   <test_depend>ament_lint_auto</test_depend>

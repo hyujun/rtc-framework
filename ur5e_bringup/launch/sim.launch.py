@@ -25,9 +25,6 @@ Nodes launched:
 """
 
 import os
-import re
-import shutil
-from datetime import datetime
 
 from launch import LaunchDescription
 from launch.actions import (
@@ -43,45 +40,23 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
 
-
-def _resolve_logging_root():
-    """colcon workspace logging_data root path."""
-    try:
-        share_dir = get_package_share_directory('ur5e_bringup')
-        ws_dir = os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.dirname(share_dir))))
-        return os.path.join(ws_dir, 'logging_data')
-    except Exception:
-        return os.path.expanduser('~/ros2_ws/ur5e_ws/logging_data')
-
-
-def _cleanup_old_sessions(logging_root, max_sessions):
-    """Keep at most max_sessions session folders (YYMMDD_HHMM pattern)."""
-    if not os.path.isdir(logging_root):
-        return
-    pattern = re.compile(r'^\d{6}_\d{4}$')
-    dirs = sorted([
-        d for d in os.listdir(logging_root)
-        if os.path.isdir(os.path.join(logging_root, d)) and pattern.match(d)
-    ])
-    while len(dirs) > max_sessions:
-        oldest = os.path.join(logging_root, dirs.pop(0))
-        shutil.rmtree(oldest, ignore_errors=True)
+from rtc_tools.utils.session_dir import (
+    cleanup_old_sessions,
+    create_session_dir,
+    resolve_logging_root,
+)
 
 
 def launch_setup(context, *args, **kwargs):
     """Setup function executed with launch context for conditional parameter loading."""
 
     # ── Session directory (YYMMDD_HHMM) ──────────────────────────────────────
-    logging_root = _resolve_logging_root()
-    session_ts = datetime.now().strftime('%y%m%d_%H%M')
-    session_dir = os.path.join(logging_root, session_ts)
-    for sub in ('controller', 'monitor', 'hand', 'sim', 'plots', 'motions'):
-        os.makedirs(os.path.join(session_dir, sub), exist_ok=True)
+    logging_root = resolve_logging_root()
+    session_dir = create_session_dir(logging_root)
 
     max_sessions = int(
         LaunchConfiguration('max_log_sessions').perform(context) or '10')
-    _cleanup_old_sessions(logging_root, max_sessions)
+    cleanup_old_sessions(logging_root, max_sessions)
 
     # ── Package paths ─────────────────────────────────────────────────────────
     pkg_sim = FindPackageShare('rtc_mujoco_sim')
@@ -167,14 +142,19 @@ def launch_setup(context, *args, **kwargs):
         ctrl_params.append(ctrl_overrides)
 
     # ── Environment variables ─────────────────────────────────────────────────
+    # RTC_SESSION_DIR 우선, UR5E_SESSION_DIR 은 하위 호환을 위해 함께 세팅.
     set_session_dir = SetEnvironmentVariable(
+        name='RTC_SESSION_DIR',
+        value=session_dir
+    )
+    set_session_dir_legacy = SetEnvironmentVariable(
         name='UR5E_SESSION_DIR',
         value=session_dir
     )
 
     # ── CPU Shield (Tier 1 only for simulation) ───────────────────────────────
     use_affinity = LaunchConfiguration('use_cpu_affinity').perform(context)
-    actions = [set_session_dir]
+    actions = [set_session_dir, set_session_dir_legacy]
 
     if use_affinity.lower() in ('true', '1', 'yes'):
         enable_sim_cpu_shield = ExecuteProcess(

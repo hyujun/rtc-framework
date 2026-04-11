@@ -819,7 +819,8 @@ class HandDataCsvLogger:
         """
         Args:
             num_sensors: 연결된 핑거팁 센서 수
-            output_dir: CSV 저장 디렉토리 (빈 문자열 시 UR5E_SESSION_DIR/hand 사용)
+            output_dir: CSV 저장 디렉토리 (빈 문자열 시 RTC/UR5E_SESSION_DIR/device 사용,
+                없으면 현재 ws logging_data 에 새 세션을 생성해 거기 저장)
             prefix: 파일명 접두어
             bulk_mode: True이면 전류 컬럼 추가 및 bulk 타이밍 키 사용
         """
@@ -827,8 +828,9 @@ class HandDataCsvLogger:
         self.bulk_mode = bulk_mode
         # 세션 디렉토리 기반 기본 경로
         if not output_dir:
-            session = os.environ.get('UR5E_SESSION_DIR', '')
-            output_dir = os.path.join(session, 'hand') if session else '.'
+            from rtc_tools.utils.session_dir import get_or_create_session_dir
+            session = get_or_create_session_dir()
+            output_dir = os.path.join(session, 'device')
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(output_dir, exist_ok=True)
         self.filepath = os.path.join(output_dir, f"{prefix}_{timestamp}.csv")
