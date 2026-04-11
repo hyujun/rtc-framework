@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ur5e_bt_coordinator/bt_ros_bridge.hpp"
+#include "ur5e_bt_coordinator/failure_logger.hpp"
 
 #include <behaviortree_cpp/bt_factory.h>
 
@@ -54,6 +55,10 @@ private:
   /// Log detailed failure diagnosis: which nodes failed and why.
   void LogFailureDiagnosis();
 
+  /// Attach the real-time FailureLogger to the current tree root.
+  /// Must be called after LoadTree() and after any runtime tree switch.
+  void InstallFailureLogger();
+
   /// Log topic health status.
   void WatchdogCheck();
 
@@ -99,6 +104,9 @@ private:
 #ifdef BT_GROOT2_AVAILABLE
   std::unique_ptr<BT::Groot2Publisher> groot2_publisher_;
 #endif
+
+  // Real-time failure logger — prints every FAILURE transition via rclcpp.
+  std::unique_ptr<FailureLogger> failure_logger_;
 
   // Step mode pending flag
   bool step_pending_{false};

@@ -38,7 +38,11 @@ BT::NodeStatus IsVisionTargetReady::tick()
     setOutput("pose", pose);
     return BT::NodeStatus::SUCCESS;
   }
-  RCLCPP_DEBUG(logger(), "[IsVisionTargetReady] no valid target data");
+  static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
+  RCLCPP_WARN_THROTTLE(
+    logger(), steady_clock, 2000,
+    "[IsVisionTargetReady] FAILURE: no valid target pose "
+    "(waiting for /world_target_info)");
   return BT::NodeStatus::FAILURE;
 }
 

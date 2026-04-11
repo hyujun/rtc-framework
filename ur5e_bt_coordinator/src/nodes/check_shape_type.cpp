@@ -72,8 +72,10 @@ BT::NodeStatus CheckShapeType::tick()
   if (expected) {
     const auto expected_lower = ToLower(expected.value());
     if (expected_lower != name) {
-      RCLCPP_INFO(logger(), "[CheckShapeType] mismatch: expected=%s, got=%s",
-                  expected_lower.c_str(), name.c_str());
+      RCLCPP_WARN(logger(),
+                  "[CheckShapeType] FAILURE: shape mismatch "
+                  "(expected=%s, got=%s, confidence=%.3f)",
+                  expected_lower.c_str(), name.c_str(), est.confidence);
       return BT::NodeStatus::FAILURE;
     }
   }

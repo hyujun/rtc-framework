@@ -44,7 +44,10 @@ BT::NodeStatus IsGraspPhase::tick()
 
   auto it = kPhaseMap.find(target);
   if (it == kPhaseMap.end()) {
-    RCLCPP_ERROR(logger(), "[IsGraspPhase] Unknown phase: '%s'", target.c_str());
+    RCLCPP_ERROR(logger(),
+                 "[IsGraspPhase] FAILURE: unknown phase '%s' "
+                 "(valid: idle|approaching|contact|force_control|holding|releasing)",
+                 target.c_str());
     return BT::NodeStatus::FAILURE;
   }
 
@@ -61,9 +64,21 @@ BT::NodeStatus IsGraspPhase::tick()
 
   if (match) {
     RCLCPP_INFO(logger(), "[IsGraspPhase] phase '%s' reached", target.c_str());
+    return BT::NodeStatus::SUCCESS;
   }
 
-  return match ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+  // Throttle FAILURE log: IsGraspPhase is typically polled inside
+  // RetryUntilSuccessful, so we don't want to flood the log every tick.
+  static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
+  RCLCPP_WARN_THROTTLE(
+    logger(), steady_clock, 1000,
+    "[IsGraspPhase] FAILURE: phase mismatch current=%s(%d) target=%s(%d). "
+    "If this persists, check that grasp_controller_type='force_pi' is set "
+    "in demo_shared.yaml and that the Force-PI state machine is actually "
+    "running (expect controller log '[grasp:force_pi] phase X -> Y').",
+    current_str, gs.grasp_phase, target.c_str(), it->second);
+
+  return BT::NodeStatus::FAILURE;
 }
 
 }  // namespace rtc_bt

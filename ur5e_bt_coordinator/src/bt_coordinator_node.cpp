@@ -77,6 +77,10 @@ void BtCoordinatorNode::Initialize()
   }
 #endif
 
+  // Real-time failure logger: surfaces every FAILURE transition via rclcpp.
+  // Auto-subscribes to all nodes in the tree via StatusChangeLogger base.
+  InstallFailureLogger();
+
   // Tick timer (only if not in step mode)
   if (!step_mode_) {
     const auto period = std::chrono::duration<double>(1.0 / tick_rate_hz_);
@@ -287,28 +291,85 @@ void BtCoordinatorNode::TickCallback()
   }
 }
 
+void BtCoordinatorNode::InstallFailureLogger()
+{
+  // Reset any previous logger (important after runtime tree switch, since
+  // StatusChangeLogger keeps shared_ptrs to the old tree's nodes).
+  failure_logger_.reset();
+
+  if (!tree_ || !tree_->rootNode()) {
+    RCLCPP_WARN(get_logger(),
+                "[BtCoordinator] InstallFailureLogger: no tree/root — skipped");
+    return;
+  }
+
+  try {
+    failure_logger_ = std::make_unique<FailureLogger>(
+        tree_->rootNode(), get_logger());
+    RCLCPP_INFO(get_logger(),
+                "[BtCoordinator] FailureLogger attached — FAILURE transitions "
+                "will be printed via RCLCPP_ERROR");
+  } catch (const std::exception& e) {
+    RCLCPP_WARN(get_logger(),
+                "[BtCoordinator] FailureLogger init failed: %s", e.what());
+  }
+}
+
 void BtCoordinatorNode::LogFailureDiagnosis()
 {
   if (!tree_) return;
 
-  RCLCPP_WARN(get_logger(), "──── Failure Diagnosis ────");
+  RCLCPP_ERROR(get_logger(), "──── Failure Diagnosis ────");
 
-  // Walk the tree to find failed nodes
+  // Walk the tree and dump every FAILURE-leaf, showing the path from root.
+  // A "failed leaf" is a failed node with no failed descendant — this gives
+  // the narrowest culprit. Parent control/decorator failures are printed as
+  // context around the leaf.
+  std::function<bool(const BT::TreeNode*)> has_failed_descendant =
+      [&](const BT::TreeNode* node) -> bool {
+    if (!node) return false;
+    if (auto control = dynamic_cast<const BT::ControlNode*>(node)) {
+      for (std::size_t i = 0; i < control->childrenCount(); ++i) {
+        auto* child = control->child(i);
+        if (child && child->status() == BT::NodeStatus::FAILURE) return true;
+        if (has_failed_descendant(child)) return true;
+      }
+    } else if (auto decorator = dynamic_cast<const BT::DecoratorNode*>(node)) {
+      auto* child = decorator->child();
+      if (child && child->status() == BT::NodeStatus::FAILURE) return true;
+      if (has_failed_descendant(child)) return true;
+    }
+    return false;
+  };
+
+  int failure_count = 0;
   std::function<void(const BT::TreeNode*, int)> visit =
       [&](const BT::TreeNode* node, int depth) {
     if (!node) return;
 
-    auto status = node->status();
-    std::string indent(depth * 2, ' ');
+    const auto status = node->status();
+    const std::string indent(depth * 2, ' ');
+    const std::string name =
+        node->name().empty() ? "<anon>" : node->name();
 
     if (status == BT::NodeStatus::FAILURE) {
-      RCLCPP_WARN(get_logger(), "%s[FAILED] %s (type: %s)",
-                  indent.c_str(),
-                  node->name().c_str(),
-                  node->registrationName().c_str());
+      const bool is_leaf_failure = !has_failed_descendant(node);
+      if (is_leaf_failure) {
+        RCLCPP_ERROR(get_logger(),
+                     "%s[FAIL-LEAF] %s (type=%s uid=%u)",
+                     indent.c_str(), name.c_str(),
+                     node->registrationName().c_str(),
+                     static_cast<unsigned>(node->UID()));
+        ++failure_count;
+      } else {
+        RCLCPP_WARN(get_logger(),
+                    "%s[FAIL] %s (type=%s uid=%u)",
+                    indent.c_str(), name.c_str(),
+                    node->registrationName().c_str(),
+                     static_cast<unsigned>(node->UID()));
+      }
     }
 
-    // Visit children if it's a control/decorator node
     if (auto control = dynamic_cast<const BT::ControlNode*>(node)) {
       for (std::size_t i = 0; i < control->childrenCount(); ++i) {
         visit(control->child(i), depth + 1);
@@ -318,18 +379,17 @@ void BtCoordinatorNode::LogFailureDiagnosis()
     }
   };
 
-  for (auto& subtree : tree_->subtrees) {
-    for (auto& node : subtree->nodes) {
-      if (node->status() == BT::NodeStatus::FAILURE && !node->name().empty()) {
-        // Only log leaf/action/condition failures at root pass
-      }
-    }
-  }
-
-  // Comprehensive walk from root
   visit(tree_->rootNode(), 0);
 
-  RCLCPP_WARN(get_logger(), "──── End Diagnosis ────");
+  if (failure_count == 0) {
+    RCLCPP_WARN(get_logger(),
+                "  (no FAIL-LEAF node found — root returned FAILURE without "
+                "a surviving failed descendant; check logs above for the "
+                "last [BT FAIL] line emitted by FailureLogger)");
+  }
+
+  RCLCPP_ERROR(get_logger(), "──── End Diagnosis (%d leaf failures) ────",
+               failure_count);
 }
 
 void BtCoordinatorNode::WatchdogCheck()
@@ -381,6 +441,10 @@ rcl_interfaces::msg::SetParametersResult BtCoordinatorNode::OnParameterChange(
           tree_->haltTree();
         }
 
+        // Detach the FailureLogger BEFORE destroying the old tree so its
+        // internal subscriptions don't dangle over freed TreeNodes.
+        failure_logger_.reset();
+
         // Load new tree
         tree_file_ = new_file;
         LoadTree();
@@ -397,6 +461,9 @@ rcl_interfaces::msg::SetParametersResult BtCoordinatorNode::OnParameterChange(
           }
         }
 #endif
+
+        // Re-attach failure logger to the new tree
+        InstallFailureLogger();
 
         // Resume ticking
         if (!step_mode_ && tick_timer_) {

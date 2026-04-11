@@ -150,6 +150,37 @@ ros2 param set /bt_coordinator step_mode true
 ros2 service call /bt_coordinator/step std_srvs/srv/Trigger
 ```
 
+### 실패 로그 (FailureLogger)
+
+트리 실행 중 어떤 노드가 `FAILURE` 상태로 전이되면 **실시간으로** 다음과 같은
+로그가 `RCLCPP_ERROR` 레벨로 출력된다:
+
+```
+[BT FAIL] <node_name> (type=<RegistrationName> uid=<N>) <prev_status> -> FAILURE
+```
+
+이는 `BT::StatusChangeLogger` 를 상속한 `FailureLogger` 클래스가 트리 로드 시
+모든 노드에 자동 구독되어 동작한다. 틱 주기 사이에도 즉시 출력되므로, 트리가
+멈춘 시점에 어느 노드가 먼저 실패했는지 곧바로 확인할 수 있다.
+
+추가로 트리가 최종 `FAILURE` 로 종료되면 `LogFailureDiagnosis()` 가 트리
+전체를 순회하며 실패 경로를 들여쓰기 포맷으로 덤프한다. 가장 안쪽의 실패
+노드에는 `[FAIL-LEAF]` 태그가 붙어 원인 노드를 빠르게 찾을 수 있다:
+
+```
+──── Failure Diagnosis ────
+[FAIL] main (type=Sequence uid=1)
+  [FAIL] <anon> (type=SubTree uid=25)
+    [FAIL-LEAF] <anon> (type=IsGraspPhase uid=42)
+──── End Diagnosis (1 leaf failures) ────
+```
+
+개별 Action/Condition 노드(예: `MoveToPose`, `IsGraspPhase`, `IsGrasped`,
+`IsForceAbove`, `SwitchController`)는 실패 시 진단에 필요한 수치(타임아웃,
+위치/힘 오차, 현재 phase 등)를 `RCLCPP_WARN` 으로 함께 출력한다.
+폴링 노드(RetryUntilSuccessful 안에서 동작)의 경우 로그 플러딩을 막기 위해
+1s 주기로 throttle 된다.
+
 ### Blackboard 변수 (`bb.*` 파라미터)
 
 YAML의 `bb.<key>` 형식으로 선언하면 트리 로드 후 Blackboard에 자동 주입된다.

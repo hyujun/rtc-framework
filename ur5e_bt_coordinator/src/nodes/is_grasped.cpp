@@ -37,17 +37,25 @@ BT::NodeStatus IsGrasped::tick()
     if (gs.grasp_detected) {
       RCLCPP_INFO(logger(), "[IsGrasped] grasp confirmed (contacts=%d max_force=%.2fN)",
                   gs.num_active_contacts, gs.max_force);
+      return BT::NodeStatus::SUCCESS;
     }
-    return gs.grasp_detected ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+    RCLCPP_WARN(logger(),
+                "[IsGrasped] FAILURE: not grasped "
+                "(contacts=%d/%d max_force=%.2fN/%.2fN)",
+                gs.num_active_contacts, gs.min_fingertips,
+                gs.max_force, gs.force_threshold);
+    return BT::NodeStatus::FAILURE;
   }
 
   // Custom threshold: recount from per-fingertip data
   int count = 0;
+  float max_force = 0.0f;
   for (const auto& ft : gs.fingertips) {
     if (ft.inference_valid && ft.contact_flag > 0.5f &&
         ft.force_magnitude > static_cast<float>(threshold)) {
       ++count;
     }
+    if (ft.force_magnitude > max_force) max_force = ft.force_magnitude;
   }
 
   bool grasped = (count >= min_ft);
@@ -55,8 +63,13 @@ BT::NodeStatus IsGrasped::tick()
   if (grasped) {
     RCLCPP_INFO(logger(), "[IsGrasped] grasp confirmed (custom: %d fingertips >= %.2fN)",
                 count, threshold);
+    return BT::NodeStatus::SUCCESS;
   }
-  return grasped ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+  RCLCPP_WARN(logger(),
+              "[IsGrasped] FAILURE: custom check failed "
+              "(%d/%d fingertips >= %.2fN, max_force=%.2fN)",
+              count, min_ft, threshold, static_cast<double>(max_force));
+  return BT::NodeStatus::FAILURE;
 }
 
 }  // namespace rtc_bt

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 
 namespace rtc_bt {
@@ -66,8 +67,9 @@ BT::NodeStatus MoveToJoints::onStart()
 BT::NodeStatus MoveToJoints::onRunning()
 {
   auto current = bridge_->GetArmJointPositions();
+  double max_err = std::numeric_limits<double>::quiet_NaN();
   if (current.size() >= target_.size()) {
-    double max_err = 0.0;
+    max_err = 0.0;
     for (std::size_t i = 0; i < target_.size(); ++i) {
       max_err = std::max(max_err, std::abs(current[i] - target_[i]));
     }
@@ -82,7 +84,11 @@ BT::NodeStatus MoveToJoints::onRunning()
   }
 
   if (ElapsedSeconds(start_time_) > timeout_s_) {
-    RCLCPP_WARN(logger(), "[MoveToJoints] timeout (%.1fs)", timeout_s_);
+    RCLCPP_WARN(logger(),
+                "[MoveToJoints] FAILURE: timeout (%.1fs) max_err=%.4f tol=%.4f "
+                "current_size=%zu target_size=%zu",
+                timeout_s_, max_err, tolerance_,
+                current.size(), target_.size());
     return BT::NodeStatus::FAILURE;
   }
   return BT::NodeStatus::RUNNING;

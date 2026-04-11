@@ -55,11 +55,18 @@ BT::NodeStatus IsForceAbove::tick()
                "[IsForceAbove] count=%d/%d max_force=%.2fN threshold=%.2fN",
                count, min_ft, gs.max_force, threshold);
 
+  static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
+
   if (sustained_ms <= 0) {
     if (condition_met) {
       RCLCPP_INFO(logger(), "[IsForceAbove] triggered (%d fingertips >= %.2fN)", count, threshold);
+      return BT::NodeStatus::SUCCESS;
     }
-    return condition_met ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+    RCLCPP_WARN_THROTTLE(
+      logger(), steady_clock, 1000,
+      "[IsForceAbove] FAILURE: %d/%d fingertips >= %.2fN (max_force=%.2fN)",
+      count, min_ft, threshold, gs.max_force);
+    return BT::NodeStatus::FAILURE;
   }
 
   // Sustained check
@@ -70,17 +77,28 @@ BT::NodeStatus IsForceAbove::tick()
       RCLCPP_DEBUG(logger(), "[IsForceAbove] sustained check started (%dms required)", sustained_ms);
     }
     auto elapsed = std::chrono::steady_clock::now() - sustained_start_;
-    if (std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
-        >= sustained_ms) {
+    const auto elapsed_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+    if (elapsed_ms >= sustained_ms) {
       RCLCPP_INFO(logger(), "[IsForceAbove] sustained condition met (%dms, %d fingertips)",
                   sustained_ms, count);
       sustained_active_ = false;
       return BT::NodeStatus::SUCCESS;
     }
+    RCLCPP_WARN_THROTTLE(
+      logger(), steady_clock, 1000,
+      "[IsForceAbove] FAILURE: condition met but not yet sustained "
+      "(%ldms / %dms required, count=%d/%d)",
+      static_cast<long>(elapsed_ms), sustained_ms, count, min_ft);
     return BT::NodeStatus::FAILURE;
   }
 
   sustained_active_ = false;
+  RCLCPP_WARN_THROTTLE(
+    logger(), steady_clock, 1000,
+    "[IsForceAbove] FAILURE: %d/%d fingertips >= %.2fN "
+    "(max_force=%.2fN, sustained_ms=%d not started)",
+    count, min_ft, threshold, gs.max_force, sustained_ms);
   return BT::NodeStatus::FAILURE;
 }
 
