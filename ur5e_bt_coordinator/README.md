@@ -110,7 +110,7 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 | `IsForceAbove` | Fingertip force가 threshold 초과 여부 확인 (500Hz 사전 계산 활용, sustained 판정 지원) | `threshold_N`(1.5), `min_fingertips`(2), `sustained_ms`(0) |
 | `IsGrasped` | 물체 파지 상태 확인 (500Hz 사전 계산된 grasp_detected 활용) | `force_threshold_N`(1.0), `min_fingertips`(2) |
 | `IsObjectDetected` | Vision 결과 수신 여부 확인 | 출력: `pose` |
-| `IsGraspPhase` | Force-PI grasp phase 상태 확인 (GraspState.grasp_phase 비교) | `expected_phase` |
+| `IsGraspPhase` | Force-PI grasp phase 상태 확인 (GraspState.grasp_phase 비교). `min_duration_s > 0` 지정 시 해당 phase 를 그 시간 이상 연속 관찰해야 SUCCESS 리턴 (stateful dwell 타이머). | `phase`(holding), `min_duration_s`(0.0) |
 | `IsVisionTargetReady` | Vision target 데이터 유효성 확인 (최신 데이터 존재 여부) | — |
 | `CheckShapeType` | ShapeEstimate 결과에서 shape 타입 추출 및 비교 | `expected_type`, 출력: `shape_type` |
 

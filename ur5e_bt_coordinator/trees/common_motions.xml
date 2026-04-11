@@ -107,7 +107,10 @@
   <!-- ================================================================== -->
   <!-- ForcePIGrasp: Adaptive PI force-controlled grasp                   -->
   <!--   Controller 내부 state machine이 force control 수행                 -->
-  <!--   Ports: target_force_N, grasp_timeout_ms                          -->
+  <!--   Success conditions (either one):                                -->
+  <!--     (a) phase == "holding"                                        -->
+  <!--     (b) phase == "force_control" sustained for 3.0s               -->
+  <!--   Ports: target_force_N, grasp_timeout_ms                         -->
   <!-- ================================================================== -->
   <BehaviorTree ID="ForcePIGrasp">
     <Sequence>
@@ -116,19 +119,30 @@
                 grasp_command="1"
                 grasp_target_force="{target_force_N}"/>
 
-      <!-- Wait for Holding phase (force converged) -->
+      <!-- Wait for one of the success conditions -->
       <Timeout msec="{grasp_timeout_ms}">
         <RetryUntilSuccessful num_attempts="-1">
           <Sequence>
             <WaitDuration duration_s="0.05"/>
-            <IsGraspPhase phase="holding"/>
+            <Fallback>
+              <!-- (a) Fast path: force converged → Holding phase -->
+              <IsGraspPhase phase="holding"/>
+              <!-- (b) Slow path: PI still regulating but stable in    -->
+              <!--     ForceControl phase for >= 3.0s → accept as      -->
+              <!--     success (handles soft/deformable objects where  -->
+              <!--     force_settle never fully converges).            -->
+              <IsGraspPhase phase="force_control" min_duration_s="3.0"/>
+            </Fallback>
           </Sequence>
         </RetryUntilSuccessful>
       </Timeout>
 
-      <!-- Verify: still holding after brief settle -->
+      <!-- Verify: still in a terminal-success phase after brief settle -->
       <WaitDuration duration_s="0.3"/>
-      <IsGraspPhase phase="holding"/>
+      <Fallback>
+        <IsGraspPhase phase="holding"/>
+        <IsGraspPhase phase="force_control"/>
+      </Fallback>
     </Sequence>
   </BehaviorTree>
 

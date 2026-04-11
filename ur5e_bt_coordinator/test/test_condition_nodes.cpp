@@ -243,6 +243,105 @@ TEST_F(ConditionNodeTest, IsGraspPhase_InvalidPhase)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
 }
 
+// ── min_duration_s (dwell timer) ────────────────────────────────────────────
+//
+// When ``min_duration_s > 0`` the node becomes stateful: the target phase
+// must be continuously observed for at least that long before SUCCESS is
+// returned. These tests exercise the new dwell path added to support the
+// "force_control sustained for 3 s → success" condition used by the
+// ``ForcePIGrasp`` subtree.
+
+TEST_F(ConditionNodeTest, IsGraspPhase_DwellTimer_FailsBeforeMinDuration)
+{
+  CachedGraspState gs;
+  gs.grasp_phase = 3;  // "force_control"
+  PublishGraspState(gs);
+  Spin();
+
+  auto tree = CreateTree(
+      R"(<IsGraspPhase phase="force_control" min_duration_s="0.5"/>)");
+
+  // First tick starts the dwell timer → expect FAILURE (not yet elapsed).
+  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
+
+  // A second tick ~10 ms later is still far below the 500 ms threshold.
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
+}
+
+TEST_F(ConditionNodeTest, IsGraspPhase_DwellTimer_SucceedsAfterMinDuration)
+{
+  CachedGraspState gs;
+  gs.grasp_phase = 3;  // "force_control"
+  PublishGraspState(gs);
+  Spin();
+
+  auto tree = CreateTree(
+      R"(<IsGraspPhase phase="force_control" min_duration_s="0.1"/>)");
+
+  // Start the dwell timer.
+  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
+
+  // Wait longer than the 100 ms threshold, then re-tick.
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
+}
+
+TEST_F(ConditionNodeTest, IsGraspPhase_DwellTimer_ResetsOnMismatch)
+{
+  // Use a 300 ms threshold to leave generous headroom above the ~50 ms
+  // Spin() duration used below, so the test is not sensitive to scheduler
+  // jitter on CI runners.
+  constexpr auto kMinDurationMs = std::chrono::milliseconds(300);
+
+  // Phase initially matches — dwell timer arms.
+  CachedGraspState gs;
+  gs.grasp_phase = 3;  // "force_control"
+  PublishGraspState(gs);
+  Spin();
+
+  auto tree = CreateTree(
+      R"(<IsGraspPhase phase="force_control" min_duration_s="0.3"/>)");
+
+  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE)
+      << "First tick should start the dwell timer and return FAILURE";
+
+  // Phase transiently leaves the target → dwell timer must reset.
+  gs.grasp_phase = 2;  // "contact"
+  PublishGraspState(gs);
+  Spin();
+  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
+
+  // Phase returns to target — the dwell clock starts over from zero.
+  gs.grasp_phase = 3;
+  PublishGraspState(gs);
+  Spin();
+  const auto reentry_time = std::chrono::steady_clock::now();
+
+  // Tick well before the 300 ms threshold has elapsed from the re-entry
+  // moment → should still fail even though the tree has been alive longer.
+  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
+
+  // Wait until well past the threshold measured from the re-entry moment.
+  std::this_thread::sleep_until(reentry_time + kMinDurationMs +
+                                std::chrono::milliseconds(100));
+  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
+}
+
+TEST_F(ConditionNodeTest, IsGraspPhase_DwellTimer_ZeroIsLegacyBehavior)
+{
+  // min_duration_s == 0.0 (the port default) must match the pre-existing
+  // semantics: immediate SUCCESS on first match without any dwell.
+  CachedGraspState gs;
+  gs.grasp_phase = 4;  // "holding"
+  PublishGraspState(gs);
+  Spin();
+
+  auto tree = CreateTree(
+      R"(<IsGraspPhase phase="holding" min_duration_s="0.0"/>)");
+  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 // IsObjectDetected
 // ══════════════════════════════════════════════════════════════════════════
