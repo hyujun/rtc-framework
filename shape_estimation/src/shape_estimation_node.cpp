@@ -1,8 +1,13 @@
 #include "shape_estimation/shape_estimation_node.hpp"
+#include "shape_estimation/shape_logging.hpp"
 
 #include <sstream>
 
 namespace shape_estimation {
+
+namespace {
+auto node_log() { return ::rtc::shape::logging::NodeLogger(); }
+}  // namespace
 
 ShapeEstimationNode::ShapeEstimationNode()
     : Node("shape_estimation_node") {
@@ -111,12 +116,12 @@ ShapeEstimationNode::ShapeEstimationNode()
   enable_exploration_ = get_parameter("enable_exploration").as_bool();
   if (enable_exploration_) {
     InitExploration();
-    RCLCPP_INFO(get_logger(), "ShapeEstimationNode 초기화 완료. 탐색 모션 활성화");
+    RCLCPP_INFO(node_log(), "ShapeEstimationNode 초기화 완료. 탐색 모션 활성화");
   } else {
-    RCLCPP_INFO(get_logger(), "ShapeEstimationNode 초기화 완료. 순수 추정 모드");
+    RCLCPP_INFO(node_log(), "ShapeEstimationNode 초기화 완료. 순수 추정 모드");
   }
 
-  RCLCPP_INFO(get_logger(),
+  RCLCPP_INFO(node_log(),
               "설정: voxel_res=%.3fm, max_points=%d, expiry=%.1fs, "
               "min_fit_points=%d, pub_rate=%.1fHz, viz_rate=%.1fHz",
               cloud_config.voxel_resolution_m, cloud_config.max_points,
@@ -214,7 +219,8 @@ void ShapeEstimationNode::SnapshotCallback(
     }
   }
   if (valid_count == 0) {
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+    RCLCPP_WARN_THROTTLE(node_log(), *get_clock(),
+                         ::rtc::shape::logging::kThrottleSlowMs,
                          "빈 snapshot 수신 (유효 센서 0개)");
   }
   has_snapshot_ = true;
@@ -226,8 +232,10 @@ void ShapeEstimationNode::SnapshotCallback(
   // Snapshot 시계열 저장 (돌출 구조 gap 분석용)
   snapshot_history_.Push(latest_snapshot_);
 
-  RCLCPP_DEBUG(get_logger(), "SnapshotCallback: valid_sensors=%d, cloud_size=%d",
-               valid_count, voxel_cloud_.Size());
+  RCLCPP_DEBUG_THROTTLE(node_log(), *get_clock(),
+                        ::rtc::shape::logging::kThrottleSlowMs,
+                        "SnapshotCallback: valid_sensors=%d, cloud_size=%d",
+                        valid_count, voxel_cloud_.Size());
 
   // 형상 추정
   latest_estimate_ = EstimateShape();
@@ -264,7 +272,7 @@ void ShapeEstimationNode::SnapshotCallback(
   // SingleShot 모드: 1개 처리 후 Paused
   if (state_ == State::kSingleShot) {
     state_ = State::kPaused;
-    RCLCPP_INFO(get_logger(), "SingleShot 완료 → PAUSED");
+    RCLCPP_INFO(node_log(), "SingleShot 완료 → PAUSED");
   }
 }
 
@@ -283,20 +291,22 @@ ShapeEstimate ShapeEstimationNode::EstimateShape() {
     // fast와 fitted 결과 결합: fitted 결과가 더 신뢰도가 높으면 사용
     if (fitted_result.type != ShapeType::kUnknown &&
         fitted_result.confidence >= fast_result.confidence) {
-      RCLCPP_DEBUG(get_logger(),
-                   "EstimateShape: fitted=%s(%.2f) 선택 (fast=%s(%.2f), points=%zu)",
-                   ShapeTypeToString(fitted_result.type).data(),
-                   fitted_result.confidence,
-                   ShapeTypeToString(fast_result.type).data(),
-                   fast_result.confidence, points.size());
+      RCLCPP_DEBUG_THROTTLE(node_log(), *get_clock(),
+                            ::rtc::shape::logging::kThrottleFastMs,
+                            "EstimateShape: fitted=%s(%.2f) 선택 (fast=%s(%.2f), points=%zu)",
+                            ShapeTypeToString(fitted_result.type).data(),
+                            fitted_result.confidence,
+                            ShapeTypeToString(fast_result.type).data(),
+                            fast_result.confidence, points.size());
       return fitted_result;
     }
   }
 
-  RCLCPP_DEBUG(get_logger(),
-               "EstimateShape: fast=%s(%.2f) 사용 (cloud=%d/%d)",
-               ShapeTypeToString(fast_result.type).data(),
-               fast_result.confidence,
+  RCLCPP_DEBUG_THROTTLE(node_log(), *get_clock(),
+                        ::rtc::shape::logging::kThrottleFastMs,
+                        "EstimateShape: fast=%s(%.2f) 사용 (cloud=%d/%d)",
+                        ShapeTypeToString(fast_result.type).data(),
+                        fast_result.confidence,
                voxel_cloud_.Size(), min_points_for_fitting_);
 
   return fast_result;
@@ -308,21 +318,21 @@ void ShapeEstimationNode::TriggerCallback(std_msgs::msg::String::SharedPtr msg) 
   if (cmd == "start") {
     voxel_cloud_.Clear();
     state_ = State::kRunning;
-    RCLCPP_INFO(get_logger(), "형상 추정 시작 (point cloud 초기화)");
+    RCLCPP_INFO(node_log(), "형상 추정 시작 (point cloud 초기화)");
   } else if (cmd == "stop") {
     state_ = State::kStopped;
-    RCLCPP_INFO(get_logger(), "형상 추정 중지");
+    RCLCPP_INFO(node_log(), "형상 추정 중지");
   } else if (cmd == "pause") {
     state_ = State::kPaused;
-    RCLCPP_INFO(get_logger(), "형상 추정 일시 정지");
+    RCLCPP_INFO(node_log(), "형상 추정 일시 정지");
   } else if (cmd == "resume") {
     state_ = State::kRunning;
-    RCLCPP_INFO(get_logger(), "형상 추정 재개");
+    RCLCPP_INFO(node_log(), "형상 추정 재개");
   } else if (cmd == "single") {
     state_ = State::kSingleShot;
-    RCLCPP_INFO(get_logger(), "SingleShot 모드 활성화");
+    RCLCPP_INFO(node_log(), "SingleShot 모드 활성화");
   } else {
-    RCLCPP_WARN(get_logger(), "알 수 없는 trigger 명령: '%s'", cmd.c_str());
+    RCLCPP_WARN(node_log(), "알 수 없는 trigger 명령: '%s'", cmd.c_str());
   }
 }
 
@@ -344,7 +354,7 @@ void ShapeEstimationNode::ClearCallback(
   oss << "Point cloud cleared. " << n << " points removed.";
   response->message = oss.str();
 
-  RCLCPP_INFO(get_logger(), "%s", response->message.c_str());
+  RCLCPP_INFO(node_log(), "%s", response->message.c_str());
 }
 
 void ShapeEstimationNode::VizTimerCallback() {
@@ -454,16 +464,16 @@ rclcpp_action::GoalResponse ShapeEstimationNode::HandleGoal(
     const rclcpp_action::GoalUUID& /*uuid*/,
     std::shared_ptr<const ExploreShape::Goal> /*goal*/) {
   if (action_active_) {
-    RCLCPP_WARN(get_logger(), "탐색이 이미 진행 중. 거부.");
+    RCLCPP_WARN(node_log(), "탐색이 이미 진행 중. 거부.");
     return rclcpp_action::GoalResponse::REJECT;
   }
-  RCLCPP_INFO(get_logger(), "ExploreShape 목표 수신");
+  RCLCPP_INFO(node_log(), "ExploreShape 목표 수신");
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 
 rclcpp_action::CancelResponse ShapeEstimationNode::HandleCancel(
     const std::shared_ptr<GoalHandleExploreShape> /*goal_handle*/) {
-  RCLCPP_INFO(get_logger(), "ExploreShape 취소 요청");
+  RCLCPP_INFO(node_log(), "ExploreShape 취소 요청");
   motion_generator_.Abort();
   return rclcpp_action::CancelResponse::ACCEPT;
 }
@@ -529,12 +539,12 @@ void ShapeEstimationNode::StartExploration(
   // 현재 EE 위치에서 시작
   std::array<double, 6> current_pose = latest_gui_position_;
   if (!has_gui_position_) {
-    RCLCPP_WARN(get_logger(), "GuiPosition 미수신. 기본 위치로 시작.");
+    RCLCPP_WARN(node_log(), "GuiPosition 미수신. 기본 위치로 시작.");
     current_pose = {0.4, 0.0, 0.3, 3.14, 0.0, 0.0};
   }
 
   motion_generator_.Start(current_pose, object_position);
-  RCLCPP_INFO(get_logger(), "탐색 시작: 물체=[%.3f, %.3f, %.3f]",
+  RCLCPP_INFO(node_log(), "탐색 시작: 물체=[%.3f, %.3f, %.3f]",
               object_position[0], object_position[1], object_position[2]);
 }
 
@@ -550,7 +560,7 @@ void ShapeEstimationNode::ExploreLoopCallback() {
 
   // E-STOP 검사
   if (estop_active_) {
-    RCLCPP_WARN(get_logger(), "E-STOP 활성 상태에서 탐색 중단");
+    RCLCPP_WARN(node_log(), "E-STOP 활성 상태에서 탐색 중단");
     motion_generator_.Abort();
     SendActionResult(false, "E-STOP triggered");
     StopExploration();
@@ -637,13 +647,13 @@ void ShapeEstimationNode::SendActionResult(
 
   if (success) {
     active_goal_handle_->succeed(result);
-    RCLCPP_INFO(get_logger(), "탐색 성공: %s", message.c_str());
+    RCLCPP_INFO(node_log(), "탐색 성공: %s", message.c_str());
   } else if (active_goal_handle_->is_canceling()) {
     active_goal_handle_->canceled(result);
-    RCLCPP_INFO(get_logger(), "탐색 취소: %s", message.c_str());
+    RCLCPP_INFO(node_log(), "탐색 취소: %s", message.c_str());
   } else {
     active_goal_handle_->abort(result);
-    RCLCPP_ERROR(get_logger(), "탐색 실패: %s", message.c_str());
+    RCLCPP_ERROR(node_log(), "탐색 실패: %s", message.c_str());
   }
 }
 
