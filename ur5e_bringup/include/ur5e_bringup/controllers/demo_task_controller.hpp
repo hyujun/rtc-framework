@@ -1,6 +1,7 @@
 // ── Includes: project header first, then third-party, then C++ stdlib ──────────
 #pragma once
 
+#include "ur5e_bringup/bringup_logging.hpp"
 #include "ur5e_bringup/controllers/virtual_tcp.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 
@@ -276,8 +277,11 @@ private:
   /// Previous grasp phase (for state-transition logging; non-RT critical).
   uint8_t prev_grasp_phase_{0};
 
-  // ── Logging (throttled, debug only — RT-safe by throttle interval) ───────
-  rclcpp::Logger logger_{rclcpp::get_logger("DemoTaskController")};
+  // ── Logging (throttled — RT-safe by throttle interval) ───────────────────
+  // Sub-logger handle cached at construction; bringup_logging.hpp owns the
+  // canonical name ("bringup.demo_task"). All hot-path log calls must use
+  // *_THROTTLE variants with constants from ur5e_bringup::logging.
+  rclcpp::Logger logger_{ur5e_bringup::logging::DemoTaskLogger()};
   rclcpp::Clock  log_clock_{RCL_STEADY_TIME};
 
   // ── E-STOP ────────────────────────────────────────────────────────────────

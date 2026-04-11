@@ -1,5 +1,7 @@
 #include "ur5e_bringup/controllers/demo_shared_config.hpp"
 
+#include "ur5e_bringup/bringup_logging.hpp"
+
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rclcpp/logging.hpp>
 
@@ -80,7 +82,7 @@ void ApplyForcePiBlock(const YAML::Node & fp, DemoSharedConfig & cfg)
         angle_scale = std::numbers::pi_v<double> / 180.0;
       } else if (units_str != "rad" && units_str != "radians") {
         RCLCPP_WARN(
-          rclcpp::get_logger("ur5e_bringup"),
+          ::ur5e_bringup::logging::SharedConfigLogger(),
           "force_pi_grasp.fingers.units: unknown value '%s'; defaulting to radians",
           units_str.c_str());
       }
@@ -142,7 +144,7 @@ void LoadDemoSharedYamlFile(DemoSharedConfig & cfg)
               + kSharedYamlRelPath;
   } catch (const std::exception & e) {
     RCLCPP_WARN(
-      rclcpp::get_logger("ur5e_bringup"),
+      ::ur5e_bringup::logging::SharedConfigLogger(),
       "demo_shared.yaml: package share dir lookup failed (%s); skipping shared defaults",
       e.what());
     return;
@@ -153,7 +155,7 @@ void LoadDemoSharedYamlFile(DemoSharedConfig & cfg)
     ApplyDemoSharedConfig(file_node[kSharedYamlRootKey], cfg);
   } catch (const YAML::Exception & e) {
     RCLCPP_WARN(
-      rclcpp::get_logger("ur5e_bringup"),
+      ::ur5e_bringup::logging::SharedConfigLogger(),
       "demo_shared.yaml: load failed at %s (%s); using built-in defaults",
       yaml_path.c_str(), e.what());
   }

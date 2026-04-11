@@ -11,6 +11,7 @@
 #include <string_view>
 #include <vector>
 
+#include "ur5e_bringup/bringup_logging.hpp"
 #include "ur5e_bringup/controllers/virtual_tcp.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
@@ -206,8 +207,11 @@ private:
   /// Previous grasp phase (for state-transition logging; non-RT critical).
   uint8_t prev_grasp_phase_{0};
 
-  // ── Logging (throttled, debug only — RT-safe by throttle interval) ───────
-  rclcpp::Logger logger_{rclcpp::get_logger("DemoJointController")};
+  // ── Logging (throttled — RT-safe by throttle interval) ───────────────────
+  // Sub-logger handle cached at construction; bringup_logging.hpp owns the
+  // canonical name ("bringup.demo_joint"). All hot-path log calls must use
+  // *_THROTTLE variants with constants from ur5e_bringup::logging.
+  rclcpp::Logger logger_{ur5e_bringup::logging::DemoJointLogger()};
   rclcpp::Clock  log_clock_{RCL_STEADY_TIME};
 
   // ── E-STOP ────────────────────────────────────────────────────────────────

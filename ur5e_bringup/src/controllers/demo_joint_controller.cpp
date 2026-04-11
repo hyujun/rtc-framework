@@ -401,7 +401,7 @@ void DemoJointController::ComputeControl(
     // NOTE: throttled logging on the 500Hz path — the rare allocation
     // inside rclcpp logging macros is acceptable at this interval.
     RCLCPP_INFO_THROTTLE(
-      logger_, log_clock_, 2000,
+      logger_, log_clock_, ::ur5e_bringup::logging::kThrottleSlowMs,
       "[grasp] type=%s active=%d/%d max_force=%.2fN thresh=%.2fN phase=%d",
       grasp_controller_type_.c_str(),
       active_count, num_active_fingertips_,
@@ -421,12 +421,13 @@ void DemoJointController::ComputeControl(
       const auto commands = grasp_controller_->Update(
         std::span<const double, rtc::grasp::kNumGraspFingers>(f_raw), dt);
 
-      // Phase-transition log (non-throttled — transitions are rare events)
+      // Phase-transition log: rare event (gated by phase change), but still
+      // throttled as a defensive RT-safety net in case the FSM oscillates.
       const auto cur_phase = static_cast<uint8_t>(grasp_controller_->phase());
       if (cur_phase != prev_grasp_phase_) {
-        RCLCPP_INFO(
-          logger_,
-          "[grasp:force_pi] phase %u -> %u target_force=%.2fN",
+        RCLCPP_INFO_THROTTLE(
+          logger_, log_clock_, ::ur5e_bringup::logging::kThrottleFastMs,
+          "[force_pi] phase %u -> %u target_force=%.2fN",
           prev_grasp_phase_, cur_phase,
           grasp_controller_->target_force());
         prev_grasp_phase_ = cur_phase;
@@ -472,7 +473,7 @@ void DemoJointController::ComputeControl(
 
         if (release_phase) {
           RCLCPP_INFO_THROTTLE(
-            logger_, log_clock_, 1000,
+            logger_, log_clock_, ::ur5e_bringup::logging::kThrottleFastMs,
             "[contact_stop] SKIP (release) dthumb_fe=%+.3f dindex_fe=%+.3f dmid_fe=%+.3f",
             d_thumb, d_index, d_middle);
         } else if (active_count > 0 && max_force > force_thresh) {
@@ -481,7 +482,7 @@ void DemoJointController::ComputeControl(
             hand_computed_.velocities[i] = 0.0;
           }
           RCLCPP_INFO_THROTTLE(
-            logger_, log_clock_, 1000,
+            logger_, log_clock_, ::ur5e_bringup::logging::kThrottleFastMs,
             "[contact_stop] FREEZE active=%d max_force=%.2fN "
             "thumb_fe(a=%.3f,t=%.3f) index_fe(a=%.3f,t=%.3f) mid_fe(a=%.3f,t=%.3f)",
             active_count, static_cast<double>(max_force),
@@ -786,7 +787,7 @@ void DemoJointController::UpdateGainsFromMsg(std::span<const double> gains) noex
     if (cmd == 1 || cmd == 2) {
       if (!grasp_controller_) {
         RCLCPP_WARN_THROTTLE(
-          logger_, log_clock_, 2000,
+          logger_, log_clock_, ::ur5e_bringup::logging::kThrottleSlowMs,
           "[grasp] %s command ignored: grasp_controller_type='%s' "
           "(require 'force_pi' in YAML to enable Grasp/Release buttons)",
           (cmd == 1) ? "Grasp" : "Release", grasp_controller_type_.c_str());
@@ -794,10 +795,10 @@ void DemoJointController::UpdateGainsFromMsg(std::span<const double> gains) noex
         const double target_force = (gains.size() >= 9) ? gains[8] : 0.0;
         grasp_controller_->CommandGrasp(target_force);
         RCLCPP_INFO(
-          logger_, "[grasp] CommandGrasp target_force=%.2fN", target_force);
+          logger_, "CommandGrasp target_force=%.2fN", target_force);
       } else {
         grasp_controller_->CommandRelease();
-        RCLCPP_INFO(logger_, "[grasp] CommandRelease");
+        RCLCPP_INFO(logger_, "CommandRelease");
       }
     }
   }

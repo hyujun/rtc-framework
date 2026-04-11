@@ -267,6 +267,63 @@ J_vtcp_angular = J_tcp_angular
 
 ---
 
+## 로깅 (Logging)
+
+### 분류 독트린
+
+| 레벨 | 용도 | 예시 |
+|------|------|------|
+| `FATAL` | 프로세스를 계속 실행할 수 없는 상태 | URDF 로드 실패, 컨트롤러 등록 실패 |
+| `ERROR` | 복구 불가능한 실패, 사용자 개입 필요 | 모델 빌드 실패, 필수 디바이스 누락 |
+| `WARN` | 복구 가능한 실패/이상 상태, 자동 재시도 중 | YAML 로드 실패 (built-in defaults 사용), Grasp 명령 무시 |
+| `INFO` | 사용자가 알아야 할 1 Hz 미만 상태 전환 | Force-PI 위상 전이, CommandGrasp/Release 트리거 |
+| `DEBUG` | 개발자 진단용 (기본 꺼짐) | 상세 trajectory 진행률, gain 업데이트 추적 |
+
+**핵심 규칙**:
+
+- 데모 컨트롤러의 `Compute()` 는 500 Hz RT 루프에서 호출된다. 정상 경로의 `INFO`/`WARN` 직접 호출은 **금지** — 반복될 수 있는 메시지는 반드시 `*_THROTTLE` 매크로를 사용한다.
+- THROTTLE 주기는 매직넘버 대신 `bringup_logging.hpp` 의 표준 상수를 사용한다.
+- 메시지 본문에 클래스 이름을 박아넣지 않는다. 서브-로거 이름이 곧 식별자다 (`bringup.demo_joint`).
+- 메시지 본문 내 `[grasp]` / `[contact_stop]` / `[force_pi]` 같은 짧은 태그는 *기능 영역*을 나타내며, 같은 클래스 안의 여러 흐름을 구분하기 위한 용도로 허용된다.
+
+### 서브-로거 네임스페이스
+
+| 서브-로거 | 사용처 |
+|-----------|--------|
+| `bringup.demo_joint` | `DemoJointController` (joint-space 데모 컨트롤러, 500 Hz 핫패스) |
+| `bringup.demo_task` | `DemoTaskController` (task-space 데모 컨트롤러, 500 Hz 핫패스) |
+| `bringup.config` | `demo_shared_config` YAML 로더 (init-time, non-RT) |
+
+### THROTTLE 주기 표준
+
+`ur5e_bringup::logging` 네임스페이스에 정의된 상수만 사용한다 (`bringup_logging.hpp`):
+
+| 상수 | 값 [ms] | 용도 |
+|------|---------|------|
+| `kThrottleFastMs` | 1000 | contact_stop FREEZE/SKIP, force_pi 위상 전이 등 빠른 진행 표시 |
+| `kThrottleSlowMs` | 2000 | grasp 상태 스냅샷, 일반 반복 경고 |
+| `kThrottleIdleMs` | 10000 | 장기 유휴 / one-shot 전이 안전 그물 |
+
+### 실시간 필터링 예시
+
+```bash
+# Force-PI 위상 전이만 DEBUG 활성화
+ros2 service call /rt_controller/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
+  "{levels: [{name: 'bringup.demo_joint', level: 10}]}"
+
+# 양쪽 데모 컨트롤러 동시에 끄기
+ros2 service call /rt_controller/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
+  "{levels: [{name: 'bringup.demo_joint', level: 50}, {name: 'bringup.demo_task', level: 50}]}"
+```
+
+콘솔 출력에 로거 이름을 표시하려면:
+
+```bash
+export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
+```
+
+---
+
 ## Launch 파일
 
 ### robot.launch.py -- 실제 로봇
