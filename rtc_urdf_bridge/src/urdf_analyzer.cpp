@@ -1,5 +1,6 @@
 // ── UrdfAnalyzer 구현 ────────────────────────────────────────────────────────
 #include "rtc_urdf_bridge/urdf_analyzer.hpp"
+#include "rtc_urdf_bridge/urdf_logging.hpp"
 #include "rtc_urdf_bridge/xacro_processor.hpp"
 
 #include <tinyxml2.h>
@@ -14,10 +15,16 @@
 namespace rtc_urdf_bridge
 {
 
+namespace
+{
+auto logger() {return ::rtc::urdf::logging::AnalyzerLogger();}
+}  // namespace
+
 // ── 생성자 (파일 경로) ───────────────────────────────────────────────────────
 UrdfAnalyzer::UrdfAnalyzer(std::string_view urdf_file_path)
 : urdf_file_path_(urdf_file_path)
 {
+  RCLCPP_DEBUG(logger(), "UrdfAnalyzer 로드: %s", urdf_file_path_.c_str());
   if (IsXacroFile(urdf_file_path_)) {
     // xacro 전처리 → URDF XML 문자열
     urdf_xml_string_ = ProcessXacro(urdf_file_path_);
@@ -25,6 +32,8 @@ UrdfAnalyzer::UrdfAnalyzer(std::string_view urdf_file_path)
     // 일반 URDF 파일 읽기
     std::ifstream ifs(urdf_file_path_);
     if (!ifs.is_open()) {
+      RCLCPP_ERROR(logger(),
+                   "URDF 파일을 열 수 없습니다: %s", urdf_file_path_.c_str());
       throw std::runtime_error(
         "UrdfAnalyzer: URDF 파일을 열 수 없습니다: " + urdf_file_path_);
     }
@@ -48,12 +57,14 @@ void UrdfAnalyzer::ParseUrdfXml(const std::string & xml)
 {
   tinyxml2::XMLDocument doc;
   if (doc.Parse(xml.c_str()) != tinyxml2::XML_SUCCESS) {
+    RCLCPP_ERROR(logger(), "XML 파싱 실패 — %s", doc.ErrorStr());
     throw std::runtime_error(
       "UrdfAnalyzer: XML 파싱 실패 — " + std::string(doc.ErrorStr()));
   }
 
   auto * robot = doc.FirstChildElement("robot");
   if (!robot) {
+    RCLCPP_ERROR(logger(), "<robot> 루트 요소가 없습니다");
     throw std::runtime_error("UrdfAnalyzer: <robot> 루트 요소가 없습니다");
   }
 
@@ -162,6 +173,17 @@ void UrdfAnalyzer::ParseUrdfXml(const std::string & xml)
   ClassifyJoints();
   DetectPassiveJoints();
   ComputeDepths();
+
+  RCLCPP_INFO(logger(),
+              "URDF 파싱 완료: links=%zu, joints=%zu, "
+              "actuated=%zu, fixed=%zu, passive=%zu, mimic=%zu, root='%s'",
+              link_nodes_.size(),
+              joint_meta_map_.size(),
+              actuated_joint_names_.size(),
+              fixed_joint_names_.size(),
+              passive_joints_.size(),
+              mimic_joints_.size(),
+              root_index_ >= 0 ? GetRootLinkName().c_str() : "(없음)");
 }
 
 // ── 인접 그래프 구축 ────────────────────────────────────────────────────────
@@ -281,6 +303,9 @@ int UrdfAnalyzer::GetLinkIndex(std::string_view link_name) const
 {
   auto it = link_name_to_index_.find(std::string(link_name));
   if (it == link_name_to_index_.end()) {
+    RCLCPP_ERROR(logger(),
+                 "링크를 찾을 수 없습니다: %s",
+                 std::string(link_name).c_str());
     throw std::out_of_range(
       "UrdfAnalyzer: 링크를 찾을 수 없습니다: " + std::string(link_name));
   }
@@ -332,6 +357,9 @@ UrdfJointType UrdfAnalyzer::GetJointType(std::string_view joint_name) const
 {
   auto it = joint_meta_map_.find(std::string(joint_name));
   if (it == joint_meta_map_.end()) {
+    RCLCPP_ERROR(logger(),
+                 "관절을 찾을 수 없습니다: %s",
+                 std::string(joint_name).c_str());
     throw std::out_of_range(
       "UrdfAnalyzer: 관절을 찾을 수 없습니다: " + std::string(joint_name));
   }
@@ -342,6 +370,9 @@ const JointMeta & UrdfAnalyzer::GetJointMeta(std::string_view joint_name) const
 {
   auto it = joint_meta_map_.find(std::string(joint_name));
   if (it == joint_meta_map_.end()) {
+    RCLCPP_ERROR(logger(),
+                 "관절을 찾을 수 없습니다: %s",
+                 std::string(joint_name).c_str());
     throw std::out_of_range(
       "UrdfAnalyzer: 관절을 찾을 수 없습니다: " + std::string(joint_name));
   }

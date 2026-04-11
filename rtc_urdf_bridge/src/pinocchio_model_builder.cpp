@@ -1,5 +1,6 @@
 // ── PinocchioModelBuilder 구현 ───────────────────────────────────────────────
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
+#include "rtc_urdf_bridge/urdf_logging.hpp"
 #include "rtc_urdf_bridge/xacro_processor.hpp"
 
 // Pinocchio 헤더 (경고 억제)
@@ -25,6 +26,11 @@
 
 namespace rtc_urdf_bridge
 {
+
+namespace
+{
+auto logger() {return ::rtc::urdf::logging::BuilderLogger();}
+}  // namespace
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 생성자
@@ -60,6 +66,7 @@ void PinocchioModelBuilder::Build()
   } else if (!config_.urdf_path.empty()) {
     analyzer_ = std::make_unique<UrdfAnalyzer>(config_.urdf_path);
   } else {
+    RCLCPP_ERROR(logger(), "urdf_path 또는 urdf_xml_string 필요");
     throw std::runtime_error("PinocchioModelBuilder: urdf_path 또는 urdf_xml_string 필요");
   }
 
@@ -79,6 +86,9 @@ void PinocchioModelBuilder::Build()
 void PinocchioModelBuilder::BuildFullModel()
 {
   full_model_ = std::make_shared<pinocchio::Model>();
+  RCLCPP_DEBUG(logger(),
+               "Pinocchio full 모델 구축 시작 (root_joint_type=%s)",
+               config_.root_joint_type.c_str());
 
   // XML 문자열 우선 (xacro 전처리 결과 포함)
   const bool use_xml = !config_.urdf_xml_string.empty();
@@ -100,6 +110,11 @@ void PinocchioModelBuilder::BuildFullModel()
       pinocchio::urdf::buildModel(config_.urdf_path, *full_model_);
     }
   }
+
+  RCLCPP_INFO(logger(),
+              "Full 모델 구축 완료: nq=%d, nv=%d, njoints=%d, nframes=%d",
+              full_model_->nq, full_model_->nv,
+              full_model_->njoints, full_model_->nframes);
 }
 
 // ── mimic 관절을 passive 목록에 추가 ────────────────────────────────────────
@@ -148,6 +163,16 @@ void PinocchioModelBuilder::BuildReducedModels()
     auto reduced = std::make_shared<pinocchio::Model>();
     pinocchio::buildReducedModel(*full_model_, joints_to_lock, ref_config, *reduced);
 
+    RCLCPP_INFO(logger(),
+                "서브모델 등록: '%s' (root='%s', tip='%s', nq=%d, nv=%d, "
+                "actuated=%zu, locked=%zu)",
+                sub_cfg.name.c_str(),
+                sub_cfg.root_link.c_str(),
+                sub_cfg.tip_link.c_str(),
+                reduced->nq, reduced->nv,
+                def.joint_names.size(),
+                joints_to_lock.size());
+
     reduced_models_[sub_cfg.name] = std::move(reduced);
     sub_model_defs_[sub_cfg.name] = std::move(def);
   }
@@ -181,6 +206,17 @@ void PinocchioModelBuilder::BuildTreeModels()
     auto tree_model = std::make_shared<pinocchio::Model>();
     pinocchio::buildReducedModel(*full_model_, joints_to_lock, ref_config, *tree_model);
 
+    RCLCPP_INFO(logger(),
+                "트리모델 등록: '%s' (root='%s', tips=%zu, nq=%d, nv=%d, "
+                "actuated=%zu, branching=%zu, locked=%zu)",
+                tree_cfg.name.c_str(),
+                tree_cfg.root_link.c_str(),
+                tree_cfg.tip_links.size(),
+                tree_model->nq, tree_model->nv,
+                def.joint_names.size(),
+                def.branching_points.size(),
+                joints_to_lock.size());
+
     tree_models_[tree_cfg.name] = std::move(tree_model);
     tree_model_defs_[tree_cfg.name] = std::move(def);
   }
@@ -203,6 +239,9 @@ void PinocchioModelBuilder::RegisterClosedChainConstraints()
     }
 
     if (!found_a || !found_b) {
+      RCLCPP_ERROR(logger(),
+                   "폐쇄 체인 링크를 찾을 수 없습니다: %s / %s",
+                   cc.link_a.c_str(), cc.link_b.c_str());
       throw std::runtime_error(
         "PinocchioModelBuilder: 폐쇄 체인 링크를 찾을 수 없습니다: " +
         cc.link_a + " / " + cc.link_b);
@@ -233,6 +272,15 @@ void PinocchioModelBuilder::RegisterClosedChainConstraints()
     // Baumgarte 안정화 파라미터
     constraint.corrector.Kp.setConstant(cc.baumgarte_kp);
     constraint.corrector.Kd.setConstant(cc.baumgarte_kd);
+
+    RCLCPP_INFO(logger(),
+                "폐쇄 체인 등록: '%s' (link_a='%s', link_b='%s', %s, "
+                "Kp=%.1f, Kd=%.1f)",
+                cc.name.c_str(),
+                cc.link_a.c_str(),
+                cc.link_b.c_str(),
+                cc.is_6d ? "6D" : "3D",
+                cc.baumgarte_kp, cc.baumgarte_kd);
 
     constraint_models_.push_back(std::move(constraint));
   }
@@ -290,6 +338,9 @@ std::shared_ptr<const pinocchio::Model> PinocchioModelBuilder::GetReducedModel(
 {
   auto it = reduced_models_.find(std::string(sub_model_name));
   if (it == reduced_models_.end()) {
+    RCLCPP_ERROR(logger(),
+                 "서브모델을 찾을 수 없습니다: %s",
+                 std::string(sub_model_name).c_str());
     throw std::out_of_range(
       "PinocchioModelBuilder: 서브모델을 찾을 수 없습니다: " +
       std::string(sub_model_name));
@@ -302,6 +353,9 @@ std::shared_ptr<const pinocchio::Model> PinocchioModelBuilder::GetTreeModel(
 {
   auto it = tree_models_.find(std::string(tree_model_name));
   if (it == tree_models_.end()) {
+    RCLCPP_ERROR(logger(),
+                 "트리모델을 찾을 수 없습니다: %s",
+                 std::string(tree_model_name).c_str());
     throw std::out_of_range(
       "PinocchioModelBuilder: 트리모델을 찾을 수 없습니다: " +
       std::string(tree_model_name));
@@ -340,6 +394,9 @@ const SubModelDefinition & PinocchioModelBuilder::GetSubModelDefinition(
 {
   auto it = sub_model_defs_.find(std::string(name));
   if (it == sub_model_defs_.end()) {
+    RCLCPP_ERROR(logger(),
+                 "서브모델 정의를 찾을 수 없습니다: %s",
+                 std::string(name).c_str());
     throw std::out_of_range(
       "PinocchioModelBuilder: 서브모델 정의를 찾을 수 없습니다: " + std::string(name));
   }
@@ -351,6 +408,9 @@ const TreeModelDefinition & PinocchioModelBuilder::GetTreeModelDefinition(
 {
   auto it = tree_model_defs_.find(std::string(name));
   if (it == tree_model_defs_.end()) {
+    RCLCPP_ERROR(logger(),
+                 "트리모델 정의를 찾을 수 없습니다: %s",
+                 std::string(name).c_str());
     throw std::out_of_range(
       "PinocchioModelBuilder: 트리모델 정의를 찾을 수 없습니다: " + std::string(name));
   }
@@ -378,6 +438,9 @@ const ModelConfig & PinocchioModelBuilder::GetConfig() const noexcept
 
 ModelConfig PinocchioModelBuilder::LoadModelConfig(std::string_view yaml_path)
 {
+  RCLCPP_DEBUG(logger(),
+               "ModelConfig 로드: %s",
+               std::string(yaml_path).c_str());
   YAML::Node root = YAML::LoadFile(std::string(yaml_path));
   ModelConfig cfg;
 

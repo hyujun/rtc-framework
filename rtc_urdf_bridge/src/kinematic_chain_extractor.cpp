@@ -1,5 +1,6 @@
 // ── KinematicChainExtractor 구현 ─────────────────────────────────────────────
 #include "rtc_urdf_bridge/kinematic_chain_extractor.hpp"
+#include "rtc_urdf_bridge/urdf_logging.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -7,6 +8,11 @@
 
 namespace rtc_urdf_bridge
 {
+
+namespace
+{
+auto logger() {return ::rtc::urdf::logging::ChainLogger();}
+}  // namespace
 
 KinematicChainExtractor::KinematicChainExtractor(const UrdfAnalyzer & analyzer)
 : analyzer_(analyzer)
@@ -25,6 +31,10 @@ SubModelDefinition KinematicChainExtractor::ExtractSubModel(
 
   auto link_path = analyzer_.FindPath(root_link, tip_link);
   if (link_path.empty()) {
+    RCLCPP_ERROR(logger(),
+                 "%s → %s 경로를 찾을 수 없습니다",
+                 std::string(root_link).c_str(),
+                 std::string(tip_link).c_str());
     throw std::runtime_error(
       "KinematicChainExtractor: " + std::string(root_link) +
       " → " + std::string(tip_link) + " 경로를 찾을 수 없습니다");
@@ -36,6 +46,12 @@ SubModelDefinition KinematicChainExtractor::ExtractSubModel(
   def.tip_link = tip_link;
 
   CollectJointsOnPath(link_path, def.joint_names, def.all_joint_names, def.link_names);
+  RCLCPP_DEBUG(logger(),
+               "ExtractSubModel '%s': links=%zu, actuated=%zu, all=%zu",
+               std::string(name).c_str(),
+               def.link_names.size(),
+               def.joint_names.size(),
+               def.all_joint_names.size());
   return def;
 }
 
@@ -59,6 +75,10 @@ TreeModelDefinition KinematicChainExtractor::ExtractTreeModel(
   for (const auto & tip : tip_links) {
     auto path = analyzer_.FindPath(root_link, tip);
     if (path.empty()) {
+      RCLCPP_ERROR(logger(),
+                   "%s → %s 경로를 찾을 수 없습니다",
+                   std::string(root_link).c_str(),
+                   tip.c_str());
       throw std::runtime_error(
         "KinematicChainExtractor: " + std::string(root_link) +
         " → " + tip + " 경로를 찾을 수 없습니다");
@@ -94,6 +114,15 @@ TreeModelDefinition KinematicChainExtractor::ExtractTreeModel(
     }
   }
 
+  RCLCPP_DEBUG(logger(),
+               "ExtractTreeModel '%s': tips=%zu, links=%zu, actuated=%zu, "
+               "all=%zu, branching=%zu",
+               std::string(name).c_str(),
+               tip_links.size(),
+               def.link_names.size(),
+               def.joint_names.size(),
+               def.all_joint_names.size(),
+               def.branching_points.size());
   return def;
 }
 

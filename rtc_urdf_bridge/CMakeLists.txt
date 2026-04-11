@@ -18,6 +18,7 @@ endif()
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
 find_package(pinocchio REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
@@ -40,7 +41,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-ament_target_dependencies(${PROJECT_NAME} pinocchio)
+ament_target_dependencies(${PROJECT_NAME} rclcpp pinocchio)
 target_link_libraries(${PROJECT_NAME}
   Eigen3::Eigen
   yaml-cpp
@@ -87,7 +88,7 @@ install(
 
 # ── Export ────────────────────────────────────────────────────────────────────
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(pinocchio Eigen3 yaml-cpp tinyxml2)
+ament_export_dependencies(rclcpp pinocchio Eigen3 yaml-cpp tinyxml2)
 ament_export_include_directories(include)
 
 # ── Tests ────────────────────────────────────────────────────────────────────

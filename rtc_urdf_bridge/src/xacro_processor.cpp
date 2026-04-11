@@ -1,5 +1,6 @@
 // ── Xacro 전처리 유틸리티 구현 ───────────────────────────────────────────────
 #include "rtc_urdf_bridge/xacro_processor.hpp"
+#include "rtc_urdf_bridge/urdf_logging.hpp"
 
 #include <array>
 #include <cstdio>
@@ -9,6 +10,11 @@
 
 namespace rtc_urdf_bridge
 {
+
+namespace
+{
+auto logger() {return ::rtc::urdf::logging::XacroLogger();}
+}  // namespace
 
 bool IsXacroFile(std::string_view file_path) noexcept
 {
@@ -21,6 +27,7 @@ std::string ProcessXacro(
 {
   // 파일 존재 확인
   if (!std::filesystem::exists(file_path)) {
+    RCLCPP_ERROR(logger(), "파일이 존재하지 않습니다: %s", file_path.c_str());
     throw std::runtime_error(
       "ProcessXacro: 파일이 존재하지 않습니다: " + file_path);
   }
@@ -32,6 +39,8 @@ std::string ProcessXacro(
   }
   cmd += " 2>&1";
 
+  RCLCPP_DEBUG(logger(), "xacro 실행: %s", cmd.c_str());
+
   // popen으로 실행
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wignored-attributes"
@@ -40,6 +49,7 @@ std::string ProcessXacro(
 #pragma GCC diagnostic pop
 
   if (!pipe) {
+    RCLCPP_ERROR(logger(), "popen 실행 실패 — 명령: %s", cmd.c_str());
     throw std::runtime_error(
       "ProcessXacro: popen 실행 실패 — 명령: " + cmd);
   }
@@ -59,20 +69,30 @@ std::string ProcessXacro(
   if (exit_code != 0) {
     // exit code 127: 명령 미발견
     if (exit_code == 127) {
+      RCLCPP_ERROR(logger(),
+                   "'xacro' 명령을 찾을 수 없습니다. "
+                   "ros-${ROS_DISTRO}-xacro 패키지가 설치되어 있는지 확인하세요.");
       throw std::runtime_error(
         "ProcessXacro: 'xacro' 명령을 찾을 수 없습니다. "
         "ros-${ROS_DISTRO}-xacro 패키지가 설치되어 있는지 확인하세요.");
     }
+    RCLCPP_ERROR(logger(),
+                 "xacro 실행 실패 (exit code %d)\n%s",
+                 exit_code, output.c_str());
     throw std::runtime_error(
       "ProcessXacro: xacro 실행 실패 (exit code " +
       std::to_string(exit_code) + ")\n" + output);
   }
 
   if (output.empty()) {
+    RCLCPP_ERROR(logger(), "xacro 출력이 비어 있습니다: %s", file_path.c_str());
     throw std::runtime_error(
       "ProcessXacro: xacro 출력이 비어 있습니다: " + file_path);
   }
 
+  RCLCPP_DEBUG(logger(),
+               "xacro 전처리 완료: %s (%zu bytes)",
+               file_path.c_str(), output.size());
   return output;
 }
 

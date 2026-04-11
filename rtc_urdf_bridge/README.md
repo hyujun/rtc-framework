@@ -363,6 +363,58 @@ ros2 run rtc_urdf_bridge example_tree_model config/hand_tree_config.yaml
 ros2 run rtc_urdf_bridge example_rt_integration config/serial_arm_config.yaml
 ```
 
+## Logging
+
+`rtc_urdf_bridge`는 init-time 진단을 위한 계층적 sub-logger를 제공합니다. 모든 로그는 라이브러리 사용자의 ROS2 노드 로깅 파이프라인을 통해 발사되며, RT-safe `RtModelHandle` 메서드(noexcept hot path)는 절대 로깅하지 않습니다.
+
+### Sub-logger 네임스페이스
+
+| Sub-logger | 모듈 | 용도 |
+|---|---|---|
+| `urdf.analyzer` | `UrdfAnalyzer` | URDF/xacro 파싱, 그래프 구축, 관절 분류 |
+| `urdf.builder` | `PinocchioModelBuilder` | full/sub/tree 모델 빌드, YAML 로드, 폐쇄 체인 |
+| `urdf.chain` | `KinematicChainExtractor` | 체인/트리 추출, 잠금 관절 계산 |
+| `urdf.xacro` | `ProcessXacro` | popen 기반 xacro 전처리 |
+| `urdf.handle` | `RtModelHandle` | 생성/해제 단계만 (RT 경로 외) |
+
+### 로깅 doctrine
+
+| Severity | 사용처 |
+|---|---|
+| `INFO` | 1회성 모델 빌드 요약: full/sub/tree 모델 등록, 폐쇄 체인 등록, URDF 파싱 결과 (관절/링크 카운트) |
+| `DEBUG` | xacro 명령 라인, 파일 로드 trace, 체인/트리 추출 디테일, YAML 로드 시작 |
+| `ERROR` | 모든 `throw` 직전 발사 — 예외가 uncaught여도 사용자 노드 로그에 남음 |
+| `WARN` | (현재 없음) 향후 silent skip 지점이 발견되면 사용 |
+| `FATAL` | (사용 안 함) — 라이브러리 코드는 예외로 종료 신호 전달 |
+
+핵심 원칙:
+- **Hot path 무로그**: `RtModelHandle::Compute*` 계열은 `noexcept`이며 로그 호출 금지.
+- **Init-only**: 모든 instrumentation은 생성자/빌드 파이프라인 1회성. throttle 불필요.
+- **Throw + ERROR 쌍**: 예외 메시지를 로그로도 발사해 uncaught 시 가시성을 보장.
+
+### 런타임 필터링
+
+라이브러리 사용 노드에 sub-logger 레벨을 변경하면 됩니다 (노드명은 라이브러리를 로드한 ROS2 노드 이름):
+
+```bash
+# 모든 urdf.* sub-logger를 DEBUG로
+ros2 service call /<node>/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
+  "{levels: [{name: 'urdf.analyzer', level: 10},
+              {name: 'urdf.builder',  level: 10},
+              {name: 'urdf.chain',    level: 10},
+              {name: 'urdf.xacro',    level: 10}]}"
+
+# xacro 전처리 트레이스만
+ros2 service call /<node>/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
+  "{levels: [{name: 'urdf.xacro', level: 10}]}"
+```
+
+콘솔에서 sub-logger 이름이 보이도록 환경 변수를 설정하면 디버깅이 편합니다:
+
+```bash
+export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
+```
+
 ## License
 
 MIT
