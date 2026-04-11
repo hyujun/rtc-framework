@@ -77,9 +77,6 @@ private:
   /// Adaptive PI computation for one finger, returns ds.
   [[nodiscard]] double ComputeAdaptivePI(int finger, double dt) noexcept;
 
-  /// Count fingers with contact_detected == true.
-  [[nodiscard]] int CountContactFingers() const noexcept;
-
   /// Reset all per-finger state.
   void ResetFingers() noexcept;
 

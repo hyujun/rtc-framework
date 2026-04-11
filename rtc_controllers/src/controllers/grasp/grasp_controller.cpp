@@ -142,22 +142,21 @@ void GraspController::UpdateApproaching(double dt) noexcept
     // 접촉한 finger는 s 고정 (대기)
   }
 
-  // 모든 finger 접촉 시 Contact 전이
-  if (CountContactFingers() >= kNumGraspFingers) {
+  // Contact 전이: thumb(0) + index(1) 두 손가락만 접촉하면 충분.
+  // middle(2) 은 접촉 여부와 무관하게 grasp 진행을 막지 않는다.
+  if (fingers_[0].contact_detected && fingers_[1].contact_detected) {
     contact_settle_timer_ = 0.0;
     phase_ = GraspPhase::kContact;
+    return;
   }
 
-  // Grasp 실패: 어떤 finger가 s=1.0에 도달했는데 아직 전체 접촉 안됨
-  bool any_maxed = false;
-  for (int f = 0; f < kNumGraspFingers; ++f) {
+  // Grasp 실패: thumb 또는 index 가 s=1.0 까지 닫혔는데도 접촉 못 함
+  for (int f = 0; f < 2; ++f) {
     const auto& fs = fingers_[static_cast<std::size_t>(f)];
     if (!fs.contact_detected && fs.s >= 1.0) {
-      any_maxed = true;
+      phase_ = GraspPhase::kIdle;
+      return;
     }
-  }
-  if (any_maxed) {
-    phase_ = GraspPhase::kIdle;
   }
 }
 
@@ -348,17 +347,6 @@ void GraspController::ApplyDeformationGuard(int finger, double& ds) noexcept
   }
   // else: 여유 있음 — deformation guard에서는 integrator 해제하지 않음
   // (integrator_frozen은 PI 로직에서 별도로 관리)
-}
-
-int GraspController::CountContactFingers() const noexcept
-{
-  int count = 0;
-  for (int f = 0; f < kNumGraspFingers; ++f) {
-    if (fingers_[static_cast<std::size_t>(f)].contact_detected) {
-      ++count;
-    }
-  }
-  return count;
 }
 
 void GraspController::ResetFingers() noexcept

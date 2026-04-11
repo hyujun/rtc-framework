@@ -186,6 +186,65 @@ TEST_F(GraspControllerTest, GraspFailsWhenNoContact)
   EXPECT_EQ(controller_.phase(), GraspPhase::kIdle);
 }
 
+// Approaching → Contact 전이는 thumb(0) + index(1) 기준만 본다.
+// middle(2) 가 영영 접촉하지 못해도 grasp 는 진행되어야 한다.
+TEST_F(GraspControllerTest, ApproachingTransitionsWithoutMiddleContact)
+{
+  controller_.CommandGrasp();
+
+  // thumb/index 는 contact_s_=0.3 에서 접촉, middle 은 영영 접촉 안 함.
+  for (int i = 0; i < 50000; ++i) {
+    std::array<double, kNumGraspFingers> forces{};
+    const auto& states = controller_.finger_states();
+    for (int f = 0; f < 2; ++f) {  // thumb, index 만 force 생성
+      const auto idx = static_cast<std::size_t>(f);
+      const double ds_dt = (states[idx].s - states[idx].s_prev) / kDt;
+      forces[idx] = SimulateContactForce(states[idx].s, contact_s_, ds_dt);
+    }
+    forces[2] = 0.0;  // middle: 항상 0
+    (void)controller_.Update(std::span<const double, 3>(forces), kDt);
+
+    if (controller_.phase() == GraspPhase::kContact ||
+        controller_.phase() == GraspPhase::kForceControl ||
+        controller_.phase() == GraspPhase::kHolding) {
+      break;
+    }
+  }
+
+  EXPECT_NE(controller_.phase(), GraspPhase::kIdle);
+  EXPECT_NE(controller_.phase(), GraspPhase::kApproaching);
+
+  EXPECT_TRUE(controller_.finger_states()[0].contact_detected);
+  EXPECT_TRUE(controller_.finger_states()[1].contact_detected);
+  EXPECT_FALSE(controller_.finger_states()[2].contact_detected);
+}
+
+// thumb 또는 index 가 s=1.0 까지 닫혀도 접촉 못 하면 grasp 실패.
+// (middle 의 s=1.0 도달은 더 이상 실패 트리거가 아니다.)
+TEST_F(GraspControllerTest, GraspFailsWhenThumbCannotContact)
+{
+  controller_.CommandGrasp();
+
+  // thumb 만 unreachable, index/middle 은 정상 접촉 가능.
+  for (int i = 0; i < 50000; ++i) {
+    std::array<double, kNumGraspFingers> forces{};
+    const auto& states = controller_.finger_states();
+    // thumb (0): 항상 0 (unreachable object)
+    forces[0] = 0.0;
+    // index (1), middle (2): 정상 접촉
+    for (int f = 1; f < kNumGraspFingers; ++f) {
+      const auto idx = static_cast<std::size_t>(f);
+      const double ds_dt = (states[idx].s - states[idx].s_prev) / kDt;
+      forces[idx] = SimulateContactForce(states[idx].s, contact_s_, ds_dt);
+    }
+    (void)controller_.Update(std::span<const double, 3>(forces), kDt);
+
+    if (controller_.phase() == GraspPhase::kIdle && i > 10) break;
+  }
+
+  EXPECT_EQ(controller_.phase(), GraspPhase::kIdle);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 2. Force Control Tests
 // ═══════════════════════════════════════════════════════════════════════════════
