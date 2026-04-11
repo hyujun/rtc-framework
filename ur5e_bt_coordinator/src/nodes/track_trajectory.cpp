@@ -46,8 +46,14 @@ BT::NodeStatus TrackTrajectory::onStart()
 BT::NodeStatus TrackTrajectory::onRunning()
 {
   if (ElapsedSeconds(start_time_) > timeout_s_) {
-    RCLCPP_WARN(logger(), "[TrackTrajectory] timeout (%.1fs) at waypoint %zu/%zu",
-                timeout_s_, current_idx_, waypoints_.size());
+    auto cur = bridge_->GetTcpPose();
+    double err = current_idx_ < waypoints_.size()
+        ? cur.PositionDistanceTo(waypoints_[current_idx_])
+        : -1.0;
+    RCLCPP_WARN(logger(),
+                "[TrackTrajectory] FAILURE: timeout (%.1fs) at waypoint "
+                "%zu/%zu (last_err=%.4f tol=%.4f)",
+                timeout_s_, current_idx_, waypoints_.size(), err, pos_tol_);
     return BT::NodeStatus::FAILURE;
   }
 

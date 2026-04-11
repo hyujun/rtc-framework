@@ -93,8 +93,12 @@ BT::NodeStatus SwitchController::onRunning()
     }
 
     if (ElapsedSeconds(start_time_) > timeout_s_) {
-      RCLCPP_ERROR(logger(), "[SwitchController] timeout switching to %s (%.1fs)",
-                   target_name_.c_str(), timeout_s_);
+      RCLCPP_ERROR(logger(),
+                   "[SwitchController] FAILURE: timeout switching to '%s' "
+                   "after %.1fs (active='%s'). Check that the RT controller "
+                   "manager is running and the target controller is registered.",
+                   target_name_.c_str(), timeout_s_,
+                   bridge_->GetActiveController().c_str());
       return BT::NodeStatus::FAILURE;
     }
     return BT::NodeStatus::RUNNING;

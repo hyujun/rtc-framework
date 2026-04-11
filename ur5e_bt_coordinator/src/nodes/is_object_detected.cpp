@@ -37,7 +37,11 @@ BT::NodeStatus IsObjectDetected::tick()
     setOutput("pose", pose);
     return BT::NodeStatus::SUCCESS;
   }
-  RCLCPP_DEBUG(logger(), "[IsObjectDetected] no object detected");
+  static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
+  RCLCPP_WARN_THROTTLE(
+    logger(), steady_clock, 2000,
+    "[IsObjectDetected] FAILURE: no valid pose on /world_target_info "
+    "(either no message received, or all points are zero)");
   return BT::NodeStatus::FAILURE;
 }
 

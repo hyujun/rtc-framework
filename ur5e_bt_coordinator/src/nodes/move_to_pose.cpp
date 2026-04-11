@@ -63,8 +63,12 @@ BT::NodeStatus MoveToPose::onRunning()
   double elapsed = ElapsedSeconds(start_time_);
   if (elapsed > timeout_s_) {
     RCLCPP_WARN(logger(),
-                "[MoveToPose] timeout (%.1fs) pos_err=%.4f rot_err=%.4f",
-                timeout_s_, pos_err, rot_err);
+                "[MoveToPose] FAILURE: timeout (%.1fs) "
+                "pos_err=%.4f/%.4f rot_err=%.4f/%.4f "
+                "target=[%.3f,%.3f,%.3f] current=[%.3f,%.3f,%.3f]",
+                timeout_s_, pos_err, pos_tol_, rot_err, rot_tol_,
+                target_.x, target_.y, target_.z,
+                current.x, current.y, current.z);
     return BT::NodeStatus::FAILURE;
   }
 
