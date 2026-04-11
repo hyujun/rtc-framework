@@ -722,10 +722,21 @@ class HandUdpNode : public rclcpp::Node {
     // 타이밍 요약 로그 출력
     RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(), "%s", controller_->TimingSummary().c_str());
 
+    // Enriched one-line summary: include elapsed time and ok/timeout/error as
+    // percentages so that post-mortem analysis of a failed session can read
+    // the outcome from a single grep hit without reopening the JSON.
+    const double total = static_cast<double>(stats.total_cycles > 0 ? stats.total_cycles : 1);
+    const double ok_pct      = 100.0 * static_cast<double>(stats.recv_ok)      / total;
+    const double timeout_pct = 100.0 * static_cast<double>(stats.recv_timeout) / total;
+    const double error_pct   = 100.0 * static_cast<double>(stats.recv_error)   / total;
     RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(),
-                "Hand stats saved to %s (cycles=%lu, ok=%lu, timeout=%lu, error=%lu, rate=%.1f Hz)",
-                path.c_str(), stats.total_cycles, stats.recv_ok,
-                stats.recv_timeout, stats.recv_error, avg_rate_hz);
+                "Hand stats saved: %s | %lu cycles in %.1fs "
+                "(avg=%.1fHz ok=%.1f%% timeout=%.1f%% err=%.1f%% fd_failed=%d)",
+                path.c_str(),
+                static_cast<unsigned long>(stats.total_cycles),
+                elapsed_sec, avg_rate_hz,
+                ok_pct, timeout_pct, error_pct,
+                fd_failed ? 1 : 0);
   }
 
   std::unique_ptr<urtc::HandController>      controller_;

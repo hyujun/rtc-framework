@@ -158,7 +158,29 @@ void LoadDemoSharedYamlFile(DemoSharedConfig & cfg)
       ::ur5e_bringup::logging::SharedConfigLogger(),
       "demo_shared.yaml: load failed at %s (%s); using built-in defaults",
       yaml_path.c_str(), e.what());
+    return;
   }
+
+  // Success path: record which knobs actually took effect. This is the
+  // single line to grep when the operator suspects a controller is picking
+  // up stale or unexpected shared defaults.
+  const char * vtcp_mode_str = "disabled";
+  switch (cfg.vtcp.mode) {
+    case VirtualTcpMode::kCentroid: vtcp_mode_str = "centroid"; break;
+    case VirtualTcpMode::kWeighted: vtcp_mode_str = "weighted"; break;
+    case VirtualTcpMode::kConstant: vtcp_mode_str = "constant"; break;
+    case VirtualTcpMode::kDisabled: vtcp_mode_str = "disabled"; break;
+  }
+  RCLCPP_INFO(
+    ::ur5e_bringup::logging::SharedConfigLogger(),
+    "demo_shared.yaml loaded: vtcp=%s grasp_type=%s force_pi_block=%s "
+    "contact_thresh=%.2fN force_thresh=%.2fN min_fingers=%d",
+    vtcp_mode_str,
+    cfg.grasp_controller_type.c_str(),
+    cfg.has_force_pi_block ? "yes" : "no",
+    static_cast<double>(cfg.grasp_contact_threshold),
+    static_cast<double>(cfg.grasp_force_threshold),
+    cfg.grasp_min_fingertips);
 }
 
 void BuildGraspController(

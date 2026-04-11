@@ -141,28 +141,30 @@ class HandController {
   // ── Lifecycle ──────────────────────────────────────────────────────────
 
   [[nodiscard]] bool Start() {
-    // F/T inferencer initialization
+    // F/T inferencer initialization. Non-RT init path — verbose diagnostics
+    // here are intentional: when FT inference misbehaves at runtime, this
+    // dump is the first thing the operator inspects.
     RCLCPP_INFO(::ur5e_hand_driver::logging::ControllerLogger(),
-                "FT config: enabled=%d, num_fingertips=%d, "
-                "model_paths.size=%zu, calibration_enabled=%d, calibration_samples=%d",
+                "FT config: enabled=%d fingertips=%d paths=%zu cal=%s(%d samples)",
                 ft_config_.enabled ? 1 : 0, num_fingertips_,
                 ft_config_.model_paths.size(),
-                ft_config_.calibration_enabled ? 1 : 0,
+                ft_config_.calibration_enabled ? "on" : "off",
                 ft_config_.calibration_samples);
     if (ft_config_.enabled && num_fingertips_ > 0) {
       for (std::size_t i = 0; i < ft_config_.model_paths.size(); ++i) {
+        const auto & p = ft_config_.model_paths[i];
         RCLCPP_INFO(::ur5e_hand_driver::logging::ControllerLogger(),
-                    "FT model_path[%zu]=\"%s\"",
-                    i, ft_config_.model_paths[i].c_str());
+                    "FT model[%zu]=%s",
+                    i, p.empty() ? "<skipped>" : p.c_str());
       }
       ft_inferencer_ = std::make_unique<FingertipFTInferencer>();
       try {
         ft_inferencer_->InitFT(ft_config_);
         ft_enabled_ = ft_inferencer_->is_initialized();
         RCLCPP_INFO(::ur5e_hand_driver::logging::ControllerLogger(),
-                    "FT init OK: initialized=%d, num_active_models=%d, calibrated=%d",
+                    "FT ready: active=%d/%d initialized=%d calibrated=%d",
+                    ft_inferencer_->num_models(), num_fingertips_,
                     ft_inferencer_->is_initialized() ? 1 : 0,
-                    ft_inferencer_->num_models(),
                     ft_inferencer_->is_calibrated() ? 1 : 0);
       } catch (const std::exception& e) {
         RCLCPP_ERROR(::ur5e_hand_driver::logging::ControllerLogger(),
@@ -183,6 +185,7 @@ class HandController {
 
     if (use_fake_hand_) {
       running_.store(true, std::memory_order_release);
+      start_time_ = std::chrono::steady_clock::now();
       RCLCPP_INFO(::ur5e_hand_driver::logging::ControllerLogger(),
                   "HandController started in FAKE mode (num_fingertips=%d)",
                   num_fingertips_);
@@ -212,6 +215,7 @@ class HandController {
     }
 
     running_.store(true, std::memory_order_release);
+    start_time_ = std::chrono::steady_clock::now();
     event_thread_ = std::jthread([this](std::stop_token st) {
       EventLoop(std::move(st));
     });
@@ -228,9 +232,15 @@ class HandController {
     event_thread_.request_stop();
     event_cv_.notify_all();
     transport_.Close();
+    const auto cycles = cycle_count_.load(std::memory_order_relaxed);
+    const double elapsed_sec = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - start_time_).count();
+    const double avg_rate_hz = (elapsed_sec > 0.0)
+        ? static_cast<double>(cycles) / elapsed_sec
+        : 0.0;
     RCLCPP_INFO(::ur5e_hand_driver::logging::ControllerLogger(),
-                "HandController stopped (cycles=%zu)",
-                cycle_count_.load(std::memory_order_relaxed));
+                "HandController stopped: %zu cycles in %.1fs (avg=%.1f Hz)",
+                cycles, elapsed_sec, avg_rate_hz);
   }
 
   // ── Callback ───────────────────────────────────────────────────────────
@@ -820,6 +830,9 @@ class HandController {
   StateCallback     callback_;
   SeqLock<HandState> state_seqlock_{};
   std::atomic<std::size_t> cycle_count_{0};
+
+  // Non-RT: captured in Start() to report the average cycle rate in Stop().
+  std::chrono::steady_clock::time_point start_time_{};
 
   // Link health
   std::atomic<uint64_t> consecutive_recv_failures_{0};

@@ -1236,12 +1236,19 @@ void DemoTaskController::UpdateGainsFromMsg(std::span<const double> gains) noexc
           (cmd == 1) ? "Grasp" : "Release", grasp_controller_type_.c_str());
       } else if (cmd == 1) {
         const double target_force = (gains.size() >= 21) ? gains[20] : 0.0;
+        const auto phase_before = static_cast<unsigned>(grasp_controller_->phase());
         grasp_controller_->CommandGrasp(target_force);
         RCLCPP_INFO(
-          logger_, "CommandGrasp target_force=%.2fN", target_force);
+          logger_,
+          "CommandGrasp target=%.2fN type=%s phase_before=%u",
+          target_force, grasp_controller_type_.c_str(), phase_before);
       } else {
+        const auto phase_before = static_cast<unsigned>(grasp_controller_->phase());
         grasp_controller_->CommandRelease();
-        RCLCPP_INFO(logger_, "CommandRelease");
+        RCLCPP_INFO(
+          logger_,
+          "CommandRelease type=%s phase_before=%u",
+          grasp_controller_type_.c_str(), phase_before);
       }
     }
   }
