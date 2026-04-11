@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstddef>
+#include <numbers>
 #include <stdexcept>
 #include <string>
 
@@ -69,22 +70,38 @@ void ApplyForcePiBlock(const YAML::Node & fp, DemoSharedConfig & cfg)
   if (fp["lpf_cutoff_hz"])         gp.lpf_cutoff_hz = fp["lpf_cutoff_hz"].as<double>();
 
   if (fp["fingers"]) {
+    const auto fingers_node = fp["fingers"];
+
+    // Angle unit: "rad" (default) or "deg". Internally always stored in radians.
+    double angle_scale = 1.0;
+    if (fingers_node["units"]) {
+      const auto units_str = fingers_node["units"].as<std::string>();
+      if (units_str == "deg" || units_str == "degrees") {
+        angle_scale = std::numbers::pi_v<double> / 180.0;
+      } else if (units_str != "rad" && units_str != "radians") {
+        RCLCPP_WARN(
+          rclcpp::get_logger("ur5e_bringup"),
+          "force_pi_grasp.fingers.units: unknown value '%s'; defaulting to radians",
+          units_str.c_str());
+      }
+    }
+
     const std::array<std::string, 3> names = {"thumb", "index", "middle"};
     for (int i = 0; i < rtc::grasp::kNumGraspFingers; ++i) {
-      const auto fn = fp["fingers"][names[static_cast<std::size_t>(i)]];
+      const auto fn = fingers_node[names[static_cast<std::size_t>(i)]];
       if (!fn) { continue; }
       if (fn["q_open"]) {
         const auto seq = fn["q_open"];
         for (int j = 0; j < rtc::grasp::kDoFPerFinger && j < static_cast<int>(seq.size()); ++j) {
           cfg.force_pi_fingers[static_cast<std::size_t>(i)]
-            .q_open[static_cast<std::size_t>(j)] = seq[j].as<double>();
+            .q_open[static_cast<std::size_t>(j)] = seq[j].as<double>() * angle_scale;
         }
       }
       if (fn["q_close"]) {
         const auto seq = fn["q_close"];
         for (int j = 0; j < rtc::grasp::kDoFPerFinger && j < static_cast<int>(seq.size()); ++j) {
           cfg.force_pi_fingers[static_cast<std::size_t>(i)]
-            .q_close[static_cast<std::size_t>(j)] = seq[j].as<double>();
+            .q_close[static_cast<std::size_t>(j)] = seq[j].as<double>() * angle_scale;
         }
       }
     }

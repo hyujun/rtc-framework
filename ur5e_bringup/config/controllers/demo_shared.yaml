@@ -50,14 +50,16 @@ demo_shared:
     # Force filter
     lpf_cutoff_hz: 25.0         # Bessel LPF cutoff [Hz]
 
-    # Finger postures [rad] {MCP_AA, MCP_FE, DIP_FE}
+    # Finger postures {MCP_AA, MCP_FE, DIP_FE}
+    # units: "deg" or "rad" (default "rad"). Internally always converted to rad.
     fingers:
+      units: "deg"
       thumb:
         q_open:  [0.0, 0.0, 0.0]
-        q_close: [0.524, 1.047, 0.785]
+        q_close: [30.0, 60.0, 45.0]
       index:
         q_open:  [0.0, 0.0, 0.0]
-        q_close: [0.0, 1.047, 0.785]
+        q_close: [0.0, 60.0, 45.0]
       middle:
         q_open:  [0.0, 0.0, 0.0]
-        q_close: [0.0, 1.047, 0.785]
+        q_close: [0.0, 60.0, 45.0]

@@ -286,6 +286,30 @@ Contact 전이가 thumb+index 2 손가락에 결정되므로:
 colcon test --packages-select rtc_controllers --ctest-args -R test_grasp_controller --event-handlers console_direct+
 ```
 
+### 7.1 Finger posture 각도 단위
+
+`fingers:` 블록 아래에 `units:` 키로 각도 단위를 선택할 수 있다. 내부 저장은 항상 radian 으로 변환된다 (`GraspParams`/`FingerConfig` 는 rad 기준).
+
+```yaml
+force_pi_grasp:
+  fingers:
+    units: "deg"              # "deg" | "rad" (default "rad")
+    thumb:
+      q_open:  [0.0, 0.0, 0.0]
+      q_close: [30.0, 60.0, 45.0]
+    index:
+      q_open:  [0.0, 0.0, 0.0]
+      q_close: [0.0, 60.0, 45.0]
+    middle:
+      q_open:  [0.0, 0.0, 0.0]
+      q_close: [0.0, 60.0, 45.0]
+```
+
+- `units` 생략 또는 `"rad"`/`"radians"` → 스케일 없음 (하위 호환)
+- `"deg"`/`"degrees"` → `π/180` 곱해 rad 으로 저장
+- 알 수 없는 값 → 경고 후 rad 기본값으로 fallback
+- 단위는 블록 전체에 일괄 적용되며, 손가락별로 다르게 설정할 수 없다
+
 ---
 
 ## 8. 한 줄 요약

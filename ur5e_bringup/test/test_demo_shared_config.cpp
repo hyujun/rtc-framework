@@ -13,6 +13,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <memory>
+#include <numbers>
 #include <string>
 
 using ur5e_bringup::ApplyDemoSharedConfig;
@@ -201,6 +202,71 @@ TEST(DemoSharedConfigTest, ForcePiBlockAbsentLeavesFlagFalse)
   ApplyDemoSharedConfig(node, cfg);
   EXPECT_FALSE(cfg.has_force_pi_block);
   EXPECT_EQ(cfg.grasp_controller_type, "force_pi");
+}
+
+// units: "deg" → 내부 저장은 radians 로 변환되어야 한다.
+TEST(DemoSharedConfigTest, ForcePiFingersDegreesConverted)
+{
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load(R"YAML(
+force_pi_grasp:
+  fingers:
+    units: "deg"
+    thumb:
+      q_open:  [0.0, 0.0, 0.0]
+      q_close: [30.0, 60.0, 45.0]
+    index:
+      q_open:  [0.0, 0.0, 0.0]
+      q_close: [0.0, 90.0, 45.0]
+    middle:
+      q_open:  [10.0, 0.0, 0.0]
+      q_close: [0.0, 60.0, 180.0]
+)YAML");
+  ApplyDemoSharedConfig(node, cfg);
+
+  constexpr double kD2R = std::numbers::pi_v<double> / 180.0;
+  EXPECT_NEAR(cfg.force_pi_fingers[0].q_close[0], 30.0 * kD2R, 1e-12);
+  EXPECT_NEAR(cfg.force_pi_fingers[0].q_close[1], 60.0 * kD2R, 1e-12);
+  EXPECT_NEAR(cfg.force_pi_fingers[0].q_close[2], 45.0 * kD2R, 1e-12);
+  EXPECT_NEAR(cfg.force_pi_fingers[1].q_close[1], 90.0 * kD2R, 1e-12);
+  EXPECT_NEAR(cfg.force_pi_fingers[2].q_open[0],  10.0 * kD2R, 1e-12);
+  EXPECT_NEAR(cfg.force_pi_fingers[2].q_close[2], std::numbers::pi_v<double>, 1e-12);
+}
+
+// units 미지정 → rad 로 해석 (하위 호환).
+TEST(DemoSharedConfigTest, ForcePiFingersDefaultsToRadians)
+{
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load(R"YAML(
+force_pi_grasp:
+  fingers:
+    thumb:
+      q_open:  [0.0, 0.0, 0.0]
+      q_close: [0.524, 1.047, 0.785]
+)YAML");
+  ApplyDemoSharedConfig(node, cfg);
+
+  EXPECT_DOUBLE_EQ(cfg.force_pi_fingers[0].q_close[0], 0.524);
+  EXPECT_DOUBLE_EQ(cfg.force_pi_fingers[0].q_close[1], 1.047);
+  EXPECT_DOUBLE_EQ(cfg.force_pi_fingers[0].q_close[2], 0.785);
+}
+
+// units: "rad" 을 명시적으로 설정한 경우도 스케일 없이 통과.
+TEST(DemoSharedConfigTest, ForcePiFingersExplicitRadians)
+{
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load(R"YAML(
+force_pi_grasp:
+  fingers:
+    units: "rad"
+    thumb:
+      q_close: [0.5, 1.0, 0.7]
+)YAML");
+  ApplyDemoSharedConfig(node, cfg);
+
+  EXPECT_DOUBLE_EQ(cfg.force_pi_fingers[0].q_close[0], 0.5);
+  EXPECT_DOUBLE_EQ(cfg.force_pi_fingers[0].q_close[1], 1.0);
+  EXPECT_DOUBLE_EQ(cfg.force_pi_fingers[0].q_close[2], 0.7);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
