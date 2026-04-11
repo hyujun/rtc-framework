@@ -14,12 +14,14 @@
 #include <cmath>
 #include <cstdint>
 
+#include <rclcpp/clock.hpp>
 #include <rclcpp/logging.hpp>
 
 #include "rtc_base/types/types.hpp"
 #include "rtc_base/filters/bessel_filter.hpp"
 #include "rtc_base/filters/sensor_rate_estimator.hpp"
 #include "rtc_base/filters/sliding_trend_detector.hpp"
+#include "ur5e_hand_driver/hand_logging.hpp"
 
 namespace rtc {
 
@@ -58,7 +60,7 @@ class HandSensorProcessor {
     const double nominal_effective_rate =
         kNominalRateHz / static_cast<double>(sensor_decimation_);
 
-    const auto logger = rclcpp::get_logger("HandSensorProcessor");
+    const auto logger = ::ur5e_hand_driver::logging::SensorLogger();
 
     if (baro_lpf_enabled_) {
       try {
@@ -101,22 +103,31 @@ class HandSensorProcessor {
       const double actual_rate =
           sensor_rate_estimator_.rate_hz()
           / static_cast<double>(sensor_decimation_);
+      // Replaced RCLCPP_WARN_ONCE with WARN_THROTTLE on the RT path: _ONCE
+      // still pays the formatting allocation on the first hit and offers no
+      // defense against repeated firing if the filter init keeps throwing
+      // before filter_reinited_ flips. The throttle bounds the worst case to
+      // one log per kThrottleIdleMs while still surfacing the failure.
       if (baro_filter_active_) {
         try {
           baro_filter_.Init(baro_lpf_cutoff_hz_, actual_rate);
         } catch (...) {
-          RCLCPP_WARN_ONCE(rclcpp::get_logger("HandSensorProcessor"),
-                           "Barometer BesselFilter re-init failed at actual rate %.1f Hz",
-                           actual_rate);
+          RCLCPP_WARN_THROTTLE(::ur5e_hand_driver::logging::SensorLogger(),
+                               filter_warn_clock_,
+                               ::ur5e_hand_driver::logging::kThrottleIdleMs,
+                               "Barometer BesselFilter re-init failed at actual rate %.1f Hz",
+                               actual_rate);
         }
       }
       if (tof_filter_active_) {
         try {
           tof_filter_.Init(tof_lpf_cutoff_hz_, actual_rate);
         } catch (...) {
-          RCLCPP_WARN_ONCE(rclcpp::get_logger("HandSensorProcessor"),
-                           "TOF BesselFilter re-init failed at actual rate %.1f Hz",
-                           actual_rate);
+          RCLCPP_WARN_THROTTLE(::ur5e_hand_driver::logging::SensorLogger(),
+                               filter_warn_clock_,
+                               ::ur5e_hand_driver::logging::kThrottleIdleMs,
+                               "TOF BesselFilter re-init failed at actual rate %.1f Hz",
+                               actual_rate);
         }
       }
       filter_reinited_ = true;
@@ -226,7 +237,7 @@ class HandSensorProcessor {
     const int num_baro = num_fingertips_ * kBarometerCount;
     for (int i = 0; i < num_baro; ++i) {
       if (drift_result_.drift_flags[static_cast<std::size_t>(i)]) {
-        RCLCPP_WARN(rclcpp::get_logger("HandSensorProcessor"),
+        RCLCPP_WARN(::ur5e_hand_driver::logging::SensorLogger(),
                     "Barometer sensor(id:%d) drift detected (slope=%.3f)",
                     i, drift_result_.slopes[static_cast<std::size_t>(i)]);
       }
@@ -260,6 +271,10 @@ class HandSensorProcessor {
   SlidingTrendDetector<kMaxBaroChannels, 2500>::Result drift_result_{};
   bool   drift_detected_{false};
   std::chrono::steady_clock::time_point last_drift_warn_time_{};
+
+  // Throttle clock for filter re-init failures (RT-safe replacement for
+  // RCLCPP_WARN_ONCE on the PreFilter hot path).
+  rclcpp::Clock filter_warn_clock_{RCL_STEADY_TIME};
 };
 
 }  // namespace rtc

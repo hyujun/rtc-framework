@@ -35,6 +35,7 @@
 #include <rclcpp/logging.hpp>
 
 #include "rtc_base/types/types.hpp"
+#include "ur5e_hand_driver/hand_logging.hpp"
 
 namespace rtc {
 
@@ -54,7 +55,7 @@ class FingertipFTInferencer {
   };
 
   void InitFT(const Config& /*config*/) {
-    RCLCPP_ERROR(rclcpp::get_logger("FT-Inferencer"),
+    RCLCPP_ERROR(::ur5e_hand_driver::logging::FtLogger(),
                  "STUB: HAS_ONNXRUNTIME not defined! "
                  "ONNX Runtime unavailable — FT inference disabled.");
   }
@@ -114,7 +115,7 @@ class FingertipFTInferencer {
     const int n = std::min(config_.num_fingertips, kMaxFingertips);
     num_active_ = 0;
 
-    RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+    RCLCPP_INFO(::ur5e_hand_driver::logging::FtLogger(),
                 "InitFT: num_fingertips=%d, history_length=%d, model_paths.size=%zu, calibration=%s(%d samples)",
                 n, config_.history_length, config_.model_paths.size(),
                 config_.calibration_enabled ? "ON" : "OFF",
@@ -134,14 +135,14 @@ class FingertipFTInferencer {
       // 모델 경로 없으면 해당 finger 비활성
       if (f >= static_cast<int>(config_.model_paths.size()) ||
           config_.model_paths[static_cast<std::size_t>(f)].empty()) {
-        RCLCPP_WARN(rclcpp::get_logger("FT-Inferencer"),
+        RCLCPP_WARN(::ur5e_hand_driver::logging::FtLogger(),
                     "finger[%d]: SKIPPED (empty path)", f);
         model.valid = false;
         continue;
       }
 
       const auto& path = config_.model_paths[static_cast<std::size_t>(f)];
-      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+      RCLCPP_INFO(::ur5e_hand_driver::logging::FtLogger(),
                   "finger[%d]: loading \"%s\"", f, path.c_str());
 
       // Session 생성
@@ -174,7 +175,7 @@ class FingertipFTInferencer {
         allocator_.Free(out2_name);
       }
 #endif
-      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+      RCLCPP_INFO(::ur5e_hand_driver::logging::FtLogger(),
                   "finger[%d]: input='%s', outputs=['%s','%s','%s']",
                   f, model.input_name.c_str(),
                   model.output0_name.c_str(),
@@ -211,7 +212,7 @@ class FingertipFTInferencer {
 
       model.valid = true;
       ++num_active_;
-      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+      RCLCPP_INFO(::ur5e_hand_driver::logging::FtLogger(),
                   "finger[%d]: loaded OK (input=%s, outputs=[%s,%s,%s])",
                   f, model.input_name.c_str(),
                   model.output0_name.c_str(),
@@ -219,7 +220,7 @@ class FingertipFTInferencer {
                   model.output2_name.c_str());
     }
 
-    RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+    RCLCPP_INFO(::ur5e_hand_driver::logging::FtLogger(),
                 "num_active=%d / %d", num_active_, n);
 
     // prev_barometer 초기화 (delta 계산용)
@@ -254,7 +255,7 @@ class FingertipFTInferencer {
     }
 
     initialized_ = (num_active_ > 0);
-    RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+    RCLCPP_INFO(::ur5e_hand_driver::logging::FtLogger(),
                 "InitFT done: initialized=%d, calibrated=%d",
                 initialized_ ? 1 : 0, calibrated_ ? 1 : 0);
   }
@@ -289,7 +290,7 @@ class FingertipFTInferencer {
         }
       }
       calibrated_ = true;
-      RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+      RCLCPP_INFO(::ur5e_hand_driver::logging::FtLogger(),
                   "Calibration COMPLETE (%d samples)", calibration_count_);
       return true;
     }
@@ -309,7 +310,7 @@ class FingertipFTInferencer {
     for (auto& b : baseline_offset_) b.fill(0.0f);
     calibration_count_ = 0;
     calibrated_ = false;
-    RCLCPP_INFO(rclcpp::get_logger("FT-Inferencer"),
+    RCLCPP_INFO(::ur5e_hand_driver::logging::FtLogger(),
                 "Calibration RESET (target=%d samples)",
                 config_.calibration_samples);
   }
@@ -418,14 +419,16 @@ class FingertipFTInferencer {
       result.valid = all_ready;
     } catch (const std::exception& e) {
       static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
-      RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("FT-Inferencer"),
-                            steady_clock, 5000,
+      RCLCPP_ERROR_THROTTLE(::ur5e_hand_driver::logging::FtLogger(),
+                            steady_clock,
+                            ::ur5e_hand_driver::logging::kThrottleHotMs,
                             "FT inference exception: %s", e.what());
       result.valid = false;
     } catch (...) {
       static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
-      RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("FT-Inferencer"),
-                            steady_clock, 5000,
+      RCLCPP_ERROR_THROTTLE(::ur5e_hand_driver::logging::FtLogger(),
+                            steady_clock,
+                            ::ur5e_hand_driver::logging::kThrottleHotMs,
                             "FT inference unknown exception (result invalidated)");
       result.valid = false;
     }

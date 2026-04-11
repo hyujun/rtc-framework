@@ -46,6 +46,7 @@
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "ur5e_hand_driver/fingertip_ft_inferencer.hpp"
+#include "ur5e_hand_driver/hand_logging.hpp"
 #include "ur5e_hand_driver/hand_packets.hpp"
 #include "ur5e_hand_driver/hand_sensor_processor.hpp"
 #include "ur5e_hand_driver/hand_timing_profiler.hpp"
@@ -141,7 +142,7 @@ class HandController {
 
   [[nodiscard]] bool Start() {
     // F/T inferencer initialization
-    RCLCPP_INFO(rclcpp::get_logger("HandController"),
+    RCLCPP_INFO(::ur5e_hand_driver::logging::ControllerLogger(),
                 "FT config: enabled=%d, num_fingertips=%d, "
                 "model_paths.size=%zu, calibration_enabled=%d, calibration_samples=%d",
                 ft_config_.enabled ? 1 : 0, num_fingertips_,
@@ -150,7 +151,7 @@ class HandController {
                 ft_config_.calibration_samples);
     if (ft_config_.enabled && num_fingertips_ > 0) {
       for (std::size_t i = 0; i < ft_config_.model_paths.size(); ++i) {
-        RCLCPP_INFO(rclcpp::get_logger("HandController"),
+        RCLCPP_INFO(::ur5e_hand_driver::logging::ControllerLogger(),
                     "FT model_path[%zu]=\"%s\"",
                     i, ft_config_.model_paths[i].c_str());
       }
@@ -158,38 +159,38 @@ class HandController {
       try {
         ft_inferencer_->InitFT(ft_config_);
         ft_enabled_ = ft_inferencer_->is_initialized();
-        RCLCPP_INFO(rclcpp::get_logger("HandController"),
+        RCLCPP_INFO(::ur5e_hand_driver::logging::ControllerLogger(),
                     "FT init OK: initialized=%d, num_active_models=%d, calibrated=%d",
                     ft_inferencer_->is_initialized() ? 1 : 0,
                     ft_inferencer_->num_models(),
                     ft_inferencer_->is_calibrated() ? 1 : 0);
       } catch (const std::exception& e) {
-        RCLCPP_ERROR(rclcpp::get_logger("HandController"),
+        RCLCPP_ERROR(::ur5e_hand_driver::logging::ControllerLogger(),
                      "FT init FAILED: %s", e.what());
         ft_enabled_ = false;
         ft_inferencer_.reset();
       } catch (...) {
-        RCLCPP_ERROR(rclcpp::get_logger("HandController"),
+        RCLCPP_ERROR(::ur5e_hand_driver::logging::ControllerLogger(),
                      "FT init FAILED: unknown exception");
         ft_enabled_ = false;
         ft_inferencer_.reset();
       }
     } else {
-      RCLCPP_WARN(rclcpp::get_logger("HandController"),
+      RCLCPP_WARN(::ur5e_hand_driver::logging::ControllerLogger(),
                   "FT inference SKIPPED: enabled=%d, num_fingertips=%d",
                   ft_config_.enabled ? 1 : 0, num_fingertips_);
     }
 
     if (use_fake_hand_) {
       running_.store(true, std::memory_order_release);
-      RCLCPP_INFO(rclcpp::get_logger("HandController"),
+      RCLCPP_INFO(::ur5e_hand_driver::logging::ControllerLogger(),
                   "HandController started in FAKE mode (num_fingertips=%d)",
                   num_fingertips_);
       return true;
     }
 
     if (!transport_.Open()) {
-      RCLCPP_ERROR(rclcpp::get_logger("HandController"),
+      RCLCPP_ERROR(::ur5e_hand_driver::logging::ControllerLogger(),
                    "UDP socket open failed");
       return false;
     }
@@ -198,7 +199,7 @@ class HandController {
     if (num_fingertips_ > 0) {
       sensor_init_ok_ = transport_.InitializeSensors();
       if (!sensor_init_ok_) {
-        RCLCPP_WARN(rclcpp::get_logger("HandController"),
+        RCLCPP_WARN(::ur5e_hand_driver::logging::ControllerLogger(),
                     "Sensor initialization failed (sensor_init_ok=false)");
       }
     }
@@ -206,7 +207,7 @@ class HandController {
     // Sensor processor initialization (rate estimator, filters, drift detector)
     if (num_fingertips_ > 0) {
       sensor_processor_.Init();
-      RCLCPP_DEBUG(rclcpp::get_logger("HandController"),
+      RCLCPP_DEBUG(::ur5e_hand_driver::logging::ControllerLogger(),
                    "Sensor processor initialized");
     }
 
@@ -214,7 +215,7 @@ class HandController {
     event_thread_ = std::jthread([this](std::stop_token st) {
       EventLoop(std::move(st));
     });
-    RCLCPP_INFO(rclcpp::get_logger("HandController"),
+    RCLCPP_INFO(::ur5e_hand_driver::logging::ControllerLogger(),
                 "EventLoop thread started (mode=%s)",
                 communication_mode_ == HandCommunicationMode::kBulk ? "bulk" : "individual");
 
@@ -227,7 +228,7 @@ class HandController {
     event_thread_.request_stop();
     event_cv_.notify_all();
     transport_.Close();
-    RCLCPP_INFO(rclcpp::get_logger("HandController"),
+    RCLCPP_INFO(::ur5e_hand_driver::logging::ControllerLogger(),
                 "HandController stopped (cycles=%zu)",
                 cycle_count_.load(std::memory_order_relaxed));
   }
@@ -424,7 +425,7 @@ class HandController {
   // Event-driven loop: condvar wait -> write + read -> sensor processing -> state publish.
   void EventLoop(std::stop_token stop_token) {
     if (!ApplyThreadConfig(thread_cfg_)) {
-      RCLCPP_WARN(rclcpp::get_logger("HandController"),
+      RCLCPP_WARN(::ur5e_hand_driver::logging::ControllerLogger(),
                   "EventLoop: ApplyThreadConfig failed (running at default priority)");
     }
 
@@ -473,7 +474,7 @@ class HandController {
 
       // E-Stop check
       if (estop_flag_ && estop_flag_->load(std::memory_order_acquire)) {
-        RCLCPP_WARN(rclcpp::get_logger("HandController"),
+        RCLCPP_WARN(::ur5e_hand_driver::logging::ControllerLogger(),
                     "EventLoop: E-Stop active, sending zero command and exiting");
         std::array<float, kNumHandMotors> zeros{};
         transport_.WritePositionFireAndForget(zeros, hand_packets::JointMode::kJoint);
@@ -570,8 +571,13 @@ class HandController {
 
         if (any_recv_ok && !state_read_once_) {
           state_read_once_ = true;
-          RCLCPP_INFO(rclcpp::get_logger("HandController"),
-                      "First hand state received (write commands now enabled)");
+          // Throttled as a defensive RT-safety net; the state_read_once_ gate
+          // already guarantees this fires at most once per Start().
+          static rclcpp::Clock first_state_clock(RCL_STEADY_TIME);
+          RCLCPP_INFO_THROTTLE(::ur5e_hand_driver::logging::ControllerLogger(),
+                               first_state_clock,
+                               ::ur5e_hand_driver::logging::kThrottleIdleMs,
+                               "First hand state received (write commands now enabled)");
         }
 
         state_seqlock_.Store(state);
@@ -663,8 +669,13 @@ class HandController {
 
         if (any_recv_ok && !state_read_once_) {
           state_read_once_ = true;
-          RCLCPP_INFO(rclcpp::get_logger("HandController"),
-                      "First hand state received (write commands now enabled)");
+          // Throttled as a defensive RT-safety net; the state_read_once_ gate
+          // already guarantees this fires at most once per Start().
+          static rclcpp::Clock first_state_clock(RCL_STEADY_TIME);
+          RCLCPP_INFO_THROTTLE(::ur5e_hand_driver::logging::ControllerLogger(),
+                               first_state_clock,
+                               ::ur5e_hand_driver::logging::kThrottleIdleMs,
+                               "First hand state received (write commands now enabled)");
         }
 
         state_seqlock_.Store(state);
@@ -696,9 +707,9 @@ class HandController {
             1, std::memory_order_relaxed) + 1;
         if (failures >= 5) {
           static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
-          RCLCPP_WARN_THROTTLE(rclcpp::get_logger("HandController"),
+          RCLCPP_WARN_THROTTLE(::ur5e_hand_driver::logging::ControllerLogger(),
                                steady_clock,
-                               1000,  // 1Hz throttle
+                               ::ur5e_hand_driver::logging::kThrottleFastMs,
                                "EventLoop: consecutive recv failures=%lu",
                                static_cast<unsigned long>(failures));
         }
@@ -717,18 +728,26 @@ class HandController {
     switch (req.sensor_type) {
       case hand_calibration::kSensorBarometer: {
         if (!ft_inferencer_) {
-          RCLCPP_WARN(rclcpp::get_logger("HandController"),
+          RCLCPP_WARN(::ur5e_hand_driver::logging::ControllerLogger(),
                       "Calibration: barometer request ignored (no inferencer)");
           return;
         }
+        // Calibration START/ABORT are externally triggered, but the dispatch
+        // runs on the EventLoop hot path. Throttle as a defensive RT-safety
+        // net even though duplicate requests are already de-duped upstream.
+        static rclcpp::Clock calib_clock(RCL_STEADY_TIME);
         if (req.action == hand_calibration::kActionStart) {
-          RCLCPP_INFO(rclcpp::get_logger("HandController"),
-                      "Calibration: barometer START (sample_count=%u)",
-                      static_cast<unsigned>(req.sample_count));
+          RCLCPP_INFO_THROTTLE(::ur5e_hand_driver::logging::ControllerLogger(),
+                               calib_clock,
+                               ::ur5e_hand_driver::logging::kThrottleSlowMs,
+                               "Calibration: barometer START (sample_count=%u)",
+                               static_cast<unsigned>(req.sample_count));
           ft_inferencer_->ResetCalibration(req.sample_count);
         } else if (req.action == hand_calibration::kActionAbort) {
-          RCLCPP_INFO(rclcpp::get_logger("HandController"),
-                      "Calibration: barometer ABORT (noop)");
+          RCLCPP_INFO_THROTTLE(::ur5e_hand_driver::logging::ControllerLogger(),
+                               calib_clock,
+                               ::ur5e_hand_driver::logging::kThrottleSlowMs,
+                               "Calibration: barometer ABORT (noop)");
           // Currently barometer cal has no externally-visible abort state;
           // leaving the in-progress buffers alone is acceptable.
         }
@@ -736,7 +755,7 @@ class HandController {
       }
       // Future sensors: add cases here.
       default:
-        RCLCPP_WARN(rclcpp::get_logger("HandController"),
+        RCLCPP_WARN(::ur5e_hand_driver::logging::ControllerLogger(),
                     "Calibration: unknown sensor_type=%u",
                     static_cast<unsigned>(req.sensor_type));
         break;

@@ -29,6 +29,7 @@
 #include <unistd.h>
 
 #include "rtc_base/types/types.hpp"
+#include "ur5e_hand_driver/hand_logging.hpp"
 #include "ur5e_hand_driver/hand_packets.hpp"
 #include "ur5e_hand_driver/hand_udp_codec.hpp"
 
@@ -63,7 +64,7 @@ class HandUdpTransport {
   // ── Socket lifecycle ──────────────────────────────────────────────────────
 
   [[nodiscard]] bool Open() noexcept {
-    const auto logger = rclcpp::get_logger("HandUdpTransport");
+    const auto logger = ::ur5e_hand_driver::logging::TransportLogger();
 
     socket_fd_ = socket(AF_INET, SOCK_DGRAM, 0);
     if (socket_fd_ < 0) {
@@ -107,7 +108,7 @@ class HandUdpTransport {
 
   void Close() noexcept {
     if (socket_fd_ >= 0) {
-      RCLCPP_DEBUG(rclcpp::get_logger("HandUdpTransport"),
+      RCLCPP_DEBUG(::ur5e_hand_driver::logging::TransportLogger(),
                    "UDP socket closed (%s:%d)", target_ip_.c_str(), target_port_);
       close(socket_fd_);
       socket_fd_ = -1;
@@ -417,7 +418,7 @@ class HandUdpTransport {
   [[nodiscard]] bool InitializeSensors(
       int max_retries = 5,
       int retry_interval_ms = 100) noexcept {
-    const auto logger = rclcpp::get_logger("HandUdpTransport");
+    const auto logger = ::ur5e_hand_driver::logging::TransportLogger();
     for (int attempt = 0; attempt < max_retries; ++attempt) {
       if (RequestSetSensorMode(hand_packets::SensorMode::kRaw)) {
         RCLCPP_INFO(logger, "Sensor mode set to RAW (attempt %d/%d)",

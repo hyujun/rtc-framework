@@ -332,6 +332,72 @@ source install/setup.bash
 
 ---
 
+## 로깅 (Logging)
+
+### 분류 독트린
+
+| 레벨 | 용도 | 예시 |
+|------|------|------|
+| `FATAL` | 프로세스를 계속 실행할 수 없는 상태 | UDP 소켓 생성 실패 (포트 점유), 잘못된 설정 |
+| `ERROR` | 복구 불가능한 실패, 사용자 개입 필요 | FT 모델 로드 실패, FailureDetector trigger, 센서모드 전환 실패 |
+| `WARN` | 복구 가능한 실패/이상 상태, 자동 재시도 중 | UDP recv 실패 누적, 링크 복구 중, fake 모드 안내 |
+| `INFO` | 사용자가 알아야 할 1 Hz 미만 상태 전환 | 노드 시작/종료, 캘리브레이션 START/COMPLETE, 링크 복구 |
+| `DEBUG` | 개발자 진단용 (기본 꺼짐) | cycle counter, FailureDetector 스레드 lifecycle |
+
+**핵심 규칙**:
+
+- `HandController::EventLoop`, `HandUdpTransport::Send/Recv`, `HandSensorProcessor::PreFilter/ApplyFilters`, `FingertipFTInferencer::Infer` 는 모두 **500 Hz UDP 폴링 hot path** 다. 정상 경로의 `INFO`/`WARN` 직접 호출은 **금지** — 반복될 수 있는 메시지는 반드시 `*_THROTTLE` 매크로를 사용한다.
+- **`RCLCPP_*_ONCE` 금지**. `_ONCE` 도 첫 호출에서는 동일한 fmt 포맷 할당을 수행하므로 RT 안전이 아니며, 조건이 다시 참이 될 때 침묵해 버린다. 대신 `*_THROTTLE` 을 `kThrottleIdleMs` 와 함께 사용한다 (예: `HandSensorProcessor::PreFilter` 의 BesselFilter 재초기화 실패 경고).
+- THROTTLE 주기는 매직넘버 대신 `hand_logging.hpp` 의 표준 상수를 사용한다.
+- 메시지 본문에 클래스 이름을 박아넣지 않는다. 서브-로거 이름이 곧 식별자다 (`hand.ctrl`).
+- `HandFailureDetector` 와 `hand_udp_node` 의 init/shutdown 코드는 non-RT 컨텍스트 — `RCLCPP_INFO`/`WARN` 를 자유롭게 사용할 수 있다.
+
+### 서브-로거 네임스페이스
+
+| 서브-로거 | 사용처 |
+|-----------|--------|
+| `hand.node` | `HandUdpNode` (ROS2 노드 lifecycle, 토픽 구독/발행, link 상태 전이) |
+| `hand.ctrl` | `HandController` (lifecycle + EventLoop, 캘리브레이션 dispatch) |
+| `hand.udp` | `HandUdpTransport` (소켓 open/close, 센서모드 전환) |
+| `hand.sensor` | `HandSensorProcessor` (LPF init, drift detection, BesselFilter 재초기화) |
+| `hand.fail` | `HandFailureDetector` (50 Hz 워치독 스레드) |
+| `hand.ft` | `FingertipFTInferencer` (ONNX 모델 로드, 캘리브레이션, inference 예외) |
+
+### THROTTLE 주기 표준
+
+`ur5e_hand_driver::logging` 네임스페이스에 정의된 상수만 사용한다 (`hand_logging.hpp`):
+
+| 상수 | 값 [ms] | 용도 |
+|------|---------|------|
+| `kThrottleFastMs` | 500 | UDP recv 실패 누적 등 빠른 진행 표시 |
+| `kThrottleSlowMs` | 2000 | 캘리브레이션 dispatch, 일반 반복 경고 |
+| `kThrottleIdleMs` | 10000 | BesselFilter 재초기화 실패, one-shot 전이 안전 그물 |
+| `kThrottleHotMs` | 5000 | RT 핫패스 예외 경로 (FT inference exception) |
+
+### 실시간 필터링 예시
+
+```bash
+# UDP 트랜스포트 레이어만 DEBUG 활성화
+ros2 service call /hand_udp_node/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
+  "{levels: [{name: 'hand.udp', level: 10}]}"
+
+# 모든 hand.* 서브로거 동시에 끄기 (계층 매칭)
+ros2 service call /hand_udp_node/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
+  "{levels: [{name: 'hand', level: 50}]}"
+
+# Failure detector 만 끄기 (false-positive 노이즈 제거)
+ros2 service call /hand_udp_node/set_logger_levels rcl_interfaces/srv/SetLoggerLevels \
+  "{levels: [{name: 'hand.fail', level: 50}]}"
+```
+
+콘솔 출력에 로거 이름을 표시하려면:
+
+```bash
+export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
+```
+
+---
+
 ## 라이선스
 
 MIT License -- [LICENSE](../LICENSE)

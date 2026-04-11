@@ -1,6 +1,8 @@
 #include "ur5e_hand_driver/hand_controller.hpp"
 #include "ur5e_hand_driver/hand_failure_detector.hpp"
+#include "ur5e_hand_driver/hand_logging.hpp"
 
+#include <rtc_base/logging/session_dir.hpp>
 #include <rtc_base/threading/thread_utils.hpp>
 
 #include <rclcpp/rclcpp.hpp>
@@ -21,12 +23,14 @@
 #include <atomic>
 #include <chrono>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <system_error>
 
 using namespace std::chrono_literals;
 namespace urtc = rtc;
@@ -270,7 +274,7 @@ class HandUdpNode : public rclcpp::Node {
             return;  // Start 실패 시 명령 무시 (EventLoop 미동작)
           }
           if (msg->values.size() < static_cast<std::size_t>(urtc::kNumHandMotors)) {
-            RCLCPP_WARN(get_logger(),
+            RCLCPP_WARN(::ur5e_hand_driver::logging::NodeLogger(),
                         "JointCommand values size %zu (expected %d)",
                         msg->values.size(), urtc::kNumHandMotors);
             return;
@@ -294,11 +298,11 @@ class HandUdpNode : public rclcpp::Node {
         calib_cmd_topic, rclcpp::QoS(1).reliable(),
         [this](rtc_msgs::msg::CalibrationCommand::SharedPtr msg) {
           if (!controller_ || !controller_->IsRunning()) {
-            RCLCPP_WARN(get_logger(),
+            RCLCPP_WARN(::ur5e_hand_driver::logging::NodeLogger(),
                         "Calibration command ignored: controller not running");
             return;
           }
-          RCLCPP_INFO(get_logger(),
+          RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(),
                       "Calibration command: sensor_type=%u action=%u sample_count=%u",
                       static_cast<unsigned>(msg->sensor_type),
                       static_cast<unsigned>(msg->action),
@@ -325,7 +329,7 @@ class HandUdpNode : public rclcpp::Node {
     // See: git log for migration history.
 
     if (!controller_->Start()) {
-      RCLCPP_ERROR(get_logger(),
+      RCLCPP_ERROR(::ur5e_hand_driver::logging::NodeLogger(),
                    "Failed to start HandController to %s:%d  "
                    "(subscriptions created — check ros2 topic info for diagnostics)",
                    target_ip.c_str(), target_port);
@@ -353,11 +357,11 @@ class HandUdpNode : public rclcpp::Node {
           }
           controller_->SendCommandAndRequestStates(cmd);
         });
-        RCLCPP_WARN(get_logger(),
+        RCLCPP_WARN(::ur5e_hand_driver::logging::NodeLogger(),
                     "HandUdpNode: FAKE mode enabled — no UDP, self-tick=%.1f Hz",
                     fake_rate);
       } else {
-        RCLCPP_WARN(get_logger(),
+        RCLCPP_WARN(::ur5e_hand_driver::logging::NodeLogger(),
                     "HandUdpNode: FAKE mode enabled — self-tick disabled "
                     "(fake_tick_rate_hz=%.1f). Drive SendCommandAndRequestStates "
                     "externally (e.g. rt_controller ControlLoop).",
@@ -388,10 +392,10 @@ class HandUdpNode : public rclcpp::Node {
           *controller_, fd_cfg, cfgs.logging);
       failure_detector_->SetFailureCallback(
           [this](const std::string& reason) {
-            RCLCPP_ERROR(get_logger(), "Hand failure detected: %s", reason.c_str());
+            RCLCPP_ERROR(::ur5e_hand_driver::logging::NodeLogger(), "Hand failure detected: %s", reason.c_str());
           });
       failure_detector_->Start();
-      RCLCPP_INFO(get_logger(), "HandFailureDetector started (50 Hz, threshold=%d)",
+      RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(), "HandFailureDetector started (50 Hz, threshold=%d)",
                   fd_cfg.failure_threshold);
     }
 
@@ -401,12 +405,12 @@ class HandUdpNode : public rclcpp::Node {
         if (i > 0) names_str += ", ";
         names_str += motor_names[i];
       }
-      RCLCPP_INFO(get_logger(),
+      RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(),
                   "Hand motor order (%zu): [%s]",
                   motor_names.size(), names_str.c_str());
     }
 
-    RCLCPP_INFO(get_logger(),
+    RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(),
                 "HandUdpNode: target %s:%d, direct publish from EventLoop, comm=%s",
                 target_ip.c_str(), target_port, comm_mode_str.c_str());
   }
@@ -537,9 +541,9 @@ class HandUdpNode : public rclcpp::Node {
       const bool link_ok = (failures < link_fail_threshold_);
       if (link_ok != prev_link_ok_) {
         if (link_ok) {
-          RCLCPP_INFO(get_logger(), "Hand UDP link UP (recovered)");
+          RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(), "Hand UDP link UP (recovered)");
         } else {
-          RCLCPP_WARN(get_logger(),
+          RCLCPP_WARN(::ur5e_hand_driver::logging::NodeLogger(),
                       "Hand UDP link DOWN (consecutive_recv_failures=%lu)",
                       static_cast<unsigned long>(failures));
         }
@@ -550,7 +554,7 @@ class HandUdpNode : public rclcpp::Node {
     }
 
     if (++publish_count_ % 500 == 0) {
-      RCLCPP_DEBUG(get_logger(), "cycles: %zu",
+      RCLCPP_DEBUG(::ur5e_hand_driver::logging::NodeLogger(), "cycles: %zu",
                    controller_->cycle_count());
     }
   }
@@ -590,19 +594,20 @@ class HandUdpNode : public rclcpp::Node {
         ? static_cast<double>(stats.total_cycles) / elapsed_sec
         : 0.0;
 
-    // 세션 디렉토리 기반 경로 결정
-    std::string output_dir;
-    const char* session_env = std::getenv("UR5E_SESSION_DIR");
-    if (session_env != nullptr && session_env[0] != '\0') {
-      output_dir = std::string(session_env) + "/hand";
-    } else {
-      output_dir = "/tmp";
-    }
+    // 세션 디렉토리 기반 경로 결정.
+    // RTC_SESSION_DIR / UR5E_SESSION_DIR 이 있으면 그 아래 device/ 를 사용하고,
+    // 없으면 3단 체인으로 해석된 ws logging_data 에 새 세션을 만들어 device/ 에 저장.
+    const std::filesystem::path session =
+        urtc::ResolveSessionDir();
+    std::filesystem::path output_dir_path = session / "device";
+    std::error_code dir_ec;
+    std::filesystem::create_directories(output_dir_path, dir_ec);
+    const std::string output_dir = output_dir_path.string();
 
     const std::string path = output_dir + "/hand_udp_stats.json";
     std::ofstream ofs(path);
     if (!ofs.is_open()) {
-      RCLCPP_WARN(get_logger(), "Failed to save hand stats to %s", path.c_str());
+      RCLCPP_WARN(::ur5e_hand_driver::logging::NodeLogger(), "Failed to save hand stats to %s", path.c_str());
       return;
     }
 
@@ -711,9 +716,9 @@ class HandUdpNode : public rclcpp::Node {
     ofs.close();
 
     // 타이밍 요약 로그 출력
-    RCLCPP_INFO(get_logger(), "%s", controller_->TimingSummary().c_str());
+    RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(), "%s", controller_->TimingSummary().c_str());
 
-    RCLCPP_INFO(get_logger(),
+    RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(),
                 "Hand stats saved to %s (cycles=%lu, ok=%lu, timeout=%lu, error=%lu, rate=%.1f Hz)",
                 path.c_str(), stats.total_cycles, stats.recv_ok,
                 stats.recv_timeout, stats.recv_error, avg_rate_hz);
@@ -764,7 +769,7 @@ class HandUdpNode : public rclcpp::Node {
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
 
-  const auto logger = rclcpp::get_logger("hand_udp_node");
+  const auto logger = ::ur5e_hand_driver::logging::NodeLogger();
 
   if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
     RCLCPP_WARN(logger, "mlockall failed (errno=%d: %s)", errno, strerror(errno));

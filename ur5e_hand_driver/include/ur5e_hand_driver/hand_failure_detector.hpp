@@ -64,7 +64,7 @@ public:
     if (running_.load(std::memory_order_relaxed)) return;
     running_.store(true, std::memory_order_relaxed);
     thread_ = std::jthread([this](std::stop_token st) { DetectLoop(st); });
-    RCLCPP_DEBUG(rclcpp::get_logger("HandFailureDetector"),
+    RCLCPP_DEBUG(::ur5e_hand_driver::logging::FailureLogger(),
                  "Detector thread started (50 Hz)");
   }
 
@@ -75,7 +75,7 @@ public:
       thread_.request_stop();
       thread_.join();
     }
-    RCLCPP_DEBUG(rclcpp::get_logger("HandFailureDetector"),
+    RCLCPP_DEBUG(::ur5e_hand_driver::logging::FailureLogger(),
                  "Detector thread stopped");
   }
 
@@ -89,7 +89,7 @@ private:
     {
       auto [ok, msg] = ApplyThreadConfigWithFallback(thread_cfg_);
       if (!ok) {
-        RCLCPP_WARN(rclcpp::get_logger("HandFailureDetector"),
+        RCLCPP_WARN(::ur5e_hand_driver::logging::FailureLogger(),
                     "Thread config apply failed: %s", msg.c_str());
       }
     }
@@ -142,14 +142,14 @@ private:
     prev_motor_valid_ = true;
 
     if (motor_zero_count_ >= cfg_.failure_threshold) {
-      RCLCPP_WARN(rclcpp::get_logger("HandFailureDetector"),
+      RCLCPP_WARN(::ur5e_hand_driver::logging::FailureLogger(),
                   "Motor all-zero detected (count=%d, threshold=%d)",
                   motor_zero_count_, cfg_.failure_threshold);
       RaiseFailure("hand_motor_all_zero (count=" +
                    std::to_string(motor_zero_count_) + ")");
     }
     if (motor_dup_count_ >= cfg_.failure_threshold) {
-      RCLCPP_WARN(rclcpp::get_logger("HandFailureDetector"),
+      RCLCPP_WARN(::ur5e_hand_driver::logging::FailureLogger(),
                   "Motor duplicate detected (count=%d, threshold=%d)",
                   motor_dup_count_, cfg_.failure_threshold);
       RaiseFailure("hand_motor_duplicate (count=" +
@@ -180,14 +180,14 @@ private:
     prev_sensor_valid_ = true;
 
     if (sensor_zero_count_ >= cfg_.failure_threshold) {
-      RCLCPP_WARN(rclcpp::get_logger("HandFailureDetector"),
+      RCLCPP_WARN(::ur5e_hand_driver::logging::FailureLogger(),
                   "Sensor all-zero detected (count=%d, threshold=%d)",
                   sensor_zero_count_, cfg_.failure_threshold);
       RaiseFailure("hand_sensor_all_zero (count=" +
                    std::to_string(sensor_zero_count_) + ")");
     }
     if (sensor_dup_count_ >= cfg_.failure_threshold) {
-      RCLCPP_WARN(rclcpp::get_logger("HandFailureDetector"),
+      RCLCPP_WARN(::ur5e_hand_driver::logging::FailureLogger(),
                   "Sensor duplicate detected (count=%d, threshold=%d)",
                   sensor_dup_count_, cfg_.failure_threshold);
       RaiseFailure("hand_sensor_duplicate (count=" +
@@ -213,7 +213,7 @@ private:
     }
 
     if (rate_fail_count_ >= cfg_.rate_fail_threshold) {
-      RCLCPP_WARN(rclcpp::get_logger("HandFailureDetector"),
+      RCLCPP_WARN(::ur5e_hand_driver::logging::FailureLogger(),
                   "Polling rate low: %.1f Hz (min=%.1f Hz, fail_count=%d)",
                   rate_hz, cfg_.min_rate_hz, rate_fail_count_);
       RaiseFailure("hand_polling_rate_low (rate=" +
@@ -225,7 +225,7 @@ private:
   void CheckLink() {
     const uint64_t failures = controller_.consecutive_recv_failures();
     if (failures >= static_cast<uint64_t>(cfg_.link_fail_threshold)) {
-      RCLCPP_WARN(rclcpp::get_logger("HandFailureDetector"),
+      RCLCPP_WARN(::ur5e_hand_driver::logging::FailureLogger(),
                   "UDP link down (consecutive_recv_failures=%lu, threshold=%d)",
                   static_cast<unsigned long>(failures), cfg_.link_fail_threshold);
       RaiseFailure("hand_udp_link_down (consecutive_recv_failures=" +
