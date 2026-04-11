@@ -13,7 +13,7 @@ demo_shared:
   # ── Grasp controller selection ─────────────────────────────────────────────
   # "contact_stop" (default): force 감지 시 hand position freeze
   # "force_pi": adaptive PI force controller with state machine
-  grasp_controller_type: "contact_stop"
+  grasp_controller_type: "force_pi"
 
   # ── Force-PI grasp parameters (grasp_controller_type: "force_pi" 전용) ──
   force_pi_grasp:

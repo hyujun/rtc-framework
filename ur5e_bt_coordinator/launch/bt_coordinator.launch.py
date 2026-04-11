@@ -6,8 +6,11 @@ Usage:
   # Default (hand_motions.xml, YAML config + poses)
   ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py
 
-  # Pick and Place
-  ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place.xml
+  # Pick and Place (contact_stop grasp)
+  ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place_contact_stop.xml
+
+  # Pick and Place (Force-PI grasp)
+  ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place_force_pi.xml
 
   # Towel Unfold
   ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=towel_unfold.xml
@@ -40,7 +43,7 @@ def generate_launch_description():
     declared_args = [
         DeclareLaunchArgument(
             'tree', default_value='',
-            description='BT tree XML filename (e.g. pick_and_place.xml). '
+            description='BT tree XML filename (e.g. pick_and_place_contact_stop.xml). '
                         'Empty = use YAML default'),
         DeclareLaunchArgument(
             'tick_rate', default_value='0.0',

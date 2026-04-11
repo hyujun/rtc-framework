@@ -1,0 +1,179 @@
+<!-- file: trees/pick_and_place_contact_stop.xml -->
+<!-- UR5e + Hand Pick-and-Place demo (contact_stop grasp variant) -->
+<!-- BehaviorTree.CPP v4 syntax -->
+<!--
+  ─── Failure handling ─────────────────────────────────────────────────
+  Top-level Fallback wraps the normal pick sequence with
+  ContactStopEmergencyAbort. On any FAILURE the abort SubTree opens the
+  hand and retreats by {grasp_abort_retreat_z} from the current TCP
+  pose. ForceFailure ensures the tree result remains FAILURE so the
+  operator is informed of the unsuccessful run.
+
+  Phases 8/9 (transport, lower) include in-transit IsGrasped guards so
+  drops between the lift and the place are caught instead of placing
+  with an empty hand.
+
+  Note: contact_stop intentionally does NOT use a grasp retry wrapper
+  (ForcePIGraspWithRetry is force_pi only). The single ForceGrasp
+  attempt is paired with the safety abort wrapper instead.
+
+  ─── Shared blackboard variables (declared in bt_coordinator.yaml) ────
+    {grasp_target_force_N}    : primary detection / hold force [N]
+    {grasp_verify_force_N}    : post-close / post-lift verification floor [N]
+    {grasp_sustained_ms}      : sustained window for IsForceAbove [ms]
+    {grasp_min_fingertips}    : minimum fingertips required
+    {grasp_in_transit_min_N}  : transport/lower drop-guard threshold [N]
+    {grasp_abort_retreat_z}   : EmergencyAbort retreat distance [m]
+
+  Prerequisite: place_pose must be set in Blackboard before tree starts.
+  Prerequisite: grasp_controller_type: "contact_stop" in demo controller YAML.
+-->
+
+<root BTCPP_format="4" main_tree_to_execute="PickAndPlace">
+
+  <include path="common_motions.xml"/>
+
+  <BehaviorTree ID="PickAndPlace">
+    <Fallback name="main_with_safety">
+
+      <Sequence name="normal_pick_and_place">
+
+        <!-- ======================================================== -->
+        <!-- Phase 1: Move to table_top joint pose                     -->
+        <!-- ======================================================== -->
+        <SwitchController controller_name="demo_joint_controller"
+                          timeout_s="3.0"
+                          current_gains="{current_gains}"/>
+
+        <SetGains current_gains="{current_gains}"
+                  trajectory_speed="0.15"/>
+
+        <MoveToJoints pose_name="table_top"
+                      tolerance="0.01"
+                      timeout_s="15.0"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 2: Detect object via vision                         -->
+        <!-- ======================================================== -->
+        <SubTree ID="DetectObject"
+                 pose="{object_pose}"
+                 num_attempts="10"
+                 wait_s="0.5"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 3: Switch to task-space controller                  -->
+        <!-- ======================================================== -->
+        <SwitchController controller_name="demo_task_controller"
+                          timeout_s="3.0"
+                          current_gains="{current_gains}"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 4: Pre-shape hand and approach from above           -->
+        <!-- ======================================================== -->
+        <SubTree ID="ContactStopOpen"
+                 open_timeout_s="5.0"/>
+
+        <SubTree ID="ApproachFromAbove"
+                 target_pose="{object_pose}"
+                 offset_z="0.04"
+                 pos_tol="0.003"
+                 ori_tol="0.05"
+                 timeout_s="10.0"
+                 approach_pose="{approach_pose}"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 5: Slow descend to object                           -->
+        <!-- ======================================================== -->
+        <SubTree ID="SlowDescend"
+                 target_pose="{object_pose}"
+                 traj_speed="0.05"
+                 pos_tol="0.002"
+                 ori_tol="0.05"
+                 timeout_s="8.0"
+                 constant_z="{object_final_z}"
+                 current_gains="{current_gains}"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 6: Force-based grasp (single attempt, no retry)     -->
+        <!-- ======================================================== -->
+        <SubTree ID="ForceGrasp"
+                 grasp_mode="close"
+                 close_speed="0.3"
+                 max_position="1.4"
+                 grasp_timeout_s="10.0"
+                 threshold_N="{grasp_target_force_N}"
+                 min_fingertips="{grasp_min_fingertips}"
+                 sustained_ms="{grasp_sustained_ms}"
+                 verify_force_N="{grasp_verify_force_N}"
+                 verify_min_tips="{grasp_min_fingertips}"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 7: Lift object and verify grasp                     -->
+        <!-- ======================================================== -->
+        <SubTree ID="LiftAndVerify"
+                 base_pose="{object_pose}"
+                 offset_z="0.12"
+                 traj_speed="0.08"
+                 pos_tol="0.005"
+                 timeout_s="6.0"
+                 verify_force_N="{grasp_verify_force_N}"
+                 verify_min_tips="{grasp_min_fingertips}"
+                 lift_pose="{lift_pose}"
+                 current_gains="{current_gains}"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 8: Transport to goal position (with in-transit      -->
+        <!--   drop guard immediately after the move completes).       -->
+        <!-- ======================================================== -->
+        <SetGains current_gains="{current_gains}"
+                  trajectory_speed="0.1"/>
+
+        <MoveToPose target="{place_pose}"
+                    position_tolerance="0.005"
+                    timeout_s="12.0"/>
+
+        <IsGrasped force_threshold_N="{grasp_in_transit_min_N}"
+                   min_fingertips="{grasp_min_fingertips}"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 9: Lower to release height (with drop guard).       -->
+        <!-- ======================================================== -->
+        <ComputeOffsetPose input_pose="{place_pose}"
+                           offset_z="-0.05"
+                           output_pose="{lower_pose}"/>
+        <SetGains current_gains="{current_gains}"
+                  trajectory_speed="0.05"/>
+        <MoveToPose target="{lower_pose}"
+                    position_tolerance="0.003"
+                    timeout_s="6.0"/>
+
+        <IsGrasped force_threshold_N="{grasp_in_transit_min_N}"
+                   min_fingertips="{grasp_min_fingertips}"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 10: Release and retreat                             -->
+        <!-- ======================================================== -->
+        <SubTree ID="ReleaseAndRetreat"
+                 base_pose="{place_pose}"
+                 retreat_z="0.08"
+                 retreat_speed="0.1"
+                 timeout_s="6.0"
+                 retreat_pose="{retreat_pose}"
+                 current_gains="{current_gains}"/>
+
+        <!-- Restore original controller gains -->
+        <SetGains current_gains="{current_gains}"/>
+
+      </Sequence>
+
+      <!-- ── Failure path: open hand + retreat, then propagate FAILURE -->
+      <ForceFailure>
+        <SubTree ID="ContactStopEmergencyAbort"
+                 retreat_z="{grasp_abort_retreat_z}"
+                 current_gains="{current_gains}"/>
+      </ForceFailure>
+
+    </Fallback>
+  </BehaviorTree>
+
+</root>

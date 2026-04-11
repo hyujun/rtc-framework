@@ -1,7 +1,7 @@
 bt_coordinator:
   ros__parameters:
     # ── BT 설정 ──────────────────────────────────────────────────────────────
-    tree_file: "hand_motions.xml"   # trees/ 디렉토리 내 XML 파일명 (절대 경로도 지원)
+    tree_file: "pick_and_place_force_pi.xml"   # trees/ 디렉토리 내 XML 파일명 (절대 경로도 지원)
     tick_rate_hz: 80.0               # BT tick 주기 [Hz]
     repeat: false                     # true: SUCCESS 완료 후 자동 반복, FAILURE 시 정지
     repeat_delay_s: 1.0               # 반복 시 재시작 전 대기 시간 [s]
@@ -10,6 +10,8 @@ bt_coordinator:
     # ros2 param set /bt_coordinator paused true    → 일시 정지
     # ros2 param set /bt_coordinator step_mode true → 단계별 디버깅
     # ros2 service call /bt_coordinator/step std_srvs/srv/Trigger → 한 틱 실행
+    # ros2 param set /bt_coordinator tree_file "pick_and_place_contact_stop.xml"
+    # ros2 param set /bt_coordinator tree_file "pick_and_place_force_pi.xml"
     # ros2 param set /bt_coordinator tree_file "towel_unfold.xml" → 트리 전환
     paused: false                     # true: BT 틱 일시 정지
     step_mode: false                  # true: 자동 틱 비활성, ~/step 서비스로 수동 틱
@@ -27,13 +29,39 @@ bt_coordinator:
     # bb.<key> 형식으로 선언하면 트리 로드 후 Blackboard에 자동 주입됨
     # 타입은 YAML 값에서 자동 추론 (string, double, int, bool)
     #
-    # pick_and_place.xml 용:
+    # pick_and_place_contact_stop.xml / pick_and_place_force_pi.xml 공용:
     bb.place_pose: "0.3;-0.3;0.15;3.14;0.0;0.0"
     #
     # Phase 5 (SlowDescend) 에서 object_pose 의 Z를 덮어쓸 상수 값 [m].
     # .nan (기본값) 이면 비전 감지 Z를 그대로 사용 (pass-through).
     # 실제 값 예: 0.085 (테이블 표면 높이 기준 그립 Z)
-    bb.object_final_z: .nan
+    bb.object_final_z: 0.06
+    #
+    # 통합 grasp 파라미터 — contact_stop 트리와 force_pi 트리가 공유한다.
+    # 여기서 한 번만 정의하면 두 모드의 grasp/verify/sustained 기준이
+    # 항상 일치한다.
+    bb.grasp_target_force_N: 1.5    # 주 검출 / Force-PI 목표력 [N]
+    bb.grasp_verify_force_N: 0.8    # 닫힘 후 / 리프트 후 검증 floor [N]
+    bb.grasp_sustained_ms: 200      # IsForceAbove sustained 윈도우 [ms]
+    bb.grasp_min_fingertips: 2      # 최소 접촉 손가락 수
+    #
+    # 실패 대응 (EmergencyAbort / 사각지대 가드 / retry).
+    # 두 트리 모두 동일 변수를 참조 → 한 곳에서 튜닝.
+    bb.grasp_abort_retreat_z: 0.05  # 실패 시 EmergencyAbort 후퇴 거리 [m] (0=skip)
+    bb.grasp_in_transit_min_N: 0.5  # transport/lower 가드 임계 [N] (verify 보다 느슨)
+    bb.grasp_max_attempts: 2        # ForcePIGrasp retry 횟수 (1=비활성화, force_pi only)
+    bb.grasp_retry_settle_s: 0.3    # retry release 후 sensor settling [s]
+    #
+    # Phase 3 TCP 재배향 — task controller 전환 직후 현재 pose 기준 RPY 보정.
+    # tcp_rotation_mode 값:
+    #   "add"        : target.rpy = current.rpy + offset (단순 산술합, 작은 각도용)
+    #   "quat_body"  : target = current * offset (TCP 프레임 회전, intrinsic)
+    #   "quat_world" : target = offset * current (World 프레임 회전, extrinsic)
+    # 모든 offset 이 0 이면 어느 mode 든 no-op.
+    bb.tcp_rpy_offset_r: 0.0
+    bb.tcp_rpy_offset_p: 0.0
+    bb.tcp_rpy_offset_y: 0.0
+    bb.tcp_rotation_mode: "add"
     #
     # towel_unfold.xml 용:
     # bb.sweep_direction_x: 1.0

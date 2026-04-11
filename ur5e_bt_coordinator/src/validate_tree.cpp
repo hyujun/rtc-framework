@@ -5,7 +5,8 @@
 ///
 /// Usage:
 ///   ros2 run ur5e_bt_coordinator validate_tree <tree_file.xml>
-///   ros2 run ur5e_bt_coordinator validate_tree trees/pick_and_place.xml
+///   ros2 run ur5e_bt_coordinator validate_tree trees/pick_and_place_contact_stop.xml
+///   ros2 run ur5e_bt_coordinator validate_tree trees/pick_and_place_force_pi.xml
 ///
 /// Exit codes:
 ///   0 = valid, 1 = invalid, 2 = file not found

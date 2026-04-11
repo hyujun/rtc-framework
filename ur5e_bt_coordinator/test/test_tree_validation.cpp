@@ -117,10 +117,16 @@ TEST_F(TreeValidationTest, HandMotions)
   EXPECT_GT(count, 0u) << "hand_motions.xml should have nodes";
 }
 
-TEST_F(TreeValidationTest, PickAndPlace)
+TEST_F(TreeValidationTest, PickAndPlaceContactStop)
 {
-  auto count = ValidateTree("pick_and_place.xml");
-  EXPECT_GT(count, 0u) << "pick_and_place.xml should have nodes";
+  auto count = ValidateTree("pick_and_place_contact_stop.xml");
+  EXPECT_GT(count, 0u) << "pick_and_place_contact_stop.xml should have nodes";
+}
+
+TEST_F(TreeValidationTest, PickAndPlaceForcePI)
+{
+  auto count = ValidateTree("pick_and_place_force_pi.xml");
+  EXPECT_GT(count, 0u) << "pick_and_place_force_pi.xml should have nodes";
 }
 
 TEST_F(TreeValidationTest, ShapeInspect)

@@ -106,8 +106,13 @@
 
   <!-- ================================================================== -->
   <!-- ForcePIGrasp: Adaptive PI force-controlled grasp                   -->
-  <!--   Controller 내부 state machine이 force control 수행                 -->
-  <!--   Ports: target_force_N, grasp_timeout_ms                          -->
+  <!--   Controller 내부 state machine이 force control 수행.                -->
+  <!--   Detection 조건은 contact_stop ForceGrasp 와 동일하게 맞춘다:        -->
+  <!--     (1) FSM 가 kHolding 진입                                         -->
+  <!--     (2) IsForceAbove(verify_force_N, min_fingertips, sustained_ms)  -->
+  <!--   양쪽 검사 모두 통과해야 grasp 성공.                                  -->
+  <!--   Ports: target_force_N, grasp_timeout_ms,                          -->
+  <!--          verify_force_N, min_fingertips, sustained_ms               -->
   <!-- ================================================================== -->
   <BehaviorTree ID="ForcePIGrasp">
     <Sequence>
@@ -116,19 +121,18 @@
                 grasp_command="1"
                 grasp_target_force="{target_force_N}"/>
 
-      <!-- Wait for Holding phase (force converged) -->
+      <!-- Wait for Holding phase AND sustained per-fingertip force -->
       <Timeout msec="{grasp_timeout_ms}">
         <RetryUntilSuccessful num_attempts="-1">
           <Sequence>
             <WaitDuration duration_s="0.05"/>
             <IsGraspPhase phase="holding"/>
+            <IsForceAbove threshold_N="{verify_force_N}"
+                          min_fingertips="{min_fingertips}"
+                          sustained_ms="{sustained_ms}"/>
           </Sequence>
         </RetryUntilSuccessful>
       </Timeout>
-
-      <!-- Verify: still holding after brief settle -->
-      <WaitDuration duration_s="0.3"/>
-      <IsGraspPhase phase="holding"/>
     </Sequence>
   </BehaviorTree>
 
@@ -171,6 +175,135 @@
                   position_tolerance="0.005"
                   timeout_s="{timeout_s}"/>
     </Sequence>
+  </BehaviorTree>
+
+  <!-- ================================================================== -->
+  <!-- ContactStopOpen: contact_stop 모드 hand-open building block.         -->
+  <!--   GraspControl mode="open" + brief settle. Arm 정지.                  -->
+  <!--   확장성: 새 grasp 모드 추가 시 같은 인터페이스의 *Open SubTree만        -->
+  <!--   추가하면 EmergencyAbort 패턴이 그대로 재사용된다.                   -->
+  <!--   Ports: open_timeout_s                                             -->
+  <!-- ================================================================== -->
+  <BehaviorTree ID="ContactStopOpen">
+    <Sequence>
+      <GraspControl mode="open"
+                    target_positions="0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0"
+                    timeout_s="{open_timeout_s}"/>
+      <WaitDuration duration_s="0.2"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ================================================================== -->
+  <!-- ForcePIEmergencyAbort: 모든 실패 경로에서 호출되는 안전 종착 SubTree.  -->
+  <!--   1) FSM 통한 hand release (ForcePIRelease)                         -->
+  <!--   2) 현재 TCP pose 기준 +Z retreat_z                                  -->
+  <!--   어떤 단계가 실패하더라도 마지막 AlwaysSuccess 가 SUCCESS 보장 →     -->
+  <!--   호출부에서 ForceFailure 로 감싸 원래 FAILURE 를 propagate.           -->
+  <!--   Ports: retreat_z, current_gains                                   -->
+  <!-- ================================================================== -->
+  <BehaviorTree ID="ForcePIEmergencyAbort">
+    <Fallback>
+      <Sequence>
+        <SubTree ID="ForcePIRelease"
+                 release_timeout_ms="2000"
+                 current_gains="{current_gains}"/>
+        <WaitDuration duration_s="0.2"/>
+        <GetCurrentPose pose="{abort_current_pose}"/>
+        <ComputeOffsetPose input_pose="{abort_current_pose}"
+                           offset_z="{retreat_z}"
+                           output_pose="{abort_retreat_pose}"/>
+        <SetGains current_gains="{current_gains}"
+                  trajectory_speed="0.1"/>
+        <MoveToPose target="{abort_retreat_pose}"
+                    position_tolerance="0.01"
+                    timeout_s="5.0"/>
+      </Sequence>
+      <AlwaysSuccess/>
+    </Fallback>
+  </BehaviorTree>
+
+  <!-- ================================================================== -->
+  <!-- ContactStopEmergencyAbort: contact_stop 모드 안전 종착 SubTree.       -->
+  <!--   ForcePIEmergencyAbort 와 동일 구조이나 release 단계만               -->
+  <!--   ContactStopOpen 으로 교체.                                         -->
+  <!--   Ports: retreat_z, current_gains                                   -->
+  <!-- ================================================================== -->
+  <BehaviorTree ID="ContactStopEmergencyAbort">
+    <Fallback>
+      <Sequence>
+        <SubTree ID="ContactStopOpen"
+                 open_timeout_s="2.0"/>
+        <GetCurrentPose pose="{abort_current_pose}"/>
+        <ComputeOffsetPose input_pose="{abort_current_pose}"
+                           offset_z="{retreat_z}"
+                           output_pose="{abort_retreat_pose}"/>
+        <SetGains current_gains="{current_gains}"
+                  trajectory_speed="0.1"/>
+        <MoveToPose target="{abort_retreat_pose}"
+                    position_tolerance="0.01"
+                    timeout_s="5.0"/>
+      </Sequence>
+      <AlwaysSuccess/>
+    </Fallback>
+  </BehaviorTree>
+
+  <!-- ================================================================== -->
+  <!-- ForcePIGraspDiagnose: ForcePIGrasp 실패 시 마지막 phase 진단.         -->
+  <!--   Fallback 가 phase 별 IsGraspPhase 를 차례로 ticking.                -->
+  <!--   매치된 노드의 IsGraspPhase 가 RCLCPP_INFO 로                         -->
+  <!--   "[IsGraspPhase] phase 'X' reached" 출력 → 로그로 식별 가능.          -->
+  <!--   매치 phase 가 없으면 AlwaysSuccess 로 흡수.                          -->
+  <!--   호출부에서 ForceFailure 로 감싸 원래 FAILURE 를 propagate.           -->
+  <!--   Ports: 없음                                                       -->
+  <!-- ================================================================== -->
+  <BehaviorTree ID="ForcePIGraspDiagnose">
+    <Fallback>
+      <IsGraspPhase phase="approaching"/>
+      <IsGraspPhase phase="contact"/>
+      <IsGraspPhase phase="force_control"/>
+      <IsGraspPhase phase="holding"/>
+      <IsGraspPhase phase="releasing"/>
+      <IsGraspPhase phase="idle"/>
+      <AlwaysSuccess/>
+    </Fallback>
+  </BehaviorTree>
+
+  <!-- ================================================================== -->
+  <!-- ForcePIGraspWithRetry: ForcePIGrasp 만 (재)시도하는 retry wrapper.    -->
+  <!--   ApproachFromAbove / SlowDescend 는 호출부에서 한 번만 실행되고,      -->
+  <!--   여기서는 hand-only 재시도. 매 iteration:                             -->
+  <!--     1) ForcePIRelease (idempotent — 첫 iter Idle no-op,                -->
+  <!--        retry 시 stuck FSM 강제 해제)                                   -->
+  <!--     2) settling                                                       -->
+  <!--     3) ForcePIGrasp (실패 시 ForcePIGraspDiagnose 로 phase 로깅)        -->
+  <!--   확장성: ForcePIGrasp 의 모든 포트를 pure pass-through →               -->
+  <!--   호출부는 기존 ForcePIGrasp 와 동일한 인터페이스 + max_attempts +     -->
+  <!--   retry_settle_s 만 추가하면 됨.                                        -->
+  <!--   Ports: target_force_N, grasp_timeout_ms, verify_force_N,           -->
+  <!--          min_fingertips, sustained_ms, current_gains,                -->
+  <!--          max_attempts, retry_settle_s                                -->
+  <!-- ================================================================== -->
+  <BehaviorTree ID="ForcePIGraspWithRetry">
+    <RetryUntilSuccessful num_attempts="{max_attempts}">
+      <Sequence>
+        <SubTree ID="ForcePIRelease"
+                 release_timeout_ms="2000"
+                 current_gains="{current_gains}"/>
+        <WaitDuration duration_s="{retry_settle_s}"/>
+        <Fallback>
+          <SubTree ID="ForcePIGrasp"
+                   target_force_N="{target_force_N}"
+                   grasp_timeout_ms="{grasp_timeout_ms}"
+                   verify_force_N="{verify_force_N}"
+                   min_fingertips="{min_fingertips}"
+                   sustained_ms="{sustained_ms}"
+                   current_gains="{current_gains}"/>
+          <ForceFailure>
+            <SubTree ID="ForcePIGraspDiagnose"/>
+          </ForceFailure>
+        </Fallback>
+      </Sequence>
+    </RetryUntilSuccessful>
   </BehaviorTree>
 
 </root>

@@ -13,6 +13,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(rtc_msgs REQUIRED)
 find_package(shape_estimation_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(Eigen3 REQUIRED)
 
 # ── Library: all BT nodes + ROS bridge ─────────────────────────────────────
 add_library(bt_nodes SHARED
@@ -50,6 +51,7 @@ target_include_directories(bt_nodes PUBLIC
 ament_target_dependencies(bt_nodes
   rclcpp behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs
 )
+target_link_libraries(bt_nodes Eigen3::Eigen)
 
 # ── Executable: coordinator node ───────────────────────────────────────────
 add_executable(bt_coordinator_node
