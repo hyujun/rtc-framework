@@ -17,9 +17,9 @@ The `ur5e_*` packages are **robot-specific**: UR5e + 10-DOF hand hardware driver
 | Middleware | ROS 2 Humble / Jazzy, CycloneDDS |
 | Build | CMake 3.22+, colcon, ament_cmake / ament_python |
 | Framework Deps | Eigen 3.4, Pinocchio, ONNX Runtime |
-| Optional Deps | MuJoCo 3.x (simulation), BehaviorTree.CPP v4 (coordination) |
+| Optional Deps | MuJoCo 3.x (simulation), BehaviorTree.CPP v4 (coordination), ProxSuite (TSID QP solver) |
 | Robot-Specific HW | UR5e (ros2_control RTDE), 10-DOF Hand (UDP), STM32 ToF (UART) |
-| Test | GTest, pytest (30 tests across 6 packages) |
+| Test | GTest, pytest (60 tests across 10 packages) |
 | CI | GitHub Actions (`ros2-advanced-ci.yml`), Codecov |
 | Compiler flags | `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion` |
 
@@ -50,7 +50,7 @@ ros2 topic echo /system/estop_status                  # true = E-STOP active
 
 ## Repository Structure
 
-18 ROS2 packages at repo root (no `src/`). 12 `rtc_*` (robot-agnostic) + 2 `shape_estimation_*` + 4 `ur5e_*` (robot-specific). Each has its own `README.md` with detailed API and configuration.
+19 ROS2 packages at repo root (no `src/`). 13 `rtc_*` (robot-agnostic) + 2 `shape_estimation_*` + 4 `ur5e_*` (robot-specific). Each has its own `README.md` with detailed API and configuration.
 
 | Package | Type | Key Content |
 |---------|------|-------------|
@@ -66,6 +66,7 @@ ros2 topic echo /system/estop_status                  # true = E-STOP active
 | `rtc_scripts` | Shell | PREEMPT_RT build, CPU shield, IRQ affinity, UDP optimization |
 | `rtc_digital_twin` | Python | RViz2 multi-source JointState merge, URDF mimic auto-compute |
 | `rtc_urdf_bridge` | Library | Robot-agnostic URDF parser + Pinocchio model builder |
+| `rtc_tsid` | Library | TSID QP framework: WQP/HQP formulations, PostureTask, EOM/Contact/FrictionCone/TorqueLimit constraints, ProxSuite solver |
 | `shape_estimation` | Executable | ToF-based voxel point cloud + primitive fitting |
 | `ur5e_description` | Data | URDF + MJCF + meshes (DAE/STL/OBJ) |
 | `ur5e_hand_driver` | Executable | UDP event-driven driver, SeqLock state, ONNX F/T inference |
@@ -80,6 +81,7 @@ rtc_msgs, rtc_base (independent)
   +-- rtc_controller_interface <-- rtc_base, rtc_msgs, rtc_urdf_bridge
   |     +-- rtc_controllers <-- rtc_controller_interface, rtc_urdf_bridge
   |           +-- rtc_controller_manager <-- rtc_controllers, rtc_communication
+  +-- rtc_tsid <-- Pinocchio, ProxSuite, Eigen3, yaml-cpp
   +-- rtc_mujoco_sim <-- MuJoCo 3.x (optional)
 rtc_urdf_bridge <-- Pinocchio, tinyxml2, yaml-cpp
 ur5e_hand_driver <-- rtc_communication, rtc_inference, rtc_base
@@ -737,11 +739,13 @@ colcon test --packages-select rtc_controllers --ctest-args -R test_grasp_control
 colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 ```
 
-Test files by package (30 total):
+Test files by package (60 total):
 
 | Package | Tests | Framework |
 |---------|-------|-----------|
 | `ur5e_bt_coordinator` | 14 C++ tests (`test/test_*.cpp`) | GTest |
+| `rtc_tsid` | 11 C++ tests (QP solver, tasks, constraints, formulations, performance) | GTest |
+| `rtc_base` | 19 C++ tests (SeqLock, SPSC buffers, Bessel/Kalman filters, session dir) | GTest |
 | `rtc_controllers` | 6 C++ tests (trajectory + grasp) | GTest |
 | `rtc_urdf_bridge` | 5 C++ tests (URDF/model parsing) | GTest |
 | `shape_estimation` | 3 C++ tests (ToF + exploration) | GTest |
@@ -770,4 +774,8 @@ Test files by package (30 total):
 | BT trees + launch | `ur5e_bt_coordinator/trees/*.xml`, `launch/bt_coordinator.launch.py` |
 | Arm poses | `ur5e_bt_coordinator/config/poses.yaml` |
 | CycloneDDS config | `rtc_controller_manager/config/cyclone_dds.xml` |
+| TSID controller | `rtc_tsid/include/rtc_tsid/controller/tsid_controller.hpp` |
+| TSID formulations | `rtc_tsid/include/rtc_tsid/formulation/{wqp,hqp}_formulation.hpp` |
+| TSID tasks/constraints | `rtc_tsid/include/rtc_tsid/core/{task_base,constraint_base}.hpp` |
+| TSID types | `rtc_tsid/include/rtc_tsid/types/wbc_types.hpp` |
 | Supplementary docs | `docs/` (RT_OPTIMIZATION.md, SHELL_SCRIPTS.md, VSCODE_DEBUGGING.md) |

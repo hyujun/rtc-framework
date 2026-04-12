@@ -542,13 +542,21 @@ struct ThreadMetrics
 
   // Returns the number of physical CPU cores (excluding SMT/HT siblings).
   // Parses sysfs topology to count unique (socket_id, core_id) pairs.
-  // Falls back to GetOnlineCpuCount() if sysfs topology is unavailable.
+  // Falls back to cgroup CPU quota or GetOnlineCpuCount() if sysfs topology
+  // is unavailable (containers, VMs, restricted environments).
   //
   // This is the correct metric for selecting thread layouts (4/6/8-core)
   // because thread_config.hpp assigns threads to physical cores.
   // Example: i7-8700 (6C/12T) → returns 6, not 12.
+  //
+  // Container/VM detection order:
+  //   1. sysfs topology (bare-metal / full VM with topology exposed)
+  //   2. cgroup v2 cpu.max (Docker, Kubernetes with CPU limits)
+  //   3. cgroup v1 cpu.cfs_quota_us / cpu.cfs_period_us
+  //   4. sysconf(_SC_NPROCESSORS_ONLN) final fallback
   inline int GetPhysicalCpuCount() noexcept
   {
+    // ── Stage 1: sysfs topology (preferred) ──────────────────────────────
     std::set<std::pair<int, int>> unique_cores;
 
     for (int cpu = 0; cpu < 1024; ++cpu)
@@ -590,13 +598,56 @@ struct ThreadMetrics
       unique_cores.insert({socket_id, core_id});
     }
 
-    if (unique_cores.empty())
+    if (!unique_cores.empty())
     {
-      // Fallback: sysfs topology unavailable (VM, container, etc.)
-      return GetOnlineCpuCount();
+      return static_cast<int>(unique_cores.size());
     }
 
-    return static_cast<int>(unique_cores.size());
+    // ── Stage 2: cgroup v2 cpu.max ───────────────────────────────────────
+    {
+      FILE *f = std::fopen("/sys/fs/cgroup/cpu.max", "r");
+      if (f)
+      {
+        char max_str[32]{};
+        int period = 0;
+        if (std::fscanf(f, "%31s %d", max_str, &period) == 2 &&
+            std::string_view(max_str) != "max" && period > 0)
+        {
+          const int quota = std::atoi(max_str);
+          if (quota > 0)
+          {
+            std::fclose(f);
+            return std::max(1, quota / period);
+          }
+        }
+        std::fclose(f);
+      }
+    }
+
+    // ── Stage 3: cgroup v1 cpu.cfs_quota_us / period ─────────────────────
+    {
+      int quota = -1;
+      int period = 0;
+      FILE *fq = std::fopen("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "r");
+      if (fq)
+      {
+        std::fscanf(fq, "%d", &quota);
+        std::fclose(fq);
+      }
+      FILE *fp = std::fopen("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "r");
+      if (fp)
+      {
+        std::fscanf(fp, "%d", &period);
+        std::fclose(fp);
+      }
+      if (quota > 0 && period > 0)
+      {
+        return std::max(1, quota / period);
+      }
+    }
+
+    // ── Stage 4: final fallback ─���────────────────────────────────────────
+    return GetOnlineCpuCount();
   }
 
 // Aggregated thread configs selected at runtime for all threads.

@@ -47,14 +47,26 @@ class UdpSocket {
     return fd_ >= 0;
   }
 
-  // Binds to INADDR_ANY:port (receiver mode).
-  [[nodiscard]] bool Bind(int port) noexcept {
+  // Binds to address:port (receiver mode).
+  // Pass "0.0.0.0" or empty string to bind to all interfaces (INADDR_ANY).
+  [[nodiscard]] bool Bind(std::string_view bind_address, int port) noexcept {
     if (fd_ < 0 && !Open()) return false;
 
     sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_port        = htons(static_cast<uint16_t>(port));
-    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons(static_cast<uint16_t>(port));
+
+    if (bind_address.empty() || bind_address == "0.0.0.0") {
+      addr.sin_addr.s_addr = INADDR_ANY;
+    } else {
+      char ip_buf[INET_ADDRSTRLEN]{};
+      const auto len = std::min(bind_address.size(), sizeof(ip_buf) - 1);
+      std::memcpy(ip_buf, bind_address.data(), len);
+      if (inet_pton(AF_INET, ip_buf, &addr.sin_addr) <= 0) {
+        Close();
+        return false;
+      }
+    }
 
     if (::bind(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
       Close();
@@ -113,7 +125,7 @@ class UdpSocket {
   // -- I/O (allocation-free, noexcept) ---------------------------------------
 
   // Receives up to buf.size() bytes. Returns bytes received, or -1 on error.
-  [[nodiscard]] ssize_t Recv(std::span<char> buf) noexcept {
+  [[nodiscard]] ssize_t Recv(std::span<uint8_t> buf) noexcept {
     return ::recv(fd_, buf.data(), buf.size(), 0);
   }
 

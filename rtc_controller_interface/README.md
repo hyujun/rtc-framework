@@ -249,12 +249,14 @@ my_controller:
 | `device_state_log` | `kDeviceStateLog` | 통합 상태 로그 (DeviceStateLog) |
 | `device_sensor_log` | `kDeviceSensorLog` | 센서 + 추론 로그 (DeviceSensorLog) |
 | `grasp_state` | `kGraspState` | BT coordinator용 grasp 상태 (GraspState) |
+| `tof_snapshot` | `kToFSnapshot` | ToF 센서 + 핑거팁 포즈 스냅샷 (ToFSnapshot) |
+| `digital_twin_state` | `kDigitalTwinState` | 디지털 트윈용 관절 상태 (JointState, RELIABLE QoS) |
 | `joint_goal` | `kRobotTarget` | 하위 호환 별칭 |
 | `position_command` | `kRos2Command` | 하위 호환 별칭 |
 | `torque_command` | `kRos2Command` | 하위 호환 별칭 |
 | `hand_command` | `kJointCommand` | 하위 호환 별칭 |
 
-> 참고: `kDigitalTwinState` 역할은 `PublishRole` enum에 정의되어 있지만, YAML 역할 문자열 매핑에는 등록되어 있지 않아 YAML을 통해 직접 설정할 수 없습니다.
+> 참고: `kDigitalTwinState` 역할은 `PublishRole` enum에 정의되어 있으며, YAML에서 `"digital_twin_state"` 역할 문자열로 설정할 수 있습니다. 디지털 트윈용 JointState를 RELIABLE QoS로 퍼블리시합니다.
 
 ### 기본 토픽 설정
 

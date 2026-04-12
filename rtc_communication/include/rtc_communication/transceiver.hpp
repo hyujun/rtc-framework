@@ -96,7 +96,11 @@ class Transceiver {
     if (!transport_) return false;
     std::array<uint8_t, sizeof(SendPacket)> buf{};
     std::memcpy(buf.data(), &pkt, sizeof(SendPacket));
-    return transport_->Send(buf) >= 0;
+    const bool ok = transport_->Send(buf) >= 0;
+    if (ok) {
+      send_count_.fetch_add(1, std::memory_order_relaxed);
+    }
+    return ok;
   }
 
   [[nodiscard]] std::size_t send_count() const noexcept {

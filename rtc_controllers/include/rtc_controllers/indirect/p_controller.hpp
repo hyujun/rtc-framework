@@ -9,6 +9,7 @@
 #include <Eigen/Core>
 
 #include <array>
+#include <atomic>
 #include <memory>
 #include <span>
 #include <string>
@@ -61,6 +62,13 @@ public:
   [[nodiscard]] std::vector<double> GetCurrentGains() const noexcept override;
   [[nodiscard]] CommandType GetCommandType() const noexcept override {return command_type_;}
 
+  // ── E-STOP ──────────────────────────────────────────────────────────────
+  void TriggerEstop() noexcept override { estopped_.store(true, std::memory_order_release); }
+  void ClearEstop() noexcept override { estopped_.store(false, std::memory_order_release); }
+  [[nodiscard]] bool IsEstopped() const noexcept override {
+    return estopped_.load(std::memory_order_acquire);
+  }
+
   // Accessors (Google C++ Style: getter matches member name w/o trailing _).
   void set_gains(Gains gains) noexcept {gains_ = gains;}
   [[nodiscard]] Gains get_gains() const noexcept {return gains_;}
@@ -76,6 +84,7 @@ private:
   pinocchio::FrameIndex tip_frame_id_{0};
 
   CommandType command_type_{CommandType::kPosition};
+  std::atomic<bool> estopped_{false};
 
   std::vector<double> max_joint_velocity_;
   void ClampCommands(
