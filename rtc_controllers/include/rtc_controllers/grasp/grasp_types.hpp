@@ -60,6 +60,7 @@ struct GraspParams {
   // Anomaly detection
   double df_slip_threshold{5.0};      // [N/s] slip df/dt threshold (negative direction)
   double grip_tightening_ratio{0.15}; // force increase ratio on slip
+  double grip_decay_rate{0.1};          // [N/s] force decay rate toward target after tightening
   double f_max_multiplier{2.0};       // max force = f_target * multiplier
 
   // Filter

@@ -93,7 +93,7 @@ command[i] = current_pos[i] + kp[i] * (target[i] - current[i]) * dt
 - 출력 클램핑: `max_joint_velocity` (기본 2.0 rad/s)
 - FK 계산으로 TCP 위치 진단 제공 (`actual_task_positions`)
 - 궤적 생성기 미사용 (즉시 목표 추종)
-- E-STOP 미구현
+- E-STOP: `estopped_` 원자적 플래그 기반, 활성화 시 현재 위치 유지 (hold position)
 - 스레드 동기화 없음 (단일 스레드 전용)
 
 ```yaml
@@ -382,7 +382,7 @@ RTC_REGISTER_CONTROLLER(
 | **궤적** | 없음 | JointSpace 5차 | TaskSpace SE(3) 5차 | TaskSpace SE(3) 5차 |
 | **동역학** | FK만 | FK + G + C + J | FK + J | FK + J + G |
 | **영공간** | N/A | N/A | 관절 센터링 (3-DOF만) | N/A (전체 6-DOF 사용) |
-| **E-STOP** | 미구현 | PD 기반 safe_position 이동 | safe_position 위치 명령 | safe_position 위치 명령 |
+| **E-STOP** | 현재 위치 유지 (hold) | PD 기반 safe_position 이동 | safe_position 위치 명령 | safe_position 위치 명령 |
 | **역행렬** | N/A | N/A | LDLT (3x3/6x6) | PartialPivLU (6x6) |
 | **명령 제한** | velocity (기본 2.0 rad/s) | torque (기본 150 Nm) / velocity (기본 2.0 rad/s) | velocity (기본 2.0 rad/s) | velocity (기본 2.0 rad/s) |
 | **계산량** | 최소 | 중간 | 중간 | 높음 |

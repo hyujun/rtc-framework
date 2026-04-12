@@ -123,8 +123,8 @@ ds          = clamp(Kp_eff · e_f + Ki_eff · ∫e, ±ds_max)
 
 ### 3.3 Anti-windup
 - `integrator_frozen` 은 `ApplyDeformationGuard` 가 `remaining ≤ 0` 또는 `remaining < 10% · delta_s_max` 일 때 set
-- 해제는 Approaching→Contact 진입 시, Holding 의 slip 보정 시, phase reset 시
-- ⚠️ deformation guard 가 영역을 벗어나도 **자동 해제되지 않음** — Holding 에서 한번 frozen 되면 지속될 수 있음 (코드 주석 명시)
+- 해제 조건: (1) Approaching→Contact 진입 시, (2) Holding 의 slip 보정 시, (3) phase reset 시, (4) **deformation guard에서 여유 마진 회복 시** (`remaining >= 10% · delta_s_max`)
+- deformation guard의 인테그레이터 동결은 여유가 회복되면 자동 해제됩니다
 
 ---
 
@@ -160,6 +160,7 @@ ds          = clamp(Kp_eff · e_f + Ki_eff · ∫e, ±ds_max)
 | `f_ramp_rate` | 1.0 | N/s | f_desired ramp 속도 |
 | `f_max_multiplier` | 2.0 | — | Holding 시 최대 허용 force = `f_target · multiplier` |
 | `grip_tightening_ratio` | 0.15 | — | 슬립 감지 시 1회 force boost 비율 |
+| `grip_decay_rate` | 0.1 | N/s | Holding에서 tightening 후 f_desired 감쇠 속도 (f_target으로 복귀) |
 | `df_slip_threshold` | 5.0 | N/s | 슬립 판정 `df/dt` 임계 |
 
 튜닝 가이드:

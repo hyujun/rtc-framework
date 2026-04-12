@@ -229,6 +229,13 @@ void GraspController::UpdateHolding(double dt) noexcept
 
     if (!fs.contact_detected) continue;
 
+    // Gradual force decay toward active_target_force_ after tightening
+    if (fs.f_desired > active_target_force_) {
+      fs.f_desired = std::max(
+        fs.f_desired - params_.grip_decay_rate * dt,
+        active_target_force_);
+    }
+
     // Force control 유지
     double ds = ComputeAdaptivePI(f, dt);
     ApplyDeformationGuard(f, ds);
@@ -344,9 +351,10 @@ void GraspController::ApplyDeformationGuard(int finger, double& ds) noexcept
       ds *= remaining / (params_.delta_s_max * 0.1);
     }
     fs.integrator_frozen = true;
+  } else {
+    // 여유 충분: 인테그레이터 동결 해제 (deformation guard에 의한 동결만 해제)
+    fs.integrator_frozen = false;
   }
-  // else: 여유 있음 — deformation guard에서는 integrator 해제하지 않음
-  // (integrator_frozen은 PI 로직에서 별도로 관리)
 }
 
 void GraspController::ResetFingers() noexcept

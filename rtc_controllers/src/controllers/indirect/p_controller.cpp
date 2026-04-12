@@ -52,6 +52,20 @@ void PController::OnDeviceConfigsSet()
 
 ControllerOutput PController::Compute(const ControllerState & state) noexcept
 {
+  if (estopped_.load(std::memory_order_acquire)) {
+    // E-STOP: hold current position, zero velocity
+    ControllerOutput output{};
+    output.valid = true;
+    output.command_type = command_type_;
+    for (int d = 0; d < state.num_devices; ++d) {
+      for (int j = 0; j < state.devices[d].num_channels; ++j) {
+        output.devices[d].commands[j] = state.devices[d].positions[j];
+        device_targets_[d][j] = state.devices[d].positions[j];
+      }
+    }
+    return output;
+  }
+
   ControllerOutput output;
   output.num_devices = state.num_devices;
 
