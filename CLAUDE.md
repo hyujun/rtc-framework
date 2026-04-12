@@ -2,6 +2,29 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project Identity
+
+**RTC (Real-Time Control) Framework** — A robot-agnostic real-time control framework for URDF-based manipulators.
+
+The `rtc_*` packages are **robot-agnostic**: variable-DOF, configurable control rate (500Hz–2kHz), transport abstraction (UDP/CAN-FD/EtherCAT/RS485), lock-free SPSC architecture, and E-STOP safety system. They can be applied to any URDF manipulator without modification.
+
+The `ur5e_*` packages are **robot-specific**: UR5e + 10-DOF hand hardware drivers, launch files, demo controllers, and BehaviorTree coordinator. These serve as a reference integration built on top of the `rtc_*` framework.
+
+| Item | Value |
+|------|-------|
+| Lang | C++20 (GCC 11+/13+), Python 3.10+ |
+| OS | Ubuntu 22.04 (PREEMPT_RT optional) / 24.04 |
+| Middleware | ROS 2 Humble / Jazzy, CycloneDDS |
+| Build | CMake 3.22+, colcon, ament_cmake / ament_python |
+| Framework Deps | Eigen 3.4, Pinocchio, ONNX Runtime |
+| Optional Deps | MuJoCo 3.x (simulation), BehaviorTree.CPP v4 (coordination) |
+| Robot-Specific HW | UR5e (ros2_control RTDE), 10-DOF Hand (UDP), STM32 ToF (UART) |
+| Test | GTest, pytest (30 tests across 6 packages) |
+| CI | GitHub Actions (`ros2-advanced-ci.yml`), Codecov |
+| Compiler flags | `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion` |
+
+---
+
 ## Build & Run
 
 **Prerequisites**: Ubuntu 22.04 (ROS2 Humble) or 24.04 (ROS2 Jazzy), `realtime` group with `rtprio 99` / `memlock unlimited`.
@@ -199,9 +222,9 @@ Key config files (see each file for full parameter documentation):
 
 ### Updating an Existing Package
 
-When modifying code in any package (bug fix, feature addition, refactoring, API change, dependency update, etc.), you **MUST** complete ALL of the following steps before considering the task done. Do not skip any step.
+When modifying code in any package (bug fix, feature addition, refactoring, API change, dependency update, etc.), you **MUST** complete ALL of the following steps before considering the task done. Do not skip any step. **Code changes without corresponding documentation and metadata updates are considered incomplete and must not be committed.**
 
-#### 1. Unit Tests — Update & Run
+#### 1. Unit Tests -- Update & Run
 
 - **Identify affected tests**: Find all test files related to the changed code. Use the test table in the [Testing](#testing) section and check `<package>/test/` directory.
 - **Update existing tests**: If the change modifies public API, function signatures, behavior, or data types, update corresponding test cases to match. Ensure assertions reflect the new expected behavior.
@@ -213,42 +236,29 @@ When modifying code in any package (bug fix, feature addition, refactoring, API 
 - **For Python tests (pytest)**: Ensure new test files follow the `test_*.py` naming convention and are discoverable by pytest.
 - **Run tests and verify**:
   ```bash
-  # Build the package first
   ./build.sh -p <package_name>
-
-  # Run tests for the specific package
   colcon test --packages-select <package_name> --event-handlers console_direct+
   colcon test-result --verbose
-
-  # If a specific test fails, run it individually to debug
-  # C++:
-  colcon test --packages-select <package_name> --ctest-args -R <test_name>
-  # Python:
-  colcon test --packages-select <package_name> --pytest-args -k <test_name>
   ```
 - **All tests must pass** before proceeding. If a test failure is unrelated to the current change, note it explicitly but do not ignore it silently.
 
-#### 2. CMakeLists.txt — Verify & Update
+#### 2. CMakeLists.txt -- Verify & Update
 
 - **Source files**: If new `.cpp` files were added or existing ones renamed/removed, update `add_library()` or `add_executable()` target source lists.
 - **Header install**: If new public headers were added, verify they are included in `install(DIRECTORY include/ ...)`.
-- **Dependencies**: If new `find_package()` or `ament_target_dependencies()` are needed (e.g., new ROS2 package dependency, new third-party library), add them.
+- **Dependencies**: If new `find_package()` or `ament_target_dependencies()` are needed, add them.
 - **Test targets**: If new test files were added, add corresponding `ament_add_gtest()` or `ament_add_pytest_test()` entries.
 - **Message generation**: For `rtc_msgs`, if `.msg`/`.srv`/`.action` files were added or removed, update `rosidl_generate_interfaces()`.
 - **Ensure the package builds cleanly** with `./build.sh -p <package_name>` after CMakeLists.txt changes.
 
-#### 3. package.xml — Verify & Update
+#### 3. package.xml -- Verify & Update
 
-- **Dependencies**: If new package dependencies were introduced, add the appropriate tags:
-  - `<build_depend>` for build-time only dependencies
-  - `<exec_depend>` for runtime only dependencies
-  - `<depend>` for both build and runtime dependencies
-  - `<test_depend>` for test-only dependencies
+- **Dependencies**: Add appropriate tags (`<build_depend>`, `<exec_depend>`, `<depend>`, `<test_depend>`).
 - **Version**: Bump `<version>` if the change is significant (new feature, breaking API change). Follow semantic versioning.
 - **Description**: Update `<description>` if the package scope has changed.
-- **Consistency**: Ensure `package.xml` dependencies match `CMakeLists.txt` `find_package()` calls — they must be in sync.
+- **Consistency**: Ensure `package.xml` dependencies match `CMakeLists.txt` `find_package()` calls -- they must be in sync.
 
-#### 4. Config Files (YAML) — Verify & Update
+#### 4. Config Files (YAML) -- Verify & Update
 
 - **Parameter changes**: If code changes add, remove, or rename configurable parameters, update all relevant YAML config files:
   - Controller configs: `rtc_controllers/config/controllers/{direct|indirect}/*.yaml`
@@ -260,25 +270,32 @@ When modifying code in any package (bug fix, feature addition, refactoring, API 
 - **Comments**: Add or update inline YAML comments for new/changed parameters to document valid ranges and units.
 - **Topic routing**: If topic names or device groups changed, update the `topics:` section in affected controller YAMLs.
 
-#### 5. README.md — Verify & Update
+#### 5. Documentation -- Verify & Update
 
-- **Each package has its own `README.md`** with detailed API and configuration documentation. Update it to reflect:
-  - New/changed public API (functions, classes, parameters)
-  - Updated usage examples if behavior changed
-  - New/changed configuration parameters and their descriptions
-  - Updated dependency information
-- **If the change affects cross-package behavior**, also update:
-  - This `CLAUDE.md` file (architecture, data flow, tables, key file locations)
-  - Supplementary docs in `docs/` if applicable (RT_OPTIMIZATION.md, SHELL_SCRIPTS.md, etc.)
+Every package modification **MUST** include corresponding documentation updates. Documentation that is out of sync with code is treated as a bug.
+
+- **Package `README.md`** (mandatory for every code change):
+  - Update public API documentation (functions, classes, parameters, return types)
+  - Update usage examples if behavior changed
+  - Update configuration parameter descriptions (name, type, default, valid range, units)
+  - Update dependency information if new dependencies were added
+  - If the package README contains architecture diagrams or data flow descriptions, update them
+
+- **Cross-package documentation** (when the change affects behavior beyond the package boundary):
+  - This `CLAUDE.md` file: update architecture, data flow, tables, key file locations, controller gains layout, threading model, or any other section that references the changed code
+  - Supplementary docs in `docs/` if applicable: `RT_OPTIMIZATION.md`, `SHELL_SCRIPTS.md`, `VSCODE_DEBUGGING.md`
+  - Root `README.md`: update if the change adds new packages, new features, or changes the architecture diagram
+
+- **Inline code documentation**:
+  - Add or update Doxygen-style comments (`///` or `/** */`) for new or changed public headers
+  - Update comments in YAML config files to reflect valid ranges, units, and parameter descriptions
+  - If a function's contract, preconditions, or thread-safety guarantees change, update the corresponding header comment
 
 #### 6. Final Verification
 
 After all updates are complete, perform a final check:
 ```bash
-# Build the package (and downstream dependents if API changed)
 ./build.sh -p <package_name>
-
-# Run all tests for affected packages
 colcon test --packages-select <package_name> [<dependent_packages>...] --event-handlers console_direct+
 colcon test-result --verbose
 ```
@@ -304,26 +321,372 @@ If the change touches `rtc_base` or `rtc_msgs` (widely depended-upon packages), 
 Session logs: `logging_data/YYMMDD_HHMM/{controller,monitor,device,sim,plots,motions}/`
 
 Session/logging root resolution (4-tier chain, shared between `rtc_base/logging/session_dir.hpp` and `rtc_tools.utils.session_dir`):
-1. `$RTC_SESSION_DIR` → `$UR5E_SESSION_DIR` (legacy fallback) — used as-is if set.
+1. `$RTC_SESSION_DIR` -> `$UR5E_SESSION_DIR` (legacy fallback) -- used as-is if set.
 2. `$COLCON_PREFIX_PATH` first entry's parent + `/logging_data` (requires write access).
-3. Walk up from `cwd` looking for `install/` + `src/` siblings → that dir + `/logging_data`.
+3. Walk up from `cwd` looking for `install/` + `src/` siblings -> that dir + `/logging_data`.
 4. Final fallback: `$PWD/logging_data`.
 
-Typical use: source `install/setup.bash` in the colcon ws, then `ros2 launch ...` — step 2 keeps all sessions under `{ws}/logging_data` regardless of cwd.
+Typical use: source `install/setup.bash` in the colcon ws, then `ros2 launch ...` -- step 2 keeps all sessions under `{ws}/logging_data` regardless of cwd.
 
 ---
 
 ## Code Conventions
 
+- **Style guide**: Follows [ROS 2 Code Style](https://docs.ros.org/en/rolling/The-ROS2-Project/Contributing/Code-Style-Language-Versions.html) and [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html) as baseline
 - **Namespace**: `rtc` (all packages)
-- **Naming**: Google C++ Style -- `snake_case` members with trailing `_`
+- **Naming**: Google C++ Style — `snake_case` members with trailing `_`, `PascalCase` classes/types, `kConstant` for compile-time constants
+- **Modern C++20**: Prefer `std::jthread`/`stop_token` over raw threads, `std::span` over pointer+size, `std::string_view` over `const std::string&` for non-owning, `concepts` for template constraints, `[[likely]]/[[unlikely]]` for branch hints, `constexpr` wherever possible, structured bindings, `std::optional`/`std::expected` over error codes
+- **RAII**: All resource acquisition (sockets, file handles, memory) via RAII wrappers. Raw `new`/`delete` prohibited; use stack allocation or pre-allocated buffers
 - **`noexcept`** on all RT paths (exceptions = process termination, intentional)
-- **C++20**: jthread, stop_token, span, string_view, concepts, `[[likely]]/[[unlikely]]`, constexpr
 - **`[[nodiscard]]`** on status-returning functions; **`static_assert`** on template params
-- **Include order**: project -> ROS2/third-party -> C++ stdlib
-- **Eigen**: pre-allocated buffers, `noalias()`, zero heap on 500Hz path
+- **Include order**: project headers → ROS 2 / third-party → C++ stdlib (each group alphabetically sorted)
+- **Eigen**: pre-allocated buffers, `noalias()`, zero heap on 500Hz path. Never use `auto` for Eigen expressions (expression template aliasing)
 - **Compiler flags**: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`
-- **ROS2 Node**: Prefer `rclcpp_lifecycle::LifecycleNode` over `rclcpp::Node` for managed state transitions (unconfigured → inactive → active → finalized)
+- **ROS 2 Node**: Prefer `rclcpp_lifecycle::LifecycleNode` over `rclcpp::Node` for managed state transitions (unconfigured → inactive → active → finalized)
+- **ROS 2 API**: Use `rclcpp::QoS` profiles explicitly (never rely on defaults), `MutuallyExclusiveCallbackGroup` for thread-safety, `ParameterDescriptor` with ranges for declared parameters
+
+### Documentation Requirements
+
+- **Doxygen for all public API**: Every public class, function, and non-trivial member must have Doxygen-style comments (`@brief`, `@param`, `@return`, `@note`)
+- **Kinematics & control algorithms**: Functions implementing mathematical formulas must include:
+  - The equation in LaTeX-compatible Doxygen notation (`@f$..@f$`)
+  - Reference to the source paper/textbook (author, year, equation number)
+  - Units and coordinate frame assumptions for each parameter
+  - Example:
+    ```cpp
+    /**
+     * @brief Compute damped Jacobian pseudoinverse.
+     *
+     * @f$ J^{\dagger} = J^T (J J^T + \lambda^2 I)^{-1} @f$
+     *
+     * Ref: Wampler (1986), Eq. 12. Uses body Jacobian in base frame.
+     *
+     * @param J Body Jacobian (6 x n_joints), base frame
+     * @param damping Damping factor lambda [dimensionless], loaded from YAML
+     * @return Damped pseudoinverse (n_joints x 6)
+     * @note Singular values below 1e-6 are clamped. See Domain Conventions for frame rules.
+     */
+    ```
+- **FSM and state transitions**: Document valid transitions, entry/exit conditions, and timeout behaviors
+- **Thread safety**: Every shared data member must document its synchronization mechanism (SeqLock, SPSC, atomic, mutex with scope)
+
+---
+
+## Domain Conventions
+
+These conventions apply to all `rtc_*` (robot-agnostic) packages. Robot-specific packages (`ur5e_*`) inherit these and may add hardware-specific constraints documented in their own README.
+
+- **Coordinate frame**: Right-hand rule, ZYX Euler (roll-pitch-yaw)
+- **Rotation representation**: Internal computation = quaternion (`Eigen::Quaterniond`, Hamilton convention). Euler conversion allowed only at API boundaries
+- **Quaternion interpolation**: Always use `slerp` — `lerp`/`nlerp` are prohibited (no normalization guarantee, geodesic path distortion). Normalize quaternions after any arithmetic operation
+- **Units**: SI base (m, rad, s, kg, N). Degree inputs must be explicitly converted to radians
+- **Jacobian**: Body Jacobian by default. Spatial Jacobian requires `_spatial` suffix in function/variable names
+- **Dynamics**: M(q)q̈ + C(q,q̇)q̇ + g(q) = τ notation. Pinocchio RNEA-based
+- **Variable naming**: Respect paper notation — `J_b` (body Jacobian), `q_d` (desired joint), `x_e` (end-effector pose), `K_d` (desired stiffness)
+- **Singularity handling**: Damped pseudoinverse required (`damping` parameter via YAML config), division-by-near-zero protection mandatory
+
+---
+
+## Anti-patterns (Never Generate)
+
+| Forbidden Pattern | Reason | Alternative |
+|-------------------|--------|-------------|
+| `new`/`malloc`/`std::vector::push_back` on RT path | Breaks RT determinism | `std::array`, pre-allocated `Eigen::Matrix<fixed>` |
+| `throw`/`catch` on RT path | `noexcept` violation -> process termination | Error code return, `std::optional` |
+| `std::cout`/`RCLCPP_*` on RT path | Blocking I/O | SPSC queue -> delegate to logging thread |
+| `std::mutex::lock` on RT path | Priority inversion | `try_lock`, SeqLock, SPSC |
+| `auto` return type with Eigen | Expression template aliasing | Explicit types (`Eigen::Vector3d`, etc.) |
+| `rclcpp::spin()` standalone | Single-thread bottleneck | `MultiThreadedExecutor` + CallbackGroup separation |
+| `lerp` for quaternion interpolation | Non-normalized, path distortion | `slerp` required |
+| Hardcoded control gains | Cannot tune at runtime | YAML parameters + `~/controller_gains` topic |
+| Indiscriminate `// NOLINT` usage | Suppresses warnings without fixing | Fix root cause |
+| Modifying existing test assertions to pass | Hides regressions | Fix new code to pass existing tests |
+| Code change without doc/metadata update | Causes doc-code drift | Always update README, CMakeLists, package.xml, YAML together |
+
+---
+
+## AI Harness Engineering
+
+This section defines behavioral protocols that Claude Code must follow when working on this project.
+
+### Critical Thinking Protocol
+
+Before writing any code, self-check the following questions. If any concern is found, raise it with the user before proceeding.
+
+**Safety**
+- Could this change compromise deterministic execution of the RT loop (500Hz)?
+- Is the code safe under exceptional conditions (singularity, joint limit, communication loss, E-STOP)?
+- Are numerically unstable operations (matrix inversion, near-zero division) properly guarded?
+
+**Design Coherence**
+- Is this consistent with existing architecture patterns (Strategy controllers, SPSC offload, SeqLock sharing)?
+- Is there a simpler alternative to this approach?
+- Is introducing a new dependency justified?
+
+**Mathematical Correctness**
+- Do coordinate frame (right-hand), units (SI), and rotation convention (Hamilton quaternion, ZYX Euler) match Domain Conventions?
+- Are Jacobian/mass matrix dimensions consistent?
+
+**Performance Impact**
+- Can the computation complete within the control period (2ms @ 500Hz)?
+- Are there unnecessary copies, redundant computations, or heap allocations?
+
+When a concern is found, report it in this format:
+
+```
+[CONCERN] <one-line summary>
+Severity: Critical | Warning | Info
+Detail: <specific issue>
+Alternative: <suggested approach>
+```
+
+- **Critical** (RT safety, numerical instability, data loss): Do NOT proceed without user confirmation
+- **Warning** (performance degradation, design inconsistency): Raise concern but follow user's decision
+- **Info** (better alternative, style suggestion): Mention briefly and proceed
+
+If a user request appears technically problematic, provide evidence-based alternatives. However, if the user insists after hearing the rationale, comply — the user may have context that Claude does not.
+
+### Self-QA Protocol
+
+Before finalizing any generated code, verify that the output does not exhibit typical AI-generated slop:
+
+**Slop Detection Checklist**
+- No placeholder or stub implementations left behind (`// TODO: implement`, empty function bodies) unless explicitly agreed with the user
+- No hallucinated APIs — every function call, method name, and class reference must exist in the actual codebase or linked library; when uncertain, read the source file first
+- No generic variable names (`data`, `result`, `temp`, `value`) where domain-specific names exist (use `joint_positions`, `jacobian_body`, `force_error`)
+- No redundant comments restating what the code obviously does (`// increment counter` above `++counter`)
+- No over-abstraction — do not introduce wrapper classes, factory patterns, or inheritance hierarchies that the existing architecture does not use
+- No copy-paste drift — if generating multiple similar blocks (per-joint, per-device), verify each instance uses the correct index, name, and configuration
+
+**Edge Case Audit**
+Before declaring implementation complete, explicitly verify handling of:
+- **Singularity**: Jacobian rank deficiency near singular configurations → damped pseudoinverse with configurable `damping`
+- **Joint limits**: `q` approaching `q_min`/`q_max` → clamp or null-space repulsion, never ignore
+- **Communication loss**: State topic not received within timeout → E-STOP trigger, not silent stale-data usage
+- **Array bounds**: Device index ≥ `num_devices`, channel index ≥ `kMaxDeviceChannels` → bounds check or `static_assert`
+- **Numerical precision**: Quaternion normalization after arithmetic, rotation matrix orthogonality, `dt` near zero guard
+- **E-STOP recovery**: Controller state after E-STOP clear → must re-initialize hold position, not resume from stale target
+- **Empty/zero input**: Zero-length trajectory, identity rotation target, zero-force grasp command → graceful no-op or explicit rejection
+- **Thread safety**: Any new shared state between RT and non-RT threads → must use SeqLock, SPSC, or atomic; document the chosen mechanism
+
+If any edge case is intentionally left unhandled, document it explicitly in the response with rationale.
+
+### Task Decomposition Policy
+
+**Decomposition trigger** -- If any of the following conditions apply, present a task plan for user approval before starting implementation:
+- 3+ files need to be created or modified
+- Changes span 2+ packages (refer to dependency graph)
+- New class hierarchy or interface design is involved
+- Estimated code volume exceeds 300 lines
+
+**Atomic task criteria**:
+- Single responsibility: focus on one module or one feature
+- Self-verifiable: can independently pass Verification Gates
+- Interface-first: finalize headers/interfaces before implementation
+- 100-200 lines of change (excluding tests)
+
+**Decomposition order**: Interface definition -> core data structures -> algorithm implementation -> external integration -> tests -> config/docs
+
+**Task plan format**:
+
+```
+Goal: <one line>
+Scope: <package/directory list>
+
+Step 1/N -- <title>
+  Files: <target files>
+  Work: <description>
+  Depends: <prior Step or existing code>
+  Verify: <applicable Gate list>
+
+Step 2/N -- ...
+```
+
+Each Step must include [Files, Work, Depends, Verify]. When user says "proceed", execute one Step at a time. When user says "proceed all", execute all Steps sequentially and report verification results after each.
+
+### Context Management
+
+**Context Anchor** -- Record the following at the end of each Step completion during multi-step tasks:
+
+```
+[Context Anchor -- Step N/M complete]
+- Finalized interfaces: <Class>::<key method signatures>
+- Key design decisions: <decisions made in this step>
+- Shared data structures: <types/constants referenced by next step>
+- Remaining TODOs: <intentionally deferred items>
+- Next Step: <what comes next>
+```
+
+**File-based context preservation** -- When conversations grow long, persist key design decisions to files to guard against context window eviction:
+
+```bash
+echo "## $(date +%Y-%m-%d): <decision summary>" >> docs/DESIGN_DECISIONS.md
+echo "- [ ] <item>" >> docs/TODO.md
+```
+
+**Context recovery protocol** -- Execute before resuming work in a new conversation or when context exhaustion is suspected:
+
+```bash
+find . -maxdepth 2 -name '*.hpp' -path '*/include/*' | head -30
+git log --oneline -10
+git diff --stat HEAD~3
+cat rtc_controller_interface/include/rtc_controller_interface/rt_controller_interface.hpp
+cat docs/DESIGN_DECISIONS.md 2>/dev/null
+cat docs/TODO.md 2>/dev/null
+```
+
+Report current state summary to the user, then resume work.
+
+**Context exhaustion self-detection** -- When any of the following occurs, do NOT write code from guesswork. Re-read the relevant file(s) first:
+- Cannot recall a function signature finalized in a previous Step
+- Need to read the same file more than twice
+- User points out inconsistency with a prior decision
+
+If the conversation has grown too long, update Context Anchor + `docs/DESIGN_DECISIONS.md`, then suggest starting a new conversation.
+
+### Large Change Management
+
+**Interface-contract-first**: For changes spanning multiple packages: (1) Finalize all affected headers and confirm build passes -> (2) Implement each module independently -> (3) Integration tests after all implementations complete.
+
+**Change scope limits**:
+- Do not modify 4+ files simultaneously in a single Step (split into smaller Steps if exceeded)
+- Do not mix refactoring and feature additions in the same Step
+- Changes to `rtc_base` or `rtc_msgs` require full downstream build + test per dependency graph
+
+**Git commit granularity**: Commit after each Step passes all Gates. Format: `[package_name] summary (Step N/M)`
+
+### Tool Usage Policy
+
+**Before modifying code**:
+- Always read the current file content and understand its structure before editing
+- Check related headers/interfaces first to prevent signature mismatches
+- If existing tests exist, review them first and verify they still pass after modification
+
+**Command execution rules**:
+- Never run long-blocking commands (`ros2 launch`, `while true`, unbounded `ros2 topic echo`, etc.)
+- Build only changed packages: `./build.sh -p <pkg>` or `colcon build --packages-select`
+- On test failure, read the full log and analyze root cause before attempting fixes (no blind retries)
+
+### Self-Verification Protocol
+
+After generating or modifying code, pass the following Gates in order. On Gate failure, fix and re-verify (max 3 attempts). After 3 failures, write a Failure Report.
+
+**Gate 1 -- Lint & Format**
+
+```bash
+clang-format --dry-run --Werror <modified_files>
+clang-tidy <modified_files> -p build/ --warnings-as-errors='*'
+ruff check <modified_python_files>
+ruff format --check <modified_python_files>
+```
+
+- Respect project `.clang-tidy` and `.clang-format` settings
+- On format mismatch, auto-fix and report the diff
+
+**Gate 2 -- Build**
+
+```bash
+./build.sh -p <package_name>
+```
+
+- Treat warnings as errors (project compiler flags enforce this)
+- On build failure, resolve errors sequentially starting from the first (do not batch-fix cascading errors)
+- For template/constexpr errors, trace back to the instantiation point
+
+**Gate 3 -- Test**
+
+```bash
+colcon test --packages-select <pkg> --event-handlers console_direct+
+colcon test-result --verbose
+```
+
+- If existing tests break, fix the new code (never modify existing test assertions)
+- New public functions/classes must have corresponding tests
+- Numerical tests must specify tolerance (`EXPECT_NEAR`, `approx`)
+
+**Gate 4 -- RT Safety Audit**
+
+```bash
+grep -rn 'new \|malloc\|throw \|std::cout\|std::cerr\|std::mutex' \
+  rtc_controller_manager/src/ rtc_controllers/src/ ur5e_hand_driver/src/ \
+  --include='*.cpp' --include='*.hpp'
+grep -rn 'push_back\|emplace_back\|resize\|reserve' \
+  rtc_controller_manager/src/ rtc_controllers/src/ ur5e_hand_driver/src/ \
+  --include='*.cpp' --include='*.hpp'
+```
+
+- If any forbidden pattern is detected in RT paths, replace with pre-allocated or lock-free alternatives
+- Non-RT paths (`rtc_tools/`, `rtc_digital_twin/`, `test/`) are exempt
+
+**Gate 5 -- Documentation & Metadata Audit**
+
+Verify that all required non-code files have been updated alongside the code change. **A code change without corresponding documentation and metadata updates must not pass this gate.**
+
+```bash
+git diff --name-only HEAD
+git diff --name-only HEAD -- '<pkg>/src/' '<pkg>/include/' | head -1 && \
+  git diff --name-only HEAD -- '<pkg>/README.md' | grep -q README.md || \
+  echo "FAIL: source changed but README.md not updated"
+```
+
+Mandatory co-update matrix -- if any left-column artifact was changed, all corresponding right-column files **MUST** be updated:
+
+| Changed Artifact | Required Co-updates |
+|-----------------|---------------------|
+| New/renamed `.cpp` or `.hpp` | `CMakeLists.txt` (source lists, install targets) |
+| New `find_package()` / dependency | `CMakeLists.txt` + `package.xml` (must stay in sync) |
+| New/changed public API | Package `README.md` (API docs, examples) + Doxygen header comments |
+| New/changed configurable parameter | YAML config files (value + comment with range/units) + package `README.md` |
+| New/changed topic name or device group | Controller YAML `topics:` section + package `README.md` |
+| New test file | `CMakeLists.txt` (`ament_add_gtest` / `ament_add_pytest_test`) |
+| New/changed `.msg`/`.srv`/`.action` | `CMakeLists.txt` (`rosidl_generate_interfaces`) + `package.xml` |
+| Cross-package behavioral change | `CLAUDE.md` + `docs/*.md` + root `README.md` as applicable |
+| Significant feature or breaking API | `package.xml` version bump (semver) |
+| Function contract/precondition change | Header Doxygen comment (thread-safety, param constraints) |
+
+### Failure Reporting Protocol
+
+When self-verification fails after 3 retry attempts or the task cannot be completed, submit a structured failure report:
+
+```
+[UNRESOLVED] <one-line problem summary>
+
+Symptom: <observed error message, verbatim>
+Root cause analysis: <why it fails; mark as "suspected" if uncertain>
+Attempted fixes:
+  1. <attempt 1> -> <result>
+  2. <attempt 2> -> <result>
+  3. <attempt 3> -> <result>
+Current state: <buildable/unbuildable, partial functionality, etc.>
+Impact scope: <effect on other modules>
+Suggestion: <areas for user to review, alternative approaches>
+```
+
+**Never do the following**:
+- Optimistic hedging: "it will probably work", "might be an environment difference"
+- Ignore errors and wrap up with "everything else works fine"
+- Silently reduce feature scope without mentioning it
+- Shift verification responsibility: "please test in your environment"
+- Paste error logs without root cause analysis
+- Commit code in a failing state
+
+### Completion Checklist
+
+Self-check after every code modification/generation task:
+
+- [ ] clang-format / ruff format passed
+- [ ] clang-tidy 0 warnings / ruff check 0 warnings
+- [ ] `./build.sh -p <pkg>` succeeded (0 warnings)
+- [ ] All existing tests pass
+- [ ] New tests added for new public API
+- [ ] No forbidden patterns detected in RT paths
+- [ ] `CMakeLists.txt` updated (sources, deps, install targets, test targets)
+- [ ] `package.xml` updated (deps in sync with CMakeLists.txt, version bump if needed)
+- [ ] YAML config files updated (new/changed parameters, defaults, comments with range/units)
+- [ ] Package `README.md` updated (API, parameters, usage examples, dependencies)
+- [ ] Doxygen comments added/updated for new/changed public headers
+- [ ] Cross-package docs updated if applicable (`CLAUDE.md`, `docs/*.md`, root `README.md`)
+- [ ] Changed file list and modification summary reported to user
 
 ---
 
