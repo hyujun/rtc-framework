@@ -19,7 +19,7 @@ The `ur5e_*` packages are **robot-specific**: UR5e + 10-DOF hand hardware driver
 | Framework Deps | Eigen 3.4, Pinocchio, ONNX Runtime |
 | Optional Deps | MuJoCo 3.x (simulation), BehaviorTree.CPP v4 (coordination), ProxSuite (TSID QP solver) |
 | Robot-Specific HW | UR5e (ros2_control RTDE), 10-DOF Hand (UDP), STM32 ToF (UART) |
-| Test | GTest, pytest (41 tests across 9 packages) |
+| Test | GTest, pytest (60 tests across 10 packages) |
 | CI | GitHub Actions (`ros2-advanced-ci.yml`), Codecov |
 | Compiler flags | `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion` |
 
@@ -739,12 +739,13 @@ colcon test --packages-select rtc_controllers --ctest-args -R test_grasp_control
 colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 ```
 
-Test files by package (41 total):
+Test files by package (60 total):
 
 | Package | Tests | Framework |
 |---------|-------|-----------|
 | `ur5e_bt_coordinator` | 14 C++ tests (`test/test_*.cpp`) | GTest |
 | `rtc_tsid` | 11 C++ tests (QP solver, tasks, constraints, formulations, performance) | GTest |
+| `rtc_base` | 19 C++ tests (SeqLock, SPSC buffers, Bessel/Kalman filters, session dir) | GTest |
 | `rtc_controllers` | 6 C++ tests (trajectory + grasp) | GTest |
 | `rtc_urdf_bridge` | 5 C++ tests (URDF/model parsing) | GTest |
 | `shape_estimation` | 3 C++ tests (ToF + exploration) | GTest |
