@@ -55,7 +55,7 @@ BT::NodeStatus IsForceAbove::tick()
   static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
 
   RCLCPP_DEBUG_THROTTLE(logger(), steady_clock,
-                        ::rtc_bt::logging::kThrottleFastMs,
+                        ::rtc_bt::logging::kThrottleSlowMs,
                         "count=%d/%d max_force=%.2fN threshold=%.2fN",
                         count, min_ft, gs.max_force, threshold);
 
@@ -65,7 +65,7 @@ BT::NodeStatus IsForceAbove::tick()
       return BT::NodeStatus::SUCCESS;
     }
     RCLCPP_WARN_THROTTLE(
-      logger(), steady_clock, ::rtc_bt::logging::kThrottleFastMs,
+      logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
       "%d/%d fingertips >= %.2fN (max_force=%.2fN)",
       count, min_ft, threshold, gs.max_force);
     return BT::NodeStatus::FAILURE;
@@ -88,7 +88,7 @@ BT::NodeStatus IsForceAbove::tick()
       return BT::NodeStatus::SUCCESS;
     }
     RCLCPP_WARN_THROTTLE(
-      logger(), steady_clock, ::rtc_bt::logging::kThrottleFastMs,
+      logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
       "condition met but not yet sustained "
       "(%ldms / %dms required, count=%d/%d)",
       static_cast<long>(elapsed_ms), sustained_ms, count, min_ft);
@@ -97,7 +97,7 @@ BT::NodeStatus IsForceAbove::tick()
 
   sustained_active_ = false;
   RCLCPP_WARN_THROTTLE(
-    logger(), steady_clock, ::rtc_bt::logging::kThrottleFastMs,
+    logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
     "%d/%d fingertips >= %.2fN "
     "(max_force=%.2fN, sustained_ms=%d not started)",
     count, min_ft, threshold, gs.max_force, sustained_ms);

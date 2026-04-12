@@ -38,6 +38,21 @@ public:
 
     const std::string display_name =
         node.name().empty() ? "<anon>" : node.name();
+
+    // Condition nodes return FAILURE as normal polling behavior
+    // (e.g. IsGrasped/IsForceAbove inside RetryUntilSuccessful).
+    // Log at DEBUG to avoid flooding the terminal.
+    if (node.type() == BT::NodeType::CONDITION) {
+      RCLCPP_DEBUG(
+        ::rtc_bt::logging::FailLogger(),
+        "[BT FAIL] %s (type=%s uid=%u) %s -> FAILURE",
+        display_name.c_str(),
+        node.registrationName().c_str(),
+        static_cast<unsigned>(node.UID()),
+        BT::toStr(prev_status).c_str());
+      return;
+    }
+
     RCLCPP_ERROR(
       ::rtc_bt::logging::FailLogger(),
       "[BT FAIL] %s (type=%s uid=%u) %s -> FAILURE",

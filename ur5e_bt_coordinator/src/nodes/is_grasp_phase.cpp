@@ -72,7 +72,7 @@ BT::NodeStatus IsGraspPhase::tick()
   // so we don't want to flood the log every tick.
   static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
   RCLCPP_WARN_THROTTLE(
-    logger(), steady_clock, ::rtc_bt::logging::kThrottleFastMs,
+    logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
     "phase mismatch current=%s(%d) target=%s(%d). "
     "If this persists, check that grasp_controller_type='force_pi' is set "
     "in demo_shared.yaml and that the Force-PI state machine is actually "

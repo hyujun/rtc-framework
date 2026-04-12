@@ -36,7 +36,7 @@ BT::NodeStatus IsGrasped::tick()
   if (std::abs(threshold - static_cast<double>(gs.force_threshold)) < 0.01 &&
       min_ft == gs.min_fingertips) {
     RCLCPP_DEBUG_THROTTLE(logger(), steady_clock,
-                          ::rtc_bt::logging::kThrottleFastMs,
+                          ::rtc_bt::logging::kThrottleSlowMs,
                           "grasp_detected=%s contacts=%d max_force=%.2fN",
                           gs.grasp_detected ? "true" : "false",
                           gs.num_active_contacts, gs.max_force);
@@ -46,7 +46,7 @@ BT::NodeStatus IsGrasped::tick()
       return BT::NodeStatus::SUCCESS;
     }
     RCLCPP_WARN_THROTTLE(logger(), steady_clock,
-                         ::rtc_bt::logging::kThrottleFastMs,
+                         ::rtc_bt::logging::kThrottleSlowMs,
                          "not grasped (contacts=%d/%d max_force=%.2fN/%.2fN)",
                          gs.num_active_contacts, gs.min_fingertips,
                          gs.max_force, gs.force_threshold);
@@ -66,7 +66,7 @@ BT::NodeStatus IsGrasped::tick()
 
   bool grasped = (count >= min_ft);
   RCLCPP_DEBUG_THROTTLE(logger(), steady_clock,
-                        ::rtc_bt::logging::kThrottleFastMs,
+                        ::rtc_bt::logging::kThrottleSlowMs,
                         "count=%d/%d threshold=%.2fN", count, min_ft, threshold);
   if (grasped) {
     RCLCPP_INFO(logger(), "grasp confirmed (custom: %d fingertips >= %.2fN)",
@@ -74,7 +74,7 @@ BT::NodeStatus IsGrasped::tick()
     return BT::NodeStatus::SUCCESS;
   }
   RCLCPP_WARN_THROTTLE(logger(), steady_clock,
-                       ::rtc_bt::logging::kThrottleFastMs,
+                       ::rtc_bt::logging::kThrottleSlowMs,
                        "custom check failed "
                        "(%d/%d fingertips >= %.2fN, max_force=%.2fN)",
                        count, min_ft, threshold, static_cast<double>(max_force));
