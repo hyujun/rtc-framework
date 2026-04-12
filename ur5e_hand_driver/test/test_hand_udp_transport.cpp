@@ -1,7 +1,5 @@
-// Unit tests for hand_udp_transport.hpp — mode validation on request-response.
-//
-// Tier 2: Uses loopback UDP sockets to verify that transport methods correctly
-// reject responses whose mode field doesn't match the requested mode.
+// Unit tests for hand_udp_transport.hpp — HandCommStats, transport lifecycle,
+// and mode validation on request-response via loopback UDP.
 
 #include <gtest/gtest.h>
 
@@ -10,6 +8,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <thread>
 
 #include <arpa/inet.h>
@@ -214,22 +213,6 @@ TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMatch_ReturnsTrue) {
   EXPECT_TRUE(result);
   EXPECT_EQ(transport.comm_stats().mode_mismatch, 0u);
 }
-
-}  // namespace rtc::test
-
-// Unit tests for hand_udp_transport.hpp — UDP transport and HandCommStats.
-//
-// Tier 1.5: Tests construction, initial state, and HandCommStats defaults.
-// Socket-level tests use loopback where safe, no real hand hardware needed.
-
-#include <gtest/gtest.h>
-
-#include "ur5e_hand_driver/hand_udp_transport.hpp"
-
-#include <cstdint>
-#include <string>
-
-namespace rtc::test {
 
 // ── HandCommStats defaults ─────────────────────────────────────────────────
 
