@@ -24,6 +24,23 @@ if(BUILD_TESTING)
   if(TARGET test_session_dir)
     target_include_directories(test_session_dir PRIVATE include)
   endif()
+
+  ament_add_gtest(test_seqlock test/test_seqlock.cpp)
+  if(TARGET test_seqlock)
+    target_include_directories(test_seqlock PRIVATE include)
+    target_link_libraries(test_seqlock pthread)
+  endif()
+
+  ament_add_gtest(test_spsc_buffer test/test_spsc_buffer.cpp)
+  if(TARGET test_spsc_buffer)
+    target_include_directories(test_spsc_buffer PRIVATE include)
+    target_link_libraries(test_spsc_buffer pthread)
+  endif()
+
+  ament_add_gtest(test_filters test/test_filters.cpp)
+  if(TARGET test_filters)
+    target_include_directories(test_filters PRIVATE include)
+  endif()
 endif()
 
 ament_package()
