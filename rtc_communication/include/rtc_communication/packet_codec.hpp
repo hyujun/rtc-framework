@@ -8,7 +8,10 @@
 //   - SendPacket   : packed struct for the wire-format send packet
 //   - State        : application-level state type (decoded output)
 //   - static Decode(span<const uint8_t>, State&) -> bool
-//   - static Encode(const SendPacket&, span<uint8_t>) -> void
+//
+// Encode is NOT enforced by the concept — codecs may provide a static
+// Encode() method, but it is optional. The generic EncodePacket() helper
+// covers the common trivially-copyable memcpy case.
 //
 // Domain-specific codecs satisfy this concept.
 
@@ -27,6 +30,7 @@ namespace rtc {
 //   C::SendPacket  -- trivially copyable packed struct
 //   C::State       -- decoded state type
 //   C::Decode(span<const uint8_t>, State&) -> bool
+// Optional (not enforced by concept):
 //   C::Encode(const SendPacket&, span<uint8_t, sizeof(SendPacket)>) -> void
 
 template <typename C>

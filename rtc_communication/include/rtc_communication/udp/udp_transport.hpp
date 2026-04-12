@@ -24,7 +24,8 @@ class UdpTransport : public TransportInterface {
 
   [[nodiscard]] bool Open() override {
     if (config_.bind_port > 0) {
-      if (!recv_socket_.Bind(config_.bind_port)) return false;
+      if (!recv_socket_.Bind(config_.bind_address, config_.bind_port))
+        return false;
       recv_socket_.SetRecvBufferSize(config_.recv_buffer_size);
       recv_socket_.SetRecvTimeout(config_.recv_timeout_ms);
     }
@@ -45,9 +46,7 @@ class UdpTransport : public TransportInterface {
   }
 
   [[nodiscard]] ssize_t Recv(std::span<uint8_t> buffer) noexcept override {
-    // UdpSocket::Recv takes span<char>, so reinterpret
-    return recv_socket_.Recv(
-        std::span<char>(reinterpret_cast<char*>(buffer.data()), buffer.size()));
+    return recv_socket_.Recv(buffer);
   }
 
   void SetRecvTimeout(int timeout_ms) noexcept override {
