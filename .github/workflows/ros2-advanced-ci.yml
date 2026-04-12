@@ -24,21 +24,41 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # 모든 job에서 공유하는 패키지 목록
-  CI_PACKAGES: >-
+  # ── 패키지 목록 (모든 job에서 공유) ──────────────────────────────
+  # colcon --packages-up-to 빌드 대상 (의존성 자동 포함: rtc_base, rtc_msgs 등)
+  # 제외: rtc_tsid (proxsuite 미설치), ur5e_bt_coordinator (behaviortree_cpp 미설치),
+  #       rtc_mujoco_sim (MuJoCo 미설치)
+  BUILD_PACKAGES: >-
     rtc_controller_manager
     rtc_controllers
     ur5e_bringup
     ur5e_hand_driver
     rtc_urdf_bridge
     shape_estimation
-  TEST_PACKAGES: >-
+  # C++ 테스트 실행 대상 (BUILD_PACKAGES의 부분집합 + 의존성으로 빌드되는 rtc_base)
+  CPP_TEST_PACKAGES: >-
+    rtc_base
     rtc_controllers
     rtc_urdf_bridge
     shape_estimation
+    ur5e_bringup
+    ur5e_hand_driver
   PYTHON_TEST_PACKAGES: >-
     rtc_tools
     rtc_digital_twin
+  # cppcheck 대상 (include/ 또는 src/ 가 있는 C++ 패키지)
+  LINT_PACKAGES: >-
+    rtc_base
+    rtc_communication
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_inference
+    rtc_msgs
+    rtc_urdf_bridge
+    shape_estimation
+    ur5e_bringup
+    ur5e_hand_driver
 
 jobs:
   # ============================================================
@@ -72,63 +92,54 @@ jobs:
           python:
             - 'rtc_tools/**/*.py'
             - 'rtc_digital_twin/**/*.py'
+            - 'rtc_tools/setup.py'
+            - 'rtc_tools/setup.cfg'
+            - 'rtc_digital_twin/setup.py'
+            - 'rtc_digital_twin/setup.cfg'
+            - 'rtc_msgs/msg/*.msg'
+            - 'rtc_msgs/srv/*.srv'
           urdf:
             - 'ur5e_description/**/*.urdf'
             - 'ur5e_description/**/*.xacro'
             - 'ur5e_description/**/*.xml'
 
   # ============================================================
-  #  C++ Linting (cppcheck only — clang-tidy가 상위 호환)
-  #  cpplint 제거: clang-tidy의 readability/modernize/bugprone가
-  #  cpplint 검사 범위를 포함하며, CPPLINT.cfg에서 이미 6개 필터 비활성화
+  #  C++ Linting (cppcheck) — jazzy 1회만 실행
+  #  cppcheck는 컴파일러/distro 무관 정적 분석이므로 matrix 불필요.
+  #  clang-tidy가 상위 호환이나, cppcheck는 빌드 없이 빠르게 실행 가능.
   # ============================================================
   lint-cpp:
-    name: C++ Lint (cppcheck, ${{ matrix.ros_distro }})
+    name: C++ Lint (cppcheck)
     needs: changes
     if: needs.changes.outputs.cpp == 'true'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            ros_distro: humble
-          - os: ubuntu-24.04
-            ros_distro: jazzy
-      fail-fast: false
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
-      with:
-        path: src/rtc-framework
 
-    - name: Setup ROS2 ${{ matrix.ros_distro }}
+    - name: Setup ROS2 Jazzy
       uses: ros-tooling/setup-ros@v0.7
       with:
-        required-ros-distributions: ${{ matrix.ros_distro }}
+        required-ros-distributions: jazzy
 
     - name: Cache apt packages
-      uses: awalsh128/cache-apt-pkgs-action@latest
+      uses: awalsh128/cache-apt-pkgs-action@v1
       with:
         packages: >-
-          ros-${{ matrix.ros_distro }}-pinocchio
-          ros-${{ matrix.ros_distro }}-tinyxml2-vendor
+          ros-jazzy-pinocchio
+          ros-jazzy-tinyxml2-vendor
           libyaml-cpp-dev
           libtinyxml2-dev
           libeigen3-dev
-        version: ${{ matrix.ros_distro }}-lint-v2
+        version: jazzy-lint-v3
 
     - name: Run cppcheck
       env:
         AMENT_CPPCHECK_ALLOW_SLOW_VERSIONS: 1
       run: |
-        source /opt/ros/${{ matrix.ros_distro }}/setup.bash
-        cd src/rtc-framework
+        source /opt/ros/jazzy/setup.bash
 
-        # test/ 디렉토리를 제외한 소스 파일만 cppcheck 실행
-        PACKAGES=(
-          rtc_base rtc_communication rtc_controller_interface
-          rtc_controller_manager rtc_controllers rtc_inference
-          rtc_msgs rtc_urdf_bridge ur5e_bringup ur5e_hand_driver
-        )
+        # LINT_PACKAGES 환경 변수에서 패키지 목록 로드
+        read -ra PACKAGES <<< "$LINT_PACKAGES"
 
         ERRORS=0
         for pkg in "${PACKAGES[@]}"; do
@@ -187,7 +198,6 @@ jobs:
       run: |
         source /opt/ros/${{ matrix.ros_distro }}/setup.bash
         colcon build \
-          --packages-select $PYTHON_TEST_PACKAGES \
           --packages-up-to $PYTHON_TEST_PACKAGES
 
     - name: Run Python tests
@@ -271,7 +281,6 @@ jobs:
 
   # ============================================================
   #  Build, Test & Coverage (distro matrix)
-  #  + compile_commands.json을 artifact로 공유 → clang-tidy 재사용
   # ============================================================
   build-test-coverage:
     name: Build & Test (${{ matrix.ros_distro }})
@@ -299,7 +308,6 @@ jobs:
     - name: Upgrade colcon
       run: pip install -U colcon-cmake colcon-core
 
-    # colcon 빌드 캐시
     - name: Cache colcon workspace
       uses: actions/cache@v4
       with:
@@ -311,7 +319,7 @@ jobs:
           colcon-${{ matrix.ros_distro }}-
 
     - name: Cache apt packages
-      uses: awalsh128/cache-apt-pkgs-action@latest
+      uses: awalsh128/cache-apt-pkgs-action@v1
       with:
         packages: >-
           ros-${{ matrix.ros_distro }}-pinocchio
@@ -321,48 +329,27 @@ jobs:
           libtinyxml2-dev
           libeigen3-dev
           lcov
-        version: ${{ matrix.ros_distro }}-build-v3
+        version: ${{ matrix.ros_distro }}-build-v4
 
-    - name: Build Packages (with coverage + compile_commands)
+    - name: Build Packages (with coverage)
       run: |
         source /opt/ros/${{ matrix.ros_distro }}/setup.bash
-        # MuJoCo/BT/ONNX 패키지 제외 (CI에 해당 라이브러리 미설치)
         colcon build \
-          --packages-up-to $CI_PACKAGES \
+          --packages-up-to $BUILD_PACKAGES \
           --cmake-args \
             -DCMAKE_BUILD_TYPE=Debug \
             -DBUILD_TESTING=ON \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             '-DCMAKE_CXX_FLAGS=--coverage -fprofile-arcs -ftest-coverage' \
             '-DCMAKE_C_FLAGS=--coverage' \
             '-DCMAKE_EXE_LINKER_FLAGS=--coverage' \
             '-DCMAKE_SHARED_LINKER_FLAGS=--coverage'
-
-    - name: Merge & upload compile_commands.json
-      run: |
-        python3 -c "
-        import json, glob
-        commands = []
-        for f in glob.glob('build/*/compile_commands.json'):
-            with open(f) as fh:
-                commands.extend(json.load(fh))
-        with open('compile_commands.json', 'w') as fh:
-            json.dump(commands, fh, indent=2)
-        "
-
-    - name: Upload compile_commands.json
-      uses: actions/upload-artifact@v4
-      with:
-        name: compile-commands-${{ matrix.ros_distro }}
-        path: compile_commands.json
-        retention-days: 1
 
     - name: Run Tests
       run: |
         source /opt/ros/${{ matrix.ros_distro }}/setup.bash
         source install/setup.bash
         colcon test \
-          --packages-select $TEST_PACKAGES \
+          --packages-select $CPP_TEST_PACKAGES \
           --event-handlers console_cohesion+ \
           --return-code-on-test-failure
 
@@ -375,8 +362,8 @@ jobs:
     - name: Generate Coverage Report
       if: always()
       run: |
-        # 빌드 실패 시 coverage 디렉토리가 없으면 skip
-        if [ ! -d "build/rtc_controllers" ] && [ ! -d "build/rtc_urdf_bridge" ]; then
+        # 빌드 실패 시 skip
+        if [ ! -d "build" ] || [ -z "$(ls -A build/ 2>/dev/null)" ]; then
           echo "::warning::build directories not found — skipping coverage"
           exit 0
         fi
@@ -393,23 +380,26 @@ jobs:
           LCOV_IGNORE=""
         fi
 
-        # 테스트가 있는 패키지별로 coverage 수집
+        # CPP_TEST_PACKAGES와 동일한 패키지에서 coverage 수집
         COVERAGE_DIRS=""
-        for pkg in rtc_controllers rtc_urdf_bridge shape_estimation; do
+        for pkg in rtc_base rtc_controllers rtc_urdf_bridge shape_estimation ur5e_bringup ur5e_hand_driver; do
           if [ -d "build/$pkg" ]; then
             COVERAGE_DIRS="$COVERAGE_DIRS --directory build/$pkg"
           fi
         done
 
+        if [ -z "$COVERAGE_DIRS" ]; then
+          echo "::warning::No build directories found for coverage"
+          exit 0
+        fi
+
         if [ "$LCOV_MAJOR" -ge 2 ]; then
-          # lcov 2.x: --initial 제거됨, --capture만 사용
           lcov --capture \
             $COVERAGE_DIRS \
             --output-file coverage_merged.info \
             $BRANCH_RC \
             $LCOV_IGNORE
         else
-          # lcov 1.x: baseline + test coverage 병합
           lcov --capture --initial \
             $COVERAGE_DIRS \
             --output-file coverage_base.info \
@@ -456,7 +446,6 @@ jobs:
           $BRANCH_RC \
           $LCOV_IGNORE
 
-        # coverage 요약 출력
         echo "=== Coverage Summary ==="
         lcov --list coverage_filtered.info $BRANCH_RC || true
 
@@ -504,7 +493,7 @@ jobs:
       run: pip install -U colcon-cmake colcon-core
 
     - name: Cache apt packages
-      uses: awalsh128/cache-apt-pkgs-action@latest
+      uses: awalsh128/cache-apt-pkgs-action@v1
       with:
         packages: >-
           ros-humble-pinocchio
@@ -518,7 +507,7 @@ jobs:
       run: |
         source /opt/ros/humble/setup.bash
         colcon build \
-          --packages-up-to $CI_PACKAGES \
+          --packages-up-to $BUILD_PACKAGES \
           --cmake-args \
             -DCMAKE_BUILD_TYPE=Release
 
@@ -526,12 +515,12 @@ jobs:
       uses: github/codeql-action/analyze@v3
 
   # ============================================================
-  #  Clang-Tidy Analysis — jazzy 1회만 (정적 분석은 distro 무관)
-  #  build-test의 compile_commands.json 재사용
+  #  Clang-Tidy Analysis — jazzy 1회, build-test와 병렬 실행
+  #  자체 빌드 수행 (coverage 플래그 없이 깨끗한 compile_commands.json 생성)
   # ============================================================
   clang-tidy:
     name: Clang-Tidy
-    needs: [changes, build-test-coverage]
+    needs: changes
     if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-24.04
     continue-on-error: true
@@ -546,19 +535,19 @@ jobs:
     - name: Upgrade colcon
       run: pip install -U colcon-cmake colcon-core
 
-    # build-test-coverage와 동일 빌드 캐시 공유 (같은 키)
+    # build-test-coverage와 캐시 키를 분리 (coverage 플래그 혼입 방지)
     - name: Cache colcon workspace
       uses: actions/cache@v4
       with:
         path: |
           build/
           install/
-        key: colcon-jazzy-${{ hashFiles('**/CMakeLists.txt', '**/package.xml') }}
+        key: colcon-tidy-jazzy-${{ hashFiles('**/CMakeLists.txt', '**/package.xml') }}
         restore-keys: |
-          colcon-jazzy-
+          colcon-tidy-jazzy-
 
     - name: Cache apt packages
-      uses: awalsh128/cache-apt-pkgs-action@latest
+      uses: awalsh128/cache-apt-pkgs-action@v1
       with:
         packages: >-
           clang-tidy
@@ -567,32 +556,35 @@ jobs:
           libyaml-cpp-dev
           libtinyxml2-dev
           libeigen3-dev
-        version: jazzy-tidy-v2
+        version: jazzy-tidy-v3
 
-    - name: Download compile_commands.json
-      uses: actions/download-artifact@v4
-      with:
-        name: compile-commands-jazzy
-
-    # 캐시 miss 시에만 빌드 (캐시 hit → build/ 이미 존재)
-    - name: Build (cache miss fallback)
+    # 항상 빌드 실행 (캐시 hit 시 incremental, miss 시 full)
+    # coverage 플래그 없이 빌드하여 깨끗한 분석 보장
+    - name: Build Packages
       run: |
-        if [ ! -d "build" ] || [ -z "$(ls -A build/ 2>/dev/null)" ]; then
-          echo "Cache miss — rebuilding"
-          source /opt/ros/jazzy/setup.bash
-          colcon build \
-            --packages-up-to $CI_PACKAGES \
-            --cmake-args \
-              -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-              -DCMAKE_BUILD_TYPE=Debug
-        else
-          echo "Cache hit — skipping build"
-        fi
+        source /opt/ros/jazzy/setup.bash
+        colcon build \
+          --packages-up-to $BUILD_PACKAGES \
+          --cmake-args \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+    - name: Merge compile_commands.json
+      run: |
+        python3 -c "
+        import json, glob
+        commands = []
+        for f in glob.glob('build/*/compile_commands.json'):
+            with open(f) as fh:
+                commands.extend(json.load(fh))
+        with open('compile_commands.json', 'w') as fh:
+            json.dump(commands, fh, indent=2)
+        print(f'Merged {len(commands)} compilation entries')
+        "
 
     - name: Run clang-tidy
       run: |
         echo "=== Clang-Tidy Analysis ==="
-        # run-clang-tidy: 병렬 실행으로 성능 향상
         run-clang-tidy -p . -quiet \
           'rtc_controller_interface/src/.*\.cpp' \
           'rtc_controller_manager/src/.*\.cpp' \
@@ -603,11 +595,18 @@ jobs:
           'shape_estimation/src/.*\.cpp' 2>&1 | \
           tee clang-tidy-output.txt || true
 
-        # 경고/에러 요약
+        # Job Summary에 경고/에러 수 출력
+        WARNINGS=$(grep -c "warning:" clang-tidy-output.txt || true)
+        ERRORS=$(grep -c "error:" clang-tidy-output.txt || true)
         echo ""
         echo "=== Summary ==="
-        grep -c "warning:" clang-tidy-output.txt && echo "warnings found" || echo "No warnings"
-        grep -c "error:" clang-tidy-output.txt && echo "errors found" || echo "No errors"
+        echo "Warnings: $WARNINGS"
+        echo "Errors: $ERRORS"
+
+        # GitHub Actions Job Summary
+        echo "## Clang-Tidy Results" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **Warnings**: $WARNINGS" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **Errors**: $ERRORS" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Upload clang-tidy Results
       if: always()
