@@ -306,4 +306,33 @@
     </RetryUntilSuccessful>
   </BehaviorTree>
 
+  <!-- ================================================================== -->
+  <!-- PoseBasedEmergencyAbort: pose-based grasp 실패 시 안전 종착 SubTree. -->
+  <!--   Force controller 미사용 트리용. SetHandPose "hand_open"으로        -->
+  <!--   release 후 현재 TCP 기준 +Z retreat.                              -->
+  <!--   어떤 단계가 실패하더라도 AlwaysSuccess가 SUCCESS 보장 →             -->
+  <!--   호출부에서 ForceFailure로 감싸 원래 FAILURE를 propagate.           -->
+  <!--   Ports: retreat_z, current_gains                                   -->
+  <!-- ================================================================== -->
+  <BehaviorTree ID="PoseBasedEmergencyAbort">
+    <Fallback>
+      <Sequence>
+        <SetHandPose pose="hand_open"
+                     hand_trajectory_speed="2.0"
+                     current_gains="{current_gains}"/>
+        <WaitDuration duration_s="0.2"/>
+        <GetCurrentPose pose="{abort_current_pose}"/>
+        <ComputeOffsetPose input_pose="{abort_current_pose}"
+                           offset_z="{retreat_z}"
+                           output_pose="{abort_retreat_pose}"/>
+        <SetGains current_gains="{current_gains}"
+                  trajectory_speed="0.1"/>
+        <MoveToPose target="{abort_retreat_pose}"
+                    position_tolerance="0.01"
+                    timeout_s="5.0"/>
+      </Sequence>
+      <AlwaysSuccess/>
+    </Fallback>
+  </BehaviorTree>
+
 </root>

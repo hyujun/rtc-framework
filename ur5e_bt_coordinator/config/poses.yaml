@@ -15,6 +15,15 @@ bt_coordinator:
     hand_pose.home:       [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
     hand_pose.full_flex:  [30.0, 60.0, 45.0,  0.0, 60.0, 45.0,  0.0, 60.0, 45.0,  60.0]
 
+    # Pose-based grasp 포즈 (grip 강도별, pick_and_place.xml 용)
+    # hand_open: 완전 개방 (home과 동일, 의미적 구분을 위해 별도 정의)
+    # hand_close_soft/medium/hard: full_flex 대비 약 40%/70%/100%
+    # 실제 물체에 맞게 튜닝 필요
+    hand_pose.hand_open:         [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
+    hand_pose.hand_close_soft:   [10.0, 25.0, 18.0,  0.0, 25.0, 18.0,  0.0, 25.0, 18.0,  25.0]
+    hand_pose.hand_close_medium: [20.0, 45.0, 33.0,  0.0, 45.0, 33.0,  0.0, 45.0, 33.0,  45.0]
+    hand_pose.hand_close_hard:   [30.0, 60.0, 45.0,  0.0, 60.0, 45.0,  0.0, 60.0, 45.0,  60.0]
+
     # Opposition 포즈: 엄지 → 각 손가락
     hand_pose.thumb_index_oppose:   [15.0, 45.0, 35.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
     hand_pose.index_oppose:         [0.0, 0.0, 0.0,  -5.0, 40.0, 30.0,  0.0, 0.0, 0.0,  0.0]

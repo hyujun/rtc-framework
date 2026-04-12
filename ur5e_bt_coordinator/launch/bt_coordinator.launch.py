@@ -61,6 +61,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'groot2_port', default_value='0',
             description='Groot2 ZMQ port (0 = disabled, 1667 = default)'),
+        DeclareLaunchArgument(
+            'grip', default_value='',
+            description='Grip strength for pose-based grasp: soft, medium, hard. '
+                        'Empty = use YAML default (medium)'),
     ]
 
     def launch_setup(context):
@@ -78,6 +82,7 @@ def generate_launch_description():
         paused = LaunchConfiguration('paused').perform(context)
         groot2_port = int(
             LaunchConfiguration('groot2_port').perform(context))
+        grip = LaunchConfiguration('grip').perform(context)
 
         # Only override parameters that the user explicitly set
         overrides = {}
@@ -93,6 +98,8 @@ def generate_launch_description():
             overrides['paused'] = paused.lower() == 'true'
         if groot2_port > 0:
             overrides['groot2_port'] = groot2_port
+        if grip in ('soft', 'medium', 'hard'):
+            overrides['bb.hand_close_pose'] = f'hand_close_{grip}'
 
         bt_node = Node(
             package='ur5e_bt_coordinator',

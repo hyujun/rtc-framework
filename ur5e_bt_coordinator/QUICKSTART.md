@@ -26,14 +26,21 @@ ros2 launch ur5e_bringup robot.launch.py robot_ip:=192.168.1.10
 # 기본 실행 (hand_motions.xml, YAML + 포즈 자동 로드)
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py
 
-# Pick and Place
-ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place.xml
+# ── Pick and Place (pose-based grasp, grasp controller 미사용) ──
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place.xml              # medium grip (기본)
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place.xml grip:=soft    # 부드러운 물체
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place.xml grip:=hard    # 단단한 물체
 
-# Towel Unfold
+# ── Pick and Place (force-based grasp, grasp controller 필요) ──
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place_contact_stop.xml  # contact_stop
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place_force_pi.xml      # force-PI (retry 지원)
+
+# 기타
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=towel_unfold.xml
-
-# Hand Motions with repeat
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=hand_motions.xml repeat:=true
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=vision_approach.xml
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=shape_inspect.xml
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=search_motion.xml
 ```
 
 ## 4. 런타임 제어
@@ -71,6 +78,11 @@ ros2 run ur5e_bt_coordinator validate_tree pick_and_place.xml
 ```yaml
 # 예: 엄지-검지 opposition 포즈 조정
 hand_pose.thumb_index_oppose: [15.0, 45.0, 35.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
+
+# 예: grip 강도 포즈 조정 (pick_and_place.xml용)
+hand_pose.hand_close_soft:   [10.0, 25.0, 18.0,  0.0, 25.0, 18.0,  0.0, 25.0, 18.0,  25.0]
+hand_pose.hand_close_medium: [20.0, 45.0, 33.0,  0.0, 45.0, 33.0,  0.0, 45.0, 33.0,  45.0]
+hand_pose.hand_close_hard:   [30.0, 60.0, 45.0,  0.0, 60.0, 45.0,  0.0, 60.0, 45.0,  60.0]
 
 # 예: UR5e 자세 조정 (12개 포즈 사용 가능: home_pose, demo_pose, ready,
 # table_top, front_reach, side_reach, handover, stow, look_up, look_down,

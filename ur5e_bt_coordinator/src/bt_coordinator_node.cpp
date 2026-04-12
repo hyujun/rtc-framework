@@ -33,6 +33,7 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <functional>
 #include <sstream>
@@ -40,6 +41,8 @@
 namespace rtc_bt {
 
 namespace {
+constexpr const char* kDegSuffix = "_deg";
+constexpr std::size_t kDegSuffixLen = 4;  // strlen("_deg")
 auto coord_log()    { return ::rtc_bt::logging::CoordLogger(); }
 auto watchdog_log() { return ::rtc_bt::logging::WatchdogLogger(); }
 }  // namespace
@@ -246,6 +249,24 @@ void BtCoordinatorNode::InitializeBlackboard()
         RCLCPP_WARN(coord_log(), "blackboard: %s: unsupported type, skipped",
                     key.c_str());
         break;
+    }
+  }
+
+  // Auto-convert *_deg variables: store a rad counterpart without the suffix.
+  // e.g. bb.tcp_rpy_offset_r_deg: 45.0 → blackboard "tcp_rpy_offset_r" = 0.785
+  for (const auto& param_name : result.names) {
+    if (param_name.size() <= 3) continue;  // "bb." minimum
+    std::string key = param_name.substr(3);  // strip "bb."
+    if (key.size() > kDegSuffixLen &&
+        key.compare(key.size() - kDegSuffixLen, kDegSuffixLen, kDegSuffix) == 0) {
+      auto param = get_parameter(param_name);
+      if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
+        std::string base_key = key.substr(0, key.size() - kDegSuffixLen);
+        double rad_val = param.as_double() * kDeg2Rad;
+        bb->set(base_key, rad_val);
+        RCLCPP_INFO(coord_log(), "blackboard: %s = %.4f deg → %s = %.6f rad",
+                    key.c_str(), param.as_double(), base_key.c_str(), rad_val);
+      }
     }
   }
 }

@@ -6,12 +6,16 @@
     1. Move to ready pose via joint-space controller
     2. Wait for vision target (object position)
     3. Switch to task-space controller
-    4. Move to inspection position (offset above object, orientation preserved)
+    4. Move to inspection position (2-step: x/y lateral at safe height, then z descend)
     5. Start shape estimation (clear + start)
     6. Wait for confident shape result
     7. Stop estimation and extract shape type to blackboard
     ── (future: shape-based action branching goes here) ──
-    N. Return to ready pose
+    N. Return to ready pose (2-step: +z ascend, then joint-space to ready)
+
+  Blackboard variables (from bt_coordinator.yaml):
+    {inspect_offset_x/y/z}   : object_pose 기준 inspect 위치 오프셋 [m]
+    {inspect_approach_z}      : inspect_pose 위 접근/후퇴 클리어런스 [m]
 -->
 
 <root BTCPP_format="4" main_tree_to_execute="ShapeInspect">
@@ -60,11 +64,12 @@
                         current_gains="{current_gains}"/>
 
       <!-- ======================================================== -->
-      <!-- Phase 4: Move to inspection position                      -->
-      <!--   Compute an offset pose above the detected object        -->
-      <!--   (x/y/z offsets from blackboard, default z=+0.05m).     -->
-      <!--   Orientation is preserved from the current TCP pose.     -->
-      <!--   Move there at moderate speed for safe approach.         -->
+      <!-- Phase 4: Move to inspection position (2-step approach)    -->
+      <!--   Step 1: Compute final inspect_pose and an elevated      -->
+      <!--   approach pose (+{inspect_approach_z} above it).         -->
+      <!--   Move to approach pose first (x/y lateral movement       -->
+      <!--   while staying at a safe height).                        -->
+      <!--   Step 2: Descend to the final inspect_pose (z-only).     -->
       <!-- ======================================================== -->
       <ComputeOffsetPose input_pose="{object_pose}"
                          offset_x="{inspect_offset_x}"
@@ -72,13 +77,27 @@
                          offset_z="{inspect_offset_z}"
                          output_pose="{inspect_pose}"/>
 
+      <ComputeOffsetPose input_pose="{inspect_pose}"
+                         offset_z="{inspect_approach_z}"
+                         output_pose="{inspect_approach_pose}"/>
+
       <SetGains current_gains="{current_gains}"
-                trajectory_speed="0.08"/>
+                trajectory_speed="0.1"/>
+
+      <!-- Step 1: lateral move (x/y) at safe height -->
+      <MoveToPose target="{inspect_approach_pose}"
+                  position_tolerance="0.005"
+                  orientation_tolerance="0.05"
+                  timeout_s="12.0"/>
+
+      <!-- Step 2: descend to inspect position (z) -->
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.05"/>
 
       <MoveToPose target="{inspect_pose}"
                   position_tolerance="0.003"
                   orientation_tolerance="0.05"
-                  timeout_s="12.0"/>
+                  timeout_s="8.0"/>
 
       <!-- ======================================================== -->
       <!-- Phase 5: Start shape estimation                           -->
@@ -119,11 +138,28 @@
       <!-- ======================================================== -->
 
       <!-- ======================================================== -->
-      <!-- Phase N: Return to ready pose                             -->
-      <!--   Always return to the ready pose at the end of the       -->
-      <!--   inspection sequence, regardless of shape result.        -->
-      <!--   Switch back to joint-space controller for safe return.  -->
+      <!-- Phase N: Return to ready pose (2-step retreat)            -->
+      <!--   Step 1: Ascend +z from current position (task-space)    -->
+      <!--   to clear the object before lateral movement.            -->
+      <!--   Step 2: Switch to joint-space controller and move to    -->
+      <!--   the ready pose.                                         -->
       <!-- ======================================================== -->
+      <GetCurrentPose pose="{return_current_pose}"/>
+
+      <ComputeOffsetPose input_pose="{return_current_pose}"
+                         offset_z="{inspect_approach_z}"
+                         output_pose="{return_retreat_pose}"/>
+
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.08"/>
+
+      <!-- Step 1: ascend (+z) to safe height -->
+      <MoveToPose target="{return_retreat_pose}"
+                  position_tolerance="0.005"
+                  orientation_tolerance="0.05"
+                  timeout_s="6.0"/>
+
+      <!-- Step 2: move to ready pose via joint-space -->
       <SwitchController controller_name="demo_joint_controller"
                         timeout_s="3.0"
                         current_gains="{current_gains}"/>

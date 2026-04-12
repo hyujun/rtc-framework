@@ -52,16 +52,33 @@ bt_coordinator:
     bb.grasp_max_attempts: 2        # ForcePIGrasp retry 횟수 (1=비활성화, force_pi only)
     bb.grasp_retry_settle_s: 0.3    # retry release 후 sensor settling [s]
     #
-    # Phase 3 TCP 재배향 — task controller 전환 직후 현재 pose 기준 RPY 보정.
+    # Phase 3.5 TCP 재배향 — task controller 전환 직후 현재 pose 기준 RPY 보정.
+    # _deg 접미사: YAML에서 도(deg) 단위로 작성하면 blackboard 주입 시
+    # 자동으로 rad 변환된 값이 접미사 없는 키에 저장됨.
+    # 예: bb.tcp_rpy_offset_r_deg: 45.0 → blackboard "tcp_rpy_offset_r" = 0.785 rad
     # tcp_rotation_mode 값:
     #   "add"        : target.rpy = current.rpy + offset (단순 산술합, 작은 각도용)
     #   "quat_body"  : target = current * offset (TCP 프레임 회전, intrinsic)
     #   "quat_world" : target = offset * current (World 프레임 회전, extrinsic)
     # 모든 offset 이 0 이면 어느 mode 든 no-op.
-    bb.tcp_rpy_offset_r: 0.0
-    bb.tcp_rpy_offset_p: 0.0
-    bb.tcp_rpy_offset_y: 0.0
+    bb.tcp_rpy_offset_r_deg: 0.0    # Roll offset [deg]
+    bb.tcp_rpy_offset_p_deg: 0.0    # Pitch offset [deg]
+    bb.tcp_rpy_offset_y_deg: 0.0    # Yaw offset [deg]
     bb.tcp_rotation_mode: "add"
+    #
+    # pick_and_place.xml 용 (pose-based grasp, grasp controller 미사용):
+    # grip 강도: launch arg grip:=soft/medium/hard 로 덮어쓸 수 있음.
+    # 향후 vision topic 기반 자동 선택 시 ResolveGripFromVision node가
+    # blackboard의 hand_close_pose를 덮어씀.
+    bb.hand_close_pose: "hand_close_medium"   # hand_close_soft / medium / hard
+    bb.hand_close_settle_s: 0.5               # close 후 안정 대기 [s]
+    #
+    # shape_inspect.xml 용:
+    # inspect_offset_x/y/z 는 shape_inspect.xml 트리 내부에서 직접 참조.
+    # inspect_approach_z: inspect_pose 위 접근/후퇴 클리어런스 [m].
+    #   Phase 4 접근 시 inspect_pose 위 이 높이에서 x/y 이동 후 z 하강.
+    #   Phase N 복귀 시 현재 위치에서 이 높이만큼 상승 후 ready pose 이동.
+    bb.inspect_approach_z: 0.15
     #
     # towel_unfold.xml 용:
     # bb.sweep_direction_x: 1.0

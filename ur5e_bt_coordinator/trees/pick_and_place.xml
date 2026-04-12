@@ -1,0 +1,208 @@
+<!-- file: trees/pick_and_place.xml -->
+<!-- UR5e + Hand Pick-and-Place demo (pose-based grasp, no force controller) -->
+<!-- BehaviorTree.CPP v4 syntax -->
+<!--
+  ─── Overview ─────────────────────────────────────────────────────────
+  Grasp controller 없이 미리 정의된 hand pose만으로 pick-and-place를
+  수행하는 트리. grip 강도(soft/medium/hard)는 blackboard 변수
+  {hand_close_pose}로 제어되며, launch arg grip:= 으로 설정한다.
+
+  ─── Failure handling ─────────────────────────────────────────────────
+  Top-level Fallback wraps the normal pick sequence with
+  PoseBasedEmergencyAbort. On any FAILURE the abort SubTree opens the
+  hand via SetHandPose and retreats by {grasp_abort_retreat_z} from
+  the current TCP pose. ForceFailure ensures the tree result remains
+  FAILURE so the operator is informed of the unsuccessful run.
+
+  ─── Shared blackboard variables (declared in bt_coordinator.yaml) ────
+    {hand_close_pose}         : grip pose name ("hand_close_soft" etc.)
+    {hand_close_settle_s}     : settle duration after close [s]
+    {place_pose}              : 6D place target "x;y;z;r;p;y"
+    {object_final_z}          : optional Z override for descend [m]
+    {grasp_abort_retreat_z}   : EmergencyAbort retreat distance [m]
+    {tcp_rpy_offset_r/p/y}    : Phase 3.5 TCP RPY offset [rad] (all 0 = no-op)
+    {tcp_rotation_mode}       : 'add' | 'quat_body' | 'quat_world'
+
+  ─── Extensibility (vision-based grip selection) ─────────────────────
+  향후 Phase 2 ~ Phase 4 사이에 ResolveGripFromVision node를 삽입하여
+  vision topic 기반으로 {hand_close_pose}를 덮어쓸 수 있다.
+  Tree 내부는 포즈 이름에 대해 agnostic하므로 XML 변경 불필요.
+
+  Prerequisite: place_pose must be set in Blackboard before tree starts.
+  Prerequisite: demo controller YAML에 grasp_controller_type 설정 불필요.
+-->
+
+<root BTCPP_format="4" main_tree_to_execute="PickAndPlace">
+
+  <include path="common_motions.xml"/>
+
+  <BehaviorTree ID="PickAndPlace">
+    <Fallback name="main_with_safety">
+
+      <Sequence name="normal_pick_and_place">
+
+        <!-- ======================================================== -->
+        <!-- Phase 1: Move to table_top joint pose                     -->
+        <!-- ======================================================== -->
+        <SwitchController controller_name="demo_joint_controller"
+                          timeout_s="3.0"
+                          current_gains="{current_gains}"/>
+
+        <SetGains current_gains="{current_gains}"
+                  trajectory_speed="0.15"/>
+
+        <MoveToJoints pose_name="table_top"
+                      tolerance="0.01"
+                      timeout_s="15.0"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 2: Detect object via vision                         -->
+        <!-- ======================================================== -->
+        <SubTree ID="DetectObject"
+                 pose="{object_pose}"
+                 num_attempts="10"
+                 wait_s="0.5"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 3: Switch to task-space controller                  -->
+        <!-- ======================================================== -->
+        <SwitchController controller_name="demo_task_controller"
+                          timeout_s="3.0"
+                          current_gains="{current_gains}"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 3.5: TCP re-orientation                             -->
+        <!--   Read current TCP pose, apply RPY offset                 -->
+        <!--   ({tcp_rpy_offset_r/p/y}, {tcp_rotation_mode}), and      -->
+        <!--   move to that pose. Translation is preserved             -->
+        <!--   (xyz come from the current pose, no offset).            -->
+        <!--   All offsets = 0 -> MoveToPose to the same pose          -->
+        <!--   succeeds immediately.                                   -->
+        <!-- ======================================================== -->
+        <GetCurrentPose pose="{phase3_current_pose}"/>
+        <ComputeOffsetPose input_pose="{phase3_current_pose}"
+                           offset_roll="{tcp_rpy_offset_r}"
+                           offset_pitch="{tcp_rpy_offset_p}"
+                           offset_yaw="{tcp_rpy_offset_y}"
+                           rotation_mode="{tcp_rotation_mode}"
+                           output_pose="{phase3_oriented_pose}"/>
+        <SetGains current_gains="{current_gains}"
+                  trajectory_speed="0.1"/>
+        <MoveToPose target="{phase3_oriented_pose}"
+                    position_tolerance="0.005"
+                    orientation_tolerance="0.025"
+                    timeout_s="5.0"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 4: Open hand and approach from above                -->
+        <!-- ======================================================== -->
+        <SetHandPose pose="hand_open"
+                     hand_trajectory_speed="1.5"
+                     current_gains="{current_gains}"/>
+
+        <SubTree ID="ApproachFromAbove"
+                 target_pose="{object_pose}"
+                 offset_z="0.04"
+                 pos_tol="0.003"
+                 ori_tol="0.05"
+                 timeout_s="10.0"
+                 approach_pose="{approach_pose}"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 5: Slow descend to object                           -->
+        <!-- ======================================================== -->
+        <SubTree ID="SlowDescend"
+                 target_pose="{object_pose}"
+                 traj_speed="0.05"
+                 pos_tol="0.002"
+                 ori_tol="0.05"
+                 timeout_s="8.0"
+                 constant_z="{object_final_z}"
+                 current_gains="{current_gains}"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 6: Close hand with selected grip strength           -->
+        <!--   {hand_close_pose} is set by launch arg grip:= or       -->
+        <!--   future vision-based ResolveGripFromVision node.         -->
+        <!-- ======================================================== -->
+        <SetHandPose pose="{hand_close_pose}"
+                     hand_trajectory_speed="1.0"
+                     current_gains="{current_gains}"/>
+
+        <WaitDuration duration_s="{hand_close_settle_s}"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 7: Lift object                                      -->
+        <!--   No force verification (no grasp controller).            -->
+        <!-- ======================================================== -->
+        <SetGains current_gains="{current_gains}"
+                  trajectory_speed="0.08"/>
+
+        <ComputeOffsetPose input_pose="{object_pose}"
+                           offset_z="0.12"
+                           output_pose="{lift_pose}"/>
+
+        <MoveToPose target="{lift_pose}"
+                    position_tolerance="0.005"
+                    timeout_s="6.0"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 8: Transport to goal position                       -->
+        <!-- ======================================================== -->
+        <SetGains current_gains="{current_gains}"
+                  trajectory_speed="0.1"/>
+
+        <MoveToPose target="{place_pose}"
+                    position_tolerance="0.005"
+                    timeout_s="12.0"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 9: Lower to release height                          -->
+        <!-- ======================================================== -->
+        <ComputeOffsetPose input_pose="{place_pose}"
+                           offset_z="-0.05"
+                           output_pose="{lower_pose}"/>
+
+        <SetGains current_gains="{current_gains}"
+                  trajectory_speed="0.05"/>
+
+        <MoveToPose target="{lower_pose}"
+                    position_tolerance="0.003"
+                    timeout_s="6.0"/>
+
+        <!-- ======================================================== -->
+        <!-- Phase 10: Release and retreat                             -->
+        <!-- ======================================================== -->
+        <SetHandPose pose="hand_open"
+                     hand_trajectory_speed="1.5"
+                     current_gains="{current_gains}"/>
+
+        <WaitDuration duration_s="0.3"/>
+
+        <ComputeOffsetPose input_pose="{place_pose}"
+                           offset_z="0.08"
+                           output_pose="{retreat_pose}"/>
+
+        <SetGains current_gains="{current_gains}"
+                  trajectory_speed="0.1"/>
+
+        <MoveToPose target="{retreat_pose}"
+                    position_tolerance="0.005"
+                    timeout_s="6.0"/>
+
+        <!-- Restore original controller gains -->
+        <SetGains current_gains="{current_gains}"/>
+
+      </Sequence>
+
+      <!-- ── Failure path: open hand + retreat, then propagate FAILURE -->
+      <ForceFailure>
+        <SubTree ID="PoseBasedEmergencyAbort"
+                 retreat_z="{grasp_abort_retreat_z}"
+                 current_gains="{current_gains}"/>
+      </ForceFailure>
+
+    </Fallback>
+  </BehaviorTree>
+
+</root>

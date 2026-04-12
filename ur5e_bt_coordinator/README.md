@@ -72,12 +72,15 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 
 | 트리 | 파일 | 설명 |
 |------|------|------|
-| Common Motions | `trees/common_motions.xml` | 재사용 가능한 공통 모션 SubTree 라이브러리 (DetectObject, ForceGrasp, LiftAndVerify 등) |
-| Pick and Place | `trees/pick_and_place.xml` | Vision 기반 물체 감지 → approach → force-based grasp → lift → transport → lower/release → retreat |
+| Common Motions | `trees/common_motions.xml` | 재사용 가능한 공통 모션 SubTree 라이브러리 (DetectObject, ForceGrasp, LiftAndVerify, PoseBasedEmergencyAbort 등) |
+| Pick and Place | `trees/pick_and_place.xml` | Pose-based grasp: vision 감지 → approach → SetHandPose 기반 grip (soft/medium/hard) → lift → transport → release. Grasp controller 미사용 |
+| Pick and Place (Contact Stop) | `trees/pick_and_place_contact_stop.xml` | Force-based grasp (contact_stop): vision 감지 → approach → force-based grasp → lift → transport → release |
+| Pick and Place (Force-PI) | `trees/pick_and_place_force_pi.xml` | Force-PI adaptive grasp: vision 감지 → approach → force-PI grasp (retry 지원) → lift → transport → release |
 | Towel Unfold | `trees/towel_unfold.xml` | 수건 edge 감지 → pinch pre-shape → approach → pinch grasp → lift → compliant sweep → lower/release → retreat |
 | Hand Motions | `trees/hand_motions.xml` | UR5e 자세 유지 + Hand 데모 (OppositionDemo → WaveDemo) |
 | Vision Approach | `trees/vision_approach.xml` | Vision 기반 approach 데모 (arm-only, 핸드 미사용) |
 | Shape Inspect | `trees/shape_inspect.xml` | ToF 센서 기반 shape estimation 워크플로우 (start → wait → stop → evaluate) |
+| Search Motion | `trees/search_motion.xml` | 팔 sweep + tilt scan 탐색 모션 |
 
 ## BT 노드
 
@@ -253,15 +256,22 @@ throttle 된다.
 YAML의 `bb.<key>` 형식으로 선언하면 트리 로드 후 Blackboard에 자동 주입된다.
 타입은 YAML 값에서 자동 추론 (string, double, int, bool).
 
-**Pick and Place (`pick_and_place.xml`):**
+**Pick and Place 공용 (`pick_and_place*.xml`):**
 - `bb.place_pose`: 물체를 놓을 목표 pose (형식: `"x;y;z;roll;pitch;yaw"`)
 - `bb.object_final_z` (double, 기본 `.nan`): Phase 5 (`SlowDescend`)에서 object
   final goal의 Z를 이 절대값으로 덮어씀. `.nan`이면 비전 감지 Z를 그대로 사용
-  (pass-through). 테이블 표면이 알려진 경우 등, 고정 Z로 최종 접근하고 싶을 때
+  (pass-through). 테이블 표면이 알려진 경우 ��, 고정 Z로 최종 접근하고 싶을 때
   실제 값(예: `0.085`)을 지정. `SetPoseZ` 노드가 `SlowDescend` 내부에서 Z만
-  교체하며 X, Y, 방향은 감지된 object pose를 그대로 유지한다. Phase 4
+  교체하며 X, Y, 방향은 감지된 object pose를 그��로 유지한다. Phase 4
   (ApproachFromAbove)와 Phase 7 (LiftAndVerify)는 원본 `{object_pose}` 기준으로
   동작하므로 영향이 없다.
+
+**Pose-based grasp (`pick_and_place.xml` 전용):**
+- `bb.hand_close_pose` (string, 기본 `"hand_close_medium"`): grip 강도별 hand 포즈 이름.
+  `"hand_close_soft"`, `"hand_close_medium"`, `"hand_close_hard"` 중 선택.
+  Launch arg `grip:=soft/medium/hard`로 설정 가능. 향후 vision topic 기반
+  `ResolveGripFromVision` 노���가 blackboard에서 덮어쓸 수 있도록 설계됨.
+- `bb.hand_close_settle_s` (double, 기본 `0.5`): hand close 후 안정 대기 시간 [s]
 
 **Towel Unfold (`towel_unfold.xml`):**
 - `bb.sweep_direction_x`, `bb.sweep_direction_y`: sweep 방향 벡터
@@ -302,6 +312,10 @@ arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
 | `thumb_ring_oppose` / `ring_oppose` | 엄지-약지 opposition |
 | `thumb_flex` / `index_flex` / `middle_flex` / `ring_flex` | FlexExtendFinger용 flex 타겟 (전체 손가락) |
 | `thumb_mcp_flex` / `index_dip_flex` / `middle_dip_flex` | FlexExtendFinger용 flex 타겟 (단일 관절) |
+| `hand_open` | Pose-based grasp 완전 개방 (home과 동일, 의미적 구분) |
+| `hand_close_soft` | Pose-based grasp 소프트 (~40% full_flex) |
+| `hand_close_medium` | Pose-based grasp 미디엄 (~70% full_flex) |
+| `hand_close_hard` | Pose-based grasp 하드 (~100% full_flex) |
 
 `kUR5ePoses` 맵에 정의된 UR5e 포즈 (6-DoF, 컴파일타임):
 
@@ -412,8 +426,18 @@ ros2 launch ur5e_bringup sim.launch.py
 # 기본 실행 (hand_motions.xml, YAML 설정 + 포즈 자동 로드)
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py
 
-# Pick and Place
+# Pick and Place (pose-based grasp, 기본 medium grip)
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place.xml
+
+# Pick and Place (soft grip — 부드러운 물체용)
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place.xml grip:=soft
+
+# Pick and Place (hard grip — 단단한 물체용)
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place.xml grip:=hard
+
+# Pick and Place (force-based grasp — contact_stop / force_pi)
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place_contact_stop.xml
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place_force_pi.xml
 
 # Towel Unfold
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=towel_unfold.xml
@@ -438,6 +462,7 @@ ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py paused:=true
 | `repeat_delay` | 0 (=YAML 1.0s) | 반복 전 대기 시간 [s] |
 | `paused` | (YAML 기본값) | 일시정지 상태로 시작 |
 | `groot2_port` | 0 (비활성) | Groot2 ZMQ 포트 |
+| `grip` | (YAML 기본값) | Pose-based grasp grip 강도: `soft`, `medium`, `hard` |
 
 ### 직접 실행 (ros2 run)
 
@@ -471,9 +496,14 @@ ur5e_bt_coordinator/
 │   └── bt_coordinator.launch.py     # Launch 파일 (YAML + poses 자동 로드, launch arg 지원)
 ├── trees/
 │   ├── common_motions.xml           # 재사용 가능 공통 모션 SubTree
-│   ├── pick_and_place.xml           # 물체 파지 시나리오
+│   ├── pick_and_place.xml           # Pose-based grasp 물체 파지 (grip:=soft/medium/hard)
+│   ├── pick_and_place_contact_stop.xml  # Force-based grasp (contact_stop)
+│   ├── pick_and_place_force_pi.xml      # Force-PI adaptive grasp (retry 지원)
 │   ├── towel_unfold.xml             # 수건 펼치기 시나리오
-│   └── hand_motions.xml             # Hand 민첩성 데모 시나리오
+│   ├── hand_motions.xml             # Hand 민첩성 데모 시나리오
+│   ├── vision_approach.xml          # Vision approach 데모 (arm-only)
+│   ├── shape_inspect.xml            # ToF shape estimation 워크플로우
+│   └── search_motion.xml            # 팔 sweep + tilt scan 탐색
 ├── include/ur5e_bt_coordinator/
 │   ├── bt_types.hpp                 # Pose6D, CachedGraspState, BT 타입 변환
 │   ├── bt_utils.hpp                 # 유틸리티 함수 (시간, map lookup, CSV 파싱, partial hand update)
