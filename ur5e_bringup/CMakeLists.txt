@@ -151,6 +151,7 @@ if(BUILD_TESTING)
   # Skip style/copyright lints — not useful for unit test sources.
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
+  set(ament_cmake_uncrustify_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 
   find_package(ament_cmake_gtest REQUIRED)
