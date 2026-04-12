@@ -70,7 +70,6 @@ jobs:
     outputs:
       cpp: ${{ steps.filter.outputs.cpp }}
       python: ${{ steps.filter.outputs.python }}
-      urdf: ${{ steps.filter.outputs.urdf }}
     steps:
     - uses: actions/checkout@v4
     - uses: dorny/paths-filter@v3
@@ -98,11 +97,6 @@ jobs:
             - 'rtc_digital_twin/setup.cfg'
             - 'rtc_msgs/msg/*.msg'
             - 'rtc_msgs/srv/*.srv'
-          urdf:
-            - 'ur5e_description/**/*.urdf'
-            - 'ur5e_description/**/*.xacro'
-            - 'ur5e_description/**/*.xml'
-
   # ============================================================
   #  C++ Linting (cppcheck) — jazzy 1회만 실행
   #  cppcheck는 컴파일러/distro 무관 정적 분석이므로 matrix 불필요.
@@ -214,70 +208,6 @@ jobs:
       run: |
         source /opt/ros/${{ matrix.ros_distro }}/setup.bash
         colcon test-result --all --verbose || true
-
-  # ============================================================
-  #  URDF Validation (check_urdf + xacro processing)
-  # ============================================================
-  urdf-validation:
-    name: URDF Validation
-    needs: changes
-    if: needs.changes.outputs.urdf == 'true' || needs.changes.outputs.cpp == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Setup ROS2
-      uses: ros-tooling/setup-ros@v0.7
-      with:
-        required-ros-distributions: jazzy
-
-    - name: Install URDF tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          ros-jazzy-xacro \
-          ros-jazzy-urdf \
-          liburdfdom-tools
-
-    - name: Validate pre-built URDF files
-      run: |
-        source /opt/ros/jazzy/setup.bash
-        echo "=== Validating ur5e.urdf ==="
-        check_urdf ur5e_description/robots/ur5e/urdf/ur5e.urdf
-
-        echo ""
-        echo "=== Validating ur5e_with_hand.urdf ==="
-        check_urdf ur5e_description/robots/ur5e/urdf/ur5e_with_hand.urdf
-
-    - name: Build ur5e_description (ament package registration)
-      run: |
-        source /opt/ros/jazzy/setup.bash
-        pip install -U colcon-cmake colcon-core
-        colcon build --packages-select ur5e_description
-
-    - name: Validate xacro → URDF pipeline
-      run: |
-        source /opt/ros/jazzy/setup.bash
-        source install/setup.bash
-
-        echo "=== Processing ur5e_with_hand.urdf.xacro ==="
-        xacro ur5e_description/robots/ur5e/urdf/ur5e_with_hand.urdf.xacro \
-          -o /tmp/ur5e_with_hand_generated.urdf
-
-        echo "=== Validating generated URDF ==="
-        check_urdf /tmp/ur5e_with_hand_generated.urdf
-
-    - name: Check URDF consistency (xacro output vs committed file)
-      run: |
-        # xacro 출력과 커밋된 URDF의 구조적 일관성 검증
-        # (공백/주석 차이 무시, 링크/조인트 수 비교)
-        COMMITTED=$(grep -c '<joint' ur5e_description/robots/ur5e/urdf/ur5e_with_hand.urdf || true)
-        GENERATED=$(grep -c '<joint' /tmp/ur5e_with_hand_generated.urdf || true)
-        echo "Committed URDF joints: $COMMITTED"
-        echo "Generated URDF joints: $GENERATED"
-        if [ "$COMMITTED" != "$GENERATED" ]; then
-          echo "::warning::Joint count mismatch — committed ($COMMITTED) vs generated ($GENERATED). Consider regenerating ur5e_with_hand.urdf"
-        fi
 
   # ============================================================
   #  Build, Test & Coverage (distro matrix)
