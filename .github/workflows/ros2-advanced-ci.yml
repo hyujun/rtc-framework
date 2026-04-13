@@ -240,9 +240,9 @@ jobs:
         path: |
           build/
           install/
-        key: colcon-${{ matrix.ros_distro }}-${{ hashFiles('**/CMakeLists.txt', '**/package.xml') }}
+        key: colcon-${{ matrix.ros_distro }}-v2-${{ hashFiles('**/CMakeLists.txt', '**/package.xml', '**/test/*.cpp') }}
         restore-keys: |
-          colcon-${{ matrix.ros_distro }}-
+          colcon-${{ matrix.ros_distro }}-v2-
 
     - name: Cache apt packages
       uses: awalsh128/cache-apt-pkgs-action@v1
