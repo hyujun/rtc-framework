@@ -52,6 +52,14 @@ TEST(TaskSpaceBlendTrajectory, TwoWaypointsMatch)
     auto bs = blend.compute(t);
     auto ss = single.compute(t);
 
+    // Debug: print actual values for CI diagnosis
+    std::cerr << "[DEBUG] t=" << t
+              << " blend=(" << bs.pose.translation().transpose() << ")"
+              << " single=(" << ss.pose.translation().transpose() << ")"
+              << " diff_norm=" << (bs.pose.translation() - ss.pose.translation()).norm()
+              << " rot_diff=" << (bs.pose.rotation() - ss.pose.rotation()).norm()
+              << std::endl;
+
     // Compare translations
     for (int i = 0; i < 3; ++i) {
       EXPECT_NEAR(bs.pose.translation()[i], ss.pose.translation()[i], 1e-3)

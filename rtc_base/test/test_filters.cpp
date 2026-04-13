@@ -75,11 +75,17 @@ TEST(BesselFilter, StepResponse) {
   std::array<double, 1> output{};
   for (int i = 0; i < 100; ++i) {
     output = filter.Apply(step);
-    // Monotonically rising (within floating-point tolerance).
-    EXPECT_GE(output[0], prev - 1e-6) << "Non-monotonic at sample " << i;
+    if (output[0] < prev - 1e-6) {
+      std::cerr << "[DEBUG] Non-monotonic at sample " << i
+                << " prev=" << prev << " cur=" << output[0]
+                << " diff=" << (output[0] - prev) << std::endl;
+    }
+    EXPECT_GE(output[0], prev - 1e-6) << "Non-monotonic at sample " << i
+      << " prev=" << prev << " cur=" << output[0];
     prev = output[0];
   }
 
+  std::cerr << "[DEBUG] BesselFilter final output=" << output[0] << std::endl;
   // After 100 samples at 500 Hz (0.2s), should be within 1% of final value.
   EXPECT_NEAR(output[0], 1.0, 0.01);
 }
