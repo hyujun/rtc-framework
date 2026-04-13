@@ -279,6 +279,25 @@ jobs:
           --event-handlers console_cohesion+ \
           --return-code-on-test-failure
 
+    - name: Dump failed test output
+      if: failure()
+      run: |
+        source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+        echo "## Failed Test Details" >> "$GITHUB_STEP_SUMMARY"
+        for pkg in rtc_base rtc_controllers rtc_urdf_bridge shape_estimation ur5e_bringup ur5e_hand_driver; do
+          log_dir="build/${pkg}/test_results/${pkg}"
+          if [ -d "$log_dir" ]; then
+            for xml in "$log_dir"/*.xml; do
+              if grep -q 'failures="[1-9]\|errors="[1-9]' "$xml" 2>/dev/null; then
+                echo "### $(basename "$xml")" >> "$GITHUB_STEP_SUMMARY"
+                echo '```xml' >> "$GITHUB_STEP_SUMMARY"
+                cat "$xml" >> "$GITHUB_STEP_SUMMARY"
+                echo '```' >> "$GITHUB_STEP_SUMMARY"
+              fi
+            done
+          fi
+        done
+
     - name: Show Test Results
       if: always()
       run: |
