@@ -262,7 +262,7 @@ jobs:
         colcon build \
           --packages-up-to $BUILD_PACKAGES \
           --cmake-args \
-            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DBUILD_TESTING=ON \
             '-DCMAKE_CXX_FLAGS=--coverage -fprofile-arcs -ftest-coverage' \
             '-DCMAKE_C_FLAGS=--coverage' \
