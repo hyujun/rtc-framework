@@ -495,6 +495,7 @@ jobs:
 
     # ros-jazzy-ros-base: desktop(963 pkg) 대신 최소 ROS2 런타임(~200 pkg)
     # visualization-msgs, std-srvs: ros-base에 미포함된 프로젝트 의존성
+    # python3-numpy: pinocchio → eigenpy → FIND_NUMPY 의존성
     - name: Cache apt packages
       uses: awalsh128/cache-apt-pkgs-action@v1
       with:
@@ -508,7 +509,8 @@ jobs:
           libyaml-cpp-dev
           libtinyxml2-dev
           libeigen3-dev
-        version: jazzy-tidy-v4
+          python3-numpy
+        version: jazzy-tidy-v5
 
     # coverage 플래그 없이 빌드하여 깨끗한 분석 보장
     # BUILD_TESTING=OFF: clang-tidy는 테스트 빌드 불필요 (gtest 의존성 제거)
