@@ -1,7 +1,7 @@
 # RTC (Real-Time Control) Framework
 
 ![CI](https://github.com/hyujun/rtc-framework/actions/workflows/ros2-advanced-ci.yml/badge.svg)
-[![codecov](https://codecov.io/gh/hyujun/rtc-framework/graph/badge.svg?token=4Synh4Gk1v)](https://codecov.io/gh/hyujun/rtc-framework)
+[![codecov](https://codecov.io/gh/hyujun/rtc-framework/branch/main/graph/badge.svg?token=4Synh4Gk1v)](https://codecov.io/gh/hyujun/rtc-framework)
 ![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)
 ![ROS2 Jazzy](https://img.shields.io/badge/ROS2-Jazzy-green)
 
