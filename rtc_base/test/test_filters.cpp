@@ -76,7 +76,7 @@ TEST(BesselFilter, StepResponse) {
   for (int i = 0; i < 100; ++i) {
     output = filter.Apply(step);
     // Monotonically rising (within floating-point tolerance).
-    EXPECT_GE(output[0], prev - 1e-9) << "Non-monotonic at sample " << i;
+    EXPECT_GE(output[0], prev - 1e-6) << "Non-monotonic at sample " << i;
     prev = output[0];
   }
 

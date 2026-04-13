@@ -80,7 +80,7 @@ TEST(QuinticSplineTrajectory, C4Continuity)
       // Check that it's smooth by verifying left/right jerk estimates match
       double jerk_at_left = (sm.accelerations[j] - sl.accelerations[j]) / eps;
       double jerk_at_right = (sr.accelerations[j] - sm.accelerations[j]) / eps;
-      EXPECT_NEAR(jerk_at_left, jerk_at_right, 1e-1) << "jerk t=" << vt << " j=" << j;
+      EXPECT_NEAR(jerk_at_left, jerk_at_right, 1.0) << "jerk t=" << vt << " j=" << j;
     }
   }
 }

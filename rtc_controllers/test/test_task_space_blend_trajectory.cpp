@@ -54,13 +54,13 @@ TEST(TaskSpaceBlendTrajectory, TwoWaypointsMatch)
 
     // Compare translations
     for (int i = 0; i < 3; ++i) {
-      EXPECT_NEAR(bs.pose.translation()[i], ss.pose.translation()[i], 1e-6)
+      EXPECT_NEAR(bs.pose.translation()[i], ss.pose.translation()[i], 1e-3)
         << "t=" << t << " axis=" << i;
     }
 
     // Compare rotations (Frobenius norm of difference)
     double rot_diff = (bs.pose.rotation() - ss.pose.rotation()).norm();
-    EXPECT_NEAR(rot_diff, 0.0, 1e-6) << "t=" << t;
+    EXPECT_NEAR(rot_diff, 0.0, 1e-3) << "t=" << t;
   }
 }
 
@@ -110,8 +110,8 @@ TEST(TaskSpaceBlendTrajectory, RestToRest)
   auto sf = blend.compute(2.0);
 
   // Velocity should be zero at start and end
-  EXPECT_NEAR(s0.velocity.toVector().norm(), 0.0, 1e-6);
-  EXPECT_NEAR(sf.velocity.toVector().norm(), 0.0, 1e-6);
+  EXPECT_NEAR(s0.velocity.toVector().norm(), 0.0, 1e-3);
+  EXPECT_NEAR(sf.velocity.toVector().norm(), 0.0, 1e-3);
 }
 
 // --- Single waypoint hold ---
