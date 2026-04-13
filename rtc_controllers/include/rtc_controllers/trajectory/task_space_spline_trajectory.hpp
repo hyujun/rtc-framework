@@ -223,7 +223,7 @@ public:
       ++row;
     }
 
-    // Internal continuity: vel, acc, jerk, snap, crackle
+    // Internal continuity: pos (C0), vel (C1), acc (C2), jerk (C3), snap (C4)
     for (std::size_t k = 0; k < ns - 1; ++k) {
       const auto base_k = static_cast<Eigen::Index>(6 * k);
       const auto base_k1 = static_cast<Eigen::Index>(6 * (k + 1));
@@ -231,6 +231,17 @@ public:
       const double hk2 = hk * hk;
       const double hk3 = hk2 * hk;
       const double hk4 = hk3 * hk;
+      const double hk5 = hk4 * hk;
+
+      // Position continuity: p_k(h_k) - p_{k+1}(0) = 0
+      A(row, base_k)     = 1.0;
+      A(row, base_k + 1) = hk;
+      A(row, base_k + 2) = hk2;
+      A(row, base_k + 3) = hk3;
+      A(row, base_k + 4) = hk4;
+      A(row, base_k + 5) = hk5;
+      A(row, base_k1)    = -1.0;
+      ++row;
 
       // Velocity
       A(row, base_k + 1) = 1.0;
@@ -260,11 +271,6 @@ public:
       A(row, base_k + 4) = 24.0;
       A(row, base_k + 5) = 120.0 * hk;
       A(row, base_k1 + 4) = -24.0;
-      ++row;
-
-      // Crackle
-      A(row, base_k + 5) = 120.0;
-      A(row, base_k1 + 5) = -120.0;
       ++row;
     }
 

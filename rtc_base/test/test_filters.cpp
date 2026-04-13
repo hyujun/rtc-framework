@@ -58,7 +58,9 @@ TEST(BesselFilter, DCPassthrough) {
 }
 
 TEST(BesselFilter, StepResponse) {
-  // Step from 0 to 1.0 — output should rise monotonically and settle near 1.0.
+  // Step from 0 to 1.0 — output should settle near 1.0 with bounded overshoot.
+  // A 4th-order Bessel filter has ~2.2% overshoot in its step response, which
+  // is normal and expected (maximally flat group delay, NOT monotone convergence).
   // With 50 Hz cutoff at 500 Hz sample rate, 100 samples = 0.2 s.
   rtc::BesselFilterN<1> filter;
   filter.Init(50.0, 500.0);
@@ -71,23 +73,19 @@ TEST(BesselFilter, StepResponse) {
     (void)filter.Apply(zero);
   }
 
-  double prev = 0.0;
+  double max_output = 0.0;
   std::array<double, 1> output{};
   for (int i = 0; i < 100; ++i) {
     output = filter.Apply(step);
-    if (output[0] < prev - 1e-6) {
-      std::cerr << "[DEBUG] Non-monotonic at sample " << i
-                << " prev=" << prev << " cur=" << output[0]
-                << " diff=" << (output[0] - prev) << std::endl;
-    }
-    EXPECT_GE(output[0], prev - 1e-6) << "Non-monotonic at sample " << i
-      << " prev=" << prev << " cur=" << output[0];
-    prev = output[0];
+    max_output = std::max(max_output, output[0]);
   }
 
-  std::cerr << "[DEBUG] BesselFilter final output=" << output[0] << std::endl;
-  // After 100 samples at 500 Hz (0.2s), should be within 1% of final value.
-  EXPECT_NEAR(output[0], 1.0, 0.01);
+  // Overshoot should be bounded (4th-order Bessel: ~2.2%, allow up to 5%).
+  EXPECT_LT(max_output, 1.05) << "Overshoot exceeds 5%";
+  EXPECT_GT(max_output, 1.0) << "4th-order Bessel should exhibit slight overshoot";
+
+  // After 100 samples at 500 Hz (0.2s), should be within 0.1% of final value.
+  EXPECT_NEAR(output[0], 1.0, 0.001);
 }
 
 TEST(BesselFilter, HighFreqAttenuation) {

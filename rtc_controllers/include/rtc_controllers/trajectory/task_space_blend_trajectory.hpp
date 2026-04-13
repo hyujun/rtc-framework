@@ -80,8 +80,9 @@ public:
     // Arriving velocity at wp[i]: delta[i-1] / h[i-1] (in wp[i-1] frame)
     //   -> transform to wp[i] frame: T_{i-1,i}^{-1}.act(v)
     // Departing velocity at wp[i]: delta[i] / h[i] (already in wp[i] frame)
-    std::array<Eigen::Matrix<double, 6, 1>, kMaxWaypoints> velocities{};
-    // velocities[0] = 0 (rest), velocities[n-1] = 0 (rest) — already zero-initialized
+    std::array<Eigen::Matrix<double, 6, 1>, kMaxWaypoints> velocities;
+    // Eigen matrices are NOT zero-initialized by default — explicit init required.
+    for (auto & vel : velocities) { vel.setZero(); }
 
     for (std::size_t i = 1; i < n - 1; ++i) {
       const double h_prev = waypoints[i].time - waypoints[i - 1].time;
