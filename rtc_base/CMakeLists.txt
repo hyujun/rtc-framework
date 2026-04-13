@@ -6,6 +6,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# ── Coverage (gcov/lcov) ─────────────────────────────────────────────────────
+option(ENABLE_COVERAGE "Enable gcov code coverage" OFF)
+if(ENABLE_COVERAGE)
+  add_compile_options(--coverage -fprofile-arcs -ftest-coverage)
+  add_link_options(--coverage)
+endif()
+
 # ── Strict compiler warnings ─────────────────────────────────────────────────
 add_compile_options(
   -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
