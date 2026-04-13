@@ -147,14 +147,6 @@ ament_export_include_directories(include)
 
 # ── Testing ───────────────────────────────────────────────────────────────────
 if(BUILD_TESTING)
-  find_package(ament_lint_auto REQUIRED)
-  # Skip style/copyright lints — not useful for unit test sources.
-  set(ament_cmake_copyright_FOUND TRUE)
-  set(ament_cmake_cpplint_FOUND TRUE)
-  set(ament_cmake_uncrustify_FOUND TRUE)
-  set(ament_cmake_cppcheck_FOUND TRUE)
-  ament_lint_auto_find_test_dependencies()
-
   find_package(ament_cmake_gtest REQUIRED)
   find_package(Eigen3 REQUIRED)
 

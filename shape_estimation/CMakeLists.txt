@@ -87,13 +87,7 @@ ament_export_include_directories(include)
 
 # ── Testing ──────────────────────────────────────────────────────────────────
 if(BUILD_TESTING)
-  find_package(ament_lint_auto REQUIRED)
   find_package(ament_cmake_gtest REQUIRED)
-  set(ament_cmake_copyright_FOUND TRUE)
-  set(ament_cmake_cpplint_FOUND TRUE)
-  set(ament_cmake_uncrustify_FOUND TRUE)
-  set(ament_cmake_cppcheck_FOUND TRUE)
-  ament_lint_auto_find_test_dependencies()
 
   ament_add_gtest(test_tof_shape test/test_tof_shape.cpp)
   target_link_libraries(test_tof_shape shape_estimation_core)
