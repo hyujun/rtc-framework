@@ -57,7 +57,7 @@ TEST(QuinticSplineTrajectory, C4Continuity)
   // At internal knots t=1.0 and t=2.0, check up to 4th derivative (snap)
   // We check pos/vel/acc from compute() and approximate jerk/snap with finite differences
   const double via_times[] = {1.0, 2.0};
-  constexpr double eps = 1e-6;
+  constexpr double eps = 1e-5;
 
   for (double vt : via_times) {
     auto sl = spline.compute(vt - eps);
