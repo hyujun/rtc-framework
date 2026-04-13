@@ -289,6 +289,12 @@ jobs:
         colcon test-result --all --verbose 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
         echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+        # Emit failed tests as GitHub annotations (visible via API)
+        colcon test-result --all --verbose 2>&1 | grep -E "FAILED|ERROR|failed" | while IFS= read -r line; do
+          echo "::error title=Test Failure::$line"
+        done || true
+        echo '```' >> "$GITHUB_STEP_SUMMARY"
+
     - name: Generate Coverage Report
       if: always()
       run: |
