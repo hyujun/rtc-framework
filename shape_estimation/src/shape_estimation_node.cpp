@@ -196,6 +196,12 @@ void ShapeEstimationNode::DeclareParameters() {
   declare_parameter("exploration.min_points_for_success", 20);
   declare_parameter("exploration.max_total_time_sec", 10.0);
   declare_parameter("exploration.max_sweep_cycles", 3);
+
+  // 센서 가중치 파라미터
+  declare_parameter("exploration.finger_weights",
+                    std::vector<double>{0.2, 0.4, 0.4});
+  declare_parameter("exploration.min_classification_fingers", 1);
+  declare_parameter("exploration.min_classification_coverage", 0.5);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -227,7 +233,12 @@ void ShapeEstimationNode::SnapshotCallback(
 
   // ���인트 클라우드 누적
   voxel_cloud_.AddSnapshot(latest_snapshot_);
-  voxel_cloud_.RemoveExpired(latest_snapshot_.timestamp_ns);
+
+  // RemoveExpired throttle: 0.5초 간격 @500Hz
+  if (++expire_counter_ >= kExpireInterval) {
+    expire_counter_ = 0;
+    voxel_cloud_.RemoveExpired(latest_snapshot_.timestamp_ns);
+  }
 
   // Snapshot 시계열 저장 (돌출 구조 gap 분석용)
   snapshot_history_.Push(latest_snapshot_);
@@ -237,55 +248,30 @@ void ShapeEstimationNode::SnapshotCallback(
                         "SnapshotCallback: valid_sensors=%d, cloud_size=%d",
                         valid_count, voxel_cloud_.Size());
 
-  // 형상 추정
-  latest_estimate_ = EstimateShape();
+  // NOTE: 형상 추정(fitting) + 돌출 탐지 + estimate/시각화 publish는
+  // VizTimerCallback (5-10Hz)에서 수행. 500Hz 콜백에서는 누적만 처리.
 
-  // 돌출 구조 ���지
-  if (latest_estimate_.type != ShapeType::kUnknown) {
-    latest_protuberance_result_ = protuberance_detector_.Detect(
-        latest_estimate_, voxel_cloud_.GetPoints(),
-        snapshot_history_.Snapshots());
-  } else {
-    latest_protuberance_result_ = ProtuberanceResult{};
-  }
+  // REMOVED: EstimateShape(), protuberance Detect(), estimate publish,
+  // beam/curvature marker publish → moved to VizTimerCallback()
 
-  // Estimate publish (rate limiting)
-  const auto now_time = now();
-  const double dt = (now_time - last_estimate_pub_time_).seconds();
-  if (dt >= 1.0 / publish_rate_hz_) {
-    std_msgs::msg::Header header;
-    header.stamp = msg->stamp;
-    header.frame_id = frame_id_;
-
-    estimate_pub_->publish(
-        ToMsg(latest_estimate_, latest_snapshot_,
-              latest_protuberance_result_, header));
-    last_estimate_pub_time_ = now_time;
-  }
-
-  // 빔 + 곡률 시각화 (매 콜백)
-  const auto stamp = msg->stamp;
-  tof_beams_pub_->publish(viz::BuildBeamMarkers(latest_snapshot_, stamp, frame_id_));
-  curvature_text_pub_->publish(
-      viz::BuildCurvatureTextMarkers(latest_snapshot_, stamp, frame_id_));
-
-  // SingleShot 모드: 1개 처리 후 Paused
+  // SingleShot 모드: 다음 VizTimerCallback에서 추정 후 Paused 전이
   if (state_ == State::kSingleShot) {
     state_ = State::kPaused;
     RCLCPP_INFO(node_log(), "SingleShot 완료 → PAUSED");
   }
 }
 
-ShapeEstimate ShapeEstimationNode::EstimateShape() {
-  // Fast classification
+ShapeEstimate ShapeEstimationNode::EstimateShape(
+    const std::vector<PointWithNormal>& points) {
+  // Fast classification (O(1))
   ShapeEstimate fast_result = fast_classifier_.Classify(
       latest_snapshot_.local_curvatures,
       latest_snapshot_.curvature_valid,
       latest_snapshot_.readings);
 
   // 충분한 포인트가 모이면 primitive fitting
-  if (voxel_cloud_.Size() >= min_points_for_fitting_) {
-    const auto points = voxel_cloud_.GetPoints();
+  const auto n_points = static_cast<int>(points.size());
+  if (n_points >= min_points_for_fitting_) {
     ShapeEstimate fitted_result = fitter_.FitBestPrimitive(points);
 
     // fast와 fitted 결과 결합: fitted 결과가 더 신뢰도가 높으면 사용
@@ -293,11 +279,11 @@ ShapeEstimate ShapeEstimationNode::EstimateShape() {
         fitted_result.confidence >= fast_result.confidence) {
       RCLCPP_DEBUG_THROTTLE(node_log(), *get_clock(),
                             ::rtc::shape::logging::kThrottleFastMs,
-                            "EstimateShape: fitted=%s(%.2f) 선택 (fast=%s(%.2f), points=%zu)",
+                            "EstimateShape: fitted=%s(%.2f) 선택 (fast=%s(%.2f), points=%d)",
                             ShapeTypeToString(fitted_result.type).data(),
                             fitted_result.confidence,
                             ShapeTypeToString(fast_result.type).data(),
-                            fast_result.confidence, points.size());
+                            fast_result.confidence, n_points);
       return fitted_result;
     }
   }
@@ -307,7 +293,7 @@ ShapeEstimate ShapeEstimationNode::EstimateShape() {
                         "EstimateShape: fast=%s(%.2f) 사용 (cloud=%d/%d)",
                         ShapeTypeToString(fast_result.type).data(),
                         fast_result.confidence,
-               voxel_cloud_.Size(), min_points_for_fitting_);
+                        n_points, min_points_for_fitting_);
 
   return fast_result;
 }
@@ -363,8 +349,39 @@ void ShapeEstimationNode::VizTimerCallback() {
   ros_stamp.sec = static_cast<int32_t>(stamp.seconds());
   ros_stamp.nanosec = static_cast<uint32_t>(stamp.nanoseconds() % 1'000'000'000LL);
 
-  // Point cloud publish
+  // ── 형상 추정 + 돌출 탐지 (SnapshotCallback에서 이동) ──────────────────────
+  // GetPoints()를 1회만 호출하여 fitting, protuberance, visualization 모두에 재사용
   const auto points = voxel_cloud_.GetPoints();
+
+  if (has_snapshot_) {
+    latest_estimate_ = EstimateShape(points);
+
+    // 돌출 구조 탐지
+    if (latest_estimate_.type != ShapeType::kUnknown) {
+      latest_protuberance_result_ = protuberance_detector_.Detect(
+          latest_estimate_, points, snapshot_history_.Snapshots());
+    } else {
+      latest_protuberance_result_ = ProtuberanceResult{};
+    }
+
+    // Estimate publish
+    std_msgs::msg::Header header;
+    header.stamp.sec = ros_stamp.sec;
+    header.stamp.nanosec = ros_stamp.nanosec;
+    header.frame_id = frame_id_;
+    estimate_pub_->publish(
+        ToMsg(latest_estimate_, latest_snapshot_,
+              latest_protuberance_result_, header));
+
+    // 빔 + 곡률 시각화
+    tof_beams_pub_->publish(
+        viz::BuildBeamMarkers(latest_snapshot_, ros_stamp, frame_id_));
+    curvature_text_pub_->publish(
+        viz::BuildCurvatureTextMarkers(latest_snapshot_, ros_stamp, frame_id_));
+  }
+
+  // ── 시각화 publish ─────────────────────────────────────────────────────────
+  // Point cloud publish
   point_cloud_pub_->publish(viz::BuildPointCloud2(points, ros_stamp, frame_id_));
 
   // Primitive marker publish
@@ -516,15 +533,13 @@ void ShapeEstimationNode::HandleAccepted(
   pub_controller_gains_->publish(gains_msg);
 
   // 3) 컨트롤러 전환 대기 후 탐색 시작 (one-shot timer)
+  // 멤버 변수로 타이머를 유지하여 lifetime 보장 + cancel 가능
   auto delay = std::chrono::milliseconds(controller_switch_delay_ms_);
-  auto timer = create_wall_timer(delay, [this, object_pos]() {
+  delayed_start_timer_ = create_wall_timer(delay, [this, object_pos]() {
     StartExploration(object_pos);
-    // one-shot: 타이머를 즉시 취소
-    // (rclcpp wall timer는 반복이므로, 플래그로 제어)
+    // one-shot: 즉시 cancel
+    delayed_start_timer_->cancel();
   });
-  // one-shot timer는 직접 cancel로 구현하기 어려우므로,
-  // 바로 시작하고 delay는 첫 step에서 자연스럽게 흡수
-  StartExploration(object_pos);
 }
 
 // ── 탐색 시작/중지 ──────────────────────────────────────────────────────────
@@ -729,6 +744,17 @@ ExplorationConfig ShapeEstimationNode::LoadExplorationConfig() {
   config.max_total_time_sec = get_parameter("exploration.max_total_time_sec").as_double();
   config.max_sweep_cycles =
       static_cast<uint8_t>(get_parameter("exploration.max_sweep_cycles").as_int());
+
+  // 센서 가중치
+  const auto weights = get_parameter("exploration.finger_weights").as_double_array();
+  if (weights.size() >= 3) {
+    config.finger_weights = {weights[0], weights[1], weights[2]};
+  }
+  config.min_classification_fingers =
+      static_cast<uint8_t>(get_parameter("exploration.min_classification_fingers").as_int());
+  config.min_classification_coverage =
+      get_parameter("exploration.min_classification_coverage").as_double();
+
   return config;
 }
 

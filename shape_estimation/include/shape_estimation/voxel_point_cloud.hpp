@@ -3,6 +3,7 @@
 #include "shape_estimation/tof_shape_types.hpp"
 
 #include <cstdint>
+#include <map>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -50,6 +51,10 @@ class VoxelPointCloud {
 
   Config config_;
   std::unordered_map<int64_t, VoxelEntry> voxels_;
+
+  // timestamp → voxel_key 정렬 인덱스: FIFO eviction O(log N)
+  // multimap: 동일 timestamp에 여러 voxel 가능
+  std::multimap<uint64_t, int64_t> timestamp_index_;
 
   // 만료 시간 (ns)
   uint64_t expiry_ns_{0};

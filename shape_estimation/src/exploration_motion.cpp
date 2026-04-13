@@ -217,9 +217,14 @@ StepResult ExplorationMotionGenerator::Step(
     }
 
     case ExplorePhase::kEvaluate: {
-      // 추정 결과 평가
+      // 추정 결과 평가 (classification coverage 포함)
+      // index/middle pair-valid 비율: classification 품질 지표
+      const int class_pairs = CountClassificationFingerPairs(snapshot);
+      const double class_coverage = static_cast<double>(class_pairs) / 2.0;  // max 2 fingers
+
       if (current_estimate.confidence >= config_.confidence_threshold &&
-          current_estimate.num_points_used >= config_.min_points_for_success) {
+          current_estimate.num_points_used >= config_.min_points_for_success &&
+          class_coverage >= config_.min_classification_coverage) {
         phase_ = ExplorePhase::kSucceeded;
         result.phase = phase_;
         std::ostringstream oss;
@@ -296,7 +301,7 @@ TaskSpaceGoal ExplorationMotionGenerator::GenerateServo(
   TaskSpaceGoal goal;
   goal.pose = current;
 
-  const double mean_dist = MeanValidDistance(snapshot);
+  const double mean_dist = WeightedMeanDistance(snapshot);
   if (mean_dist <= 0.0) {
     // 유효한 센서가 없으면 approach 방향으로 계속 전진
     goal.pose[0] += approach_direction_.x() * config_.servo_max_step;
@@ -373,8 +378,8 @@ TaskSpaceGoal ExplorationMotionGenerator::GenerateSweep(
   goal.pose[1] += sweep_axis.y() * static_cast<double>(sweep_direction_) * config_.sweep_step_size;
   goal.pose[2] += sweep_axis.z() * static_cast<double>(sweep_direction_) * config_.sweep_step_size;
 
-  // 표면 법선 방향 보정: ToF 거리를 기반으로 표면과의 거리 유지
-  const double mean_dist = MeanValidDistance(snapshot);
+  // 표면 법선 방향 보정: index/middle 가중 거리 기반으로 표면 거리 유지
+  const double mean_dist = WeightedMeanDistance(snapshot);
   if (mean_dist > 0.0) {
     const double normal_error = mean_dist - config_.servo_target_distance;
     double normal_step = config_.sweep_normal_gain * normal_error;
@@ -395,17 +400,23 @@ TaskSpaceGoal ExplorationMotionGenerator::GenerateTilt(
   TaskSpaceGoal goal;
   goal.pose = current;
 
-  // 사인파 틸트: roll과 pitch를 교대로 변경
+  // Index/middle 편향 틸트 시퀀스:
+  // - pitch 우선 (index/middle이 물체 표면에 수직에 가까워짐)
+  // - 3:1 비율로 pitch:roll 배분
   const double amp = config_.tilt_amplitude_deg * kDegToRad;
   const double phase_ratio = static_cast<double>(tilt_step_count_) /
                              static_cast<double>(std::max(config_.tilt_steps, 1u));
   const double angle = amp * std::sin(2.0 * M_PI * phase_ratio);
 
-  // roll과 pitch에 적용 (start_pose 기준)
-  if (tilt_step_count_ % 2 == 0) {
-    goal.pose[3] = start_pose_[3] + angle;  // roll
+  // 4스텝 사이클: pitch+, pitch-, pitch (반대 방향), roll
+  // → pitch 3회, roll 1회 → index/middle 센서가 더 다양한 표면 각도 경험
+  const uint32_t cycle_pos = tilt_step_count_ % 4;
+  if (cycle_pos < 3) {
+    // pitch (index/middle finger가 표면을 가로지르는 방향)
+    goal.pose[4] = start_pose_[4] + angle;
   } else {
-    goal.pose[4] = start_pose_[4] + angle;  // pitch
+    // roll (보완적 스캔)
+    goal.pose[3] = start_pose_[3] + angle;
   }
 
   tilt_step_count_++;
@@ -450,11 +461,18 @@ bool ExplorationMotionGenerator::ValidateGoal(
 // ── Phase 전이 판정 ─────────────────────────────────────────────────────────
 
 bool ExplorationMotionGenerator::ShouldTransitionToServo(const ToFSnapshot& snapshot) const {
-  return CountValidSensors(snapshot) >= config_.servo_min_valid_sensors;
+  // 기존 조건: 전체 valid 센서 수 >= min
+  if (CountValidSensors(snapshot) < config_.servo_min_valid_sensors) {
+    return false;
+  }
+  // 신규 조건: index/middle 중 pair-valid finger >= min_classification_fingers
+  // (곡률 계산 가능한 finger가 충분해야 classification에 유의미)
+  return CountClassificationFingerPairs(snapshot) >=
+         static_cast<int>(config_.min_classification_fingers);
 }
 
 bool ExplorationMotionGenerator::IsServoConverged(const ToFSnapshot& snapshot) const {
-  const double mean_dist = MeanValidDistance(snapshot);
+  const double mean_dist = WeightedMeanDistance(snapshot);
   if (mean_dist <= 0.0) {
     return false;
   }
@@ -490,6 +508,46 @@ int ExplorationMotionGenerator::CountValidSensors(const ToFSnapshot& snapshot) c
   for (int i = 0; i < kTotalSensors; ++i) {
     if (snapshot.readings[static_cast<size_t>(i)].valid) {
       count++;
+    }
+  }
+  return count;
+}
+
+double ExplorationMotionGenerator::WeightedMeanDistance(const ToFSnapshot& snapshot) const {
+  // finger별 가중 평균: 각 finger의 valid 센서 평균 거리 × finger_weight
+  double weighted_sum = 0.0;
+  double weight_sum = 0.0;
+
+  for (int f = 0; f < kNumFingers; ++f) {
+    const auto fi = static_cast<size_t>(f);
+    double finger_dist = 0.0;
+    int finger_valid = 0;
+    for (int s = 0; s < kSensorsPerFinger; ++s) {
+      const auto si = static_cast<size_t>(f * kSensorsPerFinger + s);
+      if (snapshot.readings[si].valid) {
+        finger_dist += snapshot.readings[si].distance_m;
+        ++finger_valid;
+      }
+    }
+    if (finger_valid > 0) {
+      finger_dist /= static_cast<double>(finger_valid);
+      weighted_sum += config_.finger_weights[fi] * finger_dist;
+      weight_sum += config_.finger_weights[fi];
+    }
+  }
+
+  return (weight_sum > 1e-9) ? (weighted_sum / weight_sum) : 0.0;
+}
+
+int ExplorationMotionGenerator::CountClassificationFingerPairs(
+    const ToFSnapshot& snapshot) const {
+  // index(finger=1)와 middle(finger=2)에서 A+B 모두 valid인 finger 수
+  int count = 0;
+  for (int f = 1; f <= 2; ++f) {  // index, middle만
+    const auto a_idx = static_cast<size_t>(f * kSensorsPerFinger + 0);
+    const auto b_idx = static_cast<size_t>(f * kSensorsPerFinger + 1);
+    if (snapshot.readings[a_idx].valid && snapshot.readings[b_idx].valid) {
+      ++count;
     }
   }
   return count;

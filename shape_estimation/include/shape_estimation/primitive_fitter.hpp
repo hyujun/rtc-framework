@@ -42,6 +42,22 @@ class PrimitiveFitter {
       const std::vector<PointWithNormal>& points) const;
 
  private:
+  /// Centroid + Eigendecomposition 결과를 공유하는 내부 피팅
+  [[nodiscard]] ShapeEstimate FitCylinderImpl(
+      const std::vector<PointWithNormal>& points,
+      const Eigen::Vector3d& centroid,
+      const Eigen::Vector3d& eigenvalues,
+      const Eigen::Matrix3d& eigenvectors) const;
+  [[nodiscard]] ShapeEstimate FitPlaneImpl(
+      const std::vector<PointWithNormal>& points,
+      const Eigen::Vector3d& centroid,
+      const Eigen::Vector3d& eigenvalues,
+      const Eigen::Matrix3d& eigenvectors) const;
+  [[nodiscard]] ShapeEstimate FitBoxImpl(
+      const std::vector<PointWithNormal>& points,
+      const Eigen::Vector3d& centroid,
+      const Eigen::Matrix3d& eigenvectors) const;
+
   Config config_;
 };
 

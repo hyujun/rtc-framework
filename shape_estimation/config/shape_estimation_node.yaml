@@ -83,5 +83,18 @@ shape_estimation_node:
       max_total_time_sec: 10.0           # [s]
       max_sweep_cycles: 3
 
+      # ── 센서 가중치 (index/middle 우선) ────────────────────────────────────
+      # finger별 가중치 [thumb, index, middle]
+      # index/middle이 형상 분류에 더 기여하므로 높은 가중치 부여
+      # servo/sweep 거리 계산 시 사용
+      finger_weights: [0.2, 0.4, 0.4]
+
+      # Servo 전이: index/middle 중 pair-valid finger 최소 수
+      # (pair-valid = A+B 센서 모두 valid → 곡률 계산 가능)
+      min_classification_fingers: 1      # [0-2]
+
+      # Evaluate: index/middle pair-valid 비율 최소 기준 (0.0~1.0)
+      min_classification_coverage: 0.5
+
       # Explore loop rate
       explore_rate_hz: 10.0              # [Hz]

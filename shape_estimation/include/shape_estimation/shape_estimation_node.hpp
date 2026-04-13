@@ -55,8 +55,8 @@ class ShapeEstimationNode : public rclcpp::Node {
       std::shared_ptr<std_srvs::srv::Trigger::Response> response);
   void VizTimerCallback();
 
-  // 형상 추정 실행
-  ShapeEstimate EstimateShape();
+  // 형상 추정 실행 (외부에서 GetPoints() 결과를 전달받아 중복 복사 방지)
+  ShapeEstimate EstimateShape(const std::vector<PointWithNormal>& points);
 
   // 파라미터 선언
   void DeclareParameters();
@@ -105,6 +105,10 @@ class ShapeEstimationNode : public rclcpp::Node {
   // Publish rate limiting
   rclcpp::Time last_estimate_pub_time_;
 
+  // RemoveExpired throttle (500Hz에서 매번 호출 방지)
+  uint32_t expire_counter_{0};
+  static constexpr uint32_t kExpireInterval = 250;  // 0.5초 간격 @500Hz
+
   // ═════════════════════════════════════════════════════════════════════════════
   // 탐색 모션 (enable_exploration: true일 때만 활성화)
   // ═════════════════════════════════════════════════════════════════════════════
@@ -140,6 +144,9 @@ class ShapeEstimationNode : public rclcpp::Node {
 
   // ── 탐색 루프 타이머 ──────────────────────────────────────────────────────
   rclcpp::TimerBase::SharedPtr explore_timer_;
+
+  // ── 컨트롤러 전환 지연 타이머 (one-shot) ──────────────────────────────────
+  rclcpp::TimerBase::SharedPtr delayed_start_timer_;
 
   // ── 탐색 모션 생성기 ──────────────────────────────────────────────────────
   ExplorationMotionGenerator motion_generator_;

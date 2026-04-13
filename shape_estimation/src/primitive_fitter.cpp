@@ -51,7 +51,7 @@ static Eigen::Matrix3d ComputeCovariance(
 
 // ── 구 피팅 ──────────────────────────────────────────────────────────────────
 // 대수적 방법: Ax + By + Cz + D = x² + y² + z² 선형화
-// [2x 2y 2z 1] * [cx cy cz (cx²+cy²+cz²-r²)]^T = x²+y²+z²
+// Normal Equation: (A^T A) x = A^T b → 4×4 시스템 직접 풀기 (SVD 대비 ~10배 빠름)
 
 ShapeEstimate PrimitiveFitter::FitSphere(
     const std::vector<PointWithNormal>& points) const {
@@ -67,22 +67,20 @@ ShapeEstimate PrimitiveFitter::FitSphere(
     return result;
   }
 
-  // A * x = b 구성
-  Eigen::MatrixXd A(n, 4);
-  Eigen::VectorXd b(n);
+  // Normal Equation: A^T A (4x4) 와 A^T b (4x1) 을 직접 누적
+  Eigen::Matrix4d ATA = Eigen::Matrix4d::Zero();
+  Eigen::Vector4d ATb = Eigen::Vector4d::Zero();
 
   for (int i = 0; i < n; ++i) {
-    const auto& p = points[static_cast<size_t>(i)].position;
-    A(i, 0) = 2.0 * p.x();
-    A(i, 1) = 2.0 * p.y();
-    A(i, 2) = 2.0 * p.z();
-    A(i, 3) = 1.0;
-    b(i) = p.squaredNorm();
+    const Eigen::Vector3d& p = points[static_cast<size_t>(i)].position;
+    const Eigen::Vector4d row(2.0 * p.x(), 2.0 * p.y(), 2.0 * p.z(), 1.0);
+    const double bi = p.squaredNorm();
+    ATA.noalias() += row * row.transpose();
+    ATb.noalias() += row * bi;
   }
 
-  // SVD로 least squares 풀기
-  const Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeThinU | Eigen::ComputeThinV);
-  const Eigen::VectorXd x = svd.solve(b);
+  // LDLT로 4×4 대칭 양정치 시스템 풀기
+  const Eigen::Vector4d x = ATA.ldlt().solve(ATb);
 
   result.center = Eigen::Vector3d(x(0), x(1), x(2));
   const double r_sq = x(3) + result.center.squaredNorm();
@@ -114,11 +112,28 @@ ShapeEstimate PrimitiveFitter::FitSphere(
 }
 
 // ── 실린더 피팅 ──────────────────────────────────────────────────────────────
-// 1) PCA로 주축 추정 (최대 고유값의 고유벡터)
-// 2) 축 직교 평면에 투영 → 2D circle fit
+// 공용 인터페이스: centroid/covariance/eigendecomposition 자체 계산
 
 ShapeEstimate PrimitiveFitter::FitCylinder(
     const std::vector<PointWithNormal>& points) const {
+  const auto n = static_cast<int>(points.size());
+  if (n < config_.min_points_cylinder) {
+    ShapeEstimate result;
+    result.type = ShapeType::kUnknown;
+    result.confidence = 0.0;
+    return result;
+  }
+  const Eigen::Vector3d centroid = ComputeCentroid(points);
+  const Eigen::Matrix3d cov = ComputeCovariance(points, centroid);
+  const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eig(cov);
+  return FitCylinderImpl(points, centroid, eig.eigenvalues(), eig.eigenvectors());
+}
+
+ShapeEstimate PrimitiveFitter::FitCylinderImpl(
+    const std::vector<PointWithNormal>& points,
+    const Eigen::Vector3d& centroid,
+    const Eigen::Vector3d& eigenvalues,
+    const Eigen::Matrix3d& eigenvectors) const {
   ShapeEstimate result;
   result.type = ShapeType::kCylinder;
 
@@ -131,42 +146,32 @@ ShapeEstimate PrimitiveFitter::FitCylinder(
     return result;
   }
 
-  const Eigen::Vector3d centroid = ComputeCentroid(points);
-  const Eigen::Matrix3d cov = ComputeCovariance(points, centroid);
-
-  // PCA: 고유값 분해
-  const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eigen_solver(cov);
-  const Eigen::Vector3d eigenvalues = eigen_solver.eigenvalues();
-  const Eigen::Matrix3d eigenvectors = eigen_solver.eigenvectors();
-
   // 최대 고유값의 고유벡터 = cylinder 축 방향
   int max_idx = 0;
   eigenvalues.maxCoeff(&max_idx);
   const Eigen::Vector3d axis = eigenvectors.col(max_idx).normalized();
 
-  // 축 직교 평면에 투영하여 2D circle fit
   // 축과 직교하는 2개 기저 벡터
   const int mid_idx = (max_idx == 2) ? 1 : ((max_idx == 0) ? 1 : 0);
   const int min_idx = 3 - max_idx - mid_idx;
   const Eigen::Vector3d u = eigenvectors.col(mid_idx);
   const Eigen::Vector3d v = eigenvectors.col(min_idx);
 
-  // 2D 좌표로 투영
-  Eigen::MatrixXd A2d(n, 3);
-  Eigen::VectorXd b2d(n);
+  // Normal Equation: 2D circle fit (3×3 시스템)
+  Eigen::Matrix3d ATA_2d = Eigen::Matrix3d::Zero();
+  Eigen::Vector3d ATb_2d = Eigen::Vector3d::Zero();
 
   for (int i = 0; i < n; ++i) {
     const Eigen::Vector3d d = points[static_cast<size_t>(i)].position - centroid;
     const double pu = d.dot(u);
     const double pv = d.dot(v);
-    A2d(i, 0) = 2.0 * pu;
-    A2d(i, 1) = 2.0 * pv;
-    A2d(i, 2) = 1.0;
-    b2d(i) = pu * pu + pv * pv;
+    const Eigen::Vector3d row(2.0 * pu, 2.0 * pv, 1.0);
+    const double bi = pu * pu + pv * pv;
+    ATA_2d.noalias() += row * row.transpose();
+    ATb_2d.noalias() += row * bi;
   }
 
-  const Eigen::JacobiSVD<Eigen::MatrixXd> svd2d(A2d, Eigen::ComputeThinU | Eigen::ComputeThinV);
-  const Eigen::VectorXd x2d = svd2d.solve(b2d);
+  const Eigen::Vector3d x2d = ATA_2d.ldlt().solve(ATb_2d);
 
   // 2D center → 3D center
   const Eigen::Vector3d center_2d_3d = centroid + x2d(0) * u + x2d(1) * v;
@@ -206,10 +211,27 @@ ShapeEstimate PrimitiveFitter::FitCylinder(
 }
 
 // ── 평면 피팅 ────────────────────────────────────────────────────────────────
-// SVD: centroid 빼고, 최소 고유값의 고유벡터 = 법선
 
 ShapeEstimate PrimitiveFitter::FitPlane(
     const std::vector<PointWithNormal>& points) const {
+  const auto n = static_cast<int>(points.size());
+  if (n < config_.min_points_plane) {
+    ShapeEstimate result;
+    result.type = ShapeType::kUnknown;
+    result.confidence = 0.0;
+    return result;
+  }
+  const Eigen::Vector3d centroid = ComputeCentroid(points);
+  const Eigen::Matrix3d cov = ComputeCovariance(points, centroid);
+  const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eig(cov);
+  return FitPlaneImpl(points, centroid, eig.eigenvalues(), eig.eigenvectors());
+}
+
+ShapeEstimate PrimitiveFitter::FitPlaneImpl(
+    const std::vector<PointWithNormal>& points,
+    const Eigen::Vector3d& centroid,
+    const Eigen::Vector3d& eigenvalues,
+    const Eigen::Matrix3d& eigenvectors) const {
   ShapeEstimate result;
   result.type = ShapeType::kPlane;
 
@@ -221,13 +243,6 @@ ShapeEstimate PrimitiveFitter::FitPlane(
                  n, config_.min_points_plane);
     return result;
   }
-
-  const Eigen::Vector3d centroid = ComputeCentroid(points);
-  const Eigen::Matrix3d cov = ComputeCovariance(points, centroid);
-
-  const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eigen_solver(cov);
-  const Eigen::Vector3d eigenvalues = eigen_solver.eigenvalues();
-  const Eigen::Matrix3d eigenvectors = eigen_solver.eigenvectors();
 
   // 최소 고유값의 고유벡터 = 평면 법선
   int min_idx = 0;
@@ -260,7 +275,6 @@ ShapeEstimate PrimitiveFitter::FitPlane(
   }
   const double rms = std::sqrt(residual_sum / static_cast<double>(n));
 
-  // 평면 "두께"에 비례한 confidence (rms가 1mm 미만이면 높은 confidence)
   const double thickness_conf = std::max(0.0, 1.0 - rms / 0.005);
   result.confidence = 0.5 * thickness_conf + 0.5 * normal_consistency;
   result.num_points_used = static_cast<uint32_t>(n);
@@ -275,10 +289,26 @@ ShapeEstimate PrimitiveFitter::FitPlane(
 }
 
 // ── 박스 피팅 ────────────────────────────────────────────────────────────────
-// PCA 기반 Oriented Bounding Box
 
 ShapeEstimate PrimitiveFitter::FitBox(
     const std::vector<PointWithNormal>& points) const {
+  const auto n = static_cast<int>(points.size());
+  if (n < config_.min_points_box) {
+    ShapeEstimate result;
+    result.type = ShapeType::kUnknown;
+    result.confidence = 0.0;
+    return result;
+  }
+  const Eigen::Vector3d centroid = ComputeCentroid(points);
+  const Eigen::Matrix3d cov = ComputeCovariance(points, centroid);
+  const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eig(cov);
+  return FitBoxImpl(points, centroid, eig.eigenvectors());
+}
+
+ShapeEstimate PrimitiveFitter::FitBoxImpl(
+    const std::vector<PointWithNormal>& points,
+    const Eigen::Vector3d& centroid,
+    const Eigen::Matrix3d& axes) const {
   ShapeEstimate result;
   result.type = ShapeType::kBox;
 
@@ -290,12 +320,6 @@ ShapeEstimate PrimitiveFitter::FitBox(
                  n, config_.min_points_box);
     return result;
   }
-
-  const Eigen::Vector3d centroid = ComputeCentroid(points);
-  const Eigen::Matrix3d cov = ComputeCovariance(points, centroid);
-
-  const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eigen_solver(cov);
-  const Eigen::Matrix3d axes = eigen_solver.eigenvectors();
 
   // 각 PCA 축을 따른 min/max extent
   Eigen::Vector3d min_ext = Eigen::Vector3d::Constant(std::numeric_limits<double>::max());
@@ -309,7 +333,7 @@ ShapeEstimate PrimitiveFitter::FitBox(
 
   result.center = centroid + axes * ((min_ext + max_ext) / 2.0);
   result.dimensions = max_ext - min_ext;
-  result.axis = axes.col(2);  // 주축 (최대 분산 방향)
+  result.axis = axes.col(2);
 
   // 잔차: 각 포인트와 가장 가까운 면까지의 거리
   double residual_sum = 0.0;
@@ -318,7 +342,6 @@ ShapeEstimate PrimitiveFitter::FitBox(
   for (const auto& p : points) {
     const Eigen::Vector3d local = axes.transpose() * (p.position - result.center);
     const Eigen::Vector3d abs_local = local.cwiseAbs();
-    // 면까지의 거리 = max(|local_i| - half_i, 0)
     double face_dist = 0.0;
     for (int i = 0; i < 3; ++i) {
       const double d = abs_local(i) - half(i);
@@ -362,17 +385,28 @@ ShapeEstimate PrimitiveFitter::FitBestPrimitive(
   std::vector<Candidate> candidates;
   candidates.reserve(4);
 
-  // 각 primitive 피팅
+  // Centroid + Covariance + Eigendecomposition을 1회만 계산하여 공유
+  const Eigen::Vector3d centroid = ComputeCentroid(points);
+  const Eigen::Matrix3d cov = ComputeCovariance(points, centroid);
+  const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eig(cov);
+  const Eigen::Vector3d& eigenvalues = eig.eigenvalues();
+  const Eigen::Matrix3d& eigenvectors = eig.eigenvectors();
+
+  // Sphere: 독립적 Normal Equation (centroid/eig 불필요)
   if (auto est = FitSphere(points); est.type != ShapeType::kUnknown) {
     candidates.push_back({est, 4});  // center(3) + radius(1)
   }
-  if (auto est = FitCylinder(points); est.type != ShapeType::kUnknown) {
+  // Cylinder/Plane/Box: 공유 centroid + eigendecomposition 사용
+  if (auto est = FitCylinderImpl(points, centroid, eigenvalues, eigenvectors);
+      est.type != ShapeType::kUnknown) {
     candidates.push_back({est, 7});  // center(3) + axis(3) + radius(1)
   }
-  if (auto est = FitPlane(points); est.type != ShapeType::kUnknown) {
+  if (auto est = FitPlaneImpl(points, centroid, eigenvalues, eigenvectors);
+      est.type != ShapeType::kUnknown) {
     candidates.push_back({est, 4});  // center(3) + normal(3) - 1 constraint
   }
-  if (auto est = FitBox(points); est.type != ShapeType::kUnknown) {
+  if (auto est = FitBoxImpl(points, centroid, eigenvectors);
+      est.type != ShapeType::kUnknown) {
     candidates.push_back({est, 9});  // center(3) + axis(3) + dims(3)
   }
 

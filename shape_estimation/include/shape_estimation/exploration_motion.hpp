@@ -50,6 +50,17 @@ struct ExplorationConfig {
   uint32_t min_points_for_success{20};
   double max_total_time_sec{10.0};
   uint8_t max_sweep_cycles{3};
+
+  // ── 센서 가중치: index/middle이 classification에 더 기여 ─────────────────
+  // finger별 가중치 [thumb, index, middle] (거리 계산 시 사용)
+  std::array<double, 3> finger_weights{0.2, 0.4, 0.4};
+
+  // Servo 전이 조건: index/middle 중 최소 이 수만큼 finger가 pair-valid 필수
+  // (pair-valid = 해당 finger의 A, B 센서 모두 valid → 곡률 계산 가능)
+  uint8_t min_classification_fingers{1};
+
+  // Evaluation: index/middle pair-valid 비율 최소 기준 (0.0~1.0)
+  double min_classification_coverage{0.5};
 };
 
 // ── 탐색 FSM 상태 ──────────────────────────────────────────────────────────
@@ -163,6 +174,12 @@ class ExplorationMotionGenerator {
   // ToF 유틸
   double MeanValidDistance(const ToFSnapshot& snapshot) const;
   int CountValidSensors(const ToFSnapshot& snapshot) const;
+
+  /// finger_weights 기반 가중 평균 거리 (index/middle 우선)
+  double WeightedMeanDistance(const ToFSnapshot& snapshot) const;
+
+  /// index/middle 중 A+B 모두 valid인 finger 수 (곡률 계산 가능 = classification 유효)
+  int CountClassificationFingerPairs(const ToFSnapshot& snapshot) const;
 
   ExplorationConfig config_;
   ExplorePhase phase_{ExplorePhase::kIdle};

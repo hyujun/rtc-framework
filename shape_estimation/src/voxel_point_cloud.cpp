@@ -49,27 +49,33 @@ void VoxelPointCloud::AddSnapshot(const ToFSnapshot& snapshot) {
       const double w_old = static_cast<double>(n) / static_cast<double>(n + 1);
       const double w_new = 1.0 / static_cast<double>(n + 1);
 
+      // timestamp_index_ 에서 이전 timestamp 제거 후 새 timestamp 추가
+      const uint64_t old_ts = entry.point.timestamp_ns;
+      auto range = timestamp_index_.equal_range(old_ts);
+      for (auto ti = range.first; ti != range.second; ++ti) {
+        if (ti->second == key) {
+          timestamp_index_.erase(ti);
+          break;
+        }
+      }
+
       entry.point.position = w_old * entry.point.position + w_new * surface_pt;
       entry.point.normal = (w_old * entry.point.normal + w_new * normal).normalized();
       entry.point.curvature = w_old * entry.point.curvature + w_new * curvature;
       entry.point.timestamp_ns = snapshot.timestamp_ns;
       entry.update_count = n + 1;
+
+      timestamp_index_.emplace(snapshot.timestamp_ns, key);
     } else {
       // 신규 추가 (max_points 초과 시 oldest 제거)
       if (static_cast<int>(voxels_.size()) >= config_.max_points) {
         RCLCPP_WARN_ONCE(logger(),
                          "최대 포인트 도달 (%d) → FIFO eviction 시작",
                          config_.max_points);
-        // oldest timestamp를 가진 엔트리 제거
-        auto oldest_it = voxels_.begin();
-        uint64_t oldest_ts = std::numeric_limits<uint64_t>::max();
-        for (auto jt = voxels_.begin(); jt != voxels_.end(); ++jt) {
-          if (jt->second.point.timestamp_ns < oldest_ts) {
-            oldest_ts = jt->second.point.timestamp_ns;
-            oldest_it = jt;
-          }
-        }
-        voxels_.erase(oldest_it);
+        // timestamp_index_ 앞쪽 = oldest → O(1) 접근
+        auto oldest_ti = timestamp_index_.begin();
+        voxels_.erase(oldest_ti->second);
+        timestamp_index_.erase(oldest_ti);
       }
 
       VoxelEntry entry;
@@ -79,6 +85,7 @@ void VoxelPointCloud::AddSnapshot(const ToFSnapshot& snapshot) {
       entry.point.timestamp_ns = snapshot.timestamp_ns;
       entry.update_count = 1;
       voxels_.emplace(key, entry);
+      timestamp_index_.emplace(snapshot.timestamp_ns, key);
     }
   }
   static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
@@ -94,14 +101,17 @@ void VoxelPointCloud::RemoveExpired(uint64_t current_time_ns) {
   }
 
   const auto size_before = voxels_.size();
-  for (auto it = voxels_.begin(); it != voxels_.end();) {
-    if (current_time_ns > it->second.point.timestamp_ns &&
-        (current_time_ns - it->second.point.timestamp_ns) > expiry_ns_) {
-      it = voxels_.erase(it);
-    } else {
-      ++it;
-    }
+  const uint64_t cutoff = (current_time_ns > expiry_ns_)
+                              ? (current_time_ns - expiry_ns_)
+                              : 0;
+
+  // timestamp_index_ は timestamp 순 정렬 → 앞쪽부터 순차 제거 O(K)
+  auto it = timestamp_index_.begin();
+  while (it != timestamp_index_.end() && it->first < cutoff) {
+    voxels_.erase(it->second);
+    it = timestamp_index_.erase(it);
   }
+
   const auto removed = size_before - voxels_.size();
   if (removed > 0) {
     static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
@@ -127,6 +137,7 @@ int VoxelPointCloud::Size() const noexcept {
 
 void VoxelPointCloud::Clear() {
   voxels_.clear();
+  timestamp_index_.clear();
 }
 
 int64_t VoxelPointCloud::ComputeVoxelKey(const Eigen::Vector3d& p) const noexcept {

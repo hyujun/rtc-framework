@@ -3,12 +3,13 @@
 #include "shape_estimation/tof_shape_types.hpp"
 
 #include <cstddef>
+#include <deque>
 #include <vector>
 
 namespace shape_estimation {
 
 // 최근 ToFSnapshot 시계열을 유지하는 버퍼 (Gap 분석용).
-// NRT 스레드에서 사용하므로 std::vector 동적 할당 허용.
+// std::deque 기반: 앞쪽 제거 O(1), 뒤쪽 추가 O(1).
 class SnapshotHistory {
  public:
   // max_duration_sec: 유지할 최대 시간 (기본 3초)
@@ -18,8 +19,8 @@ class SnapshotHistory {
 
   void Push(const ToFSnapshot& snapshot);
 
-  // 시간순 정렬된 snapshot 벡터 (oldest → newest)
-  [[nodiscard]] const std::vector<ToFSnapshot>& Snapshots() const noexcept;
+  /// snapshot을 vector로 반환 (ProtuberanceDetector 인터페이스 호환)
+  [[nodiscard]] std::vector<ToFSnapshot> Snapshots() const;
 
   void Clear();
 
@@ -28,7 +29,7 @@ class SnapshotHistory {
  private:
   double max_duration_sec_;
   size_t max_count_;
-  std::vector<ToFSnapshot> buffer_;
+  std::deque<ToFSnapshot> buffer_;
 
   void PruneOld();
 };

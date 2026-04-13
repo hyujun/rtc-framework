@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <unordered_map>
 
 #include <rclcpp/logging.hpp>
 
@@ -186,7 +187,6 @@ ProtuberanceDetector::ClusterNegativeResiduals(
   std::vector<uint32_t> parent(n);
   std::iota(parent.begin(), parent.end(), 0U);
 
-  // Find with path compression
   auto find = [&parent](uint32_t x) -> uint32_t {
     while (parent[x] != x) {
       parent[x] = parent[parent[x]];
@@ -203,16 +203,73 @@ ProtuberanceDetector::ClusterNegativeResiduals(
     }
   };
 
-  // O(N²) brute force — N은 보통 수십개 이하
+  // Spatial grid 기반 클러스터링: O(N * k) where k ≈ constant
+  // cell_size = cluster_radius → 같은/인접(26-neighbor) cell만 비교
+  const double cell_size = config_.cluster_radius;
+  const double inv_cell = 1.0 / cell_size;
   const double radius_sq = config_.cluster_radius * config_.cluster_radius;
+
+  // Grid: cell_key → 해당 cell의 포인트 local indices (0..n-1)
+  auto cell_key = [inv_cell](const Eigen::Vector3d& p) -> int64_t {
+    const auto cx = static_cast<int32_t>(std::floor(p.x() * inv_cell));
+    const auto cy = static_cast<int32_t>(std::floor(p.y() * inv_cell));
+    const auto cz = static_cast<int32_t>(std::floor(p.z() * inv_cell));
+    // 21-bit packing
+    constexpr int64_t kMask = (1LL << 21) - 1;
+    return ((static_cast<int64_t>(cx) & kMask) << 42) |
+           ((static_cast<int64_t>(cy) & kMask) << 21) |
+           (static_cast<int64_t>(cz) & kMask);
+  };
+
+  std::unordered_map<int64_t, std::vector<size_t>> grid;
   for (size_t i = 0; i < n; ++i) {
-    for (size_t j = i + 1; j < n; ++j) {
-      const double dist_sq =
-          (residuals[negative_indices[i]].position -
-           residuals[negative_indices[j]].position)
-              .squaredNorm();
-      if (dist_sq < radius_sq) {
-        unite(static_cast<uint32_t>(i), static_cast<uint32_t>(j));
+    grid[cell_key(residuals[negative_indices[i]].position)].push_back(i);
+  }
+
+  // 각 포인트에 대해 27-neighbor cell 내의 포인트만 비교
+  for (const auto& [key, cell_indices] : grid) {
+    // 현재 cell 내부 pairwise
+    for (size_t a = 0; a < cell_indices.size(); ++a) {
+      for (size_t b = a + 1; b < cell_indices.size(); ++b) {
+        const double dist_sq =
+            (residuals[negative_indices[cell_indices[a]]].position -
+             residuals[negative_indices[cell_indices[b]]].position)
+                .squaredNorm();
+        if (dist_sq < radius_sq) {
+          unite(static_cast<uint32_t>(cell_indices[a]),
+                static_cast<uint32_t>(cell_indices[b]));
+        }
+      }
+    }
+    // 인접 cell과 비교 (13개 방향만: 중복 방지)
+    const auto cx = static_cast<int32_t>((key >> 42) & ((1LL << 21) - 1));
+    const auto cy = static_cast<int32_t>((key >> 21) & ((1LL << 21) - 1));
+    const auto cz = static_cast<int32_t>(key & ((1LL << 21) - 1));
+
+    constexpr int kOffsets[13][3] = {
+        {1, 0, 0}, {0, 1, 0}, {0, 0, 1},
+        {1, 1, 0}, {1, -1, 0}, {1, 0, 1}, {1, 0, -1},
+        {0, 1, 1}, {0, 1, -1},
+        {1, 1, 1}, {1, 1, -1}, {1, -1, 1}, {1, -1, -1}};
+
+    for (const auto& off : kOffsets) {
+      constexpr int64_t kMask = (1LL << 21) - 1;
+      const int64_t nkey =
+          ((static_cast<int64_t>(cx + off[0]) & kMask) << 42) |
+          ((static_cast<int64_t>(cy + off[1]) & kMask) << 21) |
+          (static_cast<int64_t>(cz + off[2]) & kMask);
+      auto nit = grid.find(nkey);
+      if (nit == grid.end()) continue;
+      for (size_t a : cell_indices) {
+        for (size_t b : nit->second) {
+          const double dist_sq =
+              (residuals[negative_indices[a]].position -
+               residuals[negative_indices[b]].position)
+                  .squaredNorm();
+          if (dist_sq < radius_sq) {
+            unite(static_cast<uint32_t>(a), static_cast<uint32_t>(b));
+          }
+        }
       }
     }
   }
