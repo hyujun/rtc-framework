@@ -1,5 +1,10 @@
-# Codecov 설정 — ur5e-rt-controller
+# Codecov 설정 — rtc-framework
 # https://docs.codecov.io/docs/codecov-yaml
+#
+# CI coverage 수집 대상 (ros2-advanced-ci.yml의 lcov --extract 경로와 일치):
+#   rtc_base, rtc_communication, rtc_controller_interface, rtc_controller_manager,
+#   rtc_controllers, rtc_inference, rtc_urdf_bridge, ur5e_bringup, ur5e_hand_driver,
+#   shape_estimation
 
 codecov:
   require_ci_to_pass: false   # coverage 업로드는 CI 실패와 독립적으로 처리
@@ -22,9 +27,21 @@ coverage:
 
 # 커버리지에서 제외할 경로
 ignore:
+  # 데이터/설정 전용 패키지
   - "ur5e_description/**"
-  - "ur5e_mujoco_sim/**"
-  - "ur5e_tools/**"
+  # CI 미빌드 패키지 (외부 의존성 미설치)
+  - "rtc_mujoco_sim/**"         # MuJoCo
+  - "rtc_tsid/**"               # ProxSuite
+  - "ur5e_bt_coordinator/**"    # BehaviorTree.CPP
+  # 메시지 정의 (rosidl 자동 생성 코드)
+  - "rtc_msgs/**"
+  - "shape_estimation_msgs/**"
+  # Python 패키지 (별도 pytest 커버리지)
+  - "rtc_tools/**"
+  - "rtc_digital_twin/**"
+  # Shell 스크립트
+  - "rtc_scripts/**"
+  # 공통 제외
   - "**/test/**"
   - "**/launch/**"
   - "**/config/**"
@@ -33,21 +50,49 @@ ignore:
 # 컴포넌트별 커버리지 추적
 component_management:
   individual_components:
-    - component_id: trajectory
-      name: "Trajectory Library"
-      paths:
-        - "ur5e_rt_controller/include/ur5e_rt_controller/trajectory/**"
-    - component_id: controllers
-      name: "Controllers"
-      paths:
-        - "ur5e_rt_controller/src/controllers/**"
-        - "ur5e_rt_controller/include/ur5e_rt_controller/controllers/**"
     - component_id: rt_base
-      name: "RT Base Library"
+      name: "RT Base (types, threading, filters)"
       paths:
-        - "ur5e_rt_base/include/**"
-    - component_id: hand_udp
-      name: "Hand UDP Bridge"
+        - "rtc_base/include/**"
+    - component_id: communication
+      name: "Communication (transport, codec)"
       paths:
-        - "ur5e_hand_udp/include/**"
-        - "ur5e_hand_udp/src/**"
+        - "rtc_communication/include/**"
+    - component_id: controller_interface
+      name: "Controller Interface"
+      paths:
+        - "rtc_controller_interface/include/**"
+        - "rtc_controller_interface/src/**"
+    - component_id: controllers
+      name: "Controllers (PD, CLIK, OSC, Grasp)"
+      paths:
+        - "rtc_controllers/include/**"
+        - "rtc_controllers/src/**"
+    - component_id: controller_manager
+      name: "Controller Manager (RT loop)"
+      paths:
+        - "rtc_controller_manager/src/**"
+    - component_id: inference
+      name: "Inference Engine (ONNX)"
+      paths:
+        - "rtc_inference/include/**"
+    - component_id: urdf_bridge
+      name: "URDF Bridge (Pinocchio)"
+      paths:
+        - "rtc_urdf_bridge/include/**"
+        - "rtc_urdf_bridge/src/**"
+    - component_id: shape_estimation
+      name: "Shape Estimation (ToF voxel)"
+      paths:
+        - "shape_estimation/include/**"
+        - "shape_estimation/src/**"
+    - component_id: hand_driver
+      name: "Hand Driver (UDP, F/T inference)"
+      paths:
+        - "ur5e_hand_driver/include/**"
+        - "ur5e_hand_driver/src/**"
+    - component_id: bringup
+      name: "Bringup (Demo Controllers)"
+      paths:
+        - "ur5e_bringup/include/**"
+        - "ur5e_bringup/src/**"
