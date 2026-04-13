@@ -473,13 +473,14 @@ jobs:
     if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-24.04
     continue-on-error: true
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@v4
 
-    - name: Setup ROS2 Jazzy
+    # required-ros-distributions 생략 → ros-jazzy-desktop(963 pkg, 598 MB) 설치 방지
+    # ROS2 apt 저장소 추가 + 개발 도구만 설치
+    - name: Setup ROS2 tooling
       uses: ros-tooling/setup-ros@v0.7
-      with:
-        required-ros-distributions: jazzy
 
     - name: Upgrade colcon
       run: pip install -U colcon-cmake colcon-core
@@ -495,20 +496,25 @@ jobs:
         restore-keys: |
           colcon-tidy-jazzy-
 
+    # ros-jazzy-ros-base: desktop(963 pkg) 대신 최소 ROS2 런타임(~200 pkg)
+    # visualization-msgs, std-srvs: ros-base에 미포함된 프로젝트 의존성
     - name: Cache apt packages
       uses: awalsh128/cache-apt-pkgs-action@v1
       with:
         packages: >-
           clang-tidy
+          ros-jazzy-ros-base
+          ros-jazzy-visualization-msgs
+          ros-jazzy-std-srvs
           ros-jazzy-pinocchio
           ros-jazzy-tinyxml2-vendor
           libyaml-cpp-dev
           libtinyxml2-dev
           libeigen3-dev
-        version: jazzy-tidy-v3
+        version: jazzy-tidy-v4
 
-    # 항상 빌드 실행 (캐시 hit 시 incremental, miss 시 full)
     # coverage 플래그 없이 빌드하여 깨끗한 분석 보장
+    # BUILD_TESTING=OFF: clang-tidy는 테스트 빌드 불필요 (gtest 의존성 제거)
     - name: Build Packages
       run: |
         source /opt/ros/jazzy/setup.bash
@@ -516,7 +522,8 @@ jobs:
           --packages-up-to $BUILD_PACKAGES \
           --cmake-args \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DBUILD_TESTING=OFF
 
     - name: Merge compile_commands.json
       run: |
