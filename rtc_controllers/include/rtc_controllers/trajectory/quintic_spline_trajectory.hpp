@@ -92,7 +92,7 @@ public:
 
     // 6*(N-1) unknowns (6 coefficients per segment).
     // Conditions: N position interpolation, 4 boundary (start/end vel & acc),
-    // 5*(N-2) internal continuity (vel, acc, jerk, snap, crackle).
+    // 5*(N-2) internal continuity (pos, vel, acc, jerk, snap).
     // Total: N + 4 + 5*(N-2) = 6N - 6 = 6*(N-1). Square system.
 
     const auto ns = num_segments_;
@@ -201,12 +201,11 @@ public:
     }
 
     // --- Internal continuity conditions at knots k = 0..ns-2 ---
-    // At junction between segment k and k+1: p_k(h_k) = p_{k+1}(0) [already covered by position constraints]
-    // Velocity: p_k'(h_k) = p_{k+1}'(0)
-    // Acceleration: p_k''(h_k) = p_{k+1}''(0)
-    // Jerk: p_k'''(h_k) = p_{k+1}'''(0)
-    // Snap: p_k''''(h_k) = p_{k+1}''''(0)
-    // Crackle (5th deriv): p_k'''''(h_k) = p_{k+1}'''''(0)
+    // Position continuity (C0): p_k(h_k) = p_{k+1}(0)
+    // Velocity (C1): p_k'(h_k) = p_{k+1}'(0)
+    // Acceleration (C2): p_k''(h_k) = p_{k+1}''(0)
+    // Jerk (C3): p_k'''(h_k) = p_{k+1}'''(0)
+    // Snap (C4): p_k''''(h_k) = p_{k+1}''''(0)
 
     for (std::size_t k = 0; k < ns - 1; ++k) {
       const auto base_k = static_cast<Eigen::Index>(6 * k);
@@ -215,6 +214,17 @@ public:
       const double hk2 = hk * hk;
       const double hk3 = hk2 * hk;
       const double hk4 = hk3 * hk;
+      const double hk5 = hk4 * hk;
+
+      // Position continuity: p_k(h_k) - p_{k+1}(0) = 0
+      A(row, base_k)     = 1.0;
+      A(row, base_k + 1) = hk;
+      A(row, base_k + 2) = hk2;
+      A(row, base_k + 3) = hk3;
+      A(row, base_k + 4) = hk4;
+      A(row, base_k + 5) = hk5;
+      A(row, base_k1)    = -1.0;
+      ++row;
 
       // Velocity continuity: p_k'(h_k) - p_{k+1}'(0) = 0
       A(row, base_k + 1) = 1.0;
@@ -246,12 +256,6 @@ public:
       A(row, base_k + 4) = 24.0;
       A(row, base_k + 5) = 120.0 * hk;
       A(row, base_k1 + 4) = -24.0;
-      ++row;
-
-      // Crackle continuity: p_k'''''(h_k) - p_{k+1}'''''(0) = 0
-      // p_k'''''(t) = 120*c5
-      A(row, base_k + 5) = 120.0;
-      A(row, base_k1 + 5) = -120.0;
       ++row;
     }
 

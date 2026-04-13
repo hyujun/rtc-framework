@@ -81,12 +81,6 @@ ament_export_dependencies(
 ament_export_include_directories(include)
 
 if(BUILD_TESTING)
-  find_package(ament_lint_auto REQUIRED)
-  set(ament_cmake_copyright_FOUND TRUE)
-  set(ament_cmake_cpplint_FOUND TRUE)
-  set(ament_cmake_uncrustify_FOUND TRUE)
-  ament_lint_auto_find_test_dependencies()
-
   find_package(ament_cmake_gtest REQUIRED)
 
   ament_add_gtest(test_quintic_blend_trajectory test/test_quintic_blend_trajectory.cpp)
