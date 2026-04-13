@@ -234,15 +234,14 @@ jobs:
     - name: Upgrade colcon
       run: pip install -U colcon-cmake colcon-core
 
-    - name: Cache colcon workspace
-      uses: actions/cache@v4
-      with:
-        path: |
-          build/
-          install/
-        key: colcon-${{ matrix.ros_distro }}-v2-${{ hashFiles('**/CMakeLists.txt', '**/package.xml', '**/test/*.cpp') }}
-        restore-keys: |
-          colcon-${{ matrix.ros_distro }}-v2-
+    # NOTE: colcon workspace cache temporarily disabled to ensure clean build
+    # - name: Cache colcon workspace
+    #   uses: actions/cache@v4
+    #   with:
+    #     path: |
+    #       build/
+    #       install/
+    #     key: colcon-${{ matrix.ros_distro }}-v3-${{ hashFiles('**/CMakeLists.txt', '**/package.xml', '**/test/*.cpp') }}
 
     - name: Cache apt packages
       uses: awalsh128/cache-apt-pkgs-action@v1
