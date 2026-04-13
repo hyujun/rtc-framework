@@ -283,7 +283,11 @@ jobs:
       if: always()
       run: |
         source /opt/ros/${{ matrix.ros_distro }}/setup.bash
-        colcon test-result --all --verbose || true
+
+        echo "## Test Results" >> "$GITHUB_STEP_SUMMARY"
+        echo '```' >> "$GITHUB_STEP_SUMMARY"
+        colcon test-result --all --verbose 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+        echo '```' >> "$GITHUB_STEP_SUMMARY"
 
     - name: Generate Coverage Report
       if: always()
