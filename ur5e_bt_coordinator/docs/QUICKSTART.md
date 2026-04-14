@@ -35,11 +35,14 @@ ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place.xm
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place_contact_stop.xml  # contact_stop
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place_force_pi.xml      # force-PI (retry 지원)
 
-# 기타
+# ── Shape Inspection ──
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=shape_inspect.xml               # ToF shape estimation
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=shape_inspect_simple.xml         # search move + ToF collection
+
+# ── 기타 ──
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=towel_unfold.xml
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=hand_motions.xml repeat:=true
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=vision_approach.xml
-ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=shape_inspect.xml
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=search_motion.xml
 ```
 
@@ -101,7 +104,7 @@ ros2 param set /bt_coordinator hand_pose.home "[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.
 | 증상 | 원인 | 해결 |
 |------|------|------|
 | `[Watchdog] /ur5e/gui_position: no messages` | RT 컨트롤러 미실행 | `sim.launch.py` 또는 `robot.launch.py` 먼저 시작 |
-| `[FAILED] IsObjectDetected` | 비전 미감지 | `/vision/object_pose` 토픽 확인 |
+| `[FAILED] IsObjectDetected` | 비전 미감지 | `/world_target_info` 토픽 확인 |
 | `[FAILED] MoveToPose` (timeout) | 목표 도달 실패 | tolerance 완화 또는 gains 조정 |
 | `[FAILED] IsForceAbove` | 힘 미감지 | threshold_N 낮추기, 물체 위치 확인 |
 | `Tree file not found` | 경로 오류 | 절대 경로 사용 또는 trees/ 디렉토리 확인 |
