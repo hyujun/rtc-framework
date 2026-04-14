@@ -1,0 +1,187 @@
+<!-- file: trees/shape_inspect_simple.xml -->
+<!-- UR5e Simple Shape Inspection (search move + ToF data collection) -->
+<!-- BehaviorTree.CPP v4 syntax -->
+<!--
+  Flow:
+    1. Move to ready pose via joint-space controller
+    2. Wait for vision target (object position)
+    3. Switch to task-space controller
+    4. Move to inspection position (2-step: x/y at safe height, then z descend)
+       - x/y: object_pose + offset
+       - z: constant value (not object-relative)
+    5. Search move in -x direction with ToF data collection (500 Hz)
+    6. Process collected ToF data (stub — not yet implemented)
+    7. Move to computed target position
+    N. Return to ready pose (2-step: +z ascend, then joint-space to ready)
+
+  Blackboard variables (from bt_coordinator.yaml):
+    {inspect_offset_x/y}    : object_pose 기준 inspect 위치 x/y 오프셋 [m]
+    {inspect_constant_z}     : inspect 위치 고정 Z [m]
+    {inspect_approach_z}     : inspect_pose 위 접근/후퇴 클리어런스 [m]
+    {search_offset_x}        : -x 방향 search 거리 [m] (음수)
+    {search_speed}            : search 시 trajectory speed [m/s]
+-->
+
+<root BTCPP_format="4" main_tree_to_execute="ShapeInspectSimple">
+
+  <BehaviorTree ID="ShapeInspectSimple">
+    <Sequence name="main">
+
+      <!-- ======================================================== -->
+      <!-- Phase 1: Move to ready pose (joint-space)                 -->
+      <!--   Switch to demo_joint_controller and move to the ready   -->
+      <!--   pose defined in poses.yaml.                             -->
+      <!-- ======================================================== -->
+      <SwitchController controller_name="demo_joint_controller"
+                        timeout_s="3.0"
+                        current_gains="{current_gains}"/>
+
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.15"/>
+
+      <MoveToJoints pose_name="ready"
+                    tolerance="0.01"
+                    timeout_s="15.0"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 2: Wait for vision data                             -->
+      <!--   Poll /world_target_info every 0.5s, up to 60 attempts  -->
+      <!--   (30s total). Succeeds when the topic publishes a valid  -->
+      <!--   non-zero object position.                               -->
+      <!-- ======================================================== -->
+      <RetryUntilSuccessful num_attempts="60">
+        <Sequence>
+          <WaitDuration duration_s="0.5"/>
+          <IsVisionTargetReady pose="{object_pose}"/>
+        </Sequence>
+      </RetryUntilSuccessful>
+
+      <!-- ======================================================== -->
+      <!-- Phase 3: Switch to task-space controller                  -->
+      <!-- ======================================================== -->
+      <SwitchController controller_name="demo_task_controller"
+                        timeout_s="3.0"
+                        current_gains="{current_gains}"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 4: Move to inspection position (2-step approach)    -->
+      <!--   Step A: Compute inspect_pose                            -->
+      <!--     x, y = object_pose + offset (vision-based)            -->
+      <!--     z = constant (table height, not vision Z)             -->
+      <!--   Step B: Compute approach pose (+z clearance above it)   -->
+      <!--   Step C: Lateral move at safe height, then z descend     -->
+      <!-- ======================================================== -->
+
+      <!-- Step A: object x/y + offset, then override z to constant -->
+      <ComputeOffsetPose input_pose="{object_pose}"
+                         offset_x="{inspect_offset_x}"
+                         offset_y="{inspect_offset_y}"
+                         output_pose="{inspect_pose_xy}"/>
+
+      <SetPoseZ input_pose="{inspect_pose_xy}"
+                z="{inspect_constant_z}"
+                output_pose="{inspect_pose}"/>
+
+      <!-- Step B: approach pose = inspect_pose + clearance z -->
+      <ComputeOffsetPose input_pose="{inspect_pose}"
+                         offset_z="{inspect_approach_z}"
+                         output_pose="{inspect_approach_pose}"/>
+
+      <!-- Step C-1: lateral move (x/y) at safe height -->
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.1"/>
+
+      <MoveToPose target="{inspect_approach_pose}"
+                  position_tolerance="0.005"
+                  orientation_tolerance="0.05"
+                  timeout_s="12.0"/>
+
+      <!-- Step C-2: descend to inspect position (z) -->
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.05"/>
+
+      <MoveToPose target="{inspect_pose}"
+                  position_tolerance="0.003"
+                  orientation_tolerance="0.05"
+                  timeout_s="8.0"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 5: Search move with ToF data collection             -->
+      <!--   Start collecting /tof/snapshot (500 Hz) before motion.  -->
+      <!--   Move in -x direction at slow speed to maximize the      -->
+      <!--   number of ToF samples. Stop collection after arrival.   -->
+      <!--   Example: 10 cm @ 0.02 m/s = 5 s → ~2500 samples.      -->
+      <!-- ======================================================== -->
+      <ComputeOffsetPose input_pose="{inspect_pose}"
+                         offset_x="{search_offset_x}"
+                         output_pose="{search_target}"/>
+
+      <StartToFCollection/>
+
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="{search_speed}"/>
+
+      <MoveToPose target="{search_target}"
+                  position_tolerance="0.003"
+                  orientation_tolerance="0.05"
+                  timeout_s="30.0"/>
+
+      <StopToFCollection count="{tof_count}"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 6: Data processing                                  -->
+      <!--   Input:  collected ToF buffer (bridge internal)          -->
+      <!--           - index_A: distances[2], index_B: distances[3]  -->
+      <!--           - fingertip SE3 poses, timestamps               -->
+      <!--   Output: task controller goal (x, y, z)                  -->
+      <!--   NOTE: processing logic not yet implemented (stub).      -->
+      <!-- ======================================================== -->
+      <ProcessSearchData output_pose="{final_target}"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase 7: Move to computed target position                 -->
+      <!-- ======================================================== -->
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.05"/>
+
+      <MoveToPose target="{final_target}"
+                  position_tolerance="0.003"
+                  orientation_tolerance="0.05"
+                  timeout_s="10.0"/>
+
+      <!-- ======================================================== -->
+      <!-- Phase N: Return to ready pose (2-step retreat)            -->
+      <!--   Step 1: Ascend +z from current position (task-space).   -->
+      <!--   Step 2: Switch to joint-space and move to ready pose.   -->
+      <!-- ======================================================== -->
+      <GetCurrentPose pose="{return_current_pose}"/>
+
+      <ComputeOffsetPose input_pose="{return_current_pose}"
+                         offset_z="{inspect_approach_z}"
+                         output_pose="{return_retreat_pose}"/>
+
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.08"/>
+
+      <!-- Step 1: ascend (+z) to safe height -->
+      <MoveToPose target="{return_retreat_pose}"
+                  position_tolerance="0.005"
+                  orientation_tolerance="0.05"
+                  timeout_s="6.0"/>
+
+      <!-- Step 2: move to ready pose via joint-space -->
+      <SwitchController controller_name="demo_joint_controller"
+                        timeout_s="3.0"
+                        current_gains="{current_gains}"/>
+
+      <SetGains current_gains="{current_gains}"
+                trajectory_speed="0.15"/>
+
+      <MoveToJoints pose_name="ready"
+                    tolerance="0.01"
+                    timeout_s="15.0"/>
+
+    </Sequence>
+  </BehaviorTree>
+
+</root>

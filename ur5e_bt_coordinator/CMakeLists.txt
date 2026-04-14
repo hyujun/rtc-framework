@@ -43,6 +43,9 @@ add_library(bt_nodes SHARED
   src/nodes/trigger_shape_estimation.cpp
   src/nodes/wait_shape_result.cpp
   src/nodes/check_shape_type.cpp
+  src/nodes/start_tof_collection.cpp
+  src/nodes/stop_tof_collection.cpp
+  src/nodes/process_search_data.cpp
 )
 target_include_directories(bt_nodes PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

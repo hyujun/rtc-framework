@@ -180,6 +180,20 @@ BtRosBridge::BtRosBridge(rclcpp::Node::SharedPtr node)
   request_gains_pub_ = node_->create_publisher<std_msgs::msg::Bool>(
       "/ur5e/request_gains", rclcpp::QoS{10});
 
+  // ── ToF snapshot (BEST_EFFORT to match RT publisher QoS) ────────────────
+
+  {
+    auto tof_qos = rclcpp::SensorDataQoS();
+    tof_qos.keep_last(100);
+    tof_snapshot_sub_ = node_->create_subscription<rtc_msgs::msg::ToFSnapshot>(
+        "/tof/snapshot", tof_qos,
+        [this](rtc_msgs::msg::ToFSnapshot::SharedPtr msg) {
+          if (!tof_collecting_.load(std::memory_order_relaxed)) return;
+          std::lock_guard lock(tof_mutex_);
+          tof_buffer_.push_back(*msg);
+        });
+  }
+
   // ── Shape estimation ──────────────────────────────────────────────────
 
   shape_estimate_sub_ = node_->create_subscription<shape_estimation_msgs::msg::ShapeEstimate>(
@@ -349,6 +363,37 @@ void BtRosBridge::ClearShapeEstimate() {
   std::lock_guard lock(state_mutex_);
   shape_estimate_ = shape_estimation_msgs::msg::ShapeEstimate{};
   shape_estimate_valid_ = false;
+}
+
+// ── ToF data collection ──────────────────────────────────────────────────
+
+void BtRosBridge::StartToFCollection()
+{
+  std::lock_guard lock(tof_mutex_);
+  tof_buffer_.clear();
+  tof_buffer_.reserve(8192);
+  tof_collecting_.store(true, std::memory_order_relaxed);
+  RCLCPP_INFO(bridge_log(), "ToF collection started (buffer cleared)");
+}
+
+void BtRosBridge::StopToFCollection()
+{
+  tof_collecting_.store(false, std::memory_order_relaxed);
+  std::lock_guard lock(tof_mutex_);
+  RCLCPP_INFO(bridge_log(), "ToF collection stopped (%zu snapshots)",
+              tof_buffer_.size());
+}
+
+const std::vector<rtc_msgs::msg::ToFSnapshot>& BtRosBridge::GetCollectedToFData() const
+{
+  // Caller must ensure collection is stopped before reading.
+  return tof_buffer_;
+}
+
+std::size_t BtRosBridge::GetCollectedToFCount() const
+{
+  std::lock_guard lock(tof_mutex_);
+  return tof_buffer_.size();
 }
 
 // ── Pose library ──────────────────────────────────────────────────────────

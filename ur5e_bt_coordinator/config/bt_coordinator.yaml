@@ -1,6 +1,10 @@
 bt_coordinator:
   ros__parameters:
-    # ── BT 설정 ──────────────────────────────────────────────────────────────
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # BT 시스템 설정
+    # ══════════════════════════════════════════════════════════════════════════
+
     tree_file: "pick_and_place_force_pi.xml"   # trees/ 디렉토리 내 XML 파일명 (절대 경로도 지원)
     tick_rate_hz: 80.0               # BT tick 주기 [Hz]
     repeat: false                     # true: SUCCESS 완료 후 자동 반복, FAILURE 시 정지
@@ -17,70 +21,94 @@ bt_coordinator:
     step_mode: false                  # true: 자동 틱 비활성, ~/step 서비스로 수동 틱
 
     # ── Groot2 모니터링 ──────────────────────────────────────────────────────
-    # Groot2 연결: groot2_port > 0 이면 해당 포트에서 ZMQ publisher 활성화
-    # Groot2 GUI에서 localhost:<port>로 연결하여 실시간 BT 모니터링 가능
     groot2_port: 0                    # 0 = 비활성, 1667 = Groot2 기본 포트
 
     # ── Watchdog (토픽 헬스 모니터링) ────────────────────────────────────────
     watchdog_timeout_s: 2.0           # 토픽 타임아웃 [s] (이 시간 동안 메시지 없으면 경고)
     watchdog_interval_s: 5.0          # 헬스 체크 주기 [s] (0 = 비활성)
 
-    # ── Blackboard 초기값 ────────────────────────────────────────────────────
-    # bb.<key> 형식으로 선언하면 트리 로드 후 Blackboard에 자동 주입됨
-    # 타입은 YAML 값에서 자동 추론 (string, double, int, bool)
-    #
-    # pick_and_place_contact_stop.xml / pick_and_place_force_pi.xml 공용:
+    # ══════════════════════════════════════════════════════════════════════════
+    # Blackboard 초기값
+    # ══════════════════════════════════════════════════════════════════════════
+    # bb.<key> 형식으로 선언하면 트리 로드 후 Blackboard에 자동 주입됨.
+    # 타입은 YAML 값에서 자동 추론 (string, double, int, bool).
+    # _deg 접미사: 도(deg) 단위 → blackboard 주입 시 rad 변환 값이 접미사 없는 키에 저장.
+    #   예: bb.tcp_rpy_offset_r_deg: 45.0 → blackboard "tcp_rpy_offset_r" = 0.785 rad
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # pick_and_place 공용 (contact_stop / force_pi / pose-based)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    # 목표 배치 위치 [x;y;z;roll;pitch;yaw]
     bb.place_pose: "0.3;-0.3;0.15;3.14;0.0;0.0"
-    #
-    # Phase 5 (SlowDescend) 에서 object_pose 의 Z를 덮어쓸 상수 값 [m].
-    # .nan (기본값) 이면 비전 감지 Z를 그대로 사용 (pass-through).
-    # 실제 값 예: 0.085 (테이블 표면 높이 기준 그립 Z)
+
+    # object_pose Z 덮어쓰기 상수 [m].
+    # .nan 이면 비전 감지 Z를 그대로 사용 (pass-through).
     bb.object_final_z: 0.06
-    #
-    # 통합 grasp 파라미터 — contact_stop 트리와 force_pi 트리가 공유한다.
-    # 여기서 한 번만 정의하면 두 모드의 grasp/verify/sustained 기준이
-    # 항상 일치한다.
+
+    # 통합 grasp 파라미터 — contact_stop 과 force_pi 트리가 공유.
     bb.grasp_target_force_N: 1.5    # 주 검출 / Force-PI 목표력 [N]
     bb.grasp_verify_force_N: 0.8    # 닫힘 후 / 리프트 후 검증 floor [N]
     bb.grasp_sustained_ms: 200      # IsForceAbove sustained 윈도우 [ms]
     bb.grasp_min_fingertips: 2      # 최소 접촉 손가락 수
-    #
+
     # 실패 대응 (EmergencyAbort / 사각지대 가드 / retry).
-    # 두 트리 모두 동일 변수를 참조 → 한 곳에서 튜닝.
     bb.grasp_abort_retreat_z: 0.05  # 실패 시 EmergencyAbort 후퇴 거리 [m] (0=skip)
     bb.grasp_in_transit_min_N: 0.5  # transport/lower 가드 임계 [N] (verify 보다 느슨)
     bb.grasp_max_attempts: 2        # ForcePIGrasp retry 횟수 (1=비활성화, force_pi only)
     bb.grasp_retry_settle_s: 0.3    # retry release 후 sensor settling [s]
-    #
-    # Phase 3.5 TCP 재배향 — task controller 전환 직후 현재 pose 기준 RPY 보정.
-    # _deg 접미사: YAML에서 도(deg) 단위로 작성하면 blackboard 주입 시
-    # 자동으로 rad 변환된 값이 접미사 없는 키에 저장됨.
-    # 예: bb.tcp_rpy_offset_r_deg: 45.0 → blackboard "tcp_rpy_offset_r" = 0.785 rad
-    # tcp_rotation_mode 값:
+
+    # TCP 재배향 — task controller 전환 직후 현재 pose 기준 RPY 보정.
+    # tcp_rotation_mode:
     #   "add"        : target.rpy = current.rpy + offset (단순 산술합, 작은 각도용)
     #   "quat_body"  : target = current * offset (TCP 프레임 회전, intrinsic)
     #   "quat_world" : target = offset * current (World 프레임 회전, extrinsic)
-    # 모든 offset 이 0 이면 어느 mode 든 no-op.
     bb.tcp_rpy_offset_r_deg: 0.0    # Roll offset [deg]
     bb.tcp_rpy_offset_p_deg: 0.0    # Pitch offset [deg]
     bb.tcp_rpy_offset_y_deg: 0.0    # Yaw offset [deg]
     bb.tcp_rotation_mode: "add"
-    #
-    # pick_and_place.xml 용 (pose-based grasp, grasp controller 미사용):
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # pick_and_place.xml (pose-based grasp, grasp controller 미사용)
+    # ──────────────────────────────────────────────────────────────────────────
+
     # grip 강도: launch arg grip:=soft/medium/hard 로 덮어쓸 수 있음.
-    # 향후 vision topic 기반 자동 선택 시 ResolveGripFromVision node가
-    # blackboard의 hand_close_pose를 덮어씀.
     bb.hand_close_pose: "hand_close_medium"   # hand_close_soft / medium / hard
     bb.hand_close_settle_s: 0.5               # close 후 안정 대기 [s]
-    #
-    # shape_inspect.xml 용:
-    # inspect_offset_x/y/z 는 shape_inspect.xml 트리 내부에서 직접 참조.
-    # inspect_approach_z: inspect_pose 위 접근/후퇴 클리어런스 [m].
-    #   Phase 4 접근 시 inspect_pose 위 이 높이에서 x/y 이동 후 z 하강.
-    #   Phase N 복귀 시 현재 위치에서 이 높이만큼 상승 후 ready pose 이동.
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # shape_inspect 공용 (shape_inspect.xml / shape_inspect_simple.xml)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    # object_pose 기준 inspect 위치 x/y 오프셋 [m].
+    bb.inspect_offset_x: 0.0
+    bb.inspect_offset_y: 0.0
+
+    # inspect_pose 위 접근/후퇴 클리어런스 [m].
+    #   접근 시 inspect_pose 위 이 높이에서 x/y 이동 후 z 하강.
+    #   복귀 시 현재 위치에서 이 높이만큼 상승 후 ready pose 이동.
     bb.inspect_approach_z: 0.15
-    #
-    # towel_unfold.xml 용:
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # shape_inspect_simple.xml
+    # ──────────────────────────────────────────────────────────────────────────
+
+    # inspect 위치 고정 Z [m].
+    # object_pose.z 대신 이 상수를 사용하여 비전 Z 노이즈를 회피.
+    bb.inspect_constant_z: 0.06
+
+    # -x 방향 search 이동 거리 [m] (음수).
+    # 예: -0.1 = 10cm를 -x 방향으로 이동.
+    bb.search_offset_x: -0.1
+
+    # search 시 trajectory speed [m/s].
+    # 느릴수록 더 많은 ToF 샘플 확보 (0.02 m/s @ 10cm → 5s → ~2500 samples).
+    bb.search_speed: 0.02
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # towel_unfold.xml
+    # ──────────────────────────────────────────────────────────────────────────
+
     # bb.sweep_direction_x: 1.0
     # bb.sweep_direction_y: 0.0
     # bb.sweep_distance: 0.3

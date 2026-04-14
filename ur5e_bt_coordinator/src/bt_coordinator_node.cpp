@@ -16,6 +16,9 @@
 #include "ur5e_bt_coordinator/action_nodes/wait_duration.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_finger.hpp"
 #include "ur5e_bt_coordinator/action_nodes/flex_extend_finger.hpp"
+#include "ur5e_bt_coordinator/action_nodes/start_tof_collection.hpp"
+#include "ur5e_bt_coordinator/action_nodes/stop_tof_collection.hpp"
+#include "ur5e_bt_coordinator/action_nodes/process_search_data.hpp"
 #include "ur5e_bt_coordinator/action_nodes/set_hand_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/ur5e_hold_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_opposition.hpp"
@@ -177,6 +180,11 @@ void BtCoordinatorNode::RegisterBtNodes()
   // ── Shape estimation nodes ──────────────────────────────────────────
   factory_.registerNodeType<TriggerShapeEstimation>("TriggerShapeEstimation", bridge);
   factory_.registerNodeType<WaitShapeResult>("WaitShapeResult", bridge);
+
+  // ── ToF data collection nodes ─────────────────────────────────────
+  factory_.registerNodeType<StartToFCollection>("StartToFCollection", bridge);
+  factory_.registerNodeType<StopToFCollection>("StopToFCollection", bridge);
+  factory_.registerNodeType<ProcessSearchData>("ProcessSearchData", bridge);
 
   // ── Condition nodes ───────────────────────────────────────────────────
   factory_.registerNodeType<IsForceAbove>("IsForceAbove", bridge);

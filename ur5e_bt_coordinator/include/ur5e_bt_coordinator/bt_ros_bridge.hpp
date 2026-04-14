@@ -9,13 +9,16 @@
 #include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/msg/grasp_state.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
+#include <rtc_msgs/msg/to_f_snapshot.hpp>
 #include <shape_estimation_msgs/msg/shape_estimate.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
+#include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -124,6 +127,23 @@ public:
   /// Clear the cached shape estimate (called before a new estimation session).
   void ClearShapeEstimate();
 
+  // ── ToF data collection ─────────────────────────────────────────────────
+
+  /// Start buffering incoming /tof/snapshot messages.
+  /// Always clears the buffer and resets state (safe to call even if a
+  /// previous collection was interrupted by E-STOP or tree halt).
+  void StartToFCollection();
+
+  /// Stop buffering. The collected data remains accessible via
+  /// GetCollectedToFData() until the next StartToFCollection() call.
+  void StopToFCollection();
+
+  /// Collected ToF snapshots (valid between StopToFCollection and next Start).
+  const std::vector<rtc_msgs::msg::ToFSnapshot>& GetCollectedToFData() const;
+
+  /// Number of snapshots currently in the buffer.
+  std::size_t GetCollectedToFCount() const;
+
   // ── Pose library (runtime-configurable) ───────────────────────────────────
 
   /// Load hand/arm pose overrides from ROS2 parameters (deg → rad conversion).
@@ -201,6 +221,12 @@ private:
   bool world_target_received_{false};
   TimePoint estop_last_{};
   bool estop_received_{false};
+
+  // ── ToF data collection ────────────────────────────────────────────────────
+  rclcpp::Subscription<rtc_msgs::msg::ToFSnapshot>::SharedPtr tof_snapshot_sub_;
+  mutable std::mutex tof_mutex_;              ///< Guards tof_buffer_ only
+  std::vector<rtc_msgs::msg::ToFSnapshot> tof_buffer_;
+  std::atomic<bool> tof_collecting_{false};   ///< Checked in 500Hz callback
 
   // ── Pose library ──────────────────────────────────────────────────────────
   std::map<std::string, HandPose> hand_poses_;

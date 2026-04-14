@@ -22,6 +22,9 @@
 #include "ur5e_bt_coordinator/action_nodes/ur5e_hold_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/wait_duration.hpp"
 #include "ur5e_bt_coordinator/action_nodes/wait_shape_result.hpp"
+#include "ur5e_bt_coordinator/action_nodes/start_tof_collection.hpp"
+#include "ur5e_bt_coordinator/action_nodes/stop_tof_collection.hpp"
+#include "ur5e_bt_coordinator/action_nodes/process_search_data.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/check_shape_type.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_grasp_phase.hpp"
@@ -63,6 +66,9 @@ protected:
     factory_.registerNodeType<MoveOpposition>("MoveOpposition", null_bridge);
     factory_.registerNodeType<TriggerShapeEstimation>("TriggerShapeEstimation", null_bridge);
     factory_.registerNodeType<WaitShapeResult>("WaitShapeResult", null_bridge);
+    factory_.registerNodeType<StartToFCollection>("StartToFCollection", null_bridge);
+    factory_.registerNodeType<StopToFCollection>("StopToFCollection", null_bridge);
+    factory_.registerNodeType<ProcessSearchData>("ProcessSearchData", null_bridge);
 
     // Condition nodes
     factory_.registerNodeType<IsForceAbove>("IsForceAbove", null_bridge);
@@ -151,6 +157,12 @@ TEST_F(TreeValidationTest, SearchMotion)
 {
   auto count = ValidateTree("search_motion.xml");
   EXPECT_GT(count, 0u) << "search_motion.xml should have nodes";
+}
+
+TEST_F(TreeValidationTest, ShapeInspectSimple)
+{
+  auto count = ValidateTree("shape_inspect_simple.xml");
+  EXPECT_GT(count, 0u) << "shape_inspect_simple.xml should have nodes";
 }
 
 TEST_F(TreeValidationTest, InvalidXmlThrows)
