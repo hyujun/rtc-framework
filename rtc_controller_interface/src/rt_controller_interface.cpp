@@ -44,6 +44,29 @@ const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
   {"hand_command",       PublishRole::kJointCommand},
 };
 
+// Infer DeviceCapability bitmask from subscribe roles.
+uint16_t InferCapability(const DeviceTopicGroup & group)
+{
+  uint16_t cap = static_cast<uint16_t>(DeviceCapability::kNone);
+  for (const auto & entry : group.subscribe) {
+    switch (entry.role) {
+      case SubscribeRole::kState:
+        cap |= static_cast<uint16_t>(DeviceCapability::kJointState);
+        break;
+      case SubscribeRole::kMotorState:
+        cap |= static_cast<uint16_t>(DeviceCapability::kMotorState);
+        break;
+      case SubscribeRole::kSensorState:
+        cap |= static_cast<uint16_t>(DeviceCapability::kSensorData)
+             | static_cast<uint16_t>(DeviceCapability::kInference);
+        break;
+      case SubscribeRole::kTarget:
+        break;
+    }
+  }
+  return cap;
+}
+
 // Parse subscribe/publish arrays from a YAML device group node (ur5e or hand).
 void ParseDeviceTopicGroup(
     const YAML::Node & group_node,
@@ -76,6 +99,9 @@ void ParseDeviceTopicGroup(
       out.publish.push_back({topic, it->second, data_size});
     }
   }
+
+  // Auto-infer capability bitmask from subscribe roles.
+  out.capability = InferCapability(out);
 }
 
 }  // namespace
@@ -110,12 +136,13 @@ TopicConfig RTControllerInterface::MakeDefaultTopicConfig(
     {ns + "/target_joint_positions",        SubscribeRole::kTarget},
   };
   cfg[device_name].publish = {
-    {ns + "/joint_command",                             PublishRole::kJointCommand,     kNumRobotJoints},
-    {"/forward_position_controller/commands",           PublishRole::kRos2Command,      kNumRobotJoints},
+    {ns + "/joint_command",                             PublishRole::kJointCommand,     0},
+    {"/forward_position_controller/commands",           PublishRole::kRos2Command,      0},
     {ns + "/gui_position",                              PublishRole::kGuiPosition,      0},
     {ns + "/robot_target",                              PublishRole::kRobotTarget,      0},
     {ns + "/state_log",                                 PublishRole::kDeviceStateLog,   0},
   };
+  cfg[device_name].capability = InferCapability(cfg[device_name]);
 
   return cfg;
 }

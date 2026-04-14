@@ -16,6 +16,7 @@
   <depend>rtc_communication</depend>
   <depend>rtc_inference</depend>
   <depend>rtc_msgs</depend>
+  <depend>ur5e_description</depend>
   <depend>ament_index_cpp</depend>
 
   <test_depend>ament_cmake_gtest</test_depend>

@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(ur5e_description VERSION 5.17.0)
 
 find_package(ament_cmake REQUIRED)
+find_package(rtc_base REQUIRED)
 
 # ── Data-only package ─────────────────────────────────────────────────────────
 #
@@ -25,5 +26,10 @@ install(
   DIRECTORY robots/
   DESTINATION share/${PROJECT_NAME}/robots
 )
+
+# ── Install C++ headers (ur5e_constants.hpp) ─────────────────────────────────
+install(DIRECTORY include/ DESTINATION include)
+ament_export_include_directories(include)
+ament_export_dependencies(rtc_base)
 
 ament_package()

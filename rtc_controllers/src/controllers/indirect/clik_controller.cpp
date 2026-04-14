@@ -426,8 +426,9 @@ void ClikController::SetDeviceTarget(
         tcp_target_pose_.rotation() = q.matrix();
       }
     } else {
-      // 3-DOF target mode: [x, y, z, null3, null4, null5]
-      const std::size_t n = std::min(target.size(), static_cast<std::size_t>(kNumRobotJoints));
+      // 3-DOF target mode: [x, y, z, null3, null4, ...]
+      const auto nv = static_cast<std::size_t>(handle_->nv());
+      const std::size_t n = std::min(target.size(), nv);
       for (std::size_t i = 0; i < std::min(n, std::size_t{3}); ++i) {
         tcp_target_[i] = target[i];
       }
@@ -471,8 +472,8 @@ void ClikController::InitializeHoldPosition(
                  tcp_pose.translation()[1],
                  tcp_pose.translation()[2]};
   // null-space target: initialize to current joint positions
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    null_target_[i] = dev0.positions[i];
+  for (int i = 0; i < nv; ++i) {
+    null_target_[static_cast<std::size_t>(i)] = dev0.positions[static_cast<std::size_t>(i)];
   }
   target_initialized_ = true;
   new_target_.store(false, std::memory_order_relaxed);

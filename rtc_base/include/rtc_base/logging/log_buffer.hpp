@@ -45,7 +45,7 @@ struct DeviceLogSlot {
 
 // One row of the control log, split across CSV files by the DataLogger.
 struct LogEntry {
-  static constexpr int kMaxDevices = 4;
+  static constexpr int kMaxDevices = 8;
 
   double timestamp{0.0};
 
@@ -57,10 +57,10 @@ struct LogEntry {
   double jitter_us{0.0};
 
   // ── Shared ─────────────────────────────────────────────────────────────
-  std::array<double, 6> actual_task_positions{};
-  std::array<double, 6> task_goal_positions{};
-  std::array<double, 6> trajectory_task_positions{};
-  std::array<double, 6> trajectory_task_velocities{};
+  std::array<double, kTaskSpaceDim> actual_task_positions{};
+  std::array<double, kTaskSpaceDim> task_goal_positions{};
+  std::array<double, kTaskSpaceDim> trajectory_task_positions{};
+  std::array<double, kTaskSpaceDim> trajectory_task_velocities{};
   CommandType command_type{CommandType::kPosition};
 
   // ── Per-device data ────────────────────────────────────────────────────

@@ -14,7 +14,9 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <!-- No build dependencies: ur5e.urdf is pre-generated -->
+  <!-- rtc_base: needed for types referenced in ur5e_constants.hpp -->
+  <depend>rtc_base</depend>
+
   <!-- xacro needed at runtime to process ur5e_with_hand.urdf.xacro -->
   <exec_depend>xacro</exec_depend>
 

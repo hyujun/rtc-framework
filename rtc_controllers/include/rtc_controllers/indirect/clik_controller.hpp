@@ -161,9 +161,10 @@ private:
   Gains gains_;
   pinocchio::SE3 tcp_target_pose_{pinocchio::SE3::Identity()};
   std::array<double, 3> tcp_target_{};
-  /// Null-space reference configuration.  Joints 0–2 from this array;
-  /// joints 3–5 are overwritten by SetRobotTarget(target[3..5]).
-  std::array<double, kNumRobotJoints> null_target_{0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
+  /// Null-space reference configuration. Initialized to zero; set from
+  /// safe_position in OnDeviceConfigsSet(). In 3-DOF mode, joints 3+
+  /// are overwritten by SetDeviceTarget(target[3..]).
+  std::array<double, kMaxRobotDOF> null_target_{};
   std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices> device_targets_{};
   std::array<double, 6> pose_error_cache_{};               ///< diagnostic cache
   std::array<double, 3> tcp_position_{};                ///< diagnostic cache

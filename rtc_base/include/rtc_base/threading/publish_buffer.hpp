@@ -30,7 +30,7 @@ namespace rtc {
 // Populated by the RT loop (producer), consumed by the publish thread.
 struct PublishSnapshot {
   // ── Per-group data slots (RT-safe fixed-size) ──────────────────────────
-  static constexpr int kMaxGroups = 4;
+  static constexpr int kMaxGroups = 8;
   struct GroupCommandSlot {
     int num_channels{0};          // from controller output (command channels)
     int actual_num_channels{0};   // from device state (state channels for GUI)
@@ -67,9 +67,9 @@ struct PublishSnapshot {
 
   // ── Shared data (group-independent) ────────────────────────────────────
   CommandType command_type{CommandType::kPosition};
-  std::array<double, 6> actual_task_positions{};
-  // Per-group task goals (6-DOF, for kRobotTarget / kDeviceStateLog)
-  std::array<std::array<double, 6>, kMaxGroups> task_goals{};
+  std::array<double, kTaskSpaceDim> actual_task_positions{};
+  // Per-group task goals (for kRobotTarget / kDeviceStateLog)
+  std::array<std::array<double, kTaskSpaceDim>, kMaxGroups> task_goals{};
 
   // JointCommand header stamp (monotonic nanoseconds)
   int64_t stamp_ns{0};

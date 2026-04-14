@@ -42,6 +42,7 @@
 #include <rclcpp/logging.hpp>
 
 #include "rtc_base/types/types.hpp"
+#include "ur5e_description/ur5e_constants.hpp"
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/threading/seqlock.hpp"

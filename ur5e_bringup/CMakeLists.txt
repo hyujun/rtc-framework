@@ -41,6 +41,7 @@ find_package(Python3 COMPONENTS Interpreter Development NumPy)
 find_package(pinocchio REQUIRED)
 find_package(rtc_urdf_bridge REQUIRED)
 find_package(rtc_controller_manager REQUIRED)
+find_package(ur5e_description REQUIRED)
 
 # ── Static library: demo controllers ──────────────────────────────────────────
 add_library(${PROJECT_NAME}_demo_controllers STATIC
@@ -66,6 +67,7 @@ ament_target_dependencies(${PROJECT_NAME}_demo_controllers
   rtc_msgs
   pinocchio
   rtc_urdf_bridge
+  ur5e_description
 )
 
 target_link_libraries(${PROJECT_NAME}_demo_controllers

@@ -23,6 +23,7 @@
 #include <type_traits>
 
 #include "rtc_base/types/types.hpp"
+#include "ur5e_description/ur5e_constants.hpp"
 
 namespace rtc
 {

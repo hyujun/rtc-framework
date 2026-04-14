@@ -25,6 +25,7 @@
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/grasp/grasp_controller.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
+#include "ur5e_description/ur5e_constants.hpp"
 
 namespace ur5e_bringup
 {

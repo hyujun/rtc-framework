@@ -4,6 +4,7 @@
 #include "rtc_base/logging/data_logger.hpp"
 #include "rtc_base/logging/log_buffer.hpp"
 #include "rtc_base/threading/publish_buffer.hpp"
+#include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_controller_manager/controller_timing_profiler.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
@@ -201,15 +202,34 @@ private:
   std::set<std::string> active_groups_;           // union of all controller groups
   std::map<std::string, int> group_slot_map_;     // group name → PublishSnapshot slot index
 
+  // Pre-resolved group→slot mapping per controller (avoids map lookup on RT path).
+  // controller_slot_mappings_[ctrl_idx].slots[group_iteration_order] = device slot index.
+  struct ControllerSlotMapping {
+    static constexpr int kMaxSlots = rtc::PublishSnapshot::kMaxGroups;
+    std::array<int, kMaxSlots> slots{};
+    std::array<uint16_t, kMaxSlots> capabilities{};  ///< DeviceCapability per group
+    int num_groups{0};
+  };
+  std::vector<ControllerSlotMapping> controller_slot_mappings_;
+
   // ── Device timeout entries (E-STOP watchdog) ──────────────────────────────
   struct DeviceTimeoutEntry {
     std::string group_name;
     std::string state_topic;
     std::chrono::milliseconds timeout{100};
     std::chrono::steady_clock::time_point last_update{};
-    // Not std::atomic — written from a single subscriber callback,
-    // read from RT thread. Worst case: 1-tick delay (acceptable).
-    volatile bool received{false};
+    std::atomic<bool> received{false};
+
+    DeviceTimeoutEntry() = default;
+    DeviceTimeoutEntry(DeviceTimeoutEntry&& o) noexcept
+      : group_name(std::move(o.group_name)),
+        state_topic(std::move(o.state_topic)),
+        timeout(o.timeout),
+        last_update(o.last_update),
+        received(o.received.load(std::memory_order_relaxed)) {}
+    DeviceTimeoutEntry& operator=(DeviceTimeoutEntry&&) = delete;
+    DeviceTimeoutEntry(const DeviceTimeoutEntry&) = delete;
+    DeviceTimeoutEntry& operator=(const DeviceTimeoutEntry&) = delete;
   };
   std::vector<DeviceTimeoutEntry> device_timeouts_;
   [[nodiscard]] bool AllTimeoutDevicesReceived() const noexcept;
@@ -235,9 +255,9 @@ private:
     int num_inference_fingertips{0};
     bool valid{false};
   };
-  std::array<DeviceStateCache, kMaxDevices> device_states_{};
-  std::array<DeviceStateCache, kMaxDevices> cached_device_states_{};
-  std::mutex device_state_mutex_;
+  static_assert(std::is_trivially_copyable_v<DeviceStateCache>,
+                "DeviceStateCache must be trivially copyable for SeqLock");
+  std::array<rtc::SeqLock<DeviceStateCache>, kMaxDevices> device_states_;
 
   // Per-device targets
   std::array<std::array<double, rtc::kMaxDeviceChannels>, kMaxDevices> device_targets_{};
@@ -256,6 +276,7 @@ private:
   rtc::ControlPublishBuffer publish_buffer_{};
   std::jthread publish_thread_;
   std::atomic<bool> publish_running_{false};
+  int publish_eventfd_{-1};  // eventfd for RT→publish wakeup (replaces sched_yield)
 
   // ── Domain objects ────────────────────────────────────────────────────────
   std::vector<std::unique_ptr<rtc::RTControllerInterface>> controllers_;
@@ -265,8 +286,9 @@ private:
   rtc::ControllerTimingProfiler      timing_profiler_{};         // Compute() timing
 
   // ── Shared state ──────────────────────────────────────────────────────────
-  // All device state is now in device_states_[] / cached_device_states_[]
-  // guarded by device_state_mutex_.
+  // Device state: per-device SeqLock (lock-free single-writer/multi-reader).
+  // Writer: sensor callbacks (cb_group_sensor_, MutuallyExclusive).
+  // Readers: RT loop (ControlLoop), controller switch callback.
 
   mutable std::mutex target_mutex_;
 

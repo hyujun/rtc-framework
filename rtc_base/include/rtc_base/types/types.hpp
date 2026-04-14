@@ -22,10 +22,10 @@ inline constexpr std::size_t kCacheLineSize = 64;
 // ── Compile-time constants ─────────────────────────────────────────────────────
 inline constexpr int kNumRobotJoints = 6;  // default channel count (UR5e); runtime count from YAML
 inline constexpr int kMaxRobotDOF            = 12;   // max joints for generic robots
-inline constexpr int kNumHandMotors          = 10;  // default channel count; runtime count from YAML
 inline constexpr int kMaxDeviceChannels      = 64;   // max channels for generic devices
 inline constexpr int kMaxSensorChannels      = 128;  // max sensor data channels
 inline constexpr int kMaxInferenceValues     = 64;   // max inference output values
+inline constexpr int kTaskSpaceDim           = 6;    // task-space DOF (position + orientation)
 
 // Default fallback limits (used when device config is unavailable)
 inline constexpr double kDefaultMaxJointVelocity = 2.0;   // rad/s
@@ -49,26 +49,11 @@ inline constexpr int kMaxHandSensors              = kMaxFingertips * kSensorValu
 inline constexpr int kNumFingertips               = kDefaultNumFingertips;                         // 4
 inline constexpr int kNumHandSensors              = kNumFingertips * kSensorValuesPerFingertip;    // 44
 
-// Legacy alias — downstream code still references kNumHandJoints.
-inline constexpr int kNumHandJoints = kNumHandMotors;
+// kNumHandMotors, kNumHandJoints, RobotState, HandState moved to
+// ur5e_description/ur5e_constants.hpp (UR5e-specific).
 
 // ── Default joint/motor/fingertip names ─────────────────────────────────────
-// YAML 미설정 시 사용되는 기본 이름. URDF/XML 검증의 기준.
-inline const std::vector<std::string> kDefaultRobotJointNames = {
-  "shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
-  "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"
-};
-
-inline const std::vector<std::string> kDefaultHandMotorNames = {
-  "thumb_cmc_aa", "thumb_cmc_fe", "thumb_mcp_fe",
-  "index_mcp_aa", "index_mcp_fe", "index_dip_fe",
-  "middle_mcp_aa", "middle_mcp_fe", "middle_dip_fe",
-  "ring_mcp_fe"
-};
-
-inline const std::vector<std::string> kDefaultFingertipNames = {
-  "thumb", "index", "middle", "ring"
-};
+// UR5e-specific names moved to ur5e_description/ur5e_constants.hpp.
 
 // ── C++20 Concepts ─────────────────────────────────────────────────────────────
 // Constrains template parameters to floating-point types (double, float, etc.).
@@ -99,35 +84,7 @@ struct FingertipFTState {
   bool valid{false};
 };
 
-// Legacy structs — used by ur5e_hand_driver and other packages that haven't
-// migrated to the unified DeviceState yet.  Will be removed in PR3.
-struct RobotState {
-  std::array<double, kNumRobotJoints> positions{};
-  std::array<double, kNumRobotJoints> velocities{};
-  std::array<double, kNumRobotJoints> torques{};
-  std::array<double, 3>               tcp_position{};
-  double   dt{0.002};
-  uint64_t iteration{0};
-};
-
-struct HandState {
-  // Motor-space (from kMotor read)
-  std::array<float, kNumHandMotors>    motor_positions{};
-  std::array<float, kNumHandMotors>    motor_velocities{};
-  std::array<float, kNumHandMotors>    motor_currents{};
-  // Joint-space (from kJoint read)
-  std::array<float, kNumHandMotors>    joint_positions{};
-  std::array<float, kNumHandMotors>    joint_velocities{};
-  std::array<float, kNumHandMotors>    joint_currents{};
-  // Sensor
-  std::array<int32_t, kMaxHandSensors> sensor_data{};
-  std::array<int32_t, kMaxHandSensors> sensor_data_raw{};
-  int  num_fingertips{kDefaultNumFingertips};
-  bool valid{false};         // any read succeeded this cycle
-  bool joint_valid{false};   // kJoint read succeeded this cycle
-  bool motor_valid{false};   // kMotor read succeeded this cycle
-  uint8_t received_joint_mode{0x00};  // 0x00=motor, 0x01=joint (from response packet)
-};
+// RobotState, HandState moved to ur5e_description/ur5e_constants.hpp.
 
 // Unified device state — used for all device groups (robot arm, hand, gripper, …)
 struct DeviceState {
@@ -151,7 +108,7 @@ struct DeviceState {
 };
 
 struct ControllerState {
-  static constexpr int kMaxDevices = 4;
+  static constexpr int kMaxDevices = 8;
   std::array<DeviceState, kMaxDevices> devices{};
   int      num_devices{0};
   double   dt{0.002};
@@ -225,15 +182,15 @@ struct DeviceOutput {
 };
 
 struct ControllerOutput {
-  static constexpr int kMaxDevices = 4;
+  static constexpr int kMaxDevices = 8;
   std::array<DeviceOutput, kMaxDevices> devices{};
   int num_devices{0};
 
   // Shared fields (not per-device)
-  std::array<double, 6> actual_task_positions{};  // TCP FK result
-  std::array<double, 6> task_goal_positions{};    // task-space goal target from GUI
-  std::array<double, 6> trajectory_task_positions{};   // task-space trajectory reference pose
-  std::array<double, 6> trajectory_task_velocities{};  // task-space trajectory velocity
+  std::array<double, kTaskSpaceDim> actual_task_positions{};  // TCP FK result
+  std::array<double, kTaskSpaceDim> task_goal_positions{};    // task-space goal target from GUI
+  std::array<double, kTaskSpaceDim> trajectory_task_positions{};   // task-space trajectory reference pose
+  std::array<double, kTaskSpaceDim> trajectory_task_velocities{};  // task-space trajectory velocity
   bool        valid{true};
   CommandType command_type{CommandType::kPosition};
   GraspStateData grasp_state{};
@@ -267,6 +224,31 @@ struct DeviceNameConfig {
   std::optional<DeviceJointLimits> joint_limits;  // nullopt if no limits configured
   std::vector<double> safe_position;              // E-STOP target position (per-joint, rad)
 };
+
+// ── Device capability bitmask (selective data copy in RT loop) ───────────────
+// Auto-inferred from subscribe roles at topic config time.  The RT loop
+// checks capability bits instead of per-field count checks, enabling the
+// compiler to eliminate entire copy blocks for devices that don't provide
+// certain data types (e.g. robot arm has no sensor_data / inference).
+
+enum class DeviceCapability : uint16_t {
+  kNone       = 0,
+  kJointState = 1 << 0,   ///< positions / velocities / efforts
+  kMotorState = 1 << 1,   ///< motor_positions / motor_velocities / motor_efforts
+  kSensorData = 1 << 2,   ///< sensor_data / sensor_data_raw
+  kInference  = 1 << 3,   ///< inference_data / inference_enable
+};
+
+[[nodiscard]] inline constexpr uint16_t operator|(
+    DeviceCapability lhs, DeviceCapability rhs) noexcept {
+  return static_cast<uint16_t>(
+      static_cast<uint16_t>(lhs) | static_cast<uint16_t>(rhs));
+}
+
+[[nodiscard]] inline constexpr bool HasCapability(
+    uint16_t caps, DeviceCapability flag) noexcept {
+  return (caps & static_cast<uint16_t>(flag)) != 0;
+}
 
 // ── Topic configuration for per-controller subscribe/publish routing ─────────
 
@@ -311,6 +293,7 @@ struct PublishTopicEntry {
 struct DeviceTopicGroup {
   std::vector<SubscribeTopicEntry> subscribe;
   std::vector<PublishTopicEntry> publish;
+  uint16_t capability{0};  ///< DeviceCapability bitmask, auto-inferred from subscribe roles
 };
 
 // Dynamic topic configuration: groups keyed by device name ("ur5e", "hand", …)

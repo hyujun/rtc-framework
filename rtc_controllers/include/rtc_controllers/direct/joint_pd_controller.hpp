@@ -26,14 +26,17 @@ namespace rtc
 ///   τ[i] = ff_vel[i] + Kp[i]*e[i] + Kd[i]*ė[i]  [+ g(q)[i]]  [+ C(q,v)·v [i]]
 /// @endcode
 ///
-/// UpdateGainsFromMsg layout: [kp×6, kd×6, gravity(0/1), coriolis(0/1), trajectory_speed]
+/// UpdateGainsFromMsg layout: [kp×nv, kd×nv, gravity(0/1), coriolis(0/1), trajectory_speed]
+/// where nv = model DOF (e.g. 6 for UR5e, determined at construction from URDF)
 class JointPDController final : public RTControllerInterface
 {
 public:
   struct Gains
   {
-    std::array<double, 6> kp{{200.0, 200.0, 150.0, 120.0, 120.0, 120.0}};
-    std::array<double, 6> kd{{30.0, 30.0, 25.0, 20.0, 20.0, 20.0}};
+    std::array<double, kMaxRobotDOF> kp{{100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
+                                          100.0, 100.0, 100.0, 100.0, 100.0, 100.0}};
+    std::array<double, kMaxRobotDOF> kd{{20.0, 20.0, 20.0, 20.0, 20.0, 20.0,
+                                          20.0, 20.0, 20.0, 20.0, 20.0, 20.0}};
     bool   enable_gravity_compensation{false};
     bool   enable_coriolis_compensation{false};
     double trajectory_speed{1.0};
@@ -78,7 +81,7 @@ public:
   [[nodiscard]] Gains get_gains() const noexcept {return gains_;}
 
   // ── Diagnostic accessors (non-RT only) ─────────────────────────────────────
-  [[nodiscard]] std::array<double, kNumRobotJoints> gravity_torques() const noexcept;
+  [[nodiscard]] std::array<double, kMaxRobotDOF> gravity_torques() const noexcept;
   [[nodiscard]] std::array<double, 3>               tcp_position()    const noexcept;
   [[nodiscard]] Eigen::MatrixXd                     jacobian()        const noexcept
   {
@@ -101,15 +104,15 @@ private:
   // ── Controller state ───────────────────────────────────────────────────────
   Gains  gains_;
   std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices> device_targets_{};
-  std::array<double, kNumRobotJoints> prev_error_{};
+  std::array<double, kMaxRobotDOF> prev_error_{};
 
   std::mutex target_mutex_;
   std::atomic<bool> new_target_{false};
-  trajectory::JointSpaceTrajectory<kNumRobotJoints> trajectory_;
+  trajectory::JointSpaceTrajectory<kMaxRobotDOF> trajectory_;
   double trajectory_time_{0.0};
 
   // ── Diagnostic caches ──────────────────────────────────────────────────────
-  std::array<double, kNumRobotJoints> gravity_torques_{};
+  std::array<double, kMaxRobotDOF> gravity_torques_{};
   std::array<double, 3>               tcp_position_{};
 
   // ── E-STOP ─────────────────────────────────────────────────────────────────
