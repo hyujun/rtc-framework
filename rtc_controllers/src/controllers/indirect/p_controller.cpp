@@ -57,8 +57,8 @@ ControllerOutput PController::Compute(const ControllerState & state) noexcept
     ControllerOutput output{};
     output.valid = true;
     output.command_type = command_type_;
-    for (int d = 0; d < state.num_devices; ++d) {
-      for (int j = 0; j < state.devices[d].num_channels; ++j) {
+    for (std::size_t d = 0; d < static_cast<std::size_t>(state.num_devices); ++d) {
+      for (std::size_t j = 0; j < static_cast<std::size_t>(state.devices[d].num_channels); ++j) {
         output.devices[d].commands[j] = state.devices[d].positions[j];
         device_targets_[d][j] = state.devices[d].positions[j];
       }
