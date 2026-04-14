@@ -1,0 +1,137 @@
+# DemoWbcController — TSID QP → Position integration with FSM
+# Whole-body controller for UR5e arm + 10-DoF hand.
+# TSID produces optimal acceleration, integrated to position commands.
+#
+# Gains layout for ~/controller_gains:
+#   [grasp_cmd(0/1/2), grasp_target_force,
+#    arm_traj_speed, hand_traj_speed,
+#    se3_weight, force_weight, posture_weight] = 7 values
+
+demo_wbc_controller:
+  command_type: "position"
+
+  # ── Trajectory speeds (position mode phases) ──────────────────────────
+  arm_trajectory_speed: 0.5       # rad/s, joint-space trajectory
+  hand_trajectory_speed: 1.0      # rad/s
+  arm_max_traj_velocity: 2.0      # rad/s, max velocity during trajectory
+  hand_max_traj_velocity: 4.0     # rad/s
+
+  # ── Topic routing ─────────────────────────────────────────────────────
+  topics:
+    ur5e:
+      subscribe:
+        - topic: "/ur5e/joint_goal"
+          role: "target"
+        - topic: "/joint_states"
+          role: "state"
+      publish:
+        - topic: "/ur5e/joint_command"
+          role: "joint_command"
+        - topic: "/forward_position_controller/commands"
+          role: "ros2_command"
+          data_size: 6
+        - topic: "/ur5e/gui_position"
+          role: "gui_position"
+        - topic: "/ur5e/state_log"
+          role: "device_state_log"
+    hand:
+      subscribe:
+        - topic: "/hand/joint_goal"
+          role: "target"
+        - topic: "/hand/joint_states"
+          role: "state"
+        - topic: "/hand/motor_states"
+          role: "motor_state"
+        - topic: "/hand/sensor_states"
+          role: "sensor_state"
+      publish:
+        - topic: "/hand/joint_command"
+          role: "joint_command"
+        - topic: "/hand/gui_position"
+          role: "gui_position"
+        - topic: "/hand/state_log"
+          role: "device_state_log"
+        - topic: "/hand/sensor_log"
+          role: "device_sensor_log"
+
+  # ── TSID QP configuration ────────────────────────────────────────────
+  tsid:
+    formulation_type: "wqp"
+
+    tasks:
+      posture:
+        type: "posture"
+        weight: 1.0
+        priority: 0
+        kp: 10.0      # scalar → all joints
+        kd: 6.0
+      se3_tcp:
+        type: "se3"
+        frame: "tool0"
+        mask: [1, 1, 1, 1, 1, 1]   # full 6-DoF
+        kp: [100, 100, 100, 50, 50, 50]
+        kd: [20, 20, 20, 10, 10, 10]
+        weight: 100.0
+        priority: 0
+
+    constraints:
+      eom:
+        type: "eom"
+      joint_limit:
+        type: "joint_limit"
+        dt: 0.002               # must match control_rate
+        position_margin: 0.05   # rad
+        velocity_margin: 0.1    # rad/s
+
+    contacts:
+      - name: "thumb_tip"
+        frame: "thumb_tip_link"
+        type: "point"
+        mu: 0.5
+      - name: "index_tip"
+        frame: "index_tip_link"
+        type: "point"
+        mu: 0.5
+      - name: "middle_tip"
+        frame: "middle_tip_link"
+        type: "point"
+        mu: 0.5
+
+    phase_presets:
+      pre_grasp:
+        tasks:
+          posture:   { active: true,  weight: 1.0,   priority: 0 }
+          se3_tcp:   { active: true,  weight: 200.0, priority: 0 }
+        constraints:
+          eom:           { active: true }
+          joint_limit:   { active: true }
+
+      closure:
+        tasks:
+          posture:   { active: true,  weight: 0.1,  priority: 0 }
+          se3_tcp:   { active: true,  weight: 50.0, priority: 0 }
+        constraints:
+          eom:           { active: true }
+          joint_limit:   { active: true }
+
+      hold:
+        tasks:
+          posture:   { active: true,  weight: 0.1,   priority: 0 }
+          se3_tcp:   { active: true,  weight: 50.0,  priority: 0 }
+        constraints:
+          eom:           { active: true }
+          joint_limit:   { active: true }
+
+  # ── Integration safety ───────────────────────────────────────────────
+  integration:
+    position_margin: 0.02      # rad, from joint limits
+    velocity_scale: 0.95       # fraction of max velocity
+
+  # ── FSM thresholds ───────────────────────────────────────────────────
+  fsm:
+    epsilon_approach: 0.01       # m, approach → pre-grasp threshold
+    epsilon_pregrasp: 0.005      # m, pre-grasp → closure threshold
+    force_contact_threshold: 0.2 # N, contact detection (Phase 4B)
+    force_hold_threshold: 1.0    # N, hold threshold (Phase 4B)
+    max_qp_fail_before_fallback: 5
+    approach_speed: 0.5          # rad/s (overrides arm_trajectory_speed)

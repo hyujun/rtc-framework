@@ -38,6 +38,10 @@ inline rclcpp::Logger DemoTaskLogger() {
   return rclcpp::get_logger("bringup.demo_task");
 }
 
+inline rclcpp::Logger DemoWbcLogger() {
+  return rclcpp::get_logger("bringup.demo_wbc");
+}
+
 inline rclcpp::Logger SharedConfigLogger() {
   return rclcpp::get_logger("bringup.config");
 }

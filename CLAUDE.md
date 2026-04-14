@@ -135,6 +135,7 @@ Core 0-1: OS/DDS/IRQ. Auto-selects 4/6/8/10/12/16-core layouts via `SelectThread
 | GraspController | Internal | Hand 3x3-DOF | Adaptive PI force, 6-state FSM, per-finger stiffness EMA |
 | DemoJointController | Position | Joint + Hand | Quintic trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"` |
 | DemoTaskController | Position | Cartesian + Hand | CLIK + trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"` |
+| DemoWbcController | Position | TSID QP + Hand | 8-phase FSM, TSID QP → accel → position integration, combined 16-DoF model |
 
 ### Gains Layout (via `~/controller_gains` topic)
 
@@ -146,6 +147,7 @@ Core 0-1: OS/DDS/IRQ. Auto-selects 4/6/8/10/12/16-core layouts via `SelectThread
 | OSC | `[kp_pos x 3, kd_pos x 3, kp_rot x 3, kd_rot x 3, damping, gravity(0/1), traj_speed, traj_ang_speed, max_vel, max_ang_vel]` | 18 |
 | DemoJoint | `[robot_traj_speed, hand_traj_speed, robot_max_vel, hand_max_vel, grasp_contact_thresh, grasp_force_thresh, grasp_min_fingertips, grasp_cmd(0/1/2), grasp_target_force]` | 9 |
 | DemoTask | `[kp_trans x 3, kp_rot x 3, damping, null_kp, null_space(0/1), 6dof(0/1), traj_speed, traj_ang_speed, hand_traj_speed, max_vel, max_ang_vel, hand_max_vel, grasp_contact_thresh, grasp_force_thresh, grasp_min_fingertips, grasp_cmd(0/1/2), grasp_target_force]` | 21 |
+| DemoWbc | `[grasp_cmd(0/1/2), grasp_target_force, arm_traj_speed, hand_traj_speed, se3_weight, force_weight, posture_weight]` | 7 |
 
 ### GraspController (Force-PI, internal only)
 
@@ -739,13 +741,14 @@ colcon test --packages-select rtc_controllers --ctest-args -R test_grasp_control
 colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 ```
 
-Test files by package (60 total):
+Test files by package (73 total):
 
 | Package | Tests | Framework |
 |---------|-------|-----------|
 | `ur5e_bt_coordinator` | 14 C++ tests (`test/test_*.cpp`) | GTest |
 | `rtc_tsid` | 17 C++ tests (QP solver, tasks, constraints, formulations, performance, Phase 3 integration) | GTest |
 | `rtc_base` | 19 C++ tests (SeqLock, SPSC buffers, Bessel/Kalman filters, session dir) | GTest |
+| `ur5e_bringup` | 13 C++ tests (virtual_tcp, shared_config, demo_wbc_controller FSM/integration/output) | GTest |
 | `rtc_controllers` | 6 C++ tests (trajectory + grasp) | GTest |
 | `rtc_urdf_bridge` | 5 C++ tests (URDF/model parsing) | GTest |
 | `shape_estimation` | 3 C++ tests (ToF + exploration) | GTest |
@@ -778,4 +781,6 @@ Test files by package (60 total):
 | TSID formulations | `rtc_tsid/include/rtc_tsid/formulation/{wqp,hqp}_formulation.hpp` |
 | TSID tasks/constraints | `rtc_tsid/include/rtc_tsid/core/{task_base,constraint_base}.hpp` |
 | TSID types | `rtc_tsid/include/rtc_tsid/types/wbc_types.hpp` |
-| Supplementary docs | `docs/` (RT_OPTIMIZATION.md, SHELL_SCRIPTS.md, VSCODE_DEBUGGING.md) |
+| DemoWbcController | `ur5e_bringup/include/ur5e_bringup/controllers/demo_wbc_controller.hpp` |
+| DemoWbc YAML config | `ur5e_bringup/config/controllers/demo_wbc_controller.yaml` |
+| Supplementary docs | `docs/` (RT_OPTIMIZATION.md, SHELL_SCRIPTS.md, VSCODE_DEBUGGING.md, phase4_critical_review.md) |

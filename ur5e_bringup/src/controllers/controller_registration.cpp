@@ -8,6 +8,7 @@
 
 #include "ur5e_bringup/controllers/demo_joint_controller.hpp"
 #include "ur5e_bringup/controllers/demo_task_controller.hpp"
+#include "ur5e_bringup/controllers/demo_wbc_controller.hpp"
 
 RTC_REGISTER_CONTROLLER(
   demo_joint_controller, "", "ur5e_bringup",
@@ -17,4 +18,8 @@ RTC_REGISTER_CONTROLLER(
   demo_task_controller, "", "ur5e_bringup",
   std::make_unique<ur5e_bringup::DemoTaskController>(
     urdf, ur5e_bringup::DemoTaskController::Gains{}))
+
+RTC_REGISTER_CONTROLLER(
+  demo_wbc_controller, "", "ur5e_bringup",
+  std::make_unique<ur5e_bringup::DemoWbcController>(urdf))
 

@@ -41,12 +41,14 @@ find_package(Python3 COMPONENTS Interpreter Development NumPy)
 find_package(pinocchio REQUIRED)
 find_package(rtc_urdf_bridge REQUIRED)
 find_package(rtc_controller_manager REQUIRED)
+find_package(rtc_tsid REQUIRED)
 find_package(ur5e_description REQUIRED)
 
 # ── Static library: demo controllers ──────────────────────────────────────────
 add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/demo_joint_controller.cpp
   src/controllers/demo_task_controller.cpp
+  src/controllers/demo_wbc_controller.cpp
   src/controllers/demo_shared_config.cpp
   src/controllers/controller_registration.cpp
 )
@@ -67,6 +69,7 @@ ament_target_dependencies(${PROJECT_NAME}_demo_controllers
   rtc_msgs
   pinocchio
   rtc_urdf_bridge
+  rtc_tsid
   ur5e_description
 )
 
@@ -150,6 +153,7 @@ ament_export_dependencies(
   rtc_msgs
   pinocchio
   rtc_urdf_bridge
+  rtc_tsid
   yaml-cpp
 )
 ament_export_include_directories(include)
@@ -168,6 +172,21 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_virtual_tcp
     rtc_base
     pinocchio
+    Eigen3
+  )
+
+  # ── demo_wbc_controller tests ──────────────────────────────────────────────
+  ament_add_gtest(test_demo_wbc_controller test/test_demo_wbc_controller.cpp)
+  target_link_libraries(test_demo_wbc_controller
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_demo_wbc_controller
+    rclcpp
+    rtc_controllers
+    rtc_base
+    pinocchio
+    rtc_tsid
     Eigen3
   )
 
