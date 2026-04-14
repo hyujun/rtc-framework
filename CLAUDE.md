@@ -744,7 +744,7 @@ Test files by package (60 total):
 | Package | Tests | Framework |
 |---------|-------|-----------|
 | `ur5e_bt_coordinator` | 14 C++ tests (`test/test_*.cpp`) | GTest |
-| `rtc_tsid` | 11 C++ tests (QP solver, tasks, constraints, formulations, performance) | GTest |
+| `rtc_tsid` | 17 C++ tests (QP solver, tasks, constraints, formulations, performance, Phase 3 integration) | GTest |
 | `rtc_base` | 19 C++ tests (SeqLock, SPSC buffers, Bessel/Kalman filters, session dir) | GTest |
 | `rtc_controllers` | 6 C++ tests (trajectory + grasp) | GTest |
 | `rtc_urdf_bridge` | 5 C++ tests (URDF/model parsing) | GTest |

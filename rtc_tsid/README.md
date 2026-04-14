@@ -31,12 +31,17 @@ rtc_tsid/
 │   │   ├── hqp_formulation.hpp         -- Hierarchical QP formulation (cascaded)
 │   │   └── formulation_factory.hpp     -- Formulation 팩토리
 │   ├── tasks/
-│   │   └── posture_task.hpp            -- 관절 자세 추종 태스크
+│   │   ├── posture_task.hpp            -- 관절 자세 추종 태스크
+│   │   ├── se3_task.hpp                -- SE3 pose tracking 태스크 (6D, mask 지원)
+│   │   ├── com_task.hpp                -- CoM 위치 추종 태스크
+│   │   ├── force_task.hpp              -- 접촉력 reference 추종 태스크
+│   │   └── momentum_task.hpp           -- Centroidal momentum regularization 태스크
 │   ├── constraints/
 │   │   ├── eom_constraint.hpp          -- 운동 방정식 등식 제약
 │   │   ├── contact_constraint.hpp      -- 접촉 제약
 │   │   ├── friction_cone_constraint.hpp -- 마찰 원뿔 부등식 제약
-│   │   └── torque_limit_constraint.hpp -- 토크 한계 부등식 제약
+│   │   ├── torque_limit_constraint.hpp -- 토크 한계 부등식 제약
+│   │   └── joint_limit_constraint.hpp  -- 관절 한계 가속도 부등식 제약
 │   ├── types/
 │   │   ├── wbc_types.hpp               -- 핵심 데이터 구조체
 │   │   └── qp_types.hpp                -- QP 문제 구조체
@@ -44,7 +49,7 @@ rtc_tsid/
 │       └── qp_solver_wrapper.hpp       -- ProxSuite QP 솔버 래퍼
 ├── src/                                -- 구현 파일
 ├── config/                             -- YAML 설정 파일
-├── test/                               -- 11개 GTest 파일
+├── test/                               -- 17개 GTest 파일
 ├── CMakeLists.txt
 └── package.xml
 ```
@@ -88,11 +93,46 @@ formulation_type: "wqp"  # 또는 "hqp"
 
 ### 태스크 (Tasks)
 
-| 태스크 | 설명 |
-|--------|------|
-| `PostureTask` | 관절 자세 추종: `r = q_ref - q`, `J = I` (joint space identity) |
+| 태스크 | 공간 | 설명 | residual_dim |
+|--------|------|------|-------------|
+| `PostureTask` | Joint | 관절 자세 추종: `a_des = Kp·(q_des-q) + Kd·(v_des-v)`, `J = I` | nv |
+| `SE3Task` | Cartesian | TCP/EE pose tracking (6D), 6D mask 지원, `log3` singularity 보호 | mask 활성 축 수 (1~6) |
+| `CoMTask` | Cartesian | CoM 위치 추종, `com_drift` 보상 | 3 |
+| `ForceTask` | Force | 접촉력 reference 추종, active contact에 따라 가변 dim | Σ(active contact_dim) |
+| `MomentumTask` | Centroidal | Angular momentum → 0 regularization 또는 full momentum tracking | 3 (angular) / 6 (full) |
 
 태스크는 `TaskBase`를 상속하며, `compute_residual()` 메서드로 잔차 벡터와 자코비안을 반환합니다. 각 태스크는 `weight`와 `priority` 속성을 가집니다.
+
+#### SE3Task YAML 설정
+
+```yaml
+se3_tcp:
+  frame: "tool0"              # URDF frame 이름
+  mask: [1, 1, 1, 1, 1, 1]    # [vx, vy, vz, wx, wy, wz] 축 선택
+  kp: [100, 100, 100, 50, 50, 50]  # 축별 position gain
+  kd: [20, 20, 20, 10, 10, 10]     # 축별 velocity gain
+  weight: 100.0
+  priority: 0
+```
+
+#### CoMTask YAML 설정
+
+```yaml
+com:
+  kp: [100, 100, 100]    # [x, y, z] position gain
+  kd: [20, 20, 20]       # [x, y, z] velocity gain
+  weight: 100.0
+  priority: 0
+```
+
+#### MomentumTask YAML 설정
+
+```yaml
+momentum:
+  mode: "angular_regularize"  # "angular_regularize" | "full_track"
+  weight: 1.0
+  priority: 2
+```
 
 ---
 
@@ -104,6 +144,18 @@ formulation_type: "wqp"  # 또는 "hqp"
 | `ContactConstraint` | 등식 | 접촉점 가속도 = 0: @f$ J_c \ddot{q} + \dot{J}_c \dot{q} = 0 @f$ |
 | `FrictionConeConstraint` | 부등식 | 쿨롱 마찰 원뿔 선형 근사 |
 | `TorqueLimitConstraint` | 부등식 | 액추에이터 토크 상/하한 |
+| `JointLimitConstraint` | 부등식 | 가속도-레벨 관절 한계 viability (Del Prete 2018) |
+
+#### JointLimitConstraint YAML 설정
+
+```yaml
+joint_limit:
+  dt: 0.002              # 제어 주기 [s]
+  position_margin: 0.05   # position limit margin [rad]
+  velocity_margin: 0.1    # velocity limit margin [rad/s]
+```
+
+Position/velocity limit에서 acceleration bound를 도출하여 QP inequality로 부과합니다. Floating-base 모델의 처음 6 DoF (free-flyer)에는 무제약이 적용됩니다. Per-joint margin clamping으로 범위가 좁은 관절(예: gripper finger)에서도 안전하게 동작합니다.
 
 ---
 
@@ -131,6 +183,13 @@ formulation_type: "wqp"  # 또는 "hqp"
 | `h`, `g` | `VectorXd` | 비선형항, 중력항 |
 | `q`, `v` | `VectorXd` | 현재 설정/속도 |
 | `contact_frames` | `vector<FrameCache>` | 접촉 프레임별 자코비안 [6 × nv] + dJ·v |
+| `registered_frames` | `vector<RegisteredFrame>` | 태스크용 등록 프레임 (SE3Task 등) |
+| `Jcom` | `MatrixXd` | CoM 자코비안 [3 × nv] (`compute_com` 활성 시) |
+| `com_position` | `Vector3d` | CoM 위치 (`compute_com` 활성 시) |
+| `com_drift` | `Vector3d` | dJ_com·v — CoM 가속도 drift (`compute_com` 활성 시) |
+| `Ag` | `MatrixXd` | Centroidal Momentum Matrix [6 × nv] (`compute_centroidal` 활성 시) |
+| `h_centroidal` | `Vector6d` | Centroidal momentum [6] (`compute_centroidal` 활성 시) |
+| `hg_drift` | `Vector6d` | dAg·v — centroidal momentum rate drift (`compute_centroidal` 활성 시) |
 
 ### CommandOutput
 
@@ -173,21 +232,27 @@ colcon test --packages-select rtc_tsid --event-handlers console_direct+
 colcon test-result --verbose
 ```
 
-11개 테스트:
+17개 테스트 (107 test cases):
 
 | 테스트 | 설명 |
 |--------|------|
 | `test_qp_solver_wrapper` | ProxSuite QP 래퍼 기본 동작 |
 | `test_wbc_types` | WBC 타입 시스템 초기화/갱신 |
 | `test_posture_task` | 자세 태스크 잔차/자코비안 |
+| `test_se3_task` | SE3 pose tracking, mask, log3 singularity, gains |
+| `test_com_task` | CoM 위치 추종, drift 보상 |
+| `test_force_task` | 접촉력 reference 추종, active/inactive 전환 |
+| `test_momentum_task` | Centroidal momentum regularization, angular/full mode |
 | `test_eom_constraint` | 운동 방정식 등식 제약 |
 | `test_contact_constraint` | 접촉 등식 제약 |
 | `test_friction_cone_constraint` | 마찰 원뿔 부등식 제약 |
 | `test_torque_limit_constraint` | 토크 한계 부등식 제약 |
+| `test_joint_limit_constraint` | 관절 한계 가속도-레벨 viability 제약 |
 | `test_tsid_wqp` | WQP formulation 통합 테스트 |
 | `test_tsid_hqp` | HQP formulation 통합 테스트 |
 | `test_tsid_wqp_hqp_compare` | WQP vs HQP 비교 검증 |
 | `test_tsid_performance` | 성능 벤치마크 |
+| `test_phase3_integration` | Phase 3 모듈 통합 (WQP/HQP + SE3 + CoM + preset 전환) |
 
 ---
 

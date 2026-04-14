@@ -25,10 +25,15 @@ add_library(rtc_tsid STATIC
   src/solver/qp_solver_wrapper.cpp
   src/types/wbc_types.cpp
   src/tasks/posture_task.cpp
+  src/tasks/se3_task.cpp
+  src/tasks/force_task.cpp
+  src/tasks/com_task.cpp
+  src/tasks/momentum_task.cpp
   src/constraints/eom_constraint.cpp
   src/constraints/contact_constraint.cpp
   src/constraints/friction_cone_constraint.cpp
   src/constraints/torque_limit_constraint.cpp
+  src/constraints/joint_limit_constraint.cpp
   src/formulation/wqp_formulation.cpp
   src/formulation/hqp_formulation.cpp
   src/formulation/formulation_factory.cpp
@@ -75,6 +80,21 @@ if(BUILD_TESTING)
   ament_add_gtest(test_posture_task test/test_posture_task.cpp)
   target_link_libraries(test_posture_task rtc_tsid)
 
+  ament_add_gtest(test_se3_task test/test_se3_task.cpp)
+  target_link_libraries(test_se3_task rtc_tsid)
+
+  ament_add_gtest(test_force_task test/test_force_task.cpp)
+  target_link_libraries(test_force_task rtc_tsid)
+
+  ament_add_gtest(test_com_task test/test_com_task.cpp)
+  target_link_libraries(test_com_task rtc_tsid)
+
+  ament_add_gtest(test_momentum_task test/test_momentum_task.cpp)
+  target_link_libraries(test_momentum_task rtc_tsid)
+
+  ament_add_gtest(test_phase3_integration test/test_phase3_integration.cpp)
+  target_link_libraries(test_phase3_integration rtc_tsid)
+
   ament_add_gtest(test_eom_constraint test/test_eom_constraint.cpp)
   target_link_libraries(test_eom_constraint rtc_tsid)
 
@@ -86,6 +106,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_torque_limit_constraint test/test_torque_limit_constraint.cpp)
   target_link_libraries(test_torque_limit_constraint rtc_tsid)
+
+  ament_add_gtest(test_joint_limit_constraint test/test_joint_limit_constraint.cpp)
+  target_link_libraries(test_joint_limit_constraint rtc_tsid)
 
   ament_add_gtest(test_tsid_wqp test/test_tsid_wqp.cpp)
   target_link_libraries(test_tsid_wqp rtc_tsid)

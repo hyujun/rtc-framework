@@ -136,12 +136,14 @@ struct PinocchioCache {
   // CoM (optional — CoMTask 등록 시 활성화)
   bool compute_com{false};
   Eigen::Vector3d com_position;
-  Eigen::MatrixXd Jcom;  // [3 × nv]
+  Eigen::MatrixXd Jcom;       // [3 × nv]
+  Eigen::Vector3d com_drift;  // dJ_com·v (zero acceleration에서의 CoM 가속도) [3]
 
   // Centroidal momentum (optional — MomentumTask 등록 시 활성화)
   bool compute_centroidal{false};
   Eigen::Matrix<double, 6, 1> h_centroidal;
-  Eigen::MatrixXd Ag;  // [6 × nv]
+  Eigen::MatrixXd Ag;                        // [6 × nv]
+  Eigen::Matrix<double, 6, 1> hg_drift;      // dAg·v (centroidal momentum rate drift) [6]
 
   // 초기화: buffer pre-allocate (init 시 1회)
   void init(std::shared_ptr<const pinocchio::Model> model,

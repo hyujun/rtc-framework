@@ -176,8 +176,10 @@ void PinocchioCache::init(std::shared_ptr<const pinocchio::Model> model,
 
   com_position.setZero();
   Jcom.setZero(3, nv);
+  com_drift.setZero();
   h_centroidal.setZero();
   Ag.setZero(6, nv);
+  hg_drift.setZero();
 
   registration_locked = false;
 }
@@ -259,10 +261,17 @@ void PinocchioCache::update(const Eigen::VectorXd& q_in,
 
   // CoM (optional)
   if (compute_com) {
+    // CoM 위치, 속도, Jacobian 계산
     pinocchio::centerOfMass(mdl, data, q, v, false);
     com_position = data.com[0];
     pinocchio::jacobianCenterOfMass(mdl, data, q, false);
     Jcom = data.Jcom;
+
+    // CoM drift: zero acceleration에서의 CoM 가속도 = dJ_com·v
+    // centerOfMass(model, data, q, v, a=0) → data.acom[0]
+    const auto zero_a = Eigen::VectorXd::Zero(mdl.nv);
+    pinocchio::centerOfMass(mdl, data, q, v, zero_a);
+    com_drift = data.acom[0];
   }
 
   // Centroidal momentum (optional)
@@ -271,6 +280,11 @@ void PinocchioCache::update(const Eigen::VectorXd& q_in,
     h_centroidal = data.hg.toVector();
     pinocchio::computeCentroidalMap(mdl, data, q);
     Ag = data.Ag;
+
+    // Centroidal momentum drift: dAg·v (momentum rate at zero acceleration)
+    pinocchio::computeCentroidalMomentumTimeVariation(mdl, data, q, v,
+        Eigen::VectorXd::Zero(mdl.nv));
+    hg_drift = data.dhg.toVector();
   }
 }
 
