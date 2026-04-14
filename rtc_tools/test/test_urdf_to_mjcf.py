@@ -18,6 +18,7 @@ from rtc_tools.conversion.urdf_to_mjcf import (
     generate_scene,
     _add_equality_constraints,
     _add_actuators,
+    _add_parent_child_collision_excludes,
     _clean_mesh_paths,
     _fix_compiler,
     resolve_mesh_paths,
@@ -506,10 +507,11 @@ class TestPostprocessMjcf:
         meshdir.mkdir()
 
         c = classify_joints(URDF_BASIC)
-        n_eq, n_act = postprocess_mjcf(mjcf_file, c, meshdir)
+        n_eq, n_act, n_excl = postprocess_mjcf(mjcf_file, c, meshdir)
 
         assert n_eq == 0
         assert n_act == 2
+        assert n_excl == 0
 
         tree = ET.parse(str(mjcf_file))
         root = tree.getroot()
@@ -526,6 +528,95 @@ class TestPostprocessMjcf:
         actuator = root.find("actuator")
         assert actuator is not None
         assert len(actuator.findall("general")) == 2
+
+    def test_postprocess_with_collision_excludes(self, tmp_path):
+        raw_mjcf = (
+            '<mujoco model="test">'
+            '<compiler meshdir="/abs/meshes"/>'
+            "<worldbody>"
+            '<body name="base_link"><joint name="joint1"/>'
+            '<body name="link1"><joint name="joint2"/></body>'
+            "</body>"
+            "</worldbody>"
+            "</mujoco>"
+        )
+        mjcf_file = tmp_path / "robot.xml"
+        mjcf_file.write_text(raw_mjcf)
+
+        meshdir = tmp_path / "meshes"
+        meshdir.mkdir()
+
+        c = classify_joints(URDF_BASIC)
+        n_eq, n_act, n_excl = postprocess_mjcf(
+            mjcf_file, c, meshdir,
+            disable_parent_child_collision=True,
+            urdf_xml=URDF_BASIC,
+        )
+
+        assert n_excl == 2  # joint1: base→link1, joint2: link1→link2
+
+        tree = ET.parse(str(mjcf_file))
+        root = tree.getroot()
+        contact = root.find("contact")
+        assert contact is not None
+        excludes = contact.findall("exclude")
+        assert len(excludes) == 2
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Collision Exclude Tests
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestAddParentChildCollisionExcludes:
+    def _make_root(self) -> ET.Element:
+        return ET.fromstring('<mujoco model="test"></mujoco>')
+
+    def test_basic_excludes(self):
+        root = self._make_root()
+        n = _add_parent_child_collision_excludes(root, URDF_BASIC)
+
+        assert n == 2
+        contact = root.find("contact")
+        assert contact is not None
+        excludes = contact.findall("exclude")
+        assert len(excludes) == 2
+
+        pairs = {(e.get("body1"), e.get("body2")) for e in excludes}
+        assert ("base_link", "link1") in pairs
+        assert ("link1", "link2") in pairs
+
+    def test_no_joints(self):
+        root = self._make_root()
+        urdf = '<robot name="test"><link name="base_link"/></robot>'
+        n = _add_parent_child_collision_excludes(root, urdf)
+        assert n == 0
+        assert root.find("contact") is None
+
+    def test_deduplicates_pairs(self):
+        """동일한 parent→child 쌍이 중복되면 하나만 추가."""
+        root = self._make_root()
+        # Two joints with same parent→child
+        urdf = """\
+<robot name="test">
+  <link name="base_link"/>
+  <link name="link1"/>
+  <joint name="j1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link1"/>
+  </joint>
+  <joint name="j2" type="fixed">
+    <parent link="base_link"/>
+    <child link="link1"/>
+  </joint>
+</robot>
+"""
+        n = _add_parent_child_collision_excludes(root, urdf)
+        assert n == 1
+
+    def test_fixed_joints_included(self):
+        root = self._make_root()
+        n = _add_parent_child_collision_excludes(root, URDF_WITH_FIXED)
+        assert n == 2  # joint1 + tool_fixed
 
 
 # ════════════════════════════════════════════════════════════════════════════

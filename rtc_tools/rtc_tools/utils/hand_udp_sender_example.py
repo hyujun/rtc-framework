@@ -69,7 +69,8 @@ DEFAULT_MODE = 0x00
 HEADER_SIZE = 3       # ID + CMD + MODE
 
 NUM_HAND_MOTORS = 10
-NUM_FINGERTIPS = 4
+NUM_FINGERTIPS = 4          # default (kDefaultNumFingertips)
+MAX_FINGERTIPS = 8          # array upper bound (kMaxFingertips)
 
 # 모터 패킷 상수
 MOTOR_DATA_COUNT = 10
@@ -96,14 +97,22 @@ RESERVED_COUNT = 5    # 패킷에만 존재, 저장하지 않음
 TOF_COUNT = 3
 SENSOR_VALUES_PER_FINGERTIP = BAROMETER_COUNT + TOF_COUNT  # 11 (유효 값)
 NUM_HAND_SENSORS = NUM_FINGERTIPS * SENSOR_VALUES_PER_FINGERTIP  # 44
+MAX_HAND_SENSORS = MAX_FINGERTIPS * SENSOR_VALUES_PER_FINGERTIP  # 88
 
 # State mode (response mode 필드)
 STATE_MODE_MOTOR = 0
 STATE_MODE_FINGERTIP_SENSOR = 1
 
-# Sensor sub-mode
+# Sensor sub-mode (SensorMode enum — hand_packets.hpp)
 SENSOR_MODE_RAW = 0
 SENSOR_MODE_NN = 1
+
+# Joint mode (JointMode enum — hand_packets.hpp)
+# MODE 필드 의미: joint commands (0x01, 0x10, 0x11, 0x12) 에서 사용
+#   kMotor = 0x00: raw motor encoder position (기본값, 하위 호환)
+#   kJoint = 0x01: joint-space position (기어비 적용, 펌웨어 변환)
+JOINT_MODE_MOTOR = 0x00
+JOINT_MODE_JOINT = 0x01
 
 # 커맨드 코드
 CMD_WRITE_POSITION = 0x01
@@ -123,8 +132,16 @@ CMD_READ_SENSORS = [CMD_READ_SENSOR0, CMD_READ_SENSOR1,
 
 
 def _is_sensor_command(cmd: int) -> bool:
-    """센서 커맨드인지 확인"""
-    return CMD_READ_SENSOR0 <= cmd <= CMD_READ_SENSOR3
+    """센서 커맨드인지 확인 (hand_packets.hpp IsSensorCommand 동일)"""
+    return (cmd == CMD_SET_SENSOR_MODE
+            or cmd == CMD_READ_ALL_SENSORS
+            or CMD_READ_SENSOR0 <= cmd <= CMD_READ_SENSOR3)
+
+
+def _is_joint_command(cmd: int) -> bool:
+    """조인트(모터) 커맨드인지 확인 (hand_packets.hpp IsJointCommand 동일)"""
+    return cmd in (CMD_WRITE_POSITION, CMD_READ_ALL_MOTORS,
+                   CMD_READ_POSITION, CMD_READ_VELOCITY)
 
 
 # ── 패킷 인코딩/디코딩 (hand_udp_codec.hpp 기반) ────────────────────────────
@@ -139,21 +156,39 @@ def uint32_to_float(raw: int) -> float:
     return struct.unpack('<f', struct.pack('<I', raw))[0]
 
 
-def encode_motor_packet(cmd: int, floats: list[float] | None = None) -> bytes:
+def encode_motor_packet(cmd: int, floats: list[float] | None = None,
+                        joint_mode: int = JOINT_MODE_MOTOR) -> bytes:
     """
     모터 패킷 인코딩 (43 bytes)
 
     Args:
         cmd: 커맨드 코드 (예: CMD_WRITE_POSITION, CMD_READ_POSITION)
         floats: 10개 float 데이터 (None이면 0으로 채움, read request용)
+        joint_mode: JOINT_MODE_MOTOR (0x00) 또는 JOINT_MODE_JOINT (0x01)
     """
-    header = struct.pack('<BBB', DEVICE_ID, cmd, DEFAULT_MODE)
+    header = struct.pack('<BBB', DEVICE_ID, cmd, joint_mode)
     if floats is not None:
         assert len(floats) == MOTOR_DATA_COUNT, f"데이터는 {MOTOR_DATA_COUNT}개여야 합니다"
         data = struct.pack('<10I', *[float_to_uint32(f) for f in floats])
     else:
         data = b'\x00' * (MOTOR_DATA_COUNT * 4)
     return header + data
+
+
+def encode_motor_read_request(cmd: int,
+                              joint_mode: int = JOINT_MODE_MOTOR) -> bytes:
+    """
+    모터 read request 인코딩 (3 bytes, 헤더만)
+
+    C++ MakeMotorReadRequest() 동일 — read position/velocity 요청 시
+    43B 대신 3B 헤더만 전송하는 최적화 버전.
+    joint_mode 로 motor-space(0x00) / joint-space(0x01) 선택.
+
+    Args:
+        cmd: CMD_READ_POSITION 또는 CMD_READ_VELOCITY
+        joint_mode: JOINT_MODE_MOTOR (0x00) 또는 JOINT_MODE_JOINT (0x01)
+    """
+    return struct.pack('<BBB', DEVICE_ID, cmd, joint_mode)
 
 
 def encode_sensor_request(cmd: int, sensor_mode: int = SENSOR_MODE_RAW) -> bytes:
@@ -166,7 +201,8 @@ def encode_sensor_request(cmd: int, sensor_mode: int = SENSOR_MODE_RAW) -> bytes
         cmd: 센서 커맨드 코드 (CMD_READ_SENSOR0 ~ CMD_READ_SENSOR3)
         sensor_mode: SENSOR_MODE_RAW (0) 또는 SENSOR_MODE_NN (1)
     """
-    assert _is_sensor_command(cmd), f"센서 커맨드가 아닙니다: 0x{cmd:02x}"
+    assert CMD_READ_SENSOR0 <= cmd <= CMD_READ_SENSOR3, \
+        f"개별 센서 커맨드가 아닙니다: 0x{cmd:02x}"
     return struct.pack('<BBB', DEVICE_ID, cmd, sensor_mode)
 
 
@@ -201,14 +237,14 @@ def decode_sensor_response(buf: bytes) -> tuple[int, int, list[int]]:
     """
     센서 response 디코딩 (67 bytes)
     barometer[8] + reserved[5] (skip) + tof[3] = 11 유효 값 추출
-    float 변환 없이 uint32 원본 값 반환.
+    float 변환 없이 int32 원본 값 반환 (C++ SensorResponsePacket.data = int32_t[16]).
 
     Returns:
-        (cmd, mode, [11 uint32: barometer(8) + tof(3)])
+        (cmd, mode, [11 int32: barometer(8) + tof(3)])
     """
     assert len(buf) >= SENSOR_RESPONSE_SIZE, f"패킷 크기 부족: {len(buf)} < {SENSOR_RESPONSE_SIZE}"
     _id, cmd, mode = struct.unpack('<BBB', buf[:HEADER_SIZE])
-    raw_data = struct.unpack('<16I', buf[HEADER_SIZE:SENSOR_RESPONSE_SIZE])
+    raw_data = struct.unpack('<16i', buf[HEADER_SIZE:SENSOR_RESPONSE_SIZE])
 
     # barometer[0..7] → out[0..7]
     values = [raw_data[i] for i in range(BAROMETER_COUNT)]
@@ -220,12 +256,16 @@ def decode_sensor_response(buf: bytes) -> tuple[int, int, list[int]]:
     return cmd, mode, values
 
 
-def encode_all_motor_request() -> bytes:
+def encode_all_motor_request(joint_mode: int = JOINT_MODE_MOTOR) -> bytes:
     """
     모터 전체 데이터 일괄 요청 인코딩 (cmd=0x10, 3 bytes — 헤더만)
     응답: 123 bytes (10모터 × pos,vel,cur)
+    joint_mode 로 motor-space(0x00) / joint-space(0x01) 선택.
+
+    Args:
+        joint_mode: JOINT_MODE_MOTOR (0x00) 또는 JOINT_MODE_JOINT (0x01)
     """
-    return struct.pack('<BBB', DEVICE_ID, CMD_READ_ALL_MOTORS, 0x00)
+    return struct.pack('<BBB', DEVICE_ID, CMD_READ_ALL_MOTORS, joint_mode)
 
 
 def decode_all_motor_response(buf: bytes) -> tuple[int, int, list[float], list[float], list[float]]:
@@ -263,14 +303,15 @@ def decode_all_sensor_response(buf: bytes) -> tuple[int, int, list[int]]:
     센서 4개 일괄 응답 디코딩 (259 bytes)
     각 핑거: barometer[8] + reserved[5](skip) + tof[3] = 11 유효 값
     4핑거 × 11 = 44 유효 값
+    C++ AllSensorResponsePacket.data = int32_t[64].
 
     Returns:
-        (cmd, mode, [44 uint32: finger0(baro8+tof3) + finger1 + finger2 + finger3])
+        (cmd, mode, [44 int32: finger0(baro8+tof3) + finger1 + finger2 + finger3])
     """
     assert len(buf) >= ALL_SENSOR_RESPONSE_SIZE, \
         f"패킷 크기 부족: {len(buf)} < {ALL_SENSOR_RESPONSE_SIZE}"
     _id, cmd, mode = struct.unpack('<BBB', buf[:HEADER_SIZE])
-    raw_data = struct.unpack(f'<{ALL_SENSOR_DATA_COUNT}I',
+    raw_data = struct.unpack(f'<{ALL_SENSOR_DATA_COUNT}i',
                              buf[HEADER_SIZE:ALL_SENSOR_RESPONSE_SIZE])
 
     values = []
@@ -287,9 +328,10 @@ def decode_all_sensor_response(buf: bytes) -> tuple[int, int, list[int]]:
 
 
 # Legacy aliases
-def encode_packet(cmd: int, floats: list[float] | None = None) -> bytes:
+def encode_packet(cmd: int, floats: list[float] | None = None,
+                  joint_mode: int = JOINT_MODE_MOTOR) -> bytes:
     """Legacy: 모터 패킷 인코딩 (센서 커맨드는 encode_sensor_request 사용)"""
-    return encode_motor_packet(cmd, floats)
+    return encode_motor_packet(cmd, floats, joint_mode)
 
 
 def decode_packet(buf: bytes) -> tuple[int, list[float]]:
@@ -330,18 +372,32 @@ class HandUDPSender:
         print(f"  Target: {target_ip}:{target_port}")
         print(f"  Motors: {NUM_HAND_MOTORS}, Connected sensors: {self.num_sensors}/{NUM_FINGERTIPS}")
 
-    def write_position(self, positions: list[float]) -> list[float] | None:
-        """모터 목표 위치 전송 및 echo 수신 (cmd=0x01, 43B ↔ 43B)"""
+    def write_position(self, positions: list[float],
+                       joint_mode: int = JOINT_MODE_MOTOR) -> list[float] | None:
+        """모터 목표 위치 전송 및 echo 수신 (cmd=0x01, 43B ↔ 43B)
+
+        Args:
+            positions: 10개 모터 목표 위치
+            joint_mode: JOINT_MODE_MOTOR (0x00) 또는 JOINT_MODE_JOINT (0x01)
+        """
         assert len(positions) == NUM_HAND_MOTORS
-        return self._request_motor(CMD_WRITE_POSITION, positions)
+        return self._request_motor(CMD_WRITE_POSITION, positions, joint_mode)
 
-    def read_position(self) -> list[float] | None:
-        """모터 현재 위치 요청 및 수신 (cmd=0x11, 43B ↔ 43B)"""
-        return self._request_motor(CMD_READ_POSITION)
+    def read_position(self, joint_mode: int = JOINT_MODE_MOTOR) -> list[float] | None:
+        """모터 현재 위치 요청 및 수신 (cmd=0x11, 3B → 43B)
 
-    def read_velocity(self) -> list[float] | None:
-        """모터 현재 속도 요청 및 수신 (cmd=0x12, 43B ↔ 43B)"""
-        return self._request_motor(CMD_READ_VELOCITY)
+        Args:
+            joint_mode: JOINT_MODE_MOTOR (0x00) 또는 JOINT_MODE_JOINT (0x01)
+        """
+        return self._request_motor_read(CMD_READ_POSITION, joint_mode)
+
+    def read_velocity(self, joint_mode: int = JOINT_MODE_MOTOR) -> list[float] | None:
+        """모터 현재 속도 요청 및 수신 (cmd=0x12, 3B → 43B)
+
+        Args:
+            joint_mode: JOINT_MODE_MOTOR (0x00) 또는 JOINT_MODE_JOINT (0x01)
+        """
+        return self._request_motor_read(CMD_READ_VELOCITY, joint_mode)
 
     def set_sensor_mode(self, sensor_mode: int = SENSOR_MODE_RAW) -> bool:
         """
@@ -384,15 +440,19 @@ class HandUDPSender:
             time.sleep(retry_interval)
         return False
 
-    def read_all_motors(self) -> tuple[list[float], list[float], list[float]] | None:
+    def read_all_motors(self, joint_mode: int = JOINT_MODE_MOTOR
+                        ) -> tuple[list[float], list[float], list[float]] | None:
         """
         모터 전체 데이터 일괄 요청 (cmd=0x10, 3B → 123B)
         10개 모터의 위치, 속도, 전류를 한 번에 수신.
 
+        Args:
+            joint_mode: JOINT_MODE_MOTOR (0x00) 또는 JOINT_MODE_JOINT (0x01)
+
         Returns:
             (positions[10], velocities[10], currents[10]) or None on timeout
         """
-        pkt = encode_all_motor_request()
+        pkt = encode_all_motor_request(joint_mode)
         self.sock.sendto(pkt, self.target)
         try:
             data, _ = self.sock.recvfrom(512)
@@ -688,9 +748,25 @@ class HandUDPSender:
         }
 
     def _request_motor(self, cmd: int,
-                       floats: list[float] | None = None) -> list[float] | None:
+                       floats: list[float] | None = None,
+                       joint_mode: int = JOINT_MODE_MOTOR) -> list[float] | None:
         """모터 요청 전송(43B) 후 echo 응답 수신(43B)"""
-        pkt = encode_motor_packet(cmd, floats)
+        pkt = encode_motor_packet(cmd, floats, joint_mode)
+        self.sock.sendto(pkt, self.target)
+        try:
+            data, _ = self.sock.recvfrom(256)
+            _, _mode, floats = decode_motor_response(data)
+            return floats
+        except socket.timeout:
+            return None
+
+    def _request_motor_read(self, cmd: int,
+                            joint_mode: int = JOINT_MODE_MOTOR) -> list[float] | None:
+        """모터 read 요청 전송(3B) 후 응답 수신(43B)
+
+        C++ MakeMotorReadRequest 동일 — 3B 헤더만 전송하는 최적화 버전.
+        """
+        pkt = encode_motor_read_request(cmd, joint_mode)
         self.sock.sendto(pkt, self.target)
         try:
             data, _ = self.sock.recvfrom(256)
