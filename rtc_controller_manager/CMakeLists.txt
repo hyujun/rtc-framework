@@ -123,4 +123,17 @@ ament_export_dependencies(
 )
 ament_export_include_directories(include)
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(test_controller_timing_profiler
+    test/test_controller_timing_profiler.cpp)
+  if(TARGET test_controller_timing_profiler)
+    target_include_directories(test_controller_timing_profiler PRIVATE include)
+    ament_target_dependencies(test_controller_timing_profiler
+      rtc_controller_interface rtc_base rtc_urdf_bridge)
+    target_link_libraries(test_controller_timing_profiler yaml-cpp)
+  endif()
+endif()
+
 ament_package()

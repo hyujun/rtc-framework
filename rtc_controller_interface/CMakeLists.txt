@@ -76,6 +76,15 @@ if(BUILD_TESTING)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(test_controller_registry test/test_controller_registry.cpp)
+  target_link_libraries(test_controller_registry rtc_controller_interface)
+
+  ament_add_gtest(test_rt_controller_interface test/test_rt_controller_interface.cpp)
+  target_link_libraries(test_rt_controller_interface rtc_controller_interface)
+  ament_target_dependencies(test_rt_controller_interface rtc_urdf_bridge)
 endif()
 
 ament_package()
