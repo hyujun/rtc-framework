@@ -57,10 +57,19 @@ log_executor (Core 4, SCHED_OTHER nice -5) <- ROS2 Executor
 
 aux_executor (Core 5, SCHED_OTHER) <- ROS2 Executor
   +- estop_pub_
+
+mpc_main (Phase 5, Core 4, SCHED_FIFO prio 60) <- std::jthread, 20Hz
+  |- ReadState() <- rtc::SeqLock<MPCStateSnapshot>::Load()
+  |- Solve() <- MockMPCThread (placeholder; Aligator는 후속 패키지)
+  +- PublishSolution() -> rtc::mpc::TripleBuffer (zero-copy publish)
+
+mpc_worker_0..1 (Phase 5, 12/16-core only, SCHED_FIFO prio 55)
+  +- 솔버가 spawn한 parallel rollout / linear solve 작업 수행
 ```
 
 > 위 코어 배치는 6-core 기준입니다. 4/8/10/12/16-core 시스템은 자동으로 다른 레이아웃을 선택합니다.
 > `SelectThreadConfigs()` 함수가 `GetPhysicalCpuCount()`로 물리 코어 수를 감지하여 적절한 설정을 반환합니다.
+> Phase 5에서 `SystemThreadConfigs.mpc` (`MpcThreadConfig`)가 추가되어 `SelectThreadConfigs()`가 tier별 `kMpcConfig{4,6,8,10,12,16}Core`를 함께 반환합니다.
 
 ---
 
@@ -72,20 +81,24 @@ aux_executor (Core 5, SCHED_OTHER) <- ROS2 Executor
 
 > `udp_recv`가 Core 5에 배치되어 `sensor_io`(Core 3)가 전용 코어를 확보합니다.
 > UDP 버스트 시에도 `JointStateCallback` 지연이 발생하지 않습니다.
+> Phase 5: `mpc_main`이 `logger`와 Core 4를 공유하지만 `SCHED_FIFO 60`이므로 `logger`(SCHED_OTHER)는 자동으로 양보됩니다.
 
 | Core | 용도 | Scheduler | Priority/Nice | 스레드 이름 | 비고 |
 |------|------|-----------|---------------|------------|------|
-| 0-1 | OS / DDS / NIC IRQ | SCHED_OTHER | - | - | `isolcpus=2-5`로 격리 |
+| 0-1 | OS / DDS / NIC IRQ | SCHED_OTHER | - | - | cset shield로 동적 격리 |
 | 2 | RT Control | SCHED_FIFO | 90 | `rt_control` | 500Hz + 50Hz E-STOP |
 | 3 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` | joint_state, target, hand 콜백 |
 | 4 | Logging | SCHED_OTHER | nice -5 | `logger` | 100Hz CSV drain |
+| 4 | **MPC main** (Phase 5) | **SCHED_FIFO** | **60** | `mpc_main` | **20Hz solve, logger 코어 공유** |
 | 5 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` | SPSC drain -> publish |
 | 5 | UDP recv | SCHED_FIFO | 65 | `udp_recv` | Hand UDP 수신 |
 | 5 | Aux | SCHED_OTHER | nice 0 | `aux` | E-STOP publisher |
 
-**isolcpus 설정**: `isolcpus=2-5 nohz_full=2-5 rcu_nocbs=2-5`
+**GRUB 설정**: `nohz_full=2-5 rcu_nocbs=2-5` (`isolcpus`는 사용하지 않고 `cset shield`로 대체)
 
 ### 4-Core 시스템 (폴백)
+
+> Phase 5: 4코어에서 MPC는 `SCHED_OTHER nice=-5`로 강등됩니다 (RT로 돌릴 여유 부족 — 10 Hz로 자동 감속 권장).
 
 | Core | 용도 | Scheduler | Priority/Nice | 스레드 이름 |
 |------|------|-----------|---------------|------------|
@@ -96,26 +109,30 @@ aux_executor (Core 5, SCHED_OTHER) <- ROS2 Executor
 | 3 | Logging | SCHED_OTHER | nice -5 | `logger` |
 | 3 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
 | 3 | Aux | SCHED_OTHER | nice 0 | `aux` |
+| 3 | **MPC main** (Phase 5) | **SCHED_OTHER** | **nice -5** | `mpc_main` (degraded mode) |
 
-**isolcpus 설정**: `isolcpus=1-3 nohz_full=1-3 rcu_nocbs=1-3`
+**GRUB 설정**: `nohz_full=1-3 rcu_nocbs=1-3`
 
-### 8-Core 시스템
+### 8-Core 시스템 (Phase 5: MPC dedicated)
+
+> Phase 5에서 Core 4가 MPC main 전용으로 배정되어 `udp_recv` 4→5, `logger` 5→6, `aux`/`publish` 6→7로 시프트되었습니다.
 
 | Core | 용도 | Scheduler | Priority/Nice | 스레드 이름 |
 |------|------|-----------|---------------|------------|
 | 0-1 | OS / DDS / NIC IRQ | SCHED_OTHER | - | - |
 | 2 | RT Control | SCHED_FIFO | 90 | `rt_control` |
 | 3 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` |
-| 4 | UDP recv | SCHED_FIFO | 65 | `udp_recv` |
-| 5 | Logging | SCHED_OTHER | nice -5 | `logger` |
-| 6 | Aux | SCHED_OTHER | nice 0 | `aux` |
-| 6 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
+| 4 | **MPC main** (Phase 5) | **SCHED_FIFO** | **60** | `mpc_main` (dedicated) |
+| 5 | UDP recv (shifted from 4) | SCHED_FIFO | 65 | `udp_recv` |
+| 6 | Logging (shifted from 5) | SCHED_OTHER | nice -5 | `logger` |
+| 7 | Aux (shifted from 6) | SCHED_OTHER | nice 0 | `aux` |
+| 7 | Publish offload (shifted from 6) | SCHED_OTHER | nice -3 | `rt_publish` |
 
-**isolcpus 설정**: `isolcpus=2-6 nohz_full=2-6 rcu_nocbs=2-6`
+**GRUB 설정**: `nohz_full=2-7 rcu_nocbs=2-7`
 
 ### 10-Core 시스템 (cset shield)
 
-> cset shield가 Core 2-6을 "user" cpuset으로 격리합니다. rt_controller는 "system" cpuset (Core 0-1, 7-9)에서 실행됩니다.
+> cset shield가 Core 2-6을 "user" cpuset으로 격리합니다. rt_controller는 "system" cpuset (Core 0-1, 7-9)에서 실행됩니다. Phase 5: MPC도 Core 9를 system cpuset 내에서 공유 (10코어는 dedicated 코어를 확보할 여유 없음 — 12+코어 권장).
 
 | Core | 용도 | Scheduler | Priority/Nice | 스레드 이름 |
 |------|------|-----------|---------------|------------|
@@ -127,10 +144,12 @@ aux_executor (Core 5, SCHED_OTHER) <- ROS2 Executor
 | 9 | Logging | SCHED_OTHER | nice -5 | `logger` |
 | 9 | Aux | SCHED_OTHER | nice 0 | `aux` |
 | 9 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
+| 9 | **MPC main** (Phase 5) | **SCHED_FIFO** | **60** | `mpc_main` (shared) |
 
-### 12-Core 시스템 (cset shield)
+### 12-Core 시스템 (cset shield, Phase 5: MPC + 1 worker)
 
-> cset shield Core 2-6. rt_controller는 Core 0-1, 7-11에서 실행. 각 스레드 전용 코어.
+> cset shield Core 2-6. rt_controller는 Core 0-1, 7-11에서 실행.
+> Phase 5에서 Core 9–10이 MPC 전용으로 배정되고 `udp_recv`/`logger`/`aux`/`publish`가 Core 11로 통합되었습니다.
 
 | Core | 용도 | Scheduler | Priority/Nice | 스레드 이름 |
 |------|------|-----------|---------------|------------|
@@ -138,14 +157,17 @@ aux_executor (Core 5, SCHED_OTHER) <- ROS2 Executor
 | 2-6 | cset shield "user" | - | - | 예약 |
 | 7 | RT Control | SCHED_FIFO | 90 | `rt_control` |
 | 8 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` |
-| 9 | UDP recv | SCHED_FIFO | 65 | `udp_recv` |
-| 10 | Logging | SCHED_OTHER | nice -5 | `logger` |
+| 9 | **MPC main** (Phase 5) | **SCHED_FIFO** | **60** | `mpc_main` (dedicated) |
+| 10 | **MPC worker 0** (Phase 5) | **SCHED_FIFO** | **55** | `mpc_worker_0` |
+| 11 | UDP recv (shifted from 9) | SCHED_FIFO | 65 | `udp_recv` |
+| 11 | Logging (shifted from 10) | SCHED_OTHER | nice -5 | `logger` |
 | 11 | Aux | SCHED_OTHER | nice 0 | `aux` |
 | 11 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
 
-### 16-Core 시스템 (cset shield)
+### 16-Core 시스템 (cset shield, Phase 5: MPC + 2 workers)
 
 > cset shield Core 4-8. rt_controller는 Core 0-3, 9+에서 실행.
+> Phase 5에서 Core 9–11이 MPC main+workers 전용으로 배정되어 `udp_recv` 9→12, `logger` 10→13, `aux`/`publish` 11→14, MuJoCo `sim_thread_core` 12→15로 시프트되었습니다.
 
 | Core | 용도 | Scheduler | Priority/Nice | 스레드 이름 |
 |------|------|-----------|---------------|------------|
@@ -153,31 +175,41 @@ aux_executor (Core 5, SCHED_OTHER) <- ROS2 Executor
 | 2 | RT Control | SCHED_FIFO | 90 | `rt_control` |
 | 3 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` |
 | 4-8 | cset shield "user" | - | - | 예약 |
-| 9 | UDP recv | SCHED_FIFO | 65 | `udp_recv` |
-| 10 | Logging | SCHED_OTHER | nice -5 | `logger` |
-| 11 | Aux | SCHED_OTHER | nice 0 | `aux` |
-| 11 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
+| 9 | **MPC main** (Phase 5) | **SCHED_FIFO** | **60** | `mpc_main` (dedicated) |
+| 10 | **MPC worker 0** (Phase 5) | **SCHED_FIFO** | **55** | `mpc_worker_0` |
+| 11 | **MPC worker 1** (Phase 5) | **SCHED_FIFO** | **55** | `mpc_worker_1` |
+| 12 | UDP recv (shifted from 9) | SCHED_FIFO | 65 | `udp_recv` |
+| 13 | Logging (shifted from 10) | SCHED_OTHER | nice -5 | `logger` |
+| 14 | Aux (shifted from 11) | SCHED_OTHER | nice 0 | `aux` |
+| 14 | Publish offload (shifted from 11) | SCHED_OTHER | nice -3 | `rt_publish` |
+| 15 | MuJoCo sim (shifted from 12) | SCHED_OTHER | - | sim_thread (Tier 3) |
 
 ### 우선순위 계층
 
 ```
-SCHED_FIFO prio 90 (rt_control)      <- 최고 우선순위
+SCHED_FIFO prio 90 (rt_control)            <- 최고 우선순위
            |
-SCHED_FIFO prio 70 (sensor_io)       <- 센서 데이터 수신
+SCHED_FIFO prio 70 (sensor_io)             <- 센서 데이터 수신
            |
-SCHED_FIFO prio 65 (udp_recv)        <- Hand UDP 수신
+SCHED_FIFO prio 65 (udp_recv)              <- Hand UDP 수신
            |
-SCHED_OTHER nice -5 (logger)         <- I/O bound
+SCHED_FIFO prio 60 (mpc_main)              <- Phase 5: MPC solve (sensor 미만)
            |
-SCHED_OTHER nice -3 (rt_publish)     <- publish 오프로드
+SCHED_FIFO prio 55 (mpc_worker_0..1)       <- Phase 5: MPC parallel solve
            |
-SCHED_OTHER nice 0  (aux)            <- 보조 작업
+SCHED_OTHER nice -5 (logger)               <- I/O bound
+           |
+SCHED_OTHER nice -3 (rt_publish)           <- publish 오프로드
+           |
+SCHED_OTHER nice 0  (aux)                  <- 보조 작업
 ```
 
 **설계 원칙**:
 - **RT 작업**: SCHED_FIFO (선점형, 우선순위 고정)
 - **I/O 작업**: SCHED_OTHER (CFS, nice value로 조정)
 - **우선순위 간격**: 20 (prio 90 vs 70)으로 충분한 여유 확보
+- **Phase 5 MPC 우선순위 규칙**: `mpc_main < sensor_io` 가 강제됨 (`ValidateSystemThreadConfigs`에서 검증). 긴 MPC solve가 sensor callback latency를 늘리지 않도록 보장.
+- **Phase 5 worker 규칙**: `mpc_worker_*.priority ≤ mpc_main.priority` 강제. parallel solver가 main loop를 역preempt하는 것을 방지.
 
 ---
 
