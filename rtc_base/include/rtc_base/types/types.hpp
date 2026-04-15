@@ -20,12 +20,28 @@ namespace rtc {
 inline constexpr std::size_t kCacheLineSize = 64;
 
 // ── Compile-time constants ─────────────────────────────────────────────────────
-inline constexpr int kNumRobotJoints = 6;  // default channel count (UR5e); runtime count from YAML
-inline constexpr int kMaxRobotDOF            = 12;   // max joints for generic robots
-inline constexpr int kMaxDeviceChannels      = 64;   // max channels for generic devices
-inline constexpr int kMaxSensorChannels      = 128;  // max sensor data channels
-inline constexpr int kMaxInferenceValues     = 64;   // max inference output values
-inline constexpr int kTaskSpaceDim           = 6;    // task-space DOF (position + orientation)
+//
+// Naming convention (read carefully — the distinction is load-bearing for
+// the framework's robot-agnostic property):
+//
+//   kNum*  : default value used when YAML omits the field. Per-device count
+//            is set at runtime via DeviceState::num_channels (or analogous).
+//            Code MUST NOT assume the actual count equals the kNum* default.
+//   kMax*  : compile-time UPPER-BOUND capacity. Sized so that std::array
+//            members of DeviceState/ControllerState etc. stay trivially
+//            copyable (SeqLock-compatible) and avoid any heap allocation on
+//            the RT path. New robots/devices stay within these bounds; if
+//            you need to exceed one, raise the constant — never branch on it.
+//
+// kNumRobotJoints == 6 reflects the most common manipulator class (UR5/UR10/
+// Franka-like 6/7-DOF). It is a default, not an assumption — algorithms in
+// rtc_* packages must operate on runtime num_channels.
+inline constexpr int kNumRobotJoints         = 6;    // default channel count; actual DOF from YAML (num_channels)
+inline constexpr int kMaxRobotDOF            = 12;   // upper-bound DOF (covers 7-DOF arms + redundancy)
+inline constexpr int kMaxDeviceChannels      = 64;   // upper-bound per DeviceState array
+inline constexpr int kMaxSensorChannels      = 128;  // upper-bound sensor channels per device
+inline constexpr int kMaxInferenceValues     = 64;   // upper-bound ONNX output values per device
+inline constexpr int kTaskSpaceDim           = 6;    // SE(3) DOF — geometry constant, not configurable
 
 // Default fallback limits (used when device config is unavailable)
 inline constexpr double kDefaultMaxJointVelocity = 2.0;   // rad/s

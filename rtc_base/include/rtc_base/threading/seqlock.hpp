@@ -9,6 +9,14 @@
 //
 // Requirements: T must be trivially copyable.
 //
+// Convergence: Under the single-writer invariant, each Store() consists of
+// exactly two atomic stores plus one memcpy(T). A reader's retry window is
+// therefore bounded by the longest Store() observed across cores. In
+// practice, with cache-line-aligned data and modern x86_64/ARM64 memory
+// systems, Load() converges in 1 iteration and worst-case in 2-3. The
+// invariant "single writer + bounded write duration" must hold at the
+// design level — there is no built-in retry cap.
+//
 // Usage:
 //   SeqLock<MyData> sl;
 //   // Writer (single thread, e.g. EventLoop):

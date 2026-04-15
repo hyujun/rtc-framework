@@ -55,14 +55,19 @@ rtc_base/
 
 #### 주요 상수
 
-| 상수 | 값 | 설명 |
-|------|---|------|
-| `kCacheLineSize` | 64 (또는 HW 값) | 캐시 라인 크기 -- 모든 threading 프리미티브에서 공유 |
-| `kNumRobotJoints` | 6 | UR5e 기본 관절 수 |
-| `kMaxRobotDOF` | 12 | 최대 로봇 자유도 |
-| `kMaxDeviceChannels` | 64 | 일반화 디바이스 최대 채널 수 |
-| `kMaxSensorChannels` | 128 | 최대 센서 데이터 채널 수 |
-| `kMaxInferenceValues` | 64 | 최대 추론 출력 크기 |
+> **명명 규약 (capacity vs default)** — 프레임워크의 robot-agnostic 성질을 유지하기 위한 핵심 구분입니다.
+>
+> - `kNum*` : YAML이 해당 필드를 생략했을 때 사용하는 **기본값**. 실제 채널 수는 런타임에 `DeviceState::num_channels` (또는 유사 필드)로 결정됩니다. 코드는 실제 카운트가 `kNum*` 기본값과 같다고 가정해서는 안 됩니다.
+> - `kMax*` : 컴파일 타임 **상한 용량**. `DeviceState`/`ControllerState` 등의 `std::array` 멤버가 trivially copyable (SeqLock 호환) 상태를 유지하고 RT 경로에서 힙 할당을 회피하도록 정해진 크기. 새로운 로봇/디바이스는 이 상한 안에 들어와야 하며, 초과해야 한다면 상한 자체를 올리되 코드에서 분기는 추가하지 마세요.
+
+| 상수 | 값 | 분류 | 설명 |
+|------|---|------|------|
+| `kCacheLineSize` | 64 | HW const | 캐시 라인 크기 -- 모든 threading 프리미티브에서 공유 |
+| `kNumRobotJoints` | 6 | default | YAML 미설정 시 기본 채널 수 (UR5/Franka 등 6/7-DOF 매니퓰레이터 가정). 알고리즘은 런타임 `num_channels` 사용 필수 |
+| `kMaxRobotDOF` | 12 | capacity | DOF 상한 (7-DOF 암 + 리던던시까지 커버) |
+| `kMaxDeviceChannels` | 64 | capacity | DeviceState 배열 상한 |
+| `kMaxSensorChannels` | 128 | capacity | 디바이스 당 센서 채널 상한 |
+| `kMaxInferenceValues` | 64 | capacity | ONNX 출력 값 상한 |
 | `kNumHandMotors` | 10 | 핸드 모터 수 |
 | `kNumHandJoints` | 10 | 레거시 별칭 (`kNumHandMotors`와 동일) |
 | `kDefaultNumFingertips` | 4 | 기본 핑거팁 수 (YAML 미설정 시) |

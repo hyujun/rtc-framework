@@ -237,6 +237,33 @@ while (!stop_requested):
 | `recv_count_` | `relaxed` | `relaxed` | 통계 |
 | `send_count_` | `relaxed` | `relaxed` | 통계 (`Send()` 성공 시 증가) |
 
+#### 호출 컨텍스트 (RT vs non-RT)
+
+`Transceiver`의 메서드는 RT-안전성 보장이 다릅니다. 호출 컨텍스트에 맞게 사용해야 합니다.
+
+| 메서드 | RT-safe? | 사유 |
+|--------|----------|------|
+| `Send(pkt)` | ✅ Yes | 스택 memcpy + 단일 `sendto()` syscall, `noexcept`. 500 Hz 루프에서 직접 호출 가능 |
+| `IsRunning()` / `recv_count()` / `send_count()` | ✅ Yes | atomic load만 수행 |
+| `GetLatestState()` | ❌ **No** | `std::mutex` 획득 — non-RT 컨텍스트(진단 스레드, ROS2 콜백)에서만 호출 |
+| `StartRecv()` / `Stop()` / `SetCallback()` | ❌ No | 초기화/셧다운 경로 (jthread 생성·조인) |
+
+RT 루프에서 디코딩된 상태가 필요하면 `GetLatestState()`를 직접 호출하지 말고, 비-RT 스레드(예: 센서 callback group)에서 한 번 읽어 `SeqLock<State>` 또는 SPSC 큐로 RT 루프에 전달하는 패턴을 사용하세요.
+
+---
+
+## 테스트
+
+| 테스트 파일 | 프레임워크 | 다루는 항목 |
+|------------|-----------|------------|
+| `test/test_udp_loopback.cpp` | GTest | UdpSocket bind/connect 라운드 트립, `SO_RCVTIMEO` 만료, RAII fd 닫힘, UdpTransport bind+connect 수명 (5 케이스) |
+| `test/test_transceiver.cpp` | GTest | `Transceiver<FakeCodec>` 기동·종료, 외부 송신 디코딩, 콜백 호출, 짧은 데이터그램 무시, Send 경로 외부 수신자 도달 (4 케이스) |
+| `test/fake_codec.hpp` | -- | `PacketCodec` concept을 만족하는 최소 코덱 (테스트 하니스용) |
+
+```bash
+colcon test --packages-select rtc_communication --event-handlers console_direct+
+```
+
 ---
 
 ## 의존성
@@ -247,6 +274,7 @@ while (!stop_requested):
 | `rtc_base` | 런타임 | `ThreadConfig`, `ApplyThreadConfig` (스레드 설정) |
 | `ament_lint_auto` | 테스트 | 린트 자동 검사 |
 | `ament_lint_common` | 테스트 | 공통 린트 규칙 |
+| `ament_cmake_gtest` | 테스트 | UDP 루프백 / Transceiver 통합 테스트 |
 
 **시스템 의존성:** POSIX 소켓 API (`sys/socket.h`, `arpa/inet.h`, `netinet/in.h`, `unistd.h`)
 

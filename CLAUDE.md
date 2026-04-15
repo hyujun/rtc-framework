@@ -785,13 +785,14 @@ colcon test --packages-select rtc_controllers --ctest-args -R test_grasp_control
 colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 ```
 
-Test files by package (150 total):
+Test files by package (159 total):
 
 | Package | Tests | Framework |
 |---------|-------|-----------|
 | `ur5e_bt_coordinator` | 14 C++ tests (`test/test_*.cpp`) | GTest |
 | `rtc_tsid` | 17 C++ tests (QP solver, tasks, constraints, formulations, performance, Phase 3 integration) | GTest |
 | `rtc_base` | 19 C++ tests (SeqLock, SPSC buffers, Bessel/Kalman filters, session dir) | GTest |
+| `rtc_communication` | 9 C++ tests (UDP loopback bind/connect/timeout/RAII + Transceiver lifecycle/decode/callback/Send via FakeCodec) | GTest |
 | `ur5e_bringup` | 23 C++ tests (virtual_tcp, shared_config, demo_wbc_controller FSM/integration/output + Phase 4B sensor parsing + closure/hold/retreat/release transitions) | GTest |
 | `rtc_mujoco_sim` | 77 C++ tests (pure parse helpers, simulator init/validation, solver XML-priority, command/state I/O, Start/Stop lifecycle, atomic runtime controls, state/sensor callback data flow) | GTest |
 | `rtc_controllers` | 6 C++ tests (trajectory + grasp) | GTest |
