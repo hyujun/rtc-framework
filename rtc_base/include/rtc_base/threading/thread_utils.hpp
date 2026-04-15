@@ -9,8 +9,10 @@
 #include <unistd.h>
 
 #include <algorithm> // std::min_element, std::max_element
+#include <array>    // std::array (NamedConfig table in ValidateSystemThreadConfigs)
 #include <cerrno>   // errno
 #include <cmath>    // std::sqrt
+#include <cstdint>  // std::uint8_t (ThreadHealthFlag underlying type)
 #include <cstdio>   // fopen, fclose, fscanf
 #include <cstring>
 #include <map>     // std::map

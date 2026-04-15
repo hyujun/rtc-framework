@@ -76,6 +76,14 @@ class Transceiver {
 
   void SetCallback(StateCallback cb) noexcept { callback_ = std::move(cb); }
 
+  // Snapshot of the most recently decoded State.
+  //
+  // @note **Not RT-safe.** Acquires a std::mutex shared with the recv thread
+  // and may block briefly while a decode completes. Intended for non-RT
+  // consumers (controllers running off of a SeqLock-published snapshot,
+  // diagnostic threads, ROS2 callback groups). RT-path callers must obtain
+  // the state through an upstream non-blocking primitive (SeqLock<T>, SPSC
+  // queue, atomic snapshot) — never call this from a SCHED_FIFO loop.
   [[nodiscard]] State GetLatestState() const {
     std::lock_guard lock(data_mutex_);
     return latest_state_;
@@ -92,6 +100,11 @@ class Transceiver {
   // -- Send path -------------------------------------------------------------
 
   // Sends a pre-built packet. Allocation-free.
+  //
+  // @note **RT-safe.** Performs one stack-buffer memcpy + a single sendto()
+  // syscall, no locks taken, noexcept. Suitable for the 500 Hz RT loop.
+  // The caller owns the timing budget — sendto() may still block if the
+  // kernel send buffer is full and the socket is configured blocking.
   [[nodiscard]] bool Send(const SendPacket& pkt) noexcept {
     if (!transport_) return false;
     std::array<uint8_t, sizeof(SendPacket)> buf{};
@@ -113,7 +126,7 @@ class Transceiver {
 
  private:
   void RecvLoop(std::stop_token stop_token) {
-    ApplyThreadConfig(thread_cfg_);
+    (void)ApplyThreadConfig(thread_cfg_);  // best-effort; non-RT users may lack rtprio
 
     // Buffer slightly larger than the recv packet to detect oversized datagrams.
     std::array<uint8_t, sizeof(RecvPacket) + 64> buffer{};
