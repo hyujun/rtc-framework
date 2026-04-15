@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>rtc_mujoco_sim</name>
-  <version>5.17.0</version>
+  <version>5.20.0</version>
   <description>
     MuJoCo 3.x physics simulation with interactive GLFW viewer.
     Multi-group support (robot physics + fake LPF echo-back), configurable

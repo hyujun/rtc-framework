@@ -13,7 +13,9 @@
 #include <cstring>
 #include <functional>
 #include <mutex>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -220,6 +222,21 @@ class MuJoCoSimulator {
   MuJoCoSimulator& operator=(const MuJoCoSimulator&) = delete;
   MuJoCoSimulator(MuJoCoSimulator&&)                 = delete;
   MuJoCoSimulator& operator=(MuJoCoSimulator&&)      = delete;
+
+  // ── Pure parse helpers (testable without MuJoCo init) ────────────────────
+  // String → MuJoCo enum conversion. Unknown input returns the documented
+  // default (mjSOL_NEWTON / mjCONE_PYRAMIDAL / mjJAC_AUTO / mjINT_EULER).
+  [[nodiscard]] static int SolverNameToEnum(std::string_view name) noexcept;
+  [[nodiscard]] static int ConeNameToEnum(std::string_view name) noexcept;
+  [[nodiscard]] static int JacobianNameToEnum(std::string_view name) noexcept;
+  [[nodiscard]] static int IntegratorNameToEnum(std::string_view name) noexcept;
+
+  // In-place LPF step: state[i] += alpha * (target[i] - state[i]).
+  // Processes min(state.size(), target.size()) elements; no-op if either empty.
+  // NaN target values are skipped (state unchanged for that index).
+  static void ApplyFakeLpfStep(std::vector<double>& state,
+                               const std::vector<double>& target,
+                               double alpha) noexcept;
 
   // Load MJCF model and resolve joint indices.  Must be called before Start().
   [[nodiscard]] bool Initialize() noexcept;

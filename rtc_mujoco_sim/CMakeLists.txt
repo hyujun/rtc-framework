@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(rtc_mujoco_sim VERSION 5.17.0 LANGUAGES CXX)
+project(rtc_mujoco_sim VERSION 5.20.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -66,14 +66,41 @@ endif()
 if(mujoco_FOUND)
   message(STATUS "MuJoCo found — building mujoco_simulator_node")
 
-  add_executable(mujoco_simulator_node
-    src/mujoco_simulator_node.cpp
+  # Core simulator logic as STATIC library so tests can link against it.
+  add_library(mujoco_simulator_lib STATIC
     src/mujoco_simulator.cpp
     src/mujoco_sim_loop.cpp
     src/ros2_resource_provider.cpp
     src/viewer/viewer_loop.cpp
     src/viewer/viewer_callbacks.cpp
     src/viewer/viewer_overlays.cpp
+  )
+  target_include_directories(mujoco_simulator_lib PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+  )
+  target_include_directories(mujoco_simulator_lib PRIVATE src)
+  set_property(TARGET mujoco_simulator_lib PROPERTY POSITION_INDEPENDENT_CODE ON)
+  ament_target_dependencies(mujoco_simulator_lib
+    rclcpp
+    ament_index_cpp
+    rtc_base
+  )
+  target_link_libraries(mujoco_simulator_lib
+    mujoco::mujoco
+    tinyxml2::tinyxml2
+  )
+
+  if(glfw3_FOUND)
+    message(STATUS "GLFW found — MuJoCo viewer enabled")
+    target_compile_definitions(mujoco_simulator_lib PRIVATE MUJOCO_HAVE_GLFW)
+    target_link_libraries(mujoco_simulator_lib glfw)
+  else()
+    message(STATUS "GLFW not found — MuJoCo viewer disabled (headless only)")
+  endif()
+
+  add_executable(mujoco_simulator_node
+    src/mujoco_simulator_node.cpp
   )
   target_include_directories(mujoco_simulator_node PRIVATE include src)
   ament_target_dependencies(mujoco_simulator_node
@@ -84,19 +111,40 @@ if(mujoco_FOUND)
     rtc_msgs
     rtc_base
   )
-  target_link_libraries(mujoco_simulator_node mujoco::mujoco tinyxml2::tinyxml2)
-
-  if(glfw3_FOUND)
-    message(STATUS "GLFW found — MuJoCo viewer enabled")
-    target_compile_definitions(mujoco_simulator_node PRIVATE MUJOCO_HAVE_GLFW)
-    target_link_libraries(mujoco_simulator_node glfw)
-  else()
-    message(STATUS "GLFW not found — MuJoCo viewer disabled (headless only)")
-  endif()
+  target_link_libraries(mujoco_simulator_node
+    mujoco_simulator_lib
+  )
 
   install(TARGETS mujoco_simulator_node
     DESTINATION lib/${PROJECT_NAME}
   )
+
+  # ── Tests ────────────────────────────────────────────────────────────────
+  if(BUILD_TESTING)
+    find_package(ament_cmake_gtest REQUIRED)
+    set(MJCF_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/minimal.xml")
+
+    # Phase 1: pure helpers (no MJCF fixture needed)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_pure_helpers.cpp")
+      ament_add_gtest(test_pure_helpers test/test_pure_helpers.cpp)
+      target_link_libraries(test_pure_helpers mujoco_simulator_lib)
+    endif()
+
+    # Phase 2 + 3: MJCF-fixture-based tests
+    foreach(t test_simulator_init
+              test_solver_config
+              test_command_state_io
+              test_lifecycle
+              test_runtime_controls
+              test_data_flow)
+      if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/${t}.cpp")
+        ament_add_gtest(${t} test/${t}.cpp)
+        target_link_libraries(${t} mujoco_simulator_lib)
+        target_compile_definitions(${t} PRIVATE
+          MINIMAL_MJCF_PATH="${MJCF_FIXTURE}")
+      endif()
+    endforeach()
+  endif()
 else()
   message(WARNING
     "MuJoCo not found — mujoco_simulator_node will NOT be built.\n"

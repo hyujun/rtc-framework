@@ -688,10 +688,36 @@ colcon build --packages-select rtc_mujoco_sim --symlink-install \
 
 ---
 
+## Testing
+
+```bash
+./build.sh -p rtc_mujoco_sim sim
+colcon test --packages-select rtc_mujoco_sim --event-handlers console_direct+
+colcon test-result --verbose
+```
+
+77 GTest 케이스 (7 파일):
+
+| Test | Count | Scope |
+|------|-------|-------|
+| `test_pure_helpers` | 15 | `SolverNameToEnum`/`ConeNameToEnum`/`JacobianNameToEnum`/`IntegratorNameToEnum`/`ApplyFakeLpfStep` (순수 로직) |
+| `test_simulator_init` | 15 | `Initialize` happy/실패 경로, joint/sensor 디스커버리, 검증 |
+| `test_solver_config` | 9 | XML `<option>`/`<flag>` 우선순위, YAML fallback, ContactOverride |
+| `test_command_state_io` | 12 | `SetCommand`/`SetControlMode`/`SetFakeTarget` 정합성 (스레드 미사용) |
+| `test_lifecycle` | 10 | Start/Stop/Pause/Resume/Reset/StepOnce/SyncTimeout |
+| `test_runtime_controls` | 11 | atomic setter/getter, 클램핑, gravity lock |
+| `test_data_flow` | 5 | 상태/센서 콜백 firing, StepCount 단조, RTF |
+
+Fixture: [test/fixtures/minimal.xml](test/fixtures/minimal.xml) (2-hinge 체인 + 2 센서).
+GLFW 뷰어 통합 테스트는 헤드리스 CI 제약으로 제외.
+
+---
+
 ## 변경 내역
 
 | 버전 | 변경 내용 |
 |------|----------|
+| **v5.20.0** | 단위 테스트 스위트 추가 (77 GTest 케이스, 7 파일). `SolverNameToEnum`/`ConeNameToEnum`/`JacobianNameToEnum`/`IntegratorNameToEnum`/`ApplyFakeLpfStep`를 public static helper로 추출. 소스를 `mujoco_simulator_lib` 정적 라이브러리로 분리. |
 | **v5.19.0** | MuJoCo 센서 publish 지원 추가. 그룹별 `sensor_topic` + `sensor_names` YAML 설정으로 XML 센서 데이터를 `rtc_msgs/SimSensorState`로 매 physics step 퍼블리시. 로봇 독립적(robot-agnostic) 구현. |
 | **v5.18.0** | `n_substeps` 파라미터 추가 — 제어 주기당 `mj_step` 호출 횟수 제어. Physics Load 측정 및 뷰어 상태 오버레이에 Substeps/Physics Load 표시 추가. |
 | **v5.17.0** | `SimMode` enum (`free_run`/`sync_step`) 제거 → 동기식 단일 루프로 통합. rt_controller CV 기반 wakeup (`use_sim_time_sync`) 지원. `publish_decimation` 파라미터 제거. |

@@ -14,6 +14,47 @@
 
 namespace rtc {
 
+// ── Pure parse helpers ─────────────────────────────────────────────────────────
+
+int MuJoCoSimulator::SolverNameToEnum(std::string_view name) noexcept {
+  if (name == "PGS")    return mjSOL_PGS;
+  if (name == "CG")     return mjSOL_CG;
+  if (name == "Newton") return mjSOL_NEWTON;
+  return mjSOL_NEWTON;
+}
+
+int MuJoCoSimulator::ConeNameToEnum(std::string_view name) noexcept {
+  if (name == "elliptic")  return mjCONE_ELLIPTIC;
+  if (name == "pyramidal") return mjCONE_PYRAMIDAL;
+  return mjCONE_PYRAMIDAL;
+}
+
+int MuJoCoSimulator::JacobianNameToEnum(std::string_view name) noexcept {
+  if (name == "dense")  return mjJAC_DENSE;
+  if (name == "sparse") return mjJAC_SPARSE;
+  if (name == "auto")   return mjJAC_AUTO;
+  return mjJAC_AUTO;
+}
+
+int MuJoCoSimulator::IntegratorNameToEnum(std::string_view name) noexcept {
+  if (name == "Euler")        return mjINT_EULER;
+  if (name == "RK4")          return mjINT_RK4;
+  if (name == "implicit")     return mjINT_IMPLICIT;
+  if (name == "implicitfast") return mjINT_IMPLICITFAST;
+  return mjINT_EULER;
+}
+
+void MuJoCoSimulator::ApplyFakeLpfStep(std::vector<double>& state,
+                                        const std::vector<double>& target,
+                                        double alpha) noexcept {
+  const auto n = std::min(state.size(), target.size());
+  for (std::size_t i = 0; i < n; ++i) {
+    const double t = target[i];
+    if (std::isnan(t)) continue;
+    state[i] += alpha * (t - state[i]);
+  }
+}
+
 // ── Constructor / Destructor ───────────────────────────────────────────────────
 
 MuJoCoSimulator::MuJoCoSimulator(Config cfg) noexcept
@@ -701,52 +742,26 @@ void MuJoCoSimulator::ApplySolverConfig() noexcept {
     }
   }
 
-  // ── Helper: string → MuJoCo enum ─────────────────────────────────────────
-  auto parse_solver = [](const std::string& s) -> int {
-    if (s == "PGS")    return mjSOL_PGS;
-    if (s == "CG")     return mjSOL_CG;
-    if (s == "Newton")  return mjSOL_NEWTON;
-    return mjSOL_NEWTON;
-  };
-  auto parse_cone = [](const std::string& s) -> int {
-    if (s == "elliptic")  return mjCONE_ELLIPTIC;
-    if (s == "pyramidal") return mjCONE_PYRAMIDAL;
-    return mjCONE_PYRAMIDAL;
-  };
-  auto parse_jacobian = [](const std::string& s) -> int {
-    if (s == "dense")  return mjJAC_DENSE;
-    if (s == "sparse") return mjJAC_SPARSE;
-    if (s == "auto")   return mjJAC_AUTO;
-    return mjJAC_AUTO;
-  };
-  auto parse_integrator = [](const std::string& s) -> int {
-    if (s == "Euler")        return mjINT_EULER;
-    if (s == "RK4")          return mjINT_RK4;
-    if (s == "implicit")     return mjINT_IMPLICIT;
-    if (s == "implicitfast") return mjINT_IMPLICITFAST;
-    return mjINT_EULER;
-  };
-
   // ── Apply YAML values where XML did not set them ──────────────────────────
   // For each parameter: if the attribute name is NOT in xml_attrs, apply YAML.
 
   if (!xml_attrs.count("solver")) {
-    const int v = parse_solver(sc.solver);
+    const int v = SolverNameToEnum(sc.solver);
     model_->opt.solver = v;
     solver_type_.store(v, std::memory_order_relaxed);
   }
   if (!xml_attrs.count("cone")) {
-    const int v = parse_cone(sc.cone);
+    const int v = ConeNameToEnum(sc.cone);
     model_->opt.cone = v;
     solver_cone_.store(v, std::memory_order_relaxed);
   }
   if (!xml_attrs.count("jacobian")) {
-    const int v = parse_jacobian(sc.jacobian);
+    const int v = JacobianNameToEnum(sc.jacobian);
     model_->opt.jacobian = v;
     solver_jacobian_.store(v, std::memory_order_relaxed);
   }
   if (!xml_attrs.count("integrator")) {
-    const int v = parse_integrator(sc.integrator);
+    const int v = IntegratorNameToEnum(sc.integrator);
     model_->opt.integrator = static_cast<mjtIntegrator>(v);
     solver_integrator_.store(v, std::memory_order_relaxed);
   }
@@ -1078,10 +1093,7 @@ void MuJoCoSimulator::AdvanceFakeLPF(std::size_t group_idx) noexcept {
   auto& g = *groups_[group_idx];
   if (g.is_robot) return;
   std::lock_guard lock(g.fake_mutex);
-  const auto n = std::min(g.fake_state.size(), g.fake_target.size());
-  for (std::size_t i = 0; i < n; ++i) {
-    g.fake_state[i] += g.filter_alpha * (g.fake_target[i] - g.fake_state[i]);
-  }
+  ApplyFakeLpfStep(g.fake_state, g.fake_target, g.filter_alpha);
 }
 
 std::vector<double> MuJoCoSimulator::GetFakeState(std::size_t group_idx) const noexcept {
