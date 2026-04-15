@@ -221,6 +221,36 @@ def launch_setup(context, *args, **kwargs):
         )
         actions.append(pin_mujoco_sim)
 
+        # rt_controller DDS/aux threads → Core 0-1 (mirror of robot.launch.py).
+        # ApplyThreadConfig() already pins SCHED_FIFO executors (rt_loop, sensor,
+        # udp_recv); this timer only catches DDS-internal reader/writer threads
+        # that are spawned outside our control.
+        pin_rt_controller_dds = TimerAction(
+            period=5.0,
+            actions=[
+                ExecuteProcess(
+                    cmd=[
+                        'bash', '-c',
+                        'PID=$(pgrep -nf "rt_controller"); '
+                        'if [ -z "$PID" ]; then '
+                        '  echo "[SIM] WARNING: rt_controller not found — DDS thread pinning skipped"; '
+                        '  exit 0; '
+                        'fi; '
+                        'taskset -cp 0-1 "$PID" 2>/dev/null; '
+                        'PINNED=0; '
+                        'for TID in $(ls /proc/$PID/task/ 2>/dev/null); do '
+                        '  POLICY=$(chrt -p $TID 2>/dev/null | grep -o "SCHED_FIFO" || echo ""); '
+                        '  if [ -n "$POLICY" ]; then continue; fi; '
+                        '  taskset -cp 0-1 "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
+                        'done; '
+                        'echo "[SIM] rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core 0-1"'
+                    ],
+                    output='screen',
+                )
+            ]
+        )
+        actions.append(pin_rt_controller_dds)
+
     return actions
 
 
