@@ -28,11 +28,7 @@ Checks: "-*,
   -modernize-pass-by-value,
   -modernize-return-braced-init-list,
   -modernize-use-auto,
-  -modernize-use-default-member-init,
-  -modernize-use-equals-default,
-  -modernize-use-override,
   -modernize-use-trailing-return-type,
-  -modernize-use-nodiscard,
   -performance-unnecessary-value-param,
   -readability-braces-around-statements,
   -readability-convert-member-functions-to-static,
@@ -41,6 +37,51 @@ Checks: "-*,
   -readability-named-parameter,
   -readability-redundant-smartptr-get,
   -readability-simplify-boolean-expr"
-HeaderFilterRegex: '.*'
-WarningsAsErrors: ''
+HeaderFilterRegex: '^(?!.*\b(build|install|log|_deps)\b).*$'
+WarningsAsErrors: 'bugprone-exception-escape,performance-*'
+CheckOptions:
+  # Google C++ Style + CLAUDE.md naming (see "Code Conventions").
+  # 신규/변경 코드부터 점진 적용 — 기존 위반은 HeaderFilterRegex / NOLINT 로 단계적 전환.
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypeAliasCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypedefCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: CamelCase
+  - key: readability-identifier-naming.MethodCase
+    value: CamelCase
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: _
+  - key: readability-identifier-naming.ProtectedMemberCase
+    value: lower_case
+  - key: readability-identifier-naming.ProtectedMemberSuffix
+    value: _
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: CamelCase
+  - key: readability-identifier-naming.ConstexprVariablePrefix
+    value: k
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.GlobalConstantPrefix
+    value: k
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantPrefix
+    value: k
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
 ...

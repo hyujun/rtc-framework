@@ -3,8 +3,8 @@
 #
 # CI coverage 수집 대상 (ros2-advanced-ci.yml의 lcov --extract 경로와 일치):
 #   rtc_base, rtc_communication, rtc_controller_interface, rtc_controller_manager,
-#   rtc_controllers, rtc_inference, rtc_urdf_bridge, ur5e_bringup, ur5e_hand_driver,
-#   shape_estimation
+#   rtc_controllers, rtc_inference, rtc_tsid, rtc_urdf_bridge,
+#   ur5e_bringup, ur5e_bt_coordinator, ur5e_hand_driver, shape_estimation
 
 codecov:
   require_ci_to_pass: false   # coverage 업로드는 CI 실패와 독립적으로 처리
@@ -18,12 +18,36 @@ coverage:
     project:
       default:
         target: auto          # 이전 커밋 대비 자동 목표 설정
-        threshold: 1%         # 1% 감소까지 허용
+        threshold: 0.5%       # 회귀 감지 강화 (이전 1% → 0.5%)
         if_ci_failed: success
     patch:
       default:
-        target: 0%            # 새 코드에 대한 최소 커버리지 (점진적으로 올릴 예정)
+        target: 60%           # 신규/변경 코드 최소 커버리지 (점진적으로 상향 중)
+        threshold: 5%
         if_ci_failed: success
+
+# C++/Python 분리 업로드 플래그 (ros2-advanced-ci.yml 과 연동)
+flags:
+  cpp:
+    paths:
+      - rtc_base/
+      - rtc_communication/
+      - rtc_controller_interface/
+      - rtc_controller_manager/
+      - rtc_controllers/
+      - rtc_inference/
+      - rtc_tsid/
+      - rtc_urdf_bridge/
+      - shape_estimation/
+      - ur5e_bringup/
+      - ur5e_bt_coordinator/
+      - ur5e_hand_driver/
+    carryforward: true
+  python:
+    paths:
+      - rtc_tools/
+      - rtc_digital_twin/
+    carryforward: true
 
 # 커버리지에서 제외할 경로
 ignore:
@@ -31,21 +55,18 @@ ignore:
   - "ur5e_description/**"
   # CI 미빌드 패키지 (외부 의존성 미설치)
   - "rtc_mujoco_sim/**"         # MuJoCo
-  - "rtc_tsid/**"               # ProxSuite
-  - "ur5e_bt_coordinator/**"    # BehaviorTree.CPP
   # 메시지 정의 (rosidl 자동 생성 코드)
   - "rtc_msgs/**"
   - "shape_estimation_msgs/**"
-  # Python 패키지 (별도 pytest 커버리지)
+  # Python 패키지 (별도 pytest 커버리지로 flag=python 분리 업로드)
   - "rtc_tools/**"
   - "rtc_digital_twin/**"
-  # Shell 스크립트
+  # Shell 스크립트 / CI 빌드 산출물
   - "rtc_scripts/**"
   # 공통 제외
   - "**/test/**"
   - "**/launch/**"
   - "**/config/**"
-  - "**/scripts/**"
 
 # 컴포넌트별 커버리지 추적
 component_management:
@@ -76,6 +97,11 @@ component_management:
       name: "Inference Engine (ONNX)"
       paths:
         - "rtc_inference/include/**"
+    - component_id: tsid
+      name: "TSID (QP, tasks, constraints)"
+      paths:
+        - "rtc_tsid/include/**"
+        - "rtc_tsid/src/**"
     - component_id: urdf_bridge
       name: "URDF Bridge (Pinocchio)"
       paths:
@@ -91,8 +117,19 @@ component_management:
       paths:
         - "ur5e_hand_driver/include/**"
         - "ur5e_hand_driver/src/**"
+    - component_id: bt_coordinator
+      name: "BT Coordinator (BehaviorTree v4)"
+      paths:
+        - "ur5e_bt_coordinator/include/**"
+        - "ur5e_bt_coordinator/src/**"
     - component_id: bringup
       name: "Bringup (Demo Controllers)"
       paths:
         - "ur5e_bringup/include/**"
         - "ur5e_bringup/src/**"
+
+# PR 코멘트 레이아웃 — component별 diff 포함
+comment:
+  layout: "header, diff, components, files, footer"
+  behavior: default
+  require_changes: false

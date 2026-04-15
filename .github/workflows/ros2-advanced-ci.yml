@@ -196,7 +196,7 @@ jobs:
       run: pip install -U colcon-cmake colcon-core
 
     - name: Install Python test dependencies
-      run: pip install pytest
+      run: pip install pytest pytest-cov coverage
 
     - name: Build Python packages
       run: |
@@ -204,20 +204,42 @@ jobs:
         colcon build \
           --packages-up-to $PYTHON_TEST_PACKAGES
 
-    - name: Run Python tests
+    - name: Run Python tests (with coverage)
       run: |
         source /opt/ros/${{ matrix.ros_distro }}/setup.bash
         source install/setup.bash
         colcon test \
           --packages-select $PYTHON_TEST_PACKAGES \
           --event-handlers console_cohesion+ \
-          --return-code-on-test-failure
+          --return-code-on-test-failure \
+          --pytest-args --cov=rtc_tools --cov=rtc_digital_twin --cov-report=xml:coverage.xml
 
     - name: Show Test Results
       if: always()
       run: |
         source /opt/ros/${{ matrix.ros_distro }}/setup.bash
         colcon test-result --all --verbose || true
+
+    - name: Collect Python coverage
+      if: always()
+      run: |
+        # 각 패키지 build 디렉토리에서 pytest가 생성한 coverage.xml 수집
+        find build/ -name 'coverage.xml' -print 2>/dev/null | head -5 || true
+        # 최상위 coverage.xml 이 없으면 build/ 하위 첫 번째를 루트로 복사
+        if [ ! -f coverage.xml ]; then
+          FIRST=$(find build/ -name 'coverage.xml' | head -1 || true)
+          [ -n "$FIRST" ] && cp "$FIRST" coverage.xml || true
+        fi
+
+    - name: Upload Python Coverage to Codecov
+      if: always()
+      uses: codecov/codecov-action@v5
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: ./coverage.xml
+        flags: python,unittests-${{ matrix.ros_distro }}
+        name: rtc-framework-python-${{ matrix.ros_distro }}
+        fail_ci_if_error: false
 
   # ============================================================
   #  Build, Test & Coverage (distro matrix)
@@ -419,7 +441,7 @@ jobs:
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: ./coverage_filtered.info
-        flags: unittests-${{ matrix.ros_distro }}
+        flags: cpp,unittests-${{ matrix.ros_distro }}
         name: rtc-framework-${{ matrix.ros_distro }}
         fail_ci_if_error: false
 
