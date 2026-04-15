@@ -59,11 +59,11 @@ show_help() {
   echo ""
   echo "Modes:"
   echo "  sim    — MuJoCo simulation only"
-  echo "             Installs: ROS2 build tools, Pinocchio, tinyxml2, yaml-cpp, MuJoCo 3.x"
+  echo "             Installs: ROS2 build tools, Pinocchio, ProxSuite, tinyxml2, yaml-cpp, MuJoCo 3.x"
   echo "             Skips:    UR robot driver, RT scheduling permissions"
   echo ""
   echo "  robot  — Real robot only"
-  echo "             Installs: ROS2 build tools, UR driver, Pinocchio, tinyxml2, yaml-cpp, RT permissions"
+  echo "             Installs: ROS2 build tools, UR driver, Pinocchio, ProxSuite, tinyxml2, yaml-cpp, RT permissions"
   echo "             Skips:    MuJoCo"
   echo ""
   echo "  full   — Complete installation (default)"
@@ -153,9 +153,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$MODE" in
-  sim)   MODE_DESC="Simulation  (MuJoCo + Pinocchio, hand: fake response, no RT perms)" ;;
-  robot) MODE_DESC="Real Robot  (UR driver + Pinocchio + RT permissions, no MuJoCo)" ;;
-  full)  MODE_DESC="Full        (UR driver + Pinocchio + MuJoCo + RT permissions)" ;;
+  sim)   MODE_DESC="Simulation  (MuJoCo + Pinocchio + ProxSuite, hand: fake response, no RT perms)" ;;
+  robot) MODE_DESC="Real Robot  (UR driver + Pinocchio + ProxSuite + RT permissions, no MuJoCo)" ;;
+  full)  MODE_DESC="Full        (UR driver + Pinocchio + ProxSuite + MuJoCo + RT permissions)" ;;
 esac
 
 # ── Banner ─────────────────────────────────────────────────────────────────────
@@ -392,6 +392,38 @@ install_pinocchio() {
     else
       warn "Pinocchio not installed — ClikController / DemoTaskController / OperationalSpaceController unavailable"
       warn "See: https://stack-of-tasks.github.io/pinocchio/download.html"
+    fi
+  fi
+}
+
+# ── ProxSuite (TSID QP solver) ─────────────────────────────────────────────────
+# ProxSuite: required by rtc_tsid (WQP/HQP formulations used by DemoWbcController).
+# Hard dependency of ur5e_bringup via rtc_tsid — must be installed for all modes.
+install_proxsuite() {
+  info "Installing ProxSuite (${ROS_PKG_PREFIX})..."
+  if sudo apt-get install -y ${ROS_PKG_PREFIX}-proxsuite >/dev/null 2>&1; then
+    success "ProxSuite installed via ${ROS_PKG_PREFIX}-proxsuite"
+  else
+    warn "${ROS_PKG_PREFIX}-proxsuite not found, trying robotpkg..."
+    local ROBOTPKG_KEYRING="/usr/share/keyrings/robotpkg-archive-keyring.gpg"
+    if [[ ! -f "$ROBOTPKG_KEYRING" ]]; then
+      curl -fsSL http://robotpkg.openrobots.org/packages/debian/robotpkg.key \
+          | sudo gpg --batch --yes --dearmor -o "$ROBOTPKG_KEYRING" 2>/dev/null || true
+      sudo sh -c "echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/robotpkg-archive-keyring.gpg] http://robotpkg.openrobots.org/packages/debian/pub $(lsb_release -sc) robotpkg' \
+          > /etc/apt/sources.list.d/robotpkg.list"
+      sudo apt-get update -qq
+    fi
+    if sudo apt-get install -y robotpkg-${PYTHON_ROBOTPKG_SUFFIX}-proxsuite >/dev/null 2>&1; then
+      success "ProxSuite installed via robotpkg (${PYTHON_ROBOTPKG_SUFFIX})"
+      grep -q "openrobots" ~/.bashrc || {
+        echo "export PATH=/opt/openrobots/bin:\$PATH" >> ~/.bashrc
+        echo "export PKG_CONFIG_PATH=/opt/openrobots/lib/pkgconfig:\$PKG_CONFIG_PATH" >> ~/.bashrc
+        echo "export LD_LIBRARY_PATH=/opt/openrobots/lib:\$LD_LIBRARY_PATH" >> ~/.bashrc
+        echo "export CMAKE_PREFIX_PATH=/opt/openrobots:\$CMAKE_PREFIX_PATH" >> ~/.bashrc
+      }
+    else
+      warn "ProxSuite not installed — rtc_tsid / DemoWbcController will not build"
+      warn "See: https://github.com/Simple-Robotics/proxsuite#installation"
     fi
   fi
 }
@@ -1003,15 +1035,18 @@ if [[ "$SKIP_DEPS" -eq 0 ]]; then
   case "$MODE" in
     sim)
       install_pinocchio
+      install_proxsuite
       install_mujoco
       ;;
     robot)
       install_ur_driver
       install_pinocchio
+      install_proxsuite
       ;;
     full)
       install_ur_driver
       install_pinocchio
+      install_proxsuite
       install_mujoco
       ;;
   esac

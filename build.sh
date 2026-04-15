@@ -41,7 +41,7 @@ show_help() {
   echo "Modes:"
   echo "  robot   Build packages for real robot (no MuJoCo)"
   echo "            Packages: rtc_msgs, rtc_base, rtc_communication, rtc_controller_interface,"
-  echo "                      rtc_urdf_bridge, rtc_controllers, rtc_controller_manager,"
+  echo "                      rtc_urdf_bridge, rtc_tsid, rtc_controllers, rtc_controller_manager,"
   echo "                      rtc_inference, rtc_scripts, rtc_tools,"
   echo "                      shape_estimation_msgs, shape_estimation, ur5e_description,"
   echo "                      ur5e_hand_driver, ur5e_bringup,"

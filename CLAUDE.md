@@ -783,4 +783,4 @@ Test files by package (73 total):
 | TSID types | `rtc_tsid/include/rtc_tsid/types/wbc_types.hpp` |
 | DemoWbcController | `ur5e_bringup/include/ur5e_bringup/controllers/demo_wbc_controller.hpp` |
 | DemoWbc YAML config | `ur5e_bringup/config/controllers/demo_wbc_controller.yaml` |
-| Supplementary docs | `docs/` (RT_OPTIMIZATION.md, SHELL_SCRIPTS.md, VSCODE_DEBUGGING.md, phase4_critical_review.md) |
+| Supplementary docs | `docs/` (RT_OPTIMIZATION.md, SHELL_SCRIPTS.md, VSCODE_DEBUGGING.md) |

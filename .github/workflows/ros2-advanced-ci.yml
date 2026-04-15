@@ -31,12 +31,13 @@ env:
 
   # ── 패키지 목록 (모든 job에서 공유) ──────────────────────────────
   # colcon --packages-up-to 빌드 대상 (의존성 자동 포함: rtc_base, rtc_msgs 등)
-  # 제외: rtc_tsid (proxsuite 미설치), ur5e_bt_coordinator (behaviortree_cpp 미설치),
-  #       rtc_mujoco_sim (MuJoCo 미설치)
+  # 제외: rtc_mujoco_sim (MuJoCo 미설치)
   BUILD_PACKAGES: >-
     rtc_controller_manager
     rtc_controllers
+    rtc_tsid
     ur5e_bringup
+    ur5e_bt_coordinator
     ur5e_hand_driver
     rtc_urdf_bridge
     shape_estimation
@@ -44,9 +45,11 @@ env:
   CPP_TEST_PACKAGES: >-
     rtc_base
     rtc_controllers
+    rtc_tsid
     rtc_urdf_bridge
     shape_estimation
     ur5e_bringup
+    ur5e_bt_coordinator
     ur5e_hand_driver
   PYTHON_TEST_PACKAGES: >-
     rtc_tools
@@ -60,9 +63,11 @@ env:
     rtc_controllers
     rtc_inference
     rtc_msgs
+    rtc_tsid
     rtc_urdf_bridge
     shape_estimation
     ur5e_bringup
+    ur5e_bt_coordinator
     ur5e_hand_driver
 
 jobs:
@@ -125,11 +130,13 @@ jobs:
       with:
         packages: >-
           ros-jazzy-pinocchio
+          ros-jazzy-proxsuite
+          ros-jazzy-behaviortree-cpp
           ros-jazzy-tinyxml2-vendor
           libyaml-cpp-dev
           libtinyxml2-dev
           libeigen3-dev
-        version: jazzy-lint-v3
+        version: jazzy-lint-v5
 
     - name: Run cppcheck
       env:
@@ -254,13 +261,15 @@ jobs:
       with:
         packages: >-
           ros-${{ matrix.ros_distro }}-pinocchio
+          ros-${{ matrix.ros_distro }}-proxsuite
+          ros-${{ matrix.ros_distro }}-behaviortree-cpp
           ros-${{ matrix.ros_distro }}-xacro
           ros-${{ matrix.ros_distro }}-tinyxml2-vendor
           libyaml-cpp-dev
           libtinyxml2-dev
           libeigen3-dev
           lcov
-        version: ${{ matrix.ros_distro }}-build-v4
+        version: ${{ matrix.ros_distro }}-build-v6
 
     - name: Build Packages (with coverage)
       run: |
@@ -285,7 +294,7 @@ jobs:
       if: failure()
       run: |
         echo "## Failed Test Details" >> "$GITHUB_STEP_SUMMARY"
-        for pkg in rtc_base rtc_controllers rtc_urdf_bridge shape_estimation ur5e_bringup ur5e_hand_driver; do
+        for pkg in rtc_base rtc_controllers rtc_tsid rtc_urdf_bridge shape_estimation ur5e_bringup ur5e_bt_coordinator ur5e_hand_driver; do
           if [ -d "build/${pkg}" ]; then
             echo "### ${pkg}" >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
@@ -333,7 +342,7 @@ jobs:
 
         # CPP_TEST_PACKAGES와 동일한 패키지에서 coverage 수집
         COVERAGE_DIRS=""
-        for pkg in rtc_base rtc_controllers rtc_urdf_bridge shape_estimation ur5e_bringup ur5e_hand_driver; do
+        for pkg in rtc_base rtc_controllers rtc_tsid rtc_urdf_bridge shape_estimation ur5e_bringup ur5e_bt_coordinator ur5e_hand_driver; do
           if [ -d "build/$pkg" ]; then
             COVERAGE_DIRS="$COVERAGE_DIRS --directory build/$pkg"
           fi
@@ -377,10 +386,14 @@ jobs:
           '*/rtc_controllers/include/*' \
           '*/rtc_controllers/src/*' \
           '*/rtc_inference/include/*' \
+          '*/rtc_tsid/include/*' \
+          '*/rtc_tsid/src/*' \
           '*/rtc_urdf_bridge/include/*' \
           '*/rtc_urdf_bridge/src/*' \
           '*/ur5e_bringup/include/*' \
           '*/ur5e_bringup/src/*' \
+          '*/ur5e_bt_coordinator/include/*' \
+          '*/ur5e_bt_coordinator/src/*' \
           '*/ur5e_hand_driver/include/*' \
           '*/ur5e_hand_driver/src/*' \
           '*/shape_estimation/include/*' \
@@ -418,14 +431,21 @@ jobs:
         path: log/
 
   # ============================================================
-  #  CodeQL Security Scan — main push만 (PR 제외)
+  #  CodeQL Security Scan — main push + C++ 변경 시에만
+  #  최적화: needs(changes), security-and-quality, paths-ignore,
+  #         colcon workspace 캐시, ccache
   # ============================================================
   codeql:
     name: CodeQL Security Scan
+    needs: changes
+    if: github.event_name == 'push' && needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-24.04
-    if: github.event_name == 'push'
+    timeout-minutes: 60
     permissions:
       security-events: write
+    env:
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 2G
     steps:
     - uses: actions/checkout@v4
 
@@ -433,7 +453,10 @@ jobs:
       uses: github/codeql-action/init@v4
       with:
         languages: cpp
-        queries: security-extended
+        # security-and-quality: security-extended 대비 분석 단계 30~40% 단축
+        queries: security-and-quality
+        # paths-ignore: 생성된 msg/rosidl, build/install/log, 테스트 코드 제외
+        config-file: ./.github/codeql/codeql-config.yml
 
     - name: Setup ROS2
       uses: ros-tooling/setup-ros@v0.7
@@ -443,27 +466,52 @@ jobs:
     - name: Upgrade colcon
       run: pip install -U colcon-cmake colcon-core
 
+    # build-test-coverage / clang-tidy와 캐시 키 분리 (CodeQL 빌드 플래그 격리)
+    - name: Cache colcon workspace
+      uses: actions/cache@v4
+      with:
+        path: |
+          build/
+          install/
+        key: colcon-codeql-jazzy-${{ hashFiles('**/CMakeLists.txt', '**/package.xml') }}
+        restore-keys: |
+          colcon-codeql-jazzy-
+
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: codeql-jazzy
+        max-size: 2G
+
     - name: Cache apt packages
       uses: awalsh128/cache-apt-pkgs-action@v1
       with:
         packages: >-
           ros-jazzy-pinocchio
+          ros-jazzy-proxsuite
+          ros-jazzy-behaviortree-cpp
           ros-jazzy-tinyxml2-vendor
           libyaml-cpp-dev
           libtinyxml2-dev
           libeigen3-dev
-        version: jazzy-codeql-v1
+        version: jazzy-codeql-v3
 
     - name: Build Packages
       run: |
         source /opt/ros/jazzy/setup.bash
+        export PATH="/usr/lib/ccache:$PATH"
         colcon build \
           --packages-up-to $BUILD_PACKAGES \
           --cmake-args \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DBUILD_TESTING=OFF
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v4
+      with:
+        category: "/language:cpp"
 
   # ============================================================
   #  Clang-Tidy Analysis — jazzy 1회, build-test와 병렬 실행
@@ -510,12 +558,14 @@ jobs:
           ros-jazzy-visualization-msgs
           ros-jazzy-std-srvs
           ros-jazzy-pinocchio
+          ros-jazzy-proxsuite
+          ros-jazzy-behaviortree-cpp
           ros-jazzy-tinyxml2-vendor
           libyaml-cpp-dev
           libtinyxml2-dev
           libeigen3-dev
           python3-numpy
-        version: jazzy-tidy-v6
+        version: jazzy-tidy-v8
 
     # cache-apt-pkgs-action의 tar 복원 시 Python site-packages가
     # 올바르게 복원되지 않을 수 있음 → pip로 numpy 보장
@@ -554,8 +604,10 @@ jobs:
           'rtc_controller_interface/src/.*\.cpp' \
           'rtc_controller_manager/src/.*\.cpp' \
           'rtc_controllers/src/.*\.cpp' \
+          'rtc_tsid/src/.*\.cpp' \
           'rtc_urdf_bridge/src/.*\.cpp' \
           'ur5e_bringup/src/.*\.cpp' \
+          'ur5e_bt_coordinator/src/.*\.cpp' \
           'ur5e_hand_driver/src/.*\.cpp' \
           'shape_estimation/src/.*\.cpp' 2>&1 | \
           tee clang-tidy-output.txt || true

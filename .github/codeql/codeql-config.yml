@@ -1,0 +1,20 @@
+name: "RTC Framework CodeQL config"
+
+# 분석에서 제외할 경로 — DB 빌드 / 분석 시간을 단축한다.
+# - build/, install/, log/: colcon 산출물 (소스 아님)
+# - **/test/**: 테스트 코드 (보안 스캔 가치 낮음, 노이즈 다량)
+# - **/*_msgs/**: rosidl이 생성한 메시지 헤더/소스 (자동 생성물)
+# - **/rosidl_*/**: rosidl 생성 디렉토리 전반
+# - .github/, docs/: 파이프라인/문서
+paths-ignore:
+  - "build/**"
+  - "install/**"
+  - "log/**"
+  - "**/test/**"
+  - "**/*_msgs/**"
+  - "**/rosidl_*/**"
+  - ".github/**"
+  - "docs/**"
+
+# 추가 query suite는 워크플로우 init step의 `queries:` 필드에서 지정.
+# 여기서는 paths/paths-ignore만 관리하여 정책을 한 곳에서 보게 한다.

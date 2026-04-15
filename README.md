@@ -7,13 +7,13 @@
 
 **Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 모듈형 rtc_* 프레임워크 기반 UR5e 실시간 제어 시스템**
 
-로봇 비의존적(robot-agnostic) RTC 프레임워크 위에 구축된 실시간 제어 솔루션입니다. 가변 DOF, 설정 가능한 제어 주기(500Hz–2kHz), 전략 패턴 기반 다중 제어기(P/JointPD/CLIK/OSC), 전송 계층 추상화(UDP/CAN-FD/EtherCAT/RS485), RT-안전 ONNX 추론 엔진, MuJoCo 3.x 물리 시뮬레이터, E-STOP 안전 시스템, CSV 데이터 로깅, GUI 도구를 포함합니다.
+로봇 비의존적(robot-agnostic) RTC 프레임워크 위에 구축된 실시간 제어 솔루션입니다. 가변 DOF, 설정 가능한 제어 주기(500Hz–2kHz), 전략 패턴 기반 다중 제어기(P/JointPD/CLIK/OSC/TSID-WBC), TSID QP 전신 제어 (`rtc_tsid` + ProxSuite), 전송 계층 추상화(UDP/CAN-FD/EtherCAT/RS485), RT-안전 ONNX 추론 엔진, MuJoCo 3.x 물리 시뮬레이터, E-STOP 안전 시스템, CSV 데이터 로깅, GUI 도구를 포함합니다.
 
 ---
 
 ## 패키지 구성
 
-18개 ROS2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`), 형상 추정(`shape_estimation_*`), 로봇 고유 패키지(`ur5e_*`)로 분리됩니다. 각 패키지는 자체 `README.md`를 포함합니다.
+19개 ROS2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`), 형상 추정(`shape_estimation_*`), 로봇 고유 패키지(`ur5e_*`)로 분리됩니다. 각 패키지는 자체 `README.md`를 포함합니다.
 
 ### 로봇 비의존적 프레임워크 (rtc_*)
 
@@ -24,6 +24,7 @@
 | [`rtc_communication`](rtc_communication/) | 5.17.0 | 헤더-전용 전송 계층 추상화: TransportInterface, UdpSocket RAII, PacketCodec concept, Transceiver 템플릿 | ament_cmake |
 | [`rtc_controller_interface`](rtc_controller_interface/) | 5.17.0 | 추상 컨트롤러 인터페이스 (Strategy 패턴) + Singleton 레지스트리 (가변 DOF) | ament_cmake |
 | [`rtc_controllers`](rtc_controllers/) | 5.17.0 | 범용 제어기 4종 (P, JointPD, CLIK, OSC) + 퀸틱 궤적 생성기 | ament_cmake |
+| [`rtc_tsid`](rtc_tsid/) | 0.1.0 | TSID QP 프레임워크: WQP/HQP formulation, PostureTask/SE3Task/CoMTask/ForceTask, EOM/Contact/FrictionCone/TorqueLimit/JointLimit 제약, ProxSuite 백엔드 | ament_cmake |
 | [`rtc_controller_manager`](rtc_controller_manager/) | 5.17.0 | 500Hz RT 루프 (clock_nanosleep) + 컨트롤러 라이프사이클 + SPSC publish offload + E-STOP | ament_cmake |
 | [`rtc_inference`](rtc_inference/) | 5.17.0 | 헤더-전용 RT-안전 추론 엔진: ONNX Runtime IoBinding, 사전 할당 버퍼, 배치/다중 모델 | ament_cmake |
 | [`rtc_mujoco_sim`](rtc_mujoco_sim/) | 5.18.0 | MuJoCo 3.x 물리 시뮬레이터: 멀티 그룹 물리, GLFW 뷰어, fake_hand 1차 필터, `max_rtf` 속도 제어, `n_substeps` 서브스텝 | ament_cmake |
@@ -51,7 +52,7 @@
 | [`ur5e_description`](ur5e_description/) | 5.17.0 | UR5e URDF/MJCF/메시 — Pinocchio/RViz/MuJoCo 겸용 | ament_cmake |
 | [`ur5e_hand_driver`](ur5e_hand_driver/) | 5.17.0 | 10-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서 44ch, ONNX F/T 추론 | ament_cmake |
 | [`ur5e_bt_coordinator`](ur5e_bt_coordinator/) | 0.1.0 | BehaviorTree.CPP v4 기반 비-RT 태스크 코디네이터 (20 Hz, UR5e + 핸드 통합 모션) | ament_cmake |
-| [`ur5e_bringup`](ur5e_bringup/) | 5.17.0 | UR5e launch/config + 데모 컨트롤러 (DemoJoint, DemoTask) + CPU 격리/DDS 핀닝 | ament_cmake |
+| [`ur5e_bringup`](ur5e_bringup/) | 5.17.0 | UR5e launch/config + 데모 컨트롤러 (DemoJoint, DemoTask, DemoWbc — TSID QP 기반 8-phase WBC) + CPU 격리/DDS 핀닝 | ament_cmake |
 
 ### 의존성 그래프
 
@@ -62,6 +63,7 @@ rtc_msgs, rtc_base (독립)
   ├── rtc_controller_interface ← rtc_base, rtc_msgs
   │   └── rtc_controllers ← rtc_controller_interface, rtc_urdf_bridge
   │       └── rtc_controller_manager ← rtc_controllers, rtc_communication
+  ├── rtc_tsid ← Pinocchio, ProxSuite, Eigen3, yaml-cpp
   ├── rtc_mujoco_sim ← MuJoCo 3.x (optional)
   ├── rtc_digital_twin (독립, Python)
   ├── rtc_tools (독립, Python)
@@ -75,7 +77,7 @@ shape_estimation_msgs (독립)
 ur5e_description (독립)
   ├── ur5e_hand_driver ← rtc_communication, rtc_inference, rtc_base
   ├── ur5e_bt_coordinator ← rtc_msgs, BehaviorTree.CPP v4
-  └── ur5e_bringup ← rtc_controller_manager, ur5e_hand_driver, ur5e_description
+  └── ur5e_bringup ← rtc_controller_manager, rtc_tsid, ur5e_hand_driver, ur5e_description
 ```
 
 ---
@@ -93,6 +95,7 @@ ur5e_description (독립)
 - **JointPDController**: PD + Pinocchio RNEA 중력/코리올리 보상, JointSpaceTrajectory 퀸틱 보간
 - **ClikController**: Damped Jacobian 역운동학 (3/6-DOF), 영공간 제어, TaskSpaceTrajectory SE3 퀸틱
 - **OperationalSpaceController**: 6-DOF Cartesian PD + SO(3) 회전 제어, Pinocchio log3 오차
+- **DemoWbcController**: TSID QP 기반 16-DoF (arm + hand) 전신 제어, 8-phase FSM (Idle→Approach→PreGrasp→Closure→Hold→Retreat→Release→Fallback), ProxSuite Dense QP, semi-implicit Euler 적분
 
 ### 안전 시스템
 - **글로벌 E-STOP**: `atomic<bool>` + `compare_exchange_strong` 기반 통합 비상 정지 — 동적 디바이스 그룹 기반 트리거:
