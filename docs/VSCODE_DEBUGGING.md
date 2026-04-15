@@ -14,7 +14,7 @@
 6. [변수 및 메모리 검사](#6-변수-및-메모리-검사)
 7. [GDB 콘솔 직접 사용](#7-gdb-콘솔-직접-사용)
 8. [자주 발생하는 문제](#8-자주-발생하는-문제)
-9. [VS Code 설정 파일 생성](#vs-code-설정-파일-생성)
+9. [VS Code 설정 파일 구조](#vs-code-설정-파일-구조)
 
 ---
 
@@ -28,13 +28,21 @@ sudo apt install gdb
 
 ### VS Code 확장 설치
 
-VS Code에서 `Ctrl+Shift+X` → 다음 확장 설치 (또는 `Ctrl+Shift+P` → `Show Recommended Extensions`):
+`.vscode/extensions.json`에 권장 목록이 포함되어 있습니다. VS Code에서 `Ctrl+Shift+P` → `Show Recommended Extensions` → 일괄 설치.
 
 | 확장 | 역할 |
 |------|------|
-| `ms-vscode.cpptools` | C++ IntelliSense + GDB 디버거 |
-| `ms-vscode.cpptools-extension-pack` | C++ 도구 묶음 |
+| `llvm-vs-code-extensions.vscode-clangd` | **기본 IntelliSense**(cpptools 대신 사용) |
+| `ms-vscode.cpptools` | **GDB 디버거** (IntelliSense는 비활성) |
+| `ms-python.python` / `ms-python.debugpy` | Python 디버거 (launch 파일용) |
+| `ms-vscode.cmake-tools` / `twxs.cmake` | CMake 지원 |
+| `redhat.vscode-yaml` / `redhat.vscode-xml` | YAML/URDF/MJCF |
 | `ms-iot.vscode-ros` | ROS 2 통합 |
+| `smilerobotics.urdf` | URDF 뷰어 |
+
+> [!NOTE]
+> 본 프로젝트는 clangd를 기본 IntelliSense로 사용합니다(`C_Cpp.intelliSenseEngine: "disabled"`).
+> cpptools는 **디버거 목적**으로만 활성화됩니다.
 
 ### GDB 실행 권한 확인
 
@@ -71,16 +79,35 @@ source /opt/ros/${ROS_DISTRO}/setup.bash   # Humble 또는 Jazzy
 colcon build --symlink-install \
   --cmake-args -DCMAKE_BUILD_TYPE=Debug \
                -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+# clangd가 읽을 수 있도록 compile_commands.json을 워크스페이스에 병합
+python3 src/rtc-framework/merge_compile_commands.py
 ```
 
 > [!IMPORTANT]
 > Release 빌드된 바이너리는 최적화(`-O2`/`-O3`)로 인해 **변수가 사라지거나 순서가 바뀌어** 디버깅이 부정확합니다. 반드시 Debug 빌드(`-g -O0`)로 사용하세요.
 
+> [!TIP]
+> `.vscode/tasks.json`의 **모든 빌드 태스크는 빌드 후 자동으로** `merge_compile_commands.py`를 실행합니다.
+> 수동 빌드 시에만 위 파이썬 커맨드를 직접 실행하면 됩니다.
+
 ---
 
 ## 3. Launch 디버거 — 노드 직접 실행
 
-VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다.
+VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다. `.vscode/launch.json`에 다음 구성이 정의되어 있습니다:
+
+| 구성 | 대상 바이너리 | 기본 `--params-file` |
+|------|---------------|----------------------|
+| `C++: Launch rt_controller (Debug)` | `install/rtc_controller_manager/lib/rtc_controller_manager/rt_controller` | `ur5e_bringup/config/ur5e_sim.yaml` |
+| `C++: Launch mujoco_simulator_node (Debug)` | `install/rtc_mujoco_sim/lib/rtc_mujoco_sim/mujoco_simulator_node` | `rtc_mujoco_sim/config/mujoco_simulator.yaml` |
+| `C++: Launch hand_udp_node (Debug)` | `install/ur5e_hand_driver/lib/ur5e_hand_driver/hand_udp_node` | `ur5e_hand_driver/config/hand_udp_node.yaml` |
+| `C++: Launch bt_coordinator_node (Debug)` | `install/ur5e_bt_coordinator/lib/ur5e_bt_coordinator/bt_coordinator_node` | — |
+| `C++: Launch shape_estimation_node (Debug)` | `install/shape_estimation/lib/shape_estimation/shape_estimation_node` | — |
+| `C++: Attach to Node (Pick Process)` | (실행 중인 프로세스 선택) | — |
+| `C++: Run GTest (Selected Package)` | 프롬프트로 GTest 바이너리 경로 입력 | — |
+| `Python: Launch File (sim.launch.py)` | `ros2 launch ur5e_bringup sim.launch.py` | — |
+| `Python: Current File` | 현재 편집 중인 `.py` | — |
 
 ### 3-1. `rt_controller` 노드 디버깅
 
@@ -98,21 +125,24 @@ VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다.
 
 > [!NOTE]
 > 이 설정은 `ros2 launch`를 우회하고 바이너리를 **직접** 실행합니다.
-> 따라서 ROS 2 파라미터(YAML) 로딩이 되지 않을 수 있습니다.
-> 파라미터가 필요하면 `"args"` 필드에 `--ros-args`, `-p` 등의 인수를 추가하세요.
-
-**`launch.json` `args` 예시 (파라미터 전달):**
-
-```json
-"args": [
-  "--ros-args",
-  "--params-file", "/home/junho/ros2_ws/rtc_ws/src/rtc-framework/rtc_controller_manager/config/rt_controller_manager.yaml"
-]
-```
+> 기본값으로 `ur5e_bringup/config/ur5e_sim.yaml`이 `--params-file`로 전달됩니다.
+> 실로봇 설정(`ur5e_robot.yaml`)으로 디버깅하려면 `launch.json`의 `args` 항목을 편집하세요.
 
 ### 3-2. `mujoco_simulator_node` 디버깅
 
 동일한 방법으로 **`C++: Launch mujoco_simulator_node (Debug)`** 선택 후 `F5`.
+
+### 3-3. GTest 단일 실행
+
+`C++: Run GTest (Selected Package)`를 선택하면 GTest 바이너리 경로를 입력받아 그 테스트만 GDB로 실행합니다. 경로 예시:
+
+```
+${workspaceFolder}/../../build/rtc_base/test/test_seqlock
+${workspaceFolder}/../../build/rtc_controllers/test/test_grasp_controller
+${workspaceFolder}/../../build/rtc_tsid/test/test_wqp_formulation
+```
+
+전체 테스트 실행은 `Ctrl+Shift+P` → `Run Task` → **`colcon: Test All`** 또는 **`colcon: Test Selected Package`**.
 
 ---
 
@@ -388,153 +418,64 @@ ros2 node list
 
 ---
 
-## VS Code 설정 파일 생성
+## VS Code 설정 파일 구조
 
-이 프로젝트에는 `.vscode/` 설정 파일이 포함되어 있지 않으므로, 디버깅에 필요한 파일을 직접 생성해야 합니다.
+이 프로젝트는 `.vscode/` 아래에 **즉시 사용 가능한** 설정 파일을 포함합니다. 내용은 리포에 체크인되어 있으므로 별도 생성이 불필요합니다.
 
-### `.vscode/launch.json`
-
-```json
-{
-  "version": "0.2.0",
-  "configurations": [
-    {
-      "name": "C++: Launch rt_controller (Debug)",
-      "type": "cppdbg",
-      "request": "launch",
-      "program": "${workspaceFolder}/../../install/rtc_controller_manager/lib/rtc_controller_manager/rt_controller",
-      "args": [
-        "--ros-args",
-        "--params-file", "${workspaceFolder}/rtc_controller_manager/config/rt_controller_manager.yaml"
-      ],
-      "stopAtEntry": false,
-      "cwd": "${workspaceFolder}/../../",
-      "environment": [],
-      "externalConsole": false,
-      "MIMode": "gdb",
-      "setupCommands": [
-        { "text": "-enable-pretty-printing", "ignoreFailures": true }
-      ],
-      "preLaunchTask": "colcon: Build All (Debug)",
-      "sourceFileMap": {}
-    },
-    {
-      "name": "C++: Launch mujoco_simulator_node (Debug)",
-      "type": "cppdbg",
-      "request": "launch",
-      "program": "${workspaceFolder}/../../install/rtc_mujoco_sim/lib/rtc_mujoco_sim/mujoco_simulator_node",
-      "args": [],
-      "stopAtEntry": false,
-      "cwd": "${workspaceFolder}/../../",
-      "environment": [],
-      "externalConsole": false,
-      "MIMode": "gdb",
-      "setupCommands": [
-        { "text": "-enable-pretty-printing", "ignoreFailures": true }
-      ],
-      "preLaunchTask": "colcon: Build All (Debug)",
-      "sourceFileMap": {}
-    },
-    {
-      "name": "C++: Attach to Node (Pick Process)",
-      "type": "cppdbg",
-      "request": "attach",
-      "program": "",
-      "processId": "${command:pickProcess}",
-      "MIMode": "gdb",
-      "setupCommands": [
-        { "text": "-enable-pretty-printing", "ignoreFailures": true }
-      ]
-    }
-  ]
-}
 ```
+.vscode/
+├── settings.json       # clangd, 에디터, Python, ROS 설정
+├── tasks.json          # colcon 빌드/테스트, compile_commands 병합, ros2 launch
+├── launch.json         # GDB launch/attach 구성 (노드 5종 + GTest + Python)
+└── extensions.json     # 권장 확장 목록
+```
+
+### `settings.json` 핵심 항목
+
+| 키 | 값 | 의도 |
+|----|-----|------|
+| `C_Cpp.intelliSenseEngine` | `"disabled"` | cpptools IntelliSense 비활성 (clangd와 충돌 방지) |
+| `clangd.arguments[--compile-commands-dir]` | `${workspaceFolder}/build` | `merge_compile_commands.py` 출력 위치 |
+| `editor.defaultFormatter` (C++) | `llvm-vs-code-extensions.vscode-clangd` | 저장 시 clang-format 적용 |
+| `python.analysis.extraPaths` | `/opt/ros/jazzy/lib/python3.12/dist-packages` 외 | Pylance에서 `rclpy`/`rtc_tools` 인식 |
+| `ros.distro` | `"jazzy"` | ROS 확장 기본 디스트로 |
+| `files.exclude` / `files.watcherExclude` | `build`, `install`, `log`, `logging_data`, `.cache` | 탐색·워처 성능 |
 
 > [!NOTE]
-> `program` 경로는 `colcon build --symlink-install` 후 `install/<패키지>/lib/<패키지>/` 아래에 생성되는 바이너리를 가리킵니다.
-> `${workspaceFolder}`는 `.vscode/`가 위치한 `rtc-framework/` 디렉토리이므로, 워크스페이스 루트(`rtc_ws/`)까지 `../../`로 이동합니다.
+> `c_cpp_properties.json`은 **의도적으로 생성하지 않습니다**.
+> clangd가 `.clangd` + `build/compile_commands.json`을 직접 사용하므로 cpptools IntelliSense 설정은 불필요합니다.
 
-### `.vscode/tasks.json`
+### `tasks.json` 태스크 목록
 
-```json
-{
-  "version": "2.0.0",
-  "tasks": [
-    {
-      "label": "colcon: Build All (Debug)",
-      "type": "shell",
-      "command": "source /opt/ros/${ROS_DISTRO}/setup.bash && colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
-      "options": {
-        "cwd": "/home/junho/ros2_ws/rtc_ws"
-      },
-      "group": {
-        "kind": "build",
-        "isDefault": true
-      },
-      "problemMatcher": ["$gcc"]
-    },
-    {
-      "label": "colcon: Build All (Release)",
-      "type": "shell",
-      "command": "source /opt/ros/${ROS_DISTRO}/setup.bash && colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
-      "options": {
-        "cwd": "/home/junho/ros2_ws/rtc_ws"
-      },
-      "group": "build",
-      "problemMatcher": ["$gcc"]
-    }
-  ]
-}
-```
+| Label | 역할 |
+|-------|------|
+| `colcon: Build All (Debug)` | 전체 Debug 빌드 + `merge_compile_commands.py` 자동 실행 (**기본 빌드**, `Ctrl+Shift+B`) |
+| `colcon: Build All (Release)` | 전체 Release 빌드 |
+| `colcon: Build Selected Package` | `build.sh -p <pkg>`로 단일 패키지 빌드 (드롭다운 선택) |
+| `colcon: Build Sim` / `Build Robot` | `build.sh sim` / `robot` |
+| `colcon: Test All` / `Test Selected Package` | 전체 또는 단일 패키지 테스트 (`console_direct+`) |
+| `rtc: Merge compile_commands.json` | 병합만 수동 실행 |
+| `rtc: Clean Build Artifacts` | `rm -rf build install log` |
+| `rtc: Check RT Setup` | `rtc_scripts/scripts/check_rt_setup.sh --summary` |
+| `ros2 launch: sim` / `robot` | MuJoCo 시뮬 / 실로봇 런치 (`robot_ip` 프롬프트) |
 
-### `.vscode/c_cpp_properties.json`
+### `launch.json` 디버그 구성
 
-```json
-{
-  "configurations": [
-    {
-      "name": "Linux",
-      "includePath": [
-        "${workspaceFolder}/**/include",
-        "/opt/ros/${ROS_DISTRO}/include/**",
-        "/home/junho/ros2_ws/rtc_ws/install/**/include/**"
-      ],
-      "compileCommands": "/home/junho/ros2_ws/rtc_ws/build/compile_commands.json",
-      "cStandard": "c17",
-      "cppStandard": "c++20",
-      "intelliSenseMode": "linux-gcc-x64"
-    }
-  ],
-  "version": 4
-}
-```
+[3. Launch 디버거](#3-launch-디버거--노드-직접-실행) 표 참고. 모든 C++ 구성은 `preLaunchTask: "colcon: Build All (Debug)"`로 빌드 후 실행되며, `setupCommands`에 `-enable-pretty-printing` / `set print pretty on` / `set print object on`이 포함되어 STL 및 Eigen 타입이 가독성 있게 표시됩니다.
 
-> [!TIP]
-> `compile_commands.json`을 워크스페이스 루트에 모으려면 빌드 후 다음을 실행하세요:
-> ```bash
-> cd /home/junho/ros2_ws/rtc_ws
-> jq -s 'add' build/*/compile_commands.json > build/compile_commands.json
-> ```
+### `extensions.json`
 
-### `.vscode/settings.json`
-
-```json
-{
-  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
-  "files.associations": {
-    "*.hpp": "cpp",
-    "*.h": "cpp"
-  }
-}
-```
+권장 확장: clangd, cpptools(디버거용), Python+debugpy+Pylance, CMake, YAML/XML/URDF, ROS. `Ctrl+Shift+P` → `Show Recommended Extensions`에서 일괄 설치 가능.
 
 ---
 
 ## 관련 파일
 
-| 파일 | 역할 |
-|------|------|
-| `.vscode/launch.json` | 디버그 실행 구성 (직접 생성 필요) |
-| `.vscode/tasks.json` | 빌드/테스트 태스크 (직접 생성 필요) |
-| `.vscode/c_cpp_properties.json` | IntelliSense 설정 (직접 생성 필요) |
-| `.vscode/settings.json` | 워크스페이스 설정 (직접 생성 필요) |
+| 파일 | 역할 | 체크인됨 |
+|------|------|:--:|
+| [.vscode/settings.json](../.vscode/settings.json) | clangd, 에디터, Python, exclusion 설정 | ✅ |
+| [.vscode/tasks.json](../.vscode/tasks.json) | 빌드/테스트/런치 태스크 | ✅ |
+| [.vscode/launch.json](../.vscode/launch.json) | GDB launch/attach 구성 | ✅ |
+| [.vscode/extensions.json](../.vscode/extensions.json) | 권장 확장 목록 | ✅ |
+| [.clangd](../.clangd) | clangd 컴파일 플래그 + `build/` 지정 | ✅ |
+| [merge_compile_commands.py](../merge_compile_commands.py) | 패키지별 `compile_commands.json`을 `build/`로 병합 | ✅ |
