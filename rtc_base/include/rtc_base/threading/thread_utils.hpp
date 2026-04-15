@@ -661,6 +661,7 @@ struct SystemThreadConfigs
   ThreadConfig logging;
   ThreadConfig aux;
   ThreadConfig publish;         // Non-RT publish offload thread
+  MpcThreadConfig mpc;          // Phase 5: MPC main + optional workers
 };
 
   // Validate SystemThreadConfigs for conflicts and invalid configurations.
@@ -685,20 +686,63 @@ struct SystemThreadConfigs
     errors += ValidateThreadConfig(configs.logging);
     errors += ValidateThreadConfig(configs.aux);
     errors += ValidateThreadConfig(configs.publish);
+    // MPC: validate main + active workers. workers beyond num_workers are
+    // zero-initialised and ignored.
+    errors += ValidateThreadConfig(configs.mpc.main);
+    if (configs.mpc.num_workers < 0 || configs.mpc.num_workers > kMpcMaxWorkers)
+    {
+      errors += "mpc.num_workers out of range [0, " +
+                std::to_string(kMpcMaxWorkers) + "]; ";
+    }
+    for (int i = 0; i < configs.mpc.num_workers && i < kMpcMaxWorkers; ++i)
+    {
+      const ThreadConfig &w =
+          configs.mpc.workers[static_cast<std::size_t>(i)];
+      errors += ValidateThreadConfig(w);
+      // Worker priority must not exceed main — prevents worker preempting
+      // the solve loop it's supposed to assist.
+      if ((w.sched_policy == SCHED_FIFO || w.sched_policy == SCHED_RR) &&
+          (configs.mpc.main.sched_policy == SCHED_FIFO ||
+           configs.mpc.main.sched_policy == SCHED_RR) &&
+          w.sched_priority > configs.mpc.main.sched_priority)
+      {
+        errors += "mpc.worker[" + std::to_string(i) +
+                  "] priority exceeds mpc.main; ";
+      }
+    }
+    // MPC main must not exceed sensor priority — sensor callbacks are hard
+    // real-time and must always preempt long MPC solves.
+    if ((configs.mpc.main.sched_policy == SCHED_FIFO ||
+         configs.mpc.main.sched_policy == SCHED_RR) &&
+        (configs.sensor.sched_policy == SCHED_FIFO ||
+         configs.sensor.sched_policy == SCHED_RR) &&
+        configs.mpc.main.sched_priority >= configs.sensor.sched_priority)
+    {
+      errors += "mpc.main priority (" +
+                std::to_string(configs.mpc.main.sched_priority) +
+                ") must be below sensor priority (" +
+                std::to_string(configs.sensor.sched_priority) + "); ";
+    }
 
-    // Collect all configs with names for conflict analysis
+    // Collect all configs with names for conflict analysis. MPC main + up
+    // to kMpcMaxWorkers workers are always included; inactive worker slots
+    // have cpu_core == 0 but also sched_policy == 0 (SCHED_OTHER priority 0),
+    // which cannot trigger an RT/RT same-priority conflict.
     struct NamedConfig
     {
       const char *name;
       const ThreadConfig *config;
     };
-    const std::array<NamedConfig, 6> all_configs = {{
+    const std::array<NamedConfig, 6 + 1 + kMpcMaxWorkers> all_configs = {{
         {"rt_control", &configs.rt_control},
         {"sensor", &configs.sensor},
         {"udp_recv", &configs.udp_recv},
         {"logging", &configs.logging},
         {"aux", &configs.aux},
         {"publish", &configs.publish},
+        {"mpc_main", &configs.mpc.main},
+        {"mpc_worker_0", &configs.mpc.workers[0]},
+        {"mpc_worker_1", &configs.mpc.workers[1]},
     }};
 
     auto is_rt = [](const ThreadConfig *c)
@@ -756,30 +800,36 @@ struct SystemThreadConfigs
     if (ncpu >= 16)
     {
       return {kRtControlConfig16Core, kSensorConfig16Core, kUdpRecvConfig16Core,
-              kLoggingConfig16Core, kAuxConfig16Core, kPublishConfig16Core};
+              kLoggingConfig16Core, kAuxConfig16Core, kPublishConfig16Core,
+              kMpcConfig16Core};
     }
     if (ncpu >= 12)
     {
       return {kRtControlConfig12Core, kSensorConfig12Core, kUdpRecvConfig12Core,
-              kLoggingConfig12Core, kAuxConfig12Core, kPublishConfig12Core};
+              kLoggingConfig12Core, kAuxConfig12Core, kPublishConfig12Core,
+              kMpcConfig12Core};
     }
     if (ncpu >= 10)
     {
       return {kRtControlConfig10Core, kSensorConfig10Core, kUdpRecvConfig10Core,
-              kLoggingConfig10Core, kAuxConfig10Core, kPublishConfig10Core};
+              kLoggingConfig10Core, kAuxConfig10Core, kPublishConfig10Core,
+              kMpcConfig10Core};
     }
     if (ncpu >= 8)
     {
       return {kRtControlConfig8Core, kSensorConfig8Core, kUdpRecvConfig8Core,
-              kLoggingConfig8Core, kAuxConfig8Core, kPublishConfig8Core};
+              kLoggingConfig8Core, kAuxConfig8Core, kPublishConfig8Core,
+              kMpcConfig8Core};
     }
     if (ncpu >= 6)
     {
       return {kRtControlConfig, kSensorConfig, kUdpRecvConfig,
-              kLoggingConfig, kAuxConfig, kPublishConfig};
+              kLoggingConfig, kAuxConfig, kPublishConfig,
+              kMpcConfig6Core};
     }
     return {kRtControlConfig4Core, kSensorConfig4Core, kUdpRecvConfig4Core,
-            kLoggingConfig4Core, kAuxConfig4Core, kPublishConfig4Core};
+            kLoggingConfig4Core, kAuxConfig4Core, kPublishConfig4Core,
+            kMpcConfig4Core};
   }
 
 } // namespace rtc

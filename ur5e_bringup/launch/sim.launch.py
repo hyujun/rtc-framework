@@ -144,6 +144,16 @@ def launch_setup(context, *args, **kwargs):
     if initial_controller != '':
         ctrl_overrides['initial_controller'] = initial_controller
 
+    # Phase 5: expose `enable_mpc` as a runtime override for the DemoWbc
+    # controller's `mpc.enabled` YAML setting. The controller reads this
+    # key during LoadConfig; the runtime gains topic (index 7) can also
+    # toggle MPC on/off dynamically without restarting the launch.
+    enable_mpc = LaunchConfiguration('enable_mpc').perform(context)
+    if enable_mpc.lower() in ('true', '1', 'yes'):
+        ctrl_overrides['demo_wbc_controller.mpc.enabled'] = True
+    elif enable_mpc.lower() in ('false', '0', 'no'):
+        ctrl_overrides['demo_wbc_controller.mpc.enabled'] = False
+
     if ctrl_overrides:
         ctrl_params.append(ctrl_overrides)
 
@@ -357,6 +367,17 @@ def generate_launch_description():
         )
     )
 
+    enable_mpc_arg = DeclareLaunchArgument(
+        'enable_mpc',
+        default_value='',
+        description=(
+            'Enable the MPC thread in DemoWbcController (Phase 5). '
+            'Takes effect only when initial_controller:=demo_wbc_controller. '
+            'Empty = use demo_wbc_controller.yaml default. '
+            'Runtime toggle is also available via gains index 7.'
+        )
+    )
+
     return LaunchDescription([
         # Arguments
         model_path_arg,
@@ -369,6 +390,7 @@ def generate_launch_description():
         max_log_sessions_arg,
         use_cpu_affinity_arg,
         initial_controller_arg,
+        enable_mpc_arg,
         # Nodes (via OpaqueFunction for conditional parameter loading)
         OpaqueFunction(function=launch_setup),
     ])

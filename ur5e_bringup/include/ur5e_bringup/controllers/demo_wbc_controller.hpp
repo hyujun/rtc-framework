@@ -14,6 +14,10 @@
 #include "rtc_tsid/types/qp_types.hpp"
 #include "rtc_tsid/types/wbc_types.hpp"
 
+#include "rtc_mpc/manager/mpc_solution_manager.hpp"
+#include "rtc_mpc/thread/mock_mpc_thread.hpp"
+#include "rtc_mpc/thread/mpc_thread.hpp"
+
 // Third-party
 #include <Eigen/Core>
 
@@ -64,10 +68,13 @@ enum class WbcPhase : uint8_t {
 // TSID produces optimal acceleration a; position is obtained by integration:
 //   v_next = v_curr + a · dt,  q_next = q_curr + v_next · dt
 //
-// Gains layout for UpdateGainsFromMsg:
+// Gains layout for UpdateGainsFromMsg (Phase 5):
 //   [grasp_cmd(0/1/2), grasp_target_force,
 //    arm_traj_speed, hand_traj_speed,
-//    se3_weight, force_weight, posture_weight] = 7 values
+//    se3_weight, force_weight, posture_weight,
+//    mpc_enable(0/1), riccati_gain_scale(0..1)] = 9 values
+// Phase 4 compatibility: first 7 indices are unchanged; trailing 2 are
+// optional (a 7-entry message keeps Phase 4 semantics exactly).
 class DemoWbcController final : public RTControllerInterface {
 public:
   static constexpr int kArmDof  = static_cast<int>(kNumRobotJoints);  // 6
@@ -295,6 +302,28 @@ private:
   };
   ComputedTrajectory robot_computed_{};
   ComputedTrajectory hand_computed_{};
+
+  // ── MPC integration (Phase 5) ───────────────────────────────────────────
+  //
+  // When `mpc_enabled_` is true, `OnEnter` spawns a MockMPCThread (placeholder
+  // for a future Aligator integration) that publishes solutions into
+  // `mpc_manager_`. On every RT tick inside `ComputeTSIDPosition`, the
+  // manager interpolates the newest solution, computes Riccati feedback, and
+  // writes q_ref / v_ref / a_ff / u_fb into the pre-allocated buffers below.
+  // The references are then injected into the TSID SE3 and posture tasks.
+  //
+  // If `mpc_enabled_` is false, the MPC thread is never started and the
+  // existing Phase 4 fixed-reference path is taken.
+  bool mpc_enabled_{false};
+  rtc::mpc::MPCSolutionManager mpc_manager_;
+  std::unique_ptr<rtc::mpc::MPCThread> mpc_thread_;
+
+  // Pre-allocated MPC reference buffers (sized in LoadConfig).
+  Eigen::VectorXd mpc_q_ref_;
+  Eigen::VectorXd mpc_v_ref_;
+  Eigen::VectorXd mpc_a_ff_;
+  Eigen::VectorXd mpc_lambda_ref_;
+  Eigen::VectorXd mpc_u_fb_;
 
   // ── FSM thresholds ──────────────────────────────────────────────────────
   double epsilon_approach_{0.01};       ///< m, approach → pre-grasp

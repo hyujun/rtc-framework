@@ -32,6 +32,13 @@ source "${SCRIPT_DIR}/lib/rt_common.sh"
 make_logger "SHIELD"
 
 # ── Compute shield cores based on mode and core count ─────────────────────
+#
+# Phase 5 note: Shield ranges intentionally unchanged by the MPC-core
+# addition. The 8-core layout shifts udp_recv 4→5, logging 5→6, aux 6→7
+# but all of these cores remain inside the shield range (2-6) or on the
+# shield boundary (Core 7 in system cpuset); only their identity changed.
+# For 12/16-core tiers the MPC cores (9-10, 9-11) live in the system
+# cpuset alongside rt_control/sensor, outside the "user" shield.
 compute_shield_cores() {
   local mode="$1"
   local phys_cores="$2"
@@ -46,17 +53,17 @@ compute_shield_cores() {
       echo "2-3"
     fi
   else
-    # robot: Tier 1 + Tier 2
+    # robot: Tier 1 + Tier 2 (+ Phase 5 MPC on 8-core via Core 4 in range)
     if [[ "$phys_cores" -le 4 ]]; then
       echo "1-3"
     elif [[ "$phys_cores" -le 7 ]]; then
       echo "2-5"
     elif [[ "$phys_cores" -le 9 ]]; then
-      echo "2-6"
+      echo "2-6"   # Includes MPC Core 4, udp_recv 5, logging 6
     elif [[ "$phys_cores" -le 15 ]]; then
-      echo "2-6"
+      echo "2-6"   # MPC 9-10 in system cpuset; shield covers non-MPC user work
     else
-      echo "4-8"
+      echo "4-8"   # MPC 9-11 in system cpuset; shield covers 4-8 "user"
     fi
   fi
 }

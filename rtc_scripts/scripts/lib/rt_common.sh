@@ -529,9 +529,69 @@ parse_common_args() {
 # ── 공통 패키지 리스트 (build.sh / install.sh 공유) ─────────────────────────
 # 이 함수들은 패키지 리스트의 single source of truth를 제공한다.
 get_base_packages() {
-  echo "rtc_msgs rtc_base rtc_communication rtc_controller_interface rtc_urdf_bridge rtc_tsid rtc_controllers rtc_controller_manager rtc_inference rtc_scripts rtc_tools shape_estimation_msgs shape_estimation"
+  echo "rtc_msgs rtc_base rtc_communication rtc_controller_interface rtc_urdf_bridge rtc_mpc rtc_tsid rtc_controllers rtc_controller_manager rtc_inference rtc_scripts rtc_tools shape_estimation_msgs shape_estimation"
 }
 
 get_robot_packages() {
   echo "ur5e_description ur5e_hand_driver ur5e_bringup ur5e_bt_coordinator"
+}
+
+# ── MPC core layout helpers (Phase 5) ────────────────────────────────────────
+# Single source of truth for MPC thread core assignment. Must stay in sync
+# with rtc_base/threading/thread_config.hpp (Phase 5, Steps 11-14).
+#
+# Layout policy:
+#   ≤7 cores  → MPC piggybacks on logging/aux core (SCHED_OTHER).
+#   8-9      → Core 4 dedicated to MPC main (FIFO 60).
+#   10-11    → Core 9 shared (MPC main + udp_recv + logging/aux).
+#   12-15    → Core 9 main, Core 10 worker 0.
+#   16+      → Core 9 main, Core 10 worker 0, Core 11 worker 1.
+#
+# Prints a comma-separated list of cores. First entry is always the MPC
+# main thread's core.
+get_mpc_cores() {
+  local ncpu
+  ncpu=$(get_physical_cores)
+  case "$ncpu" in
+    1|2|3|4)      echo "3" ;;
+    5|6|7)        echo "4" ;;
+    8|9)          echo "4" ;;
+    10|11)        echo "9" ;;
+    12|13|14|15)  echo "9,10" ;;
+    *)            echo "9,10,11" ;;
+  esac
+}
+
+# Print just the main MPC core (first entry of get_mpc_cores).
+get_mpc_main_core() {
+  get_mpc_cores | cut -d',' -f1
+}
+
+# Print the list of RT cores (rt_control + sensor_io + udp_recv + MPC).
+# Used by IRQ affinity and GRUB nohz_full/rcu_nocbs. Order is not guaranteed.
+get_rt_cores() {
+  local ncpu
+  ncpu=$(get_physical_cores)
+  local mpc
+  mpc=$(get_mpc_cores)
+  # rt_control + sensor_io cores — keep hardcoded to match thread_config.hpp.
+  case "$ncpu" in
+    1|2|3|4)      echo "1,2,${mpc}" ;;
+    5|6|7)        echo "2,3,5,${mpc}" ;;     # RT=2, sensor=3, udp=5
+    8|9)          echo "2,3,5,${mpc}" ;;     # RT=2, sensor=3, udp=5 (after shift)
+    10|11)        echo "7,8,${mpc}" ;;       # RT=7, sensor=8
+    12|13|14|15)  echo "7,8,${mpc}" ;;       # RT=7, sensor=8, MPC=9,10
+    *)            echo "2,3,${mpc}" ;;       # 16+: RT=2, sensor=3
+  esac
+}
+
+# Print the list of OS cores (complement of get_rt_cores).
+get_os_cores() {
+  local ncpu
+  ncpu=$(get_physical_cores)
+  if [[ "$ncpu" -le 4 ]]; then
+    echo "0"
+  else
+    echo "0,1"
+  fi
 }

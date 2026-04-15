@@ -129,6 +129,17 @@ def generate_launch_description():
         )
     )
 
+    enable_mpc_arg = DeclareLaunchArgument(
+        'enable_mpc',
+        default_value='',
+        description=(
+            'Enable the MPC thread in DemoWbcController (Phase 5). '
+            'Takes effect only when initial_controller is demo_wbc_controller. '
+            'Empty = use demo_wbc_controller.yaml default. '
+            'Runtime toggle is also available via gains index 7.'
+        )
+    )
+
     # ── Paths ──────────────────────────────────────────────────────────────────
     ur_control_config = PathJoinSubstitution([
         FindPackageShare('ur5e_bringup'),
@@ -258,6 +269,11 @@ def generate_launch_description():
     )
 
     # ── RT controller node ─────────────────────────────────────────────────────
+    # Phase 5: `enable_mpc` launch arg is declared below but takes effect
+    # through the runtime gains topic (index 7) rather than a param override
+    # here — robot.launch.py does not use OpaqueFunction, and nested YAML
+    # overrides would require restructuring the launch. The sim.launch.py
+    # flow does inject the override directly via its OpaqueFunction setup.
     rt_controller_node = Node(
         package='ur5e_bringup',
         executable='ur5e_rt_controller',
@@ -356,6 +372,7 @@ def generate_launch_description():
         use_mock_hardware_arg,
         use_fake_hardware_arg,
         use_cpu_affinity_arg,
+        enable_mpc_arg,
         # 2) Environment
         set_session_dir,
         set_session_dir_legacy,

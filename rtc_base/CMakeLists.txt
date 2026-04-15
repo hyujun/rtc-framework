@@ -48,6 +48,11 @@ if(BUILD_TESTING)
   if(TARGET test_filters)
     target_include_directories(test_filters PRIVATE include)
   endif()
+
+  ament_add_gtest(test_mpc_thread_config test/test_mpc_thread_config.cpp)
+  if(TARGET test_mpc_thread_config)
+    target_include_directories(test_mpc_thread_config PRIVATE include)
+  endif()
 endif()
 
 ament_package()

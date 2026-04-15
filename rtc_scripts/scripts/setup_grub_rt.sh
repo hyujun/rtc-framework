@@ -97,6 +97,11 @@ fi
 # cset shield는 런타임에 동적 CPU 격리 on/off가 가능하여
 # 빌드 시 전체 코어를 사용할 수 있다. (cpu_shield.sh 참조)
 # nohz_full과 rcu_nocbs는 isolcpus와 독립적으로 유효하므로 유지.
+#
+# Phase 5 note: RT_CORES comes from compute_expected_isolated which returns
+# every non-OS core. MPC cores (get_mpc_cores in rt_common.sh) are a strict
+# subset of non-OS cores, so they are automatically covered without needing
+# a separate merge step.
 declare -A GRUB_PARAMS_WITH_VALUE=(
   ["nohz_full"]="${RT_CORES}"
   ["rcu_nocbs"]="${RT_CORES}"

@@ -1053,6 +1053,15 @@ main() {
     check_benchmark
   fi
 
+  # Phase 5: report MPC core assignment for the current tier. Informational
+  # only — check_rt_setup does not yet validate that the MPC thread is
+  # actually pinned (that's verify_rt_runtime.sh's job).
+  if [[ "$OUTPUT_MODE" == "verbose" ]] && declare -F get_mpc_cores >/dev/null; then
+    local mpc_cores_desc
+    mpc_cores_desc=$(get_mpc_cores)
+    info "MPC cores (tier ${TOTAL_CORES}): ${mpc_cores_desc}"
+  fi
+
   if [[ "$OUTPUT_MODE" == "json" ]]; then
     print_json
   else

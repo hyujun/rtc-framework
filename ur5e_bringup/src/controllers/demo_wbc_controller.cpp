@@ -1,5 +1,7 @@
 #include "ur5e_bringup/controllers/demo_wbc_controller.hpp"
 
+#include "rtc_base/threading/thread_utils.hpp"
+
 #include <algorithm>
 #include <cmath>
 
@@ -328,6 +330,29 @@ void DemoWbcController::LoadConfig(const YAML::Node & cfg)
     const auto s = cfg["command_type"].as<std::string>();
     command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
+
+  // ── 7. MPC integration (Phase 5) ──────────────────────────────────────
+  //
+  // If `mpc.enabled: true`, size the reference buffers and initialise the
+  // MPC solution manager. The thread itself is spawned in
+  // InitializeHoldPosition so it starts from the first valid RT tick's
+  // state snapshot. If `mpc:` is missing or disabled, all MPC paths are
+  // short-circuited and Phase 4 behaviour is preserved bit-exactly.
+  if (const auto mpc_cfg = cfg["mpc"]; mpc_cfg && full_model_ptr_) {
+    mpc_enabled_ = mpc_cfg["enabled"] && mpc_cfg["enabled"].as<bool>();
+    const int mpc_nq = full_model_ptr_->nq;
+    const int mpc_nv = full_model_ptr_->nv;
+    const int mpc_n_contact = contact_mgr_config_.max_contact_vars;
+    mpc_q_ref_ = Eigen::VectorXd::Zero(mpc_nq);
+    mpc_v_ref_ = Eigen::VectorXd::Zero(mpc_nv);
+    mpc_a_ff_ = Eigen::VectorXd::Zero(mpc_nv);
+    mpc_lambda_ref_ = Eigen::VectorXd::Zero(std::max(1, mpc_n_contact));
+    mpc_u_fb_ = Eigen::VectorXd::Zero(mpc_nv);
+    mpc_manager_.Init(mpc_cfg, mpc_nq, mpc_nv, mpc_n_contact);
+    RCLCPP_INFO(logger_,
+      "MPC integration: enabled=%d nq=%d nv=%d n_contact=%d",
+      mpc_enabled_, mpc_nq, mpc_nv, mpc_n_contact);
+  }
 }
 
 void DemoWbcController::OnDeviceConfigsSet()
@@ -386,9 +411,12 @@ void DemoWbcController::OnDeviceConfigsSet()
 void DemoWbcController::UpdateGainsFromMsg(
   std::span<const double> gains) noexcept
 {
-  // Layout: [grasp_cmd, grasp_target_force,
-  //          arm_traj_speed, hand_traj_speed,
-  //          se3_weight, force_weight, posture_weight] = 7
+  // Layout (9 entries as of Phase 5):
+  //   [ grasp_cmd, grasp_target_force,
+  //     arm_traj_speed, hand_traj_speed,
+  //     se3_weight, force_weight, posture_weight,
+  //     mpc_enable (0/1), riccati_gain_scale (0..1) ]
+  // Indices 0-6 are backwards-compatible with the Phase 4 7-entry layout.
   if (gains.size() >= 1) {
     grasp_cmd_.store(static_cast<int>(gains[0]), std::memory_order_release);
   }
@@ -398,6 +426,13 @@ void DemoWbcController::UpdateGainsFromMsg(
   if (gains.size() >= 5) { gains_.se3_weight = gains[4]; }
   if (gains.size() >= 6) { gains_.force_weight = gains[5]; }
   if (gains.size() >= 7) { gains_.posture_weight = gains[6]; }
+  if (gains.size() >= 8) {
+    const bool requested = gains[7] > 0.5;
+    mpc_manager_.SetEnabled(requested && mpc_enabled_);
+  }
+  if (gains.size() >= 9) {
+    mpc_manager_.SetRiccatiGainScale(gains[8]);
+  }
 }
 
 std::vector<double> DemoWbcController::GetCurrentGains() const noexcept
@@ -409,7 +444,9 @@ std::vector<double> DemoWbcController::GetCurrentGains() const noexcept
     gains_.hand_trajectory_speed,
     gains_.se3_weight,
     gains_.force_weight,
-    gains_.posture_weight
+    gains_.posture_weight,
+    mpc_manager_.Enabled() ? 1.0 : 0.0,
+    mpc_manager_.RiccatiGainScale()
   };
 }
 
@@ -936,10 +973,42 @@ void DemoWbcController::ComputeTSIDPosition(
   // 2. Update Pinocchio cache (M, h, g, Jacobians)
   pinocchio_cache_.update(q_curr_full_, v_curr_full_, contact_state_);
 
-  // 3. Set posture reference (regularization toward current target)
-  control_ref_.q_des = q_curr_full_;
-  control_ref_.v_des.setZero();
-  control_ref_.a_des.setZero();
+  // 2b. MPC reference injection (Phase 5).
+  //
+  // Publish the current RT state to the MPC thread, then try to consume
+  // the freshest MPC solution. If we have a valid interpolated reference,
+  // it replaces the Phase 4 self-regularising hold target on the next
+  // line. If not (MPC disabled / not yet publishing / too many stale
+  // cycles), we fall through to the Phase 4 behaviour.
+  bool mpc_ref_valid = false;
+  if (mpc_enabled_ && mpc_manager_.Enabled()) {
+    const uint64_t now_ns =
+        static_cast<uint64_t>(state.iteration) * 2'000'000ULL;  // 500 Hz tick
+    mpc_manager_.WriteState(q_curr_full_, v_curr_full_, now_ns);
+
+    rtc::mpc::InterpMeta meta;
+    mpc_ref_valid = mpc_manager_.ComputeReference(
+        q_curr_full_, v_curr_full_, now_ns,
+        mpc_q_ref_, mpc_v_ref_, mpc_a_ff_,
+        mpc_lambda_ref_, mpc_u_fb_, meta);
+  }
+
+  // 3. Set posture reference (regularization toward MPC q_ref if valid,
+  //    else toward current position for self-holding behaviour).
+  if (mpc_ref_valid) {
+    control_ref_.q_des = mpc_q_ref_;
+    control_ref_.v_des = mpc_v_ref_;
+    // TSID will combine a_ff with task PD correction. u_fb from Riccati
+    // is additive acceleration feedback on the actuated joints only.
+    control_ref_.a_des = mpc_a_ff_;
+    const int n_fb = std::min(static_cast<int>(mpc_u_fb_.size()),
+                              static_cast<int>(control_ref_.a_des.size()));
+    control_ref_.a_des.head(n_fb) += mpc_u_fb_.head(n_fb);
+  } else {
+    control_ref_.q_des = q_curr_full_;
+    control_ref_.v_des.setZero();
+    control_ref_.a_des.setZero();
+  }
 
   // 4. Build ControlState
   ctrl_state_.q = q_curr_full_;
@@ -1169,6 +1238,41 @@ void DemoWbcController::InitializeHoldPosition(
   tcp_goal_valid_ = false;
   qp_fail_count_ = 0;
   grasp_cmd_.store(0, std::memory_order_relaxed);
+
+  // ── MPC thread lifecycle (Phase 5) ──────────────────────────────────────
+  //
+  // Spawn the MPC thread lazily on first InitializeHoldPosition call so it
+  // starts from a known-good RT state. Subsequent calls (e.g. controller
+  // re-init after E-STOP clear) leave the existing thread running.
+  if (mpc_enabled_ && !mpc_thread_) {
+    const auto thread_configs = rtc::SelectThreadConfigs();
+    auto mock = std::make_unique<rtc::mpc::MockMPCThread>();
+    const int nq = static_cast<int>(q_curr_full_.size());
+    const int nv = static_cast<int>(v_curr_full_.size());
+    mock->Configure(nq, nv, /*horizon=*/10, /*dt_node=*/0.01);
+
+    // Seed MPC target at the current hold position so the initial MPC
+    // trajectory is a no-op hold (matches Phase 4 behaviour).
+    mock->SetTarget(q_curr_full_);
+
+    rtc::mpc::MpcThreadLaunchConfig launch{};
+    launch.main = thread_configs.mpc.main;
+    launch.num_workers = thread_configs.mpc.num_workers;
+    for (int i = 0; i < launch.num_workers &&
+         i < rtc::mpc::kMaxMpcWorkers; ++i) {
+      launch.workers[static_cast<std::size_t>(i)] =
+          thread_configs.mpc.workers[static_cast<std::size_t>(i)];
+    }
+    launch.target_frequency_hz = 20.0;
+
+    mock->Init(mpc_manager_, launch);
+    mock->Start();
+    mpc_thread_ = std::move(mock);
+    mpc_manager_.SetEnabled(true);
+    RCLCPP_INFO(logger_,
+      "MPC thread started: core=%d prio=%d workers=%d",
+      launch.main.cpu_core, launch.main.sched_priority, launch.num_workers);
+  }
 }
 
 // ── E-STOP ───────────────────────────────────────────────────────────────────

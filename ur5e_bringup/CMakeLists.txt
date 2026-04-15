@@ -42,6 +42,7 @@ find_package(pinocchio REQUIRED)
 find_package(rtc_urdf_bridge REQUIRED)
 find_package(rtc_controller_manager REQUIRED)
 find_package(rtc_tsid REQUIRED)
+find_package(rtc_mpc REQUIRED)
 find_package(ur5e_description REQUIRED)
 
 # ── Static library: demo controllers ──────────────────────────────────────────
@@ -70,6 +71,7 @@ ament_target_dependencies(${PROJECT_NAME}_demo_controllers
   pinocchio
   rtc_urdf_bridge
   rtc_tsid
+  rtc_mpc
   ur5e_description
 )
 
@@ -187,6 +189,23 @@ if(BUILD_TESTING)
     rtc_base
     pinocchio
     rtc_tsid
+    Eigen3
+  )
+
+  # ── demo_wbc_controller MPC integration tests (Phase 5) ────────────────────
+  ament_add_gtest(test_demo_wbc_mpc_integration
+    test/test_demo_wbc_mpc_integration.cpp)
+  target_link_libraries(test_demo_wbc_mpc_integration
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_demo_wbc_mpc_integration
+    rclcpp
+    rtc_controllers
+    rtc_base
+    pinocchio
+    rtc_tsid
+    rtc_mpc
     Eigen3
   )
 

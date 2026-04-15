@@ -67,6 +67,7 @@ ros2 topic echo /system/estop_status                  # true = E-STOP active
 | `rtc_digital_twin` | Python | RViz2 multi-source JointState merge, URDF mimic auto-compute |
 | `rtc_urdf_bridge` | Library | Robot-agnostic URDF parser + Pinocchio model builder |
 | `rtc_tsid` | Library | TSID QP framework: WQP/HQP formulations, PostureTask, EOM/Contact/FrictionCone/TorqueLimit constraints, ProxSuite solver |
+| `rtc_mpc` | Library | MPC↔RT interface: zero-copy `TripleBuffer<T>`, cubic-Hermite `TrajectoryInterpolator`, `RiccatiFeedback`, `MPCSolutionManager` facade, `MPCThread`+`MockMPCThread` jthread skeleton |
 | `shape_estimation` | Executable | ToF-based voxel point cloud + primitive fitting |
 | `ur5e_description` | Data | URDF + MJCF + meshes (DAE/STL/OBJ) |
 | `ur5e_hand_driver` | Executable | UDP event-driven driver, SeqLock state, ONNX F/T inference |
@@ -82,10 +83,12 @@ rtc_msgs, rtc_base (independent)
   |     +-- rtc_controllers <-- rtc_controller_interface, rtc_urdf_bridge
   |           +-- rtc_controller_manager <-- rtc_controllers, rtc_communication
   +-- rtc_tsid <-- Pinocchio, ProxSuite, Eigen3, yaml-cpp
+  +-- rtc_mpc  <-- rtc_base, Eigen3, yaml-cpp                # Phase 5
   +-- rtc_mujoco_sim <-- MuJoCo 3.x (optional)
 rtc_urdf_bridge <-- Pinocchio, tinyxml2, yaml-cpp
 ur5e_hand_driver <-- rtc_communication, rtc_inference, rtc_base
-ur5e_bringup <-- rtc_controller_manager, ur5e_hand_driver, ur5e_description
+ur5e_bringup <-- rtc_controller_manager, ur5e_hand_driver, ur5e_description,
+                 rtc_tsid, rtc_mpc
 ```
 
 ---
@@ -109,10 +112,13 @@ Key types (all trivially copyable, RT-safe):
 | rt_loop | 2 | FIFO | 90 | 500Hz ControlLoop + 50Hz CheckTimeouts |
 | sensor_executor | 3 | FIFO | 70 | JointState/MotorState/SensorState/Target subs |
 | log_executor | 4 | OTHER | nice -5 | CSV logging (SPSC drain) |
+| mpc_main (Phase 5) | 4 | FIFO | 60 | 20Hz MPC solve, publishes via `TripleBuffer` |
 | publish_thread | 5 | OTHER | nice -3 | SPSC -> ROS2 publish |
 | udp_recv | 5 | FIFO | 65 | Hand UDP receiver |
 
 Core 0-1: OS/DDS/IRQ. Auto-selects 4/6/8/10/12/16-core layouts via `SelectThreadConfigs()`.
+MPC gets a dedicated core on 8+ core tiers (Core 4 on 8-core; Core 9 on 12/16-core with 1-2 workers).
+MPC priority is always below `sensor_io` so sensor callbacks preempt long MPC solves.
 
 ### Lock-Free Rules
 
@@ -147,7 +153,7 @@ Core 0-1: OS/DDS/IRQ. Auto-selects 4/6/8/10/12/16-core layouts via `SelectThread
 | OSC | `[kp_pos x 3, kd_pos x 3, kp_rot x 3, kd_rot x 3, damping, gravity(0/1), traj_speed, traj_ang_speed, max_vel, max_ang_vel]` | 18 |
 | DemoJoint | `[robot_traj_speed, hand_traj_speed, robot_max_vel, hand_max_vel, grasp_contact_thresh, grasp_force_thresh, grasp_min_fingertips, grasp_cmd(0/1/2), grasp_target_force]` | 9 |
 | DemoTask | `[kp_trans x 3, kp_rot x 3, damping, null_kp, null_space(0/1), 6dof(0/1), traj_speed, traj_ang_speed, hand_traj_speed, max_vel, max_ang_vel, hand_max_vel, grasp_contact_thresh, grasp_force_thresh, grasp_min_fingertips, grasp_cmd(0/1/2), grasp_target_force]` | 21 |
-| DemoWbc | `[grasp_cmd(0/1/2), grasp_target_force, arm_traj_speed, hand_traj_speed, se3_weight, force_weight, posture_weight]` | 7 |
+| DemoWbc | `[grasp_cmd(0/1/2), grasp_target_force, arm_traj_speed, hand_traj_speed, se3_weight, force_weight, posture_weight, mpc_enable(0/1), riccati_gain_scale(0..1)]` | 9 |
 
 ### GraspController (Force-PI, internal only)
 
@@ -791,9 +797,10 @@ Test files by package (159 total):
 |---------|-------|-----------|
 | `ur5e_bt_coordinator` | 14 C++ tests (`test/test_*.cpp`) | GTest |
 | `rtc_tsid` | 17 C++ tests (QP solver, tasks, constraints, formulations, performance, Phase 3 integration) | GTest |
-| `rtc_base` | 19 C++ tests (SeqLock, SPSC buffers, Bessel/Kalman filters, session dir) | GTest |
+| `rtc_base` | 24 C++ tests (SeqLock, SPSC buffers, Bessel/Kalman filters, session dir, MPC thread-config tier validation) | GTest |
+| `rtc_mpc` | 43 C++ tests (MPC types, zero-copy TripleBuffer + 1M-iter stress, linear + cubic-Hermite interpolation, Riccati feedback, solution manager, thread skeleton + MockMPC end-to-end) | GTest |
 | `rtc_communication` | 9 C++ tests (UDP loopback bind/connect/timeout/RAII + Transceiver lifecycle/decode/callback/Send via FakeCodec) | GTest |
-| `ur5e_bringup` | 23 C++ tests (virtual_tcp, shared_config, demo_wbc_controller FSM/integration/output + Phase 4B sensor parsing + closure/hold/retreat/release transitions) | GTest |
+| `ur5e_bringup` | 29 C++ tests (virtual_tcp, shared_config, demo_wbc_controller FSM/integration/output + Phase 4B sensor parsing + closure/hold/retreat/release transitions + Phase 5 MPC binding tests) | GTest |
 | `rtc_mujoco_sim` | 77 C++ tests (pure parse helpers, simulator init/validation, solver XML-priority, command/state I/O, Start/Stop lifecycle, atomic runtime controls, state/sensor callback data flow) | GTest |
 | `rtc_controllers` | 6 C++ tests (trajectory + grasp) | GTest |
 | `rtc_urdf_bridge` | 5 C++ tests (URDF/model parsing) | GTest |
@@ -827,6 +834,14 @@ Test files by package (159 total):
 | TSID formulations | `rtc_tsid/include/rtc_tsid/formulation/{wqp,hqp}_formulation.hpp` |
 | TSID tasks/constraints | `rtc_tsid/include/rtc_tsid/core/{task_base,constraint_base}.hpp` |
 | TSID types | `rtc_tsid/include/rtc_tsid/types/wbc_types.hpp` |
+| MPC solution types | `rtc_mpc/include/rtc_mpc/types/mpc_solution_types.hpp` |
+| MPC TripleBuffer | `rtc_mpc/include/rtc_mpc/comm/triple_buffer.hpp` |
+| MPC interpolator | `rtc_mpc/include/rtc_mpc/interpolation/trajectory_interpolator.hpp` |
+| MPC Riccati feedback | `rtc_mpc/include/rtc_mpc/feedback/riccati_feedback.hpp` |
+| MPC solution manager | `rtc_mpc/include/rtc_mpc/manager/mpc_solution_manager.hpp` |
+| MPC thread + mock | `rtc_mpc/include/rtc_mpc/thread/{mpc_thread,mock_mpc_thread}.hpp` |
+| MpcThreadConfig tiers | `rtc_base/include/rtc_base/threading/thread_config.hpp` (`kMpcConfig{4,6,8,10,12,16}Core`) |
+| MPC core helpers (shell) | `rtc_scripts/scripts/lib/rt_common.sh` (`get_mpc_cores`, `get_rt_cores`, `get_os_cores`) |
 | DemoWbcController | `ur5e_bringup/include/ur5e_bringup/controllers/demo_wbc_controller.hpp` |
 | DemoWbc YAML config | `ur5e_bringup/config/controllers/demo_wbc_controller.yaml` |
 | Supplementary docs | `docs/` (RT_OPTIMIZATION.md, SHELL_SCRIPTS.md, VSCODE_DEBUGGING.md) |

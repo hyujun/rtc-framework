@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>rtc_mpc</name>
+  <version>0.1.0</version>
+  <description>
+    MPC↔RT control interface layer for RTC framework.
+    Robot-agnostic library providing: lock-free triple-buffer for MPC solution
+    delivery, cubic Hermite trajectory interpolation, Riccati feedback, and
+    MPC thread skeleton. Solver implementations (e.g. Aligator) live in
+    separate downstream packages.
+  </description>
+  <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rtc_base</depend>
+  <depend>eigen</depend>
+  <depend>yaml-cpp</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

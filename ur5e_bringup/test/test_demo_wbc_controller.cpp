@@ -147,19 +147,24 @@ TEST_F(WbcFSMTest, HandEstopIndependent)
 
 TEST_F(WbcFSMTest, UpdateGainsFromMsg)
 {
-  std::array<double, 7> gains = {
+  // Phase 5: gains layout expanded to 9 entries. Trailing two
+  // (mpc_enable, riccati_gain_scale) are backwards-compatible: a 7-entry
+  // message still updates indices 0-6 and leaves MPC state untouched.
+  std::array<double, 9> gains = {
     0.0,    // grasp_cmd = idle
     3.0,    // grasp_target_force
     0.8,    // arm_traj_speed
     2.0,    // hand_traj_speed
     150.0,  // se3_weight
     15.0,   // force_weight
-    2.0     // posture_weight
+    2.0,    // posture_weight
+    0.0,    // mpc_enable (off — controller was constructed without MPC)
+    0.7     // riccati_gain_scale
   };
   ctrl_.UpdateGainsFromMsg(gains);
 
   auto current = ctrl_.GetCurrentGains();
-  ASSERT_EQ(current.size(), 7u);
+  ASSERT_EQ(current.size(), 9u);
   EXPECT_NEAR(current[0], 0.0, 1e-9);    // grasp_cmd
   EXPECT_NEAR(current[1], 3.0, 1e-9);    // force
   EXPECT_NEAR(current[2], 0.8, 1e-9);    // arm speed
@@ -167,6 +172,8 @@ TEST_F(WbcFSMTest, UpdateGainsFromMsg)
   EXPECT_NEAR(current[4], 150.0, 1e-9);  // se3_weight
   EXPECT_NEAR(current[5], 15.0, 1e-9);   // force_weight
   EXPECT_NEAR(current[6], 2.0, 1e-9);    // posture_weight
+  EXPECT_NEAR(current[7], 0.0, 1e-9);    // mpc_enable
+  EXPECT_NEAR(current[8], 0.7, 1e-9);    // riccati_gain_scale
 }
 
 TEST_F(WbcFSMTest, PartialGainsUpdate)
