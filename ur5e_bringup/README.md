@@ -265,6 +265,68 @@ J_vtcp_angular = J_tcp_angular
 
 **E-STOP:** 안전 위치 `[0, -1.57, 1.57, -1.57, -1.57, 0]` rad로 이동, 핸드는 현재 위치 유지
 
+### DemoWbcController (Index 6)
+
+UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller. TSID QP가 풀어내는 최적 가속도 `a*`를 semi-implicit Euler로 적분해 위치 명령을 산출하고, 8-단계 FSM이 phase별 task 가중치/contact 활성화를 자동 전환한다.
+
+#### 8-Phase FSM
+
+| Phase | 제어 모드 | 진입 조건 | 종료 조건 |
+|-------|----------|----------|----------|
+| `kIdle` | Position hold | 초기 / `grasp_cmd=0` | `grasp_cmd=1` + `robot_new_target` |
+| `kApproach` | Quintic trajectory (joint) | kIdle 종료 | `trajectory_time >= duration` |
+| `kPreGrasp` | TSID QP (no contact) | kApproach 종료 | `||tcp_err|| < epsilon_pregrasp` |
+| `kClosure` | TSID QP + contact + ForceTask | kPreGrasp 종료 | active fingertip force ≥ N개 (`min_contacts_for_hold`) |
+| `kHold` | TSID QP + contact + ForceTask | kClosure 종료 | `grasp_cmd=2`, slip 또는 deformation 감지 시 `kFallback` |
+| `kRetreat` | Quintic trajectory (joint) | `grasp_cmd=2` | `trajectory_time >= duration` (q_approach_start로 복귀) |
+| `kRelease` | Hand open trajectory | kRetreat 종료 | `hand_trajectory_time >= duration` |
+| `kFallback` | Position hold | QP 연속 실패 N회, slip/deformation | `grasp_cmd=0` (수동 복구) |
+
+#### Gains Layout (`~/controller_gains` topic, 7 values)
+
+```
+[grasp_cmd(0/1/2), grasp_target_force,
+ arm_traj_speed, hand_traj_speed,
+ se3_weight, force_weight, posture_weight]
+```
+
+#### YAML 구조 (`config/controllers/demo_wbc_controller.yaml`)
+
+- `tsid.tasks`: `posture` / `se3_tcp` / `force` (Phase 4B)
+- `tsid.constraints`: `eom` / `joint_limit` / `friction_cone` (Phase 4B, n_faces=8)
+- `tsid.phase_presets`: pre_grasp / closure / hold 별 task weight + active 토글
+- `fsm`: epsilon_approach/pregrasp, force_contact_threshold, `min_contacts_for_hold`, `slip_rate_threshold`, `deformation_threshold`
+
+#### 사용법 (시뮬레이션)
+
+```bash
+ros2 launch ur5e_bringup sim.launch.py initial_controller:=demo_wbc_controller
+
+# 1. Pre-grasp 위치로 approach
+ros2 topic pub /ur5e/joint_goal std_msgs/Float64MultiArray \
+  "{data: [0.0, -1.2, 1.0, -1.4, -1.57, 0.0]}" -1
+
+# 2. Hand close target
+ros2 topic pub /hand/joint_goal std_msgs/Float64MultiArray \
+  "{data: [0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6]}" -1
+
+# 3. grasp_cmd=1 → 전체 FSM 시작
+ros2 topic pub /ur5e/controller_gains std_msgs/Float64MultiArray \
+  "{data: [1.0, 2.0, 0.5, 1.0, 100.0, 10.0, 1.0]}" -1
+
+# 4. Release: grasp_cmd=2
+ros2 topic pub /ur5e/controller_gains std_msgs/Float64MultiArray \
+  "{data: [2.0, 2.0, 0.5, 1.0, 100.0, 10.0, 1.0]}" -1
+```
+
+#### Anomaly 보호
+
+- **Slip**: EMA-smoothed `|df/dt|` > `slip_rate_threshold` (기본 5.0 N/s)
+- **Deformation**: `||displacement||` > `deformation_threshold` (기본 0.015 m)
+- **QP 실패**: 연속 `max_qp_fail_before_fallback`회 (기본 5) → `kFallback` 진입
+
+**E-STOP:** 안전 위치 `[0, -1.57, 1.57, -1.57, -1.57, 0]` rad로 이동, 핸드는 현재 위치 유지, contact 비활성화
+
 ---
 
 ## 로깅 (Logging)
@@ -534,7 +596,9 @@ ros2 run ur5e_bringup motion_editor_gui
 | `rtc_base` | 타입, 스레딩 |
 | `rtc_msgs` | 커스텀 메시지 |
 | `rtc_urdf_bridge` | URDF→Pinocchio 모델 빌더 + RT-safe handle |
+| `rtc_tsid` | TSID QP 프레임워크 (DemoWbcController) |
 | `pinocchio` | 기구학 (FK, Jacobian) — bridge가 transitively 제공 |
+| `proxsuite` | QP 솔버 (rtc_tsid가 transitively 요구) |
 | `yaml-cpp` | YAML 파싱 |
 | `sensor_msgs` | JointState |
 | `std_msgs` | 표준 메시지 |

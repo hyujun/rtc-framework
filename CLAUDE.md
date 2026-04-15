@@ -16,8 +16,8 @@ The `ur5e_*` packages are **robot-specific**: UR5e + 10-DOF hand hardware driver
 | OS | Ubuntu 22.04 (PREEMPT_RT optional) / 24.04 |
 | Middleware | ROS 2 Humble / Jazzy, CycloneDDS |
 | Build | CMake 3.22+, colcon, ament_cmake / ament_python |
-| Framework Deps | Eigen 3.4, Pinocchio, ONNX Runtime |
-| Optional Deps | MuJoCo 3.x (simulation), BehaviorTree.CPP v4 (coordination), ProxSuite (TSID QP solver) |
+| Framework Deps | Eigen 3.4, Pinocchio, ProxSuite (TSID QP solver, hard dep of `ur5e_bringup` via `rtc_tsid`), ONNX Runtime |
+| Optional Deps | MuJoCo 3.x (simulation), BehaviorTree.CPP v4 (coordination) |
 | Robot-Specific HW | UR5e (ros2_control RTDE), 10-DOF Hand (UDP), STM32 ToF (UART) |
 | Test | GTest, pytest (60 tests across 10 packages) |
 | CI | GitHub Actions (`ros2-advanced-ci.yml`), Codecov |
@@ -135,7 +135,7 @@ Core 0-1: OS/DDS/IRQ. Auto-selects 4/6/8/10/12/16-core layouts via `SelectThread
 | GraspController | Internal | Hand 3x3-DOF | Adaptive PI force, 6-state FSM, per-finger stiffness EMA |
 | DemoJointController | Position | Joint + Hand | Quintic trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"` |
 | DemoTaskController | Position | Cartesian + Hand | CLIK + trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"` |
-| DemoWbcController | Position | TSID QP + Hand | 8-phase FSM, TSID QP → accel → position integration, combined 16-DoF model |
+| DemoWbcController | Position | TSID QP + Hand | 8-phase FSM (Idle→Approach→PreGrasp→Closure→Hold→Retreat→Release), TSID QP → accel → position integration, contact-aware ForceTask + FrictionCone, sensor-driven contact / slip / deformation guards, combined 16-DoF model |
 
 ### Gains Layout (via `~/controller_gains` topic)
 
@@ -748,7 +748,7 @@ Test files by package (73 total):
 | `ur5e_bt_coordinator` | 14 C++ tests (`test/test_*.cpp`) | GTest |
 | `rtc_tsid` | 17 C++ tests (QP solver, tasks, constraints, formulations, performance, Phase 3 integration) | GTest |
 | `rtc_base` | 19 C++ tests (SeqLock, SPSC buffers, Bessel/Kalman filters, session dir) | GTest |
-| `ur5e_bringup` | 13 C++ tests (virtual_tcp, shared_config, demo_wbc_controller FSM/integration/output) | GTest |
+| `ur5e_bringup` | 23 C++ tests (virtual_tcp, shared_config, demo_wbc_controller FSM/integration/output + Phase 4B sensor parsing + closure/hold/retreat/release transitions) | GTest |
 | `rtc_controllers` | 6 C++ tests (trajectory + grasp) | GTest |
 | `rtc_urdf_bridge` | 5 C++ tests (URDF/model parsing) | GTest |
 | `shape_estimation` | 3 C++ tests (ToF + exploration) | GTest |

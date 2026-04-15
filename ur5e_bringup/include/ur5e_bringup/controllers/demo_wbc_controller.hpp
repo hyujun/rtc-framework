@@ -108,6 +108,26 @@ public:
   [[nodiscard]] bool IsEstopped() const          noexcept override;
   void SetHandEstop(bool active)                 noexcept override;
 
+  // ── Test accessors (const snapshots, not RT-safe) ───────────────────────
+  struct FingertipReport {
+    float force_magnitude{0.0f};
+    float force_rate{0.0f};
+    float contact_flag{0.0f};
+    bool  valid{false};
+  };
+  [[nodiscard]] FingertipReport GetFingertipReportForTesting(
+    int fingertip_idx) const noexcept;
+  [[nodiscard]] int GetNumActiveFingertipsForTesting() const noexcept
+  {
+    return num_active_fingertips_;
+  }
+  [[nodiscard]] WbcPhase GetPhaseForTesting() const noexcept { return phase_; }
+  void ForcePhaseForTesting(WbcPhase p) noexcept { phase_ = p; }
+  void SetGraspCmdForTesting(int v) noexcept
+  {
+    grasp_cmd_.store(v, std::memory_order_release);
+  }
+
   // ── Registry hooks ──────────────────────────────────────────────────────
   void LoadConfig(const YAML::Node & cfg) override;
   void OnDeviceConfigsSet() override;
@@ -122,6 +142,15 @@ private:
   // ── Model initialization ────────────────────────────────────────────────
   void InitModels(const rtc_urdf_bridge::ModelConfig & config);
   void BuildJointReorderMap();
+
+  // ── TSID task/constraint YAML factory ───────────────────────────────────
+  //
+  // Dispatches on the `type:` field of each entry under `tsid.tasks` /
+  // `tsid.constraints`. Supported tasks: posture, se3, force. Supported
+  // constraints: eom, joint_limit, friction_cone. Unknown types log ERROR
+  // and skip. Called once in LoadConfig after TSIDController::init().
+  void BuildTsidTasks(const YAML::Node & tsid_node);
+  void BuildTsidConstraints(const YAML::Node & tsid_node);
 
   // ── 3-phase pipeline (RT path) ──────────────────────────────────────────
   void ReadState(const ControllerState & state) noexcept;
@@ -194,6 +223,26 @@ private:
   std::array<rtc::tsid::PhasePreset, kNumPhases> phase_presets_{};
   std::array<bool, kNumPhases> phase_preset_valid_{};
 
+  // ── Fingertip sensor data (parsed in ReadState) ─────────────────────────
+  //
+  // Populated each tick from state.devices[1].sensor_data / inference_data.
+  // Consumed by contact detection (kClosure -> kHold) and anomaly monitoring
+  // (kHold slip/deformation -> kFallback).
+  struct FingertipSensorData {
+    std::array<int32_t, rtc::kBarometerCount> baro{};
+    std::array<int32_t, 3> tof{};
+    std::array<float, 3>   force{};
+    std::array<float, 3>   displacement{};
+    float force_magnitude{0.0f};    ///< ||force||  (cached, N)
+    float prev_force_magnitude{0.0f}; ///< previous tick, for df/dt
+    float force_rate{0.0f};           ///< df/dt [N/s] (smoothed)
+    float contact_flag{0.0f};
+    bool  valid{false};
+  };
+  std::array<FingertipSensorData, rtc::kMaxFingertips> fingertip_data_{};
+  int num_active_fingertips_{0};
+  bool force_rate_initialized_{false};
+
   // ── TSID → Position integration ─────────────────────────────────────────
   //
   // All vectors are in Pinocchio joint order (full model, 16-DoF).
@@ -252,6 +301,12 @@ private:
   double epsilon_pregrasp_{0.005};      ///< m, pre-grasp → closure
   double force_contact_threshold_{0.2}; ///< N, contact detection
   double force_hold_threshold_{1.0};    ///< N, hold → retreat
+  int    min_contacts_for_hold_{2};     ///< # fingertips required -> kHold
+  double slip_rate_threshold_{5.0};     ///< N/s, |df/dt| slip guard (kHold)
+  double deformation_threshold_{0.015}; ///< m, ||disp|| guard (kHold)
+
+  // Approach start pose (saved on kApproach entry, reused on kRetreat)
+  std::array<double, kNumRobotJoints> q_approach_start_{};
 
   // Integration safety margins
   double position_margin_{0.02};        ///< rad, from joint limits

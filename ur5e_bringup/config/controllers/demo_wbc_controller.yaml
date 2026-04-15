@@ -73,6 +73,11 @@ demo_wbc_controller:
         kd: [20, 20, 20, 10, 10, 10]
         weight: 100.0
         priority: 0
+      # Contact force tracking (Phase 4B): active in closure/hold phases
+      force:
+        type: "force"
+        weight: 10.0
+        priority: 1
 
     constraints:
       eom:
@@ -82,6 +87,10 @@ demo_wbc_controller:
         dt: 0.002               # must match control_rate
         position_margin: 0.05   # rad
         velocity_margin: 0.1    # rad/s
+      # Friction cone (Phase 4B): linearised n-face pyramid per contact
+      friction_cone:
+        type: "friction_cone"
+        n_faces: 8
 
     contacts:
       - name: "thumb_tip"
@@ -110,17 +119,21 @@ demo_wbc_controller:
         tasks:
           posture:   { active: true,  weight: 0.1,  priority: 0 }
           se3_tcp:   { active: true,  weight: 50.0, priority: 0 }
+          force:     { active: true,  weight: 10.0, priority: 1 }
         constraints:
           eom:           { active: true }
           joint_limit:   { active: true }
+          friction_cone: { active: true }
 
       hold:
         tasks:
           posture:   { active: true,  weight: 0.1,   priority: 0 }
           se3_tcp:   { active: true,  weight: 50.0,  priority: 0 }
+          force:     { active: true,  weight: 20.0,  priority: 1 }
         constraints:
           eom:           { active: true }
           joint_limit:   { active: true }
+          friction_cone: { active: true }
 
   # ── Integration safety ───────────────────────────────────────────────
   integration:
@@ -131,7 +144,10 @@ demo_wbc_controller:
   fsm:
     epsilon_approach: 0.01       # m, approach → pre-grasp threshold
     epsilon_pregrasp: 0.005      # m, pre-grasp → closure threshold
-    force_contact_threshold: 0.2 # N, contact detection (Phase 4B)
-    force_hold_threshold: 1.0    # N, hold threshold (Phase 4B)
+    force_contact_threshold: 0.2 # N, per-fingertip contact detection
+    force_hold_threshold: 1.0    # N, hold threshold
+    min_contacts_for_hold: 2     # # of fingertips required for kClosure→kHold
+    slip_rate_threshold: 5.0     # N/s, |df/dt| anomaly guard in kHold
+    deformation_threshold: 0.015 # m, ||displacement|| anomaly guard in kHold
     max_qp_fail_before_fallback: 5
     approach_speed: 0.5          # rad/s (overrides arm_trajectory_speed)

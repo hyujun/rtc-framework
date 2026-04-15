@@ -138,6 +138,12 @@ def launch_setup(context, *args, **kwargs):
 
     ctrl_overrides['log_dir'] = session_dir
 
+    # Optional: override initial_controller (Phase 4B: select demo_wbc_controller)
+    initial_controller = LaunchConfiguration(
+        'initial_controller').perform(context)
+    if initial_controller != '':
+        ctrl_overrides['initial_controller'] = initial_controller
+
     if ctrl_overrides:
         ctrl_params.append(ctrl_overrides)
 
@@ -342,6 +348,15 @@ def generate_launch_description():
         )
     )
 
+    initial_controller_arg = DeclareLaunchArgument(
+        'initial_controller',
+        default_value='',
+        description=(
+            'Override initial controller name (e.g. demo_wbc_controller). '
+            'Empty = use value from ur5e_sim.yaml.'
+        )
+    )
+
     return LaunchDescription([
         # Arguments
         model_path_arg,
@@ -353,6 +368,7 @@ def generate_launch_description():
         use_yaml_servo_gains_arg,
         max_log_sessions_arg,
         use_cpu_affinity_arg,
+        initial_controller_arg,
         # Nodes (via OpaqueFunction for conditional parameter loading)
         OpaqueFunction(function=launch_setup),
     ])
