@@ -391,6 +391,49 @@ These conventions apply to all `rtc_*` (robot-agnostic) packages. Robot-specific
 
 ---
 
+## Design Principles for `rtc_*` Packages
+
+`rtc_*` packages are the **robot-agnostic** backbone of this framework. Any modification — bug fix, feature addition, refactor — MUST preserve this property. Robot-specific logic, hardware assumptions, and fixed-shape constants belong in `ur5e_*` packages. When in doubt, re-read the Project Identity section and ask: *"Would this code still make sense on a 7-DOF arm with a 2-finger gripper?"*
+
+### Five Principles (mandatory self-check before writing code in `rtc_*`)
+
+1. **Extensibility** — Adding a new robot, new DOF count, new transport, or new controller must require **zero source edits** inside `rtc_*` packages. It should be achievable via: (a) YAML config, (b) `RTC_REGISTER_CONTROLLER` registration from a downstream package, or (c) implementing an existing abstract interface. If your change forces `rtc_*` recompilation for every new robot, the design is wrong.
+
+2. **Generality** — No robot names, joint counts, finger counts, topic names, or hardware identifiers may be hardcoded in `rtc_*`. Use YAML-injected values, template parameters, or runtime config. Constants like `kNumRobotJoints=6` that exist today are **upper-bound capacity** values, not per-robot assumptions — new code must not add tighter coupling. Variable and type names must describe the *role* (`num_joints`, `num_fingertips`), never the *robot* (`ur5e_joints`, `allegro_fingers`).
+
+3. **Modularity** — Respect the dependency graph ([Repository Structure](#repository-structure)). Never introduce upward dependencies (e.g., `rtc_base` depending on `rtc_controllers`). Never cross-link sibling packages that the graph does not already connect. A new feature that needs to span packages is a signal to: (a) push the abstraction down to a shared base, or (b) invert the dependency via an interface injected by the caller.
+
+4. **Interface-first design** — New functionality that may have multiple implementations MUST be defined as an **abstract class, concept, or pure-virtual interface** in an `*_interface` or `*_base` header *before* any concrete implementation is written. Follow the existing patterns: `RTControllerInterface` (rtc_controller_interface), `TransportInterface` / `PacketCodec` concept (rtc_communication), `InferenceEngine` (rtc_inference), `TaskBase` / `ConstraintBase` (rtc_tsid). Concrete classes register themselves via factory/registry — never via `#ifdef` or hardcoded switch statements in the framework layer.
+
+5. **Deduplication & Reuse** — Before writing any utility, filter, buffer, parser, or math helper, search existing `rtc_*` packages. Canonical locations:
+   - Lock-free primitives, filters, logging, threading → `rtc_base`
+   - URDF parsing, Pinocchio model construction → `rtc_urdf_bridge`
+   - Transport abstractions, UDP, codecs → `rtc_communication`
+   - ONNX / inference runtime → `rtc_inference`
+   - QP tasks, constraints, formulations → `rtc_tsid`
+
+   If a utility is re-implemented locally because the existing one doesn't quite fit, the correct action is to **generalize the existing one** (adding a template parameter, relaxing an assumption), not to fork it.
+
+### Concrete Boundary Rules (`rtc_*` vs `ur5e_*`)
+
+| Belongs in `rtc_*` | Belongs in `ur5e_*` |
+|--------------------|---------------------|
+| Abstract interfaces, concepts, base classes | Concrete implementations registered via `RTC_REGISTER_CONTROLLER` |
+| DOF-generic algorithms (variable `n_joints`) | Fixed-DOF launch files, URDF, MJCF, meshes |
+| Transport/codec templates (`Transceiver<T,C>`) | Robot-specific packet structs passed as template args |
+| YAML-driven parameter schemas | YAML files with actual robot values |
+| Controller registry, TSID solver core | Demo controllers, BT coordinator, bringup launch |
+| RT threading, SPSC, SeqLock, E-STOP logic | Hardware drivers (UR5e RTDE, hand UDP, ToF UART) |
+
+### When Generalization Requires a Design Change
+
+If you cannot satisfy all five principles with a local edit, STOP and:
+1. Report a `[CONCERN] Severity: Warning` per the Critical Thinking Protocol.
+2. Propose an interface refactor or dependency inversion as a separate task.
+3. Do NOT take the shortcut of embedding robot-specific logic in `rtc_*` "for now" — there is no "for now" in a framework layer.
+
+---
+
 ## Anti-patterns (Never Generate)
 
 | Forbidden Pattern | Reason | Alternative |
@@ -426,6 +469,7 @@ Before writing any code, self-check the following questions. If any concern is f
 - Is this consistent with existing architecture patterns (Strategy controllers, SPSC offload, SeqLock sharing)?
 - Is there a simpler alternative to this approach?
 - Is introducing a new dependency justified?
+- For `rtc_*` changes: does the code satisfy all five principles in [Design Principles for `rtc_*` Packages](#design-principles-for-rtc_-packages) (extensibility, generality, modularity, interface-first, deduplication & reuse)? Any robot-specific assumption — joint count, finger count, topic name, hardware identifier — leaking into a `rtc_*` package is a Critical concern, not a Warning.
 
 **Mathematical Correctness**
 - Do coordinate frame (right-hand), units (SI), and rotation convention (Hamilton quaternion, ZYX Euler) match Domain Conventions?
