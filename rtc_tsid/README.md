@@ -41,7 +41,7 @@ rtc_tsid/
 │   ├── formulation/
 │   │   ├── wqp_formulation.hpp         -- Weighted QP formulation
 │   │   ├── hqp_formulation.hpp         -- Hierarchical QP formulation (cascaded)
-│   │   └── formulation_factory.hpp     -- Formulation 팩토리
+│   │   └── formulation_factory.hpp     -- create_formulation() 팩토리 함수
 │   ├── tasks/
 │   │   ├── posture_task.hpp            -- 관절 자세 추종 태스크
 │   │   ├── se3_task.hpp                -- SE3 pose tracking 태스크 (6D, mask 지원)
@@ -96,7 +96,7 @@ TSID 솔버의 메인 컨트롤러입니다. `ControllerBase`를 상속하며 `f
 | **WQP** | 모든 태스크를 가중치로 통합하여 단일 QP로 해결 | 1 |
 | **HQP** | 우선순위별 cascaded QP — 상위 레벨 null-space에서 하위 레벨 최적화 | N (레벨 수) |
 
-`FormulationFactory`를 통해 YAML `formulation_type` 값으로 생성:
+`create_formulation()` 팩토리 함수를 통해 YAML `formulation_type` 값으로 생성:
 ```yaml
 formulation_type: "wqp"  # 또는 "hqp"
 ```

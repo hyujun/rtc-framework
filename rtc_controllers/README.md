@@ -297,6 +297,101 @@ operational_space_controller:
 
 ---
 
+### 5. GraspController (적응형 PI 힘 제어)
+
+3-finger 핸드를 위한 위치 제어 기반 적응형 PI 힘 제어기입니다. 스칼라 그래스프 파라미터 `s in [0,1]`로 finger별 open/close 자세를 선형 보간하며, 외부 루프 PI 제어기와 온라인 강성(stiffness) 추정을 통해 목표 접촉력을 달성합니다. ROS2 독립적이며 `Init()` 호출 이후 RT-safe합니다.
+
+> **내부 컨트롤러**: `RTC_REGISTER_CONTROLLER` 매크로로 직접 등록되지 않습니다. `DemoJointController`, `DemoTaskController`, `DemoWbcController` 등 상위 컨트롤러에서 `grasp_controller_type: "force_pi"` 설정으로 내부적으로 인스턴스화하여 사용합니다.
+
+**상태 머신 (GraspPhase):**
+
+```
+  Idle ──[CommandGrasp()]──> Approaching ──[thumb+index 접촉]──> Contact
+   ^                            |                                   |
+   |                     [s=1.0, 미접촉]                    [settle_time 경과]
+   |                            |                                   v
+   +────────────────────────────+                            ForceControl
+   ^                                                           |      |
+   |                                                    [수렴]  |  [CommandRelease()]
+   |                                                      v     |
+   +──────[전원 open]───── Releasing <──[CommandRelease()]── Holding
+```
+
+| 단계 | 설명 |
+|------|------|
+| `kIdle` | 대기 상태, `s` 유지. `CommandGrasp()` 시 Approaching으로 전이 |
+| `kApproaching` | `approach_speed` (1/s)로 `s`를 증가시키며 closing. `f_measured > f_contact_threshold`이면 접촉 감지. thumb(0)+index(1) 모두 접촉 시 Contact로 전이 |
+| `kContact` | 안정화 대기 (`contact_settle_time` 초). 경과 후 ForceControl 진입 |
+| `kForceControl` | PI 힘 제어 활성화. `f_desired`를 `f_ramp_rate` (N/s)로 `f_target`까지 램프. 모든 finger가 `settle_epsilon` 이내로 `settle_time` 이상 수렴하면 Holding 전이 |
+| `kHolding` | 힘 유지 + 이상 감지. 슬립 (`df/dt < -df_slip_threshold`) 또는 힘 급감 시 grip tightening 적용 |
+| `kReleasing` | `release_speed` (1/s)로 `s`를 감소. 모든 finger `s < 0.01`이면 Idle 복귀 |
+
+**GraspParams (주요 파라미터):**
+
+| 파라미터 | 타입 | 기본값 | 단위 | 설명 |
+|---------|------|--------|------|------|
+| `Kp_base` | `double` | `0.02` | 1/(N*s) | PI 비례 게인 기본값 |
+| `Ki_base` | `double` | `0.002` | 1/(N*s^2) | PI 적분 게인 기본값 |
+| `alpha_ema` | `double` | `0.95` | [0,1] | 강성 EMA 계수 (1에 가까울수록 느린 적응) |
+| `beta` | `double` | `0.3` | -- | 적응 게인 감도 (높을수록 강한 물체에 게인 감소) |
+| `f_contact_threshold` | `double` | `0.2` | N | 접촉 감지 힘 임계값 |
+| `f_target` | `double` | `2.0` | N | 목표 파지력 |
+| `f_ramp_rate` | `double` | `1.0` | N/s | 힘 레퍼런스 램프 속도 |
+| `ds_max` | `double` | `0.05` | 1/s | 최대 ds/dt (s 변화율 제한) |
+| `delta_s_max` | `double` | `0.15` | -- | 접촉 후 최대 변형 delta_s (변형 가드) |
+| `integral_clamp` | `double` | `0.1` | -- | 적분기 포화 한계 |
+| `approach_speed` | `double` | `0.2` | 1/s | Approaching 단계 ds/dt |
+| `release_speed` | `double` | `0.3` | 1/s | Releasing 단계 ds/dt |
+| `settle_epsilon` | `double` | `0.1` | N | 힘 수렴 판정 임계값 |
+| `settle_time` | `double` | `0.3` | s | 수렴 유지 시간 |
+| `contact_settle_time` | `double` | `0.1` | s | Contact 단계 안정화 대기 시간 |
+| `df_slip_threshold` | `double` | `5.0` | N/s | 슬립 감지 df/dt 임계값 (음방향) |
+| `grip_tightening_ratio` | `double` | `0.15` | -- | 슬립 시 힘 증가 비율 |
+| `grip_decay_rate` | `double` | `0.1` | N/s | tightening 후 목표력으로 감쇄 속도 |
+| `f_max_multiplier` | `double` | `2.0` | -- | 최대 허용 힘 = f_target * multiplier |
+| `lpf_cutoff_hz` | `double` | `25.0` | Hz | Bessel 4차 LPF 차단 주파수 |
+| `control_rate_hz` | `double` | `500.0` | Hz | 제어 루프 주파수 |
+
+**Per-finger 제어 법칙 (적응형 PI):**
+
+```
+# 온라인 강성 추정 (EMA)
+K_inst   = delta_f / delta_s                       (|delta_s| > 1e-6 일 때만)
+K_est    = alpha_ema * K_est + (1 - alpha_ema) * K_inst   (K_inst > 0 일 때만)
+
+# 적응 게인 스케줄링
+gain_scale = 1.0 / (1.0 + beta * K_est)
+Kp = Kp_base * gain_scale
+Ki = Ki_base * gain_scale
+
+# PI 제어 + anti-windup
+e_f = f_desired - f_measured
+integral_error += e_f * dt                         (integrator_frozen이 아닐 때)
+integral_error  = clamp(integral_error, +/-integral_clamp)
+
+ds = clamp(Kp * e_f + Ki * integral_error, +/-ds_max)
+
+# 변형 가드 (deformation guard)
+deformation = s - s_at_contact
+if deformation >= delta_s_max:      ds = min(ds, 0)   # closing 금지
+elif deformation >= 0.9*delta_s_max: ds *= remaining / (0.1*delta_s_max)   # 비례 감속
+
+# 자세 보간
+s += ds * dt
+q[j] = (1 - s) * q_open[j] + s * q_close[j]       (j = 0..2, MCP_AA/MCP_FE/DIP_FE)
+```
+
+**RT 안전성:**
+
+- `Update()` 메서드: `noexcept`, 매 제어 주기(500Hz) 호출
+- 4차 Bessel LPF (`BesselFilterN<3>`)로 힘 신호 필터링 (RT 경로에서 동적 할당 없음)
+- `CommandGrasp()` / `CommandRelease()`: `std::atomic<bool>` + `memory_order_release/acq_rel`로 크로스 스레드 명령 전달
+- 모든 상태 (`FingerState`, `GraspParams`)는 `trivially_copyable` 구조체
+- `Init()`은 non-RT (필터 계수 계산), 이후 모든 호출은 RT-safe
+- 고정 크기 배열 (`std::array`) 사용, 동적 할당 없음
+
+---
+
 ## 궤적 생성 (`trajectory/`)
 
 모든 궤적 기반 컨트롤러(JointPD, CLIK, OSC)는 5차(quintic) 다항식 기반 궤적 생성기를 사용합니다.

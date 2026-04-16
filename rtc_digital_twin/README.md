@@ -31,8 +31,9 @@ rtc_digital_twin/
 ├── rtc_digital_twin/
 │   ├── __init__.py
 │   ├── digital_twin_node.py      <- 메인 노드 (다중 소스 병합 + URDF 검증 + 센서 시각화)
-│   ├── urdf_validator.py         <- URDF 파싱 + 조인트 분류/검증 유틸리티
+│   ├── urdf_parser.py            <- URDF 파싱 + 조인트 분류/검증 유틸리티
 │   ├── sensor_visualizer.py      <- 핑거팁 센서 -> MarkerArray 변환 (선택적)
+│   ├── tcp_visualizer.py         <- TCP 위치/자세 MarkerArray + TF 시각화 (선택적)
 │   └── joint_gui.py              <- Joint State Publisher GUI (Qt, 선택적)
 ├── launch/
 │   └── digital_twin.launch.py    <- 일반화된 launch (URDF/xacro + config 인자)
@@ -40,7 +41,7 @@ rtc_digital_twin/
 │   ├── digital_twin.yaml         <- 파라미터 설정 (source_N.* 구조)
 │   └── digital_twin.rviz         <- RViz2 디스플레이 설정
 └── test/
-    └── test_urdf_validator.py    <- URDF 분류/검증 단위 테스트
+    └── test_urdf_parser.py       <- URDF 분류/검증 단위 테스트
 ```
 
 ---
@@ -75,6 +76,7 @@ rtc_digital_twin/
 |------|------|-----|------|
 | `source_N.topic` (YAML 정의) | `sensor_msgs/JointState` | RELIABLE, depth=10 | rt_controller가 republish한 조인트 상태 |
 | `sensor_viz.sensor_topic` (선택) | `rtc_msgs/HandSensorState` | RELIABLE, depth=10 | 핑거팁 센서 데이터 |
+| `tcp_viz.source_topic` (선택) | `rtc_msgs/GuiPosition` | SensorData (BE/5) | TCP 위치/자세 데이터 |
 
 ### 퍼블리시
 
@@ -82,6 +84,7 @@ rtc_digital_twin/
 |------|------|--------|------|
 | `/digital_twin/joint_states` (기본값) | `sensor_msgs/JointState` | 60 Hz (설정 가능) | 병합된 관절 상태 -> robot_state_publisher |
 | `sensor_viz.marker_topic` (선택) | `visualization_msgs/MarkerArray` | 60 Hz (설정 가능) | 핑거팁 센서 시각화 마커 |
+| `tcp_viz.marker_topic` (선택) | `visualization_msgs/MarkerArray` | 60 Hz (설정 가능) | TCP 위치 구체 + RGB 자세 축 마커 |
 
 ---
 
@@ -124,6 +127,32 @@ YAML에 `sensor_viz` 블록이 있을 때만 활성화됩니다. 핑거팁별로
 - F/u Arrow는 접촉이 감지될 때만 표시, 비접촉 시 DELETE 처리
 - 접촉 판정: `inference_enable == True`이고 `contact_flag >= 0.1` (threshold)
 - 마커 프레임: `{fingertip_name}_tip_link`, 수명: 100ms
+
+### TcpVisualizer (`tcp_visualizer.py`) -- 선택적
+
+YAML에 `tcp_viz.source_topic`이 비어있지 않을 때 활성화됩니다. `GuiPosition` 메시지로부터 TCP 위치/자세를 받아 RViz2에서 시각화합니다.
+
+**시각화 마커:**
+
+| 마커 | 타입 | 설명 |
+|------|------|------|
+| TCP Sphere | Sphere | 현재 TCP 위치 (파란색, 불투명) |
+| Goal Sphere | Sphere | 목표 TCP 위치 (반투명, `show_goal: true` 시) |
+| RGB Axes | Arrow × 3 | TCP 자세 방향 (R=X, G=Y, B=Z) |
+
+- 선택적 TF 브로드캐스팅: `broadcast_tf: true` 시 `virtual_tcp` 프레임을 TF 트리에 발행
+- 설정 가능한 구체 반지름 (`sphere_radius`), 축 길이 (`axes_length`)
+
+```yaml
+# YAML tcp_viz 설정 예시
+tcp_viz.source_topic: "/ur5e/gui_position"
+tcp_viz.marker_topic: "/digital_twin/tcp_markers"
+tcp_viz.broadcast_tf: true
+tcp_viz.tf_child_frame: "virtual_tcp"
+tcp_viz.sphere_radius: 0.012
+tcp_viz.axes_length: 0.05
+tcp_viz.show_goal: true
+```
 
 ### JointGuiNode (`joint_gui.py`) -- 선택적
 
@@ -309,7 +338,8 @@ Launch 파일은 URDF/xacro를 처리하여 `robot_description` 문자열을 `ro
 | `visualization_msgs` | `Marker`, `MarkerArray` (센서 시각화) |
 | `geometry_msgs` | `Point`, `Vector3` (마커 좌표/스케일) |
 | `builtin_interfaces` | ROS2 기본 인터페이스 |
-| `rtc_msgs` | `HandSensorState`, `FingertipSensor` (센서 데이터) |
+| `rtc_msgs` | `HandSensorState`, `FingertipSensor`, `GuiPosition` (센서/TCP 데이터) |
+| `tf2_ros` | TCP TF 브로드캐스팅 (tcp_visualizer에서 사용) |
 | `robot_state_publisher` | URDF -> TF 변환 (launch에서 사용) |
 | `rviz2` | 3D 시각화 (launch에서 사용) |
 | `xacro` | URDF 매크로 처리 (launch에서 사용) |
