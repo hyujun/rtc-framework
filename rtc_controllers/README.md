@@ -439,6 +439,113 @@ SE(3) 태스크 공간 궤적 -- log6 기반 tangent space에서 6-DOF에 각각
 3. `pose(t) = start_pose * exp6(p(t))` -- SE(3) 지수 맵으로 복원
 4. `velocity(t) = Jexp6(delta_X(t)) * v(t)` -- 우측 자코비안으로 속도 변환
 
+### 다중 웨이포인트 궤적 (Multi-Waypoint Trajectories)
+
+단일 시작-목표 궤적 외에, 2개 이상의 via-point를 경유하는 4가지 다중 웨이포인트 궤적 생성기를 제공합니다. 모든 궤적은 최대 `kMaxWaypoints = 32`개의 웨이포인트를 지원하며, `initialize()`는 non-RT, `compute()`는 RT-safe (`noexcept`)입니다.
+
+#### QuinticBlendTrajectory (`quintic_blend_trajectory.hpp`)
+
+N-DOF 관절 공간 다중 웨이포인트 블렌드 궤적입니다. 각 세그먼트를 5차 다항식으로 생성하며, via-point에서 **C2 연속성**(위치, 속도, 가속도 연속)을 보장합니다.
+
+- **Via-point 속도 계산**: 인접 세그먼트 평균 속도 `v[i] = 0.5 * (v_prev + v_next)`
+- **경계 조건**: Rest-to-rest (시작/끝 속도 = 0, 가속도 = 0)
+- **세그먼트 탐색**: 선형 검색 (O(N), N <= 32)
+- **웨이포인트 < 2**: 첫 번째 웨이포인트 위치에서 hold
+
+```cpp
+QuinticBlendTrajectory<6> traj;
+traj.initialize(waypoints, num_waypoints);      // non-RT
+auto state = traj.compute(time);                // RT-safe
+// state.positions, state.velocities, state.accelerations
+```
+
+| 메서드 | 설명 |
+|--------|------|
+| `initialize(waypoints, num_waypoints)` | 웨이포인트 배열로 블렌드 궤적 초기화 (non-RT) |
+| `compute(time)` | 시간 t에서 위치/속도/가속도 반환 (RT-safe, `noexcept`) |
+| `duration()` | 전체 궤적 지속 시간 |
+| `num_segments()` | 세그먼트 수 (= 웨이포인트 수 - 1) |
+
+#### QuinticSplineTrajectory (`quintic_spline_trajectory.hpp`)
+
+N-DOF 관절 공간 글로벌 스플라인 궤적입니다. 모든 내부 knot에서 **C4 연속성**(위치, 속도, 가속도, 저크, 스냅 연속)을 보장합니다.
+
+- **풀이 방식**: 6*(N-1) 미지수 선형 시스템 (PartialPivLU 분해)
+  - 조건: N개 위치 보간 + 4개 경계 조건 + 5*(N-2)개 내부 연속성 = 6*(N-1)
+- **경계 조건**: Natural (vel=0, acc=0) 또는 Clamped (사용자 지정 시작/끝 속도, 가속도)
+- **2-웨이포인트 특수 케이스**: 단일 세그먼트 직접 5차 다항식 (선형 시스템 없이)
+
+```cpp
+QuinticSplineTrajectory<6> traj;
+traj.initialize(waypoints, num_waypoints);                   // natural
+traj.initialize(waypoints, n, start_vel, start_acc,          // clamped
+                end_vel, end_acc);
+auto state = traj.compute(time);
+```
+
+| 메서드 | 설명 |
+|--------|------|
+| `initialize(waypoints, num_waypoints)` | Natural 스플라인 (시작/끝 vel=0, acc=0) |
+| `initialize(waypoints, n, start_vel, start_acc, end_vel, end_acc)` | Clamped 스플라인 (사용자 경계 조건) |
+| `compute(time)` | 시간 t에서 위치/속도/가속도 반환 (RT-safe, `noexcept`) |
+| `duration()` | 전체 궤적 지속 시간 |
+
+#### TaskSpaceBlendTrajectory (`task_space_blend_trajectory.hpp`)
+
+SE(3) 태스크 공간 다중 웨이포인트 블렌드 궤적입니다. 각 세그먼트의 시작 pose 로컬 tangent space에서 5차 다항식 보간하며, via-point에서 **C2 연속성**을 보장합니다.
+
+- **Via-point 속도**: 도착/출발 속도의 평균 (프레임 변환 적용: 도착 속도를 해당 웨이포인트 프레임으로 Adjoint 변환)
+- **경계 조건**: Rest-to-rest (시작/끝 속도 = 0)
+- **보간**: `pose(t) = start_pose[seg] * exp6(p(t))`, 속도 = `Jexp6(delta_X) * v(t)`
+
+```cpp
+TaskSpaceBlendTrajectory traj;
+traj.initialize(waypoints, num_waypoints);
+auto state = traj.compute(time);
+// state.pose (SE3), state.velocity (Motion), state.acceleration (Motion)
+```
+
+| 메서드 | 설명 |
+|--------|------|
+| `initialize(waypoints, num_waypoints)` | SE(3) 웨이포인트로 블렌드 궤적 초기화 (non-RT) |
+| `compute(time)` | 시간 t에서 SE(3) pose, Motion velocity/acceleration 반환 (RT-safe) |
+| `duration()` | 전체 궤적 지속 시간 |
+
+#### TaskSpaceSplineTrajectory (`task_space_spline_trajectory.hpp`)
+
+SE(3) 태스크 공간 글로벌 스플라인 궤적으로 **C4 연속성**을 보장합니다. 첫 번째 웨이포인트 프레임을 공통 참조 프레임으로 사용하여 6D 선형 시스템을 풀고, 결과를 각 세그먼트의 로컬 tangent space 다항식으로 변환합니다.
+
+- **풀이 방식**: 누적 tangent 벡터(`cum_pos[k] = log6(wp[0]^{-1} * wp[k])`)를 wp[0] 프레임에서 계산 -> 글로벌 6D 스플라인 시스템 풀이 (PartialPivLU) -> Adjoint 변환으로 per-segment 로컬 계수 추출
+- **경계 조건**: Natural (vel=0, acc=0) 또는 Clamped (로컬 프레임에서 지정)
+- **속도 변환**: 경계 속도는 `SE3::act()` / `SE3::actInv()`로 프레임 간 변환
+
+```cpp
+TaskSpaceSplineTrajectory traj;
+traj.initialize(waypoints, num_waypoints);                   // natural
+traj.initialize(waypoints, n, start_vel, start_acc,          // clamped
+                end_vel, end_acc);
+auto state = traj.compute(time);
+```
+
+| 메서드 | 설명 |
+|--------|------|
+| `initialize(waypoints, num_waypoints)` | Natural SE(3) 스플라인 (시작/끝 vel=0, acc=0) |
+| `initialize(waypoints, n, start_vel, start_acc, end_vel, end_acc)` | Clamped SE(3) 스플라인 (로컬 프레임 경계 조건) |
+| `compute(time)` | 시간 t에서 SE(3) pose, Motion velocity/acceleration 반환 (RT-safe) |
+| `duration()` | 전체 궤적 지속 시간 |
+
+#### 궤적 비교
+
+| | QuinticBlend | QuinticSpline | TaskSpaceBlend | TaskSpaceSpline |
+|---|---|---|---|---|
+| **공간** | 관절 | 관절 | SE(3) 태스크 | SE(3) 태스크 |
+| **연속성** | C2 | C4 | C2 | C4 |
+| **초기화 비용** | O(N) | O(N^3) 선형 시스템 | O(N) | O(N^3) 선형 시스템 |
+| **경계 조건** | Rest-to-rest only | Natural / Clamped | Rest-to-rest only | Natural / Clamped |
+| **Via-point 속도** | 인접 평균 | 글로벌 최적 | 인접 평균 (프레임 변환) | 글로벌 최적 (프레임 변환) |
+| **RT-safe compute** | O(DOF) | O(DOF) | O(1) (6-DOF 고정) | O(1) (6-DOF 고정) |
+| **최대 웨이포인트** | 32 | 32 | 32 | 32 |
+
 ---
 
 ## 컨트롤러 등록
