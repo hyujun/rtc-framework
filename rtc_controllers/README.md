@@ -604,9 +604,11 @@ RTC_REGISTER_CONTROLLER(
 모든 컨트롤러의 RT 경로 메서드 (`Compute`, `SetDeviceTarget`, `InitializeHoldPosition`)는:
 - `noexcept` 보장
 - 생성자에서 모든 Pinocchio/Eigen 버퍼 사전 할당 (RT 경로에서 동적 할당 없음)
-- `SetDeviceTarget()`은 `std::lock_guard` 사용, `Compute()`는 `std::try_to_lock` (RT 스레드 차단 불가)
+- `SetDeviceTarget()`은 `std::lock_guard` 사용, `Compute()`/`InitializeHoldPosition()`은 `std::try_to_lock` (RT 스레드 차단 불가)
 - `new_target_` 플래그는 `memory_order_acquire/release` 원자적 동기화
 - Eigen: `noalias()` 사용, 고정 크기 행렬(3x3, 6x6) 스택 할당
+- **Bool 플래그 스냅샷:** `Compute()` 진입 시 `control_6dof`, `enable_null_space`, `enable_gravity_compensation`, `enable_coriolis_compensation` 등 제어 분기 플래그를 로컬 변수에 한 번 복사하여, `UpdateGainsFromMsg()`가 동시 실행되어도 한 틱 내 분기 일관성 보장
+- **trajectory_speed 검증:** `LoadConfig()` 및 `UpdateGainsFromMsg()`에서 `trajectory_speed`/`trajectory_angular_speed`에 `std::max(1e-6, val)` 적용하여 0 또는 음수 값으로 인한 무한 궤적 duration 방지
 
 ---
 
@@ -667,6 +669,15 @@ rtc_controllers  -- 4개 내장 컨트롤러 구현
 ---
 
 ## 변경 내역
+
+### v5.18.0
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **스레드 안전** | `Compute()`에서 bool 플래그 (control_6dof, enable_null_space, enable_gravity/coriolis) 틱 시작 시 로컬 스냅샷 -- `UpdateGainsFromMsg()` 동시 실행 시 분기 일관성 보장 |
+| **RT 안전** | `InitializeHoldPosition()`에서 `std::lock_guard` → `std::try_to_lock` 변경 -- RT 경로 blocking lock 제거 (JointPD, CLIK, OSC) |
+| **입력 검증** | `trajectory_speed`, `trajectory_angular_speed`에 `std::max(1e-6, val)` 클램프 적용 -- 0/음수 값 입력 시 무한 궤적 duration 방지 |
+| **테스트** | `test_core_controllers.cpp` 추가 -- PController(10), JointPD(8), CLIK(8), OSC(7) = 33개 단위 테스트 |
 
 ### v5.17.0
 

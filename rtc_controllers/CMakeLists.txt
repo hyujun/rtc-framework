@@ -107,6 +107,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_grasp_controller test/test_grasp_controller.cpp)
   target_link_libraries(test_grasp_controller rtc_controllers)
+
+  ament_add_gtest(test_core_controllers test/test_core_controllers.cpp)
+  target_link_libraries(test_core_controllers rtc_controllers)
 endif()
 
 ament_package()

@@ -1,4 +1,5 @@
-// ── Includes: project header first, then C++ stdlib ────────────────────────────
+// ── Includes: project header first, then C++ stdlib
+// ────────────────────────────
 #include "rtc_controllers/direct/operational_space_controller.hpp"
 
 #include <algorithm>
@@ -14,15 +15,13 @@
 #include <pinocchio/spatial/explog.hpp>
 #pragma GCC diagnostic pop
 
-namespace rtc
-{
+namespace rtc {
 
 // ── Constructor ─────────────────────────────────────────────────────────────
 
 OperationalSpaceController::OperationalSpaceController(
-  std::string_view urdf_path, Gains gains)
-: gains_(gains)
-{
+    std::string_view urdf_path, Gains gains)
+    : gains_(gains) {
   rtc_urdf_bridge::ModelConfig config;
   config.urdf_path = std::string(urdf_path);
   config.root_joint_type = "fixed";
@@ -49,10 +48,9 @@ OperationalSpaceController::OperationalSpaceController(
   tcp_vel_.setZero();
 }
 
-void OperationalSpaceController::OnDeviceConfigsSet()
-{
+void OperationalSpaceController::OnDeviceConfigsSet() {
   const auto primary = GetPrimaryDeviceName();
-  if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
+  if (auto *cfg = GetDeviceNameConfig(primary); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       auto fid = handle_->GetFrameId(cfg->urdf->tip_link);
       if (fid != 0) {
@@ -76,9 +74,8 @@ void OperationalSpaceController::OnDeviceConfigsSet()
 
 // ── RTControllerInterface implementation ────────────────────────────────────
 
-ControllerOutput OperationalSpaceController::Compute(
-  const ControllerState & state) noexcept
-{
+ControllerOutput
+OperationalSpaceController::Compute(const ControllerState &state) noexcept {
   if (estopped_.load(std::memory_order_acquire)) {
     auto out = ComputeEstop(state);
     out.command_type = command_type_;
@@ -87,8 +84,11 @@ ControllerOutput OperationalSpaceController::Compute(
 
   const int nv = handle_->nv();
 
+  // Snapshot compensation flag once per tick for branch consistency.
+  const bool use_gravity = gains_.enable_gravity_compensation;
+
   // ── Step 1: copy joint state into buffers ───────────────────────────────
-  const auto & dev0 = state.devices[0];
+  const auto &dev0 = state.devices[0];
   std::array<double, kMaxDeviceChannels> q_buf{};
   std::array<double, kMaxDeviceChannels> v_buf{};
   for (int i = 0; i < nv; ++i) {
@@ -102,14 +102,15 @@ ControllerOutput OperationalSpaceController::Compute(
   // ── Step 2: FK + full Jacobian ────────────────────────────────────────────
   // ComputeJacobians performs FK internally and updates frame placements.
   handle_->ComputeJacobians(q_span);
-  handle_->GetFrameJacobian(tip_frame_id_, pinocchio::LOCAL_WORLD_ALIGNED, J_full_);
+  handle_->GetFrameJacobian(tip_frame_id_, pinocchio::LOCAL_WORLD_ALIGNED,
+                            J_full_);
 
   // ── Step 3: current task-space velocity  tcp_vel = J * dq ────────────────
   Eigen::Map<const Eigen::VectorXd> v_eigen(v_buf.data(), nv);
   tcp_vel_.noalias() = J_full_ * v_eigen;
 
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
-  const pinocchio::SE3 & tcp = handle_->GetFramePlacement(tip_frame_id_);
+  const pinocchio::SE3 &tcp = handle_->GetFramePlacement(tip_frame_id_);
 
   // ── Step 3.5: initialise trajectory on new target (after FK) ─────────────
   if (new_target_.load(std::memory_order_acquire)) {
@@ -122,22 +123,24 @@ ControllerOutput OperationalSpaceController::Compute(
       // Duration from translational trajectory_speed and velocity limit.
       // Quintic rest-to-rest peak velocity = (15/8) * dist / T.
       const double T_speed_trans = trans_dist / gains_.trajectory_speed;
-      const double T_vel_trans = (gains_.max_traj_velocity > 0.0)
-          ? (1.875 * trans_dist / gains_.max_traj_velocity)
-          : 0.0;
+      const double T_vel_trans =
+          (gains_.max_traj_velocity > 0.0)
+              ? (1.875 * trans_dist / gains_.max_traj_velocity)
+              : 0.0;
       double duration = std::max({0.01, T_speed_trans, T_vel_trans});
 
       // Angular distance via AngleAxisd (stable at θ → π, unlike log3)
-      constexpr double kPiSafetyMargin = 0.15;  // rad ≈ 8.6°
-      const Eigen::AngleAxisd aa(
-          tcp.rotation().transpose() * goal_pose_.rotation());
-      const double angular_dist = aa.angle();       // always in [0, π]
+      constexpr double kPiSafetyMargin = 0.15; // rad ≈ 8.6°
+      const Eigen::AngleAxisd aa(tcp.rotation().transpose() *
+                                 goal_pose_.rotation());
+      const double angular_dist = aa.angle(); // always in [0, π]
       const Eigen::Vector3d rot_axis = aa.axis();
 
       const double T_speed_rot = angular_dist / gains_.trajectory_angular_speed;
-      const double T_vel_rot = (gains_.max_traj_angular_velocity > 0.0)
-          ? (1.875 * angular_dist / gains_.max_traj_angular_velocity)
-          : 0.0;
+      const double T_vel_rot =
+          (gains_.max_traj_angular_velocity > 0.0)
+              ? (1.875 * angular_dist / gains_.max_traj_angular_velocity)
+              : 0.0;
       duration = std::max({duration, T_speed_rot, T_vel_rot});
 
       const bool split_trajectory = (angular_dist > M_PI - kPiSafetyMargin);
@@ -145,7 +148,8 @@ ControllerOutput OperationalSpaceController::Compute(
       if (split_trajectory) {
         // ── π-rotation defense: split into 2 rest-to-rest segments ──
         const double half_angle = angular_dist * 0.5;
-        const Eigen::Matrix3d R_mid = tcp.rotation() *
+        const Eigen::Matrix3d R_mid =
+            tcp.rotation() *
             Eigen::AngleAxisd(half_angle, rot_axis).toRotationMatrix();
 
         pinocchio::SE3 mid_pose;
@@ -155,22 +159,26 @@ ControllerOutput OperationalSpaceController::Compute(
         // Segment 1: start → mid (half distances)
         const double half_trans = trans_dist * 0.5;
         const double T1_speed_t = half_trans / gains_.trajectory_speed;
-        const double T1_vel_t = (gains_.max_traj_velocity > 0.0)
-            ? (1.875 * half_trans / gains_.max_traj_velocity) : 0.0;
+        const double T1_vel_t =
+            (gains_.max_traj_velocity > 0.0)
+                ? (1.875 * half_trans / gains_.max_traj_velocity)
+                : 0.0;
         const double T1_speed_r = half_angle / gains_.trajectory_angular_speed;
-        const double T1_vel_r = (gains_.max_traj_angular_velocity > 0.0)
-            ? (1.875 * half_angle / gains_.max_traj_angular_velocity) : 0.0;
-        const double dur1 = std::max({0.01, T1_speed_t, T1_vel_t, T1_speed_r, T1_vel_r});
+        const double T1_vel_r =
+            (gains_.max_traj_angular_velocity > 0.0)
+                ? (1.875 * half_angle / gains_.max_traj_angular_velocity)
+                : 0.0;
+        const double dur1 =
+            std::max({0.01, T1_speed_t, T1_vel_t, T1_speed_r, T1_vel_r});
 
-        trajectory_.initialize(tcp, pinocchio::Motion::Zero(),
-                               mid_pose, pinocchio::Motion::Zero(), dur1);
+        trajectory_.initialize(tcp, pinocchio::Motion::Zero(), mid_pose,
+                               pinocchio::Motion::Zero(), dur1);
         pending_goal_pose_ = goal_pose_;
-        pending_duration_ = dur1;  // symmetric split
+        pending_duration_ = dur1; // symmetric split
         has_pending_segment_ = true;
       } else {
-        trajectory_.initialize(tcp, pinocchio::Motion::Zero(),
-                               goal_pose_, pinocchio::Motion::Zero(),
-                               duration);
+        trajectory_.initialize(tcp, pinocchio::Motion::Zero(), goal_pose_,
+                               pinocchio::Motion::Zero(), duration);
         has_pending_segment_ = false;
       }
 
@@ -194,11 +202,14 @@ ControllerOutput OperationalSpaceController::Compute(
 
   // ── Step 4: 6D pose error w.r.t. trajectory setpoint ─────────────────────
   // 3D position error
-  const Eigen::Vector3d pos_err = traj_state_.pose.translation() - tcp.translation();
-  tcp_position_ = {tcp.translation()[0], tcp.translation()[1], tcp.translation()[2]};
+  const Eigen::Vector3d pos_err =
+      traj_state_.pose.translation() - tcp.translation();
+  tcp_position_ = {tcp.translation()[0], tcp.translation()[1],
+                   tcp.translation()[2]};
 
   // 3D orientation error via SO(3) logarithm
-  const Eigen::Matrix3d R_err = traj_state_.pose.rotation() * tcp.rotation().transpose();
+  const Eigen::Matrix3d R_err =
+      traj_state_.pose.rotation() * tcp.rotation().transpose();
   const Eigen::Vector3d rot_err = pinocchio::log3(R_err);
 
   task_err_.head<3>() = pos_err;
@@ -215,17 +226,19 @@ ControllerOutput OperationalSpaceController::Compute(
   Eigen::Vector3d kp_r(gains_.kp_rot[0], gains_.kp_rot[1], gains_.kp_rot[2]);
   Eigen::Vector3d kd_r(gains_.kd_rot[0], gains_.kd_rot[1], gains_.kd_rot[2]);
 
-  task_vel_.head<3>() = kp_p.cwiseProduct(pos_err) + traj_state_.velocity.linear() -
-    kd_p.cwiseProduct(tcp_vel_.head<3>());
-  task_vel_.tail<3>() = kp_r.cwiseProduct(rot_err) + traj_state_.velocity.angular() -
-    kd_r.cwiseProduct(tcp_vel_.tail<3>());
+  task_vel_.head<3>() = kp_p.cwiseProduct(pos_err) +
+                        traj_state_.velocity.linear() -
+                        kd_p.cwiseProduct(tcp_vel_.head<3>());
+  task_vel_.tail<3>() = kp_r.cwiseProduct(rot_err) +
+                        traj_state_.velocity.angular() -
+                        kd_r.cwiseProduct(tcp_vel_.tail<3>());
 
   // ── Step 6: Damped pseudoinverse  J^# = J^T (J J^T + λ²I₆)^{−1} ─────────
   JJt_.noalias() = J_full_ * J_full_.transpose();
   JJt_.diagonal().array() += gains_.damping * gains_.damping;
   lu_.compute(JJt_);
-  Jpinv_.noalias() = J_full_.transpose() *
-    lu_.solve(Eigen::Matrix<double, 6, 6>::Identity());
+  Jpinv_.noalias() =
+      J_full_.transpose() * lu_.solve(Eigen::Matrix<double, 6, 6>::Identity());
 
   // ── Step 7: joint velocity from task-space velocity ───────────────────────
   dq_.noalias() = Jpinv_ * task_vel_;
@@ -239,7 +252,7 @@ ControllerOutput OperationalSpaceController::Compute(
   }
 
   // ── Step 8: optional gravity compensation ────────────────────────────────
-  if (gains_.enable_gravity_compensation) {
+  if (use_gravity) {
     handle_->ComputeGeneralizedGravity(q_span);
     dq_ += handle_->GetGeneralizedGravity();
   }
@@ -247,7 +260,7 @@ ControllerOutput OperationalSpaceController::Compute(
   // ── Step 9: clamp joint velocity and integrate ────────────────────────────
   ControllerOutput output;
   output.num_devices = state.num_devices;
-  auto & out0 = output.devices[0];
+  auto &out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
   out0.goal_type = GoalType::kTask;
@@ -262,7 +275,8 @@ ControllerOutput OperationalSpaceController::Compute(
     // Pure trajectory feedforward velocity (without PD error)
     out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
     // Trajectory-implied joint position = current + feedforward * dt
-    out0.trajectory_positions[i] = dev0.positions[i] + out0.trajectory_velocities[i] * dt;
+    out0.trajectory_positions[i] =
+        dev0.positions[i] + out0.trajectory_velocities[i] * dt;
   }
   for (std::size_t i = 0; i < 6; ++i) {
     out0.target_positions[i] = pose_target_[i];
@@ -270,9 +284,10 @@ ControllerOutput OperationalSpaceController::Compute(
   }
 
   // Device 1+ : pass-through goals
-  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
-    const auto & devN = state.devices[d];
-    auto & outN = output.devices[d];
+  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices);
+       ++d) {
+    const auto &devN = state.devices[d];
+    auto &outN = output.devices[d];
     const int ncN = devN.num_channels;
     outN.num_channels = ncN;
     for (std::size_t i = 0; i < static_cast<std::size_t>(ncN); ++i) {
@@ -292,7 +307,8 @@ ControllerOutput OperationalSpaceController::Compute(
 
   // Task-space goal target
   {
-    Eigen::Vector3d goal_rpy = pinocchio::rpy::matrixToRpy(goal_pose_.rotation());
+    Eigen::Vector3d goal_rpy =
+        pinocchio::rpy::matrixToRpy(goal_pose_.rotation());
     output.task_goal_positions[0] = pose_target_[0];
     output.task_goal_positions[1] = pose_target_[1];
     output.task_goal_positions[2] = pose_target_[2];
@@ -304,7 +320,8 @@ ControllerOutput OperationalSpaceController::Compute(
   // Task-space trajectory reference
   {
     const Eigen::Vector3d traj_pos = traj_state_.pose.translation();
-    Eigen::Vector3d traj_rpy = pinocchio::rpy::matrixToRpy(traj_state_.pose.rotation());
+    Eigen::Vector3d traj_rpy =
+        pinocchio::rpy::matrixToRpy(traj_state_.pose.rotation());
     output.trajectory_task_positions[0] = traj_pos[0];
     output.trajectory_task_positions[1] = traj_pos[1];
     output.trajectory_task_positions[2] = traj_pos[2];
@@ -325,9 +342,9 @@ ControllerOutput OperationalSpaceController::Compute(
 }
 
 void OperationalSpaceController::SetDeviceTarget(
-  int device_idx, std::span<const double> target) noexcept
-{
-  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) return;
+    int device_idx, std::span<const double> target) noexcept {
+  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices)
+    return;
   if (device_idx == 0) {
     std::lock_guard lock(target_mutex_);
     const std::size_t n = std::min(target.size(), std::size_t{6});
@@ -336,13 +353,14 @@ void OperationalSpaceController::SetDeviceTarget(
     }
     if (n >= 6) {
       goal_pose_.translation() =
-        Eigen::Vector3d(target[0], target[1], target[2]);
+          Eigen::Vector3d(target[0], target[1], target[2]);
       goal_pose_.rotation() = RpyToMatrix(target[3], target[4], target[5]);
     }
     new_target_.store(true, std::memory_order_release);
   } else {
     const auto ud = static_cast<std::size_t>(device_idx);
-    const std::size_t n = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
+    const std::size_t n =
+        std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
     for (std::size_t i = 0; i < n; ++i) {
       device_targets_[ud][i] = target[i];
     }
@@ -350,20 +368,24 @@ void OperationalSpaceController::SetDeviceTarget(
 }
 
 void OperationalSpaceController::InitializeHoldPosition(
-  const ControllerState & state) noexcept
-{
-  const auto & dev0 = state.devices[0];
+    const ControllerState &state) noexcept {
+  const auto &dev0 = state.devices[0];
   const int nv = handle_->nv();
 
   std::array<double, kMaxDeviceChannels> q_buf{};
   for (int i = 0; i < nv; ++i) {
-    q_buf[static_cast<std::size_t>(i)] = dev0.positions[static_cast<std::size_t>(i)];
+    q_buf[static_cast<std::size_t>(i)] =
+        dev0.positions[static_cast<std::size_t>(i)];
   }
   std::span<const double> q_span(q_buf.data(), static_cast<std::size_t>(nv));
   handle_->ComputeJacobians(q_span);
-  const pinocchio::SE3 & tcp = handle_->GetFramePlacement(tip_frame_id_);
+  const pinocchio::SE3 &tcp = handle_->GetFramePlacement(tip_frame_id_);
 
-  std::lock_guard lock(target_mutex_);
+  // try_lock: called from RT path — never block. Skip on contention (retry next
+  // tick).
+  std::unique_lock lock(target_mutex_, std::try_to_lock);
+  if (!lock.owns_lock())
+    return;
   goal_pose_ = tcp;
 
   const Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
@@ -375,129 +397,143 @@ void OperationalSpaceController::InitializeHoldPosition(
   pose_target_[5] = rpy[2];
   new_target_.store(false, std::memory_order_relaxed);
 
-  trajectory_.initialize(tcp, pinocchio::Motion::Zero(),
-                         tcp, pinocchio::Motion::Zero(), 0.01);
+  trajectory_.initialize(tcp, pinocchio::Motion::Zero(), tcp,
+                         pinocchio::Motion::Zero(), 0.01);
   trajectory_time_ = 0.0;
   has_pending_segment_ = false;
 
-  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
-    const auto & dev = state.devices[d];
-    if (!dev.valid) continue;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) && i < static_cast<std::size_t>(kMaxDeviceChannels); ++i) {
+  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices);
+       ++d) {
+    const auto &dev = state.devices[d];
+    if (!dev.valid)
+      continue;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) &&
+                            i < static_cast<std::size_t>(kMaxDeviceChannels);
+         ++i) {
       device_targets_[d][i] = dev.positions[i];
     }
   }
 }
 
-std::string_view OperationalSpaceController::Name() const noexcept
-{
+std::string_view OperationalSpaceController::Name() const noexcept {
   return "OperationalSpaceController";
 }
 
-void OperationalSpaceController::TriggerEstop() noexcept
-{
+void OperationalSpaceController::TriggerEstop() noexcept {
   estopped_.store(true, std::memory_order_release);
 }
 
-void OperationalSpaceController::ClearEstop() noexcept
-{
+void OperationalSpaceController::ClearEstop() noexcept {
   estopped_.store(false, std::memory_order_release);
   new_target_.store(true, std::memory_order_relaxed);
 }
 
-bool OperationalSpaceController::IsEstopped() const noexcept
-{
+bool OperationalSpaceController::IsEstopped() const noexcept {
   return estopped_.load(std::memory_order_acquire);
 }
 
-void OperationalSpaceController::SetHandEstop(bool active) noexcept
-{
+void OperationalSpaceController::SetHandEstop(bool active) noexcept {
   hand_estopped_.store(active, std::memory_order_release);
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
 
 ControllerOutput OperationalSpaceController::ComputeEstop(
-  const ControllerState & state) noexcept
-{
+    const ControllerState &state) noexcept {
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
-  const auto & dev0 = state.devices[0];
+  const auto &dev0 = state.devices[0];
   ControllerOutput output;
   output.num_devices = state.num_devices;
-  auto & out0 = output.devices[0];
+  auto &out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    const double lim = (i < max_joint_velocity_.size()) ? max_joint_velocity_[i] : kDefaultMaxJointVelocity;
+    const double lim = (i < max_joint_velocity_.size())
+                           ? max_joint_velocity_[i]
+                           : kDefaultMaxJointVelocity;
     const double sp = (i < safe_position_.size()) ? safe_position_[i] : 0.0;
-    out0.commands[i] = dev0.positions[i] +
-      std::clamp(sp - dev0.positions[i], -lim, lim) * dt;
+    out0.commands[i] =
+        dev0.positions[i] + std::clamp(sp - dev0.positions[i], -lim, lim) * dt;
   }
   return output;
 }
 
 void OperationalSpaceController::ClampVelocity(
-  std::array<double, kMaxDeviceChannels>& dq, int n) const noexcept
-{
+    std::array<double, kMaxDeviceChannels> &dq, int n) const noexcept {
   for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i) {
-    const double lim = (i < max_joint_velocity_.size()) ? max_joint_velocity_[i] : kDefaultMaxJointVelocity;
+    const double lim = (i < max_joint_velocity_.size())
+                           ? max_joint_velocity_[i]
+                           : kDefaultMaxJointVelocity;
     dq[i] = std::clamp(dq[i], -lim, lim);
   }
 }
 
-Eigen::Matrix3d OperationalSpaceController::RpyToMatrix(
-  double roll, double pitch, double yaw) noexcept
-{
+Eigen::Matrix3d OperationalSpaceController::RpyToMatrix(double roll,
+                                                        double pitch,
+                                                        double yaw) noexcept {
   // ZYX Euler convention: R = Rz(yaw) * Ry(pitch) * Rx(roll)
   return (Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()) *
-         Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY()) *
-         Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX()))
-         .toRotationMatrix();
+          Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY()) *
+          Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX()))
+      .toRotationMatrix();
 }
 
 // ── Controller registry hooks ────────────────────────────────────────────────
 
-void OperationalSpaceController::LoadConfig(const YAML::Node & cfg)
-{
+void OperationalSpaceController::LoadConfig(const YAML::Node &cfg) {
   RTControllerInterface::LoadConfig(cfg);
-  if (!cfg) {return;}
-  auto load3 = [](const YAML::Node & n, std::array<double, 3> & arr) {
-      if (n && n.IsSequence() && n.size() == 3) {
-        for (std::size_t i = 0; i < 3; ++i) {
-          arr[i] = n[i].as<double>();
-        }
+  if (!cfg) {
+    return;
+  }
+  auto load3 = [](const YAML::Node &n, std::array<double, 3> &arr) {
+    if (n && n.IsSequence() && n.size() == 3) {
+      for (std::size_t i = 0; i < 3; ++i) {
+        arr[i] = n[i].as<double>();
       }
-    };
+    }
+  };
   load3(cfg["kp_pos"], gains_.kp_pos);
   load3(cfg["kd_pos"], gains_.kd_pos);
   load3(cfg["kp_rot"], gains_.kp_rot);
   load3(cfg["kd_rot"], gains_.kd_rot);
-  if (cfg["damping"]) {gains_.damping = cfg["damping"].as<double>();}
-  if (cfg["enable_gravity_compensation"]) {
-    gains_.enable_gravity_compensation = cfg["enable_gravity_compensation"].as<bool>();
+  if (cfg["damping"]) {
+    gains_.damping = cfg["damping"].as<double>();
   }
-  if (cfg["trajectory_speed"]) {gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();}
+  if (cfg["enable_gravity_compensation"]) {
+    gains_.enable_gravity_compensation =
+        cfg["enable_gravity_compensation"].as<bool>();
+  }
+  if (cfg["trajectory_speed"]) {
+    gains_.trajectory_speed =
+        std::max(1e-6, cfg["trajectory_speed"].as<double>());
+  }
   if (cfg["trajectory_angular_speed"]) {
-    gains_.trajectory_angular_speed = cfg["trajectory_angular_speed"].as<double>();
+    gains_.trajectory_angular_speed =
+        std::max(1e-6, cfg["trajectory_angular_speed"].as<double>());
   }
   if (cfg["max_traj_velocity"]) {
     gains_.max_traj_velocity = cfg["max_traj_velocity"].as<double>();
   }
   if (cfg["max_traj_angular_velocity"]) {
-    gains_.max_traj_angular_velocity = cfg["max_traj_angular_velocity"].as<double>();
+    gains_.max_traj_angular_velocity =
+        cfg["max_traj_angular_velocity"].as<double>();
   }
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
-    command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
+    command_type_ =
+        (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
 }
 
-void OperationalSpaceController::UpdateGainsFromMsg(std::span<const double> gains) noexcept
-{
-  // layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1),
+void OperationalSpaceController::UpdateGainsFromMsg(
+    std::span<const double> gains) noexcept {
+  // layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping,
+  // enable_gravity(0/1),
   //          trajectory_speed, trajectory_angular_speed,
   //          max_traj_velocity, max_traj_angular_velocity] = 18
-  if (gains.size() < 14) {return;}
+  if (gains.size() < 14) {
+    return;
+  }
   for (std::size_t i = 0; i < 3; ++i) {
     gains_.kp_pos[i] = gains[i];
   }
@@ -512,15 +548,24 @@ void OperationalSpaceController::UpdateGainsFromMsg(std::span<const double> gain
   }
   gains_.damping = gains[12];
   gains_.enable_gravity_compensation = gains[13] > 0.5;
-  if (gains.size() >= 15) {gains_.trajectory_speed = gains[14];}
-  if (gains.size() >= 16) {gains_.trajectory_angular_speed = gains[15];}
-  if (gains.size() >= 17) {gains_.max_traj_velocity = gains[16];}
-  if (gains.size() >= 18) {gains_.max_traj_angular_velocity = gains[17];}
+  if (gains.size() >= 15) {
+    gains_.trajectory_speed = std::max(1e-6, gains[14]);
+  }
+  if (gains.size() >= 16) {
+    gains_.trajectory_angular_speed = std::max(1e-6, gains[15]);
+  }
+  if (gains.size() >= 17) {
+    gains_.max_traj_velocity = gains[16];
+  }
+  if (gains.size() >= 18) {
+    gains_.max_traj_angular_velocity = gains[17];
+  }
 }
 
-std::vector<double> OperationalSpaceController::GetCurrentGains() const noexcept
-{
-  // layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1),
+std::vector<double>
+OperationalSpaceController::GetCurrentGains() const noexcept {
+  // layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping,
+  // enable_gravity(0/1),
   //          trajectory_speed, trajectory_angular_speed,
   //          max_traj_velocity, max_traj_angular_velocity] = 18
   std::vector<double> v;
@@ -538,4 +583,4 @@ std::vector<double> OperationalSpaceController::GetCurrentGains() const noexcept
   return v;
 }
 
-}  // namespace rtc
+} // namespace rtc

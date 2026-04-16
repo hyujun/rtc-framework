@@ -11,19 +11,15 @@
 #include <pinocchio/math/rpy.hpp>
 #pragma GCC diagnostic pop
 
-namespace rtc
-{
+namespace rtc {
 
 // ── Constructors ─────────────────────────────────────────────────────────────
 
 JointPDController::JointPDController(std::string_view urdf_path)
-: JointPDController(urdf_path, Gains{}) {}
+    : JointPDController(urdf_path, Gains{}) {}
 
-JointPDController::JointPDController(
-  std::string_view urdf_path,
-  Gains gains)
-: gains_(gains)
-{
+JointPDController::JointPDController(std::string_view urdf_path, Gains gains)
+    : gains_(gains) {
   rtc_urdf_bridge::ModelConfig config;
   config.urdf_path = std::string(urdf_path);
   config.root_joint_type = "fixed";
@@ -42,13 +38,12 @@ JointPDController::JointPDController(
   trajectory_.initialize({}, {}, 0.0);
 }
 
-void JointPDController::OnDeviceConfigsSet()
-{
+void JointPDController::OnDeviceConfigsSet() {
   const auto primary = GetPrimaryDeviceName();
-  if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
+  if (auto *cfg = GetDeviceNameConfig(primary); cfg) {
     if (cfg->joint_limits) {
       max_joint_velocity_ = cfg->joint_limits->max_velocity;
-      max_joint_torque_   = cfg->joint_limits->max_torque;
+      max_joint_torque_ = cfg->joint_limits->max_torque;
     }
     if (!cfg->safe_position.empty()) {
       safe_position_ = cfg->safe_position;
@@ -67,9 +62,8 @@ void JointPDController::OnDeviceConfigsSet()
 
 // ── RTControllerInterface implementation ─────────────────────────────────────
 
-ControllerOutput JointPDController::Compute(
-  const ControllerState & state) noexcept
-{
+ControllerOutput
+JointPDController::Compute(const ControllerState &state) noexcept {
   if (estopped_.load(std::memory_order_acquire)) {
     auto out = ComputeEstop(state);
     out.command_type = command_type_;
@@ -77,7 +71,11 @@ ControllerOutput JointPDController::Compute(
   }
 
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
-  const auto & dev0 = state.devices[0];
+  const auto &dev0 = state.devices[0];
+
+  // Snapshot compensation flags once per tick for branch consistency.
+  const bool use_gravity = gains_.enable_gravity_compensation;
+  const bool use_coriolis = gains_.enable_coriolis_compensation;
 
   UpdateDynamics(dev0);
 
@@ -91,19 +89,20 @@ ControllerOutput JointPDController::Compute(
 
       double max_dist = 0.0;
       for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-        start_state.positions[i]     = dev0.positions[i];
-        start_state.velocities[i]    = dev0.velocities[i];
+        start_state.positions[i] = dev0.positions[i];
+        start_state.velocities[i] = dev0.velocities[i];
         start_state.accelerations[i] = 0.0;
 
-        goal_state.positions[i]     = device_targets_[0][i];
-        goal_state.velocities[i]    = 0.0;
+        goal_state.positions[i] = device_targets_[0][i];
+        goal_state.velocities[i] = 0.0;
         goal_state.accelerations[i] = 0.0;
 
-        max_dist = std::max(max_dist,
-          std::abs(device_targets_[0][i] - dev0.positions[i]));
+        max_dist = std::max(
+            max_dist, std::abs(device_targets_[0][i] - dev0.positions[i]));
       }
 
-      const double duration = std::max(0.01, max_dist / gains_.trajectory_speed);
+      const double duration =
+          std::max(0.01, max_dist / gains_.trajectory_speed);
       trajectory_.initialize(start_state, goal_state, duration);
       trajectory_time_ = 0.0;
       new_target_.store(false, std::memory_order_relaxed);
@@ -116,11 +115,11 @@ ControllerOutput JointPDController::Compute(
   // PD control + feedforward velocity + optional gravity/Coriolis compensation
   ControllerOutput output;
   output.num_devices = state.num_devices;
-  auto & out0 = output.devices[0];
+  auto &out0 = output.devices[0];
   out0.num_channels = nc0;
 
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    const double e  = traj_state.positions[i] - dev0.positions[i];
+    const double e = traj_state.positions[i] - dev0.positions[i];
     const double de = (e - prev_error_[i]) / dt;
 
     out0.commands[i] = gains_.kp[i] * e + gains_.kd[i] * de;
@@ -128,12 +127,11 @@ ControllerOutput JointPDController::Compute(
       out0.commands[i] += traj_state.velocities[i];
     }
 
-    if (gains_.enable_gravity_compensation) {
+    if (use_gravity) {
       out0.commands[i] += gravity_torques_[i];
     }
-    if (gains_.enable_coriolis_compensation) {
-      out0.commands[i] +=
-        coriolis_forces_[static_cast<Eigen::Index>(i)];
+    if (use_coriolis) {
+      out0.commands[i] += coriolis_forces_[static_cast<Eigen::Index>(i)];
     }
 
     prev_error_[i] = e;
@@ -146,9 +144,10 @@ ControllerOutput JointPDController::Compute(
   }
 
   // Device 1+ : pass-through goals
-  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
-    const auto & devN = state.devices[d];
-    auto & outN = output.devices[d];
+  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices);
+       ++d) {
+    const auto &devN = state.devices[d];
+    auto &outN = output.devices[d];
     const int ncN = devN.num_channels;
     outN.num_channels = ncN;
     for (std::size_t i = 0; i < static_cast<std::size_t>(ncN); ++i) {
@@ -161,7 +160,7 @@ ControllerOutput JointPDController::Compute(
   ClampCommands(out0.commands, nc0, command_type_);
 
   // TCP pose output (task_positions: [x, y, z, roll, pitch, yaw])
-  const pinocchio::SE3 & tcp = handle_->GetFramePlacement(tip_frame_id_);
+  const pinocchio::SE3 &tcp = handle_->GetFramePlacement(tip_frame_id_);
   const Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
   output.actual_task_positions[0] = tcp.translation().x();
   output.actual_task_positions[1] = tcp.translation().y();
@@ -175,10 +174,11 @@ ControllerOutput JointPDController::Compute(
 }
 
 void JointPDController::SetDeviceTarget(
-  int device_idx, std::span<const double> target) noexcept
-{
-  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) return;
-  const std::size_t n = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
+    int device_idx, std::span<const double> target) noexcept {
+  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices)
+    return;
+  const std::size_t n =
+      std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
   if (device_idx == 0) {
     std::lock_guard lock(target_mutex_);
     for (std::size_t i = 0; i < n; ++i) {
@@ -194,18 +194,21 @@ void JointPDController::SetDeviceTarget(
 }
 
 void JointPDController::InitializeHoldPosition(
-  const ControllerState & state) noexcept
-{
-  const auto & dev0 = state.devices[0];
+    const ControllerState &state) noexcept {
+  const auto &dev0 = state.devices[0];
   const int nc0 = dev0.num_channels;
-  std::lock_guard lock(target_mutex_);
+  // try_lock: called from RT path — never block. Skip on contention (retry next
+  // tick).
+  std::unique_lock lock(target_mutex_, std::try_to_lock);
+  if (!lock.owns_lock())
+    return;
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     device_targets_[0][i] = dev0.positions[i];
   }
   trajectory::JointSpaceTrajectory<kMaxRobotDOF>::State hold_state;
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    hold_state.positions[i]     = dev0.positions[i];
-    hold_state.velocities[i]    = 0.0;
+    hold_state.positions[i] = dev0.positions[i];
+    hold_state.velocities[i] = 0.0;
     hold_state.accelerations[i] = 0.0;
   }
   trajectory_.initialize(hold_state, hold_state, 0.01);
@@ -213,111 +216,124 @@ void JointPDController::InitializeHoldPosition(
   prev_error_ = {};
   new_target_.store(false, std::memory_order_relaxed);
 
-  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
-    const auto & dev = state.devices[d];
-    if (!dev.valid) continue;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) && i < static_cast<std::size_t>(kMaxDeviceChannels); ++i) {
+  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices);
+       ++d) {
+    const auto &dev = state.devices[d];
+    if (!dev.valid)
+      continue;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) &&
+                            i < static_cast<std::size_t>(kMaxDeviceChannels);
+         ++i) {
       device_targets_[d][i] = dev.positions[i];
     }
   }
 }
 
-// ── E-STOP ────────────────────────────────────────────────────────────────────
+// ── E-STOP
+// ────────────────────────────────────────────────────────────────────
 
-void JointPDController::TriggerEstop() noexcept
-{
+void JointPDController::TriggerEstop() noexcept {
   estopped_.store(true, std::memory_order_release);
 }
 
-void JointPDController::ClearEstop() noexcept
-{
+void JointPDController::ClearEstop() noexcept {
   estopped_.store(false, std::memory_order_release);
   prev_error_ = {};
   new_target_.store(true, std::memory_order_relaxed);
 }
 
-bool JointPDController::IsEstopped() const noexcept
-{
+bool JointPDController::IsEstopped() const noexcept {
   return estopped_.load(std::memory_order_acquire);
 }
 
-void JointPDController::SetHandEstop(bool active) noexcept
-{
+void JointPDController::SetHandEstop(bool active) noexcept {
   hand_estopped_.store(active, std::memory_order_release);
 }
 
 // ── Diagnostic accessors ─────────────────────────────────────────────────────
 
 std::array<double, kMaxRobotDOF>
-JointPDController::gravity_torques() const noexcept
-{
+JointPDController::gravity_torques() const noexcept {
   return gravity_torques_;
 }
 
-std::array<double, 3> JointPDController::tcp_position() const noexcept
-{
+std::array<double, 3> JointPDController::tcp_position() const noexcept {
   return tcp_position_;
 }
 
 // ── Controller registry hooks ────────────────────────────────────────────────
 
-void JointPDController::LoadConfig(const YAML::Node & cfg)
-{
+void JointPDController::LoadConfig(const YAML::Node &cfg) {
   RTControllerInterface::LoadConfig(cfg);
-  if (!cfg) {return;}
+  if (!cfg) {
+    return;
+  }
 
   if (cfg["kp"] && cfg["kp"].IsSequence()) {
-    const auto n = std::min(cfg["kp"].size(), static_cast<std::size_t>(kMaxRobotDOF));
+    const auto n =
+        std::min(cfg["kp"].size(), static_cast<std::size_t>(kMaxRobotDOF));
     for (std::size_t i = 0; i < n; ++i) {
       gains_.kp[i] = cfg["kp"][i].as<double>();
     }
   }
   if (cfg["kd"] && cfg["kd"].IsSequence()) {
-    const auto n = std::min(cfg["kd"].size(), static_cast<std::size_t>(kMaxRobotDOF));
+    const auto n =
+        std::min(cfg["kd"].size(), static_cast<std::size_t>(kMaxRobotDOF));
     for (std::size_t i = 0; i < n; ++i) {
       gains_.kd[i] = cfg["kd"][i].as<double>();
     }
   }
   if (cfg["enable_gravity_compensation"]) {
     gains_.enable_gravity_compensation =
-      cfg["enable_gravity_compensation"].as<bool>();
+        cfg["enable_gravity_compensation"].as<bool>();
   }
   if (cfg["enable_coriolis_compensation"]) {
     gains_.enable_coriolis_compensation =
-      cfg["enable_coriolis_compensation"].as<bool>();
+        cfg["enable_coriolis_compensation"].as<bool>();
   }
   if (cfg["trajectory_speed"]) {
-    gains_.trajectory_speed = cfg["trajectory_speed"].as<double>();
+    gains_.trajectory_speed =
+        std::max(1e-6, cfg["trajectory_speed"].as<double>());
   }
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
-    command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
+    command_type_ =
+        (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
 }
 
 void JointPDController::UpdateGainsFromMsg(
-  std::span<const double> gains) noexcept
-{
-  // layout: [kp×nv, kd×nv, enable_gravity(0/1), enable_coriolis(0/1), trajectory_speed]
-  // where nv = model DOF (e.g. 6 for UR5e)
+    std::span<const double> gains) noexcept {
+  // layout: [kp×nv, kd×nv, enable_gravity(0/1), enable_coriolis(0/1),
+  // trajectory_speed] where nv = model DOF (e.g. 6 for UR5e)
   const auto nv = static_cast<std::size_t>(handle_->nv());
-  if (gains.size() < 2 * nv + 2) {return;}
+  if (gains.size() < 2 * nv + 2) {
+    return;
+  }
 
-  for (std::size_t i = 0; i < nv; ++i) {gains_.kp[i] = gains[i];}
-  for (std::size_t i = 0; i < nv; ++i) {gains_.kd[i] = gains[nv + i];}
-  gains_.enable_gravity_compensation  = gains[2 * nv] > 0.5;
+  for (std::size_t i = 0; i < nv; ++i) {
+    gains_.kp[i] = gains[i];
+  }
+  for (std::size_t i = 0; i < nv; ++i) {
+    gains_.kd[i] = gains[nv + i];
+  }
+  gains_.enable_gravity_compensation = gains[2 * nv] > 0.5;
   gains_.enable_coriolis_compensation = gains[2 * nv + 1] > 0.5;
-  if (gains.size() >= 2 * nv + 3) {gains_.trajectory_speed = gains[2 * nv + 2];}
+  if (gains.size() >= 2 * nv + 3) {
+    gains_.trajectory_speed = std::max(1e-6, gains[2 * nv + 2]);
+  }
 }
 
-std::vector<double> JointPDController::GetCurrentGains() const noexcept
-{
-  // layout: [kp×nv, kd×nv, enable_gravity(0/1), enable_coriolis(0/1), trajectory_speed]
+std::vector<double> JointPDController::GetCurrentGains() const noexcept {
+  // layout: [kp×nv, kd×nv, enable_gravity(0/1), enable_coriolis(0/1),
+  // trajectory_speed]
   const auto nv = static_cast<std::size_t>(handle_->nv());
   std::vector<double> v;
   v.reserve(2 * nv + 3);
-  v.insert(v.end(), gains_.kp.begin(), gains_.kp.begin() + static_cast<std::ptrdiff_t>(nv));
-  v.insert(v.end(), gains_.kd.begin(), gains_.kd.begin() + static_cast<std::ptrdiff_t>(nv));
+  v.insert(v.end(), gains_.kp.begin(),
+           gains_.kp.begin() + static_cast<std::ptrdiff_t>(nv));
+  v.insert(v.end(), gains_.kd.begin(),
+           gains_.kd.begin() + static_cast<std::ptrdiff_t>(nv));
   v.push_back(gains_.enable_gravity_compensation ? 1.0 : 0.0);
   v.push_back(gains_.enable_coriolis_compensation ? 1.0 : 0.0);
   v.push_back(gains_.trajectory_speed);
@@ -326,20 +342,19 @@ std::vector<double> JointPDController::GetCurrentGains() const noexcept
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
-ControllerOutput JointPDController::ComputeEstop(
-  const ControllerState & state) noexcept
-{
+ControllerOutput
+JointPDController::ComputeEstop(const ControllerState &state) noexcept {
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
-  const auto & dev0 = state.devices[0];
+  const auto &dev0 = state.devices[0];
 
   ControllerOutput output;
   output.num_devices = state.num_devices;
-  auto & out0 = output.devices[0];
+  auto &out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
 
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    const double e  = safe_position_[i] - dev0.positions[i];
+    const double e = safe_position_[i] - dev0.positions[i];
     const double de = (e - prev_error_[i]) / dt;
     out0.commands[i] = gains_.kp[i] * e + gains_.kd[i] * de;
     prev_error_[i] = e;
@@ -354,8 +369,7 @@ ControllerOutput JointPDController::ComputeEstop(
   return output;
 }
 
-void JointPDController::UpdateDynamics(const DeviceState & dev) noexcept
-{
+void JointPDController::UpdateDynamics(const DeviceState &dev) noexcept {
   const int nv = handle_->nv();
   const std::size_t n = std::min(static_cast<std::size_t>(dev.num_channels),
                                  static_cast<std::size_t>(nv));
@@ -372,7 +386,7 @@ void JointPDController::UpdateDynamics(const DeviceState & dev) noexcept
   // ── Gravity torque g(q) ─────────────────────────────────────────────────
   if (gains_.enable_gravity_compensation) {
     handle_->ComputeGeneralizedGravity(q_span);
-    const auto & g = handle_->GetGeneralizedGravity();
+    const auto &g = handle_->GetGeneralizedGravity();
     for (std::size_t i = 0; i < n; ++i) {
       gravity_torques_[i] = g[static_cast<Eigen::Index>(i)];
     }
@@ -382,19 +396,20 @@ void JointPDController::UpdateDynamics(const DeviceState & dev) noexcept
   handle_->ComputeForwardKinematics(q_span, v_span);
 
   // ── TCP position cache ───────────────────────────────────────────────────
-  const pinocchio::SE3 & tcp = handle_->GetFramePlacement(tip_frame_id_);
+  const pinocchio::SE3 &tcp = handle_->GetFramePlacement(tip_frame_id_);
   tcp_position_[0] = tcp.translation()[0];
   tcp_position_[1] = tcp.translation()[1];
   tcp_position_[2] = tcp.translation()[2];
 
   // ── Jacobian ─────────────────────────────────────────────────────────────
   handle_->ComputeJacobians(q_span);
-  handle_->GetFrameJacobian(tip_frame_id_, pinocchio::LOCAL_WORLD_ALIGNED, jacobian_);
+  handle_->GetFrameJacobian(tip_frame_id_, pinocchio::LOCAL_WORLD_ALIGNED,
+                            jacobian_);
 
   // ── Coriolis/centrifugal C(q,v)·v ────────────────────────────────────────
   if (gains_.enable_coriolis_compensation) {
     handle_->ComputeCoriolisMatrix(q_span, v_span);
-    const auto & C = handle_->GetCoriolisMatrix();
+    const auto &C = handle_->GetCoriolisMatrix();
     // Reconstruct v as Eigen vector to compute C * v
     Eigen::Map<const Eigen::VectorXd> v_eigen(v_buf.data(), nv);
     coriolis_forces_.noalias() = C * v_eigen;
@@ -402,14 +417,15 @@ void JointPDController::UpdateDynamics(const DeviceState & dev) noexcept
 }
 
 void JointPDController::ClampCommands(
-  std::array<double, kMaxDeviceChannels>& cmds, int n, CommandType type) const noexcept
-{
-  const auto& limits = (type == CommandType::kTorque)
-                            ? max_joint_torque_ : max_joint_velocity_;
+    std::array<double, kMaxDeviceChannels> &cmds, int n,
+    CommandType type) const noexcept {
+  const auto &limits =
+      (type == CommandType::kTorque) ? max_joint_torque_ : max_joint_velocity_;
   for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i) {
-    const double lim = (i < limits.size()) ? limits[i] : kDefaultMaxJointVelocity;
+    const double lim =
+        (i < limits.size()) ? limits[i] : kDefaultMaxJointVelocity;
     cmds[i] = std::clamp(cmds[i], -lim, lim);
   }
 }
 
-}  // namespace rtc
+} // namespace rtc
