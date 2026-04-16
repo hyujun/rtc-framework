@@ -10,7 +10,7 @@ auto bridge_log() { return ::rtc_bt::logging::BridgeLogger(); }
 auto poses_log()  { return ::rtc_bt::logging::PosesLogger(); }
 }  // namespace
 
-BtRosBridge::BtRosBridge(rclcpp::Node::SharedPtr node)
+BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node)
   : node_(std::move(node))
 {
   // Initialize pose maps from compile-time defaults
@@ -398,7 +398,7 @@ std::size_t BtRosBridge::GetCollectedToFCount() const
 
 // ── Pose library ──────────────────────────────────────────────────────────
 
-void BtRosBridge::LoadPoseOverrides(rclcpp::Node::SharedPtr node)
+void BtRosBridge::LoadPoseOverrides(rclcpp_lifecycle::LifecycleNode::SharedPtr node)
 {
   // Discover hand_pose.* parameters
   auto hand_result = node->list_parameters({"hand_pose"}, 1);

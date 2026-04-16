@@ -26,6 +26,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(rtc_controller_interface REQUIRED)
@@ -92,6 +93,7 @@ target_link_libraries(ur5e_rt_controller
 )
 ament_target_dependencies(ur5e_rt_controller
   rclcpp
+  rclcpp_lifecycle
   rtc_base
   rtc_controller_manager
   rtc_controllers
@@ -147,6 +149,7 @@ ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
   ament_index_cpp
   rclcpp
+  rclcpp_lifecycle
   std_msgs
   sensor_msgs
   rtc_controller_interface

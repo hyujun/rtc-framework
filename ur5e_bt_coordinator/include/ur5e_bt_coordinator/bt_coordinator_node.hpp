@@ -11,6 +11,8 @@
 #endif
 
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <lifecycle_msgs/msg/state.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
 #include <memory>
@@ -34,14 +36,21 @@ namespace rtc_bt {
 ///
 /// Usage:
 ///   auto node = std::make_shared<BtCoordinatorNode>(options);
-///   node->Initialize();  // must call after construction (needs shared_from_this)
-///   rclcpp::spin(node);
-class BtCoordinatorNode : public rclcpp::Node {
+///   // Launch event handler triggers configure/activate automatically.
+///   rclcpp::spin(node->get_node_base_interface());
+class BtCoordinatorNode : public rclcpp_lifecycle::LifecycleNode {
 public:
+  using CallbackReturn =
+      rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+
   explicit BtCoordinatorNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
 
-  /// Two-phase init: call after make_shared (shared_from_this requires it).
-  void Initialize();
+  CallbackReturn on_configure(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_activate(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_cleanup(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_shutdown(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_error(const rclcpp_lifecycle::State& state) override;
 
 private:
   void DeclareParameters();

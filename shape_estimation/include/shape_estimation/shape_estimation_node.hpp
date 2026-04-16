@@ -14,6 +14,9 @@
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <rclcpp_lifecycle/lifecycle_publisher.hpp>
+#include <lifecycle_msgs/msg/state.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -36,12 +39,21 @@
 
 namespace shape_estimation {
 
-class ShapeEstimationNode : public rclcpp::Node {
+class ShapeEstimationNode : public rclcpp_lifecycle::LifecycleNode {
  public:
+  using CallbackReturn =
+      rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
   using ExploreShape = shape_estimation_msgs::action::ExploreShape;
   using GoalHandleExploreShape = rclcpp_action::ServerGoalHandle<ExploreShape>;
 
   ShapeEstimationNode();
+
+  CallbackReturn on_configure(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_activate(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_cleanup(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_shutdown(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_error(const rclcpp_lifecycle::State& state) override;
 
  private:
   // 상태 머신
@@ -80,13 +92,13 @@ class ShapeEstimationNode : public rclcpp::Node {
   rclcpp::Subscription<rtc_msgs::msg::ToFSnapshot>::SharedPtr snapshot_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr trigger_sub_;
 
-  // Publishers
-  rclcpp::Publisher<shape_estimation_msgs::msg::ShapeEstimate>::SharedPtr estimate_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_cloud_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr primitive_marker_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr tof_beams_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr curvature_text_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr protuberance_marker_pub_;
+  // Publishers (LifecyclePublisher — gated by lifecycle state)
+  rclcpp_lifecycle::LifecyclePublisher<shape_estimation_msgs::msg::ShapeEstimate>::SharedPtr estimate_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_cloud_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr primitive_marker_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr tof_beams_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr curvature_text_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr protuberance_marker_pub_;
 
   // Service
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr clear_srv_;
@@ -130,9 +142,9 @@ class ShapeEstimationNode : public rclcpp::Node {
       const std::shared_ptr<GoalHandleExploreShape> goal_handle);
 
   // ── RT Controller 연동 ────────────────────────────────────────────────────
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_controller_type_;
-  rclcpp::Publisher<rtc_msgs::msg::RobotTarget>::SharedPtr pub_robot_target_;
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_controller_gains_;
+  rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::String>::SharedPtr pub_controller_type_;
+  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::RobotTarget>::SharedPtr pub_robot_target_;
+  rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_controller_gains_;
 
   // ── 피드백 수신 ───────────────────────────────────────────────────────────
   rclcpp::Subscription<rtc_msgs::msg::GuiPosition>::SharedPtr sub_gui_position_;
@@ -140,7 +152,7 @@ class ShapeEstimationNode : public rclcpp::Node {
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_object_pose_;
 
   // ── 탐색 시각화 ───────────────────────────────────────────────────────────
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr explore_status_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr explore_status_pub_;
 
   // ── 탐색 루프 타이머 ──────────────────────────────────────────────────────
   rclcpp::TimerBase::SharedPtr explore_timer_;

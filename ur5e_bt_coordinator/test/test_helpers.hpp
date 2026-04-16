@@ -12,6 +12,7 @@
 #include <behaviortree_cpp/bt_factory.h>
 #include <geometry_msgs/msg/polygon.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rtc_msgs/msg/grasp_state.hpp>
 #include <rtc_msgs/msg/gui_position.hpp>
 #include <shape_estimation_msgs/msg/shape_estimate.hpp>
@@ -52,7 +53,7 @@ protected:
       rclcpp::init(0, nullptr);
       owns_rclcpp_ = true;
     }
-    node_ = std::make_shared<rclcpp::Node>(
+    node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>(
         "bt_test_node",
         rclcpp::NodeOptions().use_intra_process_comms(true));
     bridge_ = std::make_shared<BtRosBridge>(node_);
@@ -94,7 +95,7 @@ protected:
   {
     auto start = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - start < duration) {
-      rclcpp::spin_some(node_);
+      rclcpp::spin_some(node_->get_node_base_interface());
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
   }
@@ -181,7 +182,7 @@ protected:
 
   // ── Data members ────────────────────────────────────────────────────────
 
-  rclcpp::Node::SharedPtr node_;
+  rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
   std::shared_ptr<BtRosBridge> bridge_;
 
   rclcpp::Publisher<rtc_msgs::msg::GuiPosition>::SharedPtr arm_gui_pub_;

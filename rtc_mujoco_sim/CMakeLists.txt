@@ -18,6 +18,7 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
@@ -105,6 +106,7 @@ if(mujoco_FOUND)
   target_include_directories(mujoco_simulator_node PRIVATE include src)
   ament_target_dependencies(mujoco_simulator_node
     rclcpp
+    rclcpp_lifecycle
     std_msgs
     sensor_msgs
     ament_index_cpp

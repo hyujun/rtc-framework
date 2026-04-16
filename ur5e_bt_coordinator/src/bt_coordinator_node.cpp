@@ -51,27 +51,25 @@ auto watchdog_log() { return ::rtc_bt::logging::WatchdogLogger(); }
 }  // namespace
 
 BtCoordinatorNode::BtCoordinatorNode(const rclcpp::NodeOptions& options)
-  : rclcpp::Node("bt_coordinator", options)
+  : rclcpp_lifecycle::LifecycleNode("bt_coordinator", options)
 {
   DeclareParameters();
 }
 
-void BtCoordinatorNode::Initialize()
+BtCoordinatorNode::CallbackReturn
+BtCoordinatorNode::on_configure(const rclcpp_lifecycle::State& /*state*/)
 {
-  // Create ROS bridge — requires shared_from_this(), so must be called
-  // after make_shared<BtCoordinatorNode>().
-  bridge_ = std::make_shared<BtRosBridge>(shared_from_this());
+  // shared_from_this() is safe here — node is managed via shared_ptr.
+  bridge_ = std::make_shared<BtRosBridge>(
+      std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()));
 
-  // Load pose overrides from ROS2 parameters (hand_pose.*, arm_pose.*)
-  bridge_->LoadPoseOverrides(shared_from_this());
+  bridge_->LoadPoseOverrides(
+      std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()));
 
   RegisterBtNodes();
   LoadTree();
-
-  // Inject blackboard variables from bb.* parameters
   InitializeBlackboard();
 
-  // Groot2 monitoring
 #ifdef BT_GROOT2_AVAILABLE
   if (groot2_port_ > 0) {
     try {
@@ -89,9 +87,29 @@ void BtCoordinatorNode::Initialize()
   }
 #endif
 
-  // Real-time failure logger: surfaces every FAILURE transition via rclcpp.
-  // Auto-subscribes to all nodes in the tree via StatusChangeLogger base.
   InstallFailureLogger();
+
+  // Step mode service (always available once configured)
+  step_service_ = create_service<std_srvs::srv::Trigger>(
+      "~/step",
+      std::bind(&BtCoordinatorNode::StepCallback, this,
+                std::placeholders::_1, std::placeholders::_2));
+
+  // Parameter change callback for runtime tree switching and pause
+  param_callback_ = add_on_set_parameters_callback(
+      std::bind(&BtCoordinatorNode::OnParameterChange, this, std::placeholders::_1));
+
+  RCLCPP_INFO(coord_log(),
+              "Tree loaded: %s (tick %.1f Hz, %s)",
+              tree_file_.c_str(), tick_rate_hz_,
+              step_mode_ ? "step mode" : "auto mode");
+  return CallbackReturn::SUCCESS;
+}
+
+BtCoordinatorNode::CallbackReturn
+BtCoordinatorNode::on_activate(const rclcpp_lifecycle::State& state)
+{
+  LifecycleNode::on_activate(state);
 
   // Tick timer (only if not in step mode)
   if (!step_mode_) {
@@ -103,16 +121,6 @@ void BtCoordinatorNode::Initialize()
     RCLCPP_INFO(coord_log(), "Step mode enabled — use ~/step service to tick");
   }
 
-  // Step mode service (always available)
-  step_service_ = create_service<std_srvs::srv::Trigger>(
-      "~/step",
-      std::bind(&BtCoordinatorNode::StepCallback, this,
-                std::placeholders::_1, std::placeholders::_2));
-
-  // Parameter change callback for runtime tree switching and pause
-  param_callback_ = add_on_set_parameters_callback(
-      std::bind(&BtCoordinatorNode::OnParameterChange, this, std::placeholders::_1));
-
   // Watchdog timer
   if (watchdog_interval_s_ > 0.0) {
     watchdog_timer_ = create_wall_timer(
@@ -121,10 +129,74 @@ void BtCoordinatorNode::Initialize()
         std::bind(&BtCoordinatorNode::WatchdogCheck, this));
   }
 
-  RCLCPP_INFO(coord_log(),
-              "Tree loaded: %s (tick %.1f Hz, %s)",
-              tree_file_.c_str(), tick_rate_hz_,
-              step_mode_ ? "step mode" : "auto mode");
+  RCLCPP_INFO(coord_log(), "BtCoordinatorNode activated");
+  return CallbackReturn::SUCCESS;
+}
+
+BtCoordinatorNode::CallbackReturn
+BtCoordinatorNode::on_deactivate(const rclcpp_lifecycle::State& state)
+{
+  if (tick_timer_) tick_timer_->cancel();
+  if (repeat_timer_) repeat_timer_->cancel();
+  if (watchdog_timer_) watchdog_timer_->cancel();
+  if (tree_) tree_->haltTree();
+
+  LifecycleNode::on_deactivate(state);
+  RCLCPP_INFO(coord_log(), "BtCoordinatorNode deactivated");
+  return CallbackReturn::SUCCESS;
+}
+
+BtCoordinatorNode::CallbackReturn
+BtCoordinatorNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/)
+{
+  tick_timer_.reset();
+  repeat_timer_.reset();
+  watchdog_timer_.reset();
+  step_service_.reset();
+  param_callback_.reset();
+  failure_logger_.reset();
+#ifdef BT_GROOT2_AVAILABLE
+  groot2_publisher_.reset();
+#endif
+  tree_.reset();
+  bridge_.reset();
+
+  RCLCPP_INFO(coord_log(), "BtCoordinatorNode cleaned up");
+  return CallbackReturn::SUCCESS;
+}
+
+BtCoordinatorNode::CallbackReturn
+BtCoordinatorNode::on_shutdown(const rclcpp_lifecycle::State& state)
+{
+  if (get_current_state().id() ==
+      lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+    on_deactivate(state);
+  }
+  return on_cleanup(state);
+}
+
+BtCoordinatorNode::CallbackReturn
+BtCoordinatorNode::on_error(const rclcpp_lifecycle::State& /*state*/)
+{
+  RCLCPP_ERROR(coord_log(), "BtCoordinatorNode error — attempting recovery");
+  if (tick_timer_) tick_timer_->cancel();
+  if (repeat_timer_) repeat_timer_->cancel();
+  if (watchdog_timer_) watchdog_timer_->cancel();
+  if (tree_) tree_->haltTree();
+
+  tick_timer_.reset();
+  repeat_timer_.reset();
+  watchdog_timer_.reset();
+  step_service_.reset();
+  param_callback_.reset();
+  failure_logger_.reset();
+#ifdef BT_GROOT2_AVAILABLE
+  groot2_publisher_.reset();
+#endif
+  tree_.reset();
+  bridge_.reset();
+
+  return CallbackReturn::SUCCESS;
 }
 
 void BtCoordinatorNode::DeclareParameters()

@@ -6,6 +6,9 @@
 #include <rtc_base/threading/thread_utils.hpp>
 
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <rclcpp_lifecycle/lifecycle_publisher.hpp>
+#include <lifecycle_msgs/msg/state.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <rtc_msgs/msg/joint_command.hpp>
@@ -38,26 +41,48 @@ namespace urtc = rtc;
 // Unified hand UDP node using request-response protocol.
 //
 // Owns a HandController that polls the hand device:
-//   write position → read position → read velocity → read sensors × 4
+//   write position -> read position -> read velocity -> read sensors x 4
 //
 // Publishes full state directly from EventLoop callback (no timer).
-// This eliminates the 100 Hz timer bottleneck — state is published at the
+// This eliminates the 100 Hz timer bottleneck -- state is published at the
 // EventLoop rate (500 Hz when driven by rt_controller).
 //
 // Pre-allocated messages avoid dynamic allocation on the publish path.
 // Receives commands on /hand/command.
-class HandUdpNode : public rclcpp::Node {
+//
+// Lifecycle states:
+//   Unconfigured -> on_configure -> Inactive -> on_activate -> Active
+//   Active -> on_deactivate -> Inactive -> on_cleanup -> Unconfigured
+//
+// Tier 1 (on_configure): parameters, controller, publishers, subscribers,
+//   timers, pre-allocated messages, EventLoop callback.
+// Tier 2 (on_activate): controller Start, fake tick timer, failure detector.
+class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
  public:
-  HandUdpNode() : Node("hand_udp_node") {
+  using CallbackReturn =
+      rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+
+  HandUdpNode() : LifecycleNode("hand_udp_node") {
+    // Lifecycle design: constructor is intentionally empty.
+    // All resource allocation happens in on_configure().
+  }
+
+  ~HandUdpNode() override {
+    // Safety net — idempotent cleanup in case lifecycle callbacks were not
+    // invoked (e.g. SIGTERM without graceful shutdown).
+    if (failure_detector_) failure_detector_->Stop();
+    if (controller_ && controller_->IsRunning()) controller_->Stop();
+    SaveCommStats();
+  }
+
+  /// Tier 1: allocate all persistent resources (parameters, controller,
+  /// publishers, subscribers, timers, pre-allocated messages).
+  CallbackReturn on_configure(const rclcpp_lifecycle::State& /*state*/) override {
     // ── Parameters ─────────────────────────────────────────────────────
     declare_parameter("target_ip",       std::string{"192.168.1.2"});
     declare_parameter("target_port",     55151);
-    // publish_rate kept for backward compatibility but no longer used for timer.
-    // Controls link_status decimation: link status published every (EventLoop Hz / publish_rate) cycles.
     declare_parameter("publish_rate",    100.0);
     declare_parameter("recv_timeout_ms", 10.0);
-    // enable_write_ack is deprecated — echo is always consumed for RT safety.
-    // Parameter kept for backward compatibility but ignored.
     declare_parameter("enable_write_ack", false);
     declare_parameter("enable_failure_detector", true);
     declare_parameter("failure_threshold", 5);
@@ -68,37 +93,30 @@ class HandUdpNode : public rclcpp::Node {
     declare_parameter("check_link", true);
     declare_parameter("link_fail_threshold", 10);
 
-    // Fake hand 모드 (하드웨어 없는 standalone 테스트용)
     declare_parameter("use_fake_hand", false);
     declare_parameter("fake_tick_rate_hz", 500.0);
 
-    // Hand joint/motor/fingertip names (이름 기반 매핑용)
     declare_parameter("joint_state_names", std::vector<std::string>{});
     declare_parameter("motor_state_names", std::vector<std::string>{});
     declare_parameter("hand_fingertip_names", std::vector<std::string>{});
 
-    // Communication mode: "individual" (0x11+0x12+0x14~0x17) or "bulk" (0x10+0x19)
     declare_parameter("communication_mode", std::string{"individual"});
 
-    // Sensor LPF
     declare_parameter("baro_lpf_enabled", false);
     declare_parameter("baro_lpf_cutoff_hz", 30.0);
     declare_parameter("tof_lpf_enabled", false);
     declare_parameter("tof_lpf_cutoff_hz", 15.0);
 
-    // Drift detection (one-shot)
     declare_parameter("drift_detection_enabled", false);
     declare_parameter("drift_threshold", 5.0);
     declare_parameter("drift_window_size", 2500);
 
-    // F/T inference
     declare_parameter("ft_inferencer.enabled", false);
     declare_parameter("ft_inferencer.num_fingertips", 4);
     declare_parameter("ft_inferencer.history_length", urtc::kFTHistoryLength);
     declare_parameter("ft_inferencer.model_paths", std::vector<std::string>{});
     declare_parameter("ft_inferencer.calibration_enabled", true);
     declare_parameter("ft_inferencer.calibration_samples", 500);
-    // Per-fingertip normalization (input_max arrays)
     for (const auto& name : {"thumb", "index", "middle", "ring"}) {
       declare_parameter("ft_inferencer." + std::string(name) + "_max",
                         std::vector<double>(16, 1.0));
@@ -107,19 +125,16 @@ class HandUdpNode : public rclcpp::Node {
     const std::string target_ip       = get_parameter("target_ip").as_string();
     const int         target_port     = static_cast<int>(get_parameter("target_port").as_int());
     const double      recv_timeout_ms = get_parameter("recv_timeout_ms").as_double();
-    // ── Communication mode ──────────────────────────────────────────────
     const std::string comm_mode_str = get_parameter("communication_mode").as_string();
     const auto comm_mode = (comm_mode_str == "bulk")
         ? urtc::HandCommunicationMode::kBulk
         : urtc::HandCommunicationMode::kIndividual;
 
-    // ── Sensor LPF ────────────────────────────────────────────────────────
     const bool   baro_lpf_enabled   = get_parameter("baro_lpf_enabled").as_bool();
     const double baro_lpf_cutoff_hz = get_parameter("baro_lpf_cutoff_hz").as_double();
     const bool   tof_lpf_enabled    = get_parameter("tof_lpf_enabled").as_bool();
     const double tof_lpf_cutoff_hz  = get_parameter("tof_lpf_cutoff_hz").as_double();
 
-    // ── F/T Inferencer Config ────────────────────────────────────────
     urtc::FingertipFTInferencer::Config ft_config;
     ft_config.enabled = get_parameter("ft_inferencer.enabled").as_bool();
     ft_config.num_fingertips = static_cast<int>(
@@ -128,7 +143,6 @@ class HandUdpNode : public rclcpp::Node {
         get_parameter("ft_inferencer.history_length").as_int());
     ft_config.model_paths = get_parameter("ft_inferencer.model_paths").as_string_array();
 
-    // Resolve relative model paths against ur5e_hand_driver package's models/ directory
     {
       const std::string models_dir =
           ament_index_cpp::get_package_share_directory("ur5e_hand_driver") + "/models/";
@@ -143,7 +157,6 @@ class HandUdpNode : public rclcpp::Node {
     ft_config.calibration_samples = static_cast<int>(
         get_parameter("ft_inferencer.calibration_samples").as_int());
 
-    // Per-fingertip input_max 로드
     const std::array<const char*, 4> ft_param_names = {"thumb", "index", "middle", "ring"};
     for (int f = 0; f < 4 && f < ft_config.num_fingertips; ++f) {
       auto max_vec = get_parameter(
@@ -155,7 +168,6 @@ class HandUdpNode : public rclcpp::Node {
       }
     }
 
-    // ── Drift detection ────────────────────────────────────────────────
     const bool   drift_enabled     = get_parameter("drift_detection_enabled").as_bool();
     const double drift_threshold   = get_parameter("drift_threshold").as_double();
     const int    drift_window_size = static_cast<int>(
@@ -173,7 +185,7 @@ class HandUdpNode : public rclcpp::Node {
         baro_lpf_enabled, baro_lpf_cutoff_hz, ft_config,
         drift_enabled, drift_threshold, drift_window_size);
 
-    // ── Topic names (configurable) ────────────────────────────────────
+    // ── Topic names ──────────────────────────────────────────────────
     declare_parameter("command_topic", std::string("/hand/joint_command"));
     declare_parameter("joint_state_topic", std::string("/hand/joint_states"));
     declare_parameter("motor_state_topic", std::string("/hand/motor_states"));
@@ -196,10 +208,7 @@ class HandUdpNode : public rclcpp::Node {
     const double calib_status_rate_hz =
         get_parameter("calibration_status_rate_hz").as_double();
 
-    // ── ROS2 pub/sub ───────────────────────────────────────────────────
-    // BEST_EFFORT + depth 1: 500 Hz RT sensor data — only latest value matters.
-    // Eliminates DDS ACK/NACK/retransmit overhead on the EventLoop publish path.
-    // Subscribers (rt_controller) MUST also use BEST_EFFORT to connect.
+    // ── Publishers (LifecyclePublisher — gated by lifecycle state) ─────
     rclcpp::QoS sensor_pub_qos{1};
     sensor_pub_qos.best_effort();
 
@@ -210,19 +219,16 @@ class HandUdpNode : public rclcpp::Node {
     sensor_state_pub_ = create_publisher<rtc_msgs::msg::HandSensorState>(
         sensor_topic, sensor_pub_qos);
 
-    // RELIABLE + depth 10: non-RT monitoring topic for BT / external nodes.
-    // Publishes the same HandSensorState at 500 Hz but with RELIABLE QoS,
-    // so non-RT subscribers (e.g. BT coordinator) can connect without
-    // interfering with the BEST_EFFORT RT control path.
     sensor_monitor_pub_ = create_publisher<rtc_msgs::msg::HandSensorState>(
         sensor_topic + "/monitor", rclcpp::QoS{10});
 
-    // Link status: RELIABLE + TRANSIENT_LOCAL + depth 1.
-    // Low-rate (~100 Hz decimated), latch ensures late subscribers get last status.
+    // Link status: standalone rclcpp::Publisher (NOT LifecyclePublisher).
+    // Must remain publishable in any lifecycle state — link status is a
+    // safety-relevant signal that should report even when Inactive.
     rclcpp::QoS link_pub_qos{1};
     link_pub_qos.transient_local();
-    link_status_pub_ = create_publisher<std_msgs::msg::Bool>(
-        link_status_topic, link_pub_qos);
+    link_status_pub_ = rclcpp::create_publisher<std_msgs::msg::Bool>(
+        this->get_node_topics_interface(), link_status_topic, link_pub_qos);
     link_fail_threshold_ = static_cast<uint64_t>(
         get_parameter("link_fail_threshold").as_int());
 
@@ -240,30 +246,20 @@ class HandUdpNode : public rclcpp::Node {
     fingertip_names_ = fingertip_names;
 
     // ── Link status decimation ─────────────────────────────────────────
-    // link_status는 500Hz로 보낼 필요 없음 — publish_rate 기준으로 decimation.
     const double publish_rate = get_parameter("publish_rate").as_double();
-    // EventLoop rate assumed 500Hz; decimation = 500/publish_rate (e.g. 500/100=5)
     link_decimation_ = std::max(1, static_cast<int>(500.0 / publish_rate));
 
-    // ── Pre-allocate ROS2 messages (non-RT, 1회만 할당) ─────────────────
+    // ── Pre-allocate ROS2 messages ─────────────────────────────────────
     PreallocateMessages();
 
-    // ── Set EventLoop callback: direct publish (no timer) ───────────────
+    // ── EventLoop callback ─────────────────────────────────────────────
     controller_->SetCallback(
         [this](const urtc::HandState& state,
                const urtc::FingertipFTState& ft_state) {
           PublishFromEventLoop(state, ft_state);
         });
 
-    // ── Subscriptions (Start 실패와 무관하게 항상 생성) ────────────────
-    // Start() 실패 시에도 구독을 생성하여 ros2 topic info에서 subscriber 확인 가능.
-    // 구독이 없으면 subscriber=0으로 표시되어 문제 진단이 어려워짐.
-
-    // JointCommand subscription (from rt_controller or external)
-    // rt_controller publishes with BEST_EFFORT + depth 1 for minimal DDS overhead.
-    // Subscriber must match: RELIABLE sub cannot connect to BEST_EFFORT pub.
-    // BEST_EFFORT + depth 1: rt_controller publishes with BEST_EFFORT/1,
-    // only the latest command matters — stale commands in queue cause lag.
+    // ── Subscriptions ──────────────────────────────────────────────────
     rclcpp::QoS cmd_sub_qos{1};
     cmd_sub_qos.best_effort();
 
@@ -271,7 +267,7 @@ class HandUdpNode : public rclcpp::Node {
         cmd_topic, cmd_sub_qos,
         [this](rtc_msgs::msg::JointCommand::SharedPtr msg) {
           if (!controller_->IsRunning()) {
-            return;  // Start 실패 시 명령 무시 (EventLoop 미동작)
+            return;
           }
           if (msg->values.size() < static_cast<std::size_t>(urtc::kNumHandMotors)) {
             RCLCPP_WARN(::ur5e_hand_driver::logging::NodeLogger(),
@@ -283,8 +279,6 @@ class HandUdpNode : public rclcpp::Node {
           for (std::size_t i = 0; i < static_cast<std::size_t>(urtc::kNumHandMotors); ++i) {
             cmd[i] = static_cast<float>(msg->values[i]);
           }
-          // Cache for fake-mode self-tick (so quiet periods keep echoing the
-          // last commanded target instead of reverting to zeros).
           if (use_fake_hand_) {
             std::lock_guard lock(last_cmd_mutex_);
             last_cmd_ = cmd;
@@ -292,8 +286,6 @@ class HandUdpNode : public rclcpp::Node {
           controller_->SetTargetPositions(cmd);
         });
 
-    // ── Sensor calibration command/status ────────────────────────────
-    // Reliable, depth 1: trigger must not be dropped.
     calib_cmd_sub_ = create_subscription<rtc_msgs::msg::CalibrationCommand>(
         calib_cmd_topic, rclcpp::QoS(1).reliable(),
         [this](rtc_msgs::msg::CalibrationCommand::SharedPtr msg) {
@@ -311,7 +303,6 @@ class HandUdpNode : public rclcpp::Node {
                                           msg->sample_count);
         });
 
-    // Transient local so late-joining GUIs see latest status immediately.
     rclcpp::QoS calib_status_qos{1};
     calib_status_qos.reliable().transient_local();
     calib_status_pub_ = create_publisher<rtc_msgs::msg::CalibrationStatus>(
@@ -324,25 +315,43 @@ class HandUdpNode : public rclcpp::Node {
         std::chrono::milliseconds(status_period_ms),
         [this]() { PublishCalibrationStatus(); });
 
-    // Legacy Float64MultiArray subscription (/hand/command) removed.
-    // rt_controller and mujoco_sim both use JointCommand on /hand/joint_command.
-    // See: git log for migration history.
+    // Cache config values needed by on_activate
+    target_ip_ = target_ip;
+    target_port_ = target_port;
+    comm_mode_str_ = comm_mode_str;
+
+    {
+      std::string names_str;
+      for (std::size_t i = 0; i < motor_names.size(); ++i) {
+        if (i > 0) names_str += ", ";
+        names_str += motor_names[i];
+      }
+      RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(),
+                  "Hand motor order (%zu): [%s]",
+                  motor_names.size(), names_str.c_str());
+    }
+
+    RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(),
+                "HandUdpNode configured: target %s:%d, direct publish from EventLoop, comm=%s",
+                target_ip.c_str(), target_port, comm_mode_str.c_str());
+    return CallbackReturn::SUCCESS;
+  }
+
+  /// Tier 2: start hardware communication and monitoring threads.
+  CallbackReturn on_activate(const rclcpp_lifecycle::State& state) override {
+    // Parent call activates LifecyclePublishers — must be called first.
+    LifecycleNode::on_activate(state);
+
+    start_time_ = std::chrono::steady_clock::now();
 
     if (!controller_->Start()) {
       RCLCPP_ERROR(::ur5e_hand_driver::logging::NodeLogger(),
-                   "Failed to start HandController to %s:%d  "
-                   "(subscriptions created — check ros2 topic info for diagnostics)",
-                   target_ip.c_str(), target_port);
-      return;
+                   "Failed to start HandController to %s:%d",
+                   target_ip_.c_str(), target_port_);
+      return CallbackReturn::FAILURE;
     }
 
-    // ── Fake-hand self tick (standalone mode without hardware) ──────────
-    // In fake mode the HandController has no EventLoop thread and its echo
-    // path only fires on SendCommandAndRequestStates(). A node-side wall_timer
-    // calls it at fake_tick_rate_hz so that /hand/joint_states, motor_states,
-    // sensor_states, link_status continue to publish even without incoming
-    // commands. Set fake_tick_rate_hz <= 0 to disable (e.g. when rt_controller
-    // drives the fake controller directly and the tick would be redundant).
+    // Fake-hand self tick
     if (use_fake_hand_) {
       const double fake_rate = get_parameter("fake_tick_rate_hz").as_double();
       if (fake_rate > 0.0) {
@@ -369,9 +378,7 @@ class HandUdpNode : public rclcpp::Node {
       }
     }
 
-    // ── Failure Detector (optional) ──────────────────────────────────
-    // Skipped in fake mode: no UDP link, no real sensor/motor data — the
-    // detector would immediately flag link_down / rate_fail false positives.
+    // Failure Detector (skipped in fake mode)
     const bool enable_fd =
         get_parameter("enable_failure_detector").as_bool() && !use_fake_hand_;
     if (enable_fd) {
@@ -399,33 +406,94 @@ class HandUdpNode : public rclcpp::Node {
                   fd_cfg.failure_threshold);
     }
 
-    {
-      std::string names_str;
-      for (std::size_t i = 0; i < motor_names.size(); ++i) {
-        if (i > 0) names_str += ", ";
-        names_str += motor_names[i];
-      }
-      RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(),
-                  "Hand motor order (%zu): [%s]",
-                  motor_names.size(), names_str.c_str());
-    }
-
-    RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(),
-                "HandUdpNode: target %s:%d, direct publish from EventLoop, comm=%s",
-                target_ip.c_str(), target_port, comm_mode_str.c_str());
+    RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(), "HandUdpNode activated");
+    return CallbackReturn::SUCCESS;
   }
 
-  ~HandUdpNode() override {
+  /// Tier 2 teardown: stop hardware communication and monitoring.
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State& state) override {
+    if (failure_detector_) {
+      failure_detector_->Stop();
+      failure_detector_.reset();
+    }
+    if (controller_ && controller_->IsRunning()) {
+      controller_->Stop();
+    }
+    if (fake_tick_timer_) {
+      fake_tick_timer_->cancel();
+      fake_tick_timer_.reset();
+    }
+
+    // Parent call deactivates LifecyclePublishers.
+    LifecycleNode::on_deactivate(state);
+
+    RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(), "HandUdpNode deactivated");
+    return CallbackReturn::SUCCESS;
+  }
+
+  /// Tier 1 teardown: release all resources in reverse order of on_configure.
+  CallbackReturn on_cleanup(const rclcpp_lifecycle::State& /*state*/) override {
     SaveCommStats();
-    if (failure_detector_) failure_detector_->Stop();
-    if (controller_) controller_->Stop();
+
+    calib_status_timer_.reset();
+    calib_cmd_sub_.reset();
+    joint_command_sub_.reset();
+    link_status_pub_.reset();
+    sensor_monitor_pub_.reset();
+    sensor_state_pub_.reset();
+    motor_state_pub_.reset();
+    joint_state_pub_.reset();
+    calib_status_pub_.reset();
+    controller_.reset();
+
+    RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(), "HandUdpNode cleaned up");
+    return CallbackReturn::SUCCESS;
+  }
+
+  /// Can be called from any primary state.
+  CallbackReturn on_shutdown(const rclcpp_lifecycle::State& state) override {
+    if (get_current_state().id() ==
+        lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+      on_deactivate(state);
+    }
+    return on_cleanup(state);
+  }
+
+  /// Error recovery — clean up and return to Unconfigured.
+  CallbackReturn on_error(const rclcpp_lifecycle::State& /*state*/) override {
+    RCLCPP_ERROR(::ur5e_hand_driver::logging::NodeLogger(), "HandUdpNode error — attempting recovery");
+    if (failure_detector_) {
+      failure_detector_->Stop();
+      failure_detector_.reset();
+    }
+    if (controller_ && controller_->IsRunning()) {
+      controller_->Stop();
+    }
+    if (fake_tick_timer_) {
+      fake_tick_timer_->cancel();
+      fake_tick_timer_.reset();
+    }
+    SaveCommStats();
+
+    calib_status_timer_.reset();
+    calib_cmd_sub_.reset();
+    joint_command_sub_.reset();
+    link_status_pub_.reset();
+    sensor_monitor_pub_.reset();
+    sensor_state_pub_.reset();
+    motor_state_pub_.reset();
+    joint_state_pub_.reset();
+    calib_status_pub_.reset();
+    controller_.reset();
+
+    // SUCCESS -> Unconfigured (recoverable), not Finalized.
+    return CallbackReturn::SUCCESS;
   }
 
  private:
-  // Pre-allocate ROS2 messages once in the constructor (non-RT).
+  // Pre-allocate ROS2 messages once in on_configure (non-RT).
   // This avoids dynamic allocation on the EventLoop publish path.
   void PreallocateMessages() {
-    // JointState messages (dual: joint + motor)
     joint_js_msg_.name = joint_names_;
     joint_js_msg_.position.resize(urtc::kNumHandMotors);
     joint_js_msg_.velocity.resize(urtc::kNumHandMotors);
@@ -436,7 +504,6 @@ class HandUdpNode : public rclcpp::Node {
     motor_js_msg_.velocity.resize(urtc::kNumHandMotors);
     motor_js_msg_.effort.resize(urtc::kNumHandMotors);
 
-    // HandSensorState message — pre-allocate fingertips array
     sensor_msg_.fingertips.resize(static_cast<std::size_t>(num_fingertips_));
     for (int f = 0; f < num_fingertips_; ++f) {
       auto& fs = sensor_msg_.fingertips[static_cast<std::size_t>(f)];
@@ -448,21 +515,10 @@ class HandUdpNode : public rclcpp::Node {
 
   // Called directly from EventLoop thread — publishes state at EventLoop rate.
   // Uses pre-allocated messages to avoid dynamic allocation.
-  //
-  // NOTE: publish() may trigger DDS serialization which is not strictly RT-safe,
-  // but the overhead is small (~10-20µs for these message sizes) and acceptable
-  // within the 2ms EventLoop budget.
   void PublishFromEventLoop(const urtc::HandState& state,
                             const urtc::FingertipFTState& ft_state) {
-    // ── Dual JointState publish (joint + motor) ────────────────────────
-    // Gate each publish on the corresponding per-subsystem valid flag so that
-    // zero-initialized positions from a failed read are never broadcast.
-    // Downstream consumers (e.g. rt_controller auto_hold_position) latch the
-    // first received state as the hold target; publishing zeros would lock in
-    // a bogus target before the real UDP read succeeds.
     const auto stamp = this->now();
 
-    // /hand/joint_states (joint-space: position/velocity/effort from kJoint read)
     if (state.joint_valid) {
       joint_js_msg_.header.stamp = stamp;
       for (int i = 0; i < urtc::kNumHandMotors; ++i) {
@@ -474,7 +530,6 @@ class HandUdpNode : public rclcpp::Node {
       joint_state_pub_->publish(joint_js_msg_);
     }
 
-    // /hand/motor_states (motor-space: position/velocity/effort from kMotor read)
     if (state.motor_valid) {
       motor_js_msg_.header.stamp = stamp;
       for (int i = 0; i < urtc::kNumHandMotors; ++i) {
@@ -486,7 +541,6 @@ class HandUdpNode : public rclcpp::Node {
       motor_state_pub_->publish(motor_js_msg_);
     }
 
-    // ── HandSensorState (sensor + inference) ───────────────────────────
     if (state.num_fingertips > 0) {
       sensor_msg_.header.stamp = this->now();
 
@@ -532,7 +586,9 @@ class HandUdpNode : public rclcpp::Node {
       sensor_monitor_pub_->publish(sensor_msg_);
     }
 
-    // ── Link status (decimated — not every cycle) ──────────────────────
+    // Link status (decimated — not every cycle).
+    // Published via standalone rclcpp::Publisher (not LifecyclePublisher),
+    // so it works regardless of lifecycle state.
     ++link_cycle_counter_;
     if (link_cycle_counter_ >= link_decimation_) {
       link_cycle_counter_ = 0;
@@ -540,9 +596,6 @@ class HandUdpNode : public rclcpp::Node {
       const uint64_t failures = controller_->consecutive_recv_failures();
       const bool link_ok = (failures < link_fail_threshold_);
       if (link_ok != prev_link_ok_) {
-        // Edge-triggered — fires at most once per transition. Runs on the
-        // HandController EventLoop (SCHED_FIFO) so argument count is kept
-        // minimal: UP takes 0 args, DOWN takes 1 (failure count).
         if (link_ok) {
           RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(),
                       "Hand UDP link UP");
@@ -563,9 +616,6 @@ class HandUdpNode : public rclcpp::Node {
     }
   }
 
-  // Publish the calibration status for all sensors the node tracks.
-  // Currently only barometer is supported; new sensors require adding
-  // another entry to this list and a case in HandController::GetCalibrationStatus().
   void PublishCalibrationStatus() {
     if (!controller_ || !calib_status_pub_) return;
 
@@ -591,16 +641,12 @@ class HandUdpNode : public rclcpp::Node {
     const auto stats = controller_->comm_stats();
     const bool fd_failed = failure_detector_ ? failure_detector_->failed() : false;
 
-    // 평균 rate 계산 (start_time_ 기준)
     const auto elapsed = std::chrono::steady_clock::now() - start_time_;
     const double elapsed_sec = std::chrono::duration<double>(elapsed).count();
     const double avg_rate_hz = (elapsed_sec > 0.0)
         ? static_cast<double>(stats.total_cycles) / elapsed_sec
         : 0.0;
 
-    // 세션 디렉토리 기반 경로 결정.
-    // RTC_SESSION_DIR / UR5E_SESSION_DIR 이 있으면 그 아래 device/ 를 사용하고,
-    // 없으면 3단 체인으로 해석된 ws logging_data 에 새 세션을 만들어 device/ 에 저장.
     const std::filesystem::path session =
         urtc::ResolveSessionDir();
     std::filesystem::path output_dir_path = session / "device";
@@ -615,7 +661,6 @@ class HandUdpNode : public rclcpp::Node {
       return;
     }
 
-    // 타이밍 통계
     const auto ts = controller_->timing_stats();
 
     const bool is_bulk = (controller_->communication_mode() == urtc::HandCommunicationMode::kBulk);
@@ -693,7 +738,6 @@ class HandUdpNode : public rclcpp::Node {
           << " },\n";
     }
 
-    // Sensor processing timing (filter + drift detection)
     if (ts.sensor_cycle_count > 0) {
       ofs << "    \"sensor_proc_us\": {"
           << " \"mean\": " << ts.sensor_proc.mean_us
@@ -702,7 +746,6 @@ class HandUdpNode : public rclcpp::Node {
           << " },\n";
     }
 
-    // F/T inference timing
     if (ts.ft_infer_count > 0) {
       ofs << "    \"ft_infer_us\": {"
           << " \"mean\": " << ts.ft_infer.mean_us
@@ -719,12 +762,8 @@ class HandUdpNode : public rclcpp::Node {
         << "}\n";
     ofs.close();
 
-    // 타이밍 요약 로그 출력
     RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(), "%s", controller_->TimingSummary().c_str());
 
-    // Enriched one-line summary: include elapsed time and ok/timeout/error as
-    // percentages so that post-mortem analysis of a failed session can read
-    // the outcome from a single grep hit without reopening the JSON.
     const double total = static_cast<double>(stats.total_cycles > 0 ? stats.total_cycles : 1);
     const double ok_pct      = 100.0 * static_cast<double>(stats.recv_ok)      / total;
     const double timeout_pct = 100.0 * static_cast<double>(stats.recv_timeout) / total;
@@ -742,32 +781,35 @@ class HandUdpNode : public rclcpp::Node {
   std::unique_ptr<urtc::HandController>      controller_;
   std::unique_ptr<urtc::HandFailureDetector> failure_detector_;
 
-  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr         joint_state_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr         motor_state_pub_;
-  rclcpp::Publisher<rtc_msgs::msg::HandSensorState>::SharedPtr      sensor_state_pub_;
-  rclcpp::Publisher<rtc_msgs::msg::HandSensorState>::SharedPtr      sensor_monitor_pub_;
+  // Data publishers — LifecyclePublisher (gated by lifecycle state).
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr    joint_state_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr    motor_state_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::HandSensorState>::SharedPtr  sensor_state_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::HandSensorState>::SharedPtr  sensor_monitor_pub_;
   rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr      joint_command_sub_;
   rclcpp::Subscription<rtc_msgs::msg::CalibrationCommand>::SharedPtr calib_cmd_sub_;
-  rclcpp::Publisher<rtc_msgs::msg::CalibrationStatus>::SharedPtr    calib_status_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::CalibrationStatus>::SharedPtr calib_status_pub_;
   rclcpp::TimerBase::SharedPtr                                      calib_status_timer_;
   std::vector<std::string> joint_names_;
   std::vector<std::string> motor_names_;
   std::vector<std::string> fingertip_names_;
   int num_fingertips_{urtc::kDefaultNumFingertips};
 
+  // Link status — standalone rclcpp::Publisher (NOT LifecyclePublisher).
+  // Safety-relevant: must remain publishable in any lifecycle state.
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr link_status_pub_;
   bool ft_enabled_{false};
   uint64_t            link_fail_threshold_{10};
   bool                prev_link_ok_{true};
 
-  // Pre-allocated messages (populated once in constructor, values overwritten per cycle)
+  // Pre-allocated messages
   sensor_msgs::msg::JointState           joint_js_msg_;
   sensor_msgs::msg::JointState           motor_js_msg_;
   rtc_msgs::msg::HandSensorState         sensor_msg_;
   std_msgs::msg::Bool                    link_msg_;
 
-  // Link status decimation (500Hz → publish_rate Hz)
-  int link_decimation_{5};     // default: 500/100 = 5
+  // Link status decimation
+  int link_decimation_{5};
   int link_cycle_counter_{0};
 
   std::size_t         publish_count_{0};
@@ -779,6 +821,11 @@ class HandUdpNode : public rclcpp::Node {
   std::array<float, urtc::kNumHandMotors>     last_cmd_{};
 
   std::chrono::steady_clock::time_point start_time_{std::chrono::steady_clock::now()};
+
+  // Cached config for on_activate logging
+  std::string target_ip_;
+  int target_port_{0};
+  std::string comm_mode_str_;
 };
 
 int main(int argc, char** argv) {
@@ -791,8 +838,6 @@ int main(int argc, char** argv) {
   }
 
   // Pin main thread (ROS2 executor, DDS) to Core 0-1 (OS/DDS cores).
-  // EventLoop thread has its own affinity (Core 5, SCHED_FIFO 65).
-  // Without this, the executor could land on isolated RT cores (2-5).
   {
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
@@ -803,7 +848,9 @@ int main(int argc, char** argv) {
     }
   }
 
-  rclcpp::spin(std::make_shared<HandUdpNode>());
+  auto node = std::make_shared<HandUdpNode>();
+  // Constructor is empty — launch event handler triggers configure/activate.
+  rclcpp::spin(node->get_node_base_interface());
   rclcpp::shutdown();
   return 0;
 }

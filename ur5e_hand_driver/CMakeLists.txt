@@ -25,6 +25,7 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(rtc_base REQUIRED)
@@ -43,6 +44,7 @@ add_executable(hand_udp_node
 target_include_directories(hand_udp_node PRIVATE include)
 ament_target_dependencies(hand_udp_node
   rclcpp
+  rclcpp_lifecycle
   sensor_msgs
   std_msgs
   rtc_base

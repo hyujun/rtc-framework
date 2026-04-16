@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
 find_package(behaviortree_cpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
@@ -52,7 +53,7 @@ target_include_directories(bt_nodes PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 ament_target_dependencies(bt_nodes
-  rclcpp behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs
+  rclcpp rclcpp_lifecycle behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs
 )
 target_link_libraries(bt_nodes Eigen3::Eigen)
 
@@ -66,7 +67,7 @@ target_include_directories(bt_coordinator_node PRIVATE
 )
 target_link_libraries(bt_coordinator_node bt_nodes)
 ament_target_dependencies(bt_coordinator_node
-  rclcpp behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs ament_index_cpp
+  rclcpp rclcpp_lifecycle behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs ament_index_cpp
 )
 
 # ── Executable: offline tree validator ─────────────────────────────────────

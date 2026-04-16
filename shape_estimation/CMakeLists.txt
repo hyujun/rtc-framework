@@ -21,6 +21,7 @@ endif()
 # ── Dependencies ──────────────────────────────────────────────────────────────
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
@@ -60,7 +61,7 @@ target_include_directories(shape_estimation_ros PUBLIC
 )
 target_link_libraries(shape_estimation_ros shape_estimation_core)
 ament_target_dependencies(shape_estimation_ros
-  rclcpp rclcpp_action std_msgs std_srvs sensor_msgs geometry_msgs
+  rclcpp rclcpp_lifecycle rclcpp_action std_msgs std_srvs sensor_msgs geometry_msgs
   visualization_msgs shape_estimation_msgs rtc_msgs
 )
 set_target_properties(shape_estimation_ros PROPERTIES POSITION_INDEPENDENT_CODE ON)

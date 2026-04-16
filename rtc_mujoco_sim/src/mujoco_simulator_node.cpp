@@ -1,13 +1,23 @@
 // ── mujoco_simulator_node.cpp ─────────────────────────────────────────────────
-// ROS2 node for MuJoCo simulation with multi-group support.
+// ROS2 lifecycle node for MuJoCo simulation with multi-group support.
 // robot_response groups use MuJoCo physics; fake_response groups use LPF.
 // All groups use rtc_msgs/JointCommand for commands, sensor_msgs/JointState
 // for state publishing.
+//
+// Lifecycle states:
+//   Unconfigured -> on_configure -> Inactive -> on_activate -> Active
+//   Active -> on_deactivate -> Inactive -> on_cleanup -> Unconfigured
+//
+// Tier 1 (on_configure): parameters, simulator, publishers, subscribers.
+// Tier 2 (on_activate): sim Start, timers.
 // ──────────────────────────────────────────────────────────────────────────────
 #include "rtc_mujoco_sim/mujoco_simulator.hpp"
 #include "rtc_mujoco_sim/ros2_resource_provider.hpp"
 
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <rclcpp_lifecycle/lifecycle_publisher.hpp>
+#include <lifecycle_msgs/msg/state.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <rtc_msgs/msg/joint_command.hpp>
@@ -28,8 +38,8 @@ namespace urtc = rtc;
 // ── GroupRosHandles ──────────────────────────────────────────────────────────────
 
 struct GroupRosHandles {
-  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr state_pub;
-  rclcpp::Publisher<rtc_msgs::msg::SimSensorState>::SharedPtr sensor_pub;
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr state_pub;
+  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::SimSensorState>::SharedPtr sensor_pub;
   rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr cmd_sub;
   rclcpp::TimerBase::SharedPtr fake_timer;  // fake groups only
   std::size_t group_idx{0};
@@ -39,29 +49,113 @@ struct GroupRosHandles {
 
 // ── MuJoCoSimulatorNode ────────────────────────────────────────────────────────
 
-class MuJoCoSimulatorNode : public rclcpp::Node {
+class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
  public:
+  using CallbackReturn =
+      rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+
   MuJoCoSimulatorNode()
-      : Node("mujoco_simulator")
+      : LifecycleNode("mujoco_simulator")
   {
     urtc::RegisterRos2ResourceProvider();
-
-    DeclareAndLoadParameters();
-    CreateSimulator();
-    CreateGroupHandles();
-    CreateTimers();
-
-    sim_->Start();
-
-    RCLCPP_INFO(get_logger(),
-                "MuJoCo simulator ready — model: %s  viewer: %s  groups: %zu  max_rtf: %.1f",
-                model_path_.c_str(),
-                enable_viewer_ ? "ON" : "OFF",
-                sim_->NumGroups(), max_rtf_);
+    // Lifecycle design: constructor is intentionally minimal.
+    // All resource allocation happens in on_configure().
   }
 
   ~MuJoCoSimulatorNode() override {
-    if (sim_) { sim_->Stop(); }
+    if (sim_ && sim_->IsRunning()) { sim_->Stop(); }
+  }
+
+  /// Tier 1: parameters, simulator, publishers, subscribers.
+  CallbackReturn on_configure(const rclcpp_lifecycle::State& /*state*/) override {
+    DeclareAndLoadParameters();
+    CreateSimulator();
+    CreateGroupHandles();
+
+    sim_status_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
+        "/sim/status", rclcpp::QoS(10));
+
+    RCLCPP_INFO(get_logger(),
+                "MuJoCo simulator configured — model: %s  viewer: %s  groups: %zu  max_rtf: %.1f",
+                model_path_.c_str(),
+                enable_viewer_ ? "ON" : "OFF",
+                sim_->NumGroups(), max_rtf_);
+    return CallbackReturn::SUCCESS;
+  }
+
+  /// Tier 2: start simulation and timers.
+  CallbackReturn on_activate(const rclcpp_lifecycle::State& state) override {
+    LifecycleNode::on_activate(state);
+
+    sim_->Start();
+    CreateTimers();
+
+    RCLCPP_INFO(get_logger(), "MuJoCoSimulatorNode activated");
+    return CallbackReturn::SUCCESS;
+  }
+
+  /// Stop simulation and timers.
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State& state) override {
+    // Cancel all timers
+    if (status_timer_) status_timer_->cancel();
+    for (auto& h : group_handles_) {
+      if (h.fake_timer) h.fake_timer->cancel();
+    }
+
+    if (sim_ && sim_->IsRunning()) { sim_->Stop(); }
+
+    LifecycleNode::on_deactivate(state);
+    RCLCPP_INFO(get_logger(), "MuJoCoSimulatorNode deactivated");
+    return CallbackReturn::SUCCESS;
+  }
+
+  /// Release all resources (reverse order of on_configure).
+  CallbackReturn on_cleanup(const rclcpp_lifecycle::State& /*state*/) override {
+    status_timer_.reset();
+    for (auto& h : group_handles_) {
+      h.fake_timer.reset();
+      h.cmd_sub.reset();
+      h.sensor_pub.reset();
+      h.state_pub.reset();
+    }
+    group_handles_.clear();
+    sim_status_pub_.reset();
+    sim_.reset();
+    group_configs_.clear();
+
+    RCLCPP_INFO(get_logger(), "MuJoCoSimulatorNode cleaned up");
+    return CallbackReturn::SUCCESS;
+  }
+
+  CallbackReturn on_shutdown(const rclcpp_lifecycle::State& state) override {
+    if (get_current_state().id() ==
+        lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+      on_deactivate(state);
+    }
+    return on_cleanup(state);
+  }
+
+  CallbackReturn on_error(const rclcpp_lifecycle::State& /*state*/) override {
+    RCLCPP_ERROR(get_logger(), "MuJoCoSimulatorNode error — attempting recovery");
+    if (status_timer_) status_timer_->cancel();
+    for (auto& h : group_handles_) {
+      if (h.fake_timer) h.fake_timer->cancel();
+    }
+    if (sim_ && sim_->IsRunning()) { sim_->Stop(); }
+
+    status_timer_.reset();
+    for (auto& h : group_handles_) {
+      h.fake_timer.reset();
+      h.cmd_sub.reset();
+      h.sensor_pub.reset();
+      h.state_pub.reset();
+    }
+    group_handles_.clear();
+    sim_status_pub_.reset();
+    sim_.reset();
+    group_configs_.clear();
+
+    return CallbackReturn::SUCCESS;
   }
 
  private:
@@ -111,7 +205,6 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     declare_parameter("solver.contact_override.o_friction",
                       std::vector<double>{1.0, 1.0, 0.005, 0.0001, 0.0001});
 
-    // robot_response / fake_response group names
     declare_parameter("robot_response.groups", std::vector<std::string>{});
     declare_parameter("fake_response.groups", std::vector<std::string>{});
 
@@ -127,7 +220,6 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     servo_kp_ = get_parameter("servo_kp").as_double_array();
     servo_kd_ = get_parameter("servo_kd").as_double_array();
 
-    // Load solver config
     solver_config_.solver      = get_parameter("solver.solver").as_string();
     solver_config_.cone        = get_parameter("solver.cone").as_string();
     solver_config_.jacobian    = get_parameter("solver.jacobian").as_string();
@@ -166,7 +258,6 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
         solver_config_.contact_override.o_friction[i] = v[i];
     }
 
-    // Parse robot_response groups
     auto robot_groups = get_parameter("robot_response.groups").as_string_array();
     for (const auto& gname : robot_groups) {
       DeclareGroupParams("robot_response", gname);
@@ -181,7 +272,6 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
       gc.sensor_topic = get_parameter("robot_response." + gname + ".sensor_topic").as_string();
       gc.sensor_names = get_parameter("robot_response." + gname + ".sensor_names").as_string_array();
 
-      // Optional per-group servo gains
       try {
         gc.servo_kp = get_parameter("robot_response." + gname + ".servo_kp").as_double_array();
         gc.servo_kd = get_parameter("robot_response." + gname + ".servo_kd").as_double_array();
@@ -190,7 +280,6 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
       group_configs_.push_back(std::move(gc));
     }
 
-    // Parse fake_response groups
     auto fake_groups = get_parameter("fake_response.groups").as_string_array();
     for (const auto& gname : fake_groups) {
       DeclareGroupParams("fake_response", gname);
@@ -211,7 +300,6 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
       group_configs_.push_back(std::move(gc));
     }
 
-    // Resolve model path
     if (model_path_.empty()) {
       model_path_ = "package://ur5e_description/robots/ur5e/mjcf/scene.xml";
     } else if (model_path_.find("package://") != 0 && model_path_[0] != '/') {
@@ -256,7 +344,6 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
       throw std::runtime_error("MuJoCo initialization failed");
     }
 
-    // Physics vs control rate validation
     const double xml_dt = sim_->GetPhysicsTimestep();
     if (xml_dt > 0.0 && control_rate_ > 0.0) {
       const double physics_freq = 1.0 / xml_dt;
@@ -274,8 +361,6 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     const auto num_groups = sim_->NumGroups();
     group_handles_.resize(num_groups);
 
-    // BEST_EFFORT + depth 1: rt_controller publishes commands with BEST_EFFORT/1.
-    // Only the latest command matters — stale commands cause lag.
     rclcpp::QoS cmd_qos{1};
     cmd_qos.best_effort();
 
@@ -286,23 +371,18 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
       const auto& cmd_joint_names = sim_->GetJointNames(idx);
       const bool is_robot = sim_->IsGroupRobot(idx);
 
-      // Build name → index map (command_joint_names 기준)
       for (std::size_t j = 0; j < cmd_joint_names.size(); ++j) {
         h.name_index_map[cmd_joint_names[j]] = j;
       }
 
-      // Topic names from config (groups_ order matches group_configs_ order)
       const std::string& cmd_topic = group_configs_[idx].command_topic;
       const std::string& state_topic = group_configs_[idx].state_topic;
 
-      // Publisher: BEST_EFFORT + depth 1 for high-rate sim state (matches hand_udp_node).
-      // rt_controller subscribes with BEST_EFFORT — compatible with both RELIABLE and BE pubs.
       rclcpp::QoS state_pub_qos{1};
       state_pub_qos.best_effort();
       h.state_pub = create_publisher<sensor_msgs::msg::JointState>(
           state_topic, state_pub_qos);
 
-      // Subscriber (JointCommand for all groups)
       h.cmd_sub = create_subscription<rtc_msgs::msg::JointCommand>(
           cmd_topic,
           cmd_qos,
@@ -310,7 +390,6 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
             GroupCommandCallback(idx, msg);
           });
 
-      // State callback for robot groups
       if (is_robot) {
         sim_->SetStateCallback(idx,
             [this, idx](const std::vector<double>& pos,
@@ -320,7 +399,6 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
             });
       }
 
-      // Sensor publisher + callback (robot groups with sensors only)
       const std::string& sensor_topic = group_configs_[idx].sensor_topic;
       if (is_robot && !sensor_topic.empty() && sim_->HasSensors(idx)) {
         rclcpp::QoS sensor_qos{1};
@@ -347,14 +425,12 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
 
   // ── Timers ───────────────────────────────────────────────────────────────────
   void CreateTimers() {
-    // Fake response timers (100 Hz per fake group)
     for (std::size_t idx = 0; idx < sim_->NumGroups(); ++idx) {
       if (sim_->IsGroupRobot(idx)) continue;
       group_handles_[idx].fake_timer = create_wall_timer(
           10ms, [this, idx]() { PublishFakeState(idx); });
     }
 
-    // Simulation status @ 1 Hz
     status_timer_ = create_wall_timer(
         1s, [this]() { PublishSimStatus(); });
   }
@@ -369,7 +445,6 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
     const bool is_robot = sim_->IsGroupRobot(group_idx);
     auto& h = group_handles_[group_idx];
 
-    // Build command vector using name-based mapping
     std::vector<double> cmd(static_cast<std::size_t>(nj), 0.0);
     if (msg->joint_names.empty()) {
       const auto n = std::min(msg->values.size(),
@@ -400,7 +475,6 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
       }
       sim_->SetCommand(group_idx, cmd);
     } else {
-      // Fake group: update LPF target
       sim_->SetFakeTarget(group_idx, cmd);
     }
   }
@@ -486,8 +560,8 @@ class MuJoCoSimulatorNode : public rclcpp::Node {
   std::vector<urtc::JointGroupConfig> group_configs_;
   std::vector<GroupRosHandles> group_handles_;
 
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr sim_status_pub_ =
-      create_publisher<std_msgs::msg::Float64MultiArray>("/sim/status", rclcpp::QoS(10));
+  // sim_status_pub_ initialized in on_configure (NOT in member initializer list).
+  rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Float64MultiArray>::SharedPtr sim_status_pub_;
 
   rclcpp::TimerBase::SharedPtr status_timer_;
 
@@ -513,7 +587,8 @@ int main(int argc, char** argv) {
 
   try {
     auto node = std::make_shared<MuJoCoSimulatorNode>();
-    rclcpp::spin(node);
+    // Constructor is minimal — launch event handler triggers configure/activate.
+    rclcpp::spin(node->get_node_base_interface());
   } catch (const std::exception& e) {
     fprintf(stderr, "[mujoco_simulator_node] Fatal: %s\n", e.what());
     rclcpp::shutdown();

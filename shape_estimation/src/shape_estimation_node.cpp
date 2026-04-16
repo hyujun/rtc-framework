@@ -10,7 +10,13 @@ auto node_log() { return ::rtc::shape::logging::NodeLogger(); }
 }  // namespace
 
 ShapeEstimationNode::ShapeEstimationNode()
-    : Node("shape_estimation_node") {
+    : LifecycleNode("shape_estimation_node") {
+  // Lifecycle design: constructor is intentionally empty.
+  // All resource allocation happens in on_configure().
+}
+
+ShapeEstimationNode::CallbackReturn
+ShapeEstimationNode::on_configure(const rclcpp_lifecycle::State& /*state*/) {
   DeclareParameters();
 
   // 파라미터로부터 설정 구성
@@ -76,7 +82,7 @@ ShapeEstimationNode::ShapeEstimationNode()
         TriggerCallback(std::move(msg));
       });
 
-  // ── Publishers ─────────────────────────────────────────────────────────────
+  // ── Publishers (LifecyclePublisher) ────────────────────────────────────────
   estimate_pub_ = create_publisher<shape_estimation_msgs::msg::ShapeEstimate>(
       "/shape/estimate", rclcpp::QoS(10).reliable());
 
@@ -116,9 +122,9 @@ ShapeEstimationNode::ShapeEstimationNode()
   enable_exploration_ = get_parameter("enable_exploration").as_bool();
   if (enable_exploration_) {
     InitExploration();
-    RCLCPP_INFO(node_log(), "ShapeEstimationNode 초기화 완료. 탐색 모션 활성화");
+    RCLCPP_INFO(node_log(), "ShapeEstimationNode configured. 탐색 모션 활성화");
   } else {
-    RCLCPP_INFO(node_log(), "ShapeEstimationNode 초기화 완료. 순수 추정 모드");
+    RCLCPP_INFO(node_log(), "ShapeEstimationNode configured. 순수 추정 모드");
   }
 
   RCLCPP_INFO(node_log(),
@@ -127,6 +133,107 @@ ShapeEstimationNode::ShapeEstimationNode()
               cloud_config.voxel_resolution_m, cloud_config.max_points,
               cloud_config.expiry_duration_sec, min_points_for_fitting_,
               publish_rate_hz_, viz_rate_hz);
+  return CallbackReturn::SUCCESS;
+}
+
+ShapeEstimationNode::CallbackReturn
+ShapeEstimationNode::on_activate(const rclcpp_lifecycle::State& state) {
+  LifecycleNode::on_activate(state);
+  state_ = State::kStopped;  // trigger 대기
+  RCLCPP_INFO(node_log(), "ShapeEstimationNode activated");
+  return CallbackReturn::SUCCESS;
+}
+
+ShapeEstimationNode::CallbackReturn
+ShapeEstimationNode::on_deactivate(const rclcpp_lifecycle::State& state) {
+  // 탐색 중이면 중단
+  if (action_active_) {
+    motion_generator_.Abort();
+    if (active_goal_handle_) {
+      auto result = std::make_shared<ExploreShape::Result>();
+      result->success = false;
+      result->message = "Node deactivated";
+      active_goal_handle_->abort(result);
+    }
+    StopExploration();
+  }
+  state_ = State::kStopped;
+  if (explore_timer_) explore_timer_->cancel();
+  if (delayed_start_timer_) delayed_start_timer_->cancel();
+  LifecycleNode::on_deactivate(state);
+  RCLCPP_INFO(node_log(), "ShapeEstimationNode deactivated");
+  return CallbackReturn::SUCCESS;
+}
+
+ShapeEstimationNode::CallbackReturn
+ShapeEstimationNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) {
+  // Reverse order of on_configure
+  delayed_start_timer_.reset();
+  explore_timer_.reset();
+  explore_status_pub_.reset();
+  sub_object_pose_.reset();
+  sub_estop_.reset();
+  sub_gui_position_.reset();
+  pub_controller_gains_.reset();
+  pub_robot_target_.reset();
+  pub_controller_type_.reset();
+  action_server_.reset();
+
+  viz_timer_.reset();
+  clear_srv_.reset();
+  protuberance_marker_pub_.reset();
+  curvature_text_pub_.reset();
+  tof_beams_pub_.reset();
+  primitive_marker_pub_.reset();
+  point_cloud_pub_.reset();
+  estimate_pub_.reset();
+  trigger_sub_.reset();
+  snapshot_sub_.reset();
+
+  RCLCPP_INFO(node_log(), "ShapeEstimationNode cleaned up");
+  return CallbackReturn::SUCCESS;
+}
+
+ShapeEstimationNode::CallbackReturn
+ShapeEstimationNode::on_shutdown(const rclcpp_lifecycle::State& state) {
+  if (get_current_state().id() ==
+      lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+    on_deactivate(state);
+  }
+  return on_cleanup(state);
+}
+
+ShapeEstimationNode::CallbackReturn
+ShapeEstimationNode::on_error(const rclcpp_lifecycle::State& /*state*/) {
+  RCLCPP_ERROR(node_log(), "ShapeEstimationNode error — attempting recovery");
+  if (action_active_) {
+    motion_generator_.Abort();
+    StopExploration();
+  }
+
+  delayed_start_timer_.reset();
+  explore_timer_.reset();
+  explore_status_pub_.reset();
+  sub_object_pose_.reset();
+  sub_estop_.reset();
+  sub_gui_position_.reset();
+  pub_controller_gains_.reset();
+  pub_robot_target_.reset();
+  pub_controller_type_.reset();
+  action_server_.reset();
+
+  viz_timer_.reset();
+  clear_srv_.reset();
+  protuberance_marker_pub_.reset();
+  curvature_text_pub_.reset();
+  tof_beams_pub_.reset();
+  primitive_marker_pub_.reset();
+  point_cloud_pub_.reset();
+  estimate_pub_.reset();
+  trigger_sub_.reset();
+  snapshot_sub_.reset();
+
+  return CallbackReturn::SUCCESS;
 }
 
 void ShapeEstimationNode::DeclareParameters() {

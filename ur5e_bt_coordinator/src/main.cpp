@@ -11,8 +11,9 @@ int main(int argc, char** argv)
   options.automatically_declare_parameters_from_overrides(true);
 
   auto node = std::make_shared<rtc_bt::BtCoordinatorNode>(options);
-  node->Initialize();
-  rclcpp::spin(node);
+  // Constructor only declares parameters — launch event handler triggers
+  // configure/activate via lifecycle services.
+  rclcpp::spin(node->get_node_base_interface());
   rclcpp::shutdown();
   return 0;
 }

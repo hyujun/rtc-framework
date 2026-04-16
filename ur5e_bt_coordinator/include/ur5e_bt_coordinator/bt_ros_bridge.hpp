@@ -6,6 +6,7 @@
 #include <behaviortree_cpp/bt_factory.h>
 #include <geometry_msgs/msg/polygon.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/msg/grasp_state.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
@@ -43,7 +44,7 @@ struct TopicHealth {
 ///   - Topic health watchdog
 class BtRosBridge {
 public:
-  explicit BtRosBridge(rclcpp::Node::SharedPtr node);
+  explicit BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node);
 
   // ── Cached state (thread-safe reads) ──────────────────────────────────────
 
@@ -148,7 +149,7 @@ public:
 
   /// Load hand/arm pose overrides from ROS2 parameters (deg → rad conversion).
   /// Parameters format: hand_pose.<name> = [double array], arm_pose.<name> = [double array]
-  void LoadPoseOverrides(rclcpp::Node::SharedPtr node);
+  void LoadPoseOverrides(rclcpp_lifecycle::LifecycleNode::SharedPtr node);
 
   /// Lookup a hand pose by name. Falls back to compile-time defaults.
   const HandPose& GetHandPose(const std::string& name) const;
@@ -171,7 +172,7 @@ public:
   bool AreTopicsHealthy(double timeout_s = 2.0) const;
 
 private:
-  rclcpp::Node::SharedPtr node_;
+  rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
 
   // ── Subscribers ───────────────────────────────────────────────────────────
   rclcpp::Subscription<rtc_msgs::msg::GuiPosition>::SharedPtr      arm_gui_sub_;
