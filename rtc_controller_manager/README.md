@@ -16,6 +16,7 @@ RTC 프레임워크의 **500 Hz 실시간 제어 루프 매니저** 패키지입
 - 멀티 코어 스레드 분리 (5개 스레드, CPU 어피니티)
 - 글로벌 E-STOP + 연속 오버런 감지
 - 컨트롤러별 TopicConfig YAML 기반 동적 토픽 라우팅
+- `rclcpp_lifecycle::LifecycleNode` 기반 관리된 상태 전환 (Unconfigured → Inactive → Active → Finalized)
 
 ---
 
@@ -30,7 +31,7 @@ rtc_controller_manager/
 │   ├── rt_controller_main.hpp             <- 재사용 가능 진입점 함수
 │   └── controller_timing_profiler.hpp     <- 락-프리 타이밍 프로파일러
 ├── src/
-│   ├── rt_controller_node.cpp             <- 생성자/소멸자, 콜백 그룹, 타이머
+│   ├── rt_controller_node.cpp             <- 생성자/소멸자, 콜백 그룹, 타이머, Lifecycle 콜백
 │   ├── rt_controller_node_params.cpp      <- 파라미터 선언/로딩, 디바이스 설정
 │   ├── rt_controller_node_device_config.cpp <- URDF/모델 파싱, 디바이스 이름 설정
 │   ├── rt_controller_node_topics.cpp      <- 구독/퍼블리셔 생성, 컨트롤러 전환
@@ -61,10 +62,34 @@ rtc_controller_manager/
 
 > `mlockall(MCL_CURRENT | MCL_FUTURE)`를 `rclcpp::init()` 전에 호출하여 페이지 폴트를 방지합니다.
 
-**초기화 순서 (`RtControllerMain()`):**
-1. `mlockall()` -> `rclcpp::init()` -> 노드 생성
-2. `StartRtLoop()` + `StartPublishLoop()` (jthread 시작)
-3. sensor/log/aux executor 스레드 생성 -> spin
+### Lifecycle 상태 전환
+
+`RtControllerNode`는 `rclcpp_lifecycle::LifecycleNode`를 상속하며, 관리된 상태 전환을 지원합니다.
+
+| 콜백 | 리소스 티어 | 역할 |
+|------|-----------|------|
+| `on_configure` | Tier 1 | 콜백 그룹, 파라미터, 컨트롤러, 퍼블리셔/구독, 타이머, eventfd |
+| `on_activate` | Tier 2 | RT 루프 + 퍼블리시 오프로드 스레드 시작 |
+| `on_deactivate` | — | RT 루프/퍼블리시 스레드 중지, E-STOP 클리어, 상태 초기화 |
+| `on_cleanup` | — | `on_configure` 역순 리소스 해제 |
+| `on_error` | — | E-STOP 트리거, 스레드 중지, 전체 정리 → SUCCESS (Unconfigured 복구) |
+
+**안전 퍼블리셔:** `estop_pub_`, `active_ctrl_name_pub_`, `current_gains_pub_`는 `rclcpp::create_publisher` standalone으로 생성되어 lifecycle 상태와 무관하게 동작합니다.
+
+런타임 상태 제어:
+```bash
+ros2 lifecycle get /rt_controller
+ros2 lifecycle set /rt_controller deactivate   # RT 루프 중지
+ros2 lifecycle set /rt_controller activate     # RT 루프 재시작
+```
+
+**초기화 순서 (`RtControllerMain()` — 3-Phase Lifecycle Executor):**
+1. `mlockall()` → `rclcpp::init()` → 노드 생성 (Unconfigured 상태)
+2. **Phase 1:** `lifecycle_executor` spin → Launch event handler가 configure/activate 트리거
+   - `on_configure`: 콜백 그룹, 파라미터, 구독/퍼블리셔, 타이머, eventfd 생성
+   - `on_activate`: `SelectThreadConfigs()` → `StartRtLoop()` + `StartPublishLoop()` 시작
+3. **Phase 2:** Active 상태 대기 (polling)
+4. **Phase 3:** sensor/log/aux 전용 executor 전환 (lifecycle services는 aux_executor에서 처리)
 
 ---
 

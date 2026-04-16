@@ -11,6 +11,8 @@
 #include "rtc_urdf_bridge/types.hpp"
 // ── ROS2 ─────────────────────────────────────────────────────────────────────
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <rclcpp_lifecycle/lifecycle_publisher.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
@@ -50,18 +52,29 @@
 //   - cb_group_sensor_:    joint_state_sub_, target_sub_, hand_state_sub_  (Sensor core)
 //   - cb_group_log_:       drain_timer_  (non-RT core)
 //   - cb_group_aux_:       estop_pub_  (aux core)
-class RtControllerNode : public rclcpp::Node
+class RtControllerNode : public rclcpp_lifecycle::LifecycleNode
 {
 public:
+  using CallbackReturn =
+      rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+
   RtControllerNode();
   ~RtControllerNode() override;
+
+  // ── Lifecycle callbacks ──────────────────────────────────────────────────
+  CallbackReturn on_configure(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_activate(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_cleanup(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_shutdown(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_error(const rclcpp_lifecycle::State& state) override;
 
   // Public accessors for main() to retrieve callback groups
   rclcpp::CallbackGroup::SharedPtr GetSensorGroup() const {return cb_group_sensor_;}
   rclcpp::CallbackGroup::SharedPtr GetLogGroup()    const {return cb_group_log_;}
   rclcpp::CallbackGroup::SharedPtr GetAuxGroup()    const {return cb_group_aux_;}
 
-  // RT loop lifecycle — called from main()
+  // RT loop lifecycle — public until Step 8 (RtControllerMain redesign)
   void StartRtLoop(const rtc::ThreadConfig& rt_cfg);
   void StartPublishLoop(const rtc::ThreadConfig& pub_cfg);
   void StopRtLoop();
@@ -140,7 +153,7 @@ private:
   // ── Configurable topic publishers (created from controller YAML) ──────────
   // Key = topic name, value = publisher + pre-allocated message
   struct PublisherEntry {
-    rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr publisher;
+    rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Float64MultiArray>::SharedPtr publisher;
     std_msgs::msg::Float64MultiArray msg;
     // Reorder map: output index → input (gc.commands) index.
     // Built from joint_state_names → joint_command_names mapping.
@@ -156,7 +169,7 @@ private:
 
   // JointCommand publishers (created from controller YAML kJointCommand roles)
   struct JointCommandPublisherEntry {
-    rclcpp::Publisher<rtc_msgs::msg::JointCommand>::SharedPtr publisher;
+    rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::JointCommand>::SharedPtr publisher;
     rtc_msgs::msg::JointCommand msg;  // pre-allocated
     std::vector<int> reorder_map;     // config (joint_state_names) → command order
   };
@@ -165,7 +178,7 @@ private:
   // Typed publishers for new topic roles
   template <typename MsgT>
   struct TypedPublisherEntry {
-    typename rclcpp::Publisher<MsgT>::SharedPtr publisher;
+    typename rclcpp_lifecycle::LifecyclePublisher<MsgT>::SharedPtr publisher;
     MsgT msg;  // pre-allocated
   };
   std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::GuiPosition>>
@@ -184,7 +197,7 @@ private:
   // ── Digital Twin JointState republishers (RELIABLE, depth 10) ────────────
   // key = "/{group}/digital_twin/joint_states"
   struct DigitalTwinEntry {
-    rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr publisher;
+    rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr publisher;
     sensor_msgs::msg::JointState msg;  // pre-allocated with config joint_state_names
   };
   std::unordered_map<std::string, DigitalTwinEntry> digital_twin_publishers_;

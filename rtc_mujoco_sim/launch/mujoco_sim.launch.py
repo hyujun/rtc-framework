@@ -62,10 +62,14 @@ from launch.actions import (
     SetEnvironmentVariable,
     TimerAction,
 )
+from launch.actions import EmitEvent, RegisterEventHandler
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.actions import Node
+from launch_ros.actions import LifecycleNode, Node
+from launch_ros.event_handlers import OnStateTransition
+from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
+from lifecycle_msgs.msg import Transition
 from ament_index_python.packages import get_package_share_directory
 
 from rtc_tools.utils.session_dir import (
@@ -254,8 +258,8 @@ def launch_setup(context, *args, **kwargs):
         )
         actions.append(enable_sim_cpu_shield)
 
-    # ── Node 1: MuJoCo Simulator ──────────────────────────────────────────────
-    mujoco_node = Node(
+    # ── Node 1: MuJoCo Simulator (LifecycleNode) ────────────────────────────
+    mujoco_node = LifecycleNode(
         package='rtc_mujoco_sim',
         executable='mujoco_simulator_node',
         name='mujoco_simulator',
@@ -264,8 +268,8 @@ def launch_setup(context, *args, **kwargs):
         parameters=sim_params,
     )
 
-    # ── Node 2: Custom Controller ─────────────────────────────────────────────
-    rt_controller_node = Node(
+    # ── Node 2: Custom Controller (LifecycleNode) ─────────────────────────
+    rt_controller_node = LifecycleNode(
         package='rtc_controller_manager',
         executable='rt_controller',
         name='rt_controller',
@@ -274,7 +278,54 @@ def launch_setup(context, *args, **kwargs):
         parameters=ctrl_params,
     )
 
-    actions.extend([mujoco_node, rt_controller_node])
+    # ── Lifecycle chain: mujoco configure→activate → rt_controller configure→activate
+    # MuJoCo: auto-activate after configure
+    mujoco_auto_activate = RegisterEventHandler(
+        OnStateTransition(
+            target_lifecycle_node=mujoco_node,
+            start_state='configuring',
+            goal_state='inactive',
+            entities=[EmitEvent(event=ChangeState(
+                lifecycle_node_matcher=lambda n: n == mujoco_node,
+                transition_id=Transition.TRANSITION_ACTIVATE,
+            ))],
+        )
+    )
+    # After mujoco reaches active → configure rt_controller
+    chain_rt_after_mujoco = RegisterEventHandler(
+        OnStateTransition(
+            target_lifecycle_node=mujoco_node,
+            start_state='activating',
+            goal_state='active',
+            entities=[EmitEvent(event=ChangeState(
+                lifecycle_node_matcher=lambda n: n == rt_controller_node,
+                transition_id=Transition.TRANSITION_CONFIGURE,
+            ))],
+        )
+    )
+    # rt_controller: auto-activate after configure
+    rt_auto_activate = RegisterEventHandler(
+        OnStateTransition(
+            target_lifecycle_node=rt_controller_node,
+            start_state='configuring',
+            goal_state='inactive',
+            entities=[EmitEvent(event=ChangeState(
+                lifecycle_node_matcher=lambda n: n == rt_controller_node,
+                transition_id=Transition.TRANSITION_ACTIVATE,
+            ))],
+        )
+    )
+    # Trigger: start mujoco configure (chain handles the rest)
+    trigger_mujoco_configure = EmitEvent(event=ChangeState(
+        lifecycle_node_matcher=lambda n: n == mujoco_node,
+        transition_id=Transition.TRANSITION_CONFIGURE,
+    ))
+
+    actions.extend([
+        mujoco_node, rt_controller_node,
+        mujoco_auto_activate, chain_rt_after_mujoco, rt_auto_activate,
+        trigger_mujoco_configure,
+    ])
 
     # ── MuJoCo sim_thread를 Tier 3 코어에 pin (8코어+) ─────────────────────────
     if use_affinity.lower() in ('true', '1', 'yes'):

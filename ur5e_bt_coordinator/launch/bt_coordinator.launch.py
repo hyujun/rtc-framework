@@ -31,10 +31,18 @@ Prerequisites:
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import (
+    DeclareLaunchArgument,
+    EmitEvent,
+    OpaqueFunction,
+    RegisterEventHandler,
+)
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.actions import Node
+from launch_ros.actions import LifecycleNode
+from launch_ros.event_handlers import OnStateTransition
+from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
+from lifecycle_msgs.msg import Transition
 
 
 def generate_launch_description():
@@ -101,14 +109,31 @@ def generate_launch_description():
         if grip in ('soft', 'medium', 'hard'):
             overrides['bb.hand_close_pose'] = f'hand_close_{grip}'
 
-        bt_node = Node(
+        bt_node = LifecycleNode(
             package='ur5e_bt_coordinator',
             executable='bt_coordinator_node',
             name='bt_coordinator',
             output='screen',
             parameters=[config_yaml, poses_yaml, overrides],
         )
-        return [bt_node]
+
+        auto_activate = RegisterEventHandler(
+            OnStateTransition(
+                target_lifecycle_node=bt_node,
+                start_state='configuring',
+                goal_state='inactive',
+                entities=[EmitEvent(event=ChangeState(
+                    lifecycle_node_matcher=lambda n: n == bt_node,
+                    transition_id=Transition.TRANSITION_ACTIVATE,
+                ))],
+            )
+        )
+        trigger_configure = EmitEvent(event=ChangeState(
+            lifecycle_node_matcher=lambda n: n == bt_node,
+            transition_id=Transition.TRANSITION_CONFIGURE,
+        ))
+
+        return [bt_node, auto_activate, trigger_configure]
 
     return LaunchDescription(
         declared_args + [OpaqueFunction(function=launch_setup)]

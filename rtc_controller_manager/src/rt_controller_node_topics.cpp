@@ -432,17 +432,23 @@ void RtControllerNode::CreatePublishers()
     }
   }
 
-  // ── Fixed publishers (always present) ─────────────────────────────────────
-  estop_pub_ =
-    create_publisher<std_msgs::msg::Bool>("/system/estop_status", 10);
+  // ── Fixed safety publishers (always present, non-lifecycle) ────────────────
+  // These use the standalone rclcpp::create_publisher to remain as regular
+  // rclcpp::Publisher (not LifecyclePublisher). This ensures E-STOP status
+  // and controller name can be published regardless of lifecycle state.
+  estop_pub_ = rclcpp::create_publisher<std_msgs::msg::Bool>(
+      this->get_node_topics_interface(),
+      "/system/estop_status", rclcpp::QoS(10));
 
   rclcpp::QoS latch_qos{1};
   latch_qos.transient_local();
-  active_ctrl_name_pub_ =
-    create_publisher<std_msgs::msg::String>("/" + robot_ns_ + "/active_controller_name", latch_qos);
+  active_ctrl_name_pub_ = rclcpp::create_publisher<std_msgs::msg::String>(
+      this->get_node_topics_interface(),
+      "/" + robot_ns_ + "/active_controller_name", latch_qos);
 
-  current_gains_pub_ =
-    create_publisher<std_msgs::msg::Float64MultiArray>("/" + robot_ns_ + "/current_gains", 10);
+  current_gains_pub_ = rclcpp::create_publisher<std_msgs::msg::Float64MultiArray>(
+      this->get_node_topics_interface(),
+      "/" + robot_ns_ + "/current_gains", rclcpp::QoS(10));
 }
 
 // ── Expose topic configuration as read-only ROS2 parameters ─────────────────

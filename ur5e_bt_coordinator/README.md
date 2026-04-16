@@ -9,7 +9,7 @@ UR5e + 10-DoF Hand 시스템을 위한 BehaviorTree 기반 task coordinator.
 
 ## 개요
 
-`bt_coordinator` 노드는 설정된 BT XML 트리를 로드하고, 지정된 주기(기본 80 Hz)로
+`bt_coordinator` LifecycleNode는 설정된 BT XML 트리를 로드하고, 지정된 주기(기본 80 Hz)로
 tick하면서 BT 노드들을 실행한다. 각 BT 노드는 `BtRosBridge`를 통해 ROS2 topic으로
 RT 제어 레이어와 통신하며, 기존 컨트롤러 코드를 수정하지 않는다.
 

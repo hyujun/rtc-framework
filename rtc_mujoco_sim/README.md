@@ -6,6 +6,7 @@
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
 
 **MuJoCo 3.x 물리 시뮬레이터 패키지**입니다. 실제 로봇 드라이버를 대체하여 개발 환경에서 알고리즘 검증 및 테스트를 수행할 수 있습니다. 멀티 그룹 아키텍처로 임의의 로봇 조합(ur5e + hand, kuka, franka 등)을 독립된 ROS2 토픽으로 제어합니다.
+LifecycleNode 기반으로, `ros2 lifecycle` CLI를 통한 런타임 상태 제어(deactivate/activate)를 지원합니다.
 
 ## 개요
 
@@ -22,7 +23,7 @@ rtc_mujoco_sim/
 │   │   ├── viewer_loop.cpp        ←   ViewerLoop 멤버 함수 (~60Hz)
 │   │   ├── viewer_callbacks.cpp   ←   GLFW 입력 콜백 (키/마우스)
 │   │   └── viewer_overlays.cpp    ←   mjr_overlay/mjr_figure 렌더 함수
-│   ├── mujoco_simulator_node.cpp  ← ROS2 노드 (robot_response / fake_response 파싱)
+│   ├── mujoco_simulator_node.cpp  ← ROS2 LifecycleNode (robot_response / fake_response 파싱)
 │   └── ros2_resource_provider.cpp ← package:// URI 해석 구현
 ├── config/
 │   ├── mujoco_simulator.yaml  ← 시뮬레이터 기본 설정

@@ -92,6 +92,7 @@ ur5e_description (독립)
 - **Lock-Free SPSC 아키텍처**: RT 스레드 → SPSC 버퍼 → 비-RT 퍼블리시/로깅 (wait-free push, cache-line 정렬)
 - **SeqLock 동기화**: 단일 Writer / 다중 Reader lock-free 상태 공유 (trivially copyable 타입 전용)
 - **컨트롤러 계층 분리**: `rtc_controller_interface` (추상) → `rtc_controllers` (범용 4종) → `ur5e_bringup` (데모 2종)
+- **Lifecycle 관리**: 모든 C++ 노드가 `rclcpp_lifecycle::LifecycleNode` 기반 — `ros2 lifecycle` CLI로 런타임 상태 제어 (deactivate/activate), Launch event handler 기반 자동 configure→activate 체이닝
 
 ### 제어 알고리즘
 - **PController**: Joint-space 비례 제어 (증분 스텝 `q + kp*error*dt`)

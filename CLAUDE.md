@@ -167,6 +167,20 @@ Key params in `grasp_types.hpp`: `Kp_base=0.02`, `Ki_base=0.002`, `f_target=2.0N
 
 ## RtControllerNode
 
+`RtControllerNode` inherits from `rclcpp_lifecycle::LifecycleNode`. The constructor is empty; all initialization happens in lifecycle callbacks.
+
+| Callback | Tier | Resources |
+|----------|------|-----------|
+| `on_configure` | 1 | Callback groups, parameters, controllers, publishers/subscribers, timers, eventfd |
+| `on_activate` | 2 | `SelectThreadConfigs()` → `StartRtLoop()` + `StartPublishLoop()` |
+| `on_deactivate` | — | Stop RT/publish threads, clear E-STOP, reset init state |
+| `on_cleanup` | — | Reverse of `on_configure` (all `.reset()` / `.clear()`) |
+| `on_error` | — | `TriggerGlobalEstop("lifecycle_error")`, stop threads, full cleanup → SUCCESS |
+
+**Safety publishers** (`estop_pub_`, `active_ctrl_name_pub_`, `current_gains_pub_`) use standalone `rclcpp::create_publisher` — active regardless of lifecycle state.
+
+**RtControllerMain** uses a 3-phase executor: (1) lifecycle_executor spins for configure/activate, (2) polls until Active, (3) switches to sensor/log/aux dedicated executors.
+
 - **ControlLoop** (500Hz): E-STOP check -> assemble ControllerState -> `Compute()` -> SPSC publish + log
 - **CheckTimeouts** (50Hz): per-group device timeout -> `TriggerGlobalEstop("{group}_timeout")`
 - **E-STOP triggers**: group timeout, init timeout, >= 10 consecutive RT overruns, sim sync timeout
@@ -352,7 +366,7 @@ Typical use: source `install/setup.bash` in the colcon ws, then `ros2 launch ...
 - **Include order**: project headers → ROS 2 / third-party → C++ stdlib (each group alphabetically sorted)
 - **Eigen**: pre-allocated buffers, `noalias()`, zero heap on 500Hz path. Never use `auto` for Eigen expressions (expression template aliasing)
 - **Compiler flags**: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`
-- **ROS 2 Node**: Prefer `rclcpp_lifecycle::LifecycleNode` over `rclcpp::Node` for managed state transitions (unconfigured → inactive → active → finalized)
+- **ROS 2 Node**: All 5 C++ nodes use `rclcpp_lifecycle::LifecycleNode` with managed state transitions (unconfigured → inactive → active → finalized). Constructor is empty; resources are allocated in `on_configure` (Tier 1) and threads started in `on_activate` (Tier 2). Safety publishers (E-STOP, controller name) use standalone `rclcpp::create_publisher` to remain active regardless of lifecycle state. Launch files use `LifecycleNode` action with auto-configure/activate event handler chains
 - **ROS 2 API**: Use `rclcpp::QoS` profiles explicitly (never rely on defaults), `MutuallyExclusiveCallbackGroup` for thread-safety, `ParameterDescriptor` with ranges for declared parameters
 
 ### Documentation Requirements
@@ -818,7 +832,8 @@ Test files by package (159 total):
 | Thread configs | `rtc_base/include/rtc_base/threading/thread_config.hpp` |
 | Controller abstract base | `rtc_controller_interface/include/rtc_controller_interface/rt_controller_interface.hpp` |
 | Controller registry | `rtc_controller_interface/include/rtc_controller_interface/controller_registry.hpp` |
-| RT control loop | `rtc_controller_manager/src/rt_controller_node.cpp` |
+| RT control loop + lifecycle | `rtc_controller_manager/src/rt_controller_node.cpp` |
+| 3-phase executor main | `rtc_controller_manager/src/rt_controller_main_impl.cpp` |
 | Controller registration | `rtc_controllers/src/controller_registration.cpp` |
 | Demo controller registration | `ur5e_bringup/src/controllers/controller_registration.cpp` |
 | Grasp controller | `rtc_controllers/include/rtc_controllers/grasp/grasp_controller.hpp` |

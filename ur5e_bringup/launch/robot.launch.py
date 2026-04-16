@@ -18,6 +18,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    EmitEvent,
     ExecuteProcess,
     IncludeLaunchDescription,
     LogInfo,
@@ -30,8 +31,11 @@ from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit, OnProcessStart
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.actions import Node
+from launch_ros.actions import LifecycleNode, Node
+from launch_ros.event_handlers import OnStateTransition
+from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
+from lifecycle_msgs.msg import Transition
 
 from rtc_tools.utils.session_dir import (
     cleanup_old_sessions,
@@ -274,7 +278,7 @@ def generate_launch_description():
     # here — robot.launch.py does not use OpaqueFunction, and nested YAML
     # overrides would require restructuring the launch. The sim.launch.py
     # flow does inject the override directly via its OpaqueFunction setup.
-    rt_controller_node = Node(
+    rt_controller_node = LifecycleNode(
         package='ur5e_bringup',
         executable='ur5e_rt_controller',
         name='rt_controller',
@@ -288,9 +292,9 @@ def generate_launch_description():
         emulate_tty=True,
     )
 
-    # ── Hand UDP driver node ──────────────────────────────────────────────────
+    # ── Hand UDP driver node (LifecycleNode) ──────────────────────────────────
     # Publishes /hand/joint_states and /hand/sensor_states for rt_controller.
-    hand_udp_node = Node(
+    hand_udp_node = LifecycleNode(
         package='ur5e_hand_driver',
         executable='hand_udp_node',
         name='hand_udp_node',
@@ -301,6 +305,40 @@ def generate_launch_description():
         ],
         emulate_tty=True,
     )
+
+    # ── Lifecycle auto-configure/activate for hand_udp_node ───────────────────
+    hand_auto_activate = RegisterEventHandler(
+        OnStateTransition(
+            target_lifecycle_node=hand_udp_node,
+            start_state='configuring',
+            goal_state='inactive',
+            entities=[EmitEvent(event=ChangeState(
+                lifecycle_node_matcher=lambda n: n == hand_udp_node,
+                transition_id=Transition.TRANSITION_ACTIVATE,
+            ))],
+        )
+    )
+    hand_trigger_configure = EmitEvent(event=ChangeState(
+        lifecycle_node_matcher=lambda n: n == hand_udp_node,
+        transition_id=Transition.TRANSITION_CONFIGURE,
+    ))
+
+    # ── Lifecycle auto-configure/activate for rt_controller_node ──────────────
+    rt_auto_activate = RegisterEventHandler(
+        OnStateTransition(
+            target_lifecycle_node=rt_controller_node,
+            start_state='configuring',
+            goal_state='inactive',
+            entities=[EmitEvent(event=ChangeState(
+                lifecycle_node_matcher=lambda n: n == rt_controller_node,
+                transition_id=Transition.TRANSITION_ACTIVATE,
+            ))],
+        )
+    )
+    rt_trigger_configure = EmitEvent(event=ChangeState(
+        lifecycle_node_matcher=lambda n: n == rt_controller_node,
+        transition_id=Transition.TRANSITION_CONFIGURE,
+    ))
 
     # ── Readiness gate ────────────────────────────────────────────────────────
     # Polls until UR driver publishes /joint_states AND hand_udp_node publishes
@@ -355,6 +393,8 @@ def generate_launch_description():
             on_exit=[
                 LogInfo(msg='[RT] Readiness gate passed — launching rt_controller'),
                 rt_controller_node,
+                rt_auto_activate,
+                rt_trigger_configure,
             ],
         )
     )
@@ -383,6 +423,8 @@ def generate_launch_description():
         ur_driver_launch_action,
         pin_ur_driver,
         hand_udp_node,
+        hand_auto_activate,
+        hand_trigger_configure,
         # 4) Event-driven chain:
         #    hand_udp_node started → comm_readiness_gate
         #    → gate exits OK → rt_controller_node
