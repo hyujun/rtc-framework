@@ -75,15 +75,15 @@ ur5e_description/
 
 ## 4. MJCF 모델 (MuJoCo)
 
-`robots/ur5e/mjcf/` 디렉토리에 5개의 MJCF XML 파일이 있습니다.
+3개 디렉토리에 총 5개의 MJCF XML 파일이 있습니다.
 
-| 파일 | 설명 |
-|------|------|
-| `ur5e.xml` | UR5e 로봇 단독 모델. capsule collision geometry, position actuator (PD 제어), OBJ 메시 시각화. `implicitfast` 적분기 사용. |
-| `hand.xml` | 10-DOF 커스텀 핸드 단독 모델. cylinder geometry 기반 간소화 형상. 4개 손가락(thumb, index, middle, ring) 포함. |
-| `scene.xml` | 시뮬레이션 진입점. `ur5e.xml`을 include하고 지면(checker 평면), 조명, 스카이박스를 추가한 씬 파일. |
-| `ur5e_with_hand.xml` | UR5e 로봇과 커스텀 핸드를 하나의 모델로 통합. wrist3 말단에 핸드가 부착됨. |
-| `scene_with_hand.xml` | 시뮬레이션 진입점. `ur5e_with_hand.xml`을 include하고 지면, 조명, 스카이박스를 추가한 씬 파일. |
+| 파일 | 경로 | 설명 |
+|------|------|------|
+| `ur5e.xml` | `robots/ur5e/mjcf/` | UR5e 로봇 단독 모델. capsule collision geometry, position actuator (PD 제어), OBJ 메시 시각화. `implicitfast` 적분기 사용. |
+| `scene.xml` | `robots/ur5e/mjcf/` | 시뮬레이션 진입점. `ur5e.xml`을 include하고 지면(checker 평면), 조명, 스카이박스를 추가한 씬 파일. |
+| `hand.xml` | `robots/hand_tmp/mjcf/` | 10-DOF 커스텀 핸드 단독 모델. cylinder geometry 기반 간소화 형상. 4개 손가락(thumb, index, middle, ring) 포함. |
+| `ur5e_with_hand.xml` | `robots/ur5e_hand_tmp/mjcf/` | UR5e 로봇과 커스텀 핸드를 하나의 모델로 통합. wrist3 말단에 핸드가 부착됨. |
+| `scene_with_hand.xml` | `robots/ur5e_hand_tmp/mjcf/` | 시뮬레이션 진입점. `ur5e_with_hand.xml`을 include하고 지면, 조명, 스카이박스를 추가한 씬 파일. |
 
 ### MJCF 액추에이터 설정
 
@@ -95,13 +95,13 @@ ur5e_description/
 
 ## 5. URDF 모델
 
-`robots/ur5e/urdf/` 디렉토리에 3개의 URDF 파일이 있습니다.
+3개 디렉토리에 총 3개의 URDF 파일이 있습니다.
 
-| 파일 | 설명 |
-|------|------|
-| `ur5e.urdf` | UR5e 로봇 사전 생성 URDF. UR 공식 `ur_description` 패키지의 `ur.urdf.xacro`를 `ur_type:=ur5e`로 변환하여 생성. DAE/STL 메시 참조. Pinocchio 모델 빌드의 진입점. |
-| `hand.urdf.xacro` | 10-DOF 커스텀 핸드 xacro. 기하학적 프리미티브(box, cylinder, sphere)만 사용하며 메시 파일 불필요. 4개 핑거팁 프레임 정의. |
-| `ur5e_with_hand.urdf.xacro` | `ur5e.urdf`와 `hand.urdf.xacro`를 결합. tool0 링크에 fixed joint로 핸드를 부착. `xacro` 처리 필요. |
+| 파일 | 경로 | 설명 |
+|------|------|------|
+| `ur5e.urdf` | `robots/ur5e/urdf/` | UR5e 로봇 사전 생성 URDF. UR 공식 `ur_description` 패키지의 `ur.urdf.xacro`를 `ur_type:=ur5e`로 변환하여 생성. DAE/STL 메시 참조. Pinocchio 모델 빌드의 진입점. |
+| `hand.urdf.xacro` | `robots/hand_tmp/urdf/` | 10-DOF 커스텀 핸드 xacro. 기하학적 프리미티브(box, cylinder, sphere)만 사용하며 메시 파일 불필요. 4개 핑거팁 프레임 정의. |
+| `ur5e_with_hand.urdf.xacro` | `robots/ur5e_hand_tmp/urdf/` | `ur5e.urdf`와 `hand.urdf.xacro`를 결합. tool0 링크에 fixed joint로 핸드를 부착. `xacro` 처리 필요. |
 
 ---
 
@@ -202,16 +202,16 @@ colcon build --packages-select ur5e_description --symlink-install
 $(ros2 pkg prefix ur5e_description)/share/ur5e_description/
 
 # MJCF
-robots/ur5e/mjcf/scene.xml                     # MuJoCo 시뮬레이션 진입점 (로봇 단독)
-robots/ur5e/mjcf/scene_with_hand.xml            # MuJoCo 시뮬레이션 진입점 (로봇 + 핸드)
 robots/ur5e/mjcf/ur5e.xml                       # 로봇 모델
-robots/ur5e/mjcf/ur5e_with_hand.xml             # 로봇 + 핸드 모델
-robots/ur5e/mjcf/hand.xml                       # 핸드 단독 모델
+robots/ur5e/mjcf/scene.xml                      # MuJoCo 시뮬레이션 진입점 (로봇 단독)
+robots/hand_tmp/mjcf/hand.xml                   # 핸드 단독 모델
+robots/ur5e_hand_tmp/mjcf/ur5e_with_hand.xml    # 로봇 + 핸드 모델
+robots/ur5e_hand_tmp/mjcf/scene_with_hand.xml   # MuJoCo 시뮬레이션 진입점 (로봇 + 핸드)
 
 # URDF
 robots/ur5e/urdf/ur5e.urdf                      # Pinocchio 진입점 (로봇 팔만)
-robots/ur5e/urdf/hand.urdf.xacro                # 10-DOF 커스텀 핸드
-robots/ur5e/urdf/ur5e_with_hand.urdf.xacro      # 로봇 + 핸드 조합
+robots/hand_tmp/urdf/hand.urdf.xacro            # 10-DOF 커스텀 핸드
+robots/ur5e_hand_tmp/urdf/ur5e_with_hand.urdf.xacro  # 로봇 + 핸드 조합
 
 # Mesh
 robots/ur5e/meshes/visual/*.dae                 # 시각화용 (7 files)

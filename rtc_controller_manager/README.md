@@ -250,6 +250,7 @@ poll(&pfd, 1, 1);  // 1ms timeout, eventfd readable → 즉시 wakeup
 | `kDeviceStateLog` | `DeviceStateLog` | BEST_EFFORT/1 | 관절/모터 상태 + 궤적 로그 |
 | `kDeviceSensorLog` | `DeviceSensorLog` | BEST_EFFORT/1 | 센서 데이터 + 추론 결과 로그 |
 | `kGraspState` | `GraspState` | RELIABLE/10 | 그래스프 감지 상태 |
+| `kToFSnapshot` | `ToFSnapshot` | BEST_EFFORT/5 | ToF 센서 거리 + 핑거팁 SE3 포즈 |
 
 ### Digital Twin 자동 퍼블리셔
 

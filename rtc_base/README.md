@@ -68,8 +68,7 @@ rtc_base/
 | `kMaxDeviceChannels` | 64 | capacity | DeviceState 배열 상한 |
 | `kMaxSensorChannels` | 128 | capacity | 디바이스 당 센서 채널 상한 |
 | `kMaxInferenceValues` | 64 | capacity | ONNX 출력 값 상한 |
-| `kNumHandMotors` | 10 | 핸드 모터 수 |
-| `kNumHandJoints` | 10 | 레거시 별칭 (`kNumHandMotors`와 동일) |
+| `kTaskSpaceDim` | 6 | HW const | SE(3) DOF — 기하학 상수, 설정 불가 |
 | `kDefaultNumFingertips` | 4 | 기본 핑거팁 수 (YAML 미설정 시) |
 | `kMaxFingertips` | 8 | 최대 핑거팁 수 (배열 상한) |
 | `kBarometerCount` | 8 | 핑거팁 당 기압 센서 수 |
@@ -86,13 +85,7 @@ rtc_base/
 | `kDefaultMaxJointVelocity` | 2.0 | 기본 최대 관절 속도 (rad/s) |
 | `kDefaultMaxJointTorque` | 150.0 | 기본 최대 관절 토크 (N-m) |
 
-#### 기본 이름 벡터
-
-| 변수 | 값 |
-|------|---|
-| `kDefaultRobotJointNames` | `shoulder_pan_joint`, `shoulder_lift_joint`, `elbow_joint`, `wrist_1_joint`, `wrist_2_joint`, `wrist_3_joint` |
-| `kDefaultHandMotorNames` | `thumb_cmc_aa`, `thumb_cmc_fe`, `thumb_mcp_fe`, `index_mcp_aa`, `index_mcp_fe`, `index_dip_fe`, `middle_mcp_aa`, `middle_mcp_fe`, `middle_dip_fe`, `ring_mcp_fe` |
-| `kDefaultFingertipNames` | `thumb`, `index`, `middle`, `ring` |
+> **참고:** `kNumHandMotors`, `kNumHandJoints`, `kDefaultRobotJointNames`, `kDefaultHandMotorNames`, `kDefaultFingertipNames`는 UR5e 전용 상수로 `ur5e_description/ur5e_constants.hpp`로 이동되었습니다.
 
 #### C++20 Concepts
 
@@ -108,18 +101,14 @@ rtc_base/
 | `CommandType` | `kPosition`, `kTorque` | 커맨드 모드 |
 | `GoalType` | `kJoint`, `kTask` | 목표 공간 타입 (uint8_t 기반) |
 | `SubscribeRole` | `kState`, `kMotorState`, `kSensorState`, `kTarget` | 구독 역할 |
-| `PublishRole` | `kJointCommand`, `kRos2Command`, `kGuiPosition`, `kRobotTarget`, `kDeviceStateLog`, `kDeviceSensorLog`, `kDigitalTwinState`, `kGraspState` | 퍼블리시 역할 |
+| `PublishRole` | `kJointCommand`, `kRos2Command`, `kGuiPosition`, `kRobotTarget`, `kDeviceStateLog`, `kDeviceSensorLog`, `kDigitalTwinState`, `kGraspState`, `kToFSnapshot` | 퍼블리시 역할 |
+| `DeviceCapability` | `kNone`, `kJointState`, `kMotorState`, `kSensorData`, `kInference` | 디바이스 기능 비트마스크 (RT 루프 선택적 데이터 복사) |
 
 `GoalTypeToString()`, `SubscribeRoleToString()`, `PublishRoleToString()` -- `constexpr` 문자열 변환 함수.
 
 #### 주요 구조체
 
-**레거시 타입 (UR5e 전용, 향후 제거 예정):**
-
-| 구조체 | 설명 |
-|--------|------|
-| `RobotState` | 6-DOF 관절 위치/속도/토크, TCP 위치(3), dt, 반복 카운터 |
-| `HandState` | 모터 위치/속도/전류, 관절 위치/속도/전류, 센서 데이터 (raw + filtered), 핑거팁 수, 유효성, `received_joint_mode` (0x00=motor, 0x01=joint) |
+> **참고:** 레거시 타입 `RobotState`, `HandState`는 `ur5e_description/ur5e_constants.hpp`로 이동되었습니다.
 
 **일반화된 디바이스 타입 (가변 DOF):**
 
@@ -128,9 +117,10 @@ rtc_base/
 | `DeviceState` | 가변 채널 디바이스 상태 -- `positions[64]`, `velocities[64]`, `efforts[64]`, 모터 공간 (`motor_positions[64]`, `motor_velocities[64]`, `motor_efforts[64]`), 센서 (`sensor_data[128]`, `sensor_data_raw[128]`), 추론 (`inference_data[64]`, `inference_enable[8]`, `num_inference_fingertips`) |
 | `ControllerState` | `devices[4]` (DeviceState 배열) + `num_devices`, `dt`, `iteration` |
 | `DeviceOutput` | 가변 채널 출력 -- `commands[64]`, `goal_positions[64]`, `target_positions[64]`, `target_velocities[64]`, `trajectory_positions[64]`, `trajectory_velocities[64]`, `goal_type` |
-| `ControllerOutput` | `devices[4]` (DeviceOutput 배열) + `actual_task_positions[6]`, `task_goal_positions[6]`, `trajectory_task_positions[6]`, `trajectory_task_velocities[6]`, `valid`, `command_type`, `grasp_state` |
+| `ControllerOutput` | `devices[4]` (DeviceOutput 배열) + `actual_task_positions[6]`, `task_goal_positions[6]`, `trajectory_task_positions[6]`, `trajectory_task_velocities[6]`, `valid`, `command_type`, `grasp_state`, `tof_snapshot` |
 | `FingertipFTState` | 핑거팁 힘/토크 추론 결과 -- `ft_data[56]` (`kFTValuesPerFingertip * kMaxFingertips`), `per_fingertip_valid[8]`, `num_fingertips` |
-| `GraspStateData` | 파지 감지 상태 -- `force_magnitude[8]`, `contact_flag[8]`, `inference_valid[8]`, `num_active_contacts`, `max_force`, `grasp_detected`, `force_threshold`, `min_fingertips_for_grasp` |
+| `GraspStateData` | 파지 감지 상태 -- `force_magnitude[8]`, `contact_flag[8]`, `inference_valid[8]`, `num_active_contacts`, `max_force`, `grasp_detected`, `force_threshold`, `min_fingertips_for_grasp`, Force-PI 전용: `grasp_phase`, `finger_s[8]`, `finger_filtered_force[8]`, `finger_force_error[8]`, `grasp_target_force` |
+| `ToFSnapshotData` | ToF 센서 스냅샷 -- `distances[24]`, `valid[24]`, `tip_poses[8]` (Pose: position[3] + quaternion[4]), `num_fingers`, `sensors_per_finger`, `populated` |
 
 **설정 타입:**
 

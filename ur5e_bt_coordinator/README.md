@@ -80,6 +80,7 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 | Hand Motions | `trees/hand_motions.xml` | UR5e 자세 유지 + Hand 데모 (OppositionDemo → WaveDemo) |
 | Vision Approach | `trees/vision_approach.xml` | Vision 기반 approach 데모 (arm-only, 핸드 미사용) |
 | Shape Inspect | `trees/shape_inspect.xml` | ToF 센서 기반 shape estimation 워크플로우 (start → wait → stop → evaluate) |
+| Shape Inspect Simple | `trees/shape_inspect_simple.xml` | Vision 기반 inspect 위치 이동 → -x 방향 linear search move + ToF 500Hz 데이터 수집 → 데이터 처리 → 목표 이동. 서비스 기반 shape estimation 미사용 |
 | Search Motion | `trees/search_motion.xml` | 팔 sweep + tilt scan 탐색 모션 |
 
 ## BT 노드
@@ -503,6 +504,7 @@ ur5e_bt_coordinator/
 │   ├── hand_motions.xml             # Hand 민첩성 데모 시나리오
 │   ├── vision_approach.xml          # Vision approach 데모 (arm-only)
 │   ├── shape_inspect.xml            # ToF shape estimation 워크플로우
+│   ├── shape_inspect_simple.xml    # Vision + linear ToF search 간소화 inspection
 │   └── search_motion.xml            # 팔 sweep + tilt scan 탐색
 ├── include/ur5e_bt_coordinator/
 │   ├── bt_types.hpp                 # Pose6D, CachedGraspState, BT 타입 변환

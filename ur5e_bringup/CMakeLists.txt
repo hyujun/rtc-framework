@@ -151,11 +151,13 @@ ament_export_dependencies(
   sensor_msgs
   rtc_controller_interface
   rtc_controllers
+  rtc_controller_manager
   rtc_base
   rtc_msgs
   pinocchio
   rtc_urdf_bridge
   rtc_tsid
+  rtc_mpc
   yaml-cpp
 )
 ament_export_include_directories(include)

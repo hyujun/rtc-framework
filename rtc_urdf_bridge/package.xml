@@ -10,6 +10,7 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
+  <depend>eigen</depend>
   <depend>pinocchio</depend>
   <depend>yaml-cpp</depend>
   <depend>tinyxml2</depend>
