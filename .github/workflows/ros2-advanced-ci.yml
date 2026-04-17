@@ -291,7 +291,11 @@ jobs:
           libtinyxml2-dev
           libeigen3-dev
           lcov
-        version: ${{ matrix.ros_distro }}-build-v6
+        version: ${{ matrix.ros_distro }}-build-v7
+
+    # rtc_tsid 테스트에서 Panda URDF 참조 (/usr/local/share/example-robot-data/)
+    - name: Install example-robot-data
+      run: pip install example-robot-data
 
     - name: Build Packages (with coverage)
       run: |
@@ -518,12 +522,22 @@ jobs:
           libeigen3-dev
         version: jazzy-codeql-v3
 
+    # CodeQL instrumentation + colcon 빌드 조합이 GitHub 호스트 러너(7GB RAM)를
+    # 초과하여 OOM kill 발생 → 4GB swap 추가로 완화
+    - name: Add swap space
+      run: |
+        sudo fallocate -l 4G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+
     - name: Build Packages
       run: |
         source /opt/ros/jazzy/setup.bash
         export PATH="/usr/lib/ccache:$PATH"
         colcon build \
           --packages-up-to $BUILD_PACKAGES \
+          --parallel-workers 1 \
           --cmake-args \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
@@ -570,7 +584,8 @@ jobs:
 
     # ros-jazzy-ros-base: desktop(963 pkg) 대신 최소 ROS2 런타임(~200 pkg)
     # visualization-msgs, std-srvs: ros-base에 미포함된 프로젝트 의존성
-    # python3-numpy: pinocchio → eigenpy → FIND_NUMPY 의존성
+    # python3-numpy는 apt 캐시에서 제외 — cache-apt-pkgs-action의 tar 복원 시
+    # Python .so 심볼릭 링크가 깨져 eigenpy FIND_NUMPY가 실패하는 문제 방지
     - name: Cache apt packages
       uses: awalsh128/cache-apt-pkgs-action@v1
       with:
@@ -586,13 +601,12 @@ jobs:
           libyaml-cpp-dev
           libtinyxml2-dev
           libeigen3-dev
-          python3-numpy
-        version: jazzy-tidy-v8
+        version: jazzy-tidy-v9
 
-    # cache-apt-pkgs-action의 tar 복원 시 Python site-packages가
-    # 올바르게 복원되지 않을 수 있음 → pip로 numpy 보장
-    - name: Ensure numpy is available
-      run: python3 -m pip install numpy
+    # pinocchio → eigenpy → FIND_NUMPY 의존성
+    # apt 캐시와 분리하여 항상 정상 설치 보장
+    - name: Install numpy for eigenpy
+      run: sudo apt-get install -y python3-numpy
 
     # coverage 플래그 없이 빌드하여 깨끗한 분석 보장
     # BUILD_TESTING=OFF: clang-tidy는 테스트 빌드 불필요 (gtest 의존성 제거)

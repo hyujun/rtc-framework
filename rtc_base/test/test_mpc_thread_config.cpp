@@ -21,23 +21,23 @@ namespace rtc {
 namespace {
 
 struct TierExpectation {
-  const char* label;
-  const MpcThreadConfig* mpc;
+  const char *label;
+  const MpcThreadConfig *mpc;
   int expected_main_core;
   int expected_num_workers;
 };
 
 const std::array<TierExpectation, 6> kTiers = {{
-    {"4-core",  &kMpcConfig4Core,  3, 0},
-    {"6-core",  &kMpcConfig6Core,  4, 0},
-    {"8-core",  &kMpcConfig8Core,  4, 0},
+    {"4-core", &kMpcConfig4Core, 3, 0},
+    {"6-core", &kMpcConfig6Core, 4, 0},
+    {"8-core", &kMpcConfig8Core, 4, 0},
     {"10-core", &kMpcConfig10Core, 9, 0},
     {"12-core", &kMpcConfig12Core, 9, 1},
     {"16-core", &kMpcConfig16Core, 9, 2},
 }};
 
 TEST(MpcThreadConfig, MainCoreMatchesSpec) {
-  for (const auto& tier : kTiers) {
+  for (const auto &tier : kTiers) {
     EXPECT_EQ(tier.mpc->main.cpu_core, tier.expected_main_core)
         << tier.label << ": MPC main core mismatch";
     EXPECT_EQ(tier.mpc->num_workers, tier.expected_num_workers)
@@ -46,14 +46,14 @@ TEST(MpcThreadConfig, MainCoreMatchesSpec) {
 }
 
 TEST(MpcThreadConfig, WorkerPriorityNotAboveMain) {
-  for (const auto& tier : kTiers) {
-    const auto& mpc = *tier.mpc;
+  for (const auto &tier : kTiers) {
+    const auto &mpc = *tier.mpc;
     if (mpc.main.sched_policy != SCHED_FIFO &&
         mpc.main.sched_policy != SCHED_RR) {
-      continue;  // Non-RT tier (4-core)
+      continue; // Non-RT tier (4-core)
     }
     for (int i = 0; i < mpc.num_workers; ++i) {
-      const auto& worker = mpc.workers[static_cast<std::size_t>(i)];
+      const auto &worker = mpc.workers[static_cast<std::size_t>(i)];
       EXPECT_LE(worker.sched_priority, mpc.main.sched_priority)
           << tier.label << " worker " << i << ": priority > main";
     }
@@ -63,23 +63,23 @@ TEST(MpcThreadConfig, WorkerPriorityNotAboveMain) {
 TEST(MpcThreadConfig, PriorityBelowSensor) {
   // Pair every tier's MPC with the corresponding sensor config.
   struct Pair {
-    const MpcThreadConfig* mpc;
-    const ThreadConfig* sensor;
-    const char* label;
+    const MpcThreadConfig *mpc;
+    const ThreadConfig *sensor;
+    const char *label;
   };
   const std::array<Pair, 6> pairs = {{
-      {&kMpcConfig4Core,  &kSensorConfig4Core,  "4-core"},
-      {&kMpcConfig6Core,  &kSensorConfig,       "6-core"},
-      {&kMpcConfig8Core,  &kSensorConfig8Core,  "8-core"},
+      {&kMpcConfig4Core, &kSensorConfig4Core, "4-core"},
+      {&kMpcConfig6Core, &kSensorConfig, "6-core"},
+      {&kMpcConfig8Core, &kSensorConfig8Core, "8-core"},
       {&kMpcConfig10Core, &kSensorConfig10Core, "10-core"},
       {&kMpcConfig12Core, &kSensorConfig12Core, "12-core"},
       {&kMpcConfig16Core, &kSensorConfig16Core, "16-core"},
   }};
-  for (const auto& pair : pairs) {
+  for (const auto &pair : pairs) {
     const bool mpc_is_rt = pair.mpc->main.sched_policy == SCHED_FIFO ||
                            pair.mpc->main.sched_policy == SCHED_RR;
     if (!mpc_is_rt) {
-      continue;  // SCHED_OTHER MPC never preempts anything RT.
+      continue; // SCHED_OTHER MPC never preempts anything RT.
     }
     EXPECT_LT(pair.mpc->main.sched_priority, pair.sensor->sched_priority)
         << pair.label << ": MPC priority must be below sensor";
@@ -89,17 +89,17 @@ TEST(MpcThreadConfig, PriorityBelowSensor) {
 TEST(MpcThreadConfig, DedicatedTiersDoNotShareWithSensorOrRt) {
   // 8, 12, 16-core tiers give MPC a dedicated core.
   struct DedicatedPair {
-    const MpcThreadConfig* mpc;
-    const ThreadConfig* rt_control;
-    const ThreadConfig* sensor;
-    const char* label;
+    const MpcThreadConfig *mpc;
+    const ThreadConfig *rt_control;
+    const ThreadConfig *sensor;
+    const char *label;
   };
   const std::array<DedicatedPair, 3> dedicated = {{
-      {&kMpcConfig8Core,  &kRtControlConfig8Core,  &kSensorConfig8Core,  "8"},
+      {&kMpcConfig8Core, &kRtControlConfig8Core, &kSensorConfig8Core, "8"},
       {&kMpcConfig12Core, &kRtControlConfig12Core, &kSensorConfig12Core, "12"},
       {&kMpcConfig16Core, &kRtControlConfig16Core, &kSensorConfig16Core, "16"},
   }};
-  for (const auto& d : dedicated) {
+  for (const auto &d : dedicated) {
     EXPECT_NE(d.mpc->main.cpu_core, d.rt_control->cpu_core)
         << d.label << "-core: MPC must not share rt_control's core";
     EXPECT_NE(d.mpc->main.cpu_core, d.sensor->cpu_core)
@@ -117,6 +117,15 @@ TEST(MpcThreadConfig, NoRtPriorityConflicts) {
   // tier that matches this machine: pick the tier whose max core is in
   // range, validate it, and require an empty error string.
   const int ncpu = GetPhysicalCpuCount();
+
+  // The smallest supported tier (kMpcConfig4Core) uses Core 3, which requires
+  // at least 4 physical cores.  CI runners (e.g. GitHub Actions) typically
+  // have only 2 cores, so skip rather than report a false failure.
+  if (ncpu < 4) {
+    GTEST_SKIP() << "Host has only " << ncpu
+                 << " cores; minimum 4-core tier requires >= 4";
+  }
+
   const SystemThreadConfigs host_tier = SelectThreadConfigs();
 
   // MPC main's core must fit in the host's core count.
@@ -124,9 +133,9 @@ TEST(MpcThreadConfig, NoRtPriorityConflicts) {
       << "SelectThreadConfigs returned MPC on a core that does not exist";
 
   const std::string err = ValidateSystemThreadConfigs(host_tier);
-  EXPECT_TRUE(err.empty())
-      << "Host tier validation should succeed, got: " << err;
+  EXPECT_TRUE(err.empty()) << "Host tier validation should succeed, got: "
+                           << err;
 }
 
-}  // namespace
-}  // namespace rtc
+} // namespace
+} // namespace rtc
