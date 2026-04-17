@@ -607,7 +607,7 @@ RTC_REGISTER_CONTROLLER(
 - `SetDeviceTarget()`은 `std::lock_guard` 사용, `Compute()`/`InitializeHoldPosition()`은 `std::try_to_lock` (RT 스레드 차단 불가)
 - `new_target_` 플래그는 `memory_order_acquire/release` 원자적 동기화
 - Eigen: `noalias()` 사용, 고정 크기 행렬(3x3, 6x6) 스택 할당
-- **Bool 플래그 스냅샷:** `Compute()` 진입 시 `control_6dof`, `enable_null_space`, `enable_gravity_compensation`, `enable_coriolis_compensation` 등 제어 분기 플래그를 로컬 변수에 한 번 복사하여, `UpdateGainsFromMsg()`가 동시 실행되어도 한 틱 내 분기 일관성 보장
+- **Gains SeqLock 스냅샷:** 모든 컨트롤러의 `gains_` 필드를 `rtc::SeqLock<Gains> gains_lock_`로 교체. RT 경로(`Compute()`)는 진입 시 `const auto gains = gains_lock_.Load()`로 전체 구조체를 단일 스냅샷으로 읽어, `UpdateGainsFromMsg()`가 aux 스레드에서 동시 실행되어도 한 틱 내 모든 필드(bool/배열/스칼라) 일관성 보장. Aux 스레드 writer(`LoadConfig`, `UpdateGainsFromMsg`, `set_gains`)는 Load→mutate→Store 패턴으로 torn-write 방지. Phase 1의 bool 플래그 스냅샷은 SeqLock에 흡수됨.
 - **trajectory_speed 검증:** `LoadConfig()` 및 `UpdateGainsFromMsg()`에서 `trajectory_speed`/`trajectory_angular_speed`에 `std::max(1e-6, val)` 적용하여 0 또는 음수 값으로 인한 무한 궤적 duration 방지
 
 ---
@@ -670,11 +670,18 @@ rtc_controllers  -- 4개 내장 컨트롤러 구현
 
 ## 변경 내역
 
+### v5.19.0 (Phase 1b)
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **스레드 안전 (SeqLock)** | 4개 컨트롤러(`PController`, `JointPDController`, `ClikController`, `OperationalSpaceController`) 모두 `Gains gains_` → `rtc::SeqLock<Gains> gains_lock_` 전환. RT 경로는 `Compute()` 진입 시 단일 `Load()` 스냅샷 사용, aux 스레드 writer는 Load/mutate/Store 패턴. Phase 1의 bool 플래그 스냅샷을 SeqLock으로 대체 — 전체 구조체 단위 일관성 보장. |
+| **API 유지** | `set_gains`/`get_gains`/`GetCurrentGains` 시그니처 동일, 내부 구현만 SeqLock 경유로 변경. `set_kp()` (PController)도 Load/modify/Store 적용. |
+
 ### v5.18.0
 
 | 영역 | 변경 내용 |
 |------|----------|
-| **스레드 안전** | `Compute()`에서 bool 플래그 (control_6dof, enable_null_space, enable_gravity/coriolis) 틱 시작 시 로컬 스냅샷 -- `UpdateGainsFromMsg()` 동시 실행 시 분기 일관성 보장 |
+| **스레드 안전** | `Compute()`에서 bool 플래그 (control_6dof, enable_null_space, enable_gravity/coriolis) 틱 시작 시 로컬 스냅샷 -- `UpdateGainsFromMsg()` 동시 실행 시 분기 일관성 보장 (v5.19.0에서 SeqLock으로 대체) |
 | **RT 안전** | `InitializeHoldPosition()`에서 `std::lock_guard` → `std::try_to_lock` 변경 -- RT 경로 blocking lock 제거 (JointPD, CLIK, OSC) |
 | **입력 검증** | `trajectory_speed`, `trajectory_angular_speed`에 `std::max(1e-6, val)` 클램프 적용 -- 0/음수 값 입력 시 무한 궤적 duration 방지 |
 | **테스트** | `test_core_controllers.cpp` 추가 -- PController(10), JointPD(8), CLIK(8), OSC(7) = 33개 단위 테스트 |

@@ -2,10 +2,11 @@
 #define UR5E_BRINGUP_CONTROLLERS_DEMO_WBC_CONTROLLER_H_
 
 // Project headers (order: RTC base → interface → controllers → bridge → tsid)
+#include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
-#include "ur5e_description/ur5e_constants.hpp"
 #include "ur5e_bringup/bringup_logging.hpp"
+#include "ur5e_description/ur5e_constants.hpp"
 
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
@@ -34,17 +35,16 @@
 #include <string_view>
 #include <vector>
 
-namespace ur5e_bringup
-{
+namespace ur5e_bringup {
 
-using rtc::kMaxDeviceChannels;
-using rtc::kNumHandMotors;
-using rtc::kNumRobotJoints;
-using rtc::RTControllerInterface;
 using rtc::CommandType;
 using rtc::ControllerOutput;
 using rtc::ControllerState;
 using rtc::GoalType;
+using rtc::kMaxDeviceChannels;
+using rtc::kNumHandMotors;
+using rtc::kNumRobotJoints;
+using rtc::RTControllerInterface;
 namespace trajectory = rtc::trajectory;
 
 // ── WBC Phase (8-state FSM) ─────────────────────────────────────────────────
@@ -52,14 +52,14 @@ namespace trajectory = rtc::trajectory;
 // Phase 4 MVP implements: kIdle, kApproach, kPreGrasp, kFallback.
 // Contact phases (kClosure, kHold, kRetreat, kRelease) are skeleton-only.
 enum class WbcPhase : uint8_t {
-  kIdle,       ///< Home pose hold (position hold)
-  kApproach,   ///< Joint-space quintic trajectory to pre-grasp
-  kPreGrasp,   ///< TSID QP → position (no contact, fine positioning)
-  kClosure,    ///< TSID QP → position (contact forming, Phase 4B)
-  kHold,       ///< TSID QP → position (grasp holding, Phase 4B)
-  kRetreat,    ///< Quintic trajectory retreat (Phase 4B)
-  kRelease,    ///< Finger open ramp (Phase 4B)
-  kFallback    ///< Safety: position hold at last valid q
+  kIdle,     ///< Home pose hold (position hold)
+  kApproach, ///< Joint-space quintic trajectory to pre-grasp
+  kPreGrasp, ///< TSID QP → position (no contact, fine positioning)
+  kClosure,  ///< TSID QP → position (contact forming, Phase 4B)
+  kHold,     ///< TSID QP → position (grasp holding, Phase 4B)
+  kRetreat,  ///< Quintic trajectory retreat (Phase 4B)
+  kRelease,  ///< Finger open ramp (Phase 4B)
+  kFallback  ///< Safety: position hold at last valid q
 };
 
 // ── DemoWbcController ────────────────────────────────────────────────────────
@@ -77,77 +77,72 @@ enum class WbcPhase : uint8_t {
 // optional (a 7-entry message keeps Phase 4 semantics exactly).
 class DemoWbcController final : public RTControllerInterface {
 public:
-  static constexpr int kArmDof  = static_cast<int>(kNumRobotJoints);  // 6
-  static constexpr int kHandDof = static_cast<int>(kNumHandMotors);   // 10
-  static constexpr int kFullDof = kArmDof + kHandDof;                 // 16
+  static constexpr int kArmDof = static_cast<int>(kNumRobotJoints); // 6
+  static constexpr int kHandDof = static_cast<int>(kNumHandMotors); // 10
+  static constexpr int kFullDof = kArmDof + kHandDof;               // 16
   static constexpr int kNumPhases = 8;
 
   struct Gains {
-    double arm_trajectory_speed{0.5};      ///< Joint-space traj speed [rad/s]
-    double hand_trajectory_speed{1.0};     ///< Hand traj speed [rad/s]
-    double arm_max_traj_velocity{2.0};     ///< Max arm joint velocity [rad/s]
-    double hand_max_traj_velocity{4.0};    ///< Max hand motor velocity [rad/s]
-    double grasp_target_force{2.0};        ///< Target grasp force [N]
-    double se3_weight{100.0};              ///< SE3Task weight (runtime tuning)
-    double force_weight{10.0};             ///< ForceTask weight
-    double posture_weight{1.0};            ///< PostureTask weight
+    double arm_trajectory_speed{0.5};   ///< Joint-space traj speed [rad/s]
+    double hand_trajectory_speed{1.0};  ///< Hand traj speed [rad/s]
+    double arm_max_traj_velocity{2.0};  ///< Max arm joint velocity [rad/s]
+    double hand_max_traj_velocity{4.0}; ///< Max hand motor velocity [rad/s]
+    double grasp_target_force{2.0};     ///< Target grasp force [N]
+    double se3_weight{100.0};           ///< SE3Task weight (runtime tuning)
+    double force_weight{10.0};          ///< ForceTask weight
+    double posture_weight{1.0};         ///< PostureTask weight
   };
 
   explicit DemoWbcController(std::string_view urdf_path);
 
   // ── RTControllerInterface overrides ──────────────────────────────────────
-  [[nodiscard]] ControllerOutput Compute(
-    const ControllerState & state) noexcept override;
+  [[nodiscard]] ControllerOutput
+  Compute(const ControllerState &state) noexcept override;
 
-  void SetDeviceTarget(
-    int device_idx, std::span<const double> target) noexcept override;
+  void SetDeviceTarget(int device_idx,
+                       std::span<const double> target) noexcept override;
 
-  void InitializeHoldPosition(
-    const ControllerState & state) noexcept override;
+  void InitializeHoldPosition(const ControllerState &state) noexcept override;
 
-  [[nodiscard]] std::string_view Name() const noexcept override
-  {
+  [[nodiscard]] std::string_view Name() const noexcept override {
     return "DemoWbcController";
   }
 
-  void TriggerEstop()                            noexcept override;
-  void ClearEstop()                              noexcept override;
-  [[nodiscard]] bool IsEstopped() const          noexcept override;
-  void SetHandEstop(bool active)                 noexcept override;
+  void TriggerEstop() noexcept override;
+  void ClearEstop() noexcept override;
+  [[nodiscard]] bool IsEstopped() const noexcept override;
+  void SetHandEstop(bool active) noexcept override;
 
   // ── Test accessors (const snapshots, not RT-safe) ───────────────────────
   struct FingertipReport {
     float force_magnitude{0.0f};
     float force_rate{0.0f};
     float contact_flag{0.0f};
-    bool  valid{false};
+    bool valid{false};
   };
-  [[nodiscard]] FingertipReport GetFingertipReportForTesting(
-    int fingertip_idx) const noexcept;
-  [[nodiscard]] int GetNumActiveFingertipsForTesting() const noexcept
-  {
+  [[nodiscard]] FingertipReport
+  GetFingertipReportForTesting(int fingertip_idx) const noexcept;
+  [[nodiscard]] int GetNumActiveFingertipsForTesting() const noexcept {
     return num_active_fingertips_;
   }
   [[nodiscard]] WbcPhase GetPhaseForTesting() const noexcept { return phase_; }
   void ForcePhaseForTesting(WbcPhase p) noexcept { phase_ = p; }
-  void SetGraspCmdForTesting(int v) noexcept
-  {
+  void SetGraspCmdForTesting(int v) noexcept {
     grasp_cmd_.store(v, std::memory_order_release);
   }
 
   // ── Registry hooks ──────────────────────────────────────────────────────
-  void LoadConfig(const YAML::Node & cfg) override;
+  void LoadConfig(const YAML::Node &cfg) override;
   void OnDeviceConfigsSet() override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
   [[nodiscard]] std::vector<double> GetCurrentGains() const noexcept override;
-  [[nodiscard]] CommandType GetCommandType() const noexcept override
-  {
+  [[nodiscard]] CommandType GetCommandType() const noexcept override {
     return command_type_;
   }
 
 private:
   // ── Model initialization ────────────────────────────────────────────────
-  void InitModels(const rtc_urdf_bridge::ModelConfig & config);
+  void InitModels(const rtc_urdf_bridge::ModelConfig &config);
   void BuildJointReorderMap();
 
   // ── TSID task/constraint YAML factory ───────────────────────────────────
@@ -156,26 +151,25 @@ private:
   // `tsid.constraints`. Supported tasks: posture, se3, force. Supported
   // constraints: eom, joint_limit, friction_cone. Unknown types log ERROR
   // and skip. Called once in LoadConfig after TSIDController::init().
-  void BuildTsidTasks(const YAML::Node & tsid_node);
-  void BuildTsidConstraints(const YAML::Node & tsid_node);
+  void BuildTsidTasks(const YAML::Node &tsid_node);
+  void BuildTsidConstraints(const YAML::Node &tsid_node);
 
   // ── 3-phase pipeline (RT path) ──────────────────────────────────────────
-  void ReadState(const ControllerState & state) noexcept;
-  void ComputeControl(const ControllerState & state, double dt) noexcept;
-  [[nodiscard]] ControllerOutput WriteOutput(
-    const ControllerState & state) noexcept;
+  void ReadState(const ControllerState &state) noexcept;
+  void ComputeControl(const ControllerState &state, double dt) noexcept;
+  [[nodiscard]] ControllerOutput
+  WriteOutput(const ControllerState &state) noexcept;
 
   // ── FSM ─────────────────────────────────────────────────────────────────
   WbcPhase phase_{WbcPhase::kIdle};
   WbcPhase prev_phase_{WbcPhase::kIdle};
 
-  void UpdatePhase(const ControllerState & state) noexcept;
-  void OnPhaseEnter(WbcPhase new_phase,
-                    const ControllerState & state) noexcept;
+  void UpdatePhase(const ControllerState &state) noexcept;
+  void OnPhaseEnter(WbcPhase new_phase, const ControllerState &state) noexcept;
 
   // ── Control modes ───────────────────────────────────────────────────────
   void ComputePositionMode(double dt) noexcept;
-  void ComputeTSIDPosition(const ControllerState & state, double dt) noexcept;
+  void ComputeTSIDPosition(const ControllerState &state, double dt) noexcept;
   void ComputeFallback() noexcept;
 
   // ── E-STOP ──────────────────────────────────────────────────────────────
@@ -184,13 +178,13 @@ private:
   bool estop_active_{false};
 
   static constexpr std::array<double, kNumRobotJoints> kSafePosition{
-    0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
+      0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
 
-  [[nodiscard]] ControllerOutput ComputeEstop(
-    const ControllerState & state) noexcept;
+  [[nodiscard]] ControllerOutput
+  ComputeEstop(const ControllerState &state) noexcept;
 
   // ── Configuration ───────────────────────────────────────────────────────
-  Gains gains_;
+  rtc::SeqLock<Gains> gains_lock_;
   std::string urdf_path_;
   CommandType command_type_{CommandType::kPosition};
 
@@ -238,13 +232,13 @@ private:
   struct FingertipSensorData {
     std::array<int32_t, rtc::kBarometerCount> baro{};
     std::array<int32_t, 3> tof{};
-    std::array<float, 3>   force{};
-    std::array<float, 3>   displacement{};
-    float force_magnitude{0.0f};    ///< ||force||  (cached, N)
+    std::array<float, 3> force{};
+    std::array<float, 3> displacement{};
+    float force_magnitude{0.0f};      ///< ||force||  (cached, N)
     float prev_force_magnitude{0.0f}; ///< previous tick, for df/dt
     float force_rate{0.0f};           ///< df/dt [N/s] (smoothed)
     float contact_flag{0.0f};
-    bool  valid{false};
+    bool valid{false};
   };
   std::array<FingertipSensorData, rtc::kMaxFingertips> fingertip_data_{};
   int num_active_fingertips_{0};
@@ -253,13 +247,13 @@ private:
   // ── TSID → Position integration ─────────────────────────────────────────
   //
   // All vectors are in Pinocchio joint order (full model, 16-DoF).
-  Eigen::VectorXd q_curr_full_;       ///< [nv] current q (sensor, per tick)
-  Eigen::VectorXd v_curr_full_;       ///< [nv] current v (sensor, per tick)
-  Eigen::VectorXd q_next_full_;       ///< [nv] integrated position (output)
-  Eigen::VectorXd v_next_full_;       ///< [nv] integrated velocity
-  Eigen::VectorXd q_min_clamped_;     ///< [nv] q_lower + margin
-  Eigen::VectorXd q_max_clamped_;     ///< [nv] q_upper - margin
-  Eigen::VectorXd v_limit_;           ///< [nv] velocity limit
+  Eigen::VectorXd q_curr_full_;   ///< [nv] current q (sensor, per tick)
+  Eigen::VectorXd v_curr_full_;   ///< [nv] current v (sensor, per tick)
+  Eigen::VectorXd q_next_full_;   ///< [nv] integrated position (output)
+  Eigen::VectorXd v_next_full_;   ///< [nv] integrated velocity
+  Eigen::VectorXd q_min_clamped_; ///< [nv] q_lower + margin
+  Eigen::VectorXd q_max_clamped_; ///< [nv] q_upper - margin
+  Eigen::VectorXd v_limit_;       ///< [nv] velocity limit
 
   // ControlState for TSID compute (pre-allocated)
   rtc::tsid::ControlState ctrl_state_;
@@ -270,7 +264,8 @@ private:
   std::atomic<bool> hand_new_target_{false};
 
   std::array<std::array<double, kMaxDeviceChannels>,
-    ControllerState::kMaxDevices> device_targets_{};
+             ControllerState::kMaxDevices>
+      device_targets_{};
 
   // Task-space goal (computed from FK of arm target in SetDeviceTarget)
   pinocchio::SE3 tcp_goal_{pinocchio::SE3::Identity()};
@@ -278,22 +273,21 @@ private:
 
   // ── Trajectory (position mode phases) ───────────────────────────────────
   trajectory::JointSpaceTrajectory<kNumRobotJoints> robot_trajectory_;
-  trajectory::JointSpaceTrajectory<kNumHandMotors>  hand_trajectory_;
+  trajectory::JointSpaceTrajectory<kNumHandMotors> hand_trajectory_;
   double robot_trajectory_time_{0.0};
   double hand_trajectory_time_{0.0};
 
   // ── Device limits ───────────────────────────────────────────────────────
-  std::array<std::vector<double>,
-    ControllerState::kMaxDevices> device_max_velocity_;
-  std::array<std::vector<double>,
-    ControllerState::kMaxDevices> device_position_lower_;
-  std::array<std::vector<double>,
-    ControllerState::kMaxDevices> device_position_upper_;
+  std::array<std::vector<double>, ControllerState::kMaxDevices>
+      device_max_velocity_;
+  std::array<std::vector<double>, ControllerState::kMaxDevices>
+      device_position_lower_;
+  std::array<std::vector<double>, ControllerState::kMaxDevices>
+      device_position_upper_;
 
-  static void ClampCommands(
-    std::array<double, kMaxDeviceChannels>& commands, int n,
-    const std::vector<double>& lower,
-    const std::vector<double>& upper) noexcept;
+  static void ClampCommands(std::array<double, kMaxDeviceChannels> &commands,
+                            int n, const std::vector<double> &lower,
+                            const std::vector<double> &upper) noexcept;
 
   // ── Computed output (intermediate) ──────────────────────────────────────
   struct ComputedTrajectory {
@@ -330,7 +324,7 @@ private:
   double epsilon_pregrasp_{0.005};      ///< m, pre-grasp → closure
   double force_contact_threshold_{0.2}; ///< N, contact detection
   double force_hold_threshold_{1.0};    ///< N, hold → retreat
-  int    min_contacts_for_hold_{2};     ///< # fingertips required -> kHold
+  int min_contacts_for_hold_{2};        ///< # fingertips required -> kHold
   double slip_rate_threshold_{5.0};     ///< N/s, |df/dt| slip guard (kHold)
   double deformation_threshold_{0.015}; ///< m, ||disp|| guard (kHold)
 
@@ -338,19 +332,18 @@ private:
   std::array<double, kNumRobotJoints> q_approach_start_{};
 
   // Integration safety margins
-  double position_margin_{0.02};        ///< rad, from joint limits
-  double velocity_scale_{0.95};         ///< fraction of max velocity
+  double position_margin_{0.02}; ///< rad, from joint limits
+  double velocity_scale_{0.95};  ///< fraction of max velocity
 
   // ── Utility ─────────────────────────────────────────────────────────────
-  void ExtractFullState(const ControllerState & state) noexcept;
-  [[nodiscard]] double ComputeTcpError(
-    const pinocchio::SE3 & target) noexcept;
+  void ExtractFullState(const ControllerState &state) noexcept;
+  [[nodiscard]] double ComputeTcpError(const pinocchio::SE3 &target) noexcept;
 
   // ── Logging ─────────────────────────────────────────────────────────────
   rclcpp::Logger logger_{ur5e_bringup::logging::DemoWbcLogger()};
-  rclcpp::Clock  log_clock_{RCL_STEADY_TIME};
+  rclcpp::Clock log_clock_{RCL_STEADY_TIME};
 };
 
-}  // namespace ur5e_bringup
+} // namespace ur5e_bringup
 
-#endif  // UR5E_BRINGUP_CONTROLLERS_DEMO_WBC_CONTROLLER_H_
+#endif // UR5E_BRINGUP_CONTROLLERS_DEMO_WBC_CONTROLLER_H_

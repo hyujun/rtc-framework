@@ -24,7 +24,7 @@ namespace ur5e_bringup {
 // ── Constructor ─────────────────────────────────────────────────────────────
 
 DemoTaskController::DemoTaskController(std::string_view urdf_path, Gains gains)
-    : gains_(gains), urdf_path_(urdf_path) {
+    : gains_lock_(gains), urdf_path_(urdf_path) {
   // Model is built in LoadConfig() (bridge YAML driven) or InitArmModel().
   // Constructor only stores urdf_path for later use.
 }
@@ -161,10 +161,10 @@ void DemoTaskController::OnDeviceConfigsSet() {
 
 // ── Virtual TCP computation ─────────────────────────────────────────────────
 
-void DemoTaskController::UpdateVirtualTcp(
-    const pinocchio::SE3 &T_base_tcp) noexcept {
+void DemoTaskController::UpdateVirtualTcp(const pinocchio::SE3 &T_base_tcp,
+                                          const Gains &gains) noexcept {
   vtcp_valid_ = false;
-  if (!hand_handle_ || gains_.vtcp.mode == VirtualTcpMode::kDisabled)
+  if (!hand_handle_ || gains.vtcp.mode == VirtualTcpMode::kDisabled)
     return;
 
   // Build fingertip inputs from hand model FK
@@ -187,7 +187,7 @@ void DemoTaskController::UpdateVirtualTcp(
                  : 0.0;
   }
 
-  const auto result = ComputeVirtualTcp(gains_.vtcp, T_base_tcp, vtcp_inputs_);
+  const auto result = ComputeVirtualTcp(gains.vtcp, T_base_tcp, vtcp_inputs_);
   if (result.valid) {
     T_tcp_vtcp_ = result.T_tcp_vtcp;
     vtcp_pose_ = result.world_pose;
@@ -290,6 +290,9 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
     return;
   }
 
+  // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
+  const auto gains = gains_lock_.Load();
+
   const auto &dev0 = state.devices[0];
 
   // ── Arm TCP pose ──────────────────────────────────────────────────────
@@ -324,7 +327,7 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
     }
 
     // Virtual TCP computation
-    UpdateVirtualTcp(tcp_pose);
+    UpdateVirtualTcp(tcp_pose, gains);
   }
 
   // ── Control pose: virtual TCP or tool0 ────────────────────────────────
@@ -363,7 +366,7 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
       pinocchio::SE3 start_pose = control_pose;
       pinocchio::SE3 goal_pose;
 
-      if (gains_.control_6dof) {
+      if (gains.control_6dof) {
         goal_pose = tcp_target_pose_;
       } else {
         goal_pose = start_pose;
@@ -377,10 +380,10 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
 
       // Duration from translational trajectory_speed and velocity limit.
       // Quintic rest-to-rest peak velocity = (15/8) * dist / T.
-      const double T_speed_trans = trans_dist / gains_.trajectory_speed;
+      const double T_speed_trans = trans_dist / gains.trajectory_speed;
       const double T_vel_trans =
-          (gains_.max_traj_velocity > 0.0)
-              ? (1.875 * trans_dist / gains_.max_traj_velocity)
+          (gains.max_traj_velocity > 0.0)
+              ? (1.875 * trans_dist / gains.max_traj_velocity)
               : 0.0;
       double duration = std::max({0.01, T_speed_trans, T_vel_trans});
 
@@ -390,17 +393,17 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
       Eigen::Vector3d rot_axis = Eigen::Vector3d::UnitZ(); // fallback
       bool split_trajectory = false;
 
-      if (gains_.control_6dof) {
+      if (gains.control_6dof) {
         const Eigen::AngleAxisd aa(start_pose.rotation().transpose() *
                                    goal_pose.rotation());
         angular_dist = aa.angle(); // always in [0, π]
         rot_axis = aa.axis();
 
         const double T_speed_rot =
-            angular_dist / gains_.trajectory_angular_speed;
+            angular_dist / gains.trajectory_angular_speed;
         const double T_vel_rot =
-            (gains_.max_traj_angular_velocity > 0.0)
-                ? (1.875 * angular_dist / gains_.max_traj_angular_velocity)
+            (gains.max_traj_angular_velocity > 0.0)
+                ? (1.875 * angular_dist / gains.max_traj_angular_velocity)
                 : 0.0;
         duration = std::max({duration, T_speed_rot, T_vel_rot});
 
@@ -420,15 +423,15 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
 
         // Segment 1: start → mid (half distances)
         const double half_trans = trans_dist * 0.5;
-        const double T1_speed_t = half_trans / gains_.trajectory_speed;
+        const double T1_speed_t = half_trans / gains.trajectory_speed;
         const double T1_vel_t =
-            (gains_.max_traj_velocity > 0.0)
-                ? (1.875 * half_trans / gains_.max_traj_velocity)
+            (gains.max_traj_velocity > 0.0)
+                ? (1.875 * half_trans / gains.max_traj_velocity)
                 : 0.0;
-        const double T1_speed_r = half_angle / gains_.trajectory_angular_speed;
+        const double T1_speed_r = half_angle / gains.trajectory_angular_speed;
         const double T1_vel_r =
-            (gains_.max_traj_angular_velocity > 0.0)
-                ? (1.875 * half_angle / gains_.max_traj_angular_velocity)
+            (gains.max_traj_angular_velocity > 0.0)
+                ? (1.875 * half_angle / gains.max_traj_angular_velocity)
                 : 0.0;
         const double dur1 =
             std::max({0.01, T1_speed_t, T1_vel_t, T1_speed_r, T1_vel_r});
@@ -496,9 +499,9 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
   }
 
   // ── Damped pseudoinverse & Primary task ────────────────────────────────
-  if (gains_.control_6dof) {
+  if (gains.control_6dof) {
     JJt_6d_.noalias() = J_full_ * J_full_.transpose();
-    JJt_6d_.diagonal().array() += gains_.damping * gains_.damping;
+    JJt_6d_.diagonal().array() += gains.damping * gains.damping;
     ldlt_6d_.compute(JJt_6d_);
     JJt_inv_6d_.noalias() =
         ldlt_6d_.solve(Eigen::Matrix<double, 6, 6>::Identity());
@@ -506,8 +509,8 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
 
     Eigen::Matrix<double, 6, 1> kp_vec_6d;
     for (std::size_t i = 0; i < 3; ++i) {
-      kp_vec_6d[static_cast<Eigen::Index>(i)] = gains_.kp_translation[i];
-      kp_vec_6d[static_cast<Eigen::Index>(i + 3)] = gains_.kp_rotation[i];
+      kp_vec_6d[static_cast<Eigen::Index>(i)] = gains.kp_translation[i];
+      kp_vec_6d[static_cast<Eigen::Index>(i + 3)] = gains.kp_rotation[i];
     }
 
     Eigen::Matrix<double, 6, 1> task_vel_6d =
@@ -532,13 +535,13 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
     dq_.noalias() = Jpinv_6d_ * task_vel_6d;
   } else {
     JJt_.noalias() = J_pos_ * J_pos_.transpose();
-    JJt_.diagonal().array() += gains_.damping * gains_.damping;
+    JJt_.diagonal().array() += gains.damping * gains.damping;
     ldlt_.compute(JJt_);
     JJt_inv_.noalias() = ldlt_.solve(Eigen::Matrix3d::Identity());
     Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
 
-    Eigen::Vector3d kp_vec(gains_.kp_translation[0], gains_.kp_translation[1],
-                           gains_.kp_translation[2]);
+    Eigen::Vector3d kp_vec(gains.kp_translation[0], gains.kp_translation[1],
+                           gains.kp_translation[2]);
     // Feedforward: trajectory local → Jacobian frame (vtcp or world-aligned)
     Eigen::Vector3d ff_vel;
     if (use_vtcp_frame) {
@@ -553,7 +556,7 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
   }
 
   // ── Feedforward-only trajectory velocity (for logging) ────────────────
-  if (gains_.control_6dof) {
+  if (gains.control_6dof) {
     Eigen::Matrix<double, 6, 1> ff_vel_6d;
     if (use_vtcp_frame) {
       const Eigen::Matrix3d R_vtcp_traj =
@@ -580,7 +583,7 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
   }
 
   // ── Null-space secondary task ──────────────────────────────────────────
-  if (gains_.enable_null_space && !gains_.control_6dof) {
+  if (gains.enable_null_space && !gains.control_6dof) {
     N_.setIdentity();
     N_.noalias() -= Jpinv_ * J_pos_;
 
@@ -589,7 +592,7 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
                      dev0.positions[static_cast<std::size_t>(i)];
     }
     null_dq_.noalias() = N_ * null_err_;
-    null_dq_ *= gains_.null_kp;
+    null_dq_ *= gains.null_kp;
     dq_ += null_dq_;
   }
 
@@ -615,10 +618,10 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
             max_dist, std::abs(device_targets_[1][i] - dev1.positions[i]));
       }
 
-      const double T_speed = max_dist / gains_.hand_trajectory_speed;
+      const double T_speed = max_dist / gains.hand_trajectory_speed;
       const double T_vel =
-          (gains_.hand_max_traj_velocity > 0.0)
-              ? (1.875 * max_dist / gains_.hand_max_traj_velocity)
+          (gains.hand_max_traj_velocity > 0.0)
+              ? (1.875 * max_dist / gains.hand_max_traj_velocity)
               : 0.0;
       const double duration = std::max({0.01, T_speed, T_vel});
       hand_trajectory_.initialize(start_state, goal_state, duration);
@@ -637,9 +640,9 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
 
   // ── Grasp detection + ContactStopHand (500Hz) ────────────────────────
   {
-    const float contact_thresh = gains_.grasp_contact_threshold;
-    const float force_thresh = gains_.grasp_force_threshold;
-    const int min_fingers = gains_.grasp_min_fingertips;
+    const float contact_thresh = gains.grasp_contact_threshold;
+    const float force_thresh = gains.grasp_force_threshold;
+    const int min_fingers = gains.grasp_min_fingertips;
 
     float max_force = 0.0f;
     int active_count = 0;
@@ -881,7 +884,7 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState &state,
   output.task_goal_positions[0] = tcp_target_[0];
   output.task_goal_positions[1] = tcp_target_[1];
   output.task_goal_positions[2] = tcp_target_[2];
-  if (gains_.control_6dof) {
+  if (gains_lock_.Load().control_6dof) {
     Eigen::Vector3d goal_rpy =
         pinocchio::rpy::matrixToRpy(tcp_target_pose_.rotation());
     output.task_goal_positions[3] = goal_rpy[0];
@@ -960,7 +963,7 @@ void DemoTaskController::SetDeviceTarget(
     return;
   if (device_idx == 0) {
     std::lock_guard lock(target_mutex_);
-    if (gains_.control_6dof) {
+    if (gains_lock_.Load().control_6dof) {
       if (target.size() >= 6) {
         tcp_target_[0] = target[0];
         tcp_target_[1] = target[1];
@@ -1023,7 +1026,7 @@ void DemoTaskController::InitializeHoldPosition(
     }
     hand_handle_->ComputeForwardKinematics(
         std::span<const double>(hand_q_.data(), hand_nq));
-    UpdateVirtualTcp(tcp_pose);
+    UpdateVirtualTcp(tcp_pose, gains_lock_.Load());
     if (vtcp_valid_) {
       hold_pose = vtcp_pose_;
     }
@@ -1181,54 +1184,53 @@ void DemoTaskController::LoadConfig(const YAML::Node &cfg) {
     InitHandModel(*sys_cfg);
   }
 
+  auto g = gains_lock_.Load();
   // CLIK gains — translation / rotation separated
   if (cfg["kp_translation"] && cfg["kp_translation"].IsSequence()) {
     std::size_t n = std::min<std::size_t>(cfg["kp_translation"].size(), 3);
     for (std::size_t i = 0; i < n; ++i) {
-      gains_.kp_translation[i] = cfg["kp_translation"][i].as<double>();
+      g.kp_translation[i] = cfg["kp_translation"][i].as<double>();
     }
   }
   if (cfg["kp_rotation"] && cfg["kp_rotation"].IsSequence()) {
     std::size_t n = std::min<std::size_t>(cfg["kp_rotation"].size(), 3);
     for (std::size_t i = 0; i < n; ++i) {
-      gains_.kp_rotation[i] = cfg["kp_rotation"][i].as<double>();
+      g.kp_rotation[i] = cfg["kp_rotation"][i].as<double>();
     }
   }
   if (cfg["damping"]) {
-    gains_.damping = cfg["damping"].as<double>();
+    g.damping = cfg["damping"].as<double>();
   }
   if (cfg["null_kp"]) {
-    gains_.null_kp = cfg["null_kp"].as<double>();
+    g.null_kp = cfg["null_kp"].as<double>();
   }
   if (cfg["enable_null_space"]) {
-    gains_.enable_null_space = cfg["enable_null_space"].as<bool>();
+    g.enable_null_space = cfg["enable_null_space"].as<bool>();
   }
   if (cfg["control_6dof"]) {
-    gains_.control_6dof = cfg["control_6dof"].as<bool>();
+    g.control_6dof = cfg["control_6dof"].as<bool>();
   }
 
   // Trajectory speed
   if (cfg["trajectory_speed"]) {
-    gains_.trajectory_speed =
-        std::max(1e-6, cfg["trajectory_speed"].as<double>());
+    g.trajectory_speed = std::max(1e-6, cfg["trajectory_speed"].as<double>());
   }
   if (cfg["trajectory_angular_speed"]) {
-    gains_.trajectory_angular_speed =
+    g.trajectory_angular_speed =
         std::max(1e-6, cfg["trajectory_angular_speed"].as<double>());
   }
   if (cfg["hand_trajectory_speed"]) {
-    gains_.hand_trajectory_speed =
+    g.hand_trajectory_speed =
         std::max(1e-6, cfg["hand_trajectory_speed"].as<double>());
   }
   if (cfg["max_traj_velocity"]) {
-    gains_.max_traj_velocity = cfg["max_traj_velocity"].as<double>();
+    g.max_traj_velocity = cfg["max_traj_velocity"].as<double>();
   }
   if (cfg["max_traj_angular_velocity"]) {
-    gains_.max_traj_angular_velocity =
-        cfg["max_traj_angular_velocity"].as<double>();
+    g.max_traj_angular_velocity = cfg["max_traj_angular_velocity"].as<double>();
   }
   if (cfg["hand_max_traj_velocity"]) {
-    gains_.hand_max_traj_velocity = cfg["hand_max_traj_velocity"].as<double>();
+    g.hand_max_traj_velocity = cfg["hand_max_traj_velocity"].as<double>();
   }
 
   // ── Shared params: defaults from demo_shared.yaml, overridden by cfg ──
@@ -1236,10 +1238,11 @@ void DemoTaskController::LoadConfig(const YAML::Node &cfg) {
   LoadDemoSharedYamlFile(shared);
   ApplyDemoSharedConfig(cfg, shared);
 
-  gains_.vtcp = shared.vtcp;
-  gains_.grasp_contact_threshold = shared.grasp_contact_threshold;
-  gains_.grasp_force_threshold = shared.grasp_force_threshold;
-  gains_.grasp_min_fingertips = shared.grasp_min_fingertips;
+  g.vtcp = shared.vtcp;
+  g.grasp_contact_threshold = shared.grasp_contact_threshold;
+  g.grasp_force_threshold = shared.grasp_force_threshold;
+  g.grasp_min_fingertips = shared.grasp_min_fingertips;
+  gains_lock_.Store(g);
   grasp_controller_type_ = shared.grasp_controller_type;
 
   if (cfg["command_type"]) {
@@ -1264,42 +1267,44 @@ void DemoTaskController::UpdateGainsFromMsg(
   if (gains.size() < 10) {
     return;
   }
+  auto g = gains_lock_.Load();
   for (std::size_t i = 0; i < 3; ++i) {
-    gains_.kp_translation[i] = gains[i];
-    gains_.kp_rotation[i] = gains[3 + i];
+    g.kp_translation[i] = gains[i];
+    g.kp_rotation[i] = gains[3 + i];
   }
-  gains_.damping = gains[6];
-  gains_.null_kp = gains[7];
-  gains_.enable_null_space = gains[8] > 0.5;
-  gains_.control_6dof = gains[9] > 0.5;
+  g.damping = gains[6];
+  g.null_kp = gains[7];
+  g.enable_null_space = gains[8] > 0.5;
+  g.control_6dof = gains[9] > 0.5;
 
   if (gains.size() >= 11) {
-    gains_.trajectory_speed = std::max(1e-6, gains[10]);
+    g.trajectory_speed = std::max(1e-6, gains[10]);
   }
   if (gains.size() >= 12) {
-    gains_.trajectory_angular_speed = std::max(1e-6, gains[11]);
+    g.trajectory_angular_speed = std::max(1e-6, gains[11]);
   }
   if (gains.size() >= 13) {
-    gains_.hand_trajectory_speed = std::max(1e-6, gains[12]);
+    g.hand_trajectory_speed = std::max(1e-6, gains[12]);
   }
   if (gains.size() >= 14) {
-    gains_.max_traj_velocity = gains[13];
+    g.max_traj_velocity = gains[13];
   }
   if (gains.size() >= 15) {
-    gains_.max_traj_angular_velocity = gains[14];
+    g.max_traj_angular_velocity = gains[14];
   }
   if (gains.size() >= 16) {
-    gains_.hand_max_traj_velocity = gains[15];
+    g.hand_max_traj_velocity = gains[15];
   }
   if (gains.size() >= 17) {
-    gains_.grasp_contact_threshold = static_cast<float>(gains[16]);
+    g.grasp_contact_threshold = static_cast<float>(gains[16]);
   }
   if (gains.size() >= 18) {
-    gains_.grasp_force_threshold = static_cast<float>(gains[17]);
+    g.grasp_force_threshold = static_cast<float>(gains[17]);
   }
   if (gains.size() >= 19) {
-    gains_.grasp_min_fingertips = static_cast<int>(gains[18]);
+    g.grasp_min_fingertips = static_cast<int>(gains[18]);
   }
+  gains_lock_.Store(g);
   // grasp_command: 0=none, 1=grasp, 2=release
   if (gains.size() >= 20) {
     const int cmd = static_cast<int>(gains[19]);
@@ -1338,23 +1343,24 @@ std::vector<double> DemoTaskController::GetCurrentGains() const noexcept {
   //          grasp_contact_threshold, grasp_force_threshold,
   //          grasp_min_fingertips,
   //          grasp_command, grasp_target_force] = 21
+  const auto g = gains_lock_.Load();
   std::vector<double> v;
   v.reserve(21);
-  v.insert(v.end(), gains_.kp_translation.begin(), gains_.kp_translation.end());
-  v.insert(v.end(), gains_.kp_rotation.begin(), gains_.kp_rotation.end());
-  v.push_back(gains_.damping);
-  v.push_back(gains_.null_kp);
-  v.push_back(gains_.enable_null_space ? 1.0 : 0.0);
-  v.push_back(gains_.control_6dof ? 1.0 : 0.0);
-  v.push_back(gains_.trajectory_speed);
-  v.push_back(gains_.trajectory_angular_speed);
-  v.push_back(gains_.hand_trajectory_speed);
-  v.push_back(gains_.max_traj_velocity);
-  v.push_back(gains_.max_traj_angular_velocity);
-  v.push_back(gains_.hand_max_traj_velocity);
-  v.push_back(static_cast<double>(gains_.grasp_contact_threshold));
-  v.push_back(static_cast<double>(gains_.grasp_force_threshold));
-  v.push_back(static_cast<double>(gains_.grasp_min_fingertips));
+  v.insert(v.end(), g.kp_translation.begin(), g.kp_translation.end());
+  v.insert(v.end(), g.kp_rotation.begin(), g.kp_rotation.end());
+  v.push_back(g.damping);
+  v.push_back(g.null_kp);
+  v.push_back(g.enable_null_space ? 1.0 : 0.0);
+  v.push_back(g.control_6dof ? 1.0 : 0.0);
+  v.push_back(g.trajectory_speed);
+  v.push_back(g.trajectory_angular_speed);
+  v.push_back(g.hand_trajectory_speed);
+  v.push_back(g.max_traj_velocity);
+  v.push_back(g.max_traj_angular_velocity);
+  v.push_back(g.hand_max_traj_velocity);
+  v.push_back(static_cast<double>(g.grasp_contact_threshold));
+  v.push_back(static_cast<double>(g.grasp_force_threshold));
+  v.push_back(static_cast<double>(g.grasp_min_fingertips));
   v.push_back(0.0); // grasp_command (read-only: always 0)
   v.push_back(grasp_controller_ ? grasp_controller_->target_force() : 0.0);
   return v;

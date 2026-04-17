@@ -19,7 +19,7 @@ JointPDController::JointPDController(std::string_view urdf_path)
     : JointPDController(urdf_path, Gains{}) {}
 
 JointPDController::JointPDController(std::string_view urdf_path, Gains gains)
-    : gains_(gains) {
+    : gains_lock_(gains) {
   rtc_urdf_bridge::ModelConfig config;
   config.urdf_path = std::string(urdf_path);
   config.root_joint_type = "fixed";
@@ -73,11 +73,12 @@ JointPDController::Compute(const ControllerState &state) noexcept {
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
   const auto &dev0 = state.devices[0];
 
-  // Snapshot compensation flags once per tick for branch consistency.
-  const bool use_gravity = gains_.enable_gravity_compensation;
-  const bool use_coriolis = gains_.enable_coriolis_compensation;
+  // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
+  const auto gains = gains_lock_.Load();
+  const bool use_gravity = gains.enable_gravity_compensation;
+  const bool use_coriolis = gains.enable_coriolis_compensation;
 
-  UpdateDynamics(dev0);
+  UpdateDynamics(dev0, gains);
 
   const int nc0 = dev0.num_channels;
 
@@ -101,8 +102,7 @@ JointPDController::Compute(const ControllerState &state) noexcept {
             max_dist, std::abs(device_targets_[0][i] - dev0.positions[i]));
       }
 
-      const double duration =
-          std::max(0.01, max_dist / gains_.trajectory_speed);
+      const double duration = std::max(0.01, max_dist / gains.trajectory_speed);
       trajectory_.initialize(start_state, goal_state, duration);
       trajectory_time_ = 0.0;
       new_target_.store(false, std::memory_order_relaxed);
@@ -122,7 +122,7 @@ JointPDController::Compute(const ControllerState &state) noexcept {
     const double e = traj_state.positions[i] - dev0.positions[i];
     const double de = (e - prev_error_[i]) / dt;
 
-    out0.commands[i] = gains_.kp[i] * e + gains_.kd[i] * de;
+    out0.commands[i] = gains.kp[i] * e + gains.kd[i] * de;
     if (command_type_ != CommandType::kTorque) {
       out0.commands[i] += traj_state.velocities[i];
     }
@@ -269,32 +269,33 @@ void JointPDController::LoadConfig(const YAML::Node &cfg) {
     return;
   }
 
+  auto g = gains_lock_.Load();
   if (cfg["kp"] && cfg["kp"].IsSequence()) {
     const auto n =
         std::min(cfg["kp"].size(), static_cast<std::size_t>(kMaxRobotDOF));
     for (std::size_t i = 0; i < n; ++i) {
-      gains_.kp[i] = cfg["kp"][i].as<double>();
+      g.kp[i] = cfg["kp"][i].as<double>();
     }
   }
   if (cfg["kd"] && cfg["kd"].IsSequence()) {
     const auto n =
         std::min(cfg["kd"].size(), static_cast<std::size_t>(kMaxRobotDOF));
     for (std::size_t i = 0; i < n; ++i) {
-      gains_.kd[i] = cfg["kd"][i].as<double>();
+      g.kd[i] = cfg["kd"][i].as<double>();
     }
   }
   if (cfg["enable_gravity_compensation"]) {
-    gains_.enable_gravity_compensation =
+    g.enable_gravity_compensation =
         cfg["enable_gravity_compensation"].as<bool>();
   }
   if (cfg["enable_coriolis_compensation"]) {
-    gains_.enable_coriolis_compensation =
+    g.enable_coriolis_compensation =
         cfg["enable_coriolis_compensation"].as<bool>();
   }
   if (cfg["trajectory_speed"]) {
-    gains_.trajectory_speed =
-        std::max(1e-6, cfg["trajectory_speed"].as<double>());
+    g.trajectory_speed = std::max(1e-6, cfg["trajectory_speed"].as<double>());
   }
+  gains_lock_.Store(g);
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
     command_type_ =
@@ -311,32 +312,35 @@ void JointPDController::UpdateGainsFromMsg(
     return;
   }
 
+  auto g = gains_lock_.Load();
   for (std::size_t i = 0; i < nv; ++i) {
-    gains_.kp[i] = gains[i];
+    g.kp[i] = gains[i];
   }
   for (std::size_t i = 0; i < nv; ++i) {
-    gains_.kd[i] = gains[nv + i];
+    g.kd[i] = gains[nv + i];
   }
-  gains_.enable_gravity_compensation = gains[2 * nv] > 0.5;
-  gains_.enable_coriolis_compensation = gains[2 * nv + 1] > 0.5;
+  g.enable_gravity_compensation = gains[2 * nv] > 0.5;
+  g.enable_coriolis_compensation = gains[2 * nv + 1] > 0.5;
   if (gains.size() >= 2 * nv + 3) {
-    gains_.trajectory_speed = std::max(1e-6, gains[2 * nv + 2]);
+    g.trajectory_speed = std::max(1e-6, gains[2 * nv + 2]);
   }
+  gains_lock_.Store(g);
 }
 
 std::vector<double> JointPDController::GetCurrentGains() const noexcept {
   // layout: [kp×nv, kd×nv, enable_gravity(0/1), enable_coriolis(0/1),
   // trajectory_speed]
   const auto nv = static_cast<std::size_t>(handle_->nv());
+  const auto g = gains_lock_.Load();
   std::vector<double> v;
   v.reserve(2 * nv + 3);
-  v.insert(v.end(), gains_.kp.begin(),
-           gains_.kp.begin() + static_cast<std::ptrdiff_t>(nv));
-  v.insert(v.end(), gains_.kd.begin(),
-           gains_.kd.begin() + static_cast<std::ptrdiff_t>(nv));
-  v.push_back(gains_.enable_gravity_compensation ? 1.0 : 0.0);
-  v.push_back(gains_.enable_coriolis_compensation ? 1.0 : 0.0);
-  v.push_back(gains_.trajectory_speed);
+  v.insert(v.end(), g.kp.begin(),
+           g.kp.begin() + static_cast<std::ptrdiff_t>(nv));
+  v.insert(v.end(), g.kd.begin(),
+           g.kd.begin() + static_cast<std::ptrdiff_t>(nv));
+  v.push_back(g.enable_gravity_compensation ? 1.0 : 0.0);
+  v.push_back(g.enable_coriolis_compensation ? 1.0 : 0.0);
+  v.push_back(g.trajectory_speed);
   return v;
 }
 
@@ -346,6 +350,7 @@ ControllerOutput
 JointPDController::ComputeEstop(const ControllerState &state) noexcept {
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
   const auto &dev0 = state.devices[0];
+  const auto gains = gains_lock_.Load();
 
   ControllerOutput output;
   output.num_devices = state.num_devices;
@@ -356,7 +361,7 @@ JointPDController::ComputeEstop(const ControllerState &state) noexcept {
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     const double e = safe_position_[i] - dev0.positions[i];
     const double de = (e - prev_error_[i]) / dt;
-    out0.commands[i] = gains_.kp[i] * e + gains_.kd[i] * de;
+    out0.commands[i] = gains.kp[i] * e + gains.kd[i] * de;
     prev_error_[i] = e;
   }
 
@@ -369,7 +374,8 @@ JointPDController::ComputeEstop(const ControllerState &state) noexcept {
   return output;
 }
 
-void JointPDController::UpdateDynamics(const DeviceState &dev) noexcept {
+void JointPDController::UpdateDynamics(const DeviceState &dev,
+                                       const Gains &gains) noexcept {
   const int nv = handle_->nv();
   const std::size_t n = std::min(static_cast<std::size_t>(dev.num_channels),
                                  static_cast<std::size_t>(nv));
@@ -384,7 +390,7 @@ void JointPDController::UpdateDynamics(const DeviceState &dev) noexcept {
   std::span<const double> v_span(v_buf.data(), static_cast<std::size_t>(nv));
 
   // ── Gravity torque g(q) ─────────────────────────────────────────────────
-  if (gains_.enable_gravity_compensation) {
+  if (gains.enable_gravity_compensation) {
     handle_->ComputeGeneralizedGravity(q_span);
     const auto &g = handle_->GetGeneralizedGravity();
     for (std::size_t i = 0; i < n; ++i) {
@@ -407,7 +413,7 @@ void JointPDController::UpdateDynamics(const DeviceState &dev) noexcept {
                             jacobian_);
 
   // ── Coriolis/centrifugal C(q,v)·v ────────────────────────────────────────
-  if (gains_.enable_coriolis_compensation) {
+  if (gains.enable_coriolis_compensation) {
     handle_->ComputeCoriolisMatrix(q_span, v_span);
     const auto &C = handle_->GetCoriolisMatrix();
     // Reconstruct v as Eigen vector to compute C * v

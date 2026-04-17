@@ -22,7 +22,7 @@ DemoJointController::DemoJointController(std::string_view urdf_path)
 
 DemoJointController::DemoJointController(std::string_view urdf_path,
                                          Gains gains)
-    : gains_(gains), urdf_path_(urdf_path) {
+    : gains_lock_(gains), urdf_path_(urdf_path) {
   // Model is built in LoadConfig() (bridge YAML driven) or InitArmModel().
   // Constructor only stores urdf_path for later use.
 }
@@ -209,10 +209,10 @@ void DemoJointController::ReadState(const ControllerState &state) noexcept {
 
 // ── Virtual TCP computation ─────────────────────────────────────────────────
 
-void DemoJointController::UpdateVirtualTcp(
-    const pinocchio::SE3 &T_base_tcp) noexcept {
+void DemoJointController::UpdateVirtualTcp(const pinocchio::SE3 &T_base_tcp,
+                                           const Gains &gains) noexcept {
   vtcp_valid_ = false;
-  if (!hand_handle_ || gains_.vtcp.mode == VirtualTcpMode::kDisabled)
+  if (!hand_handle_ || gains.vtcp.mode == VirtualTcpMode::kDisabled)
     return;
 
   // Build fingertip inputs from hand model FK (already computed in
@@ -236,7 +236,7 @@ void DemoJointController::UpdateVirtualTcp(
                  : 0.0;
   }
 
-  const auto result = ComputeVirtualTcp(gains_.vtcp, T_base_tcp, vtcp_inputs_);
+  const auto result = ComputeVirtualTcp(gains.vtcp, T_base_tcp, vtcp_inputs_);
   if (result.valid) {
     vtcp_pose_ = result.world_pose;
     vtcp_valid_ = true;
@@ -247,6 +247,8 @@ void DemoJointController::UpdateVirtualTcp(
 
 void DemoJointController::ComputeControl(const ControllerState &state,
                                          double dt) noexcept {
+  // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
+  const auto gains = gains_lock_.Load();
   const auto &dev0 = state.devices[0];
 
   // ── Robot arm trajectory ────────────────────────────────────────────────
@@ -272,10 +274,10 @@ void DemoJointController::ComputeControl(const ControllerState &state,
 
       // Duration from trajectory_speed, then enforce max trajectory velocity.
       // Quintic rest-to-rest peak velocity = (15/8) * max_dist / T.
-      const double T_speed = max_dist / gains_.robot_trajectory_speed;
+      const double T_speed = max_dist / gains.robot_trajectory_speed;
       const double T_vel =
-          (gains_.robot_max_traj_velocity > 0.0)
-              ? (1.875 * max_dist / gains_.robot_max_traj_velocity)
+          (gains.robot_max_traj_velocity > 0.0)
+              ? (1.875 * max_dist / gains.robot_max_traj_velocity)
               : 0.0;
       const double duration = std::max({0.01, T_speed, T_vel});
       robot_trajectory_.initialize(start_state, goal_state, duration);
@@ -316,10 +318,10 @@ void DemoJointController::ComputeControl(const ControllerState &state,
               max_dist, std::abs(device_targets_[1][i] - dev1.positions[i]));
         }
 
-        const double T_speed = max_dist / gains_.hand_trajectory_speed;
+        const double T_speed = max_dist / gains.hand_trajectory_speed;
         const double T_vel =
-            (gains_.hand_max_traj_velocity > 0.0)
-                ? (1.875 * max_dist / gains_.hand_max_traj_velocity)
+            (gains.hand_max_traj_velocity > 0.0)
+                ? (1.875 * max_dist / gains.hand_max_traj_velocity)
                 : 0.0;
         const double duration = std::max({0.01, T_speed, T_vel});
         hand_trajectory_.initialize(start_state, goal_state, duration);
@@ -374,14 +376,14 @@ void DemoJointController::ComputeControl(const ControllerState &state,
     }
 
     // Virtual TCP computation (uses hand FK data computed above)
-    UpdateVirtualTcp(T_base_tcp);
+    UpdateVirtualTcp(T_base_tcp, gains);
   }
 
   // ── Grasp detection + ContactStopHand (500Hz) ────────────────────────
   {
-    const float contact_thresh = gains_.grasp_contact_threshold;
-    const float force_thresh = gains_.grasp_force_threshold;
-    const int min_fingers = gains_.grasp_min_fingertips;
+    const float contact_thresh = gains.grasp_contact_threshold;
+    const float force_thresh = gains.grasp_force_threshold;
+    const int min_fingers = gains.grasp_min_fingertips;
 
     float max_force = 0.0f;
     int active_count = 0;
@@ -751,20 +753,20 @@ void DemoJointController::LoadConfig(const YAML::Node &cfg) {
     InitHandModel(*sys_cfg);
   }
 
+  auto g = gains_lock_.Load();
   if (cfg["robot_trajectory_speed"]) {
-    gains_.robot_trajectory_speed =
+    g.robot_trajectory_speed =
         std::max(1e-6, cfg["robot_trajectory_speed"].as<double>());
   }
   if (cfg["hand_trajectory_speed"]) {
-    gains_.hand_trajectory_speed =
+    g.hand_trajectory_speed =
         std::max(1e-6, cfg["hand_trajectory_speed"].as<double>());
   }
   if (cfg["robot_max_traj_velocity"]) {
-    gains_.robot_max_traj_velocity =
-        cfg["robot_max_traj_velocity"].as<double>();
+    g.robot_max_traj_velocity = cfg["robot_max_traj_velocity"].as<double>();
   }
   if (cfg["hand_max_traj_velocity"]) {
-    gains_.hand_max_traj_velocity = cfg["hand_max_traj_velocity"].as<double>();
+    g.hand_max_traj_velocity = cfg["hand_max_traj_velocity"].as<double>();
   }
 
   // ── Shared params: defaults from demo_shared.yaml, overridden by cfg ──
@@ -772,10 +774,11 @@ void DemoJointController::LoadConfig(const YAML::Node &cfg) {
   LoadDemoSharedYamlFile(shared);
   ApplyDemoSharedConfig(cfg, shared);
 
-  gains_.vtcp = shared.vtcp;
-  gains_.grasp_contact_threshold = shared.grasp_contact_threshold;
-  gains_.grasp_force_threshold = shared.grasp_force_threshold;
-  gains_.grasp_min_fingertips = shared.grasp_min_fingertips;
+  g.vtcp = shared.vtcp;
+  g.grasp_contact_threshold = shared.grasp_contact_threshold;
+  g.grasp_force_threshold = shared.grasp_force_threshold;
+  g.grasp_min_fingertips = shared.grasp_min_fingertips;
+  gains_lock_.Store(g);
   grasp_controller_type_ = shared.grasp_controller_type;
 
   if (cfg["command_type"]) {
@@ -794,27 +797,29 @@ void DemoJointController::UpdateGainsFromMsg(
   //          grasp_contact_threshold, grasp_force_threshold,
   //          grasp_min_fingertips,
   //          grasp_command, grasp_target_force] = 9 values
+  auto g = gains_lock_.Load();
   if (gains.size() >= 1) {
-    gains_.robot_trajectory_speed = std::max(1e-6, gains[0]);
+    g.robot_trajectory_speed = std::max(1e-6, gains[0]);
   }
   if (gains.size() >= 2) {
-    gains_.hand_trajectory_speed = std::max(1e-6, gains[1]);
+    g.hand_trajectory_speed = std::max(1e-6, gains[1]);
   }
   if (gains.size() >= 3) {
-    gains_.robot_max_traj_velocity = gains[2];
+    g.robot_max_traj_velocity = gains[2];
   }
   if (gains.size() >= 4) {
-    gains_.hand_max_traj_velocity = gains[3];
+    g.hand_max_traj_velocity = gains[3];
   }
   if (gains.size() >= 5) {
-    gains_.grasp_contact_threshold = static_cast<float>(gains[4]);
+    g.grasp_contact_threshold = static_cast<float>(gains[4]);
   }
   if (gains.size() >= 6) {
-    gains_.grasp_force_threshold = static_cast<float>(gains[5]);
+    g.grasp_force_threshold = static_cast<float>(gains[5]);
   }
   if (gains.size() >= 7) {
-    gains_.grasp_min_fingertips = static_cast<int>(gains[6]);
+    g.grasp_min_fingertips = static_cast<int>(gains[6]);
   }
+  gains_lock_.Store(g);
   // grasp_command: 0=none, 1=grasp, 2=release
   if (gains.size() >= 8) {
     const int cmd = static_cast<int>(gains[7]);
@@ -850,14 +855,15 @@ std::vector<double> DemoJointController::GetCurrentGains() const noexcept {
   //          grasp_contact_threshold, grasp_force_threshold,
   //          grasp_min_fingertips,
   //          grasp_command, grasp_target_force] = 9 values
+  const auto g = gains_lock_.Load();
   return {
-      gains_.robot_trajectory_speed,
-      gains_.hand_trajectory_speed,
-      gains_.robot_max_traj_velocity,
-      gains_.hand_max_traj_velocity,
-      static_cast<double>(gains_.grasp_contact_threshold),
-      static_cast<double>(gains_.grasp_force_threshold),
-      static_cast<double>(gains_.grasp_min_fingertips),
+      g.robot_trajectory_speed,
+      g.hand_trajectory_speed,
+      g.robot_max_traj_velocity,
+      g.hand_max_traj_velocity,
+      static_cast<double>(g.grasp_contact_threshold),
+      static_cast<double>(g.grasp_force_threshold),
+      static_cast<double>(g.grasp_min_fingertips),
       0.0, // grasp_command (read-only: always 0)
       grasp_controller_ ? grasp_controller_->target_force() : 0.0,
   };

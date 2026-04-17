@@ -20,7 +20,7 @@ namespace rtc {
 // ── Constructor ─────────────────────────────────────────────────────────────
 
 ClikController::ClikController(std::string_view urdf_path, Gains gains)
-    : gains_(gains) {
+    : gains_lock_(gains) {
   rtc_urdf_bridge::ModelConfig config;
   config.urdf_path = std::string(urdf_path);
   config.root_joint_type = "fixed";
@@ -95,11 +95,10 @@ ClikController::Compute(const ControllerState &state) noexcept {
 
   const int nv = handle_->nv();
 
-  // Snapshot control-mode flags once per tick so that all branches within a
-  // single Compute() call see a consistent set of booleans, even if
-  // UpdateGainsFromMsg() fires concurrently on the aux thread.
-  const bool use_6dof = gains_.control_6dof;
-  const bool use_null_space = gains_.enable_null_space;
+  // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
+  const auto gains = gains_lock_.Load();
+  const bool use_6dof = gains.control_6dof;
+  const bool use_null_space = gains.enable_null_space;
 
   // ── Step 1: copy joint state into q buffer ──────────────────────────────
   const auto &dev0 = state.devices[0];
@@ -151,10 +150,10 @@ ClikController::Compute(const ControllerState &state) noexcept {
 
       // Duration from translational trajectory_speed and velocity limit.
       // Quintic rest-to-rest peak velocity = (15/8) * dist / T.
-      const double T_speed_trans = trans_dist / gains_.trajectory_speed;
+      const double T_speed_trans = trans_dist / gains.trajectory_speed;
       const double T_vel_trans =
-          (gains_.max_traj_velocity > 0.0)
-              ? (1.875 * trans_dist / gains_.max_traj_velocity)
+          (gains.max_traj_velocity > 0.0)
+              ? (1.875 * trans_dist / gains.max_traj_velocity)
               : 0.0;
       double duration = std::max({0.01, T_speed_trans, T_vel_trans});
 
@@ -171,10 +170,10 @@ ClikController::Compute(const ControllerState &state) noexcept {
         rot_axis = aa.axis();
 
         const double T_speed_rot =
-            angular_dist / gains_.trajectory_angular_speed;
+            angular_dist / gains.trajectory_angular_speed;
         const double T_vel_rot =
-            (gains_.max_traj_angular_velocity > 0.0)
-                ? (1.875 * angular_dist / gains_.max_traj_angular_velocity)
+            (gains.max_traj_angular_velocity > 0.0)
+                ? (1.875 * angular_dist / gains.max_traj_angular_velocity)
                 : 0.0;
         duration = std::max({duration, T_speed_rot, T_vel_rot});
 
@@ -194,15 +193,15 @@ ClikController::Compute(const ControllerState &state) noexcept {
 
         // Segment 1: start → mid (half distances)
         const double half_trans = trans_dist * 0.5;
-        const double T1_speed_t = half_trans / gains_.trajectory_speed;
+        const double T1_speed_t = half_trans / gains.trajectory_speed;
         const double T1_vel_t =
-            (gains_.max_traj_velocity > 0.0)
-                ? (1.875 * half_trans / gains_.max_traj_velocity)
+            (gains.max_traj_velocity > 0.0)
+                ? (1.875 * half_trans / gains.max_traj_velocity)
                 : 0.0;
-        const double T1_speed_r = half_angle / gains_.trajectory_angular_speed;
+        const double T1_speed_r = half_angle / gains.trajectory_angular_speed;
         const double T1_vel_r =
-            (gains_.max_traj_angular_velocity > 0.0)
-                ? (1.875 * half_angle / gains_.max_traj_angular_velocity)
+            (gains.max_traj_angular_velocity > 0.0)
+                ? (1.875 * half_angle / gains.max_traj_angular_velocity)
                 : 0.0;
         const double dur1 =
             std::max({0.01, T1_speed_t, T1_vel_t, T1_speed_r, T1_vel_r});
@@ -265,7 +264,7 @@ ClikController::Compute(const ControllerState &state) noexcept {
   // ── Step 4 & 5: Damped pseudoinverse & Primary task ──────────────────────
   if (use_6dof) {
     JJt_6d_.noalias() = J_full_ * J_full_.transpose();
-    JJt_6d_.diagonal().array() += gains_.damping * gains_.damping;
+    JJt_6d_.diagonal().array() += gains.damping * gains.damping;
     ldlt_6d_.compute(JJt_6d_);
     JJt_inv_6d_.noalias() =
         ldlt_6d_.solve(Eigen::Matrix<double, 6, 6>::Identity());
@@ -273,8 +272,8 @@ ClikController::Compute(const ControllerState &state) noexcept {
 
     Eigen::Matrix<double, 6, 1> kp_vec_6d;
     for (std::size_t i = 0; i < 3; ++i) {
-      kp_vec_6d[static_cast<Eigen::Index>(i)] = gains_.kp_translation[i];
-      kp_vec_6d[static_cast<Eigen::Index>(i + 3)] = gains_.kp_rotation[i];
+      kp_vec_6d[static_cast<Eigen::Index>(i)] = gains.kp_translation[i];
+      kp_vec_6d[static_cast<Eigen::Index>(i + 3)] = gains.kp_rotation[i];
     }
 
     Eigen::Matrix<double, 6, 1> task_vel_6d =
@@ -290,13 +289,13 @@ ClikController::Compute(const ControllerState &state) noexcept {
   } else {
     // 3D version
     JJt_.noalias() = J_pos_ * J_pos_.transpose();
-    JJt_.diagonal().array() += gains_.damping * gains_.damping;
+    JJt_.diagonal().array() += gains.damping * gains.damping;
     ldlt_.compute(JJt_);
     JJt_inv_.noalias() = ldlt_.solve(Eigen::Matrix3d::Identity());
     Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
 
-    Eigen::Vector3d kp_vec(gains_.kp_translation[0], gains_.kp_translation[1],
-                           gains_.kp_translation[2]);
+    Eigen::Vector3d kp_vec(gains.kp_translation[0], gains.kp_translation[1],
+                           gains.kp_translation[2]);
     Eigen::Vector3d task_vel =
         kp_vec.cwiseProduct(pos_error_) +
         traj_state_.pose.rotation() * traj_state_.velocity.linear();
@@ -327,7 +326,7 @@ ClikController::Compute(const ControllerState &state) noexcept {
           dev0.positions[static_cast<std::size_t>(i)];
     }
     null_dq_.noalias() = N_ * null_err_;
-    null_dq_ *= gains_.null_kp;
+    null_dq_ *= gains.null_kp;
     dq_ += null_dq_;
   }
 
@@ -435,7 +434,7 @@ void ClikController::SetDeviceTarget(int device_idx,
     return;
   if (device_idx == 0) {
     std::lock_guard lock(target_mutex_);
-    if (gains_.control_6dof) {
+    if (gains_lock_.Load().control_6dof) {
       // 6-DOF target mode: [x, y, z, roll, pitch, yaw]
       if (target.size() >= 6) {
         tcp_target_[0] = target[0];
@@ -592,6 +591,8 @@ void ClikController::LoadConfig(const YAML::Node &cfg) {
     return;
   }
 
+  auto g = gains_lock_.Load();
+
   // CLIK gains — translation / rotation separated
   auto load3 = [](const YAML::Node &n, std::array<double, 3> &arr) {
     if (n && n.IsSequence() && n.size() >= 3) {
@@ -600,40 +601,40 @@ void ClikController::LoadConfig(const YAML::Node &cfg) {
       }
     }
   };
-  load3(cfg["kp_translation"], gains_.kp_translation);
-  load3(cfg["kp_rotation"], gains_.kp_rotation);
+  load3(cfg["kp_translation"], g.kp_translation);
+  load3(cfg["kp_rotation"], g.kp_rotation);
 
   if (cfg["damping"]) {
-    gains_.damping = cfg["damping"].as<double>();
+    g.damping = cfg["damping"].as<double>();
   }
   if (cfg["null_kp"]) {
-    gains_.null_kp = cfg["null_kp"].as<double>();
+    g.null_kp = cfg["null_kp"].as<double>();
   }
   if (cfg["enable_null_space"]) {
-    gains_.enable_null_space = cfg["enable_null_space"].as<bool>();
+    g.enable_null_space = cfg["enable_null_space"].as<bool>();
   }
   if (cfg["control_6dof"]) {
-    gains_.control_6dof = cfg["control_6dof"].as<bool>();
+    g.control_6dof = cfg["control_6dof"].as<bool>();
   }
 
   // Trajectory speed
   if (cfg["trajectory_speed"]) {
-    gains_.trajectory_speed =
-        std::max(1e-6, cfg["trajectory_speed"].as<double>());
+    g.trajectory_speed = std::max(1e-6, cfg["trajectory_speed"].as<double>());
   }
   if (cfg["trajectory_angular_speed"]) {
-    gains_.trajectory_angular_speed =
+    g.trajectory_angular_speed =
         std::max(1e-6, cfg["trajectory_angular_speed"].as<double>());
   }
 
   // Trajectory velocity limits
   if (cfg["max_traj_velocity"]) {
-    gains_.max_traj_velocity = cfg["max_traj_velocity"].as<double>();
+    g.max_traj_velocity = cfg["max_traj_velocity"].as<double>();
   }
   if (cfg["max_traj_angular_velocity"]) {
-    gains_.max_traj_angular_velocity =
-        cfg["max_traj_angular_velocity"].as<double>();
+    g.max_traj_angular_velocity = cfg["max_traj_angular_velocity"].as<double>();
   }
+
+  gains_lock_.Store(g);
 
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
@@ -651,27 +652,29 @@ void ClikController::UpdateGainsFromMsg(
   if (gains.size() < 10) {
     return;
   }
+  auto g = gains_lock_.Load();
   for (std::size_t i = 0; i < 3; ++i) {
-    gains_.kp_translation[i] = gains[i];
-    gains_.kp_rotation[i] = gains[3 + i];
+    g.kp_translation[i] = gains[i];
+    g.kp_rotation[i] = gains[3 + i];
   }
-  gains_.damping = gains[6];
-  gains_.null_kp = gains[7];
-  gains_.enable_null_space = gains[8] > 0.5;
-  gains_.control_6dof = gains[9] > 0.5;
+  g.damping = gains[6];
+  g.null_kp = gains[7];
+  g.enable_null_space = gains[8] > 0.5;
+  g.control_6dof = gains[9] > 0.5;
 
   if (gains.size() >= 11) {
-    gains_.trajectory_speed = std::max(1e-6, gains[10]);
+    g.trajectory_speed = std::max(1e-6, gains[10]);
   }
   if (gains.size() >= 12) {
-    gains_.trajectory_angular_speed = std::max(1e-6, gains[11]);
+    g.trajectory_angular_speed = std::max(1e-6, gains[11]);
   }
   if (gains.size() >= 13) {
-    gains_.max_traj_velocity = gains[12];
+    g.max_traj_velocity = gains[12];
   }
   if (gains.size() >= 14) {
-    gains_.max_traj_angular_velocity = gains[13];
+    g.max_traj_angular_velocity = gains[13];
   }
+  gains_lock_.Store(g);
 }
 
 std::vector<double> ClikController::GetCurrentGains() const noexcept {
@@ -679,18 +682,19 @@ std::vector<double> ClikController::GetCurrentGains() const noexcept {
   //          enable_null_space(0/1), control_6dof(0/1),
   //          trajectory_speed, trajectory_angular_speed,
   //          max_traj_velocity, max_traj_angular_velocity] = 14
+  const auto g = gains_lock_.Load();
   std::vector<double> v;
   v.reserve(14);
-  v.insert(v.end(), gains_.kp_translation.begin(), gains_.kp_translation.end());
-  v.insert(v.end(), gains_.kp_rotation.begin(), gains_.kp_rotation.end());
-  v.push_back(gains_.damping);
-  v.push_back(gains_.null_kp);
-  v.push_back(gains_.enable_null_space ? 1.0 : 0.0);
-  v.push_back(gains_.control_6dof ? 1.0 : 0.0);
-  v.push_back(gains_.trajectory_speed);
-  v.push_back(gains_.trajectory_angular_speed);
-  v.push_back(gains_.max_traj_velocity);
-  v.push_back(gains_.max_traj_angular_velocity);
+  v.insert(v.end(), g.kp_translation.begin(), g.kp_translation.end());
+  v.insert(v.end(), g.kp_rotation.begin(), g.kp_rotation.end());
+  v.push_back(g.damping);
+  v.push_back(g.null_kp);
+  v.push_back(g.enable_null_space ? 1.0 : 0.0);
+  v.push_back(g.control_6dof ? 1.0 : 0.0);
+  v.push_back(g.trajectory_speed);
+  v.push_back(g.trajectory_angular_speed);
+  v.push_back(g.max_traj_velocity);
+  v.push_back(g.max_traj_angular_velocity);
   return v;
 }
 

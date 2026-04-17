@@ -4,8 +4,9 @@
 
 1. Header in `rtc_controllers/include/rtc_controllers/{direct|indirect}/` -- inherit `RTControllerInterface`, implement `Compute()`, `SetDeviceTarget()`, `InitializeHoldPosition()`, `Name()` (all `noexcept`)
 2. Source in `rtc_controllers/src/controllers/{direct|indirect}/` -- `LoadConfig()` for YAML, `UpdateGainsFromMsg()` for runtime gains
-3. YAML in `rtc_controllers/config/controllers/` -- must include `topics:` section
-4. Register via `RTC_REGISTER_CONTROLLER()` macro. Robot-specific controllers go in `ur5e_bringup/` with registration in `ur5e_bringup/src/controllers/controller_registration.cpp`
+3. Gains struct must be trivially copyable (plain arrays/bools/doubles/floats/ints; no `std::string`/`std::vector`/virtuals). Store as `rtc::SeqLock<Gains> gains_lock_` — RT path snapshots once with `const auto gains = gains_lock_.Load();` at method entry; aux-thread writers use Load/mutate/Store. `set_gains`/`get_gains` accessors delegate to the SeqLock.
+4. YAML in `rtc_controllers/config/controllers/` -- must include `topics:` section
+5. Register via `RTC_REGISTER_CONTROLLER()` macro. Robot-specific controllers go in `ur5e_bringup/` with registration in `ur5e_bringup/src/controllers/controller_registration.cpp`
 
 ## Adding a New Message Type
 

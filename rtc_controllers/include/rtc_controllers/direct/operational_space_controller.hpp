@@ -1,8 +1,10 @@
-// ── Includes: project header first, then third-party, then C++ stdlib ──────────
+// ── Includes: project header first, then third-party, then C++ stdlib
+// ──────────
 #pragma once
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 
+#include <rtc_base/threading/seqlock.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/rt_model_handle.hpp>
 
@@ -12,14 +14,14 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/spatial/se3.hpp>
 #include <pinocchio/spatial/motion.hpp>
+#include <pinocchio/spatial/se3.hpp>
 #pragma GCC diagnostic pop
 
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
 
 #include <Eigen/Core>
-#include <Eigen/LU>  // PartialPivLU
+#include <Eigen/LU> // PartialPivLU
 
 #include <array>
 #include <atomic>
@@ -30,8 +32,7 @@
 #include <string_view>
 #include <vector>
 
-namespace rtc
-{
+namespace rtc {
 
 /// Operational Space Controller (OSC) — full 6-DOF Cartesian PD control.
 ///
@@ -42,9 +43,11 @@ namespace rtc
 /// ### Control law
 /// @code
 ///   pos_error   = p_des − p_FK(q)              [3D, metres]
-///   rot_error   = log₃(R_des * R_FK(q)^T)      [3D axis-angle, LOCAL_WORLD_ALIGNED]
+///   rot_error   = log₃(R_des * R_FK(q)^T)      [3D axis-angle,
+///   LOCAL_WORLD_ALIGNED]
 ///
-///   tcp_vel     = J * dq                        [6D, current task-space velocity]
+///   tcp_vel     = J * dq                        [6D, current task-space
+///   velocity]
 ///
 ///   task_vel[0:3] = kp_pos * pos_error  −  kd_pos * tcp_vel[0:3]
 ///   task_vel[3:6] = kp_rot * rot_error  −  kd_rot * tcp_vel[3:6]
@@ -63,69 +66,77 @@ namespace rtc
 class OperationalSpaceController final : public RTControllerInterface {
 public:
   // ── Gain / feature configuration ─────────────────────────────────────────
-  struct Gains
-  {
-    std::array<double, 3> kp_pos{{1.0, 1.0, 1.0}};            ///< Cartesian position gain      [1/s]
-    std::array<double, 3> kd_pos{{0.1, 0.1, 0.1}};            ///< Cartesian position damping   [—]
-    std::array<double, 3> kp_rot{{0.5, 0.5, 0.5}};            ///< Cartesian orientation gain   [1/s]
-    std::array<double, 3> kd_rot{{0.05, 0.05, 0.05}};         ///< Cartesian orientation damping[—]
-    double damping{0.01};                   ///< Damping factor λ for J^#  (singularity robustness)
-    bool   enable_gravity_compensation{false}; ///< Add g(q) feedforward term
+  struct Gains {
+    std::array<double, 3> kp_pos{
+        {1.0, 1.0, 1.0}}; ///< Cartesian position gain      [1/s]
+    std::array<double, 3> kd_pos{
+        {0.1, 0.1, 0.1}}; ///< Cartesian position damping   [—]
+    std::array<double, 3> kp_rot{
+        {0.5, 0.5, 0.5}}; ///< Cartesian orientation gain   [1/s]
+    std::array<double, 3> kd_rot{
+        {0.05, 0.05, 0.05}}; ///< Cartesian orientation damping[—]
+    double damping{
+        0.01}; ///< Damping factor λ for J^#  (singularity robustness)
+    bool enable_gravity_compensation{false}; ///< Add g(q) feedforward term
 
     // Trajectory speed
-    double trajectory_speed{0.1};           ///< Max translational speed for trajectory [m/s]
-    double trajectory_angular_speed{0.5};   ///< Max angular speed for trajectory [rad/s]
+    double trajectory_speed{
+        0.1}; ///< Max translational speed for trajectory [m/s]
+    double trajectory_angular_speed{
+        0.5}; ///< Max angular speed for trajectory [rad/s]
 
     // Trajectory velocity limits
-    double max_traj_velocity{0.5};             ///< Max TCP velocity during task-space trajectory [m/s]
-    double max_traj_angular_velocity{1.0};     ///< Max TCP angular velocity during trajectory [rad/s]
+    double max_traj_velocity{
+        0.5}; ///< Max TCP velocity during task-space trajectory [m/s]
+    double max_traj_angular_velocity{
+        1.0}; ///< Max TCP angular velocity during trajectory [rad/s]
   };
 
   /// @param urdf_path  Absolute path to the robot URDF file.
   /// @param gains      PD gains and feature flags.
   /// @throws std::runtime_error  if the URDF cannot be parsed.
-  explicit OperationalSpaceController(
-    std::string_view urdf_path,
-    Gains gains);
+  explicit OperationalSpaceController(std::string_view urdf_path, Gains gains);
 
   // ── RTControllerInterface — all methods are noexcept (RT safety) ──────────
-  [[nodiscard]] ControllerOutput Compute(const ControllerState & state) noexcept override;
+  [[nodiscard]] ControllerOutput
+  Compute(const ControllerState &state) noexcept override;
 
-  void SetDeviceTarget(
-    int device_idx, std::span<const double> target) noexcept override;
+  void SetDeviceTarget(int device_idx,
+                       std::span<const double> target) noexcept override;
 
-  void InitializeHoldPosition(const ControllerState & state) noexcept override;
+  void InitializeHoldPosition(const ControllerState &state) noexcept override;
 
   [[nodiscard]] std::string_view Name() const noexcept override;
 
-  void TriggerEstop()                            noexcept override;
-  void ClearEstop()                              noexcept override;
-  [[nodiscard]] bool IsEstopped() const          noexcept override;
-  void SetHandEstop(bool active)                 noexcept override;
+  void TriggerEstop() noexcept override;
+  void ClearEstop() noexcept override;
+  [[nodiscard]] bool IsEstopped() const noexcept override;
+  void SetHandEstop(bool active) noexcept override;
 
   // ── Controller registry hooks ────────────────────────────────────────────
-  // gains layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping, enable_gravity(0/1),
+  // gains layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping,
+  // enable_gravity(0/1),
   //                trajectory_speed, trajectory_angular_speed,
   //                max_traj_velocity, max_traj_angular_velocity] = 18 values
-  void LoadConfig(const YAML::Node & cfg) override;
+  void LoadConfig(const YAML::Node &cfg) override;
   void OnDeviceConfigsSet() override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
   [[nodiscard]] std::vector<double> GetCurrentGains() const noexcept override;
-  [[nodiscard]] CommandType GetCommandType() const noexcept override {return command_type_;}
+  [[nodiscard]] CommandType GetCommandType() const noexcept override {
+    return command_type_;
+  }
 
   // ── Accessors (non-RT reads only) ─────────────────────────────────────────
-  void set_gains(const Gains & g) noexcept {gains_ = g;}
-  [[nodiscard]] Gains get_gains() const noexcept {return gains_;}
+  void set_gains(const Gains &g) noexcept { gains_lock_.Store(g); }
+  [[nodiscard]] Gains get_gains() const noexcept { return gains_lock_.Load(); }
 
   /// Cached TCP position (world frame) from the most recent Compute().
-  [[nodiscard]] std::array<double, 3> tcp_position() const noexcept
-  {
+  [[nodiscard]] std::array<double, 3> tcp_position() const noexcept {
     return tcp_position_;
   }
 
   /// Cached 6D pose error [pos; rot] from the most recent Compute().
-  [[nodiscard]] std::array<double, 6> pose_error() const noexcept
-  {
+  [[nodiscard]] std::array<double, 6> pose_error() const noexcept {
     return pose_error_cache_;
   }
 
@@ -136,25 +147,28 @@ private:
   pinocchio::FrameIndex tip_frame_id_{0};
 
   // ── Pre-allocated Eigen work buffers ─────────────────────────────────────
-  Eigen::VectorXd q_;        ///< nv: joint positions (for gravity only)
-  Eigen::VectorXd v_;        ///< nv: joint velocities (for gravity only)
+  Eigen::VectorXd q_; ///< nv: joint positions (for gravity only)
+  Eigen::VectorXd v_; ///< nv: joint velocities (for gravity only)
 
-  Eigen::MatrixXd J_full_;   ///< 6×nv: full spatial Jacobian (LOCAL_WORLD_ALIGNED)
+  Eigen::MatrixXd
+      J_full_; ///< 6×nv: full spatial Jacobian (LOCAL_WORLD_ALIGNED)
 
-  Eigen::Matrix<double, 6, 6> JJt_;       ///< J * J^T + λ²I
-  Eigen::MatrixXd             Jpinv_;     ///< nv×6: damped pseudoinverse J^#
-  Eigen::VectorXd             dq_;        ///< nv: joint velocity command
-  Eigen::VectorXd             traj_dq_;   ///< nv: feedforward-only trajectory velocity (for logging)
+  Eigen::Matrix<double, 6, 6> JJt_; ///< J * J^T + λ²I
+  Eigen::MatrixXd Jpinv_;           ///< nv×6: damped pseudoinverse J^#
+  Eigen::VectorXd dq_;              ///< nv: joint velocity command
+  Eigen::VectorXd
+      traj_dq_; ///< nv: feedforward-only trajectory velocity (for logging)
 
   // Task-space vectors — fixed 6×1, stack-allocated
-  Eigen::Matrix<double, 6, 1> task_err_;  ///< [pos_error(3); rot_error(3)]
-  Eigen::Matrix<double, 6, 1> task_vel_;  ///< desired task-space velocity
-  Eigen::Matrix<double, 6, 1> tcp_vel_;   ///< current TCP velocity = J * v_
+  Eigen::Matrix<double, 6, 1> task_err_; ///< [pos_error(3); rot_error(3)]
+  Eigen::Matrix<double, 6, 1> task_vel_; ///< desired task-space velocity
+  Eigen::Matrix<double, 6, 1> tcp_vel_;  ///< current TCP velocity = J * v_
 
   // PartialPivLU on a fixed-size 6×6 matrix — zero dynamic allocation.
   Eigen::PartialPivLU<Eigen::Matrix<double, 6, 6>> lu_;
 
-  // Desired SE3 goal pose, updated in SetRobotTarget() and used to initialise the trajectory.
+  // Desired SE3 goal pose, updated in SetRobotTarget() and used to initialise
+  // the trajectory.
   pinocchio::SE3 goal_pose_{pinocchio::SE3::Identity()};
 
   std::atomic<bool> new_target_{false};
@@ -169,11 +183,13 @@ private:
   bool has_pending_segment_{false};
 
   // ── Controller state ──────────────────────────────────────────────────────
-  Gains gains_;
-  std::array<double, 6> pose_target_{};                ///< [x,y,z,r,p,yaw]
-  std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices> device_targets_{};
-  std::array<double, 3> tcp_position_{};               ///< diagnostic cache
-  std::array<double, 6> pose_error_cache_{};              ///< diagnostic cache
+  SeqLock<Gains> gains_lock_;
+  std::array<double, 6> pose_target_{}; ///< [x,y,z,r,p,yaw]
+  std::array<std::array<double, kMaxDeviceChannels>,
+             ControllerState::kMaxDevices>
+      device_targets_{};
+  std::array<double, 3> tcp_position_{};     ///< diagnostic cache
+  std::array<double, 6> pose_error_cache_{}; ///< diagnostic cache
 
   // ── E-STOP ────────────────────────────────────────────────────────────────
   std::atomic<bool> estopped_{false};
@@ -185,12 +201,14 @@ private:
   CommandType command_type_{CommandType::kTorque};
 
   // ── Helpers ───────────────────────────────────────────────────────────────
-  [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState & state) noexcept;
+  [[nodiscard]] ControllerOutput
+  ComputeEstop(const ControllerState &state) noexcept;
 
-  void ClampVelocity(
-    std::array<double, kMaxDeviceChannels>& dq, int n) const noexcept;
+  void ClampVelocity(std::array<double, kMaxDeviceChannels> &dq,
+                     int n) const noexcept;
 
-  static Eigen::Matrix3d RpyToMatrix(double roll, double pitch, double yaw) noexcept;
+  static Eigen::Matrix3d RpyToMatrix(double roll, double pitch,
+                                     double yaw) noexcept;
 };
 
-}  // namespace rtc
+} // namespace rtc

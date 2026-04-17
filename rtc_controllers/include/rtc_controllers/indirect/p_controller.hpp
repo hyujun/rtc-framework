@@ -3,6 +3,7 @@
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 
+#include <rtc_base/threading/seqlock.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/rt_model_handle.hpp>
 
@@ -16,8 +17,7 @@
 #include <string_view>
 #include <vector>
 
-namespace rtc
-{
+namespace rtc {
 
 // Proportional (P) position controller.
 //
@@ -25,58 +25,68 @@ namespace rtc
 // Output is clamped to joint velocity limits before publishing.
 class PController final : public RTControllerInterface {
 public:
-  struct Gains
-  {
+  struct Gains {
     std::array<double, 6> kp{{120.0, 120.0, 100.0, 80.0, 80.0, 80.0}};
   };
 
   explicit PController(std::string_view urdf_path);
   PController(std::string_view urdf_path, Gains gains);
 
-  template<typename T>
+  template <typename T>
   explicit PController(std::string_view urdf_path, T kp)
-  : PController(urdf_path)
-  {
-    gains_.kp.fill(static_cast<double>(kp));
+      : PController(urdf_path) {
+    auto g = gains_lock_.Load();
+    g.kp.fill(static_cast<double>(kp));
+    gains_lock_.Store(g);
   }
 
-  [[nodiscard]] ControllerOutput Compute(
-    const ControllerState & state) noexcept override;
+  [[nodiscard]] ControllerOutput
+  Compute(const ControllerState &state) noexcept override;
 
-  void SetDeviceTarget(
-    int device_idx, std::span<const double> target) noexcept override;
+  void SetDeviceTarget(int device_idx,
+                       std::span<const double> target) noexcept override;
 
-  void InitializeHoldPosition(
-    const ControllerState & state) noexcept override;
+  void InitializeHoldPosition(const ControllerState &state) noexcept override;
 
-  [[nodiscard]] std::string_view Name() const noexcept override
-  {
+  [[nodiscard]] std::string_view Name() const noexcept override {
     return "PController";
   }
 
   // ── Controller registry hooks ────────────────────────────────────────────
   // gains layout: [kp×6]
-  void LoadConfig(const YAML::Node & cfg) override;
+  void LoadConfig(const YAML::Node &cfg) override;
   void OnDeviceConfigsSet() override;
   void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
   [[nodiscard]] std::vector<double> GetCurrentGains() const noexcept override;
-  [[nodiscard]] CommandType GetCommandType() const noexcept override {return command_type_;}
+  [[nodiscard]] CommandType GetCommandType() const noexcept override {
+    return command_type_;
+  }
 
   // ── E-STOP ──────────────────────────────────────────────────────────────
-  void TriggerEstop() noexcept override { estopped_.store(true, std::memory_order_release); }
-  void ClearEstop() noexcept override { estopped_.store(false, std::memory_order_release); }
+  void TriggerEstop() noexcept override {
+    estopped_.store(true, std::memory_order_release);
+  }
+  void ClearEstop() noexcept override {
+    estopped_.store(false, std::memory_order_release);
+  }
   [[nodiscard]] bool IsEstopped() const noexcept override {
     return estopped_.load(std::memory_order_acquire);
   }
 
   // Accessors (Google C++ Style: getter matches member name w/o trailing _).
-  void set_gains(Gains gains) noexcept {gains_ = gains;}
-  [[nodiscard]] Gains get_gains() const noexcept {return gains_;}
-  void set_kp(double kp) noexcept {gains_.kp.fill(kp);}
+  void set_gains(Gains gains) noexcept { gains_lock_.Store(gains); }
+  [[nodiscard]] Gains get_gains() const noexcept { return gains_lock_.Load(); }
+  void set_kp(double kp) noexcept {
+    auto g = gains_lock_.Load();
+    g.kp.fill(kp);
+    gains_lock_.Store(g);
+  }
 
 private:
-  Gains gains_;
-  std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices> device_targets_{};
+  SeqLock<Gains> gains_lock_;
+  std::array<std::array<double, kMaxDeviceChannels>,
+             ControllerState::kMaxDevices>
+      device_targets_{};
 
   // ── Pinocchio via rtc_urdf_bridge ────────────────────────────────────
   std::shared_ptr<const pinocchio::Model> model_ptr_;
@@ -87,10 +97,10 @@ private:
   std::atomic<bool> estopped_{false};
 
   std::vector<double> max_joint_velocity_;
-  void ClampCommands(
-    std::array<double, kMaxDeviceChannels>& commands, int n) const noexcept;
+  void ClampCommands(std::array<double, kMaxDeviceChannels> &commands,
+                     int n) const noexcept;
 };
 
-}  // namespace rtc
+} // namespace rtc
 
-#endif  // RTC_CONTROLLERS_P_CONTROLLER_H_
+#endif // RTC_CONTROLLERS_P_CONTROLLER_H_

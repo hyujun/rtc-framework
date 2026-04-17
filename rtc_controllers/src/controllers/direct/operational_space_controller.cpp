@@ -21,7 +21,7 @@ namespace rtc {
 
 OperationalSpaceController::OperationalSpaceController(
     std::string_view urdf_path, Gains gains)
-    : gains_(gains) {
+    : gains_lock_(gains) {
   rtc_urdf_bridge::ModelConfig config;
   config.urdf_path = std::string(urdf_path);
   config.root_joint_type = "fixed";
@@ -84,8 +84,9 @@ OperationalSpaceController::Compute(const ControllerState &state) noexcept {
 
   const int nv = handle_->nv();
 
-  // Snapshot compensation flag once per tick for branch consistency.
-  const bool use_gravity = gains_.enable_gravity_compensation;
+  // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
+  const auto gains = gains_lock_.Load();
+  const bool use_gravity = gains.enable_gravity_compensation;
 
   // ── Step 1: copy joint state into buffers ───────────────────────────────
   const auto &dev0 = state.devices[0];
@@ -122,10 +123,10 @@ OperationalSpaceController::Compute(const ControllerState &state) noexcept {
 
       // Duration from translational trajectory_speed and velocity limit.
       // Quintic rest-to-rest peak velocity = (15/8) * dist / T.
-      const double T_speed_trans = trans_dist / gains_.trajectory_speed;
+      const double T_speed_trans = trans_dist / gains.trajectory_speed;
       const double T_vel_trans =
-          (gains_.max_traj_velocity > 0.0)
-              ? (1.875 * trans_dist / gains_.max_traj_velocity)
+          (gains.max_traj_velocity > 0.0)
+              ? (1.875 * trans_dist / gains.max_traj_velocity)
               : 0.0;
       double duration = std::max({0.01, T_speed_trans, T_vel_trans});
 
@@ -136,10 +137,10 @@ OperationalSpaceController::Compute(const ControllerState &state) noexcept {
       const double angular_dist = aa.angle(); // always in [0, π]
       const Eigen::Vector3d rot_axis = aa.axis();
 
-      const double T_speed_rot = angular_dist / gains_.trajectory_angular_speed;
+      const double T_speed_rot = angular_dist / gains.trajectory_angular_speed;
       const double T_vel_rot =
-          (gains_.max_traj_angular_velocity > 0.0)
-              ? (1.875 * angular_dist / gains_.max_traj_angular_velocity)
+          (gains.max_traj_angular_velocity > 0.0)
+              ? (1.875 * angular_dist / gains.max_traj_angular_velocity)
               : 0.0;
       duration = std::max({duration, T_speed_rot, T_vel_rot});
 
@@ -158,15 +159,15 @@ OperationalSpaceController::Compute(const ControllerState &state) noexcept {
 
         // Segment 1: start → mid (half distances)
         const double half_trans = trans_dist * 0.5;
-        const double T1_speed_t = half_trans / gains_.trajectory_speed;
+        const double T1_speed_t = half_trans / gains.trajectory_speed;
         const double T1_vel_t =
-            (gains_.max_traj_velocity > 0.0)
-                ? (1.875 * half_trans / gains_.max_traj_velocity)
+            (gains.max_traj_velocity > 0.0)
+                ? (1.875 * half_trans / gains.max_traj_velocity)
                 : 0.0;
-        const double T1_speed_r = half_angle / gains_.trajectory_angular_speed;
+        const double T1_speed_r = half_angle / gains.trajectory_angular_speed;
         const double T1_vel_r =
-            (gains_.max_traj_angular_velocity > 0.0)
-                ? (1.875 * half_angle / gains_.max_traj_angular_velocity)
+            (gains.max_traj_angular_velocity > 0.0)
+                ? (1.875 * half_angle / gains.max_traj_angular_velocity)
                 : 0.0;
         const double dur1 =
             std::max({0.01, T1_speed_t, T1_vel_t, T1_speed_r, T1_vel_r});
@@ -221,10 +222,10 @@ OperationalSpaceController::Compute(const ControllerState &state) noexcept {
   }
 
   // ── Step 5: desired task-space velocity with feedforward ──────────────────
-  Eigen::Vector3d kp_p(gains_.kp_pos[0], gains_.kp_pos[1], gains_.kp_pos[2]);
-  Eigen::Vector3d kd_p(gains_.kd_pos[0], gains_.kd_pos[1], gains_.kd_pos[2]);
-  Eigen::Vector3d kp_r(gains_.kp_rot[0], gains_.kp_rot[1], gains_.kp_rot[2]);
-  Eigen::Vector3d kd_r(gains_.kd_rot[0], gains_.kd_rot[1], gains_.kd_rot[2]);
+  Eigen::Vector3d kp_p(gains.kp_pos[0], gains.kp_pos[1], gains.kp_pos[2]);
+  Eigen::Vector3d kd_p(gains.kd_pos[0], gains.kd_pos[1], gains.kd_pos[2]);
+  Eigen::Vector3d kp_r(gains.kp_rot[0], gains.kp_rot[1], gains.kp_rot[2]);
+  Eigen::Vector3d kd_r(gains.kd_rot[0], gains.kd_rot[1], gains.kd_rot[2]);
 
   task_vel_.head<3>() = kp_p.cwiseProduct(pos_err) +
                         traj_state_.velocity.linear() -
@@ -235,7 +236,7 @@ OperationalSpaceController::Compute(const ControllerState &state) noexcept {
 
   // ── Step 6: Damped pseudoinverse  J^# = J^T (J J^T + λ²I₆)^{−1} ─────────
   JJt_.noalias() = J_full_ * J_full_.transpose();
-  JJt_.diagonal().array() += gains_.damping * gains_.damping;
+  JJt_.diagonal().array() += gains.damping * gains.damping;
   lu_.compute(JJt_);
   Jpinv_.noalias() =
       J_full_.transpose() * lu_.solve(Eigen::Matrix<double, 6, 6>::Identity());
@@ -485,6 +486,7 @@ void OperationalSpaceController::LoadConfig(const YAML::Node &cfg) {
   if (!cfg) {
     return;
   }
+  auto g = gains_lock_.Load();
   auto load3 = [](const YAML::Node &n, std::array<double, 3> &arr) {
     if (n && n.IsSequence() && n.size() == 3) {
       for (std::size_t i = 0; i < 3; ++i) {
@@ -492,32 +494,31 @@ void OperationalSpaceController::LoadConfig(const YAML::Node &cfg) {
       }
     }
   };
-  load3(cfg["kp_pos"], gains_.kp_pos);
-  load3(cfg["kd_pos"], gains_.kd_pos);
-  load3(cfg["kp_rot"], gains_.kp_rot);
-  load3(cfg["kd_rot"], gains_.kd_rot);
+  load3(cfg["kp_pos"], g.kp_pos);
+  load3(cfg["kd_pos"], g.kd_pos);
+  load3(cfg["kp_rot"], g.kp_rot);
+  load3(cfg["kd_rot"], g.kd_rot);
   if (cfg["damping"]) {
-    gains_.damping = cfg["damping"].as<double>();
+    g.damping = cfg["damping"].as<double>();
   }
   if (cfg["enable_gravity_compensation"]) {
-    gains_.enable_gravity_compensation =
+    g.enable_gravity_compensation =
         cfg["enable_gravity_compensation"].as<bool>();
   }
   if (cfg["trajectory_speed"]) {
-    gains_.trajectory_speed =
-        std::max(1e-6, cfg["trajectory_speed"].as<double>());
+    g.trajectory_speed = std::max(1e-6, cfg["trajectory_speed"].as<double>());
   }
   if (cfg["trajectory_angular_speed"]) {
-    gains_.trajectory_angular_speed =
+    g.trajectory_angular_speed =
         std::max(1e-6, cfg["trajectory_angular_speed"].as<double>());
   }
   if (cfg["max_traj_velocity"]) {
-    gains_.max_traj_velocity = cfg["max_traj_velocity"].as<double>();
+    g.max_traj_velocity = cfg["max_traj_velocity"].as<double>();
   }
   if (cfg["max_traj_angular_velocity"]) {
-    gains_.max_traj_angular_velocity =
-        cfg["max_traj_angular_velocity"].as<double>();
+    g.max_traj_angular_velocity = cfg["max_traj_angular_velocity"].as<double>();
   }
+  gains_lock_.Store(g);
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
     command_type_ =
@@ -534,32 +535,34 @@ void OperationalSpaceController::UpdateGainsFromMsg(
   if (gains.size() < 14) {
     return;
   }
+  auto g = gains_lock_.Load();
   for (std::size_t i = 0; i < 3; ++i) {
-    gains_.kp_pos[i] = gains[i];
+    g.kp_pos[i] = gains[i];
   }
   for (std::size_t i = 0; i < 3; ++i) {
-    gains_.kd_pos[i] = gains[3 + i];
+    g.kd_pos[i] = gains[3 + i];
   }
   for (std::size_t i = 0; i < 3; ++i) {
-    gains_.kp_rot[i] = gains[6 + i];
+    g.kp_rot[i] = gains[6 + i];
   }
   for (std::size_t i = 0; i < 3; ++i) {
-    gains_.kd_rot[i] = gains[9 + i];
+    g.kd_rot[i] = gains[9 + i];
   }
-  gains_.damping = gains[12];
-  gains_.enable_gravity_compensation = gains[13] > 0.5;
+  g.damping = gains[12];
+  g.enable_gravity_compensation = gains[13] > 0.5;
   if (gains.size() >= 15) {
-    gains_.trajectory_speed = std::max(1e-6, gains[14]);
+    g.trajectory_speed = std::max(1e-6, gains[14]);
   }
   if (gains.size() >= 16) {
-    gains_.trajectory_angular_speed = std::max(1e-6, gains[15]);
+    g.trajectory_angular_speed = std::max(1e-6, gains[15]);
   }
   if (gains.size() >= 17) {
-    gains_.max_traj_velocity = gains[16];
+    g.max_traj_velocity = gains[16];
   }
   if (gains.size() >= 18) {
-    gains_.max_traj_angular_velocity = gains[17];
+    g.max_traj_angular_velocity = gains[17];
   }
+  gains_lock_.Store(g);
 }
 
 std::vector<double>
@@ -568,18 +571,19 @@ OperationalSpaceController::GetCurrentGains() const noexcept {
   // enable_gravity(0/1),
   //          trajectory_speed, trajectory_angular_speed,
   //          max_traj_velocity, max_traj_angular_velocity] = 18
+  const auto g = gains_lock_.Load();
   std::vector<double> v;
   v.reserve(18);
-  v.insert(v.end(), gains_.kp_pos.begin(), gains_.kp_pos.end());
-  v.insert(v.end(), gains_.kd_pos.begin(), gains_.kd_pos.end());
-  v.insert(v.end(), gains_.kp_rot.begin(), gains_.kp_rot.end());
-  v.insert(v.end(), gains_.kd_rot.begin(), gains_.kd_rot.end());
-  v.push_back(gains_.damping);
-  v.push_back(gains_.enable_gravity_compensation ? 1.0 : 0.0);
-  v.push_back(gains_.trajectory_speed);
-  v.push_back(gains_.trajectory_angular_speed);
-  v.push_back(gains_.max_traj_velocity);
-  v.push_back(gains_.max_traj_angular_velocity);
+  v.insert(v.end(), g.kp_pos.begin(), g.kp_pos.end());
+  v.insert(v.end(), g.kd_pos.begin(), g.kd_pos.end());
+  v.insert(v.end(), g.kp_rot.begin(), g.kp_rot.end());
+  v.insert(v.end(), g.kd_rot.begin(), g.kd_rot.end());
+  v.push_back(g.damping);
+  v.push_back(g.enable_gravity_compensation ? 1.0 : 0.0);
+  v.push_back(g.trajectory_speed);
+  v.push_back(g.trajectory_angular_speed);
+  v.push_back(g.max_traj_velocity);
+  v.push_back(g.max_traj_angular_velocity);
   return v;
 }
 

@@ -316,24 +316,30 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
         fsm["deformation_threshold"].as<double>(deformation_threshold_);
     max_qp_fail_before_fallback_ =
         fsm["max_qp_fail_before_fallback"].as<int>(5);
-    gains_.arm_trajectory_speed = std::max(
-        1e-6, fsm["approach_speed"].as<double>(gains_.arm_trajectory_speed));
+    auto g = gains_lock_.Load();
+    g.arm_trajectory_speed = std::max(
+        1e-6, fsm["approach_speed"].as<double>(g.arm_trajectory_speed));
+    gains_lock_.Store(g);
   }
 
   // ── 5. Trajectory speeds ──────────────────────────────────────────────
-  if (cfg["arm_trajectory_speed"]) {
-    gains_.arm_trajectory_speed =
-        std::max(1e-6, cfg["arm_trajectory_speed"].as<double>());
-  }
-  if (cfg["hand_trajectory_speed"]) {
-    gains_.hand_trajectory_speed =
-        std::max(1e-6, cfg["hand_trajectory_speed"].as<double>());
-  }
-  if (cfg["arm_max_traj_velocity"]) {
-    gains_.arm_max_traj_velocity = cfg["arm_max_traj_velocity"].as<double>();
-  }
-  if (cfg["hand_max_traj_velocity"]) {
-    gains_.hand_max_traj_velocity = cfg["hand_max_traj_velocity"].as<double>();
+  {
+    auto g = gains_lock_.Load();
+    if (cfg["arm_trajectory_speed"]) {
+      g.arm_trajectory_speed =
+          std::max(1e-6, cfg["arm_trajectory_speed"].as<double>());
+    }
+    if (cfg["hand_trajectory_speed"]) {
+      g.hand_trajectory_speed =
+          std::max(1e-6, cfg["hand_trajectory_speed"].as<double>());
+    }
+    if (cfg["arm_max_traj_velocity"]) {
+      g.arm_max_traj_velocity = cfg["arm_max_traj_velocity"].as<double>();
+    }
+    if (cfg["hand_max_traj_velocity"]) {
+      g.hand_max_traj_velocity = cfg["hand_max_traj_velocity"].as<double>();
+    }
+    gains_lock_.Store(g);
   }
 
   // ── 6. Command type ───────────────────────────────────────────────────
@@ -437,24 +443,26 @@ void DemoWbcController::UpdateGainsFromMsg(
   if (gains.size() >= 1) {
     grasp_cmd_.store(static_cast<int>(gains[0]), std::memory_order_release);
   }
+  auto g = gains_lock_.Load();
   if (gains.size() >= 2) {
-    gains_.grasp_target_force = gains[1];
+    g.grasp_target_force = gains[1];
   }
   if (gains.size() >= 3) {
-    gains_.arm_trajectory_speed = std::max(1e-6, gains[2]);
+    g.arm_trajectory_speed = std::max(1e-6, gains[2]);
   }
   if (gains.size() >= 4) {
-    gains_.hand_trajectory_speed = std::max(1e-6, gains[3]);
+    g.hand_trajectory_speed = std::max(1e-6, gains[3]);
   }
   if (gains.size() >= 5) {
-    gains_.se3_weight = gains[4];
+    g.se3_weight = gains[4];
   }
   if (gains.size() >= 6) {
-    gains_.force_weight = gains[5];
+    g.force_weight = gains[5];
   }
   if (gains.size() >= 7) {
-    gains_.posture_weight = gains[6];
+    g.posture_weight = gains[6];
   }
+  gains_lock_.Store(g);
   if (gains.size() >= 8) {
     const bool requested = gains[7] > 0.5;
     mpc_manager_.SetEnabled(requested && mpc_enabled_);
@@ -465,13 +473,14 @@ void DemoWbcController::UpdateGainsFromMsg(
 }
 
 std::vector<double> DemoWbcController::GetCurrentGains() const noexcept {
+  const auto g = gains_lock_.Load();
   return {static_cast<double>(grasp_cmd_.load(std::memory_order_relaxed)),
-          gains_.grasp_target_force,
-          gains_.arm_trajectory_speed,
-          gains_.hand_trajectory_speed,
-          gains_.se3_weight,
-          gains_.force_weight,
-          gains_.posture_weight,
+          g.grasp_target_force,
+          g.arm_trajectory_speed,
+          g.hand_trajectory_speed,
+          g.se3_weight,
+          g.force_weight,
+          g.posture_weight,
           mpc_manager_.Enabled() ? 1.0 : 0.0,
           mpc_manager_.RiccatiGainScale()};
 }
@@ -751,6 +760,8 @@ void DemoWbcController::UpdatePhase(const ControllerState &state) noexcept {
 
 void DemoWbcController::OnPhaseEnter(WbcPhase new_phase,
                                      const ControllerState &state) noexcept {
+  // Atomic gains snapshot — phase transitions are RT-safe reads.
+  const auto gains = gains_lock_.Load();
   const auto &dev0 = state.devices[0];
   const auto &dev1 = state.devices[1];
 
@@ -793,7 +804,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase,
       }
     }
     const double duration =
-        std::max(max_delta / gains_.arm_trajectory_speed, 0.1);
+        std::max(max_delta / gains.arm_trajectory_speed, 0.1);
     robot_trajectory_.initialize(start, goal, duration);
     robot_trajectory_time_ = 0.0;
     robot_new_target_.store(false, std::memory_order_relaxed);
@@ -825,7 +836,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase,
           hmax = hd;
         }
       }
-      const double hdur = std::max(hmax / gains_.hand_trajectory_speed, 0.1);
+      const double hdur = std::max(hmax / gains.hand_trajectory_speed, 0.1);
       hand_trajectory_.initialize(hstart, hgoal, hdur);
       hand_trajectory_time_ = 0.0;
       hand_new_target_.store(false, std::memory_order_relaxed);
@@ -863,7 +874,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase,
       }
       contact_state_.recompute_active(contact_mgr_config_);
 
-      // Set per-contact force reference: +Z normal = gains_.grasp_target_force
+      // Set per-contact force reference: +Z normal = gains.grasp_target_force
       auto *force_task = tsid_initialized_
                              ? tsid_controller_.formulation().get_task("force")
                              : nullptr;
@@ -879,7 +890,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase,
             }
             // Point contact: lambda = [fx, fy, fz]; push +Z target force
             if (cdim >= 3) {
-              lambda_des[offset + 2] = gains_.grasp_target_force;
+              lambda_des[offset + 2] = gains.grasp_target_force;
             }
             offset += cdim;
           }
@@ -901,7 +912,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase,
             hmax = hd;
           }
         }
-        const double hdur = std::max(hmax / gains_.hand_trajectory_speed, 0.1);
+        const double hdur = std::max(hmax / gains.hand_trajectory_speed, 0.1);
         hand_trajectory_.initialize(hstart, hgoal, hdur);
         hand_trajectory_time_ = 0.0;
       }
@@ -931,7 +942,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase,
       }
     }
     const double duration =
-        std::max(max_delta / gains_.arm_trajectory_speed, 0.1);
+        std::max(max_delta / gains.arm_trajectory_speed, 0.1);
     robot_trajectory_.initialize(start, goal, duration);
     robot_trajectory_time_ = 0.0;
     tcp_goal_valid_ = false;
@@ -952,7 +963,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase,
           hmax = hd;
         }
       }
-      const double hdur = std::max(hmax / gains_.hand_trajectory_speed, 0.1);
+      const double hdur = std::max(hmax / gains.hand_trajectory_speed, 0.1);
       hand_trajectory_.initialize(hstart, hgoal, hdur);
       hand_trajectory_time_ = 0.0;
     }
