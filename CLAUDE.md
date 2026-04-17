@@ -77,6 +77,14 @@ Design rules for `rtc_*` packages:
 
 When a concern is found, report: `[CONCERN] summary / Severity: Critical|Warning|Info / Detail / Alternative`
 
+## Post-Task Housekeeping
+
+Run after a commit lands or the user signals task completion:
+1. Save only *surprising / non-obvious* learnings to memory per auto-memory type rules (user / feedback / project / reference). Skip code patterns, git-derivable facts, ephemeral state.
+2. Delete stale artifacts -- `~/.claude/plans/*.md` tied to completed work, repo-root / `/tmp` scratch files. Verify content is preserved elsewhere (git log, `agent_docs/*.md`, `docs/*.md`) before deleting.
+3. Prune memory entries that are now outdated or wrong.
+4. Report only items actually performed, one line each.
+
 ## Reference Docs (read when relevant)
 
 - `agent_docs/architecture.md`        -- Threading, data flow, core types, lock-free rules, lifecycle, E-STOP
