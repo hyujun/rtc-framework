@@ -26,6 +26,15 @@ demo_task_controller:
   max_traj_angular_velocity: 0.7854   # Max TCP angular velocity [rad/s] (6-DOF mode)
   hand_max_traj_velocity: 6.28       # Max hand motor velocity [rad/s]
 
+  # ── FSM / trajectory tuning (required) ─────────────────────────────────────
+  fsm:
+    pi_rotation_margin: 0.15        # rad, split quintic trajectory when
+                                    # |angle| > π - margin (stability near θ=π)
+                                    # Range: [0, π/2]
+    contact_stop_release_eps: 0.005 # rad, hand contact-stop release hysteresis
+                                    # (target↔actual delta to reject sensor noise)
+                                    # Range: [0, 0.1]
+
   # ── Shared parameters ───────────────────────────────────────────────────────
   # Virtual TCP, grasp detection, and force-PI grasp parameters are loaded from
   # config/controllers/demo_shared.yaml. To override any shared key locally,

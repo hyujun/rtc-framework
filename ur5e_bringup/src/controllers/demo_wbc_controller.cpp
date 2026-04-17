@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
+#include <string>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -290,10 +292,28 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
   q_next_full_ = Eigen::VectorXd::Zero(nv);
   v_next_full_ = Eigen::VectorXd::Zero(nv);
 
-  // Joint limits with safety margins
-  if (cfg["integration"]) {
-    position_margin_ = cfg["integration"]["position_margin"].as<double>(0.02);
-    velocity_scale_ = cfg["integration"]["velocity_scale"].as<double>(0.95);
+  // Joint limits with safety margins + force-rate filter (required)
+  if (!cfg["integration"] || !cfg["integration"].IsMap()) {
+    throw std::runtime_error(
+        "demo_wbc_controller: required 'integration' section is missing");
+  }
+  {
+    const auto int_node = cfg["integration"];
+    position_margin_ = int_node["position_margin"].as<double>(0.02);
+    velocity_scale_ = int_node["velocity_scale"].as<double>(0.95);
+
+    if (!int_node["force_rate_alpha"]) {
+      throw std::runtime_error(
+          "demo_wbc_controller: required 'integration.force_rate_alpha' "
+          "is missing");
+    }
+    const double alpha = int_node["force_rate_alpha"].as<double>();
+    if (!(alpha >= 0.0 && alpha <= 1.0)) {
+      throw std::runtime_error(
+          "demo_wbc_controller: 'integration.force_rate_alpha' out of "
+          "range [0, 1]");
+    }
+    force_rate_alpha_ = static_cast<float>(alpha);
   }
   q_min_clamped_ =
       full_model_ptr_->lowerPositionLimit.array() + position_margin_;
@@ -320,6 +340,31 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
     g.arm_trajectory_speed = std::max(
         1e-6, fsm["approach_speed"].as<double>(g.arm_trajectory_speed));
     gains_lock_.Store(g);
+  }
+
+  // ── 4b. E-STOP arm safe position (required) ──────────────────────────
+  if (!cfg["estop"] || !cfg["estop"].IsMap()) {
+    throw std::runtime_error(
+        "demo_wbc_controller: required 'estop' section is missing");
+  }
+  {
+    const auto estop_node = cfg["estop"];
+    if (!estop_node["arm_safe_position"] ||
+        !estop_node["arm_safe_position"].IsSequence()) {
+      throw std::runtime_error(
+          "demo_wbc_controller: required 'estop.arm_safe_position' "
+          "must be a sequence");
+    }
+    const auto sp = estop_node["arm_safe_position"];
+    if (sp.size() != static_cast<std::size_t>(kArmDof)) {
+      throw std::runtime_error(
+          "demo_wbc_controller: 'estop.arm_safe_position' length " +
+          std::to_string(sp.size()) + " != expected " +
+          std::to_string(kArmDof));
+    }
+    for (std::size_t i = 0; i < static_cast<std::size_t>(kArmDof); ++i) {
+      safe_position_[i] = sp[i].as<double>();
+    }
   }
 
   // ── 5. Trajectory speeds ──────────────────────────────────────────────
@@ -541,9 +586,6 @@ void DemoWbcController::ReadState(const ControllerState &state) noexcept {
   num_active_fingertips_ =
       std::min(num_fingertips, static_cast<int>(rtc::kMaxFingertips));
 
-  // Smoothing factor for df/dt (exponential moving average): 500Hz -> ~20Hz BW
-  constexpr float kForceRateAlpha = 0.1f;
-
   const double inv_dt = (state.dt > 0.0) ? (1.0 / state.dt) : 500.0;
 
   for (int f = 0; f < num_active_fingertips_; ++f) {
@@ -583,8 +625,8 @@ void DemoWbcController::ReadState(const ControllerState &state) noexcept {
     if (force_rate_initialized_) {
       const float raw_rate = static_cast<float>(
           (ft.force_magnitude - ft.prev_force_magnitude) * inv_dt);
-      ft.force_rate =
-          kForceRateAlpha * raw_rate + (1.0f - kForceRateAlpha) * ft.force_rate;
+      ft.force_rate = force_rate_alpha_ * raw_rate +
+                      (1.0f - force_rate_alpha_) * ft.force_rate;
     } else {
       ft.force_rate = 0.0f;
     }
@@ -1363,8 +1405,8 @@ DemoWbcController::ComputeEstop(const ControllerState &state) noexcept {
   out0.num_channels = state.devices[0].num_channels;
   out0.goal_type = GoalType::kJoint;
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    out0.commands[i] = kSafePosition[i];
-    out0.target_positions[i] = kSafePosition[i];
+    out0.commands[i] = safe_position_[i];
+    out0.target_positions[i] = safe_position_[i];
   }
 
   // Hold current position (hand)

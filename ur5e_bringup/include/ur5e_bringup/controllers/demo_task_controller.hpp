@@ -118,6 +118,12 @@ public:
         0.5f}; ///< Contact probability threshold (0.0~1.0)
     float grasp_force_threshold{1.0f}; ///< Force magnitude threshold [N]
     int grasp_min_fingertips{2};       ///< Min fingertips for grasp detection
+
+    // Trajectory / grasp FSM tuning
+    double pi_rotation_margin{
+        0.15}; ///< Split quintic trajectory when |angle|>π-margin [rad]
+    double contact_stop_release_eps{
+        0.005}; ///< Hand contact-stop release hysteresis [rad]
   };
 
   /// @param urdf_path  Absolute path to the UR5e URDF file.
@@ -297,8 +303,6 @@ private:
   static constexpr std::size_t kHandIdxThumbCmcFe = 1;
   static constexpr std::size_t kHandIdxIndexMcpFe = 4;
   static constexpr std::size_t kHandIdxMiddleMcpFe = 7;
-  /// Hysteresis on target↔actual delta to reject sensor noise (rad).
-  static constexpr double kContactStopReleaseEps = 0.005;
 
   /// Previous grasp phase (for state-transition logging; non-RT critical).
   uint8_t prev_grasp_phase_{0};

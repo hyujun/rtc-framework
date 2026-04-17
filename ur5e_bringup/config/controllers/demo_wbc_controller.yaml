@@ -61,6 +61,16 @@ demo_wbc_controller:
   tsid:
     formulation_type: "wqp"
 
+    # ProxSuite dense QP solver (WQP). Read by rtc_tsid::WQPFormulation::init.
+    # Note: only max_iter and eps_abs are currently read by rtc_tsid;
+    # eps_rel / verbose are in QPSolverConfig but not wired through YAML yet
+    # (upstream TODO). If formulation_type switches to "hqp", use
+    # 'hqp.solver_per_level' and 'hqp.max_levels' instead.
+    wqp:
+      solver:
+        max_iter: 20             # ProxSuite max iterations
+        eps_abs: 1.0e-6          # absolute tolerance
+
     tasks:
       posture:
         type: "posture"
@@ -112,7 +122,7 @@ demo_wbc_controller:
     phase_presets:
       pre_grasp:
         tasks:
-          posture:   { active: true,  weight: 1.0,   priority: 0 }
+          posture:   { active: true,  weight: 1.0,   priority: 0 } 
           se3_tcp:   { active: true,  weight: 200.0, priority: 0 }
         constraints:
           eom:           { active: true }
@@ -142,6 +152,8 @@ demo_wbc_controller:
   integration:
     position_margin: 0.02      # rad, from joint limits
     velocity_scale: 0.95       # fraction of max velocity
+    force_rate_alpha: 0.1      # EMA alpha for df/dt smoothing at 500Hz
+                               # (~20 Hz bandwidth). Range: [0, 1]
 
   # ── FSM thresholds ───────────────────────────────────────────────────
   fsm:
@@ -154,6 +166,11 @@ demo_wbc_controller:
     deformation_threshold: 0.015 # m, ||displacement|| anomaly guard in kHold
     max_qp_fail_before_fallback: 5
     approach_speed: 0.5          # rad/s (overrides arm_trajectory_speed)
+
+  # ── E-STOP target (required) ────────────────────────────────────────
+  estop:
+    arm_safe_position:           # rad, 6 values = arm DoF (UR5e home pose)
+      [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]
 
   # ── MPC integration (Phase 5) ───────────────────────────────────────
   # When enabled, a soft-RT MPC thread (20 Hz, SCHED_FIFO 60 on 8+ core

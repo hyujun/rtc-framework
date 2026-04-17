@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath> // std::sqrt
 #include <cstddef>
+#include <stdexcept>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -388,7 +389,6 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
       double duration = std::max({0.01, T_speed_trans, T_vel_trans});
 
       // Angular distance via AngleAxisd (stable at θ → π, unlike log3)
-      constexpr double kPiSafetyMargin = 0.15; // rad ≈ 8.6°
       double angular_dist = 0.0;
       Eigen::Vector3d rot_axis = Eigen::Vector3d::UnitZ(); // fallback
       bool split_trajectory = false;
@@ -407,7 +407,7 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
                 : 0.0;
         duration = std::max({duration, T_speed_rot, T_vel_rot});
 
-        split_trajectory = (angular_dist > M_PI - kPiSafetyMargin);
+        split_trajectory = (angular_dist > M_PI - gains.pi_rotation_margin);
       }
 
       if (split_trajectory) {
@@ -737,9 +737,10 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
         const double d_middle = device_targets_[1][kHandIdxMiddleMcpFe] -
                                 dev1.positions[kHandIdxMiddleMcpFe];
 
-        const bool thumb_releasing = d_thumb > kContactStopReleaseEps;
-        const bool index_releasing = d_index < -kContactStopReleaseEps;
-        const bool middle_releasing = d_middle < -kContactStopReleaseEps;
+        const bool thumb_releasing = d_thumb > gains.contact_stop_release_eps;
+        const bool index_releasing = d_index < -gains.contact_stop_release_eps;
+        const bool middle_releasing =
+            d_middle < -gains.contact_stop_release_eps;
         const bool release_phase =
             thumb_releasing && index_releasing && middle_releasing;
 
@@ -1231,6 +1232,39 @@ void DemoTaskController::LoadConfig(const YAML::Node &cfg) {
   }
   if (cfg["hand_max_traj_velocity"]) {
     g.hand_max_traj_velocity = cfg["hand_max_traj_velocity"].as<double>();
+  }
+
+  // ── FSM / trajectory tuning (required) ──────────────────────────────────
+  if (!cfg["fsm"] || !cfg["fsm"].IsMap()) {
+    throw std::runtime_error(
+        "demo_task_controller: required 'fsm' section is missing");
+  }
+  {
+    const auto &fsm = cfg["fsm"];
+    if (!fsm["pi_rotation_margin"]) {
+      throw std::runtime_error(
+          "demo_task_controller: required 'fsm.pi_rotation_margin' is missing");
+    }
+    const double pi_margin = fsm["pi_rotation_margin"].as<double>();
+    if (!(pi_margin >= 0.0 && pi_margin <= M_PI_2)) {
+      throw std::runtime_error(
+          "demo_task_controller: 'fsm.pi_rotation_margin' out of range "
+          "[0, pi/2]");
+    }
+    g.pi_rotation_margin = pi_margin;
+
+    if (!fsm["contact_stop_release_eps"]) {
+      throw std::runtime_error(
+          "demo_task_controller: required 'fsm.contact_stop_release_eps' "
+          "is missing");
+    }
+    const double eps = fsm["contact_stop_release_eps"].as<double>();
+    if (!(eps >= 0.0 && eps <= 0.1)) {
+      throw std::runtime_error(
+          "demo_task_controller: 'fsm.contact_stop_release_eps' out of range "
+          "[0, 0.1]");
+    }
+    g.contact_stop_release_eps = eps;
   }
 
   // ── Shared params: defaults from demo_shared.yaml, overridden by cfg ──

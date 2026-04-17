@@ -177,8 +177,12 @@ private:
   std::atomic<bool> hand_estopped_{false};
   bool estop_active_{false};
 
-  static constexpr std::array<double, kNumRobotJoints> kSafePosition{
-      0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
+  /// Arm joint position the E-STOP path drives to. Authoritative source is
+  /// LoadConfig(cfg["estop"]["arm_safe_position"]); this initializer only
+  /// provides a safe default for unit tests that construct the controller
+  /// without calling LoadConfig.
+  std::array<double, kNumRobotJoints> safe_position_{0.0,   -1.57, 1.57,
+                                                     -1.57, -1.57, 0.0};
 
   [[nodiscard]] ControllerOutput
   ComputeEstop(const ControllerState &state) noexcept;
@@ -334,6 +338,7 @@ private:
   // Integration safety margins
   double position_margin_{0.02}; ///< rad, from joint limits
   double velocity_scale_{0.95};  ///< fraction of max velocity
+  float force_rate_alpha_{0.1f}; ///< EMA smoothing for df/dt (500Hz→~20Hz BW)
 
   // ── Utility ─────────────────────────────────────────────────────────────
   void ExtractFullState(const ControllerState &state) noexcept;
