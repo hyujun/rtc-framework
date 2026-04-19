@@ -43,7 +43,8 @@
 | **1** | RobotModelHandler + contact plan types | rtc_mpc | 1.5d | ✅ |
 | **2** | PhaseManagerBase + PhaseCostConfig (abstract only) | rtc_mpc | 1.5d | ✅ |
 | **3** | OCPHandlerBase + KinoDynamicsOCP + CostFactory | rtc_mpc | 3.5d | ✅ |
-| 4 | FullDynamicsOCPHandler | rtc_mpc | 2.5d | ⬜ |
+| 4.-1 | Rename precondition: `KinoDynamicsOCP`→`LightContactOCP` (logic-preserving) | rtc_mpc | 0.3d | ✅ |
+| 4 | ContactRichOCP (was FullDynamicsOCP; Option C scope: contact-force cost + friction cone) | rtc_mpc | ~2.6-2.9d | ⬜ |
 | 5 | MPCHandler + warm-start + factory | rtc_mpc | 2.5d | ⬜ |
 | 6 | MPCThread integration + MockPhaseManager | rtc_mpc | 2d | ⬜ |
 | 7a | GraspPhaseManager (FSM) + phase_config.yaml | ur5e_bringup | 1.5d | ⬜ |
@@ -266,6 +267,8 @@ public:
 ---
 
 ## Phase 3 — OCPHandlerBase + KinoDynamicsOCP + CostFactory (COMPLETE 2026-04-19)
+
+*Note: class renamed to `LightContactOCP` in Phase 4.-1; references below use the Phase-3-era name.*
 
 ### Outcome
 
@@ -698,27 +701,579 @@ Scratch at `/tmp/aligator_verify/kinodyn_spike/` — Panda URDF, 2×3D fingertip
 
 ---
 
-## Phase 4 — FullDynamicsOCP (2.5d, rtc_mpc)
+## Phase 4 — ContactRichOCP (⬜, planned 0.3d rename + 2.6d base, rtc_mpc)
+
+> **Rename decision (2026-04-19):** Phase 3's `KinoDynamicsOCP` is renamed to
+> `LightContactOCP` and Phase 4's working title `FullDynamicsOCP` is renamed
+> to `ContactRichOCP`. Motivation: the name "KinoDynamics" collides with
+> Aligator's own `KinodynamicsFwdDynamicsTpl` (floating-base centroidal),
+> already flagged in Phase 3 Spike Notes §1. The shipped Phase 3 class does
+> NOT use that Aligator class; it uses `MultibodyConstraintFwdDynamicsTpl`,
+> and the real axis separating the two OCP modes is "constraints + contact-
+> force cost", not dynamics. "LightContact / ContactRich" names that axis
+> directly. Workspace-wide audit (2026-04-19): `grep -rnE
+> '\bKinoDynamics|kinodynamics\b' ~/ros2_ws/rtc_ws/src` returns 11 matches,
+> **all inside `rtc_mpc/`** — no external consumers, rename blast radius
+> contained.
 
 ### Goal
-Add second dynamics mode for contact-rich phases (grasp closure, hold).
+Second concrete `OCPHandlerBase` tailored to **contact-rich** phases (grasp closure, hold, manipulate) where contact-force shaping and friction must be explicit. Delivers the second dispatch target for `PhaseContext::ocp_type == "contact_rich"` (Phase 5 `MPCFactory`).
 
-### Files
+### Semantic Clarification (resolved 2026-04-19)
+
+Phase 3 already uses `aligator::dynamics::MultibodyConstraintFwdDynamicsTpl` with `u = τ` (see `light_contact_ocp.hpp:9-13` post-rename — was `kinodynamics_ocp.hpp` — and Phase 3 Spike Notes). So "`u = τ`, same `MultibodyConstraintFwd`" alone does **not** distinguish the two OCPs on a fixed-base manipulator. The real differentiation is the set of concerns Phase 3 intentionally **deferred**:
+
+| Aspect | LightContactOCP (Phase 3, renamed) | ContactRichOCP (Phase 4) |
+|---|---|---|
+| Dynamics backbone | `MultibodyConstraintFwdDynamicsTpl` | **same** (shared layout → warm-start transferable) |
+| `u` layout | `τ ∈ R^{nv}` | same |
+| State layout | `x = [q; v] ∈ R^{nq+nv}` | same |
+| Frame/State/Control reg costs | ✅ via `CostFactory` | ✅ same (factory reused, no edits) |
+| Contact-force residual | gated off (`w_contact_force = 0` default) | **active** — per-active-contact `ContactForceResidualTpl` when `w_contact_force > 0` |
+| Friction cone on contact force λ | omitted | **applied** with `limits.friction_mu` / `limits.n_friction_facets` |
+| Torque box constraint (`u_min`/`u_max`) | ignored even when populated | **deferred to Phase 5** (Option C scope — see Open Decision #1) |
+| Joint position box | omitted | **deferred to Phase 5** (Option C scope) |
+| Default use case | APPROACH / free-flight / lightly-loaded tracking | CLOSURE / HOLD / MANIPULATE (contact is load-bearing, force shape matters) |
+| `ocp_type()` dispatch string | `"light_contact"` (renamed from `"kinodynamics"`) | `"contact_rich"` |
+
+### Entry State
+- Phase 3 landed: `OCPHandlerBase`, `OCPLimits`, `OCPBuildError`, `CostFactory` (3 residuals), `KinoDynamicsOCP` (12/12 tests green, solve p50 ~53 ms on Panda). **Phase 4.-1 renames the class to `LightContactOCP` — pure rename, no logic change.**
+- `PhaseContext`, `PhaseCostConfig`, `ContactPlan`, `RobotModelHandler` frozen from Phases 1–2. `ocp_type` default in `phase_context.hpp:46` flips from `"kinodynamics"` to `"light_contact"` in the rename commit.
+- `OCPLimits` already exposes the fields ContactRichOCP needs: `friction_mu`, `n_friction_facets`. `u_min` / `u_max` are present but unused in Option C scope. **No interface churn expected**.
+- Aligator 0.19.0 at `/usr/local`; CMake workarounds in place; `find_package(aligator)` already wired in `rtc_mpc/CMakeLists.txt`.
+
+### Sub-step Breakdown
+
+| # | Sub-step | Effort | Depends on |
+|---|----------|--------|-----------|
+| **4.-1** | **Rename precondition** — `KinoDynamicsOCP`→`LightContactOCP` (logic-preserving). Separate commit. | 0.3d | — |
+| 4.0 | **Aligator API spike** (BLOCKING) — residuals + friction-cone discovery | 0.4d | 4.-1 |
+| 4.1 | `ContactRichOCP` header + `RichStageHandles` struct | 0.1d | 4.0 |
+| 4.2 | Build path — cost stack + contact-force residuals + friction cone | 0.8d | 4.1 |
+| 4.3 | UpdateReferences — mutate frame/state/contact-force targets, reject topology/weight-cross | 0.3d | 4.2 |
+| 4.4 | Integration test + perf log + alloc audit | 0.5d | 4.3 |
+| 4.5 | Warm-start smoke (intra-ContactRich cold vs seeded; cross-mode deferred to Phase 5) | 0.2d | 4.4 |
+| 4.6 | Phase-end housekeeping (README + memory + progress doc + commit) | 0.1d | 4.5 |
+| **Base** | | **2.7d** (0.3d rename + 2.4d body) | |
+| **Contingency** | +0.3d if 4.0 finds friction-cone on λ needs Pinocchio constraint-multiplier plumbing beyond what Phase 3 already owns | **+0.3d** | conditional |
+| **Upper bound** | | **~3.0d** | |
+
+### 4.-1 — Rename Precondition (0.3d, separate commit)
+
+**Goal.** Rename Phase 3's `KinoDynamicsOCP` → `LightContactOCP` before any Phase 4 body code lands. Pure file/identifier rename, zero logic change, Phase 3's 12/12 tests remain green unchanged.
+
+**Why precondition, not bundled with Phase 4 body:** keeps `git log --follow` history clean; the rename commit is a single concept that reviewers can verify by diff shape alone; Phase 4 body commit then reads as "new OCP", not "new OCP + rename churn".
+
+**File operations.** All moves are `git mv`:
+
+| From | To |
+|------|-----|
+| `rtc_mpc/include/rtc_mpc/ocp/kinodynamics_ocp.hpp` | `rtc_mpc/include/rtc_mpc/ocp/light_contact_ocp.hpp` |
+| `rtc_mpc/src/ocp/kinodynamics_ocp.cpp` | `rtc_mpc/src/ocp/light_contact_ocp.cpp` |
+| `rtc_mpc/test/test_kinodynamics_ocp.cpp` | `rtc_mpc/test/test_light_contact_ocp.cpp` |
+
+**In-file identifier rename** (all in-tree, 11 files touched per `grep -rnE '\bKinoDynamics|kinodynamics\b' ~/ros2_ws/rtc_ws/src`; all inside `rtc_mpc/`):
+
+| Old | New |
+|-----|-----|
+| `class KinoDynamicsOCP` | `class LightContactOCP` |
+| `struct KinoStageHandles` | `struct LightStageHandles` |
+| `KinoDynamicsOCPTest` (gtest fixture) | `LightContactOCPTest` |
+| `ocp_type() == "kinodynamics"` | `ocp_type() == "light_contact"` |
+| `RTC_MPC_OCP_KINODYNAMICS_OCP_HPP_` (include guard) | `RTC_MPC_OCP_LIGHT_CONTACT_OCP_HPP_` |
+| CMake source entries (`ocp/kinodynamics_ocp.cpp`) | `ocp/light_contact_ocp.cpp` |
+| `PhaseContext::ocp_type` default (`phase_context.hpp:46`) | `"light_contact"` |
+| Doc comment at `phase_context.hpp:43-45` referencing `"kinodynamics"` / `"fulldynamics"` dispatch | `"light_contact"` / `"contact_rich"` |
+| `mpc_default.yaml:5` comment referencing downstream `mpc_kinodynamics.yaml` example path | `mpc_light_contact.yaml` |
+| README module-map row for `ocp/kinodynamics_ocp.hpp` | `ocp/light_contact_ocp.hpp` |
+
+**Factual corrections to an earlier rename proposal:**
+- `mpc_default.yaml` has **no** `ocp_type` key — the default lives in `phase_context.hpp:46`. Only line 5 (the comment) needs touching in the YAML.
+- `mpc_solution_types.hpp:21` is the Phase-0 *UR5e 16-DoF* rationale tombstone, **not** a kinodynamics reference — not in rename scope.
+- Workspace audit showed 11 files total, **all inside `rtc_mpc/`**. `ur5e_bringup/` and other downstream packages have zero references. NEW Risk #13 (external leakage) is therefore nominal — audit is a defensive check, not a load-bearing safeguard.
+
+**Historical records preserved.** The Phase 0–3 completion sections in THIS doc (e.g. §"Phase 3 — OCPHandlerBase + KinoDynamicsOCP + CostFactory (COMPLETE 2026-04-19)") document what shipped at that commit and are **not** rewritten. Add a 1-line pointer at the top of Phase 3's completion section: `*Note: class renamed to `LightContactOCP` in Phase 4.-1; references below use the Phase-3-era name.*`
+
+**Exit Criteria (4.-1):**
+- [ ] `grep -rnE '\bKinoDynamics|kinodynamics\b' rtc_mpc/{include,src,test,config}` → empty.
+- [ ] `grep -rnE '\bKinoDynamics|kinodynamics\b' ~/ros2_ws/rtc_ws/src` → empty (workspace-wide, excluding `docs/` and `.git/`).
+- [ ] `./build.sh -p rtc_mpc` clean, no warnings.
+- [ ] `colcon test --packages-select rtc_mpc` → Phase 3's 12/12 test targets pass, case names renamed but counts unchanged.
+- [ ] Single commit: `[rtc_mpc] Phase 4.-1: rename KinoDynamicsOCP → LightContactOCP (logic-preserving)`. Commit body: "pure rename, no logic change; 12/12 Phase-3 tests green post-rename; workspace audit clean."
+- [ ] Change Log entry appended to this doc.
+
+### 4.0 — Aligator API spike (BLOCKING)
+
+Scratch at `/tmp/aligator_verify/contact_rich_spike/` (not committed; replaced by Spike Notes appended to this section). Questions in order:
+
+1. **Semantic split confirmation.** Prototype both OCPs side-by-side on Panda (9-DoF, 2×3D fingertip contacts). Confirm: sharing `MultibodyConstraintFwd` backbone with differentiating *contact-force cost + friction cone* (Option C) is the intended Phase 4 scope.
+2. **`ContactForceResidualTpl<double>` ctor signature** — spike Note Q2 already recorded `(ndx, model, actuation, constraint_models, prox_settings, fref, contact_name)`. Verify `contact_name` must match `RigidConstraintModel::name` set in `LightContactOCP::BuildConstraintModels` (post-rename; was `kinodynamics_ocp.cpp:94`). Mutation API: `setReference(Vector3or6)` — verify signature, verify reference visibility after stage assembly via the `getCost → getComponent → getResidual<T>()` chain.
+3. **Friction-cone residual / constraint class** — candidates in Aligator 0.19.0:
+   - `MultibodyFrictionConeResidualTpl` — acts on contact Lagrange multipliers λ.
+   - `FrictionConeResidualTpl` — acts on a free force variable `f` (probably not applicable on the constraint-fwd path).
+   - `aligator::constraints::NegativeOrthant` / `BoxConstraint` — used as constraint sets on residuals.
+   Determine which residual+constraint pair produces `‖f_tan‖ ≤ μ·f_n` on the λ we already have. Record N-facet polyhedral API.
+4. **Constraint attach API** — how does Aligator attach inequality constraints to a `StageModel`? Candidates: `StageModelTpl::addConstraint(residual, constraint_set)`. Record the exact attach signature for the friction-cone pair chosen in Q3. (Control/state box attach is deferred to Phase 5 per Option C.)
+5. **Reference-mutation visibility of contact-force residuals.** After `problem.stages_[k]` copy-stores the stage, can we retrieve `getComponent<QuadraticResidualCost>(contact_force_key)->getResidual<ContactForceResidual>()` and `setReference(F_target)` without rebuild? Spike the chain on a 2-stage problem.
+6. **Multi-cost key collision.** A stage with N active contacts needs N distinct `ContactForceResidual` entries in the CostStack. Pick a keying scheme: `kCostKeyContactForcePrefix + contact_name` (e.g. `"contact_force::panda_leftfinger"`). Verify `CostStackTpl::getComponent` accepts arbitrary string keys.
+7. **Solver smoke.** Build a 2-stage ContactRich problem on Panda with `w_contact_force = 1.0`, friction_mu = 0.7. Run `SolverProxDDP`. Record: convergence, iter count, wall-time, whether friction cone is active at solution.
+
+**Spike exit:** 1-page notes appended to §"Phase 4 Spike Notes" below with concrete answers to all 7. No `rtc_mpc/ocp/contact_rich_ocp.*` code lands until these are filled.
+
+### 4.1 — `ContactRichOCP` header + `RichStageHandles`
+
+```cpp
+// rtc_mpc/include/rtc_mpc/ocp/contact_rich_ocp.hpp (new)
+namespace rtc::mpc {
+
+/// Non-owning raw-pointer handles to residuals stored inside a contact-rich
+/// StageModel's polymorphic cost tree. Populated **after** problem assembly.
+/// `contact_force` is parallel to `stage_active_contacts_[k]` order.
+struct RichStageHandles {
+  aligator::FramePlacementResidualTpl<double>* frame_placement{nullptr};
+  aligator::StateErrorResidualTpl<double>*     state_reg{nullptr};
+  aligator::ControlErrorResidualTpl<double>*   control_reg{nullptr};
+  std::vector<aligator::ContactForceResidualTpl<double>*> contact_force{};
+};
+
+class ContactRichOCP : public OCPHandlerBase {
+ public:
+  ContactRichOCP() = default;
+  ~ContactRichOCP() override = default;
+  // non-copy/non-move like LightContactOCP
+
+  [[nodiscard]] OCPBuildError Build(const PhaseContext&, const RobotModelHandler&,
+                                    const OCPLimits&) noexcept override;
+  [[nodiscard]] OCPBuildError UpdateReferences(const PhaseContext&) noexcept override;
+  [[nodiscard]] bool Built() const noexcept override { return problem_ != nullptr; }
+  [[nodiscard]] aligator::TrajOptProblemTpl<double>& problem() override { return *problem_; }
+  [[nodiscard]] int horizon_length() const noexcept override { return horizon_length_; }
+  [[nodiscard]] std::string_view ocp_type() const noexcept override { return "contact_rich"; }
+
+ private:
+  std::unique_ptr<aligator::TrajOptProblemTpl<double>> problem_{};
+  std::vector<RichStageHandles> stage_handles_{};
+  RichStageHandles terminal_handles_{};
+  int horizon_length_{0};
+  double dt_{0.0};
+  int nq_{0}, nv_{0}, nu_{0};
+  std::vector<std::vector<int>> stage_active_contacts_{};
+  Eigen::MatrixXd actuation_matrix_{};
+  // Cached snapshot — weight changes that cross 0 or friction_mu /
+  // n_friction_facets changes count as topology change (force Build).
+  OCPLimits limits_cached_{};
+  double w_contact_force_cached_{0.0};
+};
+
+/// Key prefix for contact-force residuals; full key is
+/// `kCostKeyContactForcePrefix + contact_frame_name`.
+inline constexpr std::string_view kCostKeyContactForcePrefix = "contact_force::";
+
+}  // namespace rtc::mpc
+```
+
+Rationale:
+- Separate handler from LightContactOCP to keep Phase 3 code frozen and to make the per-stage handle extension (`std::vector<ContactForceResidual*>`) local.
+- Cached `limits_cached_` + `w_contact_force_cached_` so UpdateReferences can detect *structural* changes (weight crossing 0, friction μ / facet count change) and force a rebuild — matches `OCPHandlerBase::UpdateReferences` contract (`ocp_handler_base.hpp:95-101`).
+- **No `GraspQualityResidualProvider` seam in this phase.** See Open Decision #4 — interface deferred to Phase 4.5 when first concrete provider lands.
+
+### 4.2 — Build path (0.8d)
+
+Core structure mirrors `LightContactOCP::Build` (post-rename; was `kinodynamics_ocp.cpp:154-318`). Diffs:
+
+1. **ocp_type gate**: reject unless `ctx.ocp_type == "contact_rich"`.
+2. **Reuse `BuildConstraintModels`** — promote it from `LightContactOCP`'s anon namespace to a shared internal header (`rtc_mpc/src/ocp/internal/constraint_models.hpp`, private — not in installed headers). Two call sites now; keeps the 30-line body DRY and lets both OCPs evolve constraint-model construction in lockstep.
+3. **CostFactory invocation**: unchanged. Use `cost_factory::BuildRunningCost` / `BuildTerminalCost`. Phase 2 POD + factory untouched.
+4. **Additional per-stage contact-force residuals** (ContactRich-exclusive):
+   ```cpp
+   for each active_fid in stage_active_contacts_[k]:
+     if cfg.w_contact_force > 0:
+       // Slice F_target for this contact; dim = 3 or 6 per contact info
+       VectorXd fref = cfg.F_target.segment(offset, dim);
+       ContactForceResidual residual(ndx, model.model(), actuation,
+                                     constraint_models, prox_settings, fref,
+                                     contact_frame_name);
+       MatrixXd W = MatrixXd::Identity(dim, dim) * cfg.w_contact_force;
+       QuadCost qcost(space, residual, W);
+       std::string key = "contact_force::" + contact_frame_name;
+       stage_cost.stack.addCost(key, qcost, 1.0);
+   ```
+   `F_target` slicing rule: walk `model.contact_frames()` in order; offset = sum of `dim` up to the current contact. `cfg.F_target.size()` must equal `Σ dim` (enforced by `PhaseCostConfig::LoadFromYaml` already). Guard: if a stage's active set excludes a frame, skip that slice (still walk the full F_target indexing based on *model* order, not stage order).
+5. **Friction-cone constraint** (ContactRich-exclusive, Option C scope). For each active contact on each running stage, attach a friction-cone residual + constraint set per the class chosen in spike Q3/Q4, using `limits.friction_mu` + `limits.n_friction_facets`. Only applies on active-contact stages. Stateless wrt phase (μ shared across phases); per-contact μ would require `OCPLimits` extension (out of scope). **Torque box / joint box are deferred to Phase 5** per Open Decision #1 (Option C).
+6. **Handle caching** — walk `problem_->stages_[k]` AFTER construction (same pattern as LightContactOCP to avoid dangling pointers). Populate `RichStageHandles::contact_force` vector in *active-contact order* for this stage, using keys `kCostKeyContactForcePrefix + name`. Terminal: no contact-force handles (contact force is a running-only cost).
+7. **Commit** — same sequence as LightContactOCP: move `problem_new` in, move `stage_active`, cache `limits_cached_`, `w_contact_force_cached_`.
+8. **Throw containment** — wrap Aligator constructs in a single outer `try/catch` → `OCPBuildError::kAligatorInstantiationFailure`. Preserve `noexcept`.
+
+Error enum additions to `OCPBuildError`: expected **none**. `kLimitsDimMismatch`, `kContactPlanModelMismatch`, `kInvalidCostConfig` already cover the Phase 4 failure modes (see `ocp_handler_base.hpp:56-67`). If 4.0 spike finds friction-cone-specific validation (e.g. friction_mu ≤ 0), reuse `kInvalidCostConfig` — avoid enum churn.
+
+### 4.3 — UpdateReferences (0.3d)
+
+Mirror `LightContactOCP::UpdateReferences` (post-rename; was `kinodynamics_ocp.cpp:320-357`), with the additions:
+
+- Topology checks (extended):
+  - `horizon_length`, `dt`, per-stage active-contact set — same as Phase 3.
+  - **New**: `w_contact_force` crossing 0 (was zero, now positive or vice versa) → returns `kInvalidPhaseContext`, store state untouched.
+  - **New**: `limits.friction_mu` or `n_friction_facets` change → treat as topology change (would alter constraint row count / cone polyhedra) → rebuild required.
+- Reference mutations (no alloc):
+  - `frame_placement->setReference(ctx.ee_target)` — per stage + terminal.
+  - `state_reg->target_ = [q_posture_ref; 0]` — per stage + terminal.
+  - For each `contact_force[i]` handle: `setReference(F_target.segment(...))`. The slice index comes from the stage's active-contact order, resolved the same way as Build.
+- Terminal handles lack `contact_force`; skip.
+
+### 4.4 — Integration test + perf log + alloc audit (0.5d)
+
+`rtc_mpc/test/test_contact_rich_ocp.cpp` on Panda (reuse fixture patterns from `test_light_contact_ocp.cpp:64-107`):
+
+| Case | Setup | Assertion |
+|------|-------|-----------|
+| `BuildNeutralSucceeds` | ocp_type="contact_rich", neutral pose, no contacts | `Build() == kNoError`, `problem().numSteps() == H`, `ocp_type() == "contact_rich"` |
+| `SolveReachesEETarget` | Same + ee_target shifted 0.1m | `prim_infeas < 1e-3`, `num_iters > 0` (hard assert) |
+| `InvalidOcpTypeRejected` | ocp_type="light_contact" | `Build() == kInvalidPhaseContext` |
+| `ContactForceCostActive` | Contact phase spanning horizon, `w_contact_force=10`, `F_target=zero` | After solve, per-stage ‖λ‖ lower than `w_contact_force=0` baseline (hard assert: ≥20% reduction) |
+| `ContactForceTargetTracks` | Same + `F_target` = non-zero downward force | λ at active frames moves toward target (direction correctness check) |
+| `FrictionConeRespected` | Contact stage, `friction_mu=0.5`, `n_friction_facets=4` | `‖f_tan‖ ≤ μ·f_n + 1e-6` for λ on active contacts (hard assert) |
+| `UpdateReferencesPropagatesEE` | Build → UpdateReferences with new ee_target | Cross-check via `getComponent → getResidual->getReference()` matches (same pattern as LightContact `UpdateReferencesPropagatesTarget`) |
+| `UpdateReferencesPropagatesContactForce` | Build (w>0) → UpdateReferences with new F_target | Contact-force residual reference matches new slice (handle mutation visible) |
+| `UpdateReferencesWeightCrossRejected` | Build (w>0) → UpdateReferences with w=0 | Returns `kInvalidPhaseContext`, `Built()` still true, horizon unchanged |
+| `UpdateReferencesFrictionMuChangeRejected` | Build → change friction_mu via UpdateReferences | Returns `kInvalidPhaseContext` |
+| `EmptyContactPlanFreeFlight` | No contact phases | Solves; no contact-force residuals, no friction cones |
+| `ReBuildIdempotent` | Build twice | Both succeed, second yields equivalent problem |
+| `SolvePerfLog` | 20 solves, p50/p99 logged | No assert (informational; Phase 5 warm-start is the real perf phase) |
+
+**Performance** — 20 solves, log `p50`/`p99`. **No hard assert** (see Open Decision #2): Phase 3 LightContact measured ~53 ms without warm-start; ContactRich adds friction cones → likely slower. The 15/30 ms targets in the original plan are unrealistic without Phase 5 warm-start.
+
+**Allocation audit** — `mi_stats_reset() → 100× UpdateReferences → mi_stats_print()`. Log per-iter alloc count in Change Log. Target: stable across iterations (not necessarily zero).
+
+### 4.5 — Warm-start smoke (0.2d)
+
+The original exit criterion "KinoDyn → FullDyn iter count drops ≥40% vs cold" implies `MPCHandler`-level orchestration (Phase 5: solver reuse across ticks + shift-warm-start). Without `MPCHandler`, the best Phase 4 can do is a two-part intra-handler smoke:
+
+1. **Cold solve** `ContactRichOCP` on Panda contact phase, record iter count.
+2. **Seeded solve** — reuse `SolverProxDDPTpl::results_` state as initial guess via `solver.setInitialGuess(results.xs_, results.us_)` (or equivalent; per 4.0 Q7) on a lightly-jittered ee_target, record iter count.
+3. Log both; do not hard-assert the ≥40% drop. The cross-mode (LightContact → ContactRich) test belongs in Phase 5.
+
+**Recommendation**: move the ≥40% drop assertion to Phase 5 (Open Decision #3). Record the rationale in Change Log.
+
+### 4.6 — Phase-end housekeeping (0.1d)
+
+Per §"Phase Completion Housekeeping" checklist:
+- `rtc_mpc/README.md` — Status row Phase 4 → ✅, Module map rows for `ocp/contact_rich_ocp`, add `kCostKeyContactForcePrefix` to design-invariants if a public-surface item.
+- Memory — update `~/.claude/projects/.../memory/project_mpc_implementation.md` + MEMORY.md line: "Phases 0-4 complete (incl. 4.-1 rename); Phase 5 next (MPCHandler + warm-start + factory + torque/joint box composition)".
+- `agent_docs/*` — likely no update (ContactRich is internal to rtc_mpc). State "no agent_docs update needed" in commit body.
+- This progress doc — flip Phase 4 row ✅, add "Phase 4 — ContactRichOCP (COMPLETE YYYY-MM-DD)" section mirroring Phase 3 template, Change Log line.
+- Single commit: `[rtc_mpc] Phase 4: ContactRichOCP (contact-force cost + friction cone)`.
+- Delete `/tmp/aligator_verify/contact_rich_spike/` after commit.
+
+### Files (final)
+
+**Phase 4.-1 rename commit:**
+
 | Path | Kind |
 |------|------|
-| `rtc_mpc/include/rtc_mpc/ocp/fulldynamics_ocp.hpp` | new |
-| `rtc_mpc/src/ocp/fulldynamics_ocp.cpp` | new |
-| `rtc_mpc/test/test_fulldynamics_ocp.cpp` | new |
+| `rtc_mpc/include/rtc_mpc/ocp/kinodynamics_ocp.hpp` → `light_contact_ocp.hpp` | `git mv` + in-file identifiers |
+| `rtc_mpc/src/ocp/kinodynamics_ocp.cpp` → `light_contact_ocp.cpp` | `git mv` + in-file identifiers |
+| `rtc_mpc/test/test_kinodynamics_ocp.cpp` → `test_light_contact_ocp.cpp` | `git mv` + fixture rename |
+| `rtc_mpc/CMakeLists.txt` | edit — source + test paths |
+| `rtc_mpc/README.md` | edit — module map row |
+| `rtc_mpc/include/rtc_mpc/phase/phase_context.hpp` | edit — `ocp_type` default + doc comment |
+| `rtc_mpc/config/mpc_default.yaml` | edit — downstream-path comment only (no `ocp_type` key exists) |
+| `rtc_mpc/include/rtc_mpc/ocp/ocp_handler_base.hpp` | edit — doc comments mentioning `"kinodynamics"` dispatch string |
+| `rtc_mpc/include/rtc_mpc/ocp/cost_factory.hpp` | edit — doc comment mention of `KinoDynamicsOCP` |
+| `rtc_mpc/test/test_cost_factory.cpp` | edit — test-name renames if any reference the old OCP |
+| `docs/mpc_implementation_progress.md` | edit — Change Log line only (Phase 3 completion section preserved as historical record with 1-line pointer) |
 
-### Scope
-- `x = [q; v]`, `u = τ`; internal `M(q)·a + h = τ + Jcᵀ·λ` via `aligator::dynamics::MultibodyConstraintFwdDynamics`
-- Share state-space layout with KinoDynamics (same `nq+nv`) so warm-start transfers between modes on phase switch
-- Reuse `CostFactory` unchanged
+**Phase 4 body commit:**
+
+| Path | Kind |
+|------|------|
+| `rtc_mpc/include/rtc_mpc/ocp/contact_rich_ocp.hpp` | new |
+| `rtc_mpc/src/ocp/contact_rich_ocp.cpp` | new |
+| `rtc_mpc/src/ocp/internal/constraint_models.hpp` | new (private helper; shared by LightContact + ContactRich) |
+| `rtc_mpc/src/ocp/light_contact_ocp.cpp` | edit — include shared `constraint_models.hpp`, remove local `BuildConstraintModels` |
+| `rtc_mpc/test/test_contact_rich_ocp.cpp` | new (~13 cases) |
+| `rtc_mpc/CMakeLists.txt` | edit — add source + test target |
+| `rtc_mpc/README.md` | edit — Status + Module map |
+| `docs/mpc_implementation_progress.md` | edit — Phase 4 completion section + Change Log |
 
 ### Exit Criteria
-- Panda offline solve comparable residual to Phase 3
-- Solve p50 < 15ms, p99 < 30ms
-- Warm-start reuse test: run KinoDyn → FullDyn with same `x` sequence, verify solver iteration count drops ≥ 40% vs cold
+
+**Phase 4.-1 (rename):**
+- [ ] `grep -rnE '\bKinoDynamics|kinodynamics\b' rtc_mpc/{include,src,test,config}` → empty.
+- [ ] `grep -rnE '\bKinoDynamics|kinodynamics\b' ~/ros2_ws/rtc_ws/src` (excluding `docs/`, `.git/`) → empty.
+- [ ] `./build.sh -p rtc_mpc` clean, no warnings.
+- [ ] `colcon test --packages-select rtc_mpc` → Phase 3's 12/12 test targets pass post-rename.
+- [ ] Single commit with body stating "pure rename, no logic change".
+
+**Phase 4 body:**
+- [ ] 4.0 Spike Notes populated in this doc before any `rtc_mpc/ocp/contact_rich_ocp.*` code lands.
+- [ ] `ContactRichOCP` builds, `ocp_type() == "contact_rich"`, rejects `ctx.ocp_type == "light_contact"`.
+- [ ] Panda ContactRich offline solve: `prim_infeas < 1e-3` within ≤ 50 ProxDDP iterations (hard-asserted).
+- [ ] Contact-force cost active: `w_contact_force > 0` → λ norm reduced ≥ 20% vs baseline (hard-asserted).
+- [ ] Friction cone constraint hard-asserted at solution.
+- [ ] UpdateReferences mutates ee_target AND F_target through handles; solver sees change (hard-asserted).
+- [ ] Topology-change + weight-cross + friction-μ-change rejections hard-asserted.
+- [ ] Perf p50/p99 logged (not asserted) — Phase 5 warm-start is the real perf phase.
+- [ ] mimalloc alloc-delta across 100 UpdateReferences logged.
+- [ ] No `auto` with Eigen expressions in `rtc_mpc/src/ocp/contact_rich_ocp.cpp`.
+- [ ] `colcon test --packages-select rtc_mpc` → all prior tests still pass + new `test_contact_rich_ocp` (~13 cases).
+- [ ] Robot-agnostic grep audit clean (no UR5e/tool0/fingertip/nq=16 identifiers outside pre-existing Phase-0 tombstone).
+- [ ] §Phase Completion Housekeeping applied + single commit.
+
+### Open Decisions (user input required before 4.0 starts)
+
+1. **Phase 4 scope breadth** — **DECIDED (2026-04-19): Option C.**
+   - Option A (full scope): contact-force cost + torque box + joint box + friction cone. Effort 2.6d + 0.3d.
+   - Option B (narrow): contact-force cost only. Effort ~1.0d.
+   - **Option C (selected)**: contact-force cost + friction cone on λ. Torque/joint box deferred to Phase 5 where they compose with warm-start + factory. Effort 2.4d body + 0.3d rename.
+
+2. **Performance criterion handling** — **DECIDED (2026-04-19): log only (Option B).** Phase 3 p50 ~53 ms without warm-start; ContactRich will be slower. Hard asserting 15/30 ms will fail. Real perf gating moves to Phase 5 (warm-start + MPCHandler).
+
+3. **Warm-start exit criterion placement** — **DECIDED (2026-04-19): move to Phase 5.** Phase 4 logs cold/seeded iter counts for intra-handler re-solve only; the ≥40% drop assertion (and the cross-mode Light↔ContactRich case) belongs to Phase 5 `MPCHandler`.
+
+4. **`GraspQualityResidualProvider` extension seam** — **DECIDED (2026-04-19): defer to Phase 4.5.** No provider interface ships in Phase 4. `ContactRichOCP` has **no** `SetGraspQualityProvider` setter, no hook points in Build/UpdateReferences, no `grasp_quality_provider.hpp` header. Phase 4.5's first concrete grasp-quality provider will co-design the interface with real requirements (`PhaseContext`, `OCPLimits`, stage index, YAML init) in hand. Rationale: YAGNI (no concrete consumer); signature correctness unverifiable without a consumer; topology-tracking gap (silent-stale on null↔non-null swap); `noexcept` cascade imposes implementation burden; deferral cost is ~30 lines in Phase 4.5 with better design hand. Risk #13 (conditional) is therefore retired.
+
+### Open Risks → Action
+
+- **§11 #2 (contact-force residual)** — Phase 4's load-bearing risk. `ContactForceResidualTpl` needs the same `constraint_models` vector Phase 3 already builds (`BuildConstraintModels`, was `kinodynamics_ocp.cpp:68-97`, now promoted to `internal/constraint_models.hpp` during rename). Reuse, don't re-derive. Spike Q2/Q5 close this.
+- **NEW Risk #10 (friction-cone API shape)** — unknown whether Aligator 0.19.0 exposes a direct λ-based friction-cone residual or requires constructing it from per-contact wrench views. Spike Q3 resolves. If unavailable, narrow to Option B scope (contact-force cost only).
+- **NEW Risk #11 (constraint attach API)** — unknown whether `StageModelTpl::addConstraint` accepts `(residual, constraint_set)` pairs directly or requires a different wrapper. Spike Q4 resolves.
+- **NEW Risk #12 (rename external leakage)** — `"kinodynamics"` dispatch strings / `KinoDynamicsOCP` identifiers could be referenced outside `rtc_mpc/`. **Status 2026-04-19: retired** — workspace audit found 11 matches, all inside `rtc_mpc/`. Workspace grep remains in 4.-1 Exit Criteria as a defensive check, not a load-bearing safeguard.
+- **NEW Risk #13 (provider-interface speculation)** — **Status 2026-04-19: retired** by Open Decision #4 (defer). Phase 4 ships no provider interface; Phase 4.5 co-designs it with first concrete consumer.
+- **§11 #9 (solve perf)** — Phase 3 p50 ~53 ms. ContactRich adds friction cones → likely slower. Phase 4 cannot resolve this; it is Phase 5's job via warm-start. Documented in Open Decision #2 (log-only).
+
+### Phase 4 Spike Notes (4.0 — resolved YYYY-MM-DD)
+
+_(To be filled in before 4.1 code lands. Template:)_
+
+1. Semantic split — confirmed / rejected / modified:
+2. `ContactForceResidualTpl` ctor + mutation API:
+3. Friction-cone residual/constraint choice:
+4. Friction-cone attach API (`StageModelTpl::addConstraint` signature):
+5. Reference-mutation visibility of contact-force residuals:
+6. Multi-cost key collision handling:
+7. Solver smoke result (iters, wall-time, friction cone active):
+
+---
+
+## Phase 4 — Step-by-Step Execution Plan (resumption-friendly)
+
+This section is self-contained so a fresh conversation can resume without re-reading the Phase 0–3 history. Follow steps in order; **do not skip**.
+
+### Step 0 — Context bootstrap (must run on every resume)
+
+1. `cd /home/junho/ros2_ws/rtc_ws/src/rtc-framework && git status && git log --oneline -5`
+   - Expected branch: `main`. If dirty, stop and reconcile before anything else.
+   - Expected latest commit: `2dd021e [rtc_mpc] Phase 3: OCPHandlerBase + KinoDynamicsOCP + CostFactory` (or later if 4.-1 already landed).
+2. `./install.sh verify` — confirms fmt 11.1.4 + mimalloc 2.1.7 + Aligator 0.19.0 + Panda URDF are installed. If any missing, halt — do not attempt to reinstall without user consent.
+3. `./build.sh -p rtc_mpc` → must finish green. `colcon test --packages-select rtc_mpc` → must show 12/12 pass (or 12/12 post-rename, same count).
+4. Read **this doc** top-to-bottom (or at minimum §"Phase 4" through this execution plan).
+5. Read **[light_contact_ocp.hpp](rtc_mpc/include/rtc_mpc/ocp/light_contact_ocp.hpp)** + **[light_contact_ocp.cpp](rtc_mpc/src/ocp/light_contact_ocp.cpp)** (post-rename — or `kinodynamics_ocp.*` if Step 1 hasn't run yet). These are the structural templates for `ContactRichOCP`.
+6. Read **[ocp_handler_base.hpp](rtc_mpc/include/rtc_mpc/ocp/ocp_handler_base.hpp)** + **[cost_factory.hpp](rtc_mpc/include/rtc_mpc/ocp/cost_factory.hpp)** — frozen interfaces.
+7. Confirm Open Decisions 1–4 are still decided (scope = Option C, perf = log-only, warm-start → Phase 5, provider = deferred). If any has been re-opened in this doc, re-align with user before continuing.
+
+### Step 1 — Phase 4.-1 Rename (0.3d, single commit)
+
+**Goal:** Pure rename `KinoDynamicsOCP`→`LightContactOCP` and dispatch string `"kinodynamics"`→`"light_contact"`. Zero logic change. Phase 3's 12/12 tests remain green with renamed case names.
+
+Execute in this order:
+
+**1.1 — File moves** (use `git mv` to preserve history):
+- `git mv rtc_mpc/include/rtc_mpc/ocp/kinodynamics_ocp.hpp rtc_mpc/include/rtc_mpc/ocp/light_contact_ocp.hpp`
+- `git mv rtc_mpc/src/ocp/kinodynamics_ocp.cpp rtc_mpc/src/ocp/light_contact_ocp.cpp`
+- `git mv rtc_mpc/test/test_kinodynamics_ocp.cpp rtc_mpc/test/test_light_contact_ocp.cpp`
+
+**1.2 — In-file identifier rename** (inside the three moved files):
+- `class KinoDynamicsOCP` → `class LightContactOCP`
+- `struct KinoStageHandles` → `struct LightStageHandles`
+- `KinoDynamicsOCPTest` (gtest fixture) → `LightContactOCPTest`
+- `RTC_MPC_OCP_KINODYNAMICS_OCP_HPP_` → `RTC_MPC_OCP_LIGHT_CONTACT_OCP_HPP_`
+- Include: `#include "rtc_mpc/ocp/kinodynamics_ocp.hpp"` → `#include "rtc_mpc/ocp/light_contact_ocp.hpp"`
+- `ocp_type() == "kinodynamics"` / `return "kinodynamics"` → `"light_contact"`
+- Doc/comment text referencing the old name/class → update to new name
+- Test case names that embed `KinoDynamics` → `LightContact` (e.g. `TEST_F(LightContactOCPTest, …)`)
+
+**1.3 — Edits in sibling files:**
+- [rtc_mpc/CMakeLists.txt](rtc_mpc/CMakeLists.txt) — update source path `ocp/kinodynamics_ocp.cpp` → `ocp/light_contact_ocp.cpp` and test path `test/test_kinodynamics_ocp.cpp` → `test/test_light_contact_ocp.cpp`. Also test target name if it embeds `kinodynamics`.
+- [rtc_mpc/include/rtc_mpc/phase/phase_context.hpp](rtc_mpc/include/rtc_mpc/phase/phase_context.hpp:43-46) — update doc comment at lines 43-45 (`"kinodynamics"` / `"fulldynamics"` → `"light_contact"` / `"contact_rich"`) **and** the default value at line 46 (`std::string ocp_type{"kinodynamics"}` → `{"light_contact"}`).
+- [rtc_mpc/include/rtc_mpc/ocp/ocp_handler_base.hpp](rtc_mpc/include/rtc_mpc/ocp/ocp_handler_base.hpp:114-115) — update doc comment referencing `"kinodynamics"`/`"fulldynamics"` dispatch strings.
+- [rtc_mpc/include/rtc_mpc/ocp/cost_factory.hpp](rtc_mpc/include/rtc_mpc/ocp/cost_factory.hpp) — update any doc comment that names `KinoDynamicsOCP` (e.g. line ~10).
+- [rtc_mpc/test/test_cost_factory.cpp](rtc_mpc/test/test_cost_factory.cpp) — update any test case name / comment that references `KinoDynamics`.
+- [rtc_mpc/config/mpc_default.yaml:5](rtc_mpc/config/mpc_default.yaml#L5) — update downstream-path example `mpc_kinodynamics.yaml` → `mpc_light_contact.yaml`. **Do not add** an `ocp_type` key (none exists; default lives in `phase_context.hpp`).
+- [rtc_mpc/README.md:23](rtc_mpc/README.md#L23) — update module-map row from `kinodynamics_ocp.hpp` to `light_contact_ocp.hpp`; reword the description if it names the old class.
+
+**1.4 — Verification (halt on any failure):**
+- `grep -rnE '\bKinoDynamics|kinodynamics\b' rtc_mpc/{include,src,test,config}` → **empty**.
+- `grep -rnE '\bKinoDynamics|kinodynamics\b' /home/junho/ros2_ws/rtc_ws/src` (using the Grep tool) — excluding `docs/` and `.git/`, **empty**.
+- `./build.sh -p rtc_mpc` → clean, no warnings.
+- `colcon test --packages-select rtc_mpc --event-handlers console_direct+` → **12/12 pass**. Case counts must match Phase 3 baseline exactly.
+
+**1.5 — Single commit:**
+- Stage: the three renamed files + CMakeLists + phase_context + ocp_handler_base + cost_factory headers + test_cost_factory + mpc_default.yaml + README.
+- Commit message:
+  ```
+  [rtc_mpc] Phase 4.-1: rename KinoDynamicsOCP → LightContactOCP (logic-preserving)
+
+  Pure rename. Zero logic change. Phase 3's 12/12 rtc_mpc tests remain
+  green post-rename. Workspace-wide `kinodynamics` grep audit clean
+  (11 in-tree matches migrated; no external consumers existed).
+
+  Motivation: "KinoDynamics" clashes with Aligator's
+  `KinodynamicsFwdDynamicsTpl` (floating-base centroidal class), which
+  the shipped implementation does NOT use — it uses
+  `MultibodyConstraintFwdDynamicsTpl`. The real axis distinguishing
+  Phase 3's OCP from Phase 4's is "constraints + contact-force cost",
+  not dynamics; "LightContact" names that axis directly. Phase 4 will
+  ship `ContactRichOCP` against this renamed baseline.
+  ```
+- **Do not bundle** with any Phase 4 body work. This commit is a pure rename.
+
+**1.6 — Update this doc** (Change Log only, not the Phase Plan row):
+- Append one line to §"Change Log": `| YYYY-MM-DD | Phase 4.-1 complete: rename KinoDynamicsOCP → LightContactOCP (logic-preserving). 12/12 Phase-3 tests unchanged. Workspace audit clean. |`
+- Flip the Phase 4.-1 row at the top of §"Phase Plan" table to ✅.
+- Commit this doc change as a separate commit: `[docs] Phase 4.-1: record rename in progress doc`. (Keeps the rename commit itself minimal.)
+
+---
+
+### Step 2 — 4.0 Aligator API Spike (0.4d, NO commit)
+
+**Goal:** Answer the 7 spike questions in §"4.0 — Aligator API spike" and fill §"Phase 4 Spike Notes" in this doc **before** Step 3. Scratch code lives at `/tmp/aligator_verify/contact_rich_spike/` and is **not** committed.
+
+**2.1 — Create scratch dir** and write a minimal CMake project that links `aligator::aligator` + `pinocchio` (copy the CMake workarounds from `rtc_mpc/CMakeLists.txt` — hpp-fcl_DIR + fmt HINTS).
+
+**2.2 — Answer each question in sequence.** Stop and escalate if Q1 comes back "semantic split needs different design" or if Q3 comes back "no λ-based friction cone in Aligator 0.19.0" (in the latter case, scope narrows to Option B: contact-force cost only).
+
+**2.3 — Fill the Spike Notes template** in this doc with concrete answers (ctor signatures, class names, verified behaviors). **Commit that doc edit**: `[docs] Phase 4.0: spike notes populated (aligator contact-force + friction-cone APIs)`.
+
+**2.4 — Keep the scratch dir until Step 8** for regression checks, then delete per §"Phase Completion Housekeeping".
+
+---
+
+### Step 3 — 4.1 `ContactRichOCP` Header (0.1d, part of body work)
+
+Create `rtc_mpc/include/rtc_mpc/ocp/contact_rich_ocp.hpp` per the template in §"4.1 — `ContactRichOCP` header + `RichStageHandles`" above. Forward-declare Aligator types instead of including headers where possible (mirror the style of `light_contact_ocp.hpp` post-rename).
+
+Add to `rtc_mpc/CMakeLists.txt`: no source addition yet (comes in Step 4); but if headers are installed explicitly, add this one.
+
+**Do not build yet** — Step 4 provides the .cpp.
+
+---
+
+### Step 4 — 4.2 Build Path + Shared Constraint Helper (0.8d)
+
+**4a — Promote `BuildConstraintModels` to an internal shared header** (non-installed):
+- Create `rtc_mpc/src/ocp/internal/constraint_models.hpp` with the function body from the current `light_contact_ocp.cpp` anon namespace (roughly lines 68-97 pre-rename). Put it in a `rtc::mpc::internal::` namespace.
+- Edit `rtc_mpc/src/ocp/light_contact_ocp.cpp` to include this header and remove the local copy.
+- `./build.sh -p rtc_mpc` → clean. `colcon test --packages-select rtc_mpc` → 12/12 still green (no behavior change).
+- This is a **prerequisite within the Phase 4 body commit**, not a separate commit.
+
+**4b — Implement `ContactRichOCP::Build`** in `rtc_mpc/src/ocp/contact_rich_ocp.cpp`:
+- Skeleton: copy the structure from `light_contact_ocp.cpp::Build` (lines 154-318 pre-rename).
+- Change 1: `if (ctx.ocp_type != "contact_rich") return kInvalidPhaseContext;`
+- Change 2: include `internal/constraint_models.hpp` and call `internal::BuildConstraintModels(...)` instead of the local version.
+- Change 3: inside the per-stage loop, AFTER the `CostFactory::BuildRunningCost` call and BEFORE `StageModel` construction, for each `active_fid` in `stage_active[k]`, if `cfg.w_contact_force > 0`, append a `ContactForceResidual` wrapped in `QuadraticResidualCost` with key `"contact_force::" + contact_frame_name` to `stage_cost.stack`. Track the active-frame order so handle caching (Change 5) walks contacts in the same order.
+- Change 4: friction-cone constraint — implementation exact form comes from Spike Note Q3/Q4. Attach per active contact on each stage.
+- Change 5: handle caching AFTER `TrajOptProblem` construction. Walk `problem_->stages_[k]` as the LightContact version does. For each active contact, look up the contact-force residual via `stack->getComponent<QuadCost>("contact_force::" + name)->getResidual<ContactForceResidual>()` and push into `RichStageHandles::contact_force`.
+- Change 6: cache `limits_cached_`, `w_contact_force_cached_` for UpdateReferences topology checks.
+- Wrap Aligator-touching regions in a single outer try/catch → `OCPBuildError::kAligatorInstantiationFailure`.
+
+**Do not add torque/joint box constraints** — out of scope per Option C.
+
+Add source + install rule to `rtc_mpc/CMakeLists.txt`.
+
+`./build.sh -p rtc_mpc` → clean.
+
+---
+
+### Step 5 — 4.3 `UpdateReferences` (0.3d)
+
+Implement per §"4.3 — UpdateReferences" above. Topology check additions over LightContact:
+- `w_contact_force` crossing 0 in either direction → `kInvalidPhaseContext`, store state untouched.
+- `limits.friction_mu` or `limits.n_friction_facets` change → `kInvalidPhaseContext`.
+
+Reference mutations: frame_placement + state_reg (same as LightContact) + per-contact `contact_force[i]->setReference(F_target.segment(offset, dim))` where offset is computed from model's contact-frames order.
+
+Terminal: no contact-force handles; skip that mutation.
+
+---
+
+### Step 6 — 4.4 Integration Tests (0.5d)
+
+Create `rtc_mpc/test/test_contact_rich_ocp.cpp` — mirror fixture style from `test_light_contact_ocp.cpp:64-107` (Panda URDF + robot_cfg YAML + neutral ee_target). Implement the 13 cases in the table in §"4.4 — Integration test + perf log + alloc audit". Treat hard-asserted cases as ground truth; `SolvePerfLog` is log-only.
+
+Add test target to `rtc_mpc/CMakeLists.txt`. `colcon test --packages-select rtc_mpc` → 25/25 pass (12 prior + 13 new).
+
+**Allocation audit**: add an `AllocAudit` test case (or inline in `SolvePerfLog`) using `mi_stats_reset() / mi_stats_print()` around a 100-iter UpdateReferences loop. Log only; no assert.
+
+---
+
+### Step 7 — 4.5 Warm-Start Smoke (0.2d)
+
+Add **two test cases** to `test_contact_rich_ocp.cpp`:
+- `ColdSolveIterCount` — record iter count of a fresh solve on a contact phase.
+- `SeededSolveIterCount` — reuse prior `results_.xs_` / `results_.us_` via `solver.setInitialGuess(...)` (exact API per Spike Q7) on a lightly-jittered ee_target, record iter count.
+
+Log both; **no ≥40% drop assertion** (moved to Phase 5 per Open Decision #3).
+
+---
+
+### Step 8 — 4.6 Phase Completion Housekeeping (0.1d, single commit)
+
+**8.1 — Documentation updates (all in same commit as code):**
+- [rtc_mpc/README.md](rtc_mpc/README.md) — flip §"Status" row for Phase 4 to ✅; add module-map rows for `ocp/contact_rich_ocp.hpp` and `src/ocp/internal/constraint_models.hpp`.
+- **This doc** — add a new `## Phase 4 — ContactRichOCP (COMPLETE YYYY-MM-DD)` section mirroring the Phase 3 completion template (Outcome, Files Delivered, Verified Behavior, Exit Criteria, Cross-Phase Invariants Upheld, Risks status, Perf numbers). Flip the Phase Plan row at top of doc. Append one line to §"Change Log".
+- `agent_docs/*` — review; Phase 4 is internal to `rtc_mpc/`, likely no update needed. Say so in commit body.
+
+**8.2 — Auto-memory update** (not in repo):
+- Edit `~/.claude/projects/-home-junho-ros2-ws-rtc-ws-src-rtc-framework/memory/project_mpc_implementation.md`:
+  - "Phases 0-4 complete (incl. 4.-1 rename `KinoDynamicsOCP`→`LightContactOCP`). Phase 5 next (MPCHandler + warm-start + factory + torque/joint box composition). Aligator uses polymorphic not shared_ptr — read docs/mpc_implementation_progress.md §Phase 3 Spike Notes first on resume."
+- Update the corresponding line in `MEMORY.md`.
+
+**8.3 — Single commit:**
+- Stage: all new/edited files from Steps 3–7 + README + this doc.
+- Commit message:
+  ```
+  [rtc_mpc] Phase 4: ContactRichOCP (contact-force cost + friction cone)
+
+  Option-C scope: per-stage contact-force residual (ContactForceResidualTpl
+  keyed by "contact_force::<frame>") + λ-side friction cone with
+  n_friction_facets polyhedral approximation. Torque / joint box deferred
+  to Phase 5 (compose with MPCHandler + warm-start).
+
+  - New: rtc_mpc/{include,src}/rtc_mpc/ocp/contact_rich_ocp.{hpp,cpp}
+  - New: rtc_mpc/src/ocp/internal/constraint_models.hpp (shared helper,
+         Light/ContactRich both consume)
+  - Edited: rtc_mpc/src/ocp/light_contact_ocp.cpp (use shared helper)
+  - New: rtc_mpc/test/test_contact_rich_ocp.cpp (~15 cases, all hard-
+         asserted except perf p50/p99 log + alloc audit)
+
+  Perf (informational): p50 / p99 logged. Phase 5 warm-start is the real
+  perf gate; see Open Decision #2 in progress doc.
+
+  No agent_docs update needed (feature internal to rtc_mpc).
+
+  Closes Phase 4 in docs/mpc_implementation_progress.md.
+  ```
+- **Do not** include the spike-notes commit from Step 2.4 — that was already landed separately.
+
+**8.4 — Delete scratch:** `rm -rf /tmp/aligator_verify/contact_rich_spike/`.
+
+---
+
+### Resumption Checklist (quick reference)
+
+| Step | Effort | Commits | Gate |
+|------|--------|---------|------|
+| 0 | — | — | Env/build/test green; doc re-read |
+| 1 | 0.3d | 2 (rename + doc) | 12/12 tests green; workspace audit clean |
+| 2 | 0.4d | 1 (spike notes in doc) | 7 Q's answered; Option C still viable |
+| 3 | 0.1d | (rolls into Step 8) | Header compiles |
+| 4 | 0.8d | (rolls into Step 8) | Build succeeds, LightContact still 12/12 after helper promotion |
+| 5 | 0.3d | (rolls into Step 8) | UpdateReferences compiles |
+| 6 | 0.5d | (rolls into Step 8) | 25/25 tests pass |
+| 7 | 0.2d | (rolls into Step 8) | Warm-start smoke logged |
+| 8 | 0.1d | 1 (body commit) | README/doc/memory updated |
+
+**Total commits**: 4 (1× rename, 1× rename-doc, 1× spike-notes, 1× body). **Total effort**: ~2.7d base (+0.3d contingency on Step 4 if spike Q3/Q4 reveals friction-cone plumbing needs extra glue).
 
 ---
 
@@ -893,3 +1448,4 @@ When resuming:
 | 2026-04-19 | Phase 1 complete: `RobotModelHandler` + `contact_plan_types.hpp` landed in rtc_mpc (Panda 9-DoF test, 9/9 pass). install.sh §0.8 delivered: `install_mpc_deps` + `verify` subcommand + `--skip-mpc` flag. Robot-agnostic invariant verified. |
 | 2026-04-19 | Phase 2 complete: `PhaseManagerBase` (pure-virtual), `PhaseCostConfig` (POD + YAML factory via `RobotModelHandler`), `PhaseContext`, `mpc_default.yaml` reference template. 10/10 test_phase_cost_config cases pass. Method naming uses CamelCase (`Init`/`Update`) — deliberate deviation from v2.2 plan for consistency with existing rtc_mpc conventions. Robot-agnostic invariant re-verified. |
 | 2026-04-19 | Phase 3 complete: `OCPHandlerBase` + `OCPLimits` + `OCPBuildError`; `CostFactory` returning `StageCost { stack, keys }` (weight-gated, polymorphic-aware); `KinoDynamicsOCP` backed by `MultibodyConstraintFwdDynamicsTpl` (`u=τ`, contact forces as Lagrange multipliers). 24 new test cases pass (10 cost-factory + 14 kinodynamics-ocp integration). Aligator ownership model corrected from plan: handles are raw pointers retrieved via `getCost → getComponent(key) → getResidual<T>()` chain AFTER problem assembly (spike Q3 invalidated the original `shared_ptr`-based design). Post-assembly caching fixed a dangling-pointer heap corruption. Perf gap observed: solve p50 ~53 ms vs 5 ms target — elevated as new Risk §11 #9 for Phase 5 warm-start. |
+| 2026-04-19 | Phase 4.-1 complete: rename `KinoDynamicsOCP` → `LightContactOCP` (logic-preserving). 12/12 Phase-3 tests unchanged post-rename (all cases reported as `LightContactOCPTest.*`); perf p50 ~53.5ms p99 ~57.2ms (unchanged). Workspace audit of `rtc_mpc/{include,src,test,config}` clean. Dispatch string `"kinodynamics"` → `"light_contact"`; `"fulldynamics"` → `"contact_rich"`. Commit `c5553a9`. |
