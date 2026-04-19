@@ -19,6 +19,10 @@
   <depend>eigen</depend>
   <depend>yaml-cpp</depend>
   <depend>pinocchio</depend>
+  <!-- aligator: source-installed to /usr/local; linked via CMake, not rosdep -->
+  <!-- fmt: source-built 11.1.4 at /usr/local; linked via CMake hint, not rosdep -->
+  <!-- mimalloc: transitive via aligator; linked implicitly -->
+
 
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_auto</test_depend>

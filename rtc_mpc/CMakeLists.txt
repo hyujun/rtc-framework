@@ -34,6 +34,9 @@ endif()
 # but Aligator was built against source-installed fmt 11.1.4. Hint /usr/local.
 find_package(fmt 10 REQUIRED HINTS /usr/local/lib/cmake/fmt)
 find_package(pinocchio REQUIRED)
+# aligator: source-installed at /usr/local (Phase 0). Not a rosdep — do NOT add
+# to package.xml. CMake config lives at /usr/local/lib/cmake/aligator.
+find_package(aligator REQUIRED)
 
 # ── Library target (STATIC) ──────────────────────────────────────────────────
 add_library(rtc_mpc STATIC
@@ -44,6 +47,8 @@ add_library(rtc_mpc STATIC
   src/thread/mock_mpc_thread.cpp
   src/model/robot_model_handler.cpp
   src/phase/phase_cost_config.cpp
+  src/ocp/cost_factory.cpp
+  src/ocp/kinodynamics_ocp.cpp
 )
 
 target_include_directories(rtc_mpc PUBLIC
@@ -59,6 +64,7 @@ target_link_libraries(rtc_mpc PUBLIC
   yaml-cpp
   pinocchio::pinocchio
   fmt::fmt
+  aligator::aligator
 )
 
 ament_target_dependencies(rtc_mpc PUBLIC
@@ -82,7 +88,7 @@ install(EXPORT rtc_mpcTargets
 
 ament_export_targets(rtc_mpcTargets)
 ament_export_include_directories(include)
-ament_export_dependencies(rtc_base Eigen3 yaml-cpp pinocchio fmt)
+ament_export_dependencies(rtc_base Eigen3 yaml-cpp pinocchio fmt aligator)
 
 # ── Tests ────────────────────────────────────────────────────────────────────
 if(BUILD_TESTING)
@@ -141,6 +147,16 @@ if(BUILD_TESTING)
     test/test_phase_cost_config.cpp)
   if(TARGET test_phase_cost_config)
     target_link_libraries(test_phase_cost_config rtc_mpc)
+  endif()
+
+  ament_add_gtest(test_cost_factory test/test_cost_factory.cpp)
+  if(TARGET test_cost_factory)
+    target_link_libraries(test_cost_factory rtc_mpc)
+  endif()
+
+  ament_add_gtest(test_kinodynamics_ocp test/test_kinodynamics_ocp.cpp)
+  if(TARGET test_kinodynamics_ocp)
+    target_link_libraries(test_kinodynamics_ocp rtc_mpc)
   endif()
 endif()
 
