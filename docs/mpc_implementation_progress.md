@@ -1041,17 +1041,69 @@ Per §"Phase Completion Housekeeping" checklist:
 - **NEW Risk #13 (provider-interface speculation)** — **Status 2026-04-19: retired** by Open Decision #4 (defer). Phase 4 ships no provider interface; Phase 4.5 co-designs it with first concrete consumer.
 - **§11 #9 (solve perf)** — Phase 3 p50 ~53 ms. ContactRich adds friction cones → likely slower. Phase 4 cannot resolve this; it is Phase 5's job via warm-start. Documented in Open Decision #2 (log-only).
 
-### Phase 4 Spike Notes (4.0 — resolved YYYY-MM-DD)
+### Phase 4 Spike Notes (4.0 — resolved 2026-04-19)
 
-_(To be filled in before 4.1 code lands. Template:)_
+Scratch at `/tmp/aligator_verify/contact_rich_spike/` — CMake + `spike.cpp` linking `aligator::aligator` + `pinocchio::pinocchio` + `fmt::fmt`. Compile clean under the same CMake workarounds as `rtc_mpc/CMakeLists.txt` (hpp-fcl_DIR + fmt HINTS). Header inspection paths: `/usr/local/include/aligator/{core,modelling}/`.
 
-1. Semantic split — confirmed / rejected / modified:
-2. `ContactForceResidualTpl` ctor + mutation API:
-3. Friction-cone residual/constraint choice:
-4. Friction-cone attach API (`StageModelTpl::addConstraint` signature):
-5. Reference-mutation visibility of contact-force residuals:
-6. Multi-cost key collision handling:
-7. Solver smoke result (iters, wall-time, friction cone active):
+1. **Semantic split — CONFIRMED.** Both `LightContactOCP` and `ContactRichOCP` share the `MultibodyConstraintFwdDynamicsTpl` backbone on fixed-base manipulators; the differentiation is: (a) per-active-contact `ContactForceResidualTpl` wrapped in `QuadraticResidualCostTpl` when `w_contact_force > 0`, (b) per-active-contact `MultibodyFrictionConeResidualTpl` attached as inequality constraint with `NegativeOrthantTpl` when `limits.friction_mu > 0`. Torque / joint box are deferred to Phase 5 per Open Decision #1.
+
+2. **`ContactForceResidualTpl<double>` ctor + mutation API.** Header `<aligator/modelling/multibody/contact-force.hpp>`. Ctor:
+   ```cpp
+   ContactForceResidualTpl(int ndx, const pinocchio::Model&, const MatrixXd& actuation,
+                           const RigidConstraintModelVector& constraint_models,
+                           const pinocchio::ProximalSettings&, const Vector3or6& fref,
+                           std::string_view contact_name);
+   ```
+   The ctor iterates `constraint_models[i].name` to locate `contact_name`; throws `ALIGATOR_RUNTIME_ERROR` if not found. So `LightContactOCP::BuildConstraintModels` (post-rename) already sets `.name = info.name` — the ContactRich path inherits that requirement and MUST use matching frame names. Mutation API is `void setReference(const Eigen::Ref<const Vector3or6>&)` — plain field assignment, alloc-free. `getReference()` returns `const Vector3or6&`. `fref.size()` at ctor selects 3-D (CONTACT_3D) or 6-D (CONTACT_6D) residual; shipped Panda fixture uses 3-D.
+
+3. **Friction-cone residual / constraint choice — `MultibodyFrictionConeResidualTpl` + `NegativeOrthantTpl`.** Header `<aligator/modelling/multibody/multibody-friction-cone.hpp>`. Residual is **2-dimensional** and **CONTACT_3D-only** (evaluate() indexes `lambda_c[contact_id*3 + {0,1,2}]`):
+   - `value_[0] = −λ_n` → `≤0` ⇒ unilateral contact `λ_n ≥ 0`.
+   - `value_[1] = −μ·λ_n + √(λ_t1² + λ_t2²)` → `≤0` ⇒ smooth friction cone `‖f_tan‖ ≤ μ·f_n`.
+
+   This is a **smooth second-order (conic)** formulation — **no `n_friction_facets` parameter exists**. `OCPLimits::n_friction_facets` is therefore unused by this class. **Plan update**: leave the field in `OCPLimits` (POD frozen across Phase 3–4), but document in `ContactRichOCP` header that it's reserved for a future polyhedral variant and ignored today. Ctor:
+   ```cpp
+   MultibodyFrictionConeResidualTpl(int ndx, const pinocchio::Model&, const MatrixXd& actuation,
+                                    const RigidConstraintModelVector&, const pinocchio::ProximalSettings&,
+                                    std::string_view contact_name, double mu);
+   ```
+   `mu` is instance-level; ctor resolves `contact_id_` via the same `constraint_models[i].name` lookup. **Edge case (risk for Step 4):** `computeJacobians` divides by `√(λ_t1² + λ_t2²)` (file `multibody-friction-cone.hxx` lines 44-48) — zero tangential force ⇒ division by zero ⇒ NaN downstream. Implementation must either (a) seed λ with non-zero tangential values via warm-start, or (b) gate the friction cone to contact phases only, or (c) add a small regularization ε to the sqrt. Decision deferred to Step 4; add as new Risk #14.
+
+4. **Constraint attach API.** `aligator::StageModelTpl<Scalar>::addConstraint(const PolyFunction&, const PolyConstraintSet&)` where:
+   - `PolyFunction = xyz::polymorphic<StageFunctionTpl<Scalar>>`
+   - `PolyConstraintSet = xyz::polymorphic<ConstraintSetTpl<Scalar>>`
+
+   Both are value-copied into `StageModelTpl::constraints_` (a `ConstraintStackTpl<Scalar>` — distinct from the cost `CostStackTpl`). Attach pattern: `stage.addConstraint(fcone_residual, NegOrthantTpl<double>{});`. Verified by compile in spike (friction-cone path enabled via `SPIKE_FRICTION=1` env var).
+
+5. **Reference-mutation visibility — VERIFIED at runtime.** Post-`TrajOptProblem` assembly, walking the stored stage reproduces the Phase-3-proven chain for contact-force residuals:
+   ```cpp
+   auto* stored = problem.stages_[k].get();
+   auto* stack  = stored->getCost<CostStackTpl<double>>();
+   auto* qc     = stack->getComponent<QuadraticResidualCostTpl<double>>(
+                     "contact_force::" + contact_frame_name);
+   auto* cfr    = qc->getResidual<ContactForceResidualTpl<double>>();
+   cfr->setReference(F_target);  // alloc-free mutation
+   ```
+   Spike verified `getReference()` returns `[0,0,0]` pre-mutation and `[0.1, 0.2, 1.3]` post-`setReference` — same polymorphic deep-copy + raw-pointer cache-on-build pattern as Phase 3's FramePlacement/StateError/ControlError handles. `RichStageHandles::contact_force` is a `std::vector<ContactForceResidualTpl<double>*>` parallel to `stage_active_contacts_[k]` order.
+
+6. **Multi-cost key collision handling.** `CostStackTpl<Scalar>::addCost(const CostKey& key, const PolyCost& cost, Scalar weight = 1.)` accepts arbitrary `std::string` keys. Keying scheme for Step 4: `"contact_force::" + frame_name` — guaranteed collision-free because Pinocchio frame names are unique per model. Same key is used for handle lookup via `getComponent<QuadraticResidualCostTpl<double>>(key)`. Constant: introduce `inline constexpr std::string_view kCostKeyContactForcePrefix = "contact_force::"` in `contact_rich_ocp.hpp` (or `cost_factory.hpp` if Step 4 decides contact-force belongs to the factory). **Recommendation**: keep contact-force construction inside `ContactRichOCP` (not `cost_factory`) — the residual needs dynamics-layer inputs (actuation, constraint_models, prox_settings) that the factory doesn't own. Phase 3 already documents this boundary in `cost_factory.hpp:9-12`.
+
+7. **Solver smoke.** `/tmp/aligator_verify/contact_rich_spike/build/spike`, 2-stage problem, Panda 9-DoF, both fingers active, `w_contact_force = 1.0`, `mu = 0.7`:
+   - **Baseline (no cforce, no friction) — PASS.** Solver converges in 2 iters, prim_infeas = 6.1e-11, cost = 0.08, wall = <1 ms. Confirms `MultibodyConstraintFwd` backbone + `CostStack` baseline is wired correctly.
+   - **+ contact-force cost — NaN.** Solver aborts at `computeMultipliers() returned false. NaN or Inf detected` inside `solver-proxddp.hxx:547` during the first linearization. Happens even with `fref = 0`. Root cause: `computeConstraintDynamicsDerivatives` yields ill-conditioned `dlambda_d{q,v,tau}` when rigid constraints are attached at fingertips that are in free space (neutral Panda pose — no physical load). Not an API defect.
+   - **+ friction cone — NaN (same site).** Expected per note Q3.
+
+   **Implication for Step 4:** cold-solve from neutral pose with contact-force cost requires initial-guess shaping. Three mitigation levers identified (pick ≤1 or combine per Step 4 judgement):
+   - (a) **Seed `solver.setInitialGuess(xs, us)`** with `us[k] = tau_gravity(q_neutral)` (feed-forward gravity compensation) so `λ_c` starts at a well-posed fixed point.
+   - (b) **Start with low `w_contact_force` and ramp** across phase transitions (complicates Step 4 scope; avoid).
+   - (c) **Skip friction cone on free-flight stages** (we already do — it's only attached for active-contact stages — but the NaN arises even pre-friction). So (a) is the load-bearing mitigation.
+   - Step 4 implementation: in `ContactRichOCP::Build`, after problem assembly, call `solver`-side seeding is NOT the OCP's responsibility — but `test_contact_rich_ocp.cpp` MUST seed `solver.setInitialGuess` in every `Solve*` test case, else tests repro the NaN. Record this in §4.4 (test fixture SetUp does this).
+
+**Risks updated from 4.0:**
+- Risk **#14 (friction-cone Jacobian div-by-zero at λ_tan = 0)** — new. Mitigated by seeding initial guess; document in `contact_rich_ocp.hpp` doc-comment. **Status 2026-04-19: open**, to be closed by Step 4 implementation choice.
+- Risk **#10 (friction-cone API unknown)** — CLOSED: `MultibodyFrictionConeResidualTpl` + `NegativeOrthantTpl` confirmed.
+- Risk **#11 (constraint attach API)** — CLOSED: `StageModelTpl::addConstraint(polymorphic<StageFunction>, polymorphic<ConstraintSet>)` confirmed.
+
+**`OCPLimits::n_friction_facets` field status:** retained as-is (POD frozen). Doc-comment in `ocp_handler_base.hpp:52` should be updated in Step 4 to note "currently unused by `MultibodyFrictionConeResidualTpl` (smooth cone); reserved for future polyhedral friction-cone variant". Not a Spike-Notes commit concern — lands with Step 4 code.
 
 ---
 
