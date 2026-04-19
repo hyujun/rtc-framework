@@ -20,6 +20,21 @@ find_package(rtc_base REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
+# ── MPC deps (Phase 0 dual-install workarounds — see
+#    docs/mpc_implementation_progress.md §Phase 0 "CMake Constraints") ────────
+# hpp-fcl ABI: force ROS Jazzy's hpp-fcl *before* pinocchio's transitive
+# find_dependency, otherwise /usr/local's RowMajor-signature hpp-fcl wins and
+# breaks pinocchio_parsers linking.
+if(EXISTS /opt/ros/$ENV{ROS_DISTRO}/lib/x86_64-linux-gnu/cmake/hpp-fcl)
+  set(hpp-fcl_DIR
+    /opt/ros/$ENV{ROS_DISTRO}/lib/x86_64-linux-gnu/cmake/hpp-fcl
+    CACHE PATH "ROS hpp-fcl (avoid /usr/local ABI break)" FORCE)
+endif()
+# fmt: apt libfmt-dev (9.1.0) is preferred by CMake's multi-arch search,
+# but Aligator was built against source-installed fmt 11.1.4. Hint /usr/local.
+find_package(fmt 10 REQUIRED HINTS /usr/local/lib/cmake/fmt)
+find_package(pinocchio REQUIRED)
+
 # ── Library target (STATIC) ──────────────────────────────────────────────────
 add_library(rtc_mpc STATIC
   src/interpolation/trajectory_interpolator.cpp
@@ -27,6 +42,7 @@ add_library(rtc_mpc STATIC
   src/manager/mpc_solution_manager.cpp
   src/thread/mpc_thread.cpp
   src/thread/mock_mpc_thread.cpp
+  src/model/robot_model_handler.cpp
 )
 
 target_include_directories(rtc_mpc PUBLIC
@@ -40,6 +56,8 @@ target_include_directories(rtc_mpc SYSTEM PUBLIC
 
 target_link_libraries(rtc_mpc PUBLIC
   yaml-cpp
+  pinocchio::pinocchio
+  fmt::fmt
 )
 
 ament_target_dependencies(rtc_mpc PUBLIC
@@ -62,7 +80,7 @@ install(EXPORT rtc_mpcTargets
 
 ament_export_targets(rtc_mpcTargets)
 ament_export_include_directories(include)
-ament_export_dependencies(rtc_base Eigen3 yaml-cpp)
+ament_export_dependencies(rtc_base Eigen3 yaml-cpp pinocchio fmt)
 
 # ── Tests ────────────────────────────────────────────────────────────────────
 if(BUILD_TESTING)
@@ -109,6 +127,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_mpc_thread_mock test/test_mpc_thread_mock.cpp)
   if(TARGET test_mpc_thread_mock)
     target_link_libraries(test_mpc_thread_mock rtc_mpc)
+  endif()
+
+  ament_add_gtest(test_robot_model_handler
+    test/test_robot_model_handler.cpp)
+  if(TARGET test_robot_model_handler)
+    target_link_libraries(test_robot_model_handler rtc_mpc)
   endif()
 endif()
 

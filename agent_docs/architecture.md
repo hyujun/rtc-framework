@@ -85,7 +85,7 @@ rtc_msgs, rtc_base (independent)
   |     +-- rtc_controllers <-- rtc_controller_interface, rtc_urdf_bridge
   |           +-- rtc_controller_manager <-- rtc_controllers, rtc_communication
   +-- rtc_tsid <-- Pinocchio, ProxSuite, Eigen3, yaml-cpp
-  +-- rtc_mpc  <-- rtc_base, Eigen3, yaml-cpp
+  +-- rtc_mpc  <-- rtc_base, Eigen3, yaml-cpp, Pinocchio, fmt ≥ 10
   +-- rtc_mujoco_sim <-- MuJoCo 3.x (optional)
 rtc_urdf_bridge <-- Pinocchio, tinyxml2, yaml-cpp
 ur5e_hand_driver <-- rtc_communication, rtc_inference, rtc_base

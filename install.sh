@@ -44,9 +44,17 @@ apt_update_if_stale() {
   fi
 }
 
+# ── MPC dependency versions (Phase 0 — source-built to /usr/local) ────────────
+FMT_VERSION="11.1.4"
+MIMALLOC_VERSION="2.1.7"
+ALIGATOR_VERSION="0.19.0"
+LIBS_ROOT="${HOME}/libs"
+
 # ── Mode & argument parsing ────────────────────────────────────────────────────
 SKIP_DEPS=0
 SKIP_BUILD=0
+SKIP_MPC=0
+MODE_VERIFY=0
 DO_RT=0
 SKIP_DEBUG_SETUP=0
 SET_PTRACE_SCOPE=0
@@ -59,15 +67,18 @@ show_help() {
   echo ""
   echo "Modes:"
   echo "  sim    — MuJoCo simulation only"
-  echo "             Installs: ROS2 build tools, Pinocchio, ProxSuite, tinyxml2, yaml-cpp, MuJoCo 3.x"
+  echo "             Installs: ROS2 build tools, Pinocchio, ProxSuite, MPC deps (fmt/mimalloc/aligator), MuJoCo 3.x"
   echo "             Skips:    UR robot driver, RT scheduling permissions"
   echo ""
   echo "  robot  — Real robot only"
-  echo "             Installs: ROS2 build tools, UR driver, Pinocchio, ProxSuite, tinyxml2, yaml-cpp, RT permissions"
+  echo "             Installs: ROS2 build tools, UR driver, Pinocchio, ProxSuite, MPC deps, RT permissions"
   echo "             Skips:    MuJoCo"
   echo ""
   echo "  full   — Complete installation (default)"
   echo "             Installs: everything above"
+  echo ""
+  echo "  verify — Verify installation only (no deps, no build, no RT setup)"
+  echo "             Checks: MPC libraries under /usr/local, Panda URDF, workspace install/"
   echo ""
   echo "Scope:"
   echo "  --all             Install everything: deps + build + RT system setup"
@@ -84,6 +95,7 @@ show_help() {
   echo "  --skip-deps       Skip installing apt system dependencies"
   echo "  --skip-build      Skip compiling the packages (only download/setup)"
   echo "  --skip-rt         Skip RT system setup (overrides --all)"
+  echo "  --skip-mpc        Skip MPC source-built deps (fmt/mimalloc/aligator)"
   echo "  --skip-debug      Skip GDB/debugger tools installation"
   echo "  --ptrace-scope    Set ptrace_scope=0 for VS Code Attach debugger"
   echo "                    (Required for 'Attach to Node' launch configuration)"
@@ -135,8 +147,19 @@ while [[ $# -gt 0 ]]; do
       DO_RT=0
       shift
       ;;
+    --skip-mpc)
+      SKIP_MPC=1
+      shift
+      ;;
     --skip-debug)
       SKIP_DEBUG_SETUP=1
+      shift
+      ;;
+    verify)
+      MODE_VERIFY=1
+      SKIP_DEPS=1
+      SKIP_BUILD=1
+      DO_RT=0
       shift
       ;;
     --ptrace-scope)
@@ -153,10 +176,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$MODE" in
-  sim)   MODE_DESC="Simulation  (MuJoCo + Pinocchio + ProxSuite, hand: fake response, no RT perms)" ;;
-  robot) MODE_DESC="Real Robot  (UR driver + Pinocchio + ProxSuite + RT permissions, no MuJoCo)" ;;
-  full)  MODE_DESC="Full        (UR driver + Pinocchio + ProxSuite + MuJoCo + RT permissions)" ;;
+  sim)   MODE_DESC="Simulation  (MuJoCo + Pinocchio + ProxSuite + MPC deps, hand: fake response, no RT perms)" ;;
+  robot) MODE_DESC="Real Robot  (UR driver + Pinocchio + ProxSuite + MPC deps + RT permissions, no MuJoCo)" ;;
+  full)  MODE_DESC="Full        (UR driver + Pinocchio + ProxSuite + MPC deps + MuJoCo + RT permissions)" ;;
 esac
+[[ "$MODE_VERIFY" -eq 1 ]] && MODE_DESC="Verify      (no deps, no build — check install artifacts only)"
 
 # ── Banner ─────────────────────────────────────────────────────────────────────
 echo ""
@@ -426,6 +450,192 @@ install_proxsuite() {
       warn "See: https://github.com/Simple-Robotics/proxsuite#installation"
     fi
   fi
+}
+
+# ── MPC deps: fmt / mimalloc / aligator (source build to /usr/local) ──────────
+# Aligator 0.19 requires fmt ≥ 10 and mimalloc; neither is available from apt at
+# the required versions on Ubuntu 22.04/24.04. Build from source, retaining
+# sources under ~/libs/ so the user can `sudo make uninstall` later.
+#
+# hpp-fcl ABI note: Aligator must be configured with ROS Jazzy's hpp-fcl (not
+# /usr/local's) to avoid ABI break with pinocchio_parsers. See
+# docs/mpc_implementation_progress.md §Phase 0 for full diagnostic history.
+_mpc_prepare_source() {
+  # $1=repo_url $2=tag $3=dest_dir
+  local url="$1" tag="$2" dir="$3"
+  mkdir -p "$LIBS_ROOT"
+  if [[ ! -d "$dir/.git" ]]; then
+    info "  Cloning $(basename "$dir") ${tag} → ${dir}"
+    git clone --depth 1 --branch "$tag" "$url" "$dir" > /dev/null 2>&1 \
+      || { warn "git clone failed for $url@$tag"; return 1; }
+  else
+    # 이미 클론된 저장소: 태그 일치 시 skip, 아니면 fetch + checkout
+    local current_tag
+    current_tag=$(cd "$dir" && git describe --tags 2>/dev/null || echo "")
+    if [[ "$current_tag" != "$tag" && "$current_tag" != "v$tag" ]]; then
+      info "  Updating $(basename "$dir") to ${tag} (was ${current_tag})"
+      (cd "$dir" && git fetch --depth 1 origin "refs/tags/$tag:refs/tags/$tag" \
+          && git checkout -q "$tag") > /dev/null 2>&1 \
+        || { warn "git checkout $tag failed in $dir"; return 1; }
+    fi
+  fi
+  return 0
+}
+
+install_fmt_from_source() {
+  # 이미 설치되어 있으면 skip (멱등성)
+  if [[ -f "/usr/local/lib/libfmt.so.${FMT_VERSION}" ]]; then
+    success "fmt ${FMT_VERSION} already installed at /usr/local"
+    return
+  fi
+  info "Preparing fmt ${FMT_VERSION} from source..."
+  _mpc_prepare_source "https://github.com/fmtlib/fmt.git" \
+                      "${FMT_VERSION}" \
+                      "${LIBS_ROOT}/fmt" \
+    || { warn "fmt source prep failed — skipping"; return; }
+
+  local build_dir="${LIBS_ROOT}/fmt/build"
+  if [[ ! -f "$build_dir/CMakeCache.txt" ]]; then
+    cmake -S "${LIBS_ROOT}/fmt" -B "$build_dir" \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DFMT_TEST=OFF \
+      -DBUILD_SHARED_LIBS=ON \
+      > /dev/null || { warn "fmt cmake failed"; return; }
+  fi
+  cmake --build "$build_dir" --parallel > /dev/null \
+    || { warn "fmt build failed"; return; }
+
+  info "  Installing fmt ${FMT_VERSION} to /usr/local (requires sudo)..."
+  sudo cmake --install "$build_dir" > /dev/null \
+    || { warn "fmt install failed"; return; }
+  sudo ldconfig
+  success "fmt ${FMT_VERSION} installed"
+}
+
+install_mimalloc_from_source() {
+  if [[ -f "/usr/local/lib/libmimalloc.so.2.1" ]]; then
+    success "mimalloc ${MIMALLOC_VERSION} already installed at /usr/local"
+    return
+  fi
+  info "Preparing mimalloc ${MIMALLOC_VERSION} from source..."
+  _mpc_prepare_source "https://github.com/microsoft/mimalloc.git" \
+                      "v${MIMALLOC_VERSION}" \
+                      "${LIBS_ROOT}/mimalloc" \
+    || { warn "mimalloc source prep failed — skipping"; return; }
+
+  local build_dir="${LIBS_ROOT}/mimalloc/build"
+  if [[ ! -f "$build_dir/CMakeCache.txt" ]]; then
+    cmake -S "${LIBS_ROOT}/mimalloc" -B "$build_dir" \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DMI_BUILD_TESTS=OFF \
+      > /dev/null || { warn "mimalloc cmake failed"; return; }
+  fi
+  cmake --build "$build_dir" --parallel > /dev/null \
+    || { warn "mimalloc build failed"; return; }
+
+  info "  Installing mimalloc ${MIMALLOC_VERSION} to /usr/local (requires sudo)..."
+  sudo cmake --install "$build_dir" > /dev/null \
+    || { warn "mimalloc install failed"; return; }
+  sudo ldconfig
+  success "mimalloc ${MIMALLOC_VERSION} installed"
+}
+
+install_aligator_from_source() {
+  if [[ -f "/usr/local/lib/libaligator.so.${ALIGATOR_VERSION}" ]]; then
+    success "Aligator ${ALIGATOR_VERSION} already installed at /usr/local"
+    return
+  fi
+  # ROS 소싱 필수 (hpp-fcl_DIR 경로 resolve용)
+  if [[ -z "${ROS_DISTRO:-}" ]]; then
+    warn "ROS env not sourced — Aligator build needs hpp-fcl from ROS. Skipping."
+    warn "Run: source /opt/ros/<distro>/setup.bash, then re-run install.sh"
+    return
+  fi
+  info "Preparing Aligator ${ALIGATOR_VERSION} from source..."
+  _mpc_prepare_source "https://github.com/Simple-Robotics/aligator.git" \
+                      "v${ALIGATOR_VERSION}" \
+                      "${LIBS_ROOT}/aligator" \
+    || { warn "Aligator source prep failed — skipping"; return; }
+
+  # 서브모듈 (eigenpy, example-robot-data 등)
+  (cd "${LIBS_ROOT}/aligator" && git submodule update --init --recursive --depth 1) \
+    > /dev/null 2>&1 || warn "Aligator submodule update produced warnings (continuing)"
+
+  local hpp_fcl_cmake="/opt/ros/${ROS_DISTRO}/lib/x86_64-linux-gnu/cmake/hpp-fcl"
+  if [[ ! -d "$hpp_fcl_cmake" ]]; then
+    warn "ROS hpp-fcl cmake dir not found at ${hpp_fcl_cmake} — Aligator build may fail"
+  fi
+
+  local build_dir="${LIBS_ROOT}/aligator/build"
+  if [[ ! -f "$build_dir/CMakeCache.txt" ]]; then
+    cmake -S "${LIBS_ROOT}/aligator" -B "$build_dir" \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_TESTING=OFF \
+      -DBUILD_PYTHON_INTERFACE=OFF \
+      -DBUILD_WITH_PINOCCHIO_SUPPORT=ON \
+      -Dhpp-fcl_DIR="$hpp_fcl_cmake" \
+      -Dfmt_DIR=/usr/local/lib/cmake/fmt \
+      > /dev/null || { warn "Aligator cmake failed"; return; }
+  fi
+  info "  Building Aligator ${ALIGATOR_VERSION} (~3-5 min)..."
+  cmake --build "$build_dir" --parallel > /dev/null \
+    || { warn "Aligator build failed"; return; }
+
+  info "  Installing Aligator ${ALIGATOR_VERSION} to /usr/local (requires sudo)..."
+  sudo cmake --install "$build_dir" > /dev/null \
+    || { warn "Aligator install failed"; return; }
+  sudo ldconfig
+  success "Aligator ${ALIGATOR_VERSION} installed"
+}
+
+install_mpc_deps() {
+  if [[ "$SKIP_MPC" -eq 1 ]]; then
+    info "Skipping MPC source-built deps (--skip-mpc)"
+    return
+  fi
+  info "Installing MPC deps (fmt + mimalloc + aligator)..."
+  install_fmt_from_source
+  install_mimalloc_from_source
+  install_aligator_from_source
+}
+
+# ── Verify MPC install artifacts (verify mode + post-install check) ──────────
+verify_mpc_deps() {
+  local failed=0
+  echo ""
+  info "━━━ MPC Dependency Check ━━━"
+
+  if [[ -f "/usr/local/lib/libfmt.so.${FMT_VERSION}" ]]; then
+    success "fmt ${FMT_VERSION}      → /usr/local/lib/libfmt.so.${FMT_VERSION}"
+  else
+    warn "fmt ${FMT_VERSION} MISSING (expected /usr/local/lib/libfmt.so.${FMT_VERSION})"
+    failed=1
+  fi
+
+  if [[ -f "/usr/local/lib/libmimalloc.so.2.1" ]]; then
+    success "mimalloc ${MIMALLOC_VERSION} → /usr/local/lib/libmimalloc.so.2.1"
+  else
+    warn "mimalloc ${MIMALLOC_VERSION} MISSING"
+    failed=1
+  fi
+
+  if [[ -f "/usr/local/lib/libaligator.so.${ALIGATOR_VERSION}" ]]; then
+    success "Aligator ${ALIGATOR_VERSION}  → /usr/local/lib/libaligator.so.${ALIGATOR_VERSION}"
+  else
+    warn "Aligator ${ALIGATOR_VERSION} MISSING (run: $0 --skip-rt --skip-build)"
+    failed=1
+  fi
+
+  local panda_urdf="/usr/local/share/example-robot-data/robots/panda_description/urdf/panda.urdf"
+  if [[ -f "$panda_urdf" ]]; then
+    success "Panda URDF         → ${panda_urdf}"
+  else
+    warn "Panda URDF MISSING (installed by Aligator's example-robot-data submodule)"
+    failed=1
+  fi
+
+  [[ $failed -eq 1 ]] && warn "MPC dependency check: one or more artifacts missing"
+  return $failed
 }
 
 # ── BehaviorTree.CPP (BT coordinator) ──────────────────────────────────────────
@@ -889,8 +1099,8 @@ verify_installation() {
   mkdir -p "${WORKSPACE}/logging_data/stats" "${WORKSPACE}/logging_data/ur_plot"
   success "Log directories ready (${WORKSPACE}/logging_data, ${WORKSPACE}/logging_data/ur_plot)"
 
-  # RT 환경 검증 (robot/full 모드)
-  if [[ "$MODE" == "robot" || "$MODE" == "full" ]]; then
+  # RT 환경 검증 (robot/full 모드; verify 모드에선 skip)
+  if [[ "$MODE_VERIFY" -eq 0 ]] && [[ "$MODE" == "robot" || "$MODE" == "full" ]]; then
     local CHECK_SCRIPT
     CHECK_SCRIPT="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/check_rt_setup.sh"
     if [[ -f "$CHECK_SCRIPT" ]]; then
@@ -1021,6 +1231,19 @@ print_summary() {
 # Main installation sequence
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ── Verify-only short circuit ─────────────────────────────────────────────────
+if [[ "$MODE_VERIFY" -eq 1 ]]; then
+  check_workspace_structure "$INSTALL_SCRIPT_DIR"
+  check_prerequisites
+  verify_mpc_deps || true
+  if [[ -d "${WORKSPACE}/install" ]]; then
+    verify_installation
+  else
+    warn "Workspace not built yet — skipping colcon package verification"
+  fi
+  exit 0
+fi
+
 if [[ "$SKIP_DEPS" -eq 0 ]]; then
   check_workspace_structure "$INSTALL_SCRIPT_DIR"
   check_prerequisites
@@ -1036,17 +1259,20 @@ if [[ "$SKIP_DEPS" -eq 0 ]]; then
     sim)
       install_pinocchio
       install_proxsuite
+      install_mpc_deps
       install_mujoco
       ;;
     robot)
       install_ur_driver
       install_pinocchio
       install_proxsuite
+      install_mpc_deps
       ;;
     full)
       install_ur_driver
       install_pinocchio
       install_proxsuite
+      install_mpc_deps
       install_mujoco
       ;;
   esac
@@ -1095,4 +1321,5 @@ else
 fi
 
 verify_installation
+verify_mpc_deps || true
 print_summary

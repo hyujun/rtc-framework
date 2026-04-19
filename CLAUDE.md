@@ -16,7 +16,7 @@
 | Build | CMake 3.22+, colcon, ament_cmake / ament_python |
 | Deps | Eigen 3.4, Pinocchio, ProxSuite, ONNX Runtime |
 | Optional | MuJoCo 3.x (sim), BehaviorTree.CPP v4 |
-| Test | GTest, pytest (229 tests across 12 packages) |
+| Test | GTest, pytest (238 tests across 12 packages) |
 
 ## Directory Map
 
@@ -33,7 +33,7 @@
 | `rtc_msgs` | ROS2 message definitions |
 | `rtc_mujoco_sim` | MuJoCo 3.x wrapper |
 | `rtc_tsid` | TSID QP: WQP/HQP, tasks, constraints, ProxSuite |
-| `rtc_mpc` | MPC-RT interface: TripleBuffer, TrajectoryInterpolator, RiccatiFeedback |
+| `rtc_mpc` | MPC-RT interface: TripleBuffer, TrajectoryInterpolator, RiccatiFeedback, RobotModelHandler |
 | `rtc_urdf_bridge` | URDF parser + Pinocchio model builder |
 | `rtc_tools` | Python GUI/plotting tools |
 | `rtc_scripts` | PREEMPT_RT, CPU shield, IRQ affinity scripts |

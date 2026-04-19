@@ -22,7 +22,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | Package | Tests | Framework |
 |---------|-------|-----------|
 | `rtc_mujoco_sim` | 77 C++ tests (parse helpers, simulator lifecycle, solver priority, command/state I/O, runtime controls) | GTest |
-| `rtc_mpc` | 43 C++ tests (types, TripleBuffer stress, interpolation, Riccati, solution manager, thread skeleton) | GTest |
+| `rtc_mpc` | 59 C++ tests (types, TripleBuffer stress, interpolation, Riccati, solution manager, thread skeleton, RobotModelHandler) | GTest |
 | `ur5e_bringup` | 29 C++ tests (virtual_tcp, shared_config, demo_wbc FSM/integration/output, MPC binding) | GTest |
 | `rtc_base` | 24 C++ tests (SeqLock, SPSC, Bessel/Kalman filters, session dir, thread-config tiers) | GTest |
 | `rtc_tsid` | 17 C++ tests (QP solver, tasks, constraints, formulations, performance) | GTest |
