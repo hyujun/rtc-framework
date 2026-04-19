@@ -17,7 +17,7 @@ Key types (all trivially copyable, RT-safe):
 | rt_loop | 2 | FIFO | 90 | 500Hz ControlLoop + 50Hz CheckTimeouts |
 | sensor_executor | 3 | FIFO | 70 | JointState/MotorState/SensorState/Target subs |
 | log_executor | 4 | OTHER | nice -5 | CSV logging (SPSC drain) |
-| mpc_main | 4 | FIFO | 60 | 20Hz MPC solve, publishes via `TripleBuffer` |
+| mpc_main | 4 | FIFO | 60 | 20Hz MPC solve, publishes via `TripleBuffer`. Concrete driver is `rtc::mpc::HandlerMPCThread` (Phase 6): per-tick FK → `PhaseManagerBase::Update` → `MPCHandlerBase::Solve` → `MPCSolutionManager::PublishSolution`; cross-mode swap via `MPCFactory::Create` + `SeedWarmStart`. `MockMPCThread` remains the no-solver baseline. |
 | publish_thread | 5 | OTHER | nice -3 | SPSC -> ROS2 publish |
 | udp_recv | 5 | FIFO | 65 | Hand UDP receiver |
 

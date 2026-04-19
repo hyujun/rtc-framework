@@ -28,6 +28,7 @@ skeleton. Concrete solver integrations (Aligator ProxDDP) plug in via
 | `feedback/` | `riccati_feedback.hpp` | `u_fb = gain_scale · K · Δx` with optional accel-only mode |
 | `manager/` | `mpc_solution_manager.hpp` | Facade combining TripleBuffer + Interpolator + Feedback + SeqLock |
 | `thread/` | `mpc_thread.hpp` | `MPCThread` base (jthread + worker frame) and `MockMPCThread` |
+| `thread/` | `handler_mpc_thread.hpp` | Concrete `MPCThread` wiring a `PhaseManagerBase` FSM into an `MPCHandlerBase` solver: per-tick FK → `phase_manager.Update` → `handler.Solve` → `PublishSolution`; cross-mode swap via `MPCFactory` + `SeedWarmStart`; observability atomics |
 | `handler/` | `mpc_handler_base.hpp` | Abstract MPC solve orchestrator: owns an `OCPHandlerBase` + `SolverProxDDP`, drives warm-started solves via `Init` / `Solve(PhaseContext, state, MPCSolution&)` / `SeedWarmStart`. Enums `MPCInitError`, `MPCSolveError`, POD `MPCSolverConfig`. |
 | `handler/` | `light_contact_mpc.hpp` | Concrete `MPCHandlerBase` wrapping `LightContactOCP`. |
 | `handler/` | `contact_rich_mpc.hpp` | Concrete `MPCHandlerBase` wrapping `ContactRichOCP`; forwards the grasp-quality provider seam. |
@@ -79,6 +80,7 @@ workarounds via `ament_export_dependencies`.
 | 3 | `OCPHandlerBase` + `LightContactOCP` (renamed from `KinoDynamicsOCP` in 4.-1) + `CostFactory` + `OCPLimits` | ✅ |
 | 4 | `ContactRichOCP` (contact-force cost + smooth conic friction cone) + `GraspQualityResidualProvider` seam + `test_utils/SeedGravityCompensation` | ✅ |
 | 5 | `MPCHandlerBase` + `LightContactMPC` + `ContactRichMPC` + `MPCFactory` + horizon-shift warm-start (Aligator `cycleAppend`) | ✅ |
-| 6-7 | MPCThread integration + MockPhaseManager + ur5e hook-up | ⬜ |
+| 6 | `HandlerMPCThread` + `MockPhaseManager` (test-only) + alloc tracer (Phase 5 Exit #3 closed for LightContact; ContactRich informational) | ✅ |
+| 7 | ur5e_bringup `GraspPhaseManager` + MPC YAML wiring + 16-DoF MuJoCo E2E | ⬜ |
 
 See `docs/mpc_implementation_progress.md` for the living roadmap.

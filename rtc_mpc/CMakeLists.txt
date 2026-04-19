@@ -45,6 +45,7 @@ add_library(rtc_mpc STATIC
   src/manager/mpc_solution_manager.cpp
   src/thread/mpc_thread.cpp
   src/thread/mock_mpc_thread.cpp
+  src/thread/handler_mpc_thread.cpp
   src/model/robot_model_handler.cpp
   src/phase/phase_cost_config.cpp
   src/ocp/cost_factory.cpp
@@ -190,6 +191,22 @@ if(BUILD_TESTING)
   ament_add_gtest(test_mpc_factory test/test_mpc_factory.cpp)
   if(TARGET test_mpc_factory)
     target_link_libraries(test_mpc_factory rtc_mpc)
+  endif()
+
+  ament_add_gtest(test_mpc_thread_integration
+    test/test_mpc_thread_integration.cpp)
+  if(TARGET test_mpc_thread_integration)
+    target_include_directories(test_mpc_thread_integration PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/test)
+    target_link_libraries(test_mpc_thread_integration rtc_mpc)
+  endif()
+
+  ament_add_gtest(test_mpc_handler_alloc_tracer
+    test/test_mpc_handler_alloc_tracer.cpp)
+  if(TARGET test_mpc_handler_alloc_tracer)
+    target_include_directories(test_mpc_handler_alloc_tracer PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/test)
+    target_link_libraries(test_mpc_handler_alloc_tracer rtc_mpc)
   endif()
 endif()
 
