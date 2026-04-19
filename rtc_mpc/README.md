@@ -15,6 +15,9 @@ skeleton. Concrete solver integrations (Aligator ProxDDP) plug in via
 | `types/` | `mpc_solution_types.hpp` | `MPCSolution`, `MPCStateSnapshot` (trivially copyable, fixed capacity) |
 | `types/` | `contact_plan_types.hpp` | `ContactFrameInfo`, `ContactPhase`, `ContactPlan` (non-RT, OCP build path) |
 | `model/` | `robot_model_handler.hpp` | Robot-agnostic wrapper over `pinocchio::Model` + YAML frame resolution |
+| `phase/` | `phase_manager_base.hpp` | Pure-virtual FSM boundary (`Init`/`Update`/`SetTaskTarget`/`ForcePhase`); concrete impls live in downstream bringup packages |
+| `phase/` | `phase_cost_config.hpp` | POD cost container (scalars, `W_placement`, `q_posture_ref`, `F_target`, `custom_weights`) + no-throw YAML factory |
+| `phase/` | `phase_context.hpp` | `PhaseContext` bundle passed from manager to OCP builder (contact plan + cost config + ee target + `ocp_type` dispatch key) |
 | `comm/` | `triple_buffer.hpp` | Lock-free triple buffer with zero-copy consumer acquire |
 | `interpolation/` | `trajectory_interpolator.hpp` | Cubic Hermite interpolation between OCP nodes |
 | `feedback/` | `riccati_feedback.hpp` | `u_fb = gain_scale · K · Δx` with optional accel-only mode |
@@ -62,7 +65,7 @@ workarounds via `ament_export_dependencies`.
 |-------|-------|--------|
 | 0 | Aligator toolchain (fmt / mimalloc / aligator → /usr/local) | ✅ |
 | 1 | `RobotModelHandler` + `contact_plan_types.hpp` | ✅ |
-| 2 | `PhaseManagerBase` + `PhaseCostConfig` | ⬜ |
+| 2 | `PhaseManagerBase` + `PhaseCostConfig` + `PhaseContext` | ✅ |
 | 3 | `OCPHandlerBase` + `KinoDynamicsOCP` + `CostFactory` | ⬜ |
 | 4-7 | FullDynamics, `MPCHandler`, thread integration, ur5e hook-up | ⬜ |
 

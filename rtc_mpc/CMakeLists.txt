@@ -43,6 +43,7 @@ add_library(rtc_mpc STATIC
   src/thread/mpc_thread.cpp
   src/thread/mock_mpc_thread.cpp
   src/model/robot_model_handler.cpp
+  src/phase/phase_cost_config.cpp
 )
 
 target_include_directories(rtc_mpc PUBLIC
@@ -66,6 +67,7 @@ ament_target_dependencies(rtc_mpc PUBLIC
 
 # ── Install & Export ─────────────────────────────────────────────────────────
 install(DIRECTORY include/ DESTINATION include)
+install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 
 install(TARGETS rtc_mpc EXPORT rtc_mpcTargets
   ARCHIVE DESTINATION lib
@@ -133,6 +135,12 @@ if(BUILD_TESTING)
     test/test_robot_model_handler.cpp)
   if(TARGET test_robot_model_handler)
     target_link_libraries(test_robot_model_handler rtc_mpc)
+  endif()
+
+  ament_add_gtest(test_phase_cost_config
+    test/test_phase_cost_config.cpp)
+  if(TARGET test_phase_cost_config)
+    target_link_libraries(test_phase_cost_config rtc_mpc)
   endif()
 endif()
 

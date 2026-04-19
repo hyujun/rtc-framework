@@ -41,7 +41,7 @@
 |-------|-------|---------|--------|--------|
 | **0** | Aligator toolchain + integration smoke tests | rtc_mpc | 1d | ✅ |
 | **1** | RobotModelHandler + contact plan types | rtc_mpc | 1.5d | ✅ |
-| 2 | PhaseManagerBase + PhaseCostConfig (abstract only) | rtc_mpc | 1.5d | ⬜ |
+| **2** | PhaseManagerBase + PhaseCostConfig (abstract only) | rtc_mpc | 1.5d | ✅ |
 | 3 | OCPHandlerBase + KinoDynamicsOCP + CostFactory | rtc_mpc | 3.5d | ⬜ |
 | 4 | FullDynamicsOCPHandler | rtc_mpc | 2.5d | ⬜ |
 | 5 | MPCHandler + warm-start + factory | rtc_mpc | 2.5d | ⬜ |
@@ -187,52 +187,81 @@ Robot-agnostic wrapper around `pinocchio::Model` + contact plan types. All DoF/f
 
 ---
 
-## Phase 2 — PhaseManagerBase + PhaseCostConfig (1.5d, rtc_mpc)
+## Phase 2 — PhaseManagerBase + PhaseCostConfig (COMPLETE 2026-04-19)
 
 ### Goal
 Ship only the **abstract** FSM interface + **generic** cost container. Concrete FSM (APPROACH/CLOSURE/etc.) must NOT appear in `rtc_mpc`.
 
-### Files
-| Path | Kind |
-|------|------|
-| `rtc_mpc/include/rtc_mpc/phase/phase_manager_base.hpp` | new (pure-virtual) |
-| `rtc_mpc/include/rtc_mpc/phase/phase_cost_config.hpp` | new |
-| `rtc_mpc/src/phase/phase_cost_config.cpp` | new — YAML factory |
-| `rtc_mpc/test/test_phase_cost_config.cpp` | new |
-| `rtc_mpc/config/mpc_default.yaml` | new (reference template) |
+### Files Delivered
+| Path | Kind | Status |
+|------|------|--------|
+| `rtc_mpc/include/rtc_mpc/phase/phase_cost_config.hpp` | new | ✅ |
+| `rtc_mpc/include/rtc_mpc/phase/phase_context.hpp` | new (split header) | ✅ |
+| `rtc_mpc/include/rtc_mpc/phase/phase_manager_base.hpp` | new (pure-virtual) | ✅ |
+| `rtc_mpc/src/phase/phase_cost_config.cpp` | new — YAML factory | ✅ |
+| `rtc_mpc/test/test_phase_cost_config.cpp` | new (10 cases on Panda) | ✅ |
+| `rtc_mpc/config/mpc_default.yaml` | new (reference template) | ✅ |
+| `rtc_mpc/CMakeLists.txt` | edit — source + test target + config install | ✅ |
 
-### Interface Shape
+### Interface Shape (shipped)
 ```cpp
 struct PhaseContext {
-  int phase_id = 0;
-  std::string phase_name;
-  bool phase_changed = false;
-  ContactPlan contact_plan;
-  PhaseCostConfig cost_config;
-  std::string ocp_type;               // "kinodynamics" | "fulldynamics"
-  pinocchio::SE3 ee_target;
+  int phase_id{0};
+  std::string phase_name{};
+  bool phase_changed{false};
+  ContactPlan contact_plan{};
+  PhaseCostConfig cost_config{};
+  std::string ocp_type{"kinodynamics"};   // "kinodynamics" | "fulldynamics"
+  pinocchio::SE3 ee_target{pinocchio::SE3::Identity()};
 };
 
 class PhaseManagerBase {
 public:
-  virtual void init(const YAML::Node&) = 0;
-  virtual PhaseContext update(const VectorXd& q, const VectorXd& v,
-                              const VectorXd& sensor,
+  virtual ~PhaseManagerBase() = default;
+  virtual void Init(const YAML::Node& cfg) = 0;
+  virtual PhaseContext Update(const Eigen::VectorXd& q,
+                              const Eigen::VectorXd& v,
+                              const Eigen::VectorXd& sensor,
                               const pinocchio::SE3& tcp, double t) = 0;
-  virtual void set_task_target(const YAML::Node&) = 0;
-  virtual int current_phase_id() const = 0;
-  virtual std::string current_phase_name() const = 0;
-  virtual void force_phase(int) = 0;
+  virtual void SetTaskTarget(const YAML::Node& target) = 0;
+  [[nodiscard]] virtual int CurrentPhaseId() const = 0;
+  [[nodiscard]] virtual std::string CurrentPhaseName() const = 0;
+  virtual void ForcePhase(int phase_id) = 0;
 };
 ```
+**Naming deviation from v2.2 plan:** method names use CamelCase (`Init`/`Update`/…) to match `RobotModelHandler::Init` and `RiccatiFeedback::SetGain` conventions already in rtc_mpc. Deliberate; decided 2026-04-19.
 
-### PhaseCostConfig
-`w_frame_placement`, `w_state_reg`, `w_control_reg`, `w_contact_force`, `w_centroidal_momentum`, `W_placement (6×1)`, `q_posture_ref (nq)`, `F_target (3K)`, `horizon_length`, `dt`, **`std::map<std::string, double> custom_weights`** (extension point for robot-specific costs like `"hand_posture"`).
+### PhaseCostConfig (shipped)
+- Scalars: `w_frame_placement`, `w_state_reg`, `w_control_reg`, `w_contact_force`, `w_centroidal_momentum` (all ≥ 0 enforced)
+- Vectors: `W_placement` (fixed `Eigen::Matrix<double,6,1>`), `q_posture_ref` (nq), `F_target` (Σ contact dims)
+- Timing: `horizon_length` (> 0), `dt` (> 0)
+- Extension point: `std::map<std::string,double> custom_weights` + `CustomWeight(key)` lookup returning 0.0 for absent keys
+- Factory signature (per user decision on coupling): `static PhaseCostConfigError LoadFromYaml(const YAML::Node&, const RobotModelHandler&, PhaseCostConfig& out) noexcept` — model is the single source of `nq` / `Σ dim` for dimension validation.
 
-### Exit Criteria
-- `rtc_mpc` source tree grep'd: no occurrence of `APPROACH`, `CLOSURE`, `UR5e`, `finger_*_tip`, `tool0`
-- YAML parsing test: all numeric weights + custom_weights round-trip correctly
-- `custom_weights` absent key → 0.0 default (no throw)
+### Error Enum (shipped)
+`PhaseCostConfigError`: `kNoError`, `kModelNotInitialised`, `kInvalidYamlSchema`, `kInvalidWeightSign`, `kInvalidHorizon`, `kInvalidDt`, `kPostureRefDimMismatch`, `kForceTargetDimMismatch`, `kPlacementWeightDimMismatch`.
+
+### Verified Behavior
+- Build: `./build.sh -p rtc_mpc` → `Finished <<< rtc_mpc [14.4s]`, no warnings.
+- Tests: `colcon test --packages-select rtc_mpc` → **10/10** gtest targets pass (Phase 1's 9/9 plus new `test_phase_cost_config` with 10 cases: round-trip, absent custom_weights, present/absent lookup, 6 dim/sign error paths, uninitialised-model rejection).
+- Robot-agnostic audit: `grep -rnE '\b(APPROACH|CLOSURE|HOLD|RETREAT|RELEASE|PRE_GRASP|MANIPULATE|UR5e|ur5e|tool0|fingertip|panda)\b' rtc_mpc/{include,src}` → only the pre-existing Phase-0 rationale comment at `mpc_solution_types.hpp:21`. Tests legitimately mention `panda_*` frames (generic fixture).
+- `PhaseCostConfig` is a passive POD container; all FSM logic deferred to Phase 7 `GraspPhaseManager`.
+
+### Exit Criteria — Met
+- ✅ `rtc_mpc` source tree: no `APPROACH`, `CLOSURE`, `UR5e`, `finger_*_tip`, `tool0`, `fingertip`, `panda` identifiers outside the pre-existing Phase-0 comment + test fixtures.
+- ✅ YAML parsing test: all numeric weights + `custom_weights` round-trip correctly (ValidYamlRoundTrip test).
+- ✅ `custom_weights` absent key → 0.0 default, no throw (AbsentCustomWeightsDefaultsToEmptyMap, CustomWeightLookupPresentAndAbsent).
+
+### Cross-Phase Invariants Upheld
+1. **Robot-agnostic**: new files use `<ee_frame_name>` / `<contact_frame_0>` placeholders only; `phase_id` / `phase_name` are opaque integers/strings to rtc_mpc.
+2. **RT-safety**: `PhaseCostConfig` lives on the OCP build / reconfigure path, not the 500Hz loop — `Eigen::VectorXd` and `std::map` are permitted here, documented in the header. `CustomWeight` constructs a `std::string` for lookup (non-RT call site only).
+3. **Interface-first**: `PhaseManagerBase` ships with zero concrete implementers in rtc_mpc — first concrete derived class lives in Phase 6 (MockPhaseManager test-only) then Phase 7 (`GraspPhaseManager` in ur5e_bringup).
+4. **CMake hygiene**: Phase-0 workarounds (hpp-fcl_DIR, fmt HINTS) preserved. Added `install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)` so downstream packages can locate `mpc_default.yaml`.
+5. **Config-driven**: all dimensions flow from `RobotModelHandler::nq()` + `contact_frames()[i].dim`; zero hardcoded joint counts or contact counts in `rtc_mpc/{include,src}`.
+
+### Risks (from plan §11) — Status Update
+- No new risks introduced in Phase 2 (interface-only phase; no solver/dynamics coupling yet).
+- Phase 3 starts with the open §11 #1 (fixed-base KinoDynamics) + #2 (contact-force residual) — both unchanged from Phase 0 status.
 
 ---
 
@@ -412,7 +441,7 @@ When resuming:
 2. **Reference docs (provided as attachments in the original session):**
    - `mpc_controller_implementation_plan.md` v2.2 — full phase breakdown (re-attach if needed)
    - `aligator_installation_guide.md` — toolchain guide (Phase 0 superseded it with documented workarounds above)
-3. **Starting point:** Phase 2 — `PhaseManagerBase` (pure-virtual FSM) + `PhaseCostConfig` (generic YAML-loadable cost container). Phase 1 shipped `RobotModelHandler` + contact-plan types; Phase 2 can consume them directly.
+3. **Starting point:** Phase 3 — `OCPHandlerBase` + `KinoDynamicsOCP` + `CostFactory`. The largest phase (3.5d); budget generously and verify Aligator `KinodynamicsFwdDynamicsTpl` fixed-base support in the first 2 hours (risk §11 #1). Phase 2 shipped `PhaseManagerBase` + `PhaseCostConfig` + `PhaseContext`; Phase 3 will consume `PhaseContext.cost_config` and `RobotModelHandler` directly.
 4. **Test robot:** Panda URDF at `/usr/local/share/example-robot-data/robots/panda_description/urdf/panda.urdf` (nq=9, nv=9). Do **not** use UR5e in `rtc_mpc/test/` — ur5e-specific tests belong in `ur5e_bringup/test/` (Phase 7).
 5. **CMake hygiene for `rtc_mpc/CMakeLists.txt`** (see Phase 0 §"CMake Constraints"):
    ```cmake
@@ -433,3 +462,4 @@ When resuming:
 | 2026-04-19 | Doc created, environment baseline captured, Phase 0 started |
 | 2026-04-19 | Phase 0 complete: fmt 11.1.4 + mimalloc 2.1.7 + Aligator 0.19.0 installed; 4 smoke tests pass; CMake dual-install conflicts (fmt, hpp-fcl) documented with required workarounds for rtc_mpc |
 | 2026-04-19 | Phase 1 complete: `RobotModelHandler` + `contact_plan_types.hpp` landed in rtc_mpc (Panda 9-DoF test, 9/9 pass). install.sh §0.8 delivered: `install_mpc_deps` + `verify` subcommand + `--skip-mpc` flag. Robot-agnostic invariant verified. |
+| 2026-04-19 | Phase 2 complete: `PhaseManagerBase` (pure-virtual), `PhaseCostConfig` (POD + YAML factory via `RobotModelHandler`), `PhaseContext`, `mpc_default.yaml` reference template. 10/10 test_phase_cost_config cases pass. Method naming uses CamelCase (`Init`/`Update`) — deliberate deviation from v2.2 plan for consistency with existing rtc_mpc conventions. Robot-agnostic invariant re-verified. |

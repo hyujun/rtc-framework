@@ -1,0 +1,42 @@
+# rtc_mpc — reference MPC configuration template (robot-agnostic).
+#
+# This file is consumed by PhaseCostConfig::LoadFromYaml + RobotModelHandler::Init
+# for smoke/unit tests and as a starting point for robot-specific configs in
+# downstream packages (e.g. ur5e_bringup/config/controllers/mpc_kinodynamics.yaml).
+#
+# Placeholders wrapped in <...> MUST be overridden per robot; rtc_mpc itself
+# never reads these placeholder values at runtime.
+
+# ── Robot model resolution (consumed by RobotModelHandler::Init) ─────────────
+end_effector_frame: "<ee_frame_name>"
+contact_frames:
+  - name: "<contact_frame_0>"
+    dim: 3                       # 3 (point) or 6 (wrench)
+
+# ── Per-phase cost defaults (consumed by PhaseCostConfig::LoadFromYaml) ──────
+# Concrete phase managers override subsets of this per FSM state.
+horizon_length: 20               # knots; dt * horizon_length = horizon duration
+dt: 0.01                         # [s]; nominal MPC period
+
+w_frame_placement: 100.0         # scalar multiplier on W_placement
+w_state_reg: 1.0                 # ||x - [q_posture_ref; 0]||² weight
+w_control_reg: 0.01              # ||u||² weight (τ + contact forces)
+w_contact_force: 0.001           # ||f_c - F_target||² weight
+w_centroidal_momentum: 0.0       # disabled by default; enable for balancing tasks
+
+# Per-axis SE3 placement weight: [tx, ty, tz, rx, ry, rz]. Rotation typically
+# weighted lighter than translation since manipulators are often translation-
+# dominant in reaching tasks.
+W_placement: [100.0, 100.0, 100.0, 10.0, 10.0, 10.0]
+
+# Length must equal model.nq(). Fill with neutral posture for the robot.
+q_posture_ref: []
+
+# Length must equal Σ contact_frames[i].dim. Empty if no contacts.
+F_target: []
+
+# Robot-specific extension point. Keys are free-form strings; OCP handlers in
+# rtc_mpc look up documented key names (e.g. "joint_range") and fall back to
+# 0.0 when absent. Downstream packages may add robot-specific keys without
+# modifying rtc_mpc.
+custom_weights: {}
