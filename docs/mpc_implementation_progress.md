@@ -44,7 +44,7 @@
 | **2** | PhaseManagerBase + PhaseCostConfig (abstract only) | rtc_mpc | 1.5d | ✅ |
 | **3** | OCPHandlerBase + KinoDynamicsOCP + CostFactory | rtc_mpc | 3.5d | ✅ |
 | 4.-1 | Rename precondition: `KinoDynamicsOCP`→`LightContactOCP` (logic-preserving) | rtc_mpc | 0.3d | ✅ |
-| 4 | ContactRichOCP (was FullDynamicsOCP; Option C scope: contact-force cost + friction cone) | rtc_mpc | ~2.6-2.9d | ⬜ |
+| 4 | ContactRichOCP (was FullDynamicsOCP; Option C scope: contact-force cost + friction cone) | rtc_mpc | ~2.6-2.9d | ✅ |
 | 5 | MPCHandler + warm-start + factory | rtc_mpc | 2.5d | ⬜ |
 | 6 | MPCThread integration + MockPhaseManager | rtc_mpc | 2d | ⬜ |
 | 7a | GraspPhaseManager (FSM) + phase_config.yaml | ur5e_bringup | 1.5d | ⬜ |
@@ -1107,6 +1107,58 @@ Scratch at `/tmp/aligator_verify/contact_rich_spike/` — CMake + `spike.cpp` li
 
 ---
 
+## Phase 4 — ContactRichOCP (COMPLETE 2026-04-19)
+
+*The step-by-step plan that follows was the blueprint used to land this phase. Retained as historical record.*
+
+### Outcome
+Landed `ContactRichOCP` on the shared `MultibodyConstraintFwdDynamicsTpl` backbone (same as `LightContactOCP`). Option-C scope: per-active-contact `ContactForceResidualTpl` cost (key `"contact_force::<frame>"`, weight-gated by `cfg.w_contact_force`) plus smooth conic friction cone via `MultibodyFrictionConeResidualTpl` + `NegativeOrthantTpl` (gated by `limits.friction_mu > 0`). `GraspQualityResidualProvider` pure-virtual seam shipped with no concrete subclass (D1). `BuildConstraintModels` promoted to `src/ocp/internal/constraint_models.hpp` and shared by both OCPs. 118/0/0 colcon tests pass (98 prior + 20 new).
+
+### Files Delivered
+| Path | Kind |
+|------|------|
+| `rtc_mpc/include/rtc_mpc/ocp/contact_rich_ocp.hpp` | new — class header with cold-start contract (Risk #14) |
+| `rtc_mpc/src/ocp/contact_rich_ocp.cpp` | new — `Build` + `UpdateReferences` + handle cache |
+| `rtc_mpc/include/rtc_mpc/ocp/grasp_quality_provider.hpp` | new — pure-virtual extension seam (no concrete subclass in Phase 4) |
+| `rtc_mpc/src/ocp/internal/constraint_models.hpp` | new — shared `BuildConstraintModels`, consumed by both OCPs |
+| `rtc_mpc/src/ocp/light_contact_ocp.cpp` | edit — use shared helper (no behaviour change) |
+| `rtc_mpc/include/rtc_mpc/ocp/ocp_handler_base.hpp` | edit — comment-only update on `n_friction_facets` (POD frozen) |
+| `rtc_mpc/test/test_utils/solver_seeding.hpp` | new — `SeedGravityCompensation` (Risk #14 mitigation) |
+| `rtc_mpc/test/test_contact_rich_ocp.cpp` | new — 20 gtest cases (topology, error paths, perf log, warm-start smoke) |
+| `rtc_mpc/CMakeLists.txt` | edit — add `src/ocp/contact_rich_ocp.cpp` source + `test_contact_rich_ocp` target; add PRIVATE build-tree include for `src/` |
+| `rtc_mpc/README.md` | edit — Phase 4 row ✅; module-map entries for new headers |
+
+### Verified Behaviour
+- Topology: per-stage handles walk the stored `CostStack` via the Phase-3 polymorphic chain and retrieve `ContactForceResidualTpl` handles parallel to `stage_active_contacts_[k]`. Friction-cone residuals attach via `StageModel::addConstraint(PolyFunction, PolyConstraintSet)` with `NegativeOrthantTpl`.
+- Weight gating: `cfg.w_contact_force == 0` ⇒ contact-force terms absent from the stack (verified with `components_.count(key) == 0`). `limits.friction_mu == 0` ⇒ zero attached constraints.
+- UpdateReferences: `ee_target` + `q_posture_ref` + `F_target` mutations take effect through cached handles without allocation. Weight crossings (`w_contact_force`: 0 ↔ positive) are rejected as topology changes.
+- Error paths: invalid `ocp_type`, uninitialised model, unknown contact frame, overlapping phases, `u_{min,max}` dim mismatch, pre-`Build` `UpdateReferences`, and horizon/dt changes — all return the expected `OCPBuildError` code without mutating state.
+
+### Exit Criteria Satisfied
+- [x] 4.-1 rename clean; Phase-3 tests unchanged.
+- [x] 4.0 spike notes populated before any `contact_rich_ocp.*` code landed.
+- [x] 118/0/0 tests pass on `colcon test --packages-select rtc_mpc`.
+- [x] Robot-agnostic audit clean (`rtc_mpc/{include,src,test/test_utils}` free of UR5e/tool0/fingertip/hand/ur5e identifiers).
+- [x] `OCPLimits` POD unchanged (comment-only edit on `n_friction_facets`).
+- [x] `LightContactOCP` public API and test outputs unchanged post-helper-promotion.
+
+### Cross-Phase Invariants Upheld
+- Robot-agnostic: no robot names baked into `rtc_mpc/` (Panda referenced only in test fixture).
+- RT-safety: all production methods `noexcept`; Aligator ctors wrapped in try/catch → `kAligatorInstantiationFailure`.
+- Interface-first: `GraspQualityResidualProvider` is a standalone pure-virtual header; no concrete implementation in `rtc_mpc/src/`.
+- CMake hygiene: Phase-0 workarounds preserved; PRIVATE build-tree include for `src/` is non-exported and does not leak to consumers.
+
+### Risks Status
+- Risk **#10 (friction-cone API)** — CLOSED.
+- Risk **#11 (constraint attach API)** — CLOSED.
+- Risk **#14 (friction-cone Jacobian div-by-zero at λ_tan = 0)** — OPEN. Mitigated in tests by `SeedGravityCompensation` + try/catch log-only perf/warm-start cases. Will re-close in Phase 5 via `MPCHandler::SeedInitialGuess()` + warm-start supplying non-zero λ across ticks.
+- Risk **§11 #9 (solve p50 ~53 ms)** — still open; Phase 4 tests are log-only per Open Decision #2. Phase 5 warm-start is the real perf gate.
+
+### Perf (informational — Risk #14 can NaN the cold solve)
+Log captured from `test_contact_rich_ocp`: when the cold solve completes, iter count is logged; when it NaN's, the exception message is logged with a `(Risk #14 NaN …)` tag. Neither path hard-asserts (Open Decision #2). Steady-state perf is a Phase 5 concern.
+
+---
+
 ## Phase 4 — Step-by-Step Execution Plan (resumption-friendly)
 
 This section is self-contained so a fresh conversation can resume without re-reading the Phase 0–3 history. Follow steps in order; **do not skip**.
@@ -1501,3 +1553,5 @@ When resuming:
 | 2026-04-19 | Phase 2 complete: `PhaseManagerBase` (pure-virtual), `PhaseCostConfig` (POD + YAML factory via `RobotModelHandler`), `PhaseContext`, `mpc_default.yaml` reference template. 10/10 test_phase_cost_config cases pass. Method naming uses CamelCase (`Init`/`Update`) — deliberate deviation from v2.2 plan for consistency with existing rtc_mpc conventions. Robot-agnostic invariant re-verified. |
 | 2026-04-19 | Phase 3 complete: `OCPHandlerBase` + `OCPLimits` + `OCPBuildError`; `CostFactory` returning `StageCost { stack, keys }` (weight-gated, polymorphic-aware); `KinoDynamicsOCP` backed by `MultibodyConstraintFwdDynamicsTpl` (`u=τ`, contact forces as Lagrange multipliers). 24 new test cases pass (10 cost-factory + 14 kinodynamics-ocp integration). Aligator ownership model corrected from plan: handles are raw pointers retrieved via `getCost → getComponent(key) → getResidual<T>()` chain AFTER problem assembly (spike Q3 invalidated the original `shared_ptr`-based design). Post-assembly caching fixed a dangling-pointer heap corruption. Perf gap observed: solve p50 ~53 ms vs 5 ms target — elevated as new Risk §11 #9 for Phase 5 warm-start. |
 | 2026-04-19 | Phase 4.-1 complete: rename `KinoDynamicsOCP` → `LightContactOCP` (logic-preserving). 12/12 Phase-3 tests unchanged post-rename (all cases reported as `LightContactOCPTest.*`); perf p50 ~53.5ms p99 ~57.2ms (unchanged). Workspace audit of `rtc_mpc/{include,src,test,config}` clean. Dispatch string `"kinodynamics"` → `"light_contact"`; `"fulldynamics"` → `"contact_rich"`. Commit `c5553a9`. |
+| 2026-04-19 | Phase 4.0 complete: Aligator contact-force / friction-cone API spike. 7/7 questions resolved; `ContactForceResidualTpl` ctor + `setReference` alloc-free mutation verified at runtime; `MultibodyFrictionConeResidualTpl` + `NegativeOrthantTpl` confirmed (smooth 2-D conic, CONTACT_3D only, `n_friction_facets` field unused). New Risk #14 (cold-solve NaN from ill-conditioned constraint-dynamics derivatives at neutral pose). Commit `c3c5ef1`. |
+| 2026-04-19 | Phase 4 complete: `ContactRichOCP` with Option-C scope (contact-force cost keyed `"contact_force::<frame>"` + smooth conic friction cone). `GraspQualityResidualProvider` pure-virtual seam shipped (no concrete subclass). `BuildConstraintModels` promoted to `src/ocp/internal/constraint_models.hpp` (shared by both OCPs). `test_utils/SeedGravityCompensation` provides Risk-#14 mitigation for test fixtures. 118/0/0 colcon tests (98 prior + 20 new). Risks #10/#11 closed; #14 open (Phase 5 warm-start will close). |

@@ -21,6 +21,8 @@ skeleton. Concrete solver integrations (Aligator ProxDDP) plug in via
 | `ocp/` | `ocp_handler_base.hpp` | Abstract OCP builder (`Build` / `UpdateReferences`); `OCPLimits` (control box / friction μ) and `OCPBuildError` enum |
 | `ocp/` | `cost_factory.hpp` | Builds per-stage `aligator::CostStack` (frame placement + state reg + control reg), weight-gated, no-throw |
 | `ocp/` | `light_contact_ocp.hpp` | Concrete `OCPHandlerBase` backed by `MultibodyConstraintFwdDynamicsTpl` (fixed-base `u = τ`); alloc-free `UpdateReferences` via cached polymorphic residual handles. Dispatch key `"light_contact"`. (Renamed from `kinodynamics_ocp.hpp` in Phase 4.-1.) |
+| `ocp/` | `contact_rich_ocp.hpp` | Concrete `OCPHandlerBase` adding per-active-contact `ContactForceResidualTpl` cost + `MultibodyFrictionConeResidualTpl` / `NegativeOrthantTpl` inequality. Dispatch key `"contact_rich"`. Phase 4 header; `.cpp` lands in Step 4. Cold-start requires caller-side seeding (see class doc-comment). |
+| `ocp/` | `grasp_quality_provider.hpp` | Pure-virtual extension seam for grasp-quality residuals on `ContactRichOCP` running/terminal stages. No concrete provider ships in Phase 4 — first implementation lands in Phase 4.5+ alongside a real consumer. |
 | `comm/` | `triple_buffer.hpp` | Lock-free triple buffer with zero-copy consumer acquire |
 | `interpolation/` | `trajectory_interpolator.hpp` | Cubic Hermite interpolation between OCP nodes |
 | `feedback/` | `riccati_feedback.hpp` | `u_fb = gain_scale · K · Δx` with optional accel-only mode |
@@ -71,6 +73,7 @@ workarounds via `ament_export_dependencies`.
 | 1 | `RobotModelHandler` + `contact_plan_types.hpp` | ✅ |
 | 2 | `PhaseManagerBase` + `PhaseCostConfig` + `PhaseContext` | ✅ |
 | 3 | `OCPHandlerBase` + `LightContactOCP` (renamed from `KinoDynamicsOCP` in 4.-1) + `CostFactory` + `OCPLimits` | ✅ |
-| 4-7 | FullDynamics, `MPCHandler`, thread integration, ur5e hook-up | ⬜ |
+| 4 | `ContactRichOCP` (contact-force cost + smooth conic friction cone) + `GraspQualityResidualProvider` seam + `test_utils/SeedGravityCompensation` | ✅ |
+| 5-7 | `MPCHandler` + warm-start + thread integration + ur5e hook-up | ⬜ |
 
 See `docs/mpc_implementation_progress.md` for the living roadmap.

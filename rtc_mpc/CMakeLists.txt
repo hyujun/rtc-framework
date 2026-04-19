@@ -49,11 +49,18 @@ add_library(rtc_mpc STATIC
   src/phase/phase_cost_config.cpp
   src/ocp/cost_factory.cpp
   src/ocp/light_contact_ocp.cpp
+  src/ocp/contact_rich_ocp.cpp
 )
 
 target_include_directories(rtc_mpc PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
+)
+
+# Private build-tree include so TUs under src/ocp/ can #include
+# "ocp/internal/..." shared helpers. Not installed or exported.
+target_include_directories(rtc_mpc PRIVATE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
 )
 
 target_include_directories(rtc_mpc SYSTEM PUBLIC
@@ -157,6 +164,13 @@ if(BUILD_TESTING)
   ament_add_gtest(test_light_contact_ocp test/test_light_contact_ocp.cpp)
   if(TARGET test_light_contact_ocp)
     target_link_libraries(test_light_contact_ocp rtc_mpc)
+  endif()
+
+  ament_add_gtest(test_contact_rich_ocp test/test_contact_rich_ocp.cpp)
+  if(TARGET test_contact_rich_ocp)
+    target_include_directories(test_contact_rich_ocp PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/test)
+    target_link_libraries(test_contact_rich_ocp rtc_mpc)
   endif()
 endif()
 
