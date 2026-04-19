@@ -1492,6 +1492,271 @@ Wire `PhaseManagerBase` into existing `rtc_mpc::MPCThread`; prove full pipeline 
 
 ---
 
+## Phase 6 — Step-by-Step Execution Plan (resumption-friendly)
+
+Authored 2026-04-19 after Phase 5 landed. Use this as the running work list; every step names the files it touches, the tests that gate it, and whether it commits. Budget 2.0d end-to-end (0.1 bootstrap + 0.3 mock FSM + 0.7 thread + 0.4 E2E + 0.3 tracer + 0.15 stretch + 0.05 grep + 0.1 housekeeping).
+
+### Step 0 — Context bootstrap (must run on every resume)
+1. Re-read this doc's §Phase 5 outcome + §Phase 6 stub + this execution-plan section.
+2. Re-read `~/.claude/projects/-home-junho-ros2-ws-rtc-ws-src-rtc-framework/memory/project_mpc_implementation.md` — confirm "Phase 5 done, Phase 6 next" and Aligator polymorphic-not-shared_ptr invariant are still true.
+3. `colcon test --packages-select rtc_mpc --event-handlers console_direct+` — must start green (153/153). If red, stop and investigate before touching Phase 6 code.
+4. Re-read `rtc_mpc/include/rtc_mpc/phase/phase_manager_base.hpp`, `phase/phase_context.hpp`, `handler/mpc_handler_base.hpp`, `handler/mpc_factory.hpp`, `thread/mpc_thread.hpp`, `thread/mock_mpc_thread.hpp`. They are the interface surface the two new files must honour — do not change any of them without re-opening a design decision.
+5. Confirm Open Decisions 1–4 below are still decided (concrete-thread shape, cross-mode swap scope, sensor vector, tracer scope). If any has been re-opened, re-align with user before coding.
+6. Skim `rtc_mpc/test/test_mpc_thread_mock.cpp` and `test_mpc_thread_skeleton.cpp` — the E2E integration test in Step 4 mirrors `test_mpc_thread_mock.cpp`'s pipeline shape; the tracer test in Step 5 extends the skeleton's lifecycle fixture.
+
+### Step 1 — 6.0 Design recap + no-spike gate (0.0d)
+
+No Aligator spike needed: all solver-facing API was locked in Phases 3–5. Phase 6 is pure integration glue within rtc_mpc. Confirm:
+- `MPCHandlerBase::Solve(ctx, snapshot, out)` remains the single entry point — no new virtuals.
+- `PhaseManagerBase::Update(q, v, sensor, tcp, t)` signature is fixed; Phase 6 only adds a concrete subclass under `test/`.
+- `MPCThread` stays abstract; Phase 6 adds one new concrete subclass (`HandlerMPCThread`, see Open Decision #1), mirroring how `MockMPCThread` relates to `MPCThread`. `MockMPCThread` stays usable as the no-solver baseline.
+
+If any of the above is violated by a prior refactor, raise `[CONCERN]` and stop.
+
+### Step 2 — 6.1 `MockPhaseManager` (0.3d, test-only, no commit yet)
+
+**Files**
+| Path | Kind |
+|------|------|
+| `rtc_mpc/test/mock_phase_manager.hpp` | new — test-only header, not installed |
+
+**Scope** — minimal 2-phase FSM that exercises `phase_changed` and cost-weight swaps, staying in one `ocp_type` (`light_contact`) per Open Decision #2:
+1. Phase A `"free_flight"` (id=0): `ContactPlan.phases` empty, `w_contact_force = 0`, light `w_state_reg`, EE target = identity (track current pose).
+2. Phase B `"near_object"` (id=1): single active contact frame (passed in via constructor), non-zero `w_contact_force`, EE target = a fixed SE3 offset.
+
+**API**
+```cpp
+class MockPhaseManager final : public PhaseManagerBase {
+ public:
+  struct Params {
+    int contact_frame_id{-1};   // Pinocchio frame id; -1 → no contact frame → stays in A
+    int transition_tick{50};    // # Update() calls before auto-transition A→B
+    pinocchio::SE3 ee_target_B{pinocchio::SE3::Identity()};
+  };
+  explicit MockPhaseManager(const Params& p);
+  void Init(const YAML::Node&) override { /* no-op */ }
+  PhaseContext Update(const Eigen::VectorXd& q, const Eigen::VectorXd& v,
+                      const Eigen::VectorXd& sensor, const pinocchio::SE3& tcp,
+                      double t) override;
+  void SetTaskTarget(const YAML::Node&) override { /* no-op */ }
+  int CurrentPhaseId() const override { return current_id_; }
+  std::string CurrentPhaseName() const override { /* "free_flight"|"near_object" */ }
+  void ForcePhase(int id) override;                // unit-testable trigger
+ private:
+  // tick counter + cached PhaseCostConfig per phase + current_id_.
+};
+```
+
+**Correctness gates** (plain TEST cases in `test_mpc_thread_integration.cpp` — see Step 4):
+- Initial `Update` → `phase_changed==true, phase_id==0`.
+- Subsequent `Update` with same state → `phase_changed==false`.
+- `ForcePhase(1)` → next `Update` returns `phase_changed==true, phase_id==1` with the Phase-B cost config.
+- `Update` exactly at `transition_tick` without `ForcePhase` → auto-transitions A→B.
+
+No commit at end of Step 2 — the header lives in `test/`, gets exercised in Step 4.
+
+### Step 3 — 6.2 `HandlerMPCThread` (0.7d)
+
+**Files**
+| Path | Kind |
+|------|------|
+| `rtc_mpc/include/rtc_mpc/thread/handler_mpc_thread.hpp` | new — concrete `MPCThread` subclass |
+| `rtc_mpc/src/thread/handler_mpc_thread.cpp` | new |
+| `rtc_mpc/CMakeLists.txt` | edit — add source to `rtc_mpc` library; preserve Phase-0 workarounds |
+| `rtc_mpc/README.md` | edit — `thread/` module map row for `handler_mpc_thread` |
+
+**API** (locked by Open Decision #1 — single concrete `HandlerMPCThread` subclass, no changes to `MPCThread` base):
+```cpp
+class HandlerMPCThread final : public MPCThread {
+ public:
+  // Called once, off-RT, before Start(). Takes ownership of handler + phase manager.
+  // `model_handler` must outlive this thread.
+  void Configure(const RobotModelHandler& model_handler,
+                 std::unique_ptr<MPCHandlerBase> handler,
+                 std::unique_ptr<PhaseManagerBase> phase_manager,
+                 YAML::Node factory_cfg_for_cross_mode /* may be Null */) noexcept;
+
+  // Observability for tests (lock-free atomic reads).
+  int LastSolveErrorCode() const noexcept;   // cast from MPCSolveError
+  int LastPhaseId() const noexcept;
+  uint64_t TotalSolves() const noexcept;
+  uint64_t FailedSolves() const noexcept;
+
+ protected:
+  bool Solve(const MPCStateSnapshot& state, MPCSolution& out,
+             std::span<std::jthread> workers) override;
+
+ private:
+  // Owned:
+  std::unique_ptr<MPCHandlerBase> handler_;
+  std::unique_ptr<PhaseManagerBase> phase_manager_;
+  std::unique_ptr<pinocchio::Data> pdata_;          // for per-tick FK
+  YAML::Node factory_cfg_;                          // only touched on cross-mode swap
+  const RobotModelHandler* model_{nullptr};
+  // Scratch (pre-allocated in Configure):
+  Eigen::VectorXd q_scratch_, v_scratch_, sensor_scratch_;
+  std::chrono::steady_clock::time_point start_time_;
+  // Observability:
+  std::atomic<int> last_err_{0};
+  std::atomic<int> last_phase_id_{-1};
+  std::atomic<uint64_t> total_solves_{0}, failed_solves_{0};
+  bool null_logged_{false};                         // one-shot guard for nullptr path
+};
+```
+
+**`Solve()` body** (pseudocode; each sub-bullet is a line or two of C++):
+1. Fast-out if `handler_ == nullptr || phase_manager_ == nullptr`: log `[CONCERN]` once via `std::fprintf(stderr, ...)` guarded by `null_logged_`, return `false` (don't crash; surface to user via observability counters).
+2. Copy `state.q/v` into `q_scratch_/v_scratch_` (respecting `state.nq/nv`).
+3. `pinocchio::forwardKinematics(model_->model(), *pdata_, q_scratch_); pinocchio::updateFramePlacements(...)` — compute TCP SE3 from `model_->end_effector_frame_id()`.
+4. `sensor_scratch_.setZero()` (size fixed in Configure; Open Decision #3 keeps it zero-length for Phase 6).
+5. `const double t = duration<double>(steady_clock::now() - start_time_);`
+6. `ctx = phase_manager_->Update(q_scratch_, v_scratch_, sensor_scratch_, tcp, t);`
+7. Cross-mode swap branch (only if `factory_cfg_` is non-Null and `ctx.ocp_type != handler_->ocp_type()`): `MPCFactory::Create(factory_cfg_, *model_, ctx, new_handler)` → on success, `new_handler->SeedWarmStart(prev_out_)` (requires storing the last-published `MPCSolution` — see note below), swap `handler_ = std::move(new_handler)`. On failure, increment `failed_solves_` and return `false` this tick. **Stretch**: deferred to Step 6 if short on time.
+8. `err = handler_->Solve(ctx, state, out);`
+9. Branch on `err`:
+   - `kNoError` → publish (return `true`), save `out` into a pre-allocated `prev_out_` for the next tick's SeedWarmStart path.
+   - `kRebuildRequired` → cross-mode swap path above (or log + skip if disabled).
+   - anything else → increment `failed_solves_`, set `last_err_`, return `false`.
+10. Update atomic observability counters: `total_solves_++`, `last_phase_id_ = ctx.phase_id`, `last_err_ = int(err)`.
+
+**RT-safety** — `Solve()` must stay `noexcept` (wrap the cross-mode swap in try/catch in case YAML throws; convert to error). No `new`/`push_back`; `pdata_` / `q_scratch_` / etc. all pre-allocated in `Configure`. `forwardKinematics` reuses `pdata_` — no allocs.
+
+**Error-reporting contract** — the one-shot `stderr` print in (1) is **not** the RT path (MPC thread is off the 500 Hz loop) so writing to stderr is acceptable here, mirroring how `OCPHandlerBase::Build` surfaces errors today. Do not add an SPSC log queue for Phase 6; defer to Phase 7 if a controller-side log path is needed.
+
+**Unit test**: a standalone lifecycle test in `test_mpc_thread_integration.cpp` (Step 4) covering: Configure with nullptr handler → Start → first Solve skipped with `null_logged_` set → Stop clean; Configure correctly → at least 10 solves over 500 ms → `last_err_ == 0`.
+
+### Step 4 — 6.3 End-to-end integration test with Panda (0.4d)
+
+**Files**
+| Path | Kind |
+|------|------|
+| `rtc_mpc/test/test_mpc_thread_integration.cpp` | new |
+| `rtc_mpc/CMakeLists.txt` | edit — `ament_add_gtest(test_mpc_thread_integration …)` |
+
+**Fixture** — reuse the Panda URDF pattern from `test_light_contact_mpc.cpp` (Pinocchio model from `/usr/local/share/example-robot-data/robots/panda_description/urdf/panda.urdf`). **Do not reference UR5e** — Phase 7 concern. Seed initial state via `test_utils/SeedGravityCompensation` (Risk #14 mitigation carried over).
+
+**Test cases** (target 6–7, gtest):
+1. `NullHandlerLogsOnceAndSkips` — Configure with `handler=nullptr`, run for 250 ms, assert `total_solves_ == 0`, `null_logged_` triggered (check via a test-only accessor or a one-shot `failed_solves_` sentinel).
+2. `DefaultPhaseConvergesFreeFlight` — MockPhaseManager stuck in phase A (no auto-transition), Panda neutral pose, run 500 ms at 20 Hz, `ComputeReference` produces valid refs, `failed_solves_ == 0`.
+3. `PhaseTransitionPickedUpWithinOneTick` — MockPhaseManager with `transition_tick = 20` (so ~1 s at 20 Hz), record `last_phase_id_` samples every 50 ms; after the transition happens we must see `last_phase_id_ == 1` within one tick of the FSM flipping. Tie the timing together by sampling from the test thread and asserting the sample immediately after the transition is in phase B.
+4. `ForcePhaseOverridesGuards` — call `phase_manager_->ForcePhase(1)` from the test thread, verify next published solution has new target reflected (e.g. `MPCSolution.q_traj[H]` shifts toward EE target of phase B).
+5. `HandlerFailureKeepsThreadAlive` — inject a phase that would trigger `kOCPRebuildFailed` (pass a malformed `PhaseCostConfig` via `ForcePhase`), verify `failed_solves_ > 0` but thread keeps looping and recovers when a valid phase returns.
+6. `SolutionManagerConsumptionE2E` — mirror `test_mpc_thread_mock.cpp`'s 1 kHz RT-poll pattern: Configure thread with `MPCSolutionManager`, poll `ComputeReference` for 500 ms, expect `valid_count > 10`, `StaleCount() < max_stale`, finite references.
+
+Exit gate for Step 4: all cases green under `colcon test --packages-select rtc_mpc`.
+
+**Commit boundary**: after Step 4 passes, **do not yet commit**. Steps 5–6 are still inside the Phase 6 scope.
+
+### Step 5 — 6.4 Heap-alloc tracer (closes Phase 5 Exit #3) (0.3d)
+
+**Why here** — Phase 5 Exit #3 ("No heap alloc inside `solve()` after first call") was deferred with "full tracer lands with Phase 6's MockPhaseManager end-to-end". Phase 6 now has the MockPhaseManager-driven pipeline, so this is the right time.
+
+**Files**
+| Path | Kind |
+|------|------|
+| `rtc_mpc/test/test_mpc_handler_alloc_tracer.cpp` | new |
+| `rtc_mpc/test/test_utils/alloc_counter.hpp` | new (test-only, header-only) |
+| `rtc_mpc/CMakeLists.txt` | edit — add test target |
+
+**Approach** — operator-new/delete override in the test TU, counting bytes + calls. Arm the counter after the first solve (when Aligator workspace is fully warmed), tick 50 more times via `handler_->Solve` directly (do **not** use the threaded loop — too many confounding allocs from `jthread`/`steady_clock::now()`/etc.). Assert `alloc_count == 0 && free_count == 0` on the armed window.
+
+**Scope**
+- Primary: `LightContactMPC` — the Phase 5 closure path. Must-pass.
+- Secondary: `ContactRichMPC` cross-mode-seeded (`light_contact` → `contact_rich` via `MPCFactory` + `SeedWarmStart`). Must-pass per Phase 5 production-closure path for Risk #14.
+- Excluded: raw cold-start `ContactRichMPC` (still throws NaN per Phase 4 Open Decision #2).
+
+**Risks** — operator-new override is TU-local; if Aligator's `.so` performs its own allocs they are observed too, so the assertion must be zero for the whole test binary linkage. Check that standard library internals (e.g. `std::string` SSO) do not trip the counter inside the armed window; add any static-cache warm-up inside the pre-arm block if needed.
+
+**Exit** — two new TEST cases (`LightContactSteadyStateZeroAllocs`, `ContactRichWarmStartZeroAllocs`) green.
+
+### Step 6 — 6.5 Cross-mode swap stretch test (0.15d, stretch)
+
+**Files**
+| Path | Kind |
+|------|------|
+| `rtc_mpc/test/test_mpc_thread_integration.cpp` | edit — append one case |
+
+**Scope** — validate the Step 3 cross-mode branch end-to-end:
+1. Configure `HandlerMPCThread` with `light_contact` handler + a `factory_cfg_` that can build either mode + a `MockPhaseManager` variant that flips `ocp_type` at a known tick (drop this into `MockPhaseManager::Params` behind a new `cross_mode: bool` flag).
+2. Run thread 500 ms, assert: solves succeed both before and after the flip, `last_err_ == 0` throughout, observed `handler_->ocp_type()` changed within one tick of the FSM flip.
+3. Confirm `SeedWarmStart` was invoked exactly once (probe via a debug counter on `MPCHandlerBase` — add only if needed; otherwise infer indirectly from iteration counts not blowing up to cold-solve levels).
+
+If we're at risk of blowing the 2.0d budget at this point, **defer** this case to Phase 7 and note it in the §Open Decisions outcome.
+
+### Step 7 — 6.6 Robot-agnostic invariant grep (0.05d)
+
+Per stub exit criterion: "No UR5e / hand / fingertip references in `rtc_mpc/`".
+
+**Do** (not CI): run `grep -rnE 'UR5e|ur5e|tool0|finger|panda|nq = 16' rtc_mpc/{include,src}` — must be empty. Test directories are allowed to mention `panda` and `example-robot-data` paths, but **not** UR5e/finger/tool0.
+
+Record the grep command + outcome in the Phase 6 completion section of this doc when writing it up. Do **not** yet add a CMake `add_test` wrapper — the stub explicitly defers the CI enforcement ("document but defer"); we honour that to avoid scope creep.
+
+### Step 8 — 6.7 Phase completion housekeeping (0.1d, single commit)
+
+Per `## Phase Completion Housekeeping` block above. Specifically:
+
+1. `rtc_mpc/README.md` — flip the Phase 6 Status row to ✅; add `thread/handler_mpc_thread.hpp` to the module map with a one-line summary. If MockPhaseManager is referenced from README (unlikely), mention it under `test/`.
+2. This progress doc — flip Phase 6 row in `## Phase Plan`, add a `## Phase 6 — MPCThread integration + MockPhaseManager (COMPLETE YYYY-MM-DD)` section mirroring Phase 5's template (Outcome, Files Delivered, Verified Behaviour, Exit Criteria — including Phase 5 Exit #3 now closed, Cross-Phase Invariants Upheld, Risks Status). Append one line to `## Change Log`.
+3. `agent_docs/architecture.md` — thread topology now includes `HandlerMPCThread`; add a one-line bullet under the MPC thread section. Other `agent_docs/*.md` likely untouched; state "no update needed" in the commit body if so.
+4. Claude auto-memory — update `project_mpc_implementation.md` + MEMORY.md line to "Phases 0-6 complete; Phase 7 next (ur5e_bringup GraspPhaseManager + MPC YAML + MuJoCo E2E)". Risk #14 stays MITIGATED (Phase 7 production path reconfirms). Phase 5 Exit #3 flips to CLOSED.
+5. Single commit titled `[rtc_mpc] Phase 6: HandlerMPCThread + MockPhaseManager + alloc tracer` bundling all code + doc updates. Memory files outside repo → **not** in the commit.
+6. Pre-commit: `colcon test --packages-select rtc_mpc` green, robot-agnostic grep clean, `git status` only intended files.
+
+### Files (final, consolidated)
+
+| Path | Kind |
+|------|------|
+| `rtc_mpc/include/rtc_mpc/thread/handler_mpc_thread.hpp` | new |
+| `rtc_mpc/src/thread/handler_mpc_thread.cpp` | new |
+| `rtc_mpc/test/mock_phase_manager.hpp` | new (test-only, not installed) |
+| `rtc_mpc/test/test_mpc_thread_integration.cpp` | new |
+| `rtc_mpc/test/test_mpc_handler_alloc_tracer.cpp` | new |
+| `rtc_mpc/test/test_utils/alloc_counter.hpp` | new |
+| `rtc_mpc/CMakeLists.txt` | edit — 1 new source, 2 new test targets |
+| `rtc_mpc/README.md` | edit — status row 6 → ✅, `thread/` module map entry |
+| `docs/mpc_implementation_progress.md` | edit — Phase 6 completion section + Phase 5 Exit #3 closed + Change Log |
+| `agent_docs/architecture.md` | edit (if needed) — `HandlerMPCThread` in thread topology |
+
+**Untouched by Phase 6**: `MPCThread` base header, `MockMPCThread`, all Phase 3/4/5 headers, any `ur5e_*` package.
+
+### Exit Criteria (for ticking the Phase 6 row)
+
+- [ ] `colcon test --packages-select rtc_mpc` passes all cases (prior 153 + new Phase 6 cases).
+- [ ] `MockPhaseManager` phase transition picked up by `HandlerMPCThread` within 1 tick (test case 3 above).
+- [ ] `LightContactSteadyStateZeroAllocs` tracer green (closes Phase 5 Exit #3).
+- [ ] `ContactRichWarmStartZeroAllocs` tracer green (confirms Risk #14 production-closure path is alloc-free).
+- [ ] Robot-agnostic grep of `rtc_mpc/{include,src}` yields no UR5e/finger/tool0 hits.
+- [ ] `HandlerMPCThread::Solve` confirmed `noexcept` by compile check + try/catch audit of the cross-mode branch.
+- [ ] Null-handler path logs exactly once and does not crash.
+
+### Open Decisions (user input required before Step 3 starts)
+
+1. **Concrete `MPCThread` subclass shape — DECIDED pending user ack**: introduce `HandlerMPCThread final : MPCThread` rather than editing `MPCThread::set_phase_manager` as the Phase 6 stub sketched. Reason: keeps `MPCThread` a pure skeleton, mirrors `MockMPCThread`, preserves the interface-first invariant, and avoids adding a handler-shaped field to the base that `MockMPCThread` has no use for. If the user prefers the stub's "edit base + add setters" path, re-open before Step 3.
+2. **Cross-mode swap scope — recommended: stretch-only (Step 6), defer production use to Phase 7**: Phase 6 baseline (Step 4) keeps `ocp_type` fixed at `light_contact`; MockPhaseManager only toggles contact activity / cost weights. Cross-mode swap is covered by one stretch test that can be dropped if we blow budget. Rationale: Phase 5 already tested cross-mode in `MPCFactoryTest.CrossModeSwapPreservesSolveability`; Phase 6 gains little from re-testing it through the threaded path until Phase 7 has a real FSM that actually does it.
+3. **Sensor vector shape — recommended: zero-length in Phase 6**: `MockPhaseManager::Update` ignores `sensor`; `HandlerMPCThread` passes a zero-length `Eigen::VectorXd`. Real F/T sensor integration is a Phase 7 concern (requires a `SensorSource` seam that belongs with `GraspPhaseManager`). If the user wants the seam shipped in Phase 6 for ur5e_bringup to plug into, budget +0.2d.
+4. **Alloc tracer scope — recommended: operator-new override, LightContact + cross-mode-seeded ContactRich only**: raw-cold ContactRich still NaN's per Phase 4 Open Decision #2, so tracing it is not meaningful. If the user wants a full malloc-hook-based tracer (glibc `__malloc_hook`) rather than operator-new override, budget +0.2d and note the glibc deprecation warning.
+
+### Open Risks → Action
+
+- **Risk #14 (ContactRich cold NaN) revisited** — Phase 6 Step 5's tracer must cover the *cross-mode-seeded* ContactRich path, not raw cold. If the operator-new counter trips on the ContactRich cross-mode path, investigate whether `SeedWarmStart` itself allocates (it shouldn't — Phase 5 pre-allocated `xs_warm_`/`us_warm_` — but the cross-TU linkage could surprise us).
+- **Phase 5 Exit #3 perf regression** — if the alloc tracer reveals non-zero allocs inside `LightContactMPC::Solve` steady-state, we likely have an Eigen expression-template miss or an unnoticed `push_back` introduced post-Phase-5. Action: bisect by disabling cost terms in `CostFactory` one at a time.
+- **Thread-safety of `phase_manager_->Update` vs `ForcePhase`** — test case 4 invokes `ForcePhase` from the test thread while `Update` runs on the MPC thread. Phase 2's header says "concrete FSMs are responsible for their own synchronisation". MockPhaseManager's simple tick counter + atomic `current_id_` should be race-free; document the choice in its header doc comment.
+- **Cross-mode swap on the MPC thread**: `MPCFactory::Create` on a running thread means a short allocation stall. This is acceptable because Phase 6 runs the swap in the stretch test only; Phase 7 production will need a pre-built handler pool or an off-thread factory if stall is measured to hurt.
+
+### Resumption Checklist (quick reference)
+
+- [ ] Step 0 bootstrap done (tests green + memory reviewed).
+- [ ] Step 1 no-spike confirmed.
+- [ ] Step 2 MockPhaseManager header drafted + unit-tests red-green-refactor.
+- [ ] Step 3 HandlerMPCThread + CMake wiring — `rtc_mpc` library builds + `test_mpc_thread_skeleton` still green.
+- [ ] Step 4 integration test file green (6–7 cases).
+- [ ] Step 5 alloc tracer green for LightContact + ContactRich-cross-mode.
+- [ ] Step 6 cross-mode stretch — in scope **or** deferred with explicit note in Change Log.
+- [ ] Step 7 grep clean.
+- [ ] Step 8 housekeeping: README ✅, progress-doc completion section, `agent_docs/architecture.md` thread-topology bullet, auto-memory update, single commit.
+
+---
+
 ## Phase 7 — ur5e_bringup integration (3d total)
 
 ### 7a — GraspPhaseManager FSM (1.5d)
