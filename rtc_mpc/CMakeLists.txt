@@ -50,6 +50,10 @@ add_library(rtc_mpc STATIC
   src/ocp/cost_factory.cpp
   src/ocp/light_contact_ocp.cpp
   src/ocp/contact_rich_ocp.cpp
+  src/handler/internal/mpc_handler_core.cpp
+  src/handler/light_contact_mpc.cpp
+  src/handler/contact_rich_mpc.cpp
+  src/handler/mpc_factory.cpp
 )
 
 target_include_directories(rtc_mpc PUBLIC
@@ -171,6 +175,21 @@ if(BUILD_TESTING)
     target_include_directories(test_contact_rich_ocp PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/test)
     target_link_libraries(test_contact_rich_ocp rtc_mpc)
+  endif()
+
+  ament_add_gtest(test_light_contact_mpc test/test_light_contact_mpc.cpp)
+  if(TARGET test_light_contact_mpc)
+    target_link_libraries(test_light_contact_mpc rtc_mpc)
+  endif()
+
+  ament_add_gtest(test_contact_rich_mpc test/test_contact_rich_mpc.cpp)
+  if(TARGET test_contact_rich_mpc)
+    target_link_libraries(test_contact_rich_mpc rtc_mpc)
+  endif()
+
+  ament_add_gtest(test_mpc_factory test/test_mpc_factory.cpp)
+  if(TARGET test_mpc_factory)
+    target_link_libraries(test_mpc_factory rtc_mpc)
   endif()
 endif()
 

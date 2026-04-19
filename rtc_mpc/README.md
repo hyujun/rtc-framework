@@ -28,6 +28,10 @@ skeleton. Concrete solver integrations (Aligator ProxDDP) plug in via
 | `feedback/` | `riccati_feedback.hpp` | `u_fb = gain_scale · K · Δx` with optional accel-only mode |
 | `manager/` | `mpc_solution_manager.hpp` | Facade combining TripleBuffer + Interpolator + Feedback + SeqLock |
 | `thread/` | `mpc_thread.hpp` | `MPCThread` base (jthread + worker frame) and `MockMPCThread` |
+| `handler/` | `mpc_handler_base.hpp` | Abstract MPC solve orchestrator: owns an `OCPHandlerBase` + `SolverProxDDP`, drives warm-started solves via `Init` / `Solve(PhaseContext, state, MPCSolution&)` / `SeedWarmStart`. Enums `MPCInitError`, `MPCSolveError`, POD `MPCSolverConfig`. |
+| `handler/` | `light_contact_mpc.hpp` | Concrete `MPCHandlerBase` wrapping `LightContactOCP`. |
+| `handler/` | `contact_rich_mpc.hpp` | Concrete `MPCHandlerBase` wrapping `ContactRichOCP`; forwards the grasp-quality provider seam. |
+| `handler/` | `mpc_factory.hpp` | YAML-driven static factory: `Create(cfg, model, initial_ctx, &handler_out) → MPCFactoryStatus` dispatching on `ocp_type`. |
 
 ## Dependencies
 
@@ -74,6 +78,7 @@ workarounds via `ament_export_dependencies`.
 | 2 | `PhaseManagerBase` + `PhaseCostConfig` + `PhaseContext` | ✅ |
 | 3 | `OCPHandlerBase` + `LightContactOCP` (renamed from `KinoDynamicsOCP` in 4.-1) + `CostFactory` + `OCPLimits` | ✅ |
 | 4 | `ContactRichOCP` (contact-force cost + smooth conic friction cone) + `GraspQualityResidualProvider` seam + `test_utils/SeedGravityCompensation` | ✅ |
-| 5-7 | `MPCHandler` + warm-start + thread integration + ur5e hook-up | ⬜ |
+| 5 | `MPCHandlerBase` + `LightContactMPC` + `ContactRichMPC` + `MPCFactory` + horizon-shift warm-start (Aligator `cycleAppend`) | ✅ |
+| 6-7 | MPCThread integration + MockPhaseManager + ur5e hook-up | ⬜ |
 
 See `docs/mpc_implementation_progress.md` for the living roadmap.
