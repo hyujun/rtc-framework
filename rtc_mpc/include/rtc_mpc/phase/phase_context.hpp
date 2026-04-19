@@ -41,9 +41,9 @@ struct PhaseContext {
   PhaseCostConfig cost_config{}; ///< per-phase cost weights + references
 
   /// Dispatch key for @ref MPCFactory (Phase 5). Current values:
-  /// `"kinodynamics"` (Phase 3), `"fulldynamics"` (Phase 4). Unknown
-  /// strings cause factory rejection — never silently fall back.
-  std::string ocp_type{"kinodynamics"};
+  /// `"light_contact"` (Phase 3, renamed in 4.-1), `"contact_rich"` (Phase
+  /// 4). Unknown strings cause factory rejection — never silently fall back.
+  std::string ocp_type{"light_contact"};
 
   /// End-effector SE3 target in the model's world frame. Identity means
   /// "no target set" (track current pose); concrete managers overwrite.

@@ -20,7 +20,7 @@ skeleton. Concrete solver integrations (Aligator ProxDDP) plug in via
 | `phase/` | `phase_context.hpp` | `PhaseContext` bundle passed from manager to OCP builder (contact plan + cost config + ee target + `ocp_type` dispatch key) |
 | `ocp/` | `ocp_handler_base.hpp` | Abstract OCP builder (`Build` / `UpdateReferences`); `OCPLimits` (control box / friction μ) and `OCPBuildError` enum |
 | `ocp/` | `cost_factory.hpp` | Builds per-stage `aligator::CostStack` (frame placement + state reg + control reg), weight-gated, no-throw |
-| `ocp/` | `kinodynamics_ocp.hpp` | Concrete `OCPHandlerBase` backed by `MultibodyConstraintFwdDynamicsTpl` (fixed-base `u = τ`); alloc-free `UpdateReferences` via cached polymorphic residual handles |
+| `ocp/` | `light_contact_ocp.hpp` | Concrete `OCPHandlerBase` backed by `MultibodyConstraintFwdDynamicsTpl` (fixed-base `u = τ`); alloc-free `UpdateReferences` via cached polymorphic residual handles. Dispatch key `"light_contact"`. (Renamed from `kinodynamics_ocp.hpp` in Phase 4.-1.) |
 | `comm/` | `triple_buffer.hpp` | Lock-free triple buffer with zero-copy consumer acquire |
 | `interpolation/` | `trajectory_interpolator.hpp` | Cubic Hermite interpolation between OCP nodes |
 | `feedback/` | `riccati_feedback.hpp` | `u_fb = gain_scale · K · Δx` with optional accel-only mode |
@@ -70,7 +70,7 @@ workarounds via `ament_export_dependencies`.
 | 0 | Aligator toolchain (fmt / mimalloc / aligator → /usr/local) | ✅ |
 | 1 | `RobotModelHandler` + `contact_plan_types.hpp` | ✅ |
 | 2 | `PhaseManagerBase` + `PhaseCostConfig` + `PhaseContext` | ✅ |
-| 3 | `OCPHandlerBase` + `KinoDynamicsOCP` + `CostFactory` + `OCPLimits` | ✅ |
+| 3 | `OCPHandlerBase` + `LightContactOCP` (renamed from `KinoDynamicsOCP` in 4.-1) + `CostFactory` + `OCPLimits` | ✅ |
 | 4-7 | FullDynamics, `MPCHandler`, thread integration, ur5e hook-up | ⬜ |
 
 See `docs/mpc_implementation_progress.md` for the living roadmap.

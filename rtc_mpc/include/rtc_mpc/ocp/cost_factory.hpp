@@ -7,7 +7,7 @@
 /// Scope is the three **robot-agnostic**, **OCP-backbone-independent**
 /// residuals: frame placement, state regularisation, control regularisation.
 /// Contact-force and centroidal-momentum residuals live inside the concrete
-/// OCP handler (e.g. `KinoDynamicsOCP`) because they depend on dynamics-
+/// OCP handler (e.g. `LightContactOCP`) because they depend on dynamics-
 /// specific data (rigid-contact constraint models, actuation matrix, prox
 /// settings) that the handler already owns.
 ///

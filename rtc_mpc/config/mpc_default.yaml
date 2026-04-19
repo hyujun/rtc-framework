@@ -2,7 +2,7 @@
 #
 # This file is consumed by PhaseCostConfig::LoadFromYaml + RobotModelHandler::Init
 # for smoke/unit tests and as a starting point for robot-specific configs in
-# downstream packages (e.g. ur5e_bringup/config/controllers/mpc_kinodynamics.yaml).
+# downstream packages (e.g. ur5e_bringup/config/controllers/mpc_light_contact.yaml).
 #
 # Placeholders wrapped in <...> MUST be overridden per robot; rtc_mpc itself
 # never reads these placeholder values at runtime.

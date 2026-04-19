@@ -48,7 +48,7 @@ add_library(rtc_mpc STATIC
   src/model/robot_model_handler.cpp
   src/phase/phase_cost_config.cpp
   src/ocp/cost_factory.cpp
-  src/ocp/kinodynamics_ocp.cpp
+  src/ocp/light_contact_ocp.cpp
 )
 
 target_include_directories(rtc_mpc PUBLIC
@@ -154,9 +154,9 @@ if(BUILD_TESTING)
     target_link_libraries(test_cost_factory rtc_mpc)
   endif()
 
-  ament_add_gtest(test_kinodynamics_ocp test/test_kinodynamics_ocp.cpp)
-  if(TARGET test_kinodynamics_ocp)
-    target_link_libraries(test_kinodynamics_ocp rtc_mpc)
+  ament_add_gtest(test_light_contact_ocp test/test_light_contact_ocp.cpp)
+  if(TARGET test_light_contact_ocp)
+    target_link_libraries(test_light_contact_ocp rtc_mpc)
   endif()
 endif()
 

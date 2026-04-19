@@ -7,7 +7,7 @@
 /// - Terminal cost omits control reg regardless of weight
 /// - Polymorphic handle retrieval chain works post-StageModel assembly
 ///   (the load-bearing assumption for alloc-free UpdateReferences in
-///    `KinoDynamicsOCP`) — including a mutation round-trip
+///    `LightContactOCP`) — including a mutation round-trip
 /// - Error paths: uninitialised model, invalid horizon/dt, posture dim mismatch
 
 #include <gtest/gtest.h>
@@ -154,7 +154,7 @@ TEST_F(CostFactoryTest, PolymorphicHandleRetrievalAfterStageAssembly) {
   // Build running cost, then wrap into a minimal StageModel to verify the
   // getCost → getComponent(key) → getResidual<T>() chain resolves after
   // polymorphic copy. If this test fails, alloc-free UpdateReferences in
-  // KinoDynamicsOCP is infeasible (spike Q3 would be invalidated).
+  // LightContactOCP is infeasible (spike Q3 would be invalidated).
 
   rtc::mpc::CostFactoryError err = rtc::mpc::CostFactoryError::kNoError;
   auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg_, handler_, ee_target_,

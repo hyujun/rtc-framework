@@ -1,4 +1,4 @@
-#include "rtc_mpc/ocp/kinodynamics_ocp.hpp"
+#include "rtc_mpc/ocp/light_contact_ocp.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -98,9 +98,9 @@ BuildConstraintModels(const RobotModelHandler &model,
 
 // Walk a freshly-built StageModel's polymorphic cost tree and populate
 // raw-pointer handles for alloc-free mutation in UpdateReferences.
-KinoStageHandles CacheStageHandles(StageModel &stage,
-                                   const StageComponentKeys &keys) noexcept {
-  KinoStageHandles h{};
+LightStageHandles CacheStageHandles(StageModel &stage,
+                                    const StageComponentKeys &keys) noexcept {
+  LightStageHandles h{};
   auto *stack = stage.getCost<CostStack>();
   if (stack == nullptr) {
     return h;
@@ -131,7 +131,7 @@ KinoStageHandles CacheStageHandles(StageModel &stage,
 // Mutate cached handles to reflect new references. Pre-condition: topology
 // unchanged (caller verified); handles non-null only where corresponding
 // components were built.
-void ApplyReferences(const KinoStageHandles &h, const PhaseCostConfig &cfg,
+void ApplyReferences(const LightStageHandles &h, const PhaseCostConfig &cfg,
                      const pinocchio::SE3 &ee_target, int nq, int nv) noexcept {
   if (h.frame_placement != nullptr) {
     h.frame_placement->setReference(ee_target);
@@ -151,14 +151,14 @@ void ApplyReferences(const KinoStageHandles &h, const PhaseCostConfig &cfg,
 
 } // namespace
 
-OCPBuildError KinoDynamicsOCP::Build(const PhaseContext &ctx,
+OCPBuildError LightContactOCP::Build(const PhaseContext &ctx,
                                      const RobotModelHandler &model,
                                      const OCPLimits &limits) noexcept {
   // ── Input validation ────────────────────────────────────────────────
   if (!model.Initialised()) {
     return OCPBuildError::kModelNotInitialised;
   }
-  if (ctx.ocp_type != "kinodynamics") {
+  if (ctx.ocp_type != "light_contact") {
     return OCPBuildError::kInvalidPhaseContext;
   }
   const auto &cfg = ctx.cost_config;
@@ -268,7 +268,7 @@ OCPBuildError KinoDynamicsOCP::Build(const PhaseContext &ctx,
     // Walk the STORED stages inside the freshly built problem to cache
     // raw handles. Pointers into `stages` (local) would dangle — the
     // TrajOptProblem ctor copied that vector into `problem_new->stages_`.
-    std::vector<KinoStageHandles> fresh_handles{};
+    std::vector<LightStageHandles> fresh_handles{};
     fresh_handles.reserve(static_cast<std::size_t>(H));
     for (int k = 0; k < H; ++k) {
       auto &stored_stage = *problem_new->stages_[static_cast<std::size_t>(k)];
@@ -278,7 +278,7 @@ OCPBuildError KinoDynamicsOCP::Build(const PhaseContext &ctx,
 
     // Walk terminal cost for handles (term_cost_ is polymorphic-stored
     // inside TrajOptProblem).
-    KinoStageHandles term_handles{};
+    LightStageHandles term_handles{};
     auto *term_stack = dynamic_cast<CostStack *>(&*problem_new->term_cost_);
     if (term_stack != nullptr) {
       if (term_cost.keys.has_frame_placement) {
@@ -318,11 +318,11 @@ OCPBuildError KinoDynamicsOCP::Build(const PhaseContext &ctx,
 }
 
 OCPBuildError
-KinoDynamicsOCP::UpdateReferences(const PhaseContext &ctx) noexcept {
+LightContactOCP::UpdateReferences(const PhaseContext &ctx) noexcept {
   if (!Built()) {
     return OCPBuildError::kInvalidPhaseContext;
   }
-  if (ctx.ocp_type != "kinodynamics") {
+  if (ctx.ocp_type != "light_contact") {
     return OCPBuildError::kInvalidPhaseContext;
   }
   const auto &cfg = ctx.cost_config;

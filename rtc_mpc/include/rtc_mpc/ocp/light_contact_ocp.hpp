@@ -1,16 +1,17 @@
-#ifndef RTC_MPC_OCP_KINODYNAMICS_OCP_HPP_
-#define RTC_MPC_OCP_KINODYNAMICS_OCP_HPP_
+#ifndef RTC_MPC_OCP_LIGHT_CONTACT_OCP_HPP_
+#define RTC_MPC_OCP_LIGHT_CONTACT_OCP_HPP_
 
-/// @file kinodynamics_ocp.hpp
-/// @brief Concrete `OCPHandlerBase` for v2.2-sense "KinoDynamics MPC" on a
-///        fixed-base manipulator.
+/// @file light_contact_ocp.hpp
+/// @brief Concrete `OCPHandlerBase` for the "LightContact" MPC mode on a
+///        fixed-base manipulator (renamed from `LightContactOCP` in Phase
+///        4.-1; see `docs/mpc_implementation_progress.md` §"Phase 4.-1").
 ///
-/// Class naming reflects our MPC mode (kinematics-level control) per the
-/// v2.2 architecture; the backing Aligator class is
-/// `MultibodyConstraintFwdDynamicsTpl` (see
-/// `docs/mpc_implementation_progress.md` §"Phase 3 Spike Notes" — the
-/// Aligator-named `KinodynamicsFwdDynamicsTpl` is a floating-base
-/// centroidal class unsuitable for fixed-base manipulators).
+/// The backing Aligator class is `MultibodyConstraintFwdDynamicsTpl` — the
+/// similarly-named `KinodynamicsFwdDynamicsTpl` is a floating-base
+/// centroidal class unsuitable for fixed-base manipulators. The
+/// "LightContact" name reflects the scope axis that distinguishes this OCP
+/// from Phase 4's `ContactRichOCP`: rigid-contact dynamics only, no
+/// contact-force cost and no friction-cone constraints.
 ///
 /// Layout:
 /// - state  `x = [q; v]` ∈ R^{nq+nv}
@@ -55,21 +56,21 @@ namespace rtc::mpc {
 ///
 /// Null entries indicate the corresponding weight was <= 0 at Build and
 /// the residual is absent from the stage (no lookup possible).
-struct KinoStageHandles {
+struct LightStageHandles {
   aligator::FramePlacementResidualTpl<double> *frame_placement{nullptr};
   aligator::StateErrorResidualTpl<double> *state_reg{nullptr};
   aligator::ControlErrorResidualTpl<double> *control_reg{nullptr};
 };
 
-class KinoDynamicsOCP : public OCPHandlerBase {
+class LightContactOCP : public OCPHandlerBase {
 public:
-  KinoDynamicsOCP() = default;
-  ~KinoDynamicsOCP() override = default;
+  LightContactOCP() = default;
+  ~LightContactOCP() override = default;
 
-  KinoDynamicsOCP(const KinoDynamicsOCP &) = delete;
-  KinoDynamicsOCP &operator=(const KinoDynamicsOCP &) = delete;
-  KinoDynamicsOCP(KinoDynamicsOCP &&) = delete;
-  KinoDynamicsOCP &operator=(KinoDynamicsOCP &&) = delete;
+  LightContactOCP(const LightContactOCP &) = delete;
+  LightContactOCP &operator=(const LightContactOCP &) = delete;
+  LightContactOCP(LightContactOCP &&) = delete;
+  LightContactOCP &operator=(LightContactOCP &&) = delete;
 
   [[nodiscard]] OCPBuildError Build(const PhaseContext &ctx,
                                     const RobotModelHandler &model,
@@ -91,7 +92,7 @@ public:
   }
 
   [[nodiscard]] std::string_view ocp_type() const noexcept override {
-    return std::string_view{"kinodynamics"};
+    return std::string_view{"light_contact"};
   }
 
 private:
@@ -99,8 +100,8 @@ private:
   std::unique_ptr<aligator::TrajOptProblemTpl<double>> problem_{};
 
   // Per-stage cached handles; size == horizon_length_ after Build.
-  std::vector<KinoStageHandles> stage_handles_{};
-  KinoStageHandles terminal_handles_{};
+  std::vector<LightStageHandles> stage_handles_{};
+  LightStageHandles terminal_handles_{};
 
   // Cached topology + limits — used by UpdateReferences to detect changes
   // that would require a full Build.
@@ -118,4 +119,4 @@ private:
 
 } // namespace rtc::mpc
 
-#endif // RTC_MPC_OCP_KINODYNAMICS_OCP_HPP_
+#endif // RTC_MPC_OCP_LIGHT_CONTACT_OCP_HPP_

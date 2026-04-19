@@ -6,7 +6,7 @@
 ///
 /// `OCPHandlerBase` is the boundary between the phase-agnostic MPC
 /// orchestration layer (Phase 5 `MPCHandler`) and concrete solver-specific
-/// OCP assembly (Aligator-backed `KinoDynamicsOCP`, `FullDynamicsOCP`). It
+/// OCP assembly (Aligator-backed `LightContactOCP`, `ContactRichOCP`). It
 /// lives on the **OCP build / reconfigure path**, not the 500Hz RT loop.
 ///
 /// Two-method API split:
@@ -67,7 +67,7 @@ enum class OCPBuildError {
 };
 
 /// @brief Abstract OCP builder. Concrete implementations map the OCP onto a
-///        specific dynamics class (e.g. KinoDynamicsOCP, FullDynamicsOCP).
+///        specific dynamics class (e.g. LightContactOCP, ContactRichOCP).
 class OCPHandlerBase {
 public:
   OCPHandlerBase() = default;
@@ -111,7 +111,7 @@ public:
   /// @return horizon length used by the last successful Build.
   [[nodiscard]] virtual int horizon_length() const noexcept = 0;
 
-  /// @return dispatch key string literal (`"kinodynamics"`, `"fulldynamics"`).
+  /// @return dispatch key string literal (`"light_contact"`, `"contact_rich"`).
   ///         Must match `PhaseContext::ocp_type` for Build to succeed.
   [[nodiscard]] virtual std::string_view ocp_type() const noexcept = 0;
 };
