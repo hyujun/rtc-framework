@@ -1,0 +1,17 @@
+repositories:
+  fmt:
+    type: git
+    url: https://github.com/fmtlib/fmt.git
+    version: 11.1.4
+  mimalloc:
+    type: git
+    url: https://github.com/microsoft/mimalloc.git
+    version: v2.1.7
+  aligator:
+    type: git
+    url: https://github.com/Simple-Robotics/aligator.git
+    version: v0.19.0
+  example-robot-data:
+    type: git
+    url: https://github.com/Gepetto/example-robot-data.git
+    version: master

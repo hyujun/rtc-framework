@@ -4,6 +4,7 @@ project(rtc_scripts VERSION 5.17.0 LANGUAGES)
 find_package(ament_cmake REQUIRED)
 
 install(PROGRAMS
+  # RT system setup + verification
   scripts/setup_irq_affinity.sh
   scripts/setup_udp_optimization.sh
   scripts/setup_nvidia_rt.sh
@@ -14,6 +15,11 @@ install(PROGRAMS
   scripts/check_rt_setup.sh
   scripts/cpu_shield.sh
   scripts/verify_rt_runtime.sh
+  # Dependency isolation (ISOLATION_PLAN.md)
+  scripts/setup_env.sh
+  scripts/build_deps.sh
+  scripts/verify_isolation.sh
+  scripts/uninstall_system_deps.sh
   DESTINATION lib/${PROJECT_NAME}
 )
 install(PROGRAMS
