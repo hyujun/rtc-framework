@@ -109,10 +109,14 @@ def generate_launch_description():
         if grip in ('soft', 'medium', 'hard'):
             overrides['bb.hand_close_pose'] = f'hand_close_{grip}'
 
+        # `namespace=''` is required by launch_ros >= jazzy (keyword-only
+        # arg in LifecycleNode.__init__); earlier distros defaulted it
+        # implicitly.
         bt_node = LifecycleNode(
             package='ur5e_bt_coordinator',
             executable='bt_coordinator_node',
             name='bt_coordinator',
+            namespace='',
             output='screen',
             parameters=[config_yaml, poses_yaml, overrides],
         )

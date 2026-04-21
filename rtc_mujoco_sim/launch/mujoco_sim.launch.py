@@ -259,10 +259,13 @@ def launch_setup(context, *args, **kwargs):
         actions.append(enable_sim_cpu_shield)
 
     # ── Node 1: MuJoCo Simulator (LifecycleNode) ────────────────────────────
+    # `namespace=''` is required by launch_ros >= jazzy (keyword-only arg
+    # in LifecycleNode.__init__); earlier distros defaulted it implicitly.
     mujoco_node = LifecycleNode(
         package='rtc_mujoco_sim',
         executable='mujoco_simulator_node',
         name='mujoco_simulator',
+        namespace='',
         output='screen',
         emulate_tty=True,
         parameters=sim_params,
@@ -273,6 +276,7 @@ def launch_setup(context, *args, **kwargs):
         package='rtc_controller_manager',
         executable='rt_controller',
         name='rt_controller',
+        namespace='',
         output='screen',
         emulate_tty=True,
         parameters=ctrl_params,

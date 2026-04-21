@@ -20,10 +20,13 @@ def generate_launch_description():
         ]),
         description='shape_estimation_node YAML 설정 파일 경로')
 
+    # `namespace=''` is required by launch_ros >= jazzy (keyword-only arg
+    # in LifecycleNode.__init__); earlier distros defaulted it implicitly.
     shape_node = LifecycleNode(
         package='shape_estimation',
         executable='shape_estimation_node',
         name='shape_estimation_node',
+        namespace='',
         parameters=[LaunchConfiguration('config_file')],
         output='screen',
     )

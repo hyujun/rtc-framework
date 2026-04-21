@@ -278,10 +278,13 @@ def generate_launch_description():
     # here — robot.launch.py does not use OpaqueFunction, and nested YAML
     # overrides would require restructuring the launch. The sim.launch.py
     # flow does inject the override directly via its OpaqueFunction setup.
+    # `namespace=''` is required by launch_ros >= jazzy (keyword-only arg
+    # in LifecycleNode.__init__); earlier distros defaulted it implicitly.
     rt_controller_node = LifecycleNode(
         package='ur5e_bringup',
         executable='ur5e_rt_controller',
         name='rt_controller',
+        namespace='',
         output='screen',
         parameters=[
             ur_control_config,
@@ -298,6 +301,7 @@ def generate_launch_description():
         package='ur5e_hand_driver',
         executable='hand_udp_node',
         name='hand_udp_node',
+        namespace='',
         output='screen',
         parameters=[
             hand_udp_config,

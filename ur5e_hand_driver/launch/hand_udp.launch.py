@@ -68,10 +68,13 @@ def generate_launch_description():
     ])
 
     # ── Lifecycle Node ──────────────────────────────────────────────────
+    # `namespace=''` is required by launch_ros >= jazzy (keyword-only arg
+    # in LifecycleNode.__init__); earlier distros defaulted it implicitly.
     hand_udp_node = LifecycleNode(
         package='ur5e_hand_driver',
         executable='hand_udp_node',
         name='hand_udp_node',
+        namespace='',
         output='screen',
         parameters=[
             hand_config,
