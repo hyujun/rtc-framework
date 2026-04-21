@@ -225,9 +225,13 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
     // RobotModelInfo
     robot_info_.build(model, tsid_node);
 
-    // ContactManagerConfig
+    // ContactManagerConfig — pass the whole tsid subtree; load() looks up
+    // "contacts" itself (same pattern as rtc_tsid/test_force_task.cpp).
+    // Passing tsid_node["contacts"] would double-index and silently yield
+    // max_contacts = 0 (bug observed as "TSID initialized: contacts=0"
+    // in the sim launch prior to this fix).
     if (tsid_node["contacts"]) {
-      contact_mgr_config_.load(tsid_node["contacts"], model);
+      contact_mgr_config_.load(tsid_node, model);
     }
 
     // PinocchioCache
