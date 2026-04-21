@@ -148,10 +148,11 @@ def launch_setup(context, *args, **kwargs):
     if initial_controller != '':
         ctrl_overrides['initial_controller'] = initial_controller
 
-    # Phase 5: expose `enable_mpc` as a runtime override for the DemoWbc
-    # controller's `mpc.enabled` YAML setting. The controller reads this
-    # key during LoadConfig; the runtime gains topic (index 7) can also
-    # toggle MPC on/off dynamically without restarting the launch.
+    # Phase 5 + controller-override follow-up: `enable_mpc` drives the
+    # `demo_wbc_controller.mpc.enabled` ROS parameter, which rtc_controller_
+    # manager's `ApplyControllerParamOverrides` helper writes into the
+    # YAML::Node handed to `LoadConfig`. The runtime gains topic (index 7)
+    # can also toggle MPC on/off dynamically without restarting the launch.
     enable_mpc = LaunchConfiguration('enable_mpc').perform(context)
     if enable_mpc.lower() in ('true', '1', 'yes'):
         ctrl_overrides['demo_wbc_controller.mpc.enabled'] = True
