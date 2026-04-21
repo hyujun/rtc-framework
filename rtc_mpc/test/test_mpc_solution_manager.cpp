@@ -40,18 +40,16 @@ MPCSolution MakeSolution(uint64_t timestamp = 1) {
   for (int k = 0; k <= kHorizon; ++k) {
     const double t = static_cast<double>(k) * kDtNode;
     for (int i = 0; i < kNq; ++i) {
-      sol.q_traj[static_cast<std::size_t>(k)]
-                [static_cast<std::size_t>(i)] = t;
+      sol.q_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)] = t;
     }
     for (int i = 0; i < kNv; ++i) {
-      sol.v_traj[static_cast<std::size_t>(k)]
-                [static_cast<std::size_t>(i)] = 1.0;
+      sol.v_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)] =
+          1.0;
     }
   }
   // Identity Riccati gain (nu x nx) at node 0.
   for (int i = 0; i < kNv; ++i) {
-    sol.K_riccati[0][static_cast<std::size_t>(
-        i * (kNq + kNv) + i)] = 1.0;
+    sol.K_riccati[0][static_cast<std::size_t>(i * (kNq + kNv) + i)] = 1.0;
   }
   return sol;
 }
@@ -69,7 +67,7 @@ YAML::Node MakeConfig(bool enabled, int max_stale = 5) {
 }
 
 class MpcSolutionManagerTest : public ::testing::Test {
- protected:
+protected:
   void SetUp() override {
     q_curr_.setZero(kNq);
     v_curr_.setZero(kNv);
@@ -91,8 +89,8 @@ TEST_F(MpcSolutionManagerTest, DisabledShortCircuits) {
   mgr_.Init(MakeConfig(false), kNq, kNv, kNc);
   EXPECT_FALSE(mgr_.Enabled());
 
-  const bool ok = mgr_.ComputeReference(
-      q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_);
+  const bool ok = mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_,
+                                        a_ff_, lambda_ref_, u_fb_, meta_);
   EXPECT_FALSE(ok);
   EXPECT_FALSE(meta_.valid);
   EXPECT_DOUBLE_EQ(u_fb_.norm(), 0.0);
@@ -111,8 +109,8 @@ TEST_F(MpcSolutionManagerTest, PublishConsumeRoundTrip) {
   const uint64_t now = 1'000'000'000;
   mgr_.PublishSolution(MakeSolution(now));
 
-  const bool ok = mgr_.ComputeReference(
-      q_curr_, v_curr_, now, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_);
+  const bool ok = mgr_.ComputeReference(q_curr_, v_curr_, now, q_ref_, v_ref_,
+                                        a_ff_, lambda_ref_, u_fb_, meta_);
   ASSERT_TRUE(ok);
   EXPECT_TRUE(meta_.valid);
   EXPECT_FALSE(meta_.beyond_horizon);
@@ -149,40 +147,117 @@ TEST_F(MpcSolutionManagerTest, StaleCounterIncrementsAndResets) {
   mgr_.PublishSolution(MakeSolution(t0));
 
   // First call consumes the fresh solution — stale stays 0.
-  EXPECT_TRUE(mgr_.ComputeReference(
-      q_curr_, v_curr_, t0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, t0, q_ref_, v_ref_, a_ff_,
+                                    lambda_ref_, u_fb_, meta_));
   EXPECT_EQ(mgr_.StaleCount(), 0);
 
   // Subsequent calls without a new publish: counter climbs.
-  EXPECT_TRUE(mgr_.ComputeReference(
-      q_curr_, v_curr_, t0 + 1, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_,
-      meta_));
+  EXPECT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, t0 + 1, q_ref_, v_ref_,
+                                    a_ff_, lambda_ref_, u_fb_, meta_));
   EXPECT_EQ(mgr_.StaleCount(), 1);
-  EXPECT_TRUE(mgr_.ComputeReference(
-      q_curr_, v_curr_, t0 + 2, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_,
-      meta_));
+  EXPECT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, t0 + 2, q_ref_, v_ref_,
+                                    a_ff_, lambda_ref_, u_fb_, meta_));
   EXPECT_EQ(mgr_.StaleCount(), 2);
 
   // Threshold 3: next stale increment triggers fallback.
-  EXPECT_FALSE(mgr_.ComputeReference(
-      q_curr_, v_curr_, t0 + 3, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_,
-      meta_));
+  EXPECT_FALSE(mgr_.ComputeReference(q_curr_, v_curr_, t0 + 3, q_ref_, v_ref_,
+                                     a_ff_, lambda_ref_, u_fb_, meta_));
   EXPECT_EQ(mgr_.StaleCount(), 3);
 
   // Publish a fresh solution → counter resets, ComputeReference succeeds.
   mgr_.PublishSolution(MakeSolution(t0 + 1000));
-  EXPECT_TRUE(mgr_.ComputeReference(
-      q_curr_, v_curr_, t0 + 1000, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_,
-      meta_));
+  EXPECT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, t0 + 1000, q_ref_, v_ref_,
+                                    a_ff_, lambda_ref_, u_fb_, meta_));
   EXPECT_EQ(mgr_.StaleCount(), 0);
 }
 
 TEST_F(MpcSolutionManagerTest, NoSolutionYieldsFallback) {
   mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
   EXPECT_FALSE(mgr_.HasEverReceivedSolution());
-  EXPECT_FALSE(mgr_.ComputeReference(
-      q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_FALSE(mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_,
+                                     lambda_ref_, u_fb_, meta_));
 }
 
-}  // namespace
-}  // namespace rtc::mpc
+// ── Solve-timing probe (Phase 7c perf follow-up) ────────────────────────────
+
+TEST_F(MpcSolutionManagerTest, SolveStatsEmptyBeforeFirstPublish) {
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+  const auto s = mgr_.GetSolveStats();
+  EXPECT_EQ(s.count, 0u);
+  EXPECT_EQ(s.window, 0u);
+  EXPECT_EQ(s.last_ns, 0u);
+  EXPECT_EQ(s.min_ns, 0u);
+  EXPECT_EQ(s.max_ns, 0u);
+  EXPECT_EQ(s.p50_ns, 0u);
+  EXPECT_EQ(s.p99_ns, 0u);
+  EXPECT_DOUBLE_EQ(s.mean_ns, 0.0);
+}
+
+TEST_F(MpcSolutionManagerTest, SolveStatsAggregatesPercentiles) {
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+
+  // Feed a 100-sample window where sample i has solve_duration_ns = (i+1)*1e6
+  // (1 ms, 2 ms, …, 100 ms). p50 should land near 50 ms, p99 near 99 ms.
+  for (int i = 0; i < 100; ++i) {
+    MPCSolution sol = MakeSolution(static_cast<uint64_t>(i + 1));
+    sol.solve_duration_ns = static_cast<uint64_t>(i + 1) * 1'000'000ULL;
+    mgr_.PublishSolution(sol);
+  }
+
+  const auto s = mgr_.GetSolveStats();
+  EXPECT_EQ(s.count, 100u);
+  EXPECT_EQ(s.window, 100u);
+  EXPECT_EQ(s.last_ns, 100'000'000u);
+  EXPECT_EQ(s.min_ns, 1'000'000u);
+  EXPECT_EQ(s.max_ns, 100'000'000u);
+  // Rank-based p50 of 100 sorted samples → index round(0.5 * 99) = 50 →
+  // samples[50] = 51 ms (0-indexed). p99 → round(0.99 * 99) = 98 → 99 ms.
+  EXPECT_EQ(s.p50_ns, 51'000'000u);
+  EXPECT_EQ(s.p99_ns, 99'000'000u);
+  // Mean of 1..100 ms = 50.5 ms.
+  EXPECT_NEAR(s.mean_ns, 50'500'000.0, 1.0);
+}
+
+TEST_F(MpcSolutionManagerTest, SolveStatsRingBufferOverwrites) {
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+
+  // Fill beyond the window so the oldest samples fall off. Window size is
+  // MPCSolutionManager::kSolveStatsWindow (256). Publish 300 samples where
+  // the last 256 all have duration == 5 ms. Statistics must reflect only
+  // that tail; the earlier 1 ms samples should be gone.
+  for (int i = 0; i < 300; ++i) {
+    MPCSolution sol = MakeSolution(static_cast<uint64_t>(i + 1));
+    sol.solve_duration_ns = (i < 44) ? 1'000'000ULL : 5'000'000ULL;
+    mgr_.PublishSolution(sol);
+  }
+
+  const auto s = mgr_.GetSolveStats();
+  EXPECT_EQ(s.count, 300u);
+  EXPECT_EQ(s.window, MPCSolutionManager::kSolveStatsWindow);
+  EXPECT_EQ(s.last_ns, 5'000'000u);
+  EXPECT_EQ(s.min_ns, 5'000'000u);
+  EXPECT_EQ(s.max_ns, 5'000'000u);
+  EXPECT_EQ(s.p50_ns, 5'000'000u);
+  EXPECT_EQ(s.p99_ns, 5'000'000u);
+  EXPECT_DOUBLE_EQ(s.mean_ns, 5'000'000.0);
+}
+
+TEST_F(MpcSolutionManagerTest, ResetSolveStatsClearsAllFields) {
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+  for (int i = 0; i < 50; ++i) {
+    MPCSolution sol = MakeSolution(static_cast<uint64_t>(i + 1));
+    sol.solve_duration_ns = 1'000'000ULL;
+    mgr_.PublishSolution(sol);
+  }
+  ASSERT_GT(mgr_.GetSolveStats().count, 0u);
+
+  mgr_.ResetSolveStats();
+
+  const auto s = mgr_.GetSolveStats();
+  EXPECT_EQ(s.count, 0u);
+  EXPECT_EQ(s.window, 0u);
+  EXPECT_EQ(s.last_ns, 0u);
+}
+
+} // namespace
+} // namespace rtc::mpc
