@@ -20,22 +20,21 @@ find_package(rtc_base REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
-# ── MPC deps (Phase 0 dual-install workarounds — see
-#    docs/mpc_implementation_progress.md §Phase 0 "CMake Constraints") ────────
+# ── MPC deps (isolated to deps/install/ via scripts/setup_env.sh) ────────────
 # hpp-fcl ABI: force ROS Jazzy's hpp-fcl *before* pinocchio's transitive
-# find_dependency, otherwise /usr/local's RowMajor-signature hpp-fcl wins and
-# breaks pinocchio_parsers linking.
+# find_dependency. ROS版 hpp-fcl는 ColMajor addVertices; 다른 설치본이 CMAKE_PREFIX_PATH
+# 앞쪽에 있으면 ABI 깨짐.
 if(EXISTS /opt/ros/$ENV{ROS_DISTRO}/lib/x86_64-linux-gnu/cmake/hpp-fcl)
   set(hpp-fcl_DIR
     /opt/ros/$ENV{ROS_DISTRO}/lib/x86_64-linux-gnu/cmake/hpp-fcl
-    CACHE PATH "ROS hpp-fcl (avoid /usr/local ABI break)" FORCE)
+    CACHE PATH "ROS hpp-fcl (avoid ABI break from stray installs)" FORCE)
 endif()
-# fmt: apt libfmt-dev (9.1.0) is preferred by CMake's multi-arch search,
-# but Aligator was built against source-installed fmt 11.1.4. Hint /usr/local.
-find_package(fmt 10 REQUIRED HINTS /usr/local/lib/cmake/fmt)
+# fmt: deps/install (v11.1.4) 를 CMAKE_PREFIX_PATH 에서 찾음. v10 이상 요구.
+# apt libfmt-dev (9.1.0) 가 ROS transitive 로 들어와도 HINT 는 필요 없음 —
+# scripts/setup_env.sh 가 CMAKE_PREFIX_PATH 앞에 deps/install 을 둠.
+find_package(fmt 10 REQUIRED)
 find_package(pinocchio REQUIRED)
-# aligator: source-installed at /usr/local (Phase 0). Not a rosdep — do NOT add
-# to package.xml. CMake config lives at /usr/local/lib/cmake/aligator.
+# aligator: deps/install (v0.19.0). CMAKE_PREFIX_PATH 로 찾음.
 find_package(aligator REQUIRED)
 
 # ── Library target (STATIC) ──────────────────────────────────────────────────

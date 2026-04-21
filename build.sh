@@ -24,6 +24,15 @@ if [[ -f "$_RT_COMMON" ]]; then
 fi
 make_logger "BUILD" emoji
 
+# ── 격리 환경 자동 활성화 (ISOLATION_PLAN.md) ─────────────────────────────
+# setup_env.sh 가 아직 source 되지 않았으면 자동 source — RTC_DEPS_PREFIX 가
+# 지정되어 있는지로 판정. (deps/install 의 fmt/mimalloc/aligator 경로 + venv + ROS)
+_SETUP_ENV="${_SCRIPT_DIR_BUILD}/rtc_scripts/scripts/setup_env.sh"
+if [[ -z "${RTC_DEPS_PREFIX:-}" && -f "$_SETUP_ENV" ]]; then
+  # shellcheck source=/dev/null
+  source "$_SETUP_ENV"
+fi
+
 # ── Mode & argument parsing ────────────────────────────────────────────────────
 NO_SYMLINK=0
 EXPORT_COMPILE_COMMANDS=0

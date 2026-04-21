@@ -34,6 +34,15 @@ else
   success() { echo -e "${GREEN}✔ $*${NC}"; }
 fi
 
+# ── 격리 환경 자동 활성화 (ISOLATION_PLAN.md) ─────────────────────────────
+# setup_env.sh 가 아직 source 되지 않았으면 자동 source — deps/install 의
+# fmt/mimalloc/aligator 경로를 colcon 빌드 시 먼저 찾도록.
+_SETUP_ENV="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/setup_env.sh"
+if [[ -z "${RTC_DEPS_PREFIX:-}" && -f "$_SETUP_ENV" ]]; then
+  # shellcheck source=/dev/null
+  source "$_SETUP_ENV"
+fi
+
 # ── apt-get update 이중 호출 방지 ─────────────────────────────────────────────
 _LAST_APT_UPDATE=0
 apt_update_if_stale() {
@@ -44,11 +53,10 @@ apt_update_if_stale() {
   fi
 }
 
-# ── MPC dependency versions (Phase 0 — source-built to /usr/local) ────────────
+# ── MPC dependency versions (scripts/build_deps.sh 에서 소비) ────────────────
 FMT_VERSION="11.1.4"
 MIMALLOC_VERSION="2.1.7"
 ALIGATOR_VERSION="0.19.0"
-LIBS_ROOT="${HOME}/libs"
 
 # ── Mode & argument parsing ────────────────────────────────────────────────────
 SKIP_DEPS=0
@@ -396,27 +404,8 @@ install_pinocchio() {
   if sudo apt-get install -y ${ROS_PKG_PREFIX}-pinocchio >/dev/null 2>&1; then
     success "Pinocchio installed via ${ROS_PKG_PREFIX}-pinocchio"
   else
-    warn "${ROS_PKG_PREFIX}-pinocchio not found, trying robotpkg..."
-    # Ubuntu 22.04+ deprecates apt-key; Ubuntu 24.04 removes it entirely.
-    # Use gpg keyring method (works on both 22.04 and 24.04).
-    local ROBOTPKG_KEYRING="/usr/share/keyrings/robotpkg-archive-keyring.gpg"
-    curl -fsSL http://robotpkg.openrobots.org/packages/debian/robotpkg.key \
-        | sudo gpg --batch --yes --dearmor -o "$ROBOTPKG_KEYRING" 2>/dev/null || true
-    sudo sh -c "echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/robotpkg-archive-keyring.gpg] http://robotpkg.openrobots.org/packages/debian/pub $(lsb_release -sc) robotpkg' \
-        > /etc/apt/sources.list.d/robotpkg.list"
-    sudo apt-get update -qq
-    if sudo apt-get install -y robotpkg-${PYTHON_ROBOTPKG_SUFFIX}-pinocchio >/dev/null 2>&1; then
-      success "Pinocchio installed via robotpkg (${PYTHON_ROBOTPKG_SUFFIX})"
-      grep -q "openrobots" ~/.bashrc || {
-        echo "export PATH=/opt/openrobots/bin:\$PATH" >> ~/.bashrc
-        echo "export PKG_CONFIG_PATH=/opt/openrobots/lib/pkgconfig:\$PKG_CONFIG_PATH" >> ~/.bashrc
-        echo "export LD_LIBRARY_PATH=/opt/openrobots/lib:\$LD_LIBRARY_PATH" >> ~/.bashrc
-        echo "export CMAKE_PREFIX_PATH=/opt/openrobots:\$CMAKE_PREFIX_PATH" >> ~/.bashrc
-      }
-    else
-      warn "Pinocchio not installed — ClikController / DemoTaskController / OperationalSpaceController unavailable"
-      warn "See: https://stack-of-tasks.github.io/pinocchio/download.html"
-    fi
+    error "${ROS_PKG_PREFIX}-pinocchio not found — isolation plan requires ROS distribution pinocchio. \
+See ISOLATION_PLAN.md for the reason robotpkg fallback was removed."
   fi
 }
 
@@ -428,209 +417,65 @@ install_proxsuite() {
   if sudo apt-get install -y ${ROS_PKG_PREFIX}-proxsuite >/dev/null 2>&1; then
     success "ProxSuite installed via ${ROS_PKG_PREFIX}-proxsuite"
   else
-    warn "${ROS_PKG_PREFIX}-proxsuite not found, trying robotpkg..."
-    local ROBOTPKG_KEYRING="/usr/share/keyrings/robotpkg-archive-keyring.gpg"
-    if [[ ! -f "$ROBOTPKG_KEYRING" ]]; then
-      curl -fsSL http://robotpkg.openrobots.org/packages/debian/robotpkg.key \
-          | sudo gpg --batch --yes --dearmor -o "$ROBOTPKG_KEYRING" 2>/dev/null || true
-      sudo sh -c "echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/robotpkg-archive-keyring.gpg] http://robotpkg.openrobots.org/packages/debian/pub $(lsb_release -sc) robotpkg' \
-          > /etc/apt/sources.list.d/robotpkg.list"
-      sudo apt-get update -qq
-    fi
-    if sudo apt-get install -y robotpkg-${PYTHON_ROBOTPKG_SUFFIX}-proxsuite >/dev/null 2>&1; then
-      success "ProxSuite installed via robotpkg (${PYTHON_ROBOTPKG_SUFFIX})"
-      grep -q "openrobots" ~/.bashrc || {
-        echo "export PATH=/opt/openrobots/bin:\$PATH" >> ~/.bashrc
-        echo "export PKG_CONFIG_PATH=/opt/openrobots/lib/pkgconfig:\$PKG_CONFIG_PATH" >> ~/.bashrc
-        echo "export LD_LIBRARY_PATH=/opt/openrobots/lib:\$LD_LIBRARY_PATH" >> ~/.bashrc
-        echo "export CMAKE_PREFIX_PATH=/opt/openrobots:\$CMAKE_PREFIX_PATH" >> ~/.bashrc
-      }
-    else
-      warn "ProxSuite not installed — rtc_tsid / DemoWbcController will not build"
-      warn "See: https://github.com/Simple-Robotics/proxsuite#installation"
-    fi
+    error "${ROS_PKG_PREFIX}-proxsuite not found — isolation plan requires ROS distribution proxsuite. \
+See ISOLATION_PLAN.md for the reason robotpkg fallback was removed."
   fi
 }
 
-# ── MPC deps: fmt / mimalloc / aligator (source build to /usr/local) ──────────
-# Aligator 0.19 requires fmt ≥ 10 and mimalloc; neither is available from apt at
-# the required versions on Ubuntu 22.04/24.04. Build from source, retaining
-# sources under ~/libs/ so the user can `sudo make uninstall` later.
-#
-# hpp-fcl ABI note: Aligator must be configured with ROS Jazzy's hpp-fcl (not
-# /usr/local's) to avoid ABI break with pinocchio_parsers. See
-# docs/mpc_implementation_progress.md §Phase 0 for full diagnostic history.
-_mpc_prepare_source() {
-  # $1=repo_url $2=tag $3=dest_dir
-  local url="$1" tag="$2" dir="$3"
-  mkdir -p "$LIBS_ROOT"
-  if [[ ! -d "$dir/.git" ]]; then
-    info "  Cloning $(basename "$dir") ${tag} → ${dir}"
-    git clone --depth 1 --branch "$tag" "$url" "$dir" > /dev/null 2>&1 \
-      || { warn "git clone failed for $url@$tag"; return 1; }
-  else
-    # 이미 클론된 저장소: 태그 일치 시 skip, 아니면 fetch + checkout
-    local current_tag
-    current_tag=$(cd "$dir" && git describe --tags 2>/dev/null || echo "")
-    if [[ "$current_tag" != "$tag" && "$current_tag" != "v$tag" ]]; then
-      info "  Updating $(basename "$dir") to ${tag} (was ${current_tag})"
-      (cd "$dir" && git fetch --depth 1 origin "refs/tags/$tag:refs/tags/$tag" \
-          && git checkout -q "$tag") > /dev/null 2>&1 \
-        || { warn "git checkout $tag failed in $dir"; return 1; }
-    fi
-  fi
-  return 0
-}
-
-install_fmt_from_source() {
-  # 이미 설치되어 있으면 skip (멱등성)
-  if [[ -f "/usr/local/lib/libfmt.so.${FMT_VERSION}" ]]; then
-    success "fmt ${FMT_VERSION} already installed at /usr/local"
-    return
-  fi
-  info "Preparing fmt ${FMT_VERSION} from source..."
-  _mpc_prepare_source "https://github.com/fmtlib/fmt.git" \
-                      "${FMT_VERSION}" \
-                      "${LIBS_ROOT}/fmt" \
-    || { warn "fmt source prep failed — skipping"; return; }
-
-  local build_dir="${LIBS_ROOT}/fmt/build"
-  if [[ ! -f "$build_dir/CMakeCache.txt" ]]; then
-    cmake -S "${LIBS_ROOT}/fmt" -B "$build_dir" \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DFMT_TEST=OFF \
-      -DBUILD_SHARED_LIBS=ON \
-      > /dev/null || { warn "fmt cmake failed"; return; }
-  fi
-  cmake --build "$build_dir" --parallel > /dev/null \
-    || { warn "fmt build failed"; return; }
-
-  info "  Installing fmt ${FMT_VERSION} to /usr/local (requires sudo)..."
-  sudo cmake --install "$build_dir" > /dev/null \
-    || { warn "fmt install failed"; return; }
-  sudo ldconfig
-  success "fmt ${FMT_VERSION} installed"
-}
-
-install_mimalloc_from_source() {
-  if [[ -f "/usr/local/lib/libmimalloc.so.2.1" ]]; then
-    success "mimalloc ${MIMALLOC_VERSION} already installed at /usr/local"
-    return
-  fi
-  info "Preparing mimalloc ${MIMALLOC_VERSION} from source..."
-  _mpc_prepare_source "https://github.com/microsoft/mimalloc.git" \
-                      "v${MIMALLOC_VERSION}" \
-                      "${LIBS_ROOT}/mimalloc" \
-    || { warn "mimalloc source prep failed — skipping"; return; }
-
-  local build_dir="${LIBS_ROOT}/mimalloc/build"
-  if [[ ! -f "$build_dir/CMakeCache.txt" ]]; then
-    cmake -S "${LIBS_ROOT}/mimalloc" -B "$build_dir" \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DMI_BUILD_TESTS=OFF \
-      > /dev/null || { warn "mimalloc cmake failed"; return; }
-  fi
-  cmake --build "$build_dir" --parallel > /dev/null \
-    || { warn "mimalloc build failed"; return; }
-
-  info "  Installing mimalloc ${MIMALLOC_VERSION} to /usr/local (requires sudo)..."
-  sudo cmake --install "$build_dir" > /dev/null \
-    || { warn "mimalloc install failed"; return; }
-  sudo ldconfig
-  success "mimalloc ${MIMALLOC_VERSION} installed"
-}
-
-install_aligator_from_source() {
-  if [[ -f "/usr/local/lib/libaligator.so.${ALIGATOR_VERSION}" ]]; then
-    success "Aligator ${ALIGATOR_VERSION} already installed at /usr/local"
-    return
-  fi
-  # ROS 소싱 필수 (hpp-fcl_DIR 경로 resolve용)
-  if [[ -z "${ROS_DISTRO:-}" ]]; then
-    warn "ROS env not sourced — Aligator build needs hpp-fcl from ROS. Skipping."
-    warn "Run: source /opt/ros/<distro>/setup.bash, then re-run install.sh"
-    return
-  fi
-  info "Preparing Aligator ${ALIGATOR_VERSION} from source..."
-  _mpc_prepare_source "https://github.com/Simple-Robotics/aligator.git" \
-                      "v${ALIGATOR_VERSION}" \
-                      "${LIBS_ROOT}/aligator" \
-    || { warn "Aligator source prep failed — skipping"; return; }
-
-  # 서브모듈 (eigenpy, example-robot-data 등)
-  (cd "${LIBS_ROOT}/aligator" && git submodule update --init --recursive --depth 1) \
-    > /dev/null 2>&1 || warn "Aligator submodule update produced warnings (continuing)"
-
-  local hpp_fcl_cmake="/opt/ros/${ROS_DISTRO}/lib/x86_64-linux-gnu/cmake/hpp-fcl"
-  if [[ ! -d "$hpp_fcl_cmake" ]]; then
-    warn "ROS hpp-fcl cmake dir not found at ${hpp_fcl_cmake} — Aligator build may fail"
-  fi
-
-  local build_dir="${LIBS_ROOT}/aligator/build"
-  if [[ ! -f "$build_dir/CMakeCache.txt" ]]; then
-    cmake -S "${LIBS_ROOT}/aligator" -B "$build_dir" \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DBUILD_TESTING=OFF \
-      -DBUILD_PYTHON_INTERFACE=OFF \
-      -DBUILD_WITH_PINOCCHIO_SUPPORT=ON \
-      -Dhpp-fcl_DIR="$hpp_fcl_cmake" \
-      -Dfmt_DIR=/usr/local/lib/cmake/fmt \
-      > /dev/null || { warn "Aligator cmake failed"; return; }
-  fi
-  info "  Building Aligator ${ALIGATOR_VERSION} (~3-5 min)..."
-  cmake --build "$build_dir" --parallel > /dev/null \
-    || { warn "Aligator build failed"; return; }
-
-  info "  Installing Aligator ${ALIGATOR_VERSION} to /usr/local (requires sudo)..."
-  sudo cmake --install "$build_dir" > /dev/null \
-    || { warn "Aligator install failed"; return; }
-  sudo ldconfig
-  success "Aligator ${ALIGATOR_VERSION} installed"
-}
-
+# ── MPC deps: fmt / mimalloc / aligator ────────────────────────────────────────
+# Isolation plan (2026-04-21): source build moved to scripts/build_deps.sh
+# with install prefix = $WS_ROOT/deps/install. No longer installs to /usr/local,
+# no longer uses ~/libs/. See ISOLATION_PLAN.md for rationale.
 install_mpc_deps() {
   if [[ "$SKIP_MPC" -eq 1 ]]; then
     info "Skipping MPC source-built deps (--skip-mpc)"
     return
   fi
-  info "Installing MPC deps (fmt + mimalloc + aligator)..."
-  install_fmt_from_source
-  install_mimalloc_from_source
-  install_aligator_from_source
+  info "Building MPC deps via scripts/build_deps.sh (fmt + mimalloc + aligator → deps/install)"
+
+  # Ensure sources are present (vcs import if missing).
+  # deps.repos 는 repo 내부 (src/rtc-framework/), deps/src|install 은 workspace 루트 (../../).
+  if [[ ! -d "${INSTALL_SCRIPT_DIR}/../../deps/src/aligator/.git" ]]; then
+    info "  Importing deps sources (deps.repos)..."
+    mkdir -p "${INSTALL_SCRIPT_DIR}/../../deps/src"
+    (cd "${INSTALL_SCRIPT_DIR}/../../deps/src" \
+        && vcs import . < "${INSTALL_SCRIPT_DIR}/deps.repos" > /dev/null 2>&1 \
+        && (cd aligator && git submodule update --init --recursive --depth 1 >/dev/null 2>&1)) \
+      || { warn "vcs import failed — check deps.repos"; return; }
+  fi
+
+  if ! bash "${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/build_deps.sh"; then
+    warn "rtc_scripts/scripts/build_deps.sh failed — see output above"
+    return
+  fi
+  success "MPC deps built → $(cd "${INSTALL_SCRIPT_DIR}/../../deps/install" && pwd)"
 }
 
 # ── Verify MPC install artifacts (verify mode + post-install check) ──────────
 verify_mpc_deps() {
   local failed=0
+  local deps_prefix="${INSTALL_SCRIPT_DIR}/../../deps/install"
   echo ""
-  info "━━━ MPC Dependency Check ━━━"
+  info "━━━ MPC Dependency Check (${deps_prefix}) ━━━"
 
-  if [[ -f "/usr/local/lib/libfmt.so.${FMT_VERSION}" ]]; then
-    success "fmt ${FMT_VERSION}      → /usr/local/lib/libfmt.so.${FMT_VERSION}"
+  if [[ -f "${deps_prefix}/lib/libfmt.so.${FMT_VERSION}" ]]; then
+    success "fmt ${FMT_VERSION}      → ${deps_prefix}/lib/libfmt.so.${FMT_VERSION}"
   else
-    warn "fmt ${FMT_VERSION} MISSING (expected /usr/local/lib/libfmt.so.${FMT_VERSION})"
+    warn "fmt ${FMT_VERSION} MISSING (expected ${deps_prefix}/lib/libfmt.so.${FMT_VERSION})"
     failed=1
   fi
 
-  if [[ -f "/usr/local/lib/libmimalloc.so.2.1" ]]; then
-    success "mimalloc ${MIMALLOC_VERSION} → /usr/local/lib/libmimalloc.so.2.1"
+  if [[ -f "${deps_prefix}/lib/libmimalloc.so.2.1" ]]; then
+    success "mimalloc ${MIMALLOC_VERSION} → ${deps_prefix}/lib/libmimalloc.so.2.1"
   else
     warn "mimalloc ${MIMALLOC_VERSION} MISSING"
     failed=1
   fi
 
-  if [[ -f "/usr/local/lib/libaligator.so.${ALIGATOR_VERSION}" ]]; then
-    success "Aligator ${ALIGATOR_VERSION}  → /usr/local/lib/libaligator.so.${ALIGATOR_VERSION}"
+  if [[ -f "${deps_prefix}/lib/libaligator.so.${ALIGATOR_VERSION}" ]]; then
+    success "Aligator ${ALIGATOR_VERSION}  → ${deps_prefix}/lib/libaligator.so.${ALIGATOR_VERSION}"
   else
-    warn "Aligator ${ALIGATOR_VERSION} MISSING (run: $0 --skip-rt --skip-build)"
-    failed=1
-  fi
-
-  local panda_urdf="/usr/local/share/example-robot-data/robots/panda_description/urdf/panda.urdf"
-  if [[ -f "$panda_urdf" ]]; then
-    success "Panda URDF         → ${panda_urdf}"
-  else
-    warn "Panda URDF MISSING (installed by Aligator's example-robot-data submodule)"
+    warn "Aligator ${ALIGATOR_VERSION} MISSING (run: $0 --skip-rt --skip-build to rebuild deps)"
     failed=1
   fi
 
