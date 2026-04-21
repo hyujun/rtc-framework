@@ -45,7 +45,11 @@
 
 ## Build & Test
 
+**Every new shell (interactive `colcon test` / `ros2 launch`)**: `source rtc_scripts/scripts/setup_env.sh` — orders ROS 2 + `deps/install` (fmt/mimalloc/aligator) + `.venv` + workspace overlay, and sets `COLCON_DEFAULTS_FILE`. `build.sh` / `install.sh` auto-source it, so pure build flow doesn't need manual source.
+
 ```bash
+source rtc_scripts/scripts/setup_env.sh   # PWD=src/rtc-framework, needed for ros2/colcon test
+
 ./build.sh sim            # simulation packages
 ./build.sh robot          # real robot
 ./build.sh full           # all packages
@@ -57,6 +61,8 @@ ros2 launch ur5e_bringup robot.launch.py robot_ip:=192.168.1.10
 colcon test --packages-select <pkg> --event-handlers console_direct+
 colcon test-result --verbose
 ```
+
+**Isolated deps** (see `ISOLATION_PLAN.md`): fmt 11.1.4 · mimalloc 2.1.7 · aligator 0.19.0 live at `<rtc_ws>/deps/install/` (built via `rtc_scripts/scripts/build_deps.sh` from `deps.repos`). Pinocchio · ProxSuite · hpp-fcl · eigenpy come from ROS Jazzy apt (no robotpkg / no /usr/local). Python deps locked in `requirements.lock`. `rtc_scripts/README.md` has detailed docs for all 14 scripts (10 RT + 4 isolation).
 
 ## Hard Rules
 
