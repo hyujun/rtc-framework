@@ -62,7 +62,7 @@ colcon test --packages-select <pkg> --event-handlers console_direct+
 colcon test-result --verbose
 ```
 
-**Isolated deps** (see `ISOLATION_PLAN.md`): fmt 11.1.4 · mimalloc 2.1.7 · aligator 0.19.0 live at `<rtc_ws>/deps/install/` (built via `rtc_scripts/scripts/build_deps.sh` from `deps.repos`). Pinocchio · ProxSuite · hpp-fcl · eigenpy come from ROS Jazzy apt (no robotpkg / no /usr/local). Python deps locked in `requirements.lock`. `rtc_scripts/README.md` has detailed docs for all 14 scripts (10 RT + 4 isolation).
+**Isolated deps** (see `rtc_scripts/README.md`): fmt 11.1.4 · mimalloc 2.1.7 · aligator 0.19.0 live at `<rtc_ws>/deps/install/` (built via `rtc_scripts/scripts/build_deps.sh` from `deps.repos`). Pinocchio · ProxSuite · hpp-fcl · eigenpy come from ROS Jazzy apt (no robotpkg / no /usr/local). Python deps locked in `requirements.lock`. `rtc_scripts/README.md` has detailed docs for all 14 scripts (10 RT + 4 isolation) and a "격리 환경 배포 가이드" with CI + RT-PC snippets.
 
 ## Hard Rules
 

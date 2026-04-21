@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# uninstall_system_deps.sh — ISOLATION_PLAN.md §8 의 대화형 시스템 정리 스크립트.
+# uninstall_system_deps.sh — 대화형 시스템 정리 스크립트 (격리로 전환 시 1회 실행).
 #
 # 순서:
 #   A) /usr/local/ stale 잔재 제거 (2024-07 hpp-fcl, pinocchio 3.0, gtsam, teaser)

@@ -34,7 +34,7 @@ else
   success() { echo -e "${GREEN}✔ $*${NC}"; }
 fi
 
-# ── 격리 환경 자동 활성화 (ISOLATION_PLAN.md) ─────────────────────────────
+# ── 격리 환경 자동 활성화 (rtc_scripts/README.md 배포 가이드) ─────────────
 # setup_env.sh 가 아직 source 되지 않았으면 자동 source — deps/install 의
 # fmt/mimalloc/aligator 경로를 colcon 빌드 시 먼저 찾도록.
 _SETUP_ENV="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/setup_env.sh"
@@ -405,7 +405,7 @@ install_pinocchio() {
     success "Pinocchio installed via ${ROS_PKG_PREFIX}-pinocchio"
   else
     error "${ROS_PKG_PREFIX}-pinocchio not found — isolation plan requires ROS distribution pinocchio. \
-See ISOLATION_PLAN.md for the reason robotpkg fallback was removed."
+See rtc_scripts/README.md for the reason robotpkg fallback was removed."
   fi
 }
 
@@ -418,20 +418,20 @@ install_proxsuite() {
     success "ProxSuite installed via ${ROS_PKG_PREFIX}-proxsuite"
   else
     error "${ROS_PKG_PREFIX}-proxsuite not found — isolation plan requires ROS distribution proxsuite. \
-See ISOLATION_PLAN.md for the reason robotpkg fallback was removed."
+See rtc_scripts/README.md for the reason robotpkg fallback was removed."
   fi
 }
 
 # ── MPC deps: fmt / mimalloc / aligator ────────────────────────────────────────
-# Isolation plan (2026-04-21): source build moved to scripts/build_deps.sh
-# with install prefix = $WS_ROOT/deps/install. No longer installs to /usr/local,
-# no longer uses ~/libs/. See ISOLATION_PLAN.md for rationale.
+# Isolation landed 2026-04-21: source build lives in
+# rtc_scripts/scripts/build_deps.sh with install prefix = $WS_ROOT/deps/install.
+# No more /usr/local or ~/libs/. See rtc_scripts/README.md for details.
 install_mpc_deps() {
   if [[ "$SKIP_MPC" -eq 1 ]]; then
     info "Skipping MPC source-built deps (--skip-mpc)"
     return
   fi
-  info "Building MPC deps via scripts/build_deps.sh (fmt + mimalloc + aligator → deps/install)"
+  info "Building MPC deps via rtc_scripts/scripts/build_deps.sh (fmt + mimalloc + aligator → deps/install)"
 
   # Ensure sources are present (vcs import if missing).
   # deps.repos 는 repo 내부 (src/rtc-framework/), deps/src|install 은 workspace 루트 (../../).

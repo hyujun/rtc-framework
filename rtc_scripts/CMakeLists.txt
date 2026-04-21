@@ -15,7 +15,7 @@ install(PROGRAMS
   scripts/check_rt_setup.sh
   scripts/cpu_shield.sh
   scripts/verify_rt_runtime.sh
-  # Dependency isolation (ISOLATION_PLAN.md)
+  # Dependency isolation (see README.md "격리 환경 배포 가이드")
   scripts/setup_env.sh
   scripts/build_deps.sh
   scripts/verify_isolation.sh
