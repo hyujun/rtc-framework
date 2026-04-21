@@ -1,0 +1,41 @@
+# Phase 7b — rtc_mpc ContactRichOCP factory config for UR5e + 10-DoF hand.
+#
+# Loaded by rtc::mpc::MPCFactory::Create when the active phase's
+# `ocp_type == "contact_rich"`. File name retains the plan document's
+# "fulldynamics" label; the dispatch key follows the Phase 4.-1 rename
+# ("contact_rich").
+#
+# The `model` block must stay structurally identical to the one in
+# mpc_kinodynamics.yaml — the same RobotModelHandler is shared across both
+# handlers during cross-mode swaps, and any contact_frames divergence
+# would break index-based activation in phase_config.yaml.
+
+mpc:
+  ocp_type: "contact_rich"
+
+  # ── RobotModelHandler schema ──────────────────────────────────────────────
+  model:
+    end_effector_frame: "tool0"
+    contact_frames:
+      - { name: "thumb_tip_link",  dim: 3 }
+      - { name: "index_tip_link",  dim: 3 }
+      - { name: "middle_tip_link", dim: 3 }
+
+  # ── Proximal-DDP solver tuning ────────────────────────────────────────────
+  # ContactRichOCP is harder to converge than LightContact; give it a slightly
+  # larger iteration budget to absorb the friction-cone penalty updates.
+  solver:
+    prim_tol:     1.0e-3
+    dual_tol:     1.0e-2
+    mu_init:      1.0e-2
+    max_iters:    50
+    max_al_iters: 30
+    verbose:      false
+
+  # ── OCP limits ────────────────────────────────────────────────────────────
+  # friction_mu drives the smooth conic cone residual (Phase 4 Option C).
+  limits:
+    friction_mu:       0.7     # hand-material coefficient (TPU / silicone)
+    n_friction_facets: 4       # reserved; see OCPLimits docs
+    u_min: []
+    u_max: []

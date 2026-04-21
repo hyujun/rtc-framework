@@ -1,0 +1,42 @@
+# Phase 7b — rtc_mpc LightContactOCP factory config for UR5e + 10-DoF hand.
+#
+# Loaded by rtc::mpc::MPCFactory::Create when the active phase's
+# `ocp_type == "light_contact"`. Keeps the Phase 4.-1 dispatch key name
+# ("light_contact") even though the file name retains the original
+# "kinodynamics" label for compat with the plan document.
+#
+# RobotModelHandler side (end_effector_frame + contact_frames) is also
+# declared here so a single YAML drives the full `RobotModelHandler::Init +
+# MPCFactory::Create` pipeline on engine startup.
+#
+# The contact_frames ORDER is authoritative — phase_config.yaml's
+# `active_contact_indices` indexes into this list.
+
+mpc:
+  ocp_type: "light_contact"
+
+  # ── RobotModelHandler schema (consumed by RobotModelHandler::Init) ────────
+  model:
+    end_effector_frame: "tool0"
+    contact_frames:
+      - { name: "thumb_tip_link",  dim: 3 }
+      - { name: "index_tip_link",  dim: 3 }
+      - { name: "middle_tip_link", dim: 3 }
+
+  # ── Proximal-DDP solver tuning (see MPCSolverConfig) ──────────────────────
+  solver:
+    prim_tol:     1.0e-3
+    dual_tol:     1.0e-2
+    mu_init:      1.0e-2
+    max_iters:    30
+    max_al_iters: 20
+    verbose:      false
+
+  # ── OCP limits (see rtc_mpc::OCPLimits) ───────────────────────────────────
+  # friction_mu is ignored by LightContactOCP (applies only to ContactRichOCP);
+  # retained here so a single limits block can serve both factory YAMLs.
+  limits:
+    friction_mu:       0.7
+    n_friction_facets: 4     # reserved; see OCPLimits docs
+    u_min: []                # optional; empty → use model-default torque lb
+    u_max: []                # optional; empty → use model-default torque ub

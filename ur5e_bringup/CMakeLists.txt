@@ -53,6 +53,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/demo_wbc_controller.cpp
   src/controllers/demo_shared_config.cpp
   src/controllers/controller_registration.cpp
+  src/phase/grasp_phase_manager.cpp
 )
 
 target_include_directories(${PROJECT_NAME}_demo_controllers PUBLIC
@@ -210,6 +211,37 @@ if(BUILD_TESTING)
     rtc_base
     pinocchio
     rtc_tsid
+    rtc_mpc
+    Eigen3
+  )
+
+  # ── GraspPhaseManager FSM tests (Phase 7a) ─────────────────────────────────
+  ament_add_gtest(test_grasp_phase_manager test/test_grasp_phase_manager.cpp)
+  target_link_libraries(test_grasp_phase_manager
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_grasp_phase_manager
+    rclcpp
+    rtc_base
+    pinocchio
+    rtc_mpc
+    Eigen3
+  )
+
+  # ── Grasp handler pipeline integration (Phase 7c) ──────────────────────────
+  # Wires GraspPhaseManager + MPCFactory + HandlerMPCThread end-to-end on the
+  # Panda fixture. Exercises the same surface DemoWbcController drives in
+  # handler-mode, including the ForcePhase → cross-mode swap path.
+  ament_add_gtest(test_grasp_pipeline test/test_grasp_pipeline.cpp)
+  target_link_libraries(test_grasp_pipeline
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_grasp_pipeline
+    rclcpp
+    rtc_base
+    pinocchio
     rtc_mpc
     Eigen3
   )

@@ -182,8 +182,17 @@ demo_wbc_controller:
   # Default enabled=false: disabled enablement preserves Phase 4 behaviour.
   mpc:
     enabled: false               # runtime-togglable via gains[7]
+    engine: "mock"               # "mock" (Phase 5 default) | "handler" (Phase 7b)
     max_stale_solutions: 5       # ticks without a fresh solution before
                                  # falling back to Phase 4 reference
+
+    # Phase 7b handler-mode inputs — ignored when engine == "mock".
+    # Paths are resolved relative to the ur5e_bringup package share dir
+    # (ament_index_cpp::get_package_share_directory).
+    phase_config_path:  "config/controllers/phase_config.yaml"
+    light_contact_path: "config/controllers/mpc_kinodynamics.yaml"
+    contact_rich_path:  "config/controllers/mpc_fulldynamics.yaml"
+
     riccati:
       enabled: true              # include K·Δx in the reference accel
       gain_scale: 1.0            # runtime-tunable via gains[8] (0..1)

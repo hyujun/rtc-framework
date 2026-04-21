@@ -394,15 +394,34 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
         (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
 
-  // ── 7. MPC integration (Phase 5) ──────────────────────────────────────
+  // ── 7. MPC integration (Phase 5 + 7b) ─────────────────────────────────
   //
   // If `mpc.enabled: true`, size the reference buffers and initialise the
   // MPC solution manager. The thread itself is spawned in
   // InitializeHoldPosition so it starts from the first valid RT tick's
   // state snapshot. If `mpc:` is missing or disabled, all MPC paths are
   // short-circuited and Phase 4 behaviour is preserved bit-exactly.
+  //
+  // Phase 7b: `mpc.engine` (default "mock") selects MockMPCThread vs
+  // HandlerMPCThread. Handler mode additionally loads phase_config.yaml +
+  // mpc_kinodynamics.yaml + mpc_fulldynamics.yaml from the package share
+  // and pre-builds the RobotModelHandler + GraspPhaseManager for startup.
   if (const auto mpc_cfg = cfg["mpc"]; mpc_cfg && full_model_ptr_) {
     mpc_enabled_ = mpc_cfg["enabled"] && mpc_cfg["enabled"].as<bool>();
+
+    const auto engine_str =
+        mpc_cfg["engine"] ? mpc_cfg["engine"].as<std::string>("mock") : "mock";
+    if (engine_str == "handler") {
+      mpc_engine_ = MpcEngine::kHandler;
+    } else if (engine_str == "mock") {
+      mpc_engine_ = MpcEngine::kMock;
+    } else {
+      RCLCPP_ERROR(logger_,
+                   "[wbc] unknown mpc.engine '%s' — falling back to 'mock'",
+                   engine_str.c_str());
+      mpc_engine_ = MpcEngine::kMock;
+    }
+
     const int mpc_nq = full_model_ptr_->nq;
     const int mpc_nv = full_model_ptr_->nv;
     const int mpc_n_contact = contact_mgr_config_.max_contact_vars;
@@ -412,8 +431,96 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
     mpc_lambda_ref_ = Eigen::VectorXd::Zero(std::max(1, mpc_n_contact));
     mpc_u_fb_ = Eigen::VectorXd::Zero(mpc_nv);
     mpc_manager_.Init(mpc_cfg, mpc_nq, mpc_nv, mpc_n_contact);
-    RCLCPP_INFO(logger_, "MPC integration: enabled=%d nq=%d nv=%d n_contact=%d",
-                mpc_enabled_, mpc_nq, mpc_nv, mpc_n_contact);
+    RCLCPP_INFO(
+        logger_,
+        "MPC integration: enabled=%d engine=%s nq=%d nv=%d n_contact=%d",
+        mpc_enabled_, engine_str.c_str(), mpc_nq, mpc_nv, mpc_n_contact);
+
+    if (mpc_engine_ == MpcEngine::kHandler) {
+      // Resolve factory YAML paths relative to the ur5e_bringup share dir.
+      std::string share;
+      try {
+        share = ament_index_cpp::get_package_share_directory("ur5e_bringup");
+      } catch (...) {
+        RCLCPP_ERROR(logger_, "[wbc] cannot resolve ur5e_bringup share dir "
+                              "— handler mode disabled");
+        mpc_engine_ = MpcEngine::kMock;
+      }
+
+      if (mpc_engine_ == MpcEngine::kHandler) {
+        const auto phase_path =
+            mpc_cfg["phase_config_path"]
+                ? mpc_cfg["phase_config_path"].as<std::string>()
+                : std::string{"config/controllers/phase_config.yaml"};
+        const auto light_path =
+            mpc_cfg["light_contact_path"]
+                ? mpc_cfg["light_contact_path"].as<std::string>()
+                : std::string{"config/controllers/mpc_kinodynamics.yaml"};
+        const auto rich_path =
+            mpc_cfg["contact_rich_path"]
+                ? mpc_cfg["contact_rich_path"].as<std::string>()
+                : std::string{"config/controllers/mpc_fulldynamics.yaml"};
+
+        const auto join = [&](const std::string &p) { return share + "/" + p; };
+
+        try {
+          phase_cfg_ = YAML::LoadFile(join(phase_path));
+          mpc_light_cfg_ = YAML::LoadFile(join(light_path));
+          mpc_rich_cfg_ = YAML::LoadFile(join(rich_path));
+        } catch (const std::exception &e) {
+          RCLCPP_ERROR(logger_,
+                       "[wbc] failed to load handler YAML (%s) — "
+                       "handler mode disabled",
+                       e.what());
+          mpc_engine_ = MpcEngine::kMock;
+        }
+      }
+
+      if (mpc_engine_ == MpcEngine::kHandler) {
+        // Build RobotModelHandler from mpc_kinodynamics.yaml's `model:`
+        // subtree (identical to mpc_fulldynamics.yaml by contract — cross-
+        // mode swap requires matching contact_frames).
+        const auto model_node =
+            mpc_light_cfg_["mpc"] && mpc_light_cfg_["mpc"]["model"]
+                ? mpc_light_cfg_["mpc"]["model"]
+                : YAML::Node{};
+        mpc_model_handler_ = std::make_unique<rtc::mpc::RobotModelHandler>();
+        const auto model_err =
+            mpc_model_handler_->Init(*full_model_ptr_, model_node);
+        if (model_err != rtc::mpc::RobotModelInitError::kNoError) {
+          RCLCPP_ERROR(logger_,
+                       "[wbc] RobotModelHandler::Init failed (code %d) — "
+                       "handler mode disabled",
+                       static_cast<int>(model_err));
+          mpc_model_handler_.reset();
+          mpc_engine_ = MpcEngine::kMock;
+        }
+      }
+
+      if (mpc_engine_ == MpcEngine::kHandler) {
+        // GraspPhaseManager is built eagerly here (non-RT) so any YAML
+        // schema errors surface before the RT thread starts. It is handed
+        // over to HandlerMPCThread::Configure in InitializeHoldPosition.
+        auto pm = std::make_unique<ur5e_bringup::phase::GraspPhaseManager>(
+            *mpc_model_handler_);
+        const auto phase_err = pm->Load(phase_cfg_["grasp_phase_manager"]
+                                            ? phase_cfg_["grasp_phase_manager"]
+                                            : phase_cfg_);
+        if (phase_err != ur5e_bringup::phase::GraspPhaseInitError::kNoError) {
+          RCLCPP_ERROR(logger_,
+                       "[wbc] GraspPhaseManager::Load failed (code %d) — "
+                       "handler mode disabled",
+                       static_cast<int>(phase_err));
+          mpc_engine_ = MpcEngine::kMock;
+        } else {
+          phase_manager_owned_ = std::move(pm);
+          phase_manager_ptr_ = phase_manager_owned_.get();
+        }
+      }
+
+      RCLCPP_INFO(logger_, "[wbc] MPC handler-mode preconditions %s",
+                  mpc_engine_ == MpcEngine::kHandler ? "ready" : "DEGRADED");
+    }
   }
 }
 
@@ -1044,6 +1151,55 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase,
     break;
   }
   }
+
+  // ── GraspPhaseManager bridge (Phase 7b, handler mode only) ────────────────
+  //
+  // WBC FSM is authoritative for the demo; the grasp phase manager mirrors
+  // it via ForcePhase so rtc_mpc picks up the matching OCP type
+  // (light_contact vs contact_rich) on every WBC edge. `ForcePhase` is
+  // atomic and RT-safe (see grasp_phase_manager.hpp thread-safety notes);
+  // `SetTaskTarget` uses a non-RT mutex but fires at most once per WBC edge
+  // (not per 500 Hz tick), which is acceptable off the TSID hot path.
+  // WBC has no direct MANIPULATE analogue — kClosure maps to CLOSURE and
+  // kHold to HOLD; MANIPULATE is reserved for a future WBC extension.
+  if (phase_manager_ptr_) {
+    namespace phase = ur5e_bringup::phase;
+    int grasp_id = static_cast<int>(phase::GraspPhaseId::kIdle);
+    switch (new_phase) {
+    case WbcPhase::kIdle:
+      grasp_id = static_cast<int>(phase::GraspPhaseId::kIdle);
+      break;
+    case WbcPhase::kApproach:
+      grasp_id = static_cast<int>(phase::GraspPhaseId::kApproach);
+      if (tcp_goal_valid_) {
+        phase::GraspTarget gt{};
+        gt.grasp_pose = tcp_goal_;
+        gt.pregrasp_pose = tcp_goal_;
+        gt.approach_start = tcp_goal_;
+        phase_manager_ptr_->SetTaskTarget(gt);
+      }
+      break;
+    case WbcPhase::kPreGrasp:
+      grasp_id = static_cast<int>(phase::GraspPhaseId::kPreGrasp);
+      break;
+    case WbcPhase::kClosure:
+      grasp_id = static_cast<int>(phase::GraspPhaseId::kClosure);
+      break;
+    case WbcPhase::kHold:
+      grasp_id = static_cast<int>(phase::GraspPhaseId::kHold);
+      break;
+    case WbcPhase::kRetreat:
+      grasp_id = static_cast<int>(phase::GraspPhaseId::kRetreat);
+      break;
+    case WbcPhase::kRelease:
+      grasp_id = static_cast<int>(phase::GraspPhaseId::kRelease);
+      break;
+    case WbcPhase::kFallback:
+      grasp_id = static_cast<int>(phase::GraspPhaseId::kIdle);
+      break;
+    }
+    phase_manager_ptr_->ForcePhase(grasp_id);
+  }
 }
 
 // ── Control modes ────────────────────────────────────────────────────────────
@@ -1339,21 +1495,21 @@ void DemoWbcController::InitializeHoldPosition(
   qp_fail_count_ = 0;
   grasp_cmd_.store(0, std::memory_order_relaxed);
 
-  // ── MPC thread lifecycle (Phase 5) ──────────────────────────────────────
+  // ── MPC thread lifecycle (Phase 5 + 7b) ─────────────────────────────────
   //
   // Spawn the MPC thread lazily on first InitializeHoldPosition call so it
   // starts from a known-good RT state. Subsequent calls (e.g. controller
   // re-init after E-STOP clear) leave the existing thread running.
+  //
+  // Handler mode (Phase 7b) additionally builds the initial PhaseContext
+  // from the idle phase, runs MPCFactory::Create, and hands both the
+  // handler and the pre-loaded GraspPhaseManager to HandlerMPCThread::
+  // Configure. On factory failure we fall back to mock mode so the RT loop
+  // can still make progress.
   if (mpc_enabled_ && !mpc_thread_) {
     const auto thread_configs = rtc::SelectThreadConfigs();
-    auto mock = std::make_unique<rtc::mpc::MockMPCThread>();
     const int nq = static_cast<int>(q_curr_full_.size());
     const int nv = static_cast<int>(v_curr_full_.size());
-    mock->Configure(nq, nv, /*horizon=*/10, /*dt_node=*/0.01);
-
-    // Seed MPC target at the current hold position so the initial MPC
-    // trajectory is a no-op hold (matches Phase 4 behaviour).
-    mock->SetTarget(q_curr_full_);
 
     rtc::mpc::MpcThreadLaunchConfig launch{};
     launch.main = thread_configs.mpc.main;
@@ -1365,13 +1521,60 @@ void DemoWbcController::InitializeHoldPosition(
     }
     launch.target_frequency_hz = 20.0;
 
-    mock->Init(mpc_manager_, launch);
-    mock->Start();
-    mpc_thread_ = std::move(mock);
-    mpc_manager_.SetEnabled(true);
-    RCLCPP_INFO(logger_, "MPC thread started: core=%d prio=%d workers=%d",
-                launch.main.cpu_core, launch.main.sched_priority,
-                launch.num_workers);
+    bool thread_started = false;
+
+    if (mpc_engine_ == MpcEngine::kHandler && mpc_model_handler_ &&
+        phase_manager_owned_) {
+      // Build the initial PhaseContext from the idle phase so the factory
+      // can size its OCP + solver workspace.
+      Eigen::VectorXd q_zero = Eigen::VectorXd::Zero(nq);
+      Eigen::VectorXd v_zero = Eigen::VectorXd::Zero(nv);
+      Eigen::VectorXd sensor_zero = Eigen::VectorXd::Zero(0);
+      const pinocchio::SE3 tcp_identity = pinocchio::SE3::Identity();
+      const auto initial_ctx = phase_manager_owned_->Update(
+          q_zero, v_zero, sensor_zero, tcp_identity, /*t=*/0.0);
+
+      std::unique_ptr<rtc::mpc::MPCHandlerBase> handler;
+      const auto status = rtc::mpc::MPCFactory::Create(
+          mpc_light_cfg_, *mpc_model_handler_, initial_ctx, handler);
+
+      if (status.error != rtc::mpc::MPCFactoryError::kNoError || !handler) {
+        RCLCPP_ERROR(logger_,
+                     "[wbc] MPCFactory::Create failed (err=%d, init=%d) — "
+                     "falling back to mock engine",
+                     static_cast<int>(status.error),
+                     static_cast<int>(status.init_error));
+        mpc_engine_ = MpcEngine::kMock;
+      } else {
+        auto hthread = std::make_unique<rtc::mpc::HandlerMPCThread>();
+        hthread->Configure(*mpc_model_handler_, std::move(handler),
+                           std::move(phase_manager_owned_), mpc_light_cfg_,
+                           mpc_rich_cfg_);
+        hthread->Init(mpc_manager_, launch);
+        hthread->Start();
+        mpc_thread_ = std::move(hthread);
+        mpc_manager_.SetEnabled(true);
+        thread_started = true;
+        RCLCPP_INFO(logger_,
+                    "MPC thread started (handler): core=%d prio=%d workers=%d",
+                    launch.main.cpu_core, launch.main.sched_priority,
+                    launch.num_workers);
+      }
+    }
+
+    if (!thread_started) {
+      // Mock fallback — matches Phase 5 behaviour exactly.
+      auto mock = std::make_unique<rtc::mpc::MockMPCThread>();
+      mock->Configure(nq, nv, /*horizon=*/10, /*dt_node=*/0.01);
+      mock->SetTarget(q_curr_full_);
+      mock->Init(mpc_manager_, launch);
+      mock->Start();
+      mpc_thread_ = std::move(mock);
+      mpc_manager_.SetEnabled(true);
+      RCLCPP_INFO(
+          logger_, "MPC thread started (mock): core=%d prio=%d workers=%d",
+          launch.main.cpu_core, launch.main.sched_priority, launch.num_workers);
+    }
   }
 }
 

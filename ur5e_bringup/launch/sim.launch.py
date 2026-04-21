@@ -158,6 +158,20 @@ def launch_setup(context, *args, **kwargs):
     elif enable_mpc.lower() in ('false', '0', 'no'):
         ctrl_overrides['demo_wbc_controller.mpc.enabled'] = False
 
+    # Phase 7b: `mpc_engine` selects between the Phase 5 MockMPCThread
+    # placeholder and the Phase 7 HandlerMPCThread (real Aligator ProxDDP
+    # via MPCFactory + GraspPhaseManager). Default "" leaves the YAML's
+    # `mpc.engine: "mock"` untouched.
+    mpc_engine = LaunchConfiguration('mpc_engine').perform(context)
+    if mpc_engine.strip() != '':
+        engine_str = mpc_engine.strip().lower()
+        if engine_str not in ('mock', 'handler'):
+            raise RuntimeError(
+                f"Invalid mpc_engine='{mpc_engine}'. "
+                "Must be 'mock' or 'handler' (or empty to use YAML default)."
+            )
+        ctrl_overrides['demo_wbc_controller.mpc.engine'] = engine_str
+
     if ctrl_overrides:
         ctrl_params.append(ctrl_overrides)
 
@@ -425,6 +439,19 @@ def generate_launch_description():
         )
     )
 
+    mpc_engine_arg = DeclareLaunchArgument(
+        'mpc_engine',
+        default_value='',
+        description=(
+            'Select MPC engine in DemoWbcController (Phase 7b): '
+            '"mock" = Phase 5 MockMPCThread placeholder (default); '
+            '"handler" = HandlerMPCThread + MPCFactory + GraspPhaseManager '
+            '(real Aligator ProxDDP solve, requires phase_config.yaml + '
+            'mpc_kinodynamics.yaml + mpc_fulldynamics.yaml in the package share). '
+            'Empty = use demo_wbc_controller.yaml default.'
+        )
+    )
+
     return LaunchDescription([
         # Arguments
         model_path_arg,
@@ -438,6 +465,7 @@ def generate_launch_description():
         use_cpu_affinity_arg,
         initial_controller_arg,
         enable_mpc_arg,
+        mpc_engine_arg,
         # Nodes (via OpaqueFunction for conditional parameter loading)
         OpaqueFunction(function=launch_setup),
     ])

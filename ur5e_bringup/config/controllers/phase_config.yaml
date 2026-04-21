@@ -1,0 +1,180 @@
+# Phase 7a — GraspPhaseManager configuration (UR5e + 10-DoF hand, 16 DoF).
+#
+# Loaded by ur5e_bringup::phase::GraspPhaseManager::Init at the
+# `grasp_phase_manager:` key below. Uses YAML anchors to cut repetition
+# across the 8 phases while keeping a single validated PhaseCostConfig
+# block per phase (PhaseCostConfig::LoadFromYaml does not support merging
+# at the field level — anchors + override are the clean alternative).
+#
+# Contact frames referenced by `active_contact_indices:` come from the
+# rtc_mpc factory YAML (`mpc_kinodynamics.yaml` / `mpc_fulldynamics.yaml`,
+# Phase 7b). The order there is authoritative — index 0 → thumb_tip_link,
+# 1 → index_tip_link, 2 → middle_tip_link.
+
+grasp_phase_manager:
+  transition:
+    approach_tolerance: 0.05   # m, APPROACH → PRE_GRASP (TCP-to-pregrasp)
+    pregrasp_tolerance: 0.01   # m, PRE_GRASP → CLOSURE (TCP-to-grasp)
+    force_threshold:    0.5    # N, CLOSURE → HOLD (Σ fingertip force mag)
+    max_failures:       50     # consecutive CLOSURE ticks without force → IDLE
+
+  # ── Cost anchors (reusable per-phase blocks) ──────────────────────────────
+  _anchors:
+    zero_posture: &q_posture_home
+      # UR5e home  : [0, -π/2, π/2, -π/2, -π/2, 0]
+      # 10-DoF hand: all zero (open)
+      [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0,
+       0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    close_posture: &q_posture_close
+      # Same arm, hand curled ~30° (illustrative — tune in simulation).
+      [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0,
+       0.5, 0.3, 0.3, 0.5, 0.3, 0.3, 0.5, 0.3, 0.3, 0.3]
+
+    no_force: &f_target_zero
+      [0.0, 0.0, 0.0,   0.0, 0.0, 0.0,   0.0, 0.0, 0.0]
+
+    grasp_force: &f_target_grasp
+      # Per-fingertip +Z ≈ 2 N (local contact frame z-axis = inward normal).
+      [0.0, 0.0, 2.0,   0.0, 0.0, 2.0,   0.0, 0.0, 2.0]
+
+    # Default placement weights (6-vec: [tx ty tz  rx ry rz])
+    placement_free: &W_free [100.0, 100.0, 100.0, 10.0, 10.0, 10.0]
+    placement_fine: &W_fine [500.0, 500.0, 500.0, 50.0, 50.0, 50.0]
+
+  phases:
+    idle:
+      ocp_type: "light_contact"
+      active_contact_indices: []
+      cost:
+        horizon_length: 20
+        dt: 0.01
+        w_frame_placement:     0.0
+        w_state_reg:          10.0
+        w_control_reg:         0.01
+        w_contact_force:       0.0
+        w_centroidal_momentum: 0.0
+        W_placement: *W_free
+        q_posture_ref: *q_posture_home
+        F_target: *f_target_zero
+        custom_weights:
+          hand_posture: 1.0
+
+    approach:
+      ocp_type: "light_contact"
+      active_contact_indices: []
+      cost:
+        horizon_length: 20
+        dt: 0.01
+        w_frame_placement:    100.0
+        w_state_reg:            1.0
+        w_control_reg:          0.01
+        w_contact_force:        0.0
+        w_centroidal_momentum:  0.0
+        W_placement: *W_free
+        q_posture_ref: *q_posture_home
+        F_target: *f_target_zero
+        custom_weights:
+          hand_posture: 1.0
+
+    pre_grasp:
+      ocp_type: "light_contact"
+      active_contact_indices: []
+      cost:
+        horizon_length: 20
+        dt: 0.01
+        w_frame_placement:    300.0
+        w_state_reg:            1.0
+        w_control_reg:          0.01
+        w_contact_force:        0.0
+        w_centroidal_momentum:  0.0
+        W_placement: *W_fine
+        q_posture_ref: *q_posture_home
+        F_target: *f_target_zero
+        custom_weights:
+          hand_posture: 1.0
+
+    closure:
+      ocp_type: "contact_rich"
+      active_contact_indices: [0, 1, 2]
+      cost:
+        horizon_length: 20
+        dt: 0.01
+        w_frame_placement:     50.0
+        w_state_reg:            0.1
+        w_control_reg:          0.01
+        w_contact_force:       10.0
+        w_centroidal_momentum:  0.0
+        W_placement: *W_fine
+        q_posture_ref: *q_posture_close
+        F_target: *f_target_grasp
+        custom_weights:
+          hand_posture: 5.0
+
+    hold:
+      ocp_type: "contact_rich"
+      active_contact_indices: [0, 1, 2]
+      cost:
+        horizon_length: 20
+        dt: 0.01
+        w_frame_placement:     50.0
+        w_state_reg:            0.1
+        w_control_reg:          0.01
+        w_contact_force:       20.0
+        w_centroidal_momentum:  0.0
+        W_placement: *W_fine
+        q_posture_ref: *q_posture_close
+        F_target: *f_target_grasp
+        custom_weights:
+          hand_posture: 5.0
+
+    manipulate:
+      ocp_type: "contact_rich"
+      active_contact_indices: [0, 1, 2]
+      cost:
+        horizon_length: 20
+        dt: 0.01
+        w_frame_placement:    100.0
+        w_state_reg:            0.1
+        w_control_reg:          0.01
+        w_contact_force:       20.0
+        w_centroidal_momentum:  0.0
+        W_placement: *W_fine
+        q_posture_ref: *q_posture_close
+        F_target: *f_target_grasp
+        custom_weights:
+          hand_posture: 5.0
+
+    retreat:
+      ocp_type: "light_contact"
+      active_contact_indices: []
+      cost:
+        horizon_length: 20
+        dt: 0.01
+        w_frame_placement:    100.0
+        w_state_reg:            1.0
+        w_control_reg:          0.01
+        w_contact_force:        0.0
+        w_centroidal_momentum:  0.0
+        W_placement: *W_free
+        q_posture_ref: *q_posture_home
+        F_target: *f_target_zero
+        custom_weights:
+          hand_posture: 1.0
+
+    release:
+      ocp_type: "light_contact"
+      active_contact_indices: []
+      cost:
+        horizon_length: 20
+        dt: 0.01
+        w_frame_placement:     50.0
+        w_state_reg:           10.0
+        w_control_reg:          0.01
+        w_contact_force:        0.0
+        w_centroidal_momentum:  0.0
+        W_placement: *W_free
+        q_posture_ref: *q_posture_home
+        F_target: *f_target_zero
+        custom_weights:
+          hand_posture: 1.0

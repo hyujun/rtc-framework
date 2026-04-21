@@ -15,9 +15,14 @@
 #include "rtc_tsid/types/qp_types.hpp"
 #include "rtc_tsid/types/wbc_types.hpp"
 
+#include "rtc_mpc/handler/mpc_factory.hpp"
+#include "rtc_mpc/handler/mpc_handler_base.hpp"
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
+#include "rtc_mpc/model/robot_model_handler.hpp"
+#include "rtc_mpc/thread/handler_mpc_thread.hpp"
 #include "rtc_mpc/thread/mock_mpc_thread.hpp"
 #include "rtc_mpc/thread/mpc_thread.hpp"
+#include "ur5e_bringup/phase/grasp_phase_manager.hpp"
 
 // Third-party
 #include <Eigen/Core>
@@ -301,20 +306,51 @@ private:
   ComputedTrajectory robot_computed_{};
   ComputedTrajectory hand_computed_{};
 
-  // ── MPC integration (Phase 5) ───────────────────────────────────────────
+  // ── MPC integration (Phase 5 + 7b) ──────────────────────────────────────
   //
-  // When `mpc_enabled_` is true, `OnEnter` spawns a MockMPCThread (placeholder
-  // for a future Aligator integration) that publishes solutions into
-  // `mpc_manager_`. On every RT tick inside `ComputeTSIDPosition`, the
-  // manager interpolates the newest solution, computes Riccati feedback, and
-  // writes q_ref / v_ref / a_ff / u_fb into the pre-allocated buffers below.
-  // The references are then injected into the TSID SE3 and posture tasks.
+  // When `mpc_enabled_` is true, `InitializeHoldPosition` spawns one of two
+  // MPC thread implementations:
   //
-  // If `mpc_enabled_` is false, the MPC thread is never started and the
-  // existing Phase 4 fixed-reference path is taken.
+  //   `mpc.engine: "mock"`     (Phase 5, default) — MockMPCThread publishes
+  //                            a self-regularising hold target. Keeps the
+  //                            Phase 4 fixed-reference + Riccati-scaled
+  //                            path alive without pulling in Aligator.
+  //
+  //   `mpc.engine: "handler"`  (Phase 7b, opt-in) — HandlerMPCThread drives
+  //                            a real LightContact / ContactRich solve via
+  //                            MPCFactory, with GraspPhaseManager supplying
+  //                            phase context. Cross-mode swap between
+  //                            light_contact and contact_rich is handled
+  //                            inside HandlerMPCThread.
+  //
+  // If `mpc_enabled_` is false, no MPC thread is spawned and the Phase 4
+  // self-regularising hold path runs exclusively.
+  enum class MpcEngine { kMock, kHandler };
+
   bool mpc_enabled_{false};
+  MpcEngine mpc_engine_{MpcEngine::kMock};
   rtc::mpc::MPCSolutionManager mpc_manager_;
   std::unique_ptr<rtc::mpc::MPCThread> mpc_thread_;
+
+  // Handler-mode dependencies (null when engine != kHandler).
+  //
+  // `mpc_model_handler_` stays owned by the controller because HandlerMPCThread
+  // only holds a non-owning reference to it; its lifetime must bracket the
+  // MPC thread. `phase_manager_owned_` holds the manager between LoadConfig
+  // (build + validate YAML) and InitializeHoldPosition (ownership transferred
+  // into HandlerMPCThread::Configure). `phase_manager_ptr_` is a borrowed
+  // raw pointer that stays valid for the thread's lifetime; the controller
+  // uses it to bridge WBC FSM edges onto the grasp FSM command bus
+  // (`SetCommand` / `ForcePhase`).
+  std::unique_ptr<rtc::mpc::RobotModelHandler> mpc_model_handler_;
+  std::unique_ptr<ur5e_bringup::phase::GraspPhaseManager> phase_manager_owned_;
+  ur5e_bringup::phase::GraspPhaseManager *phase_manager_ptr_{nullptr};
+
+  // Pre-parsed YAML nodes (kept alive for handler-mode startup and for
+  // cross-mode swap inside HandlerMPCThread).
+  YAML::Node mpc_light_cfg_;
+  YAML::Node mpc_rich_cfg_;
+  YAML::Node phase_cfg_;
 
   // Pre-allocated MPC reference buffers (sized in LoadConfig).
   Eigen::VectorXd mpc_q_ref_;
