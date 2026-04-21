@@ -119,10 +119,16 @@ void ApplyControllerParamOverrides(rclcpp_lifecycle::LifecycleNode &node,
       continue;
     }
 
-    // Navigate to parent map, creating missing intermediates as maps.
-    YAML::Node parent = ctrl_node;
+    // Walk to the parent map. CRITICAL: `Node::operator=` in yaml-cpp is a
+    // VALUE COPY that overwrites the left-hand node's data — using it here
+    // (e.g. `parent = parent[x]`) would splice the child subtree over the
+    // ctrl_node root and lose sibling keys (observed as the grand
+    // `integration` section vanishing after applying a single
+    // `demo_wbc_controller.mpc.*` override). `Node::reset(other)` is the
+    // reference-rebind that leaves the underlying tree untouched.
+    YAML::Node parent(ctrl_node);
     for (std::size_t i = 0; i + 1 < parts.size(); ++i) {
-      parent = parent[parts[i]];
+      parent.reset(parent[parts[i]]);
     }
 
     try {
