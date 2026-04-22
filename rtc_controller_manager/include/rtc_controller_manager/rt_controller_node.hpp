@@ -4,6 +4,7 @@
 // ───────────────────────────────────────────────────────────
 #include "rtc_base/logging/data_logger.hpp"
 #include "rtc_base/logging/log_buffer.hpp"
+#include "rtc_base/logging/mpc_solve_timing_logger.hpp"
 #include "rtc_base/threading/publish_buffer.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/threading/thread_config.hpp"
@@ -131,6 +132,7 @@ private:
   void DrainLog(); // Log drain (non-RT core)
 
   void PublishEstopStatus(bool estopped);
+  void LogMpcSolveTimingTick(); // 1 Hz aux callback, non-RT
 
   /// Trigger a global E-Stop that propagates to all subsystems.
   /// Safe to call from any thread. Idempotent — second call is a no-op.
@@ -308,6 +310,15 @@ private:
   // ── RT loop (clock_nanosleep, replaces control_timer_ + timeout_timer_) ──
   std::jthread rt_loop_thread_;
   std::atomic<bool> rt_loop_running_{false};
+
+  // ── MPC solve-timing observability (aux thread, non-RT) ──────────────────
+  // Polls active controller's GetMpcSolveStats() at 1 Hz, appends one CSV row
+  // per tick to <session>/controller/mpc_solve_timing.csv, and emits a single
+  // RCLCPP_INFO line every 10 seconds. No-op when the controller returns
+  // std::nullopt (non-MPC controller or MPC disabled).
+  rclcpp::TimerBase::SharedPtr mpc_timing_timer_;
+  rtc::MpcSolveTimingLogger mpc_timing_logger_;
+  std::uint32_t mpc_timing_tick_{0};
 
   // ── Publish offload (SPSC buffer + dedicated thread) ────────────────────
   rtc::ControlPublishBuffer publish_buffer_{};

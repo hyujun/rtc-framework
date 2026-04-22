@@ -3,23 +3,27 @@
 
 // Shared types (constants, data structs) live in rtc_base.
 // This header re-exports them and adds the abstract Strategy interface.
+#include "rtc_base/timing/mpc_solve_stats.hpp"
 #include "rtc_base/types/types.hpp"
 
 #include <yaml-cpp/yaml.h>
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
 
 // Forward declaration — full definition only needed in .cpp
-namespace rtc_urdf_bridge { struct ModelConfig; }
+namespace rtc_urdf_bridge {
+struct ModelConfig;
+}
 
-namespace rtc
-{
+namespace rtc {
 
-// ── Abstract interface (Strategy Pattern) ─────────────────────────────────────
+// ── Abstract interface (Strategy Pattern)
+// ─────────────────────────────────────
 //
 // All virtual methods are noexcept to guarantee real-time safety: any
 // exception thrown inside a 500 Hz timer would terminate the process.
@@ -27,17 +31,17 @@ class RTControllerInterface {
 public:
   ~RTControllerInterface();
 
-  RTControllerInterface(const RTControllerInterface &)            = delete;
-  RTControllerInterface & operator=(const RTControllerInterface &) = delete;
-  RTControllerInterface(RTControllerInterface &&)                 = delete;
-  RTControllerInterface & operator=(RTControllerInterface &&)      = delete;
+  RTControllerInterface(const RTControllerInterface &) = delete;
+  RTControllerInterface &operator=(const RTControllerInterface &) = delete;
+  RTControllerInterface(RTControllerInterface &&) = delete;
+  RTControllerInterface &operator=(RTControllerInterface &&) = delete;
 
   // Compute one control step. Must be noexcept for RT safety.
-  [[nodiscard]] virtual ControllerOutput Compute(
-    const ControllerState & state) noexcept = 0;
+  [[nodiscard]] virtual ControllerOutput
+  Compute(const ControllerState &state) noexcept = 0;
 
-  virtual void SetDeviceTarget(
-    int device_idx, std::span<const double> target) noexcept = 0;
+  virtual void SetDeviceTarget(int device_idx,
+                               std::span<const double> target) noexcept = 0;
 
   [[nodiscard]] virtual std::string_view Name() const noexcept = 0;
 
@@ -46,14 +50,14 @@ public:
   // Each controller implements this according to its own target format
   // (joint-space, task-space, etc.).  Called once from ControlLoop Phase 0
   // when state_received_ is true but target_received_ is false.
-  virtual void InitializeHoldPosition(
-    const ControllerState & state) noexcept = 0;
+  virtual void
+  InitializeHoldPosition(const ControllerState &state) noexcept = 0;
 
   // E-STOP interface — default no-ops for controllers that do not need it.
-  virtual void TriggerEstop() noexcept                      {}
-  virtual void ClearEstop() noexcept                        {}
-  [[nodiscard]] virtual bool IsEstopped() const noexcept    {return false;}
-  virtual void SetHandEstop(bool /*enabled*/) noexcept      {}
+  virtual void TriggerEstop() noexcept {}
+  virtual void ClearEstop() noexcept {}
+  [[nodiscard]] virtual bool IsEstopped() const noexcept { return false; }
+  virtual void SetHandEstop(bool /*enabled*/) noexcept {}
 
   // ── Extensibility hooks for the controller registry ──────────────────────
   //
@@ -61,7 +65,8 @@ public:
   //   Called once at node startup.  `cfg` is the YAML node already scoped to
   //   this controller's key (e.g. the content under `pd_controller:` in its
   //   YAML file).  Override to read per-controller gains / flags from disk.
-  //   Not noexcept — YAML parsing can throw; the call site wraps it in try/catch.
+  //   Not noexcept — YAML parsing can throw; the call site wraps it in
+  //   try/catch.
   //
   // UpdateGainsFromMsg()
   //   Called from the ~/controller_gains subscriber (sensor thread).
@@ -73,9 +78,8 @@ public:
     return CommandType::kPosition;
   }
 
-  virtual void LoadConfig(const YAML::Node & cfg);
-  virtual void UpdateGainsFromMsg(std::span<const double> gains) noexcept
-  {
+  virtual void LoadConfig(const YAML::Node &cfg);
+  virtual void UpdateGainsFromMsg(std::span<const double> gains) noexcept {
     (void)gains;
   }
 
@@ -83,17 +87,26 @@ public:
   //   Returns the current gains as a flat array matching the layout expected
   //   by UpdateGainsFromMsg().  Used by the GUI "Load Gain" feature to read
   //   back the active controller's runtime gains.  Default returns empty.
-  [[nodiscard]] virtual std::vector<double> GetCurrentGains() const noexcept
-  {
+  [[nodiscard]] virtual std::vector<double> GetCurrentGains() const noexcept {
     return {};
   }
 
+  // GetMpcSolveStats()
+  //   Observability hook — returns the most recent MPC solve-timing window
+  //   if this controller runs an MPC loop, or std::nullopt otherwise.
+  //   Non-RT: RtControllerNode polls this from the aux callback group at
+  //   1 Hz for CSV logging and periodic INFO output. Controllers that do
+  //   not own an MPCSolutionManager leave the default nullopt.
+  [[nodiscard]] virtual std::optional<MpcSolveStats>
+  GetMpcSolveStats() const noexcept {
+    return std::nullopt;
+  }
+
   // GetTopicConfig()
-  //   Returns the per-controller topic configuration (subscribe/publish topics).
-  //   Populated by LoadConfig() from the YAML "topics" section.
-  //   If no "topics" section exists, returns the default topic set.
-  [[nodiscard]] const TopicConfig & GetTopicConfig() const noexcept
-  {
+  //   Returns the per-controller topic configuration (subscribe/publish
+  //   topics). Populated by LoadConfig() from the YAML "topics" section. If no
+  //   "topics" section exists, returns the default topic set.
+  [[nodiscard]] const TopicConfig &GetTopicConfig() const noexcept {
     return topic_config_;
   }
 
@@ -102,23 +115,20 @@ public:
   //   controllers are constructed and device configs are loaded from YAML.
   //   After setting, OnDeviceConfigsSet() is called for controllers to
   //   resolve kinematics (e.g. end_id_ from tip_link).
-  void SetDeviceNameConfigs(std::map<std::string, DeviceNameConfig> configs)
-  {
+  void SetDeviceNameConfigs(std::map<std::string, DeviceNameConfig> configs) {
     device_name_configs_ = std::move(configs);
     OnDeviceConfigsSet();
   }
 
-  [[nodiscard]] const DeviceNameConfig* GetDeviceNameConfig(
-      const std::string& device_name) const noexcept
-  {
+  [[nodiscard]] const DeviceNameConfig *
+  GetDeviceNameConfig(const std::string &device_name) const noexcept {
     auto it = device_name_configs_.find(device_name);
     return (it != device_name_configs_.end()) ? &it->second : nullptr;
   }
 
   // Returns the name of the primary device (first group in topic config).
   // Use instead of hardcoding "ur5e" to support arbitrary robot names.
-  [[nodiscard]] std::string GetPrimaryDeviceName() const noexcept
-  {
+  [[nodiscard]] std::string GetPrimaryDeviceName() const noexcept {
     if (!topic_config_.groups.empty()) {
       return topic_config_.groups.front().first;
     }
@@ -134,8 +144,9 @@ public:
   //   (sub_models, tree_models, passive_joints) parsed from the top-level
   //   "urdf:" YAML section.  Controllers can override OnSystemModelConfigSet()
   //   to build Pinocchio models from the shared config.
-  void SetSystemModelConfig(const rtc_urdf_bridge::ModelConfig & config);
-  [[nodiscard]] const rtc_urdf_bridge::ModelConfig* GetSystemModelConfig() const noexcept;
+  void SetSystemModelConfig(const rtc_urdf_bridge::ModelConfig &config);
+  [[nodiscard]] const rtc_urdf_bridge::ModelConfig *
+  GetSystemModelConfig() const noexcept;
 
   // Set the control loop rate (Hz). Called by the manager at init time.
   void SetControlRate(double hz) noexcept { control_rate_ = hz; }
@@ -157,10 +168,11 @@ protected:
   // Parses the "topics" section of a controller YAML node.
   // Called by the base LoadConfig(); subclasses that override LoadConfig()
   // should call RTControllerInterface::LoadConfig(cfg) to inherit this.
-  static TopicConfig ParseTopicConfig(const YAML::Node & topics_node);
+  static TopicConfig ParseTopicConfig(const YAML::Node &topics_node);
 
   // Default topic configuration — device_name determines topic namespace.
-  static TopicConfig MakeDefaultTopicConfig(const std::string& device_name = "ur5e");
+  static TopicConfig
+  MakeDefaultTopicConfig(const std::string &device_name = "ur5e");
 
   TopicConfig topic_config_;
   std::map<std::string, DeviceNameConfig> device_name_configs_;
@@ -168,6 +180,6 @@ protected:
   double control_rate_{500.0};
 };
 
-}  // namespace rtc
+} // namespace rtc
 
-#endif  // RTC_CONTROLLER_INTERFACE_RT_CONTROLLER_INTERFACE_H_
+#endif // RTC_CONTROLLER_INTERFACE_RT_CONTROLLER_INTERFACE_H_

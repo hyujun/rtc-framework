@@ -144,6 +144,8 @@ public:
   [[nodiscard]] CommandType GetCommandType() const noexcept override {
     return command_type_;
   }
+  [[nodiscard]] std::optional<rtc::MpcSolveStats>
+  GetMpcSolveStats() const noexcept override;
 
 private:
   // ── Model initialization ────────────────────────────────────────────────

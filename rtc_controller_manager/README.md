@@ -236,6 +236,12 @@ poll(&pfd, 1, 1);  // 1ms timeout, eventfd readable → 즉시 wakeup
 | 통계 | min, max, mean, stddev, p95, p99 |
 | 예산 초과 | 2000 us (500 Hz = 2 ms) 초과 횟수 |
 
+### MPC Solve Timing Logger (aux thread, non-RT)
+
+`on_configure`에서 `cb_group_aux_`에 1 Hz 타이머(`mpc_timing_timer_`)가 등록된다. 활성 컨트롤러의 `GetMpcSolveStats()` (기본 `nullopt`, MPC 보유 컨트롤러만 override)를 폴링해 `<session>/controller/mpc_solve_timing.csv`에 9열(`t_wall_ns,count,window,last_ns,min_ns,p50_ns,p99_ns,max_ns,mean_ns`)을 append한다. 10초마다 `RCLCPP_INFO`로 `count / window / p50 / p99 / max` 요약 로그. 컨트롤러가 `nullopt`를 반환하면 row를 쓰지 않는다 — reader는 빈 구간을 MPC 비활성 구간으로 해석.
+
+Writer 구현: [`rtc_base/logging/mpc_solve_timing_logger.hpp`](../rtc_base/include/rtc_base/logging/mpc_solve_timing_logger.hpp) · neutral 타입 [`rtc::MpcSolveStats`](../rtc_base/include/rtc_base/timing/mpc_solve_stats.hpp).
+
 ---
 
 ## ROS2 인터페이스

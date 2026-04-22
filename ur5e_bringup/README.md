@@ -329,6 +329,8 @@ UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller.
 
 매 RT tick에서 `ComputeTSIDPosition`이 `(q, v)`를 MPC 스레드로 publish하고, 최신 solution을 cubic-Hermite 보간한 `q_ref, v_ref, a_ff`를 TSID task reference로 주입한다. Riccati 피드백(`K·Δx`)은 `control_ref_.a_des`의 상위 `nv`개 원소에 가산된다. MPC가 solution을 공급하지 못하거나 `stale_count >= max_stale_solutions`면 자동으로 Phase 4 self-hold reference로 fallback한다.
 
+`DemoWbcController::GetMpcSolveStats()`는 `mpc.enabled=true`일 때 `MPCSolutionManager::GetSolveStats()` 스냅샷을 `rtc::MpcSolveStats`로 변환해 반환한다(아직 한 번도 solve가 돌지 않았으면 `std::nullopt`). `RtControllerNode`의 aux 1 Hz 타이머가 이를 폴링해 `<session>/controller/mpc_solve_timing.csv`로 기록 — Stage B 레이아웃 변경 전후 p50/p99 분포 비교의 baseline.
+
 ##### GraspPhaseManager 연동 (Phase 7a/7b)
 
 `engine: "handler"`일 때 WBC의 8-state FSM(`WbcPhase`)이 authoritative이며, `OnPhaseEnter` 말미에서 `GraspPhaseManager::ForcePhase`로 grasp 측 FSM을 동기화한다(매핑: `kApproach→kApproach`, `kClosure→kClosure`, `kHold→kHold`, `kFallback→kIdle` 등). `kApproach` 진입 시 `tcp_goal_`이 valid하면 `GraspPhaseManager::SetTaskTarget`으로 grasp/pregrasp/approach_start pose가 푸시된다. `ForcePhase`는 atomic-only여서 RT-safe; `SetTaskTarget`은 non-RT 뮤텍스이지만 phase edge마다 1회만 실행된다.

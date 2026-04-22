@@ -59,6 +59,7 @@ virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 | `UpdateGainsFromMsg(span<const double>)` | no-op | 런타임 게인 업데이트 |
 | `GetCurrentGains()` | `{}` 반환 | 현재 게인 배열 반환 |
 | `GetCommandType()` | `CommandType::kPosition` | 커맨드 타입 (`kPosition` 또는 `kTorque`) |
+| `GetMpcSolveStats()` | `std::nullopt` | MPC 루프를 보유한 컨트롤러만 오버라이드. `RtControllerNode`의 aux 1Hz 타이머가 폴링하여 `<session>/controller/mpc_solve_timing.csv`로 기록하고 10초마다 `RCLCPP_INFO` 요약. 반환 타입은 `std::optional<rtc::MpcSolveStats>` ([`rtc_base/timing/mpc_solve_stats.hpp`](../rtc_base/include/rtc_base/timing/mpc_solve_stats.hpp)). |
 
 > **`LoadConfig()` 기본 구현 동작:**
 > 1. `cfg["enable_ur5e"]` / `cfg["enable_hand"]` 존재 시 deprecated 경고 출력 후 무시

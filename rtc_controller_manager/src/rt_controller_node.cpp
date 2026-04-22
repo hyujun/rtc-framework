@@ -1,6 +1,7 @@
 // ── Core lifecycle: constructor, destructor, callback groups, timers,
 //    lifecycle callbacks (on_configure / activate / deactivate / cleanup /
-//    shutdown / error) ─────────────────────────────────────────────────────────
+//    shutdown / error)
+//    ─────────────────────────────────────────────────────────
 #include "rtc_controller_manager/rt_controller_node.hpp"
 
 #include <rtc_base/logging/session_dir.hpp>
@@ -9,7 +10,7 @@
 #include <lifecycle_msgs/msg/state.hpp>
 
 #include <sys/eventfd.h>
-#include <unistd.h>  // close
+#include <unistd.h> // close
 
 using namespace std::chrono_literals;
 namespace urtc = rtc;
@@ -25,19 +26,19 @@ namespace urtc = rtc;
 // See rtc_controllers/src/controller_registration.cpp for built-in examples.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── Constructor / destructor ──────────────────────────────────────────────────
+// ── Constructor / destructor
+// ──────────────────────────────────────────────────
 //
 // Lifecycle design: constructor is intentionally minimal.
 // All resource allocation happens in on_configure / on_activate.
 RtControllerNode::RtControllerNode()
-: LifecycleNode("rt_controller",
-       rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true)),
-  logger_(nullptr)
-{
-}
+    : LifecycleNode(
+          "rt_controller",
+          rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(
+              true)),
+      logger_(nullptr) {}
 
-RtControllerNode::~RtControllerNode()
-{
+RtControllerNode::~RtControllerNode() {
   // Safety net — idempotent cleanup in case lifecycle callbacks were not
   // invoked (e.g. SIGTERM without graceful shutdown).
   StopRtLoop();
@@ -54,30 +55,79 @@ RtControllerNode::~RtControllerNode()
   }
 }
 
-// ── Session directory helpers ─────────────────────────────────────────────────
-std::filesystem::path RtControllerNode::ResolveAndSetupSessionDir()
-{
+// ── Session directory helpers
+// ─────────────────────────────────────────────────
+std::filesystem::path RtControllerNode::ResolveAndSetupSessionDir() {
   return urtc::ResolveSessionDir();
 }
 
-// ── CallbackGroup creation ────────────────────────────────────────────────────
-void RtControllerNode::CreateCallbackGroups()
-{
+// ── CallbackGroup creation
+// ────────────────────────────────────────────────────
+void RtControllerNode::CreateCallbackGroups() {
   cb_group_sensor_ =
-    create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+      create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   cb_group_log_ =
-    create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+      create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   cb_group_aux_ =
-    create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+      create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 }
 
-void RtControllerNode::CreateTimers()
-{
+void RtControllerNode::CreateTimers() {
   // Drain the SPSC log ring buffer from the log thread (Core 4).
   // File I/O stays entirely out of the 500 Hz RT thread.
   static constexpr auto kLogDrainPeriod = 10ms;
-  drain_timer_ =
-    create_wall_timer(kLogDrainPeriod, [this]() {DrainLog();}, cb_group_log_);
+  drain_timer_ = create_wall_timer(
+      kLogDrainPeriod, [this]() { DrainLog(); }, cb_group_log_);
+
+  // MPC solve-timing poller runs on the aux executor (non-RT). 1 Hz is
+  // enough to track Stage B / Phase 2 layout changes; the inner ring buffer
+  // already provides p50/p99 over ~12 s of history.
+  static constexpr auto kMpcTimingPeriod = 1000ms;
+  mpc_timing_timer_ = create_wall_timer(
+      kMpcTimingPeriod, [this]() { LogMpcSolveTimingTick(); }, cb_group_aux_);
+  if (!mpc_timing_logger_.Open()) {
+    RCLCPP_WARN(
+        get_logger(),
+        "MpcSolveTimingLogger::Open() failed — solve-timing CSV disabled");
+  } else {
+    RCLCPP_INFO(get_logger(), "MPC solve-timing CSV: %s",
+                mpc_timing_logger_.Path().c_str());
+  }
+}
+
+void RtControllerNode::LogMpcSolveTimingTick() {
+  // Active controller may change at runtime via /controller_selector; read
+  // acquire to pair with the release store in the selector callback.
+  const int idx = active_controller_idx_.load(std::memory_order_acquire);
+  if (idx < 0 || static_cast<std::size_t>(idx) >= controllers_.size()) {
+    return;
+  }
+  const auto &ctrl = controllers_[static_cast<std::size_t>(idx)];
+  if (!ctrl)
+    return;
+
+  const auto stats = ctrl->GetMpcSolveStats();
+  if (!stats) {
+    // Non-MPC controller or MPC disabled — nothing to log. Don't burn CSV
+    // rows with empty data; readers can tell sessions apart by row count.
+    return;
+  }
+
+  mpc_timing_logger_.Log(*stats);
+
+  // Periodic INFO so tmux-watchers see progress without tail-ing the CSV.
+  // 10 s cadence keeps the log readable across a 10-minute pilot session.
+  static constexpr std::uint32_t kInfoEveryNTicks = 10;
+  if (++mpc_timing_tick_ % kInfoEveryNTicks == 0) {
+    RCLCPP_INFO(get_logger(),
+                "[mpc_solve_timing] count=%lu window=%u p50=%.2fms p99=%.2fms "
+                "max=%.2fms",
+                static_cast<unsigned long>(stats->count),
+                static_cast<unsigned>(stats->window),
+                static_cast<double>(stats->p50_ns) / 1e6,
+                static_cast<double>(stats->p99_ns) / 1e6,
+                static_cast<double>(stats->max_ns) / 1e6);
+  }
 }
 
 // ── Lifecycle callbacks ──────────────────────────────────────────────────────
@@ -87,8 +137,7 @@ void RtControllerNode::CreateTimers()
 // Tier 2 (on_activate): RT loop + publish offload thread start.
 
 RtControllerNode::CallbackReturn
-RtControllerNode::on_configure(const rclcpp_lifecycle::State& /*state*/)
-{
+RtControllerNode::on_configure(const rclcpp_lifecycle::State & /*state*/) {
   RCLCPP_INFO(get_logger(), "Configuring RtControllerNode...");
 
   CreateCallbackGroups();
@@ -102,7 +151,7 @@ RtControllerNode::on_configure(const rclcpp_lifecycle::State& /*state*/)
   publish_eventfd_ = eventfd(0, EFD_NONBLOCK);
   if (publish_eventfd_ < 0) {
     RCLCPP_WARN(get_logger(),
-        "eventfd() failed: publish thread will use polling fallback");
+                "eventfd() failed: publish thread will use polling fallback");
   }
 
   // Publish initial active controller name (transient_local so late
@@ -111,8 +160,9 @@ RtControllerNode::on_configure(const rclcpp_lifecycle::State& /*state*/)
   {
     std_msgs::msg::String ctrl_name_msg;
     ctrl_name_msg.data = std::string(
-      controllers_[static_cast<std::size_t>(
-          active_controller_idx_.load(std::memory_order_acquire))]->Name());
+        controllers_[static_cast<std::size_t>(active_controller_idx_.load(
+                         std::memory_order_acquire))]
+            ->Name());
     active_ctrl_name_pub_->publish(ctrl_name_msg);
   }
 
@@ -123,23 +173,21 @@ RtControllerNode::on_configure(const rclcpp_lifecycle::State& /*state*/)
 }
 
 RtControllerNode::CallbackReturn
-RtControllerNode::on_activate(const rclcpp_lifecycle::State& state)
-{
-  LifecycleNode::on_activate(state);  // activates LifecyclePublishers
+RtControllerNode::on_activate(const rclcpp_lifecycle::State &state) {
+  LifecycleNode::on_activate(state); // activates LifecyclePublishers
 
   const auto cfgs = urtc::SelectThreadConfigs();
   StartRtLoop(cfgs.rt_control);
   StartPublishLoop(cfgs.publish);
 
   RCLCPP_INFO(get_logger(),
-      "RtControllerNode active — RT loop + publish offload started");
+              "RtControllerNode active — RT loop + publish offload started");
 
   return CallbackReturn::SUCCESS;
 }
 
 RtControllerNode::CallbackReturn
-RtControllerNode::on_deactivate(const rclcpp_lifecycle::State& state)
-{
+RtControllerNode::on_deactivate(const rclcpp_lifecycle::State &state) {
   RCLCPP_INFO(get_logger(), "Deactivating RtControllerNode...");
 
   StopRtLoop();
@@ -158,15 +206,14 @@ RtControllerNode::on_deactivate(const rclcpp_lifecycle::State& state)
   skip_count_.store(0, std::memory_order_relaxed);
   consecutive_overruns_.store(0, std::memory_order_relaxed);
 
-  LifecycleNode::on_deactivate(state);  // deactivates LifecyclePublishers
+  LifecycleNode::on_deactivate(state); // deactivates LifecyclePublishers
 
   RCLCPP_INFO(get_logger(), "RtControllerNode deactivated");
   return CallbackReturn::SUCCESS;
 }
 
 RtControllerNode::CallbackReturn
-RtControllerNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/)
-{
+RtControllerNode::on_cleanup(const rclcpp_lifecycle::State & /*state*/) {
   RCLCPP_INFO(get_logger(), "Cleaning up RtControllerNode...");
 
   // Reverse order of on_configure:
@@ -227,8 +274,7 @@ RtControllerNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/)
 }
 
 RtControllerNode::CallbackReturn
-RtControllerNode::on_shutdown(const rclcpp_lifecycle::State& state)
-{
+RtControllerNode::on_shutdown(const rclcpp_lifecycle::State &state) {
   RCLCPP_INFO(get_logger(), "Shutting down RtControllerNode...");
 
   // on_shutdown can be called from any primary state
@@ -244,8 +290,7 @@ RtControllerNode::on_shutdown(const rclcpp_lifecycle::State& state)
 }
 
 RtControllerNode::CallbackReturn
-RtControllerNode::on_error(const rclcpp_lifecycle::State& /*state*/)
-{
+RtControllerNode::on_error(const rclcpp_lifecycle::State & /*state*/) {
   RCLCPP_ERROR(get_logger(), "RtControllerNode error — attempting recovery");
 
   TriggerGlobalEstop("lifecycle_error");

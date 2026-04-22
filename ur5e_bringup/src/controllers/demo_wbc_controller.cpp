@@ -641,6 +641,27 @@ std::vector<double> DemoWbcController::GetCurrentGains() const noexcept {
           mpc_manager_.RiccatiGainScale()};
 }
 
+std::optional<rtc::MpcSolveStats>
+DemoWbcController::GetMpcSolveStats() const noexcept {
+  if (!mpc_manager_.Enabled()) {
+    return std::nullopt;
+  }
+  const auto s = mpc_manager_.GetSolveStats();
+  if (s.count == 0) {
+    return std::nullopt;
+  }
+  rtc::MpcSolveStats out;
+  out.count = s.count;
+  out.window = s.window;
+  out.last_ns = s.last_ns;
+  out.min_ns = s.min_ns;
+  out.max_ns = s.max_ns;
+  out.p50_ns = s.p50_ns;
+  out.p99_ns = s.p99_ns;
+  out.mean_ns = s.mean_ns;
+  return out;
+}
+
 DemoWbcController::FingertipReport
 DemoWbcController::GetFingertipReportForTesting(
     int fingertip_idx) const noexcept {
