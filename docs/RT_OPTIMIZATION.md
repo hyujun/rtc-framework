@@ -130,39 +130,60 @@ mpc_worker_0..1 (Phase 5, 12/16-core only, SCHED_FIFO prio 55)
 
 **GRUB 설정**: `nohz_full=2-7 rcu_nocbs=2-7`
 
-### 10-Core 시스템 (cset shield)
+### 10-Core 시스템 (unified layout, MPC + 1 worker)
 
-> cset shield가 Core 2-6을 "user" cpuset으로 격리합니다. rt_controller는 "system" cpuset (Core 0-1, 7-9)에서 실행됩니다. Phase 5: MPC도 Core 9를 system cpuset 내에서 공유 (10코어는 dedicated 코어를 확보할 여유 없음 — 12+코어 권장).
+> **2026-04 unified layout**: 이전에는 shield 2-6이 "user" 예약 영역이고 rt_controller가 Core 7-9 (3코어)만 썼기 때문에 8-core보다 격리 품질이 나빴습니다. 새 레이아웃은 RT 쓰레드를 8-core와 동일한 Core 2부터 배치하고 Core 5에 MPC worker 0을 추가합니다. cset shield 2-8이 RT 전 영역을 보호하며, Core 9는 MuJoCo sim / monitoring용 spare.
 
 | Core | 용도 | Scheduler | Priority/Nice | 스레드 이름 |
 |------|------|-----------|---------------|------------|
 | 0-1 | OS / DDS / NIC IRQ | SCHED_OTHER | - | - |
-| 2-6 | cset shield "user" | - | - | 예약 (OS 노이즈 감소) |
-| 7 | RT Control | SCHED_FIFO | 90 | `rt_control` |
-| 8 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` |
-| 9 | UDP recv | SCHED_FIFO | 65 | `udp_recv` |
-| 9 | Logging | SCHED_OTHER | nice -5 | `logger` |
+| 2 | RT Control | SCHED_FIFO | 90 | `rt_control` |
+| 3 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` |
+| 4 | **MPC main** | **SCHED_FIFO** | **60** | `mpc_main` (dedicated) |
+| 5 | **MPC worker 0** | **SCHED_FIFO** | **55** | `mpc_worker_0` |
+| 6 | UDP recv | SCHED_FIFO | 65 | `udp_recv` (dedicated) |
+| 7 | Logging | SCHED_OTHER | nice -5 | `logger` |
+| 8 | Aux | SCHED_OTHER | nice 0 | `aux` |
+| 8 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
+| 9 | MuJoCo sim / spare | SCHED_OTHER | - | `sim_thread` (Tier 3) |
+
+### 12-Core 시스템 (unified layout, MPC + 2 workers)
+
+> **2026-04 unified layout**: 이전 12-core는 Core 11에 udp/logger/aux/publish가 모두 몰렸고 shield 2-6 (5코어)은 rt_controller 관점에서 낭비였습니다. 새 레이아웃은 10-core를 그대로 확장해 MPC worker 1을 Core 6에 추가하고, UDP/logger/aux/publish가 각각 전용 코어를 가집니다. cset shield 2-9이 RT 전 영역을 보호.
+
+| Core | 용도 | Scheduler | Priority/Nice | 스레드 이름 |
+|------|------|-----------|---------------|------------|
+| 0-1 | OS / DDS / NIC IRQ | SCHED_OTHER | - | - |
+| 2 | RT Control | SCHED_FIFO | 90 | `rt_control` |
+| 3 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` |
+| 4 | **MPC main** | **SCHED_FIFO** | **60** | `mpc_main` (dedicated) |
+| 5 | **MPC worker 0** | **SCHED_FIFO** | **55** | `mpc_worker_0` |
+| 6 | **MPC worker 1** | **SCHED_FIFO** | **55** | `mpc_worker_1` |
+| 7 | UDP recv | SCHED_FIFO | 65 | `udp_recv` (dedicated) |
+| 8 | Logging | SCHED_OTHER | nice -5 | `logger` |
 | 9 | Aux | SCHED_OTHER | nice 0 | `aux` |
 | 9 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
-| 9 | **MPC main** (Phase 5) | **SCHED_FIFO** | **60** | `mpc_main` (shared) |
+| 10 | MuJoCo sim | SCHED_OTHER | - | `sim_thread` (Tier 3) |
+| 11 | Spare | - | - | user shield / viewer |
 
-### 12-Core 시스템 (cset shield, Phase 5: MPC + 1 worker)
+### 14-Core 시스템 (unified layout, dedicated sim core)
 
-> cset shield Core 2-6. rt_controller는 Core 0-1, 7-11에서 실행.
-> Phase 5에서 Core 9–10이 MPC 전용으로 배정되고 `udp_recv`/`logger`/`aux`/`publish`가 Core 11로 통합되었습니다.
+> **2026-04 신규**: 이전에는 14-core 머신이 12-core 분기에 흡수되어 Core 12-13이 **완전히 미사용**이었습니다. 새 tier는 12-core RT 레이아웃을 그대로 유지하고 Core 10을 MuJoCo sim 전용으로 배정, Core 11-13을 user shield/monitoring spare로 제공.
 
 | Core | 용도 | Scheduler | Priority/Nice | 스레드 이름 |
 |------|------|-----------|---------------|------------|
 | 0-1 | OS / DDS / NIC IRQ | SCHED_OTHER | - | - |
-| 2-6 | cset shield "user" | - | - | 예약 |
-| 7 | RT Control | SCHED_FIFO | 90 | `rt_control` |
-| 8 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` |
-| 9 | **MPC main** (Phase 5) | **SCHED_FIFO** | **60** | `mpc_main` (dedicated) |
-| 10 | **MPC worker 0** (Phase 5) | **SCHED_FIFO** | **55** | `mpc_worker_0` |
-| 11 | UDP recv (shifted from 9) | SCHED_FIFO | 65 | `udp_recv` |
-| 11 | Logging (shifted from 10) | SCHED_OTHER | nice -5 | `logger` |
-| 11 | Aux | SCHED_OTHER | nice 0 | `aux` |
-| 11 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
+| 2 | RT Control | SCHED_FIFO | 90 | `rt_control` |
+| 3 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` |
+| 4 | **MPC main** | **SCHED_FIFO** | **60** | `mpc_main` (dedicated) |
+| 5 | **MPC worker 0** | **SCHED_FIFO** | **55** | `mpc_worker_0` |
+| 6 | **MPC worker 1** | **SCHED_FIFO** | **55** | `mpc_worker_1` |
+| 7 | UDP recv | SCHED_FIFO | 65 | `udp_recv` (dedicated) |
+| 8 | Logging | SCHED_OTHER | nice -5 | `logger` |
+| 9 | Aux | SCHED_OTHER | nice 0 | `aux` |
+| 9 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
+| 10 | MuJoCo sim | SCHED_OTHER | - | `sim_thread` (Tier 3) |
+| 11-13 | Spare | - | - | user shield / viewer / monitoring |
 
 ### 16-Core 시스템 (cset shield, Phase 5: MPC + 2 workers)
 
@@ -183,6 +204,8 @@ mpc_worker_0..1 (Phase 5, 12/16-core only, SCHED_FIFO prio 55)
 | 14 | Aux (shifted from 11) | SCHED_OTHER | nice 0 | `aux` |
 | 14 | Publish offload (shifted from 11) | SCHED_OTHER | nice -3 | `rt_publish` |
 | 15 | MuJoCo sim (shifted from 12) | SCHED_OTHER | - | sim_thread (Tier 3) |
+
+> **단조성 불변식 (Monotonicity Invariant)**: 물리 코어 수가 증가하면 per-thread 격리 품질은 절대 감소하지 않는다. `rtc_base/test/test_mpc_thread_config.cpp::TierIsolationMonotonicity`가 모든 tier 쌍에 대해 (1) MPC worker 수 단조 비감소, (2) 전용 코어 개수 단조 비감소, (3) 10-core 이상에서 `mpc_main` / `udp_recv` / `logger`가 서로 다른 코어에 위치한다는 것을 강제합니다. 새 레이아웃 추가 시 이 테스트를 반드시 업데이트하세요.
 
 ### 우선순위 계층
 

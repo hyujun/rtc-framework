@@ -163,44 +163,54 @@ build_expected_threads() {
   #   - udp_recv:   Transceiver 사용 시에만 생성 (현재 미사용)
   EXPECTED_THREADS=()
   if [[ "$PHYSICAL_CORES" -ge 16 ]]; then
-    # Core 0-1: OS, Core 2-3: RT, Core 4-8: cset shield, Core 9-11: system
+    # 16+: RT 2-3, shield 4-8 (user), MPC 9-11, UDP 12, logger 13, aux/pub 14.
     EXPECTED_THREADS=(
       "rt_control:2:1:90"
       "sensor_io:3:1:70"
-      "udp_recv:9:1:65:optional"
-      "logger:10:0:0"
-      "aux:11:0:0"
-      "rt_publish:11:0:0"
+      "udp_recv:12:1:65:optional"
+      "logger:13:0:0"
+      "aux:14:0:0"
+      "rt_publish:14:0:0"
     )
-  elif [[ "$PHYSICAL_CORES" -ge 12 ]]; then
-    # Core 0-1: OS, Core 2-6: cset shield, Core 7-11: system
+  elif [[ "$PHYSICAL_CORES" -ge 14 ]]; then
+    # 14-15: unified — RT 2-3, MPC 4-6, UDP 7, logger 8, aux/pub 9, sim 10.
     EXPECTED_THREADS=(
-      "rt_control:7:1:90"
-      "sensor_io:8:1:70"
-      "udp_recv:9:1:65:optional"
-      "logger:10:0:0"
-      "aux:11:0:0"
-      "rt_publish:11:0:0"
-    )
-  elif [[ "$PHYSICAL_CORES" -ge 10 ]]; then
-    # Core 0-1: OS, Core 2-6: cset shield, Core 7-9: system (shared Core 9)
-    EXPECTED_THREADS=(
-      "rt_control:7:1:90"
-      "sensor_io:8:1:70"
-      "udp_recv:9:1:65:optional"
-      "logger:9:0:0"
+      "rt_control:2:1:90"
+      "sensor_io:3:1:70"
+      "udp_recv:7:1:65:optional"
+      "logger:8:0:0"
       "aux:9:0:0"
       "rt_publish:9:0:0"
     )
-  elif [[ "$PHYSICAL_CORES" -ge 8 ]]; then
-    # Core 0-1: OS, Core 2-6: RT threads (no cset shield)
+  elif [[ "$PHYSICAL_CORES" -ge 12 ]]; then
+    # 12-13: unified — RT 2-3, MPC 4-6, UDP 7, logger 8, aux/pub 9.
     EXPECTED_THREADS=(
       "rt_control:2:1:90"
       "sensor_io:3:1:70"
-      "udp_recv:4:1:65:optional"
-      "logger:5:0:0"
-      "aux:6:0:0"
-      "rt_publish:6:0:0"
+      "udp_recv:7:1:65:optional"
+      "logger:8:0:0"
+      "aux:9:0:0"
+      "rt_publish:9:0:0"
+    )
+  elif [[ "$PHYSICAL_CORES" -ge 10 ]]; then
+    # 10-11: unified — RT 2-3, MPC 4-5, UDP 6, logger 7, aux/pub 8; spare 9.
+    EXPECTED_THREADS=(
+      "rt_control:2:1:90"
+      "sensor_io:3:1:70"
+      "udp_recv:6:1:65:optional"
+      "logger:7:0:0"
+      "aux:8:0:0"
+      "rt_publish:8:0:0"
+    )
+  elif [[ "$PHYSICAL_CORES" -ge 8 ]]; then
+    # 8-9: RT 2-3, MPC 4, UDP 5, logger 6, aux/pub 7.
+    EXPECTED_THREADS=(
+      "rt_control:2:1:90"
+      "sensor_io:3:1:70"
+      "udp_recv:5:1:65:optional"
+      "logger:6:0:0"
+      "aux:7:0:0"
+      "rt_publish:7:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 6 ]]; then
     # Core 0-1: OS, Core 2-5: RT threads, udp_recv shares Core 5 with aux

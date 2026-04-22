@@ -262,15 +262,17 @@ uname -v | grep PREEMPT_RT   # 재부팅 후 RT 커널 확인
 - `--robot` (기본): Tier 1 + Tier 2 격리 (최대 RT 성능). MPC 코어가 user/system cpuset 어느 쪽에 위치하든 cset shield 범위에 자연스럽게 포함됨.
 - `--sim`: Tier 1만 격리 (Tier 2 해제, MuJoCo 성능 확보). MPC가 사용되지 않거나 SCHED_OTHER로 동작.
 
-**코어 수별 격리 범위 (robot 모드)** — Phase 5에서 격리 범위는 변경되지 않습니다 (MPC 코어가 기존 cpuset 내부에 자연 포함):
+**코어 수별 격리 범위 (robot 모드)** — 2026-04 unified layout: 10/12/14-core tier에서 shield 범위가 RT 쓰레드 전 영역을 포함하도록 확장되었습니다. 이전 10-core 구조(shield 2-6 / RT 7-9)는 8-core 대비 격리 품질 퇴행이 있었으며, 이를 수정한 결과입니다.
 
 | 물리 코어 | 격리 범위 | MPC 코어 위치 |
 |-----------|-----------|---------------|
-| 4코어 이하 | Core 1-3 | Core 3 (degraded) |
+| 4코어 이하 | Core 1-3 | Core 3 (degraded, SCHED_OTHER) |
 | 5-7코어 | Core 2-5 | Core 4 (user shield 내) |
-| 8-9코어 | Core 2-6 | Core 4 (user shield 내, dedicated) |
-| 10-15코어 | Core 2-6 | Core 9 (system cpuset, shield 외부) |
-| 16코어 이상 | Core 4-8 | Core 9-11 (system cpuset, shield 외부) |
+| 8-9코어 | Core 2-6 | Core 4 (dedicated) |
+| 10-11코어 | Core 2-8 | Core 4 main + Core 5 worker_0 |
+| 12-13코어 | Core 2-9 | Core 4 main + Core 5-6 workers |
+| 14-15코어 | Core 2-10 | Core 4 main + Core 5-6 workers + Core 10 sim |
+| 16코어 이상 | Core 4-8 | Core 9-11 (legacy layout — RT 2-3 below shield, MPC above) |
 
 **자동 호출 시점**:
 - 로봇 런치: `ur5e_bringup` launch 파일에서 자동 호출
@@ -644,34 +646,58 @@ nvidia-smi -q -d PERFORMANCE         # persistence mode 확인
 | 1 | OS / DDS / IRQ |
 | 2 | RT Control (500Hz) |
 | 3 | Sensor I/O |
-| 4 | UDP recv (전용) |
-| 5 | Logging |
-| 6 | Aux + Monitoring |
-| 7 | Spare (cyclictest 측정용) |
+| 4 | MPC main (SCHED_FIFO 60) |
+| 5 | UDP recv (전용) |
+| 6 | Logging |
+| 7 | Aux + Publish |
 
-### 10-코어 시스템
-
-| 코어 | 역할 |
-|------|------|
-| 0-1 | OS / DDS / NIC IRQ |
-| 2-6 | cset shield "user" (예약) |
-| 7 | RT Control (SCHED_FIFO 90) |
-| 8 | Sensor I/O (SCHED_FIFO 70) |
-| 9 | UDP recv + Logging + Aux (공유) |
-
-### 12-코어 시스템
+### 10-코어 시스템 (unified layout)
 
 | 코어 | 역할 |
 |------|------|
 | 0-1 | OS / DDS / NIC IRQ |
-| 2-6 | cset shield "user" (예약) |
-| 7 | RT Control (SCHED_FIFO 90) |
-| 8 | Sensor I/O (SCHED_FIFO 70) |
-| 9 | UDP recv (SCHED_FIFO 65) |
-| 10 | Logging + Monitoring |
-| 11 | Aux |
+| 2 | RT Control (SCHED_FIFO 90) |
+| 3 | Sensor I/O (SCHED_FIFO 70) |
+| 4 | MPC main (SCHED_FIFO 60) |
+| 5 | MPC worker 0 (SCHED_FIFO 55) |
+| 6 | UDP recv (SCHED_FIFO 65, dedicated) |
+| 7 | Logging |
+| 8 | Aux + Publish |
+| 9 | MuJoCo sim / spare |
 
-### 16-코어 시스템
+### 12-코어 시스템 (unified layout, MPC + 2 workers)
+
+| 코어 | 역할 |
+|------|------|
+| 0-1 | OS / DDS / NIC IRQ |
+| 2 | RT Control (SCHED_FIFO 90) |
+| 3 | Sensor I/O (SCHED_FIFO 70) |
+| 4 | MPC main (SCHED_FIFO 60) |
+| 5 | MPC worker 0 (SCHED_FIFO 55) |
+| 6 | MPC worker 1 (SCHED_FIFO 55) |
+| 7 | UDP recv (SCHED_FIFO 65, dedicated) |
+| 8 | Logging |
+| 9 | Aux + Publish |
+| 10 | MuJoCo sim |
+| 11 | Spare / user shield |
+
+### 14-코어 시스템 (unified layout, dedicated sim)
+
+| 코어 | 역할 |
+|------|------|
+| 0-1 | OS / DDS / NIC IRQ |
+| 2 | RT Control (SCHED_FIFO 90) |
+| 3 | Sensor I/O (SCHED_FIFO 70) |
+| 4 | MPC main (SCHED_FIFO 60) |
+| 5 | MPC worker 0 (SCHED_FIFO 55) |
+| 6 | MPC worker 1 (SCHED_FIFO 55) |
+| 7 | UDP recv (SCHED_FIFO 65) |
+| 8 | Logging |
+| 9 | Aux + Publish |
+| 10 | MuJoCo sim (dedicated) |
+| 11-13 | Spare / user shield / viewer |
+
+### 16-코어 시스템 (legacy layout, MPC + 2 workers)
 
 | 코어 | 역할 |
 |------|------|
@@ -679,9 +705,13 @@ nvidia-smi -q -d PERFORMANCE         # persistence mode 확인
 | 2 | RT Control (SCHED_FIFO 90) |
 | 3 | Sensor I/O (SCHED_FIFO 70) |
 | 4-8 | cset shield "user" (예약) |
-| 9 | UDP recv (SCHED_FIFO 65) |
-| 10 | Logging |
-| 11 | Aux |
+| 9 | MPC main (SCHED_FIFO 60) |
+| 10 | MPC worker 0 (SCHED_FIFO 55) |
+| 11 | MPC worker 1 (SCHED_FIFO 55) |
+| 12 | UDP recv (SCHED_FIFO 65) |
+| 13 | Logging |
+| 14 | Aux + Publish |
+| 15 | MuJoCo sim |
 
 ---
 

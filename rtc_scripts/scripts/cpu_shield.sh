@@ -33,18 +33,21 @@ make_logger "SHIELD"
 
 # ── Compute shield cores based on mode and core count ─────────────────────
 #
-# Phase 5 note: Shield ranges intentionally unchanged by the MPC-core
-# addition. The 8-core layout shifts udp_recv 4→5, logging 5→6, aux 6→7
-# but all of these cores remain inside the shield range (2-6) or on the
-# shield boundary (Core 7 in system cpuset); only their identity changed.
-# For 12/16-core tiers the MPC cores (9-10, 9-11) live in the system
-# cpuset alongside rt_control/sensor, outside the "user" shield.
+# Unified layout (10-/12-/14-core): RT + MPC + I/O live on low-numbered
+# cores (2-9) in every tier, so the shield range grows monotonically with
+# the machine size. 16-core retains the legacy Option A layout (shield
+# 4-8 between RT 2-3 and MPC 9-11).
+#
+# Shield range semantics (robot mode): the "user" cpuset protects RT/MPC
+# cores from ambient user tasks; everything else lands in "system" (OS 0-1
+# plus spare cores above the RT range). The sim mode only protects Tier 1
+# (rt_control + sensor_io) so MuJoCo can use the freed cores.
 compute_shield_cores() {
   local mode="$1"
   local phys_cores="$2"
 
   if [[ "$mode" == "sim" ]]; then
-    # Tier 1만: rt_control + sensor_io
+    # Tier 1 only: rt_control + sensor_io
     if [[ "$phys_cores" -le 4 ]]; then
       echo "1-2"
     elif [[ "$phys_cores" -ge 16 ]]; then
@@ -53,17 +56,21 @@ compute_shield_cores() {
       echo "2-3"
     fi
   else
-    # robot: Tier 1 + Tier 2 (+ Phase 5 MPC on 8-core via Core 4 in range)
+    # robot: Tier 1 + Tier 2 (RT + MPC + I/O)
     if [[ "$phys_cores" -le 4 ]]; then
       echo "1-3"
     elif [[ "$phys_cores" -le 7 ]]; then
       echo "2-5"
     elif [[ "$phys_cores" -le 9 ]]; then
-      echo "2-6"   # Includes MPC Core 4, udp_recv 5, logging 6
+      echo "2-6"   # 8-9: RT 2-3, MPC 4, UDP 5, logging 6, aux/publish 7 (boundary)
+    elif [[ "$phys_cores" -le 11 ]]; then
+      echo "2-8"   # 10-11: RT 2-3, MPC 4-5, UDP 6, log 7, aux/pub 8; Core 9 spare/sim
+    elif [[ "$phys_cores" -le 13 ]]; then
+      echo "2-9"   # 12-13: RT 2-3, MPC 4-6, UDP 7, log 8, aux/pub 9; Cores 10-11 spare
     elif [[ "$phys_cores" -le 15 ]]; then
-      echo "2-6"   # MPC 9-10 in system cpuset; shield covers non-MPC user work
+      echo "2-10"  # 14-15: same RT/MPC/IO + sim_thread on Core 10; Cores 11-13 spare
     else
-      echo "4-8"   # MPC 9-11 in system cpuset; shield covers 4-8 "user"
+      echo "4-8"   # 16+: legacy — RT 2-3 below shield, MPC 9-11 above, user=4-8
     fi
   fi
 }

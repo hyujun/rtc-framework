@@ -141,20 +141,23 @@ rtc_scripts/
 
 쉘 스크립트와 `rtc_base/threading/thread_config.hpp` 사이에 **단일 소스 진실**을 유지하기 위한 헬퍼입니다. `cpu_shield.sh`, `setup_grub_rt.sh`, `setup_irq_affinity.sh`, `check_rt_setup.sh`, `verify_rt_runtime.sh`가 이 함수들을 통해 tier별 코어 배치를 질의합니다.
 
-| 함수 | 설명 | 반환 예시 (6코어 / 8코어 / 12코어 / 16코어) |
+| 함수 | 설명 | 반환 예시 (6 / 8 / 10 / 12 / 14 / 16 코어) |
 |------|------|--------------------------------------------|
-| `get_mpc_cores()` | 현재 물리 코어 수에 맞는 MPC 코어 (main + workers) CSV 반환. 첫 항목이 항상 MPC main 코어. | `4` / `4` / `9,10` / `9,10,11` |
-| `get_mpc_main_core()` | MPC main 코어만 (get_mpc_cores의 첫 항목). | `4` / `4` / `9` / `9` |
-| `get_rt_cores()` | RT 스레드 전체 집합 (rt_control + sensor_io + udp_recv + MPC). GRUB `nohz_full`/`rcu_nocbs` 인자에 사용. | `2,3,5,4` / `2,3,5,4` / `7,8,9,10` / `2,3,9,10,11` |
-| `get_os_cores()` | OS/DDS/IRQ 코어 (전체 - RT). IRQ affinity 고정 대상. | `0,1` / `0,1` / `0,1` / `0,1` |
+| `get_mpc_cores()` | 현재 물리 코어 수에 맞는 MPC 코어 (main + workers) CSV 반환. 첫 항목이 항상 MPC main 코어. | `4` / `4` / `4,5` / `4,5,6` / `4,5,6` / `9,10,11` |
+| `get_mpc_main_core()` | MPC main 코어만 (get_mpc_cores의 첫 항목). | `4` / `4` / `4` / `4` / `4` / `9` |
+| `get_rt_cores()` | RT 스레드 전체 집합 (rt_control + sensor_io + udp_recv + MPC). GRUB `nohz_full`/`rcu_nocbs` 인자에 사용. | `2,3,5,4` / `2,3,5,4` / `2,3,6,4,5` / `2,3,7,4,5,6` / `2,3,7,4,5,6` / `2,3,12,9,10,11` |
+| `get_os_cores()` | OS/DDS/IRQ 코어 (전체 - RT). IRQ affinity 고정 대상. | `0,1` / `0,1` / `0,1` / `0,1` / `0,1` / `0,1` |
 
-Tier별 매핑 (핵심 규칙):
+Tier별 매핑 (2026-04 unified layout):
 - **≤4코어**: MPC `SCHED_OTHER nice=-5`, Core 3 공유 (degraded).
 - **5–7코어**: Core 4 공유 (MPC FIFO 60 > logger OTHER).
-- **8–9코어**: **Core 4 dedicated** (udp_recv 4→5, logger 5→6, aux+publish 6→7 shift).
-- **10–11코어**: Core 9 공유 (system cpuset 제약).
-- **12–15코어**: **Core 9 main + Core 10 worker dedicated**.
-- **16+코어**: **Core 9 main + Core 10,11 workers dedicated** (udp_recv→12, logger→13, aux/publish→14, sim→15).
+- **8–9코어**: **Core 4 dedicated** (udp_recv 5, logger 6, aux+publish 7).
+- **10–11코어**: **Core 4 main + Core 5 worker 0** (dedicated UDP 6 / logger 7 / aux+pub 8, Core 9 spare).
+- **12–13코어**: **Core 4 main + Core 5-6 workers** (dedicated UDP 7 / logger 8 / aux+pub 9, Cores 10-11 spare).
+- **14–15코어**: 12-core와 동일한 RT 배치 + **Core 10 MuJoCo sim dedicated**, Cores 11-13 spare.
+- **16+코어**: **Core 9 main + Core 10-11 workers** (legacy Option A: udp→12, logger→13, aux/publish→14, sim→15).
+
+이전 10/12-core 구성은 cset shield "user"를 Core 2-6에 고정하고 rt_controller를 system cpuset(Core 7-9)로 몰아넣어 **8-core보다 적은 3코어만** RT에 쓰는 구조였습니다. 14-core는 12-core 분기에 흡수되어 Cores 12-13을 완전히 미사용. 새 레이아웃은 단조성 불변식 — "물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다" — 을 `rtc_base/test/test_mpc_thread_config.cpp::TierIsolationMonotonicity`로 회귀 방지합니다.
 
 ---
 
