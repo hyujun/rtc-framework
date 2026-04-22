@@ -536,16 +536,17 @@ get_robot_packages() {
   echo "ur5e_description ur5e_hand_driver ur5e_bringup ur5e_bt_coordinator"
 }
 
-# ── MPC core layout helpers (Phase 5) ────────────────────────────────────────
+# ── MPC core layout helpers (Phase 5 + unified 10/12/14 rework) ──────────────
 # Single source of truth for MPC thread core assignment. Must stay in sync
-# with rtc_base/threading/thread_config.hpp (Phase 5, Steps 11-14).
+# with rtc_base/threading/thread_config.hpp (SelectThreadConfigs dispatch).
 #
-# Layout policy:
-#   ≤7 cores  → MPC piggybacks on logging/aux core (SCHED_OTHER).
-#   8-9      → Core 4 dedicated to MPC main (FIFO 60).
-#   10-11    → Core 9 shared (MPC main + udp_recv + logging/aux).
-#   12-15    → Core 9 main, Core 10 worker 0.
-#   16+      → Core 9 main, Core 10 worker 0, Core 11 worker 1.
+# Layout policy (unified — low-numbered RT cores in every 10+ tier):
+#   ≤4 cores  → MPC on Core 3, SCHED_OTHER (degraded).
+#   5-9      → Core 4 dedicated to MPC main (FIFO 60).
+#   10-11    → Core 4 main + Core 5 worker 0.
+#   12-13    → Core 4 main + Core 5-6 workers (2 workers).
+#   14-15    → Same as 12-13; Core 10 is dedicated MuJoCo sim.
+#   16+      → Core 9 main + Core 10-11 workers (legacy Option A layout).
 #
 # Prints a comma-separated list of cores. First entry is always the MPC
 # main thread's core.
@@ -556,8 +557,9 @@ get_mpc_cores() {
     1|2|3|4)      echo "3" ;;
     5|6|7)        echo "4" ;;
     8|9)          echo "4" ;;
-    10|11)        echo "9" ;;
-    12|13|14|15)  echo "9,10" ;;
+    10|11)        echo "4,5" ;;
+    12|13)        echo "4,5,6" ;;
+    14|15)        echo "4,5,6" ;;
     *)            echo "9,10,11" ;;
   esac
 }
@@ -574,14 +576,15 @@ get_rt_cores() {
   ncpu=$(get_physical_cores)
   local mpc
   mpc=$(get_mpc_cores)
-  # rt_control + sensor_io cores — keep hardcoded to match thread_config.hpp.
+  # rt_control + sensor_io + udp_recv cores — match thread_config.hpp.
   case "$ncpu" in
     1|2|3|4)      echo "1,2,${mpc}" ;;
     5|6|7)        echo "2,3,5,${mpc}" ;;     # RT=2, sensor=3, udp=5
-    8|9)          echo "2,3,5,${mpc}" ;;     # RT=2, sensor=3, udp=5 (after shift)
-    10|11)        echo "7,8,${mpc}" ;;       # RT=7, sensor=8
-    12|13|14|15)  echo "7,8,${mpc}" ;;       # RT=7, sensor=8, MPC=9,10
-    *)            echo "2,3,${mpc}" ;;       # 16+: RT=2, sensor=3
+    8|9)          echo "2,3,5,${mpc}" ;;     # RT=2, sensor=3, udp=5
+    10|11)        echo "2,3,6,${mpc}" ;;     # RT=2, sensor=3, udp=6, MPC=4,5
+    12|13)        echo "2,3,7,${mpc}" ;;     # RT=2, sensor=3, udp=7, MPC=4,5,6
+    14|15)        echo "2,3,7,${mpc}" ;;     # RT=2, sensor=3, udp=7, MPC=4,5,6
+    *)            echo "2,3,12,${mpc}" ;;    # 16+: RT=2, sensor=3, udp=12, MPC=9-11
   esac
 }
 
@@ -595,3 +598,207 @@ get_os_cores() {
     echo "0,1"
   fi
 }
+
+# ── Intel hybrid CPU detection (Stage A) ────────────────────────────────────
+# C++ 측 rtc::DetectCpuTopology() (cpu_topology.hpp)와 동일한 감지 로직을
+# shell에서 재현한다. 두 구현은 같은 입력(sysfs + /proc/cpuinfo)을 소비하므로
+# 결과가 일치해야 한다 — 테스트(test_rt_common.sh)가 이를 강제한다.
+#
+# Stage A에서는 tier 선택이나 IRQ affinity에 영향을 주지 않는다. 감지 결과는
+# check_rt_setup.sh의 사용자 표시와 BIOS HT off FAIL 판정에만 사용된다.
+#
+# 테스트 훅: $RTC_SYSFS_ROOT (default: /sys), $RTC_PROC_CPUINFO (default: /proc/cpuinfo)
+# 환경변수: $RTC_FORCE_HYBRID_GENERATION — 세대 enum만 override (§1.3 결정).
+#           id 리스트는 생성하지 않으며 sysfs 감지 결과를 유지한다.
+
+# Expand a sysfs cpulist ("0-7,12-15" or "0,2,4") to space-separated ids.
+_rt_parse_cpulist() {
+  local raw="$1"
+  [[ -z "$raw" ]] && return 0
+  local out=""
+  local part
+  IFS=',' read -ra parts <<<"$raw"
+  for part in "${parts[@]}"; do
+    part="${part// /}"
+    [[ -z "$part" ]] && continue
+    if [[ "$part" == *-* ]]; then
+      local a="${part%-*}"
+      local b="${part#*-}"
+      local i
+      for ((i=a; i<=b; i++)); do out="${out} ${i}"; done
+    else
+      out="${out} ${part}"
+    fi
+  done
+  # Trim leading space
+  echo "${out# }"
+}
+
+# Read first non-empty line of a file, trimmed. Echoes nothing on failure.
+_rt_read_trim() {
+  local p="$1"
+  [[ -r "$p" ]] || return 0
+  local v
+  v=$(head -n1 -- "$p" 2>/dev/null)
+  # strip CR/whitespace
+  v="${v//$'\r'/}"
+  v="${v// /}"
+  v="${v//	/}"
+  echo "$v"
+}
+
+# Try <dir>/cpus, then <dir>/cpulist. Different kernels expose different names.
+_rt_read_cpulist_file() {
+  local dir="$1"
+  local raw
+  raw=$(_rt_read_trim "$dir/cpus")
+  if [[ -z "$raw" ]]; then
+    raw=$(_rt_read_trim "$dir/cpulist")
+  fi
+  _rt_parse_cpulist "$raw"
+}
+
+# Check whether /proc/cpuinfo (or $RTC_PROC_CPUINFO) exposes the "hybrid" flag.
+_rt_cpuinfo_has_hybrid() {
+  local p="${RTC_PROC_CPUINFO:-/proc/cpuinfo}"
+  [[ -r "$p" ]] || return 1
+  # Match the flag at a word boundary in a "flags" line.
+  awk '/^flags/ {
+    for (i=1; i<=NF; ++i) if ($i == "hybrid") { exit 0 }
+    exit 1
+  }' "$p"
+}
+
+# Populate IS_HYBRID, NUM_*, NUC_GENERATION, id lists. Idempotent — callers may
+# re-invoke; later calls overwrite globals. Uses $RTC_SYSFS_ROOT (default /sys).
+detect_hybrid_capability() {
+  local root="${RTC_SYSFS_ROOT:-/sys}"
+  local cpu_root="$root/devices/system/cpu"
+
+  IS_HYBRID=0
+  P_CORE_HAS_SMT=0
+  HAS_LP_E_CORES=0
+  NUM_P_PHYSICAL=0
+  NUM_P_LOGICAL=0
+  NUM_E_CORES=0
+  NUM_LPE_CORES=0
+  P_CORE_PHYSICAL_IDS=""
+  P_CORE_SIBLING_IDS=""
+  E_CORE_IDS=""
+  LPE_CORE_IDS=""
+  NUC_GENERATION="none"
+
+  local p_cpus e_cpus
+  p_cpus=$(_rt_read_cpulist_file "$cpu_root/types/intel_core")
+  e_cpus=$(_rt_read_cpulist_file "$cpu_root/types/intel_atom")
+
+  local cpuinfo_hybrid=0
+  if _rt_cpuinfo_has_hybrid; then cpuinfo_hybrid=1; fi
+
+  # types/intel_{core,atom} 동시 존재 or (존재 + cpuinfo hybrid flag) → hybrid.
+  local types_present=0
+  if [[ -n "$p_cpus" || -n "$e_cpus" ]]; then types_present=1; fi
+  if [[ -n "$p_cpus" && -n "$e_cpus" ]]; then IS_HYBRID=1; fi
+  if (( types_present == 1 && cpuinfo_hybrid == 1 )); then IS_HYBRID=1; fi
+
+  if (( IS_HYBRID == 1 )) && [[ -n "$p_cpus" ]]; then
+    # Group P-cores by core_id. Produce "core_id:cpu" pairs, sort, unique by core_id.
+    local -A core_to_cpus=()
+    local cpu
+    for cpu in $p_cpus; do
+      local cid
+      cid=$(_rt_read_trim "$cpu_root/cpu${cpu}/topology/core_id")
+      [[ -z "$cid" ]] && continue
+      if [[ -z "${core_to_cpus[$cid]+x}" ]]; then
+        core_to_cpus[$cid]="$cpu"
+      else
+        core_to_cpus[$cid]="${core_to_cpus[$cid]} $cpu"
+      fi
+    done
+
+    # Sort core_ids numerically for deterministic ordering.
+    local sorted_cids
+    sorted_cids=$(printf '%s\n' "${!core_to_cpus[@]}" | sort -n)
+    NUM_P_PHYSICAL=0
+    local cid cpus sorted_cpus first second
+    while IFS= read -r cid; do
+      [[ -z "$cid" ]] && continue
+      cpus="${core_to_cpus[$cid]}"
+      # Sort logical cpus within this physical core numerically.
+      sorted_cpus=$(printf '%s\n' $cpus | sort -n | tr '\n' ' ')
+      read -r first second _ <<<"$sorted_cpus"
+      P_CORE_PHYSICAL_IDS="${P_CORE_PHYSICAL_IDS} ${first}"
+      if [[ -n "$second" ]]; then
+        P_CORE_SIBLING_IDS="${P_CORE_SIBLING_IDS} ${second}"
+      fi
+      NUM_P_PHYSICAL=$((NUM_P_PHYSICAL + 1))
+    done <<<"$sorted_cids"
+    P_CORE_PHYSICAL_IDS="${P_CORE_PHYSICAL_IDS# }"
+    P_CORE_SIBLING_IDS="${P_CORE_SIBLING_IDS# }"
+
+    NUM_P_LOGICAL=$(echo "$p_cpus" | wc -w)
+    local num_siblings
+    num_siblings=$(echo "$P_CORE_SIBLING_IDS" | wc -w)
+    if (( NUM_P_LOGICAL > NUM_P_PHYSICAL && num_siblings == NUM_P_PHYSICAL )); then
+      P_CORE_HAS_SMT=1
+    fi
+
+    # E-core / LP-E split via cpuinfo_max_freq 70% rule.
+    if [[ -n "$e_cpus" ]]; then
+      local max_freq=0
+      local -A e_freq=()
+      local f
+      for cpu in $e_cpus; do
+        f=$(_rt_read_trim "$cpu_root/cpu${cpu}/cpufreq/cpuinfo_max_freq")
+        [[ -z "$f" ]] && f=0
+        e_freq[$cpu]=$f
+        if (( f > max_freq )); then max_freq=$f; fi
+      done
+      local threshold=0
+      if (( max_freq > 0 )); then
+        threshold=$(( max_freq * 70 / 100 ))
+      fi
+      for cpu in $e_cpus; do
+        f=${e_freq[$cpu]:-0}
+        if (( threshold > 0 && f > 0 && f < threshold )); then
+          LPE_CORE_IDS="${LPE_CORE_IDS} ${cpu}"
+        else
+          E_CORE_IDS="${E_CORE_IDS} ${cpu}"
+        fi
+      done
+      E_CORE_IDS="${E_CORE_IDS# }"
+      LPE_CORE_IDS="${LPE_CORE_IDS# }"
+      NUM_E_CORES=$(echo "$E_CORE_IDS" | wc -w)
+      NUM_LPE_CORES=$(echo "$LPE_CORE_IDS" | wc -w)
+      if (( NUM_LPE_CORES > 0 )); then HAS_LP_E_CORES=1; fi
+    fi
+  fi
+
+  # Classify generation from (is_hybrid, p_core_has_smt, has_lp_e_cores).
+  if (( IS_HYBRID == 0 )); then
+    NUC_GENERATION="none"
+  elif (( P_CORE_HAS_SMT == 0 && HAS_LP_E_CORES == 1 )); then
+    NUC_GENERATION="arrow_lake_h"
+  elif (( P_CORE_HAS_SMT == 1 && HAS_LP_E_CORES == 1 )); then
+    NUC_GENERATION="meteor_lake"
+  elif (( P_CORE_HAS_SMT == 1 && HAS_LP_E_CORES == 0 )); then
+    NUC_GENERATION="raptor_lake_p"
+  else
+    NUC_GENERATION="raptor_lake_p_ht_off"
+  fi
+
+  # Env-var hint override — generation enum only; id lists untouched.
+  case "${RTC_FORCE_HYBRID_GENERATION:-}" in
+    raptor_lake_p|meteor_lake|arrow_lake_h|raptor_lake_p_ht_off|none)
+      NUC_GENERATION="$RTC_FORCE_HYBRID_GENERATION"
+      ;;
+  esac
+}
+
+# Thin accessors — call detect_hybrid_capability once first, or rely on
+# existing globals (these helpers do not re-detect to keep callers fast).
+get_nuc_generation()      { echo "${NUC_GENERATION:-none}"; }
+get_p_core_physical_ids() { echo "${P_CORE_PHYSICAL_IDS:-}"; }
+get_p_core_sibling_ids()  { echo "${P_CORE_SIBLING_IDS:-}"; }
+get_e_core_ids()          { echo "${E_CORE_IDS:-}"; }
+get_lpe_core_ids()        { echo "${LPE_CORE_IDS:-}"; }

@@ -53,6 +53,11 @@ if(BUILD_TESTING)
   if(TARGET test_mpc_thread_config)
     target_include_directories(test_mpc_thread_config PRIVATE include)
   endif()
+
+  ament_add_gtest(test_cpu_topology test/test_cpu_topology.cpp)
+  if(TARGET test_cpu_topology)
+    target_include_directories(test_cpu_topology PRIVATE include)
+  endif()
 endif()
 
 ament_package()

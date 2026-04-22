@@ -27,4 +27,13 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}/lib
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_test REQUIRED)
+  ament_add_test(test_rt_common
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test/test_rt_common.sh
+    TIMEOUT 60
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+  )
+endif()
+
 ament_package()

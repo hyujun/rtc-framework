@@ -271,6 +271,102 @@ check_cpu_isolation() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
+# [2.5/9] Hybrid CPU Detection (Stage A)
+# ──────────────────────────────────────────────────────────────────────────────
+# Intel hybrid CPU(NUC 13/14/15 Pro)에서 P-core / E-core / LP E-core 구성을
+# 감지하여 표시한다. Stage A는 레이아웃을 바꾸지 않으며 감지 결과만 소비한다.
+#
+# FAIL 조건:
+#   - NUC_GENERATION == "raptor_lake_p_ht_off"
+#     (hybrid이지만 P-core SMT가 없음 → BIOS에서 Hyper-Threading 비활성 상태.
+#      Stage B에서 mpc_worker의 SMT sibling 배치가 불가능해지므로 FAIL.)
+#
+# WARN 조건:
+#   - RTC_FORCE_HYBRID_GENERATION 환경변수가 설정됨 (production에서 남으면 위험)
+#
+# INFO 로만 표시:
+#   - NOT_NUC_HYBRID (AMD/homogeneous Intel — 정상)
+#   - RAPTOR_LAKE_P / METEOR_LAKE / ARROW_LAKE_H (지원 세대)
+# ══════════════════════════════════════════════════════════════════════════════
+check_hybrid_cpu() {
+  _section "2.5/9" "Hybrid CPU Detection"
+  _category_start "hybrid_cpu"
+
+  if ! declare -F detect_hybrid_capability >/dev/null; then
+    _skip "detect_hybrid_capability 미로드 — rt_common.sh 갱신 필요"
+    _category_set_detail "hybrid_cpu" "detector missing"
+    return
+  fi
+
+  detect_hybrid_capability
+
+  case "$NUC_GENERATION" in
+    none)
+      if [[ "$IS_HYBRID" -eq 1 ]]; then
+        # is_hybrid but not classified into any supported generation.
+        # This should not happen with current classifier — surface it.
+        _warn "Hybrid CPU 감지되었으나 세대 분류 실패"
+        _category_update "hybrid_cpu" "WARN"
+        _category_set_detail "hybrid_cpu" "unclassified hybrid"
+      else
+        _pass "Homogeneous CPU (AMD 또는 non-hybrid Intel) — hybrid 처리 불필요"
+        _category_set_detail "hybrid_cpu" "none"
+      fi
+      ;;
+    raptor_lake_p)
+      _pass "NUC 13 Pro class: Raptor Lake-P (${NUM_P_PHYSICAL}P + ${NUM_E_CORES}E)"
+      if [[ "$NUM_LPE_CORES" -gt 0 ]]; then
+        _warn "LP E-core ${NUM_LPE_CORES}개 감지 — Raptor Lake-P에는 없어야 함"
+      fi
+      _category_set_detail "hybrid_cpu" "raptor_lake_p ${NUM_P_PHYSICAL}P+${NUM_E_CORES}E"
+      ;;
+    meteor_lake)
+      _pass "NUC 14 Pro class: Meteor Lake (${NUM_P_PHYSICAL}P + ${NUM_E_CORES}E + ${NUM_LPE_CORES}LP-E)"
+      _warn "Phase 2 지원 예정 — 현재 Stage A는 감지만 수행 (레이아웃은 tier dispatch 사용)"
+      _category_update "hybrid_cpu" "WARN"
+      _category_set_detail "hybrid_cpu" "meteor_lake ${NUM_P_PHYSICAL}P+${NUM_E_CORES}E+${NUM_LPE_CORES}LP-E (Phase 2 pending)"
+      ;;
+    arrow_lake_h)
+      _pass "NUC 15 Pro class: Arrow Lake-H (${NUM_P_PHYSICAL}P + ${NUM_E_CORES}E + ${NUM_LPE_CORES}LP-E, SMT off)"
+      _warn "Phase 3 지원 예정 — 현재 Stage A는 감지만 수행"
+      _category_update "hybrid_cpu" "WARN"
+      _category_set_detail "hybrid_cpu" "arrow_lake_h (Phase 3 pending)"
+      ;;
+    raptor_lake_p_ht_off)
+      _fail "Intel hybrid 감지되었으나 Hyper-Threading이 비활성 상태입니다"
+      _fail "MPC worker의 SMT sibling 배치가 불가능 — BIOS에서 HT를 활성화해야 합니다"
+      _fix "Reboot → BIOS/UEFI 설정 → Advanced → CPU Configuration → Hyper-Threading = Enabled"
+      _category_update "hybrid_cpu" "FAIL"
+      _category_set_detail "hybrid_cpu" "raptor_lake_p_ht_off (BIOS HT disabled)"
+      ;;
+    *)
+      _warn "알 수 없는 NUC_GENERATION 값: ${NUC_GENERATION}"
+      _category_update "hybrid_cpu" "WARN"
+      _category_set_detail "hybrid_cpu" "unknown (${NUC_GENERATION})"
+      ;;
+  esac
+
+  # Env-var override warning — production image에 값이 남으면 실제 hardware와
+  # 불일치하는 레이아웃이 적용될 수 있으므로 반드시 경고한다.
+  if [[ -n "${RTC_FORCE_HYBRID_GENERATION:-}" ]]; then
+    _warn "RTC_FORCE_HYBRID_GENERATION='${RTC_FORCE_HYBRID_GENERATION}' 감지됨"
+    _warn "개발 환경 override는 괜찮지만 production 배포 전에 반드시 unset하세요"
+    _category_update "hybrid_cpu" "WARN"
+  fi
+
+  # Always show the id lists when hybrid detected — useful for debugging
+  # Stage B layout issues later.
+  if [[ "$IS_HYBRID" -eq 1 && "$OUTPUT_MODE" == "verbose" ]]; then
+    echo -e "         ${DIM}P-core logical CPUs: ${P_CORE_PHYSICAL_IDS:-<none>}${NC}"
+    if [[ "$P_CORE_HAS_SMT" -eq 1 ]]; then
+      echo -e "         ${DIM}P-core SMT siblings: ${P_CORE_SIBLING_IDS}${NC}"
+    fi
+    [[ -n "${E_CORE_IDS}" ]]   && echo -e "         ${DIM}E-core logical CPUs: ${E_CORE_IDS}${NC}"
+    [[ -n "${LPE_CORE_IDS}" ]] && echo -e "         ${DIM}LP E-core logical CPUs: ${LPE_CORE_IDS}${NC}"
+  fi
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
 # [3/9] Scheduler & Memory
 # ══════════════════════════════════════════════════════════════════════════════
 check_scheduler_memory() {
@@ -1041,6 +1137,7 @@ main() {
 
   check_rt_kernel
   check_cpu_isolation
+  check_hybrid_cpu
   check_scheduler_memory
   check_grub_params
   check_rt_permissions

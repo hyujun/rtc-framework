@@ -25,6 +25,8 @@ Core 0-1: OS/DDS/IRQ. Auto-selects 4/6/8/10/12/16-core layouts via `SelectThread
 MPC gets a dedicated core on 8+ core tiers (Core 4 on 8-core; Core 9 on 12/16-core with 1-2 workers).
 MPC priority is always below `sensor_io` so sensor callbacks preempt long MPC solves.
 
+Hybrid-CPU detection (Stage A, 2026-04-22): `rtc_base/threading/cpu_topology.hpp::GetCpuTopology()` returns a cached `CpuTopology` with `{num_p_physical, p_core_{physical,sibling}_ids, {e,lpe}_core_ids, generation ∈ {NOT_NUC_HYBRID, RAPTOR_LAKE_P, METEOR_LAKE, ARROW_LAKE_H, RAPTOR_LAKE_P_HT_OFF}}`. `SelectThreadConfigs()` still dispatches on `GetPhysicalCpuCount()` — the topology layer is dormant until Stage B consumes it. Shell mirror: `rt_common.sh::detect_hybrid_capability`; sysfs-root override via `$RTC_SYSFS_ROOT` for tests. See `docs/NUC_HYBRID_SUPPORT.md`.
+
 ## Lock-Free Rules
 
 - **SeqLock<T>**: single-writer/multi-reader, requires `is_trivially_copyable_v<T>`
