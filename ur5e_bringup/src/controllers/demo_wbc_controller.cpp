@@ -800,6 +800,17 @@ void DemoWbcController::ComputeControl(const ControllerState &state,
                                        double dt) noexcept {
   UpdatePhase(state);
 
+  // Keep MPC state fresh across all phases: HandlerMPCThread::Solve rejects
+  // dim-mismatched snapshots, so non-TSID phases (kIdle/kApproach/kRetreat/
+  // kRelease) would otherwise starve the solver and leave mpc_solve_timing.csv
+  // with only the header.
+  if (mpc_enabled_ && mpc_manager_.Enabled()) {
+    ExtractFullState(state);
+    const uint64_t now_ns =
+        static_cast<uint64_t>(state.iteration) * 2'000'000ULL;
+    mpc_manager_.WriteState(q_curr_full_, v_curr_full_, now_ns);
+  }
+
   switch (phase_) {
   case WbcPhase::kIdle:
   case WbcPhase::kApproach:
