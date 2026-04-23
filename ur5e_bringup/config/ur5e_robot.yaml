@@ -46,6 +46,14 @@
         hand:
           root_link: "hand_base_link"
           tip_links: ["thumb_tip_link", "index_tip_link", "middle_tip_link", "ring_tip_link"]
+        # MPC-dedicated arm+hand tree. Mimic joints are auto-locked via
+        # PinocchioModelBuilder::IncorporateMimicAsPassive, yielding a clean
+        # nq == nv == 16 model (6 arm + 10 actuated hand DoFs). MPC prediction
+        # uses this reduced space; TSID/WBC still use the full model (nq=26,
+        # nv=21) so mimic kinematics remain correct downstream.
+        mpc:
+          root_link: "base"
+          tip_links: ["thumb_tip_link", "index_tip_link", "middle_tip_link", "ring_tip_link"]
       # ── Passive joints (locked in all sub/tree models) ──────────────────
       # Hand joints — locked when building the arm sub-model.
       # Required because the combined URDF has no <transmission> tags.
