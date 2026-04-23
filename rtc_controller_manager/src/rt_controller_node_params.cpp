@@ -6,6 +6,8 @@
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rtc_base/logging/session_dir.hpp>
+#include <rtc_urdf_bridge/urdf_analyzer.hpp>
+#include <rtc_urdf_bridge/xacro_processor.hpp>
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
@@ -219,12 +221,53 @@ void RtControllerNode::DeclareAndLoadParameters() {
               get_parameter("urdf.passive_joints").as_string_array();
         }
 
-        RCLCPP_INFO(get_logger(),
-                    "System URDF: %s (%zu sub_models, %zu tree_models, %zu "
-                    "passive_joints)",
-                    urdf_path.c_str(), system_model_config_.sub_models.size(),
-                    system_model_config_.tree_models.size(),
-                    system_model_config_.passive_joints.size());
+        // Pre-scan the URDF with UrdfAnalyzer so the startup log surfaces
+        // joints PinocchioModelBuilder will auto-lock (mimic) or fails to
+        // classify (transmission-less). The analyzer is cheap (tinyxml2
+        // pass) and this scan is ignored; each controller still runs the
+        // full builder in InitModels. Any failure here is non-fatal — we
+        // just skip the richer log line.
+        std::size_t mimic_count = 0;
+        std::size_t analyzer_passive_count = 0;
+        bool analyzer_ok = false;
+        try {
+          std::unique_ptr<rtc_urdf_bridge::UrdfAnalyzer> analyzer;
+          if (rtc_urdf_bridge::IsXacroFile(urdf_path)) {
+            const auto xml = rtc_urdf_bridge::ProcessXacro(urdf_path);
+            analyzer = std::make_unique<rtc_urdf_bridge::UrdfAnalyzer>(
+                xml, rtc_urdf_bridge::UrdfAnalyzer::FromXmlTag{});
+          } else {
+            analyzer =
+                std::make_unique<rtc_urdf_bridge::UrdfAnalyzer>(urdf_path);
+          }
+          mimic_count = analyzer->GetMimicJoints().size();
+          analyzer_passive_count = analyzer->GetPassiveJoints().size();
+          analyzer_ok = true;
+        } catch (const std::exception &e) {
+          RCLCPP_DEBUG(get_logger(),
+                       "URDF pre-scan skipped (%s); PinocchioModelBuilder "
+                       "will still detect mimic joints per-controller",
+                       e.what());
+        }
+
+        if (analyzer_ok) {
+          RCLCPP_INFO(
+              get_logger(),
+              "System URDF: %s (%zu sub_models, %zu tree_models, "
+              "%zu yaml-passive_joints; %zu <mimic> tags auto-locked by "
+              "PinocchioModelBuilder, %zu transmission-less passive)",
+              urdf_path.c_str(), system_model_config_.sub_models.size(),
+              system_model_config_.tree_models.size(),
+              system_model_config_.passive_joints.size(), mimic_count,
+              analyzer_passive_count);
+        } else {
+          RCLCPP_INFO(get_logger(),
+                      "System URDF: %s (%zu sub_models, %zu tree_models, %zu "
+                      "yaml-passive_joints)",
+                      urdf_path.c_str(), system_model_config_.sub_models.size(),
+                      system_model_config_.tree_models.size(),
+                      system_model_config_.passive_joints.size());
+        }
       } catch (const std::exception &e) {
         RCLCPP_WARN(get_logger(), "Failed to resolve system URDF config: %s",
                     e.what());
