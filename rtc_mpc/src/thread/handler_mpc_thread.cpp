@@ -55,7 +55,26 @@ void HandlerMPCThread::Configure(
   total_solves_.store(0, std::memory_order_relaxed);
   failed_solves_.store(0, std::memory_order_relaxed);
   null_logged_.store(false, std::memory_order_relaxed);
+  last_warn_ns_.store(0, std::memory_order_relaxed);
   has_prev_out_ = false;
+}
+
+void HandlerMPCThread::WarnThrottled(const char *what, int code) noexcept {
+  constexpr std::int64_t kWarnThrottleNs = 5'000'000'000LL; // 5 s
+  const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  const auto last = last_warn_ns_.load(std::memory_order_relaxed);
+  if (last != 0 && now_ns - last < kWarnThrottleNs) {
+    return;
+  }
+  last_warn_ns_.store(now_ns, std::memory_order_relaxed);
+  std::fprintf(
+      stderr, "[HandlerMPCThread] %s code=%d total=%lu failed=%lu\n", what,
+      code,
+      static_cast<unsigned long>(total_solves_.load(std::memory_order_relaxed)),
+      static_cast<unsigned long>(
+          failed_solves_.load(std::memory_order_relaxed)));
 }
 
 bool HandlerMPCThread::TryCrossModeSwap(const PhaseContext &ctx) {
@@ -108,6 +127,8 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot &state, MPCSolution &out,
                     std::memory_order_relaxed);
     failed_solves_.fetch_add(1, std::memory_order_relaxed);
     total_solves_.fetch_add(1, std::memory_order_relaxed);
+    WarnThrottled("state dim mismatch",
+                  static_cast<int>(MPCSolveError::kStateDimMismatch));
     return false;
   }
   q_scratch_.head(nq) = Eigen::Map<const Eigen::VectorXd>(state.q.data(), nq);
@@ -140,6 +161,8 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot &state, MPCSolution &out,
                       std::memory_order_relaxed);
       failed_solves_.fetch_add(1, std::memory_order_relaxed);
       total_solves_.fetch_add(1, std::memory_order_relaxed);
+      WarnThrottled("cross-mode swap failed",
+                    static_cast<int>(MPCSolveError::kRebuildRequired));
       return false;
     }
   }
@@ -151,6 +174,7 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot &state, MPCSolution &out,
 
   if (err != MPCSolveError::kNoError) {
     failed_solves_.fetch_add(1, std::memory_order_relaxed);
+    WarnThrottled("handler solve error", static_cast<int>(err));
     return false;
   }
 

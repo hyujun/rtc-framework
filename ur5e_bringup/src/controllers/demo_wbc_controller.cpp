@@ -673,10 +673,11 @@ DemoWbcController::GetMpcSolveStats() const noexcept {
   if (!mpc_manager_.Enabled()) {
     return std::nullopt;
   }
+  // Always return stats when MPC is enabled — even with count==0. A
+  // count=0 row lets `mpc_solve_timing.csv` readers distinguish "MPC
+  // enabled but solver not publishing" (dim-mismatch / solver error /
+  // warm-up) from "MPC disabled" (nullopt → no CSV row at all).
   const auto s = mpc_manager_.GetSolveStats();
-  if (s.count == 0) {
-    return std::nullopt;
-  }
   rtc::MpcSolveStats out;
   out.count = s.count;
   out.window = s.window;
@@ -799,6 +800,17 @@ void DemoWbcController::ReadState(const ControllerState &state) noexcept {
 void DemoWbcController::ComputeControl(const ControllerState &state,
                                        double dt) noexcept {
   UpdatePhase(state);
+
+  // Keep MPC state fresh across all phases: HandlerMPCThread::Solve rejects
+  // dim-mismatched snapshots, so non-TSID phases (kIdle/kApproach/kRetreat/
+  // kRelease) would otherwise starve the solver and leave mpc_solve_timing.csv
+  // with only the header.
+  if (mpc_enabled_ && mpc_manager_.Enabled()) {
+    ExtractFullState(state);
+    const uint64_t now_ns =
+        static_cast<uint64_t>(state.iteration) * 2'000'000ULL;
+    mpc_manager_.WriteState(q_curr_full_, v_curr_full_, now_ns);
+  }
 
   switch (phase_) {
   case WbcPhase::kIdle:
