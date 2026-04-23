@@ -148,6 +148,12 @@ private:
   ///        `handler_` points at the new instance (seeded via SeedWarmStart).
   bool TryCrossModeSwap(const PhaseContext &ctx);
 
+  /// @brief Emit a single `fprintf(stderr, …)` line at most once per
+  ///        `kWarnThrottleNs`. Called from every `Solve` failure path
+  ///        (dim-mismatch / rebuild-required / solver error) so a silently
+  ///        failing thread is no longer invisible from outside.
+  void WarnThrottled(const char *what, int code) noexcept;
+
   // Owned dependencies.
   std::unique_ptr<MPCHandlerBase> handler_{};
   std::unique_ptr<PhaseManagerBase> phase_manager_{};
@@ -179,6 +185,8 @@ private:
   std::atomic<std::uint64_t> total_solves_{0};
   std::atomic<std::uint64_t> failed_solves_{0};
   std::atomic<bool> null_logged_{false};
+  // steady_clock epoch ns of the most recent WarnThrottled() emission.
+  std::atomic<std::int64_t> last_warn_ns_{0};
 };
 
 } // namespace rtc::mpc

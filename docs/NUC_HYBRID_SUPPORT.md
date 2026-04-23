@@ -97,13 +97,33 @@ Stage B merge 전 다음 벤치마크를 채워 Stage B PR에 첨부한다. 각 
 
 ### MPC solve timing (PR #2 관측 경로 사용)
 
-`logging_data/YYMMDD_HHMM/controller/mpc_solve_timing.csv`에서 수집.
+`logging_data/YYMMDD_HHMM/controller/mpc_solve_timing.csv`에서 수집. `DemoWbcController::ComputeControl`이 phase-independent로 MPC state를 publish하므로 **kIdle** 구간도 20 Hz solve 측정이 가능하다 — kHold 워크로드와 별도 행으로 분리해 baseline vs active 차이를 구분한다. `count == 0` 행은 `DemoWbcController::GetMpcSolveStats` sentinel(`mpc.enabled=true`인데 solver가 publish 못한 상태 — dim-mismatch / solver error / 워밍업 구간) — 수집 스크립트에서 필터링 필요.
 
-| 환경 | 구성 | p50 (ms) | p99 (ms) | max (ms) |
-|---|---|---|---|---|
-| AMD 개발 PC | — | | | |
-| NUC 13 i7-1360P (Stage A) | E-core worker 존재 | | | |
-| NUC 13 i7-1360P (Stage B) | P-core dedicated worker | | | |
+#### 수집 절차
+
+```bash
+ros2 launch ur5e_bringup sim.launch.py \
+    initial_controller:=demo_wbc_controller enable_mpc:=true mpc_engine:=handler
+
+# 워크로드별 5분씩:
+# 1) kIdle — robot_target / grasp_cmd 미전송
+# 2) kHold — grasp 시퀀스 수동 트리거 (gains[0]=1 + robot_target 전송)
+
+# 세션 종료 후:
+awk -F, 'NR>1 && $2>0 {print $6, $7, $8}' \
+    logging_data/<SID>/controller/mpc_solve_timing.csv \
+    | sort -n | awk 'END{print "rows:", NR}'
+# 컬럼 순서: p50_ns, p99_ns, max_ns (NS → MS는 1e-6 스케일).
+```
+
+| 환경 | 구성 | Workload | p50 (ms) | p99 (ms) | max (ms) |
+|---|---|---|---|---|---|
+| AMD 개발 PC | — | kIdle | | | |
+| AMD 개발 PC | — | kHold | | | |
+| NUC 13 i7-1360P (Stage A) | E-core worker 존재 | kIdle | | | |
+| NUC 13 i7-1360P (Stage A) | E-core worker 존재 | kHold | | | |
+| NUC 13 i7-1360P (Stage B) | P-core dedicated worker | kIdle | | | |
+| NUC 13 i7-1360P (Stage B) | P-core dedicated worker | kHold | | | |
 
 ### UDP burst 중 sensor callback latency
 

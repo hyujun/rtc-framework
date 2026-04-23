@@ -673,10 +673,11 @@ DemoWbcController::GetMpcSolveStats() const noexcept {
   if (!mpc_manager_.Enabled()) {
     return std::nullopt;
   }
+  // Always return stats when MPC is enabled — even with count==0. A
+  // count=0 row lets `mpc_solve_timing.csv` readers distinguish "MPC
+  // enabled but solver not publishing" (dim-mismatch / solver error /
+  // warm-up) from "MPC disabled" (nullopt → no CSV row at all).
   const auto s = mpc_manager_.GetSolveStats();
-  if (s.count == 0) {
-    return std::nullopt;
-  }
   rtc::MpcSolveStats out;
   out.count = s.count;
   out.window = s.window;
