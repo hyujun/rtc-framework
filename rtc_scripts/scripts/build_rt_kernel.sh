@@ -397,6 +397,10 @@ show_verify() {
       "CONFIG_PREEMPT_RT=y:PREEMPT_RT 활성화"
       "CONFIG_PREEMPT_NONE=:PREEMPT_NONE 비활성화"
       "CONFIG_PREEMPT_VOLUNTARY=:PREEMPT_VOLUNTARY 비활성화"
+      "CONFIG_IKCONFIG_PROC=y:/proc/config.gz 노출 (진단용)"
+      "CONFIG_SCHED_MC_PRIO=y:ITMT (P-core 우선 스케줄링)"
+      "CONFIG_SCHED_CLUSTER=y:LP E-core cluster 인식"
+      "CONFIG_INTEL_HFI_THERMAL=y:Intel HFI / Thread Director"
     )
     for check in "${config_checks[@]}"; do
       local key="${check%%:*}"
@@ -773,11 +777,42 @@ else
   scripts/config --disable CONFIG_DEBUG_INFO
   scripts/config --disable CONFIG_DEBUG_INFO_BTF
 
+  # /proc/config.gz 노출 — CI/진단에서 커널 .config 재현 가능하게 함
+  scripts/config --enable CONFIG_IKCONFIG
+  scripts/config --enable CONFIG_IKCONFIG_PROC
+
+  # Intel hybrid CPU topology 노출 (NUC 13/14/15 Pro class).
+  # 아래가 모두 켜져 있어야 /sys/devices/system/cpu/types/intel_{core,atom}
+  # 디렉토리와 /proc/cpuinfo 의 "hybrid" flag 가 올라옴. rt_common.sh /
+  # cpu_topology.hpp 의 primary 감지 경로가 이 노출에 의존한다.
+  scripts/config --enable CONFIG_SCHED_MC
+  scripts/config --enable CONFIG_SCHED_MC_PRIO        # ITMT (P-core preference)
+  scripts/config --enable CONFIG_SCHED_CLUSTER        # LP E-core cluster 인식
+  scripts/config --enable CONFIG_INTEL_HFI_THERMAL    # HFI / Thread Director
+  scripts/config --enable CONFIG_INTEL_IDLE
+  scripts/config --enable CONFIG_X86_INTEL_PSTATE
+
   # RT 커널 식별을 위한 LOCALVERSION 설정
   scripts/config --set-str LOCALVERSION "-rt-custom"
 
   # 새 옵션에 대한 기본값 적용
   make olddefconfig
+
+  # Post-verify: hybrid-관련 필수 옵션이 실제로 = y 인지 점검 (olddefconfig
+  # 가 의존성 불만족으로 드롭시킬 수 있음 — 그 경우 사용자에게 알림).
+  local _missing_hybrid=""
+  local _k
+  for _k in CONFIG_SCHED_MC_PRIO CONFIG_SCHED_CLUSTER CONFIG_INTEL_HFI_THERMAL \
+            CONFIG_IKCONFIG_PROC; do
+    if ! grep -q "^${_k}=y$" .config 2>/dev/null; then
+      _missing_hybrid="${_missing_hybrid} ${_k}"
+    fi
+  done
+  if [[ -n "$_missing_hybrid" ]]; then
+    warn "다음 옵션이 .config 에 =y 로 반영되지 않았습니다:${_missing_hybrid}"
+    warn "Meteor/Arrow Lake NUC 에서 hybrid topology 감지가 fallback 경로를 사용할 수 있습니다."
+    warn "menuconfig 에서 수동으로 활성화하거나 defconfig 의존성을 확인하세요."
+  fi
 
   if [[ "$BATCH_MODE" -eq 0 ]]; then
     echo ""

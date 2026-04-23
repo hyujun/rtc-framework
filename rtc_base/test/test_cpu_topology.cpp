@@ -361,3 +361,137 @@ TEST(CpuTopologyClassifier, ClassifyGeneration) {
   EXPECT_EQ(ClassifyGeneration(true, false, false),
             NucGeneration::RAPTOR_LAKE_P_HT_OFF);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. FreqFallback_MeteorLake_185H — sysfs types/ absent, no cpuinfo hybrid
+//    flag. Realistic Core Ultra 9 185H frequencies (6P @ 5.1G, 8E @ 3.8G,
+//    2 LP-E @ 2.5G). Fallback must reconstruct the split and land on
+//    METEOR_LAKE with detect_source == CPUFREQ_CLUSTER.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, FreqFallback_MeteorLake_185H) {
+  MockSysfs m(tmp_root_);
+  // 6 P-cores with SMT siblings — cpus 0..11.
+  for (int core = 0; core < 6; ++core) {
+    m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ 5100000);
+  }
+  // 8 E-cores — cpus 12..19.
+  for (int i = 0; i < 8; ++i)
+    m.AddECore(6 + i, 12 + i, /*freq*/ 3800000);
+  // 2 LP E-cores — cpus 20..21, well under 70% of E-core max (2500<3800*0.7).
+  m.AddECore(14, 20, /*freq*/ 2500000);
+  m.AddECore(15, 21, /*freq*/ 2500000);
+  // Intentionally skip m.WriteTypes() — simulate the NUC14SRK custom RT
+  // kernel where /sys/devices/system/cpu/types/ is absent.
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t =
+      rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_TRUE(t.is_hybrid);
+  EXPECT_EQ(t.detect_source, rtc::HybridDetectSource::CPUFREQ_CLUSTER);
+  EXPECT_TRUE(t.p_core_has_smt);
+  EXPECT_TRUE(t.has_lp_e_cores);
+  EXPECT_EQ(t.num_p_physical, 6);
+  EXPECT_EQ(t.num_p_logical, 12);
+  EXPECT_EQ(t.num_e_cores, 8);
+  EXPECT_EQ(t.num_lpe_cores, 2);
+  EXPECT_EQ(t.generation, rtc::NucGeneration::METEOR_LAKE);
+
+  ASSERT_EQ(t.p_core_physical_ids.size(), 6u);
+  ASSERT_EQ(t.p_core_sibling_ids.size(), 6u);
+  EXPECT_EQ(t.p_core_physical_ids.front(), 0);
+  EXPECT_EQ(t.p_core_sibling_ids.back(), 11);
+  ASSERT_EQ(t.lpe_core_ids.size(), 2u);
+  EXPECT_EQ(t.lpe_core_ids[0], 20);
+  EXPECT_EQ(t.lpe_core_ids[1], 21);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. FreqFallback_AMD_Negative — regression guard: homogeneous AMD must
+//    remain NOT_NUC_HYBRID. Uniform freq → spread 0% → fallback rejects.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, FreqFallback_AMD_Negative) {
+  MockSysfs m(tmp_root_);
+  for (int core = 0; core < 8; ++core) {
+    m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ 5400000);
+  }
+  // No WriteTypes, no hybrid flag.
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t =
+      rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_FALSE(t.is_hybrid);
+  EXPECT_EQ(t.detect_source, rtc::HybridDetectSource::NONE);
+  EXPECT_EQ(t.generation, rtc::NucGeneration::NOT_NUC_HYBRID);
+  EXPECT_EQ(t.num_effective_cores(), 8);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9. DetectSource_SysfsPrimary — when sysfs types/ + hybrid flag are both
+//    present, detect_source must be SYSFS_TYPES (not CPUFREQ_CLUSTER), even
+//    if the freqs would otherwise also support a split.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, DetectSource_SysfsPrimary) {
+  MockSysfs m(tmp_root_);
+  m.AddPCore(0, 0, 1, /*freq*/ 5000000);
+  m.AddPCore(1, 2, 3, /*freq*/ 5000000);
+  for (int i = 0; i < 4; ++i)
+    m.AddECore(2 + i, 4 + i, /*freq*/ 3800000);
+  m.WriteTypes();
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/true);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t =
+      rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_TRUE(t.is_hybrid);
+  EXPECT_EQ(t.detect_source, rtc::HybridDetectSource::SYSFS_TYPES);
+  EXPECT_EQ(t.generation, rtc::NucGeneration::RAPTOR_LAKE_P);
+}
+
+// Classifier helper — HybridDetectSource ⟷ string round-trip must match
+// the shell rt_common.sh tags. Keeps C++/bash logs interchangeable.
+TEST(CpuTopologyClassifier, HybridDetectSourceToString) {
+  EXPECT_EQ(rtc::HybridDetectSourceToString(rtc::HybridDetectSource::NONE),
+            "none");
+  EXPECT_EQ(
+      rtc::HybridDetectSourceToString(rtc::HybridDetectSource::SYSFS_TYPES),
+      "sysfs_types");
+  EXPECT_EQ(
+      rtc::HybridDetectSourceToString(rtc::HybridDetectSource::CPUFREQ_CLUSTER),
+      "cpufreq_cluster");
+}
+
+// Fallback primitive — direct ClusterByMaxFreq coverage. Guards the
+// threshold constants against drift (85% P-core, 15% min spread).
+TEST_F(CpuTopologyTest, ClusterByMaxFreq_Thresholds) {
+  using rtc::internal::topology::ClusterByMaxFreq;
+  MockSysfs m(tmp_root_);
+  // Two tiers: 3×5000 MHz + 3×3500 MHz. Spread = 30%, p_threshold=4250.
+  for (int i = 0; i < 3; ++i)
+    m.AddPCore(i, i, -1, /*freq*/ 5000000);
+  for (int i = 0; i < 3; ++i)
+    m.AddECore(3 + i, 3 + i, /*freq*/ 3500000);
+  const std::vector<int> online{0, 1, 2, 3, 4, 5};
+  auto [p, e] = ClusterByMaxFreq(tmp_root_ / "devices/system/cpu", online);
+  ASSERT_EQ(p.size(), 3u);
+  ASSERT_EQ(e.size(), 3u);
+  EXPECT_EQ(p[0], 0);
+  EXPECT_EQ(e[2], 5);
+
+  // Near-homogeneous (spread < 15%) must reject the split.
+  MockSysfs m2(tmp_root_ / "homogeneous");
+  for (int i = 0; i < 4; ++i)
+    m2.AddPCore(i, i, -1, /*freq*/ 5000000);
+  // +2% spread — well under 15% threshold.
+  m2.AddECore(4, 4, /*freq*/ 4900000);
+  m2.AddECore(5, 5, /*freq*/ 4900000);
+  const std::vector<int> online2{0, 1, 2, 3, 4, 5};
+  auto [p2, e2] =
+      ClusterByMaxFreq(tmp_root_ / "homogeneous/devices/system/cpu", online2);
+  EXPECT_TRUE(p2.empty());
+  EXPECT_TRUE(e2.empty());
+}

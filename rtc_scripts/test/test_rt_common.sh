@@ -212,6 +212,154 @@ test_cpulist_parser() {
   expect_eq "Parse.empty"        ""                 "$out"
 }
 
+# ── Test 7: freq-clustering fallback — Meteor Lake (NUC 14 Pro, 185H) ──────
+# sysfs types/ 미노출 + cpuinfo hybrid flag 없음 (custom RT 커널 시나리오).
+# cpuinfo_max_freq 만으로 6P + 8E + 2LP-E 를 재구성해야 한다.
+test_freq_fallback_meteor_lake() {
+  local root="$TMP/mtl_freq"
+  mock_reset "$root"
+  local i
+  # 6 P-cores, each with SMT sibling. core_id 0..5, cpus 0..11 at 5.1 GHz.
+  for i in 0 1 2 3 4 5; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5100000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5100000
+  done
+  # 8 E-cores, no SMT, core_id 6..13, cpus 12..19 at 3.8 GHz.
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((12+i)) $((6+i)) 3800000
+  done
+  # 2 LP E-cores, core_id 14..15, cpus 20..21 at 2.5 GHz (under 70% of E-max).
+  mock_add_cpu "$root" 20 14 2500000
+  mock_add_cpu "$root" 21 15 2500000
+  # Intentionally skip mock_set_types AND hybrid flag — simulates the NUC14SRK
+  # case where the kernel suppresses both signals.
+  mock_write_cpuinfo "$TMP/mtl_freq_cpuinfo" "false"
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/mtl_freq_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "MTLFreq.is_hybrid"        "1"                 "$IS_HYBRID"
+  expect_eq "MTLFreq.detect_source"    "cpufreq_cluster"   "$HYBRID_DETECT_SOURCE"
+  expect_eq "MTLFreq.p_core_has_smt"   "1"                 "$P_CORE_HAS_SMT"
+  expect_eq "MTLFreq.has_lp_e_cores"   "1"                 "$HAS_LP_E_CORES"
+  expect_eq "MTLFreq.num_p_physical"   "6"                 "$NUM_P_PHYSICAL"
+  expect_eq "MTLFreq.num_p_logical"    "12"                "$NUM_P_LOGICAL"
+  expect_eq "MTLFreq.num_e_cores"      "8"                 "$NUM_E_CORES"
+  expect_eq "MTLFreq.num_lpe_cores"    "2"                 "$NUM_LPE_CORES"
+  expect_eq "MTLFreq.generation"       "meteor_lake"       "$NUC_GENERATION"
+  expect_eq "MTLFreq.p_physical_ids"   "0 2 4 6 8 10"      "$P_CORE_PHYSICAL_IDS"
+  expect_eq "MTLFreq.p_sibling_ids"    "1 3 5 7 9 11"      "$P_CORE_SIBLING_IDS"
+  expect_eq "MTLFreq.lpe_ids"          "20 21"             "$LPE_CORE_IDS"
+}
+
+# ── Test 8: freq-clustering regression guard — homogeneous AMD still false ─
+# AMD Ryzen has identical max_freq across all cores; freq fallback must NOT
+# produce a false-positive hybrid classification.
+test_freq_fallback_amd_negative() {
+  local root="$TMP/amd_freq"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5400000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5400000
+  done
+  mock_write_cpuinfo "$TMP/amd_freq_cpuinfo" "false"
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/amd_freq_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "AMDFreq.is_hybrid"        "0"       "$IS_HYBRID"
+  expect_eq "AMDFreq.detect_source"    "none"    "$HYBRID_DETECT_SOURCE"
+  expect_eq "AMDFreq.generation"       "none"    "$NUC_GENERATION"
+}
+
+# ── Test 9: detect_source tag is "sysfs_types" when primary path wins ──────
+# Reuses the NUC13 mock (sysfs + hybrid flag) to pin down the reported source.
+test_detect_source_primary() {
+  local root="$TMP/src_primary"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5000000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5000000
+  done
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((8+i)) $((4+i)) 3800000
+  done
+  mock_set_types "$root" "0,1,2,3,4,5,6,7" "8,9,10,11,12,13,14,15"
+  mock_write_cpuinfo "$TMP/src_primary_cpuinfo" "true"
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/src_primary_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "SrcPrimary.detect_source" "sysfs_types"  "$HYBRID_DETECT_SOURCE"
+  expect_eq "SrcPrimary.is_hybrid"     "1"            "$IS_HYBRID"
+}
+
+# ── Test 10: container fallback remains conservative when freq unavailable ─
+# Container mock adds CPUs WITHOUT cpufreq/cpuinfo_max_freq files. The freq
+# fallback must return "cannot form opinion" rather than force a split.
+test_container_no_freq_files() {
+  local root="$TMP/container_nofreq"
+  mock_reset "$root"
+  local i
+  # mock_add_cpu with max_freq=0 → does not create cpufreq/cpuinfo_max_freq.
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" "$i" "$i" 0
+  done
+  mock_write_cpuinfo "$TMP/container_nofreq_cpuinfo" "false"
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/container_nofreq_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "NoFreq.is_hybrid"       "0"     "$IS_HYBRID"
+  expect_eq "NoFreq.detect_source"   "none"  "$HYBRID_DETECT_SOURCE"
+}
+
+# ── Test 11: sanity-check hook fires a warning on disagreement ─────────────
+# Primary sysfs path classifies cpus 0-7 as P (all at a flat 5.0 GHz), but
+# freq-clustering sees uniform freq → can't form an opinion → no warning.
+# To force a disagreement we give sysfs an "intel_core" override that doesn't
+# match the freq split. Sanity hook must print to stderr; we just check that
+# the command does not alter detected globals (diagnostic only).
+test_sanity_check_disagreement() {
+  local root="$TMP/sanity"
+  mock_reset "$root"
+  local i
+  # 4 P-cores @ 5.0 GHz (cpus 0..3) + 4 E-cores @ 3.0 GHz (cpus 4..7).
+  for i in 0 1 2 3; do
+    mock_add_cpu "$root" "$i" "$i" 5000000
+  done
+  for i in 4 5 6 7; do
+    mock_add_cpu "$root" "$i" "$i" 3000000
+  done
+  # sysfs says the split is {0,1,2,3,4} | {5,6,7} — intentionally mislabels
+  # cpu4 as a P-core. Freq-clustering would disagree (cpu4 is below P
+  # threshold). Sanity hook must fire.
+  mock_set_types "$root" "0,1,2,3,4" "5,6,7"
+  mock_write_cpuinfo "$TMP/sanity_cpuinfo" "true"
+
+  # Route stderr to a file so we can check the hook emitted something.
+  local stderr_file="$TMP/sanity_stderr.log"
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/sanity_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=1 \
+    detect_hybrid_capability 2>"$stderr_file"
+
+  # Primary split wins (unchanged behaviour).
+  expect_eq "Sanity.detect_source"   "sysfs_types"  "$HYBRID_DETECT_SOURCE"
+  expect_eq "Sanity.is_hybrid"       "1"            "$IS_HYBRID"
+  # Hook must have printed a disagreement warning to stderr.
+  if grep -q "hybrid sanity: P-core sets disagree" "$stderr_file" 2>/dev/null; then
+    pass
+  else
+    fail "[Sanity] sanity-check warning not found in stderr: $(cat "$stderr_file")"
+  fi
+}
+
 # ── Run all ─────────────────────────────────────────────────────────────────
 test_cpulist_parser
 test_nuc13_i7_1360p
@@ -219,6 +367,11 @@ test_bios_ht_off
 test_container_fallback
 test_amd_ryzen
 test_env_hint_override
+test_freq_fallback_meteor_lake
+test_freq_fallback_amd_negative
+test_detect_source_primary
+test_container_no_freq_files
+test_sanity_check_disagreement
 
 echo
 echo "── test_rt_common.sh summary ──"

@@ -669,8 +669,268 @@ _rt_cpuinfo_has_hybrid() {
   }' "$p"
 }
 
+# Enumerate online logical CPU ids by scanning cpuN directories under sysfs.
+# Output: space-separated ids in numeric order. Empty on failure.
+_rt_enumerate_online_cpus() {
+  local cpu_root="$1"
+  local cpu_dir cpu out=""
+  for cpu_dir in "$cpu_root"/cpu[0-9]*; do
+    [[ -d "$cpu_dir" ]] || continue
+    cpu="${cpu_dir##*/cpu}"
+    [[ "$cpu" =~ ^[0-9]+$ ]] || continue
+    out="${out} ${cpu}"
+  done
+  # Numeric sort for determinism.
+  echo "$out" | tr ' ' '\n' | sed '/^$/d' | sort -n | tr '\n' ' ' | sed 's/ $//'
+}
+
+# ─── Hybrid-detection fallback helpers ──────────────────────────────────────
+# When the primary sysfs path (`types/intel_core`, `types/intel_atom` +
+# /proc/cpuinfo `hybrid` flag) fails — as happens on older RT kernels and on
+# custom builds where the hybrid topology is not exported — these fallbacks
+# try to classify P vs E cores from information that is always exposed.
+#
+#   1. CPUID leaf 0x1A (`cpuid` tool, per-CPU via `taskset`).
+#      Most authoritative: reads the Intel "Native Model ID Enumeration"
+#      leaf directly. Requires `cpuid` and `taskset` on PATH and leaf 0x1A
+#      returning a non-zero EAX.
+#      EAX[31:24]: 0x40 = Intel Core (P), 0x20 = Intel Atom (E/LP-E).
+#
+#   2. `cpuinfo_max_freq` clustering (zero-dependency, sysfs only).
+#      On every hybrid x86 Intel SoC, the per-CPU `cpuinfo_max_freq` differs
+#      between P / E / LP-E tiers by a wide margin (20 %–50 %). If spread
+#      >= 15 % and we can form non-empty P/E sets, treat as hybrid.
+#
+# Both helpers return the tentative `p_cpus` / `e_cpus` cpulists via the
+# globals `_RT_FB_P_CPUS` / `_RT_FB_E_CPUS`. The shared population step
+# (`_rt_populate_hybrid_from_cpus`) then derives SMT siblings and E / LP-E
+# split by reusing the sysfs topology and cpufreq files that *are* present.
+
+# Fallback 1: CPUID leaf 0x1A.
+# Returns 0 on success, sets _RT_FB_P_CPUS / _RT_FB_E_CPUS.
+# Returns 1 (and leaves globals empty) if cpuid / taskset are missing, the
+# leaf is unsupported, or the split is homogeneous.
+_rt_detect_hybrid_via_cpuid() {
+  _RT_FB_P_CPUS=""
+  _RT_FB_E_CPUS=""
+  command -v cpuid   >/dev/null 2>&1 || return 1
+  command -v taskset >/dev/null 2>&1 || return 1
+
+  local cpu_root="${RTC_SYSFS_ROOT:-/sys}/devices/system/cpu"
+  local cpus
+  cpus=$(_rt_enumerate_online_cpus "$cpu_root")
+  [[ -z "$cpus" ]] && return 1
+
+  local cpu line eax hex core_type
+  local p_list="" e_list=""
+  for cpu in $cpus; do
+    # Extract leaf 0x1A subleaf 0x00 for this specific CPU. The raw line
+    # format is e.g. "   0x0000001a 0x00: eax=0x40000002 ebx=0x00000000 ...".
+    line=$(taskset -c "$cpu" cpuid -r -1 -l 0x1a 2>/dev/null \
+           | awk '/0x0000001a 0x00:/ {print; exit}')
+    [[ -z "$line" ]] && return 1
+    hex=$(echo "$line" | grep -oE 'eax=0x[0-9a-fA-F]+' | head -1 | cut -d= -f2)
+    [[ -z "$hex" ]] && return 1
+    # Bash arithmetic can eat the hex directly.
+    eax=$(( hex ))
+    # Leaf 0x1A returns EAX=0 when the CPU does not support hybrid reporting.
+    (( eax == 0 )) && return 1
+    core_type=$(( (eax >> 24) & 0xFF ))
+    case "$core_type" in
+      64)  p_list="${p_list} ${cpu}" ;;   # 0x40 → Intel Core (P)
+      32)  e_list="${e_list} ${cpu}" ;;   # 0x20 → Intel Atom (E/LP-E)
+      *)   return 1 ;;                    # Unknown vendor-extension value
+    esac
+  done
+
+  # Only claim hybrid if both tiers are present. Homogeneous P-only or
+  # E-only silicon (e.g., Alder-Lake-N) stays "not hybrid".
+  [[ -z "$p_list" || -z "$e_list" ]] && return 1
+
+  _RT_FB_P_CPUS="${p_list# }"
+  _RT_FB_E_CPUS="${e_list# }"
+  return 0
+}
+
+# Fallback 2: cpuinfo_max_freq clustering.
+# Returns 0 on success, sets _RT_FB_P_CPUS / _RT_FB_E_CPUS.
+# Threshold: P-cores are those with max_freq >= 85 % of system-wide max.
+# Guard: demands >= 15 % spread between min and max — filters out AMD /
+# homogeneous Intel whose per-core freqs are within a percent of each other.
+_rt_detect_hybrid_via_freq() {
+  _RT_FB_P_CPUS=""
+  _RT_FB_E_CPUS=""
+  local cpu_root="${RTC_SYSFS_ROOT:-/sys}/devices/system/cpu"
+  local cpus
+  cpus=$(_rt_enumerate_online_cpus "$cpu_root")
+  [[ -z "$cpus" ]] && return 1
+
+  local cpu f max_f=0 min_f=0 missing=0
+  local -A freqs=()
+  for cpu in $cpus; do
+    f=$(_rt_read_trim "$cpu_root/cpu${cpu}/cpufreq/cpuinfo_max_freq")
+    if [[ -z "$f" ]]; then
+      missing=1
+      break
+    fi
+    freqs[$cpu]=$f
+    (( f > max_f )) && max_f=$f
+    if (( min_f == 0 )) || (( f < min_f )); then min_f=$f; fi
+  done
+  (( missing == 1 )) && return 1
+  (( max_f == 0 ))   && return 1
+
+  local spread_pct=$(( (max_f - min_f) * 100 / max_f ))
+  (( spread_pct < 15 )) && return 1   # Homogeneous silicon.
+
+  local p_threshold=$(( max_f * 85 / 100 ))
+  local p_list="" e_list=""
+  for cpu in $cpus; do
+    f=${freqs[$cpu]}
+    if (( f >= p_threshold )); then
+      p_list="${p_list} ${cpu}"
+    else
+      e_list="${e_list} ${cpu}"
+    fi
+  done
+
+  [[ -z "$p_list" || -z "$e_list" ]] && return 1
+  _RT_FB_P_CPUS="${p_list# }"
+  _RT_FB_E_CPUS="${e_list# }"
+  return 0
+}
+
+# Derive NUM_*, P_CORE_*, E_CORE_IDS, LPE_CORE_IDS, HAS_LP_E_CORES,
+# P_CORE_HAS_SMT from a (p_cpus, e_cpus) split. Extracted from the original
+# body of detect_hybrid_capability so all three detection paths can share it.
+_rt_populate_hybrid_from_cpus() {
+  local cpu_root="$1"
+  local p_cpus="$2"
+  local e_cpus="$3"
+
+  NUM_P_PHYSICAL=0
+  NUM_P_LOGICAL=0
+  NUM_E_CORES=0
+  NUM_LPE_CORES=0
+  P_CORE_PHYSICAL_IDS=""
+  P_CORE_SIBLING_IDS=""
+  E_CORE_IDS=""
+  LPE_CORE_IDS=""
+  P_CORE_HAS_SMT=0
+  HAS_LP_E_CORES=0
+
+  [[ -z "$p_cpus" ]] && return 0
+
+  # Group P-cores by topology/core_id; within each group, the lowest logical
+  # id is the "physical" representative and the second is the SMT sibling.
+  local -A core_to_cpus=()
+  local cpu cid
+  for cpu in $p_cpus; do
+    cid=$(_rt_read_trim "$cpu_root/cpu${cpu}/topology/core_id")
+    [[ -z "$cid" ]] && continue
+    if [[ -z "${core_to_cpus[$cid]+x}" ]]; then
+      core_to_cpus[$cid]="$cpu"
+    else
+      core_to_cpus[$cid]="${core_to_cpus[$cid]} $cpu"
+    fi
+  done
+
+  local sorted_cids
+  sorted_cids=$(printf '%s\n' "${!core_to_cpus[@]}" | sort -n)
+  local cpus sorted_cpus first second
+  while IFS= read -r cid; do
+    [[ -z "$cid" ]] && continue
+    cpus="${core_to_cpus[$cid]}"
+    sorted_cpus=$(printf '%s\n' $cpus | sort -n | tr '\n' ' ')
+    read -r first second _ <<<"$sorted_cpus"
+    P_CORE_PHYSICAL_IDS="${P_CORE_PHYSICAL_IDS} ${first}"
+    if [[ -n "$second" ]]; then
+      P_CORE_SIBLING_IDS="${P_CORE_SIBLING_IDS} ${second}"
+    fi
+    NUM_P_PHYSICAL=$((NUM_P_PHYSICAL + 1))
+  done <<<"$sorted_cids"
+  P_CORE_PHYSICAL_IDS="${P_CORE_PHYSICAL_IDS# }"
+  P_CORE_SIBLING_IDS="${P_CORE_SIBLING_IDS# }"
+
+  NUM_P_LOGICAL=$(echo "$p_cpus" | wc -w)
+  local num_siblings
+  num_siblings=$(echo "$P_CORE_SIBLING_IDS" | wc -w)
+  if (( NUM_P_LOGICAL > NUM_P_PHYSICAL && num_siblings == NUM_P_PHYSICAL )); then
+    P_CORE_HAS_SMT=1
+  fi
+
+  # E-core vs LP-E-core split via cpuinfo_max_freq 70 % rule.
+  if [[ -n "$e_cpus" ]]; then
+    local max_freq=0
+    local -A e_freq=()
+    local f
+    for cpu in $e_cpus; do
+      f=$(_rt_read_trim "$cpu_root/cpu${cpu}/cpufreq/cpuinfo_max_freq")
+      [[ -z "$f" ]] && f=0
+      e_freq[$cpu]=$f
+      if (( f > max_freq )); then max_freq=$f; fi
+    done
+    local threshold=0
+    if (( max_freq > 0 )); then
+      threshold=$(( max_freq * 70 / 100 ))
+    fi
+    for cpu in $e_cpus; do
+      f=${e_freq[$cpu]:-0}
+      if (( threshold > 0 && f > 0 && f < threshold )); then
+        LPE_CORE_IDS="${LPE_CORE_IDS} ${cpu}"
+      else
+        E_CORE_IDS="${E_CORE_IDS} ${cpu}"
+      fi
+    done
+    E_CORE_IDS="${E_CORE_IDS# }"
+    LPE_CORE_IDS="${LPE_CORE_IDS# }"
+    NUM_E_CORES=$(echo "$E_CORE_IDS" | wc -w)
+    NUM_LPE_CORES=$(echo "$LPE_CORE_IDS" | wc -w)
+    if (( NUM_LPE_CORES > 0 )); then HAS_LP_E_CORES=1; fi
+  fi
+}
+
+# Sanity hook: when enabled (RTC_HYBRID_SANITY=1), cross-check the primary
+# detection result against the freq-clustering fallback. Emits a single
+# stderr warning if they disagree on the P/E split. Does not alter globals
+# — this is diagnostic only. Intended for CI / staging; off by default so
+# production boots stay quiet.
+_rt_hybrid_sanity_check() {
+  local source="$1" p_primary="$2" e_primary="$3"
+  local p_fb e_fb
+  # Save the freq-fallback outputs so we can re-run without clobbering the
+  # canonical _RT_FB_* globals (the primary path may have filled them).
+  _RT_FB_P_CPUS=""; _RT_FB_E_CPUS=""
+  if ! _rt_detect_hybrid_via_freq; then
+    return 0   # Freq-clustering cannot form an opinion — nothing to check.
+  fi
+  p_fb="$_RT_FB_P_CPUS"
+  e_fb="$_RT_FB_E_CPUS"
+
+  local p_sorted_primary p_sorted_fb
+  p_sorted_primary=$(echo "$p_primary" | tr ' ' '\n' | sort -n | tr '\n' ' ')
+  p_sorted_fb=$(echo "$p_fb" | tr ' ' '\n' | sort -n | tr '\n' ' ')
+  if [[ "$p_sorted_primary" != "$p_sorted_fb" ]]; then
+    {
+      echo "[rt_common] hybrid sanity: P-core sets disagree"
+      echo "[rt_common]   primary(${source}):   ${p_sorted_primary% }"
+      echo "[rt_common]   freq_cluster:         ${p_sorted_fb% }"
+      echo "[rt_common]   set RTC_HYBRID_SANITY=0 to silence"
+    } >&2
+  fi
+}
+
 # Populate IS_HYBRID, NUM_*, NUC_GENERATION, id lists. Idempotent — callers may
 # re-invoke; later calls overwrite globals. Uses $RTC_SYSFS_ROOT (default /sys).
+#
+# Detection priority (matches cpu_topology.hpp):
+#   1. sysfs `types/intel_core` + `types/intel_atom` (+ optional cpuinfo
+#      `hybrid` flag). Requires kernel topology exposure that some custom
+#      RT kernel builds strip out.
+#   2. CPUID leaf 0x1A via the `cpuid` tool.
+#   3. cpuinfo_max_freq clustering (>= 15 % spread).
+# First match wins. HYBRID_DETECT_SOURCE records which path populated the
+# globals ("sysfs_types" / "cpuid_0x1a" / "cpufreq_cluster" / "none").
 detect_hybrid_capability() {
   local root="${RTC_SYSFS_ROOT:-/sys}"
   local cpu_root="$root/devices/system/cpu"
@@ -687,91 +947,57 @@ detect_hybrid_capability() {
   E_CORE_IDS=""
   LPE_CORE_IDS=""
   NUC_GENERATION="none"
+  HYBRID_DETECT_SOURCE="none"
 
-  local p_cpus e_cpus
-  p_cpus=$(_rt_read_cpulist_file "$cpu_root/types/intel_core")
-  e_cpus=$(_rt_read_cpulist_file "$cpu_root/types/intel_atom")
+  local p_cpus="" e_cpus=""
 
+  # ── Primary: sysfs types + cpuinfo hybrid flag ───────────────────────────
+  local sysfs_p sysfs_e
+  sysfs_p=$(_rt_read_cpulist_file "$cpu_root/types/intel_core")
+  sysfs_e=$(_rt_read_cpulist_file "$cpu_root/types/intel_atom")
   local cpuinfo_hybrid=0
   if _rt_cpuinfo_has_hybrid; then cpuinfo_hybrid=1; fi
-
-  # types/intel_{core,atom} 동시 존재 or (존재 + cpuinfo hybrid flag) → hybrid.
   local types_present=0
-  if [[ -n "$p_cpus" || -n "$e_cpus" ]]; then types_present=1; fi
-  if [[ -n "$p_cpus" && -n "$e_cpus" ]]; then IS_HYBRID=1; fi
-  if (( types_present == 1 && cpuinfo_hybrid == 1 )); then IS_HYBRID=1; fi
+  [[ -n "$sysfs_p" || -n "$sysfs_e" ]] && types_present=1
 
-  if (( IS_HYBRID == 1 )) && [[ -n "$p_cpus" ]]; then
-    # Group P-cores by core_id. Produce "core_id:cpu" pairs, sort, unique by core_id.
-    local -A core_to_cpus=()
-    local cpu
-    for cpu in $p_cpus; do
-      local cid
-      cid=$(_rt_read_trim "$cpu_root/cpu${cpu}/topology/core_id")
-      [[ -z "$cid" ]] && continue
-      if [[ -z "${core_to_cpus[$cid]+x}" ]]; then
-        core_to_cpus[$cid]="$cpu"
-      else
-        core_to_cpus[$cid]="${core_to_cpus[$cid]} $cpu"
-      fi
-    done
+  if [[ -n "$sysfs_p" && -n "$sysfs_e" ]] \
+     || (( types_present == 1 && cpuinfo_hybrid == 1 )); then
+    IS_HYBRID=1
+    p_cpus="$sysfs_p"
+    e_cpus="$sysfs_e"
+    HYBRID_DETECT_SOURCE="sysfs_types"
+  fi
 
-    # Sort core_ids numerically for deterministic ordering.
-    local sorted_cids
-    sorted_cids=$(printf '%s\n' "${!core_to_cpus[@]}" | sort -n)
-    NUM_P_PHYSICAL=0
-    local cid cpus sorted_cpus first second
-    while IFS= read -r cid; do
-      [[ -z "$cid" ]] && continue
-      cpus="${core_to_cpus[$cid]}"
-      # Sort logical cpus within this physical core numerically.
-      sorted_cpus=$(printf '%s\n' $cpus | sort -n | tr '\n' ' ')
-      read -r first second _ <<<"$sorted_cpus"
-      P_CORE_PHYSICAL_IDS="${P_CORE_PHYSICAL_IDS} ${first}"
-      if [[ -n "$second" ]]; then
-        P_CORE_SIBLING_IDS="${P_CORE_SIBLING_IDS} ${second}"
-      fi
-      NUM_P_PHYSICAL=$((NUM_P_PHYSICAL + 1))
-    done <<<"$sorted_cids"
-    P_CORE_PHYSICAL_IDS="${P_CORE_PHYSICAL_IDS# }"
-    P_CORE_SIBLING_IDS="${P_CORE_SIBLING_IDS# }"
-
-    NUM_P_LOGICAL=$(echo "$p_cpus" | wc -w)
-    local num_siblings
-    num_siblings=$(echo "$P_CORE_SIBLING_IDS" | wc -w)
-    if (( NUM_P_LOGICAL > NUM_P_PHYSICAL && num_siblings == NUM_P_PHYSICAL )); then
-      P_CORE_HAS_SMT=1
+  # ── Fallback 1: CPUID leaf 0x1A ──────────────────────────────────────────
+  if (( IS_HYBRID == 0 )); then
+    if _rt_detect_hybrid_via_cpuid; then
+      IS_HYBRID=1
+      p_cpus="$_RT_FB_P_CPUS"
+      e_cpus="$_RT_FB_E_CPUS"
+      HYBRID_DETECT_SOURCE="cpuid_0x1a"
     fi
+  fi
 
-    # E-core / LP-E split via cpuinfo_max_freq 70% rule.
-    if [[ -n "$e_cpus" ]]; then
-      local max_freq=0
-      local -A e_freq=()
-      local f
-      for cpu in $e_cpus; do
-        f=$(_rt_read_trim "$cpu_root/cpu${cpu}/cpufreq/cpuinfo_max_freq")
-        [[ -z "$f" ]] && f=0
-        e_freq[$cpu]=$f
-        if (( f > max_freq )); then max_freq=$f; fi
-      done
-      local threshold=0
-      if (( max_freq > 0 )); then
-        threshold=$(( max_freq * 70 / 100 ))
-      fi
-      for cpu in $e_cpus; do
-        f=${e_freq[$cpu]:-0}
-        if (( threshold > 0 && f > 0 && f < threshold )); then
-          LPE_CORE_IDS="${LPE_CORE_IDS} ${cpu}"
-        else
-          E_CORE_IDS="${E_CORE_IDS} ${cpu}"
-        fi
-      done
-      E_CORE_IDS="${E_CORE_IDS# }"
-      LPE_CORE_IDS="${LPE_CORE_IDS# }"
-      NUM_E_CORES=$(echo "$E_CORE_IDS" | wc -w)
-      NUM_LPE_CORES=$(echo "$LPE_CORE_IDS" | wc -w)
-      if (( NUM_LPE_CORES > 0 )); then HAS_LP_E_CORES=1; fi
+  # ── Fallback 2: cpuinfo_max_freq clustering ──────────────────────────────
+  if (( IS_HYBRID == 0 )); then
+    if _rt_detect_hybrid_via_freq; then
+      IS_HYBRID=1
+      p_cpus="$_RT_FB_P_CPUS"
+      e_cpus="$_RT_FB_E_CPUS"
+      HYBRID_DETECT_SOURCE="cpufreq_cluster"
     fi
+  fi
+
+  # ── Derive detailed fields from whichever (p_cpus, e_cpus) split won ────
+  if (( IS_HYBRID == 1 )); then
+    _rt_populate_hybrid_from_cpus "$cpu_root" "$p_cpus" "$e_cpus"
+  fi
+
+  # ── Optional cross-check when RTC_HYBRID_SANITY=1 ───────────────────────
+  # Compares the primary split to the freq-clustering split. Diagnostic
+  # only — used by CI/staging; off by default.
+  if (( IS_HYBRID == 1 )) && [[ "${RTC_HYBRID_SANITY:-0}" == "1" ]]; then
+    _rt_hybrid_sanity_check "$HYBRID_DETECT_SOURCE" "$p_cpus" "$e_cpus"
   fi
 
   # Classify generation from (is_hybrid, p_core_has_smt, has_lp_e_cores).
@@ -802,3 +1028,4 @@ get_p_core_physical_ids() { echo "${P_CORE_PHYSICAL_IDS:-}"; }
 get_p_core_sibling_ids()  { echo "${P_CORE_SIBLING_IDS:-}"; }
 get_e_core_ids()          { echo "${E_CORE_IDS:-}"; }
 get_lpe_core_ids()        { echo "${LPE_CORE_IDS:-}"; }
+get_hybrid_detect_source() { echo "${HYBRID_DETECT_SOURCE:-none}"; }
