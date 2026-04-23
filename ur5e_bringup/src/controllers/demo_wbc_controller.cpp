@@ -53,11 +53,30 @@ void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig &config) {
   arm_handle_ = std::make_unique<rub::RtModelHandle>(
       builder_->GetReducedModel(arm_model_name));
 
-  // Full combined model (16-DoF) for TSID
-  full_model_ptr_ = builder_->GetFullModel();
+  // Control model. Prefer the mimic-locked reduced tree `mpc` built by
+  // PinocchioModelBuilder (IncorporateMimicAsPassive → buildReducedModel),
+  // which yields nq == nv == 16 for UR5e + 10-DoF hand. TSID/MPC/state
+  // buffers all operate in this reduced space, so mimic DoFs are handled
+  // by the hardware driver / MuJoCo's built-in tendon. If the tree isn't
+  // configured in YAML, fall back to the raw URDF-parsed full model (nq=26,
+  // nv=21 with Pinocchio first-class mimic) — this preserves pre-reduction
+  // behaviour for URDFs without <mimic> tags.
+  try {
+    full_model_ptr_ = builder_->GetTreeModel("mpc");
+    RCLCPP_INFO(logger_,
+                "[wbc] control model: reduced tree 'mpc' (nq=%d nv=%d)",
+                full_model_ptr_->nq, full_model_ptr_->nv);
+  } catch (const std::exception &e) {
+    full_model_ptr_ = builder_->GetFullModel();
+    RCLCPP_INFO(
+        logger_,
+        "[wbc] control model: URDF full model (nq=%d nv=%d) — tree 'mpc' "
+        "missing (%s); MPC handler-mode + TSID will see mimic joints",
+        full_model_ptr_->nq, full_model_ptr_->nv, e.what());
+  }
 
-  RCLCPP_INFO(logger_, "Models initialized: arm nv=%d, full nv=%d",
-              arm_handle_->nv(), full_model_ptr_->nv);
+  RCLCPP_INFO(logger_, "Models initialized: arm nv=%d, control nq=%d nv=%d",
+              arm_handle_->nv(), full_model_ptr_->nq, full_model_ptr_->nv);
 }
 
 void DemoWbcController::BuildJointReorderMap() {
@@ -426,19 +445,27 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
       mpc_engine_ = MpcEngine::kMock;
     }
 
+    // TSID and MPC share full_model_ptr_ (the reduced tree when available).
+    // No projection layer needed — ComputeReference writes directly into the
+    // reference buffers that TSID consumes via control_ref_.
     const int mpc_nq = full_model_ptr_->nq;
     const int mpc_nv = full_model_ptr_->nv;
     const int mpc_n_contact = contact_mgr_config_.max_contact_vars;
+
     mpc_q_ref_ = Eigen::VectorXd::Zero(mpc_nq);
     mpc_v_ref_ = Eigen::VectorXd::Zero(mpc_nv);
     mpc_a_ff_ = Eigen::VectorXd::Zero(mpc_nv);
     mpc_lambda_ref_ = Eigen::VectorXd::Zero(std::max(1, mpc_n_contact));
     mpc_u_fb_ = Eigen::VectorXd::Zero(mpc_nv);
+
     mpc_manager_.Init(mpc_cfg, mpc_nq, mpc_nv, mpc_n_contact);
-    RCLCPP_INFO(
-        logger_,
-        "MPC integration: enabled=%d engine=%s nq=%d nv=%d n_contact=%d",
-        mpc_enabled_, engine_str.c_str(), mpc_nq, mpc_nv, mpc_n_contact);
+    const char *active_engine =
+        (mpc_engine_ == MpcEngine::kHandler) ? "handler" : "mock";
+    RCLCPP_INFO(logger_,
+                "MPC integration: enabled=%d engine=%s (yaml=%s) nq=%d nv=%d "
+                "n_contact=%d",
+                mpc_enabled_, active_engine, engine_str.c_str(), mpc_nq, mpc_nv,
+                mpc_n_contact);
 
     if (mpc_engine_ == MpcEngine::kHandler) {
       // Resolve factory YAML paths relative to the ur5e_bringup share dir.
@@ -1268,9 +1295,8 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState &state,
   if (mpc_enabled_ && mpc_manager_.Enabled()) {
     const uint64_t now_ns =
         static_cast<uint64_t>(state.iteration) * 2'000'000ULL; // 500 Hz tick
-    mpc_manager_.WriteState(q_curr_full_, v_curr_full_, now_ns);
-
     rtc::mpc::InterpMeta meta;
+    mpc_manager_.WriteState(q_curr_full_, v_curr_full_, now_ns);
     mpc_ref_valid = mpc_manager_.ComputeReference(
         q_curr_full_, v_curr_full_, now_ns, mpc_q_ref_, mpc_v_ref_, mpc_a_ff_,
         mpc_lambda_ref_, mpc_u_fb_, meta);
@@ -1551,9 +1577,11 @@ void DemoWbcController::InitializeHoldPosition(
     if (mpc_engine_ == MpcEngine::kHandler && mpc_model_handler_ &&
         phase_manager_owned_) {
       // Build the initial PhaseContext from the idle phase so the factory
-      // can size its OCP + solver workspace.
-      Eigen::VectorXd q_zero = Eigen::VectorXd::Zero(nq);
-      Eigen::VectorXd v_zero = Eigen::VectorXd::Zero(nv);
+      // can size its OCP + solver workspace. GraspPhaseManager and all
+      // downstream solvers live in the reduced (mimic-locked) MPC model's
+      // index space, so seed zeros at those dims — not the full_model's.
+      Eigen::VectorXd q_zero = Eigen::VectorXd::Zero(full_model_ptr_->nq);
+      Eigen::VectorXd v_zero = Eigen::VectorXd::Zero(full_model_ptr_->nv);
       Eigen::VectorXd sensor_zero = Eigen::VectorXd::Zero(0);
       const pinocchio::SE3 tcp_identity = pinocchio::SE3::Identity();
       const auto initial_ctx = phase_manager_owned_->Update(

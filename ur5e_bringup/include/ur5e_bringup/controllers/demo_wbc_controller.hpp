@@ -209,7 +209,11 @@ private:
   pinocchio::FrameIndex root_frame_id_{0};
   bool use_root_frame_{false};
 
-  // Full model (16-DoF) — shared_ptr lifetime for PinocchioCache
+  // Control model — shared_ptr lifetime for PinocchioCache.
+  // InitModels prefers the mimic-locked reduced tree `mpc`
+  // (nq == nv == 16 for UR5e + 10-DoF hand). Falls back to the raw URDF
+  // full model (nq=26, nv=21 with first-class mimic) only if that tree
+  // isn't declared in urdf.tree_models. TSID + MPC share this model.
   std::shared_ptr<const pinocchio::Model> full_model_ptr_;
 
   // Joint reorder: external [arm0..5, hand0..9] → Pinocchio q/v index
@@ -354,7 +358,9 @@ private:
   YAML::Node mpc_rich_cfg_;
   YAML::Node phase_cfg_;
 
-  // Pre-allocated MPC reference buffers (sized in LoadConfig).
+  // Reference buffers sized to full_model_ptr_->nq/nv (= reduced tree when
+  // available). Populated each tick by ComputeReference, consumed by TSID
+  // via control_ref_.{q_des,v_des,a_des}.
   Eigen::VectorXd mpc_q_ref_;
   Eigen::VectorXd mpc_v_ref_;
   Eigen::VectorXd mpc_a_ff_;
