@@ -515,15 +515,14 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
 
     // Handler-mode requires the reduced (mimic-locked) MPC model; mock-mode
     // falls back to the full model since it doesn't touch RobotModelHandler.
+    // The ext_to_mpc_{q,v}_ index map can't be checked here because device
+    // configs aren't bound yet (SetDeviceNameConfigs runs after LoadConfig).
+    // The tick path guards against an invalid map and falls through to the
+    // self-hold reference instead, so a late-detected mismatch can't hurt RT.
     const bool want_handler = (mpc_engine_ == MpcEngine::kHandler);
     if (want_handler && !mpc_model_ptr_) {
       RCLCPP_ERROR(logger_, "[wbc] handler-mode requires urdf.tree_models.mpc; "
                             "falling back to mock engine");
-      mpc_engine_ = MpcEngine::kMock;
-    }
-    if (want_handler && !mpc_joint_reorder_valid_) {
-      RCLCPP_ERROR(logger_,
-                   "[wbc] MPC joint reorder invalid; handler-mode disabled");
       mpc_engine_ = MpcEngine::kMock;
     }
 
@@ -555,10 +554,12 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
     mpc_u_fb_full_ = Eigen::VectorXd::Zero(full_model_ptr_->nv);
 
     mpc_manager_.Init(mpc_cfg, mpc_nq, mpc_nv, mpc_n_contact);
+    const char *active_engine =
+        (mpc_engine_ == MpcEngine::kHandler) ? "handler" : "mock";
     RCLCPP_INFO(logger_,
-                "MPC integration: enabled=%d engine=%s solver_nq=%d "
+                "MPC integration: enabled=%d engine=%s (yaml=%s) solver_nq=%d "
                 "solver_nv=%d full_nq=%d full_nv=%d n_contact=%d",
-                mpc_enabled_, engine_str.c_str(), mpc_nq, mpc_nv,
+                mpc_enabled_, active_engine, engine_str.c_str(), mpc_nq, mpc_nv,
                 full_model_ptr_->nq, full_model_ptr_->nv, mpc_n_contact);
 
     if (mpc_engine_ == MpcEngine::kHandler) {
@@ -1392,7 +1393,12 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState &state,
     const uint64_t now_ns =
         static_cast<uint64_t>(state.iteration) * 2'000'000ULL; // 500 Hz tick
     rtc::mpc::InterpMeta meta;
-    if (handler_mode) {
+    if (handler_mode && !mpc_joint_reorder_valid_) {
+      // Reorder map wasn't built before the first tick (device configs not
+      // yet bound, or a joint name lookup failed). Self-hold this tick — the
+      // ERROR from BuildMpcJointReorderMap surfaces the actual problem.
+      mpc_ref_valid = false;
+    } else if (handler_mode) {
       // Project full-model state (nv=21) → MPC-model state (nv=16), run the
       // manager in reduced space, then expand the 16-DoF outputs back into
       // full-nv-sized references for TSID.
