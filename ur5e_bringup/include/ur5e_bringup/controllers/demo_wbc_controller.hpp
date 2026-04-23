@@ -151,21 +151,6 @@ private:
   // ── Model initialization ────────────────────────────────────────────────
   void InitModels(const rtc_urdf_bridge::ModelConfig &config);
   void BuildJointReorderMap();
-  void BuildMpcJointReorderMap();
-
-  // Projection between full-model (nq=26/nv=21, mimic first-class) and
-  // MPC-model (nq==nv==16, mimic locked) index spaces. Uses
-  // ext_to_pin_{q,v}_ + ext_to_mpc_{q,v}_ so only the kFullDof actuated
-  // entries are copied. Both are noexcept and allocation-free (outputs are
-  // pre-sized scratch buffers).
-  void ProjectFullToMpc(const Eigen::VectorXd &q_full,
-                        const Eigen::VectorXd &v_full, Eigen::VectorXd &q_mpc,
-                        Eigen::VectorXd &v_mpc) const noexcept;
-  void ExpandMpcToFull(const Eigen::VectorXd &q_mpc,
-                       const Eigen::VectorXd &v_mpc,
-                       const Eigen::VectorXd &a_mpc, Eigen::VectorXd &q_full,
-                       Eigen::VectorXd &v_full,
-                       Eigen::VectorXd &a_full) const noexcept;
 
   // ── TSID task/constraint YAML factory ───────────────────────────────────
   //
@@ -224,7 +209,11 @@ private:
   pinocchio::FrameIndex root_frame_id_{0};
   bool use_root_frame_{false};
 
-  // Full model (16-DoF) — shared_ptr lifetime for PinocchioCache
+  // Control model — shared_ptr lifetime for PinocchioCache.
+  // InitModels prefers the mimic-locked reduced tree `mpc`
+  // (nq == nv == 16 for UR5e + 10-DoF hand). Falls back to the raw URDF
+  // full model (nq=26, nv=21 with first-class mimic) only if that tree
+  // isn't declared in urdf.tree_models. TSID + MPC share this model.
   std::shared_ptr<const pinocchio::Model> full_model_ptr_;
 
   // Joint reorder: external [arm0..5, hand0..9] → Pinocchio q/v index
@@ -363,48 +352,20 @@ private:
   std::unique_ptr<ur5e_bringup::phase::GraspPhaseManager> phase_manager_owned_;
   ur5e_bringup::phase::GraspPhaseManager *phase_manager_ptr_{nullptr};
 
-  // MPC-dedicated Pinocchio model (mimic joints locked via rtc_urdf_bridge
-  // tree_model "mpc"). nq == nv == kFullDof (16). Borrowed from builder_;
-  // lifetime bracketed by builder_. All MPC state/reference vectors below
-  // live in THIS model's index space, not full_model_ptr_'s.
-  std::shared_ptr<const pinocchio::Model> mpc_model_ptr_;
-
-  // External [arm0..5, hand0..9] → mpc_model_ptr_ q/v index. Built in
-  // BuildMpcReorderMap() at LoadConfig time alongside ext_to_pin_{q,v}_.
-  std::array<int, kFullDof> ext_to_mpc_q_{};
-  std::array<int, kFullDof> ext_to_mpc_v_{};
-  bool mpc_joint_reorder_valid_{false};
-
   // Pre-parsed YAML nodes (kept alive for handler-mode startup and for
   // cross-mode swap inside HandlerMPCThread).
   YAML::Node mpc_light_cfg_;
   YAML::Node mpc_rich_cfg_;
   YAML::Node phase_cfg_;
 
-  // Manager-view reference buffers (size = solver_model nq/nv, i.e. passed
-  // to MPCSolutionManager::Init). In mock mode these feed control_ref_
-  // directly (pre-existing behavior). In handler mode they hold the reduced
-  // ComputeReference output, which is then expanded into mpc_q_ref_full_
-  // etc. below.
+  // Reference buffers sized to full_model_ptr_->nq/nv (= reduced tree when
+  // available). Populated each tick by ComputeReference, consumed by TSID
+  // via control_ref_.{q_des,v_des,a_des}.
   Eigen::VectorXd mpc_q_ref_;
   Eigen::VectorXd mpc_v_ref_;
   Eigen::VectorXd mpc_a_ff_;
   Eigen::VectorXd mpc_lambda_ref_;
   Eigen::VectorXd mpc_u_fb_;
-
-  // Handler-mode only — state projection scratch (full → MPC) consumed by
-  // WriteState / ComputeReference. Sized to solver_model nq/nv.
-  Eigen::VectorXd mpc_q_curr_reduced_;
-  Eigen::VectorXd mpc_v_curr_reduced_;
-
-  // Handler-mode only — full_model_ptr_->nv-sized expanded targets that feed
-  // TSID via control_ref_.{q_des,v_des,a_des}. Populated by ExpandMpcToFull.
-  // Entries that don't correspond to kFullDof actuated joints stay zero and
-  // are ignored downstream (posture regulation only).
-  Eigen::VectorXd mpc_q_ref_full_;
-  Eigen::VectorXd mpc_v_ref_full_;
-  Eigen::VectorXd mpc_a_ff_full_;
-  Eigen::VectorXd mpc_u_fb_full_;
 
   // ── FSM thresholds ──────────────────────────────────────────────────────
   double epsilon_approach_{0.01};       ///< m, approach → pre-grasp

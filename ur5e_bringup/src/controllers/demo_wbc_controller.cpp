@@ -53,28 +53,30 @@ void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig &config) {
   arm_handle_ = std::make_unique<rub::RtModelHandle>(
       builder_->GetReducedModel(arm_model_name));
 
-  // Full combined model (nq=26, nv=21 with first-class mimic) for TSID
-  full_model_ptr_ = builder_->GetFullModel();
-
-  // MPC-dedicated reduced tree: mimic joints auto-locked via
-  // IncorporateMimicAsPassive → buildReducedModel. Optional — if missing
-  // from YAML the handler-mode engine will fall back at LoadConfig time.
+  // Control model. Prefer the mimic-locked reduced tree `mpc` built by
+  // PinocchioModelBuilder (IncorporateMimicAsPassive → buildReducedModel),
+  // which yields nq == nv == 16 for UR5e + 10-DoF hand. TSID/MPC/state
+  // buffers all operate in this reduced space, so mimic DoFs are handled
+  // by the hardware driver / MuJoCo's built-in tendon. If the tree isn't
+  // configured in YAML, fall back to the raw URDF-parsed full model (nq=26,
+  // nv=21 with Pinocchio first-class mimic) — this preserves pre-reduction
+  // behaviour for URDFs without <mimic> tags.
   try {
-    mpc_model_ptr_ = builder_->GetTreeModel("mpc");
+    full_model_ptr_ = builder_->GetTreeModel("mpc");
+    RCLCPP_INFO(logger_,
+                "[wbc] control model: reduced tree 'mpc' (nq=%d nv=%d)",
+                full_model_ptr_->nq, full_model_ptr_->nv);
   } catch (const std::exception &e) {
-    RCLCPP_WARN(logger_,
-                "[wbc] tree_model 'mpc' unavailable (%s); MPC handler-mode "
-                "will be disabled unless config is fixed",
-                e.what());
-    mpc_model_ptr_.reset();
+    full_model_ptr_ = builder_->GetFullModel();
+    RCLCPP_INFO(
+        logger_,
+        "[wbc] control model: URDF full model (nq=%d nv=%d) — tree 'mpc' "
+        "missing (%s); MPC handler-mode + TSID will see mimic joints",
+        full_model_ptr_->nq, full_model_ptr_->nv, e.what());
   }
 
-  RCLCPP_INFO(
-      logger_,
-      "Models initialized: arm nv=%d, full nq=%d nv=%d, mpc nq=%d nv=%d",
-      arm_handle_->nv(), full_model_ptr_->nq, full_model_ptr_->nv,
-      mpc_model_ptr_ ? mpc_model_ptr_->nq : 0,
-      mpc_model_ptr_ ? mpc_model_ptr_->nv : 0);
+  RCLCPP_INFO(logger_, "Models initialized: arm nv=%d, control nq=%d nv=%d",
+              arm_handle_->nv(), full_model_ptr_->nq, full_model_ptr_->nv);
 }
 
 void DemoWbcController::BuildJointReorderMap() {
@@ -130,76 +132,6 @@ void DemoWbcController::BuildJointReorderMap() {
   if (!joint_reorder_valid_) {
     RCLCPP_ERROR(logger_, "Joint reorder incomplete: mapped %d/%d joints",
                  ext_idx, kFullDof);
-  }
-}
-
-void DemoWbcController::BuildMpcJointReorderMap() {
-  mpc_joint_reorder_valid_ = false;
-  if (!mpc_model_ptr_) {
-    return;
-  }
-  const auto &model = *mpc_model_ptr_;
-
-  const auto *arm_cfg = GetDeviceNameConfig("ur5e");
-  const auto *hand_cfg = GetDeviceNameConfig("hand");
-  if (!arm_cfg || !hand_cfg) {
-    RCLCPP_WARN(logger_, "[wbc] MPC reorder: device configs unavailable");
-    return;
-  }
-
-  int ext_idx = 0;
-  for (const auto &jname : arm_cfg->joint_state_names) {
-    if (!model.existJointName(jname)) {
-      RCLCPP_ERROR(logger_, "[wbc] MPC model lacks joint '%s'", jname.c_str());
-      return;
-    }
-    const auto jid = model.getJointId(jname);
-    const auto eidx = static_cast<std::size_t>(ext_idx);
-    ext_to_mpc_q_[eidx] = model.idx_qs[jid];
-    ext_to_mpc_v_[eidx] = model.idx_vs[jid];
-    ++ext_idx;
-  }
-  for (const auto &jname : hand_cfg->joint_state_names) {
-    if (!model.existJointName(jname)) {
-      RCLCPP_ERROR(logger_, "[wbc] MPC model lacks joint '%s'", jname.c_str());
-      return;
-    }
-    const auto jid = model.getJointId(jname);
-    const auto eidx = static_cast<std::size_t>(ext_idx);
-    ext_to_mpc_q_[eidx] = model.idx_qs[jid];
-    ext_to_mpc_v_[eidx] = model.idx_vs[jid];
-    ++ext_idx;
-  }
-
-  mpc_joint_reorder_valid_ = (ext_idx == kFullDof);
-  if (!mpc_joint_reorder_valid_) {
-    RCLCPP_ERROR(logger_,
-                 "[wbc] MPC joint reorder incomplete: mapped %d/%d joints",
-                 ext_idx, kFullDof);
-  }
-}
-
-void DemoWbcController::ProjectFullToMpc(
-    const Eigen::VectorXd &q_full, const Eigen::VectorXd &v_full,
-    Eigen::VectorXd &q_mpc, Eigen::VectorXd &v_mpc) const noexcept {
-  for (int i = 0; i < kFullDof; ++i) {
-    const auto ei = static_cast<std::size_t>(i);
-    q_mpc[ext_to_mpc_q_[ei]] = q_full[ext_to_pin_q_[ei]];
-    v_mpc[ext_to_mpc_v_[ei]] = v_full[ext_to_pin_v_[ei]];
-  }
-}
-
-void DemoWbcController::ExpandMpcToFull(
-    const Eigen::VectorXd &q_mpc, const Eigen::VectorXd &v_mpc,
-    const Eigen::VectorXd &a_mpc, Eigen::VectorXd &q_full,
-    Eigen::VectorXd &v_full, Eigen::VectorXd &a_full) const noexcept {
-  // Mimic slots in q_full/v_full/a_full are not touched — downstream TSID
-  // reconstructs them via the full model's mimic constraint when needed.
-  for (int i = 0; i < kFullDof; ++i) {
-    const auto ei = static_cast<std::size_t>(i);
-    q_full[ext_to_pin_q_[ei]] = q_mpc[ext_to_mpc_q_[ei]];
-    v_full[ext_to_pin_v_[ei]] = v_mpc[ext_to_mpc_v_[ei]];
-    a_full[ext_to_pin_v_[ei]] = a_mpc[ext_to_mpc_v_[ei]];
   }
 }
 
@@ -513,54 +445,27 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
       mpc_engine_ = MpcEngine::kMock;
     }
 
-    // Handler-mode requires the reduced (mimic-locked) MPC model; mock-mode
-    // falls back to the full model since it doesn't touch RobotModelHandler.
-    // The ext_to_mpc_{q,v}_ index map can't be checked here because device
-    // configs aren't bound yet (SetDeviceNameConfigs runs after LoadConfig).
-    // The tick path guards against an invalid map and falls through to the
-    // self-hold reference instead, so a late-detected mismatch can't hurt RT.
-    const bool want_handler = (mpc_engine_ == MpcEngine::kHandler);
-    if (want_handler && !mpc_model_ptr_) {
-      RCLCPP_ERROR(logger_, "[wbc] handler-mode requires urdf.tree_models.mpc; "
-                            "falling back to mock engine");
-      mpc_engine_ = MpcEngine::kMock;
-    }
-
-    const pinocchio::Model &solver_model = (mpc_engine_ == MpcEngine::kHandler)
-                                               ? *mpc_model_ptr_
-                                               : *full_model_ptr_;
-    const int mpc_nq = solver_model.nq;
-    const int mpc_nv = solver_model.nv;
+    // TSID and MPC share full_model_ptr_ (the reduced tree when available).
+    // No projection layer needed — ComputeReference writes directly into the
+    // reference buffers that TSID consumes via control_ref_.
+    const int mpc_nq = full_model_ptr_->nq;
+    const int mpc_nv = full_model_ptr_->nv;
     const int mpc_n_contact = contact_mgr_config_.max_contact_vars;
 
-    // Manager-view buffers: sized to the solver model (passed to
-    // MPCSolutionManager::Init). In mock mode these ARE the references TSID
-    // consumes (pre-existing behavior). In handler mode they are the reduced
-    // (nq=nv=16) outputs of ComputeReference — expanded into the *_full_
-    // buffers below before feeding TSID.
     mpc_q_ref_ = Eigen::VectorXd::Zero(mpc_nq);
     mpc_v_ref_ = Eigen::VectorXd::Zero(mpc_nv);
     mpc_a_ff_ = Eigen::VectorXd::Zero(mpc_nv);
     mpc_lambda_ref_ = Eigen::VectorXd::Zero(std::max(1, mpc_n_contact));
     mpc_u_fb_ = Eigen::VectorXd::Zero(mpc_nv);
 
-    // Handler-mode only: state projection scratch + full-nv-sized expanded
-    // reference targets that feed TSID via control_ref_. Unused in mock mode.
-    mpc_q_curr_reduced_ = Eigen::VectorXd::Zero(mpc_nq);
-    mpc_v_curr_reduced_ = Eigen::VectorXd::Zero(mpc_nv);
-    mpc_q_ref_full_ = Eigen::VectorXd::Zero(full_model_ptr_->nv);
-    mpc_v_ref_full_ = Eigen::VectorXd::Zero(full_model_ptr_->nv);
-    mpc_a_ff_full_ = Eigen::VectorXd::Zero(full_model_ptr_->nv);
-    mpc_u_fb_full_ = Eigen::VectorXd::Zero(full_model_ptr_->nv);
-
     mpc_manager_.Init(mpc_cfg, mpc_nq, mpc_nv, mpc_n_contact);
     const char *active_engine =
         (mpc_engine_ == MpcEngine::kHandler) ? "handler" : "mock";
     RCLCPP_INFO(logger_,
-                "MPC integration: enabled=%d engine=%s (yaml=%s) solver_nq=%d "
-                "solver_nv=%d full_nq=%d full_nv=%d n_contact=%d",
+                "MPC integration: enabled=%d engine=%s (yaml=%s) nq=%d nv=%d "
+                "n_contact=%d",
                 mpc_enabled_, active_engine, engine_str.c_str(), mpc_nq, mpc_nv,
-                full_model_ptr_->nq, full_model_ptr_->nv, mpc_n_contact);
+                mpc_n_contact);
 
     if (mpc_engine_ == MpcEngine::kHandler) {
       // Resolve factory YAML paths relative to the ur5e_bringup share dir.
@@ -612,7 +517,7 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
                 : YAML::Node{};
         mpc_model_handler_ = std::make_unique<rtc::mpc::RobotModelHandler>();
         const auto model_err =
-            mpc_model_handler_->Init(*mpc_model_ptr_, model_node);
+            mpc_model_handler_->Init(*full_model_ptr_, model_node);
         if (model_err != rtc::mpc::RobotModelInitError::kNoError) {
           RCLCPP_ERROR(logger_,
                        "[wbc] RobotModelHandler::Init failed (code %d) — "
@@ -708,7 +613,6 @@ void DemoWbcController::OnDeviceConfigsSet() {
 
   // ── Joint reorder map ─────────────────────────────────────────────────
   BuildJointReorderMap();
-  BuildMpcJointReorderMap();
 }
 
 void DemoWbcController::UpdateGainsFromMsg(
@@ -1388,61 +1292,27 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState &state,
   // line. If not (MPC disabled / not yet publishing / too many stale
   // cycles), we fall through to the Phase 4 behaviour.
   bool mpc_ref_valid = false;
-  const bool handler_mode = (mpc_engine_ == MpcEngine::kHandler);
   if (mpc_enabled_ && mpc_manager_.Enabled()) {
     const uint64_t now_ns =
         static_cast<uint64_t>(state.iteration) * 2'000'000ULL; // 500 Hz tick
     rtc::mpc::InterpMeta meta;
-    if (handler_mode && !mpc_joint_reorder_valid_) {
-      // Reorder map wasn't built before the first tick (device configs not
-      // yet bound, or a joint name lookup failed). Self-hold this tick — the
-      // ERROR from BuildMpcJointReorderMap surfaces the actual problem.
-      mpc_ref_valid = false;
-    } else if (handler_mode) {
-      // Project full-model state (nv=21) → MPC-model state (nv=16), run the
-      // manager in reduced space, then expand the 16-DoF outputs back into
-      // full-nv-sized references for TSID.
-      ProjectFullToMpc(q_curr_full_, v_curr_full_, mpc_q_curr_reduced_,
-                       mpc_v_curr_reduced_);
-      mpc_manager_.WriteState(mpc_q_curr_reduced_, mpc_v_curr_reduced_, now_ns);
-      mpc_ref_valid = mpc_manager_.ComputeReference(
-          mpc_q_curr_reduced_, mpc_v_curr_reduced_, now_ns, mpc_q_ref_,
-          mpc_v_ref_, mpc_a_ff_, mpc_lambda_ref_, mpc_u_fb_, meta);
-      if (mpc_ref_valid) {
-        mpc_q_ref_full_.setZero();
-        mpc_v_ref_full_.setZero();
-        mpc_a_ff_full_.setZero();
-        mpc_u_fb_full_.setZero();
-        ExpandMpcToFull(mpc_q_ref_, mpc_v_ref_, mpc_a_ff_, mpc_q_ref_full_,
-                        mpc_v_ref_full_, mpc_a_ff_full_);
-        for (int i = 0; i < kFullDof; ++i) {
-          const auto ei = static_cast<std::size_t>(i);
-          mpc_u_fb_full_[ext_to_pin_v_[ei]] = mpc_u_fb_[ext_to_mpc_v_[ei]];
-        }
-      }
-    } else {
-      mpc_manager_.WriteState(q_curr_full_, v_curr_full_, now_ns);
-      mpc_ref_valid = mpc_manager_.ComputeReference(
-          q_curr_full_, v_curr_full_, now_ns, mpc_q_ref_, mpc_v_ref_, mpc_a_ff_,
-          mpc_lambda_ref_, mpc_u_fb_, meta);
-    }
+    mpc_manager_.WriteState(q_curr_full_, v_curr_full_, now_ns);
+    mpc_ref_valid = mpc_manager_.ComputeReference(
+        q_curr_full_, v_curr_full_, now_ns, mpc_q_ref_, mpc_v_ref_, mpc_a_ff_,
+        mpc_lambda_ref_, mpc_u_fb_, meta);
   }
 
   // 3. Set posture reference (regularization toward MPC q_ref if valid,
   //    else toward current position for self-holding behaviour).
   if (mpc_ref_valid) {
-    const Eigen::VectorXd &qr = handler_mode ? mpc_q_ref_full_ : mpc_q_ref_;
-    const Eigen::VectorXd &vr = handler_mode ? mpc_v_ref_full_ : mpc_v_ref_;
-    const Eigen::VectorXd &ar = handler_mode ? mpc_a_ff_full_ : mpc_a_ff_;
-    const Eigen::VectorXd &ub = handler_mode ? mpc_u_fb_full_ : mpc_u_fb_;
-    control_ref_.q_des = qr;
-    control_ref_.v_des = vr;
+    control_ref_.q_des = mpc_q_ref_;
+    control_ref_.v_des = mpc_v_ref_;
     // TSID will combine a_ff with task PD correction. u_fb from Riccati
     // is additive acceleration feedback on the actuated joints only.
-    control_ref_.a_des = ar;
-    const int n_fb = std::min(static_cast<int>(ub.size()),
+    control_ref_.a_des = mpc_a_ff_;
+    const int n_fb = std::min(static_cast<int>(mpc_u_fb_.size()),
                               static_cast<int>(control_ref_.a_des.size()));
-    control_ref_.a_des.head(n_fb) += ub.head(n_fb);
+    control_ref_.a_des.head(n_fb) += mpc_u_fb_.head(n_fb);
   } else {
     control_ref_.q_des = q_curr_full_;
     control_ref_.v_des.setZero();
@@ -1710,8 +1580,8 @@ void DemoWbcController::InitializeHoldPosition(
       // can size its OCP + solver workspace. GraspPhaseManager and all
       // downstream solvers live in the reduced (mimic-locked) MPC model's
       // index space, so seed zeros at those dims — not the full_model's.
-      Eigen::VectorXd q_zero = Eigen::VectorXd::Zero(mpc_model_ptr_->nq);
-      Eigen::VectorXd v_zero = Eigen::VectorXd::Zero(mpc_model_ptr_->nv);
+      Eigen::VectorXd q_zero = Eigen::VectorXd::Zero(full_model_ptr_->nq);
+      Eigen::VectorXd v_zero = Eigen::VectorXd::Zero(full_model_ptr_->nv);
       Eigen::VectorXd sensor_zero = Eigen::VectorXd::Zero(0);
       const pinocchio::SE3 tcp_identity = pinocchio::SE3::Identity();
       const auto initial_ctx = phase_manager_owned_->Update(
