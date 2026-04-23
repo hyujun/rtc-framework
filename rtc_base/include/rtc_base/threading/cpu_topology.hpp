@@ -58,6 +58,16 @@ enum class DegradationMode {
   SERIAL_MPC,
 };
 
+// Which detection path populated the hybrid fields. Surfaced so callers
+// (check_rt_setup.sh, diagnostic logging) can warn when the primary sysfs
+// topology is absent — usually a signal that the kernel build is missing
+// CONFIG_INTEL_HFI_THERMAL / SCHED_MC_PRIO / SCHED_CLUSTER.
+enum class HybridDetectSource {
+  NONE = 0,    // Not hybrid (or no CPU at all).
+  SYSFS_TYPES, // /sys/.../cpu/types/intel_{core,atom}   (+cpuinfo hybrid flag)
+  CPUFREQ_CLUSTER, // cpuinfo_max_freq heterogeneity clustering.
+};
+
 struct CpuTopology {
   // Aggregate counts (valid on every CPU).
   int num_physical_cores{0};
@@ -84,6 +94,11 @@ struct CpuTopology {
   std::vector<int> lpe_core_ids;
 
   NucGeneration generation{NucGeneration::NOT_NUC_HYBRID};
+
+  // Which detection path populated the hybrid fields (NONE when not hybrid).
+  // Used by callers to warn when the primary sysfs path was unavailable and
+  // a fallback had to classify the CPU.
+  HybridDetectSource detect_source{HybridDetectSource::NONE};
 
   // Tier-selection metric for future hybrid dispatch. Returns the count of
   // "high-performance" physical cores — P-core count on hybrid, plain
@@ -189,6 +204,116 @@ CpuinfoHasHybridFlag(const std::filesystem::path &cpuinfo) noexcept {
   return false;
 }
 
+// Frequency-clustering fallback. Returns (p_cpus, e_cpus) when the CPU
+// set splits into two frequency tiers — highest-tier ids go to p_cpus,
+// the rest to e_cpus. Returns empty vectors if the heterogeneity is too
+// small (< kSpreadPct) or the data is unavailable. Zero-dependency: reads
+// cpuinfo_max_freq from each cpuN directory that the caller enumerated.
+//
+// Parameters tuned for Intel hybrid SoCs:
+//   Meteor Lake Core Ultra 9 185H   — P≈5.1 GHz  E≈3.8 GHz  LP-E≈2.5 GHz
+//   Raptor Lake-P i7-1360P          — P≈5.0 GHz  E≈3.7 GHz  (no LP-E)
+//   Arrow Lake-H Core Ultra 9 285H  — P≈5.4 GHz  E≈4.5 GHz  LP-E≈2.5 GHz
+// Homogeneous silicon (AMD Zen 4/5, Alder-Lake-N all-E, SKUs without SMT
+// heterogeneity) typically reports < 3 % spread and is rejected by the
+// 15 % threshold.
+inline std::pair<std::vector<int>, std::vector<int>>
+ClusterByMaxFreq(const std::filesystem::path &cpu_root,
+                 const std::vector<int> &online_cpus) noexcept {
+  constexpr int kSpreadPct = 15;         // min (max-min)/max% to call hybrid
+  constexpr int kPCoreThresholdPct = 85; // P-core: f >= max * 85/100
+  std::pair<std::vector<int>, std::vector<int>> empty;
+  if (online_cpus.empty())
+    return empty;
+
+  std::vector<std::pair<int, int>> freqs; // (cpu, max_khz)
+  freqs.reserve(online_cpus.size());
+  int max_f = 0;
+  int min_f = 0;
+  for (const int cpu : online_cpus) {
+    const int f = ReadInt(cpu_root / ("cpu" + std::to_string(cpu)) /
+                          "cpufreq/cpuinfo_max_freq");
+    if (f <= 0)
+      return empty; // Any missing reading disqualifies the fallback.
+    freqs.emplace_back(cpu, f);
+    if (f > max_f)
+      max_f = f;
+    if (min_f == 0 || f < min_f)
+      min_f = f;
+  }
+  if (max_f <= 0)
+    return empty;
+  const int spread_pct = (max_f - min_f) * 100 / max_f;
+  if (spread_pct < kSpreadPct)
+    return empty;
+
+  const int p_threshold = max_f * kPCoreThresholdPct / 100;
+  std::vector<int> p_cpus, e_cpus;
+  for (const auto &[cpu, f] : freqs) {
+    if (f >= p_threshold)
+      p_cpus.push_back(cpu);
+    else
+      e_cpus.push_back(cpu);
+  }
+  // Must have both tiers — otherwise homogeneous (and the spread check
+  // above should already have rejected, but belt-and-suspenders).
+  if (p_cpus.empty() || e_cpus.empty())
+    return empty;
+  return {std::move(p_cpus), std::move(e_cpus)};
+}
+
+// Derive P-core SMT pairing, E/LP-E split, and all hybrid counters from a
+// (p_cpus, e_cpus) split. Shared between the sysfs-primary and freq-fallback
+// paths so their outputs are identical shape.
+inline void PopulateHybridFromCpus(CpuTopology &t,
+                                   const std::filesystem::path &cpu_root,
+                                   const std::vector<int> &p_cpus,
+                                   const std::vector<int> &e_cpus) noexcept {
+  if (!p_cpus.empty()) {
+    std::map<int, std::vector<int>> p_core_id_to_cpus;
+    for (const int cpu : p_cpus) {
+      const int cid = ReadInt(cpu_root / ("cpu" + std::to_string(cpu)) /
+                              "topology/core_id");
+      if (cid >= 0)
+        p_core_id_to_cpus[cid].push_back(cpu);
+    }
+    for (auto &[cid, cpus] : p_core_id_to_cpus) {
+      std::sort(cpus.begin(), cpus.end());
+      t.p_core_physical_ids.push_back(cpus.front());
+      if (cpus.size() >= 2)
+        t.p_core_sibling_ids.push_back(cpus[1]);
+    }
+    t.num_p_physical = static_cast<int>(p_core_id_to_cpus.size());
+    t.num_p_logical = static_cast<int>(p_cpus.size());
+    t.p_core_has_smt =
+        (t.num_p_logical > t.num_p_physical) &&
+        (t.p_core_sibling_ids.size() == t.p_core_physical_ids.size());
+  }
+
+  if (!e_cpus.empty()) {
+    std::vector<std::pair<int, int>> e_freq;
+    e_freq.reserve(e_cpus.size());
+    int max_freq = 0;
+    for (const int cpu : e_cpus) {
+      const int f = ReadInt(cpu_root / ("cpu" + std::to_string(cpu)) /
+                            "cpufreq/cpuinfo_max_freq");
+      e_freq.emplace_back(cpu, f);
+      if (f > max_freq)
+        max_freq = f;
+    }
+    const int lpe_threshold = max_freq > 0 ? (max_freq * 70 / 100) : 0;
+    for (const auto &[cpu, f] : e_freq) {
+      if (lpe_threshold > 0 && f > 0 && f < lpe_threshold)
+        t.lpe_core_ids.push_back(cpu);
+      else
+        t.e_core_ids.push_back(cpu);
+    }
+    t.num_e_cores = static_cast<int>(t.e_core_ids.size());
+    t.num_lpe_cores = static_cast<int>(t.lpe_core_ids.size());
+    t.has_lp_e_cores = (t.num_lpe_cores > 0);
+  }
+}
+
 inline NucGeneration ClassifyGeneration(bool is_hybrid, bool p_core_has_smt,
                                         bool has_lp_e_cores) noexcept {
   if (!is_hybrid)
@@ -274,64 +399,48 @@ inline CpuTopology DetectCpuTopology(std::string_view sysfs_root,
     }
   }
 
-  // Step 2: hybrid classification via intel_core / intel_atom directories.
-  const auto p_cpus_raw = ReadCpuListFile(cpu_root / "types/intel_core");
-  const auto e_cpus_raw = ReadCpuListFile(cpu_root / "types/intel_atom");
-  const bool types_present = !p_cpus_raw.empty() || !e_cpus_raw.empty();
+  // Step 2a (primary): hybrid classification via intel_core / intel_atom
+  //                   sysfs directories (+ optional cpuinfo `hybrid` flag).
+  const auto p_cpus_sysfs = ReadCpuListFile(cpu_root / "types/intel_core");
+  const auto e_cpus_sysfs = ReadCpuListFile(cpu_root / "types/intel_atom");
+  const bool types_present = !p_cpus_sysfs.empty() || !e_cpus_sysfs.empty();
   const bool cpuinfo_hybrid = CpuinfoHasHybridFlag(cpuinfo);
+  const bool sysfs_says_hybrid =
+      (!p_cpus_sysfs.empty() && !e_cpus_sysfs.empty()) ||
+      (types_present && cpuinfo_hybrid);
 
-  t.is_hybrid = (!p_cpus_raw.empty() && !e_cpus_raw.empty()) ||
-                (types_present && cpuinfo_hybrid);
-
-  if (t.is_hybrid && !p_cpus_raw.empty()) {
-    // Step 3-5: P-core grouping by core_id, SMT sibling pairing.
-    std::map<int, std::vector<int>> p_core_id_to_cpus;
-    for (const int cpu : p_cpus_raw) {
-      const int cid = ReadInt(cpu_root / ("cpu" + std::to_string(cpu)) /
-                              "topology/core_id");
-      if (cid >= 0)
-        p_core_id_to_cpus[cid].push_back(cpu);
-    }
-    for (auto &[cid, cpus] : p_core_id_to_cpus) {
-      std::sort(cpus.begin(), cpus.end());
-      t.p_core_physical_ids.push_back(cpus.front());
-      if (cpus.size() >= 2) {
-        t.p_core_sibling_ids.push_back(cpus[1]);
-      }
-    }
-    t.num_p_physical = static_cast<int>(p_core_id_to_cpus.size());
-    t.num_p_logical = static_cast<int>(p_cpus_raw.size());
-    t.p_core_has_smt =
-        (t.num_p_logical > t.num_p_physical) &&
-        (t.p_core_sibling_ids.size() == t.p_core_physical_ids.size());
-
-    // Step 3b: E-core vs LP-E-core split using cpuinfo_max_freq 70% rule.
-    if (!e_cpus_raw.empty()) {
-      std::vector<std::pair<int, int>> e_freq;
-      int max_freq = 0;
-      e_freq.reserve(e_cpus_raw.size());
-      for (const int cpu : e_cpus_raw) {
-        const int f = ReadInt(cpu_root / ("cpu" + std::to_string(cpu)) /
-                              "cpufreq/cpuinfo_max_freq");
-        e_freq.emplace_back(cpu, f);
-        if (f > max_freq)
-          max_freq = f;
-      }
-      const int lpe_threshold = max_freq > 0 ? (max_freq * 70 / 100) : 0;
-      for (const auto &[cpu, f] : e_freq) {
-        if (lpe_threshold > 0 && f > 0 && f < lpe_threshold) {
-          t.lpe_core_ids.push_back(cpu);
-        } else {
-          t.e_core_ids.push_back(cpu);
-        }
-      }
-      t.num_e_cores = static_cast<int>(t.e_core_ids.size());
-      t.num_lpe_cores = static_cast<int>(t.lpe_core_ids.size());
-      t.has_lp_e_cores = (t.num_lpe_cores > 0);
+  std::vector<int> p_cpus;
+  std::vector<int> e_cpus;
+  if (sysfs_says_hybrid) {
+    t.is_hybrid = true;
+    t.detect_source = HybridDetectSource::SYSFS_TYPES;
+    p_cpus = p_cpus_sysfs;
+    e_cpus = e_cpus_sysfs;
+  } else {
+    // Step 2b (fallback): cpuinfo_max_freq clustering. Fires on kernels
+    // that don't export the hybrid topology — typically custom RT builds
+    // where CONFIG_INTEL_HFI_THERMAL / SCHED_MC_PRIO / SCHED_CLUSTER were
+    // stripped, or pre-6.10 kernels on Meteor/Arrow Lake.
+    std::vector<int> online_cpus;
+    for (const auto &[key, logicals] : core_id_to_logicals)
+      for (const int cpu : logicals)
+        online_cpus.push_back(cpu);
+    std::sort(online_cpus.begin(), online_cpus.end());
+    auto [p_fb, e_fb] = ClusterByMaxFreq(cpu_root, online_cpus);
+    if (!p_fb.empty() && !e_fb.empty()) {
+      t.is_hybrid = true;
+      t.detect_source = HybridDetectSource::CPUFREQ_CLUSTER;
+      p_cpus = std::move(p_fb);
+      e_cpus = std::move(e_fb);
     }
   }
 
-  // Step 6: classify + env hint override.
+  // Step 3: derive SMT sibling pairing + E/LP-E split from the chosen split.
+  //        Shared helper keeps the two paths byte-identical in output shape.
+  if (t.is_hybrid)
+    PopulateHybridFromCpus(t, cpu_root, p_cpus, e_cpus);
+
+  // Step 4: classify generation + apply env hint override.
   t.generation =
       ClassifyGeneration(t.is_hybrid, t.p_core_has_smt, t.has_lp_e_cores);
   t.generation = ApplyEnvHint(t.generation, env_gen_hint);
@@ -371,6 +480,22 @@ inline std::string_view DegradationModeToString(DegradationMode m) noexcept {
     return "none";
   case DegradationMode::SERIAL_MPC:
     return "serial_mpc";
+  }
+  return "none";
+}
+
+// Matches shell `HYBRID_DETECT_SOURCE` values from rt_common.sh —
+// "sysfs_types" / "cpufreq_cluster" / "none". Used for structured logging
+// so the two layers speak the same tag.
+inline std::string_view
+HybridDetectSourceToString(HybridDetectSource s) noexcept {
+  switch (s) {
+  case HybridDetectSource::NONE:
+    return "none";
+  case HybridDetectSource::SYSFS_TYPES:
+    return "sysfs_types";
+  case HybridDetectSource::CPUFREQ_CLUSTER:
+    return "cpufreq_cluster";
   }
   return "none";
 }

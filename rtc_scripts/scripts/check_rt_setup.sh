@@ -346,6 +346,32 @@ check_hybrid_cpu() {
       ;;
   esac
 
+  # Surface which detection path fired — useful on custom RT kernels where
+  # the sysfs hybrid topology is stripped and only fallbacks succeed. Fallback
+  # success implies the kernel is missing intel_core/intel_atom exposure, which
+  # typically points to a missing CONFIG (INTEL_HFI_THERMAL / SCHED_MC_PRIO /
+  # SCHED_CLUSTER) or to /proc/config.gz being disabled.
+  if [[ "$IS_HYBRID" -eq 1 ]]; then
+    case "${HYBRID_DETECT_SOURCE:-none}" in
+      sysfs_types)
+        [[ "$OUTPUT_MODE" == "verbose" ]] \
+          && echo -e "         ${DIM}detect source: sysfs_types (primary)${NC}"
+        ;;
+      cpuid_0x1a)
+        _warn "Hybrid 감지 경로: CPUID leaf 0x1A fallback (sysfs types/ 미노출)"
+        _fix "커널 재빌드 권장: CONFIG_INTEL_HFI_THERMAL / SCHED_MC_PRIO / SCHED_CLUSTER 활성화"
+        _category_update "hybrid_cpu" "WARN"
+        ;;
+      cpufreq_cluster)
+        _warn "Hybrid 감지 경로: cpuinfo_max_freq clustering fallback"
+        _warn "sysfs 도 CPUID 도 hybrid 를 노출하지 않음 — \`sudo apt install cpuid\` 후 재검사 또는 커널 재빌드"
+        _fix "sudo apt install -y cpuid  && 재실행"
+        _fix "또는 커널 .config 에 INTEL_HFI_THERMAL / SCHED_MC_PRIO / SCHED_CLUSTER 추가 후 재빌드"
+        _category_update "hybrid_cpu" "WARN"
+        ;;
+    esac
+  fi
+
   # Env-var override warning — production image에 값이 남으면 실제 hardware와
   # 불일치하는 레이아웃이 적용될 수 있으므로 반드시 경고한다.
   if [[ -n "${RTC_FORCE_HYBRID_GENERATION:-}" ]]; then
