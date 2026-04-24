@@ -67,6 +67,31 @@ virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 >
 > 하위 클래스에서 오버라이드 시 `RTControllerInterface::LoadConfig(cfg)`를 먼저 호출해야 토픽 설정이 적용됩니다.
 
+### Lifecycle 훅 (ros2_control 정렬, 기본 구현 제공)
+
+시그니처는 `rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface`와 동형이며, 향후 `RTControllerInterface`를 `LifecycleNode` 상속형으로 전환할 때 시그니처 변경 없이 이동 가능합니다. 모든 훅은 `noexcept`입니다.
+
+| 훅 | 시그니처 | 기본 동작 |
+|---|---|---|
+| `on_configure` | `(State, LifecycleNode::SharedPtr, YAML::Node) → CallbackReturn` | `node_`에 주입된 노드 저장 → `LoadConfig(yaml_cfg)`를 try/catch로 호출 → 성공 시 `SUCCESS`, YAML 파싱 throw 시 `FAILURE` 반환 |
+| `on_activate` | `(State) → CallbackReturn` | no-op `SUCCESS` |
+| `on_deactivate` | `(State) → CallbackReturn` | no-op `SUCCESS` |
+| `on_cleanup` | `(State) → CallbackReturn` | `node_.reset()` → `SUCCESS` |
+| `on_shutdown` | `(State) → CallbackReturn` | `on_cleanup(state)` 위임 |
+| `on_error` | `(State) → CallbackReturn` | no-op `SUCCESS` (서브클래스에서 E-STOP 트리거 등 원하는 복구 로직 override) |
+
+> **Override 규약**: 서브클래스가 `on_configure`를 오버라이드해 자체 sub/pub을 만들 때 반드시 `RTControllerInterface::on_configure(previous_state, node, yaml_cfg)`를 먼저 호출한 뒤 `node_->create_subscription(...)` / `node_->create_publisher(...)`로 확장합니다. 이 순서를 어기면 `LoadConfig()`가 실행되지 않아 `topic_config_`가 기본값으로 남습니다.
+>
+> RT 경로(`Compute`, `SetDeviceTarget` 등)에서는 **절대 `node_`에 접근하지 않습니다** — ROS2 API 호출은 non-RT 훅에서만 수행하고, RT 경로에서는 사전 할당된 SeqLock/SPSC 버퍼를 통해 값을 읽습니다.
+
+### LifecycleNode 접근자
+
+| 메서드 | 접근 | 설명 |
+|--------|------|------|
+| `get_lifecycle_node()` | public const noexcept | `on_configure` 성공 후 non-null. `RtControllerNode`가 `aux_executor`에 attach하기 위해 사용. `on_cleanup` 후 null |
+
+멤버 `node_`는 `protected`로 노출되어 서브클래스가 `node_->create_subscription(...)` 형태로 직접 ROS I/O를 소유합니다. 이 네이밍 규약(`node_->`)은 향후 상속 전환 시 `this->`로 기계적 치환이 가능하도록 의도된 것입니다.
+
 ### 디바이스 설정 메서드
 
 | 메서드 | 접근 | 설명 |

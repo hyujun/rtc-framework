@@ -5,6 +5,10 @@
 #include "rtc_controller_interface/controller_registry.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <lifecycle_msgs/msg/state.hpp>
+#include <rclcpp/node_options.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <rclcpp_lifecycle/state.hpp>
 #include <rtc_base/logging/session_dir.hpp>
 #include <rtc_urdf_bridge/urdf_analyzer.hpp>
 #include <rtc_urdf_bridge/xacro_processor.hpp>
@@ -318,6 +322,9 @@ void RtControllerNode::DeclareAndLoadParameters() {
       ctrl->SetSystemModelConfig(system_model_config_);
     }
 
+    // Load YAML for this controller; empty node on failure so on_configure
+    // falls through to built-in defaults (matches previous behavior).
+    YAML::Node ctrl_node;
     try {
       const std::string pkg_dir =
           ament_index_cpp::get_package_share_directory(entry.config_package);
@@ -325,13 +332,32 @@ void RtControllerNode::DeclareAndLoadParameters() {
                                     entry.config_subdir + entry.config_key +
                                     ".yaml";
       YAML::Node file_node = YAML::LoadFile(yaml_path);
-      YAML::Node ctrl_node = file_node[entry.config_key];
+      ctrl_node = file_node[entry.config_key];
       ApplyControllerParamOverrides(*this, ctrl_node, entry.config_key);
-      ctrl->LoadConfig(ctrl_node);
     } catch (const std::exception &e) {
       RCLCPP_WARN(get_logger(),
                   "Config load failed for '%s' (pkg=%s, %s) — using defaults",
                   ctrl->Name().data(), entry.config_package.c_str(), e.what());
+    }
+
+    // Create a dedicated LifecycleNode per controller — named after the
+    // config_key so topics declared with the `~` prefix resolve to
+    // /<config_key>/<topic>.  main() attaches these to aux_executor.
+    auto ctrl_lc_node = std::make_shared<rclcpp_lifecycle::LifecycleNode>(
+        entry.config_key, rclcpp::NodeOptions());
+
+    // Drive the controller's lifecycle on_configure.  Default implementation
+    // stores the node and invokes LoadConfig(ctrl_node) internally; a FAILURE
+    // return is non-fatal (matches previous "use defaults" semantics).
+    const rclcpp_lifecycle::State unconfigured_state(
+        lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "unconfigured");
+    const auto cfg_ret =
+        ctrl->on_configure(unconfigured_state, ctrl_lc_node, ctrl_node);
+    if (cfg_ret != urtc::RTControllerInterface::CallbackReturn::SUCCESS) {
+      RCLCPP_WARN(get_logger(),
+                  "Controller '%s' on_configure returned non-SUCCESS — "
+                  "continuing with defaults",
+                  ctrl->Name().data());
     }
 
     name_to_idx[std::string(ctrl->Name())] = static_cast<int>(i);
@@ -340,6 +366,7 @@ void RtControllerNode::DeclareAndLoadParameters() {
     controller_name_to_idx_[entry.config_key] = static_cast<int>(i);
 
     controllers_.push_back(std::move(ctrl));
+    controller_nodes_.push_back(std::move(ctrl_lc_node));
   }
 
   // Cache per-controller topic configs and build active_groups_ +

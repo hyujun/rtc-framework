@@ -6,6 +6,9 @@
 #include "rtc_base/timing/mpc_solve_stats.hpp"
 #include "rtc_base/types/types.hpp"
 
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <rclcpp_lifecycle/node_interfaces/lifecycle_node_interface.hpp>
+#include <rclcpp_lifecycle/state.hpp>
 #include <yaml-cpp/yaml.h>
 
 #include <map>
@@ -35,6 +38,58 @@ public:
   RTControllerInterface &operator=(const RTControllerInterface &) = delete;
   RTControllerInterface(RTControllerInterface &&) = delete;
   RTControllerInterface &operator=(RTControllerInterface &&) = delete;
+
+  // Signature-equivalent to rclcpp_lifecycle so future inheritance migration
+  // ("RTControllerInterface : public rclcpp_lifecycle::LifecycleNode") is a
+  // near-mechanical change — see agent_docs/modification-guide.md.
+  using CallbackReturn =
+      rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+
+  // ── Lifecycle hooks (ros2_control-aligned signatures) ────────────────────
+  //
+  // These are driven by RtControllerNode (CM) as direct C++ method calls;
+  // the injected LifecycleNode is stored in node_ for each controller's own
+  // sub/pub ownership.  All hooks are noexcept — RT-adjacent code (on_activate
+  // arming a publish flag) must not throw.  Non-RT configuration that can
+  // throw (YAML parsing, dynamic allocation) must be caught inside.
+  //
+  // Default contract:
+  //   on_configure:  store node_, invoke LoadConfig(yaml_cfg) in try/catch
+  //   on_activate:   no-op SUCCESS
+  //   on_deactivate: no-op SUCCESS
+  //   on_cleanup:    release node_
+  //   on_shutdown:   delegate to on_cleanup
+  //   on_error:      no-op SUCCESS  (subclass may TriggerEstop() here)
+  //
+  // Overrides that add work MUST call the base implementation first (or
+  // handle LoadConfig / node_ themselves).
+  virtual CallbackReturn
+  on_configure(const rclcpp_lifecycle::State &previous_state,
+               rclcpp_lifecycle::LifecycleNode::SharedPtr node,
+               const YAML::Node &yaml_cfg) noexcept;
+
+  virtual CallbackReturn
+  on_activate(const rclcpp_lifecycle::State &previous_state) noexcept;
+
+  virtual CallbackReturn
+  on_deactivate(const rclcpp_lifecycle::State &previous_state) noexcept;
+
+  virtual CallbackReturn
+  on_cleanup(const rclcpp_lifecycle::State &previous_state) noexcept;
+
+  virtual CallbackReturn
+  on_shutdown(const rclcpp_lifecycle::State &previous_state) noexcept;
+
+  virtual CallbackReturn
+  on_error(const rclcpp_lifecycle::State &previous_state) noexcept;
+
+  // Controller-owned LifecycleNode accessor.  Non-null after on_configure
+  // succeeds; null after on_cleanup.  Intended for CM to add the node to an
+  // executor (aux_executor) for non-RT callback processing.
+  [[nodiscard]] rclcpp_lifecycle::LifecycleNode::SharedPtr
+  get_lifecycle_node() const noexcept {
+    return node_;
+  }
 
   // Compute one control step. Must be noexcept for RT safety.
   [[nodiscard]] virtual ControllerOutput
@@ -178,6 +233,13 @@ protected:
   std::map<std::string, DeviceNameConfig> device_name_configs_;
   std::unique_ptr<rtc_urdf_bridge::ModelConfig> system_model_config_;
   double control_rate_{500.0};
+
+  // Controller-owned LifecycleNode injected by RtControllerNode in
+  // on_configure.  Subclasses use `node_->create_subscription(...)` etc. for
+  // their own ROS I/O.  Kept as a protected member (composition pattern) so a
+  // future migration to "RTControllerInterface : public LifecycleNode" is a
+  // mechanical `node_->` → `this->` replacement.
+  rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
 };
 
 } // namespace rtc

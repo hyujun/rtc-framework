@@ -256,6 +256,20 @@ RtControllerNode::on_cleanup(const rclcpp_lifecycle::State & /*state*/) {
     logger_->DrainBuffer(log_buffer_);
     logger_->Flush();
   }
+  // Drive each controller's lifecycle on_cleanup before destruction so any
+  // sub/pub they created in on_configure is released deterministically.  The
+  // injected LifecycleNode is reset inside the controller; we then drop our
+  // parallel reference.
+  {
+    const rclcpp_lifecycle::State inactive_state(
+        lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "inactive");
+    for (auto &ctrl : controllers_) {
+      if (ctrl) {
+        (void)ctrl->on_cleanup(inactive_state);
+      }
+    }
+  }
+  controller_nodes_.clear();
   controllers_.clear();
   controller_topic_configs_.clear();
   controller_name_to_idx_.clear();

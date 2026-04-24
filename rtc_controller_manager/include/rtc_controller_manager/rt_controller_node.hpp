@@ -81,6 +81,14 @@ public:
   rclcpp::CallbackGroup::SharedPtr GetLogGroup() const { return cb_group_log_; }
   rclcpp::CallbackGroup::SharedPtr GetAuxGroup() const { return cb_group_aux_; }
 
+  // Per-controller LifecycleNodes created in on_configure.  main() attaches
+  // these to aux_executor so controller-owned subscriptions/publishers are
+  // processed off the RT path.  Valid after CM's on_configure has succeeded.
+  [[nodiscard]] const std::vector<rclcpp_lifecycle::LifecycleNode::SharedPtr> &
+  GetControllerNodes() const {
+    return controller_nodes_;
+  }
+
   // RT loop lifecycle — public until Step 8 (RtControllerMain redesign)
   void StartRtLoop(const rtc::ThreadConfig &rt_cfg);
   void StartPublishLoop(const rtc::ThreadConfig &pub_cfg);
@@ -329,6 +337,10 @@ private:
 
   // ── Domain objects ────────────────────────────────────────────────────────
   std::vector<std::unique_ptr<rtc::RTControllerInterface>> controllers_;
+  // Owned in parallel with controllers_: nodes_[i] is the LifecycleNode
+  // injected into controllers_[i] via on_configure().  Index-aligned so
+  // switch/activate logic can pair them without extra lookup.
+  std::vector<rclcpp_lifecycle::LifecycleNode::SharedPtr> controller_nodes_;
   std::atomic<int> active_controller_idx_{1};
   std::unique_ptr<rtc::DataLogger> logger_;
   rtc::ControlLogBuffer log_buffer_{};              // SPSC ring buffer

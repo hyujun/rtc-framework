@@ -1,4 +1,5 @@
-// ── Reusable entry-point logic ────────────────────────────────────────────────
+// ── Reusable entry-point logic
+// ────────────────────────────────────────────────
 //
 // Extracted from rt_controller_main.cpp so that every robot-specific bringup
 // package can reuse it without duplicating boilerplate.
@@ -13,11 +14,12 @@
 //            aux_executor to continue processing lifecycle services.
 //
 // Threading model:
-//   rt_loop          Core 2  SCHED_FIFO 90   clock_nanosleep 500Hz + 50Hz E-STOP
-//   publish_thread   Core 5  SCHED_OTHER -3   SPSC drain → all publish() calls
-//   sensor_executor  Core 3  SCHED_FIFO 70   /joint_states, /target, /hand subs
-//   log_executor     Core 4  SCHED_OTHER -5   SpscLogBuffer → CSV drain
-//   aux_executor     Core 5  SCHED_OTHER  0   E-STOP status + lifecycle services
+//   rt_loop          Core 2  SCHED_FIFO 90   clock_nanosleep 500Hz + 50Hz
+//   E-STOP publish_thread   Core 5  SCHED_OTHER -3   SPSC drain → all publish()
+//   calls sensor_executor  Core 3  SCHED_FIFO 70   /joint_states, /target,
+//   /hand subs log_executor     Core 4  SCHED_OTHER -5   SpscLogBuffer → CSV
+//   drain aux_executor     Core 5  SCHED_OTHER  0   E-STOP status + lifecycle
+//   services
 
 #include "rtc_controller_manager/rt_controller_main.hpp"
 #include "rtc_controller_manager/rt_controller_node.hpp"
@@ -27,18 +29,16 @@
 
 #include <lifecycle_msgs/msg/state.hpp>
 
-#include <sys/mman.h>  // mlockall
+#include <sys/mman.h> // mlockall
 
 #include <chrono>
 #include <fstream>
 #include <string>
 #include <thread>
 
-namespace rtc
-{
+namespace rtc {
 
-int RtControllerMain(int argc, char ** argv)
-{
+int RtControllerMain(int argc, char **argv) {
   // mlockall BEFORE rclcpp::init.
   // MCL_CURRENT locks pages already mapped; MCL_FUTURE ensures every page
   // allocated afterwards (including DDS/RMW heaps) is also locked.
@@ -78,9 +78,8 @@ int RtControllerMain(int argc, char ** argv)
   rclcpp::executors::SingleThreadedExecutor lifecycle_executor;
   lifecycle_executor.add_node(node->get_node_base_interface());
 
-  std::thread lifecycle_thread([&lifecycle_executor]() {
-    lifecycle_executor.spin();
-  });
+  std::thread lifecycle_thread(
+      [&lifecycle_executor]() { lifecycle_executor.spin(); });
 
   // ═══ Phase 2: wait for Active state ═══════════════════════════════════════
   // on_configure creates callback groups, publishers, subscribers.
@@ -133,21 +132,30 @@ int RtControllerMain(int argc, char ** argv)
   // (deactivate, cleanup, shutdown) continue to be processed at runtime.
   aux_executor.add_node(node->get_node_base_interface());
 
+  // Attach each controller's LifecycleNode to aux_executor so controller-
+  // owned subscriptions/publishers are processed off the RT path.  Created
+  // during CM on_configure; stable for the lifetime of the CM node.
+  for (const auto &ctrl_node : node->GetControllerNodes()) {
+    if (ctrl_node) {
+      aux_executor.add_node(ctrl_node->get_node_base_interface());
+    }
+  }
+
   // Helper lambda to create executor thread with RT config
-  auto make_thread = [](auto & executor, const ThreadConfig & cfg) {
-      return std::thread([&executor, cfg]() {
-                 if (!ApplyThreadConfig(cfg)) {
-                   fprintf(stderr,
+  auto make_thread = [](auto &executor, const ThreadConfig &cfg) {
+    return std::thread([&executor, cfg]() {
+      if (!ApplyThreadConfig(cfg)) {
+        fprintf(stderr,
                 "[WARN] Thread config failed for '%s' (need realtime "
                 "permissions)\n",
                 cfg.name);
-                 } else {
-                   fprintf(stdout, "[INFO] Thread '%s' configured:\n%s", cfg.name,
+      } else {
+        fprintf(stdout, "[INFO] Thread '%s' configured:\n%s", cfg.name,
                 VerifyThreadConfig().c_str());
-                 }
-                 executor.spin();
-      });
-    };
+      }
+      executor.spin();
+    });
+  };
 
   auto t_sensor = make_thread(sensor_executor, cfgs.sensor);
   auto t_log = make_thread(log_executor, cfgs.logging);
@@ -165,4 +173,4 @@ int RtControllerMain(int argc, char ** argv)
   return 0;
 }
 
-}  // namespace rtc
+} // namespace rtc

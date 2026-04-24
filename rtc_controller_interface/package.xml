@@ -13,6 +13,8 @@
   <depend>rtc_msgs</depend>
   <depend>rtc_urdf_bridge</depend>
   <depend>pinocchio</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
   <depend>yaml-cpp</depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
