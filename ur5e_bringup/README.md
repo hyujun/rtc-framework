@@ -67,6 +67,8 @@ ur5e_bringup/
 
 데모 컨트롤러는 `rtc_urdf_bridge` 패키지를 통해 Pinocchio 기구학 모델을 구축합니다. URDF 경로와 모델 토폴로지(`sub_models`, `tree_models`, `passive_joints`)는 모두 `ur5e_robot.yaml` / `ur5e_sim.yaml`의 최상위 `urdf:` 섹션에 통합 정의됩니다.
 
+> **관절 분류 규칙 (2026-04-24~)**: `<transmission>` 태그는 더 이상 active/passive 기준이 아닙니다. URDF `type == "fixed"`는 kFixed, `<mimic>` 태그는 kPassive/kMimic, closed-chain 루프 참여 관절은 kPassive/kClosedChain, YAML `passive_joints:`에 명시된 관절은 kPassive/kFree, 그 외 non-fixed는 모두 기본적으로 kActive로 분류됩니다. Active이지만 `<limit effort>` 등 physics가 누락되면 경고가 출력됩니다. 상세는 `rtc_urdf_bridge/README.md` 참조.
+
 ### 설정 구조
 
 | 설정 영역 | 위치 | 역할 |

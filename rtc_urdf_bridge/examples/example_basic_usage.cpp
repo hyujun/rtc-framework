@@ -39,8 +39,8 @@ int main(int argc, char * argv[])
   std::cout << "  링크 수: " << analyzer.GetNumLinks() << "\n";
   std::cout << "  관절 수: " << analyzer.GetNumJoints() << "\n";
 
-  std::cout << "  Actuated 관절: ";
-  for (const auto & j : analyzer.GetActuatedJointNames()) {
+  std::cout << "  Active 관절: ";
+  for (const auto & j : analyzer.GetActiveJointNames()) {
     std::cout << j << " ";
   }
   std::cout << "\n";

@@ -105,6 +105,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_urdf_analyzer test/test_urdf_analyzer.cpp)
   target_link_libraries(test_urdf_analyzer ${PROJECT_NAME})
 
+  ament_add_gtest(test_joint_classification test/test_joint_classification.cpp)
+  target_link_libraries(test_joint_classification ${PROJECT_NAME})
+
   ament_add_gtest(test_chain_extractor test/test_chain_extractor.cpp)
   target_link_libraries(test_chain_extractor ${PROJECT_NAME})
 

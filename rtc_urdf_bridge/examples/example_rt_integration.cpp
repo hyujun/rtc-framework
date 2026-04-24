@@ -65,7 +65,7 @@ int main(int argc, char * argv[])
   const auto & analyzer = builder.GetAnalyzer();
 
   std::cout << "URDF 루트 링크: " << analyzer.GetRootLinkName() << "\n";
-  std::cout << "Actuated 관절 수: " << analyzer.GetActuatedJointNames().size() << "\n";
+  std::cout << "Active 관절 수: " << analyzer.GetActiveJointNames().size() << "\n";
 
   // (2) Full model handle (항상 생성)
   auto full_model = builder.GetFullModel();

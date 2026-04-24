@@ -130,7 +130,7 @@ TreeModelDefinition KinematicChainExtractor::ExtractTreeModel(
 std::vector<std::string> KinematicChainExtractor::ComputeJointsToLock(
   const SubModelDefinition & sub_model) const
 {
-  const auto & all = analyzer_.GetActuatedJointNames();
+  const auto & all = analyzer_.GetNonFixedJointNames();
   std::unordered_set<std::string> keep(
     sub_model.joint_names.begin(), sub_model.joint_names.end());
 
@@ -147,7 +147,7 @@ std::vector<std::string> KinematicChainExtractor::ComputeJointsToLock(
 std::vector<std::string> KinematicChainExtractor::ComputeJointsToLock(
   const TreeModelDefinition & tree_model) const
 {
-  const auto & all = analyzer_.GetActuatedJointNames();
+  const auto & all = analyzer_.GetNonFixedJointNames();
   std::unordered_set<std::string> keep(
     tree_model.joint_names.begin(), tree_model.joint_names.end());
 

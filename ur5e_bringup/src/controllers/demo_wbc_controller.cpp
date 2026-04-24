@@ -53,9 +53,10 @@ void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig &config) {
   arm_handle_ = std::make_unique<rub::RtModelHandle>(
       builder_->GetReducedModel(arm_model_name));
 
-  // Control model. Prefer the mimic-locked reduced tree `mpc` built by
-  // PinocchioModelBuilder (IncorporateMimicAsPassive → buildReducedModel),
-  // which yields nq == nv == 16 for UR5e + 10-DoF hand. TSID/MPC/state
+  // Control model. Prefer the passive-locked reduced tree `mpc` built by
+  // PinocchioModelBuilder (Analyzer auto-classifies mimic/closed-chain/hint
+  // as passive → buildReducedModel locks them), which yields nq == nv == 16
+  // for UR5e + 10-DoF hand. TSID/MPC/state
   // buffers all operate in this reduced space, so mimic DoFs are handled
   // by the hardware driver / MuJoCo's built-in tendon. If the tree isn't
   // configured in YAML, fall back to the raw URDF-parsed full model (nq=26,
@@ -817,8 +818,8 @@ void DemoWbcController::ComputeControl(const ControllerState &state,
   case WbcPhase::kApproach:
   case WbcPhase::kRetreat:
   case WbcPhase::kRelease:
-    ComputePositionMode(dt);
-    break;
+    // ComputePositionMode(dt);
+    // break;
 
   case WbcPhase::kPreGrasp:
   case WbcPhase::kClosure:

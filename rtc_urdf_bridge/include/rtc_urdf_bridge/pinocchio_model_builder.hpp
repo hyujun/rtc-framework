@@ -1,9 +1,9 @@
 // ── PinocchioModelBuilder: YAML + URDF → Pinocchio 모델 구축 ────────────────
 #pragma once
 
+#include "rtc_urdf_bridge/kinematic_chain_extractor.hpp"
 #include "rtc_urdf_bridge/types.hpp"
 #include "rtc_urdf_bridge/urdf_analyzer.hpp"
-#include "rtc_urdf_bridge/kinematic_chain_extractor.hpp"
 
 // Pinocchio 헤더 (경고 억제)
 #pragma GCC diagnostic push
@@ -11,9 +11,9 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/multibody/model.hpp>
-#include <pinocchio/multibody/data.hpp>
 #include <pinocchio/algorithm/contact-info.hpp>
+#include <pinocchio/multibody/data.hpp>
+#include <pinocchio/multibody/model.hpp>
 #pragma GCC diagnostic pop
 
 #include <memory>
@@ -22,8 +22,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace rtc_urdf_bridge
-{
+namespace rtc_urdf_bridge {
 
 /// YAML 설정 + URDF 분석 결과로 Pinocchio 모델 빌드.
 ///
@@ -33,8 +32,7 @@ namespace rtc_urdf_bridge
 /// - 외부에는 shared_ptr<const Model> 참조 제공
 ///
 /// 로봇 비종속: URDF 파일 + YAML 설정에서 모든 정보 결정.
-class PinocchioModelBuilder
-{
+class PinocchioModelBuilder {
 public:
   /// @brief YAML 파일 경로로 생성 (ModelConfig 자동 로드)
   /// @throws std::runtime_error 파일/파싱/빌드 실패 시
@@ -42,26 +40,27 @@ public:
 
   /// @brief ModelConfig 직접 전달
   /// @throws std::runtime_error 빌드 실패 시
-  explicit PinocchioModelBuilder(const ModelConfig & config);
+  explicit PinocchioModelBuilder(const ModelConfig &config);
 
   // ── 모델 접근 ──────────────────────────────────────────────────────────────
 
   /// 전체(full) Pinocchio 모델
-  [[nodiscard]] std::shared_ptr<const pinocchio::Model> GetFullModel() const noexcept;
+  [[nodiscard]] std::shared_ptr<const pinocchio::Model>
+  GetFullModel() const noexcept;
 
   /// 이름으로 축소(reduced) 서브모델 조회
   /// @throws std::out_of_range 이름 미등록 시
-  [[nodiscard]] std::shared_ptr<const pinocchio::Model> GetReducedModel(
-    std::string_view sub_model_name) const;
+  [[nodiscard]] std::shared_ptr<const pinocchio::Model>
+  GetReducedModel(std::string_view sub_model_name) const;
 
   /// 이름으로 트리모델 조회
   /// @throws std::out_of_range 이름 미등록 시
-  [[nodiscard]] std::shared_ptr<const pinocchio::Model> GetTreeModel(
-    std::string_view tree_model_name) const;
+  [[nodiscard]] std::shared_ptr<const pinocchio::Model>
+  GetTreeModel(std::string_view tree_model_name) const;
 
   /// 폐쇄 체인 구속 조건 모델 목록
   [[nodiscard]] const std::vector<pinocchio::RigidConstraintModel> &
-    GetConstraintModels() const noexcept;
+  GetConstraintModels() const noexcept;
 
   // ── 메타데이터 ─────────────────────────────────────────────────────────────
 
@@ -72,21 +71,21 @@ public:
   [[nodiscard]] std::vector<std::string> GetTreeModelNames() const;
 
   /// 서브모델 정의 조회
-  [[nodiscard]] const SubModelDefinition & GetSubModelDefinition(
-    std::string_view name) const;
+  [[nodiscard]] const SubModelDefinition &
+  GetSubModelDefinition(std::string_view name) const;
 
   /// 트리모델 정의 조회
-  [[nodiscard]] const TreeModelDefinition & GetTreeModelDefinition(
-    std::string_view name) const;
+  [[nodiscard]] const TreeModelDefinition &
+  GetTreeModelDefinition(std::string_view name) const;
 
   /// UrdfAnalyzer 접근
-  [[nodiscard]] const UrdfAnalyzer & GetAnalyzer() const noexcept;
+  [[nodiscard]] const UrdfAnalyzer &GetAnalyzer() const noexcept;
 
   /// KinematicChainExtractor 접근
-  [[nodiscard]] const KinematicChainExtractor & GetExtractor() const noexcept;
+  [[nodiscard]] const KinematicChainExtractor &GetExtractor() const noexcept;
 
   /// ModelConfig 접근
-  [[nodiscard]] const ModelConfig & GetConfig() const noexcept;
+  [[nodiscard]] const ModelConfig &GetConfig() const noexcept;
 
   // ── YAML 로드 유틸리티 (static) ────────────────────────────────────────────
 
@@ -100,15 +99,17 @@ private:
   void BuildTreeModels();
   void RegisterClosedChainConstraints();
 
-  /// mimic 관절을 passive 목록에 추가 (잠금 대상)
-  void IncorporateMimicAsPassive();
+  /// 축소 모델에서 잠금 대상이 될 passive 관절 이름 목록.
+  ///   - yaml_passive_override == false: analyzer의 자동 분류 결과 사용
+  ///   - yaml_passive_override == true : config_.passive_joints 그대로 사용
+  [[nodiscard]] std::vector<std::string> CollectPassiveLockNames() const;
 
   /// 잠금 관절의 기준 설정값 구성
   [[nodiscard]] Eigen::VectorXd MakeReferenceConfig() const;
 
   /// 관절 이름 목록 → Pinocchio JointIndex 목록 (full model 기준)
   [[nodiscard]] std::vector<pinocchio::JointIndex> ResolveJointIndicesToLock(
-    const std::vector<std::string> & joint_names_to_lock) const;
+      const std::vector<std::string> &joint_names_to_lock) const;
 
   // ── 내부 데이터 ────────────────────────────────────────────────────────────
   ModelConfig config_;
@@ -117,8 +118,10 @@ private:
 
   // 모델 저장소 (shared_ptr: Handle이 참조)
   std::shared_ptr<pinocchio::Model> full_model_;
-  std::unordered_map<std::string, std::shared_ptr<pinocchio::Model>> reduced_models_;
-  std::unordered_map<std::string, std::shared_ptr<pinocchio::Model>> tree_models_;
+  std::unordered_map<std::string, std::shared_ptr<pinocchio::Model>>
+      reduced_models_;
+  std::unordered_map<std::string, std::shared_ptr<pinocchio::Model>>
+      tree_models_;
 
   // 서브모델/트리모델 정의 캐시
   std::unordered_map<std::string, SubModelDefinition> sub_model_defs_;
@@ -128,4 +131,4 @@ private:
   std::vector<pinocchio::RigidConstraintModel> constraint_models_;
 };
 
-}  // namespace rtc_urdf_bridge
+} // namespace rtc_urdf_bridge
