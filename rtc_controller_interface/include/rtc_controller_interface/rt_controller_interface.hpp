@@ -3,6 +3,7 @@
 
 // Shared types (constants, data structs) live in rtc_base.
 // This header re-exports them and adds the abstract Strategy interface.
+#include "rtc_base/threading/publish_buffer.hpp"
 #include "rtc_base/timing/mpc_solve_stats.hpp"
 #include "rtc_base/types/types.hpp"
 
@@ -11,6 +12,7 @@
 #include <rclcpp_lifecycle/state.hpp>
 #include <yaml-cpp/yaml.h>
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -165,6 +167,32 @@ public:
     return topic_config_;
   }
 
+  // PublishNonRtSnapshot()
+  //   Called from the non-RT publish thread after CM has drained the SPSC
+  //   snapshot and dispatched manager-owned publishers. Override to publish
+  //   controller-owned topics (ownership == TopicOwnership::kController) via
+  //   publishers the controller created in on_configure/on_activate.
+  //
+  //   Group iteration order in `snap.group_commands` matches the controller's
+  //   own `topic_config_.groups` order (set by the RT loop), so overrides can
+  //   index by position.
+  //
+  //   Must be noexcept — any allocation / exception would stall the publish
+  //   thread. Must not touch device_target_ or other RT-written state.
+  virtual void PublishNonRtSnapshot(const PublishSnapshot &snap) noexcept {
+    (void)snap;
+  }
+
+  // SetTargetReceivedNotifier()
+  //   Injected by CM before on_configure. Controllers that move target
+  //   subscriptions to their own LifecycleNode (ownership == kController)
+  //   must invoke notifier_() in the subscription callback so CM's
+  //   target_received_ gate flips exactly once, matching the legacy behavior
+  //   where CM's own DeviceTargetCallback set the flag. No-op when unset.
+  void SetTargetReceivedNotifier(std::function<void()> notifier) {
+    target_received_notifier_ = std::move(notifier);
+  }
+
   // ── Device name configuration ──────────────────────────────────────────
   //   SetDeviceNameConfigs() is called by RtControllerNode after all
   //   controllers are constructed and device configs are loaded from YAML.
@@ -240,6 +268,18 @@ protected:
   // future migration to "RTControllerInterface : public LifecycleNode" is a
   // mechanical `node_->` → `this->` replacement.
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
+
+  // Invoked by subclasses (from controller-owned target subscription
+  // callbacks) to signal CM that a target has been received. Safe to call
+  // even when the notifier is unset — guarded internally.
+  void NotifyTargetReceived() const {
+    if (target_received_notifier_) {
+      target_received_notifier_();
+    }
+  }
+
+private:
+  std::function<void()> target_received_notifier_;
 };
 
 } // namespace rtc

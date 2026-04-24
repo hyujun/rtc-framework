@@ -237,13 +237,17 @@ my_controller:
     ur5e:
       subscribe:
         - topic: "/joint_states"
-          role: "state"
-        - topic: "/ur5e/target_joint_positions"
+          role: "state"                # ownership omitted → manager (default)
+        - topic: "ur5e/joint_goal"     # relative path (controller namespace)
           role: "target"
+          ownership: "controller"
       publish:
         - topic: "/ur5e/joint_command"
           role: "joint_command"
           data_size: 6
+        - topic: "ur5e/gui_position"   # relative path (controller namespace)
+          role: "gui_position"
+          ownership: "controller"
     hand:
       subscribe:
         - topic: "/hand/joint_states"
@@ -251,6 +255,17 @@ my_controller:
 ```
 
 > 폐기된 flat format (`topics.subscribe`를 직접 사용)은 마이그레이션 에러를 발생시킵니다.
+
+### 토픽 소유권 (TopicOwnership)
+
+각 subscribe/publish entry는 optional `ownership` 필드를 갖습니다. 누락 시 기본값은 `"manager"`.
+
+| YAML 값 | enum 값 | 주체 | 용도 |
+|---------|---------|------|------|
+| `manager` (default) | `kManager` | `RtControllerNode` (CM) | RT-adjacent HW 트래픽 (state/command/log). 500 Hz 루프와 SPSC 드레인을 경유 |
+| `controller` | `kController` | 컨트롤러별 `LifecycleNode` | 외부 GUI/BT/planner용 non-RT 트래픽. 상대 경로는 노드 namespace `/<config_key>/...`로 자동 해석 |
+
+Controller-owned 토픽은 on_configure에서 컨트롤러가 직접 `node_->create_subscription(...)` / `node_->create_publisher(...)`로 생성합니다. CM의 publish thread는 SPSC snapshot을 드레인한 뒤 `controllers_[active]->PublishNonRtSnapshot(snap)` 을 호출해 controller-owned 발행을 위임합니다.
 
 ### 구독 역할 (SubscribeRole)
 
