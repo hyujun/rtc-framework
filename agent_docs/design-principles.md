@@ -2,6 +2,8 @@
 
 `rtc_*` packages are the **robot-agnostic** backbone of this framework. Any modification must preserve this property. Robot-specific logic, hardware assumptions, and fixed-shape constants belong in `ur5e_*` packages. When in doubt: *"Would this code still make sense on a 7-DOF arm with a 2-finger gripper?"*
 
+> **이 파일의 규칙 위반은 [invariants.md](invariants.md) ARCH-1~4의 escalation 대상이다.** 위반이 불가피하다고 판단될 때는 코드를 쓰기 **전에** [CLAUDE.md](../CLAUDE.md#L115) §6 포맷으로 `[CONCERN] Severity: Warning` 이상을 보고한다.
+
 ## Five Principles
 
 1. **Extensibility** -- Adding a new robot, new DOF count, new transport, or new controller must require **zero source edits** inside `rtc_*`. Achievable via: (a) YAML config, (b) `RTC_REGISTER_CONTROLLER` from downstream, or (c) implementing an abstract interface.
@@ -43,6 +45,24 @@ CM's publish thread drains the SPSC snapshot for manager-owned roles and then ca
 ## When Generalization Requires a Design Change
 
 If you cannot satisfy all five principles with a local edit, STOP and:
-1. Report a `[CONCERN] Severity: Warning`
+1. Report a `[CONCERN] Severity: Warning` ([CLAUDE.md](../CLAUDE.md#L115) §6 포맷)
 2. Propose an interface refactor or dependency inversion as a separate task
 3. Do NOT embed robot-specific logic in `rtc_*` "for now"
+
+### Example
+
+```
+[CONCERN] rtc_controllers/CLIK에서 hand joint 인덱스가 6~15로 하드코딩 필요
+Severity: Warning
+Detail: UR5e + 10-DOF hand 조합에서 task 공간 CLIK이 hand 6~15 번 joint를
+  null-space에 넣어야 하는데, rtc_* 는 robot-agnostic이어야 하므로
+  ARCH-1 위반. 현재 rtc_controllers는 "total DOF" 만 알고 sub-chain
+  분할 정보는 없음.
+Alternative:
+  1) SubChain 구성을 rtc_urdf_bridge에서 YAML 주입 (선호)
+  2) CLIK에 `null_space_indices: [int]` 파라미터 추가 후 ur5e_bringup
+     YAML에서 주입
+  3) ur5e_bringup에 별도 CLIKWithHand 컨트롤러를 파생해 robot-specific
+     지식을 외부로 뽑아냄
+권고: (1) — 다른 robot/hand 조합에서도 재사용 가능
+```
