@@ -7,8 +7,6 @@ CSV 유틸리티, 컬럼 감지, 로그 타입 분류, subplot 그리드 계산 
 from __future__ import annotations
 
 import csv
-import os
-import textwrap
 
 import numpy as np
 import pandas as pd
@@ -34,6 +32,7 @@ from rtc_tools.plotting.plot_rtc_log import (
 # Fixtures
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 @pytest.fixture(autouse=True)
 def _clear_cache():
     """테스트 간 컬럼 감지 캐시 격리."""
@@ -53,6 +52,7 @@ def _write_csv(path, header: list[str], rows: list[list]):
 # ═══════════════════════════════════════════════════════════════════════════
 # detect_log_type — 파일명으로 로그 타입 분류
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestDetectLogType:
     """detect_log_type: 파일명 패턴으로 로그 종류를 자동 분류."""
@@ -89,8 +89,68 @@ class TestDetectLogType:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# detect_log_type_by_columns — 컬럼 기반 fallback 분류
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestDetectLogTypeByColumns:
+    """detect_log_type_by_columns: 파일명이 안 맞을 때 CSV 헤더로 분류."""
+
+    def test_timing_by_t_total_us(self):
+        cols = ["timestamp", "t_total_us", "jitter_us"]
+        assert detect_log_type_by_columns(cols) == "timing"
+
+    def test_timing_by_jitter_only(self):
+        assert detect_log_type_by_columns(["timestamp", "jitter_us"]) == "timing"
+
+    def test_state_log_by_actual_pos(self):
+        cols = ["timestamp", "actual_pos_0", "actual_pos_1", "goal_pos_0"]
+        assert detect_log_type_by_columns(cols) == "state_log"
+
+    def test_sensor_log_by_baro_raw(self):
+        cols = ["timestamp", "baro_raw_thumb_0", "tof_raw_thumb_0"]
+        assert detect_log_type_by_columns(cols) == "sensor_log"
+
+    def test_empty_columns(self):
+        assert detect_log_type_by_columns([]) == "unknown"
+
+    def test_only_timestamp(self):
+        assert detect_log_type_by_columns(["timestamp"]) == "unknown"
+
+    def test_timing_priority_over_state(self):
+        # Defensive: timing columns win if both appear.
+        cols = ["timestamp", "t_total_us", "actual_pos_0"]
+        assert detect_log_type_by_columns(cols) == "timing"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _peek_csv_header — 헤더 미리보기
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestPeekCsvHeader:
+    """_peek_csv_header: CSV 첫 줄을 컬럼 리스트로 반환."""
+
+    def test_reads_header(self, tmp_path):
+        path = tmp_path / "timing_stat.csv"
+        _write_csv(path, ["timestamp", "t_total_us", "jitter_us"], [[0.0, 100, 5]])
+        assert _peek_csv_header(str(path)) == ["timestamp", "t_total_us", "jitter_us"]
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        assert _peek_csv_header(str(tmp_path / "nope.csv")) == []
+
+    def test_renamed_timing_csv_classifies_as_timing(self, tmp_path):
+        # 통합 시나리오: timing_stat.csv 같은 임의 이름도 컬럼으로 인식.
+        path = tmp_path / "timing_stat.csv"
+        _write_csv(path, ["timestamp", "t_total_us", "jitter_us"], [[0.0, 100, 5]])
+        assert detect_log_type(str(path)) == "unknown"
+        assert detect_log_type_by_columns(_peek_csv_header(str(path))) == "timing"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # _auto_subplot_grid — 최적 subplot 배치 계산
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestAutoSubplotGrid:
     """_auto_subplot_grid: n개 subplot의 (nrows, ncols) 최적 배치."""
@@ -146,19 +206,27 @@ class TestAutoSubplotGrid:
 # _detect_num_channels — prefix로 컬럼 수 감지
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestDetectNumChannels:
     def test_basic(self):
-        df = pd.DataFrame({
-            "actual_pos_0": [1], "actual_pos_1": [2], "actual_pos_2": [3],
-            "actual_vel_0": [4],
-        })
+        df = pd.DataFrame(
+            {
+                "actual_pos_0": [1],
+                "actual_pos_1": [2],
+                "actual_pos_2": [3],
+                "actual_vel_0": [4],
+            }
+        )
         assert _detect_num_channels(df, "actual_pos_") == 3
         assert _detect_num_channels(df, "actual_vel_") == 1
 
     def test_named_columns(self):
-        df = pd.DataFrame({
-            "actual_pos_shoulder": [1], "actual_pos_elbow": [2],
-        })
+        df = pd.DataFrame(
+            {
+                "actual_pos_shoulder": [1],
+                "actual_pos_elbow": [2],
+            }
+        )
         assert _detect_num_channels(df, "actual_pos_") == 2
 
     def test_no_match(self):
@@ -170,28 +238,39 @@ class TestDetectNumChannels:
 # _detect_joint_columns — 조인트 컬럼 감지 + 캐싱
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestDetectJointColumns:
     def test_numeric_columns(self):
-        df = pd.DataFrame({
-            "goal_pos_0": [0.1], "goal_pos_1": [0.2], "goal_pos_2": [0.3],
-        })
+        df = pd.DataFrame(
+            {
+                "goal_pos_0": [0.1],
+                "goal_pos_1": [0.2],
+                "goal_pos_2": [0.3],
+            }
+        )
         cols, names = _detect_joint_columns(df, "goal_pos_", 3)
         assert cols == ["goal_pos_0", "goal_pos_1", "goal_pos_2"]
         assert names == ["0", "1", "2"]
 
     def test_named_columns(self):
-        df = pd.DataFrame({
-            "actual_pos_shoulder_pan_joint": [0.1],
-            "actual_pos_elbow_joint": [0.2],
-        })
+        df = pd.DataFrame(
+            {
+                "actual_pos_shoulder_pan_joint": [0.1],
+                "actual_pos_elbow_joint": [0.2],
+            }
+        )
         cols, names = _detect_joint_columns(df, "actual_pos_")
         assert len(cols) == 2
         assert "shoulder_pan_joint" in names[0]
 
     def test_auto_count(self):
-        df = pd.DataFrame({
-            "cmd_0": [0.1], "cmd_1": [0.2], "cmd_2": [0.3],
-        })
+        df = pd.DataFrame(
+            {
+                "cmd_0": [0.1],
+                "cmd_1": [0.2],
+                "cmd_2": [0.3],
+            }
+        )
         cols, names = _detect_joint_columns(df, "cmd_")
         assert len(cols) == 3
 
@@ -213,6 +292,7 @@ class TestDetectJointColumns:
 # _has_columns — 컬럼 존재 여부 확인
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestHasColumns:
     def test_numeric_present(self):
         df = pd.DataFrame({"task_pos_0": [1], "task_pos_1": [2], "task_pos_2": [3]})
@@ -220,9 +300,13 @@ class TestHasColumns:
         assert _has_columns(df, "task_pos_", 4) is False
 
     def test_named_present(self):
-        df = pd.DataFrame({
-            "task_pos_x": [1], "task_pos_y": [2], "task_pos_z": [3],
-        })
+        df = pd.DataFrame(
+            {
+                "task_pos_x": [1],
+                "task_pos_y": [2],
+                "task_pos_z": [3],
+            }
+        )
         assert _has_columns(df, "task_pos_", 3) is True
 
     def test_missing(self):
@@ -234,11 +318,14 @@ class TestHasColumns:
 # _detect_fingertip_labels / _detect_fingertip_labels_raw / _detect_ft_labels
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestDetectFingertipLabels:
     def test_filtered_labels(self):
         cols = {
-            "baro_thumb_0": [1], "baro_thumb_1": [2],
-            "baro_index_0": [3], "baro_index_1": [4],
+            "baro_thumb_0": [1],
+            "baro_thumb_1": [2],
+            "baro_index_0": [3],
+            "baro_index_1": [4],
         }
         df = pd.DataFrame(cols)
         labels = _detect_fingertip_labels(df)
@@ -247,8 +334,10 @@ class TestDetectFingertipLabels:
     def test_excludes_raw(self):
         """baro_raw_ 컬럼은 filtered 감지에서 제외."""
         cols = {
-            "baro_raw_thumb_0": [1], "baro_raw_thumb_1": [2],
-            "baro_thumb_0": [3], "baro_thumb_1": [4],
+            "baro_raw_thumb_0": [1],
+            "baro_raw_thumb_1": [2],
+            "baro_thumb_0": [3],
+            "baro_thumb_1": [4],
         }
         df = pd.DataFrame(cols)
         labels = _detect_fingertip_labels(df)
@@ -262,8 +351,10 @@ class TestDetectFingertipLabels:
 class TestDetectFingertipLabelsRaw:
     def test_raw_labels(self):
         cols = {
-            "baro_raw_thumb_0": [1], "baro_raw_thumb_1": [2],
-            "baro_raw_index_0": [3], "baro_raw_index_1": [4],
+            "baro_raw_thumb_0": [1],
+            "baro_raw_thumb_1": [2],
+            "baro_raw_index_0": [3],
+            "baro_raw_index_1": [4],
         }
         df = pd.DataFrame(cols)
         labels = _detect_fingertip_labels_raw(df)
@@ -279,8 +370,10 @@ class TestDetectFtLabels:
     def test_contact_model(self):
         """3-head model: ft_{label}_contact + ft_{label}_fx."""
         cols = {
-            "ft_thumb_contact": [0.8], "ft_thumb_fx": [1.0],
-            "ft_index_contact": [0.3], "ft_index_fx": [0.5],
+            "ft_thumb_contact": [0.8],
+            "ft_thumb_fx": [1.0],
+            "ft_index_contact": [0.3],
+            "ft_index_fx": [0.5],
         }
         df = pd.DataFrame(cols)
         labels = _detect_ft_labels(df)
@@ -289,8 +382,10 @@ class TestDetectFtLabels:
     def test_legacy_model(self):
         """Legacy 6-output model: ft_{label}_fx + ft_{label}_fy."""
         cols = {
-            "ft_thumb_fx": [1.0], "ft_thumb_fy": [0.5],
-            "ft_index_fx": [0.3], "ft_index_fy": [0.2],
+            "ft_thumb_fx": [1.0],
+            "ft_thumb_fy": [0.5],
+            "ft_index_fx": [0.3],
+            "ft_index_fy": [0.2],
         }
         df = pd.DataFrame(cols)
         labels = _detect_ft_labels(df)
@@ -299,8 +394,10 @@ class TestDetectFtLabels:
     def test_excludes_ft_valid(self):
         """ft_valid 라벨은 제외."""
         cols = {
-            "ft_valid_contact": [1], "ft_valid_fx": [0],
-            "ft_thumb_contact": [0.8], "ft_thumb_fx": [1.0],
+            "ft_valid_contact": [1],
+            "ft_valid_fx": [0],
+            "ft_thumb_contact": [0.8],
+            "ft_thumb_fx": [1.0],
         }
         df = pd.DataFrame(cols)
         labels = _detect_ft_labels(df)
@@ -314,6 +411,7 @@ class TestDetectFtLabels:
 # ═══════════════════════════════════════════════════════════════════════════
 # CSV 컬럼 불일치 감지 + 헤더 복구
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestDetectCsvColumnMismatch:
     def test_no_mismatch(self, tmp_path):
@@ -375,7 +473,8 @@ class TestRebuildSensorLogHeader:
     def test_multiple_fingertips(self):
         header = [
             "timestamp",
-            "baro_raw_thumb_0", "baro_raw_index_0",
+            "baro_raw_thumb_0",
+            "baro_raw_index_0",
         ]
         result = _rebuild_sensor_log_header(header, 17)
         assert len(result) == 17
@@ -388,9 +487,9 @@ class TestRebuildSensorLogHeader:
 class TestLoadSensorLogCsv:
     def test_normal_load(self, tmp_path):
         path = tmp_path / "hand_sensor_log.csv"
-        _write_csv(path,
-                   ["timestamp", "baro_0", "tof_0"],
-                   [[0.0, 100, 50], [0.002, 101, 51]])
+        _write_csv(
+            path, ["timestamp", "baro_0", "tof_0"], [[0.0, 100, 50], [0.002, 101, 51]]
+        )
 
         df, repaired = _load_sensor_log_csv(str(path))
         assert not repaired
@@ -422,23 +521,26 @@ class TestLoadSensorLogCsv:
 # 통계 함수 — print_robot_statistics / print_timing_statistics
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestStatistics:
     """통계 출력 함수가 예외 없이 실행되는지 검증 (출력 내용은 smoke test)."""
 
     def test_robot_statistics_no_crash(self, capsys):
         from rtc_tools.plotting.plot_rtc_log import print_robot_statistics
 
-        df = pd.DataFrame({
-            "timestamp": [0.0, 0.002, 0.004, 0.006, 0.008],
-            "actual_pos_0": [0.1, 0.11, 0.12, 0.13, 0.14],
-            "actual_pos_1": [0.2, 0.21, 0.22, 0.23, 0.24],
-            "traj_pos_0": [0.1, 0.12, 0.14, 0.16, 0.18],
-            "traj_pos_1": [0.2, 0.22, 0.24, 0.26, 0.28],
-            "actual_vel_0": [5.0, 5.0, 5.0, 5.0, 5.0],
-            "actual_vel_1": [5.0, 5.0, 5.0, 5.0, 5.0],
-            "traj_vel_0": [5.0, 5.0, 5.0, 5.0, 5.0],
-            "traj_vel_1": [5.0, 5.0, 5.0, 5.0, 5.0],
-        })
+        df = pd.DataFrame(
+            {
+                "timestamp": [0.0, 0.002, 0.004, 0.006, 0.008],
+                "actual_pos_0": [0.1, 0.11, 0.12, 0.13, 0.14],
+                "actual_pos_1": [0.2, 0.21, 0.22, 0.23, 0.24],
+                "traj_pos_0": [0.1, 0.12, 0.14, 0.16, 0.18],
+                "traj_pos_1": [0.2, 0.22, 0.24, 0.26, 0.28],
+                "actual_vel_0": [5.0, 5.0, 5.0, 5.0, 5.0],
+                "actual_vel_1": [5.0, 5.0, 5.0, 5.0, 5.0],
+                "traj_vel_0": [5.0, 5.0, 5.0, 5.0, 5.0],
+                "traj_vel_1": [5.0, 5.0, 5.0, 5.0, 5.0],
+            }
+        )
         print_robot_statistics(df)
         captured = capsys.readouterr()
         assert "Robot Trajectory Statistics" in captured.out
@@ -448,10 +550,12 @@ class TestStatistics:
         """duration=0 시 ZeroDivisionError 방지."""
         from rtc_tools.plotting.plot_rtc_log import print_robot_statistics
 
-        df = pd.DataFrame({
-            "timestamp": [5.0, 5.0],
-            "actual_pos_0": [0.1, 0.1],
-        })
+        df = pd.DataFrame(
+            {
+                "timestamp": [5.0, 5.0],
+                "actual_pos_0": [0.1, 0.1],
+            }
+        )
         print_robot_statistics(df)  # no crash
         captured = capsys.readouterr()
         assert "0.0 Hz" in captured.out
@@ -459,14 +563,16 @@ class TestStatistics:
     def test_timing_statistics_no_crash(self, capsys):
         from rtc_tools.plotting.plot_rtc_log import print_timing_statistics
 
-        df = pd.DataFrame({
-            "timestamp": np.arange(0, 1.0, 0.002),
-            "t_state_acquire_us": np.random.uniform(10, 50, 500),
-            "t_compute_us": np.random.uniform(50, 200, 500),
-            "t_publish_us": np.random.uniform(5, 30, 500),
-            "t_total_us": np.random.uniform(100, 300, 500),
-            "jitter_us": np.random.uniform(-50, 50, 500),
-        })
+        df = pd.DataFrame(
+            {
+                "timestamp": np.arange(0, 1.0, 0.002),
+                "t_state_acquire_us": np.random.uniform(10, 50, 500),
+                "t_compute_us": np.random.uniform(50, 200, 500),
+                "t_publish_us": np.random.uniform(5, 30, 500),
+                "t_total_us": np.random.uniform(100, 300, 500),
+                "jitter_us": np.random.uniform(-50, 50, 500),
+            }
+        )
         print_timing_statistics(df)
         captured = capsys.readouterr()
         assert "Timing Statistics" in captured.out
@@ -476,16 +582,18 @@ class TestStatistics:
     def test_device_statistics_no_crash(self, capsys):
         from rtc_tools.plotting.plot_rtc_log import print_device_statistics
 
-        df = pd.DataFrame({
-            "timestamp": [0.0, 0.002, 0.004],
-            "hand_actual_pos_m0": [0.1, 0.2, 0.3],
-            "hand_actual_pos_m1": [0.4, 0.5, 0.6],
-            "hand_goal_pos_m0": [0.1, 0.2, 0.3],
-            "hand_goal_pos_m1": [0.4, 0.5, 0.6],
-            "baro_thumb_0": [100, 101, 102],
-            "baro_thumb_1": [200, 201, 202],
-            "tof_thumb_0": [50, 51, 52],
-        })
+        df = pd.DataFrame(
+            {
+                "timestamp": [0.0, 0.002, 0.004],
+                "hand_actual_pos_m0": [0.1, 0.2, 0.3],
+                "hand_actual_pos_m1": [0.4, 0.5, 0.6],
+                "hand_goal_pos_m0": [0.1, 0.2, 0.3],
+                "hand_goal_pos_m1": [0.4, 0.5, 0.6],
+                "baro_thumb_0": [100, 101, 102],
+                "baro_thumb_1": [200, 201, 202],
+                "tof_thumb_0": [50, 51, 52],
+            }
+        )
         print_device_statistics(df)
         captured = capsys.readouterr()
         assert "Hand Trajectory Statistics" in captured.out
@@ -493,15 +601,17 @@ class TestStatistics:
     def test_motor_statistics_no_crash(self, capsys):
         from rtc_tools.plotting.plot_rtc_log import print_motor_statistics
 
-        df = pd.DataFrame({
-            "timestamp": [0.0, 0.002, 0.004],
-            "motor_pos_m0": [0.1, 0.2, 0.3],
-            "motor_pos_m1": [0.4, 0.5, 0.6],
-            "motor_vel_m0": [1.0, 1.1, 1.2],
-            "motor_vel_m1": [2.0, 2.1, 2.2],
-            "motor_eff_m0": [0.01, 0.02, 0.03],
-            "motor_eff_m1": [0.04, 0.05, 0.06],
-        })
+        df = pd.DataFrame(
+            {
+                "timestamp": [0.0, 0.002, 0.004],
+                "motor_pos_m0": [0.1, 0.2, 0.3],
+                "motor_pos_m1": [0.4, 0.5, 0.6],
+                "motor_vel_m0": [1.0, 1.1, 1.2],
+                "motor_vel_m1": [2.0, 2.1, 2.2],
+                "motor_eff_m0": [0.01, 0.02, 0.03],
+                "motor_eff_m1": [0.04, 0.05, 0.06],
+            }
+        )
         print_motor_statistics(df)
         captured = capsys.readouterr()
         assert "Motor State Statistics" in captured.out
