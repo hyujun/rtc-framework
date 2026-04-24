@@ -61,6 +61,33 @@ Before declaring implementation complete, verify handling of:
 - **Empty/zero input**: graceful no-op or explicit rejection
 - **Thread safety**: new shared state -> SeqLock, SPSC, or atomic; document mechanism
 
+## Commit Message Conventions
+
+Follow **Conventional Commits**: `type(scope): subject` + optional body + optional footer.
+
+**Types**: `feat` | `fix` | `docs` | `style` | `refactor` | `perf` | `test` | `chore`
+
+**Scope**: package name (`rtc_base`, `ur5e_bringup`, ...) or broad tag (`multi-pkg`, `launch`, `isolation`) when the change spans packages. One scope per commit -- split unrelated changes.
+
+**Subject**: English, imperative mood, capitalized first letter, no trailing period, <= 50 chars.
+
+**Body / footer** (optional, blank line before each, wrap at 72):
+- Explain *what* and *why*, not *how*. Omit when the subject is self-explanatory.
+- Reference issues as `Closes: #N` / `Refs: #N` in the footer.
+- PR merge commits keep GitHub's default `Merge pull request #N from ...` -- do not rewrite.
+
+Example with body + footer:
+```
+feat(multi-pkg): Surface MPC solve failures via throttled stderr
+
+Previously a failed solve was silently dropped, masking convergence
+regressions during long runs. Emit a count=0 sentinel plus a
+rate-limited warning so operators see repeated failures without
+flooding the console.
+
+Closes: #92
+```
+
 ## Code Quality Checks
 
 - No placeholder stubs (`// TODO: implement`) unless explicitly agreed

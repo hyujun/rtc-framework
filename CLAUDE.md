@@ -83,6 +83,8 @@ Design rules for `rtc_*` packages:
 
 When a concern is found, report: `[CONCERN] summary / Severity: Critical|Warning|Info / Detail / Alternative`
 
+Commits: Conventional Commits -- `type(scope): subject`. See `agent_docs/conventions.md` for full rules.
+
 ## Post-Task Housekeeping
 
 Run after a commit lands or the user signals task completion:
@@ -97,5 +99,5 @@ Run after a commit lands or the user signals task completion:
 - `agent_docs/controllers.md`         -- Controller table, gains layout, GraspController FSM, topics, config files
 - `agent_docs/modification-guide.md`  -- Adding controllers/messages/devices/threads, package update checklist
 - `agent_docs/design-principles.md`   -- rtc_* 5 principles, rtc_* vs ur5e_* boundary rules
-- `agent_docs/conventions.md`         -- Domain conventions, documentation requirements, edge case audit
+- `agent_docs/conventions.md`         -- Domain/code/commit conventions, documentation requirements, edge case audit
 - `agent_docs/testing-debug.md`       -- Test table, debugging tips, RT permissions
