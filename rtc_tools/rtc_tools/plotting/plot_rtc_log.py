@@ -23,7 +23,6 @@ v5 변경사항:
 
 import os
 import csv
-import io
 import numpy as np
 import math
 import pandas as pd
@@ -42,9 +41,9 @@ plt = None
 # DataLogger 상수와 동일
 _BARO_COUNT = 8
 _TOF_COUNT = 3
-_SENSORS_PER_FT = _BARO_COUNT + _TOF_COUNT   # 11
-_FT_COMPS = ['contact', 'fx', 'fy', 'fz', 'ux', 'uy', 'uz']
-_FT_VALUES_PER_FT = len(_FT_COMPS)           # 7
+_SENSORS_PER_FT = _BARO_COUNT + _TOF_COUNT  # 11
+_FT_COMPS = ["contact", "fx", "fy", "fz", "ux", "uy", "uz"]
+_FT_VALUES_PER_FT = len(_FT_COMPS)  # 7
 _VALUES_PER_FT = 2 * _SENSORS_PER_FT + _FT_VALUES_PER_FT  # 29
 
 
@@ -54,7 +53,7 @@ def _detect_csv_column_mismatch(filepath):
     Returns (header_count, data_count, header_line).
     두 값이 같으면 불일치 없음.
     """
-    with open(filepath, 'r') as f:
+    with open(filepath, "r") as f:
         reader = csv.reader(f)
         header = next(reader, None)
         if header is None:
@@ -83,8 +82,8 @@ def _rebuild_sensor_log_header(original_header, data_col_count):
     # fingertip 라벨 추출 (baro_raw_{label}_0 패턴)
     ft_labels = []
     for col in original_header:
-        if col.startswith('baro_raw_') and col.endswith('_0'):
-            label = col[len('baro_raw_'):-len('_0')]
+        if col.startswith("baro_raw_") and col.endswith("_0"):
+            label = col[len("baro_raw_") : -len("_0")]
             ft_labels.append(label)
 
     # inference 컬럼 이름 생성
@@ -92,16 +91,16 @@ def _rebuild_sensor_log_header(original_header, data_col_count):
     if ft_labels:
         for label in ft_labels:
             for comp in _FT_COMPS:
-                inference_cols.append(f'ft_{label}_{comp}')
+                inference_cols.append(f"ft_{label}_{comp}")
     else:
         # fingertip 라벨을 찾을 수 없으면 generic 이름 사용
-        inference_cols = [f'inference_{i}' for i in range(missing)]
+        inference_cols = [f"inference_{i}" for i in range(missing)]
 
     # 필요한 수만큼만 추가
     inference_cols = inference_cols[:missing]
     # 부족하면 generic으로 채움
     while len(inference_cols) < missing:
-        inference_cols.append(f'inference_{len(inference_cols)}')
+        inference_cols.append(f"inference_{len(inference_cols)}")
 
     return original_header + inference_cols
 
@@ -114,7 +113,7 @@ def _load_sensor_log_csv(filepath):
     header_count, data_count, original_header = _detect_csv_column_mismatch(filepath)
 
     if header_count == 0:
-        raise pd.errors.EmptyDataError(f'Empty CSV: {filepath}')
+        raise pd.errors.EmptyDataError(f"Empty CSV: {filepath}")
 
     if header_count >= data_count:
         # 불일치 없음 — 정상 로드
@@ -122,14 +121,19 @@ def _load_sensor_log_csv(filepath):
         return df, False
 
     # 컬럼 수 불일치 — 헤더 복구
-    print(f'  Detected column mismatch: header has {header_count} cols, '
-          f'data has {data_count} cols (missing {data_count - header_count} inference cols)')
+    print(
+        f"  Detected column mismatch: header has {header_count} cols, "
+        f"data has {data_count} cols (missing {data_count - header_count} inference cols)"
+    )
     new_header = _rebuild_sensor_log_header(original_header, data_count)
-    print(f'  Reconstructed header: added {len(new_header) - header_count} inference columns')
+    print(
+        f"  Reconstructed header: added {len(new_header) - header_count} inference columns"
+    )
 
     # 헤더를 건너뛰고 데이터만 로드, 복구된 헤더 적용
-    df = pd.read_csv(filepath, header=0, names=new_header, skiprows=1,
-                     on_bad_lines='warn')
+    df = pd.read_csv(
+        filepath, header=0, names=new_header, skiprows=1, on_bad_lines="warn"
+    )
     return df, True
 
 
@@ -167,7 +171,7 @@ def _auto_subplot_grid(n, max_cols=None):
       5 → (2,3)   6 → (2,3)   7 → (3,3)   8 → (2,4)
       9 → (3,3)  10 → (2,5)  12 → (3,4)  16 → (4,4)
     """
-    import math
+
     if n <= 0:
         return (1, 1)
     if n <= 3:
@@ -190,6 +194,7 @@ def _auto_subplot_grid(n, max_cols=None):
 
 # ── Robot 모드 ──────────────────────────────────────────────────────────────
 
+
 def _detect_joint_columns(df, prefix, count=None):
     """CSV 헤더에서 prefix로 시작하는 컬럼을 감지하여 (column_names, display_names) 반환.
 
@@ -210,13 +215,13 @@ def _detect_joint_columns(df, prefix, count=None):
     named_cols = [c for c in df.columns if c.startswith(prefix)]
     if len(named_cols) >= count:
         # prefix 제거하여 표시 이름 추출
-        display = [c[len(prefix):] for c in named_cols[:count]]
+        display = [c[len(prefix) :] for c in named_cols[:count]]
         result = (named_cols[:count], display)
         _column_cache[key] = result
         return result
 
     # 2. 숫자 인덱스 기반 fallback
-    numeric_cols = [f'{prefix}{i}' for i in range(count)]
+    numeric_cols = [f"{prefix}{i}" for i in range(count)]
     if all(c in df.columns for c in numeric_cols):
         result = (numeric_cols, [f"J{i}" for i in range(count)])
         _column_cache[key] = result
@@ -235,70 +240,89 @@ def _has_columns(df, prefix, count):
     if len(named) >= count:
         return True
     # Numeric fallback
-    return all(f'{prefix}{i}' in df.columns for i in range(count))
-
-
+    return all(f"{prefix}{i}" in df.columns for i in range(count))
 
 
 def plot_robot_positions(df, save_dir=None):
     """Figure 1: Robot joint positions — goal vs trajectory vs actual."""
-    actual_cols, display_names = _detect_joint_columns(df, 'actual_pos_')
+    actual_cols, display_names = _detect_joint_columns(df, "actual_pos_")
     n_joints = len(actual_cols)
     if n_joints == 0:
-        print('  Skipping position plot (actual_pos_* columns not found)')
+        print("  Skipping position plot (actual_pos_* columns not found)")
         return
 
     nrows, ncols = _auto_subplot_grid(n_joints)
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows))
-    fig.suptitle('Robot Joint Positions', fontsize=16, fontweight='bold')
+    fig.suptitle("Robot Joint Positions", fontsize=16, fontweight="bold")
     axes = np.atleast_1d(axes).flatten()
 
-    goal_cols, _ = _detect_joint_columns(df, 'goal_pos_')
-    traj_cols, _ = _detect_joint_columns(df, 'traj_pos_')
+    goal_cols, _ = _detect_joint_columns(df, "goal_pos_")
+    traj_cols, _ = _detect_joint_columns(df, "traj_pos_")
     # 하위 호환: 이전 CSV의 target_pos_ 컬럼 지원
-    legacy_cols, _ = _detect_joint_columns(df, 'target_pos_') if not traj_cols else ([], [])
+    legacy_cols, _ = (
+        _detect_joint_columns(df, "target_pos_") if not traj_cols else ([], [])
+    )
 
     # GUI joint goal overlay: goal_type=="joint" 구간만 표시
-    joint_goal_cols, _ = _detect_joint_columns(df, 'joint_goal_')
-    has_goal_type = 'goal_type' in df.columns
+    joint_goal_cols, _ = _detect_joint_columns(df, "joint_goal_")
+    has_goal_type = "goal_type" in df.columns
     joint_goal_mask = None
     if joint_goal_cols and has_goal_type:
-        joint_goal_mask = df['goal_type'] == 'joint'
+        joint_goal_mask = df["goal_type"] == "joint"
 
     for i in range(n_joints):
         ax = axes[i]
-        t = df['timestamp']
-        ax.plot(t, df[actual_cols[i]], label='Actual', linewidth=1.5)
+        t = df["timestamp"]
+        ax.plot(t, df[actual_cols[i]], label="Actual", linewidth=1.5)
 
         if traj_cols:
-            ax.plot(t, df[traj_cols[i]], label='Trajectory',
-                    linestyle='--', linewidth=1.5)
+            ax.plot(
+                t, df[traj_cols[i]], label="Trajectory", linestyle="--", linewidth=1.5
+            )
         elif legacy_cols:
-            ax.plot(t, df[legacy_cols[i]], label='Target (traj)',
-                    linestyle='--', linewidth=1.5)
+            ax.plot(
+                t,
+                df[legacy_cols[i]],
+                label="Target (traj)",
+                linestyle="--",
+                linewidth=1.5,
+            )
 
         if goal_cols:
-            ax.plot(t, df[goal_cols[i]], label='Goal',
-                    linestyle=':', linewidth=1.5, alpha=0.8)
+            ax.plot(
+                t,
+                df[goal_cols[i]],
+                label="Goal",
+                linestyle=":",
+                linewidth=1.5,
+                alpha=0.8,
+            )
 
         # Joint goal from GUI (goal_type=="joint" 구간만)
         if joint_goal_cols and i < len(joint_goal_cols) and joint_goal_mask is not None:
             jg = df[joint_goal_cols[i]].copy()
             jg[~joint_goal_mask] = np.nan
-            ax.plot(t, jg, label='Joint Goal (GUI)',
-                    linestyle='-.', linewidth=1.5, alpha=0.7, color='C4')
+            ax.plot(
+                t,
+                jg,
+                label="Joint Goal (GUI)",
+                linestyle="-.",
+                linewidth=1.5,
+                alpha=0.7,
+                color="C4",
+            )
 
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Position (rad)')
-        ax.set_title(f'Joint {i}: {display_names[i]}')
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Position (rad)")
+        ax.set_title(f"Joint {i}: {display_names[i]}")
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'robot_positions.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "robot_positions.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -306,43 +330,51 @@ def plot_robot_positions(df, save_dir=None):
 
 def plot_robot_velocities(df, save_dir=None):
     """Figure 2: Robot joint velocities — trajectory vs actual."""
-    actual_cols, display_names = _detect_joint_columns(df, 'actual_vel_')
+    actual_cols, display_names = _detect_joint_columns(df, "actual_vel_")
     n_joints = len(actual_cols)
     if n_joints == 0:
-        print('  Skipping velocity plot (actual_vel_* columns not found)')
+        print("  Skipping velocity plot (actual_vel_* columns not found)")
         return
 
     nrows, ncols = _auto_subplot_grid(n_joints)
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows))
-    fig.suptitle('Robot Joint Velocities', fontsize=16, fontweight='bold')
+    fig.suptitle("Robot Joint Velocities", fontsize=16, fontweight="bold")
     axes = np.atleast_1d(axes).flatten()
 
-    traj_cols, _ = _detect_joint_columns(df, 'traj_vel_')
-    legacy_cols, _ = _detect_joint_columns(df, 'target_vel_') if not traj_cols else ([], [])
+    traj_cols, _ = _detect_joint_columns(df, "traj_vel_")
+    legacy_cols, _ = (
+        _detect_joint_columns(df, "target_vel_") if not traj_cols else ([], [])
+    )
 
     for i in range(n_joints):
         ax = axes[i]
-        t = df['timestamp']
-        ax.plot(t, df[actual_cols[i]], label='Actual', linewidth=1.5)
+        t = df["timestamp"]
+        ax.plot(t, df[actual_cols[i]], label="Actual", linewidth=1.5)
 
         if traj_cols:
-            ax.plot(t, df[traj_cols[i]], label='Trajectory',
-                    linestyle='--', linewidth=1.5)
+            ax.plot(
+                t, df[traj_cols[i]], label="Trajectory", linestyle="--", linewidth=1.5
+            )
         elif legacy_cols:
-            ax.plot(t, df[legacy_cols[i]], label='Target (traj)',
-                    linestyle='--', linewidth=1.5)
+            ax.plot(
+                t,
+                df[legacy_cols[i]],
+                label="Target (traj)",
+                linestyle="--",
+                linewidth=1.5,
+            )
 
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Velocity (rad/s)')
-        ax.set_title(f'Joint {i}: {display_names[i]}')
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Velocity (rad/s)")
+        ax.set_title(f"Joint {i}: {display_names[i]}")
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'robot_velocities.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "robot_velocities.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -350,51 +382,57 @@ def plot_robot_velocities(df, save_dir=None):
 
 def plot_robot_commands(df, save_dir=None):
     """Figure 3: Robot control commands — command output per joint."""
-    cmd_cols, display_names = _detect_joint_columns(df, 'command_')
+    cmd_cols, display_names = _detect_joint_columns(df, "command_")
     n_joints = len(cmd_cols)
     if n_joints == 0:
-        print('  Skipping command plot (command_* columns not found)')
+        print("  Skipping command plot (command_* columns not found)")
         return
 
     nrows, ncols_grid = _auto_subplot_grid(n_joints)
     fig, axes = plt.subplots(nrows, ncols_grid, figsize=(5 * ncols_grid, 4 * nrows))
 
     # command_type: 0=position, 1=torque
-    has_type = 'command_type' in df.columns
+    has_type = "command_type" in df.columns
     if has_type:
-        cmd_type = df['command_type'].mode().iloc[0] if len(df) > 0 else 0
-        type_label = 'Position' if cmd_type == 0 else 'Torque'
-        unit = 'rad' if cmd_type == 0 else 'Nm'
+        cmd_type = df["command_type"].mode().iloc[0] if len(df) > 0 else 0
+        type_label = "Position" if cmd_type == 0 else "Torque"
+        unit = "rad" if cmd_type == 0 else "Nm"
     else:
-        type_label = 'Command'
-        unit = ''
+        type_label = "Command"
+        unit = ""
 
-    fig.suptitle(f'Robot Control Commands ({type_label})',
-                 fontsize=16, fontweight='bold')
+    fig.suptitle(
+        f"Robot Control Commands ({type_label})", fontsize=16, fontweight="bold"
+    )
     axes = np.atleast_1d(axes).flatten()
 
-    actual_cols, _ = _detect_joint_columns(df, 'actual_pos_')
+    actual_cols, _ = _detect_joint_columns(df, "actual_pos_")
 
     for i in range(n_joints):
         ax = axes[i]
-        t = df['timestamp']
-        ax.plot(t, df[cmd_cols[i]], label=type_label,
-                linewidth=1.5, color='C2')
+        t = df["timestamp"]
+        ax.plot(t, df[cmd_cols[i]], label=type_label, linewidth=1.5, color="C2")
         if actual_cols:
-            ax.plot(t, df[actual_cols[i]], label='Actual pos',
-                    linewidth=1.0, alpha=0.5, linestyle='--')
+            ax.plot(
+                t,
+                df[actual_cols[i]],
+                label="Actual pos",
+                linewidth=1.0,
+                alpha=0.5,
+                linestyle="--",
+            )
 
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel(f'{type_label} ({unit})' if unit else type_label)
-        ax.set_title(f'Joint {i}: {display_names[i]}')
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel(f"{type_label} ({unit})" if unit else type_label)
+        ax.set_title(f"Joint {i}: {display_names[i]}")
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'robot_commands.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "robot_commands.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -402,36 +440,35 @@ def plot_robot_commands(df, save_dir=None):
 
 def plot_robot_torques(df, save_dir=None):
     """Figure 4: Robot actual torques."""
-    torque_cols, display_names = _detect_joint_columns(df, 'actual_torque_')
+    torque_cols, display_names = _detect_joint_columns(df, "actual_torque_")
     if not torque_cols:
-        torque_cols, display_names = _detect_joint_columns(df, 'effort_')
+        torque_cols, display_names = _detect_joint_columns(df, "effort_")
     n_joints = len(torque_cols)
     if n_joints == 0:
-        print('  Skipping torque plot (actual_torque_*/effort_* columns not found)')
+        print("  Skipping torque plot (actual_torque_*/effort_* columns not found)")
         return
 
     nrows, ncols = _auto_subplot_grid(n_joints)
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows))
-    fig.suptitle('Robot Actual Torques', fontsize=16, fontweight='bold')
+    fig.suptitle("Robot Actual Torques", fontsize=16, fontweight="bold")
     axes = np.atleast_1d(axes).flatten()
 
     for i in range(n_joints):
         ax = axes[i]
-        t = df['timestamp']
-        ax.plot(t, df[torque_cols[i]], label='Torque',
-                linewidth=1.5, color='C3')
+        t = df["timestamp"]
+        ax.plot(t, df[torque_cols[i]], label="Torque", linewidth=1.5, color="C3")
 
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Torque (Nm)')
-        ax.set_title(f'Joint {i}: {display_names[i]}')
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Torque (Nm)")
+        ax.set_title(f"Joint {i}: {display_names[i]}")
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'robot_torques.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "robot_torques.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -439,54 +476,65 @@ def plot_robot_torques(df, save_dir=None):
 
 def plot_robot_task_position(df, save_dir=None):
     """Figure 5: TCP task-space position (3x1: x, y, z)."""
-    if not _has_columns(df, 'task_pos_', 3):
-        print('  Skipping task position plot (task_pos_* columns not found)')
+    if not _has_columns(df, "task_pos_", 3):
+        print("  Skipping task position plot (task_pos_* columns not found)")
         return
 
-    labels = ['X', 'Y', 'Z']
+    labels = ["X", "Y", "Z"]
     fig, axes = plt.subplots(3, 1, figsize=(14, 10))
-    fig.suptitle('TCP Task-Space Position', fontsize=16, fontweight='bold')
+    fig.suptitle("TCP Task-Space Position", fontsize=16, fontweight="bold")
 
     # Task goal overlay: goal_type=="task" 구간만 표시
-    has_goal_type = 'goal_type' in df.columns
-    has_task_goal = _has_columns(df, 'task_goal_', 3)
+    has_goal_type = "goal_type" in df.columns
+    has_task_goal = _has_columns(df, "task_goal_", 3)
     task_goal_mask = None
     if has_task_goal and has_goal_type:
-        task_goal_mask = df['goal_type'] == 'task'
+        task_goal_mask = df["goal_type"] == "task"
 
-    has_traj_task = _has_columns(df, 'traj_task_pos_', 3)
+    has_traj_task = _has_columns(df, "traj_task_pos_", 3)
 
-    t = df['timestamp']
+    t = df["timestamp"]
     for i in range(3):
         ax = axes[i]
-        ax.plot(t, df[f'task_pos_{i}'], label=f'Actual {labels[i]}',
-                linewidth=1.5)
+        ax.plot(t, df[f"task_pos_{i}"], label=f"Actual {labels[i]}", linewidth=1.5)
 
         # Task-space trajectory reference
         if has_traj_task:
-            ax.plot(t, df[f'traj_task_pos_{i}'],
-                    label='Trajectory Ref', linestyle='--',
-                    linewidth=1.5, alpha=0.8, color='C1')
+            ax.plot(
+                t,
+                df[f"traj_task_pos_{i}"],
+                label="Trajectory Ref",
+                linestyle="--",
+                linewidth=1.5,
+                alpha=0.8,
+                color="C1",
+            )
 
         # Task goal from GUI (goal_type=="task" 구간만)
         if task_goal_mask is not None:
-            tg = df[f'task_goal_{i}'].copy()
+            tg = df[f"task_goal_{i}"].copy()
             tg[~task_goal_mask] = np.nan
-            unit = 'm' if i < 3 else 'rad'
-            ax.plot(t, tg, label=f'Task Goal (GUI)',
-                    linestyle='-.', linewidth=1.5,
-                    alpha=0.7, color='C4')
+            unit = "m" if i < 3 else "rad"
+            ax.plot(
+                t,
+                tg,
+                label="Task Goal (GUI)",
+                linestyle="-.",
+                linewidth=1.5,
+                alpha=0.7,
+                color="C4",
+            )
 
-        ax.set_ylabel(f'{labels[i]} (m)')
+        ax.set_ylabel(f"{labels[i]} (m)")
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
-    axes[-1].set_xlabel('Time (s)')
+    axes[-1].set_xlabel("Time (s)")
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'robot_task_position.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "robot_task_position.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -495,48 +543,48 @@ def plot_robot_task_position(df, save_dir=None):
 def plot_robot_tracking_error(df, save_dir=None):
     """Position & velocity tracking error (trajectory - actual)."""
     # trajectory 컬럼 결정 (신규 named 또는 레거시 numeric)
-    traj_pos_cols, traj_names = _detect_joint_columns(df, 'traj_pos_')
+    traj_pos_cols, traj_names = _detect_joint_columns(df, "traj_pos_")
     if not traj_pos_cols:
-        traj_pos_cols, traj_names = _detect_joint_columns(df, 'target_pos_')
-    actual_pos_cols, _ = _detect_joint_columns(df, 'actual_pos_')
+        traj_pos_cols, traj_names = _detect_joint_columns(df, "target_pos_")
+    actual_pos_cols, _ = _detect_joint_columns(df, "actual_pos_")
     if not traj_pos_cols or not actual_pos_cols:
-        print('  Skipping tracking error plot (trajectory columns not found)')
+        print("  Skipping tracking error plot (trajectory columns not found)")
         return
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8))
-    fig.suptitle('Robot Tracking Errors', fontsize=16, fontweight='bold')
-    t = df['timestamp']
+    fig.suptitle("Robot Tracking Errors", fontsize=16, fontweight="bold")
+    t = df["timestamp"]
 
     for i in range(len(traj_pos_cols)):
         pos_err = df[traj_pos_cols[i]] - df[actual_pos_cols[i]]
-        ax1.plot(t, pos_err, label=f'J{i} ({traj_names[i]})', alpha=0.7)
-    ax1.set_ylabel('Position Error (rad)')
-    ax1.set_title('Position Tracking Error (trajectory - actual)')
+        ax1.plot(t, pos_err, label=f"J{i} ({traj_names[i]})", alpha=0.7)
+    ax1.set_ylabel("Position Error (rad)")
+    ax1.set_title("Position Tracking Error (trajectory - actual)")
     ax1.legend(fontsize=8, ncol=3)
     ax1.grid(True, alpha=0.3)
-    ax1.axhline(y=0, color='k', linewidth=0.5)
+    ax1.axhline(y=0, color="k", linewidth=0.5)
 
     # Velocity tracking error
-    traj_vel_cols, _ = _detect_joint_columns(df, 'traj_vel_')
+    traj_vel_cols, _ = _detect_joint_columns(df, "traj_vel_")
     if not traj_vel_cols:
-        traj_vel_cols, _ = _detect_joint_columns(df, 'target_vel_')
-    actual_vel_cols, _ = _detect_joint_columns(df, 'actual_vel_')
+        traj_vel_cols, _ = _detect_joint_columns(df, "target_vel_")
+    actual_vel_cols, _ = _detect_joint_columns(df, "actual_vel_")
     if traj_vel_cols and actual_vel_cols:
         for i in range(len(traj_vel_cols)):
             vel_err = df[traj_vel_cols[i]] - df[actual_vel_cols[i]]
-            ax2.plot(t, vel_err, label=f'J{i} ({traj_names[i]})', alpha=0.7)
-    ax2.set_xlabel('Time (s)')
-    ax2.set_ylabel('Velocity Error (rad/s)')
-    ax2.set_title('Velocity Tracking Error (trajectory - actual)')
+            ax2.plot(t, vel_err, label=f"J{i} ({traj_names[i]})", alpha=0.7)
+    ax2.set_xlabel("Time (s)")
+    ax2.set_ylabel("Velocity Error (rad/s)")
+    ax2.set_title("Velocity Tracking Error (trajectory - actual)")
     ax2.legend(fontsize=8, ncol=3)
     ax2.grid(True, alpha=0.3)
-    ax2.axhline(y=0, color='k', linewidth=0.5)
+    ax2.axhline(y=0, color="k", linewidth=0.5)
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'robot_tracking_error.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "robot_tracking_error.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -544,52 +592,57 @@ def plot_robot_tracking_error(df, save_dir=None):
 
 def plot_robot_task_tracking_error(df, save_dir=None):
     """Task-space tracking error (trajectory reference - actual TCP)."""
-    if not _has_columns(df, 'traj_task_pos_', 3) or not _has_columns(df, 'task_pos_', 3):
-        print('  Skipping task tracking error plot (traj_task_pos_* columns not found)')
+    if not _has_columns(df, "traj_task_pos_", 3) or not _has_columns(
+        df, "task_pos_", 3
+    ):
+        print("  Skipping task tracking error plot (traj_task_pos_* columns not found)")
         return
 
-    pos_labels = ['X', 'Y', 'Z']
-    rot_labels = ['Roll', 'Pitch', 'Yaw']
-    has_rot = _has_columns(df, 'traj_task_pos_', 6) and _has_columns(df, 'task_pos_', 6)
+    pos_labels = ["X", "Y", "Z"]
+    rot_labels = ["Roll", "Pitch", "Yaw"]
+    has_rot = _has_columns(df, "traj_task_pos_", 6) and _has_columns(df, "task_pos_", 6)
     nrows = 2 if has_rot else 1
     fig, axes = plt.subplots(nrows, 1, figsize=(14, 5 * nrows))
-    fig.suptitle('Task-Space Tracking Error (Trajectory Ref - Actual)',
-                 fontsize=16, fontweight='bold')
+    fig.suptitle(
+        "Task-Space Tracking Error (Trajectory Ref - Actual)",
+        fontsize=16,
+        fontweight="bold",
+    )
     if nrows == 1:
         axes = [axes]
 
-    t = df['timestamp']
+    t = df["timestamp"]
 
     # Position error (m)
     ax = axes[0]
     for i in range(3):
-        err = df[f'traj_task_pos_{i}'] - df[f'task_pos_{i}']
+        err = df[f"traj_task_pos_{i}"] - df[f"task_pos_{i}"]
         ax.plot(t, err, label=pos_labels[i], alpha=0.8, linewidth=1.2)
-    ax.set_ylabel('Position Error (m)')
-    ax.set_title('Translation Tracking Error')
+    ax.set_ylabel("Position Error (m)")
+    ax.set_title("Translation Tracking Error")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
-    ax.axhline(y=0, color='k', linewidth=0.5)
+    ax.axhline(y=0, color="k", linewidth=0.5)
 
     # Orientation error (rad)
     if has_rot:
         ax = axes[1]
         for i in range(3):
-            err = df[f'traj_task_pos_{i + 3}'] - df[f'task_pos_{i + 3}']
+            err = df[f"traj_task_pos_{i + 3}"] - df[f"task_pos_{i + 3}"]
             ax.plot(t, err, label=rot_labels[i], alpha=0.8, linewidth=1.2)
-        ax.set_ylabel('Orientation Error (rad)')
-        ax.set_title('Rotation Tracking Error')
+        ax.set_ylabel("Orientation Error (rad)")
+        ax.set_title("Rotation Tracking Error")
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
-        ax.axhline(y=0, color='k', linewidth=0.5)
+        ax.axhline(y=0, color="k", linewidth=0.5)
 
-    axes[-1].set_xlabel('Time (s)')
+    axes[-1].set_xlabel("Time (s)")
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'robot_task_tracking_error.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "robot_task_tracking_error.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -597,53 +650,49 @@ def plot_robot_task_tracking_error(df, save_dir=None):
 
 def print_robot_statistics(df):
     """Print robot trajectory statistics."""
-    duration = df['timestamp'].iloc[-1] - df['timestamp'].iloc[0]
+    duration = df["timestamp"].iloc[-1] - df["timestamp"].iloc[0]
     rate = len(df) / duration if duration > 0 else 0.0
-    print('\n=== Robot Trajectory Statistics ===')
-    print(f'Duration: {duration:.2f} s | Samples: {len(df)}'
-          f' | Rate: {rate:.1f} Hz')
+    print("\n=== Robot Trajectory Statistics ===")
+    print(f"Duration: {duration:.2f} s | Samples: {len(df)} | Rate: {rate:.1f} Hz")
 
     # trajectory 컬럼 결정 (named 또는 numeric)
-    traj_pos_cols, traj_names = _detect_joint_columns(df, 'traj_pos_')
+    traj_pos_cols, traj_names = _detect_joint_columns(df, "traj_pos_")
     if not traj_pos_cols:
-        traj_pos_cols, traj_names = _detect_joint_columns(df, 'target_pos_')
-    actual_pos_cols, _ = _detect_joint_columns(df, 'actual_pos_')
+        traj_pos_cols, traj_names = _detect_joint_columns(df, "target_pos_")
+    actual_pos_cols, _ = _detect_joint_columns(df, "actual_pos_")
 
     if traj_pos_cols and actual_pos_cols:
-        print('\nPosition Tracking Error (RMS):')
+        print("\nPosition Tracking Error (RMS):")
         for i in range(min(len(traj_pos_cols), len(actual_pos_cols))):
-            traj_s = pd.to_numeric(df[traj_pos_cols[i]], errors='coerce')
-            act_s = pd.to_numeric(df[actual_pos_cols[i]], errors='coerce')
+            traj_s = pd.to_numeric(df[traj_pos_cols[i]], errors="coerce")
+            act_s = pd.to_numeric(df[actual_pos_cols[i]], errors="coerce")
             err = traj_s - act_s
-            rms = np.sqrt(np.nanmean(err ** 2))
-            print(f'  Joint {i} ({traj_names[i]}): '
-                  f'{rms:.6f} rad ({np.rad2deg(rms):.4f} deg)')
+            rms = np.sqrt(np.nanmean(err**2))
+            print(
+                f"  Joint {i} ({traj_names[i]}): "
+                f"{rms:.6f} rad ({np.rad2deg(rms):.4f} deg)"
+            )
 
-    traj_vel_cols, _ = _detect_joint_columns(df, 'traj_vel_')
+    traj_vel_cols, _ = _detect_joint_columns(df, "traj_vel_")
     if not traj_vel_cols:
-        traj_vel_cols, _ = _detect_joint_columns(df, 'target_vel_')
-    actual_vel_cols, _ = _detect_joint_columns(df, 'actual_vel_')
+        traj_vel_cols, _ = _detect_joint_columns(df, "target_vel_")
+    actual_vel_cols, _ = _detect_joint_columns(df, "actual_vel_")
 
     if traj_vel_cols and actual_vel_cols:
-        print('\nVelocity Tracking Error (RMS):')
+        print("\nVelocity Tracking Error (RMS):")
         for i in range(min(len(traj_vel_cols), len(actual_vel_cols))):
-            traj_s = pd.to_numeric(df[traj_vel_cols[i]], errors='coerce')
-            act_s = pd.to_numeric(df[actual_vel_cols[i]], errors='coerce')
+            traj_s = pd.to_numeric(df[traj_vel_cols[i]], errors="coerce")
+            act_s = pd.to_numeric(df[actual_vel_cols[i]], errors="coerce")
             err = traj_s - act_s
-            rms = np.sqrt(np.nanmean(err ** 2))
-            print(f'  Joint {i} ({traj_names[i]}): {rms:.6f} rad/s')
+            rms = np.sqrt(np.nanmean(err**2))
+            print(f"  Joint {i} ({traj_names[i]}): {rms:.6f} rad/s")
 
-    if 'command_type' in df.columns:
-        cmd_type = df['command_type'].mode().iloc[0] if len(df) > 0 else 0
-        print(f'\nCommand type: {"position" if cmd_type == 0 else "torque"}')
+    if "command_type" in df.columns:
+        cmd_type = df["command_type"].mode().iloc[0] if len(df) > 0 else 0
+        print(f"\nCommand type: {'position' if cmd_type == 0 else 'torque'}")
 
 
 # ── Hand 모드 ──────────────────────────────────────────────────────────────
-
-
-
-
-
 
 
 def _detect_fingertip_labels(df):
@@ -656,10 +705,13 @@ def _detect_fingertip_labels(df):
     """
     labels = []
     for col in df.columns:
-        if col.startswith('baro_') and not col.startswith('baro_raw_') \
-                and col.endswith('_0'):
-            middle = col[len('baro_'):-len('_0')]
-            if f'baro_{middle}_1' in df.columns:
+        if (
+            col.startswith("baro_")
+            and not col.startswith("baro_raw_")
+            and col.endswith("_0")
+        ):
+            middle = col[len("baro_") : -len("_0")]
+            if f"baro_{middle}_1" in df.columns:
                 labels.append(middle)
     return labels
 
@@ -673,9 +725,9 @@ def _detect_fingertip_labels_raw(df):
     """
     labels = []
     for col in df.columns:
-        if col.startswith('baro_raw_') and col.endswith('_0'):
-            middle = col[len('baro_raw_'):-len('_0')]
-            if f'baro_raw_{middle}_1' in df.columns:
+        if col.startswith("baro_raw_") and col.endswith("_0"):
+            middle = col[len("baro_raw_") : -len("_0")]
+            if f"baro_raw_{middle}_1" in df.columns:
                 labels.append(middle)
     return labels
 
@@ -688,57 +740,62 @@ def _detect_ft_labels(df):
     """
     labels = []
     for col in df.columns:
-        if col.startswith('ft_') and col.endswith('_contact'):
-            middle = col[len('ft_'):-len('_contact')]
-            if middle != 'valid' and f'ft_{middle}_fx' in df.columns:
+        if col.startswith("ft_") and col.endswith("_contact"):
+            middle = col[len("ft_") : -len("_contact")]
+            if middle != "valid" and f"ft_{middle}_fx" in df.columns:
                 labels.append(middle)
     if not labels:
         # Legacy fallback (6-output 모델)
         for col in df.columns:
-            if col.startswith('ft_') and col.endswith('_fx'):
-                middle = col[len('ft_'):-len('_fx')]
-                if middle != 'valid' and f'ft_{middle}_fy' in df.columns:
+            if col.startswith("ft_") and col.endswith("_fx"):
+                middle = col[len("ft_") : -len("_fx")]
+                if middle != "valid" and f"ft_{middle}_fy" in df.columns:
                     labels.append(middle)
     return labels
 
 
 def plot_device_positions(df, save_dir=None):
     """Figure 1: Hand motor positions (2x5 subplot)."""
-    actual_cols, motor_names = _detect_joint_columns(df, 'hand_actual_pos_')
-    cmd_cols, _ = _detect_joint_columns(df, 'hand_cmd_')
-    goal_cols, _ = _detect_joint_columns(df, 'hand_goal_pos_')
+    actual_cols, motor_names = _detect_joint_columns(df, "hand_actual_pos_")
+    cmd_cols, _ = _detect_joint_columns(df, "hand_cmd_")
+    goal_cols, _ = _detect_joint_columns(df, "hand_goal_pos_")
     if not actual_cols:
-        print('  Skipping hand positions plot (columns not found)')
+        print("  Skipping hand positions plot (columns not found)")
         return
 
     n_motors = len(actual_cols)
     nrows, ncols_g = _auto_subplot_grid(n_motors)
     fig, axes = plt.subplots(nrows, ncols_g, figsize=(5 * ncols_g, 4 * nrows))
-    fig.suptitle('Device Motor Positions', fontsize=16, fontweight='bold')
+    fig.suptitle("Device Motor Positions", fontsize=16, fontweight="bold")
     axes = axes.flatten()
 
-    t = df['timestamp']
+    t = df["timestamp"]
     for i in range(len(actual_cols)):
         ax = axes[i]
-        ax.plot(t, df[actual_cols[i]], label='Actual', linewidth=1.5)
+        ax.plot(t, df[actual_cols[i]], label="Actual", linewidth=1.5)
         if i < len(cmd_cols):
-            ax.plot(t, df[cmd_cols[i]], label='Command',
-                    linestyle='--', linewidth=1.5)
+            ax.plot(t, df[cmd_cols[i]], label="Command", linestyle="--", linewidth=1.5)
         if i < len(goal_cols):
-            ax.plot(t, df[goal_cols[i]], label='Goal',
-                    linestyle=':', linewidth=1.5, alpha=0.8)
+            ax.plot(
+                t,
+                df[goal_cols[i]],
+                label="Goal",
+                linestyle=":",
+                linewidth=1.5,
+                alpha=0.8,
+            )
 
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Position')
-        ax.set_title(f'Motor {i} ({motor_names[i]})')
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Position")
+        ax.set_title(f"Motor {i} ({motor_names[i]})")
         ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'device_positions.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "device_positions.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -746,33 +803,33 @@ def plot_device_positions(df, save_dir=None):
 
 def plot_device_velocities(df, save_dir=None):
     """Figure 2: Hand motor velocities (2x5 subplot)."""
-    vel_cols, motor_names = _detect_joint_columns(df, 'hand_actual_vel_')
+    vel_cols, motor_names = _detect_joint_columns(df, "hand_actual_vel_")
     if not vel_cols:
-        print('  Skipping hand velocities plot (columns not found)')
+        print("  Skipping hand velocities plot (columns not found)")
         return
 
     n_motors = len(vel_cols)
     nrows, ncols_g = _auto_subplot_grid(n_motors)
     fig, axes = plt.subplots(nrows, ncols_g, figsize=(5 * ncols_g, 4 * nrows))
-    fig.suptitle('Device Motor Velocities', fontsize=16, fontweight='bold')
+    fig.suptitle("Device Motor Velocities", fontsize=16, fontweight="bold")
     axes = axes.flatten()
 
-    t = df['timestamp']
+    t = df["timestamp"]
     for i in range(len(vel_cols)):
         ax = axes[i]
-        ax.plot(t, df[vel_cols[i]], label='Actual', linewidth=1.5)
+        ax.plot(t, df[vel_cols[i]], label="Actual", linewidth=1.5)
 
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Velocity')
-        ax.set_title(f'Motor {i} ({motor_names[i]})')
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Velocity")
+        ax.set_title(f"Motor {i} ({motor_names[i]})")
         ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'device_velocities.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "device_velocities.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -782,29 +839,29 @@ def plot_device_sensors(df, save_dir=None):
     """Figure 3: Hand sensor data (2 rows x N cols: barometer + ToF)."""
     labels = _detect_fingertip_labels(df)
     if not labels:
-        print('  Skipping hand sensors plot (sensor columns not found)')
+        print("  Skipping hand sensors plot (sensor columns not found)")
         return
 
     num_ft = len(labels)
     fig, axes = plt.subplots(2, num_ft, figsize=(5 * num_ft, 8))
-    fig.suptitle('Device Sensor Data', fontsize=16, fontweight='bold')
+    fig.suptitle("Device Sensor Data", fontsize=16, fontweight="bold")
 
     # fingertip이 1개면 axes가 1D가 되므로 2D로 보정
     if num_ft == 1:
         axes = axes.reshape(2, 1)
 
-    t = df['timestamp']
+    t = df["timestamp"]
 
     # Row 1: Barometer (8ch per fingertip)
     for f_idx, label in enumerate(labels):
         ax = axes[0, f_idx]
         for b in range(16):  # auto-stopped by column check
-            col = f'baro_{label}_{b}'
+            col = f"baro_{label}_{b}"
             if col in df.columns:
-                ax.plot(t, df[col], label=f'B{b}', alpha=0.7, linewidth=0.8)
-        ax.set_title(f'{label} — Barometer')
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Pressure')
+                ax.plot(t, df[col], label=f"B{b}", alpha=0.7, linewidth=0.8)
+        ax.set_title(f"{label} — Barometer")
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Pressure")
         ax.legend(fontsize=6, ncol=4)
         ax.grid(True, alpha=0.3)
 
@@ -812,21 +869,27 @@ def plot_device_sensors(df, save_dir=None):
     for f_idx, label in enumerate(labels):
         ax = axes[1, f_idx]
         for t_idx in range(8):  # auto-stopped by column check
-            col = f'tof_{label}_{t_idx}'
+            col = f"tof_{label}_{t_idx}"
             if col in df.columns:
-                ax.plot(t, df[col], label=f'ToF{t_idx}',
-                        linewidth=1.2, marker='.', markersize=1)
-        ax.set_title(f'{label} — ToF')
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Distance')
+                ax.plot(
+                    t,
+                    df[col],
+                    label=f"ToF{t_idx}",
+                    linewidth=1.2,
+                    marker=".",
+                    markersize=1,
+                )
+        ax.set_title(f"{label} — ToF")
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Distance")
         ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'device_sensors.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "device_sensors.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -836,28 +899,28 @@ def plot_device_sensors_raw(df, fingertip_labels, save_dir=None):
     """Hand raw sensor data (pre-LPF): 2 rows x N cols (barometer + ToF)."""
     labels = fingertip_labels
     if not labels:
-        print('  Skipping raw sensor plot (baro_raw_* columns not found)')
+        print("  Skipping raw sensor plot (baro_raw_* columns not found)")
         return
 
     num_ft = len(labels)
     fig, axes = plt.subplots(2, num_ft, figsize=(5 * num_ft, 8))
-    fig.suptitle('Device Sensor Data (Raw, pre-LPF)', fontsize=16, fontweight='bold')
+    fig.suptitle("Device Sensor Data (Raw, pre-LPF)", fontsize=16, fontweight="bold")
 
     if num_ft == 1:
         axes = axes.reshape(2, 1)
 
-    t = df['timestamp']
+    t = df["timestamp"]
 
     # Row 1: Raw Barometer (8ch per fingertip)
     for f_idx, label in enumerate(labels):
         ax = axes[0, f_idx]
         for b in range(16):  # auto-stopped by column check
-            col = f'baro_raw_{label}_{b}'
+            col = f"baro_raw_{label}_{b}"
             if col in df.columns:
-                ax.plot(t, df[col], label=f'B{b}', alpha=0.7, linewidth=0.8)
-        ax.set_title(f'{label} — Barometer (Raw)')
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Pressure')
+                ax.plot(t, df[col], label=f"B{b}", alpha=0.7, linewidth=0.8)
+        ax.set_title(f"{label} — Barometer (Raw)")
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Pressure")
         ax.legend(fontsize=6, ncol=4)
         ax.grid(True, alpha=0.3)
 
@@ -865,21 +928,27 @@ def plot_device_sensors_raw(df, fingertip_labels, save_dir=None):
     for f_idx, label in enumerate(labels):
         ax = axes[1, f_idx]
         for t_idx in range(8):  # auto-stopped by column check
-            col = f'tof_raw_{label}_{t_idx}'
+            col = f"tof_raw_{label}_{t_idx}"
             if col in df.columns:
-                ax.plot(t, df[col], label=f'ToF{t_idx}',
-                        linewidth=1.2, marker='.', markersize=1)
-        ax.set_title(f'{label} — ToF (Raw)')
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Distance')
+                ax.plot(
+                    t,
+                    df[col],
+                    label=f"ToF{t_idx}",
+                    linewidth=1.2,
+                    marker=".",
+                    markersize=1,
+                )
+        ax.set_title(f"{label} — ToF (Raw)")
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Distance")
         ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'device_sensors_raw.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "device_sensors_raw.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -889,40 +958,40 @@ def _plot_device_ft_legacy(df, labels, save_dir=None):
     """Legacy 6-output 모델: Force(3) + Torque(3)."""
     num_ft = len(labels)
     ncols = 2
-    fig, axes = plt.subplots(num_ft, ncols, figsize=(14, 4 * num_ft),
-                             squeeze=False)
-    fig.suptitle('Fingertip Force/Torque (ONNX inference)',
-                 fontsize=16, fontweight='bold')
+    fig, axes = plt.subplots(num_ft, ncols, figsize=(14, 4 * num_ft), squeeze=False)
+    fig.suptitle(
+        "Fingertip Force/Torque (ONNX inference)", fontsize=16, fontweight="bold"
+    )
 
-    t = df['timestamp']
+    t = df["timestamp"]
     for f_idx, label in enumerate(labels):
         ax_f = axes[f_idx, 0]
-        for comp in ['fx', 'fy', 'fz']:
-            col = f'ft_{label}_{comp}'
+        for comp in ["fx", "fy", "fz"]:
+            col = f"ft_{label}_{comp}"
             if col in df.columns:
                 ax_f.plot(t, df[col], label=comp.upper(), linewidth=1.2)
-        ax_f.set_title(f'{label} — Force')
-        ax_f.set_xlabel('Time (s)')
-        ax_f.set_ylabel('Force (N)')
+        ax_f.set_title(f"{label} — Force")
+        ax_f.set_xlabel("Time (s)")
+        ax_f.set_ylabel("Force (N)")
         ax_f.legend(fontsize=8)
         ax_f.grid(True, alpha=0.3)
 
         ax_t = axes[f_idx, 1]
-        for comp in ['tx', 'ty', 'tz']:
-            col = f'ft_{label}_{comp}'
+        for comp in ["tx", "ty", "tz"]:
+            col = f"ft_{label}_{comp}"
             if col in df.columns:
                 ax_t.plot(t, df[col], label=comp.upper(), linewidth=1.2)
-        ax_t.set_title(f'{label} — Torque')
-        ax_t.set_xlabel('Time (s)')
-        ax_t.set_ylabel('Torque (Nm)')
+        ax_t.set_title(f"{label} — Torque")
+        ax_t.set_xlabel("Time (s)")
+        ax_t.set_ylabel("Torque (Nm)")
         ax_t.legend(fontsize=8)
         ax_t.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'device_ft_output.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "device_ft_output.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -942,13 +1011,13 @@ def plot_device_ft_output(df, fingertip_labels, save_dir=None):
     """
     labels = fingertip_labels
     if not labels:
-        print('  Skipping F/T plot (ft_*_contact / ft_*_fx columns not found)')
+        print("  Skipping F/T plot (ft_*_contact / ft_*_fx columns not found)")
         return
 
     num_ft = len(labels)
 
     # 3-head 모델 여부 감지
-    has_contact = f'ft_{labels[0]}_contact' in df.columns
+    has_contact = f"ft_{labels[0]}_contact" in df.columns
     if not has_contact:
         _plot_device_ft_legacy(df, labels, save_dir)
         return
@@ -957,75 +1026,73 @@ def plot_device_ft_output(df, fingertip_labels, save_dir=None):
     sensor_labels = _detect_fingertip_labels(df)
 
     nrows = 4  # Barometer | Contact | Force | Direction
-    fig, axes = plt.subplots(nrows, num_ft, figsize=(5.5 * num_ft, 14),
-                             squeeze=False)
-    fig.suptitle('Fingertip Sensor + Inference Output',
-                 fontsize=16, fontweight='bold')
+    fig, axes = plt.subplots(nrows, num_ft, figsize=(5.5 * num_ft, 14), squeeze=False)
+    fig.suptitle("Fingertip Sensor + Inference Output", fontsize=16, fontweight="bold")
 
     # 같은 column(fingertip) 내 모든 row가 x축을 공유하여 확대 시 동기화
     for col_idx in range(num_ft):
         for row_idx in range(1, nrows):
             axes[row_idx, col_idx].sharex(axes[0, col_idx])
 
-    t = df['timestamp']
+    t = df["timestamp"]
 
     for f_idx, label in enumerate(labels):
         # ── Row 0: Barometer (8ch) ──
         ax = axes[0, f_idx]
         if label in sensor_labels:
             for b in range(16):  # auto-stopped by column check
-                col = f'baro_{label}_{b}'
+                col = f"baro_{label}_{b}"
                 if col in df.columns:
-                    ax.plot(t, df[col], label=f'B{b}', alpha=0.7,
-                            linewidth=0.8)
+                    ax.plot(t, df[col], label=f"B{b}", alpha=0.7, linewidth=0.8)
             ax.legend(fontsize=6, ncol=4)
-        ax.set_title(f'{label}', fontweight='bold')
+        ax.set_title(f"{label}", fontweight="bold")
         ax.grid(True, alpha=0.3)
         if f_idx == 0:
-            ax.set_ylabel('Barometer\nPressure')
+            ax.set_ylabel("Barometer\nPressure")
 
         # ── Row 1: Contact probability ──
         ax = axes[1, f_idx]
-        col = f'ft_{label}_contact'
+        col = f"ft_{label}_contact"
         if col in df.columns:
-            ax.plot(t, df[col], linewidth=1.2, color='C0')
-            ax.fill_between(t, 0, df[col], alpha=0.2, color='C0')
-            ax.axhline(y=0.1, color='red', linestyle='--', alpha=0.5,
-                       label='threshold (0.1)')
+            ax.plot(t, df[col], linewidth=1.2, color="C0")
+            ax.fill_between(t, 0, df[col], alpha=0.2, color="C0")
+            ax.axhline(
+                y=0.1, color="red", linestyle="--", alpha=0.5, label="threshold (0.1)"
+            )
         ax.set_ylim(-0.05, 1.05)
         ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
         if f_idx == 0:
-            ax.set_ylabel('Contact\nProbability')
+            ax.set_ylabel("Contact\nProbability")
 
         # ── Row 2: Force vector F ──
         ax = axes[2, f_idx]
-        for comp, c_label in [('fx', 'Fx'), ('fy', 'Fy'), ('fz', 'Fz')]:
-            col = f'ft_{label}_{comp}'
+        for comp, c_label in [("fx", "Fx"), ("fy", "Fy"), ("fz", "Fz")]:
+            col = f"ft_{label}_{comp}"
             if col in df.columns:
                 ax.plot(t, df[col], label=c_label, linewidth=1.2)
         ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
         if f_idx == 0:
-            ax.set_ylabel('Force (N)')
+            ax.set_ylabel("Force (N)")
 
         # ── Row 3: Direction vector u ──
         ax = axes[3, f_idx]
-        for comp, c_label in [('ux', 'uX'), ('uy', 'uY'), ('uz', 'uZ')]:
-            col = f'ft_{label}_{comp}'
+        for comp, c_label in [("ux", "uX"), ("uy", "uY"), ("uz", "uZ")]:
+            col = f"ft_{label}_{comp}"
             if col in df.columns:
                 ax.plot(t, df[col], label=c_label, linewidth=1.2)
         ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
-        ax.set_xlabel('Time (s)')
+        ax.set_xlabel("Time (s)")
         if f_idx == 0:
-            ax.set_ylabel('Direction\nUnit vector')
+            ax.set_ylabel("Direction\nUnit vector")
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'device_ft_output.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "device_ft_output.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -1035,30 +1102,29 @@ def plot_device_sensor_comparison(df, fingertip_labels, save_dir=None):
     """Sensor comparison: raw (alpha=0.3) vs filtered (alpha=1.0) overlay per fingertip."""
     labels = fingertip_labels
     if not labels:
-        print('  Skipping sensor comparison plot (raw sensor columns not found)')
+        print("  Skipping sensor comparison plot (raw sensor columns not found)")
         return
 
     # filtered 라벨도 존재하는지 확인
     filtered_labels = _detect_fingertip_labels(df)
     if not filtered_labels:
-        print('  Skipping sensor comparison plot (filtered sensor columns not found)')
+        print("  Skipping sensor comparison plot (filtered sensor columns not found)")
         return
 
     # 두 라벨 집합의 교집합 사용
     common_labels = [l for l in labels if l in filtered_labels]
     if not common_labels:
-        print('  Skipping sensor comparison plot (no matching raw/filtered labels)')
+        print("  Skipping sensor comparison plot (no matching raw/filtered labels)")
         return
 
     num_ft = len(common_labels)
     fig, axes = plt.subplots(2, num_ft, figsize=(5 * num_ft, 8))
-    fig.suptitle('Sensor Comparison: Raw vs Filtered',
-                 fontsize=16, fontweight='bold')
+    fig.suptitle("Sensor Comparison: Raw vs Filtered", fontsize=16, fontweight="bold")
 
     if num_ft == 1:
         axes = axes.reshape(2, 1)
 
-    t = df['timestamp']
+    t = df["timestamp"]
     colors = plt.cm.tab10.colors
 
     # Row 1: Barometer comparison
@@ -1066,17 +1132,22 @@ def plot_device_sensor_comparison(df, fingertip_labels, save_dir=None):
         ax = axes[0, f_idx]
         for b in range(16):  # auto-stopped by column check
             color = colors[b % len(colors)]
-            raw_col = f'baro_raw_{label}_{b}'
-            filt_col = f'baro_{label}_{b}'
+            raw_col = f"baro_raw_{label}_{b}"
+            filt_col = f"baro_{label}_{b}"
             if raw_col in df.columns:
-                ax.plot(t, df[raw_col], alpha=0.3, linewidth=0.6,
-                        color=color)
+                ax.plot(t, df[raw_col], alpha=0.3, linewidth=0.6, color=color)
             if filt_col in df.columns:
-                ax.plot(t, df[filt_col], alpha=1.0, linewidth=0.8,
-                        color=color, label=f'B{b}')
-        ax.set_title(f'{label} — Barometer (solid=filtered, faint=raw)')
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Pressure')
+                ax.plot(
+                    t,
+                    df[filt_col],
+                    alpha=1.0,
+                    linewidth=0.8,
+                    color=color,
+                    label=f"B{b}",
+                )
+        ax.set_title(f"{label} — Barometer (solid=filtered, faint=raw)")
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Pressure")
         ax.legend(fontsize=6, ncol=4)
         ax.grid(True, alpha=0.3)
 
@@ -1085,26 +1156,32 @@ def plot_device_sensor_comparison(df, fingertip_labels, save_dir=None):
         ax = axes[1, f_idx]
         for t_idx in range(8):  # auto-stopped by column check
             color = colors[t_idx % len(colors)]
-            raw_col = f'tof_raw_{label}_{t_idx}'
-            filt_col = f'tof_{label}_{t_idx}'
+            raw_col = f"tof_raw_{label}_{t_idx}"
+            filt_col = f"tof_{label}_{t_idx}"
             if raw_col in df.columns:
-                ax.plot(t, df[raw_col], alpha=0.3, linewidth=0.8,
-                        color=color)
+                ax.plot(t, df[raw_col], alpha=0.3, linewidth=0.8, color=color)
             if filt_col in df.columns:
-                ax.plot(t, df[filt_col], alpha=1.0, linewidth=1.2,
-                        color=color, label=f'ToF{t_idx}',
-                        marker='.', markersize=1)
-        ax.set_title(f'{label} — ToF (solid=filtered, faint=raw)')
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Distance')
+                ax.plot(
+                    t,
+                    df[filt_col],
+                    alpha=1.0,
+                    linewidth=1.2,
+                    color=color,
+                    label=f"ToF{t_idx}",
+                    marker=".",
+                    markersize=1,
+                )
+        ax.set_title(f"{label} — ToF (solid=filtered, faint=raw)")
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Distance")
         ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'device_sensor_comparison.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "device_sensor_comparison.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -1115,39 +1192,41 @@ def plot_sensor_barometer_combined(df, save_dir=None):
     raw_labels = _detect_fingertip_labels_raw(df)
     filt_labels = _detect_fingertip_labels(df)
     if not raw_labels and not filt_labels:
-        print('  Skipping barometer combined plot (columns not found)')
+        print("  Skipping barometer combined plot (columns not found)")
         return
 
     # raw/filtered 라벨 합집합 (순서 유지)
-    all_labels = list(dict.fromkeys(
-        (filt_labels or []) + (raw_labels or [])))
+    all_labels = list(dict.fromkeys((filt_labels or []) + (raw_labels or [])))
     num_ft = len(all_labels)
 
     nrows, ncols = _auto_subplot_grid(num_ft)
-    fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(5 * ncols, 4 * nrows))
-    fig.suptitle('Barometer: Filtered + Raw',
-                 fontsize=16, fontweight='bold')
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows))
+    fig.suptitle("Barometer: Filtered + Raw", fontsize=16, fontweight="bold")
     axes = np.atleast_1d(axes).flatten()
 
-    t = df['timestamp']
+    t = df["timestamp"]
     colors = plt.cm.tab10.colors
 
     for f_idx, label in enumerate(all_labels):
         ax = axes[f_idx]
         for b in range(16):
             color = colors[b % len(colors)]
-            raw_col = f'baro_raw_{label}_{b}'
-            filt_col = f'baro_{label}_{b}'
+            raw_col = f"baro_raw_{label}_{b}"
+            filt_col = f"baro_{label}_{b}"
             if raw_col in df.columns:
-                ax.plot(t, df[raw_col], alpha=0.3, linewidth=0.6,
-                        color=color)
+                ax.plot(t, df[raw_col], alpha=0.3, linewidth=0.6, color=color)
             if filt_col in df.columns:
-                ax.plot(t, df[filt_col], alpha=1.0, linewidth=0.8,
-                        color=color, label=f'B{b}')
-        ax.set_title(f'{label} (solid=filtered, faint=raw)')
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Pressure')
+                ax.plot(
+                    t,
+                    df[filt_col],
+                    alpha=1.0,
+                    linewidth=0.8,
+                    color=color,
+                    label=f"B{b}",
+                )
+        ax.set_title(f"{label} (solid=filtered, faint=raw)")
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Pressure")
         ax.legend(fontsize=6, ncol=4)
         ax.grid(True, alpha=0.3)
 
@@ -1157,9 +1236,9 @@ def plot_sensor_barometer_combined(df, save_dir=None):
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'sensor_barometer.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "sensor_barometer.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -1170,39 +1249,42 @@ def plot_sensor_tof_combined(df, save_dir=None):
     raw_labels = _detect_fingertip_labels_raw(df)
     filt_labels = _detect_fingertip_labels(df)
     if not raw_labels and not filt_labels:
-        print('  Skipping ToF combined plot (columns not found)')
+        print("  Skipping ToF combined plot (columns not found)")
         return
 
-    all_labels = list(dict.fromkeys(
-        (filt_labels or []) + (raw_labels or [])))
+    all_labels = list(dict.fromkeys((filt_labels or []) + (raw_labels or [])))
     num_ft = len(all_labels)
 
     nrows, ncols = _auto_subplot_grid(num_ft)
-    fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(5 * ncols, 4 * nrows))
-    fig.suptitle('ToF: Filtered + Raw',
-                 fontsize=16, fontweight='bold')
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows))
+    fig.suptitle("ToF: Filtered + Raw", fontsize=16, fontweight="bold")
     axes = np.atleast_1d(axes).flatten()
 
-    t = df['timestamp']
+    t = df["timestamp"]
     colors = plt.cm.tab10.colors
 
     for f_idx, label in enumerate(all_labels):
         ax = axes[f_idx]
         for t_idx in range(8):
             color = colors[t_idx % len(colors)]
-            raw_col = f'tof_raw_{label}_{t_idx}'
-            filt_col = f'tof_{label}_{t_idx}'
+            raw_col = f"tof_raw_{label}_{t_idx}"
+            filt_col = f"tof_{label}_{t_idx}"
             if raw_col in df.columns:
-                ax.plot(t, df[raw_col], alpha=0.3, linewidth=0.8,
-                        color=color)
+                ax.plot(t, df[raw_col], alpha=0.3, linewidth=0.8, color=color)
             if filt_col in df.columns:
-                ax.plot(t, df[filt_col], alpha=1.0, linewidth=1.2,
-                        color=color, label=f'ToF{t_idx}',
-                        marker='.', markersize=1)
-        ax.set_title(f'{label} (solid=filtered, faint=raw)')
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Distance')
+                ax.plot(
+                    t,
+                    df[filt_col],
+                    alpha=1.0,
+                    linewidth=1.2,
+                    color=color,
+                    label=f"ToF{t_idx}",
+                    marker=".",
+                    markersize=1,
+                )
+        ax.set_title(f"{label} (solid=filtered, faint=raw)")
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Distance")
         ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
 
@@ -1211,9 +1293,9 @@ def plot_sensor_tof_combined(df, save_dir=None):
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'sensor_tof.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "sensor_tof.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -1221,63 +1303,65 @@ def plot_sensor_tof_combined(df, save_dir=None):
 
 def print_device_statistics(df):
     """Print hand trajectory statistics."""
-    duration = df['timestamp'].iloc[-1] - df['timestamp'].iloc[0]
+    duration = df["timestamp"].iloc[-1] - df["timestamp"].iloc[0]
     rate = len(df) / duration if duration > 0 else 0.0
-    print('\n=== Hand Trajectory Statistics ===')
-    print(f'Duration: {duration:.2f} s | Samples: {len(df)}'
-          f' | Rate: {rate:.1f} Hz')
+    print("\n=== Hand Trajectory Statistics ===")
+    print(f"Duration: {duration:.2f} s | Samples: {len(df)} | Rate: {rate:.1f} Hz")
 
-    if 'hand_valid' in df.columns:
-        valid_ratio = df['hand_valid'].sum() / len(df) * 100
-        print(f'Hand valid: {valid_ratio:.1f}%')
+    if "hand_valid" in df.columns:
+        valid_ratio = df["hand_valid"].sum() / len(df) * 100
+        print(f"Hand valid: {valid_ratio:.1f}%")
 
-    goal_cols, _ = _detect_joint_columns(df, 'hand_goal_pos_')
-    actual_cols, motor_names = _detect_joint_columns(df, 'hand_actual_pos_')
+    goal_cols, _ = _detect_joint_columns(df, "hand_goal_pos_")
+    actual_cols, motor_names = _detect_joint_columns(df, "hand_actual_pos_")
     if goal_cols and actual_cols:
-        print('\nPosition Tracking Error (RMS):')
+        print("\nPosition Tracking Error (RMS):")
         for i in range(min(len(goal_cols), len(actual_cols))):
-            goal_s = pd.to_numeric(df[goal_cols[i]], errors='coerce')
-            act_s = pd.to_numeric(df[actual_cols[i]], errors='coerce')
+            goal_s = pd.to_numeric(df[goal_cols[i]], errors="coerce")
+            act_s = pd.to_numeric(df[actual_cols[i]], errors="coerce")
             err = goal_s - act_s
-            rms = np.sqrt(np.nanmean(err ** 2))
-            print(f'  Motor {i} ({motor_names[i]}): {rms:.6f}')
+            rms = np.sqrt(np.nanmean(err**2))
+            print(f"  Motor {i} ({motor_names[i]}): {rms:.6f}")
 
     # Sensor summary (filtered 컬럼만, raw 제외)
-    baro_cols = [c for c in df.columns
-                 if c.startswith('baro_') and not c.startswith('baro_raw_')]
-    tof_cols = [c for c in df.columns
-                if c.startswith('tof_') and not c.startswith('tof_raw_')]
+    baro_cols = [
+        c for c in df.columns if c.startswith("baro_") and not c.startswith("baro_raw_")
+    ]
+    tof_cols = [
+        c for c in df.columns if c.startswith("tof_") and not c.startswith("tof_raw_")
+    ]
     if baro_cols:
         baro_vals = df[baro_cols].values.flatten()
-        print(f'\nBarometer range: [{baro_vals.min():.1f}, {baro_vals.max():.1f}]')
+        print(f"\nBarometer range: [{baro_vals.min():.1f}, {baro_vals.max():.1f}]")
     if tof_cols:
         tof_vals = df[tof_cols].values.flatten()
-        print(f'ToF range: [{tof_vals.min():.1f}, {tof_vals.max():.1f}]')
+        print(f"ToF range: [{tof_vals.min():.1f}, {tof_vals.max():.1f}]")
 
     # FT inference output statistics
     ft_labels = _detect_ft_labels(df)
     if ft_labels:
         # 3-head 모델 여부 감지 (contact 컬럼 존재)
-        has_contact = f'ft_{ft_labels[0]}_contact' in df.columns
+        has_contact = f"ft_{ft_labels[0]}_contact" in df.columns
         if has_contact:
-            ft_comps = ['contact', 'fx', 'fy', 'fz',
-                        'ux', 'uy', 'uz']
+            ft_comps = ["contact", "fx", "fy", "fz", "ux", "uy", "uz"]
         else:
-            ft_comps = ['fx', 'fy', 'fz', 'tx', 'ty', 'tz']
-        print('\nF/T Inference Output:')
-        if 'ft_valid' in df.columns:
-            ft_valid_ratio = df['ft_valid'].sum() / len(df) * 100
-            print(f'  FT valid: {ft_valid_ratio:.1f}%')
+            ft_comps = ["fx", "fy", "fz", "tx", "ty", "tz"]
+        print("\nF/T Inference Output:")
+        if "ft_valid" in df.columns:
+            ft_valid_ratio = df["ft_valid"].sum() / len(df) * 100
+            print(f"  FT valid: {ft_valid_ratio:.1f}%")
         for label in ft_labels:
-            print(f'  {label}:')
+            print(f"  {label}:")
             for comp in ft_comps:
-                col = f'ft_{label}_{comp}'
+                col = f"ft_{label}_{comp}"
                 if col in df.columns:
                     data = df[col]
-                    print(f'    {comp}: mean={data.mean():.4f}'
-                          f'  std={data.std():.4f}'
-                          f'  min={data.min():.4f}'
-                          f'  max={data.max():.4f}')
+                    print(
+                        f"    {comp}: mean={data.mean():.4f}"
+                        f"  std={data.std():.4f}"
+                        f"  min={data.min():.4f}"
+                        f"  max={data.max():.4f}"
+                    )
 
 
 # ── Motor 모드 (state_log 내 motor 컬럼) ────────────────────────────────────
@@ -1285,29 +1369,29 @@ def print_device_statistics(df):
 
 def _has_motor_columns(df):
     """state_log CSV에 motor_pos_* 컬럼이 존재하는지 확인."""
-    return any(c.startswith('motor_pos_') for c in df.columns)
+    return any(c.startswith("motor_pos_") for c in df.columns)
 
 
 def plot_motor_positions(df, save_dir=None):
     """Motor positions (motor_pos_*) per motor subplot."""
-    cols, names = _detect_joint_columns(df, 'motor_pos_')
+    cols, names = _detect_joint_columns(df, "motor_pos_")
     if not cols:
-        print('  Skipping motor positions plot (motor_pos_* columns not found)')
+        print("  Skipping motor positions plot (motor_pos_* columns not found)")
         return
 
     n = len(cols)
     nrows, ncols = _auto_subplot_grid(n)
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows))
-    fig.suptitle('Motor Positions', fontsize=16, fontweight='bold')
+    fig.suptitle("Motor Positions", fontsize=16, fontweight="bold")
     axes = np.atleast_1d(axes).flatten()
 
-    t = df['timestamp']
+    t = df["timestamp"]
     for i in range(n):
         ax = axes[i]
-        ax.plot(t, df[cols[i]], label='Position', linewidth=1.5)
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Position (rad)')
-        ax.set_title(f'Motor {i}: {names[i]}')
+        ax.plot(t, df[cols[i]], label="Position", linewidth=1.5)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Position (rad)")
+        ax.set_title(f"Motor {i}: {names[i]}")
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
@@ -1316,9 +1400,9 @@ def plot_motor_positions(df, save_dir=None):
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'motor_positions.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "motor_positions.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -1326,24 +1410,24 @@ def plot_motor_positions(df, save_dir=None):
 
 def plot_motor_velocities(df, save_dir=None):
     """Motor velocities (motor_vel_*) per motor subplot."""
-    cols, names = _detect_joint_columns(df, 'motor_vel_')
+    cols, names = _detect_joint_columns(df, "motor_vel_")
     if not cols:
-        print('  Skipping motor velocities plot (motor_vel_* columns not found)')
+        print("  Skipping motor velocities plot (motor_vel_* columns not found)")
         return
 
     n = len(cols)
     nrows, ncols = _auto_subplot_grid(n)
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows))
-    fig.suptitle('Motor Velocities', fontsize=16, fontweight='bold')
+    fig.suptitle("Motor Velocities", fontsize=16, fontweight="bold")
     axes = np.atleast_1d(axes).flatten()
 
-    t = df['timestamp']
+    t = df["timestamp"]
     for i in range(n):
         ax = axes[i]
-        ax.plot(t, df[cols[i]], label='Velocity', linewidth=1.5)
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Velocity (rad/s)')
-        ax.set_title(f'Motor {i}: {names[i]}')
+        ax.plot(t, df[cols[i]], label="Velocity", linewidth=1.5)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Velocity (rad/s)")
+        ax.set_title(f"Motor {i}: {names[i]}")
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
@@ -1352,9 +1436,9 @@ def plot_motor_velocities(df, save_dir=None):
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'motor_velocities.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "motor_velocities.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -1362,24 +1446,24 @@ def plot_motor_velocities(df, save_dir=None):
 
 def plot_motor_efforts(df, save_dir=None):
     """Motor efforts/currents (motor_eff_*) per motor subplot."""
-    cols, names = _detect_joint_columns(df, 'motor_eff_')
+    cols, names = _detect_joint_columns(df, "motor_eff_")
     if not cols:
-        print('  Skipping motor efforts plot (motor_eff_* columns not found)')
+        print("  Skipping motor efforts plot (motor_eff_* columns not found)")
         return
 
     n = len(cols)
     nrows, ncols = _auto_subplot_grid(n)
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows))
-    fig.suptitle('Motor Efforts (Current)', fontsize=16, fontweight='bold')
+    fig.suptitle("Motor Efforts (Current)", fontsize=16, fontweight="bold")
     axes = np.atleast_1d(axes).flatten()
 
-    t = df['timestamp']
+    t = df["timestamp"]
     for i in range(n):
         ax = axes[i]
-        ax.plot(t, df[cols[i]], label='Effort', linewidth=1.5, color='C3')
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Effort')
-        ax.set_title(f'Motor {i}: {names[i]}')
+        ax.plot(t, df[cols[i]], label="Effort", linewidth=1.5, color="C3")
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Effort")
+        ax.set_title(f"Motor {i}: {names[i]}")
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
@@ -1388,9 +1472,9 @@ def plot_motor_efforts(df, save_dir=None):
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'motor_efforts.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "motor_efforts.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -1398,37 +1482,43 @@ def plot_motor_efforts(df, save_dir=None):
 
 def print_motor_statistics(df):
     """Print motor state statistics if motor columns exist."""
-    pos_cols, names = _detect_joint_columns(df, 'motor_pos_')
+    pos_cols, names = _detect_joint_columns(df, "motor_pos_")
     if not pos_cols:
         return
 
-    print('\n=== Motor State Statistics ===')
-    print(f'Motor channels: {len(pos_cols)}')
+    print("\n=== Motor State Statistics ===")
+    print(f"Motor channels: {len(pos_cols)}")
 
-    print('\nMotor Positions (range):')
+    print("\nMotor Positions (range):")
     for i, (col, name) in enumerate(zip(pos_cols, names)):
-        data = pd.to_numeric(df[col], errors='coerce')
-        print(f'  Motor {i} ({name}): '
-              f'[{data.min():.4f}, {data.max():.4f}]  '
-              f'mean={data.mean():.4f}')
+        data = pd.to_numeric(df[col], errors="coerce")
+        print(
+            f"  Motor {i} ({name}): "
+            f"[{data.min():.4f}, {data.max():.4f}]  "
+            f"mean={data.mean():.4f}"
+        )
 
-    vel_cols, _ = _detect_joint_columns(df, 'motor_vel_')
+    vel_cols, _ = _detect_joint_columns(df, "motor_vel_")
     if vel_cols:
-        print('\nMotor Velocities (range):')
+        print("\nMotor Velocities (range):")
         for i, (col, name) in enumerate(zip(vel_cols, names)):
-            data = pd.to_numeric(df[col], errors='coerce')
-            print(f'  Motor {i} ({name}): '
-                  f'[{data.min():.4f}, {data.max():.4f}]  '
-                  f'mean={data.mean():.4f}')
+            data = pd.to_numeric(df[col], errors="coerce")
+            print(
+                f"  Motor {i} ({name}): "
+                f"[{data.min():.4f}, {data.max():.4f}]  "
+                f"mean={data.mean():.4f}"
+            )
 
-    eff_cols, _ = _detect_joint_columns(df, 'motor_eff_')
+    eff_cols, _ = _detect_joint_columns(df, "motor_eff_")
     if eff_cols:
-        print('\nMotor Efforts (range):')
+        print("\nMotor Efforts (range):")
         for i, (col, name) in enumerate(zip(eff_cols, names)):
-            data = pd.to_numeric(df[col], errors='coerce')
-            print(f'  Motor {i} ({name}): '
-                  f'[{data.min():.4f}, {data.max():.4f}]  '
-                  f'mean={data.mean():.4f}')
+            data = pd.to_numeric(df[col], errors="coerce")
+            print(
+                f"  Motor {i} ({name}): "
+                f"[{data.min():.4f}, {data.max():.4f}]  "
+                f"mean={data.mean():.4f}"
+            )
 
 
 # ── Timing 모드 ─────────────────────────────────────────────────────────────
@@ -1437,19 +1527,24 @@ def print_motor_statistics(df):
 def plot_timing_breakdown(df, save_dir=None):
     """Figure 1: Per-phase timing breakdown (stacked area)."""
     fig, ax = plt.subplots(figsize=(14, 6))
-    fig.suptitle('Control Loop Timing Breakdown', fontsize=16, fontweight='bold')
+    fig.suptitle("Control Loop Timing Breakdown", fontsize=16, fontweight="bold")
 
-    t = df['timestamp']
-    phases = ['t_state_acquire_us', 't_compute_us', 't_publish_us']
-    labels = ['State Acquire', 'Compute', 'Publish']
-    colors = ['#2196F3', '#FF9800', '#4CAF50']
+    t = df["timestamp"]
+    phases = ["t_state_acquire_us", "t_compute_us", "t_publish_us"]
+    labels = ["State Acquire", "Compute", "Publish"]
+    colors = ["#2196F3", "#FF9800", "#4CAF50"]
 
-    available = [(p, l, c) for p, l, c in zip(phases, labels, colors)
-                 if p in df.columns]
+    available = [
+        (p, l, c) for p, l, c in zip(phases, labels, colors) if p in df.columns
+    ]
     if available:
-        ax.stackplot(t, *[df[p] for p, _, _ in available],
-                     labels=[l for _, l, _ in available],
-                     colors=[c for _, _, c in available], alpha=0.7)
+        ax.stackplot(
+            t,
+            *[df[p] for p, _, _ in available],
+            labels=[l for _, l, _ in available],
+            colors=[c for _, _, c in available],
+            alpha=0.7,
+        )
 
     # Budget line
     if len(df) > 1:
@@ -1457,19 +1552,24 @@ def plot_timing_breakdown(df, save_dir=None):
         budget = 1e6 * dt if dt > 0 else 2000.0
     else:
         budget = 2000.0
-    ax.axhline(y=budget, color='red', linestyle='--', linewidth=1.5,
-               label=f'Budget ({budget:.0f} µs)')
+    ax.axhline(
+        y=budget,
+        color="red",
+        linestyle="--",
+        linewidth=1.5,
+        label=f"Budget ({budget:.0f} µs)",
+    )
 
-    ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Duration (µs)')
-    ax.legend(fontsize=9, loc='upper right')
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Duration (µs)")
+    ax.legend(fontsize=9, loc="upper right")
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'timing_breakdown.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "timing_breakdown.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -1478,9 +1578,9 @@ def plot_timing_breakdown(df, save_dir=None):
 def plot_timing_total_and_jitter(df, save_dir=None):
     """Figure 2: Total loop time and jitter (2 subplots)."""
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8))
-    fig.suptitle('Loop Timing & Jitter', fontsize=16, fontweight='bold')
+    fig.suptitle("Loop Timing & Jitter", fontsize=16, fontweight="bold")
 
-    t = df['timestamp']
+    t = df["timestamp"]
 
     # Budget estimation
     if len(df) > 1:
@@ -1490,31 +1590,37 @@ def plot_timing_total_and_jitter(df, save_dir=None):
         budget = 2000.0
 
     # Total loop time
-    if 't_total_us' in df.columns:
-        ax1.plot(t, df['t_total_us'], linewidth=0.5, alpha=0.7, label='t_total')
-        ax1.axhline(y=budget, color='red', linestyle='--', linewidth=1.5,
-                     label=f'Budget ({budget:.0f} µs)')
-        overruns = (df['t_total_us'] > budget).sum()
-        ax1.set_title(f'Total Loop Time (overruns: {overruns})')
-    ax1.set_ylabel('Duration (µs)')
+    if "t_total_us" in df.columns:
+        ax1.plot(t, df["t_total_us"], linewidth=0.5, alpha=0.7, label="t_total")
+        ax1.axhline(
+            y=budget,
+            color="red",
+            linestyle="--",
+            linewidth=1.5,
+            label=f"Budget ({budget:.0f} µs)",
+        )
+        overruns = (df["t_total_us"] > budget).sum()
+        ax1.set_title(f"Total Loop Time (overruns: {overruns})")
+    ax1.set_ylabel("Duration (µs)")
     ax1.legend(fontsize=9)
     ax1.grid(True, alpha=0.3)
 
     # Jitter
-    if 'jitter_us' in df.columns:
-        ax2.plot(t, df['jitter_us'], linewidth=0.5, alpha=0.7,
-                 color='C1', label='Jitter')
-        ax2.set_title('Period Jitter')
-    ax2.set_xlabel('Time (s)')
-    ax2.set_ylabel('Jitter (µs)')
+    if "jitter_us" in df.columns:
+        ax2.plot(
+            t, df["jitter_us"], linewidth=0.5, alpha=0.7, color="C1", label="Jitter"
+        )
+        ax2.set_title("Period Jitter")
+    ax2.set_xlabel("Time (s)")
+    ax2.set_ylabel("Jitter (µs)")
     ax2.legend(fontsize=9)
     ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'timing_total_jitter.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "timing_total_jitter.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -1523,42 +1629,39 @@ def plot_timing_total_and_jitter(df, save_dir=None):
 def plot_timing_histograms(df, save_dir=None):
     """Figure 3: Histograms of total loop time and jitter."""
     cols = []
-    if 't_total_us' in df.columns:
-        cols.append(('t_total_us', 'Total Loop Time'))
-    if 'jitter_us' in df.columns:
-        cols.append(('jitter_us', 'Jitter'))
+    if "t_total_us" in df.columns:
+        cols.append(("t_total_us", "Total Loop Time"))
+    if "jitter_us" in df.columns:
+        cols.append(("jitter_us", "Jitter"))
     if not cols:
-        print('  Skipping timing histograms (columns not found)')
+        print("  Skipping timing histograms (columns not found)")
         return
 
     fig, axes = plt.subplots(1, len(cols), figsize=(7 * len(cols), 5))
-    fig.suptitle('Timing Distributions', fontsize=16, fontweight='bold')
+    fig.suptitle("Timing Distributions", fontsize=16, fontweight="bold")
     if len(cols) == 1:
         axes = [axes]
 
     for ax, (col, label) in zip(axes, cols):
         data = df[col]
-        ax.hist(data, bins=100, edgecolor='black', linewidth=0.3, alpha=0.7)
+        ax.hist(data, bins=100, edgecolor="black", linewidth=0.3, alpha=0.7)
         p50 = data.quantile(0.50)
         p95 = data.quantile(0.95)
         p99 = data.quantile(0.99)
-        ax.axvline(p50, color='green', linestyle='--',
-                   label=f'P50: {p50:.1f} µs')
-        ax.axvline(p95, color='orange', linestyle='--',
-                   label=f'P95: {p95:.1f} µs')
-        ax.axvline(p99, color='red', linestyle='--',
-                   label=f'P99: {p99:.1f} µs')
-        ax.set_xlabel(f'{label} (µs)')
-        ax.set_ylabel('Count')
+        ax.axvline(p50, color="green", linestyle="--", label=f"P50: {p50:.1f} µs")
+        ax.axvline(p95, color="orange", linestyle="--", label=f"P95: {p95:.1f} µs")
+        ax.axvline(p99, color="red", linestyle="--", label=f"P99: {p99:.1f} µs")
+        ax.set_xlabel(f"{label} (µs)")
+        ax.set_ylabel("Count")
         ax.set_title(label)
         ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if save_dir:
-        path = Path(save_dir) / 'timing_histograms.png'
-        plt.savefig(path, dpi=300, bbox_inches='tight')
-        print(f'Saved: {path}')
+        path = Path(save_dir) / "timing_histograms.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
     else:
         plt.show()
     plt.close()
@@ -1566,38 +1669,42 @@ def plot_timing_histograms(df, save_dir=None):
 
 def print_timing_statistics(df):
     """Print timing statistics summary."""
-    duration = df['timestamp'].iloc[-1] - df['timestamp'].iloc[0]
+    duration = df["timestamp"].iloc[-1] - df["timestamp"].iloc[0]
     rate = len(df) / duration if duration > 0 else 0
 
-    print('\n=== Timing Statistics ===')
-    print(f'Duration: {duration:.2f} s | Samples: {len(df)}'
-          f' | Rate: {rate:.1f} Hz')
+    print("\n=== Timing Statistics ===")
+    print(f"Duration: {duration:.2f} s | Samples: {len(df)} | Rate: {rate:.1f} Hz")
 
     # Budget estimation
     budget = 1e6 / rate if rate > 0 else 2000.0
 
-    for col, label in [('t_state_acquire_us', 'State Acquire'),
-                       ('t_compute_us', 'Compute'),
-                       ('t_publish_us', 'Publish'),
-                       ('t_total_us', 'Total Loop'),
-                       ('jitter_us', 'Jitter')]:
+    for col, label in [
+        ("t_state_acquire_us", "State Acquire"),
+        ("t_compute_us", "Compute"),
+        ("t_publish_us", "Publish"),
+        ("t_total_us", "Total Loop"),
+        ("jitter_us", "Jitter"),
+    ]:
         if col not in df.columns:
             continue
         data = df[col]
-        print(f'\n{label}:')
-        print(f'  Mean: {data.mean():.2f} µs | Std: {data.std():.2f} µs')
-        print(f'  Min: {data.min():.2f} µs | Max: {data.max():.2f} µs')
-        print(f'  P50: {data.quantile(0.50):.2f} µs'
-              f' | P95: {data.quantile(0.95):.2f} µs'
-              f' | P99: {data.quantile(0.99):.2f} µs')
+        print(f"\n{label}:")
+        print(f"  Mean: {data.mean():.2f} µs | Std: {data.std():.2f} µs")
+        print(f"  Min: {data.min():.2f} µs | Max: {data.max():.2f} µs")
+        print(
+            f"  P50: {data.quantile(0.50):.2f} µs"
+            f" | P95: {data.quantile(0.95):.2f} µs"
+            f" | P99: {data.quantile(0.99):.2f} µs"
+        )
 
-    if 't_total_us' in df.columns:
-        overruns = (df['t_total_us'] > budget).sum()
+    if "t_total_us" in df.columns:
+        overruns = (df["t_total_us"] > budget).sum()
         pct = overruns / len(df) * 100
-        print(f'\nOverruns (>{budget:.0f} µs): {overruns} ({pct:.3f}%)')
+        print(f"\nOverruns (>{budget:.0f} µs): {overruns} ({pct:.3f}%)")
 
 
 # ── Auto-detect & Main ────────────────────────────────────────────────────
+
 
 def detect_log_type(filepath):
     """Detect log type from filename pattern.
@@ -1611,47 +1718,112 @@ def detect_log_type(filepath):
       timing_log*.csv  → timing
     """
     stem = Path(filepath).stem
-    if stem.endswith('state_log'):
-        return 'state_log'
-    elif stem.endswith('sensor_log'):
-        return 'sensor_log'
-    elif stem.startswith('robot_log'):
-        return 'robot'
-    elif stem.startswith('device_log') or stem.startswith('hand_log'):
-        return 'device'
-    elif stem.startswith('timing_log'):
-        return 'timing'
+    if stem.endswith("state_log"):
+        return "state_log"
+    elif stem.endswith("sensor_log"):
+        return "sensor_log"
+    elif stem.startswith("robot_log"):
+        return "robot"
+    elif stem.startswith("device_log") or stem.startswith("hand_log"):
+        return "device"
+    elif stem.startswith("timing_log"):
+        return "timing"
     else:
-        return 'unknown'
+        return "unknown"
+
+
+def detect_log_type_by_columns(columns):
+    """Fallback: infer log type from CSV header columns.
+
+    Used when filename doesn't match a known pattern (e.g. user-renamed file
+    like timing_stat.csv). Priority: timing > state_log > sensor_log.
+    """
+    cols = set(columns)
+    if any(
+        c in cols
+        for c in (
+            "t_total_us",
+            "t_compute_us",
+            "t_state_acquire_us",
+            "t_publish_us",
+            "jitter_us",
+        )
+    ):
+        return "timing"
+    if any(
+        c.startswith(("actual_pos_", "goal_pos_", "traj_pos_", "target_pos_"))
+        for c in cols
+    ):
+        return "state_log"
+    if any(
+        c.startswith(("baro_raw_", "tof_raw_", "baro_filt_", "tof_filt_", "ft_"))
+        for c in cols
+    ):
+        return "sensor_log"
+    return "unknown"
+
+
+def _peek_csv_header(filepath):
+    """Read the first row of a CSV as column names. Empty list on error."""
+    try:
+        with open(filepath, "r") as f:
+            return next(csv.reader(f), [])
+    except (OSError, StopIteration):
+        return []
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Plot RTC log data from split CSV logs (4-category)')
-    parser.add_argument('csv_file', type=str,
-                        help='Path to robot_log*.csv, device_log*.csv, or timing_log*.csv')
-    parser.add_argument('--save-dir', type=str, default=None,
-                        help='Directory to save plots (PNG). '
-                             '미지정 시 RTC_SESSION_DIR/plots/ (없으면 '
-                             '현재 colcon ws logging_data 의 최신 세션) 사용')
-    parser.add_argument('--stats', action='store_true',
-                        help='Print statistics only (no plots)')
-    parser.add_argument('--error', action='store_true',
-                        help='Also plot tracking error figures (robot only)')
-    parser.add_argument('--command', action='store_true',
-                        help='Also plot control command figures (robot only)')
-    parser.add_argument('--torque', action='store_true',
-                        help='Also plot actual torque figures (robot only)')
-    parser.add_argument('--task-pos', action='store_true',
-                        help='Also plot TCP task-space position (robot only)')
-    parser.add_argument('--raw', action='store_true',
-                        help='Plot raw sensor data (pre-LPF) (hand only)')
-    parser.add_argument('--ft', action='store_true',
-                        help='Plot F/T inference output (hand only)')
-    parser.add_argument('--sensor-compare', action='store_true',
-                        help='Plot raw vs filtered sensor comparison (hand only)')
-    parser.add_argument('--all', action='store_true',
-                        help='Plot all available figures')
+        description="Plot RTC log data from split CSV logs (4-category)"
+    )
+    parser.add_argument(
+        "csv_file",
+        type=str,
+        help="Path to robot_log*.csv, device_log*.csv, or timing_log*.csv",
+    )
+    parser.add_argument(
+        "--save-dir",
+        type=str,
+        default=None,
+        help="Directory to save plots (PNG). "
+        "미지정 시 RTC_SESSION_DIR/plots/ (없으면 "
+        "현재 colcon ws logging_data 의 최신 세션) 사용",
+    )
+    parser.add_argument(
+        "--stats", action="store_true", help="Print statistics only (no plots)"
+    )
+    parser.add_argument(
+        "--error",
+        action="store_true",
+        help="Also plot tracking error figures (robot only)",
+    )
+    parser.add_argument(
+        "--command",
+        action="store_true",
+        help="Also plot control command figures (robot only)",
+    )
+    parser.add_argument(
+        "--torque",
+        action="store_true",
+        help="Also plot actual torque figures (robot only)",
+    )
+    parser.add_argument(
+        "--task-pos",
+        action="store_true",
+        help="Also plot TCP task-space position (robot only)",
+    )
+    parser.add_argument(
+        "--raw", action="store_true", help="Plot raw sensor data (pre-LPF) (hand only)"
+    )
+    parser.add_argument(
+        "--ft", action="store_true", help="Plot F/T inference output (hand only)"
+    )
+    parser.add_argument(
+        "--sensor-compare",
+        action="store_true",
+        help="Plot raw vs filtered sensor comparison (hand only)",
+    )
+    parser.add_argument("--all", action="store_true", help="Plot all available figures")
 
     args = parser.parse_args()
 
@@ -1673,59 +1845,85 @@ def main():
             get_session_dir,
             resolve_logging_root,
         )
+
         session = get_session_dir()
         if not session:
             root = resolve_logging_root()
             if os.path.isdir(root):
                 candidates = sorted(
-                    d for d in os.listdir(root)
+                    d
+                    for d in os.listdir(root)
                     if os.path.isdir(os.path.join(root, d))
-                    and len(d) == 11 and d[6] == '_'
+                    and len(d) == 11
+                    and d[6] == "_"
                 )
                 if candidates:
                     session = os.path.join(root, candidates[-1])
         if session:
-            args.save_dir = os.path.join(session, 'plots')
+            args.save_dir = os.path.join(session, "plots")
             os.makedirs(args.save_dir, exist_ok=True)
 
     # Agg backend 최적화: --save-dir 지정 시 GUI 없이 렌더링
     global plt
     if args.save_dir:
         import matplotlib
-        matplotlib.use('Agg')
+
+        matplotlib.use("Agg")
     import matplotlib.pyplot as _plt
+
     plt = _plt
 
-    log_type = detect_log_type(args.csv_file)
-    if log_type == 'unknown':
-        print(f'Error: Cannot detect log type from filename: {args.csv_file}')
-        print('Expected: *_state_log.csv, *_sensor_log.csv, timing_log*.csv, '
-              'robot_log*.csv, device_log*.csv, hand_log*.csv')
+    if not os.path.isfile(args.csv_file):
+        print(f"Error: file not found: {args.csv_file}")
         sys.exit(1)
 
-    print(f'Loading ({log_type}): {args.csv_file}')
+    log_type = detect_log_type(args.csv_file)
+    if log_type == "unknown":
+        header = _peek_csv_header(args.csv_file)
+        log_type = detect_log_type_by_columns(header)
+        if log_type != "unknown":
+            print(
+                f"Note: filename did not match known patterns; "
+                f"detected type from CSV columns: {log_type}"
+            )
+
+    if log_type == "unknown":
+        print(
+            f"Error: Cannot detect log type from filename or columns: {args.csv_file}"
+        )
+        print(
+            "Expected filenames: *_state_log.csv, *_sensor_log.csv, "
+            "timing_log*.csv, robot_log*.csv, device_log*.csv, hand_log*.csv"
+        )
+        sys.exit(1)
+
+    print(f"Loading ({log_type}): {args.csv_file}")
     try:
-        if log_type in ('sensor_log', 'device'):
+        if log_type in ("sensor_log", "device"):
             # sensor_log/device: 컬럼 수 불일치 자동 복구 시도
             df, repaired = _load_sensor_log_csv(args.csv_file)
             if repaired:
-                print(f'  Loaded {len(df)} rows (header repaired).')
+                print(f"  Loaded {len(df)} rows (header repaired).")
         else:
             df = pd.read_csv(args.csv_file)
     except pd.errors.EmptyDataError:
-        print(f'Error: CSV file is empty or has no columns: {args.csv_file}')
-        print('The log file may not have been written (e.g. controller crashed before logging).')
+        print(f"Error: CSV file is empty or has no columns: {args.csv_file}")
+        print(
+            "The log file may not have been written (e.g. controller crashed before logging)."
+        )
         sys.exit(1)
     except pd.errors.ParserError as e:
         print(f'Warning: CSV parse error — retrying with on_bad_lines="warn": {e}')
-        df = pd.read_csv(args.csv_file, on_bad_lines='warn')
+        df = pd.read_csv(args.csv_file, on_bad_lines="warn")
         if df.empty:
-            print(f'Error: No valid rows after skipping malformed lines: {args.csv_file}')
+            print(
+                f"Error: No valid rows after skipping malformed lines: {args.csv_file}"
+            )
             sys.exit(1)
-        print(f'Loaded {len(df)} valid rows (some malformed lines were skipped).')
+        print(f"Loaded {len(df)} valid rows (some malformed lines were skipped).")
 
     if df.empty:
-        print(f'Error: No valid data rows in {args.csv_file}')
+        print(f"Error: No valid data rows in {args.csv_file}")
         sys.exit(1)
 
     # 새 DataFrame 로드 시 컬럼 감지 캐시 초기화
@@ -1734,17 +1932,17 @@ def main():
     # 숫자여야 할 컬럼에 문자열이 섞여 있을 경우 (레거시 CSV에서
     # 컬럼 수 불일치로 goal_type 문자열이 밀려 들어간 경우) 숫자로 변환.
     # goal_type, command_type 등 알려진 문자열/정수 컬럼은 제외.
-    _str_cols = {'goal_type', 'command_type'}
+    _str_cols = {"goal_type", "command_type"}
     for col in df.columns:
-        if col in _str_cols or col == 'timestamp':
+        if col in _str_cols or col == "timestamp":
             continue
         if df[col].dtype == object:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     if args.save_dir:
         Path(args.save_dir).mkdir(parents=True, exist_ok=True)
 
-    if log_type in ('robot', 'state_log'):
+    if log_type in ("robot", "state_log"):
         print_robot_statistics(df)
         if _has_motor_columns(df):
             print_motor_statistics(df)
@@ -1753,8 +1951,9 @@ def main():
             plot_robot_velocities(df, args.save_dir)
             plot_robot_torques(df, args.save_dir)
             # goal_type=="task" 데이터가 존재하면 자동 표시
-            has_task_goal = ('goal_type' in df.columns
-                            and (df['goal_type'] == 'task').any())
+            has_task_goal = (
+                "goal_type" in df.columns and (df["goal_type"] == "task").any()
+            )
             if args.task_pos or has_task_goal:
                 plot_robot_task_position(df, args.save_dir)
                 plot_robot_task_tracking_error(df, args.save_dir)
@@ -1767,7 +1966,7 @@ def main():
                 plot_motor_positions(df, args.save_dir)
                 plot_motor_velocities(df, args.save_dir)
                 plot_motor_efforts(df, args.save_dir)
-    elif log_type == 'sensor_log':
+    elif log_type == "sensor_log":
         print_device_statistics(df)
         if not args.stats:
             # 기본: barometer combined, tof combined, ft output
@@ -1778,9 +1977,8 @@ def main():
             # 옵트인: 레거시 개별 plots
             if args.sensor_compare:
                 raw_labels = _detect_fingertip_labels_raw(df)
-                plot_device_sensor_comparison(
-                    df, raw_labels, args.save_dir)
-    elif log_type == 'device':
+                plot_device_sensor_comparison(df, raw_labels, args.save_dir)
+    elif log_type == "device":
         print_device_statistics(df)
         if not args.stats:
             plot_device_positions(df, args.save_dir)
@@ -1792,9 +1990,8 @@ def main():
             plot_device_ft_output(df, ft_labels, args.save_dir)
             if args.sensor_compare:
                 raw_labels = _detect_fingertip_labels_raw(df)
-                plot_device_sensor_comparison(
-                    df, raw_labels, args.save_dir)
-    elif log_type == 'timing':
+                plot_device_sensor_comparison(df, raw_labels, args.save_dir)
+    elif log_type == "timing":
         print_timing_statistics(df)
         if not args.stats:
             plot_timing_breakdown(df, args.save_dir)
@@ -1802,5 +1999,5 @@ def main():
             plot_timing_histograms(df, args.save_dir)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
