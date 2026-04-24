@@ -1,5 +1,6 @@
-// ── test_controller_timing_profiler.cpp ───────────────────────────────────────
-// Unit tests for rtc::ControllerTimingProfiler.
+// ── test_controller_timing_profiler.cpp
+// ─────────────────────────────────────── Unit tests for
+// rtc::ControllerTimingProfiler.
 //
 // Covers: initial state, MeasuredCompute timing, statistics (min/max/mean,
 // percentiles), over-budget detection, Reset, Summary string format, and
@@ -8,32 +9,28 @@
 // Uses a stub controller with configurable busy-wait to produce deterministic
 // timing measurements.
 // ─────────────────────────────────────────────────────────────────────────────
-#include <rtc_controller_manager/controller_timing_profiler.hpp>
 #include <rtc_controller_interface/rt_controller_interface.hpp>
+#include <rtc_controller_manager/controller_timing_profiler.hpp>
 
 #include <gtest/gtest.h>
 
 #include <chrono>
 #include <string>
 
-namespace
-{
+namespace {
 
 // Stub controller with configurable Compute() duration via busy-wait.
-class ProfilerStubController : public rtc::RTControllerInterface
-{
+class ProfilerStubController : public rtc::RTControllerInterface {
 public:
   ProfilerStubController() = default;
 
-  [[nodiscard]] rtc::ControllerOutput Compute(
-    const rtc::ControllerState &) noexcept override
-  {
+  [[nodiscard]] rtc::ControllerOutput
+  Compute(const rtc::ControllerState &) noexcept override {
     if (busy_wait_us_ > 0.0) {
       const auto t0 = std::chrono::steady_clock::now();
       while (std::chrono::duration<double, std::micro>(
                  std::chrono::steady_clock::now() - t0)
-        .count() < busy_wait_us_)
-      {
+                 .count() < busy_wait_us_) {
       }
     }
     rtc::ControllerOutput out{};
@@ -42,13 +39,12 @@ public:
   }
 
   void SetDeviceTarget(int, std::span<const double>) noexcept override {}
-  [[nodiscard]] std::string_view Name() const noexcept override
-  {
+  [[nodiscard]] std::string_view Name() const noexcept override {
     return "ProfilerStub";
   }
   void InitializeHoldPosition(const rtc::ControllerState &) noexcept override {}
 
-  void set_busy_wait_us(double us) noexcept {busy_wait_us_ = us;}
+  void set_busy_wait_us(double us) noexcept { busy_wait_us_ = us; }
 
 private:
   double busy_wait_us_{0.0};
@@ -58,8 +54,7 @@ private:
 // Initial state
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(ControllerTimingProfilerTest, InitialStateNoData)
-{
+TEST(ControllerTimingProfilerTest, InitialStateNoData) {
   rtc::ControllerTimingProfiler profiler;
   const auto stats = profiler.GetStats();
 
@@ -68,8 +63,7 @@ TEST(ControllerTimingProfilerTest, InitialStateNoData)
   EXPECT_EQ(stats.over_budget, uint64_t{0});
 }
 
-TEST(ControllerTimingProfilerTest, InitialLastComputeUs)
-{
+TEST(ControllerTimingProfilerTest, InitialLastComputeUs) {
   rtc::ControllerTimingProfiler profiler;
   EXPECT_DOUBLE_EQ(profiler.LastComputeUs(), 0.0);
 }
@@ -78,8 +72,7 @@ TEST(ControllerTimingProfilerTest, InitialLastComputeUs)
 // MeasuredCompute records timing
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(ControllerTimingProfilerTest, MeasuredComputeRecordsTiming)
-{
+TEST(ControllerTimingProfilerTest, MeasuredComputeRecordsTiming) {
   rtc::ControllerTimingProfiler profiler;
   ProfilerStubController ctrl;
   rtc::ControllerState state{};
@@ -92,8 +85,7 @@ TEST(ControllerTimingProfilerTest, MeasuredComputeRecordsTiming)
   EXPECT_GT(profiler.LastComputeUs(), 0.0);
 }
 
-TEST(ControllerTimingProfilerTest, MultipleMeasurements)
-{
+TEST(ControllerTimingProfilerTest, MultipleMeasurements) {
   rtc::ControllerTimingProfiler profiler;
   ProfilerStubController ctrl;
   rtc::ControllerState state{};
@@ -115,8 +107,7 @@ TEST(ControllerTimingProfilerTest, MultipleMeasurements)
 // Statistics correctness
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(ControllerTimingProfilerTest, StatsMinMaxWithSlowCompute)
-{
+TEST(ControllerTimingProfilerTest, StatsMinMaxWithSlowCompute) {
   rtc::ControllerTimingProfiler profiler;
   ProfilerStubController ctrl;
   rtc::ControllerState state{};
@@ -137,8 +128,7 @@ TEST(ControllerTimingProfilerTest, StatsMinMaxWithSlowCompute)
   EXPECT_GE(stats.max_us, 400.0);
 }
 
-TEST(ControllerTimingProfilerTest, PercentilesComputed)
-{
+TEST(ControllerTimingProfilerTest, PercentilesComputed) {
   rtc::ControllerTimingProfiler profiler;
   ProfilerStubController ctrl;
   rtc::ControllerState state{};
@@ -153,8 +143,7 @@ TEST(ControllerTimingProfilerTest, PercentilesComputed)
   EXPECT_GE(stats.p99_us, stats.p95_us);
 }
 
-TEST(ControllerTimingProfilerTest, StddevComputed)
-{
+TEST(ControllerTimingProfilerTest, StddevComputed) {
   rtc::ControllerTimingProfiler profiler;
   ProfilerStubController ctrl;
   rtc::ControllerState state{};
@@ -172,8 +161,7 @@ TEST(ControllerTimingProfilerTest, StddevComputed)
 // Over-budget detection
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(ControllerTimingProfilerTest, OverBudgetDetection)
-{
+TEST(ControllerTimingProfilerTest, OverBudgetDetection) {
   rtc::ControllerTimingProfiler profiler;
   ProfilerStubController ctrl;
   rtc::ControllerState state{};
@@ -188,8 +176,7 @@ TEST(ControllerTimingProfilerTest, OverBudgetDetection)
   EXPECT_GE(stats.max_us, 2000.0);
 }
 
-TEST(ControllerTimingProfilerTest, UnderBudgetNotCounted)
-{
+TEST(ControllerTimingProfilerTest, UnderBudgetNotCounted) {
   rtc::ControllerTimingProfiler profiler;
   ProfilerStubController ctrl;
   rtc::ControllerState state{};
@@ -207,8 +194,7 @@ TEST(ControllerTimingProfilerTest, UnderBudgetNotCounted)
 // Reset
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(ControllerTimingProfilerTest, ResetClearsAllStats)
-{
+TEST(ControllerTimingProfilerTest, ResetClearsAllStats) {
   rtc::ControllerTimingProfiler profiler;
   ProfilerStubController ctrl;
   rtc::ControllerState state{};
@@ -228,8 +214,7 @@ TEST(ControllerTimingProfilerTest, ResetClearsAllStats)
   EXPECT_DOUBLE_EQ(profiler.LastComputeUs(), 0.0);
 }
 
-TEST(ControllerTimingProfilerTest, ResetHistogramCleared)
-{
+TEST(ControllerTimingProfilerTest, ResetHistogramCleared) {
   rtc::ControllerTimingProfiler profiler;
   ProfilerStubController ctrl;
   rtc::ControllerState state{};
@@ -241,7 +226,7 @@ TEST(ControllerTimingProfilerTest, ResetHistogramCleared)
 
   const auto stats = profiler.GetStats();
   uint64_t total_histogram = 0;
-  for (const auto & bucket : stats.histogram) {
+  for (const auto &bucket : stats.histogram) {
     total_histogram += bucket;
   }
   EXPECT_EQ(total_histogram, uint64_t{0});
@@ -251,15 +236,13 @@ TEST(ControllerTimingProfilerTest, ResetHistogramCleared)
 // Summary string
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(ControllerTimingProfilerTest, SummaryNoData)
-{
+TEST(ControllerTimingProfilerTest, SummaryNoData) {
   rtc::ControllerTimingProfiler profiler;
   const auto summary = profiler.Summary("TestCtrl");
   EXPECT_EQ(summary, "TestCtrl timing: no data");
 }
 
-TEST(ControllerTimingProfilerTest, SummaryWithData)
-{
+TEST(ControllerTimingProfilerTest, SummaryWithData) {
   rtc::ControllerTimingProfiler profiler;
   ProfilerStubController ctrl;
   rtc::ControllerState state{};
@@ -279,8 +262,7 @@ TEST(ControllerTimingProfilerTest, SummaryWithData)
 // Histogram bucket assignment
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(ControllerTimingProfilerTest, HistogramBucketZero)
-{
+TEST(ControllerTimingProfilerTest, HistogramBucketZero) {
   rtc::ControllerTimingProfiler profiler;
   ProfilerStubController ctrl;
   rtc::ControllerState state{};
@@ -293,8 +275,7 @@ TEST(ControllerTimingProfilerTest, HistogramBucketZero)
   EXPECT_GT(stats.histogram[0], uint64_t{0});
 }
 
-TEST(ControllerTimingProfilerTest, HistogramTotalMatchesCount)
-{
+TEST(ControllerTimingProfilerTest, HistogramTotalMatchesCount) {
   rtc::ControllerTimingProfiler profiler;
   ProfilerStubController ctrl;
   rtc::ControllerState state{};
@@ -306,10 +287,42 @@ TEST(ControllerTimingProfilerTest, HistogramTotalMatchesCount)
 
   const auto stats = profiler.GetStats();
   uint64_t total = 0;
-  for (const auto & bucket : stats.histogram) {
+  for (const auto &bucket : stats.histogram) {
     total += bucket;
   }
   EXPECT_EQ(total, stats.count);
 }
 
-}  // namespace
+// Regression: p99 must NOT clip to the overflow-bucket lower edge when
+// samples exceed the histogram range. Before the fix, p99 was capped at
+// kBuckets * kBucketWidthUs (2000 µs for ControllerTimingProfiler) even if
+// max_us was much larger.
+TEST(ControllerTimingProfilerTest, OverflowBucketP99ExceedsBucketEdge) {
+  rtc::ControllerTimingProfiler profiler;
+  ProfilerStubController ctrl;
+  rtc::ControllerState state{};
+
+  // 40 near-instant samples → bucket 0
+  ctrl.set_busy_wait_us(0.0);
+  for (int i = 0; i < 40; ++i) {
+    (void)profiler.MeasuredCompute(ctrl, state);
+  }
+
+  // 10 samples of ~3000 µs → overflow bucket (bucket index == kBuckets).
+  // p99 rank = 49.5, cumulative[0] = 40, so the rank lands in overflow.
+  ctrl.set_busy_wait_us(3000.0);
+  for (int i = 0; i < 10; ++i) {
+    (void)profiler.MeasuredCompute(ctrl, state);
+  }
+
+  const auto stats = profiler.GetStats();
+  constexpr double kOverflowLo =
+      static_cast<double>(rtc::ControllerTimingProfiler::kBuckets) *
+      static_cast<double>(rtc::ControllerTimingProfiler::kBucketWidthUs);
+  // Must exceed the overflow lower edge (not clipped) …
+  EXPECT_GT(stats.p99_us, kOverflowLo);
+  // … and must never exceed the observed max.
+  EXPECT_LE(stats.p99_us, stats.max_us);
+}
+
+} // namespace

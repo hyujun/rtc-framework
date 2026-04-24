@@ -235,6 +235,10 @@ poll(&pfd, 1, 1);  // 1ms timeout, eventfd readable → 즉시 wakeup
 | 히스토그램 | 20개 버킷 (100 us 간격, 0-2000 us) + 오버플로 버킷 |
 | 통계 | min, max, mean, stddev, p95, p99 |
 | 예산 초과 | 2000 us (500 Hz = 2 ms) 초과 횟수 |
+| 리셋 주기 | RT 루프가 1 000 tick(≈ 2 s)마다 로그 스레드에 Summary 출력 요청 → 로그 스레드는 `RCLCPP_INFO` 직후 `timing_profiler_.Reset()`을 호출. 따라서 각 출력은 **최근 ~2 s 윈도우**의 통계이며, 세션 시작 시점의 스파이크가 p99에 영구 반영되지 않음 |
+| p99 정확도 | 오버플로 버킷(≥ 2 ms)에서 p99가 떨어질 경우, `[2000 µs, max_us]` 구간의 선형 보간값을 반환 (이전에는 `2000 µs`로 clip). `max ≫ p99`는 정상 출력 |
+
+누적 over-run 카운터(`overruns`, `compute_overruns`, `skips`, `log_drops`, `pub_drops`)는 `rt_controller_node`가 별도 원자 변수로 관리 — Summary 리셋에 영향 없음.
 
 ### MPC Solve Timing Logger (aux thread, non-RT)
 

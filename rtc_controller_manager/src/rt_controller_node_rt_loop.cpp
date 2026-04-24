@@ -404,7 +404,12 @@ void RtControllerNode::DrainLog() {
     }
   }
 
-  // Print timing summary when signalled by the RT thread.
+  // Print timing summary when signalled by the RT thread. Each print is
+  // followed by a Reset() so the reported mean/p95/p99 reflect the most
+  // recent kTimingSummaryInterval ticks (~2 s at 500 Hz), not the whole
+  // session — old start-up spikes would otherwise permanently skew p99.
+  // The rt_controller_node owns cumulative counters (overruns, skips,
+  // log_drops, pub_drops) separately, so they are unaffected by the reset.
   if (print_timing_summary_.exchange(false, std::memory_order_relaxed)) {
     int idx = active_controller_idx_.load(std::memory_order_acquire);
     const auto overruns = overrun_count_.load(std::memory_order_relaxed);
@@ -425,6 +430,7 @@ void RtControllerNode::DrainLog() {
                 static_cast<unsigned long>(skips),
                 static_cast<unsigned long>(log_drops),
                 static_cast<unsigned long>(pub_drops));
+    timing_profiler_.Reset();
   }
 }
 
