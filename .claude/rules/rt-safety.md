@@ -2,32 +2,21 @@
 globs: ["rtc_controller_manager/**/*.cpp", "rtc_controller_manager/**/*.hpp", "rtc_controllers/**/*.cpp", "rtc_controllers/**/*.hpp", "ur5e_hand_driver/**/*.cpp", "ur5e_hand_driver/**/*.hpp"]
 ---
 
-# RT Safety Rules
+# RT Safety Rules (Scoped Stub)
 
-These rules apply to RT-critical code paths (500Hz control loop).
+이 파일은 `rtc_controller_manager` / `rtc_controllers` / `ur5e_hand_driver` 경로에서 자동 로드되는 scoped reminder다.
 
-## Forbidden on RT Path
+**전체 규칙**: [../../agent_docs/invariants.md](../../agent_docs/invariants.md)
 
-| Pattern | Why | Use Instead |
-|---------|-----|-------------|
-| `new`/`malloc`/`push_back`/`emplace_back`/`resize` | Heap allocation breaks determinism | `std::array`, pre-allocated `Eigen::Matrix<fixed>` |
-| `throw`/`catch` | `noexcept` violation = process kill | Error code, `std::optional` |
-| `std::cout`/`std::cerr`/`RCLCPP_*` | Blocking I/O | SPSC queue -> logging thread |
-| `std::mutex::lock` | Priority inversion | `try_lock`, SeqLock, SPSC |
-| `std::shared_ptr` copy | Atomic ref-count contention | Raw ref or `std::shared_ptr` const-ref only |
+RT path (500 Hz loop)에서 금지되는 패턴 요약:
 
-## Required Patterns
+1. Heap (`new` / `malloc` / `push_back` / `emplace_back` / `resize`) — RT-1
+2. `throw` / `catch` — RT-2
+3. `RCLCPP_*` 직접 호출 (one-shot init + RT-safe THROTTLE 제외) — RT-3
+4. `std::mutex::lock` / `lock_guard` / `scoped_lock` — RT-4
+5. `auto` with Eigen expression — RT-5
+6. Quaternion `lerp` / `nlerp` — RT-6
+7. 기존 test assertion 수정 — RT-7
+8. `std::shared_ptr` 복사 — RT-8
 
-- All functions on RT path must be `noexcept`
-- Eigen: pre-allocated buffers, `noalias()`, never `auto` (expression template aliasing)
-- Shared state: SeqLock (single-writer/multi-reader), SPSC (wait-free), or atomic
-- Separate mutexes: `state_mutex_`, `target_mutex_`, `hand_mutex_` -- never hold more than one
-- `jthread` + `stop_token` for cooperative cancellation
-
-## E-STOP Triggers
-
-- Device group timeout (50Hz check)
-- Init timeout
-- >= 10 consecutive RT overruns
-- Sim sync timeout
-- `TriggerGlobalEstop`: idempotent via `compare_exchange_strong`
+상세 (탐지 grep, 복구 방법, RT-3 예외 규칙) + ARCH / PROC / NUM invariant은 [../../agent_docs/invariants.md](../../agent_docs/invariants.md) 참조. 재발성 실수 패턴은 [../../agent_docs/anti-patterns.md](../../agent_docs/anti-patterns.md).
