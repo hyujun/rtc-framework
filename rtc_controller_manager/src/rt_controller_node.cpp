@@ -176,6 +176,15 @@ RtControllerNode::CallbackReturn
 RtControllerNode::on_activate(const rclcpp_lifecycle::State &state) {
   LifecycleNode::on_activate(state); // activates LifecyclePublishers
 
+  // Activate each controller's LifecyclePublishers (controller-owned topics)
+  // before the publish thread starts so non-lifecycle pub() paths never hit
+  // an Inactive publisher.
+  for (auto &ctrl : controllers_) {
+    if (ctrl) {
+      (void)ctrl->on_activate(state);
+    }
+  }
+
   const auto cfgs = urtc::SelectThreadConfigs();
   StartRtLoop(cfgs.rt_control);
   StartPublishLoop(cfgs.publish);
@@ -192,6 +201,14 @@ RtControllerNode::on_deactivate(const rclcpp_lifecycle::State &state) {
 
   StopRtLoop();
   StopPublishLoop();
+
+  // Deactivate controllers after the publish thread has stopped so no one
+  // tries to publish via a newly-Inactive LifecyclePublisher.
+  for (auto &ctrl : controllers_) {
+    if (ctrl) {
+      (void)ctrl->on_deactivate(state);
+    }
+  }
 
   ClearGlobalEstop();
 

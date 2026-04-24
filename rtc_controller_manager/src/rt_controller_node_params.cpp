@@ -340,11 +340,19 @@ void RtControllerNode::DeclareAndLoadParameters() {
                   ctrl->Name().data(), entry.config_package.c_str(), e.what());
     }
 
-    // Create a dedicated LifecycleNode per controller — named after the
-    // config_key so topics declared with the `~` prefix resolve to
-    // /<config_key>/<topic>.  main() attaches these to aux_executor.
+    // Create a dedicated LifecycleNode per controller.  Namespace is
+    // "/<config_key>" so controller-owned topics declared with relative
+    // paths in YAML resolve to /<config_key>/<topic> automatically.
+    // main() attaches these to aux_executor.
+    const std::string ctrl_ns = "/" + entry.config_key;
     auto ctrl_lc_node = std::make_shared<rclcpp_lifecycle::LifecycleNode>(
-        entry.config_key, rclcpp::NodeOptions());
+        entry.config_key, ctrl_ns, rclcpp::NodeOptions());
+
+    // Inject the target-received notifier so controllers that own their own
+    // target subscription flip CM's target_received_ gate in the callback.
+    // Matches the prior behavior of CM's DeviceTargetCallback.
+    ctrl->SetTargetReceivedNotifier(
+        [this]() { target_received_.store(true, std::memory_order_release); });
 
     // Drive the controller's lifecycle on_configure.  Default implementation
     // stores the node and invokes LoadConfig(ctrl_node) internally; a FAILURE
