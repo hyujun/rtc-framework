@@ -234,6 +234,55 @@ RTControllerInterface::ParseTopicConfig(const YAML::Node &topics_node) {
   return cfg;
 }
 
+void RTControllerInterface::DeliverTargetMessage(
+    const std::string &group_name, int device_idx,
+    const rtc_msgs::msg::RobotTarget &msg) noexcept {
+  const double *data_ptr = nullptr;
+  int data_size = 0;
+
+  if (msg.goal_type == "task") {
+    data_ptr = msg.task_target.data();
+    data_size = static_cast<int>(msg.task_target.size());
+  } else {
+    if (msg.joint_target.empty()) {
+      return;
+    }
+    data_ptr = msg.joint_target.data();
+    data_size = static_cast<int>(msg.joint_target.size());
+  }
+
+  std::array<double, kMaxDeviceChannels> reordered{};
+  const double *ordered_ptr = data_ptr;
+  int ordered_size = data_size;
+
+  if (msg.goal_type != "task" && !msg.joint_names.empty()) {
+    auto cfg_it = device_name_configs_.find(group_name);
+    if (cfg_it != device_name_configs_.end()) {
+      const auto &ref_names = cfg_it->second.joint_state_names;
+      if (!ref_names.empty()) {
+        for (std::size_t mi = 0;
+             mi < msg.joint_names.size() && mi < msg.joint_target.size();
+             ++mi) {
+          for (std::size_t ri = 0; ri < ref_names.size(); ++ri) {
+            if (msg.joint_names[mi] == ref_names[ri]) {
+              reordered[ri] = msg.joint_target[mi];
+              break;
+            }
+          }
+        }
+        ordered_ptr = reordered.data();
+        ordered_size =
+            std::min(static_cast<int>(ref_names.size()), kMaxDeviceChannels);
+      }
+    }
+  }
+
+  const int n = std::min(ordered_size, kMaxDeviceChannels);
+  SetDeviceTarget(device_idx, std::span<const double>(
+                                  ordered_ptr, static_cast<std::size_t>(n)));
+  NotifyTargetReceived();
+}
+
 void RTControllerInterface::LoadConfig(const YAML::Node &cfg) {
   if (!cfg) {
     return;

@@ -6,6 +6,7 @@
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 #include "ur5e_bringup/bringup_logging.hpp"
+#include "ur5e_bringup/controllers/owned_topics.hpp"
 #include "ur5e_description/ur5e_constants.hpp"
 
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
@@ -117,6 +118,18 @@ public:
   void ClearEstop() noexcept override;
   [[nodiscard]] bool IsEstopped() const noexcept override;
   void SetHandEstop(bool active) noexcept override;
+
+  // ── Phase 4: controller-owned sub/pub lifecycle ─────────────────────────
+  CallbackReturn on_configure(const rclcpp_lifecycle::State &prev,
+                              rclcpp_lifecycle::LifecycleNode::SharedPtr node,
+                              const YAML::Node &yaml) noexcept override;
+  CallbackReturn
+  on_activate(const rclcpp_lifecycle::State &prev) noexcept override;
+  CallbackReturn
+  on_deactivate(const rclcpp_lifecycle::State &prev) noexcept override;
+  CallbackReturn
+  on_cleanup(const rclcpp_lifecycle::State &prev) noexcept override;
+  void PublishNonRtSnapshot(const rtc::PublishSnapshot &snap) noexcept override;
 
   // ── Test accessors (const snapshots, not RT-safe) ───────────────────────
   struct FingertipReport {
@@ -391,6 +404,9 @@ private:
   // ── Logging ─────────────────────────────────────────────────────────────
   rclcpp::Logger logger_{ur5e_bringup::logging::DemoWbcLogger()};
   rclcpp::Clock log_clock_{RCL_STEADY_TIME};
+
+  // ── Phase 4: controller-owned topic sub/pub handles ───────────────────
+  ControllerTopicHandles owned_topics_{};
 };
 
 } // namespace ur5e_bringup

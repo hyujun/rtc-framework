@@ -1400,4 +1400,49 @@ std::vector<double> DemoTaskController::GetCurrentGains() const noexcept {
   return v;
 }
 
+// ── Phase 4: controller-owned topic lifecycle ─────────────────────────────
+RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
+    const rclcpp_lifecycle::State &prev,
+    rclcpp_lifecycle::LifecycleNode::SharedPtr node,
+    const YAML::Node &yaml) noexcept {
+  const auto ret = RTControllerInterface::on_configure(prev, node, yaml);
+  if (ret != CallbackReturn::SUCCESS) {
+    return ret;
+  }
+  try {
+    CreateOwnedTopics(*this, owned_topics_);
+  } catch (const std::exception &e) {
+    RCLCPP_ERROR(logger_, "DemoTaskController on_configure failed: %s",
+                 e.what());
+    return CallbackReturn::FAILURE;
+  } catch (...) {
+    RCLCPP_ERROR(logger_, "DemoTaskController on_configure failed: unknown");
+    return CallbackReturn::FAILURE;
+  }
+  return CallbackReturn::SUCCESS;
+}
+
+RTControllerInterface::CallbackReturn
+DemoTaskController::on_activate(const rclcpp_lifecycle::State &prev) noexcept {
+  ActivateOwnedTopics(prev, owned_topics_);
+  return CallbackReturn::SUCCESS;
+}
+
+RTControllerInterface::CallbackReturn DemoTaskController::on_deactivate(
+    const rclcpp_lifecycle::State &prev) noexcept {
+  DeactivateOwnedTopics(prev, owned_topics_);
+  return CallbackReturn::SUCCESS;
+}
+
+RTControllerInterface::CallbackReturn
+DemoTaskController::on_cleanup(const rclcpp_lifecycle::State &prev) noexcept {
+  ResetOwnedTopics(owned_topics_);
+  return RTControllerInterface::on_cleanup(prev);
+}
+
+void DemoTaskController::PublishNonRtSnapshot(
+    const rtc::PublishSnapshot &snap) noexcept {
+  PublishOwnedTopicsFromSnapshot(snap, owned_topics_);
+}
+
 } // namespace ur5e_bringup

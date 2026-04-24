@@ -44,11 +44,15 @@ demo_task_controller:
   command_type: "position"
 
   # ── Topic configuration ─────────────────────────────────────────────────────
+  # ownership: "manager"   → CM owns the sub/pub (RT-adjacent, default)
+  # ownership: "controller"→ per-controller LifecycleNode owns it; relative
+  #                          paths resolve under namespace /<config_key>/
   topics:
     ur5e:
       subscribe:
-        - topic: "/ur5e/joint_goal"
+        - topic: "ur5e/joint_goal"
           role: "target"
+          ownership: "controller"
         - topic: "/joint_states"
           role: "state"
       publish:
@@ -57,14 +61,16 @@ demo_task_controller:
         - topic: "/forward_position_controller/commands"
           role: "ros2_command"
           data_size: 6
-        - topic: "/ur5e/gui_position"
+        - topic: "ur5e/gui_position"
           role: "gui_position"
+          ownership: "controller"
         - topic: "/ur5e/state_log"
           role: "device_state_log"
     hand:
       subscribe:
-        - topic: "/hand/joint_goal"
+        - topic: "hand/joint_goal"
           role: "target"
+          ownership: "controller"
         - topic: "/hand/joint_states"
           role: "state"
         - topic: "/hand/motor_states"
@@ -74,13 +80,16 @@ demo_task_controller:
       publish:
         - topic: "/hand/joint_command"
           role: "joint_command"
-        - topic: "/hand/gui_position"
+        - topic: "hand/gui_position"
           role: "gui_position"
+          ownership: "controller"
         - topic: "/hand/state_log"
           role: "device_state_log"
         - topic: "/hand/sensor_log"
           role: "device_sensor_log"
-        - topic: "/hand/grasp_state"
+        - topic: "hand/grasp_state"
           role: "grasp_state"
-        - topic: "/tof/snapshot"
+          ownership: "controller"
+        - topic: "tof/snapshot"
           role: "tof_snapshot"
+          ownership: "controller"

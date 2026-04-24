@@ -53,6 +53,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/demo_wbc_controller.cpp
   src/controllers/demo_shared_config.cpp
   src/controllers/controller_registration.cpp
+  src/controllers/owned_topics.cpp
   src/phase/grasp_phase_manager.cpp
 )
 

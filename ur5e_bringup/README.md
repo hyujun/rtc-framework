@@ -159,6 +159,20 @@ demo_task_controller:
 
 ## 데모 컨트롤러
 
+### 토픽 소유권 (Phase 4~)
+
+3개 데모 컨트롤러 모두 non-RT 외부 통신 토픽을 **컨트롤러 소유**로 이관했습니다 (plan: `~/.claude/plans/phase4_topic_ownership_migration.md`).
+
+| 토픽 역할 | 소유자 | 경로 (active = demo_wbc_controller 예시) |
+|-----------|--------|------------------------------------------|
+| `target` (ur5e/hand) | 컨트롤러 | `/demo_wbc_controller/ur5e/joint_goal`, `/demo_wbc_controller/hand/joint_goal` |
+| `gui_position` (ur5e/hand) | 컨트롤러 | `/demo_wbc_controller/ur5e/gui_position`, `/demo_wbc_controller/hand/gui_position` |
+| `grasp_state` (hand; joint/task 데모만) | 컨트롤러 | `/demo_joint_controller/hand/grasp_state` 등 |
+| `tof_snapshot` (hand; joint/task 데모만) | 컨트롤러 | `/demo_joint_controller/tof/snapshot` 등 |
+| `state`, `joint_command`, `ros2_command`, `device_state_log`, `device_sensor_log` | CM (매니저) | 기존 경로 유지 (`/joint_states`, `/ur5e/joint_command`, ...) |
+
+**외부 도구는 `/active_controller_name` (TRANSIENT_LOCAL) 구독해서 런타임에 rewire**하십시오 (BT bridge / GUI / digital_twin / shape_estimation 포함). 컨트롤러 전환 시 각 소유 토픽은 이전 네임스페이스에서 silent 되고 새 네임스페이스에서 라이브됩니다.
+
 ### DemoJointController (Index 4)
 
 관절 공간 Quintic 궤적 생성기 -- UR5e 6-DOF 로봇 암 + 10-DOF 핸드 통합 제어기입니다. Rest-to-rest quintic 다항식으로 부드러운 궤적을 생성하며, 출력을 직접 위치 명령으로 전달합니다 (비례 게인 없음).
@@ -349,13 +363,13 @@ ros2 launch ur5e_bringup sim.launch.py initial_controller:=demo_wbc_controller
 ros2 launch ur5e_bringup sim.launch.py \
     initial_controller:=demo_wbc_controller enable_mpc:=true
 
-# 1. Pre-grasp 위치로 approach
-ros2 topic pub /ur5e/joint_goal std_msgs/Float64MultiArray \
-  "{data: [0.0, -1.2, 1.0, -1.4, -1.57, 0.0]}" -1
+# 1. Pre-grasp 위치로 approach  (Phase 4~: target 토픽은 active controller가 소유)
+ros2 topic pub /demo_wbc_controller/ur5e/joint_goal rtc_msgs/RobotTarget \
+  "{joint_target: [0.0, -1.2, 1.0, -1.4, -1.57, 0.0]}" -1
 
 # 2. Hand close target
-ros2 topic pub /hand/joint_goal std_msgs/Float64MultiArray \
-  "{data: [0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6]}" -1
+ros2 topic pub /demo_wbc_controller/hand/joint_goal rtc_msgs/RobotTarget \
+  "{joint_target: [0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6]}" -1
 
 # 3. grasp_cmd=1 → 전체 FSM 시작 (Phase 5 9-entry 메시지; 뒤 2개로 MPC 제어)
 ros2 topic pub /ur5e/controller_gains std_msgs/Float64MultiArray \

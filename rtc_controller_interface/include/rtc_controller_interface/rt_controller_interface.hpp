@@ -10,6 +10,7 @@
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/node_interfaces/lifecycle_node_interface.hpp>
 #include <rclcpp_lifecycle/state.hpp>
+#include <rtc_msgs/msg/robot_target.hpp>
 #include <yaml-cpp/yaml.h>
 
 #include <functional>
@@ -192,6 +193,18 @@ public:
   void SetTargetReceivedNotifier(std::function<void()> notifier) {
     target_received_notifier_ = std::move(notifier);
   }
+
+  // DeliverTargetMessage()
+  //   Relocates CM's legacy DeviceTargetCallback logic into the controller.
+  //   Use from controller-owned target-topic subscription callbacks:
+  //     - joint_target goal: reorders by msg.joint_names against
+  //       device_name_configs_[group_name].joint_state_names;
+  //     - task_target goal: forwarded as-is.
+  //   Dispatches via SetDeviceTarget(device_idx, ordered_span) and invokes
+  //   NotifyTargetReceived(). `device_idx` is the controller-local group
+  //   index (position in topic_config_.groups).
+  void DeliverTargetMessage(const std::string &group_name, int device_idx,
+                            const rtc_msgs::msg::RobotTarget &msg) noexcept;
 
   // ── Device name configuration ──────────────────────────────────────────
   //   SetDeviceNameConfigs() is called by RtControllerNode after all

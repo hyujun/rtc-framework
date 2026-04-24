@@ -13,6 +13,7 @@
 #include "rtc_controllers/grasp/grasp_controller.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
+#include "ur5e_bringup/controllers/owned_topics.hpp"
 #include "ur5e_description/ur5e_constants.hpp"
 
 #include <rclcpp/clock.hpp>
@@ -146,6 +147,18 @@ public:
   void ClearEstop() noexcept override;
   [[nodiscard]] bool IsEstopped() const noexcept override;
   void SetHandEstop(bool active) noexcept override;
+
+  // ── Phase 4: controller-owned sub/pub lifecycle ─────────────────────────
+  CallbackReturn on_configure(const rclcpp_lifecycle::State &prev,
+                              rclcpp_lifecycle::LifecycleNode::SharedPtr node,
+                              const YAML::Node &yaml) noexcept override;
+  CallbackReturn
+  on_activate(const rclcpp_lifecycle::State &prev) noexcept override;
+  CallbackReturn
+  on_deactivate(const rclcpp_lifecycle::State &prev) noexcept override;
+  CallbackReturn
+  on_cleanup(const rclcpp_lifecycle::State &prev) noexcept override;
+  void PublishNonRtSnapshot(const rtc::PublishSnapshot &snap) noexcept override;
 
   // ── Controller registry hooks ────────────────────────────────────────────
   // gains layout: [kp_translation×3, kp_rotation×3, damping, null_kp,
@@ -336,6 +349,9 @@ private:
   static void ClampCommands(std::array<double, kMaxDeviceChannels> &commands,
                             int n, const std::vector<double> &lower,
                             const std::vector<double> &upper) noexcept;
+
+  // ── Phase 4: controller-owned topic sub/pub handles ───────────────────
+  ControllerTopicHandles owned_topics_{};
 };
 
 } // namespace ur5e_bringup
