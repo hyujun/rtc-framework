@@ -1,9 +1,7 @@
-# Phase 7b — rtc_mpc LightContactOCP factory config for UR5e + 10-DoF hand.
+# rtc_mpc LightContactOCP factory config for UR5e + 10-DoF hand.
 #
 # Loaded by rtc::mpc::MPCFactory::Create when the active phase's
-# `ocp_type == "light_contact"`. Keeps the Phase 4.-1 dispatch key name
-# ("light_contact") even though the file name retains the original
-# "kinodynamics" label for compat with the plan document.
+# `ocp_type == "light_contact"`.
 #
 # RobotModelHandler side (end_effector_frame + contact_frames) is also
 # declared here so a single YAML drives the full `RobotModelHandler::Init +

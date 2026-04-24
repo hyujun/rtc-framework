@@ -142,27 +142,27 @@ def launch_setup(context, *args, **kwargs):
 
     ctrl_overrides['log_dir'] = session_dir
 
-    # Optional: override initial_controller (Phase 4B: select demo_wbc_controller)
+    # Optional: override initial_controller (e.g. select demo_wbc_controller)
     initial_controller = LaunchConfiguration(
         'initial_controller').perform(context)
     if initial_controller != '':
         ctrl_overrides['initial_controller'] = initial_controller
 
-    # Phase 5 + controller-override follow-up: `enable_mpc` drives the
-    # `demo_wbc_controller.mpc.enabled` ROS parameter, which rtc_controller_
-    # manager's `ApplyControllerParamOverrides` helper writes into the
-    # YAML::Node handed to `LoadConfig`. The runtime gains topic (index 7)
-    # can also toggle MPC on/off dynamically without restarting the launch.
+    # `enable_mpc` drives the `demo_wbc_controller.mpc.enabled` ROS parameter,
+    # which rtc_controller_manager's `ApplyControllerParamOverrides` helper
+    # writes into the YAML::Node handed to `LoadConfig`. The runtime gains
+    # topic (index 7) can also toggle MPC on/off dynamically without
+    # restarting the launch.
     enable_mpc = LaunchConfiguration('enable_mpc').perform(context)
     if enable_mpc.lower() in ('true', '1', 'yes'):
         ctrl_overrides['demo_wbc_controller.mpc.enabled'] = True
     elif enable_mpc.lower() in ('false', '0', 'no'):
         ctrl_overrides['demo_wbc_controller.mpc.enabled'] = False
 
-    # Phase 7b: `mpc_engine` selects between the Phase 5 MockMPCThread
-    # placeholder and the Phase 7 HandlerMPCThread (real Aligator ProxDDP
-    # via MPCFactory + GraspPhaseManager). Default "" leaves the YAML's
-    # `mpc.engine: "mock"` untouched.
+    # `mpc_engine` selects between the MockMPCThread placeholder and the
+    # HandlerMPCThread (real Aligator ProxDDP via MPCFactory +
+    # GraspPhaseManager). Default "" leaves the YAML's `mpc.engine: "mock"`
+    # untouched.
     mpc_engine = LaunchConfiguration('mpc_engine').perform(context)
     if mpc_engine.strip() != '':
         engine_str = mpc_engine.strip().lower()
@@ -437,7 +437,7 @@ def generate_launch_description():
         'enable_mpc',
         default_value='',
         description=(
-            'Enable the MPC thread in DemoWbcController (Phase 5). '
+            'Enable the MPC thread in DemoWbcController. '
             'Takes effect only when initial_controller:=demo_wbc_controller. '
             'Empty = use demo_wbc_controller.yaml default. '
             'Runtime toggle is also available via gains index 7.'
@@ -448,12 +448,12 @@ def generate_launch_description():
         'mpc_engine',
         default_value='',
         description=(
-            'Select MPC engine in DemoWbcController (Phase 7b): '
-            '"mock" = Phase 5 MockMPCThread placeholder (default); '
+            'Select MPC engine in DemoWbcController: '
+            '"mock" = MockMPCThread placeholder (default); '
             '"handler" = HandlerMPCThread + MPCFactory + GraspPhaseManager '
-            '(real Aligator ProxDDP solve, requires phase_config.yaml + '
-            'mpc_kinodynamics.yaml + mpc_fulldynamics.yaml in the package share). '
-            'Empty = use demo_wbc_controller.yaml default.'
+            '(real Aligator ProxDDP solve, requires mpc/phase_config.yaml + '
+            'mpc/light_contact.yaml + mpc/contact_rich.yaml in the package '
+            'share). Empty = use demo_wbc_controller.yaml default.'
         )
     )
 

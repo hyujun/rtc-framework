@@ -2,13 +2,13 @@
 # Whole-body controller for UR5e arm + 10-DoF hand.
 # TSID produces optimal acceleration, integrated to position commands.
 #
-# Gains layout for ~/controller_gains (Phase 5):
+# Gains layout for ~/controller_gains:
 #   [grasp_cmd(0/1/2), grasp_target_force,
 #    arm_traj_speed, hand_traj_speed,
 #    se3_weight, force_weight, posture_weight,
 #    mpc_enable(0/1), riccati_gain_scale(0..1)] = 9 values
-# Phase 4 compatibility: first 7 indices unchanged; the trailing 2 are
-# optional — senders that still emit 7 values keep the Phase 4 behaviour.
+# Senders that emit only the first 7 values skip MPC fields (mpc_enable +
+# riccati_gain_scale) and keep whatever runtime state they had.
 
 demo_wbc_controller:
   command_type: "position"
@@ -93,7 +93,7 @@ demo_wbc_controller:
         kd: [20, 20, 20, 10, 10, 10]
         weight: 100.0
         priority: 0
-      # Contact force tracking (Phase 4B): active in closure/hold phases
+      # Contact force tracking: active in closure/hold phases
       force:
         type: "force"
         weight: 10.0
@@ -107,7 +107,7 @@ demo_wbc_controller:
         dt: 0.002               # must match control_rate
         position_margin: 0.05   # rad
         velocity_margin: 0.1    # rad/s
-      # Friction cone (Phase 4B): linearised n-face pyramid per contact
+      # Friction cone: linearised n-face pyramid per contact
       friction_cone:
         type: "friction_cone"
         n_faces: 8
@@ -179,26 +179,26 @@ demo_wbc_controller:
     arm_safe_position:           # rad, 6 values = arm DoF (UR5e home pose)
       [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]
 
-  # ── MPC integration (Phase 5) ───────────────────────────────────────
+  # ── MPC integration ─────────────────────────────────────────────────
   # When enabled, a soft-RT MPC thread (20 Hz, SCHED_FIFO 60 on 8+ core
   # systems — see rtc_base/threading/thread_config.hpp) publishes a
   # trajectory + Riccati gains into a lock-free triple buffer. On every
   # 500 Hz RT tick the controller consumes the latest solution, cubic-
   # Hermite interpolates it to the current time, and feeds (q_ref, v_ref,
   # a_ff + K·Δx) into the TSID posture/SE3 tasks.
-  # Default enabled=false: disabled enablement preserves Phase 4 behaviour.
+  # Default enabled=false: MPC is inert and TSID self-holds.
   mpc:
     enabled: false               # runtime-togglable via gains[7]
-    engine: "mock"               # "mock" (Phase 5 default) | "handler" (Phase 7b)
+    engine: "mock"               # "mock" | "handler"
     max_stale_solutions: 5       # ticks without a fresh solution before
-                                 # falling back to Phase 4 reference
+                                 # falling back to TSID self-hold
 
-    # Phase 7b handler-mode inputs — ignored when engine == "mock".
+    # Handler-mode inputs — ignored when engine == "mock".
     # Paths are resolved relative to the ur5e_bringup package share dir
     # (ament_index_cpp::get_package_share_directory).
-    phase_config_path:  "config/controllers/phase_config.yaml"
-    light_contact_path: "config/controllers/mpc_kinodynamics.yaml"
-    contact_rich_path:  "config/controllers/mpc_fulldynamics.yaml"
+    phase_config_path:  "config/controllers/mpc/phase_config.yaml"
+    light_contact_path: "config/controllers/mpc/light_contact.yaml"
+    contact_rich_path:  "config/controllers/mpc/contact_rich.yaml"
 
     riccati:
       enabled: true              # include K·Δx in the reference accel

@@ -1,12 +1,10 @@
-# Phase 7b — rtc_mpc ContactRichOCP factory config for UR5e + 10-DoF hand.
+# rtc_mpc ContactRichOCP factory config for UR5e + 10-DoF hand.
 #
 # Loaded by rtc::mpc::MPCFactory::Create when the active phase's
-# `ocp_type == "contact_rich"`. File name retains the plan document's
-# "fulldynamics" label; the dispatch key follows the Phase 4.-1 rename
-# ("contact_rich").
+# `ocp_type == "contact_rich"`.
 #
 # The `model` block must stay structurally identical to the one in
-# mpc_kinodynamics.yaml — the same RobotModelHandler is shared across both
+# light_contact.yaml — the same RobotModelHandler is shared across both
 # handlers during cross-mode swaps, and any contact_frames divergence
 # would break index-based activation in phase_config.yaml.
 

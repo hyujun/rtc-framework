@@ -1,4 +1,4 @@
-# Phase 7a — GraspPhaseManager configuration (UR5e + 10-DoF hand, 16 DoF).
+# GraspPhaseManager configuration (UR5e + 10-DoF hand, 16 DoF).
 #
 # Loaded by ur5e_bringup::phase::GraspPhaseManager::Init at the
 # `grasp_phase_manager:` key below. Uses YAML anchors to cut repetition
@@ -7,13 +7,13 @@
 # at the field level — anchors + override are the clean alternative).
 #
 # Contact frames referenced by `active_contact_indices:` come from the
-# rtc_mpc factory YAML (`mpc_kinodynamics.yaml` / `mpc_fulldynamics.yaml`,
-# Phase 7b). The order there is authoritative — index 0 → thumb_tip_link,
+# rtc_mpc factory YAML (`mpc/light_contact.yaml` / `mpc/contact_rich.yaml`).
+# The order there is authoritative — index 0 → thumb_tip_link,
 # 1 → index_tip_link, 2 → middle_tip_link.
 #
-# Dim contract: `q_posture_ref` must match the MPC-dedicated reduced model
-# loaded from urdf.tree_models.mpc (ur5e_sim.yaml / ur5e_robot.yaml). That
-# tree locks all URDF <mimic> joints, yielding nq == nv == 16 (6 UR5e arm
+# Dim contract: `q_posture_ref` must match the WBC control model loaded
+# from urdf.tree_models.wbc (ur5e_sim.yaml / ur5e_robot.yaml). That tree
+# locks all URDF <mimic> joints, yielding nq == nv == 16 (6 UR5e arm
 # + 10 actuated hand joints). Joint ordering follows the joint_state_names
 # of devices.ur5e then devices.hand in the runtime YAML.
 

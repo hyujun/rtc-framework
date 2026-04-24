@@ -46,13 +46,14 @@
         hand:
           root_link: "hand_base_link"
           tip_links: ["thumb_tip_link", "index_tip_link", "middle_tip_link", "ring_tip_link"]
-        # MPC-dedicated arm+hand tree. Mimic joints are auto-classified as
-        # passive/kMimic by UrdfAnalyzer and locked during buildReducedModel,
-        # yielding a clean nq == nv == 16 model (6 arm + 10 actuated hand
-        # DoFs). MPC prediction uses this reduced space; TSID/WBC still use
-        # the full model (nq=26, nv=21) so mimic kinematics remain correct
-        # downstream.
-        mpc:
+        # WBC control tree (arm + hand, shared by TSID and MPC). Mimic
+        # joints are auto-classified as passive/kMimic by UrdfAnalyzer and
+        # locked during buildReducedModel, yielding a clean nq == nv == 16
+        # model (6 arm + 10 actuated hand DoFs). TSID tasks/constraints and
+        # MPC handler-mode prediction both operate in this reduced space;
+        # mimic kinematics are handled downstream by the hardware driver /
+        # MuJoCo tendon.
+        wbc:
           root_link: "base"
           tip_links: ["thumb_tip_link", "index_tip_link", "middle_tip_link", "ring_tip_link"]
       # ── Passive joints (locked in all sub/tree models) ──────────────────

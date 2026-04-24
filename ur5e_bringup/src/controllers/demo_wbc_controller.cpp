@@ -53,7 +53,7 @@ void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig &config) {
   arm_handle_ = std::make_unique<rub::RtModelHandle>(
       builder_->GetReducedModel(arm_model_name));
 
-  // Control model. Prefer the passive-locked reduced tree `mpc` built by
+  // Control model. Prefer the passive-locked reduced tree `wbc` built by
   // PinocchioModelBuilder (Analyzer auto-classifies mimic/closed-chain/hint
   // as passive → buildReducedModel locks them), which yields nq == nv == 16
   // for UR5e + 10-DoF hand. TSID/MPC/state
@@ -63,15 +63,15 @@ void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig &config) {
   // nv=21 with Pinocchio first-class mimic) — this preserves pre-reduction
   // behaviour for URDFs without <mimic> tags.
   try {
-    full_model_ptr_ = builder_->GetTreeModel("mpc");
+    full_model_ptr_ = builder_->GetTreeModel("wbc");
     RCLCPP_INFO(logger_,
-                "[wbc] control model: reduced tree 'mpc' (nq=%d nv=%d)",
+                "[wbc] control model: reduced tree 'wbc' (nq=%d nv=%d)",
                 full_model_ptr_->nq, full_model_ptr_->nv);
   } catch (const std::exception &e) {
     full_model_ptr_ = builder_->GetFullModel();
     RCLCPP_INFO(
         logger_,
-        "[wbc] control model: URDF full model (nq=%d nv=%d) — tree 'mpc' "
+        "[wbc] control model: URDF full model (nq=%d nv=%d) — tree 'wbc' "
         "missing (%s); MPC handler-mode + TSID will see mimic joints",
         full_model_ptr_->nq, full_model_ptr_->nv, e.what());
   }
@@ -418,17 +418,17 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
         (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
 
-  // ── 7. MPC integration (Phase 5 + 7b) ─────────────────────────────────
+  // ── 7. MPC integration ────────────────────────────────────────────────
   //
   // If `mpc.enabled: true`, size the reference buffers and initialise the
   // MPC solution manager. The thread itself is spawned in
   // InitializeHoldPosition so it starts from the first valid RT tick's
   // state snapshot. If `mpc:` is missing or disabled, all MPC paths are
-  // short-circuited and Phase 4 behaviour is preserved bit-exactly.
+  // short-circuited and TSID self-hold behaviour is preserved bit-exactly.
   //
-  // Phase 7b: `mpc.engine` (default "mock") selects MockMPCThread vs
-  // HandlerMPCThread. Handler mode additionally loads phase_config.yaml +
-  // mpc_kinodynamics.yaml + mpc_fulldynamics.yaml from the package share
+  // `mpc.engine` (default "mock") selects MockMPCThread vs
+  // HandlerMPCThread. Handler mode additionally loads mpc/phase_config.yaml
+  // + mpc/light_contact.yaml + mpc/contact_rich.yaml from the package share
   // and pre-builds the RobotModelHandler + GraspPhaseManager for startup.
   if (const auto mpc_cfg = cfg["mpc"]; mpc_cfg && full_model_ptr_) {
     mpc_enabled_ = mpc_cfg["enabled"] && mpc_cfg["enabled"].as<bool>();
@@ -483,15 +483,15 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
         const auto phase_path =
             mpc_cfg["phase_config_path"]
                 ? mpc_cfg["phase_config_path"].as<std::string>()
-                : std::string{"config/controllers/phase_config.yaml"};
+                : std::string{"config/controllers/mpc/phase_config.yaml"};
         const auto light_path =
             mpc_cfg["light_contact_path"]
                 ? mpc_cfg["light_contact_path"].as<std::string>()
-                : std::string{"config/controllers/mpc_kinodynamics.yaml"};
+                : std::string{"config/controllers/mpc/light_contact.yaml"};
         const auto rich_path =
             mpc_cfg["contact_rich_path"]
                 ? mpc_cfg["contact_rich_path"].as<std::string>()
-                : std::string{"config/controllers/mpc_fulldynamics.yaml"};
+                : std::string{"config/controllers/mpc/contact_rich.yaml"};
 
         const auto join = [&](const std::string &p) { return share + "/" + p; };
 
@@ -509,9 +509,9 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
       }
 
       if (mpc_engine_ == MpcEngine::kHandler) {
-        // Build RobotModelHandler from mpc_kinodynamics.yaml's `model:`
-        // subtree (identical to mpc_fulldynamics.yaml by contract — cross-
-        // mode swap requires matching contact_frames).
+        // Build RobotModelHandler from light_contact.yaml's `model:` subtree
+        // (identical to contact_rich.yaml by contract — cross-mode swap
+        // requires matching contact_frames).
         const auto model_node =
             mpc_light_cfg_["mpc"] && mpc_light_cfg_["mpc"]["model"]
                 ? mpc_light_cfg_["mpc"]["model"]
@@ -618,12 +618,12 @@ void DemoWbcController::OnDeviceConfigsSet() {
 
 void DemoWbcController::UpdateGainsFromMsg(
     std::span<const double> gains) noexcept {
-  // Layout (9 entries as of Phase 5):
+  // Layout (9 entries):
   //   [ grasp_cmd, grasp_target_force,
   //     arm_traj_speed, hand_traj_speed,
   //     se3_weight, force_weight, posture_weight,
   //     mpc_enable (0/1), riccati_gain_scale (0..1) ]
-  // Indices 0-6 are backwards-compatible with the Phase 4 7-entry layout.
+  // Senders that emit only the first 7 entries skip the MPC fields.
   if (gains.size() >= 1) {
     grasp_cmd_.store(static_cast<int>(gains[0]), std::memory_order_release);
   }
@@ -868,11 +868,11 @@ void DemoWbcController::UpdatePhase(const ControllerState &state) noexcept {
   }
 
   case WbcPhase::kPreGrasp: {
-    // TCP close enough to goal → closure (Phase 4B)
+    // TCP close enough to goal → closure
     if (tcp_goal_valid_) {
       const double err = ComputeTcpError(tcp_goal_);
       if (err < epsilon_pregrasp_) {
-        next = WbcPhase::kClosure; // Phase 4B
+        next = WbcPhase::kClosure;
       }
     }
     // Abort
@@ -937,7 +937,7 @@ void DemoWbcController::UpdatePhase(const ControllerState &state) noexcept {
   }
 
   case WbcPhase::kRetreat:
-    // Phase 4B: trajectory complete → release
+    // Trajectory complete → release
     if (robot_trajectory_time_ >= robot_trajectory_.duration()) {
       next = WbcPhase::kRelease;
     }
@@ -947,7 +947,7 @@ void DemoWbcController::UpdatePhase(const ControllerState &state) noexcept {
     break;
 
   case WbcPhase::kRelease:
-    // Phase 4B: hand open complete → idle
+    // Hand open complete → idle
     if (hand_trajectory_time_ >= hand_trajectory_.duration()) {
       next = WbcPhase::kIdle;
     }
@@ -1081,7 +1081,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase,
       }
     }
 
-    // Contact activation (Phase 4B)
+    // Contact activation for closure/hold phases
     if (new_phase == WbcPhase::kClosure || new_phase == WbcPhase::kHold) {
       for (auto &c : contact_state_.contacts) {
         c.active = true;
@@ -1217,7 +1217,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase,
   }
   }
 
-  // ── GraspPhaseManager bridge (Phase 7b, handler mode only) ────────────────
+  // ── GraspPhaseManager bridge (handler mode only) ──────────────────────────
   //
   // WBC FSM is authoritative for the demo; the grasp phase manager mirrors
   // it via ForcePhase so rtc_mpc picks up the matching OCP type
@@ -1297,13 +1297,13 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState &state,
   // 2. Update Pinocchio cache (M, h, g, Jacobians)
   pinocchio_cache_.update(q_curr_full_, v_curr_full_, contact_state_);
 
-  // 2b. MPC reference injection (Phase 5).
+  // 2b. MPC reference injection.
   //
   // Publish the current RT state to the MPC thread, then try to consume
   // the freshest MPC solution. If we have a valid interpolated reference,
-  // it replaces the Phase 4 self-regularising hold target on the next
-  // line. If not (MPC disabled / not yet publishing / too many stale
-  // cycles), we fall through to the Phase 4 behaviour.
+  // it replaces the self-regularising hold target on the next line. If
+  // not (MPC disabled / not yet publishing / too many stale cycles), we
+  // fall through to the TSID self-hold behaviour.
   bool mpc_ref_valid = false;
   if (mpc_enabled_ && mpc_manager_.Enabled()) {
     const uint64_t now_ns =
@@ -1559,17 +1559,16 @@ void DemoWbcController::InitializeHoldPosition(
   qp_fail_count_ = 0;
   grasp_cmd_.store(0, std::memory_order_relaxed);
 
-  // ── MPC thread lifecycle (Phase 5 + 7b) ─────────────────────────────────
+  // ── MPC thread lifecycle ────────────────────────────────────────────────
   //
   // Spawn the MPC thread lazily on first InitializeHoldPosition call so it
   // starts from a known-good RT state. Subsequent calls (e.g. controller
   // re-init after E-STOP clear) leave the existing thread running.
   //
-  // Handler mode (Phase 7b) additionally builds the initial PhaseContext
-  // from the idle phase, runs MPCFactory::Create, and hands both the
-  // handler and the pre-loaded GraspPhaseManager to HandlerMPCThread::
-  // Configure. On factory failure we fall back to mock mode so the RT loop
-  // can still make progress.
+  // Handler mode additionally builds the initial PhaseContext from the idle
+  // phase, runs MPCFactory::Create, and hands both the handler and the
+  // pre-loaded GraspPhaseManager to HandlerMPCThread::Configure. On factory
+  // failure we fall back to mock mode so the RT loop can still make progress.
   if (mpc_enabled_ && !mpc_thread_) {
     const auto thread_configs = rtc::SelectThreadConfigs();
     const int nq = static_cast<int>(q_curr_full_.size());
@@ -1629,7 +1628,7 @@ void DemoWbcController::InitializeHoldPosition(
     }
 
     if (!thread_started) {
-      // Mock fallback — matches Phase 5 behaviour exactly.
+      // Mock fallback — linear interpolation placeholder.
       auto mock = std::make_unique<rtc::mpc::MockMPCThread>();
       mock->Configure(nq, nv, /*horizon=*/10, /*dt_node=*/0.01);
       mock->SetTarget(q_curr_full_);
@@ -1746,7 +1745,7 @@ void DemoWbcController::ClampCommands(
   }
 }
 
-// ── Phase 4: controller-owned topic lifecycle ─────────────────────────────
+// ── Controller-owned topic lifecycle ──────────────────────────────────────
 RTControllerInterface::CallbackReturn
 DemoWbcController::on_configure(const rclcpp_lifecycle::State &prev,
                                 rclcpp_lifecycle::LifecycleNode::SharedPtr node,
