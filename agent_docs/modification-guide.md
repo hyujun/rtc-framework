@@ -1,5 +1,34 @@
 # Modification Guide
 
+## Workflow Loop
+
+모든 수정 작업은 이 순서 ([CLAUDE.md](../CLAUDE.md#L67) §4 요약판의 상세).
+
+```
+1. Locate   → grep / Glob (known symbol) OR Explore agent (broad search)
+              파일의 RT / aux / robot-specific 역할 판단
+2. Read     → package.xml + CMakeLists.txt + target file + 인접 테스트
+              invariants.md 중 영향받는 항목 확인
+3. Edit     → minimal, single-concern. RT path 여부 재확인.
+              auto/lerp/RT-forbidden 자체 grep
+4. Build    → ./build.sh -p <pkg> (단일) 또는 ./build.sh full (rtc_base/rtc_msgs 변경 시)
+5. Test     → CLAUDE.md §5 Sensor matrix 참조. 버그 수정 시 회귀 테스트 추가
+6. Verify   → 본 문서 Completion Checklist 8항목 통과
+```
+
+### Workflow Fail-Safe
+
+각 단계 실패 시 대응. "Try harder"는 실패 응답이 아니다 — 누락된 capability를 엔지니어링하거나 [CLAUDE.md](../CLAUDE.md#L115) §6 Escalate.
+
+| 실패 단계 | 증상 | 대응 |
+|----------|------|------|
+| 1. Locate | 파일을 찾을 수 없음 | `Agent` subagent로 broad search. "찾았다고 추정" 금지 |
+| 2. Read | 컨텍스트 불충분 (호출자 / 테스트 미확인) | 인접 파일 + 테스트 추가 읽기. 추측하지 말 것 |
+| 3. Edit | Invariant 위반 유혹 | [invariants.md](invariants.md) 확인 후 [CLAUDE.md](../CLAUDE.md#L115) §6 Escalate. 우회로 찾지 말 것 |
+| 4. Build | 빌드 실패 | 에러 메시지를 **먼저** 기록. 원인 파악 전 재시도 금지 |
+| 5. Test | 테스트 실패 | assertion 수정 금지 ([anti-patterns.md](anti-patterns.md) AP-PROC-4). 새 코드를 고칠 것 |
+| 6. Verify | Checklist 항목 실패 | 해당 항목까지 rollback, 재실행. 부분 완료 주장 금지 ([anti-patterns.md](anti-patterns.md) AP-PROC-1) |
+
 ## Adding a New Controller
 
 1. Header in `rtc_controllers/include/rtc_controllers/{direct|indirect}/` -- inherit `RTControllerInterface`, implement `Compute()`, `SetDeviceTarget()`, `InitializeHoldPosition()`, `Name()` (all `noexcept`)
