@@ -550,28 +550,20 @@ auto state = traj.compute(time);
 
 ## 컨트롤러 등록
 
-`src/controller_registration.cpp`에서 `RTC_REGISTER_CONTROLLER` 매크로로 4개 컨트롤러를 정적 초기화 시점에 자동 등록합니다.
+`rtc_controllers`의 4개 컨트롤러(`PController`, `JointPDController`, `ClikController`, `OperationalSpaceController`)는 **라이브러리 심볼로만 제공**되며 `ControllerRegistry`에 **자동 등록되지 않습니다**. 런타임에 선택 가능한 컨트롤러 집합은 각 로봇의 `<robot>_bringup` 패키지가 결정합니다 (예: `ur5e_bringup`은 `DemoJointController`, `DemoTaskController`, `DemoWbcController` 3종을 등록).
+
+필요 시 downstream 패키지에서 다음과 같이 직접 등록할 수 있습니다.
 
 ```cpp
+#include "rtc_controller_interface/controller_registry.hpp"
+#include "rtc_controllers/indirect/p_controller.hpp"
+
 RTC_REGISTER_CONTROLLER(
-    p_controller, "indirect/", "rtc_controllers",
+    p_controller, "indirect/", "<your_bringup_pkg>",
     std::make_unique<rtc::PController>(urdf))
-
-RTC_REGISTER_CONTROLLER(
-    joint_pd_controller, "direct/", "rtc_controllers",
-    std::make_unique<rtc::JointPDController>(urdf))
-
-RTC_REGISTER_CONTROLLER(
-    clik_controller, "indirect/", "rtc_controllers",
-    std::make_unique<rtc::ClikController>(urdf, rtc::ClikController::Gains{}))
-
-RTC_REGISTER_CONTROLLER(
-    operational_space_controller, "direct/", "rtc_controllers",
-    std::make_unique<rtc::OperationalSpaceController>(
-        urdf, rtc::OperationalSpaceController::Gains{}))
 ```
 
-> 정적 라이브러리에서 링커 스트립을 방지하려면 `rtc::ForceBuiltinControllerRegistration()`을 `main()`에서 호출해야 합니다.
+> `src/controller_registration.cpp`의 `ForceBuiltinControllerRegistration()`은 이제 no-op이며, 기존 `main()`들과의 링크 호환성을 위해서만 남아 있습니다.
 
 ---
 
