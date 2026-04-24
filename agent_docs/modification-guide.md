@@ -5,8 +5,9 @@
 1. Header in `rtc_controllers/include/rtc_controllers/{direct|indirect}/` -- inherit `RTControllerInterface`, implement `Compute()`, `SetDeviceTarget()`, `InitializeHoldPosition()`, `Name()` (all `noexcept`)
 2. Source in `rtc_controllers/src/controllers/{direct|indirect}/` -- `LoadConfig()` for YAML, `UpdateGainsFromMsg()` for runtime gains
 3. Gains struct must be trivially copyable (plain arrays/bools/doubles/floats/ints; no `std::string`/`std::vector`/virtuals). Store as `rtc::SeqLock<Gains> gains_lock_` — RT path snapshots once with `const auto gains = gains_lock_.Load();` at method entry; aux-thread writers use Load/mutate/Store. `set_gains`/`get_gains` accessors delegate to the SeqLock.
-4. YAML in `rtc_controllers/config/controllers/` -- must include `topics:` section
-5. Register via `RTC_REGISTER_CONTROLLER()` macro. Robot-specific controllers go in `ur5e_bringup/` with registration in `ur5e_bringup/src/controllers/controller_registration.cpp`
+4. YAML in `rtc_controllers/config/controllers/` -- must include `topics:` section. Tag non-RT external topics (target / gui_position / grasp_state / tof_snapshot / ...) with `ownership: controller` and use **relative paths** (`ur5e/joint_goal`, not `/ur5e/joint_goal`). Manager-owned entries keep absolute paths and may omit `ownership` (defaults to `manager`). See `ur5e_bringup/controllers/owned_topics.{hpp,cpp}` for the standard create/activate/publish helper the 3 demos share.
+5. If the controller owns any topics: override `on_configure` / `on_activate` / `on_deactivate` / `on_cleanup` / `PublishNonRtSnapshot` and delegate to the `owned_topics` helper (or inline the equivalent). Always call the base `RTControllerInterface::on_configure` / `on_cleanup` first.
+6. Register via `RTC_REGISTER_CONTROLLER()` macro. Robot-specific controllers go in `ur5e_bringup/` with registration in `ur5e_bringup/src/controllers/controller_registration.cpp`
 
 ## Adding a New Message Type
 

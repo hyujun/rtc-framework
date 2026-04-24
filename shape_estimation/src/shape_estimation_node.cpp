@@ -7,7 +7,7 @@ namespace shape_estimation {
 
 namespace {
 auto node_log() { return ::rtc::shape::logging::NodeLogger(); }
-}  // namespace
+} // namespace
 
 ShapeEstimationNode::ShapeEstimationNode()
     : LifecycleNode("shape_estimation_node") {
@@ -16,14 +16,17 @@ ShapeEstimationNode::ShapeEstimationNode()
 }
 
 ShapeEstimationNode::CallbackReturn
-ShapeEstimationNode::on_configure(const rclcpp_lifecycle::State& /*state*/) {
+ShapeEstimationNode::on_configure(const rclcpp_lifecycle::State & /*state*/) {
   DeclareParameters();
 
   // 파라미터로부터 설정 구성
   VoxelPointCloud::Config cloud_config;
-  cloud_config.voxel_resolution_m = get_parameter("voxel_resolution").as_double();
-  cloud_config.max_points = static_cast<int>(get_parameter("max_points").as_int());
-  cloud_config.expiry_duration_sec = get_parameter("point_expiry_sec").as_double();
+  cloud_config.voxel_resolution_m =
+      get_parameter("voxel_resolution").as_double();
+  cloud_config.max_points =
+      static_cast<int>(get_parameter("max_points").as_int());
+  cloud_config.expiry_duration_sec =
+      get_parameter("point_expiry_sec").as_double();
   voxel_cloud_ = VoxelPointCloud(cloud_config);
 
   FastShapeClassifier::Config classifier_config;
@@ -56,28 +59,34 @@ ShapeEstimationNode::on_configure(const rclcpp_lifecycle::State& /*state*/) {
   protuberance_detector_ = ProtuberanceDetector(prot_config);
 
   frame_id_ = get_parameter("frame_id").as_string();
-  min_points_for_fitting_ = static_cast<int>(get_parameter("min_points_for_fitting").as_int());
+  min_points_for_fitting_ =
+      static_cast<int>(get_parameter("min_points_for_fitting").as_int());
   publish_rate_hz_ = get_parameter("publish_rate_hz").as_double();
   const double viz_rate_hz = get_parameter("viz_rate_hz").as_double();
 
   // Callback group: MutuallyExclusive로 voxel_cloud_ 접근 직렬화
-  cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  cb_group_ =
+      create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
   rclcpp::SubscriptionOptions sub_options;
   sub_options.callback_group = cb_group_;
 
   // ── Subscribers ────────────────────────────────────────────────────────────
-  snapshot_sub_ = create_subscription<rtc_msgs::msg::ToFSnapshot>(
-      "/tof/snapshot",
-      rclcpp::SensorDataQoS().keep_last(5),
-      [this](rtc_msgs::msg::ToFSnapshot::SharedPtr msg) {
-        SnapshotCallback(std::move(msg));
-      },
-      sub_options);
+  //
+  // Phase 4: snapshot_sub_, sub_gui_position_, and pub_robot_target_ are
+  // controller-owned and resolved under /<active_controller_name>/...
+  // RewireControllerTopics() rebinds them when active_ctrl_sub_ fires.
+
+  rclcpp::QoS latched_qos{1};
+  latched_qos.transient_local().reliable();
+  active_ctrl_sub_ = create_subscription<std_msgs::msg::String>(
+      "/" + robot_namespace_ + "/active_controller_name", latched_qos,
+      [this](std_msgs::msg::String::SharedPtr msg) {
+        RewireControllerTopics(msg->data);
+      });
 
   trigger_sub_ = create_subscription<std_msgs::msg::String>(
-      "/shape/trigger",
-      rclcpp::QoS(5).reliable(),
+      "/shape/trigger", rclcpp::QoS(5).reliable(),
       [this](std_msgs::msg::String::SharedPtr msg) {
         TriggerCallback(std::move(msg));
       });
@@ -89,9 +98,10 @@ ShapeEstimationNode::on_configure(const rclcpp_lifecycle::State& /*state*/) {
   point_cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
       "/shape/point_cloud", rclcpp::SensorDataQoS());
 
-  primitive_marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
-      "/shape/primitive_marker",
-      rclcpp::QoS(1).reliable().transient_local());
+  primitive_marker_pub_ =
+      create_publisher<visualization_msgs::msg::MarkerArray>(
+          "/shape/primitive_marker",
+          rclcpp::QoS(1).reliable().transient_local());
 
   tof_beams_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
       "/shape/tof_beams", rclcpp::SensorDataQoS());
@@ -99,9 +109,10 @@ ShapeEstimationNode::on_configure(const rclcpp_lifecycle::State& /*state*/) {
   curvature_text_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
       "/shape/curvature_text", rclcpp::SensorDataQoS());
 
-  protuberance_marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
-      "/shape/protuberance_marker",
-      rclcpp::QoS(1).reliable().transient_local());
+  protuberance_marker_pub_ =
+      create_publisher<visualization_msgs::msg::MarkerArray>(
+          "/shape/protuberance_marker",
+          rclcpp::QoS(1).reliable().transient_local());
 
   // ── Service ────────────────────────────────────────────────────────────────
   clear_srv_ = create_service<std_srvs::srv::Trigger>(
@@ -112,9 +123,10 @@ ShapeEstimationNode::on_configure(const rclcpp_lifecycle::State& /*state*/) {
       });
 
   // ── Timer (시각화 publish 주기) ────────────────────────────────────────────
-  const auto viz_period = std::chrono::milliseconds(
-      static_cast<int64_t>(1000.0 / viz_rate_hz));
-  viz_timer_ = create_wall_timer(viz_period, [this]() { VizTimerCallback(); }, cb_group_);
+  const auto viz_period =
+      std::chrono::milliseconds(static_cast<int64_t>(1000.0 / viz_rate_hz));
+  viz_timer_ = create_wall_timer(
+      viz_period, [this]() { VizTimerCallback(); }, cb_group_);
 
   last_estimate_pub_time_ = now();
 
@@ -137,15 +149,15 @@ ShapeEstimationNode::on_configure(const rclcpp_lifecycle::State& /*state*/) {
 }
 
 ShapeEstimationNode::CallbackReturn
-ShapeEstimationNode::on_activate(const rclcpp_lifecycle::State& state) {
+ShapeEstimationNode::on_activate(const rclcpp_lifecycle::State &state) {
   LifecycleNode::on_activate(state);
-  state_ = State::kStopped;  // trigger 대기
+  state_ = State::kStopped; // trigger 대기
   RCLCPP_INFO(node_log(), "ShapeEstimationNode activated");
   return CallbackReturn::SUCCESS;
 }
 
 ShapeEstimationNode::CallbackReturn
-ShapeEstimationNode::on_deactivate(const rclcpp_lifecycle::State& state) {
+ShapeEstimationNode::on_deactivate(const rclcpp_lifecycle::State &state) {
   // 탐색 중이면 중단
   if (action_active_) {
     motion_generator_.Abort();
@@ -158,15 +170,17 @@ ShapeEstimationNode::on_deactivate(const rclcpp_lifecycle::State& state) {
     StopExploration();
   }
   state_ = State::kStopped;
-  if (explore_timer_) explore_timer_->cancel();
-  if (delayed_start_timer_) delayed_start_timer_->cancel();
+  if (explore_timer_)
+    explore_timer_->cancel();
+  if (delayed_start_timer_)
+    delayed_start_timer_->cancel();
   LifecycleNode::on_deactivate(state);
   RCLCPP_INFO(node_log(), "ShapeEstimationNode deactivated");
   return CallbackReturn::SUCCESS;
 }
 
 ShapeEstimationNode::CallbackReturn
-ShapeEstimationNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) {
+ShapeEstimationNode::on_cleanup(const rclcpp_lifecycle::State & /*state*/) {
   // Reverse order of on_configure
   delayed_start_timer_.reset();
   explore_timer_.reset();
@@ -188,6 +202,7 @@ ShapeEstimationNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) {
   point_cloud_pub_.reset();
   estimate_pub_.reset();
   trigger_sub_.reset();
+  active_ctrl_sub_.reset();
   snapshot_sub_.reset();
 
   RCLCPP_INFO(node_log(), "ShapeEstimationNode cleaned up");
@@ -195,7 +210,7 @@ ShapeEstimationNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) {
 }
 
 ShapeEstimationNode::CallbackReturn
-ShapeEstimationNode::on_shutdown(const rclcpp_lifecycle::State& state) {
+ShapeEstimationNode::on_shutdown(const rclcpp_lifecycle::State &state) {
   if (get_current_state().id() ==
       lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
     on_deactivate(state);
@@ -204,7 +219,7 @@ ShapeEstimationNode::on_shutdown(const rclcpp_lifecycle::State& state) {
 }
 
 ShapeEstimationNode::CallbackReturn
-ShapeEstimationNode::on_error(const rclcpp_lifecycle::State& /*state*/) {
+ShapeEstimationNode::on_error(const rclcpp_lifecycle::State & /*state*/) {
   RCLCPP_ERROR(node_log(), "ShapeEstimationNode error — attempting recovery");
   if (action_active_) {
     motion_generator_.Abort();
@@ -231,6 +246,7 @@ ShapeEstimationNode::on_error(const rclcpp_lifecycle::State& /*state*/) {
   point_cloud_pub_.reset();
   estimate_pub_.reset();
   trigger_sub_.reset();
+  active_ctrl_sub_.reset();
   snapshot_sub_.reset();
 
   return CallbackReturn::SUCCESS;
@@ -276,11 +292,14 @@ void ShapeEstimationNode::DeclareParameters() {
   declare_parameter("exploration.exploration_gains.enable_null_space", false);
   declare_parameter("exploration.exploration_gains.control_6dof", true);
   declare_parameter("exploration.exploration_gains.trajectory_speed", 0.05);
-  declare_parameter("exploration.exploration_gains.trajectory_angular_speed", 0.3);
+  declare_parameter("exploration.exploration_gains.trajectory_angular_speed",
+                    0.3);
   declare_parameter("exploration.exploration_gains.hand_trajectory_speed", 0.0);
   declare_parameter("exploration.exploration_gains.max_traj_velocity", 0.10);
-  declare_parameter("exploration.exploration_gains.max_traj_angular_velocity", 0.5);
-  declare_parameter("exploration.exploration_gains.hand_max_traj_velocity", 0.0);
+  declare_parameter("exploration.exploration_gains.max_traj_angular_velocity",
+                    0.5);
+  declare_parameter("exploration.exploration_gains.hand_max_traj_velocity",
+                    0.0);
 
   // Phase 파라미터
   declare_parameter("exploration.approach_step_size", 0.005);
@@ -368,12 +387,11 @@ void ShapeEstimationNode::SnapshotCallback(
   }
 }
 
-ShapeEstimate ShapeEstimationNode::EstimateShape(
-    const std::vector<PointWithNormal>& points) {
+ShapeEstimate
+ShapeEstimationNode::EstimateShape(const std::vector<PointWithNormal> &points) {
   // Fast classification (O(1))
   ShapeEstimate fast_result = fast_classifier_.Classify(
-      latest_snapshot_.local_curvatures,
-      latest_snapshot_.curvature_valid,
+      latest_snapshot_.local_curvatures, latest_snapshot_.curvature_valid,
       latest_snapshot_.readings);
 
   // 충분한 포인트가 모이면 primitive fitting
@@ -384,29 +402,28 @@ ShapeEstimate ShapeEstimationNode::EstimateShape(
     // fast와 fitted 결과 결합: fitted 결과가 더 신뢰도가 높으면 사용
     if (fitted_result.type != ShapeType::kUnknown &&
         fitted_result.confidence >= fast_result.confidence) {
-      RCLCPP_DEBUG_THROTTLE(node_log(), *get_clock(),
-                            ::rtc::shape::logging::kThrottleFastMs,
-                            "EstimateShape: fitted=%s(%.2f) 선택 (fast=%s(%.2f), points=%d)",
-                            ShapeTypeToString(fitted_result.type).data(),
-                            fitted_result.confidence,
-                            ShapeTypeToString(fast_result.type).data(),
-                            fast_result.confidence, n_points);
+      RCLCPP_DEBUG_THROTTLE(
+          node_log(), *get_clock(), ::rtc::shape::logging::kThrottleFastMs,
+          "EstimateShape: fitted=%s(%.2f) 선택 (fast=%s(%.2f), points=%d)",
+          ShapeTypeToString(fitted_result.type).data(),
+          fitted_result.confidence, ShapeTypeToString(fast_result.type).data(),
+          fast_result.confidence, n_points);
       return fitted_result;
     }
   }
 
-  RCLCPP_DEBUG_THROTTLE(node_log(), *get_clock(),
-                        ::rtc::shape::logging::kThrottleFastMs,
-                        "EstimateShape: fast=%s(%.2f) 사용 (cloud=%d/%d)",
-                        ShapeTypeToString(fast_result.type).data(),
-                        fast_result.confidence,
-                        n_points, min_points_for_fitting_);
+  RCLCPP_DEBUG_THROTTLE(
+      node_log(), *get_clock(), ::rtc::shape::logging::kThrottleFastMs,
+      "EstimateShape: fast=%s(%.2f) 사용 (cloud=%d/%d)",
+      ShapeTypeToString(fast_result.type).data(), fast_result.confidence,
+      n_points, min_points_for_fitting_);
 
   return fast_result;
 }
 
-void ShapeEstimationNode::TriggerCallback(std_msgs::msg::String::SharedPtr msg) {
-  const auto& cmd = msg->data;
+void ShapeEstimationNode::TriggerCallback(
+    std_msgs::msg::String::SharedPtr msg) {
+  const auto &cmd = msg->data;
 
   if (cmd == "start") {
     voxel_cloud_.Clear();
@@ -454,10 +471,12 @@ void ShapeEstimationNode::VizTimerCallback() {
   const auto stamp = now();
   builtin_interfaces::msg::Time ros_stamp;
   ros_stamp.sec = static_cast<int32_t>(stamp.seconds());
-  ros_stamp.nanosec = static_cast<uint32_t>(stamp.nanoseconds() % 1'000'000'000LL);
+  ros_stamp.nanosec =
+      static_cast<uint32_t>(stamp.nanoseconds() % 1'000'000'000LL);
 
   // ── 형상 추정 + 돌출 탐지 (SnapshotCallback에서 이동) ──────────────────────
-  // GetPoints()를 1회만 호출하여 fitting, protuberance, visualization 모두에 재사용
+  // GetPoints()를 1회만 호출하여 fitting, protuberance, visualization 모두에
+  // 재사용
   const auto points = voxel_cloud_.GetPoints();
 
   if (has_snapshot_) {
@@ -476,9 +495,8 @@ void ShapeEstimationNode::VizTimerCallback() {
     header.stamp.sec = ros_stamp.sec;
     header.stamp.nanosec = ros_stamp.nanosec;
     header.frame_id = frame_id_;
-    estimate_pub_->publish(
-        ToMsg(latest_estimate_, latest_snapshot_,
-              latest_protuberance_result_, header));
+    estimate_pub_->publish(ToMsg(latest_estimate_, latest_snapshot_,
+                                 latest_protuberance_result_, header));
 
     // 빔 + 곡률 시각화
     tof_beams_pub_->publish(
@@ -489,16 +507,16 @@ void ShapeEstimationNode::VizTimerCallback() {
 
   // ── 시각화 publish ─────────────────────────────────────────────────────────
   // Point cloud publish
-  point_cloud_pub_->publish(viz::BuildPointCloud2(points, ros_stamp, frame_id_));
+  point_cloud_pub_->publish(
+      viz::BuildPointCloud2(points, ros_stamp, frame_id_));
 
   // Primitive marker publish
   primitive_marker_pub_->publish(
       viz::BuildPrimitiveMarkers(latest_estimate_, ros_stamp, frame_id_));
 
   // 돌출 구조 마커 publish
-  protuberance_marker_pub_->publish(
-      viz::BuildProtuberanceMarkers(
-          latest_protuberance_result_, latest_estimate_, ros_stamp, frame_id_));
+  protuberance_marker_pub_->publish(viz::BuildProtuberanceMarkers(
+      latest_protuberance_result_, latest_estimate_, ros_stamp, frame_id_));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -509,8 +527,8 @@ void ShapeEstimationNode::InitExploration() {
   // 파라미터 로드
   robot_namespace_ = get_parameter("exploration.robot_namespace").as_string();
   controller_name_ = get_parameter("exploration.controller_name").as_string();
-  controller_switch_delay_ms_ =
-      static_cast<int>(get_parameter("exploration.controller_switch_delay_ms").as_int());
+  controller_switch_delay_ms_ = static_cast<int>(
+      get_parameter("exploration.controller_switch_delay_ms").as_int());
 
   // ExplorationConfig 로드
   auto config = LoadExplorationConfig();
@@ -521,9 +539,8 @@ void ShapeEstimationNode::InitExploration() {
 
   // ── Action Server ──────────────────────────────────────────────────────────
   action_server_ = rclcpp_action::create_server<ExploreShape>(
-      this,
-      "/shape/explore",
-      [this](const rclcpp_action::GoalUUID& uuid,
+      this, "/shape/explore",
+      [this](const rclcpp_action::GoalUUID &uuid,
              std::shared_ptr<const ExploreShape::Goal> goal) {
         return HandleGoal(uuid, goal);
       },
@@ -536,35 +553,22 @@ void ShapeEstimationNode::InitExploration() {
 
   // ── RT Controller 연동 publishers ──────────────────────────────────────────
   pub_controller_type_ = create_publisher<std_msgs::msg::String>(
-      "/" + robot_namespace_ + "/controller_type",
-      rclcpp::QoS(1).reliable());
+      "/" + robot_namespace_ + "/controller_type", rclcpp::QoS(1).reliable());
 
-  pub_robot_target_ = create_publisher<rtc_msgs::msg::RobotTarget>(
-      "/" + robot_namespace_ + "/joint_goal",
-      rclcpp::QoS(1).reliable());
+  // pub_robot_target_ and sub_gui_position_ are controller-owned (Phase 4)
+  // and bound in RewireControllerTopics() on /active_controller_name arrival.
 
   pub_controller_gains_ = create_publisher<std_msgs::msg::Float64MultiArray>(
-      "/" + robot_namespace_ + "/controller_gains",
-      rclcpp::QoS(1).reliable());
-
-  // ── 피드백 수신 subscribers ────────────────────────────────────────────────
-  sub_gui_position_ = create_subscription<rtc_msgs::msg::GuiPosition>(
-      "/" + robot_namespace_ + "/gui_position",
-      rclcpp::SensorDataQoS(),
-      [this](rtc_msgs::msg::GuiPosition::SharedPtr msg) {
-        GuiPositionCallback(std::move(msg));
-      });
+      "/" + robot_namespace_ + "/controller_gains", rclcpp::QoS(1).reliable());
 
   sub_estop_ = create_subscription<std_msgs::msg::Bool>(
-      "/system/estop_status",
-      rclcpp::QoS(1).reliable().transient_local(),
+      "/system/estop_status", rclcpp::QoS(1).reliable().transient_local(),
       [this](std_msgs::msg::Bool::SharedPtr msg) {
         EstopCallback(std::move(msg));
       });
 
   sub_object_pose_ = create_subscription<geometry_msgs::msg::PoseStamped>(
-      "/object/pose_estimate",
-      rclcpp::QoS(1).reliable().transient_local(),
+      "/object/pose_estimate", rclcpp::QoS(1).reliable().transient_local(),
       [this](geometry_msgs::msg::PoseStamped::SharedPtr msg) {
         ObjectPoseCallback(std::move(msg));
       });
@@ -576,16 +580,16 @@ void ShapeEstimationNode::InitExploration() {
   // ── 탐색 루프 타이머 ──────────────────────────────────────────────────────
   const double explore_rate =
       get_parameter("exploration.explore_rate_hz").as_double();
-  const auto explore_period = std::chrono::milliseconds(
-      static_cast<int64_t>(1000.0 / explore_rate));
-  explore_timer_ = create_wall_timer(explore_period,
-      [this]() { ExploreLoopCallback(); });
+  const auto explore_period =
+      std::chrono::milliseconds(static_cast<int64_t>(1000.0 / explore_rate));
+  explore_timer_ =
+      create_wall_timer(explore_period, [this]() { ExploreLoopCallback(); });
 }
 
 // ── Action Server 핸들러 ────────────────────────────────────────────────────
 
 rclcpp_action::GoalResponse ShapeEstimationNode::HandleGoal(
-    const rclcpp_action::GoalUUID& /*uuid*/,
+    const rclcpp_action::GoalUUID & /*uuid*/,
     std::shared_ptr<const ExploreShape::Goal> /*goal*/) {
   if (action_active_) {
     RCLCPP_WARN(node_log(), "탐색이 이미 진행 중. 거부.");
@@ -624,8 +628,7 @@ void ShapeEstimationNode::HandleAccepted(
   if (goal->use_current_object_pose && has_object_position_) {
     object_pos = latest_object_position_;
   } else {
-    object_pos = {goal->object_position.x,
-                  goal->object_position.y,
+    object_pos = {goal->object_position.x, goal->object_position.y,
                   goal->object_position.z};
   }
 
@@ -652,10 +655,10 @@ void ShapeEstimationNode::HandleAccepted(
 // ── 탐색 시작/중지 ──────────────────────────────────────────────────────────
 
 void ShapeEstimationNode::StartExploration(
-    const std::array<double, 3>& object_position) {
+    const std::array<double, 3> &object_position) {
   // Point cloud 초기화
   voxel_cloud_.Clear();
-  state_ = State::kRunning;  // 형상 추정도 활성화
+  state_ = State::kRunning; // 형상 추정도 활성화
   action_active_ = true;
 
   // 현재 EE 위치에서 시작
@@ -678,7 +681,8 @@ void ShapeEstimationNode::StopExploration() {
 // ── 탐색 루프 (10Hz) ────────────────────────────────────────────────────────
 
 void ShapeEstimationNode::ExploreLoopCallback() {
-  if (!action_active_) return;
+  if (!action_active_)
+    return;
 
   // E-STOP 검사
   if (estop_active_) {
@@ -701,10 +705,10 @@ void ShapeEstimationNode::ExploreLoopCallback() {
   std::array<double, 6> current_pose = latest_gui_position_;
 
   // 탐색 모션 step
-  const double dt = 1.0 /
-      get_parameter("exploration.explore_rate_hz").as_double();
-  auto result = motion_generator_.Step(
-      latest_snapshot_, latest_estimate_, current_pose, dt);
+  const double dt =
+      1.0 / get_parameter("exploration.explore_rate_hz").as_double();
+  auto result = motion_generator_.Step(latest_snapshot_, latest_estimate_,
+                                       current_pose, dt);
 
   // RobotTarget publish
   if (result.goal.valid) {
@@ -712,7 +716,8 @@ void ShapeEstimationNode::ExploreLoopCallback() {
     target.header.stamp = now();
     target.goal_type = "task";
     for (int i = 0; i < 6; ++i) {
-      target.task_target[static_cast<size_t>(i)] = result.goal.pose[static_cast<size_t>(i)];
+      target.task_target[static_cast<size_t>(i)] =
+          result.goal.pose[static_cast<size_t>(i)];
     }
     pub_robot_target_->publish(target);
   }
@@ -725,14 +730,14 @@ void ShapeEstimationNode::ExploreLoopCallback() {
     const auto stamp_now = now();
     builtin_interfaces::msg::Time ros_stamp;
     ros_stamp.sec = static_cast<int32_t>(stamp_now.seconds());
-    ros_stamp.nanosec = static_cast<uint32_t>(
-        stamp_now.nanoseconds() % 1'000'000'000LL);
+    ros_stamp.nanosec =
+        static_cast<uint32_t>(stamp_now.nanoseconds() % 1'000'000'000LL);
 
     explore_status_pub_->publish(viz::BuildExploreStatusMarkers(
-        result.phase, motion_generator_.Stats(), latest_estimate_,
-        current_pose, ros_stamp, frame_id_));
-    explore_status_pub_->publish(viz::BuildTargetGoalMarker(
-        result.goal, ros_stamp, frame_id_));
+        result.phase, motion_generator_.Stats(), latest_estimate_, current_pose,
+        ros_stamp, frame_id_));
+    explore_status_pub_->publish(
+        viz::BuildTargetGoalMarker(result.goal, ros_stamp, frame_id_));
   }
 
   // 종료 판정
@@ -748,9 +753,10 @@ void ShapeEstimationNode::ExploreLoopCallback() {
 
 // ── Action 결과/피드백 ──────────────────────────────────────────────────────
 
-void ShapeEstimationNode::SendActionResult(
-    bool success, const std::string& message) {
-  if (!active_goal_handle_) return;
+void ShapeEstimationNode::SendActionResult(bool success,
+                                           const std::string &message) {
+  if (!active_goal_handle_)
+    return;
 
   auto result = std::make_shared<ExploreShape::Result>();
   result->success = success;
@@ -779,9 +785,10 @@ void ShapeEstimationNode::SendActionResult(
   }
 }
 
-void ShapeEstimationNode::PublishActionFeedback(
-    ExplorePhase phase, const std::string& status_msg) {
-  if (!active_goal_handle_) return;
+void ShapeEstimationNode::PublishActionFeedback(ExplorePhase phase,
+                                                const std::string &status_msg) {
+  if (!active_goal_handle_)
+    return;
 
   auto feedback = std::make_shared<ExploreShape::Feedback>();
   feedback->current_phase = static_cast<uint8_t>(phase);
@@ -789,7 +796,8 @@ void ShapeEstimationNode::PublishActionFeedback(
   std_msgs::msg::Header header;
   header.stamp = now();
   header.frame_id = frame_id_;
-  feedback->current_estimate = ToMsg(latest_estimate_, latest_snapshot_, header);
+  feedback->current_estimate =
+      ToMsg(latest_estimate_, latest_snapshot_, header);
 
   const auto stats = motion_generator_.Stats();
   feedback->elapsed_sec = stats.elapsed_sec;
@@ -816,10 +824,8 @@ void ShapeEstimationNode::EstopCallback(std_msgs::msg::Bool::SharedPtr msg) {
 
 void ShapeEstimationNode::ObjectPoseCallback(
     geometry_msgs::msg::PoseStamped::SharedPtr msg) {
-  latest_object_position_ = {
-      msg->pose.position.x,
-      msg->pose.position.y,
-      msg->pose.position.z};
+  latest_object_position_ = {msg->pose.position.x, msg->pose.position.y,
+                             msg->pose.position.z};
   has_object_position_ = true;
 }
 
@@ -827,38 +833,52 @@ void ShapeEstimationNode::ObjectPoseCallback(
 
 ExplorationConfig ShapeEstimationNode::LoadExplorationConfig() {
   ExplorationConfig config;
-  config.approach_step_size = get_parameter("exploration.approach_step_size").as_double();
-  config.approach_timeout_sec = get_parameter("exploration.approach_timeout_sec").as_double();
-  config.servo_target_distance = get_parameter("exploration.servo_target_distance").as_double();
-  config.servo_step_gain = get_parameter("exploration.servo_step_gain").as_double();
-  config.servo_max_step = get_parameter("exploration.servo_max_step").as_double();
-  config.servo_converge_tol = get_parameter("exploration.servo_converge_tol").as_double();
-  config.servo_timeout_sec = get_parameter("exploration.servo_timeout_sec").as_double();
-  config.servo_min_valid_sensors =
-      static_cast<uint8_t>(get_parameter("exploration.servo_min_valid_sensors").as_int());
-  config.sweep_step_size = get_parameter("exploration.sweep_step_size").as_double();
+  config.approach_step_size =
+      get_parameter("exploration.approach_step_size").as_double();
+  config.approach_timeout_sec =
+      get_parameter("exploration.approach_timeout_sec").as_double();
+  config.servo_target_distance =
+      get_parameter("exploration.servo_target_distance").as_double();
+  config.servo_step_gain =
+      get_parameter("exploration.servo_step_gain").as_double();
+  config.servo_max_step =
+      get_parameter("exploration.servo_max_step").as_double();
+  config.servo_converge_tol =
+      get_parameter("exploration.servo_converge_tol").as_double();
+  config.servo_timeout_sec =
+      get_parameter("exploration.servo_timeout_sec").as_double();
+  config.servo_min_valid_sensors = static_cast<uint8_t>(
+      get_parameter("exploration.servo_min_valid_sensors").as_int());
+  config.sweep_step_size =
+      get_parameter("exploration.sweep_step_size").as_double();
   config.sweep_width = get_parameter("exploration.sweep_width").as_double();
-  config.sweep_normal_gain = get_parameter("exploration.sweep_normal_gain").as_double();
-  config.sweep_normal_max_step = get_parameter("exploration.sweep_normal_max_step").as_double();
-  config.tilt_amplitude_deg = get_parameter("exploration.tilt_amplitude_deg").as_double();
+  config.sweep_normal_gain =
+      get_parameter("exploration.sweep_normal_gain").as_double();
+  config.sweep_normal_max_step =
+      get_parameter("exploration.sweep_normal_max_step").as_double();
+  config.tilt_amplitude_deg =
+      get_parameter("exploration.tilt_amplitude_deg").as_double();
   config.tilt_steps =
       static_cast<uint32_t>(get_parameter("exploration.tilt_steps").as_int());
   config.min_distance = get_parameter("exploration.min_distance").as_double();
   config.max_step_size = get_parameter("exploration.max_step_size").as_double();
-  config.confidence_threshold = get_parameter("exploration.confidence_threshold").as_double();
-  config.min_points_for_success =
-      static_cast<uint32_t>(get_parameter("exploration.min_points_for_success").as_int());
-  config.max_total_time_sec = get_parameter("exploration.max_total_time_sec").as_double();
-  config.max_sweep_cycles =
-      static_cast<uint8_t>(get_parameter("exploration.max_sweep_cycles").as_int());
+  config.confidence_threshold =
+      get_parameter("exploration.confidence_threshold").as_double();
+  config.min_points_for_success = static_cast<uint32_t>(
+      get_parameter("exploration.min_points_for_success").as_int());
+  config.max_total_time_sec =
+      get_parameter("exploration.max_total_time_sec").as_double();
+  config.max_sweep_cycles = static_cast<uint8_t>(
+      get_parameter("exploration.max_sweep_cycles").as_int());
 
   // 센서 가중치
-  const auto weights = get_parameter("exploration.finger_weights").as_double_array();
+  const auto weights =
+      get_parameter("exploration.finger_weights").as_double_array();
   if (weights.size() >= 3) {
     config.finger_weights = {weights[0], weights[1], weights[2]};
   }
-  config.min_classification_fingers =
-      static_cast<uint8_t>(get_parameter("exploration.min_classification_fingers").as_int());
+  config.min_classification_fingers = static_cast<uint8_t>(
+      get_parameter("exploration.min_classification_fingers").as_int());
   config.min_classification_coverage =
       get_parameter("exploration.min_classification_coverage").as_double();
 
@@ -874,33 +894,84 @@ std::vector<double> ShapeEstimationNode::LoadExplorationGains() {
   gains.reserve(16);
 
   const auto kp_trans =
-      get_parameter("exploration.exploration_gains.kp_translation").as_double_array();
-  const auto kp_rot =
-      get_parameter("exploration.exploration_gains.kp_rotation").as_double_array();
+      get_parameter("exploration.exploration_gains.kp_translation")
+          .as_double_array();
+  const auto kp_rot = get_parameter("exploration.exploration_gains.kp_rotation")
+                          .as_double_array();
 
-  for (const auto& v : kp_trans) gains.push_back(v);
-  for (const auto& v : kp_rot) gains.push_back(v);
+  for (const auto &v : kp_trans)
+    gains.push_back(v);
+  for (const auto &v : kp_rot)
+    gains.push_back(v);
 
-  gains.push_back(get_parameter("exploration.exploration_gains.damping").as_double());
-  gains.push_back(get_parameter("exploration.exploration_gains.null_kp").as_double());
   gains.push_back(
-      get_parameter("exploration.exploration_gains.enable_null_space").as_bool() ? 1.0 : 0.0);
+      get_parameter("exploration.exploration_gains.damping").as_double());
   gains.push_back(
-      get_parameter("exploration.exploration_gains.control_6dof").as_bool() ? 1.0 : 0.0);
+      get_parameter("exploration.exploration_gains.null_kp").as_double());
   gains.push_back(
-      get_parameter("exploration.exploration_gains.trajectory_speed").as_double());
+      get_parameter("exploration.exploration_gains.enable_null_space").as_bool()
+          ? 1.0
+          : 0.0);
   gains.push_back(
-      get_parameter("exploration.exploration_gains.trajectory_angular_speed").as_double());
+      get_parameter("exploration.exploration_gains.control_6dof").as_bool()
+          ? 1.0
+          : 0.0);
   gains.push_back(
-      get_parameter("exploration.exploration_gains.hand_trajectory_speed").as_double());
+      get_parameter("exploration.exploration_gains.trajectory_speed")
+          .as_double());
   gains.push_back(
-      get_parameter("exploration.exploration_gains.max_traj_velocity").as_double());
+      get_parameter("exploration.exploration_gains.trajectory_angular_speed")
+          .as_double());
   gains.push_back(
-      get_parameter("exploration.exploration_gains.max_traj_angular_velocity").as_double());
+      get_parameter("exploration.exploration_gains.hand_trajectory_speed")
+          .as_double());
   gains.push_back(
-      get_parameter("exploration.exploration_gains.hand_max_traj_velocity").as_double());
+      get_parameter("exploration.exploration_gains.max_traj_velocity")
+          .as_double());
+  gains.push_back(
+      get_parameter("exploration.exploration_gains.max_traj_angular_velocity")
+          .as_double());
+  gains.push_back(
+      get_parameter("exploration.exploration_gains.hand_max_traj_velocity")
+          .as_double());
 
   return gains;
 }
 
-}  // namespace shape_estimation
+// ── Phase 4: rebind controller-owned topics on switch ─────────────────────
+void ShapeEstimationNode::RewireControllerTopics(const std::string &ctrl_name) {
+  if (ctrl_name.empty() || ctrl_name == active_ctrl_name_) {
+    return;
+  }
+  active_ctrl_name_ = ctrl_name;
+  const std::string ns = "/" + ctrl_name;
+
+  // Drop prior handles.
+  snapshot_sub_.reset();
+  sub_gui_position_.reset();
+  pub_robot_target_.reset();
+
+  // Controller-owned ToF snapshot (BEST_EFFORT to match RT publisher QoS).
+  rclcpp::SubscriptionOptions sub_options;
+  sub_options.callback_group = cb_group_;
+  snapshot_sub_ = create_subscription<rtc_msgs::msg::ToFSnapshot>(
+      ns + "/tof/snapshot", rclcpp::SensorDataQoS().keep_last(5),
+      [this](rtc_msgs::msg::ToFSnapshot::SharedPtr msg) {
+        SnapshotCallback(std::move(msg));
+      },
+      sub_options);
+
+  // Controller-owned gui_position + joint_goal.
+  sub_gui_position_ = create_subscription<rtc_msgs::msg::GuiPosition>(
+      ns + "/" + robot_namespace_ + "/gui_position", rclcpp::SensorDataQoS(),
+      [this](rtc_msgs::msg::GuiPosition::SharedPtr msg) {
+        GuiPositionCallback(std::move(msg));
+      });
+  pub_robot_target_ = create_publisher<rtc_msgs::msg::RobotTarget>(
+      ns + "/" + robot_namespace_ + "/joint_goal", rclcpp::QoS(1).reliable());
+
+  RCLCPP_INFO(node_log(), "rewired controller-owned topics to '%s'",
+              ctrl_name.c_str());
+}
+
+} // namespace shape_estimation

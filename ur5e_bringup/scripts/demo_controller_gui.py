@@ -230,11 +230,18 @@ class DemoControllerGUI(Node):
     def __init__(self):
         super().__init__('demo_controller_gui')
 
-        # Publishers
-        self.robot_cmd_pub = self.create_publisher(
-            RobotTarget, '/ur5e/joint_goal', 10)
-        self.hand_cmd_pub = self.create_publisher(
-            RobotTarget, '/hand/joint_goal', 10)
+        # Phase 4: target / gui_position / grasp_state / tof are owned by the
+        # active controller (/<config_key>/...). We defer creating them until
+        # /ur5e/active_controller_name tells us the namespace, and re-create
+        # them whenever the name changes (controller switch).
+        self._active_ctrl: str = ""
+        self.robot_cmd_pub = None
+        self.hand_cmd_pub = None
+        self._arm_gui_sub = None
+        self._hand_gui_sub = None
+        self._grasp_state_sub = None
+
+        # Manager-owned publishers (stable paths)
         self.type_pub = self.create_publisher(
             String, '/ur5e/controller_type', 10)
         self.gains_pub = self.create_publisher(
@@ -255,11 +262,9 @@ class DemoControllerGUI(Node):
             CalibrationStatus, '/hand/calibration/status',
             self._calib_status_cb, 10)
 
-        # Subscriptions
+        # Subscriptions (Phase 4: GuiPosition subs created by rewire helper)
         self.current_positions = [0.0] * NUM_JOINTS
         self.current_task_positions = [0.0] * 6
-        self.create_subscription(GuiPosition, '/ur5e/gui_position',
-                                 self._gui_pos_cb, 10)
 
         self.estop_active = False
         self.create_subscription(Bool, '/system/estop_status',
@@ -269,10 +274,8 @@ class DemoControllerGUI(Node):
         self.create_subscription(Float64MultiArray, '/ur5e/current_gains',
                                  self._current_gains_cb, 10)
 
-        # Hand state subscription via gui_position topic
+        # Hand state subscription via gui_position topic (created in rewire)
         self.current_hand_positions = [0.0] * NUM_HAND_MOTORS
-        self.create_subscription(GuiPosition, '/hand/gui_position',
-                                 self._hand_gui_pos_cb, 10)
 
         # Grasp state subscription
         self._grasp_detected = False
@@ -289,8 +292,17 @@ class DemoControllerGUI(Node):
         self._fp_finger_s = [0.0] * len(FORCE_PI_FINGER_NAMES)
         self._fp_filtered_force = [0.0] * len(FORCE_PI_FINGER_NAMES)
         self._fp_force_error = [0.0] * len(FORCE_PI_FINGER_NAMES)
-        self.create_subscription(GraspState, '/hand/grasp_state',
-                                 self._grasp_state_cb, 10)
+
+        # Phase 4: subscribe to the active controller name and rebind
+        # controller-owned topics on each change.
+        from rclpy.qos import (QoSProfile, QoSDurabilityPolicy,
+                               QoSReliabilityPolicy)
+        latched_qos = QoSProfile(depth=1)
+        latched_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
+        latched_qos.reliability = QoSReliabilityPolicy.RELIABLE
+        self.create_subscription(
+            String, '/ur5e/active_controller_name',
+            self._on_active_controller, latched_qos)
 
         # Hand presets (loaded from JSON)
         self._preset_path = _resolve_preset_path()
@@ -318,6 +330,46 @@ class DemoControllerGUI(Node):
         self._gui_ready.wait()
 
     # ---- ROS callbacks -------------------------------------------------------
+
+    def _on_active_controller(self, msg: String):
+        """Rewire controller-owned pubs/subs whenever the active controller
+        changes (Phase 4 dynamic remapping)."""
+        name = (msg.data or '').strip()
+        if not name or name == self._active_ctrl:
+            return
+        self._active_ctrl = name
+        ns = '/' + name
+
+        # Reset old sub handles by dropping references; rclpy will unsubscribe.
+        for sub_attr in ('_arm_gui_sub', '_hand_gui_sub', '_grasp_state_sub'):
+            sub = getattr(self, sub_attr, None)
+            if sub is not None:
+                try:
+                    self.destroy_subscription(sub)
+                except Exception:
+                    pass
+                setattr(self, sub_attr, None)
+        for pub_attr in ('robot_cmd_pub', 'hand_cmd_pub'):
+            pub = getattr(self, pub_attr, None)
+            if pub is not None:
+                try:
+                    self.destroy_publisher(pub)
+                except Exception:
+                    pass
+                setattr(self, pub_attr, None)
+
+        self.robot_cmd_pub = self.create_publisher(
+            RobotTarget, ns + '/ur5e/joint_goal', 10)
+        self.hand_cmd_pub = self.create_publisher(
+            RobotTarget, ns + '/hand/joint_goal', 10)
+        self._arm_gui_sub = self.create_subscription(
+            GuiPosition, ns + '/ur5e/gui_position', self._gui_pos_cb, 10)
+        self._hand_gui_sub = self.create_subscription(
+            GuiPosition, ns + '/hand/gui_position', self._hand_gui_pos_cb, 10)
+        self._grasp_state_sub = self.create_subscription(
+            GraspState, ns + '/hand/grasp_state', self._grasp_state_cb, 10)
+        self.get_logger().info(
+            f"rewired controller-owned topics to '{name}'")
 
     def _gui_pos_cb(self, msg: GuiPosition):
         if len(msg.joint_positions) >= NUM_JOINTS:
@@ -1841,6 +1893,10 @@ class DemoControllerGUI(Node):
             self.get_logger().error("Invalid numerical input for target.")
             return
 
+        if self.robot_cmd_pub is None:
+            self.get_logger().warn(
+                "robot_cmd_pub not yet bound — waiting for active controller")
+            return
         self.robot_cmd_pub.publish(robot_msg)
         data = robot_msg.joint_target if is_joint else list(robot_msg.task_target)
         self.get_logger().info(
@@ -1857,6 +1913,10 @@ class DemoControllerGUI(Node):
         hand_msg.goal_type = 'joint'
         hand_msg.joint_names = HAND_MOTOR_NAMES
         hand_msg.joint_target = hand_values
+        if self.hand_cmd_pub is None:
+            self.get_logger().warn(
+                "hand_cmd_pub not yet bound — waiting for active controller")
+            return
         self.hand_cmd_pub.publish(hand_msg)
         self.get_logger().info(
             f"Sent hand cmd: {[f'{v:.4f}' for v in hand_values]}")
@@ -1905,10 +1965,15 @@ class DemoControllerGUI(Node):
                         for i, v in enumerate(robot_target_vals)]
                     robot_msg.task_target = task_values
                     self._set_task_target_entries(task_values)
-                self.robot_cmd_pub.publish(robot_msg)
-                self.get_logger().info(
-                    f"Preset '{name}': sent robot target ({goal_type}): "
-                    f"{[f'{v:.2f}' for v in robot_target_vals]}")
+                if self.robot_cmd_pub is None:
+                    self.get_logger().warn(
+                        "robot_cmd_pub not yet bound — waiting for "
+                        "active controller")
+                else:
+                    self.robot_cmd_pub.publish(robot_msg)
+                    self.get_logger().info(
+                        f"Preset '{name}': sent robot target ({goal_type}): "
+                        f"{[f'{v:.2f}' for v in robot_target_vals]}")
 
         # ── Hand target ────────────���───────────────────────────────────
         positions_deg = data.get('positions_deg', [0.0] * NUM_HAND_MOTORS)
@@ -1951,10 +2016,14 @@ class DemoControllerGUI(Node):
         hand_msg.goal_type = 'joint'
         hand_msg.joint_names = HAND_MOTOR_NAMES
         hand_msg.joint_target = positions_rad
-        self.hand_cmd_pub.publish(hand_msg)
-        self.get_logger().info(
-            f"Sent preset '{name}' ({data.get('type', 'open')}): "
-            f"{[f'{v:.2f}' for v in positions_deg]} deg")
+        if self.hand_cmd_pub is None:
+            self.get_logger().warn(
+                "hand_cmd_pub not yet bound — waiting for active controller")
+        else:
+            self.hand_cmd_pub.publish(hand_msg)
+            self.get_logger().info(
+                f"Sent preset '{name}' ({data.get('type', 'open')}): "
+                f"{[f'{v:.2f}' for v in positions_deg]} deg")
 
         # Also update the hand target entries on the Control tab
         self._set_hand_target_entries(positions_rad)

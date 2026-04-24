@@ -13,23 +13,23 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <lifecycle_msgs/msg/state.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/lifecycle_publisher.hpp>
-#include <lifecycle_msgs/msg/state.hpp>
-#include <rclcpp_action/rclcpp_action.hpp>
-#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <rtc_msgs/msg/gui_position.hpp>
+#include <rtc_msgs/msg/robot_target.hpp>
+#include <rtc_msgs/msg/to_f_snapshot.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <shape_estimation_msgs/action/explore_shape.hpp>
 #include <shape_estimation_msgs/msg/shape_estimate.hpp>
-#include <rtc_msgs/msg/to_f_snapshot.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
-#include <rtc_msgs/msg/gui_position.hpp>
-#include <rtc_msgs/msg/robot_target.hpp>
 #pragma GCC diagnostic pop
 
 #include <array>
@@ -40,7 +40,7 @@
 namespace shape_estimation {
 
 class ShapeEstimationNode : public rclcpp_lifecycle::LifecycleNode {
- public:
+public:
   using CallbackReturn =
       rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
   using ExploreShape = shape_estimation_msgs::action::ExploreShape;
@@ -48,27 +48,27 @@ class ShapeEstimationNode : public rclcpp_lifecycle::LifecycleNode {
 
   ShapeEstimationNode();
 
-  CallbackReturn on_configure(const rclcpp_lifecycle::State& state) override;
-  CallbackReturn on_activate(const rclcpp_lifecycle::State& state) override;
-  CallbackReturn on_deactivate(const rclcpp_lifecycle::State& state) override;
-  CallbackReturn on_cleanup(const rclcpp_lifecycle::State& state) override;
-  CallbackReturn on_shutdown(const rclcpp_lifecycle::State& state) override;
-  CallbackReturn on_error(const rclcpp_lifecycle::State& state) override;
+  CallbackReturn on_configure(const rclcpp_lifecycle::State &state) override;
+  CallbackReturn on_activate(const rclcpp_lifecycle::State &state) override;
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State &state) override;
+  CallbackReturn on_cleanup(const rclcpp_lifecycle::State &state) override;
+  CallbackReturn on_shutdown(const rclcpp_lifecycle::State &state) override;
+  CallbackReturn on_error(const rclcpp_lifecycle::State &state) override;
 
- private:
+private:
   // 상태 머신
   enum class State { kStopped, kRunning, kPaused, kSingleShot };
 
   // ── 기존 콜백 ─────────────────────────────────────────────────────────────
   void SnapshotCallback(rtc_msgs::msg::ToFSnapshot::SharedPtr msg);
   void TriggerCallback(std_msgs::msg::String::SharedPtr msg);
-  void ClearCallback(
-      const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-      std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+  void
+  ClearCallback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                std::shared_ptr<std_srvs::srv::Trigger::Response> response);
   void VizTimerCallback();
 
   // 형상 추정 실행 (외부에서 GetPoints() 결과를 전달받아 중복 복사 방지)
-  ShapeEstimate EstimateShape(const std::vector<PointWithNormal>& points);
+  ShapeEstimate EstimateShape(const std::vector<PointWithNormal> &points);
 
   // 파라미터 선언
   void DeclareParameters();
@@ -80,7 +80,8 @@ class ShapeEstimationNode : public rclcpp_lifecycle::LifecycleNode {
   ProtuberanceDetector protuberance_detector_;
   SnapshotHistory snapshot_history_;
 
-  // ── 상태 ────────────────────────────────────────────────────────────────────
+  // ── 상태
+  // ────────────────────────────────────────────────────────────────────
   State state_{State::kStopped};
   ToFSnapshot latest_snapshot_{};
   ShapeEstimate latest_estimate_{};
@@ -93,12 +94,18 @@ class ShapeEstimationNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr trigger_sub_;
 
   // Publishers (LifecyclePublisher — gated by lifecycle state)
-  rclcpp_lifecycle::LifecyclePublisher<shape_estimation_msgs::msg::ShapeEstimate>::SharedPtr estimate_pub_;
-  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_cloud_pub_;
-  rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr primitive_marker_pub_;
-  rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr tof_beams_pub_;
-  rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr curvature_text_pub_;
-  rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr protuberance_marker_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<
+      shape_estimation_msgs::msg::ShapeEstimate>::SharedPtr estimate_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::PointCloud2>::SharedPtr
+      point_cloud_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<
+      visualization_msgs::msg::MarkerArray>::SharedPtr primitive_marker_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<
+      visualization_msgs::msg::MarkerArray>::SharedPtr tof_beams_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<
+      visualization_msgs::msg::MarkerArray>::SharedPtr curvature_text_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<
+      visualization_msgs::msg::MarkerArray>::SharedPtr protuberance_marker_pub_;
 
   // Service
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr clear_srv_;
@@ -109,7 +116,8 @@ class ShapeEstimationNode : public rclcpp_lifecycle::LifecycleNode {
   // Callback group
   rclcpp::CallbackGroup::SharedPtr cb_group_;
 
-  // ── 파라미터 ────────────────────────────────────────────────────────────────
+  // ── 파라미터
+  // ────────────────────────────────────────────────────────────────
   std::string frame_id_{"base_link"};
   int min_points_for_fitting_{10};
   double publish_rate_hz_{10.0};
@@ -119,7 +127,7 @@ class ShapeEstimationNode : public rclcpp_lifecycle::LifecycleNode {
 
   // RemoveExpired throttle (500Hz에서 매번 호출 방지)
   uint32_t expire_counter_{0};
-  static constexpr uint32_t kExpireInterval = 250;  // 0.5초 간격 @500Hz
+  static constexpr uint32_t kExpireInterval = 250; // 0.5초 간격 @500Hz
 
   // ═════════════════════════════════════════════════════════════════════════════
   // 탐색 모션 (enable_exploration: true일 때만 활성화)
@@ -133,26 +141,36 @@ class ShapeEstimationNode : public rclcpp_lifecycle::LifecycleNode {
   // ── Action Server ──────────────────────────────────────────────────────────
   rclcpp_action::Server<ExploreShape>::SharedPtr action_server_;
 
-  rclcpp_action::GoalResponse HandleGoal(
-      const rclcpp_action::GoalUUID& uuid,
-      std::shared_ptr<const ExploreShape::Goal> goal);
-  rclcpp_action::CancelResponse HandleCancel(
-      const std::shared_ptr<GoalHandleExploreShape> goal_handle);
-  void HandleAccepted(
-      const std::shared_ptr<GoalHandleExploreShape> goal_handle);
+  rclcpp_action::GoalResponse
+  HandleGoal(const rclcpp_action::GoalUUID &uuid,
+             std::shared_ptr<const ExploreShape::Goal> goal);
+  rclcpp_action::CancelResponse
+  HandleCancel(const std::shared_ptr<GoalHandleExploreShape> goal_handle);
+  void
+  HandleAccepted(const std::shared_ptr<GoalHandleExploreShape> goal_handle);
 
   // ── RT Controller 연동 ────────────────────────────────────────────────────
-  rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::String>::SharedPtr pub_controller_type_;
-  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::RobotTarget>::SharedPtr pub_robot_target_;
-  rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_controller_gains_;
+  rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::String>::SharedPtr
+      pub_controller_type_;
+  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::RobotTarget>::SharedPtr
+      pub_robot_target_;
+  rclcpp_lifecycle::LifecyclePublisher<
+      std_msgs::msg::Float64MultiArray>::SharedPtr pub_controller_gains_;
 
   // ── 피드백 수신 ───────────────────────────────────────────────────────────
   rclcpp::Subscription<rtc_msgs::msg::GuiPosition>::SharedPtr sub_gui_position_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_estop_;
-  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_object_pose_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr
+      sub_object_pose_;
+
+  // ── Phase 4: controller namespace rewiring ──────────────────────────────
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr active_ctrl_sub_;
+  std::string active_ctrl_name_;
+  void RewireControllerTopics(const std::string &ctrl_name);
 
   // ── 탐색 시각화 ───────────────────────────────────────────────────────────
-  rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr explore_status_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<
+      visualization_msgs::msg::MarkerArray>::SharedPtr explore_status_pub_;
 
   // ── 탐색 루프 타이머 ──────────────────────────────────────────────────────
   rclcpp::TimerBase::SharedPtr explore_timer_;
@@ -185,10 +203,10 @@ class ShapeEstimationNode : public rclcpp_lifecycle::LifecycleNode {
   void ObjectPoseCallback(geometry_msgs::msg::PoseStamped::SharedPtr msg);
 
   // ── 탐색 유틸 ─────────────────────────────────────────────────────────────
-  void StartExploration(const std::array<double, 3>& object_position);
+  void StartExploration(const std::array<double, 3> &object_position);
   void StopExploration();
-  void SendActionResult(bool success, const std::string& message = "");
-  void PublishActionFeedback(ExplorePhase phase, const std::string& status_msg);
+  void SendActionResult(bool success, const std::string &message = "");
+  void PublishActionFeedback(ExplorePhase phase, const std::string &status_msg);
 
   // YAML에서 ExplorationConfig 로드
   ExplorationConfig LoadExplorationConfig();
@@ -196,4 +214,4 @@ class ShapeEstimationNode : public rclcpp_lifecycle::LifecycleNode {
   std::vector<double> LoadExplorationGains();
 };
 
-}  // namespace shape_estimation
+} // namespace shape_estimation

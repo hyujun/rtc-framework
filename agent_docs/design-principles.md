@@ -31,6 +31,15 @@
 | Controller registry, TSID solver core | Demo controllers, BT coordinator, bringup |
 | RT threading, SPSC, SeqLock, E-STOP logic | Hardware drivers (UR5e RTDE, hand UDP, ToF UART) |
 
+## Two-Tier Topic Ownership (Phase 4)
+
+Non-RT ROS I/O is split into two tiers based on RT adjacency and per-controller schema requirements:
+
+- **Manager-owned** (`TopicOwnership::kManager`, default): RT-adjacent traffic — device state, joint/ros2 commands, state/sensor logs, digital-twin republishers. Lives on `RtControllerNode` (CM). Topic paths are stable across controller switches because the hardware protocol does not change.
+- **Controller-owned** (`TopicOwnership::kController`): external GUI / BT / planner traffic whose schema or QoS may differ per controller (targets, gui_position, grasp_state, tof_snapshot). Created on a per-controller `rclcpp_lifecycle::LifecycleNode` whose namespace is `/<config_key>`; relative YAML paths auto-resolve to `/<config_key>/<topic>`.
+
+CM's publish thread drains the SPSC snapshot for manager-owned roles and then calls `controllers_[active]->PublishNonRtSnapshot(snap)` to delegate controller-owned publishing. External consumers (BT bridge, GUIs, digital_twin, shape_estimation) subscribe to `/<robot_ns>/active_controller_name` (TRANSIENT_LOCAL) and rewire their sub/pubs on each transition. The CM never decides which namespace is authoritative — it exposes the current choice; everything else is pull-based. Logs (`device_state_log`, `device_sensor_log`) remain manager-owned for now; may move later when per-controller schema stabilises.
+
 ## When Generalization Requires a Design Change
 
 If you cannot satisfy all five principles with a local edit, STOP and:

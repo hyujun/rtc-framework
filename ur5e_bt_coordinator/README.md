@@ -50,22 +50,25 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 
 ### 발행 (Publish)
 
+Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/demo_task_controller`, `/demo_wbc_controller` 등). `/ur5e/active_controller_name`이 수신될 때마다 `RewireControllerTopics()`가 sub/pub을 재바인딩합니다.
+
 | Topic | 메시지 타입 | 설명 |
 |-------|------------|------|
-| `/ur5e/joint_goal` | `rtc_msgs/RobotTarget` | Arm task-space 또는 joint-space 목표 |
-| `/hand/joint_goal` | `rtc_msgs/RobotTarget` | Hand 10-DoF 모터 목표 |
+| `<ns>/ur5e/joint_goal` | `rtc_msgs/RobotTarget` | Arm task-space 또는 joint-space 목표 (controller-owned) |
+| `<ns>/hand/joint_goal` | `rtc_msgs/RobotTarget` | Hand 10-DoF 모터 목표 (controller-owned) |
 | `/ur5e/controller_gains` | `std_msgs/Float64MultiArray` | 컨트롤러 gain 업데이트 (DemoTask 16개 / DemoJoint 4개 요소) |
-| `/ur5e/select_controller` | `std_msgs/String` | 컨트롤러 전환 명령 |
+| `/ur5e/controller_type` | `std_msgs/String` | 컨트롤러 전환 명령 |
 
 ### 구독 (Subscribe)
 
 | Topic | 메시지 타입 | QoS | 설명 |
 |-------|------------|-----|------|
-| `/ur5e/gui_position` | `rtc_msgs/GuiPosition` | RELIABLE, depth 10 | TCP 포즈 + 관절 위치 |
-| `/hand/gui_position` | `rtc_msgs/GuiPosition` | RELIABLE, depth 10 | Hand 관절 위치 |
-| `/hand/grasp_state` | `rtc_msgs/GraspState` | RELIABLE, depth 10 | 500Hz 사전 계산된 grasp 상태 |
+| `<ns>/ur5e/gui_position` | `rtc_msgs/GuiPosition` | RELIABLE, depth 10 | TCP 포즈 + 관절 위치 (controller-owned) |
+| `<ns>/hand/gui_position` | `rtc_msgs/GuiPosition` | RELIABLE, depth 10 | Hand 관절 위치 (controller-owned) |
+| `<ns>/hand/grasp_state` | `rtc_msgs/GraspState` | RELIABLE, depth 10 | 500Hz 사전 계산된 grasp 상태 (controller-owned) |
+| `<ns>/tof/snapshot` | `rtc_msgs/ToFSnapshot` | BEST_EFFORT, depth 100 | ToF + 핑거팁 pose snapshot (controller-owned) |
 | `/vision/object_pose` | `geometry_msgs/PoseStamped` | RELIABLE, depth 10 | 물체 위치 (쿼터니언 → RPY 변환) |
-| `/ur5e/active_controller_name` | `std_msgs/String` | TRANSIENT_LOCAL, depth 1 | 현재 활성 컨트롤러 이름 |
+| `/ur5e/active_controller_name` | `std_msgs/String` | TRANSIENT_LOCAL, depth 1 | 현재 활성 컨트롤러 이름 — rewire 트리거 |
 | `/system/estop_status` | `std_msgs/Bool` | RELIABLE, depth 10 | E-STOP 상태 |
 
 ## BT 트리

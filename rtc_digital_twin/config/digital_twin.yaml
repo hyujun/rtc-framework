@@ -84,7 +84,11 @@
     # ── TCP visualization ───────────────────────────────────────────────
     # Subscribes to GuiPosition for task-space TCP data (actual + goal).
     # Publishes MarkerArray (sphere + axes) and optionally broadcasts TF.
-    tcp_viz.source_topic: "/ur5e/gui_position"      # GuiPosition topic
+    # Phase 4: relative suffix → digital_twin auto-prefixes with
+    # /<active_controller_name>/ on every /ur5e/active_controller_name.
+    # Use an absolute path (leading "/") to bypass rewiring and subscribe
+    # directly to a fixed topic.
+    tcp_viz.source_topic: "ur5e/gui_position"       # GuiPosition topic
     tcp_viz.marker_topic: "/digital_twin/tcp_markers"
     tcp_viz.frame_id: "base"                        # parent TF frame
     tcp_viz.broadcast_tf: true                      # broadcast virtual_tcp TF

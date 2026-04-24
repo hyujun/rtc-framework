@@ -12,8 +12,10 @@ from dataclasses import dataclass, field
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
+                       ReliabilityPolicy)
 from sensor_msgs.msg import JointState
+from std_msgs.msg import String
 from visualization_msgs.msg import MarkerArray
 
 from rtc_msgs.msg import GuiPosition, HandSensorState
@@ -247,14 +249,31 @@ class DigitalTwinNode(Node):
                 from rtc_digital_twin.tcp_visualizer import TcpVisualizer
                 self._tcp_viz = TcpVisualizer(tcp_viz_config)
 
-                # Subscribe to GuiPosition for TCP data
-                be_qos = QoSProfile(
+                # Phase 4: tcp_viz.source_topic may be a suffix (e.g.
+                # "ur5e/gui_position") that the active controller's
+                # namespace is prefixed onto, or an absolute path that
+                # bypasses rewiring. Detect via the leading slash.
+                self._tcp_source_topic = tcp_source_topic
+                self._tcp_be_qos = QoSProfile(
                     reliability=ReliabilityPolicy.BEST_EFFORT,
                     history=HistoryPolicy.KEEP_LAST,
                     depth=10,
                 )
-                self.create_subscription(
-                    GuiPosition, tcp_source_topic, self._tcp_cb, be_qos)
+                self._tcp_sub = None
+                self._tcp_active_ctrl = ''
+                if tcp_source_topic.startswith('/'):
+                    self._tcp_sub = self.create_subscription(
+                        GuiPosition, tcp_source_topic,
+                        self._tcp_cb, self._tcp_be_qos)
+                else:
+                    latched = QoSProfile(
+                        depth=1,
+                        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                        reliability=ReliabilityPolicy.RELIABLE,
+                    )
+                    self.create_subscription(
+                        String, '/ur5e/active_controller_name',
+                        self._tcp_on_active_ctrl, latched)
                 self._tcp_marker_pub = self.create_publisher(
                     MarkerArray, tcp_marker_topic, 10)
 
@@ -345,6 +364,24 @@ class DigitalTwinNode(Node):
     def _tcp_cb(self, msg: GuiPosition):
         """Cache latest TCP task-space data from GuiPosition."""
         self._tcp_task_positions = list(msg.task_positions)
+
+    def _tcp_on_active_ctrl(self, msg: String):
+        """Rewire tcp gui_position subscription under the active controller
+        namespace (Phase 4)."""
+        name = (msg.data or '').strip()
+        if not name or name == self._tcp_active_ctrl:
+            return
+        self._tcp_active_ctrl = name
+        if self._tcp_sub is not None:
+            try:
+                self.destroy_subscription(self._tcp_sub)
+            except Exception:
+                pass
+        topic = '/' + name + '/' + self._tcp_source_topic.lstrip('/')
+        self._tcp_sub = self.create_subscription(
+            GuiPosition, topic, self._tcp_cb, self._tcp_be_qos)
+        self.get_logger().info(
+            f'TCP visualization rebound to {topic}')
 
     def _sensor_cb(self, msg: HandSensorState):
         """Cache latest fingertip sensor data from HandSensorState."""

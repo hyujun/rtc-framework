@@ -16,7 +16,7 @@ from PyQt5.QtGui import QBrush, QColor, QFont
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from rtc_msgs.msg import GuiPosition, RobotTarget
 
 # ── 상수 ──────────────────────────────────────────────────────────────────────
@@ -1452,28 +1452,66 @@ class ROSNode(Node):
         self.gui = gui
         gui.ros_node = self
 
-        qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+        self._qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
 
-        # ── Subscribers ───────────────────────────────────────────────
-        self.task_pos_sub = self.create_subscription(
-            GuiPosition, '/ur5e/gui_position',
-            self.gui_pos_callback, qos)
+        # Phase 4: controller-owned topics (/<name>/{ur5e,hand}/*) are bound
+        # on every /ur5e/active_controller_name transition.
+        self._active_ctrl: str = ""
+        self.task_pos_sub = None
+        self.hand_gui_pos_sub = None
+        self.cmd_pub = None
+        self.hand_cmd_pub = None
 
-        self.hand_gui_pos_sub = self.create_subscription(
-            GuiPosition, '/hand/gui_position',
-            self.hand_gui_pos_callback, qos)
-
+        # Manager-owned topics (fixed paths)
         self.estop_sub = self.create_subscription(
-            Bool, '/system/estop_status', self.estop_callback, qos)
+            Bool, '/system/estop_status', self.estop_callback, self._qos)
 
-        # ── Publishers ────────────────────────────────────────────────
-        self.cmd_pub = self.create_publisher(
-            RobotTarget, '/ur5e/joint_goal', qos)
-
-        self.hand_cmd_pub = self.create_publisher(
-            RobotTarget, '/hand/joint_goal', qos)
+        from rclpy.qos import DurabilityPolicy
+        latched_qos = QoSProfile(depth=1)
+        latched_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        latched_qos.reliability = ReliabilityPolicy.RELIABLE
+        self.create_subscription(
+            String, '/ur5e/active_controller_name',
+            self._on_active_controller, latched_qos)
 
         self.get_logger().info("Motion Editor ROS Node started")
+
+    def _on_active_controller(self, msg):
+        name = (msg.data or '').strip()
+        if not name or name == self._active_ctrl:
+            return
+        self._active_ctrl = name
+        ns = '/' + name
+
+        for attr in ('task_pos_sub', 'hand_gui_pos_sub'):
+            sub = getattr(self, attr, None)
+            if sub is not None:
+                try:
+                    self.destroy_subscription(sub)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+        for attr in ('cmd_pub', 'hand_cmd_pub'):
+            pub = getattr(self, attr, None)
+            if pub is not None:
+                try:
+                    self.destroy_publisher(pub)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+
+        self.task_pos_sub = self.create_subscription(
+            GuiPosition, ns + '/ur5e/gui_position',
+            self.gui_pos_callback, self._qos)
+        self.hand_gui_pos_sub = self.create_subscription(
+            GuiPosition, ns + '/hand/gui_position',
+            self.hand_gui_pos_callback, self._qos)
+        self.cmd_pub = self.create_publisher(
+            RobotTarget, ns + '/ur5e/joint_goal', self._qos)
+        self.hand_cmd_pub = self.create_publisher(
+            RobotTarget, ns + '/hand/joint_goal', self._qos)
+        self.get_logger().info(
+            f"rewired controller-owned topics to '{name}'")
 
     def gui_pos_callback(self, msg: GuiPosition):
         if len(msg.joint_positions) >= NUM_JOINTS:
@@ -1507,6 +1545,10 @@ class ROSNode(Node):
         msg.goal_type = "joint"
         msg.joint_names = ROBOT_JOINT_NAMES
         msg.joint_target = pose.tolist()
+        if self.cmd_pub is None:
+            self.get_logger().warn(
+                "cmd_pub not yet bound — waiting for active controller")
+            return
         self.cmd_pub.publish(msg)
         self.get_logger().info(f"Published UR5e pose: {pose}")
 
@@ -1517,6 +1559,10 @@ class ROSNode(Node):
         msg.goal_type = "joint"
         msg.joint_names = HAND_MOTOR_NAMES
         msg.joint_target = hand_pose.tolist()
+        if self.hand_cmd_pub is None:
+            self.get_logger().warn(
+                "hand_cmd_pub not yet bound — waiting for active controller")
+            return
         self.hand_cmd_pub.publish(msg)
         self.get_logger().info(f"Published hand pose: {hand_pose}")
 
