@@ -39,7 +39,15 @@ DemoWbcController::DemoWbcController(std::string_view urdf_path)
 void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig &config) {
   namespace rub = rtc_urdf_bridge;
 
-  builder_ = std::make_unique<rub::PinocchioModelBuilder>(config);
+  // Prefer the shared builder injected by RtControllerNode so the URDF is
+  // parsed only once across every controller. Fall back to building our own
+  // (e.g. when the shared build failed or when called via fallback path with
+  // a custom config).
+  if (auto shared = GetSharedModelBuilder()) {
+    builder_ = std::move(shared);
+  } else {
+    builder_ = std::make_shared<rub::PinocchioModelBuilder>(config);
+  }
 
   // Arm sub-model (6-DoF) for FK / task-space logging
   const auto primary = GetPrimaryDeviceName();

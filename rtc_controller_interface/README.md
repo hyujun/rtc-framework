@@ -108,8 +108,22 @@ virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 | `SetSystemModelConfig(config)` | public | 시스템 레벨 `ModelConfig`를 복사 저장 후 `OnSystemModelConfigSet()` 호출 |
 | `GetSystemModelConfig()` | public const noexcept | 저장된 `ModelConfig` 포인터 반환. 미설정 시 `nullptr` |
 | `OnSystemModelConfigSet()` | protected virtual | 하위 클래스 오버라이드 포인트 (예: arm sub-model 구축) |
+| `SetSharedModelBuilder(builder)` | public noexcept | `RtControllerNode`가 시스템 URDF로 한 번 빌드한 `std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder>` 를 컨트롤러에 주입 |
+| `GetSharedModelBuilder()` | public const noexcept | 주입된 공유 빌더 반환. 미주입/실패 시 `nullptr` — 컨트롤러는 직접 빌드로 폴백 |
 
 > **`SetSystemModelConfig()`** 은 `RtControllerNode`가 컨트롤러 인스턴스 생성 직후, `LoadConfig()` 호출 이전에 실행합니다. 따라서 `LoadConfig()` 내에서 `GetSystemModelConfig()`로 시스템 URDF 경로, sub_models, tree_models, passive_joints 정보에 접근할 수 있습니다.
+>
+> **`SetSharedModelBuilder()`** 은 `SetSystemModelConfig()` 직후 같은 단계에서 호출됩니다. 컨트롤러의 model 초기화 (`InitArmModel` / `InitModels`) 는
+>
+> ```cpp
+> if (auto shared = GetSharedModelBuilder()) {
+>   builder_ = std::move(shared);
+> } else {
+>   builder_ = std::make_shared<rub::PinocchioModelBuilder>(config);
+> }
+> ```
+>
+> 패턴을 따르며, 동일한 `system_model_config_` 로 N개의 컨트롤러가 각각 URDF를 다시 파싱하는 비용을 제거합니다 (xacro→tinyxml2→Pinocchio full+sub+tree 모델까지). 데모 빌업 기준 이전 4회 → 현재 1회.
 
 ### 제어 주기 설정
 
@@ -132,6 +146,7 @@ virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 TopicConfig topic_config_;                                      // 기본값: MakeDefaultTopicConfig("ur5e")
 std::map<std::string, DeviceNameConfig> device_name_configs_;   // SetDeviceNameConfigs()에서 설정
 std::unique_ptr<rtc_urdf_bridge::ModelConfig> system_model_config_;  // SetSystemModelConfig()에서 설정
+std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> shared_model_builder_;  // SetSharedModelBuilder()에서 설정 (CM이 한 번 빌드 후 모든 컨트롤러에 공유)
 double control_rate_{500.0};                                    // SetControlRate()에서 설정
 ```
 

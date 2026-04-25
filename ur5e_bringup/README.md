@@ -100,15 +100,15 @@ ur5e_robot.yaml                            controller.yaml
 │     joint_limits         │                       │
 └──────────────────────────┘                       │
         │                                          │
-  ament resolve + ParseSystemModelConfig()         │
+  ament resolve + ParseSystemModelConfig() + Build shared PinocchioModelBuilder
         │                                          │
         ▼                                          ▼
-  SetSystemModelConfig()  ──→  LoadConfig(): InitArmModel()  ──→  OnDeviceConfigsSet()
-  (ModelConfig 전달)           (Builder + RtModelHandle 생성)      (tip/root frame 조회)
+  SetSystemModelConfig() + SetSharedModelBuilder() ──→ LoadConfig(): InitArmModel() ──→ OnDeviceConfigsSet()
+  (ModelConfig + 공유 builder 전달)                 (공유 builder 우선, 폴백 시만 새로 빌드)   (tip/root frame 조회)
 ```
 
-1. **SetSystemModelConfig()**: `RtControllerNode`가 최상위 `urdf:` 섹션에서 파싱한 `ModelConfig`를 컨트롤러에 전달합니다 (`LoadConfig()` 이전 호출).
-2. **LoadConfig()**: `GetSystemModelConfig()`로 시스템 URDF 경로 + sub_models를 읽고, `PinocchioModelBuilder`로 arm sub-model을 구축합니다.
+1. **SetSystemModelConfig() + SetSharedModelBuilder()**: `RtControllerNode`가 최상위 `urdf:` 섹션에서 파싱한 `ModelConfig` 와, 그 ModelConfig 로 한 번 빌드한 `std::shared_ptr<PinocchioModelBuilder>` 를 모든 컨트롤러에 전달합니다 (`LoadConfig()` 이전 호출).
+2. **LoadConfig() / InitArmModel()**: `GetSharedModelBuilder()` 가 non-null 이면 그 핸들을 그대로 받아 `builder_` 로 사용 (URDF 재파싱 + 모델 재빌드 회피); null 이면 `GetSystemModelConfig()` 로 받은 ModelConfig 로 직접 `PinocchioModelBuilder` 를 만드는 폴백 경로. 결과적으로 sim launch 기준 URDF 파싱 4회 → 1회.
 3. **OnDeviceConfigsSet()**: device YAML의 `root_link`/`tip_link`를 arm sub-model에서 프레임 인덱스로 조회하여 FK/Jacobian 연산 기준점으로 설정합니다.
 
 ### 시스템 URDF YAML 예시

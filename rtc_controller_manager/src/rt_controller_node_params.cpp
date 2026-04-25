@@ -10,6 +10,7 @@
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/state.hpp>
 #include <rtc_base/logging/session_dir.hpp>
+#include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/urdf_analyzer.hpp>
 #include <rtc_urdf_bridge/xacro_processor.hpp>
 #include <yaml-cpp/yaml.h>
@@ -202,6 +203,7 @@ void RtControllerNode::DeclareAndLoadParameters() {
 
   // ── Resolve system URDF and model topology ─────────────────────────────────
   std::string urdf_path;
+  std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> shared_builder;
   {
     // 1) Top-level urdf section (preferred)
     if (has_parameter("urdf.package") && has_parameter("urdf.path")) {
@@ -225,36 +227,25 @@ void RtControllerNode::DeclareAndLoadParameters() {
               get_parameter("urdf.passive_joints").as_string_array();
         }
 
-        // Pre-scan the URDF with UrdfAnalyzer so the startup log surfaces
-        // joints PinocchioModelBuilder will auto-lock (mimic) or fails to
-        // classify (transmission-less). The analyzer is cheap (tinyxml2
-        // pass) and this scan is ignored; each controller still runs the
-        // full builder in InitModels. Any failure here is non-fatal — we
-        // just skip the richer log line.
-        std::size_t mimic_count = 0;
-        std::size_t analyzer_passive_count = 0;
-        bool analyzer_ok = false;
+        // Build the system PinocchioModelBuilder once and share it with every
+        // registered controller. Each controller would otherwise re-run the
+        // same xacro → tinyxml2 → Pinocchio pipeline against an identical
+        // ModelConfig (4× URDF parses on a 3-controller bring-up). Failure
+        // is non-fatal: controllers fall back to constructing their own
+        // builder from GetSystemModelConfig().
         try {
-          std::unique_ptr<rtc_urdf_bridge::UrdfAnalyzer> analyzer;
-          if (rtc_urdf_bridge::IsXacroFile(urdf_path)) {
-            const auto xml = rtc_urdf_bridge::ProcessXacro(urdf_path);
-            analyzer = std::make_unique<rtc_urdf_bridge::UrdfAnalyzer>(
-                xml, rtc_urdf_bridge::UrdfAnalyzer::FromXmlTag{});
-          } else {
-            analyzer =
-                std::make_unique<rtc_urdf_bridge::UrdfAnalyzer>(urdf_path);
-          }
-          mimic_count = analyzer->GetMimicJoints().size();
-          analyzer_passive_count = analyzer->GetPassiveJoints().size();
-          analyzer_ok = true;
+          shared_builder =
+              std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(
+                  system_model_config_);
         } catch (const std::exception &e) {
-          RCLCPP_DEBUG(get_logger(),
-                       "URDF pre-scan skipped (%s); PinocchioModelBuilder "
-                       "will still detect mimic joints per-controller",
-                       e.what());
+          RCLCPP_WARN(get_logger(),
+                      "Shared PinocchioModelBuilder build failed (%s) — "
+                      "controllers will build their own",
+                      e.what());
         }
 
-        if (analyzer_ok) {
+        if (shared_builder) {
+          const auto &analyzer = shared_builder->GetAnalyzer();
           RCLCPP_INFO(
               get_logger(),
               "System URDF: %s (%zu sub_models, %zu tree_models, "
@@ -262,8 +253,9 @@ void RtControllerNode::DeclareAndLoadParameters() {
               "PinocchioModelBuilder, %zu transmission-less passive)",
               urdf_path.c_str(), system_model_config_.sub_models.size(),
               system_model_config_.tree_models.size(),
-              system_model_config_.passive_joints.size(), mimic_count,
-              analyzer_passive_count);
+              system_model_config_.passive_joints.size(),
+              analyzer.GetMimicJoints().size(),
+              analyzer.GetPassiveJoints().size());
         } else {
           RCLCPP_INFO(get_logger(),
                       "System URDF: %s (%zu sub_models, %zu tree_models, %zu "
@@ -320,6 +312,9 @@ void RtControllerNode::DeclareAndLoadParameters() {
 
     if (!system_model_config_.urdf_path.empty()) {
       ctrl->SetSystemModelConfig(system_model_config_);
+    }
+    if (shared_builder) {
+      ctrl->SetSharedModelBuilder(shared_builder);
     }
 
     // Load YAML for this controller; empty node on failure so on_configure

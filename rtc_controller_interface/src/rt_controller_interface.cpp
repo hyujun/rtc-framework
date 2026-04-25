@@ -1,4 +1,5 @@
 #include "rtc_controller_interface/rt_controller_interface.hpp"
+#include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/types.hpp"
 
 #include <iostream>
@@ -187,6 +188,16 @@ void RTControllerInterface::SetSystemModelConfig(
 const rtc_urdf_bridge::ModelConfig *
 RTControllerInterface::GetSystemModelConfig() const noexcept {
   return system_model_config_.get();
+}
+
+void RTControllerInterface::SetSharedModelBuilder(
+    std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> builder) noexcept {
+  shared_model_builder_ = std::move(builder);
+}
+
+std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder>
+RTControllerInterface::GetSharedModelBuilder() const noexcept {
+  return shared_model_builder_;
 }
 
 TopicConfig

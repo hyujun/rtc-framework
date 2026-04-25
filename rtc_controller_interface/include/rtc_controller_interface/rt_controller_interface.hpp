@@ -24,7 +24,8 @@
 // Forward declaration — full definition only needed in .cpp
 namespace rtc_urdf_bridge {
 struct ModelConfig;
-}
+class PinocchioModelBuilder;
+} // namespace rtc_urdf_bridge
 
 namespace rtc {
 
@@ -244,6 +245,17 @@ public:
   [[nodiscard]] const rtc_urdf_bridge::ModelConfig *
   GetSystemModelConfig() const noexcept;
 
+  // Optional shared PinocchioModelBuilder. RtControllerNode builds a single
+  // PinocchioModelBuilder from the system URDF + sub/tree topology and shares
+  // it with every controller via this setter, so that controllers can avoid
+  // re-parsing the URDF and re-building the same Pinocchio models. Returns
+  // null if no shared builder was injected; controllers must then build
+  // their own from GetSystemModelConfig().
+  void SetSharedModelBuilder(
+      std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> builder) noexcept;
+  [[nodiscard]] std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder>
+  GetSharedModelBuilder() const noexcept;
+
   // Set the control loop rate (Hz). Called by the manager at init time.
   void SetControlRate(double hz) noexcept { control_rate_ = hz; }
   [[nodiscard]] double GetDefaultDt() const noexcept {
@@ -273,6 +285,7 @@ protected:
   TopicConfig topic_config_;
   std::map<std::string, DeviceNameConfig> device_name_configs_;
   std::unique_ptr<rtc_urdf_bridge::ModelConfig> system_model_config_;
+  std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> shared_model_builder_;
   double control_rate_{500.0};
 
   // Controller-owned LifecycleNode injected by RtControllerNode in

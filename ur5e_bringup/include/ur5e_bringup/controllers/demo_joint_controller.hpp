@@ -165,7 +165,7 @@ private:
 
   // ── rtc_urdf_bridge ────────────────────────────────────────────
   std::string urdf_path_; // stored from constructor, used in LoadConfig
-  std::unique_ptr<rtc_urdf_bridge::PinocchioModelBuilder> builder_;
+  std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> builder_;
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> arm_handle_;
   pinocchio::FrameIndex tip_frame_id_{0};
   pinocchio::FrameIndex root_frame_id_{0};
