@@ -97,7 +97,7 @@ Stage B merge 전 다음 벤치마크를 채워 Stage B PR에 첨부한다. 각 
 
 ### MPC solve timing (PR #2 관측 경로 사용)
 
-`logging_data/YYMMDD_HHMM/controller/mpc_solve_timing.csv`에서 수집. `DemoWbcController::ComputeControl`이 phase-independent로 MPC state를 publish하므로 **kIdle** 구간도 20 Hz solve 측정이 가능하다 — kHold 워크로드와 별도 행으로 분리해 baseline vs active 차이를 구분한다. `count == 0` 행은 `DemoWbcController::GetMpcSolveStats` sentinel(`mpc.enabled=true`인데 solver가 publish 못한 상태 — dim-mismatch / solver error / 워밍업 구간) — 수집 스크립트에서 필터링 필요.
+`logging_data/YYMMDD_HHMM/controllers/demo_wbc_controller/mpc_solve_timing.csv`에서 수집 (writer는 `DemoWbcController` 자체 LifecycleNode의 1 Hz aux 타이머). `DemoWbcController::ComputeControl`이 phase-independent로 MPC state를 publish하므로 **kIdle** 구간도 20 Hz solve 측정이 가능하다 — kHold 워크로드와 별도 행으로 분리해 baseline vs active 차이를 구분한다. `count == 0` 행은 `DemoWbcController::GetMpcSolveStats` sentinel(`mpc.enabled=true`인데 solver가 publish 못한 상태 — dim-mismatch / solver error / 워밍업 구간) — 수집 스크립트에서 필터링 필요.
 
 #### 수집 절차
 
@@ -111,7 +111,7 @@ ros2 launch ur5e_bringup sim.launch.py \
 
 # 세션 종료 후:
 awk -F, 'NR>1 && $2>0 {print $6, $7, $8}' \
-    logging_data/<SID>/controller/mpc_solve_timing.csv \
+    logging_data/<SID>/controllers/demo_wbc_controller/mpc_solve_timing.csv \
     | sort -n | awk 'END{print "rows:", NR}'
 # 컬럼 순서: p50_ns, p99_ns, max_ns (NS → MS는 1e-6 스케일).
 ```

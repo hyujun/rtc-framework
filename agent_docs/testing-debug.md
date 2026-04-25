@@ -11,7 +11,7 @@
 | `rtc_controller_interface/` | `test_core_controllers` + controller registry tests | downstream controller 빌드 |
 | `rtc_controllers/` RT path | `test_core_controllers` + grasp 관련 gtest | RT scheduling 확인 (`ps -eLo cls,rtprio`) |
 | `rtc_controllers/` gains/config | 위 + 해당 controller YAML 로드 smoke | `ros2 topic echo /active_controller_name` |
-| `rtc_controller_manager/` | RT loop timing (`/system/estop_status`) | `<session>/controller/mpc_solve_timing.csv` 회귀 |
+| `rtc_controller_manager/` | RT loop timing (`/system/estop_status`) | (MPC CSV는 `<session>/controllers/<config_key>/...` 경로로 컨트롤러가 자체 기록) |
 | `rtc_tsid/` | QP/task/constraint gtest | TSID performance tests |
 | `rtc_mpc/` | gtest (types, TripleBuffer, Riccati, SolutionManager) | `mpc_solve_timing.csv` p50/p99/max 회귀 |
 | `rtc_mujoco_sim/` | gtest (parse, lifecycle, solver, I/O) | `ros2 launch ur5e_bringup sim.launch.py` smoke |
@@ -72,7 +72,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | `/active_controller_name` | 동일 (TRANSIENT_LOCAL) | Controller switch 확인. BT / GUI / digital_twin은 이 토픽으로 리와이어 |
 | `/current_gains` | 동일 | Runtime gain update 검증 |
 | `/forward_position_controller/commands` | 동일 | RT loop 건강성 — `ros2 topic hz` 로 ~500 Hz 확인 |
-| `<session>/controller/mpc_solve_timing.csv` | `RtControllerNode` 1 Hz aux | MPC solve p50/p99/max 회귀 — 9 cols `t_wall_ns,count,window,last_ns,min_ns,p50_ns,p99_ns,max_ns,mean_ns` |
+| `<session>/controllers/<config_key>/mpc_solve_timing.csv` | per-controller LifecycleNode 1 Hz aux (e.g. `DemoWbcController`) | MPC solve p50/p99/max 회귀 — 9 cols `t_wall_ns,count,window,last_ns,min_ns,p50_ns,p99_ns,max_ns,mean_ns` |
 | `/{group}/digital_twin/joint_states` | controllers (per-group, RELIABLE) | Device 그룹별 건강성; `rtc_digital_twin`이 merge |
 | `/sim/status` | `rtc_mujoco_sim` 1 Hz | Sim 건강성 — 중단 시 sim sync timeout E-STOP |
 | `/hand/joint_states`, `/hand/motor_states`, `/hand/sensor_states` | `ur5e_hand_driver` | Hand UDP 건강성 |
