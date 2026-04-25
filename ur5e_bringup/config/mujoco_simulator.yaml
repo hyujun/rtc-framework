@@ -9,7 +9,7 @@
 mujoco_simulator:
   ros__parameters:
     # ── Model ────────────────────────────────────────────────────────────────
-    model_path: "robots/ur5e_hand_tmp/mjcf/scene_with_hand.xml"
+    model_path: "package://ur5e_description/robots/ur5e_hand_tmp/mjcf/scene_with_hand.xml"
 
     # ── Sync timeout ─────────────────────────────────────────────────────────
     # Max time to wait for a controller command per step (ms).
