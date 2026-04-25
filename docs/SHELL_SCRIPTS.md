@@ -550,7 +550,7 @@ nvidia-smi -q -d PERFORMANCE         # persistence mode 확인
 
 ### verify_rt_runtime.sh --- 제어기 RT 런타임 검증
 
-**목적**: 제어기(`rt_controller`)가 실행 중일 때, 각 스레드의 RT 설정이 `thread_config.hpp`에 정의된 대로 올바르게 적용되었는지 실시간 확인합니다. `check_rt_setup.sh`가 정적 시스템 설정을 검증하는 반면, 이 스크립트는 실행 중인 프로세스의 런타임 상태를 검증합니다.
+**목적**: 제어기 (실행 파일 = ROS 노드 이름 = `ur5e_rt_controller`, robot bringup이 소유)가 실행 중일 때, 각 스레드의 RT 설정이 `thread_config.hpp`에 정의된 대로 올바르게 적용되었는지 실시간 확인합니다. `check_rt_setup.sh`가 정적 시스템 설정을 검증하는 반면, 이 스크립트는 실행 중인 프로세스의 런타임 상태를 검증합니다.
 
 **`check_rt_setup.sh`와의 차이점**:
 
@@ -559,7 +559,7 @@ nvidia-smi -q -d PERFORMANCE         # persistence mode 확인
 | 검증 시점 | 제어기 실행 **전** | 제어기 실행 **중** |
 | 대상 | 시스템 설정 (커널, GRUB, sysctl 등) | 프로세스/스레드 상태 |
 | sudo 필요 | 불필요 (read-only) | 불필요 (read-only) |
-| 제어기 필요 | 불필요 | **필수** (rt_controller 실행 중이어야 함) |
+| 제어기 필요 | 불필요 | **필수** (`ur5e_rt_controller` 또는 다른 robot bringup exec 실행 중) |
 
 **인자**:
 
@@ -574,7 +574,7 @@ nvidia-smi -q -d PERFORMANCE         # persistence mode 확인
 
 | # | 카테고리 | 점검 내용 |
 |---|----------|-----------|
-| 1 | Process Discovery | `rt_controller` 프로세스 감지, `thread_config.hpp` 스레드 이름 매칭 |
+| 1 | Process Discovery | `(ur5e_)?rt_controller` 패턴(robot bringup exec) 감지, `thread_config.hpp` 스레드 이름 매칭 |
 | 2 | Scheduling Policy | 각 스레드의 SCHED_FIFO/OTHER 정책 및 우선순위 검증 |
 | 3 | CPU Affinity | 스레드별 코어 할당이 `thread_config.hpp` 기대값과 일치하는지 확인 |
 | 4 | Memory Locking | `mlockall` 적용 여부 (VmLck), major/minor page fault 추적 |

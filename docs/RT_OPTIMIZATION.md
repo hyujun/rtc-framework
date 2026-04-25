@@ -132,7 +132,7 @@ mpc_worker_0..1 (Phase 5, 12/16-core only, SCHED_FIFO prio 55)
 
 ### 10-Core 시스템 (unified layout, MPC + 1 worker)
 
-> **2026-04 unified layout**: 이전에는 shield 2-6이 "user" 예약 영역이고 rt_controller가 Core 7-9 (3코어)만 썼기 때문에 8-core보다 격리 품질이 나빴습니다. 새 레이아웃은 RT 쓰레드를 8-core와 동일한 Core 2부터 배치하고 Core 5에 MPC worker 0을 추가합니다. cset shield 2-8이 RT 전 영역을 보호하며, Core 9는 MuJoCo sim / monitoring용 spare.
+> **2026-04 unified layout**: 이전에는 shield 2-6이 "user" 예약 영역이고 rtc_controller_manager가 Core 7-9 (3코어)만 썼기 때문에 8-core보다 격리 품질이 나빴습니다. 새 레이아웃은 RT 쓰레드를 8-core와 동일한 Core 2부터 배치하고 Core 5에 MPC worker 0을 추가합니다. cset shield 2-8이 RT 전 영역을 보호하며, Core 9는 MuJoCo sim / monitoring용 spare.
 
 | Core | 용도 | Scheduler | Priority/Nice | 스레드 이름 |
 |------|------|-----------|---------------|------------|
@@ -149,7 +149,7 @@ mpc_worker_0..1 (Phase 5, 12/16-core only, SCHED_FIFO prio 55)
 
 ### 12-Core 시스템 (unified layout, MPC + 2 workers)
 
-> **2026-04 unified layout**: 이전 12-core는 Core 11에 udp/logger/aux/publish가 모두 몰렸고 shield 2-6 (5코어)은 rt_controller 관점에서 낭비였습니다. 새 레이아웃은 10-core를 그대로 확장해 MPC worker 1을 Core 6에 추가하고, UDP/logger/aux/publish가 각각 전용 코어를 가집니다. cset shield 2-9이 RT 전 영역을 보호.
+> **2026-04 unified layout**: 이전 12-core는 Core 11에 udp/logger/aux/publish가 모두 몰렸고 shield 2-6 (5코어)은 rtc_controller_manager 관점에서 낭비였습니다. 새 레이아웃은 10-core를 그대로 확장해 MPC worker 1을 Core 6에 추가하고, UDP/logger/aux/publish가 각각 전용 코어를 가집니다. cset shield 2-9이 RT 전 영역을 보호.
 
 | Core | 용도 | Scheduler | Priority/Nice | 스레드 이름 |
 |------|------|-----------|---------------|------------|
@@ -187,7 +187,7 @@ mpc_worker_0..1 (Phase 5, 12/16-core only, SCHED_FIFO prio 55)
 
 ### 16-Core 시스템 (cset shield, Phase 5: MPC + 2 workers)
 
-> cset shield Core 4-8. rt_controller는 Core 0-3, 9+에서 실행.
+> cset shield Core 4-8. rtc_controller_manager는 Core 0-3, 9+에서 실행.
 > Phase 5에서 Core 9–11이 MPC main+workers 전용으로 배정되어 `udp_recv` 9→12, `logger` 10→13, `aux`/`publish` 11→14, MuJoCo `sim_thread_core` 12→15로 시프트되었습니다.
 
 | Core | 용도 | Scheduler | Priority/Nice | 스레드 이름 |
@@ -727,8 +727,8 @@ int RtControllerMain(int argc, char** argv) {
 ### 1. 스레드 설정 확인
 
 ```bash
-# rt_controller 프로세스 찾기
-PID=$(pgrep -f rt_controller)
+# ur5e_rt_controller 프로세스 찾기
+PID=$(pgrep -f ur5e_rt_controller)
 
 # 스레드 목록 + 스케줄러 정책 + CPU 코어
 ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
@@ -737,7 +737,7 @@ ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 **출력 예시 (6-core)**:
 ```
   PID   TID CLS RTPRIO PSR COMMAND
- 1234  1234  TS      -   0 rt_controller  (메인 스레드)
+ 1234  1234  TS      -   0 ur5e_rt_contro (메인 스레드, comm 컬럼은 15자)
  1234  1235  FF     90   2 rt_control         <- Core 2, FIFO 90 (clock_nanosleep jthread)
  1234  1236  TS      -   5 rt_publish         <- Core 5, OTHER   (SPSC publish jthread)
  1234  1237  FF     70   3 sensor_io          <- Core 3, FIFO 70 (ROS2 Executor)
@@ -890,7 +890,7 @@ done
 # CycloneDDS 0.11+ (Jazzy): <Internal><Threads> XML은 더 이상 지원되지 않음.
 # 대신 taskset으로 DDS 스레드를 비-RT 코어에 고정 (robot.launch.py에서 자동 처리).
 # 수동 확인:
-PID=$(pgrep -nf "rt_controller")
+PID=$(pgrep -nf "ur5e_rt_controller")
 for TID in $(ls /proc/$PID/task/); do
   COMM=$(cat /proc/$PID/task/$TID/comm 2>/dev/null)
   POLICY=$(chrt -p $TID 2>/dev/null | grep -o "SCHED_FIFO" || echo "OTHER")

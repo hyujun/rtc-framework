@@ -289,7 +289,7 @@ if [[ -f "$CHECK_SCRIPT" ]]; then
       if [[ "$MEMLOCK" != "unlimited" ]]; then
         echo ""
         warn "Your current memlock limit is $MEMLOCK (not unlimited)."
-        warn "Running the rt_controller may fail with RMW load errors due to mlockall()."
+        warn "Running ur5e_rt_controller may fail with RMW load errors due to mlockall()."
         warn "Run: ./install.sh robot  or  ulimit -l unlimited"
         echo ""
       fi
@@ -301,7 +301,7 @@ else
   if [[ "$MEMLOCK" != "unlimited" ]]; then
     echo ""
     warn "Your current memlock limit is $MEMLOCK (not unlimited)."
-    warn "Running the rt_controller may fail with RMW load errors due to mlockall()."
+    warn "Running ur5e_rt_controller may fail with RMW load errors due to mlockall()."
     warn "  ulimit -l unlimited"
     echo ""
   fi
@@ -313,7 +313,7 @@ if [[ "$BUILD_TYPE" == "Debug" ]]; then
   echo -e "${CYAN}${BOLD}── VS Code Debugging ───────────────────────────────────${NC}"
   echo "  Debug build complete — ready for GDB debugging in VS Code."
   echo ""
-  echo "  Launch debugger : F5 → 'C++: Launch rt_controller (Debug)'"
+  echo "  Launch debugger : F5 → 'C++: Launch ur5e_rt_controller (Debug)'"
   echo "  Attach debugger : F5 → 'C++: Attach to Node (Pick Process)'"
   echo ""
   echo "  If attach fails with 'Operation not permitted', run:"

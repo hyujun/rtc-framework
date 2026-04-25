@@ -174,10 +174,10 @@ ros2 launch ur5e_hand_driver hand_udp.launch.py target_ip:=192.168.1.2
 ros2 topic hz /forward_position_controller/commands   # RT 루프 주기 (~500Hz)
 ros2 topic echo /system/estop_status                  # E-STOP 상태 (true = 활성)
 ros2 topic echo /sim/status                           # MuJoCo: [step, time, rtf, paused]
-ros2 param list /rt_controller | grep controllers     # 토픽 파라미터 확인
+ros2 param list /ur5e_rt_controller | grep controllers  # 토픽 파라미터 확인
 
-# RT 스레드 상태 확인
-PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
+# RT 스레드 상태 확인 (exec 이름 = 노드 이름 = ur5e_rt_controller)
+PID=$(pgrep -f ur5e_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 ```
 
 ---
@@ -190,7 +190,7 @@ PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 [로봇 하드웨어 / MuJoCo 시뮬레이터]
     │  /joint_states (sensor_msgs/JointState)
     ▼
-[rtc_controller_manager]  ←  /target_joint_positions (goal)
+[ur5e_rt_controller]  ←  /target_joint_positions (goal)
     │  RT 루프 (clock_nanosleep 500Hz)
     │  제어기: rtc_controllers (P / JointPD / CLIK / OSC)
     │  전송: rtc_communication (UDP)

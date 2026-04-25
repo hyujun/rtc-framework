@@ -157,7 +157,7 @@ Tier별 매핑 (2026-04 unified layout):
 - **14–15코어**: 12-core와 동일한 RT 배치 + **Core 10 MuJoCo sim dedicated**, Cores 11-13 spare.
 - **16+코어**: **Core 9 main + Core 10-11 workers** (legacy Option A: udp→12, logger→13, aux/publish→14, sim→15).
 
-이전 10/12-core 구성은 cset shield "user"를 Core 2-6에 고정하고 rt_controller를 system cpuset(Core 7-9)로 몰아넣어 **8-core보다 적은 3코어만** RT에 쓰는 구조였습니다. 14-core는 12-core 분기에 흡수되어 Cores 12-13을 완전히 미사용. 새 레이아웃은 단조성 불변식 — "물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다" — 을 `rtc_base/test/test_mpc_thread_config.cpp::TierIsolationMonotonicity`로 회귀 방지합니다.
+이전 10/12-core 구성은 cset shield "user"를 Core 2-6에 고정하고 rtc_controller_manager를 system cpuset(Core 7-9)로 몰아넣어 **8-core보다 적은 3코어만** RT에 쓰는 구조였습니다. 14-core는 12-core 분기에 흡수되어 Cores 12-13을 완전히 미사용. 새 레이아웃은 단조성 불변식 — "물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다" — 을 `rtc_base/test/test_mpc_thread_config.cpp::TierIsolationMonotonicity`로 회귀 방지합니다.
 
 ---
 
@@ -416,7 +416,7 @@ RT 컨트롤러 실행 중 스레드 상태를 검증합니다.
 
 | # | 카테고리 | 검증 내용 |
 |---|---------|----------|
-| 1 | 프로세스 탐색 | rt_controller PID, 스레드 이름 매칭 |
+| 1 | 프로세스 탐색 | robot bringup exec (예: `ur5e_rt_controller`) PID, 스레드 이름 매칭 |
 | 2 | 스케줄링 정책 | SCHED_FIFO/OTHER + 우선순위 (`chrt -p`) |
 | 3 | CPU 어피니티 | 예상 코어에 고정 (`taskset -p`) |
 | 4 | 메모리 잠금 | `mlockall()` 적용 (VmLck > 0) |

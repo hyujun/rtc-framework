@@ -99,8 +99,8 @@ VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다. 
 
 | 구성 | 대상 바이너리 | 기본 `--params-file` |
 |------|---------------|----------------------|
-| `C++: Launch rt_controller (Debug)` | `install/rtc_controller_manager/lib/rtc_controller_manager/rt_controller` | `ur5e_bringup/config/ur5e_sim.yaml` |
-| `C++: Launch mujoco_simulator_node (Debug)` | `install/rtc_mujoco_sim/lib/rtc_mujoco_sim/mujoco_simulator_node` | `rtc_mujoco_sim/config/mujoco_simulator.yaml` |
+| `C++: Launch ur5e_rt_controller (Debug)` | `install/ur5e_bringup/lib/ur5e_bringup/ur5e_rt_controller` | `ur5e_bringup/config/ur5e_sim.yaml` |
+| `C++: Launch mujoco_simulator_node (Debug)` | `install/rtc_mujoco_sim/lib/rtc_mujoco_sim/mujoco_simulator_node` | `ur5e_bringup/config/mujoco_simulator.yaml` |
 | `C++: Launch hand_udp_node (Debug)` | `install/ur5e_hand_driver/lib/ur5e_hand_driver/hand_udp_node` | `ur5e_hand_driver/config/hand_udp_node.yaml` |
 | `C++: Launch bt_coordinator_node (Debug)` | `install/ur5e_bt_coordinator/lib/ur5e_bt_coordinator/bt_coordinator_node` | — |
 | `C++: Launch shape_estimation_node (Debug)` | `install/shape_estimation/lib/shape_estimation/shape_estimation_node` | — |
@@ -109,17 +109,17 @@ VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다. 
 | `Python: Launch File (sim.launch.py)` | `ros2 launch ur5e_bringup sim.launch.py` | — |
 | `Python: Current File` | 현재 편집 중인 `.py` | — |
 
-### 3-1. `rt_controller` 노드 디버깅
+### 3-1. `ur5e_rt_controller` 노드 디버깅
 
 1. **`F5`** 키 또는 사이드바 `Run and Debug` (▷ 아이콘) 클릭
-2. 드롭다운에서 **`C++: Launch rt_controller (Debug)`** 선택
+2. 드롭다운에서 **`C++: Launch ur5e_rt_controller (Debug)`** 선택
 3. **`F5`** 눌러 시작
 
 ```
 실행 흐름:
   preLaunchTask 실행 (colcon: Build All (Debug))
     → 빌드 완료
-      → GDB가 rt_controller 프로세스 시작
+      → GDB가 ur5e_rt_controller 프로세스 시작
         → Breakpoint에서 일시 정지
 ```
 
@@ -165,11 +165,11 @@ ros2 launch ur5e_bringup robot.launch.py
 
 1. 사이드바 `Run and Debug` → **`C++: Attach to Node (Pick Process)`** 선택
 2. **`F5`** 또는 ▷ 버튼 클릭
-3. 프로세스 선택 팝업에서 **`rt_controller`** 검색 후 선택
+3. 프로세스 선택 팝업에서 **`ur5e_rt_controller`** 검색 후 선택
 
 ```
 Tip: 팝업에서 프로세스 이름을 타이핑하면 필터링됩니다.
-예) "custom" 입력 → rt_controller 프로세스만 표시
+예) "ur5e" 입력 → ur5e_rt_controller 프로세스만 표시
 ```
 
 ### 4-3. 프로세스 ID로 직접 Attach (CLI)
@@ -179,7 +179,7 @@ Tip: 팝업에서 프로세스 이름을 타이핑하면 필터링됩니다.
 ```bash
 # PID 확인
 ros2 node list
-ps aux | grep rt_controller
+ps aux | grep ur5e_rt_controller
 
 # GDB attach (참고용)
 sudo gdb -p <PID>
@@ -393,13 +393,13 @@ Release 빌드 또는 최적화 레벨 문제입니다.
 
 ---
 
-### ❌ `rt_controller` 노드가 팝업 목록에 없음 (Attach 시)
+### ❌ `ur5e_rt_controller` 노드가 팝업 목록에 없음 (Attach 시)
 
 노드가 실행 중이지 않거나 이름이 다릅니다.
 
 ```bash
 # 실행 중인 프로세스 확인
-ps aux | grep -E "rt_controller|mujoco_simulator"
+ps aux | grep -E "ur5e_rt_controller|mujoco_simulator"
 
 # ROS 2 노드 목록
 ros2 node list

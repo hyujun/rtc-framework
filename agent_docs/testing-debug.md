@@ -90,7 +90,11 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | `ament_cmake_test` missing on `colcon test` | `.venv` overlay가 system site-packages를 가림. 재활성화 + ROS 2 환경 재로드 |
 
 ```bash
-PID=$(pgrep -f rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
+# exec name = ROS node name = "ur5e_rt_controller" (only exec from ur5e_bringup;
+# rtc_controller_manager is library-only). Use the same name for pgrep and
+# lifecycle calls:
+#   ros2 lifecycle list /ur5e_rt_controller
+PID=$(pgrep -f ur5e_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 ros2 topic hz /forward_position_controller/commands
 ros2 topic echo /system/estop_status
 ./rtc_scripts/scripts/check_rt_setup.sh --summary
