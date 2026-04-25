@@ -30,7 +30,7 @@ namespace rtc {
 void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
 #ifdef MUJOCO_HAVE_GLFW
   if (!glfwInit()) {
-    fprintf(stderr, "[MuJoCoSimulator] glfwInit failed — viewer disabled\n");
+    fprintf(stderr, "[Viewer] glfwInit failed — viewer disabled\n");
     return;
   }
 
@@ -48,7 +48,7 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
       glfwCreateWindow(kDefaultWindowWidth, kDefaultWindowHeight, window_title,
                        nullptr, nullptr);
   if (!window) {
-    fprintf(stderr, "[MuJoCoSimulator] glfwCreateWindow failed\n");
+    fprintf(stderr, "[Viewer] glfwCreateWindow failed\n");
     glfwTerminate();
     return;
   }
@@ -136,7 +136,7 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
 
   fprintf(
       stdout,
-      "[MuJoCoSimulator] Viewer ready — press F1 in the window for help\n"
+      "[Viewer] Ready — press F1 in the window for help\n"
       "  Simulation : Space=pause  +/-=speed  Right=step  R=reset\n"
       "  Camera     : TAB=cycle  Left=orbit  Right=pan  Scroll=zoom  "
       "Esc=reset\n"
@@ -264,12 +264,10 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
   mjr_freeContext(&con);
   glfwDestroyWindow(window);
   glfwTerminate();
-  fprintf(stdout, "[MuJoCoSimulator] Viewer closed\n");
+  fprintf(stdout, "[Viewer] Closed\n");
 
 #else
-  fprintf(
-      stdout,
-      "[MuJoCoSimulator] Viewer not available (MUJOCO_HAVE_GLFW not set)\n");
+  fprintf(stdout, "[Viewer] Not available (MUJOCO_HAVE_GLFW not set)\n");
   (void)stop;
 #endif
 }

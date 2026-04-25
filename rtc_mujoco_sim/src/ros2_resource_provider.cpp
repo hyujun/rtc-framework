@@ -66,14 +66,14 @@ int Ros2OpenResource(mjResource *resource) {
 
   std::string resolved_path = ResolvePackageUri(resource->name);
   if (resolved_path.empty()) {
-    std::cerr << "[MuJoCo ROS 2 VFS] Failed to resolve URI: " << resource->name
-              << "\n";
+    std::cerr << "[MuJoCoSimulator] VFS failed to resolve URI: "
+              << resource->name << "\n";
     return 0; // Failed
   }
 
   std::ifstream file(resolved_path, std::ios::binary | std::ios::ate);
   if (!file) {
-    std::cerr << "[MuJoCo ROS 2 VFS] Failed to open file: " << resolved_path
+    std::cerr << "[MuJoCoSimulator] VFS failed to open file: " << resolved_path
               << "\n";
     return 0; // Failed
   }

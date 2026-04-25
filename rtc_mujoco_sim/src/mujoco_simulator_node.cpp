@@ -81,8 +81,8 @@ public:
         "/sim/status", rclcpp::QoS(10));
 
     RCLCPP_INFO(get_logger(),
-                "MuJoCo simulator configured — model: %s  viewer: %s  groups: "
-                "%zu  max_rtf: %.1f",
+                "[MuJoCoSimulatorNode] Configured — model: %s  viewer: %s  "
+                "groups: %zu  max_rtf: %.1f",
                 model_path_.c_str(), enable_viewer_ ? "ON" : "OFF",
                 sim_->NumGroups(), max_rtf_);
     return CallbackReturn::SUCCESS;
@@ -95,7 +95,7 @@ public:
     sim_->Start();
     CreateTimers();
 
-    RCLCPP_INFO(get_logger(), "MuJoCoSimulatorNode activated");
+    RCLCPP_INFO(get_logger(), "[MuJoCoSimulatorNode] Activated");
     return CallbackReturn::SUCCESS;
   }
 
@@ -114,7 +114,7 @@ public:
     }
 
     LifecycleNode::on_deactivate(state);
-    RCLCPP_INFO(get_logger(), "MuJoCoSimulatorNode deactivated");
+    RCLCPP_INFO(get_logger(), "[MuJoCoSimulatorNode] Deactivated");
     return CallbackReturn::SUCCESS;
   }
 
@@ -133,7 +133,7 @@ public:
     sim_.reset();
     group_configs_.clear();
 
-    RCLCPP_INFO(get_logger(), "MuJoCoSimulatorNode cleaned up");
+    RCLCPP_INFO(get_logger(), "[MuJoCoSimulatorNode] Cleaned up");
     return CallbackReturn::SUCCESS;
   }
 
@@ -147,7 +147,7 @@ public:
 
   CallbackReturn on_error(const rclcpp_lifecycle::State & /*state*/) override {
     RCLCPP_ERROR(get_logger(),
-                 "MuJoCoSimulatorNode error — attempting recovery");
+                 "[MuJoCoSimulatorNode] Error — attempting recovery");
     if (status_timer_)
       status_timer_->cancel();
     for (auto &h : group_handles_) {
@@ -409,7 +409,8 @@ private:
 
     if (!sim_->Initialize()) {
       RCLCPP_FATAL(get_logger(),
-                   "Failed to initialize MuJoCo simulator from '%s'",
+                   "[MuJoCoSimulatorNode] Failed to initialize MuJoCo "
+                   "simulator from '%s'",
                    model_path_.c_str());
       throw std::runtime_error("MuJoCo initialization failed");
     }
@@ -419,7 +420,8 @@ private:
       const double physics_freq = 1.0 / xml_dt;
       if (physics_freq < control_rate_) {
         RCLCPP_FATAL(get_logger(),
-                     "Physics frequency (%.1f Hz) < control_rate (%.1f Hz)",
+                     "[MuJoCoSimulatorNode] Physics frequency (%.1f Hz) < "
+                     "control_rate (%.1f Hz)",
                      physics_freq, control_rate_);
         throw std::runtime_error("physics_timestep vs control_rate mismatch");
       }
@@ -485,8 +487,8 @@ private:
       }
 
       RCLCPP_INFO(get_logger(),
-                  "Group[%zu] '%s' %s — cmd: %s  state: %s  sensor: %s  "
-                  "cmd_joints: %d  state_joints: %d",
+                  "[MuJoCoSimulatorNode] Group[%zu] '%s' %s — cmd: %s  "
+                  "state: %s  sensor: %s  cmd_joints: %d  state_joints: %d",
                   idx, group_configs_[idx].name.c_str(),
                   is_robot ? "ROBOT" : "FAKE", cmd_topic.c_str(),
                   state_topic.c_str(),
@@ -539,12 +541,15 @@ private:
       if (is_torque) {
         if (!sim_->IsInTorqueMode(group_idx)) {
           sim_->SetControlMode(group_idx, true);
-          RCLCPP_INFO(get_logger(), "Group[%zu] → torque mode", group_idx);
+          RCLCPP_INFO(get_logger(),
+                      "[MuJoCoSimulatorNode] Group[%zu] → torque mode",
+                      group_idx);
         }
       } else {
         if (sim_->IsInTorqueMode(group_idx)) {
           sim_->SetControlMode(group_idx, false);
-          RCLCPP_INFO(get_logger(), "Group[%zu] → position servo mode",
+          RCLCPP_INFO(get_logger(),
+                      "[MuJoCoSimulatorNode] Group[%zu] → position servo mode",
                       group_idx);
         }
         sim_->EnforcePositionServoGravity();
@@ -627,7 +632,8 @@ private:
     sim_status_pub_->publish(msg);
 
     RCLCPP_INFO(get_logger(),
-                "Simulator running=%s%s  steps=%lu  sim_time=%.2f s  rtf=%.1fx",
+                "[MuJoCoSimulatorNode] Simulator running=%s%s  steps=%lu  "
+                "sim_time=%.2f s  rtf=%.1fx",
                 is_running ? "true" : "false", is_paused ? " [PAUSED]" : "",
                 static_cast<unsigned long>(steps), sim_time, rtf);
   }
@@ -673,7 +679,7 @@ int main(int argc, char **argv) {
     // configure/activate.
     rclcpp::spin(node->get_node_base_interface());
   } catch (const std::exception &e) {
-    fprintf(stderr, "[mujoco_simulator_node] Fatal: %s\n", e.what());
+    fprintf(stderr, "[MuJoCoSimulatorNode] Fatal: %s\n", e.what());
     rclcpp::shutdown();
     return 1;
   }

@@ -260,7 +260,7 @@ void MuJoCoSimulator::HandleReset() noexcept {
   throttle_wall_start_ = now;  throttle_sim_start_ = data_->time;
   throttle_rtf_        = current_max_rtf_.load(std::memory_order_relaxed);
   ReadState();
-  fprintf(stdout, "[MuJoCoSimulator] Reset to initial pose\n");
+  fprintf(stdout, "[SimLoop] Reset to initial pose\n");
 }
 
 // ── SimLoop ─────────────────────────────────────────────────────────────────────
@@ -352,7 +352,7 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
   }
 
   fprintf(stdout,
-          "[MuJoCoSimulator] SimLoop exited — steps=%lu  sim_time=%.3f s\n",
+          "[SimLoop] Exited — steps=%lu  sim_time=%.3f s\n",
           static_cast<unsigned long>(step_count_.load()), sim_time_sec_.load());
 }
 
