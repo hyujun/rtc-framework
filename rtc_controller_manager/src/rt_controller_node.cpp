@@ -78,56 +78,6 @@ void RtControllerNode::CreateTimers() {
   static constexpr auto kLogDrainPeriod = 10ms;
   drain_timer_ = create_wall_timer(
       kLogDrainPeriod, [this]() { DrainLog(); }, cb_group_log_);
-
-  // MPC solve-timing poller runs on the aux executor (non-RT). 1 Hz is
-  // enough to track Stage B / Phase 2 layout changes; the inner ring buffer
-  // already provides p50/p99 over ~12 s of history.
-  static constexpr auto kMpcTimingPeriod = 1000ms;
-  mpc_timing_timer_ = create_wall_timer(
-      kMpcTimingPeriod, [this]() { LogMpcSolveTimingTick(); }, cb_group_aux_);
-  if (!mpc_timing_logger_.Open()) {
-    RCLCPP_WARN(
-        get_logger(),
-        "MpcSolveTimingLogger::Open() failed — solve-timing CSV disabled");
-  } else {
-    RCLCPP_INFO(get_logger(), "MPC solve-timing CSV: %s",
-                mpc_timing_logger_.Path().c_str());
-  }
-}
-
-void RtControllerNode::LogMpcSolveTimingTick() {
-  // Active controller may change at runtime via /controller_selector; read
-  // acquire to pair with the release store in the selector callback.
-  const int idx = active_controller_idx_.load(std::memory_order_acquire);
-  if (idx < 0 || static_cast<std::size_t>(idx) >= controllers_.size()) {
-    return;
-  }
-  const auto &ctrl = controllers_[static_cast<std::size_t>(idx)];
-  if (!ctrl)
-    return;
-
-  const auto stats = ctrl->GetMpcSolveStats();
-  if (!stats) {
-    // Non-MPC controller or MPC disabled — nothing to log. Don't burn CSV
-    // rows with empty data; readers can tell sessions apart by row count.
-    return;
-  }
-
-  mpc_timing_logger_.Log(*stats);
-
-  // Periodic INFO so tmux-watchers see progress without tail-ing the CSV.
-  // 10 s cadence keeps the log readable across a 10-minute pilot session.
-  static constexpr std::uint32_t kInfoEveryNTicks = 10;
-  if (++mpc_timing_tick_ % kInfoEveryNTicks == 0) {
-    RCLCPP_INFO(get_logger(),
-                "[mpc_solve_timing] count=%lu window=%u p50=%.2fms p99=%.2fms "
-                "max=%.2fms",
-                static_cast<unsigned long>(stats->count),
-                static_cast<unsigned>(stats->window),
-                static_cast<double>(stats->p50_ns) / 1e6,
-                static_cast<double>(stats->p99_ns) / 1e6,
-                static_cast<double>(stats->max_ns) / 1e6);
-  }
 }
 
 // ── Lifecycle callbacks ──────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
-#ifndef RTC_BASE_MPC_SOLVE_TIMING_LOGGER_HPP_
-#define RTC_BASE_MPC_SOLVE_TIMING_LOGGER_HPP_
+#ifndef RTC_MPC_LOGGING_MPC_SOLVE_TIMING_LOGGER_HPP_
+#define RTC_MPC_LOGGING_MPC_SOLVE_TIMING_LOGGER_HPP_
 
 #include "rtc_base/logging/session_dir.hpp"
 #include "rtc_base/timing/mpc_solve_stats.hpp"
@@ -9,21 +9,24 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 // Periodic CSV appender for MPC solve-timing windows. Writes one row per
-// snapshot to `<session>/controller/mpc_solve_timing.csv` with columns:
+// snapshot to `<session>/controllers/<config_key>/mpc_solve_timing.csv` with
+// columns:
 //   t_wall_ns,count,window,last_ns,min_ns,p50_ns,p99_ns,max_ns,mean_ns
 //
 // The caller is expected to invoke `Log()` from a non-RT callback (typ.
-// 1 Hz aux executor). First call opens the file and writes the header;
-// later calls append in text mode with std::flush after every row so an
-// aborted session still produces a readable file.
+// 1 Hz aux executor of the controller's LifecycleNode). First call opens
+// the file and writes the header; later calls append in text mode with
+// std::flush after every row so an aborted session still produces a
+// readable file.
 //
-// Header-only (matches rtc_base convention). Thread-safety: not intended
-// for concurrent use — one writer per process is the expected topology.
+// Header-only. Thread-safety: not intended for concurrent use — one writer
+// per controller LifecycleNode is the expected topology.
 
-namespace rtc {
+namespace rtc::mpc {
 
 class MpcSolveTimingLogger {
 public:
@@ -33,13 +36,16 @@ public:
   MpcSolveTimingLogger(const MpcSolveTimingLogger &) = delete;
   MpcSolveTimingLogger &operator=(const MpcSolveTimingLogger &) = delete;
 
-  /// Resolve the CSV path (session_dir/controller/mpc_solve_timing.csv),
-  /// create parent directories, and open the file in append mode.
-  /// Returns false on filesystem errors — caller may retry or skip.
-  [[nodiscard]] bool Open() noexcept {
+  /// Resolve the CSV path (session_dir/controllers/<config_key>/
+  /// mpc_solve_timing.csv), create parent directories, and open the file in
+  /// append mode. Returns false on filesystem errors — caller may retry or
+  /// skip. `config_key` is typically the controller's YAML root key (which
+  /// also matches its LifecycleNode namespace).
+  [[nodiscard]] bool Open(std::string_view config_key) noexcept {
     try {
       const auto session = ResolveSessionDir();
-      const auto controller_dir = session / "controller";
+      const auto controller_dir =
+          session / "controllers" / std::string(config_key);
       std::error_code ec;
       std::filesystem::create_directories(controller_dir, ec);
       path_ = controller_dir / "mpc_solve_timing.csv";
@@ -67,7 +73,7 @@ public:
 
   /// Append one row. No-op if not open. Uses CLOCK_REALTIME-ish wall time
   /// from the steady_clock epoch for monotonicity-safe plotting.
-  void Log(const MpcSolveStats &s) noexcept {
+  void Log(const rtc::MpcSolveStats &s) noexcept {
     if (!out_.is_open())
       return;
     const auto now = std::chrono::steady_clock::now();
@@ -85,6 +91,6 @@ private:
   std::ofstream out_;
 };
 
-} // namespace rtc
+} // namespace rtc::mpc
 
-#endif // RTC_BASE_MPC_SOLVE_TIMING_LOGGER_HPP_
+#endif // RTC_MPC_LOGGING_MPC_SOLVE_TIMING_LOGGER_HPP_

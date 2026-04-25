@@ -80,9 +80,12 @@ which emits one `fprintf(stderr, …)` line at most every 5 s with
 `what=<cause> code=<int> total=N failed=M`. The null-handler setup error
 retains its own one-shot `fprintf` (separate semantics: fatal setup
 mistake, not runtime drift). Readers can also pair the stderr stream with
-`<session>/controller/mpc_solve_timing.csv` — when MPC is enabled but
-Solve keeps failing, `DemoWbcController::GetMpcSolveStats` returns a
-`count=0` sentinel row so the CSV still proves the thread is alive.
+`<session>/controllers/<config_key>/mpc_solve_timing.csv` (writer:
+[`rtc_mpc/logging/mpc_solve_timing_logger.hpp`](include/rtc_mpc/logging/mpc_solve_timing_logger.hpp);
+each MPC-using controller's own LifecycleNode owns the 1 Hz aux timer)
+— when MPC is enabled but Solve keeps failing, `DemoWbcController::
+GetMpcSolveStats` returns a `count=0` sentinel row so the CSV still
+proves the thread is alive.
 
 ## Status
 

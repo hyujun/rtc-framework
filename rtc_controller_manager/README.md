@@ -257,11 +257,13 @@ poll(&pfd, 1, 1);  // 1ms timeout, eventfd readable → 즉시 wakeup
 
 누적 over-run 카운터(`overruns`, `compute_overruns`, `skips`, `log_drops`, `pub_drops`)는 `rt_controller_node`가 별도 원자 변수로 관리 — Summary 리셋에 영향 없음.
 
-### MPC Solve Timing Logger (aux thread, non-RT)
+### MPC Solve Timing Logger (per-controller aux thread, non-RT)
 
-`on_configure`에서 `cb_group_aux_`에 1 Hz 타이머(`mpc_timing_timer_`)가 등록된다. 활성 컨트롤러의 `GetMpcSolveStats()` (기본 `nullopt`, MPC 보유 컨트롤러만 override)를 폴링해 `<session>/controller/mpc_solve_timing.csv`에 9열(`t_wall_ns,count,window,last_ns,min_ns,p50_ns,p99_ns,max_ns,mean_ns`)을 append한다. 10초마다 `RCLCPP_INFO`로 `count / window / p50 / p99 / max` 요약 로그. 컨트롤러가 `nullopt`를 반환하면 row를 쓰지 않는다 — reader는 빈 구간을 MPC 비활성 구간으로 해석.
+CM 자체는 솔버 스탯에 관여하지 않는다. MPC를 사용하는 각 컨트롤러(예: `DemoWbcController`)가 자체 LifecycleNode의 1 Hz aux 타이머를 `on_activate`에서 (필요 시) 띄우고, 자기 `mpc_thread_`(별도 스레드, 20 Hz)의 스냅샷을 `GetMpcSolveStats()`로 가져와 `<session>/controllers/<config_key>/mpc_solve_timing.csv`에 9열(`t_wall_ns,count,window,last_ns,min_ns,p50_ns,p99_ns,max_ns,mean_ns`)을 append한다. 10초마다 `RCLCPP_INFO`로 `count / window / p50 / p99 / max` 요약 로그. `GetMpcSolveStats()`가 `nullopt`를 반환하면 row를 쓰지 않는다.
 
-Writer 구현: [`rtc_base/logging/mpc_solve_timing_logger.hpp`](../rtc_base/include/rtc_base/logging/mpc_solve_timing_logger.hpp) · neutral 타입 [`rtc::MpcSolveStats`](../rtc_base/include/rtc_base/timing/mpc_solve_stats.hpp).
+각 컨트롤러가 자기 `<config_key>` 서브디렉토리에 쓰므로 컨트롤러 전환이 발생해도 stream이 섞이지 않는다.
+
+Writer 구현: [`rtc_mpc/logging/mpc_solve_timing_logger.hpp`](../rtc_mpc/include/rtc_mpc/logging/mpc_solve_timing_logger.hpp) · neutral 타입 [`rtc::MpcSolveStats`](../rtc_base/include/rtc_base/timing/mpc_solve_stats.hpp).
 
 ---
 

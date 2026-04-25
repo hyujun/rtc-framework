@@ -1764,6 +1764,8 @@ DemoWbcController::on_configure(const rclcpp_lifecycle::State &prev,
   }
   try {
     CreateOwnedTopics(*this, owned_topics_);
+    mpc_timing_cb_group_ = node->create_callback_group(
+        rclcpp::CallbackGroupType::MutuallyExclusive);
   } catch (const std::exception &e) {
     RCLCPP_ERROR(logger_, "DemoWbcController on_configure failed: %s",
                  e.what());
@@ -1778,19 +1780,66 @@ DemoWbcController::on_configure(const rclcpp_lifecycle::State &prev,
 RTControllerInterface::CallbackReturn
 DemoWbcController::on_activate(const rclcpp_lifecycle::State &prev) noexcept {
   ActivateOwnedTopics(prev, owned_topics_);
+
+  // Spawn 1 Hz aux timer for MPC solve-timing CSV only when MPC is actually
+  // enabled. Non-MPC sessions skip both the file open and the timer so no
+  // empty CSV directory is created.
+  if (mpc_enabled_) {
+    if (!mpc_timing_logger_.Open("demo_wbc_controller")) {
+      RCLCPP_WARN(
+          logger_,
+          "MpcSolveTimingLogger::Open() failed — solve-timing CSV disabled");
+    } else {
+      RCLCPP_INFO(logger_, "MPC solve-timing CSV: %s",
+                  mpc_timing_logger_.Path().c_str());
+    }
+    auto node = get_lifecycle_node();
+    if (node && mpc_timing_cb_group_) {
+      mpc_timing_timer_ = node->create_wall_timer(
+          std::chrono::seconds(1), [this]() { LogMpcSolveTimingTick(); },
+          mpc_timing_cb_group_);
+    }
+  }
   return CallbackReturn::SUCCESS;
 }
 
 RTControllerInterface::CallbackReturn
 DemoWbcController::on_deactivate(const rclcpp_lifecycle::State &prev) noexcept {
+  mpc_timing_timer_.reset();
+  mpc_timing_tick_ = 0;
   DeactivateOwnedTopics(prev, owned_topics_);
   return CallbackReturn::SUCCESS;
 }
 
 RTControllerInterface::CallbackReturn
 DemoWbcController::on_cleanup(const rclcpp_lifecycle::State &prev) noexcept {
+  mpc_timing_timer_.reset();
+  mpc_timing_cb_group_.reset();
   ResetOwnedTopics(owned_topics_);
   return RTControllerInterface::on_cleanup(prev);
+}
+
+void DemoWbcController::LogMpcSolveTimingTick() noexcept {
+  const auto stats = GetMpcSolveStats();
+  if (!stats) {
+    // MPC enabled but solver hasn't published a window yet — skip.
+    return;
+  }
+  mpc_timing_logger_.Log(*stats);
+
+  // Periodic INFO so tmux-watchers see progress without tail-ing the CSV.
+  // 10 s cadence keeps the log readable across a 10-minute pilot session.
+  static constexpr std::uint32_t kInfoEveryNTicks = 10;
+  if (++mpc_timing_tick_ % kInfoEveryNTicks == 0) {
+    RCLCPP_INFO(logger_,
+                "[mpc_solve_timing] count=%lu window=%u p50=%.2fms p99=%.2fms "
+                "max=%.2fms",
+                static_cast<unsigned long>(stats->count),
+                static_cast<unsigned>(stats->window),
+                static_cast<double>(stats->p50_ns) / 1e6,
+                static_cast<double>(stats->p99_ns) / 1e6,
+                static_cast<double>(stats->max_ns) / 1e6);
+  }
 }
 
 void DemoWbcController::PublishNonRtSnapshot(
