@@ -196,18 +196,30 @@ def launch_setup(context, *args, **kwargs):
     actions = [set_session_dir, set_session_dir_legacy]
 
     if use_affinity.lower() in ('true', '1', 'yes'):
+        # Mirror robot.launch.py: probe `sudo -n true` first.  Launch's stdin
+        # isn't a tty so an interactive sudo prompt would silently hang and
+        # leave the cores un-isolated — better to warn loudly and skip.
         enable_sim_cpu_shield = ExecuteProcess(
             cmd=[
                 'bash', '-c',
                 'SCRIPT_DIR="$(ros2 pkg prefix rtc_scripts 2>/dev/null)/lib/rtc_scripts" && '
-                'if [ -f "$SCRIPT_DIR/cpu_shield.sh" ]; then '
+                'SHIELD="$SCRIPT_DIR/cpu_shield.sh" && '
+                'if [ -f "$SHIELD" ]; then '
                 '  ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); '
                 '  if [ -z "$ISOLATED" ]; then '
                 '    echo "[SIM] CPU shield not active — enabling sim mode Tier 1 isolation..."; '
-                '    sudo "$SCRIPT_DIR/cpu_shield.sh" on --sim; '
+                '    if sudo -n true 2>/dev/null; then '
+                '      sudo "$SHIELD" on --sim; '
+                '    else '
+                '      echo "[SIM] WARNING: sudo requires a password — skipping CPU shield. '
+                'Configure passwordless sudo for cpu_shield.sh or run beforehand: '
+                'sudo $SHIELD on --sim"; '
+                '    fi; '
                 '  else '
                 '    echo "[SIM] CPU shield already active: Core $ISOLATED isolated"; '
                 '  fi; '
+                'else '
+                '  echo "[SIM] WARNING: cpu_shield.sh not found at $SHIELD"; '
                 'fi'
             ],
             output='screen',

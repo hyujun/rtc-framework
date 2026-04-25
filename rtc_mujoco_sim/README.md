@@ -119,7 +119,11 @@ MuJoCo constraint solver의 전체 파라미터를 `config/solver_param.yaml`에
 **XML 우선순위 규칙:**
 - MJCF XML의 `<option>` 요소에 명시적으로 설정된 속성은 YAML 값보다 우선합니다
 - XML에 해당 속성이 없는 경우에만 YAML의 값이 적용됩니다
-- `Initialize()` 시 tinyxml2로 원본 XML을 파싱하여 명시된 속성 집합을 감지합니다
+- `Initialize()` 시 tinyxml2로 원본 XML을 파싱하여 명시된 속성 집합을 감지합니다.
+  `model_path`가 `package://` URI 인 경우 `ResolveModelPath()` 가 ament 를 통해
+  절대 경로로 변환한 뒤 tinyxml2 에 전달합니다 (tinyxml2 는 `package://` 를
+  직접 해석하지 못하므로 — fallback 만 동작하면 모든 solver 파라미터가 YAML 로
+  대체되어 XML 우선순위가 사라짐)
 
 ```
 XML: <option solver="CG" iterations="50"/>
@@ -331,7 +335,9 @@ mujoco_simulator:
 # (예: ur5e_bringup/config/ur5e_sim.yaml)에서 `/**:` wildcard로 관리.
 ```
 
-> **참고:** `joint_names`는 `command_joint_names` 미지정 시 하위 호환 대체로 사용됩니다. `state_joint_names`가 빈 배열이면 robot 그룹은 XML 전체 조인트, fake 그룹은 command_joint_names와 동일하게 사용됩니다.
+> **참고:** `joint_names`는 `command_joint_names` 미지정 시 하위 호환 대체로 사용됩니다. `state_joint_names`가 빈 배열이면 robot 그룹은 XML 전체 조인트, fake 그룹은 command_joint_names와 동일하게 사용됩니다. 다중 그룹(arm + hand)에서는 각 그룹의 `state_joint_names`를 명시적으로 지정해야 그룹별 state 토픽이 자기 도메인 조인트만 publish 합니다 (미지정 시 전 그룹이 XML 전체를 publish).
+>
+> **검증 경고:** XML 조인트가 모든 robot 그룹의 `state_joint_names` 합집합에 포함되지 않으면 `WARNING: XML joint '...' not published by any group's state_joint_names` 가 1회 출력됩니다 (이전에는 그룹별로 잘못 출력됨).
 
 ### 노드가 읽는 파라미터 목록
 

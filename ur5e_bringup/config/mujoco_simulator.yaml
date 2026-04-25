@@ -70,6 +70,19 @@ mujoco_simulator:
           - middle_mcp_fe
           - middle_dip_fe
           - ring_mcp_fe
+        # state_joint_names 명시: 미지정 시 XML 전체 joint(arm 6 + hand 10)
+        # 가 /hand/joint_states 로 publish 되어 ur5e arm 상태가 hand 그룹에 섞임
+        state_joint_names:
+          - thumb_cmc_aa
+          - thumb_cmc_fe
+          - thumb_mcp_fe
+          - index_mcp_aa
+          - index_mcp_fe
+          - index_dip_fe
+          - middle_mcp_aa
+          - middle_mcp_fe
+          - middle_dip_fe
+          - ring_mcp_fe
         command_topic: "/hand/joint_command"
         state_topic: "/hand/joint_states"
         # sensor_topic: "/hand/sim_sensors"   # uncomment + add sensor_names to enable
