@@ -322,8 +322,9 @@ private:
 
   // ── Logging (throttled — RT-safe by throttle interval) ───────────────────
   // Sub-logger handle cached at construction; bringup_logging.hpp owns the
-  // canonical name ("bringup.demo_task"). All hot-path log calls must use
-  // *_THROTTLE variants with constants from ur5e_bringup::logging.
+  // canonical name ("ur5e_bringup.demo_task_controller"). All hot-path log
+  // calls must use *_THROTTLE variants with constants from
+  // ur5e_bringup::logging.
   rclcpp::Logger logger_{ur5e_bringup::logging::DemoTaskLogger()};
   rclcpp::Clock log_clock_{RCL_STEADY_TIME};
 

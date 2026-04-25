@@ -21,7 +21,7 @@ Usage:
 
 Nodes launched:
   1. mujoco_simulator_node  — MuJoCo physics simulator (replaces UR driver)
-  2. rt_controller          — 500Hz controller (CV-based wakeup in sim mode)
+  2. ur5e_rt_controller     — 500Hz controller (CV-based wakeup in sim mode)
 """
 
 import os
@@ -66,8 +66,12 @@ def launch_setup(context, *args, **kwargs):
     pkg_sim = FindPackageShare('rtc_mujoco_sim')
     pkg_bringup = FindPackageShare('ur5e_bringup')
 
+    # MuJoCo sim params: agnostic defaults (rtc_mujoco_sim) + UR5e-specific
+    # robot_response groups, joint names, topics, model_path (ur5e_bringup).
+    sim_default = PathJoinSubstitution(
+        [pkg_sim,     'config', 'mujoco_default.yaml'])
     sim_config = PathJoinSubstitution(
-        [pkg_sim,  'config', 'mujoco_simulator.yaml'])
+        [pkg_bringup, 'config', 'mujoco_simulator.yaml'])
     ctrl_config = PathJoinSubstitution(
         [pkg_bringup, 'config', 'ur5e_sim.yaml'])
 
@@ -79,8 +83,8 @@ def launch_setup(context, *args, **kwargs):
     except Exception:
         pass
 
-    # ── Build simulator parameters (YAML first, then conditional overrides) ───
-    sim_params = [sim_config]
+    # ── Build simulator parameters (defaults → robot YAML → CLI overrides) ──
+    sim_params = [sim_default, sim_config]
     sim_overrides = {}
 
     # Check each launch argument - only add to overrides if explicitly provided
@@ -149,7 +153,7 @@ def launch_setup(context, *args, **kwargs):
         ctrl_overrides['initial_controller'] = initial_controller
 
     # `enable_mpc` drives the `demo_wbc_controller.mpc.enabled` ROS parameter,
-    # which rtc_controller_manager's `ApplyControllerParamOverrides` helper
+    # which ur5e_rt_controller's `ApplyControllerParamOverrides` helper
     # writes into the YAML::Node handed to `LoadConfig`. The runtime gains
     # topic (index 7) can also toggle MPC on/off dynamically without
     # restarting the launch.
@@ -224,17 +228,20 @@ def launch_setup(context, *args, **kwargs):
     )
 
     # ── Node 2: Custom Controller (LifecycleNode) ─────────────────────────
+    # Node name = executable name (= "ur5e_rt_controller"). The robot-specific
+    # bringup owns runtime identity; rtc_controller_manager is library-only.
+    # See agent_docs/design-principles.md.
     rt_controller_node = LifecycleNode(
         package='ur5e_bringup',
         executable='ur5e_rt_controller',
-        name='rt_controller',
+        name='ur5e_rt_controller',
         namespace='',
         output='screen',
         emulate_tty=True,
         parameters=ctrl_params,
     )
 
-    # ── Lifecycle chain: mujoco configure→activate → rt_controller configure→activate
+    # ── Lifecycle chain: mujoco configure→activate → ur5e_rt_controller configure→activate
     mujoco_auto_activate = RegisterEventHandler(
         OnStateTransition(
             target_lifecycle_node=mujoco_node,
@@ -303,19 +310,20 @@ def launch_setup(context, *args, **kwargs):
         )
         actions.append(pin_mujoco_sim)
 
-        # rt_controller DDS/aux threads → Core 0-1 (mirror of robot.launch.py).
+        # ur5e_rt_controller DDS/aux threads → Core 0-1 (mirror of robot.launch.py).
         # ApplyThreadConfig() already pins SCHED_FIFO executors (rt_loop, sensor,
         # udp_recv); this timer only catches DDS-internal reader/writer threads
         # that are spawned outside our control.
+        # exec name = ROS node name = "ur5e_rt_controller" (Phase 3 정렬).
         pin_rt_controller_dds = TimerAction(
             period=5.0,
             actions=[
                 ExecuteProcess(
                     cmd=[
                         'bash', '-c',
-                        'PID=$(pgrep -nf "rt_controller"); '
+                        'PID=$(pgrep -nf "ur5e_rt_controller"); '
                         'if [ -z "$PID" ]; then '
-                        '  echo "[SIM] WARNING: rt_controller not found — DDS thread pinning skipped"; '
+                        '  echo "[SIM] WARNING: ur5e_rt_controller not found — DDS thread pinning skipped"; '
                         '  exit 0; '
                         'fi; '
                         'taskset -cp 0-1 "$PID" 2>/dev/null; '
@@ -325,7 +333,7 @@ def launch_setup(context, *args, **kwargs):
                         '  if [ -n "$POLICY" ]; then continue; fi; '
                         '  taskset -cp 0-1 "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
                         'done; '
-                        'echo "[SIM] rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core 0-1"'
+                        'echo "[SIM] ur5e_rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core 0-1"'
                     ],
                     output='screen',
                 )

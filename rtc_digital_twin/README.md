@@ -49,7 +49,7 @@ rtc_digital_twin/
 ## 데이터 흐름
 
 ```
-[rt_controller (C++, 500Hz)]
+[rtc_controller_manager (C++, 500Hz)]
   /joint_states (BE/2) -> DeviceJointStateCallback
        ├── device_states_ 업데이트 (기존)
        └── forward -> /{group}/digital_twin/joint_states (RELIABLE/10)
@@ -74,7 +74,7 @@ rtc_digital_twin/
 
 | 토픽 | 타입 | QoS | 설명 |
 |------|------|-----|------|
-| `source_N.topic` (YAML 정의) | `sensor_msgs/JointState` | RELIABLE, depth=10 | rt_controller가 republish한 조인트 상태 |
+| `source_N.topic` (YAML 정의) | `sensor_msgs/JointState` | RELIABLE, depth=10 | rtc_controller_manager가 republish한 조인트 상태 |
 | `sensor_viz.sensor_topic` (선택) | `rtc_msgs/HandSensorState` | RELIABLE, depth=10 | 핑거팁 센서 데이터 |
 | `tcp_viz.source_topic` (선택) | `rtc_msgs/GuiPosition` | SensorData (BE/5) | TCP 위치/자세 데이터 |
 
@@ -314,9 +314,9 @@ Launch 파일은 URDF/xacro를 처리하여 `robot_description` 문자열을 `ro
 
 ---
 
-## rt_controller 연동 (Digital Twin Republish)
+## rtc_controller_manager 연동 (Digital Twin Republish)
 
-`rtc_controller_manager`의 `rt_controller` 노드는 각 디바이스 그룹의 JointState를 RELIABLE QoS로 자동 republish합니다:
+`rtc_controller_manager` 패키지의 `rtc_controller_manager` 노드는 각 디바이스 그룹의 JointState를 RELIABLE QoS로 자동 republish합니다:
 
 | 원본 토픽 (BEST_EFFORT/2) | Republish 토픽 (RELIABLE/10) |
 |---|---|

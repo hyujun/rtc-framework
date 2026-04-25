@@ -496,7 +496,7 @@ inline const MpcThreadConfig kMpcConfig14Core{
 
 // ── 16-core configuration (Phase 5: MPC main + 2 workers) ──────────────────
 // cset shield isolates Core 4-8 → "user" cpuset (0 tasks).
-// rt_controller lives in "system" cpuset (Core 0-3, 9-15).
+// rtc_controller_manager lives in "system" cpuset (Core 0-3, 9-15).
 // All threads MUST use system-cpuset cores to avoid pthread_setaffinity_np
 // failures caused by cpuset boundary violations.
 //

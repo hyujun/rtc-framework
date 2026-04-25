@@ -55,7 +55,7 @@ def generate_launch_description():
         default_value='500.0',
         description='Internal tick rate for fake hand mode (Hz). '
                     '0 or negative disables the node-side timer (use when '
-                    'rt_controller drives the fake controller directly).',
+                    'rtc_controller_manager drives the fake controller directly).',
     )
 
     # ── Config files ────────────────────────────────────────────────────

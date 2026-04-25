@@ -31,9 +31,9 @@ namespace urtc = rtc;
 //
 // Lifecycle design: constructor is intentionally minimal.
 // All resource allocation happens in on_configure / on_activate.
-RtControllerNode::RtControllerNode()
+RtControllerNode::RtControllerNode(const std::string &node_name)
     : LifecycleNode(
-          "rt_controller",
+          node_name,
           rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(
               true)),
       logger_(nullptr) {}

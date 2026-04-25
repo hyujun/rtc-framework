@@ -75,23 +75,11 @@ target_link_libraries(rtc_controller_manager_lib
   pinocchio::pinocchio
 )
 
-# ── Executable ────────────────────────────────────────────────────────────────
-add_executable(rt_controller
-  src/rt_controller_main.cpp
-)
-target_link_libraries(rt_controller
-  rtc_controller_manager_lib
-)
-ament_target_dependencies(rt_controller
-  rclcpp
-  rtc_base
-)
-
 # ── Install ───────────────────────────────────────────────────────────────────
-install(TARGETS rt_controller
-  DESTINATION lib/${PROJECT_NAME}
-)
-
+# rtc_controller_manager is library-only (no executable). Robot-specific
+# bringup packages (e.g. ur5e_bringup) link rtc_controller_manager_lib and
+# expose their own executable via rtc::RtControllerMain(argc, argv, node_name).
+# See agent_docs/design-principles.md.
 install(TARGETS rtc_controller_manager_lib
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib

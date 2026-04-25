@@ -39,8 +39,7 @@ rtc_controller_manager/
 │   ├── rt_controller_node_rt_loop.cpp     <- 500 Hz RT 루프, 워치독, 로그 드레인
 │   ├── rt_controller_node_publish.cpp     <- SPSC 드레인 → ROS2 publish (eventfd wakeup)
 │   ├── rt_controller_node_estop.cpp       <- E-STOP 트리거/클리어/퍼블리시
-│   ├── rt_controller_main.cpp             <- main() 진입점
-│   └── rt_controller_main_impl.cpp        <- RtControllerMain() 구현
+│   └── rt_controller_main_impl.cpp        <- RtControllerMain() 구현 (라이브러리)
 └── config/
     ├── rt_controller_manager.yaml         <- 제어 루프 설정
     └── cyclone_dds.xml                    <- CycloneDDS RT 성능 최적화 설정
@@ -78,9 +77,9 @@ rtc_controller_manager/
 
 런타임 상태 제어:
 ```bash
-ros2 lifecycle get /rt_controller
-ros2 lifecycle set /rt_controller deactivate   # RT 루프 중지
-ros2 lifecycle set /rt_controller activate     # RT 루프 재시작
+ros2 lifecycle get /rtc_controller_manager
+ros2 lifecycle set /rtc_controller_manager deactivate   # RT 루프 중지
+ros2 lifecycle set /rtc_controller_manager activate     # RT 루프 재시작
 ```
 
 **초기화 순서 (`RtControllerMain()` — 3-Phase Lifecycle Executor):**
@@ -467,8 +466,8 @@ source install/setup.bash
 ```
 
 **빌드 산출물:**
-- 정적 라이브러리: `librtc_controller_manager_lib.a`
-- 실행 파일: `rt_controller`
+- 정적 라이브러리: `librtc_controller_manager_lib.a` (export 됨, 외부에서 link)
+- 실행 파일 없음 — robot-specific bringup 패키지(예: `ur5e_bringup`의 `ur5e_rt_controller`)가 `rtc::RtControllerMain(argc, argv, node_name)`을 호출하여 자체 exec를 만든다. `node_name`은 robot bringup의 executable 이름과 일치시킨다 (exec ↔ ROS 노드 ↔ 로거 식별자 정렬). 자세한 원칙은 [agent_docs/design-principles.md](../agent_docs/design-principles.md) 참고.
 
 ---
 

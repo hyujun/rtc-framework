@@ -1,8 +1,10 @@
 // ── Reusable entry-point logic
 // ────────────────────────────────────────────────
 //
-// Extracted from rt_controller_main.cpp so that every robot-specific bringup
-// package can reuse it without duplicating boilerplate.
+// Library-only API. rtc_controller_manager is robot-agnostic and exports no
+// executable. Robot-specific bringup packages (e.g. ur5e_bringup) supply
+// their own main() that calls rtc::RtControllerMain(argc, argv, node_name).
+// See agent_docs/design-principles.md for the agnostic-vs-specific rule.
 //
 // 3-phase lifecycle executor pattern:
 //   Phase 1: lifecycle_executor spins to process configure/activate service
@@ -38,7 +40,7 @@
 
 namespace rtc {
 
-int RtControllerMain(int argc, char **argv) {
+int RtControllerMain(int argc, char **argv, const std::string &node_name) {
   // mlockall BEFORE rclcpp::init.
   // MCL_CURRENT locks pages already mapped; MCL_FUTURE ensures every page
   // allocated afterwards (including DDS/RMW heaps) is also locked.
@@ -70,7 +72,7 @@ int RtControllerMain(int argc, char **argv) {
     }
   }
 
-  auto node = std::make_shared<RtControllerNode>();
+  auto node = std::make_shared<RtControllerNode>(node_name);
 
   // ═══ Phase 1: lifecycle executor ═══════════════════════════════════════════
   // Spin the node so it can receive lifecycle service calls (configure /

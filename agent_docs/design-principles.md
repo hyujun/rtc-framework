@@ -32,6 +32,10 @@
 | YAML-driven parameter schemas | YAML files with actual robot values |
 | Controller registry, TSID solver core | Demo controllers, BT coordinator, bringup |
 | RT threading, SPSC, SeqLock, E-STOP logic | Hardware drivers (UR5e RTDE, hand UDP, ToF UART) |
+| **Library only** — `rtc_*` 패키지는 자체 `add_executable` / `main()` 보유 금지. `RtControllerMain()` 등 진입 함수만 export | **Runtime identity 소유** — robot-specific 패키지가 `add_executable`로 exec 생성, `RtControllerMain(argc, argv, "<exec_name>")` 호출. ROS 노드 이름 = exec 이름 (예: `ur5e_rt_controller`) |
+| Agnostic launch는 자기 노드 단독만 띄움 (예: `rtc_mujoco_sim/launch/mujoco_sim.launch.py` → `mujoco_simulator_node`만). robot-specific 패키지 의존 / robot-specific exec 호출 금지 | 통합 launch (RT 컨트롤러 + 시뮬레이터 + 드라이버 chain)는 robot bringup이 소유 (예: `ur5e_bringup/launch/sim.launch.py`) |
+
+**Runtime identity rule** (위 마지막 두 행의 근거): exec ↔ ROS 노드 ↔ pgrep ↔ logger 식별자가 모두 같은 이름으로 정렬되어야 디버깅·검증·로그 추적 비용이 일정하게 유지됨. agnostic 패키지가 자체 exec를 가지면 robot-specific identity와 혼선이 생김(어느 launch에서 띄운 어느 instance인지 구분 불가). 따라서 agnostic은 library만 export.
 
 ## Two-Tier Topic Ownership (Phase 4)
 

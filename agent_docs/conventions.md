@@ -31,6 +31,24 @@
 - **Lifecycle**: 5 C++ nodes는 `rclcpp_lifecycle::LifecycleNode`. Empty constructor; `on_configure` (Tier 1) / `on_activate` (Tier 2). Safety publishers은 standalone `rclcpp::create_publisher` 사용
 - **ROS 2 API**: 명시 `rclcpp::QoS`, `MutuallyExclusiveCallbackGroup`, 범위 지정 `ParameterDescriptor`
 
+## Logging
+
+로그 한 줄에서 **어느 패키지** · **어느 컨트롤러**인지 즉시 읽히도록 logger 이름을 다음 규약으로 짓는다. (터미널에는 `[<logger>]: <msg>` 형태로 찍힘.)
+
+| 계층 | Logger 이름 포맷 | 예시 |
+|------|------------------|------|
+| Node-owned (robot bringup의 lifecycle node) | `<exec_name>` (= ROS 노드 이름 = 실행 파일 이름) | `ur5e_rt_controller` |
+| Library-level (agnostic base/framework) | `<full_package_name>` | `rtc_controller_interface` |
+| Controller-level (구체 컨트롤러) | `<package>.<controller_key>` | `ur5e_bringup.demo_joint_controller`, `ur5e_bringup.demo_task_controller`, `ur5e_bringup.demo_wbc_controller` |
+
+**구현 원칙:**
+- ROS 노드 이름 = 실행 파일 이름 (예: `ur5e_rt_controller`). `node_->get_logger()`는 그 이름을 그대로 반환. `rtc_controller_manager`는 library-only (실행 파일 없음) — runtime identity는 robot-specific bringup이 소유. 자세한 원칙: [design-principles.md](design-principles.md)
+- 컨트롤러 내부 로그는 `rclcpp::get_logger("<pkg>.<controller>")` 정적 logger를 멤버 캐시로 보유 (예: [ur5e_bringup/include/ur5e_bringup/bringup_logging.hpp](../ur5e_bringup/include/ur5e_bringup/bringup_logging.hpp))
+- Base class (`RTControllerInterface`)에서 찍는 공통 로그는 `rclcpp::get_logger("rtc_controller_interface")` + 메시지 본문에 `[<controller_name>]` prefix 로 어느 컨트롤러에서 호출됐는지 표시
+- 점(`.`) 하나만 허용. 패키지 prefix를 축약하지 말 것 (예: `bringup.demo_joint` 사용 금지 → `ur5e_bringup.demo_joint_controller`)
+
+RT path logging 금지 규칙과 SPSC 우회 패턴은 [invariants.md](invariants.md) RT-3 참조.
+
 ## Documentation Requirements
 
 - **Doxygen for public API**: `@brief`, `@param`, `@return`, `@note` on every public class/function

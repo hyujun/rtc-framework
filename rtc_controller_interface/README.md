@@ -73,7 +73,7 @@ virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 
 | 훅 | 시그니처 | 기본 동작 |
 |---|---|---|
-| `on_configure` | `(State, LifecycleNode::SharedPtr, YAML::Node) → CallbackReturn` | `node_`에 주입된 노드 저장 → `LoadConfig(yaml_cfg)`를 try/catch로 호출 → 성공 시 `SUCCESS`, YAML 파싱 throw 시 `FAILURE` 반환 |
+| `on_configure` | `(State, LifecycleNode::SharedPtr, YAML::Node) → CallbackReturn` | `node_`에 주입된 노드 저장 → `LoadConfig(yaml_cfg)`를 try/catch로 호출 → 성공 시 `SUCCESS`, YAML 파싱 throw 시 `FAILURE` 반환. 실패 경로 로그는 `rclcpp::get_logger("rtc_controller_interface")` 정적 logger 사용 + 메시지 본문에 `[<controller_name>]` prefix로 호출 주체 표시 — 네이밍 규약은 [agent_docs/conventions.md](../agent_docs/conventions.md) "Logging" 섹션 참조 |
 | `on_activate` | `(State) → CallbackReturn` | no-op `SUCCESS` |
 | `on_deactivate` | `(State) → CallbackReturn` | no-op `SUCCESS` |
 | `on_cleanup` | `(State) → CallbackReturn` | `node_.reset()` → `SUCCESS` |

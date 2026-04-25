@@ -41,7 +41,7 @@ rtc_base, rtc_communication, rtc_inference, rtc_msgs  <--  ur5e_hand_driver
 
 ### Event-Driven 통신
 
-`HandController`는 `ControlLoop`의 `SendCommandAndRequestStates()` 호출에 의해 event-driven으로 구동됩니다. 단독 실행(standalone) 시에는 `/hand/joint_command` 구독으로 명령을 수신합니다.
+`HandController`는 `rtc_controller_manager`의 `ControlLoop`가 호출하는 `SendCommandAndRequestStates()`에 의해 event-driven으로 구동됩니다. 단독 실행(standalone) 시에는 `/hand/joint_command` 구독으로 명령을 수신합니다.
 
 ```
 [Core 2] ControlLoop 500Hz

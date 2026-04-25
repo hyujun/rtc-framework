@@ -63,7 +63,10 @@ public:
   using CallbackReturn =
       rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
-  RtControllerNode();
+  // Node name is supplied by the robot-specific bringup executable.
+  // rtc_controller_manager is robot-agnostic — it does not own a runtime
+  // identity. See agent_docs/design-principles.md.
+  explicit RtControllerNode(const std::string &node_name);
   ~RtControllerNode() override;
 
   // ── Lifecycle callbacks ──────────────────────────────────────────────────

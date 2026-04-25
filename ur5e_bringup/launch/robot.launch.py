@@ -4,12 +4,12 @@
 #   1. Environment vars (RMW, CycloneDDS, session dir)
 #   2. CPU shield, UR driver, hand_udp_node  (parallel)
 #   3. Readiness gate: polls /joint_states and /hand/joint_states publishers
-#   4. rt_controller_node starts ONLY after gate exits successfully
-#   5. DDS thread pinning runs 5 s after rt_controller starts
+#   4. ur5e_rt_controller node starts ONLY after gate exits successfully
+#   5. DDS thread pinning runs 5 s after the CM process starts
 #
 # Core allocation optimizations applied:
 #   C) UR driver process pinned to Core 0-1 via delayed taskset (use_cpu_affinity:=true)
-#   D) rt_controller DDS threads pinned to Core 0-1 (prevents 100-350us jitter on Jazzy)
+#   D) ur5e_rt_controller DDS threads pinned to Core 0-1 (prevents 100-350us jitter on Jazzy)
 #   E) CycloneDDS threads restricted to Core 0-1 via CYCLONEDDS_URI env var
 
 import os
@@ -244,16 +244,17 @@ def generate_launch_description():
         ]
     )
 
-    # ── rt_controller DDS thread pinning ──────────────────────────────────────
+    # ── ur5e_rt_controller DDS thread pinning ─────────────────────────────────
+    # exec name = ROS node name = "ur5e_rt_controller" (Phase 3 정렬).
     pin_rt_controller_dds = TimerAction(
         period=5.0,
         actions=[
             ExecuteProcess(
                 cmd=[
                     'bash', '-c',
-                    'PID=$(pgrep -nf "rt_controller"); '
+                    'PID=$(pgrep -nf "ur5e_rt_controller"); '
                     'if [ -z "$PID" ]; then '
-                    '  echo "[RT] WARNING: rt_controller not found — DDS thread pinning skipped"; '
+                    '  echo "[RT] WARNING: ur5e_rt_controller not found — DDS thread pinning skipped"; '
                     '  exit 0; '
                     'fi; '
                     'taskset -cp 0-1 "$PID" 2>/dev/null; '
@@ -264,7 +265,7 @@ def generate_launch_description():
                     '  if [ -n "$POLICY" ]; then continue; fi; '
                     '  taskset -cp 0-1 "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
                     'done; '
-                    'echo "[RT] rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core 0-1"'
+                    'echo "[RT] ur5e_rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core 0-1"'
                 ],
                 output='screen',
                 condition=IfCondition(LaunchConfiguration('use_cpu_affinity'))
@@ -280,10 +281,13 @@ def generate_launch_description():
     # inject the override directly via its OpaqueFunction setup.
     # `namespace=''` is required by launch_ros >= jazzy (keyword-only arg
     # in LifecycleNode.__init__); earlier distros defaulted it implicitly.
+    # Node name = executable name (= "ur5e_rt_controller"). The robot-specific
+    # bringup owns runtime identity; rtc_controller_manager is library-only.
+    # See agent_docs/design-principles.md.
     rt_controller_node = LifecycleNode(
         package='ur5e_bringup',
         executable='ur5e_rt_controller',
-        name='rt_controller',
+        name='ur5e_rt_controller',
         namespace='',
         output='screen',
         parameters=[
@@ -296,7 +300,7 @@ def generate_launch_description():
     )
 
     # ── Hand UDP driver node (LifecycleNode) ──────────────────────────────────
-    # Publishes /hand/joint_states and /hand/sensor_states for rt_controller.
+    # Publishes /hand/joint_states and /hand/sensor_states for ur5e_rt_controller.
     hand_udp_node = LifecycleNode(
         package='ur5e_hand_driver',
         executable='hand_udp_node',
@@ -327,7 +331,7 @@ def generate_launch_description():
         transition_id=Transition.TRANSITION_CONFIGURE,
     ))
 
-    # ── Lifecycle auto-configure/activate for rt_controller_node ──────────────
+    # ── Lifecycle auto-configure/activate for ur5e_rt_controller ──────────────
     rt_auto_activate = RegisterEventHandler(
         OnStateTransition(
             target_lifecycle_node=rt_controller_node,
@@ -346,7 +350,7 @@ def generate_launch_description():
 
     # ── Readiness gate ────────────────────────────────────────────────────────
     # Polls until UR driver publishes /joint_states AND hand_udp_node publishes
-    # /hand/joint_states.  rt_controller_node is chained to start only after
+    # /hand/joint_states.  ur5e_rt_controller is chained to start only after
     # this gate process exits successfully (via OnProcessExit event handler).
     comm_readiness_gate = ExecuteProcess(
         cmd=[
@@ -378,9 +382,9 @@ def generate_launch_description():
 
     # ── Event-driven launch chain ─────────────────────────────────────────────
     # Gate starts only after hand_udp_node process is running (ensures DDS
-    # endpoint is registered before polling).  rt_controller starts only after
-    # the gate exits with success.  DDS thread pinning fires 5 s after
-    # rt_controller starts.
+    # endpoint is registered before polling).  ur5e_rt_controller starts
+    # only after the gate exits with success.  DDS thread pinning fires 5 s
+    # after the CM process starts.
     start_gate_after_hand = RegisterEventHandler(
         OnProcessStart(
             target_action=hand_udp_node,
@@ -395,7 +399,7 @@ def generate_launch_description():
         OnProcessExit(
             target_action=comm_readiness_gate,
             on_exit=[
-                LogInfo(msg='[RT] Readiness gate passed — launching rt_controller'),
+                LogInfo(msg='[RT] Readiness gate passed — launching ur5e_rt_controller'),
                 rt_controller_node,
                 rt_auto_activate,
                 rt_trigger_configure,
@@ -431,8 +435,8 @@ def generate_launch_description():
         hand_trigger_configure,
         # 4) Event-driven chain:
         #    hand_udp_node started → comm_readiness_gate
-        #    → gate exits OK → rt_controller_node
-        #    → rt_controller started → pin_rt_controller_dds
+        #    → gate exits OK → ur5e_rt_controller
+        #    → CM process started → pin_rt_controller_dds
         start_gate_after_hand,
         start_rt_after_gate,
         start_dds_pin_after_rt,

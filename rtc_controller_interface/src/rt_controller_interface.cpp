@@ -139,11 +139,12 @@ RTControllerInterface::CallbackReturn RTControllerInterface::on_configure(
   try {
     LoadConfig(yaml_cfg);
   } catch (const std::exception &e) {
-    RCLCPP_ERROR(node_->get_logger(), "[%s] LoadConfig failed: %s",
-                 std::string(Name()).c_str(), e.what());
+    RCLCPP_ERROR(rclcpp::get_logger("rtc_controller_interface"),
+                 "[%s] LoadConfig failed: %s", std::string(Name()).c_str(),
+                 e.what());
     return CallbackReturn::FAILURE;
   } catch (...) {
-    RCLCPP_ERROR(node_->get_logger(),
+    RCLCPP_ERROR(rclcpp::get_logger("rtc_controller_interface"),
                  "[%s] LoadConfig failed: unknown exception",
                  std::string(Name()).c_str());
     return CallbackReturn::FAILURE;
