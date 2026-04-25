@@ -344,9 +344,17 @@ void RtControllerNode::DeclareAndLoadParameters() {
     // "/<config_key>" so controller-owned topics declared with relative
     // paths in YAML resolve to /<config_key>/<topic> automatically.
     // main() attaches these to aux_executor.
+    // Per-controller LifecycleNodes must NOT inherit the parent's CLI
+    // remappings (e.g. `--ros-args -r __node:=ur5e_rt_controller`).  Without
+    // use_global_arguments(false), the global remap rules rename every child
+    // to the parent's node name and namespace, which clobbers the intended
+    // /<config_key> namespacing and produces one
+    // `rcl.logging_rosout: Publisher already registered` warning per child.
     const std::string ctrl_ns = "/" + entry.config_key;
+    const auto ctrl_node_options =
+        rclcpp::NodeOptions().use_global_arguments(false);
     auto ctrl_lc_node = std::make_shared<rclcpp_lifecycle::LifecycleNode>(
-        entry.config_key, ctrl_ns, rclcpp::NodeOptions());
+        entry.config_key, ctrl_ns, ctrl_node_options);
 
     // Inject the target-received notifier so controllers that own their own
     // target subscription flip CM's target_received_ gate in the callback.
