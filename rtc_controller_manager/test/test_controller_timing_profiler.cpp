@@ -267,7 +267,8 @@ TEST(ControllerTimingProfilerTest, HistogramBucketZero) {
   ProfilerStubController ctrl;
   rtc::ControllerState state{};
 
-  // Near-instant compute should land in bucket 0 (0–100 µs)
+  // Near-instant compute should land in bucket 0
+  // (kBucketWidthUs = 10 µs → bucket 0 = [0, 10) µs)
   ctrl.set_busy_wait_us(0.0);
   (void)profiler.MeasuredCompute(ctrl, state);
 
@@ -291,6 +292,30 @@ TEST(ControllerTimingProfilerTest, HistogramTotalMatchesCount) {
     total += bucket;
   }
   EXPECT_EQ(total, stats.count);
+}
+
+// Regression: when all samples cluster in a single bucket whose width
+// exceeds the observed max (e.g. 14–60 µs samples in a 100 µs-wide bucket),
+// linear interpolation used to extrapolate p95/p99 past max — producing a
+// constant 95.0 / 99.0 µs while max sat at ~50 µs. The clamp in
+// InterpolateBucket() guarantees p95 ≤ max and p99 ≤ max.
+TEST(ControllerTimingProfilerTest, PercentilesNeverExceedMax) {
+  rtc::ControllerTimingProfiler profiler;
+  ProfilerStubController ctrl;
+  rtc::ControllerState state{};
+
+  // 1000 near-instant Compute() calls — all samples land in the lowest
+  // bucket(s) and observed max is small.
+  ctrl.set_busy_wait_us(0.0);
+  for (int i = 0; i < 1000; ++i) {
+    (void)profiler.MeasuredCompute(ctrl, state);
+  }
+
+  const auto stats = profiler.GetStats();
+  EXPECT_GT(stats.count, uint64_t{0});
+  EXPECT_LE(stats.p95_us, stats.max_us);
+  EXPECT_LE(stats.p99_us, stats.max_us);
+  EXPECT_LE(stats.p95_us, stats.p99_us);
 }
 
 // Regression: p99 must NOT clip to the overflow-bucket lower edge when

@@ -1,7 +1,8 @@
 #ifndef RTC_CONTROLLER_MANAGER_CONTROLLER_TIMING_PROFILER_HPP_
 #define RTC_CONTROLLER_MANAGER_CONTROLLER_TIMING_PROFILER_HPP_
 
-// ── ControllerTimingProfiler ───────────────────────────────────────────────────
+// ── ControllerTimingProfiler
+// ───────────────────────────────────────────────────
 //
 // Measures the wall-clock time of RTControllerInterface::Compute() calls and
 // maintains a lock-free running histogram + summary statistics.
@@ -33,72 +34,63 @@
 #include <cstdio>
 #include <string>
 
-namespace rtc
-{
+namespace rtc {
 
-class ControllerTimingProfiler
-  : public TimingProfilerBase<20, 100, 2000> {
+// Buckets cover [0, 2000) µs at 10 µs resolution (200 buckets) so that
+// percentiles for typical 10–100 µs Compute() times don't extrapolate past
+// the observed max. The overflow bucket still captures anything ≥ 2000 µs.
+class ControllerTimingProfiler : public TimingProfilerBase<200, 10, 2000> {
 public:
   // Re-export base types under the names existing callers expect
   using Stats = BaseStats;
 
-  // ── Core measurement ─────────────────────────────────────────────────────────
+  // ── Core measurement
+  // ─────────────────────────────────────────────────────────
 
-  [[nodiscard]] ControllerOutput MeasuredCompute(
-    RTControllerInterface & ctrl,
-    const ControllerState & state) noexcept
-  {
+  [[nodiscard]] ControllerOutput
+  MeasuredCompute(RTControllerInterface &ctrl,
+                  const ControllerState &state) noexcept {
     const auto t0 = std::chrono::steady_clock::now();
     auto output = ctrl.Compute(state);
     const auto t1 = std::chrono::steady_clock::now();
 
     const double us =
-      std::chrono::duration<double, std::micro>(t1 - t0).count();
+        std::chrono::duration<double, std::micro>(t1 - t0).count();
     UpdateTotal(us);
     return output;
   }
 
-  // ── Statistics ───────────────────────────────────────────────────────────────
+  // ── Statistics
+  // ───────────────────────────────────────────────────────────────
 
-  [[nodiscard]] Stats GetStats() const noexcept
-  {
-    return GetBaseStats();
-  }
+  [[nodiscard]] Stats GetStats() const noexcept { return GetBaseStats(); }
 
-  [[nodiscard]] double LastComputeUs() const noexcept
-  {
-    return LastUs();
-  }
+  [[nodiscard]] double LastComputeUs() const noexcept { return LastUs(); }
 
-  void Reset() noexcept
-  {
-    ResetBase();
-  }
+  void Reset() noexcept { ResetBase(); }
 
   // Human-readable summary line suitable for RCLCPP_INFO.
-  [[nodiscard]] std::string Summary(const std::string & ctrl_name) const noexcept
-  {
+  [[nodiscard]] std::string
+  Summary(const std::string &ctrl_name) const noexcept {
     const Stats s = GetStats();
-    if (s.count == 0) {return ctrl_name + " timing: no data";}
+    if (s.count == 0) {
+      return ctrl_name + " timing: no data";
+    }
 
     const double over_pct = static_cast<double>(s.over_budget) * 100.0 /
-      static_cast<double>(s.count);
+                            static_cast<double>(s.count);
     char buf[512];
-    std::snprintf(
-        buf, sizeof(buf),
-        "%s timing: count=%lu  mean=%.1f\xc2\xb5s  min=%.1f\xc2\xb5s"
-        "  max=%.1f\xc2\xb5s  p95=%.1f\xc2\xb5s  p99=%.1f\xc2\xb5s"
-        "  over_budget=%lu (%.1f%%)",
-        ctrl_name.c_str(),
-        static_cast<unsigned long>(s.count),
-        s.mean_us, s.min_us, s.max_us,
-        s.p95_us, s.p99_us,
-        static_cast<unsigned long>(s.over_budget),
-        over_pct);
+    std::snprintf(buf, sizeof(buf),
+                  "%s timing: count=%lu  mean=%.1f\xc2\xb5s  min=%.1f\xc2\xb5s"
+                  "  max=%.1f\xc2\xb5s  p95=%.1f\xc2\xb5s  p99=%.1f\xc2\xb5s"
+                  "  over_budget=%lu (%.1f%%)",
+                  ctrl_name.c_str(), static_cast<unsigned long>(s.count),
+                  s.mean_us, s.min_us, s.max_us, s.p95_us, s.p99_us,
+                  static_cast<unsigned long>(s.over_budget), over_pct);
     return std::string(buf);
   }
 };
 
-}  // namespace rtc
+} // namespace rtc
 
-#endif  // RTC_CONTROLLER_MANAGER_CONTROLLER_TIMING_PROFILER_HPP_
+#endif // RTC_CONTROLLER_MANAGER_CONTROLLER_TIMING_PROFILER_HPP_

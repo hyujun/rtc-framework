@@ -225,18 +225,23 @@ private:
   // the bucket's lower edge and the observed max. Without this, p99 would
   // silently clip to the overflow-bucket lower edge (e.g. 2000 µs for the
   // controller profiler) even when max_us is much larger.
+  //
+  // The result is clamped to max_us. By definition any percentile p ≤ max,
+  // but linear interpolation assumes uniform fill within the bucket — when
+  // samples cluster in the lower part of a bucket (e.g. all 27 µs samples
+  // in the [0, 100) bucket), the unclamped estimate can exceed max.
   static double InterpolateBucket(int bucket_idx, uint64_t prev_cum,
                                   uint64_t bucket_count, double target_rank,
                                   double max_us) noexcept {
     const double bucket_lo = static_cast<double>(bucket_idx * kBucketWidthUs);
     if (bucket_count == 0)
-      return bucket_lo;
+      return std::min(bucket_lo, max_us);
     const double frac = (target_rank - static_cast<double>(prev_cum)) /
                         static_cast<double>(bucket_count);
     const double bucket_span = (bucket_idx >= kBuckets)
                                    ? std::max(0.0, max_us - bucket_lo)
                                    : static_cast<double>(kBucketWidthUs);
-    return bucket_lo + frac * bucket_span;
+    return std::min(bucket_lo + frac * bucket_span, max_us);
   }
 
   // ── Atomic members ────────────────────────────────────────────────────────

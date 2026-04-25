@@ -148,7 +148,7 @@ Per-fingertip ONNX 모델 기반 힘/토크 추론 (3-head output):
 
 ### HandTimingProfiler (`hand_timing_profiler.hpp`)
 
-EventLoop 단계별 소요시간 추적. 히스토그램 기반 p95/p99 백분위수, 예산(2000us) 초과 카운트.
+EventLoop 단계별 소요시간 추적. 히스토그램 기반 p95/p99 백분위수, 예산(2000us) 초과 카운트. `TimingProfilerBase<250, 20, 2000>` 상속 — 250개 버킷 × 20 µs (= [0, 5000) µs 범위, 20 µs 백분위 해상도). 보간 결과는 `max_us`로 clamp되어 p95, p99 ≤ max를 보장.
 
 ---
 
