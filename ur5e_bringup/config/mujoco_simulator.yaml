@@ -1,9 +1,10 @@
-# MuJoCo Simulator Node Configuration
-# ─────────────────────────────────────────────
-# Launch with:
-#   ros2 launch rtc_mujoco_sim mujoco_sim.launch.py
-#   ros2 launch rtc_mujoco_sim mujoco_sim.launch.py enable_viewer:=false
-#   ros2 launch rtc_mujoco_sim mujoco_sim.launch.py max_rtf:=10.0
+# MuJoCo Simulator — UR5e + 10-DOF hand configuration
+# ─────────────────────────────────────────────────────
+# Robot-specific overrides for the agnostic mujoco_simulator_node.
+# Loaded by ur5e_bringup/launch/sim.launch.py.
+#
+# Generic defaults live in rtc_mujoco_sim/config/mujoco_default.yaml.
+# RTC controller param overrides live in ur5e_bringup/config/ur5e_sim.yaml.
 
 mujoco_simulator:
   ros__parameters:
@@ -97,10 +98,3 @@ mujoco_simulator:
     #     state_topic: "/hand/joint_states"
     #     filter_alpha: 0.1
 
-# ── rt_controller parameter overrides for simulation ─────────────────────
-rt_controller:
-  ros__parameters:
-    enable_estop: false
-    robot_timeout_ms: 10000.0
-    hand_timeout_ms: 10000.0
-    init_timeout_sec: 0.0

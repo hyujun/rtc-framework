@@ -1,0 +1,35 @@
+# MuJoCo Simulator — Robot-agnostic default parameters
+# ──────────────────────────────────────────────────────
+# Loaded by rtc_mujoco_sim/launch/mujoco_sim.launch.py for standalone smoke
+# tests. Robot-specific overrides (joint names, command/state topics, model
+# path, servo gains) live in robot bringup packages — see e.g.
+# ur5e_bringup/config/mujoco_simulator.yaml.
+#
+# Required externally (no agnostic default):
+#   model_path                       ← path to MJCF scene
+#   robot_response.groups            ← list of actuator groups
+#   robot_response.<group>.command_joint_names + topics
+
+mujoco_simulator:
+  ros__parameters:
+    # ── Sync timeout (controller command wait per step) ──────────────────────
+    sync_timeout_ms: 50.0
+
+    # ── Real-Time Factor (1.0 = real-time, 0.0 = unlimited) ──────────────────
+    max_rtf: 1.0
+
+    # ── Viewer ───────────────────────────────────────────────────────────────
+    enable_viewer: true
+    viewer_refresh_rate: 60.0  # Hz
+
+    # ── Physics timestep ─────────────────────────────────────────────────────
+    physics_timestep: 0.002  # seconds (control period)
+    n_substeps: 3            # physics substeps per control cycle
+
+    # ── Position servo gains (override per robot) ────────────────────────────
+    use_yaml_servo_gains: false
+    # servo_kp: [...]   # set per robot in robot-specific YAML
+    # servo_kd: [...]
+
+    # ── Control rate (used by physics_timestep validator) ────────────────────
+    control_rate: 500.0  # Hz

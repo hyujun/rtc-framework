@@ -1,76 +1,48 @@
 """
-mujoco_sim.launch.py -- MuJoCo simulation launch file
-=====================================================
+mujoco_sim.launch.py — Robot-agnostic MuJoCo standalone launch
+==============================================================
 
-기존 실제 로봇 런치(ur_control.launch.py)와 동일한 ROS2 토픽 구조를 사용하므로
-rt_controller 노드를 수정 없이 그대로 실행합니다.
+Brings up `mujoco_simulator_node` only — no controller, no robot-specific
+config. Useful as a smoke test for the simulator itself or as a building
+block when a robot bringup package needs the simulator without the rest of
+its stack.
 
-시뮬레이션:
-  Synchronous loop -- state 발행 -> command 대기 -> step -> throttle(max_rtf)
+Robot-specific demos (UR5e + RT controller + hand bridge) live in
+`ur5e_bringup/launch/sim.launch.py` and load `mujoco_simulator.yaml` from
+`ur5e_bringup/config/`.
 
-사용법:
-  # 기본 (YAML 설정 사용)
-  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py
-
-  # Headless 모드 (디스플레이 없는 환경)
-  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py enable_viewer:=false
-
-  # 외부 Menagerie 모델 사용
+Usage:
+  # Smoke test with an external MJCF (no robot params loaded)
   ros2 launch rtc_mujoco_sim mujoco_sim.launch.py \\
-      model_path:=/path/to/mujoco_menagerie/universal_robots_ur5e/scene.xml
+      model_path:=/path/to/scene.xml
 
-  # PD 게인 조정
-  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py kp:=10.0 kd:=1.0
+  # Headless mode
+  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py \\
+      model_path:=/path/to/scene.xml enable_viewer:=false
 
-  # max_rtf 오버라이드 (YAML의 1.0 대신 10.0 사용)
-  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py max_rtf:=10.0
+  # Override params file (must define robot_response.* groups)
+  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py \\
+      params_file:=/path/to/my_robot_sim.yaml
 
-실행되는 노드:
-  1. mujoco_simulator_node  -- MuJoCo 물리 시뮬레이터 (UR 드라이버 역할 대체)
-  2. rt_controller          -- 기존 500Hz PD 제어기 (코드 변경 없음)
-
-목표 위치 발행 (별도 터미널):
-  ros2 topic pub /ur5e/target_joint_positions std_msgs/msg/Float64MultiArray \\
-    "data: [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]"
-
-모니터링:
-  ros2 topic hz /joint_states            # 게시 주파수 확인
-  ros2 topic echo /system/estop_status   # E-STOP 상태
-  ros2 topic echo /sim/status            # 시뮬레이터 상태 (steps, sim_time)
-
-연산 시간 로그 분석:
-  python3 -c "
-  import pandas as pd, glob, os
-  from rtc_tools.utils.session_dir import resolve_logging_root
-  sessions = sorted(glob.glob(os.path.join(resolve_logging_root(), '??????_????')))
-  if sessions:
-      df = pd.read_csv(os.path.join(sessions[-1], 'controller', 'timing_log.csv'))
-      print(df['t_compute_us'].describe())
-      print(f'P95: {df[\"t_compute_us\"].quantile(0.95):.1f} us')
-      print(f'P99: {df[\"t_compute_us\"].quantile(0.99):.1f} us')
-      print(f'Over 2ms: {(df[\"t_compute_us\"] > 2000).mean()*100:.2f}%')
-  "
+Defaults loaded: rtc_mujoco_sim/config/mujoco_default.yaml (agnostic only;
+robot-specific groups MUST be supplied via params_file or the node will
+fail to configure).
 """
-
-import os
 
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
-    ExecuteProcess,
+    EmitEvent,
     OpaqueFunction,
+    RegisterEventHandler,
     SetEnvironmentVariable,
-    TimerAction,
 )
-from launch.actions import EmitEvent, RegisterEventHandler
-from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.actions import LifecycleNode, Node
+from launch_ros.actions import LifecycleNode
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
-from ament_index_python.packages import get_package_share_directory
 
 from rtc_tools.utils.session_dir import (
     cleanup_old_sessions,
@@ -80,187 +52,45 @@ from rtc_tools.utils.session_dir import (
 
 
 def launch_setup(context, *args, **kwargs):
-    """Setup function executed with launch context for conditional parameter loading."""
-
-    # ── 세션 디렉토리 생성 (YYMMDD_HHMM) ─────────────────────────────────────
+    # ── Session directory ────────────────────────────────────────────────────
     logging_root = resolve_logging_root()
     session_dir = create_session_dir(logging_root)
-
     max_sessions = int(
         LaunchConfiguration('max_log_sessions').perform(context) or '10')
     cleanup_old_sessions(logging_root, max_sessions)
 
-    # ── Package paths ─────────────────────────────────────────────────────────
+    # ── Params: default file + optional override + CLI overrides ─────────────
     pkg_sim = FindPackageShare('rtc_mujoco_sim')
-    pkg_ctrl = FindPackageShare('rtc_controller_manager')
+    default_params = PathJoinSubstitution(
+        [pkg_sim, 'config', 'mujoco_default.yaml'])
 
-    sim_config = PathJoinSubstitution(
-        [pkg_sim,  'config', 'mujoco_simulator.yaml'])
-    ctrl_config = PathJoinSubstitution(
-        [pkg_ctrl, 'config', 'rt_controller_manager.yaml'])
+    params_file = LaunchConfiguration('params_file').perform(context)
+    sim_params: list = [default_params]
+    if params_file != '':
+        sim_params.append(params_file)
 
-    # ur5e_hand_driver is optional — may not be built in sim-only installs
-    hand_config = None
-    try:
-        hand_share = get_package_share_directory('ur5e_hand_driver')
-        hand_config = os.path.join(hand_share, 'config', 'hand_udp_node.yaml')
-    except Exception:
-        pass
-
-    # ── Build simulator parameters (YAML first, then conditional overrides) ───
-    solver_config = PathJoinSubstitution(
-        [pkg_sim,  'config', 'solver_param.yaml'])
-    sim_params = [sim_config, solver_config]
-    sim_overrides = {}
-
-    # Check each launch argument - only add to overrides if explicitly provided
+    overrides: dict = {}
     model_path = LaunchConfiguration('model_path').perform(context)
     if model_path != '':
-        sim_overrides['model_path'] = model_path
+        overrides['model_path'] = model_path
 
     enable_viewer = LaunchConfiguration('enable_viewer').perform(context)
     if enable_viewer != '':
-        sim_overrides['enable_viewer'] = enable_viewer.lower() in (
+        overrides['enable_viewer'] = enable_viewer.lower() in (
             'true', '1', 'yes')
-
-    sync_timeout_ms = LaunchConfiguration('sync_timeout_ms').perform(context)
-    if sync_timeout_ms != '':
-        sim_overrides['sync_timeout_ms'] = float(sync_timeout_ms)
 
     max_rtf = LaunchConfiguration('max_rtf').perform(context)
     if max_rtf != '':
-        sim_overrides['max_rtf'] = float(max_rtf)
+        overrides['max_rtf'] = float(max_rtf)
 
-    use_yaml_servo_gains = LaunchConfiguration(
-        'use_yaml_servo_gains').perform(context)
-    if use_yaml_servo_gains != '':
-        sim_overrides['use_yaml_servo_gains'] = (
-            use_yaml_servo_gains.lower() in ('true', '1', 'yes'))
+    if overrides:
+        sim_params.append(overrides)
 
-    # ── Fake hand response + control_rate 연동 ─────────────────────────────
-    import yaml
-
-    # control_rate를 MuJoCo 노드에 전달 (physics_timestep 검증용)
-    try:
-        ctrl_yaml_path = os.path.join(
-            get_package_share_directory('rtc_controller_manager'),
-            'config', 'rt_controller_manager.yaml')
-        with open(ctrl_yaml_path, 'r') as f:
-            ctrl_yaml = yaml.safe_load(f)
-        control_rate = (ctrl_yaml.get('/**', {})
-                        .get('ros__parameters', {})
-                        .get('control_rate', 500.0))
-        sim_overrides['control_rate'] = float(control_rate)
-    except Exception:
-        sim_overrides['control_rate'] = 500.0
-
-    # Add overrides only if any were provided
-    if sim_overrides:
-        sim_params.append(sim_overrides)
-
-    # ── Build controller parameters (YAML + overrides + launch args) ──────────
-    ctrl_params = [ctrl_config, sim_config]
-    if hand_config is not None:
-        ctrl_params.append(hand_config)
-    ctrl_overrides = {}
-
-    kp = LaunchConfiguration('kp').perform(context)
-    if kp != '':
-        ctrl_overrides['kp'] = float(kp)
-
-    kd = LaunchConfiguration('kd').perform(context)
-    if kd != '':
-        ctrl_overrides['kd'] = float(kd)
-
-    # 세션 디렉토리를 log_dir로 전달 (rt_controller가 session_dir 내에서 로깅)
-    ctrl_overrides['log_dir'] = session_dir
-
-    # Simulation sync: CV-based wakeup for rt_loop
-    ctrl_overrides['use_sim_time_sync'] = True
-
-    # use_fake_hand launch argument → rt_controller 파라미터로 전달
-    use_fake_hand = LaunchConfiguration('use_fake_hand').perform(context)
-    if use_fake_hand.lower() in ('true', '1', 'yes'):
-        ctrl_overrides['use_fake_hand'] = True
-
-    # Hand topic 연동: MuJoCo 설정에서 hand 그룹 토픽을 rt_controller에 전달
-    sim_yaml_path = os.path.join(
-        get_package_share_directory('rtc_mujoco_sim'),
-        'config', 'mujoco_simulator.yaml')
-    try:
-        with open(sim_yaml_path, 'r') as f:
-            sim_yaml = yaml.safe_load(f)
-        sim_params_yaml = (sim_yaml.get('mujoco_simulator', {})
-                           .get('ros__parameters', {}))
-
-        # Check robot_response for hand group
-        robot_resp = sim_params_yaml.get('robot_response', {})
-        robot_groups = robot_resp.get('groups', [])
-        if 'hand' in robot_groups:
-            hand_cfg = robot_resp.get('hand', {})
-            ctrl_overrides['hand_sim_enabled'] = True
-            ctrl_overrides['hand_command_topic'] = hand_cfg.get(
-                'command_topic', '/hand/joint_command')
-            ctrl_overrides['hand_state_topic'] = hand_cfg.get(
-                'state_topic', '/hand/joint_states')
-            ctrl_overrides['target_ip'] = ''
-            ctrl_overrides['target_port'] = 0
-
-        # Check fake_response for hand group
-        fake_resp = sim_params_yaml.get('fake_response', {})
-        fake_groups = fake_resp.get('groups', [])
-        if 'hand' in fake_groups:
-            hand_cfg = fake_resp.get('hand', {})
-            ctrl_overrides['hand_sim_enabled'] = True
-            ctrl_overrides['hand_command_topic'] = hand_cfg.get(
-                'command_topic', '/hand/joint_command')
-            ctrl_overrides['hand_state_topic'] = hand_cfg.get(
-                'state_topic', '/hand/joint_states')
-            ctrl_overrides['target_ip'] = ''
-            ctrl_overrides['target_port'] = 0
-    except Exception:
-        pass  # YAML 읽기 실패 시 기본값 사용
-
-    if ctrl_overrides:
-        ctrl_params.append(ctrl_overrides)
-
-    # ── 환경변수: 모든 노드에 세션 디렉토리 전파 ────────────────────────────────
-    # RTC_SESSION_DIR 우선, UR5E_SESSION_DIR 은 하위 호환.
+    # ── Environment variables ────────────────────────────────────────────────
     set_session_dir = SetEnvironmentVariable(
-        name='RTC_SESSION_DIR',
-        value=session_dir
-    )
-    set_session_dir_legacy = SetEnvironmentVariable(
-        name='UR5E_SESSION_DIR',
-        value=session_dir
-    )
+        name='RTC_SESSION_DIR', value=session_dir)
 
-    # ── [RT] 시뮬레이션 모드 CPU Shield (Tier 1만) ─────────────────────────────
-    use_affinity = LaunchConfiguration('use_cpu_affinity').perform(context)
-    actions = [set_session_dir, set_session_dir_legacy]
-
-    if use_affinity.lower() in ('true', '1', 'yes'):
-        enable_sim_cpu_shield = ExecuteProcess(
-            cmd=[
-                'bash', '-c',
-                'SCRIPT_DIR="$(ros2 pkg prefix rtc_scripts 2>/dev/null)/lib/rtc_scripts" && '
-                'if [ -f "$SCRIPT_DIR/cpu_shield.sh" ]; then '
-                '  ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); '
-                '  if [ -z "$ISOLATED" ]; then '
-                '    echo "[SIM] CPU shield 미활성 — 시뮬 모드 Tier 1 격리 활성화 중..."; '
-                '    sudo "$SCRIPT_DIR/cpu_shield.sh" on --sim; '
-                '  else '
-                '    echo "[SIM] CPU shield 이미 활성: Core $ISOLATED 격리됨"; '
-                '  fi; '
-                'fi'
-            ],
-            output='screen',
-        )
-        actions.append(enable_sim_cpu_shield)
-
-    # ── Node 1: MuJoCo Simulator (LifecycleNode) ────────────────────────────
-    # `namespace=''` is required by launch_ros >= jazzy (keyword-only arg
-    # in LifecycleNode.__init__); earlier distros defaulted it implicitly.
+    # ── MuJoCo simulator (LifecycleNode) ─────────────────────────────────────
     mujoco_node = LifecycleNode(
         package='rtc_mujoco_sim',
         executable='mujoco_simulator_node',
@@ -271,20 +101,8 @@ def launch_setup(context, *args, **kwargs):
         parameters=sim_params,
     )
 
-    # ── Node 2: Custom Controller (LifecycleNode) ─────────────────────────
-    rt_controller_node = LifecycleNode(
-        package='rtc_controller_manager',
-        executable='rt_controller',
-        name='rt_controller',
-        namespace='',
-        output='screen',
-        emulate_tty=True,
-        parameters=ctrl_params,
-    )
-
-    # ── Lifecycle chain: mujoco configure→activate → rt_controller configure→activate
-    # MuJoCo: auto-activate after configure
-    mujoco_auto_activate = RegisterEventHandler(
+    # ── Lifecycle: configure → activate ──────────────────────────────────────
+    auto_activate = RegisterEventHandler(
         OnStateTransition(
             target_lifecycle_node=mujoco_node,
             start_state='configuring',
@@ -295,178 +113,43 @@ def launch_setup(context, *args, **kwargs):
             ))],
         )
     )
-    # After mujoco reaches active → configure rt_controller
-    chain_rt_after_mujoco = RegisterEventHandler(
-        OnStateTransition(
-            target_lifecycle_node=mujoco_node,
-            start_state='activating',
-            goal_state='active',
-            entities=[EmitEvent(event=ChangeState(
-                lifecycle_node_matcher=lambda n: n == rt_controller_node,
-                transition_id=Transition.TRANSITION_CONFIGURE,
-            ))],
-        )
-    )
-    # rt_controller: auto-activate after configure
-    rt_auto_activate = RegisterEventHandler(
-        OnStateTransition(
-            target_lifecycle_node=rt_controller_node,
-            start_state='configuring',
-            goal_state='inactive',
-            entities=[EmitEvent(event=ChangeState(
-                lifecycle_node_matcher=lambda n: n == rt_controller_node,
-                transition_id=Transition.TRANSITION_ACTIVATE,
-            ))],
-        )
-    )
-    # Trigger: start mujoco configure (chain handles the rest)
-    trigger_mujoco_configure = EmitEvent(event=ChangeState(
+    trigger_configure = EmitEvent(event=ChangeState(
         lifecycle_node_matcher=lambda n: n == mujoco_node,
         transition_id=Transition.TRANSITION_CONFIGURE,
     ))
 
-    actions.extend([
-        mujoco_node, rt_controller_node,
-        mujoco_auto_activate, chain_rt_after_mujoco, rt_auto_activate,
-        trigger_mujoco_configure,
-    ])
-
-    # ── MuJoCo sim_thread를 Tier 3 코어에 pin (8코어+) ─────────────────────────
-    if use_affinity.lower() in ('true', '1', 'yes'):
-        pin_mujoco_sim = TimerAction(
-            period=2.0,
-            actions=[
-                ExecuteProcess(
-                    cmd=[
-                        'bash', '-c',
-                        'PHYS=$(lscpu -p=Core,Socket 2>/dev/null | grep -v "^#" | sort -u | wc -l); '
-                        'if [ "$PHYS" -ge 8 ]; then '
-                        '  PID=$(pgrep -nf mujoco_simulator_node); '
-                        '  if [ -n "$PID" ]; then '
-                        '    SIM_CORE=$((PHYS >= 10 ? 7 : 6)); '
-                        '    taskset -cp $SIM_CORE "$PID" && '
-                        '    echo "[SIM] mujoco_simulator (PID=$PID) pinned to Core $SIM_CORE"; '
-                        '  fi; '
-                        'fi'
-                    ],
-                    output='screen',
-                )
-            ]
-        )
-        actions.append(pin_mujoco_sim)
-
-    return actions
+    return [set_session_dir, mujoco_node, auto_activate, trigger_configure]
 
 
 def generate_launch_description():
-    # ── Launch arguments with empty defaults (YAML values take precedence) ───
-    model_path_arg = DeclareLaunchArgument(
-        'model_path',
-        default_value='',
-        description=(
-            'Override model_path from YAML. '
-            'Empty → use YAML value (ur5e_description/scene.xml). '
-            'Absolute path → use specified MuJoCo scene.xml'
-        ),
-    )
-
-    enable_viewer_arg = DeclareLaunchArgument(
-        'enable_viewer',
-        default_value='',
-        description=(
-            'Override enable_viewer from YAML. '
-            'Empty → use YAML value (true). '
-            'Set to "false" for headless mode'
-        ),
-    )
-
-    sync_timeout_ms_arg = DeclareLaunchArgument(
-        'sync_timeout_ms',
-        default_value='',
-        description=(
-            'Override sync_timeout_ms from YAML. '
-            'Empty → use YAML value (50.0). '
-            'Command wait timeout per step in milliseconds'
-        ),
-    )
-
-    max_rtf_arg = DeclareLaunchArgument(
-        'max_rtf',
-        default_value='',
-        description=(
-            'Override max_rtf from YAML. '
-            'Empty → use YAML value (1.0). '
-            'Maximum Real-Time Factor (0.0 = unlimited). '
-            'Examples: 1.0 for real-time, 10.0 for 10x speed'
-        ),
-    )
-
-    kp_arg = DeclareLaunchArgument(
-        'kp',
-        default_value='',
-        description=(
-            'Override kp from YAML. '
-            'Empty → use YAML value. '
-            'PD controller proportional gain'
-        ),
-    )
-
-    kd_arg = DeclareLaunchArgument(
-        'kd',
-        default_value='',
-        description=(
-            'Override kd from YAML. '
-            'Empty → use YAML value. '
-            'PD controller derivative gain'
-        ),
-    )
-
-    use_yaml_servo_gains_arg = DeclareLaunchArgument(
-        'use_yaml_servo_gains',
-        default_value='',
-        description=(
-            'Override use_yaml_servo_gains from YAML. '
-            'Empty → use YAML value (false). '
-            'true: servo_kp/kd gains from YAML, false: XML gainprm/biasprm'
-        ),
-    )
-
-    max_log_sessions_arg = DeclareLaunchArgument(
-        'max_log_sessions',
-        default_value='10',
-        description='최대 보관 세션 폴더 수 (YYMMDD_HHMM)',
-    )
-
-    use_cpu_affinity_arg = DeclareLaunchArgument(
-        'use_cpu_affinity',
-        default_value='true',
-        description=(
-            'Enable CPU shield (Tier 1 isolation) and MuJoCo core pinning. '
-            'Set false for CI or environments without sudo.'
-        )
-    )
-
-    use_fake_hand_arg = DeclareLaunchArgument(
-        'use_fake_hand',
-        default_value='false',
-        description=(
-            'Use fake hand echo-back mode (no UDP/ROS communication). '
-            'Command is echoed back as position state immediately.'
-        )
-    )
-
     return LaunchDescription([
-        # Arguments
-        model_path_arg,
-        enable_viewer_arg,
-        sync_timeout_ms_arg,
-        max_rtf_arg,
-        kp_arg,
-        kd_arg,
-        use_yaml_servo_gains_arg,
-        max_log_sessions_arg,
-        use_cpu_affinity_arg,
-        use_fake_hand_arg,
-        # Nodes (via OpaqueFunction for conditional parameter loading)
+        DeclareLaunchArgument(
+            'params_file',
+            default_value='',
+            description=(
+                'Optional ROS params YAML overlaid on top of mujoco_default.yaml. '
+                'Must supply robot_response.groups + per-group joint/topic config.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'model_path',
+            default_value='',
+            description='Override model_path. Empty -> use YAML value.',
+        ),
+        DeclareLaunchArgument(
+            'enable_viewer',
+            default_value='',
+            description='Override enable_viewer. Empty -> use YAML value.',
+        ),
+        DeclareLaunchArgument(
+            'max_rtf',
+            default_value='',
+            description='Override max_rtf. Empty -> use YAML value.',
+        ),
+        DeclareLaunchArgument(
+            'max_log_sessions',
+            default_value='10',
+            description='Maximum number of session folders to keep.',
+        ),
         OpaqueFunction(function=launch_setup),
     ])
