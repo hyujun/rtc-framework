@@ -1,0 +1,36 @@
+# /<active_controller>/grasp_command — issue a one-shot Force-PI grasp command
+# to the active demo controller.
+#
+# Force-PI grasp is a one-shot transition (start grasp / release), not a runtime
+# tunable. It cannot live as a ROS 2 parameter (parameters represent state, not
+# events). This service is the dedicated channel.
+#
+# Single-active model: the BT calls the service on the namespace of the
+# currently-active controller (e.g. /demo_task_controller/grasp_command). The
+# active controller validates and applies; non-active controllers do not
+# advertise the server.
+#
+# E-STOP behavior: while the global E-STOP is active, every command returns
+# ok=false with message="E-STOP active".
+
+# Command code:
+#   NONE    — no-op (rejected with ok=false; callers should not send NONE)
+#   GRASP   — start Force-PI grasp toward target_force
+#   RELEASE — release grip (target_force ignored)
+uint8 command
+uint8 NONE=0
+uint8 GRASP=1
+uint8 RELEASE=2
+
+# Target grip force [N]. Used only when command==GRASP. Must be > 0.
+float64 target_force
+
+---
+
+# True iff the command was accepted and applied to the controller's grasp FSM.
+bool ok
+
+# Human-readable summary. On success: "grasp started @ 2.0 N" /
+# "release accepted". On failure: explanation (E-STOP, controller not
+# grasp-capable, invalid target_force, ...).
+string message
