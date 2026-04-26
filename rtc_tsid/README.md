@@ -101,6 +101,19 @@ TSID 솔버의 메인 컨트롤러입니다. `ControllerBase`를 상속하며 `f
 formulation_type: "wqp"  # 또는 "hqp"
 ```
 
+#### ProxSuite QP solver YAML (WQP / HQP 공통, 2026-04-26 update)
+
+```yaml
+wqp:                       # 또는 hqp.solver_per_level (HQP)
+  solver:
+    max_iter: 20           # ProxSuite max iterations
+    eps_abs:  1.0e-6       # absolute tolerance
+    eps_rel:  0.0          # relative tolerance (0 → abs-only)
+    verbose:  false        # ProxSuite per-iteration log (debug only)
+```
+
+4개 키 모두 `WQPFormulation::init` / `HQPFormulation::init` 에서 읽음. 누락 시 위 기본값.
+
 ---
 
 ### 태스크 (Tasks)

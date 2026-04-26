@@ -2,10 +2,10 @@
 
 namespace rtc::tsid {
 
-void HQPFormulation::init(const pinocchio::Model& /*model*/,
-                          const RobotModelInfo& robot_info,
-                          const ContactManagerConfig& contact_cfg,
-                          const YAML::Node& config) {
+void HQPFormulation::init(const pinocchio::Model & /*model*/,
+                          const RobotModelInfo &robot_info,
+                          const ContactManagerConfig &contact_cfg,
+                          const YAML::Node &config) {
   nv_ = robot_info.nv;
   max_n_vars_ = nv_ + contact_cfg.max_contact_vars;
 
@@ -14,14 +14,13 @@ void HQPFormulation::init(const pinocchio::Model& /*model*/,
   }
 
   // Base equality: EoM + contacts
-  const int eom_eq = robot_info.floating_base
-                         ? (robot_info.nv - robot_info.n_actuated)
-                         : 0;
+  const int eom_eq =
+      robot_info.floating_base ? (robot_info.nv - robot_info.n_actuated) : 0;
   max_n_eq_base_ = eom_eq + contact_cfg.max_contact_vars + 16;
 
   // Max inequality
   int max_friction = 0;
-  for (const auto& c : contact_cfg.contacts) {
+  for (const auto &c : contact_cfg.contacts) {
     max_friction += c.friction_faces + 1;
   }
   max_n_ineq_ = robot_info.n_actuated + max_friction + 16;
@@ -35,9 +34,11 @@ void HQPFormulation::init(const pinocchio::Model& /*model*/,
   // Solver config
   QPSolverConfig solver_cfg;
   if (config && config["hqp"] && config["hqp"]["solver_per_level"]) {
-    const auto& sc = config["hqp"]["solver_per_level"];
+    const auto &sc = config["hqp"]["solver_per_level"];
     solver_cfg.max_iter = sc["max_iter"].as<int>(10);
     solver_cfg.eps_abs = sc["eps_abs"].as<double>(1e-6);
+    solver_cfg.eps_rel = sc["eps_rel"].as<double>(0.0);
+    solver_cfg.verbose = sc["verbose"].as<bool>(false);
   }
 
   // Pre-allocate per-level resources
@@ -46,8 +47,8 @@ void HQPFormulation::init(const pinocchio::Model& /*model*/,
   for (int k = 0; k < max_levels_; ++k) {
     qp_data_per_level_[static_cast<size_t>(k)].init(
         max_n_vars_, max_n_eq_per_level, max_n_ineq_);
-    qp_solvers_[static_cast<size_t>(k)].init(
-        max_n_vars_, max_n_eq_per_level, max_n_ineq_, solver_cfg);
+    qp_solvers_[static_cast<size_t>(k)].init(max_n_vars_, max_n_eq_per_level,
+                                             max_n_ineq_, solver_cfg);
   }
 
   // Level index storage
@@ -80,43 +81,46 @@ void HQPFormulation::add_constraint(
   constraints_.push_back(std::move(constraint));
 }
 
-TaskBase* HQPFormulation::get_task(std::string_view name) {
-  for (auto& t : tasks_) {
-    if (t->name() == name) return t.get();
+TaskBase *HQPFormulation::get_task(std::string_view name) {
+  for (auto &t : tasks_) {
+    if (t->name() == name)
+      return t.get();
   }
   return nullptr;
 }
 
-ConstraintBase* HQPFormulation::get_constraint(std::string_view name) {
-  for (auto& c : constraints_) {
-    if (c->name() == name) return c.get();
+ConstraintBase *HQPFormulation::get_constraint(std::string_view name) {
+  for (auto &c : constraints_) {
+    if (c->name() == name)
+      return c.get();
   }
   return nullptr;
 }
 
-void HQPFormulation::apply_preset(const PhasePreset& preset) noexcept {
-  for (const auto& tp : preset.task_presets) {
-    if (auto* t = get_task(tp.task_name)) {
+void HQPFormulation::apply_preset(const PhasePreset &preset) noexcept {
+  for (const auto &tp : preset.task_presets) {
+    if (auto *t = get_task(tp.task_name)) {
       t->set_active(tp.active);
       t->set_weight(tp.weight);
       t->set_priority(tp.priority);
     }
   }
-  for (const auto& cp : preset.constraint_presets) {
-    if (auto* c = get_constraint(cp.constraint_name)) {
+  for (const auto &cp : preset.constraint_presets) {
+    if (auto *c = get_constraint(cp.constraint_name)) {
       c->set_active(cp.active);
     }
   }
 }
 
 void HQPFormulation::rebuild_level_indices() noexcept {
-  for (auto& v : level_task_indices_) {
+  for (auto &v : level_task_indices_) {
     v.clear();
   }
   active_max_level_ = -1;
 
   for (int i = 0; i < static_cast<int>(tasks_.size()); ++i) {
-    if (!tasks_[static_cast<size_t>(i)]->is_active()) continue;
+    if (!tasks_[static_cast<size_t>(i)]->is_active())
+      continue;
     const int prio = tasks_[static_cast<size_t>(i)]->priority();
     if (prio >= 0 && prio < max_levels_) {
       level_task_indices_[static_cast<size_t>(prio)].push_back(i);
@@ -127,11 +131,10 @@ void HQPFormulation::rebuild_level_indices() noexcept {
   }
 }
 
-const SolveResult& HQPFormulation::solve(
-    const PinocchioCache& cache,
-    const ControlReference& ref,
-    const ContactState& contacts,
-    const RobotModelInfo& robot_info) noexcept {
+const SolveResult &
+HQPFormulation::solve(const PinocchioCache &cache, const ControlReference &ref,
+                      const ContactState &contacts,
+                      const RobotModelInfo &robot_info) noexcept {
   const int n_vars = nv_ + contacts.active_contact_vars;
 
   // Rebuild level indices from current task active/priority state
@@ -147,12 +150,14 @@ const SolveResult& HQPFormulation::solve(
   // ── Compute base constraints (shared across all levels) ──
   int base_n_eq = 0;
   // Use level 0's QPData as scratch for base constraints
-  auto& base_qp = qp_data_per_level_[0];
+  auto &base_qp = qp_data_per_level_[0];
 
-  for (const auto& con : constraints_) {
-    if (!con->is_active()) continue;
+  for (const auto &con : constraints_) {
+    if (!con->is_active())
+      continue;
     const int ed = con->eq_dim(contacts);
-    if (ed <= 0) continue;
+    if (ed <= 0)
+      continue;
 
     auto A_view = base_qp.A.block(base_n_eq, 0, ed, n_vars);
     auto b_view = base_qp.b.segment(base_n_eq, ed);
@@ -163,10 +168,12 @@ const SolveResult& HQPFormulation::solve(
   }
 
   int base_n_ineq = 0;
-  for (const auto& con : constraints_) {
-    if (!con->is_active()) continue;
+  for (const auto &con : constraints_) {
+    if (!con->is_active())
+      continue;
     const int id = con->ineq_dim(contacts);
-    if (id <= 0) continue;
+    if (id <= 0)
+      continue;
 
     auto C_view = base_qp.C.block(base_n_ineq, 0, id, n_vars);
     auto l_view = base_qp.l.segment(base_n_ineq, id);
@@ -174,8 +181,8 @@ const SolveResult& HQPFormulation::solve(
     C_view.setZero();
     l_view.setZero();
     u_view.setZero();
-    con->compute_inequality(cache, contacts, robot_info, n_vars,
-                            C_view, l_view, u_view);
+    con->compute_inequality(cache, contacts, robot_info, n_vars, C_view, l_view,
+                            u_view);
     base_n_ineq += id;
   }
 
@@ -185,10 +192,11 @@ const SolveResult& HQPFormulation::solve(
   result_.converged = false;
 
   for (int k = 0; k <= active_max_level_ && k < max_levels_; ++k) {
-    const auto& task_indices = level_task_indices_[static_cast<size_t>(k)];
-    if (task_indices.empty()) continue;
+    const auto &task_indices = level_task_indices_[static_cast<size_t>(k)];
+    if (task_indices.empty())
+      continue;
 
-    auto& qp = qp_data_per_level_[static_cast<size_t>(k)];
+    auto &qp = qp_data_per_level_[static_cast<size_t>(k)];
 
     // ── Cost: H_k, g_k from level k tasks ──
     auto H = qp.H.topLeftCorner(n_vars, n_vars);
@@ -200,7 +208,7 @@ const SolveResult& HQPFormulation::solve(
     int level_J_rows = 0;
 
     for (const int ti : task_indices) {
-      const auto& task = tasks_[static_cast<size_t>(ti)];
+      const auto &task = tasks_[static_cast<size_t>(ti)];
       const int rdim = task->residual_dim();
 
       auto J_view = J_workspace_.topLeftCorner(rdim, n_vars);
@@ -258,8 +266,7 @@ const SolveResult& HQPFormulation::solve(
     qp.n_ineq = base_n_ineq;
 
     // ── Solve level k ──
-    const auto& solver_result =
-        qp_solvers_[static_cast<size_t>(k)].solve(qp);
+    const auto &solver_result = qp_solvers_[static_cast<size_t>(k)].solve(qp);
 
     if (!solver_result.converged) {
       // Infeasible → 직전 level z* 사용
@@ -278,8 +285,7 @@ const SolveResult& HQPFormulation::solve(
     //   = J_level_k · z*_k
     if (level_J_rows > 0 && prev_stack_rows + level_J_rows <= max_prev_rows_) {
       Jz_prev_stack_.segment(prev_stack_rows, level_J_rows) =
-          J_prev_stack_
-              .block(prev_stack_rows, 0, level_J_rows, n_vars) *
+          J_prev_stack_.block(prev_stack_rows, 0, level_J_rows, n_vars) *
           solver_result.x_opt.head(n_vars);
       prev_stack_rows += level_J_rows;
     }
@@ -289,4 +295,4 @@ const SolveResult& HQPFormulation::solve(
   return result_;
 }
 
-}  // namespace rtc::tsid
+} // namespace rtc::tsid

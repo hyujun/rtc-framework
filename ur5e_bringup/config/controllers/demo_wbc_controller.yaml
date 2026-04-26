@@ -72,14 +72,14 @@ demo_wbc_controller:
     formulation_type: "wqp"
 
     # ProxSuite dense QP solver (WQP). Read by rtc_tsid::WQPFormulation::init.
-    # Note: only max_iter and eps_abs are currently read by rtc_tsid;
-    # eps_rel / verbose are in QPSolverConfig but not wired through YAML yet
-    # (upstream TODO). If formulation_type switches to "hqp", use
-    # 'hqp.solver_per_level' and 'hqp.max_levels' instead.
+    # If formulation_type switches to "hqp", use 'hqp.solver_per_level' +
+    # 'hqp.max_levels' instead (same 4 keys per level).
     wqp:
       solver:
         max_iter: 20             # ProxSuite max iterations
         eps_abs: 1.0e-6          # absolute tolerance
+        eps_rel: 0.0             # relative tolerance (0 → abs-only)
+        verbose: false           # ProxSuite per-iteration log (debug only)
 
     tasks:
       posture:
