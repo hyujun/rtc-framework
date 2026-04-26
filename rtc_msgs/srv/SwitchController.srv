@@ -1,0 +1,40 @@
+# /rtc_cm/switch_controller — request activation/deactivation of controllers.
+#
+# Single-active model: at most 1 entry in `activate_controllers` and at most
+# 1 entry in `deactivate_controllers`. STRICT rejects violations; BEST_EFFORT
+# uses the first entry of each list and warns.
+#
+# Response is sync — the new active controller is visible to the RT loop and
+# /<robot_ns>/active_controller_name (latched) has been published before
+# `ok=true` is returned.
+#
+# E-STOP behavior: while the global E-STOP is active, every switch request
+# returns ok=false with message="E-STOP active".
+
+# Names of controllers to activate (≤ 1 entry under D-A1 single-active).
+string[] activate_controllers
+
+# Names of controllers to deactivate (≤ 1 entry under D-A1 single-active).
+string[] deactivate_controllers
+
+# Strictness of validation:
+#   STRICT       — any violation (unknown name, multi-active, E-STOP, ...) → ok=false.
+#   BEST_EFFORT  — accept first valid entry, warn on others, succeed if at
+#                  least the activate target is reachable.
+int32 strictness
+int32 STRICT=1
+int32 BEST_EFFORT=2
+
+# Maximum time the service may wait for the RT loop to commit the swap.
+# Zero means infinite. Default callers should pass 1.0 s.
+builtin_interfaces/Duration timeout
+
+---
+
+# True iff the requested switch was committed under the chosen strictness.
+bool ok
+
+# Human-readable summary. On success: "switched <prev> -> <next>" or
+# "no-op (already active)". On failure: explanation (unknown name, E-STOP,
+# timeout, ...).
+string message

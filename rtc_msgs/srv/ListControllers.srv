@@ -1,0 +1,8 @@
+# /rtc_cm/list_controllers — query lifecycle state of all controllers
+# registered with the rtc_controller_manager.
+#
+# Empty request; response carries one ControllerState per loaded controller.
+
+---
+
+rtc_msgs/ControllerState[] controllers

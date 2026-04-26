@@ -4,10 +4,11 @@
   <name>rtc_msgs</name>
   <version>5.17.0</version>
   <description>
-    Custom ROS2 message definitions for the RTC framework (13 messages).
-    JointCommand, FingertipSensor, HandSensorState, GraspState, GuiPosition, RobotTarget,
-    DeviceStateLog, DeviceSensorLog, SimSensor, SimSensorState, ToFSnapshot,
-    CalibrationCommand, CalibrationStatus.
+    Custom ROS2 message + service definitions for the RTC framework.
+    Messages: JointCommand, FingertipSensor, HandSensorState, GraspState, GuiPosition,
+    RobotTarget, DeviceStateLog, DeviceSensorLog, SimSensor, SimSensorState, ToFSnapshot,
+    WbcState, CalibrationCommand, CalibrationStatus, ControllerState.
+    Services: ListControllers, SwitchController (rtc_controller_manager /rtc_cm/* APIs).
   </description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
