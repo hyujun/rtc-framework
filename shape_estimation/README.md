@@ -126,15 +126,24 @@ ROS 비의존 순수 C++ FSM 기반 탐색 모션 생성기. `enable_exploration
 
 ### Service
 
-| Service | Type | Description |
-|---------|------|-------------|
-| `/shape/clear` | `std_srvs/Trigger` | Clear point cloud & reset |
+| Service | Direction | Type | Description |
+|---------|-----------|------|-------------|
+| `/shape/clear` | server | `std_srvs/Trigger` | Clear point cloud & reset |
+| `/rtc_cm/switch_controller` | client | `rtc_msgs/srv/SwitchController` | Switch RT controller before exploration starts (sync, single-active per D-A1) |
 
 ### Action (enable_exploration: true)
 
 | Action | Type | Description |
 |--------|------|-------------|
 | `/shape/explore` | `ExploreShape` | Autonomous exploration |
+
+> **2026-04-26 migration note.** The legacy publisher to
+> `/<robot_ns>/controller_type` (which the action server used to switch the
+> RT controller before launching exploration) was retired in `55b10f5` —
+> the topic itself was removed, so for a brief window between commits
+> `55b10f5` and `F-1` the action's controller switch was a silent no-op
+> against a non-existent topic. The action now uses the `SwitchController`
+> srv synchronously and aborts cleanly on `ok=false`.
 
 ---
 

@@ -13,7 +13,11 @@ RTC 프레임워크의 **Python 개발 유틸리티 패키지**입니다. 컨트
 rtc_tools/
 ├── rtc_tools/
 │   ├── gui/
-│   │   └── controller_gui.py            ← tkinter 다크 테마 컨트롤러 GUI
+│   │   └── (empty)                       ← controller_gui.py removed in
+│   │                                       Phase F-2 (2026-04-26); the
+│   │                                       supported demo GUI lives under
+│   │                                       ur5e_bringup/scripts/
+│   │                                       demo_controller_gui.py
 │   ├── monitoring/
 │   │   └── __init__.py
 │   ├── plotting/
@@ -35,11 +39,10 @@ rtc_tools/
 
 **빌드 타입**: `ament_python` (`setup.py`의 `entry_points` 사용)
 
-**Entry points** (7개):
+**Entry points** (6개):
 
 | 실행 명령 | 모듈 | 설명 |
 |-----------|------|------|
-| `ros2 run rtc_tools controller_gui` | `gui.controller_gui` | 컨트롤러 GUI (tkinter) |
 | `ros2 run rtc_tools plot_rtc_log` | `plotting.plot_rtc_log` | CSV 로그 시각화 |
 | `ros2 run rtc_tools plot_ur_log` | `plotting.plot_rtc_log` | plot_rtc_log의 별칭 |
 | `ros2 run rtc_tools plot_ur_trajectory` | `plotting.plot_rtc_log` | legacy 별칭 |
@@ -53,52 +56,12 @@ rtc_tools/
 
 ## 스크립트 설명
 
-### `controller_gui.py` — 컨트롤러 GUI
-
-tkinter 기반 다크 테마(Catppuccin) GUI. 컨트롤러 선택, 게인 튜닝, 관절/태스크 타겟 전송, E-STOP 상태 표시를 단일 창에서 수행합니다.
-
-```bash
-ros2 run rtc_tools controller_gui
-```
-
-**기능:**
-
-| 섹션 | 설명 |
-|------|------|
-| 컨트롤러 선택 | P / Joint PD / CLIK / OSC 라디오 버튼 + "Switch Controller" |
-| 게인 패널 | 컨트롤러별 동적 입력 폼 (float 입력 또는 bool 체크박스) |
-| Joint Target | 6개 관절 각도 입력 (deg 표시, rad 전송) + 단계별 증감 버튼 |
-| Task Target | XYZ (m) + RPY (deg) 입력 + 단계별 증감 버튼 (CLIK/OSC용) |
-| 현재 상태 | 실시간 관절 위치 (rad + deg) + 태스크 위치 (XYZ m, RPY rad + deg) |
-| E-STOP 표시 | 실시간 상태 배지 (초록=정상, 빨강=활성) |
-| Load Gain | 활성 컨트롤러에서 현재 게인을 요청하여 입력 필드에 자동 채움 |
-| Apply Gains | "Currently Applied" 읽기 전용 섹션에 마지막 전송 게인 표시 |
-
-**ROS2 토픽:**
-
-> ⚠ **DEPRECATED 게인/스위치 채널.** controller_gui는 2026-04-26 게인 → ROS 2 parameter 마이그레이션 이전의 레거시 토픽들을 발행/구독하는데, 이 토픽들은 모두 제거된 상태입니다. 즉 Apply / Load / Switch 버튼은 런타임에 no-op입니다. 대체 경로: `/rtc_cm/switch_controller` srv (전환), 컨트롤러 LifecycleNode parameter API (게인). [ur5e_bt_coordinator/src/bt_ros_bridge.cpp](../ur5e_bt_coordinator/src/bt_ros_bridge.cpp) 참고하여 마이그레이션 필요.
-
-| 방향 | 토픽 | 타입 | 상태 | 설명 |
-|------|------|------|------|------|
-| 발행 | `/ur5e/target_joint_positions` | `Float64MultiArray` | active | 관절/태스크 타겟 위치 |
-| 발행 | `/ur5e/controller_type` | `Int32` | **dead** | 컨트롤러 전환 → `/rtc_cm/switch_controller` srv 사용 |
-| 발행 | `/ur5e/controller_gains` | `Float64MultiArray` | **dead** | 게인 → 컨트롤러 LifecycleNode parameter API |
-| 발행 | `/ur5e/request_gains` | `Bool` | **dead** | (제거됨) parameter `get_parameters` 사용 |
-| 구독 | `/joint_states` | `JointState` | active | 현재 관절 상태 |
-| 구독 | `/ur5e/gui_position` | `GuiPosition` (`rtc_msgs`) | active | 현재 EE 태스크 위치 (6D) |
-| 구독 | `/system/estop_status` | `Bool` | active | E-STOP 상태 |
-| 구독 | `/ur5e/current_gains` | `Float64MultiArray` | **dead** | (제거됨) parameter `get_parameters` 사용 |
-
-**컨트롤러별 게인 입력 형식:**
-
-| 컨트롤러 | 인덱스 | 게인 | 총 값 개수 |
-|----------|--------|------|-----------|
-| P | 0 | kp x6 | 6 |
-| Joint PD | 1 | kp x6, kd x6, gravity_comp(bool), coriolis_comp(bool), traj_speed | 15 |
-| CLIK | 2 | kp x6, damping, null_kp, null_space(bool), control_6dof(bool) | 10 |
-| OSC | 3 | kp_pos x3, kd_pos x3, kp_rot x3, kd_rot x3, damping, gravity_comp(bool), traj_speed, traj_ang_speed | 16 |
-
----
+> **Note:** The legacy `controller_gui.py` was removed in Phase F-2 (2026-04-26)
+> together with the gain → ROS 2 parameter migration. It targeted the four
+> core controllers (P / JointPD / CLIK / OSC) which never exposed a
+> runtime-tunable gain channel. The supported demo GUI for the
+> three demo controllers (DemoJoint / DemoTask / DemoWbc) lives at
+> [ur5e_bringup/scripts/demo_controller_gui.py](../ur5e_bringup/scripts/demo_controller_gui.py).
 
 ### `plot_rtc_log.py` — 로그 시각화 (v5, 4-카테고리)
 

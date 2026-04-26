@@ -189,7 +189,7 @@ ShapeEstimationNode::on_cleanup(const rclcpp_lifecycle::State & /*state*/) {
   sub_estop_.reset();
   sub_gui_position_.reset();
   pub_robot_target_.reset();
-  pub_controller_type_.reset();
+  switch_controller_client_.reset();
   action_server_.reset();
 
   viz_timer_.reset();
@@ -232,7 +232,7 @@ ShapeEstimationNode::on_error(const rclcpp_lifecycle::State & /*state*/) {
   sub_estop_.reset();
   sub_gui_position_.reset();
   pub_robot_target_.reset();
-  pub_controller_type_.reset();
+  switch_controller_client_.reset();
   action_server_.reset();
 
   viz_timer_.reset();
@@ -527,12 +527,16 @@ void ShapeEstimationNode::InitExploration() {
         HandleAccepted(goal_handle);
       });
 
-  // ── RT Controller 연동 publishers ──────────────────────────────────────────
-  pub_controller_type_ = create_publisher<std_msgs::msg::String>(
-      "/" + robot_namespace_ + "/controller_type", rclcpp::QoS(1).reliable());
+  // ── RT Controller 연동 ─────────────────────────────────────────────────
+  // Switch the active RT controller via /rtc_cm/switch_controller srv (sync,
+  // single-active per locked decision D-A2). Replaces the dead
+  // /<robot_ns>/controller_type publisher path that was retired in 55b10f5.
+  switch_controller_client_ = create_client<rtc_msgs::srv::SwitchController>(
+      "/rtc_cm/switch_controller");
 
   // pub_robot_target_ and sub_gui_position_ are controller-owned (Phase 4)
-  // and bound in RewireControllerTopics() on /active_controller_name arrival.
+  // and bound in RewireControllerTopics() on /rtc_cm/active_controller_name
+  // arrival.
 
   sub_estop_ = create_subscription<std_msgs::msg::Bool>(
       "/system/estop_status", rclcpp::QoS(1).reliable().transient_local(),
@@ -605,19 +609,48 @@ void ShapeEstimationNode::HandleAccepted(
                   goal->object_position.z};
   }
 
-  // 1) DemoTaskController로 전환
-  auto switch_msg = std_msgs::msg::String();
-  switch_msg.data = controller_name_;
-  pub_controller_type_->publish(switch_msg);
+  // 1) Switch the RT controller to controller_name_ via the
+  //    /rtc_cm/switch_controller srv (single-active per D-A1, STRICT).
+  //    The action server runs accepted callbacks on a dedicated thread, so
+  //    blocking here is safe; CM only returns ok=true after committing the
+  //    swap and publishing the latched /rtc_cm/active_controller_name.
+  if (!switch_controller_client_->service_is_ready()) {
+    if (!switch_controller_client_->wait_for_service(std::chrono::seconds(2))) {
+      RCLCPP_ERROR(
+          get_logger(),
+          "/rtc_cm/switch_controller unavailable — exploration aborted");
+      return;
+    }
+  }
+  auto request = std::make_shared<rtc_msgs::srv::SwitchController::Request>();
+  request->activate_controllers = {controller_name_};
+  request->strictness = rtc_msgs::srv::SwitchController::Request::STRICT;
+  request->timeout.sec = 1;
+  request->timeout.nanosec = 0;
+  auto fut = switch_controller_client_->async_send_request(request);
+  const auto wait_dur =
+      std::chrono::milliseconds(controller_switch_delay_ms_ + 2000);
+  if (fut.wait_for(wait_dur) != std::future_status::ready) {
+    RCLCPP_ERROR(
+        get_logger(),
+        "switch_controller srv timed out (>%lldms) — exploration aborted",
+        static_cast<long long>(wait_dur.count()));
+    return;
+  }
+  const auto resp = fut.get();
+  if (!resp->ok) {
+    RCLCPP_ERROR(get_logger(), "switch_controller srv rejected '%s': %s",
+                 controller_name_.c_str(), resp->message.c_str());
+    return;
+  }
 
-  // 2) 컨트롤러 전환 대기 후 탐색 시작 (one-shot timer)
-  // 멤버 변수로 타이머를 유지하여 lifetime 보장 + cancel 가능
-  auto delay = std::chrono::milliseconds(controller_switch_delay_ms_);
-  delayed_start_timer_ = create_wall_timer(delay, [this, object_pos]() {
-    StartExploration(object_pos);
-    // one-shot: 즉시 cancel
-    delayed_start_timer_->cancel();
-  });
+  // 2) 탐색 시작 (one-shot timer keeps StartExploration off the action
+  //    accepted callback's stack, matching the previous behavior).
+  delayed_start_timer_ =
+      create_wall_timer(std::chrono::milliseconds(1), [this, object_pos]() {
+        StartExploration(object_pos);
+        delayed_start_timer_->cancel();
+      });
 }
 
 // ── 탐색 시작/중지 ──────────────────────────────────────────────────────────

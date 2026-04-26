@@ -22,6 +22,7 @@
 #include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/msg/to_f_snapshot.hpp>
+#include <rtc_msgs/srv/switch_controller.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <shape_estimation_msgs/action/explore_shape.hpp>
 #include <shape_estimation_msgs/msg/shape_estimate.hpp>
@@ -149,8 +150,8 @@ private:
   HandleAccepted(const std::shared_ptr<GoalHandleExploreShape> goal_handle);
 
   // ── RT Controller 연동 ────────────────────────────────────────────────────
-  rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::String>::SharedPtr
-      pub_controller_type_;
+  rclcpp::Client<rtc_msgs::srv::SwitchController>::SharedPtr
+      switch_controller_client_;
   rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::RobotTarget>::SharedPtr
       pub_robot_target_;
 

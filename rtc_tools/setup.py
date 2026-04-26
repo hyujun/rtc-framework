@@ -20,8 +20,6 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'controller_gui = rtc_tools.gui.controller_gui:main',
-
             'plot_rtc_log = rtc_tools.plotting.plot_rtc_log:main',
             'plot_ur_log = rtc_tools.plotting.plot_rtc_log:main',
             'plot_ur_trajectory = rtc_tools.plotting.plot_rtc_log:main',

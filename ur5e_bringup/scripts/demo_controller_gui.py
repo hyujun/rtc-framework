@@ -2,22 +2,17 @@
 """
 Demo Controller GUI (ur5e_bringup)
 
-⚠ DEPRECATED — gain/switch paths point at topics removed during the 2026-04-26
-   gain → ROS 2 parameter migration. /ur5e/controller_type (replaced by
-   /rtc_cm/switch_controller srv, 55b10f5) and the
-   /ur5e/{controller_gains,request_gains,current_gains} trio (replaced by
-   per-controller LifecycleNode parameter API) no longer exist on the bus.
-   GUI Apply Gains / Load Gains / controller-switch buttons are no-ops at
-   runtime until migrated to AsyncParametersClient + switch_controller srv.
-   Reference implementation: ur5e_bt_coordinator/src/bt_ros_bridge.cpp.
-
-- Select between Demo Joint / Demo Task / Demo WBC (legacy publish path)
-- Set gains per controller (legacy publish path)
-- Displays currently applied gains after "Apply Gains" is pressed
-- When switching controller, current joint positions become the new target
-- Periodically display current joint positions alongside the target inputs
-- E-STOP status indicator via /system/estop_status
-- Hand motor target UI for all three demo controllers
+- Select between Demo Joint / Demo Task and tune their runtime gains
+- Controller switch  → /rtc_cm/switch_controller srv (single-active, D-A1)
+- Gain Apply / Load  → AsyncParameterClient on the active controller's
+                       LifecycleNode (params declared in DeclareGainParameters
+                       in each demo's source file). Read-only caps
+                       (*_max_traj_velocity) are skipped on Apply.
+- Force-PI grasp     → /<active>/grasp_command srv (rtc_msgs/GraspCommand)
+- E-STOP status      → /system/estop_status (subscribe)
+- Hand motor target  → /<active>/hand/joint_goal (RobotTarget pub)
+- Live joint state   → /<active>/<arm|hand>/gui_position (rebound on every
+                       /rtc_cm/active_controller_name transition)
 """
 import json
 import math
@@ -25,11 +20,14 @@ import os
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float64MultiArray, String, Bool
+from rclpy.parameter import Parameter
+from rclpy.parameter_client import AsyncParameterClient
+from std_msgs.msg import String, Bool
 from rtc_msgs.msg import (
     GuiPosition, GraspState, RobotTarget,
     CalibrationCommand, CalibrationStatus,
 )
+from rtc_msgs.srv import GraspCommand, SwitchController
 import tkinter as tk
 from tkinter import ttk, font as tkfont, messagebox
 import threading
@@ -111,13 +109,6 @@ _DEFAULT_PRESETS = {
     },
 }
 
-# hand_trajectory_speed index inside the flat gains array per controller
-_HAND_TRAJ_SPEED_IDX = {
-    "demo_joint_controller": 1,   # gains[1]
-    "demo_task_controller": 12,   # gains[12] (after 3+3+1+1+1+1+1+1)
-}
-
-
 def _resolve_preset_path() -> str:
     """Resolve hand_presets.json path using the workspace logging directory."""
     from rtc_tools.utils.session_dir import get_session_dir, resolve_logging_root
@@ -180,6 +171,48 @@ GAIN_ROW_NAMES = {
     "demo_task_controller": {
         "kp_translation": ["x", "y", "z"],
         "kp_rotation": ["rx", "ry", "rz"],
+    },
+}
+
+# Maps each GAIN_DEFS entry name → (declared parameter name, value-builder).
+# value-builder is called with the flat list of widget values for that entry
+# and must return either a `Parameter.Type` + native value pair, or None to
+# skip dispatch (used for read-only caps that the controller would reject).
+# `grasp_command` and `grasp_target_force` are not parameters — they go
+# through the GraspCommand srv on Apply Grasp / Release.
+def _set_double(v): return (Parameter.Type.DOUBLE, float(v[0]))
+def _set_double_array(v): return (Parameter.Type.DOUBLE_ARRAY,
+                                  [float(x) for x in v])
+def _set_bool(v): return (Parameter.Type.BOOL, bool(v[0] > 0.5))
+def _set_int(v): return (Parameter.Type.INTEGER, int(v[0]))
+def _read_only(_): return None  # skip — controller has read_only=true on cap
+
+GAIN_PARAM_DISPATCH: dict[str, dict[str, tuple[str, callable]]] = {
+    "demo_joint_controller": {
+        "robot_traj_speed":     ("robot_trajectory_speed", _set_double),
+        "hand_traj_speed":      ("hand_trajectory_speed",  _set_double),
+        "robot_max_traj_vel":   ("robot_max_traj_velocity", _read_only),
+        "hand_max_traj_vel":    ("hand_max_traj_velocity",  _read_only),
+        "grasp_contact_thresh": ("grasp_contact_threshold", _set_double),
+        "grasp_force_thresh":   ("grasp_force_threshold",   _set_double),
+        "grasp_min_fingertips": ("grasp_min_fingertips",    _set_int),
+    },
+    "demo_task_controller": {
+        "kp_translation":       ("kp_translation",          _set_double_array),
+        "kp_rotation":          ("kp_rotation",             _set_double_array),
+        "damping":              ("damping",                 _set_double),
+        "null_kp":              ("null_kp",                 _set_double),
+        "null_space":           ("enable_null_space",       _set_bool),
+        "control_6dof":         ("control_6dof",            _set_bool),
+        "traj_speed":           ("trajectory_speed",        _set_double),
+        "traj_angular_speed":   ("trajectory_angular_speed", _set_double),
+        "hand_traj_speed":      ("hand_trajectory_speed",   _set_double),
+        "max_traj_vel":         ("max_traj_velocity",       _read_only),
+        "max_traj_angular_vel": ("max_traj_angular_velocity", _read_only),
+        "hand_max_traj_vel":    ("hand_max_traj_velocity",  _read_only),
+        "grasp_contact_thresh": ("grasp_contact_threshold", _set_double),
+        "grasp_force_thresh":   ("grasp_force_threshold",   _set_double),
+        "grasp_min_fingertips": ("grasp_min_fingertips",    _set_int),
     },
 }
 
@@ -251,13 +284,17 @@ class DemoControllerGUI(Node):
         self._hand_gui_sub = None
         self._grasp_state_sub = None
 
-        # Manager-owned publishers (stable paths)
-        self.type_pub = self.create_publisher(
-            String, '/ur5e/controller_type', 10)
-        self.gains_pub = self.create_publisher(
-            Float64MultiArray, '/ur5e/controller_gains', 10)
-        self.request_gains_pub = self.create_publisher(
-            Bool, '/ur5e/request_gains', 10)
+        # /rtc_cm/switch_controller srv client (single-CM scope per D-A2)
+        self.switch_controller_client = self.create_client(
+            SwitchController, '/rtc_cm/switch_controller')
+
+        # AsyncParameterClient + grasp_command client per controller. Created
+        # lazily (and rebound on /rtc_cm/active_controller_name change) so we
+        # don't pin clients against controllers that may not have come up yet.
+        # Param services live on the LifecycleNode FQN /<config_key>/<config_key>;
+        # grasp_command is a relative srv under /<config_key>/grasp_command.
+        self._param_clients: dict[str, AsyncParameterClient] = {}
+        self._grasp_clients: dict[str, rclpy.client.Client] = {}
 
         # Sensor calibration (Control tab)
         self.calib_cmd_pub = self.create_publisher(
@@ -280,9 +317,9 @@ class DemoControllerGUI(Node):
         self.create_subscription(Bool, '/system/estop_status',
                                  self._estop_cb, 10)
 
+        # _pending_load_gains carries a tk-thread callback to fire after
+        # AsyncParameterClient.get_parameters resolves on the executor.
         self._pending_load_gains = False
-        self.create_subscription(Float64MultiArray, '/ur5e/current_gains',
-                                 self._current_gains_cb, 10)
 
         # Hand state subscription via gui_position topic (created in rewire)
         self.current_hand_positions = [0.0] * NUM_HAND_MOTORS
@@ -317,9 +354,6 @@ class DemoControllerGUI(Node):
         # Hand presets (loaded from JSON)
         self._preset_path = _resolve_preset_path()
         self._presets = self._load_presets()
-
-        # Cached current gains (updated via request/response)
-        self._cached_gains: list[float] | None = None
 
         # Dirty-check caches for GUI refresh (avoid redundant Tk redraws)
         self._prev_status = [''] * 6
@@ -471,12 +505,25 @@ class DemoControllerGUI(Node):
         except OSError as e:
             self.get_logger().error(f"Failed to save presets: {e}")
 
-    def _current_gains_cb(self, msg: Float64MultiArray):
-        self._cached_gains = list(msg.data)
-        if not self._pending_load_gains:
-            return
-        self._pending_load_gains = False
-        self.root.after(0, self._fill_gains_from_data, list(msg.data))
+    # ── /rtc_cm/* + per-controller parameter helpers ─────────────────────
+
+    def _get_param_client(self, ctrl: str) -> AsyncParameterClient:
+        """Return (lazily creating) an AsyncParameterClient targeting the
+        active controller's LifecycleNode. The node FQN is /<ctrl>/<ctrl>
+        because each controller's LifecycleNode is constructed with
+        namespace=/<ctrl> and node-name=<ctrl> (see RtControllerNode."""
+        client = self._param_clients.get(ctrl)
+        if client is None:
+            client = AsyncParameterClient(self, f'/{ctrl}/{ctrl}')
+            self._param_clients[ctrl] = client
+        return client
+
+    def _get_grasp_client(self, ctrl: str) -> 'rclpy.client.Client':
+        client = self._grasp_clients.get(ctrl)
+        if client is None:
+            client = self.create_client(GraspCommand, f'/{ctrl}/grasp_command')
+            self._grasp_clients[ctrl] = client
+        return client
 
     def _schedule_refresh(self):
         """Periodic GUI refresh scheduled on the Tk event loop (thread-safe)."""
@@ -1706,11 +1753,37 @@ class DemoControllerGUI(Node):
     def _on_switch_controller(self):
         idx = self.selected_ctrl.get()
 
-        msg = String()
-        msg.data = idx
-        self.type_pub.publish(msg)
-        self.get_logger().info(
-            f"Switched to controller: {CONTROLLER_TYPES[idx]}")
+        # Async send via /rtc_cm/switch_controller. UI updates happen
+        # immediately (the switch-back flag /rtc_cm/active_controller_name
+        # subscription drives the controller-owned topic rebinding); the
+        # done-callback only logs success/failure.
+        if not self.switch_controller_client.service_is_ready():
+            self.get_logger().warn(
+                "/rtc_cm/switch_controller not ready — request dropped")
+            self._ctrl_status.set(
+                f"(srv unavailable) Active: {CONTROLLER_TYPES[idx]}")
+            return
+
+        req = SwitchController.Request()
+        req.activate_controllers = [idx]
+        req.strictness = SwitchController.Request.STRICT
+        req.timeout.sec = 1
+        req.timeout.nanosec = 0
+        future = self.switch_controller_client.call_async(req)
+
+        def _on_switch_done(fut):
+            try:
+                resp = fut.result()
+            except Exception as exc:  # pragma: no cover — rclpy executor error
+                self.get_logger().error(f"switch_controller srv exception: {exc}")
+                return
+            if resp.ok:
+                self.get_logger().info(
+                    f"Switched to {CONTROLLER_TYPES[idx]}: {resp.message}")
+            else:
+                self.get_logger().error(
+                    f"switch_controller rejected: {resp.message}")
+        future.add_done_callback(_on_switch_done)
 
         self._ctrl_status.set(f"Active: {CONTROLLER_TYPES[idx]}")
         self._show_gains_panel(idx)
@@ -1730,11 +1803,58 @@ class DemoControllerGUI(Node):
         self._set_hand_target_entries(self.current_hand_positions)
 
     def _request_load_gains(self):
-        self._pending_load_gains = True
-        msg = Bool()
-        msg.data = True
-        self.request_gains_pub.publish(msg)
-        self.get_logger().info("Requested current gains from active controller")
+        ctrl = self.selected_ctrl.get()
+        dispatch = GAIN_PARAM_DISPATCH.get(ctrl)
+        if dispatch is None:
+            self.get_logger().error(f"No parameter dispatch for {ctrl}")
+            return
+
+        # Read all parameters (read-only caps included so the user can see
+        # the YAML-set values; the result fills widgets but they remain
+        # disabled at apply time).
+        param_names = [p[0] for p in dispatch.values()]
+        client = self._get_param_client(ctrl)
+        if not client.wait_for_services(timeout_sec=1.0):
+            self.get_logger().error(
+                f"parameter services for /{ctrl} unavailable")
+            return
+
+        future = client.get_parameters(param_names)
+
+        def _on_get_done(fut):
+            try:
+                resp = fut.result()
+            except Exception as exc:
+                self.get_logger().error(f"get_parameters exception: {exc}")
+                return
+            # resp is rcl_interfaces.srv.GetParameters.Response → values list.
+            flat: list[float] = []
+            for entry, p_value in zip(dispatch.items(), resp.values):
+                # entry = (gain_def_name, (param_name, value_builder)). The
+                # GUI widget order matches GAIN_DEFS exactly, so we flatten
+                # in dispatch-iteration order.
+                _, (_, builder) = entry
+                # Reverse-extract the typed scalar/array. ParameterValue
+                # carries 8 type slots (NOT_SET, BOOL, INTEGER, DOUBLE,
+                # STRING, BYTE_ARRAY, BOOL_ARRAY, INTEGER_ARRAY,
+                # DOUBLE_ARRAY, STRING_ARRAY).
+                if builder is _set_double_array:
+                    flat.extend(list(p_value.double_array_value))
+                elif builder is _set_double:
+                    flat.append(p_value.double_value)
+                elif builder is _set_int:
+                    flat.append(float(p_value.integer_value))
+                elif builder is _set_bool:
+                    flat.append(1.0 if p_value.bool_value else 0.0)
+                elif builder is _read_only:
+                    flat.append(p_value.double_value)
+                else:
+                    flat.append(0.0)
+            self.root.after(0, self._fill_gains_from_data, flat)
+            self.get_logger().info(
+                f"Loaded {len(param_names)} parameters from /{ctrl}")
+        future.add_done_callback(_on_get_done)
+        self.get_logger().info(f"Requesting current parameters from /{ctrl}")
 
     def _fill_gains_from_data(self, data: list[float]):
         idx = 0
@@ -1786,41 +1906,103 @@ class DemoControllerGUI(Node):
         return values
 
     def _publish_gains(self):
-        values = self._collect_gain_values()
-        if values is None:
+        ctrl = self.selected_ctrl.get()
+        dispatch = GAIN_PARAM_DISPATCH.get(ctrl)
+        if dispatch is None:
+            self.get_logger().error(f"No parameter dispatch for {ctrl}")
             return
 
-        msg = Float64MultiArray()
-        msg.data = values
-        self.gains_pub.publish(msg)
+        # GAIN_DEFS and dispatch are both keyed by entry name; iterate the
+        # widget rows in declared order and consume `size` widgets each.
+        params: list[Parameter] = []
+        widget_iter = iter(zip(self._gain_entries, self._gain_is_bool))
+        for entry in GAIN_DEFS[ctrl]:
+            entry_name, size, _defaults, is_bool, _grp = entry
+            try:
+                widgets, _is_bool = next(widget_iter)
+            except StopIteration:
+                self.get_logger().error("widget/gain_def out of sync")
+                return
+            try:
+                values = [float(w.get()) for w in widgets]
+            except ValueError:
+                self.get_logger().error(
+                    f"Invalid value in '{entry_name}' — fix and retry")
+                return
+            param_name, builder = dispatch[entry_name]
+            built = builder(values)
+            if built is None:
+                # Read-only cap — skip silently (controller would reject).
+                continue
+            ptype, pvalue = built
+            params.append(Parameter(name=param_name, type_=ptype, value=pvalue))
 
-        ctrl_name = CONTROLLER_TYPES[self.selected_ctrl.get()]
-        self.get_logger().info(
-            f"Applied gains for {ctrl_name}: {[f'{v:.4f}' for v in values]}")
+        if not params:
+            self.get_logger().warn("Nothing to apply (all entries read-only?)")
+            return
 
-        self._update_applied_display()
+        client = self._get_param_client(ctrl)
+        if not client.wait_for_services(timeout_sec=1.0):
+            self.get_logger().error(
+                f"parameter services for /{ctrl} unavailable")
+            return
+
+        future = client.set_parameters_atomically(params)
+        ctrl_label = CONTROLLER_TYPES[ctrl]
+
+        def _on_set_done(fut):
+            try:
+                resp = fut.result()
+            except Exception as exc:
+                self.get_logger().error(f"set_parameters exception: {exc}")
+                return
+            if resp.result.successful:
+                self.get_logger().info(
+                    f"Applied {len(params)} gains for {ctrl_label}")
+            else:
+                self.get_logger().error(
+                    f"set_parameters_atomically rejected: {resp.result.reason}")
+        future.add_done_callback(_on_set_done)
+
+        self.root.after(0, self._update_applied_display)
 
     def _send_grasp_command(self, cmd: int):
-        """Send grasp command (1=grasp, 2=release) via gains message.
-
-        Appends grasp_command + grasp_target_force to the base gains array
-        so the controller receives the full expected layout.
+        """Send a one-shot Force-PI grasp command via the active controller's
+        ~/grasp_command srv. cmd: 1=grasp, 2=release.
         """
-        base = self._collect_gain_values()
-        if base is None:
-            return
+        ctrl = self.selected_ctrl.get()
         try:
             target_force = float(self._grasp_target_force_entry.get())
         except (ValueError, AttributeError):
             target_force = 2.0
 
-        base.extend([float(cmd), target_force])
+        client = self._get_grasp_client(ctrl)
+        if not client.service_is_ready():
+            self.get_logger().error(
+                f"/{ctrl}/grasp_command srv not ready")
+            return
 
-        msg = Float64MultiArray()
-        msg.data = base
-        self.gains_pub.publish(msg)
+        req = GraspCommand.Request()
+        req.command = int(cmd)
+        req.target_force = target_force
+        future = client.call_async(req)
 
         cmd_name = "Grasp" if cmd == 1 else "Release"
+
+        def _on_grasp_done(fut):
+            try:
+                resp = fut.result()
+            except Exception as exc:
+                self.get_logger().error(f"grasp_command exception: {exc}")
+                return
+            if resp.ok:
+                self.get_logger().info(
+                    f"{cmd_name} accepted (target_force={target_force:.2f} N): "
+                    f"{resp.message}")
+            else:
+                self.get_logger().error(
+                    f"{cmd_name} rejected: {resp.message}")
+        future.add_done_callback(_on_grasp_done)
         self.get_logger().info(
             f"Sent {cmd_name} command (target_force={target_force:.2f} N)")
 
@@ -2000,26 +2182,38 @@ class DemoControllerGUI(Node):
         else:
             hand_traj_speed = 1.0
 
-        # Update gains with the new hand_trajectory_speed
+        # Update only the hand_trajectory_speed parameter on the active
+        # controller. set_parameters_atomically with a single typed Parameter
+        # is cheaper + more transparent than the legacy whole-gains-array
+        # publish that used `_HAND_TRAJ_SPEED_IDX` to find the right slot.
         ctrl = self.selected_ctrl.get()
-        speed_idx = _HAND_TRAJ_SPEED_IDX.get(ctrl)
-        if speed_idx is not None:
-            gains_values: list[float] = []
-            for widgets, is_bool in zip(self._gain_entries, self._gain_is_bool):
-                for w in widgets:
-                    try:
-                        gains_values.append(float(w.get()))
-                    except ValueError:
-                        gains_values.append(0.0)
+        client = self._get_param_client(ctrl)
+        if client.wait_for_services(timeout_sec=0.5):
+            param = Parameter(name='hand_trajectory_speed',
+                              type_=Parameter.Type.DOUBLE,
+                              value=float(hand_traj_speed))
+            future = client.set_parameters_atomically([param])
 
-            if speed_idx < len(gains_values):
-                gains_values[speed_idx] = hand_traj_speed
-                gains_msg = Float64MultiArray()
-                gains_msg.data = gains_values
-                self.gains_pub.publish(gains_msg)
-                self.get_logger().info(
-                    f"Preset '{name}': set hand_traj_speed={hand_traj_speed:.4f} "
-                    f"rad/s (grasp_time={grasp_time:.2f}s, max_dist={max_dist:.4f})")
+            def _on_done(fut):
+                try:
+                    resp = fut.result()
+                except Exception as exc:
+                    self.get_logger().error(
+                        f"hand_trajectory_speed set exception: {exc}")
+                    return
+                if resp.result.successful:
+                    self.get_logger().info(
+                        f"Preset '{name}': hand_trajectory_speed="
+                        f"{hand_traj_speed:.4f} rad/s "
+                        f"(grasp_time={grasp_time:.2f}s, max_dist={max_dist:.4f})")
+                else:
+                    self.get_logger().error(
+                        f"set hand_trajectory_speed rejected: {resp.result.reason}")
+            future.add_done_callback(_on_done)
+        else:
+            self.get_logger().warn(
+                f"parameter services for /{ctrl} unavailable — "
+                f"hand_trajectory_speed not updated")
 
         # Publish hand target
         hand_msg = RobotTarget()
