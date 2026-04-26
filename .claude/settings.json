@@ -16,6 +16,10 @@
       "Bash(dd *)",
       "Bash(mkfs*)",
       "Bash(eval *)"
+    ],
+    "additionalDirectories": [
+      "/home/junho/ros2_ws/rtc_ws/src/rtc-framework",
+      "/home/junho/ros2_ws/rtc_ws/src/rtc-framework/.claude"
     ]
   },
   "hooks": {
