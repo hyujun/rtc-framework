@@ -137,6 +137,12 @@ if(BUILD_TESTING)
     target_link_libraries(test_mpc_solution_manager rtc_mpc)
   endif()
 
+  ament_add_gtest(test_mpc_solve_timing_logger
+    test/test_mpc_solve_timing_logger.cpp)
+  if(TARGET test_mpc_solve_timing_logger)
+    target_link_libraries(test_mpc_solve_timing_logger rtc_mpc)
+  endif()
+
   ament_add_gtest(test_mpc_thread_skeleton
     test/test_mpc_thread_skeleton.cpp)
   if(TARGET test_mpc_thread_skeleton)

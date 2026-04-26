@@ -1703,6 +1703,79 @@ def print_timing_statistics(df):
         print(f"\nOverruns (>{budget:.0f} µs): {overruns} ({pct:.3f}%)")
 
 
+# ── MPC solve-timing plots ────────────────────────────────────────────────
+
+
+def plot_mpc_solve_timing(df, save_dir=None):
+    """Plot MPC solver latency p50/p99/max over time from
+    `<session>/controllers/<config_key>/mpc_solve_timing.csv`. Columns are
+    nanoseconds; this function converts them to microseconds for display.
+    """
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+    fig.suptitle("MPC Solve Timing", fontsize=16, fontweight="bold")
+
+    # X axis: relative wall time in seconds. t_wall_ns is steady_clock since
+    # epoch, so anchor to the first sample for readability.
+    t0 = df["t_wall_ns"].iloc[0]
+    t = (df["t_wall_ns"] - t0) / 1e9
+
+    # Convert ns → us
+    p50_us = df["p50_ns"] / 1e3
+    p99_us = df["p99_ns"] / 1e3
+    max_us = df["max_ns"] / 1e3
+    last_us = df["last_ns"] / 1e3
+    mean_us = df["mean_ns"] / 1e3
+
+    ax1.plot(t, p50_us, linewidth=1.0, label="p50", color="#2196F3")
+    ax1.plot(t, p99_us, linewidth=1.0, label="p99", color="#FF9800")
+    ax1.plot(t, max_us, linewidth=1.0, label="max", color="#F44336")
+    ax1.plot(
+        t, mean_us, linewidth=0.8, alpha=0.6, label="mean", color="#4CAF50"
+    )
+    ax1.set_ylabel("Solve time (µs)")
+    ax1.legend(fontsize=9, loc="upper right")
+    ax1.grid(True, alpha=0.3)
+
+    ax2.plot(t, last_us, linewidth=0.6, alpha=0.7, label="last sample", color="#9C27B0")
+    ax2.set_xlabel("Time since first sample (s)")
+    ax2.set_ylabel("Last solve (µs)")
+    ax2.legend(fontsize=9, loc="upper right")
+    ax2.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if save_dir:
+        path = Path(save_dir) / "mpc_solve_timing.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
+    else:
+        plt.show()
+    plt.close()
+
+
+def print_mpc_timing_statistics(df):
+    """Print MPC solve-timing summary in microseconds."""
+    duration_s = (df["t_wall_ns"].iloc[-1] - df["t_wall_ns"].iloc[0]) / 1e9
+    print("\n=== MPC Solve Timing ===")
+    print(
+        f"Duration: {duration_s:.2f} s | Snapshots: {len(df)} "
+        f"| Last count: {int(df['count'].iloc[-1])}"
+    )
+    for col, label in [
+        ("min_ns", "Min"),
+        ("p50_ns", "P50 (median)"),
+        ("p99_ns", "P99"),
+        ("max_ns", "Max"),
+        ("mean_ns", "Mean"),
+    ]:
+        if col not in df.columns:
+            continue
+        data_us = df[col] / 1e3
+        print(
+            f"{label:<14}  window-mean: {data_us.mean():.2f} µs"
+            f"  window-max: {data_us.max():.2f} µs"
+        )
+
+
 # ── Auto-detect & Main ────────────────────────────────────────────────────
 
 
@@ -1728,6 +1801,8 @@ def detect_log_type(filepath):
         return "device"
     elif stem.startswith("timing_log"):
         return "timing"
+    elif stem == "mpc_solve_timing":
+        return "mpc_solve_timing"
     else:
         return "unknown"
 
@@ -1736,9 +1811,12 @@ def detect_log_type_by_columns(columns):
     """Fallback: infer log type from CSV header columns.
 
     Used when filename doesn't match a known pattern (e.g. user-renamed file
-    like timing_stat.csv). Priority: timing > state_log > sensor_log.
+    like timing_stat.csv). Priority: mpc_solve_timing > timing > state_log
+    > sensor_log.
     """
     cols = set(columns)
+    if {"t_wall_ns", "p50_ns", "p99_ns", "max_ns"}.issubset(cols):
+        return "mpc_solve_timing"
     if any(
         c in cols
         for c in (
@@ -1788,6 +1866,13 @@ def main():
         help="Directory to save plots (PNG). "
         "미지정 시 RTC_SESSION_DIR/plots/ (없으면 "
         "현재 colcon ws logging_data 의 최신 세션) 사용",
+    )
+    parser.add_argument(
+        "--show",
+        action="store_true",
+        help="Display plots in GUI in addition to saving. "
+        "Without this flag, --save-dir (auto-resolved by default) forces the "
+        "Agg backend and only PNGs are written.",
     )
     parser.add_argument(
         "--stats", action="store_true", help="Print statistics only (no plots)"
@@ -1863,15 +1948,21 @@ def main():
             args.save_dir = os.path.join(session, "plots")
             os.makedirs(args.save_dir, exist_ok=True)
 
-    # Agg backend 최적화: --save-dir 지정 시 GUI 없이 렌더링
+    # Agg backend 최적화: --save-dir 지정 시 GUI 없이 렌더링.
+    # --show가 켜진 경우엔 interactive backend를 유지해서 저장 + GUI 둘 다 수행.
     global plt
-    if args.save_dir:
+    if args.save_dir and not args.show:
         import matplotlib
 
         matplotlib.use("Agg")
     import matplotlib.pyplot as _plt
 
     plt = _plt
+
+    # --show 모드에서는 plot 함수들이 호출하는 plt.close()를 무력화해서
+    # 모든 figure가 살아남도록 한 뒤, main() 마지막에 plt.show()로 일괄 표시.
+    if args.show:
+        _plt.close = lambda *a, **kw: None
 
     if not os.path.isfile(args.csv_file):
         print(f"Error: file not found: {args.csv_file}")
@@ -1893,7 +1984,8 @@ def main():
         )
         print(
             "Expected filenames: *_state_log.csv, *_sensor_log.csv, "
-            "timing_log*.csv, robot_log*.csv, device_log*.csv, hand_log*.csv"
+            "timing_log*.csv, robot_log*.csv, device_log*.csv, hand_log*.csv, "
+            "mpc_solve_timing.csv"
         )
         sys.exit(1)
 
@@ -1997,6 +2089,13 @@ def main():
             plot_timing_breakdown(df, args.save_dir)
             plot_timing_total_and_jitter(df, args.save_dir)
             plot_timing_histograms(df, args.save_dir)
+    elif log_type == "mpc_solve_timing":
+        print_mpc_timing_statistics(df)
+        if not args.stats:
+            plot_mpc_solve_timing(df, args.save_dir)
+
+    if args.show and not args.stats:
+        plt.show()
 
 
 if __name__ == "__main__":
