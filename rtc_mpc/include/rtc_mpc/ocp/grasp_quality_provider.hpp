@@ -12,10 +12,10 @@
 ///
 /// The implementation cost of shipping a useful grasp-quality residual is
 /// substantial — it typically requires a custom `aligator::StageFunctionTpl`
-/// subclass with custom Jacobians over contact frames — and is
-/// explicitly out of scope for Phase 4 (see Open Decision #4 in
-/// `docs/mpc_implementation_progress.md`). The seam exists so that a
-/// downstream provider can plug in without re-touching `ContactRichOCP`.
+/// subclass with custom Jacobians over contact frames — and was
+/// explicitly out of scope for Phase 4 (Open Decision #4; `git log
+/// --grep='rtc_mpc Phase 4'`). The seam exists so that a downstream
+/// provider can plug in without re-touching `ContactRichOCP`.
 ///
 /// ## Where the hooks are invoked
 ///

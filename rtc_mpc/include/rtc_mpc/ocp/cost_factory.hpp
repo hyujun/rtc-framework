@@ -11,8 +11,7 @@
 /// specific data (rigid-contact constraint models, actuation matrix, prox
 /// settings) that the handler already owns.
 ///
-/// Ownership contract — see `docs/mpc_implementation_progress.md` §"Phase 3
-/// Spike Notes":
+/// Ownership contract (Phase 3 spike — `git log --grep='rtc_mpc Phase 3'`):
 /// Aligator stores stage components as `xyz::polymorphic<T>` (value-type,
 /// copy-on-construct). The `CostStackTpl` returned here is a fresh object
 /// that the caller copies into a `StageModelTpl`. External pointers to the

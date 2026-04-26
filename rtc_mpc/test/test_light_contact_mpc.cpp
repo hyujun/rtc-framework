@@ -3,8 +3,8 @@
 ///        generic Panda fixture. Exercises Init / Solve / warm-start
 ///        behavior and records per-tick solve latency.
 ///
-/// Exit-criterion gates wired here (from
-/// `docs/mpc_implementation_progress.md` §Phase 5):
+/// Exit-criterion gates wired here (Phase 5 contract; `git log
+/// --grep='rtc_mpc Phase 5'`):
 /// - Warm-start iter drop: second solve after a small reference shift
 ///   should use ≤ 50% of the first solve's iteration count.
 /// - `Solve` on steady-state topology must be `noexcept` — tested by the
@@ -41,8 +41,7 @@
 
 namespace {
 
-constexpr const char *kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+constexpr const char *kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 constexpr const char *kCostYaml = R"(
 horizon_length: 20

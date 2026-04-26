@@ -5,7 +5,7 @@
 /// @brief Abstract MPC solve orchestrator — owns an `OCPHandlerBase` plus an
 ///        Aligator `SolverProxDDP` instance and drives warm-started solves.
 ///
-/// Phase 5 contract (see `docs/mpc_implementation_progress.md` §Phase 5):
+/// Phase 5 contract (`git log --grep='rtc_mpc Phase 5'`):
 /// - `Init` (off-RT): build the underlying OCP via `OCPHandlerBase::Build`,
 ///   call `solver.setup(problem)`, pre-allocate every workspace vector used
 ///   by `Solve`. Must be called once before the MPC thread starts ticking.

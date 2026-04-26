@@ -3,8 +3,8 @@
 
 /// @file light_contact_ocp.hpp
 /// @brief Concrete `OCPHandlerBase` for the "LightContact" MPC mode on a
-///        fixed-base manipulator (renamed from `LightContactOCP` in Phase
-///        4.-1; see `docs/mpc_implementation_progress.md` §"Phase 4.-1").
+///        fixed-base manipulator (renamed from `KinoDynamicsOCP` in Phase
+///        4.-1; commit `c5553a9`).
 ///
 /// The backing Aligator class is `MultibodyConstraintFwdDynamicsTpl` — the
 /// similarly-named `KinodynamicsFwdDynamicsTpl` is a floating-base

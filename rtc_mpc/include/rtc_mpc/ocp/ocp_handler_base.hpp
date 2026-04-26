@@ -56,8 +56,8 @@ struct OCPLimits {
   ///       conic residual (‖f_tan‖ ≤ μ·f_n enforced via sqrt, no facets).
   ///       Retained in OCPLimits as a reserved slot for a future
   ///       polyhedral friction-cone variant (e.g., dense-QP compatible
-  ///       or multi-facet analytic Jacobian). See Phase 4 Spike Notes Q3
-  ///       in docs/mpc_implementation_progress.md.
+  ///       or multi-facet analytic Jacobian). See Phase 4 spike Q3
+  ///       (`git log --grep='rtc_mpc Phase 4'`).
   int n_friction_facets{4};
 };
 

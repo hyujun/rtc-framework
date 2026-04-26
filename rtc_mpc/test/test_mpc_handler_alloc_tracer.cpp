@@ -11,8 +11,8 @@
 ///     tick (alloc/free balanced — no leak). The hard gate here is leak-
 ///     freeness (`allocs == frees`) plus a wide regression canary; tuning
 ///     the count to zero is a Phase 7 / follow-up perf-pass concern, not a
-///     Phase 5 regression. See `docs/mpc_implementation_progress.md`
-///     §Phase 6 completion for the rationale.
+///     Phase 5 regression (rationale in the Phase 6 closure commit; see
+///     `git log --grep='rtc_mpc Phase 6'`).
 ///
 /// Raw-cold `ContactRichMPC` is intentionally NOT covered — it still throws
 /// NaN per Phase 4 Open Decision #2, so tracing it would be noise.
@@ -109,8 +109,7 @@ void operator delete[](void *p, std::size_t) noexcept {
 
 namespace {
 
-constexpr const char *kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+constexpr const char *kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 constexpr const char *kLightCostYaml = R"(
 horizon_length: 15
@@ -357,8 +356,8 @@ mpc:
       << "ContactRich warm-start produced zero successful ticks — Risk #14 "
          "likely broken, not an alloc regression";
 
-  // ContactRich assertion is **informational** (see Phase 6 finding in
-  // docs/mpc_implementation_progress.md §Phase 6 completion): the Phase 5
+  // ContactRich assertion is **informational** (Phase 6 finding; `git log
+  // --grep='rtc_mpc Phase 6'`): the Phase 5
   // Exit #3 closure invariant applies to the LightContact production
   // steady-state path only. ContactRich warm-seeded swap is an event-driven
   // transition (seconds between swaps in the real GraspPhaseManager) and

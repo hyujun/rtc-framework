@@ -49,10 +49,10 @@ into TSID tasks themselves.
 ### CMake workarounds (dual-install conflicts on dev machine)
 
 `rtc_mpc/CMakeLists.txt` forces ROS-Jazzy hpp-fcl and source-built fmt
-before any `find_package(pinocchio)` call. See
-`docs/mpc_implementation_progress.md` §Phase 0 "CMake Constraints" for
-rationale; any downstream package linking `rtc_mpc` inherits the
-workarounds via `ament_export_dependencies`.
+before any `find_package(pinocchio)` call (Aligator was built against
+fmt ≥ 10, hpp-fcl ABI must match the Pinocchio install). Any downstream
+package linking `rtc_mpc` inherits the workarounds via
+`ament_export_dependencies`.
 
 ## Design invariants
 
@@ -98,6 +98,9 @@ proves the thread is alive.
 | 4 | `ContactRichOCP` (contact-force cost + smooth conic friction cone) + `GraspQualityResidualProvider` seam + `test_utils/SeedGravityCompensation` | ✅ |
 | 5 | `MPCHandlerBase` + `LightContactMPC` + `ContactRichMPC` + `MPCFactory` + horizon-shift warm-start (Aligator `cycleAppend`) | ✅ |
 | 6 | `HandlerMPCThread` + `MockPhaseManager` (test-only) + alloc tracer (Phase 5 Exit #3 closed for LightContact; ContactRich informational) | ✅ |
-| 7 | ur5e_bringup `GraspPhaseManager` + MPC YAML wiring + 16-DoF MuJoCo E2E | ⬜ |
+| 7 | ur5e_bringup `GraspPhaseManager` + MPC YAML wiring + 16-DoF MuJoCo E2E | ✅ |
 
-See `docs/mpc_implementation_progress.md` for the living roadmap.
+Phase 0–7 closed; production default since `5118f67` (`engine: handler` in
+`demo_wbc`). For phase-by-phase rationale, spike notes, and risk closure
+history, see `git log --grep='rtc_mpc'` (key commits: `6e49bc9` Phase 7,
+`02e119e`/`9d6288f` Phase 7 follow-ups, `5118f67` handler default).

@@ -5,8 +5,8 @@
 ///        fixed-base manipulator.
 ///
 /// Shares the `MultibodyConstraintFwdDynamicsTpl` backbone with
-/// `LightContactOCP`; the differentiation (see
-/// `docs/mpc_implementation_progress.md` §"Phase 4") is scope:
+/// `LightContactOCP`; the differentiation (Phase 4 scope; `git log
+/// --grep='rtc_mpc Phase 4'`):
 /// - per-active-contact `ContactForceResidualTpl` in the running cost
 ///   when `cfg.w_contact_force > 0`
 /// - per-active-contact `MultibodyFrictionConeResidualTpl` inequality
@@ -122,8 +122,8 @@ struct RichStageHandles {
 ///                    test_utils/solver_seeding.hpp::SeedGravityCompensation)
 ///         - Phase 5+: MPCHandler::SeedInitialGuess()
 ///
-///       See Phase 4 Spike Notes Q7 and Risk #14 in
-///       docs/mpc_implementation_progress.md.
+///       See Phase 4 spike Q7 and Risk #14 (`git log --grep='rtc_mpc
+///       Phase 4'`, closure `6e49bc9`).
 class ContactRichOCP : public OCPHandlerBase {
 public:
   ContactRichOCP() = default;

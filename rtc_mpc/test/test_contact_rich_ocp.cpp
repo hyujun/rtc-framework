@@ -7,8 +7,8 @@
 /// - Build on a contact phase succeeds; topology reflects contact-force
 ///   cost terms and friction-cone constraints.
 /// - Offline solve converges when the initial guess is seeded with
-///   `SeedGravityCompensation` (Risk #14 mitigation — see
-///   `docs/mpc_implementation_progress.md` §Phase 4 Spike Notes Q7).
+///   `SeedGravityCompensation` (Risk #14 mitigation — Phase 4 spike Q7;
+///   `git log --grep='rtc_mpc Phase 4'`, closure commit `6e49bc9`).
 /// - UpdateReferences propagates a new EE target through to the stored
 ///   FramePlacement residual.
 /// - UpdateReferences rejects topology changes (horizon change,
@@ -52,8 +52,7 @@
 
 namespace {
 
-constexpr const char *kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+constexpr const char *kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 constexpr const char *kCostYaml = R"(
 horizon_length: 10

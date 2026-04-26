@@ -5,7 +5,7 @@
 /// @brief Concrete `MPCThread` subclass that wires a `PhaseManagerBase` FSM
 ///        into an `MPCHandlerBase` solver.
 ///
-/// Role in the pipeline (see `docs/mpc_implementation_progress.md` §Phase 6):
+/// Role in the pipeline (Phase 6 contract; `git log --grep='rtc_mpc Phase 6'`):
 ///
 ///   RT thread                      MPC thread (this class)
 ///   ──────────                     ──────────────────────────

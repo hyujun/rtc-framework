@@ -5,10 +5,10 @@
 ///        well-posed initial guess.
 ///
 /// Phase 4 `ContactRichOCP` tests rely on `SeedGravityCompensation` to
-/// avoid the NaN-on-cold-solve pathology captured as Risk #14 (see
-/// `docs/mpc_implementation_progress.md` §"Phase 4 Spike Notes Q7").
-/// Phase 5 `MPCHandler::SeedInitialGuess()` will promote the same pattern
-/// to production. Not installed — header is test-local by design.
+/// avoid the NaN-on-cold-solve pathology captured as Risk #14 (Phase 4
+/// spike Q7; `git log --grep='rtc_mpc Phase 4'`, closure `6e49bc9`).
+/// Phase 5 `MPCHandler::SeedInitialGuess()` promotes the same pattern to
+/// production. Not installed — header is test-local by design.
 
 #include <cassert>
 #include <vector>
@@ -30,8 +30,8 @@ namespace rtc::mpc::test_utils {
 
 /// Seed a control trajectory with robot self-gravity compensation.
 /// Used by ContactRichOCP tests to avoid the NaN-on-cold-solve pathology
-/// documented as Risk #14 (see docs/mpc_implementation_progress.md
-/// §Phase 4 Spike Notes Q7).
+/// documented as Risk #14 (Phase 4 spike Q7; `git log --grep='rtc_mpc
+/// Phase 4'`).
 ///
 /// Computes tau_g = pinocchio::computeGeneralizedGravity(model, data, q)
 /// and broadcasts it to every control in `us`. This drives the
