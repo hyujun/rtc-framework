@@ -132,7 +132,7 @@ demo_wbc_controller:
     phase_presets:
       pre_grasp:
         tasks:
-          posture:   { active: true,  weight: 1.0,   priority: 0 } 
+          posture:   { active: true,  weight: 1.0,   priority: 0 }
           se3_tcp:   { active: true,  weight: 200.0, priority: 0 }
         constraints:
           eom:           { active: true }
@@ -191,8 +191,8 @@ demo_wbc_controller:
   # a_ff + K·Δx) into the TSID posture/SE3 tasks.
   # Default enabled=false: MPC is inert and TSID self-holds.
   mpc:
-    enabled: false               # runtime-togglable via gains[7]
-    engine: "mock"               # "mock" | "handler"
+    enabled: true               # runtime-togglable via gains[7]
+    engine: "handler"               # "mock" | "handler"
     max_stale_solutions: 5       # ticks without a fresh solution before
                                  # falling back to TSID self-hold
 

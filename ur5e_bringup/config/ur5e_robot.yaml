@@ -6,7 +6,7 @@
     control_rate: 500.0 # Hz — timer period = 1e6/rate us
 
     # ── Initial controller ────────────────────────────────────────────────────
-    initial_controller: "demo_joint_controller"
+    initial_controller: "demo_wbc_controller"
 
     # ── Initialization timeout ────────────────────────────────────────────────
     init_timeout_sec: 30.0 # E-STOP + shutdown if no robot/target data (sec)
