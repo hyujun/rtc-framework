@@ -170,7 +170,7 @@ Meyer's 싱글톤 패턴 기반의 컨트롤러 레지스트리입니다. 정적
 | 메서드 | 설명 |
 |--------|------|
 | `Instance()` | 싱글톤 인스턴스 반환 (`noexcept`, static) |
-| `Register(ControllerEntry)` | 컨트롤러 엔트리를 `entries_` 벡터에 추가 |
+| `Register(ControllerEntry)` | 컨트롤러 엔트리를 `entries_` 벡터에 추가. 동일 `config_key` 중복 등록 시 `RCLCPP_WARN` (shadowing 발생; throw 하지 않음 — static-init 순서 fragile) |
 | `GetEntries()` | 등록된 컨트롤러 목록 반환 (`noexcept`, const 참조) |
 
 ---
