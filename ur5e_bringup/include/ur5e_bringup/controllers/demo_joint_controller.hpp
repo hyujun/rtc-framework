@@ -19,9 +19,12 @@
 
 #include <Eigen/Core>
 
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
+#include <rclcpp/parameter.hpp>
+#include <rtc_msgs/srv/grasp_command.hpp>
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/grasp/grasp_controller.hpp"
@@ -260,6 +263,28 @@ private:
 
   // ── Phase 4: controller-owned topic sub/pub handles ───────────────────
   ControllerTopicHandles owned_topics_{};
+
+  // ── Phase D (gain→parameter migration): per-controller ROS 2 parameters ──
+  //
+  // Tunable gains (robot_trajectory_speed, hand_trajectory_speed, grasp_*) are
+  // declared as parameters on the controller's own LifecycleNode in
+  // on_configure. The set-parameters callback rebuilds a Gains snapshot and
+  // stores it via gains_lock_; SeqLock provides RT-safe handoff to the 500 Hz
+  // Compute() reader.
+  //
+  // robot_max_traj_velocity / hand_max_traj_velocity are declared with
+  // read_only=true (D-2): startup overrides honoured, runtime `param set`
+  // rejected.
+  //
+  // Force-PI grasp_command rides on a dedicated srv (grasp_command_srv_)
+  // because it is a one-shot event, not state.
+  void DeclareGainParameters() noexcept;
+  rcl_interfaces::msg::SetParametersResult
+  OnGainParametersSet(const std::vector<rclcpp::Parameter> &params) noexcept;
+
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
+      param_callback_handle_;
+  rclcpp::Service<rtc_msgs::srv::GraspCommand>::SharedPtr grasp_command_srv_;
 };
 
 } // namespace ur5e_bringup

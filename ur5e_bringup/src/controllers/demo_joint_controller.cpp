@@ -5,8 +5,11 @@
 
 #include <algorithm> // std::copy, std::clamp
 #include <cmath>     // std::sqrt
+#include <string>
+#include <vector>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -997,6 +1000,64 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
   }
   try {
     CreateOwnedTopics(*this, owned_topics_);
+
+    // Phase D: declare tunable gains as ROS 2 parameters seeded from
+    // gains_lock_ (populated by LoadConfig from YAML), register the
+    // set-parameters callback, and create the Force-PI grasp_command srv.
+    DeclareGainParameters();
+    param_callback_handle_ = node_->add_on_set_parameters_callback(
+        [this](const std::vector<rclcpp::Parameter> &params) {
+          return OnGainParametersSet(params);
+        });
+
+    grasp_command_srv_ = node_->create_service<rtc_msgs::srv::GraspCommand>(
+        "grasp_command",
+        [this](const std::shared_ptr<rtc_msgs::srv::GraspCommand::Request> req,
+               std::shared_ptr<rtc_msgs::srv::GraspCommand::Response> resp) {
+          if (estopped_.load(std::memory_order_acquire)) {
+            resp->ok = false;
+            resp->message = "E-STOP active";
+            return;
+          }
+          if (!grasp_controller_) {
+            resp->ok = false;
+            resp->message =
+                "grasp_controller unavailable (set 'grasp_controller_type: "
+                "force_pi' in YAML to enable Grasp/Release)";
+            return;
+          }
+          using Req = rtc_msgs::srv::GraspCommand::Request;
+          if (req->command == Req::GRASP) {
+            if (!(req->target_force > 0.0)) {
+              resp->ok = false;
+              resp->message = "GRASP requires target_force > 0";
+              return;
+            }
+            const auto phase_before =
+                static_cast<unsigned>(grasp_controller_->phase());
+            grasp_controller_->CommandGrasp(req->target_force);
+            RCLCPP_INFO(
+                logger_,
+                "[grasp_command] GRASP target=%.2fN type=%s phase_before=%u",
+                req->target_force, grasp_controller_type_.c_str(),
+                phase_before);
+            resp->ok = true;
+            resp->message =
+                "grasp started @ " + std::to_string(req->target_force) + " N";
+          } else if (req->command == Req::RELEASE) {
+            const auto phase_before =
+                static_cast<unsigned>(grasp_controller_->phase());
+            grasp_controller_->CommandRelease();
+            RCLCPP_INFO(logger_,
+                        "[grasp_command] RELEASE type=%s phase_before=%u",
+                        grasp_controller_type_.c_str(), phase_before);
+            resp->ok = true;
+            resp->message = "release accepted";
+          } else {
+            resp->ok = false;
+            resp->message = "command must be GRASP or RELEASE";
+          }
+        });
   } catch (const std::exception &e) {
     RCLCPP_ERROR(logger_, "DemoJointController on_configure failed: %s",
                  e.what());
@@ -1024,12 +1085,119 @@ RTControllerInterface::CallbackReturn DemoJointController::on_deactivate(
 RTControllerInterface::CallbackReturn
 DemoJointController::on_cleanup(const rclcpp_lifecycle::State &prev) noexcept {
   ResetOwnedTopics(owned_topics_);
+  grasp_command_srv_.reset();
+  param_callback_handle_.reset();
   return RTControllerInterface::on_cleanup(prev);
 }
 
 void DemoJointController::PublishNonRtSnapshot(
     const rtc::PublishSnapshot &snap) noexcept {
   PublishOwnedTopicsFromSnapshot(snap, owned_topics_);
+}
+
+// ── Phase D: gain → ROS 2 parameter declaration & callback ────────────────
+//
+// Mirrors the DemoTaskController pattern (Phase B) for the joint-space demo.
+// Tunable: robot_trajectory_speed, hand_trajectory_speed,
+//          grasp_{contact,force}_threshold, grasp_min_fingertips.
+// Read-only (D-2): robot_max_traj_velocity, hand_max_traj_velocity.
+void DemoJointController::DeclareGainParameters() noexcept {
+  if (!node_) {
+    return;
+  }
+
+  auto g = gains_lock_.Load();
+
+  auto declare_double = [&](const std::string &name, double default_val,
+                            const std::string &description,
+                            bool read_only = false) {
+    rcl_interfaces::msg::ParameterDescriptor d;
+    d.description = description;
+    d.read_only = read_only;
+    if (!node_->has_parameter(name)) {
+      return node_->declare_parameter<double>(name, default_val, d);
+    }
+    return node_->get_parameter(name).as_double();
+  };
+  auto declare_int = [&](const std::string &name, int64_t default_val,
+                         const std::string &description) {
+    rcl_interfaces::msg::ParameterDescriptor d;
+    d.description = description;
+    if (!node_->has_parameter(name)) {
+      return node_->declare_parameter<int64_t>(name, default_val, d);
+    }
+    return node_->get_parameter(name).as_int();
+  };
+
+  g.robot_trajectory_speed = std::max(
+      1e-6, declare_double("robot_trajectory_speed", g.robot_trajectory_speed,
+                           "Arm joint trajectory speed [rad/s]"));
+  g.hand_trajectory_speed = std::max(
+      1e-6, declare_double("hand_trajectory_speed", g.hand_trajectory_speed,
+                           "Hand motor trajectory speed [rad/s]"));
+
+  g.robot_max_traj_velocity = declare_double(
+      "robot_max_traj_velocity", g.robot_max_traj_velocity,
+      "Max arm joint velocity during trajectory [rad/s] (read-only)",
+      /*read_only=*/true);
+  g.hand_max_traj_velocity = declare_double(
+      "hand_max_traj_velocity", g.hand_max_traj_velocity,
+      "Max hand motor velocity during trajectory [rad/s] (read-only)",
+      /*read_only=*/true);
+
+  g.grasp_contact_threshold = static_cast<float>(
+      declare_double("grasp_contact_threshold", g.grasp_contact_threshold,
+                     "Contact probability threshold [0,1]"));
+  g.grasp_force_threshold = static_cast<float>(
+      declare_double("grasp_force_threshold", g.grasp_force_threshold,
+                     "Force magnitude threshold [N]"));
+  g.grasp_min_fingertips = static_cast<int>(
+      declare_int("grasp_min_fingertips", g.grasp_min_fingertips,
+                  "Min fingertips with contact for grasp detection"));
+
+  gains_lock_.Store(g);
+}
+
+rcl_interfaces::msg::SetParametersResult
+DemoJointController::OnGainParametersSet(
+    const std::vector<rclcpp::Parameter> &params) noexcept {
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+
+  auto g = gains_lock_.Load();
+  bool gains_dirty = false;
+
+  for (const auto &p : params) {
+    const auto &name = p.get_name();
+    try {
+      if (name == "robot_trajectory_speed") {
+        g.robot_trajectory_speed = std::max(1e-6, p.as_double());
+        gains_dirty = true;
+      } else if (name == "hand_trajectory_speed") {
+        g.hand_trajectory_speed = std::max(1e-6, p.as_double());
+        gains_dirty = true;
+      } else if (name == "grasp_contact_threshold") {
+        g.grasp_contact_threshold = static_cast<float>(p.as_double());
+        gains_dirty = true;
+      } else if (name == "grasp_force_threshold") {
+        g.grasp_force_threshold = static_cast<float>(p.as_double());
+        gains_dirty = true;
+      } else if (name == "grasp_min_fingertips") {
+        g.grasp_min_fingertips = static_cast<int>(p.as_int());
+        gains_dirty = true;
+      }
+      // Unknown names: silently allowed (other callbacks may own them).
+    } catch (const std::exception &e) {
+      result.successful = false;
+      result.reason = std::string("type error on '") + name + "': " + e.what();
+      return result;
+    }
+  }
+
+  if (gains_dirty) {
+    gains_lock_.Store(g);
+  }
+  return result;
 }
 
 } // namespace ur5e_bringup

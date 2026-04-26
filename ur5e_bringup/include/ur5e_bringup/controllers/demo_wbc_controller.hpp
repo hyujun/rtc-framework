@@ -29,7 +29,10 @@
 // Third-party
 #include <Eigen/Core>
 
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/clock.hpp>
+#include <rclcpp/parameter.hpp>
+#include <rtc_msgs/srv/grasp_command.hpp>
 
 // C++ stdlib
 #include <array>
@@ -424,6 +427,26 @@ private:
 
   // ── Phase 4: controller-owned topic sub/pub handles ───────────────────
   ControllerTopicHandles owned_topics_{};
+
+  // ── Phase D (gain→parameter migration): per-controller ROS 2 parameters ──
+  //
+  // Tunable: arm_trajectory_speed, hand_trajectory_speed, se3_weight,
+  //          force_weight, posture_weight, mpc_enable (runtime gate),
+  //          riccati_gain_scale.
+  // Read-only (D-2): arm_max_traj_velocity, hand_max_traj_velocity.
+  //
+  // Force-PI grasp on DemoWbc has different semantics than DemoTask/DemoJoint:
+  // there is no `grasp_controller_` — the GRASP/RELEASE codes drive the WBC
+  // FSM via grasp_cmd_ atomic + gains.grasp_target_force. The grasp_command
+  // srv handler sets both atomically. NONE is rejected (use lifecycle
+  // deactivate to abort).
+  void DeclareGainParameters() noexcept;
+  rcl_interfaces::msg::SetParametersResult
+  OnGainParametersSet(const std::vector<rclcpp::Parameter> &params) noexcept;
+
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
+      param_callback_handle_;
+  rclcpp::Service<rtc_msgs::srv::GraspCommand>::SharedPtr grasp_command_srv_;
 };
 
 } // namespace ur5e_bringup

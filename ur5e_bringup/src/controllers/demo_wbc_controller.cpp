@@ -7,8 +7,10 @@
 #include <cmath>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -1800,6 +1802,58 @@ DemoWbcController::on_configure(const rclcpp_lifecycle::State &prev,
     CreateOwnedTopics(*this, owned_topics_);
     mpc_timing_cb_group_ = node->create_callback_group(
         rclcpp::CallbackGroupType::MutuallyExclusive);
+
+    // Phase D: declare tunable gains as ROS 2 parameters seeded from
+    // gains_lock_ (populated by LoadConfig from YAML), register the
+    // set-parameters callback, and create the WBC FSM grasp_command srv.
+    DeclareGainParameters();
+    param_callback_handle_ = node_->add_on_set_parameters_callback(
+        [this](const std::vector<rclcpp::Parameter> &params) {
+          return OnGainParametersSet(params);
+        });
+
+    // Force-PI grasp_command srv: WBC has no grasp_controller_ — the srv
+    // handler updates grasp_cmd_ atomic + gains.grasp_target_force, which
+    // the WBC FSM (UpdatePhase) reads to drive kApproach/kRelease.
+    grasp_command_srv_ = node_->create_service<rtc_msgs::srv::GraspCommand>(
+        "grasp_command",
+        [this](const std::shared_ptr<rtc_msgs::srv::GraspCommand::Request> req,
+               std::shared_ptr<rtc_msgs::srv::GraspCommand::Response> resp) {
+          if (estopped_.load(std::memory_order_acquire)) {
+            resp->ok = false;
+            resp->message = "E-STOP active";
+            return;
+          }
+          using Req = rtc_msgs::srv::GraspCommand::Request;
+          if (req->command == Req::GRASP) {
+            if (!(req->target_force > 0.0)) {
+              resp->ok = false;
+              resp->message = "GRASP requires target_force > 0";
+              return;
+            }
+            auto g = gains_lock_.Load();
+            g.grasp_target_force = req->target_force;
+            gains_lock_.Store(g);
+            grasp_cmd_.store(static_cast<int>(Req::GRASP),
+                             std::memory_order_release);
+            RCLCPP_INFO(
+                logger_,
+                "[grasp_command] GRASP target=%.2fN (WBC FSM kApproach)",
+                req->target_force);
+            resp->ok = true;
+            resp->message =
+                "grasp started @ " + std::to_string(req->target_force) + " N";
+          } else if (req->command == Req::RELEASE) {
+            grasp_cmd_.store(static_cast<int>(Req::RELEASE),
+                             std::memory_order_release);
+            RCLCPP_INFO(logger_, "[grasp_command] RELEASE (WBC FSM kRelease)");
+            resp->ok = true;
+            resp->message = "release accepted";
+          } else {
+            resp->ok = false;
+            resp->message = "command must be GRASP or RELEASE";
+          }
+        });
   } catch (const std::exception &e) {
     RCLCPP_ERROR(logger_, "DemoWbcController on_configure failed: %s",
                  e.what());
@@ -1876,7 +1930,127 @@ DemoWbcController::on_cleanup(const rclcpp_lifecycle::State &prev) noexcept {
   mpc_timing_initialized_ = false;
   mpc_timing_tick_ = 0;
   ResetOwnedTopics(owned_topics_);
+  grasp_command_srv_.reset();
+  param_callback_handle_.reset();
   return RTControllerInterface::on_cleanup(prev);
+}
+
+// ── Phase D: gain → ROS 2 parameter declaration & callback ────────────────
+//
+// Mirrors DemoTask/DemoJoint Phase D pattern but with WBC-specific keys:
+// arm_*/hand_* trajectory, TSID weights, MPC runtime gates. mpc_enable and
+// riccati_gain_scale are forwarded into mpc_manager_ at set time so they
+// take effect immediately (no controller restart required).
+void DemoWbcController::DeclareGainParameters() noexcept {
+  if (!node_) {
+    return;
+  }
+
+  auto g = gains_lock_.Load();
+
+  auto declare_double = [&](const std::string &name, double default_val,
+                            const std::string &description,
+                            bool read_only = false) {
+    rcl_interfaces::msg::ParameterDescriptor d;
+    d.description = description;
+    d.read_only = read_only;
+    if (!node_->has_parameter(name)) {
+      return node_->declare_parameter<double>(name, default_val, d);
+    }
+    return node_->get_parameter(name).as_double();
+  };
+  auto declare_bool = [&](const std::string &name, bool default_val,
+                          const std::string &description) {
+    rcl_interfaces::msg::ParameterDescriptor d;
+    d.description = description;
+    if (!node_->has_parameter(name)) {
+      return node_->declare_parameter<bool>(name, default_val, d);
+    }
+    return node_->get_parameter(name).as_bool();
+  };
+
+  g.arm_trajectory_speed = std::max(
+      1e-6, declare_double("arm_trajectory_speed", g.arm_trajectory_speed,
+                           "Arm joint trajectory speed [rad/s]"));
+  g.hand_trajectory_speed = std::max(
+      1e-6, declare_double("hand_trajectory_speed", g.hand_trajectory_speed,
+                           "Hand motor trajectory speed [rad/s]"));
+  g.arm_max_traj_velocity = declare_double(
+      "arm_max_traj_velocity", g.arm_max_traj_velocity,
+      "Max arm joint velocity during trajectory [rad/s] (read-only)",
+      /*read_only=*/true);
+  g.hand_max_traj_velocity = declare_double(
+      "hand_max_traj_velocity", g.hand_max_traj_velocity,
+      "Max hand motor velocity during trajectory [rad/s] (read-only)",
+      /*read_only=*/true);
+
+  g.se3_weight = declare_double("se3_weight", g.se3_weight,
+                                "TSID SE3Task weight (runtime tuning)");
+  g.force_weight =
+      declare_double("force_weight", g.force_weight, "TSID ForceTask weight");
+  g.posture_weight = declare_double("posture_weight", g.posture_weight,
+                                    "TSID PostureTask weight");
+
+  gains_lock_.Store(g);
+
+  // MPC runtime gates: handed straight to mpc_manager_. mpc_enable is gated
+  // by structural mpc_enabled_ (decided at LoadConfig from YAML — toggling
+  // a controller without an MPC thread is a no-op).
+  const bool mpc_enable = declare_bool(
+      "mpc_enable", mpc_manager_.Enabled(),
+      "Enable MPC output consumption (only effective when mpc_enabled_ "
+      "structural flag is true)");
+  mpc_manager_.SetEnabled(mpc_enable && mpc_enabled_);
+
+  const double rgs =
+      declare_double("riccati_gain_scale", mpc_manager_.RiccatiGainScale(),
+                     "Riccati feedback gain scale [0,1]");
+  mpc_manager_.SetRiccatiGainScale(rgs);
+}
+
+rcl_interfaces::msg::SetParametersResult DemoWbcController::OnGainParametersSet(
+    const std::vector<rclcpp::Parameter> &params) noexcept {
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+
+  auto g = gains_lock_.Load();
+  bool gains_dirty = false;
+
+  for (const auto &p : params) {
+    const auto &name = p.get_name();
+    try {
+      if (name == "arm_trajectory_speed") {
+        g.arm_trajectory_speed = std::max(1e-6, p.as_double());
+        gains_dirty = true;
+      } else if (name == "hand_trajectory_speed") {
+        g.hand_trajectory_speed = std::max(1e-6, p.as_double());
+        gains_dirty = true;
+      } else if (name == "se3_weight") {
+        g.se3_weight = p.as_double();
+        gains_dirty = true;
+      } else if (name == "force_weight") {
+        g.force_weight = p.as_double();
+        gains_dirty = true;
+      } else if (name == "posture_weight") {
+        g.posture_weight = p.as_double();
+        gains_dirty = true;
+      } else if (name == "mpc_enable") {
+        mpc_manager_.SetEnabled(p.as_bool() && mpc_enabled_);
+      } else if (name == "riccati_gain_scale") {
+        mpc_manager_.SetRiccatiGainScale(p.as_double());
+      }
+      // Unknown names: silently allowed (other callbacks may own them).
+    } catch (const std::exception &e) {
+      result.successful = false;
+      result.reason = std::string("type error on '") + name + "': " + e.what();
+      return result;
+    }
+  }
+
+  if (gains_dirty) {
+    gains_lock_.Store(g);
+  }
+  return result;
 }
 
 void DemoWbcController::LogMpcSolveTimingTick() noexcept {
