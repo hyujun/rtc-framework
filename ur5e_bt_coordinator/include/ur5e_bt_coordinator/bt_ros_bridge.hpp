@@ -11,6 +11,7 @@
 #include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/msg/to_f_snapshot.hpp>
+#include <rtc_msgs/msg/wbc_state.hpp>
 #include <rtc_msgs/srv/list_controllers.hpp>
 #include <rtc_msgs/srv/switch_controller.hpp>
 #include <shape_estimation_msgs/msg/shape_estimate.hpp>
@@ -62,8 +63,17 @@ public:
   /// Last published hand target (empty if never published)
   std::vector<double> GetLastHandTarget() const;
 
-  /// Cached grasp state from /hand/grasp_state (500Hz pre-computed)
+  /// Cached grasp state from /<ctrl>/hand/grasp_state (500Hz pre-computed).
+  /// Populated only when the active controller publishes Force-PI grasp
+  /// state (DemoJointController / DemoTaskController). Empty/stale when a
+  /// WBC controller is active — use GetWbcState() instead.
   CachedGraspState GetGraspState() const;
+
+  /// Cached WBC state from /<ctrl>/hand/wbc_state (500Hz pre-computed).
+  /// Populated only when the active controller is a TSID-based WBC
+  /// controller (DemoWbcController). Empty/stale when a Force-PI grasp
+  /// controller is active — use GetGraspState() instead.
+  CachedWbcState GetWbcState() const;
 
   /// Latest vision object pose from /world_target_info (position only).
   /// Orientation is zeroed; callers should fill from current TCP if needed.
@@ -200,6 +210,7 @@ private:
   rclcpp::Subscription<rtc_msgs::msg::GuiPosition>::SharedPtr arm_gui_sub_;
   rclcpp::Subscription<rtc_msgs::msg::GuiPosition>::SharedPtr hand_gui_sub_;
   rclcpp::Subscription<rtc_msgs::msg::GraspState>::SharedPtr grasp_state_sub_;
+  rclcpp::Subscription<rtc_msgs::msg::WbcState>::SharedPtr wbc_state_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Polygon>::SharedPtr
       world_target_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr active_ctrl_sub_;
@@ -232,6 +243,7 @@ private:
   std::vector<double> arm_joint_positions_;
   std::vector<double> hand_joint_positions_;
   CachedGraspState grasp_state_;
+  CachedWbcState wbc_state_;
   Pose6D world_target_pose_;
   bool world_target_valid_{false};
   std::string active_controller_;
@@ -251,6 +263,8 @@ private:
   bool hand_gui_received_{false};
   TimePoint grasp_state_last_{};
   bool grasp_state_received_{false};
+  TimePoint wbc_state_last_{};
+  bool wbc_state_received_{false};
   TimePoint world_target_last_{};
   bool world_target_received_{false};
   TimePoint estop_last_{};

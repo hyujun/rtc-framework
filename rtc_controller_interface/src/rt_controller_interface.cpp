@@ -34,6 +34,7 @@ const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
     {"device_state_log", PublishRole::kDeviceStateLog},
     {"device_sensor_log", PublishRole::kDeviceSensorLog},
     {"grasp_state", PublishRole::kGraspState},
+    {"wbc_state", PublishRole::kWbcState},
     {"tof_snapshot", PublishRole::kToFSnapshot},
     // Digital twin
     {"digital_twin_state", PublishRole::kDigitalTwinState},

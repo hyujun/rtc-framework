@@ -37,6 +37,19 @@ void PrefillGraspMessage(const rtc::DeviceNameConfig *cfg,
   msg.finger_force_error.assign(max_ft, 0.0F);
 }
 
+// Pre-populate WbcState per-finger arrays so publish() never resizes.
+void PrefillWbcMessage(const rtc::DeviceNameConfig *cfg,
+                       rtc_msgs::msg::WbcState &msg) {
+  if (cfg != nullptr) {
+    msg.fingertip_names.assign(cfg->sensor_names.begin(),
+                               cfg->sensor_names.end());
+  }
+  const auto max_ft = static_cast<std::size_t>(rtc::kMaxFingertips);
+  msg.force_magnitude.assign(max_ft, 0.0F);
+  msg.contact_flag.assign(max_ft, 0.0F);
+  msg.displacement.assign(max_ft, 0.0F);
+}
+
 } // namespace
 
 void CreateOwnedTopics(rtc::RTControllerInterface &ctrl,
@@ -103,6 +116,15 @@ void CreateOwnedTopics(rtc::RTControllerInterface &ctrl,
         handles.tof_group_idx = group_idx;
         break;
       }
+      case rtc::PublishRole::kWbcState: {
+        rclcpp::QoS wbc_qos{10};
+        handles.wbc_pub = node->create_publisher<rtc_msgs::msg::WbcState>(
+            pub.topic_name, wbc_qos);
+        PrefillWbcMessage(ctrl.GetDeviceNameConfig(group_name),
+                          handles.wbc_msg);
+        handles.wbc_group_idx = group_idx;
+        break;
+      }
       default:
         // Controller-owned role we don't handle yet — ignore rather than
         // throw so that future additions are opt-in.
@@ -126,6 +148,9 @@ void ActivateOwnedTopics(const rclcpp_lifecycle::State & /*prev*/,
   if (handles.tof_pub) {
     handles.tof_pub->on_activate();
   }
+  if (handles.wbc_pub) {
+    handles.wbc_pub->on_activate();
+  }
 }
 
 void DeactivateOwnedTopics(const rclcpp_lifecycle::State & /*prev*/,
@@ -141,6 +166,9 @@ void DeactivateOwnedTopics(const rclcpp_lifecycle::State & /*prev*/,
   if (handles.tof_pub) {
     handles.tof_pub->on_deactivate();
   }
+  if (handles.wbc_pub) {
+    handles.wbc_pub->on_deactivate();
+  }
 }
 
 void ResetOwnedTopics(ControllerTopicHandles &handles) noexcept {
@@ -155,6 +183,8 @@ void ResetOwnedTopics(ControllerTopicHandles &handles) noexcept {
   handles.grasp_group_idx = -1;
   handles.tof_pub.reset();
   handles.tof_group_idx = -1;
+  handles.wbc_pub.reset();
+  handles.wbc_group_idx = -1;
 }
 
 void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot &snap,
@@ -217,6 +247,33 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot &snap,
     msg.grasp_phase = gs.grasp_phase;
     msg.grasp_target_force = gs.grasp_target_force;
     handles.grasp_pub->publish(msg);
+  }
+
+  // ── WBC state ───────────────────────────────────────────────────────
+  if (handles.wbc_pub && handles.wbc_group_idx >= 0 &&
+      handles.wbc_group_idx < rtc::PublishSnapshot::kMaxGroups) {
+    const auto gi = static_cast<std::size_t>(handles.wbc_group_idx);
+    const auto &ws = snap.group_commands[gi].wbc_state;
+    auto &msg = handles.wbc_msg;
+    msg.header.stamp.sec = sec;
+    msg.header.stamp.nanosec = nsec;
+    const auto nf = static_cast<std::size_t>(
+        std::min(ws.num_fingertips, static_cast<int>(rtc::kMaxFingertips)));
+    for (std::size_t i = 0; i < nf; ++i) {
+      msg.force_magnitude[i] = ws.force_magnitude[i];
+      msg.contact_flag[i] = ws.contact_flag[i];
+      msg.displacement[i] = ws.displacement[i];
+    }
+    msg.phase = ws.phase;
+    msg.num_active_contacts = ws.num_active_contacts;
+    msg.max_force = ws.max_force;
+    msg.grasp_target_force = ws.grasp_target_force;
+    msg.grasp_detected = ws.grasp_detected;
+    msg.min_fingertips = ws.min_fingertips_for_grasp;
+    msg.tsid_solve_us = ws.tsid_solve_us;
+    msg.tsid_solver_ok = ws.tsid_solver_ok;
+    msg.qp_fail_count = ws.qp_fail_count;
+    handles.wbc_pub->publish(msg);
   }
 
   // ── ToF snapshot ────────────────────────────────────────────────────

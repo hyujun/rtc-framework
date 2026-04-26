@@ -169,6 +169,7 @@ demo_task_controller:
 | `target` (ur5e/hand) | 컨트롤러 | `/demo_wbc_controller/ur5e/joint_goal`, `/demo_wbc_controller/hand/joint_goal` |
 | `gui_position` (ur5e/hand) | 컨트롤러 | `/demo_wbc_controller/ur5e/gui_position`, `/demo_wbc_controller/hand/gui_position` |
 | `grasp_state` (hand; joint/task 데모만) | 컨트롤러 | `/demo_joint_controller/hand/grasp_state` 등 |
+| `wbc_state` (hand; wbc 데모만) | 컨트롤러 | `/demo_wbc_controller/hand/wbc_state` |
 | `tof_snapshot` (hand; joint/task 데모만) | 컨트롤러 | `/demo_joint_controller/tof/snapshot` 등 |
 | `state`, `joint_command`, `ros2_command`, `device_state_log`, `device_sensor_log` | CM (매니저) | 기존 경로 유지 (`/joint_states`, `/ur5e/joint_command`, ...) |
 

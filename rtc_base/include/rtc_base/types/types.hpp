@@ -187,6 +187,27 @@ struct GraspStateData {
   float grasp_target_force{0.0f}; // active target force [N]
 };
 
+// WBC state — published by TSID-based whole-body controllers. RT-safe POD.
+// Parallel role to GraspStateData but reflects WBC's TSID-based grasp
+// algorithm (no Force-PI fields). Consumers (BT coordinator / GUI) pick
+// between grasp_state and wbc_state based on the active controller name.
+struct WbcStateData {
+  uint8_t phase{0};                                    // WbcPhase enum
+  std::array<float, kMaxFingertips> force_magnitude{}; // |F| per fingertip [N]
+  std::array<float, kMaxFingertips> contact_flag{}; // contact probability [0,1]
+  std::array<float, kMaxFingertips> displacement{}; // raw displacement [m]
+  int num_fingertips{0};
+  int num_active_contacts{0};
+  float max_force{0.0f};          // max across fingertips [N]
+  float grasp_target_force{0.0f}; // active target force [N]
+  bool grasp_detected{false};
+  int min_fingertips_for_grasp{2};
+  // TSID solver diagnostics (informational — not safety-critical)
+  float tsid_solve_us{0.0f};
+  bool tsid_solver_ok{true};
+  int qp_fail_count{0};
+};
+
 // ToF snapshot data — trivially copyable, RT-safe (SPSC buffer 호환)
 // 상한값(kMax*) 기반 고정 배열 + 런타임 num_fingers/sensors_per_finger
 struct ToFSnapshotData {
@@ -243,6 +264,7 @@ struct ControllerOutput {
   bool valid{true};
   CommandType command_type{CommandType::kPosition};
   GraspStateData grasp_state{};
+  WbcStateData wbc_state{};
   ToFSnapshotData tof_snapshot{};
 };
 
@@ -328,6 +350,8 @@ enum class PublishRole {
                      // twin)
   // Grasp State
   kGraspState, // rtc_msgs/GraspState (BT coordinator용 grasp 상태)
+  // WBC State
+  kWbcState, // rtc_msgs/WbcState (TSID-based WBC controllers)
   // ToF Snapshot
   kToFSnapshot, // rtc_msgs/ToFSnapshot (ToF + fingertip SE3)
 };
@@ -477,6 +501,8 @@ PublishRoleToString(PublishRole role) noexcept {
     return "digital_twin_state";
   case PublishRole::kGraspState:
     return "grasp_state";
+  case PublishRole::kWbcState:
+    return "wbc_state";
   case PublishRole::kToFSnapshot:
     return "tof_snapshot";
   }

@@ -23,6 +23,7 @@
 #include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/msg/to_f_snapshot.hpp>
+#include <rtc_msgs/msg/wbc_state.hpp>
 
 namespace ur5e_bringup {
 
@@ -56,6 +57,12 @@ struct ControllerTopicHandles {
       tof_pub{};
   rtc_msgs::msg::ToFSnapshot tof_msg{};
   int tof_group_idx{-1};
+
+  // WBC state publisher — at most one per demo (TSID-based controllers).
+  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::WbcState>::SharedPtr
+      wbc_pub{};
+  rtc_msgs::msg::WbcState wbc_msg{};
+  int wbc_group_idx{-1};
 };
 
 // Walk ctrl.GetTopicConfig().groups and for every entry with

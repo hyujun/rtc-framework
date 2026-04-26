@@ -29,7 +29,8 @@ bt_coordinator (non-RT, 80 Hz)
   │ subscribe
   ├─ /ur5e/gui_position  ◄──────  RtControllerNode
   ├─ /hand/gui_position  ◄──────  RtControllerNode
-  ├─ /hand/grasp_state   ◄──────  RtControllerNode (500Hz grasp detection)
+  ├─ /<ctrl>/hand/grasp_state ◄─  Force-PI grasp 컨트롤러 (500Hz)
+  ├─ /<ctrl>/hand/wbc_state   ◄─  WBC 컨트롤러 (500Hz, TSID FSM phase + 진단)
   ├─ /vision/object_pose ◄──────  Vision 노드 (외부)
   ├─ /ur5e/active_controller_name
   └─ /system/estop_status
@@ -65,7 +66,8 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 |-------|------------|-----|------|
 | `<ns>/ur5e/gui_position` | `rtc_msgs/GuiPosition` | RELIABLE, depth 10 | TCP 포즈 + 관절 위치 (controller-owned) |
 | `<ns>/hand/gui_position` | `rtc_msgs/GuiPosition` | RELIABLE, depth 10 | Hand 관절 위치 (controller-owned) |
-| `<ns>/hand/grasp_state` | `rtc_msgs/GraspState` | RELIABLE, depth 10 | 500Hz 사전 계산된 grasp 상태 (controller-owned) |
+| `<ns>/hand/grasp_state` | `rtc_msgs/GraspState` | RELIABLE, depth 10 | 500Hz 사전 계산된 grasp 상태 (Force-PI grasp 컨트롤러 전용; controller-owned) |
+| `<ns>/hand/wbc_state` | `rtc_msgs/WbcState` | RELIABLE, depth 10 | 500Hz WBC FSM phase + 핑거팁 raw + TSID 진단 (TSID-based WBC 컨트롤러 전용; controller-owned). BT 는 grasp_state 와 함께 항상 subscribe — active controller 가 발행하는 쪽이 캐시 채움 |
 | `<ns>/tof/snapshot` | `rtc_msgs/ToFSnapshot` | BEST_EFFORT, depth 100 | ToF + 핑거팁 pose snapshot (controller-owned) |
 | `/vision/object_pose` | `geometry_msgs/PoseStamped` | RELIABLE, depth 10 | 물체 위치 (쿼터니언 → RPY 변환) |
 | `/ur5e/active_controller_name` | `std_msgs/String` | TRANSIENT_LOCAL, depth 1 | 현재 활성 컨트롤러 이름 — rewire 트리거 |

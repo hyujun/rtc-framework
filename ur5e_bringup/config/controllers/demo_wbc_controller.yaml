@@ -63,6 +63,9 @@ demo_wbc_controller:
           role: "device_state_log"
         - topic: "/hand/sensor_log"
           role: "device_sensor_log"
+        - topic: "hand/wbc_state"
+          role: "wbc_state"
+          ownership: "controller"
 
   # ── TSID QP configuration ────────────────────────────────────────────
   tsid:

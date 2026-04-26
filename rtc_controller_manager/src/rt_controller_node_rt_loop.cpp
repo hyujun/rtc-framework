@@ -258,6 +258,8 @@ void RtControllerNode::ControlLoop() {
       snap.task_goals[gi] = output.task_goal_positions;
       // Grasp state from controller output
       gc.grasp_state = output.grasp_state;
+      // WBC state from controller output (TSID-based controllers)
+      gc.wbc_state = output.wbc_state;
       // ToF snapshot from controller output
       gc.tof_snapshot = output.tof_snapshot;
       ++gi;

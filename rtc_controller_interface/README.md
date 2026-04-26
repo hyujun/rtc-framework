@@ -304,7 +304,8 @@ Controller-owned 토픽은 on_configure에서 컨트롤러가 직접 `node_->cre
 | `robot_target` | `kRobotTarget` | 관절/태스크 목표 (RobotTarget) |
 | `device_state_log` | `kDeviceStateLog` | 통합 상태 로그 (DeviceStateLog) |
 | `device_sensor_log` | `kDeviceSensorLog` | 센서 + 추론 로그 (DeviceSensorLog) |
-| `grasp_state` | `kGraspState` | BT coordinator용 grasp 상태 (GraspState) |
+| `grasp_state` | `kGraspState` | Force-PI grasp 컨트롤러 상태 (GraspState) — joint/task 데모 |
+| `wbc_state` | `kWbcState` | TSID-based WBC 컨트롤러 상태 (WbcState) — wbc 데모 |
 | `tof_snapshot` | `kToFSnapshot` | ToF 센서 + 핑거팁 포즈 스냅샷 (ToFSnapshot) |
 | `digital_twin_state` | `kDigitalTwinState` | 디지털 트윈용 관절 상태 (JointState, RELIABLE QoS) |
 | `joint_goal` | `kRobotTarget` | 하위 호환 별칭 |

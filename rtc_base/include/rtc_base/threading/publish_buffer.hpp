@@ -8,7 +8,8 @@
 // Constraints:
 //   - Exactly ONE producer thread (the 500 Hz RT loop).
 //   - Exactly ONE consumer thread (the publish thread).
-//   - Push() called only from the producer; Pop() called only from the consumer.
+//   - Push() called only from the producer; Pop() called only from the
+//   consumer.
 //
 // Design rationale:
 //   DDS serialization and transport are unbounded-latency operations.
@@ -32,8 +33,8 @@ struct PublishSnapshot {
   // ── Per-group data slots (RT-safe fixed-size) ──────────────────────────
   static constexpr int kMaxGroups = 8;
   struct GroupCommandSlot {
-    int num_channels{0};          // from controller output (command channels)
-    int actual_num_channels{0};   // from device state (state channels for GUI)
+    int num_channels{0};        // from controller output (command channels)
+    int actual_num_channels{0}; // from device state (state channels for GUI)
     std::array<double, kMaxDeviceChannels> commands{};
     std::array<double, kMaxDeviceChannels> goal_positions{};
     std::array<double, kMaxDeviceChannels> target_positions{};
@@ -59,6 +60,8 @@ struct PublishSnapshot {
     GoalType goal_type{GoalType::kJoint};
     // Grasp state (from controller output)
     GraspStateData grasp_state{};
+    // WBC state (from controller output, TSID-based whole-body controllers)
+    WbcStateData wbc_state{};
     // ToF snapshot (from controller output)
     ToFSnapshotData tof_snapshot{};
   };
@@ -80,14 +83,13 @@ struct PublishSnapshot {
 
 // SPSC ring buffer of capacity N entries (N must be a power of 2).
 // Identical pattern to SpscLogBuffer — see log_buffer.hpp.
-template <std::size_t N>
-class SpscPublishBuffer {
+template <std::size_t N> class SpscPublishBuffer {
   static_assert(N > 0 && (N & (N - 1)) == 0, "N must be a power of 2");
 
- public:
+public:
   // Called from the RT thread.  Returns false (and drops the entry) if the
   // buffer is full — no blocking, no allocation.
-  [[nodiscard]] bool Push(const PublishSnapshot& entry) noexcept {
+  [[nodiscard]] bool Push(const PublishSnapshot &entry) noexcept {
     const std::size_t head = head_.load(std::memory_order_relaxed);
     const std::size_t next = (head + 1) & (N - 1);
 
@@ -105,7 +107,7 @@ class SpscPublishBuffer {
   }
 
   // Called from the publish thread.  Returns false when the buffer is empty.
-  [[nodiscard]] bool Pop(PublishSnapshot& out) noexcept {
+  [[nodiscard]] bool Pop(PublishSnapshot &out) noexcept {
     const std::size_t tail = tail_.load(std::memory_order_relaxed);
 
     if (tail == cached_head_) {
@@ -124,7 +126,7 @@ class SpscPublishBuffer {
     return drop_count_.load(std::memory_order_relaxed);
   }
 
- private:
+private:
   std::array<PublishSnapshot, N> buffer_{};
 
   // Separate cache lines to avoid false sharing between producer and consumer.
@@ -141,6 +143,6 @@ class SpscPublishBuffer {
 inline constexpr std::size_t kPublishBufferCapacity = 512;
 using ControlPublishBuffer = SpscPublishBuffer<kPublishBufferCapacity>;
 
-}  // namespace rtc
+} // namespace rtc
 
-#endif  // RTC_BASE_PUBLISH_BUFFER_HPP_
+#endif // RTC_BASE_PUBLISH_BUFFER_HPP_

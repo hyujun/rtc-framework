@@ -154,6 +154,11 @@ CachedGraspState BtRosBridge::GetGraspState() const {
   return grasp_state_;
 }
 
+CachedWbcState BtRosBridge::GetWbcState() const {
+  std::lock_guard lock(state_mutex_);
+  return wbc_state_;
+}
+
 bool BtRosBridge::GetObjectPose(Pose6D &pose) const {
   return GetWorldTargetPose(pose);
 }
@@ -450,6 +455,7 @@ std::vector<TopicHealth> BtRosBridge::GetTopicHealth(double timeout_s) const {
       make_health("/hand/gui_position", hand_gui_received_, hand_gui_last_),
       make_health("/hand/grasp_state", grasp_state_received_,
                   grasp_state_last_),
+      make_health("/hand/wbc_state", wbc_state_received_, wbc_state_last_),
       make_health("/world_target_info", world_target_received_,
                   world_target_last_),
       make_health("/system/estop_status", estop_received_, estop_last_),
@@ -491,6 +497,7 @@ void BtRosBridge::RewireControllerTopics(const std::string &ctrl_name) {
   arm_gui_sub_.reset();
   hand_gui_sub_.reset();
   grasp_state_sub_.reset();
+  wbc_state_sub_.reset();
   tof_snapshot_sub_.reset();
   arm_target_pub_.reset();
   hand_target_pub_.reset();
@@ -584,6 +591,44 @@ void BtRosBridge::RewireControllerTopics(const std::string &ctrl_name) {
           tof_buffer_.push_back(*msg);
         });
   }
+
+  // Subscribe to wbc_state alongside grasp_state — only the active controller
+  // publishes one of them, the other stays empty/stale. Caller picks via
+  // GetGraspState() vs GetWbcState() based on the active controller.
+  wbc_state_sub_ = node_->create_subscription<rtc_msgs::msg::WbcState>(
+      ns + "/hand/wbc_state", rclcpp::QoS{10},
+      [this](rtc_msgs::msg::WbcState::SharedPtr msg) {
+        {
+          std::lock_guard lock(state_mutex_);
+          const auto n = msg->force_magnitude.size();
+          wbc_state_.fingertips.resize(n);
+          for (std::size_t i = 0; i < n; ++i) {
+            auto &ft = wbc_state_.fingertips[i];
+            ft.name = (i < msg->fingertip_names.size())
+                          ? msg->fingertip_names[i]
+                          : "";
+            ft.force_magnitude = msg->force_magnitude[i];
+            ft.contact_flag =
+                (i < msg->contact_flag.size()) ? msg->contact_flag[i] : 0.0f;
+            ft.displacement =
+                (i < msg->displacement.size()) ? msg->displacement[i] : 0.0f;
+          }
+          wbc_state_.num_active_contacts = msg->num_active_contacts;
+          wbc_state_.max_force = msg->max_force;
+          wbc_state_.grasp_target_force = msg->grasp_target_force;
+          wbc_state_.grasp_detected = msg->grasp_detected;
+          wbc_state_.min_fingertips = msg->min_fingertips;
+          wbc_state_.phase = msg->phase;
+          wbc_state_.tsid_solve_us = msg->tsid_solve_us;
+          wbc_state_.tsid_solver_ok = msg->tsid_solver_ok;
+          wbc_state_.qp_fail_count = msg->qp_fail_count;
+        }
+        {
+          std::lock_guard lock(health_mutex_);
+          wbc_state_last_ = std::chrono::steady_clock::now();
+          wbc_state_received_ = true;
+        }
+      });
 
   arm_target_pub_ = node_->create_publisher<rtc_msgs::msg::RobotTarget>(
       ns + "/ur5e/joint_goal", rclcpp::QoS{10});
