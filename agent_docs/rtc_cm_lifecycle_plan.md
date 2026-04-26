@@ -6,48 +6,78 @@
 |---|---|---|
 | 0 — Design lockdown | ✅ done | `9aa830f` |
 | 1 — `rtc_msgs` schema | ✅ done | `f5d3204` |
-| 1.5 — P-1 (DemoWbc idempotent) + P-2 (MPCThread Pause/Resume) | ✅ done | (pending commit) |
-| 2 — CM controller-level lifecycle state | ⏳ next | — |
-| 3 — `/rtc_cm/...` srv 도입 | ⏳ pending | — |
+| 1.5 — P-1 (DemoWbc idempotent) + P-2 (MPCThread Pause/Resume) | ✅ done | `e3d2c70` |
+| 2 — CM controller-level lifecycle state | ✅ done | `b4b31dc` |
+| 3 — `/rtc_cm/...` srv 도입 | ⏳ next | — |
 | 4 — BT 마이그레이션 | ⏳ pending | — |
 | 5 — Legacy topic 제거 | ⏳ pending | — |
 | 6 — 문서 + plan doc cleanup | ⏳ pending | — |
 
-**Closed decisions**: D-A1..A7, D-B6, D-OQ6, OQ-3/4/5.
-**Still open**: OQ-1 (atomic vector vs bitmask), OQ-2 (RT sync mechanism). Decide at Phase 2 entry.
+**Closed decisions**: D-A1..A7, D-B6, D-OQ6, OQ-1, OQ-2, OQ-3/4/5.
+**Still open**: (none — all OQ closed at Phase 2 entry).
+- **OQ-1 = `std::vector<std::atomic<int>>`** — D-A7 4-state enum doesn't pack as bitmask; D-A1 single-active locked makes multi-active future-proofing moot.
+- **OQ-2 = `sleep_for(1.5 × dt)`** — F-3 race is benign (LifecyclePublisher drops when inactive; demo on_deactivate only toggles publishers / WBC Pause). cv-based RT-tick ack would touch RT path — rejected per E-1.
 
-## Phase 2 Entry — Handoff Notes
+## Phase 3 Entry — Handoff Notes
 
-새 conversation에서 이어받을 때 읽을 순서: Status (위) → §Decisions → §Phase 2 → §Phase 1.5 (P-1, P-2 디테일) → §Risks (RT 동기화 결함 항목).
+**현재 상태 (2026-04-26)**: Phase 0/1/1.5/2 완료 (`9aa830f`, `f5d3204`, `e3d2c70`, `b4b31dc`). Phase 3 (`/rtc_cm/list_controllers` + `/rtc_cm/switch_controller` srv 도입) 가 다음.
 
-**권장 진입 순서**:
-1. **Phase 1.5 먼저** — Phase 2의 prereq로 명시되어 있음 (DemoWbc on_activate가 idempotent해야 Phase 2의 N회 activate/deactivate가 안전). 작업 범위가 작고 (DemoWbc 수정 + MPCThread Pause/Resume + unit test 1개) 독립 PR로 commit 가능
-2. **Phase 2 본 작업** — Phase 1.5 이후. CM에 `controller_states_` 추가, helper, on_activate/on_deactivate refactor
+**Phase 2 결과 요약 (`b4b31dc`)** — Phase 3에서 의존하는 내부 인터페이스:
+- `RtControllerNode::SwitchActiveController(name, message)` — sync, aux thread, E-STOP guard 포함. Phase 3 srv 콜백이 그대로 호출하면 됨.
+- `controller_states_` (vector<atomic<int>>, 0=Inactive 1=Active) — `ListControllers` 응답 build에 직접 사용 가능.
+- `controller_name_to_idx_` + `controller_topic_configs_` — `ListControllers` 의 `name` / `claimed_groups` 필드 채울 때 참조.
+- 기존 `/<robot_ns>/controller_type` topic은 여전히 동작 (내부적으로 같은 helper 호출). Phase 5에서 제거.
 
-**Phase 2 진입 시 결정해야 할 OQ-1, OQ-2** — Decision matrix는 [§Open Questions](#open-questions) 참조.
+**Phase 3 진입 시 결정해야 할 것**: 없음 (all OQ closed). 단순 srv wrapper.
 
-**건드릴 핵심 파일**:
-- Phase 1.5:
-  - [ur5e_bringup/src/controllers/demo_wbc_controller.cpp](../ur5e_bringup/src/controllers/demo_wbc_controller.cpp#L1816-L1856) — on_activate/on_deactivate idempotent화
-  - [rtc_mpc/include/rtc_mpc/thread/mpc_thread.hpp](../rtc_mpc/include/rtc_mpc/thread/mpc_thread.hpp), [src/thread/mpc_thread.cpp](../rtc_mpc/src/thread/mpc_thread.cpp) — Pause/Resume
-  - [rtc_mpc/test/](../rtc_mpc/test/) — Pause/Resume gtest (`test_mpc_solve_timing_logger.cpp` 인접)
-  - [ur5e_bringup/test/test_demo_wbc_controller.cpp](../ur5e_bringup/test/test_demo_wbc_controller.cpp) — N회 cycle 테스트 추가
-- Phase 2:
-  - [rtc_controller_manager/include/rtc_controller_manager/rt_controller_node.hpp](../rtc_controller_manager/include/rtc_controller_manager/rt_controller_node.hpp#L336) (`active_controller_idx_` 인접에 `controller_states_` 추가)
-  - [rtc_controller_manager/src/rt_controller_node.cpp](../rtc_controller_manager/src/rt_controller_node.cpp#L126-L180) (`on_activate`/`on_deactivate` 일괄 controller 호출 제거)
-  - [rtc_controller_interface/include/rtc_controller_interface/rt_controller_interface.hpp](../rtc_controller_interface/include/rtc_controller_interface/rt_controller_interface.hpp#L75-L77) (`on_activate` 시그니처 확장)
-  - [rtc_controller_interface/src/rt_controller_interface.cpp](../rtc_controller_interface/src/rt_controller_interface.cpp#L157-L160) (base 구현 — `if (auto_hold) InitializeHoldPosition(snapshot);`)
-  - 7개 controller override 시그니처 일괄 수정 (rtc_controllers 4 + ur5e_bringup 3) — 단순 인자 추가, 로직 변경 없음
-  - 신규 `test_controller_lifecycle` (rtc_controller_manager) — N회 switch + RT timing 회귀
+**Phase 3 건드릴 핵심 파일**:
+- `rtc_controller_manager/include/rtc_controller_manager/rt_controller_node.hpp` — srv handle 멤버 2개 추가
+- `rtc_controller_manager/src/rt_controller_node_topics.cpp` — `CreateSubscriptions()` 끝에 `create_service<>` 호출 2개 추가 (cb_group_aux_)
+- 신규 `test_switch_service` (rtc_controller_manager) — srv 호출 → 동작 검증 + E-STOP 거부
 
-**확인된 pre-existing test failure (Phase 1과 무관)**: workspace에 `test_demo_wbc_controller.cpp:234` 외 11개 누적 실패 — `colcon test-result` 캐시. Phase 2 진입 시 이 실패가 새로 도입된 게 아닌지 first-touch 검증 필요.
+**Phase 2 회고 — 다음에 참고할 것**:
+- ⚠ `git status`에 list된 pre-existing modified files (rt_controller_node_rt_loop.cpp, owned_topics.{hpp,cpp}, configs, BT files, READMEs, rtc_base/* wbc_state work) 는 Phase 2 commit에 포함시키지 않음 — `git add -p`로 wbc_state 1줄도 제외됨
+- 신규 untracked (Phase 2와 무관): rtc_mpc/test/test_mpc_solve_timing_logger.cpp, rtc_msgs/msg/WbcState.msg
 
-**Pre-existing dev env quirk**: `.venv` overlay가 `colcon test` 래퍼를 가려 즉시 종료시킬 수 있음 ([feedback_dev_env_quirks](memory)). gtest 직접 실행은 `build/<pkg>/<test_bin>`이 신뢰 가능.
+## Phase 2 Entry — Handoff Notes (archived)
+
+**현재 상태 (2026-04-26)**: Phase 0 / 1 / 1.5 완료. Phase 2 본 작업이 다음.
+
+새 conversation에서 이어받을 때 읽을 순서: Status (위) → §Decisions → §Phase 2 → §Risks (RT 동기화 결함 항목) → §Open Questions (OQ-1, OQ-2 결정 필요).
+
+**Phase 1.5 결과 요약 (`e3d2c70`)** — 이후 phase에서 의존하는 인터페이스:
+- `rtc::mpc::MPCThread::Pause() / Resume() / Paused()` — cv-기반 일시정지. 이미 spawn된 thread에 대해 멱등.
+- `DemoWbcController::on_activate` 멱등 — `mpc_timing_initialized_` flag로 logger/timer one-shot, 재진입 시 `mpc_thread_->Resume()`만. `on_deactivate`는 `Pause()` + `DeactivateOwnedTopics()`. `on_cleanup`이 flag 리셋.
+- 신규 gtest: `MpcThreadLifecycle.{PauseFreezesSolveLoop,PauseResumeIdempotent,RequestStopWakesPausedThread}` + `WbcFSMTest.RepeatedInitializeHoldPositionIsStable`.
+
+**Phase 2 진입 시 결정해야 할 OQ-1, OQ-2** — Decision matrix는 [§Open Questions](#open-questions) 참조. 둘 다 RT 동기화 정밀도 vs 단순성 trade-off.
+
+**Phase 2 건드릴 핵심 파일**:
+- [rtc_controller_manager/include/rtc_controller_manager/rt_controller_node.hpp](../rtc_controller_manager/include/rtc_controller_manager/rt_controller_node.hpp#L336) — `active_controller_idx_` 인접에 `controller_states_` (atomic vector 또는 bitmask, OQ-1) 추가
+- [rtc_controller_manager/src/rt_controller_node.cpp](../rtc_controller_manager/src/rt_controller_node.cpp#L126-L180) — CM `on_activate`에서 일괄 controller `on_activate` 호출 제거, `initial_controller`만 활성. CM `on_deactivate`에서 활성 controller만 `on_deactivate`.
+- [rtc_controller_interface/include/rtc_controller_interface/rt_controller_interface.hpp](../rtc_controller_interface/include/rtc_controller_interface/rt_controller_interface.hpp#L75-L77) — `on_activate(prev, ControllerState const& devices)` 시그니처 확장 (D-A5)
+- [rtc_controller_interface/src/rt_controller_interface.cpp](../rtc_controller_interface/src/rt_controller_interface.cpp#L157-L160) — base 구현 `if (auto_hold) InitializeHoldPosition(snapshot);`
+- 7개 controller override 시그니처 일괄 수정 (rtc_controllers 4: PController/JointPD/CLIK/OSC + ur5e_bringup 3: DemoJoint/DemoTask/DemoWbc) — 단순 인자 추가, 로직 변경 없음
+- 신규 `test_controller_lifecycle` (rtc_controller_manager) — N회 switch + RT timing 회귀
+
+**Phase 2 Switch sequence (sync, aux thread)** — 자세히는 §Phase 2:
+1. precondition (E-STOP idle, single-active)
+2. snapshot = build_device_snapshot()
+3. target's on_activate(prev, snapshot)
+4. atomic store active_controller_idx_ = target_idx (release)
+5. wait one RT tick (OQ-2: cv vs sleep_for)
+6. previous's on_deactivate
+7. publish /active_controller_name (latched)
+
+**Pre-existing dev env quirk**: `.venv` overlay가 `colcon test` 래퍼를 가려 즉시 종료시킬 수 있음 ([feedback_dev_env_quirks](memory)). gtest 직접 실행은 `build/<pkg>/<test_bin>`이 신뢰 가능. ROS env 필요 시 `source /opt/ros/jazzy/setup.bash && source /home/junho/ros2_ws/rtc_ws/install/setup.bash`.
+
+**Pre-existing modified files** (Phase 1.5 작업 시작 전부터 working tree에 있던 unrelated changes — Phase 2 작업과 무관, 건드리지 말 것): rtc_base/{README,publish_buffer,types}, rtc_controller_interface/{README,rt_controller_interface.cpp}, rtc_controller_manager/{README,rt_controller_node_rt_loop.cpp}, rtc_mpc/CMakeLists.txt, rtc_tools/.../plot_rtc_log.py, ur5e_bringup/{README,config/*,owned_topics.{hpp,cpp}}, ur5e_bt_coordinator/*, untracked: rtc_mpc/test/test_mpc_solve_timing_logger.cpp, rtc_msgs/msg/WbcState.msg. ⚠ rtc_controller_interface/{include/rt_controller_interface.hpp,src/rt_controller_interface.cpp}는 Phase 2에서 본격 수정 대상 — 진입 시 사용자에게 pre-existing diff 확인 요청.
 
 **중요 invariant 알림**:
-- Phase 2는 RT path 영향 가능 → E-1, E-7 escalation 대상. 작업 시작 시 [CONCERN] 보고 후 진행
+- Phase 2는 RT path 영향 → **E-1, E-7 escalation 대상**. 작업 시작 시 `[CONCERN]` 보고 후 진행
 - `on_activate(prev, snapshot)` 시그니처 변경은 모든 override 동시 수정 필요 (build 깨지지 않게 base default + override 일괄 PR로)
 - `/<robot_ns>/active_controller_name` latched topic은 영구 유지 — Phase 2/3에서 절대 제거하지 않음
+- 기존 test assertion 수정 금지 (RT-7) — Phase 2 신규 테스트만 추가
 
 ## Context
 
