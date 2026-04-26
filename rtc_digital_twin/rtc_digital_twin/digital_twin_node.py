@@ -272,7 +272,7 @@ class DigitalTwinNode(Node):
                         reliability=ReliabilityPolicy.RELIABLE,
                     )
                     self.create_subscription(
-                        String, '/ur5e/active_controller_name',
+                        String, '/rtc_cm/active_controller_name',
                         self._tcp_on_active_ctrl, latched)
                 self._tcp_marker_pub = self.create_publisher(
                     MarkerArray, tcp_marker_topic, 10)

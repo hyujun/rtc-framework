@@ -21,7 +21,7 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node)
   // Phase 4: controller-owned topics (arm_gui / hand_gui / grasp_state /
   // tof_snapshot / arm_target / hand_target) live under
   // /<active_controller_name>/... and are rebound on every
-  // /ur5e/active_controller_name transition via RewireControllerTopics.
+  // /rtc_cm/active_controller_name transition via RewireControllerTopics.
   // Manager-owned topics stay at their fixed paths below.
 
   world_target_sub_ = node_->create_subscription<geometry_msgs::msg::Polygon>(
@@ -62,7 +62,7 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node)
       });
 
   active_ctrl_sub_ = node_->create_subscription<std_msgs::msg::String>(
-      "/ur5e/active_controller_name", rclcpp::QoS{1}.transient_local(),
+      "/rtc_cm/active_controller_name", rclcpp::QoS{1}.transient_local(),
       [this](std_msgs::msg::String::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);

@@ -122,7 +122,7 @@ public:
   /// On false, `message` carries the failure reason (E-STOP active, unknown
   /// name, timeout, ...). Caller (BT switch_controller node) treats the
   /// boolean as a synchronous switch confirmation — no follow-up polling on
-  /// /<robot_ns>/active_controller_name is required.
+  /// /rtc_cm/active_controller_name is required.
   bool RequestSwitchController(const std::string &name, double timeout_s,
                                std::string &message);
 

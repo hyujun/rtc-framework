@@ -232,7 +232,7 @@ class DemoControllerGUI(Node):
 
         # Phase 4: target / gui_position / grasp_state / tof are owned by the
         # active controller (/<config_key>/...). We defer creating them until
-        # /ur5e/active_controller_name tells us the namespace, and re-create
+        # /rtc_cm/active_controller_name tells us the namespace, and re-create
         # them whenever the name changes (controller switch).
         self._active_ctrl: str = ""
         self.robot_cmd_pub = None
@@ -301,7 +301,7 @@ class DemoControllerGUI(Node):
         latched_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
         latched_qos.reliability = QoSReliabilityPolicy.RELIABLE
         self.create_subscription(
-            String, '/ur5e/active_controller_name',
+            String, '/rtc_cm/active_controller_name',
             self._on_active_controller, latched_qos)
 
         # Hand presets (loaded from JSON)

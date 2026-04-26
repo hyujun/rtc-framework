@@ -424,9 +424,12 @@ void RtControllerNode::CreatePublishers() {
 
   rclcpp::QoS latch_qos{1};
   latch_qos.transient_local();
+  // /rtc_cm/active_controller_name — owned by rtc_controller_manager
+  // (single-CM assumption per locked decision D-A2). robot_namespace prefix
+  // is intentionally absent so the topic ownership is obvious from its name.
   active_ctrl_name_pub_ = rclcpp::create_publisher<std_msgs::msg::String>(
-      this->get_node_topics_interface(),
-      "/" + robot_ns_ + "/active_controller_name", latch_qos);
+      this->get_node_topics_interface(), "/rtc_cm/active_controller_name",
+      latch_qos);
 }
 
 // ── Expose topic configuration as read-only ROS2 parameters ─────────────────
@@ -485,7 +488,7 @@ void RtControllerNode::ExposeTopicParameters() {
 //   4. atomic store active_controller_idx_ = target    (release)
 //   5. wait one RT tick (sleep_for(1.5 * dt))          (OQ-2 = sleep_for)
 //   6. previous.on_deactivate(prev_state)              (sets state=Inactive)
-//   7. publish /<robot_ns>/active_controller_name      (latched)
+//   7. publish /rtc_cm/active_controller_name          (latched)
 //
 // The race between step 4 and step 6 is benign by F-3: demo controllers'
 // on_deactivate only toggles LifecyclePublishers (which drop internally

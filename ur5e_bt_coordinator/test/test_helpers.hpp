@@ -95,7 +95,7 @@ protected:
     world_target_pub_ = node_->create_publisher<geometry_msgs::msg::Polygon>(
         "/world_target_info", rclcpp::QoS{10});
     active_ctrl_pub_ = node_->create_publisher<std_msgs::msg::String>(
-        "/ur5e/active_controller_name", rclcpp::QoS{1}.transient_local());
+        "/rtc_cm/active_controller_name", rclcpp::QoS{1}.transient_local());
     estop_pub_ = node_->create_publisher<std_msgs::msg::Bool>(
         "/system/estop_status", rclcpp::QoS{10});
     shape_estimate_pub_ =

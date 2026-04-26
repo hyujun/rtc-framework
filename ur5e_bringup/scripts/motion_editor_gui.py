@@ -1455,7 +1455,7 @@ class ROSNode(Node):
         self._qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
 
         # Phase 4: controller-owned topics (/<name>/{ur5e,hand}/*) are bound
-        # on every /ur5e/active_controller_name transition.
+        # on every /rtc_cm/active_controller_name transition.
         self._active_ctrl: str = ""
         self.task_pos_sub = None
         self.hand_gui_pos_sub = None
@@ -1471,7 +1471,7 @@ class ROSNode(Node):
         latched_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         latched_qos.reliability = ReliabilityPolicy.RELIABLE
         self.create_subscription(
-            String, '/ur5e/active_controller_name',
+            String, '/rtc_cm/active_controller_name',
             self._on_active_controller, latched_qos)
 
         self.get_logger().info("Motion Editor ROS Node started")

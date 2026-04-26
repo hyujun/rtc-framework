@@ -80,7 +80,7 @@ ShapeEstimationNode::on_configure(const rclcpp_lifecycle::State & /*state*/) {
   rclcpp::QoS latched_qos{1};
   latched_qos.transient_local().reliable();
   active_ctrl_sub_ = create_subscription<std_msgs::msg::String>(
-      "/" + robot_namespace_ + "/active_controller_name", latched_qos,
+      "/rtc_cm/active_controller_name", latched_qos,
       [this](std_msgs::msg::String::SharedPtr msg) {
         RewireControllerTopics(msg->data);
       });

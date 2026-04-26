@@ -85,7 +85,7 @@
     # Subscribes to GuiPosition for task-space TCP data (actual + goal).
     # Publishes MarkerArray (sphere + axes) and optionally broadcasts TF.
     # Phase 4: relative suffix → digital_twin auto-prefixes with
-    # /<active_controller_name>/ on every /ur5e/active_controller_name.
+    # /<active_controller_name>/ on every /rtc_cm/active_controller_name.
     # Use an absolute path (leading "/") to bypass rewiring and subscribe
     # directly to a fixed topic.
     tcp_viz.source_topic: "ur5e/gui_position"       # GuiPosition topic
