@@ -51,10 +51,9 @@
         <!-- Phase 1: Move to table_top joint pose                     -->
         <!-- ======================================================== -->
         <SwitchController controller_name="demo_joint_controller"
-                          timeout_s="3.0"
-                          current_gains="{current_gains}"/>
+                          timeout_s="3.0"/>
 
-        <SetGains current_gains="{current_gains}"
+        <SetGains
                   trajectory_speed="0.15"/>
 
         <MoveToJoints pose_name="table_top"
@@ -73,8 +72,7 @@
         <!-- Phase 3: Switch to task-space controller                  -->
         <!-- ======================================================== -->
         <SwitchController controller_name="demo_task_controller"
-                          timeout_s="3.0"
-                          current_gains="{current_gains}"/>
+                          timeout_s="3.0"/>
 
         <!-- ======================================================== -->
         <!-- Phase 3.5: TCP re-orientation                             -->
@@ -92,7 +90,7 @@
                            offset_yaw="{tcp_rpy_offset_y}"
                            rotation_mode="{tcp_rotation_mode}"
                            output_pose="{phase3_oriented_pose}"/>
-        <SetGains current_gains="{current_gains}"
+        <SetGains
                   trajectory_speed="0.1"/>
         <MoveToPose target="{phase3_oriented_pose}"
                     position_tolerance="0.005"
@@ -105,8 +103,7 @@
         <!--   drives Releasing -> Idle on a re-run.                   -->
         <!-- ======================================================== -->
         <SubTree ID="ForcePIRelease"
-                 release_timeout_ms="5000"
-                 current_gains="{current_gains}"/>
+                 release_timeout_ms="5000"/>
 
         <SubTree ID="ApproachFromAbove"
                  target_pose="{object_pose}"
@@ -125,8 +122,7 @@
                  pos_tol="0.002"
                  ori_tol="0.05"
                  timeout_s="8.0"
-                 constant_z="{object_final_z}"
-                 current_gains="{current_gains}"/>
+                 constant_z="{object_final_z}"/>
 
         <!-- ======================================================== -->
         <!-- Phase 6: Force-PI grasp with retry (hand-only)            -->
@@ -141,8 +137,7 @@
                  min_fingertips="{grasp_min_fingertips}"
                  sustained_ms="{grasp_sustained_ms}"
                  max_attempts="{grasp_max_attempts}"
-                 retry_settle_s="{grasp_retry_settle_s}"
-                 current_gains="{current_gains}"/>
+                 retry_settle_s="{grasp_retry_settle_s}"/>
 
         <!-- ======================================================== -->
         <!-- Phase 7: Lift and verify holding                          -->
@@ -155,14 +150,13 @@
                  timeout_s="6.0"
                  verify_force_N="{grasp_verify_force_N}"
                  verify_min_tips="{grasp_min_fingertips}"
-                 lift_pose="{lift_pose}"
-                 current_gains="{current_gains}"/>
+                 lift_pose="{lift_pose}"/>
 
         <!-- ======================================================== -->
         <!-- Phase 8: Transport to goal position (with in-transit      -->
         <!--   drop guard immediately after the move completes).       -->
         <!-- ======================================================== -->
-        <SetGains current_gains="{current_gains}"
+        <SetGains
                   trajectory_speed="0.1"/>
 
         <MoveToPose target="{place_pose}"
@@ -178,7 +172,7 @@
         <ComputeOffsetPose input_pose="{place_pose}"
                            offset_z="-0.05"
                            output_pose="{lower_pose}"/>
-        <SetGains current_gains="{current_gains}"
+        <SetGains
                   trajectory_speed="0.05"/>
         <MoveToPose target="{lower_pose}"
                     position_tolerance="0.003"
@@ -191,30 +185,28 @@
         <!-- Phase 10: Force-PI release and retreat                    -->
         <!-- ======================================================== -->
         <SubTree ID="ForcePIRelease"
-                 release_timeout_ms="5000"
-                 current_gains="{current_gains}"/>
+                 release_timeout_ms="5000"/>
 
         <WaitDuration duration_s="0.3"/>
 
         <ComputeOffsetPose input_pose="{place_pose}"
                            offset_z="0.08"
                            output_pose="{retreat_pose}"/>
-        <SetGains current_gains="{current_gains}"
+        <SetGains
                   trajectory_speed="0.1"/>
         <MoveToPose target="{retreat_pose}"
                     position_tolerance="0.005"
                     timeout_s="6.0"/>
 
         <!-- Restore original controller gains -->
-        <SetGains current_gains="{current_gains}"/>
+        <SetGains/>
 
       </Sequence>
 
       <!-- ── Failure path: open hand + retreat, then propagate FAILURE -->
       <ForceFailure>
         <SubTree ID="ForcePIEmergencyAbort"
-                 retreat_z="{grasp_abort_retreat_z}"
-                 current_gains="{current_gains}"/>
+                 retreat_z="{grasp_abort_retreat_z}"/>
       </ForceFailure>
 
     </Fallback>

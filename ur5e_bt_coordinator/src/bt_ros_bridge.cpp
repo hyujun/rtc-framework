@@ -85,25 +85,6 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node)
         }
       });
 
-  current_gains_sub_ =
-      node_->create_subscription<std_msgs::msg::Float64MultiArray>(
-          "/ur5e/current_gains", rclcpp::QoS{10},
-          [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-            std::lock_guard lock(state_mutex_);
-            cached_gains_ = msg->data;
-            cached_gains_valid_ = true;
-            RCLCPP_DEBUG(bridge_log(), "received current_gains (%zu values)",
-                         msg->data.size());
-          });
-
-  // ── Publishers (manager-owned: fixed paths) ─────────────────────────────
-
-  gains_pub_ = node_->create_publisher<std_msgs::msg::Float64MultiArray>(
-      "/ur5e/controller_gains", rclcpp::QoS{10});
-
-  request_gains_pub_ = node_->create_publisher<std_msgs::msg::Bool>(
-      "/ur5e/request_gains", rclcpp::QoS{10});
-
   // ── Shape estimation ──────────────────────────────────────────────────
 
   shape_estimate_sub_ =
@@ -181,31 +162,6 @@ bool BtRosBridge::IsEstopped() const {
   return estopped_;
 }
 
-// ── Gains query ──────────────────────────────────────────────────────────
-
-void BtRosBridge::RequestCurrentGains() {
-  std_msgs::msg::Bool msg;
-  msg.data = true;
-  request_gains_pub_->publish(msg);
-  RCLCPP_DEBUG(bridge_log(), "request_current_gains published");
-}
-
-std::vector<double> BtRosBridge::GetCachedGains() const {
-  std::lock_guard lock(state_mutex_);
-  return cached_gains_;
-}
-
-bool BtRosBridge::HasCachedGains() const {
-  std::lock_guard lock(state_mutex_);
-  return cached_gains_valid_;
-}
-
-void BtRosBridge::ClearCachedGains() {
-  std::lock_guard lock(state_mutex_);
-  cached_gains_.clear();
-  cached_gains_valid_ = false;
-}
-
 // ── Publishers ────────────────────────────────────────────────────────────
 
 void BtRosBridge::PublishArmTarget(const Pose6D &target) {
@@ -240,12 +196,6 @@ void BtRosBridge::PublishHandTarget(const std::vector<double> &target) {
 std::vector<double> BtRosBridge::GetLastHandTarget() const {
   std::lock_guard lock(state_mutex_);
   return last_hand_target_;
-}
-
-void BtRosBridge::PublishGains(const std::vector<double> &gains) {
-  std_msgs::msg::Float64MultiArray msg;
-  msg.data = gains;
-  gains_pub_->publish(msg);
 }
 
 bool BtRosBridge::RequestSwitchController(const std::string &name,

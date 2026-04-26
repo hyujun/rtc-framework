@@ -26,7 +26,6 @@
 #include <shape_estimation_msgs/action/explore_shape.hpp>
 #include <shape_estimation_msgs/msg/shape_estimate.hpp>
 #include <std_msgs/msg/bool.hpp>
-#include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
@@ -154,8 +153,6 @@ private:
       pub_controller_type_;
   rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::RobotTarget>::SharedPtr
       pub_robot_target_;
-  rclcpp_lifecycle::LifecyclePublisher<
-      std_msgs::msg::Float64MultiArray>::SharedPtr pub_controller_gains_;
 
   // ── 피드백 수신 ───────────────────────────────────────────────────────────
   rclcpp::Subscription<rtc_msgs::msg::GuiPosition>::SharedPtr sub_gui_position_;
@@ -194,7 +191,6 @@ private:
   std::string robot_namespace_{"ur5e"};
   std::string controller_name_{"demo_task_controller"};
   int controller_switch_delay_ms_{200};
-  std::vector<double> exploration_gains_;
 
   // ── 탐색 콜백 ─────────────────────────────────────────────────────────────
   void ExploreLoopCallback();
@@ -210,8 +206,6 @@ private:
 
   // YAML에서 ExplorationConfig 로드
   ExplorationConfig LoadExplorationConfig();
-  // YAML에서 게인 배열 생성
-  std::vector<double> LoadExplorationGains();
 };
 
 } // namespace shape_estimation

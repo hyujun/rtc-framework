@@ -242,12 +242,9 @@ RtControllerNode::on_cleanup(const rclcpp_lifecycle::State & /*state*/) {
   slot_to_dt_topic_.clear();
   estop_pub_.reset();
   active_ctrl_name_pub_.reset();
-  current_gains_pub_.reset();
 
   // 3. subscribers
   topic_subscriptions_.clear();
-  controller_gains_sub_.reset();
-  request_gains_sub_.reset();
 
   // 2. parameters / controllers / logger
   if (logger_) {
@@ -332,10 +329,7 @@ RtControllerNode::on_error(const rclcpp_lifecycle::State & /*state*/) {
   slot_to_dt_topic_.clear();
   estop_pub_.reset();
   active_ctrl_name_pub_.reset();
-  current_gains_pub_.reset();
   topic_subscriptions_.clear();
-  controller_gains_sub_.reset();
-  request_gains_sub_.reset();
   if (logger_) {
     logger_->DrainBuffer(log_buffer_);
     logger_->Flush();

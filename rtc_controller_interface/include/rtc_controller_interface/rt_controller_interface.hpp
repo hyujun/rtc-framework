@@ -134,14 +134,16 @@ public:
   // LoadConfig()
   //   Called once at node startup.  `cfg` is the YAML node already scoped to
   //   this controller's key (e.g. the content under `pd_controller:` in its
-  //   YAML file).  Override to read per-controller gains / flags from disk.
-  //   Not noexcept — YAML parsing can throw; the call site wraps it in
-  //   try/catch.
+  //   YAML file).  Override to read per-controller structural config from
+  //   disk (e.g. estop, fsm, topics, command_type).  Not noexcept — YAML
+  //   parsing can throw; the call site wraps it in try/catch.
   //
-  // UpdateGainsFromMsg()
-  //   Called from the ~/controller_gains subscriber (sensor thread).
-  //   `gains` is a flat array whose layout is controller-specific:
-  //   document the layout in the controller's header.  Default is a no-op.
+  // Runtime-tunable gains have migrated to ROS 2 parameters declared on each
+  // controller's own LifecycleNode (in on_configure). The CM no longer
+  // routes a /<robot>/{controller_gains, request_gains, current_gains}
+  // topic — BT calls SetActiveControllerGains directly against the active
+  // controller's parameter services.
+  //
   // Returns the type of command this controller outputs (position or torque).
   // Value is set by LoadConfig() from the YAML command_type field.
   [[nodiscard]] virtual CommandType GetCommandType() const noexcept {
@@ -149,17 +151,6 @@ public:
   }
 
   virtual void LoadConfig(const YAML::Node &cfg);
-  virtual void UpdateGainsFromMsg(std::span<const double> gains) noexcept {
-    (void)gains;
-  }
-
-  // GetCurrentGains()
-  //   Returns the current gains as a flat array matching the layout expected
-  //   by UpdateGainsFromMsg().  Used by the GUI "Load Gain" feature to read
-  //   back the active controller's runtime gains.  Default returns empty.
-  [[nodiscard]] virtual std::vector<double> GetCurrentGains() const noexcept {
-    return {};
-  }
 
   // GetMpcSolveStats()
   //   Observability hook — returns the most recent MPC solve-timing window

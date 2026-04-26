@@ -33,10 +33,9 @@
       <!--   pose defined in poses.yaml.                             -->
       <!-- ======================================================== -->
       <SwitchController controller_name="demo_joint_controller"
-                        timeout_s="3.0"
-                        current_gains="{current_gains}"/>
+                        timeout_s="3.0"/>
 
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="0.15"/>
 
       <MoveToJoints pose_name="ready"
@@ -60,8 +59,7 @@
       <!-- Phase 3: Switch to task-space controller                  -->
       <!-- ======================================================== -->
       <SwitchController controller_name="demo_task_controller"
-                        timeout_s="3.0"
-                        current_gains="{current_gains}"/>
+                        timeout_s="3.0"/>
 
       <!-- ======================================================== -->
       <!-- Phase 4: Move to inspection position (2-step approach)    -->
@@ -88,7 +86,7 @@
                          output_pose="{inspect_approach_pose}"/>
 
       <!-- Step C-1: lateral move (x/y) at safe height -->
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="0.1"/>
 
       <MoveToPose target="{inspect_approach_pose}"
@@ -97,7 +95,7 @@
                   timeout_s="12.0"/>
 
       <!-- Step C-2: descend to inspect position (z) -->
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="0.05"/>
 
       <MoveToPose target="{inspect_pose}"
@@ -118,7 +116,7 @@
 
       <StartToFCollection/>
 
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="{search_speed}"/>
 
       <MoveToPose target="{search_target}"
@@ -141,7 +139,7 @@
       <!-- ======================================================== -->
       <!-- Phase 7: Move to computed target position                 -->
       <!-- ======================================================== -->
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="0.05"/>
 
       <MoveToPose target="{final_target}"
@@ -160,7 +158,7 @@
                          offset_z="{inspect_approach_z}"
                          output_pose="{return_retreat_pose}"/>
 
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="0.08"/>
 
       <!-- Step 1: ascend (+z) to safe height -->
@@ -171,10 +169,9 @@
 
       <!-- Step 2: move to ready pose via joint-space -->
       <SwitchController controller_name="demo_joint_controller"
-                        timeout_s="3.0"
-                        current_gains="{current_gains}"/>
+                        timeout_s="3.0"/>
 
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="0.15"/>
 
       <MoveToJoints pose_name="ready"

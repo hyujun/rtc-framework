@@ -21,10 +21,9 @@
       <!--   workspace before vision detection begins.               -->
       <!-- ======================================================== -->
       <SwitchController controller_name="demo_joint_controller"
-                        timeout_s="3.0"
-                        current_gains="{current_gains}"/>
+                        timeout_s="3.0"/>
 
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="0.15"/>
 
       <MoveToJoints pose_name="table_top"
@@ -51,8 +50,7 @@
       <!--   subsequent SetGains only overrides specified values.    -->
       <!-- ======================================================== -->
       <SwitchController controller_name="demo_task_controller"
-                        timeout_s="3.0"
-                        current_gains="{current_gains}"/>
+                        timeout_s="3.0"/>
 
       <!-- ======================================================== -->
       <!-- Phase 4: Approach detected object from above              -->
@@ -64,7 +62,7 @@
                          offset_z="0.10"
                          output_pose="{approach_pose}"/>
 
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="0.1"/>
 
       <MoveToPose target="{approach_pose}"

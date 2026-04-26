@@ -627,59 +627,6 @@ void DemoWbcController::OnDeviceConfigsSet() {
   BuildJointReorderMap();
 }
 
-void DemoWbcController::UpdateGainsFromMsg(
-    std::span<const double> gains) noexcept {
-  // Layout (9 entries):
-  //   [ grasp_cmd, grasp_target_force,
-  //     arm_traj_speed, hand_traj_speed,
-  //     se3_weight, force_weight, posture_weight,
-  //     mpc_enable (0/1), riccati_gain_scale (0..1) ]
-  // Senders that emit only the first 7 entries skip the MPC fields.
-  if (gains.size() >= 1) {
-    grasp_cmd_.store(static_cast<int>(gains[0]), std::memory_order_release);
-  }
-  auto g = gains_lock_.Load();
-  if (gains.size() >= 2) {
-    g.grasp_target_force = gains[1];
-  }
-  if (gains.size() >= 3) {
-    g.arm_trajectory_speed = std::max(1e-6, gains[2]);
-  }
-  if (gains.size() >= 4) {
-    g.hand_trajectory_speed = std::max(1e-6, gains[3]);
-  }
-  if (gains.size() >= 5) {
-    g.se3_weight = gains[4];
-  }
-  if (gains.size() >= 6) {
-    g.force_weight = gains[5];
-  }
-  if (gains.size() >= 7) {
-    g.posture_weight = gains[6];
-  }
-  gains_lock_.Store(g);
-  if (gains.size() >= 8) {
-    const bool requested = gains[7] > 0.5;
-    mpc_manager_.SetEnabled(requested && mpc_enabled_);
-  }
-  if (gains.size() >= 9) {
-    mpc_manager_.SetRiccatiGainScale(gains[8]);
-  }
-}
-
-std::vector<double> DemoWbcController::GetCurrentGains() const noexcept {
-  const auto g = gains_lock_.Load();
-  return {static_cast<double>(grasp_cmd_.load(std::memory_order_relaxed)),
-          g.grasp_target_force,
-          g.arm_trajectory_speed,
-          g.hand_trajectory_speed,
-          g.se3_weight,
-          g.force_weight,
-          g.posture_weight,
-          mpc_manager_.Enabled() ? 1.0 : 0.0,
-          mpc_manager_.RiccatiGainScale()};
-}
-
 std::optional<rtc::MpcSolveStats>
 DemoWbcController::GetMpcSolveStats() const noexcept {
   if (!mpc_manager_.Enabled()) {

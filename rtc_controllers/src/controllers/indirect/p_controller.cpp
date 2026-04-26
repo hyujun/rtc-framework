@@ -169,22 +169,4 @@ void PController::LoadConfig(const YAML::Node &cfg) {
   }
 }
 
-void PController::UpdateGainsFromMsg(std::span<const double> gains) noexcept {
-  // layout: [kp×6]
-  if (gains.size() < 6) {
-    return;
-  }
-  auto g = gains_lock_.Load();
-  for (std::size_t i = 0; i < 6; ++i) {
-    g.kp[i] = gains[i];
-  }
-  gains_lock_.Store(g);
-}
-
-std::vector<double> PController::GetCurrentGains() const noexcept {
-  // layout: [kp×6]
-  const auto g = gains_lock_.Load();
-  return {g.kp.begin(), g.kp.end()};
-}
-
 } // namespace rtc

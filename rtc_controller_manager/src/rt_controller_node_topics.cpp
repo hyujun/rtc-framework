@@ -130,37 +130,11 @@ void RtControllerNode::CreateSubscriptions() {
     }
   }
 
-  // ── GUI control subscriptions (use aux callback group to avoid blocking
-  //    sensor callbacks, which would stall device_timeouts_ updates and
-  //    trigger E-STOP during controller switch / gains update) ──────────────
-  auto aux_sub_options = rclcpp::SubscriptionOptions();
-  aux_sub_options.callback_group = cb_group_aux_;
-
-  controller_gains_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
-      "/" + robot_ns_ + "/controller_gains", 10,
-      [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-        const int idx = active_controller_idx_.load(std::memory_order_acquire);
-        controllers_[static_cast<std::size_t>(idx)]->UpdateGainsFromMsg(
-            msg->data);
-        RCLCPP_INFO(get_logger(), "Gains updated for %s",
-                    controllers_[static_cast<std::size_t>(idx)]->Name().data());
-      },
-      aux_sub_options);
-
-  request_gains_sub_ = create_subscription<std_msgs::msg::Bool>(
-      "/" + robot_ns_ + "/request_gains", 10,
-      [this](std_msgs::msg::Bool::SharedPtr /*msg*/) {
-        const int idx = active_controller_idx_.load(std::memory_order_acquire);
-        const auto gains =
-            controllers_[static_cast<std::size_t>(idx)]->GetCurrentGains();
-        std_msgs::msg::Float64MultiArray gains_msg;
-        gains_msg.data = gains;
-        current_gains_pub_->publish(gains_msg);
-        RCLCPP_INFO(get_logger(), "Published current gains for %s (%zu values)",
-                    controllers_[static_cast<std::size_t>(idx)]->Name().data(),
-                    gains.size());
-      },
-      aux_sub_options);
+  // Per-controller gain tuning has migrated from /<robot>/{controller_gains,
+  // request_gains, current_gains} topics to ROS 2 parameters declared on each
+  // controller's own LifecycleNode (Phase D of gain→parameter migration).
+  // BT now calls SetActiveControllerGains() and SendGraspCommand() directly
+  // against the active controller; CM no longer routes any gain traffic.
 }
 
 void RtControllerNode::CreatePublishers() {
@@ -453,11 +427,6 @@ void RtControllerNode::CreatePublishers() {
   active_ctrl_name_pub_ = rclcpp::create_publisher<std_msgs::msg::String>(
       this->get_node_topics_interface(),
       "/" + robot_ns_ + "/active_controller_name", latch_qos);
-
-  current_gains_pub_ =
-      rclcpp::create_publisher<std_msgs::msg::Float64MultiArray>(
-          this->get_node_topics_interface(), "/" + robot_ns_ + "/current_gains",
-          rclcpp::QoS(10));
 }
 
 // ── Expose topic configuration as read-only ROS2 parameters ─────────────────

@@ -15,8 +15,7 @@
       <!--   Store baseline gains for restoration at end of task.   -->
       <!-- ======================================================== -->
       <SwitchController controller_name="demo_task_controller"
-                        timeout_s="3.0"
-                        current_gains="{current_gains}"/>
+                        timeout_s="3.0"/>
 
       <!-- ======================================================== -->
       <!-- Phase 1: Detect towel edge via vision                     -->
@@ -50,8 +49,7 @@
                traj_speed="0.03"
                pos_tol="0.002"
                ori_tol="0.05"
-               timeout_s="8.0"
-               current_gains="{current_gains}"/>
+               timeout_s="8.0"/>
 
       <!-- Pinch grasp — low force for thin fabric -->
       <!-- pinch_motors 사용하므로 ForceGrasp SubTree 대신 인라인 -->
@@ -86,14 +84,13 @@
                timeout_s="8.0"
                verify_force_N="0.2"
                verify_min_tips="1"
-               lift_pose="{lift_pose}"
-               current_gains="{current_gains}"/>
+               lift_pose="{lift_pose}"/>
 
       <!-- ======================================================== -->
       <!-- Phase 5: Sweep to unfold                                  -->
       <!-- Switch to compliant gains for fabric interaction          -->
       <!-- ======================================================== -->
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 kp_translation="5.0,5.0,5.0"
                 kp_rotation="3.0,3.0,3.0"
                 trajectory_speed="0.08"/>
@@ -113,7 +110,7 @@
       <!-- ======================================================== -->
       <!-- Phase 6: Lower and release towel edge                     -->
       <!-- ======================================================== -->
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 kp_translation="15.0,15.0,15.0"
                 kp_rotation="5.0,5.0,5.0"
                 trajectory_speed="0.05"/>
@@ -134,13 +131,12 @@
                retreat_z="0.10"
                retreat_speed="0.1"
                timeout_s="6.0"
-               retreat_pose="{retreat_pose}"
-               current_gains="{current_gains}"/>
+               retreat_pose="{retreat_pose}"/>
 
       <!-- ======================================================== -->
       <!-- Cleanup: Restore original controller gains                -->
       <!-- ======================================================== -->
-      <SetGains current_gains="{current_gains}"/>
+      <SetGains/>
 
     </Sequence>
   </BehaviorTree>

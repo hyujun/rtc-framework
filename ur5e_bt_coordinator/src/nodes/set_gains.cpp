@@ -2,217 +2,216 @@
 #include "ur5e_bt_coordinator/bt_logging.hpp"
 #include "ur5e_bt_coordinator/bt_utils.hpp"
 
+#include <rclcpp/parameter.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rtc_msgs/srv/grasp_command.hpp>
+
+#include <string>
+#include <vector>
 
 namespace rtc_bt {
 
 namespace {
 auto logger() { return ::rtc_bt::logging::ActionLogger("set_gains"); }
-}  // namespace
 
-SetGains::SetGains(const std::string& name, const BT::NodeConfig& config,
+// Normalize controller name for comparison: strip underscores and lowercase.
+// e.g. "demo_task_controller" and "DemoTaskController" both become
+// "demotaskcontroller".
+std::string NormalizeName(const std::string &s) {
+  std::string r;
+  r.reserve(s.size());
+  for (char c : s) {
+    if (c != '_') {
+      r.push_back(
+          static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+  }
+  return r;
+}
+
+constexpr double kSrvTimeoutS = 2.0;
+} // namespace
+
+SetGains::SetGains(const std::string &name, const BT::NodeConfig &config,
                    std::shared_ptr<BtRosBridge> bridge)
-  : BT::SyncActionNode(name, config), bridge_(std::move(bridge))
-{}
+    : BT::SyncActionNode(name, config), bridge_(std::move(bridge)) {}
 
-BT::PortsList SetGains::providedPorts()
-{
+BT::PortsList SetGains::providedPorts() {
   return {
-    BT::InputPort<std::string>("kp_translation", "", "e.g. \"5.0,5.0,5.0\""),
-    BT::InputPort<std::string>("kp_rotation", "", "e.g. \"3.0,3.0,3.0\""),
-    BT::InputPort<double>("damping", "Damping ratio (default 0.01)"),
-    BT::InputPort<double>("null_kp", "Null-space stiffness (default 0.5)"),
-    BT::InputPort<bool>("enable_null_space", "Enable null-space control"),
-    BT::InputPort<bool>("control_6dof", "Enable 6-DoF control"),
-    BT::InputPort<double>("trajectory_speed"),
-    BT::InputPort<double>("trajectory_angular_speed"),
-    BT::InputPort<double>("hand_trajectory_speed"),
-    BT::InputPort<std::vector<double>>("full_gains"),
-    BT::InputPort<int>("grasp_command", 0, "0=none, 1=grasp, 2=release (Force-PI)"),
-    BT::InputPort<double>("grasp_target_force", 2.0, "Target grip force [N] (Force-PI)"),
-    BT::InputPort<std::vector<double>>("current_gains",
-                                       "Cached gains from SwitchController"),
+      // ── Common ────────────────────────────────────────────────────────────
+      BT::InputPort<double>("trajectory_speed",
+                            "[m/s] DemoTask: trajectory_speed; "
+                            "DemoJoint: robot_trajectory_speed; "
+                            "DemoWbc: arm_trajectory_speed"),
+      BT::InputPort<double>("trajectory_angular_speed",
+                            "[rad/s] DemoTask only"),
+      BT::InputPort<double>("hand_trajectory_speed", "[rad/s] All demos"),
+
+      // ── DemoTask CLIK gains ───────────────────────────────────────────────
+      BT::InputPort<std::string>("kp_translation", "", "e.g. \"5.0,5.0,5.0\""),
+      BT::InputPort<std::string>("kp_rotation", "", "e.g. \"3.0,3.0,3.0\""),
+      BT::InputPort<double>("damping", "Damped pseudoinverse lambda"),
+      BT::InputPort<double>("null_kp", "Null-space P gain"),
+      BT::InputPort<bool>("enable_null_space", "Enable null-space task"),
+      BT::InputPort<bool>("control_6dof", "false=3-DOF, true=6-DOF"),
+
+      // ── DemoJoint / DemoTask grasp detection ──────────────────────────────
+      BT::InputPort<double>("grasp_contact_threshold",
+                            "Contact probability threshold [0,1]"),
+      BT::InputPort<double>("grasp_force_threshold",
+                            "Force magnitude threshold [N]"),
+      BT::InputPort<int>("grasp_min_fingertips",
+                         "Min fingertips with contact for grasp"),
+
+      // ── DemoWbc ───────────────────────────────────────────────────────────
+      BT::InputPort<double>("se3_weight", "TSID SE3Task weight"),
+      BT::InputPort<double>("force_weight", "TSID ForceTask weight"),
+      BT::InputPort<double>("posture_weight", "TSID PostureTask weight"),
+      BT::InputPort<bool>("mpc_enable", "MPC output gate"),
+      BT::InputPort<double>("riccati_gain_scale",
+                            "Riccati feedback scale [0,1]"),
+
+      // ── Force-PI grasp (one-shot, separate srv) ───────────────────────────
+      BT::InputPort<int>("grasp_command", 0,
+                         "0=none, 1=grasp, 2=release (Force-PI)"),
+      BT::InputPort<double>("grasp_target_force", 2.0, "Target grip force [N]"),
   };
 }
 
-BT::NodeStatus SetGains::tick()
-{
-  // If full_gains provided, use it directly
-  auto full = getInput<std::vector<double>>("full_gains");
-  if (full && full->size() >= 4) {
-    RCLCPP_INFO(logger(), "publishing full_gains (%zu values)", full->size());
-    bridge_->PublishGains(full.value());
-    return BT::NodeStatus::SUCCESS;
+BT::NodeStatus SetGains::tick() {
+  const auto active = NormalizeName(bridge_->GetActiveController());
+  const bool is_joint = (active == "demojointcontroller");
+  const bool is_task = (active == "demotaskcontroller");
+  const bool is_wbc = (active == "demowbccontroller");
+  if (!is_joint && !is_task && !is_wbc) {
+    RCLCPP_WARN(logger(), "unknown active controller: '%s' — skipping",
+                bridge_->GetActiveController().c_str());
+    return BT::NodeStatus::FAILURE;
   }
 
-  const auto active = bridge_->GetActiveController();
-  const bool is_joint = (active == "DemoJointController" ||
-                         active == "demo_joint_controller");
+  std::vector<rclcpp::Parameter> params;
+  params.reserve(16);
 
-  if (is_joint) {
-    return BuildDemoJointGains();
+  // ── Map trajectory_speed input → controller-specific param name ──────────
+  if (auto v = getInput<double>("trajectory_speed"); v) {
+    if (is_task) {
+      params.emplace_back("trajectory_speed", v.value());
+    } else if (is_joint) {
+      params.emplace_back("robot_trajectory_speed", v.value());
+    } else if (is_wbc) {
+      params.emplace_back("arm_trajectory_speed", v.value());
+    }
   }
-  return BuildDemoTaskGains();
-}
-
-BT::NodeStatus SetGains::BuildDemoJointGains()
-{
-  // DemoJointController layout (7 + optional 2 values):
-  // [robot_trajectory_speed, hand_trajectory_speed,
-  //  robot_max_traj_velocity, hand_max_traj_velocity,
-  //  grasp_contact_threshold, grasp_force_threshold,
-  //  grasp_min_fingertips,
-  //  (grasp_command, grasp_target_force)]   ← optional Force-PI
-  constexpr std::size_t kBaseSize = 7;
-
-  // Use cached gains as base if available and correctly sized
-  auto cached = getInput<std::vector<double>>("current_gains");
-  const bool use_cached = cached && cached->size() >= kBaseSize;
-
-  std::vector<double> gains = use_cached
-    ? std::vector<double>(cached->begin(),
-                          cached->begin() + static_cast<std::ptrdiff_t>(kBaseSize))
-    : std::vector<double>{
-        0.1,    // [0] robot_trajectory_speed
-        3.14,   // [1] hand_trajectory_speed
-        0.5,    // [2] robot_max_traj_velocity
-        6.28,   // [3] hand_max_traj_velocity
-        0.5,    // [4] grasp_contact_threshold
-        1.0,    // [5] grasp_force_threshold
-        2.0,    // [6] grasp_min_fingertips
-      };
-
-  if (use_cached) {
-    RCLCPP_INFO(logger(), "DemoJoint: using cached gains as base");
+  if (auto v = getInput<double>("hand_trajectory_speed"); v) {
+    params.emplace_back("hand_trajectory_speed", v.value());
   }
 
-  auto ts = getInput<double>("trajectory_speed");
-  if (ts) gains[0] = ts.value();
-
-  auto hts = getInput<double>("hand_trajectory_speed");
-  if (hts) gains[1] = hts.value();
-
-  // max_traj_velocity (gains[2]) and hand_max_traj_velocity (gains[3])
-  // are not overridable — always from current_gains or defaults.
-
-  // Force-PI grasp command (one-shot, only appended when non-zero)
-  auto gcmd = getInput<int>("grasp_command");
-  if (gcmd && gcmd.value() != 0) {
-    auto gtf = getInput<double>("grasp_target_force");
-    gains.push_back(static_cast<double>(gcmd.value()));
-    gains.push_back(gtf.value_or(2.0));
-    RCLCPP_INFO(logger(),
-                "DemoJoint: grasp_command=%d target_force=%.2f",
-                gcmd.value(), gains.back());
-  }
-
-  RCLCPP_INFO(logger(),
-              "DemoJoint: robot_speed=%.2f hand_speed=%.2f "
-              "max_vel=%.2f(locked) hand_max_vel=%.2f(locked)",
-              gains[0], gains[1], gains[2], gains[3]);
-  bridge_->PublishGains(gains);
-  return BT::NodeStatus::SUCCESS;
-}
-
-BT::NodeStatus SetGains::BuildDemoTaskGains()
-{
-  // DemoTaskController layout (19 + optional 2 values):
-  // [kp_t×3, kp_r×3, damping, null_kp, en_null, en_6dof,
-  //  traj_speed, traj_ang_speed, hand_traj_speed,
-  //  max_traj_vel, max_traj_ang_vel, hand_max_traj_vel,
-  //  grasp_contact_threshold, grasp_force_threshold,
-  //  grasp_min_fingertips,
-  //  (grasp_command, grasp_target_force)]   ← optional Force-PI
-  constexpr std::size_t kBaseSize = 19;
-
-  // Use cached gains as base if available and correctly sized
-  auto cached = getInput<std::vector<double>>("current_gains");
-  const bool use_cached = cached && cached->size() >= kBaseSize;
-
-  std::vector<double> gains = use_cached
-    ? std::vector<double>(cached->begin(),
-                          cached->begin() + static_cast<std::ptrdiff_t>(kBaseSize))
-    : std::vector<double>{
-        5.0, 5.0, 5.0,         // [0-2]  kp_translation
-        2.0, 2.0, 2.0,         // [3-5]  kp_rotation
-        0.01,                // [6]    damping
-        0.5,                 // [7]    null_kp
-        0.0,                 // [8]    enable_null_space
-        1.0,                 // [9]    control_6dof
-        0.1,                 // [10]   trajectory_speed
-        0.78,                // [11]   trajectory_angular_speed
-        3.14,                // [12]   hand_trajectory_speed
-        0.5,                 // [13]   max_traj_velocity
-        1.57,                // [14]   max_traj_angular_velocity
-        6.28,                // [15]   hand_max_traj_velocity
-        0.5,                 // [16]   grasp_contact_threshold
-        1.0,                 // [17]   grasp_force_threshold
-        2.0,                 // [18]   grasp_min_fingertips
-      };
-
-  if (use_cached) {
-    RCLCPP_INFO(logger(), "DemoTask: using cached gains as base");
-  }
-
-  auto kp_t = getInput<std::string>("kp_translation");
-  if (kp_t && !kp_t->empty()) {
-    auto vals = ParseCsvList<double>(kp_t.value());
-    for (std::size_t i = 0; i < std::min(vals.size(), std::size_t{3}); ++i) {
-      gains[i] = vals[i];
+  // ── DemoTask-only ────────────────────────────────────────────────────────
+  if (is_task) {
+    if (auto v = getInput<double>("trajectory_angular_speed"); v) {
+      params.emplace_back("trajectory_angular_speed", v.value());
+    }
+    if (auto s = getInput<std::string>("kp_translation"); s && !s->empty()) {
+      auto vals = ParseCsvList<double>(s.value());
+      if (vals.size() == 3) {
+        params.emplace_back("kp_translation", vals);
+      } else {
+        RCLCPP_WARN(logger(), "kp_translation must be 3 values (got %zu)",
+                    vals.size());
+      }
+    }
+    if (auto s = getInput<std::string>("kp_rotation"); s && !s->empty()) {
+      auto vals = ParseCsvList<double>(s.value());
+      if (vals.size() == 3) {
+        params.emplace_back("kp_rotation", vals);
+      } else {
+        RCLCPP_WARN(logger(), "kp_rotation must be 3 values (got %zu)",
+                    vals.size());
+      }
+    }
+    if (auto v = getInput<double>("damping"); v) {
+      params.emplace_back("damping", v.value());
+    }
+    if (auto v = getInput<double>("null_kp"); v) {
+      params.emplace_back("null_kp", v.value());
+    }
+    if (auto v = getInput<bool>("enable_null_space"); v) {
+      params.emplace_back("enable_null_space", v.value());
+    }
+    if (auto v = getInput<bool>("control_6dof"); v) {
+      params.emplace_back("control_6dof", v.value());
     }
   }
 
-  auto kp_r = getInput<std::string>("kp_rotation");
-  if (kp_r && !kp_r->empty()) {
-    auto vals = ParseCsvList<double>(kp_r.value());
-    for (std::size_t i = 0; i < std::min(vals.size(), std::size_t{3}); ++i) {
-      gains[3 + i] = vals[i];
+  // ── DemoJoint / DemoTask grasp detection ─────────────────────────────────
+  if (is_joint || is_task) {
+    if (auto v = getInput<double>("grasp_contact_threshold"); v) {
+      params.emplace_back("grasp_contact_threshold", v.value());
+    }
+    if (auto v = getInput<double>("grasp_force_threshold"); v) {
+      params.emplace_back("grasp_force_threshold", v.value());
+    }
+    if (auto v = getInput<int>("grasp_min_fingertips"); v) {
+      params.emplace_back("grasp_min_fingertips",
+                          static_cast<int64_t>(v.value()));
     }
   }
 
-  auto damp = getInput<double>("damping");
-  if (damp) gains[6] = damp.value();
-
-  auto nkp = getInput<double>("null_kp");
-  if (nkp) gains[7] = nkp.value();
-
-  auto ens = getInput<bool>("enable_null_space");
-  if (ens) gains[8] = ens.value() ? 1.0 : 0.0;
-
-  auto c6d = getInput<bool>("control_6dof");
-  if (c6d) gains[9] = c6d.value() ? 1.0 : 0.0;
-
-  auto ts = getInput<double>("trajectory_speed");
-  if (ts) gains[10] = ts.value();
-
-  auto tas = getInput<double>("trajectory_angular_speed");
-  if (tas) gains[11] = tas.value();
-
-  auto hts = getInput<double>("hand_trajectory_speed");
-  if (hts) gains[12] = hts.value();
-
-  // max_traj_velocity (gains[13]), max_traj_angular_velocity (gains[14]),
-  // and hand_max_traj_velocity (gains[15]) are not overridable —
-  // always from current_gains or defaults.
-
-  // Force-PI grasp command (one-shot, only appended when non-zero)
-  auto gcmd = getInput<int>("grasp_command");
-  if (gcmd && gcmd.value() != 0) {
-    auto gtf = getInput<double>("grasp_target_force");
-    gains.push_back(static_cast<double>(gcmd.value()));
-    gains.push_back(gtf.value_or(2.0));
-    RCLCPP_INFO(logger(),
-                "DemoTask: grasp_command=%d target_force=%.2f",
-                gcmd.value(), gains.back());
+  // ── DemoWbc ──────────────────────────────────────────────────────────────
+  if (is_wbc) {
+    if (auto v = getInput<double>("se3_weight"); v) {
+      params.emplace_back("se3_weight", v.value());
+    }
+    if (auto v = getInput<double>("force_weight"); v) {
+      params.emplace_back("force_weight", v.value());
+    }
+    if (auto v = getInput<double>("posture_weight"); v) {
+      params.emplace_back("posture_weight", v.value());
+    }
+    if (auto v = getInput<bool>("mpc_enable"); v) {
+      params.emplace_back("mpc_enable", v.value());
+    }
+    if (auto v = getInput<double>("riccati_gain_scale"); v) {
+      params.emplace_back("riccati_gain_scale", v.value());
+    }
   }
 
-  RCLCPP_INFO(logger(),
-              "DemoTask: kp_t=[%.1f,%.1f,%.1f] kp_r=[%.1f,%.1f,%.1f] "
-              "traj_speed=%.2f hand_speed=%.2f",
-              gains[0], gains[1], gains[2], gains[3], gains[4], gains[5],
-              gains[10], gains[12]);
-  bridge_->PublishGains(gains);
+  // ── Set parameters (skipped when no port set) ────────────────────────────
+  if (!params.empty()) {
+    std::string msg;
+    if (!bridge_->SetActiveControllerGains(params, kSrvTimeoutS, msg)) {
+      RCLCPP_ERROR(logger(), "set_parameters_atomically failed: %s",
+                   msg.c_str());
+      return BT::NodeStatus::FAILURE;
+    }
+    RCLCPP_INFO(logger(), "%s: %zu parameter(s) updated",
+                bridge_->GetActiveController().c_str(), params.size());
+  }
+
+  // ── Force-PI grasp command (one-shot, separate srv) ─────────────────────
+  if (auto cmd = getInput<int>("grasp_command"); cmd && cmd.value() != 0) {
+    const auto cmd_val = cmd.value();
+    if (cmd_val !=
+            static_cast<int>(rtc_msgs::srv::GraspCommand::Request::GRASP) &&
+        cmd_val !=
+            static_cast<int>(rtc_msgs::srv::GraspCommand::Request::RELEASE)) {
+      RCLCPP_ERROR(logger(),
+                   "grasp_command must be 1 (GRASP) or 2 (RELEASE), got %d",
+                   cmd_val);
+      return BT::NodeStatus::FAILURE;
+    }
+    const double force = getInput<double>("grasp_target_force").value_or(2.0);
+    std::string msg;
+    if (!bridge_->SendGraspCommand(static_cast<uint8_t>(cmd_val), force,
+                                   kSrvTimeoutS, msg)) {
+      RCLCPP_ERROR(logger(), "grasp_command srv failed: %s", msg.c_str());
+      return BT::NodeStatus::FAILURE;
+    }
+    RCLCPP_INFO(logger(), "grasp_command %s: %s",
+                cmd_val == 1 ? "GRASP" : "RELEASE", msg.c_str());
+  }
+
   return BT::NodeStatus::SUCCESS;
 }
 
-}  // namespace rtc_bt
+} // namespace rtc_bt

@@ -30,10 +30,9 @@
       <!--   position for the inspection task.                       -->
       <!-- ======================================================== -->
       <SwitchController controller_name="demo_joint_controller"
-                        timeout_s="3.0"
-                        current_gains="{current_gains}"/>
+                        timeout_s="3.0"/>
 
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="0.15"/>
 
       <MoveToJoints pose_name="ready"
@@ -60,8 +59,7 @@
       <!--   motion. Loads current gains into blackboard.            -->
       <!-- ======================================================== -->
       <SwitchController controller_name="demo_task_controller"
-                        timeout_s="3.0"
-                        current_gains="{current_gains}"/>
+                        timeout_s="3.0"/>
 
       <!-- ======================================================== -->
       <!-- Phase 4: Move to inspection position (2-step approach)    -->
@@ -81,7 +79,7 @@
                          offset_z="{inspect_approach_z}"
                          output_pose="{inspect_approach_pose}"/>
 
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="0.1"/>
 
       <!-- Step 1: lateral move (x/y) at safe height -->
@@ -91,7 +89,7 @@
                   timeout_s="12.0"/>
 
       <!-- Step 2: descend to inspect position (z) -->
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="0.05"/>
 
       <MoveToPose target="{inspect_pose}"
@@ -150,7 +148,7 @@
                          offset_z="{inspect_approach_z}"
                          output_pose="{return_retreat_pose}"/>
 
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="0.08"/>
 
       <!-- Step 1: ascend (+z) to safe height -->
@@ -161,10 +159,9 @@
 
       <!-- Step 2: move to ready pose via joint-space -->
       <SwitchController controller_name="demo_joint_controller"
-                        timeout_s="3.0"
-                        current_gains="{current_gains}"/>
+                        timeout_s="3.0"/>
 
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="0.15"/>
 
       <MoveToJoints pose_name="ready"

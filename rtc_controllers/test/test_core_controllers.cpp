@@ -175,32 +175,17 @@ TEST(PController, EstopClear) {
       << "After ClearEstop, control should resume toward target";
 }
 
-TEST(PController, UpdateGains) {
+TEST(PController, SetGetGainsRoundTrip) {
   rtc::PController ctrl(GetTestUrdfPath());
 
-  std::vector<double> new_gains{50.0, 55.0, 60.0, 65.0, 70.0, 75.0};
-  ctrl.UpdateGainsFromMsg(new_gains);
-
-  auto readback = ctrl.GetCurrentGains();
-  ASSERT_EQ(readback.size(), 6u);
+  rtc::PController::Gains g;
   for (std::size_t i = 0; i < 6; ++i) {
-    EXPECT_NEAR(readback[i], new_gains[i], 1e-12) << "Gain " << i;
+    g.kp[i] = 50.0 + 5.0 * static_cast<double>(i);
   }
-}
-
-TEST(PController, UpdateGainsTooShort) {
-  rtc::PController ctrl(GetTestUrdfPath());
-
-  auto original = ctrl.GetCurrentGains();
-  // Send fewer than 6 values -> gains should be unchanged
-  std::vector<double> short_gains{10.0, 20.0};
-  ctrl.UpdateGainsFromMsg(short_gains);
-
-  auto readback = ctrl.GetCurrentGains();
-  ASSERT_EQ(readback.size(), original.size());
-  for (std::size_t i = 0; i < original.size(); ++i) {
-    EXPECT_NEAR(readback[i], original[i], 1e-12)
-        << "Gain " << i << " should be unchanged";
+  ctrl.set_gains(g);
+  const auto rb = ctrl.get_gains();
+  for (std::size_t i = 0; i < 6; ++i) {
+    EXPECT_NEAR(rb.kp[i], g.kp[i], 1e-12) << "Gain " << i;
   }
 }
 
@@ -337,28 +322,29 @@ TEST(JointPD, Estop) {
       << "E-STOP should produce torque driving toward safe position (zero)";
 }
 
-TEST(JointPD, UpdateGains) {
+TEST(JointPD, SetGetGainsRoundTrip) {
   rtc::JointPDController ctrl(GetTestUrdfPath());
 
-  // Layout: [kp x6, kd x6, gravity(0/1), coriolis(0/1), trajectory_speed]
-  std::vector<double> new_gains(15, 0.0);
+  rtc::JointPDController::Gains gains;
   for (int i = 0; i < 6; ++i) {
-    new_gains[static_cast<std::size_t>(i)] =
-        50.0 + static_cast<double>(i); // kp
-    new_gains[static_cast<std::size_t>(i + 6)] =
-        10.0 + static_cast<double>(i); // kd
+    gains.kp[static_cast<std::size_t>(i)] = 50.0 + static_cast<double>(i);
+    gains.kd[static_cast<std::size_t>(i)] = 10.0 + static_cast<double>(i);
   }
-  new_gains[12] = 1.0; // enable_gravity
-  new_gains[13] = 0.0; // disable_coriolis
-  new_gains[14] = 2.0; // trajectory_speed
+  gains.enable_gravity_compensation = true;
+  gains.enable_coriolis_compensation = false;
+  gains.trajectory_speed = 2.0;
 
-  ctrl.UpdateGainsFromMsg(new_gains);
-  auto readback = ctrl.GetCurrentGains();
-
-  ASSERT_EQ(readback.size(), 15u);
-  for (std::size_t i = 0; i < 15; ++i) {
-    EXPECT_NEAR(readback[i], new_gains[i], 1e-12) << "Gain index " << i;
+  ctrl.set_gains(gains);
+  const auto rb = ctrl.get_gains();
+  for (int i = 0; i < 6; ++i) {
+    EXPECT_NEAR(rb.kp[static_cast<std::size_t>(i)],
+                gains.kp[static_cast<std::size_t>(i)], 1e-12);
+    EXPECT_NEAR(rb.kd[static_cast<std::size_t>(i)],
+                gains.kd[static_cast<std::size_t>(i)], 1e-12);
   }
+  EXPECT_TRUE(rb.enable_gravity_compensation);
+  EXPECT_FALSE(rb.enable_coriolis_compensation);
+  EXPECT_DOUBLE_EQ(rb.trajectory_speed, 2.0);
 }
 
 TEST(JointPD, CommandType) {
@@ -472,51 +458,30 @@ TEST(Clik, Estop) {
       << "E-STOP should move joint 0 toward safe position (0.0)";
 }
 
-TEST(Clik, UpdateGains) {
+TEST(Clik, SetGetGainsRoundTrip) {
+  rtc::ClikController::Gains init;
+  rtc::ClikController ctrl(GetTestUrdfPath(), init);
+
   rtc::ClikController::Gains gains;
-  rtc::ClikController ctrl(GetTestUrdfPath(), gains);
+  gains.kp_translation = {2.0, 3.0, 4.0};
+  gains.kp_rotation = {1.5, 1.5, 1.5};
+  gains.damping = 0.02;
+  gains.null_kp = 0.8;
+  gains.enable_null_space = true;
+  gains.control_6dof = false;
+  gains.trajectory_speed = 0.2;
+  gains.trajectory_angular_speed = 0.6;
+  gains.max_traj_velocity = 0.8;
+  gains.max_traj_angular_velocity = 1.5;
 
-  // Layout: [kp_translation x3, kp_rotation x3, damping, null_kp,
-  //          enable_null_space(0/1), control_6dof(0/1),
-  //          trajectory_speed, trajectory_angular_speed,
-  //          max_traj_velocity, max_traj_angular_velocity] = 14
-  std::vector<double> new_gains{
-      2.0,  3.0, 4.0, // kp_translation
-      1.5,  1.5, 1.5, // kp_rotation
-      0.02,           // damping
-      0.8,            // null_kp
-      1.0,            // enable_null_space
-      0.0,            // control_6dof
-      0.2,            // trajectory_speed
-      0.6,            // trajectory_angular_speed
-      0.8,            // max_traj_velocity
-      1.5             // max_traj_angular_velocity
-  };
-
-  ctrl.UpdateGainsFromMsg(new_gains);
-  auto readback = ctrl.GetCurrentGains();
-
-  ASSERT_EQ(readback.size(), 14u);
-  for (std::size_t i = 0; i < 14; ++i) {
-    EXPECT_NEAR(readback[i], new_gains[i], 1e-12) << "Gain index " << i;
-  }
-}
-
-TEST(Clik, UpdateGainsTooShort) {
-  rtc::ClikController::Gains gains;
-  rtc::ClikController ctrl(GetTestUrdfPath(), gains);
-
-  auto original = ctrl.GetCurrentGains();
-  // Send fewer than 10 values -> gains should be unchanged
-  std::vector<double> short_gains{1.0, 2.0, 3.0, 4.0, 5.0};
-  ctrl.UpdateGainsFromMsg(short_gains);
-
-  auto readback = ctrl.GetCurrentGains();
-  ASSERT_EQ(readback.size(), original.size());
-  for (std::size_t i = 0; i < original.size(); ++i) {
-    EXPECT_NEAR(readback[i], original[i], 1e-12)
-        << "Gain " << i << " should be unchanged";
-  }
+  ctrl.set_gains(gains);
+  const auto rb = ctrl.get_gains();
+  EXPECT_NEAR(rb.kp_translation[0], 2.0, 1e-12);
+  EXPECT_NEAR(rb.kp_rotation[2], 1.5, 1e-12);
+  EXPECT_NEAR(rb.damping, 0.02, 1e-12);
+  EXPECT_TRUE(rb.enable_null_space);
+  EXPECT_FALSE(rb.control_6dof);
+  EXPECT_NEAR(rb.trajectory_speed, 0.2, 1e-12);
 }
 
 TEST(Clik, CommandType) {
@@ -634,33 +599,30 @@ TEST(OSC, Estop) {
       << "E-STOP should move joint 0 toward safe position (0.0)";
 }
 
-TEST(OSC, UpdateGains) {
+TEST(OSC, SetGetGainsRoundTrip) {
+  rtc::OperationalSpaceController::Gains init;
+  rtc::OperationalSpaceController ctrl(GetTestUrdfPath(), init);
+
   rtc::OperationalSpaceController::Gains gains;
-  rtc::OperationalSpaceController ctrl(GetTestUrdfPath(), gains);
+  gains.kp_pos = {3.0, 3.0, 3.0};
+  gains.kd_pos = {0.2, 0.2, 0.2};
+  gains.kp_rot = {1.0, 1.0, 1.0};
+  gains.kd_rot = {0.1, 0.1, 0.1};
+  gains.damping = 0.05;
+  gains.enable_gravity_compensation = true;
+  gains.trajectory_speed = 0.15;
+  gains.trajectory_angular_speed = 0.7;
+  gains.max_traj_velocity = 0.6;
+  gains.max_traj_angular_velocity = 1.2;
 
-  // Layout: [kp_pos x3, kd_pos x3, kp_rot x3, kd_rot x3, damping,
-  //          enable_gravity(0/1), trajectory_speed, trajectory_angular_speed,
-  //          max_traj_velocity, max_traj_angular_velocity] = 18
-  std::vector<double> new_gains{
-      3.0,  3.0, 3.0, // kp_pos
-      0.2,  0.2, 0.2, // kd_pos
-      1.0,  1.0, 1.0, // kp_rot
-      0.1,  0.1, 0.1, // kd_rot
-      0.05,           // damping
-      1.0,            // enable_gravity
-      0.15,           // trajectory_speed
-      0.7,            // trajectory_angular_speed
-      0.6,            // max_traj_velocity
-      1.2             // max_traj_angular_velocity
-  };
-
-  ctrl.UpdateGainsFromMsg(new_gains);
-  auto readback = ctrl.GetCurrentGains();
-
-  ASSERT_EQ(readback.size(), 18u);
-  for (std::size_t i = 0; i < 18; ++i) {
-    EXPECT_NEAR(readback[i], new_gains[i], 1e-12) << "Gain index " << i;
-  }
+  ctrl.set_gains(gains);
+  const auto rb = ctrl.get_gains();
+  EXPECT_NEAR(rb.kp_pos[0], 3.0, 1e-12);
+  EXPECT_NEAR(rb.kd_pos[1], 0.2, 1e-12);
+  EXPECT_NEAR(rb.kp_rot[2], 1.0, 1e-12);
+  EXPECT_NEAR(rb.damping, 0.05, 1e-12);
+  EXPECT_TRUE(rb.enable_gravity_compensation);
+  EXPECT_DOUBLE_EQ(rb.trajectory_speed, 0.15);
 }
 
 TEST(OSC, CommandType) {

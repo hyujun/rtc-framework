@@ -188,7 +188,6 @@ ShapeEstimationNode::on_cleanup(const rclcpp_lifecycle::State & /*state*/) {
   sub_object_pose_.reset();
   sub_estop_.reset();
   sub_gui_position_.reset();
-  pub_controller_gains_.reset();
   pub_robot_target_.reset();
   pub_controller_type_.reset();
   action_server_.reset();
@@ -232,7 +231,6 @@ ShapeEstimationNode::on_error(const rclcpp_lifecycle::State & /*state*/) {
   sub_object_pose_.reset();
   sub_estop_.reset();
   sub_gui_position_.reset();
-  pub_controller_gains_.reset();
   pub_robot_target_.reset();
   pub_controller_type_.reset();
   action_server_.reset();
@@ -281,25 +279,6 @@ void ShapeEstimationNode::DeclareParameters() {
   declare_parameter("exploration.controller_name", "demo_task_controller");
   declare_parameter("exploration.controller_switch_delay_ms", 200);
   declare_parameter("exploration.explore_rate_hz", 10.0);
-
-  // 탐색 게인 (16개 → 개별 파라미터로 선언)
-  declare_parameter("exploration.exploration_gains.kp_translation",
-                    std::vector<double>{10.0, 10.0, 10.0});
-  declare_parameter("exploration.exploration_gains.kp_rotation",
-                    std::vector<double>{5.0, 5.0, 5.0});
-  declare_parameter("exploration.exploration_gains.damping", 0.01);
-  declare_parameter("exploration.exploration_gains.null_kp", 0.0);
-  declare_parameter("exploration.exploration_gains.enable_null_space", false);
-  declare_parameter("exploration.exploration_gains.control_6dof", true);
-  declare_parameter("exploration.exploration_gains.trajectory_speed", 0.05);
-  declare_parameter("exploration.exploration_gains.trajectory_angular_speed",
-                    0.3);
-  declare_parameter("exploration.exploration_gains.hand_trajectory_speed", 0.0);
-  declare_parameter("exploration.exploration_gains.max_traj_velocity", 0.10);
-  declare_parameter("exploration.exploration_gains.max_traj_angular_velocity",
-                    0.5);
-  declare_parameter("exploration.exploration_gains.hand_max_traj_velocity",
-                    0.0);
 
   // Phase 파라미터
   declare_parameter("exploration.approach_step_size", 0.005);
@@ -534,9 +513,6 @@ void ShapeEstimationNode::InitExploration() {
   auto config = LoadExplorationConfig();
   motion_generator_ = ExplorationMotionGenerator(config);
 
-  // 게인 배열 로드
-  exploration_gains_ = LoadExplorationGains();
-
   // ── Action Server ──────────────────────────────────────────────────────────
   action_server_ = rclcpp_action::create_server<ExploreShape>(
       this, "/shape/explore",
@@ -557,9 +533,6 @@ void ShapeEstimationNode::InitExploration() {
 
   // pub_robot_target_ and sub_gui_position_ are controller-owned (Phase 4)
   // and bound in RewireControllerTopics() on /active_controller_name arrival.
-
-  pub_controller_gains_ = create_publisher<std_msgs::msg::Float64MultiArray>(
-      "/" + robot_namespace_ + "/controller_gains", rclcpp::QoS(1).reliable());
 
   sub_estop_ = create_subscription<std_msgs::msg::Bool>(
       "/system/estop_status", rclcpp::QoS(1).reliable().transient_local(),
@@ -637,12 +610,7 @@ void ShapeEstimationNode::HandleAccepted(
   switch_msg.data = controller_name_;
   pub_controller_type_->publish(switch_msg);
 
-  // 2) 탐색용 게인 설정
-  auto gains_msg = std_msgs::msg::Float64MultiArray();
-  gains_msg.data = exploration_gains_;
-  pub_controller_gains_->publish(gains_msg);
-
-  // 3) 컨트롤러 전환 대기 후 탐색 시작 (one-shot timer)
+  // 2) 컨트롤러 전환 대기 후 탐색 시작 (one-shot timer)
   // 멤버 변수로 타이머를 유지하여 lifetime 보장 + cancel 가능
   auto delay = std::chrono::milliseconds(controller_switch_delay_ms_);
   delayed_start_timer_ = create_wall_timer(delay, [this, object_pos]() {
@@ -883,59 +851,6 @@ ExplorationConfig ShapeEstimationNode::LoadExplorationConfig() {
       get_parameter("exploration.min_classification_coverage").as_double();
 
   return config;
-}
-
-std::vector<double> ShapeEstimationNode::LoadExplorationGains() {
-  // DemoTaskController 게인 레이아웃 (16개):
-  // [kp_trans×3, kp_rot×3, damping, null_kp, enable_null_space(0/1),
-  //  control_6dof(0/1), traj_speed, traj_angular_speed,
-  //  hand_traj_speed, max_vel, max_angular_vel, hand_max_vel]
-  std::vector<double> gains;
-  gains.reserve(16);
-
-  const auto kp_trans =
-      get_parameter("exploration.exploration_gains.kp_translation")
-          .as_double_array();
-  const auto kp_rot = get_parameter("exploration.exploration_gains.kp_rotation")
-                          .as_double_array();
-
-  for (const auto &v : kp_trans)
-    gains.push_back(v);
-  for (const auto &v : kp_rot)
-    gains.push_back(v);
-
-  gains.push_back(
-      get_parameter("exploration.exploration_gains.damping").as_double());
-  gains.push_back(
-      get_parameter("exploration.exploration_gains.null_kp").as_double());
-  gains.push_back(
-      get_parameter("exploration.exploration_gains.enable_null_space").as_bool()
-          ? 1.0
-          : 0.0);
-  gains.push_back(
-      get_parameter("exploration.exploration_gains.control_6dof").as_bool()
-          ? 1.0
-          : 0.0);
-  gains.push_back(
-      get_parameter("exploration.exploration_gains.trajectory_speed")
-          .as_double());
-  gains.push_back(
-      get_parameter("exploration.exploration_gains.trajectory_angular_speed")
-          .as_double());
-  gains.push_back(
-      get_parameter("exploration.exploration_gains.hand_trajectory_speed")
-          .as_double());
-  gains.push_back(
-      get_parameter("exploration.exploration_gains.max_traj_velocity")
-          .as_double());
-  gains.push_back(
-      get_parameter("exploration.exploration_gains.max_traj_angular_velocity")
-          .as_double());
-  gains.push_back(
-      get_parameter("exploration.exploration_gains.hand_max_traj_velocity")
-          .as_double());
-
-  return gains;
 }
 
 // ── Phase 4: rebind controller-owned topics on switch ─────────────────────

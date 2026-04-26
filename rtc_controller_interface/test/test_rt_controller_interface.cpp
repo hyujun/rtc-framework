@@ -1,5 +1,6 @@
-// ── test_rt_controller_interface.cpp ──────────────────────────────────────────
-// Unit tests for RTControllerInterface base class and TopicConfig.
+// ── test_rt_controller_interface.cpp
+// ────────────────────────────────────────── Unit tests for
+// RTControllerInterface base class and TopicConfig.
 //
 // Uses a minimal concrete subclass (StubController) to exercise the protected
 // and virtual method behaviour of the abstract interface.
@@ -19,25 +20,21 @@
 #include <string>
 #include <vector>
 
-namespace
-{
+namespace {
 
 // ── Stub controller — exposes protected helpers for testing ──────────────────
-class StubController : public rtc::RTControllerInterface
-{
+class StubController : public rtc::RTControllerInterface {
 public:
   StubController() = default;
 
-  [[nodiscard]] rtc::ControllerOutput Compute(
-    const rtc::ControllerState &) noexcept override
-  {
+  [[nodiscard]] rtc::ControllerOutput
+  Compute(const rtc::ControllerState &) noexcept override {
     rtc::ControllerOutput out{};
     out.valid = true;
     return out;
   }
   void SetDeviceTarget(int, std::span<const double>) noexcept override {}
-  [[nodiscard]] std::string_view Name() const noexcept override
-  {
+  [[nodiscard]] std::string_view Name() const noexcept override {
     return "StubController";
   }
   void InitializeHoldPosition(const rtc::ControllerState &) noexcept override {}
@@ -51,42 +48,36 @@ public:
   int model_config_set_count{0};
 
 protected:
-  void OnDeviceConfigsSet() override {++device_config_set_count;}
-  void OnSystemModelConfigSet() override {++model_config_set_count;}
+  void OnDeviceConfigsSet() override { ++device_config_set_count; }
+  void OnSystemModelConfigSet() override { ++model_config_set_count; }
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Default construction
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(RTControllerInterfaceTest, DefaultControlRate)
-{
+TEST(RTControllerInterfaceTest, DefaultControlRate) {
   StubController ctrl;
   EXPECT_DOUBLE_EQ(ctrl.GetDefaultDt(), 0.002);
 }
 
-TEST(RTControllerInterfaceTest, DefaultTopicConfigHasUr5e)
-{
+TEST(RTControllerInterfaceTest, DefaultTopicConfigHasUr5e) {
   StubController ctrl;
   EXPECT_TRUE(ctrl.GetTopicConfig().HasGroup("ur5e"));
 }
 
-TEST(RTControllerInterfaceTest, DefaultVirtualMethods)
-{
+TEST(RTControllerInterfaceTest, DefaultVirtualMethods) {
   StubController ctrl;
   EXPECT_FALSE(ctrl.IsEstopped());
   EXPECT_EQ(ctrl.GetCommandType(), rtc::CommandType::kPosition);
-  EXPECT_TRUE(ctrl.GetCurrentGains().empty());
 }
 
-TEST(RTControllerInterfaceTest, NameReturnsStub)
-{
+TEST(RTControllerInterfaceTest, NameReturnsStub) {
   StubController ctrl;
   EXPECT_EQ(ctrl.Name(), "StubController");
 }
 
-TEST(RTControllerInterfaceTest, ComputeReturnsValid)
-{
+TEST(RTControllerInterfaceTest, ComputeReturnsValid) {
   StubController ctrl;
   rtc::ControllerState state{};
   state.dt = 0.002;
@@ -99,8 +90,7 @@ TEST(RTControllerInterfaceTest, ComputeReturnsValid)
 // E-STOP default no-ops
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(RTControllerInterfaceTest, EstopDefaultNoOps)
-{
+TEST(RTControllerInterfaceTest, EstopDefaultNoOps) {
   StubController ctrl;
   EXPECT_FALSE(ctrl.IsEstopped());
 
@@ -116,22 +106,19 @@ TEST(RTControllerInterfaceTest, EstopDefaultNoOps)
 // Control rate
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(RTControllerInterfaceTest, SetControlRate)
-{
+TEST(RTControllerInterfaceTest, SetControlRate) {
   StubController ctrl;
   ctrl.SetControlRate(1000.0);
   EXPECT_DOUBLE_EQ(ctrl.GetDefaultDt(), 0.001);
 }
 
-TEST(RTControllerInterfaceTest, SetControlRateZeroFallback)
-{
+TEST(RTControllerInterfaceTest, SetControlRateZeroFallback) {
   StubController ctrl;
   ctrl.SetControlRate(0.0);
   EXPECT_DOUBLE_EQ(ctrl.GetDefaultDt(), 0.002);
 }
 
-TEST(RTControllerInterfaceTest, SetControlRateNegativeFallback)
-{
+TEST(RTControllerInterfaceTest, SetControlRateNegativeFallback) {
   StubController ctrl;
   ctrl.SetControlRate(-500.0);
   EXPECT_DOUBLE_EQ(ctrl.GetDefaultDt(), 0.002);
@@ -141,8 +128,7 @@ TEST(RTControllerInterfaceTest, SetControlRateNegativeFallback)
 // Device name configuration
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(RTControllerInterfaceTest, SetDeviceNameConfigsStoresAndCallsHook)
-{
+TEST(RTControllerInterfaceTest, SetDeviceNameConfigsStoresAndCallsHook) {
   StubController ctrl;
   std::map<std::string, rtc::DeviceNameConfig> configs;
   configs["robot"].device_name = "robot";
@@ -157,14 +143,12 @@ TEST(RTControllerInterfaceTest, SetDeviceNameConfigsStoresAndCallsHook)
   EXPECT_EQ(ctrl.GetDeviceNameConfig("hand")->device_name, "hand");
 }
 
-TEST(RTControllerInterfaceTest, GetDeviceNameConfigReturnsNullptrForMissing)
-{
+TEST(RTControllerInterfaceTest, GetDeviceNameConfigReturnsNullptrForMissing) {
   StubController ctrl;
   EXPECT_EQ(ctrl.GetDeviceNameConfig("nonexistent"), nullptr);
 }
 
-TEST(RTControllerInterfaceTest, GetPrimaryDeviceNameFromTopicConfig)
-{
+TEST(RTControllerInterfaceTest, GetPrimaryDeviceNameFromTopicConfig) {
   StubController ctrl;
   EXPECT_EQ(ctrl.GetPrimaryDeviceName(), "ur5e");
 }
@@ -173,14 +157,12 @@ TEST(RTControllerInterfaceTest, GetPrimaryDeviceNameFromTopicConfig)
 // System model configuration
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(RTControllerInterfaceTest, SystemModelConfigDefaultNull)
-{
+TEST(RTControllerInterfaceTest, SystemModelConfigDefaultNull) {
   StubController ctrl;
   EXPECT_EQ(ctrl.GetSystemModelConfig(), nullptr);
 }
 
-TEST(RTControllerInterfaceTest, SetSystemModelConfigStoresAndCallsHook)
-{
+TEST(RTControllerInterfaceTest, SetSystemModelConfigStoresAndCallsHook) {
   StubController ctrl;
   rtc_urdf_bridge::ModelConfig config;
   config.urdf_path = "/test/robot.urdf";
@@ -194,8 +176,7 @@ TEST(RTControllerInterfaceTest, SetSystemModelConfigStoresAndCallsHook)
   EXPECT_EQ(ctrl.GetSystemModelConfig()->root_joint_type, "fixed");
 }
 
-TEST(RTControllerInterfaceTest, SetSystemModelConfigOverwrites)
-{
+TEST(RTControllerInterfaceTest, SetSystemModelConfigOverwrites) {
   StubController ctrl;
   rtc_urdf_bridge::ModelConfig cfg1;
   cfg1.urdf_path = "/first.urdf";
@@ -213,18 +194,18 @@ TEST(RTControllerInterfaceTest, SetSystemModelConfigOverwrites)
 // MakeDefaultTopicConfig
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigSubscribeRoles)
-{
+TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigSubscribeRoles) {
   const auto cfg = StubController::MakeDefaultTopicConfig("my_robot");
   EXPECT_TRUE(cfg.HasGroup("my_robot"));
   EXPECT_TRUE(cfg.HasSubscribeRole("my_robot", rtc::SubscribeRole::kState));
   EXPECT_TRUE(cfg.HasSubscribeRole("my_robot", rtc::SubscribeRole::kTarget));
-  EXPECT_FALSE(cfg.HasSubscribeRole("my_robot", rtc::SubscribeRole::kMotorState));
-  EXPECT_FALSE(cfg.HasSubscribeRole("my_robot", rtc::SubscribeRole::kSensorState));
+  EXPECT_FALSE(
+      cfg.HasSubscribeRole("my_robot", rtc::SubscribeRole::kMotorState));
+  EXPECT_FALSE(
+      cfg.HasSubscribeRole("my_robot", rtc::SubscribeRole::kSensorState));
 }
 
-TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigTopicNames)
-{
+TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigTopicNames) {
   const auto cfg = StubController::MakeDefaultTopicConfig("my_robot");
   EXPECT_EQ(cfg.GetSubscribeTopicName("my_robot", rtc::SubscribeRole::kState),
             "/joint_states");
@@ -232,26 +213,24 @@ TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigTopicNames)
             "/my_robot/target_joint_positions");
 }
 
-TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigCapability)
-{
+TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigCapability) {
   const auto cfg = StubController::MakeDefaultTopicConfig("ur5e");
 
-  for (const auto & [name, group] : cfg.groups) {
+  for (const auto &[name, group] : cfg.groups) {
     if (name == "ur5e") {
-      EXPECT_TRUE(rtc::HasCapability(
-        group.capability, rtc::DeviceCapability::kJointState));
-      EXPECT_FALSE(rtc::HasCapability(
-        group.capability, rtc::DeviceCapability::kMotorState));
-      EXPECT_FALSE(rtc::HasCapability(
-        group.capability, rtc::DeviceCapability::kSensorData));
+      EXPECT_TRUE(rtc::HasCapability(group.capability,
+                                     rtc::DeviceCapability::kJointState));
+      EXPECT_FALSE(rtc::HasCapability(group.capability,
+                                      rtc::DeviceCapability::kMotorState));
+      EXPECT_FALSE(rtc::HasCapability(group.capability,
+                                      rtc::DeviceCapability::kSensorData));
       return;
     }
   }
   FAIL() << "ur5e group not found in default topic config";
 }
 
-TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigPublishEntries)
-{
+TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigPublishEntries) {
   const auto cfg = StubController::MakeDefaultTopicConfig("ur5e");
 
   bool has_joint_command = false;
@@ -260,16 +239,29 @@ TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigPublishEntries)
   bool has_robot_target = false;
   bool has_state_log = false;
 
-  for (const auto & [name, group] : cfg.groups) {
-    if (name != "ur5e") {continue;}
-    for (const auto & pub : group.publish) {
+  for (const auto &[name, group] : cfg.groups) {
+    if (name != "ur5e") {
+      continue;
+    }
+    for (const auto &pub : group.publish) {
       switch (pub.role) {
-        case rtc::PublishRole::kJointCommand:   has_joint_command = true; break;
-        case rtc::PublishRole::kRos2Command:    has_ros2_command = true; break;
-        case rtc::PublishRole::kGuiPosition:    has_gui_position = true; break;
-        case rtc::PublishRole::kRobotTarget:    has_robot_target = true; break;
-        case rtc::PublishRole::kDeviceStateLog: has_state_log = true; break;
-        default: break;
+      case rtc::PublishRole::kJointCommand:
+        has_joint_command = true;
+        break;
+      case rtc::PublishRole::kRos2Command:
+        has_ros2_command = true;
+        break;
+      case rtc::PublishRole::kGuiPosition:
+        has_gui_position = true;
+        break;
+      case rtc::PublishRole::kRobotTarget:
+        has_robot_target = true;
+        break;
+      case rtc::PublishRole::kDeviceStateLog:
+        has_state_log = true;
+        break;
+      default:
+        break;
       }
     }
   }
@@ -285,10 +277,8 @@ TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigPublishEntries)
 // ParseTopicConfig — valid YAML
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigValidMultiDevice)
-{
-  const auto node =
-    YAML::Load(
+TEST(RTControllerInterfaceTest, ParseTopicConfigValidMultiDevice) {
+  const auto node = YAML::Load(
       R"(
 ur5e:
   subscribe:
@@ -327,10 +317,8 @@ hand:
 // ParseTopicConfig — capability inference
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigCapabilityInference)
-{
-  const auto node =
-    YAML::Load(
+TEST(RTControllerInterfaceTest, ParseTopicConfigCapabilityInference) {
+  const auto node = YAML::Load(
       R"(
 hand:
   subscribe:
@@ -340,24 +328,23 @@ hand:
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
 
-  for (const auto & [name, group] : cfg.groups) {
+  for (const auto &[name, group] : cfg.groups) {
     if (name == "hand") {
-      EXPECT_TRUE(rtc::HasCapability(
-        group.capability, rtc::DeviceCapability::kJointState));
-      EXPECT_TRUE(rtc::HasCapability(
-        group.capability, rtc::DeviceCapability::kMotorState));
-      EXPECT_TRUE(rtc::HasCapability(
-        group.capability, rtc::DeviceCapability::kSensorData));
-      EXPECT_TRUE(rtc::HasCapability(
-        group.capability, rtc::DeviceCapability::kInference));
+      EXPECT_TRUE(rtc::HasCapability(group.capability,
+                                     rtc::DeviceCapability::kJointState));
+      EXPECT_TRUE(rtc::HasCapability(group.capability,
+                                     rtc::DeviceCapability::kMotorState));
+      EXPECT_TRUE(rtc::HasCapability(group.capability,
+                                     rtc::DeviceCapability::kSensorData));
+      EXPECT_TRUE(rtc::HasCapability(group.capability,
+                                     rtc::DeviceCapability::kInference));
       return;
     }
   }
   FAIL() << "hand group not found";
 }
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigTargetOnlyNoCapability)
-{
+TEST(RTControllerInterfaceTest, ParseTopicConfigTargetOnlyNoCapability) {
   const auto node = YAML::Load(R"(
 robot:
   subscribe:
@@ -365,12 +352,12 @@ robot:
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
 
-  for (const auto & [name, group] : cfg.groups) {
+  for (const auto &[name, group] : cfg.groups) {
     if (name == "robot") {
-      EXPECT_FALSE(rtc::HasCapability(
-        group.capability, rtc::DeviceCapability::kJointState));
-      EXPECT_FALSE(rtc::HasCapability(
-        group.capability, rtc::DeviceCapability::kMotorState));
+      EXPECT_FALSE(rtc::HasCapability(group.capability,
+                                      rtc::DeviceCapability::kJointState));
+      EXPECT_FALSE(rtc::HasCapability(group.capability,
+                                      rtc::DeviceCapability::kMotorState));
       return;
     }
   }
@@ -381,10 +368,8 @@ robot:
 // ParseTopicConfig — backward compatibility
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigBackwardCompatSubscribe)
-{
-  const auto node =
-    YAML::Load(
+TEST(RTControllerInterfaceTest, ParseTopicConfigBackwardCompatSubscribe) {
+  const auto node = YAML::Load(
       R"(
 robot:
   subscribe:
@@ -399,10 +384,8 @@ robot:
   EXPECT_TRUE(cfg.HasSubscribeRole("robot", rtc::SubscribeRole::kTarget));
 }
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigBackwardCompatPublish)
-{
-  const auto node =
-    YAML::Load(
+TEST(RTControllerInterfaceTest, ParseTopicConfigBackwardCompatPublish) {
+  const auto node = YAML::Load(
       R"(
 robot:
   publish:
@@ -417,12 +400,20 @@ robot:
   bool has_joint_cmd = false;
   bool has_robot_target = false;
 
-  for (const auto & [name, group] : cfg.groups) {
-    if (name != "robot") {continue;}
-    for (const auto & pub : group.publish) {
-      if (pub.role == rtc::PublishRole::kRos2Command) {has_ros2_cmd = true;}
-      if (pub.role == rtc::PublishRole::kJointCommand) {has_joint_cmd = true;}
-      if (pub.role == rtc::PublishRole::kRobotTarget) {has_robot_target = true;}
+  for (const auto &[name, group] : cfg.groups) {
+    if (name != "robot") {
+      continue;
+    }
+    for (const auto &pub : group.publish) {
+      if (pub.role == rtc::PublishRole::kRos2Command) {
+        has_ros2_cmd = true;
+      }
+      if (pub.role == rtc::PublishRole::kJointCommand) {
+        has_joint_cmd = true;
+      }
+      if (pub.role == rtc::PublishRole::kRobotTarget) {
+        has_robot_target = true;
+      }
     }
   }
 
@@ -438,10 +429,8 @@ robot:
 // ParseTopicConfig — error cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigDeprecatedFlatFormatThrows)
-{
-  const auto node =
-    YAML::Load(
+TEST(RTControllerInterfaceTest, ParseTopicConfigDeprecatedFlatFormatThrows) {
+  const auto node = YAML::Load(
       R"(
 subscribe:
   - {topic: /joint_states, role: state}
@@ -451,8 +440,7 @@ publish:
   EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
 }
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigUnknownSubscribeRoleThrows)
-{
+TEST(RTControllerInterfaceTest, ParseTopicConfigUnknownSubscribeRoleThrows) {
   const auto node = YAML::Load(R"(
 robot:
   subscribe:
@@ -461,10 +449,8 @@ robot:
   EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
 }
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigUnknownPublishRoleThrows)
-{
-  const auto node =
-    YAML::Load(R"(
+TEST(RTControllerInterfaceTest, ParseTopicConfigUnknownPublishRoleThrows) {
+  const auto node = YAML::Load(R"(
 robot:
   publish:
     - {topic: /data, role: invalid_publish_role}
@@ -472,10 +458,8 @@ robot:
   EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
 }
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigNonMapGroupSkipped)
-{
-  const auto node =
-    YAML::Load(R"(
+TEST(RTControllerInterfaceTest, ParseTopicConfigNonMapGroupSkipped) {
+  const auto node = YAML::Load(R"(
 ur5e:
   subscribe:
     - {topic: /joint_states, role: state}
@@ -486,17 +470,15 @@ scalar_value: 42
   EXPECT_FALSE(cfg.HasGroup("scalar_value"));
 }
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigDataSizePreserved)
-{
-  const auto node =
-    YAML::Load(R"(
+TEST(RTControllerInterfaceTest, ParseTopicConfigDataSizePreserved) {
+  const auto node = YAML::Load(R"(
 robot:
   publish:
     - {topic: /log, role: device_state_log, data_size: 30}
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
 
-  for (const auto & [name, group] : cfg.groups) {
+  for (const auto &[name, group] : cfg.groups) {
     if (name == "robot") {
       ASSERT_EQ(group.publish.size(), std::size_t{1});
       EXPECT_EQ(group.publish[0].data_size, 30);
@@ -506,10 +488,8 @@ robot:
   FAIL() << "robot group not found";
 }
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigPreservesInsertionOrder)
-{
-  const auto node =
-    YAML::Load(
+TEST(RTControllerInterfaceTest, ParseTopicConfigPreservesInsertionOrder) {
+  const auto node = YAML::Load(
       R"(
 beta_device:
   subscribe:
@@ -525,10 +505,8 @@ alpha_device:
   EXPECT_EQ(cfg.groups[1].first, "alpha_device");
 }
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigAllPublishRoles)
-{
-  const auto node =
-    YAML::Load(
+TEST(RTControllerInterfaceTest, ParseTopicConfigAllPublishRoles) {
+  const auto node = YAML::Load(
       R"(
 robot:
   publish:
@@ -544,7 +522,7 @@ robot:
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
 
-  for (const auto & [name, group] : cfg.groups) {
+  for (const auto &[name, group] : cfg.groups) {
     if (name == "robot") {
       EXPECT_EQ(group.publish.size(), std::size_t{9});
       return;
@@ -557,8 +535,7 @@ robot:
 // LoadConfig
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(RTControllerInterfaceTest, LoadConfigNullNode)
-{
+TEST(RTControllerInterfaceTest, LoadConfigNullNode) {
   StubController ctrl;
   YAML::Node null_node;
   EXPECT_NO_THROW(ctrl.LoadConfig(null_node));
@@ -566,11 +543,9 @@ TEST(RTControllerInterfaceTest, LoadConfigNullNode)
   EXPECT_TRUE(ctrl.GetTopicConfig().HasGroup("ur5e"));
 }
 
-TEST(RTControllerInterfaceTest, LoadConfigWithTopics)
-{
+TEST(RTControllerInterfaceTest, LoadConfigWithTopics) {
   StubController ctrl;
-  const auto node =
-    YAML::Load(
+  const auto node = YAML::Load(
       R"(
 topics:
   custom_robot:
@@ -585,8 +560,7 @@ topics:
   EXPECT_FALSE(ctrl.GetTopicConfig().HasGroup("ur5e"));
 }
 
-TEST(RTControllerInterfaceTest, LoadConfigWithoutTopicsKeepsDefault)
-{
+TEST(RTControllerInterfaceTest, LoadConfigWithoutTopicsKeepsDefault) {
   StubController ctrl;
   const auto node = YAML::Load(R"(
 some_gain: 1.5
@@ -596,8 +570,7 @@ some_flag: true
   EXPECT_TRUE(ctrl.GetTopicConfig().HasGroup("ur5e"));
 }
 
-TEST(RTControllerInterfaceTest, LoadConfigDeprecatedEnableFlagsDoNotThrow)
-{
+TEST(RTControllerInterfaceTest, LoadConfigDeprecatedEnableFlagsDoNotThrow) {
   StubController ctrl;
   const auto node = YAML::Load(R"(
 enable_ur5e: true
@@ -610,16 +583,14 @@ enable_hand: false
 // TopicConfig struct operations
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(TopicConfigTest, OperatorBracketInsertsNew)
-{
+TEST(TopicConfigTest, OperatorBracketInsertsNew) {
   rtc::TopicConfig cfg;
   cfg["robot"].subscribe.push_back({"/data", rtc::SubscribeRole::kState});
   EXPECT_TRUE(cfg.HasGroup("robot"));
   EXPECT_EQ(cfg.groups.size(), std::size_t{1});
 }
 
-TEST(TopicConfigTest, OperatorBracketAccessesExisting)
-{
+TEST(TopicConfigTest, OperatorBracketAccessesExisting) {
   rtc::TopicConfig cfg;
   cfg["robot"].subscribe.push_back({"/data", rtc::SubscribeRole::kState});
   cfg["robot"].subscribe.push_back({"/more", rtc::SubscribeRole::kTarget});
@@ -627,41 +598,35 @@ TEST(TopicConfigTest, OperatorBracketAccessesExisting)
   EXPECT_EQ(cfg.groups[0].second.subscribe.size(), std::size_t{2});
 }
 
-TEST(TopicConfigTest, HasGroupFalseWhenEmpty)
-{
+TEST(TopicConfigTest, HasGroupFalseWhenEmpty) {
   rtc::TopicConfig cfg;
   EXPECT_FALSE(cfg.HasGroup("anything"));
 }
 
-TEST(TopicConfigTest, HasGroupFalseForEmptyEntries)
-{
+TEST(TopicConfigTest, HasGroupFalseForEmptyEntries) {
   rtc::TopicConfig cfg;
   cfg.groups.emplace_back("empty", rtc::DeviceTopicGroup{});
   EXPECT_FALSE(cfg.HasGroup("empty"));
 }
 
-TEST(TopicConfigTest, HasSubscribeRoleNotFound)
-{
+TEST(TopicConfigTest, HasSubscribeRoleNotFound) {
   rtc::TopicConfig cfg;
   EXPECT_FALSE(cfg.HasSubscribeRole("robot", rtc::SubscribeRole::kState));
 }
 
-TEST(TopicConfigTest, HasSubscribeRoleWrongGroup)
-{
+TEST(TopicConfigTest, HasSubscribeRoleWrongGroup) {
   rtc::TopicConfig cfg;
   cfg["hand"].subscribe.push_back({"/hand/js", rtc::SubscribeRole::kState});
   EXPECT_FALSE(cfg.HasSubscribeRole("robot", rtc::SubscribeRole::kState));
   EXPECT_TRUE(cfg.HasSubscribeRole("hand", rtc::SubscribeRole::kState));
 }
 
-TEST(TopicConfigTest, GetSubscribeTopicNameReturnsEmpty)
-{
+TEST(TopicConfigTest, GetSubscribeTopicNameReturnsEmpty) {
   rtc::TopicConfig cfg;
   EXPECT_EQ(cfg.GetSubscribeTopicName("robot", rtc::SubscribeRole::kState), "");
 }
 
-TEST(TopicConfigTest, GetSubscribeTopicNameReturnsFirst)
-{
+TEST(TopicConfigTest, GetSubscribeTopicNameReturnsFirst) {
   rtc::TopicConfig cfg;
   cfg["robot"].subscribe.push_back({"/first", rtc::SubscribeRole::kState});
   cfg["robot"].subscribe.push_back({"/second", rtc::SubscribeRole::kState});
@@ -669,8 +634,7 @@ TEST(TopicConfigTest, GetSubscribeTopicNameReturnsFirst)
             "/first");
 }
 
-TEST(TopicConfigTest, InsertionOrderPreserved)
-{
+TEST(TopicConfigTest, InsertionOrderPreserved) {
   rtc::TopicConfig cfg;
   cfg["charlie"];
   cfg["alpha"];
@@ -682,4 +646,4 @@ TEST(TopicConfigTest, InsertionOrderPreserved)
   EXPECT_EQ(cfg.groups[2].first, "bravo");
 }
 
-}  // namespace
+} // namespace

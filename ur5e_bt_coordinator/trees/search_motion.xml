@@ -35,10 +35,9 @@
       <!-- Phase 1: Move to ready pose (joint-space)                 -->
       <!-- ======================================================== -->
       <SwitchController controller_name="demo_joint_controller"
-                        timeout_s="3.0"
-                        current_gains="{current_gains}"/>
+                        timeout_s="3.0"/>
 
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="0.15"/>
 
       <MoveToJoints pose_name="ready"
@@ -60,8 +59,7 @@
       <!-- Phase 3: Switch to task-space controller                  -->
       <!-- ======================================================== -->
       <SwitchController controller_name="demo_task_controller"
-                        timeout_s="3.0"
-                        current_gains="{current_gains}"/>
+                        timeout_s="3.0"/>
 
       <!-- ======================================================== -->
       <!-- Phase 4: Move to inspection position (above object)       -->
@@ -72,7 +70,7 @@
                          offset_z="{inspect_offset_z}"
                          output_pose="{inspect_pose}"/>
 
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="0.08"/>
 
       <MoveToPose target="{inspect_pose}"
@@ -88,7 +86,7 @@
                          offset_z="-0.03"
                          output_pose="{approach_pose}"/>
 
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="0.05"/>
 
       <MoveToPose target="{approach_pose}"
@@ -151,10 +149,9 @@
       <!-- Phase 6: Return to ready pose                             -->
       <!-- ======================================================== -->
       <SwitchController controller_name="demo_joint_controller"
-                        timeout_s="3.0"
-                        current_gains="{current_gains}"/>
+                        timeout_s="3.0"/>
 
-      <SetGains current_gains="{current_gains}"
+      <SetGains
                 trajectory_speed="0.15"/>
 
       <MoveToJoints pose_name="ready"

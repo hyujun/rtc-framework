@@ -294,47 +294,6 @@ void JointPDController::LoadConfig(const YAML::Node &cfg) {
   }
 }
 
-void JointPDController::UpdateGainsFromMsg(
-    std::span<const double> gains) noexcept {
-  // layout: [kp×nv, kd×nv, enable_gravity(0/1), enable_coriolis(0/1),
-  // trajectory_speed] where nv = model DOF (e.g. 6 for UR5e)
-  const auto nv = static_cast<std::size_t>(handle_->nv());
-  if (gains.size() < 2 * nv + 2) {
-    return;
-  }
-
-  auto g = gains_lock_.Load();
-  for (std::size_t i = 0; i < nv; ++i) {
-    g.kp[i] = gains[i];
-  }
-  for (std::size_t i = 0; i < nv; ++i) {
-    g.kd[i] = gains[nv + i];
-  }
-  g.enable_gravity_compensation = gains[2 * nv] > 0.5;
-  g.enable_coriolis_compensation = gains[2 * nv + 1] > 0.5;
-  if (gains.size() >= 2 * nv + 3) {
-    g.trajectory_speed = std::max(1e-6, gains[2 * nv + 2]);
-  }
-  gains_lock_.Store(g);
-}
-
-std::vector<double> JointPDController::GetCurrentGains() const noexcept {
-  // layout: [kp×nv, kd×nv, enable_gravity(0/1), enable_coriolis(0/1),
-  // trajectory_speed]
-  const auto nv = static_cast<std::size_t>(handle_->nv());
-  const auto g = gains_lock_.Load();
-  std::vector<double> v;
-  v.reserve(2 * nv + 3);
-  v.insert(v.end(), g.kp.begin(),
-           g.kp.begin() + static_cast<std::ptrdiff_t>(nv));
-  v.insert(v.end(), g.kd.begin(),
-           g.kd.begin() + static_cast<std::ptrdiff_t>(nv));
-  v.push_back(g.enable_gravity_compensation ? 1.0 : 0.0);
-  v.push_back(g.enable_coriolis_compensation ? 1.0 : 0.0);
-  v.push_back(g.trajectory_speed);
-  return v;
-}
-
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
 ControllerOutput

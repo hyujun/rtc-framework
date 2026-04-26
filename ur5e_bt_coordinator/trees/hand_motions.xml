@@ -123,7 +123,7 @@
       </Repeat>
 
       <!-- 시작 시 로드한 gains로 복원 -->
-      <SetGains current_gains="{current_gains}"/>
+      <SetGains/>
 
     </Sequence>
   </BehaviorTree>
@@ -225,7 +225,7 @@
       </Repeat>
 
       <!-- 시작 시 로드한 gains로 복원 -->
-      <SetGains current_gains="{current_gains}"/>
+      <SetGains/>
 
     </Sequence>
   </BehaviorTree>
@@ -247,10 +247,9 @@
       <Sequence name="HandDemoSequence">
         <!-- 현재 컨트롤러의 gains를 로드하여 모션 종료 시 복원에 사용 -->
         <SwitchController controller_name="demo_joint_controller"
-                          timeout_s="3.0"
-                          current_gains="{current_gains}"/>
-        <SubTree ID="OppositionDemo" current_gains="{current_gains}"/>
-        <SubTree ID="WaveDemo" current_gains="{current_gains}"/>
+                          timeout_s="3.0"/>
+        <SubTree ID="OppositionDemo"/>
+        <SubTree ID="WaveDemo"/>
       </Sequence>
     </Parallel>
   </BehaviorTree>

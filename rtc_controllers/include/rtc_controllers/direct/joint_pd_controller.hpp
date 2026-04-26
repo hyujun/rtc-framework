@@ -67,8 +67,6 @@ public:
   // ── Controller registry hooks ──────────────────────────────────────────────
   void LoadConfig(const YAML::Node &cfg) override;
   void OnDeviceConfigsSet() override;
-  void UpdateGainsFromMsg(std::span<const double> gains) noexcept override;
-  [[nodiscard]] std::vector<double> GetCurrentGains() const noexcept override;
   [[nodiscard]] CommandType GetCommandType() const noexcept override {
     return command_type_;
   }

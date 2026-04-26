@@ -18,7 +18,6 @@
 #include <rtc_msgs/srv/switch_controller.hpp>
 #include <shape_estimation_msgs/msg/shape_estimate.hpp>
 #include <std_msgs/msg/bool.hpp>
-#include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
@@ -92,25 +91,6 @@ public:
   /// E-STOP status
   bool IsEstopped() const;
 
-  // ── Gains query (request/response via controller manager) ─────────────────
-
-  /// Request current gains from the active controller.
-  /// Publishes a Bool to /{ns}/request_gains, response arrives on
-  /// /{ns}/current_gains and is cached internally.
-  void RequestCurrentGains();
-
-  /// Return the most recently cached gains (from current_gains topic).
-  /// Returns empty vector if no gains have been received yet.
-  std::vector<double> GetCachedGains() const;
-
-  /// True if at least one current_gains message has been received
-  /// since the last call to RequestCurrentGains().
-  bool HasCachedGains() const;
-
-  /// Clear the cached gains (called before a new request to detect fresh
-  /// arrival).
-  void ClearCachedGains();
-
   // ── Publishers (send commands) ────────────────────────────────────────────
 
   /// Publish arm task-space target [x,y,z,roll,pitch,yaw]
@@ -121,12 +101,6 @@ public:
 
   /// Publish hand motor target [m0..m9]
   void PublishHandTarget(const std::vector<double> &target);
-
-  /// Publish gain update (16-element array)
-  /// DEPRECATED (Phase C of gain→parameter migration). Will be removed in
-  /// Phase E once all callers (set_gains.cpp BT node) migrate to
-  /// SetActiveControllerGains.
-  void PublishGains(const std::vector<double> &gains);
 
   /// Set ROS 2 parameters atomically on the active controller's LifecycleNode
   /// via the rebound AsyncParametersClient. Sync wrapper — blocks until the
@@ -235,16 +209,12 @@ private:
       world_target_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr active_ctrl_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr
-      current_gains_sub_;
   rclcpp::Subscription<shape_estimation_msgs::msg::ShapeEstimate>::SharedPtr
       shape_estimate_sub_;
 
   // ── Publishers ────────────────────────────────────────────────────────────
   rclcpp::Publisher<rtc_msgs::msg::RobotTarget>::SharedPtr arm_target_pub_;
   rclcpp::Publisher<rtc_msgs::msg::RobotTarget>::SharedPtr hand_target_pub_;
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr gains_pub_;
-  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr request_gains_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr shape_trigger_pub_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr shape_clear_client_;
 
@@ -282,8 +252,6 @@ private:
   std::string active_controller_;
   bool estopped_{false};
   std::vector<double> last_hand_target_;
-  std::vector<double> cached_gains_;
-  bool cached_gains_valid_{false};
   shape_estimation_msgs::msg::ShapeEstimate shape_estimate_;
   bool shape_estimate_valid_{false};
 

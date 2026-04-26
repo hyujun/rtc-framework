@@ -136,47 +136,23 @@ TEST_F(WbcFSMTest, HandEstopIndependent) {
 
 // ── Gains Tests ──────────────────────────────────────────────────────────────
 
-TEST_F(WbcFSMTest, UpdateGainsFromMsg) {
-  // Phase 5: gains layout expanded to 9 entries. Trailing two
-  // (mpc_enable, riccati_gain_scale) are backwards-compatible: a 7-entry
-  // message still updates indices 0-6 and leaves MPC state untouched.
-  std::array<double, 9> gains = {
-      0.0,   // grasp_cmd = idle
-      3.0,   // grasp_target_force
-      0.8,   // arm_traj_speed
-      2.0,   // hand_traj_speed
-      150.0, // se3_weight
-      15.0,  // force_weight
-      2.0,   // posture_weight
-      0.0,   // mpc_enable (off — controller was constructed without MPC)
-      0.7    // riccati_gain_scale
-  };
-  ctrl_.UpdateGainsFromMsg(gains);
+TEST_F(WbcFSMTest, SetGetGainsRoundTrip) {
+  DemoWbcController::Gains g;
+  g.grasp_target_force = 3.0;
+  g.arm_trajectory_speed = 0.8;
+  g.hand_trajectory_speed = 2.0;
+  g.se3_weight = 150.0;
+  g.force_weight = 15.0;
+  g.posture_weight = 2.0;
+  ctrl_.set_gains(g);
 
-  auto current = ctrl_.GetCurrentGains();
-  ASSERT_EQ(current.size(), 9u);
-  EXPECT_NEAR(current[0], 0.0, 1e-9);   // grasp_cmd
-  EXPECT_NEAR(current[1], 3.0, 1e-9);   // force
-  EXPECT_NEAR(current[2], 0.8, 1e-9);   // arm speed
-  EXPECT_NEAR(current[3], 2.0, 1e-9);   // hand speed
-  EXPECT_NEAR(current[4], 150.0, 1e-9); // se3_weight
-  EXPECT_NEAR(current[5], 15.0, 1e-9);  // force_weight
-  EXPECT_NEAR(current[6], 2.0, 1e-9);   // posture_weight
-  EXPECT_NEAR(current[7], 0.0, 1e-9);   // mpc_enable
-  EXPECT_NEAR(current[8], 0.7, 1e-9);   // riccati_gain_scale
-}
-
-TEST_F(WbcFSMTest, PartialGainsUpdate) {
-  // Only update first 3 values
-  std::array<double, 3> partial = {1.0, 5.0, 1.2};
-  ctrl_.UpdateGainsFromMsg(partial);
-
-  auto current = ctrl_.GetCurrentGains();
-  EXPECT_NEAR(current[0], 1.0, 1e-9); // grasp_cmd updated
-  EXPECT_NEAR(current[1], 5.0, 1e-9); // force updated
-  EXPECT_NEAR(current[2], 1.2, 1e-9); // arm speed updated
-  // Remaining should be defaults
-  EXPECT_GT(current[4], 0.0); // se3_weight still has default
+  const auto rb = ctrl_.get_gains();
+  EXPECT_NEAR(rb.grasp_target_force, 3.0, 1e-9);
+  EXPECT_NEAR(rb.arm_trajectory_speed, 0.8, 1e-9);
+  EXPECT_NEAR(rb.hand_trajectory_speed, 2.0, 1e-9);
+  EXPECT_NEAR(rb.se3_weight, 150.0, 1e-9);
+  EXPECT_NEAR(rb.force_weight, 15.0, 1e-9);
+  EXPECT_NEAR(rb.posture_weight, 2.0, 1e-9);
 }
 
 // ── Output Assembly Tests ────────────────────────────────────────────────────
@@ -605,14 +581,9 @@ TEST_F(WbcFSMTest, CommandTypeStableAcrossPhases) {
   }
 }
 
-TEST_F(WbcFSMTest, GraspCmdRoundTripPreservesValueAcrossUpdate) {
-  ctrl_.SetGraspCmdForTesting(2);
-  auto current = ctrl_.GetCurrentGains();
-  EXPECT_NEAR(current[0], 2.0, 1e-9);
-  ctrl_.SetGraspCmdForTesting(1);
-  current = ctrl_.GetCurrentGains();
-  EXPECT_NEAR(current[0], 1.0, 1e-9);
-}
+// SetGraspCmdForTesting is the test-only access path for grasp_cmd_;
+// post-Phase-E, runtime grasp commands flow through the
+// /<active>/grasp_command srv (see SetGains BT node tests).
 
 TEST_F(WbcFSMTest, ApproachSavesQApproachStartForRetreat) {
   // Set an approach target, transition idle -> approach (UpdatePhase path)

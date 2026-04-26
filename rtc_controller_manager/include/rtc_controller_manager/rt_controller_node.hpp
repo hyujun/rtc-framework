@@ -202,11 +202,6 @@ private:
   // lifetime)
   std::vector<rclcpp::SubscriptionBase::SharedPtr> topic_subscriptions_;
 
-  // Fixed control subscriptions (always present)
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr
-      controller_gains_sub_;
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr request_gains_sub_;
-
   // ── Configurable topic publishers (created from controller YAML) ──────────
   // Key = topic name, value = publisher + pre-allocated message
   struct PublisherEntry {
@@ -223,8 +218,6 @@ private:
   // Fixed publishers (always present)
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr active_ctrl_name_pub_;
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr
-      current_gains_pub_;
 
   // ── /rtc_cm/* services (Phase 3) ─────────────────────────────────────────
   // Both callbacks run on cb_group_aux_ — never on the RT path. The switch

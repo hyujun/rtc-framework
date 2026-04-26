@@ -9,52 +9,35 @@
 
 namespace rtc_bt {
 
-/// Publish a gain update to the active controller.
+/// Set runtime-tunable gains on the active controller via ROS 2 parameters,
+/// and (optionally) issue a one-shot Force-PI grasp command via the active
+/// controller's /<config_key>/grasp_command srv.
 ///
-/// Automatically detects the active controller and builds the appropriate
-/// gain layout:
+/// Each input port maps to a typed parameter on the active controller's
+/// LifecycleNode; only ports explicitly set in the BT XML are pushed via
+/// `set_parameters_atomically` — unspecified parameters keep whatever value
+/// the controller currently holds (parameters are persistent state).
 ///
-/// DemoTaskController (19 values + optional 2 for Force-PI):
-///   [kp_translation×3, kp_rotation×3, damping, null_kp,
-///    enable_null_space(0/1), control_6dof(0/1),
-///    trajectory_speed, trajectory_angular_speed,
-///    hand_trajectory_speed, max_traj_velocity,
-///    max_traj_angular_velocity, hand_max_traj_velocity,
-///    grasp_contact_threshold, grasp_force_threshold,
-///    grasp_min_fingertips,
-///    (grasp_command, grasp_target_force)]
+/// Active controller dispatch (parameter name selection):
+///   demo_joint_controller: robot_trajectory_speed, hand_trajectory_speed,
+///                          grasp_{contact,force}_threshold,
+///                          grasp_min_fingertips
+///   demo_task_controller:  kp_translation, kp_rotation, damping, null_kp,
+///                          enable_null_space, control_6dof,
+///                          trajectory_speed, trajectory_angular_speed,
+///                          hand_trajectory_speed,
+///                          grasp_{contact,force}_threshold,
+///                          grasp_min_fingertips
+///   demo_wbc_controller:   arm_trajectory_speed, hand_trajectory_speed,
+///                          se3_weight, force_weight, posture_weight,
+///                          mpc_enable, riccati_gain_scale
 ///
-/// DemoJointController (7 values + optional 2 for Force-PI):
-///   [robot_trajectory_speed, hand_trajectory_speed,
-///    robot_max_traj_velocity, hand_max_traj_velocity,
-///    grasp_contact_threshold, grasp_force_threshold,
-///    grasp_min_fingertips,
-///    (grasp_command, grasp_target_force)]
-///
-/// NOTE: max_traj_velocity, max_traj_angular_velocity, hand_max_traj_velocity
-/// are NOT configurable from BT. They are always taken from current_gains
-/// (loaded by SwitchController) or from hard-coded defaults.
-///
-/// Input ports:
-///   - kp_translation (string): "5.0,5.0,5.0" (DemoTask only, optional)
-///   - kp_rotation (string): "3.0,3.0,3.0" (DemoTask only, optional)
-///   - damping (double): damping ratio (DemoTask only, optional, default 0.01)
-///   - null_kp (double): null-space stiffness (DemoTask only, optional, default 0.5)
-///   - enable_null_space (bool): enable null-space control (DemoTask only, optional)
-///   - control_6dof (bool): enable 6-DoF control (DemoTask only, optional)
-///   - trajectory_speed (double): [m/s] (optional)
-///   - trajectory_angular_speed (double): [rad/s] (DemoTask only, optional)
-///   - hand_trajectory_speed (double): [rad/s] (optional)
-///   - full_gains (vector<double>): complete gain array (optional, overrides all)
-///   - grasp_command (int): 0=none, 1=grasp, 2=release (Force-PI, optional)
-///   - grasp_target_force (double): target grip force [N] (Force-PI, default 2.0)
-///   - current_gains (vector<double>): previously loaded gains from
-///     SwitchController (optional). When present, these are used as the base
-///     values instead of hard-coded defaults. Only ports explicitly set in
-///     the BT XML will override the corresponding gain values.
+/// max_traj_velocity / max_traj_angular_velocity / hand_max_traj_velocity
+/// are declared with read_only=true on the controller side and cannot be
+/// set via this node — they are honoured only at startup via YAML.
 class SetGains : public BT::SyncActionNode {
 public:
-  SetGains(const std::string& name, const BT::NodeConfig& config,
+  SetGains(const std::string &name, const BT::NodeConfig &config,
            std::shared_ptr<BtRosBridge> bridge);
 
   static BT::PortsList providedPorts();
@@ -62,10 +45,7 @@ public:
   BT::NodeStatus tick() override;
 
 private:
-  BT::NodeStatus BuildDemoJointGains();
-  BT::NodeStatus BuildDemoTaskGains();
-
   std::shared_ptr<BtRosBridge> bridge_;
 };
 
-}  // namespace rtc_bt
+} // namespace rtc_bt
