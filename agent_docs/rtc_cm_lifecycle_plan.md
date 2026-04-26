@@ -6,8 +6,8 @@
 |---|---|---|
 | 0 — Design lockdown | ✅ done | `9aa830f` |
 | 1 — `rtc_msgs` schema | ✅ done | `f5d3204` |
-| 1.5 — P-1 (DemoWbc idempotent) + P-2 (MPCThread Pause/Resume) | ⏳ next | — |
-| 2 — CM controller-level lifecycle state | ⏳ pending | — |
+| 1.5 — P-1 (DemoWbc idempotent) + P-2 (MPCThread Pause/Resume) | ✅ done | (pending commit) |
+| 2 — CM controller-level lifecycle state | ⏳ next | — |
 | 3 — `/rtc_cm/...` srv 도입 | ⏳ pending | — |
 | 4 — BT 마이그레이션 | ⏳ pending | — |
 | 5 — Legacy topic 제거 | ⏳ pending | — |

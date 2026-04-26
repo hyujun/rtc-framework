@@ -1493,6 +1493,42 @@ DemoWbcController::WriteOutput(const ControllerState &state) noexcept {
                   device_position_upper_[1]);
   }
 
+  // ── WBC state (per-fingertip aggregates + FSM phase) ─────────────────
+  {
+    auto &ws = output.wbc_state;
+    ws.phase = static_cast<uint8_t>(phase_);
+    ws.num_fingertips = num_active_fingertips_;
+    int active_count = 0;
+    float max_force = 0.0F;
+    for (int f = 0; f < num_active_fingertips_; ++f) {
+      const auto idx = static_cast<std::size_t>(f);
+      const auto &ft = fingertip_data_[idx];
+      const float mag = ft.force_magnitude;
+      ws.force_magnitude[idx] = mag;
+      ws.contact_flag[idx] = ft.contact_flag;
+      // Use per-axis displacement magnitude (single scalar for the topic).
+      const float d0 = ft.displacement[0];
+      const float d1 = ft.displacement[1];
+      const float d2 = ft.displacement[2];
+      ws.displacement[idx] = std::sqrt(d0 * d0 + d1 * d1 + d2 * d2);
+      if (ft.contact_flag > 0.5F) {
+        ++active_count;
+      }
+      if (mag > max_force) {
+        max_force = mag;
+      }
+    }
+    ws.num_active_contacts = active_count;
+    ws.max_force = max_force;
+    const auto g = gains_lock_.Load();
+    ws.grasp_target_force = static_cast<float>(g.grasp_target_force);
+    ws.min_fingertips_for_grasp = 2; // WBC default; no YAML override yet
+    ws.grasp_detected = (active_count >= ws.min_fingertips_for_grasp);
+    ws.tsid_solver_ok = tsid_initialized_ && (qp_fail_count_ == 0);
+    ws.qp_fail_count = qp_fail_count_;
+    // tsid_solve_us: not measured in WBC yet — informational, leave 0.
+  }
+
   output.valid = true;
   return output;
 }
@@ -1781,10 +1817,11 @@ RTControllerInterface::CallbackReturn
 DemoWbcController::on_activate(const rclcpp_lifecycle::State &prev) noexcept {
   ActivateOwnedTopics(prev, owned_topics_);
 
-  // Spawn 1 Hz aux timer for MPC solve-timing CSV only when MPC is actually
-  // enabled. Non-MPC sessions skip both the file open and the timer so no
-  // empty CSV directory is created.
-  if (mpc_enabled_) {
+  // MPC solve-timing CSV + 1 Hz aux timer: one-shot setup per controller
+  // lifetime (gated on mpc_timing_initialized_). Re-activation after a
+  // deactivate must NOT re-Open the CSV (truncates accumulated rows) or
+  // re-register the timer (executor churn).
+  if (mpc_enabled_ && !mpc_timing_initialized_) {
     if (!mpc_timing_logger_.Open("demo_wbc_controller")) {
       RCLCPP_WARN(
           logger_,
@@ -1799,14 +1836,31 @@ DemoWbcController::on_activate(const rclcpp_lifecycle::State &prev) noexcept {
           std::chrono::seconds(1), [this]() { LogMpcSolveTimingTick(); },
           mpc_timing_cb_group_);
     }
+    mpc_timing_initialized_ = true;
   }
+
+  // Resume the MPC solve loop if the thread has already been spawned (it is
+  // spawned lazily by InitializeHoldPosition on the first valid RT tick).
+  // Pre-spawn activations are a no-op; the thread is created in the
+  // running-not-paused state.
+  if (mpc_thread_) {
+    mpc_thread_->Resume();
+  }
+
   return CallbackReturn::SUCCESS;
 }
 
 RTControllerInterface::CallbackReturn
 DemoWbcController::on_deactivate(const rclcpp_lifecycle::State &prev) noexcept {
-  mpc_timing_timer_.reset();
-  mpc_timing_tick_ = 0;
+  // Pause the MPC solve loop so it stops burning CPU while this controller
+  // is inactive. The timing logger / timer keep running — GetMpcSolveStats
+  // returns nullopt when the manager is disabled, which silently skips
+  // logging (see LogMpcSolveTimingTick guard); when paused the manager is
+  // still enabled so the most recent stats window keeps repeating, which
+  // is acceptable noise for the inactive interval.
+  if (mpc_thread_) {
+    mpc_thread_->Pause();
+  }
   DeactivateOwnedTopics(prev, owned_topics_);
   return CallbackReturn::SUCCESS;
 }
@@ -1815,6 +1869,8 @@ RTControllerInterface::CallbackReturn
 DemoWbcController::on_cleanup(const rclcpp_lifecycle::State &prev) noexcept {
   mpc_timing_timer_.reset();
   mpc_timing_cb_group_.reset();
+  mpc_timing_initialized_ = false;
+  mpc_timing_tick_ = 0;
   ResetOwnedTopics(owned_topics_);
   return RTControllerInterface::on_cleanup(prev);
 }

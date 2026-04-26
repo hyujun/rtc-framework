@@ -390,6 +390,10 @@ private:
   rclcpp::TimerBase::SharedPtr mpc_timing_timer_;
   rtc::mpc::MpcSolveTimingLogger mpc_timing_logger_;
   std::uint32_t mpc_timing_tick_{0};
+  // Logger / timer setup is one-shot per controller lifetime — gated on this
+  // flag so repeated activate/deactivate cycles (Phase 2 lifecycle switch)
+  // don't truncate the CSV or churn timer registration.
+  bool mpc_timing_initialized_{false};
   void LogMpcSolveTimingTick() noexcept;
 
   // ── FSM thresholds ──────────────────────────────────────────────────────

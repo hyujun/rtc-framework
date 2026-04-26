@@ -33,6 +33,8 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <span>
 #include <thread>
 
@@ -57,21 +59,21 @@ struct MpcThreadLaunchConfig {
 };
 
 class MPCThread {
- public:
+public:
   MPCThread() = default;
   virtual ~MPCThread();
 
-  MPCThread(const MPCThread&) = delete;
-  MPCThread& operator=(const MPCThread&) = delete;
-  MPCThread(MPCThread&&) = delete;
-  MPCThread& operator=(MPCThread&&) = delete;
+  MPCThread(const MPCThread &) = delete;
+  MPCThread &operator=(const MPCThread &) = delete;
+  MPCThread(MPCThread &&) = delete;
+  MPCThread &operator=(MPCThread &&) = delete;
 
   /// @brief Configure the thread before @ref Start.
   /// @param manager        shared solution manager (state read, solution
   ///                       publish)
   /// @param launch_config  thread affinity / priority / frequency
-  void Init(MPCSolutionManager& manager,
-            const MpcThreadLaunchConfig& launch_config) noexcept;
+  void Init(MPCSolutionManager &manager,
+            const MpcThreadLaunchConfig &launch_config) noexcept;
 
   /// @brief Spawn main + worker threads. No-op if already running or not
   ///        initialised.
@@ -85,7 +87,21 @@ class MPCThread {
 
   [[nodiscard]] bool Running() const noexcept { return running_.load(); }
 
- protected:
+  /// @brief Suspend the solve loop after the current iteration completes.
+  ///
+  /// Idempotent. The solve loop will block in a `condition_variable` wait
+  /// until @ref Resume or @ref RequestStop is called. Workers are not
+  /// affected (they are passive sleepers per Start()). Safe to call from
+  /// any non-RT thread (e.g. controller `on_deactivate`).
+  void Pause() noexcept;
+
+  /// @brief Resume the solve loop. Idempotent. Safe to call before @ref
+  ///        Start (the loop will start un-paused on the first iteration).
+  void Resume() noexcept;
+
+  [[nodiscard]] bool Paused() const noexcept { return paused_.load(); }
+
+protected:
   /// @brief Perform one MPC solve.
   ///
   /// @param state     latest RT-thread state snapshot.
@@ -93,21 +109,29 @@ class MPCThread {
   /// @param workers   worker jthread handles (empty span if no workers).
   /// @return true if @p out_sol contains a usable solution (will be
   ///         published); false to skip publishing this cycle.
-  virtual bool Solve(const MPCStateSnapshot& state,
-                     MPCSolution& out_sol,
+  virtual bool Solve(const MPCStateSnapshot &state, MPCSolution &out_sol,
                      std::span<std::jthread> workers) = 0;
 
- private:
+private:
   void RunMain(std::stop_token stoken);
 
-  MPCSolutionManager* manager_{nullptr};
+  MPCSolutionManager *manager_{nullptr};
   MpcThreadLaunchConfig launch_config_{};
   std::jthread main_thread_;
   std::array<std::jthread, kMaxMpcWorkers> workers_{};
   std::atomic<bool> running_{false};
   bool initialised_{false};
+
+  // Pause / Resume state. `paused_` is the source of truth for the loop
+  // predicate; the cv coordinates with the (possibly sleeping) main thread
+  // so Resume / RequestStop wake it without polling. The mutex guards
+  // wait/notify ordering only — `paused_` is also exposed via Paused() so
+  // observers (tests, controllers) can read it without locking.
+  std::atomic<bool> paused_{false};
+  std::mutex pause_mutex_;
+  std::condition_variable pause_cv_;
 };
 
-}  // namespace rtc::mpc
+} // namespace rtc::mpc
 
-#endif  // RTC_MPC_THREAD_MPC_THREAD_HPP_
+#endif // RTC_MPC_THREAD_MPC_THREAD_HPP_

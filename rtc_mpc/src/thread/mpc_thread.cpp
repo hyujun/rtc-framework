@@ -9,8 +9,8 @@ namespace rtc::mpc {
 
 MPCThread::~MPCThread() { Join(); }
 
-void MPCThread::Init(MPCSolutionManager& manager,
-                     const MpcThreadLaunchConfig& launch_config) noexcept {
+void MPCThread::Init(MPCSolutionManager &manager,
+                     const MpcThreadLaunchConfig &launch_config) noexcept {
   manager_ = &manager;
   launch_config_ = launch_config;
   if (launch_config_.num_workers < 0) {
@@ -32,8 +32,8 @@ void MPCThread::Start() {
   // Workers are started first so that any solver which consumes the worker
   // span finds them live on first iteration.
   for (int i = 0; i < launch_config_.num_workers; ++i) {
-    const rtc::ThreadConfig& wcfg = launch_config_.workers[
-        static_cast<std::size_t>(i)];
+    const rtc::ThreadConfig &wcfg =
+        launch_config_.workers[static_cast<std::size_t>(i)];
     workers_[static_cast<std::size_t>(i)] =
         std::jthread([wcfg](std::stop_token /*stoken*/) {
           (void)rtc::ApplyThreadConfig(wcfg);
@@ -42,9 +42,8 @@ void MPCThread::Start() {
           // schedule tasks onto them via their own worker pool.
         });
   }
-  main_thread_ = std::jthread([this](std::stop_token stoken) {
-    RunMain(stoken);
-  });
+  main_thread_ =
+      std::jthread([this](std::stop_token stoken) { RunMain(stoken); });
 }
 
 void MPCThread::RequestStop() noexcept {
@@ -52,6 +51,25 @@ void MPCThread::RequestStop() noexcept {
   for (int i = 0; i < launch_config_.num_workers; ++i) {
     workers_[static_cast<std::size_t>(i)].request_stop();
   }
+  // Wake any pause-blocked main loop so it observes stop_requested and
+  // exits promptly rather than waiting indefinitely on the cv.
+  { std::lock_guard<std::mutex> lock(pause_mutex_); }
+  pause_cv_.notify_all();
+}
+
+void MPCThread::Pause() noexcept {
+  paused_.store(true);
+  // No notify needed — the loop polls paused_ at the top of each iteration
+  // and enters the cv wait on its own. notify is only required to wake from
+  // the wait (Resume / RequestStop).
+}
+
+void MPCThread::Resume() noexcept {
+  {
+    std::lock_guard<std::mutex> lock(pause_mutex_);
+    paused_.store(false);
+  }
+  pause_cv_.notify_all();
 }
 
 void MPCThread::Join() noexcept {
@@ -60,7 +78,7 @@ void MPCThread::Join() noexcept {
     main_thread_.join();
   }
   for (int i = 0; i < launch_config_.num_workers; ++i) {
-    auto& worker = workers_[static_cast<std::size_t>(i)];
+    auto &worker = workers_[static_cast<std::size_t>(i)];
     if (worker.joinable()) {
       worker.join();
     }
@@ -78,10 +96,23 @@ void MPCThread::RunMain(std::stop_token stoken) {
   MPCSolution scratch{};
 
   std::span<std::jthread> worker_span(
-      workers_.data(),
-      static_cast<std::size_t>(launch_config_.num_workers));
+      workers_.data(), static_cast<std::size_t>(launch_config_.num_workers));
 
   while (!stoken.stop_requested()) {
+    // Pause gate: block here when Pause() has been called. Resume() /
+    // RequestStop() both notify the cv. Re-anchor next_wake on resume so
+    // we don't burst-catch-up cycles that elapsed during the pause.
+    if (paused_.load()) {
+      std::unique_lock<std::mutex> lock(pause_mutex_);
+      pause_cv_.wait(lock, [this, &stoken]() {
+        return !paused_.load() || stoken.stop_requested();
+      });
+      if (stoken.stop_requested()) {
+        break;
+      }
+      next_wake = std::chrono::steady_clock::now();
+    }
+
     const MPCStateSnapshot state = manager_->ReadState();
     const bool ok = Solve(state, scratch, worker_span);
     if (ok) {
@@ -98,4 +129,4 @@ void MPCThread::RunMain(std::stop_token stoken) {
   }
 }
 
-}  // namespace rtc::mpc
+} // namespace rtc::mpc
