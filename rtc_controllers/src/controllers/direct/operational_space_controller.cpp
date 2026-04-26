@@ -2,6 +2,8 @@
 // ────────────────────────────
 #include "rtc_controllers/direct/operational_space_controller.hpp"
 
+#include "rtc_base/utils/device_passthrough.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -284,19 +286,7 @@ OperationalSpaceController::Compute(const ControllerState &state) noexcept {
     out0.goal_positions[i] = pose_target_[i];
   }
 
-  // Device 1+ : pass-through goals
-  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices);
-       ++d) {
-    const auto &devN = state.devices[d];
-    auto &outN = output.devices[d];
-    const int ncN = devN.num_channels;
-    outN.num_channels = ncN;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(ncN); ++i) {
-      outN.commands[i] = device_targets_[d][i];
-      outN.target_positions[i] = device_targets_[d][i];
-      outN.goal_positions[i] = device_targets_[d][i];
-    }
-  }
+  rtc::utils::PassthroughSecondaryDevices(state, output, device_targets_);
 
   Eigen::Vector3d rpy_current = pinocchio::rpy::matrixToRpy(tcp.rotation());
   output.actual_task_positions[0] = tcp.translation().x();

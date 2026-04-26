@@ -1,5 +1,8 @@
 #include "rtc_controllers/indirect/p_controller.hpp"
 
+#include "rtc_base/utils/clamp_commands.hpp"
+#include "rtc_base/utils/device_passthrough.hpp"
+
 #include <algorithm> // std::copy, std::clamp
 
 #pragma GCC diagnostic push
@@ -104,19 +107,7 @@ ControllerOutput PController::Compute(const ControllerState &state) noexcept {
     out0.goal_positions[i] = device_targets_[0][i];
   }
 
-  // Device 1+ : pass-through goals
-  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices);
-       ++d) {
-    const auto &devN = state.devices[d];
-    auto &outN = output.devices[d];
-    const int ncN = devN.num_channels;
-    outN.num_channels = ncN;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(ncN); ++i) {
-      outN.commands[i] = device_targets_[d][i];
-      outN.target_positions[i] = device_targets_[d][i];
-      outN.goal_positions[i] = device_targets_[d][i];
-    }
-  }
+  rtc::utils::PassthroughSecondaryDevices(state, output, device_targets_);
 
   ClampCommands(out0.commands, nc0);
   output.command_type = command_type_;
@@ -152,12 +143,9 @@ void PController::InitializeHoldPosition(
 
 void PController::ClampCommands(
     std::array<double, kMaxDeviceChannels> &commands, int n) const noexcept {
-  for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i) {
-    const double lim = (i < max_joint_velocity_.size())
-                           ? max_joint_velocity_[i]
-                           : kDefaultMaxJointVelocity;
-    commands[i] = std::clamp(commands[i], -lim, lim);
-  }
+  rtc::utils::ClampSymmetric(commands, n,
+                             std::span<const double>(max_joint_velocity_),
+                             kDefaultMaxJointVelocity);
 }
 
 // ── Controller registry hooks ────────────────────────────────────────────────

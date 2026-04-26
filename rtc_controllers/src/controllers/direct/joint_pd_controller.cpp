@@ -1,5 +1,8 @@
 #include "rtc_controllers/direct/joint_pd_controller.hpp"
 
+#include "rtc_base/utils/clamp_commands.hpp"
+#include "rtc_base/utils/device_passthrough.hpp"
+
 #include <algorithm>
 #include <cstddef>
 
@@ -143,19 +146,7 @@ JointPDController::Compute(const ControllerState &state) noexcept {
     out0.target_velocities[i] = traj_state.velocities[i];
   }
 
-  // Device 1+ : pass-through goals
-  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices);
-       ++d) {
-    const auto &devN = state.devices[d];
-    auto &outN = output.devices[d];
-    const int ncN = devN.num_channels;
-    outN.num_channels = ncN;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(ncN); ++i) {
-      outN.commands[i] = device_targets_[d][i];
-      outN.target_positions[i] = device_targets_[d][i];
-      outN.goal_positions[i] = device_targets_[d][i];
-    }
-  }
+  rtc::utils::PassthroughSecondaryDevices(state, output, device_targets_);
 
   ClampCommands(out0.commands, nc0, command_type_);
 
@@ -427,11 +418,10 @@ void JointPDController::ClampCommands(
     CommandType type) const noexcept {
   const auto &limits =
       (type == CommandType::kTorque) ? max_joint_torque_ : max_joint_velocity_;
-  for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i) {
-    const double lim =
-        (i < limits.size()) ? limits[i] : kDefaultMaxJointVelocity;
-    cmds[i] = std::clamp(cmds[i], -lim, lim);
-  }
+  // NOTE: default falls back to kDefaultMaxJointVelocity even for torque mode
+  // — preserved here to keep refactor pure. Latent bug; revisit separately.
+  rtc::utils::ClampSymmetric(cmds, n, std::span<const double>(limits),
+                             kDefaultMaxJointVelocity);
 }
 
 } // namespace rtc
