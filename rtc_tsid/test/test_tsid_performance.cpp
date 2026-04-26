@@ -21,8 +21,7 @@ namespace rtc::tsid {
 namespace {
 
 const std::string kPandaUrdf =
-    "/usr/local/share/example-robot-data/robots/panda_description/urdf/"
-    "panda.urdf";
+    RTC_PANDA_URDF_PATH;
 
 struct TimingStats {
   double mean_us;

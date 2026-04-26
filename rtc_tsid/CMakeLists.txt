@@ -71,6 +71,17 @@ ament_export_include_directories(include)
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
+  # Path to the example-robot-data Panda URDF used by tests as a generic
+  # fixed-base 7-DOF fixture. Cache var + override-able from -D or env so
+  # other PCs without the /usr/local symlink can still build the test suite.
+  set(RTC_PANDA_URDF_PATH
+      "/usr/local/share/example-robot-data/robots/panda_description/urdf/panda.urdf"
+      CACHE FILEPATH "Path to panda.urdf used by rtc_tsid tests")
+  if(DEFINED ENV{RTC_PANDA_URDF_PATH})
+    set(RTC_PANDA_URDF_PATH "$ENV{RTC_PANDA_URDF_PATH}" CACHE FILEPATH
+        "Path to panda.urdf used by rtc_tsid tests" FORCE)
+  endif()
+
   ament_add_gtest(test_qp_solver_wrapper test/test_qp_solver_wrapper.cpp)
   target_link_libraries(test_qp_solver_wrapper rtc_tsid)
 
@@ -121,6 +132,17 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_tsid_performance test/test_tsid_performance.cpp)
   target_link_libraries(test_tsid_performance rtc_tsid)
+
+  # Apply PANDA_URDF_PATH macro to every test target above.
+  foreach(_t
+      test_qp_solver_wrapper test_wbc_types test_posture_task test_se3_task
+      test_force_task test_com_task test_momentum_task test_phase3_integration
+      test_eom_constraint test_contact_constraint test_friction_cone_constraint
+      test_torque_limit_constraint test_joint_limit_constraint test_tsid_wqp
+      test_tsid_hqp test_tsid_wqp_hqp_compare test_tsid_performance)
+    target_compile_definitions(${_t} PRIVATE
+        RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}")
+  endforeach()
 endif()
 
 ament_package()

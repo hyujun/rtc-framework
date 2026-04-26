@@ -54,8 +54,7 @@
 namespace {
 
 constexpr const char *kPandaUrdf =
-    "/usr/local/share/example-robot-data/robots/panda_description/urdf/"
-    "panda.urdf";
+    RTC_PANDA_URDF_PATH;
 
 constexpr const char *kPhaseACostYaml = R"(
 horizon_length: 15

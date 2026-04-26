@@ -15,8 +15,7 @@ namespace {
 TEST(FrictionConeTest, Dimensions) {
   auto model = std::make_shared<pinocchio::Model>();
   pinocchio::urdf::buildModel(
-      "/usr/local/share/example-robot-data/robots/panda_description/urdf/"
-      "panda.urdf",
+      RTC_PANDA_URDF_PATH,
       *model);
 
   RobotModelInfo info;
@@ -58,8 +57,7 @@ TEST(FrictionConeTest, Dimensions) {
 TEST(FrictionConeTest, ConeMatrixStructure) {
   auto model = std::make_shared<pinocchio::Model>();
   pinocchio::urdf::buildModel(
-      "/usr/local/share/example-robot-data/robots/panda_description/urdf/"
-      "panda.urdf",
+      RTC_PANDA_URDF_PATH,
       *model);
 
   RobotModelInfo info;

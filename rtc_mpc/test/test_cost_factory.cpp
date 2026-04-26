@@ -41,8 +41,7 @@
 namespace {
 
 constexpr const char *kPandaUrdf =
-    "/usr/local/share/example-robot-data/robots/panda_description/urdf/"
-    "panda.urdf";
+    RTC_PANDA_URDF_PATH;
 
 // Baseline cost config matching Panda (nq=9, 2 × 3D contacts).
 constexpr const char *kBaselineYaml = R"(

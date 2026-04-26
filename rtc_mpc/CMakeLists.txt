@@ -105,6 +105,16 @@ ament_export_dependencies(rtc_base Eigen3 yaml-cpp pinocchio fmt aligator)
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
+  # Path to the example-robot-data Panda URDF used by integration / OCP tests
+  # as a generic 7-DOF fixture. Cache var, override-able via -D or env.
+  set(RTC_PANDA_URDF_PATH
+      "/usr/local/share/example-robot-data/robots/panda_description/urdf/panda.urdf"
+      CACHE FILEPATH "Path to panda.urdf used by rtc_mpc tests")
+  if(DEFINED ENV{RTC_PANDA_URDF_PATH})
+    set(RTC_PANDA_URDF_PATH "$ENV{RTC_PANDA_URDF_PATH}" CACHE FILEPATH
+        "Path to panda.urdf used by rtc_mpc tests" FORCE)
+  endif()
+
   ament_add_gtest(test_scaffold test/test_scaffold.cpp)
   if(TARGET test_scaffold)
     target_link_libraries(test_scaffold rtc_mpc)
@@ -213,6 +223,18 @@ if(BUILD_TESTING)
       ${CMAKE_CURRENT_SOURCE_DIR}/test)
     target_link_libraries(test_mpc_handler_alloc_tracer rtc_mpc)
   endif()
+
+  # Apply PANDA_URDF_PATH macro to every test target that uses it.
+  foreach(_t
+      test_robot_model_handler test_phase_cost_config test_cost_factory
+      test_light_contact_ocp test_contact_rich_ocp test_light_contact_mpc
+      test_contact_rich_mpc test_mpc_factory test_mpc_thread_integration
+      test_mpc_handler_alloc_tracer)
+    if(TARGET ${_t})
+      target_compile_definitions(${_t} PRIVATE
+          RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}")
+    endif()
+  endforeach()
 endif()
 
 ament_package()

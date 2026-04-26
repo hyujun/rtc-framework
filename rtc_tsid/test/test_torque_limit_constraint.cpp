@@ -14,8 +14,7 @@ namespace rtc::tsid {
 namespace {
 
 const std::string kPandaUrdf =
-    "/usr/local/share/example-robot-data/robots/panda_description/urdf/"
-    "panda.urdf";
+    RTC_PANDA_URDF_PATH;
 
 TEST(TorqueLimitTest, Dimensions) {
   auto model = std::make_shared<pinocchio::Model>();

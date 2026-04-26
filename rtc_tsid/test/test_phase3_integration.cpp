@@ -26,8 +26,7 @@ namespace rtc::tsid {
 namespace {
 
 const std::string kPandaUrdf =
-    "/usr/local/share/example-robot-data/robots/panda_description/urdf/"
-    "panda.urdf";
+    RTC_PANDA_URDF_PATH;
 
 // ──────────────────────────────────────────────
 // Panda 7DoF fixed-base 통합 테스트 (WQP)
