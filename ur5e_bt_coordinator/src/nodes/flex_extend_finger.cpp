@@ -11,44 +11,41 @@ namespace rtc_bt {
 
 namespace {
 auto logger() { return ::rtc_bt::logging::ActionLogger("flex_extend_finger"); }
-}  // namespace
+} // namespace
 
-FlexExtendFinger::FlexExtendFinger(const std::string& name, const BT::NodeConfig& config,
+FlexExtendFinger::FlexExtendFinger(const std::string &name,
+                                   const BT::NodeConfig &config,
                                    std::shared_ptr<BtRosBridge> bridge)
-  : BT::StatefulActionNode(name, config), bridge_(std::move(bridge))
-{}
+    : BT::StatefulActionNode(name, config), bridge_(std::move(bridge)) {}
 
-BT::PortsList FlexExtendFinger::providedPorts()
-{
+BT::PortsList FlexExtendFinger::providedPorts() {
   return {
-    BT::InputPort<std::string>("finger_name", "손가락 이름 (thumb/index/middle/ring)"),
-    BT::InputPort<double>("hand_trajectory_speed", kDefaultHandTrajectorySpeed,
-                           "Trajectory speed [rad/s]"),
-    BT::InputPort<std::vector<double>>("current_gains", "{current_gains}",
-                                       "Cached gains from SwitchController"),
+      BT::InputPort<std::string>("finger_name",
+                                 "손가락 이름 (thumb/index/middle/ring)"),
+      BT::InputPort<double>("hand_trajectory_speed",
+                            kDefaultHandTrajectorySpeed,
+                            "Trajectory speed [rad/s]"),
   };
 }
 
-BT::NodeStatus FlexExtendFinger::onStart()
-{
+BT::NodeStatus FlexExtendFinger::onStart() {
   auto finger_name = getInput<std::string>("finger_name");
   if (!finger_name) {
-    throw BT::RuntimeError("FlexExtendFinger: missing finger_name: ", finger_name.error());
+    throw BT::RuntimeError("FlexExtendFinger: missing finger_name: ",
+                           finger_name.error());
   }
   finger_name_ = finger_name.value();
 
   speed_ = getInput<double>("hand_trajectory_speed")
                .value_or(kDefaultHandTrajectorySpeed);
-  auto cached = getInput<std::vector<double>>("current_gains");
-  max_vel_ = (cached && !cached->empty())
-      ? ExtractHandMaxTrajVelocity(cached.value())
-      : kDefaultHandMaxTrajVelocity;
+  max_vel_ = kDefaultHandMaxTrajVelocity;
 
   // 포즈 lookup (bridge pose library 사용)
   const std::string flex_pose_name = finger_name_ + "_flex";
   flex_target_ = bridge_->GetHandPose(flex_pose_name);
   home_target_ = bridge_->GetHandPose("home");
-  joint_indices_ = LookupOrThrow(kFingerJointIndices, finger_name_, "FlexExtendFinger");
+  joint_indices_ =
+      LookupOrThrow(kFingerJointIndices, finger_name_, "FlexExtendFinger");
 
   // 현재 위치 → flex duration 추정
   auto current = bridge_->GetHandJointPositions();
@@ -58,13 +55,12 @@ BT::NodeStatus FlexExtendFinger::onStart()
 
   flex_duration_ = EstimateHandTrajectoryDuration(
       current, flex_target_, joint_indices_, speed_, max_vel_);
-  extend_duration_ = 0.01;  // extend phase 시작 시 재계산
+  extend_duration_ = 0.01; // extend phase 시작 시 재계산
 
   // Phase 1 (Flex): flex 타겟 전송
   ApplyPartialHandTarget(*bridge_, flex_target_, joint_indices_);
 
-  RCLCPP_INFO(logger(),
-              "finger=%s flex_duration=%.3fs (speed=%.2f)",
+  RCLCPP_INFO(logger(), "finger=%s flex_duration=%.3fs (speed=%.2f)",
               finger_name_.c_str(), flex_duration_, speed_);
 
   phase_ = Phase::kFlex;
@@ -72,8 +68,7 @@ BT::NodeStatus FlexExtendFinger::onStart()
   return BT::NodeStatus::RUNNING;
 }
 
-BT::NodeStatus FlexExtendFinger::onRunning()
-{
+BT::NodeStatus FlexExtendFinger::onRunning() {
   const double elapsed = ElapsedSeconds(start_time_);
 
   // Phase 전환: FLEX → EXTEND
@@ -89,26 +84,24 @@ BT::NodeStatus FlexExtendFinger::onRunning()
 
     ApplyPartialHandTarget(*bridge_, home_target_, joint_indices_);
 
-    RCLCPP_INFO(logger(),
-                "finger=%s extend phase (%.3fs)",
+    RCLCPP_INFO(logger(), "finger=%s extend phase (%.3fs)",
                 finger_name_.c_str(), extend_duration_);
 
     phase_ = Phase::kExtend;
   }
 
   // 전체 완료
-  if (phase_ == Phase::kExtend && elapsed >= flex_duration_ + extend_duration_) {
-    RCLCPP_INFO(logger(),
-                "complete finger=%s (total=%.3fs)",
+  if (phase_ == Phase::kExtend &&
+      elapsed >= flex_duration_ + extend_duration_) {
+    RCLCPP_INFO(logger(), "complete finger=%s (total=%.3fs)",
                 finger_name_.c_str(), flex_duration_ + extend_duration_);
     return BT::NodeStatus::SUCCESS;
   }
   return BT::NodeStatus::RUNNING;
 }
 
-void FlexExtendFinger::onHalted()
-{
+void FlexExtendFinger::onHalted() {
   RCLCPP_INFO(logger(), "halted (finger=%s)", finger_name_.c_str());
 }
 
-}  // namespace rtc_bt
+} // namespace rtc_bt

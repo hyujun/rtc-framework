@@ -1,5 +1,6 @@
 /// Unit tests for hand-related action nodes:
-/// SetHandPose, MoveFinger, FlexExtendFinger, MoveOpposition, UR5eHoldPose, TrackTrajectory.
+/// SetHandPose, MoveFinger, FlexExtendFinger, MoveOpposition, UR5eHoldPose,
+/// TrackTrajectory.
 
 #include "test_helpers.hpp"
 #include "ur5e_bt_coordinator/action_nodes/flex_extend_finger.hpp"
@@ -19,8 +20,7 @@ using namespace rtc_bt::test;
 
 class HandNodeTest : public RosTestFixture {
 protected:
-  void SetUp() override
-  {
+  void SetUp() override {
     RosTestFixture::SetUp();
     factory_.registerNodeType<SetHandPose>("SetHandPose", bridge_);
     factory_.registerNodeType<MoveFinger>("MoveFinger", bridge_);
@@ -30,8 +30,7 @@ protected:
     factory_.registerNodeType<TrackTrajectory>("TrackTrajectory", bridge_);
   }
 
-  BT::Tree CreateTree(const std::string& xml)
-  {
+  BT::Tree CreateTree(const std::string &xml) {
     const std::string full = R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" +
                              xml + R"(</BehaviorTree></root>)";
     return factory_.createTreeFromText(full);
@@ -44,8 +43,7 @@ protected:
 // SetHandPose
 // ══════════════════════════════════════════════════════════════════════════
 
-TEST_F(HandNodeTest, SetHandPose_StartsRunning)
-{
+TEST_F(HandNodeTest, SetHandPose_StartsRunning) {
   PublishHandState({0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
   Spin();
 
@@ -53,8 +51,7 @@ TEST_F(HandNodeTest, SetHandPose_StartsRunning)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 }
 
-TEST_F(HandNodeTest, SetHandPose_CompletesAfterDuration)
-{
+TEST_F(HandNodeTest, SetHandPose_CompletesAfterDuration) {
   // Start at home (all zeros) → target home → distance 0 → min duration
   PublishHandState({0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
   Spin();
@@ -67,8 +64,7 @@ TEST_F(HandNodeTest, SetHandPose_CompletesAfterDuration)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 }
 
-TEST_F(HandNodeTest, SetHandPose_UnknownPoseThrows)
-{
+TEST_F(HandNodeTest, SetHandPose_UnknownPoseThrows) {
   PublishHandState({0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
   Spin();
 
@@ -80,34 +76,29 @@ TEST_F(HandNodeTest, SetHandPose_UnknownPoseThrows)
 // MoveFinger
 // ══════════════════════════════════════════════════════════════════════════
 
-TEST_F(HandNodeTest, MoveFinger_StartsRunning)
-{
+TEST_F(HandNodeTest, MoveFinger_StartsRunning) {
   PublishHandState({0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
   Spin();
 
-  auto tree = CreateTree(
-      R"(<MoveFinger finger_name="thumb" pose="thumb_flex"/>)");
+  auto tree =
+      CreateTree(R"(<MoveFinger finger_name="thumb" pose="thumb_flex"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 }
 
-TEST_F(HandNodeTest, MoveFinger_InvalidFingerThrows)
-{
+TEST_F(HandNodeTest, MoveFinger_InvalidFingerThrows) {
   PublishHandState({0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
   Spin();
 
-  auto tree = CreateTree(
-      R"(<MoveFinger finger_name="pinky" pose="home"/>)");
+  auto tree = CreateTree(R"(<MoveFinger finger_name="pinky" pose="home"/>)");
   EXPECT_THROW(tree.tickOnce(), BT::RuntimeError);
 }
 
-TEST_F(HandNodeTest, MoveFinger_ZeroDistanceQuickComplete)
-{
+TEST_F(HandNodeTest, MoveFinger_ZeroDistanceQuickComplete) {
   // Already at home → target home → zero distance → quick
   PublishHandState({0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
   Spin();
 
-  auto tree = CreateTree(
-      R"(<MoveFinger finger_name="thumb" pose="home"/>)");
+  auto tree = CreateTree(R"(<MoveFinger finger_name="thumb" pose="home"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -118,35 +109,36 @@ TEST_F(HandNodeTest, MoveFinger_ZeroDistanceQuickComplete)
 // FlexExtendFinger
 // ══════════════════════════════════════════════════════════════════════════
 
-TEST_F(HandNodeTest, FlexExtendFinger_StartsRunning)
-{
+TEST_F(HandNodeTest, FlexExtendFinger_StartsRunning) {
   PublishHandState({0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
   Spin();
 
-  auto tree = CreateTree(
-      R"(<FlexExtendFinger finger_name="index"/>)");
+  auto tree = CreateTree(R"(<FlexExtendFinger finger_name="index"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 }
 
-TEST_F(HandNodeTest, FlexExtendFinger_CompletesFlexExtendCycle)
-{
+TEST_F(HandNodeTest, FlexExtendFinger_CompletesFlexExtendCycle) {
   // At home → flex → extend (home)
   PublishHandState({0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
   Spin();
 
-  // Supply current_gains with high hand_max_traj_velocity (index 3 in
-  // DemoJoint layout) so the velocity constraint doesn't dominate duration.
+  // High hand_trajectory_speed so duration_ is dominated by max_vel limit
+  // (kDefaultHandMaxTrajVelocity = 4.0 rad/s) and finishes within the
+  // 100-tick budget below.
   auto tree = CreateTree(
       R"(<FlexExtendFinger finger_name="thumb"
-                           hand_trajectory_speed="100.0"
-                           current_gains="1.0;1.0;1.0;100.0;1.0;1.0;1.0"/>)");
+                           hand_trajectory_speed="100.0"/>)");
 
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 
-  // With very high speed, duration is very short. Wait for completion.
-  for (int i = 0; i < 100; ++i) {
+  // hand_trajectory_speed=100 saturates speed term; duration is then bounded
+  // by max_vel=kDefaultHandMaxTrajVelocity (4.0). Flex (0..0.6 thumb_flex)
+  // costs ~0.28s × 1.1 margin ≈ 0.31s, extend back to 0 ≈ same. Allow 600
+  // ticks × 5 ms = 3 s budget for safety.
+  for (int i = 0; i < 600; ++i) {
     auto status = tree.tickOnce();
-    if (status == BT::NodeStatus::SUCCESS) return;
+    if (status == BT::NodeStatus::SUCCESS)
+      return;
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   FAIL() << "FlexExtendFinger did not complete within timeout";
@@ -156,8 +148,7 @@ TEST_F(HandNodeTest, FlexExtendFinger_CompletesFlexExtendCycle)
 // MoveOpposition
 // ══════════════════════════════════════════════════════════════════════════
 
-TEST_F(HandNodeTest, MoveOpposition_StartsRunning)
-{
+TEST_F(HandNodeTest, MoveOpposition_StartsRunning) {
   PublishHandState({0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
   Spin();
 
@@ -168,8 +159,7 @@ TEST_F(HandNodeTest, MoveOpposition_StartsRunning)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 }
 
-TEST_F(HandNodeTest, MoveOpposition_InvalidFingerThrows)
-{
+TEST_F(HandNodeTest, MoveOpposition_InvalidFingerThrows) {
   PublishHandState({0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
   Spin();
 
@@ -184,16 +174,14 @@ TEST_F(HandNodeTest, MoveOpposition_InvalidFingerThrows)
 // UR5eHoldPose
 // ══════════════════════════════════════════════════════════════════════════
 
-TEST_F(HandNodeTest, UR5eHoldPose_AlwaysRunning)
-{
+TEST_F(HandNodeTest, UR5eHoldPose_AlwaysRunning) {
   auto tree = CreateTree(R"(<UR5eHoldPose pose="demo_pose"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 }
 
-TEST_F(HandNodeTest, UR5eHoldPose_UnknownPoseThrows)
-{
+TEST_F(HandNodeTest, UR5eHoldPose_UnknownPoseThrows) {
   auto tree = CreateTree(R"(<UR5eHoldPose pose="nonexistent"/>)");
   EXPECT_THROW(tree.tickOnce(), BT::RuntimeError);
 }
@@ -202,8 +190,7 @@ TEST_F(HandNodeTest, UR5eHoldPose_UnknownPoseThrows)
 // TrackTrajectory
 // ══════════════════════════════════════════════════════════════════════════
 
-TEST_F(HandNodeTest, TrackTrajectory_StartsRunning)
-{
+TEST_F(HandNodeTest, TrackTrajectory_StartsRunning) {
   auto tree = CreateTree(
       R"(<TrackTrajectory waypoints="{wp}"
                           position_tolerance="0.01" timeout_s="5.0"/>)");
@@ -214,8 +201,7 @@ TEST_F(HandNodeTest, TrackTrajectory_StartsRunning)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 }
 
-TEST_F(HandNodeTest, TrackTrajectory_SucceedsAllWaypoints)
-{
+TEST_F(HandNodeTest, TrackTrajectory_SucceedsAllWaypoints) {
   auto tree = CreateTree(
       R"(<TrackTrajectory waypoints="{wp}"
                           position_tolerance="0.05" timeout_s="5.0"/>)");
@@ -229,7 +215,7 @@ TEST_F(HandNodeTest, TrackTrajectory_SucceedsAllWaypoints)
   Pose6D at_wp0{0.1, 0.0, 0.0, 0, 0, 0};
   PublishArmState(at_wp0, {0, 0, 0, 0, 0, 0});
   Spin();
-  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);  // Advances to wp[1]
+  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING); // Advances to wp[1]
 
   // Move to second waypoint
   Pose6D at_wp1{0.2, 0.0, 0.0, 0, 0, 0};
@@ -238,8 +224,7 @@ TEST_F(HandNodeTest, TrackTrajectory_SucceedsAllWaypoints)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 }
 
-TEST_F(HandNodeTest, TrackTrajectory_FailsOnTimeout)
-{
+TEST_F(HandNodeTest, TrackTrajectory_FailsOnTimeout) {
   auto tree = CreateTree(
       R"(<TrackTrajectory waypoints="{wp}"
                           position_tolerance="0.001" timeout_s="0.05"/>)");

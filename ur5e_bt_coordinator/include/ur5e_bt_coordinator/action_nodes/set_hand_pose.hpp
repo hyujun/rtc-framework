@@ -21,11 +21,11 @@ namespace rtc_bt {
 /// Input ports:
 ///   - pose (string): 명명된 포즈 (예: "home", "full_flex")
 ///   - hand_trajectory_speed (double): trajectory speed [rad/s] (기본 1.0)
-///   - current_gains (vector<double>): SwitchController에서 로드한 gains
-///     (hand_max_traj_velocity를 추출하여 duration 추정에 사용)
+///
+/// Duration 추정의 max_vel은 bt_utils.hpp::kDefaultHandMaxTrajVelocity 사용.
 class SetHandPose : public BT::StatefulActionNode {
 public:
-  SetHandPose(const std::string& name, const BT::NodeConfig& config,
+  SetHandPose(const std::string &name, const BT::NodeConfig &config,
               std::shared_ptr<BtRosBridge> bridge);
 
   static BT::PortsList providedPorts();
@@ -41,4 +41,4 @@ private:
   std::chrono::steady_clock::time_point start_time_;
 };
 
-}  // namespace rtc_bt
+} // namespace rtc_bt

@@ -104,11 +104,11 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 | `SetPoseZ` | SyncAction | Pose의 Z좌표를 절대값으로 덮어씀 (X, Y, 방향 유지). `z`가 NaN(기본값)이면 pass-through. Object final goal의 Z를 고정하는 용도 | `input_pose`, `z`(NaN) → 출력: `output_pose` |
 | `ComputeSweepTrajectory` | SyncAction | Arc sweep 경로 waypoint 생성 (towel unfold용, sinusoidal arc 프로파일) | `start_pose`, `direction_x`(1.0), `direction_y`(0.0), `distance`(0.3), `arc_height`(0.05), `num_waypoints`(8) → 출력: `waypoints` |
 | `WaitDuration` | StatefulAction | 지정 시간 대기 | `duration_s`(0.5) |
-| `MoveFinger` | StatefulAction | 특정 손가락을 명명된 포즈로 이동 (trajectory duration 추정 기반 완료, partial hand update) | `finger_name`, `pose`, `hand_trajectory_speed`(1.0), `current_gains` |
-| `FlexExtendFinger` | StatefulAction | 손가락 flex→extend 1 cycle (2-phase, phase별 trajectory duration 추정) | `finger_name`, `hand_trajectory_speed`(1.0), `current_gains` |
-| `SetHandPose` | StatefulAction | 전체 Hand 10-DoF를 명명된 포즈로 이동 (trajectory duration 추정 기반 완료) | `pose`, `hand_trajectory_speed`(1.0), `current_gains` |
+| `MoveFinger` | StatefulAction | 특정 손가락을 명명된 포즈로 이동 (trajectory duration 추정 기반 완료, partial hand update) | `finger_name`, `pose`, `hand_trajectory_speed`(1.0) |
+| `FlexExtendFinger` | StatefulAction | 손가락 flex→extend 1 cycle (2-phase, phase별 trajectory duration 추정) | `finger_name`, `hand_trajectory_speed`(1.0) |
+| `SetHandPose` | StatefulAction | 전체 Hand 10-DoF를 명명된 포즈로 이동 (trajectory duration 추정 기반 완료) | `pose`, `hand_trajectory_speed`(1.0) |
 | `UR5eHoldPose` | StatefulAction | UR5e 목표 자세 도달 후 영구 RUNNING (halt까지 유지) | `pose` |
-| `MoveOpposition` | StatefulAction | Opposition 동작 (thumb+target 포즈, 비-target home 리셋, trajectory duration 추정 완료) | `thumb_pose`, `target_finger`, `target_pose`, `hand_trajectory_speed`(1.0), `current_gains` |
+| `MoveOpposition` | StatefulAction | Opposition 동작 (thumb+target 포즈, 비-target home 리셋, trajectory duration 추정 완료) | `thumb_pose`, `target_finger`, `target_pose`, `hand_trajectory_speed`(1.0) |
 | `TriggerShapeEstimation` | SyncAction | Shape estimation 시작/정지 제어 (서비스 호출) | `action`(start/stop) |
 | `WaitShapeResult` | StatefulAction | Shape estimation 결과 대기 (confidence 임계값 도달까지) | `min_confidence`(0.8), `timeout_s`(10.0) |
 

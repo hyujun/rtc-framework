@@ -16,26 +16,34 @@
 
 namespace rtc_bt {
 
-// ── Hand trajectory gain defaults (match RT controller YAML) ───────────────
+// ── Hand trajectory gain defaults ───────────────────────────────────────────
+//
+// kDefaultHandMaxTrajVelocity is chosen as the *smallest*
+// hand_max_traj_velocity across the 3 demo controllers' YAMLs (demo_joint=6.28,
+// demo_task=6.28, demo_wbc=4.0). BT trajectory-duration estimation uses this to
+// pick how long to wait before the next BT step. Picking the smallest is the
+// conservative choice — over-estimating wait time only adds latency, while
+// under-estimating causes the next BT step to fire before the RT trajectory
+// completes. Update this value if a new demo controller drops below 4.0 rad/s.
 
-inline constexpr double kDefaultHandTrajectorySpeed = 1.0;    // [rad/s]
-inline constexpr double kDefaultHandMaxTrajVelocity = 2.0;    // [rad/s]
+inline constexpr double kDefaultHandTrajectorySpeed = 1.0; // [rad/s]
+inline constexpr double kDefaultHandMaxTrajVelocity = 4.0; // [rad/s]
 
 // ── Time ────────────────────────────────────────────────────────────────────
 
 /// Seconds elapsed since a time point.
-inline double ElapsedSeconds(std::chrono::steady_clock::time_point since)
-{
-  return std::chrono::duration<double>(std::chrono::steady_clock::now() - since).count();
+inline double ElapsedSeconds(std::chrono::steady_clock::time_point since) {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now() - since)
+      .count();
 }
 
 // ── Map lookup ──────────────────────────────────────────────────────────────
 
 /// Lookup a key in an associative container; throw BT::RuntimeError on miss.
 template <typename MapT>
-const typename MapT::mapped_type& LookupOrThrow(
-    const MapT& map, const std::string& key, const std::string& context)
-{
+const typename MapT::mapped_type &LookupOrThrow(const MapT &map,
+                                                const std::string &key,
+                                                const std::string &context) {
   auto it = map.find(key);
   if (it == map.end()) {
     throw BT::RuntimeError(context + ": unknown key: " + key);
@@ -46,9 +54,7 @@ const typename MapT::mapped_type& LookupOrThrow(
 // ── CSV parsing ─────────────────────────────────────────────────────────────
 
 /// Parse a comma-separated string into a vector of T (int or double).
-template <typename T>
-std::vector<T> ParseCsvList(const std::string& str)
-{
+template <typename T> std::vector<T> ParseCsvList(const std::string &str) {
   std::vector<T> result;
   std::istringstream ss(str);
   std::string token;
@@ -72,11 +78,9 @@ std::vector<T> ParseCsvList(const std::string& str)
 /// Read last hand target (or current position as fallback), overlay specific
 /// finger joints, and publish.  Non-target joints keep moving toward their
 /// previously commanded targets instead of freezing at the current position.
-inline void ApplyPartialHandTarget(
-    BtRosBridge& bridge,
-    const HandPose& target_pose,
-    const std::vector<int>& joint_indices)
-{
+inline void ApplyPartialHandTarget(BtRosBridge &bridge,
+                                   const HandPose &target_pose,
+                                   const std::vector<int> &joint_indices) {
   auto base = bridge.GetLastHandTarget();
   if (base.size() < static_cast<std::size_t>(kHandDofCount)) {
     // First publish in this session — fall back to current position
@@ -91,17 +95,6 @@ inline void ApplyPartialHandTarget(
   bridge.PublishHandTarget(base);
 }
 
-// ── Gain extraction ────────────────────────────────────────────────────
-
-/// current_gains 벡터에서 hand_max_traj_velocity를 추출한다.
-/// DemoTask(19+): index 15, DemoJoint(7+): index 3, 그 외 기본값.
-inline double ExtractHandMaxTrajVelocity(const std::vector<double>& gains)
-{
-  if (gains.size() >= 19) return gains[15];  // DemoTask layout
-  if (gains.size() >= 7)  return gains[3];   // DemoJoint layout
-  return kDefaultHandMaxTrajVelocity;
-}
-
 // ── Trajectory duration estimation ─────────────────────────────────────────
 
 /// RT 컨트롤러와 동일한 공식으로 hand trajectory duration을 추정한다.
@@ -110,13 +103,11 @@ inline double ExtractHandMaxTrajVelocity(const std::vector<double>& gains)
 /// RT 공식: duration = max(0.01, max_dist/speed, 1.875*max_dist/max_vel)
 /// Quintic rest-to-rest peak velocity = (15/8) * max_dist / T 이므로
 /// T >= 1.875 * max_dist / max_vel 조건으로 velocity limit 보장.
-inline double EstimateHandTrajectoryDuration(
-    const std::vector<double>& current,
-    const std::array<double, kHandDofCount>& target,
-    const std::vector<int>& indices,
-    double speed, double max_vel,
-    double margin = 1.1)
-{
+inline double
+EstimateHandTrajectoryDuration(const std::vector<double> &current,
+                               const std::array<double, kHandDofCount> &target,
+                               const std::vector<int> &indices, double speed,
+                               double max_vel, double margin = 1.1) {
   double max_dist = 0.0;
   for (int idx : indices) {
     const auto ui = static_cast<std::size_t>(idx);
@@ -131,12 +122,10 @@ inline double EstimateHandTrajectoryDuration(
 
 /// RT 컨트롤러와 동일한 공식으로 hand trajectory duration을 추정한다.
 /// 전체 10-DoF 오버로드.
-inline double EstimateHandTrajectoryDuration(
-    const std::vector<double>& current,
-    const std::vector<double>& target,
-    double speed, double max_vel,
-    double margin = 1.1)
-{
+inline double EstimateHandTrajectoryDuration(const std::vector<double> &current,
+                                             const std::vector<double> &target,
+                                             double speed, double max_vel,
+                                             double margin = 1.1) {
   double max_dist = 0.0;
   const std::size_t n = std::min(current.size(), target.size());
   for (std::size_t i = 0; i < n; ++i) {
@@ -152,23 +141,23 @@ inline double EstimateHandTrajectoryDuration(
 /// Opposition 전용: thumb + target 손가락만 목표 포즈, 나머지는 home으로 리셋.
 /// 비-target 손가락 잔류 문제를 방지한다.
 /// Bridge의 pose library에서 home 포즈를 읽는다.
-inline void ApplyOppositionTarget(
-    BtRosBridge& bridge,
-    const HandPose& thumb_pose,
-    const HandPose& target_pose,
-    const std::vector<int>& target_indices)
-{
-  const auto& home = bridge.GetHandPose("home");
+inline void ApplyOppositionTarget(BtRosBridge &bridge,
+                                  const HandPose &thumb_pose,
+                                  const HandPose &target_pose,
+                                  const std::vector<int> &target_indices) {
+  const auto &home = bridge.GetHandPose("home");
   std::vector<double> cmd(home.begin(), home.end());
   // thumb 관절 덮어쓰기
   for (int idx : kFingerJointIndices.at("thumb")) {
-    cmd[static_cast<std::size_t>(idx)] = thumb_pose[static_cast<std::size_t>(idx)];
+    cmd[static_cast<std::size_t>(idx)] =
+        thumb_pose[static_cast<std::size_t>(idx)];
   }
   // target 손가락 관절 덮어쓰기
   for (int idx : target_indices) {
-    cmd[static_cast<std::size_t>(idx)] = target_pose[static_cast<std::size_t>(idx)];
+    cmd[static_cast<std::size_t>(idx)] =
+        target_pose[static_cast<std::size_t>(idx)];
   }
   bridge.PublishHandTarget(cmd);
 }
 
-}  // namespace rtc_bt
+} // namespace rtc_bt
