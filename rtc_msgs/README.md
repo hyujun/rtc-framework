@@ -26,20 +26,22 @@ rtc_msgs/
 ├── CMakeLists.txt
 ├── package.xml
 ├── README.md
-└── msg/
-    ├── JointCommand.msg       <- 로봇 암 관절 커맨드 (position/torque)
-    ├── FingertipSensor.msg    <- 단일 핑거팁 센서 + 추론 결과
-    ├── HandSensorState.msg    <- 전체 핸드 센서 상태 (핑거팁 집계)
-    ├── GraspState.msg         <- 파지 상태 판정 (접촉/힘/grasp 감지)
-    ├── GuiPosition.msg        <- GUI 표시용 관절/태스크 위치
-    ├── RobotTarget.msg        <- 관절/태스크 공간 목표
-    ├── DeviceStateLog.msg     <- 디바이스 상태 종합 로그
-    ├── DeviceSensorLog.msg    <- 디바이스 센서 로그
-    ├── SimSensor.msg          <- MuJoCo 단일 센서 출력 (로봇 비의존적)
-    ├── SimSensorState.msg     <- MuJoCo 센서 데이터 집계 (로봇 비의존적)
-    ├── ToFSnapshot.msg        <- ToF 센서 + 핑거팁 SE3 자세 통합 스냅샷
-    ├── CalibrationCommand.msg <- 센서 캘리브레이션 명령 (확장 가능 enum)
-    └── CalibrationStatus.msg  <- 센서 캘리브레이션 진행/완료 상태
+├── msg/
+│   ├── JointCommand.msg       <- 로봇 암 관절 커맨드 (position/torque)
+│   ├── FingertipSensor.msg    <- 단일 핑거팁 센서 + 추론 결과
+│   ├── HandSensorState.msg    <- 전체 핸드 센서 상태 (핑거팁 집계)
+│   ├── GraspState.msg         <- 파지 상태 판정 (접촉/힘/grasp 감지)
+│   ├── GuiPosition.msg        <- GUI 표시용 관절/태스크 위치
+│   ├── RobotTarget.msg        <- 관절/태스크 공간 목표
+│   ├── DeviceStateLog.msg     <- 디바이스 상태 종합 로그
+│   ├── DeviceSensorLog.msg    <- 디바이스 센서 로그
+│   ├── SimSensor.msg          <- MuJoCo 단일 센서 출력 (로봇 비의존적)
+│   ├── SimSensorState.msg     <- MuJoCo 센서 데이터 집계 (로봇 비의존적)
+│   ├── ToFSnapshot.msg        <- ToF 센서 + 핑거팁 SE3 자세 통합 스냅샷
+│   ├── CalibrationCommand.msg <- 센서 캘리브레이션 명령 (확장 가능 enum)
+│   └── CalibrationStatus.msg  <- 센서 캘리브레이션 진행/완료 상태
+└── srv/
+    └── GraspCommand.srv       <- Force-PI 그래스프 one-shot 이벤트 (start/release)
 ```
 
 ---
@@ -289,6 +291,42 @@ Subscriber: `ur5e_hand_driver` 의 `hand_udp_node` (RELIABLE/1 QoS).
 Publisher: `ur5e_hand_driver` 가 `calibration_status_rate_hz` (기본 5 Hz) 주기로
 publish (QoS: RELIABLE + TRANSIENT_LOCAL + depth 1, late-join 구독자가 최신 상태
 즉시 수신).
+
+---
+
+## 서비스 정의
+
+### `GraspCommand.srv`
+
+Force-PI 그래스프의 **one-shot 이벤트** 채널입니다. State가 아닌 transition이라
+ROS 2 parameter로 표현하기에 부적절하므로 별도 srv로 분리되어 있습니다 (Phase A
+migration, 2026-04-26).
+
+**Request:**
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `command` | `uint8` | `NONE=0` (rejected) / `GRASP=1` / `RELEASE=2` |
+| `target_force` | `float64` | 목표 grip force [N] (`GRASP`일 때만 사용, `> 0`) |
+
+**Response:**
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `ok` | `bool` | 활성 컨트롤러 grasp FSM에 적용 여부 |
+| `message` | `string` | 사람-읽기용 결과 ("grasp started @ 2.0 N", "E-STOP active", ...) |
+
+**Single-active 모델:** 활성 데모 컨트롤러만 `~/grasp_command` server를 advertise
+합니다. 호출자(예: BT)는 `/{active_config_key}/grasp_command` 로 호출.
+
+- `demo_joint_controller` / `demo_task_controller`: `grasp_controller_` (Force-PI
+  FSM) 가 있을 때만 적용. 없으면 `ok=false, message="grasp_controller unavailable"`.
+- `demo_wbc_controller`: `grasp_cmd_` atomic + `grasp_target_force` gain 갱신 →
+  WBC 8-state FSM이 다음 tick에서 `kApproach` / `kRelease` 진입.
+- E-STOP 활성 시 모든 호출이 `ok=false, message="E-STOP active"`.
+
+Publisher: `ur5e_bt_coordinator` 의 `SetGains` BT node (또는 `ros2 service call`).
+Subscriber: 활성 데모 컨트롤러의 LifecycleNode aux thread.
 
 ---
 
