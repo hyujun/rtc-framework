@@ -1657,18 +1657,26 @@ void DemoWbcController::SetHandEstop(bool active) noexcept {
 
 ControllerOutput
 DemoWbcController::ComputeEstop(const ControllerState &state) noexcept {
+  const auto &dev0 = state.devices[0];
   ControllerOutput output;
   output.num_devices = state.num_devices;
   output.valid = true;
   output.command_type = command_type_;
 
-  // Hold safe position (arm)
+  // Arm: ramp toward safe position with per-joint velocity limit (matches
+  // DemoJoint/DemoTask ComputeEstop pattern — instant jump risks hardware
+  // damage on real UR5e at high E-STOP delta).
   auto &out0 = output.devices[0];
-  out0.num_channels = state.devices[0].num_channels;
+  out0.num_channels = dev0.num_channels;
   out0.goal_type = GoalType::kJoint;
+  const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    out0.commands[i] = safe_position_[i];
-    out0.target_positions[i] = safe_position_[i];
+    const double lim =
+        (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
+    out0.commands[i] =
+        dev0.positions[i] +
+        std::clamp(safe_position_[i] - dev0.positions[i], -lim, lim) * dt;
+    out0.target_positions[i] = out0.commands[i];
   }
 
   // Hold current position (hand)

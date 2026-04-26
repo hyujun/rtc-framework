@@ -79,6 +79,10 @@ public:
         0.5f}; ///< Contact probability threshold (0.0~1.0)
     float grasp_force_threshold{1.0f}; ///< Force magnitude threshold [N]
     int grasp_min_fingertips{2};       ///< Min fingertips for grasp detection
+
+    // Trajectory / grasp FSM tuning
+    double contact_stop_release_eps{
+        0.005}; ///< Hand contact-stop release hysteresis [rad]
   };
 
   explicit DemoJointController(std::string_view urdf_path);
@@ -229,9 +233,6 @@ private:
   std::size_t hand_idx_thumb_cmc_fe_{1};
   std::size_t hand_idx_index_mcp_fe_{4};
   std::size_t hand_idx_middle_mcp_fe_{7};
-  /// Hysteresis on target↔actual delta to reject sensor noise (rad).
-  static constexpr double kContactStopReleaseEps = 0.005;
-
   /// Previous grasp phase (for state-transition logging; non-RT critical).
   uint8_t prev_grasp_phase_{0};
 

@@ -492,9 +492,10 @@ void DemoJointController::ComputeControl(const ControllerState &state,
         const double d_middle = device_targets_[1][hand_idx_middle_mcp_fe_] -
                                 dev1.positions[hand_idx_middle_mcp_fe_];
 
-        const bool thumb_releasing = d_thumb > kContactStopReleaseEps;
-        const bool index_releasing = d_index < -kContactStopReleaseEps;
-        const bool middle_releasing = d_middle < -kContactStopReleaseEps;
+        const bool thumb_releasing = d_thumb > gains.contact_stop_release_eps;
+        const bool index_releasing = d_index < -gains.contact_stop_release_eps;
+        const bool middle_releasing =
+            d_middle < -gains.contact_stop_release_eps;
         const bool release_phase =
             thumb_releasing && index_releasing && middle_releasing;
 
@@ -801,6 +802,27 @@ void DemoJointController::LoadConfig(const YAML::Node &cfg) {
   }
   if (cfg["hand_max_traj_velocity"]) {
     g.hand_max_traj_velocity = cfg["hand_max_traj_velocity"].as<double>();
+  }
+
+  // ── FSM tuning (required) ───────────────────────────────────────────
+  if (!cfg["fsm"] || !cfg["fsm"].IsMap()) {
+    throw std::runtime_error(
+        "demo_joint_controller: required 'fsm' section is missing");
+  }
+  {
+    const auto &fsm = cfg["fsm"];
+    if (!fsm["contact_stop_release_eps"]) {
+      throw std::runtime_error(
+          "demo_joint_controller: required 'fsm.contact_stop_release_eps' "
+          "is missing");
+    }
+    const double eps = fsm["contact_stop_release_eps"].as<double>();
+    if (!(eps >= 0.0 && eps <= 0.1)) {
+      throw std::runtime_error(
+          "demo_joint_controller: 'fsm.contact_stop_release_eps' out of range "
+          "[0, 0.1]");
+    }
+    g.contact_stop_release_eps = eps;
   }
 
   // ── Shared params: defaults from demo_shared.yaml, overridden by cfg ──

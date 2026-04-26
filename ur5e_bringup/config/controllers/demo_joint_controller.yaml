@@ -17,6 +17,11 @@ demo_joint_controller:
   # config/controllers/demo_shared.yaml. To override any shared key locally,
   # add it under this section — per-controller values take precedence.
 
+  # ── FSM tuning ──────────────────────────────────────────────────────────────
+  # Required — LoadConfig throws if any key is missing or out of range.
+  fsm:
+    contact_stop_release_eps: 0.005 # rad, hand contact-stop release hysteresis
+
   # ── E-STOP ──────────────────────────────────────────────────────────────────
   # Joint position the E-STOP path drives the arm toward (rad, length = arm DoF).
   # Required — LoadConfig throws if missing or wrong length.

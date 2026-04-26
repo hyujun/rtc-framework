@@ -53,7 +53,8 @@ Per-controller snapshot site:
 | Q-4 | Device passthrough utility | rtc_base | **Done** — `rtc_base/utils/device_passthrough.hpp::PassthroughSecondaryDevices` 추출. 4 controllers (P/JointPD/CLIK/OSC) 리팩터 |
 | ~~Q-5~~ | ~~`GetCurrentGains()` heap removal~~ | (resolved) | **Not applicable** — `GetCurrentGains` 가상 메서드 자체가 2026-04-26 게인 → ROS 2 parameter 마이그레이션에서 제거됨 (rtc_controller_interface). |
 | Q-6 | Registry duplicate check | rtc_controller_interface | **Done** — `ControllerRegistry::Register()` 가 duplicate `config_key` 시 RCLCPP_WARN. `RegisterDuplicateShadowsAndAppends` gtest 추가 |
-| Q-7 | **E-STOP ramp** (escalated 2026-04-26) | ur5e_bringup | **Decision pending (E-8 escalation)** — `DemoWbcController::ComputeEstop` ([demo_wbc_controller.cpp:1721](../ur5e_bringup/src/controllers/demo_wbc_controller.cpp#L1721)) writes `out0.commands[i] = safe_position_[i]` (no rate limit). Joint/Task ramp pattern 권장. 사용자 컨펌 대기 |
+| Q-7 | **E-STOP ramp** | ur5e_bringup | **Done (2026-04-26)** — `DemoWbcController::ComputeEstop` now follows the Joint/Task ramp pattern: `out0.commands[i] = dev0.positions[i] + clamp(safe-cur, ±device_max_velocity_[0][i]) * dt`. Eliminates instant-jump hardware risk on real UR5e |
+| Q-8 | **`kContactStopReleaseEps` → YAML** | ur5e_bringup | **Done (2026-04-26)** — Joint mirrors Task: new `Gains::contact_stop_release_eps` (default 0.005), required `fsm.contact_stop_release_eps` key in `demo_joint_controller.yaml` (range-checked [0, 0.1]), use sites read from per-tick gains snapshot. `kContactStopReleaseEps` constexpr removed |
 
 ### Phase 4 — Long-term (재평가 완료 2026-04-26)
 
