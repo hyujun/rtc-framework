@@ -113,6 +113,7 @@
 | E-8 | E-STOP 경로 수정 | Critical | 안전 |
 | E-9 | 문서-코드 불일치를 어느 쪽에 맞출지 결정 필요 | Warning | 사용자 의도 확인 |
 | E-10 | [agent_docs/controller-safety-improvements.md](agent_docs/controller-safety-improvements.md) Remaining Phase 진행 | Warning | 계획 순서 |
+| E-11 | [agent_docs/rtc_cm_lifecycle_plan.md](agent_docs/rtc_cm_lifecycle_plan.md) Phase 진행 | Warning | RT path / msg ABI 영향, 단계 순서 |
 
 ### `[CONCERN]` 포맷
 
@@ -218,3 +219,4 @@ Commit 완료 또는 사용자가 task 종료를 알린 후:
 - [agent_docs/invariants.md](agent_docs/invariants.md) — RT / ARCH / PROC / NUM invariants (escalation triggers)
 - [agent_docs/anti-patterns.md](agent_docs/anti-patterns.md) — Recurring mistakes with detection + recovery
 - [agent_docs/controller-safety-improvements.md](agent_docs/controller-safety-improvements.md) — Controller safety Phase plan (R/Q/L IDs)
+- [agent_docs/rtc_cm_lifecycle_plan.md](agent_docs/rtc_cm_lifecycle_plan.md) — `/rtc_cm/...` srv + per-controller lifecycle 분리 Phase plan (D/F/P/M/OQ IDs)
