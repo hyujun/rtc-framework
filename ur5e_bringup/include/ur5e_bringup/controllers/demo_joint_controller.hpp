@@ -104,7 +104,8 @@ public:
                               rclcpp_lifecycle::LifecycleNode::SharedPtr node,
                               const YAML::Node &yaml) noexcept override;
   CallbackReturn
-  on_activate(const rclcpp_lifecycle::State &prev) noexcept override;
+  on_activate(const rclcpp_lifecycle::State &prev,
+              const rtc::ControllerState &device_snapshot) noexcept override;
   CallbackReturn
   on_deactivate(const rclcpp_lifecycle::State &prev) noexcept override;
   CallbackReturn

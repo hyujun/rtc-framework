@@ -1429,10 +1429,11 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
   return CallbackReturn::SUCCESS;
 }
 
-RTControllerInterface::CallbackReturn
-DemoTaskController::on_activate(const rclcpp_lifecycle::State &prev) noexcept {
+RTControllerInterface::CallbackReturn DemoTaskController::on_activate(
+    const rclcpp_lifecycle::State &prev,
+    const rtc::ControllerState &device_snapshot) noexcept {
   ActivateOwnedTopics(prev, owned_topics_);
-  return CallbackReturn::SUCCESS;
+  return RTControllerInterface::on_activate(prev, device_snapshot);
 }
 
 RTControllerInterface::CallbackReturn DemoTaskController::on_deactivate(

@@ -57,7 +57,18 @@
 //   (Sensor core)
 //   - cb_group_log_:       drain_timer_  (non-RT core)
 //   - cb_group_aux_:       estop_pub_  (aux core)
+// Forward declaration for friend access — defined in
+// test/test_controller_lifecycle.cpp.
+namespace rtc {
+class ControllerLifecycleTestAccess;
+}
+
 class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
+  // Test-only access to private lifecycle helpers (controller_states_,
+  // BuildDeviceSnapshot, ActivateController, DeactivateController,
+  // SwitchActiveController) without exposing them as public API.
+  friend class rtc::ControllerLifecycleTestAccess;
+
 public:
   using CallbackReturn =
       rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
@@ -142,6 +153,32 @@ private:
   void DrainLog(); // Log drain (non-RT core)
 
   void PublishEstopStatus(bool estopped);
+
+  // ── Controller-level lifecycle (aux thread only) ─────────────────────────
+  // Build a snapshot of the latest device state for the controller at
+  // `ctrl_idx`. Returns empty (num_devices == 0) when sensor data has not
+  // been received yet (state_received_ false) — callers pass this to
+  // controller->on_activate so the base hold-init logic skips cleanly.
+  [[nodiscard]] rtc::ControllerState
+  BuildDeviceSnapshot(std::size_t ctrl_idx) const noexcept;
+
+  // Activate / deactivate a single controller. Updates controller_states_
+  // (release store) and invokes the controller's lifecycle hook. Aux-thread
+  // only. Caller must hold lifecycle ordering invariants (e.g. don't
+  // activate while another controller is active — use SwitchActiveController
+  // for transitions).
+  CallbackReturn ActivateController(std::size_t ctrl_idx,
+                                    const rclcpp_lifecycle::State &prev_state,
+                                    const rtc::ControllerState &snapshot);
+  CallbackReturn
+  DeactivateController(std::size_t ctrl_idx,
+                       const rclcpp_lifecycle::State &prev_state);
+
+  // Swap the active controller to `name`. Sync sequence: precondition →
+  // build snapshot → target.on_activate → store active idx → wait one RT
+  // tick → previous.on_deactivate → publish active_controller_name.
+  // Returns true on success; sets `message` on failure. Aux-thread only.
+  bool SwitchActiveController(const std::string &name, std::string &message);
 
   /// Trigger a global E-Stop that propagates to all subsystems.
   /// Safe to call from any thread. Idempotent — second call is a no-op.
@@ -334,6 +371,11 @@ private:
   // switch/activate logic can pair them without extra lookup.
   std::vector<rclcpp_lifecycle::LifecycleNode::SharedPtr> controller_nodes_;
   std::atomic<int> active_controller_idx_{1};
+  // Per-controller lifecycle state, parallel to controllers_. Values map
+  // 1:1 to rtc_msgs::msg::ControllerState (0=Inactive, 1=Active). Single-
+  // active is enforced by SwitchActiveController; the vector permits a
+  // future relaxation to multi-active without a schema change.
+  std::vector<std::atomic<int>> controller_states_;
   std::unique_ptr<rtc::DataLogger> logger_;
   rtc::ControlLogBuffer log_buffer_{};              // SPSC ring buffer
   rtc::ControllerTimingProfiler timing_profiler_{}; // Compute() timing

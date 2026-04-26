@@ -125,6 +125,18 @@ if(BUILD_TESTING)
       rtc_controller_interface rtc_base rtc_urdf_bridge)
     target_link_libraries(test_controller_timing_profiler yaml-cpp)
   endif()
+
+  ament_add_gtest(test_controller_lifecycle
+    test/test_controller_lifecycle.cpp)
+  if(TARGET test_controller_lifecycle)
+    target_include_directories(test_controller_lifecycle PRIVATE include)
+    ament_target_dependencies(test_controller_lifecycle
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs ament_index_cpp
+      rtc_controller_interface rtc_controllers rtc_base rtc_communication
+      rtc_msgs rtc_urdf_bridge)
+    target_link_libraries(test_controller_lifecycle
+      rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
 endif()
 
 ament_package()

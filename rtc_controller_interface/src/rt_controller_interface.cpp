@@ -154,7 +154,11 @@ RTControllerInterface::CallbackReturn RTControllerInterface::on_configure(
 }
 
 RTControllerInterface::CallbackReturn RTControllerInterface::on_activate(
-    const rclcpp_lifecycle::State & /*previous_state*/) noexcept {
+    const rclcpp_lifecycle::State & /*previous_state*/,
+    const ControllerState &device_snapshot) noexcept {
+  if (device_snapshot.num_devices > 0) {
+    InitializeHoldPosition(device_snapshot);
+  }
   return CallbackReturn::SUCCESS;
 }
 

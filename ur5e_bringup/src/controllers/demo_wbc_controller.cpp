@@ -1813,8 +1813,9 @@ DemoWbcController::on_configure(const rclcpp_lifecycle::State &prev,
   return CallbackReturn::SUCCESS;
 }
 
-RTControllerInterface::CallbackReturn
-DemoWbcController::on_activate(const rclcpp_lifecycle::State &prev) noexcept {
+RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
+    const rclcpp_lifecycle::State &prev,
+    const rtc::ControllerState &device_snapshot) noexcept {
   ActivateOwnedTopics(prev, owned_topics_);
 
   // MPC solve-timing CSV + 1 Hz aux timer: one-shot setup per controller
@@ -1839,15 +1840,20 @@ DemoWbcController::on_activate(const rclcpp_lifecycle::State &prev) noexcept {
     mpc_timing_initialized_ = true;
   }
 
-  // Resume the MPC solve loop if the thread has already been spawned (it is
-  // spawned lazily by InitializeHoldPosition on the first valid RT tick).
-  // Pre-spawn activations are a no-op; the thread is created in the
-  // running-not-paused state.
+  // Delegate to base for hold-init (InitializeHoldPosition lazy-spawns the
+  // MPC thread on the first call). Snapshot is empty when CM activates the
+  // initial controller before any RT tick — RT loop's auto-hold path then
+  // takes over and triggers spawn on the first sensor read.
+  const auto rc = RTControllerInterface::on_activate(prev, device_snapshot);
+
+  // Resume the MPC solve loop if the thread has already been spawned (either
+  // by the base on_activate above, or by a previous activation cycle). Calling
+  // Resume on a freshly-spawned thread that was never paused is a no-op.
   if (mpc_thread_) {
     mpc_thread_->Resume();
   }
 
-  return CallbackReturn::SUCCESS;
+  return rc;
 }
 
 RTControllerInterface::CallbackReturn

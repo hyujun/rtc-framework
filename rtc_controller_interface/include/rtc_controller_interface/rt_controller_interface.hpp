@@ -59,7 +59,8 @@ public:
   //
   // Default contract:
   //   on_configure:  store node_, invoke LoadConfig(yaml_cfg) in try/catch
-  //   on_activate:   no-op SUCCESS
+  //   on_activate:   if device_snapshot.num_devices > 0,
+  //                    InitializeHoldPosition(device_snapshot); SUCCESS
   //   on_deactivate: no-op SUCCESS
   //   on_cleanup:    release node_
   //   on_shutdown:   delegate to on_cleanup
@@ -67,13 +68,23 @@ public:
   //
   // Overrides that add work MUST call the base implementation first (or
   // handle LoadConfig / node_ themselves).
+  //
+  // on_activate's `device_snapshot` carries fresh device state at the moment
+  // the controller becomes active. Callers that do not have valid state (e.g.
+  // CM's startup on_activate before the RT loop has received any sensor data)
+  // pass an empty snapshot (`num_devices == 0`); the RT loop's auto-hold path
+  // then handles initialisation later. Callers that DO have valid state (e.g.
+  // the switch_controller helper after a successful state read) populate the
+  // snapshot so the controller's hold target is initialised in lockstep with
+  // the activation, before any Compute() runs.
   virtual CallbackReturn
   on_configure(const rclcpp_lifecycle::State &previous_state,
                rclcpp_lifecycle::LifecycleNode::SharedPtr node,
                const YAML::Node &yaml_cfg) noexcept;
 
   virtual CallbackReturn
-  on_activate(const rclcpp_lifecycle::State &previous_state) noexcept;
+  on_activate(const rclcpp_lifecycle::State &previous_state,
+              const ControllerState &device_snapshot) noexcept;
 
   virtual CallbackReturn
   on_deactivate(const rclcpp_lifecycle::State &previous_state) noexcept;
