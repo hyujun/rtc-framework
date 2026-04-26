@@ -30,6 +30,8 @@
 #include "rtc_base/threading/thread_utils.hpp"
 
 #include <lifecycle_msgs/msg/state.hpp>
+#include <rclcpp/executor.hpp>
+#include <rclcpp/utilities.hpp>
 
 #include <sys/mman.h> // mlockall
 
@@ -163,13 +165,34 @@ int RtControllerMain(int argc, char **argv, const std::string &node_name) {
   auto t_log = make_thread(log_executor, cfgs.logging);
   auto t_aux = make_thread(aux_executor, cfgs.aux);
 
+  // Block here until rclcpp signals shutdown (SIGINT / SIGTERM via
+  // rclcpp's installed signal handler, or explicit `rclcpp::shutdown()`).
+  // We cannot rely on the rmw guard condition alone to wake every
+  // executor — cores collected during sim shutdown showed t_aux still in
+  // rmw_fastrtps_shared_cpp::__rmw_wait after rclcpp::ok() flipped false,
+  // so cancel each executor explicitly here before joining.
+  while (rclcpp::ok()) {
+    std::this_thread::sleep_for(50ms);
+  }
+  sensor_executor.cancel();
+  log_executor.cancel();
+  aux_executor.cancel();
+
   t_sensor.join();
   t_log.join();
   t_aux.join();
 
-  // Graceful shutdown — lifecycle deactivate/cleanup handled via
-  // ros2 lifecycle CLI or launch shutdown event handlers.
-  // Destructor provides safety-net Stop calls.
+  // Drop executor↔node references explicitly so the executors' internal
+  // weak_ptr bookkeeping releases its node refs before local destruction
+  // begins. Without this, controller LifecycleNodes attached via
+  // add_node() (per-controller `/<config_key>` namespace) could outlive
+  // their expected scope during local-variable teardown.
+  for (const auto &ctrl_node : node->GetControllerNodes()) {
+    if (ctrl_node) {
+      aux_executor.remove_node(ctrl_node->get_node_base_interface());
+    }
+  }
+  aux_executor.remove_node(node->get_node_base_interface());
 
   rclcpp::shutdown();
   return 0;

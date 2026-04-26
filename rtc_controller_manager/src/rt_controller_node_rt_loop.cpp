@@ -467,7 +467,8 @@ void RtControllerNode::RtLoopEntry(const urtc::ThreadConfig &cfg) {
         std::unique_lock lock(state_cv_mutex_);
         woken = state_cv_.wait_for(lock, sim_timeout, [this] {
           return state_fresh_.load(std::memory_order_acquire) ||
-                 !rt_loop_running_.load(std::memory_order_acquire);
+                 !rt_loop_running_.load(std::memory_order_acquire) ||
+                 !rclcpp::ok();
         });
         state_fresh_.store(false, std::memory_order_release);
       }
@@ -555,6 +556,10 @@ void RtControllerNode::StartRtLoop(const urtc::ThreadConfig &rt_cfg) {
 
 void RtControllerNode::StopRtLoop() {
   rt_loop_running_.store(false, std::memory_order_release);
+  // Wake sim-mode CV wait so the RT thread observes the stop flag immediately
+  // instead of sleeping until sim_sync_timeout_sec_. Caller is destructor /
+  // on_deactivate / on_shutdown — never the RT tick.
+  state_cv_.notify_all();
   if (rt_loop_thread_.joinable()) {
     rt_loop_thread_.join();
   }
