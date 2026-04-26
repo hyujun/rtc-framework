@@ -23,7 +23,7 @@ BehaviorTree 기반 UR5e + Hand 비실시간 태스크 코디네이터.
 
 BT coordinator를 실행하기 전에 다음 노드들이 먼저 실행되어 있어야 한다:
 
-1. **UR5e RT Controller** — `/ur5e/gui_position`, `/hand/gui_position`, `/hand/grasp_state`, `/ur5e/active_controller_name`, `/tof/snapshot` 토픽 발행
+1. **UR5e RT Controller** — `/<active_ctrl>/{ur5e,hand}/gui_position`, `/<active_ctrl>/hand/grasp_state`, `/rtc_cm/active_controller_name`, `/<active_ctrl>/tof/snapshot` 토픽 발행
 2. **Vision Node** (선택) — `/world_target_info` 토픽 발행 (물체 감지 사용 시)
 3. **Shape Estimation Node** (선택) — `/shape/estimate` 토픽 발행, `/shape/trigger` 수신, `/shape/clear` 서비스 (shape_inspect 트리용)
 4. **E-STOP Node** (선택) — `/system/estop_status` 토픽 발행

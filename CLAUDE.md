@@ -84,7 +84,7 @@
 | `rtc_base/` | `colcon test --packages-select rtc_base` | 전체 downstream (PROC-3) |
 | `rtc_msgs/` | 위 + `./build.sh full` (msg gen 전파) | downstream pub/sub 테스트 |
 | `rtc_controllers/` RT path | `test_core_controllers` + grasp 관련 gtest | RT scheduling 확인 (`ps -eLo cls,rtprio`) |
-| `rtc_controllers/` gains/config | 위 + 해당 controller YAML 로드 smoke | `ros2 topic echo /active_controller_name` |
+| `rtc_controllers/` gains/config | 위 + 해당 controller YAML 로드 smoke | `ros2 topic echo /rtc_cm/active_controller_name` |
 | `rtc_controller_manager/` | RT loop timing (`/system/estop_status`) | `mpc_solve_timing.csv` 회귀 |
 | `rtc_tsid/` | QP/task/constraint gtest | TSID performance tests |
 | `rtc_mpc/` | gtest (types, TripleBuffer, Riccati, SolutionManager) | `mpc_solve_timing.csv` 회귀 |

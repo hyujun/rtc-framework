@@ -54,12 +54,11 @@ namespace trajectory = rtc::trajectory;
 //   data[0..5]  : robot arm joint targets (rad)
 //   data[6..15] : hand motor targets (rad), optional — ignored if size < 16
 //
-// Gains layout for UpdateGainsFromMsg:
-//   [robot_trajectory_speed, hand_trajectory_speed,
-//    robot_max_traj_velocity, hand_max_traj_velocity,
-//    grasp_contact_threshold, grasp_force_threshold,
-//    grasp_min_fingertips,
-//    grasp_command, grasp_target_force] = 9 values
+// Runtime tunable parameters (per-controller LifecycleNode):
+//   ROS 2 parameters declared on /demo_joint_controller/<name>: see
+//   DeclareGainParameters() in demo_joint_controller.cpp. Read-only caps
+//   robot_max_traj_velocity, hand_max_traj_velocity. Force-PI grasp
+//   transitions: ~/grasp_command srv (rtc_msgs/GraspCommand).
 class DemoJointController final : public RTControllerInterface {
 public:
   struct Gains {

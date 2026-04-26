@@ -82,7 +82,7 @@ TEST_F(WbcFSMTest, SetDeviceTargetStoresTarget) {
   ctrl_.SetDeviceTarget(0, target);
 
   // After setting target, compute should still work (still in kIdle
-  // until grasp_cmd=1 is sent via UpdateGainsFromMsg)
+  // until grasp_cmd=1 is sent via the ~/grasp_command srv)
   auto out = ctrl_.Compute(state_);
   EXPECT_TRUE(out.valid);
 }

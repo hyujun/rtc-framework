@@ -1,12 +1,11 @@
 // ── DemoWbcController Phase 5 integration tests ─────────────────────────────
 //
 // Verifies:
-//   * Gains layout expanded to 9 entries with MPC toggle and Riccati scale.
-//   * With `mpc.enabled` false in YAML, gains[7]=1 does NOT accidentally
-//     enable MPC (the controller needs both build-time init and runtime on).
-//   * GetCurrentGains round-trips MPC state faithfully.
-//   * A controller constructed without an MPC config produces identical
-//     output when MPC is nominally "on" via gains (disabled guard).
+//   * Gains accessor (set_gains/get_gains) round-trip preserves the runtime
+//     tunables that DeclareGainParameters() exposes (arm/hand trajectory
+//     speed, SE3/force/posture weights, MPC toggle, Riccati gain scale).
+//   * Compute() succeeds whether or not LoadConfig was called with an MPC
+//     config (the Phase 4 fallback path keeps the RT loop alive).
 //
 // We deliberately avoid spinning the MPC thread here — that's covered by
 // rtc_mpc's own test_mpc_thread_mock. This file focuses on the bindings

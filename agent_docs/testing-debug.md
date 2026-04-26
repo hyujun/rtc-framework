@@ -10,7 +10,7 @@
 | `rtc_msgs/` | 위 + `./build.sh full` (msg gen 전파) | downstream pub/sub 테스트 |
 | `rtc_controller_interface/` | `test_core_controllers` + controller registry tests | downstream controller 빌드 |
 | `rtc_controllers/` RT path | `test_core_controllers` + grasp 관련 gtest | RT scheduling 확인 (`ps -eLo cls,rtprio`) |
-| `rtc_controllers/` gains/config | 위 + 해당 controller YAML 로드 smoke | `ros2 topic echo /active_controller_name` |
+| `rtc_controllers/` gains/config | 위 + 해당 controller YAML 로드 smoke | `ros2 topic echo /rtc_cm/active_controller_name` |
 | `rtc_controller_manager/` | RT loop timing (`/system/estop_status`) | (MPC CSV는 `<session>/controllers/<config_key>/...` 경로로 컨트롤러가 자체 기록) |
 | `rtc_tsid/` | QP/task/constraint gtest | TSID performance tests |
 | `rtc_mpc/` | gtest (types, TripleBuffer, Riccati, SolutionManager) | `mpc_solve_timing.csv` p50/p99/max 회귀 |
@@ -74,8 +74,8 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | Topic | 발행 주체 | 언제 보나 |
 |-------|----------|----------|
 | `/system/estop_status` | `rtc_controller_manager` | E-STOP 원인 파악 (timeout name / trigger thread) |
-| `/active_controller_name` | 동일 (TRANSIENT_LOCAL) | Controller switch 확인. BT / GUI / digital_twin은 이 토픽으로 리와이어 |
-| `/current_gains` | 동일 | Runtime gain update 검증 |
+| `/rtc_cm/active_controller_name` | 동일 (TRANSIENT_LOCAL) | Controller switch 확인. BT / GUI / digital_twin은 이 토픽으로 리와이어 |
+| `/<config_key>/<config_key>/get_parameters` (srv) | active 데모 컨트롤러의 LifecycleNode | Runtime gain 값 조회 (`ros2 param get`) |
 | `/forward_position_controller/commands` | 동일 | RT loop 건강성 — `ros2 topic hz` 로 ~500 Hz 확인 |
 | `<session>/controllers/<config_key>/mpc_solve_timing.csv` | per-controller LifecycleNode 1 Hz aux (e.g. `DemoWbcController`) | MPC solve p50/p99/max 회귀 — 9 cols `t_wall_ns,count,window,last_ns,min_ns,p50_ns,p99_ns,max_ns,mean_ns` |
 | `/{group}/digital_twin/joint_states` | controllers (per-group, RELIABLE) | Device 그룹별 건강성; `rtc_digital_twin`이 merge |

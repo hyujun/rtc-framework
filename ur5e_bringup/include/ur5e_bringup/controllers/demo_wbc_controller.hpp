@@ -78,13 +78,14 @@ enum class WbcPhase : uint8_t {
 // TSID produces optimal acceleration a; position is obtained by integration:
 //   v_next = v_curr + a · dt,  q_next = q_curr + v_next · dt
 //
-// Gains layout for UpdateGainsFromMsg (Phase 5):
-//   [grasp_cmd(0/1/2), grasp_target_force,
-//    arm_traj_speed, hand_traj_speed,
-//    se3_weight, force_weight, posture_weight,
-//    mpc_enable(0/1), riccati_gain_scale(0..1)] = 9 values
-// Phase 4 compatibility: first 7 indices are unchanged; trailing 2 are
-// optional (a 7-entry message keeps Phase 4 semantics exactly).
+// Runtime tunable parameters (per-controller LifecycleNode):
+//   ROS 2 parameters declared on /demo_wbc_controller/<name>: see
+//   DeclareGainParameters() in demo_wbc_controller.cpp. Read-only caps
+//   arm_max_traj_velocity, hand_max_traj_velocity. mpc_enable is gated by
+//   structural mpc_enabled_ (LoadConfig from YAML — toggling without an
+//   MPC thread is a no-op). Force-PI grasp transitions: ~/grasp_command
+//   srv (rtc_msgs/GraspCommand) — handler updates grasp_cmd_ atomic +
+//   gains.grasp_target_force, which the FSM consumes.
 class DemoWbcController final : public RTControllerInterface {
 public:
   static constexpr int kArmDof = static_cast<int>(kNumRobotJoints); // 6
@@ -218,7 +219,8 @@ private:
   std::string urdf_path_;
   CommandType command_type_{CommandType::kPosition};
 
-  // Grasp command from UpdateGainsFromMsg (0=idle/abort, 1=approach, 2=release)
+  // Grasp command from ~/grasp_command srv (0=idle/abort, 1=approach,
+  // 2=release)
   std::atomic<int> grasp_cmd_{0};
 
   // ── rtc_urdf_bridge ─────────────────────────────────────────────────────

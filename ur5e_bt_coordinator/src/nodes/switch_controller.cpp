@@ -58,7 +58,7 @@ BT::NodeStatus SwitchController::tick() {
 
   // Sync srv. The bridge's underlying client returns ok only after CM has
   // committed the swap (D-A4) and published the latched
-  // /<robot_ns>/active_controller_name update, so the active controller is
+  // /rtc_cm/active_controller_name update, so the active controller is
   // immediately ready for subsequent SetGains parameter calls.
   std::string err;
   if (!bridge_->RequestSwitchController(target, timeout_s, err)) {

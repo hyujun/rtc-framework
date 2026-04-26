@@ -76,16 +76,18 @@ ros2 run rtc_tools controller_gui
 
 **ROS2 토픽:**
 
-| 방향 | 토픽 | 타입 | 설명 |
-|------|------|------|------|
-| 발행 | `/ur5e/target_joint_positions` | `Float64MultiArray` | 관절/태스크 타겟 위치 |
-| 발행 | `/ur5e/controller_type` | `Int32` | 컨트롤러 전환 (0=P, 1=PD, 2=CLIK, 3=OSC) |
-| 발행 | `/ur5e/controller_gains` | `Float64MultiArray` | 게인 업데이트 |
-| 발행 | `/ur5e/request_gains` | `Bool` | 활성 컨트롤러에 현재 게인 요청 |
-| 구독 | `/joint_states` | `JointState` | 현재 관절 상태 |
-| 구독 | `/ur5e/gui_position` | `GuiPosition` (`rtc_msgs`) | 현재 EE 태스크 위치 (6D) |
-| 구독 | `/system/estop_status` | `Bool` | E-STOP 상태 |
-| 구독 | `/ur5e/current_gains` | `Float64MultiArray` | 현재 게인 피드백 (Load Gain 응답) |
+> ⚠ **DEPRECATED 게인/스위치 채널.** controller_gui는 2026-04-26 게인 → ROS 2 parameter 마이그레이션 이전의 레거시 토픽들을 발행/구독하는데, 이 토픽들은 모두 제거된 상태입니다. 즉 Apply / Load / Switch 버튼은 런타임에 no-op입니다. 대체 경로: `/rtc_cm/switch_controller` srv (전환), 컨트롤러 LifecycleNode parameter API (게인). [ur5e_bt_coordinator/src/bt_ros_bridge.cpp](../ur5e_bt_coordinator/src/bt_ros_bridge.cpp) 참고하여 마이그레이션 필요.
+
+| 방향 | 토픽 | 타입 | 상태 | 설명 |
+|------|------|------|------|------|
+| 발행 | `/ur5e/target_joint_positions` | `Float64MultiArray` | active | 관절/태스크 타겟 위치 |
+| 발행 | `/ur5e/controller_type` | `Int32` | **dead** | 컨트롤러 전환 → `/rtc_cm/switch_controller` srv 사용 |
+| 발행 | `/ur5e/controller_gains` | `Float64MultiArray` | **dead** | 게인 → 컨트롤러 LifecycleNode parameter API |
+| 발행 | `/ur5e/request_gains` | `Bool` | **dead** | (제거됨) parameter `get_parameters` 사용 |
+| 구독 | `/joint_states` | `JointState` | active | 현재 관절 상태 |
+| 구독 | `/ur5e/gui_position` | `GuiPosition` (`rtc_msgs`) | active | 현재 EE 태스크 위치 (6D) |
+| 구독 | `/system/estop_status` | `Bool` | active | E-STOP 상태 |
+| 구독 | `/ur5e/current_gains` | `Float64MultiArray` | **dead** | (제거됨) parameter `get_parameters` 사용 |
 
 **컨트롤러별 게인 입력 형식:**
 

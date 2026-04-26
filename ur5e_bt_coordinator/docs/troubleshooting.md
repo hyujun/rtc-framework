@@ -13,7 +13,7 @@
 | `[FAILED] IsForceAbove` | 힘 미감지 | threshold_N 낮추기, 물체 위치 확인 |
 | 팔이 움직이지 않음 | RT Controller 미실행 또는 E-STOP 활성 | 컨트롤러 상태 및 E-STOP 확인 |
 | 파지 타임아웃 | 힘 임계값이 너무 높거나 센서 미연결 | `threshold_N` 조정, `/hand/grasp_state` 확인 |
-| 게인 변경이 반영 안 됨 | `/ur5e/controller_gains` 토픽 QoS 불일치 | RELIABLE QoS 확인 |
+| 게인 변경이 반영 안 됨 | active 컨트롤러 LifecycleNode parameter 서비스 미준비 (또는 read-only 파라미터에 set 시도) | `ros2 param list /<active_ctrl>` 로 노출 확인. read-only 거절 시 SetGains 응답 message 확인 |
 | "Tree completed with FAILURE" 로그 | 시퀀스 중 하나의 노드가 실패 | Groot2로 트리 실행 추적하여 실패 노드 확인 |
 | `Tree file not found` | 경로 오류 | 절대 경로 사용 또는 trees/ 디렉토리 확인 |
 | `E-STOP active, tree paused` | 비상 정지 활성화 | E-STOP 원인 확인 및 해제 후 자동 재개 |
@@ -33,7 +33,7 @@ ros2 param list /bt_coordinator
 ros2 param get /bt_coordinator tree_file
 
 # 활성 컨트롤러 확인
-ros2 topic echo /ur5e/active_controller_name
+ros2 topic echo /rtc_cm/active_controller_name
 
 # Step 모드로 한 틱씩 디버깅
 ros2 param set /bt_coordinator step_mode true

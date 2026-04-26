@@ -50,7 +50,7 @@ MPC solve-timing observability: `RTControllerInterface::GetMpcSolveStats()` retu
 | `on_cleanup` | -- | Reverse of `on_configure` (all `.reset()` / `.clear()`) |
 | `on_error` | -- | `TriggerGlobalEstop("lifecycle_error")`, stop threads, full cleanup -> SUCCESS |
 
-**Safety publishers** (`estop_pub_`, `active_ctrl_name_pub_`, `current_gains_pub_`) use standalone `rclcpp::create_publisher` -- active regardless of lifecycle state.
+**Safety publishers** (`estop_pub_`, `active_ctrl_name_pub_`) use standalone `rclcpp::create_publisher` -- active regardless of lifecycle state.
 
 **RtControllerMain** uses a 3-phase executor: (1) lifecycle_executor spins for configure/activate, (2) polls until Active, (3) switches to sensor/log/aux dedicated executors.
 
@@ -70,7 +70,7 @@ MPC solve-timing observability: `RTControllerInterface::GetMpcSolveStats()` retu
 
 [Hand HW] <--UDP--> [ur5e_hand_driver] <--SeqLock--> [ControlLoop]
 [rtc_digital_twin]: merge digital_twin topics --> RViz2
-[ur5e_bt_coordinator]: subscribes grasp_state/gui_position, publishes goals/gains
+[ur5e_bt_coordinator]: subscribes grasp_state/gui_position, publishes goals; tunes gains via per-controller ROS 2 parameters
 ```
 
 ## RT vs non-RT Topic Ownership
@@ -88,8 +88,8 @@ ownership: "manager"  ──►   │  │ RT loop (500 Hz, SCHED_FIFO)         
                             │  │        digital_twin/joint_states       │    │
                             │  │   safety pubs (standalone, non-life-   │    │
                             │  │     cycle): /system/estop_status,      │    │
-                            │  │     /active_controller_name (latched), │    │
-                            │  │     /current_gains                     │    │
+                            │  │     /rtc_cm/active_controller_name     │    │
+                            │  │     (latched, rewire trigger)          │    │
                             │  └────────────────────────────────────────┘    │
                             │                                                │
                             │  per-controller LifecycleNode  (aux executor)  │
@@ -105,8 +105,8 @@ ownership: "controller"     │  │ namespace = /<config_key>/             │ 
                             └────────────────────────────────────────────────┘
 
 External tools (BT, GUIs, digital_twin, shape_estimation) sub
-  /active_controller_name (TRANSIENT_LOCAL, CM-owned) → rewire to
-  the active controller's /<config_key>/... topics on switch.
+  /rtc_cm/active_controller_name (TRANSIENT_LOCAL, CM-owned) → rewire
+  to the active controller's /<config_key>/... topics on switch.
 ```
 
 Implementation: `rtc::TopicOwnership` enum (`kManager` | `kController`) read by `rtc_controllers/topic_config.hpp`. CM skips controller-owned sub/pub during configure. Publish thread routes via `RTControllerInterface::PublishNonRtSnapshot(snap)` → controller-owned `LifecyclePublisher` instances.

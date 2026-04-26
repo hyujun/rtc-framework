@@ -120,14 +120,12 @@
 
 ### AP-CTRL-1: Mid-tick gains branch 불일치 ([controller-safety-improvements.md](controller-safety-improvements.md) Phase 1 근거)
 
-- **증상**: `Compute()` 중간에 `UpdateGainsFromMsg()` aux thread 실행 → bool flag 절반만 업데이트된 상태로 분기
+- **증상**: `Compute()` 중간에 aux thread의 게인 writer (parameter callback `OnGainParametersSet` — 2026-04-26 이전엔 `UpdateGainsFromMsg`) 실행 → bool flag 절반만 업데이트된 상태로 분기
 - **복구**: `Compute()` 진입 시 `const auto gains = gains_lock_.Load();` 단일 snapshot. 이미 7개 컨트롤러 모두 적용됨 (Phase 1b ✅)
 
-### AP-CTRL-2: `GetCurrentGains()` heap allocation ([controller-safety-improvements.md](controller-safety-improvements.md) Phase 3 Q-5, 미완료)
+### ~~AP-CTRL-2: `GetCurrentGains()` heap allocation~~ (resolved 2026-04-26)
 
-- **증상**: 매 호출마다 `std::vector<double>` heap alloc — 현재 aux thread에서만 호출되어 RT 직접 영향은 없으나 RT-1 정신 위반
-- **현 상태**: [p_controller.cpp:196](../rtc_controllers/src/controllers/indirect/p_controller.cpp#L196) 등 아직 `std::vector<double>` 반환
-- **복구**: `std::span<double>` 또는 caller-provided `std::array` (Q-5 과제로 남음)
+게인 → ROS 2 parameter 마이그레이션에서 `GetCurrentGains` 가상 메서드 자체가 제거되어 더 이상 해당 안티패턴 대상이 없음 ([controller-safety-improvements.md](controller-safety-improvements.md) Q-5).
 
 ### AP-CTRL-3: `trajectory_speed = 0` → 1/v = INF ([controller-safety-improvements.md](controller-safety-improvements.md) Phase 2 R-4, [invariants.md](invariants.md#L68) NUM-4 근거)
 

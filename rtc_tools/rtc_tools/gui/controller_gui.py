@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
 """
 UR5e Controller GUI
-- Select controller type (P, JointPD, CLIK, OSC)
-- Set gains per controller via ~/controller_gains
-  (gain vectors match UpdateGainsFromMsg layouts in each controller header)
+
+⚠ DEPRECATED — gain/switch paths point at topics removed during the 2026-04-26
+   gain → ROS 2 parameter migration. Specifically: /ur5e/controller_type
+   (replaced by /rtc_cm/switch_controller srv, commit 55b10f5) and the
+   /ur5e/{controller_gains,request_gains,current_gains} trio (replaced by
+   per-controller LifecycleNode parameter API). Until the GUI is migrated
+   to AsyncParametersClient + the switch_controller srv, gain Apply / Load
+   buttons are no-ops at runtime. See ur5e_bt_coordinator/src/bt_ros_bridge.cpp
+   for a working reference of the new pattern.
+
+- Select controller type (legacy publish to /ur5e/controller_type)
+- Set gains per controller (legacy publish to /ur5e/controller_gains)
 - Displays currently applied gains after "Apply Gains" is pressed
 - When switching controller, current joint positions become the new target
 - Periodically display current joint positions alongside the target inputs

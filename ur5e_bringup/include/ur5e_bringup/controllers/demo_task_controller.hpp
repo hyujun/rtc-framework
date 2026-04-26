@@ -76,13 +76,12 @@ namespace trajectory = rtc::trajectory;
 ///   - 6-DOF mode: `target[0..2]` = TCP position [x,y,z], `target[3..5]` =
 ///   [roll,pitch,yaw]
 ///
-/// ### Gains layout for UpdateGainsFromMsg
-///   `[kp_translation×3, kp_rotation×3, damping, null_kp,
-///   enable_null_space(0/1),
-///    control_6dof(0/1), trajectory_speed, trajectory_angular_speed,
-///    hand_trajectory_speed, max_traj_velocity, max_traj_angular_velocity,
-///    hand_max_traj_velocity, grasp_contact_threshold, grasp_force_threshold,
-///    grasp_min_fingertips, grasp_command, grasp_target_force]` = 21 values
+/// ### Runtime tunable parameters (per-controller LifecycleNode)
+///   ROS 2 parameters declared on `/demo_task_controller/<name>`: see
+///   `DeclareGainParameters()` in demo_task_controller.cpp. Read-only caps
+///   `max_traj_velocity` / `max_traj_angular_velocity` /
+///   `hand_max_traj_velocity`. Force-PI grasp transitions: `~/grasp_command`
+///   srv (rtc_msgs/GraspCommand).
 class DemoTaskController final : public RTControllerInterface {
 public:
   // ── Gain / feature configuration ─────────────────────────────────────────

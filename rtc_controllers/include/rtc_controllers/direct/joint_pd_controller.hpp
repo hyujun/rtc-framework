@@ -26,9 +26,10 @@ namespace rtc {
 ///   τ[i] = ff_vel[i] + Kp[i]*e[i] + Kd[i]*ė[i]  [+ g(q)[i]]  [+ C(q,v)·v [i]]
 /// @endcode
 ///
-/// UpdateGainsFromMsg layout: [kp×nv, kd×nv, gravity(0/1), coriolis(0/1),
-/// trajectory_speed] where nv = model DOF (e.g. 6 for UR5e, determined at
-/// construction from URDF)
+/// Gains struct (loaded once via LoadConfig, fixed at runtime — JointPD does
+/// not expose runtime parameter channel; demo controllers do): kp[nv], kd[nv],
+/// enable_gravity, enable_coriolis, trajectory_speed where nv = model DOF
+/// (e.g. 6 for UR5e, determined at construction from URDF).
 class JointPDController final : public RTControllerInterface {
 public:
   struct Gains {

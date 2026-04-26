@@ -56,8 +56,6 @@ virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 | `IsEstopped()` | `false` 반환 | 비상 정지 상태 확인 |
 | `SetHandEstop(bool)` | no-op | 핸드 비상 정지 설정 |
 | `LoadConfig(const YAML::Node&)` | 디바이스 플래그 경고 + 토픽 파싱 | YAML 설정 로드. `noexcept`가 아님 (throw 가능) |
-| `UpdateGainsFromMsg(span<const double>)` | no-op | 런타임 게인 업데이트 |
-| `GetCurrentGains()` | `{}` 반환 | 현재 게인 배열 반환 |
 | `GetCommandType()` | `CommandType::kPosition` | 커맨드 타입 (`kPosition` 또는 `kTorque`) |
 | `GetMpcSolveStats()` | `std::nullopt` | MPC 루프를 보유한 컨트롤러만 오버라이드. **컨트롤러 자체 LifecycleNode**의 aux 1 Hz 타이머가 자기 자신을 폴링하여 `<session>/controllers/<config_key>/mpc_solve_timing.csv`로 기록하고 10초마다 `RCLCPP_INFO` 요약. 반환 타입은 `std::optional<rtc::MpcSolveStats>` ([`rtc_base/timing/mpc_solve_stats.hpp`](../rtc_base/include/rtc_base/timing/mpc_solve_stats.hpp)); writer는 [`rtc_mpc/logging/mpc_solve_timing_logger.hpp`](../rtc_mpc/include/rtc_mpc/logging/mpc_solve_timing_logger.hpp). |
 

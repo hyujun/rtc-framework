@@ -1,13 +1,23 @@
 #!/usr/bin/env python3
 """
 Demo Controller GUI (ur5e_bringup)
-- Select between Demo Joint Controller (index 4) and Demo Task Controller (index 5)
-- Set gains per controller via ~/controller_gains
+
+⚠ DEPRECATED — gain/switch paths point at topics removed during the 2026-04-26
+   gain → ROS 2 parameter migration. /ur5e/controller_type (replaced by
+   /rtc_cm/switch_controller srv, 55b10f5) and the
+   /ur5e/{controller_gains,request_gains,current_gains} trio (replaced by
+   per-controller LifecycleNode parameter API) no longer exist on the bus.
+   GUI Apply Gains / Load Gains / controller-switch buttons are no-ops at
+   runtime until migrated to AsyncParametersClient + switch_controller srv.
+   Reference implementation: ur5e_bt_coordinator/src/bt_ros_bridge.cpp.
+
+- Select between Demo Joint / Demo Task / Demo WBC (legacy publish path)
+- Set gains per controller (legacy publish path)
 - Displays currently applied gains after "Apply Gains" is pressed
 - When switching controller, current joint positions become the new target
 - Periodically display current joint positions alongside the target inputs
 - E-STOP status indicator via /system/estop_status
-- Hand motor target UI for both Demo Joint and Demo Task controllers
+- Hand motor target UI for all three demo controllers
 """
 import json
 import math

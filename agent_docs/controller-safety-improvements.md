@@ -12,7 +12,7 @@ Deep analysis of `rtc_controller_interface`, `rtc_controller_manager`, `rtc_cont
 - Uses `rtc_urdf_bridge/test/urdf/serial_6dof.urdf` (all Z-axis revolute, 6-DOF)
 
 ### Phase 1 — Bool Flag Snapshots in Compute()
-Prevent mid-tick branch inconsistency when `UpdateGainsFromMsg()` runs concurrently on aux thread.
+Prevent mid-tick branch inconsistency when an aux-thread gains writer runs concurrently (originally `UpdateGainsFromMsg`; since the 2026-04-26 migration, the parameter callback `OnGainParametersSet`).
 
 | Controller | Snapshot variables | File |
 |---|---|---|
@@ -38,7 +38,8 @@ Per-controller snapshot site:
 - DemoJointController, DemoTaskController: snapshot at top of `ComputeControl()`;
   `UpdateVirtualTcp()` signature extended to take `const Gains&`.
 - DemoWbcController: snapshot at top of `OnPhaseEnter()` (phase-transition path);
-  UpdateGainsFromMsg keeps `grasp_cmd_` atomic write outside the gains snapshot.
+  the parameter callback / `~/grasp_command` srv handler keep `grasp_cmd_`
+  atomic write outside the gains snapshot.
 - `SetDeviceTarget()` readers of `gains_.control_6dof` (Clik, DemoTask) use
   `gains_lock_.Load().control_6dof` — aux-thread serialized by ROS executor.
 
@@ -50,7 +51,7 @@ Per-controller snapshot site:
 | Q-2 | `kFingerJointMap`/`kHandIdx*` from YAML | ur5e_bringup | **Done** — `DemoSharedConfig::hand_finger_joint_map` + `hand_idx_*` 추가. demo_shared.yaml 에 4 키 노출. 29 use sites 마이그레이션 |
 | Q-3 | Velocity clamp utility | rtc_controllers/rtc_base | **Done** — `rtc_base/utils/clamp_commands.hpp::ClampSymmetric/ClampRange` 추출. PController/JointPD/Demo×3 리팩터 |
 | Q-4 | Device passthrough utility | rtc_base | **Done** — `rtc_base/utils/device_passthrough.hpp::PassthroughSecondaryDevices` 추출. 4 controllers (P/JointPD/CLIK/OSC) 리팩터 |
-| ~~Q-5~~ | ~~`GetCurrentGains()` heap removal~~ | (resolved) | **Not needed** — 유일 production caller는 `RtControllerNode::request_gains_sub_` (aux thread). Heap 안전. 검증 2026-04-26 |
+| ~~Q-5~~ | ~~`GetCurrentGains()` heap removal~~ | (resolved) | **Not applicable** — `GetCurrentGains` 가상 메서드 자체가 2026-04-26 게인 → ROS 2 parameter 마이그레이션에서 제거됨 (rtc_controller_interface). |
 | Q-6 | Registry duplicate check | rtc_controller_interface | **Done** — `ControllerRegistry::Register()` 가 duplicate `config_key` 시 RCLCPP_WARN. `RegisterDuplicateShadowsAndAppends` gtest 추가 |
 | Q-7 | **E-STOP ramp** (escalated 2026-04-26) | ur5e_bringup | **Decision pending (E-8 escalation)** — `DemoWbcController::ComputeEstop` ([demo_wbc_controller.cpp:1721](../ur5e_bringup/src/controllers/demo_wbc_controller.cpp#L1721)) writes `out0.commands[i] = safe_position_[i]` (no rate limit). Joint/Task ramp pattern 권장. 사용자 컨펌 대기 |
 

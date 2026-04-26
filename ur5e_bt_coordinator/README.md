@@ -32,7 +32,7 @@ bt_coordinator (non-RT, 80 Hz)
   ├─ /<ctrl>/hand/grasp_state ◄─  Force-PI grasp 컨트롤러 (500Hz)
   ├─ /<ctrl>/hand/wbc_state   ◄─  WBC 컨트롤러 (500Hz, TSID FSM phase + 진단)
   ├─ /vision/object_pose ◄──────  Vision 노드 (외부)
-  ├─ /ur5e/active_controller_name
+  ├─ /rtc_cm/active_controller_name
   └─ /system/estop_status
 ```
 
@@ -51,14 +51,14 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 
 ### 발행 (Publish)
 
-Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/demo_task_controller`, `/demo_wbc_controller` 등). `/ur5e/active_controller_name`이 수신될 때마다 `RewireControllerTopics()`가 sub/pub을 재바인딩합니다.
+Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/demo_task_controller`, `/demo_wbc_controller` 등). `/rtc_cm/active_controller_name`이 수신될 때마다 `RewireControllerTopics()`가 sub/pub을 재바인딩합니다.
 
 | Topic | 메시지 타입 | 설명 |
 |-------|------------|------|
 | `<ns>/ur5e/joint_goal` | `rtc_msgs/RobotTarget` | Arm task-space 또는 joint-space 목표 (controller-owned) |
 | `<ns>/hand/joint_goal` | `rtc_msgs/RobotTarget` | Hand 10-DoF 모터 목표 (controller-owned) |
-| `/ur5e/controller_gains` | `std_msgs/Float64MultiArray` | 컨트롤러 gain 업데이트 (DemoTask 16개 / DemoJoint 4개 요소) |
-| `/ur5e/controller_type` | `std_msgs/String` | 컨트롤러 전환 명령 |
+
+게인 변경은 토픽이 아닌 active controller LifecycleNode의 ROS 2 parameter (`SetGains` BT node가 `set_parameters_atomically`로 호출). 컨트롤러 전환은 `/rtc_cm/switch_controller` srv (`SwitchController` BT node).
 
 ### 구독 (Subscribe)
 
@@ -70,7 +70,7 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 | `<ns>/hand/wbc_state` | `rtc_msgs/WbcState` | RELIABLE, depth 10 | 500Hz WBC FSM phase + 핑거팁 raw + TSID 진단 (TSID-based WBC 컨트롤러 전용; controller-owned). BT 는 grasp_state 와 함께 항상 subscribe — active controller 가 발행하는 쪽이 캐시 채움 |
 | `<ns>/tof/snapshot` | `rtc_msgs/ToFSnapshot` | BEST_EFFORT, depth 100 | ToF + 핑거팁 pose snapshot (controller-owned) |
 | `/vision/object_pose` | `geometry_msgs/PoseStamped` | RELIABLE, depth 10 | 물체 위치 (쿼터니언 → RPY 변환) |
-| `/ur5e/active_controller_name` | `std_msgs/String` | TRANSIENT_LOCAL, depth 1 | 현재 활성 컨트롤러 이름 — rewire 트리거 |
+| `/rtc_cm/active_controller_name` | `std_msgs/String` | TRANSIENT_LOCAL, depth 1 | 현재 활성 컨트롤러 이름 — rewire 트리거 |
 | `/system/estop_status` | `std_msgs/Bool` | RELIABLE, depth 10 | E-STOP 상태 |
 
 ## BT 트리
@@ -98,7 +98,7 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 | `MoveToJoints` | StatefulAction | Joint-space 목표 이동, per-joint tolerance 도달 판정 | `target`, `tolerance`(0.01), `timeout_s`(10.0) |
 | `GraspControl` | StatefulAction | Hand open/close/pinch/preset 제어, 점진적 닫기 지원 | `mode`(close), `target_positions`, `close_speed`(0.3), `max_position`(1.4), `pinch_motors`("0,1,2,3"), `timeout_s`(8.0) |
 | `TrackTrajectory` | StatefulAction | Waypoint 시퀀스 순차 추적 (sweep motion 등) | `waypoints`, `position_tolerance`(0.01), `timeout_s`(30.0) |
-| `SetGains` | SyncAction | 컨트롤러 gain 동적 변경 (DemoTask 19개 / DemoJoint 7개 요소 배열). max_traj_velocity 계열은 current_gains에서 자동 로드 (BT에서 설정 불가) | `kp_translation`, `kp_rotation`, `damping`, `null_kp`, `enable_null_space`, `control_6dof`, `trajectory_speed`, `trajectory_angular_speed`, `hand_trajectory_speed`, `full_gains`, `current_gains` |
+| `SetGains` | SyncAction | active controller LifecycleNode의 ROS 2 parameter 동적 변경 (`set_parameters_atomically`). 입력 포트 중 채워진 것만 dispatch — 컨트롤러별 매핑은 `set_gains.cpp` 참조 (예: `trajectory_speed` → DemoJoint면 `robot_trajectory_speed`, DemoWbc면 `arm_trajectory_speed`). `grasp_command`/`grasp_target_force`는 ROS 2 srv (`rtc_msgs/srv/GraspCommand`)로 분기. read-only 파라미터 (`*_max_traj_velocity`)는 변경 불가 (rejected) | `trajectory_speed`, `trajectory_angular_speed`, `hand_trajectory_speed`, `kp_translation`, `kp_rotation`, `damping`, `null_kp`, `enable_null_space`, `control_6dof`, `grasp_contact_threshold`, `grasp_force_threshold`, `grasp_min_fingertips`, `se3_weight`, `force_weight`, `posture_weight`, `mpc_enable`, `riccati_gain_scale`, `grasp_command`, `grasp_target_force` |
 | `SwitchController` | StatefulAction | 활성 컨트롤러 전환 (joint ↔ task) | `controller_name`, `timeout_s`(3.0) |
 | `ComputeOffsetPose` | SyncAction | Pose에 XYZ offset 적용 (approach, lift, retreat 계산) | `input_pose`, `offset_x`(0.0), `offset_y`(0.0), `offset_z`(0.0) → 출력: `output_pose` |
 | `SetPoseZ` | SyncAction | Pose의 Z좌표를 절대값으로 덮어씀 (X, Y, 방향 유지). `z`가 NaN(기본값)이면 pass-through. Object final goal의 Z를 고정하는 용도 | `input_pose`, `z`(NaN) → 출력: `output_pose` |
@@ -357,39 +357,22 @@ arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
 | `middle_dip` | DIP flex/ext | 1 | 8 |
 | `ring` | MCP flex/ext | 1 | 9 |
 
-## SetGains 배열 레이아웃
+## SetGains 노드 (ROS 2 parameter API)
 
-`SetGains` 노드가 발행하는 gain 배열.
+`SetGains` BT 노드는 *active* 컨트롤러의 LifecycleNode (`/<config_key>`) 에 대해 `set_parameters_atomically`를 호출한다 (Phase A~E 마이그레이션, 2026-04-26). BT 입력 포트로 채워진 값들만 dispatch하며, 입력 키와 실제 parameter 이름의 매핑은 active controller에 따라 다르다 ([src/nodes/set_gains.cpp](src/nodes/set_gains.cpp) 참조).
 
-**DemoTaskController (16개 요소):**
+| BT 입력 포트 | DemoJoint | DemoTask | DemoWbc |
+|-------------|-----------|----------|---------|
+| `trajectory_speed` | `robot_trajectory_speed` | `trajectory_speed` | `arm_trajectory_speed` |
+| `trajectory_angular_speed` | — | `trajectory_angular_speed` | — |
+| `hand_trajectory_speed` | `hand_trajectory_speed` | `hand_trajectory_speed` | `hand_trajectory_speed` |
+| `kp_translation`, `kp_rotation`, `damping`, `null_kp`, `enable_null_space`, `control_6dof` | — | (CLIK 게인) | — |
+| `grasp_contact_threshold`, `grasp_force_threshold`, `grasp_min_fingertips` | (Force-PI grasp) | (Force-PI grasp) | — |
+| `se3_weight`, `force_weight`, `posture_weight`, `mpc_enable`, `riccati_gain_scale` | — | — | (TSID + MPC) |
 
-| 인덱스 | 필드 | 기본값 |
-|--------|------|--------|
-| 0-2 | `kp_translation` (X, Y, Z) | 40.0, 40.0, 40.0 |
-| 3-5 | `kp_rotation` (R, P, Y) | 20.0, 20.0, 20.0 |
-| 6 | `damping` | 0.01 |
-| 7 | `null_kp` | 0.5 |
-| 8 | `enable_null_space` | 0.0 |
-| 9 | `control_6dof` | 1.0 |
-| 10 | `trajectory_speed` | 0.1 |
-| 11 | `trajectory_angular_speed` | 0.78 |
-| 12 | `hand_trajectory_speed` | 3.14 |
-| 13 | `max_traj_velocity` *(locked)* | 0.5 |
-| 14 | `max_traj_angular_velocity` *(locked)* | 1.57 |
-| 15 | `hand_max_traj_velocity` *(locked)* | 6.28 |
+`grasp_command` / `grasp_target_force` 입력 포트는 parameter가 아닌 srv 채널 (`/<active>/grasp_command`, `rtc_msgs/srv/GraspCommand`) 로 분기된다. one-shot transition은 state가 아니므로 parameter로 표현하지 않는다.
 
-> **NOTE**: 인덱스 13-15 (`max_traj_*`)는 BT에서 설정할 수 없습니다. `SwitchController`가 로드한 `current_gains` 값을 그대로 사용하며, `current_gains`가 없는 경우 위 기본값이 적용됩니다.
-
-**DemoJointController (7개 요소):**
-
-| 인덱스 | 필드 | 기본값 |
-|--------|------|--------|
-| 0 | `robot_trajectory_speed` | 0.1 |
-| 1 | `hand_trajectory_speed` | 3.14 |
-| 2 | `robot_max_traj_velocity` *(locked)* | 0.5 |
-| 3 | `hand_max_traj_velocity` *(locked)* | 6.28 |
-
-> **NOTE**: 인덱스 2-3 (`max_traj_*`)는 BT에서 설정할 수 없습니다. `SwitchController`가 로드한 `current_gains` 값을 그대로 사용합니다.
+Read-only 파라미터 (`max_traj_velocity` / `max_traj_angular_velocity` / `hand_max_traj_velocity` / `*_max_traj_velocity`) 는 `ParameterDescriptor::read_only=true` 로 선언되어 BT에서 set 시 컨트롤러가 거절한다. 이들 값은 컨트롤러 YAML로만 설정 가능.
 
 ## 의존성
 

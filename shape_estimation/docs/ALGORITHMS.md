@@ -529,12 +529,15 @@ else:
 [Client] → /shape/explore action goal
              ↓
 [HandleAccepted]
-  1. Publish /{ns}/controller_type → "demo_task_controller"
-  2. Publish /{ns}/controller_gains → exploration gains (16 values)
-  3. Wait controller_switch_delay_ms (200ms)
-  4. motion_generator_.Start(current_pose, object_position)
-  5. Start /shape/trigger "start"
-  6. state_ = kRunning
+  (TODO: see "shape_estimation controller switch is currently a no-op" follow-up
+  — pub_controller_type_ writes to a removed topic; switch should call
+  /rtc_cm/switch_controller srv. Tracked separately from the gain
+  parameter migration.)
+  1. (NO-OP) legacy /<ns>/controller_type publish — topic removed in 55b10f5
+  2. Wait controller_switch_delay_ms (200ms)
+  3. motion_generator_.Start(current_pose, object_position)
+  4. Start /shape/trigger "start"
+  5. state_ = kRunning
 
 [ExploreLoopCallback @10Hz]
   while action_active && !estop:

@@ -119,7 +119,7 @@ ros2 topic echo /system/estop_status
 ros2 topic echo /ur5e/gui_position --once
 
 # 컨트롤러 전환 확인
-ros2 topic echo /ur5e/active_controller_name
+ros2 topic echo /rtc_cm/active_controller_name
 ```
 
 ---
@@ -205,7 +205,7 @@ ros2 topic pub /shape/trigger std_msgs/msg/String "data: 'start'" --once
 | `enable_exploration: false` | YAML 설정 | `enable_exploration: true` |
 | E-STOP 활성 | `ros2 topic echo /system/estop_status` | E-STOP 해제 |
 | GuiPosition 미수신 | `ros2 topic hz /ur5e/gui_position` | RT controller 실행 확인 |
-| 컨트롤러 전환 실패 | `ros2 topic echo /ur5e/active_controller_name` | controller_name 설정 확인 |
+| 컨트롤러 전환 실패 | `ros2 topic echo /rtc_cm/active_controller_name` | controller_name 설정 확인 |
 | 물체 위치 미설정 | goal의 `object_position`이 원점 | 유효한 좌표 입력 |
 
 ### 6. "Exploration stuck in phase" — 탐색이 특정 단계에서 멈춤
@@ -314,8 +314,9 @@ ros2 topic echo /system/estop_status
 # 현재 발행되는 목표 위치 확인
 ros2 topic echo /ur5e/joint_goal
 
-# 컨트롤러 게인 확인
-ros2 topic echo /ur5e/current_gains
+# active 컨트롤러의 게인 파라미터 확인
+ros2 param list /demo_task_controller
+ros2 param get /demo_task_controller trajectory_speed
 ```
 
 ### 탐색 Action 취소

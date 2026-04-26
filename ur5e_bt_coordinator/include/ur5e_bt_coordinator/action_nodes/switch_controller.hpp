@@ -16,7 +16,7 @@ namespace rtc_bt {
 ///   - timeout_s (double): switch timeout [s] (default 3.0)
 ///
 /// Returns SUCCESS once the srv responds with ok=true (CM has committed
-/// the swap and published the latched /<robot_ns>/active_controller_name).
+/// the swap and published the latched /rtc_cm/active_controller_name).
 /// FAILURE on E-STOP, unknown name, or timeout.
 class SwitchController : public BT::SyncActionNode {
 public:

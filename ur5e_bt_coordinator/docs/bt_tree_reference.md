@@ -278,7 +278,7 @@ FullDemo (Parallel, success_count=1)
 | `ForceGrasp` | `grasp_mode`, `close_speed`, `max_position`, `threshold_N`, `min_fingertips`, `sustained_ms`, `verify_force_N`, `verify_min_tips` | - |
 | `LiftAndVerify` | `base_pose`, `offset_z`, `traj_speed`, `verify_force_N`, `verify_min_tips` | `lift_pose` |
 | `ReleaseAndRetreat` | `base_pose`, `retreat_z`, `retreat_speed`, `timeout_s` | `retreat_pose` |
-| `*EmergencyAbort` | `retreat_z`, `current_gains` | - |
+| `*EmergencyAbort` | `retreat_z` | - |
 
 ### Hand 포즈/모션 추가 방법
 
