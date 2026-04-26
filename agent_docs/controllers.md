@@ -35,7 +35,7 @@ Key params in `grasp_types.hpp`: `Kp_base=0.02`, `Ki_base=0.002`, `f_target=2.0N
 
 ## ROS2 Topics
 
-**Controller Manager** (`/{ns}/`): `controller_type` (Sub, switch), `controller_gains` (Sub), `active_controller_name` (Pub), `/system/estop_status` (Pub)
+**Controller Manager**: switch via `/rtc_cm/switch_controller` (srv, sync, single-active), query via `/rtc_cm/list_controllers` (srv); `/{ns}/controller_gains` (Sub), `/{ns}/active_controller_name` (Pub, latched — rewire trigger for downstream nodes), `/system/estop_status` (Pub)
 
 **Dynamic** (per controller TopicConfig): Subscribe `kState`/`kMotorState`/`kSensorState`/`kTarget`; Publish `kJointCommand`/`kRos2Command`/`kGuiPosition`/`kGraspState`/`kDeviceStateLog`/`kDeviceSensorLog`
 

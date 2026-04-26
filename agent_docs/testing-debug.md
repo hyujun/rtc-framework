@@ -50,14 +50,14 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | Package | Tests | Framework |
 |---------|-------|-----------|
 | `ur5e_hand_driver` | 179 C++ (hand_packets 46, hand_controller 33, hand_udp_codec 24, fingertip_ft 19, hand_udp_transport 18, hand_timing_profiler 15, hand_sensor_processor 13, hand_failure_detector 11) | GTest |
-| `ur5e_bt_coordinator` | 156 C++ (condition_nodes 21, bt_utils 19, bt_types 16, hand_nodes 15, compute_offset_pose 12, shape_nodes 11, tree_validation 10, set_gains 9, set_pose_z 8, grasp_control 7, compute_sweep_trajectory 6, move_to_joints 6, switch_controller 6, wait_duration 5, move_to_pose 5) | GTest |
+| `ur5e_bt_coordinator` | 157 C++ (condition_nodes 21, bt_utils 19, bt_types 16, hand_nodes 15, compute_offset_pose 12, shape_nodes 11, tree_validation 10, set_gains 9, set_pose_z 8, switch_controller 7 (4 base + 3 srv), grasp_control 7, compute_sweep_trajectory 6, move_to_joints 6, wait_duration 5, move_to_pose 5) | GTest |
 | `rtc_mpc` | 136 C++ (types, TripleBuffer, TrajectoryInterpolator, Riccati, SolutionManager, thread skeleton, RobotModelHandler, PhaseCostConfig) | GTest |
 | `rtc_urdf_bridge` | 89 C++ (urdf_analyzer 25, rt_model_handle 16, model_builder 15, chain_extractor 12, xacro_processor 11, joint_classification 10) | GTest |
 | `ur5e_bringup` | 89 C++ (demo_wbc_controller 41, demo_shared_config 16, grasp_phase_manager 13, virtual_tcp 10, demo_wbc_mpc_integration 6, grasp_pipeline 3) | GTest |
 | `rtc_controllers` | 87 C++ (test_core_controllers + grasp related) | GTest |
 | `rtc_base` | 54 C++ (SeqLock, SPSC, Bessel/Kalman filters, session dir, thread-config tiers) | GTest |
 | `rtc_controller_interface` | 51 C++ | GTest |
-| `rtc_controller_manager` | 16 C++ | GTest |
+| `rtc_controller_manager` | 35 C++ (controller_lifecycle 9, switch_service 9, controller_timing_profiler 17) | GTest |
 | `rtc_tools` | 247 Python (pytest parameterized) | pytest |
 
 총 **1104 gtest cases + 247 pytest cases**. `rtc_tsid` · `rtc_mujoco_sim` · `rtc_communication` · `rtc_digital_twin` · `shape_estimation` 등은 등록되어 있으나 최근 실측 시점 `ament_cmake_test` 환경 이슈로 xUnit 미산출 — 이전 실행분 기준 17/77/9/1/3 C++ tests (검증 필요).
