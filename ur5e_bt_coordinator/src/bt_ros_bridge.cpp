@@ -101,9 +101,6 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node)
   gains_pub_ = node_->create_publisher<std_msgs::msg::Float64MultiArray>(
       "/ur5e/controller_gains", rclcpp::QoS{10});
 
-  select_ctrl_pub_ = node_->create_publisher<std_msgs::msg::String>(
-      "/ur5e/controller_type", rclcpp::QoS{10});
-
   request_gains_pub_ = node_->create_publisher<std_msgs::msg::Bool>(
       "/ur5e/request_gains", rclcpp::QoS{10});
 
@@ -244,13 +241,6 @@ void BtRosBridge::PublishGains(const std::vector<double> &gains) {
   std_msgs::msg::Float64MultiArray msg;
   msg.data = gains;
   gains_pub_->publish(msg);
-}
-
-void BtRosBridge::PublishSelectController(const std::string &name) {
-  std_msgs::msg::String msg;
-  msg.data = name;
-  RCLCPP_DEBUG(bridge_log(), "select_controller: %s", name.c_str());
-  select_ctrl_pub_->publish(msg);
 }
 
 bool BtRosBridge::RequestSwitchController(const std::string &name,

@@ -203,8 +203,6 @@ private:
   std::vector<rclcpp::SubscriptionBase::SharedPtr> topic_subscriptions_;
 
   // Fixed control subscriptions (always present)
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
-      controller_selector_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr
       controller_gains_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr request_gains_sub_;

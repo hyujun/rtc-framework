@@ -246,7 +246,6 @@ RtControllerNode::on_cleanup(const rclcpp_lifecycle::State & /*state*/) {
 
   // 3. subscribers
   topic_subscriptions_.clear();
-  controller_selector_sub_.reset();
   controller_gains_sub_.reset();
   request_gains_sub_.reset();
 
@@ -335,7 +334,6 @@ RtControllerNode::on_error(const rclcpp_lifecycle::State & /*state*/) {
   active_ctrl_name_pub_.reset();
   current_gains_pub_.reset();
   topic_subscriptions_.clear();
-  controller_selector_sub_.reset();
   controller_gains_sub_.reset();
   request_gains_sub_.reset();
   if (logger_) {

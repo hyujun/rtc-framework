@@ -10,12 +10,7 @@
 
 namespace rtc_bt {
 
-/// Switch the active controller.
-///
-/// Phase 4 default uses the /rtc_cm/switch_controller srv (sync, single call).
-/// `use_service=false` falls back to the legacy /<robot_ns>/controller_type
-/// topic + /<robot_ns>/active_controller_name latched-confirm polling. The
-/// fallback is removed in Phase 5 along with the topic.
+/// Switch the active controller via the /rtc_cm/switch_controller srv (sync).
 ///
 /// Input ports:
 ///   - controller_name (string): target controller name
@@ -25,8 +20,6 @@ namespace rtc_bt {
 ///     and stores them on the Blackboard as "current_gains" so that a
 ///     subsequent SetGains node can use them as the base instead of
 ///     hard-coded defaults.
-///   - use_service (bool, default true): srv path when true, legacy publish
-///     path when false. D-A6 rollback knob — removed in Phase 5.
 ///
 /// Output ports:
 ///   - current_gains (vector<double>): gains loaded from the controller
@@ -47,7 +40,6 @@ private:
   std::string target_name_;
   double timeout_s_{3.0};
   bool load_gains_{true};
-  bool use_service_{true};
   bool switch_confirmed_{false};
   bool gains_requested_{false};
   std::chrono::steady_clock::time_point start_time_;

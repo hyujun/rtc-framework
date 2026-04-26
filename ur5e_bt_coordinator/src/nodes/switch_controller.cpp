@@ -37,9 +37,6 @@ BT::PortsList SwitchController::providedPorts() {
       BT::InputPort<double>("timeout_s", 3.0, "Timeout [s]"),
       BT::InputPort<bool>("load_gains", true,
                           "Request current gains after switch"),
-      BT::InputPort<bool>("use_service", true,
-                          "Use /rtc_cm/switch_controller srv (D-A6 rollback "
-                          "knob; removed in Phase 5)"),
       BT::OutputPort<std::vector<double>>("current_gains",
                                           "Gains loaded from controller"),
   };
@@ -54,7 +51,6 @@ BT::NodeStatus SwitchController::onStart() {
   target_name_ = name.value();
   timeout_s_ = getInput<double>("timeout_s").value_or(3.0);
   load_gains_ = getInput<bool>("load_gains").value_or(true);
-  use_service_ = getInput<bool>("use_service").value_or(true);
   switch_confirmed_ = false;
   gains_requested_ = false;
   start_time_ = std::chrono::steady_clock::now();
@@ -72,70 +68,33 @@ BT::NodeStatus SwitchController::onStart() {
     return BT::NodeStatus::SUCCESS;
   }
 
-  RCLCPP_INFO(logger(),
-              "switching: %s -> %s (timeout=%.1fs, load_gains=%s, "
-              "use_service=%s)",
+  RCLCPP_INFO(logger(), "switching: %s -> %s (timeout=%.1fs, load_gains=%s)",
               current.c_str(), target_name_.c_str(), timeout_s_,
-              load_gains_ ? "true" : "false", use_service_ ? "true" : "false");
+              load_gains_ ? "true" : "false");
 
-  if (use_service_) {
-    // Phase 4 path — sync srv. The bridge's underlying client returns ok
-    // only after CM has committed the swap (D-A4) and published the
-    // latched /<robot_ns>/active_controller_name update, so polling here
-    // would be redundant.
-    std::string err;
-    if (!bridge_->RequestSwitchController(target_name_, timeout_s_, err)) {
-      RCLCPP_ERROR(logger(), "switch_controller srv rejected '%s': %s",
-                   target_name_.c_str(), err.c_str());
-      return BT::NodeStatus::FAILURE;
-    }
-    switch_confirmed_ = true;
-    if (load_gains_) {
-      bridge_->ClearCachedGains();
-      bridge_->RequestCurrentGains();
-      gains_requested_ = true;
-      return BT::NodeStatus::RUNNING;
-    }
-    return BT::NodeStatus::SUCCESS;
+  // Sync srv. The bridge's underlying client returns ok only after CM has
+  // committed the swap (D-A4) and published the latched
+  // /<robot_ns>/active_controller_name update, so polling here would be
+  // redundant.
+  std::string err;
+  if (!bridge_->RequestSwitchController(target_name_, timeout_s_, err)) {
+    RCLCPP_ERROR(logger(), "switch_controller srv rejected '%s': %s",
+                 target_name_.c_str(), err.c_str());
+    return BT::NodeStatus::FAILURE;
   }
-
-  // Legacy path — fire-and-forget publish + onRunning() polls
-  // /<robot_ns>/active_controller_name. Removed in Phase 5.
-  bridge_->PublishSelectController(target_name_);
-  return BT::NodeStatus::RUNNING;
+  switch_confirmed_ = true;
+  if (load_gains_) {
+    bridge_->ClearCachedGains();
+    bridge_->RequestCurrentGains();
+    gains_requested_ = true;
+    return BT::NodeStatus::RUNNING;
+  }
+  return BT::NodeStatus::SUCCESS;
 }
 
 BT::NodeStatus SwitchController::onRunning() {
-  // Phase 1: wait for controller switch confirmation
-  if (!switch_confirmed_) {
-    if (NormalizeName(bridge_->GetActiveController()) ==
-        NormalizeName(target_name_)) {
-      switch_confirmed_ = true;
-      RCLCPP_INFO(logger(), "active: %s (elapsed=%.2fs)", target_name_.c_str(),
-                  ElapsedSeconds(start_time_));
-
-      if (load_gains_) {
-        bridge_->ClearCachedGains();
-        bridge_->RequestCurrentGains();
-        gains_requested_ = true;
-        return BT::NodeStatus::RUNNING;
-      }
-      return BT::NodeStatus::SUCCESS;
-    }
-
-    if (ElapsedSeconds(start_time_) > timeout_s_) {
-      RCLCPP_ERROR(logger(),
-                   "timeout switching to '%s' after %.1fs (active='%s'). "
-                   "Check that the RT controller manager is running and the "
-                   "target controller is registered.",
-                   target_name_.c_str(), timeout_s_,
-                   bridge_->GetActiveController().c_str());
-      return BT::NodeStatus::FAILURE;
-    }
-    return BT::NodeStatus::RUNNING;
-  }
-
-  // Phase 2: wait for gains response (load_gains=true)
+  // The srv path resolves switch_confirmed_ in onStart(); only gains
+  // loading reaches onRunning.
   if (gains_requested_ && bridge_->HasCachedGains()) {
     auto gains = bridge_->GetCachedGains();
     setOutput("current_gains", gains);

@@ -63,26 +63,6 @@ TEST_F(SwitchControllerTest, AlreadyActiveWithGainsLoading) {
   EXPECT_DOUBLE_EQ(gains[0], 1.0);
 }
 
-TEST_F(SwitchControllerTest, SwitchAndConfirm) {
-  // Legacy publish path (use_service=false) — covered for D-A6 rollback
-  // until Phase 5 removes /<robot_ns>/controller_type.
-  PublishActiveController("old_controller");
-  Spin();
-
-  auto tree = CreateTree(
-      R"(<SwitchController controller_name="demo_joint_controller"
-                          load_gains="false" timeout_s="3.0"
-                          use_service="false"/>)");
-
-  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
-
-  // Simulate controller manager confirming the switch
-  PublishActiveController("demo_joint_controller");
-  Spin();
-
-  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
-}
-
 TEST_F(SwitchControllerTest, NormalizedNameComparison) {
   // Test that "DemoJointController" matches "demo_joint_controller"
   PublishActiveController("DemoJointController");
@@ -93,26 +73,6 @@ TEST_F(SwitchControllerTest, NormalizedNameComparison) {
                           load_gains="false" timeout_s="3.0"/>)");
 
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
-}
-
-TEST_F(SwitchControllerTest, FailsOnTimeout) {
-  // Legacy publish path (use_service=false): timeout surfaces from
-  // onRunning() polling /<robot_ns>/active_controller_name.
-  PublishActiveController("old_controller");
-  Spin();
-
-  auto tree = CreateTree(
-      R"(<SwitchController controller_name="new_controller"
-                          load_gains="false" timeout_s="0.05"
-                          use_service="false"/>)");
-
-  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
-
-  // Don't publish the expected controller
-  std::this_thread::sleep_for(std::chrono::milliseconds(60));
-  Spin();
-
-  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
 }
 
 TEST_F(SwitchControllerTest, GainsTimeoutStillSucceeds) {

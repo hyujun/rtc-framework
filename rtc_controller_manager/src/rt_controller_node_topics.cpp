@@ -136,17 +136,6 @@ void RtControllerNode::CreateSubscriptions() {
   auto aux_sub_options = rclcpp::SubscriptionOptions();
   aux_sub_options.callback_group = cb_group_aux_;
 
-  controller_selector_sub_ = create_subscription<std_msgs::msg::String>(
-      "/" + robot_ns_ + "/controller_type", 10,
-      [this](std_msgs::msg::String::SharedPtr msg) {
-        std::string err;
-        if (!SwitchActiveController(msg->data, err)) {
-          RCLCPP_WARN(get_logger(), "controller_type switch '%s' rejected: %s",
-                      msg->data.c_str(), err.c_str());
-        }
-      },
-      aux_sub_options);
-
   controller_gains_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
       "/" + robot_ns_ + "/controller_gains", 10,
       [this](std_msgs::msg::Float64MultiArray::SharedPtr msg) {

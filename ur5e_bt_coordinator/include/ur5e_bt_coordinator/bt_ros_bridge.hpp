@@ -113,12 +113,6 @@ public:
   /// Publish gain update (16-element array)
   void PublishGains(const std::vector<double> &gains);
 
-  /// Publish controller switch command (legacy publish path — D-A6 rollback).
-  /// Phase 4 default uses RequestSwitchController instead; this remains for
-  /// the SwitchController BT node's `use_service=false` branch and is removed
-  /// in Phase 5 along with /<robot_ns>/controller_type.
-  void PublishSelectController(const std::string &name);
-
   /// Request a controller switch via /rtc_cm/switch_controller (sync srv).
   /// Returns true when the service responded ok=true within `timeout_s`.
   /// On false, `message` carries the failure reason (E-STOP active, unknown
@@ -219,7 +213,6 @@ private:
   rclcpp::Publisher<rtc_msgs::msg::RobotTarget>::SharedPtr arm_target_pub_;
   rclcpp::Publisher<rtc_msgs::msg::RobotTarget>::SharedPtr hand_target_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr gains_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr select_ctrl_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr request_gains_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr shape_trigger_pub_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr shape_clear_client_;
