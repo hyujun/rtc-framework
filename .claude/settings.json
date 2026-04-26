@@ -1,4 +1,23 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "WebFetch(*)",
+      "WebSearch"
+    ],
+    "deny": [
+      "Bash(curl *)",
+      "Bash(wget *)",
+      "Bash(git push *)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean -f*)",
+      "Bash(git branch -D*)",
+      "Bash(git checkout -- *)",
+      "Bash(dd *)",
+      "Bash(mkfs*)",
+      "Bash(eval *)"
+    ]
+  },
   "hooks": {
     "PostToolUse": [
       {
