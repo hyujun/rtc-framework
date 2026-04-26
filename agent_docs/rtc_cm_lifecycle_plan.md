@@ -1,5 +1,54 @@
 # rtc_cm Lifecycle & Switch Service Plan
 
+## Status (2026-04-26)
+
+| Phase | 상태 | Commit |
+|---|---|---|
+| 0 — Design lockdown | ✅ done | `9aa830f` |
+| 1 — `rtc_msgs` schema | ✅ done | `f5d3204` |
+| 1.5 — P-1 (DemoWbc idempotent) + P-2 (MPCThread Pause/Resume) | ⏳ next | — |
+| 2 — CM controller-level lifecycle state | ⏳ pending | — |
+| 3 — `/rtc_cm/...` srv 도입 | ⏳ pending | — |
+| 4 — BT 마이그레이션 | ⏳ pending | — |
+| 5 — Legacy topic 제거 | ⏳ pending | — |
+| 6 — 문서 + plan doc cleanup | ⏳ pending | — |
+
+**Closed decisions**: D-A1..A7, D-B6, D-OQ6, OQ-3/4/5.
+**Still open**: OQ-1 (atomic vector vs bitmask), OQ-2 (RT sync mechanism). Decide at Phase 2 entry.
+
+## Phase 2 Entry — Handoff Notes
+
+새 conversation에서 이어받을 때 읽을 순서: Status (위) → §Decisions → §Phase 2 → §Phase 1.5 (P-1, P-2 디테일) → §Risks (RT 동기화 결함 항목).
+
+**권장 진입 순서**:
+1. **Phase 1.5 먼저** — Phase 2의 prereq로 명시되어 있음 (DemoWbc on_activate가 idempotent해야 Phase 2의 N회 activate/deactivate가 안전). 작업 범위가 작고 (DemoWbc 수정 + MPCThread Pause/Resume + unit test 1개) 독립 PR로 commit 가능
+2. **Phase 2 본 작업** — Phase 1.5 이후. CM에 `controller_states_` 추가, helper, on_activate/on_deactivate refactor
+
+**Phase 2 진입 시 결정해야 할 OQ-1, OQ-2** — Decision matrix는 [§Open Questions](#open-questions) 참조.
+
+**건드릴 핵심 파일**:
+- Phase 1.5:
+  - [ur5e_bringup/src/controllers/demo_wbc_controller.cpp](../ur5e_bringup/src/controllers/demo_wbc_controller.cpp#L1816-L1856) — on_activate/on_deactivate idempotent화
+  - [rtc_mpc/include/rtc_mpc/thread/mpc_thread.hpp](../rtc_mpc/include/rtc_mpc/thread/mpc_thread.hpp), [src/thread/mpc_thread.cpp](../rtc_mpc/src/thread/mpc_thread.cpp) — Pause/Resume
+  - [rtc_mpc/test/](../rtc_mpc/test/) — Pause/Resume gtest (`test_mpc_solve_timing_logger.cpp` 인접)
+  - [ur5e_bringup/test/test_demo_wbc_controller.cpp](../ur5e_bringup/test/test_demo_wbc_controller.cpp) — N회 cycle 테스트 추가
+- Phase 2:
+  - [rtc_controller_manager/include/rtc_controller_manager/rt_controller_node.hpp](../rtc_controller_manager/include/rtc_controller_manager/rt_controller_node.hpp#L336) (`active_controller_idx_` 인접에 `controller_states_` 추가)
+  - [rtc_controller_manager/src/rt_controller_node.cpp](../rtc_controller_manager/src/rt_controller_node.cpp#L126-L180) (`on_activate`/`on_deactivate` 일괄 controller 호출 제거)
+  - [rtc_controller_interface/include/rtc_controller_interface/rt_controller_interface.hpp](../rtc_controller_interface/include/rtc_controller_interface/rt_controller_interface.hpp#L75-L77) (`on_activate` 시그니처 확장)
+  - [rtc_controller_interface/src/rt_controller_interface.cpp](../rtc_controller_interface/src/rt_controller_interface.cpp#L157-L160) (base 구현 — `if (auto_hold) InitializeHoldPosition(snapshot);`)
+  - 7개 controller override 시그니처 일괄 수정 (rtc_controllers 4 + ur5e_bringup 3) — 단순 인자 추가, 로직 변경 없음
+  - 신규 `test_controller_lifecycle` (rtc_controller_manager) — N회 switch + RT timing 회귀
+
+**확인된 pre-existing test failure (Phase 1과 무관)**: workspace에 `test_demo_wbc_controller.cpp:234` 외 11개 누적 실패 — `colcon test-result` 캐시. Phase 2 진입 시 이 실패가 새로 도입된 게 아닌지 first-touch 검증 필요.
+
+**Pre-existing dev env quirk**: `.venv` overlay가 `colcon test` 래퍼를 가려 즉시 종료시킬 수 있음 ([feedback_dev_env_quirks](memory)). gtest 직접 실행은 `build/<pkg>/<test_bin>`이 신뢰 가능.
+
+**중요 invariant 알림**:
+- Phase 2는 RT path 영향 가능 → E-1, E-7 escalation 대상. 작업 시작 시 [CONCERN] 보고 후 진행
+- `on_activate(prev, snapshot)` 시그니처 변경은 모든 override 동시 수정 필요 (build 깨지지 않게 base default + override 일괄 PR로)
+- `/<robot_ns>/active_controller_name` latched topic은 영구 유지 — Phase 2/3에서 절대 제거하지 않음
+
 ## Context
 
 `rtc_controller_manager`의 controller 선택은 현재 `/<robot_ns>/controller_type` (String request) + `/<robot_ns>/active_controller_name` (latched String confirm) topic 한 쌍으로 이루어진다. 모든 controller는 부팅 시 일괄 `on_activate` 되고 — 즉 **controller-level lifecycle 상태가 active/inactive로 분리되어 있지 않다**. 클라이언트(BT)는 fire-and-forget publish 후 latched topic을 polling해 close-loop 확인한다.
