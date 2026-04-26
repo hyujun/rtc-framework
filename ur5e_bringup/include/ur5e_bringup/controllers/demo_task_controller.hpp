@@ -16,9 +16,12 @@
 #include "ur5e_bringup/controllers/owned_topics.hpp"
 #include "ur5e_description/ur5e_constants.hpp"
 
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
+#include <rclcpp/parameter.hpp>
+#include <rtc_msgs/srv/grasp_command.hpp>
 
 #include <Eigen/Cholesky> // LDLT
 #include <Eigen/Core>
@@ -361,6 +364,28 @@ private:
 
   // ── Phase 4: controller-owned topic sub/pub handles ───────────────────
   ControllerTopicHandles owned_topics_{};
+
+  // ── Phase B (gain→parameter migration): per-controller ROS 2 parameters ──
+  //
+  // Tunable gains (kp_translation, damping, trajectory_speed, ...) are
+  // declared as parameters on the controller's own LifecycleNode in
+  // on_configure. The set-parameters callback rebuilds a Gains snapshot
+  // and stores it via gains_lock_.Store(); the SeqLock provides RT-safe
+  // publication to the 500 Hz Compute() reader.
+  //
+  // max_traj_velocity / max_traj_angular_velocity / hand_max_traj_velocity
+  // are declared with read_only=true (D-2): YAML/launch overrides at boot
+  // are honoured, but `ros2 param set` is rejected post-startup.
+  //
+  // Force-PI grasp command rides on a separate srv (grasp_command_srv_)
+  // because it is a one-shot event, not state.
+  void DeclareGainParameters() noexcept;
+  rcl_interfaces::msg::SetParametersResult
+  OnGainParametersSet(const std::vector<rclcpp::Parameter> &params) noexcept;
+
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
+      param_callback_handle_;
+  rclcpp::Service<rtc_msgs::srv::GraspCommand>::SharedPtr grasp_command_srv_;
 };
 
 } // namespace ur5e_bringup

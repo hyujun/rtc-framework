@@ -9,8 +9,11 @@
 #include <cmath> // std::sqrt
 #include <cstddef>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -1449,6 +1452,69 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
   }
   try {
     CreateOwnedTopics(*this, owned_topics_);
+
+    // Phase B: declare tunable gains as ROS 2 parameters on the controller's
+    // own LifecycleNode and register the set-parameters callback. LoadConfig
+    // (run from the base class on_configure above) already seeded gains_lock_
+    // from YAML; declare uses those as defaults so YAML-loaded values are the
+    // initial parameter values.
+    DeclareGainParameters();
+    param_callback_handle_ = node_->add_on_set_parameters_callback(
+        [this](const std::vector<rclcpp::Parameter> &params) {
+          return OnGainParametersSet(params);
+        });
+
+    // Phase B: Force-PI grasp command channel (one-shot event, NOT a gain).
+    // Resolves to /<config_key>/grasp_command via the LifecycleNode's
+    // namespace.
+    grasp_command_srv_ = node_->create_service<rtc_msgs::srv::GraspCommand>(
+        "grasp_command",
+        [this](const std::shared_ptr<rtc_msgs::srv::GraspCommand::Request> req,
+               std::shared_ptr<rtc_msgs::srv::GraspCommand::Response> resp) {
+          if (estopped_.load(std::memory_order_acquire)) {
+            resp->ok = false;
+            resp->message = "E-STOP active";
+            return;
+          }
+          if (!grasp_controller_) {
+            resp->ok = false;
+            resp->message =
+                "grasp_controller unavailable (set 'grasp_controller_type: "
+                "force_pi' in YAML to enable Grasp/Release)";
+            return;
+          }
+          using Req = rtc_msgs::srv::GraspCommand::Request;
+          if (req->command == Req::GRASP) {
+            if (!(req->target_force > 0.0)) {
+              resp->ok = false;
+              resp->message = "GRASP requires target_force > 0";
+              return;
+            }
+            const auto phase_before =
+                static_cast<unsigned>(grasp_controller_->phase());
+            grasp_controller_->CommandGrasp(req->target_force);
+            RCLCPP_INFO(
+                logger_,
+                "[grasp_command] GRASP target=%.2fN type=%s phase_before=%u",
+                req->target_force, grasp_controller_type_.c_str(),
+                phase_before);
+            resp->ok = true;
+            resp->message =
+                "grasp started @ " + std::to_string(req->target_force) + " N";
+          } else if (req->command == Req::RELEASE) {
+            const auto phase_before =
+                static_cast<unsigned>(grasp_controller_->phase());
+            grasp_controller_->CommandRelease();
+            RCLCPP_INFO(logger_,
+                        "[grasp_command] RELEASE type=%s phase_before=%u",
+                        grasp_controller_type_.c_str(), phase_before);
+            resp->ok = true;
+            resp->message = "release accepted";
+          } else {
+            resp->ok = false;
+            resp->message = "command must be GRASP or RELEASE";
+          }
+        });
   } catch (const std::exception &e) {
     RCLCPP_ERROR(logger_, "DemoTaskController on_configure failed: %s",
                  e.what());
@@ -1476,12 +1542,224 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_deactivate(
 RTControllerInterface::CallbackReturn
 DemoTaskController::on_cleanup(const rclcpp_lifecycle::State &prev) noexcept {
   ResetOwnedTopics(owned_topics_);
+  grasp_command_srv_.reset();
+  param_callback_handle_.reset();
   return RTControllerInterface::on_cleanup(prev);
 }
 
 void DemoTaskController::PublishNonRtSnapshot(
     const rtc::PublishSnapshot &snap) noexcept {
   PublishOwnedTopicsFromSnapshot(snap, owned_topics_);
+}
+
+// ── Phase B: gain → ROS 2 parameter declaration & callback ────────────────
+//
+// Declare every tunable gain as a parameter on the controller's LifecycleNode,
+// seeded from the current `gains_lock_` snapshot (which LoadConfig populated
+// from YAML). After declare, read each parameter back so any startup overrides
+// (--params-file) supersede the YAML defaults, and store the final Gains
+// snapshot via gains_lock_.Store() — RT-safe by SeqLock.
+//
+// Read-only fields (D-2): max_traj_velocity, max_traj_angular_velocity,
+// hand_max_traj_velocity. Declared with read_only=true; honour startup
+// overrides but reject runtime `ros2 param set`.
+void DemoTaskController::DeclareGainParameters() noexcept {
+  if (!node_) {
+    return;
+  }
+
+  auto g = gains_lock_.Load();
+
+  rcl_interfaces::msg::ParameterDescriptor desc_rw;
+  rcl_interfaces::msg::ParameterDescriptor desc_ro;
+  desc_ro.read_only = true;
+
+  auto declare_double_array = [&](const std::string &name,
+                                  std::vector<double> default_val,
+                                  const std::string &description) {
+    rcl_interfaces::msg::ParameterDescriptor d;
+    d.description = description;
+    if (!node_->has_parameter(name)) {
+      return node_->declare_parameter<std::vector<double>>(
+          name, std::move(default_val), d);
+    }
+    return node_->get_parameter(name).as_double_array();
+  };
+  auto declare_double = [&](const std::string &name, double default_val,
+                            const std::string &description,
+                            bool read_only = false) {
+    rcl_interfaces::msg::ParameterDescriptor d;
+    d.description = description;
+    d.read_only = read_only;
+    if (!node_->has_parameter(name)) {
+      return node_->declare_parameter<double>(name, default_val, d);
+    }
+    return node_->get_parameter(name).as_double();
+  };
+  auto declare_bool = [&](const std::string &name, bool default_val,
+                          const std::string &description) {
+    rcl_interfaces::msg::ParameterDescriptor d;
+    d.description = description;
+    if (!node_->has_parameter(name)) {
+      return node_->declare_parameter<bool>(name, default_val, d);
+    }
+    return node_->get_parameter(name).as_bool();
+  };
+  auto declare_int = [&](const std::string &name, int64_t default_val,
+                         const std::string &description) {
+    rcl_interfaces::msg::ParameterDescriptor d;
+    d.description = description;
+    if (!node_->has_parameter(name)) {
+      return node_->declare_parameter<int64_t>(name, default_val, d);
+    }
+    return node_->get_parameter(name).as_int();
+  };
+
+  // CLIK gains
+  const auto kp_t = declare_double_array(
+      "kp_translation",
+      std::vector<double>(g.kp_translation.begin(), g.kp_translation.end()),
+      "Translation P gain (x, y, z) [1/s]");
+  const auto kp_r = declare_double_array(
+      "kp_rotation",
+      std::vector<double>(g.kp_rotation.begin(), g.kp_rotation.end()),
+      "Rotation P gain (rx, ry, rz) [1/s]");
+  for (std::size_t i = 0; i < 3 && i < kp_t.size(); ++i) {
+    g.kp_translation[i] = kp_t[i];
+  }
+  for (std::size_t i = 0; i < 3 && i < kp_r.size(); ++i) {
+    g.kp_rotation[i] = kp_r[i];
+  }
+
+  g.damping = declare_double("damping", g.damping,
+                             "Damped pseudoinverse lambda (singularity stab.)");
+  g.null_kp = declare_double("null_kp", g.null_kp,
+                             "Null-space joint-centering gain [1/s]");
+  g.enable_null_space = declare_bool("enable_null_space", g.enable_null_space,
+                                     "Enable null-space secondary task");
+  g.control_6dof =
+      declare_bool("control_6dof", g.control_6dof,
+                   "false=3-DOF (position only), true=6-DOF (pose)");
+
+  g.trajectory_speed = std::max(
+      1e-6, declare_double("trajectory_speed", g.trajectory_speed,
+                           "TCP translational trajectory speed [m/s]"));
+  g.trajectory_angular_speed =
+      std::max(1e-6, declare_double("trajectory_angular_speed",
+                                    g.trajectory_angular_speed,
+                                    "TCP rotational trajectory speed [rad/s]"));
+  g.hand_trajectory_speed = std::max(
+      1e-6, declare_double("hand_trajectory_speed", g.hand_trajectory_speed,
+                           "Hand motor trajectory speed [rad/s]"));
+
+  // Read-only velocity caps (D-2)
+  g.max_traj_velocity = declare_double(
+      "max_traj_velocity", g.max_traj_velocity,
+      "Max TCP translational velocity during trajectory [m/s] (read-only)",
+      /*read_only=*/true);
+  g.max_traj_angular_velocity =
+      declare_double("max_traj_angular_velocity", g.max_traj_angular_velocity,
+                     "Max TCP angular velocity during trajectory [rad/s] "
+                     "(read-only)",
+                     /*read_only=*/true);
+  g.hand_max_traj_velocity = declare_double(
+      "hand_max_traj_velocity", g.hand_max_traj_velocity,
+      "Max hand motor velocity during trajectory [rad/s] (read-only)",
+      /*read_only=*/true);
+
+  // Grasp detection
+  g.grasp_contact_threshold = static_cast<float>(
+      declare_double("grasp_contact_threshold", g.grasp_contact_threshold,
+                     "Contact probability threshold [0,1]"));
+  g.grasp_force_threshold = static_cast<float>(
+      declare_double("grasp_force_threshold", g.grasp_force_threshold,
+                     "Force magnitude threshold [N]"));
+  g.grasp_min_fingertips = static_cast<int>(
+      declare_int("grasp_min_fingertips", g.grasp_min_fingertips,
+                  "Min fingertips with contact for grasp detection"));
+
+  gains_lock_.Store(g);
+}
+
+rcl_interfaces::msg::SetParametersResult
+DemoTaskController::OnGainParametersSet(
+    const std::vector<rclcpp::Parameter> &params) noexcept {
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+
+  // Snapshot → mutate → store. SeqLock makes the publish RT-safe.
+  auto g = gains_lock_.Load();
+  bool gains_dirty = false;
+
+  for (const auto &p : params) {
+    const auto &name = p.get_name();
+    try {
+      if (name == "kp_translation") {
+        const auto v = p.as_double_array();
+        if (v.size() != 3) {
+          result.successful = false;
+          result.reason = "kp_translation requires 3 values";
+          return result;
+        }
+        for (std::size_t i = 0; i < 3; ++i) {
+          g.kp_translation[i] = v[i];
+        }
+        gains_dirty = true;
+      } else if (name == "kp_rotation") {
+        const auto v = p.as_double_array();
+        if (v.size() != 3) {
+          result.successful = false;
+          result.reason = "kp_rotation requires 3 values";
+          return result;
+        }
+        for (std::size_t i = 0; i < 3; ++i) {
+          g.kp_rotation[i] = v[i];
+        }
+        gains_dirty = true;
+      } else if (name == "damping") {
+        g.damping = p.as_double();
+        gains_dirty = true;
+      } else if (name == "null_kp") {
+        g.null_kp = p.as_double();
+        gains_dirty = true;
+      } else if (name == "enable_null_space") {
+        g.enable_null_space = p.as_bool();
+        gains_dirty = true;
+      } else if (name == "control_6dof") {
+        g.control_6dof = p.as_bool();
+        gains_dirty = true;
+      } else if (name == "trajectory_speed") {
+        g.trajectory_speed = std::max(1e-6, p.as_double());
+        gains_dirty = true;
+      } else if (name == "trajectory_angular_speed") {
+        g.trajectory_angular_speed = std::max(1e-6, p.as_double());
+        gains_dirty = true;
+      } else if (name == "hand_trajectory_speed") {
+        g.hand_trajectory_speed = std::max(1e-6, p.as_double());
+        gains_dirty = true;
+      } else if (name == "grasp_contact_threshold") {
+        g.grasp_contact_threshold = static_cast<float>(p.as_double());
+        gains_dirty = true;
+      } else if (name == "grasp_force_threshold") {
+        g.grasp_force_threshold = static_cast<float>(p.as_double());
+        gains_dirty = true;
+      } else if (name == "grasp_min_fingertips") {
+        g.grasp_min_fingertips = static_cast<int>(p.as_int());
+        gains_dirty = true;
+      }
+      // Unknown parameter names are silently allowed — other callbacks
+      // (CM topic param read-only validator, lifecycle) may own them.
+    } catch (const std::exception &e) {
+      result.successful = false;
+      result.reason = std::string("type error on '") + name + "': " + e.what();
+      return result;
+    }
+  }
+
+  if (gains_dirty) {
+    gains_lock_.Store(g);
+  }
+  return result;
 }
 
 } // namespace ur5e_bringup
