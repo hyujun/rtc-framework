@@ -1,5 +1,6 @@
 #include "ur5e_bringup/controllers/demo_joint_controller.hpp"
 
+#include "rtc_base/utils/clamp_commands.hpp"
 #include "ur5e_bringup/controllers/demo_shared_config.hpp"
 
 #include <algorithm> // std::copy, std::clamp
@@ -458,8 +459,8 @@ void DemoJointController::ComputeControl(const ControllerState &state,
         for (int f = 0; f < rtc::grasp::kNumGraspFingers; ++f) {
           for (int j = 0; j < rtc::grasp::kDoFPerFinger; ++j) {
             const auto mi = static_cast<std::size_t>(
-                kFingerJointMap[static_cast<std::size_t>(f)]
-                               [static_cast<std::size_t>(j)]);
+                finger_joint_map_[static_cast<std::size_t>(f)]
+                                 [static_cast<std::size_t>(j)]);
             hand_computed_.positions[mi] =
                 commands.q[static_cast<std::size_t>(f)]
                           [static_cast<std::size_t>(j)];
@@ -481,12 +482,12 @@ void DemoJointController::ComputeControl(const ControllerState &state,
       if (state.num_devices > 1 && state.devices[1].valid) {
         const auto &dev1 = state.devices[1];
 
-        const double d_thumb = device_targets_[1][kHandIdxThumbCmcFe] -
-                               dev1.positions[kHandIdxThumbCmcFe];
-        const double d_index = device_targets_[1][kHandIdxIndexMcpFe] -
-                               dev1.positions[kHandIdxIndexMcpFe];
-        const double d_middle = device_targets_[1][kHandIdxMiddleMcpFe] -
-                                dev1.positions[kHandIdxMiddleMcpFe];
+        const double d_thumb = device_targets_[1][hand_idx_thumb_cmc_fe_] -
+                               dev1.positions[hand_idx_thumb_cmc_fe_];
+        const double d_index = device_targets_[1][hand_idx_index_mcp_fe_] -
+                               dev1.positions[hand_idx_index_mcp_fe_];
+        const double d_middle = device_targets_[1][hand_idx_middle_mcp_fe_] -
+                                dev1.positions[hand_idx_middle_mcp_fe_];
 
         const bool thumb_releasing = d_thumb > kContactStopReleaseEps;
         const bool index_releasing = d_index < -kContactStopReleaseEps;
@@ -509,12 +510,13 @@ void DemoJointController::ComputeControl(const ControllerState &state,
           // Errors (target - actual) encode both the actual position and the
           // overshoot beyond target in a single number each, so 5 args are
           // enough to diagnose contact_stop engagement.
-          const double err_thumb = device_targets_[1][kHandIdxThumbCmcFe] -
-                                   dev1.positions[kHandIdxThumbCmcFe];
-          const double err_index = device_targets_[1][kHandIdxIndexMcpFe] -
-                                   dev1.positions[kHandIdxIndexMcpFe];
-          const double err_middle = device_targets_[1][kHandIdxMiddleMcpFe] -
-                                    dev1.positions[kHandIdxMiddleMcpFe];
+          const double err_thumb = device_targets_[1][hand_idx_thumb_cmc_fe_] -
+                                   dev1.positions[hand_idx_thumb_cmc_fe_];
+          const double err_index = device_targets_[1][hand_idx_index_mcp_fe_] -
+                                   dev1.positions[hand_idx_index_mcp_fe_];
+          const double err_middle =
+              device_targets_[1][hand_idx_middle_mcp_fe_] -
+              dev1.positions[hand_idx_middle_mcp_fe_];
           RCLCPP_INFO_THROTTLE(logger_, log_clock_,
                                ::ur5e_bringup::logging::kThrottleFastMs,
                                "[contact_stop] FREEZE active=%d fmax=%.2fN "
@@ -716,11 +718,8 @@ void DemoJointController::ClampCommands(
     std::array<double, kMaxDeviceChannels> &commands, int n,
     const std::vector<double> &lower,
     const std::vector<double> &upper) noexcept {
-  for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i) {
-    const double lo = (i < lower.size()) ? lower[i] : -6.2832;
-    const double hi = (i < upper.size()) ? upper[i] : 6.2832;
-    commands[i] = std::clamp(commands[i], lo, hi);
-  }
+  rtc::utils::ClampRange(commands, n, std::span<const double>(lower),
+                         std::span<const double>(upper), -6.2832, 6.2832);
 }
 
 // ── Controller registry hooks ────────────────────────────────────────────────
@@ -760,6 +759,31 @@ void DemoJointController::LoadConfig(const YAML::Node &cfg) {
     InitHandModel(*sys_cfg);
   }
 
+  // ── E-STOP arm safe position (required) ─────────────────────────────
+  if (!cfg["estop"] || !cfg["estop"].IsMap()) {
+    throw std::runtime_error(
+        "demo_joint_controller: required 'estop' section is missing");
+  }
+  {
+    const auto estop_node = cfg["estop"];
+    if (!estop_node["arm_safe_position"] ||
+        !estop_node["arm_safe_position"].IsSequence()) {
+      throw std::runtime_error(
+          "demo_joint_controller: required 'estop.arm_safe_position' "
+          "must be a sequence");
+    }
+    const auto sp = estop_node["arm_safe_position"];
+    if (sp.size() != static_cast<std::size_t>(kNumRobotJoints)) {
+      throw std::runtime_error(
+          "demo_joint_controller: 'estop.arm_safe_position' length " +
+          std::to_string(sp.size()) + " != expected " +
+          std::to_string(kNumRobotJoints));
+    }
+    for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+      safe_position_[i] = sp[i].as<double>();
+    }
+  }
+
   auto g = gains_lock_.Load();
   if (cfg["robot_trajectory_speed"]) {
     g.robot_trajectory_speed =
@@ -787,6 +811,13 @@ void DemoJointController::LoadConfig(const YAML::Node &cfg) {
   g.grasp_min_fingertips = shared.grasp_min_fingertips;
   gains_lock_.Store(g);
   grasp_controller_type_ = shared.grasp_controller_type;
+  finger_joint_map_ = shared.hand_finger_joint_map;
+  hand_idx_thumb_cmc_fe_ =
+      static_cast<std::size_t>(shared.hand_idx_thumb_cmc_fe);
+  hand_idx_index_mcp_fe_ =
+      static_cast<std::size_t>(shared.hand_idx_index_mcp_fe);
+  hand_idx_middle_mcp_fe_ =
+      static_cast<std::size_t>(shared.hand_idx_middle_mcp_fe);
 
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
@@ -910,9 +941,9 @@ DemoJointController::ComputeEstop(const ControllerState &state) noexcept {
         (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
     out0.commands[i] =
         dev0.positions[i] +
-        std::clamp(kSafePosition[i] - dev0.positions[i], -lim, lim) *
+        std::clamp(safe_position_[i] - dev0.positions[i], -lim, lim) *
             ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
-    out0.goal_positions[i] = kSafePosition[i];
+    out0.goal_positions[i] = safe_position_[i];
     out0.target_positions[i] = out0.commands[i];
     out0.trajectory_positions[i] = out0.commands[i];
   }

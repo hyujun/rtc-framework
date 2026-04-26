@@ -26,6 +26,18 @@ demo_task_controller:
   max_traj_angular_velocity: 0.7854   # Max TCP angular velocity [rad/s] (6-DOF mode)
   hand_max_traj_velocity: 6.28       # Max hand motor velocity [rad/s]
 
+  # ── E-STOP ──────────────────────────────────────────────────────────────────
+  # Joint position the E-STOP path drives the arm toward (rad, length = arm DoF).
+  # Required — LoadConfig throws if missing or wrong length.
+  estop:
+    arm_safe_position:           # rad, 6 values = arm DoF (UR5e home pose)
+      - 0.0
+      - -1.57
+      - 1.57
+      - -1.57
+      - -1.57
+      - 0.0
+
   # ── FSM / trajectory tuning (required) ─────────────────────────────────────
   fsm:
     pi_rotation_margin: 0.15        # rad, split quintic trajectory when

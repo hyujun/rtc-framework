@@ -15,6 +15,19 @@ demo_shared:
   # "force_pi": adaptive PI force controller with state machine
   grasp_controller_type: "force_pi"
 
+  # ── Hand joint topology (UR5e 10-DoF hand) ─────────────────────────────────
+  # finger → motor index mapping for {MCP_AA, MCP_FE, DIP_FE} (0-based, into
+  # device 1 joint arrays). Used by force_pi grasp controller to address
+  # per-finger joint groups. 3 fingers (thumb, index, middle) × 3 joints each.
+  hand_finger_joint_map:
+    - [0, 1, 2]     # thumb:  CMC_AA, CMC_FE, MCP_FE
+    - [3, 4, 5]     # index:  MCP_AA, MCP_FE, DIP_FE
+    - [6, 7, 8]     # middle: MCP_AA, MCP_FE, DIP_FE
+  # Per-finger MCP_FE motor index used by the contact_stop release-phase gate.
+  hand_idx_thumb_cmc_fe: 1
+  hand_idx_index_mcp_fe: 4
+  hand_idx_middle_mcp_fe: 7
+
   # ── Force-PI grasp parameters (grasp_controller_type: "force_pi" 전용) ──
   force_pi_grasp:
     # PI gains

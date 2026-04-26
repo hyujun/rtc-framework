@@ -17,6 +17,18 @@ demo_joint_controller:
   # config/controllers/demo_shared.yaml. To override any shared key locally,
   # add it under this section — per-controller values take precedence.
 
+  # ── E-STOP ──────────────────────────────────────────────────────────────────
+  # Joint position the E-STOP path drives the arm toward (rad, length = arm DoF).
+  # Required — LoadConfig throws if missing or wrong length.
+  estop:
+    arm_safe_position:           # rad, 6 values = arm DoF (UR5e home pose)
+      - 0.0
+      - -1.57
+      - 1.57
+      - -1.57
+      - -1.57
+      - 0.0
+
   # ── Output type ─────────────────────────────────────────────────────────────
   command_type: "position"
 

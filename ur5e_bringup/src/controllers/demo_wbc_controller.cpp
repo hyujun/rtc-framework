@@ -1,6 +1,7 @@
 #include "ur5e_bringup/controllers/demo_wbc_controller.hpp"
 
 #include "rtc_base/threading/thread_utils.hpp"
+#include "rtc_base/utils/clamp_commands.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -1782,11 +1783,8 @@ void DemoWbcController::ClampCommands(
     std::array<double, kMaxDeviceChannels> &commands, int n,
     const std::vector<double> &lower,
     const std::vector<double> &upper) noexcept {
-  for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i) {
-    const double lo = (i < lower.size()) ? lower[i] : -6.2832;
-    const double hi = (i < upper.size()) ? upper[i] : 6.2832;
-    commands[i] = std::clamp(commands[i], lo, hi);
-  }
+  rtc::utils::ClampRange(commands, n, std::span<const double>(lower),
+                         std::span<const double>(upper), -6.2832, 6.2832);
 }
 
 // ── Controller-owned topic lifecycle ──────────────────────────────────────

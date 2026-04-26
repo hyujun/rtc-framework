@@ -309,14 +309,17 @@ private:
   // ── Grasp controller (force_pi mode) ──────────────────────────────────────
   std::string grasp_controller_type_{"contact_stop"};
   std::unique_ptr<rtc::grasp::GraspController> grasp_controller_;
-  static constexpr std::array<std::array<int, 3>, 3> kFingerJointMap{
-      {{0, 1, 2}, {3, 4, 5}, {6, 7, 8}}};
+  /// Finger index → hand motor indices mapping (thumb, index, middle).
+  /// Cached from `DemoSharedConfig::hand_finger_joint_map` in LoadConfig.
+  std::array<std::array<int, 3>, 3> finger_joint_map_{
+      {{{0, 1, 2}}, {{3, 4, 5}}, {{6, 7, 8}}}};
 
   /// Hand joint indices (matches ur5e hand joint order in YAML).
   /// Used by the contact_stop release-phase gate.
-  static constexpr std::size_t kHandIdxThumbCmcFe = 1;
-  static constexpr std::size_t kHandIdxIndexMcpFe = 4;
-  static constexpr std::size_t kHandIdxMiddleMcpFe = 7;
+  /// Cached from `DemoSharedConfig::hand_idx_*` in LoadConfig.
+  std::size_t hand_idx_thumb_cmc_fe_{1};
+  std::size_t hand_idx_index_mcp_fe_{4};
+  std::size_t hand_idx_middle_mcp_fe_{7};
 
   /// Previous grasp phase (for state-transition logging; non-RT critical).
   uint8_t prev_grasp_phase_{0};
@@ -333,8 +336,12 @@ private:
   std::atomic<bool> estopped_{false};
   std::atomic<bool> hand_estopped_{false};
 
-  static constexpr std::array<double, kNumRobotJoints> kSafePosition{
-      0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
+  /// Arm joint position the E-STOP path drives to. Authoritative source is
+  /// LoadConfig(cfg["estop"]["arm_safe_position"]); this initializer only
+  /// provides a safe default for unit/integration paths that construct the
+  /// controller without LoadConfig.
+  std::array<double, kNumRobotJoints> safe_position_{0.0,   -1.57, 1.57,
+                                                     -1.57, -1.57, 0.0};
   std::array<std::vector<double>, ControllerState::kMaxDevices>
       device_max_velocity_;
   std::array<std::vector<double>, ControllerState::kMaxDevices>
