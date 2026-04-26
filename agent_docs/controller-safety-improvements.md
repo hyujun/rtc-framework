@@ -42,28 +42,30 @@ Per-controller snapshot site:
 - `SetDeviceTarget()` readers of `gains_.control_6dof` (Clik, DemoTask) use
   `gains_lock_.Load().control_6dof` — aux-thread serialized by ROS executor.
 
-### Phase 3 — Code Quality
+### Phase 3 — Code Quality (완료 2026-04-26)
 
-| ID | Task | Package | Detail |
+| ID | Task | Package | Status |
 |---|---|---|---|
-| Q-1 | `kSafePosition` from YAML | ur5e_bringup ×3 | Replace `static constexpr` with runtime load from `DeviceNameConfig::safe_position` (already available via `OnDeviceConfigsSet()`) |
-| Q-2 | `kFingerJointMap`/`kHandIdx*` from YAML | ur5e_bringup | Move hardcoded hand joint indices to `demo_shared.yaml` |
-| Q-3 | Velocity clamp utility | rtc_controllers/rtc_base | Extract duplicated `ClampCommands()` loop into shared function |
-| Q-4 | Device passthrough utility | rtc_controller_interface | Extract duplicated "Device 1+ passthrough" loop |
-| Q-5 | `GetCurrentGains()` heap removal | rtc_controllers ×4 | Change return type from `std::vector<double>` to caller-provided `span<double>` or `std::array` |
-| Q-6 | Registry duplicate check | rtc_controller_interface | Warn on duplicate `config_key` in `ControllerRegistry::Register()` |
-| Q-7 | E-STOP ramp investigate | ur5e_bringup | Verify if DemoWbcController's instant-jump E-STOP (vs ramp in Joint/Task) is intentional |
+| Q-1 | `kSafePosition` from YAML | ur5e_bringup ×3 | **Done** — DemoJoint/DemoTask 마이그레이션 완료. WBC 패턴 (`estop.arm_safe_position` 필수 키) 동일 적용. `safe_position_` 멤버 + LoadConfig 검증 |
+| Q-2 | `kFingerJointMap`/`kHandIdx*` from YAML | ur5e_bringup | **Done** — `DemoSharedConfig::hand_finger_joint_map` + `hand_idx_*` 추가. demo_shared.yaml 에 4 키 노출. 29 use sites 마이그레이션 |
+| Q-3 | Velocity clamp utility | rtc_controllers/rtc_base | **Done** — `rtc_base/utils/clamp_commands.hpp::ClampSymmetric/ClampRange` 추출. PController/JointPD/Demo×3 리팩터 |
+| Q-4 | Device passthrough utility | rtc_base | **Done** — `rtc_base/utils/device_passthrough.hpp::PassthroughSecondaryDevices` 추출. 4 controllers (P/JointPD/CLIK/OSC) 리팩터 |
+| ~~Q-5~~ | ~~`GetCurrentGains()` heap removal~~ | (resolved) | **Not needed** — 유일 production caller는 `RtControllerNode::request_gains_sub_` (aux thread). Heap 안전. 검증 2026-04-26 |
+| Q-6 | Registry duplicate check | rtc_controller_interface | **Done** — `ControllerRegistry::Register()` 가 duplicate `config_key` 시 RCLCPP_WARN. `RegisterDuplicateShadowsAndAppends` gtest 추가 |
+| Q-7 | **E-STOP ramp** (escalated 2026-04-26) | ur5e_bringup | **Decision pending (E-8 escalation)** — `DemoWbcController::ComputeEstop` ([demo_wbc_controller.cpp:1721](../ur5e_bringup/src/controllers/demo_wbc_controller.cpp#L1721)) writes `out0.commands[i] = safe_position_[i]` (no rate limit). Joint/Task ramp pattern 권장. 사용자 컨펌 대기 |
 
-### Phase 4 — Long-term
+### Phase 4 — Long-term (재평가 완료 2026-04-26)
 
-| ID | Task |
-|---|---|
-| L-1 | Clarify target double-buffering (RtControllerNode `device_targets_` vs controller internal targets) |
-| L-2 | Document RTControllerInterface initialization order in header |
-| L-3 | RtControllerNode integration tests |
-| L-4 | GraspController RTControllerInterface wrapper evaluation |
-| L-5 | WBC MPC thread lifecycle audit |
-| L-6 | ClikController/OSC goal reporting snapshot (Low — GUI only) |
+| ID | Task | Status |
+|---|---|---|
+| L-1 | Clarify target double-buffering (CM `device_targets_` aux-write vs `device_target_snapshots_` RT try_lock vs controller-internal trajectory intent) | **Doc-only, low** — 1-paragraph in architecture.md if revisited |
+| L-2 | Document RTControllerInterface initialization order | **Closed** — already in `rt_controller_interface.hpp:56-90` |
+| L-3 | RtControllerNode integration tests | **Substantially closed** — `test_controller_lifecycle` (9), `test_switch_service` (9), `test_demo_wbc_mpc_integration` (6) |
+| L-4 | GraspController RTControllerInterface wrapper evaluation | **Closed (not needed)** — Force-PI vs TSID bifurcation settled; wrapper would add 3rd paradigm with no consumer |
+| L-5 | WBC MPC thread lifecycle audit | **Superseded** — rtc_cm Phase 1.5 (`e3d2c70`) DemoWbc idempotent activate + MPCThread Pause/Resume + Phase 6 handler integration |
+| L-6 | ClikController/OSC goal reporting snapshot | **Closed (already done)** — `output.actual_task_positions` populated by both, fan-out via publish thread |
+
+→ Phase 4 는 **사실상 완료**. 새 항목 등장 시 별도 plan 으로 분리.
 
 ## Critical Analysis Notes
 

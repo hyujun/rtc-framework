@@ -17,7 +17,7 @@
 | Build | CMake 3.22+, colcon, ament_cmake / ament_python |
 | Deps | Eigen 3.4, Pinocchio, ProxSuite, ONNX Runtime |
 | Optional | MuJoCo 3.x (sim), BehaviorTree.CPP v4 |
-| Test | GTest, pytest — **1104 gtest cases across 10 packages** (최근 실측: 2026-04-24. 단일 출처: [agent_docs/testing-debug.md](agent_docs/testing-debug.md)) |
+| Test | GTest, pytest — **1377 gtest cases across 13 packages + 281 pytest** (최근 실측: 2026-04-26. 단일 출처: [agent_docs/testing-debug.md](agent_docs/testing-debug.md)) |
 
 ## 2. Harness Overview
 
@@ -217,4 +217,4 @@ Commit 완료 또는 사용자가 task 종료를 알린 후:
 - [agent_docs/testing-debug.md](agent_docs/testing-debug.md) — Test table, sensor matrix, live debug topics, RT permissions
 - [agent_docs/invariants.md](agent_docs/invariants.md) — RT / ARCH / PROC / NUM invariants (escalation triggers)
 - [agent_docs/anti-patterns.md](agent_docs/anti-patterns.md) — Recurring mistakes with detection + recovery
-- [agent_docs/controller-safety-improvements.md](agent_docs/controller-safety-improvements.md) — Controller safety Phase plan (R/Q/L IDs)
+- [agent_docs/controller-safety-improvements.md](agent_docs/controller-safety-improvements.md) — Controller safety improvements (Phase 0~4 closed 2026-04-26; Q-7 E-STOP ramp pending E-8 escalation)

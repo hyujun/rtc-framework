@@ -11,7 +11,7 @@
 | GraspController | Internal | Hand 3x3-DOF | Adaptive PI force, 6-state FSM, per-finger stiffness EMA |
 | DemoJointController | Position | Joint + Hand | Quintic trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"` |
 | DemoTaskController | Position | Cartesian + Hand | CLIK + trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"` |
-| DemoWbcController | Position | TSID QP + Hand | 8-phase FSM (Idle->Approach->PreGrasp->Closure->Hold->Retreat->Release), TSID QP -> accel -> position integration, contact-aware ForceTask + FrictionCone, sensor-driven contact / slip / deformation guards, combined 16-DoF model |
+| DemoWbcController | Position | TSID QP + Hand | **Default `initial_controller` (sim+robot, `5118f67`)**. 8-phase FSM (Idle->Approach->PreGrasp->Closure->Hold->Retreat->Release), TSID QP -> accel -> position integration, contact-aware ForceTask + FrictionCone, sensor-driven contact / slip / deformation guards, combined 16-DoF model. MPC default: `engine: "handler"` + `enabled: true` (Aligator HandlerMPCThread; runtime-togglable via `gains[7]`) |
 
 ## Gains Layout (via `~/controller_gains` topic)
 
@@ -37,7 +37,7 @@ Key params in `grasp_types.hpp`: `Kp_base=0.02`, `Ki_base=0.002`, `f_target=2.0N
 
 **Controller Manager**: switch via `/rtc_cm/switch_controller` (srv, sync, single-active), query via `/rtc_cm/list_controllers` (srv); `/{ns}/controller_gains` (Sub), `/{ns}/active_controller_name` (Pub, latched — rewire trigger for downstream nodes), `/system/estop_status` (Pub)
 
-**Dynamic** (per controller TopicConfig): Subscribe `kState`/`kMotorState`/`kSensorState`/`kTarget`; Publish `kJointCommand`/`kRos2Command`/`kGuiPosition`/`kGraspState`/`kDeviceStateLog`/`kDeviceSensorLog`
+**Dynamic** (per controller TopicConfig): Subscribe `kState`/`kMotorState`/`kSensorState`/`kTarget`; Publish `kJointCommand`/`kRos2Command`/`kGuiPosition`/`kGraspState`/`kWbcState`/`kDeviceStateLog`/`kDeviceSensorLog`. `kWbcState` (controller-owned, RELIABLE/10) — DemoWbcController가 `<config_key>/hand/wbc_state` 로 발행. `kGraspState` 와 상호 배타: Force-PI 데모(DemoJoint/Task)만 grasp_state, TSID 데모(DemoWbc)만 wbc_state.
 
 **Digital Twin**: `/{group}/digital_twin/joint_states` (RELIABLE) -> `rtc_digital_twin` merges -> RViz2
 

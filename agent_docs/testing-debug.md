@@ -45,22 +45,27 @@ colcon test --packages-select rtc_controllers --ctest-args -R test_grasp_control
 colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 ```
 
-## Test Table (최근 실측: 2026-04-24, gtest CASES 단위)
+## Test Table (최근 실측: 2026-04-26, gtest CASES 단위)
 
 | Package | Tests | Framework |
 |---------|-------|-----------|
 | `ur5e_hand_driver` | 179 C++ (hand_packets 46, hand_controller 33, hand_udp_codec 24, fingertip_ft 19, hand_udp_transport 18, hand_timing_profiler 15, hand_sensor_processor 13, hand_failure_detector 11) | GTest |
-| `ur5e_bt_coordinator` | 157 C++ (condition_nodes 21, bt_utils 19, bt_types 16, hand_nodes 15, compute_offset_pose 12, shape_nodes 11, tree_validation 10, set_gains 9, set_pose_z 8, switch_controller 7 (4 base + 3 srv), grasp_control 7, compute_sweep_trajectory 6, move_to_joints 6, wait_duration 5, move_to_pose 5) | GTest |
+| `ur5e_bt_coordinator` | 157 C++ (condition_nodes 21, bt_utils 19, bt_types 16, hand_nodes 15, compute_offset_pose 12, shape_nodes 11, tree_validation 10, set_gains 9, set_pose_z 8, switch_controller 7, grasp_control 7, compute_sweep_trajectory 6, move_to_joints 6, wait_duration 5, move_to_pose 5) | GTest |
 | `rtc_mpc` | 136 C++ (types, TripleBuffer, TrajectoryInterpolator, Riccati, SolutionManager, thread skeleton, RobotModelHandler, PhaseCostConfig) | GTest |
+| `ur5e_bringup` | 92 C++ (demo_wbc_controller 44, demo_shared_config 16, grasp_phase_manager 13, virtual_tcp 10, demo_wbc_mpc_integration 6, grasp_pipeline 3) | GTest |
+| `rtc_tsid` | 90 C++ (wbc_types 11, se3_task 10, qp_solver_wrapper 8, momentum_task 8, tsid_wqp 7, force_task 6, com_task 6, posture_task 5, phase3_integration 5, joint_limit 5, tsid_hqp 4, wqp_hqp_compare 3, performance 3, eom 3, torque_limit 2, friction_cone 2, contact 2) | GTest |
 | `rtc_urdf_bridge` | 89 C++ (urdf_analyzer 25, rt_model_handle 16, model_builder 15, chain_extractor 12, xacro_processor 11, joint_classification 10) | GTest |
-| `ur5e_bringup` | 89 C++ (demo_wbc_controller 41, demo_shared_config 16, grasp_phase_manager 13, virtual_tcp 10, demo_wbc_mpc_integration 6, grasp_pipeline 3) | GTest |
 | `rtc_controllers` | 87 C++ (test_core_controllers + grasp related) | GTest |
+| `shape_estimation` | 82 C++ (exploration_motion 29, tof_shape 27, protuberance_detector 26) | GTest |
+| `rtc_mujoco_sim` | 77 C++ (simulator_init 15, pure_helpers 15, command_state_io 12, runtime_controls 11, lifecycle 10, solver_config 9, data_flow 5) | GTest |
 | `rtc_base` | 54 C++ (SeqLock, SPSC, Bessel/Kalman filters, session dir, thread-config tiers) | GTest |
-| `rtc_controller_interface` | 51 C++ | GTest |
+| `rtc_controller_interface` | 52 C++ (registry 8 incl. duplicate-shadow + rt_controller_interface) | GTest |
 | `rtc_controller_manager` | 35 C++ (controller_lifecycle 9, switch_service 9, controller_timing_profiler 17) | GTest |
+| `rtc_communication` | 9 C++ (udp_loopback 5, transceiver 4) | GTest |
 | `rtc_tools` | 247 Python (pytest parameterized) | pytest |
+| `rtc_digital_twin` | 34 Python (test_urdf_parser; pytest 자동 discovery 미통과 — `pytest test/` 직접 실행 필요) | pytest |
 
-총 **1104 gtest cases + 247 pytest cases**. `rtc_tsid` · `rtc_mujoco_sim` · `rtc_communication` · `rtc_digital_twin` · `shape_estimation` 등은 등록되어 있으나 최근 실측 시점 `ament_cmake_test` 환경 이슈로 xUnit 미산출 — 이전 실행분 기준 17/77/9/1/3 C++ tests (검증 필요).
+총 **1377 gtest cases + 281 pytest cases**. 5개 신규 측정 패키지 (`rtc_tsid`/`rtc_mujoco_sim`/`rtc_communication`/`shape_estimation`/`rtc_digital_twin`) 2026-04-26 실측 추가. Q-6 추가 테스트로 `rtc_controller_interface` 51→52. **참고**: 메모리에 기록된 `.venv` overlay → `ament_cmake_test` 이슈는 현재 PC 환경에서 재현되지 않음. `rtc_digital_twin` pytest discovery 실패는 별개 이슈 (pytest config 미존재 추정).
 
 ## Live Debug Topics
 

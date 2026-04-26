@@ -7,8 +7,9 @@ Key constants: `kNumRobotJoints=6`, `kMaxDeviceChannels=64`, `kMaxSensorChannels
 Key types (all trivially copyable, RT-safe):
 - **DeviceState**: positions/velocities/efforts[64], motor_*/sensor_data/inference_data arrays
 - **ControllerState**: devices[4], num_devices, dt, iteration
-- **ControllerOutput**: devices[4], task positions, valid, command_type, grasp_state
-- **GraspStateData**: force_magnitude/contact_flag/inference_valid[8], grasp_phase, finger_s/filtered_force/force_error[8], grasp_target_force
+- **ControllerOutput**: devices[4], task positions, valid, command_type, grasp_state, wbc_state
+- **GraspStateData**: force_magnitude/contact_flag/inference_valid[8], grasp_phase, finger_s/filtered_force/force_error[8], grasp_target_force (Force-PI 데모 전용 — DemoJoint/DemoTask)
+- **WbcStateData** (2026-04-26, `6c8d70a`): wbc_phase (8-state enum), per-fingertip force/contact/displacement[8], num_active_contacts, max_force, grasp_target_force, grasp_detected, min_fingertips, tsid_solve_us, tsid_solver_ok, qp_fail_count (TSID-기반 데모 전용 — DemoWbc). RT 루프가 `output.wbc_state` → `PublishSnapshot::GroupCommandSlot::wbc_state` 로 단일 struct 복사.
 
 ## Threading Model (6-core example)
 
@@ -72,7 +73,45 @@ MPC solve-timing observability: `RTControllerInterface::GetMpcSolveStats()` retu
 [ur5e_bt_coordinator]: subscribes grasp_state/gui_position, publishes goals/gains
 ```
 
-Session logs: `logging_data/YYMMDD_HHMM/{controller,monitor,device,sim,plots,motions}/`
+## RT vs non-RT Topic Ownership
+
+YAML `ownership:` field (per `<topic>` entry in controller config) drives a 2-tier split. CM (`RtControllerNode`) owns RT-adjacent traffic; per-controller `LifecycleNode` owns external-facing snapshot traffic.
+
+```
+                            ┌────────────────────────────────────────────────┐
+                            │       RtControllerNode (CM, exec process)      │
+                            │  ┌────────────────────────────────────────┐    │
+ownership: "manager"  ──►   │  │ RT loop (500 Hz, SCHED_FIFO)           │    │
+(default)                   │  │   sub: state / motor_state / sensor    │    │
+                            │  │   pub: ros2_command, joint_command,    │    │
+                            │  │        device_state_log, sensor_log,   │    │
+                            │  │        digital_twin/joint_states       │    │
+                            │  │   safety pubs (standalone, non-life-   │    │
+                            │  │     cycle): /system/estop_status,      │    │
+                            │  │     /active_controller_name (latched), │    │
+                            │  │     /current_gains                     │    │
+                            │  └────────────────────────────────────────┘    │
+                            │                                                │
+                            │  per-controller LifecycleNode  (aux executor)  │
+                            │  ┌────────────────────────────────────────┐    │
+ownership: "controller"     │  │ namespace = /<config_key>/             │    │
+                       ──►  │  │   sub: target  (joint_goal, ee_pose)   │    │
+                            │  │   pub: gui_position, grasp_state,      │    │
+                            │  │        wbc_state, tof_snapshot         │    │
+                            │  │ RT loop never touches this node — all  │    │
+                            │  │ data flows via SPSC PublishSnapshot →  │    │
+                            │  │ publish_thread → Node->publish()       │    │
+                            │  └────────────────────────────────────────┘    │
+                            └────────────────────────────────────────────────┘
+
+External tools (BT, GUIs, digital_twin, shape_estimation) sub
+  /active_controller_name (TRANSIENT_LOCAL, CM-owned) → rewire to
+  the active controller's /<config_key>/... topics on switch.
+```
+
+Implementation: `rtc::TopicOwnership` enum (`kManager` | `kController`) read by `rtc_controllers/topic_config.hpp`. CM skips controller-owned sub/pub during configure. Publish thread routes via `RTControllerInterface::PublishNonRtSnapshot(snap)` → controller-owned `LifecyclePublisher` instances.
+
+Session logs: `logging_data/YYMMDD_HHMM/{controller,monitor,device,sim,plots,motions}/`. Per-controller logs live under `controllers/<config_key>/` (plural), CM RT loop logs under `controller/` (singular). See `feedback_session_log_dir_convention` memory for the singular vs plural distinction.
 
 Session/logging root resolution (4-tier chain, shared between `rtc_base/logging/session_dir.hpp` and `rtc_tools.utils.session_dir`):
 1. `$RTC_SESSION_DIR` -> `$UR5E_SESSION_DIR` (legacy fallback) -- used as-is if set.

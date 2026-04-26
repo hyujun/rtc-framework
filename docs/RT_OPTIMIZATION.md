@@ -1,6 +1,8 @@
-# 실시간 최적화 가이드 (v5.17.0)
+# 실시간 최적화 가이드 (v5.17.0 baseline; current trunk = v5.21.0)
 
 **RTC (Real-Time Controller) 병렬 컴퓨팅 아키텍처 상세 문서**
+
+> **Currency (2026-04-26)**: RT layout (thread tier 4/8/10/12/14/16-core) 은 commit `5f0680c` (2026-04-22, unified rework + `TierIsolationMonotonicity`) 이후 변경되지 않음. v5.18~v5.21 은 controller / MPC / WbcState 추가로 RT subsystem 외 변경. 본 문서는 trunk 와 일치.
 
 ---
 
