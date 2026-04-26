@@ -5,6 +5,7 @@
 
 #include <behaviortree_cpp/bt_factory.h>
 #include <geometry_msgs/msg/polygon.hpp>
+#include <rclcpp/parameter.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rtc_msgs/msg/grasp_state.hpp>
@@ -12,6 +13,7 @@
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/msg/to_f_snapshot.hpp>
 #include <rtc_msgs/msg/wbc_state.hpp>
+#include <rtc_msgs/srv/grasp_command.hpp>
 #include <rtc_msgs/srv/list_controllers.hpp>
 #include <rtc_msgs/srv/switch_controller.hpp>
 #include <shape_estimation_msgs/msg/shape_estimate.hpp>
@@ -121,7 +123,25 @@ public:
   void PublishHandTarget(const std::vector<double> &target);
 
   /// Publish gain update (16-element array)
+  /// DEPRECATED (Phase C of gain→parameter migration). Will be removed in
+  /// Phase E once all callers (set_gains.cpp BT node) migrate to
+  /// SetActiveControllerGains.
   void PublishGains(const std::vector<double> &gains);
+
+  /// Set ROS 2 parameters atomically on the active controller's LifecycleNode
+  /// via the rebound AsyncParametersClient. Sync wrapper — blocks until the
+  /// remote node responds or `timeout_s` elapses. Returns false on timeout,
+  /// service unavailable, or any-parameter-rejected; populates `message`
+  /// with the failure reason.
+  bool SetActiveControllerGains(const std::vector<rclcpp::Parameter> &params,
+                                double timeout_s, std::string &message);
+
+  /// Issue a one-shot Force-PI grasp command via the active controller's
+  /// /<active>/grasp_command srv. `command` uses the rtc_msgs/GraspCommand
+  /// constants (GRASP=1, RELEASE=2). `target_force` is ignored for RELEASE.
+  /// Sync wrapper — same blocking semantics as SetActiveControllerGains.
+  bool SendGraspCommand(uint8_t command, double target_force, double timeout_s,
+                        std::string &message);
 
   /// Request a controller switch via /rtc_cm/switch_controller (sync srv).
   /// Returns true when the service responded ok=true within `timeout_s`.
@@ -236,6 +256,19 @@ private:
       switch_controller_client_;
   rclcpp::Client<rtc_msgs::srv::ListControllers>::SharedPtr
       list_controllers_client_;
+
+  // ── Phase C (gain→parameter migration): per-active-controller clients ──
+  //
+  // Both rebound to the active controller in RewireControllerTopics():
+  //   active_param_client_  → /<ctrl_FQN>/{get,set}_parameters[_atomically]
+  //   grasp_command_client_ → /<ctrl_ns>/grasp_command
+  //
+  // The controller's LifecycleNode is created with namespace=/<config_key>
+  // and node-name=<config_key>, so its parameter services live under
+  // /<config_key>/<config_key>/... while its relative grasp_command srv
+  // resolves under /<config_key>/grasp_command.
+  rclcpp::AsyncParametersClient::SharedPtr active_param_client_;
+  rclcpp::Client<rtc_msgs::srv::GraspCommand>::SharedPtr grasp_command_client_;
 
   // ── Cached state ──────────────────────────────────────────────────────────
   mutable std::mutex state_mutex_;

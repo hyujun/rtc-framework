@@ -635,8 +635,100 @@ void BtRosBridge::RewireControllerTopics(const std::string &ctrl_name) {
   hand_target_pub_ = node_->create_publisher<rtc_msgs::msg::RobotTarget>(
       ns + "/hand/joint_goal", rclcpp::QoS{10});
 
+  // Phase C: bind parameter + grasp_command clients to the active controller.
+  //   Param services live on the LifecycleNode FQN /<ctrl>/<ctrl>; relative
+  //   srv 'grasp_command' resolves under namespace /<ctrl>/grasp_command.
+  active_param_client_ = std::make_shared<rclcpp::AsyncParametersClient>(
+      node_, ns + "/" + ctrl_name);
+  grasp_command_client_ =
+      node_->create_client<rtc_msgs::srv::GraspCommand>(ns + "/grasp_command");
+
   RCLCPP_INFO(bridge_log(), "rewired controller-owned topics to '%s'",
               ctrl_name.c_str());
+}
+
+// ── Phase C: parameter + grasp_command sync wrappers ────────────────────────
+
+bool BtRosBridge::SetActiveControllerGains(
+    const std::vector<rclcpp::Parameter> &params, double timeout_s,
+    std::string &message) {
+  rclcpp::AsyncParametersClient::SharedPtr client;
+  std::string ctrl;
+  {
+    std::lock_guard lock(controller_topics_mutex_);
+    client = active_param_client_;
+    ctrl = rewired_controller_;
+  }
+  if (!client) {
+    message = "no active controller (RewireControllerTopics not invoked)";
+    return false;
+  }
+  if (params.empty()) {
+    message = "no parameters supplied";
+    return true; // no-op success
+  }
+
+  const auto wait_dur = std::chrono::duration<double>(timeout_s);
+  if (!client->service_is_ready()) {
+    if (!client->wait_for_service(
+            std::chrono::duration_cast<std::chrono::milliseconds>(wait_dur))) {
+      message = "parameter service for /" + ctrl + " unavailable";
+      return false;
+    }
+  }
+
+  auto fut = client->set_parameters_atomically(params);
+  if (fut.wait_for(std::chrono::duration_cast<std::chrono::milliseconds>(
+          wait_dur)) != std::future_status::ready) {
+    message = "set_parameters_atomically timeout (" +
+              std::to_string(timeout_s) + "s) on /" + ctrl;
+    return false;
+  }
+  const auto result = fut.get();
+  if (!result.successful) {
+    message = "set_parameters_atomically rejected: " + result.reason;
+    return false;
+  }
+  message = "ok (" + std::to_string(params.size()) + " params)";
+  return true;
+}
+
+bool BtRosBridge::SendGraspCommand(uint8_t command, double target_force,
+                                   double timeout_s, std::string &message) {
+  rclcpp::Client<rtc_msgs::srv::GraspCommand>::SharedPtr client;
+  std::string ctrl;
+  {
+    std::lock_guard lock(controller_topics_mutex_);
+    client = grasp_command_client_;
+    ctrl = rewired_controller_;
+  }
+  if (!client) {
+    message = "no active controller (RewireControllerTopics not invoked)";
+    return false;
+  }
+
+  const auto wait_dur = std::chrono::duration<double>(timeout_s);
+  if (!client->service_is_ready()) {
+    if (!client->wait_for_service(
+            std::chrono::duration_cast<std::chrono::milliseconds>(wait_dur))) {
+      message = "/" + ctrl + "/grasp_command service unavailable";
+      return false;
+    }
+  }
+  auto req = std::make_shared<rtc_msgs::srv::GraspCommand::Request>();
+  req->command = command;
+  req->target_force = target_force;
+
+  auto fut = client->async_send_request(req);
+  if (fut.wait_for(std::chrono::duration_cast<std::chrono::milliseconds>(
+          wait_dur)) != std::future_status::ready) {
+    message = "grasp_command timeout (" + std::to_string(timeout_s) +
+              "s) on /" + ctrl;
+    return false;
+  }
+  auto resp = fut.get();
+  message = resp->message;
+  return resp->ok;
 }
 
 } // namespace rtc_bt
