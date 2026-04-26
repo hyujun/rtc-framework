@@ -22,6 +22,8 @@
 #include <rtc_msgs/msg/joint_command.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/msg/to_f_snapshot.hpp>
+#include <rtc_msgs/srv/list_controllers.hpp>
+#include <rtc_msgs/srv/switch_controller.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
@@ -118,6 +120,7 @@ private:
   void DeclareAndLoadParameters();
   void CreateSubscriptions();
   void CreatePublishers();
+  void CreateServices();
   void ExposeTopicParameters();
   void CreateTimers();
 
@@ -225,6 +228,16 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr
       current_gains_pub_;
 
+  // ── /rtc_cm/* services (Phase 3) ─────────────────────────────────────────
+  // Both callbacks run on cb_group_aux_ — never on the RT path. The switch
+  // service is a thin wrapper around SwitchActiveController(name, message);
+  // list_controllers builds its response from controller_states_ +
+  // controller_topic_configs_ + controller_types_.
+  rclcpp::Service<rtc_msgs::srv::ListControllers>::SharedPtr
+      list_controllers_srv_;
+  rclcpp::Service<rtc_msgs::srv::SwitchController>::SharedPtr
+      switch_controller_srv_;
+
   // JointCommand publishers (created from controller YAML kJointCommand roles)
   struct JointCommandPublisherEntry {
     rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::JointCommand>::SharedPtr
@@ -278,6 +291,11 @@ private:
   // Maps both display names ("DemoJointController") and config keys
   // ("demo_joint_controller")
   std::unordered_map<std::string, int> controller_name_to_idx_;
+
+  // Per-controller registry plugin name (config_key from
+  // RTC_REGISTER_CONTROLLER), parallel to controllers_. Returned as the
+  // `type` field by /rtc_cm/list_controllers.
+  std::vector<std::string> controller_types_;
 
   // ── Dynamic device group management ──────────────────────────────────────
   std::set<std::string> active_groups_; // union of all controller groups

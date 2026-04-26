@@ -137,6 +137,18 @@ if(BUILD_TESTING)
     target_link_libraries(test_controller_lifecycle
       rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
   endif()
+
+  ament_add_gtest(test_switch_service
+    test/test_switch_service.cpp)
+  if(TARGET test_switch_service)
+    target_include_directories(test_switch_service PRIVATE include)
+    ament_target_dependencies(test_switch_service
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs ament_index_cpp
+      rtc_controller_interface rtc_controllers rtc_base rtc_communication
+      rtc_msgs rtc_urdf_bridge)
+    target_link_libraries(test_switch_service
+      rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
 endif()
 
 ament_package()

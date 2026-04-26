@@ -8,8 +8,8 @@
 | 1 — `rtc_msgs` schema | ✅ done | `f5d3204` |
 | 1.5 — P-1 (DemoWbc idempotent) + P-2 (MPCThread Pause/Resume) | ✅ done | `e3d2c70` |
 | 2 — CM controller-level lifecycle state | ✅ done | `b4b31dc` |
-| 3 — `/rtc_cm/...` srv 도입 | ⏳ next | — |
-| 4 — BT 마이그레이션 | ⏳ pending | — |
+| 3 — `/rtc_cm/...` srv 도입 | ✅ done | (this commit) |
+| 4 — BT 마이그레이션 | ⏳ next | — |
 | 5 — Legacy topic 제거 | ⏳ pending | — |
 | 6 — 문서 + plan doc cleanup | ⏳ pending | — |
 
@@ -18,7 +18,34 @@
 - **OQ-1 = `std::vector<std::atomic<int>>`** — D-A7 4-state enum doesn't pack as bitmask; D-A1 single-active locked makes multi-active future-proofing moot.
 - **OQ-2 = `sleep_for(1.5 × dt)`** — F-3 race is benign (LifecyclePublisher drops when inactive; demo on_deactivate only toggles publishers / WBC Pause). cv-based RT-tick ack would touch RT path — rejected per E-1.
 
-## Phase 3 Entry — Handoff Notes
+## Phase 4 Entry — Handoff Notes
+
+**현재 상태 (2026-04-26)**: Phase 0/1/1.5/2/3 완료. Phase 4 (BT `SwitchController` 노드의 srv 마이그레이션) 가 다음.
+
+**Phase 3 결과 요약** — Phase 4에서 의존하는 인터페이스:
+- `/rtc_cm/list_controllers` (`rtc_msgs/srv/ListControllers`) — empty request, response = `ControllerState[]` (name/state/type/is_active/claimed_groups)
+- `/rtc_cm/switch_controller` (`rtc_msgs/srv/SwitchController`) — sync. STRICT (default) 거부 multi-activate / pure-deactivate / E-STOP / unknown name. BEST_EFFORT는 first activate target만 사용. timeout 필드는 현재 미사용 (helper 자체가 sync, ~ms).
+- 두 srv 모두 `cb_group_aux_` (RT path와 분리). `rmw_qos_profile_services_default` 사용.
+- `controller_types_` (vector<string>, parallel to `controllers_`, registry plugin name) — `ListControllers.type` 필드 source. CM cleanup 시 함께 clear.
+- 기존 `/<robot_ns>/controller_type` topic 콜백은 그대로 유지 (D-A6, Phase 5에서 제거). 내부적으로 동일한 `SwitchActiveController()` helper 호출.
+
+**Phase 4 진입 시 결정해야 할 것**: 없음. plan doc Phase 4 섹션 그대로.
+
+**Phase 4 핵심 파일**:
+- `ur5e_bt_coordinator/include/ur5e_bt_coordinator/bt_ros_bridge.hpp` + `src/bt_ros_bridge.cpp` — `switch_controller_client_` / `list_controllers_client_` 추가, `RequestSwitchController(name, timeout, message)` 헬퍼
+- `ur5e_bt_coordinator/src/nodes/switch_controller.cpp` — `BT::InputPort<bool>("use_service", true, "...")` 추가, `use_service=true` 분기에서 sync srv call
+- `ur5e_bt_coordinator/test/test_switch_controller.cpp` — service 분기 케이스 추가 (E-STOP 시 `ok=false` 포함)
+
+**Phase 3 회고 — 다음에 참고할 것**:
+- `rclcpp::QoS srv_qos(rclcpp::ServicesQoS());` 는 most-vexing-parse — `const rmw_qos_profile_t srv_qos = rmw_qos_profile_services_default;` 사용
+- `create_service<>()` 4-arg signature: `(name, callback, qos, callback_group)`. `callback_group` 안 넘기면 default group으로 들어가 RT-adjacent thread에서 callback 실행 가능 → 반드시 `cb_group_aux_` 명시
+- 새 test (test_switch_service): `MultiThreadedExecutor` + `ControllerLifecycleTestAccess` friend bridge 패턴 그대로 재사용. 친구 클래스는 같은 namespace(rtc::)지만 별도 TU라서 두 test 바이너리가 독립적으로 link됨
+
+**Pre-existing modified files** (Phase 3 commit 진입 시점부터 working tree에 있던 unrelated changes — Phase 4 작업과 무관, 건드리지 말 것): rtc_base/{README,publish_buffer,types}, rtc_controller_interface/{README,rt_controller_interface.cpp wbc_state line}, rtc_controller_manager/{README,rt_controller_node_rt_loop.cpp}, rtc_mpc/CMakeLists.txt, rtc_tools/.../plot_rtc_log.py, ur5e_bringup/{README,config/*,owned_topics.{hpp,cpp}}, ur5e_bt_coordinator/{README,bt_ros_bridge.{hpp,cpp},bt_types.hpp}. Untracked: rtc_mpc/test/test_mpc_solve_timing_logger.cpp, rtc_msgs/msg/WbcState.msg.
+
+⚠ ur5e_bt_coordinator/{bt_ros_bridge.{hpp,cpp},bt_types.hpp}는 Phase 4 본격 수정 대상 — 진입 시 사용자에게 pre-existing diff 확인 요청.
+
+## Phase 3 Entry — Handoff Notes (archived)
 
 **현재 상태 (2026-04-26)**: Phase 0/1/1.5/2 완료 (`9aa830f`, `f5d3204`, `e3d2c70`, `b4b31dc`). Phase 3 (`/rtc_cm/list_controllers` + `/rtc_cm/switch_controller` srv 도입) 가 다음.
 

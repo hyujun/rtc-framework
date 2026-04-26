@@ -94,6 +94,7 @@ RtControllerNode::on_configure(const rclcpp_lifecycle::State & /*state*/) {
   DeclareAndLoadParameters();
   CreateSubscriptions();
   CreatePublishers();
+  CreateServices();
   ExposeTopicParameters();
   CreateTimers();
 
@@ -272,12 +273,15 @@ RtControllerNode::on_cleanup(const rclcpp_lifecycle::State & /*state*/) {
   controller_states_.clear();
   controller_topic_configs_.clear();
   controller_name_to_idx_.clear();
+  controller_types_.clear();
   controller_slot_mappings_.clear();
   device_name_configs_.clear();
   slot_to_group_name_.clear();
   active_groups_.clear();
   group_slot_map_.clear();
   device_timeouts_.clear();
+  list_controllers_srv_.reset();
+  switch_controller_srv_.reset();
   logger_.reset();
 
   // 1. callback groups — kept alive (executor may still reference them)
@@ -342,11 +346,14 @@ RtControllerNode::on_error(const rclcpp_lifecycle::State & /*state*/) {
   controller_states_.clear();
   controller_topic_configs_.clear();
   controller_name_to_idx_.clear();
+  controller_types_.clear();
   controller_slot_mappings_.clear();
   device_name_configs_.clear();
   slot_to_group_name_.clear();
   active_groups_.clear();
   group_slot_map_.clear();
+  list_controllers_srv_.reset();
+  switch_controller_srv_.reset();
   device_timeouts_.clear();
   logger_.reset();
 

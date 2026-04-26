@@ -378,6 +378,7 @@ void RtControllerNode::DeclareAndLoadParameters() {
 
     controllers_.push_back(std::move(ctrl));
     controller_nodes_.push_back(std::move(ctrl_lc_node));
+    controller_types_.push_back(entry.config_key);
   }
 
   // Cache per-controller topic configs and build active_groups_ +
