@@ -11,6 +11,8 @@
 #include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/msg/to_f_snapshot.hpp>
+#include <rtc_msgs/srv/list_controllers.hpp>
+#include <rtc_msgs/srv/switch_controller.hpp>
 #include <shape_estimation_msgs/msg/shape_estimate.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
@@ -111,8 +113,20 @@ public:
   /// Publish gain update (16-element array)
   void PublishGains(const std::vector<double> &gains);
 
-  /// Publish controller switch command
+  /// Publish controller switch command (legacy publish path — D-A6 rollback).
+  /// Phase 4 default uses RequestSwitchController instead; this remains for
+  /// the SwitchController BT node's `use_service=false` branch and is removed
+  /// in Phase 5 along with /<robot_ns>/controller_type.
   void PublishSelectController(const std::string &name);
+
+  /// Request a controller switch via /rtc_cm/switch_controller (sync srv).
+  /// Returns true when the service responded ok=true within `timeout_s`.
+  /// On false, `message` carries the failure reason (E-STOP active, unknown
+  /// name, timeout, ...). Caller (BT switch_controller node) treats the
+  /// boolean as a synchronous switch confirmation — no follow-up polling on
+  /// /<robot_ns>/active_controller_name is required.
+  bool RequestSwitchController(const std::string &name, double timeout_s,
+                               std::string &message);
 
   // ── Shape estimation ────────────────────────────────────────────────────
 
@@ -209,6 +223,15 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr request_gains_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr shape_trigger_pub_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr shape_clear_client_;
+
+  // ── /rtc_cm/* service clients (Phase 4) ─────────────────────────────────
+  // Sync wrappers exposed via RequestSwitchController. list_controllers_
+  // currently has no consumer in BT but is created so future diagnostics /
+  // health-check nodes can reuse it without re-touching this file.
+  rclcpp::Client<rtc_msgs::srv::SwitchController>::SharedPtr
+      switch_controller_client_;
+  rclcpp::Client<rtc_msgs::srv::ListControllers>::SharedPtr
+      list_controllers_client_;
 
   // ── Cached state ──────────────────────────────────────────────────────────
   mutable std::mutex state_mutex_;

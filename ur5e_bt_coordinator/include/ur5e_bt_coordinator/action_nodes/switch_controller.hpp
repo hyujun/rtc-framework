@@ -10,23 +10,30 @@
 
 namespace rtc_bt {
 
-/// Switch the active controller via /{ns}/select_controller topic.
+/// Switch the active controller.
+///
+/// Phase 4 default uses the /rtc_cm/switch_controller srv (sync, single call).
+/// `use_service=false` falls back to the legacy /<robot_ns>/controller_type
+/// topic + /<robot_ns>/active_controller_name latched-confirm polling. The
+/// fallback is removed in Phase 5 along with the topic.
 ///
 /// Input ports:
 ///   - controller_name (string): target controller name
-///   - timeout_s (double): time to wait for confirmation (default 3.0)
+///   - timeout_s (double): switch timeout [s] (default 3.0)
 ///   - load_gains (bool): request current gains after switch (default true).
 ///     When true, the node requests the active controller's current gains
 ///     and stores them on the Blackboard as "current_gains" so that a
 ///     subsequent SetGains node can use them as the base instead of
 ///     hard-coded defaults.
+///   - use_service (bool, default true): srv path when true, legacy publish
+///     path when false. D-A6 rollback knob — removed in Phase 5.
 ///
 /// Output ports:
 ///   - current_gains (vector<double>): gains loaded from the controller
 ///     (only written when load_gains is true and gains are received)
 class SwitchController : public BT::StatefulActionNode {
 public:
-  SwitchController(const std::string& name, const BT::NodeConfig& config,
+  SwitchController(const std::string &name, const BT::NodeConfig &config,
                    std::shared_ptr<BtRosBridge> bridge);
 
   static BT::PortsList providedPorts();
@@ -40,9 +47,10 @@ private:
   std::string target_name_;
   double timeout_s_{3.0};
   bool load_gains_{true};
+  bool use_service_{true};
   bool switch_confirmed_{false};
   bool gains_requested_{false};
   std::chrono::steady_clock::time_point start_time_;
 };
 
-}  // namespace rtc_bt
+} // namespace rtc_bt

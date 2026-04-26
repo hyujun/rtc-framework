@@ -124,6 +124,14 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node)
   shape_clear_client_ =
       node_->create_client<std_srvs::srv::Trigger>("/shape/clear");
 
+  // ── /rtc_cm/* service clients (Phase 4) ───────────────────────────────
+  switch_controller_client_ =
+      node_->create_client<rtc_msgs::srv::SwitchController>(
+          "/rtc_cm/switch_controller");
+  list_controllers_client_ =
+      node_->create_client<rtc_msgs::srv::ListControllers>(
+          "/rtc_cm/list_controllers");
+
   RCLCPP_INFO(bridge_log(), "initialized");
 }
 
@@ -243,6 +251,39 @@ void BtRosBridge::PublishSelectController(const std::string &name) {
   msg.data = name;
   RCLCPP_DEBUG(bridge_log(), "select_controller: %s", name.c_str());
   select_ctrl_pub_->publish(msg);
+}
+
+bool BtRosBridge::RequestSwitchController(const std::string &name,
+                                          double timeout_s,
+                                          std::string &message) {
+  if (!switch_controller_client_->service_is_ready()) {
+    // Single 200ms grace period so the client survives a brief CM start race.
+    if (!switch_controller_client_->wait_for_service(
+            std::chrono::milliseconds(200))) {
+      message = "switch_controller service unavailable";
+      return false;
+    }
+  }
+  auto req = std::make_shared<rtc_msgs::srv::SwitchController::Request>();
+  req->activate_controllers = {name};
+  req->strictness = rtc_msgs::srv::SwitchController::Request::STRICT;
+  // Mirror caller's timeout into the service field (server currently treats
+  // the field as informational — D-A4 sync helper bounds latency to ~ms).
+  const auto t_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(timeout_s));
+  req->timeout.sec = static_cast<int32_t>(t_ns.count() / 1'000'000'000LL);
+  req->timeout.nanosec = static_cast<uint32_t>(t_ns.count() % 1'000'000'000LL);
+
+  auto fut = switch_controller_client_->async_send_request(req);
+  const auto wait_ms = static_cast<int64_t>(timeout_s * 1000.0);
+  if (fut.wait_for(std::chrono::milliseconds(wait_ms)) !=
+      std::future_status::ready) {
+    message = "switch_controller timeout (" + std::to_string(timeout_s) + "s)";
+    return false;
+  }
+  auto resp = fut.get();
+  message = resp->message;
+  return resp->ok;
 }
 
 // ── Shape estimation ──────────────────────────────────────────────────────
