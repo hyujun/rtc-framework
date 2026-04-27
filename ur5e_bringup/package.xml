@@ -28,6 +28,7 @@
   <exec_depend>rtc_tools</exec_depend>
   <depend>ur5e_description</depend>
   <exec_depend>ur5e_hand_driver</exec_depend>
+  <exec_depend>ur_robot_driver</exec_depend>
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>eigen</test_depend>
   <export>

@@ -351,7 +351,7 @@ setup_workspace() {
       ${ROS_PKG_PREFIX}-ament-cmake-gtest \
       ${ROS_PKG_PREFIX}-ament-lint-auto \
       ${ROS_PKG_PREFIX}-ament-lint-common \
-      ${ROS_PKG_PREFIX}-controller-manager-msgs \
+      libeigen3-dev \
       python3-colcon-common-extensions \
       python3-vcstool \
       ethtool \
