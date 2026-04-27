@@ -43,11 +43,10 @@ runs:
       if: inputs.install-ros != 'true'
       uses: ros-tooling/setup-ros@v0.7
 
-    # setup-ros 의 colcon-cmake 가 다중 의존성에서 CMAKE_PREFIX_PATH 구분자를
-    # 세미콜론(;)으로 잘못 설정 — pip 으로 최신 버전 강제 (HISTORICAL: 2025년 보고된 버그)
-    - name: Upgrade colcon
-      shell: bash
-      run: pip install -U colcon-cmake colcon-core
+    # setup-ros@v0.7.15 의 colcon-cmake 는 CMAKE_PREFIX_PATH 세미콜론 버그 fix 됨
+    # (이전 workflow 의 `pip install -U colcon-cmake colcon-core` 는 user site-packages
+    # 에 설치되어 system ament_cmake_test 모듈을 가려 ModuleNotFoundError 발생).
+    # 향후 colcon 자체에 fresh bug 발견되면 여기에서 핀-버전으로 격리 권장.
 
     - name: Cache apt packages
       if: inputs.apt-packages != ''
