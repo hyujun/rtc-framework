@@ -2,7 +2,7 @@
 # setup_env.sh — rtc_ws 개발 환경 활성화.
 #
 # Source 순서:
-#   1. ROS 2 Jazzy (pinocchio · hpp-fcl · proxsuite · rclcpp 등)
+#   1. ROS 2 (jazzy 우선, humble fallback) — pinocchio · hpp-fcl · proxsuite · rclcpp 등
 #   2. deps/install  (fmt · mimalloc · aligator — 소스 빌드, scripts/build_deps.sh 산출물)
 #   3. .venv         (Python 의존성; ROS Python 모듈은 system-site-packages 로 상속)
 #   4. install/      (워크스페이스 overlay — 있을 때만)
@@ -13,10 +13,17 @@
 # 사용:
 #   source <rtc_ws>/src/rtc-framework/rtc_scripts/scripts/setup_env.sh
 
-# ROS 2
+# ROS 2 — distro 자동 탐색 (jazzy 우선, humble fallback).
+# fresh PC: ROS 미설치 시 silent 통과 — install.sh 가 이후 auto-install 처리.
 if [[ -z "${ROS_DISTRO:-}" ]]; then
-  # shellcheck source=/dev/null
-  source /opt/ros/jazzy/setup.bash
+  for _distro in jazzy humble; do
+    if [[ -f "/opt/ros/${_distro}/setup.bash" ]]; then
+      # shellcheck source=/dev/null
+      source "/opt/ros/${_distro}/setup.bash"
+      break
+    fi
+  done
+  unset _distro
 fi
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"

@@ -372,6 +372,36 @@ install_ur_driver() {
   success "UR robot driver and CycloneDDS installed"
 }
 
+# ── Python venv 자동 생성 (24.04 PEP 668 우회) ─────────────────────────────
+# 24.04+ 는 libpython3.12-stdlib 가 EXTERNALLY-MANAGED 마커를 깔아
+# system Python 에 대한 `pip install` 을 차단한다 (PEP 668).
+# 대응: workspace 루트에 .venv 를 자동 생성하여 install_python_*_deps 의
+# pip install 경로가 venv 안에서 동작하도록 한다.
+#   --system-site-packages: ROS rclpy / ament_* 모듈 상속
+#   기존 .venv 가 있으면 재사용 (멱등)
+#   이미 다른 venv 가 활성이면 그것을 그대로 사용
+ensure_venv() {
+  if is_venv_active; then
+    info "venv already active: ${VIRTUAL_ENV} — reusing"
+    return 0
+  fi
+
+  local venv_dir="${WORKSPACE}/.venv"
+  if [[ ! -f "${venv_dir}/bin/activate" ]]; then
+    info "Creating Python venv at ${venv_dir} (PEP 668 workaround for 24.04+)..."
+    apt_update_if_stale
+    sudo apt-get install -y python3-venv > /dev/null
+    python3 -m venv --system-site-packages "${venv_dir}"
+    success "venv created: ${venv_dir}"
+  else
+    info "venv already exists at ${venv_dir} — activating"
+  fi
+
+  # shellcheck disable=SC1091
+  source "${venv_dir}/bin/activate"
+  success "venv activated: ${VIRTUAL_ENV}"
+}
+
 # ── Python dev headers + NumPy (required by eigenpy cmake detection) ───────────
 # eigenpy's python.cmake calls FIND_NUMPY at cmake configure time.
 # python3-dev provides Python.h; python3-numpy provides numpy headers.
@@ -1092,6 +1122,7 @@ fi
 if [[ "$SKIP_DEPS" -eq 0 ]]; then
   check_workspace_structure "$INSTALL_SCRIPT_DIR"
   check_prerequisites
+  ensure_venv
   setup_workspace
 
   install_python_base_deps

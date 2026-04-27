@@ -2,7 +2,7 @@
 # build_deps.sh — fmt + mimalloc + aligator 를 deps/install/ 로 소스 빌드.
 #
 # 의존성 위상: fmt → mimalloc → aligator (aligator 가 fmt + mimalloc + pinocchio + hpp-fcl 요구).
-# pinocchio · hpp-fcl 은 ROS Jazzy 판을 그대로 사용 (ABI 호환 확인됨).
+# pinocchio · hpp-fcl 은 ROS distribution (jazzy 또는 humble) 판을 그대로 사용 (ABI 호환 확인됨).
 #
 # 산출물: deps/install/{lib,include,lib/cmake/...}
 # RPATH: $ORIGIN/../lib + deps/install/lib + ROS lib — 시스템 /usr/local 참조 없음.
@@ -16,10 +16,22 @@ REPO="$(cd "${_SCRIPT_DIR}/../.." && pwd)"
 DEPS_PREFIX="${WS}/deps/install"
 
 # ── ROS 소싱 (hpp-fcl_DIR resolve 용) ─────────────────────────────────────
-# NOTE: /opt/ros/jazzy/setup.bash references unbound vars, so we don't use `set -u`.
+# NOTE: /opt/ros/*/setup.bash references unbound vars, so we don't use `set -u`.
 if [[ -z "${ROS_DISTRO:-}" ]]; then
-  # shellcheck source=/dev/null
-  source /opt/ros/jazzy/setup.bash
+  for _distro in jazzy humble; do
+    if [[ -f "/opt/ros/${_distro}/setup.bash" ]]; then
+      # shellcheck source=/dev/null
+      source "/opt/ros/${_distro}/setup.bash"
+      break
+    fi
+  done
+  unset _distro
+fi
+
+if [[ -z "${ROS_DISTRO:-}" ]]; then
+  echo "ERROR: ROS 2 not found. Install jazzy or humble first:" >&2
+  echo "       ./install.sh --skip-build  # apt deps + ROS auto-install only" >&2
+  exit 1
 fi
 
 HPPFCL_CMAKE_DIR="/opt/ros/${ROS_DISTRO}/lib/x86_64-linux-gnu/cmake/hpp-fcl"
