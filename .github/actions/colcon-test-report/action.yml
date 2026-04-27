@@ -1,0 +1,118 @@
+name: Colcon Test + Report
+description: |
+  colcon test 실행 → GITHUB_STEP_SUMMARY 에 markdown 표 작성 →
+  실패 시 ctest --output-on-failure 덤프 + log/latest_test/ artifact upload.
+
+  Caller responsibility:
+    - colcon-build 가 먼저 성공
+    - install/setup.bash 가 존재 (build 산출물)
+
+inputs:
+  packages:
+    description: Space-separated package list for `--packages-select`
+    required: true
+  ros-distro:
+    description: ROS 2 distribution to source
+    required: false
+    default: jazzy
+  deps-install-path:
+    description: Path to deps/install (for runtime LD_LIBRARY_PATH)
+    required: false
+    default: ""
+  pytest-args:
+    description: Extra arguments forwarded via `--pytest-args`
+    required: false
+    default: ""
+  summary-title:
+    description: Heading shown in job summary
+    required: false
+    default: Test Results
+  artifact-suffix:
+    description: Suffix for failure log artifact name (must be unique per job)
+    required: false
+    default: test
+
+runs:
+  using: composite
+  steps:
+    - name: Run colcon test
+      id: test
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        ROS_DISTRO: ${{ inputs.ros-distro }}
+        DEPS_INSTALL: ${{ inputs.deps-install-path }}
+        PYTEST_ARGS: ${{ inputs.pytest-args }}
+      run: |
+        set -eo pipefail
+        source "/opt/ros/${ROS_DISTRO}/setup.bash"
+        source install/setup.bash
+
+        if [ -n "${DEPS_INSTALL}" ] && [ -d "${DEPS_INSTALL}" ]; then
+          export LD_LIBRARY_PATH="${DEPS_INSTALL}/lib:${LD_LIBRARY_PATH:-}"
+        fi
+
+        EXTRA=""
+        if [ -n "${PYTEST_ARGS}" ]; then
+          EXTRA="--pytest-args ${PYTEST_ARGS}"
+        fi
+
+        # shellcheck disable=SC2086
+        colcon test \
+          --packages-select ${PACKAGES} \
+          --event-handlers console_cohesion+ \
+          --return-code-on-test-failure \
+          ${EXTRA}
+
+    - name: Render test summary
+      if: always()
+      shell: bash
+      env:
+        ROS_DISTRO: ${{ inputs.ros-distro }}
+        TITLE: ${{ inputs.summary-title }}
+      run: |
+        source "/opt/ros/${ROS_DISTRO}/setup.bash"
+        {
+          echo "## ${TITLE}"
+          echo ""
+          echo '```'
+          colcon test-result --all --verbose 2>&1 || true
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        # Failed test → annotation (GitHub Checks API 노출)
+        colcon test-result --all --verbose 2>&1 \
+          | grep -E "FAILED|errors|failures" \
+          | while IFS= read -r line; do
+              echo "::error title=Test Failure::${line}"
+            done || true
+
+    - name: Dump failed test ctest output
+      if: failure()
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        {
+          echo "## Failed Test Details"
+          # shellcheck disable=SC2086
+          for pkg in ${PACKAGES}; do
+            if [ -d "build/${pkg}" ]; then
+              echo "### ${pkg}"
+              echo '```'
+              ( cd "build/${pkg}" && ctest --output-on-failure --no-tests=ignore 2>&1 | tail -200 ) || true
+              echo '```'
+            fi
+          done
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload test failure logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: colcon-test-logs-${{ inputs.artifact-suffix }}
+        path: |
+          log/latest_test/
+          build/**/Testing/Temporary/LastTest.log
+        if-no-files-found: warn
+        retention-days: 7

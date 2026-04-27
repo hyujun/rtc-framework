@@ -1,0 +1,101 @@
+name: Build Isolated RTC Dependencies
+description: |
+  fmt 11.1.4 / mimalloc 2.1.7 / aligator 0.19.0 을 deps.repos 명세대로 소스 빌드.
+  결과물(`deps/install/`)을 cache + artifact 로 노출하여 후속 build/test/codeql/clang-tidy
+  job 들이 동일한 binary 를 공유.
+
+  Cache key: hashFiles('deps.repos', 'rtc_scripts/scripts/build_deps.sh') + ros-distro.
+  Cache hit 시 `build_deps.sh` 를 skip 하고 install tree 만 복원 (수십 초).
+  Cache miss 시 hosted runner 에서 ~15 분 빌드.
+
+  주의: build_deps.sh 는 `<rtc_ws>/deps/install/` 경로에 install (script 가
+  4-up 으로 workspace 추론). 이 action 은 GitHub Actions 의 단일 checkout 구조에
+  맞춰 `<repo>/_rtc_ws/src/rtc-framework` symlink 를 만들어 우회.
+
+inputs:
+  ros-distro:
+    description: ROS 2 distribution (jazzy / humble)
+    required: false
+    default: jazzy
+  cache-version:
+    description: Cache version key suffix (bump to invalidate dep cache)
+    required: false
+    default: v1
+
+outputs:
+  deps-install-path:
+    description: Absolute path to the populated deps/install directory
+    value: ${{ steps.export.outputs.path }}
+  cache-hit:
+    description: 'Set to the string "true" if deps cache restored without rebuild'
+    value: ${{ steps.cache.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compute deps install path
+      id: paths
+      shell: bash
+      run: |
+        # build_deps.sh 는 src/rtc-framework/rtc_scripts/scripts → 4-up 을 WS 로 사용.
+        # GitHub Actions checkout 은 repo 만 풀므로 src/rtc-framework symlink 구조를 만든다.
+        WS_ROOT="${GITHUB_WORKSPACE}/_rtc_ws"
+        DEPS_INSTALL="${WS_ROOT}/deps/install"
+        echo "ws-root=${WS_ROOT}" >> "$GITHUB_OUTPUT"
+        echo "deps-install=${DEPS_INSTALL}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore deps cache
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.paths.outputs.ws-root }}/deps/install
+        key: rtc-deps-${{ inputs.ros-distro }}-${{ inputs.cache-version }}-${{ hashFiles('deps.repos', 'rtc_scripts/scripts/build_deps.sh') }}
+
+    - name: Build isolated deps (cache miss)
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        WS_ROOT: ${{ steps.paths.outputs.ws-root }}
+      run: |
+        set -eo pipefail
+        # rtc-framework checkout 을 src/ 하위로 symlink (build_deps.sh 가정)
+        mkdir -p "${WS_ROOT}/src"
+        if [ ! -e "${WS_ROOT}/src/rtc-framework" ]; then
+          ln -s "${GITHUB_WORKSPACE}" "${WS_ROOT}/src/rtc-framework"
+        fi
+        source "/opt/ros/${{ inputs.ros-distro }}/setup.bash"
+        # build_deps.sh 는 set -eo pipefail 로 동작
+        bash "${GITHUB_WORKSPACE}/rtc_scripts/scripts/build_deps.sh"
+
+    - name: Verify deps install
+      shell: bash
+      env:
+        DEPS_INSTALL: ${{ steps.paths.outputs.deps-install }}
+      run: |
+        if [ ! -d "${DEPS_INSTALL}/lib" ]; then
+          echo "::error::deps install missing: ${DEPS_INSTALL}/lib"
+          exit 1
+        fi
+        echo "=== deps/install/lib ==="
+        ls -la "${DEPS_INSTALL}/lib/" | grep -E 'libaligator|libfmt|libmimalloc' || {
+          echo "::error::expected libraries not found"
+          exit 1
+        }
+        echo "=== deps/install/lib/cmake ==="
+        ls "${DEPS_INSTALL}/lib/cmake/" 2>/dev/null || true
+
+    - name: Export deps path
+      id: export
+      shell: bash
+      env:
+        DEPS_INSTALL: ${{ steps.paths.outputs.deps-install }}
+      run: echo "path=${DEPS_INSTALL}" >> "$GITHUB_OUTPUT"
+
+    - name: Upload deps artifact
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: rtc-deps-${{ inputs.ros-distro }}
+        path: ${{ steps.paths.outputs.deps-install }}
+        retention-days: 1
+        if-no-files-found: error
