@@ -56,16 +56,30 @@ runs:
       shell: bash
       env:
         WS_ROOT: ${{ steps.paths.outputs.ws-root }}
+        DEPS_INSTALL: ${{ steps.paths.outputs.deps-install }}
       run: |
         set -eo pipefail
-        # rtc-framework checkout 을 src/ 하위로 symlink (build_deps.sh 가정)
-        mkdir -p "${WS_ROOT}/src"
-        if [ ! -e "${WS_ROOT}/src/rtc-framework" ]; then
-          ln -s "${GITHUB_WORKSPACE}" "${WS_ROOT}/src/rtc-framework"
-        fi
+        # build_deps.sh 는 _SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) 후
+        # 4-up 을 WS 로 사용. GitHub Actions checkout 은 /home/runner/work/<repo>/<repo>/
+        # 구조이므로 4-up = /home/runner/work/. build_deps.sh 가 거기에 deps/install 을
+        # 만든 뒤 우리 expected path (${WS_ROOT}/deps/install) 로 이동.
         source "/opt/ros/${{ inputs.ros-distro }}/setup.bash"
-        # build_deps.sh 는 set -eo pipefail 로 동작
         bash "${GITHUB_WORKSPACE}/rtc_scripts/scripts/build_deps.sh"
+
+        # build_deps.sh 가 추론한 실제 install 경로 = repo 부모 부모 / deps/install
+        ACTUAL_WS="$(cd "${GITHUB_WORKSPACE}/../.." && pwd)"
+        ACTUAL_INSTALL="${ACTUAL_WS}/deps/install"
+        if [ ! -d "${ACTUAL_INSTALL}/lib" ]; then
+          echo "::error::build_deps.sh did not produce ${ACTUAL_INSTALL}/lib"
+          ls -la "${ACTUAL_WS}/deps/" 2>/dev/null || true
+          exit 1
+        fi
+
+        # expected path 로 이동 (action consumer 가 download-artifact 로 받을 위치)
+        mkdir -p "${WS_ROOT}/deps"
+        mv "${ACTUAL_WS}/deps/install" "${WS_ROOT}/deps/install"
+        # build/src 디렉토리는 cache 가 필요 없으므로 그대로 두거나 정리
+        rm -rf "${ACTUAL_WS}/deps/build" "${ACTUAL_WS}/deps/src" 2>/dev/null || true
 
     - name: Verify deps install
       shell: bash
