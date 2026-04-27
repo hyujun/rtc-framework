@@ -57,7 +57,7 @@ fallocate failed: Text file busy
 | D-3 | OS / ROS matrix | **Ubuntu 24.04 + jazzy 단일** | Humble 추가 시 CI 시간 2x, 현 운영 환경 jazzy |
 | D-4 | deps 공유 메커니즘 | **artifact** | cross-job 공유 명확. cache 보다 결정적 |
 | D-Q2 | rtc_mpc CI 포함 | **포함 (build_deps 빌드)** | ur5e_bringup transitive — 분리 시 ur5e_bringup 도 제외해야 함 |
-| D-Q3 | PR 분할 | **Phase 별 PR** | 단일 거대 PR 보다 회귀 격리 용이 |
+| D-Q3 | PR 분할 | **단일 PR (revised 2026-04-27 mid-session)** | branch 가 점진 빌드, 최종 PR 의 CI run 으로 통합 검증 |
 
 **Locked**: 위 6개 결정은 rewrite 종료까지 재논의 X. 변경 필요 시 새 [CONCERN] 발의.
 
@@ -204,18 +204,22 @@ codeql     ─► (자체 SARIF upload 유지)
 
 Wall-clock 측정: `gh run watch` × 3 회 평균. 목표 < 8 min (cache hit), < 14 min (cold).
 
-## 5. 단계별 PR 순서
+## 5. 통합 PR 전략 (revised 2026-04-27)
 
-| # | PR 제목 | 의존 | 검증 |
-|---|---------|------|------|
-| 1 | `ci: add composite actions for ROS workflow primitives` | - | 기존 yaml 그대로, action 호출 X (no-op merge) |
-| 2 | `ci: extract package list to .github/ci-packages.yml SSoT` | PR 1 | 기존 4벌 env 와 동일성 확인 |
-| 3 | `ci: rewrite jobs — build-deps artifact, drop claude-review, split coverage` | PR 1, 2 | **fmt 11 빌드 통과** (root cause fix) |
-| 4 | `ci: improve diagnostics — failure artifacts, gated coverage` | PR 3 | 의도 회귀 매트릭스 |
-| 5 | `ci: cleanup — Node 24 native, agent_docs paths-ignore` | PR 3 | warning 0 |
-| 6 | (optional) `ci: validation matrix doc` | PR 5 | wall-clock 측정 결과 기록 |
+D-Q3 변경: 단일 branch 에 phase 1~5 누적 → 마지막에 PR 1개. 검증은 PR 의 CI run 1회로 통합.
 
-각 PR 은 별도 fork branch 에서 dry-run 후 main merge.
+| # | Branch commit | 검증 시점 |
+|---|---------------|----------|
+| 1 | `ci: add composite actions ...` (856de70, pushed) | 다음 commit 후 통합 |
+| 2 | `ci: extract package list to .github/ci-packages.yml SSoT` | (deferred to final PR) |
+| 3 | `ci: rewrite jobs — build-deps artifact, drop claude-review` | (deferred) |
+| 4 | `ci: improve diagnostics — failure artifacts, gated coverage` | (deferred) |
+| 5 | `ci: cleanup — Node 24 native, agent_docs paths-ignore` | (deferred) |
+
+최종 PR 1개 (`ci/rewrite-phase1-composite-actions` 그대로 또는 `ci/rewrite` 로 rename):
+- 5 commit, 단계별 history 보존 → review 시 phase 단위로 읽기 가능
+- CI run 1회로 fmt 11 root cause fix + diagnostics + Node 24 통합 검증
+- main merge 후 본 plan 문서 status 를 "completed" 로 갱신, archive
 
 ## 6. Risk register
 
