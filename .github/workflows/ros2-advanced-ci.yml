@@ -1,10 +1,21 @@
 name: ROS2 Advanced CI
 
+# 전면 재작성: 2026-04-27 (agent_docs/ci-rewrite-plan.md)
+# 핵심 변경:
+#   - build-deps job: fmt 11 / mimalloc / aligator 사전 빌드 → cache + artifact
+#     (이전 실패의 root cause 해결: rtc_mpc 의 find_package(fmt 10) 실패)
+#   - claude-review job 제거 (D-1)
+#   - 패키지 목록 SSoT: .github/ci-packages.yml
+#   - composite actions 활용 (.github/actions/*)
+#   - coverage upload 분리 (build 실패에 묶이지 않음)
+#   - paths-ignore 에 agent_docs/** 추가
+
 on:
   push:
     branches: [main]
     paths-ignore:
       - 'docs/**'
+      - 'agent_docs/**'
       - '*.md'
       - 'rtc_scripts/**'
       - 'LICENSE'
@@ -13,6 +24,7 @@ on:
     branches: [main]
     paths-ignore:
       - 'docs/**'
+      - 'agent_docs/**'
       - '*.md'
       - 'rtc_scripts/**'
       - 'LICENSE'
@@ -24,55 +36,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Node.js 20 deprecation 대응 — 2026-06-02부터 Node.js 24 강제 전환 예정
-  # actions/checkout@v4, dorny/paths-filter@v3 등이 Node.js 20 사용 중이므로
-  # 사전에 Node.js 24 런타임으로 전환하여 호환성 검증
+  ROS_DISTRO: jazzy
+  # ros-tooling/setup-ros@v0.7 (latest 0.7.15) 는 아직 Node 20 사용 — 강제 Node 24
+  # 으로 호환성 유지. 2026-06-02 부터 GitHub Actions 가 Node 24 강제 전환.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
-  # ── 패키지 목록 (모든 job에서 공유) ──────────────────────────────
-  # colcon --packages-up-to 빌드 대상 (의존성 자동 포함: rtc_base, rtc_msgs 등)
-  # 제외: rtc_mujoco_sim (MuJoCo 미설치)
-  BUILD_PACKAGES: >-
-    rtc_controller_manager
-    rtc_controllers
-    rtc_tsid
-    ur5e_bringup
-    ur5e_bt_coordinator
-    ur5e_hand_driver
-    rtc_urdf_bridge
-    shape_estimation
-  # C++ 테스트 실행 대상 (BUILD_PACKAGES의 부분집합 + 의존성으로 빌드되는 rtc_base)
-  CPP_TEST_PACKAGES: >-
-    rtc_base
-    rtc_controllers
-    rtc_tsid
-    rtc_urdf_bridge
-    shape_estimation
-    ur5e_bringup
-    ur5e_bt_coordinator
-    ur5e_hand_driver
-  PYTHON_TEST_PACKAGES: >-
-    rtc_tools
-    rtc_digital_twin
-  # cppcheck 대상 (include/ 또는 src/ 가 있는 C++ 패키지)
-  LINT_PACKAGES: >-
-    rtc_base
-    rtc_communication
-    rtc_controller_interface
-    rtc_controller_manager
-    rtc_controllers
-    rtc_inference
-    rtc_msgs
-    rtc_tsid
-    rtc_urdf_bridge
-    shape_estimation
-    ur5e_bringup
-    ur5e_bt_coordinator
-    ur5e_hand_driver
 
 jobs:
   # ============================================================
-  #  변경 감지 — 후속 job 실행 여부 결정
+  #  Path filter — 후속 job 실행 여부 결정
   # ============================================================
   changes:
     name: Detect Changes
@@ -81,389 +52,456 @@ jobs:
       cpp: ${{ steps.filter.outputs.cpp }}
       python: ${{ steps.filter.outputs.python }}
     steps:
-    - uses: actions/checkout@v4
-    - uses: dorny/paths-filter@v3
-      id: filter
-      with:
-        filters: |
-          cpp:
-            - '**/*.hpp'
-            - '**/*.cpp'
-            - '**/*.h'
-            - '**/CMakeLists.txt'
-            - '**/package.xml'
-            - '**/*.yaml'
-            - '**/*.yml'
-            - '**/*.xml'
-            - '**/*.urdf'
-            - '**/*.msg'
-            - '**/*.srv'
-          python:
-            - 'rtc_tools/**/*.py'
-            - 'rtc_digital_twin/**/*.py'
-            - 'rtc_tools/setup.py'
-            - 'rtc_tools/setup.cfg'
-            - 'rtc_digital_twin/setup.py'
-            - 'rtc_digital_twin/setup.cfg'
-            - 'rtc_msgs/msg/*.msg'
-            - 'rtc_msgs/srv/*.srv'
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            cpp:
+              - '**/*.hpp'
+              - '**/*.cpp'
+              - '**/*.h'
+              - '**/CMakeLists.txt'
+              - '**/package.xml'
+              - '**/*.yaml'
+              - '**/*.yml'
+              - '**/*.xml'
+              - '**/*.urdf'
+              - '**/*.msg'
+              - '**/*.srv'
+              - '.github/actions/**'
+              - '.github/ci-packages.yml'
+              - 'deps.repos'
+              - 'rtc_scripts/scripts/build_deps.sh'
+            python:
+              - 'rtc_tools/**/*.py'
+              - 'rtc_digital_twin/**/*.py'
+              - 'rtc_tools/setup.py'
+              - 'rtc_tools/setup.cfg'
+              - 'rtc_digital_twin/setup.py'
+              - 'rtc_digital_twin/setup.cfg'
+              - 'rtc_msgs/msg/*.msg'
+              - 'rtc_msgs/srv/*.srv'
+
   # ============================================================
-  #  C++ Linting (cppcheck) — jazzy 1회만 실행
-  #  cppcheck는 컴파일러/distro 무관 정적 분석이므로 matrix 불필요.
-  #  clang-tidy가 상위 호환이나, cppcheck는 빌드 없이 빠르게 실행 가능.
+  #  Package list loader — .github/ci-packages.yml 을 4개 output 으로 노출
+  # ============================================================
+  packages:
+    name: Load Package Lists
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.load.outputs.build }}
+      test_cpp: ${{ steps.load.outputs.test_cpp }}
+      test_python: ${{ steps.load.outputs.test_python }}
+      lint_cpp: ${{ steps.load.outputs.lint_cpp }}
+      coverage_paths: ${{ steps.load.outputs.coverage_paths }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Parse ci-packages.yml
+        id: load
+        run: |
+          set -eo pipefail
+          # ubuntu-24.04 image 는 yq 4.x preinstalled
+          BUILD=$(yq -r '.build | join(" ")' .github/ci-packages.yml)
+          TEST_CPP=$(yq -r '.test_cpp | join(" ")' .github/ci-packages.yml)
+          TEST_PY=$(yq -r '.test_python | join(" ")' .github/ci-packages.yml)
+          LINT=$(yq -r '.lint_cpp | join(" ")' .github/ci-packages.yml)
+          # coverage_paths: lcov --extract 의 다중 인자 — 한 줄에 공백 분리
+          COV=$(yq -r '.coverage_paths | join(" ")' .github/ci-packages.yml)
+          {
+            echo "build=${BUILD}"
+            echo "test_cpp=${TEST_CPP}"
+            echo "test_python=${TEST_PY}"
+            echo "lint_cpp=${LINT}"
+            echo "coverage_paths=${COV}"
+          } >> "$GITHUB_OUTPUT"
+          echo "build=${BUILD}"
+          echo "test_cpp=${TEST_CPP}"
+          echo "test_python=${TEST_PY}"
+          echo "lint_cpp=${LINT}"
+
+  # ============================================================
+  #  Build isolated deps — fmt 11 / mimalloc / aligator
+  #  cache hit 시 skip, miss 시 ~15 min 빌드 후 artifact upload
+  # ============================================================
+  build-deps:
+    name: Build Isolated Deps
+    needs: [changes, packages]
+    if: needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-rtc-env
+        with:
+          ros-distro: ${{ env.ROS_DISTRO }}
+          apt-cache-version: deps-v1
+          apt-packages: >-
+            ros-jazzy-pinocchio
+            ros-jazzy-hpp-fcl
+            ros-jazzy-eigenpy
+            ros-jazzy-proxsuite
+            libeigen3-dev
+
+      - name: Build & cache deps
+        uses: ./.github/actions/build-isolated-deps
+        with:
+          ros-distro: ${{ env.ROS_DISTRO }}
+          cache-version: v1
+
+  # ============================================================
+  #  C++ Lint (cppcheck) — deps 불요
   # ============================================================
   lint-cpp:
     name: C++ Lint (cppcheck)
-    needs: changes
+    needs: [changes, packages]
     if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-    - name: Setup ROS2 Jazzy
-      uses: ros-tooling/setup-ros@v0.7
-      with:
-        required-ros-distributions: jazzy
+      - name: Setup environment
+        uses: ./.github/actions/setup-rtc-env
+        with:
+          ros-distro: ${{ env.ROS_DISTRO }}
+          apt-cache-version: lint-v1
+          install-numpy: "false"
+          apt-packages: >-
+            ros-jazzy-pinocchio
+            ros-jazzy-proxsuite
+            ros-jazzy-behaviortree-cpp
+            ros-jazzy-tinyxml2-vendor
+            libyaml-cpp-dev
+            libtinyxml2-dev
+            libeigen3-dev
 
-    - name: Cache apt packages
-      uses: awalsh128/cache-apt-pkgs-action@v1
-      with:
-        packages: >-
-          ros-jazzy-pinocchio
-          ros-jazzy-proxsuite
-          ros-jazzy-behaviortree-cpp
-          ros-jazzy-tinyxml2-vendor
-          libyaml-cpp-dev
-          libtinyxml2-dev
-          libeigen3-dev
-        version: jazzy-lint-v5
-
-    - name: Run cppcheck
-      env:
-        AMENT_CPPCHECK_ALLOW_SLOW_VERSIONS: 1
-      run: |
-        source /opt/ros/jazzy/setup.bash
-
-        # LINT_PACKAGES 환경 변수에서 패키지 목록 로드
-        read -ra PACKAGES <<< "$LINT_PACKAGES"
-
-        ERRORS=0
-        for pkg in "${PACKAGES[@]}"; do
-          if [ ! -d "$pkg" ]; then continue; fi
-          echo "=== Checking $pkg ==="
-
-          # include/ 와 src/ 디렉토리만 검사 (test/ 제외)
-          DIRS=""
-          [ -d "$pkg/include" ] && DIRS="$DIRS $pkg/include"
-          [ -d "$pkg/src" ] && DIRS="$DIRS $pkg/src"
-
-          if [ -z "$DIRS" ]; then
-            echo "  No include/ or src/ — skipped"
-            continue
+      - name: Run cppcheck
+        env:
+          AMENT_CPPCHECK_ALLOW_SLOW_VERSIONS: 1
+          LINT_PACKAGES: ${{ needs.packages.outputs.lint_cpp }}
+        run: |
+          set -eo pipefail
+          source /opt/ros/${{ env.ROS_DISTRO }}/setup.bash
+          read -ra PACKAGES <<< "$LINT_PACKAGES"
+          ERRORS=0
+          for pkg in "${PACKAGES[@]}"; do
+            [ -d "$pkg" ] || continue
+            DIRS=""
+            [ -d "$pkg/include" ] && DIRS="$DIRS $pkg/include"
+            [ -d "$pkg/src" ] && DIRS="$DIRS $pkg/src"
+            if [ -z "$DIRS" ]; then
+              echo "=== $pkg: no include/ or src/ — skipped"
+              continue
+            fi
+            echo "=== Checking $pkg ==="
+            ament_cppcheck $DIRS || ERRORS=$((ERRORS + 1))
+          done
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::cppcheck found errors in $ERRORS package(s)"
+            exit 1
           fi
 
-          ament_cppcheck $DIRS || ERRORS=$((ERRORS + 1))
-        done
-
-        if [ "$ERRORS" -gt 0 ]; then
-          echo "::error::cppcheck found errors in $ERRORS package(s)"
-          exit 1
-        fi
-
   # ============================================================
-  #  Python Tests (rtc_tools, rtc_digital_twin)
+  #  Python Tests (rtc_tools, rtc_digital_twin) — deps 불요
   # ============================================================
   python-test:
-    name: Python Test (${{ matrix.ros_distro }})
-    needs: changes
+    name: Python Test
+    needs: [changes, packages]
     if: needs.changes.outputs.python == 'true'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            ros_distro: jazzy
-      fail-fast: false
+    runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-    - name: Setup ROS2 ${{ matrix.ros_distro }}
-      uses: ros-tooling/setup-ros@v0.7
-      with:
-        required-ros-distributions: ${{ matrix.ros_distro }}
+      - name: Setup environment
+        uses: ./.github/actions/setup-rtc-env
+        with:
+          ros-distro: ${{ env.ROS_DISTRO }}
+          apt-cache-version: pytest-v1
+          install-numpy: "false"
 
-    - name: Upgrade colcon
-      run: pip install -U colcon-cmake colcon-core
+      - name: Install Python test dependencies
+        run: pip install pytest pytest-cov coverage
 
-    - name: Install Python test dependencies
-      run: pip install pytest pytest-cov coverage
+      - name: Build Python packages
+        uses: ./.github/actions/colcon-build
+        with:
+          packages: ${{ needs.packages.outputs.test_python }}
+          ros-distro: ${{ env.ROS_DISTRO }}
+          enable-testing: "true"
+          artifact-suffix: pybuild
 
-    - name: Build Python packages
-      run: |
-        source /opt/ros/${{ matrix.ros_distro }}/setup.bash
-        colcon build \
-          --packages-up-to $PYTHON_TEST_PACKAGES
+      - name: Run Python tests with coverage
+        uses: ./.github/actions/colcon-test-report
+        with:
+          packages: ${{ needs.packages.outputs.test_python }}
+          ros-distro: ${{ env.ROS_DISTRO }}
+          pytest-args: "--cov=rtc_tools --cov=rtc_digital_twin --cov-report=xml:coverage.xml"
+          summary-title: Python Test Results
+          artifact-suffix: pytest
 
-    - name: Run Python tests (with coverage)
-      run: |
-        source /opt/ros/${{ matrix.ros_distro }}/setup.bash
-        source install/setup.bash
-        colcon test \
-          --packages-select $PYTHON_TEST_PACKAGES \
-          --event-handlers console_cohesion+ \
-          --return-code-on-test-failure \
-          --pytest-args --cov=rtc_tools --cov=rtc_digital_twin --cov-report=xml:coverage.xml
-
-    - name: Show Test Results
-      if: always()
-      run: |
-        source /opt/ros/${{ matrix.ros_distro }}/setup.bash
-        colcon test-result --all --verbose || true
-
-    - name: Collect Python coverage
-      if: always()
-      run: |
-        # 각 패키지 build 디렉토리에서 pytest가 생성한 coverage.xml 수집
-        find build/ -name 'coverage.xml' -print 2>/dev/null | head -5 || true
-        # 최상위 coverage.xml 이 없으면 build/ 하위 첫 번째를 루트로 복사
-        if [ ! -f coverage.xml ]; then
-          FIRST=$(find build/ -name 'coverage.xml' | head -1 || true)
-          [ -n "$FIRST" ] && cp "$FIRST" coverage.xml || true
-        fi
-
-    - name: Upload Python Coverage to Codecov
-      if: always()
-      uses: codecov/codecov-action@v5
-      with:
-        token: ${{ secrets.CODECOV_TOKEN }}
-        files: ./coverage.xml
-        flags: python,unittests-${{ matrix.ros_distro }}
-        name: rtc-framework-python-${{ matrix.ros_distro }}
-        fail_ci_if_error: false
-
-  # ============================================================
-  #  Build, Test & Coverage (distro matrix)
-  # ============================================================
-  build-test-coverage:
-    name: Build & Test (${{ matrix.ros_distro }})
-    needs: changes
-    if: needs.changes.outputs.cpp == 'true'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            ros_distro: jazzy
-      fail-fast: false
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Setup ROS2 ${{ matrix.ros_distro }}
-      uses: ros-tooling/setup-ros@v0.7
-      with:
-        required-ros-distributions: ${{ matrix.ros_distro }}
-
-    # setup-ros의 colcon이 다수 의존성 시 CMAKE_PREFIX_PATH 구분자를
-    # 세미콜론(;)으로 설정하는 버그 수정 — pip으로 최신 버전 설치
-    - name: Upgrade colcon
-      run: pip install -U colcon-cmake colcon-core
-
-    - name: Cache colcon workspace
-      uses: actions/cache@v4
-      with:
-        path: |
-          build/
-          install/
-        key: colcon-${{ matrix.ros_distro }}-v4-${{ hashFiles('**/CMakeLists.txt', '**/package.xml', '**/*.hpp', '**/*.cpp') }}
-        restore-keys: |
-          colcon-${{ matrix.ros_distro }}-v4-
-
-    - name: Cache apt packages
-      uses: awalsh128/cache-apt-pkgs-action@v1
-      with:
-        packages: >-
-          ros-${{ matrix.ros_distro }}-pinocchio
-          ros-${{ matrix.ros_distro }}-proxsuite
-          ros-${{ matrix.ros_distro }}-behaviortree-cpp
-          ros-${{ matrix.ros_distro }}-xacro
-          ros-${{ matrix.ros_distro }}-tinyxml2-vendor
-          libyaml-cpp-dev
-          libtinyxml2-dev
-          libeigen3-dev
-          lcov
-        version: ${{ matrix.ros_distro }}-build-v7
-
-    # rtc_tsid 테스트에서 Panda URDF 참조 (/usr/local/share/example-robot-data/)
-    - name: Install example-robot-data
-      run: pip install example-robot-data
-
-    - name: Build Packages (with coverage)
-      run: |
-        source /opt/ros/${{ matrix.ros_distro }}/setup.bash
-        colcon build \
-          --packages-up-to $BUILD_PACKAGES \
-          --cmake-args \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DBUILD_TESTING=ON \
-            -DENABLE_COVERAGE=ON
-
-    - name: Run Tests
-      run: |
-        source /opt/ros/${{ matrix.ros_distro }}/setup.bash
-        source install/setup.bash
-        colcon test \
-          --packages-select $CPP_TEST_PACKAGES \
-          --event-handlers console_cohesion+ \
-          --return-code-on-test-failure
-
-    - name: Dump failed test output
-      if: failure()
-      run: |
-        echo "## Failed Test Details" >> "$GITHUB_STEP_SUMMARY"
-        for pkg in rtc_base rtc_controllers rtc_tsid rtc_urdf_bridge shape_estimation ur5e_bringup ur5e_bt_coordinator ur5e_hand_driver; do
-          if [ -d "build/${pkg}" ]; then
-            echo "### ${pkg}" >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            cd "build/${pkg}" && ctest --output-on-failure --no-tests=ignore 2>&1 | tail -200 >> "$GITHUB_STEP_SUMMARY" || true
-            cd "$GITHUB_WORKSPACE"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - name: Collect Python coverage
+        if: always()
+        run: |
+          find build/ -name 'coverage.xml' -print 2>/dev/null | head -5 || true
+          if [ ! -f coverage.xml ]; then
+            FIRST=$(find build/ -name 'coverage.xml' | head -1 || true)
+            [ -n "$FIRST" ] && cp "$FIRST" coverage.xml || true
           fi
-        done
 
-    - name: Show Test Results
-      if: always()
-      run: |
-        source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+      - name: Upload Python coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.xml
+          flags: python
+          name: rtc-framework-python
+          fail_ci_if_error: false
 
-        echo "## Test Results" >> "$GITHUB_STEP_SUMMARY"
-        echo '```' >> "$GITHUB_STEP_SUMMARY"
-        colcon test-result --all --verbose 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
-        echo '```' >> "$GITHUB_STEP_SUMMARY"
+  # ============================================================
+  #  Build & Test (C++) — fmt 11 deps 사용
+  # ============================================================
+  build-test:
+    name: Build & Test
+    needs: [changes, packages, build-deps]
+    if: needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
 
-        # Emit failed tests as GitHub annotations (visible via API)
-        colcon test-result --all --verbose 2>&1 | grep -E "FAILED|ERROR|failed" | while IFS= read -r line; do
-          echo "::error title=Test Failure::$line"
-        done || true
+      - name: Setup environment
+        uses: ./.github/actions/setup-rtc-env
+        with:
+          ros-distro: ${{ env.ROS_DISTRO }}
+          apt-cache-version: build-v1
+          apt-packages: >-
+            ros-jazzy-pinocchio
+            ros-jazzy-proxsuite
+            ros-jazzy-behaviortree-cpp
+            ros-jazzy-xacro
+            ros-jazzy-tinyxml2-vendor
+            ros-jazzy-hpp-fcl
+            ros-jazzy-eigenpy
+            libyaml-cpp-dev
+            libtinyxml2-dev
+            libeigen3-dev
+            lcov
 
-    - name: Generate Coverage Report
-      if: always()
-      run: |
-        # 빌드 실패 시 skip
-        if [ ! -d "build" ] || [ -z "$(ls -A build/ 2>/dev/null)" ]; then
-          echo "::warning::build directories not found — skipping coverage"
-          exit 0
-        fi
+      # rtc_tsid 테스트의 Panda URDF 참조 (/usr/local/share/example-robot-data/)
+      - name: Install example-robot-data
+        run: pip install example-robot-data
 
-        set -e
+      - name: Download deps artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rtc-deps-${{ env.ROS_DISTRO }}
+          path: _rtc_ws/deps/install
 
-        # lcov 버전 감지 (Ubuntu 22.04: 1.x, Ubuntu 24.04: 2.x)
-        LCOV_MAJOR=$(lcov --version | grep -oP '\d+' | head -1)
-        if [ "$LCOV_MAJOR" -ge 2 ]; then
+      - name: Cache colcon workspace
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/
+            install/
+          key: colcon-${{ env.ROS_DISTRO }}-build-v5-${{ hashFiles('**/CMakeLists.txt', '**/package.xml', '**/*.hpp', '**/*.cpp') }}
+          restore-keys: |
+            colcon-${{ env.ROS_DISTRO }}-build-v5-
+
+      - name: Build packages with coverage
+        uses: ./.github/actions/colcon-build
+        with:
+          packages: ${{ needs.packages.outputs.build }}
+          ros-distro: ${{ env.ROS_DISTRO }}
+          deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
+          build-type: RelWithDebInfo
+          enable-coverage: "true"
+          artifact-suffix: cpp-build
+
+      - name: Run C++ tests
+        uses: ./.github/actions/colcon-test-report
+        with:
+          packages: ${{ needs.packages.outputs.test_cpp }}
+          ros-distro: ${{ env.ROS_DISTRO }}
+          deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
+          summary-title: C++ Test Results
+          artifact-suffix: cpp-test
+
+      # Coverage 는 build/test 모두 성공한 경우에만 의미 있음.
+      # if: success() 로 이전 step 실패 시 skip. lcov 자체 실패는 job 을 망가뜨리지 않음.
+      - name: Generate coverage report
+        if: success()
+        continue-on-error: true
+        env:
+          TEST_PACKAGES: ${{ needs.packages.outputs.test_cpp }}
+          COVERAGE_PATHS: ${{ needs.packages.outputs.coverage_paths }}
+        run: |
+          set -eo pipefail
+          if [ ! -d build ]; then
+            echo "::warning::No build/ directory — skipping coverage"
+            exit 0
+          fi
+
+          # Ubuntu 24.04 → lcov 2.x
+          LCOV_MAJOR=$(lcov --version | grep -oP '\d+' | head -1)
           BRANCH_RC="--rc branch_coverage=1"
           LCOV_IGNORE="--ignore-errors unused,mismatch"
-        else
-          BRANCH_RC="--rc lcov_branch_coverage=1"
-          LCOV_IGNORE=""
-        fi
-
-        # CPP_TEST_PACKAGES와 동일한 패키지에서 coverage 수집
-        COVERAGE_DIRS=""
-        for pkg in rtc_base rtc_controllers rtc_tsid rtc_urdf_bridge shape_estimation ur5e_bringup ur5e_bt_coordinator ur5e_hand_driver; do
-          if [ -d "build/$pkg" ]; then
-            COVERAGE_DIRS="$COVERAGE_DIRS --directory build/$pkg"
+          if [ "$LCOV_MAJOR" -lt 2 ]; then
+            BRANCH_RC="--rc lcov_branch_coverage=1"
+            LCOV_IGNORE=""
           fi
-        done
 
-        if [ -z "$COVERAGE_DIRS" ]; then
-          echo "::warning::No build directories found for coverage"
-          exit 0
-        fi
+          DIRS=""
+          # shellcheck disable=SC2086
+          for pkg in $TEST_PACKAGES; do
+            [ -d "build/$pkg" ] && DIRS="$DIRS --directory build/$pkg"
+          done
+          if [ -z "$DIRS" ]; then
+            echo "::warning::No build directories — skipping coverage"
+            exit 0
+          fi
 
-        if [ "$LCOV_MAJOR" -ge 2 ]; then
-          lcov --capture \
-            $COVERAGE_DIRS \
-            --output-file coverage_merged.info \
-            $BRANCH_RC \
-            $LCOV_IGNORE
-        else
-          lcov --capture --initial \
-            $COVERAGE_DIRS \
-            --output-file coverage_base.info \
-            $BRANCH_RC
+          # shellcheck disable=SC2086
+          lcov --capture $DIRS --output-file coverage_merged.info $BRANCH_RC $LCOV_IGNORE
 
-          lcov --capture \
-            $COVERAGE_DIRS \
-            --output-file coverage_test.info \
-            $BRANCH_RC
+          # SSoT 의 coverage_paths 글로브 (`*/rtc_base/include/*` 등) 를 lcov --extract 로 전달.
+          # shell 이 cwd 에서 wildcard expand 하지 않도록 set -f (noglob) 로 보호.
+          set -f
+          # shellcheck disable=SC2086
+          lcov --extract coverage_merged.info $COVERAGE_PATHS \
+            --output-file coverage_extracted.info $BRANCH_RC $LCOV_IGNORE
+          set +f
 
-          lcov --add-tracefile coverage_base.info \
-            --add-tracefile coverage_test.info \
-            --output-file coverage_merged.info \
-            $BRANCH_RC
-        fi
+          # 테스트 코드 자체 제외
+          lcov --remove coverage_extracted.info \
+            '*/test/*' '*/examples/*' \
+            --output-file coverage_filtered.info $BRANCH_RC $LCOV_IGNORE
 
-        # 프로젝트 소스 코드만 추출
-        lcov --extract coverage_merged.info \
-          '*/rtc_base/include/*' \
-          '*/rtc_communication/include/*' \
-          '*/rtc_controller_interface/include/*' \
-          '*/rtc_controller_interface/src/*' \
-          '*/rtc_controller_manager/src/*' \
-          '*/rtc_controllers/include/*' \
-          '*/rtc_controllers/src/*' \
-          '*/rtc_inference/include/*' \
-          '*/rtc_tsid/include/*' \
-          '*/rtc_tsid/src/*' \
-          '*/rtc_urdf_bridge/include/*' \
-          '*/rtc_urdf_bridge/src/*' \
-          '*/ur5e_bringup/include/*' \
-          '*/ur5e_bringup/src/*' \
-          '*/ur5e_bt_coordinator/include/*' \
-          '*/ur5e_bt_coordinator/src/*' \
-          '*/ur5e_hand_driver/include/*' \
-          '*/ur5e_hand_driver/src/*' \
-          '*/shape_estimation/include/*' \
-          '*/shape_estimation/src/*' \
-          --output-file coverage_extracted.info \
-          $BRANCH_RC \
-          $LCOV_IGNORE
+          echo "=== Coverage Summary ==="
+          lcov --list coverage_filtered.info $BRANCH_RC || true
 
-        # 테스트 코드 자체는 제외
-        lcov --remove coverage_extracted.info \
-          '*/test/*' \
-          '*/examples/*' \
-          --output-file coverage_filtered.info \
-          $BRANCH_RC \
-          $LCOV_IGNORE
-
-        echo "=== Coverage Summary ==="
-        lcov --list coverage_filtered.info $BRANCH_RC || true
-
-    - name: Upload Coverage to Codecov
-      if: always()
-      uses: codecov/codecov-action@v5
-      with:
-        token: ${{ secrets.CODECOV_TOKEN }}
-        files: ./coverage_filtered.info
-        flags: cpp,unittests-${{ matrix.ros_distro }}
-        name: rtc-framework-${{ matrix.ros_distro }}
-        fail_ci_if_error: false
-
-    - name: Upload Artifacts
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: colcon-logs-${{ matrix.ros_distro }}
-        path: log/
+      - name: Upload coverage to Codecov
+        if: success()
+        continue-on-error: true
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage_filtered.info
+          flags: cpp
+          name: rtc-framework-cpp
+          fail_ci_if_error: false
 
   # ============================================================
-  #  CodeQL Security Scan — main push + C++ 변경 시에만
-  #  최적화: needs(changes), security-and-quality, paths-ignore,
-  #         colcon workspace 캐시, ccache
+  #  Clang-Tidy — fmt 11 deps 사용, BUILD_TESTING=OFF
+  # ============================================================
+  clang-tidy:
+    name: Clang-Tidy
+    needs: [changes, packages, build-deps]
+    if: needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup environment (tooling only)
+        uses: ./.github/actions/setup-rtc-env
+        with:
+          ros-distro: ${{ env.ROS_DISTRO }}
+          install-ros: "false"
+          apt-cache-version: tidy-v1
+          apt-packages: >-
+            clang-tidy
+            ros-jazzy-ros-base
+            ros-jazzy-visualization-msgs
+            ros-jazzy-std-srvs
+            ros-jazzy-pinocchio
+            ros-jazzy-proxsuite
+            ros-jazzy-behaviortree-cpp
+            ros-jazzy-tinyxml2-vendor
+            ros-jazzy-hpp-fcl
+            ros-jazzy-eigenpy
+            libyaml-cpp-dev
+            libtinyxml2-dev
+            libeigen3-dev
+
+      - name: Download deps artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rtc-deps-${{ env.ROS_DISTRO }}
+          path: _rtc_ws/deps/install
+
+      - name: Cache colcon workspace
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/
+            install/
+          key: colcon-${{ env.ROS_DISTRO }}-tidy-v2-${{ hashFiles('**/CMakeLists.txt', '**/package.xml') }}
+          restore-keys: |
+            colcon-${{ env.ROS_DISTRO }}-tidy-v2-
+
+      - name: Build packages
+        uses: ./.github/actions/colcon-build
+        with:
+          packages: ${{ needs.packages.outputs.build }}
+          ros-distro: ${{ env.ROS_DISTRO }}
+          deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
+          build-type: Debug
+          enable-testing: "false"
+          export-compile-commands: "true"
+          artifact-suffix: tidy-build
+
+      - name: Merge compile_commands.json
+        run: |
+          python3 -c "
+          import json, glob
+          commands = []
+          for f in glob.glob('build/*/compile_commands.json'):
+              with open(f) as fh:
+                  commands.extend(json.load(fh))
+          with open('compile_commands.json', 'w') as fh:
+              json.dump(commands, fh, indent=2)
+          print(f'Merged {len(commands)} entries')
+          "
+
+      - name: Run clang-tidy
+        run: |
+          run-clang-tidy -p . -quiet \
+            'rtc_controller_interface/src/.*\.cpp' \
+            'rtc_controller_manager/src/.*\.cpp' \
+            'rtc_controllers/src/.*\.cpp' \
+            'rtc_tsid/src/.*\.cpp' \
+            'rtc_urdf_bridge/src/.*\.cpp' \
+            'ur5e_bringup/src/.*\.cpp' \
+            'ur5e_bt_coordinator/src/.*\.cpp' \
+            'ur5e_hand_driver/src/.*\.cpp' \
+            'shape_estimation/src/.*\.cpp' 2>&1 | \
+            tee clang-tidy-output.txt || true
+
+          WARNINGS=$(grep -c "warning:" clang-tidy-output.txt || true)
+          ERRORS=$(grep -c "error:" clang-tidy-output.txt || true)
+          {
+            echo "## Clang-Tidy Results"
+            echo "- **Warnings**: $WARNINGS"
+            echo "- **Errors**: $ERRORS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload clang-tidy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-tidy-report
+          path: clang-tidy-output.txt
+
+  # ============================================================
+  #  CodeQL Security Scan — main push 시에만, fmt 11 deps 사용
   # ============================================================
   codeql:
     name: CodeQL Security Scan
-    needs: changes
+    needs: [changes, packages, build-deps]
     if: github.event_name == 'push' && needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -473,218 +511,78 @@ jobs:
       CCACHE_COMPILERCHECK: content
       CCACHE_MAXSIZE: 2G
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-    - name: Initialize CodeQL
-      uses: github/codeql-action/init@v4
-      with:
-        languages: cpp
-        # security-and-quality: security-extended 대비 분석 단계 30~40% 단축
-        queries: security-and-quality
-        # paths-ignore: 생성된 msg/rosidl, build/install/log, 테스트 코드 제외
-        config-file: ./.github/codeql/codeql-config.yml
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: cpp
+          queries: security-and-quality
+          config-file: ./.github/codeql/codeql-config.yml
 
-    - name: Setup ROS2
-      uses: ros-tooling/setup-ros@v0.7
-      with:
-        required-ros-distributions: jazzy
+      - name: Setup environment
+        uses: ./.github/actions/setup-rtc-env
+        with:
+          ros-distro: ${{ env.ROS_DISTRO }}
+          apt-cache-version: codeql-v1
+          apt-packages: >-
+            ros-jazzy-pinocchio
+            ros-jazzy-proxsuite
+            ros-jazzy-behaviortree-cpp
+            ros-jazzy-tinyxml2-vendor
+            ros-jazzy-hpp-fcl
+            ros-jazzy-eigenpy
+            libyaml-cpp-dev
+            libtinyxml2-dev
+            libeigen3-dev
 
-    - name: Upgrade colcon
-      run: pip install -U colcon-cmake colcon-core
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: codeql-jazzy
+          max-size: 2G
 
-    # build-test-coverage / clang-tidy와 캐시 키 분리 (CodeQL 빌드 플래그 격리)
-    - name: Cache colcon workspace
-      uses: actions/cache@v4
-      with:
-        path: |
-          build/
-          install/
-        key: colcon-codeql-jazzy-${{ hashFiles('**/CMakeLists.txt', '**/package.xml') }}
-        restore-keys: |
-          colcon-codeql-jazzy-
+      - name: Download deps artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rtc-deps-${{ env.ROS_DISTRO }}
+          path: _rtc_ws/deps/install
 
-    - name: Setup ccache
-      uses: hendrikmuhs/ccache-action@v1.2
-      with:
-        key: codeql-jazzy
-        max-size: 2G
+      - name: Cache colcon workspace
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/
+            install/
+          key: colcon-${{ env.ROS_DISTRO }}-codeql-v2-${{ hashFiles('**/CMakeLists.txt', '**/package.xml') }}
+          restore-keys: |
+            colcon-${{ env.ROS_DISTRO }}-codeql-v2-
 
-    - name: Cache apt packages
-      uses: awalsh128/cache-apt-pkgs-action@v1
-      with:
-        packages: >-
-          ros-jazzy-pinocchio
-          ros-jazzy-proxsuite
-          ros-jazzy-behaviortree-cpp
-          ros-jazzy-tinyxml2-vendor
-          libyaml-cpp-dev
-          libtinyxml2-dev
-          libeigen3-dev
-        version: jazzy-codeql-v3
+      # CodeQL instrumentation + colcon 빌드 조합이 hosted runner (7GB RAM) 초과 →
+      # OOM 방지용 swap. fallocate Text-file-busy 회피: guard + dd fallback.
+      - name: Add swap space
+        run: |
+          if [ ! -f /swapfile ]; then
+            sudo dd if=/dev/zero of=/swapfile bs=1M count=4096 status=none
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile
+            sudo swapon /swapfile
+          fi
+          free -h
 
-    # CodeQL instrumentation + colcon 빌드 조합이 GitHub 호스트 러너(7GB RAM)를
-    # 초과하여 OOM kill 발생 → 4GB swap 추가로 완화
-    - name: Add swap space
-      run: |
-        sudo fallocate -l 4G /swapfile
-        sudo chmod 600 /swapfile
-        sudo mkswap /swapfile
-        sudo swapon /swapfile
+      - name: Build packages
+        uses: ./.github/actions/colcon-build
+        with:
+          packages: ${{ needs.packages.outputs.build }}
+          ros-distro: ${{ env.ROS_DISTRO }}
+          deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
+          build-type: Release
+          enable-testing: "false"
+          parallel-workers: "1"
+          extra-cmake-args: "-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          artifact-suffix: codeql-build
 
-    - name: Build Packages
-      run: |
-        source /opt/ros/jazzy/setup.bash
-        export PATH="/usr/lib/ccache:$PATH"
-        colcon build \
-          --packages-up-to $BUILD_PACKAGES \
-          --parallel-workers 1 \
-          --cmake-args \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DBUILD_TESTING=OFF
-
-    - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v4
-      with:
-        category: "/language:cpp"
-
-  # ============================================================
-  #  Clang-Tidy Analysis — jazzy 1회, build-test와 병렬 실행
-  #  자체 빌드 수행 (coverage 플래그 없이 깨끗한 compile_commands.json 생성)
-  # ============================================================
-  clang-tidy:
-    name: Clang-Tidy
-    needs: changes
-    if: needs.changes.outputs.cpp == 'true'
-    runs-on: ubuntu-24.04
-    continue-on-error: true
-    timeout-minutes: 60
-    steps:
-    - uses: actions/checkout@v4
-
-    # required-ros-distributions 생략 → ros-jazzy-desktop(963 pkg, 598 MB) 설치 방지
-    # ROS2 apt 저장소 추가 + 개발 도구만 설치
-    - name: Setup ROS2 tooling
-      uses: ros-tooling/setup-ros@v0.7
-
-    - name: Upgrade colcon
-      run: pip install -U colcon-cmake colcon-core
-
-    # build-test-coverage와 캐시 키를 분리 (coverage 플래그 혼입 방지)
-    - name: Cache colcon workspace
-      uses: actions/cache@v4
-      with:
-        path: |
-          build/
-          install/
-        key: colcon-tidy-jazzy-${{ hashFiles('**/CMakeLists.txt', '**/package.xml') }}
-        restore-keys: |
-          colcon-tidy-jazzy-
-
-    # ros-jazzy-ros-base: desktop(963 pkg) 대신 최소 ROS2 런타임(~200 pkg)
-    # visualization-msgs, std-srvs: ros-base에 미포함된 프로젝트 의존성
-    # python3-numpy는 apt 캐시에서 제외 — cache-apt-pkgs-action의 tar 복원 시
-    # Python .so 심볼릭 링크가 깨져 eigenpy FIND_NUMPY가 실패하는 문제 방지
-    - name: Cache apt packages
-      uses: awalsh128/cache-apt-pkgs-action@v1
-      with:
-        packages: >-
-          clang-tidy
-          ros-jazzy-ros-base
-          ros-jazzy-visualization-msgs
-          ros-jazzy-std-srvs
-          ros-jazzy-pinocchio
-          ros-jazzy-proxsuite
-          ros-jazzy-behaviortree-cpp
-          ros-jazzy-tinyxml2-vendor
-          libyaml-cpp-dev
-          libtinyxml2-dev
-          libeigen3-dev
-        version: jazzy-tidy-v9
-
-    # pinocchio → eigenpy → FIND_NUMPY 의존성
-    # apt 캐시와 분리하여 항상 정상 설치 보장
-    - name: Install numpy for eigenpy
-      run: sudo apt-get install -y python3-numpy
-
-    # coverage 플래그 없이 빌드하여 깨끗한 분석 보장
-    # BUILD_TESTING=OFF: clang-tidy는 테스트 빌드 불필요 (gtest 의존성 제거)
-    - name: Build Packages
-      run: |
-        source /opt/ros/jazzy/setup.bash
-        colcon build \
-          --packages-up-to $BUILD_PACKAGES \
-          --cmake-args \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DBUILD_TESTING=OFF
-
-    - name: Merge compile_commands.json
-      run: |
-        python3 -c "
-        import json, glob
-        commands = []
-        for f in glob.glob('build/*/compile_commands.json'):
-            with open(f) as fh:
-                commands.extend(json.load(fh))
-        with open('compile_commands.json', 'w') as fh:
-            json.dump(commands, fh, indent=2)
-        print(f'Merged {len(commands)} compilation entries')
-        "
-
-    - name: Run clang-tidy
-      run: |
-        echo "=== Clang-Tidy Analysis ==="
-        run-clang-tidy -p . -quiet \
-          'rtc_controller_interface/src/.*\.cpp' \
-          'rtc_controller_manager/src/.*\.cpp' \
-          'rtc_controllers/src/.*\.cpp' \
-          'rtc_tsid/src/.*\.cpp' \
-          'rtc_urdf_bridge/src/.*\.cpp' \
-          'ur5e_bringup/src/.*\.cpp' \
-          'ur5e_bt_coordinator/src/.*\.cpp' \
-          'ur5e_hand_driver/src/.*\.cpp' \
-          'shape_estimation/src/.*\.cpp' 2>&1 | \
-          tee clang-tidy-output.txt || true
-
-        # Job Summary에 경고/에러 수 출력
-        WARNINGS=$(grep -c "warning:" clang-tidy-output.txt || true)
-        ERRORS=$(grep -c "error:" clang-tidy-output.txt || true)
-        echo ""
-        echo "=== Summary ==="
-        echo "Warnings: $WARNINGS"
-        echo "Errors: $ERRORS"
-
-        # GitHub Actions Job Summary
-        echo "## Clang-Tidy Results" >> "$GITHUB_STEP_SUMMARY"
-        echo "- **Warnings**: $WARNINGS" >> "$GITHUB_STEP_SUMMARY"
-        echo "- **Errors**: $ERRORS" >> "$GITHUB_STEP_SUMMARY"
-
-    - name: Upload clang-tidy Results
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: clang-tidy-report
-        path: clang-tidy-output.txt
-
-  # ============================================================
-  #  Claude Code Review (PR only)
-  # ============================================================
-  claude-review:
-    name: Claude Code Review
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    # Workflow validation requires the file to match main — expected to fail
-    # on PRs that modify the workflow file itself.
-    continue-on-error: true
-    permissions:
-      id-token: write       # OIDC 인증용
-      contents: read        # 레포지토리 체크아웃용
-      pull-requests: write  # PR 리뷰 코멘트 작성용
-    steps:
-    - uses: actions/checkout@v4
-
-    - uses: anthropics/claude-code-action@v1
-      env:
-        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:cpp"

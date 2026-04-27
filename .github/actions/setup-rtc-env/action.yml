@@ -1,0 +1,64 @@
+name: Setup RTC CI Environment
+description: |
+  ROS 2 distribution + apt cache + colcon upgrade + numpy fix.
+  Standard prerequisite for any CI job that builds or tests rtc-framework packages.
+  Caller is responsible for sourcing /opt/ros/<distro>/setup.bash in subsequent steps.
+
+inputs:
+  ros-distro:
+    description: ROS 2 distribution to install (e.g., jazzy, humble)
+    required: false
+    default: jazzy
+  install-ros:
+    description: |
+      "true"  → install full ROS distribution via setup-ros (build-test, codeql).
+      "false" → ROS apt repo + tooling only, no ros-<distro>-desktop (clang-tidy).
+    required: false
+    default: "true"
+  apt-packages:
+    description: Newline- or space-separated extra apt packages to cache
+    required: false
+    default: ""
+  apt-cache-version:
+    description: Cache version key suffix (bump to invalidate apt cache)
+    required: false
+    default: v1
+  install-numpy:
+    description: |
+      Install python3-numpy outside the apt cache (eigenpy FIND_NUMPY workaround).
+      Set "false" to skip.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Setup ROS 2 (full distribution)
+      if: inputs.install-ros == 'true'
+      uses: ros-tooling/setup-ros@v0.7
+      with:
+        required-ros-distributions: ${{ inputs.ros-distro }}
+
+    - name: Setup ROS 2 tooling only
+      if: inputs.install-ros != 'true'
+      uses: ros-tooling/setup-ros@v0.7
+
+    # setup-ros 의 colcon-cmake 가 다중 의존성에서 CMAKE_PREFIX_PATH 구분자를
+    # 세미콜론(;)으로 잘못 설정 — pip 으로 최신 버전 강제 (HISTORICAL: 2025년 보고된 버그)
+    - name: Upgrade colcon
+      shell: bash
+      run: pip install -U colcon-cmake colcon-core
+
+    - name: Cache apt packages
+      if: inputs.apt-packages != ''
+      uses: awalsh128/cache-apt-pkgs-action@v1
+      with:
+        packages: ${{ inputs.apt-packages }}
+        version: ${{ inputs.ros-distro }}-${{ inputs.apt-cache-version }}
+
+    # cache-apt-pkgs-action 의 tar 복원 시 python3-numpy 의 .so 심볼릭 링크가
+    # 깨져 eigenpy FIND_NUMPY 가 실패 — apt 캐시와 분리하여 매 실행 정상 설치
+    - name: Install numpy for eigenpy
+      if: inputs.install-numpy == 'true'
+      shell: bash
+      run: sudo apt-get install -y python3-numpy
