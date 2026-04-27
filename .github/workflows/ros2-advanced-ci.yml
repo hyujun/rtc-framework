@@ -276,8 +276,10 @@ jobs:
         uses: ./.github/actions/setup-rtc-env
         with:
           ros-distro: ${{ env.ROS_DISTRO }}
-          apt-cache-version: build-v1
+          apt-cache-version: build-v2
           apt-packages: >-
+            ros-jazzy-ament-cmake-test
+            ros-jazzy-ament-cmake-gtest
             ros-jazzy-pinocchio
             ros-jazzy-proxsuite
             ros-jazzy-behaviortree-cpp
@@ -319,6 +321,19 @@ jobs:
           build-type: RelWithDebInfo
           enable-coverage: "true"
           artifact-suffix: cpp-build
+
+      # ament_cmake_test 모듈이 PYTHONPATH 에 있는지 사전 검증.
+      # 부재 시 (cache-apt-pkgs-action 의 tar 복원 결함 등) 명시적 재설치 fallback.
+      - name: Verify ament_cmake_test module
+        run: |
+          source /opt/ros/${{ env.ROS_DISTRO }}/setup.bash
+          if ! python3 -c "import ament_cmake_test" 2>&1; then
+            echo "::warning::ament_cmake_test missing — reinstalling apt package"
+            sudo apt-get install --reinstall -y ros-${{ env.ROS_DISTRO }}-ament-cmake-test
+            python3 -c "import ament_cmake_test; print('OK:', ament_cmake_test.__file__)"
+          else
+            python3 -c "import ament_cmake_test; print('OK:', ament_cmake_test.__file__)"
+          fi
 
       - name: Run C++ tests
         uses: ./.github/actions/colcon-test-report
