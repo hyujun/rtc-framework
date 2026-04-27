@@ -91,8 +91,10 @@ runs:
         DEPS_INSTALL: ${{ steps.paths.outputs.deps-install }}
       run: echo "path=${DEPS_INSTALL}" >> "$GITHUB_OUTPUT"
 
+    # Consumer job 들이 download-artifact 로 받으므로 cache hit 시에도 항상 upload.
+    # cache 는 동일 hash 의 재실행에서 build_deps.sh 를 skip 하기 위함이고,
+    # artifact 는 cross-job 전달 채널로 별도 역할.
     - name: Upload deps artifact
-      if: steps.cache.outputs.cache-hit != 'true'
       uses: actions/upload-artifact@v4
       with:
         name: rtc-deps-${{ inputs.ros-distro }}
