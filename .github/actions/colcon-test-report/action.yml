@@ -48,6 +48,15 @@ runs:
         source "/opt/ros/${ROS_DISTRO}/setup.bash"
         source install/setup.bash
 
+        # ament_cmake_test (ament_cmake_test, ament_cmake_gtest 등) 는
+        # /opt/ros/<distro>/lib/python3.X/site-packages 에 설치됨. setup.bash 가
+        # PYTHONPATH 에 추가하지만, colcon → ctest → /usr/bin/python3 child 가
+        # 일부 환경에서 PYTHONPATH 를 lose → ModuleNotFoundError. 명시적 보강.
+        ROS_PY_SITE=$(find "/opt/ros/${ROS_DISTRO}/lib" -maxdepth 2 -name 'site-packages' -type d | head -1)
+        if [ -n "${ROS_PY_SITE}" ]; then
+          export PYTHONPATH="${ROS_PY_SITE}:${PYTHONPATH:-}"
+        fi
+
         if [ -n "${DEPS_INSTALL}" ] && [ -d "${DEPS_INSTALL}" ]; then
           export LD_LIBRARY_PATH="${DEPS_INSTALL}/lib:${LD_LIBRARY_PATH:-}"
         fi
