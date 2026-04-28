@@ -1,0 +1,90 @@
+name: CodeQL Security Scan
+
+# 분리 배경 (2026-04-28):
+#   PR/푸시마다 CodeQL instrumentation 빌드 (~30-60 min) 를 돌릴 가치 낮음.
+#   weekly cron + manual dispatch 로 격하, query suite 도 보안 only 로 축소.
+#
+# 단순화:
+#   - trigger: weekly + workflow_dispatch (push/PR 미참여)
+#   - queries: default (security only) — 기존 security-and-quality 의 quality 제거
+#   - parallel-workers / ccache / swap / 별도 colcon cache 제거 — 기본값 사용
+#   - build-deps 는 이 워크플로우 내부에서 직접 호출 (메인 CI artifact 비의존)
+
+on:
+  schedule:
+    # 매주 일요일 03:00 UTC
+    - cron: '0 3 * * 0'
+  workflow_dispatch: {}
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ROS_DISTRO: jazzy
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  analyze:
+    name: Analyze (cpp)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Load build package list
+        id: pkgs
+        run: |
+          set -eo pipefail
+          BUILD=$(yq -r '.build | join(" ")' .github/ci-packages.yml)
+          echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
+          echo "build=${BUILD}"
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: cpp
+          # default suite (security only). quality 쿼리 제거 → 분석 시간 ~50% 감소.
+          queries: default
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-rtc-env
+        with:
+          ros-distro: ${{ env.ROS_DISTRO }}
+          apt-cache-version: codeql-v2
+          apt-packages: >-
+            ros-jazzy-pinocchio
+            ros-jazzy-proxsuite
+            ros-jazzy-behaviortree-cpp
+            ros-jazzy-tinyxml2-vendor
+            ros-jazzy-hpp-fcl
+            ros-jazzy-eigenpy
+            libyaml-cpp-dev
+            libtinyxml2-dev
+            libeigen3-dev
+
+      - name: Build isolated deps
+        uses: ./.github/actions/build-isolated-deps
+        with:
+          ros-distro: ${{ env.ROS_DISTRO }}
+          cache-version: codeql-v1
+
+      - name: Build packages
+        uses: ./.github/actions/colcon-build
+        with:
+          packages: ${{ steps.pkgs.outputs.build }}
+          ros-distro: ${{ env.ROS_DISTRO }}
+          deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
+          build-type: Release
+          enable-testing: "false"
+          artifact-suffix: codeql-build
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:cpp"

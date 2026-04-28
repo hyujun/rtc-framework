@@ -9,6 +9,7 @@ name: ROS2 Advanced CI
 #   - composite actions 활용 (.github/actions/*)
 #   - coverage upload 분리 (build 실패에 묶이지 않음)
 #   - paths-ignore 에 agent_docs/** 추가
+#   - codeql 분리: .github/workflows/codeql.yml (weekly + manual, 2026-04-28)
 
 on:
   push:
@@ -322,93 +323,5 @@ jobs:
           enable-testing: "false"
           artifact-suffix: cpp-build
 
-  # ============================================================
-  #  CodeQL Security Scan — main push 시에만, fmt 11 deps 사용
-  # ============================================================
-  codeql:
-    name: CodeQL Security Scan
-    needs: [changes, packages, build-deps]
-    if: github.event_name == 'push' && needs.changes.outputs.cpp == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    permissions:
-      security-events: write
-    env:
-      CCACHE_COMPILERCHECK: content
-      CCACHE_MAXSIZE: 2G
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
-        with:
-          languages: cpp
-          queries: security-and-quality
-          config-file: ./.github/codeql/codeql-config.yml
-
-      - name: Setup environment
-        uses: ./.github/actions/setup-rtc-env
-        with:
-          ros-distro: ${{ env.ROS_DISTRO }}
-          apt-cache-version: codeql-v1
-          apt-packages: >-
-            ros-jazzy-pinocchio
-            ros-jazzy-proxsuite
-            ros-jazzy-behaviortree-cpp
-            ros-jazzy-tinyxml2-vendor
-            ros-jazzy-hpp-fcl
-            ros-jazzy-eigenpy
-            libyaml-cpp-dev
-            libtinyxml2-dev
-            libeigen3-dev
-
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: codeql-jazzy
-          max-size: 2G
-
-      - name: Download deps artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: rtc-deps-${{ env.ROS_DISTRO }}
-          path: _rtc_ws/deps/install
-
-      - name: Cache colcon workspace
-        uses: actions/cache@v4
-        with:
-          path: |
-            build/
-            install/
-          key: colcon-${{ env.ROS_DISTRO }}-codeql-v2-${{ hashFiles('**/CMakeLists.txt', '**/package.xml') }}
-          restore-keys: |
-            colcon-${{ env.ROS_DISTRO }}-codeql-v2-
-
-      # CodeQL instrumentation + colcon 빌드 조합이 hosted runner (7GB RAM) 초과 →
-      # OOM 방지용 swap. fallocate Text-file-busy 회피: guard + dd fallback.
-      - name: Add swap space
-        run: |
-          if [ ! -f /swapfile ]; then
-            sudo dd if=/dev/zero of=/swapfile bs=1M count=4096 status=none
-            sudo chmod 600 /swapfile
-            sudo mkswap /swapfile
-            sudo swapon /swapfile
-          fi
-          free -h
-
-      - name: Build packages
-        uses: ./.github/actions/colcon-build
-        with:
-          packages: ${{ needs.packages.outputs.build }}
-          ros-distro: ${{ env.ROS_DISTRO }}
-          deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
-          build-type: Release
-          enable-testing: "false"
-          parallel-workers: "1"
-          extra-cmake-args: "-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
-          artifact-suffix: codeql-build
-
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
-        with:
-          category: "/language:cpp"
+  # CodeQL: 별도 워크플로우 (.github/workflows/codeql.yml) 로 분리 — weekly + manual.
+  # PR/푸시마다 30-60분 빌드 instrumentation 을 돌릴 가치가 낮아 떼어냈다 (2026-04-28).
