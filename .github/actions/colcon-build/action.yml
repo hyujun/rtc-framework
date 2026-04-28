@@ -1,0 +1,116 @@
+name: Colcon Build (rtc-framework)
+description: |
+  colcon build wrapper — `--packages-up-to <packages>` 빌드 + 실패 시 `log/latest_build/`
+  자동 artifact upload. CMAKE_PREFIX_PATH 에 deps/install 자동 prepend.
+
+  Caller responsibility:
+    - actions/checkout 완료
+    - setup-rtc-env 완료 (ROS apt 설치)
+    - deps install path 가 download 되었거나 build-isolated-deps 출력 사용
+
+inputs:
+  packages:
+    description: Space-separated package list for `--packages-up-to`
+    required: true
+  ros-distro:
+    description: ROS 2 distribution to source
+    required: false
+    default: jazzy
+  deps-install-path:
+    description: |
+      Path to deps/install (from build-isolated-deps or download-artifact).
+      Empty string → no deps prepend (e.g., python-only build).
+    required: false
+    default: ""
+  build-type:
+    description: CMAKE_BUILD_TYPE (RelWithDebInfo, Release, Debug)
+    required: false
+    default: RelWithDebInfo
+  enable-coverage:
+    description: Set "true" to add -DENABLE_COVERAGE=ON + -DBUILD_TESTING=ON
+    required: false
+    default: "false"
+  enable-testing:
+    description: Set "true" to enable BUILD_TESTING (forced on when coverage=true)
+    required: false
+    default: "true"
+  export-compile-commands:
+    description: Set "true" for clang-tidy / IDE consumers
+    required: false
+    default: "false"
+  parallel-workers:
+    description: colcon --parallel-workers (empty → default)
+    required: false
+    default: ""
+  extra-cmake-args:
+    description: Additional `--cmake-args` (appended after defaults)
+    required: false
+    default: ""
+  artifact-suffix:
+    description: Suffix for failure log artifact name (must be unique per job)
+    required: false
+    default: build
+
+runs:
+  using: composite
+  steps:
+    - name: Run colcon build
+      id: build
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        ROS_DISTRO: ${{ inputs.ros-distro }}
+        DEPS_INSTALL: ${{ inputs.deps-install-path }}
+        BUILD_TYPE: ${{ inputs.build-type }}
+        ENABLE_COVERAGE: ${{ inputs.enable-coverage }}
+        ENABLE_TESTING: ${{ inputs.enable-testing }}
+        EXPORT_CC: ${{ inputs.export-compile-commands }}
+        PARALLEL: ${{ inputs.parallel-workers }}
+        EXTRA_CMAKE: ${{ inputs.extra-cmake-args }}
+      run: |
+        set -eo pipefail
+        source "/opt/ros/${ROS_DISTRO}/setup.bash"
+
+        if [ -n "${DEPS_INSTALL}" ] && [ -d "${DEPS_INSTALL}" ]; then
+          export CMAKE_PREFIX_PATH="${DEPS_INSTALL}:${CMAKE_PREFIX_PATH:-}"
+          export LD_LIBRARY_PATH="${DEPS_INSTALL}/lib:${LD_LIBRARY_PATH:-}"
+          echo "::notice::Using isolated deps from ${DEPS_INSTALL}"
+        fi
+
+        CMAKE_ARGS="-DCMAKE_BUILD_TYPE=${BUILD_TYPE}"
+
+        if [ "${ENABLE_COVERAGE}" = "true" ]; then
+          CMAKE_ARGS="${CMAKE_ARGS} -DBUILD_TESTING=ON -DENABLE_COVERAGE=ON"
+        elif [ "${ENABLE_TESTING}" = "true" ]; then
+          CMAKE_ARGS="${CMAKE_ARGS} -DBUILD_TESTING=ON"
+        else
+          CMAKE_ARGS="${CMAKE_ARGS} -DBUILD_TESTING=OFF"
+        fi
+
+        if [ "${EXPORT_CC}" = "true" ]; then
+          CMAKE_ARGS="${CMAKE_ARGS} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+        fi
+
+        if [ -n "${EXTRA_CMAKE}" ]; then
+          CMAKE_ARGS="${CMAKE_ARGS} ${EXTRA_CMAKE}"
+        fi
+
+        PARALLEL_ARG=""
+        if [ -n "${PARALLEL}" ]; then
+          PARALLEL_ARG="--parallel-workers ${PARALLEL}"
+        fi
+
+        # shellcheck disable=SC2086
+        colcon build \
+          --packages-up-to ${PACKAGES} \
+          ${PARALLEL_ARG} \
+          --cmake-args ${CMAKE_ARGS}
+
+    - name: Upload build failure logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: colcon-build-logs-${{ inputs.artifact-suffix }}
+        path: log/latest_build/
+        if-no-files-found: warn
+        retention-days: 7

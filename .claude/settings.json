@@ -1,22 +1,5 @@
 {
   "permissions": {
-    "allow": [
-      "Bash(*)",
-      "WebFetch(*)",
-      "WebSearch"
-    ],
-    "deny": [
-      "Bash(curl *)",
-      "Bash(wget *)",
-      "Bash(git push *)",
-      "Bash(git reset --hard*)",
-      "Bash(git clean -f*)",
-      "Bash(git branch -D*)",
-      "Bash(git checkout -- *)",
-      "Bash(dd *)",
-      "Bash(mkfs*)",
-      "Bash(eval *)"
-    ],
     "additionalDirectories": [
       "/home/junho/ros2_ws/rtc_ws/src/rtc-framework",
       "/home/junho/ros2_ws/rtc_ws/src/rtc-framework/.claude"

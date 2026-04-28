@@ -1,0 +1,83 @@
+# Single source of truth for CI package selection.
+#
+# 변경 시 함께 갱신:
+#   - agent_docs/architecture.md (패키지 표)
+#   - rtc_scripts/scripts/build_deps.sh (외부 deps 추가 시 deps.repos 도)
+#
+# 카테고리 의미:
+#   build       : `colcon build --packages-up-to <build>` 의 입력. 의존성으로
+#                 rtc_msgs / rtc_base / rtc_mpc 등이 자동 포함됨.
+#   test_cpp    : `colcon test --packages-select <test_cpp>` (gtest 보유 패키지)
+#   test_python : ament_python 패키지 (별도 pytest job)
+#   lint_cpp    : cppcheck 대상 — include/ 또는 src/ 가 있는 C++ 패키지
+#
+# 누락된 패키지 (의도적):
+#   rtc_mujoco_sim       : MuJoCo 미설치 (D-2)
+#   rtc_mpc              : ur5e_bringup transitive 로만 build (직접 test X)
+#   ur5e_description     : URDF/MJCF 데이터만
+#   rtc_msgs / shape_estimation_msgs : msg 정의만 (lint_cpp 의 ament_cppcheck 가
+#                                       include/src 부재 시 자동 skip)
+#   rtc_scripts / rtc_tools / rtc_digital_twin : C++ 빌드 대상 아님
+
+build:
+  - rtc_controller_manager
+  - rtc_controllers
+  - rtc_tsid
+  - ur5e_bringup
+  - ur5e_bt_coordinator
+  - ur5e_hand_driver
+  - rtc_urdf_bridge
+  - shape_estimation
+
+test_cpp:
+  - rtc_base
+  - rtc_controllers
+  - rtc_tsid
+  - rtc_urdf_bridge
+  - shape_estimation
+  - ur5e_bringup
+  - ur5e_bt_coordinator
+  - ur5e_hand_driver
+
+test_python:
+  - rtc_tools
+  - rtc_digital_twin
+
+lint_cpp:
+  - rtc_base
+  - rtc_communication
+  - rtc_controller_interface
+  - rtc_controller_manager
+  - rtc_controllers
+  - rtc_inference
+  - rtc_msgs
+  - rtc_tsid
+  - rtc_urdf_bridge
+  - shape_estimation
+  - ur5e_bringup
+  - ur5e_bt_coordinator
+  - ur5e_hand_driver
+
+# Coverage extraction patterns (lcov --extract globs).
+# CPP_TEST_PACKAGES 와 일치해야 한다. include/ + src/ 둘 다 포함.
+coverage_paths:
+  - "*/rtc_base/include/*"
+  - "*/rtc_communication/include/*"
+  - "*/rtc_controller_interface/include/*"
+  - "*/rtc_controller_interface/src/*"
+  - "*/rtc_controller_manager/src/*"
+  - "*/rtc_controllers/include/*"
+  - "*/rtc_controllers/src/*"
+  - "*/rtc_inference/include/*"
+  - "*/rtc_tsid/include/*"
+  - "*/rtc_tsid/src/*"
+  - "*/rtc_urdf_bridge/include/*"
+  - "*/rtc_urdf_bridge/src/*"
+  - "*/ur5e_bringup/include/*"
+  - "*/ur5e_bringup/src/*"
+  - "*/ur5e_bt_coordinator/include/*"
+  - "*/ur5e_bt_coordinator/src/*"
+  - "*/ur5e_hand_driver/include/*"
+  - "*/ur5e_hand_driver/src/*"
+  - "*/shape_estimation/include/*"
+  - "*/shape_estimation/src/*"
