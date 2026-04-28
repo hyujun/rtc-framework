@@ -9,9 +9,6 @@ CompileFlags:
     - "-Wconversion"
     - "-Wsign-conversion"
 
-Diagnostics:
-  UnusedIncludes: Strict
-
 Index:
   Background: Build
 

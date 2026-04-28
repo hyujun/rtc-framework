@@ -1,4 +1,26 @@
 ---
+# RTC Framework clang-tidy config.
+#
+# WarningsAsErrors 는 §3 invariants 와 정렬:
+#   - bugprone-exception-escape : RT-2 (RT path throw 금지)
+#   - performance-*             : RT path 성능 회귀 차단
+#
+# 그룹 비활성:
+#   - cppcoreguidelines-pro-*   : Eigen/포인터 산술/캐스트 — ROS 2 + 수치코드와 충돌
+#
+# 노이즈 큰 개별 check 비활성:
+#   - cert-err58-cpp            : ROS 2 static node/macro 패턴
+#   - misc-non-private-member-variables-in-classes : POD 구조체 다수
+#   - modernize-use-{auto,trailing-return-type,pass-by-value}, modernize-return-braced-init-list
+#                               : 스타일 — Google C++ + RT-5 (auto+Eigen 금지) 와 정렬
+#   - performance-unnecessary-value-param : Eigen 작은 객체 by-value 가 더 빠른 경우 다수
+#   - readability-{magic-numbers, implicit-bool-conversion, named-parameter,
+#                  braces-around-statements, redundant-smartptr-get,
+#                  simplify-boolean-expr, convert-member-functions-to-static}
+#                               : ROS 2 코드 노이즈
+#   - google-{build-using-namespace, explicit-constructor, readability-braces-around-statements,
+#             readability-casting, readability-todo, runtime-int, runtime-references}
+#                               : Google style 의 일부 — RTC convention 우선
 Checks: "-*,
   bugprone-*,
   cert-*,
@@ -8,15 +30,8 @@ Checks: "-*,
   modernize-*,
   performance-*,
   readability-*,
-  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
-  -cppcoreguidelines-pro-bounds-constant-array-index,
-  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
-  -cppcoreguidelines-pro-type-const-cast,
-  -cppcoreguidelines-pro-type-cstyle-cast,
-  -cppcoreguidelines-pro-type-reinterpret-cast,
-  -cppcoreguidelines-pro-type-static-cast-downcast,
-  -cppcoreguidelines-pro-type-union-access,
-  -cppcoreguidelines-pro-type-vararg,
+  -cppcoreguidelines-pro-*,
+  -cert-err58-cpp,
   -google-build-using-namespace,
   -google-explicit-constructor,
   -google-readability-braces-around-statements,
