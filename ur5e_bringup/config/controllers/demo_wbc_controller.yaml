@@ -194,6 +194,11 @@ demo_wbc_controller:
     max_stale_solutions: 5       # ticks without a fresh solution before
                                  # falling back to TSID self-hold
 
+    # MPC solve-loop frequency (Hz). Tune per host: lower if solve time
+    # exceeds 1/freq on the target machine. Falls back to 20 Hz if missing
+    # or non-positive.
+    target_frequency_hz: 20.0
+
     # Handler-mode inputs — ignored when engine == "mock".
     # Paths are resolved relative to the ur5e_bringup package share dir
     # (ament_index_cpp::get_package_share_directory).

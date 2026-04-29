@@ -34,6 +34,5 @@ mpc:
   # friction_mu drives the smooth conic cone residual (Phase 4 Option C).
   limits:
     friction_mu:       0.7     # hand-material coefficient (TPU / silicone)
-    n_friction_facets: 4       # reserved; see OCPLimits docs
     u_min: []
     u_max: []

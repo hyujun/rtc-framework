@@ -194,8 +194,7 @@ private:
 
   // Limits + contact-force weight snapshot taken at the last successful
   // Build. UpdateReferences treats a crossing of `w_contact_force` across
-  // 0 (either direction) as a topology change; same for friction_mu and
-  // n_friction_facets changes.
+  // 0 (either direction) as a topology change; same for friction_mu changes.
   OCPLimits limits_cached_{};
   double w_contact_force_cached_{0.0};
 

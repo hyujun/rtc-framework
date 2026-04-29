@@ -35,6 +35,5 @@ mpc:
   # retained here so a single limits block can serve both factory YAMLs.
   limits:
     friction_mu:       0.7
-    n_friction_facets: 4     # reserved; see OCPLimits docs
     u_min: []                # optional; empty → use model-default torque lb
     u_max: []                # optional; empty → use model-default torque ub

@@ -58,8 +58,6 @@ namespace {
   try {
     if (limits_node["friction_mu"])
       out.friction_mu = limits_node["friction_mu"].as<double>();
-    if (limits_node["n_friction_facets"])
-      out.n_friction_facets = limits_node["n_friction_facets"].as<int>();
     if (limits_node["u_min"] && limits_node["u_min"].IsSequence()) {
       const auto raw = limits_node["u_min"].as<std::vector<double>>();
       if (!raw.empty()) {

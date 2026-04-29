@@ -19,7 +19,6 @@
 ///     verbose: false
 ///   limits:
 ///     friction_mu: 0.7          # only read by contact_rich
-///     n_friction_facets: 4      # reserved (see OCPLimits docs)
 ///     u_min: []                 # optional; size nu or empty
 ///     u_max: []                 # optional; size nu or empty
 /// ```

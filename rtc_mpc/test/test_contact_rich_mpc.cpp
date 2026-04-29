@@ -34,8 +34,7 @@
 
 namespace {
 
-constexpr const char *kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+constexpr const char *kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 constexpr const char *kCostYaml = R"(
 horizon_length: 10
@@ -93,7 +92,6 @@ contact_frames:
     ctx_.ee_target = pdata.oMf[handler_.end_effector_frame_id()];
 
     limits_.friction_mu = 0.7;
-    limits_.n_friction_facets = 4;
 
     solver_cfg_.prim_tol = 1e-3;
     solver_cfg_.dual_tol = 1e-2;

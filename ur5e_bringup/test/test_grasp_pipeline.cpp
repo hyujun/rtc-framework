@@ -116,7 +116,6 @@ mpc:
     verbose: false
   limits:
     friction_mu: 0.7
-    n_friction_facets: 4
 )";
 
 constexpr const char *kRichFactoryYaml = R"(
@@ -131,7 +130,6 @@ mpc:
     verbose: false
   limits:
     friction_mu: 0.7
-    n_friction_facets: 4
 )";
 
 YAML::Node MinimalManagerConfig() {

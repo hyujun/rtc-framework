@@ -112,7 +112,6 @@ contact_frames:
 
     // Default limits activate the friction cone.
     limits_.friction_mu = 0.7;
-    limits_.n_friction_facets = 4;
   }
 
   // Seed solver with gravity-comp τ and default xs.

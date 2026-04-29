@@ -49,16 +49,6 @@ struct OCPLimits {
   Eigen::VectorXd u_min{}; ///< size `nu`, or empty = unlimited
   Eigen::VectorXd u_max{}; ///< size `nu`, or empty = unlimited
   double friction_mu{0.7}; ///< shared across active contacts
-  /// Number of polyhedral facets for friction-cone approximation.
-  ///
-  /// @note Currently UNUSED by ContactRichOCP, which uses
-  ///       aligator::MultibodyFrictionConeResidualTpl — a smooth 2D
-  ///       conic residual (‖f_tan‖ ≤ μ·f_n enforced via sqrt, no facets).
-  ///       Retained in OCPLimits as a reserved slot for a future
-  ///       polyhedral friction-cone variant (e.g., dense-QP compatible
-  ///       or multi-facet analytic Jacobian). See Phase 4 spike Q3
-  ///       (`git log --grep='rtc_mpc Phase 4'`).
-  int n_friction_facets{4};
 };
 
 /// @brief Failure modes for `OCPHandlerBase::Build` / `::UpdateReferences`.

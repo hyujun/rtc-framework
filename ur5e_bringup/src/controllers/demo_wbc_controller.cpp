@@ -457,6 +457,18 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
       mpc_engine_ = MpcEngine::kMock;
     }
 
+    if (const auto freq_node = mpc_cfg["target_frequency_hz"]) {
+      const double freq = freq_node.as<double>(20.0);
+      if (freq > 0.0) {
+        mpc_target_frequency_hz_ = freq;
+      } else {
+        RCLCPP_WARN(logger_,
+                    "[wbc] mpc.target_frequency_hz=%.3f non-positive — "
+                    "keeping default %.1f Hz",
+                    freq, mpc_target_frequency_hz_);
+      }
+    }
+
     // TSID and MPC share full_model_ptr_ (the reduced tree when available).
     // No projection layer needed — ComputeReference writes directly into the
     // reference buffers that TSID consumes via control_ref_.
@@ -1576,7 +1588,7 @@ void DemoWbcController::InitializeHoldPosition(
       launch.workers[static_cast<std::size_t>(i)] =
           thread_configs.mpc.workers[static_cast<std::size_t>(i)];
     }
-    launch.target_frequency_hz = 20.0;
+    launch.target_frequency_hz = mpc_target_frequency_hz_;
 
     bool thread_started = false;
 
@@ -1615,9 +1627,10 @@ void DemoWbcController::InitializeHoldPosition(
         mpc_manager_.SetEnabled(true);
         thread_started = true;
         RCLCPP_INFO(logger_,
-                    "MPC thread started (handler): core=%d prio=%d workers=%d",
+                    "MPC thread started (handler): core=%d prio=%d workers=%d "
+                    "freq=%.1f Hz",
                     launch.main.cpu_core, launch.main.sched_priority,
-                    launch.num_workers);
+                    launch.num_workers, launch.target_frequency_hz);
       }
     }
 
@@ -1630,9 +1643,11 @@ void DemoWbcController::InitializeHoldPosition(
       mock->Start();
       mpc_thread_ = std::move(mock);
       mpc_manager_.SetEnabled(true);
-      RCLCPP_INFO(
-          logger_, "MPC thread started (mock): core=%d prio=%d workers=%d",
-          launch.main.cpu_core, launch.main.sched_priority, launch.num_workers);
+      RCLCPP_INFO(logger_,
+                  "MPC thread started (mock): core=%d prio=%d workers=%d "
+                  "freq=%.1f Hz",
+                  launch.main.cpu_core, launch.main.sched_priority,
+                  launch.num_workers, launch.target_frequency_hz);
     }
   }
 }

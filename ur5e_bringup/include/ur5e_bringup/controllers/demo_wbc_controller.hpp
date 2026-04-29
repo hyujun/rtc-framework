@@ -356,6 +356,10 @@ private:
 
   bool mpc_enabled_{false};
   MpcEngine mpc_engine_{MpcEngine::kMock};
+  // MPC solve-loop frequency (Hz). Loaded from YAML `mpc.target_frequency_hz`
+  // and forwarded to MpcThreadLaunchConfig in InitializeHoldPosition. Default
+  // 20 Hz preserves prior hardcoded behaviour.
+  double mpc_target_frequency_hz_{20.0};
   rtc::mpc::MPCSolutionManager mpc_manager_;
   std::unique_ptr<rtc::mpc::MPCThread> mpc_thread_;
 

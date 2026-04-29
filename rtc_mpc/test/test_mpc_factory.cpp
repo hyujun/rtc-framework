@@ -31,8 +31,7 @@
 
 namespace {
 
-constexpr const char *kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+constexpr const char *kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 constexpr const char *kLightCost = R"(
 horizon_length: 15
@@ -168,7 +167,6 @@ mpc:
     max_iters: 30
   limits:
     friction_mu: 0.7
-    n_friction_facets: 4
 )");
   auto ctx = MakeContactContext();
   std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
