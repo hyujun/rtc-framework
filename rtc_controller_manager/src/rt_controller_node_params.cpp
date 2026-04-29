@@ -466,8 +466,16 @@ void RtControllerNode::DeclareAndLoadParameters() {
     const auto ctrl_dir = session_dir / "controller";
     std::filesystem::create_directories(ctrl_dir);
 
-    const std::string timing_path =
-        enable_timing ? (ctrl_dir / "timing_log.csv").string() : "";
+    if (enable_timing) {
+      const auto timing_path = ctrl_dir / "timing_log.csv";
+      if (!cm_timing_logger_.Open(timing_path, &urtc::WriteCmTimingHeader,
+                                  &urtc::WriteCmTimingRow)) {
+        RCLCPP_WARN(get_logger(),
+                    "Failed to open timing_log.csv at %s — per-tick timing "
+                    "CSV disabled",
+                    timing_path.string().c_str());
+      }
+    }
 
     std::vector<urtc::DeviceLogConfig> log_configs;
     if (enable_device && !controller_topic_configs_.empty()) {
@@ -524,8 +532,8 @@ void RtControllerNode::DeclareAndLoadParameters() {
       }
     }
 
-    logger_ = std::make_unique<urtc::DataLogger>(
-        timing_path, std::move(log_configs), max_inference);
+    logger_ = std::make_unique<urtc::DataLogger>(std::move(log_configs),
+                                                 max_inference);
     RCLCPP_INFO(get_logger(), "Logging to: %s/controller/ (max_sessions=%d)",
                 session_dir.string().c_str(), max_sessions);
   }

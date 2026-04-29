@@ -7,6 +7,7 @@
 #include "rtc_base/threading/publish_buffer.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/threading/thread_config.hpp"
+#include "rtc_base/timing/cm_timing_sample.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controller_manager/controller_timing_profiler.hpp"
 #include "rtc_urdf_bridge/types.hpp"
@@ -388,6 +389,12 @@ private:
   std::unique_ptr<rtc::DataLogger> logger_;
   rtc::ControlLogBuffer log_buffer_{};              // SPSC ring buffer
   rtc::ControllerTimingProfiler timing_profiler_{}; // Compute() timing
+
+  // Per-tick RT-loop timing → <session>/controller/timing_log.csv.
+  // Producer (RT thread, ControlLoop) pushes one CmTimingPayload per tick;
+  // consumer (log thread, DrainLog at 100 Hz) drains into the CSV logger.
+  rtc::CmTimingBuffer cm_timing_producer_{};
+  rtc::ThreadTimingCsvLogger<rtc::CmTimingPayload> cm_timing_logger_{};
 
   // ── Shared state ──────────────────────────────────────────────────────────
   // Device state: per-device SeqLock (lock-free single-writer/multi-reader).

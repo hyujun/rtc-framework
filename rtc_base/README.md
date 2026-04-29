@@ -463,10 +463,11 @@ CM/MPC가 이 패턴의 두 사용처. 향후 ONNX inference, hand UDP 등 새 t
 
 | 카테고리 | 필드 |
 |---------|------|
-| 타이밍 | `timestamp`, `t_state_acquire_us`, `t_compute_us`, `t_publish_us`, `t_total_us`, `jitter_us` |
-| 공유 | `actual_task_positions[6]`, `task_goal_positions[6]`, `trajectory_task_positions[6]`, `trajectory_task_velocities[6]`, `command_type` |
+| 공유 | `timestamp`, `actual_task_positions[6]`, `task_goal_positions[6]`, `trajectory_task_positions[6]`, `trajectory_task_velocities[6]`, `command_type` |
 | 디바이스별 (`DeviceLogSlot[4]`) | `num_channels`, `goal_positions[]`, `actual_positions[]`, `actual_velocities[]`, `efforts[]`, `commands[]`, `trajectory_positions[]`, `trajectory_velocities[]`, `motor_positions[]`, `motor_velocities[]`, `motor_efforts[]`, `sensor_data[128]`, `sensor_data_raw[128]`, `valid`, `goal_type` |
 | 추론 | `inference_output[64]`, `inference_valid`, `num_inference_values` |
+
+> Per-tick RT-loop timing (`t_state_acquire_us`, `t_compute_us`, `t_publish_us`, `t_total_us`, `jitter_us`)은 별도 transport — `CmTimingPayload` + `CmTimingBuffer` (`timing/cm_timing_sample.hpp`) — 로 옮겼다. `LogEntry` 는 device-state / sensor / inference CSV 만 담는다.
 
 #### PublishSnapshot 주요 필드
 
@@ -487,15 +488,16 @@ CM/MPC가 이 패턴의 두 사용처. 향후 ONNX inference, hand UDP 등 새 t
 
 | CSV 파일 | 역할 | 헤더 컬럼 |
 |----------|------|----------|
-| `timing_log.csv` | (항상 생성) | `timestamp, t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us` |
 | `{device}_state_log.csv` | `kDeviceStateLog` | `timestamp, actual_pos_*, actual_vel_*, effort_*, command_*, command_type, goal_type, joint_goal_*, task_goal_*, traj_pos_*, traj_vel_*, traj_task_pos_*, traj_task_vel_*, task_pos_*, motor_pos_*, motor_vel_*, motor_eff_*` |
 | `{device}_sensor_log.csv` | `kDeviceSensorLog` | `timestamp, baro_raw_*, tof_raw_*, baro_*, tof_*, inference_valid, ft_*_contact/fx/fy/fz/ux/uy/uz` |
+
+> `timing_log.csv` 는 더 이상 `DataLogger` 가 소유하지 않는다. CM RT loop 의 per-tick timing 은 `ThreadTimingCsvLogger<CmTimingPayload>` 가 직접 기록한다 (스키마: `t_wall_ns, tick_count, t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us`).
 
 **API:**
 
 | 메서드 | 설명 |
 |--------|------|
-| `DataLogger(timing_path, device_configs, num_inference_values)` | CSV 파일 열기 + 헤더 작성 |
+| `DataLogger(device_configs, num_inference_values)` | device CSV 파일 열기 + 헤더 작성 |
 | `LogEntry(const LogEntry&)` | 단일 항목 기록 |
 | `DrainBuffer(ControlLogBuffer&)` | SPSC 버퍼 전체 드레인 -> CSV 기록 |
 | `Flush()` | 파일 버퍼 플러시 |

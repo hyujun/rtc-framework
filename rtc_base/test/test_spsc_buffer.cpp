@@ -34,7 +34,6 @@ TEST(SpscLogBufferTest, PushAndPop) {
 
   rtc::LogEntry input{};
   input.timestamp = 1.234;
-  input.t_compute_us = 55.0;
   input.num_devices = 2;
 
   EXPECT_TRUE(buf.Push(input));
@@ -43,7 +42,6 @@ TEST(SpscLogBufferTest, PushAndPop) {
   EXPECT_TRUE(buf.Pop(output));
 
   EXPECT_DOUBLE_EQ(output.timestamp, 1.234);
-  EXPECT_DOUBLE_EQ(output.t_compute_us, 55.0);
   EXPECT_EQ(output.num_devices, 2);
 }
 
@@ -76,7 +74,7 @@ TEST(SpscLogBufferTest, FIFO_Order) {
 // Fill buffer to capacity (N=4, usable slots = N-1 = 3), push one more
 // -> returns false, drop_count increments.
 TEST(SpscLogBufferTest, BufferFull_DropsAndCounts) {
-  rtc::SpscLogBuffer<4> buf;  // capacity 4, usable = 3 (one slot reserved)
+  rtc::SpscLogBuffer<4> buf; // capacity 4, usable = 3 (one slot reserved)
 
   // Fill all usable slots.
   for (int i = 0; i < 3; ++i) {
@@ -102,7 +100,7 @@ TEST(SpscLogBufferTest, BufferFull_DropsAndCounts) {
 // Push N-1 entries, pop all, push N-1 more (wraps around), pop all — verify
 // data correctness across the wrap boundary.
 TEST(SpscLogBufferTest, Wraparound) {
-  rtc::SpscLogBuffer<4> buf;  // usable = 3
+  rtc::SpscLogBuffer<4> buf; // usable = 3
 
   // First fill + drain.
   for (int i = 0; i < 3; ++i) {
@@ -136,7 +134,8 @@ TEST(SpscLogBufferTest, Wraparound) {
 // Producer pushes 10000 entries, consumer pops — verify no data loss:
 //   push_count - drop_count == pop_count
 TEST(SpscLogBufferTest, ConcurrentProducerConsumer) {
-  rtc::SpscLogBuffer<64> buf;  // Moderate size to exercise both full/empty paths.
+  rtc::SpscLogBuffer<64>
+      buf; // Moderate size to exercise both full/empty paths.
 
   constexpr int kNumEntries = 10000;
   std::atomic<bool> producer_done{false};
@@ -249,4 +248,4 @@ TEST(SpscPublishBufferTest, FIFO_Order) {
   }
 }
 
-}  // namespace
+} // namespace

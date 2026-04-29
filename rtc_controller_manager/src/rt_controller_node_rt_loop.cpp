@@ -300,6 +300,13 @@ void RtControllerNode::ControlLoop() {
     compute_overrun_count_.fetch_add(1, std::memory_order_relaxed);
   }
 
+  // Per-tick timing → SPSC producer; drained by DrainLog() into
+  // <session>/controller/timing_log.csv. Timing is pushed independent of
+  // enable_logging_ so the producer collects samples for the periodic
+  // INFO summary even when CSV logging is disabled.
+  static_cast<void>(cm_timing_producer_.Push(urtc::CmTimingPayload{
+      t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us}));
+
   // Push log entry to the SPSC ring buffer — O(1), no syscall.
   // DrainLog() (log thread, Core 4) pops entries and writes the CSV file.
   if (enable_logging_) {
@@ -311,11 +318,6 @@ void RtControllerNode::ControlLoop() {
 
     urtc::LogEntry entry{};
     entry.timestamp = timestamp;
-    entry.t_state_acquire_us = t_state_us;
-    entry.t_compute_us = t_compute_us;
-    entry.t_publish_us = t_publish_us;
-    entry.t_total_us = t_total_us;
-    entry.jitter_us = jitter_us;
     entry.actual_task_positions = output.actual_task_positions;
     entry.task_goal_positions = output.task_goal_positions;
     entry.trajectory_task_positions = output.trajectory_task_positions;
@@ -393,6 +395,13 @@ void RtControllerNode::DrainLog() {
     logger_->DrainBuffer(log_buffer_);
   }
 
+  // Drain per-tick timing samples → CSV. Producer is the RT thread; this
+  // drain runs at the log-thread cadence (10 ms timer ⇒ ≤5 samples/drain
+  // at 500 Hz). On disabled logging the logger is closed and Log() is a
+  // no-op, so we still drain to keep the SPSC ring from filling.
+  cm_timing_producer_.Drain(
+      [this](const urtc::CmTimingSample &s) { cm_timing_logger_.Log(s); });
+
   // Drain deferred E-STOP log messages (set by TriggerGlobalEstop /
   // ClearGlobalEstop).
   if (estop_log_pending_.exchange(false, std::memory_order_acquire)) {
@@ -411,7 +420,8 @@ void RtControllerNode::DrainLog() {
   // recent kTimingSummaryInterval ticks (~2 s at 500 Hz), not the whole
   // session — old start-up spikes would otherwise permanently skew p99.
   // The rt_controller_node owns cumulative counters (overruns, skips,
-  // log_drops, pub_drops) separately, so they are unaffected by the reset.
+  // log_drops, pub_drops, timing_drops) separately, so they are unaffected
+  // by the reset.
   if (print_timing_summary_.exchange(false, std::memory_order_relaxed)) {
     int idx = active_controller_idx_.load(std::memory_order_acquire);
     const auto overruns = overrun_count_.load(std::memory_order_relaxed);
@@ -420,9 +430,10 @@ void RtControllerNode::DrainLog() {
     const auto skips = skip_count_.load(std::memory_order_relaxed);
     const auto log_drops = log_buffer_.drop_count();
     const auto pub_drops = publish_buffer_.drop_count();
+    const auto timing_drops = cm_timing_producer_.DropCount();
     RCLCPP_INFO(get_logger(),
                 "%s  overruns=%lu  compute_overruns=%lu  skips=%lu  "
-                "log_drops=%lu  pub_drops=%lu",
+                "log_drops=%lu  pub_drops=%lu  timing_drops=%lu",
                 timing_profiler_
                     .Summary(std::string(
                         controllers_[static_cast<std::size_t>(idx)]->Name()))
@@ -431,7 +442,8 @@ void RtControllerNode::DrainLog() {
                 static_cast<unsigned long>(compute_overruns),
                 static_cast<unsigned long>(skips),
                 static_cast<unsigned long>(log_drops),
-                static_cast<unsigned long>(pub_drops));
+                static_cast<unsigned long>(pub_drops),
+                static_cast<unsigned long>(timing_drops));
     timing_profiler_.Reset();
   }
 }
