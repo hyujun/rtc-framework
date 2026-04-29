@@ -639,28 +639,6 @@ void DemoWbcController::OnDeviceConfigsSet() {
   BuildJointReorderMap();
 }
 
-std::optional<rtc::MpcSolveStats>
-DemoWbcController::GetMpcSolveStats() const noexcept {
-  if (!mpc_manager_.Enabled()) {
-    return std::nullopt;
-  }
-  // Always return stats when MPC is enabled — even with count==0. A
-  // count=0 row lets `mpc_solve_timing.csv` readers distinguish "MPC
-  // enabled but solver not publishing" (dim-mismatch / solver error /
-  // warm-up) from "MPC disabled" (nullopt → no CSV row at all).
-  const auto s = mpc_manager_.GetSolveStats();
-  rtc::MpcSolveStats out;
-  out.count = s.count;
-  out.window = s.window;
-  out.last_ns = s.last_ns;
-  out.min_ns = s.min_ns;
-  out.max_ns = s.max_ns;
-  out.p50_ns = s.p50_ns;
-  out.p99_ns = s.p99_ns;
-  out.mean_ns = s.mean_ns;
-  return out;
-}
-
 DemoWbcController::FingertipReport
 DemoWbcController::GetFingertipReportForTesting(
     int fingertip_idx) const noexcept {
@@ -1881,11 +1859,10 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
 RTControllerInterface::CallbackReturn
 DemoWbcController::on_deactivate(const rclcpp_lifecycle::State &prev) noexcept {
   // Pause the MPC solve loop so it stops burning CPU while this controller
-  // is inactive. The timing logger / timer keep running — GetMpcSolveStats
-  // returns nullopt when the manager is disabled, which silently skips
-  // logging (see LogMpcSolveTimingTick guard); when paused the manager is
-  // still enabled so the most recent stats window keeps repeating, which
-  // is acceptable noise for the inactive interval.
+  // is inactive. The timing logger / timer keep running — the
+  // SolveTimingProducer drain naturally yields zero rows while paused, and
+  // the aggregate stats are skipped via the mpc_manager_.Enabled() guard
+  // at the top of LogMpcSolveTimingTick.
   if (mpc_thread_) {
     mpc_thread_->Pause();
   }
@@ -2024,25 +2001,31 @@ rcl_interfaces::msg::SetParametersResult DemoWbcController::OnGainParametersSet(
 }
 
 void DemoWbcController::LogMpcSolveTimingTick() noexcept {
-  const auto stats = GetMpcSolveStats();
-  if (!stats) {
-    // MPC enabled but solver hasn't published a window yet — skip.
+  if (!mpc_manager_.Enabled()) {
     return;
   }
-  mpc_timing_logger_.Log(*stats);
 
-  // Periodic INFO so tmux-watchers see progress without tail-ing the CSV.
-  // 10 s cadence keeps the log readable across a 10-minute pilot session.
+  // Drain every pending per-MPC-tick sample into the CSV. One row per
+  // solve preserves full sampling-rate granularity; the file grows at
+  // (MPC frequency × session_seconds) rows.
+  mpc_manager_.SolveTimingProducer().Drain(
+      [this](const rtc::MpcSolveSample &s) { mpc_timing_logger_.Log(s); });
+
+  // Periodic aggregate INFO so tmux-watchers see progress without
+  // tail-ing the CSV. The window is computed by MPCSolutionManager over
+  // its 256-sample ring; 10 s INFO cadence keeps the console readable
+  // across a 10-minute pilot session.
+  const auto stats = mpc_manager_.GetSolveStats();
   static constexpr std::uint32_t kInfoEveryNTicks = 10;
   if (++mpc_timing_tick_ % kInfoEveryNTicks == 0) {
     RCLCPP_INFO(logger_,
                 "[mpc_solve_timing] count=%lu window=%u p50=%.2fms p99=%.2fms "
                 "max=%.2fms",
-                static_cast<unsigned long>(stats->count),
-                static_cast<unsigned>(stats->window),
-                static_cast<double>(stats->p50_ns) / 1e6,
-                static_cast<double>(stats->p99_ns) / 1e6,
-                static_cast<double>(stats->max_ns) / 1e6);
+                static_cast<unsigned long>(stats.count),
+                static_cast<unsigned>(stats.window),
+                static_cast<double>(stats.p50_ns) / 1e6,
+                static_cast<double>(stats.p99_ns) / 1e6,
+                static_cast<double>(stats.max_ns) / 1e6);
   }
 }
 

@@ -273,13 +273,22 @@ poll(&pfd, 1, 1);  // 1ms timeout, eventfd readable → 즉시 wakeup
 
 누적 over-run 카운터(`overruns`, `compute_overruns`, `skips`, `log_drops`, `pub_drops`)는 `rt_controller_node`가 별도 원자 변수로 관리 — Summary 리셋에 영향 없음.
 
-### MPC Solve Timing Logger (per-controller aux thread, non-RT)
+### Per-thread Timing CSV (generic infra)
 
-CM 자체는 솔버 스탯에 관여하지 않는다. MPC를 사용하는 각 컨트롤러(예: `DemoWbcController`)가 자체 LifecycleNode의 1 Hz aux 타이머를 `on_activate`에서 (필요 시) 띄우고, 자기 `mpc_thread_`(별도 스레드, 20 Hz)의 스냅샷을 `GetMpcSolveStats()`로 가져와 `<session>/controllers/<config_key>/mpc_solve_timing.csv`에 9열(`t_wall_ns,count,window,last_ns,min_ns,p50_ns,p99_ns,max_ns,mean_ns`)을 append한다. 10초마다 `RCLCPP_INFO`로 `count / window / p50 / p99 / max` 요약 로그. `GetMpcSolveStats()`가 `nullopt`를 반환하면 row를 쓰지 않는다.
+CM RT loop와 MPC thread 모두 [`rtc_base/timing/thread_timing_*`](../rtc_base/include/rtc_base/timing/) generic 인프라(`ThreadTimingProducer<Payload, N>` + `ThreadTimingCsvLogger<Payload>`)를 공유한다. payload struct만 도메인별로 다르고 SPSC + push + drain + CSV open/append/flush 인프라는 한 곳:
 
-각 컨트롤러가 자기 `<config_key>` 서브디렉토리에 쓰므로 컨트롤러 전환이 발생해도 stream이 섞이지 않는다.
+| 채널 | Producer 멤버 | Logger | CSV 경로 | Schema (payload 컬럼) |
+|------|--------------|--------|----------|----------------------|
+| CM RT loop (500 Hz) | `cm_timing_producer_` (`ThreadTimingProducer<CmTimingPayload, 512>`) | `cm_timing_logger_` | `<session>/controller/timing_log.csv` | `t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us` |
+| MPC thread (20 Hz, per-controller) | `MPCSolutionManager::SolveTimingProducer()` (`ThreadTimingProducer<MpcTimingPayload, 128>`) | `MpcSolveTimingLogger` (controller-owned) | `<session>/controllers/<config_key>/mpc_solve_timing.csv` | `solve_ns` |
 
-Writer 구현: [`rtc_mpc/logging/mpc_solve_timing_logger.hpp`](../rtc_mpc/include/rtc_mpc/logging/mpc_solve_timing_logger.hpp) · neutral 타입 [`rtc::MpcSolveStats`](../rtc_base/include/rtc_base/timing/mpc_solve_stats.hpp).
+공통 컬럼 `t_wall_ns, tick_count`는 `ThreadTimingCsvLogger`가 자동으로 emit. `tick_count`는 producer-side monotonic 시퀀스 번호 (drop 검증용).
+
+CM RT loop가 매 tick `cm_timing_producer_.Push(...)` 1줄, `DrainLog()`가 `cm_timing_producer_.Drain([&](sample){ cm_timing_logger_.Log(sample); })` 1줄. 1초 INFO summary에 `timing_drops` (producer overflow 카운터)가 `log_drops` / `pub_drops`와 함께 출력된다.
+
+MPC 측은 컨트롤러가 자체 1 Hz aux 타이머에서 `mpc_manager_.SolveTimingProducer().Drain(...)`을 호출. 컨트롤러별 `<config_key>` 서브디렉토리에 쓰므로 전환이 발생해도 stream이 섞이지 않는다. 같은 콜백이 `MPCSolutionManager::GetSolveStats()` (256-sample sliding 윈도우)로 10초마다 aggregate INFO 라인을 출력 — 디스크에는 기록하지 않으며 percentile은 raw CSV에서 post-process로 계산.
+
+새 RT/soft-RT thread (예: ONNX inference)를 추가하려면 payload struct + `using` alias 두 줄이면 끝. `RTControllerInterface` 변경 없음.
 
 ---
 

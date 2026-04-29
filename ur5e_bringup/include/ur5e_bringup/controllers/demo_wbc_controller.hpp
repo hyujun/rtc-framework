@@ -164,8 +164,6 @@ public:
   [[nodiscard]] CommandType GetCommandType() const noexcept override {
     return command_type_;
   }
-  [[nodiscard]] std::optional<rtc::MpcSolveStats>
-  GetMpcSolveStats() const noexcept override;
 
 private:
   // ── Model initialization ────────────────────────────────────────────────
@@ -393,9 +391,11 @@ private:
   Eigen::VectorXd mpc_u_fb_;
 
   // ── MPC solve-timing observability (aux thread, non-RT) ────────────────
-  // Owned 1 Hz timer (spawned in on_activate when mpc_enabled_) polls the
-  // controller's GetMpcSolveStats() and appends one row per tick to
-  // <session>/controllers/<config_key>/mpc_solve_timing.csv. INFO line every
+  // Owned 1 Hz timer (spawned in on_activate when mpc_enabled_) drains the
+  // MPCSolutionManager's SolveTimingProducer SPSC ring and appends one row
+  // per MPC tick to <session>/controllers/<config_key>/mpc_solve_timing.csv
+  // via MpcSolveTimingLogger (a thin wrapper over the generic
+  // ThreadTimingCsvLogger<MpcTimingPayload>). Aggregate INFO line every
   // 10 ticks (~10 s) for tmux watchers.
   rclcpp::CallbackGroup::SharedPtr mpc_timing_cb_group_;
   rclcpp::TimerBase::SharedPtr mpc_timing_timer_;

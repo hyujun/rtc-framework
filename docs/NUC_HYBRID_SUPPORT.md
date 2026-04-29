@@ -97,7 +97,7 @@ Stage B merge 전 다음 벤치마크를 채워 Stage B PR에 첨부한다. 각 
 
 ### MPC solve timing (PR #2 관측 경로 사용)
 
-`logging_data/YYMMDD_HHMM/controllers/demo_wbc_controller/mpc_solve_timing.csv`에서 수집 (writer는 `DemoWbcController` 자체 LifecycleNode의 1 Hz aux 타이머). `DemoWbcController::ComputeControl`이 phase-independent로 MPC state를 publish하므로 **kIdle** 구간도 20 Hz solve 측정이 가능하다 — kHold 워크로드와 별도 행으로 분리해 baseline vs active 차이를 구분한다. `count == 0` 행은 `DemoWbcController::GetMpcSolveStats` sentinel(`mpc.enabled=true`인데 solver가 publish 못한 상태 — dim-mismatch / solver error / 워밍업 구간) — 수집 스크립트에서 필터링 필요.
+`logging_data/YYMMDD_HHMM/controllers/demo_wbc_controller/mpc_solve_timing.csv`에서 수집 (writer는 `DemoWbcController` 자체 LifecycleNode의 1 Hz aux 타이머가 `MPCSolutionManager::SolveTimingProducer()` SPSC를 drain). 스키마는 per-MPC-tick raw `t_wall_ns,tick_count,solve_ns` — 한 row = 한 solve. `DemoWbcController::ComputeControl`이 phase-independent로 MPC state를 publish하므로 **kIdle** 구간도 20 Hz solve 측정이 가능하다 — kHold 워크로드와 별도 행으로 분리해 baseline vs active 차이를 구분한다. solver가 publish 못한 워밍업/실패 구간에는 새 row가 추가되지 않으므로 분포 비교 시 별도 필터가 필요 없다 (`tick_count` gap으로 해당 구간 식별).
 
 #### 수집 절차
 

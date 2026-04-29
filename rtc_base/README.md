@@ -36,8 +36,16 @@ rtc_base/
     │   ├── kalman_filter.hpp          <- 이산시간 칼만 필터
     │   ├── sensor_rate_estimator.hpp  <- EMA 기반 센서 샘플링 레이트 추정
     │   └── sliding_trend_detector.hpp <- O(1) 슬라이딩 윈도우 OLS 드리프트 감지
+    ├── concurrency/
+    │   └── spsc_queue.hpp             <- 락-프리 SPSC 링 버퍼 (POD payload 템플릿)
     ├── timing/
-    │   └── timing_profiler_base.hpp   <- 락-프리 히스토그램 기반 타이밍 프로파일러
+    │   ├── timing_profiler_base.hpp   <- 락-프리 히스토그램 기반 타이밍 프로파일러
+    │   ├── thread_timing_sample.hpp   <- ThreadTimingSample<Payload> POD (per-tick 샘플)
+    │   ├── thread_timing_producer.hpp <- ThreadTimingProducer<Payload,N> SPSC + tick counter
+    │   ├── thread_timing_csv_logger.hpp <- ThreadTimingCsvLogger<Payload> CSV writer
+    │   ├── cm_timing_sample.hpp       <- CM RT loop payload + producer alias
+    │   ├── mpc_solve_stats.hpp        <- MPC solve aggregate stats POD (윈도우)
+    │   └── mpc_solve_sample.hpp       <- MPC tick payload + producer alias
     └── threading/
         ├── thread_config.hpp      <- CPU 코어별 스레드 레이아웃 프리셋
         ├── thread_utils.hpp       <- 스레드 구성/검증 유틸리티
@@ -416,14 +424,26 @@ state_lock.Store(new_state);           // RT 스레드 (500 Hz, wait-free)
 auto snapshot = state_lock.Load();     // 다른 스레드 (lock-free, 재시도 가능)
 ```
 
-#### SPSC 버퍼 (`log_buffer.hpp`, `publish_buffer.hpp`)
+#### SPSC 버퍼 (`concurrency/spsc_queue.hpp` + 도메인별 alias)
 
-RT 스레드(producer)에서 비-RT 스레드(consumer)로 데이터를 전달하는 락-프리 링 버퍼입니다.
+RT 스레드(producer)에서 비-RT 스레드(consumer)로 데이터를 전달하는 락-프리 링 버퍼입니다. 모든 buffer는 `SpscQueue<T, N>` 템플릿의 alias이며, `T` 는 trivially copyable POD 이어야 합니다.
 
 | 버퍼 | 데이터 | 용량 | 용도 |
 |------|--------|------|------|
-| `ControlLogBuffer` | `LogEntry` | 512 (~1초 @500Hz) | CSV 로깅 |
+| `ControlLogBuffer` | `LogEntry` (device CSV) | 512 (~1초 @500Hz) | DataLogger device-CSV 드레인 |
 | `ControlPublishBuffer` | `PublishSnapshot` | 512 (~1초 @500Hz) | ROS2 퍼블리시 오프로드 |
+| `CmTimingBuffer` (`ThreadTimingProducer<CmTimingPayload, 512>`) | `ThreadTimingSample<CmTimingPayload>` | 512 (~1초 @500Hz) | CM RT loop per-tick timing CSV |
+| `MpcSolveSampleBuffer` (`ThreadTimingProducer<MpcTimingPayload, 128>`) | `ThreadTimingSample<MpcTimingPayload>` | 128 (~6초 @20Hz) | MPC per-tick timing CSV |
+
+#### Per-thread timing 인프라 (`timing/thread_timing_*`)
+
+`timing/thread_timing_sample.hpp` + `thread_timing_producer.hpp` + `thread_timing_csv_logger.hpp` 3개 헤더가 임의 RT/soft-RT thread에 대한 per-tick CSV 로깅을 일반화한다. 새 timing 채널을 추가하려면:
+
+1. `Payload` POD struct 정의 (trivially copyable).
+2. header writer (`",col1,col2"`) + row writer (`",<v1>,<v2>"`) 자유 함수.
+3. `using MyBuffer = ThreadTimingProducer<Payload, N>;` alias.
+
+CM/MPC가 이 패턴의 두 사용처. 향후 ONNX inference, hand UDP 등 새 thread는 동일 인프라를 재사용한다 — `RTControllerInterface` 변경 없음.
 
 **공통 API:**
 

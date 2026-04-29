@@ -4,7 +4,6 @@
 // Shared types (constants, data structs) live in rtc_base.
 // This header re-exports them and adds the abstract Strategy interface.
 #include "rtc_base/threading/publish_buffer.hpp"
-#include "rtc_base/timing/mpc_solve_stats.hpp"
 #include "rtc_base/types/types.hpp"
 
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
@@ -16,7 +15,6 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -152,16 +150,11 @@ public:
 
   virtual void LoadConfig(const YAML::Node &cfg);
 
-  // GetMpcSolveStats()
-  //   Observability hook — returns the most recent MPC solve-timing window
-  //   if this controller runs an MPC loop, or std::nullopt otherwise.
-  //   Non-RT: RtControllerNode polls this from the aux callback group at
-  //   1 Hz for CSV logging and periodic INFO output. Controllers that do
-  //   not own an MPCSolutionManager leave the default nullopt.
-  [[nodiscard]] virtual std::optional<MpcSolveStats>
-  GetMpcSolveStats() const noexcept {
-    return std::nullopt;
-  }
+  // Note: per-thread observability CSVs (CM RT loop, MPC solve timing, ...)
+  // are owned by the producing thread itself — see rtc_base/timing/
+  // thread_timing_*.hpp for the generic infra. The base interface
+  // intentionally has no domain-specific observability virtuals so adding
+  // a new timing channel never requires touching this header.
 
   // GetTopicConfig()
   //   Returns the per-controller topic configuration (subscribe/publish

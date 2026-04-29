@@ -57,13 +57,14 @@ virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 | `SetHandEstop(bool)` | no-op | 핸드 비상 정지 설정 |
 | `LoadConfig(const YAML::Node&)` | 디바이스 플래그 경고 + 토픽 파싱 | YAML 설정 로드. `noexcept`가 아님 (throw 가능) |
 | `GetCommandType()` | `CommandType::kPosition` | 커맨드 타입 (`kPosition` 또는 `kTorque`) |
-| `GetMpcSolveStats()` | `std::nullopt` | MPC 루프를 보유한 컨트롤러만 오버라이드. **컨트롤러 자체 LifecycleNode**의 aux 1 Hz 타이머가 자기 자신을 폴링하여 `<session>/controllers/<config_key>/mpc_solve_timing.csv`로 기록하고 10초마다 `RCLCPP_INFO` 요약. 반환 타입은 `std::optional<rtc::MpcSolveStats>` ([`rtc_base/timing/mpc_solve_stats.hpp`](../rtc_base/include/rtc_base/timing/mpc_solve_stats.hpp)); writer는 [`rtc_mpc/logging/mpc_solve_timing_logger.hpp`](../rtc_mpc/include/rtc_mpc/logging/mpc_solve_timing_logger.hpp). |
 
 > **`LoadConfig()` 기본 구현 동작:**
 > 1. `cfg["enable_ur5e"]` / `cfg["enable_hand"]` 존재 시 deprecated 경고 출력 후 무시
 > 2. `cfg["topics"]` 존재 시 `ParseTopicConfig()` 호출, 없으면 기본 토픽 유지
 >
 > 하위 클래스에서 오버라이드 시 `RTControllerInterface::LoadConfig(cfg)`를 먼저 호출해야 토픽 설정이 적용됩니다.
+
+> **Observability**: 인터페이스에는 도메인-specific virtual이 없습니다. 컨트롤러가 MPC 솔버, ONNX inference 등 자체 RT/soft-RT 스레드의 per-tick timing을 CSV로 남기려면 [`rtc_base/timing/thread_timing_*`](../rtc_base/include/rtc_base/timing/) generic infra (`ThreadTimingProducer<Payload, N>` + `ThreadTimingCsvLogger<Payload>`)를 직접 owning. 새 채널을 추가해도 base 변경이 필요 없도록 의도된 구조 — 자세한 사용 예는 [`rtc_mpc/logging/mpc_solve_timing_logger.hpp`](../rtc_mpc/include/rtc_mpc/logging/mpc_solve_timing_logger.hpp), [`rtc_base/timing/cm_timing_sample.hpp`](../rtc_base/include/rtc_base/timing/cm_timing_sample.hpp).
 
 ### Lifecycle 훅 (ros2_control 정렬, 기본 구현 제공)
 

@@ -67,6 +67,12 @@ void MPCSolutionManager::PublishSolution(const MPCSolution &sol) noexcept {
     // Mutex ops can't throw in practice (non-RT) and this function is
     // noexcept; swallow to uphold the contract.
   }
+
+  // Per-tick raw-sample stream — wait-free SPSC push via the generic
+  // ThreadTimingProducer (timestamp + tick_count are stamped internally).
+  // On a full ring the sample is dropped (DropCount() increments).
+  (void)solve_timing_producer_.Push(
+      rtc::MpcTimingPayload{sol.solve_duration_ns});
 }
 
 MPCSolutionManager::SolveTimingStats

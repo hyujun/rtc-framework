@@ -77,7 +77,8 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | `/rtc_cm/active_controller_name` | 동일 (TRANSIENT_LOCAL) | Controller switch 확인. BT / GUI / digital_twin은 이 토픽으로 리와이어 |
 | `/<config_key>/<config_key>/get_parameters` (srv) | active 데모 컨트롤러의 LifecycleNode | Runtime gain 값 조회 (`ros2 param get`) |
 | `/forward_position_controller/commands` | 동일 | RT loop 건강성 — `ros2 topic hz` 로 ~500 Hz 확인 |
-| `<session>/controllers/<config_key>/mpc_solve_timing.csv` | per-controller LifecycleNode 1 Hz aux (e.g. `DemoWbcController`) | MPC solve p50/p99/max 회귀 — 9 cols `t_wall_ns,count,window,last_ns,min_ns,p50_ns,p99_ns,max_ns,mean_ns` |
+| `<session>/controller/timing_log.csv` | CM RT loop 500 Hz (`rtc::ThreadTimingProducer<CmTimingPayload>`) drained by `DrainLog()` log thread | RT loop per-tick timing — 7 cols `t_wall_ns,tick_count,t_state_acquire_us,t_compute_us,t_publish_us,t_total_us,jitter_us`. p50/p99 등은 post-process 계산 |
+| `<session>/controllers/<config_key>/mpc_solve_timing.csv` | per-controller LifecycleNode 1 Hz aux drains MPC `SolveTimingProducer` | **Per-MPC-tick raw 샘플** — 3 cols `t_wall_ns,tick_count,solve_ns`. 한 row = 한 solve. p50/p99/max는 post-process로 계산 (예: `awk` / pandas). aggregate INFO 라인은 controller 로그에 10 s마다 출력. 두 CSV 모두 같은 generic infra (`rtc_base/timing/thread_timing_*`) — 새 thread 추가 시 payload struct만 정의 |
 | `/{group}/digital_twin/joint_states` | controllers (per-group, RELIABLE) | Device 그룹별 건강성; `rtc_digital_twin`이 merge |
 | `/sim/status` | `rtc_mujoco_sim` 1 Hz | Sim 건강성 — 중단 시 sim sync timeout E-STOP |
 | `/hand/joint_states`, `/hand/motor_states`, `/hand/sensor_states` | `ur5e_hand_driver` | Hand UDP 건강성 |

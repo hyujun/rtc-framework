@@ -82,10 +82,15 @@ retains its own one-shot `fprintf` (separate semantics: fatal setup
 mistake, not runtime drift). Readers can also pair the stderr stream with
 `<session>/controllers/<config_key>/mpc_solve_timing.csv` (writer:
 [`rtc_mpc/logging/mpc_solve_timing_logger.hpp`](include/rtc_mpc/logging/mpc_solve_timing_logger.hpp);
-each MPC-using controller's own LifecycleNode owns the 1 Hz aux timer)
-— when MPC is enabled but Solve keeps failing, `DemoWbcController::
-GetMpcSolveStats` returns a `count=0` sentinel row so the CSV still
-proves the thread is alive.
+each MPC-using controller's own LifecycleNode owns a 1 Hz aux timer that
+drains `MPCSolutionManager::SolveTimingProducer()` per-tick SPSC into the
+CSV). Schema is **per-MPC-tick raw** — 3 cols `t_wall_ns,tick_count,solve_ns`,
+one row per solve. When MPC is enabled but `Solve` keeps failing the CSV
+simply stops growing (no `tick_count` progression); the failed-solve
+atomics above plus the periodic `RCLCPP_INFO` aggregate
+(`MPCSolutionManager::GetSolveStats`, 256-sample sliding window) prove
+the thread is alive. Backpressure: producer's `DropCount()` increments if
+the consumer falls behind.
 
 ## Status
 
