@@ -47,6 +47,7 @@ rtc_base/
     └── threading/
         ├── thread_config.hpp      <- CPU 코어별 스레드 레이아웃 프리셋
         ├── thread_utils.hpp       <- 스레드 구성/검증 유틸리티
+        ├── periodic_rt_thread.hpp <- 고정 주파수 RT 루프 base (CM/MPC 공유)
         ├── publish_buffer.hpp     <- 락-프리 SPSC 퍼블리시 버퍼
         └── seqlock.hpp            <- 락-프리 단일 쓰기/다중 읽기 동기화
 ```

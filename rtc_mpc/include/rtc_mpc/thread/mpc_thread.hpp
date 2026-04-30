@@ -4,38 +4,36 @@
 /// @file mpc_thread.hpp
 /// @brief Abstract MPC solve loop + worker frame.
 ///
-/// `MPCThread` is a reusable skeleton that drives `Solve()` at a fixed
-/// frequency on a dedicated jthread. Downstream packages (e.g. an Aligator
-/// integration) subclass it and implement `Solve()`; see
-/// @ref MockMPCThread below for a deterministic test implementation.
+/// `MPCThread` drives `Solve()` once per period on a dedicated thread and
+/// publishes the result via @ref MPCSolutionManager::PublishSolution. The
+/// fixed-frequency loop, lifecycle (Start / RequestStop / Join /
+/// Pause / Resume), per-tick timing capture, and overrun bookkeeping are
+/// all provided by @ref rtc::PeriodicRtThread base; this class only adds
+/// MPC-specific concerns: worker thread management, the
+/// `Solve(state, out, workers)` virtual, and the wiring of the timing
+/// producer onto the base.
 ///
 /// Threading model:
-/// - The main solve thread runs `Solve()` once per period, publishing the
-///   result via @ref MPCSolutionManager::PublishSolution.
-/// - Optional worker threads are started before the solve loop and exposed
-///   to `Solve()` via a `std::span<std::jthread>`. Solvers that do not
-///   exploit parallelism can simply ignore the span.
+/// - The main solve thread is owned by @ref rtc::PeriodicRtThread.
+/// - Optional worker threads (up to @ref kMaxMpcWorkers) are owned by this
+///   class and exposed to `Solve()` via a `std::span<std::jthread>`.
+///   Solvers that do not exploit parallelism can simply ignore the span.
 /// - Thread affinity / priority is applied by the caller-supplied
-///   @ref rtc::ThreadConfig values, one per thread; the base class calls
-///   `rtc::ApplyThreadConfig` at thread entry.
-/// - Cooperative cancellation is via `std::jthread`'s stop_token.
+///   @ref rtc::ThreadConfig values, one per thread; the main thread's
+///   config is forwarded to base, workers apply their own at thread entry.
 ///
 /// Lifecycle:
 ///   1. Construct subclass.
-///   2. @ref Init with the @ref MPCSolutionManager, thread configs, and
-///      target frequency.
-///   3. @ref Start — spawns main + workers.
-///   4. @ref RequestStop / destructor — stop_token signals, joins cleanly.
+///   2. @ref Init with the @ref MPCSolutionManager and launch config.
+///   3. @ref Start — spawns workers + base main loop.
+///   4. @ref RequestStop / destructor — workers + base join cleanly.
 
+#include "rtc_base/threading/periodic_rt_thread.hpp"
 #include "rtc_base/threading/thread_config.hpp"
-#include "rtc_base/timing/rt_tick_timing_sample.hpp"
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 
 #include <array>
-#include <atomic>
-#include <condition_variable>
-#include <mutex>
 #include <span>
 #include <thread>
 
@@ -59,10 +57,10 @@ struct MpcThreadLaunchConfig {
   double target_frequency_hz{20.0};
 };
 
-class MPCThread {
+class MPCThread : public rtc::PeriodicRtThread {
 public:
   MPCThread() = default;
-  virtual ~MPCThread();
+  ~MPCThread() override;
 
   MPCThread(const MPCThread &) = delete;
   MPCThread &operator=(const MPCThread &) = delete;
@@ -76,41 +74,21 @@ public:
   void Init(MPCSolutionManager &manager,
             const MpcThreadLaunchConfig &launch_config) noexcept;
 
-  /// @brief Spawn main + worker threads. No-op if already running or not
-  ///        initialised.
+  /// @brief Spawn workers + the base main solve loop. No-op if already
+  ///        running or not initialised.
   void Start();
 
-  /// @brief Signal the main thread (and workers) to stop. Non-blocking.
-  void RequestStop() noexcept;
-
-  /// @brief Join all threads. Idempotent; safe to call from the destructor.
-  void Join() noexcept;
-
-  [[nodiscard]] bool Running() const noexcept { return running_.load(); }
-
-  /// @brief Suspend the solve loop after the current iteration completes.
-  ///
-  /// Idempotent. The solve loop will block in a `condition_variable` wait
-  /// until @ref Resume or @ref RequestStop is called. Workers are not
-  /// affected (they are passive sleepers per Start()). Safe to call from
-  /// any non-RT thread (e.g. controller `on_deactivate`).
-  void Pause() noexcept;
-
-  /// @brief Resume the solve loop. Idempotent. Safe to call before @ref
-  ///        Start (the loop will start un-paused on the first iteration).
-  void Resume() noexcept;
-
-  [[nodiscard]] bool Paused() const noexcept { return paused_.load(); }
+  /// @brief Stop and join the main loop + workers. Idempotent.
+  void StopAndJoin() noexcept;
 
   // ── Per-tick timing producer ───────────────────────────────────────────
   //
-  // RunMain captures four steady_clock points per main-loop iteration
-  // (t0..t3 around ReadState / Solve / PublishSolution) and pushes one
-  // rtc::RtTickTimingPayload onto this SPSC ring with the same five-column
-  // schema as the CM RT loop. A non-RT consumer (e.g. the controller
-  // LifecycleNode's 1 Hz aux timer) drains via Drain(...) into a CSV at
-  // <session>/controllers/<config_key>/mpc_timing_log.csv. Push is
-  // wait-free; on overflow the sample is dropped (DropCount() increments).
+  // Base captures t0..t3 around OnTick (which delegates to Solve()) and
+  // pushes one rtc::RtTickTimingPayload onto this SPSC ring per iteration.
+  // A non-RT consumer (e.g. the controller LifecycleNode's 1 Hz aux timer)
+  // drains via Drain(...) into <session>/controllers/<key>/mpc_timing_log.csv.
+  // Push is wait-free; on overflow the sample is dropped (DropCount()
+  // increments).
 
   /// @brief Direct accessor for the per-tick MPC-loop timing producer.
   [[nodiscard]] rtc::MpcTimingBuffer &TimingProducer() noexcept {
@@ -131,27 +109,24 @@ protected:
   virtual bool Solve(const MPCStateSnapshot &state, MPCSolution &out_sol,
                      std::span<std::jthread> workers) = 0;
 
-private:
-  void RunMain(std::stop_token stoken);
+  // PeriodicRtThread hook: drives one ReadState → Solve → PublishSolution
+  // iteration on the base's thread.
+  void OnTick() noexcept override;
 
+private:
   MPCSolutionManager *manager_{nullptr};
   MpcThreadLaunchConfig launch_config_{};
-  std::jthread main_thread_;
-  std::array<std::jthread, kMaxMpcWorkers> workers_{};
-  std::atomic<bool> running_{false};
   bool initialised_{false};
 
-  // Pause / Resume state. `paused_` is the source of truth for the loop
-  // predicate; the cv coordinates with the (possibly sleeping) main thread
-  // so Resume / RequestStop wake it without polling. The mutex guards
-  // wait/notify ordering only — `paused_` is also exposed via Paused() so
-  // observers (tests, controllers) can read it without locking.
-  std::atomic<bool> paused_{false};
-  std::mutex pause_mutex_;
-  std::condition_variable pause_cv_;
+  // Worker threads owned by this class — spawned by Start(), joined by
+  // dtor / Join (via base's RequestStop chain).
+  std::array<std::jthread, kMaxMpcWorkers> workers_{};
 
-  // Per-tick timing SPSC ring. Producer is the MPC main thread (inside
-  // RunMain), consumer is the non-RT drain thread.
+  // Scratch solution buffer reused across ticks (trivially copyable POD).
+  MPCSolution scratch_{};
+
+  // Per-tick timing SPSC ring. Producer is the base main loop (inside
+  // OnTick), consumer is the non-RT drain thread.
   rtc::MpcTimingBuffer timing_producer_;
 };
 

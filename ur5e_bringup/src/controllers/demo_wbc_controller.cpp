@@ -2007,7 +2007,7 @@ void DemoWbcController::LogMpcSolveTimingTick() noexcept {
   // Drain every pending per-MPC-tick sample into the CSV. One row per
   // tick preserves full sampling-rate granularity; the file grows at
   // (MPC frequency × session_seconds) rows. Producer is the MPCThread
-  // main loop (see rtc_mpc/thread/mpc_thread.cpp::RunMain).
+  // main loop (see rtc_mpc/thread/mpc_thread.cpp::OnTick).
   if (mpc_thread_) {
     mpc_thread_->TimingProducer().Drain(
         [this](const rtc::RtTickTimingSample &s) {

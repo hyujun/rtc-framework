@@ -4,6 +4,7 @@
 // ───────────────────────────────────────────────────────────
 #include "rtc_base/logging/data_logger.hpp"
 #include "rtc_base/logging/log_buffer.hpp"
+#include "rtc_base/threading/periodic_rt_thread.hpp"
 #include "rtc_base/threading/publish_buffer.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/threading/thread_config.hpp"
@@ -147,8 +148,34 @@ private:
   void BuildDeviceReorderMap(int device_slot,
                              const std::vector<std::string> &msg_names);
 
-  // ── RT loop (clock_nanosleep) ─────────────────────────────────────────────
-  void RtLoopEntry(const rtc::ThreadConfig &cfg);
+  // ── RT loop (rtc::PeriodicRtThread) ───────────────────────────────────────
+  // The RT loop itself is owned by a nested PeriodicRtThread subclass that
+  // forwards OnTick() into ControlLoop(), and overrides WaitForNextTick()
+  // for the simulation-mode CV wakeup, OnOverrun() for E-STOP escalation,
+  // OnLoopAborted() for sim-sync timeouts, and OnRequestStop() to wake the
+  // CV. RtControllerNode itself only owns the tick body and the
+  // CM-specific counters / readiness gates.
+  class ControlLoopThread : public rtc::PeriodicRtThread {
+  public:
+    explicit ControlLoopThread(RtControllerNode *owner) noexcept
+        : owner_(owner) {}
+
+    // Public forwarders so ControlLoop() (member of the enclosing class)
+    // can stamp the per-phase timing breakpoints captured by the base.
+    void StampStateAcquired() noexcept { MarkStateAcquired(); }
+    void StampComputeDone() noexcept { MarkComputeDone(); }
+
+  protected:
+    void OnTick() noexcept override;
+    WaitResult WaitForNextTick() noexcept override;
+    void OnOverrun(std::uint64_t consecutive) noexcept override;
+    void OnLoopAborted() noexcept override;
+    void OnRequestStop() noexcept override;
+
+  private:
+    RtControllerNode *owner_;
+  };
+
   void CheckTimeouts(); // 50 Hz watchdog — called inline from RT loop
   void ControlLoop();   // 500 Hz control loop
 
@@ -363,9 +390,11 @@ private:
 
   rclcpp::TimerBase::SharedPtr drain_timer_; // log drain (log thread)
 
-  // ── RT loop (clock_nanosleep, replaces control_timer_ + timeout_timer_) ──
-  std::jthread rt_loop_thread_;
-  std::atomic<bool> rt_loop_running_{false};
+  // ── RT loop ────────────────────────────────────────────────────────────
+  // The PeriodicRtThread owns the loop thread + clock_nanosleep cadence +
+  // overrun bookkeeping; RtControllerNode keeps the CM-specific state below
+  // (loop_count_, init_complete_, compute_overrun_count_, …).
+  ControlLoopThread rt_loop_{this};
 
   // ── Publish offload (SPSC buffer + dedicated thread) ────────────────────
   rtc::ControlPublishBuffer publish_buffer_{};
@@ -458,12 +487,12 @@ private:
       estop_reason_{}; // fixed-size — no heap alloc on RT path
   std::atomic<bool> estop_log_pending_{false}; // deferred logging flag
 
-  // ── Per-tick timing & overrun detection ──────────────────────────────────
-  std::chrono::steady_clock::time_point prev_loop_start_{};
+  // ── Per-tick timing & overrun ────────────────────────────────────────────
+  // Period budget kept here (us) for the per-tick `compute_overrun_count_`
+  // check (ControlLoop body itself > budget — distinct from the deadline
+  // overrun the base detects across sleep). overrun / skip / consecutive
+  // counters live on the base (rt_loop_.OverrunCount() etc.).
   double budget_us_{2000.0};
-  std::atomic<uint64_t> overrun_count_{0};
   std::atomic<uint64_t> compute_overrun_count_{0};
-  std::atomic<uint64_t> skip_count_{0};
-  std::atomic<uint64_t> consecutive_overruns_{0};
   static constexpr uint64_t kMaxConsecutiveOverruns = 10;
 };

@@ -63,6 +63,12 @@ if(BUILD_TESTING)
   if(TARGET test_thread_timing)
     target_include_directories(test_thread_timing PRIVATE include)
   endif()
+
+  ament_add_gtest(test_periodic_rt_thread test/test_periodic_rt_thread.cpp)
+  if(TARGET test_periodic_rt_thread)
+    target_include_directories(test_periodic_rt_thread PRIVATE include)
+    target_link_libraries(test_periodic_rt_thread pthread)
+  endif()
 endif()
 
 ament_package()

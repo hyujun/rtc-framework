@@ -200,10 +200,10 @@ RtControllerNode::on_deactivate(const rclcpp_lifecycle::State &state) {
   state_received_.store(false, std::memory_order_release);
   target_received_.store(false, std::memory_order_release);
   loop_count_ = 0;
-  overrun_count_.store(0, std::memory_order_relaxed);
   compute_overrun_count_.store(0, std::memory_order_relaxed);
-  skip_count_.store(0, std::memory_order_relaxed);
-  consecutive_overruns_.store(0, std::memory_order_relaxed);
+  // Base PeriodicRtThread counters (overrun_count / skip_count /
+  // consecutive_overruns) reset implicitly when StartRtLoop spawns a fresh
+  // loop instance on the next on_activate.
 
   LifecycleNode::on_deactivate(state); // deactivates LifecyclePublishers
 

@@ -184,6 +184,7 @@ void RtControllerNode::ControlLoop() {
   state.iteration = loop_count_;
 
   const auto t1 = std::chrono::steady_clock::now(); // end of state acquisition
+  rt_loop_.StampStateAcquired();
 
   // ── Phase 2: compute control law ───────────────────────────────────────
   // Measure Compute() wall-clock time via ControllerTimingProfiler.
@@ -191,6 +192,7 @@ void RtControllerNode::ControlLoop() {
       *controllers_[static_cast<std::size_t>(active_idx)], state);
 
   const auto t2 = std::chrono::steady_clock::now(); // end of compute
+  rt_loop_.StampComputeDone();
 
   // ── Phase 3: push publish snapshot to SPSC buffer (lock-free, O(1)) ────
   // All ROS2 publish() calls are offloaded to the non-RT publish thread.
@@ -274,38 +276,20 @@ void RtControllerNode::ControlLoop() {
 
   const auto t3 = std::chrono::steady_clock::now(); // end of publish
 
-  // ── Phase 4: per-phase timing + log push ───────────────────────────────
-  const double t_state_us =
-      std::chrono::duration<double, std::micro>(t1 - t0).count();
-  const double t_compute_us =
-      std::chrono::duration<double, std::micro>(t2 - t1).count();
-  const double t_publish_us =
-      std::chrono::duration<double, std::micro>(t3 - t2).count();
+  // ── Phase 4: compute-overrun counter + log push ────────────────────────
+  // Per-tick timing payload (t_state/t_compute/t_publish/t_total/jitter)
+  // is captured by the base PeriodicRtThread automatically — the t1/t2
+  // breakpoints have already been stamped via rt_loop_.StampStateAcquired/
+  // StampComputeDone earlier in this function, and cm_timing_producer_ is
+  // wired through SetTimingProducer<> in StartRtLoop. We only retain the
+  // *compute-overrun* counter here because it tracks "ControlLoop body >
+  // budget" specifically — distinct from the deadline overrun the base
+  // detects across the sleep step.
   const double t_total_us =
       std::chrono::duration<double, std::micro>(t3 - t0).count();
-
-  // Jitter = |actual_period - expected_period|
-  double jitter_us = 0.0;
-  if (loop_count_ > 0) {
-    const double actual_period_us =
-        std::chrono::duration<double, std::micro>(t0 - prev_loop_start_)
-            .count();
-    jitter_us = std::abs(actual_period_us - budget_us_);
-  }
-  prev_loop_start_ = t0;
-
-  // Compute overrun — ControlLoop() itself exceeded tick budget.
-  // (Distinguished from RT loop overrun which includes sleep jitter.)
   if (t_total_us > budget_us_) {
     compute_overrun_count_.fetch_add(1, std::memory_order_relaxed);
   }
-
-  // Per-tick timing → SPSC producer; drained by DrainLog() into
-  // <session>/controller/cm_timing_log.csv. Timing is pushed independent of
-  // enable_logging_ so the producer collects samples for the periodic
-  // INFO summary even when CSV logging is disabled.
-  static_cast<void>(cm_timing_producer_.Push(urtc::RtTickTimingPayload{
-      t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us}));
 
   // Push log entry to the SPSC ring buffer — O(1), no syscall.
   // DrainLog() (log thread, Core 4) pops entries and writes the CSV file.
@@ -424,10 +408,10 @@ void RtControllerNode::DrainLog() {
   // by the reset.
   if (print_timing_summary_.exchange(false, std::memory_order_relaxed)) {
     int idx = active_controller_idx_.load(std::memory_order_acquire);
-    const auto overruns = overrun_count_.load(std::memory_order_relaxed);
+    const auto overruns = rt_loop_.OverrunCount();
     const auto compute_overruns =
         compute_overrun_count_.load(std::memory_order_relaxed);
-    const auto skips = skip_count_.load(std::memory_order_relaxed);
+    const auto skips = rt_loop_.SkipCount();
     const auto log_drops = log_buffer_.drop_count();
     const auto pub_drops = publish_buffer_.drop_count();
     const auto timing_drops = cm_timing_producer_.DropCount();
@@ -448,131 +432,94 @@ void RtControllerNode::DrainLog() {
   }
 }
 
-// ── RT loop (clock_nanosleep)
-// ──────────────────────────────────────────────────
+// ── RT loop (rtc::PeriodicRtThread) ─────────────────────────────────────────
 //
-// Replaces create_wall_timer() with a tight POSIX absolute-time sleep loop.
-// Eliminates ~50-200 µs of executor/epoll dispatch jitter.  Overrun recovery
-// skips missed ticks and realigns to the next period boundary — no burst.
-//
-// Threading: runs as std::jthread on Core 2, SCHED_FIFO 90.
-//            CheckTimeouts() inlined every 10th tick (50 Hz).
+// The base provides the deterministic clock_nanosleep TIMER_ABSTIME schedule
+// + overrun detection + skip recovery + Pause/Resume scaffolding.
+// ControlLoopThread overrides the wakeup primitive (CV in simulation mode),
+// the overrun reaction (E-STOP at kMaxConsecutiveOverruns), the abort path
+// (sim-sync timeout shutdown), and the stop wake (notify the CV). The tick
+// body is forwarded into RtControllerNode::ControlLoop() + the 50 Hz
+// watchdog; everything else is shared with the MPC solve thread.
 
-void RtControllerNode::RtLoopEntry(const urtc::ThreadConfig &cfg) {
-  static_cast<void>(urtc::ApplyThreadConfig(cfg));
-  rt_loop_running_.store(true, std::memory_order_release);
-
-  uint32_t timeout_tick = 0;
-
-  if (use_sim_time_sync_) {
-    // ═══ Simulation mode: CV-based wakeup on state arrival ═══
-    const auto sim_timeout =
-        std::chrono::duration<double>(sim_sync_timeout_sec_);
-
-    RCLCPP_INFO(get_logger(),
-                "RT loop: simulation sync mode (CV wakeup, timeout=%.1f s)",
-                sim_sync_timeout_sec_);
-
-    while (rt_loop_running_.load(std::memory_order_acquire) && rclcpp::ok()) {
-      bool woken = false;
-      {
-        std::unique_lock lock(state_cv_mutex_);
-        woken = state_cv_.wait_for(lock, sim_timeout, [this] {
-          return state_fresh_.load(std::memory_order_acquire) ||
-                 !rt_loop_running_.load(std::memory_order_acquire) ||
-                 !rclcpp::ok();
-        });
-        state_fresh_.store(false, std::memory_order_release);
-      }
-
-      if (!rt_loop_running_.load(std::memory_order_acquire)) {
-        break;
-      }
-
-      if (!woken) {
-        RCLCPP_FATAL(
-            get_logger(),
-            "Simulation sync timeout (%.1f s): no /joint_states received — "
-            "simulator may have crashed. Shutting down.",
-            sim_sync_timeout_sec_);
-        TriggerGlobalEstop("sim_sync_timeout");
-        rclcpp::shutdown();
-        return;
-      }
-
-      ControlLoop();
-
-      static constexpr int kWatchdogCheckDivisor = 10; // 50 Hz at 500 Hz loop
-      if (enable_estop_ && ++timeout_tick % kWatchdogCheckDivisor == 0) {
-        CheckTimeouts();
-      }
-    }
-  } else {
-    // ═══ Real robot mode: deterministic clock_nanosleep 500 Hz ═══
-    const int64_t period_ns = static_cast<int64_t>(1.0e9 / control_rate_);
-    struct timespec next_wake {};
-    clock_gettime(CLOCK_MONOTONIC, &next_wake);
-
-    while (rt_loop_running_.load(std::memory_order_acquire) && rclcpp::ok()) {
-      // Advance to next absolute wake time
-      next_wake.tv_nsec += period_ns;
-      if (next_wake.tv_nsec >= 1'000'000'000L) {
-        next_wake.tv_sec += next_wake.tv_nsec / 1'000'000'000L;
-        next_wake.tv_nsec %= 1'000'000'000L;
-      }
-
-      clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next_wake, nullptr);
-
-      // ── Overrun detection & recovery ────────────────────────────────────
-      struct timespec now_ts {};
-      clock_gettime(CLOCK_MONOTONIC, &now_ts);
-      const int64_t now_ns = now_ts.tv_sec * 1'000'000'000L + now_ts.tv_nsec;
-      const int64_t wake_ns =
-          next_wake.tv_sec * 1'000'000'000L + next_wake.tv_nsec;
-      const int64_t lag_ns = now_ns - wake_ns;
-
-      if (lag_ns > period_ns) {
-        const int64_t missed_ticks = lag_ns / period_ns;
-        const int64_t advance_ns = missed_ticks * period_ns;
-        next_wake.tv_nsec += static_cast<long>(advance_ns);
-        if (next_wake.tv_nsec >= 1'000'000'000L) {
-          next_wake.tv_sec += next_wake.tv_nsec / 1'000'000'000L;
-          next_wake.tv_nsec %= 1'000'000'000L;
-        }
-        overrun_count_.fetch_add(1, std::memory_order_relaxed);
-        skip_count_.fetch_add(static_cast<uint64_t>(missed_ticks),
-                              std::memory_order_relaxed);
-
-        const auto consecutive =
-            consecutive_overruns_.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (consecutive >= kMaxConsecutiveOverruns) {
-          TriggerGlobalEstop("consecutive_overrun");
-        }
-      } else {
-        consecutive_overruns_.store(0, std::memory_order_relaxed);
-      }
-
-      ControlLoop();
-
-      static constexpr int kWatchdogCheckDivisor = 10; // 50 Hz at 500 Hz loop
-      if (enable_estop_ && ++timeout_tick % kWatchdogCheckDivisor == 0) {
-        CheckTimeouts();
-      }
-    }
+void RtControllerNode::ControlLoopThread::OnTick() noexcept {
+  owner_->ControlLoop();
+  // 50 Hz watchdog — every 10th tick at 500 Hz.
+  static thread_local std::uint32_t timeout_tick = 0;
+  static constexpr int kWatchdogCheckDivisor = 10;
+  if (owner_->enable_estop_ && ++timeout_tick % kWatchdogCheckDivisor == 0) {
+    owner_->CheckTimeouts();
   }
+}
+
+rtc::PeriodicRtThread::WaitResult
+RtControllerNode::ControlLoopThread::WaitForNextTick() noexcept {
+  if (!owner_->use_sim_time_sync_) {
+    // Real-robot mode: defer to the base's clock_nanosleep schedule +
+    // overrun bookkeeping.
+    return rtc::PeriodicRtThread::WaitForNextTick();
+  }
+
+  // Simulation mode: block on /joint_states arrival. The base's deadline
+  // overrun detection is intentionally bypassed here (sim cadence is
+  // dictated by the simulator, not a fixed period).
+  const auto sim_timeout =
+      std::chrono::duration<double>(owner_->sim_sync_timeout_sec_);
+  bool woken = false;
+  {
+    std::unique_lock<std::mutex> lock(owner_->state_cv_mutex_);
+    woken = owner_->state_cv_.wait_for(lock, sim_timeout, [this] {
+      return owner_->state_fresh_.load(std::memory_order_acquire) ||
+             !rclcpp::ok();
+    });
+    owner_->state_fresh_.store(false, std::memory_order_release);
+  }
+  if (!woken) {
+    return WaitResult::kAbort;
+  }
+  if (!rclcpp::ok()) {
+    return WaitResult::kAbort;
+  }
+  return WaitResult::kProceed;
+}
+
+void RtControllerNode::ControlLoopThread::OnOverrun(
+    std::uint64_t consecutive) noexcept {
+  if (consecutive >= RtControllerNode::kMaxConsecutiveOverruns) {
+    owner_->TriggerGlobalEstop("consecutive_overrun");
+  }
+}
+
+void RtControllerNode::ControlLoopThread::OnLoopAborted() noexcept {
+  if (!owner_->use_sim_time_sync_) {
+    return;
+  }
+  RCLCPP_FATAL(owner_->get_logger(),
+               "Simulation sync timeout (%.1f s): no /joint_states received — "
+               "simulator may have crashed. Shutting down.",
+               owner_->sim_sync_timeout_sec_);
+  owner_->TriggerGlobalEstop("sim_sync_timeout");
+  rclcpp::shutdown();
+}
+
+void RtControllerNode::ControlLoopThread::OnRequestStop() noexcept {
+  // Sim mode wait blocks on state_cv_; nudge it so RequestStop / Join
+  // observe the stop_token without waiting out sim_sync_timeout_sec_.
+  owner_->state_cv_.notify_all();
 }
 
 void RtControllerNode::StartRtLoop(const urtc::ThreadConfig &rt_cfg) {
-  rt_loop_thread_ = std::jthread([this, rt_cfg]() { RtLoopEntry(rt_cfg); });
+  rt_loop_.SetTimingProducer<urtc::kCmTimingBufferCapacity>(
+      &cm_timing_producer_);
+  if (use_sim_time_sync_) {
+    RCLCPP_INFO(get_logger(),
+                "RT loop: simulation sync mode (CV wakeup, timeout=%.1f s)",
+                sim_sync_timeout_sec_);
+  }
+  urtc::PeriodicRtThreadConfig pcfg{};
+  pcfg.thread_config = rt_cfg;
+  pcfg.frequency_hz = control_rate_;
+  rt_loop_.Start(pcfg);
 }
 
-void RtControllerNode::StopRtLoop() {
-  rt_loop_running_.store(false, std::memory_order_release);
-  // Wake sim-mode CV wait so the RT thread observes the stop flag immediately
-  // instead of sleeping until sim_sync_timeout_sec_. Caller is destructor /
-  // on_deactivate / on_shutdown — never the RT tick.
-  state_cv_.notify_all();
-  if (rt_loop_thread_.joinable()) {
-    rt_loop_thread_.join();
-  }
-}
+void RtControllerNode::StopRtLoop() { rt_loop_.Join(); }

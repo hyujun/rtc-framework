@@ -275,7 +275,7 @@ poll(&pfd, 1, 1);  // 1ms timeout, eventfd readable → 즉시 wakeup
 
 ### Per-thread Timing CSV (generic infra)
 
-CM RT loop와 MPC thread 모두 [`rtc_base/timing/thread_timing_*`](../rtc_base/include/rtc_base/timing/) generic 인프라(`ThreadTimingProducer<Payload, N>` + `ThreadTimingCsvLogger<Payload>`)를 공유한다. payload struct만 도메인별로 다르고 SPSC + push + drain + CSV open/append/flush 인프라는 한 곳:
+CM RT loop와 MPC thread 모두 두 가지 base 인프라를 공유한다: (1) [`rtc_base/threading/periodic_rt_thread.hpp`](../rtc_base/include/rtc_base/threading/periodic_rt_thread.hpp)의 `PeriodicRtThread` — 고정 주파수 jthread + `clock_nanosleep(TIMER_ABSTIME)` 스케줄 + overrun 검출 + Pause/Resume 골격, (2) [`rtc_base/timing/thread_timing_*`](../rtc_base/include/rtc_base/timing/) — `ThreadTimingProducer<Payload, N>` + `ThreadTimingCsvLogger<Payload>`. CM은 `RtControllerNode::ControlLoopThread` (composition), MPC는 `MPCThread` (inheritance)로 base를 사용. payload는 5-컬럼 `RtTickTimingPayload` 단일 타입이며 base가 t0~t3을 자동 capture해 SPSC ring에 push:
 
 | 채널 | Producer 멤버 | Logger | CSV 경로 | Schema (payload 컬럼) |
 |------|--------------|--------|----------|----------------------|
@@ -284,11 +284,11 @@ CM RT loop와 MPC thread 모두 [`rtc_base/timing/thread_timing_*`](../rtc_base/
 
 공통 컬럼 `t_wall_ns, tick_count`는 `ThreadTimingCsvLogger`가 자동으로 emit. `tick_count`는 producer-side monotonic 시퀀스 번호 (drop 검증용). CM/MPC 두 thread가 동일한 5-컬럼 payload schema (`rtc_base/timing/rt_tick_timing_sample.hpp`)를 공유하므로 cross-thread 분석 도구 한 세트가 두 CSV를 모두 처리한다.
 
-CM RT loop가 매 tick `cm_timing_producer_.Push(...)` 1줄, `DrainLog()`가 `cm_timing_producer_.Drain([&](sample){ cm_timing_logger_.Log(sample); })` 1줄. 1초 INFO summary에 `timing_drops` (producer overflow 카운터)가 `log_drops` / `pub_drops`와 함께 출력된다.
+CM은 `StartRtLoop`에서 `rt_loop_.SetTimingProducer<>` 한 줄로 base에 ring을 위임 — base가 매 tick payload를 push한다. `ControlLoop()` 내부의 t1/t2 마킹은 `rt_loop_.StampStateAcquired()` / `StampComputeDone()` 두 줄. `DrainLog()`가 `cm_timing_producer_.Drain(...)`로 CSV에 기록. 1초 INFO summary에 `timing_drops` (producer overflow 카운터)가 `log_drops` / `pub_drops`와 함께 출력된다.
 
 MPC 측은 컨트롤러가 자체 1 Hz aux 타이머에서 `mpc_thread_->TimingProducer().Drain(...)`을 호출. 컨트롤러별 `<config_key>` 서브디렉토리에 쓰므로 전환이 발생해도 stream이 섞이지 않는다. 같은 콜백이 `MPCSolutionManager::GetSolveStats()` (handler self-report `solve_duration_ns`의 256-sample sliding 윈도우)로 10초마다 aggregate INFO 라인을 출력 — 디스크에는 기록하지 않으며 percentile은 raw CSV에서 post-process로 계산.
 
-새 RT/soft-RT thread (예: ONNX inference)를 추가하려면 payload struct + `using` alias 두 줄이면 끝. `RTControllerInterface` 변경 없음.
+새 RT/soft-RT thread (예: ONNX inference)를 추가하려면 `PeriodicRtThread` 상속/composition + `OnTick` body 정의면 끝. `RTControllerInterface` 변경 없음.
 
 ---
 
