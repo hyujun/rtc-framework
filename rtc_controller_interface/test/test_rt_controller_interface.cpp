@@ -61,9 +61,13 @@ TEST(RTControllerInterfaceTest, DefaultControlRate) {
   EXPECT_DOUBLE_EQ(ctrl.GetDefaultDt(), 0.002);
 }
 
-TEST(RTControllerInterfaceTest, DefaultTopicConfigHasUr5e) {
+TEST(RTControllerInterfaceTest, DefaultTopicConfigIsEmpty) {
+  // ARCH-1: rtc_* must stay robot-agnostic. The default ctor leaves
+  // topic_config_ empty; LoadConfig() (or an explicit
+  // MakeDefaultTopicConfig(<device>) call from a robot-specific bringup)
+  // populates it.
   StubController ctrl;
-  EXPECT_TRUE(ctrl.GetTopicConfig().HasGroup("ur5e"));
+  EXPECT_TRUE(ctrl.GetTopicConfig().groups.empty());
 }
 
 TEST(RTControllerInterfaceTest, DefaultVirtualMethods) {
@@ -148,9 +152,20 @@ TEST(RTControllerInterfaceTest, GetDeviceNameConfigReturnsNullptrForMissing) {
   EXPECT_EQ(ctrl.GetDeviceNameConfig("nonexistent"), nullptr);
 }
 
-TEST(RTControllerInterfaceTest, GetPrimaryDeviceNameFromTopicConfig) {
+TEST(RTControllerInterfaceTest, GetPrimaryDeviceNameEmptyByDefault) {
+  // ARCH-1: with the empty default topic_config_, primary device name
+  // is empty until a controller YAML supplies a topics section.
   StubController ctrl;
-  EXPECT_EQ(ctrl.GetPrimaryDeviceName(), "ur5e");
+  EXPECT_EQ(ctrl.GetPrimaryDeviceName(), "");
+}
+
+TEST(RTControllerInterfaceTest,
+     GetPrimaryDeviceNameFromMakeDefaultTopicConfig) {
+  // Robot-specific bringups can still call MakeDefaultTopicConfig(<device>)
+  // explicitly to seed the topic config — verify primary name flows through.
+  const auto cfg = StubController::MakeDefaultTopicConfig("custom_robot");
+  ASSERT_FALSE(cfg.groups.empty());
+  EXPECT_EQ(cfg.groups.front().first, "custom_robot");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -539,8 +554,8 @@ TEST(RTControllerInterfaceTest, LoadConfigNullNode) {
   StubController ctrl;
   YAML::Node null_node;
   EXPECT_NO_THROW(ctrl.LoadConfig(null_node));
-  // Default topic config should remain
-  EXPECT_TRUE(ctrl.GetTopicConfig().HasGroup("ur5e"));
+  // ARCH-1: default topic config is empty; null YAML leaves it untouched.
+  EXPECT_TRUE(ctrl.GetTopicConfig().groups.empty());
 }
 
 TEST(RTControllerInterfaceTest, LoadConfigWithTopics) {
@@ -560,14 +575,17 @@ topics:
   EXPECT_FALSE(ctrl.GetTopicConfig().HasGroup("ur5e"));
 }
 
-TEST(RTControllerInterfaceTest, LoadConfigWithoutTopicsKeepsDefault) {
+TEST(RTControllerInterfaceTest, LoadConfigWithoutTopicsLeavesEmpty) {
+  // ARCH-1: topic_config_ starts empty; YAML without a `topics:` section
+  // leaves it empty (controllers that need a fallback must call
+  // MakeDefaultTopicConfig(<device>) explicitly with a robot-specific name).
   StubController ctrl;
   const auto node = YAML::Load(R"(
 some_gain: 1.5
 some_flag: true
 )");
   ctrl.LoadConfig(node);
-  EXPECT_TRUE(ctrl.GetTopicConfig().HasGroup("ur5e"));
+  EXPECT_TRUE(ctrl.GetTopicConfig().groups.empty());
 }
 
 TEST(RTControllerInterfaceTest, LoadConfigDeprecatedEnableFlagsDoNotThrow) {

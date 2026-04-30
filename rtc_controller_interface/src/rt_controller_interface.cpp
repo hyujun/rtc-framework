@@ -120,8 +120,7 @@ void ParseDeviceTopicGroup(const YAML::Node &group_node,
 
 } // namespace
 
-RTControllerInterface::RTControllerInterface()
-    : topic_config_(MakeDefaultTopicConfig("ur5e")) {}
+RTControllerInterface::RTControllerInterface() : topic_config_{} {}
 
 RTControllerInterface::~RTControllerInterface() = default;
 
@@ -312,7 +311,9 @@ void RTControllerInterface::LoadConfig(const YAML::Node &cfg) {
               << "by the topics section presence.\n";
   }
 
-  // Parse topics section if present; otherwise keep the default topic config.
+  // Parse topics section if present; otherwise leave topic_config_ empty.
+  // Controllers that need a fallback can call MakeDefaultTopicConfig(<device>)
+  // explicitly with a robot-specific device name (rtc_* stays robot-agnostic).
   if (cfg["topics"]) {
     topic_config_ = ParseTopicConfig(cfg["topics"]);
   }

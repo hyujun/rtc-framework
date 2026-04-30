@@ -219,7 +219,8 @@ public:
   }
 
   // Returns the name of the primary device (first group in topic config).
-  // Use instead of hardcoding "ur5e" to support arbitrary robot names.
+  // Use instead of hardcoding a robot-specific name to support arbitrary
+  // robot configurations.
   [[nodiscard]] std::string GetPrimaryDeviceName() const noexcept {
     if (!topic_config_.groups.empty()) {
       return topic_config_.groups.front().first;
@@ -274,8 +275,9 @@ protected:
   static TopicConfig ParseTopicConfig(const YAML::Node &topics_node);
 
   // Default topic configuration — device_name determines topic namespace.
-  static TopicConfig
-  MakeDefaultTopicConfig(const std::string &device_name = "ur5e");
+  // Caller must supply a non-empty device name (rtc_* stays robot-agnostic;
+  // robot-specific bringups own the device name).
+  static TopicConfig MakeDefaultTopicConfig(const std::string &device_name);
 
   TopicConfig topic_config_;
   std::map<std::string, DeviceNameConfig> device_name_configs_;
