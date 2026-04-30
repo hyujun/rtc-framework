@@ -222,7 +222,10 @@ namespace {
 <config_package>/config/<config_subdir><config_key>.yaml
 ```
 
-예: `rtc_controllers/config/indirect/p_controller.yaml`
+예: `<robot>_bringup/config/controllers/indirect/p_controller.yaml`
+(production YAML 은 robot-specific bringup 패키지가 소유합니다 — ARCH-1.
+`rtc_controllers/config/controllers/` 의 동일 이름 파일은 reference
+example 이며 직접 로드되지 않습니다)
 
 ### 정적 라이브러리 링커 스트립 방지
 

@@ -10,6 +10,8 @@
 
 RTC 프레임워크의 **내장 제어 알고리즘 구현체** 패키지입니다. `RTControllerInterface`를 상속하는 4개의 로봇 컨트롤러, 적응형 PI 힘 제어 그래스프 컨트롤러, 그리고 5차 다항식 기반 궤적 생성기(기본/블렌드/스플라인)를 제공합니다.
 
+> **사용 모델 (ARCH-1)**: rtc_controllers 는 **라이브러리 심볼만** 제공합니다. `RTC_REGISTER_CONTROLLER` 자동 등록은 *하지 않습니다* — 다운스트림 `<robot>_bringup` 패키지가 (1) 자체 `controller_registration.cpp` 에서 `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 등록하고, (2) `config/controllers/<subdir>/<key>.yaml` 을 자체 보유합니다. `rtc_controllers/config/controllers/` 의 4개 YAML 은 **참고용 example** 로만 동봉되며, robot identity (토픽 그룹 이름, 토픽 경로, 관절 게인 등) 부분을 바꿔 복제해 사용하세요.
+
 **컨트롤러 분류:**
 
 | 컨트롤러 | 공간 | 출력 모드 | 카테고리 |
@@ -47,7 +49,7 @@ rtc_controllers/
 │       ├── grasp_types.hpp                   -- 그래스프 상태 머신 타입/파라미터
 │       └── grasp_controller.hpp              -- 적응형 PI 힘 제어 그래스프 컨트롤러
 ├── src/
-│   ├── controller_registration.cpp           -- 4개 컨트롤러 자동 등록
+│   ├── controller_registration.cpp           -- no-op (registration은 robot bringup 책임)
 │   └── controllers/
 │       ├── indirect/
 │       │   ├── p_controller.cpp
@@ -57,14 +59,16 @@ rtc_controllers/
 │       │   └── operational_space_controller.cpp
 │       └── grasp/
 │           └── grasp_controller.cpp
-└── config/controllers/
+└── config/controllers/                       -- ★ 모두 reference example (ARCH-1)
     ├── indirect/
-    │   ├── p_controller.yaml             -- P 제어기 기본 설정
-    │   └── clik_controller.yaml          -- CLIK 제어기 기본 설정
+    │   ├── p_controller.yaml             -- example (UR5e 토픽/게인 기준)
+    │   └── clik_controller.yaml          -- example
     └── direct/
-        ├── joint_pd_controller.yaml      -- JointPD 제어기 기본 설정
-        └── operational_space_controller.yaml -- OSC 제어기 기본 설정
+        ├── joint_pd_controller.yaml      -- example
+        └── operational_space_controller.yaml -- example
 ```
+
+> 위 4개 YAML 은 *복제용 reference* 입니다. 실제 production 설정은 `<robot>_bringup/config/controllers/` 에 두고, `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 `config_package` 를 자기 패키지로 등록하세요. 자세한 사용법은 각 YAML 상단 주석 참고.
 
 ---
 

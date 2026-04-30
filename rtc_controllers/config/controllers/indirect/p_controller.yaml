@@ -1,3 +1,14 @@
+# ── EXAMPLE — reference config for PController ────────────────────────────────
+# rtc_controllers ships this as a *reference example* only. The class is not
+# auto-registered; downstream <robot>_bringup packages opt in by:
+#   1) adding a `RTC_REGISTER_CONTROLLER(p_controller, "indirect",
+#      "<robot>_bringup", std::make_unique<rtc::PController>(...))`
+#      registration in their controller_registration.cpp, and
+#   2) copying this YAML to `<robot>_bringup/config/controllers/indirect/` and
+#      replacing the UR5e-specific gains, joint count, and topic group ("ur5e"
+#      below) with their own robot identity.
+# Keeping ARCH-1 invariant: rtc_* may not host robot-specific production YAML.
+# ──────────────────────────────────────────────────────────────────────────────
 p_controller:
   # ── P 게인 (각 관절: [Base, Shoulder, Elbow, Wrist1, Wrist2, Wrist3]) ─────
   # command = current_pos + kp * error * dt (증분 위치 스텝)

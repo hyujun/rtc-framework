@@ -1,3 +1,14 @@
+# ── EXAMPLE — reference config for OperationalSpaceController ─────────────────
+# rtc_controllers ships this as a *reference example* only. The class is not
+# auto-registered; downstream <robot>_bringup packages opt in by:
+#   1) adding a `RTC_REGISTER_CONTROLLER(operational_space_controller, "direct",
+#      "<robot>_bringup", std::make_unique<rtc::OperationalSpaceController>(...))`
+#      registration in their controller_registration.cpp, and
+#   2) copying this YAML to `<robot>_bringup/config/controllers/direct/` and
+#      replacing the UR5e-specific topic group ("ur5e" below) with their own
+#      robot identity.
+# Keeping ARCH-1 invariant: rtc_* may not host robot-specific production YAML.
+# ──────────────────────────────────────────────────────────────────────────────
 operational_space_controller:
   # ── 데카르트 PD 게인 ──────────────────────────────────────────────────────
   kp_pos: [1.0, 1.0, 1.0]               # 위치 비례 게인 (x, y, z)

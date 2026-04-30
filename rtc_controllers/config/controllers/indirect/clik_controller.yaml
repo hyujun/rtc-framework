@@ -1,3 +1,14 @@
+# ── EXAMPLE — reference config for ClikController ─────────────────────────────
+# rtc_controllers ships this as a *reference example* only. The class is not
+# auto-registered; downstream <robot>_bringup packages opt in by:
+#   1) adding a `RTC_REGISTER_CONTROLLER(clik_controller, "indirect",
+#      "<robot>_bringup", std::make_unique<rtc::ClikController>(...))`
+#      registration in their controller_registration.cpp, and
+#   2) copying this YAML to `<robot>_bringup/config/controllers/indirect/` and
+#      replacing the UR5e-specific topic group ("ur5e" below) with their own
+#      robot identity.
+# Keeping ARCH-1 invariant: rtc_* may not host robot-specific production YAML.
+# ──────────────────────────────────────────────────────────────────────────────
 clik_controller:
   # ── CLIK 게인 ─────────────────────────────────────────────────────────────
   kp_translation: [1.0, 1.0, 1.0]   # 병진 비례 게인 (x, y, z) [1/s]
