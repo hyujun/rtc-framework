@@ -64,7 +64,7 @@ virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 >
 > 하위 클래스에서 오버라이드 시 `RTControllerInterface::LoadConfig(cfg)`를 먼저 호출해야 토픽 설정이 적용됩니다.
 
-> **Observability**: 인터페이스에는 도메인-specific virtual이 없습니다. 컨트롤러가 MPC 솔버, ONNX inference 등 자체 RT/soft-RT 스레드의 per-tick timing을 CSV로 남기려면 [`rtc_base/timing/thread_timing_*`](../rtc_base/include/rtc_base/timing/) generic infra (`ThreadTimingProducer<Payload, N>` + `ThreadTimingCsvLogger<Payload>`)를 직접 owning. 새 채널을 추가해도 base 변경이 필요 없도록 의도된 구조 — 자세한 사용 예는 [`rtc_mpc/logging/mpc_solve_timing_logger.hpp`](../rtc_mpc/include/rtc_mpc/logging/mpc_solve_timing_logger.hpp), [`rtc_base/timing/cm_timing_sample.hpp`](../rtc_base/include/rtc_base/timing/cm_timing_sample.hpp).
+> **Observability**: 인터페이스에는 도메인-specific virtual이 없습니다. 컨트롤러가 MPC 솔버, ONNX inference 등 자체 RT/soft-RT 스레드의 per-tick timing을 CSV로 남기려면 [`rtc_base/timing/thread_timing_*`](../rtc_base/include/rtc_base/timing/) generic infra (`ThreadTimingProducer<Payload, N>` + `ThreadTimingCsvLogger<Payload>`)를 직접 owning. 새 채널을 추가해도 base 변경이 필요 없도록 의도된 구조 — 자세한 사용 예는 [`rtc_mpc/logging/mpc_timing_logger.hpp`](../rtc_mpc/include/rtc_mpc/logging/mpc_timing_logger.hpp), [`rtc_base/timing/rt_tick_timing_sample.hpp`](../rtc_base/include/rtc_base/timing/rt_tick_timing_sample.hpp).
 
 ### Lifecycle 훅 (ros2_control 정렬, 기본 구현 제공)
 

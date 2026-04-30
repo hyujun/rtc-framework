@@ -21,9 +21,9 @@ namespace rtc {
 // 모든 패키지에서 공유하는 세션 기반 로깅 디렉토리 관리.
 // 세션 디렉토리 구조:
 //   logging_data/YYMMDD_HHMM/
-//     controller/   — CM RT 루프 CSV (state/sensor/timing)
+//     controller/   — CM RT 루프 CSV (state/sensor/cm_timing_log)
 //     controllers/  — per-controller CSV (예: demo_wbc_controller/
-//                     mpc_solve_timing.csv); on-demand 생성
+//                     mpc_timing_log.csv); on-demand 생성
 //     monitor/      — 모니터링 로그
 //     device/       — device 통신 통계 / 센서 로그
 //     sim/          — mujoco 스크린샷

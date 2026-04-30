@@ -13,7 +13,7 @@ def plot_timing_breakdown(df, save_dir=None):
     fig.suptitle("Control Loop Timing Breakdown", fontsize=16, fontweight="bold")
 
     t = df["timestamp"]
-    phases = ["t_state_acquire_us", "t_compute_us", "t_publish_us"]
+    phases = ["t_state_us", "t_compute_us", "t_publish_us"]
     labels = ["State Acquire", "Compute", "Publish"]
     colors = ["#2196F3", "#FF9800", "#4CAF50"]
 
@@ -162,7 +162,7 @@ def print_timing_statistics(df):
     budget = 1e6 / rate if rate > 0 else 2000.0
 
     for col, label in [
-        ("t_state_acquire_us", "State Acquire"),
+        ("t_state_us", "State Acquire"),
         ("t_compute_us", "Compute"),
         ("t_publish_us", "Publish"),
         ("t_total_us", "Total Loop"),

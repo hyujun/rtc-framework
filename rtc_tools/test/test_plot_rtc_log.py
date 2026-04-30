@@ -58,31 +58,25 @@ class TestDetectLogType:
     """detect_log_type: 파일명 패턴으로 로그 종류를 자동 분류."""
 
     def test_state_log(self):
-        assert detect_log_type("ur5e_state_log.csv") == "state_log"
+        assert detect_log_type("arm_state_log.csv") == "state_log"
 
     def test_sensor_log(self):
         assert detect_log_type("hand_sensor_log.csv") == "sensor_log"
 
-    def test_robot_log(self):
-        assert detect_log_type("robot_log_20250101.csv") == "robot"
+    def test_cm_timing_log(self):
+        assert detect_log_type("cm_timing_log.csv") == "cm_timing"
 
-    def test_device_log(self):
-        assert detect_log_type("device_log_20250101.csv") == "device"
-
-    def test_hand_log(self):
-        assert detect_log_type("hand_log_20250101.csv") == "device"
-
-    def test_timing_log(self):
-        assert detect_log_type("timing_log_20250101.csv") == "timing"
+    def test_mpc_timing_log(self):
+        assert detect_log_type("mpc_timing_log.csv") == "mpc_timing"
 
     def test_unknown(self):
         assert detect_log_type("random_file.csv") == "unknown"
 
     def test_full_path(self):
-        assert detect_log_type("/data/logs/robot_log_001.csv") == "robot"
+        assert detect_log_type("/data/logs/arm_state_log.csv") == "state_log"
 
     def test_sensor_log_with_prefix(self):
-        assert detect_log_type("ur5e_hand_sensor_log.csv") == "sensor_log"
+        assert detect_log_type("hand_sensor_log.csv") == "sensor_log"
 
     def test_state_log_with_prefix(self):
         assert detect_log_type("device0_state_log.csv") == "state_log"
@@ -98,10 +92,10 @@ class TestDetectLogTypeByColumns:
 
     def test_timing_by_t_total_us(self):
         cols = ["timestamp", "t_total_us", "jitter_us"]
-        assert detect_log_type_by_columns(cols) == "timing"
+        assert detect_log_type_by_columns(cols) == "cm_timing"
 
     def test_timing_by_jitter_only(self):
-        assert detect_log_type_by_columns(["timestamp", "jitter_us"]) == "timing"
+        assert detect_log_type_by_columns(["timestamp", "jitter_us"]) == "cm_timing"
 
     def test_state_log_by_actual_pos(self):
         cols = ["timestamp", "actual_pos_0", "actual_pos_1", "goal_pos_0"]
@@ -120,7 +114,7 @@ class TestDetectLogTypeByColumns:
     def test_timing_priority_over_state(self):
         # Defensive: timing columns win if both appear.
         cols = ["timestamp", "t_total_us", "actual_pos_0"]
-        assert detect_log_type_by_columns(cols) == "timing"
+        assert detect_log_type_by_columns(cols) == "cm_timing"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -144,7 +138,7 @@ class TestPeekCsvHeader:
         path = tmp_path / "timing_stat.csv"
         _write_csv(path, ["timestamp", "t_total_us", "jitter_us"], [[0.0, 100, 5]])
         assert detect_log_type(str(path)) == "unknown"
-        assert detect_log_type_by_columns(_peek_csv_header(str(path))) == "timing"
+        assert detect_log_type_by_columns(_peek_csv_header(str(path))) == "cm_timing"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -566,7 +560,7 @@ class TestStatistics:
         df = pd.DataFrame(
             {
                 "timestamp": np.arange(0, 1.0, 0.002),
-                "t_state_acquire_us": np.random.uniform(10, 50, 500),
+                "t_state_us": np.random.uniform(10, 50, 500),
                 "t_compute_us": np.random.uniform(50, 200, 500),
                 "t_publish_us": np.random.uniform(5, 30, 500),
                 "t_total_us": np.random.uniform(100, 300, 500),

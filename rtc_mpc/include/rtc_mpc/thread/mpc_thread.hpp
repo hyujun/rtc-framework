@@ -28,6 +28,7 @@
 ///   4. @ref RequestStop / destructor — stop_token signals, joins cleanly.
 
 #include "rtc_base/threading/thread_config.hpp"
+#include "rtc_base/timing/rt_tick_timing_sample.hpp"
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 
@@ -101,6 +102,24 @@ public:
 
   [[nodiscard]] bool Paused() const noexcept { return paused_.load(); }
 
+  // ── Per-tick timing producer ───────────────────────────────────────────
+  //
+  // RunMain captures four steady_clock points per main-loop iteration
+  // (t0..t3 around ReadState / Solve / PublishSolution) and pushes one
+  // rtc::RtTickTimingPayload onto this SPSC ring with the same five-column
+  // schema as the CM RT loop. A non-RT consumer (e.g. the controller
+  // LifecycleNode's 1 Hz aux timer) drains via Drain(...) into a CSV at
+  // <session>/controllers/<config_key>/mpc_timing_log.csv. Push is
+  // wait-free; on overflow the sample is dropped (DropCount() increments).
+
+  /// @brief Direct accessor for the per-tick MPC-loop timing producer.
+  [[nodiscard]] rtc::MpcTimingBuffer &TimingProducer() noexcept {
+    return timing_producer_;
+  }
+  [[nodiscard]] const rtc::MpcTimingBuffer &TimingProducer() const noexcept {
+    return timing_producer_;
+  }
+
 protected:
   /// @brief Perform one MPC solve.
   ///
@@ -130,6 +149,10 @@ private:
   std::atomic<bool> paused_{false};
   std::mutex pause_mutex_;
   std::condition_variable pause_cv_;
+
+  // Per-tick timing SPSC ring. Producer is the MPC main thread (inside
+  // RunMain), consumer is the non-RT drain thread.
+  rtc::MpcTimingBuffer timing_producer_;
 };
 
 } // namespace rtc::mpc

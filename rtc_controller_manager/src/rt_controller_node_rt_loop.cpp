@@ -301,10 +301,10 @@ void RtControllerNode::ControlLoop() {
   }
 
   // Per-tick timing → SPSC producer; drained by DrainLog() into
-  // <session>/controller/timing_log.csv. Timing is pushed independent of
+  // <session>/controller/cm_timing_log.csv. Timing is pushed independent of
   // enable_logging_ so the producer collects samples for the periodic
   // INFO summary even when CSV logging is disabled.
-  static_cast<void>(cm_timing_producer_.Push(urtc::CmTimingPayload{
+  static_cast<void>(cm_timing_producer_.Push(urtc::RtTickTimingPayload{
       t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us}));
 
   // Push log entry to the SPSC ring buffer — O(1), no syscall.
@@ -400,7 +400,7 @@ void RtControllerNode::DrainLog() {
   // at 500 Hz). On disabled logging the logger is closed and Log() is a
   // no-op, so we still drain to keep the SPSC ring from filling.
   cm_timing_producer_.Drain(
-      [this](const urtc::CmTimingSample &s) { cm_timing_logger_.Log(s); });
+      [this](const urtc::RtTickTimingSample &s) { cm_timing_logger_.Log(s); });
 
   // Drain deferred E-STOP log messages (set by TriggerGlobalEstop /
   // ClearGlobalEstop).

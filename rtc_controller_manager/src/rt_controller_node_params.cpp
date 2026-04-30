@@ -467,11 +467,11 @@ void RtControllerNode::DeclareAndLoadParameters() {
     std::filesystem::create_directories(ctrl_dir);
 
     if (enable_timing) {
-      const auto timing_path = ctrl_dir / "timing_log.csv";
-      if (!cm_timing_logger_.Open(timing_path, &urtc::WriteCmTimingHeader,
-                                  &urtc::WriteCmTimingRow)) {
+      const auto timing_path = ctrl_dir / "cm_timing_log.csv";
+      if (!cm_timing_logger_.Open(timing_path, &urtc::WriteRtTickTimingHeader,
+                                  &urtc::WriteRtTickTimingRow)) {
         RCLCPP_WARN(get_logger(),
-                    "Failed to open timing_log.csv at %s — per-tick timing "
+                    "Failed to open cm_timing_log.csv at %s — per-tick timing "
                     "CSV disabled",
                     timing_path.string().c_str());
       }

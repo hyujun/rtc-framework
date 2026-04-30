@@ -7,27 +7,22 @@ from pathlib import Path
 def detect_log_type(filepath):
     """Detect log type from filename pattern.
 
-    New patterns (topic-role based):
+    Topic-role based (DataLogger emits):
       *_state_log.csv  → state_log  (DeviceStateLog fields)
       *_sensor_log.csv → sensor_log (DeviceSensorLog fields)
-    Legacy patterns (backward compat):
-      robot_log*.csv   → robot
-      device_log*.csv / hand_log*.csv → device
-      timing_log*.csv  → timing
+    Per-tick timing (unified 7-col schema):
+      cm_timing_log*.csv  → cm_timing   (CM RT loop)
+      mpc_timing_log*.csv → mpc_timing  (MPC main loop)
     """
     stem = Path(filepath).stem
     if stem.endswith("state_log"):
         return "state_log"
     elif stem.endswith("sensor_log"):
         return "sensor_log"
-    elif stem.startswith("robot_log"):
-        return "robot"
-    elif stem.startswith("device_log") or stem.startswith("hand_log"):
-        return "device"
-    elif stem.startswith("timing_log"):
-        return "timing"
-    elif stem == "mpc_solve_timing":
-        return "mpc_solve_timing"
+    elif stem.startswith("cm_timing_log"):
+        return "cm_timing"
+    elif stem.startswith("mpc_timing_log"):
+        return "mpc_timing"
     else:
         return "unknown"
 
@@ -35,25 +30,25 @@ def detect_log_type(filepath):
 def detect_log_type_by_columns(columns):
     """Fallback: infer log type from CSV header columns.
 
-    Used when filename doesn't match a known pattern.
-    Priority: mpc_solve_timing > timing > state_log > sensor_log.
+    Used when filename doesn't match a known pattern. CM and MPC per-tick
+    timing CSVs share the same 7-col schema, so column-based detection
+    cannot tell them apart — return ``cm_timing`` and let the caller rely
+    on the filename to pick the cm/mpc pipeline if needed.
     """
     cols = set(columns)
-    if {"t_wall_ns", "p50_ns", "p99_ns", "max_ns"}.issubset(cols):
-        return "mpc_solve_timing"
     if any(
         c in cols
         for c in (
             "t_total_us",
             "t_compute_us",
-            "t_state_acquire_us",
+            "t_state_us",
             "t_publish_us",
             "jitter_us",
         )
     ):
-        return "timing"
+        return "cm_timing"
     if any(
-        c.startswith(("actual_pos_", "goal_pos_", "traj_pos_", "target_pos_"))
+        c.startswith(("actual_pos_", "goal_pos_", "traj_pos_"))
         for c in cols
     ):
         return "state_log"

@@ -18,7 +18,7 @@
 
 #include "rtc_mpc/handler/mpc_factory.hpp"
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
-#include "rtc_mpc/logging/mpc_solve_timing_logger.hpp"
+#include "rtc_mpc/logging/mpc_timing_logger.hpp"
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/thread/handler_mpc_thread.hpp"
@@ -390,16 +390,16 @@ private:
   Eigen::VectorXd mpc_lambda_ref_;
   Eigen::VectorXd mpc_u_fb_;
 
-  // ── MPC solve-timing observability (aux thread, non-RT) ────────────────
+  // ── MPC tick-timing observability (aux thread, non-RT) ────────────────
   // Owned 1 Hz timer (spawned in on_activate when mpc_enabled_) drains the
-  // MPCSolutionManager's SolveTimingProducer SPSC ring and appends one row
-  // per MPC tick to <session>/controllers/<config_key>/mpc_solve_timing.csv
-  // via MpcSolveTimingLogger (a thin wrapper over the generic
-  // ThreadTimingCsvLogger<MpcTimingPayload>). Aggregate INFO line every
-  // 10 ticks (~10 s) for tmux watchers.
+  // MPCThread's TimingProducer SPSC ring and appends one row per MPC tick
+  // to <session>/controllers/<config_key>/mpc_timing_log.csv via
+  // MpcTimingLogger (a thin wrapper over the generic
+  // ThreadTimingCsvLogger<RtTickTimingPayload>, schema unified with the CM
+  // RT loop). Aggregate INFO line every 10 ticks (~10 s) for tmux watchers.
   rclcpp::CallbackGroup::SharedPtr mpc_timing_cb_group_;
   rclcpp::TimerBase::SharedPtr mpc_timing_timer_;
-  rtc::mpc::MpcSolveTimingLogger mpc_timing_logger_;
+  rtc::mpc::MpcTimingLogger mpc_timing_logger_;
   std::uint32_t mpc_timing_tick_{0};
   // Logger / timer setup is one-shot per controller lifetime — gated on this
   // flag so repeated activate/deactivate cycles (Phase 2 lifecycle switch)

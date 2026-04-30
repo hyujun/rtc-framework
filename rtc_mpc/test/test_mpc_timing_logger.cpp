@@ -1,18 +1,17 @@
-// MpcSolveTimingLogger unit tests — verifies path resolution, header
-// emission, append-on-reopen, per-sample Log() column count, and no-op
-// behaviour when Open() failed.
+// MpcTimingLogger unit tests — verifies path resolution, header emission,
+// append-on-reopen, per-sample Log() column count, and no-op behaviour
+// when Open() failed.
 //
-// Schema is the per-tick raw-sample format: `t_wall_ns,tick_count,solve_ns`
-// (one CSV row per MPC solve). The 9-column aggregate schema used
-// previously has been replaced — readers compute percentiles in post over
-// the raw stream.
+// Schema is the unified per-tick format shared with the CM RT loop:
+//   t_wall_ns,tick_count,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us
+// One CSV row per MPC main-loop iteration.
 //
 // `RTC_SESSION_DIR` env var is used to redirect the resolver chain to a
 // per-test tempdir; ResolveSessionDir() honours that env first.
 
-#include "rtc_mpc/logging/mpc_solve_timing_logger.hpp"
+#include "rtc_mpc/logging/mpc_timing_logger.hpp"
 
-#include "rtc_base/timing/mpc_solve_sample.hpp"
+#include "rtc_base/timing/rt_tick_timing_sample.hpp"
 
 #include <gtest/gtest.h>
 
@@ -92,51 +91,53 @@ int CountCommas(const std::string &s) {
 
 } // namespace
 
-TEST(MpcSolveTimingLogger, OpenResolvesPathUnderControllerSubdir) {
+TEST(MpcTimingLogger, OpenResolvesPathUnderControllerSubdir) {
   ScopedSessionDir scope;
-  rtc::mpc::MpcSolveTimingLogger logger;
+  rtc::mpc::MpcTimingLogger logger;
 
   ASSERT_TRUE(logger.Open("foo_controller"));
   EXPECT_TRUE(logger.IsOpen());
 
   const auto &p = logger.Path();
   const auto expected =
-      scope.dir() / "controllers" / "foo_controller" / "mpc_solve_timing.csv";
+      scope.dir() / "controllers" / "foo_controller" / "mpc_timing_log.csv";
   EXPECT_EQ(p, expected) << "logger path: " << p;
   EXPECT_TRUE(fs::exists(p));
 }
 
-TEST(MpcSolveTimingLogger, FirstOpenWritesHeader) {
+TEST(MpcTimingLogger, FirstOpenWritesHeader) {
   ScopedSessionDir scope;
-  rtc::mpc::MpcSolveTimingLogger logger;
+  rtc::mpc::MpcTimingLogger logger;
 
   ASSERT_TRUE(logger.Open("hdr_test"));
   const auto lines = ReadAllLines(logger.Path());
   ASSERT_EQ(lines.size(), 1u);
-  EXPECT_EQ(lines[0], "t_wall_ns,tick_count,solve_ns");
+  EXPECT_EQ(lines[0],
+            "t_wall_ns,tick_count,t_state_us,t_compute_us,t_publish_us,"
+            "t_total_us,jitter_us");
 }
 
-TEST(MpcSolveTimingLogger, ReopenAppendDoesNotDuplicateHeader) {
+TEST(MpcTimingLogger, ReopenAppendDoesNotDuplicateHeader) {
   ScopedSessionDir scope;
   {
-    rtc::mpc::MpcSolveTimingLogger logger;
+    rtc::mpc::MpcTimingLogger logger;
     ASSERT_TRUE(logger.Open("dup_test"));
-    rtc::MpcSolveSample sample{};
+    rtc::RtTickTimingSample sample{};
     sample.t_wall_ns = 1000;
     sample.tick_count = 1;
-    sample.payload.solve_ns = 100;
+    sample.payload.t_compute_us = 1.0;
     logger.Log(sample);
   }
   {
-    rtc::mpc::MpcSolveTimingLogger logger;
+    rtc::mpc::MpcTimingLogger logger;
     ASSERT_TRUE(logger.Open("dup_test"));
-    rtc::MpcSolveSample sample{};
+    rtc::RtTickTimingSample sample{};
     sample.t_wall_ns = 2000;
     sample.tick_count = 2;
-    sample.payload.solve_ns = 200;
+    sample.payload.t_compute_us = 2.0;
     logger.Log(sample);
   }
-  rtc::mpc::MpcSolveTimingLogger probe;
+  rtc::mpc::MpcTimingLogger probe;
   ASSERT_TRUE(probe.Open("dup_test"));
   const auto lines = ReadAllLines(probe.Path());
   ASSERT_EQ(lines.size(), 3u);
@@ -145,28 +146,32 @@ TEST(MpcSolveTimingLogger, ReopenAppendDoesNotDuplicateHeader) {
   EXPECT_EQ(lines[2].find("t_wall_ns"), std::string::npos);
 }
 
-TEST(MpcSolveTimingLogger, LogWritesThreeCommaSeparatedColumns) {
+TEST(MpcTimingLogger, LogWritesSevenCommaSeparatedColumns) {
   ScopedSessionDir scope;
-  rtc::mpc::MpcSolveTimingLogger logger;
+  rtc::mpc::MpcTimingLogger logger;
   ASSERT_TRUE(logger.Open("col_test"));
 
-  rtc::MpcSolveSample sample{};
+  rtc::RtTickTimingSample sample{};
   sample.t_wall_ns = 1234567890;
   sample.tick_count = 42;
-  sample.payload.solve_ns = 12345;
+  sample.payload.t_state_us = 1.0;
+  sample.payload.t_compute_us = 2.0;
+  sample.payload.t_publish_us = 3.0;
+  sample.payload.t_total_us = 6.0;
+  sample.payload.jitter_us = 0.5;
   logger.Log(sample);
 
   const auto lines = ReadAllLines(logger.Path());
   ASSERT_EQ(lines.size(), 2u); // header + 1 row
-  // 3 columns → 2 commas
-  EXPECT_EQ(CountCommas(lines[1]), 2);
-  EXPECT_EQ(lines[1], "1234567890,42,12345") << "row was: " << lines[1];
+  // 7 columns → 6 commas
+  EXPECT_EQ(CountCommas(lines[1]), 6);
+  EXPECT_EQ(lines[1], "1234567890,42,1,2,3,6,0.5") << "row was: " << lines[1];
 }
 
-TEST(MpcSolveTimingLogger, LogIsNoopWhenNotOpen) {
-  rtc::mpc::MpcSolveTimingLogger logger;
+TEST(MpcTimingLogger, LogIsNoopWhenNotOpen) {
+  rtc::mpc::MpcTimingLogger logger;
   ASSERT_FALSE(logger.IsOpen());
-  rtc::MpcSolveSample sample{};
+  rtc::RtTickTimingSample sample{};
   sample.tick_count = 1;
   // Must not throw / crash even though Open() was never called.
   logger.Log(sample);

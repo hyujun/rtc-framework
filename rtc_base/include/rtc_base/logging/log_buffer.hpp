@@ -46,8 +46,8 @@ struct DeviceLogSlot {
 
 // One row of the control log, split across CSV files by the DataLogger.
 //
-// Per-tick RT-loop timing (state_acquire/compute/publish/total/jitter) lives
-// on a separate transport — see rtc_base/timing/cm_timing_sample.hpp +
+// Per-tick RT-loop timing (state/compute/publish/total/jitter) lives on a
+// separate transport — see rtc_base/timing/rt_tick_timing_sample.hpp +
 // ThreadTimingProducer. DataLogger only owns the device-state / sensor /
 // inference CSVs.
 struct LogEntry {

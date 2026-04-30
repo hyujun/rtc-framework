@@ -21,7 +21,6 @@
 #include <Eigen/Core>
 
 #include "rtc_base/threading/seqlock.hpp"
-#include "rtc_base/timing/mpc_solve_sample.hpp"
 #include "rtc_mpc/comm/triple_buffer.hpp"
 #include "rtc_mpc/feedback/riccati_feedback.hpp"
 #include "rtc_mpc/interpolation/trajectory_interpolator.hpp"
@@ -157,24 +156,10 @@ public:
   /// @brief Reset the ring buffer + total-solve counter. Non-RT.
   void ResetSolveStats() noexcept;
 
-  // ── Per-tick solve-sample stream ───────────────────────────────────────
-  //
-  // In addition to the windowed aggregate above, every PublishSolution call
-  // pushes one sample onto a generic ThreadTimingProducer (lock-free SPSC).
-  // The non-RT consumer (typically the controller LifecycleNode's 1 Hz aux
-  // timer) drains via `SolveTimingProducer().Drain(...)` and writes one CSV
-  // row per MPC tick using rtc::ThreadTimingCsvLogger<rtc::MpcTimingPayload>.
-  // Push is wait-free; on overflow the sample is dropped and the producer's
-  // `DropCount()` increments.
-
-  /// @brief Direct accessor for the per-tick solve-sample producer.
-  [[nodiscard]] rtc::MpcSolveSampleBuffer &SolveTimingProducer() noexcept {
-    return solve_timing_producer_;
-  }
-  [[nodiscard]] const rtc::MpcSolveSampleBuffer &
-  SolveTimingProducer() const noexcept {
-    return solve_timing_producer_;
-  }
+  // Per-tick raw-sample stream lives on the MPCThread (producer thread)
+  // — see rtc_mpc/thread/mpc_thread.hpp::TimingProducer(). Drained by a
+  // non-RT consumer into <session>/controllers/<config_key>/mpc_timing_log.csv
+  // via rtc::ThreadTimingCsvLogger<rtc::RtTickTimingPayload>.
 
 private:
   bool enabled_{false};
@@ -203,10 +188,6 @@ private:
   std::uint32_t solve_stats_filled_{0}; // samples in ring (≤ kSolveStatsWindow)
   std::uint64_t solve_stats_total_{0}; // lifetime solve count
   std::uint64_t solve_stats_last_{0};  // most recent sample
-
-  // Per-tick raw-sample SPSC ring. Producer is the MPC thread (inside
-  // PublishSolution), consumer is the non-RT drain thread.
-  rtc::MpcSolveSampleBuffer solve_timing_producer_;
 };
 
 } // namespace rtc::mpc

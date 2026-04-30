@@ -68,11 +68,10 @@ void MPCSolutionManager::PublishSolution(const MPCSolution &sol) noexcept {
     // noexcept; swallow to uphold the contract.
   }
 
-  // Per-tick raw-sample stream — wait-free SPSC push via the generic
-  // ThreadTimingProducer (timestamp + tick_count are stamped internally).
-  // On a full ring the sample is dropped (DropCount() increments).
-  (void)solve_timing_producer_.Push(
-      rtc::MpcTimingPayload{sol.solve_duration_ns});
+  // Per-tick raw-sample stream is owned by MPCThread (producer thread).
+  // It pushes one rtc::RtTickTimingPayload per main-loop iteration with
+  // t_state_us / t_compute_us / t_publish_us / t_total_us / jitter_us
+  // captured around this PublishSolution call.
 }
 
 MPCSolutionManager::SolveTimingStats

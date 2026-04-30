@@ -68,23 +68,24 @@ rtc_tools/
 분리된 CSV 제어 로그를 Matplotlib으로 시각화합니다. 파일 이름 패턴으로 로그 타입을 자동 감지합니다.
 
 ```bash
-# Robot 로그 시각화
-ros2 run rtc_tools plot_rtc_log robot_log.csv
+# State 로그 (DeviceStateLog) 시각화
+ros2 run rtc_tools plot_rtc_log <device>_state_log.csv
 
-# Device/Hand 로그 시각화
-ros2 run rtc_tools plot_rtc_log device_log.csv
+# Sensor 로그 (DeviceSensorLog) 시각화
+ros2 run rtc_tools plot_rtc_log <device>_sensor_log.csv
 
-# 타이밍 로그 시각화
-ros2 run rtc_tools plot_rtc_log timing_log.csv
+# 타이밍 로그 시각화 (CM RT loop / MPC main loop — 동일 7-col 스키마)
+ros2 run rtc_tools plot_rtc_log cm_timing_log.csv
+ros2 run rtc_tools plot_rtc_log mpc_timing_log.csv
 
 # 플롯 파일로 저장
-ros2 run rtc_tools plot_rtc_log robot_log.csv --save-dir /tmp/plots
+ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --save-dir /tmp/plots
 
 # 통계만 출력 (플롯 없이)
-ros2 run rtc_tools plot_rtc_log robot_log.csv --stats
+ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --stats
 
 # 모든 Figure 한 번에 생성
-ros2 run rtc_tools plot_rtc_log robot_log.csv --all
+ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all
 ```
 
 > `--save-dir` 미지정 시 `RTC_SESSION_DIR/plots/`에 자동 저장됩니다.
@@ -97,9 +98,8 @@ ros2 run rtc_tools plot_rtc_log robot_log.csv --all
 |------|------|
 | `*_state_log.csv` | state_log (DeviceStateLog 필드) |
 | `*_sensor_log.csv` | sensor_log (DeviceSensorLog 필드, 컬럼 수 불일치 자동 복구) |
-| `robot_log*.csv` | robot |
-| `device_log*.csv` / `hand_log*.csv` | device |
-| `timing_log*.csv` | timing |
+| `cm_timing_log*.csv` | cm_timing (CM RT loop) |
+| `mpc_timing_log*.csv` | mpc_timing (MPC main loop) |
 
 **Robot 모드 플롯:**
 

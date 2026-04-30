@@ -752,7 +752,7 @@ void DemoWbcController::ComputeControl(const ControllerState &state,
 
   // Keep MPC state fresh across all phases: HandlerMPCThread::Solve rejects
   // dim-mismatched snapshots, so non-TSID phases (kIdle/kApproach/kRetreat/
-  // kRelease) would otherwise starve the solver and leave mpc_solve_timing.csv
+  // kRelease) would otherwise starve the solver and leave mpc_timing_log.csv
   // with only the header.
   if (mpc_enabled_ && mpc_manager_.Enabled()) {
     ExtractFullState(state);
@@ -1818,17 +1818,16 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
     const rtc::ControllerState &device_snapshot) noexcept {
   ActivateOwnedTopics(prev, owned_topics_);
 
-  // MPC solve-timing CSV + 1 Hz aux timer: one-shot setup per controller
+  // MPC tick-timing CSV + 1 Hz aux timer: one-shot setup per controller
   // lifetime (gated on mpc_timing_initialized_). Re-activation after a
   // deactivate must NOT re-Open the CSV (truncates accumulated rows) or
   // re-register the timer (executor churn).
   if (mpc_enabled_ && !mpc_timing_initialized_) {
     if (!mpc_timing_logger_.Open("demo_wbc_controller")) {
-      RCLCPP_WARN(
-          logger_,
-          "MpcSolveTimingLogger::Open() failed — solve-timing CSV disabled");
+      RCLCPP_WARN(logger_,
+                  "MpcTimingLogger::Open() failed — MPC timing CSV disabled");
     } else {
-      RCLCPP_INFO(logger_, "MPC solve-timing CSV: %s",
+      RCLCPP_INFO(logger_, "MPC tick-timing CSV: %s",
                   mpc_timing_logger_.Path().c_str());
     }
     auto node = get_lifecycle_node();
@@ -1859,10 +1858,10 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
 RTControllerInterface::CallbackReturn
 DemoWbcController::on_deactivate(const rclcpp_lifecycle::State &prev) noexcept {
   // Pause the MPC solve loop so it stops burning CPU while this controller
-  // is inactive. The timing logger / timer keep running — the
-  // SolveTimingProducer drain naturally yields zero rows while paused, and
-  // the aggregate stats are skipped via the mpc_manager_.Enabled() guard
-  // at the top of LogMpcSolveTimingTick.
+  // is inactive. The timing logger / timer keep running — the MPCThread
+  // TimingProducer drain naturally yields zero rows while paused, and the
+  // aggregate stats are skipped via the mpc_manager_.Enabled() guard at
+  // the top of LogMpcSolveTimingTick.
   if (mpc_thread_) {
     mpc_thread_->Pause();
   }
@@ -2006,20 +2005,25 @@ void DemoWbcController::LogMpcSolveTimingTick() noexcept {
   }
 
   // Drain every pending per-MPC-tick sample into the CSV. One row per
-  // solve preserves full sampling-rate granularity; the file grows at
-  // (MPC frequency × session_seconds) rows.
-  mpc_manager_.SolveTimingProducer().Drain(
-      [this](const rtc::MpcSolveSample &s) { mpc_timing_logger_.Log(s); });
+  // tick preserves full sampling-rate granularity; the file grows at
+  // (MPC frequency × session_seconds) rows. Producer is the MPCThread
+  // main loop (see rtc_mpc/thread/mpc_thread.cpp::RunMain).
+  if (mpc_thread_) {
+    mpc_thread_->TimingProducer().Drain(
+        [this](const rtc::RtTickTimingSample &s) {
+          mpc_timing_logger_.Log(s);
+        });
+  }
 
   // Periodic aggregate INFO so tmux-watchers see progress without
   // tail-ing the CSV. The window is computed by MPCSolutionManager over
-  // its 256-sample ring; 10 s INFO cadence keeps the console readable
-  // across a 10-minute pilot session.
+  // its 256-sample ring (handler-side solve_duration_ns); 10 s INFO
+  // cadence keeps the console readable across a 10-minute pilot session.
   const auto stats = mpc_manager_.GetSolveStats();
   static constexpr std::uint32_t kInfoEveryNTicks = 10;
   if (++mpc_timing_tick_ % kInfoEveryNTicks == 0) {
     RCLCPP_INFO(logger_,
-                "[mpc_solve_timing] count=%lu window=%u p50=%.2fms p99=%.2fms "
+                "[mpc_timing] count=%lu window=%u p50=%.2fms p99=%.2fms "
                 "max=%.2fms",
                 static_cast<unsigned long>(stats.count),
                 static_cast<unsigned>(stats.window),

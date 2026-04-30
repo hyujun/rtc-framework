@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-plot_rtc_log.py - v6
+plot_rtc_log.py - v7
 
 Visualize robot trajectory data from split CSV logs (4-category convention).
 
@@ -10,11 +10,11 @@ CSV 컬럼 카테고리:
   3. Control Command — 액추에이터 출력
   4. Trajectory State — 궤적 보간 내부 상태
 
-파일 이름으로 robot/hand 데이터를 자동 구분:
-  - robot_log*.csv / *_state_log.csv  → Robot 모드
-  - hand_log*.csv  / *_sensor_log.csv → Hand/sensor 모드
-  - timing_log*.csv                    → CM RT loop timing
-  - mpc_solve_timing.csv               → MPC solver latency
+파일 이름으로 자동 구분:
+  - *_state_log.csv                    → state_log (DeviceStateLog, robot)
+  - *_sensor_log.csv                   → sensor_log (DeviceSensorLog, hand)
+  - cm_timing_log*.csv                 → CM RT loop timing
+  - mpc_timing_log*.csv                → MPC main-loop timing (same 7-col schema)
 
 이 파일은 thin orchestration layer다 — actual implementations live in:
   - io/         CSV load, log-type detect, save-dir resolve
@@ -51,7 +51,7 @@ def main():
     parser.add_argument(
         "csv_file",
         type=str,
-        help="Path to robot_log*.csv, device_log*.csv, or timing_log*.csv",
+        help="Path to *_state_log.csv, *_sensor_log.csv, cm_timing_log*.csv, or mpc_timing_log*.csv",
     )
     parser.add_argument(
         "--save-dir",
@@ -150,8 +150,7 @@ def main():
         )
         print(
             "Expected filenames: *_state_log.csv, *_sensor_log.csv, "
-            "timing_log*.csv, robot_log*.csv, device_log*.csv, hand_log*.csv, "
-            "mpc_solve_timing.csv"
+            "cm_timing_log*.csv, mpc_timing_log*.csv"
         )
         sys.exit(1)
 

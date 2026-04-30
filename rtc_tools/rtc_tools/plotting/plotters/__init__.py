@@ -13,7 +13,6 @@ from .device import (
     plot_device_velocities,
     print_device_statistics,
 )
-from .mpc import plot_mpc_solve_timing, print_mpc_timing_statistics
 from .motor import (
     plot_motor_efforts,
     plot_motor_positions,
@@ -80,7 +79,4 @@ __all__ = [
     "plot_timing_histograms",
     "plot_timing_total_and_jitter",
     "print_timing_statistics",
-    # mpc
-    "plot_mpc_solve_timing",
-    "print_mpc_timing_statistics",
 ]

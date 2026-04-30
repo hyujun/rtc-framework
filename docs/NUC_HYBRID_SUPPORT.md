@@ -97,7 +97,7 @@ Stage B merge 전 다음 벤치마크를 채워 Stage B PR에 첨부한다. 각 
 
 ### MPC solve timing (PR #2 관측 경로 사용)
 
-`logging_data/YYMMDD_HHMM/controllers/demo_wbc_controller/mpc_solve_timing.csv`에서 수집 (writer는 `DemoWbcController` 자체 LifecycleNode의 1 Hz aux 타이머가 `MPCSolutionManager::SolveTimingProducer()` SPSC를 drain). 스키마는 per-MPC-tick raw `t_wall_ns,tick_count,solve_ns` — 한 row = 한 solve. `DemoWbcController::ComputeControl`이 phase-independent로 MPC state를 publish하므로 **kIdle** 구간도 20 Hz solve 측정이 가능하다 — kHold 워크로드와 별도 행으로 분리해 baseline vs active 차이를 구분한다. solver가 publish 못한 워밍업/실패 구간에는 새 row가 추가되지 않으므로 분포 비교 시 별도 필터가 필요 없다 (`tick_count` gap으로 해당 구간 식별).
+`logging_data/YYMMDD_HHMM/controllers/demo_wbc_controller/mpc_timing_log.csv`에서 수집 (writer는 `DemoWbcController` 자체 LifecycleNode의 1 Hz aux 타이머가 `MPCThread::TimingProducer()` SPSC를 drain). 스키마는 per-MPC-tick raw 7-col `t_wall_ns,tick_count,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us` (CM과 동일한 RtTickTimingPayload) — 한 row = 한 main-loop iteration. `DemoWbcController::ComputeControl`이 phase-independent로 MPC state를 publish하므로 **kIdle** 구간도 20 Hz solve 측정이 가능하다 — kHold 워크로드와 별도 행으로 분리해 baseline vs active 차이를 구분한다. solver가 publish 못한 구간(dim-mismatch / solver error / 워밍업)에도 row는 계속 쌓이며 `t_publish_us == 0` 으로 식별 가능.
 
 #### 수집 절차
 
@@ -111,9 +111,9 @@ ros2 launch ur5e_bringup sim.launch.py \
 
 # 세션 종료 후:
 awk -F, 'NR>1 && $2>0 {print $6, $7, $8}' \
-    logging_data/<SID>/controllers/demo_wbc_controller/mpc_solve_timing.csv \
+    logging_data/<SID>/controllers/demo_wbc_controller/mpc_timing_log.csv \
     | sort -n | awk 'END{print "rows:", NR}'
-# 컬럼 순서: p50_ns, p99_ns, max_ns (NS → MS는 1e-6 스케일).
+# 컬럼 순서: t_state_us, t_compute_us, t_publish_us (US → MS는 1e-3 스케일).
 ```
 
 | 환경 | 구성 | Workload | p50 (ms) | p99 (ms) | max (ms) |

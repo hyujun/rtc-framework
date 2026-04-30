@@ -35,9 +35,9 @@ struct DeviceLogConfig {
 //   - kDeviceStateLog  → {group}_state_log.csv  (state+cmd+goal+traj+task_pos)
 //   - kDeviceSensorLog → {group}_sensor_log.csv (sensor+inference)
 //
-// Per-tick RT-loop timing (timing_log.csv) is owned by the caller via the
-// generic ThreadTimingCsvLogger<CmTimingPayload> — see
-// rtc_base/timing/cm_timing_sample.hpp.
+// Per-tick RT-loop timing (cm_timing_log.csv) is owned by the caller via
+// the generic ThreadTimingCsvLogger<RtTickTimingPayload> — see
+// rtc_base/timing/rt_tick_timing_sample.hpp.
 //
 // All files share the same timestamp column for post-hoc join.
 // All methods are defined inline to keep rtc_base header-only.

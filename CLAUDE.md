@@ -98,9 +98,9 @@
 | `rtc_msgs/` | 위 + `./build.sh full` (msg gen 전파) | downstream pub/sub 테스트 |
 | `rtc_controllers/` RT path | `test_core_controllers` + grasp 관련 gtest | RT scheduling 확인 (`ps -eLo cls,rtprio`) |
 | `rtc_controllers/` gains/config | 위 + 해당 controller YAML 로드 smoke | `ros2 topic echo /rtc_cm/active_controller_name` |
-| `rtc_controller_manager/` | RT loop timing (`/system/estop_status`) | `mpc_solve_timing.csv` 회귀 |
+| `rtc_controller_manager/` | RT loop timing (`/system/estop_status`) | `cm_timing_log.csv` 회귀 |
 | `rtc_tsid/` | QP/task/constraint gtest | TSID performance tests |
-| `rtc_mpc/` | gtest (types, TripleBuffer, Riccati, SolutionManager) | `mpc_solve_timing.csv` 회귀 |
+| `rtc_mpc/` | gtest (types, TripleBuffer, Riccati, SolutionManager) | `mpc_timing_log.csv` 회귀 |
 | `rtc_mujoco_sim/` | gtest (parse, lifecycle, solver, I/O) | `ros2 launch ur5e_bringup sim.launch.py` smoke |
 | `ur5e_bringup/` demo FSM | demo_wbc FSM/integration/output + grasp_phase_manager + virtual_tcp | BT coordinator 통합 |
 | `ur5e_hand_driver/` | 단위 gtest + UDP loopback | `ros2 topic hz /hand/joint_states` |

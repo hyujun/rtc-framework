@@ -30,7 +30,7 @@ Hybrid-CPU detection (Stage A, 2026-04-22): `rtc_base/threading/cpu_topology.hpp
 
 ### Per-thread timing CSV infrastructure (`rtc_base/timing/thread_timing_*`)
 
-CM RT loop (500 Hz `timing_log.csv`) and MPC thread (`mpc_solve_timing.csv`) share the *same* generic transport. Adding a third per-tick timing channel (e.g. ONNX inference) only needs a new payload struct + alias — no `RTControllerInterface` virtuals, no new SPSC class, no new logger class.
+CM RT loop (500 Hz `cm_timing_log.csv`) and MPC thread (`mpc_timing_log.csv`) share the *same* generic transport **and** the *same* unified 5-column `RtTickTimingPayload` (`rtc_base/timing/rt_tick_timing_sample.hpp`). Both threads measure t0~t3 around `state acquire / compute / publish` plus per-period jitter, so cross-thread analysis scripts join on a single schema. Adding a third per-tick timing channel (e.g. ONNX inference) reuses the same payload + buffer alias — no `RTControllerInterface` virtuals, no new SPSC class, no new logger class.
 
 | Layer | Type | Owner |
 |-------|------|-------|
@@ -40,8 +40,8 @@ CM RT loop (500 Hz `timing_log.csv`) and MPC thread (`mpc_solve_timing.csv`) sha
 
 Channel-specific instantiations:
 
-- **CM RT loop** — `rtc::CmTimingPayload {t_state_acquire_us, t_compute_us, t_publish_us, t_total_us, jitter_us}`; `RtControllerNode` owns `cm_timing_producer_` (pushed in the RT loop) + `cm_timing_logger_` (drained in `DrainLog()` → `<session>/controller/timing_log.csv`, schema `t_wall_ns,tick_count,t_state_acquire_us,t_compute_us,t_publish_us,t_total_us,jitter_us`). `timing_drops` is added to the periodic INFO summary alongside `log_drops` / `pub_drops`. `DataLogger` no longer touches the timing CSV — it is now device-CSV-only.
-- **MPC thread** — `rtc::MpcTimingPayload {solve_ns}`; `MPCSolutionManager` exposes `SolveTimingProducer()` (the `ThreadTimingProducer` instance). `DemoWbcController` owns the consumer side: 1 Hz aux timer drains via `mpc_manager_.SolveTimingProducer().Drain(...)` into `MpcSolveTimingLogger` → `<session>/controllers/<config_key>/mpc_solve_timing.csv`, schema `t_wall_ns,tick_count,solve_ns`. The aggregate `MPCSolutionManager::GetSolveStats()` (256-sample sliding window) drives the periodic 10 s `RCLCPP_INFO` summary only — never written to disk; post-process the per-tick CSV for any percentile.
+- **CM RT loop** — `rtc::RtTickTimingPayload {t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us}`; `RtControllerNode` owns `cm_timing_producer_` (pushed in the RT loop) + `cm_timing_logger_` (drained in `DrainLog()` → `<session>/controller/cm_timing_log.csv`, schema `t_wall_ns,tick_count,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us`). `timing_drops` is added to the periodic INFO summary alongside `log_drops` / `pub_drops`. `DataLogger` no longer touches the timing CSV — it is now device-CSV-only.
+- **MPC thread** — same `rtc::RtTickTimingPayload`; `MPCThread` owns `timing_producer_` and exposes it via `TimingProducer()`. The thread's `RunMain` captures four `steady_clock` points per main-loop iteration around `ReadState / Solve / PublishSolution` and pushes one row per tick. `DemoWbcController` owns the consumer side: 1 Hz aux timer drains via `mpc_thread_->TimingProducer().Drain(...)` into `MpcTimingLogger` → `<session>/controllers/<config_key>/mpc_timing_log.csv` (same 7-column schema as CM). The aggregate `MPCSolutionManager::GetSolveStats()` (256-sample sliding window over handler self-report `solve_duration_ns`) drives the periodic 10 s `RCLCPP_INFO` summary only — never written to disk; post-process the per-tick CSV for any percentile.
 
 `RTControllerInterface` carries **no** MPC-specific virtual methods — adding a new MPC controller, or any new soft-RT thread that wants per-tick CSV output, requires only a new payload struct + `using` alias and direct ownership of the producer/logger pair.
 

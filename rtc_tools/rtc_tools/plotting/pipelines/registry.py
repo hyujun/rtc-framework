@@ -42,28 +42,31 @@ def _state_or(predicate, flag_name):
     return _gate
 
 
+# Per-tick timing CSVs (cm_timing_log.csv / mpc_timing_log.csv) share the
+# unified 7-col schema, so the same stats printer + plotter list applies to
+# both. PNG output filename is disambiguated by the source CSV's parent
+# directory.
+_TIMING_STATS = [
+    PlotEntry("print_timing_stats", plotters.print_timing_statistics),
+]
+_TIMING_PLOTS = [
+    PlotEntry("timing_breakdown",           plotters.plot_timing_breakdown),
+    PlotEntry("timing_total_jitter",        plotters.plot_timing_total_and_jitter),
+    PlotEntry("timing_histograms",          plotters.plot_timing_histograms),
+]
+
+
 # `STATS_PRINTERS` runs before any plotting and respects `available()` only.
 STATS_PRINTERS: dict[str, list[PlotEntry]] = {
     "state_log": [
         PlotEntry("print_robot_stats", plotters.print_robot_statistics),
         PlotEntry("print_motor_stats", plotters.print_motor_statistics, has_motor),
     ],
-    "robot": [
-        PlotEntry("print_robot_stats", plotters.print_robot_statistics),
-        PlotEntry("print_motor_stats", plotters.print_motor_statistics, has_motor),
-    ],
     "sensor_log": [
         PlotEntry("print_device_stats", plotters.print_device_statistics),
     ],
-    "device": [
-        PlotEntry("print_device_stats", plotters.print_device_statistics),
-    ],
-    "timing": [
-        PlotEntry("print_timing_stats", plotters.print_timing_statistics),
-    ],
-    "mpc_solve_timing": [
-        PlotEntry("print_mpc_stats", plotters.print_mpc_timing_statistics),
-    ],
+    "cm_timing": list(_TIMING_STATS),
+    "mpc_timing": list(_TIMING_STATS),
 }
 
 
@@ -91,9 +94,6 @@ PIPELINES: dict[str, list[PlotEntry]] = {
         PlotEntry("motor_efforts",              plotters.plot_motor_efforts,
                   available=has_motor),
     ],
-    "robot": [
-        # legacy alias — same pipeline as state_log
-    ],
     "sensor_log": [
         PlotEntry("sensor_barometer",           plotters.plot_sensor_barometer_combined),
         PlotEntry("sensor_tof",                 plotters.plot_sensor_tof_combined),
@@ -101,27 +101,9 @@ PIPELINES: dict[str, list[PlotEntry]] = {
         PlotEntry("device_sensor_comparison",   plotters.plot_device_sensor_comparison_auto,
                   flag="sensor_compare"),
     ],
-    "device": [
-        PlotEntry("device_positions",           plotters.plot_device_positions),
-        PlotEntry("device_velocities",          plotters.plot_device_velocities),
-        PlotEntry("sensor_barometer",           plotters.plot_sensor_barometer_combined),
-        PlotEntry("sensor_tof",                 plotters.plot_sensor_tof_combined),
-        PlotEntry("device_ft_output",           plotters.plot_device_ft_output_auto),
-        PlotEntry("device_sensor_comparison",   plotters.plot_device_sensor_comparison_auto,
-                  flag="sensor_compare"),
-    ],
-    "timing": [
-        PlotEntry("timing_breakdown",           plotters.plot_timing_breakdown),
-        PlotEntry("timing_total_jitter",        plotters.plot_timing_total_and_jitter),
-        PlotEntry("timing_histograms",          plotters.plot_timing_histograms),
-    ],
-    "mpc_solve_timing": [
-        PlotEntry("mpc_solve_timing",           plotters.plot_mpc_solve_timing),
-    ],
+    "cm_timing": list(_TIMING_PLOTS),
+    "mpc_timing": list(_TIMING_PLOTS),
 }
-
-# Legacy "robot" log_type uses the same pipeline as state_log.
-PIPELINES["robot"] = list(PIPELINES["state_log"])
 
 
 def _entry_fires(entry, df, args):

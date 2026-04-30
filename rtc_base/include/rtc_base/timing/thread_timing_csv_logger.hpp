@@ -10,9 +10,10 @@
 //
 // The first two columns are always written by this logger so cross-thread
 // analysis scripts can rely on them. Payload columns are emitted by the
-// caller-provided `extra_header` / `row_writer` so each thread keeps its
-// own schema (CM has 5 phase-timing columns, MPC has 1 solve_ns column,
-// future threads are free to choose).
+// caller-provided `extra_header` / `row_writer`. CM and MPC both bind
+// rtc::RtTickTimingPayload (5 phase-timing columns) — see
+// rtc_base/timing/rt_tick_timing_sample.hpp — so a single set of tooling
+// consumes both CSVs.
 //
 // Writer side:
 //   - `Open(path)` creates the file, writes the schema header, opens in
@@ -36,11 +37,9 @@
 #include <string_view>
 #include <system_error>
 
-namespace rtc
-{
+namespace rtc {
 
-template<typename Payload>
-class ThreadTimingCsvLogger {
+template <typename Payload> class ThreadTimingCsvLogger {
 public:
   using Sample = ThreadTimingSample<Payload>;
 
@@ -57,17 +56,15 @@ public:
   ~ThreadTimingCsvLogger() = default;
 
   ThreadTimingCsvLogger(const ThreadTimingCsvLogger &) = delete;
-  ThreadTimingCsvLogger & operator=(const ThreadTimingCsvLogger &) = delete;
+  ThreadTimingCsvLogger &operator=(const ThreadTimingCsvLogger &) = delete;
 
   /// Resolve / create the file at `path` and store the per-row writer.
   /// On first creation the schema header is written; on append (file
   /// already exists) the existing header is preserved. Returns false on
   /// filesystem errors — caller may retry or skip.
-  [[nodiscard]] bool Open(
-    const std::filesystem::path & path,
-    const HeaderWriter & header_writer,
-    RowWriter row_writer) noexcept
-  {
+  [[nodiscard]] bool Open(const std::filesystem::path &path,
+                          const HeaderWriter &header_writer,
+                          RowWriter row_writer) noexcept {
     try {
       path_ = path;
       std::error_code ec;
@@ -94,16 +91,14 @@ public:
     }
   }
 
-  [[nodiscard]] bool IsOpen() const noexcept {return out_.is_open();}
+  [[nodiscard]] bool IsOpen() const noexcept { return out_.is_open(); }
 
-  [[nodiscard]] const std::filesystem::path & Path() const noexcept
-  {
+  [[nodiscard]] const std::filesystem::path &Path() const noexcept {
     return path_;
   }
 
   /// Append one row. No-op if not open.
-  void Log(const Sample & s) noexcept
-  {
+  void Log(const Sample &s) noexcept {
     if (!out_.is_open()) {
       return;
     }

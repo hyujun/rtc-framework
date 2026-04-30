@@ -80,17 +80,19 @@ which emits one `fprintf(stderr, …)` line at most every 5 s with
 `what=<cause> code=<int> total=N failed=M`. The null-handler setup error
 retains its own one-shot `fprintf` (separate semantics: fatal setup
 mistake, not runtime drift). Readers can also pair the stderr stream with
-`<session>/controllers/<config_key>/mpc_solve_timing.csv` (writer:
-[`rtc_mpc/logging/mpc_solve_timing_logger.hpp`](include/rtc_mpc/logging/mpc_solve_timing_logger.hpp);
+`<session>/controllers/<config_key>/mpc_timing_log.csv` (writer:
+[`rtc_mpc/logging/mpc_timing_logger.hpp`](include/rtc_mpc/logging/mpc_timing_logger.hpp);
 each MPC-using controller's own LifecycleNode owns a 1 Hz aux timer that
-drains `MPCSolutionManager::SolveTimingProducer()` per-tick SPSC into the
-CSV). Schema is **per-MPC-tick raw** — 3 cols `t_wall_ns,tick_count,solve_ns`,
-one row per solve. When MPC is enabled but `Solve` keeps failing the CSV
-simply stops growing (no `tick_count` progression); the failed-solve
-atomics above plus the periodic `RCLCPP_INFO` aggregate
-(`MPCSolutionManager::GetSolveStats`, 256-sample sliding window) prove
-the thread is alive. Backpressure: producer's `DropCount()` increments if
-the consumer falls behind.
+drains `MPCThread::TimingProducer()` per-tick SPSC into the CSV). Schema
+is **per-MPC-tick raw** sharing the unified 7-col format with the CM RT
+loop: `t_wall_ns,tick_count,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us`,
+one row per main-loop iteration. When MPC is enabled but `Solve` keeps
+failing the CSV still grows one row per tick (publish phase is just
+zero), so the failed-solve atomics above plus the periodic `RCLCPP_INFO`
+aggregate (`MPCSolutionManager::GetSolveStats`, 256-sample sliding window
+over handler-side `solve_duration_ns`) prove the thread is alive.
+Backpressure: producer's `DropCount()` increments if the consumer falls
+behind.
 
 ## Status
 

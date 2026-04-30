@@ -227,7 +227,8 @@ PID=$(pgrep -f ur5e_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep
 
 | 서브디렉토리 | 내용 |
 |---|---|
-| `controller/` | timing_log.csv (6열: 타이밍), `<device>_log.csv` (디바이스별: 관절/센서/추론) |
+| `controller/` | cm_timing_log.csv (CM RT loop 7열: 타이밍), `<device>_log.csv` (디바이스별: 관절/센서/추론) |
+| `controllers/<config_key>/` | per-controller CSV (예: demo_wbc_controller/mpc_timing_log.csv — MPC RT loop 7열, CM과 동일 스키마) |
 | `monitor/` | ur5e_failure_*.log, controller_stats.json |
 | `hand/` | hand_udp_stats.json |
 | `sim/` | screenshot_*.ppm (MuJoCo 전용) |
