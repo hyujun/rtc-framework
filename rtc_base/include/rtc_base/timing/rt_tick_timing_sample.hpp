@@ -61,6 +61,10 @@ inline constexpr std::size_t kCmTimingBufferCapacity = 512;
 /// 6 s of headroom at 20 Hz, comfortably covering a 1 s drain interval.
 inline constexpr std::size_t kMpcTimingBufferCapacity = 128;
 
+/// SPSC ring capacity for the hand UDP EventLoop (~500 Hz). 512 slots ≈
+/// 1 s of headroom — drained at 1 Hz by the node's aux timer.
+inline constexpr std::size_t kHandUdpTimingBufferCapacity = 512;
+
 using RtTickTimingSample = ThreadTimingSample<RtTickTimingPayload>;
 
 using CmTimingBuffer =
@@ -68,6 +72,9 @@ using CmTimingBuffer =
 
 using MpcTimingBuffer =
     ThreadTimingProducer<RtTickTimingPayload, kMpcTimingBufferCapacity>;
+
+using HandUdpTimingBuffer =
+    ThreadTimingProducer<RtTickTimingPayload, kHandUdpTimingBufferCapacity>;
 
 } // namespace rtc
 

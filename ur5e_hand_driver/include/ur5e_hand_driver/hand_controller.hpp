@@ -44,6 +44,7 @@
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
+#include "rtc_base/timing/rt_tick_timing_sample.hpp"
 #include "rtc_base/types/types.hpp"
 #include "ur5e_description/ur5e_constants.hpp"
 #include "ur5e_hand_driver/fingertip_ft_inferencer.hpp"
@@ -247,6 +248,24 @@ public:
   // ── Callback ───────────────────────────────────────────────────────────
 
   void SetCallback(StateCallback cb) noexcept { callback_ = std::move(cb); }
+
+  // ── Timing producer (per-tick CSV output, optional) ────────────────────
+
+  /// Inject a producer for the unified per-tick timing CSV (see
+  /// rtc/timing/rt_tick_timing_sample.hpp). Owned by the caller; must
+  /// outlive this controller. Pass nullptr to disable.
+  /// `expected_period_us` is used to compute jitter; pass 0 to leave the
+  /// jitter field at zero (e.g. when the EventLoop is not driven on a
+  /// fixed cadence).
+  void SetTimingProducer(rtc::HandUdpTimingBuffer *producer,
+                         double expected_period_us = 0.0) noexcept {
+    timing_producer_ = producer;
+    expected_period_us_ = expected_period_us;
+  }
+
+  [[nodiscard]] rtc::HandUdpTimingBuffer *TimingProducer() const noexcept {
+    return timing_producer_;
+  }
 
   // ── E-Stop flag (shared with RtControllerNode) ─────────────────────────
 
@@ -625,6 +644,26 @@ private:
         pt.is_sensor_cycle = is_sensor_cycle;
         timing_profiler_.Update(pt);
 
+        if (timing_producer_) {
+          rtc::RtTickTimingPayload tp{};
+          tp.t_state_us =
+              std::chrono::duration<double, std::micro>(t3 - t0).count();
+          tp.t_compute_us =
+              std::chrono::duration<double, std::micro>(t4 - t3).count();
+          tp.t_publish_us =
+              std::chrono::duration<double, std::micro>(t5 - t4).count();
+          tp.t_total_us = pt.total_us;
+          if (prev_tick_valid_ && expected_period_us_ > 0.0) {
+            const double period_us =
+                std::chrono::duration<double, std::micro>(t0 - prev_tick_t0_)
+                    .count();
+            tp.jitter_us = std::abs(period_us - expected_period_us_);
+          }
+          prev_tick_t0_ = t0;
+          prev_tick_valid_ = true;
+          (void)timing_producer_->Push(tp);
+        }
+
       } else {
         // ── Individual mode ───────────────────────────────────────────────
         // 2. Read motor position (kMotor)
@@ -735,6 +774,26 @@ private:
             std::chrono::duration<double, std::micro>(t6 - t0).count();
         pt.is_sensor_cycle = is_sensor_cycle;
         timing_profiler_.Update(pt);
+
+        if (timing_producer_) {
+          rtc::RtTickTimingPayload tp{};
+          tp.t_state_us =
+              std::chrono::duration<double, std::micro>(t4 - t0).count();
+          tp.t_compute_us =
+              std::chrono::duration<double, std::micro>(t5 - t4).count();
+          tp.t_publish_us =
+              std::chrono::duration<double, std::micro>(t6 - t5).count();
+          tp.t_total_us = pt.total_us;
+          if (prev_tick_valid_ && expected_period_us_ > 0.0) {
+            const double period_us =
+                std::chrono::duration<double, std::micro>(t0 - prev_tick_t0_)
+                    .count();
+            tp.jitter_us = std::abs(period_us - expected_period_us_);
+          }
+          prev_tick_t0_ = t0;
+          prev_tick_valid_ = true;
+          (void)timing_producer_->Push(tp);
+        }
       }
 
       transport_.comm_stats_mut().total_cycles++;
@@ -862,6 +921,10 @@ private:
   std::atomic<bool> running_{false};
   bool state_read_once_{false}; // True after first successful state read
   StateCallback callback_;
+  rtc::HandUdpTimingBuffer *timing_producer_{nullptr};
+  double expected_period_us_{0.0};
+  std::chrono::steady_clock::time_point prev_tick_t0_{};
+  bool prev_tick_valid_{false};
   SeqLock<HandState> state_seqlock_{};
   std::atomic<std::size_t> cycle_count_{0};
 

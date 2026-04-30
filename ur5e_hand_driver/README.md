@@ -17,6 +17,7 @@ ur5e_hand_driver/
 │   ├── hand_sensor_processor.hpp -- 센서 후처리 (Bessel LPF, rate estimation, drift)
 │   ├── hand_failure_detector.hpp -- 손 통신 장애 감지기 (50Hz non-RT jthread)
 │   ├── hand_timing_profiler.hpp  -- EventLoop 단계별 타이밍 프로파일러
+│   ├── hand_udp_timing_logger.hpp -- per-tick CSV writer (mpc_timing_log 패턴)
 │   └── fingertip_ft_inferencer.hpp -- ONNX 기반 핑거팁 F/T 추론
 ├── src/
 │   └── hand_udp_node.cpp         -- ROS2 LifecycleNode (HandController + FailureDetector)
@@ -149,6 +150,21 @@ Per-fingertip ONNX 모델 기반 힘/토크 추론 (3-head output):
 ### HandTimingProfiler (`hand_timing_profiler.hpp`)
 
 EventLoop 단계별 소요시간 추적. 히스토그램 기반 p95/p99 백분위수, 예산(2000us) 초과 카운트. `TimingProfilerBase<250, 20, 2000>` 상속 — 250개 버킷 × 20 µs (= [0, 5000) µs 범위, 20 µs 백분위 해상도). 보간 결과는 `max_us`로 clamp되어 p95, p99 ≤ max를 보장.
+
+### HandUdpTimingLogger (`hand_udp_timing_logger.hpp`)
+
+EventLoop per-tick 타이밍을 `<session>/device/hand_udp_timing_log.csv` 로 기록한다. CM (`cm_timing_log.csv`) 및 MPC (`mpc_timing_log.csv`) 와 동일한 통합 스키마 (`t_wall_ns, tick_count, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us`) 를 사용 — `rtc_base/timing/rt_tick_timing_sample.hpp` 의 `RtTickTimingPayload` 직접 재사용.
+
+데이터 흐름:
+- producer: `HandController::EventLoop` 내부에서 phase timestamps (t0~t6) 로 `RtTickTimingPayload` 빌드 후 `HandUdpTimingBuffer` 에 push (RT-safe, wait-free)
+- drain: `hand_udp_node` 가 1 Hz `wall_timer` 로 SPSC 버퍼를 비우고 `ThreadTimingCsvLogger<RtTickTimingPayload>` 에 row 추가
+- expected period: `publish_rate` 파라미터 (`1e6 / publish_rate µs`) — jitter 계산에 사용 (0이면 jitter 컬럼 0)
+
+phase 매핑 (hand UDP loop):
+- bulk: `t_state = t3 - t0`, `t_compute = t4 - t3`, `t_publish = t5 - t4`
+- individual: `t_state = t4 - t0`, `t_compute = t5 - t4`, `t_publish = t6 - t5`
+
+`HandTimingProfiler` 와 공존 — Profiler 는 in-process p95/p99 텔레메트리, Logger 는 raw per-tick CSV 로그.
 
 ---
 

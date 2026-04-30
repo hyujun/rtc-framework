@@ -1,6 +1,7 @@
 #include "ur5e_hand_driver/hand_controller.hpp"
 #include "ur5e_hand_driver/hand_failure_detector.hpp"
 #include "ur5e_hand_driver/hand_logging.hpp"
+#include "ur5e_hand_driver/hand_udp_timing_logger.hpp"
 
 #include <rtc_base/logging/session_dir.hpp>
 #include <rtc_base/threading/thread_utils.hpp>
@@ -376,6 +377,18 @@ public:
 
     start_time_ = std::chrono::steady_clock::now();
 
+    // ── Per-tick timing CSV setup ──────────────────────────────────────
+    // Inject producer before Start() so the EventLoop thread sees a non-null
+    // producer on its first iteration. Expected period is the publish_rate
+    // setpoint (set at on_configure); jitter is computed against it.
+    {
+      const double publish_rate = get_parameter("publish_rate").as_double();
+      const double expected_period_us =
+          (publish_rate > 0.0) ? (1.0e6 / publish_rate) : 0.0;
+      controller_->SetTimingProducer(&hand_udp_timing_producer_,
+                                     expected_period_us);
+    }
+
     if (!controller_->Start()) {
       RCLCPP_ERROR(::ur5e_hand_driver::logging::NodeLogger(),
                    "Failed to start HandController to %s:%d",
@@ -442,9 +455,42 @@ public:
                   fd_cfg.failure_threshold);
     }
 
+    // ── Per-tick timing CSV: open + start drain timer ──────────────────
+    if (!hand_udp_timing_initialized_) {
+      if (!hand_udp_timing_logger_.Open()) {
+        RCLCPP_WARN(::ur5e_hand_driver::logging::NodeLogger(),
+                    "HandUdpTimingLogger::Open() failed — timing CSV disabled");
+      } else {
+        RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(),
+                    "Hand UDP tick-timing CSV: %s",
+                    hand_udp_timing_logger_.Path().c_str());
+      }
+      hand_udp_timing_timer_ = create_wall_timer(
+          std::chrono::seconds(1), [this]() { DrainHandUdpTiming(); });
+      hand_udp_timing_initialized_ = true;
+    }
+
     RCLCPP_INFO(::ur5e_hand_driver::logging::NodeLogger(),
                 "HandUdpNode activated");
     return CallbackReturn::SUCCESS;
+  }
+
+  // Drain the EventLoop's timing producer into the CSV (1 Hz, non-RT).
+  // Runs on the LifecycleNode's default executor thread.
+  void DrainHandUdpTiming() noexcept {
+    if (!controller_)
+      return;
+    hand_udp_timing_producer_.Drain([this](const urtc::RtTickTimingSample &s) {
+      hand_udp_timing_logger_.Log(s);
+    });
+    const std::uint64_t drops = hand_udp_timing_producer_.DropCount();
+    if (drops > hand_udp_timing_drop_baseline_) {
+      const std::uint64_t delta = drops - hand_udp_timing_drop_baseline_;
+      hand_udp_timing_drop_baseline_ = drops;
+      RCLCPP_WARN(::ur5e_hand_driver::logging::NodeLogger(),
+                  "Hand UDP timing SPSC dropped %lu samples since last drain",
+                  static_cast<unsigned long>(delta));
+    }
   }
 
   /// Tier 2 teardown: stop hardware communication and monitoring.
@@ -456,9 +502,18 @@ public:
     if (controller_ && controller_->IsRunning()) {
       controller_->Stop();
     }
+    if (controller_) {
+      // Drop the producer pointer so a stopped EventLoop cannot push into a
+      // potentially-recreated buffer on a future activation.
+      controller_->SetTimingProducer(nullptr, 0.0);
+    }
     if (fake_tick_timer_) {
       fake_tick_timer_->cancel();
       fake_tick_timer_.reset();
+    }
+    // Drain any stragglers so the CSV reflects everything pushed before stop.
+    if (hand_udp_timing_initialized_) {
+      DrainHandUdpTiming();
     }
 
     // Parent call deactivates LifecyclePublishers.
@@ -882,6 +937,18 @@ private:
   std::string target_ip_;
   int target_port_{0};
   std::string comm_mode_str_;
+
+  // ── Per-EventLoop-tick timing CSV (mpc_timing_log pattern) ─────────────
+  // Producer (filled on the EventLoop thread) → 1 Hz drain on aux timer →
+  // ThreadTimingCsvLogger writes one row per tick to
+  // <session>/device/hand_udp_timing_log.csv. Open() runs once on the first
+  // on_activate and is gated by `hand_udp_timing_initialized_` so reactivation
+  // does not truncate or re-write the header.
+  urtc::HandUdpTimingBuffer hand_udp_timing_producer_;
+  rtc::hand::HandUdpTimingLogger hand_udp_timing_logger_;
+  rclcpp::TimerBase::SharedPtr hand_udp_timing_timer_;
+  bool hand_udp_timing_initialized_{false};
+  std::uint64_t hand_udp_timing_drop_baseline_{0};
 };
 
 int main(int argc, char **argv) {
