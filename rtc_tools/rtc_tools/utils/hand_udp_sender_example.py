@@ -895,7 +895,7 @@ class HandDataCsvLogger:
         """
         Args:
             num_sensors: 연결된 핑거팁 센서 수
-            output_dir: CSV 저장 디렉토리 (빈 문자열 시 RTC/UR5E_SESSION_DIR/device 사용,
+            output_dir: CSV 저장 디렉토리 (빈 문자열 시 $RTC_SESSION_DIR/device 사용,
                 없으면 현재 ws logging_data 에 새 세션을 생성해 거기 저장)
             prefix: 파일명 접두어
             bulk_mode: True이면 전류 컬럼 추가 및 bulk 타이밍 키 사용

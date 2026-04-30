@@ -181,19 +181,14 @@ def launch_setup(context, *args, **kwargs):
         ctrl_params.append(ctrl_overrides)
 
     # ── Environment variables ─────────────────────────────────────────────────
-    # RTC_SESSION_DIR 우선, UR5E_SESSION_DIR 은 하위 호환을 위해 함께 세팅.
     set_session_dir = SetEnvironmentVariable(
         name='RTC_SESSION_DIR',
-        value=session_dir
-    )
-    set_session_dir_legacy = SetEnvironmentVariable(
-        name='UR5E_SESSION_DIR',
         value=session_dir
     )
 
     # ── CPU Shield (Tier 1 only for simulation) ───────────────────────────────
     use_affinity = LaunchConfiguration('use_cpu_affinity').perform(context)
-    actions = [set_session_dir, set_session_dir_legacy]
+    actions = [set_session_dir]
 
     if use_affinity.lower() in ('true', '1', 'yes'):
         # Mirror robot.launch.py: probe `sudo -n true` first.  Launch's stdin

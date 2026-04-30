@@ -130,7 +130,7 @@ Implementation: `rtc::TopicOwnership` enum (`kManager` | `kController`) read by 
 Session logs: `logging_data/YYMMDD_HHMM/{controller,monitor,device,sim,plots,motions}/`. Per-controller logs live under `controllers/<config_key>/` (plural), CM RT loop logs under `controller/` (singular). See `feedback_session_log_dir_convention` memory for the singular vs plural distinction.
 
 Session/logging root resolution (4-tier chain, shared between `rtc_base/logging/session_dir.hpp` and `rtc_tools.utils.session_dir`):
-1. `$RTC_SESSION_DIR` -> `$UR5E_SESSION_DIR` (legacy fallback) -- used as-is if set.
+1. `$RTC_SESSION_DIR` -- used as-is if set.
 2. `$COLCON_PREFIX_PATH` first entry's parent + `/logging_data` (requires write access).
 3. Walk up from `cwd` looking for `install/` + `src/` siblings -> that dir + `/logging_data`.
 4. Final fallback: `$PWD/logging_data`.

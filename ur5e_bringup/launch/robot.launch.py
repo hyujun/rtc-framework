@@ -177,13 +177,8 @@ def generate_launch_description():
         value=['file://', cyclone_dds_xml]
     )
 
-    # RTC_SESSION_DIR 우선, UR5E_SESSION_DIR 은 하위 호환을 위해 함께 세팅.
     set_session_dir = SetEnvironmentVariable(
         name='RTC_SESSION_DIR',
-        value=session_dir
-    )
-    set_session_dir_legacy = SetEnvironmentVariable(
-        name='UR5E_SESSION_DIR',
         value=session_dir
     )
 
@@ -423,7 +418,6 @@ def generate_launch_description():
         enable_mpc_arg,
         # 2) Environment
         set_session_dir,
-        set_session_dir_legacy,
         set_rmw,
         set_cyclone_uri,
         # 3) Infrastructure (parallel)

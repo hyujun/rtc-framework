@@ -234,7 +234,7 @@ PID=$(pgrep -f ur5e_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep
 | `sim/` | screenshot_*.ppm (MuJoCo 전용) |
 | `plots/`, `motions/` | rtc_tools 출력 |
 
-환경변수 `RTC_SESSION_DIR` (또는 `UR5E_SESSION_DIR` 폴백)로 모든 노드에 세션 경로 자동 전파.
+환경변수 `RTC_SESSION_DIR` 로 모든 노드에 세션 경로 자동 전파.
 
 ---
 

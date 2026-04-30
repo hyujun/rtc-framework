@@ -36,7 +36,7 @@ namespace rtc {
 //   3) $PWD/logging_data
 //
 // 세션 디렉토리 결정 체인 (ResolveSessionDir):
-//   1) $RTC_SESSION_DIR (fallback: $UR5E_SESSION_DIR)
+//   1) $RTC_SESSION_DIR
 //   2) ResolveLoggingRoot() / YYMMDD_HHMM
 //
 // Header-only — rtc_base의 링크 정책 유지.
@@ -104,16 +104,13 @@ inline std::filesystem::path ResolveLoggingRoot() {
 
 /// 세션 디렉토리를 결정하고 서브디렉토리까지 생성.
 ///
-/// 1) $RTC_SESSION_DIR → $UR5E_SESSION_DIR (하위 호환)
+/// 1) $RTC_SESSION_DIR
 /// 2) ResolveLoggingRoot() / YYMMDD_HHMM
 ///
 /// @return 세션 디렉토리 절대 경로 (e.g. .../logging_data/260314_1430)
 inline std::filesystem::path ResolveSessionDir() {
-  // 1. 환경변수 우선 (RTC_SESSION_DIR → UR5E_SESSION_DIR fallback)
+  // 1. 환경변수 우선 (RTC_SESSION_DIR)
   const char *env = std::getenv("RTC_SESSION_DIR");
-  if (!env) {
-    env = std::getenv("UR5E_SESSION_DIR"); // backward compat
-  }
   if (env != nullptr && env[0] != '\0') {
     std::filesystem::path session_dir{env};
     std::filesystem::create_directories(session_dir);

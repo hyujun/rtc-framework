@@ -1,7 +1,7 @@
 // ── test_session_dir.cpp ─────────────────────────────────────────────────────
 // rtc::ResolveLoggingRoot() / ResolveSessionDir() 4단 체인 검증.
 //
-// 각 테스트는 환경변수(COLCON_PREFIX_PATH, RTC_SESSION_DIR, UR5E_SESSION_DIR)
+// 각 테스트는 환경변수(COLCON_PREFIX_PATH, RTC_SESSION_DIR)
 // 와 cwd 를 독립적으로 세팅하도록 scoped fixture 로 관리합니다.
 // ─────────────────────────────────────────────────────────────────────────────
 #include <rtc_base/logging/session_dir.hpp>
@@ -19,9 +19,8 @@ namespace {
 // ScopedEnv: RAII 로 환경변수를 세팅하고 테스트 종료 시 복원.
 class ScopedEnv {
 public:
-  ScopedEnv(const char* name, const std::string& value)
-      : name_(name) {
-    if (const char* prev = std::getenv(name)) {
+  ScopedEnv(const char *name, const std::string &value) : name_(name) {
+    if (const char *prev = std::getenv(name)) {
       prev_ = prev;
       had_prev_ = true;
     }
@@ -36,11 +35,11 @@ public:
     }
   }
 
-  ScopedEnv(const ScopedEnv&) = delete;
-  ScopedEnv& operator=(const ScopedEnv&) = delete;
+  ScopedEnv(const ScopedEnv &) = delete;
+  ScopedEnv &operator=(const ScopedEnv &) = delete;
 
 private:
-  const char* name_;
+  const char *name_;
   std::string prev_;
   bool had_prev_{false};
 };
@@ -48,8 +47,8 @@ private:
 // ScopedUnsetEnv: 특정 환경변수를 강제로 해제.
 class ScopedUnsetEnv {
 public:
-  explicit ScopedUnsetEnv(const char* name) : name_(name) {
-    if (const char* prev = std::getenv(name)) {
+  explicit ScopedUnsetEnv(const char *name) : name_(name) {
+    if (const char *prev = std::getenv(name)) {
       prev_ = prev;
       had_prev_ = true;
     }
@@ -63,7 +62,7 @@ public:
   }
 
 private:
-  const char* name_;
+  const char *name_;
   std::string prev_;
   bool had_prev_{false};
 };
@@ -71,7 +70,7 @@ private:
 // ScopedCwd: chdir 기반 fixture.
 class ScopedCwd {
 public:
-  explicit ScopedCwd(const fs::path& new_cwd) {
+  explicit ScopedCwd(const fs::path &new_cwd) {
     prev_ = fs::current_path();
     fs::current_path(new_cwd);
   }
@@ -103,7 +102,7 @@ protected:
   static inline int counter_{0};
 };
 
-}  // namespace
+} // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ResolveLoggingRoot() — 3단 체인
@@ -116,7 +115,6 @@ TEST_F(SessionDirTest, LoggingRoot_UsesColconPrefixPathParent) {
   fs::create_directories(install);
 
   ScopedUnsetEnv clear_rtc{"RTC_SESSION_DIR"};
-  ScopedUnsetEnv clear_ur{"UR5E_SESSION_DIR"};
   ScopedEnv prefix{"COLCON_PREFIX_PATH", install.string()};
 
   const fs::path root = rtc::ResolveLoggingRoot();
@@ -134,7 +132,6 @@ TEST_F(SessionDirTest, LoggingRoot_FirstColonEntryWins) {
       (ws1 / "install").string() + ":" + (ws2 / "install").string();
 
   ScopedUnsetEnv clear_rtc{"RTC_SESSION_DIR"};
-  ScopedUnsetEnv clear_ur{"UR5E_SESSION_DIR"};
   ScopedEnv prefix{"COLCON_PREFIX_PATH", joined};
 
   EXPECT_EQ(rtc::ResolveLoggingRoot(), ws1 / "logging_data");
@@ -148,7 +145,6 @@ TEST_F(SessionDirTest, LoggingRoot_FallsBackWhenPrefixMissing) {
   fs::create_directories(ws / "src");
 
   ScopedUnsetEnv clear_rtc{"RTC_SESSION_DIR"};
-  ScopedUnsetEnv clear_ur{"UR5E_SESSION_DIR"};
   ScopedEnv prefix{"COLCON_PREFIX_PATH", ghost.string()};
   ScopedCwd cwd{ws};
 
@@ -163,7 +159,6 @@ TEST_F(SessionDirTest, LoggingRoot_FindsInstallSrcPairByWalkingUp) {
   fs::create_directories(deep);
 
   ScopedUnsetEnv clear_rtc{"RTC_SESSION_DIR"};
-  ScopedUnsetEnv clear_ur{"UR5E_SESSION_DIR"};
   ScopedUnsetEnv clear_prefix{"COLCON_PREFIX_PATH"};
   ScopedCwd cwd{deep};
 
@@ -176,7 +171,6 @@ TEST_F(SessionDirTest, LoggingRoot_FinalFallbackIsCwd) {
   fs::create_directories(bare);
 
   ScopedUnsetEnv clear_rtc{"RTC_SESSION_DIR"};
-  ScopedUnsetEnv clear_ur{"UR5E_SESSION_DIR"};
   ScopedUnsetEnv clear_prefix{"COLCON_PREFIX_PATH"};
   ScopedCwd cwd{bare};
 
@@ -190,25 +184,14 @@ TEST_F(SessionDirTest, LoggingRoot_FinalFallbackIsCwd) {
 TEST_F(SessionDirTest, SessionDir_UsesRtcSessionDirEnv) {
   const fs::path explicit_session = tmp_root_ / "explicit_session";
   ScopedEnv rtc_env{"RTC_SESSION_DIR", explicit_session.string()};
-  ScopedUnsetEnv clear_ur{"UR5E_SESSION_DIR"};
 
   const fs::path got = rtc::ResolveSessionDir();
   EXPECT_EQ(got, explicit_session);
   // 표준 서브디렉토리가 모두 만들어져 있어야 함.
-  for (const char* sub :
+  for (const char *sub :
        {"controller", "monitor", "device", "sim", "plots", "motions"}) {
     EXPECT_TRUE(fs::is_directory(explicit_session / sub)) << sub;
   }
-}
-
-TEST_F(SessionDirTest, SessionDir_LegacyUr5eEnvStillWorks) {
-  // RTC_SESSION_DIR 이 비어있으면 UR5E_SESSION_DIR 폴백.
-  const fs::path legacy = tmp_root_ / "legacy_session";
-  ScopedUnsetEnv clear_rtc{"RTC_SESSION_DIR"};
-  ScopedEnv ur_env{"UR5E_SESSION_DIR", legacy.string()};
-
-  EXPECT_EQ(rtc::ResolveSessionDir(), legacy);
-  EXPECT_TRUE(fs::is_directory(legacy / "device"));
 }
 
 TEST_F(SessionDirTest, SessionDir_NoEnv_CreatesUnderResolvedRoot) {
@@ -218,7 +201,6 @@ TEST_F(SessionDirTest, SessionDir_NoEnv_CreatesUnderResolvedRoot) {
   fs::create_directories(ws / "src");
 
   ScopedUnsetEnv clear_rtc{"RTC_SESSION_DIR"};
-  ScopedUnsetEnv clear_ur{"UR5E_SESSION_DIR"};
   ScopedUnsetEnv clear_prefix{"COLCON_PREFIX_PATH"};
   ScopedCwd cwd{ws};
 
@@ -235,7 +217,7 @@ TEST_F(SessionDirTest, CleanupOldSessions_KeepsOnlyMaxSessions) {
   const fs::path root = tmp_root_ / "logging_data";
   fs::create_directories(root);
   // 오름차순으로 정렬되는 타임스탬프 형식 5개
-  for (const char* ts : {"260101_0900", "260102_1000", "260103_1100",
+  for (const char *ts : {"260101_0900", "260102_1000", "260103_1100",
                          "260104_1200", "260105_1300"}) {
     fs::create_directories(root / ts);
   }

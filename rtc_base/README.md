@@ -536,7 +536,7 @@ logging_data/YYMMDD_HHMM/
 
 **`ResolveSessionDir()` 결정 체인**:
 
-1. `$RTC_SESSION_DIR` → `$UR5E_SESSION_DIR` (하위 호환)
+1. `$RTC_SESSION_DIR`
 2. `ResolveLoggingRoot() / YYMMDD_HHMM` 을 새로 생성
 
 > **주의:** `ResolveSessionDir()`은 `std::filesystem::filesystem_error`를 throw할 수 있습니다. 초기화 시에만 호출하세요.

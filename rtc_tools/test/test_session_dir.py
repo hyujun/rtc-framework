@@ -24,7 +24,7 @@ from rtc_tools.utils.session_dir import (
 # Fixtures
 # ─────────────────────────────────────────────────────────────────────────────
 
-_SESSION_ENV_VARS = ('RTC_SESSION_DIR', 'UR5E_SESSION_DIR', 'COLCON_PREFIX_PATH')
+_SESSION_ENV_VARS = ('RTC_SESSION_DIR', 'COLCON_PREFIX_PATH')
 
 
 @pytest.fixture(autouse=True)
@@ -133,12 +133,6 @@ def test_get_session_dir_reads_rtc_session_dir(tmp_path, monkeypatch):
     explicit = tmp_path / "explicit"
     monkeypatch.setenv('RTC_SESSION_DIR', str(explicit))
     assert get_session_dir() == str(explicit)
-
-
-def test_get_session_dir_falls_back_to_legacy(tmp_path, monkeypatch):
-    legacy = tmp_path / "legacy"
-    monkeypatch.setenv('UR5E_SESSION_DIR', str(legacy))
-    assert get_session_dir() == str(legacy)
 
 
 def test_get_session_dir_returns_none_when_unset():
