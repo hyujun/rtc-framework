@@ -173,8 +173,10 @@ void RtControllerNode::DeclareAndLoadParameters() {
   safe_declare("enable_estop", rclcpp::ParameterValue(true));
   safe_declare("init_timeout_sec", rclcpp::ParameterValue(5.0));
   safe_declare("auto_hold_position", rclcpp::ParameterValue(true));
-  safe_declare("initial_controller",
-               rclcpp::ParameterValue(std::string("joint_pd_controller")));
+  // Default empty: robot bringup yaml must specify which controller to start.
+  // Code default carries no assumption about which controllers are registered
+  // (rtc_* stays robot-agnostic; controllers are registered by robot bringup).
+  safe_declare("initial_controller", rclcpp::ParameterValue(std::string("")));
   safe_declare("use_sim_time_sync", rclcpp::ParameterValue(false));
   safe_declare("sim_sync_timeout_sec", rclcpp::ParameterValue(5.0));
   safe_declare("robot_namespace", rclcpp::ParameterValue(std::string("")));
@@ -586,22 +588,23 @@ void RtControllerNode::DeclareAndLoadParameters() {
                 "No device timeouts configured — skipping init wait");
   }
 
-  // Resolve initial_controller parameter → controller index
+  // Resolve initial_controller parameter → controller index.
+  // Empty or unknown name: fall back to the first registered controller
+  // (idx 0). rtc_* stays robot-agnostic — it does not assume any specific
+  // controller name is registered (ARCH-1).
   const std::string initial_ctrl =
       get_parameter("initial_controller").as_string();
   const auto it = name_to_idx.find(initial_ctrl);
   if (it != name_to_idx.end()) {
     active_controller_idx_.store(it->second);
   } else {
-    RCLCPP_WARN(
-        get_logger(),
-        "Unknown initial_controller '%s', defaulting to joint_pd_controller",
-        initial_ctrl.c_str());
-    const auto pd_it = name_to_idx.find("joint_pd_controller");
-    const int fallback = (pd_it != name_to_idx.end() &&
-                          pd_it->second < static_cast<int>(controllers_.size()))
-                             ? pd_it->second
-                             : 0;
-    active_controller_idx_.store(fallback);
+    const std::string fallback_name =
+        controllers_.empty() ? std::string{"<none>"}
+                             : std::string(controllers_.front()->Name());
+    RCLCPP_WARN(get_logger(),
+                "initial_controller '%s' not found — defaulting to first "
+                "registered controller '%s'",
+                initial_ctrl.c_str(), fallback_name.c_str());
+    active_controller_idx_.store(0);
   }
 }
