@@ -3,14 +3,22 @@
 # Subscribes to one or more JointState topics (RELIABLE, depth 10),
 # merges them, and publishes a combined JointState for robot_state_publisher.
 # Validates received joints against URDF (excluding fixed/mimic joints).
+#
+# ARCH-1: rtc_* stays robot-agnostic. This file ships robot-agnostic defaults
+# only — robot identity (URDF package/path, source topics, sensor topics,
+# fingertip names, TCP source) lives in <robot>_bringup yaml, e.g.
+# `ur5e_bringup/config/digital_twin_ur5e.yaml`. Pass it via the launch
+# `config_file:=...` argument or layer it on top of this default.
 
 /**:
   ros__parameters:
     # ── Robot description ──────────────────────────────────────────────
-    # Option 1: Package-based path (package name + relative path)
-    robot_description_package: "ur5e_description"               # e.g. "ur5e_description"
-    robot_description_path: "robots/ur5e_hand_tmp/urdf/ur5e_with_hand.urdf.xacro"                  # e.g. "robots/ur5e/urdf/ur5e_with_hand.urdf.xacro"
-    # Option 2: Absolute file path
+    # Robot bringup yaml must populate ONE of:
+    #   * robot_description_package + robot_description_path  (ament-share path)
+    #   * robot_description_file                              (absolute path)
+    # The launch file raises a friendly error if neither is provided.
+    robot_description_package: ""               # e.g. "ur5e_description"
+    robot_description_path: ""                  # e.g. "robots/ur5e/urdf/ur5e_with_hand.urdf.xacro"
     robot_description_file: ""                  # e.g. "/path/to/robot.urdf"
 
     display_rate: 60.0                          # Hz — combined JointState publish rate
@@ -18,17 +26,20 @@
     auto_compute_mimic: true                    # Auto-compute mimic joint positions from URDF
 
     # ── Joint state sources ──────────────────────────────────────────────
-    num_sources: 2
+    # Robot bringup yaml supplies the per-source topic + joint_names. Defaults
+    # below produce zero sources (num_sources: 0); standalone-launch users
+    # must override.
+    num_sources: 0
 
-    source_0.topic: "/ur5e/digital_twin/joint_states"
-    source_0.joint_names: [""]        # empty/"" = accept all joints from topic
-
-    source_1.topic: "/hand/digital_twin/joint_states"
-    source_1.joint_names: [""]       # empty/"" = accept all joints from topic
-
-    # Example: multi-source (uncomment for UR5e + hand)
+    # Example: two sources (uncomment + customize for arm + hand pair):
     # num_sources: 2
-    # source_0.topic: "/ur5e/digital_twin/joint_states"
+    # source_0.topic: "/<robot>/digital_twin/joint_states"
+    # source_0.joint_names: [""]                # empty = accept all joints
+    # source_1.topic: "/<hand>/digital_twin/joint_states"
+    # source_1.joint_names: [""]
+    #
+    # Concrete UR5e + 10-DOF hand example (see ur5e_bringup/config/
+    # digital_twin_ur5e.yaml for the production version):
     # source_0.joint_names:
     #   - "shoulder_pan_joint"
     #   - "shoulder_lift_joint"
@@ -36,18 +47,6 @@
     #   - "wrist_1_joint"
     #   - "wrist_2_joint"
     #   - "wrist_3_joint"
-    # source_1.topic: "/hand/digital_twin/joint_states"
-    # source_1.joint_names:
-    #   - "thumb_cmc_aa"
-    #   - "thumb_cmc_fe"
-    #   - "thumb_mcp_fe"
-    #   - "index_mcp_aa"
-    #   - "index_mcp_fe"
-    #   - "index_dip_fe"
-    #   - "middle_mcp_aa"
-    #   - "middle_mcp_fe"
-    #   - "middle_dip_fe"
-    #   - "ring_mcp_fe"
 
     # ── Joint State Publisher GUI (optional) ────────────────────────────
     joint_gui.enabled: false                    # true = launch GUI node
@@ -55,9 +54,10 @@
     joint_gui.publish_rate: 10.0                # Hz — GUI publish rate
 
     # ── Sensor visualization ────────────────────────────────────────────
-    sensor_viz.sensor_topic: "/hand/sensor_states/monitor"
+    # Robot bringup yaml provides the sensor topic + fingertip names.
+    sensor_viz.sensor_topic: ""                            # e.g. "/<hand>/sensor_states/monitor"
     sensor_viz.marker_topic: "/digital_twin/fingertip_markers"
-    sensor_viz.fingertip_names: ["thumb", "index", "middle", "ring"]
+    sensor_viz.fingertip_names: []                         # e.g. ["thumb","index","middle","ring"]
 
     # Barometer: +Z Arrow markers (2×4 grid, 1mm spacing)
     sensor_viz.barometer_min: 0.0
@@ -88,7 +88,9 @@
     # /<active_controller_name>/ on every /rtc_cm/active_controller_name.
     # Use an absolute path (leading "/") to bypass rewiring and subscribe
     # directly to a fixed topic.
-    tcp_viz.source_topic: "ur5e/gui_position"       # GuiPosition topic
+    # Robot bringup yaml may override; relative path is auto-prefixed with
+    # /<active_controller_name>/ on every /rtc_cm/active_controller_name change.
+    tcp_viz.source_topic: ""                        # e.g. "<robot>/gui_position"
     tcp_viz.marker_topic: "/digital_twin/tcp_markers"
     tcp_viz.frame_id: "base"                        # parent TF frame
     tcp_viz.broadcast_tf: true                      # broadcast virtual_tcp TF
