@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare UR5e MJCF (ur5e.xml) and URDF (ur5e.urdf) physics parameters.
+"""Compare MJCF and URDF physics parameters for a robot.
 
 Parses both model files and reports differences in:
   - Link mass
@@ -9,10 +9,26 @@ Parses both model files and reports differences in:
   - Joint axis vectors
   - Link-to-link offsets (DH-like origin positions)
 
+Robot-agnostic — link/joint name sets and the MJCF default class are auto-
+detected from the MJCF root (`<mujoco model="...">` / `<default class="...">`)
+unless explicitly overridden via CLI flags.
+
 Usage:
-  ros2 run rtc_tools compare_mjcf_urdf
-  ros2 run rtc_tools compare_mjcf_urdf --mjcf /path/to/ur5e.xml --urdf /path/to/ur5e.urdf
-  ros2 run rtc_tools compare_mjcf_urdf --tolerance 0.01
+  # Explicit paths (always works):
+  ros2 run rtc_tools compare_mjcf_urdf \\
+      --mjcf /path/to/robot.xml --urdf /path/to/robot.urdf
+
+  # Auto-detect via ament package + canonical layout
+  # (<robot-pkg>/robots/<robot-name>/{mjcf,urdf}/<robot-name>.{xml,urdf}):
+  ros2 run rtc_tools compare_mjcf_urdf \\
+      --robot-pkg ur5e_description --robot-name ur5e
+
+  # Override the MJCF default class root if it differs from the model name:
+  ros2 run rtc_tools compare_mjcf_urdf --mjcf-class my_robot ...
+
+  # Override link name mapping when MJCF body names differ from URDF link
+  # names (provide a YAML/JSON file with {<mjcf_body>: <urdf_link>, ...}):
+  ros2 run rtc_tools compare_mjcf_urdf --link-map link_map.yaml ...
 """
 
 import argparse
@@ -49,27 +65,11 @@ class JointParams:
     armature: float = 0.0
 
 
-# ── MJCF mapping ──────────────────────────────────────────────────────────────
-# MJCF body names → corresponding URDF link names
-MJCF_TO_URDF_LINK = {
-    "base": "base_link_inertia",
-    "shoulder_link": "shoulder_link",
-    "upper_arm_link": "upper_arm_link",
-    "forearm_link": "forearm_link",
-    "wrist_1_link": "wrist_1_link",
-    "wrist_2_link": "wrist_2_link",
-    "wrist_3_link": "wrist_3_link",
-}
-
-# Joint names are identical in both formats
-JOINT_NAMES = [
-    "shoulder_pan_joint",
-    "shoulder_lift_joint",
-    "elbow_joint",
-    "wrist_1_joint",
-    "wrist_2_joint",
-    "wrist_3_joint",
-]
+# ── Auto-detection helpers ────────────────────────────────────────────────────
+#
+# MJCF body ↔ URDF link mapping and joint name list are detected from the model
+# files themselves (or supplied via --link-map / --joints).  No robot-specific
+# constants live in this module — see _detect_link_mapping / _detect_joints.
 
 
 # ── Parsers ────────────────────────────────────────────────────────────────────
@@ -78,10 +78,48 @@ def _parse_floats(text: str) -> list:
     return [float(x) for x in text.split()]
 
 
-def parse_mjcf(path: Path) -> tuple[dict[str, InertialParams], dict[str, JointParams]]:
-    """Parse MJCF ur5e.xml and extract inertial + joint parameters."""
+def _detect_root_class(root: ET.Element) -> Optional[str]:
+    """Return the MJCF top-level default class name, or None if not declared.
+
+    MJCF allows nesting; the root <default> may have no class (acts as a
+    catch-all) or a class such as "<robot_name>" used as the inheritance root
+    of every other <default class="..."> block. We walk the immediate children
+    of root/default looking for the first child <default class="...">.
+    """
+    top = root.find("default")
+    if top is None:
+        return None
+    # If top-level has class attr, it is the root class
+    cls = top.get("class")
+    if cls:
+        return cls
+    # Otherwise walk children for the first inner <default class="...">
+    for child in top.findall("default"):
+        cls = child.get("class")
+        if cls:
+            return cls
+    return None
+
+
+def parse_mjcf(
+    path: Path,
+    link_names: set[str],
+    joint_names: set[str],
+    root_class_override: Optional[str] = None,
+) -> tuple[dict[str, InertialParams], dict[str, JointParams]]:
+    """Parse MJCF and extract inertial + joint parameters.
+
+    Args:
+        path: MJCF file path.
+        link_names: Set of MJCF body names whose <inertial> we extract.
+        joint_names: Set of joint names whose attributes we extract.
+        root_class_override: Optional MJCF default class to use as the
+            inheritance root. If None, autodetected from the file.
+    """
     tree = ET.parse(path)
     root = tree.getroot()
+
+    root_class = root_class_override or _detect_root_class(root)
 
     # ── Resolve default classes ──
     defaults = {}
@@ -98,22 +136,20 @@ def parse_mjcf(path: Path) -> tuple[dict[str, InertialParams], dict[str, JointPa
             attrs["general"] = dict(general_elem.attrib)
         defaults[cls] = attrs
 
-    # Build effective joint defaults by resolving inheritance
+    # Build effective joint defaults by resolving inheritance from root_class
     def resolve_joint_defaults(cls_name: str) -> dict:
         """Walk the default tree to merge inherited joint attributes."""
         result = {}
-        # Start from the root "ur5e" class
-        if "ur5e" in defaults and "joint" in defaults["ur5e"]:
-            result.update(defaults["ur5e"]["joint"])
-        # Apply class-specific overrides
+        if root_class and root_class in defaults and "joint" in defaults[root_class]:
+            result.update(defaults[root_class]["joint"])
         if cls_name in defaults and "joint" in defaults[cls_name]:
             result.update(defaults[cls_name]["joint"])
         return result
 
     def resolve_general_defaults(cls_name: str) -> dict:
         result = {}
-        if "ur5e" in defaults and "general" in defaults["ur5e"]:
-            result.update(defaults["ur5e"]["general"])
+        if root_class and root_class in defaults and "general" in defaults[root_class]:
+            result.update(defaults[root_class]["general"])
         if cls_name in defaults and "general" in defaults[cls_name]:
             result.update(defaults[cls_name]["general"])
         return result
@@ -122,7 +158,7 @@ def parse_mjcf(path: Path) -> tuple[dict[str, InertialParams], dict[str, JointPa
     links = {}
     for body in root.iter("body"):
         name = body.get("name")
-        if name not in MJCF_TO_URDF_LINK:
+        if name not in link_names:
             continue
         inertial = body.find("inertial")
         if inertial is None:
@@ -141,9 +177,9 @@ def parse_mjcf(path: Path) -> tuple[dict[str, InertialParams], dict[str, JointPa
     for body in root.iter("body"):
         for joint_elem in body.findall("joint"):
             jname = joint_elem.get("name")
-            if jname not in JOINT_NAMES:
+            if jname not in joint_names:
                 continue
-            cls = joint_elem.get("class", "ur5e")
+            cls = joint_elem.get("class", root_class or "")
             jdefaults = resolve_joint_defaults(cls)
             gdefaults = resolve_general_defaults(cls)
 
@@ -174,8 +210,18 @@ def parse_mjcf(path: Path) -> tuple[dict[str, InertialParams], dict[str, JointPa
     return links, joints
 
 
-def parse_urdf(path: Path) -> tuple[dict[str, InertialParams], dict[str, JointParams]]:
-    """Parse URDF ur5e.urdf and extract inertial + joint parameters."""
+def parse_urdf(
+    path: Path,
+    link_names: set[str],
+    joint_names: set[str],
+) -> tuple[dict[str, InertialParams], dict[str, JointParams]]:
+    """Parse URDF and extract inertial + joint parameters.
+
+    Args:
+        path: URDF file path.
+        link_names: Set of URDF link names whose <inertial> we extract.
+        joint_names: Set of joint names whose attributes we extract.
+    """
     tree = ET.parse(path)
     root = tree.getroot()
 
@@ -183,7 +229,7 @@ def parse_urdf(path: Path) -> tuple[dict[str, InertialParams], dict[str, JointPa
     links = {}
     for link_elem in root.findall("link"):
         name = link_elem.get("name")
-        if name not in MJCF_TO_URDF_LINK.values():
+        if name not in link_names:
             continue
         inertial = link_elem.find("inertial")
         if inertial is None:
@@ -217,7 +263,7 @@ def parse_urdf(path: Path) -> tuple[dict[str, InertialParams], dict[str, JointPa
     joints = {}
     for joint_elem in root.findall("joint"):
         jname = joint_elem.get("name")
-        if jname not in JOINT_NAMES:
+        if jname not in joint_names:
             continue
         jp = JointParams()
 
@@ -256,17 +302,37 @@ def _fmt(val: float) -> str:
 def compare(
     mjcf_path: Path,
     urdf_path: Path,
+    link_map: dict[str, str],
+    joint_names: list[str],
     tolerance: float = 1e-4,
+    mjcf_class: Optional[str] = None,
+    robot_label: str = "",
 ) -> int:
-    """Compare MJCF and URDF parameters. Returns number of mismatches."""
-    mjcf_links, mjcf_joints = parse_mjcf(mjcf_path)
-    urdf_links, urdf_joints = parse_urdf(urdf_path)
+    """Compare MJCF and URDF parameters. Returns number of mismatches.
+
+    Args:
+        mjcf_path / urdf_path: Model file paths.
+        link_map: Mapping {<mjcf_body_name>: <urdf_link_name>, ...} of which
+            link pairs to compare.
+        joint_names: Joint names to compare (assumed identical in both files).
+        tolerance: Numerical tolerance.
+        mjcf_class: Optional MJCF default class override; auto-detected if None.
+        robot_label: Optional human label printed in the header.
+    """
+    mjcf_link_names = set(link_map.keys())
+    urdf_link_names = set(link_map.values())
+    joint_set = set(joint_names)
+
+    mjcf_links, mjcf_joints = parse_mjcf(
+        mjcf_path, mjcf_link_names, joint_set, root_class_override=mjcf_class)
+    urdf_links, urdf_joints = parse_urdf(urdf_path, urdf_link_names, joint_set)
 
     mismatches = 0
     warnings = 0
 
     print("=" * 78)
-    print(f"  UR5e Model Comparison: MJCF vs URDF")
+    label = f"{robot_label} " if robot_label else ""
+    print(f"  {label}Model Comparison: MJCF vs URDF")
     print(f"  MJCF: {mjcf_path}")
     print(f"  URDF: {urdf_path}")
     print(f"  Tolerance: {tolerance}")
@@ -275,7 +341,7 @@ def compare(
     # ── Link inertial comparison ──
     print("\n--- Link Inertial Parameters ---\n")
 
-    for mjcf_name, urdf_name in MJCF_TO_URDF_LINK.items():
+    for mjcf_name, urdf_name in link_map.items():
         mjcf_ip = mjcf_links.get(mjcf_name)
         urdf_ip = urdf_links.get(urdf_name)
 
@@ -335,7 +401,7 @@ def compare(
     # ── Joint comparison ──
     print("--- Joint Parameters ---\n")
 
-    for jname in JOINT_NAMES:
+    for jname in joint_names:
         mjcf_jp = mjcf_joints.get(jname)
         urdf_jp = urdf_joints.get(jname)
 
@@ -419,40 +485,136 @@ def compare(
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
-def _find_default_paths() -> tuple[Optional[Path], Optional[Path]]:
-    """Try to locate model files via ament package prefix or relative paths."""
-    # Try ament (ROS2 installed package)
+def _resolve_robot_layout(
+    pkg: str,
+    robot_name: str,
+) -> tuple[Optional[Path], Optional[Path]]:
+    """Resolve <pkg>/robots/<robot>/{mjcf,urdf}/<robot>.{xml,urdf}.
+
+    Returns (mjcf, urdf) using ament share dir if installed, else falling back
+    to the in-source layout (`<repo>/<pkg>/robots/<robot>/...`).
+    """
+    # Try ament installed package
     try:
         from ament_index_python.packages import get_package_share_directory
-        pkg_dir = Path(get_package_share_directory("ur5e_description"))
-        mjcf = pkg_dir / "robots" / "ur5e" / "mjcf" / "ur5e.xml"
-        urdf = pkg_dir / "robots" / "ur5e" / "urdf" / "ur5e.urdf"
+        pkg_dir = Path(get_package_share_directory(pkg))
+        mjcf = pkg_dir / "robots" / robot_name / "mjcf" / f"{robot_name}.xml"
+        urdf = pkg_dir / "robots" / robot_name / "urdf" / f"{robot_name}.urdf"
         if mjcf.exists() and urdf.exists():
             return mjcf, urdf
-    except (ImportError, Exception):
+    except Exception:
         pass
 
-    # Try relative to this script (development layout)
+    # Try in-source layout (sibling to rtc_tools)
     repo_root = Path(__file__).resolve().parents[3]
-    mjcf = repo_root / "ur5e_description" / "robots" / "ur5e" / "mjcf" / "ur5e.xml"
-    urdf = repo_root / "ur5e_description" / "robots" / "ur5e" / "urdf" / "ur5e.urdf"
+    mjcf = repo_root / pkg / "robots" / robot_name / "mjcf" / f"{robot_name}.xml"
+    urdf = repo_root / pkg / "robots" / robot_name / "urdf" / f"{robot_name}.urdf"
     if mjcf.exists() and urdf.exists():
         return mjcf, urdf
 
     return None, None
 
 
+def _detect_link_mapping(
+    mjcf_path: Path,
+    urdf_path: Path,
+) -> dict[str, str]:
+    """Build {<mjcf_body>: <urdf_link>} for bodies/links present in both files
+    that carry an <inertial> child. Names that match exactly are paired; bodies
+    with no same-named URDF link are skipped (caller can supply --link-map for
+    cases where MJCF and URDF use different naming).
+    """
+    mjcf_root = ET.parse(mjcf_path).getroot()
+    urdf_root = ET.parse(urdf_path).getroot()
+
+    mjcf_inertial_bodies = {
+        b.get("name") for b in mjcf_root.iter("body")
+        if b.get("name") and b.find("inertial") is not None
+    }
+    urdf_inertial_links = {
+        l.get("name") for l in urdf_root.findall("link")
+        if l.get("name") and l.find("inertial") is not None
+    }
+
+    return {
+        name: name
+        for name in sorted(mjcf_inertial_bodies & urdf_inertial_links)
+    }
+
+
+def _detect_joints(mjcf_path: Path, urdf_path: Path) -> list[str]:
+    """Joint names that appear in both files."""
+    mjcf_root = ET.parse(mjcf_path).getroot()
+    urdf_root = ET.parse(urdf_path).getroot()
+
+    mjcf_joints = {
+        j.get("name") for j in mjcf_root.iter("joint")
+        if j.get("name")
+    }
+    urdf_joints = {
+        j.get("name") for j in urdf_root.findall("joint")
+        if j.get("name")
+    }
+
+    return sorted(mjcf_joints & urdf_joints)
+
+
+def _load_link_map(path: Path) -> dict[str, str]:
+    """Load a link-name mapping from YAML or JSON."""
+    text = path.read_text()
+    try:
+        import yaml
+        data = yaml.safe_load(text)
+    except ImportError:
+        import json
+        data = json.loads(text)
+    if not isinstance(data, dict):
+        raise SystemExit(
+            f"--link-map file {path} must contain a mapping "
+            "{<mjcf_body>: <urdf_link>, ...}")
+    return {str(k): str(v) for k, v in data.items()}
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Compare UR5e MJCF and URDF physics parameters.",
+        description="Compare MJCF and URDF physics parameters for a robot.",
     )
     parser.add_argument(
         "--mjcf", type=Path, default=None,
-        help="Path to ur5e.xml (MJCF). Auto-detected if omitted.",
+        help="Path to MJCF file. Required unless --robot-pkg + --robot-name "
+             "resolve to a canonical layout.",
     )
     parser.add_argument(
         "--urdf", type=Path, default=None,
-        help="Path to ur5e.urdf (URDF). Auto-detected if omitted.",
+        help="Path to URDF file. Required unless --robot-pkg + --robot-name "
+             "resolve to a canonical layout.",
+    )
+    parser.add_argument(
+        "--robot-pkg", type=str, default=None,
+        help="ament package containing the robot description (e.g. "
+             "'ur5e_description'). Used with --robot-name to resolve "
+             "<pkg>/robots/<robot>/{mjcf,urdf}/<robot>.{xml,urdf}.",
+    )
+    parser.add_argument(
+        "--robot-name", type=str, default=None,
+        help="Robot name used as both directory and file stem under "
+             "--robot-pkg (e.g. 'ur5e').",
+    )
+    parser.add_argument(
+        "--mjcf-class", type=str, default=None,
+        help="MJCF default class to use as inheritance root. Auto-detected "
+             "from <default class=\"...\"> if omitted.",
+    )
+    parser.add_argument(
+        "--link-map", type=Path, default=None,
+        help="YAML/JSON file with {<mjcf_body>: <urdf_link>, ...}. Required "
+             "only when MJCF body names differ from URDF link names; "
+             "otherwise same-name links are matched automatically.",
+    )
+    parser.add_argument(
+        "--joints", type=str, nargs="+", default=None,
+        help="Explicit joint name list to compare. Auto-detected (MJCF ∩ URDF) "
+             "if omitted.",
     )
     parser.add_argument(
         "--tolerance", type=float, default=1e-4,
@@ -463,8 +625,9 @@ def main():
     mjcf_path = args.mjcf
     urdf_path = args.urdf
 
-    if mjcf_path is None or urdf_path is None:
-        auto_mjcf, auto_urdf = _find_default_paths()
+    if (mjcf_path is None or urdf_path is None) and args.robot_pkg and args.robot_name:
+        auto_mjcf, auto_urdf = _resolve_robot_layout(
+            args.robot_pkg, args.robot_name)
         if mjcf_path is None:
             mjcf_path = auto_mjcf
         if urdf_path is None:
@@ -472,14 +635,45 @@ def main():
 
     if mjcf_path is None or not mjcf_path.exists():
         print(f"Error: MJCF file not found: {mjcf_path}", file=sys.stderr)
-        print("Use --mjcf to specify the path.", file=sys.stderr)
+        print("Specify with --mjcf or --robot-pkg + --robot-name.",
+              file=sys.stderr)
         sys.exit(1)
     if urdf_path is None or not urdf_path.exists():
         print(f"Error: URDF file not found: {urdf_path}", file=sys.stderr)
-        print("Use --urdf to specify the path.", file=sys.stderr)
+        print("Specify with --urdf or --robot-pkg + --robot-name.",
+              file=sys.stderr)
         sys.exit(1)
 
-    mismatches = compare(mjcf_path, urdf_path, args.tolerance)
+    if args.link_map is not None:
+        link_map = _load_link_map(args.link_map)
+    else:
+        link_map = _detect_link_mapping(mjcf_path, urdf_path)
+
+    if not link_map:
+        print("Error: no shared inertial links found between MJCF and URDF "
+              "(and no --link-map provided).", file=sys.stderr)
+        sys.exit(1)
+
+    if args.joints is not None:
+        joint_names = args.joints
+    else:
+        joint_names = _detect_joints(mjcf_path, urdf_path)
+
+    if not joint_names:
+        print("Error: no shared joint names between MJCF and URDF "
+              "(and no --joints provided).", file=sys.stderr)
+        sys.exit(1)
+
+    robot_label = args.robot_name or ""
+
+    mismatches = compare(
+        mjcf_path, urdf_path,
+        link_map=link_map,
+        joint_names=joint_names,
+        tolerance=args.tolerance,
+        mjcf_class=args.mjcf_class,
+        robot_label=robot_label,
+    )
     sys.exit(1 if mismatches > 0 else 0)
 
 
