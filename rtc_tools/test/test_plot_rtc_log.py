@@ -12,20 +12,22 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from rtc_tools.plotting.plot_rtc_log import (
-    _auto_subplot_grid,
-    _detect_csv_column_mismatch,
-    _detect_fingertip_labels,
-    _detect_fingertip_labels_raw,
-    _detect_ft_labels,
-    _detect_joint_columns,
-    _detect_num_channels,
-    _has_columns,
-    _invalidate_column_cache,
-    _load_sensor_log_csv,
-    _rebuild_sensor_log_header,
-    detect_log_type,
+from rtc_tools.plotting.columns.detect import (
+    detect_fingertip_labels as _detect_fingertip_labels,
+    detect_fingertip_labels_raw as _detect_fingertip_labels_raw,
+    detect_ft_labels as _detect_ft_labels,
+    detect_joint_columns as _detect_joint_columns,
+    detect_num_channels as _detect_num_channels,
+    has_columns as _has_columns,
+    invalidate_column_cache as _invalidate_column_cache,
 )
+from rtc_tools.plotting.io import detect_log_type
+from rtc_tools.plotting.io.csv_loader import LegacyCsvError, load_log_csv
+from rtc_tools.plotting.io.log_type import (
+    detect_log_type_by_columns,
+    peek_csv_header as _peek_csv_header,
+)
+from rtc_tools.plotting.layout import auto_subplot_grid as _auto_subplot_grid
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -403,112 +405,49 @@ class TestDetectFtLabels:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# CSV 컬럼 불일치 감지 + 헤더 복구
+# load_log_csv — header/data column-count contract
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestDetectCsvColumnMismatch:
-    def test_no_mismatch(self, tmp_path):
-        path = tmp_path / "ok.csv"
-        _write_csv(path, ["a", "b", "c"], [[1, 2, 3], [4, 5, 6]])
+class TestLoadLogCsv:
+    """load_log_csv: header와 data 컬럼 수 일치를 강제. legacy 복구 미지원."""
 
-        h_count, d_count, header = _detect_csv_column_mismatch(str(path))
-        assert h_count == 3
-        assert d_count == 3
-        assert header == ["a", "b", "c"]
-
-    def test_data_has_more_columns(self, tmp_path):
-        path = tmp_path / "mismatch.csv"
-        # 헤더 3개, 데이터 5개
-        with open(path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["a", "b", "c"])
-            writer.writerow([1, 2, 3, 4, 5])
-
-        h_count, d_count, header = _detect_csv_column_mismatch(str(path))
-        assert h_count == 3
-        assert d_count == 5
-
-    def test_empty_file(self, tmp_path):
-        path = tmp_path / "empty.csv"
-        path.write_text("")
-
-        h_count, d_count, header = _detect_csv_column_mismatch(str(path))
-        assert h_count == 0
-        assert d_count == 0
-        assert header == []
-
-
-class TestRebuildSensorLogHeader:
-    def test_no_missing(self):
-        header = ["timestamp", "baro_raw_thumb_0", "baro_raw_thumb_1"]
-        result = _rebuild_sensor_log_header(header, len(header))
-        assert result == header
-
-    def test_adds_inference_columns(self):
-        header = ["timestamp", "baro_raw_thumb_0"]
-        result = _rebuild_sensor_log_header(header, 9)
-        assert len(result) == 9
-        # 누락된 7개 컬럼 추가됨
-        added = result[2:]
-        assert len(added) == 7
-        # ft_thumb_{comp} 패턴
-        assert "ft_thumb_contact" in added
-        assert "ft_thumb_fx" in added
-
-    def test_generic_fallback(self):
-        """fingertip 라벨을 찾을 수 없으면 generic 이름 사용."""
-        header = ["timestamp", "x", "y"]
-        result = _rebuild_sensor_log_header(header, 6)
-        assert len(result) == 6
-        added = result[3:]
-        assert all(c.startswith("inference_") for c in added)
-
-    def test_multiple_fingertips(self):
-        header = [
-            "timestamp",
-            "baro_raw_thumb_0",
-            "baro_raw_index_0",
-        ]
-        result = _rebuild_sensor_log_header(header, 17)
-        assert len(result) == 17
-        # thumb + index 각각 7개 = 14, 하지만 missing = 14
-        added = result[3:]
-        assert "ft_thumb_contact" in added
-        assert "ft_index_contact" in added
-
-
-class TestLoadSensorLogCsv:
     def test_normal_load(self, tmp_path):
         path = tmp_path / "hand_sensor_log.csv"
         _write_csv(
             path, ["timestamp", "baro_0", "tof_0"], [[0.0, 100, 50], [0.002, 101, 51]]
         )
-
-        df, repaired = _load_sensor_log_csv(str(path))
-        assert not repaired
+        df = load_log_csv(str(path), "sensor_log")
         assert len(df) == 2
-        assert "timestamp" in df.columns
+        assert list(df.columns) == ["timestamp", "baro_0", "tof_0"]
 
-    def test_repaired_load(self, tmp_path):
+    def test_state_log_passthrough(self, tmp_path):
+        path = tmp_path / "arm_state_log.csv"
+        _write_csv(
+            path,
+            ["timestamp", "actual_pos_0"],
+            [[0.0, 1.0], [0.002, 1.01]],
+        )
+        df = load_log_csv(str(path), "state_log")
+        assert len(df) == 2
+
+    def test_legacy_truncated_header_raises(self, tmp_path):
+        """헤더 컬럼 수보다 데이터 행이 더 넓으면 LegacyCsvError."""
         path = tmp_path / "hand_sensor_log.csv"
-        # 헤더 2개, 데이터 4개 (inference 누락 시뮬레이션)
         with open(path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["timestamp", "baro_raw_thumb_0"])
             writer.writerow([0.0, 100, 0.8, 1.0])
-            writer.writerow([0.002, 101, 0.9, 1.1])
 
-        df, repaired = _load_sensor_log_csv(str(path))
-        assert repaired
-        assert len(df.columns) == 4
+        with pytest.raises(LegacyCsvError):
+            load_log_csv(str(path), "sensor_log")
 
     def test_empty_file_raises(self, tmp_path):
-        path = tmp_path / "empty_sensor_log.csv"
+        path = tmp_path / "empty.csv"
         path.write_text("")
 
         with pytest.raises(pd.errors.EmptyDataError):
-            _load_sensor_log_csv(str(path))
+            load_log_csv(str(path), "sensor_log")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -520,7 +459,7 @@ class TestStatistics:
     """통계 출력 함수가 예외 없이 실행되는지 검증 (출력 내용은 smoke test)."""
 
     def test_robot_statistics_no_crash(self, capsys):
-        from rtc_tools.plotting.plot_rtc_log import print_robot_statistics
+        from rtc_tools.plotting.plotters.robot import print_robot_statistics
 
         df = pd.DataFrame(
             {
@@ -542,7 +481,7 @@ class TestStatistics:
 
     def test_robot_statistics_zero_duration(self, capsys):
         """duration=0 시 ZeroDivisionError 방지."""
-        from rtc_tools.plotting.plot_rtc_log import print_robot_statistics
+        from rtc_tools.plotting.plotters.robot import print_robot_statistics
 
         df = pd.DataFrame(
             {
@@ -555,7 +494,7 @@ class TestStatistics:
         assert "0.0 Hz" in captured.out
 
     def test_timing_statistics_no_crash(self, capsys):
-        from rtc_tools.plotting.plot_rtc_log import print_timing_statistics
+        from rtc_tools.plotting.plotters.timing import print_timing_statistics
 
         df = pd.DataFrame(
             {
@@ -574,7 +513,7 @@ class TestStatistics:
         assert "P99" in captured.out
 
     def test_device_statistics_no_crash(self, capsys):
-        from rtc_tools.plotting.plot_rtc_log import print_device_statistics
+        from rtc_tools.plotting.plotters.device import print_device_statistics
 
         df = pd.DataFrame(
             {
@@ -593,7 +532,7 @@ class TestStatistics:
         assert "Hand Trajectory Statistics" in captured.out
 
     def test_motor_statistics_no_crash(self, capsys):
-        from rtc_tools.plotting.plot_rtc_log import print_motor_statistics
+        from rtc_tools.plotting.plotters.motor import print_motor_statistics
 
         df = pd.DataFrame(
             {
