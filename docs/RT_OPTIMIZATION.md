@@ -313,7 +313,7 @@ cat /proc/cmdline | grep isolcpus
 
 ```bash
 # NVIDIA 시스템: setup_nvidia_rt.sh [10/11] 단계에서 자동 설정
-sudo ./rtc_scripts/scripts/setup_nvidia_rt.sh
+sudo ./repo_scripts/scripts/setup_nvidia_rt.sh
 
 # 비-NVIDIA 시스템: install.sh가 자동으로 cpu-governor-performance.service 생성
 ./install.sh robot   # 또는 full
@@ -372,10 +372,10 @@ NVIDIA DKMS 모듈을 빌드하려면 **3가지 차단 레이어**를 모두 우
 
 ```bash
 # setup_nvidia_rt.sh [9/11] 단계에서 자동 처리
-sudo ./rtc_scripts/scripts/setup_nvidia_rt.sh
+sudo ./repo_scripts/scripts/setup_nvidia_rt.sh
 
 # 또는 RT 커널 빌드 시 자동 처리
-sudo ./rtc_scripts/scripts/build_rt_kernel.sh
+sudo ./repo_scripts/scripts/build_rt_kernel.sh
 ```
 
 #### 수동 설정
@@ -426,13 +426,13 @@ uname -v
 자동화 스크립트 제공:
 ```bash
 # 대화형 (menuconfig 포함)
-sudo ./rtc_scripts/scripts/build_rt_kernel.sh
+sudo ./repo_scripts/scripts/build_rt_kernel.sh
 
 # 비대화형 (CI/자동화용)
-sudo ./rtc_scripts/scripts/build_rt_kernel.sh --batch
+sudo ./repo_scripts/scripts/build_rt_kernel.sh --batch
 
 # 다운로드 및 패치만 (빌드 전 확인용)
-sudo ./rtc_scripts/scripts/build_rt_kernel.sh --dry-run
+sudo ./repo_scripts/scripts/build_rt_kernel.sh --dry-run
 ```
 
 지원 버전:
@@ -451,7 +451,7 @@ uname -v | grep PREEMPT_RT
 자동화 스크립트 제공:
 ```bash
 # 자동 설정 (NIC IRQ를 Core 0-1로 pin)
-sudo ./rtc_scripts/scripts/setup_irq_affinity.sh
+sudo ./repo_scripts/scripts/setup_irq_affinity.sh
 ```
 
 수동 설정:
@@ -811,9 +811,9 @@ sudo perf stat -e context-switches,cpu-migrations -p $PID sleep 10
 
 > **자동 진단**: `check_rt_setup.sh`를 실행하면 8개 카테고리의 RT 설정을 자동 점검합니다.
 > ```bash
-> ./rtc_scripts/scripts/check_rt_setup.sh           # 상세 출력
-> ./rtc_scripts/scripts/check_rt_setup.sh --fix     # 수정 명령 제안
-> ./rtc_scripts/scripts/check_rt_setup.sh --summary # 1줄 요약
+> ./repo_scripts/scripts/check_rt_setup.sh           # 상세 출력
+> ./repo_scripts/scripts/check_rt_setup.sh --fix     # 수정 명령 제안
+> ./repo_scripts/scripts/check_rt_setup.sh --summary # 1줄 요약
 > ```
 >
 > 검증 카테고리: RT Kernel, CPU Isolation, GRUB Parameters, RT Permissions,
@@ -918,7 +918,7 @@ ERROR (dkms apport): kernel package linux-headers-6.8.2-rt11-rt-custom is not su
 **해결**:
 ```bash
 # 자동 해결 (권장)
-sudo ./rtc_scripts/scripts/setup_nvidia_rt.sh
+sudo ./repo_scripts/scripts/setup_nvidia_rt.sh
 
 # 검증
 nvidia-smi
@@ -938,7 +938,7 @@ done
 # 어떤 코어든 powersave -> 문제
 
 # 해결 (자동)
-sudo ./rtc_scripts/scripts/setup_nvidia_rt.sh  # [10/11] CPU governor 설정
+sudo ./repo_scripts/scripts/setup_nvidia_rt.sh  # [10/11] CPU governor 설정
 
 # 해결 (수동)
 sudo cpupower frequency-set -g performance

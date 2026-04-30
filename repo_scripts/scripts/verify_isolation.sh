@@ -9,7 +9,7 @@
 # set -u 는 사용하지 않음. set -e 만 사용.
 set -e
 
-# 위치: src/rtc-framework/rtc_scripts/scripts/verify_isolation.sh → 4 up = <rtc_ws>
+# 위치: src/rtc-framework/repo_scripts/scripts/verify_isolation.sh → 4 up = <rtc_ws>
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS="$(cd "${_SCRIPT_DIR}/../../../.." && pwd)"
 # shellcheck source=/dev/null

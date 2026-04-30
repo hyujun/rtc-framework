@@ -694,7 +694,7 @@ ros2 run ur5e_bringup motion_editor_gui
 | `sensor_msgs` | JointState |
 | `std_msgs` | 표준 메시지 |
 | `rclpy` | Python GUI (exec) |
-| `rtc_scripts` | CPU 격리 스크립트 (exec) |
+| `repo_scripts` | CPU 격리 스크립트 (exec) |
 | `ur5e_description` | URDF/MJCF 모델 (exec) |
 | `ur5e_hand_driver` | 핸드 드라이버 (exec) |
 | `PyQt5` | 모션 에디터 GUI (exec) |
@@ -719,7 +719,7 @@ source install/setup.bash
 ## 의존성 그래프 내 위치
 
 ```
-rtc_controller_manager + rtc_controllers + rtc_scripts + ur5e_description
+rtc_controller_manager + rtc_controllers + repo_scripts + ur5e_description
     |                                                         |
     |   rtc_urdf_bridge (URDF→Pinocchio 모델)           |
     |       |                                                 |

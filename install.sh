@@ -19,9 +19,9 @@ set -e
 INSTALL_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── 공통 유틸리티 라이브러리 (get_physical_cores, compute_cpu_layout 등) ──────
-_RT_COMMON="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/lib/rt_common.sh"
+_RT_COMMON="${INSTALL_SCRIPT_DIR}/repo_scripts/scripts/lib/rt_common.sh"
 if [[ -f "$_RT_COMMON" ]]; then
-  # shellcheck source=rtc_scripts/scripts/lib/rt_common.sh
+  # shellcheck source=repo_scripts/scripts/lib/rt_common.sh
   source "$_RT_COMMON"
   make_logger "INSTALL" emoji
 else
@@ -34,10 +34,10 @@ else
   success() { echo -e "${GREEN}✔ $*${NC}"; }
 fi
 
-# ── 격리 환경 자동 활성화 (rtc_scripts/README.md 배포 가이드) ─────────────
+# ── 격리 환경 자동 활성화 (repo_scripts/README.md 배포 가이드) ─────────────
 # setup_env.sh 가 아직 source 되지 않았으면 자동 source — deps/install 의
 # fmt/mimalloc/aligator 경로를 colcon 빌드 시 먼저 찾도록.
-_SETUP_ENV="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/setup_env.sh"
+_SETUP_ENV="${INSTALL_SCRIPT_DIR}/repo_scripts/scripts/setup_env.sh"
 if [[ -z "${RTC_DEPS_PREFIX:-}" && -f "$_SETUP_ENV" ]]; then
   # shellcheck source=/dev/null
   source "$_SETUP_ENV"
@@ -435,7 +435,7 @@ install_pinocchio() {
     success "Pinocchio installed via ${ROS_PKG_PREFIX}-pinocchio"
   else
     error "${ROS_PKG_PREFIX}-pinocchio not found — isolation plan requires ROS distribution pinocchio. \
-See rtc_scripts/README.md for the reason robotpkg fallback was removed."
+See repo_scripts/README.md for the reason robotpkg fallback was removed."
   fi
 }
 
@@ -448,20 +448,20 @@ install_proxsuite() {
     success "ProxSuite installed via ${ROS_PKG_PREFIX}-proxsuite"
   else
     error "${ROS_PKG_PREFIX}-proxsuite not found — isolation plan requires ROS distribution proxsuite. \
-See rtc_scripts/README.md for the reason robotpkg fallback was removed."
+See repo_scripts/README.md for the reason robotpkg fallback was removed."
   fi
 }
 
 # ── MPC deps: fmt / mimalloc / aligator ────────────────────────────────────────
 # Isolation landed 2026-04-21: source build lives in
-# rtc_scripts/scripts/build_deps.sh with install prefix = $WS_ROOT/deps/install.
-# No more /usr/local or ~/libs/. See rtc_scripts/README.md for details.
+# repo_scripts/scripts/build_deps.sh with install prefix = $WS_ROOT/deps/install.
+# No more /usr/local or ~/libs/. See repo_scripts/README.md for details.
 install_mpc_deps() {
   if [[ "$SKIP_MPC" -eq 1 ]]; then
     info "Skipping MPC source-built deps (--skip-mpc)"
     return
   fi
-  info "Building MPC deps via rtc_scripts/scripts/build_deps.sh (fmt + mimalloc + aligator → deps/install)"
+  info "Building MPC deps via repo_scripts/scripts/build_deps.sh (fmt + mimalloc + aligator → deps/install)"
 
   # Ensure sources are present (vcs import if missing).
   # deps.repos 는 repo 내부 (src/rtc-framework/), deps/src|install 은 workspace 루트 (../../).
@@ -474,8 +474,8 @@ install_mpc_deps() {
       || { warn "vcs import failed — check deps.repos"; return; }
   fi
 
-  if ! bash "${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/build_deps.sh"; then
-    warn "rtc_scripts/scripts/build_deps.sh failed — see output above"
+  if ! bash "${INSTALL_SCRIPT_DIR}/repo_scripts/scripts/build_deps.sh"; then
+    warn "repo_scripts/scripts/build_deps.sh failed — see output above"
     return
   fi
   success "MPC deps built → $(cd "${INSTALL_SCRIPT_DIR}/../../deps/install" && pwd)"
@@ -775,7 +775,7 @@ setup_rt_sudoers() {
   # 설치된 cpu_shield.sh 경로
   local INSTALLED_SHIELD="${WORKSPACE}/install/rtc_controller_manager/lib/rtc_controller_manager/cpu_shield.sh"
   # 소스 cpu_shield.sh 경로
-  local SOURCE_SHIELD="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/cpu_shield.sh"
+  local SOURCE_SHIELD="${INSTALL_SCRIPT_DIR}/repo_scripts/scripts/cpu_shield.sh"
 
   # cset 명령 경로
   local CSET_PATH
@@ -838,7 +838,7 @@ install_cset_tools() {
 # 모든 하드웨어 IRQ를 OS 코어로 제한한다.
 # CPU 레이아웃 계산은 setup_irq_affinity.sh 내부에서 rt_common.sh로 처리.
 setup_irq_affinity() {
-  local SCRIPT="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/setup_irq_affinity.sh"
+  local SCRIPT="${INSTALL_SCRIPT_DIR}/repo_scripts/scripts/setup_irq_affinity.sh"
 
   if [[ ! -f "$SCRIPT" ]]; then
     warn "setup_irq_affinity.sh not found — skipping IRQ affinity setup"
@@ -859,11 +859,11 @@ setup_irq_affinity() {
 # ── [UDP/DDS] NIC & kernel network stack optimization (robot + full) ──────────
 setup_udp_optimization() {
   local SCRIPT
-  SCRIPT="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/setup_udp_optimization.sh"
+  SCRIPT="${INSTALL_SCRIPT_DIR}/repo_scripts/scripts/setup_udp_optimization.sh"
 
   if [[ ! -f "$SCRIPT" ]]; then
     warn "setup_udp_optimization.sh not found — skipping UDP optimization"
-    warn "Run manually after build: sudo $WORKSPACE/src/rtc-framework/rtc_scripts/scripts/setup_udp_optimization.sh"
+    warn "Run manually after build: sudo $WORKSPACE/src/rtc-framework/repo_scripts/scripts/setup_udp_optimization.sh"
     return
   fi
 
@@ -889,11 +889,11 @@ setup_nvidia_rt() {
   fi
 
   local SCRIPT
-  SCRIPT="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/setup_nvidia_rt.sh"
+  SCRIPT="${INSTALL_SCRIPT_DIR}/repo_scripts/scripts/setup_nvidia_rt.sh"
 
   if [[ ! -f "$SCRIPT" ]]; then
     warn "setup_nvidia_rt.sh not found — skipping NVIDIA RT setup"
-    warn "Run manually: sudo $WORKSPACE/src/rtc-framework/rtc_scripts/scripts/setup_nvidia_rt.sh"
+    warn "Run manually: sudo $WORKSPACE/src/rtc-framework/repo_scripts/scripts/setup_nvidia_rt.sh"
     return
   fi
 
@@ -917,7 +917,7 @@ setup_cpu_governor() {
   if lspci 2>/dev/null | grep -qi 'nvidia'; then
     return
   fi
-  local SCRIPT="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/setup_cpu_governor.sh"
+  local SCRIPT="${INSTALL_SCRIPT_DIR}/repo_scripts/scripts/setup_cpu_governor.sh"
   if [[ -f "$SCRIPT" ]]; then
     info "Setting CPU governor to performance..."
     if sudo bash "$SCRIPT"; then
@@ -935,7 +935,7 @@ setup_cpu_governor() {
 # NVIDIA 시스템은 setup_nvidia_rt.sh [3/11]에서도 같은 GRUB 파라미터를 설정하지만,
 # "이미 존재" 로 건너뛰므로 중복 문제는 없다.
 setup_rt_kernel_params() {
-  local SCRIPT="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/setup_grub_rt.sh"
+  local SCRIPT="${INSTALL_SCRIPT_DIR}/repo_scripts/scripts/setup_grub_rt.sh"
   if [[ -f "$SCRIPT" ]]; then
     info "Configuring GRUB RT kernel parameters..."
     if sudo bash "$SCRIPT"; then
@@ -977,7 +977,7 @@ verify_installation() {
   # RT 환경 검증 (robot/full 모드; verify 모드에선 skip)
   if [[ "$MODE_VERIFY" -eq 0 ]] && [[ "$MODE" == "robot" || "$MODE" == "full" ]]; then
     local CHECK_SCRIPT
-    CHECK_SCRIPT="${INSTALL_SCRIPT_DIR}/rtc_scripts/scripts/check_rt_setup.sh"
+    CHECK_SCRIPT="${INSTALL_SCRIPT_DIR}/repo_scripts/scripts/check_rt_setup.sh"
     if [[ -f "$CHECK_SCRIPT" ]]; then
       echo ""
       info "━━━ RT System Configuration Check ━━━"

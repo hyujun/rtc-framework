@@ -18,16 +18,16 @@ set -e
 
 # ── 공통 유틸리티 라이브러리 ──────────────────────────────────────────────
 _SCRIPT_DIR_BUILD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_RT_COMMON="${_SCRIPT_DIR_BUILD}/rtc_scripts/scripts/lib/rt_common.sh"
+_RT_COMMON="${_SCRIPT_DIR_BUILD}/repo_scripts/scripts/lib/rt_common.sh"
 if [[ -f "$_RT_COMMON" ]]; then
   source "$_RT_COMMON"
 fi
 make_logger "BUILD" emoji
 
-# ── 격리 환경 자동 활성화 (rtc_scripts/README.md 배포 가이드) ─────────────
+# ── 격리 환경 자동 활성화 (repo_scripts/README.md 배포 가이드) ─────────────
 # setup_env.sh 가 아직 source 되지 않았으면 자동 source — RTC_DEPS_PREFIX 가
 # 지정되어 있는지로 판정. (deps/install 의 fmt/mimalloc/aligator 경로 + venv + ROS)
-_SETUP_ENV="${_SCRIPT_DIR_BUILD}/rtc_scripts/scripts/setup_env.sh"
+_SETUP_ENV="${_SCRIPT_DIR_BUILD}/repo_scripts/scripts/setup_env.sh"
 if [[ -z "${RTC_DEPS_PREFIX:-}" && -f "$_SETUP_ENV" ]]; then
   # shellcheck source=/dev/null
   source "$_SETUP_ENV"
@@ -51,7 +51,7 @@ show_help() {
   echo "  robot   Build packages for real robot (no MuJoCo)"
   echo "            Packages: rtc_msgs, rtc_base, rtc_communication, rtc_controller_interface,"
   echo "                      rtc_urdf_bridge, rtc_tsid, rtc_controllers, rtc_controller_manager,"
-  echo "                      rtc_inference, rtc_scripts, rtc_tools,"
+  echo "                      rtc_inference, repo_scripts, rtc_tools,"
   echo "                      shape_estimation_msgs, shape_estimation, ur5e_description,"
   echo "                      ur5e_hand_driver, ur5e_bringup,"
   echo "                      ur5e_bt_coordinator"
@@ -199,7 +199,7 @@ else
 fi
 
 # ── CPU shield auto-release (빌드 전 격리 해제) ────────────────────────────────
-auto_release_cpu_shield "${_SCRIPT_DIR_BUILD}/rtc_scripts/scripts/cpu_shield.sh"
+auto_release_cpu_shield "${_SCRIPT_DIR_BUILD}/repo_scripts/scripts/cpu_shield.sh"
 
 # ── Build ──────────────────────────────────────────────────────────────────────
 info "Building: ${PACKAGES[*]}"
@@ -274,7 +274,7 @@ fi
 
 # ── RT Setup Verification ─────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CHECK_SCRIPT="${SCRIPT_DIR}/rtc_scripts/scripts/check_rt_setup.sh"
+CHECK_SCRIPT="${SCRIPT_DIR}/repo_scripts/scripts/check_rt_setup.sh"
 
 if [[ -f "$CHECK_SCRIPT" ]]; then
   case "$MODE" in

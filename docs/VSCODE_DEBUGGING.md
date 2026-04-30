@@ -456,7 +456,7 @@ ros2 node list
 | `colcon: Test All` / `Test Selected Package` | 전체 또는 단일 패키지 테스트 (`console_direct+`) |
 | `rtc: Merge compile_commands.json` | 병합만 수동 실행 |
 | `rtc: Clean Build Artifacts` | `rm -rf build install log` |
-| `rtc: Check RT Setup` | `rtc_scripts/scripts/check_rt_setup.sh --summary` |
+| `rtc: Check RT Setup` | `repo_scripts/scripts/check_rt_setup.sh --summary` |
 | `ros2 launch: sim` / `robot` | MuJoCo 시뮬 / 실로봇 런치 (`robot_ip` 프롬프트) |
 
 ### `launch.json` 디버그 구성

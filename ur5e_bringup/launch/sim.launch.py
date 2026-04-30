@@ -197,7 +197,7 @@ def launch_setup(context, *args, **kwargs):
         enable_sim_cpu_shield = ExecuteProcess(
             cmd=[
                 'bash', '-c',
-                'SCRIPT_DIR="$(ros2 pkg prefix rtc_scripts 2>/dev/null)/lib/rtc_scripts" && '
+                'SCRIPT_DIR="$(ros2 pkg prefix repo_scripts 2>/dev/null)/lib/repo_scripts" && '
                 'SHIELD="$SCRIPT_DIR/cpu_shield.sh" && '
                 'if [ -f "$SHIELD" ]; then '
                 '  ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); '

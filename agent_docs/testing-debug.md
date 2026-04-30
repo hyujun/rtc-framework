@@ -20,7 +20,7 @@
 | `rtc_communication/` | UDP loopback + Transceiver lifecycle/decode/callback | 실제 HW UDP 테스트 (선택) |
 | `rtc_digital_twin/` | pytest + RViz2 smoke | `/{group}/digital_twin/joint_states` hz |
 | `rtc_tools/` (pytest) | pytest | GUI/plot 수동 smoke |
-| `rtc_scripts/` | `test_rt_common` + shell unit test | `check_rt_setup.sh --summary` |
+| `repo_scripts/` | `test_rt_common` + shell unit test | `check_rt_setup.sh --summary` |
 | `shape_estimation*/` | ToF + exploration gtest | `/shape_estimation/snapshot` topic echo |
 | `ur5e_bringup/` demo FSM | demo_wbc FSM/integration/output + grasp_phase_manager + virtual_tcp | BT coordinator 통합 |
 | `ur5e_hand_driver/` | 단위 gtest (hand_packets, codec, FT, failure detector) + UDP loopback | `ros2 topic hz /hand/joint_states` |
@@ -103,7 +103,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 PID=$(pgrep -f ur5e_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 ros2 topic hz /forward_position_controller/commands
 ros2 topic echo /system/estop_status
-./rtc_scripts/scripts/check_rt_setup.sh --summary
+./repo_scripts/scripts/check_rt_setup.sh --summary
 ```
 
 ## RT Permissions

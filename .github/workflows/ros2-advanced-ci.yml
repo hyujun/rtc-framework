@@ -18,7 +18,7 @@ on:
       - 'docs/**'
       - 'agent_docs/**'
       - '*.md'
-      - 'rtc_scripts/**'
+      - 'repo_scripts/**'
       - 'LICENSE'
       - '.gitignore'
   pull_request:
@@ -27,7 +27,7 @@ on:
       - 'docs/**'
       - 'agent_docs/**'
       - '*.md'
-      - 'rtc_scripts/**'
+      - 'repo_scripts/**'
       - 'LICENSE'
       - '.gitignore'
 
@@ -73,7 +73,7 @@ jobs:
               - '.github/actions/**'
               - '.github/ci-packages.yml'
               - 'deps.repos'
-              - 'rtc_scripts/scripts/build_deps.sh'
+              - 'repo_scripts/scripts/build_deps.sh'
             python:
               - 'rtc_tools/**/*.py'
               - 'rtc_digital_twin/**/*.py'

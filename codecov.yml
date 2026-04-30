@@ -61,7 +61,7 @@ ignore:
   - "rtc_mujoco_sim/**"              # MuJoCo (옵셔널)
   - "rtc_msgs/**"                    # rosidl 자동 생성
   - "shape_estimation_msgs/**"       # rosidl 자동 생성
-  - "rtc_scripts/**"                 # 셸 스크립트
+  - "repo_scripts/**"                 # 셸 스크립트
   - "**/test/**"
   - "**/tests/**"
   - "**/launch/**"

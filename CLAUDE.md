@@ -4,9 +4,10 @@
 
 **RTC (Real-Time Control) Framework** — Robot-agnostic real-time control for URDF-based manipulators.
 
-- `rtc_*` packages (14): variable-DOF, 500 Hz–2 kHz, transport abstraction (UDP/CAN-FD/EtherCAT/RS485), lock-free SPSC, E-STOP
+- `rtc_*` packages (13): variable-DOF, 500 Hz–2 kHz, transport abstraction (UDP/CAN-FD/EtherCAT/RS485), lock-free SPSC, E-STOP
 - `ur5e_*` packages (4): UR5e + 10-DOF hand drivers, demo controllers, BT coordinator (reference integration)
 - `shape_estimation*` packages (2): ToF-based surface estimation (msgs + node)
+- `repo_scripts` (1): repo-local convenience tooling (PREEMPT_RT, CPU shield, deps build, env activation) — not part of the rtc_* runtime libraries
 - **Total: 20 ROS 2 packages**
 
 | Item | Value |
@@ -234,7 +235,7 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 | `rtc_mpc` | MPC-RT: TripleBuffer, TrajectoryInterpolator, RiccatiFeedback, RobotModelHandler, HandlerMPCThread |
 | `rtc_urdf_bridge` | URDF parser + Pinocchio model builder |
 | `rtc_tools` | Python GUI / plotting tools |
-| `rtc_scripts` | PREEMPT_RT, CPU shield, IRQ affinity, setup_env.sh |
+| `repo_scripts` | PREEMPT_RT, CPU shield, IRQ affinity, setup_env.sh |
 | `rtc_digital_twin` | RViz2 JointState merge |
 | `shape_estimation_msgs` | Shape estimation message/action definitions |
 | `shape_estimation` | ToF-based surface estimation node |
@@ -247,10 +248,10 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 
 ## 9. Common Commands
 
-**Every new shell** (interactive `colcon test` / `ros2 launch`): `source rtc_scripts/scripts/setup_env.sh` — ROS 2 + `deps/install` + `.venv` + workspace overlay 순서대로 로드. `build.sh` / `install.sh` 는 자동 source.
+**Every new shell** (interactive `colcon test` / `ros2 launch`): `source repo_scripts/scripts/setup_env.sh` — ROS 2 + `deps/install` + `.venv` + workspace overlay 순서대로 로드. `build.sh` / `install.sh` 는 자동 source.
 
 ```bash
-source rtc_scripts/scripts/setup_env.sh   # PWD=src/rtc-framework 에서
+source repo_scripts/scripts/setup_env.sh   # PWD=src/rtc-framework 에서
 
 ./build.sh sim            # simulation packages
 ./build.sh robot          # real robot
@@ -264,7 +265,7 @@ colcon test --packages-select <pkg> --event-handlers console_direct+
 colcon test-result --verbose
 ```
 
-**Isolated deps** (상세: [rtc_scripts/README.md](rtc_scripts/README.md)): fmt 11.1.4 · mimalloc 2.1.7 · aligator 0.19.0 @ `<rtc_ws>/deps/install/` (`build_deps.sh` from `deps.repos`). Pinocchio · ProxSuite · hpp-fcl · eigenpy은 ROS Jazzy apt. Python은 `requirements.lock`.
+**Isolated deps** (상세: [repo_scripts/README.md](repo_scripts/README.md)): fmt 11.1.4 · mimalloc 2.1.7 · aligator 0.19.0 @ `<rtc_ws>/deps/install/` (`build_deps.sh` from `deps.repos`). Pinocchio · ProxSuite · hpp-fcl · eigenpy은 ROS Jazzy apt. Python은 `requirements.lock`.
 
 ## 10. Style Cheatsheet
 

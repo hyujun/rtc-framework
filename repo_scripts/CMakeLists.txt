@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(rtc_scripts VERSION 5.17.0 LANGUAGES)
+project(repo_scripts VERSION 5.17.0 LANGUAGES)
 
 find_package(ament_cmake REQUIRED)
 

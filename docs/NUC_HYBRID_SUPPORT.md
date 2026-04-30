@@ -5,7 +5,7 @@
 > **관련 문서**:
 > - [`docs/nuc_hybrid_analysis.md`](nuc_hybrid_analysis.md) — v4 프롬프트 설계 분석 (Stage B 진입 전 gating 항목 §3.1~§4.6 참고)
 > - [`rtc_base/include/rtc_base/threading/cpu_topology.hpp`](../rtc_base/include/rtc_base/threading/cpu_topology.hpp) — C++ 감지 entry point
-> - [`rtc_scripts/scripts/lib/rt_common.sh`](../rtc_scripts/scripts/lib/rt_common.sh) — shell 감지 entry point
+> - [`repo_scripts/scripts/lib/rt_common.sh`](../repo_scripts/scripts/lib/rt_common.sh) — shell 감지 entry point
 
 ---
 
@@ -67,12 +67,12 @@ cd rtc_ws
 colcon test --packages-select rtc_base --event-handlers console_direct+
 # 예상: test_cpu_topology 7 passed (1 skipped on non-hybrid host)
 
-# 2. rtc_scripts 단위 테스트 (shell 감지 로직)
-colcon test --packages-select rtc_scripts --event-handlers console_direct+
+# 2. repo_scripts 단위 테스트 (shell 감지 로직)
+colcon test --packages-select repo_scripts --event-handlers console_direct+
 # 예상: test_rt_common PASS
 
 # 3. 실기 감지 결과 확인
-src/rtc-framework/rtc_scripts/scripts/check_rt_setup.sh
+src/rtc-framework/repo_scripts/scripts/check_rt_setup.sh
 # 섹션 [2.5/9] Hybrid CPU Detection 확인:
 #   AMD / 비-hybrid Intel: "Homogeneous CPU" PASS
 #   NUC 13 Pro i7-1360P: "NUC 13 Pro class: Raptor Lake-P (4P + 8E)" PASS

@@ -31,7 +31,7 @@
 | [`rtc_mujoco_sim`](rtc_mujoco_sim/) | 5.18.0 | MuJoCo 3.x 물리 시뮬레이터: 멀티 그룹 물리, GLFW 뷰어, fake_hand 1차 필터, `max_rtf` 속도 제어, `n_substeps` 서브스텝 | ament_cmake |
 | [`rtc_digital_twin`](rtc_digital_twin/) | 5.17.0 | RViz2 디지털 트윈 시각화: 다중 소스 관절 상태 통합, mimic 자동 계산, 핑거팁 센서 Arrow/Sphere 마커 | ament_python |
 | [`rtc_tools`](rtc_tools/) | 5.17.0 | Python 유틸리티 7종: controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf, hand_udp_sender, hand_data_plot, session_dir | ament_python |
-| [`rtc_scripts`](rtc_scripts/) | 5.17.0 | RT 시스템 설정 스크립트 (PREEMPT_RT 커널, CPU 격리, IRQ 어피니티, 네트워크 최적화, MPC 코어 헬퍼 `get_mpc_cores`/`get_rt_cores`/`get_os_cores`) | ament_cmake |
+| [`repo_scripts`](repo_scripts/) | 5.17.0 | RT 시스템 설정 스크립트 (PREEMPT_RT 커널, CPU 격리, IRQ 어피니티, 네트워크 최적화, MPC 코어 헬퍼 `get_mpc_cores`/`get_rt_cores`/`get_os_cores`) | ament_cmake |
 
 ### 브릿지 패키지
 
@@ -69,7 +69,7 @@ rtc_msgs, rtc_base (독립)
   ├── rtc_mujoco_sim ← MuJoCo 3.x (optional)
   ├── rtc_digital_twin (독립, Python)
   ├── rtc_tools (독립, Python)
-  └── rtc_scripts (독립, shell)
+  └── repo_scripts (독립, shell)
 
 rtc_urdf_bridge ← Pinocchio, tinyxml2, yaml-cpp
 

@@ -9,7 +9,7 @@
 
 set -eo pipefail
 
-# 위치: src/rtc-framework/rtc_scripts/scripts/build_deps.sh → 4 up = <rtc_ws>
+# 위치: src/rtc-framework/repo_scripts/scripts/build_deps.sh → 4 up = <rtc_ws>
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS="$(cd "${_SCRIPT_DIR}/../../../.." && pwd)"
 REPO="$(cd "${_SCRIPT_DIR}/../.." && pwd)"

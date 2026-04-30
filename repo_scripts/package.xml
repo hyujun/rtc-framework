@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>rtc_scripts</name>
+  <name>repo_scripts</name>
   <version>5.17.0</version>
-  <description>Robot-agnostic RT system setup and verification scripts for RTC framework. PREEMPT_RT kernel build, CPU shield, IRQ affinity, UDP optimization, NVIDIA RT coexistence, and runtime verification.</description>
+  <description>Repository-local convenience scripts for the RTC framework: PREEMPT_RT kernel build, CPU shield, IRQ affinity, UDP optimization, NVIDIA RT coexistence, runtime verification, isolated deps build, and shell environment activation. Not part of the rtc_* runtime libraries — operations/build tooling for this repo.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>

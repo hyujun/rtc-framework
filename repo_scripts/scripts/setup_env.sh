@@ -7,11 +7,11 @@
 #   3. .venv         (Python 의존성; ROS Python 모듈은 system-site-packages 로 상속)
 #   4. install/      (워크스페이스 overlay — 있을 때만)
 #
-# 위치: src/rtc-framework/rtc_scripts/scripts/setup_env.sh
-#   scripts/ ← rtc_scripts/ ← src/rtc-framework/ ← src/ ← <rtc_ws> (4 up)
+# 위치: src/rtc-framework/repo_scripts/scripts/setup_env.sh
+#   scripts/ ← repo_scripts/ ← src/rtc-framework/ ← src/ ← <rtc_ws> (4 up)
 #
 # 사용:
-#   source <rtc_ws>/src/rtc-framework/rtc_scripts/scripts/setup_env.sh
+#   source <rtc_ws>/src/rtc-framework/repo_scripts/scripts/setup_env.sh
 
 # ROS 2 — distro 자동 탐색 (jazzy 우선, humble fallback).
 # fresh PC: ROS 미설치 시 silent 통과 — install.sh 가 이후 auto-install 처리.
