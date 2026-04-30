@@ -6,7 +6,7 @@
 //     state/type/claimed_groups derived from controller_states_ and the
 //     controller registry.
 //   - SwitchController happy-path flips the active idx and updates
-//     controller_states_ + the latched /<robot_ns>/active_controller_name
+//     controller_states_ + the latched /rtc_cm/active_controller_name
 //     topic.
 //   - STRICT rejects multi-activate; BEST_EFFORT trims to first.
 //   - Pure-deactivate (no activate target) is rejected.
@@ -102,8 +102,9 @@ public:
 
   static void EnsureActivePublisher(RtControllerNode &node) {
     if (!node.active_ctrl_name_pub_) {
+      // Mirror production topic name (rt_controller_node_topics.cpp:430-431).
       node.active_ctrl_name_pub_ = node.create_publisher<std_msgs::msg::String>(
-          "/" + node.robot_ns_ + "/active_controller_name", 1);
+          "/rtc_cm/active_controller_name", 1);
     }
   }
 

@@ -177,7 +177,7 @@ void RtControllerNode::DeclareAndLoadParameters() {
                rclcpp::ParameterValue(std::string("joint_pd_controller")));
   safe_declare("use_sim_time_sync", rclcpp::ParameterValue(false));
   safe_declare("sim_sync_timeout_sec", rclcpp::ParameterValue(5.0));
-  safe_declare("robot_namespace", rclcpp::ParameterValue(std::string("ur5e")));
+  safe_declare("robot_namespace", rclcpp::ParameterValue(std::string("")));
 
   // ── Device timeouts (replaces robot_timeout_ms / enable_ur5e / enable_hand)
   // ─
@@ -340,7 +340,7 @@ void RtControllerNode::DeclareAndLoadParameters() {
     // paths in YAML resolve to /<config_key>/<topic> automatically.
     // main() attaches these to aux_executor.
     // Per-controller LifecycleNodes must NOT inherit the parent's CLI
-    // remappings (e.g. `--ros-args -r __node:=ur5e_rt_controller`).  Without
+    // remappings (e.g. `--ros-args -r __node:=robot_rt_controller`).  Without
     // use_global_arguments(false), the global remap rules rename every child
     // to the parent's node name and namespace, which clobbers the intended
     // /<config_key> namespacing and produces one

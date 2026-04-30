@@ -2,7 +2,9 @@
 /**:
   ros__parameters:
     # ── Robot namespace (used for manager-level topics) ────────────────────────
-    robot_namespace: "ur5e"
+    # Empty by default (rtc_* must stay robot-agnostic, ARCH-1).  Robot-specific
+    # bringups (e.g. ur5e_bringup) override this via launch-file param injection.
+    robot_namespace: ""
 
     # ── Control rate ─────────────────────────────────────────────────────────────
     control_rate: 500.0              # Hz
