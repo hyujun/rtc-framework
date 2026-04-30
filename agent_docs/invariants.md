@@ -56,7 +56,7 @@
 | NUM-1 | 특이점 근처: damped pseudoinverse 필수 (`damping` YAML 주입) | Unbounded magnification | ClikController, OSC |
 | NUM-2 | `dt` near-zero guard | `1/dt` 발산 | 모든 trajectory generator |
 | NUM-3 | Quaternion 정규화 매 곱 후 | Drift → non-unit | SE3 trajectory, orientation PD |
-| NUM-4 | `trajectory_speed`: `std::max(1e-6, val)` 클램프 | IEEE 754 `1/0 = INF` → hang | [controller-safety-improvements.md](controller-safety-improvements.md) Phase 2 R-4; 45개 `1e-6` 상수 현재 존재 |
+| NUM-4 | `trajectory_speed`: `std::max(1e-6, val)` 클램프 | IEEE 754 `1/0 = INF` → hang | [archive/controller-safety-improvements.md](archive/controller-safety-improvements.md) Phase 2 R-4; 45개 `1e-6` 상수 현재 존재 |
 
 ## 이 파일의 규칙을 건드려야 할 것 같을 때
 
@@ -69,3 +69,20 @@
    ```
 2. 사용자 컨펌 후 진행
 3. "임시로 위반 → 나중에 정리"는 허용되지 않음. Warning 이상은 별도 리팩터 task로 분리
+
+## False-positive 처리
+
+위 grep 명령은 **path-blind**(RT path 외 코드도 매칭)이거나 **role-blind**(one-shot init / aux thread 허용 케이스도 매칭)이다. 정당한 사용을 invariant로 잘못 차단하면 [CLAUDE.md](../CLAUDE.md) §11 *Harness pruning 신호*에 해당.
+
+판단 절차:
+
+1. **Path 확인**: 매칭된 파일이 RT path 정의(이 문서 §RT Path Invariants 첫 단락)에 들어가는가? 아니면 비-RT path (lifecycle 콜백 / `DrainLog()` aux / 1Hz aux 타이머 / 파라미터 콜백)인가?
+2. **Role 확인** (RT-3 한정): one-shot init? `RCLCPP_*_THROTTLE` + RT-safe msg? 둘 중 하나면 **허용** ([RT-3 세부 스펙](#rt-3-세부-스펙) 참조).
+3. **Aliasing 확인** (RT-5 한정): `auto`가 받는 게 단순 scalar/index인가, 아니면 Eigen expression (`.matrix()`, `.transpose()`, `.inverse()`, `.adjoint()`, `.block()`, `*` 연산)인가? Scalar/index는 false-positive.
+
+False-positive 판정이면:
+- 코드는 그대로 진행
+- 한 줄 보고: `false-positive: <rule-id> at <file:line>, reason=<RT path 외 / one-shot / scalar auto / ...>`
+- 동일 패턴이 반복 false-positive로 보고되면 [anti-patterns.md](anti-patterns.md) 또는 본 문서의 grep 명령을 좁히는 별도 task 후보
+
+**금지**: false-positive 추정이라며 사용자 보고 없이 invariant 우회. 의심스러우면 §"이 파일의 규칙을 건드려야 할 것 같을 때" 의 `[CONCERN]` 절차를 따른다.

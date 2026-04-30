@@ -5,6 +5,13 @@
 모든 수정 작업은 이 순서 ([CLAUDE.md](../CLAUDE.md#L67) §4 요약판의 상세).
 
 ```
+0. Type     → "수정"인가 "추가(새 기능/컨트롤러/메시지/디바이스/스레드)"인가?
+              추가라면 [design-principles.md](design-principles.md) 5원칙 + 본 문서
+              "Adding a New ..." 절을 먼저 읽는다.
+              · rtc_*에 추가 → P1·P2 (zero source edit, robot 상수 금지) +
+                ARCH-3 (interface-first; 같은 종류 두 번째 구현이면 base부터)
+              · ur5e_* / shape_estimation에 추가 → 재사용 가능한 부분이
+                rtc_*에 존재하는지 / 일반화해 끌어올릴 수 있는지 먼저 검토
 1. Locate   → grep / Glob (known symbol) OR Explore agent (broad search)
               파일의 RT / aux / robot-specific 역할 판단
 2. Read     → package.xml + CMakeLists.txt + target file + 인접 테스트
@@ -15,6 +22,8 @@
 5. Test     → CLAUDE.md §5 Sensor matrix 참조. 버그 수정 시 회귀 테스트 추가
 6. Verify   → 본 문서 Completion Checklist 8항목 통과
 ```
+
+**※ 4·5·6은 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook이 turn 종료 시 자동 실행/차단한다 — 사전 수동 실행은 빠른 피드백용. Hook 한계: 변경 패키지만 빌드, 60s timeout per package, README/CMake만 검사 (package.xml/YAML은 미검).**
 
 ### Workflow Fail-Safe
 
@@ -115,7 +124,9 @@ colcon test --packages-select <package_name> [<dependent_packages>...] --event-h
 colcon test-result --verbose
 ```
 
-If the change touches `rtc_base` or `rtc_msgs`, build and test all downstream packages.
+If the change touches `rtc_base` or `rtc_msgs`, build and test all downstream packages (PROC-3). The Stop hook automates this — see [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Phase 2 PROC-3 fallback.
+
+**Fork-Join option** for PROC-3 (downstream 패키지가 서로 독립하면): `Agent` tool로 패키지별 subagent를 worktree isolation에 띄워 병렬 빌드/테스트 가능. 직렬 `./build.sh full` 보다 빠르지만 disk + RAM 비용 큼. 권장 임계: downstream 4 패키지 이상 + 각 빌드 5분 이상일 때만. 결과는 main 컨텍스트로 요약 반환 — context window 절약.
 
 ## Completion Checklist
 

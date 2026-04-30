@@ -6,7 +6,7 @@
 - **탐지**: grep/test 명령 (가능한 경우)
 - **복구**: 올바른 방법
 
-근거는 Phase 0 git log 분석 (fix 커밋 312/997 = 31%) + [controller-safety-improvements.md](controller-safety-improvements.md)의 Phase 1~3 작업 중 발견된 케이스.
+근거는 Phase 0 git log 분석 (fix 커밋 312/997 = 31%) + [archive/controller-safety-improvements.md](archive/controller-safety-improvements.md)의 Phase 1~3 작업 중 발견된 케이스.
 
 ## RT Safety
 
@@ -84,7 +84,7 @@
 
 - **증상**: 문서에는 complete, 코드는 일부만 마이그레이션
 - **원인**: PR 리뷰에서 grep 기반 verification 누락
-- **탐지**: `grep -c <new_pattern>` 예상치 vs 실측, [controller-safety-improvements.md](controller-safety-improvements.md) Phase 1b 케이스처럼 모든 대상 파일 검증
+- **탐지**: `grep -c <new_pattern>` 예상치 vs 실측, [archive/controller-safety-improvements.md](archive/controller-safety-improvements.md) Phase 1b 케이스처럼 모든 대상 파일 검증
 - **복구**: complete 체크 전 전수 grep, 대상 파일 목록 명시 후 체크
 
 ### AP-PROC-2: Code-only without YAML/README/CMake 동기화 ([modification-guide.md](modification-guide.md) 6단계 위반, af867d4, 46cd6d4 근거)
@@ -118,21 +118,21 @@
 
 ## Controller-Specific
 
-### AP-CTRL-1: Mid-tick gains branch 불일치 ([controller-safety-improvements.md](controller-safety-improvements.md) Phase 1 근거)
+### AP-CTRL-1: Mid-tick gains branch 불일치 ([archive/controller-safety-improvements.md](archive/controller-safety-improvements.md) Phase 1 근거)
 
 - **증상**: `Compute()` 중간에 aux thread의 게인 writer (parameter callback `OnGainParametersSet` — 2026-04-26 이전엔 `UpdateGainsFromMsg`) 실행 → bool flag 절반만 업데이트된 상태로 분기
 - **복구**: `Compute()` 진입 시 `const auto gains = gains_lock_.Load();` 단일 snapshot. 이미 7개 컨트롤러 모두 적용됨 (Phase 1b ✅)
 
 ### ~~AP-CTRL-2: `GetCurrentGains()` heap allocation~~ (resolved 2026-04-26)
 
-게인 → ROS 2 parameter 마이그레이션에서 `GetCurrentGains` 가상 메서드 자체가 제거되어 더 이상 해당 안티패턴 대상이 없음 ([controller-safety-improvements.md](controller-safety-improvements.md) Q-5).
+게인 → ROS 2 parameter 마이그레이션에서 `GetCurrentGains` 가상 메서드 자체가 제거되어 더 이상 해당 안티패턴 대상이 없음 ([archive/controller-safety-improvements.md](archive/controller-safety-improvements.md) Q-5).
 
-### AP-CTRL-3: `trajectory_speed = 0` → 1/v = INF ([controller-safety-improvements.md](controller-safety-improvements.md) Phase 2 R-4, [invariants.md](invariants.md#L68) NUM-4 근거)
+### AP-CTRL-3: `trajectory_speed = 0` → 1/v = INF ([archive/controller-safety-improvements.md](archive/controller-safety-improvements.md) Phase 2 R-4, [invariants.md](invariants.md#L68) NUM-4 근거)
 
 - **증상**: IEEE 754 `1/0 = INF` → trajectory hang (crash 아님)
 - **복구**: `std::max(1e-6, val)` 클램프. 현재 45개 `1e-6` 상수 존재 (Phase 0 확인)
 
-### AP-CTRL-4: E-STOP instant jump vs ramp 혼용 ([controller-safety-improvements.md](controller-safety-improvements.md) Phase 3 Q-7, 미해결)
+### AP-CTRL-4: E-STOP instant jump vs ramp 혼용 ([archive/controller-safety-improvements.md](archive/controller-safety-improvements.md) Phase 3 Q-7, 미해결)
 
 - **현 상태**: JointPDController/DemoTaskController는 ramp, DemoWbcController는 instant jump
 - **복구**: 의도된 것인지 사용자 확인 후 통일 (별도 task)

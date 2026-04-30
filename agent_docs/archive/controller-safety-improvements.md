@@ -1,5 +1,7 @@
 # Controller Safety Improvements Plan
 
+> **Status: Closed** — Phase 0~4 모두 완료 (2026-04-26). 이 문서는 historical reference로 archive에 보관. 향후 controller safety task가 등장하면 별도 plan으로 분리한다. 본문 내 다른 문서 참조의 상대 경로는 archive 이동 전 기준 (`architecture.md` 등은 `../architecture.md`로 해석).
+
 ## Context
 
 Deep analysis of `rtc_controller_interface`, `rtc_controller_manager`, `rtc_controllers`, `ur5e_bringup` identified thread safety, RT safety, and code quality issues across the controller stack. Work is tracked in phases.
