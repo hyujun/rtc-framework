@@ -5,7 +5,7 @@
 //
 // Mirrors rtc::mpc::MpcTimingLogger structurally: a thin wrapper around
 // rtc::ThreadTimingCsvLogger<RtTickTimingPayload> that resolves the canonical
-// `<session>/device/hand_udp_timing_log.csv` path and pre-binds the unified
+// `<session>/timing/hand_udp_timing_log.csv` path and pre-binds the unified
 // RtTickTimingPayload header / row writers (the same schema CM and MPC emit,
 // so analysis scripts can join across threads).
 //
@@ -33,17 +33,17 @@ public:
   HandUdpTimingLogger(const HandUdpTimingLogger &) = delete;
   HandUdpTimingLogger &operator=(const HandUdpTimingLogger &) = delete;
 
-  /// Resolve the CSV path under `<session>/device/`, create the parent
+  /// Resolve the CSV path under `<session>/timing/`, create the parent
   /// directory, and open the file. Schema header is written on first
   /// creation; existing files are appended without a duplicate header.
   /// Returns false on filesystem errors.
   [[nodiscard]] bool Open() noexcept {
     try {
       const auto session = ResolveSessionDir();
-      const auto device_dir = session / "device";
+      const auto timing_dir = TimingDir(session);
       std::error_code ec;
-      std::filesystem::create_directories(device_dir, ec);
-      const auto path = device_dir / "hand_udp_timing_log.csv";
+      std::filesystem::create_directories(timing_dir, ec);
+      const auto path = timing_dir / "hand_udp_timing_log.csv";
       return inner_.Open(path, &rtc::WriteRtTickTimingHeader,
                          &rtc::WriteRtTickTimingRow);
     } catch (...) {

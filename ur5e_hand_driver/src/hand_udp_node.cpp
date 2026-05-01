@@ -941,7 +941,7 @@ private:
   // ── Per-EventLoop-tick timing CSV (mpc_timing_log pattern) ─────────────
   // Producer (filled on the EventLoop thread) → 1 Hz drain on aux timer →
   // ThreadTimingCsvLogger writes one row per tick to
-  // <session>/device/hand_udp_timing_log.csv. Open() runs once on the first
+  // <session>/timing/hand_udp_timing_log.csv. Open() runs once on the first
   // on_activate and is gated by `hand_udp_timing_initialized_` so reactivation
   // does not truncate or re-write the header.
   urtc::HandUdpTimingBuffer hand_udp_timing_producer_;
