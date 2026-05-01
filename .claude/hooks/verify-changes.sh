@@ -20,6 +20,15 @@
 #          (PROC-3: broad downstream impact)
 #        - else                       -> ./build.sh -p <pkg> + colcon test <pkg>
 #
+# Pure-format fast path:
+#   Phases 0 + 1 are SKIPPED when every changed source file is identical to
+#   HEAD after running it through the project's formatter (clang-format for
+#   C++, ruff for Python). Such commits carry no semantic delta — ARCH-1
+#   greps would flag pre-existing references that happen to be on a line
+#   clang-format reflowed, and README co-update would be noise (nothing new
+#   to document). Phase 2 (build/test) still runs because formatter changes
+#   like include reordering can break compilation.
+#
 # Exit   : 0 on pass (silent). 2 on any failure -> Claude is blocked, stderr
 #          message is auto-injected next turn. Pointer to modification-guide.md
 #          is appended so the agent has a recovery entry point.
@@ -48,6 +57,67 @@ CHANGED=$(git diff --name-only HEAD 2>/dev/null || true)
 CHANGED_SRC=$(echo "$CHANGED" | grep -E '\.(cpp|hpp|h|cc|py)$' || true)
 [ -z "$CHANGED_SRC" ] && exit 0
 
+# --- Pure-format fast path detection ---
+# Returns 0 if every changed source file is identical to HEAD after
+# round-tripping through its formatter. We also skip if any file is brand-new
+# or deleted (no HEAD blob to compare against), or if the formatter binary is
+# missing (cannot prove pure-format -> fail closed and run full checks).
+#
+# ruff binary lookup mirrors .claude/hooks/format-code.sh: prefer venv,
+# fall back to PATH.
+find_ruff() {
+  if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/ruff" ]]; then
+    echo "${VIRTUAL_ENV}/bin/ruff"; return 0
+  fi
+  local script_dir
+  script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  local ws_venv="${script_dir}/../../../../.venv/bin/ruff"
+  [[ -x "$ws_venv" ]] && { echo "$ws_venv"; return 0; }
+  command -v ruff 2>/dev/null && return 0
+  return 1
+}
+
+is_pure_format() {
+  command -v clang-format >/dev/null 2>&1 || return 1
+  local RUFF_BIN
+  RUFF_BIN=$(find_ruff) || RUFF_BIN=""
+
+  # Reject any file add/delete/rename — only modifications can be pure-format.
+  if git diff --diff-filter=ADRC --name-only HEAD 2>/dev/null \
+       | grep -qE '\.(cpp|hpp|h|cc|py)$'; then
+    return 1
+  fi
+
+  local f
+  for f in $CHANGED_SRC; do
+    [ -f "$f" ] || return 1
+    case "$f" in
+      *.cpp|*.hpp|*.h|*.cc)
+        # Round-trip both versions through clang-format with $f as the
+        # filename hint so .clang-format / file-type rules apply.
+        diff <(git show "HEAD:$f" 2>/dev/null \
+                 | clang-format --assume-filename="$f" 2>/dev/null) \
+             <(clang-format --assume-filename="$f" < "$f" 2>/dev/null) \
+             >/dev/null 2>&1 || return 1
+        ;;
+      *.py)
+        [ -n "$RUFF_BIN" ] || return 1
+        diff <(git show "HEAD:$f" 2>/dev/null \
+                 | "$RUFF_BIN" format --stdin-filename="$f" - 2>/dev/null) \
+             <("$RUFF_BIN" format --stdin-filename="$f" - < "$f" 2>/dev/null) \
+             >/dev/null 2>&1 || return 1
+        ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
+PURE_FORMAT=0
+if is_pure_format; then
+  PURE_FORMAT=1
+fi
+
 WARNINGS=""
 ARCH_VIOLATIONS=""
 CHANGED_PKGS=""
@@ -60,8 +130,15 @@ done
 
 # --- Phase 0: Architecture-fitness grep (ARCH-1, ARCH-4) ---
 # Only run if a CHANGED rtc_* or ur5e_* file matched, to bound cost.
-RTC_TOUCHED=$(echo "$CHANGED_SRC" | grep -E '^rtc_[a-z_]+/' || true)
-UR5E_TOUCHED=$(echo "$CHANGED_SRC" | grep -E '^ur5e_[a-z_]+/' || true)
+# Skipped on pure-format commits — no semantic change can introduce a new
+# ARCH violation, and the grep would re-flag pre-existing references on
+# any line clang-format happened to reflow.
+RTC_TOUCHED=""
+UR5E_TOUCHED=""
+if [ "$PURE_FORMAT" -eq 0 ]; then
+  RTC_TOUCHED=$(echo "$CHANGED_SRC" | grep -E '^rtc_[a-z_]+/' || true)
+  UR5E_TOUCHED=$(echo "$CHANGED_SRC" | grep -E '^ur5e_[a-z_]+/' || true)
+fi
 
 if [ -n "$RTC_TOUCHED" ]; then
   # ARCH-1: rtc_* must not hardcode robot identifier or fixed DOF
@@ -87,6 +164,10 @@ if [ -n "$UR5E_TOUCHED" ]; then
 fi
 
 # --- Phase 1: Doc/metadata co-update check ---
+# Skipped on pure-format commits — there is no semantic delta to mirror in
+# READMEs, and CMake/package.xml co-update triggers (new .cpp file, new
+# find_package) cannot fire because pure-format excludes file adds.
+if [ "$PURE_FORMAT" -eq 0 ]; then
 for pkg_dir in $CHANGED_PKGS; do
   # README.md co-update for source changes
   PKG_SRC=$(echo "$CHANGED" | grep "^${pkg_dir}/\(src\|include\)/" || true)
@@ -124,6 +205,7 @@ for pkg_dir in $CHANGED_PKGS; do
     done
   fi
 done
+fi  # PURE_FORMAT guard for Phase 1
 
 # --- Phase 2: Build + test, with PROC-3 fallback for rtc_base / rtc_msgs ---
 TEST_FAILURES=""

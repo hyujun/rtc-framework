@@ -23,7 +23,7 @@
 6. Verify   → 본 문서 Completion Checklist 8항목 통과
 ```
 
-**※ 4·5·6은 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook이 turn 종료 시 자동 실행/차단한다 — 사전 수동 실행은 빠른 피드백용. Hook 한계: 변경 패키지만 빌드, 60s timeout per package, README/CMake만 검사 (package.xml/YAML은 미검).**
+**※ 4·5·6은 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook이 turn 종료 시 자동 실행/차단한다 — 사전 수동 실행은 빠른 피드백용. Hook 한계: 변경 패키지만 빌드, 60s timeout per package, README/CMake만 검사 (package.xml/YAML은 미검). Pure-format commit (모든 변경 .cpp/.hpp/.py 가 `clang-format`/`ruff format` round-trip 결과와 동일) 은 ARCH grep + README/CMake co-update 단계만 자동 skip 되고 build/test 는 그대로 돈다.**
 
 ### Workflow Fail-Safe
 

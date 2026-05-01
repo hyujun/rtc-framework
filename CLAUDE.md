@@ -87,7 +87,7 @@
 
 실패 시 절대 **"try harder"** 금지. 누락된 capability (test, lint, interface)를 엔지니어링하거나 §6 escalate.
 
-**※ 4·5·6은 [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) Stop hook이 turn 종료 시 자동 실행하고, 실패 시 `exit 2`로 다음 turn까지 차단한다. 사전 수동 실행은 빠른 피드백용. Hook은 변경 패키지만 빌드·테스트(60s timeout per pkg) + README/CMake co-update만 검사 — `package.xml`/YAML/Doxygen은 에이전트가 직접 검증.**
+**※ 4·5·6은 [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) Stop hook이 turn 종료 시 자동 실행하고, 실패 시 `exit 2`로 다음 turn까지 차단한다. 사전 수동 실행은 빠른 피드백용. Hook은 변경 패키지만 빌드·테스트(60s timeout per pkg) + README/CMake co-update만 검사 — `package.xml`/YAML/Doxygen은 에이전트가 직접 검증. Pure-format commit (모든 변경 .cpp/.hpp/.py 가 `clang-format` / `ruff format` round-trip 결과와 동일) 은 ARCH grep + README/CMake co-update 단계만 자동 skip 되고 build/test 는 그대로 돈다.**
 
 상세: [agent_docs/modification-guide.md](agent_docs/modification-guide.md)
 
