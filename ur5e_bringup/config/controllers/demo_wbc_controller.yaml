@@ -65,6 +65,15 @@ demo_wbc_controller:
           role: "wbc_state"
           ownership: "controller"
 
+  # ── Controller-owned CSV logs (Phase C) ────────────────────────────────────
+  logs:
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: ur5e
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: hand
+    - msg_type: rtc_msgs/DeviceSensorLog
+      instance: hand
+
   # ── TSID QP configuration ────────────────────────────────────────────
   tsid:
     formulation_type: "wqp"

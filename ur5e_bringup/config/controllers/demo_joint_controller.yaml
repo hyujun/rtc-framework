@@ -87,3 +87,18 @@ demo_joint_controller:
         - topic: "tof/snapshot"
           role: "tof_snapshot"
           ownership: "controller"
+
+  # ── Controller-owned CSV logs (Phase C: msg-type-driven schema) ─────────────
+  # Each entry maps an rtc_msgs/<*Log> message type to a CSV file under
+  # <session>/controllers/<config_key>/<instance>.csv. Schema is the
+  # corresponding rtc_msgs message; RT path uses ur5e_bringup POD mirrors
+  # (kMaxJoints=16, kMaxFingertips=8). Legacy `role: device_state_log` /
+  # `device_sensor_log` rows above remain during Phase C transition for
+  # byte-compare against this new path; Track R removes them.
+  logs:
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: ur5e
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: hand
+    - msg_type: rtc_msgs/DeviceSensorLog
+      instance: hand
