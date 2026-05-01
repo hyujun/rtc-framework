@@ -26,23 +26,23 @@ Nodes launched:
 
 import os
 
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    EmitEvent,
     ExecuteProcess,
     OpaqueFunction,
+    RegisterEventHandler,
     SetEnvironmentVariable,
     TimerAction,
 )
-from launch.actions import EmitEvent, RegisterEventHandler
-from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.actions import LifecycleNode, Node
+from launch_ros.actions import LifecycleNode
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
-from ament_index_python.packages import get_package_share_directory
 
 from rtc_tools.utils.session_dir import (
     cleanup_old_sessions,
@@ -115,7 +115,7 @@ def launch_setup(context, *args, **kwargs):
         ctrl_yaml_path = os.path.join(
             get_package_share_directory("ur5e_bringup"), "config", "ur5e_sim.yaml"
         )
-        with open(ctrl_yaml_path, "r") as f:
+        with open(ctrl_yaml_path) as f:
             ctrl_yaml = yaml.safe_load(f)
         control_rate = (
             ctrl_yaml.get("/**", {}).get("ros__parameters", {}).get("control_rate", 500.0)

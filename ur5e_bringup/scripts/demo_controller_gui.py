@@ -18,23 +18,24 @@ Demo Controller GUI (ur5e_bringup)
 import json
 import math
 import os
+import threading
+import tkinter as tk
+from tkinter import font as tkfont, messagebox, ttk
 
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.parameter_client import AsyncParameterClient
-from std_msgs.msg import String, Bool
+from std_msgs.msg import Bool, String
+
 from rtc_msgs.msg import (
-    GuiPosition,
-    GraspState,
-    RobotTarget,
     CalibrationCommand,
     CalibrationStatus,
+    GraspState,
+    GuiPosition,
+    RobotTarget,
 )
 from rtc_msgs.srv import GraspCommand, SwitchController
-import tkinter as tk
-from tkinter import ttk, font as tkfont, messagebox
-import threading
 
 CONTROLLER_TYPES = {
     "demo_joint_controller": "Demo Joint Controller",
@@ -381,7 +382,7 @@ class DemoControllerGUI(Node):
 
         # Phase 4: subscribe to the active controller name and rebind
         # controller-owned topics on each change.
-        from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
+        from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
         latched_qos = QoSProfile(depth=1)
         latched_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
@@ -524,7 +525,7 @@ class DemoControllerGUI(Node):
 
     def _load_presets(self) -> dict:
         try:
-            with open(self._preset_path, "r") as f:
+            with open(self._preset_path) as f:
                 data = json.load(f)
             if isinstance(data, dict) and data:
                 return data

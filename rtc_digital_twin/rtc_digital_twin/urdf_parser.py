@@ -174,7 +174,7 @@ class UrdfParser:
                 urdf_xml = subprocess.check_output(["xacro", urdf_path], text=True)
             else:
                 logger.debug("Loading URDF: %s", urdf_path)
-                with open(urdf_path, "r") as f:
+                with open(urdf_path) as f:
                     urdf_xml = f.read()
 
         self._urdf_xml: str = urdf_xml

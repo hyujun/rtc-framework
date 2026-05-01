@@ -10,9 +10,7 @@ from __future__ import annotations
 
 import math
 import struct
-import sys
 
-import numpy as np
 import pytest
 
 from rtc_tools.utils.hand_udp_sender_example import (
@@ -31,9 +29,7 @@ from rtc_tools.utils.hand_udp_sender_example import (
     CMD_READ_VELOCITY,
     CMD_SET_SENSOR_MODE,
     CMD_WRITE_POSITION,
-    DEFAULT_MODE,
     DEVICE_ID,
-    FAILURE_THRESHOLD,
     HEADER_SIZE,
     JOINT_MODE_JOINT,
     JOINT_MODE_MOTOR,
@@ -72,7 +68,6 @@ from rtc_tools.utils.hand_udp_sender_example import (
     float_to_uint32,
     uint32_to_float,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Protocol constants sanity check

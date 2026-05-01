@@ -22,7 +22,6 @@ import os
 import re
 import shutil
 from datetime import datetime
-from typing import Optional
 
 _SESSION_SUBDIRS = (
     "controller",
@@ -66,7 +65,7 @@ def _ensure_session_subdirs(session_dir: str) -> None:
         os.makedirs(os.path.join(session_dir, sub), exist_ok=True)
 
 
-def create_session_dir(logging_root: Optional[str] = None) -> str:
+def create_session_dir(logging_root: str | None = None) -> str:
     """현재 타임스탬프로 새 세션 디렉토리를 만들고 표준 서브디렉토리까지 생성.
 
     Args:
@@ -95,7 +94,7 @@ def cleanup_old_sessions(logging_root: str, max_sessions: int) -> None:
         shutil.rmtree(oldest, ignore_errors=True)
 
 
-def get_session_dir() -> Optional[str]:
+def get_session_dir() -> str | None:
     """``RTC_SESSION_DIR`` 환경변수에서 세션 경로를 읽어옵니다.
 
     런치 파일이 자식 노드에게 전파한 세션 경로를 다시 읽을 때 사용합니다.
@@ -120,7 +119,7 @@ def get_or_create_session_dir() -> str:
     return create_session_dir()
 
 
-def get_session_subdir(subdir: str) -> Optional[str]:
+def get_session_subdir(subdir: str) -> str | None:
     """현재 세션 디렉토리 내 특정 서브디렉토리 경로를 반환합니다.
 
     Args:

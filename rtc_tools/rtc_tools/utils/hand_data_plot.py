@@ -24,7 +24,6 @@ CSV 컬럼 구조 (bulk):
 """
 
 import argparse
-import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -297,7 +296,7 @@ def main():
     print(f"  모드: {'bulk' if bulk_mode else 'legacy'}")
     print(f"  감지된 센서 수: {num_sensors}")
     if bulk_mode:
-        print(f"  전류 데이터: 있음 (cur_0..cur_9)")
+        print("  전류 데이터: 있음 (cur_0..cur_9)")
     print(f"  타이밍 데이터: {'있음' if has_timing else '없음'}")
 
     if args.timing_only:

@@ -7,9 +7,9 @@ from HandSensorState/FingertipSensor messages as RViz markers.
 import logging
 import math
 
-from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point, Vector3
 from std_msgs.msg import ColorRGBA
+from visualization_msgs.msg import Marker, MarkerArray
 
 logger = logging.getLogger("rtc_digital_twin.sensor_visualizer")
 

@@ -71,7 +71,7 @@ def launch_setup(context, *args, **kwargs):
 
         import yaml
 
-        with open(config_file, "r") as f:
+        with open(config_file) as f:
             cfg = yaml.safe_load(f)
         params = cfg.get("/**", {}).get("ros__parameters", {})
 
@@ -163,7 +163,7 @@ def launch_setup(context, *args, **kwargs):
     # Read joint_gui params from YAML config
     import yaml as _yaml
 
-    with open(config_file, "r") as _f:
+    with open(config_file) as _f:
         _cfg = _yaml.safe_load(_f)
     _gui_params = _cfg.get("/**", {}).get("ros__parameters", {})
     gui_output_topic = _gui_params.get("joint_gui.output_topic", "/joint_gui/joint_states")

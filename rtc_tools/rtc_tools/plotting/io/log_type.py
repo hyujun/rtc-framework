@@ -96,7 +96,7 @@ def detect_log_type_by_columns(columns):
 def peek_csv_header(filepath):
     """Read the first row of a CSV as column names. Empty list on error."""
     try:
-        with open(filepath, "r") as f:
+        with open(filepath) as f:
             return next(csv.reader(f), [])
     except (OSError, StopIteration):
         return []

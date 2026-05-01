@@ -37,8 +37,6 @@ import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
-
 
 # ── Data structures ────────────────────────────────────────────────────────────
 
@@ -80,7 +78,7 @@ def _parse_floats(text: str) -> list:
     return [float(x) for x in text.split()]
 
 
-def _detect_root_class(root: ET.Element) -> Optional[str]:
+def _detect_root_class(root: ET.Element) -> str | None:
     """Return the MJCF top-level default class name, or None if not declared.
 
     MJCF allows nesting; the root <default> may have no class (acts as a
@@ -107,7 +105,7 @@ def parse_mjcf(
     path: Path,
     link_names: set[str],
     joint_names: set[str],
-    root_class_override: Optional[str] = None,
+    root_class_override: str | None = None,
 ) -> tuple[dict[str, InertialParams], dict[str, JointParams]]:
     """Parse MJCF and extract inertial + joint parameters.
 
@@ -308,7 +306,7 @@ def compare(
     link_map: dict[str, str],
     joint_names: list[str],
     tolerance: float = 1e-4,
-    mjcf_class: Optional[str] = None,
+    mjcf_class: str | None = None,
     robot_label: str = "",
 ) -> int:
     """Compare MJCF and URDF parameters. Returns number of mismatches.
@@ -395,7 +393,7 @@ def compare(
                 f"Ixz={_fmt(urdf_ip.off_diag_inertia[1])}, "
                 f"Iyz={_fmt(urdf_ip.off_diag_inertia[2])}"
             )
-            print(f"           MJCF diaginertia assumes these are zero (principal axes frame).")
+            print("           MJCF diaginertia assumes these are zero (principal axes frame).")
             warnings += 1
 
         # Check if inertial frames differ
@@ -403,8 +401,8 @@ def compare(
             rpy_str = " ".join(_fmt(v) for v in urdf_ip.origin_rpy)
             print(f"    [NOTE] URDF inertial frame rotated: rpy=[{rpy_str}]")
             print(
-                f"           Diagonal inertia values are NOT directly comparable "
-                f"when frames differ."
+                "           Diagonal inertia values are NOT directly comparable "
+                "when frames differ."
             )
             warnings += 1
 
@@ -469,7 +467,7 @@ def compare(
             m_orig = " ".join(_fmt(v) for v in mjcf_jp.origin_xyz)
             u_orig = " ".join(_fmt(v) for v in urdf_jp.origin_xyz)
             print(f"    ORIGIN MISMATCH:  MJCF=[{m_orig}]  URDF=[{u_orig}]")
-            print(f"           [NOTE] MJCF and URDF use different coordinate conventions.")
+            print("           [NOTE] MJCF and URDF use different coordinate conventions.")
             warnings += 1
 
         # Armature (MJCF-only)
@@ -480,7 +478,7 @@ def compare(
 
     # ── Summary ──
     print("=" * 78)
-    print(f"  SUMMARY")
+    print("  SUMMARY")
     print(f"  Mismatches: {mismatches}")
     print(f"  Warnings:   {warnings}")
 
@@ -501,7 +499,7 @@ def compare(
 def _resolve_robot_layout(
     pkg: str,
     robot_name: str,
-) -> tuple[Optional[Path], Optional[Path]]:
+) -> tuple[Path | None, Path | None]:
     """Resolve <pkg>/robots/<robot>/{mjcf,urdf}/<robot>.{xml,urdf}.
 
     Returns (mjcf, urdf) using ament share dir if installed, else falling back

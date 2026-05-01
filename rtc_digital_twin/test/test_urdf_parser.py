@@ -1,15 +1,8 @@
 """Tests for UrdfParser — URDF loading, graph construction, and joint classification."""
 
-import os
-import textwrap
-
 import pytest
 
 from rtc_digital_twin.urdf_parser import (
-    JointClassification,
-    JointMeta,
-    LinkNode,
-    MimicParams,
     UrdfParser,
 )
 

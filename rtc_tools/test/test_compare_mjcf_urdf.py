@@ -6,10 +6,6 @@ MJCF/URDF 파서, 데이터 클래스, 비교 로직, 유틸리티 함수를 검
 
 from __future__ import annotations
 
-import math
-import xml.etree.ElementTree as ET
-from pathlib import Path
-
 import pytest
 
 from rtc_tools.validation.compare_mjcf_urdf import (
@@ -22,7 +18,6 @@ from rtc_tools.validation.compare_mjcf_urdf import (
     parse_mjcf,
     parse_urdf,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Helper utilities

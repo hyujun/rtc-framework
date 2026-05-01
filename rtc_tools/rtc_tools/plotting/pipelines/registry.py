@@ -15,14 +15,14 @@ PNG file naming and per-session output ordering stays stable. Adding a new
 controller-specific plot is one row; nothing in main() needs to change.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
 
+from rtc_tools.plotting import plotters
 from rtc_tools.plotting.columns import (
     has_motor,
     has_task_goal,
 )
-from rtc_tools.plotting import plotters
 
 
 @dataclass(frozen=True)
@@ -30,7 +30,7 @@ class PlotEntry:
     name: str
     fn: Callable  # (df, save_dir) -> None
     available: Callable = lambda df: True  # column-driven gate
-    flag: Optional[str] = None  # CLI opt-in flag name
+    flag: str | None = None  # CLI opt-in flag name
 
 
 # Match original behaviour: state_log task plots fire if EITHER the

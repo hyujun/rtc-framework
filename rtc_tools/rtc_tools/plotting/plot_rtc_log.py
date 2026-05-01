@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from rtc_tools.plotting import layout
 from rtc_tools.plotting.columns import invalidate_column_cache
 from rtc_tools.plotting.io import (
     detect_log_type,
@@ -39,7 +40,6 @@ from rtc_tools.plotting.io import (
     peek_csv_header,
     resolve_default_save_dir,
 )
-from rtc_tools.plotting import layout
 
 # ── Main ──────────────────────────────────────────────────────────────────
 

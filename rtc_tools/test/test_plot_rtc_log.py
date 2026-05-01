@@ -29,7 +29,6 @@ from rtc_tools.plotting.io.log_type import (
 )
 from rtc_tools.plotting.layout import auto_subplot_grid as _auto_subplot_grid
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Fixtures
 # ═══════════════════════════════════════════════════════════════════════════

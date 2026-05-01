@@ -30,9 +30,6 @@ import signal
 import sys
 
 import rclpy
-from rclpy.node import Node
-from sensor_msgs.msg import JointState
-
 from python_qt_binding.QtCore import Qt, QTimer
 from python_qt_binding.QtGui import QFont
 from python_qt_binding.QtWidgets import (
@@ -47,8 +44,10 @@ from python_qt_binding.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from rclpy.node import Node
+from sensor_msgs.msg import JointState
 
-from rtc_digital_twin.urdf_parser import UrdfParser, JointMeta
+from rtc_digital_twin.urdf_parser import JointMeta, UrdfParser
 
 # Slider internal resolution (same as joint_state_publisher_gui)
 _SLIDER_RANGE = 10000

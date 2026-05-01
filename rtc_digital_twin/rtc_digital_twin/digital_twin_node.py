@@ -17,9 +17,8 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 from visualization_msgs.msg import MarkerArray
 
+from rtc_digital_twin.urdf_parser import JointClassification, UrdfParser
 from rtc_msgs.msg import GuiPosition, HandSensorState
-
-from rtc_digital_twin.urdf_parser import UrdfParser, JointClassification
 
 
 @dataclass

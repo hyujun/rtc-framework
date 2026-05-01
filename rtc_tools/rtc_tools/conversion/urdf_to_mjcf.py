@@ -20,13 +20,10 @@ import argparse
 import os
 import re
 import sys
-import tempfile
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
-
 
 # ════════════════════════════════════════════════════════════════════════════
 # Joint Classification
@@ -238,7 +235,7 @@ def remove_closed_chain_joints(
 # ════════════════════════════════════════════════════════════════════════════
 
 
-def process_xacro(xacro_path: Path, xacro_args: Optional[list[str]] = None) -> str:
+def process_xacro(xacro_path: Path, xacro_args: list[str] | None = None) -> str:
     """Process a xacro file and return URDF XML string."""
     try:
         import xacro
@@ -274,9 +271,9 @@ def is_xacro_file(path: Path) -> bool:
 
 def resolve_package_uris(urdf_xml: str) -> str:
     """Replace ``package://`` URIs with absolute paths using ament index."""
-    pkg_cache: dict[str, Optional[str]] = {}
+    pkg_cache: dict[str, str | None] = {}
 
-    def _resolve_pkg(pkg_name: str) -> Optional[str]:
+    def _resolve_pkg(pkg_name: str) -> str | None:
         if pkg_name in pkg_cache:
             return pkg_cache[pkg_name]
         resolved = None
@@ -366,7 +363,7 @@ def resolve_mesh_paths(urdf_xml: str, urdf_dir: Path, meshdir: Path) -> str:
 
 def resolve_robot_dir_paths(
     robot_dir: Path,
-    urdf_file: Optional[str] = None,
+    urdf_file: str | None = None,
 ) -> tuple[Path, Path, Path]:
     """Resolve input URDF, output MJCF, and meshdir from robot directory convention.
 
@@ -735,13 +732,13 @@ def print_classification(classification: JointClassification) -> None:
 
 
 def print_model_stats(
-    model: "mujoco.MjModel",
+    model: mujoco.MjModel,
     n_eq: int,
     n_act: int,
     n_excl: int = 0,
 ) -> None:
     """Print MuJoCo model statistics."""
-    print(f"\nModel statistics:")
+    print("\nModel statistics:")
     print(f"  Bodies:      {model.nbody}")
     print(f"  Joints:      {model.njnt}")
     print(f"  DOF:         {model.nv}")
@@ -760,9 +757,9 @@ def print_model_stats(
 
 def convert_urdf_to_mjcf(
     input_path: Path,
-    output_path: Optional[Path] = None,
-    xacro_args: Optional[list[str]] = None,
-    meshdir: Optional[Path] = None,
+    output_path: Path | None = None,
+    xacro_args: list[str] | None = None,
+    meshdir: Path | None = None,
     generate_scene_file: bool = False,
     run_validation: bool = False,
     disable_parent_child_collision: bool = False,
@@ -840,7 +837,7 @@ def convert_urdf_to_mjcf(
     try:
         tmp_urdf.write_text(urdf_xml)
 
-        print(f"\nLoading URDF into MuJoCo...")
+        print("\nLoading URDF into MuJoCo...")
         model = mujoco.MjModel.from_xml_path(str(tmp_urdf))
     except mujoco.FatalError as e:
         print(f"Error: MuJoCo failed to compile URDF: {e}", file=sys.stderr)

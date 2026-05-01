@@ -22,7 +22,7 @@ def _check_header_matches_data(filepath: str) -> None:
     than the header, raise LegacyCsvError. This catches the legacy sensor_log
     case (header < data) without doing column padding.
     """
-    with open(filepath, "r") as f:
+    with open(filepath) as f:
         reader = csv.reader(f)
         header = next(reader, None)
         if header is None:

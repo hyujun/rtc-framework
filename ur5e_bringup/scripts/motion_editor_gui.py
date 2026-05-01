@@ -1,34 +1,35 @@
 #!/usr/bin/env python3
 
-import os
-import sys
 import json
+import os
 import signal
+import sys
+
 import numpy as np
+import rclpy
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QBrush, QColor, QFont
 from PyQt5.QtWidgets import (
     QApplication,
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
+    QDoubleSpinBox,
+    QFileDialog,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
+    QMainWindow,
+    QMessageBox,
     QPushButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
-    QGroupBox,
-    QSpinBox,
-    QDoubleSpinBox,
-    QFileDialog,
-    QMessageBox,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt5.QtCore import QTimer, Qt
-from PyQt5.QtGui import QBrush, QColor, QFont
-
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, String
+
 from rtc_msgs.msg import GuiPosition, RobotTarget
 
 # ── 상수 ──────────────────────────────────────────────────────────────────────
@@ -910,7 +911,7 @@ class MotionTab(QWidget):
         return filename
 
     def load_from_json(self, filename):
-        with open(filename, "r") as f:
+        with open(filename) as f:
             data = json.load(f)
 
         file_num_poses = data.get("num_poses", len(data.get("poses", {})))

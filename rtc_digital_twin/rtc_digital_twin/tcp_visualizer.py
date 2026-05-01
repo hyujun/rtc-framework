@@ -10,9 +10,9 @@ Follows the same pattern as SensorVisualizer.
 
 import math
 
-from visualization_msgs.msg import Marker, MarkerArray
-from geometry_msgs.msg import Point, Vector3, TransformStamped
+from geometry_msgs.msg import Point, TransformStamped, Vector3
 from std_msgs.msg import ColorRGBA
+from visualization_msgs.msg import Marker, MarkerArray
 
 
 class TcpVisualizer:

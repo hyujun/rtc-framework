@@ -8,22 +8,18 @@ from pathlib import Path
 import pytest
 
 from rtc_tools.conversion.urdf_to_mjcf import (
-    JointClassification,
-    JointInfo,
-    MimicParams,
-    classify_joints,
-    remove_closed_chain_joints,
-    resolve_robot_dir_paths,
-    postprocess_mjcf,
-    generate_scene,
-    _add_equality_constraints,
     _add_actuators,
+    _add_equality_constraints,
     _add_parent_child_collision_excludes,
     _clean_mesh_paths,
     _fix_compiler,
+    classify_joints,
+    generate_scene,
+    postprocess_mjcf,
+    remove_closed_chain_joints,
     resolve_mesh_paths,
+    resolve_robot_dir_paths,
 )
-
 
 # ════════════════════════════════════════════════════════════════════════════
 # Test URDF Fixtures

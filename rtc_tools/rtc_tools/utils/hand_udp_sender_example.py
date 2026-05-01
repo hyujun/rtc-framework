@@ -54,9 +54,8 @@ import socket
 import struct
 import sys
 import time
-from datetime import datetime
-
 from collections import deque
+from datetime import datetime
 
 import numpy as np
 
@@ -436,7 +435,7 @@ class HandUDPSender:
                 return False
             # Response mode 필드(offset 2)가 요청한 모드와 일치하는지 검증
             return data[2] == sensor_mode
-        except socket.timeout:
+        except TimeoutError:
             return False
 
     def initialize_sensors(self, max_retries: int = 5, retry_interval: float = 0.1) -> bool:
@@ -476,7 +475,7 @@ class HandUDPSender:
             data, _ = self.sock.recvfrom(512)
             _, _mode, positions, velocities, currents = decode_all_motor_response(data)
             return positions, velocities, currents
-        except socket.timeout:
+        except TimeoutError:
             return None
 
     def read_all_sensors(self, sensor_mode: int = SENSOR_MODE_RAW) -> tuple[list[int], int] | None:
@@ -496,7 +495,7 @@ class HandUDPSender:
             data, _ = self.sock.recvfrom(512)
             _, response_mode, values = decode_all_sensor_response(data)
             return values, response_mode
-        except socket.timeout:
+        except TimeoutError:
             return None
 
     def read_sensor(
@@ -777,7 +776,7 @@ class HandUDPSender:
             data, _ = self.sock.recvfrom(256)
             _, _mode, floats = decode_motor_response(data)
             return floats
-        except socket.timeout:
+        except TimeoutError:
             return None
 
     def _request_motor_read(
@@ -793,7 +792,7 @@ class HandUDPSender:
             data, _ = self.sock.recvfrom(256)
             _, _mode, floats = decode_motor_response(data)
             return floats
-        except socket.timeout:
+        except TimeoutError:
             return None
 
     def _request_sensor(
@@ -812,7 +811,7 @@ class HandUDPSender:
             data, _ = self.sock.recvfrom(256)
             _, response_mode, values = decode_sensor_response(data)
             return values, response_mode
-        except socket.timeout:
+        except TimeoutError:
             return None
 
     def close(self):
@@ -1428,7 +1427,7 @@ def example_poll_cycle_bulk(
     failure_detector = HandDataFailureDetector(motor_enabled=False, sensor_enabled=True)
     timing_stats = UdpTimingStats()
 
-    print(f"  WritePosition(43B↔43B) → ReadAllMotors(3B→123B) → ReadAllSensors(3B→259B)")
+    print("  WritePosition(43B↔43B) → ReadAllMotors(3B→123B) → ReadAllSensors(3B→259B)")
     print("Ctrl+C로 중지\n")
 
     try:
@@ -1507,7 +1506,7 @@ def example_read_only_bulk(
     failure_detector = HandDataFailureDetector(motor_enabled=False, sensor_enabled=True)
     timing_stats = UdpTimingStats()
 
-    print(f"  ReadAllMotors(3B→123B) → ReadAllSensors(3B→259B)")
+    print("  ReadAllMotors(3B→123B) → ReadAllSensors(3B→259B)")
     print("Ctrl+C로 중지\n")
 
     try:
