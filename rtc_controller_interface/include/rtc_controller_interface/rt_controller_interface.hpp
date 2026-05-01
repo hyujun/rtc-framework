@@ -5,11 +5,12 @@
 // This header re-exports them and adds the abstract Strategy interface.
 #include "rtc_base/threading/publish_buffer.hpp"
 #include "rtc_base/types/types.hpp"
+#include <rtc_msgs/msg/robot_target.hpp>
 
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/node_interfaces/lifecycle_node_interface.hpp>
 #include <rclcpp_lifecycle/state.hpp>
-#include <rtc_msgs/msg/robot_target.hpp>
+
 #include <yaml-cpp/yaml.h>
 
 #include <functional>
@@ -23,7 +24,7 @@
 namespace rtc_urdf_bridge {
 struct ModelConfig;
 class PinocchioModelBuilder;
-} // namespace rtc_urdf_bridge
+}  // namespace rtc_urdf_bridge
 
 namespace rtc {
 
@@ -33,19 +34,18 @@ namespace rtc {
 // All virtual methods are noexcept to guarantee real-time safety: any
 // exception thrown inside a 500 Hz timer would terminate the process.
 class RTControllerInterface {
-public:
+ public:
   ~RTControllerInterface();
 
-  RTControllerInterface(const RTControllerInterface &) = delete;
-  RTControllerInterface &operator=(const RTControllerInterface &) = delete;
-  RTControllerInterface(RTControllerInterface &&) = delete;
-  RTControllerInterface &operator=(RTControllerInterface &&) = delete;
+  RTControllerInterface(const RTControllerInterface&) = delete;
+  RTControllerInterface& operator=(const RTControllerInterface&) = delete;
+  RTControllerInterface(RTControllerInterface&&) = delete;
+  RTControllerInterface& operator=(RTControllerInterface&&) = delete;
 
   // Signature-equivalent to rclcpp_lifecycle so future inheritance migration
   // ("RTControllerInterface : public rclcpp_lifecycle::LifecycleNode") is a
   // near-mechanical change — see agent_docs/modification-guide.md.
-  using CallbackReturn =
-      rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+  using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
   // ── Lifecycle hooks (ros2_control-aligned signatures) ────────────────────
   //
@@ -75,41 +75,32 @@ public:
   // the switch_controller helper after a successful state read) populate the
   // snapshot so the controller's hold target is initialised in lockstep with
   // the activation, before any Compute() runs.
-  virtual CallbackReturn
-  on_configure(const rclcpp_lifecycle::State &previous_state,
-               rclcpp_lifecycle::LifecycleNode::SharedPtr node,
-               const YAML::Node &yaml_cfg) noexcept;
+  virtual CallbackReturn on_configure(const rclcpp_lifecycle::State& previous_state,
+                                      rclcpp_lifecycle::LifecycleNode::SharedPtr node,
+                                      const YAML::Node& yaml_cfg) noexcept;
 
-  virtual CallbackReturn
-  on_activate(const rclcpp_lifecycle::State &previous_state,
-              const ControllerState &device_snapshot) noexcept;
+  virtual CallbackReturn on_activate(const rclcpp_lifecycle::State& previous_state,
+                                     const ControllerState& device_snapshot) noexcept;
 
-  virtual CallbackReturn
-  on_deactivate(const rclcpp_lifecycle::State &previous_state) noexcept;
+  virtual CallbackReturn on_deactivate(const rclcpp_lifecycle::State& previous_state) noexcept;
 
-  virtual CallbackReturn
-  on_cleanup(const rclcpp_lifecycle::State &previous_state) noexcept;
+  virtual CallbackReturn on_cleanup(const rclcpp_lifecycle::State& previous_state) noexcept;
 
-  virtual CallbackReturn
-  on_shutdown(const rclcpp_lifecycle::State &previous_state) noexcept;
+  virtual CallbackReturn on_shutdown(const rclcpp_lifecycle::State& previous_state) noexcept;
 
-  virtual CallbackReturn
-  on_error(const rclcpp_lifecycle::State &previous_state) noexcept;
+  virtual CallbackReturn on_error(const rclcpp_lifecycle::State& previous_state) noexcept;
 
   // Controller-owned LifecycleNode accessor.  Non-null after on_configure
   // succeeds; null after on_cleanup.  Intended for CM to add the node to an
   // executor (aux_executor) for non-RT callback processing.
-  [[nodiscard]] rclcpp_lifecycle::LifecycleNode::SharedPtr
-  get_lifecycle_node() const noexcept {
+  [[nodiscard]] rclcpp_lifecycle::LifecycleNode::SharedPtr get_lifecycle_node() const noexcept {
     return node_;
   }
 
   // Compute one control step. Must be noexcept for RT safety.
-  [[nodiscard]] virtual ControllerOutput
-  Compute(const ControllerState &state) noexcept = 0;
+  [[nodiscard]] virtual ControllerOutput Compute(const ControllerState& state) noexcept = 0;
 
-  virtual void SetDeviceTarget(int device_idx,
-                               std::span<const double> target) noexcept = 0;
+  virtual void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept = 0;
 
   [[nodiscard]] virtual std::string_view Name() const noexcept = 0;
 
@@ -118,13 +109,15 @@ public:
   // Each controller implements this according to its own target format
   // (joint-space, task-space, etc.).  Called once from ControlLoop Phase 0
   // when state_received_ is true but target_received_ is false.
-  virtual void
-  InitializeHoldPosition(const ControllerState &state) noexcept = 0;
+  virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 
   // E-STOP interface — default no-ops for controllers that do not need it.
   virtual void TriggerEstop() noexcept {}
+
   virtual void ClearEstop() noexcept {}
+
   [[nodiscard]] virtual bool IsEstopped() const noexcept { return false; }
+
   virtual void SetHandEstop(bool /*enabled*/) noexcept {}
 
   // ── Extensibility hooks for the controller registry ──────────────────────
@@ -148,7 +141,7 @@ public:
     return CommandType::kPosition;
   }
 
-  virtual void LoadConfig(const YAML::Node &cfg);
+  virtual void LoadConfig(const YAML::Node& cfg);
 
   // Note: per-thread observability CSVs (CM RT loop, MPC solve timing, ...)
   // are owned by the producing thread itself — see rtc_base/timing/
@@ -160,9 +153,7 @@ public:
   //   Returns the per-controller topic configuration (subscribe/publish
   //   topics). Populated by LoadConfig() from the YAML "topics" section. If no
   //   "topics" section exists, returns the default topic set.
-  [[nodiscard]] const TopicConfig &GetTopicConfig() const noexcept {
-    return topic_config_;
-  }
+  [[nodiscard]] const TopicConfig& GetTopicConfig() const noexcept { return topic_config_; }
 
   // PublishNonRtSnapshot()
   //   Called from the non-RT publish thread after CM has drained the SPSC
@@ -176,9 +167,7 @@ public:
   //
   //   Must be noexcept — any allocation / exception would stall the publish
   //   thread. Must not touch device_target_ or other RT-written state.
-  virtual void PublishNonRtSnapshot(const PublishSnapshot &snap) noexcept {
-    (void)snap;
-  }
+  virtual void PublishNonRtSnapshot(const PublishSnapshot& snap) noexcept { (void)snap; }
 
   // SetTargetReceivedNotifier()
   //   Injected by CM before on_configure. Controllers that move target
@@ -199,8 +188,8 @@ public:
   //   Dispatches via SetDeviceTarget(device_idx, ordered_span) and invokes
   //   NotifyTargetReceived(). `device_idx` is the controller-local group
   //   index (position in topic_config_.groups).
-  void DeliverTargetMessage(const std::string &group_name, int device_idx,
-                            const rtc_msgs::msg::RobotTarget &msg) noexcept;
+  void DeliverTargetMessage(const std::string& group_name, int device_idx,
+                            const rtc_msgs::msg::RobotTarget& msg) noexcept;
 
   // ── Device name configuration ──────────────────────────────────────────
   //   SetDeviceNameConfigs() is called by RtControllerNode after all
@@ -212,8 +201,8 @@ public:
     OnDeviceConfigsSet();
   }
 
-  [[nodiscard]] const DeviceNameConfig *
-  GetDeviceNameConfig(const std::string &device_name) const noexcept {
+  [[nodiscard]] const DeviceNameConfig* GetDeviceNameConfig(
+      const std::string& device_name) const noexcept {
     auto it = device_name_configs_.find(device_name);
     return (it != device_name_configs_.end()) ? &it->second : nullptr;
   }
@@ -237,9 +226,8 @@ public:
   //   (sub_models, tree_models, passive_joints) parsed from the top-level
   //   "urdf:" YAML section.  Controllers can override OnSystemModelConfigSet()
   //   to build Pinocchio models from the shared config.
-  void SetSystemModelConfig(const rtc_urdf_bridge::ModelConfig &config);
-  [[nodiscard]] const rtc_urdf_bridge::ModelConfig *
-  GetSystemModelConfig() const noexcept;
+  void SetSystemModelConfig(const rtc_urdf_bridge::ModelConfig& config);
+  [[nodiscard]] const rtc_urdf_bridge::ModelConfig* GetSystemModelConfig() const noexcept;
 
   // Optional shared PinocchioModelBuilder. RtControllerNode builds a single
   // PinocchioModelBuilder from the system URDF + sub/tree topology and shares
@@ -249,16 +237,17 @@ public:
   // their own from GetSystemModelConfig().
   void SetSharedModelBuilder(
       std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> builder) noexcept;
-  [[nodiscard]] std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder>
-  GetSharedModelBuilder() const noexcept;
+  [[nodiscard]] std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> GetSharedModelBuilder()
+      const noexcept;
 
   // Set the control loop rate (Hz). Called by the manager at init time.
   void SetControlRate(double hz) noexcept { control_rate_ = hz; }
+
   [[nodiscard]] double GetDefaultDt() const noexcept {
     return (control_rate_ > 0.0) ? (1.0 / control_rate_) : 0.002;
   }
 
-protected:
+ protected:
   RTControllerInterface();
 
   // Called after SetDeviceNameConfigs(). Override to resolve URDF-based
@@ -272,12 +261,12 @@ protected:
   // Parses the "topics" section of a controller YAML node.
   // Called by the base LoadConfig(); subclasses that override LoadConfig()
   // should call RTControllerInterface::LoadConfig(cfg) to inherit this.
-  static TopicConfig ParseTopicConfig(const YAML::Node &topics_node);
+  static TopicConfig ParseTopicConfig(const YAML::Node& topics_node);
 
   // Default topic configuration — device_name determines topic namespace.
   // Caller must supply a non-empty device name (rtc_* stays robot-agnostic;
   // robot-specific bringups own the device name).
-  static TopicConfig MakeDefaultTopicConfig(const std::string &device_name);
+  static TopicConfig MakeDefaultTopicConfig(const std::string& device_name);
 
   TopicConfig topic_config_;
   std::map<std::string, DeviceNameConfig> device_name_configs_;
@@ -301,10 +290,10 @@ protected:
     }
   }
 
-private:
+ private:
   std::function<void()> target_received_notifier_;
 };
 
-} // namespace rtc
+}  // namespace rtc
 
-#endif // RTC_CONTROLLER_INTERFACE_RT_CONTROLLER_INTERFACE_H_
+#endif  // RTC_CONTROLLER_INTERFACE_RT_CONTROLLER_INTERFACE_H_

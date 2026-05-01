@@ -16,21 +16,21 @@ namespace rtc::test {
 
 inline MuJoCoSimulator::Config MakeMinimalConfig() {
   MuJoCoSimulator::Config cfg;
-  cfg.model_path          = MINIMAL_MJCF_PATH;
-  cfg.enable_viewer       = false;
-  cfg.sync_timeout_ms     = 10.0;
-  cfg.max_rtf             = 0.0;
-  cfg.n_substeps          = 1;
+  cfg.model_path = MINIMAL_MJCF_PATH;
+  cfg.enable_viewer = false;
+  cfg.sync_timeout_ms = 10.0;
+  cfg.max_rtf = 0.0;
+  cfg.n_substeps = 1;
   cfg.viewer_refresh_rate = 60.0;
   cfg.use_yaml_servo_gains = false;
 
   JointGroupConfig g;
-  g.name                 = "arm";
-  g.command_joint_names  = {"j1", "j2"};
-  g.state_joint_names    = {"j1", "j2"};
-  g.command_topic        = "/arm/cmd";
-  g.state_topic          = "/arm/state";
-  g.is_robot             = true;
+  g.name = "arm";
+  g.command_joint_names = {"j1", "j2"};
+  g.state_joint_names = {"j1", "j2"};
+  g.command_topic = "/arm/cmd";
+  g.state_topic = "/arm/state";
+  g.is_robot = true;
   cfg.groups.push_back(g);
 
   return cfg;

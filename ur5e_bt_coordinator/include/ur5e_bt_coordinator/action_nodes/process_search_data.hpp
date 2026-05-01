@@ -33,14 +33,14 @@ namespace rtc_bt {
 /// Output ports:
 ///   - output_pose (Pose6D): task controller goal [x, y, z, roll, pitch, yaw]
 class ProcessSearchData : public BT::SyncActionNode {
-public:
+ public:
   ProcessSearchData(const std::string& name, const BT::NodeConfig& config,
                     std::shared_ptr<BtRosBridge> bridge);
 
   static BT::PortsList providedPorts();
   BT::NodeStatus tick() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
 };
 

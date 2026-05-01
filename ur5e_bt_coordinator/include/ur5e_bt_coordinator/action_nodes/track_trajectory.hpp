@@ -20,7 +20,7 @@ namespace rtc_bt {
 ///   - position_tolerance (double): per-waypoint tolerance [m] (default 0.01)
 ///   - timeout_s (double): total timeout [s] (default 30.0)
 class TrackTrajectory : public BT::StatefulActionNode {
-public:
+ public:
   TrackTrajectory(const std::string& name, const BT::NodeConfig& config,
                   std::shared_ptr<BtRosBridge> bridge);
 
@@ -30,7 +30,7 @@ public:
   BT::NodeStatus onRunning() override;
   void onHalted() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
   std::vector<Pose6D> waypoints_;
   std::size_t current_idx_{0};

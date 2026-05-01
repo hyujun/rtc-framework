@@ -1,4 +1,5 @@
 #include "rtc_controller_interface/rt_controller_interface.hpp"
+
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/types.hpp"
 
@@ -45,22 +46,22 @@ const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
 };
 
 // Infer DeviceCapability bitmask from subscribe roles.
-uint16_t InferCapability(const DeviceTopicGroup &group) {
+uint16_t InferCapability(const DeviceTopicGroup& group) {
   uint16_t cap = static_cast<uint16_t>(DeviceCapability::kNone);
-  for (const auto &entry : group.subscribe) {
+  for (const auto& entry : group.subscribe) {
     switch (entry.role) {
-    case SubscribeRole::kState:
-      cap |= static_cast<uint16_t>(DeviceCapability::kJointState);
-      break;
-    case SubscribeRole::kMotorState:
-      cap |= static_cast<uint16_t>(DeviceCapability::kMotorState);
-      break;
-    case SubscribeRole::kSensorState:
-      cap |= static_cast<uint16_t>(DeviceCapability::kSensorData) |
-             static_cast<uint16_t>(DeviceCapability::kInference);
-      break;
-    case SubscribeRole::kTarget:
-      break;
+      case SubscribeRole::kState:
+        cap |= static_cast<uint16_t>(DeviceCapability::kJointState);
+        break;
+      case SubscribeRole::kMotorState:
+        cap |= static_cast<uint16_t>(DeviceCapability::kMotorState);
+        break;
+      case SubscribeRole::kSensorState:
+        cap |= static_cast<uint16_t>(DeviceCapability::kSensorData) |
+               static_cast<uint16_t>(DeviceCapability::kInference);
+        break;
+      case SubscribeRole::kTarget:
+        break;
     }
   }
   return cap;
@@ -68,7 +69,7 @@ uint16_t InferCapability(const DeviceTopicGroup &group) {
 
 // Parse the optional "ownership" field on a subscribe/publish entry.
 // Missing → kManager; unknown string → runtime_error.
-TopicOwnership ParseOwnership(const YAML::Node &entry) {
+TopicOwnership ParseOwnership(const YAML::Node& entry) {
   if (!entry["ownership"]) {
     return TopicOwnership::kManager;
   }
@@ -83,10 +84,9 @@ TopicOwnership ParseOwnership(const YAML::Node &entry) {
 }
 
 // Parse subscribe/publish arrays from a YAML device group node (ur5e or hand).
-void ParseDeviceTopicGroup(const YAML::Node &group_node,
-                           DeviceTopicGroup &out) {
+void ParseDeviceTopicGroup(const YAML::Node& group_node, DeviceTopicGroup& out) {
   if (group_node["subscribe"] && group_node["subscribe"].IsSequence()) {
-    for (const auto &entry : group_node["subscribe"]) {
+    for (const auto& entry : group_node["subscribe"]) {
       const auto topic = entry["topic"].as<std::string>();
       const auto role_str = entry["role"].as<std::string>();
       auto it = kSubscribeRoleMap.find(role_str);
@@ -98,7 +98,7 @@ void ParseDeviceTopicGroup(const YAML::Node &group_node,
   }
 
   if (group_node["publish"] && group_node["publish"].IsSequence()) {
-    for (const auto &entry : group_node["publish"]) {
+    for (const auto& entry : group_node["publish"]) {
       const auto topic = entry["topic"].as<std::string>();
       const auto role_str = entry["role"].as<std::string>();
       auto it = kPublishRoleMap.find(role_str);
@@ -109,8 +109,7 @@ void ParseDeviceTopicGroup(const YAML::Node &group_node,
       if (entry["data_size"]) {
         data_size = entry["data_size"].as<int>();
       }
-      out.publish.push_back(
-          {topic, it->second, data_size, ParseOwnership(entry)});
+      out.publish.push_back({topic, it->second, data_size, ParseOwnership(entry)});
     }
   }
 
@@ -118,7 +117,7 @@ void ParseDeviceTopicGroup(const YAML::Node &group_node,
   out.capability = InferCapability(out);
 }
 
-} // namespace
+}  // namespace
 
 RTControllerInterface::RTControllerInterface() : topic_config_{} {}
 
@@ -130,32 +129,29 @@ RTControllerInterface::~RTControllerInterface() = default;
 // exceptions and report FAILURE via CallbackReturn.
 
 RTControllerInterface::CallbackReturn RTControllerInterface::on_configure(
-    const rclcpp_lifecycle::State & /*previous_state*/,
-    rclcpp_lifecycle::LifecycleNode::SharedPtr node,
-    const YAML::Node &yaml_cfg) noexcept {
+    const rclcpp_lifecycle::State& /*previous_state*/,
+    rclcpp_lifecycle::LifecycleNode::SharedPtr node, const YAML::Node& yaml_cfg) noexcept {
   if (!node) {
     return CallbackReturn::FAILURE;
   }
   node_ = std::move(node);
   try {
     LoadConfig(yaml_cfg);
-  } catch (const std::exception &e) {
-    RCLCPP_ERROR(rclcpp::get_logger("rtc_controller_interface"),
-                 "[%s] LoadConfig failed: %s", std::string(Name()).c_str(),
-                 e.what());
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(rclcpp::get_logger("rtc_controller_interface"), "[%s] LoadConfig failed: %s",
+                 std::string(Name()).c_str(), e.what());
     return CallbackReturn::FAILURE;
   } catch (...) {
     RCLCPP_ERROR(rclcpp::get_logger("rtc_controller_interface"),
-                 "[%s] LoadConfig failed: unknown exception",
-                 std::string(Name()).c_str());
+                 "[%s] LoadConfig failed: unknown exception", std::string(Name()).c_str());
     return CallbackReturn::FAILURE;
   }
   return CallbackReturn::SUCCESS;
 }
 
 RTControllerInterface::CallbackReturn RTControllerInterface::on_activate(
-    const rclcpp_lifecycle::State & /*previous_state*/,
-    const ControllerState &device_snapshot) noexcept {
+    const rclcpp_lifecycle::State& /*previous_state*/,
+    const ControllerState& device_snapshot) noexcept {
   if (device_snapshot.num_devices > 0) {
     InitializeHoldPosition(device_snapshot);
   }
@@ -163,34 +159,32 @@ RTControllerInterface::CallbackReturn RTControllerInterface::on_activate(
 }
 
 RTControllerInterface::CallbackReturn RTControllerInterface::on_deactivate(
-    const rclcpp_lifecycle::State & /*previous_state*/) noexcept {
+    const rclcpp_lifecycle::State& /*previous_state*/) noexcept {
   return CallbackReturn::SUCCESS;
 }
 
 RTControllerInterface::CallbackReturn RTControllerInterface::on_cleanup(
-    const rclcpp_lifecycle::State & /*previous_state*/) noexcept {
+    const rclcpp_lifecycle::State& /*previous_state*/) noexcept {
   node_.reset();
   return CallbackReturn::SUCCESS;
 }
 
 RTControllerInterface::CallbackReturn RTControllerInterface::on_shutdown(
-    const rclcpp_lifecycle::State &previous_state) noexcept {
+    const rclcpp_lifecycle::State& previous_state) noexcept {
   return on_cleanup(previous_state);
 }
 
 RTControllerInterface::CallbackReturn RTControllerInterface::on_error(
-    const rclcpp_lifecycle::State & /*previous_state*/) noexcept {
+    const rclcpp_lifecycle::State& /*previous_state*/) noexcept {
   return CallbackReturn::SUCCESS;
 }
 
-void RTControllerInterface::SetSystemModelConfig(
-    const rtc_urdf_bridge::ModelConfig &config) {
+void RTControllerInterface::SetSystemModelConfig(const rtc_urdf_bridge::ModelConfig& config) {
   system_model_config_ = std::make_unique<rtc_urdf_bridge::ModelConfig>(config);
   OnSystemModelConfigSet();
 }
 
-const rtc_urdf_bridge::ModelConfig *
-RTControllerInterface::GetSystemModelConfig() const noexcept {
+const rtc_urdf_bridge::ModelConfig* RTControllerInterface::GetSystemModelConfig() const noexcept {
   return system_model_config_.get();
 }
 
@@ -204,8 +198,7 @@ RTControllerInterface::GetSharedModelBuilder() const noexcept {
   return shared_model_builder_;
 }
 
-TopicConfig
-RTControllerInterface::MakeDefaultTopicConfig(const std::string &device_name) {
+TopicConfig RTControllerInterface::MakeDefaultTopicConfig(const std::string& device_name) {
   TopicConfig cfg;
   const std::string ns = "/" + device_name;
 
@@ -226,8 +219,7 @@ RTControllerInterface::MakeDefaultTopicConfig(const std::string &device_name) {
   return cfg;
 }
 
-TopicConfig
-RTControllerInterface::ParseTopicConfig(const YAML::Node &topics_node) {
+TopicConfig RTControllerInterface::ParseTopicConfig(const YAML::Node& topics_node) {
   // ── Detect deprecated flat format (topics.subscribe exists directly) ──
   if (topics_node["subscribe"] && topics_node["subscribe"].IsSequence()) {
     throw std::runtime_error(
@@ -251,10 +243,9 @@ RTControllerInterface::ParseTopicConfig(const YAML::Node &topics_node) {
   return cfg;
 }
 
-void RTControllerInterface::DeliverTargetMessage(
-    const std::string &group_name, int device_idx,
-    const rtc_msgs::msg::RobotTarget &msg) noexcept {
-  const double *data_ptr = nullptr;
+void RTControllerInterface::DeliverTargetMessage(const std::string& group_name, int device_idx,
+                                                 const rtc_msgs::msg::RobotTarget& msg) noexcept {
+  const double* data_ptr = nullptr;
   int data_size = 0;
 
   if (msg.goal_type == "task") {
@@ -269,16 +260,15 @@ void RTControllerInterface::DeliverTargetMessage(
   }
 
   std::array<double, kMaxDeviceChannels> reordered{};
-  const double *ordered_ptr = data_ptr;
+  const double* ordered_ptr = data_ptr;
   int ordered_size = data_size;
 
   if (msg.goal_type != "task" && !msg.joint_names.empty()) {
     auto cfg_it = device_name_configs_.find(group_name);
     if (cfg_it != device_name_configs_.end()) {
-      const auto &ref_names = cfg_it->second.joint_state_names;
+      const auto& ref_names = cfg_it->second.joint_state_names;
       if (!ref_names.empty()) {
-        for (std::size_t mi = 0;
-             mi < msg.joint_names.size() && mi < msg.joint_target.size();
+        for (std::size_t mi = 0; mi < msg.joint_names.size() && mi < msg.joint_target.size();
              ++mi) {
           for (std::size_t ri = 0; ri < ref_names.size(); ++ri) {
             if (msg.joint_names[mi] == ref_names[ri]) {
@@ -288,19 +278,17 @@ void RTControllerInterface::DeliverTargetMessage(
           }
         }
         ordered_ptr = reordered.data();
-        ordered_size =
-            std::min(static_cast<int>(ref_names.size()), kMaxDeviceChannels);
+        ordered_size = std::min(static_cast<int>(ref_names.size()), kMaxDeviceChannels);
       }
     }
   }
 
   const int n = std::min(ordered_size, kMaxDeviceChannels);
-  SetDeviceTarget(device_idx, std::span<const double>(
-                                  ordered_ptr, static_cast<std::size_t>(n)));
+  SetDeviceTarget(device_idx, std::span<const double>(ordered_ptr, static_cast<std::size_t>(n)));
   NotifyTargetReceived();
 }
 
-void RTControllerInterface::LoadConfig(const YAML::Node &cfg) {
+void RTControllerInterface::LoadConfig(const YAML::Node& cfg) {
   if (!cfg) {
     return;
   }
@@ -320,4 +308,4 @@ void RTControllerInterface::LoadConfig(const YAML::Node &cfg) {
   }
 }
 
-} // namespace rtc
+}  // namespace rtc

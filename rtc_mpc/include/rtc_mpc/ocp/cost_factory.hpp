@@ -73,9 +73,9 @@ struct StageCost {
 enum class CostFactoryError {
   kNoError = 0,
   kModelNotInitialised,
-  kInvalidCostConfig,            ///< horizon_length <= 0 or dt <= 0
-  kPostureRefDimMismatch,        ///< q_posture_ref.size() != nq
-  kAligatorInstantiationFailure, ///< an Aligator ctor threw
+  kInvalidCostConfig,             ///< horizon_length <= 0 or dt <= 0
+  kPostureRefDimMismatch,         ///< q_posture_ref.size() != nq
+  kAligatorInstantiationFailure,  ///< an Aligator ctor threw
 };
 
 namespace cost_factory {
@@ -94,21 +94,20 @@ namespace cost_factory {
 ///                         on success, otherwise the first failure cause.
 /// @return A `StageCost` bundle. On error, the returned stack is empty and
 ///         all keys are false.
-[[nodiscard]] StageCost BuildRunningCost(const PhaseCostConfig &cfg,
-                                         const RobotModelHandler &model,
-                                         const pinocchio::SE3 &ee_target,
-                                         CostFactoryError *out_error) noexcept;
+[[nodiscard]] StageCost BuildRunningCost(const PhaseCostConfig& cfg, const RobotModelHandler& model,
+                                         const pinocchio::SE3& ee_target,
+                                         CostFactoryError* out_error) noexcept;
 
 /// @brief Terminal-stage cost: frame placement + state reg only. Control
 ///        reg and any `u`-dependent residuals are absent (the terminal
 ///        cost takes `x` only).
-[[nodiscard]] StageCost BuildTerminalCost(const PhaseCostConfig &cfg,
-                                          const RobotModelHandler &model,
-                                          const pinocchio::SE3 &ee_target,
-                                          CostFactoryError *out_error) noexcept;
+[[nodiscard]] StageCost BuildTerminalCost(const PhaseCostConfig& cfg,
+                                          const RobotModelHandler& model,
+                                          const pinocchio::SE3& ee_target,
+                                          CostFactoryError* out_error) noexcept;
 
-} // namespace cost_factory
+}  // namespace cost_factory
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc
 
-#endif // RTC_MPC_OCP_COST_FACTORY_HPP_
+#endif  // RTC_MPC_OCP_COST_FACTORY_HPP_

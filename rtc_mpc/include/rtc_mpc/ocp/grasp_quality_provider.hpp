@@ -69,9 +69,9 @@
 /// override so that Aligator's no-throw contract for stage construction
 /// propagates through the provider.
 
-#include "rtc_mpc/ocp/cost_factory.hpp"     // StageCost
-#include "rtc_mpc/ocp/ocp_handler_base.hpp" // OCPBuildError
-#include "rtc_mpc/phase/phase_context.hpp"  // PhaseContext
+#include "rtc_mpc/ocp/cost_factory.hpp"      // StageCost
+#include "rtc_mpc/ocp/ocp_handler_base.hpp"  // OCPBuildError
+#include "rtc_mpc/phase/phase_context.hpp"   // PhaseContext
 
 #include <string_view>
 #include <vector>
@@ -86,12 +86,11 @@ class RobotModelHandler;
 /// Phase 4 ships this interface with no concrete subclass; Phase 4.5+ will
 /// deliver the first implementation once a real consumer exists.
 class GraspQualityResidualProvider {
-public:
+ public:
   virtual ~GraspQualityResidualProvider() = default;
 
-  GraspQualityResidualProvider(const GraspQualityResidualProvider &) = delete;
-  GraspQualityResidualProvider &
-  operator=(const GraspQualityResidualProvider &) = delete;
+  GraspQualityResidualProvider(const GraspQualityResidualProvider&) = delete;
+  GraspQualityResidualProvider& operator=(const GraspQualityResidualProvider&) = delete;
 
   /// @brief Append grasp-quality residual(s) to a running stage's cost.
   ///
@@ -115,8 +114,8 @@ public:
   /// @return kNoError on success; any other value causes the surrounding
   ///         `Build` to abort and return the same code to the caller.
   [[nodiscard]] virtual OCPBuildError AppendRunningCost(
-      StageCost &stage_cost, const RobotModelHandler &model,
-      const std::vector<int> &active_contact_frame_ids) noexcept = 0;
+      StageCost& stage_cost, const RobotModelHandler& model,
+      const std::vector<int>& active_contact_frame_ids) noexcept = 0;
 
   /// @brief Optional: append grasp-quality residuals to the terminal cost.
   ///
@@ -126,8 +125,8 @@ public:
   /// is a no-op (returns `kNoError`) for providers that do not need a
   /// terminal contribution.
   [[nodiscard]] virtual OCPBuildError AppendTerminalCost(
-      StageCost & /*stage_cost*/, const RobotModelHandler & /*model*/,
-      const std::vector<int> & /*active_contact_frame_ids*/) noexcept {
+      StageCost& /*stage_cost*/, const RobotModelHandler& /*model*/,
+      const std::vector<int>& /*active_contact_frame_ids*/) noexcept {
     return OCPBuildError::kNoError;
   }
 
@@ -138,15 +137,15 @@ public:
   /// must retrieve their residual handles via the polymorphic chain
   /// (see ownership contract) and mutate them alloc-free. Default
   /// implementation is a no-op for providers that only depend on topology.
-  virtual void UpdateReferences(const PhaseContext & /*ctx*/) noexcept {}
+  virtual void UpdateReferences(const PhaseContext& /*ctx*/) noexcept {}
 
   /// @brief Short identifier used in log lines and error diagnostics.
   ///        Must be stable for the lifetime of the provider. Example:
   ///        `"force_closure_v1"`.
   [[nodiscard]] virtual std::string_view Name() const noexcept = 0;
 
-protected:
+ protected:
   GraspQualityResidualProvider() = default;
 };
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc

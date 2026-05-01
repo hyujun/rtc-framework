@@ -2,9 +2,9 @@
 //
 // Tier 1: Pure computation, no ROS2 or network dependencies.
 
-#include <gtest/gtest.h>
-
 #include "ur5e_hand_driver/hand_timing_profiler.hpp"
+
+#include <gtest/gtest.h>
 
 #include <string>
 
@@ -12,8 +12,7 @@ namespace rtc::test {
 
 // ── Initial state ───────────────────────────────────────────────────────────
 
-TEST(HandTimingProfiler, InitialState_Empty)
-{
+TEST(HandTimingProfiler, InitialState_Empty) {
   HandTimingProfiler profiler;
   const auto stats = profiler.GetStats();
 
@@ -25,8 +24,7 @@ TEST(HandTimingProfiler, InitialState_Empty)
   EXPECT_FALSE(stats.is_bulk_mode);
 }
 
-TEST(HandTimingProfiler, Summary_Empty)
-{
+TEST(HandTimingProfiler, Summary_Empty) {
   HandTimingProfiler profiler;
   const auto summary = profiler.Summary();
   EXPECT_NE(summary.find("no data"), std::string::npos);
@@ -54,8 +52,7 @@ class IndividualModeTest : public ::testing::Test {
   HandTimingProfiler profiler_;
 };
 
-TEST_F(IndividualModeTest, SingleUpdate)
-{
+TEST_F(IndividualModeTest, SingleUpdate) {
   const auto s = profiler_.GetStats();
 
   EXPECT_EQ(s.count, 1u);
@@ -70,8 +67,7 @@ TEST_F(IndividualModeTest, SingleUpdate)
   EXPECT_DOUBLE_EQ(s.read_sensor.mean_us, 300.0);
 }
 
-TEST_F(IndividualModeTest, MultipleUpdates_MinMax)
-{
+TEST_F(IndividualModeTest, MultipleUpdates_MinMax) {
   // Second update with different values
   HandTimingProfiler::PhaseTiming pt2;
   pt2.write_us = 50.0;
@@ -102,8 +98,7 @@ TEST_F(IndividualModeTest, MultipleUpdates_MinMax)
   EXPECT_EQ(s.sensor_cycle_count, 1u);
 }
 
-TEST(HandTimingProfiler, NonSensorCycle_SensorStatsUnchanged)
-{
+TEST(HandTimingProfiler, NonSensorCycle_SensorStatsUnchanged) {
   HandTimingProfiler profiler;
 
   HandTimingProfiler::PhaseTiming pt;
@@ -126,8 +121,7 @@ TEST(HandTimingProfiler, NonSensorCycle_SensorStatsUnchanged)
 
 // ── Bulk mode ───────────────────────────────────────────────────────────────
 
-TEST(HandTimingProfiler, BulkMode_SingleUpdate)
-{
+TEST(HandTimingProfiler, BulkMode_SingleUpdate) {
   HandTimingProfiler profiler;
 
   HandTimingProfiler::PhaseTiming pt;
@@ -154,8 +148,7 @@ TEST(HandTimingProfiler, BulkMode_SingleUpdate)
   EXPECT_EQ(s.sensor_cycle_count, 1u);
 }
 
-TEST(HandTimingProfiler, BulkMode_NonSensorCycle)
-{
+TEST(HandTimingProfiler, BulkMode_NonSensorCycle) {
   HandTimingProfiler profiler;
 
   HandTimingProfiler::PhaseTiming pt;
@@ -176,8 +169,7 @@ TEST(HandTimingProfiler, BulkMode_NonSensorCycle)
 
 // ── FT inference tracking ───────────────────────────────────────────────────
 
-TEST(HandTimingProfiler, FTInfer_TrackedWhenPositive)
-{
+TEST(HandTimingProfiler, FTInfer_TrackedWhenPositive) {
   HandTimingProfiler profiler;
 
   HandTimingProfiler::PhaseTiming pt{};
@@ -191,8 +183,7 @@ TEST(HandTimingProfiler, FTInfer_TrackedWhenPositive)
   EXPECT_DOUBLE_EQ(s.ft_infer.mean_us, 150.0);
 }
 
-TEST(HandTimingProfiler, FTInfer_IgnoredWhenZero)
-{
+TEST(HandTimingProfiler, FTInfer_IgnoredWhenZero) {
   HandTimingProfiler profiler;
 
   HandTimingProfiler::PhaseTiming pt{};
@@ -206,8 +197,7 @@ TEST(HandTimingProfiler, FTInfer_IgnoredWhenZero)
 
 // ── Sensor processing phase ─────────────────────────────────────────────────
 
-TEST(HandTimingProfiler, SensorProc_TrackedOnSensorCycle)
-{
+TEST(HandTimingProfiler, SensorProc_TrackedOnSensorCycle) {
   HandTimingProfiler profiler;
 
   HandTimingProfiler::PhaseTiming pt{};
@@ -220,8 +210,7 @@ TEST(HandTimingProfiler, SensorProc_TrackedOnSensorCycle)
   EXPECT_DOUBLE_EQ(s.sensor_proc.mean_us, 42.0);
 }
 
-TEST(HandTimingProfiler, SensorProc_NotTrackedOnNonSensorCycle)
-{
+TEST(HandTimingProfiler, SensorProc_NotTrackedOnNonSensorCycle) {
   HandTimingProfiler profiler;
 
   HandTimingProfiler::PhaseTiming pt{};
@@ -236,8 +225,7 @@ TEST(HandTimingProfiler, SensorProc_NotTrackedOnNonSensorCycle)
 
 // ── Reset ───────────────────────────────────────────────────────────────────
 
-TEST(HandTimingProfiler, Reset_ClearsAll)
-{
+TEST(HandTimingProfiler, Reset_ClearsAll) {
   HandTimingProfiler profiler;
 
   HandTimingProfiler::PhaseTiming pt;
@@ -265,8 +253,7 @@ TEST(HandTimingProfiler, Reset_ClearsAll)
 
 // ── Summary strings ─────────────────────────────────────────────────────────
 
-TEST(HandTimingProfiler, Summary_IndividualMode)
-{
+TEST(HandTimingProfiler, Summary_IndividualMode) {
   HandTimingProfiler profiler;
 
   HandTimingProfiler::PhaseTiming pt{};
@@ -284,8 +271,7 @@ TEST(HandTimingProfiler, Summary_IndividualMode)
   EXPECT_EQ(summary.find("[bulk]"), std::string::npos);
 }
 
-TEST(HandTimingProfiler, Summary_BulkMode)
-{
+TEST(HandTimingProfiler, Summary_BulkMode) {
   HandTimingProfiler profiler;
 
   HandTimingProfiler::PhaseTiming pt{};
@@ -300,8 +286,7 @@ TEST(HandTimingProfiler, Summary_BulkMode)
   EXPECT_NE(summary.find("[bulk]"), std::string::npos);
 }
 
-TEST(HandTimingProfiler, Summary_WithFTInfer)
-{
+TEST(HandTimingProfiler, Summary_WithFTInfer) {
   HandTimingProfiler profiler;
 
   HandTimingProfiler::PhaseTiming pt{};

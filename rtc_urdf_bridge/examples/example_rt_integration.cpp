@@ -48,8 +48,7 @@
 
 namespace rub = rtc_urdf_bridge;
 
-int main(int argc, char * argv[])
-{
+int main(int argc, char* argv[]) {
   if (argc < 2) {
     std::cerr << "사용법: " << argv[0] << " <yaml_config_path>\n";
     return EXIT_FAILURE;
@@ -62,7 +61,7 @@ int main(int argc, char * argv[])
 
   // (1) YAML 설정 → 모델 구축
   rub::PinocchioModelBuilder builder(argv[1]);
-  const auto & analyzer = builder.GetAnalyzer();
+  const auto& analyzer = builder.GetAnalyzer();
 
   std::cout << "URDF 루트 링크: " << analyzer.GetRootLinkName() << "\n";
   std::cout << "Active 관절 수: " << analyzer.GetActiveJointNames().size() << "\n";
@@ -75,26 +74,24 @@ int main(int argc, char * argv[])
   // (3) YAML에 정의된 서브모델별 handle 동적 생성 (이름 하드코딩 없음)
   //     pin::Model 수명 > RtModelHandle 수명 (Builder scope > handle map scope)
   std::map<std::string, rub::RtModelHandle> sub_handles;
-  for (const auto & name : builder.GetSubModelNames()) {
+  for (const auto& name : builder.GetSubModelNames()) {
     auto model = builder.GetReducedModel(name);
     sub_handles.emplace(name, rub::RtModelHandle(model));
-    std::cout << "서브모델 '" << name << "': nq=" << model->nq
-              << ", nv=" << model->nv << "\n";
+    std::cout << "서브모델 '" << name << "': nq=" << model->nq << ", nv=" << model->nv << "\n";
   }
 
   // (4) YAML에 정의된 트리모델별 handle
   std::map<std::string, rub::RtModelHandle> tree_handles;
-  for (const auto & name : builder.GetTreeModelNames()) {
+  for (const auto& name : builder.GetTreeModelNames()) {
     auto model = builder.GetTreeModel(name);
     tree_handles.emplace(name, rub::RtModelHandle(model));
-    std::cout << "트리모델 '" << name << "': nq=" << model->nq
-              << ", nv=" << model->nv << "\n";
+    std::cout << "트리모델 '" << name << "': nq=" << model->nq << ", nv=" << model->nv << "\n";
   }
 
   // (5) Tool frame ID 캐싱 (RT 루프에서 문자열 검색 방지)
   auto tool_frame_id = static_cast<pinocchio::FrameIndex>(full_model->nframes - 1);
-  std::cout << "Tool frame: " << full_model->frames[tool_frame_id].name
-            << " (id=" << tool_frame_id << ")\n";
+  std::cout << "Tool frame: " << full_model->frames[tool_frame_id].name << " (id=" << tool_frame_id
+            << ")\n";
 
   // (6) 제어 파라미터 설정 (예제용 하드코딩)
   const int nv = full_handle.nv();
@@ -129,7 +126,7 @@ int main(int argc, char * argv[])
       double freq = 0.5 + 0.1 * static_cast<double>(i);
       q_sensor[static_cast<std::size_t>(i)] = 0.3 * std::sin(2.0 * M_PI * freq * t);
       v_sensor[static_cast<std::size_t>(i)] =
-        0.3 * 2.0 * M_PI * freq * std::cos(2.0 * M_PI * freq * t);
+          0.3 * 2.0 * M_PI * freq * std::cos(2.0 * M_PI * freq * t);
     }
 
     // 목표 설정값
@@ -141,18 +138,16 @@ int main(int argc, char * argv[])
     full_handle.ComputeForwardKinematics(q_sensor, v_sensor);  // noexcept
     full_handle.ComputeJacobians(q_sensor);                    // noexcept
     full_handle.GetFrameJacobian(                              // noexcept
-      tool_frame_id, pinocchio::LOCAL_WORLD_ALIGNED, J);
-    full_handle.ComputeNonLinearEffects(q_sensor, v_sensor);   // noexcept
+        tool_frame_id, pinocchio::LOCAL_WORLD_ALIGNED, J);
+    full_handle.ComputeNonLinearEffects(q_sensor, v_sensor);  // noexcept
 
     auto nle = full_handle.GetNonLinearEffects();
 
     // ── (3) 제어 법칙 A: Joint-space impedance ──────────────────────────────
     // τ = nle + Kp·(q_des - q) + Kd·(v_des - v)
     for (int i = 0; i < nv; ++i) {
-      double eq = q_des[static_cast<std::size_t>(i)] -
-                  q_sensor[static_cast<std::size_t>(i)];
-      double ev = v_des[static_cast<std::size_t>(i)] -
-                  v_sensor[static_cast<std::size_t>(i)];
+      double eq = q_des[static_cast<std::size_t>(i)] - q_sensor[static_cast<std::size_t>(i)];
+      double ev = v_des[static_cast<std::size_t>(i)] - v_sensor[static_cast<std::size_t>(i)];
       tau_joint[i] = nle[i] + Kp_joint[i] * eq + Kd_joint[i] * ev;
     }
 
@@ -167,14 +162,13 @@ int main(int argc, char * argv[])
     Eigen::Matrix<double, 6, 1> e_x = error_twist.toVector();
 
     // 현재 task-space 속도: dx = J * v
-    Eigen::Map<const Eigen::VectorXd> v_eigen(
-      v_sensor.data(), static_cast<Eigen::Index>(v_sensor.size()));
+    Eigen::Map<const Eigen::VectorXd> v_eigen(v_sensor.data(),
+                                              static_cast<Eigen::Index>(v_sensor.size()));
     Eigen::Matrix<double, 6, 1> dx = J * v_eigen;
     Eigen::Matrix<double, 6, 1> e_dx = -dx;  // v_des = 0
 
     // τ = J^T · (Kp·e_x + Kd·e_dx) + nle
-    Eigen::Matrix<double, 6, 1> f_task =
-      Kp_task.cwiseProduct(e_x) + Kd_task.cwiseProduct(e_dx);
+    Eigen::Matrix<double, 6, 1> f_task = Kp_task.cwiseProduct(e_x) + Kd_task.cwiseProduct(e_dx);
     tau_task = J.transpose() * f_task;
     for (int i = 0; i < nv; ++i) {
       tau_task[i] += nle[i];
@@ -183,8 +177,7 @@ int main(int argc, char * argv[])
     // ── (5) 결과 출력 (매 100 사이클) ───────────────────────────────────────
     if (cycle % 100 == 0) {
       std::cout << "cycle=" << cycle << " t=" << t << "s\n";
-      std::cout << "  tool pos: ["
-                << x_cur.translation().transpose() << "]\n";
+      std::cout << "  tool pos: [" << x_cur.translation().transpose() << "]\n";
       std::cout << "  tau_joint: [" << tau_joint.head(3).transpose() << " ...]\n";
       std::cout << "  tau_task:  [" << tau_task.head(3).transpose() << " ...]\n";
     }

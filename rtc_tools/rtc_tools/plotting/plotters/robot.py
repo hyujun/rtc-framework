@@ -34,9 +34,7 @@ def plot_robot_positions(df, save_dir=None):
     goal_cols, _ = _detect_joint_columns(df, "goal_pos_")
     traj_cols, _ = _detect_joint_columns(df, "traj_pos_")
     # 하위 호환: 이전 CSV의 target_pos_ 컬럼 지원
-    legacy_cols, _ = (
-        _detect_joint_columns(df, "target_pos_") if not traj_cols else ([], [])
-    )
+    legacy_cols, _ = _detect_joint_columns(df, "target_pos_") if not traj_cols else ([], [])
 
     # GUI joint goal overlay: goal_type=="joint" 구간만 표시
     joint_goal_cols, _ = _detect_joint_columns(df, "joint_goal_")
@@ -51,9 +49,7 @@ def plot_robot_positions(df, save_dir=None):
         ax.plot(t, df[actual_cols[i]], label="Actual", linewidth=1.5)
 
         if traj_cols:
-            ax.plot(
-                t, df[traj_cols[i]], label="Trajectory", linestyle="--", linewidth=1.5
-            )
+            ax.plot(t, df[traj_cols[i]], label="Trajectory", linestyle="--", linewidth=1.5)
         elif legacy_cols:
             ax.plot(
                 t,
@@ -117,9 +113,7 @@ def plot_robot_velocities(df, save_dir=None):
     axes = np.atleast_1d(axes).flatten()
 
     traj_cols, _ = _detect_joint_columns(df, "traj_vel_")
-    legacy_cols, _ = (
-        _detect_joint_columns(df, "target_vel_") if not traj_cols else ([], [])
-    )
+    legacy_cols, _ = _detect_joint_columns(df, "target_vel_") if not traj_cols else ([], [])
 
     for i in range(n_joints):
         ax = axes[i]
@@ -127,9 +121,7 @@ def plot_robot_velocities(df, save_dir=None):
         ax.plot(t, df[actual_cols[i]], label="Actual", linewidth=1.5)
 
         if traj_cols:
-            ax.plot(
-                t, df[traj_cols[i]], label="Trajectory", linestyle="--", linewidth=1.5
-            )
+            ax.plot(t, df[traj_cols[i]], label="Trajectory", linestyle="--", linewidth=1.5)
         elif legacy_cols:
             ax.plot(
                 t,
@@ -176,9 +168,7 @@ def plot_robot_commands(df, save_dir=None):
         type_label = "Command"
         unit = ""
 
-    fig.suptitle(
-        f"Robot Control Commands ({type_label})", fontsize=16, fontweight="bold"
-    )
+    fig.suptitle(f"Robot Control Commands ({type_label})", fontsize=16, fontweight="bold")
     axes = np.atleast_1d(axes).flatten()
 
     actual_cols, _ = _detect_joint_columns(df, "actual_pos_")
@@ -367,9 +357,7 @@ def plot_robot_tracking_error(df, save_dir=None):
 
 def plot_robot_task_tracking_error(df, save_dir=None):
     """Task-space tracking error (trajectory reference - actual TCP)."""
-    if not _has_columns(df, "traj_task_pos_", 3) or not _has_columns(
-        df, "task_pos_", 3
-    ):
+    if not _has_columns(df, "traj_task_pos_", 3) or not _has_columns(df, "task_pos_", 3):
         print("  Skipping task tracking error plot (traj_task_pos_* columns not found)")
         return
 
@@ -443,10 +431,7 @@ def print_robot_statistics(df):
             act_s = pd.to_numeric(df[actual_pos_cols[i]], errors="coerce")
             err = traj_s - act_s
             rms = np.sqrt(np.nanmean(err**2))
-            print(
-                f"  Joint {i} ({traj_names[i]}): "
-                f"{rms:.6f} rad ({np.rad2deg(rms):.4f} deg)"
-            )
+            print(f"  Joint {i} ({traj_names[i]}): {rms:.6f} rad ({np.rad2deg(rms):.4f} deg)")
 
     traj_vel_cols, _ = _detect_joint_columns(df, "traj_vel_")
     if not traj_vel_cols:
@@ -465,5 +450,3 @@ def print_robot_statistics(df):
     if "command_type" in df.columns:
         cmd_type = df["command_type"].mode().iloc[0] if len(df) > 0 else 0
         print(f"\nCommand type: {'position' if cmd_type == 0 else 'torque'}")
-
-

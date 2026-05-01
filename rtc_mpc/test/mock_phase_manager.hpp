@@ -67,14 +67,12 @@ static_assert(sizeof("free_flight") <= 16,
               "phase_name 'free_flight' must fit libstdc++ SSO (<=15 chars)");
 static_assert(sizeof("near_object") <= 16,
               "phase_name 'near_object' must fit libstdc++ SSO (<=15 chars)");
-static_assert(sizeof("light_contact") <= 16,
-              "ocp_type 'light_contact' must fit libstdc++ SSO");
-static_assert(sizeof("contact_rich") <= 16,
-              "ocp_type 'contact_rich' must fit libstdc++ SSO");
+static_assert(sizeof("light_contact") <= 16, "ocp_type 'light_contact' must fit libstdc++ SSO");
+static_assert(sizeof("contact_rich") <= 16, "ocp_type 'contact_rich' must fit libstdc++ SSO");
 
 /// @brief Two-state deterministic FSM for Phase 6 integration tests.
 class MockPhaseManager final : public PhaseManagerBase {
-public:
+ public:
   /// @brief Injectable configuration for the FSM. All URDF-bound state is
   ///        owned by the caller so the mock itself stays robot-agnostic.
   struct Params {
@@ -107,17 +105,21 @@ public:
 
   /// @brief Construct with a fully-populated @ref Params. Copies the cost
   ///        configs into const slots — the caller may discard @p p after.
-  explicit MockPhaseManager(const Params &p) noexcept
-      : cost_config_A_(p.cost_config_A), cost_config_B_(p.cost_config_B),
-        contact_plan_A_(p.contact_plan_A), contact_plan_B_(p.contact_plan_B),
-        ee_target_A_(p.ee_target_A), ee_target_B_(p.ee_target_B),
-        transition_tick_(p.transition_tick), cross_mode_(p.cross_mode) {}
+  explicit MockPhaseManager(const Params& p) noexcept
+      : cost_config_A_(p.cost_config_A),
+        cost_config_B_(p.cost_config_B),
+        contact_plan_A_(p.contact_plan_A),
+        contact_plan_B_(p.contact_plan_B),
+        ee_target_A_(p.ee_target_A),
+        ee_target_B_(p.ee_target_B),
+        transition_tick_(p.transition_tick),
+        cross_mode_(p.cross_mode) {}
 
   // ── PhaseManagerBase overrides ──────────────────────────────────────────
 
   /// @brief No-op — this mock takes all config via `Params` at construction.
   /// The YAML node is ignored so tests don't need to fabricate a YAML tree.
-  void Init(const YAML::Node & /*cfg*/) override {}
+  void Init(const YAML::Node& /*cfg*/) override {}
 
   /// @brief Advance the FSM one tick, return the fresh @ref PhaseContext.
   ///
@@ -127,21 +129,18 @@ public:
   /// 2. Else, if the tick counter just reached `transition_tick` (non-negative
   ///    values only) while currently in Phase A, advance to Phase B.
   /// 3. Else, hold the current phase and report `phase_changed == false`.
-  PhaseContext Update(const Eigen::VectorXd & /*q*/,
-                      const Eigen::VectorXd & /*v*/,
-                      const Eigen::VectorXd & /*sensor*/,
-                      const pinocchio::SE3 & /*tcp*/, double /*t*/) override {
+  PhaseContext Update(const Eigen::VectorXd& /*q*/, const Eigen::VectorXd& /*v*/,
+                      const Eigen::VectorXd& /*sensor*/, const pinocchio::SE3& /*tcp*/,
+                      double /*t*/) override {
     const int prev_id = current_id_.load(std::memory_order_relaxed);
     int next_id = prev_id;
 
-    const int forced =
-        forced_phase_id_.exchange(kNoForcedPhase, std::memory_order_acq_rel);
+    const int forced = forced_phase_id_.exchange(kNoForcedPhase, std::memory_order_acq_rel);
     if (forced != kNoForcedPhase) {
       next_id = forced;
     } else {
       ++tick_counter_;
-      if (transition_tick_ >= 0 && prev_id == 0 &&
-          tick_counter_ >= transition_tick_) {
+      if (transition_tick_ >= 0 && prev_id == 0 && tick_counter_ >= transition_tick_) {
         next_id = 1;
       }
     }
@@ -155,7 +154,7 @@ public:
   }
 
   /// @brief No-op — test fixtures poke the FSM via `Params` / `ForcePhase`.
-  void SetTaskTarget(const YAML::Node & /*target*/) override {}
+  void SetTaskTarget(const YAML::Node& /*target*/) override {}
 
   [[nodiscard]] int CurrentPhaseId() const override {
     return current_id_.load(std::memory_order_relaxed);
@@ -175,20 +174,20 @@ public:
 
   [[nodiscard]] int TickCounter() const noexcept { return tick_counter_; }
 
-private:
+ private:
   // Sentinel matching any non-{0,1} id; `ForcePhase` is assumed to use valid
   // ids, so reserving the most-negative value for "no override pending" is
   // safe in practice.
   static constexpr int kNoForcedPhase = -1;
 
-  [[nodiscard]] static const char *NameFor(int id) noexcept {
+  [[nodiscard]] static const char* NameFor(int id) noexcept {
     return (id == 1) ? "near_object" : "free_flight";
   }
 
   [[nodiscard]] PhaseContext BuildContext(int id, bool changed) const {
     PhaseContext ctx{};
     ctx.phase_id = id;
-    ctx.phase_name = NameFor(id); // SSO-safe (see static_assert above)
+    ctx.phase_name = NameFor(id);  // SSO-safe (see static_assert above)
     ctx.phase_changed = changed;
     if (id == 0) {
       ctx.contact_plan = contact_plan_A_;
@@ -216,7 +215,7 @@ private:
 
   std::atomic<int> current_id_{0};
   std::atomic<int> forced_phase_id_{kNoForcedPhase};
-  int tick_counter_{0}; // MPC thread only — no atomics needed.
+  int tick_counter_{0};  // MPC thread only — no atomics needed.
 };
 
-} // namespace rtc::mpc::test_utils
+}  // namespace rtc::mpc::test_utils

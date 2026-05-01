@@ -12,8 +12,7 @@ from dataclasses import dataclass, field
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
-                       ReliabilityPolicy)
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 from visualization_msgs.msg import MarkerArray
@@ -26,6 +25,7 @@ from rtc_digital_twin.urdf_parser import UrdfParser, JointClassification
 @dataclass
 class JointStateCache:
     """Per-source joint state cache."""
+
     topic: str
     joint_names: list[str]
     name_to_idx: dict[str, int] = field(default_factory=dict)
@@ -49,22 +49,22 @@ class JointStateCache:
 
 class DigitalTwinNode(Node):
     def __init__(self):
-        super().__init__('digital_twin_node')
+        super().__init__("digital_twin_node")
 
         # ── Parameters ───────────────────────────────────────────────────
-        self.declare_parameter('display_rate', 60.0)
-        self.declare_parameter('output_topic', '/digital_twin/joint_states')
-        self.declare_parameter('num_sources', 1)
-        self.declare_parameter('robot_description', '')
+        self.declare_parameter("display_rate", 60.0)
+        self.declare_parameter("output_topic", "/digital_twin/joint_states")
+        self.declare_parameter("num_sources", 1)
+        self.declare_parameter("robot_description", "")
 
-        display_rate = self.get_parameter('display_rate').value
-        output_topic = self.get_parameter('output_topic').value
-        num_sources = self.get_parameter('num_sources').value
-        robot_description = self.get_parameter('robot_description').value
+        display_rate = self.get_parameter("display_rate").value
+        output_topic = self.get_parameter("output_topic").value
+        num_sources = self.get_parameter("num_sources").value
+        robot_description = self.get_parameter("robot_description").value
 
         # ── URDF parsing and joint classification ─────────────────────────
-        self.declare_parameter('auto_compute_mimic', True)
-        self._auto_compute_mimic = self.get_parameter('auto_compute_mimic').value
+        self.declare_parameter("auto_compute_mimic", True)
+        self._auto_compute_mimic = self.get_parameter("auto_compute_mimic").value
 
         self._parser: UrdfParser | None = None
         self._joint_classification: JointClassification | None = None
@@ -77,19 +77,22 @@ class DigitalTwinNode(Node):
                 self._required_joints = self._joint_classification.active_names
                 logger = self.get_logger()
                 logger.info(
-                    f'Active joints ({len(self._joint_classification.active)}): '
-                    f'{sorted(self._joint_classification.active.keys())}')
+                    f"Active joints ({len(self._joint_classification.active)}): "
+                    f"{sorted(self._joint_classification.active.keys())}"
+                )
                 if self._joint_classification.passive_mimic:
                     logger.info(
-                        f'Mimic joints ({len(self._joint_classification.passive_mimic)}): '
-                        f'{sorted(self._joint_classification.passive_mimic.keys())}')
+                        f"Mimic joints ({len(self._joint_classification.passive_mimic)}): "
+                        f"{sorted(self._joint_classification.passive_mimic.keys())}"
+                    )
                 if self._joint_classification.passive_closed_chain:
                     logger.info(
-                        f'Closed-chain joints '
-                        f'({len(self._joint_classification.passive_closed_chain)}): '
-                        f'{sorted(self._joint_classification.passive_closed_chain.keys())}')
+                        f"Closed-chain joints "
+                        f"({len(self._joint_classification.passive_closed_chain)}): "
+                        f"{sorted(self._joint_classification.passive_closed_chain.keys())}"
+                    )
             except Exception as e:
-                self.get_logger().error(f'Failed to parse URDF for classification: {e}')
+                self.get_logger().error(f"Failed to parse URDF for classification: {e}")
 
         # ── QoS — RELIABLE, depth 10 ────────────────────────────────────
         qos = QoSProfile(
@@ -101,32 +104,32 @@ class DigitalTwinNode(Node):
         # ── Joint state sources ──────────────────────────────────────────
         self._sources: list[JointStateCache] = []
         for i in range(num_sources):
-            prefix = f'source_{i}'
-            self.declare_parameter(f'{prefix}.topic', '')
-            self.declare_parameter(f'{prefix}.joint_names', [''])
+            prefix = f"source_{i}"
+            self.declare_parameter(f"{prefix}.topic", "")
+            self.declare_parameter(f"{prefix}.joint_names", [""])
 
-            topic = self.get_parameter(f'{prefix}.topic').value
+            topic = self.get_parameter(f"{prefix}.topic").value
             try:
-                raw = self.get_parameter(f'{prefix}.joint_names').value
+                raw = self.get_parameter(f"{prefix}.joint_names").value
                 joint_names = [n for n in (raw or []) if n]
             except rclpy.exceptions.ParameterUninitializedException:
                 joint_names = []
 
             if not topic:
-                self.get_logger().warn(f'source_{i}.topic is empty, skipping')
+                self.get_logger().warn(f"source_{i}.topic is empty, skipping")
                 continue
 
             self.get_logger().debug(
-                f'source_{i}: topic={topic}, joint_names={joint_names or "(dynamic)"}')
+                f"source_{i}: topic={topic}, joint_names={joint_names or '(dynamic)'}"
+            )
 
             cache = JointStateCache(topic=topic, joint_names=joint_names)
             self._sources.append(cache)
 
             idx = len(self._sources) - 1
-            self.create_subscription(
-                JointState, topic, self._make_source_callback(idx), qos)
-            mode = 'dynamic' if cache.dynamic else f'{len(joint_names)} joints'
-            self.get_logger().info(f'Source {i}: {topic} ({mode})')
+            self.create_subscription(JointState, topic, self._make_source_callback(idx), qos)
+            mode = "dynamic" if cache.dynamic else f"{len(joint_names)} joints"
+            self.get_logger().info(f"Source {i}: {topic} ({mode})")
 
         # ── Sensor visualization (optional) ──────────────────────────────
         self._sensor_viz_active = False
@@ -134,119 +137,110 @@ class DigitalTwinNode(Node):
         self._sensor_pub = None
         self._fingertip_data = []
         try:
-            self.declare_parameter('sensor_viz.sensor_topic', '')
-            sensor_topic = self.get_parameter('sensor_viz.sensor_topic').value
+            self.declare_parameter("sensor_viz.sensor_topic", "")
+            sensor_topic = self.get_parameter("sensor_viz.sensor_topic").value
             if sensor_topic:
-                self.declare_parameter('sensor_viz.marker_topic',
-                                       '/digital_twin/fingertip_markers')
-                self.declare_parameter('sensor_viz.fingertip_names', [''])
-                self.declare_parameter('sensor_viz.barometer_min', 0.0)
-                self.declare_parameter('sensor_viz.barometer_max', 1000.0)
-                self.declare_parameter('sensor_viz.barometer_arrow_max_length', 0.015)
-                self.declare_parameter('sensor_viz.barometer_arrow_scale', 0.0008)
-                self.declare_parameter('sensor_viz.tof_enabled', False)
-                self.declare_parameter('sensor_viz.tof_max_distance', 0.2)
-                self.declare_parameter('sensor_viz.tof_arrow_scale', 0.003)
-                self.declare_parameter('sensor_viz.force_arrow_scale', 0.01)
-                self.declare_parameter('sensor_viz.force_arrow_shaft', 0.003)
-                self.declare_parameter('sensor_viz.displacement_arrow_scale', 0.05)
-                self.declare_parameter('sensor_viz.displacement_arrow_shaft', 0.002)
-                self.declare_parameter('sensor_viz.contact_sphere_radius', 0.005)
+                self.declare_parameter(
+                    "sensor_viz.marker_topic", "/digital_twin/fingertip_markers"
+                )
+                self.declare_parameter("sensor_viz.fingertip_names", [""])
+                self.declare_parameter("sensor_viz.barometer_min", 0.0)
+                self.declare_parameter("sensor_viz.barometer_max", 1000.0)
+                self.declare_parameter("sensor_viz.barometer_arrow_max_length", 0.015)
+                self.declare_parameter("sensor_viz.barometer_arrow_scale", 0.0008)
+                self.declare_parameter("sensor_viz.tof_enabled", False)
+                self.declare_parameter("sensor_viz.tof_max_distance", 0.2)
+                self.declare_parameter("sensor_viz.tof_arrow_scale", 0.003)
+                self.declare_parameter("sensor_viz.force_arrow_scale", 0.01)
+                self.declare_parameter("sensor_viz.force_arrow_shaft", 0.003)
+                self.declare_parameter("sensor_viz.displacement_arrow_scale", 0.05)
+                self.declare_parameter("sensor_viz.displacement_arrow_shaft", 0.002)
+                self.declare_parameter("sensor_viz.contact_sphere_radius", 0.005)
 
-                marker_topic = self.get_parameter('sensor_viz.marker_topic').value
+                marker_topic = self.get_parameter("sensor_viz.marker_topic").value
                 try:
-                    raw_tips = self.get_parameter('sensor_viz.fingertip_names').value
+                    raw_tips = self.get_parameter("sensor_viz.fingertip_names").value
                     fingertip_names = [n for n in (raw_tips or []) if n]
                 except rclpy.exceptions.ParameterUninitializedException:
                     fingertip_names = []
 
                 sensor_viz_config = {
-                    'barometer_min': self.get_parameter(
-                        'sensor_viz.barometer_min').value,
-                    'barometer_max': self.get_parameter(
-                        'sensor_viz.barometer_max').value,
-                    'barometer_arrow_max_length': self.get_parameter(
-                        'sensor_viz.barometer_arrow_max_length').value,
-                    'barometer_arrow_scale': self.get_parameter(
-                        'sensor_viz.barometer_arrow_scale').value,
-                    'tof_enabled': self.get_parameter(
-                        'sensor_viz.tof_enabled').value,
-                    'tof_max_distance': self.get_parameter(
-                        'sensor_viz.tof_max_distance').value,
-                    'tof_arrow_scale': self.get_parameter(
-                        'sensor_viz.tof_arrow_scale').value,
-                    'force_arrow_scale': self.get_parameter(
-                        'sensor_viz.force_arrow_scale').value,
-                    'force_arrow_shaft': self.get_parameter(
-                        'sensor_viz.force_arrow_shaft').value,
-                    'displacement_arrow_scale': self.get_parameter(
-                        'sensor_viz.displacement_arrow_scale').value,
-                    'displacement_arrow_shaft': self.get_parameter(
-                        'sensor_viz.displacement_arrow_shaft').value,
-                    'contact_sphere_radius': self.get_parameter(
-                        'sensor_viz.contact_sphere_radius').value,
+                    "barometer_min": self.get_parameter("sensor_viz.barometer_min").value,
+                    "barometer_max": self.get_parameter("sensor_viz.barometer_max").value,
+                    "barometer_arrow_max_length": self.get_parameter(
+                        "sensor_viz.barometer_arrow_max_length"
+                    ).value,
+                    "barometer_arrow_scale": self.get_parameter(
+                        "sensor_viz.barometer_arrow_scale"
+                    ).value,
+                    "tof_enabled": self.get_parameter("sensor_viz.tof_enabled").value,
+                    "tof_max_distance": self.get_parameter("sensor_viz.tof_max_distance").value,
+                    "tof_arrow_scale": self.get_parameter("sensor_viz.tof_arrow_scale").value,
+                    "force_arrow_scale": self.get_parameter("sensor_viz.force_arrow_scale").value,
+                    "force_arrow_shaft": self.get_parameter("sensor_viz.force_arrow_shaft").value,
+                    "displacement_arrow_scale": self.get_parameter(
+                        "sensor_viz.displacement_arrow_scale"
+                    ).value,
+                    "displacement_arrow_shaft": self.get_parameter(
+                        "sensor_viz.displacement_arrow_shaft"
+                    ).value,
+                    "contact_sphere_radius": self.get_parameter(
+                        "sensor_viz.contact_sphere_radius"
+                    ).value,
                 }
 
                 from rtc_digital_twin.sensor_visualizer import SensorVisualizer
-                self._sensor_viz = SensorVisualizer(
-                    fingertip_names, sensor_viz_config)
+
+                self._sensor_viz = SensorVisualizer(fingertip_names, sensor_viz_config)
 
                 self._fingertip_data = [None] * len(fingertip_names)
 
-                self.create_subscription(
-                    HandSensorState, sensor_topic, self._sensor_cb, qos)
-                self._sensor_pub = self.create_publisher(
-                    MarkerArray, marker_topic, 10)
+                self.create_subscription(HandSensorState, sensor_topic, self._sensor_cb, qos)
+                self._sensor_pub = self.create_publisher(MarkerArray, marker_topic, 10)
                 self._sensor_viz_active = True
 
                 self.get_logger().info(
-                    f'Sensor visualization enabled: {sensor_topic} -> {marker_topic} '
-                    f'({len(fingertip_names)} fingertips)')
+                    f"Sensor visualization enabled: {sensor_topic} -> {marker_topic} "
+                    f"({len(fingertip_names)} fingertips)"
+                )
         except Exception as e:
             if sensor_topic:
-                self.get_logger().error(
-                    f'Failed to initialize sensor visualization: {e}')
+                self.get_logger().error(f"Failed to initialize sensor visualization: {e}")
 
         # ── TCP visualization (optional) ─────────────────────────────────
         self._tcp_viz_active = False
         self._tcp_viz = None
         self._tcp_marker_pub = None
         self._tcp_tf_broadcaster = None
-        self._tcp_task_positions = None   # cached [x, y, z, r, p, y]
-        self._tcp_goal_positions = None   # cached goal (from RobotTarget)
-        tcp_source_topic = ''
+        self._tcp_task_positions = None  # cached [x, y, z, r, p, y]
+        self._tcp_goal_positions = None  # cached goal (from RobotTarget)
+        tcp_source_topic = ""
         try:
-            self.declare_parameter('tcp_viz.source_topic', '')
-            tcp_source_topic = self.get_parameter('tcp_viz.source_topic').value
+            self.declare_parameter("tcp_viz.source_topic", "")
+            tcp_source_topic = self.get_parameter("tcp_viz.source_topic").value
             if tcp_source_topic:
-                self.declare_parameter('tcp_viz.marker_topic',
-                                       '/digital_twin/tcp_markers')
-                self.declare_parameter('tcp_viz.frame_id', 'base')
-                self.declare_parameter('tcp_viz.broadcast_tf', True)
-                self.declare_parameter('tcp_viz.tf_child_frame', 'virtual_tcp')
-                self.declare_parameter('tcp_viz.sphere_radius', 0.012)
-                self.declare_parameter('tcp_viz.axes_length', 0.05)
-                self.declare_parameter('tcp_viz.axes_shaft', 0.004)
-                self.declare_parameter('tcp_viz.show_goal', True)
-                self.declare_parameter('tcp_viz.goal_sphere_radius', 0.010)
+                self.declare_parameter("tcp_viz.marker_topic", "/digital_twin/tcp_markers")
+                self.declare_parameter("tcp_viz.frame_id", "base")
+                self.declare_parameter("tcp_viz.broadcast_tf", True)
+                self.declare_parameter("tcp_viz.tf_child_frame", "virtual_tcp")
+                self.declare_parameter("tcp_viz.sphere_radius", 0.012)
+                self.declare_parameter("tcp_viz.axes_length", 0.05)
+                self.declare_parameter("tcp_viz.axes_shaft", 0.004)
+                self.declare_parameter("tcp_viz.show_goal", True)
+                self.declare_parameter("tcp_viz.goal_sphere_radius", 0.010)
 
-                tcp_marker_topic = self.get_parameter(
-                    'tcp_viz.marker_topic').value
+                tcp_marker_topic = self.get_parameter("tcp_viz.marker_topic").value
                 tcp_viz_config = {
-                    'frame_id': self.get_parameter('tcp_viz.frame_id').value,
-                    'sphere_radius': self.get_parameter(
-                        'tcp_viz.sphere_radius').value,
-                    'axes_length': self.get_parameter(
-                        'tcp_viz.axes_length').value,
-                    'axes_shaft': self.get_parameter(
-                        'tcp_viz.axes_shaft').value,
-                    'show_goal': self.get_parameter(
-                        'tcp_viz.show_goal').value,
-                    'goal_sphere_radius': self.get_parameter(
-                        'tcp_viz.goal_sphere_radius').value,
+                    "frame_id": self.get_parameter("tcp_viz.frame_id").value,
+                    "sphere_radius": self.get_parameter("tcp_viz.sphere_radius").value,
+                    "axes_length": self.get_parameter("tcp_viz.axes_length").value,
+                    "axes_shaft": self.get_parameter("tcp_viz.axes_shaft").value,
+                    "show_goal": self.get_parameter("tcp_viz.show_goal").value,
+                    "goal_sphere_radius": self.get_parameter("tcp_viz.goal_sphere_radius").value,
                 }
 
                 from rtc_digital_twin.tcp_visualizer import TcpVisualizer
+
                 self._tcp_viz = TcpVisualizer(tcp_viz_config)
 
                 # Phase 4: tcp_viz.source_topic may be a suffix (e.g.
@@ -260,11 +254,11 @@ class DigitalTwinNode(Node):
                     depth=10,
                 )
                 self._tcp_sub = None
-                self._tcp_active_ctrl = ''
-                if tcp_source_topic.startswith('/'):
+                self._tcp_active_ctrl = ""
+                if tcp_source_topic.startswith("/"):
                     self._tcp_sub = self.create_subscription(
-                        GuiPosition, tcp_source_topic,
-                        self._tcp_cb, self._tcp_be_qos)
+                        GuiPosition, tcp_source_topic, self._tcp_cb, self._tcp_be_qos
+                    )
                 else:
                     latched = QoSProfile(
                         depth=1,
@@ -272,28 +266,26 @@ class DigitalTwinNode(Node):
                         reliability=ReliabilityPolicy.RELIABLE,
                     )
                     self.create_subscription(
-                        String, '/rtc_cm/active_controller_name',
-                        self._tcp_on_active_ctrl, latched)
-                self._tcp_marker_pub = self.create_publisher(
-                    MarkerArray, tcp_marker_topic, 10)
+                        String, "/rtc_cm/active_controller_name", self._tcp_on_active_ctrl, latched
+                    )
+                self._tcp_marker_pub = self.create_publisher(MarkerArray, tcp_marker_topic, 10)
 
                 # TF broadcaster (optional)
-                self._tcp_broadcast_tf = self.get_parameter(
-                    'tcp_viz.broadcast_tf').value
-                self._tcp_tf_child_frame = self.get_parameter(
-                    'tcp_viz.tf_child_frame').value
+                self._tcp_broadcast_tf = self.get_parameter("tcp_viz.broadcast_tf").value
+                self._tcp_tf_child_frame = self.get_parameter("tcp_viz.tf_child_frame").value
                 if self._tcp_broadcast_tf:
                     from tf2_ros import TransformBroadcaster
+
                     self._tcp_tf_broadcaster = TransformBroadcaster(self)
 
                 self._tcp_viz_active = True
                 self.get_logger().info(
-                    f'TCP visualization enabled: {tcp_source_topic} -> '
-                    f'{tcp_marker_topic} (tf={self._tcp_broadcast_tf})')
+                    f"TCP visualization enabled: {tcp_source_topic} -> "
+                    f"{tcp_marker_topic} (tf={self._tcp_broadcast_tf})"
+                )
         except Exception as e:
             if tcp_source_topic:
-                self.get_logger().error(
-                    f'Failed to initialize TCP visualization: {e}')
+                self.get_logger().error(f"Failed to initialize TCP visualization: {e}")
 
         # ── Publisher ────────────────────────────────────────────────────
         self._joint_pub = self.create_publisher(JointState, output_topic, 10)
@@ -304,17 +296,18 @@ class DigitalTwinNode(Node):
 
         # ── Validation timer (first at 3s, then every 10s) ──────────────
         if self._required_joints:
-            self._validation_timer = self.create_timer(
-                3.0, self._validate_joints)
+            self._validation_timer = self.create_timer(3.0, self._validate_joints)
 
         self.get_logger().info(
-            f'Digital Twin node started: {len(self._sources)} source(s), '
-            f'display_rate={display_rate}Hz, output={output_topic}')
+            f"Digital Twin node started: {len(self._sources)} source(s), "
+            f"display_rate={display_rate}Hz, output={output_topic}"
+        )
 
     # ── Callbacks ─────────────────────────────────────────────────────────
 
     def _make_source_callback(self, source_idx: int):
         """Create a closure that updates the source cache at source_idx."""
+
         def callback(msg: JointState):
             cache = self._sources[source_idx]
 
@@ -322,11 +315,11 @@ class DigitalTwinNode(Node):
                 # Dynamic mode: accept all joints, grow cache on first message
                 if not cache.data_received and msg.name:
                     self.get_logger().debug(
-                        f'Source {source_idx} ({cache.topic}): first message, '
-                        f'{len(msg.name)} joints')
+                        f"Source {source_idx} ({cache.topic}): first message, "
+                        f"{len(msg.name)} joints"
+                    )
                     cache.received_names = list(msg.name)
-                    cache.name_to_idx = {
-                        name: i for i, name in enumerate(msg.name)}
+                    cache.name_to_idx = {name: i for i, name in enumerate(msg.name)}
                     cache.positions = [0.0] * len(msg.name)
                     cache.velocities = [0.0] * len(msg.name)
 
@@ -355,8 +348,7 @@ class DigitalTwinNode(Node):
                             cache.velocities[idx] = msg.velocity[i]
 
             if not cache.data_received:
-                self.get_logger().info(
-                    f'Source {source_idx} ({cache.topic}): receiving data')
+                self.get_logger().info(f"Source {source_idx} ({cache.topic}): receiving data")
             cache.data_received = True
 
         return callback
@@ -368,7 +360,7 @@ class DigitalTwinNode(Node):
     def _tcp_on_active_ctrl(self, msg: String):
         """Rewire tcp gui_position subscription under the active controller
         namespace (Phase 4)."""
-        name = (msg.data or '').strip()
+        name = (msg.data or "").strip()
         if not name or name == self._tcp_active_ctrl:
             return
         self._tcp_active_ctrl = name
@@ -377,11 +369,11 @@ class DigitalTwinNode(Node):
                 self.destroy_subscription(self._tcp_sub)
             except Exception:
                 pass
-        topic = '/' + name + '/' + self._tcp_source_topic.lstrip('/')
+        topic = "/" + name + "/" + self._tcp_source_topic.lstrip("/")
         self._tcp_sub = self.create_subscription(
-            GuiPosition, topic, self._tcp_cb, self._tcp_be_qos)
-        self.get_logger().info(
-            f'TCP visualization rebound to {topic}')
+            GuiPosition, topic, self._tcp_cb, self._tcp_be_qos
+        )
+        self.get_logger().info(f"TCP visualization rebound to {topic}")
 
     def _sensor_cb(self, msg: HandSensorState):
         """Cache latest fingertip sensor data from HandSensorState."""
@@ -398,8 +390,10 @@ class DigitalTwinNode(Node):
             if self._joint_classification:
                 js = JointState()
                 js.header.stamp = now
-                all_joints = sorted(self._joint_classification.active_names
-                                    | self._joint_classification.passive_names)
+                all_joints = sorted(
+                    self._joint_classification.active_names
+                    | self._joint_classification.passive_names
+                )
                 js.name = all_joints
                 js.position = [0.0] * len(all_joints)
                 js.velocity = [0.0] * len(all_joints)
@@ -421,13 +415,14 @@ class DigitalTwinNode(Node):
             js.velocity.extend(cache.velocities)
 
         # Auto-compute mimic joint positions
-        if (self._auto_compute_mimic
-                and self._parser
-                and self._joint_classification
-                and self._joint_classification.passive_mimic):
+        if (
+            self._auto_compute_mimic
+            and self._parser
+            and self._joint_classification
+            and self._joint_classification.passive_mimic
+        ):
             positions_map = dict(zip(js.name, js.position))
-            mimic_positions = self._parser.compute_mimic_positions(
-                positions_map)
+            mimic_positions = self._parser.compute_mimic_positions(positions_map)
             for name, pos in mimic_positions.items():
                 if name not in positions_map:
                     js.name.append(name)
@@ -438,21 +433,20 @@ class DigitalTwinNode(Node):
 
         # Sensor visualization
         if self._sensor_viz_active and self._sensor_viz:
-            markers = self._sensor_viz.create_markers(
-                self._fingertip_data, now)
+            markers = self._sensor_viz.create_markers(self._fingertip_data, now)
             self._sensor_pub.publish(markers)
 
         # TCP visualization
-        if self._tcp_viz_active and self._tcp_viz \
-                and self._tcp_task_positions is not None:
+        if self._tcp_viz_active and self._tcp_viz and self._tcp_task_positions is not None:
             tcp_markers = self._tcp_viz.create_markers(
-                self._tcp_task_positions, now, self._tcp_goal_positions)
+                self._tcp_task_positions, now, self._tcp_goal_positions
+            )
             self._tcp_marker_pub.publish(tcp_markers)
 
             if self._tcp_tf_broadcaster is not None:
                 tf_msg = self._tcp_viz.create_tf(
-                    self._tcp_task_positions, now,
-                    self._tcp_tf_child_frame)
+                    self._tcp_task_positions, now, self._tcp_tf_child_frame
+                )
                 if tf_msg is not None:
                     self._tcp_tf_broadcaster.sendTransform(tf_msg)
 
@@ -468,24 +462,21 @@ class DigitalTwinNode(Node):
                 received.update(cache.joint_names)
 
         if not received:
-            self.get_logger().warn('No joint data received yet')
+            self.get_logger().warn("No joint data received yet")
             return
 
         covered, missing = self._parser.validate_joints(received)
 
         if missing:
-            self.get_logger().warn(
-                f'Missing {len(missing)} required joints: {sorted(missing)}')
+            self.get_logger().warn(f"Missing {len(missing)} required joints: {sorted(missing)}")
         elif not self._validation_done:
-            self.get_logger().info(
-                f'All {len(covered)} required joints covered')
+            self.get_logger().info(f"All {len(covered)} required joints covered")
             self._validation_done = True
 
         # After first validation, switch to 10s interval
-        if hasattr(self, '_validation_timer'):
+        if hasattr(self, "_validation_timer"):
             self._validation_timer.cancel()
-            self._validation_timer = self.create_timer(
-                10.0, self._validate_joints_periodic)
+            self._validation_timer = self.create_timer(10.0, self._validate_joints_periodic)
 
     def _validate_joints_periodic(self):
         """Periodic re-validation (10s interval)."""
@@ -503,8 +494,7 @@ class DigitalTwinNode(Node):
 
         _, missing = self._parser.validate_joints(received)
         if missing:
-            self.get_logger().warn(
-                f'Missing {len(missing)} required joints: {sorted(missing)}')
+            self.get_logger().warn(f"Missing {len(missing)} required joints: {sorted(missing)}")
 
 
 def main(args=None):
@@ -513,11 +503,11 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.get_logger().info('Shutting down (KeyboardInterrupt)')
+        node.get_logger().info("Shutting down (KeyboardInterrupt)")
     finally:
         node.destroy_node()
         rclpy.try_shutdown()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

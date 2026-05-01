@@ -17,8 +17,7 @@
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 class WQPFormulationTest : public ::testing::Test {
  protected:
@@ -54,8 +53,7 @@ TEST_F(WQPFormulationTest, PostureOnlyConverges) {
   YAML::Node formulation_config;
   formulation_config["formulation_type"] = "wqp";
 
-  auto formulation = create_formulation(
-      *model_, robot_info_, contact_cfg_, formulation_config);
+  auto formulation = create_formulation(*model_, robot_info_, contact_cfg_, formulation_config);
   ASSERT_NE(formulation, nullptr);
   EXPECT_EQ(formulation->type(), "wqp");
 
@@ -107,8 +105,7 @@ TEST_F(WQPFormulationTest, PostureTrackingNonZeroAccel) {
 
   // q_des != q → non-zero acceleration
   ref_.q_des = q;
-  ref_.q_des.head(robot_info_.nv) +=
-      Eigen::VectorXd::Constant(robot_info_.nv, 0.1);
+  ref_.q_des.head(robot_info_.nv) += Eigen::VectorXd::Constant(robot_info_.nv, 0.1);
   ref_.v_des = v;
   ref_.a_des.setZero(robot_info_.nv);
 
@@ -154,10 +151,9 @@ TEST_F(WQPFormulationTest, GravityCompensationTorque) {
 
   // a_opt ≈ 0 → τ ≈ g (gravity compensation)
   Eigen::VectorXd g = robot_info_.S * cache_.g;
-  EXPECT_LT((tau - g).norm(), 0.1)
-      << "tau should be close to gravity compensation\n"
-      << "  tau = " << tau.transpose() << "\n"
-      << "  g   = " << g.transpose();
+  EXPECT_LT((tau - g).norm(), 0.1) << "tau should be close to gravity compensation\n"
+                                   << "  tau = " << tau.transpose() << "\n"
+                                   << "  g   = " << g.transpose();
 }
 
 TEST_F(WQPFormulationTest, FactoryCreatesWQP) {
@@ -228,8 +224,7 @@ TEST_F(WQPFormulationTest, ConsecutiveSolvesWarmStart) {
 
   // Multiple solves should all converge
   for (int i = 0; i < 10; ++i) {
-    const auto& result =
-        formulation->solve(cache_, ref_, contacts_, robot_info_);
+    const auto& result = formulation->solve(cache_, ref_, contacts_, robot_info_);
     ASSERT_TRUE(result.converged) << "Solve " << i << " failed";
   }
 }

@@ -17,14 +17,14 @@ namespace rtc_bt {
 /// Output ports:
 ///   - count (int): number of ToFSnapshot messages collected
 class StopToFCollection : public BT::SyncActionNode {
-public:
+ public:
   StopToFCollection(const std::string& name, const BT::NodeConfig& config,
                     std::shared_ptr<BtRosBridge> bridge);
 
   static BT::PortsList providedPorts();
   BT::NodeStatus tick() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
 };
 

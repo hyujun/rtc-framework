@@ -42,12 +42,12 @@
 // - No branches in hot path beyond the warmup check.
 // ============================================================================
 
+#include "rtc_base/types/types.hpp"
+
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-
-#include "rtc_base/types/types.hpp"
 
 namespace rtc {
 
@@ -58,9 +58,9 @@ class SlidingTrendDetector {
 
  public:
   struct Result {
-    std::array<double, NumChannels> slopes{};       // per-channel slope
-    std::array<bool, NumChannels>   drift_flags{};  // |slope| > threshold
-    bool window_full{false};                        // true once warmup complete
+    std::array<double, NumChannels> slopes{};     // per-channel slope
+    std::array<bool, NumChannels> drift_flags{};  // |slope| > threshold
+    bool window_full{false};                      // true once warmup complete
   };
 
   // Initialise detector parameters.  Call once before Update().
@@ -70,21 +70,18 @@ class SlidingTrendDetector {
   // sample_rate_hz   : if > 0, slopes are reported in [units/second]
   //                    if == 0 (default), slopes are in [units/sample-index]
   //                    drift_threshold must be in the same unit system.
-  void Init(std::size_t window_size, double drift_threshold,
-            double sample_rate_hz = 0.0) noexcept {
-    n_ = (window_size < 2) ? 2
-       : (window_size > MaxWindowSize) ? MaxWindowSize
-       : window_size;
+  void Init(std::size_t window_size, double drift_threshold, double sample_rate_hz = 0.0) noexcept {
+    n_ = (window_size < 2) ? 2 : (window_size > MaxWindowSize) ? MaxWindowSize : window_size;
     drift_threshold_ = drift_threshold;
-    sample_rate_hz_  = sample_rate_hz;
+    sample_rate_hz_ = sample_rate_hz;
 
     // Precompute constants for x = {0, 1, ..., N-1}
     const double nd = static_cast<double>(n_);
-    sum_x_    = nd * (nd - 1.0) * 0.5;                          // N(N-1)/2
+    sum_x_ = nd * (nd - 1.0) * 0.5;                            // N(N-1)/2
     double sum_xx = nd * (nd - 1.0) * (2.0 * nd - 1.0) / 6.0;  // N(N-1)(2N-1)/6
-    double denom  = nd * sum_xx - sum_x_ * sum_x_;               // N*Sxx - Sx^2
-    inv_denom_    = 1.0 / denom;  // multiply by reciprocal in hot path
-    nm1_          = static_cast<double>(n_ - 1);
+    double denom = nd * sum_xx - sum_x_ * sum_x_;              // N*Sxx - Sx^2
+    inv_denom_ = 1.0 / denom;                                  // multiply by reciprocal in hot path
+    nm1_ = static_cast<double>(n_ - 1);
 
     Reset();
   }
@@ -92,7 +89,7 @@ class SlidingTrendDetector {
   // Reset all internal state (sums, buffer, counters).
   void Reset() noexcept {
     count_ = 0;
-    head_  = 0;
+    head_ = 0;
     sum_y_.fill(0.0);
     sum_xy_.fill(0.0);
     // buffer_ elements are overwritten before read — no need to zero.
@@ -100,15 +97,13 @@ class SlidingTrendDetector {
 
   // Feed one multi-channel sample and return the current detection result.
   // O(1) time complexity.  Called once per tick (e.g. every 2 ms at 500 Hz).
-  [[nodiscard]] Result Update(
-      const std::array<double, NumChannels>& sample) noexcept {
-
+  [[nodiscard]] Result Update(const std::array<double, NumChannels>& sample) noexcept {
     if (count_ < n_) {
       // ── Warmup phase: accumulate sums, no removal ─────────────────────
       const double idx = static_cast<double>(count_);
       buffer_[head_] = sample;
       for (std::size_t c = 0; c < NumChannels; ++c) {
-        sum_y_[c]  += sample[c];
+        sum_y_[c] += sample[c];
         sum_xy_[c] += idx * sample[c];
       }
       AdvanceHead();
@@ -121,7 +116,7 @@ class SlidingTrendDetector {
       for (std::size_t c = 0; c < NumChannels; ++c) {
         // Update Sxy BEFORE Sy — the recurrence uses the OLD Sy.
         sum_xy_[c] = sum_xy_[c] - sum_y_[c] + y_old[c] + nm1_ * sample[c];
-        sum_y_[c]  = sum_y_[c]  - y_old[c]  + sample[c];
+        sum_y_[c] = sum_y_[c] - y_old[c] + sample[c];
       }
 
       buffer_[head_] = sample;
@@ -133,13 +128,13 @@ class SlidingTrendDetector {
     result.window_full = (count_ >= n_);
 
     if (result.window_full) {
-      const double nd    = static_cast<double>(n_);
+      const double nd = static_cast<double>(n_);
       const double scale = (sample_rate_hz_ > 0.0) ? sample_rate_hz_ : 1.0;
 
       for (std::size_t c = 0; c < NumChannels; ++c) {
         // slope = (N * Sxy - Sx * Sy) / D,  using precomputed 1/D
         const double beta = (nd * sum_xy_[c] - sum_x_ * sum_y_[c]) * inv_denom_;
-        result.slopes[c]      = beta * scale;
+        result.slopes[c] = beta * scale;
         result.drift_flags[c] = std::abs(result.slopes[c]) > drift_threshold_;
       }
     }
@@ -149,47 +144,47 @@ class SlidingTrendDetector {
 
   // ── Accessors ────────────────────────────────────────────────────────────
 
-  [[nodiscard]] std::size_t window_size()  const noexcept { return n_; }
-  [[nodiscard]] std::size_t count()        const noexcept { return count_; }
-  [[nodiscard]] bool        window_full()  const noexcept { return count_ >= n_; }
-  [[nodiscard]] double      drift_threshold() const noexcept { return drift_threshold_; }
+  [[nodiscard]] std::size_t window_size() const noexcept { return n_; }
+
+  [[nodiscard]] std::size_t count() const noexcept { return count_; }
+
+  [[nodiscard]] bool window_full() const noexcept { return count_ >= n_; }
+
+  [[nodiscard]] double drift_threshold() const noexcept { return drift_threshold_; }
 
   // Update drift threshold at runtime (e.g. based on operating mode).
-  void set_drift_threshold(double threshold) noexcept {
-    drift_threshold_ = threshold;
-  }
+  void set_drift_threshold(double threshold) noexcept { drift_threshold_ = threshold; }
 
   // Update sample rate at runtime (e.g. from SensorRateEstimator).
-  void set_sample_rate_hz(double hz) noexcept {
-    sample_rate_hz_ = hz;
-  }
+  void set_sample_rate_hz(double hz) noexcept { sample_rate_hz_ = hz; }
 
  private:
   void AdvanceHead() noexcept {
     // Branchless-friendly: avoids integer division (modulo).
-    if (++head_ >= n_) head_ = 0;
+    if (++head_ >= n_)
+      head_ = 0;
   }
 
   // ── Configuration ──────────────────────────────────────────────────────
-  std::size_t n_{MaxWindowSize};     // runtime window size (≤ MaxWindowSize)
+  std::size_t n_{MaxWindowSize};  // runtime window size (≤ MaxWindowSize)
   double drift_threshold_{0.0};
-  double sample_rate_hz_{0.0};       // 0 = slopes in per-index units
+  double sample_rate_hz_{0.0};  // 0 = slopes in per-index units
 
   // ── Precomputed OLS constants ──────────────────────────────────────────
-  double sum_x_{0.0};       // Σx   = N(N-1)/2
-  double inv_denom_{0.0};   // 1 / (N·Σx² - (Σx)²)
-  double nm1_{0.0};         // N - 1  (hot-path constant)
+  double sum_x_{0.0};      // Σx   = N(N-1)/2
+  double inv_denom_{0.0};  // 1 / (N·Σx² - (Σx)²)
+  double nm1_{0.0};        // N - 1  (hot-path constant)
 
   // ── Running sums (per channel) ─────────────────────────────────────────
-  std::array<double, NumChannels> sum_y_{};    // Σ y_i
-  std::array<double, NumChannels> sum_xy_{};   // Σ i·y_i
+  std::array<double, NumChannels> sum_y_{};   // Σ y_i
+  std::array<double, NumChannels> sum_xy_{};  // Σ i·y_i
 
   // ── Circular buffer ────────────────────────────────────────────────────
   // buffer_[head_] = oldest sample (next overwrite target in steady state).
   // Only the first n_ slots are used; remaining MaxWindowSize-n_ are unused.
   std::array<std::array<double, NumChannels>, MaxWindowSize> buffer_{};
   std::size_t head_{0};
-  std::size_t count_{0};   // samples ingested so far (capped at n_)
+  std::size_t count_{0};  // samples ingested so far (capped at n_)
 };
 
 // ── Convenience alias ─────────────────────────────────────────────────────────

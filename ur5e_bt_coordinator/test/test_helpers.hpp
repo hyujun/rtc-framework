@@ -12,18 +12,18 @@
 
 #include "ur5e_bt_coordinator/bt_ros_bridge.hpp"
 #include "ur5e_bt_coordinator/bt_types.hpp"
-
-#include <behaviortree_cpp/bt_factory.h>
-#include <geometry_msgs/msg/polygon.hpp>
-#include <rclcpp/rclcpp.hpp>
-#include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rtc_msgs/msg/grasp_state.hpp>
 #include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/srv/grasp_command.hpp>
 #include <shape_estimation_msgs/msg/shape_estimate.hpp>
+
+#include <geometry_msgs/msg/polygon.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
 
+#include <behaviortree_cpp/bt_factory.h>
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -37,9 +37,8 @@
 namespace rtc_bt::test {
 
 /// Spin the node until a condition is met or timeout expires.
-inline void
-SpinUntil(rclcpp::Node::SharedPtr node, std::function<bool()> condition,
-          std::chrono::milliseconds timeout = std::chrono::milliseconds(500)) {
+inline void SpinUntil(rclcpp::Node::SharedPtr node, std::function<bool()> condition,
+                      std::chrono::milliseconds timeout = std::chrono::milliseconds(500)) {
   auto start = std::chrono::steady_clock::now();
   while (!condition()) {
     rclcpp::spin_some(node);
@@ -69,7 +68,7 @@ struct MockController {
 ///   - background spin drives all four nodes so bridge clients' futures
 ///     resolve during BT ticks.
 class RosTestFixture : public ::testing::Test {
-protected:
+ protected:
   void SetUp() override {
     if (!rclcpp::ok()) {
       rclcpp::init(0, nullptr);
@@ -92,15 +91,14 @@ protected:
         ctrl_ns + "/hand/gui_position", rclcpp::QoS{10});
     grasp_state_pub_ = node_->create_publisher<rtc_msgs::msg::GraspState>(
         ctrl_ns + "/hand/grasp_state", rclcpp::QoS{10});
-    world_target_pub_ = node_->create_publisher<geometry_msgs::msg::Polygon>(
-        "/world_target_info", rclcpp::QoS{10});
+    world_target_pub_ =
+        node_->create_publisher<geometry_msgs::msg::Polygon>("/world_target_info", rclcpp::QoS{10});
     active_ctrl_pub_ = node_->create_publisher<std_msgs::msg::String>(
         "/rtc_cm/active_controller_name", rclcpp::QoS{1}.transient_local());
-    estop_pub_ = node_->create_publisher<std_msgs::msg::Bool>(
-        "/system/estop_status", rclcpp::QoS{10});
-    shape_estimate_pub_ =
-        node_->create_publisher<shape_estimation_msgs::msg::ShapeEstimate>(
-            "/shape/estimate", rclcpp::QoS{10});
+    estop_pub_ =
+        node_->create_publisher<std_msgs::msg::Bool>("/system/estop_status", rclcpp::QoS{10});
+    shape_estimate_pub_ = node_->create_publisher<shape_estimation_msgs::msg::ShapeEstimate>(
+        "/shape/estimate", rclcpp::QoS{10});
 
     // Background spin drives bridge + all mock nodes.
     spin_running_.store(true);
@@ -139,33 +137,32 @@ protected:
   }
 
   /// Publish the active controller name and wait for the bridge to rebind.
-  void SetActiveAlias(const std::string &name) {
+  void SetActiveAlias(const std::string& name) {
     PublishActiveController(name);
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
   }
 
   /// Sleep wrapper preserved for legacy test bodies.
-  void
-  Spin(std::chrono::milliseconds duration = std::chrono::milliseconds(50)) {
+  void Spin(std::chrono::milliseconds duration = std::chrono::milliseconds(50)) {
     std::this_thread::sleep_for(duration);
   }
 
   // ── State injection helpers ─────────────────────────────────────────────
 
-  void PublishArmState(const Pose6D &tcp, const std::vector<double> &joints) {
+  void PublishArmState(const Pose6D& tcp, const std::vector<double>& joints) {
     rtc_msgs::msg::GuiPosition msg;
     msg.task_positions = {tcp.x, tcp.y, tcp.z, tcp.roll, tcp.pitch, tcp.yaw};
     msg.joint_positions.assign(joints.begin(), joints.end());
     arm_gui_pub_->publish(msg);
   }
 
-  void PublishHandState(const std::vector<double> &joints) {
+  void PublishHandState(const std::vector<double>& joints) {
     rtc_msgs::msg::GuiPosition msg;
     msg.joint_positions.assign(joints.begin(), joints.end());
     hand_gui_pub_->publish(msg);
   }
 
-  void PublishGraspState(const CachedGraspState &gs) {
+  void PublishGraspState(const CachedGraspState& gs) {
     rtc_msgs::msg::GraspState msg;
     msg.num_active_contacts = gs.num_active_contacts;
     msg.max_force = gs.max_force;
@@ -174,7 +171,7 @@ protected:
     msg.min_fingertips = gs.min_fingertips;
     msg.grasp_phase = gs.grasp_phase;
     msg.grasp_target_force = gs.grasp_target_force;
-    for (const auto &ft : gs.fingertips) {
+    for (const auto& ft : gs.fingertips) {
       msg.fingertip_names.push_back(ft.name);
       msg.force_magnitude.push_back(ft.force_magnitude);
       msg.contact_flag.push_back(ft.contact_flag);
@@ -196,7 +193,7 @@ protected:
     world_target_pub_->publish(msg);
   }
 
-  void PublishActiveController(const std::string &name) {
+  void PublishActiveController(const std::string& name) {
     std_msgs::msg::String msg;
     msg.data = name;
     active_ctrl_pub_->publish(msg);
@@ -208,8 +205,7 @@ protected:
     estop_pub_->publish(msg);
   }
 
-  void PublishShapeEstimate(uint8_t shape_type, double confidence,
-                            uint32_t num_points = 100) {
+  void PublishShapeEstimate(uint8_t shape_type, double confidence, uint32_t num_points = 100) {
     shape_estimation_msgs::msg::ShapeEstimate msg;
     msg.shape_type = shape_type;
     msg.confidence = confidence;
@@ -232,15 +228,13 @@ protected:
   rclcpp::Publisher<geometry_msgs::msg::Polygon>::SharedPtr world_target_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr active_ctrl_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_pub_;
-  rclcpp::Publisher<shape_estimation_msgs::msg::ShapeEstimate>::SharedPtr
-      shape_estimate_pub_;
+  rclcpp::Publisher<shape_estimation_msgs::msg::ShapeEstimate>::SharedPtr shape_estimate_pub_;
 
-private:
-  void SpawnMock(const std::string &name, MockController &out) {
+ private:
+  void SpawnMock(const std::string& name, MockController& out) {
     const std::string ns = "/" + name;
     const auto opts = rclcpp::NodeOptions().use_global_arguments(false);
-    out.node =
-        std::make_shared<rclcpp_lifecycle::LifecycleNode>(name, ns, opts);
+    out.node = std::make_shared<rclcpp_lifecycle::LifecycleNode>(name, ns, opts);
 
     // Declare the union of demo controllers' parameter names. Tests only
     // touch the ones relevant to the alias they activate; the rest are
@@ -250,10 +244,10 @@ private:
     out.node->declare_parameter<double>("hand_trajectory_speed", 1.0);
     out.node->declare_parameter<double>("robot_trajectory_speed", 0.5);
     out.node->declare_parameter<double>("arm_trajectory_speed", 0.5);
-    out.node->declare_parameter<std::vector<double>>(
-        "kp_translation", std::vector<double>{5.0, 5.0, 5.0});
-    out.node->declare_parameter<std::vector<double>>(
-        "kp_rotation", std::vector<double>{2.0, 2.0, 2.0});
+    out.node->declare_parameter<std::vector<double>>("kp_translation",
+                                                     std::vector<double>{5.0, 5.0, 5.0});
+    out.node->declare_parameter<std::vector<double>>("kp_rotation",
+                                                     std::vector<double>{2.0, 2.0, 2.0});
     out.node->declare_parameter<double>("damping", 0.01);
     out.node->declare_parameter<double>("null_kp", 0.5);
     out.node->declare_parameter<bool>("enable_null_space", false);
@@ -268,9 +262,8 @@ private:
     out.node->declare_parameter<double>("riccati_gain_scale", 1.0);
 
     out.grasp_srv = out.node->create_service<rtc_msgs::srv::GraspCommand>(
-        "grasp_command",
-        [&out](const std::shared_ptr<rtc_msgs::srv::GraspCommand::Request> req,
-               std::shared_ptr<rtc_msgs::srv::GraspCommand::Response> resp) {
+        "grasp_command", [&out](const std::shared_ptr<rtc_msgs::srv::GraspCommand::Request> req,
+                                std::shared_ptr<rtc_msgs::srv::GraspCommand::Response> resp) {
           out.last_grasp_cmd = req->command;
           out.last_grasp_force = req->target_force;
           out.grasp_cmd_calls.fetch_add(1);
@@ -284,4 +277,4 @@ private:
   std::thread spin_thread_;
 };
 
-} // namespace rtc_bt::test
+}  // namespace rtc_bt::test

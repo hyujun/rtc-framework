@@ -46,36 +46,36 @@ namespace rtc::mpc {
 /// is populated both must match `RobotModelHandler::nu()`; mismatch causes
 /// `OCPBuildError::kLimitsDimMismatch`.
 struct OCPLimits {
-  Eigen::VectorXd u_min{}; ///< size `nu`, or empty = unlimited
-  Eigen::VectorXd u_max{}; ///< size `nu`, or empty = unlimited
-  double friction_mu{0.7}; ///< shared across active contacts
+  Eigen::VectorXd u_min{};  ///< size `nu`, or empty = unlimited
+  Eigen::VectorXd u_max{};  ///< size `nu`, or empty = unlimited
+  double friction_mu{0.7};  ///< shared across active contacts
 };
 
 /// @brief Failure modes for `OCPHandlerBase::Build` / `::UpdateReferences`.
 enum class OCPBuildError {
   kNoError = 0,
-  kModelNotInitialised,      ///< passed-in RobotModelHandler is unusable
-  kInvalidPhaseContext,      ///< unknown `ocp_type`, or topology change on
-                             ///< UpdateReferences
-  kInvalidCostConfig,        ///< PhaseCostConfig sizes / horizon / dt invalid
-  kContactPlanModelMismatch, ///< frame_id in contact plan not present in model
-  kLimitsDimMismatch,        ///< u_min/u_max non-empty with size != nu
-  kOverlappingContactPhases, ///< ContactPlan::phases have overlapping time
-                             ///< intervals
-  kAligatorInstantiationFailure, ///< an Aligator ctor threw (caught internally)
+  kModelNotInitialised,           ///< passed-in RobotModelHandler is unusable
+  kInvalidPhaseContext,           ///< unknown `ocp_type`, or topology change on
+                                  ///< UpdateReferences
+  kInvalidCostConfig,             ///< PhaseCostConfig sizes / horizon / dt invalid
+  kContactPlanModelMismatch,      ///< frame_id in contact plan not present in model
+  kLimitsDimMismatch,             ///< u_min/u_max non-empty with size != nu
+  kOverlappingContactPhases,      ///< ContactPlan::phases have overlapping time
+                                  ///< intervals
+  kAligatorInstantiationFailure,  ///< an Aligator ctor threw (caught internally)
 };
 
 /// @brief Abstract OCP builder. Concrete implementations map the OCP onto a
 ///        specific dynamics class (e.g. LightContactOCP, ContactRichOCP).
 class OCPHandlerBase {
-public:
+ public:
   OCPHandlerBase() = default;
   virtual ~OCPHandlerBase() = default;
 
-  OCPHandlerBase(const OCPHandlerBase &) = delete;
-  OCPHandlerBase &operator=(const OCPHandlerBase &) = delete;
-  OCPHandlerBase(OCPHandlerBase &&) = delete;
-  OCPHandlerBase &operator=(OCPHandlerBase &&) = delete;
+  OCPHandlerBase(const OCPHandlerBase&) = delete;
+  OCPHandlerBase& operator=(const OCPHandlerBase&) = delete;
+  OCPHandlerBase(OCPHandlerBase&&) = delete;
+  OCPHandlerBase& operator=(OCPHandlerBase&&) = delete;
 
   /// @brief Full problem rebuild. Off-RT path; allocation is permitted.
   /// @param ctx     phase snapshot (contact plan + cost config + targets)
@@ -85,9 +85,8 @@ public:
   /// @return kNoError on success; on failure, the handler may be left
   ///         partially constructed — callers should treat `Built() == false`
   ///         and re-Build with corrected inputs.
-  [[nodiscard]] virtual OCPBuildError
-  Build(const PhaseContext &ctx, const RobotModelHandler &model,
-        const OCPLimits &limits) noexcept = 0;
+  [[nodiscard]] virtual OCPBuildError Build(const PhaseContext& ctx, const RobotModelHandler& model,
+                                            const OCPLimits& limits) noexcept = 0;
 
   /// @brief Mutate per-stage cost references without touching stage topology.
   ///
@@ -96,8 +95,7 @@ public:
   /// ocp_type), returns `kInvalidPhaseContext` **without** modifying stored
   /// state — caller must `Build` again. Weight crossings (0 ↔ positive)
   /// also count as topology changes because they add or remove cost terms.
-  [[nodiscard]] virtual OCPBuildError
-  UpdateReferences(const PhaseContext &ctx) noexcept = 0;
+  [[nodiscard]] virtual OCPBuildError UpdateReferences(const PhaseContext& ctx) noexcept = 0;
 
   /// @return true once a successful `Build` has completed.
   [[nodiscard]] virtual bool Built() const noexcept = 0;
@@ -105,7 +103,7 @@ public:
   /// @return non-owning reference to the internal TrajOptProblem for solver
   ///         binding (Phase 5 `MPCHandler` calls `solver.setup(problem())`).
   ///         Precondition: `Built() == true`.
-  [[nodiscard]] virtual aligator::TrajOptProblemTpl<double> &problem() = 0;
+  [[nodiscard]] virtual aligator::TrajOptProblemTpl<double>& problem() = 0;
 
   /// @return horizon length used by the last successful Build.
   [[nodiscard]] virtual int horizon_length() const noexcept = 0;
@@ -115,6 +113,6 @@ public:
   [[nodiscard]] virtual std::string_view ocp_type() const noexcept = 0;
 };
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc
 
-#endif // RTC_MPC_OCP_OCP_HANDLER_BASE_HPP_
+#endif  // RTC_MPC_OCP_OCP_HANDLER_BASE_HPP_

@@ -17,23 +17,23 @@
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
-#include <yaml-cpp/yaml.h>
-
-#include <filesystem>
-#include <iostream>
-#include <memory>
-
 #include "rtc_mpc/handler/mpc_factory.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/phase/phase_context.hpp"
 #include "rtc_mpc/phase/phase_cost_config.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 
+#include <yaml-cpp/yaml.h>
+
+#include <filesystem>
+#include <iostream>
+#include <memory>
+
 namespace {
 
-constexpr const char *kPandaUrdf = RTC_PANDA_URDF_PATH;
+constexpr const char* kPandaUrdf = RTC_PANDA_URDF_PATH;
 
-constexpr const char *kLightCost = R"(
+constexpr const char* kLightCost = R"(
 horizon_length: 15
 dt: 0.01
 w_frame_placement: 100.0
@@ -47,7 +47,7 @@ F_target: [0, 0, 0, 0, 0, 0]
 custom_weights: {}
 )";
 
-constexpr const char *kContactCost = R"(
+constexpr const char* kContactCost = R"(
 horizon_length: 10
 dt: 0.01
 w_frame_placement: 10.0
@@ -62,7 +62,7 @@ custom_weights: {}
 )";
 
 class MPCFactoryTest : public ::testing::Test {
-protected:
+ protected:
   void SetUp() override {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed — run ./install.sh verify";
@@ -77,8 +77,7 @@ contact_frames:
   - name: panda_rightfinger
     dim: 3
 )");
-    ASSERT_EQ(handler_.Init(model_, robot_cfg),
-              rtc::mpc::RobotModelInitError::kNoError);
+    ASSERT_EQ(handler_.Init(model_, robot_cfg), rtc::mpc::RobotModelInitError::kNoError);
   }
 
   rtc::mpc::PhaseContext MakeLightContext() {
@@ -113,8 +112,7 @@ contact_frames:
     const int lf = handler_.contact_frames()[0].frame_id;
     const int rf = handler_.contact_frames()[1].frame_id;
     ctx.contact_plan.frames = handler_.contact_frames();
-    ctx.contact_plan.phases.push_back(
-        rtc::mpc::ContactPhase{{lf, rf}, 0.0, 100.0});
+    ctx.contact_plan.phases.push_back(rtc::mpc::ContactPhase{{lf, rf}, 0.0, 100.0});
 
     pinocchio::Data pdata(model_);
     const Eigen::VectorXd q0 = pinocchio::neutral(model_);
@@ -194,7 +192,7 @@ TEST_F(MPCFactoryTest, RejectsYamlOcpTypeDriftVsContext) {
 mpc:
   ocp_type: contact_rich
 )");
-  auto ctx = MakeLightContext(); // light_contact, mismatches YAML
+  auto ctx = MakeLightContext();  // light_contact, mismatches YAML
   std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
   const auto status = rtc::mpc::MPCFactory::Create(cfg, handler_, ctx, h);
   EXPECT_EQ(status.error, rtc::mpc::MPCFactoryError::kUnknownOcpType);
@@ -241,14 +239,12 @@ mpc:
 )");
   auto ctx_light = MakeLightContext();
   std::unique_ptr<rtc::mpc::MPCHandlerBase> light;
-  ASSERT_EQ(
-      rtc::mpc::MPCFactory::Create(cfg_light, handler_, ctx_light, light).error,
-      rtc::mpc::MPCFactoryError::kNoError);
+  ASSERT_EQ(rtc::mpc::MPCFactory::Create(cfg_light, handler_, ctx_light, light).error,
+            rtc::mpc::MPCFactoryError::kNoError);
 
   const auto state = MakeStateSnapshot();
   rtc::mpc::MPCSolution prev{};
-  ASSERT_EQ(light->Solve(ctx_light, state, prev),
-            rtc::mpc::MPCSolveError::kNoError);
+  ASSERT_EQ(light->Solve(ctx_light, state, prev), rtc::mpc::MPCSolveError::kNoError);
 
   // Build ContactRich and seed its warm-start with the LightContact
   // solution, then verify the first solve converges (or at minimum does
@@ -265,18 +261,17 @@ mpc:
 )");
   auto ctx_rich = MakeContactContext();
   std::unique_ptr<rtc::mpc::MPCHandlerBase> rich;
-  ASSERT_EQ(
-      rtc::mpc::MPCFactory::Create(cfg_rich, handler_, ctx_rich, rich).error,
-      rtc::mpc::MPCFactoryError::kNoError);
+  ASSERT_EQ(rtc::mpc::MPCFactory::Create(cfg_rich, handler_, ctx_rich, rich).error,
+            rtc::mpc::MPCFactoryError::kNoError);
 
   rich->SeedWarmStart(prev);
 
   rtc::mpc::MPCSolution after{};
   const auto err = rich->Solve(ctx_rich, state, after);
-  std::cout << "[cross-mode swap] err=" << static_cast<int>(err)
-            << " iters=" << after.iterations << "\n";
+  std::cout << "[cross-mode swap] err=" << static_cast<int>(err) << " iters=" << after.iterations
+            << "\n";
   EXPECT_NE(err, rtc::mpc::MPCSolveError::kSolverDiverged);
   EXPECT_NE(err, rtc::mpc::MPCSolveError::kSolverException);
 }
 
-} // namespace
+}  // namespace

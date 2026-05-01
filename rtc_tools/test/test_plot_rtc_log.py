@@ -86,9 +86,7 @@ class TestDetectLogType:
     def test_hand_udp_timing_log(self):
         assert detect_log_type("hand_udp_timing_log.csv") == "cm_timing"
 
-    def test_phase_c_controller_owned_returns_unknown_for_column_fallback(
-        self, tmp_path
-    ):
+    def test_phase_c_controller_owned_returns_unknown_for_column_fallback(self, tmp_path):
         # Phase C: <session>/controllers/<key>/<instance>.csv — stem alone
         # carries no type, parent-of-parent is "controllers". Filename
         # stage returns "unknown" so the column fallback decides.
@@ -451,9 +449,7 @@ class TestLoadLogCsv:
 
     def test_normal_load(self, tmp_path):
         path = tmp_path / "hand_sensor_log.csv"
-        _write_csv(
-            path, ["timestamp", "baro_0", "tof_0"], [[0.0, 100, 50], [0.002, 101, 51]]
-        )
+        _write_csv(path, ["timestamp", "baro_0", "tof_0"], [[0.0, 100, 50], [0.002, 101, 51]])
         df = load_log_csv(str(path), "sensor_log")
         assert len(df) == 2
         assert list(df.columns) == ["timestamp", "baro_0", "tof_0"]

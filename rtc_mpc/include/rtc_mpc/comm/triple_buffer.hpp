@@ -35,8 +35,7 @@ namespace rtc::mpc {
 
 template <typename T>
 class TripleBuffer {
-  static_assert(std::is_trivially_copyable_v<T>,
-                "TripleBuffer requires a trivially copyable type");
+  static_assert(std::is_trivially_copyable_v<T>, "TripleBuffer requires a trivially copyable type");
 
  public:
   TripleBuffer() noexcept = default;
@@ -51,9 +50,7 @@ class TripleBuffer {
 
   /// @brief Writable reference to the producer-owned slot.
   /// @note Valid until the next @ref FinishWrite call.
-  [[nodiscard]] T& StartWrite() noexcept {
-    return buffers_[writing_];
-  }
+  [[nodiscard]] T& StartWrite() noexcept { return buffers_[writing_]; }
 
   /// @brief Publish the currently-written slot as `latest`.
   ///
@@ -62,10 +59,8 @@ class TripleBuffer {
   /// scratchpad. No intermediate state is observable — the consumer
   /// either sees the previous `latest` or the new one, never an alias.
   void FinishWrite() noexcept {
-    const uint8_t new_latest =
-        static_cast<uint8_t>(writing_) | kDirtyBit;
-    const uint8_t previous = latest_.exchange(new_latest,
-                                              std::memory_order_acq_rel);
+    const uint8_t new_latest = static_cast<uint8_t>(writing_) | kDirtyBit;
+    const uint8_t previous = latest_.exchange(new_latest, std::memory_order_acq_rel);
     writing_ = static_cast<uint8_t>(previous & kIndexMask);
   }
 
@@ -83,8 +78,7 @@ class TripleBuffer {
     // Swap our current `reading` slot into `latest` with dirty=0. Take
     // whatever was in `latest` as our new read slot. Single atomic op.
     const uint8_t new_latest = reading_;  // dirty bit implicitly 0
-    const uint8_t previous = latest_.exchange(new_latest,
-                                              std::memory_order_acq_rel);
+    const uint8_t previous = latest_.exchange(new_latest, std::memory_order_acq_rel);
     if ((previous & kDirtyBit) == 0) {
       // Lost the race with another (nonexistent) consumer, or another
       // thread cleared the dirty bit. Unreachable under the single-consumer
@@ -100,9 +94,7 @@ class TripleBuffer {
   /// @warning Only meaningful after a successful @ref TryAcquireLatest.
   ///          Before the first successful acquire the returned buffer is
   ///          default-constructed.
-  [[nodiscard]] const T& Current() const noexcept {
-    return buffers_[reading_];
-  }
+  [[nodiscard]] const T& Current() const noexcept { return buffers_[reading_]; }
 
   /// @brief Query whether a new buffer is waiting.
   /// @note Advisory only — `TryAcquireLatest` is the authoritative path.
@@ -112,7 +104,7 @@ class TripleBuffer {
 
  private:
   static constexpr uint8_t kIndexMask = 0b0000'0011;
-  static constexpr uint8_t kDirtyBit  = 0b0000'0100;
+  static constexpr uint8_t kDirtyBit = 0b0000'0100;
 
   // The three indices {writing_, latest_, reading_} are always distinct.
   // `writing_` and `reading_` are owned by the producer and consumer

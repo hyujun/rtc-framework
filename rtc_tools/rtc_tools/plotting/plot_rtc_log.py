@@ -68,9 +68,7 @@ def main():
         "Without this flag, --save-dir (auto-resolved by default) forces the "
         "Agg backend and only PNGs are written.",
     )
-    parser.add_argument(
-        "--stats", action="store_true", help="Print statistics only (no plots)"
-    )
+    parser.add_argument("--stats", action="store_true", help="Print statistics only (no plots)")
     parser.add_argument(
         "--error",
         action="store_true",
@@ -94,9 +92,7 @@ def main():
     parser.add_argument(
         "--raw", action="store_true", help="Plot raw sensor data (pre-LPF) (hand only)"
     )
-    parser.add_argument(
-        "--ft", action="store_true", help="Plot F/T inference output (hand only)"
-    )
+    parser.add_argument("--ft", action="store_true", help="Plot F/T inference output (hand only)")
     parser.add_argument(
         "--sensor-compare",
         action="store_true",
@@ -145,9 +141,7 @@ def main():
             )
 
     if log_type == "unknown":
-        print(
-            f"Error: Cannot detect log type from filename or columns: {args.csv_file}"
-        )
+        print(f"Error: Cannot detect log type from filename or columns: {args.csv_file}")
         print(
             "Expected filenames: *_state_log.csv, *_sensor_log.csv, "
             "cm_timing_log*.csv, mpc_timing_log*.csv"
@@ -159,17 +153,13 @@ def main():
         df = load_log_csv(args.csv_file, log_type)
     except pd.errors.EmptyDataError:
         print(f"Error: CSV file is empty or has no columns: {args.csv_file}")
-        print(
-            "The log file may not have been written (e.g. controller crashed before logging)."
-        )
+        print("The log file may not have been written (e.g. controller crashed before logging).")
         sys.exit(1)
     except pd.errors.ParserError as e:
         print(f'Warning: CSV parse error — retrying with on_bad_lines="warn": {e}')
         df = pd.read_csv(args.csv_file, on_bad_lines="warn")
         if df.empty:
-            print(
-                f"Error: No valid rows after skipping malformed lines: {args.csv_file}"
-            )
+            print(f"Error: No valid rows after skipping malformed lines: {args.csv_file}")
             sys.exit(1)
         print(f"Loaded {len(df)} valid rows (some malformed lines were skipped).")
 

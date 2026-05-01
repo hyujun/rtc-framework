@@ -4,13 +4,13 @@
 #include "ur5e_bringup/controllers/demo_shared_config.hpp"
 #include "ur5e_bringup/logging/pod_fill.hpp"
 
-#include <algorithm> // std::copy, std::clamp
-#include <cmath>     // std::sqrt
-#include <string>
-#include <vector>
-
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
+
+#include <algorithm>  // std::copy, std::clamp
+#include <cmath>      // std::sqrt
+#include <string>
+#include <vector>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -25,15 +25,13 @@ namespace ur5e_bringup {
 DemoJointController::DemoJointController(std::string_view urdf_path)
     : DemoJointController(urdf_path, Gains{}) {}
 
-DemoJointController::DemoJointController(std::string_view urdf_path,
-                                         Gains gains)
+DemoJointController::DemoJointController(std::string_view urdf_path, Gains gains)
     : gains_lock_(gains), urdf_path_(urdf_path) {
   // Model is built in LoadConfig() (bridge YAML driven) or InitArmModel().
   // Constructor only stores urdf_path for later use.
 }
 
-void DemoJointController::InitArmModel(
-    const rtc_urdf_bridge::ModelConfig &config) {
+void DemoJointController::InitArmModel(const rtc_urdf_bridge::ModelConfig& config) {
   namespace rub = rtc_urdf_bridge;
   // Prefer the shared builder injected by RtControllerNode so the URDF is
   // parsed only once across every controller. Fall back to building our own
@@ -47,33 +45,30 @@ void DemoJointController::InitArmModel(
   // Resolve sub-model name: match primary device name, fallback to "arm"
   const auto primary = GetPrimaryDeviceName();
   std::string model_name = "arm";
-  for (const auto &sm : config.sub_models) {
+  for (const auto& sm : config.sub_models) {
     if (sm.name == primary) {
       model_name = primary;
       break;
     }
   }
-  arm_handle_ = std::make_unique<rub::RtModelHandle>(
-      builder_->GetReducedModel(model_name));
+  arm_handle_ = std::make_unique<rub::RtModelHandle>(builder_->GetReducedModel(model_name));
 }
 
 // ── Hand tree-model initialization ──────────────────────────────────────────
-void DemoJointController::InitHandModel(
-    const rtc_urdf_bridge::ModelConfig & /*config*/) {
+void DemoJointController::InitHandModel(const rtc_urdf_bridge::ModelConfig& /*config*/) {
   namespace rub = rtc_urdf_bridge;
   // "hand" tree_model: name matches device name
-  hand_handle_ =
-      std::make_unique<rub::RtModelHandle>(builder_->GetTreeModel("hand"));
+  hand_handle_ = std::make_unique<rub::RtModelHandle>(builder_->GetTreeModel("hand"));
 
   // Set joint reorder mapping: YAML joint_state_names → Pinocchio model order
-  if (auto *hand_cfg = GetDeviceNameConfig("hand"); hand_cfg) {
+  if (auto* hand_cfg = GetDeviceNameConfig("hand"); hand_cfg) {
     hand_handle_->SetJointOrder(hand_cfg->joint_state_names);
   }
 
   // Resolve fingertip frame IDs from tree_model tip_links
-  const auto *sys_cfg = GetSystemModelConfig();
+  const auto* sys_cfg = GetSystemModelConfig();
   if (sys_cfg) {
-    for (const auto &tm : sys_cfg->tree_models) {
+    for (const auto& tm : sys_cfg->tree_models) {
       if (tm.name == "hand") {
         if (!tm.root_link.empty()) {
           hand_root_frame_id_ = hand_handle_->GetFrameId(tm.root_link);
@@ -81,8 +76,7 @@ void DemoJointController::InitHandModel(
             use_hand_root_frame_ = true;
           }
         }
-        for (std::size_t i = 0;
-             i < std::min(tm.tip_links.size(), kNumFingertips); ++i) {
+        for (std::size_t i = 0; i < std::min(tm.tip_links.size(), kNumFingertips); ++i) {
           fingertip_frame_ids_[i] = hand_handle_->GetFrameId(tm.tip_links[i]);
         }
         break;
@@ -94,17 +88,17 @@ void DemoJointController::InitHandModel(
   hand_q_ = Eigen::VectorXd::Zero(hand_handle_->nq());
 
   // Initialize position/rotation buffers
-  for (auto &p : fingertip_positions_)
+  for (auto& p : fingertip_positions_)
     p = Eigen::Vector3d::Zero();
-  for (auto &r : fingertip_rotations_)
+  for (auto& r : fingertip_rotations_)
     r = Eigen::Matrix3d::Identity();
 }
 
 void DemoJointController::OnDeviceConfigsSet() {
-  if (auto *cfg = GetDeviceNameConfig("ur5e"); cfg) {
+  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       auto fid = arm_handle_->GetFrameId(cfg->urdf->tip_link);
-      if (fid != 0) { // 0 = universe (not found)
+      if (fid != 0) {  // 0 = universe (not found)
         tip_frame_id_ = fid;
       }
     }
@@ -127,7 +121,7 @@ void DemoJointController::OnDeviceConfigsSet() {
       }
     }
   }
-  if (auto *cfg = GetDeviceNameConfig("hand"); cfg && cfg->joint_limits) {
+  if (auto* cfg = GetDeviceNameConfig("hand"); cfg && cfg->joint_limits) {
     if (!cfg->joint_limits->max_velocity.empty()) {
       device_max_velocity_[1] = cfg->joint_limits->max_velocity;
     }
@@ -139,15 +133,15 @@ void DemoJointController::OnDeviceConfigsSet() {
     }
   }
   // Fallback defaults
-  for (auto &v : device_max_velocity_) {
+  for (auto& v : device_max_velocity_) {
     if (v.empty())
       v.assign(kMaxDeviceChannels, 2.0);
   }
-  for (auto &v : device_position_lower_) {
+  for (auto& v : device_position_lower_) {
     if (v.empty())
       v.assign(kMaxDeviceChannels, -6.2832);
   }
-  for (auto &v : device_position_upper_) {
+  for (auto& v : device_position_upper_) {
     if (v.empty())
       v.assign(kMaxDeviceChannels, 6.2832);
   }
@@ -155,18 +149,17 @@ void DemoJointController::OnDeviceConfigsSet() {
   // Capture joint/sensor names for CSV header expansion (Phase C).
   // Header writers run once at file open in on_configure → these vectors
   // are read non-RT only.
-  if (auto *cfg = GetDeviceNameConfig("ur5e"); cfg) {
+  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
     ur5e_joint_names_ = cfg->joint_state_names;
   }
-  if (auto *cfg = GetDeviceNameConfig("hand"); cfg) {
+  if (auto* cfg = GetDeviceNameConfig("hand"); cfg) {
     hand_joint_names_ = cfg->joint_state_names;
     hand_motor_names_ = cfg->motor_state_names;
     hand_sensor_names_ = cfg->sensor_names;
   }
 }
 
-ControllerOutput
-DemoJointController::Compute(const ControllerState &state) noexcept {
+ControllerOutput DemoJointController::Compute(const ControllerState& state) noexcept {
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
   ReadState(state);
   estop_active_ = estopped_.load(std::memory_order_acquire);
@@ -217,10 +210,10 @@ DemoJointController::Compute(const ControllerState &state) noexcept {
 
 // ── Phase 1: Read joint states + sensor data ────────────────────────────────
 
-void DemoJointController::ReadState(const ControllerState &state) noexcept {
+void DemoJointController::ReadState(const ControllerState& state) noexcept {
   // Robot arm joint positions (used for FK logging in WriteOutput)
-  const auto &dev0 = state.devices[0];
-  (void)dev0; // positions accessed directly via span in WriteOutput
+  const auto& dev0 = state.devices[0];
+  (void)dev0;  // positions accessed directly via span in WriteOutput
 
   // Hand motor data: dev1.motor_positions[], motor_velocities[],
   // motor_efforts[] available via state.devices[1].motor_* (populated from
@@ -229,29 +222,26 @@ void DemoJointController::ReadState(const ControllerState &state) noexcept {
   // Hand sensor data (per-fingertip)
   num_active_fingertips_ = 0;
   if (state.num_devices > 1 && state.devices[1].valid) {
-    const auto &dev1 = state.devices[1];
+    const auto& dev1 = state.devices[1];
     const int num_sensor_ch = dev1.num_sensor_channels;
     const int num_fingertips = num_sensor_ch / rtc::kSensorValuesPerFingertip;
-    num_active_fingertips_ =
-        std::min(num_fingertips, static_cast<int>(rtc::kMaxFingertips));
+    num_active_fingertips_ = std::min(num_fingertips, static_cast<int>(rtc::kMaxFingertips));
 
     for (int f = 0; f < num_active_fingertips_; ++f) {
-      auto &ft = fingertip_data_[static_cast<std::size_t>(f)];
+      auto& ft = fingertip_data_[static_cast<std::size_t>(f)];
       const int base = f * rtc::kSensorValuesPerFingertip;
 
       for (std::size_t j = 0; j < rtc::kBarometerCount; ++j) {
         ft.baro[j] = dev1.sensor_data[static_cast<std::size_t>(base) + j];
       }
       for (std::size_t j = 0; j < 3; ++j) {
-        ft.tof[j] = dev1.sensor_data[static_cast<std::size_t>(base) +
-                                     rtc::kBarometerCount + j];
+        ft.tof[j] = dev1.sensor_data[static_cast<std::size_t>(base) + rtc::kBarometerCount + j];
       }
 
       ft.valid = dev1.inference_enable[static_cast<std::size_t>(f)];
       if (ft.valid) {
         const int ft_base = f * rtc::kFTValuesPerFingertip;
-        ft.contact_flag =
-            dev1.inference_data[static_cast<std::size_t>(ft_base)];
+        ft.contact_flag = dev1.inference_data[static_cast<std::size_t>(ft_base)];
         for (int j = 0; j < 3; ++j) {
           ft.force[static_cast<std::size_t>(j)] =
               dev1.inference_data[static_cast<std::size_t>(ft_base + 1 + j)];
@@ -269,8 +259,8 @@ void DemoJointController::ReadState(const ControllerState &state) noexcept {
 
 // ── Virtual TCP computation ─────────────────────────────────────────────────
 
-void DemoJointController::UpdateVirtualTcp(const pinocchio::SE3 &T_base_tcp,
-                                           const Gains &gains) noexcept {
+void DemoJointController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
+                                           const Gains& gains) noexcept {
   vtcp_valid_ = false;
   if (!hand_handle_ || gains.vtcp.mode == VirtualTcpMode::kDisabled)
     return;
@@ -283,17 +273,16 @@ void DemoJointController::UpdateVirtualTcp(const pinocchio::SE3 &T_base_tcp,
       continue;
     auto ft_pose = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
     if (use_hand_root_frame_) {
-      ft_pose =
-          hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(ft_pose);
+      ft_pose = hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(ft_pose);
     }
     vtcp_inputs_[f].position_in_tcp = ft_pose.translation();
     // Force magnitude for weighted mode
-    const auto &ft = fingertip_data_[f];
+    const auto& ft = fingertip_data_[f];
     vtcp_inputs_[f].force_magnitude =
-        ft.valid ? static_cast<double>(std::sqrt(ft.force[0] * ft.force[0] +
-                                                 ft.force[1] * ft.force[1] +
-                                                 ft.force[2] * ft.force[2]))
-                 : 0.0;
+        ft.valid
+            ? static_cast<double>(std::sqrt(ft.force[0] * ft.force[0] + ft.force[1] * ft.force[1] +
+                                            ft.force[2] * ft.force[2]))
+            : 0.0;
   }
 
   const auto result = ComputeVirtualTcp(gains.vtcp, T_base_tcp, vtcp_inputs_);
@@ -305,11 +294,10 @@ void DemoJointController::UpdateVirtualTcp(const pinocchio::SE3 &T_base_tcp,
 
 // ── Phase 2: Compute control (trajectory + sensor-based logic) ──────────────
 
-void DemoJointController::ComputeControl(const ControllerState &state,
-                                         double dt) noexcept {
+void DemoJointController::ComputeControl(const ControllerState& state, double dt) noexcept {
   // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
   const auto gains = gains_lock_.Load();
-  const auto &dev0 = state.devices[0];
+  const auto& dev0 = state.devices[0];
 
   // ── Robot arm trajectory ────────────────────────────────────────────────
   if (robot_new_target_.load(std::memory_order_acquire)) {
@@ -328,17 +316,15 @@ void DemoJointController::ComputeControl(const ControllerState &state,
         goal_state.velocities[i] = 0.0;
         goal_state.accelerations[i] = 0.0;
 
-        max_dist = std::max(
-            max_dist, std::abs(device_targets_[0][i] - dev0.positions[i]));
+        max_dist = std::max(max_dist, std::abs(device_targets_[0][i] - dev0.positions[i]));
       }
 
       // Duration from trajectory_speed, then enforce max trajectory velocity.
       // Quintic rest-to-rest peak velocity = (15/8) * max_dist / T.
       const double T_speed = max_dist / gains.robot_trajectory_speed;
-      const double T_vel =
-          (gains.robot_max_traj_velocity > 0.0)
-              ? (1.875 * max_dist / gains.robot_max_traj_velocity)
-              : 0.0;
+      const double T_vel = (gains.robot_max_traj_velocity > 0.0)
+                               ? (1.875 * max_dist / gains.robot_max_traj_velocity)
+                               : 0.0;
       const double duration = std::max({0.01, T_speed, T_vel});
       robot_trajectory_.initialize(start_state, goal_state, duration);
       robot_trajectory_time_ = 0.0;
@@ -356,7 +342,7 @@ void DemoJointController::ComputeControl(const ControllerState &state,
 
   // ── Hand motor trajectory ──────────────────────────────────────────────
   if (state.num_devices > 1 && state.devices[1].valid) {
-    const auto &dev1 = state.devices[1];
+    const auto& dev1 = state.devices[1];
 
     if (hand_new_target_.load(std::memory_order_acquire)) {
       std::unique_lock lock(target_mutex_, std::try_to_lock);
@@ -374,15 +360,13 @@ void DemoJointController::ComputeControl(const ControllerState &state,
           goal_state.velocities[i] = 0.0;
           goal_state.accelerations[i] = 0.0;
 
-          max_dist = std::max(
-              max_dist, std::abs(device_targets_[1][i] - dev1.positions[i]));
+          max_dist = std::max(max_dist, std::abs(device_targets_[1][i] - dev1.positions[i]));
         }
 
         const double T_speed = max_dist / gains.hand_trajectory_speed;
-        const double T_vel =
-            (gains.hand_max_traj_velocity > 0.0)
-                ? (1.875 * max_dist / gains.hand_max_traj_velocity)
-                : 0.0;
+        const double T_vel = (gains.hand_max_traj_velocity > 0.0)
+                                 ? (1.875 * max_dist / gains.hand_max_traj_velocity)
+                                 : 0.0;
         const double duration = std::max({0.01, T_speed, T_vel});
         hand_trajectory_.initialize(start_state, goal_state, duration);
         hand_trajectory_time_ = 0.0;
@@ -401,33 +385,28 @@ void DemoJointController::ComputeControl(const ControllerState &state,
 
   // ── Hand fingertip FK (tree model) — base-to-fingertip ──────────────
   if (hand_handle_ && state.num_devices > 1 && state.devices[1].valid) {
-    const auto &dev1 = state.devices[1];
+    const auto& dev1 = state.devices[1];
     const auto hand_nq = static_cast<std::size_t>(hand_handle_->nq());
     for (std::size_t i = 0; i < hand_nq; ++i) {
       hand_q_[static_cast<Eigen::Index>(i)] = dev1.positions[i];
     }
-    hand_handle_->ComputeForwardKinematics(
-        std::span<const double>(hand_q_.data(), hand_nq));
+    hand_handle_->ComputeForwardKinematics(std::span<const double>(hand_q_.data(), hand_nq));
 
     // Arm FK: base -> tcp (tool0)
     const int nc0 = dev0.num_channels;
-    std::span<const double> q_span(dev0.positions.data(),
-                                   static_cast<std::size_t>(nc0));
+    std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
     arm_handle_->ComputeForwardKinematics(q_span);
     pinocchio::SE3 T_base_tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
     if (use_root_frame_) {
-      T_base_tcp =
-          arm_handle_->GetFramePlacement(root_frame_id_).actInv(T_base_tcp);
+      T_base_tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(T_base_tcp);
     }
 
     // Chain: T_base_fingertip = T_base_tcp * T_hand_fingertip
     for (std::size_t f = 0; f < kNumFingertips; ++f) {
       if (fingertip_frame_ids_[f] != 0) {
-        auto T_hand_ft =
-            hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
+        auto T_hand_ft = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
         if (use_hand_root_frame_) {
-          T_hand_ft = hand_handle_->GetFramePlacement(hand_root_frame_id_)
-                          .actInv(T_hand_ft);
+          T_hand_ft = hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(T_hand_ft);
         }
         const pinocchio::SE3 T_base_ft = T_base_tcp.act(T_hand_ft);
         fingertip_positions_[f] = T_base_ft.translation();
@@ -450,10 +429,9 @@ void DemoJointController::ComputeControl(const ControllerState &state,
 
     for (int f = 0; f < num_active_fingertips_; ++f) {
       const auto idx = static_cast<std::size_t>(f);
-      const auto &ft = fingertip_data_[idx];
-      const float mag =
-          std::sqrt(ft.force[0] * ft.force[0] + ft.force[1] * ft.force[1] +
-                    ft.force[2] * ft.force[2]);
+      const auto& ft = fingertip_data_[idx];
+      const float mag = std::sqrt(ft.force[0] * ft.force[0] + ft.force[1] * ft.force[1] +
+                                  ft.force[2] * ft.force[2]);
 
       grasp_state_.force_magnitude[idx] = mag;
       grasp_state_.contact_flag[idx] = ft.contact_flag;
@@ -475,12 +453,11 @@ void DemoJointController::ComputeControl(const ControllerState &state,
     // Periodic grasp status snapshot (2s throttle, debug only).
     // NOTE: throttled logging on the 500Hz path — the rare allocation
     // inside rclcpp logging macros is acceptable at this interval.
-    RCLCPP_INFO_THROTTLE(
-        logger_, log_clock_, ::ur5e_bringup::logging::kThrottleSlowMs,
-        "[grasp] type=%s active=%d/%d max_force=%.2fN thresh=%.2fN phase=%d",
-        grasp_controller_type_.c_str(), active_count, num_active_fingertips_,
-        static_cast<double>(max_force), static_cast<double>(force_thresh),
-        grasp_controller_ ? static_cast<int>(grasp_controller_->phase()) : -1);
+    RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::ur5e_bringup::logging::kThrottleSlowMs,
+                         "[grasp] type=%s active=%d/%d max_force=%.2fN thresh=%.2fN phase=%d",
+                         grasp_controller_type_.c_str(), active_count, num_active_fingertips_,
+                         static_cast<double>(max_force), static_cast<double>(force_thresh),
+                         grasp_controller_ ? static_cast<int>(grasp_controller_->phase()) : -1);
 
     // Hand grasp control: force_pi (adaptive PI) or contact_stop (binary
     // freeze)
@@ -488,8 +465,8 @@ void DemoJointController::ComputeControl(const ControllerState &state,
       // Build force input: 3 fingers의 force magnitude
       std::array<double, rtc::grasp::kNumGraspFingers> f_raw{};
       for (int f = 0; f < rtc::grasp::kNumGraspFingers; ++f) {
-        f_raw[static_cast<std::size_t>(f)] = static_cast<double>(
-            grasp_state_.force_magnitude[static_cast<std::size_t>(f)]);
+        f_raw[static_cast<std::size_t>(f)] =
+            static_cast<double>(grasp_state_.force_magnitude[static_cast<std::size_t>(f)]);
       }
 
       const auto commands = grasp_controller_->Update(
@@ -499,10 +476,9 @@ void DemoJointController::ComputeControl(const ControllerState &state,
       // throttled as a defensive RT-safety net in case the FSM oscillates.
       const auto cur_phase = static_cast<uint8_t>(grasp_controller_->phase());
       if (cur_phase != prev_grasp_phase_) {
-        RCLCPP_INFO_THROTTLE(
-            logger_, log_clock_, ::ur5e_bringup::logging::kThrottleFastMs,
-            "[force_pi] phase %u -> %u target_force=%.2fN", prev_grasp_phase_,
-            cur_phase, grasp_controller_->target_force());
+        RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::ur5e_bringup::logging::kThrottleFastMs,
+                             "[force_pi] phase %u -> %u target_force=%.2fN", prev_grasp_phase_,
+                             cur_phase, grasp_controller_->target_force());
         prev_grasp_phase_ = cur_phase;
       }
 
@@ -511,11 +487,9 @@ void DemoJointController::ComputeControl(const ControllerState &state,
         for (int f = 0; f < rtc::grasp::kNumGraspFingers; ++f) {
           for (int j = 0; j < rtc::grasp::kDoFPerFinger; ++j) {
             const auto mi = static_cast<std::size_t>(
-                finger_joint_map_[static_cast<std::size_t>(f)]
-                                 [static_cast<std::size_t>(j)]);
+                finger_joint_map_[static_cast<std::size_t>(f)][static_cast<std::size_t>(j)]);
             hand_computed_.positions[mi] =
-                commands.q[static_cast<std::size_t>(f)]
-                          [static_cast<std::size_t>(j)];
+                commands.q[static_cast<std::size_t>(f)][static_cast<std::size_t>(j)];
             hand_computed_.velocities[mi] = 0.0;
           }
         }
@@ -532,50 +506,44 @@ void DemoJointController::ComputeControl(const ControllerState &state,
       //   - middle_mcp_fe: 각도 감소 = loosening → target < actual 이면 release
       // 세 조건이 모두 성립할 때만 "release 의도" 로 판단.
       if (state.num_devices > 1 && state.devices[1].valid) {
-        const auto &dev1 = state.devices[1];
+        const auto& dev1 = state.devices[1];
 
-        const double d_thumb = device_targets_[1][hand_idx_thumb_cmc_fe_] -
-                               dev1.positions[hand_idx_thumb_cmc_fe_];
-        const double d_index = device_targets_[1][hand_idx_index_mcp_fe_] -
-                               dev1.positions[hand_idx_index_mcp_fe_];
-        const double d_middle = device_targets_[1][hand_idx_middle_mcp_fe_] -
-                                dev1.positions[hand_idx_middle_mcp_fe_];
+        const double d_thumb =
+            device_targets_[1][hand_idx_thumb_cmc_fe_] - dev1.positions[hand_idx_thumb_cmc_fe_];
+        const double d_index =
+            device_targets_[1][hand_idx_index_mcp_fe_] - dev1.positions[hand_idx_index_mcp_fe_];
+        const double d_middle =
+            device_targets_[1][hand_idx_middle_mcp_fe_] - dev1.positions[hand_idx_middle_mcp_fe_];
 
         const bool thumb_releasing = d_thumb > gains.contact_stop_release_eps;
         const bool index_releasing = d_index < -gains.contact_stop_release_eps;
-        const bool middle_releasing =
-            d_middle < -gains.contact_stop_release_eps;
-        const bool release_phase =
-            thumb_releasing && index_releasing && middle_releasing;
+        const bool middle_releasing = d_middle < -gains.contact_stop_release_eps;
+        const bool release_phase = thumb_releasing && index_releasing && middle_releasing;
 
         if (release_phase) {
-          RCLCPP_INFO_THROTTLE(logger_, log_clock_,
-                               ::ur5e_bringup::logging::kThrottleFastMs,
+          RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::ur5e_bringup::logging::kThrottleFastMs,
                                "[contact_stop] SKIP (release) dthumb_fe=%+.3f "
                                "dindex_fe=%+.3f dmid_fe=%+.3f",
                                d_thumb, d_index, d_middle);
         } else if (active_count > 0 && max_force > force_thresh) {
-          for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors);
-               ++i) {
+          for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors); ++i) {
             hand_computed_.positions[i] = dev1.positions[i];
             hand_computed_.velocities[i] = 0.0;
           }
           // Errors (target - actual) encode both the actual position and the
           // overshoot beyond target in a single number each, so 5 args are
           // enough to diagnose contact_stop engagement.
-          const double err_thumb = device_targets_[1][hand_idx_thumb_cmc_fe_] -
-                                   dev1.positions[hand_idx_thumb_cmc_fe_];
-          const double err_index = device_targets_[1][hand_idx_index_mcp_fe_] -
-                                   dev1.positions[hand_idx_index_mcp_fe_];
+          const double err_thumb =
+              device_targets_[1][hand_idx_thumb_cmc_fe_] - dev1.positions[hand_idx_thumb_cmc_fe_];
+          const double err_index =
+              device_targets_[1][hand_idx_index_mcp_fe_] - dev1.positions[hand_idx_index_mcp_fe_];
           const double err_middle =
-              device_targets_[1][hand_idx_middle_mcp_fe_] -
-              dev1.positions[hand_idx_middle_mcp_fe_];
-          RCLCPP_INFO_THROTTLE(logger_, log_clock_,
-                               ::ur5e_bringup::logging::kThrottleFastMs,
+              device_targets_[1][hand_idx_middle_mcp_fe_] - dev1.positions[hand_idx_middle_mcp_fe_];
+          RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::ur5e_bringup::logging::kThrottleFastMs,
                                "[contact_stop] FREEZE active=%d fmax=%.2fN "
                                "err=[%+.3f,%+.3f,%+.3f]",
-                               active_count, static_cast<double>(max_force),
-                               err_thumb, err_index, err_middle);
+                               active_count, static_cast<double>(max_force), err_thumb, err_index,
+                               err_middle);
         }
       }
     }
@@ -583,8 +551,8 @@ void DemoJointController::ComputeControl(const ControllerState &state,
 
   // ── ToF snapshot (3 fingers × 2 sensors: tof[1]=A, tof[2]=B) ───────────
   {
-    constexpr int kNumTofFingers = 3;    // thumb, index, middle (hand-specific)
-    constexpr int kSensorsPerFinger = 2; // A/B pair
+    constexpr int kNumTofFingers = 3;     // thumb, index, middle (hand-specific)
+    constexpr int kSensorsPerFinger = 2;  // A/B pair
     constexpr double kMmToM = 0.001;
     tof_snapshot_ = {};
 
@@ -594,7 +562,7 @@ void DemoJointController::ComputeControl(const ControllerState &state,
 
       for (int f = 0; f < kNumTofFingers; ++f) {
         const auto fi = static_cast<std::size_t>(f);
-        const auto &ft = fingertip_data_[fi];
+        const auto& ft = fingertip_data_[fi];
         const int si = f * kSensorsPerFinger;
 
         // tof[1] → sensor A, tof[2] → sensor B (tof[0] 제외)
@@ -606,8 +574,8 @@ void DemoJointController::ComputeControl(const ControllerState &state,
         tof_snapshot_.valid[static_cast<std::size_t>(si + 1)] = (d_b > 0.0);
 
         // Fingertip SE3 pose → position + quaternion
-        auto &pose = tof_snapshot_.tip_poses[fi];
-        const auto &pos = fingertip_positions_[fi];
+        auto& pose = tof_snapshot_.tip_poses[fi];
+        const auto& pos = fingertip_positions_[fi];
         pose.position = {pos[0], pos[1], pos[2]};
         const Eigen::Quaterniond quat(fingertip_rotations_[fi]);
         pose.quaternion = {quat.w(), quat.x(), quat.y(), quat.z()};
@@ -619,14 +587,14 @@ void DemoJointController::ComputeControl(const ControllerState &state,
 
 // ── Phase 3: Write output ────────────────────────────────────────────────────
 
-ControllerOutput DemoJointController::WriteOutput(const ControllerState &state,
+ControllerOutput DemoJointController::WriteOutput(const ControllerState& state,
                                                   double /*dt*/) noexcept {
   ControllerOutput output;
   output.num_devices = state.num_devices;
 
   // ── Robot arm output ────────────────────────────────────────────────────
-  const auto &dev0 = state.devices[0];
-  auto &out0 = output.devices[0];
+  const auto& dev0 = state.devices[0];
+  auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
   out0.goal_type = GoalType::kJoint;
@@ -639,19 +607,17 @@ ControllerOutput DemoJointController::WriteOutput(const ControllerState &state,
     out0.trajectory_velocities[i] = robot_computed_.velocities[i];
     out0.goal_positions[i] = device_targets_[0][i];
   }
-  ClampCommands(out0.commands, nc0, device_position_lower_[0],
-                device_position_upper_[0]);
+  ClampCommands(out0.commands, nc0, device_position_lower_[0], device_position_upper_[0]);
 
   // ── Forward kinematics for task-space logging ──────────────────────────
-  std::span<const double> q_span(dev0.positions.data(),
-                                 static_cast<std::size_t>(nc0));
+  std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
   arm_handle_->ComputeForwardKinematics(q_span);
   pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
   if (use_root_frame_) {
     tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
   }
   // Log virtual TCP pose when active, otherwise raw TCP
-  const pinocchio::SE3 &log_pose = vtcp_valid_ ? vtcp_pose_ : tcp;
+  const pinocchio::SE3& log_pose = vtcp_valid_ ? vtcp_pose_ : tcp;
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(log_pose.rotation());
 
   output.actual_task_positions[0] = log_pose.translation().x();
@@ -667,7 +633,7 @@ ControllerOutput DemoJointController::WriteOutput(const ControllerState &state,
   // ── Hand output ────────────────────────────────────────────────────────
   if (state.num_devices > 1 && state.devices[1].valid) {
     const int nc1 = state.devices[1].num_channels;
-    auto &out1 = output.devices[1];
+    auto& out1 = output.devices[1];
     out1.num_channels = nc1;
     out1.goal_type = GoalType::kJoint;
 
@@ -679,21 +645,18 @@ ControllerOutput DemoJointController::WriteOutput(const ControllerState &state,
       out1.trajectory_velocities[i] = hand_computed_.velocities[i];
       out1.goal_positions[i] = device_targets_[1][i];
     }
-    ClampCommands(out1.commands, nc1, device_position_lower_[1],
-                  device_position_upper_[1]);
+    ClampCommands(out1.commands, nc1, device_position_lower_[1], device_position_upper_[1]);
   }
 
   // Populate force-PI grasp state if active
   if (grasp_controller_ && grasp_controller_type_ == "force_pi") {
     grasp_state_.grasp_phase = static_cast<uint8_t>(grasp_controller_->phase());
-    grasp_state_.grasp_target_force =
-        static_cast<float>(grasp_controller_->target_force());
-    const auto &fs = grasp_controller_->finger_states();
+    grasp_state_.grasp_target_force = static_cast<float>(grasp_controller_->target_force());
+    const auto& fs = grasp_controller_->finger_states();
     for (int f = 0; f < rtc::grasp::kNumGraspFingers; ++f) {
       const auto idx = static_cast<std::size_t>(f);
       grasp_state_.finger_s[idx] = static_cast<float>(fs[idx].s);
-      grasp_state_.finger_filtered_force[idx] =
-          static_cast<float>(fs[idx].f_measured);
+      grasp_state_.finger_filtered_force[idx] = static_cast<float>(fs[idx].f_measured);
       grasp_state_.finger_force_error[idx] =
           static_cast<float>(fs[idx].f_desired - fs[idx].f_measured);
     }
@@ -705,8 +668,7 @@ ControllerOutput DemoJointController::WriteOutput(const ControllerState &state,
   return output;
 }
 
-void DemoJointController::SetDeviceTarget(
-    int device_idx, std::span<const double> target) noexcept {
+void DemoJointController::SetDeviceTarget(int device_idx, std::span<const double> target) noexcept {
   if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices)
     return;
   const int n = std::min(static_cast<int>(target.size()), kMaxDeviceChannels);
@@ -723,13 +685,12 @@ void DemoJointController::SetDeviceTarget(
   }
 }
 
-void DemoJointController::InitializeHoldPosition(
-    const ControllerState &state) noexcept {
+void DemoJointController::InitializeHoldPosition(const ControllerState& state) noexcept {
   std::lock_guard lock(target_mutex_);
 
   // Robot
   {
-    const auto &dev0 = state.devices[0];
+    const auto& dev0 = state.devices[0];
     trajectory::JointSpaceTrajectory<kNumRobotJoints>::State hold_state;
     for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
       device_targets_[0][i] = dev0.positions[i];
@@ -743,14 +704,12 @@ void DemoJointController::InitializeHoldPosition(
   }
 
   // Hand
-  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices);
-       ++d) {
-    const auto &dev = state.devices[d];
+  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
+    const auto& dev = state.devices[d];
     if (!dev.valid)
       continue;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) &&
-                            i < kMaxDeviceChannels;
-         ++i) {
+    for (std::size_t i = 0;
+         i < static_cast<std::size_t>(dev.num_channels) && i < kMaxDeviceChannels; ++i) {
       device_targets_[d][i] = dev.positions[i];
     }
     if (d == 1) {
@@ -767,17 +726,16 @@ void DemoJointController::InitializeHoldPosition(
   }
 }
 
-void DemoJointController::ClampCommands(
-    std::array<double, kMaxDeviceChannels> &commands, int n,
-    const std::vector<double> &lower,
-    const std::vector<double> &upper) noexcept {
+void DemoJointController::ClampCommands(std::array<double, kMaxDeviceChannels>& commands, int n,
+                                        const std::vector<double>& lower,
+                                        const std::vector<double>& upper) noexcept {
   rtc::utils::ClampRange(commands, n, std::span<const double>(lower),
                          std::span<const double>(upper), -6.2832, 6.2832);
 }
 
 // ── Controller registry hooks ────────────────────────────────────────────────
 
-void DemoJointController::LoadConfig(const YAML::Node &cfg) {
+void DemoJointController::LoadConfig(const YAML::Node& cfg) {
   RTControllerInterface::LoadConfig(cfg);
   if (!cfg) {
     return;
@@ -785,7 +743,7 @@ void DemoJointController::LoadConfig(const YAML::Node &cfg) {
 
   // ── Build arm model from system model config or bridge YAML ──────────────
   namespace rub = rtc_urdf_bridge;
-  const auto *sys_cfg = GetSystemModelConfig();
+  const auto* sys_cfg = GetSystemModelConfig();
   if (sys_cfg && !sys_cfg->urdf_path.empty() && !sys_cfg->sub_models.empty()) {
     // System-level ModelConfig (top-level "urdf:" YAML section)
     InitArmModel(*sys_cfg);
@@ -793,8 +751,7 @@ void DemoJointController::LoadConfig(const YAML::Node &cfg) {
     // Fallback: separate model config YAML file (backward compatibility)
     const auto yaml_name = cfg["model_config"].as<std::string>();
     const auto yaml_path =
-        ament_index_cpp::get_package_share_directory("ur5e_bringup") +
-        "/config/" + yaml_name;
+        ament_index_cpp::get_package_share_directory("ur5e_bringup") + "/config/" + yaml_name;
     auto model_cfg = rub::PinocchioModelBuilder::LoadModelConfig(yaml_path);
     model_cfg.urdf_path = urdf_path_;
     InitArmModel(model_cfg);
@@ -814,23 +771,20 @@ void DemoJointController::LoadConfig(const YAML::Node &cfg) {
 
   // ── E-STOP arm safe position (required) ─────────────────────────────
   if (!cfg["estop"] || !cfg["estop"].IsMap()) {
-    throw std::runtime_error(
-        "demo_joint_controller: required 'estop' section is missing");
+    throw std::runtime_error("demo_joint_controller: required 'estop' section is missing");
   }
   {
     const auto estop_node = cfg["estop"];
-    if (!estop_node["arm_safe_position"] ||
-        !estop_node["arm_safe_position"].IsSequence()) {
+    if (!estop_node["arm_safe_position"] || !estop_node["arm_safe_position"].IsSequence()) {
       throw std::runtime_error(
           "demo_joint_controller: required 'estop.arm_safe_position' "
           "must be a sequence");
     }
     const auto sp = estop_node["arm_safe_position"];
     if (sp.size() != static_cast<std::size_t>(kNumRobotJoints)) {
-      throw std::runtime_error(
-          "demo_joint_controller: 'estop.arm_safe_position' length " +
-          std::to_string(sp.size()) + " != expected " +
-          std::to_string(kNumRobotJoints));
+      throw std::runtime_error("demo_joint_controller: 'estop.arm_safe_position' length " +
+                               std::to_string(sp.size()) + " != expected " +
+                               std::to_string(kNumRobotJoints));
     }
     for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
       safe_position_[i] = sp[i].as<double>();
@@ -839,12 +793,10 @@ void DemoJointController::LoadConfig(const YAML::Node &cfg) {
 
   auto g = gains_lock_.Load();
   if (cfg["robot_trajectory_speed"]) {
-    g.robot_trajectory_speed =
-        std::max(1e-6, cfg["robot_trajectory_speed"].as<double>());
+    g.robot_trajectory_speed = std::max(1e-6, cfg["robot_trajectory_speed"].as<double>());
   }
   if (cfg["hand_trajectory_speed"]) {
-    g.hand_trajectory_speed =
-        std::max(1e-6, cfg["hand_trajectory_speed"].as<double>());
+    g.hand_trajectory_speed = std::max(1e-6, cfg["hand_trajectory_speed"].as<double>());
   }
   if (cfg["robot_max_traj_velocity"]) {
     g.robot_max_traj_velocity = cfg["robot_max_traj_velocity"].as<double>();
@@ -855,11 +807,10 @@ void DemoJointController::LoadConfig(const YAML::Node &cfg) {
 
   // ── FSM tuning (required) ───────────────────────────────────────────
   if (!cfg["fsm"] || !cfg["fsm"].IsMap()) {
-    throw std::runtime_error(
-        "demo_joint_controller: required 'fsm' section is missing");
+    throw std::runtime_error("demo_joint_controller: required 'fsm' section is missing");
   }
   {
-    const auto &fsm = cfg["fsm"];
+    const auto& fsm = cfg["fsm"];
     if (!fsm["contact_stop_release_eps"]) {
       throw std::runtime_error(
           "demo_joint_controller: required 'fsm.contact_stop_release_eps' "
@@ -886,17 +837,13 @@ void DemoJointController::LoadConfig(const YAML::Node &cfg) {
   gains_lock_.Store(g);
   grasp_controller_type_ = shared.grasp_controller_type;
   finger_joint_map_ = shared.hand_finger_joint_map;
-  hand_idx_thumb_cmc_fe_ =
-      static_cast<std::size_t>(shared.hand_idx_thumb_cmc_fe);
-  hand_idx_index_mcp_fe_ =
-      static_cast<std::size_t>(shared.hand_idx_index_mcp_fe);
-  hand_idx_middle_mcp_fe_ =
-      static_cast<std::size_t>(shared.hand_idx_middle_mcp_fe);
+  hand_idx_thumb_cmc_fe_ = static_cast<std::size_t>(shared.hand_idx_thumb_cmc_fe);
+  hand_idx_index_mcp_fe_ = static_cast<std::size_t>(shared.hand_idx_index_mcp_fe);
+  hand_idx_middle_mcp_fe_ = static_cast<std::size_t>(shared.hand_idx_middle_mcp_fe);
 
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
-    command_type_ =
-        (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
+    command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
 
   BuildGraspController(shared, 1.0 / GetDefaultDt(), grasp_controller_);
@@ -907,13 +854,11 @@ void DemoJointController::LoadConfig(const YAML::Node &cfg) {
   parsed_log_entries_.clear();
   if (cfg["logs"]) {
     if (!cfg["logs"].IsSequence()) {
-      throw std::runtime_error(
-          "DemoJointController: 'logs' must be a sequence");
+      throw std::runtime_error("DemoJointController: 'logs' must be a sequence");
     }
-    for (const auto &entry : cfg["logs"]) {
+    for (const auto& entry : cfg["logs"]) {
       if (!entry.IsMap() || !entry["msg_type"]) {
-        throw std::runtime_error(
-            "DemoJointController: each `logs` entry needs `msg_type`");
+        throw std::runtime_error("DemoJointController: each `logs` entry needs `msg_type`");
       }
       ParsedLogEntry e;
       e.msg_type = entry["msg_type"].as<std::string>();
@@ -921,10 +866,8 @@ void DemoJointController::LoadConfig(const YAML::Node &cfg) {
         e.instance = entry["instance"].as<std::string>();
       }
       // Closed-set msg_type validation (typo = hard fail at parse time).
-      if (e.msg_type != "rtc_msgs/DeviceStateLog" &&
-          e.msg_type != "rtc_msgs/DeviceSensorLog") {
-        throw std::runtime_error(
-            "DemoJointController: unknown msg_type in `logs`: " + e.msg_type);
+      if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != "rtc_msgs/DeviceSensorLog") {
+        throw std::runtime_error("DemoJointController: unknown msg_type in `logs`: " + e.msg_type);
       }
       parsed_log_entries_.push_back(std::move(e));
     }
@@ -949,24 +892,21 @@ void DemoJointController::SetHandEstop(bool active) noexcept {
   hand_estopped_.store(active, std::memory_order_release);
 }
 
-ControllerOutput
-DemoJointController::ComputeEstop(const ControllerState &state) noexcept {
-  const auto &dev0 = state.devices[0];
+ControllerOutput DemoJointController::ComputeEstop(const ControllerState& state) noexcept {
+  const auto& dev0 = state.devices[0];
   ControllerOutput output;
   output.num_devices = state.num_devices;
 
   // Robot arm: move toward safe position with velocity limit
-  auto &out0 = output.devices[0];
+  auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
   out0.goal_type = GoalType::kJoint;
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    const double lim =
-        (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
+    const double lim = (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
     out0.commands[i] =
-        dev0.positions[i] +
-        std::clamp(safe_position_[i] - dev0.positions[i], -lim, lim) *
-            ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
+        dev0.positions[i] + std::clamp(safe_position_[i] - dev0.positions[i], -lim, lim) *
+                                ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
     out0.goal_positions[i] = safe_position_[i];
     out0.target_positions[i] = out0.commands[i];
     out0.trajectory_positions[i] = out0.commands[i];
@@ -974,9 +914,9 @@ DemoJointController::ComputeEstop(const ControllerState &state) noexcept {
 
   // Hand: hold current position during E-Stop
   if (state.num_devices > 1 && state.devices[1].valid) {
-    const auto &dev1 = state.devices[1];
+    const auto& dev1 = state.devices[1];
     const int nc1 = dev1.num_channels;
-    auto &out1 = output.devices[1];
+    auto& out1 = output.devices[1];
     out1.num_channels = nc1;
     out1.goal_type = GoalType::kJoint;
     for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
@@ -988,8 +928,7 @@ DemoJointController::ComputeEstop(const ControllerState &state) noexcept {
   }
 
   // FK for task-space logging (same as normal path)
-  std::span<const double> q_span(dev0.positions.data(),
-                                 static_cast<std::size_t>(nc0));
+  std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
   arm_handle_->ComputeForwardKinematics(q_span);
   pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
   if (use_root_frame_) {
@@ -1012,9 +951,8 @@ DemoJointController::ComputeEstop(const ControllerState &state) noexcept {
 // share a single implementation; only storage lives in the subclass.
 
 RTControllerInterface::CallbackReturn DemoJointController::on_configure(
-    const rclcpp_lifecycle::State &prev,
-    rclcpp_lifecycle::LifecycleNode::SharedPtr node,
-    const YAML::Node &yaml) noexcept {
+    const rclcpp_lifecycle::State& prev, rclcpp_lifecycle::LifecycleNode::SharedPtr node,
+    const YAML::Node& yaml) noexcept {
   const auto ret = RTControllerInterface::on_configure(prev, node, yaml);
   if (ret != CallbackReturn::SUCCESS) {
     return ret;
@@ -1026,12 +964,10 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
     // For each (msg_type, instance) in the parsed `logs:` section, register
     // a typed channel on log_set_. instance string is *required* and used
     // as both CSV file stem and the controller-side handle disambiguator.
-    for (const auto &entry : parsed_log_entries_) {
+    for (const auto& entry : parsed_log_entries_) {
       if (entry.instance.empty()) {
-        RCLCPP_ERROR(
-            logger_,
-            "logs entry msg_type=%s missing required `instance:` field",
-            entry.msg_type.c_str());
+        RCLCPP_ERROR(logger_, "logs entry msg_type=%s missing required `instance:` field",
+                     entry.msg_type.c_str());
         return CallbackReturn::FAILURE;
       }
       if (entry.msg_type == "rtc_msgs/DeviceStateLog") {
@@ -1039,27 +975,22 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
         // Q-MSG-3 (Option A): instance "hand_state" maps to the hand
         // device — distinct from "hand_sensor" so the CSV file paths
         // do not collide.
-        const bool is_hand =
-            (entry.instance == "hand_state" || entry.instance == "hand");
-        const auto &joint_names =
-            is_hand ? hand_joint_names_ : ur5e_joint_names_;
-        const auto &motor_names =
-            is_hand ? hand_motor_names_ : std::vector<std::string>{};
+        const bool is_hand = (entry.instance == "hand_state" || entry.instance == "hand");
+        const auto& joint_names = is_hand ? hand_joint_names_ : ur5e_joint_names_;
+        const auto& motor_names = is_hand ? hand_motor_names_ : std::vector<std::string>{};
         // Capture by value into the writers (header runs once at Open).
         const std::vector<std::string> joint_names_copy = joint_names;
         const std::vector<std::string> motor_names_copy = motor_names;
         auto handle = log_set_.RegisterLog<ur5e::DeviceStateLogPod>(
             entry.instance,
-            [joint_names_copy, motor_names_copy](std::ostream &os) {
-              ur5e::WriteDeviceStateLogHeader(os, joint_names_copy,
-                                              motor_names_copy);
+            [joint_names_copy, motor_names_copy](std::ostream& os) {
+              ur5e::WriteDeviceStateLogHeader(os, joint_names_copy, motor_names_copy);
             },
-            [](std::ostream &os, const ur5e::DeviceStateLogPod &p) {
+            [](std::ostream& os, const ur5e::DeviceStateLogPod& p) {
               ur5e::WriteDeviceStateLogRow(os, p);
             });
         if (!handle) {
-          RCLCPP_WARN(logger_,
-                      "Failed to open device_state CSV for instance=%s",
+          RCLCPP_WARN(logger_, "Failed to open device_state CSV for instance=%s",
                       entry.instance.c_str());
         } else if (entry.instance == "ur5e") {
           ur5e_state_log_handle_ = handle;
@@ -1067,22 +998,20 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
           hand_state_log_handle_ = handle;
         }
       } else if (entry.msg_type == "rtc_msgs/DeviceSensorLog") {
-        const auto &sensor_names = hand_sensor_names_;
+        const auto& sensor_names = hand_sensor_names_;
         const std::vector<std::string> sensor_names_copy = sensor_names;
         auto handle = log_set_.RegisterLog<ur5e::DeviceSensorLogPod>(
             entry.instance,
-            [sensor_names_copy](std::ostream &os) {
+            [sensor_names_copy](std::ostream& os) {
               ur5e::WriteDeviceSensorLogHeader(os, sensor_names_copy);
             },
-            [](std::ostream &os, const ur5e::DeviceSensorLogPod &p) {
+            [](std::ostream& os, const ur5e::DeviceSensorLogPod& p) {
               ur5e::WriteDeviceSensorLogRow(os, p);
             });
         if (!handle) {
-          RCLCPP_WARN(logger_,
-                      "Failed to open device_sensor CSV for instance=%s",
+          RCLCPP_WARN(logger_, "Failed to open device_sensor CSV for instance=%s",
                       entry.instance.c_str());
-        } else if (entry.instance == "hand_sensor" ||
-                   entry.instance == "hand") {
+        } else if (entry.instance == "hand_sensor" || entry.instance == "hand") {
           hand_sensor_log_handle_ = handle;
         }
       }
@@ -1091,26 +1020,24 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
     // Drain timer on a non-RT callback group (10 Hz). Single-threaded —
     // executor's MutuallyExclusive group is sufficient.
     if (!log_set_.empty() && node_) {
-      log_drain_cb_group_ = node_->create_callback_group(
-          rclcpp::CallbackGroupType::MutuallyExclusive);
+      log_drain_cb_group_ =
+          node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
       log_drain_timer_ = node_->create_wall_timer(
-          std::chrono::milliseconds(100), [this]() { log_set_.DrainAll(); },
-          log_drain_cb_group_);
+          std::chrono::milliseconds(100), [this]() { log_set_.DrainAll(); }, log_drain_cb_group_);
     }
 
     // Phase D: declare tunable gains as ROS 2 parameters seeded from
     // gains_lock_ (populated by LoadConfig from YAML), register the
     // set-parameters callback, and create the Force-PI grasp_command srv.
     DeclareGainParameters();
-    param_callback_handle_ = node_->add_on_set_parameters_callback(
-        [this](const std::vector<rclcpp::Parameter> &params) {
+    param_callback_handle_ =
+        node_->add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter>& params) {
           return OnGainParametersSet(params);
         });
 
     grasp_command_srv_ = node_->create_service<rtc_msgs::srv::GraspCommand>(
-        "grasp_command",
-        [this](const std::shared_ptr<rtc_msgs::srv::GraspCommand::Request> req,
-               std::shared_ptr<rtc_msgs::srv::GraspCommand::Response> resp) {
+        "grasp_command", [this](const std::shared_ptr<rtc_msgs::srv::GraspCommand::Request> req,
+                                std::shared_ptr<rtc_msgs::srv::GraspCommand::Response> resp) {
           if (estopped_.load(std::memory_order_acquire)) {
             resp->ok = false;
             resp->message = "E-STOP active";
@@ -1130,23 +1057,16 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
               resp->message = "GRASP requires target_force > 0";
               return;
             }
-            const auto phase_before =
-                static_cast<unsigned>(grasp_controller_->phase());
+            const auto phase_before = static_cast<unsigned>(grasp_controller_->phase());
             grasp_controller_->CommandGrasp(req->target_force);
-            RCLCPP_INFO(
-                logger_,
-                "[grasp_command] GRASP target=%.2fN type=%s phase_before=%u",
-                req->target_force, grasp_controller_type_.c_str(),
-                phase_before);
+            RCLCPP_INFO(logger_, "[grasp_command] GRASP target=%.2fN type=%s phase_before=%u",
+                        req->target_force, grasp_controller_type_.c_str(), phase_before);
             resp->ok = true;
-            resp->message =
-                "grasp started @ " + std::to_string(req->target_force) + " N";
+            resp->message = "grasp started @ " + std::to_string(req->target_force) + " N";
           } else if (req->command == Req::RELEASE) {
-            const auto phase_before =
-                static_cast<unsigned>(grasp_controller_->phase());
+            const auto phase_before = static_cast<unsigned>(grasp_controller_->phase());
             grasp_controller_->CommandRelease();
-            RCLCPP_INFO(logger_,
-                        "[grasp_command] RELEASE type=%s phase_before=%u",
+            RCLCPP_INFO(logger_, "[grasp_command] RELEASE type=%s phase_before=%u",
                         grasp_controller_type_.c_str(), phase_before);
             resp->ok = true;
             resp->message = "release accepted";
@@ -1155,9 +1075,8 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
             resp->message = "command must be GRASP or RELEASE";
           }
         });
-  } catch (const std::exception &e) {
-    RCLCPP_ERROR(logger_, "DemoJointController on_configure failed: %s",
-                 e.what());
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(logger_, "DemoJointController on_configure failed: %s", e.what());
     return CallbackReturn::FAILURE;
   } catch (...) {
     RCLCPP_ERROR(logger_, "DemoJointController on_configure failed: unknown");
@@ -1167,14 +1086,13 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
 }
 
 RTControllerInterface::CallbackReturn DemoJointController::on_activate(
-    const rclcpp_lifecycle::State &prev,
-    const rtc::ControllerState &device_snapshot) noexcept {
+    const rclcpp_lifecycle::State& prev, const rtc::ControllerState& device_snapshot) noexcept {
   ActivateOwnedTopics(prev, owned_topics_);
   return RTControllerInterface::on_activate(prev, device_snapshot);
 }
 
 RTControllerInterface::CallbackReturn DemoJointController::on_deactivate(
-    const rclcpp_lifecycle::State &prev) noexcept {
+    const rclcpp_lifecycle::State& prev) noexcept {
   DeactivateOwnedTopics(prev, owned_topics_);
   // Flush any in-flight log samples — controller switch leaves SPSC residue
   // that would otherwise replay on the next on_activate.
@@ -1182,8 +1100,8 @@ RTControllerInterface::CallbackReturn DemoJointController::on_deactivate(
   return CallbackReturn::SUCCESS;
 }
 
-RTControllerInterface::CallbackReturn
-DemoJointController::on_cleanup(const rclcpp_lifecycle::State &prev) noexcept {
+RTControllerInterface::CallbackReturn DemoJointController::on_cleanup(
+    const rclcpp_lifecycle::State& prev) noexcept {
   ResetOwnedTopics(owned_topics_);
   log_drain_timer_.reset();
   log_drain_cb_group_.reset();
@@ -1192,8 +1110,7 @@ DemoJointController::on_cleanup(const rclcpp_lifecycle::State &prev) noexcept {
   return RTControllerInterface::on_cleanup(prev);
 }
 
-void DemoJointController::PublishNonRtSnapshot(
-    const rtc::PublishSnapshot &snap) noexcept {
+void DemoJointController::PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept {
   PublishOwnedTopicsFromSnapshot(snap, owned_topics_);
 }
 
@@ -1210,9 +1127,8 @@ void DemoJointController::DeclareGainParameters() noexcept {
 
   auto g = gains_lock_.Load();
 
-  auto declare_double = [&](const std::string &name, double default_val,
-                            const std::string &description,
-                            bool read_only = false) {
+  auto declare_double = [&](const std::string& name, double default_val,
+                            const std::string& description, bool read_only = false) {
     rcl_interfaces::msg::ParameterDescriptor d;
     d.description = description;
     d.read_only = read_only;
@@ -1221,8 +1137,8 @@ void DemoJointController::DeclareGainParameters() noexcept {
     }
     return node_->get_parameter(name).as_double();
   };
-  auto declare_int = [&](const std::string &name, int64_t default_val,
-                         const std::string &description) {
+  auto declare_int = [&](const std::string& name, int64_t default_val,
+                         const std::string& description) {
     rcl_interfaces::msg::ParameterDescriptor d;
     d.description = description;
     if (!node_->has_parameter(name)) {
@@ -1231,46 +1147,43 @@ void DemoJointController::DeclareGainParameters() noexcept {
     return node_->get_parameter(name).as_int();
   };
 
-  g.robot_trajectory_speed = std::max(
-      1e-6, declare_double("robot_trajectory_speed", g.robot_trajectory_speed,
-                           "Arm joint trajectory speed [rad/s]"));
-  g.hand_trajectory_speed = std::max(
-      1e-6, declare_double("hand_trajectory_speed", g.hand_trajectory_speed,
-                           "Hand motor trajectory speed [rad/s]"));
+  g.robot_trajectory_speed =
+      std::max(1e-6, declare_double("robot_trajectory_speed", g.robot_trajectory_speed,
+                                    "Arm joint trajectory speed [rad/s]"));
+  g.hand_trajectory_speed =
+      std::max(1e-6, declare_double("hand_trajectory_speed", g.hand_trajectory_speed,
+                                    "Hand motor trajectory speed [rad/s]"));
 
-  g.robot_max_traj_velocity = declare_double(
-      "robot_max_traj_velocity", g.robot_max_traj_velocity,
-      "Max arm joint velocity during trajectory [rad/s] (read-only)",
-      /*read_only=*/true);
-  g.hand_max_traj_velocity = declare_double(
-      "hand_max_traj_velocity", g.hand_max_traj_velocity,
-      "Max hand motor velocity during trajectory [rad/s] (read-only)",
-      /*read_only=*/true);
+  g.robot_max_traj_velocity =
+      declare_double("robot_max_traj_velocity", g.robot_max_traj_velocity,
+                     "Max arm joint velocity during trajectory [rad/s] (read-only)",
+                     /*read_only=*/true);
+  g.hand_max_traj_velocity =
+      declare_double("hand_max_traj_velocity", g.hand_max_traj_velocity,
+                     "Max hand motor velocity during trajectory [rad/s] (read-only)",
+                     /*read_only=*/true);
 
-  g.grasp_contact_threshold = static_cast<float>(
-      declare_double("grasp_contact_threshold", g.grasp_contact_threshold,
-                     "Contact probability threshold [0,1]"));
-  g.grasp_force_threshold = static_cast<float>(
-      declare_double("grasp_force_threshold", g.grasp_force_threshold,
-                     "Force magnitude threshold [N]"));
-  g.grasp_min_fingertips = static_cast<int>(
-      declare_int("grasp_min_fingertips", g.grasp_min_fingertips,
-                  "Min fingertips with contact for grasp detection"));
+  g.grasp_contact_threshold = static_cast<float>(declare_double(
+      "grasp_contact_threshold", g.grasp_contact_threshold, "Contact probability threshold [0,1]"));
+  g.grasp_force_threshold = static_cast<float>(declare_double(
+      "grasp_force_threshold", g.grasp_force_threshold, "Force magnitude threshold [N]"));
+  g.grasp_min_fingertips =
+      static_cast<int>(declare_int("grasp_min_fingertips", g.grasp_min_fingertips,
+                                   "Min fingertips with contact for grasp detection"));
 
   gains_lock_.Store(g);
 }
 
-rcl_interfaces::msg::SetParametersResult
-DemoJointController::OnGainParametersSet(
-    const std::vector<rclcpp::Parameter> &params) noexcept {
+rcl_interfaces::msg::SetParametersResult DemoJointController::OnGainParametersSet(
+    const std::vector<rclcpp::Parameter>& params) noexcept {
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
 
   auto g = gains_lock_.Load();
   bool gains_dirty = false;
 
-  for (const auto &p : params) {
-    const auto &name = p.get_name();
+  for (const auto& p : params) {
+    const auto& name = p.get_name();
     try {
       if (name == "robot_trajectory_speed") {
         g.robot_trajectory_speed = std::max(1e-6, p.as_double());
@@ -1289,7 +1202,7 @@ DemoJointController::OnGainParametersSet(
         gains_dirty = true;
       }
       // Unknown names: silently allowed (other callbacks may own them).
-    } catch (const std::exception &e) {
+    } catch (const std::exception& e) {
       result.successful = false;
       result.reason = std::string("type error on '") + name + "': " + e.what();
       return result;
@@ -1302,4 +1215,4 @@ DemoJointController::OnGainParametersSet(
   return result;
 }
 
-} // namespace ur5e_bringup
+}  // namespace ur5e_bringup

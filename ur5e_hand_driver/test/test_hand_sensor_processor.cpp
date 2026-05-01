@@ -4,9 +4,9 @@
 // Note: rclcpp logging is used internally but doesn't require node init for
 // standalone calls (get_logger works without rclcpp::init).
 
-#include <gtest/gtest.h>
-
 #include "ur5e_hand_driver/hand_sensor_processor.hpp"
+
+#include <gtest/gtest.h>
 
 #include <array>
 #include <cmath>
@@ -16,8 +16,7 @@ namespace rtc::test {
 
 // ── Construction & Init ─────────────────────────────────────────────────────
 
-TEST(HandSensorProcessor, DefaultConfig_ZeroFingertips)
-{
+TEST(HandSensorProcessor, DefaultConfig_ZeroFingertips) {
   HandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 0;
   HandSensorProcessor proc(cfg);
@@ -28,8 +27,7 @@ TEST(HandSensorProcessor, DefaultConfig_ZeroFingertips)
   EXPECT_GE(proc.actual_sensor_rate_hz(), 0.0);
 }
 
-TEST(HandSensorProcessor, NegativeDecimation_ClampedToOne)
-{
+TEST(HandSensorProcessor, NegativeDecimation_ClampedToOne) {
   HandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 1;
   cfg.sensor_decimation = -5;
@@ -43,8 +41,7 @@ TEST(HandSensorProcessor, NegativeDecimation_ClampedToOne)
 
 // ── ApplyFilters: No filters ────────────────────────────────────────────────
 
-TEST(HandSensorProcessor, NoFilters_Passthrough)
-{
+TEST(HandSensorProcessor, NoFilters_Passthrough) {
   HandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 2;
   cfg.baro_lpf_enabled = false;
@@ -57,8 +54,7 @@ TEST(HandSensorProcessor, NoFilters_Passthrough)
   for (int f = 0; f < 2; ++f) {
     const int base = f * kSensorValuesPerFingertip;
     for (int i = 0; i < kSensorValuesPerFingertip; ++i) {
-      data[static_cast<std::size_t>(base + i)] =
-          static_cast<int32_t>(f * 100 + i + 1);
+      data[static_cast<std::size_t>(base + i)] = static_cast<int32_t>(f * 100 + i + 1);
     }
   }
 
@@ -87,8 +83,7 @@ class BaroLPFTest : public ::testing::Test {
   std::unique_ptr<HandSensorProcessor> proc_;
 };
 
-TEST_F(BaroLPFTest, StepInput_Smoothed)
-{
+TEST_F(BaroLPFTest, StepInput_Smoothed) {
   // Feed constant zero for a few cycles to settle filter, then step
   std::array<int32_t, kMaxHandSensors> data{};
 
@@ -113,8 +108,7 @@ TEST_F(BaroLPFTest, StepInput_Smoothed)
   }
 }
 
-TEST_F(BaroLPFTest, TofUnchanged)
-{
+TEST_F(BaroLPFTest, TofUnchanged) {
   // ToF filter is disabled — ToF values should pass through
   std::array<int32_t, kMaxHandSensors> data{};
   for (int t = 0; t < kTofCount; ++t) {
@@ -131,8 +125,7 @@ TEST_F(BaroLPFTest, TofUnchanged)
 
 // ── ApplyFilters: ToF LPF ───────────────────────────────────────────────────
 
-TEST(HandSensorProcessor, TofLPF_StepInput_Smoothed)
-{
+TEST(HandSensorProcessor, TofLPF_StepInput_Smoothed) {
   HandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 1;
   cfg.sensor_decimation = 1;
@@ -165,8 +158,7 @@ TEST(HandSensorProcessor, TofLPF_StepInput_Smoothed)
 
 // ── ApplyFilters: Both filters ──────────────────────────────────────────────
 
-TEST(HandSensorProcessor, BothFilters_Applied)
-{
+TEST(HandSensorProcessor, BothFilters_Applied) {
   HandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 1;
   cfg.sensor_decimation = 1;
@@ -205,8 +197,7 @@ TEST(HandSensorProcessor, BothFilters_Applied)
 
 // ── ApplyFilters: Multi-finger layout ───────────────────────────────────────
 
-TEST(HandSensorProcessor, MultiFingerLayout_CorrectIndexing)
-{
+TEST(HandSensorProcessor, MultiFingerLayout_CorrectIndexing) {
   HandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 4;
   cfg.sensor_decimation = 1;
@@ -228,8 +219,7 @@ TEST(HandSensorProcessor, MultiFingerLayout_CorrectIndexing)
   for (int f = 0; f < 4; ++f) {
     const int base = f * kSensorValuesPerFingertip;
     for (int b = 0; b < kBarometerCount; ++b) {
-      data[static_cast<std::size_t>(base + b)] =
-          static_cast<int32_t>((f + 1) * 1000);
+      data[static_cast<std::size_t>(base + b)] = static_cast<int32_t>((f + 1) * 1000);
     }
   }
 
@@ -256,8 +246,7 @@ TEST(HandSensorProcessor, MultiFingerLayout_CorrectIndexing)
 
 // ── ApplyFilters: Convergence ───────────────────────────────────────────────
 
-TEST(HandSensorProcessor, BaroLPF_ConvergesToSteadyState)
-{
+TEST(HandSensorProcessor, BaroLPF_ConvergesToSteadyState) {
   HandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 1;
   cfg.sensor_decimation = 1;
@@ -286,8 +275,7 @@ TEST(HandSensorProcessor, BaroLPF_ConvergesToSteadyState)
 
 // ── DetectDrift ─────────────────────────────────────────────────────────────
 
-TEST(HandSensorProcessor, DetectDrift_Disabled_NoOp)
-{
+TEST(HandSensorProcessor, DetectDrift_Disabled_NoOp) {
   HandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 1;
   cfg.drift_detection_enabled = false;
@@ -304,8 +292,7 @@ TEST(HandSensorProcessor, DetectDrift_Disabled_NoOp)
   }
 }
 
-TEST(HandSensorProcessor, DetectDrift_ConstantData_NoDrift)
-{
+TEST(HandSensorProcessor, DetectDrift_ConstantData_NoDrift) {
   HandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 1;
   cfg.drift_detection_enabled = true;
@@ -327,8 +314,7 @@ TEST(HandSensorProcessor, DetectDrift_ConstantData_NoDrift)
 
 // ── Rate accessor ───────────────────────────────────────────────────────────
 
-TEST(HandSensorProcessor, ActualSensorRateHz_DefaultNominal)
-{
+TEST(HandSensorProcessor, ActualSensorRateHz_DefaultNominal) {
   HandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 1;
   HandSensorProcessor proc(cfg);
@@ -337,8 +323,7 @@ TEST(HandSensorProcessor, ActualSensorRateHz_DefaultNominal)
   EXPECT_DOUBLE_EQ(proc.actual_sensor_rate_hz(), 500.0);
 }
 
-TEST(HandSensorProcessor, PreFilter_TicksRateEstimator)
-{
+TEST(HandSensorProcessor, PreFilter_TicksRateEstimator) {
   HandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 1;
   HandSensorProcessor proc(cfg);

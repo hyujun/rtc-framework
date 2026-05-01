@@ -27,7 +27,7 @@ namespace rtc_bt {
 /// Output ports:
 ///   - output_pose (Pose6D): resulting pose
 class ComputeOffsetPose : public BT::SyncActionNode {
-public:
+ public:
   using BT::SyncActionNode::SyncActionNode;
 
   static BT::PortsList providedPorts();

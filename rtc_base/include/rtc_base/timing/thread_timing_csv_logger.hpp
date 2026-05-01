@@ -39,31 +39,31 @@
 
 namespace rtc {
 
-template <typename Payload> class ThreadTimingCsvLogger {
-public:
+template <typename Payload>
+class ThreadTimingCsvLogger {
+ public:
   using Sample = ThreadTimingSample<Payload>;
 
   /// Function called once at first-open to emit comma-prefixed payload
   /// column names, e.g. ",t_compute_us,t_publish_us". Empty payload =
   /// empty string. Caller writes the leading comma.
-  using HeaderWriter = std::function<void(std::ostream &)>;
+  using HeaderWriter = std::function<void(std::ostream&)>;
 
   /// Function called per row to emit comma-prefixed payload values in the
   /// same order as the header, e.g. ",12.3,4.5".
-  using RowWriter = std::function<void(std::ostream &, const Payload &)>;
+  using RowWriter = std::function<void(std::ostream&, const Payload&)>;
 
   ThreadTimingCsvLogger() = default;
   ~ThreadTimingCsvLogger() = default;
 
-  ThreadTimingCsvLogger(const ThreadTimingCsvLogger &) = delete;
-  ThreadTimingCsvLogger &operator=(const ThreadTimingCsvLogger &) = delete;
+  ThreadTimingCsvLogger(const ThreadTimingCsvLogger&) = delete;
+  ThreadTimingCsvLogger& operator=(const ThreadTimingCsvLogger&) = delete;
 
   /// Resolve / create the file at `path` and store the per-row writer.
   /// On first creation the schema header is written; on append (file
   /// already exists) the existing header is preserved. Returns false on
   /// filesystem errors — caller may retry or skip.
-  [[nodiscard]] bool Open(const std::filesystem::path &path,
-                          const HeaderWriter &header_writer,
+  [[nodiscard]] bool Open(const std::filesystem::path& path, const HeaderWriter& header_writer,
                           RowWriter row_writer) noexcept {
     try {
       path_ = path;
@@ -93,12 +93,10 @@ public:
 
   [[nodiscard]] bool IsOpen() const noexcept { return out_.is_open(); }
 
-  [[nodiscard]] const std::filesystem::path &Path() const noexcept {
-    return path_;
-  }
+  [[nodiscard]] const std::filesystem::path& Path() const noexcept { return path_; }
 
   /// Append one row. No-op if not open.
-  void Log(const Sample &s) noexcept {
+  void Log(const Sample& s) noexcept {
     if (!out_.is_open()) {
       return;
     }
@@ -110,12 +108,12 @@ public:
     out_.flush();
   }
 
-private:
+ private:
   std::filesystem::path path_;
   std::ofstream out_;
   RowWriter row_writer_;
 };
 
-} // namespace rtc
+}  // namespace rtc
 
-#endif // RTC_BASE_TIMING_THREAD_TIMING_CSV_LOGGER_HPP_
+#endif  // RTC_BASE_TIMING_THREAD_TIMING_CSV_LOGGER_HPP_

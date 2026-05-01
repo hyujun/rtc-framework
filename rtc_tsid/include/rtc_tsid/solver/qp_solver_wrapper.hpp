@@ -1,8 +1,8 @@
 #pragma once
 
-#include <memory>
-
 #include "rtc_tsid/types/qp_types.hpp"
+
+#include <memory>
 
 // ProxSuite 헤더 — 컴파일러 경고 억제
 #pragma GCC diagnostic push

@@ -1,17 +1,17 @@
-#include "rtc_controllers/trajectory/quintic_spline_trajectory.hpp"
 #include "rtc_controllers/trajectory/quintic_blend_trajectory.hpp"
+#include "rtc_controllers/trajectory/quintic_spline_trajectory.hpp"
+
 #include <gtest/gtest.h>
+
 #include <cmath>
 
-namespace rtc::trajectory
-{
+namespace rtc::trajectory {
 
 using Spline3 = QuinticSplineTrajectory<3>;
 using Blend3 = QuinticBlendTrajectory<3>;
 
 std::array<Spline3::Waypoint, kMaxWaypoints> make_spline_wps(
-  const std::vector<std::pair<std::array<double, 3>, double>> & pts)
-{
+    const std::vector<std::pair<std::array<double, 3>, double>>& pts) {
   std::array<Spline3::Waypoint, kMaxWaypoints> wps{};
   for (std::size_t i = 0; i < pts.size(); ++i) {
     wps[i].positions = pts[i].first;
@@ -21,12 +21,11 @@ std::array<Spline3::Waypoint, kMaxWaypoints> make_spline_wps(
 }
 
 // --- Two waypoints: natural spline matches rest-to-rest quintic ---
-TEST(QuinticSplineTrajectory, TwoWaypoints)
-{
+TEST(QuinticSplineTrajectory, TwoWaypoints) {
   Spline3 spline;
   auto wps = make_spline_wps({
-    {{0.0, 1.0, -1.0}, 0.0},
-    {{1.0, 0.0, 2.0}, 2.0},
+      {{0.0, 1.0, -1.0}, 0.0},
+      {{1.0, 0.0, 2.0}, 2.0},
   });
   spline.initialize(wps, 2);
 
@@ -43,14 +42,13 @@ TEST(QuinticSplineTrajectory, TwoWaypoints)
 }
 
 // --- C4 continuity at internal knots ---
-TEST(QuinticSplineTrajectory, C4Continuity)
-{
+TEST(QuinticSplineTrajectory, C4Continuity) {
   Spline3 spline;
   auto wps = make_spline_wps({
-    {{0.0, 0.0, 0.0}, 0.0},
-    {{1.0, 2.0, -1.0}, 1.0},
-    {{3.0, 1.0, 0.5}, 2.0},
-    {{2.0, 0.0, 1.0}, 3.0},
+      {{0.0, 0.0, 0.0}, 0.0},
+      {{1.0, 2.0, -1.0}, 1.0},
+      {{3.0, 1.0, 0.5}, 2.0},
+      {{2.0, 0.0, 1.0}, 3.0},
   });
   spline.initialize(wps, 4);
 
@@ -86,13 +84,12 @@ TEST(QuinticSplineTrajectory, C4Continuity)
 }
 
 // --- Passes through waypoints ---
-TEST(QuinticSplineTrajectory, PassesThroughWaypoints)
-{
+TEST(QuinticSplineTrajectory, PassesThroughWaypoints) {
   Spline3 spline;
   auto wps = make_spline_wps({
-    {{0.0, 0.0, 0.0}, 0.0},
-    {{1.0, 2.0, -1.0}, 1.0},
-    {{3.0, 1.0, 0.5}, 2.5},
+      {{0.0, 0.0, 0.0}, 0.0},
+      {{1.0, 2.0, -1.0}, 1.0},
+      {{3.0, 1.0, 0.5}, 2.5},
   });
   spline.initialize(wps, 3);
 
@@ -108,13 +105,12 @@ TEST(QuinticSplineTrajectory, PassesThroughWaypoints)
 }
 
 // --- Natural boundary: start/end vel=0, acc=0 ---
-TEST(QuinticSplineTrajectory, NaturalBoundary)
-{
+TEST(QuinticSplineTrajectory, NaturalBoundary) {
   Spline3 spline;
   auto wps = make_spline_wps({
-    {{0.0, 0.0, 0.0}, 0.0},
-    {{1.0, 1.0, 1.0}, 1.0},
-    {{2.0, 2.0, 2.0}, 2.0},
+      {{0.0, 0.0, 0.0}, 0.0},
+      {{1.0, 1.0, 1.0}, 1.0},
+      {{2.0, 2.0, 2.0}, 2.0},
   });
   spline.initialize(wps, 3);
 
@@ -129,13 +125,12 @@ TEST(QuinticSplineTrajectory, NaturalBoundary)
 }
 
 // --- Clamped boundary ---
-TEST(QuinticSplineTrajectory, ClampedBoundary)
-{
+TEST(QuinticSplineTrajectory, ClampedBoundary) {
   Spline3 spline;
   auto wps = make_spline_wps({
-    {{0.0, 0.0, 0.0}, 0.0},
-    {{1.0, 1.0, 1.0}, 1.0},
-    {{2.0, 2.0, 2.0}, 2.0},
+      {{0.0, 0.0, 0.0}, 0.0},
+      {{1.0, 1.0, 1.0}, 1.0},
+      {{2.0, 2.0, 2.0}, 2.0},
   });
   std::array<double, 3> sv = {1.0, 0.5, -0.5};
   std::array<double, 3> sa = {0.0, 0.0, 0.0};
@@ -153,13 +148,12 @@ TEST(QuinticSplineTrajectory, ClampedBoundary)
 }
 
 // --- Spline is smoother than blend (lower peak acceleration) ---
-TEST(QuinticSplineTrajectory, SmootherThanBlend)
-{
+TEST(QuinticSplineTrajectory, SmootherThanBlend) {
   auto wps_data = std::vector<std::pair<std::array<double, 3>, double>>{
-    {{0.0, 0.0, 0.0}, 0.0},
-    {{2.0, 1.0, -1.0}, 1.0},
-    {{1.0, 3.0, 0.5}, 2.0},
-    {{3.0, 2.0, 1.0}, 3.0},
+      {{0.0, 0.0, 0.0}, 0.0},
+      {{2.0, 1.0, -1.0}, 1.0},
+      {{1.0, 3.0, 0.5}, 2.0},
+      {{3.0, 2.0, 1.0}, 3.0},
   };
 
   Spline3 spline;
@@ -198,8 +192,7 @@ TEST(QuinticSplineTrajectory, SmootherThanBlend)
 }
 
 // --- Single waypoint hold ---
-TEST(QuinticSplineTrajectory, SingleWaypointHold)
-{
+TEST(QuinticSplineTrajectory, SingleWaypointHold) {
   Spline3 spline;
   auto wps = make_spline_wps({{{1.0, 2.0, 3.0}, 0.0}});
   spline.initialize(wps, 1);
@@ -210,12 +203,11 @@ TEST(QuinticSplineTrajectory, SingleWaypointHold)
 }
 
 // --- Clamp time ---
-TEST(QuinticSplineTrajectory, ClampTime)
-{
+TEST(QuinticSplineTrajectory, ClampTime) {
   Spline3 spline;
   auto wps = make_spline_wps({
-    {{0.0, 0.0, 0.0}, 0.0},
-    {{1.0, 1.0, 1.0}, 1.0},
+      {{0.0, 0.0, 0.0}, 0.0},
+      {{1.0, 1.0, 1.0}, 1.0},
   });
   spline.initialize(wps, 2);
 

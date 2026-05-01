@@ -18,7 +18,7 @@ namespace rtc_bt {
 /// Input ports:
 ///   - command (string): trigger command ("start", "stop", "pause", "resume", "single")
 class TriggerShapeEstimation : public BT::SyncActionNode {
-public:
+ public:
   TriggerShapeEstimation(const std::string& name, const BT::NodeConfig& config,
                          std::shared_ptr<BtRosBridge> bridge);
 
@@ -26,7 +26,7 @@ public:
 
   BT::NodeStatus tick() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
 };
 

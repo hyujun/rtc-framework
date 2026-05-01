@@ -25,9 +25,14 @@ from datetime import datetime
 from typing import Optional
 
 _SESSION_SUBDIRS = (
-    'controller', 'monitor', 'device', 'sim', 'plots', 'motions',
+    "controller",
+    "monitor",
+    "device",
+    "sim",
+    "plots",
+    "motions",
 )
-_SESSION_PATTERN = re.compile(r'^\d{6}_\d{4}$')
+_SESSION_PATTERN = re.compile(r"^\d{6}_\d{4}$")
 
 
 def resolve_logging_root() -> str:
@@ -36,25 +41,24 @@ def resolve_logging_root() -> str:
     C++ ``rtc::ResolveLoggingRoot()`` 와 동일한 3단 체인.
     """
     # 1) COLCON_PREFIX_PATH 첫 entry 의 parent
-    prefix_env = os.environ.get('COLCON_PREFIX_PATH', '')
+    prefix_env = os.environ.get("COLCON_PREFIX_PATH", "")
     if prefix_env:
-        first = prefix_env.split(':', 1)[0]
+        first = prefix_env.split(":", 1)[0]
         if first and os.path.isdir(first) and os.access(first, os.W_OK):
-            return os.path.join(os.path.dirname(first), 'logging_data')
+            return os.path.join(os.path.dirname(first), "logging_data")
 
     # 2) cwd 상위 탐색 (install/ + src/ 쌍)
     cur = os.getcwd()
     while True:
-        if (os.path.isdir(os.path.join(cur, 'install')) and
-                os.path.isdir(os.path.join(cur, 'src'))):
-            return os.path.join(cur, 'logging_data')
+        if os.path.isdir(os.path.join(cur, "install")) and os.path.isdir(os.path.join(cur, "src")):
+            return os.path.join(cur, "logging_data")
         parent = os.path.dirname(cur)
         if parent == cur:
             break
         cur = parent
 
     # 3) 최종 폴백
-    return os.path.join(os.getcwd(), 'logging_data')
+    return os.path.join(os.getcwd(), "logging_data")
 
 
 def _ensure_session_subdirs(session_dir: str) -> None:
@@ -72,7 +76,7 @@ def create_session_dir(logging_root: Optional[str] = None) -> str:
         생성된 세션 디렉토리 절대 경로.
     """
     root = logging_root if logging_root else resolve_logging_root()
-    session = os.path.join(root, datetime.now().strftime('%y%m%d_%H%M'))
+    session = os.path.join(root, datetime.now().strftime("%y%m%d_%H%M"))
     _ensure_session_subdirs(session)
     return session
 
@@ -82,9 +86,9 @@ def cleanup_old_sessions(logging_root: str, max_sessions: int) -> None:
     if max_sessions <= 0 or not os.path.isdir(logging_root):
         return
     dirs = sorted(
-        d for d in os.listdir(logging_root)
-        if os.path.isdir(os.path.join(logging_root, d))
-        and _SESSION_PATTERN.match(d)
+        d
+        for d in os.listdir(logging_root)
+        if os.path.isdir(os.path.join(logging_root, d)) and _SESSION_PATTERN.match(d)
     )
     while len(dirs) > max_sessions:
         oldest = os.path.join(logging_root, dirs.pop(0))
@@ -99,7 +103,7 @@ def get_session_dir() -> Optional[str]:
     Returns:
         세션 디렉토리 경로. 비어있으면 ``None``.
     """
-    val = os.environ.get('RTC_SESSION_DIR', '')
+    val = os.environ.get("RTC_SESSION_DIR", "")
     return val if val else None
 
 

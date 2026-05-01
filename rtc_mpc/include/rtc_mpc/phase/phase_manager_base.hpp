@@ -41,20 +41,20 @@ namespace rtc::mpc {
 
 /// @brief FSM producing a @ref PhaseContext per MPC tick.
 class PhaseManagerBase {
-public:
+ public:
   virtual ~PhaseManagerBase() = default;
 
-  PhaseManagerBase(const PhaseManagerBase &) = delete;
-  PhaseManagerBase &operator=(const PhaseManagerBase &) = delete;
-  PhaseManagerBase(PhaseManagerBase &&) = delete;
-  PhaseManagerBase &operator=(PhaseManagerBase &&) = delete;
+  PhaseManagerBase(const PhaseManagerBase&) = delete;
+  PhaseManagerBase& operator=(const PhaseManagerBase&) = delete;
+  PhaseManagerBase(PhaseManagerBase&&) = delete;
+  PhaseManagerBase& operator=(PhaseManagerBase&&) = delete;
 
   /// @brief Configure the FSM. Called once before the MPC thread starts.
   ///
   /// May read robot-specific sub-trees (phase transitions, tolerances) and
   /// pre-build one @ref PhaseCostConfig per phase. Concrete implementers
   /// should surface config errors — rtc_mpc does not prescribe an enum.
-  virtual void Init(const YAML::Node &cfg) = 0;
+  virtual void Init(const YAML::Node& cfg) = 0;
 
   /// @brief Advance the FSM one step and return the current @ref PhaseContext.
   ///
@@ -66,16 +66,15 @@ public:
   /// @param t       elapsed time since FSM start [s].
   /// @return snapshot with `phase_changed == true` iff the FSM transitioned
   ///         on this tick.
-  virtual PhaseContext Update(const Eigen::VectorXd &q,
-                              const Eigen::VectorXd &v,
-                              const Eigen::VectorXd &sensor,
-                              const pinocchio::SE3 &tcp, double t) = 0;
+  virtual PhaseContext Update(const Eigen::VectorXd& q, const Eigen::VectorXd& v,
+                              const Eigen::VectorXd& sensor, const pinocchio::SE3& tcp,
+                              double t) = 0;
 
   /// @brief Update the task target (e.g. goal SE3 + per-target weights).
   ///
   /// Payload is FSM-specific; for a grasp manager this typically carries
   /// the object pose and a pre-grasp offset. rtc_mpc never parses the node.
-  virtual void SetTaskTarget(const YAML::Node &target) = 0;
+  virtual void SetTaskTarget(const YAML::Node& target) = 0;
 
   [[nodiscard]] virtual int CurrentPhaseId() const = 0;
   [[nodiscard]] virtual std::string CurrentPhaseName() const = 0;
@@ -84,10 +83,10 @@ public:
   ///        scripted scenarios). Idempotent if already in that phase.
   virtual void ForcePhase(int phase_id) = 0;
 
-protected:
+ protected:
   PhaseManagerBase() = default;
 };
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc
 
-#endif // RTC_MPC_PHASE_PHASE_MANAGER_BASE_HPP_
+#endif  // RTC_MPC_PHASE_PHASE_MANAGER_BASE_HPP_

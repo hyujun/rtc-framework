@@ -14,8 +14,7 @@ namespace {
 
 // Find a frame by name without throwing. Pinocchio's `getFrameId` returns
 // `model.frames.size()` when the name is absent; wrap that into std::optional.
-std::optional<int> FindFrameId(const pinocchio::Model &m,
-                               const std::string &name) noexcept {
+std::optional<int> FindFrameId(const pinocchio::Model& m, const std::string& name) noexcept {
   const auto id = m.getFrameId(name);
   if (id >= static_cast<pinocchio::FrameIndex>(m.frames.size())) {
     return std::nullopt;
@@ -23,10 +22,10 @@ std::optional<int> FindFrameId(const pinocchio::Model &m,
   return static_cast<int>(id);
 }
 
-} // namespace
+}  // namespace
 
-RobotModelInitError RobotModelHandler::Init(const pinocchio::Model &model,
-                                            const YAML::Node &cfg) noexcept {
+RobotModelInitError RobotModelHandler::Init(const pinocchio::Model& model,
+                                            const YAML::Node& cfg) noexcept {
   if (model_ != nullptr) {
     return RobotModelInitError::kModelAlreadyInitialised;
   }
@@ -59,7 +58,7 @@ RobotModelInitError RobotModelHandler::Init(const pinocchio::Model &model,
       return RobotModelInitError::kInvalidYamlSchema;
     }
     contacts.reserve(cf_node.size());
-    for (const auto &entry : cf_node) {
+    for (const auto& entry : cf_node) {
       if (!entry.IsMap() || !entry["name"].IsDefined()) {
         return RobotModelInitError::kInvalidYamlSchema;
       }
@@ -94,20 +93,21 @@ RobotModelInitError RobotModelHandler::Init(const pinocchio::Model &model,
 int RobotModelHandler::nq() const noexcept {
   return model_ != nullptr ? static_cast<int>(model_->nq) : 0;
 }
+
 int RobotModelHandler::nv() const noexcept {
   return model_ != nullptr ? static_cast<int>(model_->nv) : 0;
 }
+
 int RobotModelHandler::nu() const noexcept {
   // Fixed-base manipulators only (Phase 1 scope; see header note).
   return nv();
 }
 
-std::optional<int>
-RobotModelHandler::FrameId(std::string_view name) const noexcept {
+std::optional<int> RobotModelHandler::FrameId(std::string_view name) const noexcept {
   if (model_ == nullptr) {
     return std::nullopt;
   }
   return FindFrameId(*model_, std::string{name});
 }
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc

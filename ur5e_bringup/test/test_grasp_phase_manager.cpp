@@ -21,19 +21,19 @@
 #include <pinocchio/spatial/se3.hpp>
 #pragma GCC diagnostic pop
 
-#include <yaml-cpp/yaml.h>
-
-#include <filesystem>
-#include <string>
-
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/phase/phase_context.hpp"
 #include "ur5e_bringup/phase/grasp_phase_manager.hpp"
 #include "ur5e_bringup/phase/grasp_target.hpp"
 
+#include <yaml-cpp/yaml.h>
+
+#include <filesystem>
+#include <string>
+
 namespace {
 
-constexpr const char *kPandaUrdf =
+constexpr const char* kPandaUrdf =
     "/usr/local/share/example-robot-data/robots/panda_description/urdf/"
     "panda.urdf";
 
@@ -44,7 +44,7 @@ using ur5e_bringup::phase::GraspTarget;
 
 // Full phase_config.yaml-equivalent schema sized for Panda (nq=9, 2 × 3-dim
 // contacts = 6-entry F_target).
-constexpr const char *kPandaPhaseConfig = R"(
+constexpr const char* kPandaPhaseConfig = R"(
 transition:
   approach_tolerance: 0.05
   pregrasp_tolerance: 0.01
@@ -114,7 +114,7 @@ phases:
 )";
 
 class GraspPhaseManagerTest : public ::testing::Test {
-protected:
+ protected:
   void SetUp() override {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed at " << kPandaUrdf
@@ -130,27 +130,24 @@ contact_frames:
   - name: panda_rightfinger
     dim: 3
 )");
-    ASSERT_EQ(handler_.Init(model_, model_cfg),
-              rtc::mpc::RobotModelInitError::kNoError);
+    ASSERT_EQ(handler_.Init(model_, model_cfg), rtc::mpc::RobotModelInitError::kNoError);
 
     manager_ = std::make_unique<GraspPhaseManager>(handler_);
   }
 
   // Convenience: pose at translation p, identity rotation.
-  static pinocchio::SE3 PoseAt(const Eigen::Vector3d &p) {
+  static pinocchio::SE3 PoseAt(const Eigen::Vector3d& p) {
     return pinocchio::SE3(Eigen::Matrix3d::Identity(), p);
   }
 
   // Advance one FSM tick with all-zero sensor + given TCP.
-  rtc::mpc::PhaseContext
-  Step(const pinocchio::SE3 &tcp,
-       const Eigen::VectorXd &sensor = Eigen::VectorXd::Zero(2)) {
+  rtc::mpc::PhaseContext Step(const pinocchio::SE3& tcp,
+                              const Eigen::VectorXd& sensor = Eigen::VectorXd::Zero(2)) {
     return manager_->Update(q_, v_, sensor, tcp, /*t=*/0.0);
   }
 
-  GraspTarget MakeTarget(const Eigen::Vector3d &grasp,
-                         const Eigen::Vector3d &pregrasp,
-                         const Eigen::Vector3d &start) {
+  GraspTarget MakeTarget(const Eigen::Vector3d& grasp, const Eigen::Vector3d& pregrasp,
+                         const Eigen::Vector3d& start) {
     GraspTarget t;
     t.grasp_pose = PoseAt(grasp);
     t.pregrasp_pose = PoseAt(pregrasp);
@@ -169,8 +166,7 @@ contact_frames:
 
 TEST_F(GraspPhaseManagerTest, LoadValidYamlSucceeds) {
   const auto cfg = YAML::Load(kPandaPhaseConfig);
-  EXPECT_EQ(manager_->Load(cfg),
-            ur5e_bringup::phase::GraspPhaseInitError::kNoError);
+  EXPECT_EQ(manager_->Load(cfg), ur5e_bringup::phase::GraspPhaseInitError::kNoError);
   EXPECT_TRUE(manager_->Initialised());
   EXPECT_EQ(manager_->CurrentPhaseId(), static_cast<int>(GraspPhaseId::kIdle));
   EXPECT_EQ(manager_->CurrentPhaseName(), "idle");
@@ -179,30 +175,26 @@ TEST_F(GraspPhaseManagerTest, LoadValidYamlSucceeds) {
 TEST_F(GraspPhaseManagerTest, LoadRejectsMissingPhase) {
   auto cfg = YAML::Load(kPandaPhaseConfig);
   cfg["phases"].remove("closure");
-  EXPECT_EQ(manager_->Load(cfg),
-            ur5e_bringup::phase::GraspPhaseInitError::kMissingPhase);
+  EXPECT_EQ(manager_->Load(cfg), ur5e_bringup::phase::GraspPhaseInitError::kMissingPhase);
   EXPECT_FALSE(manager_->Initialised());
 }
 
 TEST_F(GraspPhaseManagerTest, LoadRejectsUnknownOcpType) {
   auto cfg = YAML::Load(kPandaPhaseConfig);
   cfg["phases"]["closure"]["ocp_type"] = "holographic";
-  EXPECT_EQ(manager_->Load(cfg),
-            ur5e_bringup::phase::GraspPhaseInitError::kInvalidOcpType);
+  EXPECT_EQ(manager_->Load(cfg), ur5e_bringup::phase::GraspPhaseInitError::kInvalidOcpType);
 }
 
 TEST_F(GraspPhaseManagerTest, LoadRejectsNonPositiveThreshold) {
   auto cfg = YAML::Load(kPandaPhaseConfig);
   cfg["transition"]["approach_tolerance"] = 0.0;
-  EXPECT_EQ(manager_->Load(cfg),
-            ur5e_bringup::phase::GraspPhaseInitError::kInvalidThreshold);
+  EXPECT_EQ(manager_->Load(cfg), ur5e_bringup::phase::GraspPhaseInitError::kInvalidThreshold);
 }
 
 TEST_F(GraspPhaseManagerTest, LoadRejectsOutOfRangeContactIndex) {
   auto cfg = YAML::Load(kPandaPhaseConfig);
   cfg["phases"]["closure"]["active_contact_indices"].push_back(7);
-  EXPECT_EQ(manager_->Load(cfg),
-            ur5e_bringup::phase::GraspPhaseInitError::kInvalidContactIndex);
+  EXPECT_EQ(manager_->Load(cfg), ur5e_bringup::phase::GraspPhaseInitError::kInvalidContactIndex);
 }
 
 TEST_F(GraspPhaseManagerTest, InitThrowsOnMalformedYaml) {
@@ -253,7 +245,7 @@ TEST_F(GraspPhaseManagerTest, FullHappyPathTraversal) {
   // CLOSURE → HOLD when Σ sensor > 0.5.
   {
     Eigen::VectorXd sensor(2);
-    sensor << 0.4, 0.3; // sum = 0.7 > 0.5
+    sensor << 0.4, 0.3;  // sum = 0.7 > 0.5
     auto ctx = Step(PoseAt(Eigen::Vector3d{0.15, 0.0, 0.0}), sensor);
     EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kHold));
     EXPECT_TRUE(ctx.phase_changed);
@@ -398,4 +390,4 @@ TEST_F(GraspPhaseManagerTest, UninitialisedUpdateYieldsSafeIdleContext) {
   EXPECT_EQ(ctx.ocp_type, "light_contact");
 }
 
-} // namespace
+}  // namespace

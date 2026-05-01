@@ -11,7 +11,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point, Vector3
 from std_msgs.msg import ColorRGBA
 
-logger = logging.getLogger('rtc_digital_twin.sensor_visualizer')
+logger = logging.getLogger("rtc_digital_twin.sensor_visualizer")
 
 
 class SensorVisualizer:
@@ -29,54 +29,56 @@ class SensorVisualizer:
     BARO_GRID_OFFSETS = [
         (-0.0005, -0.0015, 0.0),  # row 0, col 0
         (-0.0005, -0.0005, 0.0),  # row 0, col 1
-        (-0.0005,  0.0005, 0.0),  # row 0, col 2
-        (-0.0005,  0.0015, 0.0),  # row 0, col 3
-        ( 0.0005, -0.0015, 0.0),  # row 1, col 0
-        ( 0.0005, -0.0005, 0.0),  # row 1, col 1
-        ( 0.0005,  0.0005, 0.0),  # row 1, col 2
-        ( 0.0005,  0.0015, 0.0),  # row 1, col 3
+        (-0.0005, 0.0005, 0.0),  # row 0, col 2
+        (-0.0005, 0.0015, 0.0),  # row 0, col 3
+        (0.0005, -0.0015, 0.0),  # row 1, col 0
+        (0.0005, -0.0005, 0.0),  # row 1, col 1
+        (0.0005, 0.0005, 0.0),  # row 1, col 2
+        (0.0005, 0.0015, 0.0),  # row 1, col 3
     ]
 
     # ToF sensor positions (3 sensors along the fingertip X axis)
     TOF_OFFSETS = [
         (-0.005, 0.0, 0.0),
-        ( 0.000, 0.0, 0.0),
-        ( 0.005, 0.0, 0.0),
+        (0.000, 0.0, 0.0),
+        (0.005, 0.0, 0.0),
     ]
 
     def __init__(self, fingertip_names, config):
         self.fingertip_names = fingertip_names
 
         # Barometer config
-        self.baro_min = config.get('barometer_min', 0.0)
-        self.baro_max = config.get('barometer_max', 1000.0)
-        self.baro_arrow_max_length = config.get('barometer_arrow_max_length', 0.015)
-        self.baro_arrow_scale = config.get('barometer_arrow_scale', 0.0008)
+        self.baro_min = config.get("barometer_min", 0.0)
+        self.baro_max = config.get("barometer_max", 1000.0)
+        self.baro_arrow_max_length = config.get("barometer_arrow_max_length", 0.015)
+        self.baro_arrow_scale = config.get("barometer_arrow_scale", 0.0008)
 
         # ToF config
-        self.tof_enabled = config.get('tof_enabled', False)
-        self.tof_max_dist = config.get('tof_max_distance', 0.2)
-        self.tof_arrow_scale = config.get('tof_arrow_scale', 0.003)
+        self.tof_enabled = config.get("tof_enabled", False)
+        self.tof_max_dist = config.get("tof_max_distance", 0.2)
+        self.tof_arrow_scale = config.get("tof_arrow_scale", 0.003)
 
         # Force config (F max ≈ 10 → 0.003 × 10 = 0.03m = 30mm)
-        self.force_arrow_scale = config.get('force_arrow_scale', 0.003)
-        self.force_arrow_shaft = config.get('force_arrow_shaft', 0.003)
+        self.force_arrow_scale = config.get("force_arrow_scale", 0.003)
+        self.force_arrow_shaft = config.get("force_arrow_shaft", 0.003)
 
         # Displacement config (u max ≈ 20 → 0.0015 × 20 = 0.03m = 30mm)
-        self.disp_arrow_scale = config.get('displacement_arrow_scale', 0.0015)
-        self.disp_arrow_shaft = config.get('displacement_arrow_shaft', 0.002)
+        self.disp_arrow_scale = config.get("displacement_arrow_scale", 0.0015)
+        self.disp_arrow_shaft = config.get("displacement_arrow_shaft", 0.002)
 
         # Contact threshold (same as inferencer: contact_prob < 0.1 → no contact)
-        self.contact_threshold = config.get('contact_threshold', 0.1)
+        self.contact_threshold = config.get("contact_threshold", 0.1)
 
         # Contact config
-        self.contact_sphere_radius = config.get('contact_sphere_radius', 0.005)
+        self.contact_sphere_radius = config.get("contact_sphere_radius", 0.005)
 
         logger.info(
-            'SensorVisualizer initialized: %d fingertips, '
-            'baro_range=[%.0f, %.0f], tof=%s',
-            len(fingertip_names), self.baro_min, self.baro_max,
-            'enabled' if self.tof_enabled else 'disabled')
+            "SensorVisualizer initialized: %d fingertips, baro_range=[%.0f, %.0f], tof=%s",
+            len(fingertip_names),
+            self.baro_min,
+            self.baro_max,
+            "enabled" if self.tof_enabled else "disabled",
+        )
 
     def create_markers(self, fingertip_sensors, stamp):
         """Create MarkerArray from FingertipSensor messages.
@@ -93,46 +95,43 @@ class SensorVisualizer:
         for i, name in enumerate(self.fingertip_names):
             ft = fingertip_sensors[i] if i < len(fingertip_sensors) else None
             if ft is None:
-                logger.debug('Fingertip %s: no data', name)
+                logger.debug("Fingertip %s: no data", name)
                 continue
 
-            frame_id = f'{name}_tip_link'
+            frame_id = f"{name}_tip_link"
 
             # Barometer → +Z Arrow markers
             for j in range(8):
                 marker = self._make_baro_arrow(
-                    frame_id, marker_id, name, j, ft.barometer[j], stamp)
+                    frame_id, marker_id, name, j, ft.barometer[j], stamp
+                )
                 markers.markers.append(marker)
                 marker_id += 1
 
             # ToF → +Z Arrow markers (off by default)
             if self.tof_enabled:
                 for j in range(3):
-                    marker = self._make_tof_arrow(
-                        frame_id, marker_id, name, j, ft.tof[j], stamp)
+                    marker = self._make_tof_arrow(frame_id, marker_id, name, j, ft.tof[j], stamp)
                     markers.markers.append(marker)
                     marker_id += 1
 
             # Force + Displacement → 3D Arrow (only when contact detected)
-            has_contact = (ft.inference_enable
-                           and float(ft.contact_flag) >= self.contact_threshold)
+            has_contact = ft.inference_enable and float(ft.contact_flag) >= self.contact_threshold
             if has_contact:
-                marker = self._make_force_arrow(
-                    frame_id, marker_id, name, ft.f, stamp)
+                marker = self._make_force_arrow(frame_id, marker_id, name, ft.f, stamp)
                 markers.markers.append(marker)
                 marker_id += 1
 
-                marker = self._make_displacement_arrow(
-                    frame_id, marker_id, name, ft.u, stamp)
+                marker = self._make_displacement_arrow(frame_id, marker_id, name, ft.u, stamp)
                 markers.markers.append(marker)
                 marker_id += 1
             else:
                 # Delete stale arrows when contact lost
-                for ns_suffix in ('_force', '_displacement'):
+                for ns_suffix in ("_force", "_displacement"):
                     marker = Marker()
                     marker.header.frame_id = frame_id
                     marker.header.stamp = stamp
-                    marker.ns = f'{name}{ns_suffix}'
+                    marker.ns = f"{name}{ns_suffix}"
                     marker.id = marker_id
                     marker.action = Marker.DELETE
                     markers.markers.append(marker)
@@ -140,8 +139,8 @@ class SensorVisualizer:
 
             # Contact → Sphere
             marker = self._make_contact_sphere(
-                frame_id, marker_id, name,
-                ft.contact_flag, ft.inference_enable, stamp)
+                frame_id, marker_id, name, ft.contact_flag, ft.inference_enable, stamp
+            )
             markers.markers.append(marker)
             marker_id += 1
 
@@ -154,14 +153,13 @@ class SensorVisualizer:
         marker = Marker()
         marker.header.frame_id = frame_id
         marker.header.stamp = stamp
-        marker.ns = f'{name}_baro'
+        marker.ns = f"{name}_baro"
         marker.id = marker_id
         marker.type = Marker.ARROW
         marker.action = Marker.ADD
 
         ox, oy, oz = self.BARO_GRID_OFFSETS[baro_idx]
-        ratio = self._clamp01(
-            (value - self.baro_min) / max(self.baro_max - self.baro_min, 1e-9))
+        ratio = self._clamp01((value - self.baro_min) / max(self.baro_max - self.baro_min, 1e-9))
         arrow_len = ratio * self.baro_arrow_max_length
 
         start = Point(x=ox, y=oy, z=oz)
@@ -183,7 +181,7 @@ class SensorVisualizer:
         marker = Marker()
         marker.header.frame_id = frame_id
         marker.header.stamp = stamp
-        marker.ns = f'{name}_tof'
+        marker.ns = f"{name}_tof"
         marker.id = marker_id
         marker.type = Marker.ARROW
         marker.action = Marker.ADD
@@ -212,7 +210,7 @@ class SensorVisualizer:
         marker = Marker()
         marker.header.frame_id = frame_id
         marker.header.stamp = stamp
-        marker.ns = f'{name}_force'
+        marker.ns = f"{name}_force"
         marker.id = marker_id
         marker.type = Marker.ARROW
         marker.action = Marker.ADD
@@ -245,7 +243,7 @@ class SensorVisualizer:
         marker = Marker()
         marker.header.frame_id = frame_id
         marker.header.stamp = stamp
-        marker.ns = f'{name}_displacement'
+        marker.ns = f"{name}_displacement"
         marker.id = marker_id
         marker.type = Marker.ARROW
         marker.action = Marker.ADD
@@ -273,13 +271,14 @@ class SensorVisualizer:
 
     # ── Contact: Sphere ──────────────────────────────────────────────────
 
-    def _make_contact_sphere(self, frame_id, marker_id, name,
-                             contact_flag, inference_enable, stamp):
+    def _make_contact_sphere(
+        self, frame_id, marker_id, name, contact_flag, inference_enable, stamp
+    ):
         """Contact probability → colored Sphere at fingertip origin."""
         marker = Marker()
         marker.header.frame_id = frame_id
         marker.header.stamp = stamp
-        marker.ns = f'{name}_contact'
+        marker.ns = f"{name}_contact"
         marker.id = marker_id
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
@@ -297,8 +296,7 @@ class SensorVisualizer:
             marker.color = ColorRGBA(r=0.5, g=0.5, b=0.5, a=0.3)
         else:
             prob = self._clamp01(float(contact_flag))
-            marker.color = ColorRGBA(
-                r=prob, g=1.0 - prob, b=0.0, a=0.5 + 0.3 * prob)
+            marker.color = ColorRGBA(r=prob, g=1.0 - prob, b=0.0, a=0.5 + 0.3 * prob)
 
         marker.lifetime.sec = 0
         marker.lifetime.nanosec = 100_000_000

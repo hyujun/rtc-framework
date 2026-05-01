@@ -39,43 +39,34 @@ inline constexpr std::size_t kCacheLineSize = 64;
 // Franka-like 6/7-DOF). It is a default, not an assumption — algorithms in
 // rtc_* packages must operate on runtime num_channels.
 inline constexpr int kNumRobotJoints =
-    6; // default channel count; actual DOF from YAML (num_channels)
-inline constexpr int kMaxRobotDOF =
-    12; // upper-bound DOF (covers 7-DOF arms + redundancy)
-inline constexpr int kMaxDeviceChannels =
-    64; // upper-bound per DeviceState array
-inline constexpr int kMaxSensorChannels =
-    128; // upper-bound sensor channels per device
-inline constexpr int kMaxInferenceValues =
-    64; // upper-bound ONNX output values per device
-inline constexpr int kTaskSpaceDim =
-    6; // SE(3) DOF — geometry constant, not configurable
+    6;  // default channel count; actual DOF from YAML (num_channels)
+inline constexpr int kMaxRobotDOF = 12;         // upper-bound DOF (covers 7-DOF arms + redundancy)
+inline constexpr int kMaxDeviceChannels = 64;   // upper-bound per DeviceState array
+inline constexpr int kMaxSensorChannels = 128;  // upper-bound sensor channels per device
+inline constexpr int kMaxInferenceValues = 64;  // upper-bound ONNX output values per device
+inline constexpr int kTaskSpaceDim = 6;         // SE(3) DOF — geometry constant, not configurable
 
 // Default fallback limits (used when device config is unavailable)
-inline constexpr double kDefaultMaxJointVelocity = 2.0; // rad/s
-inline constexpr double kDefaultMaxJointTorque = 150.0; // N·m
+inline constexpr double kDefaultMaxJointVelocity = 2.0;  // rad/s
+inline constexpr double kDefaultMaxJointTorque = 150.0;  // N·m
 
 // Fingertip 수: YAML에서 런타임 설정 가능. 배열 크기는 kMaxFingertips로 고정.
-inline constexpr int kDefaultNumFingertips = 4; // YAML 미설정 시 기본값
-inline constexpr int kMaxFingertips = 8; // 배열 상한 (RT 경로 힙 할당 방지)
+inline constexpr int kDefaultNumFingertips = 4;  // YAML 미설정 시 기본값
+inline constexpr int kMaxFingertips = 8;         // 배열 상한 (RT 경로 힙 할당 방지)
 
 // Fingertip sensor layout per fingertip (packet contains 16 uint32 values):
 //   barometer[8] + reserved[5] (skipped) + tof[3]
 // Only 11 useful values are stored (reserved is discarded).
 inline constexpr int kBarometerCount = 8;
-inline constexpr int kReservedCount = 5; // in packet only, not stored
+inline constexpr int kReservedCount = 5;  // in packet only, not stored
 inline constexpr int kTofCount = 3;
-inline constexpr int kSensorDataPerPacket =
-    kBarometerCount + kReservedCount + kTofCount; // 16
-inline constexpr int kSensorValuesPerFingertip =
-    kBarometerCount + kTofCount; // 11
-inline constexpr int kMaxHandSensors =
-    kMaxFingertips * kSensorValuesPerFingertip; // 88
+inline constexpr int kSensorDataPerPacket = kBarometerCount + kReservedCount + kTofCount;  // 16
+inline constexpr int kSensorValuesPerFingertip = kBarometerCount + kTofCount;              // 11
+inline constexpr int kMaxHandSensors = kMaxFingertips * kSensorValuesPerFingertip;         // 88
 
 // 기본값 기반 상수 (하위 호환)
-inline constexpr int kNumFingertips = kDefaultNumFingertips; // 4
-inline constexpr int kNumHandSensors =
-    kNumFingertips * kSensorValuesPerFingertip; // 44
+inline constexpr int kNumFingertips = kDefaultNumFingertips;                        // 4
+inline constexpr int kNumHandSensors = kNumFingertips * kSensorValuesPerFingertip;  // 44
 
 // kNumHandMotors, kNumHandJoints, RobotState, HandState moved to
 // ur5e_description/ur5e_constants.hpp (UR5e-specific).
@@ -100,20 +91,17 @@ concept TriviallyCopyableType = std::is_trivially_copyable_v<T>;
 // Output layout: [contact_prob(1), F(3), u(3)] = 7
 // (3-head model: output0=contact logit→sigmoid, output1=F, output2=u)
 inline constexpr int kFTValuesPerFingertip = 7;
-inline constexpr int kFTInputSize =
-    2 * kBarometerCount;                    // baro(8) + delta(8) = 16
-inline constexpr int kFTHistoryLength = 12; // FIFO history rows for ONNX input
+inline constexpr int kFTInputSize = 2 * kBarometerCount;  // baro(8) + delta(8) = 16
+inline constexpr int kFTHistoryLength = 12;               // FIFO history rows for ONNX input
 
 // ── Data structures (aggregate, zero-initialised by default)
 // ──────────────────
 
 // Fingertip F/T 추론 결과 (SeqLock 호환: trivially_copyable)
 struct FingertipFTState {
-  static constexpr int kMaxFTValues =
-      kMaxFingertips * kFTValuesPerFingertip; // 56
+  static constexpr int kMaxFTValues = kMaxFingertips * kFTValuesPerFingertip;  // 56
   std::array<float, kMaxFTValues> ft_data{};
-  std::array<bool, kMaxFingertips>
-      per_fingertip_valid{}; // per-fingertip inference ready
+  std::array<bool, kMaxFingertips> per_fingertip_valid{};  // per-fingertip inference ready
   int num_fingertips{0};
   bool valid{false};
 };
@@ -126,20 +114,19 @@ struct DeviceState {
   int num_channels{0};
   std::array<double, kMaxDeviceChannels> positions{};
   std::array<double, kMaxDeviceChannels> velocities{};
-  std::array<double, kMaxDeviceChannels> efforts{}; // torques for robot arm
+  std::array<double, kMaxDeviceChannels> efforts{};  // torques for robot arm
   // Motor-space data (separate from joint-space, e.g. hand motor encoder
   // values)
   int num_motor_channels{0};
   std::array<double, kMaxDeviceChannels> motor_positions{};
   std::array<double, kMaxDeviceChannels> motor_velocities{};
-  std::array<double, kMaxDeviceChannels> motor_efforts{};    // motor currents
-  std::array<int32_t, kMaxSensorChannels> sensor_data{};     // post-filter
-  std::array<int32_t, kMaxSensorChannels> sensor_data_raw{}; // pre-filter
+  std::array<double, kMaxDeviceChannels> motor_efforts{};     // motor currents
+  std::array<int32_t, kMaxSensorChannels> sensor_data{};      // post-filter
+  std::array<int32_t, kMaxSensorChannels> sensor_data_raw{};  // pre-filter
   int num_sensor_channels{0};
   // Inference (force/displacement per fingertip)
-  std::array<float, kMaxInferenceValues>
-      inference_data{}; // [contact,F(3),u(3)] × fingertips
-  std::array<bool, kMaxFingertips> inference_enable{}; // per-fingertip flag
+  std::array<float, kMaxInferenceValues> inference_data{};  // [contact,F(3),u(3)] × fingertips
+  std::array<bool, kMaxFingertips> inference_enable{};      // per-fingertip flag
   int num_inference_fingertips{0};
   bool valid{false};
 };
@@ -164,13 +151,12 @@ struct ControllerState {
 enum class CommandType { kPosition, kTorque };
 enum class GoalType : uint8_t { kJoint, kTask };
 
-[[nodiscard]] inline constexpr const char *
-GoalTypeToString(GoalType g) noexcept {
+[[nodiscard]] inline constexpr const char* GoalTypeToString(GoalType g) noexcept {
   switch (g) {
-  case GoalType::kJoint:
-    return "joint";
-  case GoalType::kTask:
-    return "task";
+    case GoalType::kJoint:
+      return "joint";
+    case GoalType::kTask:
+      return "task";
   }
   return "unknown";
 }
@@ -188,12 +174,11 @@ struct GraspStateData {
   int min_fingertips_for_grasp{2};
 
   // Force-PI grasp controller state (grasp_controller_type == "force_pi" 전용)
-  uint8_t grasp_phase{0};                       // GraspPhase enum
-  std::array<float, kMaxFingertips> finger_s{}; // grasp parameter [0,1]
-  std::array<float, kMaxFingertips>
-      finger_filtered_force{};                            // filtered force [N]
-  std::array<float, kMaxFingertips> finger_force_error{}; // force error [N]
-  float grasp_target_force{0.0f}; // active target force [N]
+  uint8_t grasp_phase{0};                                     // GraspPhase enum
+  std::array<float, kMaxFingertips> finger_s{};               // grasp parameter [0,1]
+  std::array<float, kMaxFingertips> finger_filtered_force{};  // filtered force [N]
+  std::array<float, kMaxFingertips> finger_force_error{};     // force error [N]
+  float grasp_target_force{0.0f};                             // active target force [N]
 };
 
 // WBC state — published by TSID-based whole-body controllers. RT-safe POD.
@@ -201,14 +186,14 @@ struct GraspStateData {
 // algorithm (no Force-PI fields). Consumers (BT coordinator / GUI) pick
 // between grasp_state and wbc_state based on the active controller name.
 struct WbcStateData {
-  uint8_t phase{0};                                    // WbcPhase enum
-  std::array<float, kMaxFingertips> force_magnitude{}; // |F| per fingertip [N]
-  std::array<float, kMaxFingertips> contact_flag{}; // contact probability [0,1]
-  std::array<float, kMaxFingertips> displacement{}; // raw displacement [m]
+  uint8_t phase{0};                                     // WbcPhase enum
+  std::array<float, kMaxFingertips> force_magnitude{};  // |F| per fingertip [N]
+  std::array<float, kMaxFingertips> contact_flag{};     // contact probability [0,1]
+  std::array<float, kMaxFingertips> displacement{};     // raw displacement [m]
   int num_fingertips{0};
   int num_active_contacts{0};
-  float max_force{0.0f};          // max across fingertips [N]
-  float grasp_target_force{0.0f}; // active target force [N]
+  float max_force{0.0f};           // max across fingertips [N]
+  float grasp_target_force{0.0f};  // active target force [N]
   bool grasp_detected{false};
   int min_fingertips_for_grasp{2};
   // TSID solver diagnostics (informational — not safety-critical)
@@ -220,10 +205,9 @@ struct WbcStateData {
 // ToF snapshot data — trivially copyable, RT-safe (SPSC buffer 호환)
 // 상한값(kMax*) 기반 고정 배열 + 런타임 num_fingers/sensors_per_finger
 struct ToFSnapshotData {
-  static constexpr int kMaxFingers = kMaxFingertips;     // 8
-  static constexpr int kMaxSensorsPerFinger = kTofCount; // 3
-  static constexpr int kMaxTotalSensors =
-      kMaxFingers * kMaxSensorsPerFinger; // 24
+  static constexpr int kMaxFingers = kMaxFingertips;                           // 8
+  static constexpr int kMaxSensorsPerFinger = kTofCount;                       // 3
+  static constexpr int kMaxTotalSensors = kMaxFingers * kMaxSensorsPerFinger;  // 24
 
   // 거리 [m]
   std::array<double, kMaxTotalSensors> distances{};
@@ -232,13 +216,14 @@ struct ToFSnapshotData {
   // Fingertip SE3 poses — world frame
   struct Pose {
     std::array<double, 3> position{};
-    std::array<double, 4> quaternion{1.0, 0.0, 0.0, 0.0}; // w, x, y, z
+    std::array<double, 4> quaternion{1.0, 0.0, 0.0, 0.0};  // w, x, y, z
   };
+
   std::array<Pose, kMaxFingers> tip_poses{};
 
-  int num_fingers{0};        // 실제 사용 핑거 수
-  int sensors_per_finger{0}; // 실제 핑거당 센서 수
-  bool populated{false};     // true when controller has valid ToF + FK data
+  int num_fingers{0};         // 실제 사용 핑거 수
+  int sensors_per_finger{0};  // 실제 핑거당 센서 수
+  bool populated{false};      // true when controller has valid ToF + FK data
 };
 
 // Unified device output — per-device commands, goals, and trajectory data
@@ -246,14 +231,12 @@ struct DeviceOutput {
   int num_channels{0};
   std::array<double, kMaxDeviceChannels> commands{};
   std::array<double, kMaxDeviceChannels> goal_positions{};
+  std::array<double, kMaxDeviceChannels> target_positions{};   // controller-specific target
+  std::array<double, kMaxDeviceChannels> target_velocities{};  // controller-specific target vel
   std::array<double, kMaxDeviceChannels>
-      target_positions{}; // controller-specific target
+      trajectory_positions{};  // pure trajectory reference position
   std::array<double, kMaxDeviceChannels>
-      target_velocities{}; // controller-specific target vel
-  std::array<double, kMaxDeviceChannels>
-      trajectory_positions{}; // pure trajectory reference position
-  std::array<double, kMaxDeviceChannels>
-      trajectory_velocities{}; // pure trajectory reference velocity
+      trajectory_velocities{};  // pure trajectory reference velocity
   GoalType goal_type{GoalType::kJoint};
 };
 
@@ -263,13 +246,11 @@ struct ControllerOutput {
   int num_devices{0};
 
   // Shared fields (not per-device)
-  std::array<double, kTaskSpaceDim> actual_task_positions{}; // TCP FK result
+  std::array<double, kTaskSpaceDim> actual_task_positions{};  // TCP FK result
+  std::array<double, kTaskSpaceDim> task_goal_positions{};    // task-space goal target from GUI
   std::array<double, kTaskSpaceDim>
-      task_goal_positions{}; // task-space goal target from GUI
-  std::array<double, kTaskSpaceDim>
-      trajectory_task_positions{}; // task-space trajectory reference pose
-  std::array<double, kTaskSpaceDim>
-      trajectory_task_velocities{}; // task-space trajectory velocity
+      trajectory_task_positions{};  // task-space trajectory reference pose
+  std::array<double, kTaskSpaceDim> trajectory_task_velocities{};  // task-space trajectory velocity
   bool valid{true};
   CommandType command_type{CommandType::kPosition};
   GraspStateData grasp_state{};
@@ -280,33 +261,29 @@ struct ControllerOutput {
 // ── Per-device name + URDF configuration ─────────────────────────────────────
 
 struct DeviceUrdfConfig {
-  std::string package; // ament package name (e.g. "ur5e_description")
-  std::string
-      path; // relative to package share dir (e.g. "robots/ur5e/urdf/ur5e.urdf")
-  std::string root_link; // kinematic chain root link name
-  std::string tip_link;  // end-effector link name (for FK/IK frame)
+  std::string package;    // ament package name (e.g. "ur5e_description")
+  std::string path;       // relative to package share dir (e.g. "robots/ur5e/urdf/ur5e.urdf")
+  std::string root_link;  // kinematic chain root link name
+  std::string tip_link;   // end-effector link name (for FK/IK frame)
 };
 
 struct DeviceJointLimits {
-  std::vector<double> max_velocity;     // per-joint (rad/s)
-  std::vector<double> max_acceleration; // per-joint (rad/s²), optional
-  std::vector<double> max_torque;       // per-joint (Nm), optional
-  std::vector<double> position_lower;   // per-joint lower bound (rad)
-  std::vector<double> position_upper;   // per-joint upper bound (rad)
+  std::vector<double> max_velocity;      // per-joint (rad/s)
+  std::vector<double> max_acceleration;  // per-joint (rad/s²), optional
+  std::vector<double> max_torque;        // per-joint (Nm), optional
+  std::vector<double> position_lower;    // per-joint lower bound (rad)
+  std::vector<double> position_upper;    // per-joint upper bound (rad)
 };
 
 struct DeviceNameConfig {
   std::string device_name;
   std::vector<std::string> joint_state_names;
-  std::vector<std::string>
-      joint_command_names; // empty → defaults to joint_state_names
-  std::vector<std::string>
-      motor_state_names; // motor-space names (e.g. motor_1..10)
+  std::vector<std::string> joint_command_names;  // empty → defaults to joint_state_names
+  std::vector<std::string> motor_state_names;    // motor-space names (e.g. motor_1..10)
   std::vector<std::string> sensor_names;
-  std::optional<DeviceUrdfConfig> urdf; // nullopt if no URDF for this device
-  std::optional<DeviceJointLimits>
-      joint_limits;                  // nullopt if no limits configured
-  std::vector<double> safe_position; // E-STOP target position (per-joint, rad)
+  std::optional<DeviceUrdfConfig> urdf;           // nullopt if no URDF for this device
+  std::optional<DeviceJointLimits> joint_limits;  // nullopt if no limits configured
+  std::vector<double> safe_position;              // E-STOP target position (per-joint, rad)
 };
 
 // ── Device capability bitmask (selective data copy in RT loop) ───────────────
@@ -317,52 +294,50 @@ struct DeviceNameConfig {
 
 enum class DeviceCapability : uint16_t {
   kNone = 0,
-  kJointState = 1 << 0, ///< positions / velocities / efforts
-  kMotorState = 1 << 1, ///< motor_positions / motor_velocities / motor_efforts
-  kSensorData = 1 << 2, ///< sensor_data / sensor_data_raw
-  kInference = 1 << 3,  ///< inference_data / inference_enable
+  kJointState = 1 << 0,  ///< positions / velocities / efforts
+  kMotorState = 1 << 1,  ///< motor_positions / motor_velocities / motor_efforts
+  kSensorData = 1 << 2,  ///< sensor_data / sensor_data_raw
+  kInference = 1 << 3,   ///< inference_data / inference_enable
 };
 
-[[nodiscard]] inline constexpr uint16_t
-operator|(DeviceCapability lhs, DeviceCapability rhs) noexcept {
-  return static_cast<uint16_t>(static_cast<uint16_t>(lhs) |
-                               static_cast<uint16_t>(rhs));
+[[nodiscard]] inline constexpr uint16_t operator|(DeviceCapability lhs,
+                                                  DeviceCapability rhs) noexcept {
+  return static_cast<uint16_t>(static_cast<uint16_t>(lhs) | static_cast<uint16_t>(rhs));
 }
 
-[[nodiscard]] inline constexpr bool
-HasCapability(uint16_t caps, DeviceCapability flag) noexcept {
+[[nodiscard]] inline constexpr bool HasCapability(uint16_t caps, DeviceCapability flag) noexcept {
   return (caps & static_cast<uint16_t>(flag)) != 0;
 }
 
 // ── Topic configuration for per-controller subscribe/publish routing ─────────
 
 enum class SubscribeRole {
-  kState,       // sensor_msgs/JointState (ur5e & hand 공통)
-  kMotorState,  // sensor_msgs/JointState (motor-space state, e.g.
-                // /hand/motor_states)
-  kSensorState, // Float64MultiArray (센서 전용, e.g. 촉각)
-  kTarget,      // Float64MultiArray (외부 목표)
+  kState,        // sensor_msgs/JointState (ur5e & hand 공통)
+  kMotorState,   // sensor_msgs/JointState (motor-space state, e.g.
+                 // /hand/motor_states)
+  kSensorState,  // Float64MultiArray (센서 전용, e.g. 촉각)
+  kTarget,       // Float64MultiArray (외부 목표)
 };
 
 enum class PublishRole {
   // Control Command
-  kJointCommand, // rtc_msgs/JointCommand (통합 명령)
-  kRos2Command,  // Float64MultiArray (ros2_control 전용)
+  kJointCommand,  // rtc_msgs/JointCommand (통합 명령)
+  kRos2Command,   // Float64MultiArray (ros2_control 전용)
   // GUI / Monitoring
-  kGuiPosition, // rtc_msgs/GuiPosition (joint_pos + task_pos)
+  kGuiPosition,  // rtc_msgs/GuiPosition (joint_pos + task_pos)
   // Topic-based State/Command/Goal
-  kRobotTarget, // rtc_msgs/RobotTarget (joint/task 목표)
+  kRobotTarget,  // rtc_msgs/RobotTarget (joint/task 목표)
   // (Phase C: kDeviceStateLog / kDeviceSensorLog removed — controller
   // data CSVs flow through ControllerLogSet, not CM publish.)
   // Digital Twin
-  kDigitalTwinState, // sensor_msgs/JointState (RELIABLE republish for digital
-                     // twin)
+  kDigitalTwinState,  // sensor_msgs/JointState (RELIABLE republish for digital
+                      // twin)
   // Grasp State
-  kGraspState, // rtc_msgs/GraspState (BT coordinator용 grasp 상태)
+  kGraspState,  // rtc_msgs/GraspState (BT coordinator용 grasp 상태)
   // WBC State
-  kWbcState, // rtc_msgs/WbcState (TSID-based WBC controllers)
+  kWbcState,  // rtc_msgs/WbcState (TSID-based WBC controllers)
   // ToF Snapshot
-  kToFSnapshot, // rtc_msgs/ToFSnapshot (ToF + fingertip SE3)
+  kToFSnapshot,  // rtc_msgs/ToFSnapshot (ToF + fingertip SE3)
 };
 
 // ── Topic ownership tier ────────────────────────────────────────────────────
@@ -379,13 +354,12 @@ enum class TopicOwnership : uint8_t {
   kController = 1,
 };
 
-[[nodiscard]] inline constexpr const char *
-TopicOwnershipToString(TopicOwnership own) noexcept {
+[[nodiscard]] inline constexpr const char* TopicOwnershipToString(TopicOwnership own) noexcept {
   switch (own) {
-  case TopicOwnership::kManager:
-    return "manager";
-  case TopicOwnership::kController:
-    return "controller";
+    case TopicOwnership::kManager:
+      return "manager";
+    case TopicOwnership::kController:
+      return "controller";
   }
   return "unknown";
 }
@@ -399,7 +373,7 @@ struct SubscribeTopicEntry {
 struct PublishTopicEntry {
   std::string topic_name;
   PublishRole role;
-  int data_size{0}; // pre-allocate message size (0 = use default for role)
+  int data_size{0};  // pre-allocate message size (0 = use default for role)
   TopicOwnership ownership{TopicOwnership::kManager};
 };
 
@@ -408,8 +382,7 @@ struct PublishTopicEntry {
 struct DeviceTopicGroup {
   std::vector<SubscribeTopicEntry> subscribe;
   std::vector<PublishTopicEntry> publish;
-  uint16_t capability{
-      0}; ///< DeviceCapability bitmask, auto-inferred from subscribe roles
+  uint16_t capability{0};  ///< DeviceCapability bitmask, auto-inferred from subscribe roles
 };
 
 // Dynamic topic configuration: groups keyed by device name ("ur5e", "hand", …)
@@ -421,8 +394,8 @@ struct TopicConfig {
   std::vector<std::pair<std::string, DeviceTopicGroup>> groups;
 
   // Insert-or-access by name (preserves insertion order for new entries).
-  DeviceTopicGroup &operator[](const std::string &name) {
-    for (auto &[n, g] : groups) {
+  DeviceTopicGroup& operator[](const std::string& name) {
+    for (auto& [n, g] : groups) {
       if (n == name)
         return g;
     }
@@ -431,8 +404,8 @@ struct TopicConfig {
   }
 
   // True if the named group exists and has at least one topic entry.
-  [[nodiscard]] bool HasGroup(const std::string &name) const noexcept {
-    for (const auto &[n, g] : groups) {
+  [[nodiscard]] bool HasGroup(const std::string& name) const noexcept {
+    for (const auto& [n, g] : groups) {
       if (n == name)
         return !g.subscribe.empty() || !g.publish.empty();
     }
@@ -440,12 +413,12 @@ struct TopicConfig {
   }
 
   // True if the named group has a subscribe entry with the given role.
-  [[nodiscard]] bool HasSubscribeRole(const std::string &group_name,
+  [[nodiscard]] bool HasSubscribeRole(const std::string& group_name,
                                       SubscribeRole role) const noexcept {
-    for (const auto &[n, g] : groups) {
+    for (const auto& [n, g] : groups) {
       if (n != group_name)
         continue;
-      for (const auto &e : g.subscribe) {
+      for (const auto& e : g.subscribe) {
         if (e.role == role)
           return true;
       }
@@ -459,12 +432,12 @@ struct TopicConfig {
   //
   // WARNING: NOT RT-safe — returns std::string (potential heap allocation).
   // Call only during initialisation, not from the 500 Hz control loop.
-  [[nodiscard]] std::string GetSubscribeTopicName(const std::string &group_name,
+  [[nodiscard]] std::string GetSubscribeTopicName(const std::string& group_name,
                                                   SubscribeRole role) const {
-    for (const auto &[n, g] : groups) {
+    for (const auto& [n, g] : groups) {
       if (n != group_name)
         continue;
-      for (const auto &e : g.subscribe) {
+      for (const auto& e : g.subscribe) {
         if (e.role == role)
           return e.topic_name;
       }
@@ -476,44 +449,42 @@ struct TopicConfig {
 
 // ── Role → string conversion (for ROS2 parameter exposure) ──────────────────
 
-[[nodiscard]] inline constexpr const char *
-SubscribeRoleToString(SubscribeRole role) noexcept {
+[[nodiscard]] inline constexpr const char* SubscribeRoleToString(SubscribeRole role) noexcept {
   switch (role) {
-  case SubscribeRole::kState:
-    return "state";
-  case SubscribeRole::kMotorState:
-    return "motor_state";
-  case SubscribeRole::kSensorState:
-    return "sensor_state";
-  case SubscribeRole::kTarget:
-    return "target";
+    case SubscribeRole::kState:
+      return "state";
+    case SubscribeRole::kMotorState:
+      return "motor_state";
+    case SubscribeRole::kSensorState:
+      return "sensor_state";
+    case SubscribeRole::kTarget:
+      return "target";
   }
   return "unknown";
 }
 
-[[nodiscard]] inline constexpr const char *
-PublishRoleToString(PublishRole role) noexcept {
+[[nodiscard]] inline constexpr const char* PublishRoleToString(PublishRole role) noexcept {
   switch (role) {
-  case PublishRole::kJointCommand:
-    return "joint_command";
-  case PublishRole::kRos2Command:
-    return "ros2_command";
-  case PublishRole::kGuiPosition:
-    return "gui_position";
-  case PublishRole::kRobotTarget:
-    return "robot_target";
-  case PublishRole::kDigitalTwinState:
-    return "digital_twin_state";
-  case PublishRole::kGraspState:
-    return "grasp_state";
-  case PublishRole::kWbcState:
-    return "wbc_state";
-  case PublishRole::kToFSnapshot:
-    return "tof_snapshot";
+    case PublishRole::kJointCommand:
+      return "joint_command";
+    case PublishRole::kRos2Command:
+      return "ros2_command";
+    case PublishRole::kGuiPosition:
+      return "gui_position";
+    case PublishRole::kRobotTarget:
+      return "robot_target";
+    case PublishRole::kDigitalTwinState:
+      return "digital_twin_state";
+    case PublishRole::kGraspState:
+      return "grasp_state";
+    case PublishRole::kWbcState:
+      return "wbc_state";
+    case PublishRole::kToFSnapshot:
+      return "tof_snapshot";
   }
   return "unknown";
 }
 
-} // namespace rtc
+}  // namespace rtc
 
-#endif // RTC_BASE_TYPES_HPP_
+#endif  // RTC_BASE_TYPES_HPP_

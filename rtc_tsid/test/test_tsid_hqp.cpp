@@ -15,8 +15,7 @@
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 class HQPFormulationTest : public ::testing::Test {
  protected:
@@ -57,8 +56,7 @@ TEST_F(HQPFormulationTest, SingleLevelConverges) {
   YAML::Node config;
   config["formulation_type"] = "hqp";
 
-  auto formulation = create_formulation(
-      *model_, robot_info_, contact_cfg_, config);
+  auto formulation = create_formulation(*model_, robot_info_, contact_cfg_, config);
 
   auto posture = std::make_unique<PostureTask>();
   YAML::Node task_cfg;
@@ -94,8 +92,7 @@ TEST_F(HQPFormulationTest, MultiLevelStrictHierarchy) {
   YAML::Node config;
   config["formulation_type"] = "hqp";
 
-  auto formulation = create_formulation(
-      *model_, robot_info_, contact_cfg_, config);
+  auto formulation = create_formulation(*model_, robot_info_, contact_cfg_, config);
 
   auto posture_high = std::make_unique<PostureTask>();
   YAML::Node cfg_high;
@@ -116,12 +113,9 @@ TEST_F(HQPFormulationTest, MultiLevelStrictHierarchy) {
 
   Eigen::VectorXd q_neutral = pinocchio::neutral(*model_);
   Eigen::VectorXd q_offset = q_neutral;
-  q_offset.head(robot_info_.nv) +=
-      Eigen::VectorXd::Constant(robot_info_.nv, 0.5);
-  posture_low->set_reference(
-      q_offset,
-      Eigen::VectorXd::Zero(robot_info_.nv),
-      Eigen::VectorXd::Zero(robot_info_.nv));
+  q_offset.head(robot_info_.nv) += Eigen::VectorXd::Constant(robot_info_.nv, 0.5);
+  posture_low->set_reference(q_offset, Eigen::VectorXd::Zero(robot_info_.nv),
+                             Eigen::VectorXd::Zero(robot_info_.nv));
   formulation->add_task(std::move(posture_low));
 
   Eigen::VectorXd q = q_neutral;
@@ -139,16 +133,14 @@ TEST_F(HQPFormulationTest, MultiLevelStrictHierarchy) {
 
   // Level 0 dominates → a ≈ 0
   Eigen::VectorXd a_opt = result.x_opt.head(robot_info_.nv);
-  EXPECT_LT(a_opt.norm(), 0.5)
-      << "Level 0 should dominate. a_opt = " << a_opt.transpose();
+  EXPECT_LT(a_opt.norm(), 0.5) << "Level 0 should dominate. a_opt = " << a_opt.transpose();
 }
 
 TEST_F(HQPFormulationTest, PresetSetsCorrectPriority) {
   YAML::Node config;
   config["formulation_type"] = "hqp";
 
-  auto formulation = create_formulation(
-      *model_, robot_info_, contact_cfg_, config);
+  auto formulation = create_formulation(*model_, robot_info_, contact_cfg_, config);
 
   auto posture = std::make_unique<PostureTask>();
   YAML::Node task_cfg;

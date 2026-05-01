@@ -12,16 +12,16 @@ namespace rub = rtc_urdf_bridge;
 
 namespace {
 
-std::string TestUrdfPath(const std::string &filename) {
+std::string TestUrdfPath(const std::string& filename) {
   std::filesystem::path p(__FILE__);
   return (p.parent_path() / "urdf" / filename).string();
 }
 
-bool Contains(const std::vector<std::string> &vec, const std::string &name) {
+bool Contains(const std::vector<std::string>& vec, const std::string& name) {
   return std::find(vec.begin(), vec.end(), name) != vec.end();
 }
 
-} // namespace
+}  // namespace
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Serial arm — 모든 non-fixed 관절은 active, fixed는 fixed
@@ -35,8 +35,8 @@ TEST(JointClassificationSerial, AllNonFixedAreActive) {
   EXPECT_EQ(analyzer.GetFixedJointNames().size(), 1u);
   EXPECT_EQ(analyzer.GetNonFixedJointNames().size(), 6u);
 
-  for (const auto &j : analyzer.GetActiveJointNames()) {
-    const auto &meta = analyzer.GetJointMeta(j);
+  for (const auto& j : analyzer.GetActiveJointNames()) {
+    const auto& meta = analyzer.GetJointMeta(j);
     EXPECT_EQ(meta.role, rub::JointRole::kActive);
     EXPECT_EQ(meta.passive_subtype, rub::PassiveSubtype::kNone);
     EXPECT_TRUE(meta.has_physics);
@@ -47,8 +47,7 @@ TEST(JointClassificationSerial, AllNonFixedAreActive) {
 TEST(JointClassificationSerial, FixedJointRole) {
   rub::UrdfAnalyzer analyzer(TestUrdfPath("serial_6dof.urdf"));
   EXPECT_EQ(analyzer.GetJointRole("tool_joint"), rub::JointRole::kFixed);
-  EXPECT_EQ(analyzer.GetPassiveSubtype("tool_joint"),
-            rub::PassiveSubtype::kNone);
+  EXPECT_EQ(analyzer.GetPassiveSubtype("tool_joint"), rub::PassiveSubtype::kNone);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -58,15 +57,11 @@ TEST(JointClassificationSerial, FixedJointRole) {
 TEST(JointClassificationMimic, MimicIsPassiveMimic) {
   rub::UrdfAnalyzer analyzer(TestUrdfPath("arm_with_mimic.urdf"));
 
-  EXPECT_EQ(analyzer.GetJointRole("finger_right_joint"),
-            rub::JointRole::kPassive);
-  EXPECT_EQ(analyzer.GetPassiveSubtype("finger_right_joint"),
-            rub::PassiveSubtype::kMimic);
-  EXPECT_EQ(analyzer.GetJointRole("finger_left_joint"),
-            rub::JointRole::kActive);
+  EXPECT_EQ(analyzer.GetJointRole("finger_right_joint"), rub::JointRole::kPassive);
+  EXPECT_EQ(analyzer.GetPassiveSubtype("finger_right_joint"), rub::PassiveSubtype::kMimic);
+  EXPECT_EQ(analyzer.GetJointRole("finger_left_joint"), rub::JointRole::kActive);
 
-  const auto mimics =
-      analyzer.GetPassiveJointNamesOfSubtype(rub::PassiveSubtype::kMimic);
+  const auto mimics = analyzer.GetPassiveJointNamesOfSubtype(rub::PassiveSubtype::kMimic);
   ASSERT_EQ(mimics.size(), 1u);
   EXPECT_EQ(mimics[0], "finger_right_joint");
 
@@ -88,18 +83,16 @@ TEST(JointClassificationClosedChain, FourBarLoopJointsArePassive) {
 
   // 4-bar: joint_a, joint_ab, joint_c 모두 closed-chain 경로(link_b↔link_c)에
   // 포함되므로 kPassive/kClosedChain으로 분류된다.
-  const auto closed =
-      analyzer.GetPassiveJointNamesOfSubtype(rub::PassiveSubtype::kClosedChain);
+  const auto closed = analyzer.GetPassiveJointNamesOfSubtype(rub::PassiveSubtype::kClosedChain);
   EXPECT_GE(closed.size(), 1u);
 
-  for (const auto &j : closed) {
+  for (const auto& j : closed) {
     EXPECT_EQ(analyzer.GetJointRole(j), rub::JointRole::kPassive);
     EXPECT_EQ(analyzer.GetPassiveSubtype(j), rub::PassiveSubtype::kClosedChain);
   }
 
   // loop_closure_joint은 fixed 타입이므로 분류상 kFixed
-  EXPECT_EQ(analyzer.GetJointRole("loop_closure_joint"),
-            rub::JointRole::kFixed);
+  EXPECT_EQ(analyzer.GetJointRole("loop_closure_joint"), rub::JointRole::kFixed);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -123,9 +116,8 @@ TEST(JointClassificationHint, HintMakesJointPassiveFree) {
 
 TEST(JointClassificationHint, UnknownHintNameIsIgnored) {
   // 존재하지 않는 관절 이름은 경고만 내고 skip — 예외 없음
-  EXPECT_NO_THROW(
-      (void)rub::UrdfAnalyzer(TestUrdfPath("serial_6dof.urdf"),
-                              std::vector<std::string>{"no_such_joint"}));
+  EXPECT_NO_THROW((void)rub::UrdfAnalyzer(TestUrdfPath("serial_6dof.urdf"),
+                                          std::vector<std::string>{"no_such_joint"}));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -135,7 +127,7 @@ TEST(JointClassificationHint, UnknownHintNameIsIgnored) {
 TEST(JointClassificationPhysics, MissingLimitClassifiedActiveNoThrow) {
   // <limit> 태그 아예 없는 URDF — analyzer 생성은 성공, joint는 active,
   // has_physics == false
-  const char *xml = R"(
+  const char* xml = R"(
     <robot name="no_limit">
       <link name="world"/>
       <link name="body"/>
@@ -145,18 +137,17 @@ TEST(JointClassificationPhysics, MissingLimitClassifiedActiveNoThrow) {
       </joint>
     </robot>
   )";
-  EXPECT_NO_THROW(
-      (void)rub::UrdfAnalyzer(xml, rub::UrdfAnalyzer::FromXmlTag{}));
+  EXPECT_NO_THROW((void)rub::UrdfAnalyzer(xml, rub::UrdfAnalyzer::FromXmlTag{}));
 
   rub::UrdfAnalyzer analyzer(xml, rub::UrdfAnalyzer::FromXmlTag{});
   EXPECT_EQ(analyzer.GetJointRole("j1"), rub::JointRole::kActive);
-  const auto &meta = analyzer.GetJointMeta("j1");
+  const auto& meta = analyzer.GetJointMeta("j1");
   EXPECT_FALSE(meta.has_physics);
   EXPECT_FALSE(meta.has_limit_tag);
 }
 
 TEST(JointClassificationPhysics, ZeroEffortFailsPhysics) {
-  const char *xml = R"(
+  const char* xml = R"(
     <robot name="zero_effort">
       <link name="world"/>
       <link name="body"/>
@@ -168,7 +159,7 @@ TEST(JointClassificationPhysics, ZeroEffortFailsPhysics) {
     </robot>
   )";
   rub::UrdfAnalyzer analyzer(xml, rub::UrdfAnalyzer::FromXmlTag{});
-  const auto &meta = analyzer.GetJointMeta("j1");
+  const auto& meta = analyzer.GetJointMeta("j1");
   EXPECT_TRUE(meta.has_limit_tag);
   EXPECT_FALSE(meta.has_physics);
   // 분류는 여전히 active (warning만)
@@ -177,7 +168,7 @@ TEST(JointClassificationPhysics, ZeroEffortFailsPhysics) {
 
 TEST(JointClassificationPhysics, ContinuousSkipsVelocityCheck) {
   // continuous는 position limit 없이도 physics 인정 (effort>0만 요구)
-  const char *xml = R"(
+  const char* xml = R"(
     <robot name="continuous">
       <link name="world"/>
       <link name="body"/>
@@ -189,7 +180,7 @@ TEST(JointClassificationPhysics, ContinuousSkipsVelocityCheck) {
     </robot>
   )";
   rub::UrdfAnalyzer analyzer(xml, rub::UrdfAnalyzer::FromXmlTag{});
-  const auto &meta = analyzer.GetJointMeta("j1");
+  const auto& meta = analyzer.GetJointMeta("j1");
   EXPECT_TRUE(meta.has_physics);
   EXPECT_EQ(meta.role, rub::JointRole::kActive);
 }
@@ -202,10 +193,8 @@ TEST(JointClassificationStrings, RoleAndSubtypeToString) {
   EXPECT_STREQ(rub::JointRoleToString(rub::JointRole::kActive), "active");
   EXPECT_STREQ(rub::JointRoleToString(rub::JointRole::kPassive), "passive");
   EXPECT_STREQ(rub::JointRoleToString(rub::JointRole::kFixed), "fixed");
-  EXPECT_STREQ(rub::PassiveSubtypeToString(rub::PassiveSubtype::kMimic),
-               "mimic");
-  EXPECT_STREQ(rub::PassiveSubtypeToString(rub::PassiveSubtype::kClosedChain),
-               "closed_chain");
+  EXPECT_STREQ(rub::PassiveSubtypeToString(rub::PassiveSubtype::kMimic), "mimic");
+  EXPECT_STREQ(rub::PassiveSubtypeToString(rub::PassiveSubtype::kClosedChain), "closed_chain");
   EXPECT_STREQ(rub::PassiveSubtypeToString(rub::PassiveSubtype::kFree), "free");
   EXPECT_STREQ(rub::PassiveSubtypeToString(rub::PassiveSubtype::kNone), "none");
 }

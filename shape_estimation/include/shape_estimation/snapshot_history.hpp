@@ -14,8 +14,7 @@ class SnapshotHistory {
  public:
   // max_duration_sec: 유지할 최대 시간 (기본 3초)
   // max_count: 최대 저장 수 (기본 300 = 3초 × 100Hz)
-  explicit SnapshotHistory(double max_duration_sec = 3.0,
-                           size_t max_count = 300);
+  explicit SnapshotHistory(double max_duration_sec = 3.0, size_t max_count = 300);
 
   void Push(const ToFSnapshot& snapshot);
 

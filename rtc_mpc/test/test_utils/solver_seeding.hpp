@@ -10,10 +10,10 @@
 /// Phase 5 `MPCHandler::SeedInitialGuess()` promotes the same pattern to
 /// production. Not installed — header is test-local by design.
 
+#include <Eigen/Core>
+
 #include <cassert>
 #include <vector>
-
-#include <Eigen/Core>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -41,22 +41,20 @@ namespace rtc::mpc::test_utils {
 /// For object-loaded grasp scenarios (Phase 5+ CLOSURE/HOLD), this
 /// serves as a cold-start bootstrap only; steady-state behavior
 /// requires warm-start from the previous tick's solution.
-inline void SeedGravityCompensation(const pinocchio::Model &model,
-                                    const Eigen::VectorXd &q,
-                                    std::vector<Eigen::VectorXd> &us) noexcept {
+inline void SeedGravityCompensation(const pinocchio::Model& model, const Eigen::VectorXd& q,
+                                    std::vector<Eigen::VectorXd>& us) noexcept {
   assert(q.size() == model.nq);
   assert(!us.empty());
-  for (const auto &u : us) {
+  for (const auto& u : us) {
     assert(u.size() == model.nv);
     (void)u;
   }
 
   pinocchio::Data data(model);
-  const Eigen::VectorXd tau_g =
-      pinocchio::computeGeneralizedGravity(model, data, q);
-  for (auto &u : us) {
+  const Eigen::VectorXd tau_g = pinocchio::computeGeneralizedGravity(model, data, q);
+  for (auto& u : us) {
     u = tau_g;
   }
 }
 
-} // namespace rtc::mpc::test_utils
+}  // namespace rtc::mpc::test_utils

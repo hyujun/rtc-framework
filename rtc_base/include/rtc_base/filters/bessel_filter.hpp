@@ -70,49 +70,55 @@ class BesselFilterN {
 
     // Bilinear-transform constant and prewarped analog cutoff.
     // Prewarping ensures the digital -3 dB point lands exactly at cutoff_hz.
-    const double k       = 2.0 * sample_rate_hz;
+    const double k = 2.0 * sample_rate_hz;
     const double omega_p = k * std::tan(std::numbers::pi * cutoff_hz / sample_rate_hz);
 
     section1_ = ComputeBiquad(kProtoOmega0_1, kProtoQ_1, omega_p, k);
     section2_ = ComputeBiquad(kProtoOmega0_2, kProtoQ_2, omega_p, k);
 
-    cutoff_hz_      = cutoff_hz;
+    cutoff_hz_ = cutoff_hz;
     sample_rate_hz_ = sample_rate_hz;
-    initialized_    = true;
+    initialized_ = true;
 
     Reset();
   }
 
   // Reset all delay elements to zero (e.g. at controller start or after E-STOP).
   void Reset() noexcept {
-    for (auto& s : state1_) { s.d1 = s.d2 = 0.0; }
-    for (auto& s : state2_) { s.d1 = s.d2 = 0.0; }
+    for (auto& s : state1_) {
+      s.d1 = s.d2 = 0.0;
+    }
+    for (auto& s : state2_) {
+      s.d1 = s.d2 = 0.0;
+    }
   }
 
   // Filter an N-channel input sample.  Returns the filtered output array.
   // noexcept — safe to call on the 500 Hz RT path.
-  [[nodiscard]] std::array<double, N> Apply(
-      const std::array<double, N>& input) noexcept {
+  [[nodiscard]] std::array<double, N> Apply(const std::array<double, N>& input) noexcept {
     std::array<double, N> out{};
     for (std::size_t i = 0; i < N; ++i) {
       const double y1 = ApplyBiquad(section1_, state1_[i], input[i]);
-      out[i]          = ApplyBiquad(section2_, state2_[i], y1);
+      out[i] = ApplyBiquad(section2_, state2_[i], y1);
     }
     return out;
   }
 
   // Convenience overload for single-channel use (channel index 0..N-1).
-  [[nodiscard]] double ApplyScalar(double x,
-                                   std::size_t channel = 0) noexcept {
+  [[nodiscard]] double ApplyScalar(double x, std::size_t channel = 0) noexcept {
     const double y1 = ApplyBiquad(section1_, state1_[channel], x);
     return ApplyBiquad(section2_, state2_[channel], y1);
   }
 
   // Accessors
-  [[nodiscard]] bool   initialized()     const noexcept { return initialized_; }
-  [[nodiscard]] double cutoff_hz()       const noexcept { return cutoff_hz_; }
-  [[nodiscard]] double sample_rate_hz()  const noexcept { return sample_rate_hz_; }
+  [[nodiscard]] bool initialized() const noexcept { return initialized_; }
+
+  [[nodiscard]] double cutoff_hz() const noexcept { return cutoff_hz_; }
+
+  [[nodiscard]] double sample_rate_hz() const noexcept { return sample_rate_hz_; }
+
   [[nodiscard]] const BiquadCoeffs& section1() const noexcept { return section1_; }
+
   [[nodiscard]] const BiquadCoeffs& section2() const noexcept { return section2_; }
 
  private:
@@ -131,9 +137,9 @@ class BesselFilterN {
   //   p₁,₂ = -1.370063 ± 0.410258j  →  ω₀ = 1.4301691433,  Q = 0.5219356105
   //   p₃,₄ = -0.995214 ± 1.257102j  →  ω₀ = 1.6033574829,  Q = 0.8055342053
   static constexpr double kProtoOmega0_1 = 1.4301691433;  // √(1.370063²+0.410258²)
-  static constexpr double kProtoQ_1      = 0.5219356105;  // ω₀₁/(2·1.370063)
+  static constexpr double kProtoQ_1 = 0.5219356105;       // ω₀₁/(2·1.370063)
   static constexpr double kProtoOmega0_2 = 1.6033574829;  // √(0.995214²+1.257102²)
-  static constexpr double kProtoQ_2      = 0.8055342053;  // ω₀₂/(2·0.995214)
+  static constexpr double kProtoQ_2 = 0.8055342053;       // ω₀₂/(2·0.995214)
 
   // ── Per-biquad delay state (Direct Form II Transposed) ───────────────────
   struct BiquadState {
@@ -158,15 +164,13 @@ class BesselFilterN {
   //        a2    = (k² − (ω₀/Q)·k + ω₀²) / D
   //
   // Q is scale-invariant and is passed through unchanged.
-  [[nodiscard]] static constexpr BiquadCoeffs ComputeBiquad(double omega0_proto,
-                                                  double q_proto,
-                                                  double omega_p,
-                                                  double k) noexcept {
-    const double omega0    = omega0_proto * omega_p;
+  [[nodiscard]] static constexpr BiquadCoeffs ComputeBiquad(double omega0_proto, double q_proto,
+                                                            double omega_p, double k) noexcept {
+    const double omega0 = omega0_proto * omega_p;
     const double omega0_sq = omega0 * omega0;
-    const double k_sq      = k * k;
-    const double bw        = omega0 / q_proto;  // ω₀/Q  (bandwidth term)
-    const double D         = k_sq + bw * k + omega0_sq;
+    const double k_sq = k * k;
+    const double bw = omega0 / q_proto;  // ω₀/Q  (bandwidth term)
+    const double D = k_sq + bw * k + omega0_sq;
 
     BiquadCoeffs c;
     c.b0 = omega0_sq / D;
@@ -185,12 +189,11 @@ class BesselFilterN {
   //
   // TDF-II is preferred over Direct Form I for better numerical properties
   // (lower coefficient sensitivity) and simpler state management.
-  [[nodiscard]] static double ApplyBiquad(const BiquadCoeffs& c,
-                                          BiquadState& s,
+  [[nodiscard]] static double ApplyBiquad(const BiquadCoeffs& c, BiquadState& s,
                                           double x) noexcept {
     const double y = c.b0 * x + s.d1;
-    s.d1           = c.b1 * x - c.a1 * y + s.d2;
-    s.d2           = c.b2 * x - c.a2 * y;
+    s.d1 = c.b1 * x - c.a1 * y + s.d2;
+    s.d2 = c.b2 * x - c.a2 * y;
     return y;
   }
 
@@ -201,15 +204,15 @@ class BesselFilterN {
   std::array<BiquadState, N> state1_{};
   std::array<BiquadState, N> state2_{};
 
-  bool   initialized_{false};
+  bool initialized_{false};
   double cutoff_hz_{0.0};
   double sample_rate_hz_{0.0};
 };
 
 // ── Convenience aliases ────────────────────────────────────────────────────
-using BesselFilter6  = BesselFilterN<6>;   // 6-DOF robot joints
+using BesselFilter6 = BesselFilterN<6>;    // 6-DOF robot joints
 using BesselFilter11 = BesselFilterN<11>;  // 11 sensor values per fingertip (8 baro + 3 ToF)
-using BesselFilter1  = BesselFilterN<1>;   // single-channel scalar use
+using BesselFilter1 = BesselFilterN<1>;    // single-channel scalar use
 
 // Barometer sensor filtering (kMaxFingertips × kBarometerCount = 8 × 8 = 64 channels)
 inline constexpr std::size_t kMaxBaroChannels = 64;

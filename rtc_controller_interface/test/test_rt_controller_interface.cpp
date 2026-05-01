@@ -24,20 +24,20 @@ namespace {
 
 // ── Stub controller — exposes protected helpers for testing ──────────────────
 class StubController : public rtc::RTControllerInterface {
-public:
+ public:
   StubController() = default;
 
-  [[nodiscard]] rtc::ControllerOutput
-  Compute(const rtc::ControllerState &) noexcept override {
+  [[nodiscard]] rtc::ControllerOutput Compute(const rtc::ControllerState&) noexcept override {
     rtc::ControllerOutput out{};
     out.valid = true;
     return out;
   }
+
   void SetDeviceTarget(int, std::span<const double>) noexcept override {}
-  [[nodiscard]] std::string_view Name() const noexcept override {
-    return "StubController";
-  }
-  void InitializeHoldPosition(const rtc::ControllerState &) noexcept override {}
+
+  [[nodiscard]] std::string_view Name() const noexcept override { return "StubController"; }
+
+  void InitializeHoldPosition(const rtc::ControllerState&) noexcept override {}
 
   // Expose protected statics for direct testing.
   using RTControllerInterface::MakeDefaultTopicConfig;
@@ -47,8 +47,9 @@ public:
   int device_config_set_count{0};
   int model_config_set_count{0};
 
-protected:
+ protected:
   void OnDeviceConfigsSet() override { ++device_config_set_count; }
+
   void OnSystemModelConfigSet() override { ++model_config_set_count; }
 };
 
@@ -159,8 +160,7 @@ TEST(RTControllerInterfaceTest, GetPrimaryDeviceNameEmptyByDefault) {
   EXPECT_EQ(ctrl.GetPrimaryDeviceName(), "");
 }
 
-TEST(RTControllerInterfaceTest,
-     GetPrimaryDeviceNameFromMakeDefaultTopicConfig) {
+TEST(RTControllerInterfaceTest, GetPrimaryDeviceNameFromMakeDefaultTopicConfig) {
   // Robot-specific bringups can still call MakeDefaultTopicConfig(<device>)
   // explicitly to seed the topic config — verify primary name flows through.
   const auto cfg = StubController::MakeDefaultTopicConfig("custom_robot");
@@ -214,16 +214,13 @@ TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigSubscribeRoles) {
   EXPECT_TRUE(cfg.HasGroup("my_robot"));
   EXPECT_TRUE(cfg.HasSubscribeRole("my_robot", rtc::SubscribeRole::kState));
   EXPECT_TRUE(cfg.HasSubscribeRole("my_robot", rtc::SubscribeRole::kTarget));
-  EXPECT_FALSE(
-      cfg.HasSubscribeRole("my_robot", rtc::SubscribeRole::kMotorState));
-  EXPECT_FALSE(
-      cfg.HasSubscribeRole("my_robot", rtc::SubscribeRole::kSensorState));
+  EXPECT_FALSE(cfg.HasSubscribeRole("my_robot", rtc::SubscribeRole::kMotorState));
+  EXPECT_FALSE(cfg.HasSubscribeRole("my_robot", rtc::SubscribeRole::kSensorState));
 }
 
 TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigTopicNames) {
   const auto cfg = StubController::MakeDefaultTopicConfig("my_robot");
-  EXPECT_EQ(cfg.GetSubscribeTopicName("my_robot", rtc::SubscribeRole::kState),
-            "/joint_states");
+  EXPECT_EQ(cfg.GetSubscribeTopicName("my_robot", rtc::SubscribeRole::kState), "/joint_states");
   EXPECT_EQ(cfg.GetSubscribeTopicName("my_robot", rtc::SubscribeRole::kTarget),
             "/my_robot/target_joint_positions");
 }
@@ -231,14 +228,11 @@ TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigTopicNames) {
 TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigCapability) {
   const auto cfg = StubController::MakeDefaultTopicConfig("ur5e");
 
-  for (const auto &[name, group] : cfg.groups) {
+  for (const auto& [name, group] : cfg.groups) {
     if (name == "ur5e") {
-      EXPECT_TRUE(rtc::HasCapability(group.capability,
-                                     rtc::DeviceCapability::kJointState));
-      EXPECT_FALSE(rtc::HasCapability(group.capability,
-                                      rtc::DeviceCapability::kMotorState));
-      EXPECT_FALSE(rtc::HasCapability(group.capability,
-                                      rtc::DeviceCapability::kSensorData));
+      EXPECT_TRUE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kJointState));
+      EXPECT_FALSE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kMotorState));
+      EXPECT_FALSE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kSensorData));
       return;
     }
   }
@@ -253,26 +247,26 @@ TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigPublishEntries) {
   bool has_gui_position = false;
   bool has_robot_target = false;
 
-  for (const auto &[name, group] : cfg.groups) {
+  for (const auto& [name, group] : cfg.groups) {
     if (name != "ur5e") {
       continue;
     }
-    for (const auto &pub : group.publish) {
+    for (const auto& pub : group.publish) {
       switch (pub.role) {
-      case rtc::PublishRole::kJointCommand:
-        has_joint_command = true;
-        break;
-      case rtc::PublishRole::kRos2Command:
-        has_ros2_command = true;
-        break;
-      case rtc::PublishRole::kGuiPosition:
-        has_gui_position = true;
-        break;
-      case rtc::PublishRole::kRobotTarget:
-        has_robot_target = true;
-        break;
-      default:
-        break;
+        case rtc::PublishRole::kJointCommand:
+          has_joint_command = true;
+          break;
+        case rtc::PublishRole::kRos2Command:
+          has_ros2_command = true;
+          break;
+        case rtc::PublishRole::kGuiPosition:
+          has_gui_position = true;
+          break;
+        case rtc::PublishRole::kRobotTarget:
+          has_robot_target = true;
+          break;
+        default:
+          break;
       }
     }
   }
@@ -317,8 +311,7 @@ hand:
   EXPECT_TRUE(cfg.HasSubscribeRole("hand", rtc::SubscribeRole::kMotorState));
   EXPECT_TRUE(cfg.HasSubscribeRole("hand", rtc::SubscribeRole::kSensorState));
 
-  EXPECT_EQ(cfg.GetSubscribeTopicName("ur5e", rtc::SubscribeRole::kState),
-            "/joint_states");
+  EXPECT_EQ(cfg.GetSubscribeTopicName("ur5e", rtc::SubscribeRole::kState), "/joint_states");
   EXPECT_EQ(cfg.GetSubscribeTopicName("hand", rtc::SubscribeRole::kMotorState),
             "/hand/motor_states");
 }
@@ -338,16 +331,12 @@ hand:
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
 
-  for (const auto &[name, group] : cfg.groups) {
+  for (const auto& [name, group] : cfg.groups) {
     if (name == "hand") {
-      EXPECT_TRUE(rtc::HasCapability(group.capability,
-                                     rtc::DeviceCapability::kJointState));
-      EXPECT_TRUE(rtc::HasCapability(group.capability,
-                                     rtc::DeviceCapability::kMotorState));
-      EXPECT_TRUE(rtc::HasCapability(group.capability,
-                                     rtc::DeviceCapability::kSensorData));
-      EXPECT_TRUE(rtc::HasCapability(group.capability,
-                                     rtc::DeviceCapability::kInference));
+      EXPECT_TRUE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kJointState));
+      EXPECT_TRUE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kMotorState));
+      EXPECT_TRUE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kSensorData));
+      EXPECT_TRUE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kInference));
       return;
     }
   }
@@ -362,12 +351,10 @@ robot:
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
 
-  for (const auto &[name, group] : cfg.groups) {
+  for (const auto& [name, group] : cfg.groups) {
     if (name == "robot") {
-      EXPECT_FALSE(rtc::HasCapability(group.capability,
-                                      rtc::DeviceCapability::kJointState));
-      EXPECT_FALSE(rtc::HasCapability(group.capability,
-                                      rtc::DeviceCapability::kMotorState));
+      EXPECT_FALSE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kJointState));
+      EXPECT_FALSE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kMotorState));
       return;
     }
   }
@@ -410,11 +397,11 @@ robot:
   bool has_joint_cmd = false;
   bool has_robot_target = false;
 
-  for (const auto &[name, group] : cfg.groups) {
+  for (const auto& [name, group] : cfg.groups) {
     if (name != "robot") {
       continue;
     }
-    for (const auto &pub : group.publish) {
+    for (const auto& pub : group.publish) {
       if (pub.role == rtc::PublishRole::kRos2Command) {
         has_ros2_cmd = true;
       }
@@ -488,7 +475,7 @@ robot:
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
 
-  for (const auto &[name, group] : cfg.groups) {
+  for (const auto& [name, group] : cfg.groups) {
     if (name == "robot") {
       ASSERT_EQ(group.publish.size(), std::size_t{1});
       EXPECT_EQ(group.publish[0].data_size, 30);
@@ -533,7 +520,7 @@ robot:
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
 
-  for (const auto &[name, group] : cfg.groups) {
+  for (const auto& [name, group] : cfg.groups) {
     if (name == "robot") {
       EXPECT_EQ(group.publish.size(), std::size_t{7});
       return;
@@ -644,8 +631,7 @@ TEST(TopicConfigTest, GetSubscribeTopicNameReturnsFirst) {
   rtc::TopicConfig cfg;
   cfg["robot"].subscribe.push_back({"/first", rtc::SubscribeRole::kState});
   cfg["robot"].subscribe.push_back({"/second", rtc::SubscribeRole::kState});
-  EXPECT_EQ(cfg.GetSubscribeTopicName("robot", rtc::SubscribeRole::kState),
-            "/first");
+  EXPECT_EQ(cfg.GetSubscribeTopicName("robot", rtc::SubscribeRole::kState), "/first");
 }
 
 TEST(TopicConfigTest, InsertionOrderPreserved) {
@@ -660,4 +646,4 @@ TEST(TopicConfigTest, InsertionOrderPreserved) {
   EXPECT_EQ(cfg.groups[2].first, "bravo");
 }
 
-} // namespace
+}  // namespace

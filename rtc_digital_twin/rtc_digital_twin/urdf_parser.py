@@ -34,10 +34,11 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-logger = logging.getLogger('rtc_digital_twin.urdf_parser')
+logger = logging.getLogger("rtc_digital_twin.urdf_parser")
 
 
 # ── Data classes ─────────────────────────────────────────────────────────────
+
 
 @dataclass(frozen=True)
 class MimicParams:
@@ -88,7 +89,7 @@ class LinkNode:
     """
 
     link_name: str
-    parent_joint_name: str = ''
+    parent_joint_name: str = ""
     parent_index: int = -1
     child_indices: list[int] = field(default_factory=list)
 
@@ -117,15 +118,20 @@ class JointClassification:
     @property
     def passive_names(self) -> set[str]:
         """Joint names that are passively driven (mimic or closed-chain)."""
-        return set(self.passive_mimic.keys()) | set(
-            self.passive_closed_chain.keys())
+        return set(self.passive_mimic.keys()) | set(self.passive_closed_chain.keys())
 
 
 # ── URDF Parser ──────────────────────────────────────────────────────────────
 
-_MOVABLE_TYPES = frozenset({
-    'revolute', 'continuous', 'prismatic', 'floating', 'planar',
-})
+_MOVABLE_TYPES = frozenset(
+    {
+        "revolute",
+        "continuous",
+        "prismatic",
+        "floating",
+        "planar",
+    }
+)
 
 
 class UrdfParser:
@@ -141,7 +147,7 @@ class UrdfParser:
     5. Joint classification (fixed / mimic / closed-chain / active)
     """
 
-    def __init__(self, *, urdf_path: str = '', urdf_xml: str = '') -> None:
+    def __init__(self, *, urdf_path: str = "", urdf_xml: str = "") -> None:
         """Create a parser from a file path or XML string.
 
         Exactly one of *urdf_path* or *urdf_xml* must be non-empty.
@@ -156,29 +162,26 @@ class UrdfParser:
             RuntimeError: If xacro processing or XML parsing fails.
         """
         if bool(urdf_path) == bool(urdf_xml):
-            raise ValueError(
-                'Provide exactly one of urdf_path or urdf_xml')
+            raise ValueError("Provide exactly one of urdf_path or urdf_xml")
 
         if urdf_path:
             urdf_path = os.path.abspath(urdf_path)
             if not os.path.isfile(urdf_path):
-                logger.error('URDF file not found: %s', urdf_path)
-                raise FileNotFoundError(
-                    f'URDF file not found: {urdf_path}')
-            if urdf_path.endswith('.xacro'):
-                logger.debug('Processing xacro: %s', urdf_path)
-                urdf_xml = subprocess.check_output(
-                    ['xacro', urdf_path], text=True)
+                logger.error("URDF file not found: %s", urdf_path)
+                raise FileNotFoundError(f"URDF file not found: {urdf_path}")
+            if urdf_path.endswith(".xacro"):
+                logger.debug("Processing xacro: %s", urdf_path)
+                urdf_xml = subprocess.check_output(["xacro", urdf_path], text=True)
             else:
-                logger.debug('Loading URDF: %s', urdf_path)
-                with open(urdf_path, 'r') as f:
+                logger.debug("Loading URDF: %s", urdf_path)
+                with open(urdf_path, "r") as f:
                     urdf_xml = f.read()
 
         self._urdf_xml: str = urdf_xml
         self._urdf_path: str = urdf_path
 
         # Populated by _parse()
-        self._robot_name: str = ''
+        self._robot_name: str = ""
         self._link_nodes: list[LinkNode] = []
         self._link_name_to_index: dict[str, int] = {}
         self._joint_meta: dict[str, JointMeta] = {}
@@ -269,7 +272,8 @@ class UrdfParser:
     # ── Computation ──────────────────────────────────────────────────────────
 
     def compute_mimic_positions(
-        self, joint_positions: dict[str, float],
+        self,
+        joint_positions: dict[str, float],
     ) -> dict[str, float]:
         """Compute mimic joint positions from their master joint positions.
 
@@ -286,12 +290,12 @@ class UrdfParser:
                 continue
             master_pos = joint_positions.get(meta.mimic.master_joint)
             if master_pos is not None:
-                result[name] = (
-                    meta.mimic.multiplier * master_pos + meta.mimic.offset)
+                result[name] = meta.mimic.multiplier * master_pos + meta.mimic.offset
         return result
 
     def validate_joints(
-        self, received: set[str],
+        self,
+        received: set[str],
     ) -> tuple[set[str], set[str]]:
         """Compare required (active) joints against received joints.
 
@@ -306,8 +310,11 @@ class UrdfParser:
         missing = required - received
         if missing:
             logger.debug(
-                'Joint validation: %d/%d covered, %d missing',
-                len(covered), len(required), len(missing))
+                "Joint validation: %d/%d covered, %d missing",
+                len(covered),
+                len(required),
+                len(missing),
+            )
         return covered, missing
 
     # ── Internal parsing pipeline ────────────────────────────────────────────
@@ -315,8 +322,8 @@ class UrdfParser:
     def _parse(self) -> None:
         """Run the full parsing pipeline (called once from __init__)."""
         root = ET.fromstring(self._urdf_xml)
-        self._robot_name = root.get('name', '')
-        logger.debug('Parsing URDF: robot_name=%s', self._robot_name)
+        self._robot_name = root.get("name", "")
+        logger.debug("Parsing URDF: robot_name=%s", self._robot_name)
 
         self._collect_links(root)
         self._parse_joints(root)
@@ -325,16 +332,21 @@ class UrdfParser:
 
         c = self._classification
         logger.info(
-            'URDF parsed: %s — %d links, %d joints '
-            '(active=%d, mimic=%d, closed_chain=%d, fixed=%d)',
-            self._robot_name, len(self._link_nodes), len(self._joint_meta),
-            len(c.active), len(c.passive_mimic),
-            len(c.passive_closed_chain), len(c.fixed))
+            "URDF parsed: %s — %d links, %d joints "
+            "(active=%d, mimic=%d, closed_chain=%d, fixed=%d)",
+            self._robot_name,
+            len(self._link_nodes),
+            len(self._joint_meta),
+            len(c.active),
+            len(c.passive_mimic),
+            len(c.passive_closed_chain),
+            len(c.fixed),
+        )
 
     def _collect_links(self, root: ET.Element) -> None:
         """Step 1: Collect all <link> elements into LinkNode list."""
-        for link_el in root.findall('link'):
-            name = link_el.get('name', '')
+        for link_el in root.findall("link"):
+            name = link_el.get("name", "")
             if not name:
                 continue
             idx = len(self._link_nodes)
@@ -343,24 +355,22 @@ class UrdfParser:
 
     def _parse_joints(self, root: ET.Element) -> None:
         """Step 2: Parse all <joint> elements into JointMeta dict."""
-        for joint_el in root.findall('joint'):
-            jname = joint_el.get('name', '')
-            jtype = joint_el.get('type', '')
+        for joint_el in root.findall("joint"):
+            jname = joint_el.get("name", "")
+            jtype = joint_el.get("type", "")
             if not jname:
                 continue
 
-            parent_el = joint_el.find('parent')
-            child_el = joint_el.find('child')
-            parent_link = (
-                parent_el.get('link', '') if parent_el is not None else '')
-            child_link = (
-                child_el.get('link', '') if child_el is not None else '')
+            parent_el = joint_el.find("parent")
+            child_el = joint_el.find("child")
+            parent_link = parent_el.get("link", "") if parent_el is not None else ""
+            child_link = child_el.get("link", "") if child_el is not None else ""
 
             # Axis (default: Z)
             axis = (0.0, 0.0, 1.0)
-            axis_el = joint_el.find('axis')
+            axis_el = joint_el.find("axis")
             if axis_el is not None:
-                xyz = axis_el.get('xyz', '')
+                xyz = axis_el.get("xyz", "")
                 if xyz:
                     parts = xyz.split()
                     if len(parts) == 3:
@@ -373,21 +383,21 @@ class UrdfParser:
             # Limits
             lower = 0.0
             upper = 0.0
-            limit_el = joint_el.find('limit')
+            limit_el = joint_el.find("limit")
             if limit_el is not None:
-                lower = float(limit_el.get('lower', '0'))
-                upper = float(limit_el.get('upper', '0'))
+                lower = float(limit_el.get("lower", "0"))
+                upper = float(limit_el.get("upper", "0"))
 
             # Mimic
             mimic = None
-            mimic_el = joint_el.find('mimic')
+            mimic_el = joint_el.find("mimic")
             if mimic_el is not None:
-                master = mimic_el.get('joint', '')
+                master = mimic_el.get("joint", "")
                 if master:
                     mimic = MimicParams(
                         master_joint=master,
-                        multiplier=float(mimic_el.get('multiplier', '1.0')),
-                        offset=float(mimic_el.get('offset', '0.0')),
+                        multiplier=float(mimic_el.get("multiplier", "1.0")),
+                        offset=float(mimic_el.get("offset", "0.0")),
                     )
 
             meta = JointMeta(
@@ -442,7 +452,7 @@ class UrdfParser:
         child_link_joints: dict[str, list[int]] = defaultdict(list)
 
         for meta in self._joint_meta.values():
-            if meta.joint_type == 'fixed':
+            if meta.joint_type == "fixed":
                 result.fixed.append(meta.name)
                 continue
 
@@ -457,8 +467,8 @@ class UrdfParser:
             if len(indices) <= 1:
                 continue
             logger.debug(
-                'Closed-chain candidate: link=%s shared by %d joints',
-                child_link, len(indices))
+                "Closed-chain candidate: link=%s shared by %d joints", child_link, len(indices)
+            )
             first_tree = True
             for i in indices:
                 if movable_joints[i].mimic is not None:

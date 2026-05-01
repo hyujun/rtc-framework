@@ -40,9 +40,11 @@ class OnnxEngine : public InferenceEngine {
 
     // Compute buffer sizes
     std::size_t in_size = 1;
-    for (auto d : config.input_shape) in_size *= static_cast<std::size_t>(d);
+    for (auto d : config.input_shape)
+      in_size *= static_cast<std::size_t>(d);
     std::size_t out_size = 1;
-    for (auto d : config.output_shape) out_size *= static_cast<std::size_t>(d);
+    for (auto d : config.output_shape)
+      out_size *= static_cast<std::size_t>(d);
 
     input_sizes_.push_back(in_size);
     output_sizes_.push_back(out_size);
@@ -57,12 +59,12 @@ class OnnxEngine : public InferenceEngine {
 
     auto mem_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 
-    auto input_tensor = Ort::Value::CreateTensor<float>(
-        mem_info, input_buffers_.back().data(), in_size,
-        config.input_shape.data(), config.input_shape.size());
-    auto output_tensor = Ort::Value::CreateTensor<float>(
-        mem_info, output_buffers_.back().data(), out_size,
-        config.output_shape.data(), config.output_shape.size());
+    auto input_tensor =
+        Ort::Value::CreateTensor<float>(mem_info, input_buffers_.back().data(), in_size,
+                                        config.input_shape.data(), config.input_shape.size());
+    auto output_tensor =
+        Ort::Value::CreateTensor<float>(mem_info, output_buffers_.back().data(), out_size,
+                                        config.output_shape.data(), config.output_shape.size());
 
     // Get input/output names
     Ort::AllocatorWithDefaultOptions alloc;
@@ -87,16 +89,16 @@ class OnnxEngine : public InferenceEngine {
     {
       const char* in_names[] = {input_names_.back().c_str()};
       const char* out_names[] = {output_names_.back().c_str()};
-      session.Run(*run_options_,
-                  in_names, &input_tensors_.back(), 1,
-                  out_names, &output_tensors_.back(), 1);
+      session.Run(*run_options_, in_names, &input_tensors_.back(), 1, out_names,
+                  &output_tensors_.back(), 1);
     }
 
     initialized_ = true;
   }
 
   [[nodiscard]] bool Run() noexcept override {
-    if (!initialized_) return false;
+    if (!initialized_)
+      return false;
     try {
       for (std::size_t i = 0; i < sessions_.size(); ++i) {
         io_bindings_[i].SynchronizeInputs();
@@ -111,8 +113,8 @@ class OnnxEngine : public InferenceEngine {
 
   /// Per-model inference via IoBinding (backward compatible).
   [[nodiscard]] bool RunModel(int model_idx) noexcept override {
-    if (!initialized_ || model_idx < 0 ||
-        static_cast<std::size_t>(model_idx) >= sessions_.size()) return false;
+    if (!initialized_ || model_idx < 0 || static_cast<std::size_t>(model_idx) >= sessions_.size())
+      return false;
     try {
       const auto mi = static_cast<std::size_t>(model_idx);
       io_bindings_[mi].SynchronizeInputs();
@@ -127,18 +129,18 @@ class OnnxEngine : public InferenceEngine {
   /// RT-optimized batch run: direct Session::Run bypassing IoBinding overhead.
   /// Pre-allocated RunOptions reused across calls. SynchronizeInputs/Outputs
   /// skipped (CPU-only, no device transfer needed).
-  [[nodiscard]] bool RunModels(const int* model_indices,
-                               int count) noexcept override {
-    if (!initialized_ || count <= 0) return false;
+  [[nodiscard]] bool RunModels(const int* model_indices, int count) noexcept override {
+    if (!initialized_ || count <= 0)
+      return false;
     try {
       for (int i = 0; i < count; ++i) {
         const auto mi = static_cast<std::size_t>(model_indices[i]);
-        if (mi >= sessions_.size()) return false;
-        const char* in_names[]  = {input_names_[mi].c_str()};
+        if (mi >= sessions_.size())
+          return false;
+        const char* in_names[] = {input_names_[mi].c_str()};
         const char* out_names[] = {output_names_[mi].c_str()};
-        sessions_[mi].Run(*run_options_,
-                          in_names, &input_tensors_[mi], 1,
-                          out_names, &output_tensors_[mi], 1);
+        sessions_[mi].Run(*run_options_, in_names, &input_tensors_[mi], 1, out_names,
+                          &output_tensors_[mi], 1);
       }
       return true;
     } catch (...) {
@@ -163,6 +165,7 @@ class OnnxEngine : public InferenceEngine {
   }
 
   [[nodiscard]] bool is_initialized() const noexcept override { return initialized_; }
+
   [[nodiscard]] int num_models() const noexcept override {
     return static_cast<int>(sessions_.size());
   }
@@ -190,12 +193,19 @@ class OnnxEngine : public InferenceEngine {
 class OnnxEngine : public InferenceEngine {
  public:
   void Init(const ModelConfig&) override { /* no-op */ }
+
   [[nodiscard]] bool Run() noexcept override { return false; }
+
   float* input_buffer(int = 0) noexcept override { return nullptr; }
+
   const float* output_buffer(int = 0) const noexcept override { return nullptr; }
+
   [[nodiscard]] std::size_t input_size(int = 0) const noexcept override { return 0; }
+
   [[nodiscard]] std::size_t output_size(int = 0) const noexcept override { return 0; }
+
   [[nodiscard]] bool is_initialized() const noexcept override { return false; }
+
   [[nodiscard]] int num_models() const noexcept override { return 0; }
 };
 

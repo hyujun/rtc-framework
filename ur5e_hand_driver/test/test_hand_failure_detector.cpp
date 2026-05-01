@@ -3,9 +3,9 @@
 // Tier 2: Uses fake_hand HandController. Requires rclcpp for logging.
 // Tests run the detector's 50Hz thread and verify failure detection.
 
-#include <gtest/gtest.h>
-
 #include "ur5e_hand_driver/hand_failure_detector.hpp"
+
+#include <gtest/gtest.h>
 
 #include <array>
 #include <atomic>
@@ -22,9 +22,8 @@ using namespace std::chrono_literals;
 class HandFailureDetectorTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    controller_ = std::make_unique<HandController>(
-        "127.0.0.1", 55151, kUdpRecvConfig, 10.0,
-        false, 1, 4, true);  // fake_hand=true
+    controller_ = std::make_unique<HandController>("127.0.0.1", 55151, kUdpRecvConfig, 10.0, false,
+                                                   1, 4, true);  // fake_hand=true
     ASSERT_TRUE(controller_->Start());
   }
 
@@ -46,8 +45,7 @@ class HandFailureDetectorTest : public ::testing::Test {
 
 // ── Motor all-zero detection ────────────────────────────────────────────────
 
-TEST_F(HandFailureDetectorTest, MotorAllZero_TriggersFailure)
-{
+TEST_F(HandFailureDetectorTest, MotorAllZero_TriggersFailure) {
   HandFailureDetectorConfig cfg{};
   cfg.failure_threshold = 3;
   cfg.check_motor = true;
@@ -58,9 +56,7 @@ TEST_F(HandFailureDetectorTest, MotorAllZero_TriggersFailure)
   HandFailureDetector detector(*controller_, cfg);
 
   std::string failure_reason;
-  detector.SetFailureCallback([&](const std::string& reason) {
-    failure_reason = reason;
-  });
+  detector.SetFailureCallback([&](const std::string& reason) { failure_reason = reason; });
 
   // Feed zero commands
   std::array<float, kNumHandMotors> zero_cmd{};
@@ -77,8 +73,7 @@ TEST_F(HandFailureDetectorTest, MotorAllZero_TriggersFailure)
   EXPECT_NE(failure_reason.find("hand_motor_all_zero"), std::string::npos);
 }
 
-TEST_F(HandFailureDetectorTest, MotorNonZero_NoAllZeroFailure)
-{
+TEST_F(HandFailureDetectorTest, MotorNonZero_NoAllZeroFailure) {
   HandFailureDetectorConfig cfg{};
   cfg.failure_threshold = 3;
   cfg.check_motor = true;
@@ -89,9 +84,7 @@ TEST_F(HandFailureDetectorTest, MotorNonZero_NoAllZeroFailure)
   HandFailureDetector detector(*controller_, cfg);
 
   std::string failure_reason;
-  detector.SetFailureCallback([&](const std::string& reason) {
-    failure_reason = reason;
-  });
+  detector.SetFailureCallback([&](const std::string& reason) { failure_reason = reason; });
 
   // Feed varying non-zero commands
   for (int i = 0; i < 10; ++i) {
@@ -113,8 +106,7 @@ TEST_F(HandFailureDetectorTest, MotorNonZero_NoAllZeroFailure)
 
 // ── Motor duplicate detection ───────────────────────────────────────────────
 
-TEST_F(HandFailureDetectorTest, MotorDuplicate_TriggersFailure)
-{
+TEST_F(HandFailureDetectorTest, MotorDuplicate_TriggersFailure) {
   HandFailureDetectorConfig cfg{};
   cfg.failure_threshold = 3;
   cfg.check_motor = true;
@@ -125,9 +117,7 @@ TEST_F(HandFailureDetectorTest, MotorDuplicate_TriggersFailure)
   HandFailureDetector detector(*controller_, cfg);
 
   std::string failure_reason;
-  detector.SetFailureCallback([&](const std::string& reason) {
-    failure_reason = reason;
-  });
+  detector.SetFailureCallback([&](const std::string& reason) { failure_reason = reason; });
 
   // Feed same non-zero command many times (fake_hand echoes back)
   std::array<float, kNumHandMotors> same_cmd{};
@@ -146,8 +136,7 @@ TEST_F(HandFailureDetectorTest, MotorDuplicate_TriggersFailure)
 
 // ── Sensor all-zero detection ───────────────────────────────────────────────
 
-TEST_F(HandFailureDetectorTest, SensorAllZero_TriggersFailure)
-{
+TEST_F(HandFailureDetectorTest, SensorAllZero_TriggersFailure) {
   HandFailureDetectorConfig cfg{};
   cfg.failure_threshold = 3;
   cfg.check_motor = false;
@@ -158,9 +147,7 @@ TEST_F(HandFailureDetectorTest, SensorAllZero_TriggersFailure)
   HandFailureDetector detector(*controller_, cfg);
 
   std::string failure_reason;
-  detector.SetFailureCallback([&](const std::string& reason) {
-    failure_reason = reason;
-  });
+  detector.SetFailureCallback([&](const std::string& reason) { failure_reason = reason; });
 
   // Fake mode echoes sensor_data as all-zeros
   std::array<float, kNumHandMotors> cmd{};
@@ -177,8 +164,7 @@ TEST_F(HandFailureDetectorTest, SensorAllZero_TriggersFailure)
 
 // ── Config: disable checks ──────────────────────────────────────────────────
 
-TEST_F(HandFailureDetectorTest, DisableMotorCheck_NoFailureOnZero)
-{
+TEST_F(HandFailureDetectorTest, DisableMotorCheck_NoFailureOnZero) {
   HandFailureDetectorConfig cfg{};
   cfg.failure_threshold = 3;
   cfg.check_motor = false;
@@ -189,9 +175,7 @@ TEST_F(HandFailureDetectorTest, DisableMotorCheck_NoFailureOnZero)
   HandFailureDetector detector(*controller_, cfg);
 
   bool callback_called = false;
-  detector.SetFailureCallback([&](const std::string& /*reason*/) {
-    callback_called = true;
-  });
+  detector.SetFailureCallback([&](const std::string& /*reason*/) { callback_called = true; });
 
   std::array<float, kNumHandMotors> zero_cmd{};
   FeedCommands(zero_cmd, 10);
@@ -204,8 +188,7 @@ TEST_F(HandFailureDetectorTest, DisableMotorCheck_NoFailureOnZero)
   EXPECT_FALSE(callback_called);
 }
 
-TEST_F(HandFailureDetectorTest, CustomThreshold_HighThresholdNoFailure)
-{
+TEST_F(HandFailureDetectorTest, CustomThreshold_HighThresholdNoFailure) {
   HandFailureDetectorConfig cfg{};
   cfg.failure_threshold = 1000;  // very high threshold
   cfg.check_motor = true;
@@ -216,9 +199,7 @@ TEST_F(HandFailureDetectorTest, CustomThreshold_HighThresholdNoFailure)
   HandFailureDetector detector(*controller_, cfg);
 
   bool callback_called = false;
-  detector.SetFailureCallback([&](const std::string& /*reason*/) {
-    callback_called = true;
-  });
+  detector.SetFailureCallback([&](const std::string& /*reason*/) { callback_called = true; });
 
   std::array<float, kNumHandMotors> zero_cmd{};
   FeedCommands(zero_cmd, 5);
@@ -234,8 +215,7 @@ TEST_F(HandFailureDetectorTest, CustomThreshold_HighThresholdNoFailure)
 
 // ── Idempotent failure callback ─────────────────────────────────────────────
 
-TEST_F(HandFailureDetectorTest, FailureCallbackOnceOnly)
-{
+TEST_F(HandFailureDetectorTest, FailureCallbackOnceOnly) {
   HandFailureDetectorConfig cfg{};
   cfg.failure_threshold = 2;
   cfg.check_motor = true;
@@ -246,9 +226,7 @@ TEST_F(HandFailureDetectorTest, FailureCallbackOnceOnly)
   HandFailureDetector detector(*controller_, cfg);
 
   int callback_count = 0;
-  detector.SetFailureCallback([&](const std::string& /*reason*/) {
-    ++callback_count;
-  });
+  detector.SetFailureCallback([&](const std::string& /*reason*/) { ++callback_count; });
 
   std::array<float, kNumHandMotors> zero_cmd{};
   FeedCommands(zero_cmd, 20);
@@ -263,8 +241,7 @@ TEST_F(HandFailureDetectorTest, FailureCallbackOnceOnly)
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 
-TEST_F(HandFailureDetectorTest, StartStop_Clean)
-{
+TEST_F(HandFailureDetectorTest, StartStop_Clean) {
   HandFailureDetectorConfig cfg{};
   HandFailureDetector detector(*controller_, cfg);
 
@@ -274,15 +251,13 @@ TEST_F(HandFailureDetectorTest, StartStop_Clean)
   EXPECT_FALSE(detector.failed());
 }
 
-TEST_F(HandFailureDetectorTest, StopWithoutStart_Safe)
-{
+TEST_F(HandFailureDetectorTest, StopWithoutStart_Safe) {
   HandFailureDetectorConfig cfg{};
   HandFailureDetector detector(*controller_, cfg);
   detector.Stop();  // Should not crash
 }
 
-TEST_F(HandFailureDetectorTest, DoubleStart_Ignored)
-{
+TEST_F(HandFailureDetectorTest, DoubleStart_Ignored) {
   HandFailureDetectorConfig cfg{};
   cfg.check_motor = false;
   cfg.check_sensor = false;
@@ -298,8 +273,7 @@ TEST_F(HandFailureDetectorTest, DoubleStart_Ignored)
 
 // ── Link health (fake_hand always has 0 failures) ───────────────────────────
 
-TEST_F(HandFailureDetectorTest, LinkCheck_FakeHandNoFailure)
-{
+TEST_F(HandFailureDetectorTest, LinkCheck_FakeHandNoFailure) {
   HandFailureDetectorConfig cfg{};
   cfg.check_motor = false;
   cfg.check_sensor = false;
@@ -310,9 +284,7 @@ TEST_F(HandFailureDetectorTest, LinkCheck_FakeHandNoFailure)
   HandFailureDetector detector(*controller_, cfg);
 
   bool callback_called = false;
-  detector.SetFailureCallback([&](const std::string& /*reason*/) {
-    callback_called = true;
-  });
+  detector.SetFailureCallback([&](const std::string& /*reason*/) { callback_called = true; });
 
   // Feed some commands so there are active cycles
   std::array<float, kNumHandMotors> cmd{};

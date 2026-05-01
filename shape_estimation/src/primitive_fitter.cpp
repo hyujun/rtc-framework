@@ -1,11 +1,12 @@
 #include "shape_estimation/primitive_fitter.hpp"
+
 #include "shape_estimation/shape_logging.hpp"
+
+#include <rclcpp/logging.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
-
-#include <rclcpp/logging.hpp>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -18,13 +19,14 @@
 namespace shape_estimation {
 
 namespace {
-auto logger() { return ::rtc::shape::logging::FitLogger(); }
+auto logger() {
+  return ::rtc::shape::logging::FitLogger();
+}
 }  // namespace
 
 PrimitiveFitter::PrimitiveFitter() : PrimitiveFitter(Config{}) {}
 
-PrimitiveFitter::PrimitiveFitter(const Config& config)
-    : config_(config) {}
+PrimitiveFitter::PrimitiveFitter(const Config& config) : config_(config) {}
 
 // ── 유틸: centroid 계산 ──────────────────────────────────────────────────────
 
@@ -38,9 +40,8 @@ static Eigen::Vector3d ComputeCentroid(const std::vector<PointWithNormal>& point
 
 // ── 유틸: 3x3 공분산 행렬 ────────────────────────────────────────────────────
 
-static Eigen::Matrix3d ComputeCovariance(
-    const std::vector<PointWithNormal>& points,
-    const Eigen::Vector3d& centroid) {
+static Eigen::Matrix3d ComputeCovariance(const std::vector<PointWithNormal>& points,
+                                         const Eigen::Vector3d& centroid) {
   Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
   for (const auto& p : points) {
     const Eigen::Vector3d d = p.position - centroid;
@@ -53,8 +54,7 @@ static Eigen::Matrix3d ComputeCovariance(
 // 대수적 방법: Ax + By + Cz + D = x² + y² + z² 선형화
 // Normal Equation: (A^T A) x = A^T b → 4×4 시스템 직접 풀기 (SVD 대비 ~10배 빠름)
 
-ShapeEstimate PrimitiveFitter::FitSphere(
-    const std::vector<PointWithNormal>& points) const {
+ShapeEstimate PrimitiveFitter::FitSphere(const std::vector<PointWithNormal>& points) const {
   ShapeEstimate result;
   result.type = ShapeType::kSphere;
 
@@ -62,8 +62,7 @@ ShapeEstimate PrimitiveFitter::FitSphere(
   if (n < config_.min_points_sphere) {
     result.type = ShapeType::kUnknown;
     result.confidence = 0.0;
-    RCLCPP_DEBUG(logger(), "sphere: not enough points (%d < %d)",
-                 n, config_.min_points_sphere);
+    RCLCPP_DEBUG(logger(), "sphere: not enough points (%d < %d)", n, config_.min_points_sphere);
     return result;
   }
 
@@ -105,8 +104,8 @@ ShapeEstimate PrimitiveFitter::FitSphere(
   RCLCPP_DEBUG(logger(),
                "sphere: center=[%.3f, %.3f, %.3f], r=%.4f, "
                "RMS=%.4f, confidence=%.2f, n=%d",
-               result.center.x(), result.center.y(), result.center.z(),
-               result.radius, rms, result.confidence, n);
+               result.center.x(), result.center.y(), result.center.z(), result.radius, rms,
+               result.confidence, n);
 
   return result;
 }
@@ -114,8 +113,7 @@ ShapeEstimate PrimitiveFitter::FitSphere(
 // ── 실린더 피팅 ──────────────────────────────────────────────────────────────
 // 공용 인터페이스: centroid/covariance/eigendecomposition 자체 계산
 
-ShapeEstimate PrimitiveFitter::FitCylinder(
-    const std::vector<PointWithNormal>& points) const {
+ShapeEstimate PrimitiveFitter::FitCylinder(const std::vector<PointWithNormal>& points) const {
   const auto n = static_cast<int>(points.size());
   if (n < config_.min_points_cylinder) {
     ShapeEstimate result;
@@ -129,11 +127,10 @@ ShapeEstimate PrimitiveFitter::FitCylinder(
   return FitCylinderImpl(points, centroid, eig.eigenvalues(), eig.eigenvectors());
 }
 
-ShapeEstimate PrimitiveFitter::FitCylinderImpl(
-    const std::vector<PointWithNormal>& points,
-    const Eigen::Vector3d& centroid,
-    const Eigen::Vector3d& eigenvalues,
-    const Eigen::Matrix3d& eigenvectors) const {
+ShapeEstimate PrimitiveFitter::FitCylinderImpl(const std::vector<PointWithNormal>& points,
+                                               const Eigen::Vector3d& centroid,
+                                               const Eigen::Vector3d& eigenvalues,
+                                               const Eigen::Matrix3d& eigenvectors) const {
   ShapeEstimate result;
   result.type = ShapeType::kCylinder;
 
@@ -141,8 +138,7 @@ ShapeEstimate PrimitiveFitter::FitCylinderImpl(
   if (n < config_.min_points_cylinder) {
     result.type = ShapeType::kUnknown;
     result.confidence = 0.0;
-    RCLCPP_DEBUG(logger(), "cylinder: not enough points (%d < %d)",
-                 n, config_.min_points_cylinder);
+    RCLCPP_DEBUG(logger(), "cylinder: not enough points (%d < %d)", n, config_.min_points_cylinder);
     return result;
   }
 
@@ -204,16 +200,14 @@ ShapeEstimate PrimitiveFitter::FitCylinderImpl(
   RCLCPP_DEBUG(logger(),
                "cylinder: r=%.4f, axis=[%.3f, %.3f, %.3f], "
                "RMS=%.4f, confidence=%.2f, n=%d",
-               result.radius, axis.x(), axis.y(), axis.z(),
-               rms, result.confidence, n);
+               result.radius, axis.x(), axis.y(), axis.z(), rms, result.confidence, n);
 
   return result;
 }
 
 // ── 평면 피팅 ────────────────────────────────────────────────────────────────
 
-ShapeEstimate PrimitiveFitter::FitPlane(
-    const std::vector<PointWithNormal>& points) const {
+ShapeEstimate PrimitiveFitter::FitPlane(const std::vector<PointWithNormal>& points) const {
   const auto n = static_cast<int>(points.size());
   if (n < config_.min_points_plane) {
     ShapeEstimate result;
@@ -227,11 +221,10 @@ ShapeEstimate PrimitiveFitter::FitPlane(
   return FitPlaneImpl(points, centroid, eig.eigenvalues(), eig.eigenvectors());
 }
 
-ShapeEstimate PrimitiveFitter::FitPlaneImpl(
-    const std::vector<PointWithNormal>& points,
-    const Eigen::Vector3d& centroid,
-    const Eigen::Vector3d& eigenvalues,
-    const Eigen::Matrix3d& eigenvectors) const {
+ShapeEstimate PrimitiveFitter::FitPlaneImpl(const std::vector<PointWithNormal>& points,
+                                            const Eigen::Vector3d& centroid,
+                                            const Eigen::Vector3d& eigenvalues,
+                                            const Eigen::Matrix3d& eigenvectors) const {
   ShapeEstimate result;
   result.type = ShapeType::kPlane;
 
@@ -239,8 +232,7 @@ ShapeEstimate PrimitiveFitter::FitPlaneImpl(
   if (n < config_.min_points_plane) {
     result.type = ShapeType::kUnknown;
     result.confidence = 0.0;
-    RCLCPP_DEBUG(logger(), "plane: not enough points (%d < %d)",
-                 n, config_.min_points_plane);
+    RCLCPP_DEBUG(logger(), "plane: not enough points (%d < %d)", n, config_.min_points_plane);
     return result;
   }
 
@@ -282,16 +274,14 @@ ShapeEstimate PrimitiveFitter::FitPlaneImpl(
   RCLCPP_DEBUG(logger(),
                "plane: normal=[%.3f, %.3f, %.3f], RMS=%.4f, "
                "normal_consistency=%.2f, confidence=%.2f, n=%d",
-               normal.x(), normal.y(), normal.z(),
-               rms, normal_consistency, result.confidence, n);
+               normal.x(), normal.y(), normal.z(), rms, normal_consistency, result.confidence, n);
 
   return result;
 }
 
 // ── 박스 피팅 ────────────────────────────────────────────────────────────────
 
-ShapeEstimate PrimitiveFitter::FitBox(
-    const std::vector<PointWithNormal>& points) const {
+ShapeEstimate PrimitiveFitter::FitBox(const std::vector<PointWithNormal>& points) const {
   const auto n = static_cast<int>(points.size());
   if (n < config_.min_points_box) {
     ShapeEstimate result;
@@ -305,10 +295,9 @@ ShapeEstimate PrimitiveFitter::FitBox(
   return FitBoxImpl(points, centroid, eig.eigenvectors());
 }
 
-ShapeEstimate PrimitiveFitter::FitBoxImpl(
-    const std::vector<PointWithNormal>& points,
-    const Eigen::Vector3d& centroid,
-    const Eigen::Matrix3d& axes) const {
+ShapeEstimate PrimitiveFitter::FitBoxImpl(const std::vector<PointWithNormal>& points,
+                                          const Eigen::Vector3d& centroid,
+                                          const Eigen::Matrix3d& axes) const {
   ShapeEstimate result;
   result.type = ShapeType::kBox;
 
@@ -316,8 +305,7 @@ ShapeEstimate PrimitiveFitter::FitBoxImpl(
   if (n < config_.min_points_box) {
     result.type = ShapeType::kUnknown;
     result.confidence = 0.0;
-    RCLCPP_DEBUG(logger(), "box: not enough points (%d < %d)",
-                 n, config_.min_points_box);
+    RCLCPP_DEBUG(logger(), "box: not enough points (%d < %d)", n, config_.min_points_box);
     return result;
   }
 
@@ -359,8 +347,8 @@ ShapeEstimate PrimitiveFitter::FitBoxImpl(
   RCLCPP_DEBUG(logger(),
                "box: dims=[%.4f, %.4f, %.4f], "
                "RMS=%.4f, confidence=%.2f, n=%d",
-               result.dimensions.x(), result.dimensions.y(), result.dimensions.z(),
-               rms, result.confidence, n);
+               result.dimensions.x(), result.dimensions.y(), result.dimensions.z(), rms,
+               result.confidence, n);
 
   return result;
 }
@@ -369,8 +357,7 @@ ShapeEstimate PrimitiveFitter::FitBoxImpl(
 // 모든 primitive 피팅 후 BIC 기반 모델 선택
 // BIC = n*log(RSS/n) + k*log(n), k = 파라미터 수
 
-ShapeEstimate PrimitiveFitter::FitBestPrimitive(
-    const std::vector<PointWithNormal>& points) const {
+ShapeEstimate PrimitiveFitter::FitBestPrimitive(const std::vector<PointWithNormal>& points) const {
   if (points.empty()) {
     ShapeEstimate result;
     result.type = ShapeType::kUnknown;
@@ -405,24 +392,21 @@ ShapeEstimate PrimitiveFitter::FitBestPrimitive(
       est.type != ShapeType::kUnknown) {
     candidates.push_back({est, 4});  // center(3) + normal(3) - 1 constraint
   }
-  if (auto est = FitBoxImpl(points, centroid, eigenvectors);
-      est.type != ShapeType::kUnknown) {
+  if (auto est = FitBoxImpl(points, centroid, eigenvectors); est.type != ShapeType::kUnknown) {
     candidates.push_back({est, 9});  // center(3) + axis(3) + dims(3)
   }
 
   if (candidates.empty()) {
     ShapeEstimate result;
     result.type = ShapeType::kUnknown;
-    RCLCPP_WARN(logger(),
-                "FitBestPrimitive: all fits failed (n=%zu) → Unknown",
-                points.size());
+    RCLCPP_WARN(logger(), "FitBestPrimitive: all fits failed (n=%zu) → Unknown", points.size());
     return result;
   }
 
   // confidence 기준으로 최적 선택 (BIC 대신 단순 confidence 우선)
   // 동일 confidence에서는 파라미터 수가 적은 모델 선호
-  auto best = std::max_element(candidates.begin(), candidates.end(),
-      [](const Candidate& a, const Candidate& b) {
+  auto best = std::max_element(
+      candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
         if (std::abs(a.estimate.confidence - b.estimate.confidence) > 0.1) {
           return a.estimate.confidence < b.estimate.confidence;
         }
@@ -432,15 +416,12 @@ ShapeEstimate PrimitiveFitter::FitBestPrimitive(
 
   auto result = best->estimate;
   if (result.confidence < config_.min_confidence) {
-    RCLCPP_WARN(logger(),
-                "FitBestPrimitive: best confidence(%.2f) < min(%.2f) → Unknown",
+    RCLCPP_WARN(logger(), "FitBestPrimitive: best confidence(%.2f) < min(%.2f) → Unknown",
                 result.confidence, config_.min_confidence);
     result.type = ShapeType::kUnknown;
   } else {
-    RCLCPP_DEBUG(logger(),
-                 "FitBestPrimitive: selected=%s, confidence=%.2f, candidates=%zu",
-                 ShapeTypeToString(result.type).data(), result.confidence,
-                 candidates.size());
+    RCLCPP_DEBUG(logger(), "FitBestPrimitive: selected=%s, confidence=%.2f, candidates=%zu",
+                 ShapeTypeToString(result.type).data(), result.confidence, candidates.size());
   }
 
   return result;

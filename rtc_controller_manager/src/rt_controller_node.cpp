@@ -10,7 +10,7 @@
 #include <lifecycle_msgs/msg/state.hpp>
 
 #include <sys/eventfd.h>
-#include <unistd.h> // close
+#include <unistd.h>  // close
 
 using namespace std::chrono_literals;
 namespace urtc = rtc;
@@ -31,11 +31,9 @@ namespace urtc = rtc;
 //
 // Lifecycle design: constructor is intentionally minimal.
 // All resource allocation happens in on_configure / on_activate.
-RtControllerNode::RtControllerNode(const std::string &node_name)
-    : LifecycleNode(
-          node_name,
-          rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(
-              true)) {}
+RtControllerNode::RtControllerNode(const std::string& node_name)
+    : LifecycleNode(node_name,
+                    rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true)) {}
 
 RtControllerNode::~RtControllerNode() {
   // Safety net — idempotent cleanup in case lifecycle callbacks were not
@@ -58,12 +56,9 @@ std::filesystem::path RtControllerNode::ResolveAndSetupSessionDir() {
 // ── CallbackGroup creation
 // ────────────────────────────────────────────────────
 void RtControllerNode::CreateCallbackGroups() {
-  cb_group_sensor_ =
-      create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-  cb_group_log_ =
-      create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-  cb_group_aux_ =
-      create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  cb_group_sensor_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  cb_group_log_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  cb_group_aux_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 }
 
 void RtControllerNode::CreateTimers() {
@@ -71,8 +66,7 @@ void RtControllerNode::CreateTimers() {
   // deferred E-STOP RCLCPP messages. Controller data CSVs are owned by
   // each controller's own ControllerLogSet (Phase C), not by CM.
   static constexpr auto kLogDrainPeriod = 10ms;
-  drain_timer_ = create_wall_timer(
-      kLogDrainPeriod, [this]() { DrainLog(); }, cb_group_log_);
+  drain_timer_ = create_wall_timer(kLogDrainPeriod, [this]() { DrainLog(); }, cb_group_log_);
 }
 
 // ── Lifecycle callbacks ──────────────────────────────────────────────────────
@@ -81,8 +75,8 @@ void RtControllerNode::CreateTimers() {
 //   subscribers, timers, eventfd, pre-allocated messages.
 // Tier 2 (on_activate): RT loop + publish offload thread start.
 
-RtControllerNode::CallbackReturn
-RtControllerNode::on_configure(const rclcpp_lifecycle::State & /*state*/) {
+RtControllerNode::CallbackReturn RtControllerNode::on_configure(
+    const rclcpp_lifecycle::State& /*state*/) {
   RCLCPP_INFO(get_logger(), "Configuring RtControllerNode...");
 
   CreateCallbackGroups();
@@ -96,8 +90,7 @@ RtControllerNode::on_configure(const rclcpp_lifecycle::State & /*state*/) {
   // eventfd for RT→publish thread wakeup (non-blocking to avoid RT stalls)
   publish_eventfd_ = eventfd(0, EFD_NONBLOCK);
   if (publish_eventfd_ < 0) {
-    RCLCPP_WARN(get_logger(),
-                "eventfd() failed: publish thread will use polling fallback");
+    RCLCPP_WARN(get_logger(), "eventfd() failed: publish thread will use polling fallback");
   }
 
   // Per-controller lifecycle state, parallel to controllers_. All start
@@ -105,8 +98,8 @@ RtControllerNode::on_configure(const rclcpp_lifecycle::State & /*state*/) {
   // ActivateController(). std::vector<std::atomic<int>> is non-copyable, so
   // we resize-from-default rather than fill-with-value.
   controller_states_ = std::vector<std::atomic<int>>(controllers_.size());
-  for (auto &s : controller_states_) {
-    s.store(0, std::memory_order_relaxed); // 0 = Inactive
+  for (auto& s : controller_states_) {
+    s.store(0, std::memory_order_relaxed);  // 0 = Inactive
   }
 
   // Publish initial active controller name (transient_local so late
@@ -114,39 +107,36 @@ RtControllerNode::on_configure(const rclcpp_lifecycle::State & /*state*/) {
   // can publish regardless of state.
   {
     std_msgs::msg::String ctrl_name_msg;
-    ctrl_name_msg.data = std::string(
-        controllers_[static_cast<std::size_t>(active_controller_idx_.load(
-                         std::memory_order_acquire))]
-            ->Name());
+    ctrl_name_msg.data =
+        std::string(controllers_[static_cast<std::size_t>(
+                                     active_controller_idx_.load(std::memory_order_acquire))]
+                        ->Name());
     active_ctrl_name_pub_->publish(ctrl_name_msg);
   }
 
-  RCLCPP_INFO(get_logger(), "RtControllerNode configured — %.0f Hz, E-STOP: %s",
-              control_rate_, enable_estop_ ? "ON" : "OFF");
+  RCLCPP_INFO(get_logger(), "RtControllerNode configured — %.0f Hz, E-STOP: %s", control_rate_,
+              enable_estop_ ? "ON" : "OFF");
 
   return CallbackReturn::SUCCESS;
 }
 
-RtControllerNode::CallbackReturn
-RtControllerNode::on_activate(const rclcpp_lifecycle::State &state) {
-  LifecycleNode::on_activate(state); // activates CM-owned LifecyclePublishers
+RtControllerNode::CallbackReturn RtControllerNode::on_activate(
+    const rclcpp_lifecycle::State& state) {
+  LifecycleNode::on_activate(state);  // activates CM-owned LifecyclePublishers
 
   // Activate ONLY the initial controller (single-active invariant, D-A1).
   // Snapshot is empty because the RT loop has not yet received any sensor
   // data; the loop's auto-hold path (rt_loop.cpp) takes over once state
   // arrives. Controller-owned LifecyclePublishers are toggled inside the
   // controller's on_activate (e.g. demo controllers' ActivateOwnedTopics).
-  const int initial_idx =
-      active_controller_idx_.load(std::memory_order_acquire);
+  const int initial_idx = active_controller_idx_.load(std::memory_order_acquire);
   if (initial_idx < 0 || initial_idx >= static_cast<int>(controllers_.size())) {
-    RCLCPP_ERROR(get_logger(),
-                 "on_activate: invalid initial_controller_idx %d (size=%zu)",
+    RCLCPP_ERROR(get_logger(), "on_activate: invalid initial_controller_idx %d (size=%zu)",
                  initial_idx, controllers_.size());
     return CallbackReturn::FAILURE;
   }
   const rtc::ControllerState empty_snapshot{};
-  const auto rc = ActivateController(static_cast<std::size_t>(initial_idx),
-                                     state, empty_snapshot);
+  const auto rc = ActivateController(static_cast<std::size_t>(initial_idx), state, empty_snapshot);
   if (rc != CallbackReturn::SUCCESS) {
     return rc;
   }
@@ -155,17 +145,16 @@ RtControllerNode::on_activate(const rclcpp_lifecycle::State &state) {
   StartRtLoop(cfgs.rt_control);
   StartPublishLoop(cfgs.publish);
 
-  RCLCPP_INFO(
-      get_logger(),
-      "RtControllerNode active — initial controller '%s', RT loop + "
-      "publish offload started",
-      controllers_[static_cast<std::size_t>(initial_idx)]->Name().data());
+  RCLCPP_INFO(get_logger(),
+              "RtControllerNode active — initial controller '%s', RT loop + "
+              "publish offload started",
+              controllers_[static_cast<std::size_t>(initial_idx)]->Name().data());
 
   return CallbackReturn::SUCCESS;
 }
 
-RtControllerNode::CallbackReturn
-RtControllerNode::on_deactivate(const rclcpp_lifecycle::State &state) {
+RtControllerNode::CallbackReturn RtControllerNode::on_deactivate(
+    const rclcpp_lifecycle::State& state) {
   RCLCPP_INFO(get_logger(), "Deactivating RtControllerNode...");
 
   StopRtLoop();
@@ -176,14 +165,14 @@ RtControllerNode::on_deactivate(const rclcpp_lifecycle::State &state) {
   // controllers were already Inactive (single-active invariant).
   const int active_idx = active_controller_idx_.load(std::memory_order_acquire);
   if (active_idx >= 0 && active_idx < static_cast<int>(controllers_.size()) &&
-      controller_states_[static_cast<std::size_t>(active_idx)].load(
-          std::memory_order_acquire) == 1) {
+      controller_states_[static_cast<std::size_t>(active_idx)].load(std::memory_order_acquire) ==
+          1) {
     (void)DeactivateController(static_cast<std::size_t>(active_idx), state);
   }
 
   // Reset all controller states to Inactive so a subsequent on_activate
   // starts from a known-clean baseline.
-  for (auto &s : controller_states_) {
+  for (auto& s : controller_states_) {
     s.store(0, std::memory_order_release);
   }
 
@@ -200,14 +189,14 @@ RtControllerNode::on_deactivate(const rclcpp_lifecycle::State &state) {
   // consecutive_overruns) reset implicitly when StartRtLoop spawns a fresh
   // loop instance on the next on_activate.
 
-  LifecycleNode::on_deactivate(state); // deactivates LifecyclePublishers
+  LifecycleNode::on_deactivate(state);  // deactivates LifecyclePublishers
 
   RCLCPP_INFO(get_logger(), "RtControllerNode deactivated");
   return CallbackReturn::SUCCESS;
 }
 
-RtControllerNode::CallbackReturn
-RtControllerNode::on_cleanup(const rclcpp_lifecycle::State & /*state*/) {
+RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
+    const rclcpp_lifecycle::State& /*state*/) {
   RCLCPP_INFO(get_logger(), "Cleaning up RtControllerNode...");
 
   // Reverse order of on_configure:
@@ -247,9 +236,9 @@ RtControllerNode::on_cleanup(const rclcpp_lifecycle::State & /*state*/) {
   // injected LifecycleNode is reset inside the controller; we then drop our
   // parallel reference.
   {
-    const rclcpp_lifecycle::State inactive_state(
-        lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "inactive");
-    for (auto &ctrl : controllers_) {
+    const rclcpp_lifecycle::State inactive_state(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE,
+                                                 "inactive");
+    for (auto& ctrl : controllers_) {
       if (ctrl) {
         (void)ctrl->on_cleanup(inactive_state);
       }
@@ -276,8 +265,8 @@ RtControllerNode::on_cleanup(const rclcpp_lifecycle::State & /*state*/) {
   return CallbackReturn::SUCCESS;
 }
 
-RtControllerNode::CallbackReturn
-RtControllerNode::on_shutdown(const rclcpp_lifecycle::State &state) {
+RtControllerNode::CallbackReturn RtControllerNode::on_shutdown(
+    const rclcpp_lifecycle::State& state) {
   RCLCPP_INFO(get_logger(), "Shutting down RtControllerNode...");
 
   // on_shutdown can be called from any primary state
@@ -292,8 +281,8 @@ RtControllerNode::on_shutdown(const rclcpp_lifecycle::State &state) {
   return CallbackReturn::SUCCESS;
 }
 
-RtControllerNode::CallbackReturn
-RtControllerNode::on_error(const rclcpp_lifecycle::State & /*state*/) {
+RtControllerNode::CallbackReturn RtControllerNode::on_error(
+    const rclcpp_lifecycle::State& /*state*/) {
   RCLCPP_ERROR(get_logger(), "RtControllerNode error — attempting recovery");
 
   TriggerGlobalEstop("lifecycle_error");
@@ -344,19 +333,17 @@ RtControllerNode::on_error(const rclcpp_lifecycle::State & /*state*/) {
 // (initial-controller-only activation) and shutdown (active-only
 // deactivation) without redundant checks.
 
-rtc::ControllerState
-RtControllerNode::BuildDeviceSnapshot(std::size_t ctrl_idx) const noexcept {
+rtc::ControllerState RtControllerNode::BuildDeviceSnapshot(std::size_t ctrl_idx) const noexcept {
   rtc::ControllerState snapshot{};
   if (ctrl_idx >= controller_topic_configs_.size() ||
       !state_received_.load(std::memory_order_acquire)) {
-    return snapshot; // empty — caller skips hold init
+    return snapshot;  // empty — caller skips hold init
   }
-  const auto &slots = controller_slot_mappings_[ctrl_idx];
+  const auto& slots = controller_slot_mappings_[ctrl_idx];
   std::size_t di = 0;
-  for ([[maybe_unused]] const auto &[gname, ggroup] :
-       controller_topic_configs_[ctrl_idx].groups) {
+  for ([[maybe_unused]] const auto& [gname, ggroup] : controller_topic_configs_[ctrl_idx].groups) {
     const auto slot = static_cast<std::size_t>(slots.slots[di]);
-    auto &dev = snapshot.devices[di];
+    auto& dev = snapshot.devices[di];
     const auto cache = device_states_[slot].Load();
     dev.num_channels = cache.num_channels;
     dev.positions = cache.positions;
@@ -370,10 +357,9 @@ RtControllerNode::BuildDeviceSnapshot(std::size_t ctrl_idx) const noexcept {
   return snapshot;
 }
 
-RtControllerNode::CallbackReturn
-RtControllerNode::ActivateController(std::size_t ctrl_idx,
-                                     const rclcpp_lifecycle::State &prev_state,
-                                     const rtc::ControllerState &snapshot) {
+RtControllerNode::CallbackReturn RtControllerNode::ActivateController(
+    std::size_t ctrl_idx, const rclcpp_lifecycle::State& prev_state,
+    const rtc::ControllerState& snapshot) {
   if (ctrl_idx >= controllers_.size() || !controllers_[ctrl_idx]) {
     return CallbackReturn::FAILURE;
   }
@@ -385,7 +371,7 @@ RtControllerNode::ActivateController(std::size_t ctrl_idx,
 }
 
 RtControllerNode::CallbackReturn RtControllerNode::DeactivateController(
-    std::size_t ctrl_idx, const rclcpp_lifecycle::State &prev_state) {
+    std::size_t ctrl_idx, const rclcpp_lifecycle::State& prev_state) {
   if (ctrl_idx >= controllers_.size() || !controllers_[ctrl_idx]) {
     return CallbackReturn::FAILURE;
   }

@@ -64,8 +64,7 @@ struct MPCSolution {
   /// std::size_t to avoid implicit widening on capacity arithmetic.
   static constexpr std::size_t kRiccatiGainFlatSize =
       static_cast<std::size_t>(kMaxNu) * static_cast<std::size_t>(kMaxNx);
-  std::array<std::array<double, kRiccatiGainFlatSize>, kMaxHorizon>
-      K_riccati{};
+  std::array<std::array<double, kRiccatiGainFlatSize>, kMaxHorizon> K_riccati{};
 
   /// @return true if this solution is safe to consume.
   /// Does not check `converged` because a non-converged but usable warm-start

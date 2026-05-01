@@ -1,8 +1,8 @@
 #ifndef RTC_CONTROLLERS_TRAJECTORY_QUINTIC_SPLINE_TRAJECTORY_HPP_
 #define RTC_CONTROLLERS_TRAJECTORY_QUINTIC_SPLINE_TRAJECTORY_HPP_
 
-#include "rtc_controllers/trajectory/trajectory_utils.hpp"
 #include "rtc_controllers/trajectory/quintic_blend_trajectory.hpp"
+#include "rtc_controllers/trajectory/trajectory_utils.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -12,28 +12,25 @@
 #include <Eigen/Dense>
 #pragma GCC diagnostic pop
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
-#include <algorithm>
 
-namespace rtc
-{
-namespace trajectory
-{
+namespace rtc {
+namespace trajectory {
 
 /// Multi-waypoint quintic spline trajectory with global C4 continuity.
 /// Solves a linear system per DOF to determine internal velocities and accelerations
 /// such that position, velocity, acceleration, jerk, and snap are continuous at
 /// all internal knots. Boundary conditions: natural (vel=0, acc=0) or clamped.
-template<std::size_t DOF>
+template <std::size_t DOF>
 class QuinticSplineTrajectory {
   static_assert(DOF > 0, "QuinticSplineTrajectory: DOF must be at least 1");
 
-public:
+ public:
   using Waypoint = typename QuinticBlendTrajectory<DOF>::Waypoint;
 
-  struct State
-  {
+  struct State {
     std::array<double, DOF> positions{};
     std::array<double, DOF> velocities{};
     std::array<double, DOF> accelerations{};
@@ -42,23 +39,17 @@ public:
   QuinticSplineTrajectory() = default;
 
   /// Natural spline: start/end vel=0, acc=0 (non-RT path).
-  void initialize(
-    const std::array<Waypoint, kMaxWaypoints> & waypoints,
-    std::size_t num_waypoints) noexcept
-  {
+  void initialize(const std::array<Waypoint, kMaxWaypoints>& waypoints,
+                  std::size_t num_waypoints) noexcept {
     std::array<double, DOF> zero{};
     initialize(waypoints, num_waypoints, zero, zero, zero, zero);
   }
 
   /// Clamped spline: user-specified start/end vel and acc (non-RT path).
-  void initialize(
-    const std::array<Waypoint, kMaxWaypoints> & waypoints,
-    std::size_t num_waypoints,
-    const std::array<double, DOF> & start_vel,
-    const std::array<double, DOF> & start_acc,
-    const std::array<double, DOF> & end_vel,
-    const std::array<double, DOF> & end_acc) noexcept
-  {
+  void initialize(const std::array<Waypoint, kMaxWaypoints>& waypoints, std::size_t num_waypoints,
+                  const std::array<double, DOF>& start_vel,
+                  const std::array<double, DOF>& start_acc, const std::array<double, DOF>& end_vel,
+                  const std::array<double, DOF>& end_acc) noexcept {
     if (num_waypoints < 2) {
       num_segments_ = 0;
       duration_ = 0.0;
@@ -82,10 +73,8 @@ public:
     if (n == 2) {
       const double h = waypoints[1].time - waypoints[0].time;
       for (std::size_t j = 0; j < DOF; ++j) {
-        segments_[0][j].compute_coefficients(
-          waypoints[0].positions[j], start_vel[j], start_acc[j],
-          waypoints[1].positions[j], end_vel[j], end_acc[j],
-          h);
+        segments_[0][j].compute_coefficients(waypoints[0].positions[j], start_vel[j], start_acc[j],
+                                             waypoints[1].positions[j], end_vel[j], end_acc[j], h);
       }
       return;
     }
@@ -217,13 +206,13 @@ public:
       const double hk5 = hk4 * hk;
 
       // Position continuity: p_k(h_k) - p_{k+1}(0) = 0
-      A(row, base_k)     = 1.0;
+      A(row, base_k) = 1.0;
       A(row, base_k + 1) = hk;
       A(row, base_k + 2) = hk2;
       A(row, base_k + 3) = hk3;
       A(row, base_k + 4) = hk4;
       A(row, base_k + 5) = hk5;
-      A(row, base_k1)    = -1.0;
+      A(row, base_k1) = -1.0;
       ++row;
 
       // Velocity continuity: p_k'(h_k) - p_{k+1}'(0) = 0
@@ -286,17 +275,13 @@ public:
         const double pf = c0 + c1 * hk + c2 * hk2 + c3 * hk3 + c4 * hk4 + c5 * hk5;
         const double vf = c1 + 2.0 * c2 * hk + 3.0 * c3 * hk2 + 4.0 * c4 * hk3 + 5.0 * c5 * hk4;
         const double af = 2.0 * c2 + 6.0 * c3 * hk + 12.0 * c4 * hk2 + 20.0 * c5 * hk3;
-        segments_[k][j].compute_coefficients(
-          c0, c1, 2.0 * c2,
-          pf, vf, af,
-          hk);
+        segments_[k][j].compute_coefficients(c0, c1, 2.0 * c2, pf, vf, af, hk);
       }
     }
   }
 
   /// Compute trajectory state at given time (RT path).
-  [[nodiscard]] State compute(double time) const noexcept
-  {
+  [[nodiscard]] State compute(double time) const noexcept {
     State state;
 
     if (num_segments_ == 0) {
@@ -329,9 +314,10 @@ public:
   }
 
   [[nodiscard]] double duration() const noexcept { return duration_; }
+
   [[nodiscard]] std::size_t num_segments() const noexcept { return num_segments_; }
 
-private:
+ private:
   std::array<std::array<QuinticPolynomial, DOF>, kMaxWaypoints - 1> segments_{};
   std::array<double, kMaxWaypoints> segment_start_times_{};
   std::array<double, DOF> hold_position_{};

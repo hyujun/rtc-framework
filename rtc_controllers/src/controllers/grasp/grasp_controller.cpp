@@ -9,10 +9,8 @@ namespace rtc::grasp {
 // Init
 // ═══════════════════════════════════════════════════════════════════════════════
 
-void GraspController::Init(
-  const std::array<FingerConfig, kNumGraspFingers>& configs,
-  const GraspParams& params)
-{
+void GraspController::Init(const std::array<FingerConfig, kNumGraspFingers>& configs,
+                           const GraspParams& params) {
   configs_ = configs;
   params_ = params;
   active_target_force_ = params_.f_target;
@@ -29,28 +27,24 @@ void GraspController::Init(
 // Command interface
 // ═══════════════════════════════════════════════════════════════════════════════
 
-void GraspController::CommandGrasp(double target_force) noexcept
-{
+void GraspController::CommandGrasp(double target_force) noexcept {
   if (target_force > 0.0) {
     active_target_force_ = target_force;
   }
   grasp_requested_.store(true, std::memory_order_release);
 }
 
-void GraspController::CommandRelease() noexcept
-{
+void GraspController::CommandRelease() noexcept {
   release_requested_.store(true, std::memory_order_release);
 }
 
-void GraspController::set_target_force(double f) noexcept
-{
+void GraspController::set_target_force(double f) noexcept {
   if (f > 0.0) {
     active_target_force_ = f;
   }
 }
 
-void GraspController::set_params(const GraspParams& params) noexcept
-{
+void GraspController::set_params(const GraspParams& params) noexcept {
   params_ = params;
   // LPF 재계산은 Init에서만 — RT path에서 Init 호출 불가
   // cutoff가 변경되면 다음 Init에서 반영
@@ -60,17 +54,15 @@ void GraspController::set_params(const GraspParams& params) noexcept
 // Update (RT-safe, 매 제어 주기 호출)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-GraspJointCommands GraspController::Update(
-  std::span<const double, kNumGraspFingers> f_raw, double dt) noexcept
-{
+GraspJointCommands GraspController::Update(std::span<const double, kNumGraspFingers> f_raw,
+                                           double dt) noexcept {
   GraspJointCommands output{};
 
   if (!initialized_ || dt <= 0.0) {
     // 미초기화 또는 잘못된 dt — 현재 posture 유지
     for (int f = 0; f < kNumGraspFingers; ++f) {
-      output.q[static_cast<std::size_t>(f)] =
-        InterpolatePosture(configs_[static_cast<std::size_t>(f)],
-                           fingers_[static_cast<std::size_t>(f)].s);
+      output.q[static_cast<std::size_t>(f)] = InterpolatePosture(
+          configs_[static_cast<std::size_t>(f)], fingers_[static_cast<std::size_t>(f)].s);
     }
     return output;
   }
@@ -87,12 +79,24 @@ GraspJointCommands GraspController::Update(
 
   // ── 2. State machine update ─────────────────────────────────────────────
   switch (phase_) {
-    case GraspPhase::kIdle:         UpdateIdle();                break;
-    case GraspPhase::kApproaching:  UpdateApproaching(dt);       break;
-    case GraspPhase::kContact:      UpdateContact(dt);           break;
-    case GraspPhase::kForceControl: UpdateForceControl(dt);      break;
-    case GraspPhase::kHolding:      UpdateHolding(dt);           break;
-    case GraspPhase::kReleasing:    UpdateReleasing(dt);         break;
+    case GraspPhase::kIdle:
+      UpdateIdle();
+      break;
+    case GraspPhase::kApproaching:
+      UpdateApproaching(dt);
+      break;
+    case GraspPhase::kContact:
+      UpdateContact(dt);
+      break;
+    case GraspPhase::kForceControl:
+      UpdateForceControl(dt);
+      break;
+    case GraspPhase::kHolding:
+      UpdateHolding(dt);
+      break;
+    case GraspPhase::kReleasing:
+      UpdateReleasing(dt);
+      break;
   }
 
   // ── 3. Compute joint commands from s ────────────────────────────────────
@@ -108,8 +112,7 @@ GraspJointCommands GraspController::Update(
 // Phase updates
 // ═══════════════════════════════════════════════════════════════════════════════
 
-void GraspController::UpdateIdle() noexcept
-{
+void GraspController::UpdateIdle() noexcept {
   if (grasp_requested_.exchange(false, std::memory_order_acq_rel)) {
     ResetFingers();
     force_filter_.Reset();
@@ -119,8 +122,7 @@ void GraspController::UpdateIdle() noexcept
   release_requested_.store(false, std::memory_order_relaxed);
 }
 
-void GraspController::UpdateApproaching(double dt) noexcept
-{
+void GraspController::UpdateApproaching(double dt) noexcept {
   for (int f = 0; f < kNumGraspFingers; ++f) {
     auto& fs = fingers_[static_cast<std::size_t>(f)];
 
@@ -160,8 +162,7 @@ void GraspController::UpdateApproaching(double dt) noexcept
   }
 }
 
-void GraspController::UpdateContact(double dt) noexcept
-{
+void GraspController::UpdateContact(double dt) noexcept {
   // 안정화 대기
   contact_settle_timer_ += dt;
 
@@ -178,18 +179,17 @@ void GraspController::UpdateContact(double dt) noexcept
   }
 }
 
-void GraspController::UpdateForceControl(double dt) noexcept
-{
+void GraspController::UpdateForceControl(double dt) noexcept {
   bool all_settled = true;
 
   for (int f = 0; f < kNumGraspFingers; ++f) {
     auto& fs = fingers_[static_cast<std::size_t>(f)];
 
-    if (!fs.contact_detected) continue;
+    if (!fs.contact_detected)
+      continue;
 
     // Force reference ramp
-    fs.f_desired = std::min(fs.f_desired + params_.f_ramp_rate * dt,
-                            active_target_force_);
+    fs.f_desired = std::min(fs.f_desired + params_.f_ramp_rate * dt, active_target_force_);
 
     // Adaptive PI → ds
     double ds = ComputeAdaptivePI(f, dt);
@@ -222,18 +222,16 @@ void GraspController::UpdateForceControl(double dt) noexcept
   }
 }
 
-void GraspController::UpdateHolding(double dt) noexcept
-{
+void GraspController::UpdateHolding(double dt) noexcept {
   for (int f = 0; f < kNumGraspFingers; ++f) {
     auto& fs = fingers_[static_cast<std::size_t>(f)];
 
-    if (!fs.contact_detected) continue;
+    if (!fs.contact_detected)
+      continue;
 
     // Gradual force decay toward active_target_force_ after tightening
     if (fs.f_desired > active_target_force_) {
-      fs.f_desired = std::max(
-        fs.f_desired - params_.grip_decay_rate * dt,
-        active_target_force_);
+      fs.f_desired = std::max(fs.f_desired - params_.grip_decay_rate * dt, active_target_force_);
     }
 
     // Force control 유지
@@ -245,12 +243,10 @@ void GraspController::UpdateHolding(double dt) noexcept
     // Force anomaly detection
     if (dt > 0.0) {
       const double df_dt = (fs.f_measured - fs.f_prev) / dt;
-      if (df_dt < -params_.df_slip_threshold ||
-          fs.f_measured < active_target_force_ * 0.5) {
+      if (df_dt < -params_.df_slip_threshold || fs.f_measured < active_target_force_ * 0.5) {
         // Grip tightening
-        fs.f_desired = std::min(
-          fs.f_desired * (1.0 + params_.grip_tightening_ratio),
-          active_target_force_ * params_.f_max_multiplier);
+        fs.f_desired = std::min(fs.f_desired * (1.0 + params_.grip_tightening_ratio),
+                                active_target_force_ * params_.f_max_multiplier);
         fs.integrator_frozen = false;  // 추가 closing 허용
       }
     }
@@ -262,8 +258,7 @@ void GraspController::UpdateHolding(double dt) noexcept
   }
 }
 
-void GraspController::UpdateReleasing(double dt) noexcept
-{
+void GraspController::UpdateReleasing(double dt) noexcept {
   bool all_open = true;
 
   for (int f = 0; f < kNumGraspFingers; ++f) {
@@ -287,9 +282,8 @@ void GraspController::UpdateReleasing(double dt) noexcept
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 
-std::array<double, kDoFPerFinger> GraspController::InterpolatePosture(
-  const FingerConfig& cfg, double s) noexcept
-{
+std::array<double, kDoFPerFinger> GraspController::InterpolatePosture(const FingerConfig& cfg,
+                                                                      double s) noexcept {
   const double sc = std::clamp(s, 0.0, 1.0);
   std::array<double, kDoFPerFinger> q{};
   for (int j = 0; j < kDoFPerFinger; ++j) {
@@ -299,8 +293,7 @@ std::array<double, kDoFPerFinger> GraspController::InterpolatePosture(
   return q;
 }
 
-double GraspController::ComputeAdaptivePI(int finger, double dt) noexcept
-{
+double GraspController::ComputeAdaptivePI(int finger, double dt) noexcept {
   auto& fs = fingers_[static_cast<std::size_t>(finger)];
 
   const double e_f = fs.f_desired - fs.f_measured;
@@ -311,8 +304,7 @@ double GraspController::ComputeAdaptivePI(int finger, double dt) noexcept
   if (std::abs(delta_s) > kDeltaSEpsilon) {
     const double K_inst = delta_f / delta_s;
     if (K_inst > 0.0) {
-      fs.K_contact_est = params_.alpha_ema * fs.K_contact_est
-                       + (1.0 - params_.alpha_ema) * K_inst;
+      fs.K_contact_est = params_.alpha_ema * fs.K_contact_est + (1.0 - params_.alpha_ema) * K_inst;
     }
   }
 
@@ -324,9 +316,8 @@ double GraspController::ComputeAdaptivePI(int finger, double dt) noexcept
   // ── PI with anti-windup ───────────────────────────────────────────────
   if (!fs.integrator_frozen) {
     fs.integral_error += e_f * dt;
-    fs.integral_error = std::clamp(fs.integral_error,
-                                   -params_.integral_clamp,
-                                    params_.integral_clamp);
+    fs.integral_error =
+        std::clamp(fs.integral_error, -params_.integral_clamp, params_.integral_clamp);
   }
 
   double ds = Kp * e_f + Ki * fs.integral_error;
@@ -335,8 +326,7 @@ double GraspController::ComputeAdaptivePI(int finger, double dt) noexcept
   return ds;
 }
 
-void GraspController::ApplyDeformationGuard(int finger, double& ds) noexcept
-{
+void GraspController::ApplyDeformationGuard(int finger, double& ds) noexcept {
   auto& fs = fingers_[static_cast<std::size_t>(finger)];
   const double deformation = fs.s - fs.s_at_contact;
   const double remaining = params_.delta_s_max - deformation;
@@ -357,8 +347,7 @@ void GraspController::ApplyDeformationGuard(int finger, double& ds) noexcept
   }
 }
 
-void GraspController::ResetFingers() noexcept
-{
+void GraspController::ResetFingers() noexcept {
   for (int f = 0; f < kNumGraspFingers; ++f) {
     fingers_[static_cast<std::size_t>(f)] = FingerState{};
   }

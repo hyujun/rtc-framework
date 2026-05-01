@@ -21,16 +21,15 @@ namespace {
 
 // Stub controller with configurable Compute() duration via busy-wait.
 class ProfilerStubController : public rtc::RTControllerInterface {
-public:
+ public:
   ProfilerStubController() = default;
 
-  [[nodiscard]] rtc::ControllerOutput
-  Compute(const rtc::ControllerState &) noexcept override {
+  [[nodiscard]] rtc::ControllerOutput Compute(const rtc::ControllerState&) noexcept override {
     if (busy_wait_us_ > 0.0) {
       const auto t0 = std::chrono::steady_clock::now();
-      while (std::chrono::duration<double, std::micro>(
-                 std::chrono::steady_clock::now() - t0)
-                 .count() < busy_wait_us_) {
+      while (
+          std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() <
+          busy_wait_us_) {
       }
     }
     rtc::ControllerOutput out{};
@@ -39,14 +38,14 @@ public:
   }
 
   void SetDeviceTarget(int, std::span<const double>) noexcept override {}
-  [[nodiscard]] std::string_view Name() const noexcept override {
-    return "ProfilerStub";
-  }
-  void InitializeHoldPosition(const rtc::ControllerState &) noexcept override {}
+
+  [[nodiscard]] std::string_view Name() const noexcept override { return "ProfilerStub"; }
+
+  void InitializeHoldPosition(const rtc::ControllerState&) noexcept override {}
 
   void set_busy_wait_us(double us) noexcept { busy_wait_us_ = us; }
 
-private:
+ private:
   double busy_wait_us_{0.0};
 };
 
@@ -226,7 +225,7 @@ TEST(ControllerTimingProfilerTest, ResetHistogramCleared) {
 
   const auto stats = profiler.GetStats();
   uint64_t total_histogram = 0;
-  for (const auto &bucket : stats.histogram) {
+  for (const auto& bucket : stats.histogram) {
     total_histogram += bucket;
   }
   EXPECT_EQ(total_histogram, uint64_t{0});
@@ -288,7 +287,7 @@ TEST(ControllerTimingProfilerTest, HistogramTotalMatchesCount) {
 
   const auto stats = profiler.GetStats();
   uint64_t total = 0;
-  for (const auto &bucket : stats.histogram) {
+  for (const auto& bucket : stats.histogram) {
     total += bucket;
   }
   EXPECT_EQ(total, stats.count);
@@ -341,13 +340,12 @@ TEST(ControllerTimingProfilerTest, OverflowBucketP99ExceedsBucketEdge) {
   }
 
   const auto stats = profiler.GetStats();
-  constexpr double kOverflowLo =
-      static_cast<double>(rtc::ControllerTimingProfiler::kBuckets) *
-      static_cast<double>(rtc::ControllerTimingProfiler::kBucketWidthUs);
+  constexpr double kOverflowLo = static_cast<double>(rtc::ControllerTimingProfiler::kBuckets) *
+                                 static_cast<double>(rtc::ControllerTimingProfiler::kBucketWidthUs);
   // Must exceed the overflow lower edge (not clipped) …
   EXPECT_GT(stats.p99_us, kOverflowLo);
   // … and must never exceed the observed max.
   EXPECT_LE(stats.p99_us, stats.max_us);
 }
 
-} // namespace
+}  // namespace

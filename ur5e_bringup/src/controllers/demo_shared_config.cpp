@@ -15,11 +15,10 @@ namespace ur5e_bringup {
 
 namespace {
 
-constexpr const char *kSharedYamlRelPath =
-    "/config/controllers/demo_shared.yaml";
-constexpr const char *kSharedYamlRootKey = "demo_shared";
+constexpr const char* kSharedYamlRelPath = "/config/controllers/demo_shared.yaml";
+constexpr const char* kSharedYamlRootKey = "demo_shared";
 
-void ApplyVirtualTcp(const YAML::Node &node, VirtualTcpConfig &vtcp) {
+void ApplyVirtualTcp(const YAML::Node& node, VirtualTcpConfig& vtcp) {
   if (node["virtual_tcp_mode"]) {
     const auto mode_str = node["virtual_tcp_mode"].as<std::string>();
     if (mode_str == "centroid") {
@@ -38,8 +37,7 @@ void ApplyVirtualTcp(const YAML::Node &node, VirtualTcpConfig &vtcp) {
       vtcp.offset[i] = seq[i].as<double>();
     }
   }
-  if (node["virtual_tcp_orientation"] &&
-      node["virtual_tcp_orientation"].IsSequence()) {
+  if (node["virtual_tcp_orientation"] && node["virtual_tcp_orientation"].IsSequence()) {
     const auto seq = node["virtual_tcp_orientation"];
     for (std::size_t i = 0; i < 3 && i < seq.size(); ++i) {
       vtcp.orientation[i] = seq[i].as<double>();
@@ -47,9 +45,9 @@ void ApplyVirtualTcp(const YAML::Node &node, VirtualTcpConfig &vtcp) {
   }
 }
 
-void ApplyForcePiBlock(const YAML::Node &fp, DemoSharedConfig &cfg) {
+void ApplyForcePiBlock(const YAML::Node& fp, DemoSharedConfig& cfg) {
   cfg.has_force_pi_block = true;
-  auto &gp = cfg.force_pi_params;
+  auto& gp = cfg.force_pi_params;
 
   if (fp["Kp_base"])
     gp.Kp_base = fp["Kp_base"].as<double>();
@@ -116,21 +114,15 @@ void ApplyForcePiBlock(const YAML::Node &fp, DemoSharedConfig &cfg) {
       }
       if (fn["q_open"]) {
         const auto seq = fn["q_open"];
-        for (int j = 0;
-             j < rtc::grasp::kDoFPerFinger && j < static_cast<int>(seq.size());
-             ++j) {
-          cfg.force_pi_fingers[static_cast<std::size_t>(i)]
-              .q_open[static_cast<std::size_t>(j)] =
+        for (int j = 0; j < rtc::grasp::kDoFPerFinger && j < static_cast<int>(seq.size()); ++j) {
+          cfg.force_pi_fingers[static_cast<std::size_t>(i)].q_open[static_cast<std::size_t>(j)] =
               seq[j].as<double>() * angle_scale;
         }
       }
       if (fn["q_close"]) {
         const auto seq = fn["q_close"];
-        for (int j = 0;
-             j < rtc::grasp::kDoFPerFinger && j < static_cast<int>(seq.size());
-             ++j) {
-          cfg.force_pi_fingers[static_cast<std::size_t>(i)]
-              .q_close[static_cast<std::size_t>(j)] =
+        for (int j = 0; j < rtc::grasp::kDoFPerFinger && j < static_cast<int>(seq.size()); ++j) {
+          cfg.force_pi_fingers[static_cast<std::size_t>(i)].q_close[static_cast<std::size_t>(j)] =
               seq[j].as<double>() * angle_scale;
         }
       }
@@ -138,9 +130,9 @@ void ApplyForcePiBlock(const YAML::Node &fp, DemoSharedConfig &cfg) {
   }
 }
 
-} // namespace
+}  // namespace
 
-void ApplyDemoSharedConfig(const YAML::Node &node, DemoSharedConfig &cfg) {
+void ApplyDemoSharedConfig(const YAML::Node& node, DemoSharedConfig& cfg) {
   if (!node) {
     return;
   }
@@ -160,8 +152,7 @@ void ApplyDemoSharedConfig(const YAML::Node &node, DemoSharedConfig &cfg) {
     cfg.grasp_controller_type = node["grasp_controller_type"].as<std::string>();
   }
 
-  if (node["hand_finger_joint_map"] &&
-      node["hand_finger_joint_map"].IsSequence()) {
+  if (node["hand_finger_joint_map"] && node["hand_finger_joint_map"].IsSequence()) {
     const auto seq = node["hand_finger_joint_map"];
     const std::size_t n_fingers =
         std::min<std::size_t>(seq.size(), cfg.hand_finger_joint_map.size());
@@ -169,8 +160,8 @@ void ApplyDemoSharedConfig(const YAML::Node &node, DemoSharedConfig &cfg) {
       if (!seq[f].IsSequence()) {
         continue;
       }
-      const std::size_t n_joints = std::min<std::size_t>(
-          seq[f].size(), cfg.hand_finger_joint_map[f].size());
+      const std::size_t n_joints =
+          std::min<std::size_t>(seq[f].size(), cfg.hand_finger_joint_map[f].size());
       for (std::size_t j = 0; j < n_joints; ++j) {
         cfg.hand_finger_joint_map[f][j] = seq[f][j].as<int>();
       }
@@ -191,12 +182,11 @@ void ApplyDemoSharedConfig(const YAML::Node &node, DemoSharedConfig &cfg) {
   }
 }
 
-void LoadDemoSharedYamlFile(DemoSharedConfig &cfg) {
+void LoadDemoSharedYamlFile(DemoSharedConfig& cfg) {
   std::string yaml_path;
   try {
-    yaml_path = ament_index_cpp::get_package_share_directory("ur5e_bringup") +
-                kSharedYamlRelPath;
-  } catch (const std::exception &e) {
+    yaml_path = ament_index_cpp::get_package_share_directory("ur5e_bringup") + kSharedYamlRelPath;
+  } catch (const std::exception& e) {
     RCLCPP_WARN(::ur5e_bringup::logging::SharedConfigLogger(),
                 "demo_shared.yaml: package share dir lookup failed (%s); "
                 "skipping shared defaults",
@@ -207,45 +197,42 @@ void LoadDemoSharedYamlFile(DemoSharedConfig &cfg) {
   try {
     const YAML::Node file_node = YAML::LoadFile(yaml_path);
     ApplyDemoSharedConfig(file_node[kSharedYamlRootKey], cfg);
-  } catch (const YAML::Exception &e) {
-    RCLCPP_WARN(
-        ::ur5e_bringup::logging::SharedConfigLogger(),
-        "demo_shared.yaml: load failed at %s (%s); using built-in defaults",
-        yaml_path.c_str(), e.what());
+  } catch (const YAML::Exception& e) {
+    RCLCPP_WARN(::ur5e_bringup::logging::SharedConfigLogger(),
+                "demo_shared.yaml: load failed at %s (%s); using built-in defaults",
+                yaml_path.c_str(), e.what());
     return;
   }
 
   // Success path: record which knobs actually took effect. This is the
   // single line to grep when the operator suspects a controller is picking
   // up stale or unexpected shared defaults.
-  const char *vtcp_mode_str = "disabled";
+  const char* vtcp_mode_str = "disabled";
   switch (cfg.vtcp.mode) {
-  case VirtualTcpMode::kCentroid:
-    vtcp_mode_str = "centroid";
-    break;
-  case VirtualTcpMode::kWeighted:
-    vtcp_mode_str = "weighted";
-    break;
-  case VirtualTcpMode::kConstant:
-    vtcp_mode_str = "constant";
-    break;
-  case VirtualTcpMode::kDisabled:
-    vtcp_mode_str = "disabled";
-    break;
+    case VirtualTcpMode::kCentroid:
+      vtcp_mode_str = "centroid";
+      break;
+    case VirtualTcpMode::kWeighted:
+      vtcp_mode_str = "weighted";
+      break;
+    case VirtualTcpMode::kConstant:
+      vtcp_mode_str = "constant";
+      break;
+    case VirtualTcpMode::kDisabled:
+      vtcp_mode_str = "disabled";
+      break;
   }
-  RCLCPP_INFO(
-      ::ur5e_bringup::logging::SharedConfigLogger(),
-      "demo_shared.yaml loaded: vtcp=%s grasp_type=%s force_pi_block=%s "
-      "contact_thresh=%.2fN force_thresh=%.2fN min_fingers=%d",
-      vtcp_mode_str, cfg.grasp_controller_type.c_str(),
-      cfg.has_force_pi_block ? "yes" : "no",
-      static_cast<double>(cfg.grasp_contact_threshold),
-      static_cast<double>(cfg.grasp_force_threshold), cfg.grasp_min_fingertips);
+  RCLCPP_INFO(::ur5e_bringup::logging::SharedConfigLogger(),
+              "demo_shared.yaml loaded: vtcp=%s grasp_type=%s force_pi_block=%s "
+              "contact_thresh=%.2fN force_thresh=%.2fN min_fingers=%d",
+              vtcp_mode_str, cfg.grasp_controller_type.c_str(),
+              cfg.has_force_pi_block ? "yes" : "no",
+              static_cast<double>(cfg.grasp_contact_threshold),
+              static_cast<double>(cfg.grasp_force_threshold), cfg.grasp_min_fingertips);
 }
 
-void BuildGraspController(
-    const DemoSharedConfig &cfg, double control_rate_hz,
-    std::unique_ptr<rtc::grasp::GraspController> &grasp_controller) {
+void BuildGraspController(const DemoSharedConfig& cfg, double control_rate_hz,
+                          std::unique_ptr<rtc::grasp::GraspController>& grasp_controller) {
   if (cfg.grasp_controller_type != "force_pi" || !cfg.has_force_pi_block) {
     grasp_controller.reset();
     return;
@@ -258,4 +245,4 @@ void BuildGraspController(
   grasp_controller->Init(cfg.force_pi_fingers, gp);
 }
 
-} // namespace ur5e_bringup
+}  // namespace ur5e_bringup

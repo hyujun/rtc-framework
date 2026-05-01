@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/action_nodes/move_to_joints.hpp"
+
 #include "ur5e_bt_coordinator/bt_logging.hpp"
 #include "ur5e_bt_coordinator/bt_utils.hpp"
 
@@ -13,26 +14,25 @@
 namespace rtc_bt {
 
 namespace {
-auto logger() { return ::rtc_bt::logging::ActionLogger("move_to_joints"); }
+auto logger() {
+  return ::rtc_bt::logging::ActionLogger("move_to_joints");
+}
 }  // namespace
 
 MoveToJoints::MoveToJoints(const std::string& name, const BT::NodeConfig& config,
                            std::shared_ptr<BtRosBridge> bridge)
-  : BT::StatefulActionNode(name, config), bridge_(std::move(bridge))
-{}
+    : BT::StatefulActionNode(name, config), bridge_(std::move(bridge)) {}
 
-BT::PortsList MoveToJoints::providedPorts()
-{
+BT::PortsList MoveToJoints::providedPorts() {
   return {
-    BT::InputPort<std::vector<double>>("target", "Joint target [rad] (ignored if pose_name set)"),
-    BT::InputPort<std::string>("pose_name", "Named arm pose from poses.yaml (overrides target)"),
-    BT::InputPort<double>("tolerance", 0.01, "Per-joint tolerance [rad]"),
-    BT::InputPort<double>("timeout_s", 10.0, "Timeout [s]"),
+      BT::InputPort<std::vector<double>>("target", "Joint target [rad] (ignored if pose_name set)"),
+      BT::InputPort<std::string>("pose_name", "Named arm pose from poses.yaml (overrides target)"),
+      BT::InputPort<double>("tolerance", 0.01, "Per-joint tolerance [rad]"),
+      BT::InputPort<double>("timeout_s", 10.0, "Timeout [s]"),
   };
 }
 
-BT::NodeStatus MoveToJoints::onStart()
-{
+BT::NodeStatus MoveToJoints::onStart() {
   auto pose_name = getInput<std::string>("pose_name");
   if (pose_name) {
     const auto& pose = bridge_->GetArmPose(pose_name.value());
@@ -40,8 +40,7 @@ BT::NodeStatus MoveToJoints::onStart()
   } else {
     auto target = getInput<std::vector<double>>("target");
     if (!target) {
-      RCLCPP_ERROR(logger(), "missing target or pose_name port: %s",
-                   target.error().c_str());
+      RCLCPP_ERROR(logger(), "missing target or pose_name port: %s", target.error().c_str());
       throw BT::RuntimeError("MoveToJoints: missing target or pose_name: ", target.error());
     }
     target_ = target.value();
@@ -54,19 +53,19 @@ BT::NodeStatus MoveToJoints::onStart()
   std::ostringstream oss;
   oss << "[";
   for (std::size_t i = 0; i < target_.size(); ++i) {
-    if (i > 0) oss << ", ";
+    if (i > 0)
+      oss << ", ";
     oss << std::fixed << std::setprecision(3) << target_[i];
   }
   oss << "]";
-  RCLCPP_INFO(logger(), "target=%s tol=%.4f timeout=%.1fs",
-              oss.str().c_str(), tolerance_, timeout_s_);
+  RCLCPP_INFO(logger(), "target=%s tol=%.4f timeout=%.1fs", oss.str().c_str(), tolerance_,
+              timeout_s_);
 
   bridge_->PublishArmJointTarget(target_);
   return BT::NodeStatus::RUNNING;
 }
 
-BT::NodeStatus MoveToJoints::onRunning()
-{
+BT::NodeStatus MoveToJoints::onRunning() {
   auto current = bridge_->GetArmJointPositions();
   double max_err = std::numeric_limits<double>::quiet_NaN();
   if (current.size() >= target_.size()) {
@@ -75,31 +74,27 @@ BT::NodeStatus MoveToJoints::onRunning()
       max_err = std::max(max_err, std::abs(current[i] - target_[i]));
     }
     if (max_err < tolerance_) {
-      RCLCPP_INFO(logger(), "reached target (max_err=%.4f elapsed=%.2fs)",
-                  max_err, ElapsedSeconds(start_time_));
+      RCLCPP_INFO(logger(), "reached target (max_err=%.4f elapsed=%.2fs)", max_err,
+                  ElapsedSeconds(start_time_));
       return BT::NodeStatus::SUCCESS;
     }
 
     static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
-    RCLCPP_DEBUG_THROTTLE(logger(), steady_clock,
-                          ::rtc_bt::logging::kThrottleFastMs,
-                          "max_err=%.4f elapsed=%.2fs",
-                          max_err, ElapsedSeconds(start_time_));
+    RCLCPP_DEBUG_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleFastMs,
+                          "max_err=%.4f elapsed=%.2fs", max_err, ElapsedSeconds(start_time_));
   }
 
   if (ElapsedSeconds(start_time_) > timeout_s_) {
     RCLCPP_WARN(logger(),
                 "timeout (%.1fs) max_err=%.4f tol=%.4f "
                 "current_size=%zu target_size=%zu",
-                timeout_s_, max_err, tolerance_,
-                current.size(), target_.size());
+                timeout_s_, max_err, tolerance_, current.size(), target_.size());
     return BT::NodeStatus::FAILURE;
   }
   return BT::NodeStatus::RUNNING;
 }
 
-void MoveToJoints::onHalted()
-{
+void MoveToJoints::onHalted() {
   RCLCPP_INFO(logger(), "halted (elapsed=%.2fs)", ElapsedSeconds(start_time_));
 }
 

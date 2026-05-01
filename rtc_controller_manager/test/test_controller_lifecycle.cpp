@@ -27,48 +27,43 @@ namespace rtc {
 // Minimal RTControllerInterface stub for lifecycle tests. Records the
 // number of on_activate / on_deactivate calls and the snapshot received.
 class MockController : public RTControllerInterface {
-public:
+ public:
   explicit MockController(std::string name) : name_(std::move(name)) {}
 
-  CallbackReturn
-  on_activate(const rclcpp_lifecycle::State &prev,
-              const ControllerState &snapshot) noexcept override {
+  CallbackReturn on_activate(const rclcpp_lifecycle::State& prev,
+                             const ControllerState& snapshot) noexcept override {
     activate_count_.fetch_add(1, std::memory_order_relaxed);
     last_snapshot_devices_ = snapshot.num_devices;
     return RTControllerInterface::on_activate(prev, snapshot);
   }
 
-  CallbackReturn
-  on_deactivate(const rclcpp_lifecycle::State & /*prev*/) noexcept override {
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State& /*prev*/) noexcept override {
     deactivate_count_.fetch_add(1, std::memory_order_relaxed);
     return CallbackReturn::SUCCESS;
   }
 
   // Pure-virtual implementations — minimal no-ops.
-  ControllerOutput
-  Compute(const ControllerState & /*state*/) noexcept override {
+  ControllerOutput Compute(const ControllerState& /*state*/) noexcept override {
     return ControllerOutput{};
   }
-  void SetDeviceTarget(int /*device_idx*/,
-                       std::span<const double> /*target*/) noexcept override {}
+
+  void SetDeviceTarget(int /*device_idx*/, std::span<const double> /*target*/) noexcept override {}
+
   std::string_view Name() const noexcept override { return name_; }
-  void
-  InitializeHoldPosition(const ControllerState & /*state*/) noexcept override {
+
+  void InitializeHoldPosition(const ControllerState& /*state*/) noexcept override {
     hold_init_count_.fetch_add(1, std::memory_order_relaxed);
   }
 
-  int ActivateCount() const {
-    return activate_count_.load(std::memory_order_relaxed);
-  }
-  int DeactivateCount() const {
-    return deactivate_count_.load(std::memory_order_relaxed);
-  }
-  int HoldInitCount() const {
-    return hold_init_count_.load(std::memory_order_relaxed);
-  }
+  int ActivateCount() const { return activate_count_.load(std::memory_order_relaxed); }
+
+  int DeactivateCount() const { return deactivate_count_.load(std::memory_order_relaxed); }
+
+  int HoldInitCount() const { return hold_init_count_.load(std::memory_order_relaxed); }
+
   int LastSnapshotDevices() const { return last_snapshot_devices_; }
 
-private:
+ private:
   std::string name_;
   std::atomic<int> activate_count_{0};
   std::atomic<int> deactivate_count_{0};
@@ -79,77 +74,70 @@ private:
 // Test-only friend accessor. Lives in rtc:: so it can call the private
 // helpers and read the private state vector.
 class ControllerLifecycleTestAccess {
-public:
-  static void
-  InjectControllers(RtControllerNode &node,
-                    std::vector<std::unique_ptr<RTControllerInterface>> ctrls) {
+ public:
+  static void InjectControllers(RtControllerNode& node,
+                                std::vector<std::unique_ptr<RTControllerInterface>> ctrls) {
     node.controllers_ = std::move(ctrls);
-    node.controller_states_ =
-        std::vector<std::atomic<int>>(node.controllers_.size());
+    node.controller_states_ = std::vector<std::atomic<int>>(node.controllers_.size());
     node.controller_topic_configs_.assign(node.controllers_.size(), {});
     node.controller_slot_mappings_.assign(node.controllers_.size(), {});
     node.controller_name_to_idx_.clear();
     for (std::size_t i = 0; i < node.controllers_.size(); ++i) {
-      node.controller_name_to_idx_[std::string(node.controllers_[i]->Name())] =
-          static_cast<int>(i);
+      node.controller_name_to_idx_[std::string(node.controllers_[i]->Name())] = static_cast<int>(i);
     }
     // Bypass startup auto-hold: set state_received_ true so SwitchActive
     // builds non-empty snapshots, but only when the test explicitly opts in
     // via SetStateReceived. Default: false (caller controls).
   }
 
-  static void SetStateReceived(RtControllerNode &node, bool v) {
+  static void SetStateReceived(RtControllerNode& node, bool v) {
     node.state_received_.store(v, std::memory_order_release);
   }
 
-  static void EnsureActivePublisher(RtControllerNode &node) {
+  static void EnsureActivePublisher(RtControllerNode& node) {
     if (!node.active_ctrl_name_pub_) {
       // Mirror production topic name (rt_controller_node_topics.cpp:430-431):
       // owned by rtc_controller_manager, robot_namespace prefix intentionally
       // absent so the topic ownership is obvious from its name.
-      node.active_ctrl_name_pub_ = node.create_publisher<std_msgs::msg::String>(
-          "/rtc_cm/active_controller_name", 1);
+      node.active_ctrl_name_pub_ =
+          node.create_publisher<std_msgs::msg::String>("/rtc_cm/active_controller_name", 1);
     }
   }
 
-  static void SetActiveIdx(RtControllerNode &node, int idx) {
+  static void SetActiveIdx(RtControllerNode& node, int idx) {
     node.active_controller_idx_.store(idx, std::memory_order_release);
   }
 
-  static int GetState(const RtControllerNode &node, std::size_t idx) {
+  static int GetState(const RtControllerNode& node, std::size_t idx) {
     return node.controller_states_[idx].load(std::memory_order_acquire);
   }
 
-  static int GetActiveIdx(const RtControllerNode &node) {
+  static int GetActiveIdx(const RtControllerNode& node) {
     return node.active_controller_idx_.load(std::memory_order_acquire);
   }
 
-  static RtControllerNode::CallbackReturn
-  CallActivate(RtControllerNode &node, std::size_t idx,
-               const rclcpp_lifecycle::State &prev,
-               const ControllerState &snap) {
+  static RtControllerNode::CallbackReturn CallActivate(RtControllerNode& node, std::size_t idx,
+                                                       const rclcpp_lifecycle::State& prev,
+                                                       const ControllerState& snap) {
     return node.ActivateController(idx, prev, snap);
   }
 
-  static RtControllerNode::CallbackReturn
-  CallDeactivate(RtControllerNode &node, std::size_t idx,
-                 const rclcpp_lifecycle::State &prev) {
+  static RtControllerNode::CallbackReturn CallDeactivate(RtControllerNode& node, std::size_t idx,
+                                                         const rclcpp_lifecycle::State& prev) {
     return node.DeactivateController(idx, prev);
   }
 
-  static bool CallSwitch(RtControllerNode &node, const std::string &name,
-                         std::string &message) {
+  static bool CallSwitch(RtControllerNode& node, const std::string& name, std::string& message) {
     return node.SwitchActiveController(name, message);
   }
 
-  static ControllerState BuildSnapshot(const RtControllerNode &node,
-                                       std::size_t idx) {
+  static ControllerState BuildSnapshot(const RtControllerNode& node, std::size_t idx) {
     return node.BuildDeviceSnapshot(idx);
   }
 
   // Set the E-STOP flag directly — bypasses PublishEstopStatus() which
   // would touch estop_pub_ (uninitialised in the test fixture).
-  static void SetEstopFlag(RtControllerNode &node, bool v) {
+  static void SetEstopFlag(RtControllerNode& node, bool v) {
     node.global_estop_.store(v, std::memory_order_release);
   }
 };
@@ -157,7 +145,7 @@ public:
 // ── Fixture ─────────────────────────────────────────────────────────────
 
 class ControllerLifecycleTest : public ::testing::Test {
-protected:
+ protected:
   static void SetUpTestSuite() {
     if (!rclcpp::ok()) {
       rclcpp::init(0, nullptr);
@@ -185,13 +173,11 @@ protected:
     ControllerLifecycleTestAccess::SetActiveIdx(*node_, 0);
   }
 
-  rclcpp_lifecycle::State InactiveState() const {
-    return rclcpp_lifecycle::State(1, "inactive");
-  }
+  rclcpp_lifecycle::State InactiveState() const { return rclcpp_lifecycle::State(1, "inactive"); }
 
   std::shared_ptr<RtControllerNode> node_;
-  MockController *ctrl_a_{nullptr};
-  MockController *ctrl_b_{nullptr};
+  MockController* ctrl_a_{nullptr};
+  MockController* ctrl_b_{nullptr};
 };
 
 // ── ActivateController / DeactivateController state transitions ─────────
@@ -201,8 +187,7 @@ TEST_F(ControllerLifecycleTest, ActivateFlipsStateAndCallsHook) {
   EXPECT_EQ(0, ctrl_a_->ActivateCount());
 
   ControllerState empty{};
-  const auto rc = ControllerLifecycleTestAccess::CallActivate(
-      *node_, 0, InactiveState(), empty);
+  const auto rc = ControllerLifecycleTestAccess::CallActivate(*node_, 0, InactiveState(), empty);
   EXPECT_EQ(RTControllerInterface::CallbackReturn::SUCCESS, rc);
   EXPECT_EQ(1, ControllerLifecycleTestAccess::GetState(*node_, 0));
   EXPECT_EQ(1, ctrl_a_->ActivateCount());
@@ -216,8 +201,7 @@ TEST_F(ControllerLifecycleTest, ActivateWithSnapshotTriggersHoldInit) {
   snap.num_devices = 1;
   snap.devices[0].num_channels = 6;
   snap.devices[0].valid = true;
-  const auto rc = ControllerLifecycleTestAccess::CallActivate(
-      *node_, 1, InactiveState(), snap);
+  const auto rc = ControllerLifecycleTestAccess::CallActivate(*node_, 1, InactiveState(), snap);
   EXPECT_EQ(RTControllerInterface::CallbackReturn::SUCCESS, rc);
   EXPECT_EQ(1, ControllerLifecycleTestAccess::GetState(*node_, 1));
   EXPECT_EQ(1, ctrl_b_->HoldInitCount());
@@ -226,8 +210,7 @@ TEST_F(ControllerLifecycleTest, ActivateWithSnapshotTriggersHoldInit) {
 
 TEST_F(ControllerLifecycleTest, DeactivateFlipsStateBackToInactive) {
   ControllerState empty{};
-  ControllerLifecycleTestAccess::CallActivate(*node_, 0, InactiveState(),
-                                              empty);
+  ControllerLifecycleTestAccess::CallActivate(*node_, 0, InactiveState(), empty);
   EXPECT_EQ(1, ControllerLifecycleTestAccess::GetState(*node_, 0));
 
   ControllerLifecycleTestAccess::CallDeactivate(*node_, 0, InactiveState());
@@ -247,8 +230,7 @@ TEST_F(ControllerLifecycleTest, BuildSnapshotEmptyWhenStateNotReceived) {
 
 TEST_F(ControllerLifecycleTest, SwitchRejectsUnknownName) {
   std::string msg;
-  EXPECT_FALSE(
-      ControllerLifecycleTestAccess::CallSwitch(*node_, "ctrl_xyz", msg));
+  EXPECT_FALSE(ControllerLifecycleTestAccess::CallSwitch(*node_, "ctrl_xyz", msg));
   EXPECT_NE(std::string::npos, msg.find("Unknown"));
   // No state changes.
   EXPECT_EQ(0, ControllerLifecycleTestAccess::GetState(*node_, 0));
@@ -258,8 +240,7 @@ TEST_F(ControllerLifecycleTest, SwitchRejectsUnknownName) {
 TEST_F(ControllerLifecycleTest, SwitchRejectsWhileEstopped) {
   ControllerLifecycleTestAccess::SetEstopFlag(*node_, true);
   std::string msg;
-  EXPECT_FALSE(
-      ControllerLifecycleTestAccess::CallSwitch(*node_, "ctrl_b", msg));
+  EXPECT_FALSE(ControllerLifecycleTestAccess::CallSwitch(*node_, "ctrl_b", msg));
   EXPECT_NE(std::string::npos, msg.find("E-STOP"));
   // Recover for fixture teardown.
   ControllerLifecycleTestAccess::SetEstopFlag(*node_, false);
@@ -281,8 +262,7 @@ TEST_F(ControllerLifecycleTest, SwitchHappyPathFlipsActiveIdxAndStates) {
   // Arrange: initial state has ctrl_a (idx 0) marked Active in state vector
   // (matches CM's on_activate behavior for the initial controller).
   ControllerState empty{};
-  ControllerLifecycleTestAccess::CallActivate(*node_, 0, InactiveState(),
-                                              empty);
+  ControllerLifecycleTestAccess::CallActivate(*node_, 0, InactiveState(), empty);
   EXPECT_EQ(1, ControllerLifecycleTestAccess::GetState(*node_, 0));
 
   // Switch to ctrl_b.
@@ -297,8 +277,7 @@ TEST_F(ControllerLifecycleTest, SwitchHappyPathFlipsActiveIdxAndStates) {
 
 TEST_F(ControllerLifecycleTest, RepeatedSwitchN20IsStable) {
   ControllerState empty{};
-  ControllerLifecycleTestAccess::CallActivate(*node_, 0, InactiveState(),
-                                              empty);
+  ControllerLifecycleTestAccess::CallActivate(*node_, 0, InactiveState(), empty);
   std::string msg;
   // 20 alternating switches a → b → a → b → ...
   for (int i = 0; i < 20; ++i) {
@@ -319,4 +298,4 @@ TEST_F(ControllerLifecycleTest, RepeatedSwitchN20IsStable) {
   EXPECT_EQ(10, ctrl_b_->DeactivateCount());
 }
 
-} // namespace rtc
+}  // namespace rtc

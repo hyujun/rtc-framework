@@ -40,22 +40,20 @@ namespace rtc {
 // percentiles for typical 10–100 µs Compute() times don't extrapolate past
 // the observed max. The overflow bucket still captures anything ≥ 2000 µs.
 class ControllerTimingProfiler : public TimingProfilerBase<200, 10, 2000> {
-public:
+ public:
   // Re-export base types under the names existing callers expect
   using Stats = BaseStats;
 
   // ── Core measurement
   // ─────────────────────────────────────────────────────────
 
-  [[nodiscard]] ControllerOutput
-  MeasuredCompute(RTControllerInterface &ctrl,
-                  const ControllerState &state) noexcept {
+  [[nodiscard]] ControllerOutput MeasuredCompute(RTControllerInterface& ctrl,
+                                                 const ControllerState& state) noexcept {
     const auto t0 = std::chrono::steady_clock::now();
     auto output = ctrl.Compute(state);
     const auto t1 = std::chrono::steady_clock::now();
 
-    const double us =
-        std::chrono::duration<double, std::micro>(t1 - t0).count();
+    const double us = std::chrono::duration<double, std::micro>(t1 - t0).count();
     UpdateTotal(us);
     return output;
   }
@@ -70,27 +68,26 @@ public:
   void Reset() noexcept { ResetBase(); }
 
   // Human-readable summary line suitable for RCLCPP_INFO.
-  [[nodiscard]] std::string
-  Summary(const std::string &ctrl_name) const noexcept {
+  [[nodiscard]] std::string Summary(const std::string& ctrl_name) const noexcept {
     const Stats s = GetStats();
     if (s.count == 0) {
       return ctrl_name + " timing: no data";
     }
 
-    const double over_pct = static_cast<double>(s.over_budget) * 100.0 /
-                            static_cast<double>(s.count);
+    const double over_pct =
+        static_cast<double>(s.over_budget) * 100.0 / static_cast<double>(s.count);
     char buf[512];
     std::snprintf(buf, sizeof(buf),
                   "%s timing: count=%lu  mean=%.1f\xc2\xb5s  min=%.1f\xc2\xb5s"
                   "  max=%.1f\xc2\xb5s  p95=%.1f\xc2\xb5s  p99=%.1f\xc2\xb5s"
                   "  over_budget=%lu (%.1f%%)",
-                  ctrl_name.c_str(), static_cast<unsigned long>(s.count),
-                  s.mean_us, s.min_us, s.max_us, s.p95_us, s.p99_us,
-                  static_cast<unsigned long>(s.over_budget), over_pct);
+                  ctrl_name.c_str(), static_cast<unsigned long>(s.count), s.mean_us, s.min_us,
+                  s.max_us, s.p95_us, s.p99_us, static_cast<unsigned long>(s.over_budget),
+                  over_pct);
     return std::string(buf);
   }
 };
 
-} // namespace rtc
+}  // namespace rtc
 
-#endif // RTC_CONTROLLER_MANAGER_CONTROLLER_TIMING_PROFILER_HPP_
+#endif  // RTC_CONTROLLER_MANAGER_CONTROLLER_TIMING_PROFILER_HPP_

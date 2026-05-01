@@ -21,9 +21,7 @@ def resolve_default_save_dir():
             candidates = sorted(
                 d
                 for d in os.listdir(root)
-                if os.path.isdir(os.path.join(root, d))
-                and len(d) == 11
-                and d[6] == "_"
+                if os.path.isdir(os.path.join(root, d)) and len(d) == 11 and d[6] == "_"
             )
             if candidates:
                 session = os.path.join(root, candidates[-1])

@@ -17,9 +17,8 @@ using namespace rtc_bt;
 using namespace rtc_bt::test;
 
 class ConditionNodeTest : public RosTestFixture {
-protected:
-  void SetUp() override
-  {
+ protected:
+  void SetUp() override {
     RosTestFixture::SetUp();
     factory_.registerNodeType<IsForceAbove>("IsForceAbove", bridge_);
     factory_.registerNodeType<IsGrasped>("IsGrasped", bridge_);
@@ -29,16 +28,14 @@ protected:
     factory_.registerNodeType<CheckShapeType>("CheckShapeType", bridge_);
   }
 
-  BT::Tree CreateTree(const std::string& xml)
-  {
-    const std::string full = R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" +
-                             xml + R"(</BehaviorTree></root>)";
+  BT::Tree CreateTree(const std::string& xml) {
+    const std::string full =
+        R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" + xml + R"(</BehaviorTree></root>)";
     return factory_.createTreeFromText(full);
   }
 
   CachedGraspState MakeGraspState(int contacts, float max_force, bool detected,
-                                   float threshold = 1.0f, int min_ft = 2)
-  {
+                                  float threshold = 1.0f, int min_ft = 2) {
     CachedGraspState gs;
     gs.num_active_contacts = contacts;
     gs.max_force = max_force;
@@ -49,8 +46,7 @@ protected:
   }
 
   CachedGraspState MakeDetailedGraspState(
-      const std::vector<std::tuple<float, float, bool>>& fingertips)
-  {
+      const std::vector<std::tuple<float, float, bool>>& fingertips) {
     CachedGraspState gs;
     gs.force_threshold = 1.0f;
     gs.min_fingertips = 2;
@@ -71,46 +67,39 @@ protected:
 // IsForceAbove
 // ══════════════════════════════════════════════════════════════════════════
 
-TEST_F(ConditionNodeTest, IsForceAbove_Success)
-{
+TEST_F(ConditionNodeTest, IsForceAbove_Success) {
   auto gs = MakeGraspState(3, 5.0f, true, 1.5f, 2);
   PublishGraspState(gs);
   Spin();
 
-  auto tree = CreateTree(
-      R"(<IsForceAbove threshold_N="1.5" min_fingertips="2"/>)");
+  auto tree = CreateTree(R"(<IsForceAbove threshold_N="1.5" min_fingertips="2"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 }
 
-TEST_F(ConditionNodeTest, IsForceAbove_Failure)
-{
+TEST_F(ConditionNodeTest, IsForceAbove_Failure) {
   auto gs = MakeGraspState(1, 0.5f, false, 1.5f, 2);
   PublishGraspState(gs);
   Spin();
 
-  auto tree = CreateTree(
-      R"(<IsForceAbove threshold_N="1.5" min_fingertips="2"/>)");
+  auto tree = CreateTree(R"(<IsForceAbove threshold_N="1.5" min_fingertips="2"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
 }
 
-TEST_F(ConditionNodeTest, IsForceAbove_CustomThresholdRecount)
-{
+TEST_F(ConditionNodeTest, IsForceAbove_CustomThresholdRecount) {
   // Use different threshold than controller defaults → triggers manual recount
   auto gs = MakeDetailedGraspState({
-      {3.0f, 0.9f, true},   // above 2.0N, valid contact
-      {2.5f, 0.8f, true},   // above 2.0N, valid contact
-      {0.1f, 0.1f, true},   // below threshold
+      {3.0f, 0.9f, true},  // above 2.0N, valid contact
+      {2.5f, 0.8f, true},  // above 2.0N, valid contact
+      {0.1f, 0.1f, true},  // below threshold
   });
   PublishGraspState(gs);
   Spin();
 
-  auto tree = CreateTree(
-      R"(<IsForceAbove threshold_N="2.0" min_fingertips="2"/>)");
+  auto tree = CreateTree(R"(<IsForceAbove threshold_N="2.0" min_fingertips="2"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 }
 
-TEST_F(ConditionNodeTest, IsForceAbove_SustainedNotMet)
-{
+TEST_F(ConditionNodeTest, IsForceAbove_SustainedNotMet) {
   auto gs = MakeGraspState(3, 5.0f, true, 1.5f, 2);
   PublishGraspState(gs);
   Spin();
@@ -122,8 +111,7 @@ TEST_F(ConditionNodeTest, IsForceAbove_SustainedNotMet)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
 }
 
-TEST_F(ConditionNodeTest, IsForceAbove_SustainedMet)
-{
+TEST_F(ConditionNodeTest, IsForceAbove_SustainedMet) {
   auto gs = MakeGraspState(3, 5.0f, true, 1.5f, 2);
   PublishGraspState(gs);
   Spin();
@@ -145,8 +133,7 @@ TEST_F(ConditionNodeTest, IsForceAbove_SustainedMet)
 // IsGrasped
 // ══════════════════════════════════════════════════════════════════════════
 
-TEST_F(ConditionNodeTest, IsGrasped_Detected)
-{
+TEST_F(ConditionNodeTest, IsGrasped_Detected) {
   auto gs = MakeGraspState(3, 5.0f, true);
   PublishGraspState(gs);
   Spin();
@@ -155,8 +142,7 @@ TEST_F(ConditionNodeTest, IsGrasped_Detected)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 }
 
-TEST_F(ConditionNodeTest, IsGrasped_NotDetected)
-{
+TEST_F(ConditionNodeTest, IsGrasped_NotDetected) {
   auto gs = MakeGraspState(0, 0.0f, false);
   PublishGraspState(gs);
   Spin();
@@ -165,8 +151,7 @@ TEST_F(ConditionNodeTest, IsGrasped_NotDetected)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
 }
 
-TEST_F(ConditionNodeTest, IsGrasped_CustomThresholdRecount)
-{
+TEST_F(ConditionNodeTest, IsGrasped_CustomThresholdRecount) {
   // Use threshold/min_fingertips that differ from controller defaults
   // to trigger manual recount path
   auto gs = MakeDetailedGraspState({
@@ -176,14 +161,13 @@ TEST_F(ConditionNodeTest, IsGrasped_CustomThresholdRecount)
   });
   gs.grasp_detected = false;
   // Set controller defaults to something different so custom path is taken
-  gs.force_threshold = 5.0f;   // different from our 1.0
-  gs.min_fingertips = 3;       // different from our 2
+  gs.force_threshold = 5.0f;  // different from our 1.0
+  gs.min_fingertips = 3;      // different from our 2
   PublishGraspState(gs);
   Spin();
 
   // Custom threshold 1.0N with min 2: two fingertips qualify via manual recount
-  auto tree = CreateTree(
-      R"(<IsGrasped force_threshold_N="1.0" min_fingertips="2"/>)");
+  auto tree = CreateTree(R"(<IsGrasped force_threshold_N="1.0" min_fingertips="2"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 }
 
@@ -191,8 +175,7 @@ TEST_F(ConditionNodeTest, IsGrasped_CustomThresholdRecount)
 // IsGraspPhase
 // ══════════════════════════════════════════════════════════════════════════
 
-TEST_F(ConditionNodeTest, IsGraspPhase_Matches)
-{
+TEST_F(ConditionNodeTest, IsGraspPhase_Matches) {
   CachedGraspState gs;
   gs.grasp_phase = 4;  // "holding"
   PublishGraspState(gs);
@@ -202,8 +185,7 @@ TEST_F(ConditionNodeTest, IsGraspPhase_Matches)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 }
 
-TEST_F(ConditionNodeTest, IsGraspPhase_DoesNotMatch)
-{
+TEST_F(ConditionNodeTest, IsGraspPhase_DoesNotMatch) {
   CachedGraspState gs;
   gs.grasp_phase = 0;  // "idle"
   PublishGraspState(gs);
@@ -213,11 +195,10 @@ TEST_F(ConditionNodeTest, IsGraspPhase_DoesNotMatch)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
 }
 
-TEST_F(ConditionNodeTest, IsGraspPhase_AllPhases)
-{
-  const std::map<std::string, uint8_t> phases = {
-      {"idle", 0}, {"approaching", 1}, {"contact", 2},
-      {"force_control", 3}, {"holding", 4}, {"releasing", 5}};
+TEST_F(ConditionNodeTest, IsGraspPhase_AllPhases) {
+  const std::map<std::string, uint8_t> phases = {{"idle", 0},    {"approaching", 1},
+                                                 {"contact", 2}, {"force_control", 3},
+                                                 {"holding", 4}, {"releasing", 5}};
 
   for (const auto& [name, val] : phases) {
     CachedGraspState gs;
@@ -225,15 +206,13 @@ TEST_F(ConditionNodeTest, IsGraspPhase_AllPhases)
     PublishGraspState(gs);
     Spin();
 
-    auto tree = CreateTree(
-        R"(<IsGraspPhase phase=")" + name + R"("/>)");
+    auto tree = CreateTree(R"(<IsGraspPhase phase=")" + name + R"("/>)");
     EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS)
         << "Phase " << name << " (val=" << static_cast<int>(val) << ") should match";
   }
 }
 
-TEST_F(ConditionNodeTest, IsGraspPhase_InvalidPhase)
-{
+TEST_F(ConditionNodeTest, IsGraspPhase_InvalidPhase) {
   CachedGraspState gs;
   gs.grasp_phase = 0;
   PublishGraspState(gs);
@@ -247,8 +226,7 @@ TEST_F(ConditionNodeTest, IsGraspPhase_InvalidPhase)
 // IsObjectDetected
 // ══════════════════════════════════════════════════════════════════════════
 
-TEST_F(ConditionNodeTest, IsObjectDetected_WithObject)
-{
+TEST_F(ConditionNodeTest, IsObjectDetected_WithObject) {
   // Set TCP orientation so it can be merged
   Pose6D tcp{0.5, 0.5, 0.5, 1.0, 2.0, 3.0};
   PublishArmState(tcp, {0, 0, 0, 0, 0, 0});
@@ -265,8 +243,7 @@ TEST_F(ConditionNodeTest, IsObjectDetected_WithObject)
   EXPECT_NEAR(p.roll, 1.0, 0.01);
 }
 
-TEST_F(ConditionNodeTest, IsObjectDetected_NoObject)
-{
+TEST_F(ConditionNodeTest, IsObjectDetected_NoObject) {
   auto tree = CreateTree(R"(<IsObjectDetected pose="{p}"/>)");
   Spin();
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
@@ -276,8 +253,7 @@ TEST_F(ConditionNodeTest, IsObjectDetected_NoObject)
 // IsVisionTargetReady
 // ══════════════════════════════════════════════════════════════════════════
 
-TEST_F(ConditionNodeTest, IsVisionTargetReady_WithTarget)
-{
+TEST_F(ConditionNodeTest, IsVisionTargetReady_WithTarget) {
   Pose6D tcp{0, 0, 0, 0.5, 1.0, 1.5};
   PublishArmState(tcp, {0, 0, 0, 0, 0, 0});
   PublishWorldTarget(0.4, -0.1, 0.2);
@@ -291,15 +267,13 @@ TEST_F(ConditionNodeTest, IsVisionTargetReady_WithTarget)
   EXPECT_NEAR(p.pitch, 1.0, 0.01);
 }
 
-TEST_F(ConditionNodeTest, IsVisionTargetReady_NoTarget)
-{
+TEST_F(ConditionNodeTest, IsVisionTargetReady_NoTarget) {
   auto tree = CreateTree(R"(<IsVisionTargetReady pose="{p}"/>)");
   Spin();
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
 }
 
-TEST_F(ConditionNodeTest, IsVisionTargetReady_ZeroCoordinatesInvalid)
-{
+TEST_F(ConditionNodeTest, IsVisionTargetReady_ZeroCoordinatesInvalid) {
   Pose6D tcp{0, 0, 0, 0, 0, 0};
   PublishArmState(tcp, {0, 0, 0, 0, 0, 0});
   PublishWorldTarget(0.0, 0.0, 0.0);  // All zeros → not valid
@@ -313,8 +287,7 @@ TEST_F(ConditionNodeTest, IsVisionTargetReady_ZeroCoordinatesInvalid)
 // CheckShapeType
 // ══════════════════════════════════════════════════════════════════════════
 
-TEST_F(ConditionNodeTest, CheckShapeType_ExtractionOnly)
-{
+TEST_F(ConditionNodeTest, CheckShapeType_ExtractionOnly) {
   PublishShapeEstimate(2, 0.95, 500);  // SPHERE
   Spin();
 
@@ -341,8 +314,7 @@ TEST_F(ConditionNodeTest, CheckShapeType_ExtractionOnly)
   EXPECT_NEAR(conf, 0.95, 1e-6);
 }
 
-TEST_F(ConditionNodeTest, CheckShapeType_ExpectedMatch)
-{
+TEST_F(ConditionNodeTest, CheckShapeType_ExpectedMatch) {
   auto tree = CreateTree(
       R"(<CheckShapeType estimate="{est}" expected_type="cylinder"
                          shape_type="{st}" shape_name="{sn}" confidence="{conf}"/>)");
@@ -355,8 +327,7 @@ TEST_F(ConditionNodeTest, CheckShapeType_ExpectedMatch)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 }
 
-TEST_F(ConditionNodeTest, CheckShapeType_ExpectedMismatch)
-{
+TEST_F(ConditionNodeTest, CheckShapeType_ExpectedMismatch) {
   auto tree = CreateTree(
       R"(<CheckShapeType estimate="{est}" expected_type="box"
                          shape_type="{st}" shape_name="{sn}" confidence="{conf}"/>)");
@@ -369,8 +340,7 @@ TEST_F(ConditionNodeTest, CheckShapeType_ExpectedMismatch)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
 }
 
-TEST_F(ConditionNodeTest, CheckShapeType_AllTypes)
-{
+TEST_F(ConditionNodeTest, CheckShapeType_AllTypes) {
   const std::map<uint8_t, std::string> types = {
       {0, "unknown"}, {1, "plane"}, {2, "sphere"}, {3, "cylinder"}, {4, "box"}};
 

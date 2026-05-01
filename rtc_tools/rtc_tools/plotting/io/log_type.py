@@ -30,9 +30,7 @@ def detect_log_type(filepath):
         return "state_log"
     elif stem.endswith("sensor_log"):
         return "sensor_log"
-    elif stem.startswith("cm_timing_log") or stem.startswith(
-        "hand_udp_timing_log"
-    ):
+    elif stem.startswith("cm_timing_log") or stem.startswith("hand_udp_timing_log"):
         return "cm_timing"
     elif stem.startswith("mpc_timing_log"):
         return "mpc_timing"
@@ -86,9 +84,7 @@ def detect_log_type_by_columns(columns):
     # ft_*. Phase C POD uses <sensor_name>_raw_*, <sensor_name>_filt_*,
     # ft_<sensor_name>_*. Both match the trailing _raw_/_filt_ tokens.
     if any(
-        c.startswith(
-            ("baro_raw_", "tof_raw_", "baro_filt_", "tof_filt_", "ft_")
-        )
+        c.startswith(("baro_raw_", "tof_raw_", "baro_filt_", "tof_filt_", "ft_"))
         or "_raw_" in c
         or "_filt_" in c
         for c in cols

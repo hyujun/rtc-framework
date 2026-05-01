@@ -30,15 +30,16 @@
 
 namespace rtc {
 
-template <typename Payload, std::size_t N> class ThreadTimingProducer {
-public:
+template <typename Payload, std::size_t N>
+class ThreadTimingProducer {
+ public:
   using Sample = ThreadTimingSample<Payload>;
   static constexpr std::size_t kCapacity = N;
 
   /// Push a sample with the current steady_clock timestamp and the next
   /// monotonic tick count. Wait-free; on a full ring the sample is dropped
   /// and `DropCount()` increments. RT-safe.
-  [[nodiscard]] bool Push(const Payload &payload) noexcept {
+  [[nodiscard]] bool Push(const Payload& payload) noexcept {
     Sample s{};
     s.t_wall_ns = NowNs();
     s.tick_count = ++tick_count_;
@@ -48,7 +49,8 @@ public:
 
   /// Drain pending samples in FIFO order. Returns the number drained.
   /// Non-RT.
-  template <typename Fn> std::size_t Drain(Fn &&on_sample) noexcept {
+  template <typename Fn>
+  std::size_t Drain(Fn&& on_sample) noexcept {
     std::size_t n = 0;
     Sample s{};
     while (queue_.Pop(s)) {
@@ -59,23 +61,18 @@ public:
   }
 
   /// Lifetime count of samples dropped due to a full ring. Non-RT.
-  [[nodiscard]] std::uint64_t DropCount() const noexcept {
-    return queue_.drop_count();
-  }
+  [[nodiscard]] std::uint64_t DropCount() const noexcept { return queue_.drop_count(); }
 
   /// Producer-side tick counter. Same value the most recent Push set on
   /// `tick_count`. Useful for the producer when computing rates or
   /// coordinating periodic side-effects (INFO summary every N ticks).
-  [[nodiscard]] std::uint64_t LastTickCount() const noexcept {
-    return tick_count_;
-  }
+  [[nodiscard]] std::uint64_t LastTickCount() const noexcept { return tick_count_; }
 
-private:
+ private:
   static std::uint64_t NowNs() noexcept {
-    return static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch())
-            .count());
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count());
   }
 
   // tick_count_ is owned by the producer thread (single writer); the
@@ -86,6 +83,6 @@ private:
   SpscQueue<Sample, N> queue_;
 };
 
-} // namespace rtc
+}  // namespace rtc
 
-#endif // RTC_BASE_TIMING_THREAD_TIMING_PRODUCER_HPP_
+#endif  // RTC_BASE_TIMING_THREAD_TIMING_PRODUCER_HPP_

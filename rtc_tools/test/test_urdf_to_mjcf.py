@@ -177,6 +177,7 @@ URDF_MIXED = """\
 # Joint Classification Tests
 # ════════════════════════════════════════════════════════════════════════════
 
+
 class TestClassifyJoints:
     def test_basic_active_joints(self):
         c = classify_joints(URDF_BASIC)
@@ -245,8 +246,7 @@ class TestClassifyJoints:
 
     def test_no_overlap(self):
         """Active, mimic, closed-chain, and fixed sets must not overlap."""
-        for urdf in [URDF_BASIC, URDF_WITH_FIXED, URDF_WITH_MIMIC,
-                     URDF_CLOSED_CHAIN, URDF_MIXED]:
+        for urdf in [URDF_BASIC, URDF_WITH_FIXED, URDF_WITH_MIMIC, URDF_CLOSED_CHAIN, URDF_MIXED]:
             c = classify_joints(urdf)
             all_names = (
                 set(c.active.keys())
@@ -255,8 +255,7 @@ class TestClassifyJoints:
                 | set(c.fixed)
             )
             total = (
-                len(c.active) + len(c.passive_mimic)
-                + len(c.passive_closed_chain) + len(c.fixed)
+                len(c.active) + len(c.passive_mimic) + len(c.passive_closed_chain) + len(c.fixed)
             )
             assert len(all_names) == total, "Joint sets overlap"
 
@@ -264,6 +263,7 @@ class TestClassifyJoints:
 # ════════════════════════════════════════════════════════════════════════════
 # URDF Pre-processing Tests
 # ════════════════════════════════════════════════════════════════════════════
+
 
 class TestRemoveClosedChainJoints:
     def test_removes_loop_joint(self):
@@ -296,6 +296,7 @@ class TestRemoveClosedChainJoints:
 # ════════════════════════════════════════════════════════════════════════════
 # MJCF Post-Processing Tests
 # ════════════════════════════════════════════════════════════════════════════
+
 
 class TestAddEqualityConstraints:
     def _make_root(self) -> ET.Element:
@@ -453,6 +454,7 @@ class TestAddActuators:
 # Mesh / Compiler Post-Processing Tests
 # ════════════════════════════════════════════════════════════════════════════
 
+
 class TestCleanMeshPaths:
     def test_strips_directory(self):
         root = ET.fromstring(
@@ -488,6 +490,7 @@ class TestFixCompiler:
 # ════════════════════════════════════════════════════════════════════════════
 # MJCF Full Post-Processing Test
 # ════════════════════════════════════════════════════════════════════════════
+
 
 class TestPostprocessMjcf:
     def test_full_postprocess(self, tmp_path):
@@ -548,7 +551,9 @@ class TestPostprocessMjcf:
 
         c = classify_joints(URDF_BASIC)
         n_eq, n_act, n_excl = postprocess_mjcf(
-            mjcf_file, c, meshdir,
+            mjcf_file,
+            c,
+            meshdir,
             disable_parent_child_collision=True,
             urdf_xml=URDF_BASIC,
         )
@@ -566,6 +571,7 @@ class TestPostprocessMjcf:
 # ════════════════════════════════════════════════════════════════════════════
 # Collision Exclude Tests
 # ════════════════════════════════════════════════════════════════════════════
+
 
 class TestAddParentChildCollisionExcludes:
     def _make_root(self) -> ET.Element:
@@ -623,6 +629,7 @@ class TestAddParentChildCollisionExcludes:
 # Scene Generation Test
 # ════════════════════════════════════════════════════════════════════════════
 
+
 class TestGenerateScene:
     def test_scene_content(self, tmp_path):
         scene_path = generate_scene(tmp_path, "ur5e.xml", "ur5e")
@@ -638,6 +645,7 @@ class TestGenerateScene:
 # ════════════════════════════════════════════════════════════════════════════
 # Directory Convention Tests
 # ════════════════════════════════════════════════════════════════════════════
+
 
 class TestResolveRobotDirPaths:
     def _make_robot_dir(self, tmp_path, robot_name="test_robot"):
@@ -692,6 +700,7 @@ class TestResolveRobotDirPaths:
 # ════════════════════════════════════════════════════════════════════════════
 # Mesh Path Resolution Tests
 # ════════════════════════════════════════════════════════════════════════════
+
 
 class TestResolveMeshPaths:
     URDF_WITH_MESH = """\

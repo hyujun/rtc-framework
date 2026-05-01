@@ -15,7 +15,7 @@ namespace rtc {
 void ForceBuiltinControllerRegistration();
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   rtc::ForceBuiltinControllerRegistration();
   return rtc::RtControllerMain(argc, argv, "ur5e_rt_controller");
 }

@@ -10,9 +10,8 @@
 
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
 
-#include <gtest/gtest.h>
-
 #include <Eigen/Core>
+#include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
 #include <vector>
@@ -45,8 +44,7 @@ MPCSolution MakeSolution(uint64_t timestamp = 1) {
       sol.q_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)] = t;
     }
     for (int i = 0; i < kNv; ++i) {
-      sol.v_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)] =
-          1.0;
+      sol.v_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)] = 1.0;
     }
   }
   // Identity Riccati gain (nu x nx) at node 0.
@@ -69,7 +67,7 @@ YAML::Node MakeConfig(bool enabled, int max_stale = 5) {
 }
 
 class MpcSolutionManagerTest : public ::testing::Test {
-protected:
+ protected:
   void SetUp() override {
     q_curr_.setZero(kNq);
     v_curr_.setZero(kNv);
@@ -91,8 +89,8 @@ TEST_F(MpcSolutionManagerTest, DisabledShortCircuits) {
   mgr_.Init(MakeConfig(false), kNq, kNv, kNc);
   EXPECT_FALSE(mgr_.Enabled());
 
-  const bool ok = mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_,
-                                        a_ff_, lambda_ref_, u_fb_, meta_);
+  const bool ok =
+      mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_);
   EXPECT_FALSE(ok);
   EXPECT_FALSE(meta_.valid);
   EXPECT_DOUBLE_EQ(u_fb_.norm(), 0.0);
@@ -111,8 +109,8 @@ TEST_F(MpcSolutionManagerTest, PublishConsumeRoundTrip) {
   const uint64_t now = 1'000'000'000;
   mgr_.PublishSolution(MakeSolution(now));
 
-  const bool ok = mgr_.ComputeReference(q_curr_, v_curr_, now, q_ref_, v_ref_,
-                                        a_ff_, lambda_ref_, u_fb_, meta_);
+  const bool ok = mgr_.ComputeReference(q_curr_, v_curr_, now, q_ref_, v_ref_, a_ff_, lambda_ref_,
+                                        u_fb_, meta_);
   ASSERT_TRUE(ok);
   EXPECT_TRUE(meta_.valid);
   EXPECT_FALSE(meta_.beyond_horizon);
@@ -149,35 +147,35 @@ TEST_F(MpcSolutionManagerTest, StaleCounterIncrementsAndResets) {
   mgr_.PublishSolution(MakeSolution(t0));
 
   // First call consumes the fresh solution — stale stays 0.
-  EXPECT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, t0, q_ref_, v_ref_, a_ff_,
-                                    lambda_ref_, u_fb_, meta_));
+  EXPECT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, t0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_,
+                                    meta_));
   EXPECT_EQ(mgr_.StaleCount(), 0);
 
   // Subsequent calls without a new publish: counter climbs.
-  EXPECT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, t0 + 1, q_ref_, v_ref_,
-                                    a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, t0 + 1, q_ref_, v_ref_, a_ff_, lambda_ref_,
+                                    u_fb_, meta_));
   EXPECT_EQ(mgr_.StaleCount(), 1);
-  EXPECT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, t0 + 2, q_ref_, v_ref_,
-                                    a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, t0 + 2, q_ref_, v_ref_, a_ff_, lambda_ref_,
+                                    u_fb_, meta_));
   EXPECT_EQ(mgr_.StaleCount(), 2);
 
   // Threshold 3: next stale increment triggers fallback.
-  EXPECT_FALSE(mgr_.ComputeReference(q_curr_, v_curr_, t0 + 3, q_ref_, v_ref_,
-                                     a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_FALSE(mgr_.ComputeReference(q_curr_, v_curr_, t0 + 3, q_ref_, v_ref_, a_ff_, lambda_ref_,
+                                     u_fb_, meta_));
   EXPECT_EQ(mgr_.StaleCount(), 3);
 
   // Publish a fresh solution → counter resets, ComputeReference succeeds.
   mgr_.PublishSolution(MakeSolution(t0 + 1000));
-  EXPECT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, t0 + 1000, q_ref_, v_ref_,
-                                    a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, t0 + 1000, q_ref_, v_ref_, a_ff_, lambda_ref_,
+                                    u_fb_, meta_));
   EXPECT_EQ(mgr_.StaleCount(), 0);
 }
 
 TEST_F(MpcSolutionManagerTest, NoSolutionYieldsFallback) {
   mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
   EXPECT_FALSE(mgr_.HasEverReceivedSolution());
-  EXPECT_FALSE(mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_,
-                                     lambda_ref_, u_fb_, meta_));
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
 }
 
 // ── Solve-timing probe (Phase 7c perf follow-up) ────────────────────────────
@@ -266,5 +264,5 @@ TEST_F(MpcSolutionManagerTest, ResetSolveStatsClearsAllFields) {
 // test_mpc_thread_skeleton.cpp). The aggregate windowed ring driven by
 // PublishSolution is covered by the GetSolveStats tests above.
 
-} // namespace
-} // namespace rtc::mpc
+}  // namespace
+}  // namespace rtc::mpc

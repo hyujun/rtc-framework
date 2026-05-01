@@ -5,9 +5,9 @@
 // ──────────────────────────────────────────────────────────────────────────────
 #include "rtc_mujoco_sim/mujoco_simulator.hpp"
 
-#include <tinyxml2.h>
-
 #include "rtc_mujoco_sim/ros2_resource_provider.hpp"
+
+#include <tinyxml2.h>
 
 #include <algorithm>
 #include <cmath>
@@ -60,9 +60,8 @@ int MuJoCoSimulator::IntegratorNameToEnum(std::string_view name) noexcept {
   return mjINT_EULER;
 }
 
-void MuJoCoSimulator::ApplyFakeLpfStep(std::vector<double> &state,
-                                       const std::vector<double> &target,
-                                       double alpha) noexcept {
+void MuJoCoSimulator::ApplyFakeLpfStep(std::vector<double>& state,
+                                       const std::vector<double>& target, double alpha) noexcept {
   const auto n = std::min(state.size(), target.size());
   for (std::size_t i = 0; i < n; ++i) {
     const double t = target[i];
@@ -105,8 +104,7 @@ bool MuJoCoSimulator::DiscoverAllXmlJoints() noexcept {
 
     bool has_actuator = false;
     for (int a = 0; a < model_->nu; ++a) {
-      if (model_->actuator_trntype[a] == mjTRN_JOINT &&
-          model_->actuator_trnid[2 * a] == j) {
+      if (model_->actuator_trntype[a] == mjTRN_JOINT && model_->actuator_trnid[2 * a] == j) {
         has_actuator = true;
         break;
       }
@@ -115,17 +113,17 @@ bool MuJoCoSimulator::DiscoverAllXmlJoints() noexcept {
       continue;
     }
 
-    const char *name = mj_id2name(model_, mjOBJ_JOINT, j);
+    const char* name = mj_id2name(model_, mjOBJ_JOINT, j);
     all_xml_joint_names_.emplace_back(name ? name : "(unnamed)");
   }
 
   if (all_xml_joint_names_.empty()) {
-    fprintf(stderr, "[MuJoCoSimulator] ERROR: No hinge joints with actuators "
-                    "found in XML\n");
+    fprintf(stderr,
+            "[MuJoCoSimulator] ERROR: No hinge joints with actuators "
+            "found in XML\n");
     for (int j = 0; j < model_->njnt; ++j) {
-      const char *name = mj_id2name(model_, mjOBJ_JOINT, j);
-      fprintf(stderr, "  [%d] type=%d  %s\n", j, model_->jnt_type[j],
-              name ? name : "(unnamed)");
+      const char* name = mj_id2name(model_, mjOBJ_JOINT, j);
+      fprintf(stderr, "  [%d] type=%d  %s\n", j, model_->jnt_type[j], name ? name : "(unnamed)");
     }
     return false;
   }
@@ -136,8 +134,8 @@ bool MuJoCoSimulator::DiscoverAllXmlJoints() noexcept {
       names_str += ", ";
     names_str += all_xml_joint_names_[i];
   }
-  fprintf(stdout, "[MuJoCoSimulator] XML joints (%zu): [%s]\n",
-          all_xml_joint_names_.size(), names_str.c_str());
+  fprintf(stdout, "[MuJoCoSimulator] XML joints (%zu): [%s]\n", all_xml_joint_names_.size(),
+          names_str.c_str());
 
   return true;
 }
@@ -145,13 +143,13 @@ bool MuJoCoSimulator::DiscoverAllXmlJoints() noexcept {
 // ── Name-based index mapping for a single group
 // ────────────────────────────────
 
-bool MuJoCoSimulator::MapGroupIndices(JointGroup &group) noexcept {
+bool MuJoCoSimulator::MapGroupIndices(JointGroup& group) noexcept {
   group.qpos_indices.clear();
   group.qvel_indices.clear();
   group.actuator_indices.clear();
 
   for (std::size_t i = 0; i < group.command_joint_names.size(); ++i) {
-    const auto &jname = group.command_joint_names[i];
+    const auto& jname = group.command_joint_names[i];
     const int jnt_id = mj_name2id(model_, mjOBJ_JOINT, jname.c_str());
     if (jnt_id < 0) {
       fprintf(stderr,
@@ -166,18 +164,16 @@ bool MuJoCoSimulator::MapGroupIndices(JointGroup &group) noexcept {
 
     bool found_actuator = false;
     for (int a = 0; a < model_->nu; ++a) {
-      if (model_->actuator_trntype[a] == mjTRN_JOINT &&
-          model_->actuator_trnid[2 * a] == jnt_id) {
+      if (model_->actuator_trntype[a] == mjTRN_JOINT && model_->actuator_trnid[2 * a] == jnt_id) {
         group.actuator_indices.push_back(a);
         found_actuator = true;
 
-        const char *act_name = mj_id2name(model_, mjOBJ_ACTUATOR, a);
+        const char* act_name = mj_id2name(model_, mjOBJ_ACTUATOR, a);
         fprintf(stdout,
                 "[MuJoCoSimulator] [%s] cmd '%s' → qpos[%d]  qvel[%d]  "
                 "actuator[%d] '%s'\n",
                 group.name.c_str(), jname.c_str(), group.qpos_indices.back(),
-                group.qvel_indices.back(), a,
-                act_name ? act_name : "(unnamed)");
+                group.qvel_indices.back(), a, act_name ? act_name : "(unnamed)");
         break;
       }
     }
@@ -195,12 +191,12 @@ bool MuJoCoSimulator::MapGroupIndices(JointGroup &group) noexcept {
 // ── State joint index mapping
 // ─────────────────────────────────────────────────
 
-bool MuJoCoSimulator::MapStateIndices(JointGroup &group) noexcept {
+bool MuJoCoSimulator::MapStateIndices(JointGroup& group) noexcept {
   group.state_qpos_indices.clear();
   group.state_qvel_indices.clear();
 
   for (std::size_t i = 0; i < group.state_joint_names.size(); ++i) {
-    const auto &jname = group.state_joint_names[i];
+    const auto& jname = group.state_joint_names[i];
     const int jnt_id = mj_name2id(model_, mjOBJ_JOINT, jname.c_str());
     if (jnt_id < 0) {
       fprintf(stderr,
@@ -213,9 +209,8 @@ bool MuJoCoSimulator::MapStateIndices(JointGroup &group) noexcept {
     group.state_qpos_indices.push_back(model_->jnt_qposadr[jnt_id]);
     group.state_qvel_indices.push_back(model_->jnt_dofadr[jnt_id]);
 
-    fprintf(stdout, "[MuJoCoSimulator] [%s] state '%s' → qpos[%d]  qvel[%d]\n",
-            group.name.c_str(), jname.c_str(), group.state_qpos_indices.back(),
-            group.state_qvel_indices.back());
+    fprintf(stdout, "[MuJoCoSimulator] [%s] state '%s' → qpos[%d]  qvel[%d]\n", group.name.c_str(),
+            jname.c_str(), group.state_qpos_indices.back(), group.state_qvel_indices.back());
   }
   return true;
 }
@@ -226,10 +221,10 @@ bool MuJoCoSimulator::MapStateIndices(JointGroup &group) noexcept {
 bool MuJoCoSimulator::ValidateAndMapRobotGroups() noexcept {
   // Collect all command joint names from robot groups
   std::set<std::string> cmd_joints;
-  for (const auto &g : groups_) {
+  for (const auto& g : groups_) {
     if (!g->is_robot)
       continue;
-    for (const auto &jn : g->command_joint_names) {
+    for (const auto& jn : g->command_joint_names) {
       if (!cmd_joints.insert(jn).second) {
         fprintf(stderr,
                 "[MuJoCoSimulator] ERROR: duplicate command joint '%s' across "
@@ -241,22 +236,19 @@ bool MuJoCoSimulator::ValidateAndMapRobotGroups() noexcept {
   }
 
   // Build XML joint set
-  std::set<std::string> xml_joints(all_xml_joint_names_.begin(),
-                                   all_xml_joint_names_.end());
+  std::set<std::string> xml_joints(all_xml_joint_names_.begin(), all_xml_joint_names_.end());
 
   // Check YAML → XML (command에 있는데 XML에 없음)
   bool ok = true;
-  for (const auto &jn : cmd_joints) {
+  for (const auto& jn : cmd_joints) {
     if (xml_joints.find(jn) == xml_joints.end()) {
-      fprintf(stderr,
-              "[MuJoCoSimulator] ERROR: command joint '%s' not found in XML\n",
-              jn.c_str());
+      fprintf(stderr, "[MuJoCoSimulator] ERROR: command joint '%s' not found in XML\n", jn.c_str());
       ok = false;
     }
   }
 
   // Check XML → YAML (XML에 있는데 command에 없음)
-  for (const auto &jn : xml_joints) {
+  for (const auto& jn : xml_joints) {
     if (cmd_joints.find(jn) == cmd_joints.end()) {
       fprintf(stderr,
               "[MuJoCoSimulator] ERROR: XML joint '%s' not covered by any "
@@ -267,12 +259,11 @@ bool MuJoCoSimulator::ValidateAndMapRobotGroups() noexcept {
   }
 
   if (!ok) {
-    fprintf(stderr,
-            "[MuJoCoSimulator] command joints (%zu):", cmd_joints.size());
-    for (const auto &jn : cmd_joints)
+    fprintf(stderr, "[MuJoCoSimulator] command joints (%zu):", cmd_joints.size());
+    for (const auto& jn : cmd_joints)
       fprintf(stderr, " %s", jn.c_str());
     fprintf(stderr, "\n[MuJoCoSimulator] XML joints (%zu):", xml_joints.size());
-    for (const auto &jn : xml_joints)
+    for (const auto& jn : xml_joints)
       fprintf(stderr, " %s", jn.c_str());
     fprintf(stderr, "\n");
     return false;
@@ -284,7 +275,7 @@ bool MuJoCoSimulator::ValidateAndMapRobotGroups() noexcept {
           cmd_joints.size(), xml_joints.size());
 
   // Map command indices for each robot group
-  for (auto &g : groups_) {
+  for (auto& g : groups_) {
     if (!g->is_robot)
       continue;
     if (!MapGroupIndices(*g))
@@ -297,27 +288,25 @@ bool MuJoCoSimulator::ValidateAndMapRobotGroups() noexcept {
 // ── Validate and map state joints ────────────────────────────────────────────
 
 bool MuJoCoSimulator::ValidateAndMapStateJoints() noexcept {
-  std::set<std::string> xml_joints(all_xml_joint_names_.begin(),
-                                   all_xml_joint_names_.end());
+  std::set<std::string> xml_joints(all_xml_joint_names_.begin(), all_xml_joint_names_.end());
 
   // Build the union of state_joint_names across all robot groups so we can
   // warn about XML joints that no group publishes.  Per-group warnings would
   // misfire when joints are partitioned between groups (e.g. arm vs hand).
   std::set<std::string> all_state_set;
-  for (const auto &g : groups_) {
+  for (const auto& g : groups_) {
     if (!g->is_robot)
       continue;
-    all_state_set.insert(g->state_joint_names.begin(),
-                         g->state_joint_names.end());
+    all_state_set.insert(g->state_joint_names.begin(), g->state_joint_names.end());
   }
 
-  for (auto &g : groups_) {
+  for (auto& g : groups_) {
     if (!g->is_robot)
       continue;
 
     // Check all state_joint_names exist in XML
     bool ok = true;
-    for (const auto &jn : g->state_joint_names) {
+    for (const auto& jn : g->state_joint_names) {
       if (xml_joints.find(jn) == xml_joints.end()) {
         fprintf(stderr,
                 "[MuJoCoSimulator] ERROR: group '%s' — state joint '%s' not "
@@ -333,12 +322,12 @@ bool MuJoCoSimulator::ValidateAndMapStateJoints() noexcept {
     if (!MapStateIndices(*g))
       return false;
 
-    fprintf(stdout, "[MuJoCoSimulator] [%s] state joints: %d (command: %d)\n",
-            g->name.c_str(), g->num_state_joints, g->num_command_joints);
+    fprintf(stdout, "[MuJoCoSimulator] [%s] state joints: %d (command: %d)\n", g->name.c_str(),
+            g->num_state_joints, g->num_command_joints);
   }
 
   // Warn about XML joints that no group publishes (global coverage check).
-  for (const auto &jn : all_xml_joint_names_) {
+  for (const auto& jn : all_xml_joint_names_) {
     if (all_state_set.find(jn) == all_state_set.end()) {
       fprintf(stdout,
               "[MuJoCoSimulator] WARNING: XML joint '%s' not published by any "
@@ -359,10 +348,9 @@ void MuJoCoSimulator::LogAllXmlSensors() const noexcept {
     return;
   }
 
-  fprintf(stdout, "[MuJoCoSimulator] XML sensors found (%d):\n",
-          model_->nsensor);
+  fprintf(stdout, "[MuJoCoSimulator] XML sensors found (%d):\n", model_->nsensor);
   for (int i = 0; i < model_->nsensor; ++i) {
-    const char *name = mj_id2name(model_, mjOBJ_SENSOR, i);
+    const char* name = mj_id2name(model_, mjOBJ_SENSOR, i);
     const int type = model_->sensor_type[i];
     const int dim = model_->sensor_dim[i];
     const int adr = model_->sensor_adr[i];
@@ -370,25 +358,23 @@ void MuJoCoSimulator::LogAllXmlSensors() const noexcept {
     const int objid = model_->sensor_objid[i];
 
     // Resolve attached object name (site, body, joint, etc.)
-    const char *obj_name = nullptr;
+    const char* obj_name = nullptr;
     if (objid >= 0 && objtype > 0) {
       obj_name = mj_id2name(model_, objtype, objid);
     }
 
     fprintf(stdout, "  [%d] \"%s\"  type=%d  dim=%d  adr=%d  obj=%s\n", i,
-            name ? name : "(unnamed)", type, dim, adr,
-            obj_name ? obj_name : "(none)");
+            name ? name : "(unnamed)", type, dim, adr, obj_name ? obj_name : "(none)");
   }
 }
 
-std::vector<std::string>
-MuJoCoSimulator::CollectAllXmlSensorNames() const noexcept {
+std::vector<std::string> MuJoCoSimulator::CollectAllXmlSensorNames() const noexcept {
   std::vector<std::string> names;
   if (!model_)
     return names;
   names.reserve(static_cast<std::size_t>(model_->nsensor));
   for (int i = 0; i < model_->nsensor; ++i) {
-    const char *name = mj_id2name(model_, mjOBJ_SENSOR, i);
+    const char* name = mj_id2name(model_, mjOBJ_SENSOR, i);
     if (name) {
       names.emplace_back(name);
     }
@@ -399,12 +385,12 @@ MuJoCoSimulator::CollectAllXmlSensorNames() const noexcept {
 // ── Sensor name → MuJoCo index mapping
 // ────────────────────────────────────────
 
-void MuJoCoSimulator::MapSensorInfos(
-    JointGroup &group, const std::vector<std::string> &sensor_names) noexcept {
+void MuJoCoSimulator::MapSensorInfos(JointGroup& group,
+                                     const std::vector<std::string>& sensor_names) noexcept {
   group.sensor_infos.clear();
   int total_dim = 0;
 
-  for (const auto &sname : sensor_names) {
+  for (const auto& sname : sensor_names) {
     const int sid = mj_name2id(model_, mjOBJ_SENSOR, sname.c_str());
     if (sid < 0) {
       fprintf(stderr,
@@ -421,8 +407,7 @@ void MuJoCoSimulator::MapSensorInfos(
     info.dim = model_->sensor_dim[sid];
     total_dim += info.dim;
 
-    fprintf(stdout,
-            "[MuJoCoSimulator] [%s] sensor '%s' → type=%d  adr=%d  dim=%d\n",
+    fprintf(stdout, "[MuJoCoSimulator] [%s] sensor '%s' → type=%d  adr=%d  dim=%d\n",
             group.name.c_str(), sname.c_str(), info.type, info.adr, info.dim);
 
     group.sensor_infos.push_back(std::move(info));
@@ -438,8 +423,7 @@ bool MuJoCoSimulator::Initialize() noexcept {
   char error[1000] = {};
   model_ = mj_loadXML(cfg_.model_path.c_str(), nullptr, error, sizeof(error));
   if (!model_) {
-    fprintf(stderr, "[MuJoCoSimulator] Failed to load '%s': %s\n",
-            cfg_.model_path.c_str(), error);
+    fprintf(stderr, "[MuJoCoSimulator] Failed to load '%s': %s\n", cfg_.model_path.c_str(), error);
     return false;
   }
 
@@ -458,21 +442,16 @@ bool MuJoCoSimulator::Initialize() noexcept {
   solver_integrator_.store(model_->opt.integrator, std::memory_order_relaxed);
   solver_type_.store(model_->opt.solver, std::memory_order_relaxed);
   solver_iterations_.store(model_->opt.iterations, std::memory_order_relaxed);
-  solver_tolerance_.store(static_cast<double>(model_->opt.tolerance),
-                          std::memory_order_relaxed);
+  solver_tolerance_.store(static_cast<double>(model_->opt.tolerance), std::memory_order_relaxed);
   solver_cone_.store(model_->opt.cone, std::memory_order_relaxed);
   solver_jacobian_.store(model_->opt.jacobian, std::memory_order_relaxed);
-  solver_ls_iterations_.store(model_->opt.ls_iterations,
-                              std::memory_order_relaxed);
+  solver_ls_iterations_.store(model_->opt.ls_iterations, std::memory_order_relaxed);
   solver_ls_tolerance_.store(static_cast<double>(model_->opt.ls_tolerance),
                              std::memory_order_relaxed);
-  solver_noslip_iterations_.store(model_->opt.noslip_iterations,
-                                  std::memory_order_relaxed);
-  solver_noslip_tolerance_.store(
-      static_cast<double>(model_->opt.noslip_tolerance),
-      std::memory_order_relaxed);
-  solver_impratio_.store(static_cast<double>(model_->opt.impratio),
-                         std::memory_order_relaxed);
+  solver_noslip_iterations_.store(model_->opt.noslip_iterations, std::memory_order_relaxed);
+  solver_noslip_tolerance_.store(static_cast<double>(model_->opt.noslip_tolerance),
+                                 std::memory_order_relaxed);
+  solver_impratio_.store(static_cast<double>(model_->opt.impratio), std::memory_order_relaxed);
 
   // Apply YAML solver config with XML priority
   ApplySolverConfig();
@@ -483,7 +462,7 @@ bool MuJoCoSimulator::Initialize() noexcept {
   // Save original actuator params
   orig_actuator_params_.resize(static_cast<std::size_t>(model_->nu));
   for (int i = 0; i < model_->nu; ++i) {
-    auto &p = orig_actuator_params_[static_cast<std::size_t>(i)];
+    auto& p = orig_actuator_params_[static_cast<std::size_t>(i)];
     p.gainprm0 = static_cast<double>(model_->actuator_gainprm[i * mjNGAIN + 0]);
     p.biasprm0 = static_cast<double>(model_->actuator_biasprm[i * mjNBIAS + 0]);
     p.biasprm1 = static_cast<double>(model_->actuator_biasprm[i * mjNBIAS + 1]);
@@ -504,14 +483,14 @@ bool MuJoCoSimulator::Initialize() noexcept {
   // Validate no duplicate group names between robot and fake
   {
     std::set<std::string> robot_names, fake_names;
-    for (const auto &gc : cfg_.groups) {
+    for (const auto& gc : cfg_.groups) {
       if (gc.is_robot) {
         robot_names.insert(gc.name);
       } else {
         fake_names.insert(gc.name);
       }
     }
-    for (const auto &rn : robot_names) {
+    for (const auto& rn : robot_names) {
       if (fake_names.count(rn)) {
         fprintf(stderr,
                 "[MuJoCoSimulator] ERROR: group '%s' exists in both "
@@ -523,10 +502,9 @@ bool MuJoCoSimulator::Initialize() noexcept {
   }
 
   bool first_robot = true;
-  for (const auto &gc : cfg_.groups) {
+  for (const auto& gc : cfg_.groups) {
     // Resolve command_joint_names: prefer explicit, fallback to joint_names
-    auto cmd_names = gc.command_joint_names.empty() ? gc.joint_names
-                                                    : gc.command_joint_names;
+    auto cmd_names = gc.command_joint_names.empty() ? gc.joint_names : gc.command_joint_names;
     if (cmd_names.empty()) {
       fprintf(stderr,
               "[MuJoCoSimulator] ERROR: group '%s' has no command_joint_names "
@@ -606,7 +584,7 @@ bool MuJoCoSimulator::Initialize() noexcept {
 
   // ── Map sensor infos per group ─────────────────────────────────────────
   for (std::size_t gi = 0; gi < groups_.size(); ++gi) {
-    const auto &gc = cfg_.groups[gi];
+    const auto& gc = cfg_.groups[gi];
     if (gc.sensor_names.empty())
       continue;
 
@@ -642,9 +620,8 @@ bool MuJoCoSimulator::Initialize() noexcept {
               cfg_.physics_timestep, 1.0 / cfg_.physics_timestep, xml_timestep_,
               1.0 / xml_timestep_);
     } else {
-      fprintf(stdout,
-              "[MuJoCoSimulator] physics_timestep OK: %.6f s (%.1f Hz)\n",
-              xml_timestep_, 1.0 / xml_timestep_);
+      fprintf(stdout, "[MuJoCoSimulator] physics_timestep OK: %.6f s (%.1f Hz)\n", xml_timestep_,
+              1.0 / xml_timestep_);
     }
   }
 
@@ -658,14 +635,12 @@ bool MuJoCoSimulator::Initialize() noexcept {
   }
 
   if (cfg_.n_substeps > 1) {
-    const double substep_dt =
-        xml_timestep_ / static_cast<double>(cfg_.n_substeps);
+    const double substep_dt = xml_timestep_ / static_cast<double>(cfg_.n_substeps);
     model_->opt.timestep = static_cast<mjtNum>(substep_dt);
     fprintf(stdout,
             "[MuJoCoSimulator] Substepping: n_substeps=%d  "
             "control_period=%.4f s (%.1f Hz)  substep_dt=%.6f s (%.1f Hz)\n",
-            cfg_.n_substeps, xml_timestep_, 1.0 / xml_timestep_, substep_dt,
-            1.0 / substep_dt);
+            cfg_.n_substeps, xml_timestep_, 1.0 / xml_timestep_, substep_dt, 1.0 / substep_dt);
   } else {
     fprintf(stdout,
             "[MuJoCoSimulator] Substepping: n_substeps=1  "
@@ -683,28 +658,26 @@ bool MuJoCoSimulator::Initialize() noexcept {
   }
   {
     const double interval = 1.0 / (xml_timestep_ * cfg_.viewer_refresh_rate);
-    viz_update_interval_ = std::max(
-        static_cast<uint64_t>(1), static_cast<uint64_t>(std::round(interval)));
-    viewer_sleep_ms_ = std::max(
-        1, static_cast<int>(std::round(1000.0 / cfg_.viewer_refresh_rate)));
+    viz_update_interval_ =
+        std::max(static_cast<uint64_t>(1), static_cast<uint64_t>(std::round(interval)));
+    viewer_sleep_ms_ = std::max(1, static_cast<int>(std::round(1000.0 / cfg_.viewer_refresh_rate)));
     fprintf(stdout,
             "[MuJoCoSimulator] Viewer: target=%.0f Hz  "
             "viz_update_interval=%lu steps  render_sleep=%d ms\n",
-            cfg_.viewer_refresh_rate,
-            static_cast<unsigned long>(viz_update_interval_), viewer_sleep_ms_);
+            cfg_.viewer_refresh_rate, static_cast<unsigned long>(viz_update_interval_),
+            viewer_sleep_ms_);
   }
 
   // ── Per-group servo gains & initial positions ───────────────────────────
-  for (auto &g : groups_) {
+  for (auto& g : groups_) {
     if (!g->is_robot)
       continue;
 
     const auto ncj = static_cast<std::size_t>(g->num_command_joints);
 
     // Servo gains: use per-group if provided, otherwise inherit global
-    const auto &kp =
-        (!cfg_.groups.empty()) ? [&]() -> const std::vector<double> & {
-      for (const auto &gc : cfg_.groups) {
+    const auto& kp = (!cfg_.groups.empty()) ? [&]() -> const std::vector<double>& {
+      for (const auto& gc : cfg_.groups) {
         if (gc.name == g->name && !gc.servo_kp.empty())
           return gc.servo_kp;
       }
@@ -712,9 +685,8 @@ bool MuJoCoSimulator::Initialize() noexcept {
     }()
         : cfg_.servo_kp;
 
-    const auto &kd =
-        (!cfg_.groups.empty()) ? [&]() -> const std::vector<double> & {
-      for (const auto &gc : cfg_.groups) {
+    const auto& kd = (!cfg_.groups.empty()) ? [&]() -> const std::vector<double>& {
+      for (const auto& gc : cfg_.groups) {
         if (gc.name == g->name && !gc.servo_kd.empty())
           return gc.servo_kd;
       }
@@ -742,8 +714,7 @@ bool MuJoCoSimulator::Initialize() noexcept {
     // Initial positions from keyframe
     if (model_->nkey > 0) {
       for (std::size_t i = 0; i < ncj; ++i) {
-        g->initial_qpos[i] =
-            static_cast<double>(model_->key_qpos[g->qpos_indices[i]]);
+        g->initial_qpos[i] = static_cast<double>(model_->key_qpos[g->qpos_indices[i]]);
       }
     }
 
@@ -758,12 +729,11 @@ bool MuJoCoSimulator::Initialize() noexcept {
   ReadState();
 
   if (model_->nkey > 0) {
-    const char *key_name = mj_id2name(model_, mjOBJ_KEY, 0);
+    const char* key_name = mj_id2name(model_, mjOBJ_KEY, 0);
     fprintf(stdout, "[MuJoCoSimulator] Initial positions from keyframe '%s'\n",
             key_name ? key_name : "(unnamed)");
   } else {
-    fprintf(stdout,
-            "[MuJoCoSimulator] No keyframe — using zero initial positions\n");
+    fprintf(stdout, "[MuJoCoSimulator] No keyframe — using zero initial positions\n");
   }
 
   // ── Initial gravity state ───────────────────────────────────────────────
@@ -772,24 +742,23 @@ bool MuJoCoSimulator::Initialize() noexcept {
 
   // ── Summary ─────────────────────────────────────────────────────────────
   int total_cmd_joints = 0;
-  for (const auto &g : groups_) {
+  for (const auto& g : groups_) {
     if (g->is_robot)
       total_cmd_joints += g->num_command_joints;
     fprintf(stdout,
             "[MuJoCoSimulator] Group '%s': %s  cmd_joints=%d  state_joints=%d  "
             "sensors=%zu  cmd=%s  state=%s  sensor=%s%s\n",
-            g->name.c_str(), g->is_robot ? "ROBOT" : "FAKE",
-            g->num_command_joints, g->num_state_joints, g->sensor_infos.size(),
-            g->command_topic.c_str(), g->state_topic.c_str(),
-            g->sensor_topic.empty() ? "(none)" : g->sensor_topic.c_str(),
+            g->name.c_str(), g->is_robot ? "ROBOT" : "FAKE", g->num_command_joints,
+            g->num_state_joints, g->sensor_infos.size(), g->command_topic.c_str(),
+            g->state_topic.c_str(), g->sensor_topic.empty() ? "(none)" : g->sensor_topic.c_str(),
             g->is_primary ? "  [PRIMARY]" : "");
   }
 
   fprintf(stdout,
           "[MuJoCoSimulator] Loaded '%s'  nq=%d nv=%d nu=%d  groups=%zu"
           "  command_joints=%d  dt=%.4f s\n",
-          cfg_.model_path.c_str(), model_->nq, model_->nv, model_->nu,
-          groups_.size(), total_cmd_joints, xml_timestep_);
+          cfg_.model_path.c_str(), model_->nq, model_->nv, model_->nu, groups_.size(),
+          total_cmd_joints, xml_timestep_);
 
   return true;
 }
@@ -801,7 +770,7 @@ bool MuJoCoSimulator::Initialize() noexcept {
 // XML, keep the XML values (already in model_->opt).
 
 void MuJoCoSimulator::ApplySolverConfig() noexcept {
-  const auto &sc = cfg_.solver_config;
+  const auto& sc = cfg_.solver_config;
 
   // ── Parse XML to find explicit <option> attributes ────────────────────────
   // tinyxml2 doesn't go through MuJoCo's resource provider, so resolve any
@@ -810,14 +779,12 @@ void MuJoCoSimulator::ApplySolverConfig() noexcept {
   std::set<std::string> xml_attrs;
   {
     tinyxml2::XMLDocument doc;
-    if (!resolved_path.empty() &&
-        doc.LoadFile(resolved_path.c_str()) == tinyxml2::XML_SUCCESS) {
-      const auto *root = doc.RootElement();
+    if (!resolved_path.empty() && doc.LoadFile(resolved_path.c_str()) == tinyxml2::XML_SUCCESS) {
+      const auto* root = doc.RootElement();
       if (root) {
-        const auto *option = root->FirstChildElement("option");
+        const auto* option = root->FirstChildElement("option");
         if (option) {
-          for (const auto *attr = option->FirstAttribute(); attr != nullptr;
-               attr = attr->Next()) {
+          for (const auto* attr = option->FirstAttribute(); attr != nullptr; attr = attr->Next()) {
             xml_attrs.insert(attr->Name());
           }
         }
@@ -827,8 +794,7 @@ void MuJoCoSimulator::ApplySolverConfig() noexcept {
               "[MuJoCoSimulator] WARNING: Could not re-parse XML for <option> "
               "detection (path='%s'), "
               "using YAML solver config as fallback for all parameters\n",
-              resolved_path.empty() ? cfg_.model_path.c_str()
-                                    : resolved_path.c_str());
+              resolved_path.empty() ? cfg_.model_path.c_str() : resolved_path.c_str());
     }
   }
 
@@ -873,13 +839,11 @@ void MuJoCoSimulator::ApplySolverConfig() noexcept {
   }
   if (!xml_attrs.count("noslip_iterations")) {
     model_->opt.noslip_iterations = sc.noslip_iterations;
-    solver_noslip_iterations_.store(sc.noslip_iterations,
-                                    std::memory_order_relaxed);
+    solver_noslip_iterations_.store(sc.noslip_iterations, std::memory_order_relaxed);
   }
   if (!xml_attrs.count("noslip_tolerance")) {
     model_->opt.noslip_tolerance = static_cast<mjtNum>(sc.noslip_tolerance);
-    solver_noslip_tolerance_.store(sc.noslip_tolerance,
-                                   std::memory_order_relaxed);
+    solver_noslip_tolerance_.store(sc.noslip_tolerance, std::memory_order_relaxed);
   }
   // MuJoCo version compatibility: ccd_iterations/ccd_tolerance (>=3.2.0,
   // version 320+) vs mpr_iterations/mpr_tolerance (older, <3.2.0)
@@ -915,13 +879,12 @@ void MuJoCoSimulator::ApplySolverConfig() noexcept {
   {
     tinyxml2::XMLDocument doc;
     std::set<std::string> flag_attrs;
-    if (!resolved_path.empty() &&
-        doc.LoadFile(resolved_path.c_str()) == tinyxml2::XML_SUCCESS) {
-      const auto *root = doc.RootElement();
+    if (!resolved_path.empty() && doc.LoadFile(resolved_path.c_str()) == tinyxml2::XML_SUCCESS) {
+      const auto* root = doc.RootElement();
       if (root) {
-        const auto *flag_elem = root->FirstChildElement("flag");
+        const auto* flag_elem = root->FirstChildElement("flag");
         if (flag_elem) {
-          for (const auto *attr = flag_elem->FirstAttribute(); attr != nullptr;
+          for (const auto* attr = flag_elem->FirstAttribute(); attr != nullptr;
                attr = attr->Next()) {
             flag_attrs.insert(attr->Name());
           }
@@ -976,26 +939,24 @@ void MuJoCoSimulator::ApplySolverConfig() noexcept {
   }
 
   // ── Contact override parameters ───────────────────────────────────────────
-  if (sc.contact_override.enable ||
-      (model_->opt.enableflags & mjENBL_OVERRIDE)) {
+  if (sc.contact_override.enable || (model_->opt.enableflags & mjENBL_OVERRIDE)) {
     model_->opt.o_margin = static_cast<mjtNum>(sc.contact_override.o_margin);
     for (int i = 0; i < 2; ++i) {
-      model_->opt.o_solref[i] = static_cast<mjtNum>(
-          sc.contact_override.o_solref[static_cast<std::size_t>(i)]);
+      model_->opt.o_solref[i] =
+          static_cast<mjtNum>(sc.contact_override.o_solref[static_cast<std::size_t>(i)]);
     }
     for (int i = 0; i < 5; ++i) {
-      model_->opt.o_solimp[i] = static_cast<mjtNum>(
-          sc.contact_override.o_solimp[static_cast<std::size_t>(i)]);
-      model_->opt.o_friction[i] = static_cast<mjtNum>(
-          sc.contact_override.o_friction[static_cast<std::size_t>(i)]);
+      model_->opt.o_solimp[i] =
+          static_cast<mjtNum>(sc.contact_override.o_solimp[static_cast<std::size_t>(i)]);
+      model_->opt.o_friction[i] =
+          static_cast<mjtNum>(sc.contact_override.o_friction[static_cast<std::size_t>(i)]);
     }
   }
 
   // ── Log summary ───────────────────────────────────────────────────────────
-  static constexpr const char *kSolverNames[] = {"PGS", "CG", "Newton"};
-  static constexpr const char *kConeNames[] = {"Pyramidal", "Elliptic"};
-  static constexpr const char *kIntNames[] = {"Euler", "RK4", "Implicit",
-                                              "ImplicitFast"};
+  static constexpr const char* kSolverNames[] = {"PGS", "CG", "Newton"};
+  static constexpr const char* kConeNames[] = {"Pyramidal", "Elliptic"};
+  static constexpr const char* kIntNames[] = {"Euler", "RK4", "Implicit", "ImplicitFast"};
 
   const int sol = model_->opt.solver;
   const int cone = model_->opt.cone;
@@ -1006,20 +967,20 @@ void MuJoCoSimulator::ApplySolverConfig() noexcept {
           "iterations=%d  tolerance=%.1e  impratio=%.1f  noslip_iter=%d\n",
           (sol >= 0 && sol <= 2) ? kSolverNames[sol] : "?",
           (cone >= 0 && cone <= 1) ? kConeNames[cone] : "?",
-          (integ >= 0 && integ <= 3) ? kIntNames[integ] : "?",
-          model_->opt.iterations, static_cast<double>(model_->opt.tolerance),
-          static_cast<double>(model_->opt.impratio),
+          (integ >= 0 && integ <= 3) ? kIntNames[integ] : "?", model_->opt.iterations,
+          static_cast<double>(model_->opt.tolerance), static_cast<double>(model_->opt.impratio),
           model_->opt.noslip_iterations);
 
   if (!xml_attrs.empty()) {
     fprintf(stdout, "[MuJoCoSimulator] XML <option> explicit attrs:");
-    for (const auto &a : xml_attrs) {
+    for (const auto& a : xml_attrs) {
       fprintf(stdout, " %s", a.c_str());
     }
     fprintf(stdout, "\n");
   } else {
-    fprintf(stdout, "[MuJoCoSimulator] XML <option> not found — all solver "
-                    "params from YAML\n");
+    fprintf(stdout,
+            "[MuJoCoSimulator] XML <option> not found — all solver "
+            "params from YAML\n");
   }
 }
 
@@ -1033,8 +994,7 @@ void MuJoCoSimulator::Start() noexcept {
 
   sim_thread_ = std::jthread([this](std::stop_token st) { SimLoop(st); });
   if (cfg_.enable_viewer) {
-    viewer_thread_ =
-        std::jthread([this](std::stop_token st) { ViewerLoop(st); });
+    viewer_thread_ = std::jthread([this](std::stop_token st) { ViewerLoop(st); });
   }
 }
 
@@ -1054,11 +1014,10 @@ void MuJoCoSimulator::Stop() noexcept {
 // ── Group-indexed Command / State I/O
 // ───────────────────────────────────────────
 
-void MuJoCoSimulator::SetCommand(std::size_t group_idx,
-                                 const std::vector<double> &cmd) noexcept {
+void MuJoCoSimulator::SetCommand(std::size_t group_idx, const std::vector<double>& cmd) noexcept {
   if (group_idx >= groups_.size())
     return;
-  auto &g = *groups_[group_idx];
+  auto& g = *groups_[group_idx];
   if (!g.is_robot)
     return;
   {
@@ -1071,22 +1030,21 @@ void MuJoCoSimulator::SetCommand(std::size_t group_idx,
   }
 }
 
-void MuJoCoSimulator::SetStateCallback(std::size_t group_idx,
-                                       StateCallback cb) noexcept {
+void MuJoCoSimulator::SetStateCallback(std::size_t group_idx, StateCallback cb) noexcept {
   if (group_idx >= groups_.size())
     return;
   groups_[group_idx]->state_cb = std::move(cb);
 }
 
-void MuJoCoSimulator::SetSensorCallback(
-    std::size_t group_idx, JointGroup::SensorCallback cb) noexcept {
+void MuJoCoSimulator::SetSensorCallback(std::size_t group_idx,
+                                        JointGroup::SensorCallback cb) noexcept {
   if (group_idx >= groups_.size())
     return;
   groups_[group_idx]->sensor_cb = std::move(cb);
 }
 
-const std::vector<JointGroup::SensorInfo> &
-MuJoCoSimulator::GetSensorInfos(std::size_t group_idx) const noexcept {
+const std::vector<JointGroup::SensorInfo>& MuJoCoSimulator::GetSensorInfos(
+    std::size_t group_idx) const noexcept {
   static const std::vector<JointGroup::SensorInfo> empty;
   if (group_idx >= groups_.size())
     return empty;
@@ -1099,43 +1057,40 @@ bool MuJoCoSimulator::HasSensors(std::size_t group_idx) const noexcept {
   return !groups_[group_idx]->sensor_infos.empty();
 }
 
-std::vector<double>
-MuJoCoSimulator::GetPositions(std::size_t group_idx) const noexcept {
+std::vector<double> MuJoCoSimulator::GetPositions(std::size_t group_idx) const noexcept {
   if (group_idx >= groups_.size())
     return {};
-  auto &g = *groups_[group_idx];
+  auto& g = *groups_[group_idx];
   std::lock_guard lock(g.state_mutex);
   return g.positions;
 }
 
-std::vector<double>
-MuJoCoSimulator::GetVelocities(std::size_t group_idx) const noexcept {
+std::vector<double> MuJoCoSimulator::GetVelocities(std::size_t group_idx) const noexcept {
   if (group_idx >= groups_.size())
     return {};
-  auto &g = *groups_[group_idx];
+  auto& g = *groups_[group_idx];
   std::lock_guard lock(g.state_mutex);
   return g.velocities;
 }
 
-std::vector<double>
-MuJoCoSimulator::GetEfforts(std::size_t group_idx) const noexcept {
+std::vector<double> MuJoCoSimulator::GetEfforts(std::size_t group_idx) const noexcept {
   if (group_idx >= groups_.size())
     return {};
-  auto &g = *groups_[group_idx];
+  auto& g = *groups_[group_idx];
   std::lock_guard lock(g.state_mutex);
   return g.efforts;
 }
 
-const std::vector<std::string> &
-MuJoCoSimulator::GetJointNames(std::size_t group_idx) const noexcept {
+const std::vector<std::string>& MuJoCoSimulator::GetJointNames(
+    std::size_t group_idx) const noexcept {
   static const std::vector<std::string> empty;
   if (group_idx >= groups_.size())
     return empty;
   return groups_[group_idx]->command_joint_names;
 }
 
-const std::vector<std::string> &
-MuJoCoSimulator::GetStateJointNames(std::size_t group_idx) const noexcept {
+const std::vector<std::string>& MuJoCoSimulator::GetStateJointNames(
+    std::size_t group_idx) const noexcept {
   static const std::vector<std::string> empty;
   if (group_idx >= groups_.size())
     return empty;
@@ -1163,11 +1118,10 @@ bool MuJoCoSimulator::IsGroupRobot(std::size_t group_idx) const noexcept {
 // ── Per-group control mode
 // ──────────────────────────────────────────────────────
 
-void MuJoCoSimulator::SetControlMode(std::size_t group_idx,
-                                     bool torque_mode) noexcept {
+void MuJoCoSimulator::SetControlMode(std::size_t group_idx, bool torque_mode) noexcept {
   if (group_idx >= groups_.size())
     return;
-  auto &g = *groups_[group_idx];
+  auto& g = *groups_[group_idx];
   if (!g.is_robot)
     return;
 
@@ -1180,7 +1134,7 @@ void MuJoCoSimulator::SetControlMode(std::size_t group_idx,
   } else {
     // Check if any other robot group is still in position servo
     bool any_servo = false;
-    for (const auto &og : groups_) {
+    for (const auto& og : groups_) {
       if (!og->is_robot)
         continue;
       if (og.get() == &g)
@@ -1206,11 +1160,11 @@ bool MuJoCoSimulator::IsInTorqueMode(std::size_t group_idx) const noexcept {
 // ── Fake response API
 // ──────────────────────────────────────────────────────────
 
-void MuJoCoSimulator::SetFakeTarget(
-    std::size_t group_idx, const std::vector<double> &target) noexcept {
+void MuJoCoSimulator::SetFakeTarget(std::size_t group_idx,
+                                    const std::vector<double>& target) noexcept {
   if (group_idx >= groups_.size())
     return;
-  auto &g = *groups_[group_idx];
+  auto& g = *groups_[group_idx];
   if (g.is_robot)
     return;
   std::lock_guard lock(g.fake_mutex);
@@ -1221,18 +1175,17 @@ void MuJoCoSimulator::SetFakeTarget(
 void MuJoCoSimulator::AdvanceFakeLPF(std::size_t group_idx) noexcept {
   if (group_idx >= groups_.size())
     return;
-  auto &g = *groups_[group_idx];
+  auto& g = *groups_[group_idx];
   if (g.is_robot)
     return;
   std::lock_guard lock(g.fake_mutex);
   ApplyFakeLpfStep(g.fake_state, g.fake_target, g.filter_alpha);
 }
 
-std::vector<double>
-MuJoCoSimulator::GetFakeState(std::size_t group_idx) const noexcept {
+std::vector<double> MuJoCoSimulator::GetFakeState(std::size_t group_idx) const noexcept {
   if (group_idx >= groups_.size())
     return {};
-  auto &g = *groups_[group_idx];
+  auto& g = *groups_[group_idx];
   std::lock_guard lock(g.fake_mutex);
   return g.fake_state;
 }
@@ -1248,8 +1201,8 @@ MuJoCoSimulator::SolverStats MuJoCoSimulator::GetSolverStats() const noexcept {
 // ── External forces / perturbation
 // ────────────────────────────────────────────
 
-void MuJoCoSimulator::SetExternalForce(
-    int body_id, const std::array<double, 6> &wrench_world) noexcept {
+void MuJoCoSimulator::SetExternalForce(int body_id,
+                                       const std::array<double, 6>& wrench_world) noexcept {
   if (body_id <= 0 || body_id >= model_->nbody) {
     return;
   }
@@ -1267,7 +1220,7 @@ void MuJoCoSimulator::ClearExternalForce() noexcept {
   ext_xfrc_dirty_ = false;
 }
 
-void MuJoCoSimulator::UpdatePerturb(const mjvPerturb &pert) noexcept {
+void MuJoCoSimulator::UpdatePerturb(const mjvPerturb& pert) noexcept {
   std::lock_guard lock(pert_mutex_);
   shared_pert_ = pert;
   pert_active_ = (pert.active != 0);
@@ -1279,4 +1232,4 @@ void MuJoCoSimulator::ClearPerturb() noexcept {
   pert_active_ = false;
 }
 
-} // namespace rtc
+}  // namespace rtc

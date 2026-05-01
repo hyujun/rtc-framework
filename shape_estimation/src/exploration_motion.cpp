@@ -1,18 +1,21 @@
 #include "shape_estimation/exploration_motion.hpp"
+
 #include "shape_estimation/shape_logging.hpp"
+
+#include <rclcpp/clock.hpp>
+#include <rclcpp/logging.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <sstream>
 #include <string>
 
-#include <rclcpp/clock.hpp>
-#include <rclcpp/logging.hpp>
-
 namespace shape_estimation {
 
 namespace {
-auto logger() { return ::rtc::shape::logging::ExploreLogger(); }
+auto logger() {
+  return ::rtc::shape::logging::ExploreLogger();
+}
 }  // namespace
 
 // ── 유틸 ────────────────────────────────────────────────────────────────────
@@ -37,9 +40,8 @@ static Eigen::Vector3d PosePosition(const std::array<double, 6>& pose) {
 ExplorationMotionGenerator::ExplorationMotionGenerator(const ExplorationConfig& config)
     : config_(config) {}
 
-void ExplorationMotionGenerator::Start(
-    const std::array<double, 6>& current_pose,
-    const std::array<double, 3>& object_position) {
+void ExplorationMotionGenerator::Start(const std::array<double, 6>& current_pose,
+                                       const std::array<double, 3>& object_position) {
   phase_ = ExplorePhase::kApproach;
   stats_ = {};
   object_position_ = object_position;
@@ -60,9 +62,8 @@ void ExplorationMotionGenerator::Start(
   RCLCPP_INFO(logger(),
               "탐색 시작: object=[%.3f, %.3f, %.3f], "
               "approach_dir=[%.3f, %.3f, %.3f], dist=%.3f",
-              object_position[0], object_position[1], object_position[2],
-              approach_direction_.x(), approach_direction_.y(),
-              approach_direction_.z(), dist);
+              object_position[0], object_position[1], object_position[2], approach_direction_.x(),
+              approach_direction_.y(), approach_direction_.z(), dist);
 
   // Sweep 상태 초기화
   sweep_position_ = 0.0;
@@ -74,27 +75,21 @@ void ExplorationMotionGenerator::Start(
 }
 
 void ExplorationMotionGenerator::Abort() {
-  if (phase_ != ExplorePhase::kIdle &&
-      phase_ != ExplorePhase::kSucceeded &&
+  if (phase_ != ExplorePhase::kIdle && phase_ != ExplorePhase::kSucceeded &&
       phase_ != ExplorePhase::kFailed) {
     phase_ = ExplorePhase::kAborted;
   }
 }
 
-StepResult ExplorationMotionGenerator::Step(
-    const ToFSnapshot& snapshot,
-    const ShapeEstimate& current_estimate,
-    const std::array<double, 6>& current_pose,
-    double dt) {
-
+StepResult ExplorationMotionGenerator::Step(const ToFSnapshot& snapshot,
+                                            const ShapeEstimate& current_estimate,
+                                            const std::array<double, 6>& current_pose, double dt) {
   StepResult result;
   result.phase = phase_;
 
   // 종료 상태이면 바로 반환
-  if (phase_ == ExplorePhase::kIdle ||
-      phase_ == ExplorePhase::kSucceeded ||
-      phase_ == ExplorePhase::kFailed ||
-      phase_ == ExplorePhase::kAborted) {
+  if (phase_ == ExplorePhase::kIdle || phase_ == ExplorePhase::kSucceeded ||
+      phase_ == ExplorePhase::kFailed || phase_ == ExplorePhase::kAborted) {
     result.status_message = std::string(ExplorePhaseToString(phase_));
     return result;
   }
@@ -109,9 +104,8 @@ StepResult ExplorationMotionGenerator::Step(
     phase_ = ExplorePhase::kFailed;
     result.phase = phase_;
     result.status_message = "max_total_time exceeded";
-    RCLCPP_ERROR(logger(),
-                 "전체 시간 초과 (%.1fs >= %.1fs) → FAILED",
-                 stats_.elapsed_sec, config_.max_total_time_sec);
+    RCLCPP_ERROR(logger(), "전체 시간 초과 (%.1fs >= %.1fs) → FAILED", stats_.elapsed_sec,
+                 config_.max_total_time_sec);
     return result;
   }
 
@@ -130,8 +124,7 @@ StepResult ExplorationMotionGenerator::Step(
         phase_ = ExplorePhase::kFailed;
         result.phase = phase_;
         result.status_message = "approach timeout";
-        RCLCPP_WARN(logger(), "Approach 타임아웃 (%.1fs) → FAILED",
-                    config_.approach_timeout_sec);
+        RCLCPP_WARN(logger(), "Approach 타임아웃 (%.1fs) → FAILED", config_.approach_timeout_sec);
       } else {
         result.goal = GenerateApproach(snapshot, current_pose);
         result.status_message = "approaching object";
@@ -157,8 +150,7 @@ StepResult ExplorationMotionGenerator::Step(
         sweep_direction_ = 1;
         result.phase = phase_;
         result.status_message = "servo timeout → SWEEP_X";
-        RCLCPP_WARN(logger(), "Servo 타임아웃 (%.1fs) → SWEEP_X",
-                    config_.servo_timeout_sec);
+        RCLCPP_WARN(logger(), "Servo 타임아웃 (%.1fs) → SWEEP_X", config_.servo_timeout_sec);
         result.goal = GenerateSweep(snapshot, current_pose);
       } else {
         result.goal = GenerateServo(snapshot, current_pose);
@@ -228,8 +220,7 @@ StepResult ExplorationMotionGenerator::Step(
         phase_ = ExplorePhase::kSucceeded;
         result.phase = phase_;
         std::ostringstream oss;
-        oss << "shape estimation succeeded: "
-            << ShapeTypeToString(current_estimate.type)
+        oss << "shape estimation succeeded: " << ShapeTypeToString(current_estimate.type)
             << " (conf=" << static_cast<int>(current_estimate.confidence * 100) << "%)";
         result.status_message = oss.str();
         RCLCPP_INFO(logger(), "탐색 성공: %s", result.status_message.c_str());
@@ -237,8 +228,7 @@ StepResult ExplorationMotionGenerator::Step(
         phase_ = ExplorePhase::kFailed;
         result.phase = phase_;
         result.status_message = "max sweep cycles reached";
-        RCLCPP_WARN(logger(),
-                    "최대 sweep cycle 도달 (%u >= %u) → FAILED",
+        RCLCPP_WARN(logger(), "최대 sweep cycle 도달 (%u >= %u) → FAILED",
                     stats_.sweep_cycles_completed, config_.max_sweep_cycles);
       } else {
         // 추가 sweep 사이클 실행
@@ -253,8 +243,7 @@ StepResult ExplorationMotionGenerator::Step(
         oss << "need more data, cycle " << static_cast<int>(stats_.sweep_cycles_completed)
             << " → SWEEP_X";
         result.status_message = oss.str();
-        RCLCPP_WARN(logger(),
-                    "Evaluate: confidence=%.2f, points=%u → 추가 sweep (cycle %u)",
+        RCLCPP_WARN(logger(), "Evaluate: confidence=%.2f, points=%u → 추가 sweep (cycle %u)",
                     current_estimate.confidence, current_estimate.num_points_used,
                     stats_.sweep_cycles_completed);
       }
@@ -280,9 +269,8 @@ StepResult ExplorationMotionGenerator::Step(
 
 // ── Phase별 Goal 생성 ──────────────────────────────────────────────────────
 
-TaskSpaceGoal ExplorationMotionGenerator::GenerateApproach(
-    const ToFSnapshot& /*snapshot*/,
-    const std::array<double, 6>& current) {
+TaskSpaceGoal ExplorationMotionGenerator::GenerateApproach(const ToFSnapshot& /*snapshot*/,
+                                                           const std::array<double, 6>& current) {
   TaskSpaceGoal goal;
   goal.pose = current;
 
@@ -295,9 +283,8 @@ TaskSpaceGoal ExplorationMotionGenerator::GenerateApproach(
   return goal;
 }
 
-TaskSpaceGoal ExplorationMotionGenerator::GenerateServo(
-    const ToFSnapshot& snapshot,
-    const std::array<double, 6>& current) {
+TaskSpaceGoal ExplorationMotionGenerator::GenerateServo(const ToFSnapshot& snapshot,
+                                                        const std::array<double, 6>& current) {
   TaskSpaceGoal goal;
   goal.pose = current;
 
@@ -322,17 +309,15 @@ TaskSpaceGoal ExplorationMotionGenerator::GenerateServo(
   goal.valid = true;
 
   static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
-  RCLCPP_DEBUG_THROTTLE(logger(), steady_clock,
-                        ::rtc::shape::logging::kThrottleFastMs,
-                        "Servo: mean_dist=%.4f, target=%.4f, step=%.4f",
-                        mean_dist, config_.servo_target_distance, step);
+  RCLCPP_DEBUG_THROTTLE(logger(), steady_clock, ::rtc::shape::logging::kThrottleFastMs,
+                        "Servo: mean_dist=%.4f, target=%.4f, step=%.4f", mean_dist,
+                        config_.servo_target_distance, step);
 
   return goal;
 }
 
-TaskSpaceGoal ExplorationMotionGenerator::GenerateSweep(
-    const ToFSnapshot& snapshot,
-    const std::array<double, 6>& current) {
+TaskSpaceGoal ExplorationMotionGenerator::GenerateSweep(const ToFSnapshot& snapshot,
+                                                        const std::array<double, 6>& current) {
   TaskSpaceGoal goal;
   goal.pose = current;
 
@@ -383,8 +368,8 @@ TaskSpaceGoal ExplorationMotionGenerator::GenerateSweep(
   if (mean_dist > 0.0) {
     const double normal_error = mean_dist - config_.servo_target_distance;
     double normal_step = config_.sweep_normal_gain * normal_error;
-    normal_step = std::clamp(normal_step, -config_.sweep_normal_max_step,
-                             config_.sweep_normal_max_step);
+    normal_step =
+        std::clamp(normal_step, -config_.sweep_normal_max_step, config_.sweep_normal_max_step);
     goal.pose[0] += approach_direction_.x() * normal_step;
     goal.pose[1] += approach_direction_.y() * normal_step;
     goal.pose[2] += approach_direction_.z() * normal_step;
@@ -394,9 +379,8 @@ TaskSpaceGoal ExplorationMotionGenerator::GenerateSweep(
   return goal;
 }
 
-TaskSpaceGoal ExplorationMotionGenerator::GenerateTilt(
-    const ToFSnapshot& /*snapshot*/,
-    const std::array<double, 6>& current) {
+TaskSpaceGoal ExplorationMotionGenerator::GenerateTilt(const ToFSnapshot& /*snapshot*/,
+                                                       const std::array<double, 6>& current) {
   TaskSpaceGoal goal;
   goal.pose = current;
 
@@ -404,8 +388,8 @@ TaskSpaceGoal ExplorationMotionGenerator::GenerateTilt(
   // - pitch 우선 (index/middle이 물체 표면에 수직에 가까워짐)
   // - 3:1 비율로 pitch:roll 배분
   const double amp = config_.tilt_amplitude_deg * kDegToRad;
-  const double phase_ratio = static_cast<double>(tilt_step_count_) /
-                             static_cast<double>(std::max(config_.tilt_steps, 1u));
+  const double phase_ratio =
+      static_cast<double>(tilt_step_count_) / static_cast<double>(std::max(config_.tilt_steps, 1u));
   const double angle = amp * std::sin(2.0 * M_PI * phase_ratio);
 
   // 4스텝 사이클: pitch+, pitch-, pitch (반대 방향), roll
@@ -426,16 +410,14 @@ TaskSpaceGoal ExplorationMotionGenerator::GenerateTilt(
 
 // ── 안전 검증 ───────────────────────────────────────────────────────────────
 
-bool ExplorationMotionGenerator::ValidateGoal(
-    const TaskSpaceGoal& goal,
-    const std::array<double, 6>& current,
-    const ToFSnapshot& snapshot) const {
+bool ExplorationMotionGenerator::ValidateGoal(const TaskSpaceGoal& goal,
+                                              const std::array<double, 6>& current,
+                                              const ToFSnapshot& snapshot) const {
   // 1) max step size 검사
   const double step_dist = Norm3(goal.pose, current);
   if (step_dist > config_.max_step_size) {
-    RCLCPP_WARN(logger(),
-                "ValidateGoal: step_dist=%.4f > max=%.4f → 거부",
-                step_dist, config_.max_step_size);
+    RCLCPP_WARN(logger(), "ValidateGoal: step_dist=%.4f > max=%.4f → 거부", step_dist,
+                config_.max_step_size);
     return false;
   }
 
@@ -448,9 +430,8 @@ bool ExplorationMotionGenerator::ValidateGoal(
     // 현재 ToF 거리에서 전진량을 빼면 예상 거리
     const double predicted_dist = mean_dist - forward_step;
     if (predicted_dist < config_.min_distance) {
-      RCLCPP_WARN(logger(),
-                  "ValidateGoal: predicted_dist=%.4f < min=%.4f → 거부",
-                  predicted_dist, config_.min_distance);
+      RCLCPP_WARN(logger(), "ValidateGoal: predicted_dist=%.4f < min=%.4f → 거부", predicted_dist,
+                  config_.min_distance);
       return false;
     }
   }
@@ -539,8 +520,7 @@ double ExplorationMotionGenerator::WeightedMeanDistance(const ToFSnapshot& snaps
   return (weight_sum > 1e-9) ? (weighted_sum / weight_sum) : 0.0;
 }
 
-int ExplorationMotionGenerator::CountClassificationFingerPairs(
-    const ToFSnapshot& snapshot) const {
+int ExplorationMotionGenerator::CountClassificationFingerPairs(const ToFSnapshot& snapshot) const {
   // index(finger=1)와 middle(finger=2)에서 A+B 모두 valid인 finger 수
   int count = 0;
   for (int f = 1; f <= 2; ++f) {  // index, middle만

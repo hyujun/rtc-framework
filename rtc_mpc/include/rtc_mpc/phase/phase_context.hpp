@@ -33,12 +33,12 @@ namespace rtc::mpc {
 
 /// @brief Snapshot of the phase state for one OCP build / reconfigure.
 struct PhaseContext {
-  int phase_id{0};           ///< opaque id, assigned by concrete FSM
-  std::string phase_name{};  ///< diagnostics only
-  bool phase_changed{false}; ///< true iff `phase_id` differs from prev tick
+  int phase_id{0};            ///< opaque id, assigned by concrete FSM
+  std::string phase_name{};   ///< diagnostics only
+  bool phase_changed{false};  ///< true iff `phase_id` differs from prev tick
 
-  ContactPlan contact_plan{};    ///< active contact frames over the horizon
-  PhaseCostConfig cost_config{}; ///< per-phase cost weights + references
+  ContactPlan contact_plan{};     ///< active contact frames over the horizon
+  PhaseCostConfig cost_config{};  ///< per-phase cost weights + references
 
   /// Dispatch key for @ref MPCFactory (Phase 5). Current values:
   /// `"light_contact"` (Phase 3, renamed in 4.-1), `"contact_rich"` (Phase
@@ -50,6 +50,6 @@ struct PhaseContext {
   pinocchio::SE3 ee_target{pinocchio::SE3::Identity()};
 };
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc
 
-#endif // RTC_MPC_PHASE_PHASE_CONTEXT_HPP_
+#endif  // RTC_MPC_PHASE_PHASE_CONTEXT_HPP_

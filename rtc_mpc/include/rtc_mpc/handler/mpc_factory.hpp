@@ -38,25 +38,24 @@ namespace rtc::mpc {
 /// @brief Failure modes for @ref MPCFactory::Create.
 enum class MPCFactoryError {
   kNoError = 0,
-  kMissingOcpTypeKey,   ///< YAML has no `mpc.ocp_type` entry
-  kUnknownOcpType,      ///< `ocp_type` string not in the dispatch table
-  kInvalidSolverConfig, ///< nested `solver:` subtree failed validation
-  kInvalidLimits,       ///< u_min / u_max size mismatch vs. model
-  kHandlerInitFailed,   ///< concrete handler's `Init` rejected (embedded
-                        ///< MPCInitError available via the `last_*` probes)
+  kMissingOcpTypeKey,    ///< YAML has no `mpc.ocp_type` entry
+  kUnknownOcpType,       ///< `ocp_type` string not in the dispatch table
+  kInvalidSolverConfig,  ///< nested `solver:` subtree failed validation
+  kInvalidLimits,        ///< u_min / u_max size mismatch vs. model
+  kHandlerInitFailed,    ///< concrete handler's `Init` rejected (embedded
+                         ///< MPCInitError available via the `last_*` probes)
 };
 
 /// @brief Holder for the out-of-band error context the factory cannot fit
 ///        in the primary enum. Written by `Create` on failure paths.
 struct MPCFactoryStatus {
   MPCFactoryError error{MPCFactoryError::kNoError};
-  MPCInitError init_error{
-      MPCInitError::kNoError}; ///< set on kHandlerInitFailed
+  MPCInitError init_error{MPCInitError::kNoError};  ///< set on kHandlerInitFailed
 };
 
 /// @brief Static factory — no state, no instance.
 class MPCFactory {
-public:
+ public:
   MPCFactory() = delete;
   ~MPCFactory() = delete;
 
@@ -74,12 +73,11 @@ public:
   ///                      drift between phase manager and solver).
   /// @param handler_out   out-param: the created handler on success.
   /// @return              structured status; `kNoError` on success.
-  [[nodiscard]] static MPCFactoryStatus
-  Create(const YAML::Node &cfg, const RobotModelHandler &model,
-         const PhaseContext &initial_ctx,
-         std::unique_ptr<MPCHandlerBase> &handler_out) noexcept;
+  [[nodiscard]] static MPCFactoryStatus Create(
+      const YAML::Node& cfg, const RobotModelHandler& model, const PhaseContext& initial_ctx,
+      std::unique_ptr<MPCHandlerBase>& handler_out) noexcept;
 };
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc
 
-#endif // RTC_MPC_HANDLER_MPC_FACTORY_HPP_
+#endif  // RTC_MPC_HANDLER_MPC_FACTORY_HPP_

@@ -19,12 +19,9 @@ namespace ur5e_bringup::logging {
 //
 // Use these constants instead of magic numbers in *_THROTTLE log macros.
 
-inline constexpr int kThrottleFastMs =
-    1000; ///< Fast progress (contact freeze, release skip)
-inline constexpr int kThrottleSlowMs =
-    2000; ///< Generic recurring snapshot/warning
-inline constexpr int kThrottleIdleMs =
-    10000; ///< Long idle / one-shot transitions
+inline constexpr int kThrottleFastMs = 1000;   ///< Fast progress (contact freeze, release skip)
+inline constexpr int kThrottleSlowMs = 2000;   ///< Generic recurring snapshot/warning
+inline constexpr int kThrottleIdleMs = 10000;  ///< Long idle / one-shot transitions
 
 // ── Sub-logger factories ───────────────────────────────────────────────────
 //
@@ -55,6 +52,6 @@ inline rclcpp::Logger SharedConfigLogger() {
   return rclcpp::get_logger("ur5e_bringup.demo_shared_config");
 }
 
-} // namespace ur5e_bringup::logging
+}  // namespace ur5e_bringup::logging
 
-#endif // UR5E_BRINGUP_BRINGUP_LOGGING_HPP_
+#endif  // UR5E_BRINGUP_BRINGUP_LOGGING_HPP_

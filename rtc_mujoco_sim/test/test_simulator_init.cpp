@@ -36,7 +36,7 @@ TEST(SimulatorInit, CommandJointsMustCoverAllXmlJoints) {
   auto cfg = test::MakeMinimalConfig();
   // XML has j1 + j2, YAML covers only j1 → should fail (bidirectional check)
   cfg.groups[0].command_joint_names = {"j1"};
-  cfg.groups[0].state_joint_names   = {"j1"};
+  cfg.groups[0].state_joint_names = {"j1"};
   MuJoCoSimulator sim(std::move(cfg));
   EXPECT_FALSE(sim.Initialize());
 }
@@ -73,11 +73,11 @@ TEST(SimulatorInit, NoGroupsFails) {
 TEST(SimulatorInit, DuplicateGroupNameAcrossRobotAndFake) {
   auto cfg = test::MakeMinimalConfig();
   JointGroupConfig fake;
-  fake.name                = "arm";  // duplicate
+  fake.name = "arm";  // duplicate
   fake.command_joint_names = {"j1"};
-  fake.command_topic       = "/fake/cmd";
-  fake.state_topic         = "/fake/state";
-  fake.is_robot            = false;
+  fake.command_topic = "/fake/cmd";
+  fake.state_topic = "/fake/state";
+  fake.is_robot = false;
   cfg.groups.push_back(fake);
   MuJoCoSimulator sim(std::move(cfg));
   EXPECT_FALSE(sim.Initialize());
@@ -121,7 +121,7 @@ TEST(SimulatorInit, SensorDiscoveryExplicit) {
   const auto& infos = sim.GetSensorInfos(0);
   ASSERT_EQ(infos.size(), 1u);
   EXPECT_EQ(infos[0].name, "ee_force");
-  EXPECT_EQ(infos[0].dim,  3);  // force sensor = 3D
+  EXPECT_EQ(infos[0].dim, 3);  // force sensor = 3D
 }
 
 TEST(SimulatorInit, UnknownSensorNameSkipped) {

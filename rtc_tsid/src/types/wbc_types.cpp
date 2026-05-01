@@ -1,4 +1,5 @@
 #include "rtc_tsid/types/wbc_types.hpp"
+
 #include "rtc_tsid/types/qp_types.hpp"
 
 #include <stdexcept>
@@ -22,8 +23,7 @@ namespace rtc::tsid {
 // ════════════════════════════════════════════════
 // RobotModelInfo
 // ════════════════════════════════════════════════
-void RobotModelInfo::build(const pinocchio::Model& model,
-                           const YAML::Node& config) {
+void RobotModelInfo::build(const pinocchio::Model& model, const YAML::Node& config) {
   nq = model.nq;
   nv = model.nv;
 
@@ -32,9 +32,8 @@ void RobotModelInfo::build(const pinocchio::Model& model,
     floating_base = config["floating_base"].as<bool>();
   } else {
     // Pinocchio: floating-base 모델의 첫 joint가 freeflyer (nq=7, nv=6)
-    floating_base = (model.joints.size() > 1 &&
-                     model.joints[1].nq() == 7 &&
-                     model.joints[1].nv() == 6);
+    floating_base =
+        (model.joints.size() > 1 && model.joints[1].nq() == 7 && model.joints[1].nv() == 6);
   }
 
   if (floating_base) {
@@ -87,8 +86,7 @@ void RobotModelInfo::build(const pinocchio::Model& model,
 // ════════════════════════════════════════════════
 // ContactManagerConfig
 // ════════════════════════════════════════════════
-void ContactManagerConfig::load(const YAML::Node& config,
-                                const pinocchio::Model& model) {
+void ContactManagerConfig::load(const YAML::Node& config, const pinocchio::Model& model) {
   contacts.clear();
   max_contact_vars = 0;
 
@@ -109,8 +107,7 @@ void ContactManagerConfig::load(const YAML::Node& config,
     cc.friction_faces = c["friction_faces"].as<int>(4);
 
     if (!model.existFrame(cc.frame_name)) {
-      throw std::runtime_error(
-          "Contact frame '" + cc.frame_name + "' not found in URDF model");
+      throw std::runtime_error("Contact frame '" + cc.frame_name + "' not found in URDF model");
     }
     cc.frame_id = static_cast<int>(model.getFrameId(cc.frame_name));
 
@@ -168,8 +165,8 @@ void PinocchioCache::init(std::shared_ptr<const pinocchio::Model> model,
   contact_frames.resize(static_cast<size_t>(contact_cfg.max_contacts));
   for (int i = 0; i < contact_cfg.max_contacts; ++i) {
     auto& fc = contact_frames[static_cast<size_t>(i)];
-    fc.frame_id = static_cast<pinocchio::FrameIndex>(
-        contact_cfg.contacts[static_cast<size_t>(i)].frame_id);
+    fc.frame_id =
+        static_cast<pinocchio::FrameIndex>(contact_cfg.contacts[static_cast<size_t>(i)].frame_id);
     fc.J.setZero(6, nv);
     fc.dJv.setZero();
   }
@@ -184,8 +181,7 @@ void PinocchioCache::init(std::shared_ptr<const pinocchio::Model> model,
   registration_locked = false;
 }
 
-int PinocchioCache::register_frame(const std::string& name,
-                                   pinocchio::FrameIndex frame_id) {
+int PinocchioCache::register_frame(const std::string& name, pinocchio::FrameIndex frame_id) {
   if (registration_locked) {
     return -1;
   }
@@ -208,8 +204,7 @@ int PinocchioCache::register_frame(const std::string& name,
   return static_cast<int>(registered_frames.size()) - 1;
 }
 
-void PinocchioCache::update(const Eigen::VectorXd& q_in,
-                            const Eigen::VectorXd& v_in,
+void PinocchioCache::update(const Eigen::VectorXd& q_in, const Eigen::VectorXd& v_in,
                             const ContactState& contacts_state) noexcept {
   registration_locked = true;
 
@@ -222,8 +217,7 @@ void PinocchioCache::update(const Eigen::VectorXd& q_in,
 
   // Mass matrix (symmetrize)
   M = data.M;
-  M.triangularView<Eigen::StrictlyLower>() =
-      M.triangularView<Eigen::StrictlyUpper>().transpose();
+  M.triangularView<Eigen::StrictlyLower>() = M.triangularView<Eigen::StrictlyUpper>().transpose();
 
   // Nonlinear effects
   h = data.nle;
@@ -234,28 +228,28 @@ void PinocchioCache::update(const Eigen::VectorXd& q_in,
 
   // Contact frame Jacobian + dJv
   for (size_t i = 0; i < contacts_state.contacts.size(); ++i) {
-    if (!contacts_state.contacts[i].active) continue;
-    if (i >= contact_frames.size()) continue;
+    if (!contacts_state.contacts[i].active)
+      continue;
+    if (i >= contact_frames.size())
+      continue;
 
     auto& fc = contact_frames[i];
     fc.J.setZero();
-    pinocchio::getFrameJacobian(mdl, data, fc.frame_id,
-                                pinocchio::LOCAL_WORLD_ALIGNED, fc.J);
+    pinocchio::getFrameJacobian(mdl, data, fc.frame_id, pinocchio::LOCAL_WORLD_ALIGNED, fc.J);
     fc.oMf = data.oMf[fc.frame_id];
 
-    fc.dJv = pinocchio::getFrameClassicalAcceleration(
-                 mdl, data, fc.frame_id, pinocchio::LOCAL_WORLD_ALIGNED)
+    fc.dJv = pinocchio::getFrameClassicalAcceleration(mdl, data, fc.frame_id,
+                                                      pinocchio::LOCAL_WORLD_ALIGNED)
                  .toVector();
   }
 
   // Registered frame Jacobian + dJv
   for (auto& rf : registered_frames) {
     rf.J.setZero();
-    pinocchio::getFrameJacobian(mdl, data, rf.frame_id,
-                                pinocchio::LOCAL_WORLD_ALIGNED, rf.J);
+    pinocchio::getFrameJacobian(mdl, data, rf.frame_id, pinocchio::LOCAL_WORLD_ALIGNED, rf.J);
     rf.oMf = data.oMf[rf.frame_id];
-    rf.dJv = pinocchio::getFrameClassicalAcceleration(
-                 mdl, data, rf.frame_id, pinocchio::LOCAL_WORLD_ALIGNED)
+    rf.dJv = pinocchio::getFrameClassicalAcceleration(mdl, data, rf.frame_id,
+                                                      pinocchio::LOCAL_WORLD_ALIGNED)
                  .toVector();
   }
 
@@ -283,7 +277,7 @@ void PinocchioCache::update(const Eigen::VectorXd& q_in,
 
     // Centroidal momentum drift: dAg·v (momentum rate at zero acceleration)
     pinocchio::computeCentroidalMomentumTimeVariation(mdl, data, q, v,
-        Eigen::VectorXd::Zero(mdl.nv));
+                                                      Eigen::VectorXd::Zero(mdl.nv));
     hg_drift = data.dhg.toVector();
   }
 }
@@ -291,8 +285,7 @@ void PinocchioCache::update(const Eigen::VectorXd& q_in,
 // ════════════════════════════════════════════════
 // ControlReference
 // ════════════════════════════════════════════════
-void ControlReference::init(int nq, int nv, int n_actuated,
-                            int max_contact_vars) {
+void ControlReference::init(int nq, int nv, int n_actuated, int max_contact_vars) {
   q_des.setZero(nq);
   v_des.setZero(nv);
   a_des.setZero(nv);
@@ -312,14 +305,13 @@ void CommandOutput::init(int nv, int n_actuated, int max_contact_vars) {
 // ════════════════════════════════════════════════
 // PhasePreset loader
 // ════════════════════════════════════════════════
-std::unordered_map<std::string, PhasePreset> load_phase_presets(
-    const YAML::Node& config) {
+std::unordered_map<std::string, PhasePreset> load_phase_presets(const YAML::Node& config) {
   std::unordered_map<std::string, PhasePreset> presets;
 
-  if (!config || !config["phase_presets"]) return presets;
+  if (!config || !config["phase_presets"])
+    return presets;
 
-  for (auto it = config["phase_presets"].begin();
-       it != config["phase_presets"].end(); ++it) {
+  for (auto it = config["phase_presets"].begin(); it != config["phase_presets"].end(); ++it) {
     PhasePreset preset;
     preset.phase_name = it->first.as<std::string>();
     const auto& node = it->second;
@@ -337,8 +329,7 @@ std::unordered_map<std::string, PhasePreset> load_phase_presets(
     }
 
     if (node["constraints"]) {
-      for (auto c = node["constraints"].begin();
-           c != node["constraints"].end(); ++c) {
+      for (auto c = node["constraints"].begin(); c != node["constraints"].end(); ++c) {
         ConstraintPreset cp;
         cp.constraint_name = c->first.as<std::string>();
         cp.active = c->second["active"].as<bool>(true);

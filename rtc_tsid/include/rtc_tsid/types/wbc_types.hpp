@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Eigen/Core>
+
 #include <functional>
 #include <memory>
 #include <string>
@@ -28,17 +29,17 @@ namespace rtc::tsid {
 // 로봇 모델 정보 (init 시 Pinocchio Model + YAML로부터 구성)
 // ────────────────────────────────────────────────
 struct RobotModelInfo {
-  int nq{0};           // generalized coordinate dim
-  int nv{0};           // generalized velocity dim
-  int n_actuated{0};   // actuated DoF count
+  int nq{0};          // generalized coordinate dim
+  int nv{0};          // generalized velocity dim
+  int n_actuated{0};  // actuated DoF count
   bool floating_base{false};
 
-  Eigen::MatrixXd S;       // [n_actuated × nv] selection matrix
-  Eigen::VectorXd tau_max; // [n_actuated]
-  Eigen::VectorXd tau_min; // [n_actuated]
-  Eigen::VectorXd q_upper; // [nq]
-  Eigen::VectorXd q_lower; // [nq]
-  Eigen::VectorXd v_max;   // [nv]
+  Eigen::MatrixXd S;        // [n_actuated × nv] selection matrix
+  Eigen::VectorXd tau_max;  // [n_actuated]
+  Eigen::VectorXd tau_min;  // [n_actuated]
+  Eigen::VectorXd q_upper;  // [nq]
+  Eigen::VectorXd q_lower;  // [nq]
+  Eigen::VectorXd v_max;    // [nv]
 
   // Pinocchio model + YAML config로부터 구성
   void build(const pinocchio::Model& model, const YAML::Node& config);
@@ -50,10 +51,10 @@ struct RobotModelInfo {
 struct ContactConfig {
   std::string name;
   std::string frame_name;
-  int frame_id{0};       // Pinocchio frame ID (init 시 resolve)
-  int contact_dim{3};    // 3 (point) or 6 (surface)
+  int frame_id{0};     // Pinocchio frame ID (init 시 resolve)
+  int contact_dim{3};  // 3 (point) or 6 (surface)
   double friction_coeff{0.7};
-  int friction_faces{4}; // linearized cone 면 수
+  int friction_faces{4};  // linearized cone 면 수
 };
 
 struct ContactManagerConfig {
@@ -77,7 +78,7 @@ struct ContactState {
 
   std::vector<Entry> contacts;  // init 시 resize(max_contacts), 이후 크기 불변
   int active_count{0};
-  int active_contact_vars{0};   // Σ active contact_dim
+  int active_contact_vars{0};  // Σ active contact_dim
 
   // max_contacts 크기로 pre-allocate
   void init(int max_contacts);
@@ -116,11 +117,12 @@ struct PinocchioCache {
   // Contact frame Jacobian 캐시
   struct FrameCache {
     pinocchio::FrameIndex frame_id{0};
-    pinocchio::SE3 oMf;                     // world-frame placement
-    Eigen::MatrixXd J;                      // [6 × nv] LOCAL_WORLD_ALIGNED
-    Eigen::Matrix<double, 6, 1> dJv;        // J̇·v (classical acceleration)
+    pinocchio::SE3 oMf;               // world-frame placement
+    Eigen::MatrixXd J;                // [6 × nv] LOCAL_WORLD_ALIGNED
+    Eigen::Matrix<double, 6, 1> dJv;  // J̇·v (classical acceleration)
   };
-  std::vector<FrameCache> contact_frames;   // [max_contacts]
+
+  std::vector<FrameCache> contact_frames;  // [max_contacts]
 
   // Task용 등록 frame 캐시
   struct RegisteredFrame {
@@ -130,6 +132,7 @@ struct PinocchioCache {
     Eigen::MatrixXd J;
     Eigen::Matrix<double, 6, 1> dJv;
   };
+
   std::vector<RegisteredFrame> registered_frames;
   bool registration_locked{false};  // update() 호출 후 true → 추가 등록 금지
 
@@ -142,20 +145,18 @@ struct PinocchioCache {
   // Centroidal momentum (optional — MomentumTask 등록 시 활성화)
   bool compute_centroidal{false};
   Eigen::Matrix<double, 6, 1> h_centroidal;
-  Eigen::MatrixXd Ag;                        // [6 × nv]
-  Eigen::Matrix<double, 6, 1> hg_drift;      // dAg·v (centroidal momentum rate drift) [6]
+  Eigen::MatrixXd Ag;                    // [6 × nv]
+  Eigen::Matrix<double, 6, 1> hg_drift;  // dAg·v (centroidal momentum rate drift) [6]
 
   // 초기화: buffer pre-allocate (init 시 1회)
-  void init(std::shared_ptr<const pinocchio::Model> model,
-            const ContactManagerConfig& contact_cfg);
+  void init(std::shared_ptr<const pinocchio::Model> model, const ContactManagerConfig& contact_cfg);
 
   // Task가 init 시 필요한 frame 등록 → update()에서 자동 계산
   // 반환: registered_frames 내 인덱스
   int register_frame(const std::string& name, pinocchio::FrameIndex frame_id);
 
   // 매 tick 갱신 (RT-safe: 사전 할당된 버퍼만 사용)
-  void update(const Eigen::VectorXd& q_in,
-              const Eigen::VectorXd& v_in,
+  void update(const Eigen::VectorXd& q_in, const Eigen::VectorXd& v_in,
               const ContactState& contacts) noexcept;
 };
 
@@ -169,11 +170,11 @@ struct ControlState {
 };
 
 struct ControlReference {
-  Eigen::VectorXd q_des;      // [nq]
-  Eigen::VectorXd v_des;      // [nv]
-  Eigen::VectorXd a_des;      // [nv] desired accel (feedforward)
-  Eigen::VectorXd tau_ff;     // [n_actuated] feedforward torque
-  Eigen::VectorXd lambda_des; // [max_contact_vars] desired contact forces
+  Eigen::VectorXd q_des;       // [nq]
+  Eigen::VectorXd v_des;       // [nv]
+  Eigen::VectorXd a_des;       // [nv] desired accel (feedforward)
+  Eigen::VectorXd tau_ff;      // [n_actuated] feedforward torque
+  Eigen::VectorXd lambda_des;  // [max_contact_vars] desired contact forces
 
   void init(int nq, int nv, int n_actuated, int max_contact_vars);
 };
@@ -184,7 +185,7 @@ struct CommandOutput {
   Eigen::VectorXd lambda_opt;  // [active_contact_vars]
   bool qp_converged{false};
   double solve_time_us{0.0};
-  int solve_levels{0};         // WQP: 1, HQP: 실제 level 수
+  int solve_levels{0};  // WQP: 1, HQP: 실제 level 수
 
   void init(int nv, int n_actuated, int max_contact_vars);
 };

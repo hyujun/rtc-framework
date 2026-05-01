@@ -17,14 +17,14 @@ namespace rtc_bt {
 /// Output ports:
 ///   - pose (Pose6D): current TCP pose [x, y, z, roll, pitch, yaw]
 class GetCurrentPose : public BT::SyncActionNode {
-public:
+ public:
   GetCurrentPose(const std::string& name, const BT::NodeConfig& config,
                  std::shared_ptr<BtRosBridge> bridge);
 
   static BT::PortsList providedPorts();
   BT::NodeStatus tick() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
 };
 

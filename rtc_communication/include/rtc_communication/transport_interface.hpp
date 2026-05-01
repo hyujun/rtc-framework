@@ -1,10 +1,11 @@
 #ifndef RTC_COMMUNICATION_TRANSPORT_INTERFACE_HPP_
 #define RTC_COMMUNICATION_TRANSPORT_INTERFACE_HPP_
 
+#include <sys/types.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <sys/types.h>
 
 namespace rtc {
 
@@ -20,10 +21,8 @@ class TransportInterface {
   [[nodiscard]] virtual bool Open() = 0;
   virtual void Close() noexcept = 0;
 
-  [[nodiscard]] virtual ssize_t Send(
-      std::span<const uint8_t> data) noexcept = 0;
-  [[nodiscard]] virtual ssize_t Recv(
-      std::span<uint8_t> buffer) noexcept = 0;
+  [[nodiscard]] virtual ssize_t Send(std::span<const uint8_t> data) noexcept = 0;
+  [[nodiscard]] virtual ssize_t Recv(std::span<uint8_t> buffer) noexcept = 0;
 
   virtual void SetRecvTimeout(int timeout_ms) noexcept = 0;
   virtual void SetRecvBufferSize(int size) noexcept = 0;

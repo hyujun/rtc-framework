@@ -73,7 +73,7 @@ TEST(SolverConfig, IntegratorYamlApplied) {
 
 TEST(SolverConfig, ContactOverrideYamlApplied) {
   auto cfg = test::MakeMinimalConfig();
-  cfg.solver_config.contact_override.enable   = true;
+  cfg.solver_config.contact_override.enable = true;
   cfg.solver_config.contact_override.o_margin = 0.05;
   MuJoCoSimulator sim(std::move(cfg));
   ASSERT_TRUE(sim.Initialize());

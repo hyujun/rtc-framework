@@ -42,6 +42,7 @@ from typing import Optional
 
 # ── Data structures ────────────────────────────────────────────────────────────
 
+
 @dataclass
 class InertialParams:
     mass: float = 0.0
@@ -73,6 +74,7 @@ class JointParams:
 
 
 # ── Parsers ────────────────────────────────────────────────────────────────────
+
 
 def _parse_floats(text: str) -> list:
     return [float(x) for x in text.split()]
@@ -289,6 +291,7 @@ def parse_urdf(
 
 # ── Comparison ─────────────────────────────────────────────────────────────────
 
+
 def _close(a: float, b: float, tol: float) -> bool:
     return math.isclose(a, b, abs_tol=tol)
 
@@ -324,7 +327,8 @@ def compare(
     joint_set = set(joint_names)
 
     mjcf_links, mjcf_joints = parse_mjcf(
-        mjcf_path, mjcf_link_names, joint_set, root_class_override=mjcf_class)
+        mjcf_path, mjcf_link_names, joint_set, root_class_override=mjcf_class
+    )
     urdf_links, urdf_joints = parse_urdf(urdf_path, urdf_link_names, joint_set)
 
     mismatches = 0
@@ -362,8 +366,10 @@ def compare(
 
         # Mass
         if not _close(mjcf_ip.mass, urdf_ip.mass, tolerance):
-            print(f"    MASS MISMATCH:  MJCF={_fmt(mjcf_ip.mass)}  URDF={_fmt(urdf_ip.mass)}"
-                  f"  (delta={_fmt(abs(mjcf_ip.mass - urdf_ip.mass))})")
+            print(
+                f"    MASS MISMATCH:  MJCF={_fmt(mjcf_ip.mass)}  URDF={_fmt(urdf_ip.mass)}"
+                f"  (delta={_fmt(abs(mjcf_ip.mass - urdf_ip.mass))})"
+            )
             mismatches += 1
         else:
             print(f"    mass: {_fmt(mjcf_ip.mass)}  OK")
@@ -374,17 +380,21 @@ def compare(
             m_val = mjcf_ip.diag_inertia[i]
             u_val = urdf_ip.diag_inertia[i]
             if not _close(m_val, u_val, tolerance):
-                print(f"    {lbl} MISMATCH:  MJCF={_fmt(m_val)}  URDF={_fmt(u_val)}"
-                      f"  (delta={_fmt(abs(m_val - u_val))})")
+                print(
+                    f"    {lbl} MISMATCH:  MJCF={_fmt(m_val)}  URDF={_fmt(u_val)}"
+                    f"  (delta={_fmt(abs(m_val - u_val))})"
+                )
                 mismatches += 1
 
         # Check if URDF has significant off-diagonal inertia
         off_diag_mag = math.sqrt(sum(x * x for x in urdf_ip.off_diag_inertia))
         if off_diag_mag > tolerance:
-            print(f"    [NOTE] URDF has non-zero off-diagonal inertia: "
-                  f"Ixy={_fmt(urdf_ip.off_diag_inertia[0])}, "
-                  f"Ixz={_fmt(urdf_ip.off_diag_inertia[1])}, "
-                  f"Iyz={_fmt(urdf_ip.off_diag_inertia[2])}")
+            print(
+                f"    [NOTE] URDF has non-zero off-diagonal inertia: "
+                f"Ixy={_fmt(urdf_ip.off_diag_inertia[0])}, "
+                f"Ixz={_fmt(urdf_ip.off_diag_inertia[1])}, "
+                f"Iyz={_fmt(urdf_ip.off_diag_inertia[2])}"
+            )
             print(f"           MJCF diaginertia assumes these are zero (principal axes frame).")
             warnings += 1
 
@@ -392,8 +402,10 @@ def compare(
         if urdf_ip.origin_rpy != [0.0, 0.0, 0.0]:
             rpy_str = " ".join(_fmt(v) for v in urdf_ip.origin_rpy)
             print(f"    [NOTE] URDF inertial frame rotated: rpy=[{rpy_str}]")
-            print(f"           Diagonal inertia values are NOT directly comparable "
-                  f"when frames differ.")
+            print(
+                f"           Diagonal inertia values are NOT directly comparable "
+                f"when frames differ."
+            )
             warnings += 1
 
         print()
@@ -417,28 +429,29 @@ def compare(
         print(f"  [{jname}]")
 
         # Position limits
-        if not _close(mjcf_jp.lower, urdf_jp.lower, tolerance) or \
-           not _close(mjcf_jp.upper, urdf_jp.upper, tolerance):
-            print(f"    RANGE MISMATCH:"
-                  f"  MJCF=[{_fmt(mjcf_jp.lower)}, {_fmt(mjcf_jp.upper)}]"
-                  f"  URDF=[{_fmt(urdf_jp.lower)}, {_fmt(urdf_jp.upper)}]")
+        if not _close(mjcf_jp.lower, urdf_jp.lower, tolerance) or not _close(
+            mjcf_jp.upper, urdf_jp.upper, tolerance
+        ):
+            print(
+                f"    RANGE MISMATCH:"
+                f"  MJCF=[{_fmt(mjcf_jp.lower)}, {_fmt(mjcf_jp.upper)}]"
+                f"  URDF=[{_fmt(urdf_jp.lower)}, {_fmt(urdf_jp.upper)}]"
+            )
             mismatches += 1
         else:
             print(f"    range: [{_fmt(mjcf_jp.lower)}, {_fmt(mjcf_jp.upper)}]  OK")
 
         # Effort limits
         if not _close(mjcf_jp.effort, urdf_jp.effort, tolerance):
-            print(f"    EFFORT MISMATCH:"
-                  f"  MJCF={_fmt(mjcf_jp.effort)}  URDF={_fmt(urdf_jp.effort)}")
+            print(
+                f"    EFFORT MISMATCH:  MJCF={_fmt(mjcf_jp.effort)}  URDF={_fmt(urdf_jp.effort)}"
+            )
             mismatches += 1
         else:
             print(f"    effort: {_fmt(mjcf_jp.effort)}  OK")
 
         # Axis
-        axes_match = all(
-            _close(mjcf_jp.axis[i], urdf_jp.axis[i], tolerance)
-            for i in range(3)
-        )
+        axes_match = all(_close(mjcf_jp.axis[i], urdf_jp.axis[i], tolerance) for i in range(3))
         if not axes_match:
             m_axis = " ".join(_fmt(v) for v in mjcf_jp.axis)
             u_axis = " ".join(_fmt(v) for v in urdf_jp.axis)
@@ -450,8 +463,7 @@ def compare(
 
         # Origin position
         origins_match = all(
-            _close(mjcf_jp.origin_xyz[i], urdf_jp.origin_xyz[i], tolerance)
-            for i in range(3)
+            _close(mjcf_jp.origin_xyz[i], urdf_jp.origin_xyz[i], tolerance) for i in range(3)
         )
         if not origins_match:
             m_orig = " ".join(_fmt(v) for v in mjcf_jp.origin_xyz)
@@ -485,6 +497,7 @@ def compare(
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
+
 def _resolve_robot_layout(
     pkg: str,
     robot_name: str,
@@ -497,6 +510,7 @@ def _resolve_robot_layout(
     # Try ament installed package
     try:
         from ament_index_python.packages import get_package_share_directory
+
         pkg_dir = Path(get_package_share_directory(pkg))
         mjcf = pkg_dir / "robots" / robot_name / "mjcf" / f"{robot_name}.xml"
         urdf = pkg_dir / "robots" / robot_name / "urdf" / f"{robot_name}.urdf"
@@ -528,18 +542,17 @@ def _detect_link_mapping(
     urdf_root = ET.parse(urdf_path).getroot()
 
     mjcf_inertial_bodies = {
-        b.get("name") for b in mjcf_root.iter("body")
+        b.get("name")
+        for b in mjcf_root.iter("body")
         if b.get("name") and b.find("inertial") is not None
     }
     urdf_inertial_links = {
-        l.get("name") for l in urdf_root.findall("link")
+        l.get("name")
+        for l in urdf_root.findall("link")
         if l.get("name") and l.find("inertial") is not None
     }
 
-    return {
-        name: name
-        for name in sorted(mjcf_inertial_bodies & urdf_inertial_links)
-    }
+    return {name: name for name in sorted(mjcf_inertial_bodies & urdf_inertial_links)}
 
 
 def _detect_joints(mjcf_path: Path, urdf_path: Path) -> list[str]:
@@ -547,14 +560,8 @@ def _detect_joints(mjcf_path: Path, urdf_path: Path) -> list[str]:
     mjcf_root = ET.parse(mjcf_path).getroot()
     urdf_root = ET.parse(urdf_path).getroot()
 
-    mjcf_joints = {
-        j.get("name") for j in mjcf_root.iter("joint")
-        if j.get("name")
-    }
-    urdf_joints = {
-        j.get("name") for j in urdf_root.findall("joint")
-        if j.get("name")
-    }
+    mjcf_joints = {j.get("name") for j in mjcf_root.iter("joint") if j.get("name")}
+    urdf_joints = {j.get("name") for j in urdf_root.findall("joint") if j.get("name")}
 
     return sorted(mjcf_joints & urdf_joints)
 
@@ -564,14 +571,16 @@ def _load_link_map(path: Path) -> dict[str, str]:
     text = path.read_text()
     try:
         import yaml
+
         data = yaml.safe_load(text)
     except ImportError:
         import json
+
         data = json.loads(text)
     if not isinstance(data, dict):
         raise SystemExit(
-            f"--link-map file {path} must contain a mapping "
-            "{<mjcf_body>: <urdf_link>, ...}")
+            f"--link-map file {path} must contain a mapping {{<mjcf_body>: <urdf_link>, ...}}"
+        )
     return {str(k): str(v) for k, v in data.items()}
 
 
@@ -580,44 +589,59 @@ def main():
         description="Compare MJCF and URDF physics parameters for a robot.",
     )
     parser.add_argument(
-        "--mjcf", type=Path, default=None,
+        "--mjcf",
+        type=Path,
+        default=None,
         help="Path to MJCF file. Required unless --robot-pkg + --robot-name "
-             "resolve to a canonical layout.",
+        "resolve to a canonical layout.",
     )
     parser.add_argument(
-        "--urdf", type=Path, default=None,
+        "--urdf",
+        type=Path,
+        default=None,
         help="Path to URDF file. Required unless --robot-pkg + --robot-name "
-             "resolve to a canonical layout.",
+        "resolve to a canonical layout.",
     )
     parser.add_argument(
-        "--robot-pkg", type=str, default=None,
+        "--robot-pkg",
+        type=str,
+        default=None,
         help="ament package containing the robot description (e.g. "
-             "'ur5e_description'). Used with --robot-name to resolve "
-             "<pkg>/robots/<robot>/{mjcf,urdf}/<robot>.{xml,urdf}.",
+        "'ur5e_description'). Used with --robot-name to resolve "
+        "<pkg>/robots/<robot>/{mjcf,urdf}/<robot>.{xml,urdf}.",
     )
     parser.add_argument(
-        "--robot-name", type=str, default=None,
-        help="Robot name used as both directory and file stem under "
-             "--robot-pkg (e.g. 'ur5e').",
+        "--robot-name",
+        type=str,
+        default=None,
+        help="Robot name used as both directory and file stem under --robot-pkg (e.g. 'ur5e').",
     )
     parser.add_argument(
-        "--mjcf-class", type=str, default=None,
+        "--mjcf-class",
+        type=str,
+        default=None,
         help="MJCF default class to use as inheritance root. Auto-detected "
-             "from <default class=\"...\"> if omitted.",
+        'from <default class="..."> if omitted.',
     )
     parser.add_argument(
-        "--link-map", type=Path, default=None,
+        "--link-map",
+        type=Path,
+        default=None,
         help="YAML/JSON file with {<mjcf_body>: <urdf_link>, ...}. Required "
-             "only when MJCF body names differ from URDF link names; "
-             "otherwise same-name links are matched automatically.",
+        "only when MJCF body names differ from URDF link names; "
+        "otherwise same-name links are matched automatically.",
     )
     parser.add_argument(
-        "--joints", type=str, nargs="+", default=None,
-        help="Explicit joint name list to compare. Auto-detected (MJCF ∩ URDF) "
-             "if omitted.",
+        "--joints",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Explicit joint name list to compare. Auto-detected (MJCF ∩ URDF) if omitted.",
     )
     parser.add_argument(
-        "--tolerance", type=float, default=1e-4,
+        "--tolerance",
+        type=float,
+        default=1e-4,
         help="Numerical tolerance for comparison (default: 1e-4).",
     )
     args = parser.parse_args()
@@ -626,8 +650,7 @@ def main():
     urdf_path = args.urdf
 
     if (mjcf_path is None or urdf_path is None) and args.robot_pkg and args.robot_name:
-        auto_mjcf, auto_urdf = _resolve_robot_layout(
-            args.robot_pkg, args.robot_name)
+        auto_mjcf, auto_urdf = _resolve_robot_layout(args.robot_pkg, args.robot_name)
         if mjcf_path is None:
             mjcf_path = auto_mjcf
         if urdf_path is None:
@@ -635,13 +658,11 @@ def main():
 
     if mjcf_path is None or not mjcf_path.exists():
         print(f"Error: MJCF file not found: {mjcf_path}", file=sys.stderr)
-        print("Specify with --mjcf or --robot-pkg + --robot-name.",
-              file=sys.stderr)
+        print("Specify with --mjcf or --robot-pkg + --robot-name.", file=sys.stderr)
         sys.exit(1)
     if urdf_path is None or not urdf_path.exists():
         print(f"Error: URDF file not found: {urdf_path}", file=sys.stderr)
-        print("Specify with --urdf or --robot-pkg + --robot-name.",
-              file=sys.stderr)
+        print("Specify with --urdf or --robot-pkg + --robot-name.", file=sys.stderr)
         sys.exit(1)
 
     if args.link_map is not None:
@@ -650,8 +671,11 @@ def main():
         link_map = _detect_link_mapping(mjcf_path, urdf_path)
 
     if not link_map:
-        print("Error: no shared inertial links found between MJCF and URDF "
-              "(and no --link-map provided).", file=sys.stderr)
+        print(
+            "Error: no shared inertial links found between MJCF and URDF "
+            "(and no --link-map provided).",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if args.joints is not None:
@@ -660,14 +684,17 @@ def main():
         joint_names = _detect_joints(mjcf_path, urdf_path)
 
     if not joint_names:
-        print("Error: no shared joint names between MJCF and URDF "
-              "(and no --joints provided).", file=sys.stderr)
+        print(
+            "Error: no shared joint names between MJCF and URDF (and no --joints provided).",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     robot_label = args.robot_name or ""
 
     mismatches = compare(
-        mjcf_path, urdf_path,
+        mjcf_path,
+        urdf_path,
         link_map=link_map,
         joint_names=joint_names,
         tolerance=args.tolerance,

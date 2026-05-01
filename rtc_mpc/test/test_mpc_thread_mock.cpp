@@ -10,9 +10,8 @@
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
 #include "rtc_mpc/thread/mock_mpc_thread.hpp"
 
-#include <gtest/gtest.h>
-
 #include <Eigen/Core>
+#include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
 #include <chrono>
@@ -76,18 +75,15 @@ TEST(MpcEndToEnd, MockSolverDrivesConvergence) {
   int iterations = 0;
   while (true) {
     const auto now = std::chrono::steady_clock::now();
-    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now - start);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start);
     if (elapsed.count() >= 500) {
       break;
     }
 
     const uint64_t now_ns = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            now.time_since_epoch()).count());
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count());
     mgr.WriteState(q, v, now_ns);
-    const bool ok = mgr.ComputeReference(q, v, now_ns, q_ref, v_ref, a_ff,
-                                         lambda_ref, u_fb, meta);
+    const bool ok = mgr.ComputeReference(q, v, now_ns, q_ref, v_ref, a_ff, lambda_ref, u_fb, meta);
     if (ok) {
       ++valid_count;
       // Chase the reference at an artificially fast rate so q converges.
@@ -103,17 +99,14 @@ TEST(MpcEndToEnd, MockSolverDrivesConvergence) {
   mock.RequestStop();
   mock.Join();
 
-  EXPECT_GT(valid_count, 10)
-      << "Expected many valid ComputeReference calls over 500 ms";
-  EXPECT_LT(mgr.StaleCount(), 100)
-      << "Stale counter should stay well below threshold";
+  EXPECT_GT(valid_count, 10) << "Expected many valid ComputeReference calls over 500 ms";
+  EXPECT_LT(mgr.StaleCount(), 100) << "Stale counter should stay well below threshold";
   for (int i = 0; i < kNq; ++i) {
     EXPECT_TRUE(std::isfinite(q_ref(i)));
     EXPECT_TRUE(std::isfinite(u_fb(i)));
   }
   // q should have advanced some distance toward the target.
-  EXPECT_GT(q.norm(), 0.1)
-      << "RT state did not advance toward target — MPC pipeline inactive?";
+  EXPECT_GT(q.norm(), 0.1) << "RT state did not advance toward target — MPC pipeline inactive?";
 }
 
 }  // namespace

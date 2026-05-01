@@ -24,70 +24,68 @@ enum class UrdfJointType : std::uint8_t {
 // topology(UrdfJointType)와 직교. 컨트롤러/모델 빌더가 참조하는 "구동 가능성"
 // 축.
 enum class JointRole : std::uint8_t {
-  kFixed,  // URDF type == "fixed"
-  kActive, // 구동 대상 — 기본값(명시적 passive 분류 아니면 전부 여기로)
-  kPassive, // 수동 — kinematic 구속 또는 under-actuated
+  kFixed,    // URDF type == "fixed"
+  kActive,   // 구동 대상 — 기본값(명시적 passive 분류 아니면 전부 여기로)
+  kPassive,  // 수동 — kinematic 구속 또는 under-actuated
 };
 
 // ── 패시브 관절 subsubtype ───────────────────────────────────────────────────
 // role == kPassive 일 때 추가 분류. 중복 후보(mimic∧closed-chain)는 우선순위
 // kMimic > kClosedChain > kFree 로 단일 선택하고 warning.
 enum class PassiveSubtype : std::uint8_t {
-  kNone,        // role != kPassive 일 때
-  kMimic,       // <mimic joint="..."> 태그 존재
-  kClosedChain, // 폐쇄 체인 루프 경로 위의 관절
-  kFree, // 명시적 passive이지만 mimic/closed-chain 어디에도 속하지 않음
+  kNone,         // role != kPassive 일 때
+  kMimic,        // <mimic joint="..."> 태그 존재
+  kClosedChain,  // 폐쇄 체인 루프 경로 위의 관절
+  kFree,         // 명시적 passive이지만 mimic/closed-chain 어디에도 속하지 않음
 };
 
-[[nodiscard]] inline const char *JointRoleToString(JointRole role) noexcept {
+[[nodiscard]] inline const char* JointRoleToString(JointRole role) noexcept {
   switch (role) {
-  case JointRole::kFixed:
-    return "fixed";
-  case JointRole::kActive:
-    return "active";
-  case JointRole::kPassive:
-    return "passive";
+    case JointRole::kFixed:
+      return "fixed";
+    case JointRole::kActive:
+      return "active";
+    case JointRole::kPassive:
+      return "passive";
   }
   return "unknown";
 }
 
-[[nodiscard]] inline const char *
-PassiveSubtypeToString(PassiveSubtype subtype) noexcept {
+[[nodiscard]] inline const char* PassiveSubtypeToString(PassiveSubtype subtype) noexcept {
   switch (subtype) {
-  case PassiveSubtype::kNone:
-    return "none";
-  case PassiveSubtype::kMimic:
-    return "mimic";
-  case PassiveSubtype::kClosedChain:
-    return "closed_chain";
-  case PassiveSubtype::kFree:
-    return "free";
+    case PassiveSubtype::kNone:
+      return "none";
+    case PassiveSubtype::kMimic:
+      return "mimic";
+    case PassiveSubtype::kClosedChain:
+      return "closed_chain";
+    case PassiveSubtype::kFree:
+      return "free";
   }
   return "unknown";
 }
 
 /// 관절 타입 문자열 변환 (디버깅/로깅용)
-[[nodiscard]] inline const char *JointTypeToString(UrdfJointType t) noexcept {
+[[nodiscard]] inline const char* JointTypeToString(UrdfJointType t) noexcept {
   switch (t) {
-  case UrdfJointType::kFixed:
-    return "fixed";
-  case UrdfJointType::kRevolute:
-    return "revolute";
-  case UrdfJointType::kContinuous:
-    return "continuous";
-  case UrdfJointType::kPrismatic:
-    return "prismatic";
-  case UrdfJointType::kFloating:
-    return "floating";
-  case UrdfJointType::kPlanar:
-    return "planar";
+    case UrdfJointType::kFixed:
+      return "fixed";
+    case UrdfJointType::kRevolute:
+      return "revolute";
+    case UrdfJointType::kContinuous:
+      return "continuous";
+    case UrdfJointType::kPrismatic:
+      return "prismatic";
+    case UrdfJointType::kFloating:
+      return "floating";
+    case UrdfJointType::kPlanar:
+      return "planar";
   }
   return "unknown";
 }
 
 /// URDF 문자열 → UrdfJointType 변환
-[[nodiscard]] inline UrdfJointType
-StringToJointType(const std::string &s) noexcept {
+[[nodiscard]] inline UrdfJointType StringToJointType(const std::string& s) noexcept {
   if (s == "revolute")
     return UrdfJointType::kRevolute;
   if (s == "continuous")
@@ -114,8 +112,8 @@ struct PassiveJointInfo {
 
 // ── 마이믹 관절 정보 ─────────────────────────────────────────────────────────
 struct MimicJointInfo {
-  std::string joint_name;     // 이 관절 (mimic 수행하는 측)
-  std::string mimicked_joint; // 추종 대상 관절
+  std::string joint_name;      // 이 관절 (mimic 수행하는 측)
+  std::string mimicked_joint;  // 추종 대상 관절
   double multiplier{1.0};
   double offset{0.0};
 };
@@ -156,9 +154,9 @@ struct SubModelDefinition {
   std::string name;
   std::string root_link;
   std::string tip_link;
-  std::vector<std::string> joint_names; // 경로 상 actuated 관절
-  std::vector<std::string> all_joint_names; // 경로 상 모든 관절 (fixed 포함)
-  std::vector<std::string> link_names; // 경로 상 모든 링크
+  std::vector<std::string> joint_names;      // 경로 상 actuated 관절
+  std::vector<std::string> all_joint_names;  // 경로 상 모든 관절 (fixed 포함)
+  std::vector<std::string> link_names;       // 경로 상 모든 링크
 };
 
 // ── 트리 모델 정의 (하나의 root, 여러 tip) ──────────────────────────────────
@@ -166,10 +164,10 @@ struct TreeModelDefinition {
   std::string name;
   std::string root_link;
   std::vector<std::string> tip_links;
-  std::vector<std::string> joint_names;     // 트리 내 모든 actuated 관절
-  std::vector<std::string> all_joint_names; // 트리 내 모든 관절
-  std::vector<std::string> link_names;      // 트리 내 모든 링크
-  std::vector<std::string> branching_points; // 분기점 링크 이름
+  std::vector<std::string> joint_names;       // 트리 내 모든 actuated 관절
+  std::vector<std::string> all_joint_names;   // 트리 내 모든 관절
+  std::vector<std::string> link_names;        // 트리 내 모든 링크
+  std::vector<std::string> branching_points;  // 분기점 링크 이름
 };
 
 // ── 폐쇄 체인 정보 ──────────────────────────────────────────────────────────
@@ -181,7 +179,7 @@ struct ClosedChainInfo {
   Eigen::Vector3d offset_a_rpy{Eigen::Vector3d::Zero()};
   Eigen::Vector3d offset_b_xyz{Eigen::Vector3d::Zero()};
   Eigen::Vector3d offset_b_rpy{Eigen::Vector3d::Zero()};
-  bool is_6d{true}; // true → CONTACT_6D, false → CONTACT_3D
+  bool is_6d{true};  // true → CONTACT_6D, false → CONTACT_3D
   double baumgarte_kp{0.0};
   double baumgarte_kd{0.0};
 };
@@ -201,8 +199,8 @@ struct TreeModelConfig {
 
 struct ModelConfig {
   // URDF 소스
-  std::string urdf_path;       // 파일 경로
-  std::string urdf_xml_string; // 또는 XML 문자열 직접 제공
+  std::string urdf_path;        // 파일 경로
+  std::string urdf_xml_string;  // 또는 XML 문자열 직접 제공
 
   // xacro 인자 (urdf_path가 .xacro 파일일 때 key:=value로 전달)
   std::unordered_map<std::string, std::string> xacro_args;
@@ -231,4 +229,4 @@ struct ModelConfig {
   std::unordered_map<std::string, double> lock_reference_config;
 };
 
-} // namespace rtc_urdf_bridge
+}  // namespace rtc_urdf_bridge

@@ -3,7 +3,6 @@
 #pragma once
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
-
 #include <rtc_base/threading/seqlock.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/rt_model_handle.hpp>
@@ -20,7 +19,7 @@
 
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
 
-#include <Eigen/Cholesky> // LDLT
+#include <Eigen/Cholesky>  // LDLT
 #include <Eigen/Core>
 
 #include <array>
@@ -62,31 +61,25 @@ namespace rtc {
 ///   - `target[3..5]` = null-space reference joints 3–5 (rad);
 ///                      joints 0–2 use `kNullTarget` as reference
 class ClikController final : public RTControllerInterface {
-public:
+ public:
   // ── Gain / feature configuration ─────────────────────────────────────────
   struct Gains {
     std::array<double, 3> kp_translation{
-        {1.0, 1.0, 1.0}}; ///< Translation proportional gain (x,y,z) [1/s]
+        {1.0, 1.0, 1.0}};  ///< Translation proportional gain (x,y,z) [1/s]
     std::array<double, 3> kp_rotation{
-        {1.0, 1.0, 1.0}}; ///< Rotation proportional gain (rx,ry,rz) [1/s]
-    double damping{
-        0.01}; ///< Damping factor λ for J^#  (singularity robustness)
-    double null_kp{0.5};          ///< Null-space joint-centering gain [1/s]
-    bool enable_null_space{true}; ///< Enable null-space secondary task
-    bool control_6dof{
-        false}; ///< Enable 6-DOF (translation + orientation) control
+        {1.0, 1.0, 1.0}};          ///< Rotation proportional gain (rx,ry,rz) [1/s]
+    double damping{0.01};          ///< Damping factor λ for J^#  (singularity robustness)
+    double null_kp{0.5};           ///< Null-space joint-centering gain [1/s]
+    bool enable_null_space{true};  ///< Enable null-space secondary task
+    bool control_6dof{false};      ///< Enable 6-DOF (translation + orientation) control
 
     // Trajectory speed
-    double trajectory_speed{
-        0.1}; ///< TCP translational speed for trajectory duration [m/s]
-    double trajectory_angular_speed{
-        0.5}; ///< TCP rotational speed for trajectory duration [rad/s]
+    double trajectory_speed{0.1};  ///< TCP translational speed for trajectory duration [m/s]
+    double trajectory_angular_speed{0.5};  ///< TCP rotational speed for trajectory duration [rad/s]
 
     // Trajectory velocity limits
-    double max_traj_velocity{
-        0.5}; ///< Max TCP velocity during task-space trajectory [m/s]
-    double max_traj_angular_velocity{
-        1.0}; ///< Max TCP angular velocity during trajectory [rad/s]
+    double max_traj_velocity{0.5};          ///< Max TCP velocity during task-space trajectory [m/s]
+    double max_traj_angular_velocity{1.0};  ///< Max TCP angular velocity during trajectory [rad/s]
   };
 
   /// @param urdf_path  Absolute path to the robot URDF file.
@@ -95,13 +88,11 @@ public:
   explicit ClikController(std::string_view urdf_path, Gains gains);
 
   // ── RTControllerInterface — all methods are noexcept (RT safety) ──────────
-  [[nodiscard]] ControllerOutput
-  Compute(const ControllerState &state) noexcept override;
+  [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;
 
-  void SetDeviceTarget(int device_idx,
-                       std::span<const double> target) noexcept override;
+  void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override;
 
-  void InitializeHoldPosition(const ControllerState &state) noexcept override;
+  void InitializeHoldPosition(const ControllerState& state) noexcept override;
 
   [[nodiscard]] std::string_view Name() const noexcept override;
 
@@ -115,53 +106,47 @@ public:
   //                enable_null_space(0/1), control_6dof(0/1),
   //                trajectory_speed, trajectory_angular_speed,
   //                max_traj_velocity, max_traj_angular_velocity] = 14 values
-  void LoadConfig(const YAML::Node &cfg) override;
+  void LoadConfig(const YAML::Node& cfg) override;
   void OnDeviceConfigsSet() override;
-  [[nodiscard]] CommandType GetCommandType() const noexcept override {
-    return command_type_;
-  }
+
+  [[nodiscard]] CommandType GetCommandType() const noexcept override { return command_type_; }
 
   // ── Accessors (non-RT reads only) ─────────────────────────────────────────
-  void set_gains(const Gains &g) noexcept { gains_lock_.Store(g); }
+  void set_gains(const Gains& g) noexcept { gains_lock_.Store(g); }
+
   [[nodiscard]] Gains get_gains() const noexcept { return gains_lock_.Load(); }
 
   /// Cached TCP position (world frame) from the most recent Compute().
-  [[nodiscard]] std::array<double, 3> tcp_position() const noexcept {
-    return tcp_position_;
-  }
+  [[nodiscard]] std::array<double, 3> tcp_position() const noexcept { return tcp_position_; }
 
   /// Cached 3D Cartesian position error from the most recent Compute().
   [[nodiscard]] std::array<double, 3> position_error() const noexcept {
     return {pos_error_[0], pos_error_[1], pos_error_[2]};
   }
 
-private:
+ private:
   // ── Pinocchio via rtc_urdf_bridge ──────────────────────────────────
   std::shared_ptr<const pinocchio::Model> model_ptr_;
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> handle_;
   pinocchio::FrameIndex tip_frame_id_{0};
 
   // ── Pre-allocated Eigen work buffers — zero heap alloc on the RT path ────
-  Eigen::MatrixXd
-      J_full_; ///< 6×nv: full spatial Jacobian (LOCAL_WORLD_ALIGNED)
-  Eigen::MatrixXd J_pos_;   ///< 3×nv: translational part of J_full_
-  Eigen::Matrix3d JJt_;     ///< 3×3: J_pos * J_pos^T + λ²I
-  Eigen::Matrix3d JJt_inv_; ///< 3×3: (J_pos * J_pos^T + λ²I)^{-1}
-  Eigen::MatrixXd Jpinv_;   ///< nv×3: damped pseudoinverse J_pos^#
-  Eigen::MatrixXd N_;  ///< nv×nv: null-space projector I − J_pos^# J_pos
-  Eigen::VectorXd dq_; ///< nv: joint velocity command
-  Eigen::VectorXd desired_q_; ///< nv: integrated desired joint position
-  Eigen::VectorXd
-      traj_dq_; ///< nv: feedforward-only trajectory velocity (for logging)
-  Eigen::VectorXd null_err_;           ///< nv: (q_null − q_current)
-  Eigen::VectorXd null_dq_;            ///< nv: null-space contribution to dq
-  Eigen::Vector3d pos_error_;          ///< 3: Cartesian position error
-  Eigen::Matrix<double, 6, 6> JJt_6d_; ///< 6x6: J_full * J_full^T + λ²I
-  Eigen::Matrix<double, 6, 6>
-      JJt_inv_6d_;           ///< 6x6: (J_full * J_full^T + λ²I)^{-1}
-  Eigen::MatrixXd Jpinv_6d_; ///< nv×6: damped pseudoinverse J_full^#
-  Eigen::Matrix<double, 6, 1>
-      pos_error_6d_; ///< 6: Cartesian position+orientation error
+  Eigen::MatrixXd J_full_;              ///< 6×nv: full spatial Jacobian (LOCAL_WORLD_ALIGNED)
+  Eigen::MatrixXd J_pos_;               ///< 3×nv: translational part of J_full_
+  Eigen::Matrix3d JJt_;                 ///< 3×3: J_pos * J_pos^T + λ²I
+  Eigen::Matrix3d JJt_inv_;             ///< 3×3: (J_pos * J_pos^T + λ²I)^{-1}
+  Eigen::MatrixXd Jpinv_;               ///< nv×3: damped pseudoinverse J_pos^#
+  Eigen::MatrixXd N_;                   ///< nv×nv: null-space projector I − J_pos^# J_pos
+  Eigen::VectorXd dq_;                  ///< nv: joint velocity command
+  Eigen::VectorXd desired_q_;           ///< nv: integrated desired joint position
+  Eigen::VectorXd traj_dq_;             ///< nv: feedforward-only trajectory velocity (for logging)
+  Eigen::VectorXd null_err_;            ///< nv: (q_null − q_current)
+  Eigen::VectorXd null_dq_;             ///< nv: null-space contribution to dq
+  Eigen::Vector3d pos_error_;           ///< 3: Cartesian position error
+  Eigen::Matrix<double, 6, 6> JJt_6d_;  ///< 6x6: J_full * J_full^T + λ²I
+  Eigen::Matrix<double, 6, 6> JJt_inv_6d_;    ///< 6x6: (J_full * J_full^T + λ²I)^{-1}
+  Eigen::MatrixXd Jpinv_6d_;                  ///< nv×6: damped pseudoinverse J_full^#
+  Eigen::Matrix<double, 6, 1> pos_error_6d_;  ///< 6: Cartesian position+orientation error
 
   // LDLT decomposition of JJt_ (3×3) — fixed-size → lives on the stack,
   // no dynamic allocation at construction or on the RT path.
@@ -176,11 +161,10 @@ private:
   /// safe_position in OnDeviceConfigsSet(). In 3-DOF mode, joints 3+
   /// are overwritten by SetDeviceTarget(target[3..]).
   std::array<double, kMaxRobotDOF> null_target_{};
-  std::array<std::array<double, kMaxDeviceChannels>,
-             ControllerState::kMaxDevices>
+  std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices>
       device_targets_{};
-  std::array<double, 6> pose_error_cache_{}; ///< diagnostic cache
-  std::array<double, 3> tcp_position_{};     ///< diagnostic cache
+  std::array<double, 6> pose_error_cache_{};  ///< diagnostic cache
+  std::array<double, 3> tcp_position_{};      ///< diagnostic cache
 
   bool target_initialized_{false};
   std::atomic<bool> new_target_{false};
@@ -204,11 +188,9 @@ private:
   CommandType command_type_{CommandType::kPosition};
 
   // ── Helpers ───────────────────────────────────────────────────────────────
-  [[nodiscard]] ControllerOutput
-  ComputeEstop(const ControllerState &state) noexcept;
+  [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state) noexcept;
 
-  void ClampVelocity(std::array<double, kMaxDeviceChannels> &dq,
-                     int n) const noexcept;
+  void ClampVelocity(std::array<double, kMaxDeviceChannels>& dq, int n) const noexcept;
 };
 
-} // namespace rtc
+}  // namespace rtc

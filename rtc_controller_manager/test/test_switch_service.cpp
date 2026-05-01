@@ -18,10 +18,10 @@
 // without going through the full on_configure pipeline.
 
 #include "rtc_controller_manager/rt_controller_node.hpp"
-
-#include <rclcpp/rclcpp.hpp>
 #include <rtc_msgs/srv/list_controllers.hpp>
 #include <rtc_msgs/srv/switch_controller.hpp>
+
+#include <rclcpp/rclcpp.hpp>
 
 #include <gtest/gtest.h>
 
@@ -39,38 +39,35 @@ namespace rtc {
 // MockController). Lives in this TU so the test can link standalone — the
 // other test's symbols live in a separate gtest binary.
 class SrvMockController : public RTControllerInterface {
-public:
+ public:
   explicit SrvMockController(std::string name) : name_(std::move(name)) {}
 
-  CallbackReturn
-  on_activate(const rclcpp_lifecycle::State &prev,
-              const ControllerState &snapshot) noexcept override {
+  CallbackReturn on_activate(const rclcpp_lifecycle::State& prev,
+                             const ControllerState& snapshot) noexcept override {
     activate_count_.fetch_add(1, std::memory_order_relaxed);
     return RTControllerInterface::on_activate(prev, snapshot);
   }
-  CallbackReturn
-  on_deactivate(const rclcpp_lifecycle::State & /*prev*/) noexcept override {
+
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State& /*prev*/) noexcept override {
     deactivate_count_.fetch_add(1, std::memory_order_relaxed);
     return CallbackReturn::SUCCESS;
   }
-  ControllerOutput
-  Compute(const ControllerState & /*state*/) noexcept override {
+
+  ControllerOutput Compute(const ControllerState& /*state*/) noexcept override {
     return ControllerOutput{};
   }
-  void SetDeviceTarget(int /*device_idx*/,
-                       std::span<const double> /*target*/) noexcept override {}
+
+  void SetDeviceTarget(int /*device_idx*/, std::span<const double> /*target*/) noexcept override {}
+
   std::string_view Name() const noexcept override { return name_; }
-  void
-  InitializeHoldPosition(const ControllerState & /*state*/) noexcept override {}
 
-  int ActivateCount() const {
-    return activate_count_.load(std::memory_order_relaxed);
-  }
-  int DeactivateCount() const {
-    return deactivate_count_.load(std::memory_order_relaxed);
-  }
+  void InitializeHoldPosition(const ControllerState& /*state*/) noexcept override {}
 
-private:
+  int ActivateCount() const { return activate_count_.load(std::memory_order_relaxed); }
+
+  int DeactivateCount() const { return deactivate_count_.load(std::memory_order_relaxed); }
+
+ private:
   std::string name_;
   std::atomic<int> activate_count_{0};
   std::atomic<int> deactivate_count_{0};
@@ -81,61 +78,57 @@ private:
 // class so the two test binaries link independently. Defined in the rtc::
 // namespace so it matches the friend declaration in rt_controller_node.hpp.
 class ControllerLifecycleTestAccess {
-public:
-  static void
-  InjectControllers(RtControllerNode &node,
-                    std::vector<std::unique_ptr<RTControllerInterface>> ctrls,
-                    const std::vector<std::string> &types) {
+ public:
+  static void InjectControllers(RtControllerNode& node,
+                                std::vector<std::unique_ptr<RTControllerInterface>> ctrls,
+                                const std::vector<std::string>& types) {
     node.controllers_ = std::move(ctrls);
-    node.controller_states_ =
-        std::vector<std::atomic<int>>(node.controllers_.size());
+    node.controller_states_ = std::vector<std::atomic<int>>(node.controllers_.size());
     node.controller_topic_configs_.assign(node.controllers_.size(), {});
     node.controller_slot_mappings_.assign(node.controllers_.size(), {});
     node.controller_name_to_idx_.clear();
     node.controller_types_.clear();
     for (std::size_t i = 0; i < node.controllers_.size(); ++i) {
-      node.controller_name_to_idx_[std::string(node.controllers_[i]->Name())] =
-          static_cast<int>(i);
+      node.controller_name_to_idx_[std::string(node.controllers_[i]->Name())] = static_cast<int>(i);
       node.controller_types_.push_back(i < types.size() ? types[i] : "");
     }
   }
 
-  static void EnsureActivePublisher(RtControllerNode &node) {
+  static void EnsureActivePublisher(RtControllerNode& node) {
     if (!node.active_ctrl_name_pub_) {
       // Mirror production topic name (rt_controller_node_topics.cpp:430-431).
-      node.active_ctrl_name_pub_ = node.create_publisher<std_msgs::msg::String>(
-          "/rtc_cm/active_controller_name", 1);
+      node.active_ctrl_name_pub_ =
+          node.create_publisher<std_msgs::msg::String>("/rtc_cm/active_controller_name", 1);
     }
   }
 
-  static void SetActiveIdx(RtControllerNode &node, int idx) {
+  static void SetActiveIdx(RtControllerNode& node, int idx) {
     node.active_controller_idx_.store(idx, std::memory_order_release);
   }
 
   // Mark a controller Active in the state vector — mirrors what CM's
   // on_activate does for the initial controller.
-  static void SetState(RtControllerNode &node, std::size_t idx, int v) {
+  static void SetState(RtControllerNode& node, std::size_t idx, int v) {
     node.controller_states_[idx].store(v, std::memory_order_release);
   }
 
-  static int GetState(const RtControllerNode &node, std::size_t idx) {
+  static int GetState(const RtControllerNode& node, std::size_t idx) {
     return node.controller_states_[idx].load(std::memory_order_acquire);
   }
 
-  static int GetActiveIdx(const RtControllerNode &node) {
+  static int GetActiveIdx(const RtControllerNode& node) {
     return node.active_controller_idx_.load(std::memory_order_acquire);
   }
 
-  static void SetEstopFlag(RtControllerNode &node, bool v) {
+  static void SetEstopFlag(RtControllerNode& node, bool v) {
     node.global_estop_.store(v, std::memory_order_release);
   }
 
   // Bind cb_group_aux_ + bring the services online without driving the full
   // lifecycle. CM's CreateServices() requires cb_group_aux_ already set.
-  static void BringServicesOnline(RtControllerNode &node) {
+  static void BringServicesOnline(RtControllerNode& node) {
     if (!node.cb_group_aux_) {
-      node.cb_group_aux_ = node.create_callback_group(
-          rclcpp::CallbackGroupType::MutuallyExclusive);
+      node.cb_group_aux_ = node.create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     }
     node.CreateServices();
   }
@@ -144,12 +137,13 @@ public:
 // ── Fixture ─────────────────────────────────────────────────────────────
 
 class SwitchServiceTest : public ::testing::Test {
-protected:
+ protected:
   static void SetUpTestSuite() {
     if (!rclcpp::ok()) {
       rclcpp::init(0, nullptr);
     }
   }
+
   static void TearDownTestSuite() {
     if (rclcpp::ok()) {
       rclcpp::shutdown();
@@ -177,11 +171,10 @@ protected:
     ControllerLifecycleTestAccess::BringServicesOnline(*node_);
 
     client_node_ = std::make_shared<rclcpp::Node>("test_switch_client");
-    list_client_ = client_node_->create_client<rtc_msgs::srv::ListControllers>(
-        "/rtc_cm/list_controllers");
+    list_client_ =
+        client_node_->create_client<rtc_msgs::srv::ListControllers>("/rtc_cm/list_controllers");
     switch_client_ =
-        client_node_->create_client<rtc_msgs::srv::SwitchController>(
-            "/rtc_cm/switch_controller");
+        client_node_->create_client<rtc_msgs::srv::SwitchController>("/rtc_cm/switch_controller");
 
     executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
     executor_->add_node(node_->get_node_base_interface());
@@ -207,8 +200,7 @@ protected:
   // Helper: send a SwitchController request and wait synchronously for the
   // response (executor is already spinning on its own thread).
   rtc_msgs::srv::SwitchController::Response::SharedPtr CallSwitch(
-      const std::vector<std::string> &activate,
-      const std::vector<std::string> &deactivate,
+      const std::vector<std::string>& activate, const std::vector<std::string>& deactivate,
       int32_t strictness = rtc_msgs::srv::SwitchController::Request::STRICT) {
     auto req = std::make_shared<rtc_msgs::srv::SwitchController::Request>();
     req->activate_controllers = activate;
@@ -238,8 +230,8 @@ protected:
   rclcpp::Client<rtc_msgs::srv::SwitchController>::SharedPtr switch_client_;
   std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
   std::thread spin_thread_;
-  SrvMockController *ctrl_a_{nullptr};
-  SrvMockController *ctrl_b_{nullptr};
+  SrvMockController* ctrl_a_{nullptr};
+  SrvMockController* ctrl_b_{nullptr};
 };
 
 // ── ListControllers ─────────────────────────────────────────────────────
@@ -319,8 +311,8 @@ TEST_F(SwitchServiceTest, SwitchStrictRejectsMultiActivate) {
 }
 
 TEST_F(SwitchServiceTest, SwitchBestEffortTrimsMultiActivate) {
-  auto resp = CallSwitch({"ctrl_b", "ctrl_a"}, {},
-                         rtc_msgs::srv::SwitchController::Request::BEST_EFFORT);
+  auto resp =
+      CallSwitch({"ctrl_b", "ctrl_a"}, {}, rtc_msgs::srv::SwitchController::Request::BEST_EFFORT);
   ASSERT_NE(nullptr, resp);
   EXPECT_TRUE(resp->ok) << resp->message;
   // Only the first entry (ctrl_b) is honoured.
@@ -345,4 +337,4 @@ TEST_F(SwitchServiceTest, SwitchRejectedWhileEstopped) {
   ControllerLifecycleTestAccess::SetEstopFlag(*node_, false);
 }
 
-} // namespace rtc
+}  // namespace rtc

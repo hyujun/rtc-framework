@@ -4,14 +4,16 @@
 
 namespace rtc::mpc {
 
-MPCThread::~MPCThread() { StopAndJoin(); }
+MPCThread::~MPCThread() {
+  StopAndJoin();
+}
 
 void MPCThread::StopAndJoin() noexcept {
   // Base joins the main loop first; afterwards we tear down the worker
   // sleepers so any solver-pool shutdown ordering stays correct.
   PeriodicRtThread::Join();
   for (int i = 0; i < launch_config_.num_workers; ++i) {
-    auto &worker = workers_[static_cast<std::size_t>(i)];
+    auto& worker = workers_[static_cast<std::size_t>(i)];
     if (worker.joinable()) {
       worker.request_stop();
       worker.join();
@@ -19,8 +21,8 @@ void MPCThread::StopAndJoin() noexcept {
   }
 }
 
-void MPCThread::Init(MPCSolutionManager &manager,
-                     const MpcThreadLaunchConfig &launch_config) noexcept {
+void MPCThread::Init(MPCSolutionManager& manager,
+                     const MpcThreadLaunchConfig& launch_config) noexcept {
   manager_ = &manager;
   launch_config_ = launch_config;
   if (launch_config_.num_workers < 0) {
@@ -44,12 +46,9 @@ void MPCThread::Start() {
   // Aligator) schedule tasks onto these passive sleepers via their own
   // worker pool.
   for (int i = 0; i < launch_config_.num_workers; ++i) {
-    const rtc::ThreadConfig &wcfg =
-        launch_config_.workers[static_cast<std::size_t>(i)];
+    const rtc::ThreadConfig& wcfg = launch_config_.workers[static_cast<std::size_t>(i)];
     workers_[static_cast<std::size_t>(i)] =
-        std::jthread([wcfg](std::stop_token /*stoken*/) {
-          (void)rtc::ApplyThreadConfig(wcfg);
-        });
+        std::jthread([wcfg](std::stop_token /*stoken*/) { (void)rtc::ApplyThreadConfig(wcfg); });
   }
 
   // Wire the SPSC ring before the base spawns its loop thread so the very
@@ -69,8 +68,8 @@ void MPCThread::OnTick() noexcept {
 
   // Phase 2: solve. Worker span lets parallel solvers schedule onto the
   // class-owned worker threads.
-  std::span<std::jthread> worker_span(
-      workers_.data(), static_cast<std::size_t>(launch_config_.num_workers));
+  std::span<std::jthread> worker_span(workers_.data(),
+                                      static_cast<std::size_t>(launch_config_.num_workers));
   const bool ok = Solve(state, scratch_, worker_span);
   MarkComputeDone();
 
@@ -81,4 +80,4 @@ void MPCThread::OnTick() noexcept {
   }
 }
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc

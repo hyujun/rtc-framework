@@ -1,21 +1,23 @@
 #include "shape_estimation/fast_shape_classifier.hpp"
-#include "shape_estimation/shape_logging.hpp"
 
-#include <cmath>
+#include "shape_estimation/shape_logging.hpp"
 
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logging.hpp>
 
+#include <cmath>
+
 namespace shape_estimation {
 
 namespace {
-auto logger() { return ::rtc::shape::logging::ClassifyLogger(); }
+auto logger() {
+  return ::rtc::shape::logging::ClassifyLogger();
+}
 }  // namespace
 
 FastShapeClassifier::FastShapeClassifier() : FastShapeClassifier(Config{}) {}
 
-FastShapeClassifier::FastShapeClassifier(const Config& config)
-    : config_(config) {}
+FastShapeClassifier::FastShapeClassifier(const Config& config) : config_(config) {}
 
 ShapeEstimate FastShapeClassifier::Classify(
     const std::array<double, kNumFingers>& curvatures,
@@ -103,12 +105,11 @@ ShapeEstimate FastShapeClassifier::Classify(
   }
 
   static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
-  RCLCPP_DEBUG_THROTTLE(logger(), steady_clock,
-                        ::rtc::shape::logging::kThrottleFastMs,
+  RCLCPP_DEBUG_THROTTLE(logger(), steady_clock, ::rtc::shape::logging::kThrottleFastMs,
                         "분류 결과: type=%s, confidence=%.2f, "
                         "kappa_avg=%.2f, kappa_std=%.2f, n_valid=%d",
-                        ShapeTypeToString(result.type).data(), result.confidence,
-                        kappa_avg, kappa_std, n_valid);
+                        ShapeTypeToString(result.type).data(), result.confidence, kappa_avg,
+                        kappa_std, n_valid);
 
   return result;
 }

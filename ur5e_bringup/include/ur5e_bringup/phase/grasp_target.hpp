@@ -28,12 +28,12 @@ namespace ur5e_bringup::phase {
 /// @brief External command bus driving the grasp FSM edges that are not
 ///        derived from TCP proximity / contact force.
 enum class GraspCommand : int {
-  kNone = 0,       ///< No pending command; FSM advances via geometric guards.
-  kApproach = 1,   ///< IDLE → APPROACH — start the grasp sequence.
-  kManipulate = 2, ///< HOLD → MANIPULATE — begin object manipulation.
-  kRetreat = 3, ///< MANIPULATE → RETREAT — move arm back to approach start.
-  kRelease = 4, ///< RETREAT → RELEASE — open the hand.
-  kAbort = 5,   ///< Any phase → IDLE — user cancellation / fault.
+  kNone = 0,        ///< No pending command; FSM advances via geometric guards.
+  kApproach = 1,    ///< IDLE → APPROACH — start the grasp sequence.
+  kManipulate = 2,  ///< HOLD → MANIPULATE — begin object manipulation.
+  kRetreat = 3,     ///< MANIPULATE → RETREAT — move arm back to approach start.
+  kRelease = 4,     ///< RETREAT → RELEASE — open the hand.
+  kAbort = 5,       ///< Any phase → IDLE — user cancellation / fault.
 };
 
 /// @brief Aggregate of the poses the grasp FSM needs over one episode.
@@ -50,6 +50,6 @@ struct GraspTarget {
   pinocchio::SE3 approach_start{pinocchio::SE3::Identity()};
 };
 
-} // namespace ur5e_bringup::phase
+}  // namespace ur5e_bringup::phase
 
-#endif // UR5E_BRINGUP_PHASE_GRASP_TARGET_HPP_
+#endif  // UR5E_BRINGUP_PHASE_GRASP_TARGET_HPP_

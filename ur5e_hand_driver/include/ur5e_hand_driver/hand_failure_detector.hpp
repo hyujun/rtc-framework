@@ -10,12 +10,12 @@
 //
 // On failure, invokes a registered callback (typically triggers global E-Stop).
 
-#include <rclcpp/logging.hpp>
-
-#include "ur5e_hand_driver/hand_controller.hpp"
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/types/types.hpp"
+#include "ur5e_hand_driver/hand_controller.hpp"
+
+#include <rclcpp/logging.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -28,27 +28,26 @@
 namespace rtc {
 
 struct HandFailureDetectorConfig {
-  int  failure_threshold{5};   ///< 연속 감지 횟수 임계값
-  bool check_motor{true};      ///< 모터 위치 데이터 검사
-  bool check_sensor{true};     ///< 센서 데이터 검사
-  double min_rate_hz{30.0};    ///< 최소 허용 polling rate
-  int    rate_fail_threshold{5}; ///< 연속 N회 미달 시 failure
+  int failure_threshold{5};     ///< 연속 감지 횟수 임계값
+  bool check_motor{true};       ///< 모터 위치 데이터 검사
+  bool check_sensor{true};      ///< 센서 데이터 검사
+  double min_rate_hz{30.0};     ///< 최소 허용 polling rate
+  int rate_fail_threshold{5};   ///< 연속 N회 미달 시 failure
   bool check_link{true};        ///< UDP 링크 상태 검사
-  int  link_fail_threshold{10}; ///< 연속 N회 recv 전체 실패 시 link_down
+  int link_fail_threshold{10};  ///< 연속 N회 recv 전체 실패 시 link_down
 };
 
 class HandFailureDetector {
-public:
+ public:
   using Config = HandFailureDetectorConfig;
   using FailureCallback = std::function<void(const std::string&)>;
 
   /// @param controller   Reference to the HandController to monitor.
   /// @param cfg          Detection configuration.
   /// @param thread_cfg   Thread scheduling / CPU affinity configuration.
-  explicit HandFailureDetector(HandController& controller,
-                               Config cfg = Config{},
+  explicit HandFailureDetector(HandController& controller, Config cfg = Config{},
                                ThreadConfig thread_cfg = kLoggingConfig)
-    : controller_(controller), cfg_(cfg), thread_cfg_(thread_cfg) {}
+      : controller_(controller), cfg_(cfg), thread_cfg_(thread_cfg) {}
 
   ~HandFailureDetector() { Stop(); }
 
@@ -61,11 +60,11 @@ public:
 
   /// Start the 50 Hz detector thread.
   void Start() {
-    if (running_.load(std::memory_order_relaxed)) return;
+    if (running_.load(std::memory_order_relaxed))
+      return;
     running_.store(true, std::memory_order_relaxed);
     thread_ = std::jthread([this](std::stop_token st) { DetectLoop(st); });
-    RCLCPP_DEBUG(::ur5e_hand_driver::logging::FailureLogger(),
-                 "Detector thread started (50 Hz)");
+    RCLCPP_DEBUG(::ur5e_hand_driver::logging::FailureLogger(), "Detector thread started (50 Hz)");
   }
 
   /// Stop the detector thread.
@@ -75,22 +74,19 @@ public:
       thread_.request_stop();
       thread_.join();
     }
-    RCLCPP_DEBUG(::ur5e_hand_driver::logging::FailureLogger(),
-                 "Detector thread stopped");
+    RCLCPP_DEBUG(::ur5e_hand_driver::logging::FailureLogger(), "Detector thread stopped");
   }
 
-  [[nodiscard]] bool failed() const noexcept {
-    return failed_.load(std::memory_order_relaxed);
-  }
+  [[nodiscard]] bool failed() const noexcept { return failed_.load(std::memory_order_relaxed); }
 
-private:
+ private:
   void DetectLoop(std::stop_token st) {
     using std::chrono_literals::operator""ms;
     {
       auto [ok, msg] = ApplyThreadConfigWithFallback(thread_cfg_);
       if (!ok) {
-        RCLCPP_WARN(::ur5e_hand_driver::logging::FailureLogger(),
-                    "Thread config apply failed: %s", msg.c_str());
+        RCLCPP_WARN(::ur5e_hand_driver::logging::FailureLogger(), "Thread config apply failed: %s",
+                    msg.c_str());
       }
     }
     prev_rate_check_ = std::chrono::steady_clock::now();
@@ -124,7 +120,10 @@ private:
     // All-zero check
     bool all_zero = true;
     for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors); ++i) {
-      if (pos[i] != 0.0f) { all_zero = false; break; }
+      if (pos[i] != 0.0f) {
+        all_zero = false;
+        break;
+      }
     }
     if (all_zero) {
       ++motor_zero_count_;
@@ -143,17 +142,15 @@ private:
 
     if (motor_zero_count_ >= cfg_.failure_threshold) {
       RCLCPP_WARN(::ur5e_hand_driver::logging::FailureLogger(),
-                  "Motor all-zero detected (count=%d, threshold=%d)",
-                  motor_zero_count_, cfg_.failure_threshold);
-      RaiseFailure("hand_motor_all_zero (count=" +
-                   std::to_string(motor_zero_count_) + ")");
+                  "Motor all-zero detected (count=%d, threshold=%d)", motor_zero_count_,
+                  cfg_.failure_threshold);
+      RaiseFailure("hand_motor_all_zero (count=" + std::to_string(motor_zero_count_) + ")");
     }
     if (motor_dup_count_ >= cfg_.failure_threshold) {
       RCLCPP_WARN(::ur5e_hand_driver::logging::FailureLogger(),
-                  "Motor duplicate detected (count=%d, threshold=%d)",
-                  motor_dup_count_, cfg_.failure_threshold);
-      RaiseFailure("hand_motor_duplicate (count=" +
-                   std::to_string(motor_dup_count_) + ")");
+                  "Motor duplicate detected (count=%d, threshold=%d)", motor_dup_count_,
+                  cfg_.failure_threshold);
+      RaiseFailure("hand_motor_duplicate (count=" + std::to_string(motor_dup_count_) + ")");
     }
   }
 
@@ -163,7 +160,10 @@ private:
     bool all_zero = true;
     const int num_sensors = state.num_fingertips * kSensorValuesPerFingertip;
     for (int i = 0; i < num_sensors; ++i) {
-      if (sens[static_cast<std::size_t>(i)] != 0u) { all_zero = false; break; }
+      if (sens[static_cast<std::size_t>(i)] != 0u) {
+        all_zero = false;
+        break;
+      }
     }
     if (all_zero) {
       ++sensor_zero_count_;
@@ -181,24 +181,23 @@ private:
 
     if (sensor_zero_count_ >= cfg_.failure_threshold) {
       RCLCPP_WARN(::ur5e_hand_driver::logging::FailureLogger(),
-                  "Sensor all-zero detected (count=%d, threshold=%d)",
-                  sensor_zero_count_, cfg_.failure_threshold);
-      RaiseFailure("hand_sensor_all_zero (count=" +
-                   std::to_string(sensor_zero_count_) + ")");
+                  "Sensor all-zero detected (count=%d, threshold=%d)", sensor_zero_count_,
+                  cfg_.failure_threshold);
+      RaiseFailure("hand_sensor_all_zero (count=" + std::to_string(sensor_zero_count_) + ")");
     }
     if (sensor_dup_count_ >= cfg_.failure_threshold) {
       RCLCPP_WARN(::ur5e_hand_driver::logging::FailureLogger(),
-                  "Sensor duplicate detected (count=%d, threshold=%d)",
-                  sensor_dup_count_, cfg_.failure_threshold);
-      RaiseFailure("hand_sensor_duplicate (count=" +
-                   std::to_string(sensor_dup_count_) + ")");
+                  "Sensor duplicate detected (count=%d, threshold=%d)", sensor_dup_count_,
+                  cfg_.failure_threshold);
+      RaiseFailure("hand_sensor_duplicate (count=" + std::to_string(sensor_dup_count_) + ")");
     }
   }
 
   void CheckRate() {
     const auto now = std::chrono::steady_clock::now();
     const double dt_sec = std::chrono::duration<double>(now - prev_rate_check_).count();
-    if (dt_sec < 0.001) return;  // 너무 짧은 간격 무시
+    if (dt_sec < 0.001)
+      return;  // 너무 짧은 간격 무시
 
     const std::size_t current_cycles = controller_.cycle_count();
     const double rate_hz = static_cast<double>(current_cycles - prev_cycle_count_) / dt_sec;
@@ -214,11 +213,10 @@ private:
 
     if (rate_fail_count_ >= cfg_.rate_fail_threshold) {
       RCLCPP_WARN(::ur5e_hand_driver::logging::FailureLogger(),
-                  "Polling rate low: %.1f Hz (min=%.1f Hz, fail_count=%d)",
-                  rate_hz, cfg_.min_rate_hz, rate_fail_count_);
-      RaiseFailure("hand_polling_rate_low (rate=" +
-                   std::to_string(rate_hz) + " Hz, min=" +
-                   std::to_string(cfg_.min_rate_hz) + " Hz)");
+                  "Polling rate low: %.1f Hz (min=%.1f Hz, fail_count=%d)", rate_hz,
+                  cfg_.min_rate_hz, rate_fail_count_);
+      RaiseFailure("hand_polling_rate_low (rate=" + std::to_string(rate_hz) +
+                   " Hz, min=" + std::to_string(cfg_.min_rate_hz) + " Hz)");
     }
   }
 
@@ -228,39 +226,40 @@ private:
       RCLCPP_WARN(::ur5e_hand_driver::logging::FailureLogger(),
                   "UDP link down (consecutive_recv_failures=%lu, threshold=%d)",
                   static_cast<unsigned long>(failures), cfg_.link_fail_threshold);
-      RaiseFailure("hand_udp_link_down (consecutive_recv_failures=" +
-                   std::to_string(failures) + ")");
+      RaiseFailure("hand_udp_link_down (consecutive_recv_failures=" + std::to_string(failures) +
+                   ")");
     }
   }
 
   void RaiseFailure(const std::string& reason) {
     bool expected = false;
-    if (!failed_.compare_exchange_strong(expected, true)) return;
+    if (!failed_.compare_exchange_strong(expected, true))
+      return;
     if (on_failure_) {
       on_failure_(reason);
     }
   }
 
   HandController& controller_;
-  Config          cfg_;
-  ThreadConfig    thread_cfg_;
+  Config cfg_;
+  ThreadConfig thread_cfg_;
   FailureCallback on_failure_;
 
-  std::jthread       thread_;
-  std::atomic<bool>  running_{false};
-  std::atomic<bool>  failed_{false};
+  std::jthread thread_;
+  std::atomic<bool> running_{false};
+  std::atomic<bool> failed_{false};
 
   // Motor state
   std::array<float, kNumHandMotors> prev_motor_{};
   bool prev_motor_valid_{false};
-  int  motor_zero_count_{0};
-  int  motor_dup_count_{0};
+  int motor_zero_count_{0};
+  int motor_dup_count_{0};
 
   // Sensor state
   std::array<int32_t, kMaxHandSensors> prev_sensor_{};
   bool prev_sensor_valid_{false};
-  int  sensor_zero_count_{0};
-  int  sensor_dup_count_{0};
+  int sensor_zero_count_{0};
+  int sensor_dup_count_{0};
 
   // Rate monitoring state
   int rate_fail_count_{0};

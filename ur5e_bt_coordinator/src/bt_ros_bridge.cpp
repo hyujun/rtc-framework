@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/bt_ros_bridge.hpp"
+
 #include "ur5e_bt_coordinator/bt_logging.hpp"
 
 #include <cmath>
@@ -6,12 +7,16 @@
 namespace rtc_bt {
 
 namespace {
-auto bridge_log() { return ::rtc_bt::logging::BridgeLogger(); }
-auto poses_log() { return ::rtc_bt::logging::PosesLogger(); }
-} // namespace
+auto bridge_log() {
+  return ::rtc_bt::logging::BridgeLogger();
+}
 
-BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node)
-    : node_(std::move(node)) {
+auto poses_log() {
+  return ::rtc_bt::logging::PosesLogger();
+}
+}  // namespace
+
+BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node) : node_(std::move(node)) {
   // Initialize pose maps from compile-time defaults
   hand_poses_ = kHandPoses;
   arm_poses_ = kUR5ePoses;
@@ -25,14 +30,13 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node)
   // Manager-owned topics stay at their fixed paths below.
 
   world_target_sub_ = node_->create_subscription<geometry_msgs::msg::Polygon>(
-      "/world_target_info", rclcpp::QoS{10},
-      [this](geometry_msgs::msg::Polygon::SharedPtr msg) {
+      "/world_target_info", rclcpp::QoS{10}, [this](geometry_msgs::msg::Polygon::SharedPtr msg) {
         if (msg->points.empty())
           return;
 
         // Check if all coordinates are zero (data not ready)
         bool all_zero = true;
-        for (const auto &pt : msg->points) {
+        for (const auto& pt : msg->points) {
           if (pt.x != 0.0f || pt.y != 0.0f || pt.z != 0.0f) {
             all_zero = false;
             break;
@@ -72,8 +76,7 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node)
       });
 
   estop_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
-      "/system/estop_status", rclcpp::QoS{10},
-      [this](std_msgs::msg::Bool::SharedPtr msg) {
+      "/system/estop_status", rclcpp::QoS{10}, [this](std_msgs::msg::Bool::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);
           estopped_ = msg->data;
@@ -87,28 +90,24 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node)
 
   // ── Shape estimation ──────────────────────────────────────────────────
 
-  shape_estimate_sub_ =
-      node_->create_subscription<shape_estimation_msgs::msg::ShapeEstimate>(
-          "/shape/estimate", rclcpp::QoS{10},
-          [this](shape_estimation_msgs::msg::ShapeEstimate::SharedPtr msg) {
-            std::lock_guard lock(state_mutex_);
-            shape_estimate_ = *msg;
-            shape_estimate_valid_ = true;
-          });
+  shape_estimate_sub_ = node_->create_subscription<shape_estimation_msgs::msg::ShapeEstimate>(
+      "/shape/estimate", rclcpp::QoS{10},
+      [this](shape_estimation_msgs::msg::ShapeEstimate::SharedPtr msg) {
+        std::lock_guard lock(state_mutex_);
+        shape_estimate_ = *msg;
+        shape_estimate_valid_ = true;
+      });
 
-  shape_trigger_pub_ = node_->create_publisher<std_msgs::msg::String>(
-      "/shape/trigger", rclcpp::QoS{10});
+  shape_trigger_pub_ =
+      node_->create_publisher<std_msgs::msg::String>("/shape/trigger", rclcpp::QoS{10});
 
-  shape_clear_client_ =
-      node_->create_client<std_srvs::srv::Trigger>("/shape/clear");
+  shape_clear_client_ = node_->create_client<std_srvs::srv::Trigger>("/shape/clear");
 
   // ── /rtc_cm/* service clients (Phase 4) ───────────────────────────────
   switch_controller_client_ =
-      node_->create_client<rtc_msgs::srv::SwitchController>(
-          "/rtc_cm/switch_controller");
+      node_->create_client<rtc_msgs::srv::SwitchController>("/rtc_cm/switch_controller");
   list_controllers_client_ =
-      node_->create_client<rtc_msgs::srv::ListControllers>(
-          "/rtc_cm/list_controllers");
+      node_->create_client<rtc_msgs::srv::ListControllers>("/rtc_cm/list_controllers");
 
   RCLCPP_INFO(bridge_log(), "initialized");
 }
@@ -140,11 +139,11 @@ CachedWbcState BtRosBridge::GetWbcState() const {
   return wbc_state_;
 }
 
-bool BtRosBridge::GetObjectPose(Pose6D &pose) const {
+bool BtRosBridge::GetObjectPose(Pose6D& pose) const {
   return GetWorldTargetPose(pose);
 }
 
-bool BtRosBridge::GetWorldTargetPose(Pose6D &pose) const {
+bool BtRosBridge::GetWorldTargetPose(Pose6D& pose) const {
   std::lock_guard lock(state_mutex_);
   if (!world_target_valid_)
     return false;
@@ -164,16 +163,15 @@ bool BtRosBridge::IsEstopped() const {
 
 // ── Publishers ────────────────────────────────────────────────────────────
 
-void BtRosBridge::PublishArmTarget(const Pose6D &target) {
+void BtRosBridge::PublishArmTarget(const Pose6D& target) {
   rtc_msgs::msg::RobotTarget msg;
   msg.header.stamp = node_->now();
   msg.goal_type = "task";
-  msg.task_target = {target.x,    target.y,     target.z,
-                     target.roll, target.pitch, target.yaw};
+  msg.task_target = {target.x, target.y, target.z, target.roll, target.pitch, target.yaw};
   arm_target_pub_->publish(msg);
 }
 
-void BtRosBridge::PublishArmJointTarget(const std::vector<double> &target) {
+void BtRosBridge::PublishArmJointTarget(const std::vector<double>& target) {
   rtc_msgs::msg::RobotTarget msg;
   msg.header.stamp = node_->now();
   msg.goal_type = "joint";
@@ -181,7 +179,7 @@ void BtRosBridge::PublishArmJointTarget(const std::vector<double> &target) {
   arm_target_pub_->publish(msg);
 }
 
-void BtRosBridge::PublishHandTarget(const std::vector<double> &target) {
+void BtRosBridge::PublishHandTarget(const std::vector<double>& target) {
   {
     std::lock_guard lock(state_mutex_);
     last_hand_target_ = target;
@@ -198,13 +196,11 @@ std::vector<double> BtRosBridge::GetLastHandTarget() const {
   return last_hand_target_;
 }
 
-bool BtRosBridge::RequestSwitchController(const std::string &name,
-                                          double timeout_s,
-                                          std::string &message) {
+bool BtRosBridge::RequestSwitchController(const std::string& name, double timeout_s,
+                                          std::string& message) {
   if (!switch_controller_client_->service_is_ready()) {
     // Single 200ms grace period so the client survives a brief CM start race.
-    if (!switch_controller_client_->wait_for_service(
-            std::chrono::milliseconds(200))) {
+    if (!switch_controller_client_->wait_for_service(std::chrono::milliseconds(200))) {
       message = "switch_controller service unavailable";
       return false;
     }
@@ -221,8 +217,7 @@ bool BtRosBridge::RequestSwitchController(const std::string &name,
 
   auto fut = switch_controller_client_->async_send_request(req);
   const auto wait_ms = static_cast<int64_t>(timeout_s * 1000.0);
-  if (fut.wait_for(std::chrono::milliseconds(wait_ms)) !=
-      std::future_status::ready) {
+  if (fut.wait_for(std::chrono::milliseconds(wait_ms)) != std::future_status::ready) {
     message = "switch_controller timeout (" + std::to_string(timeout_s) + "s)";
     return false;
   }
@@ -233,7 +228,7 @@ bool BtRosBridge::RequestSwitchController(const std::string &name,
 
 // ── Shape estimation ──────────────────────────────────────────────────────
 
-void BtRosBridge::PublishShapeTrigger(const std::string &command) {
+void BtRosBridge::PublishShapeTrigger(const std::string& command) {
   std_msgs::msg::String msg;
   msg.data = command;
   RCLCPP_INFO(bridge_log(), "shape_trigger: %s", command.c_str());
@@ -247,16 +242,14 @@ void BtRosBridge::CallShapeClear() {
   }
   auto request = std::make_shared<std_srvs::srv::Trigger::Request>();
   shape_clear_client_->async_send_request(
-      request,
-      [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
+      request, [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
         auto result = future.get();
         RCLCPP_INFO(bridge_log(), "/shape/clear: %s",
                     result->success ? "OK" : result->message.c_str());
       });
 }
 
-bool BtRosBridge::GetShapeEstimate(
-    shape_estimation_msgs::msg::ShapeEstimate &out) const {
+bool BtRosBridge::GetShapeEstimate(shape_estimation_msgs::msg::ShapeEstimate& out) const {
   std::lock_guard lock(state_mutex_);
   if (!shape_estimate_valid_)
     return false;
@@ -283,12 +276,10 @@ void BtRosBridge::StartToFCollection() {
 void BtRosBridge::StopToFCollection() {
   tof_collecting_.store(false, std::memory_order_relaxed);
   std::lock_guard lock(tof_mutex_);
-  RCLCPP_INFO(bridge_log(), "ToF collection stopped (%zu snapshots)",
-              tof_buffer_.size());
+  RCLCPP_INFO(bridge_log(), "ToF collection stopped (%zu snapshots)", tof_buffer_.size());
 }
 
-const std::vector<rtc_msgs::msg::ToFSnapshot> &
-BtRosBridge::GetCollectedToFData() const {
+const std::vector<rtc_msgs::msg::ToFSnapshot>& BtRosBridge::GetCollectedToFData() const {
   // Caller must ensure collection is stopped before reading.
   return tof_buffer_;
 }
@@ -300,12 +291,11 @@ std::size_t BtRosBridge::GetCollectedToFCount() const {
 
 // ── Pose library ──────────────────────────────────────────────────────────
 
-void BtRosBridge::LoadPoseOverrides(
-    rclcpp_lifecycle::LifecycleNode::SharedPtr node) {
+void BtRosBridge::LoadPoseOverrides(rclcpp_lifecycle::LifecycleNode::SharedPtr node) {
   // Discover hand_pose.* parameters
   auto hand_result = node->list_parameters({"hand_pose"}, 1);
   int hand_count = 0;
-  for (const auto &param_name : hand_result.names) {
+  for (const auto& param_name : hand_result.names) {
     // param_name = "hand_pose.home" → pose_name = "home"
     const std::string prefix = "hand_pose.";
     if (param_name.size() <= prefix.size())
@@ -315,8 +305,7 @@ void BtRosBridge::LoadPoseOverrides(
     try {
       auto vals = node->get_parameter(param_name).as_double_array();
       if (vals.size() != static_cast<std::size_t>(kHandDofCount)) {
-        RCLCPP_WARN(poses_log(),
-                    "hand_pose.%s has %zu values (expected %d), skipped",
+        RCLCPP_WARN(poses_log(), "hand_pose.%s has %zu values (expected %d), skipped",
                     pose_name.c_str(), vals.size(), kHandDofCount);
         continue;
       }
@@ -326,16 +315,15 @@ void BtRosBridge::LoadPoseOverrides(
       }
       hand_poses_[pose_name] = pose;
       ++hand_count;
-    } catch (const std::exception &e) {
-      RCLCPP_WARN(poses_log(), "failed to load hand_pose.%s: %s",
-                  pose_name.c_str(), e.what());
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(poses_log(), "failed to load hand_pose.%s: %s", pose_name.c_str(), e.what());
     }
   }
 
   // Discover arm_pose.* parameters
   auto arm_result = node->list_parameters({"arm_pose"}, 1);
   int arm_count = 0;
-  for (const auto &param_name : arm_result.names) {
+  for (const auto& param_name : arm_result.names) {
     const std::string prefix = "arm_pose.";
     if (param_name.size() <= prefix.size())
       continue;
@@ -344,8 +332,7 @@ void BtRosBridge::LoadPoseOverrides(
     try {
       auto vals = node->get_parameter(param_name).as_double_array();
       if (vals.size() != static_cast<std::size_t>(kArmDofCount)) {
-        RCLCPP_WARN(poses_log(),
-                    "arm_pose.%s has %zu values (expected %d), skipped",
+        RCLCPP_WARN(poses_log(), "arm_pose.%s has %zu values (expected %d), skipped",
                     pose_name.c_str(), vals.size(), kArmDofCount);
         continue;
       }
@@ -355,18 +342,16 @@ void BtRosBridge::LoadPoseOverrides(
       }
       arm_poses_[pose_name] = pose;
       ++arm_count;
-    } catch (const std::exception &e) {
-      RCLCPP_WARN(poses_log(), "failed to load arm_pose.%s: %s",
-                  pose_name.c_str(), e.what());
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(poses_log(), "failed to load arm_pose.%s: %s", pose_name.c_str(), e.what());
     }
   }
 
-  RCLCPP_INFO(poses_log(),
-              "loaded %d hand poses, %d arm poses (total: %zu hand, %zu arm)",
+  RCLCPP_INFO(poses_log(), "loaded %d hand poses, %d arm poses (total: %zu hand, %zu arm)",
               hand_count, arm_count, hand_poses_.size(), arm_poses_.size());
 }
 
-const HandPose &BtRosBridge::GetHandPose(const std::string &name) const {
+const HandPose& BtRosBridge::GetHandPose(const std::string& name) const {
   auto it = hand_poses_.find(name);
   if (it == hand_poses_.end()) {
     throw BT::RuntimeError("PoseLibrary: unknown hand pose: " + name);
@@ -374,7 +359,7 @@ const HandPose &BtRosBridge::GetHandPose(const std::string &name) const {
   return it->second;
 }
 
-const ArmPose &BtRosBridge::GetArmPose(const std::string &name) const {
+const ArmPose& BtRosBridge::GetArmPose(const std::string& name) const {
   auto it = arm_poses_.find(name);
   if (it == arm_poses_.end()) {
     throw BT::RuntimeError("PoseLibrary: unknown arm pose: " + name);
@@ -388,8 +373,7 @@ std::vector<TopicHealth> BtRosBridge::GetTopicHealth(double timeout_s) const {
   std::lock_guard lock(health_mutex_);
   auto now = std::chrono::steady_clock::now();
 
-  auto make_health = [&](const std::string &name, bool received,
-                         TimePoint last) {
+  auto make_health = [&](const std::string& name, bool received, TimePoint last) {
     TopicHealth h;
     h.name = name;
     h.received = received;
@@ -403,11 +387,9 @@ std::vector<TopicHealth> BtRosBridge::GetTopicHealth(double timeout_s) const {
   return {
       make_health("/ur5e/gui_position", arm_gui_received_, arm_gui_last_),
       make_health("/hand/gui_position", hand_gui_received_, hand_gui_last_),
-      make_health("/hand/grasp_state", grasp_state_received_,
-                  grasp_state_last_),
+      make_health("/hand/grasp_state", grasp_state_received_, grasp_state_last_),
       make_health("/hand/wbc_state", wbc_state_received_, wbc_state_last_),
-      make_health("/world_target_info", world_target_received_,
-                  world_target_last_),
+      make_health("/world_target_info", world_target_received_, world_target_last_),
       make_health("/system/estop_status", estop_received_, estop_last_),
   };
 }
@@ -423,14 +405,13 @@ bool BtRosBridge::AreTopicsHealthy(double timeout_s) const {
   };
 
   // Critical topics: arm + hand position feedback
-  return is_ok(arm_gui_received_, arm_gui_last_) &&
-         is_ok(hand_gui_received_, hand_gui_last_);
+  return is_ok(arm_gui_received_, arm_gui_last_) && is_ok(hand_gui_received_, hand_gui_last_);
 }
 
 // ── Phase 4: dynamic rewiring for controller-owned topics ────────────────
 // Invoked from the active_ctrl_sub_ callback. Idempotent — skips when the
 // controller name has not changed since the last call.
-void BtRosBridge::RewireControllerTopics(const std::string &ctrl_name) {
+void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
   if (ctrl_name.empty())
     return;
   {
@@ -463,8 +444,7 @@ void BtRosBridge::RewireControllerTopics(const std::string &ctrl_name) {
           tcp_pose_.roll = msg->task_positions[3];
           tcp_pose_.pitch = msg->task_positions[4];
           tcp_pose_.yaw = msg->task_positions[5];
-          arm_joint_positions_.assign(msg->joint_positions.begin(),
-                                      msg->joint_positions.end());
+          arm_joint_positions_.assign(msg->joint_positions.begin(), msg->joint_positions.end());
         }
         {
           std::lock_guard lock(health_mutex_);
@@ -478,8 +458,7 @@ void BtRosBridge::RewireControllerTopics(const std::string &ctrl_name) {
       [this](rtc_msgs::msg::GuiPosition::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);
-          hand_joint_positions_.assign(msg->joint_positions.begin(),
-                                       msg->joint_positions.end());
+          hand_joint_positions_.assign(msg->joint_positions.begin(), msg->joint_positions.end());
         }
         {
           std::lock_guard lock(health_mutex_);
@@ -489,23 +468,18 @@ void BtRosBridge::RewireControllerTopics(const std::string &ctrl_name) {
       });
 
   grasp_state_sub_ = node_->create_subscription<rtc_msgs::msg::GraspState>(
-      ns + "/hand/grasp_state", rclcpp::QoS{10},
-      [this](rtc_msgs::msg::GraspState::SharedPtr msg) {
+      ns + "/hand/grasp_state", rclcpp::QoS{10}, [this](rtc_msgs::msg::GraspState::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);
           const auto n = msg->force_magnitude.size();
           grasp_state_.fingertips.resize(n);
           for (std::size_t i = 0; i < n; ++i) {
-            auto &ft = grasp_state_.fingertips[i];
-            ft.name = (i < msg->fingertip_names.size())
-                          ? msg->fingertip_names[i]
-                          : "";
+            auto& ft = grasp_state_.fingertips[i];
+            ft.name = (i < msg->fingertip_names.size()) ? msg->fingertip_names[i] : "";
             ft.force_magnitude = msg->force_magnitude[i];
-            ft.contact_flag =
-                (i < msg->contact_flag.size()) ? msg->contact_flag[i] : 0.0f;
-            ft.inference_valid = (i < msg->inference_valid.size())
-                                     ? msg->inference_valid[i]
-                                     : false;
+            ft.contact_flag = (i < msg->contact_flag.size()) ? msg->contact_flag[i] : 0.0f;
+            ft.inference_valid =
+                (i < msg->inference_valid.size()) ? msg->inference_valid[i] : false;
           }
           grasp_state_.num_active_contacts = msg->num_active_contacts;
           grasp_state_.max_force = msg->max_force;
@@ -514,13 +488,11 @@ void BtRosBridge::RewireControllerTopics(const std::string &ctrl_name) {
           grasp_state_.min_fingertips = msg->min_fingertips;
           grasp_state_.grasp_phase = msg->grasp_phase;
           grasp_state_.grasp_target_force = msg->grasp_target_force;
-          grasp_state_.finger_s.assign(msg->finger_s.begin(),
-                                       msg->finger_s.end());
-          grasp_state_.finger_filtered_force.assign(
-              msg->finger_filtered_force.begin(),
-              msg->finger_filtered_force.end());
-          grasp_state_.finger_force_error.assign(
-              msg->finger_force_error.begin(), msg->finger_force_error.end());
+          grasp_state_.finger_s.assign(msg->finger_s.begin(), msg->finger_s.end());
+          grasp_state_.finger_filtered_force.assign(msg->finger_filtered_force.begin(),
+                                                    msg->finger_filtered_force.end());
+          grasp_state_.finger_force_error.assign(msg->finger_force_error.begin(),
+                                                 msg->finger_force_error.end());
         }
         {
           std::lock_guard lock(health_mutex_);
@@ -533,8 +505,7 @@ void BtRosBridge::RewireControllerTopics(const std::string &ctrl_name) {
     auto tof_qos = rclcpp::SensorDataQoS();
     tof_qos.keep_last(100);
     tof_snapshot_sub_ = node_->create_subscription<rtc_msgs::msg::ToFSnapshot>(
-        ns + "/tof/snapshot", tof_qos,
-        [this](rtc_msgs::msg::ToFSnapshot::SharedPtr msg) {
+        ns + "/tof/snapshot", tof_qos, [this](rtc_msgs::msg::ToFSnapshot::SharedPtr msg) {
           if (!tof_collecting_.load(std::memory_order_relaxed))
             return;
           std::lock_guard lock(tof_mutex_);
@@ -546,22 +517,17 @@ void BtRosBridge::RewireControllerTopics(const std::string &ctrl_name) {
   // publishes one of them, the other stays empty/stale. Caller picks via
   // GetGraspState() vs GetWbcState() based on the active controller.
   wbc_state_sub_ = node_->create_subscription<rtc_msgs::msg::WbcState>(
-      ns + "/hand/wbc_state", rclcpp::QoS{10},
-      [this](rtc_msgs::msg::WbcState::SharedPtr msg) {
+      ns + "/hand/wbc_state", rclcpp::QoS{10}, [this](rtc_msgs::msg::WbcState::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);
           const auto n = msg->force_magnitude.size();
           wbc_state_.fingertips.resize(n);
           for (std::size_t i = 0; i < n; ++i) {
-            auto &ft = wbc_state_.fingertips[i];
-            ft.name = (i < msg->fingertip_names.size())
-                          ? msg->fingertip_names[i]
-                          : "";
+            auto& ft = wbc_state_.fingertips[i];
+            ft.name = (i < msg->fingertip_names.size()) ? msg->fingertip_names[i] : "";
             ft.force_magnitude = msg->force_magnitude[i];
-            ft.contact_flag =
-                (i < msg->contact_flag.size()) ? msg->contact_flag[i] : 0.0f;
-            ft.displacement =
-                (i < msg->displacement.size()) ? msg->displacement[i] : 0.0f;
+            ft.contact_flag = (i < msg->contact_flag.size()) ? msg->contact_flag[i] : 0.0f;
+            ft.displacement = (i < msg->displacement.size()) ? msg->displacement[i] : 0.0f;
           }
           wbc_state_.num_active_contacts = msg->num_active_contacts;
           wbc_state_.max_force = msg->max_force;
@@ -580,28 +546,25 @@ void BtRosBridge::RewireControllerTopics(const std::string &ctrl_name) {
         }
       });
 
-  arm_target_pub_ = node_->create_publisher<rtc_msgs::msg::RobotTarget>(
-      ns + "/ur5e/joint_goal", rclcpp::QoS{10});
-  hand_target_pub_ = node_->create_publisher<rtc_msgs::msg::RobotTarget>(
-      ns + "/hand/joint_goal", rclcpp::QoS{10});
+  arm_target_pub_ =
+      node_->create_publisher<rtc_msgs::msg::RobotTarget>(ns + "/ur5e/joint_goal", rclcpp::QoS{10});
+  hand_target_pub_ =
+      node_->create_publisher<rtc_msgs::msg::RobotTarget>(ns + "/hand/joint_goal", rclcpp::QoS{10});
 
   // Phase C: bind parameter + grasp_command clients to the active controller.
   //   Param services live on the LifecycleNode FQN /<ctrl>/<ctrl>; relative
   //   srv 'grasp_command' resolves under namespace /<ctrl>/grasp_command.
-  active_param_client_ = std::make_shared<rclcpp::AsyncParametersClient>(
-      node_, ns + "/" + ctrl_name);
-  grasp_command_client_ =
-      node_->create_client<rtc_msgs::srv::GraspCommand>(ns + "/grasp_command");
+  active_param_client_ =
+      std::make_shared<rclcpp::AsyncParametersClient>(node_, ns + "/" + ctrl_name);
+  grasp_command_client_ = node_->create_client<rtc_msgs::srv::GraspCommand>(ns + "/grasp_command");
 
-  RCLCPP_INFO(bridge_log(), "rewired controller-owned topics to '%s'",
-              ctrl_name.c_str());
+  RCLCPP_INFO(bridge_log(), "rewired controller-owned topics to '%s'", ctrl_name.c_str());
 }
 
 // ── Phase C: parameter + grasp_command sync wrappers ────────────────────────
 
-bool BtRosBridge::SetActiveControllerGains(
-    const std::vector<rclcpp::Parameter> &params, double timeout_s,
-    std::string &message) {
+bool BtRosBridge::SetActiveControllerGains(const std::vector<rclcpp::Parameter>& params,
+                                           double timeout_s, std::string& message) {
   rclcpp::AsyncParametersClient::SharedPtr client;
   std::string ctrl;
   {
@@ -615,7 +578,7 @@ bool BtRosBridge::SetActiveControllerGains(
   }
   if (params.empty()) {
     message = "no parameters supplied";
-    return true; // no-op success
+    return true;  // no-op success
   }
 
   const auto wait_dur = std::chrono::duration<double>(timeout_s);
@@ -628,10 +591,9 @@ bool BtRosBridge::SetActiveControllerGains(
   }
 
   auto fut = client->set_parameters_atomically(params);
-  if (fut.wait_for(std::chrono::duration_cast<std::chrono::milliseconds>(
-          wait_dur)) != std::future_status::ready) {
-    message = "set_parameters_atomically timeout (" +
-              std::to_string(timeout_s) + "s) on /" + ctrl;
+  if (fut.wait_for(std::chrono::duration_cast<std::chrono::milliseconds>(wait_dur)) !=
+      std::future_status::ready) {
+    message = "set_parameters_atomically timeout (" + std::to_string(timeout_s) + "s) on /" + ctrl;
     return false;
   }
   const auto result = fut.get();
@@ -643,8 +605,8 @@ bool BtRosBridge::SetActiveControllerGains(
   return true;
 }
 
-bool BtRosBridge::SendGraspCommand(uint8_t command, double target_force,
-                                   double timeout_s, std::string &message) {
+bool BtRosBridge::SendGraspCommand(uint8_t command, double target_force, double timeout_s,
+                                   std::string& message) {
   rclcpp::Client<rtc_msgs::srv::GraspCommand>::SharedPtr client;
   std::string ctrl;
   {
@@ -670,10 +632,9 @@ bool BtRosBridge::SendGraspCommand(uint8_t command, double target_force,
   req->target_force = target_force;
 
   auto fut = client->async_send_request(req);
-  if (fut.wait_for(std::chrono::duration_cast<std::chrono::milliseconds>(
-          wait_dur)) != std::future_status::ready) {
-    message = "grasp_command timeout (" + std::to_string(timeout_s) +
-              "s) on /" + ctrl;
+  if (fut.wait_for(std::chrono::duration_cast<std::chrono::milliseconds>(wait_dur)) !=
+      std::future_status::ready) {
+    message = "grasp_command timeout (" + std::to_string(timeout_s) + "s) on /" + ctrl;
     return false;
   }
   auto resp = fut.get();
@@ -681,4 +642,4 @@ bool BtRosBridge::SendGraspCommand(uint8_t command, double target_force,
   return resp->ok;
 }
 
-} // namespace rtc_bt
+}  // namespace rtc_bt

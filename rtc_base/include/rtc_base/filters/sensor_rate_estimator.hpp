@@ -42,21 +42,19 @@ class SensorRateEstimator {
   //                   0.01 ≈ ~100 sample time constant (good for 500 Hz).
   // warmup_samples  : number of Tick() calls before rate_hz() becomes valid.
   //                   Prevents transient spikes from corrupting the estimate.
-  void Init(double nominal_rate_hz,
-            double alpha = 0.01,
-            int warmup_samples = 50) noexcept {
+  void Init(double nominal_rate_hz, double alpha = 0.01, int warmup_samples = 50) noexcept {
     nominal_rate_hz_ = nominal_rate_hz;
-    alpha_           = alpha;
-    warmup_target_   = warmup_samples;
+    alpha_ = alpha;
+    warmup_target_ = warmup_samples;
     Reset();
   }
 
   // Reset internal state.  Next Tick() starts a fresh measurement.
   void Reset() noexcept {
-    ema_dt_sec_     = (nominal_rate_hz_ > 0.0) ? 1.0 / nominal_rate_hz_ : 0.002;
-    prev_time_      = Clock::time_point{};  // epoch = "not yet started"
-    tick_count_     = 0;
-    warmed_up_      = false;
+    ema_dt_sec_ = (nominal_rate_hz_ > 0.0) ? 1.0 / nominal_rate_hz_ : 0.002;
+    prev_time_ = Clock::time_point{};  // epoch = "not yet started"
+    tick_count_ = 0;
+    warmed_up_ = false;
   }
 
   // Call once per sensor cycle (i.e. once per actual sample acquisition).
@@ -96,50 +94,41 @@ class SensorRateEstimator {
   }
 
   // Smoothed estimate of the actual sampling period [seconds].
-  [[nodiscard]] double dt_sec() const noexcept {
-    return ema_dt_sec_;
-  }
+  [[nodiscard]] double dt_sec() const noexcept { return ema_dt_sec_; }
 
   // True once enough samples have been collected for a reliable estimate.
-  [[nodiscard]] bool warmed_up() const noexcept {
-    return warmed_up_;
-  }
+  [[nodiscard]] bool warmed_up() const noexcept { return warmed_up_; }
 
   // True if the actual rate deviates from nominal by more than tolerance_pct
   // (default 10%).  Useful for logging warnings without polluting RT path.
-  [[nodiscard]] bool deviation_warning(
-      double tolerance_pct = 10.0) const noexcept {
-    if (!warmed_up_ || nominal_rate_hz_ <= 0.0) return false;
+  [[nodiscard]] bool deviation_warning(double tolerance_pct = 10.0) const noexcept {
+    if (!warmed_up_ || nominal_rate_hz_ <= 0.0)
+      return false;
     const double actual = rate_hz();
-    const double deviation_pct =
-        std::abs(actual - nominal_rate_hz_) / nominal_rate_hz_ * 100.0;
+    const double deviation_pct = std::abs(actual - nominal_rate_hz_) / nominal_rate_hz_ * 100.0;
     return deviation_pct > tolerance_pct;
   }
 
   // Nominal (design-time) rate for comparison.
-  [[nodiscard]] double nominal_rate_hz() const noexcept {
-    return nominal_rate_hz_;
-  }
+  [[nodiscard]] double nominal_rate_hz() const noexcept { return nominal_rate_hz_; }
 
-  [[nodiscard]] int tick_count() const noexcept {
-    return tick_count_;
-  }
+  [[nodiscard]] int tick_count() const noexcept { return tick_count_; }
 
  private:
   using Clock = std::chrono::steady_clock;
 
   static constexpr double kOutlierLower = 0.33;  // reject dt < ema/3
   static constexpr double kOutlierUpper = 3.0;   // reject dt > ema*3
-  static constexpr double kWarmupAlpha  = 0.1;   // 10-sample τ during warmup
+  static constexpr double kWarmupAlpha = 0.1;    // 10-sample τ during warmup
 
   double nominal_rate_hz_{500.0};
   double alpha_{0.01};
-  int    warmup_target_{50};
+  int warmup_target_{50};
 
-  double ema_dt_sec_{0.002};            // EMA of inter-tick interval
-  Clock::time_point prev_time_{};       // previous Tick() timestamp
-  int    tick_count_{0};
-  bool   warmed_up_{false};
+  double ema_dt_sec_{0.002};       // EMA of inter-tick interval
+  Clock::time_point prev_time_{};  // previous Tick() timestamp
+  int tick_count_{0};
+  bool warmed_up_{false};
 };
 
 }  // namespace rtc

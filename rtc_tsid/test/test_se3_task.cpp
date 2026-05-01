@@ -15,8 +15,7 @@
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 class SE3TaskTest : public ::testing::Test {
  protected:

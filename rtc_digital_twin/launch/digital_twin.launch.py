@@ -38,15 +38,16 @@ from launch_ros.actions import Node
 def _load_urdf(path: str) -> str:
     """Load URDF from file path, processing xacro if needed."""
     from rtc_digital_twin.urdf_parser import UrdfParser
+
     parser = UrdfParser.from_file(path)
     return parser.urdf_xml
 
 
 def launch_setup(context, *args, **kwargs):
     # ── Resolve robot description ─────────────────────────────────────────
-    desc_file = LaunchConfiguration('robot_description_file').perform(context)
-    desc_pkg = LaunchConfiguration('robot_description_package').perform(context)
-    desc_path = LaunchConfiguration('robot_description_path').perform(context)
+    desc_file = LaunchConfiguration("robot_description_file").perform(context)
+    desc_pkg = LaunchConfiguration("robot_description_package").perform(context)
+    desc_path = LaunchConfiguration("robot_description_path").perform(context)
 
     robot_description = None
 
@@ -62,20 +63,21 @@ def launch_setup(context, *args, **kwargs):
 
     # Priority 2: fallback to YAML config parameters
     if robot_description is None:
-        config_file = LaunchConfiguration('config_file').perform(context)
+        config_file = LaunchConfiguration("config_file").perform(context)
         if not config_file:
             config_file = os.path.join(
-                get_package_share_directory('rtc_digital_twin'),
-                'config', 'digital_twin.yaml')
+                get_package_share_directory("rtc_digital_twin"), "config", "digital_twin.yaml"
+            )
 
         import yaml
-        with open(config_file, 'r') as f:
-            cfg = yaml.safe_load(f)
-        params = cfg.get('/**', {}).get('ros__parameters', {})
 
-        desc_file = params.get('robot_description_file', '')
-        desc_pkg = params.get('robot_description_package', '')
-        desc_path = params.get('robot_description_path', '')
+        with open(config_file, "r") as f:
+            cfg = yaml.safe_load(f)
+        params = cfg.get("/**", {}).get("ros__parameters", {})
+
+        desc_file = params.get("robot_description_file", "")
+        desc_pkg = params.get("robot_description_package", "")
+        desc_path = params.get("robot_description_path", "")
 
         if desc_file:
             urdf_path = desc_file
@@ -84,136 +86,150 @@ def launch_setup(context, *args, **kwargs):
             urdf_path = os.path.join(pkg_share, desc_path)
         else:
             raise RuntimeError(
-                'Must provide robot_description_file, '
-                'or robot_description_package + robot_description_path. '
-                'Set via launch args or in the YAML config file.')
+                "Must provide robot_description_file, "
+                "or robot_description_package + robot_description_path. "
+                "Set via launch args or in the YAML config file."
+            )
 
         robot_description = _load_urdf(urdf_path)
 
     # ── Config file ───────────────────────────────────────────────────────
-    config_file = LaunchConfiguration('config_file').perform(context)
+    config_file = LaunchConfiguration("config_file").perform(context)
     if not config_file:
         config_file = os.path.join(
-            get_package_share_directory('rtc_digital_twin'),
-            'config', 'digital_twin.yaml')
+            get_package_share_directory("rtc_digital_twin"), "config", "digital_twin.yaml"
+        )
 
     # ── RViz config ───────────────────────────────────────────────────────
-    rviz_config = LaunchConfiguration('rviz_config').perform(context)
+    rviz_config = LaunchConfiguration("rviz_config").perform(context)
     if not rviz_config:
         rviz_config = os.path.join(
-            get_package_share_directory('rtc_digital_twin'),
-            'config', 'digital_twin.rviz')
+            get_package_share_directory("rtc_digital_twin"), "config", "digital_twin.rviz"
+        )
 
     # ── Display rate override ─────────────────────────────────────────────
-    display_rate = LaunchConfiguration('display_rate').perform(context)
+    display_rate = LaunchConfiguration("display_rate").perform(context)
     dt_overrides = {}
     if display_rate:
-        dt_overrides['display_rate'] = float(display_rate)
+        dt_overrides["display_rate"] = float(display_rate)
 
     # ── robot_state_publisher ─────────────────────────────────────────────
     robot_state_publisher_node = Node(
-        package='robot_state_publisher',
-        executable='robot_state_publisher',
-        namespace='digital_twin',
-        parameters=[{
-            'robot_description': robot_description,
-            'publish_frequency': 60.0,
-        }],
-        remappings=[
-            ('joint_states', '/digital_twin/joint_states'),
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        namespace="digital_twin",
+        parameters=[
+            {
+                "robot_description": robot_description,
+                "publish_frequency": 60.0,
+            }
         ],
-        output='screen',
+        remappings=[
+            ("joint_states", "/digital_twin/joint_states"),
+        ],
+        output="screen",
     )
 
     # ── digital_twin_node ─────────────────────────────────────────────────
     dt_params = [
         config_file,
-        {'robot_description': robot_description},
+        {"robot_description": robot_description},
     ]
     if dt_overrides:
         dt_params.append(dt_overrides)
 
     digital_twin_node = Node(
-        package='rtc_digital_twin',
-        executable='digital_twin_node',
-        name='digital_twin_node',
+        package="rtc_digital_twin",
+        executable="digital_twin_node",
+        name="digital_twin_node",
         parameters=dt_params,
-        output='screen',
+        output="screen",
     )
 
     # ── rviz2 (conditional) ───────────────────────────────────────────────
-    use_rviz = LaunchConfiguration('use_rviz')
+    use_rviz = LaunchConfiguration("use_rviz")
     rviz_node = Node(
-        package='rviz2',
-        executable='rviz2',
-        name='rviz2',
-        arguments=['-d', rviz_config],
+        package="rviz2",
+        executable="rviz2",
+        name="rviz2",
+        arguments=["-d", rviz_config],
         condition=IfCondition(use_rviz),
-        output='screen',
+        output="screen",
     )
 
     # ── joint_gui_node (conditional) ────────────────────────────────────
-    use_joint_gui = LaunchConfiguration('use_joint_gui')
+    use_joint_gui = LaunchConfiguration("use_joint_gui")
 
     # Read joint_gui params from YAML config
     import yaml as _yaml
-    with open(config_file, 'r') as _f:
+
+    with open(config_file, "r") as _f:
         _cfg = _yaml.safe_load(_f)
-    _gui_params = _cfg.get('/**', {}).get('ros__parameters', {})
-    gui_output_topic = _gui_params.get('joint_gui.output_topic',
-                                       '/joint_gui/joint_states')
-    gui_publish_rate = _gui_params.get('joint_gui.publish_rate', 10.0)
+    _gui_params = _cfg.get("/**", {}).get("ros__parameters", {})
+    gui_output_topic = _gui_params.get("joint_gui.output_topic", "/joint_gui/joint_states")
+    gui_publish_rate = _gui_params.get("joint_gui.publish_rate", 10.0)
 
     joint_gui_node = Node(
-        package='rtc_digital_twin',
-        executable='joint_gui_node',
-        name='joint_gui_node',
-        parameters=[{
-            'robot_description': robot_description,
-            'joint_gui.output_topic': gui_output_topic,
-            'joint_gui.publish_rate': gui_publish_rate,
-        }],
+        package="rtc_digital_twin",
+        executable="joint_gui_node",
+        name="joint_gui_node",
+        parameters=[
+            {
+                "robot_description": robot_description,
+                "joint_gui.output_topic": gui_output_topic,
+                "joint_gui.publish_rate": gui_publish_rate,
+            }
+        ],
         condition=IfCondition(use_joint_gui),
-        output='screen',
+        output="screen",
     )
 
-    return [robot_state_publisher_node, digital_twin_node, rviz_node,
-            joint_gui_node]
+    return [robot_state_publisher_node, digital_twin_node, rviz_node, joint_gui_node]
 
 
 def generate_launch_description():
-    return LaunchDescription([
-        DeclareLaunchArgument(
-            'robot_description_file', default_value='',
-            description='Absolute path to URDF/xacro file',
-        ),
-        DeclareLaunchArgument(
-            'robot_description_package', default_value='',
-            description='Package containing the robot description',
-        ),
-        DeclareLaunchArgument(
-            'robot_description_path', default_value='',
-            description='Relative path within the description package',
-        ),
-        DeclareLaunchArgument(
-            'config_file', default_value='',
-            description='Path to digital_twin YAML config (empty = default)',
-        ),
-        DeclareLaunchArgument(
-            'use_rviz', default_value='true',
-            description='Launch RViz2',
-        ),
-        DeclareLaunchArgument(
-            'rviz_config', default_value='',
-            description='Path to RViz config file (empty = default)',
-        ),
-        DeclareLaunchArgument(
-            'display_rate', default_value='',
-            description='Override display_rate from YAML',
-        ),
-        DeclareLaunchArgument(
-            'use_joint_gui', default_value='false',
-            description='Launch Joint State Publisher GUI',
-        ),
-        OpaqueFunction(function=launch_setup),
-    ])
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument(
+                "robot_description_file",
+                default_value="",
+                description="Absolute path to URDF/xacro file",
+            ),
+            DeclareLaunchArgument(
+                "robot_description_package",
+                default_value="",
+                description="Package containing the robot description",
+            ),
+            DeclareLaunchArgument(
+                "robot_description_path",
+                default_value="",
+                description="Relative path within the description package",
+            ),
+            DeclareLaunchArgument(
+                "config_file",
+                default_value="",
+                description="Path to digital_twin YAML config (empty = default)",
+            ),
+            DeclareLaunchArgument(
+                "use_rviz",
+                default_value="true",
+                description="Launch RViz2",
+            ),
+            DeclareLaunchArgument(
+                "rviz_config",
+                default_value="",
+                description="Path to RViz config file (empty = default)",
+            ),
+            DeclareLaunchArgument(
+                "display_rate",
+                default_value="",
+                description="Override display_rate from YAML",
+            ),
+            DeclareLaunchArgument(
+                "use_joint_gui",
+                default_value="false",
+                description="Launch Joint State Publisher GUI",
+            ),
+            OpaqueFunction(function=launch_setup),
+        ]
+    )

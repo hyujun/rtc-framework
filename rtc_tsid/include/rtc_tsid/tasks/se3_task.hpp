@@ -1,8 +1,8 @@
 #pragma once
 
-#include <array>
-
 #include "rtc_tsid/core/task_base.hpp"
+
+#include <array>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -30,26 +30,17 @@ namespace rtc::tsid {
 // ────────────────────────────────────────────────
 class SE3Task final : public TaskBase {
  public:
-  [[nodiscard]] std::string_view name() const noexcept override {
-    return name_;
-  }
+  [[nodiscard]] std::string_view name() const noexcept override { return name_; }
 
-  void init(const pinocchio::Model& model,
-            const RobotModelInfo& robot_info,
-            PinocchioCache& cache,
+  void init(const pinocchio::Model& model, const RobotModelInfo& robot_info, PinocchioCache& cache,
             const YAML::Node& task_config) override;
 
-  [[nodiscard]] int residual_dim() const noexcept override {
-    return active_dim_;
-  }
+  [[nodiscard]] int residual_dim() const noexcept override { return active_dim_; }
 
-  void compute_residual(
-      const PinocchioCache& cache,
-      const ControlReference& ref,
-      const ContactState& contacts,
-      int n_vars,
-      Eigen::Ref<Eigen::MatrixXd> J_block,
-      Eigen::Ref<Eigen::VectorXd> r_block) noexcept override;
+  void compute_residual(const PinocchioCache& cache, const ControlReference& ref,
+                        const ContactState& contacts, int n_vars,
+                        Eigen::Ref<Eigen::MatrixXd> J_block,
+                        Eigen::Ref<Eigen::VectorXd> r_block) noexcept override;
 
   /// @brief SE3 목표 설정 (RT-safe)
   /// @param placement_des 목표 SE3 pose (world frame)
@@ -57,10 +48,8 @@ class SE3Task final : public TaskBase {
   /// @param a_ff feedforward spatial acceleration [6] (default: zero)
   void set_se3_reference(
       const pinocchio::SE3& placement_des,
-      const Eigen::Matrix<double, 6, 1>& v_des =
-          Eigen::Matrix<double, 6, 1>::Zero(),
-      const Eigen::Matrix<double, 6, 1>& a_ff =
-          Eigen::Matrix<double, 6, 1>::Zero()) noexcept;
+      const Eigen::Matrix<double, 6, 1>& v_des = Eigen::Matrix<double, 6, 1>::Zero(),
+      const Eigen::Matrix<double, 6, 1>& a_ff = Eigen::Matrix<double, 6, 1>::Zero()) noexcept;
 
   /// @brief PD gains 설정 (RT-safe)
   void set_gains(const Eigen::Matrix<double, 6, 1>& kp,

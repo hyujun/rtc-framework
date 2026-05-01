@@ -12,33 +12,29 @@ using namespace rtc_bt;
 using namespace rtc_bt::test;
 
 class MoveToPoseTest : public RosTestFixture {
-protected:
-  void SetUp() override
-  {
+ protected:
+  void SetUp() override {
     RosTestFixture::SetUp();
     factory_.registerNodeType<MoveToPose>("MoveToPose", bridge_);
   }
 
-  BT::Tree CreateTree(const std::string& xml)
-  {
-    const std::string full = R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" +
-                             xml + R"(</BehaviorTree></root>)";
+  BT::Tree CreateTree(const std::string& xml) {
+    const std::string full =
+        R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" + xml + R"(</BehaviorTree></root>)";
     return factory_.createTreeFromText(full);
   }
 
   BT::BehaviorTreeFactory factory_;
 };
 
-TEST_F(MoveToPoseTest, StartsRunning)
-{
+TEST_F(MoveToPoseTest, StartsRunning) {
   auto tree = CreateTree(
       R"(<MoveToPose target="0.3;-0.3;0.15;3.14;0.0;0.0"
                      position_tolerance="0.01" timeout_s="5.0"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 }
 
-TEST_F(MoveToPoseTest, SucceedsWhenAtTarget)
-{
+TEST_F(MoveToPoseTest, SucceedsWhenAtTarget) {
   auto tree = CreateTree(
       R"(<MoveToPose target="0.3;-0.3;0.15;3.14;0.0;0.0"
                      position_tolerance="0.01"
@@ -56,8 +52,7 @@ TEST_F(MoveToPoseTest, SucceedsWhenAtTarget)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 }
 
-TEST_F(MoveToPoseTest, StillRunningWhenFar)
-{
+TEST_F(MoveToPoseTest, StillRunningWhenFar) {
   auto tree = CreateTree(
       R"(<MoveToPose target="0.3;-0.3;0.15;3.14;0.0;0.0"
                      position_tolerance="0.001"
@@ -73,8 +68,7 @@ TEST_F(MoveToPoseTest, StillRunningWhenFar)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 }
 
-TEST_F(MoveToPoseTest, FailsOnTimeout)
-{
+TEST_F(MoveToPoseTest, FailsOnTimeout) {
   auto tree = CreateTree(
       R"(<MoveToPose target="0.3;-0.3;0.15;3.14;0.0;0.0"
                      position_tolerance="0.001"
@@ -91,8 +85,7 @@ TEST_F(MoveToPoseTest, FailsOnTimeout)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
 }
 
-TEST_F(MoveToPoseTest, WithinPositionButNotOrientation)
-{
+TEST_F(MoveToPoseTest, WithinPositionButNotOrientation) {
   auto tree = CreateTree(
       R"(<MoveToPose target="0.3;-0.3;0.15;3.14;0.0;0.0"
                      position_tolerance="0.01"

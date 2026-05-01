@@ -20,30 +20,30 @@ struct TaskSpaceGoal {
 
 struct ExplorationConfig {
   // Phase 0: Approach
-  double approach_step_size{0.005};      // [m]
+  double approach_step_size{0.005};  // [m]
   double approach_timeout_sec{5.0};
 
   // Phase 1: Servo
-  double servo_target_distance{0.030};   // [m]
+  double servo_target_distance{0.030};  // [m]
   double servo_step_gain{0.5};
-  double servo_max_step{0.005};          // [m]
-  double servo_converge_tol{0.003};      // [m]
+  double servo_max_step{0.005};      // [m]
+  double servo_converge_tol{0.003};  // [m]
   double servo_timeout_sec{3.0};
   uint8_t servo_min_valid_sensors{3};
 
   // Phase 2: Sweep
-  double sweep_step_size{0.003};         // [m]
-  double sweep_width{0.06};              // [m]
+  double sweep_step_size{0.003};  // [m]
+  double sweep_width{0.06};       // [m]
   double sweep_normal_gain{0.5};
-  double sweep_normal_max_step{0.003};   // [m]
+  double sweep_normal_max_step{0.003};  // [m]
 
   // Phase 3: Tilt
-  double tilt_amplitude_deg{15.0};       // [deg]
+  double tilt_amplitude_deg{15.0};  // [deg]
   uint32_t tilt_steps{10};
 
   // Safety
-  double min_distance{0.005};            // [m]
-  double max_step_size{0.010};           // [m]
+  double min_distance{0.005};   // [m]
+  double max_step_size{0.010};  // [m]
 
   // Evaluation
   double confidence_threshold{0.8};
@@ -67,12 +67,12 @@ struct ExplorationConfig {
 
 enum class ExplorePhase : uint8_t {
   kIdle = 0,
-  kApproach,     // 물체 방향 step-by-step 접근
-  kServo,        // ToF 거리 기반 접근 서보
-  kSweepX,       // X방향 표면 추종 sweep
-  kSweepY,       // Y방향 표면 추종 sweep
-  kTilt,         // 손목 틸트 스캔
-  kEvaluate,     // 추정 결과 평가
+  kApproach,  // 물체 방향 step-by-step 접근
+  kServo,     // ToF 거리 기반 접근 서보
+  kSweepX,    // X방향 표면 추종 sweep
+  kSweepY,    // Y방향 표면 추종 sweep
+  kTilt,      // 손목 틸트 스캔
+  kEvaluate,  // 추정 결과 평가
   kSucceeded,
   kFailed,
   kAborted
@@ -80,16 +80,26 @@ enum class ExplorePhase : uint8_t {
 
 [[nodiscard]] constexpr std::string_view ExplorePhaseToString(ExplorePhase p) noexcept {
   switch (p) {
-    case ExplorePhase::kIdle:      return "IDLE";
-    case ExplorePhase::kApproach:  return "APPROACH";
-    case ExplorePhase::kServo:     return "SERVO";
-    case ExplorePhase::kSweepX:    return "SWEEP_X";
-    case ExplorePhase::kSweepY:    return "SWEEP_Y";
-    case ExplorePhase::kTilt:      return "TILT";
-    case ExplorePhase::kEvaluate:  return "EVALUATE";
-    case ExplorePhase::kSucceeded: return "SUCCEEDED";
-    case ExplorePhase::kFailed:    return "FAILED";
-    case ExplorePhase::kAborted:   return "ABORTED";
+    case ExplorePhase::kIdle:
+      return "IDLE";
+    case ExplorePhase::kApproach:
+      return "APPROACH";
+    case ExplorePhase::kServo:
+      return "SERVO";
+    case ExplorePhase::kSweepX:
+      return "SWEEP_X";
+    case ExplorePhase::kSweepY:
+      return "SWEEP_Y";
+    case ExplorePhase::kTilt:
+      return "TILT";
+    case ExplorePhase::kEvaluate:
+      return "EVALUATE";
+    case ExplorePhase::kSucceeded:
+      return "SUCCEEDED";
+    case ExplorePhase::kFailed:
+      return "FAILED";
+    case ExplorePhase::kAborted:
+      return "ABORTED";
   }
   return "UNKNOWN";
 }
@@ -133,11 +143,8 @@ class ExplorationMotionGenerator {
   /// @param current_estimate 현재 형상 추정 결과
   /// @param current_pose 현재 EE [x,y,z,r,p,y]
   /// @param dt 시간 간격 [s]
-  [[nodiscard]] StepResult Step(
-      const ToFSnapshot& snapshot,
-      const ShapeEstimate& current_estimate,
-      const std::array<double, 6>& current_pose,
-      double dt);
+  [[nodiscard]] StepResult Step(const ToFSnapshot& snapshot, const ShapeEstimate& current_estimate,
+                                const std::array<double, 6>& current_pose, double dt);
 
   /// 현재 phase
   [[nodiscard]] ExplorePhase CurrentPhase() const noexcept { return phase_; }
@@ -147,22 +154,18 @@ class ExplorationMotionGenerator {
 
   /// 설정 변경
   void SetConfig(const ExplorationConfig& config) { config_ = config; }
+
   [[nodiscard]] const ExplorationConfig& GetConfig() const noexcept { return config_; }
 
  private:
   // Phase별 waypoint 생성
-  TaskSpaceGoal GenerateApproach(const ToFSnapshot& snapshot,
-                                 const std::array<double, 6>& current);
-  TaskSpaceGoal GenerateServo(const ToFSnapshot& snapshot,
-                              const std::array<double, 6>& current);
-  TaskSpaceGoal GenerateSweep(const ToFSnapshot& snapshot,
-                              const std::array<double, 6>& current);
-  TaskSpaceGoal GenerateTilt(const ToFSnapshot& snapshot,
-                             const std::array<double, 6>& current);
+  TaskSpaceGoal GenerateApproach(const ToFSnapshot& snapshot, const std::array<double, 6>& current);
+  TaskSpaceGoal GenerateServo(const ToFSnapshot& snapshot, const std::array<double, 6>& current);
+  TaskSpaceGoal GenerateSweep(const ToFSnapshot& snapshot, const std::array<double, 6>& current);
+  TaskSpaceGoal GenerateTilt(const ToFSnapshot& snapshot, const std::array<double, 6>& current);
 
   // 안전 검증: min_distance, max_step_size 클램핑
-  bool ValidateGoal(const TaskSpaceGoal& goal,
-                    const std::array<double, 6>& current,
+  bool ValidateGoal(const TaskSpaceGoal& goal, const std::array<double, 6>& current,
                     const ToFSnapshot& snapshot) const;
 
   // Phase 전이 판정
@@ -191,8 +194,8 @@ class ExplorationMotionGenerator {
   Eigen::Vector3d approach_direction_{Eigen::Vector3d::Zero()};
 
   // Sweep 상태
-  double sweep_position_{0.0};        // sweep 진행 위치 [-width/2, +width/2]
-  int sweep_direction_{1};            // +1 or -1
+  double sweep_position_{0.0};  // sweep 진행 위치 [-width/2, +width/2]
+  int sweep_direction_{1};      // +1 or -1
   bool sweep_x_done_{false};
 
   // Tilt 상태

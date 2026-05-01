@@ -2,10 +2,8 @@
 
 namespace rtc::tsid {
 
-void EomConstraint::init(const pinocchio::Model& /*model*/,
-                         const RobotModelInfo& robot_info,
-                         PinocchioCache& /*cache*/,
-                         const YAML::Node& /*constraint_config*/) {
+void EomConstraint::init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
+                         PinocchioCache& /*cache*/, const YAML::Node& /*constraint_config*/) {
   nv_ = robot_info.nv;
   floating_base_ = robot_info.floating_base;
   n_unactuated_ = floating_base_ ? (nv_ - robot_info.n_actuated) : 0;
@@ -30,14 +28,12 @@ int EomConstraint::ineq_dim(const ContactState& /*contacts*/) const noexcept {
   return 0;
 }
 
-void EomConstraint::compute_equality(
-    const PinocchioCache& cache,
-    const ContactState& contacts,
-    const RobotModelInfo& robot_info,
-    int n_vars,
-    Eigen::Ref<Eigen::MatrixXd> A_block,
-    Eigen::Ref<Eigen::VectorXd> b_block) noexcept {
-  if (!floating_base_ || n_unactuated_ == 0) return;
+void EomConstraint::compute_equality(const PinocchioCache& cache, const ContactState& contacts,
+                                     const RobotModelInfo& robot_info, int n_vars,
+                                     Eigen::Ref<Eigen::MatrixXd> A_block,
+                                     Eigen::Ref<Eigen::VectorXd> b_block) noexcept {
+  if (!floating_base_ || n_unactuated_ == 0)
+    return;
 
   // [I-SᵀS]·(M·a + h - Jcᵀ·λ) = 0
   // → P·M·a - P·Jcᵀ·λ = -P·h
@@ -52,11 +48,12 @@ void EomConstraint::compute_equality(
   // -P·Jcᵀ·λ: active contact 순회
   int lambda_offset = 0;
   for (size_t i = 0; i < contacts.contacts.size(); ++i) {
-    if (!contacts.contacts[i].active) continue;
-    if (i >= cache.contact_frames.size()) continue;
+    if (!contacts.contacts[i].active)
+      continue;
+    if (i >= cache.contact_frames.size())
+      continue;
 
-    const auto& contact_cfg =
-        robot_info.S;  // S 참조 불필요, manager에서 dim 가져옴
+    const auto& contact_cfg = robot_info.S;  // S 참조 불필요, manager에서 dim 가져옴
     (void)contact_cfg;
 
     // Contact dim은 ContactManagerConfig에서 가져와야 하지만,
@@ -96,14 +93,12 @@ void EomConstraint::compute_equality(
   b_block.head(n_unactuated_) = -cache.h.head(n_unactuated_);
 }
 
-void EomConstraint::compute_inequality(
-    const PinocchioCache& /*cache*/,
-    const ContactState& /*contacts*/,
-    const RobotModelInfo& /*robot_info*/,
-    int /*n_vars*/,
-    Eigen::Ref<Eigen::MatrixXd> /*C_block*/,
-    Eigen::Ref<Eigen::VectorXd> /*l_block*/,
-    Eigen::Ref<Eigen::VectorXd> /*u_block*/) noexcept {
+void EomConstraint::compute_inequality(const PinocchioCache& /*cache*/,
+                                       const ContactState& /*contacts*/,
+                                       const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
+                                       Eigen::Ref<Eigen::MatrixXd> /*C_block*/,
+                                       Eigen::Ref<Eigen::VectorXd> /*l_block*/,
+                                       Eigen::Ref<Eigen::VectorXd> /*u_block*/) noexcept {
   // No inequality constraints from EoM
 }
 

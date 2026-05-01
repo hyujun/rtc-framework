@@ -9,9 +9,9 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/multibody/model.hpp>
-#include <pinocchio/multibody/data.hpp>
 #include <pinocchio/algorithm/contact-info.hpp>
+#include <pinocchio/multibody/data.hpp>
+#include <pinocchio/multibody/model.hpp>
 #pragma GCC diagnostic pop
 
 #include <Eigen/Core>
@@ -22,8 +22,7 @@
 #include <string_view>
 #include <vector>
 
-namespace rtc_urdf_bridge
-{
+namespace rtc_urdf_bridge {
 
 /// RT-safe Pinocchio wrapper.
 ///
@@ -45,21 +44,19 @@ namespace rtc_urdf_bridge
 ///   handle.GetFrameJacobian(fid, pinocchio::LOCAL, J_out);
 ///   handle.ComputeNonLinearEffects(q_span, v_span);
 /// @endcode
-class RtModelHandle
-{
-public:
+class RtModelHandle {
+ public:
   /// @brief 생성자 (non-RT). 모든 버퍼 사전 할당.
   /// @param model Pinocchio Model (shared_ptr로 수명 보장)
   /// @param constraint_models 폐쇄 체인 구속 (빈 벡터면 구속 없음)
-  explicit RtModelHandle(
-    std::shared_ptr<const pinocchio::Model> model,
-    std::vector<pinocchio::RigidConstraintModel> constraint_models = {});
+  explicit RtModelHandle(std::shared_ptr<const pinocchio::Model> model,
+                         std::vector<pinocchio::RigidConstraintModel> constraint_models = {});
 
   // 복사 금지, 이동 허용
-  RtModelHandle(const RtModelHandle &) = delete;
-  RtModelHandle & operator=(const RtModelHandle &) = delete;
-  RtModelHandle(RtModelHandle &&) noexcept = default;
-  RtModelHandle & operator=(RtModelHandle &&) noexcept = default;
+  RtModelHandle(const RtModelHandle&) = delete;
+  RtModelHandle& operator=(const RtModelHandle&) = delete;
+  RtModelHandle(RtModelHandle&&) noexcept = default;
+  RtModelHandle& operator=(RtModelHandle&&) noexcept = default;
 
   ~RtModelHandle() = default;
 
@@ -70,8 +67,7 @@ public:
   void ComputeForwardKinematics(std::span<const double> q) noexcept;
 
   /// FK + 속도: (q, v) → oMi, oMf, v 갱신
-  void ComputeForwardKinematics(
-    std::span<const double> q, std::span<const double> v) noexcept;
+  void ComputeForwardKinematics(std::span<const double> q, std::span<const double> v) noexcept;
 
   /// 전체 관절 자코비안 계산: q → data_.J, oMf 갱신 포함
   void ComputeJacobians(std::span<const double> q) noexcept;
@@ -80,58 +76,44 @@ public:
   /// @param frame_id 프레임 인덱스
   /// @param ref_frame LOCAL / WORLD / LOCAL_WORLD_ALIGNED
   /// @param J_out 6 x nv pre-allocated matrix
-  void GetFrameJacobian(
-    pinocchio::FrameIndex frame_id,
-    pinocchio::ReferenceFrame ref_frame,
-    Eigen::Ref<Eigen::MatrixXd> J_out) noexcept;
+  void GetFrameJacobian(pinocchio::FrameIndex frame_id, pinocchio::ReferenceFrame ref_frame,
+                        Eigen::Ref<Eigen::MatrixXd> J_out) noexcept;
 
   /// RNEA 역동역학: τ = M(q)·a + C(q,v)·v + g(q)
-  void ComputeInverseDynamics(
-    std::span<const double> q,
-    std::span<const double> v,
-    std::span<const double> a) noexcept;
+  void ComputeInverseDynamics(std::span<const double> q, std::span<const double> v,
+                              std::span<const double> a) noexcept;
 
   /// ABA 순동역학: ddq = M⁻¹(τ - C·v - g)
-  void ComputeForwardDynamics(
-    std::span<const double> q,
-    std::span<const double> v,
-    std::span<const double> tau) noexcept;
+  void ComputeForwardDynamics(std::span<const double> q, std::span<const double> v,
+                              std::span<const double> tau) noexcept;
 
   /// 비선형 효과: nle = C(q,v)·v + g(q)
-  void ComputeNonLinearEffects(
-    std::span<const double> q,
-    std::span<const double> v) noexcept;
+  void ComputeNonLinearEffects(std::span<const double> q, std::span<const double> v) noexcept;
 
   /// 일반화 중력 벡터: g(q)
   void ComputeGeneralizedGravity(std::span<const double> q) noexcept;
 
   /// 코리올리 행렬: C(q, v) — C(q,v)·v 는 GetCoriolisMatrix() * v 로 계산
-  void ComputeCoriolisMatrix(
-    std::span<const double> q,
-    std::span<const double> v) noexcept;
+  void ComputeCoriolisMatrix(std::span<const double> q, std::span<const double> v) noexcept;
 
   /// 질량 행렬: M(q)
   void ComputeMassMatrix(std::span<const double> q) noexcept;
 
   /// 구속 동역학 (폐쇄 체인)
-  void ComputeConstraintDynamics(
-    std::span<const double> q,
-    std::span<const double> v,
-    std::span<const double> tau) noexcept;
+  void ComputeConstraintDynamics(std::span<const double> q, std::span<const double> v,
+                                 std::span<const double> tau) noexcept;
 
   // ── 결과 접근 (compute 호출 이후 유효) ─────────────────────────────────────
 
   /// 프레임 SE3 (위치 + 회전). ComputeForwardKinematics 후 유효.
-  [[nodiscard]] const pinocchio::SE3 & GetFramePlacement(
-    pinocchio::FrameIndex frame_id) const noexcept;
+  [[nodiscard]] const pinocchio::SE3& GetFramePlacement(
+      pinocchio::FrameIndex frame_id) const noexcept;
 
   /// 프레임 위치 (world frame)
-  [[nodiscard]] Eigen::Vector3d GetFramePosition(
-    pinocchio::FrameIndex frame_id) const noexcept;
+  [[nodiscard]] Eigen::Vector3d GetFramePosition(pinocchio::FrameIndex frame_id) const noexcept;
 
   /// 프레임 회전 행렬
-  [[nodiscard]] Eigen::Matrix3d GetFrameRotation(
-    pinocchio::FrameIndex frame_id) const noexcept;
+  [[nodiscard]] Eigen::Matrix3d GetFrameRotation(pinocchio::FrameIndex frame_id) const noexcept;
 
   /// RNEA 결과 토크 벡터
   [[nodiscard]] Eigen::Ref<const Eigen::VectorXd> GetTau() const noexcept;
@@ -157,18 +139,17 @@ public:
   [[nodiscard]] int nv() const noexcept;
 
   /// 프레임 이름 → FrameIndex. 없으면 0 반환 (universe).
-  [[nodiscard]] pinocchio::FrameIndex GetFrameId(
-    std::string_view frame_name) const noexcept;
+  [[nodiscard]] pinocchio::FrameIndex GetFrameId(std::string_view frame_name) const noexcept;
 
   /// 내부 Model const 참조
-  [[nodiscard]] const pinocchio::Model & GetModel() const noexcept;
+  [[nodiscard]] const pinocchio::Model& GetModel() const noexcept;
 
   /// 내부 Data const 참조 (디버깅용)
-  [[nodiscard]] const pinocchio::Data & GetData() const noexcept;
+  [[nodiscard]] const pinocchio::Data& GetData() const noexcept;
 
   /// mimic 관절 위치 계산: q_mimic = multiplier * q_mimicked + offset
-  [[nodiscard]] static double ComputeMimicPosition(
-    double mimicked_q, double multiplier, double offset) noexcept;
+  [[nodiscard]] static double ComputeMimicPosition(double mimicked_q, double multiplier,
+                                                   double offset) noexcept;
 
   // ── 관절 순서 재배열 (Non-RT 설정) ────────────────────────────────────────
 
@@ -177,8 +158,7 @@ public:
   /// @param external_joint_names 호출자 측 관절 이름 순서
   /// @return true 모든 이름을 모델에서 찾은 경우; false 하나라도 없으면 (매핑 미설정)
   /// @note Non-RT. init 시 1회 호출. thread-per-handle 전제.
-  [[nodiscard]] bool SetJointOrder(
-    std::span<const std::string> external_joint_names);
+  [[nodiscard]] bool SetJointOrder(std::span<const std::string> external_joint_names);
 
   /// reorder 매핑 활성 여부
   [[nodiscard]] bool HasJointReorder() const noexcept;
@@ -189,39 +169,36 @@ public:
   /// Pinocchio 순서 벡터 → 외부 순서 span으로 재배열 (출력용).
   /// @param pinocchio_vec Pinocchio v-space 벡터 (GetTau, GetDdq 등)
   /// @param external_out 외부 순서 출력 버퍼 (크기 >= v_reorder_map_ 크기)
-  void ReorderOutput(
-    Eigen::Ref<const Eigen::VectorXd> pinocchio_vec,
-    std::span<double> external_out) const noexcept;
+  void ReorderOutput(Eigen::Ref<const Eigen::VectorXd> pinocchio_vec,
+                     std::span<double> external_out) const noexcept;
 
-private:
+ private:
   /// std::span → Eigen::VectorXd 직접 복사 (noexcept, memcpy)
-  void CopyToEigen(std::span<const double> src, Eigen::VectorXd & dst) noexcept;
+  void CopyToEigen(std::span<const double> src, Eigen::VectorXd& dst) noexcept;
 
   /// span → Eigen 복사 (reorder_map이 비어있으면 CopyToEigen fallback).
   /// reorder_map[i] = Pinocchio 벡터 내 대상 인덱스.
-  void CopyToEigenReordered(
-    std::span<const double> src,
-    Eigen::VectorXd & dst,
-    const std::vector<int> & reorder_map) noexcept;
+  void CopyToEigenReordered(std::span<const double> src, Eigen::VectorXd& dst,
+                            const std::vector<int>& reorder_map) noexcept;
 
   // ── 내부 데이터 ────────────────────────────────────────────────────────────
   std::shared_ptr<const pinocchio::Model> model_;
   pinocchio::Data data_;
 
   // 사전 할당 작업 버퍼
-  Eigen::VectorXd q_;      // nq
-  Eigen::VectorXd v_;      // nv
-  Eigen::VectorXd a_;      // nv
-  Eigen::VectorXd tau_;    // nv
-  Eigen::MatrixXd J_;      // 6 x nv
+  Eigen::VectorXd q_;    // nq
+  Eigen::VectorXd v_;    // nv
+  Eigen::VectorXd a_;    // nv
+  Eigen::VectorXd tau_;  // nv
+  Eigen::MatrixXd J_;    // 6 x nv
 
   // 폐쇄 체인 구속
   std::vector<pinocchio::RigidConstraintModel> constraint_models_;
   std::vector<pinocchio::RigidConstraintData> constraint_datas_;
 
   // ── 관절 순서 재배열 매핑 (비어있으면 비활성) ──────────────────────────────
-  std::vector<int> q_reorder_map_;   ///< external[i] → Pinocchio q index
-  std::vector<int> v_reorder_map_;   ///< external[i] → Pinocchio v index
+  std::vector<int> q_reorder_map_;  ///< external[i] → Pinocchio q index
+  std::vector<int> v_reorder_map_;  ///< external[i] → Pinocchio v index
 };
 
 }  // namespace rtc_urdf_bridge

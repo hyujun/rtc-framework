@@ -17,19 +17,18 @@
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "rtc_mpc/model/robot_model_handler.hpp"
+
 #include <yaml-cpp/yaml.h>
 
 #include <filesystem>
 
-#include "rtc_mpc/model/robot_model_handler.hpp"
-
 namespace {
 
-constexpr const char *kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+constexpr const char* kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 class RobotModelHandlerTest : public ::testing::Test {
-protected:
+ protected:
   void SetUp() override {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed at " << kPandaUrdf
@@ -56,7 +55,7 @@ contact_frames:
 
   EXPECT_EQ(err, rtc::mpc::RobotModelInitError::kNoError);
   EXPECT_TRUE(handler.Initialised());
-  EXPECT_EQ(handler.nq(), 9); // Panda: 7 arm + 2 finger prismatic
+  EXPECT_EQ(handler.nq(), 9);  // Panda: 7 arm + 2 finger prismatic
   EXPECT_EQ(handler.nv(), 9);
   EXPECT_EQ(handler.nu(), 9);
   EXPECT_EQ(handler.n_contacts(), 2);
@@ -81,9 +80,8 @@ end_effector_frame: not_a_real_frame
 )");
 
   rtc::mpc::RobotModelHandler handler;
-  EXPECT_EQ(handler.Init(model_, cfg),
-            rtc::mpc::RobotModelInitError::kMissingEndEffectorFrame);
-  EXPECT_FALSE(handler.Initialised()); // atomic: no partial state
+  EXPECT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kMissingEndEffectorFrame);
+  EXPECT_FALSE(handler.Initialised());  // atomic: no partial state
 }
 
 TEST_F(RobotModelHandlerTest, MissingContactFrameReturnsError) {
@@ -95,8 +93,7 @@ contact_frames:
 )");
 
   rtc::mpc::RobotModelHandler handler;
-  EXPECT_EQ(handler.Init(model_, cfg),
-            rtc::mpc::RobotModelInitError::kMissingContactFrame);
+  EXPECT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kMissingContactFrame);
   EXPECT_FALSE(handler.Initialised());
 }
 
@@ -109,24 +106,21 @@ contact_frames:
 )");
 
   rtc::mpc::RobotModelHandler handler;
-  EXPECT_EQ(handler.Init(model_, cfg),
-            rtc::mpc::RobotModelInitError::kInvalidContactDim);
+  EXPECT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kInvalidContactDim);
 }
 
 TEST_F(RobotModelHandlerTest, MissingEndEffectorKeyReturnsSchemaError) {
   auto cfg = YAML::Load("contact_frames: []\n");
 
   rtc::mpc::RobotModelHandler handler;
-  EXPECT_EQ(handler.Init(model_, cfg),
-            rtc::mpc::RobotModelInitError::kInvalidYamlSchema);
+  EXPECT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kInvalidYamlSchema);
 }
 
 TEST_F(RobotModelHandlerTest, DoubleInitReturnsError) {
   auto cfg = YAML::Load("end_effector_frame: panda_hand_tcp\n");
   rtc::mpc::RobotModelHandler handler;
   ASSERT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kNoError);
-  EXPECT_EQ(handler.Init(model_, cfg),
-            rtc::mpc::RobotModelInitError::kModelAlreadyInitialised);
+  EXPECT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kModelAlreadyInitialised);
 }
 
 TEST_F(RobotModelHandlerTest, FrameIdLookup) {
@@ -148,4 +142,4 @@ TEST(RobotModelHandlerStandaloneTest, UninitialisedAccessorsSafe) {
   EXPECT_FALSE(handler.FrameId("anything").has_value());
 }
 
-} // namespace
+}  // namespace

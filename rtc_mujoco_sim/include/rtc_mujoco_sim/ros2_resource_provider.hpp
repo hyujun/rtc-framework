@@ -23,8 +23,8 @@ void RegisterRos2ResourceProvider();
 ///          empty string only when a "package://" URI cannot be resolved.
 /// @note    Used by callers (e.g. tinyxml2) that don't go through MuJoCo's
 ///          resource provider.
-std::string ResolveModelPath(const std::string &path);
+std::string ResolveModelPath(const std::string& path);
 
-} // namespace rtc
+}  // namespace rtc
 
-#endif // RTC_MUJOCO_SIM_ROS2_RESOURCE_PROVIDER_HPP_
+#endif  // RTC_MUJOCO_SIM_ROS2_RESOURCE_PROVIDER_HPP_

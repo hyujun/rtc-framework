@@ -14,6 +14,7 @@
 #include "rtc_controller_interface/controller_log_set.hpp"
 
 #include <gtest/gtest.h>
+#include <sys/stat.h>
 
 #include <cstdint>
 #include <cstdlib>
@@ -21,7 +22,6 @@
 #include <fstream>
 #include <ostream>
 #include <string>
-#include <sys/stat.h>
 
 namespace {
 
@@ -32,26 +32,28 @@ struct StatePod {
   std::int32_t tick{0};
 };
 
-void Header(std::ostream &os) { os << "t_relative_s,tick"; }
-void Row(std::ostream &os, const StatePod &p) {
+void Header(std::ostream& os) {
+  os << "t_relative_s,tick";
+}
+
+void Row(std::ostream& os, const StatePod& p) {
   os << p.t_relative_s << ',' << p.tick;
 }
 
 class ScopedSessionDir {
-public:
+ public:
   ScopedSessionDir() {
-    if (const char *prev = std::getenv("RTC_SESSION_DIR")) {
+    if (const char* prev = std::getenv("RTC_SESSION_DIR")) {
       had_prev_ = true;
       prev_value_ = prev;
     }
     auto base = fs::temp_directory_path() / "rtc_log_set_switch";
     fs::create_directories(base);
-    dir_ =
-        base / ("s_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) &
-                                      0xFFFFFFFFu));
+    dir_ = base / ("s_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) & 0xFFFFFFFFu));
     fs::create_directories(dir_);
     ::setenv("RTC_SESSION_DIR", dir_.c_str(), 1);
   }
+
   ~ScopedSessionDir() {
     if (had_prev_) {
       ::setenv("RTC_SESSION_DIR", prev_value_.c_str(), 1);
@@ -61,29 +63,30 @@ public:
     std::error_code ec;
     fs::remove_all(dir_, ec);
   }
-  const fs::path &dir() const noexcept { return dir_; }
 
-private:
+  const fs::path& dir() const noexcept { return dir_; }
+
+ private:
   fs::path dir_;
   bool had_prev_{false};
   std::string prev_value_;
 };
 
-std::uintmax_t FileSize(const fs::path &p) noexcept {
+std::uintmax_t FileSize(const fs::path& p) noexcept {
   std::error_code ec;
   return fs::file_size(p, ec);
 }
 
-std::size_t CountRows(const fs::path &p) {
+std::size_t CountRows(const fs::path& p) {
   std::ifstream in(p);
   std::size_t n = 0;
   for (std::string line; std::getline(in, line);) {
     ++n;
   }
-  return n; // includes header
+  return n;  // includes header
 }
 
-} // namespace
+}  // namespace
 
 TEST(ControllerLogSetSwitchGate, InactiveCsvFrozenWhileOtherIsActive) {
   ScopedSessionDir scope;
@@ -102,7 +105,7 @@ TEST(ControllerLogSetSwitchGate, InactiveCsvFrozenWhileOtherIsActive) {
   // Both files should exist and contain only the header at this point.
   ASSERT_TRUE(fs::exists(path_a));
   ASSERT_TRUE(fs::exists(path_b));
-  EXPECT_EQ(CountRows(path_a), 1u); // header
+  EXPECT_EQ(CountRows(path_a), 1u);  // header
   EXPECT_EQ(CountRows(path_b), 1u);
 
   // ── Phase 1: A active, B inactive ─────────────────────────────────────
@@ -111,7 +114,7 @@ TEST(ControllerLogSetSwitchGate, InactiveCsvFrozenWhileOtherIsActive) {
     // handle_b NOT pushed (gating rule: only active controller pushes).
   }
   set_a.DrainAll();
-  set_b.DrainAll(); // empty drain — should not write anything
+  set_b.DrainAll();  // empty drain — should not write anything
 
   const auto rows_a_after_p1 = CountRows(path_a);
   const auto rows_b_after_p1 = CountRows(path_b);
@@ -124,13 +127,12 @@ TEST(ControllerLogSetSwitchGate, InactiveCsvFrozenWhileOtherIsActive) {
   for (std::int32_t i = 1; i <= 30; ++i) {
     EXPECT_TRUE(handle_b.Push(StatePod{1.0 + 0.001 * i, i}));
   }
-  set_a.DrainAll(); // empty drain
+  set_a.DrainAll();  // empty drain
   set_b.DrainAll();
 
   const auto rows_a_after_p2 = CountRows(path_a);
   const auto rows_b_after_p2 = CountRows(path_b);
-  EXPECT_EQ(rows_a_after_p2, rows_a_after_p1)
-      << "A's CSV grew during B's active window";
+  EXPECT_EQ(rows_a_after_p2, rows_a_after_p1) << "A's CSV grew during B's active window";
   EXPECT_EQ(rows_b_after_p2, 1u + 30u);
 
   // B's file size must equal the post-Phase-2 size only after Phase-2
@@ -167,13 +169,12 @@ TEST(ControllerLogSetSwitchGate, TimestampMonotonicAcrossSwitch) {
 
   // Read A's last row and B's first row, parse t_relative_s, assert
   // A_last < B_first (no clock reset on switch).
-  auto last_t = [](const fs::path &p) {
+  auto last_t = [](const fs::path& p) {
     std::ifstream in(p);
     double last = -1.0;
     for (std::string line; std::getline(in, line);) {
       const auto comma = line.find(',');
-      if (comma != std::string::npos &&
-          line.find_first_of("0123456789") < std::string::npos) {
+      if (comma != std::string::npos && line.find_first_of("0123456789") < std::string::npos) {
         try {
           last = std::stod(line.substr(0, comma));
         } catch (...) {
@@ -183,10 +184,10 @@ TEST(ControllerLogSetSwitchGate, TimestampMonotonicAcrossSwitch) {
     }
     return last;
   };
-  auto first_t_after_header = [](const fs::path &p) {
+  auto first_t_after_header = [](const fs::path& p) {
     std::ifstream in(p);
     std::string line;
-    std::getline(in, line); // header
+    std::getline(in, line);  // header
     if (!std::getline(in, line))
       return -1.0;
     const auto comma = line.find(',');
@@ -195,7 +196,6 @@ TEST(ControllerLogSetSwitchGate, TimestampMonotonicAcrossSwitch) {
 
   const double a_last = last_t(set_a.Channels()[0].second);
   const double b_first = first_t_after_header(set_b.Channels()[0].second);
-  EXPECT_LT(a_last, b_first)
-      << "Timestamp not monotonic across switch: a_last=" << a_last
-      << " b_first=" << b_first;
+  EXPECT_LT(a_last, b_first) << "Timestamp not monotonic across switch: a_last=" << a_last
+                             << " b_first=" << b_first;
 }

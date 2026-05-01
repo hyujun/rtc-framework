@@ -6,21 +6,19 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/spatial/se3.hpp>
-#include <pinocchio/spatial/motion.hpp>
 #include <pinocchio/spatial/explog.hpp>
+#include <pinocchio/spatial/motion.hpp>
+#include <pinocchio/spatial/se3.hpp>
 #pragma GCC diagnostic pop
 
 #include <gtest/gtest.h>
+
 #include <cmath>
 
-namespace rtc::trajectory
-{
+namespace rtc::trajectory {
 
 // Helper to create an SE3 from translation + RPY
-pinocchio::SE3 make_pose(double x, double y, double z,
-                          double roll, double pitch, double yaw)
-{
+pinocchio::SE3 make_pose(double x, double y, double z, double roll, double pitch, double yaw) {
   Eigen::AngleAxisd r(roll, Eigen::Vector3d::UnitX());
   Eigen::AngleAxisd p(pitch, Eigen::Vector3d::UnitY());
   Eigen::AngleAxisd ya(yaw, Eigen::Vector3d::UnitZ());
@@ -29,8 +27,7 @@ pinocchio::SE3 make_pose(double x, double y, double z,
 }
 
 // --- Two waypoints match TaskSpaceTrajectory (rest-to-rest) ---
-TEST(TaskSpaceBlendTrajectory, TwoWaypointsMatch)
-{
+TEST(TaskSpaceBlendTrajectory, TwoWaypointsMatch) {
   TaskSpaceBlendTrajectory blend;
   TaskSpaceTrajectory single;
 
@@ -55,7 +52,7 @@ TEST(TaskSpaceBlendTrajectory, TwoWaypointsMatch)
     // Compare translations
     for (int i = 0; i < 3; ++i) {
       EXPECT_NEAR(bs.pose.translation()[i], ss.pose.translation()[i], 1e-3)
-        << "t=" << t << " axis=" << i;
+          << "t=" << t << " axis=" << i;
     }
 
     // Compare rotations (Frobenius norm of difference)
@@ -65,8 +62,7 @@ TEST(TaskSpaceBlendTrajectory, TwoWaypointsMatch)
 }
 
 // --- Three waypoints: continuity at via-point ---
-TEST(TaskSpaceBlendTrajectory, ThreeWaypointsContinuity)
-{
+TEST(TaskSpaceBlendTrajectory, ThreeWaypointsContinuity) {
   TaskSpaceBlendTrajectory blend;
   std::array<TaskSpaceBlendTrajectory::Waypoint, kMaxWaypoints> wps{};
   wps[0] = {make_pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0), 0.0};
@@ -96,8 +92,7 @@ TEST(TaskSpaceBlendTrajectory, ThreeWaypointsContinuity)
 }
 
 // --- Rest-to-rest: zero velocity at start and end ---
-TEST(TaskSpaceBlendTrajectory, RestToRest)
-{
+TEST(TaskSpaceBlendTrajectory, RestToRest) {
   TaskSpaceBlendTrajectory blend;
   std::array<TaskSpaceBlendTrajectory::Waypoint, kMaxWaypoints> wps{};
   wps[0] = {make_pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0), 0.0};
@@ -115,8 +110,7 @@ TEST(TaskSpaceBlendTrajectory, RestToRest)
 }
 
 // --- Single waypoint hold ---
-TEST(TaskSpaceBlendTrajectory, SingleWaypointHold)
-{
+TEST(TaskSpaceBlendTrajectory, SingleWaypointHold) {
   TaskSpaceBlendTrajectory blend;
   std::array<TaskSpaceBlendTrajectory::Waypoint, kMaxWaypoints> wps{};
   wps[0] = {make_pose(1.0, 2.0, 3.0, 0.0, 0.0, 0.0), 0.0};
@@ -131,8 +125,7 @@ TEST(TaskSpaceBlendTrajectory, SingleWaypointHold)
 }
 
 // --- Clamp ---
-TEST(TaskSpaceBlendTrajectory, ClampTime)
-{
+TEST(TaskSpaceBlendTrajectory, ClampTime) {
   TaskSpaceBlendTrajectory blend;
   std::array<TaskSpaceBlendTrajectory::Waypoint, kMaxWaypoints> wps{};
   wps[0] = {pinocchio::SE3::Identity(), 0.0};
@@ -152,8 +145,7 @@ TEST(TaskSpaceBlendTrajectory, ClampTime)
 }
 
 // --- Identity poses: straight line interpolation ---
-TEST(TaskSpaceBlendTrajectory, PureTranslation)
-{
+TEST(TaskSpaceBlendTrajectory, PureTranslation) {
   TaskSpaceBlendTrajectory blend;
   std::array<TaskSpaceBlendTrajectory::Waypoint, kMaxWaypoints> wps{};
   wps[0] = {make_pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0), 0.0};

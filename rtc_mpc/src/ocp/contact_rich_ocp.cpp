@@ -40,19 +40,18 @@ using ContactForceRes = aligator::ContactForceResidualTpl<double>;
 using FrictionConeRes = aligator::MultibodyFrictionConeResidualTpl<double>;
 using NegOrthant = aligator::NegativeOrthantTpl<double>;
 using PhaseSpace = aligator::MultibodyPhaseSpace<double>;
-using MultibodyConstraintFwd =
-    aligator::dynamics::MultibodyConstraintFwdDynamicsTpl<double>;
+using MultibodyConstraintFwd = aligator::dynamics::MultibodyConstraintFwdDynamicsTpl<double>;
 using IntegratorSE = aligator::dynamics::IntegratorSemiImplEulerTpl<double>;
 using StageModel = aligator::StageModelTpl<double>;
 using TrajOptProblem = aligator::TrajOptProblemTpl<double>;
 
 // Mirrors `LightContactOCP::ActiveContactsAtTime` (local to this TU — kept
 // independent so refactors here don't perturb the shipped LightContact path).
-std::vector<int> ActiveContactsAtTime(const ContactPlan &plan, double t,
-                                      bool *overlap_found) noexcept {
+std::vector<int> ActiveContactsAtTime(const ContactPlan& plan, double t,
+                                      bool* overlap_found) noexcept {
   std::vector<int> active{};
   int cover_count = 0;
-  for (const auto &phase : plan.phases) {
+  for (const auto& phase : plan.phases) {
     if (t >= phase.t_start && t < phase.t_end) {
       ++cover_count;
       if (cover_count == 1) {
@@ -70,32 +69,30 @@ std::vector<int> ActiveContactsAtTime(const ContactPlan &plan, double t,
 // Walk a freshly-built StageModel's polymorphic cost tree and populate
 // raw-pointer handles for alloc-free mutation in UpdateReferences. The
 // `contact_force` vector is parallel to `active_fids` order.
-RichStageHandles CacheStageHandles(StageModel &stage,
-                                   const StageComponentKeys &keys,
-                                   const std::vector<int> &active_fids,
-                                   const std::vector<ContactFrameInfo> &frames,
+RichStageHandles CacheStageHandles(StageModel& stage, const StageComponentKeys& keys,
+                                   const std::vector<int>& active_fids,
+                                   const std::vector<ContactFrameInfo>& frames,
                                    bool include_contact_force) noexcept {
   RichStageHandles h{};
-  auto *stack = stage.getCost<CostStack>();
+  auto* stack = stage.getCost<CostStack>();
   if (stack == nullptr) {
     return h;
   }
 
   if (keys.has_frame_placement) {
-    auto *quad =
-        stack->getComponent<QuadCost>(std::string(kCostKeyFramePlacement));
+    auto* quad = stack->getComponent<QuadCost>(std::string(kCostKeyFramePlacement));
     if (quad != nullptr) {
       h.frame_placement = quad->getResidual<FrameRes>();
     }
   }
   if (keys.has_state_reg) {
-    auto *quad = stack->getComponent<QuadCost>(std::string(kCostKeyStateReg));
+    auto* quad = stack->getComponent<QuadCost>(std::string(kCostKeyStateReg));
     if (quad != nullptr) {
       h.state_reg = quad->getResidual<StateRes>();
     }
   }
   if (keys.has_control_reg) {
-    auto *quad = stack->getComponent<QuadCost>(std::string(kCostKeyControlReg));
+    auto* quad = stack->getComponent<QuadCost>(std::string(kCostKeyControlReg));
     if (quad != nullptr) {
       h.control_reg = quad->getResidual<ControlRes>();
     }
@@ -105,15 +102,15 @@ RichStageHandles CacheStageHandles(StageModel &stage,
     h.contact_force.reserve(active_fids.size());
     for (int fid : active_fids) {
       std::string name = "contact_" + std::to_string(fid);
-      for (const auto &info : frames) {
+      for (const auto& info : frames) {
         if (info.frame_id == fid) {
           name = info.name;
           break;
         }
       }
       const std::string key = std::string(kCostKeyContactForcePrefix) + name;
-      auto *quad = stack->getComponent<QuadCost>(key);
-      ContactForceRes *res = nullptr;
+      auto* quad = stack->getComponent<QuadCost>(key);
+      ContactForceRes* res = nullptr;
       if (quad != nullptr) {
         res = quad->getResidual<ContactForceRes>();
       }
@@ -126,10 +123,10 @@ RichStageHandles CacheStageHandles(StageModel &stage,
 // Mutate cached handles to reflect new references. Pre-condition: topology
 // unchanged (caller verified); handles non-null only where corresponding
 // components were built.
-void ApplyReferences(const RichStageHandles &h, const PhaseCostConfig &cfg,
-                     const pinocchio::SE3 &ee_target, int nq, int nv,
-                     const Eigen::VectorXd &F_target_full,
-                     const std::vector<int> &active_fids) noexcept {
+void ApplyReferences(const RichStageHandles& h, const PhaseCostConfig& cfg,
+                     const pinocchio::SE3& ee_target, int nq, int nv,
+                     const Eigen::VectorXd& F_target_full,
+                     const std::vector<int>& active_fids) noexcept {
   if (h.frame_placement != nullptr) {
     h.frame_placement->setReference(ee_target);
   }
@@ -139,13 +136,13 @@ void ApplyReferences(const RichStageHandles &h, const PhaseCostConfig &cfg,
     x_target.tail(nv).setZero();
     h.state_reg->target_ = x_target;
   }
-  (void)h.control_reg; // target = 0, no mutation needed.
+  (void)h.control_reg;  // target = 0, no mutation needed.
 
   // Per-active-contact force-reference mutation. F_target_full is a flat
   // 6-vector shared across contacts (first 3 = linear, last 3 = angular);
   // residuals size themselves to match their own contact dim (3 or 6).
   for (std::size_t i = 0; i < h.contact_force.size(); ++i) {
-    auto *res = h.contact_force[i];
+    auto* res = h.contact_force[i];
     if (res == nullptr) {
       continue;
     }
@@ -158,22 +155,21 @@ void ApplyReferences(const RichStageHandles &h, const PhaseCostConfig &cfg,
       f_ref.head(F_target_full.size()) = F_target_full;
     }
     res->setReference(f_ref);
-    (void)active_fids; // reserved for future per-frame overrides.
+    (void)active_fids;  // reserved for future per-frame overrides.
   }
 }
 
-} // namespace
+}  // namespace
 
-OCPBuildError ContactRichOCP::Build(const PhaseContext &ctx,
-                                    const RobotModelHandler &model,
-                                    const OCPLimits &limits) noexcept {
+OCPBuildError ContactRichOCP::Build(const PhaseContext& ctx, const RobotModelHandler& model,
+                                    const OCPLimits& limits) noexcept {
   if (!model.Initialised()) {
     return OCPBuildError::kModelNotInitialised;
   }
   if (ctx.ocp_type != "contact_rich") {
     return OCPBuildError::kInvalidPhaseContext;
   }
-  const auto &cfg = ctx.cost_config;
+  const auto& cfg = ctx.cost_config;
   if (cfg.horizon_length <= 0 || cfg.dt <= 0.0) {
     return OCPBuildError::kInvalidCostConfig;
   }
@@ -192,13 +188,12 @@ OCPBuildError ContactRichOCP::Build(const PhaseContext &ctx,
     return OCPBuildError::kLimitsDimMismatch;
   }
 
-  const auto &model_frames = model.contact_frames();
+  const auto& model_frames = model.contact_frames();
   auto frame_is_known = [&](int fid) {
-    return std::any_of(
-        model_frames.begin(), model_frames.end(),
-        [fid](const ContactFrameInfo &f) { return f.frame_id == fid; });
+    return std::any_of(model_frames.begin(), model_frames.end(),
+                       [fid](const ContactFrameInfo& f) { return f.frame_id == fid; });
   };
-  for (const auto &phase : ctx.contact_plan.phases) {
+  for (const auto& phase : ctx.contact_plan.phases) {
     for (int fid : phase.active_frame_ids) {
       if (!frame_is_known(fid)) {
         return OCPBuildError::kContactPlanModelMismatch;
@@ -235,28 +230,25 @@ OCPBuildError ContactRichOCP::Build(const PhaseContext &ctx,
     stage_keys.reserve(static_cast<std::size_t>(H));
 
     for (int k = 0; k < H; ++k) {
-      const auto &active_fids = stage_active[static_cast<std::size_t>(k)];
+      const auto& active_fids = stage_active[static_cast<std::size_t>(k)];
 
       // 1. Baseline cost stack.
       CostFactoryError cost_err = CostFactoryError::kNoError;
-      auto stage_cost =
-          cost_factory::BuildRunningCost(cfg, model, ctx.ee_target, &cost_err);
+      auto stage_cost = cost_factory::BuildRunningCost(cfg, model, ctx.ee_target, &cost_err);
       if (cost_err != CostFactoryError::kNoError) {
         return OCPBuildError::kInvalidCostConfig;
       }
 
       // 2. Dynamics (rigid-contact fwd on active contacts only).
-      auto constraint_models =
-          internal::BuildConstraintModels(model, active_fids);
-      MultibodyConstraintFwd cont_dyn(space, actuation, constraint_models,
-                                      prox_settings);
+      auto constraint_models = internal::BuildConstraintModels(model, active_fids);
+      MultibodyConstraintFwd cont_dyn(space, actuation, constraint_models, prox_settings);
 
       // 3. Per-active-contact ContactForceResidual (cost term).
       if (include_contact_force) {
         for (int fid : active_fids) {
           std::string name = "contact_" + std::to_string(fid);
           int dim = 3;
-          for (const auto &info : model_frames) {
+          for (const auto& info : model_frames) {
             if (info.frame_id == fid) {
               name = info.name;
               dim = info.dim;
@@ -269,21 +261,18 @@ OCPBuildError ContactRichOCP::Build(const PhaseContext &ctx,
             const int copy_n = std::min<int>(dim, cfg.F_target.size());
             fref.head(copy_n) = cfg.F_target.head(copy_n);
           }
-          ContactForceRes cfr(ndx, model.model(), actuation, constraint_models,
-                              prox_settings, fref, name);
-          Eigen::MatrixXd Wcfr =
-              cfg.w_contact_force * Eigen::MatrixXd::Identity(dim, dim);
+          ContactForceRes cfr(ndx, model.model(), actuation, constraint_models, prox_settings, fref,
+                              name);
+          Eigen::MatrixXd Wcfr = cfg.w_contact_force * Eigen::MatrixXd::Identity(dim, dim);
           QuadCost qcost(space, cfr, Wcfr);
-          stage_cost.stack.addCost(
-              std::string(kCostKeyContactForcePrefix) + name, qcost, 1.0);
+          stage_cost.stack.addCost(std::string(kCostKeyContactForcePrefix) + name, qcost, 1.0);
         }
       }
 
       // 4. Grasp-quality provider hook (null by default in Phase 4).
       if (grasp_quality_provider_ != nullptr) {
         const OCPBuildError prov_err =
-            grasp_quality_provider_->AppendRunningCost(stage_cost, model,
-                                                       active_fids);
+            grasp_quality_provider_->AppendRunningCost(stage_cost, model, active_fids);
         if (prov_err != OCPBuildError::kNoError) {
           return prov_err;
         }
@@ -291,24 +280,21 @@ OCPBuildError ContactRichOCP::Build(const PhaseContext &ctx,
 
       // 5. Compose stage (cost + dynamics). Integrator wraps the ODE.
       IntegratorSE integrator(
-          xyz::polymorphic<aligator::dynamics::ODEAbstractTpl<double>>(
-              cont_dyn),
-          cfg.dt);
+          xyz::polymorphic<aligator::dynamics::ODEAbstractTpl<double>>(cont_dyn), cfg.dt);
       StageModel stage(stage_cost.stack, integrator);
 
       // 6. Attach friction-cone inequality constraints per active contact.
       if (include_friction_cone) {
         for (int fid : active_fids) {
           std::string name = "contact_" + std::to_string(fid);
-          for (const auto &info : model_frames) {
+          for (const auto& info : model_frames) {
             if (info.frame_id == fid) {
               name = info.name;
               break;
             }
           }
-          FrictionConeRes fcone(ndx, model.model(), actuation,
-                                constraint_models, prox_settings, name,
-                                limits.friction_mu);
+          FrictionConeRes fcone(ndx, model.model(), actuation, constraint_models, prox_settings,
+                                name, limits.friction_mu);
           stage.addConstraint(fcone, NegOrthant());
         }
       }
@@ -319,8 +305,7 @@ OCPBuildError ContactRichOCP::Build(const PhaseContext &ctx,
 
     // Terminal cost (no control reg; no contact-force cost).
     CostFactoryError term_err = CostFactoryError::kNoError;
-    auto term_cost =
-        cost_factory::BuildTerminalCost(cfg, model, ctx.ee_target, &term_err);
+    auto term_cost = cost_factory::BuildTerminalCost(cfg, model, ctx.ee_target, &term_err);
     if (term_err != CostFactoryError::kNoError) {
       return OCPBuildError::kInvalidCostConfig;
     }
@@ -328,19 +313,16 @@ OCPBuildError ContactRichOCP::Build(const PhaseContext &ctx,
       // Terminal stage has no active-contact variable on the u-less cost
       // branch; pass the last running-stage active set as a best-effort
       // signal. Default provider impl is a no-op.
-      const auto &last_active =
-          stage_active.empty() ? std::vector<int>{} : stage_active.back();
+      const auto& last_active = stage_active.empty() ? std::vector<int>{} : stage_active.back();
       const OCPBuildError prov_err =
-          grasp_quality_provider_->AppendTerminalCost(term_cost, model,
-                                                      last_active);
+          grasp_quality_provider_->AppendTerminalCost(term_cost, model, last_active);
       if (prov_err != OCPBuildError::kNoError) {
         return prov_err;
       }
     }
 
     Eigen::VectorXd x0 = space.neutral();
-    auto problem_new =
-        std::make_unique<TrajOptProblem>(x0, stages, term_cost.stack);
+    auto problem_new = std::make_unique<TrajOptProblem>(x0, stages, term_cost.stack);
 
     // Walk the STORED stages to cache raw handles. Pointers into `stages`
     // (local) would dangle — the TrajOptProblem ctor copied that vector
@@ -348,27 +330,24 @@ OCPBuildError ContactRichOCP::Build(const PhaseContext &ctx,
     std::vector<RichStageHandles> fresh_handles{};
     fresh_handles.reserve(static_cast<std::size_t>(H));
     for (int k = 0; k < H; ++k) {
-      auto &stored_stage = *problem_new->stages_[static_cast<std::size_t>(k)];
+      auto& stored_stage = *problem_new->stages_[static_cast<std::size_t>(k)];
       fresh_handles.push_back(CacheStageHandles(
           stored_stage, stage_keys[static_cast<std::size_t>(k)],
-          stage_active[static_cast<std::size_t>(k)], model_frames,
-          include_contact_force));
+          stage_active[static_cast<std::size_t>(k)], model_frames, include_contact_force));
     }
 
     // Terminal handles (frame_placement + state_reg only; no cforce).
     RichStageHandles term_handles{};
-    auto *term_stack = dynamic_cast<CostStack *>(&*problem_new->term_cost_);
+    auto* term_stack = dynamic_cast<CostStack*>(&*problem_new->term_cost_);
     if (term_stack != nullptr) {
       if (term_cost.keys.has_frame_placement) {
-        auto *quad = term_stack->getComponent<QuadCost>(
-            std::string(kCostKeyFramePlacement));
+        auto* quad = term_stack->getComponent<QuadCost>(std::string(kCostKeyFramePlacement));
         if (quad != nullptr) {
           term_handles.frame_placement = quad->getResidual<FrameRes>();
         }
       }
       if (term_cost.keys.has_state_reg) {
-        auto *quad =
-            term_stack->getComponent<QuadCost>(std::string(kCostKeyStateReg));
+        auto* quad = term_stack->getComponent<QuadCost>(std::string(kCostKeyStateReg));
         if (quad != nullptr) {
           term_handles.state_reg = quad->getResidual<StateRes>();
         }
@@ -390,22 +369,21 @@ OCPBuildError ContactRichOCP::Build(const PhaseContext &ctx,
     w_contact_force_cached_ = cfg.w_contact_force;
 
     return OCPBuildError::kNoError;
-  } catch (const std::exception &) {
+  } catch (const std::exception&) {
     return OCPBuildError::kAligatorInstantiationFailure;
   } catch (...) {
     return OCPBuildError::kAligatorInstantiationFailure;
   }
 }
 
-OCPBuildError
-ContactRichOCP::UpdateReferences(const PhaseContext &ctx) noexcept {
+OCPBuildError ContactRichOCP::UpdateReferences(const PhaseContext& ctx) noexcept {
   if (!Built()) {
     return OCPBuildError::kInvalidPhaseContext;
   }
   if (ctx.ocp_type != "contact_rich") {
     return OCPBuildError::kInvalidPhaseContext;
   }
-  const auto &cfg = ctx.cost_config;
+  const auto& cfg = ctx.cost_config;
 
   // Topology checks.
   if (cfg.horizon_length != horizon_length_ || cfg.dt != dt_) {
@@ -443,9 +421,8 @@ ContactRichOCP::UpdateReferences(const PhaseContext &ctx) noexcept {
   }
 
   for (int k = 0; k < horizon_length_; ++k) {
-    ApplyReferences(stage_handles_[static_cast<std::size_t>(k)], cfg,
-                    ctx.ee_target, nq_, nv_, F_full,
-                    stage_active_contacts_[static_cast<std::size_t>(k)]);
+    ApplyReferences(stage_handles_[static_cast<std::size_t>(k)], cfg, ctx.ee_target, nq_, nv_,
+                    F_full, stage_active_contacts_[static_cast<std::size_t>(k)]);
   }
   ApplyReferences(terminal_handles_, cfg, ctx.ee_target, nq_, nv_, F_full,
                   /*active_fids=*/{});
@@ -457,4 +434,4 @@ ContactRichOCP::UpdateReferences(const PhaseContext &ctx) noexcept {
   return OCPBuildError::kNoError;
 }
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc

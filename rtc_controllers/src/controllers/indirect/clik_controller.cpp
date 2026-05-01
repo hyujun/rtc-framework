@@ -21,8 +21,7 @@ namespace rtc {
 
 // ── Constructor ─────────────────────────────────────────────────────────────
 
-ClikController::ClikController(std::string_view urdf_path, Gains gains)
-    : gains_lock_(gains) {
+ClikController::ClikController(std::string_view urdf_path, Gains gains) : gains_lock_(gains) {
   rtc_urdf_bridge::ModelConfig config;
   config.urdf_path = std::string(urdf_path);
   config.root_joint_type = "fixed";
@@ -58,7 +57,7 @@ ClikController::ClikController(std::string_view urdf_path, Gains gains)
 
 void ClikController::OnDeviceConfigsSet() {
   const auto primary = GetPrimaryDeviceName();
-  if (auto *cfg = GetDeviceNameConfig(primary); cfg) {
+  if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       auto fid = handle_->GetFrameId(cfg->urdf->tip_link);
       if (fid != 0) {
@@ -71,8 +70,7 @@ void ClikController::OnDeviceConfigsSet() {
     if (!cfg->safe_position.empty()) {
       safe_position_ = cfg->safe_position;
       // Also use safe_position as null-space reference if available
-      for (std::size_t i = 0;
-           i < std::min(cfg->safe_position.size(), null_target_.size()); ++i) {
+      for (std::size_t i = 0; i < std::min(cfg->safe_position.size(), null_target_.size()); ++i) {
         null_target_[i] = cfg->safe_position[i];
       }
     }
@@ -87,8 +85,7 @@ void ClikController::OnDeviceConfigsSet() {
 
 // ── RTControllerInterface implementation ────────────────────────────────────
 
-ControllerOutput
-ClikController::Compute(const ControllerState &state) noexcept {
+ControllerOutput ClikController::Compute(const ControllerState& state) noexcept {
   if (estopped_.load(std::memory_order_acquire)) {
     auto out = ComputeEstop(state);
     out.command_type = command_type_;
@@ -103,24 +100,22 @@ ClikController::Compute(const ControllerState &state) noexcept {
   const bool use_null_space = gains.enable_null_space;
 
   // ── Step 1: copy joint state into q buffer ──────────────────────────────
-  const auto &dev0 = state.devices[0];
+  const auto& dev0 = state.devices[0];
   std::array<double, kMaxDeviceChannels> q_buf{};
   for (int i = 0; i < nv; ++i) {
-    q_buf[static_cast<std::size_t>(i)] =
-        dev0.positions[static_cast<std::size_t>(i)];
+    q_buf[static_cast<std::size_t>(i)] = dev0.positions[static_cast<std::size_t>(i)];
   }
   std::span<const double> q_span(q_buf.data(), static_cast<std::size_t>(nv));
 
   // ── Step 2: FK + Jacobians ───────────────────────────────────────────────
   // ComputeJacobians performs FK internally and updates frame placements.
   handle_->ComputeJacobians(q_span);
-  handle_->GetFrameJacobian(tip_frame_id_, pinocchio::LOCAL_WORLD_ALIGNED,
-                            J_full_);
+  handle_->GetFrameJacobian(tip_frame_id_, pinocchio::LOCAL_WORLD_ALIGNED, J_full_);
   // Translational Jacobian: rows 0..2
   J_pos_.noalias() = J_full_.topRows(3);
 
   // ── Step 3: Cartesian position/orientation error ──────────────────────────
-  const pinocchio::SE3 &tcp_pose = handle_->GetFramePlacement(tip_frame_id_);
+  const pinocchio::SE3& tcp_pose = handle_->GetFramePlacement(tip_frame_id_);
   const Eigen::Vector3d tcp = tcp_pose.translation();
 
   if (!target_initialized_) {
@@ -141,9 +136,8 @@ ClikController::Compute(const ControllerState &state) noexcept {
       if (use_6dof) {
         goal_pose = tcp_target_pose_;
       } else {
-        goal_pose = start_pose; // keep current rotation
-        goal_pose.translation() =
-            Eigen::Vector3d(tcp_target_[0], tcp_target_[1], tcp_target_[2]);
+        goal_pose = start_pose;  // keep current rotation
+        goal_pose.translation() = Eigen::Vector3d(tcp_target_[0], tcp_target_[1], tcp_target_[2]);
       }
 
       const Eigen::Vector3d start_pos = start_pose.translation();
@@ -154,29 +148,24 @@ ClikController::Compute(const ControllerState &state) noexcept {
       // Quintic rest-to-rest peak velocity = (15/8) * dist / T.
       const double T_speed_trans = trans_dist / gains.trajectory_speed;
       const double T_vel_trans =
-          (gains.max_traj_velocity > 0.0)
-              ? (1.875 * trans_dist / gains.max_traj_velocity)
-              : 0.0;
+          (gains.max_traj_velocity > 0.0) ? (1.875 * trans_dist / gains.max_traj_velocity) : 0.0;
       double duration = std::max({0.01, T_speed_trans, T_vel_trans});
 
       // Angular distance via AngleAxisd (stable at θ → π, unlike log3)
-      constexpr double kPiSafetyMargin = 0.15; // rad ≈ 8.6°
+      constexpr double kPiSafetyMargin = 0.15;  // rad ≈ 8.6°
       double angular_dist = 0.0;
-      Eigen::Vector3d rot_axis = Eigen::Vector3d::UnitZ(); // fallback
+      Eigen::Vector3d rot_axis = Eigen::Vector3d::UnitZ();  // fallback
       bool split_trajectory = false;
 
       if (use_6dof) {
-        const Eigen::AngleAxisd aa(start_pose.rotation().transpose() *
-                                   goal_pose.rotation());
-        angular_dist = aa.angle(); // always in [0, π]
+        const Eigen::AngleAxisd aa(start_pose.rotation().transpose() * goal_pose.rotation());
+        angular_dist = aa.angle();  // always in [0, π]
         rot_axis = aa.axis();
 
-        const double T_speed_rot =
-            angular_dist / gains.trajectory_angular_speed;
-        const double T_vel_rot =
-            (gains.max_traj_angular_velocity > 0.0)
-                ? (1.875 * angular_dist / gains.max_traj_angular_velocity)
-                : 0.0;
+        const double T_speed_rot = angular_dist / gains.trajectory_angular_speed;
+        const double T_vel_rot = (gains.max_traj_angular_velocity > 0.0)
+                                     ? (1.875 * angular_dist / gains.max_traj_angular_velocity)
+                                     : 0.0;
         duration = std::max({duration, T_speed_rot, T_vel_rot});
 
         split_trajectory = (angular_dist > M_PI - kPiSafetyMargin);
@@ -186,8 +175,7 @@ ClikController::Compute(const ControllerState &state) noexcept {
         // ── π-rotation defense: split into 2 rest-to-rest segments ──
         const double half_angle = angular_dist * 0.5;
         const Eigen::Matrix3d R_mid =
-            start_pose.rotation() *
-            Eigen::AngleAxisd(half_angle, rot_axis).toRotationMatrix();
+            start_pose.rotation() * Eigen::AngleAxisd(half_angle, rot_axis).toRotationMatrix();
 
         pinocchio::SE3 mid_pose;
         mid_pose.translation() = 0.5 * (start_pos + goal_pos);
@@ -197,21 +185,17 @@ ClikController::Compute(const ControllerState &state) noexcept {
         const double half_trans = trans_dist * 0.5;
         const double T1_speed_t = half_trans / gains.trajectory_speed;
         const double T1_vel_t =
-            (gains.max_traj_velocity > 0.0)
-                ? (1.875 * half_trans / gains.max_traj_velocity)
-                : 0.0;
+            (gains.max_traj_velocity > 0.0) ? (1.875 * half_trans / gains.max_traj_velocity) : 0.0;
         const double T1_speed_r = half_angle / gains.trajectory_angular_speed;
-        const double T1_vel_r =
-            (gains.max_traj_angular_velocity > 0.0)
-                ? (1.875 * half_angle / gains.max_traj_angular_velocity)
-                : 0.0;
-        const double dur1 =
-            std::max({0.01, T1_speed_t, T1_vel_t, T1_speed_r, T1_vel_r});
+        const double T1_vel_r = (gains.max_traj_angular_velocity > 0.0)
+                                    ? (1.875 * half_angle / gains.max_traj_angular_velocity)
+                                    : 0.0;
+        const double dur1 = std::max({0.01, T1_speed_t, T1_vel_t, T1_speed_r, T1_vel_r});
 
         trajectory_.initialize(start_pose, pinocchio::Motion::Zero(), mid_pose,
                                pinocchio::Motion::Zero(), dur1);
         pending_goal_pose_ = goal_pose;
-        pending_duration_ = dur1; // symmetric split
+        pending_duration_ = dur1;  // symmetric split
         has_pending_segment_ = true;
       } else {
         trajectory_.initialize(start_pose, pinocchio::Motion::Zero(), goal_pose,
@@ -235,9 +219,8 @@ ClikController::Compute(const ControllerState &state) noexcept {
   // ── Segment transition (π-rotation defense) ────────────────────────────
   if (has_pending_segment_ && trajectory_time_ >= trajectory_.duration()) {
     pinocchio::SE3 mid_pose = trajectory_.compute(trajectory_.duration()).pose;
-    trajectory_.initialize(mid_pose, pinocchio::Motion::Zero(),
-                           pending_goal_pose_, pinocchio::Motion::Zero(),
-                           pending_duration_);
+    trajectory_.initialize(mid_pose, pinocchio::Motion::Zero(), pending_goal_pose_,
+                           pinocchio::Motion::Zero(), pending_duration_);
     trajectory_time_ = 0.0;
     has_pending_segment_ = false;
   }
@@ -246,8 +229,7 @@ ClikController::Compute(const ControllerState &state) noexcept {
 
   // Positional error is trajectory - current
   // Rotation error is computed using log6/log3
-  pinocchio::SE3 T_current_desired =
-      tcp_pose.actInv(traj_state_.pose); // relative pose
+  pinocchio::SE3 T_current_desired = tcp_pose.actInv(traj_state_.pose);  // relative pose
   pinocchio::Motion twist_error = pinocchio::log6(T_current_desired);
 
   // The twist_error is the spatial velocity needed in the LOCAL frame to reach
@@ -268,8 +250,7 @@ ClikController::Compute(const ControllerState &state) noexcept {
     JJt_6d_.noalias() = J_full_ * J_full_.transpose();
     JJt_6d_.diagonal().array() += gains.damping * gains.damping;
     ldlt_6d_.compute(JJt_6d_);
-    JJt_inv_6d_.noalias() =
-        ldlt_6d_.solve(Eigen::Matrix<double, 6, 6>::Identity());
+    JJt_inv_6d_.noalias() = ldlt_6d_.solve(Eigen::Matrix<double, 6, 6>::Identity());
     Jpinv_6d_.noalias() = J_full_.transpose() * JJt_inv_6d_;
 
     Eigen::Matrix<double, 6, 1> kp_vec_6d;
@@ -278,14 +259,11 @@ ClikController::Compute(const ControllerState &state) noexcept {
       kp_vec_6d[static_cast<Eigen::Index>(i + 3)] = gains.kp_rotation[i];
     }
 
-    Eigen::Matrix<double, 6, 1> task_vel_6d =
-        kp_vec_6d.cwiseProduct(pos_error_6d_);
+    Eigen::Matrix<double, 6, 1> task_vel_6d = kp_vec_6d.cwiseProduct(pos_error_6d_);
     // Feedforward: trajectory local → world-aligned via R_trajectory (not
     // R_current)
-    task_vel_6d.head<3>() +=
-        traj_state_.pose.rotation() * traj_state_.velocity.linear();
-    task_vel_6d.tail<3>() +=
-        traj_state_.pose.rotation() * traj_state_.velocity.angular();
+    task_vel_6d.head<3>() += traj_state_.pose.rotation() * traj_state_.velocity.linear();
+    task_vel_6d.tail<3>() += traj_state_.pose.rotation() * traj_state_.velocity.angular();
 
     dq_.noalias() = Jpinv_6d_ * task_vel_6d;
   } else {
@@ -298,23 +276,19 @@ ClikController::Compute(const ControllerState &state) noexcept {
 
     Eigen::Vector3d kp_vec(gains.kp_translation[0], gains.kp_translation[1],
                            gains.kp_translation[2]);
-    Eigen::Vector3d task_vel =
-        kp_vec.cwiseProduct(pos_error_) +
-        traj_state_.pose.rotation() * traj_state_.velocity.linear();
+    Eigen::Vector3d task_vel = kp_vec.cwiseProduct(pos_error_) +
+                               traj_state_.pose.rotation() * traj_state_.velocity.linear();
     dq_.noalias() = Jpinv_ * task_vel;
   }
 
   // ── Feedforward-only trajectory velocity (for logging) ────────────────
   if (use_6dof) {
     Eigen::Matrix<double, 6, 1> ff_vel_6d;
-    ff_vel_6d.head<3>() =
-        traj_state_.pose.rotation() * traj_state_.velocity.linear();
-    ff_vel_6d.tail<3>() =
-        traj_state_.pose.rotation() * traj_state_.velocity.angular();
+    ff_vel_6d.head<3>() = traj_state_.pose.rotation() * traj_state_.velocity.linear();
+    ff_vel_6d.tail<3>() = traj_state_.pose.rotation() * traj_state_.velocity.angular();
     traj_dq_.noalias() = Jpinv_6d_ * ff_vel_6d;
   } else {
-    traj_dq_.noalias() =
-        Jpinv_ * (traj_state_.pose.rotation() * traj_state_.velocity.linear());
+    traj_dq_.noalias() = Jpinv_ * (traj_state_.pose.rotation() * traj_state_.velocity.linear());
   }
 
   // ── Step 6: Null-space secondary task ────────────────────────────────────
@@ -324,8 +298,7 @@ ClikController::Compute(const ControllerState &state) noexcept {
 
     for (int i = 0; i < nv; ++i) {
       null_err_[static_cast<Eigen::Index>(i)] =
-          null_target_[static_cast<std::size_t>(i)] -
-          dev0.positions[static_cast<std::size_t>(i)];
+          null_target_[static_cast<std::size_t>(i)] - dev0.positions[static_cast<std::size_t>(i)];
     }
     null_dq_.noalias() = N_ * null_err_;
     null_dq_ *= gains.null_kp;
@@ -335,7 +308,7 @@ ClikController::Compute(const ControllerState &state) noexcept {
   // ── Step 7: Clamp joint velocity and integrate ────────────────────────────
   ControllerOutput output;
   output.num_devices = state.num_devices;
-  auto &out0 = output.devices[0];
+  auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
   out0.goal_type = GoalType::kTask;
@@ -353,8 +326,7 @@ ClikController::Compute(const ControllerState &state) noexcept {
     out0.trajectory_positions[i] = desired_q_[static_cast<Eigen::Index>(i)];
   }
   for (std::size_t i = 0; i < 3; ++i) {
-    out0.target_positions[i] =
-        traj_state_.pose.translation()[static_cast<Eigen::Index>(i)];
+    out0.target_positions[i] = traj_state_.pose.translation()[static_cast<Eigen::Index>(i)];
   }
   for (std::size_t i = 3; i < static_cast<std::size_t>(nc0); ++i) {
     out0.target_positions[i] = null_target_[i];
@@ -369,7 +341,7 @@ ClikController::Compute(const ControllerState &state) noexcept {
 
   rtc::utils::PassthroughSecondaryDevices(state, output, device_targets_);
 
-  const pinocchio::SE3 &tcp_current = handle_->GetFramePlacement(tip_frame_id_);
+  const pinocchio::SE3& tcp_current = handle_->GetFramePlacement(tip_frame_id_);
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp_current.rotation());
   output.actual_task_positions[0] = tcp_current.translation().x();
   output.actual_task_positions[1] = tcp_current.translation().y();
@@ -383,8 +355,7 @@ ClikController::Compute(const ControllerState &state) noexcept {
   output.task_goal_positions[1] = tcp_target_[1];
   output.task_goal_positions[2] = tcp_target_[2];
   if (use_6dof) {
-    Eigen::Vector3d goal_rpy =
-        pinocchio::rpy::matrixToRpy(tcp_target_pose_.rotation());
+    Eigen::Vector3d goal_rpy = pinocchio::rpy::matrixToRpy(tcp_target_pose_.rotation());
     output.task_goal_positions[3] = goal_rpy[0];
     output.task_goal_positions[4] = goal_rpy[1];
     output.task_goal_positions[5] = goal_rpy[2];
@@ -397,8 +368,7 @@ ClikController::Compute(const ControllerState &state) noexcept {
   // Task-space trajectory reference
   {
     const Eigen::Vector3d traj_pos = traj_state_.pose.translation();
-    Eigen::Vector3d traj_rpy =
-        pinocchio::rpy::matrixToRpy(traj_state_.pose.rotation());
+    Eigen::Vector3d traj_rpy = pinocchio::rpy::matrixToRpy(traj_state_.pose.rotation());
     output.trajectory_task_positions[0] = traj_pos[0];
     output.trajectory_task_positions[1] = traj_pos[1];
     output.trajectory_task_positions[2] = traj_pos[2];
@@ -418,8 +388,7 @@ ClikController::Compute(const ControllerState &state) noexcept {
   return output;
 }
 
-void ClikController::SetDeviceTarget(int device_idx,
-                                     std::span<const double> target) noexcept {
+void ClikController::SetDeviceTarget(int device_idx, std::span<const double> target) noexcept {
   if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices)
     return;
   if (device_idx == 0) {
@@ -458,28 +427,25 @@ void ClikController::SetDeviceTarget(int device_idx,
     new_target_.store(true, std::memory_order_release);
   } else {
     const auto ud = static_cast<std::size_t>(device_idx);
-    const std::size_t n =
-        std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
+    const std::size_t n = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
     for (std::size_t i = 0; i < n; ++i) {
       device_targets_[ud][i] = target[i];
     }
   }
 }
 
-void ClikController::InitializeHoldPosition(
-    const ControllerState &state) noexcept {
-  const auto &dev0 = state.devices[0];
+void ClikController::InitializeHoldPosition(const ControllerState& state) noexcept {
+  const auto& dev0 = state.devices[0];
   const int nv = handle_->nv();
 
   // Compute current TCP position/pose via FK and set as target
   std::array<double, kMaxDeviceChannels> q_buf{};
   for (int i = 0; i < nv; ++i) {
-    q_buf[static_cast<std::size_t>(i)] =
-        dev0.positions[static_cast<std::size_t>(i)];
+    q_buf[static_cast<std::size_t>(i)] = dev0.positions[static_cast<std::size_t>(i)];
   }
   std::span<const double> q_span(q_buf.data(), static_cast<std::size_t>(nv));
   handle_->ComputeForwardKinematics(q_span);
-  const pinocchio::SE3 &tcp_pose = handle_->GetFramePlacement(tip_frame_id_);
+  const pinocchio::SE3& tcp_pose = handle_->GetFramePlacement(tip_frame_id_);
 
   // Initialize desired_q_ from current actual joint positions
   for (int i = 0; i < nv; ++i) {
@@ -492,25 +458,22 @@ void ClikController::InitializeHoldPosition(
   if (!lock.owns_lock())
     return;
   tcp_target_pose_ = tcp_pose;
-  tcp_target_ = {tcp_pose.translation()[0], tcp_pose.translation()[1],
-                 tcp_pose.translation()[2]};
+  tcp_target_ = {tcp_pose.translation()[0], tcp_pose.translation()[1], tcp_pose.translation()[2]};
   // null-space target: initialize to current joint positions
   for (int i = 0; i < nv; ++i) {
-    null_target_[static_cast<std::size_t>(i)] =
-        dev0.positions[static_cast<std::size_t>(i)];
+    null_target_[static_cast<std::size_t>(i)] = dev0.positions[static_cast<std::size_t>(i)];
   }
   target_initialized_ = true;
   new_target_.store(false, std::memory_order_relaxed);
 
   // Initialize stationary trajectory (start == goal)
-  trajectory_.initialize(tcp_pose, pinocchio::Motion::Zero(), tcp_pose,
-                         pinocchio::Motion::Zero(), 0.01);
+  trajectory_.initialize(tcp_pose, pinocchio::Motion::Zero(), tcp_pose, pinocchio::Motion::Zero(),
+                         0.01);
   trajectory_time_ = 0.0;
   has_pending_segment_ = false;
 
-  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices);
-       ++d) {
-    const auto &dev = state.devices[d];
+  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
+    const auto& dev = state.devices[d];
     if (!dev.valid)
       continue;
     for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) &&
@@ -543,39 +506,35 @@ void ClikController::SetHandEstop(bool active) noexcept {
 
 // ── Private helpers ──────────────────────────────────────────────────────────
 
-ControllerOutput
-ClikController::ComputeEstop(const ControllerState &state) noexcept {
-  const auto &dev0 = state.devices[0];
+ControllerOutput ClikController::ComputeEstop(const ControllerState& state) noexcept {
+  const auto& dev0 = state.devices[0];
   ControllerOutput output;
   output.num_devices = state.num_devices;
-  auto &out0 = output.devices[0];
+  auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    const double lim = (i < max_joint_velocity_.size())
-                           ? max_joint_velocity_[i]
-                           : kDefaultMaxJointVelocity;
+    const double lim =
+        (i < max_joint_velocity_.size()) ? max_joint_velocity_[i] : kDefaultMaxJointVelocity;
     const double sp = (i < safe_position_.size()) ? safe_position_[i] : 0.0;
-    out0.commands[i] =
-        dev0.positions[i] + std::clamp(sp - dev0.positions[i], -lim, lim) *
-                                ((state.dt > 0.0) ? state.dt : GetDefaultDt());
+    out0.commands[i] = dev0.positions[i] + std::clamp(sp - dev0.positions[i], -lim, lim) *
+                                               ((state.dt > 0.0) ? state.dt : GetDefaultDt());
   }
   return output;
 }
 
-void ClikController::ClampVelocity(std::array<double, kMaxDeviceChannels> &dq,
+void ClikController::ClampVelocity(std::array<double, kMaxDeviceChannels>& dq,
                                    int n) const noexcept {
   for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i) {
-    const double lim = (i < max_joint_velocity_.size())
-                           ? max_joint_velocity_[i]
-                           : kDefaultMaxJointVelocity;
+    const double lim =
+        (i < max_joint_velocity_.size()) ? max_joint_velocity_[i] : kDefaultMaxJointVelocity;
     dq[i] = std::clamp(dq[i], -lim, lim);
   }
 }
 
 // ── Controller registry hooks ────────────────────────────────────────────────
 
-void ClikController::LoadConfig(const YAML::Node &cfg) {
+void ClikController::LoadConfig(const YAML::Node& cfg) {
   RTControllerInterface::LoadConfig(cfg);
   if (!cfg) {
     return;
@@ -584,7 +543,7 @@ void ClikController::LoadConfig(const YAML::Node &cfg) {
   auto g = gains_lock_.Load();
 
   // CLIK gains — translation / rotation separated
-  auto load3 = [](const YAML::Node &n, std::array<double, 3> &arr) {
+  auto load3 = [](const YAML::Node& n, std::array<double, 3>& arr) {
     if (n && n.IsSequence() && n.size() >= 3) {
       for (std::size_t i = 0; i < 3; ++i) {
         arr[i] = n[i].as<double>();
@@ -612,8 +571,7 @@ void ClikController::LoadConfig(const YAML::Node &cfg) {
     g.trajectory_speed = std::max(1e-6, cfg["trajectory_speed"].as<double>());
   }
   if (cfg["trajectory_angular_speed"]) {
-    g.trajectory_angular_speed =
-        std::max(1e-6, cfg["trajectory_angular_speed"].as<double>());
+    g.trajectory_angular_speed = std::max(1e-6, cfg["trajectory_angular_speed"].as<double>());
   }
 
   // Trajectory velocity limits
@@ -628,9 +586,8 @@ void ClikController::LoadConfig(const YAML::Node &cfg) {
 
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
-    command_type_ =
-        (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
+    command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
 }
 
-} // namespace rtc
+}  // namespace rtc

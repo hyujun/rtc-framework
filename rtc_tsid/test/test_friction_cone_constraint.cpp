@@ -14,9 +14,7 @@ namespace {
 
 TEST(FrictionConeTest, Dimensions) {
   auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(
-      RTC_PANDA_URDF_PATH,
-      *model);
+  pinocchio::urdf::buildModel(RTC_PANDA_URDF_PATH, *model);
 
   RobotModelInfo info;
   YAML::Node config;
@@ -56,9 +54,7 @@ TEST(FrictionConeTest, Dimensions) {
 
 TEST(FrictionConeTest, ConeMatrixStructure) {
   auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(
-      RTC_PANDA_URDF_PATH,
-      *model);
+  pinocchio::urdf::buildModel(RTC_PANDA_URDF_PATH, *model);
 
   RobotModelInfo info;
   YAML::Node config;

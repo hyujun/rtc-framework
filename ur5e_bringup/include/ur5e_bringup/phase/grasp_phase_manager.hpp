@@ -42,13 +42,12 @@
 ///   `PhaseCostConfig::LoadFromYaml` against that model.
 /// - `ocp_type` per phase is YAML-driven ("light_contact" / "contact_rich").
 
-#include "ur5e_bringup/phase/grasp_target.hpp"
-
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/phase/phase_context.hpp"
 #include "rtc_mpc/phase/phase_cost_config.hpp"
 #include "rtc_mpc/phase/phase_manager_base.hpp"
 #include "rtc_mpc/types/contact_plan_types.hpp"
+#include "ur5e_bringup/phase/grasp_target.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -87,32 +86,32 @@ inline constexpr int kNumGraspPhases = 8;
 /// @brief Failure modes for @ref GraspPhaseManager::Init.
 enum class GraspPhaseInitError {
   kNoError = 0,
-  kModelNotInitialised, ///< RobotModelHandler unusable
-  kInvalidYamlSchema,   ///< required key missing / wrong kind
-  kMissingPhase,        ///< one of the 8 required phase entries absent
-  kInvalidThreshold,    ///< approach_tolerance / pregrasp_tolerance <= 0
-                        ///< or force_threshold < 0 or max_failures <= 0
-  kInvalidOcpType,      ///< per-phase ocp_type not in {light_contact,
-                        ///< contact_rich}
-  kInvalidContactIndex, ///< active_contact_indices[i] out of model range
-  kInvalidPhaseCost,    ///< PhaseCostConfig::LoadFromYaml rejected
+  kModelNotInitialised,  ///< RobotModelHandler unusable
+  kInvalidYamlSchema,    ///< required key missing / wrong kind
+  kMissingPhase,         ///< one of the 8 required phase entries absent
+  kInvalidThreshold,     ///< approach_tolerance / pregrasp_tolerance <= 0
+                         ///< or force_threshold < 0 or max_failures <= 0
+  kInvalidOcpType,       ///< per-phase ocp_type not in {light_contact,
+                         ///< contact_rich}
+  kInvalidContactIndex,  ///< active_contact_indices[i] out of model range
+  kInvalidPhaseCost,     ///< PhaseCostConfig::LoadFromYaml rejected
 };
 
 /// @brief Transition thresholds + failure guard, loaded from YAML once.
 struct GraspTransitionConfig {
-  double approach_tolerance{0.05}; ///< m — APPROACH → PRE_GRASP guard
-  double pregrasp_tolerance{0.01}; ///< m — PRE_GRASP → CLOSURE guard
-  double force_threshold{0.5};     ///< N — Σ sensor for CLOSURE → HOLD
-  int max_failures{50};            ///< consecutive CLOSURE ticks without force
+  double approach_tolerance{0.05};  ///< m — APPROACH → PRE_GRASP guard
+  double pregrasp_tolerance{0.01};  ///< m — PRE_GRASP → CLOSURE guard
+  double force_threshold{0.5};      ///< N — Σ sensor for CLOSURE → HOLD
+  int max_failures{50};             ///< consecutive CLOSURE ticks without force
 };
 
 /// @brief 8-state grasp FSM producing a `PhaseContext` per MPC tick.
 class GraspPhaseManager final : public rtc::mpc::PhaseManagerBase {
-public:
+ public:
   /// @param model  initialised handler; stays owned by the caller and must
   ///               outlive this manager (used only at @ref Init / @ref
   ///               SetTaskTarget time for dim validation + FK helpers).
-  explicit GraspPhaseManager(const rtc::mpc::RobotModelHandler &model) noexcept;
+  explicit GraspPhaseManager(const rtc::mpc::RobotModelHandler& model) noexcept;
   ~GraspPhaseManager() override = default;
 
   /// @brief Load thresholds + per-phase cost / contact plans from YAML.
@@ -142,17 +141,16 @@ public:
   /// Errors leave the manager in the uninitialised state (`Initialised()
   /// == false`); callers inspect the returned enum to decide whether to
   /// abort before starting the MPC thread.
-  [[nodiscard]] GraspPhaseInitError Load(const YAML::Node &cfg) noexcept;
+  [[nodiscard]] GraspPhaseInitError Load(const YAML::Node& cfg) noexcept;
 
   /// @brief PhaseManagerBase compatibility — delegates to @ref Load and
   ///        throws `std::runtime_error` on any error, since this entry is
   ///        only called off-RT during system init.
-  void Init(const YAML::Node &cfg) override;
+  void Init(const YAML::Node& cfg) override;
 
-  rtc::mpc::PhaseContext Update(const Eigen::VectorXd &q,
-                                const Eigen::VectorXd &v,
-                                const Eigen::VectorXd &sensor,
-                                const pinocchio::SE3 &tcp, double t) override;
+  rtc::mpc::PhaseContext Update(const Eigen::VectorXd& q, const Eigen::VectorXd& v,
+                                const Eigen::VectorXd& sensor, const pinocchio::SE3& tcp,
+                                double t) override;
 
   /// @brief Update the grasp goal (and derived pre-grasp / approach-start
   ///        poses). Expected YAML:
@@ -165,10 +163,10 @@ public:
   /// ```
   /// Unknown / malformed payloads are logged to stderr and ignored — the
   /// FSM keeps the previous target.
-  void SetTaskTarget(const YAML::Node &target) override;
+  void SetTaskTarget(const YAML::Node& target) override;
 
   /// @brief Direct-object target setter used by tests and non-YAML wiring.
-  void SetTaskTarget(const GraspTarget &target) noexcept;
+  void SetTaskTarget(const GraspTarget& target) noexcept;
 
   /// @brief External command bus. Idempotent; repeated sets overwrite.
   void SetCommand(GraspCommand cmd) noexcept;
@@ -183,10 +181,10 @@ public:
   [[nodiscard]] bool HasTarget() const noexcept {
     return has_target_.load(std::memory_order_acquire);
   }
+
   [[nodiscard]] int FailureCount() const noexcept { return failure_count_; }
-  [[nodiscard]] GraspTransitionConfig Thresholds() const noexcept {
-    return thresholds_;
-  }
+
+  [[nodiscard]] GraspTransitionConfig Thresholds() const noexcept { return thresholds_; }
 
   /// @return canonical phase name for @p id; "" for invalid ids.
   [[nodiscard]] static std::string_view NameFor(int id) noexcept;
@@ -194,7 +192,7 @@ public:
   /// @return ocp_type key for @p id (valid after @ref Load). "" on invalid.
   [[nodiscard]] std::string_view OcpTypeFor(int id) const noexcept;
 
-private:
+ private:
   struct PhaseSlot {
     std::string ocp_type{"light_contact"};
     rtc::mpc::PhaseCostConfig cost{};
@@ -203,21 +201,17 @@ private:
 
   static constexpr int kNoForcedPhase = -1;
 
-  [[nodiscard]] GraspPhaseInitError
-  LoadTransition(const YAML::Node &cfg,
-                 GraspTransitionConfig &out) const noexcept;
-  [[nodiscard]] GraspPhaseInitError
-  LoadPhases(const YAML::Node &phases_cfg,
-             std::array<PhaseSlot, kNumGraspPhases> &out) const noexcept;
+  [[nodiscard]] GraspPhaseInitError LoadTransition(const YAML::Node& cfg,
+                                                   GraspTransitionConfig& out) const noexcept;
+  [[nodiscard]] GraspPhaseInitError LoadPhases(
+      const YAML::Node& phases_cfg, std::array<PhaseSlot, kNumGraspPhases>& out) const noexcept;
 
-  [[nodiscard]] int EvaluateTransition(int current_id,
-                                       const pinocchio::SE3 &tcp,
-                                       const Eigen::VectorXd &sensor,
-                                       GraspCommand cmd) noexcept;
+  [[nodiscard]] int EvaluateTransition(int current_id, const pinocchio::SE3& tcp,
+                                       const Eigen::VectorXd& sensor, GraspCommand cmd) noexcept;
   [[nodiscard]] rtc::mpc::PhaseContext BuildContext(int id, bool changed) const;
 
   // Injected (non-owning) — must outlive this manager.
-  const rtc::mpc::RobotModelHandler &model_;
+  const rtc::mpc::RobotModelHandler& model_;
 
   // Config (set in Load; const afterwards).
   GraspTransitionConfig thresholds_{};
@@ -228,7 +222,7 @@ private:
   std::atomic<int> current_id_{static_cast<int>(GraspPhaseId::kIdle)};
   std::atomic<int> forced_phase_id_{kNoForcedPhase};
   std::atomic<int> command_{static_cast<int>(GraspCommand::kNone)};
-  int failure_count_{0}; // MPC-thread only; plain int.
+  int failure_count_{0};  // MPC-thread only; plain int.
 
   // Grasp target — updated off-MPC-thread.
   mutable std::mutex target_mutex_{};
@@ -236,6 +230,6 @@ private:
   std::atomic<bool> has_target_{false};
 };
 
-} // namespace ur5e_bringup::phase
+}  // namespace ur5e_bringup::phase
 
-#endif // UR5E_BRINGUP_PHASE_GRASP_PHASE_MANAGER_HPP_
+#endif  // UR5E_BRINGUP_PHASE_GRASP_PHASE_MANAGER_HPP_

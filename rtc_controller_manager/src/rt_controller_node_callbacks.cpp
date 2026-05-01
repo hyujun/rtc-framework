@@ -4,10 +4,10 @@
 namespace urtc = rtc;
 
 // ── Subscription callbacks (unified per-device) ──────────────────────────────
-void RtControllerNode::DeviceJointStateCallback(
-    int device_slot, sensor_msgs::msg::JointState::SharedPtr msg)
-{
-  if (msg->position.empty()) return;
+void RtControllerNode::DeviceJointStateCallback(int device_slot,
+                                                sensor_msgs::msg::JointState::SharedPtr msg) {
+  if (msg->position.empty())
+    return;
 
   // Build reorder map from the first real message that carries joint names.
   const auto uslot = static_cast<std::size_t>(device_slot);
@@ -21,27 +21,28 @@ void RtControllerNode::DeviceJointStateCallback(
   ds.num_channels = static_cast<int>(msg->position.size());
 
   if (reorder.built_from_msg) {
-    for (std::size_t src = 0; src < msg->position.size() &&
-         src < reorder.reorder.size(); ++src) {
+    for (std::size_t src = 0; src < msg->position.size() && src < reorder.reorder.size(); ++src) {
       const int idx = reorder.reorder[src];
       if (idx >= 0 && idx < urtc::kMaxDeviceChannels) {
         const auto uidx = static_cast<std::size_t>(idx);
         ds.positions[uidx] = msg->position[src];
-        if (src < msg->velocity.size()) ds.velocities[uidx] = msg->velocity[src];
-        if (src < msg->effort.size())   ds.efforts[uidx]    = msg->effort[src];
+        if (src < msg->velocity.size())
+          ds.velocities[uidx] = msg->velocity[src];
+        if (src < msg->effort.size())
+          ds.efforts[uidx] = msg->effort[src];
       }
     }
   } else {
-    for (std::size_t i = 0; i < msg->position.size() &&
-         i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
+    for (std::size_t i = 0;
+         i < msg->position.size() && i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
       ds.positions[i] = msg->position[i];
     }
-    for (std::size_t i = 0; i < msg->velocity.size() &&
-         i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
+    for (std::size_t i = 0;
+         i < msg->velocity.size() && i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
       ds.velocities[i] = msg->velocity[i];
     }
-    for (std::size_t i = 0; i < msg->effort.size() &&
-         i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
+    for (std::size_t i = 0;
+         i < msg->effort.size() && i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
       ds.efforts[i] = msg->effort[i];
     }
   }
@@ -61,7 +62,7 @@ void RtControllerNode::DeviceJointStateCallback(
         for (std::size_t i = 0; i < n; ++i) {
           dte.msg.position[i] = ds.positions[i];
           dte.msg.velocity[i] = ds.velocities[i];
-          dte.msg.effort[i]   = ds.efforts[i];
+          dte.msg.effort[i] = ds.efforts[i];
         }
         dte.publisher->publish(dte.msg);
       }
@@ -75,35 +76,34 @@ void RtControllerNode::DeviceJointStateCallback(
   }
 }
 
-void RtControllerNode::DeviceMotorStateCallback(
-    int device_slot, sensor_msgs::msg::JointState::SharedPtr msg)
-{
-  if (msg->position.empty()) return;
+void RtControllerNode::DeviceMotorStateCallback(int device_slot,
+                                                sensor_msgs::msg::JointState::SharedPtr msg) {
+  if (msg->position.empty())
+    return;
 
   const auto uslot = static_cast<std::size_t>(device_slot);
   auto ds = device_states_[uslot].Load();
   ds.num_motor_channels = static_cast<int>(msg->position.size());
 
-  for (std::size_t i = 0; i < msg->position.size() &&
-       i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
+  for (std::size_t i = 0;
+       i < msg->position.size() && i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
     ds.motor_positions[i] = msg->position[i];
   }
-  for (std::size_t i = 0; i < msg->velocity.size() &&
-       i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
+  for (std::size_t i = 0;
+       i < msg->velocity.size() && i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
     ds.motor_velocities[i] = msg->velocity[i];
   }
-  for (std::size_t i = 0; i < msg->effort.size() &&
-       i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
+  for (std::size_t i = 0;
+       i < msg->effort.size() && i < static_cast<std::size_t>(urtc::kMaxDeviceChannels); ++i) {
     ds.motor_efforts[i] = msg->effort[i];
   }
   device_states_[uslot].Store(ds);
 }
 
-void RtControllerNode::DeviceTargetCallback(
-    int device_slot, rtc_msgs::msg::RobotTarget::SharedPtr msg)
-{
+void RtControllerNode::DeviceTargetCallback(int device_slot,
+                                            rtc_msgs::msg::RobotTarget::SharedPtr msg) {
   // Select data source based on goal_type
-  const double * data_ptr = nullptr;
+  const double* data_ptr = nullptr;
   int data_size = 0;
 
   if (msg->goal_type == "task") {
@@ -111,14 +111,15 @@ void RtControllerNode::DeviceTargetCallback(
     data_size = static_cast<int>(msg->task_target.size());
   } else {
     // Default to joint target
-    if (msg->joint_target.empty()) return;
+    if (msg->joint_target.empty())
+      return;
     data_ptr = msg->joint_target.data();
     data_size = static_cast<int>(msg->joint_target.size());
   }
 
   // Reorder by joint_names if provided (same pattern as BuildDeviceReorderMap)
   std::array<double, urtc::kMaxDeviceChannels> reordered{};
-  const double * ordered_ptr = data_ptr;
+  const double* ordered_ptr = data_ptr;
   int ordered_size = data_size;
 
   if (msg->goal_type != "task" && !msg->joint_names.empty()) {
@@ -129,8 +130,8 @@ void RtControllerNode::DeviceTargetCallback(
       if (it != device_name_configs_.end()) {
         const auto& ref_names = it->second.joint_state_names;
         if (!ref_names.empty()) {
-          for (std::size_t msg_i = 0; msg_i < msg->joint_names.size() &&
-               msg_i < msg->joint_target.size(); ++msg_i) {
+          for (std::size_t msg_i = 0;
+               msg_i < msg->joint_names.size() && msg_i < msg->joint_target.size(); ++msg_i) {
             for (std::size_t ref_i = 0; ref_i < ref_names.size(); ++ref_i) {
               if (msg->joint_names[msg_i] == ref_names[ref_i]) {
                 reordered[ref_i] = msg->joint_target[msg_i];
@@ -139,8 +140,7 @@ void RtControllerNode::DeviceTargetCallback(
             }
           }
           ordered_ptr = reordered.data();
-          ordered_size = std::min(static_cast<int>(ref_names.size()),
-                                  urtc::kMaxDeviceChannels);
+          ordered_size = std::min(static_cast<int>(ref_names.size()), urtc::kMaxDeviceChannels);
         }
       }
     }
@@ -155,19 +155,17 @@ void RtControllerNode::DeviceTargetCallback(
   }
   target_received_.store(true, std::memory_order_release);
   const int idx = active_controller_idx_.load(std::memory_order_acquire);
-  controllers_[static_cast<std::size_t>(idx)]->SetDeviceTarget(device_slot,
-      std::span<const double>(ordered_ptr,
-                              static_cast<std::size_t>(ordered_size)));
+  controllers_[static_cast<std::size_t>(idx)]->SetDeviceTarget(
+      device_slot, std::span<const double>(ordered_ptr, static_cast<std::size_t>(ordered_size)));
 }
 
 // ── Device sensor callback (unified per-device) ──────────────────────────────
-void RtControllerNode::DeviceSensorCallback(
-    int device_slot, std_msgs::msg::Float64MultiArray::SharedPtr msg)
-{
+void RtControllerNode::DeviceSensorCallback(int device_slot,
+                                            std_msgs::msg::Float64MultiArray::SharedPtr msg) {
   const auto uslot = static_cast<std::size_t>(device_slot);
   auto ds = device_states_[uslot].Load();
-  for (std::size_t i = 0; i < msg->data.size() &&
-       i < static_cast<std::size_t>(urtc::kMaxSensorChannels); ++i) {
+  for (std::size_t i = 0;
+       i < msg->data.size() && i < static_cast<std::size_t>(urtc::kMaxSensorChannels); ++i) {
     ds.sensor_data[i] = static_cast<int32_t>(msg->data[i]);
   }
   ds.num_sensor_channels = static_cast<int>(
@@ -175,9 +173,8 @@ void RtControllerNode::DeviceSensorCallback(
   device_states_[uslot].Store(ds);
 }
 
-void RtControllerNode::HandSensorStateCallback(
-    int device_slot, rtc_msgs::msg::HandSensorState::SharedPtr msg)
-{
+void RtControllerNode::HandSensorStateCallback(int device_slot,
+                                               rtc_msgs::msg::HandSensorState::SharedPtr msg) {
   const auto uslot = static_cast<std::size_t>(device_slot);
   auto ds = device_states_[uslot].Load();
 
@@ -210,7 +207,7 @@ void RtControllerNode::HandSensorStateCallback(
     ds.inference_enable[static_cast<std::size_t>(f)] = fs.inference_enable;
     if (fs.inference_enable) {
       const int ft_base = f * urtc::kFTValuesPerFingertip;
-      ds.inference_data[static_cast<std::size_t>(ft_base)]     = fs.contact_flag;
+      ds.inference_data[static_cast<std::size_t>(ft_base)] = fs.contact_flag;
       for (int j = 0; j < 3; ++j) {
         const auto ju = static_cast<std::size_t>(j);
         ds.inference_data[static_cast<std::size_t>(ft_base + 1 + j)] = fs.f[ju];

@@ -19,56 +19,53 @@
 #include <string>
 #include <vector>
 
-namespace
-{
+namespace {
 
 namespace fs = std::filesystem;
 
-struct TestPayload
-{
+struct TestPayload {
   double a{0.0};
   std::uint32_t b{0};
 };
 
-void WriteHeader(std::ostream & os) {os << ",a,b";}
-void WriteRow(std::ostream & os, const TestPayload & p)
-{
+void WriteHeader(std::ostream& os) {
+  os << ",a,b";
+}
+
+void WriteRow(std::ostream& os, const TestPayload& p) {
   os << ',' << p.a << ',' << p.b;
 }
 
 class ScopedTempDir {
-public:
-  ScopedTempDir()
-  {
+ public:
+  ScopedTempDir() {
     auto base = fs::temp_directory_path() / "rtc_thread_timing_test";
     fs::create_directories(base);
-    dir_ =
-      base / ("t_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) &
-                                      0xFFFFFFFFu));
+    dir_ = base / ("t_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) & 0xFFFFFFFFu));
     fs::create_directories(dir_);
   }
-  ~ScopedTempDir()
-  {
+
+  ~ScopedTempDir() {
     std::error_code ec;
     fs::remove_all(dir_, ec);
   }
-  const fs::path & dir() const noexcept {return dir_;}
 
-private:
+  const fs::path& dir() const noexcept { return dir_; }
+
+ private:
   fs::path dir_;
 };
 
-std::vector<std::string> ReadAllLines(const fs::path & p)
-{
+std::vector<std::string> ReadAllLines(const fs::path& p) {
   std::vector<std::string> lines;
   std::ifstream in(p);
-  for (std::string line; std::getline(in, line); ) {
+  for (std::string line; std::getline(in, line);) {
     lines.push_back(line);
   }
   return lines;
 }
 
-} // namespace
+}  // namespace
 
 // ── Producer tests ──────────────────────────────────────────────────────────
 
@@ -76,14 +73,13 @@ TEST(ThreadTimingProducer, PushIncrementsTickAndDrainPreservesOrder) {
   rtc::ThreadTimingProducer<TestPayload, 8> producer;
 
   for (int i = 0; i < 5; ++i) {
-    EXPECT_TRUE(
-        producer.Push({static_cast<double>(i), static_cast<uint32_t>(i * 10)}));
+    EXPECT_TRUE(producer.Push({static_cast<double>(i), static_cast<uint32_t>(i * 10)}));
   }
   EXPECT_EQ(producer.LastTickCount(), 5u);
   EXPECT_EQ(producer.DropCount(), 0u);
 
   std::vector<rtc::ThreadTimingSample<TestPayload>> drained;
-  const auto n = producer.Drain([&](const auto & s) {drained.push_back(s);});
+  const auto n = producer.Drain([&](const auto& s) { drained.push_back(s); });
   EXPECT_EQ(n, 5u);
   ASSERT_EQ(drained.size(), 5u);
   for (std::size_t i = 0; i < drained.size(); ++i) {
@@ -100,7 +96,7 @@ TEST(ThreadTimingProducer, FullRingDrops) {
   for (int i = 0; i < 3; ++i) {
     EXPECT_TRUE(producer.Push({}));
   }
-  EXPECT_FALSE(producer.Push({})); // full
+  EXPECT_FALSE(producer.Push({}));  // full
   EXPECT_EQ(producer.DropCount(), 1u);
   // Tick count counts attempts including the dropped one.
   EXPECT_EQ(producer.LastTickCount(), 4u);
@@ -125,8 +121,7 @@ TEST(ThreadTimingCsvLogger, EmptyPayloadHeaderHasOnlyTimingColumns) {
   rtc::ThreadTimingCsvLogger<TestPayload> logger;
 
   // Pass a no-op header writer to mean "no payload columns".
-  ASSERT_TRUE(logger.Open(
-      path, [](std::ostream &) {}, [](std::ostream &, const TestPayload &) {}));
+  ASSERT_TRUE(logger.Open(path, [](std::ostream&) {}, [](std::ostream&, const TestPayload&) {}));
   const auto lines = ReadAllLines(path);
   ASSERT_EQ(lines.size(), 1u);
   EXPECT_EQ(lines[0], "t_wall_ns,tick_count");
@@ -183,22 +178,22 @@ TEST(ThreadTimingEndToEnd, ProducerDrainIntoCsv) {
   // Use integer-valued doubles so the default ostream format matches a
   // simple substring (no locale / precision concerns).
   for (int i = 0; i < 4; ++i) {
-    EXPECT_TRUE(producer.Push({static_cast<double>((i + 1) * 10),
-        static_cast<uint32_t>((i + 1) * 100)}));
+    EXPECT_TRUE(
+        producer.Push({static_cast<double>((i + 1) * 10), static_cast<uint32_t>((i + 1) * 100)}));
   }
-  const auto n = producer.Drain([&](const auto & s) {logger.Log(s);});
+  const auto n = producer.Drain([&](const auto& s) { logger.Log(s); });
   EXPECT_EQ(n, 4u);
 
   const auto lines = ReadAllLines(path);
-  ASSERT_EQ(lines.size(), 5u); // header + 4 rows
+  ASSERT_EQ(lines.size(), 5u);  // header + 4 rows
   EXPECT_EQ(lines[0], "t_wall_ns,tick_count,a,b");
   for (int i = 0; i < 4; ++i) {
-    const auto & row = lines[static_cast<std::size_t>(i + 1)];
+    const auto& row = lines[static_cast<std::size_t>(i + 1)];
     // Match a suffix the form ",<tick>,<a>,<b>". Default std::ostream
     // formats 10.0 as "10".
     const std::string expect_suffix = "," + std::to_string(i + 1) + "," +
-      std::to_string((i + 1) * 10) + "," +
-      std::to_string((i + 1) * 100);
+                                      std::to_string((i + 1) * 10) + "," +
+                                      std::to_string((i + 1) * 100);
     EXPECT_NE(row.find(expect_suffix), std::string::npos)
         << "row=" << row << " expected suffix " << expect_suffix;
   }

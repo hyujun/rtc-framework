@@ -36,16 +36,16 @@ namespace rtc_bt {
 /// are declared with read_only=true on the controller side and cannot be
 /// set via this node — they are honoured only at startup via YAML.
 class SetGains : public BT::SyncActionNode {
-public:
-  SetGains(const std::string &name, const BT::NodeConfig &config,
+ public:
+  SetGains(const std::string& name, const BT::NodeConfig& config,
            std::shared_ptr<BtRosBridge> bridge);
 
   static BT::PortsList providedPorts();
 
   BT::NodeStatus tick() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
 };
 
-} // namespace rtc_bt
+}  // namespace rtc_bt

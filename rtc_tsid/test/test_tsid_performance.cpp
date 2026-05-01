@@ -20,8 +20,7 @@
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 struct TimingStats {
   double mean_us;
@@ -75,8 +74,7 @@ TEST_F(TSIDPerformanceTest, PandaWQPSolveTime) {
   YAML::Node config;
   config["formulation_type"] = "wqp";
 
-  auto formulation = create_formulation(
-      *model_, robot_info_, contact_cfg_, config);
+  auto formulation = create_formulation(*model_, robot_info_, contact_cfg_, config);
 
   auto posture = std::make_unique<PostureTask>();
   YAML::Node task_cfg;
@@ -104,34 +102,29 @@ TEST_F(TSIDPerformanceTest, PandaWQPSolveTime) {
     cache_.update(q_, v_, contacts_);
 
     const auto t0 = std::chrono::steady_clock::now();
-    const auto& result =
-        formulation->solve(cache_, ref_, contacts_, robot_info_);
+    const auto& result = formulation->solve(cache_, ref_, contacts_, robot_info_);
     const auto t1 = std::chrono::steady_clock::now();
 
     ASSERT_TRUE(result.converged) << "Iteration " << i;
-    times[static_cast<size_t>(i)] =
-        std::chrono::duration<double, std::micro>(t1 - t0).count();
+    times[static_cast<size_t>(i)] = std::chrono::duration<double, std::micro>(t1 - t0).count();
   }
 
   auto stats = compute_stats(times);
 
   // Report
-  std::cout << "[WQP Panda 7DoF] solve time (us): "
-            << "mean=" << stats.mean_us << " median=" << stats.median_us
-            << " min=" << stats.min_us << " max=" << stats.max_us
+  std::cout << "[WQP Panda 7DoF] solve time (us): " << "mean=" << stats.mean_us
+            << " median=" << stats.median_us << " min=" << stats.min_us << " max=" << stats.max_us
             << std::endl;
 
   // Assert: median < 500us (conservative for 500Hz RT)
-  EXPECT_LT(stats.median_us, 500.0)
-      << "WQP solve median too slow for 500Hz RT loop";
+  EXPECT_LT(stats.median_us, 500.0) << "WQP solve median too slow for 500Hz RT loop";
 }
 
 TEST_F(TSIDPerformanceTest, PandaHQP2LevelsSolveTime) {
   YAML::Node config;
   config["formulation_type"] = "hqp";
 
-  auto formulation = create_formulation(
-      *model_, robot_info_, contact_cfg_, config);
+  auto formulation = create_formulation(*model_, robot_info_, contact_cfg_, config);
 
   // Level 0
   auto posture0 = std::make_unique<PostureTask>();
@@ -169,26 +162,22 @@ TEST_F(TSIDPerformanceTest, PandaHQP2LevelsSolveTime) {
     cache_.update(q_, v_, contacts_);
 
     const auto t0 = std::chrono::steady_clock::now();
-    const auto& result =
-        formulation->solve(cache_, ref_, contacts_, robot_info_);
+    const auto& result = formulation->solve(cache_, ref_, contacts_, robot_info_);
     const auto t1 = std::chrono::steady_clock::now();
 
     ASSERT_TRUE(result.converged) << "Iteration " << i;
     EXPECT_EQ(result.levels_solved, 2);
-    times[static_cast<size_t>(i)] =
-        std::chrono::duration<double, std::micro>(t1 - t0).count();
+    times[static_cast<size_t>(i)] = std::chrono::duration<double, std::micro>(t1 - t0).count();
   }
 
   auto stats = compute_stats(times);
 
-  std::cout << "[HQP Panda 7DoF 2-levels] solve time (us): "
-            << "mean=" << stats.mean_us << " median=" << stats.median_us
-            << " min=" << stats.min_us << " max=" << stats.max_us
+  std::cout << "[HQP Panda 7DoF 2-levels] solve time (us): " << "mean=" << stats.mean_us
+            << " median=" << stats.median_us << " min=" << stats.min_us << " max=" << stats.max_us
             << std::endl;
 
   // HQP 2 levels ≈ 2× WQP. Assert median < 1000us
-  EXPECT_LT(stats.median_us, 1000.0)
-      << "HQP 2-level solve median too slow";
+  EXPECT_LT(stats.median_us, 1000.0) << "HQP 2-level solve median too slow";
 }
 
 TEST_F(TSIDPerformanceTest, FullPipelineWithCacheUpdate) {
@@ -232,20 +221,17 @@ TEST_F(TSIDPerformanceTest, FullPipelineWithCacheUpdate) {
     const auto t1 = std::chrono::steady_clock::now();
 
     ASSERT_TRUE(output.qp_converged) << "Iteration " << i;
-    times[static_cast<size_t>(i)] =
-        std::chrono::duration<double, std::micro>(t1 - t0).count();
+    times[static_cast<size_t>(i)] = std::chrono::duration<double, std::micro>(t1 - t0).count();
   }
 
   auto stats = compute_stats(times);
 
-  std::cout << "[Full Pipeline Panda WQP] time (us): "
-            << "mean=" << stats.mean_us << " median=" << stats.median_us
-            << " min=" << stats.min_us << " max=" << stats.max_us
+  std::cout << "[Full Pipeline Panda WQP] time (us): " << "mean=" << stats.mean_us
+            << " median=" << stats.median_us << " min=" << stats.min_us << " max=" << stats.max_us
             << std::endl;
 
   // Full pipeline (cache + solve + tau) < 2000us (500Hz budget)
-  EXPECT_LT(stats.median_us, 2000.0)
-      << "Full pipeline too slow for 500Hz";
+  EXPECT_LT(stats.median_us, 2000.0) << "Full pipeline too slow for 500Hz";
 }
 
 }  // namespace

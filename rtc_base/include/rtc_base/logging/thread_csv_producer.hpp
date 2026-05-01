@@ -34,21 +34,21 @@
 
 namespace rtc {
 
-template <typename Payload, std::size_t N> class ThreadCsvProducer {
-public:
+template <typename Payload, std::size_t N>
+class ThreadCsvProducer {
+ public:
   static_assert(std::is_trivially_copyable_v<Payload>,
                 "ThreadCsvProducer Payload must be trivially copyable");
   static constexpr std::size_t kCapacity = N;
 
   /// Push one Payload onto the SPSC ring. Wait-free; on a full ring the
   /// sample is dropped and `DropCount()` increments. RT-safe.
-  [[nodiscard]] bool Push(const Payload &payload) noexcept {
-    return queue_.Push(payload);
-  }
+  [[nodiscard]] bool Push(const Payload& payload) noexcept { return queue_.Push(payload); }
 
   /// Drain pending samples in FIFO order. Returns the number drained.
   /// Non-RT.
-  template <typename Fn> std::size_t Drain(Fn &&on_sample) noexcept {
+  template <typename Fn>
+  std::size_t Drain(Fn&& on_sample) noexcept {
     std::size_t n = 0;
     Payload p{};
     while (queue_.Pop(p)) {
@@ -59,14 +59,12 @@ public:
   }
 
   /// Lifetime count of samples dropped due to a full ring. Non-RT.
-  [[nodiscard]] std::uint64_t DropCount() const noexcept {
-    return queue_.drop_count();
-  }
+  [[nodiscard]] std::uint64_t DropCount() const noexcept { return queue_.drop_count(); }
 
-private:
+ private:
   SpscQueue<Payload, N> queue_;
 };
 
-} // namespace rtc
+}  // namespace rtc
 
-#endif // RTC_BASE_LOGGING_THREAD_CSV_PRODUCER_HPP_
+#endif  // RTC_BASE_LOGGING_THREAD_CSV_PRODUCER_HPP_

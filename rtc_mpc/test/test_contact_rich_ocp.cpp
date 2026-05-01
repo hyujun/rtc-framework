@@ -39,6 +39,9 @@
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "rtc_mpc/ocp/contact_rich_ocp.hpp"
+#include "test_utils/solver_seeding.hpp"
+
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
@@ -47,14 +50,11 @@
 #include <iostream>
 #include <vector>
 
-#include "rtc_mpc/ocp/contact_rich_ocp.hpp"
-#include "test_utils/solver_seeding.hpp"
-
 namespace {
 
-constexpr const char *kPandaUrdf = RTC_PANDA_URDF_PATH;
+constexpr const char* kPandaUrdf = RTC_PANDA_URDF_PATH;
 
-constexpr const char *kCostYaml = R"(
+constexpr const char* kCostYaml = R"(
 horizon_length: 10
 dt: 0.01
 w_frame_placement: 10.0
@@ -69,7 +69,7 @@ custom_weights: {}
 )";
 
 class ContactRichOCPTest : public ::testing::Test {
-protected:
+ protected:
   void SetUp() override {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed — run ./install.sh verify";
@@ -84,13 +84,11 @@ contact_frames:
   - name: panda_rightfinger
     dim: 3
 )");
-    ASSERT_EQ(handler_.Init(model_, robot_cfg),
-              rtc::mpc::RobotModelInitError::kNoError);
+    ASSERT_EQ(handler_.Init(model_, robot_cfg), rtc::mpc::RobotModelInitError::kNoError);
 
     auto cost_node = YAML::Load(kCostYaml);
-    ASSERT_EQ(
-        rtc::mpc::PhaseCostConfig::LoadFromYaml(cost_node, handler_, cfg_),
-        rtc::mpc::PhaseCostConfigError::kNoError);
+    ASSERT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(cost_node, handler_, cfg_),
+              rtc::mpc::PhaseCostConfigError::kNoError);
 
     ctx_.phase_id = 0;
     ctx_.phase_name = "contact_test";
@@ -102,8 +100,7 @@ contact_frames:
     const int lf = handler_.contact_frames()[0].frame_id;
     const int rf = handler_.contact_frames()[1].frame_id;
     ctx_.contact_plan.frames = handler_.contact_frames();
-    ctx_.contact_plan.phases.push_back(
-        rtc::mpc::ContactPhase{{lf, rf}, 0.0, 100.0});
+    ctx_.contact_plan.phases.push_back(rtc::mpc::ContactPhase{{lf, rf}, 0.0, 100.0});
 
     pinocchio::Data pdata(model_);
     const Eigen::VectorXd q0 = pinocchio::neutral(model_);
@@ -115,26 +112,22 @@ contact_frames:
   }
 
   // Seed solver with gravity-comp τ and default xs.
-  void SeedSolver(aligator::SolverProxDDPTpl<double> &solver,
-                  rtc::mpc::ContactRichOCP &ocp) {
+  void SeedSolver(aligator::SolverProxDDPTpl<double>& solver, rtc::mpc::ContactRichOCP& ocp) {
     const int H = ocp.horizon_length();
-    std::vector<Eigen::VectorXd> xs(
-        static_cast<std::size_t>(H + 1),
-        Eigen::VectorXd::Zero(handler_.nq() + handler_.nv()));
-    for (auto &x : xs) {
+    std::vector<Eigen::VectorXd> xs(static_cast<std::size_t>(H + 1),
+                                    Eigen::VectorXd::Zero(handler_.nq() + handler_.nv()));
+    for (auto& x : xs) {
       x.head(handler_.nq()) = pinocchio::neutral(model_);
     }
     std::vector<Eigen::VectorXd> us(static_cast<std::size_t>(H),
                                     Eigen::VectorXd::Zero(handler_.nv()));
-    rtc::mpc::test_utils::SeedGravityCompensation(
-        model_, pinocchio::neutral(model_), us);
+    rtc::mpc::test_utils::SeedGravityCompensation(model_, pinocchio::neutral(model_), us);
     solver.setup(ocp.problem());
     run_xs_ = std::move(xs);
     run_us_ = std::move(us);
   }
 
-  bool Run(aligator::SolverProxDDPTpl<double> &solver,
-           rtc::mpc::ContactRichOCP &ocp) {
+  bool Run(aligator::SolverProxDDPTpl<double>& solver, rtc::mpc::ContactRichOCP& ocp) {
     return solver.run(ocp.problem(), run_xs_, run_us_);
   }
 
@@ -151,41 +144,37 @@ contact_frames:
 
 TEST_F(ContactRichOCPTest, BuildWithContactPhaseSucceeds) {
   rtc::mpc::ContactRichOCP ocp;
-  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kNoError);
+  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
   EXPECT_TRUE(ocp.Built());
   EXPECT_EQ(ocp.horizon_length(), cfg_.horizon_length);
   EXPECT_EQ(ocp.ocp_type(), std::string_view("contact_rich"));
-  EXPECT_EQ(ocp.problem().numSteps(),
-            static_cast<std::size_t>(cfg_.horizon_length));
+  EXPECT_EQ(ocp.problem().numSteps(), static_cast<std::size_t>(cfg_.horizon_length));
 }
 
 TEST_F(ContactRichOCPTest, ContactForceTermPresentOnActiveStage) {
   rtc::mpc::ContactRichOCP ocp;
-  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kNoError);
+  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
 
-  auto &problem = ocp.problem();
+  auto& problem = ocp.problem();
   ASSERT_GT(problem.stages_.size(), 0u);
-  auto *stack = problem.stages_[0]->getCost<aligator::CostStackTpl<double>>();
+  auto* stack = problem.stages_[0]->getCost<aligator::CostStackTpl<double>>();
   ASSERT_NE(stack, nullptr);
 
-  auto *qc_lf = stack->getComponent<aligator::QuadraticResidualCostTpl<double>>(
+  auto* qc_lf = stack->getComponent<aligator::QuadraticResidualCostTpl<double>>(
       std::string("contact_force::panda_leftfinger"));
-  auto *qc_rf = stack->getComponent<aligator::QuadraticResidualCostTpl<double>>(
+  auto* qc_rf = stack->getComponent<aligator::QuadraticResidualCostTpl<double>>(
       std::string("contact_force::panda_rightfinger"));
   EXPECT_NE(qc_lf, nullptr);
   EXPECT_NE(qc_rf, nullptr);
 
-  auto *cfr = qc_lf->getResidual<aligator::ContactForceResidualTpl<double>>();
+  auto* cfr = qc_lf->getResidual<aligator::ContactForceResidualTpl<double>>();
   ASSERT_NE(cfr, nullptr);
   EXPECT_EQ(cfr->getReference().size(), 3);
 }
 
 TEST_F(ContactRichOCPTest, FrictionConeAttachedOnActiveStage) {
   rtc::mpc::ContactRichOCP ocp;
-  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kNoError);
+  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
 
   // Expect 2 friction-cone constraints (one per active contact).
   EXPECT_EQ(ocp.problem().stages_[0]->numConstraints(), 2u);
@@ -194,8 +183,7 @@ TEST_F(ContactRichOCPTest, FrictionConeAttachedOnActiveStage) {
 TEST_F(ContactRichOCPTest, NoFrictionConeWhenMuZero) {
   limits_.friction_mu = 0.0;
   rtc::mpc::ContactRichOCP ocp;
-  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kNoError);
+  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
   EXPECT_EQ(ocp.problem().stages_[0]->numConstraints(), 0u);
 }
 
@@ -203,14 +191,11 @@ TEST_F(ContactRichOCPTest, NoContactForceCostWhenWeightZero) {
   cfg_.w_contact_force = 0.0;
   ctx_.cost_config = cfg_;
   rtc::mpc::ContactRichOCP ocp;
-  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kNoError);
+  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
 
-  auto *stack =
-      ocp.problem().stages_[0]->getCost<aligator::CostStackTpl<double>>();
+  auto* stack = ocp.problem().stages_[0]->getCost<aligator::CostStackTpl<double>>();
   ASSERT_NE(stack, nullptr);
-  const aligator::CostStackTpl<double>::CostKey key{
-      std::string("contact_force::panda_leftfinger")};
+  const aligator::CostStackTpl<double>::CostKey key{std::string("contact_force::panda_leftfinger")};
   EXPECT_EQ(stack->components_.count(key), 0u);
 }
 
@@ -221,8 +206,7 @@ TEST_F(ContactRichOCPTest, NoContactForceCostWhenWeightZero) {
 // happens — the path-through-the-code is what matters here.
 TEST_F(ContactRichOCPTest, SolveWithGravityCompSeedAttempts) {
   rtc::mpc::ContactRichOCP ocp;
-  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kNoError);
+  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
 
   aligator::SolverProxDDPTpl<double> solver(1e-3, 1e-2);
   solver.max_iters = 30;
@@ -233,7 +217,7 @@ TEST_F(ContactRichOCPTest, SolveWithGravityCompSeedAttempts) {
     (void)Run(solver, ocp);
     std::cout << "[ContactRichOCP solve] iters=" << solver.results_.num_iters
               << " prim_infeas=" << solver.results_.prim_infeas << "\n";
-  } catch (const std::exception &e) {
+  } catch (const std::exception& e) {
     std::cout << "[ContactRichOCP solve] Risk #14 NaN — known cold-solve "
                  "limitation: "
               << e.what() << "\n";
@@ -243,8 +227,7 @@ TEST_F(ContactRichOCPTest, SolveWithGravityCompSeedAttempts) {
 
 TEST_F(ContactRichOCPTest, UpdateReferencesPropagatesTarget) {
   rtc::mpc::ContactRichOCP ocp;
-  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kNoError);
+  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
 
   pinocchio::SE3 new_target = ctx_.ee_target;
   new_target.translation() += Eigen::Vector3d(0.05, -0.02, 0.01);
@@ -252,23 +235,19 @@ TEST_F(ContactRichOCPTest, UpdateReferencesPropagatesTarget) {
 
   ASSERT_EQ(ocp.UpdateReferences(ctx_), rtc::mpc::OCPBuildError::kNoError);
 
-  auto *stack =
-      ocp.problem().stages_[0]->getCost<aligator::CostStackTpl<double>>();
+  auto* stack = ocp.problem().stages_[0]->getCost<aligator::CostStackTpl<double>>();
   ASSERT_NE(stack, nullptr);
-  auto *quad = stack->getComponent<aligator::QuadraticResidualCostTpl<double>>(
+  auto* quad = stack->getComponent<aligator::QuadraticResidualCostTpl<double>>(
       std::string(rtc::mpc::kCostKeyFramePlacement));
   ASSERT_NE(quad, nullptr);
-  auto *residual =
-      quad->getResidual<aligator::FramePlacementResidualTpl<double>>();
+  auto* residual = quad->getResidual<aligator::FramePlacementResidualTpl<double>>();
   ASSERT_NE(residual, nullptr);
-  EXPECT_TRUE(residual->getReference().translation().isApprox(
-      new_target.translation()));
+  EXPECT_TRUE(residual->getReference().translation().isApprox(new_target.translation()));
 }
 
 TEST_F(ContactRichOCPTest, UpdateReferencesMutatesContactForceRef) {
   rtc::mpc::ContactRichOCP ocp;
-  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kNoError);
+  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
 
   Eigen::VectorXd new_F(6);
   new_F << 0.1, -0.05, 2.5, 0.0, 0.0, 0.0;
@@ -276,23 +255,20 @@ TEST_F(ContactRichOCPTest, UpdateReferencesMutatesContactForceRef) {
   ctx_.cost_config = cfg_;
   ASSERT_EQ(ocp.UpdateReferences(ctx_), rtc::mpc::OCPBuildError::kNoError);
 
-  auto *stack =
-      ocp.problem().stages_[0]->getCost<aligator::CostStackTpl<double>>();
-  auto *quad = stack->getComponent<aligator::QuadraticResidualCostTpl<double>>(
+  auto* stack = ocp.problem().stages_[0]->getCost<aligator::CostStackTpl<double>>();
+  auto* quad = stack->getComponent<aligator::QuadraticResidualCostTpl<double>>(
       std::string("contact_force::panda_leftfinger"));
   ASSERT_NE(quad, nullptr);
-  auto *cfr = quad->getResidual<aligator::ContactForceResidualTpl<double>>();
+  auto* cfr = quad->getResidual<aligator::ContactForceResidualTpl<double>>();
   ASSERT_NE(cfr, nullptr);
   EXPECT_TRUE(cfr->getReference().isApprox(new_F.head(3)));
 }
 
 TEST_F(ContactRichOCPTest, ReBuildIdempotent) {
   rtc::mpc::ContactRichOCP ocp;
-  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kNoError);
+  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
   EXPECT_TRUE(ocp.Built());
-  EXPECT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kNoError);
+  EXPECT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
   EXPECT_TRUE(ocp.Built());
 }
 
@@ -301,25 +277,21 @@ TEST_F(ContactRichOCPTest, ReBuildIdempotent) {
 TEST_F(ContactRichOCPTest, InvalidOcpTypeRejected) {
   ctx_.ocp_type = "light_contact";
   rtc::mpc::ContactRichOCP ocp;
-  EXPECT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kInvalidPhaseContext);
+  EXPECT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kInvalidPhaseContext);
   EXPECT_FALSE(ocp.Built());
 }
 
 TEST_F(ContactRichOCPTest, UninitialisedModelRejected) {
   rtc::mpc::RobotModelHandler empty;
   rtc::mpc::ContactRichOCP ocp;
-  EXPECT_EQ(ocp.Build(ctx_, empty, limits_),
-            rtc::mpc::OCPBuildError::kModelNotInitialised);
+  EXPECT_EQ(ocp.Build(ctx_, empty, limits_), rtc::mpc::OCPBuildError::kModelNotInitialised);
 }
 
 TEST_F(ContactRichOCPTest, ContactPlanMismatchRejected) {
   ctx_.contact_plan.phases.clear();
-  ctx_.contact_plan.phases.push_back(
-      rtc::mpc::ContactPhase{{9999}, 0.0, 1.0}); // bogus frame id
+  ctx_.contact_plan.phases.push_back(rtc::mpc::ContactPhase{{9999}, 0.0, 1.0});  // bogus frame id
   rtc::mpc::ContactRichOCP ocp;
-  EXPECT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kContactPlanModelMismatch);
+  EXPECT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kContactPlanModelMismatch);
 }
 
 TEST_F(ContactRichOCPTest, OverlappingPhasesRejected) {
@@ -327,54 +299,46 @@ TEST_F(ContactRichOCPTest, OverlappingPhasesRejected) {
   ctx_.contact_plan.phases.clear();
   ctx_.contact_plan.phases.push_back(rtc::mpc::ContactPhase{{lf}, 0.0, 0.08});
   ctx_.contact_plan.phases.push_back(
-      rtc::mpc::ContactPhase{{lf}, 0.05, 0.10}); // overlap on [0.05, 0.08)
+      rtc::mpc::ContactPhase{{lf}, 0.05, 0.10});  // overlap on [0.05, 0.08)
   rtc::mpc::ContactRichOCP ocp;
-  EXPECT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kOverlappingContactPhases);
+  EXPECT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kOverlappingContactPhases);
 }
 
 TEST_F(ContactRichOCPTest, LimitsDimMismatchRejected) {
   limits_.u_min = Eigen::VectorXd::Zero(handler_.nu() - 1);
   rtc::mpc::ContactRichOCP ocp;
-  EXPECT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kLimitsDimMismatch);
+  EXPECT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kLimitsDimMismatch);
 }
 
 TEST_F(ContactRichOCPTest, UpdateReferencesTopologyChangeRejected) {
   rtc::mpc::ContactRichOCP ocp;
-  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kNoError);
+  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
 
   ctx_.cost_config.horizon_length = cfg_.horizon_length + 5;
-  EXPECT_EQ(ocp.UpdateReferences(ctx_),
-            rtc::mpc::OCPBuildError::kInvalidPhaseContext);
+  EXPECT_EQ(ocp.UpdateReferences(ctx_), rtc::mpc::OCPBuildError::kInvalidPhaseContext);
   EXPECT_TRUE(ocp.Built());
   EXPECT_EQ(ocp.horizon_length(), cfg_.horizon_length);
 }
 
 TEST_F(ContactRichOCPTest, UpdateReferencesContactForceWeightCrossingRejected) {
   rtc::mpc::ContactRichOCP ocp;
-  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kNoError);
+  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
 
   // Flip w_contact_force to 0 — topology change (cost terms vanish).
   ctx_.cost_config.w_contact_force = 0.0;
-  EXPECT_EQ(ocp.UpdateReferences(ctx_),
-            rtc::mpc::OCPBuildError::kInvalidPhaseContext);
+  EXPECT_EQ(ocp.UpdateReferences(ctx_), rtc::mpc::OCPBuildError::kInvalidPhaseContext);
 }
 
 TEST_F(ContactRichOCPTest, UpdateReferencesBeforeBuildRejected) {
   rtc::mpc::ContactRichOCP ocp;
-  EXPECT_EQ(ocp.UpdateReferences(ctx_),
-            rtc::mpc::OCPBuildError::kInvalidPhaseContext);
+  EXPECT_EQ(ocp.UpdateReferences(ctx_), rtc::mpc::OCPBuildError::kInvalidPhaseContext);
 }
 
 // ── Performance (log-only) ───────────────────────────────────────────────
 
 TEST_F(ContactRichOCPTest, SolvePerfLog) {
   rtc::mpc::ContactRichOCP ocp;
-  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kNoError);
+  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
 
   aligator::SolverProxDDPTpl<double> solver(1e-3, 1e-2);
   solver.max_iters = 20;
@@ -393,15 +357,13 @@ TEST_F(ContactRichOCPTest, SolvePerfLog) {
       any_nan = true;
     }
     const auto t1 = std::chrono::steady_clock::now();
-    wall_us.push_back(
-        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
+    wall_us.push_back(std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
   }
   std::sort(wall_us.begin(), wall_us.end());
   const long p50 = wall_us[wall_us.size() / 2];
   const long p99 = wall_us.back();
-  std::cout << "[ContactRichOCP perf] " << kIters << " solves: p50=" << p50
-            << "us p99=" << p99 << "us"
-            << (any_nan ? " (Risk #14 NaN hit at least once)" : "") << "\n";
+  std::cout << "[ContactRichOCP perf] " << kIters << " solves: p50=" << p50 << "us p99=" << p99
+            << "us" << (any_nan ? " (Risk #14 NaN hit at least once)" : "") << "\n";
   SUCCEED();
 }
 
@@ -410,8 +372,7 @@ TEST_F(ContactRichOCPTest, SolvePerfLog) {
 
 TEST_F(ContactRichOCPTest, ColdSolveIterCount) {
   rtc::mpc::ContactRichOCP ocp;
-  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kNoError);
+  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
 
   aligator::SolverProxDDPTpl<double> solver(1e-3, 1e-2);
   solver.max_iters = 30;
@@ -420,19 +381,16 @@ TEST_F(ContactRichOCPTest, ColdSolveIterCount) {
 
   try {
     (void)Run(solver, ocp);
-    std::cout << "[ContactRichOCP warm-start] cold iters="
-              << solver.results_.num_iters << "\n";
-  } catch (const std::exception &e) {
-    std::cout << "[ContactRichOCP warm-start] cold solve NaN (Risk #14): "
-              << e.what() << "\n";
+    std::cout << "[ContactRichOCP warm-start] cold iters=" << solver.results_.num_iters << "\n";
+  } catch (const std::exception& e) {
+    std::cout << "[ContactRichOCP warm-start] cold solve NaN (Risk #14): " << e.what() << "\n";
   }
   SUCCEED();
 }
 
 TEST_F(ContactRichOCPTest, SeededSolveIterCount) {
   rtc::mpc::ContactRichOCP ocp;
-  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_),
-            rtc::mpc::OCPBuildError::kNoError);
+  ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
 
   aligator::SolverProxDDPTpl<double> solver(1e-3, 1e-2);
   solver.max_iters = 30;
@@ -445,9 +403,8 @@ TEST_F(ContactRichOCPTest, SeededSolveIterCount) {
     // Warm start: reuse previous trajectory; perturb ee_target slightly.
     run_xs_ = solver.results_.xs;
     run_us_ = solver.results_.us;
-  } catch (const std::exception &e) {
-    std::cout << "[ContactRichOCP warm-start] cold solve NaN (Risk #14): "
-              << e.what() << "\n";
+  } catch (const std::exception& e) {
+    std::cout << "[ContactRichOCP warm-start] cold solve NaN (Risk #14): " << e.what() << "\n";
     SUCCEED();
     return;
   }
@@ -460,13 +417,12 @@ TEST_F(ContactRichOCPTest, SeededSolveIterCount) {
   try {
     (void)Run(solver, ocp);
     const std::size_t seeded_iters = solver.results_.num_iters;
-    std::cout << "[ContactRichOCP warm-start] cold=" << cold_iters
-              << " seeded=" << seeded_iters << "\n";
-  } catch (const std::exception &e) {
-    std::cout << "[ContactRichOCP warm-start] seeded solve NaN (Risk #14): "
-              << e.what() << "\n";
+    std::cout << "[ContactRichOCP warm-start] cold=" << cold_iters << " seeded=" << seeded_iters
+              << "\n";
+  } catch (const std::exception& e) {
+    std::cout << "[ContactRichOCP warm-start] seeded solve NaN (Risk #14): " << e.what() << "\n";
   }
   SUCCEED();
 }
 
-} // namespace
+}  // namespace

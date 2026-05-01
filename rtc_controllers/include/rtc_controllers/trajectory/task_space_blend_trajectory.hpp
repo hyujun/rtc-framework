@@ -1,9 +1,9 @@
 #ifndef RTC_CONTROLLERS_TRAJECTORY_TASK_SPACE_BLEND_TRAJECTORY_HPP_
 #define RTC_CONTROLLERS_TRAJECTORY_TASK_SPACE_BLEND_TRAJECTORY_HPP_
 
-#include "rtc_controllers/trajectory/trajectory_utils.hpp"
 #include "rtc_controllers/trajectory/quintic_blend_trajectory.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
+#include "rtc_controllers/trajectory/trajectory_utils.hpp"
 
 // Suppress warnings emitted by Pinocchio
 #pragma GCC diagnostic push
@@ -11,30 +11,27 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/spatial/se3.hpp>
-#include <pinocchio/spatial/motion.hpp>
 #include <pinocchio/spatial/explog.hpp>
+#include <pinocchio/spatial/motion.hpp>
+#include <pinocchio/spatial/se3.hpp>
 #pragma GCC diagnostic pop
 
 #include <Eigen/Dense>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
-#include <algorithm>
 
-namespace rtc
-{
-namespace trajectory
-{
+namespace rtc {
+namespace trajectory {
 
 /// Multi-waypoint quintic blend trajectory in SE(3) task space.
 /// Each segment interpolates in the local tangent space of the segment's start pose
 /// using quintic polynomials. Via-point velocities are averaged from adjacent segments.
 /// Start/end velocities are zero (rest-to-rest).
 class TaskSpaceBlendTrajectory {
-public:
-  struct Waypoint
-  {
+ public:
+  struct Waypoint {
     pinocchio::SE3 pose;
     double time{0.0};
   };
@@ -44,10 +41,8 @@ public:
   TaskSpaceBlendTrajectory() = default;
 
   /// Initialize from waypoints (non-RT path).
-  void initialize(
-    const std::array<Waypoint, kMaxWaypoints> & waypoints,
-    std::size_t num_waypoints) noexcept
-  {
+  void initialize(const std::array<Waypoint, kMaxWaypoints>& waypoints,
+                  std::size_t num_waypoints) noexcept {
     if (num_waypoints < 2) {
       num_segments_ = 0;
       duration_ = 0.0;
@@ -82,7 +77,9 @@ public:
     // Departing velocity at wp[i]: delta[i] / h[i] (already in wp[i] frame)
     std::array<Eigen::Matrix<double, 6, 1>, kMaxWaypoints> velocities;
     // Eigen matrices are NOT zero-initialized by default — explicit init required.
-    for (auto & vel : velocities) { vel.setZero(); }
+    for (auto& vel : velocities) {
+      vel.setZero();
+    }
 
     for (std::size_t i = 1; i < n - 1; ++i) {
       const double h_prev = waypoints[i].time - waypoints[i - 1].time;
@@ -115,22 +112,19 @@ public:
       // End velocity: velocities[seg+1] is in wp[seg+1] frame.
       // Transform to wp[seg] frame via T_{seg, seg+1}.act()
       pinocchio::SE3 T_seg_to_next = waypoints[seg].pose.actInv(waypoints[seg + 1].pose);
-      Eigen::Matrix<double, 6, 1> v_end = T_seg_to_next.act(
-        pinocchio::Motion(velocities[seg + 1])).toVector();
+      Eigen::Matrix<double, 6, 1> v_end =
+          T_seg_to_next.act(pinocchio::Motion(velocities[seg + 1])).toVector();
 
       for (std::size_t j = 0; j < 6; ++j) {
         const auto jj = static_cast<Eigen::Index>(j);
-        segments_[seg][j].compute_coefficients(
-          0.0, v_start[jj], 0.0,
-          deltas[seg][jj], v_end[jj], 0.0,
-          h);
+        segments_[seg][j].compute_coefficients(0.0, v_start[jj], 0.0, deltas[seg][jj], v_end[jj],
+                                               0.0, h);
       }
     }
   }
 
   /// Compute trajectory state at given time (RT path).
-  [[nodiscard]] State compute(double time) const noexcept
-  {
+  [[nodiscard]] State compute(double time) const noexcept {
     State state;
 
     if (num_segments_ == 0) {
@@ -179,9 +173,10 @@ public:
   }
 
   [[nodiscard]] double duration() const noexcept { return duration_; }
+
   [[nodiscard]] std::size_t num_segments() const noexcept { return num_segments_; }
 
-private:
+ private:
   std::array<std::array<QuinticPolynomial, 6>, kMaxWaypoints - 1> segments_{};
   std::array<double, kMaxWaypoints> segment_start_times_{};
   std::array<pinocchio::SE3, kMaxWaypoints> segment_start_poses_{};

@@ -2,12 +2,6 @@
 
 #include "ur5e_bt_coordinator/bt_types.hpp"
 #include "ur5e_bt_coordinator/hand_pose_config.hpp"
-
-#include <behaviortree_cpp/bt_factory.h>
-#include <geometry_msgs/msg/polygon.hpp>
-#include <rclcpp/parameter.hpp>
-#include <rclcpp/rclcpp.hpp>
-#include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rtc_msgs/msg/grasp_state.hpp>
 #include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
@@ -17,8 +11,15 @@
 #include <rtc_msgs/srv/list_controllers.hpp>
 #include <rtc_msgs/srv/switch_controller.hpp>
 #include <shape_estimation_msgs/msg/shape_estimate.hpp>
+
+#include <geometry_msgs/msg/polygon.hpp>
+#include <rclcpp/parameter.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
+
+#include <behaviortree_cpp/bt_factory.h>
 #include <std_srvs/srv/trigger.hpp>
 
 #include <atomic>
@@ -33,9 +34,9 @@ namespace rtc_bt {
 /// Topic health status for watchdog monitoring.
 struct TopicHealth {
   std::string name;
-  bool received{false};            ///< true if at least one message received
-  double seconds_since_last{-1.0}; ///< -1 means never received
-  bool healthy{false};             ///< true if within timeout
+  bool received{false};             ///< true if at least one message received
+  double seconds_since_last{-1.0};  ///< -1 means never received
+  bool healthy{false};              ///< true if within timeout
 };
 
 /// Bridges ROS2 topics to/from the BT Blackboard.
@@ -47,7 +48,7 @@ struct TopicHealth {
 ///   - Pose library (runtime-configurable hand/arm poses)
 ///   - Topic health watchdog
 class BtRosBridge {
-public:
+ public:
   explicit BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node);
 
   // ── Cached state (thread-safe reads) ──────────────────────────────────────
@@ -78,12 +79,12 @@ public:
 
   /// Latest vision object pose from /world_target_info (position only).
   /// Orientation is zeroed; callers should fill from current TCP if needed.
-  bool GetObjectPose(Pose6D &pose) const;
+  bool GetObjectPose(Pose6D& pose) const;
 
   /// Latest world target position from /world_target_info (Polygon).
   /// Returns position only (orientation zeroed). Returns false if topic
   /// not received or all coordinates are zero.
-  bool GetWorldTargetPose(Pose6D &pose) const;
+  bool GetWorldTargetPose(Pose6D& pose) const;
 
   /// Active controller name
   std::string GetActiveController() const;
@@ -94,28 +95,28 @@ public:
   // ── Publishers (send commands) ────────────────────────────────────────────
 
   /// Publish arm task-space target [x,y,z,roll,pitch,yaw]
-  void PublishArmTarget(const Pose6D &target);
+  void PublishArmTarget(const Pose6D& target);
 
   /// Publish arm joint-space target [q0..q5]
-  void PublishArmJointTarget(const std::vector<double> &target);
+  void PublishArmJointTarget(const std::vector<double>& target);
 
   /// Publish hand motor target [m0..m9]
-  void PublishHandTarget(const std::vector<double> &target);
+  void PublishHandTarget(const std::vector<double>& target);
 
   /// Set ROS 2 parameters atomically on the active controller's LifecycleNode
   /// via the rebound AsyncParametersClient. Sync wrapper — blocks until the
   /// remote node responds or `timeout_s` elapses. Returns false on timeout,
   /// service unavailable, or any-parameter-rejected; populates `message`
   /// with the failure reason.
-  bool SetActiveControllerGains(const std::vector<rclcpp::Parameter> &params,
-                                double timeout_s, std::string &message);
+  bool SetActiveControllerGains(const std::vector<rclcpp::Parameter>& params, double timeout_s,
+                                std::string& message);
 
   /// Issue a one-shot Force-PI grasp command via the active controller's
   /// /<active>/grasp_command srv. `command` uses the rtc_msgs/GraspCommand
   /// constants (GRASP=1, RELEASE=2). `target_force` is ignored for RELEASE.
   /// Sync wrapper — same blocking semantics as SetActiveControllerGains.
   bool SendGraspCommand(uint8_t command, double target_force, double timeout_s,
-                        std::string &message);
+                        std::string& message);
 
   /// Request a controller switch via /rtc_cm/switch_controller (sync srv).
   /// Returns true when the service responded ok=true within `timeout_s`.
@@ -123,20 +124,19 @@ public:
   /// name, timeout, ...). Caller (BT switch_controller node) treats the
   /// boolean as a synchronous switch confirmation — no follow-up polling on
   /// /rtc_cm/active_controller_name is required.
-  bool RequestSwitchController(const std::string &name, double timeout_s,
-                               std::string &message);
+  bool RequestSwitchController(const std::string& name, double timeout_s, std::string& message);
 
   // ── Shape estimation ────────────────────────────────────────────────────
 
   /// Publish trigger command to /shape/trigger ("start", "stop", etc.)
-  void PublishShapeTrigger(const std::string &command);
+  void PublishShapeTrigger(const std::string& command);
 
   /// Call /shape/clear service (async, non-blocking)
   void CallShapeClear();
 
   /// Get the latest cached ShapeEstimate message.
   /// Returns false if no estimate has been received yet.
-  bool GetShapeEstimate(shape_estimation_msgs::msg::ShapeEstimate &out) const;
+  bool GetShapeEstimate(shape_estimation_msgs::msg::ShapeEstimate& out) const;
 
   /// Clear the cached shape estimate (called before a new estimation session).
   void ClearShapeEstimate();
@@ -153,7 +153,7 @@ public:
   void StopToFCollection();
 
   /// Collected ToF snapshots (valid between StopToFCollection and next Start).
-  const std::vector<rtc_msgs::msg::ToFSnapshot> &GetCollectedToFData() const;
+  const std::vector<rtc_msgs::msg::ToFSnapshot>& GetCollectedToFData() const;
 
   /// Number of snapshots currently in the buffer.
   std::size_t GetCollectedToFCount() const;
@@ -166,20 +166,16 @@ public:
   void LoadPoseOverrides(rclcpp_lifecycle::LifecycleNode::SharedPtr node);
 
   /// Lookup a hand pose by name. Falls back to compile-time defaults.
-  const HandPose &GetHandPose(const std::string &name) const;
+  const HandPose& GetHandPose(const std::string& name) const;
 
   /// Lookup an arm pose by name. Falls back to compile-time defaults.
-  const ArmPose &GetArmPose(const std::string &name) const;
+  const ArmPose& GetArmPose(const std::string& name) const;
 
   /// Get the full hand pose map (for iteration/validation).
-  const std::map<std::string, HandPose> &GetHandPoses() const {
-    return hand_poses_;
-  }
+  const std::map<std::string, HandPose>& GetHandPoses() const { return hand_poses_; }
 
   /// Get the full arm pose map.
-  const std::map<std::string, ArmPose> &GetArmPoses() const {
-    return arm_poses_;
-  }
+  const std::map<std::string, ArmPose>& GetArmPoses() const { return arm_poses_; }
 
   // ── Topic health watchdog ─────────────────────────────────────────────────
 
@@ -189,14 +185,14 @@ public:
   /// Check if all critical topics (arm_gui, hand_gui) are healthy.
   bool AreTopicsHealthy(double timeout_s = 2.0) const;
 
-private:
+ private:
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
 
   // ── Controller-owned topic rewiring (Phase 4) ─────────────────────────────
   // Rebuild arm_gui/hand_gui/grasp_state/tof/arm_target/hand_target sub/pub
   // against the /<ctrl_name>/... namespace. No-op when ctrl_name is empty or
   // unchanged. Protected by controller_topics_mutex_.
-  void RewireControllerTopics(const std::string &ctrl_name);
+  void RewireControllerTopics(const std::string& ctrl_name);
   std::string rewired_controller_;
   mutable std::mutex controller_topics_mutex_;
 
@@ -205,12 +201,10 @@ private:
   rclcpp::Subscription<rtc_msgs::msg::GuiPosition>::SharedPtr hand_gui_sub_;
   rclcpp::Subscription<rtc_msgs::msg::GraspState>::SharedPtr grasp_state_sub_;
   rclcpp::Subscription<rtc_msgs::msg::WbcState>::SharedPtr wbc_state_sub_;
-  rclcpp::Subscription<geometry_msgs::msg::Polygon>::SharedPtr
-      world_target_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::Polygon>::SharedPtr world_target_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr active_ctrl_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
-  rclcpp::Subscription<shape_estimation_msgs::msg::ShapeEstimate>::SharedPtr
-      shape_estimate_sub_;
+  rclcpp::Subscription<shape_estimation_msgs::msg::ShapeEstimate>::SharedPtr shape_estimate_sub_;
 
   // ── Publishers ────────────────────────────────────────────────────────────
   rclcpp::Publisher<rtc_msgs::msg::RobotTarget>::SharedPtr arm_target_pub_;
@@ -222,10 +216,8 @@ private:
   // Sync wrappers exposed via RequestSwitchController. list_controllers_
   // currently has no consumer in BT but is created so future diagnostics /
   // health-check nodes can reuse it without re-touching this file.
-  rclcpp::Client<rtc_msgs::srv::SwitchController>::SharedPtr
-      switch_controller_client_;
-  rclcpp::Client<rtc_msgs::srv::ListControllers>::SharedPtr
-      list_controllers_client_;
+  rclcpp::Client<rtc_msgs::srv::SwitchController>::SharedPtr switch_controller_client_;
+  rclcpp::Client<rtc_msgs::srv::ListControllers>::SharedPtr list_controllers_client_;
 
   // ── Phase C (gain→parameter migration): per-active-controller clients ──
   //
@@ -273,13 +265,13 @@ private:
 
   // ── ToF data collection ────────────────────────────────────────────────────
   rclcpp::Subscription<rtc_msgs::msg::ToFSnapshot>::SharedPtr tof_snapshot_sub_;
-  mutable std::mutex tof_mutex_; ///< Guards tof_buffer_ only
+  mutable std::mutex tof_mutex_;  ///< Guards tof_buffer_ only
   std::vector<rtc_msgs::msg::ToFSnapshot> tof_buffer_;
-  std::atomic<bool> tof_collecting_{false}; ///< Checked in 500Hz callback
+  std::atomic<bool> tof_collecting_{false};  ///< Checked in 500Hz callback
 
   // ── Pose library ──────────────────────────────────────────────────────────
   std::map<std::string, HandPose> hand_poses_;
   std::map<std::string, ArmPose> arm_poses_;
 };
 
-} // namespace rtc_bt
+}  // namespace rtc_bt

@@ -31,7 +31,7 @@ namespace rtc_bt {
 ///   - pinch_motors (string): comma-separated motor indices for pinch mode (default "0,1,2,3")
 ///   - timeout_s (double): timeout [s] (default 8.0)
 class GraspControl : public BT::StatefulActionNode {
-public:
+ public:
   GraspControl(const std::string& name, const BT::NodeConfig& config,
                std::shared_ptr<BtRosBridge> bridge);
 
@@ -41,7 +41,7 @@ public:
   BT::NodeStatus onRunning() override;
   void onHalted() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
   std::string mode_;
   std::vector<double> hand_target_;

@@ -18,7 +18,7 @@ namespace rtc_bt {
 ///   - tolerance (double): per-joint tolerance [rad] (default 0.01)
 ///   - timeout_s (double): timeout [s] (default 10.0)
 class MoveToJoints : public BT::StatefulActionNode {
-public:
+ public:
   MoveToJoints(const std::string& name, const BT::NodeConfig& config,
                std::shared_ptr<BtRosBridge> bridge);
 
@@ -28,7 +28,7 @@ public:
   BT::NodeStatus onRunning() override;
   void onHalted() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
   std::vector<double> target_;
   double tolerance_{0.01};

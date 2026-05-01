@@ -16,13 +16,18 @@ namespace shape_estimation::viz {
 
 static std_msgs::msg::ColorRGBA MakeColor(float r, float g, float b, float a) {
   std_msgs::msg::ColorRGBA c;
-  c.r = r; c.g = g; c.b = b; c.a = a;
+  c.r = r;
+  c.g = g;
+  c.b = b;
+  c.a = a;
   return c;
 }
 
 static geometry_msgs::msg::Point ToPoint(const Eigen::Vector3d& v) {
   geometry_msgs::msg::Point p;
-  p.x = v.x(); p.y = v.y(); p.z = v.z();
+  p.x = v.x();
+  p.y = v.y();
+  p.z = v.z();
   return p;
 }
 
@@ -33,19 +38,28 @@ static geometry_msgs::msg::Quaternion AxisToQuaternion(const Eigen::Vector3d& ax
 
   geometry_msgs::msg::Quaternion q;
   if ((a - z).norm() < 1e-6) {
-    q.w = 1.0; q.x = 0.0; q.y = 0.0; q.z = 0.0;
+    q.w = 1.0;
+    q.x = 0.0;
+    q.y = 0.0;
+    q.z = 0.0;
   } else if ((a + z).norm() < 1e-6) {
-    q.w = 0.0; q.x = 1.0; q.y = 0.0; q.z = 0.0;
+    q.w = 0.0;
+    q.x = 1.0;
+    q.y = 0.0;
+    q.z = 0.0;
   } else {
     const Eigen::Vector3d v = z.cross(a);
     const double s = v.norm();
     const double c = z.dot(a);
     const double h = 1.0 / (1.0 + c);
-    const Eigen::Matrix3d vx = (Eigen::Matrix3d() <<
-        0, -v.z(), v.y(), v.z(), 0, -v.x(), -v.y(), v.x(), 0).finished();
+    const Eigen::Matrix3d vx =
+        (Eigen::Matrix3d() << 0, -v.z(), v.y(), v.z(), 0, -v.x(), -v.y(), v.x(), 0).finished();
     const Eigen::Matrix3d R = Eigen::Matrix3d::Identity() + vx + vx * vx * h;
     const Eigen::Quaterniond eq(R);
-    q.w = eq.w(); q.x = eq.x(); q.y = eq.y(); q.z = eq.z();
+    q.w = eq.w();
+    q.x = eq.x();
+    q.y = eq.y();
+    q.z = eq.z();
     (void)s;
   }
   return q;
@@ -53,10 +67,9 @@ static geometry_msgs::msg::Quaternion AxisToQuaternion(const Eigen::Vector3d& ax
 
 // ── BuildBeamMarkers ─────────────────────────────────────────────────────────
 
-visualization_msgs::msg::MarkerArray BuildBeamMarkers(
-    const ToFSnapshot& snapshot,
-    const builtin_interfaces::msg::Time& stamp,
-    const std::string& frame_id) {
+visualization_msgs::msg::MarkerArray BuildBeamMarkers(const ToFSnapshot& snapshot,
+                                                      const builtin_interfaces::msg::Time& stamp,
+                                                      const std::string& frame_id) {
   visualization_msgs::msg::MarkerArray ma;
   ma.markers.reserve(kTotalSensors);
 
@@ -102,8 +115,7 @@ visualization_msgs::msg::MarkerArray BuildBeamMarkers(
 // ── BuildCurvatureTextMarkers ────────────────────────────────────────────────
 
 visualization_msgs::msg::MarkerArray BuildCurvatureTextMarkers(
-    const ToFSnapshot& snapshot,
-    const builtin_interfaces::msg::Time& stamp,
+    const ToFSnapshot& snapshot, const builtin_interfaces::msg::Time& stamp,
     const std::string& frame_id) {
   visualization_msgs::msg::MarkerArray ma;
   ma.markers.reserve(kNumFingers);
@@ -113,8 +125,7 @@ visualization_msgs::msg::MarkerArray BuildCurvatureTextMarkers(
     // tip 위치 = 두 센서 위치의 중간점
     const size_t a_idx = static_cast<size_t>(k * kSensorsPerFinger);
     const Eigen::Vector3d tip_pos =
-        (snapshot.sensor_positions_world[a_idx] +
-         snapshot.sensor_positions_world[a_idx + 1]) / 2.0;
+        (snapshot.sensor_positions_world[a_idx] + snapshot.sensor_positions_world[a_idx + 1]) / 2.0;
 
     visualization_msgs::msg::Marker m;
     m.header.frame_id = frame_id;
@@ -155,10 +166,9 @@ visualization_msgs::msg::MarkerArray BuildCurvatureTextMarkers(
 
 // ── BuildPointCloud2 ─────────────────────────────────────────────────────────
 
-sensor_msgs::msg::PointCloud2 BuildPointCloud2(
-    const std::vector<PointWithNormal>& points,
-    const builtin_interfaces::msg::Time& stamp,
-    const std::string& frame_id) {
+sensor_msgs::msg::PointCloud2 BuildPointCloud2(const std::vector<PointWithNormal>& points,
+                                               const builtin_interfaces::msg::Time& stamp,
+                                               const std::string& frame_id) {
   sensor_msgs::msg::PointCloud2 cloud;
   cloud.header.frame_id = frame_id;
   cloud.header.stamp = stamp;
@@ -214,8 +224,7 @@ sensor_msgs::msg::PointCloud2 BuildPointCloud2(
 // ── BuildPrimitiveMarkers ────────────────────────────────────────────────────
 
 visualization_msgs::msg::MarkerArray BuildPrimitiveMarkers(
-    const ShapeEstimate& estimate,
-    const builtin_interfaces::msg::Time& stamp,
+    const ShapeEstimate& estimate, const builtin_interfaces::msg::Time& stamp,
     const std::string& frame_id) {
   visualization_msgs::msg::MarkerArray ma;
 
@@ -330,11 +339,8 @@ visualization_msgs::msg::MarkerArray BuildPrimitiveMarkers(
 // ── BuildDeleteAllMarkers ────────────────────────────────────────────────────
 
 visualization_msgs::msg::MarkerArray BuildExploreStatusMarkers(
-    ExplorePhase phase,
-    const ExplorationStats& stats,
-    const ShapeEstimate& current_estimate,
-    const std::array<double, 6>& current_ee_pose,
-    const builtin_interfaces::msg::Time& stamp,
+    ExplorePhase phase, const ExplorationStats& stats, const ShapeEstimate& current_estimate,
+    const std::array<double, 6>& current_ee_pose, const builtin_interfaces::msg::Time& stamp,
     const std::string& frame_id) {
   visualization_msgs::msg::MarkerArray ma;
 
@@ -353,15 +359,13 @@ visualization_msgs::msg::MarkerArray BuildExploreStatusMarkers(
   m.scale.z = 0.015;
 
   std::ostringstream oss;
-  oss << "[" << ExplorePhaseToString(phase) << "] "
-      << std::fixed;
+  oss << "[" << ExplorePhaseToString(phase) << "] " << std::fixed;
   oss.precision(1);
-  oss << stats.elapsed_sec << "s"
-      << " pts=" << stats.total_snapshots
+  oss << stats.elapsed_sec << "s" << " pts=" << stats.total_snapshots
       << " goals=" << stats.goals_sent;
   if (current_estimate.type != ShapeType::kUnknown) {
-    oss << " | " << ShapeTypeToString(current_estimate.type)
-        << " " << static_cast<int>(current_estimate.confidence * 100) << "%";
+    oss << " | " << ShapeTypeToString(current_estimate.type) << " "
+        << static_cast<int>(current_estimate.confidence * 100) << "%";
   }
   m.text = oss.str();
 
@@ -401,8 +405,7 @@ visualization_msgs::msg::MarkerArray BuildExploreStatusMarkers(
 // ── BuildTargetGoalMarker ─────��──────────────────────────────────��───────────
 
 visualization_msgs::msg::MarkerArray BuildTargetGoalMarker(
-    const TaskSpaceGoal& goal,
-    const builtin_interfaces::msg::Time& stamp,
+    const TaskSpaceGoal& goal, const builtin_interfaces::msg::Time& stamp,
     const std::string& frame_id) {
   visualization_msgs::msg::MarkerArray ma;
 
@@ -429,7 +432,7 @@ visualization_msgs::msg::MarkerArray BuildTargetGoalMarker(
   m.pose.position.z = goal.pose[2];
   m.pose.orientation.w = 1.0;
 
-  m.scale.x = m.scale.y = m.scale.z = 0.008;  // 8mm 구
+  m.scale.x = m.scale.y = m.scale.z = 0.008;    // 8mm 구
   m.color = MakeColor(1.0F, 0.0F, 1.0F, 0.8F);  // 보라색
   m.lifetime.sec = 0;
   m.lifetime.nanosec = 300'000'000;
@@ -441,10 +444,8 @@ visualization_msgs::msg::MarkerArray BuildTargetGoalMarker(
 // ── BuildProtuberanceMarkers ────────────────────────────────────────────────
 
 visualization_msgs::msg::MarkerArray BuildProtuberanceMarkers(
-    const ProtuberanceResult& result,
-    const ShapeEstimate& /*primitive*/,
-    const builtin_interfaces::msg::Time& stamp,
-    const std::string& frame_id) {
+    const ProtuberanceResult& result, const ShapeEstimate& /*primitive*/,
+    const builtin_interfaces::msg::Time& stamp, const std::string& frame_id) {
   visualization_msgs::msg::MarkerArray ma;
 
   if (!result.detected || result.protuberances.empty()) {
@@ -453,9 +454,10 @@ visualization_msgs::msg::MarkerArray BuildProtuberanceMarkers(
       visualization_msgs::msg::Marker m;
       m.header.stamp = stamp;
       m.header.frame_id = frame_id;
-      m.ns = (i == 0) ? "protuberance" :
-             (i == 1) ? "protuberance_dir" :
-             (i == 2) ? "protuberance_text" : "protuberance_gap";
+      m.ns = (i == 0)   ? "protuberance"
+             : (i == 1) ? "protuberance_dir"
+             : (i == 2) ? "protuberance_text"
+                        : "protuberance_gap";
       m.id = 0;
       m.action = visualization_msgs::msg::Marker::DELETE;
       ma.markers.push_back(std::move(m));
@@ -517,8 +519,7 @@ visualization_msgs::msg::MarkerArray BuildProtuberanceMarkers(
     m.id = 0;
     m.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
     m.action = visualization_msgs::msg::Marker::ADD;
-    m.pose.position = ToPoint(
-        best.centroid + Eigen::Vector3d(0, 0, 0.02));
+    m.pose.position = ToPoint(best.centroid + Eigen::Vector3d(0, 0, 0.02));
     m.pose.orientation.w = 1.0;
     m.scale.z = 0.010;
 
@@ -546,7 +547,7 @@ visualization_msgs::msg::MarkerArray BuildProtuberanceMarkers(
     m.action = visualization_msgs::msg::Marker::ADD;
     m.pose.position = ToPoint(best.centroid);
     m.pose.orientation.w = 1.0;
-    m.scale.x = m.scale.y = m.scale.z = 0.015;  // 15mm (gap 영역)
+    m.scale.x = m.scale.y = m.scale.z = 0.015;    // 15mm (gap 영역)
     m.color = MakeColor(1.0F, 0.5F, 0.0F, 0.3F);  // 반투명 주황
 
     ma.markers.push_back(std::move(m));
@@ -598,13 +599,13 @@ visualization_msgs::msg::MarkerArray BuildDeleteAllMarkers() {
 std_msgs::msg::ColorRGBA ConfidenceToColor(double confidence, double alpha) {
   const auto a = static_cast<float>(alpha);
   if (confidence > 0.8) {
-    return MakeColor(0.0F, 1.0F, 0.0F, a);        // 초록
+    return MakeColor(0.0F, 1.0F, 0.0F, a);  // 초록
   } else if (confidence > 0.5) {
-    return MakeColor(1.0F, 1.0F, 0.0F, a);        // 노랑
+    return MakeColor(1.0F, 1.0F, 0.0F, a);  // 노랑
   } else if (confidence > 0.2) {
-    return MakeColor(1.0F, 0.5F, 0.0F, a);        // 주황
+    return MakeColor(1.0F, 0.5F, 0.0F, a);  // 주황
   } else {
-    return MakeColor(1.0F, 0.0F, 0.0F, a);        // 빨강
+    return MakeColor(1.0F, 0.0F, 0.0F, a);  // 빨강
   }
 }
 
@@ -612,11 +613,11 @@ std_msgs::msg::ColorRGBA CurvatureToColor(double curvature, double alpha) {
   const double abs_k = std::abs(curvature);
   const auto a = static_cast<float>(alpha);
   if (abs_k < 5.0) {
-    return MakeColor(0.3F, 0.3F, 1.0F, a);        // 파랑 (flat)
+    return MakeColor(0.3F, 0.3F, 1.0F, a);  // 파랑 (flat)
   } else if (abs_k < 20.0) {
-    return MakeColor(0.0F, 1.0F, 0.0F, a);        // 초록 (medium)
+    return MakeColor(0.0F, 1.0F, 0.0F, a);  // 초록 (medium)
   } else {
-    return MakeColor(1.0F, 0.0F, 0.0F, a);        // 빨강 (high curvature)
+    return MakeColor(1.0F, 0.0F, 0.0F, a);  // 빨강 (high curvature)
   }
 }
 

@@ -13,8 +13,7 @@
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 class CoMTaskTest : public ::testing::Test {
  protected:
@@ -171,8 +170,7 @@ TEST_F(CoMTaskTest, GainsUpdate) {
   task.compute_residual(cache_, ref_, contacts_, n_vars, J, r1);
 
   // gains 2배
-  task.set_gains(Eigen::Vector3d::Constant(200.0),
-                 Eigen::Vector3d::Constant(20.0));
+  task.set_gains(Eigen::Vector3d::Constant(200.0), Eigen::Vector3d::Constant(20.0));
 
   Eigen::VectorXd r2(3);
   J.setZero();

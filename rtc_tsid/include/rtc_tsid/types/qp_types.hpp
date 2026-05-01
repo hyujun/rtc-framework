@@ -1,11 +1,11 @@
 #pragma once
 
 #include <Eigen/Core>
+#include <yaml-cpp/yaml.h>
+
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-#include <yaml-cpp/yaml.h>
 
 namespace rtc::tsid {
 
@@ -41,15 +41,13 @@ struct QPData {
 // QP Solve 결과
 // ────────────────────────────────────────────────
 struct SolveResult {
-  Eigen::VectorXd x_opt;     // [max_n_vars] pre-allocated
+  Eigen::VectorXd x_opt;  // [max_n_vars] pre-allocated
   bool converged{false};
   double solve_time_us{0.0};
   int iterations{0};
-  int levels_solved{0};       // WQP: 항상 1, HQP: 실제 solve한 level 수
+  int levels_solved{0};  // WQP: 항상 1, HQP: 실제 solve한 level 수
 
-  void init(int max_n_vars) {
-    x_opt.setZero(max_n_vars);
-  }
+  void init(int max_n_vars) { x_opt.setZero(max_n_vars); }
 };
 
 // ────────────────────────────────────────────────
@@ -74,7 +72,6 @@ struct PhasePreset {
 };
 
 // YAML로부터 phase preset 로드 (init 시 1회)
-std::unordered_map<std::string, PhasePreset> load_phase_presets(
-    const YAML::Node& config);
+std::unordered_map<std::string, PhasePreset> load_phase_presets(const YAML::Node& config);
 
 }  // namespace rtc::tsid

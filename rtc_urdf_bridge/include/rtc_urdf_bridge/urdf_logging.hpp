@@ -12,29 +12,38 @@
 #ifndef RTC_URDF_BRIDGE__URDF_LOGGING_HPP_
 #define RTC_URDF_BRIDGE__URDF_LOGGING_HPP_
 
-#include <string>
-#include <string_view>
-
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
 
-namespace rtc::urdf::logging
-{
+#include <string>
+#include <string_view>
+
+namespace rtc::urdf::logging {
 
 // urdf.analyzer  — UrdfAnalyzer (URDF/xacro 파싱, 그래프 구축, 관절 분류)
-inline rclcpp::Logger AnalyzerLogger() {return rclcpp::get_logger("urdf.analyzer");}
+inline rclcpp::Logger AnalyzerLogger() {
+  return rclcpp::get_logger("urdf.analyzer");
+}
 
 // urdf.builder   — PinocchioModelBuilder (full/sub/tree 모델 빌드, YAML 로드)
-inline rclcpp::Logger BuilderLogger() {return rclcpp::get_logger("urdf.builder");}
+inline rclcpp::Logger BuilderLogger() {
+  return rclcpp::get_logger("urdf.builder");
+}
 
 // urdf.chain     — KinematicChainExtractor (체인/트리 추출, 잠금 관절 계산)
-inline rclcpp::Logger ChainLogger() {return rclcpp::get_logger("urdf.chain");}
+inline rclcpp::Logger ChainLogger() {
+  return rclcpp::get_logger("urdf.chain");
+}
 
 // urdf.xacro     — ProcessXacro (popen 기반 xacro 전처리)
-inline rclcpp::Logger XacroLogger() {return rclcpp::get_logger("urdf.xacro");}
+inline rclcpp::Logger XacroLogger() {
+  return rclcpp::get_logger("urdf.xacro");
+}
 
 // urdf.handle    — RtModelHandle 생성/해제 단계 (RT 경로 외)
-inline rclcpp::Logger HandleLogger() {return rclcpp::get_logger("urdf.handle");}
+inline rclcpp::Logger HandleLogger() {
+  return rclcpp::get_logger("urdf.handle");
+}
 
 }  // namespace rtc::urdf::logging
 

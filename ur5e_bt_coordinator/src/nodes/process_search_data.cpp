@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/action_nodes/process_search_data.hpp"
+
 #include "ur5e_bt_coordinator/bt_logging.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -6,30 +7,27 @@
 namespace rtc_bt {
 
 namespace {
-auto logger() { return ::rtc_bt::logging::ActionLogger("process_search_data"); }
+auto logger() {
+  return ::rtc_bt::logging::ActionLogger("process_search_data");
+}
 }  // namespace
 
-ProcessSearchData::ProcessSearchData(
-    const std::string& name, const BT::NodeConfig& config,
-    std::shared_ptr<BtRosBridge> bridge)
-  : BT::SyncActionNode(name, config), bridge_(std::move(bridge))
-{}
+ProcessSearchData::ProcessSearchData(const std::string& name, const BT::NodeConfig& config,
+                                     std::shared_ptr<BtRosBridge> bridge)
+    : BT::SyncActionNode(name, config), bridge_(std::move(bridge)) {}
 
-BT::PortsList ProcessSearchData::providedPorts()
-{
+BT::PortsList ProcessSearchData::providedPorts() {
   return {
-    BT::OutputPort<Pose6D>("output_pose",
-                           "Task controller goal [x, y, z, roll, pitch, yaw]"),
+      BT::OutputPort<Pose6D>("output_pose", "Task controller goal [x, y, z, roll, pitch, yaw]"),
   };
 }
 
-BT::NodeStatus ProcessSearchData::tick()
-{
+BT::NodeStatus ProcessSearchData::tick() {
   // ══════════════════════════════════════════════════════════════════════════
   // Data Input
   // ══════════════════════════════════════════════════════════════════════════
   const auto& tof_buffer = bridge_->GetCollectedToFData();
-  const auto  current_pose = bridge_->GetTcpPose();
+  const auto current_pose = bridge_->GetTcpPose();
 
   RCLCPP_INFO(logger(), "processing %zu ToF snapshots", tof_buffer.size());
 
@@ -59,12 +57,12 @@ BT::NodeStatus ProcessSearchData::tick()
   // Data Output
   // ══════════════════════════════════════════════════════════════════════════
   Pose6D result;
-  result.x     = target_x;
-  result.y     = target_y;
-  result.z     = target_z;
-  result.roll  = current_pose.roll;
+  result.x = target_x;
+  result.y = target_y;
+  result.z = target_z;
+  result.roll = current_pose.roll;
   result.pitch = current_pose.pitch;
-  result.yaw   = current_pose.yaw;
+  result.yaw = current_pose.yaw;
 
   setOutput("output_pose", result);
   return BT::NodeStatus::SUCCESS;

@@ -1,34 +1,28 @@
 #ifndef RTC_CONTROLLERS_TRAJECTORY_UTILS_HPP_
 #define RTC_CONTROLLERS_TRAJECTORY_UTILS_HPP_
 
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 
-namespace rtc
-{
-namespace trajectory
-{
+namespace rtc {
+namespace trajectory {
 
-struct TrajectoryState
-{
+struct TrajectoryState {
   double pos{0.0};
   double vel{0.0};
   double acc{0.0};
 };
 
 class QuinticPolynomial {
-public:
+ public:
   QuinticPolynomial() = default;
 
-  QuinticPolynomial(double p0, double v0, double a0, double pf, double vf, double af, double T)
-  {
+  QuinticPolynomial(double p0, double v0, double a0, double pf, double vf, double af, double T) {
     compute_coefficients(p0, v0, a0, pf, vf, af, T);
   }
 
-  void compute_coefficients(
-    double p0, double v0, double a0, double pf, double vf, double af,
-    double T)
-  {
+  void compute_coefficients(double p0, double v0, double a0, double pf, double vf, double af,
+                            double T) {
     if (T <= 0.0) {
       c0_ = pf;
       c1_ = vf;
@@ -59,8 +53,7 @@ public:
     c5_ = 6.0 * dp / T5 - 3.0 * dv / T4 + da / (2.0 * T3);
   }
 
-  TrajectoryState compute(double t) const
-  {
+  TrajectoryState compute(double t) const {
     TrajectoryState state;
     if (T_ <= 0.0) {
       state.pos = c0_;
@@ -82,9 +75,9 @@ public:
     return state;
   }
 
-  double duration() const {return T_;}
+  double duration() const { return T_; }
 
-private:
+ private:
   double c0_{0.0};
   double c1_{0.0};
   double c2_{0.0};

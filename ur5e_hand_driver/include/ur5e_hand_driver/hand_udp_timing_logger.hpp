@@ -26,12 +26,12 @@
 namespace rtc::hand {
 
 class HandUdpTimingLogger {
-public:
+ public:
   HandUdpTimingLogger() = default;
   ~HandUdpTimingLogger() = default;
 
-  HandUdpTimingLogger(const HandUdpTimingLogger &) = delete;
-  HandUdpTimingLogger &operator=(const HandUdpTimingLogger &) = delete;
+  HandUdpTimingLogger(const HandUdpTimingLogger&) = delete;
+  HandUdpTimingLogger& operator=(const HandUdpTimingLogger&) = delete;
 
   /// Resolve the CSV path under `<session>/timing/`, create the parent
   /// directory, and open the file. Schema header is written on first
@@ -44,8 +44,7 @@ public:
       std::error_code ec;
       std::filesystem::create_directories(timing_dir, ec);
       const auto path = timing_dir / "hand_udp_timing_log.csv";
-      return inner_.Open(path, &rtc::WriteRtTickTimingHeader,
-                         &rtc::WriteRtTickTimingRow);
+      return inner_.Open(path, &rtc::WriteRtTickTimingHeader, &rtc::WriteRtTickTimingRow);
     } catch (...) {
       return false;
     }
@@ -53,17 +52,15 @@ public:
 
   [[nodiscard]] bool IsOpen() const noexcept { return inner_.IsOpen(); }
 
-  [[nodiscard]] const std::filesystem::path &Path() const noexcept {
-    return inner_.Path();
-  }
+  [[nodiscard]] const std::filesystem::path& Path() const noexcept { return inner_.Path(); }
 
   /// Append one row for a single hand UDP tick sample. No-op if not open.
-  void Log(const rtc::RtTickTimingSample &s) noexcept { inner_.Log(s); }
+  void Log(const rtc::RtTickTimingSample& s) noexcept { inner_.Log(s); }
 
-private:
+ private:
   rtc::ThreadTimingCsvLogger<rtc::RtTickTimingPayload> inner_;
 };
 
-} // namespace rtc::hand
+}  // namespace rtc::hand
 
-#endif // UR5E_HAND_DRIVER_HAND_UDP_TIMING_LOGGER_HPP_
+#endif  // UR5E_HAND_DRIVER_HAND_UDP_TIMING_LOGGER_HPP_

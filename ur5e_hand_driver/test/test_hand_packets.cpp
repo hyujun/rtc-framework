@@ -2,9 +2,9 @@
 //
 // Tier 1: Pure computation, no ROS2 or network dependencies.
 
-#include <gtest/gtest.h>
-
 #include "ur5e_hand_driver/hand_packets.hpp"
+
+#include <gtest/gtest.h>
 
 #include <array>
 #include <cmath>
@@ -16,8 +16,7 @@ namespace rtc::hand_packets::test {
 
 // ── Protocol constants ──────────────────────────────────────────────────────
 
-TEST(HandPacketsConstants, PacketSizes)
-{
+TEST(HandPacketsConstants, PacketSizes) {
   EXPECT_EQ(kHeaderSize, 3u);
   EXPECT_EQ(kMotorPacketSize, 43u);
   EXPECT_EQ(kSensorRequestSize, 3u);
@@ -29,26 +28,23 @@ TEST(HandPacketsConstants, PacketSizes)
   EXPECT_EQ(kMaxPacketSize, kAllSensorResponseSize);
 }
 
-TEST(HandPacketsConstants, DataCounts)
-{
+TEST(HandPacketsConstants, DataCounts) {
   EXPECT_EQ(kMotorDataCount, 10u);
   EXPECT_EQ(kSensorResponseDataCount, static_cast<std::size_t>(kSensorDataPerPacket));
-  EXPECT_EQ(kAllMotorDataCount, 30u);  // 10 * 3
+  EXPECT_EQ(kAllMotorDataCount, 30u);   // 10 * 3
   EXPECT_EQ(kAllSensorDataCount, 64u);  // 4 * 16
 }
 
 // ── Enums: SensorCommand ────────────────────────────────────────────────────
 
-TEST(HandPacketsEnums, SensorCommand_MapsCorrectly)
-{
+TEST(HandPacketsEnums, SensorCommand_MapsCorrectly) {
   EXPECT_EQ(SensorCommand(0), Command::kReadSensor0);
   EXPECT_EQ(SensorCommand(1), Command::kReadSensor1);
   EXPECT_EQ(SensorCommand(2), Command::kReadSensor2);
   EXPECT_EQ(SensorCommand(3), Command::kReadSensor3);
 }
 
-TEST(HandPacketsEnums, SensorCommand_RawValues)
-{
+TEST(HandPacketsEnums, SensorCommand_RawValues) {
   EXPECT_EQ(static_cast<uint8_t>(SensorCommand(0)), 0x14);
   EXPECT_EQ(static_cast<uint8_t>(SensorCommand(1)), 0x15);
   EXPECT_EQ(static_cast<uint8_t>(SensorCommand(2)), 0x16);
@@ -57,8 +53,7 @@ TEST(HandPacketsEnums, SensorCommand_RawValues)
 
 // ── Enums: IsJointCommand ───────────────────────────────────────────────────
 
-TEST(HandPacketsEnums, IsJointCommand)
-{
+TEST(HandPacketsEnums, IsJointCommand) {
   EXPECT_TRUE(IsJointCommand(Command::kWritePosition));
   EXPECT_TRUE(IsJointCommand(Command::kReadAllMotors));
   EXPECT_TRUE(IsJointCommand(Command::kReadPosition));
@@ -74,8 +69,7 @@ TEST(HandPacketsEnums, IsJointCommand)
 
 // ── Enums: IsSensorCommand ──────────────────────────────────────────────────
 
-TEST(HandPacketsEnums, IsSensorCommand_EnumOverload)
-{
+TEST(HandPacketsEnums, IsSensorCommand_EnumOverload) {
   EXPECT_TRUE(IsSensorCommand(Command::kSetSensorMode));
   EXPECT_TRUE(IsSensorCommand(Command::kReadSensor0));
   EXPECT_TRUE(IsSensorCommand(Command::kReadSensor1));
@@ -89,8 +83,7 @@ TEST(HandPacketsEnums, IsSensorCommand_EnumOverload)
   EXPECT_FALSE(IsSensorCommand(Command::kReadVelocity));
 }
 
-TEST(HandPacketsEnums, IsSensorCommand_Uint8Overload)
-{
+TEST(HandPacketsEnums, IsSensorCommand_Uint8Overload) {
   EXPECT_TRUE(IsSensorCommand(uint8_t{0x04}));
   EXPECT_TRUE(IsSensorCommand(uint8_t{0x14}));
   EXPECT_TRUE(IsSensorCommand(uint8_t{0x17}));
@@ -108,24 +101,21 @@ TEST(HandPacketsEnums, IsSensorCommand_Uint8Overload)
 
 // ── Conversion helpers ──────────────────────────────────────────────────────
 
-TEST(HandPacketsConversion, Uint32ToFloat_Roundtrip_Positive)
-{
+TEST(HandPacketsConversion, Uint32ToFloat_Roundtrip_Positive) {
   const float original = 3.14159f;
   const uint32_t encoded = FloatToUint32(original);
   const float decoded = Uint32ToFloat(encoded);
   EXPECT_FLOAT_EQ(decoded, original);
 }
 
-TEST(HandPacketsConversion, Uint32ToFloat_Roundtrip_Negative)
-{
+TEST(HandPacketsConversion, Uint32ToFloat_Roundtrip_Negative) {
   const float original = -42.5f;
   const uint32_t encoded = FloatToUint32(original);
   const float decoded = Uint32ToFloat(encoded);
   EXPECT_FLOAT_EQ(decoded, original);
 }
 
-TEST(HandPacketsConversion, Uint32ToFloat_Zero)
-{
+TEST(HandPacketsConversion, Uint32ToFloat_Zero) {
   const float original = 0.0f;
   const uint32_t encoded = FloatToUint32(original);
   const float decoded = Uint32ToFloat(encoded);
@@ -133,8 +123,7 @@ TEST(HandPacketsConversion, Uint32ToFloat_Zero)
   EXPECT_EQ(encoded, 0u);
 }
 
-TEST(HandPacketsConversion, Uint32ToFloat_SpecialValues)
-{
+TEST(HandPacketsConversion, Uint32ToFloat_SpecialValues) {
   // Infinity
   {
     const float inf = std::numeric_limits<float>::infinity();
@@ -166,8 +155,7 @@ TEST(HandPacketsConversion, Uint32ToFloat_SpecialValues)
 
 // ── Encode helpers: MakeReadRequest ─────────────────────────────────────────
 
-TEST(HandPacketsEncode, MakeReadRequest)
-{
+TEST(HandPacketsEncode, MakeReadRequest) {
   const auto pkt = MakeReadRequest(Command::kReadPosition);
   EXPECT_EQ(pkt.id, kDeviceId);
   EXPECT_EQ(pkt.cmd, static_cast<uint8_t>(Command::kReadPosition));
@@ -177,44 +165,38 @@ TEST(HandPacketsEncode, MakeReadRequest)
   }
 }
 
-TEST(HandPacketsEncode, MakeMotorReadRequest_DefaultMode)
-{
+TEST(HandPacketsEncode, MakeMotorReadRequest_DefaultMode) {
   const auto pkt = MakeMotorReadRequest(Command::kReadPosition);
   EXPECT_EQ(pkt.id, kDeviceId);
   EXPECT_EQ(pkt.cmd, static_cast<uint8_t>(Command::kReadPosition));
   EXPECT_EQ(pkt.mode, static_cast<uint8_t>(JointMode::kMotor));
 }
 
-TEST(HandPacketsEncode, MakeMotorReadRequest_JointMode)
-{
+TEST(HandPacketsEncode, MakeMotorReadRequest_JointMode) {
   const auto pkt = MakeMotorReadRequest(Command::kReadPosition, JointMode::kJoint);
   EXPECT_EQ(pkt.mode, static_cast<uint8_t>(JointMode::kJoint));
 }
 
-TEST(HandPacketsEncode, MakeSensorReadRequest_DefaultRaw)
-{
+TEST(HandPacketsEncode, MakeSensorReadRequest_DefaultRaw) {
   const auto pkt = MakeSensorReadRequest(Command::kReadSensor0);
   EXPECT_EQ(pkt.id, kDeviceId);
   EXPECT_EQ(pkt.cmd, static_cast<uint8_t>(Command::kReadSensor0));
   EXPECT_EQ(pkt.mode, static_cast<uint8_t>(SensorMode::kRaw));
 }
 
-TEST(HandPacketsEncode, MakeSensorReadRequest_NnMode)
-{
+TEST(HandPacketsEncode, MakeSensorReadRequest_NnMode) {
   const auto pkt = MakeSensorReadRequest(Command::kReadSensor1, SensorMode::kNn);
   EXPECT_EQ(pkt.mode, static_cast<uint8_t>(SensorMode::kNn));
 }
 
-TEST(HandPacketsEncode, MakeSetSensorMode)
-{
+TEST(HandPacketsEncode, MakeSetSensorMode) {
   const auto pkt = MakeSetSensorMode(SensorMode::kRaw);
   EXPECT_EQ(pkt.id, kDeviceId);
   EXPECT_EQ(pkt.cmd, static_cast<uint8_t>(Command::kSetSensorMode));
   EXPECT_EQ(pkt.mode, static_cast<uint8_t>(SensorMode::kRaw));
 }
 
-TEST(HandPacketsEncode, MakeWritePosition)
-{
+TEST(HandPacketsEncode, MakeWritePosition) {
   std::array<float, kNumHandMotors> positions{};
   for (int i = 0; i < kNumHandMotors; ++i) {
     positions[static_cast<std::size_t>(i)] = static_cast<float>(i) * 0.1f;
@@ -230,24 +212,21 @@ TEST(HandPacketsEncode, MakeWritePosition)
   }
 }
 
-TEST(HandPacketsEncode, MakeWritePosition_JointMode)
-{
+TEST(HandPacketsEncode, MakeWritePosition_JointMode) {
   std::array<float, kNumHandMotors> positions{};
   positions[0] = 1.0f;
   const auto pkt = MakeWritePosition(positions, JointMode::kJoint);
   EXPECT_EQ(pkt.mode, static_cast<uint8_t>(JointMode::kJoint));
 }
 
-TEST(HandPacketsEncode, MakeReadAllMotorsRequest)
-{
+TEST(HandPacketsEncode, MakeReadAllMotorsRequest) {
   const auto pkt = MakeReadAllMotorsRequest();
   EXPECT_EQ(pkt.id, kDeviceId);
   EXPECT_EQ(pkt.cmd, static_cast<uint8_t>(Command::kReadAllMotors));
   EXPECT_EQ(pkt.mode, static_cast<uint8_t>(JointMode::kMotor));
 }
 
-TEST(HandPacketsEncode, MakeReadAllSensorsRequest)
-{
+TEST(HandPacketsEncode, MakeReadAllSensorsRequest) {
   const auto pkt = MakeReadAllSensorsRequest();
   EXPECT_EQ(pkt.id, kDeviceId);
   EXPECT_EQ(pkt.cmd, static_cast<uint8_t>(Command::kReadAllSensors));
@@ -256,8 +235,7 @@ TEST(HandPacketsEncode, MakeReadAllSensorsRequest)
 
 // ── Decode helpers ──────────────────────────────────────────────────────────
 
-TEST(HandPacketsDecode, DecodeMotorPacket_Valid)
-{
+TEST(HandPacketsDecode, DecodeMotorPacket_Valid) {
   // Build a motor packet and serialize
   auto src = MakeReadRequest(Command::kReadPosition);
   src.data[0] = FloatToUint32(1.5f);
@@ -274,15 +252,13 @@ TEST(HandPacketsDecode, DecodeMotorPacket_Valid)
   EXPECT_FLOAT_EQ(Uint32ToFloat(out.data[9]), -2.5f);
 }
 
-TEST(HandPacketsDecode, DecodeMotorPacket_TooShort)
-{
+TEST(HandPacketsDecode, DecodeMotorPacket_TooShort) {
   std::array<uint8_t, 42> buf{};
   MotorPacket out{};
   EXPECT_FALSE(DecodeMotorPacket(buf.data(), buf.size(), out));
 }
 
-TEST(HandPacketsDecode, DecodeSensorResponse_Valid)
-{
+TEST(HandPacketsDecode, DecodeSensorResponse_Valid) {
   SensorResponsePacket src{};
   src.id = kDeviceId;
   src.cmd = static_cast<uint8_t>(Command::kReadSensor0);
@@ -301,15 +277,13 @@ TEST(HandPacketsDecode, DecodeSensorResponse_Valid)
   EXPECT_EQ(out.data[15], 1600);
 }
 
-TEST(HandPacketsDecode, DecodeSensorResponse_TooShort)
-{
+TEST(HandPacketsDecode, DecodeSensorResponse_TooShort) {
   std::array<uint8_t, 66> buf{};
   SensorResponsePacket out{};
   EXPECT_FALSE(DecodeSensorResponse(buf.data(), buf.size(), out));
 }
 
-TEST(HandPacketsDecode, DecodeAllMotorResponse_Valid)
-{
+TEST(HandPacketsDecode, DecodeAllMotorResponse_Valid) {
   AllMotorResponsePacket src{};
   src.id = kDeviceId;
   src.cmd = static_cast<uint8_t>(Command::kReadAllMotors);
@@ -328,15 +302,13 @@ TEST(HandPacketsDecode, DecodeAllMotorResponse_Valid)
   EXPECT_FLOAT_EQ(Uint32ToFloat(out.data[29]), 29.0f);
 }
 
-TEST(HandPacketsDecode, DecodeAllMotorResponse_TooShort)
-{
+TEST(HandPacketsDecode, DecodeAllMotorResponse_TooShort) {
   std::array<uint8_t, 122> buf{};
   AllMotorResponsePacket out{};
   EXPECT_FALSE(DecodeAllMotorResponse(buf.data(), buf.size(), out));
 }
 
-TEST(HandPacketsDecode, DecodeAllSensorResponse_Valid)
-{
+TEST(HandPacketsDecode, DecodeAllSensorResponse_Valid) {
   AllSensorResponsePacket src{};
   src.id = kDeviceId;
   src.cmd = static_cast<uint8_t>(Command::kReadAllSensors);
@@ -353,8 +325,7 @@ TEST(HandPacketsDecode, DecodeAllSensorResponse_Valid)
   EXPECT_EQ(out.data[63], 630);
 }
 
-TEST(HandPacketsDecode, DecodeAllSensorResponse_TooShort)
-{
+TEST(HandPacketsDecode, DecodeAllSensorResponse_TooShort) {
   std::array<uint8_t, 258> buf{};
   AllSensorResponsePacket out{};
   EXPECT_FALSE(DecodeAllSensorResponse(buf.data(), buf.size(), out));
@@ -362,8 +333,7 @@ TEST(HandPacketsDecode, DecodeAllSensorResponse_TooShort)
 
 // ── Extract helpers ─────────────────────────────────────────────────────────
 
-TEST(HandPacketsExtract, ExtractMotorFloats)
-{
+TEST(HandPacketsExtract, ExtractMotorFloats) {
   MotorPacket pkt{};
   for (std::size_t i = 0; i < kMotorDataCount; ++i) {
     pkt.data[i] = FloatToUint32(static_cast<float>(i) * 1.1f);
@@ -377,8 +347,7 @@ TEST(HandPacketsExtract, ExtractMotorFloats)
   }
 }
 
-TEST(HandPacketsExtract, ExtractSensorValues_SkipsReserved)
-{
+TEST(HandPacketsExtract, ExtractSensorValues_SkipsReserved) {
   // Layout: barometer[0..7] + reserved[8..12] + tof[13..15]
   SensorResponsePacket pkt{};
   pkt.data.fill(0);
@@ -400,8 +369,7 @@ TEST(HandPacketsExtract, ExtractSensorValues_SkipsReserved)
 
   // barometer: out[0..7]
   for (int i = 0; i < kBarometerCount; ++i) {
-    EXPECT_FLOAT_EQ(out[static_cast<std::size_t>(i)],
-                    static_cast<float>((i + 1) * 1000));
+    EXPECT_FLOAT_EQ(out[static_cast<std::size_t>(i)], static_cast<float>((i + 1) * 1000));
   }
   // tof: out[8..10]
   for (int i = 0; i < kTofCount; ++i) {
@@ -410,8 +378,7 @@ TEST(HandPacketsExtract, ExtractSensorValues_SkipsReserved)
   }
 }
 
-TEST(HandPacketsExtract, ExtractSensorValuesRaw_SkipsReserved)
-{
+TEST(HandPacketsExtract, ExtractSensorValuesRaw_SkipsReserved) {
   SensorResponsePacket pkt{};
   for (int i = 0; i < kBarometerCount; ++i) {
     pkt.data[static_cast<std::size_t>(i)] = i + 10;
@@ -434,8 +401,7 @@ TEST(HandPacketsExtract, ExtractSensorValuesRaw_SkipsReserved)
   }
 }
 
-TEST(HandPacketsExtract, ExtractAllMotorFloats_GroupedLayout)
-{
+TEST(HandPacketsExtract, ExtractAllMotorFloats_GroupedLayout) {
   AllMotorResponsePacket pkt{};
   // pos[0..9] = 1.0~10.0, vel[10..19] = 11.0~20.0, cur[20..29] = 21.0~30.0
   for (std::size_t i = 0; i < kAllMotorDataCount; ++i) {
@@ -452,8 +418,7 @@ TEST(HandPacketsExtract, ExtractAllMotorFloats_GroupedLayout)
   }
 }
 
-TEST(HandPacketsExtract, ExtractAllSensorValuesRaw_MultiFingerSkipsReserved)
-{
+TEST(HandPacketsExtract, ExtractAllSensorValuesRaw_MultiFingerSkipsReserved) {
   AllSensorResponsePacket pkt{};
   pkt.data.fill(0);
 
@@ -461,8 +426,7 @@ TEST(HandPacketsExtract, ExtractAllSensorValuesRaw_MultiFingerSkipsReserved)
   for (int f = 0; f < kDefaultNumFingertips; ++f) {
     const auto base = static_cast<std::size_t>(f) * kSensorDataPerPacket;
     for (int b = 0; b < kBarometerCount; ++b) {
-      pkt.data[base + static_cast<std::size_t>(b)] =
-          static_cast<int32_t>(f * 100 + b);
+      pkt.data[base + static_cast<std::size_t>(b)] = static_cast<int32_t>(f * 100 + b);
     }
     for (int r = 0; r < kReservedCount; ++r) {
       pkt.data[base + static_cast<std::size_t>(kBarometerCount + r)] = -999;
@@ -483,16 +447,14 @@ TEST(HandPacketsExtract, ExtractAllSensorValuesRaw_MultiFingerSkipsReserved)
       EXPECT_EQ(out[out_base + static_cast<std::size_t>(b)], f * 100 + b);
     }
     for (int t = 0; t < kTofCount; ++t) {
-      EXPECT_EQ(out[out_base + static_cast<std::size_t>(kBarometerCount + t)],
-                f * 1000 + t);
+      EXPECT_EQ(out[out_base + static_cast<std::size_t>(kBarometerCount + t)], f * 1000 + t);
     }
   }
 }
 
 // ── Serialization roundtrip ─────────────────────────────────────────────────
 
-TEST(HandPacketsSerialize, MotorPacket_Roundtrip)
-{
+TEST(HandPacketsSerialize, MotorPacket_Roundtrip) {
   std::array<float, kNumHandMotors> positions{};
   for (int i = 0; i < kNumHandMotors; ++i) {
     positions[static_cast<std::size_t>(i)] = static_cast<float>(i) * 0.5f;
@@ -512,8 +474,7 @@ TEST(HandPacketsSerialize, MotorPacket_Roundtrip)
   }
 }
 
-TEST(HandPacketsSerialize, SensorRequest_Roundtrip)
-{
+TEST(HandPacketsSerialize, SensorRequest_Roundtrip) {
   const auto original = MakeSensorReadRequest(Command::kReadSensor2, SensorMode::kNn);
 
   std::array<uint8_t, kSensorRequestSize> buf{};
@@ -527,8 +488,7 @@ TEST(HandPacketsSerialize, SensorRequest_Roundtrip)
 
 // ── Legacy aliases ──────────────────────────────────────────────────────────
 
-TEST(HandPacketsLegacy, DecodePacket_IsDecodeMotorPacket)
-{
+TEST(HandPacketsLegacy, DecodePacket_IsDecodeMotorPacket) {
   auto src = MakeReadRequest(Command::kReadPosition);
   std::array<uint8_t, kMotorPacketSize> buf{};
   std::memcpy(buf.data(), &src, kMotorPacketSize);
@@ -540,8 +500,7 @@ TEST(HandPacketsLegacy, DecodePacket_IsDecodeMotorPacket)
   EXPECT_EQ(std::memcmp(&out1, &out2, sizeof(MotorPacket)), 0);
 }
 
-TEST(HandPacketsLegacy, ExtractFloats_IsExtractMotorFloats)
-{
+TEST(HandPacketsLegacy, ExtractFloats_IsExtractMotorFloats) {
   MotorPacket pkt{};
   pkt.data[0] = FloatToUint32(42.0f);
 
@@ -553,8 +512,7 @@ TEST(HandPacketsLegacy, ExtractFloats_IsExtractMotorFloats)
 
 // ── MakeReadAllMotorsRequest with JointMode ────────────────────────────────
 
-TEST(HandPacketsEncode, MakeReadAllMotorsRequest_JointMode)
-{
+TEST(HandPacketsEncode, MakeReadAllMotorsRequest_JointMode) {
   const auto pkt = MakeReadAllMotorsRequest(JointMode::kJoint);
   EXPECT_EQ(pkt.id, kDeviceId);
   EXPECT_EQ(pkt.cmd, static_cast<uint8_t>(Command::kReadAllMotors));
@@ -563,8 +521,7 @@ TEST(HandPacketsEncode, MakeReadAllMotorsRequest_JointMode)
 
 // ── MakeReadAllSensorsRequest with NnMode ──────────────────────────────────
 
-TEST(HandPacketsEncode, MakeReadAllSensorsRequest_NnMode)
-{
+TEST(HandPacketsEncode, MakeReadAllSensorsRequest_NnMode) {
   const auto pkt = MakeReadAllSensorsRequest(SensorMode::kNn);
   EXPECT_EQ(pkt.id, kDeviceId);
   EXPECT_EQ(pkt.cmd, static_cast<uint8_t>(Command::kReadAllSensors));
@@ -573,8 +530,7 @@ TEST(HandPacketsEncode, MakeReadAllSensorsRequest_NnMode)
 
 // ── Struct layout static assertions (runtime verification) ─────────────────
 
-TEST(HandPacketsLayout, StructSizes)
-{
+TEST(HandPacketsLayout, StructSizes) {
   EXPECT_EQ(sizeof(MotorPacket), kMotorPacketSize);
   EXPECT_EQ(sizeof(SensorRequestPacket), kSensorRequestSize);
   EXPECT_EQ(sizeof(SensorResponsePacket), kSensorResponseSize);
@@ -582,8 +538,7 @@ TEST(HandPacketsLayout, StructSizes)
   EXPECT_EQ(sizeof(AllSensorResponsePacket), kAllSensorResponseSize);
 }
 
-TEST(HandPacketsLayout, TriviallyCopyable)
-{
+TEST(HandPacketsLayout, TriviallyCopyable) {
   EXPECT_TRUE(std::is_trivially_copyable_v<MotorPacket>);
   EXPECT_TRUE(std::is_trivially_copyable_v<SensorRequestPacket>);
   EXPECT_TRUE(std::is_trivially_copyable_v<SensorResponsePacket>);
@@ -593,8 +548,7 @@ TEST(HandPacketsLayout, TriviallyCopyable)
 
 // ── Command enum raw values ────────────────────────────────────────────────
 
-TEST(HandPacketsEnums, CommandRawValues)
-{
+TEST(HandPacketsEnums, CommandRawValues) {
   EXPECT_EQ(static_cast<uint8_t>(Command::kWritePosition), 0x01);
   EXPECT_EQ(static_cast<uint8_t>(Command::kSetSensorMode), 0x04);
   EXPECT_EQ(static_cast<uint8_t>(Command::kReadAllMotors), 0x10);
@@ -605,8 +559,7 @@ TEST(HandPacketsEnums, CommandRawValues)
 
 // ── MakeWritePosition with all same values ─────────────────────────────────
 
-TEST(HandPacketsEncode, MakeWritePosition_AllSameValue)
-{
+TEST(HandPacketsEncode, MakeWritePosition_AllSameValue) {
   std::array<float, kNumHandMotors> positions{};
   positions.fill(1.234f);
 
@@ -618,8 +571,7 @@ TEST(HandPacketsEncode, MakeWritePosition_AllSameValue)
 
 // ── ExtractAllSensorValuesRaw with fewer fingertips ────────────────────────
 
-TEST(HandPacketsExtract, ExtractAllSensorValuesRaw_SingleFinger)
-{
+TEST(HandPacketsExtract, ExtractAllSensorValuesRaw_SingleFinger) {
   AllSensorResponsePacket pkt{};
   pkt.data.fill(0);
 
@@ -645,8 +597,7 @@ TEST(HandPacketsExtract, ExtractAllSensorValuesRaw_SingleFinger)
 
 // ── Zero fingertips extraction ─────────────────────────────────────────────
 
-TEST(HandPacketsExtract, ExtractAllSensorValuesRaw_ZeroFingertips)
-{
+TEST(HandPacketsExtract, ExtractAllSensorValuesRaw_ZeroFingertips) {
   AllSensorResponsePacket pkt{};
   pkt.data.fill(999);
   int32_t out = -1;

@@ -2,10 +2,8 @@
 
 namespace rtc::tsid {
 
-void MomentumTask::init(const pinocchio::Model& /*model*/,
-                        const RobotModelInfo& robot_info,
-                        PinocchioCache& cache,
-                        const YAML::Node& task_config) {
+void MomentumTask::init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
+                        PinocchioCache& cache, const YAML::Node& task_config) {
   nv_ = robot_info.nv;
 
   // Centroidal momentum 계산 활성화
@@ -31,13 +29,10 @@ void MomentumTask::init(const pinocchio::Model& /*model*/,
   hg_dot_des_.setZero();
 }
 
-void MomentumTask::compute_residual(
-    const PinocchioCache& cache,
-    const ControlReference& /*ref*/,
-    const ContactState& /*contacts*/,
-    int /*n_vars*/,
-    Eigen::Ref<Eigen::MatrixXd> J_block,
-    Eigen::Ref<Eigen::VectorXd> r_block) noexcept {
+void MomentumTask::compute_residual(const PinocchioCache& cache, const ControlReference& /*ref*/,
+                                    const ContactState& /*contacts*/, int /*n_vars*/,
+                                    Eigen::Ref<Eigen::MatrixXd> J_block,
+                                    Eigen::Ref<Eigen::VectorXd> r_block) noexcept {
   if (mode_ == Mode::kAngularRegularize) {
     // Angular momentum → 0: Ag_angular · a + hg_drift_angular = 0
     // J_block = Ag[3:6, :nv], r_block = -hg_drift[3:6]
@@ -51,8 +46,7 @@ void MomentumTask::compute_residual(
   }
 }
 
-void MomentumTask::set_momentum_reference(
-    const Eigen::Matrix<double, 6, 1>& hg_dot_des) noexcept {
+void MomentumTask::set_momentum_reference(const Eigen::Matrix<double, 6, 1>& hg_dot_des) noexcept {
   hg_dot_des_ = hg_dot_des;
 }
 

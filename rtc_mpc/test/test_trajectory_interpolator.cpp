@@ -11,9 +11,8 @@
 
 #include "rtc_mpc/interpolation/trajectory_interpolator.hpp"
 
-#include <gtest/gtest.h>
-
 #include <Eigen/Core>
+#include <gtest/gtest.h>
 
 namespace rtc::mpc {
 namespace {
@@ -22,7 +21,7 @@ constexpr int kNq = 3;
 constexpr int kNv = 3;
 constexpr int kNc = 0;
 constexpr int kHorizon = 10;
-constexpr double kDtNode = 0.01;  // 10 ms per OCP node
+constexpr double kDtNode = 0.01;                // 10 ms per OCP node
 constexpr uint64_t kReceiveNs = 1'000'000'000;  // arbitrary t=1 s origin
 constexpr double kTol = 1e-12;
 
@@ -43,12 +42,10 @@ MPCSolution MakeLinearSolution(double slope) {
   for (int k = 0; k <= kHorizon; ++k) {
     const double t = static_cast<double>(k) * kDtNode;
     for (int i = 0; i < kNq; ++i) {
-      sol.q_traj[static_cast<std::size_t>(k)]
-                [static_cast<std::size_t>(i)] = slope * t + 0.1 * i;
+      sol.q_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)] = slope * t + 0.1 * i;
     }
     for (int i = 0; i < kNv; ++i) {
-      sol.v_traj[static_cast<std::size_t>(k)]
-                [static_cast<std::size_t>(i)] = slope;
+      sol.v_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)] = slope;
     }
   }
   return sol;
@@ -112,15 +109,13 @@ TEST_F(TrajectoryInterpolatorTest, LinearTrajectoryReproducedExactly) {
   // Sample at 3 non-node times; expect exact reproduction because the
   // underlying signal is linear.
   for (double t_offset : {0.003, 0.017, 0.076}) {
-    const uint64_t now = kReceiveNs +
-        static_cast<uint64_t>(t_offset * 1e9);
+    const uint64_t now = kReceiveNs + static_cast<uint64_t>(t_offset * 1e9);
     interp_.Interpolate(now, q_ref_, v_ref_, a_ff_, lambda_ref_, meta_);
     ASSERT_TRUE(meta_.valid);
     EXPECT_FALSE(meta_.beyond_horizon);
     for (int i = 0; i < kNq; ++i) {
       const double expected = slope * t_offset + 0.1 * i;
-      EXPECT_NEAR(q_ref_(i), expected, kTol)
-          << "t_offset=" << t_offset << " i=" << i;
+      EXPECT_NEAR(q_ref_(i), expected, kTol) << "t_offset=" << t_offset << " i=" << i;
     }
     for (int i = 0; i < kNv; ++i) {
       EXPECT_NEAR(v_ref_(i), slope, kTol);
@@ -144,8 +139,7 @@ TEST_F(TrajectoryInterpolatorTest, BeyondHorizonFreezesLastNode) {
     EXPECT_NEAR(q_ref_(i), slope * horizon_sec + 0.1 * i, kTol);
   }
   for (int i = 0; i < kNv; ++i) {
-    EXPECT_NEAR(a_ff_(i), 0.0, kTol)
-        << "a_ff must be zero beyond horizon (safety default)";
+    EXPECT_NEAR(a_ff_(i), 0.0, kTol) << "a_ff must be zero beyond horizon (safety default)";
   }
 }
 
@@ -154,8 +148,7 @@ TEST_F(TrajectoryInterpolatorTest, NegativeTimeClampedToOrigin) {
   interp_.SetSolution(MakeLinearSolution(slope), kReceiveNs);
 
   // now_ns earlier than receive_ns — should clamp to t_local = 0.
-  interp_.Interpolate(kReceiveNs - 500'000'000, q_ref_, v_ref_, a_ff_,
-                      lambda_ref_, meta_);
+  interp_.Interpolate(kReceiveNs - 500'000'000, q_ref_, v_ref_, a_ff_, lambda_ref_, meta_);
   ASSERT_TRUE(meta_.valid);
   EXPECT_FALSE(meta_.beyond_horizon);
   for (int i = 0; i < kNq; ++i) {
@@ -167,10 +160,8 @@ TEST_F(TrajectoryInterpolatorTest, RemainingHorizonMonotoneDecrease) {
   interp_.SetSolution(MakeLinearSolution(1.0), kReceiveNs);
 
   const double r0 = interp_.RemainingHorizonSec(kReceiveNs);
-  const double r_mid =
-      interp_.RemainingHorizonSec(kReceiveNs + 50'000'000);  // +50 ms
-  const double r_end =
-      interp_.RemainingHorizonSec(kReceiveNs + 200'000'000);  // past horizon
+  const double r_mid = interp_.RemainingHorizonSec(kReceiveNs + 50'000'000);   // +50 ms
+  const double r_end = interp_.RemainingHorizonSec(kReceiveNs + 200'000'000);  // past horizon
   EXPECT_NEAR(r0, kHorizon * kDtNode, kTol);
   EXPECT_GT(r0, r_mid);
   EXPECT_GT(r_mid, 0.0);
@@ -196,10 +187,8 @@ MPCSolution MakeCubicSolution(double c0, double c1, double c2, double c3) {
     const double q = c0 + c1 * t + c2 * t * t + c3 * t * t * t;
     const double v = c1 + 2.0 * c2 * t + 3.0 * c3 * t * t;
     for (int i = 0; i < kNq; ++i) {
-      sol.q_traj[static_cast<std::size_t>(k)]
-                [static_cast<std::size_t>(i)] = q + 0.1 * i;
-      sol.v_traj[static_cast<std::size_t>(k)]
-                [static_cast<std::size_t>(i)] = v;
+      sol.q_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)] = q + 0.1 * i;
+      sol.v_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)] = v;
     }
   }
   return sol;
@@ -210,11 +199,9 @@ TEST_F(TrajectoryInterpolatorTest, HermiteReproducesCubicExactly) {
   interp_.SetSolution(MakeCubicSolution(c0, c1, c2, c3), kReceiveNs);
 
   // Sample at 7 non-node times spanning multiple segments.
-  const std::array<double, 7> offsets{
-      0.0015, 0.0049, 0.023, 0.038, 0.061, 0.077, 0.091};
+  const std::array<double, 7> offsets{0.0015, 0.0049, 0.023, 0.038, 0.061, 0.077, 0.091};
   for (double t_offset : offsets) {
-    const uint64_t now = kReceiveNs +
-        static_cast<uint64_t>(t_offset * 1e9);
+    const uint64_t now = kReceiveNs + static_cast<uint64_t>(t_offset * 1e9);
     interp_.Interpolate(now, q_ref_, v_ref_, a_ff_, lambda_ref_, meta_);
     ASSERT_TRUE(meta_.valid);
 
@@ -223,8 +210,7 @@ TEST_F(TrajectoryInterpolatorTest, HermiteReproducesCubicExactly) {
     const double v = c1 + 2.0 * c2 * t + 3.0 * c3 * t * t;
     const double a = 2.0 * c2 + 6.0 * c3 * t;
     for (int i = 0; i < kNq; ++i) {
-      EXPECT_NEAR(q_ref_(i), q + 0.1 * i, 1e-10)
-          << "t=" << t_offset << " i=" << i;
+      EXPECT_NEAR(q_ref_(i), q + 0.1 * i, 1e-10) << "t=" << t_offset << " i=" << i;
     }
     for (int i = 0; i < kNv; ++i) {
       EXPECT_NEAR(v_ref_(i), v, 1e-10);
@@ -246,14 +232,12 @@ TEST_F(TrajectoryInterpolatorTest, HermiteC1ContinuityAtNodeBoundary) {
 
     Eigen::VectorXd q_left = q_ref_;
     Eigen::VectorXd v_left = v_ref_;
-    interp_.Interpolate(node_ns - 1, q_left, v_left, a_ff_, lambda_ref_,
-                        meta_);
+    interp_.Interpolate(node_ns - 1, q_left, v_left, a_ff_, lambda_ref_, meta_);
     ASSERT_TRUE(meta_.valid);
 
     Eigen::VectorXd q_right = q_ref_;
     Eigen::VectorXd v_right = v_ref_;
-    interp_.Interpolate(node_ns + 1, q_right, v_right, a_ff_, lambda_ref_,
-                        meta_);
+    interp_.Interpolate(node_ns + 1, q_right, v_right, a_ff_, lambda_ref_, meta_);
     ASSERT_TRUE(meta_.valid);
 
     for (int i = 0; i < kNq; ++i) {
@@ -273,8 +257,7 @@ TEST_F(TrajectoryInterpolatorTest, HermiteReducesToLinearForLinearInput) {
   interp_.SetSolution(MakeLinearSolution(slope), kReceiveNs);
 
   for (double t_offset : {0.003, 0.017, 0.076}) {
-    const uint64_t now = kReceiveNs +
-        static_cast<uint64_t>(t_offset * 1e9);
+    const uint64_t now = kReceiveNs + static_cast<uint64_t>(t_offset * 1e9);
     interp_.Interpolate(now, q_ref_, v_ref_, a_ff_, lambda_ref_, meta_);
     ASSERT_TRUE(meta_.valid);
 
@@ -283,8 +266,7 @@ TEST_F(TrajectoryInterpolatorTest, HermiteReducesToLinearForLinearInput) {
     }
     for (int i = 0; i < kNv; ++i) {
       EXPECT_NEAR(v_ref_(i), slope, 1e-12);
-      EXPECT_NEAR(a_ff_(i), 0.0, 1e-9)
-          << "a_ff must vanish for a linear trajectory";
+      EXPECT_NEAR(a_ff_(i), 0.0, 1e-9) << "a_ff must vanish for a linear trajectory";
     }
   }
 }

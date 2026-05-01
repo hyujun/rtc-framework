@@ -8,24 +8,25 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    pkg_share = FindPackageShare('shape_estimation')
+    pkg_share = FindPackageShare("shape_estimation")
 
     rviz_config_arg = DeclareLaunchArgument(
-        'rviz_config',
-        default_value=PathJoinSubstitution([
-            pkg_share, 'config', 'shape_estimation.rviz'
-        ]),
-        description='RViz 설정 파일 경로')
-
-    rviz_node = Node(
-        package='rviz2',
-        executable='rviz2',
-        name='rviz2',
-        arguments=['-d', LaunchConfiguration('rviz_config')],
-        output='screen',
+        "rviz_config",
+        default_value=PathJoinSubstitution([pkg_share, "config", "shape_estimation.rviz"]),
+        description="RViz 설정 파일 경로",
     )
 
-    return LaunchDescription([
-        rviz_config_arg,
-        rviz_node,
-    ])
+    rviz_node = Node(
+        package="rviz2",
+        executable="rviz2",
+        name="rviz2",
+        arguments=["-d", LaunchConfiguration("rviz_config")],
+        output="screen",
+    )
+
+    return LaunchDescription(
+        [
+            rviz_config_arg,
+            rviz_node,
+        ]
+    )

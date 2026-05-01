@@ -5,8 +5,7 @@
 
 namespace rtc::mpc {
 
-void MPCSolutionManager::Init(const YAML::Node &cfg, int nq, int nv,
-                              int n_contact_vars) {
+void MPCSolutionManager::Init(const YAML::Node& cfg, int nq, int nv, int n_contact_vars) {
   nq_ = nq;
   nv_ = nv;
   n_contact_vars_ = n_contact_vars;
@@ -26,7 +25,7 @@ void MPCSolutionManager::Init(const YAML::Node &cfg, int nq, int nv,
   riccati_enabled_ = !r || !r["enabled"] || r["enabled"].as<bool>();
 
   const int nx = nq + nv;
-  riccati_.Init(nv, nv, nx); // nu == nv in accel-only mode
+  riccati_.Init(nv, nv, nx);  // nu == nv in accel-only mode
 
   if (r && r["gain_scale"]) {
     riccati_.SetGainScale(r["gain_scale"].as<double>());
@@ -42,8 +41,8 @@ void MPCSolutionManager::Init(const YAML::Node &cfg, int nq, int nv,
   has_ever_received_solution_ = false;
 }
 
-void MPCSolutionManager::PublishSolution(const MPCSolution &sol) noexcept {
-  MPCSolution &slot = solution_buffer_.StartWrite();
+void MPCSolutionManager::PublishSolution(const MPCSolution& sol) noexcept {
+  MPCSolution& slot = solution_buffer_.StartWrite();
   std::memcpy(&slot, &sol, sizeof(MPCSolution));
   solution_buffer_.FinishWrite();
 
@@ -53,11 +52,9 @@ void MPCSolutionManager::PublishSolution(const MPCSolution &sol) noexcept {
   // ResetSolveStats is bounded to a single consumer at a time.
   try {
     std::lock_guard<std::mutex> lock(solve_stats_mutex_);
-    const std::size_t slot_idx =
-        static_cast<std::size_t>(solve_stats_next_) % kSolveStatsWindow;
+    const std::size_t slot_idx = static_cast<std::size_t>(solve_stats_next_) % kSolveStatsWindow;
     solve_stats_ring_[slot_idx] = sol.solve_duration_ns;
-    solve_stats_next_ =
-        static_cast<std::uint32_t>((slot_idx + 1) % kSolveStatsWindow);
+    solve_stats_next_ = static_cast<std::uint32_t>((slot_idx + 1) % kSolveStatsWindow);
     if (solve_stats_filled_ < kSolveStatsWindow) {
       ++solve_stats_filled_;
     }
@@ -74,8 +71,7 @@ void MPCSolutionManager::PublishSolution(const MPCSolution &sol) noexcept {
   // captured around this PublishSolution call.
 }
 
-MPCSolutionManager::SolveTimingStats
-MPCSolutionManager::GetSolveStats() const noexcept {
+MPCSolutionManager::SolveTimingStats MPCSolutionManager::GetSolveStats() const noexcept {
   SolveTimingStats s{};
 
   // Snapshot under the mutex, compute outside.
@@ -139,8 +135,8 @@ MPCStateSnapshot MPCSolutionManager::ReadState() const noexcept {
   return state_lock_.Load();
 }
 
-void MPCSolutionManager::WriteState(const Eigen::Ref<const Eigen::VectorXd> &q,
-                                    const Eigen::Ref<const Eigen::VectorXd> &v,
+void MPCSolutionManager::WriteState(const Eigen::Ref<const Eigen::VectorXd>& q,
+                                    const Eigen::Ref<const Eigen::VectorXd>& v,
                                     uint64_t timestamp_ns) noexcept {
   MPCStateSnapshot snap{};
   const int nq = std::min(static_cast<int>(q.size()), static_cast<int>(kMaxNq));
@@ -157,12 +153,14 @@ void MPCSolutionManager::WriteState(const Eigen::Ref<const Eigen::VectorXd> &q,
   state_lock_.Store(snap);
 }
 
-bool MPCSolutionManager::ComputeReference(
-    const Eigen::Ref<const Eigen::VectorXd> &q_curr,
-    const Eigen::Ref<const Eigen::VectorXd> &v_curr, uint64_t now_ns,
-    Eigen::Ref<Eigen::VectorXd> q_ref, Eigen::Ref<Eigen::VectorXd> v_ref,
-    Eigen::Ref<Eigen::VectorXd> a_ff, Eigen::Ref<Eigen::VectorXd> lambda_ref,
-    Eigen::Ref<Eigen::VectorXd> u_fb, InterpMeta &meta_out) noexcept {
+bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
+                                          const Eigen::Ref<const Eigen::VectorXd>& v_curr,
+                                          uint64_t now_ns, Eigen::Ref<Eigen::VectorXd> q_ref,
+                                          Eigen::Ref<Eigen::VectorXd> v_ref,
+                                          Eigen::Ref<Eigen::VectorXd> a_ff,
+                                          Eigen::Ref<Eigen::VectorXd> lambda_ref,
+                                          Eigen::Ref<Eigen::VectorXd> u_fb,
+                                          InterpMeta& meta_out) noexcept {
   meta_out.valid = false;
   meta_out.beyond_horizon = false;
   meta_out.progress = 0.0;
@@ -173,7 +171,7 @@ bool MPCSolutionManager::ComputeReference(
   }
 
   // Try to pick up a newly published solution.
-  const MPCSolution *fresh = solution_buffer_.TryAcquireLatest();
+  const MPCSolution* fresh = solution_buffer_.TryAcquireLatest();
   if (fresh != nullptr) {
     interpolator_.SetSolution(*fresh, now_ns);
     // Install gains from the first Riccati node (nearest-node policy).
@@ -205,4 +203,4 @@ bool MPCSolutionManager::ComputeReference(
   return true;
 }
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc

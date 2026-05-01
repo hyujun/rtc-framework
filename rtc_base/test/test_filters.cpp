@@ -52,8 +52,7 @@ TEST(BesselFilter, DCPassthrough) {
   }
 
   for (std::size_t ch = 0; ch < 2; ++ch) {
-    EXPECT_NEAR(output[ch], dc_input[ch], 1e-6)
-        << "DC passthrough failed on channel " << ch;
+    EXPECT_NEAR(output[ch], dc_input[ch], 1e-6) << "DC passthrough failed on channel " << ch;
   }
 }
 
@@ -102,8 +101,8 @@ TEST(BesselFilter, HighFreqAttenuation) {
   // Warm up the filter for 200 samples to clear transients.
   for (int i = 0; i < 200; ++i) {
     const double t = static_cast<double>(i) / sample_rate;
-    const std::array<double, 1> input = {
-        amplitude * std::sin(2.0 * std::numbers::pi * signal_freq * t)};
+    const std::array<double, 1> input = {amplitude *
+                                         std::sin(2.0 * std::numbers::pi * signal_freq * t)};
     (void)filter.Apply(input);
   }
 
@@ -111,8 +110,8 @@ TEST(BesselFilter, HighFreqAttenuation) {
   double max_output = 0.0;
   for (int i = 200; i < 400; ++i) {
     const double t = static_cast<double>(i) / sample_rate;
-    const std::array<double, 1> input = {
-        amplitude * std::sin(2.0 * std::numbers::pi * signal_freq * t)};
+    const std::array<double, 1> input = {amplitude *
+                                         std::sin(2.0 * std::numbers::pi * signal_freq * t)};
     const auto output = filter.Apply(input);
     max_output = std::max(max_output, std::abs(output[0]));
   }
@@ -192,9 +191,9 @@ TEST(KalmanFilter, ConstantSignal) {
 TEST(KalmanFilter, LinearRamp) {
   // Feed a linearly increasing signal: velocity should converge to the slope.
   rtc::KalmanFilterN<1> kf;
-  constexpr double dt = 0.002;          // 500 Hz
-  constexpr double slope = 2.0;         // 2 units/s
-  kf.Init(0.001, 0.1, 0.01, dt);       // higher q_vel to track velocity quickly
+  constexpr double dt = 0.002;    // 500 Hz
+  constexpr double slope = 2.0;   // 2 units/s
+  kf.Init(0.001, 0.1, 0.01, dt);  // higher q_vel to track velocity quickly
 
   for (int i = 0; i < 2000; ++i) {
     const double t = static_cast<double>(i) * dt;
@@ -202,8 +201,7 @@ TEST(KalmanFilter, LinearRamp) {
     (void)kf.PredictAndUpdate(measurement);
   }
 
-  EXPECT_NEAR(kf.velocity(0), slope, 0.1)
-      << "Velocity estimate did not converge to slope";
+  EXPECT_NEAR(kf.velocity(0), slope, 0.1) << "Velocity estimate did not converge to slope";
 }
 
 TEST(KalmanFilter, NoiseRejection) {
@@ -242,8 +240,8 @@ TEST(KalmanFilter, NoiseRejection) {
   const double output_variance = sum_sq_error_output / kMeasureSamples;
 
   EXPECT_LT(output_variance, input_variance)
-      << "Kalman filter did not reduce noise variance"
-      << " (input=" << input_variance << ", output=" << output_variance << ")";
+      << "Kalman filter did not reduce noise variance" << " (input=" << input_variance
+      << ", output=" << output_variance << ")";
 }
 
 }  // namespace

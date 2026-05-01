@@ -54,8 +54,7 @@ TEST(SeqLockTest, StoreAndLoad) {
 
   EXPECT_EQ(loaded.counter, 42);
   for (std::size_t i = 0; i < loaded.values.size(); ++i) {
-    EXPECT_DOUBLE_EQ(loaded.values[i], static_cast<double>(i) * 1.5)
-        << "index " << i;
+    EXPECT_DOUBLE_EQ(loaded.values[i], static_cast<double>(i) * 1.5) << "index " << i;
   }
 }
 
@@ -104,6 +103,7 @@ TEST(SeqLockTest, LargeStruct) {
     std::array<double, 64> efforts{};
     int64_t id{0};
   };
+
   static_assert(std::is_trivially_copyable_v<LargeData>);
 
   rtc::SeqLock<LargeData> sl;
@@ -166,8 +166,7 @@ TEST(SeqLockTest, ConcurrentReadDuringWrite) {
   writer.join();
   reader.join();
 
-  EXPECT_EQ(inconsistency_count.load(), 0)
-      << "SeqLock returned partially-written (torn) data";
+  EXPECT_EQ(inconsistency_count.load(), 0) << "SeqLock returned partially-written (torn) data";
 
   // Final load must return the last written value.
   const TestData final_val = sl.Load();

@@ -14,21 +14,21 @@
 #include "ur5e_bt_coordinator/action_nodes/compute_offset_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/compute_sweep_trajectory.hpp"
 #include "ur5e_bt_coordinator/action_nodes/compute_tilt_sequence.hpp"
+#include "ur5e_bt_coordinator/action_nodes/flex_extend_finger.hpp"
 #include "ur5e_bt_coordinator/action_nodes/get_current_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/grasp_control.hpp"
+#include "ur5e_bt_coordinator/action_nodes/move_finger.hpp"
+#include "ur5e_bt_coordinator/action_nodes/move_opposition.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_to_joints.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_to_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/set_gains.hpp"
+#include "ur5e_bt_coordinator/action_nodes/set_hand_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/set_pose_z.hpp"
 #include "ur5e_bt_coordinator/action_nodes/switch_controller.hpp"
 #include "ur5e_bt_coordinator/action_nodes/track_trajectory.hpp"
-#include "ur5e_bt_coordinator/action_nodes/wait_duration.hpp"
-#include "ur5e_bt_coordinator/action_nodes/move_finger.hpp"
-#include "ur5e_bt_coordinator/action_nodes/flex_extend_finger.hpp"
-#include "ur5e_bt_coordinator/action_nodes/set_hand_pose.hpp"
-#include "ur5e_bt_coordinator/action_nodes/ur5e_hold_pose.hpp"
-#include "ur5e_bt_coordinator/action_nodes/move_opposition.hpp"
 #include "ur5e_bt_coordinator/action_nodes/trigger_shape_estimation.hpp"
+#include "ur5e_bt_coordinator/action_nodes/ur5e_hold_pose.hpp"
+#include "ur5e_bt_coordinator/action_nodes/wait_duration.hpp"
 #include "ur5e_bt_coordinator/action_nodes/wait_shape_result.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/check_shape_type.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
@@ -38,13 +38,13 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_vision_target_ready.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
+
 #include <behaviortree_cpp/bt_factory.h>
 
 #include <filesystem>
 #include <iostream>
 
-int main(int argc, char** argv)
-{
+int main(int argc, char** argv) {
   if (argc < 2) {
     std::cerr << "Usage: validate_tree <tree_file.xml>\n"
               << "\n"
@@ -64,8 +64,7 @@ int main(int argc, char** argv)
     tree_path = input;
   } else {
     try {
-      std::string pkg_share =
-          ament_index_cpp::get_package_share_directory("ur5e_bt_coordinator");
+      std::string pkg_share = ament_index_cpp::get_package_share_directory("ur5e_bt_coordinator");
       tree_path = std::filesystem::path(pkg_share) / "trees" / input;
     } catch (...) {
       // If package not found, try relative to CWD
@@ -135,7 +134,8 @@ int main(int argc, char** argv)
         std::cout << " (";
         bool first = true;
         for (const auto& [port_name, port_info] : manifest.ports) {
-          if (!first) std::cout << ", ";
+          if (!first)
+            std::cout << ", ";
           std::cout << port_name;
           first = false;
         }

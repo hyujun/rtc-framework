@@ -37,9 +37,9 @@
 /// a TrajectoryInterpolator exclusively. @ref SetSolution and
 /// @ref Interpolate must not be called concurrently.
 
-#include <Eigen/Core>
-
 #include "rtc_mpc/types/mpc_solution_types.hpp"
+
+#include <Eigen/Core>
 
 #include <cstdint>
 
@@ -109,12 +109,9 @@ class TrajectoryInterpolator {
   ///                       linear mode)
   /// @param lambda_ref     out: contact-force reference (size n_contact_vars)
   /// @param meta_out       out: progress / validity flags
-  void Interpolate(uint64_t now_ns,
-                   Eigen::Ref<Eigen::VectorXd> q_ref,
-                   Eigen::Ref<Eigen::VectorXd> v_ref,
-                   Eigen::Ref<Eigen::VectorXd> a_ff,
-                   Eigen::Ref<Eigen::VectorXd> lambda_ref,
-                   InterpMeta& meta_out) noexcept;
+  void Interpolate(uint64_t now_ns, Eigen::Ref<Eigen::VectorXd> q_ref,
+                   Eigen::Ref<Eigen::VectorXd> v_ref, Eigen::Ref<Eigen::VectorXd> a_ff,
+                   Eigen::Ref<Eigen::VectorXd> lambda_ref, InterpMeta& meta_out) noexcept;
 
   /// @return true once a valid solution has been installed via
   ///         @ref SetSolution.
@@ -128,10 +125,8 @@ class TrajectoryInterpolator {
   /// Cubic Hermite kernel for q / v / a_ff (+ linear for lambda).
   /// @param node_k  left node index (k ≥ 0, k + 1 ≤ horizon_length)
   /// @param alpha   normalized time within the segment, ∈ [0, 1]
-  void InterpolateHermite(int node_k, double alpha,
-                          Eigen::Ref<Eigen::VectorXd> q_ref,
-                          Eigen::Ref<Eigen::VectorXd> v_ref,
-                          Eigen::Ref<Eigen::VectorXd> a_ff,
+  void InterpolateHermite(int node_k, double alpha, Eigen::Ref<Eigen::VectorXd> q_ref,
+                          Eigen::Ref<Eigen::VectorXd> v_ref, Eigen::Ref<Eigen::VectorXd> a_ff,
                           Eigen::Ref<Eigen::VectorXd> lambda_ref) noexcept;
 
   MPCSolution sol_{};

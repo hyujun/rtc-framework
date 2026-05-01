@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
+
 #include "ur5e_bt_coordinator/bt_logging.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -8,25 +9,24 @@
 namespace rtc_bt {
 
 namespace {
-auto logger() { return ::rtc_bt::logging::CondLogger("is_force_above"); }
+auto logger() {
+  return ::rtc_bt::logging::CondLogger("is_force_above");
+}
 }  // namespace
 
 IsForceAbove::IsForceAbove(const std::string& name, const BT::NodeConfig& config,
                            std::shared_ptr<BtRosBridge> bridge)
-  : BT::ConditionNode(name, config), bridge_(std::move(bridge))
-{}
+    : BT::ConditionNode(name, config), bridge_(std::move(bridge)) {}
 
-BT::PortsList IsForceAbove::providedPorts()
-{
+BT::PortsList IsForceAbove::providedPorts() {
   return {
-    BT::InputPort<double>("threshold_N", 1.5, "Force threshold [N]"),
-    BT::InputPort<int>("min_fingertips", 2, "Min fingertips above threshold"),
-    BT::InputPort<int>("sustained_ms", 0, "Sustained duration [ms]"),
+      BT::InputPort<double>("threshold_N", 1.5, "Force threshold [N]"),
+      BT::InputPort<int>("min_fingertips", 2, "Min fingertips above threshold"),
+      BT::InputPort<int>("sustained_ms", 0, "Sustained duration [ms]"),
   };
 }
 
-BT::NodeStatus IsForceAbove::tick()
-{
+BT::NodeStatus IsForceAbove::tick() {
   const double threshold = getInput<double>("threshold_N").value_or(1.5);
   const int min_ft = getInput<int>("min_fingertips").value_or(2);
   const int sustained_ms = getInput<int>("sustained_ms").value_or(0);
@@ -54,20 +54,18 @@ BT::NodeStatus IsForceAbove::tick()
 
   static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
 
-  RCLCPP_DEBUG_THROTTLE(logger(), steady_clock,
-                        ::rtc_bt::logging::kThrottleSlowMs,
-                        "count=%d/%d max_force=%.2fN threshold=%.2fN",
-                        count, min_ft, gs.max_force, threshold);
+  RCLCPP_DEBUG_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
+                        "count=%d/%d max_force=%.2fN threshold=%.2fN", count, min_ft, gs.max_force,
+                        threshold);
 
   if (sustained_ms <= 0) {
     if (condition_met) {
       RCLCPP_INFO(logger(), "triggered (%d fingertips >= %.2fN)", count, threshold);
       return BT::NodeStatus::SUCCESS;
     }
-    RCLCPP_WARN_THROTTLE(
-      logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
-      "%d/%d fingertips >= %.2fN (max_force=%.2fN)",
-      count, min_ft, threshold, gs.max_force);
+    RCLCPP_WARN_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
+                         "%d/%d fingertips >= %.2fN (max_force=%.2fN)", count, min_ft, threshold,
+                         gs.max_force);
     return BT::NodeStatus::FAILURE;
   }
 
@@ -79,28 +77,24 @@ BT::NodeStatus IsForceAbove::tick()
       RCLCPP_DEBUG(logger(), "sustained check started (%dms required)", sustained_ms);
     }
     auto elapsed = std::chrono::steady_clock::now() - sustained_start_;
-    const auto elapsed_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
     if (elapsed_ms >= sustained_ms) {
-      RCLCPP_INFO(logger(), "sustained condition met (%dms, %d fingertips)",
-                  sustained_ms, count);
+      RCLCPP_INFO(logger(), "sustained condition met (%dms, %d fingertips)", sustained_ms, count);
       sustained_active_ = false;
       return BT::NodeStatus::SUCCESS;
     }
-    RCLCPP_WARN_THROTTLE(
-      logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
-      "condition met but not yet sustained "
-      "(%ldms / %dms required, count=%d/%d)",
-      static_cast<long>(elapsed_ms), sustained_ms, count, min_ft);
+    RCLCPP_WARN_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
+                         "condition met but not yet sustained "
+                         "(%ldms / %dms required, count=%d/%d)",
+                         static_cast<long>(elapsed_ms), sustained_ms, count, min_ft);
     return BT::NodeStatus::FAILURE;
   }
 
   sustained_active_ = false;
-  RCLCPP_WARN_THROTTLE(
-    logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
-    "%d/%d fingertips >= %.2fN "
-    "(max_force=%.2fN, sustained_ms=%d not started)",
-    count, min_ft, threshold, gs.max_force, sustained_ms);
+  RCLCPP_WARN_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
+                       "%d/%d fingertips >= %.2fN "
+                       "(max_force=%.2fN, sustained_ms=%d not started)",
+                       count, min_ft, threshold, gs.max_force, sustained_ms);
   return BT::NodeStatus::FAILURE;
 }
 

@@ -25,28 +25,28 @@
 
 namespace rtc {
 
-template <typename Payload> class ThreadCsvLogger {
-public:
+template <typename Payload>
+class ThreadCsvLogger {
+ public:
   /// Function called once at first-open to emit the entire header line
   /// (no leading or trailing newline — the logger appends '\n').
-  using HeaderWriter = std::function<void(std::ostream &)>;
+  using HeaderWriter = std::function<void(std::ostream&)>;
 
   /// Function called per row to emit the entire row (no leading or
   /// trailing newline — the logger appends '\n' and flushes).
-  using RowWriter = std::function<void(std::ostream &, const Payload &)>;
+  using RowWriter = std::function<void(std::ostream&, const Payload&)>;
 
   ThreadCsvLogger() = default;
   ~ThreadCsvLogger() = default;
 
-  ThreadCsvLogger(const ThreadCsvLogger &) = delete;
-  ThreadCsvLogger &operator=(const ThreadCsvLogger &) = delete;
+  ThreadCsvLogger(const ThreadCsvLogger&) = delete;
+  ThreadCsvLogger& operator=(const ThreadCsvLogger&) = delete;
 
   /// Resolve / create the file at `path` and store the per-row writer.
   /// On first creation the header is written via `header_writer`; on
   /// append (file already exists) the existing header is preserved.
   /// Returns false on filesystem errors.
-  [[nodiscard]] bool Open(const std::filesystem::path &path,
-                          const HeaderWriter &header_writer,
+  [[nodiscard]] bool Open(const std::filesystem::path& path, const HeaderWriter& header_writer,
                           RowWriter row_writer) noexcept {
     try {
       path_ = path;
@@ -73,12 +73,10 @@ public:
 
   [[nodiscard]] bool IsOpen() const noexcept { return out_.is_open(); }
 
-  [[nodiscard]] const std::filesystem::path &Path() const noexcept {
-    return path_;
-  }
+  [[nodiscard]] const std::filesystem::path& Path() const noexcept { return path_; }
 
   /// Append one row. No-op if not open.
-  void Log(const Payload &payload) noexcept {
+  void Log(const Payload& payload) noexcept {
     if (!out_.is_open() || !row_writer_) {
       return;
     }
@@ -87,12 +85,12 @@ public:
     out_.flush();
   }
 
-private:
+ private:
   std::filesystem::path path_;
   std::ofstream out_;
   RowWriter row_writer_;
 };
 
-} // namespace rtc
+}  // namespace rtc
 
-#endif // RTC_BASE_LOGGING_THREAD_CSV_LOGGER_HPP_
+#endif  // RTC_BASE_LOGGING_THREAD_CSV_LOGGER_HPP_

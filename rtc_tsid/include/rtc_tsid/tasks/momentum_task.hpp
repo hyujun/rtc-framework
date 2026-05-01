@@ -1,8 +1,8 @@
 #pragma once
 
-#include <string>
-
 #include "rtc_tsid/core/task_base.hpp"
+
+#include <string>
 
 namespace rtc::tsid {
 
@@ -28,31 +28,23 @@ class MomentumTask final : public TaskBase {
     kFullTrack           // full 6D momentum reference tracking
   };
 
-  [[nodiscard]] std::string_view name() const noexcept override {
-    return "momentum";
-  }
+  [[nodiscard]] std::string_view name() const noexcept override { return "momentum"; }
 
-  void init(const pinocchio::Model& model,
-            const RobotModelInfo& robot_info,
-            PinocchioCache& cache,
+  void init(const pinocchio::Model& model, const RobotModelInfo& robot_info, PinocchioCache& cache,
             const YAML::Node& task_config) override;
 
   [[nodiscard]] int residual_dim() const noexcept override {
     return (mode_ == Mode::kAngularRegularize) ? 3 : 6;
   }
 
-  void compute_residual(
-      const PinocchioCache& cache,
-      const ControlReference& ref,
-      const ContactState& contacts,
-      int n_vars,
-      Eigen::Ref<Eigen::MatrixXd> J_block,
-      Eigen::Ref<Eigen::VectorXd> r_block) noexcept override;
+  void compute_residual(const PinocchioCache& cache, const ControlReference& ref,
+                        const ContactState& contacts, int n_vars,
+                        Eigen::Ref<Eigen::MatrixXd> J_block,
+                        Eigen::Ref<Eigen::VectorXd> r_block) noexcept override;
 
   /// @brief Full-track 모드용 momentum rate reference 설정 (RT-safe)
   /// @param hg_dot_des Desired centroidal momentum rate [6]
-  void set_momentum_reference(
-      const Eigen::Matrix<double, 6, 1>& hg_dot_des) noexcept;
+  void set_momentum_reference(const Eigen::Matrix<double, 6, 1>& hg_dot_des) noexcept;
 
  private:
   int nv_{0};

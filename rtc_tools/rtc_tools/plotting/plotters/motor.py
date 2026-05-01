@@ -136,9 +136,7 @@ def print_motor_statistics(df):
     for i, (col, name) in enumerate(zip(pos_cols, names)):
         data = pd.to_numeric(df[col], errors="coerce")
         print(
-            f"  Motor {i} ({name}): "
-            f"[{data.min():.4f}, {data.max():.4f}]  "
-            f"mean={data.mean():.4f}"
+            f"  Motor {i} ({name}): [{data.min():.4f}, {data.max():.4f}]  mean={data.mean():.4f}"
         )
 
     vel_cols, _ = _detect_joint_columns(df, "motor_vel_")
@@ -162,4 +160,3 @@ def print_motor_statistics(df):
                 f"[{data.min():.4f}, {data.max():.4f}]  "
                 f"mean={data.mean():.4f}"
             )
-

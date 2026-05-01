@@ -18,7 +18,7 @@
 
 #include <chrono>
 #include <cstdio>
-#include <cstdlib> // getenv
+#include <cstdlib>  // getenv
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -41,12 +41,10 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
 
   constexpr int kDefaultWindowWidth = 1280;
   constexpr int kDefaultWindowHeight = 960;
-  const char *window_title = cfg_.window_title.empty()
-                                 ? "MuJoCo Simulator"
-                                 : cfg_.window_title.c_str();
-  GLFWwindow *window =
-      glfwCreateWindow(kDefaultWindowWidth, kDefaultWindowHeight, window_title,
-                       nullptr, nullptr);
+  const char* window_title =
+      cfg_.window_title.empty() ? "MuJoCo Simulator" : cfg_.window_title.c_str();
+  GLFWwindow* window =
+      glfwCreateWindow(kDefaultWindowWidth, kDefaultWindowHeight, window_title, nullptr, nullptr);
   if (!window) {
     fprintf(stderr, "[Viewer] glfwCreateWindow failed\n");
     glfwTerminate();
@@ -77,13 +75,12 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
   cam.elevation = kDefaultCameraElevation;
 
   // ── Visualisation-only mjData (only qpos is synced from physics thread) ────
-  mjData *vis_data = mj_makeData(model_);
-  for (auto &g : groups_) {
+  mjData* vis_data = mj_makeData(model_);
+  for (auto& g : groups_) {
     if (!g->is_robot)
       continue;
     std::lock_guard lock(g->state_mutex);
-    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_state_joints);
-         ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_state_joints); ++i) {
       vis_data->qpos[g->state_qpos_indices[i]] = g->positions[i];
     }
   }
@@ -92,12 +89,9 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
   // ── RTF profiler figure ────────────────────────────────────────────────────
   mjvFigure fig_profiler;
   mjv_defaultFigure(&fig_profiler);
-  std::strncpy(fig_profiler.title, "RTF History",
-               sizeof(fig_profiler.title) - 1);
-  std::strncpy(fig_profiler.xlabel, "Frames (~60Hz)",
-               sizeof(fig_profiler.xlabel) - 1);
-  std::strncpy(fig_profiler.linename[0], "RTF",
-               sizeof(fig_profiler.linename[0]) - 1);
+  std::strncpy(fig_profiler.title, "RTF History", sizeof(fig_profiler.title) - 1);
+  std::strncpy(fig_profiler.xlabel, "Frames (~60Hz)", sizeof(fig_profiler.xlabel) - 1);
+  std::strncpy(fig_profiler.linename[0], "RTF", sizeof(fig_profiler.linename[0]) - 1);
   fig_profiler.figurergba[0] = 0.08f;
   fig_profiler.figurergba[1] = 0.08f;
   fig_profiler.figurergba[2] = 0.08f;
@@ -134,28 +128,25 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
   glfwSetCursorPosCallback(window, OnCursorPos);
   glfwSetScrollCallback(window, OnScroll);
 
-  fprintf(
-      stdout,
-      "[Viewer] Ready — press F1 in the window for help\n"
-      "  Simulation : Space=pause  +/-=speed  Right=step  R=reset\n"
-      "  Camera     : TAB=cycle  Left=orbit  Right=pan  Scroll=zoom  "
-      "Esc=reset\n"
-      "  Physics    : G=gravity  N=contacts\n"
-      "  Solver     : I=integrator  S=solver  ]/[=iterations  F4=stats\n"
-      "  Frames     : B=link frames  J=joint axes  Shift+J=joint frames\n"
-      "  Visualise  : C=cpoints  F=cforces  0-5=geomgroups\n"
-      "               U=actuators  E=inertia  W=sites  L=lights  A=tendons  "
-      "X=hulls\n"
-      "               T=transp  F5=wireframe  F6=shadow  F7=skybox  "
-      "F8=reflect\n"
-      "  Overlays   : F3=profiler  F9=sensors  F10=modelinfo\n"
-      "  Perturb    : Dbl-click=select  Ctrl+Left=torque  Ctrl+Right=force\n"
-      "  Other      : P=screenshot  Backspace=reset vis\n");
+  fprintf(stdout,
+          "[Viewer] Ready — press F1 in the window for help\n"
+          "  Simulation : Space=pause  +/-=speed  Right=step  R=reset\n"
+          "  Camera     : TAB=cycle  Left=orbit  Right=pan  Scroll=zoom  "
+          "Esc=reset\n"
+          "  Physics    : G=gravity  N=contacts\n"
+          "  Solver     : I=integrator  S=solver  ]/[=iterations  F4=stats\n"
+          "  Frames     : B=link frames  J=joint axes  Shift+J=joint frames\n"
+          "  Visualise  : C=cpoints  F=cforces  0-5=geomgroups\n"
+          "               U=actuators  E=inertia  W=sites  L=lights  A=tendons  "
+          "X=hulls\n"
+          "               T=transp  F5=wireframe  F6=shadow  F7=skybox  "
+          "F8=reflect\n"
+          "  Overlays   : F3=profiler  F9=sensors  F10=modelinfo\n"
+          "  Perturb    : Dbl-click=select  Ctrl+Left=torque  Ctrl+Right=force\n"
+          "  Other      : P=screenshot  Backspace=reset vis\n");
 
   // ── Render loop ────────────────────────────────────────────────────────────
-  while (!stop.stop_requested() && running_.load() &&
-         !glfwWindowShouldClose(window)) {
-
+  while (!stop.stop_requested() && running_.load() && !glfwWindowShouldClose(window)) {
     // Sync latest physics qpos into vis_data (try_lock — never blocks SimLoop)
     {
       std::lock_guard lock(viz_mutex_);
@@ -165,11 +156,10 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
         viz_dirty_ = false;
       }
     }
-    mj_forward(model_, vis_data); // update kinematics + sensor data
+    mj_forward(model_, vis_data);  // update kinematics + sensor data
 
     // Sample RTF into rolling buffer
-    const float cur_rtf =
-        static_cast<float>(rtf_.load(std::memory_order_relaxed));
+    const float cur_rtf = static_cast<float>(rtf_.load(std::memory_order_relaxed));
     vs.push_rtf(cur_rtf);
     vs.update_figure();
 
@@ -190,8 +180,7 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
     if (vs.show_solver) {
       RenderSolverOverlay(vs, viewport);
     } else {
-      mjr_overlay(mjFONT_NORMAL, mjGRID_BOTTOMLEFT, viewport, "F1: help",
-                  nullptr, &con);
+      mjr_overlay(mjFONT_NORMAL, mjGRID_BOTTOMLEFT, viewport, "F1: help", nullptr, &con);
     }
 
     // Top-left: help pages (F1) take priority over sensor (F9)
@@ -220,10 +209,9 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
       // RTC_SESSION_DIR 이 설정돼 있으면 그 아래 sim/, 아니면 3단 체인으로
       // 해석된 logging_root 아래 sim/ 에 저장.
       static const std::filesystem::path kSimDir = [] {
-        const char *env = std::getenv("RTC_SESSION_DIR");
-        std::filesystem::path base = (env && env[0] != '\0')
-                                         ? std::filesystem::path(env)
-                                         : rtc::ResolveLoggingRoot();
+        const char* env = std::getenv("RTC_SESSION_DIR");
+        std::filesystem::path base =
+            (env && env[0] != '\0') ? std::filesystem::path(env) : rtc::ResolveLoggingRoot();
         std::filesystem::path sim = base / "sim";
         std::error_code err_code;
         std::filesystem::create_directories(sim, err_code);
@@ -235,11 +223,10 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
       const auto t = std::chrono::system_clock::to_time_t(now);
       char ts[32];
       std::strftime(ts, sizeof(ts), "%H%M%S", std::localtime(&t));
-      std::snprintf(fname, sizeof(fname), "%s/screenshot_%s.ppm",
-                    kSimDir.c_str(), ts);
+      std::snprintf(fname, sizeof(fname), "%s/screenshot_%s.ppm", kSimDir.c_str(), ts);
 
       // Write binary PPM (flip Y: OpenGL stores bottom-up)
-      FILE *f = std::fopen(fname, "wb");
+      FILE* f = std::fopen(fname, "wb");
       if (f) {
         std::fprintf(f, "P6\n%d %d\n255\n", width, height);
         for (int y = height - 1; y >= 0; --y) {
@@ -272,4 +259,4 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
 #endif
 }
 
-} // namespace rtc
+}  // namespace rtc

@@ -16,4 +16,4 @@
 
 namespace rtc {
 void ForceBuiltinControllerRegistration() {}
-} // namespace rtc
+}  // namespace rtc

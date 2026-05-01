@@ -1,10 +1,10 @@
 #pragma once
 
-#include <memory>
-#include <vector>
-
 #include "rtc_tsid/core/formulation_base.hpp"
 #include "rtc_tsid/solver/qp_solver_wrapper.hpp"
+
+#include <memory>
+#include <vector>
 
 namespace rtc::tsid {
 
@@ -16,10 +16,8 @@ namespace rtc::tsid {
 // ────────────────────────────────────────────────
 class WQPFormulation final : public FormulationBase {
  public:
-  void init(const pinocchio::Model& model,
-            const RobotModelInfo& robot_info,
-            const ContactManagerConfig& contact_cfg,
-            const YAML::Node& config) override;
+  void init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
+            const ContactManagerConfig& contact_cfg, const YAML::Node& config) override;
 
   void add_task(std::unique_ptr<TaskBase> task) override;
   void add_constraint(std::unique_ptr<ConstraintBase> constraint) override;
@@ -29,15 +27,11 @@ class WQPFormulation final : public FormulationBase {
 
   void apply_preset(const PhasePreset& preset) noexcept override;
 
-  [[nodiscard]] const SolveResult& solve(
-      const PinocchioCache& cache,
-      const ControlReference& ref,
-      const ContactState& contacts,
-      const RobotModelInfo& robot_info) noexcept override;
+  [[nodiscard]] const SolveResult& solve(const PinocchioCache& cache, const ControlReference& ref,
+                                         const ContactState& contacts,
+                                         const RobotModelInfo& robot_info) noexcept override;
 
-  [[nodiscard]] std::string_view type() const noexcept override {
-    return "wqp";
-  }
+  [[nodiscard]] std::string_view type() const noexcept override { return "wqp"; }
 
  private:
   int nv_{0};

@@ -32,14 +32,7 @@
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
-#include <yaml-cpp/yaml.h>
-
-#include <chrono>
-#include <cmath>
-#include <filesystem>
-#include <memory>
-#include <thread>
-
+#include "mock_phase_manager.hpp"
 #include "rtc_mpc/handler/light_contact_mpc.hpp"
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
@@ -49,14 +42,19 @@
 #include "rtc_mpc/thread/handler_mpc_thread.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 
-#include "mock_phase_manager.hpp"
+#include <yaml-cpp/yaml.h>
+
+#include <chrono>
+#include <cmath>
+#include <filesystem>
+#include <memory>
+#include <thread>
 
 namespace {
 
-constexpr const char *kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+constexpr const char* kPandaUrdf = RTC_PANDA_URDF_PATH;
 
-constexpr const char *kPhaseACostYaml = R"(
+constexpr const char* kPhaseACostYaml = R"(
 horizon_length: 15
 dt: 0.01
 w_frame_placement: 100.0
@@ -70,7 +68,7 @@ F_target: [0, 0, 0, 0, 0, 0]
 custom_weights: {}
 )";
 
-constexpr const char *kPhaseBCostYaml = R"(
+constexpr const char* kPhaseBCostYaml = R"(
 horizon_length: 15
 dt: 0.01
 w_frame_placement: 150.0
@@ -97,7 +95,7 @@ YAML::Node MinimalManagerConfig() {
 }
 
 class MpcThreadIntegrationTest : public ::testing::Test {
-protected:
+ protected:
   void SetUp() override {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed — run ./install.sh verify";
@@ -112,15 +110,14 @@ contact_frames:
   - name: panda_rightfinger
     dim: 3
 )");
-    ASSERT_EQ(model_handler_.Init(model_, robot_cfg),
-              rtc::mpc::RobotModelInitError::kNoError);
+    ASSERT_EQ(model_handler_.Init(model_, robot_cfg), rtc::mpc::RobotModelInitError::kNoError);
 
     // Pre-build both phase cost configs once.
-    ASSERT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(
-                  YAML::Load(kPhaseACostYaml), model_handler_, cost_A_),
+    ASSERT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(YAML::Load(kPhaseACostYaml), model_handler_,
+                                                      cost_A_),
               rtc::mpc::PhaseCostConfigError::kNoError);
-    ASSERT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(
-                  YAML::Load(kPhaseBCostYaml), model_handler_, cost_B_),
+    ASSERT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(YAML::Load(kPhaseBCostYaml), model_handler_,
+                                                      cost_B_),
               rtc::mpc::PhaseCostConfigError::kNoError);
 
     // EE target at neutral FK; Phase B shifts +10 cm along z.
@@ -144,8 +141,8 @@ contact_frames:
     return ctx;
   }
 
-  rtc::mpc::test_utils::MockPhaseManager::Params
-  MakeMockParams(int transition_tick, bool cross_mode = false) const {
+  rtc::mpc::test_utils::MockPhaseManager::Params MakeMockParams(int transition_tick,
+                                                                bool cross_mode = false) const {
     rtc::mpc::test_utils::MockPhaseManager::Params p;
     p.cost_config_A = cost_A_;
     p.cost_config_B = cost_B_;
@@ -171,12 +168,11 @@ contact_frames:
     cfg.max_al_iters = 10;
     rtc::mpc::OCPLimits limits{};
     const auto ctx = MakeInitialContextForHandler();
-    EXPECT_EQ(h->Init(cfg, model_handler_, limits, ctx),
-              rtc::mpc::MPCInitError::kNoError);
+    EXPECT_EQ(h->Init(cfg, model_handler_, limits, ctx), rtc::mpc::MPCInitError::kNoError);
     return h;
   }
 
-  void WriteNeutralState(rtc::mpc::MPCSolutionManager &mgr) const {
+  void WriteNeutralState(rtc::mpc::MPCSolutionManager& mgr) const {
     const Eigen::VectorXd q = pinocchio::neutral(model_);
     const Eigen::VectorXd v = Eigen::VectorXd::Zero(model_handler_.nv());
     mgr.WriteState(q, v, 0);
@@ -184,7 +180,7 @@ contact_frames:
 
   rtc::mpc::MpcThreadLaunchConfig MakeLaunchCfg(double hz = 20.0) const {
     rtc::mpc::MpcThreadLaunchConfig launch{};
-    launch.main.cpu_core = -1; // no pinning in unit tests
+    launch.main.cpu_core = -1;  // no pinning in unit tests
     launch.main.sched_policy = 0;
     launch.num_workers = 0;
     launch.target_frequency_hz = hz;
@@ -231,7 +227,7 @@ TEST_F(MpcThreadIntegrationTest, DefaultPhaseConvergesFreeFlight) {
   WriteNeutralState(mgr);
 
   auto mock = std::make_unique<rtc::mpc::test_utils::MockPhaseManager>(
-      MakeMockParams(/*transition_tick=*/-1)); // never auto-transition
+      MakeMockParams(/*transition_tick=*/-1));  // never auto-transition
   auto handler = MakeInitialisedLightHandler();
 
   rtc::mpc::HandlerMPCThread thread;
@@ -259,12 +255,12 @@ TEST_F(MpcThreadIntegrationTest, PhaseTransitionPickedUpWithinOneTick) {
   WriteNeutralState(mgr);
 
   auto mock = std::make_unique<rtc::mpc::test_utils::MockPhaseManager>(
-      MakeMockParams(/*transition_tick=*/5)); // auto-transition early
+      MakeMockParams(/*transition_tick=*/5));  // auto-transition early
   auto handler = MakeInitialisedLightHandler();
 
   rtc::mpc::HandlerMPCThread thread;
   thread.Configure(model_handler_, std::move(handler), std::move(mock));
-  thread.Init(mgr, MakeLaunchCfg(20.0)); // 50 ms period
+  thread.Init(mgr, MakeLaunchCfg(20.0));  // 50 ms period
   thread.Start();
 
   // 20 Hz × 5 ticks = ~250 ms for auto-transition; poll in 50 ms chunks until
@@ -284,9 +280,8 @@ TEST_F(MpcThreadIntegrationTest, PhaseTransitionPickedUpWithinOneTick) {
   thread.RequestStop();
   thread.Join();
 
-  EXPECT_TRUE(transitioned)
-      << "MockPhaseManager auto-transition (tick=5) did not surface within "
-         "the 1-second safety window";
+  EXPECT_TRUE(transitioned) << "MockPhaseManager auto-transition (tick=5) did not surface within "
+                               "the 1-second safety window";
   EXPECT_EQ(thread.LastPhaseId(), 1);
   EXPECT_EQ(thread.FailedSolves(), 0u)
       << "Light_contact handler should survive a weight/target swap "
@@ -302,7 +297,7 @@ TEST_F(MpcThreadIntegrationTest, ForcePhaseOverridesGuards) {
 
   auto mock = std::make_unique<rtc::mpc::test_utils::MockPhaseManager>(
       MakeMockParams(/*transition_tick=*/-1));
-  rtc::mpc::test_utils::MockPhaseManager *mock_raw = mock.get();
+  rtc::mpc::test_utils::MockPhaseManager* mock_raw = mock.get();
   auto handler = MakeInitialisedLightHandler();
 
   rtc::mpc::HandlerMPCThread thread;
@@ -395,17 +390,14 @@ TEST_F(MpcThreadIntegrationTest, SolutionManagerConsumptionE2E) {
   int valid_count = 0;
   double max_u_fb_abs = 0.0;
   const auto start = std::chrono::steady_clock::now();
-  while (std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::steady_clock::now() - start)
+  while (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+                                                               start)
              .count() < 500) {
     const auto now = std::chrono::steady_clock::now();
     const auto now_ns = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            now.time_since_epoch())
-            .count());
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count());
     mgr.WriteState(q, v, now_ns);
-    const bool ok = mgr.ComputeReference(q, v, now_ns, q_ref, v_ref, a_ff,
-                                         lambda_ref, u_fb, meta);
+    const bool ok = mgr.ComputeReference(q, v, now_ns, q_ref, v_ref, a_ff, lambda_ref, u_fb, meta);
     if (ok) {
       ++valid_count;
       for (int i = 0; i < u_fb.size(); ++i) {
@@ -417,8 +409,7 @@ TEST_F(MpcThreadIntegrationTest, SolutionManagerConsumptionE2E) {
   thread.RequestStop();
   thread.Join();
 
-  EXPECT_GT(valid_count, 10)
-      << "Expected many valid ComputeReference calls over 500 ms";
+  EXPECT_GT(valid_count, 10) << "Expected many valid ComputeReference calls over 500 ms";
   EXPECT_LT(mgr.StaleCount(), mgr.MaxStaleSolutions())
       << "Stale counter should stay below threshold";
   EXPECT_EQ(thread.FailedSolves(), 0u);
@@ -449,8 +440,7 @@ TEST_F(MpcThreadIntegrationTest, CrossModeSwapSucceedsOnPhaseTransition) {
   const int lf = model_handler_.contact_frames()[0].frame_id;
   const int rf = model_handler_.contact_frames()[1].frame_id;
   params.contact_plan_B.frames = model_handler_.contact_frames();
-  params.contact_plan_B.phases.push_back(
-      rtc::mpc::ContactPhase{{lf, rf}, 0.0, 100.0});
+  params.contact_plan_B.phases.push_back(rtc::mpc::ContactPhase{{lf, rf}, 0.0, 100.0});
 
   auto mock = std::make_unique<rtc::mpc::test_utils::MockPhaseManager>(params);
   auto handler = MakeInitialisedLightHandler();
@@ -477,8 +467,7 @@ mpc:
 )");
 
   rtc::mpc::HandlerMPCThread thread;
-  thread.Configure(model_handler_, std::move(handler), std::move(mock),
-                   cfg_light, cfg_rich);
+  thread.Configure(model_handler_, std::move(handler), std::move(mock), cfg_light, cfg_rich);
   thread.Init(mgr, MakeLaunchCfg(20.0));
   thread.Start();
 
@@ -498,16 +487,14 @@ mpc:
   thread.RequestStop();
   thread.Join();
 
-  ASSERT_TRUE(saw_phase_b)
-      << "MockPhaseManager cross-mode auto-transition (tick=5) never surfaced";
+  ASSERT_TRUE(saw_phase_b) << "MockPhaseManager cross-mode auto-transition (tick=5) never surfaced";
   EXPECT_EQ(thread.LastPhaseId(), 1);
   // The swap branch is the only path that can return `kRebuildRequired`; if
   // it did, the swap failed and the rich handler never took over. We allow
   // ContactRich Risk #14 NaN flakes to bump FailedSolves (kSolverException),
   // but kRebuildRequired must NOT be the last error seen.
   const int last_err = thread.LastSolveErrorCode();
-  EXPECT_NE(last_err,
-            static_cast<int>(rtc::mpc::MPCSolveError::kRebuildRequired))
+  EXPECT_NE(last_err, static_cast<int>(rtc::mpc::MPCSolveError::kRebuildRequired))
       << "Cross-mode swap reported kRebuildRequired — factory rejected the "
          "config or handler_ failed to take ownership of the new mode.";
   // Sanity: we did run solves after the transition. TotalSolves grows each
@@ -516,4 +503,4 @@ mpc:
   EXPECT_GE(thread.TotalSolves(), 5u);
 }
 
-} // namespace
+}  // namespace

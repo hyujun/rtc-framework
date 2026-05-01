@@ -32,7 +32,7 @@ namespace rtc {
 
 template <int Buckets = 20, int BucketWidthUs = 100, int BudgetUs = 2000>
 class TimingProfilerBase {
-public:
+ public:
   static constexpr int kBuckets = Buckets;
   static constexpr int kBucketWidthUs = BucketWidthUs;
   static constexpr double kBudgetUs = static_cast<double>(BudgetUs);
@@ -75,8 +75,7 @@ public:
     last_us_.store(us, std::memory_order_relaxed);
 
     // Single-producer RMW — relaxed load+store is safe
-    sum_us_.store(sum_us_.load(std::memory_order_relaxed) + us,
-                  std::memory_order_relaxed);
+    sum_us_.store(sum_us_.load(std::memory_order_relaxed) + us, std::memory_order_relaxed);
     sum_sq_us_.store(sum_sq_us_.load(std::memory_order_relaxed) + us * us,
                      std::memory_order_relaxed);
 
@@ -84,10 +83,9 @@ public:
       over_budget_.fetch_add(1, std::memory_order_relaxed);
     }
 
-    const int bucket = std::min(
-        static_cast<int>(us / static_cast<double>(kBucketWidthUs)), kBuckets);
-    histogram_[static_cast<std::size_t>(bucket)].fetch_add(
-        1, std::memory_order_relaxed);
+    const int bucket =
+        std::min(static_cast<int>(us / static_cast<double>(kBucketWidthUs)), kBuckets);
+    histogram_[static_cast<std::size_t>(bucket)].fetch_add(1, std::memory_order_relaxed);
 
     // count_ last, with release — acts as a publish barrier for all of the
     // above relaxed stores.
@@ -110,26 +108,21 @@ public:
     s.over_budget = over_budget_.load(std::memory_order_relaxed);
 
     if (s.count > 0) {
-      s.mean_us = sum_us_.load(std::memory_order_relaxed) /
-                  static_cast<double>(s.count);
-      const double var = sum_sq_us_.load(std::memory_order_relaxed) /
-                             static_cast<double>(s.count) -
+      s.mean_us = sum_us_.load(std::memory_order_relaxed) / static_cast<double>(s.count);
+      const double var = sum_sq_us_.load(std::memory_order_relaxed) / static_cast<double>(s.count) -
                          s.mean_us * s.mean_us;
       s.stddev_us = (var > 0.0) ? std::sqrt(var) : 0.0;
     }
 
     for (int b = 0; b <= kBuckets; ++b) {
       s.histogram[static_cast<std::size_t>(b)] =
-          histogram_[static_cast<std::size_t>(b)].load(
-              std::memory_order_relaxed);
+          histogram_[static_cast<std::size_t>(b)].load(std::memory_order_relaxed);
     }
     ComputePercentiles(s);
     return s;
   }
 
-  [[nodiscard]] double LastUs() const noexcept {
-    return last_us_.load(std::memory_order_relaxed);
-  }
+  [[nodiscard]] double LastUs() const noexcept { return last_us_.load(std::memory_order_relaxed); }
 
   void ResetBase() noexcept {
     count_.store(0, std::memory_order_relaxed);
@@ -139,60 +132,55 @@ public:
     sum_us_.store(0.0, std::memory_order_relaxed);
     sum_sq_us_.store(0.0, std::memory_order_relaxed);
     over_budget_.store(0, std::memory_order_relaxed);
-    for (auto &b : histogram_)
+    for (auto& b : histogram_)
       b.store(0, std::memory_order_relaxed);
   }
 
-protected:
+ protected:
   // ── Phase-level helpers (for subclass use) ────────────────────────────────
 
-  static void AtomicMin(std::atomic<double> &a, double v) noexcept {
+  static void AtomicMin(std::atomic<double>& a, double v) noexcept {
     double old = a.load(std::memory_order_relaxed);
-    while (v < old &&
-           !a.compare_exchange_weak(old, v, std::memory_order_relaxed)) {
+    while (v < old && !a.compare_exchange_weak(old, v, std::memory_order_relaxed)) {
     }
   }
 
-  static void AtomicMax(std::atomic<double> &a, double v) noexcept {
+  static void AtomicMax(std::atomic<double>& a, double v) noexcept {
     double old = a.load(std::memory_order_relaxed);
-    while (v > old &&
-           !a.compare_exchange_weak(old, v, std::memory_order_relaxed)) {
+    while (v > old && !a.compare_exchange_weak(old, v, std::memory_order_relaxed)) {
     }
   }
 
-  static void UpdatePhase(std::atomic<double> &sum,
-                          std::atomic<double> &min_val,
-                          std::atomic<double> &max_val, double us) noexcept {
-    sum.store(sum.load(std::memory_order_relaxed) + us,
-              std::memory_order_relaxed);
+  static void UpdatePhase(std::atomic<double>& sum, std::atomic<double>& min_val,
+                          std::atomic<double>& max_val, double us) noexcept {
+    sum.store(sum.load(std::memory_order_relaxed) + us, std::memory_order_relaxed);
     AtomicMin(min_val, us);
     AtomicMax(max_val, us);
   }
 
-  [[nodiscard]] static PhaseStats
-  LoadPhaseStats(const std::atomic<double> &sum,
-                 const std::atomic<double> &min_val,
-                 const std::atomic<double> &max_val, uint64_t count) noexcept {
+  [[nodiscard]] static PhaseStats LoadPhaseStats(const std::atomic<double>& sum,
+                                                 const std::atomic<double>& min_val,
+                                                 const std::atomic<double>& max_val,
+                                                 uint64_t count) noexcept {
     PhaseStats ps;
-    ps.mean_us =
-        sum.load(std::memory_order_relaxed) / static_cast<double>(count);
+    ps.mean_us = sum.load(std::memory_order_relaxed) / static_cast<double>(count);
     const double raw_min = min_val.load(std::memory_order_relaxed);
     ps.min_us = (raw_min >= 1e8) ? 0.0 : raw_min;
     ps.max_us = max_val.load(std::memory_order_relaxed);
     return ps;
   }
 
-  static void ResetPhase(std::atomic<double> &sum, std::atomic<double> &min_val,
-                         std::atomic<double> &max_val) noexcept {
+  static void ResetPhase(std::atomic<double>& sum, std::atomic<double>& min_val,
+                         std::atomic<double>& max_val) noexcept {
     sum.store(0.0, std::memory_order_relaxed);
     min_val.store(1e9, std::memory_order_relaxed);
     max_val.store(0.0, std::memory_order_relaxed);
   }
 
-private:
+ private:
   // ── Percentile computation ────────────────────────────────────────────────
 
-  static void ComputePercentiles(BaseStats &s) noexcept {
+  static void ComputePercentiles(BaseStats& s) noexcept {
     if (s.count == 0)
       return;
     const double p95_rank = static_cast<double>(s.count) * 0.95;
@@ -206,13 +194,11 @@ private:
       cumulative += s.histogram[static_cast<std::size_t>(b)];
       const uint64_t bucket_count = s.histogram[static_cast<std::size_t>(b)];
       if (!p95_done && cumulative >= static_cast<uint64_t>(p95_rank)) {
-        s.p95_us =
-            InterpolateBucket(b, prev_cum, bucket_count, p95_rank, s.max_us);
+        s.p95_us = InterpolateBucket(b, prev_cum, bucket_count, p95_rank, s.max_us);
         p95_done = true;
       }
       if (!p99_done && cumulative >= static_cast<uint64_t>(p99_rank)) {
-        s.p99_us =
-            InterpolateBucket(b, prev_cum, bucket_count, p99_rank, s.max_us);
+        s.p99_us = InterpolateBucket(b, prev_cum, bucket_count, p99_rank, s.max_us);
         p99_done = true;
       }
       if (p95_done && p99_done)
@@ -230,17 +216,15 @@ private:
   // but linear interpolation assumes uniform fill within the bucket — when
   // samples cluster in the lower part of a bucket (e.g. all 27 µs samples
   // in the [0, 100) bucket), the unclamped estimate can exceed max.
-  static double InterpolateBucket(int bucket_idx, uint64_t prev_cum,
-                                  uint64_t bucket_count, double target_rank,
-                                  double max_us) noexcept {
+  static double InterpolateBucket(int bucket_idx, uint64_t prev_cum, uint64_t bucket_count,
+                                  double target_rank, double max_us) noexcept {
     const double bucket_lo = static_cast<double>(bucket_idx * kBucketWidthUs);
     if (bucket_count == 0)
       return std::min(bucket_lo, max_us);
-    const double frac = (target_rank - static_cast<double>(prev_cum)) /
-                        static_cast<double>(bucket_count);
-    const double bucket_span = (bucket_idx >= kBuckets)
-                                   ? std::max(0.0, max_us - bucket_lo)
-                                   : static_cast<double>(kBucketWidthUs);
+    const double frac =
+        (target_rank - static_cast<double>(prev_cum)) / static_cast<double>(bucket_count);
+    const double bucket_span = (bucket_idx >= kBuckets) ? std::max(0.0, max_us - bucket_lo)
+                                                        : static_cast<double>(kBucketWidthUs);
     return std::min(bucket_lo + frac * bucket_span, max_us);
   }
 
@@ -252,10 +236,9 @@ private:
   std::atomic<double> sum_us_{0.0};
   std::atomic<double> sum_sq_us_{0.0};
   std::atomic<uint64_t> over_budget_{0};
-  std::array<std::atomic<uint64_t>, static_cast<std::size_t>(kBuckets + 1)>
-      histogram_{};
+  std::array<std::atomic<uint64_t>, static_cast<std::size_t>(kBuckets + 1)> histogram_{};
 };
 
-} // namespace rtc
+}  // namespace rtc
 
-#endif // RTC_BASE_TIMING_TIMING_PROFILER_BASE_HPP_
+#endif  // RTC_BASE_TIMING_TIMING_PROFILER_BASE_HPP_

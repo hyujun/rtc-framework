@@ -28,6 +28,7 @@ from rtc_tools.validation.compare_mjcf_urdf import (
 # Helper utilities
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestParseFloats:
     def test_basic(self):
         assert _parse_floats("1.0 2.0 3.0") == [1.0, 2.0, 3.0]
@@ -83,6 +84,7 @@ class TestFmt:
 # ═══════════════════════════════════════════════════════════════════════════
 # Data classes
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestInertialParams:
     def test_defaults(self):
@@ -168,7 +170,7 @@ class TestParseUrdf:
         ip = links["base_link_inertia"]
         assert ip.diag_inertia[0] == pytest.approx(0.00443)  # ixx
         assert ip.diag_inertia[1] == pytest.approx(0.00443)  # iyy
-        assert ip.diag_inertia[2] == pytest.approx(0.0072)   # izz
+        assert ip.diag_inertia[2] == pytest.approx(0.0072)  # izz
 
     def test_off_diagonal_inertia(self, tmp_path):
         urdf = tmp_path / "test.urdf"
@@ -177,8 +179,8 @@ class TestParseUrdf:
 
         ip = links["shoulder_link"]
         assert ip.off_diag_inertia[0] == pytest.approx(0.001)  # ixy
-        assert ip.off_diag_inertia[1] == pytest.approx(0.0)    # ixz
-        assert ip.off_diag_inertia[2] == pytest.approx(0.0)    # iyz
+        assert ip.off_diag_inertia[1] == pytest.approx(0.0)  # ixz
+        assert ip.off_diag_inertia[2] == pytest.approx(0.0)  # iyz
 
     def test_link_origin(self, tmp_path):
         urdf = tmp_path / "test.urdf"
@@ -222,6 +224,7 @@ class TestParseUrdf:
         # Only links in MJCF_TO_URDF_LINK.values() are parsed
         for name in links:
             from rtc_tools.validation.compare_mjcf_urdf import MJCF_TO_URDF_LINK
+
             assert name in MJCF_TO_URDF_LINK.values()
 
     def test_ignores_unknown_joints(self, tmp_path):
@@ -336,6 +339,7 @@ class TestParseMjcf:
 # compare — 전체 비교
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestCompare:
     def test_identical_models_zero_mismatches(self, tmp_path, capsys):
         """동일한 파라미터를 가진 MJCF/URDF 비교 시 mismatch=0."""
@@ -366,8 +370,7 @@ class TestCompare:
 
     def test_joint_range_mismatch(self, tmp_path, capsys):
         """관절 범위가 다르면 mismatch 카운트 증가."""
-        mjcf_text = MJCF_TEMPLATE.replace(
-            'range="-6.2832 6.2832"', 'range="-3.14 3.14"')
+        mjcf_text = MJCF_TEMPLATE.replace('range="-6.2832 6.2832"', 'range="-3.14 3.14"')
         mjcf = tmp_path / "test.xml"
         mjcf.write_text(mjcf_text)
         urdf = tmp_path / "test.urdf"

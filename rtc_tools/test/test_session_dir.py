@@ -24,7 +24,7 @@ from rtc_tools.utils.session_dir import (
 # Fixtures
 # ─────────────────────────────────────────────────────────────────────────────
 
-_SESSION_ENV_VARS = ('RTC_SESSION_DIR', 'COLCON_PREFIX_PATH')
+_SESSION_ENV_VARS = ("RTC_SESSION_DIR", "COLCON_PREFIX_PATH")
 
 
 @pytest.fixture(autouse=True)
@@ -38,8 +38,10 @@ def _clean_env(monkeypatch):
 @pytest.fixture
 def chdir(monkeypatch):
     """모니터링 주의: pytest monkeypatch 는 cwd 복원을 자동 처리."""
+
     def _chdir(path):
         monkeypatch.chdir(path)
+
     return _chdir
 
 
@@ -47,12 +49,13 @@ def chdir(monkeypatch):
 # resolve_logging_root — 3 단 체인
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def test_logging_root_uses_colcon_prefix_path_parent(tmp_path, monkeypatch):
     ws = tmp_path / "ws"
     install = ws / "install"
     install.mkdir(parents=True)
 
-    monkeypatch.setenv('COLCON_PREFIX_PATH', str(install))
+    monkeypatch.setenv("COLCON_PREFIX_PATH", str(install))
 
     assert resolve_logging_root() == str(ws / "logging_data")
 
@@ -64,7 +67,7 @@ def test_logging_root_first_colon_entry_wins(tmp_path, monkeypatch):
     (ws2 / "install").mkdir(parents=True)
 
     joined = f"{ws1 / 'install'}:{ws2 / 'install'}"
-    monkeypatch.setenv('COLCON_PREFIX_PATH', joined)
+    monkeypatch.setenv("COLCON_PREFIX_PATH", joined)
 
     assert resolve_logging_root() == str(ws1 / "logging_data")
 
@@ -75,7 +78,7 @@ def test_logging_root_falls_back_when_prefix_missing(tmp_path, monkeypatch, chdi
     (ws / "install").mkdir(parents=True)
     (ws / "src").mkdir(parents=True)
 
-    monkeypatch.setenv('COLCON_PREFIX_PATH', str(ghost))
+    monkeypatch.setenv("COLCON_PREFIX_PATH", str(ghost))
     chdir(ws)
 
     assert resolve_logging_root() == str(ws / "logging_data")
@@ -104,16 +107,16 @@ def test_logging_root_final_fallback_is_cwd(tmp_path, chdir):
 # create_session_dir — 서브디렉토리 생성
 # ─────────────────────────────────────────────────────────────────────────────
 
-_EXPECTED_SUBDIRS = ('controller', 'monitor', 'device', 'sim', 'plots', 'motions')
+_EXPECTED_SUBDIRS = ("controller", "monitor", "device", "sim", "plots", "motions")
 
 
 def test_create_session_dir_makes_all_subdirs(tmp_path):
     session = create_session_dir(str(tmp_path / "logging_data"))
 
     # 이름은 YYMMDD_HHMM 패턴
-    assert os.path.basename(session).count('_') == 1
+    assert os.path.basename(session).count("_") == 1
     name = os.path.basename(session)
-    assert len(name) == 11 and name[6] == '_'
+    assert len(name) == 11 and name[6] == "_"
 
     for sub in _EXPECTED_SUBDIRS:
         assert os.path.isdir(os.path.join(session, sub))
@@ -129,9 +132,10 @@ def test_create_session_dir_uses_resolve_when_root_missing(tmp_path, chdir):
 # get_session_dir / get_or_create_session_dir — env 우선
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def test_get_session_dir_reads_rtc_session_dir(tmp_path, monkeypatch):
     explicit = tmp_path / "explicit"
-    monkeypatch.setenv('RTC_SESSION_DIR', str(explicit))
+    monkeypatch.setenv("RTC_SESSION_DIR", str(explicit))
     assert get_session_dir() == str(explicit)
 
 
@@ -141,7 +145,7 @@ def test_get_session_dir_returns_none_when_unset():
 
 def test_get_or_create_uses_env_if_set(tmp_path, monkeypatch):
     explicit = tmp_path / "from_env"
-    monkeypatch.setenv('RTC_SESSION_DIR', str(explicit))
+    monkeypatch.setenv("RTC_SESSION_DIR", str(explicit))
 
     session = get_or_create_session_dir()
     assert session == str(explicit)
@@ -161,11 +165,11 @@ def test_get_or_create_generates_new_when_unset(tmp_path, chdir):
 # cleanup_old_sessions
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def test_cleanup_old_sessions_keeps_only_max(tmp_path):
     root = tmp_path / "logging_data"
     root.mkdir()
-    for name in ('260101_0900', '260102_1000', '260103_1100',
-                 '260104_1200', '260105_1300'):
+    for name in ("260101_0900", "260102_1000", "260103_1100", "260104_1200", "260105_1300"):
         (root / name).mkdir()
     # 비정상 이름 — 정리 대상 아님
     (root / "not_a_session").mkdir()
@@ -173,7 +177,7 @@ def test_cleanup_old_sessions_keeps_only_max(tmp_path):
     cleanup_old_sessions(str(root), 2)
 
     remaining = sorted(p.name for p in root.iterdir())
-    assert remaining == ['260104_1200', '260105_1300', 'not_a_session']
+    assert remaining == ["260104_1200", "260105_1300", "not_a_session"]
 
 
 def test_cleanup_old_sessions_no_op_on_missing_root(tmp_path):

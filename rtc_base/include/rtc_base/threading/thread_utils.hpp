@@ -8,20 +8,20 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
-#include <algorithm> // std::min_element, std::max_element
-#include <array> // std::array (NamedConfig table in ValidateSystemThreadConfigs)
-#include <cerrno>  // errno
-#include <cmath>   // std::sqrt
-#include <cstdint> // std::uint8_t (ThreadHealthFlag underlying type)
-#include <cstdio>  // fopen, fclose, fscanf
+#include <algorithm>  // std::min_element, std::max_element
+#include <array>      // std::array (NamedConfig table in ValidateSystemThreadConfigs)
+#include <cerrno>     // errno
+#include <cmath>      // std::sqrt
+#include <cstdint>    // std::uint8_t (ThreadHealthFlag underlying type)
+#include <cstdio>     // fopen, fclose, fscanf
 #include <cstring>
-#include <map>     // std::map
-#include <numeric> // std::accumulate
-#include <set>     // std::set
+#include <map>      // std::map
+#include <numeric>  // std::accumulate
+#include <set>      // std::set
 #include <string>
-#include <tuple>   // std::tuple
-#include <utility> // std::pair
-#include <vector>  // std::vector
+#include <tuple>    // std::tuple
+#include <utility>  // std::pair
+#include <vector>   // std::vector
 
 namespace rtc {
 
@@ -42,28 +42,27 @@ inline std::string SafeStrerror(int errnum) noexcept {
   return "Unknown error " + std::to_string(errnum);
 #else
   // GNU strerror_r: returns char* (may or may not use buf)
-  const char *result = strerror_r(errnum, buf, sizeof(buf));
+  const char* result = strerror_r(errnum, buf, sizeof(buf));
   return std::string(result);
 #endif
 }
 
 // Validate ThreadConfig before applying
 // Returns empty string if valid, error message if invalid
-inline std::string ValidateThreadConfig(const ThreadConfig &cfg) noexcept {
+inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
   std::string errors;
   const int max_cores = GetOnlineCpuCount();
 
   // Validate CPU core
   if (cfg.cpu_core < 0 || cfg.cpu_core >= max_cores) {
-    errors += "Invalid CPU core " + std::to_string(cfg.cpu_core) +
-              " (valid range: 0-" + std::to_string(max_cores - 1) + "); ";
+    errors += "Invalid CPU core " + std::to_string(cfg.cpu_core) + " (valid range: 0-" +
+              std::to_string(max_cores - 1) + "); ";
   }
 
   // Validate scheduler policy
   if (cfg.sched_policy != SCHED_FIFO && cfg.sched_policy != SCHED_RR &&
       cfg.sched_policy != SCHED_OTHER) {
-    errors +=
-        "Invalid scheduler policy " + std::to_string(cfg.sched_policy) + "; ";
+    errors += "Invalid scheduler policy " + std::to_string(cfg.sched_policy) + "; ";
   }
 
   // Validate priorities for RT scheduling
@@ -73,8 +72,7 @@ inline std::string ValidateThreadConfig(const ThreadConfig &cfg) noexcept {
   }
 
   // Validate nice value for SCHED_OTHER
-  if (cfg.sched_policy == SCHED_OTHER &&
-      (cfg.nice_value < -20 || cfg.nice_value > 19)) {
+  if (cfg.sched_policy == SCHED_OTHER && (cfg.nice_value < -20 || cfg.nice_value > 19)) {
     errors += "Nice value must be -20 to 19 for SCHED_OTHER; ";
   }
 
@@ -92,7 +90,7 @@ inline std::string ValidateThreadConfig(const ThreadConfig &cfg) noexcept {
 // Requirements:
 // - CAP_SYS_NICE capability or membership in 'realtime' group
 // - /etc/security/limits.conf: @realtime - rtprio 99
-[[nodiscard]] inline bool ApplyThreadConfig(const ThreadConfig &cfg) noexcept {
+[[nodiscard]] inline bool ApplyThreadConfig(const ThreadConfig& cfg) noexcept {
   // Validate configuration first
   std::string validation_errors = ValidateThreadConfig(cfg);
   if (!validation_errors.empty()) {
@@ -147,8 +145,8 @@ inline std::string ValidateThreadConfig(const ThreadConfig &cfg) noexcept {
 // Attempts to apply as much configuration as possible, even if RT scheduling
 // fails Returns {full_success, warnings} - full_success is true only if
 // everything succeeded
-[[nodiscard]] inline std::pair<bool, std::string>
-ApplyThreadConfigWithFallback(const ThreadConfig &cfg) noexcept {
+[[nodiscard]] inline std::pair<bool, std::string> ApplyThreadConfigWithFallback(
+    const ThreadConfig& cfg) noexcept {
   std::string validation_errors = ValidateThreadConfig(cfg);
   if (!validation_errors.empty()) {
     return {false, "Validation failed: " + validation_errors};
@@ -177,8 +175,8 @@ ApplyThreadConfigWithFallback(const ThreadConfig &cfg) noexcept {
       rt_success = true;
     } else {
       full_success = false;
-      warnings += "RT scheduling failed, falling back to SCHED_OTHER: " +
-                  SafeStrerror(errno) + "; ";
+      warnings +=
+          "RT scheduling failed, falling back to SCHED_OTHER: " + SafeStrerror(errno) + "; ";
     }
   }
 
@@ -193,8 +191,7 @@ ApplyThreadConfigWithFallback(const ThreadConfig &cfg) noexcept {
       // Fallback: set nice value for RT policies that failed
       param.sched_priority = 0;
       if (setpriority(PRIO_PROCESS, 0, cfg.nice_value) != 0) {
-        warnings +=
-            "Fallback nice value setting failed: " + SafeStrerror(errno) + "; ";
+        warnings += "Fallback nice value setting failed: " + SafeStrerror(errno) + "; ";
       }
     }
     pthread_setschedparam(pthread_self(), SCHED_OTHER, &param);
@@ -241,18 +238,18 @@ inline std::string VerifyThreadConfig() noexcept {
   if (pthread_getschedparam(pthread_self(), &policy, &param) == 0) {
     result += "Scheduler: ";
     switch (policy) {
-    case SCHED_FIFO:
-      result += "SCHED_FIFO";
-      break;
-    case SCHED_RR:
-      result += "SCHED_RR";
-      break;
-    case SCHED_OTHER:
-      result += "SCHED_OTHER";
-      break;
-    default:
-      result += "UNKNOWN";
-      break;
+      case SCHED_FIFO:
+        result += "SCHED_FIFO";
+        break;
+      case SCHED_RR:
+        result += "SCHED_RR";
+        break;
+      case SCHED_OTHER:
+        result += "SCHED_OTHER";
+        break;
+      default:
+        result += "UNKNOWN";
+        break;
     }
     result += ", Priority: " + std::to_string(param.sched_priority) + "\n";
   }
@@ -278,8 +275,8 @@ inline std::string VerifyThreadConfig() noexcept {
 //
 // WARNING: NOT RT-safe — accepts std::vector (heap-allocated).
 // Call only from non-RT threads (e.g. logging, monitoring).
-inline std::tuple<double, double, double>
-GetThreadStats(const std::vector<double> &latencies_us) noexcept {
+inline std::tuple<double, double, double> GetThreadStats(
+    const std::vector<double>& latencies_us) noexcept {
   if (latencies_us.empty()) {
     return {0.0, 0.0, 0.0};
   }
@@ -297,9 +294,9 @@ struct ThreadMetrics {
   double min_latency_us;
   double max_latency_us;
   double avg_latency_us;
-  double jitter_us;        // Standard deviation of latencies
-  double percentile_95_us; // 95th percentile latency
-  double percentile_99_us; // 99th percentile latency
+  double jitter_us;         // Standard deviation of latencies
+  double percentile_95_us;  // 95th percentile latency
+  double percentile_99_us;  // 99th percentile latency
 };
 
 // Get comprehensive thread statistics with percentiles.
@@ -307,8 +304,7 @@ struct ThreadMetrics {
 //
 // WARNING: NOT RT-safe — copies and sorts the input vector (heap allocation).
 // Call only from non-RT threads (e.g. logging, monitoring).
-inline ThreadMetrics
-GetThreadMetrics(const std::vector<double> &latencies_us) noexcept {
+inline ThreadMetrics GetThreadMetrics(const std::vector<double>& latencies_us) noexcept {
   ThreadMetrics metrics{};
 
   if (latencies_us.empty()) {
@@ -360,24 +356,20 @@ enum class ThreadHealthFlag : uint8_t {
   kNiceChanged = 1 << 3,
 };
 
-inline ThreadHealthFlag operator|(ThreadHealthFlag a,
-                                  ThreadHealthFlag b) noexcept {
-  return static_cast<ThreadHealthFlag>(static_cast<uint8_t>(a) |
-                                       static_cast<uint8_t>(b));
+inline ThreadHealthFlag operator|(ThreadHealthFlag a, ThreadHealthFlag b) noexcept {
+  return static_cast<ThreadHealthFlag>(static_cast<uint8_t>(a) | static_cast<uint8_t>(b));
 }
-inline ThreadHealthFlag operator&(ThreadHealthFlag a,
-                                  ThreadHealthFlag b) noexcept {
-  return static_cast<ThreadHealthFlag>(static_cast<uint8_t>(a) &
-                                       static_cast<uint8_t>(b));
+
+inline ThreadHealthFlag operator&(ThreadHealthFlag a, ThreadHealthFlag b) noexcept {
+  return static_cast<ThreadHealthFlag>(static_cast<uint8_t>(a) & static_cast<uint8_t>(b));
 }
-inline ThreadHealthFlag &operator|=(ThreadHealthFlag &a,
-                                    ThreadHealthFlag b) noexcept {
+
+inline ThreadHealthFlag& operator|=(ThreadHealthFlag& a, ThreadHealthFlag b) noexcept {
   a = a | b;
   return a;
 }
 
-inline ThreadHealthFlag
-CheckThreadHealthFast(const ThreadConfig &expected) noexcept {
+inline ThreadHealthFlag CheckThreadHealthFast(const ThreadConfig& expected) noexcept {
   ThreadHealthFlag flags = ThreadHealthFlag::kOk;
 
   // Check CPU affinity
@@ -419,8 +411,7 @@ CheckThreadHealthFast(const ThreadConfig &expected) noexcept {
 //
 // WARNING: NOT RT-safe — uses std::string (heap allocation).
 // For RT-safe health checks, use CheckThreadHealthFast() instead.
-inline std::string
-CheckThreadHealth(const ThreadConfig *expected_config = nullptr) noexcept {
+inline std::string CheckThreadHealth(const ThreadConfig* expected_config = nullptr) noexcept {
   std::string issues;
 
   // Check if still on expected CPU core
@@ -430,15 +421,14 @@ CheckThreadHealth(const ThreadConfig *expected_config = nullptr) noexcept {
     if (pthread_getaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) == 0) {
       bool on_expected_core = false;
       for (std::size_t i = 0; i < static_cast<std::size_t>(CPU_SETSIZE); ++i) {
-        if (CPU_ISSET(i, &cpuset) &&
-            static_cast<int>(i) == expected_config->cpu_core) {
+        if (CPU_ISSET(i, &cpuset) && static_cast<int>(i) == expected_config->cpu_core) {
           on_expected_core = true;
           break;
         }
       }
       if (!on_expected_core) {
-        issues += "Thread not on expected CPU core " +
-                  std::to_string(expected_config->cpu_core) + "; ";
+        issues +=
+            "Thread not on expected CPU core " + std::to_string(expected_config->cpu_core) + "; ";
       }
     }
   }
@@ -450,8 +440,8 @@ CheckThreadHealth(const ThreadConfig *expected_config = nullptr) noexcept {
     if (expected_config) {
       if (policy != expected_config->sched_policy) {
         issues += "Scheduler policy changed from expected " +
-                  std::to_string(expected_config->sched_policy) + " to " +
-                  std::to_string(policy) + "; ";
+                  std::to_string(expected_config->sched_policy) + " to " + std::to_string(policy) +
+                  "; ";
       }
       if ((policy == SCHED_FIFO || policy == SCHED_RR) &&
           param.sched_priority != expected_config->sched_priority) {
@@ -472,8 +462,7 @@ CheckThreadHealth(const ThreadConfig *expected_config = nullptr) noexcept {
     errno = 0;
     int nice_val = getpriority(PRIO_PROCESS, 0);
     if (errno == 0 && nice_val != expected_config->nice_value) {
-      issues += "Nice value " + std::to_string(nice_val) +
-                " differs from expected " +
+      issues += "Nice value " + std::to_string(nice_val) + " differs from expected " +
                 std::to_string(expected_config->nice_value) + "; ";
     }
   }
@@ -512,14 +501,13 @@ inline int GetPhysicalCpuCount() noexcept {
     char core_path[128];
 
     std::snprintf(pkg_path, sizeof(pkg_path),
-                  "/sys/devices/system/cpu/cpu%d/topology/physical_package_id",
+                  "/sys/devices/system/cpu/cpu%d/topology/physical_package_id", cpu);
+    std::snprintf(core_path, sizeof(core_path), "/sys/devices/system/cpu/cpu%d/topology/core_id",
                   cpu);
-    std::snprintf(core_path, sizeof(core_path),
-                  "/sys/devices/system/cpu/cpu%d/topology/core_id", cpu);
 
-    FILE *pkg_file = std::fopen(pkg_path, "r");
+    FILE* pkg_file = std::fopen(pkg_path, "r");
     if (!pkg_file) {
-      break; // No more CPUs
+      break;  // No more CPUs
     }
     int socket_id = 0;
     if (std::fscanf(pkg_file, "%d", &socket_id) != 1) {
@@ -528,7 +516,7 @@ inline int GetPhysicalCpuCount() noexcept {
     }
     std::fclose(pkg_file);
 
-    FILE *core_file = std::fopen(core_path, "r");
+    FILE* core_file = std::fopen(core_path, "r");
     if (!core_file) {
       break;
     }
@@ -548,12 +536,12 @@ inline int GetPhysicalCpuCount() noexcept {
 
   // ── Stage 2: cgroup v2 cpu.max ───────────────────────────────────────
   {
-    FILE *f = std::fopen("/sys/fs/cgroup/cpu.max", "r");
+    FILE* f = std::fopen("/sys/fs/cgroup/cpu.max", "r");
     if (f) {
       char max_str[32]{};
       int period = 0;
-      if (std::fscanf(f, "%31s %d", max_str, &period) == 2 &&
-          std::string_view(max_str) != "max" && period > 0) {
+      if (std::fscanf(f, "%31s %d", max_str, &period) == 2 && std::string_view(max_str) != "max" &&
+          period > 0) {
         const int quota = std::atoi(max_str);
         if (quota > 0) {
           std::fclose(f);
@@ -568,12 +556,12 @@ inline int GetPhysicalCpuCount() noexcept {
   {
     int quota = -1;
     int period = 0;
-    FILE *fq = std::fopen("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "r");
+    FILE* fq = std::fopen("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "r");
     if (fq) {
       std::fscanf(fq, "%d", &quota);
       std::fclose(fq);
     }
-    FILE *fp = std::fopen("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "r");
+    FILE* fp = std::fopen("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "r");
     if (fp) {
       std::fscanf(fp, "%d", &period);
       std::fclose(fp);
@@ -591,11 +579,11 @@ inline int GetPhysicalCpuCount() noexcept {
 struct SystemThreadConfigs {
   ThreadConfig rt_control;
   ThreadConfig sensor;
-  ThreadConfig udp_recv; // Hand UDP receiver (separate from sensor_io)
+  ThreadConfig udp_recv;  // Hand UDP receiver (separate from sensor_io)
   ThreadConfig logging;
   ThreadConfig aux;
-  ThreadConfig publish; // Non-RT publish offload thread
-  MpcThreadConfig mpc;  // Phase 5: MPC main + optional workers
+  ThreadConfig publish;  // Non-RT publish offload thread
+  MpcThreadConfig mpc;   // Phase 5: MPC main + optional workers
 };
 
 // Validate SystemThreadConfigs for conflicts and invalid configurations.
@@ -609,8 +597,7 @@ struct SystemThreadConfigs {
 //   - Two non-RT threads on the same core: always allowed (CFS handles it).
 //   - Two RT threads with the SAME priority on the SAME core: ERROR
 //     (SCHED_FIFO with equal priority causes starvation of one thread).
-inline std::string
-ValidateSystemThreadConfigs(const SystemThreadConfigs &configs) noexcept {
+inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& configs) noexcept {
   std::string errors;
 
   // Validate each individual config
@@ -624,11 +611,10 @@ ValidateSystemThreadConfigs(const SystemThreadConfigs &configs) noexcept {
   // zero-initialised and ignored.
   errors += ValidateThreadConfig(configs.mpc.main);
   if (configs.mpc.num_workers < 0 || configs.mpc.num_workers > kMpcMaxWorkers) {
-    errors += "mpc.num_workers out of range [0, " +
-              std::to_string(kMpcMaxWorkers) + "]; ";
+    errors += "mpc.num_workers out of range [0, " + std::to_string(kMpcMaxWorkers) + "]; ";
   }
   for (int i = 0; i < configs.mpc.num_workers && i < kMpcMaxWorkers; ++i) {
-    const ThreadConfig &w = configs.mpc.workers[static_cast<std::size_t>(i)];
+    const ThreadConfig& w = configs.mpc.workers[static_cast<std::size_t>(i)];
     errors += ValidateThreadConfig(w);
     // Worker priority must not exceed main — prevents worker preempting
     // the solve loop it's supposed to assist.
@@ -636,21 +622,17 @@ ValidateSystemThreadConfigs(const SystemThreadConfigs &configs) noexcept {
         (configs.mpc.main.sched_policy == SCHED_FIFO ||
          configs.mpc.main.sched_policy == SCHED_RR) &&
         w.sched_priority > configs.mpc.main.sched_priority) {
-      errors +=
-          "mpc.worker[" + std::to_string(i) + "] priority exceeds mpc.main; ";
+      errors += "mpc.worker[" + std::to_string(i) + "] priority exceeds mpc.main; ";
     }
   }
   // MPC main must not exceed sensor priority — sensor callbacks are hard
   // real-time and must always preempt long MPC solves.
-  if ((configs.mpc.main.sched_policy == SCHED_FIFO ||
-       configs.mpc.main.sched_policy == SCHED_RR) &&
-      (configs.sensor.sched_policy == SCHED_FIFO ||
-       configs.sensor.sched_policy == SCHED_RR) &&
+  if ((configs.mpc.main.sched_policy == SCHED_FIFO || configs.mpc.main.sched_policy == SCHED_RR) &&
+      (configs.sensor.sched_policy == SCHED_FIFO || configs.sensor.sched_policy == SCHED_RR) &&
       configs.mpc.main.sched_priority >= configs.sensor.sched_priority) {
-    errors += "mpc.main priority (" +
-              std::to_string(configs.mpc.main.sched_priority) +
-              ") must be below sensor priority (" +
-              std::to_string(configs.sensor.sched_priority) + "); ";
+    errors += "mpc.main priority (" + std::to_string(configs.mpc.main.sched_priority) +
+              ") must be below sensor priority (" + std::to_string(configs.sensor.sched_priority) +
+              "); ";
   }
 
   // Collect all configs with names for conflict analysis. MPC main + up
@@ -658,9 +640,10 @@ ValidateSystemThreadConfigs(const SystemThreadConfigs &configs) noexcept {
   // have cpu_core == 0 but also sched_policy == 0 (SCHED_OTHER priority 0),
   // which cannot trigger an RT/RT same-priority conflict.
   struct NamedConfig {
-    const char *name;
-    const ThreadConfig *config;
+    const char* name;
+    const ThreadConfig* config;
   };
+
   const std::array<NamedConfig, 6 + 1 + kMpcMaxWorkers> all_configs = {{
       {"rt_control", &configs.rt_control},
       {"sensor", &configs.sensor},
@@ -673,26 +656,26 @@ ValidateSystemThreadConfigs(const SystemThreadConfigs &configs) noexcept {
       {"mpc_worker_1", &configs.mpc.workers[1]},
   }};
 
-  auto is_rt = [](const ThreadConfig *c) {
+  auto is_rt = [](const ThreadConfig* c) {
     return c->sched_policy == SCHED_FIFO || c->sched_policy == SCHED_RR;
   };
 
   // Check for problematic core sharing: only flag RT+RT same-priority conflicts
   for (std::size_t i = 0; i < all_configs.size(); ++i) {
     for (std::size_t j = i + 1; j < all_configs.size(); ++j) {
-      const auto &a = all_configs[i];
-      const auto &b = all_configs[j];
+      const auto& a = all_configs[i];
+      const auto& b = all_configs[j];
 
       if (a.config->cpu_core != b.config->cpu_core) {
-        continue; // different cores — no conflict possible
+        continue;  // different cores — no conflict possible
       }
 
       // Same core: only a problem if both are RT with identical priority
       if (is_rt(a.config) && is_rt(b.config) &&
           a.config->sched_priority == b.config->sched_priority) {
-        errors += "RT priority " + std::to_string(a.config->sched_priority) +
-                  " conflict on core " + std::to_string(a.config->cpu_core) +
-                  " between '" + a.name + "' and '" + b.name + "'; ";
+        errors += "RT priority " + std::to_string(a.config->sched_priority) + " conflict on core " +
+                  std::to_string(a.config->cpu_core) + " between '" + a.name + "' and '" + b.name +
+                  "'; ";
       }
     }
   }
@@ -743,19 +726,17 @@ inline SystemThreadConfigs SelectThreadConfigs() noexcept {
             kMpcConfig10Core};
   }
   if (ncpu >= 8) {
-    return {kRtControlConfig8Core, kSensorConfig8Core, kUdpRecvConfig8Core,
-            kLoggingConfig8Core,   kAuxConfig8Core,    kPublishConfig8Core,
-            kMpcConfig8Core};
+    return {kRtControlConfig8Core, kSensorConfig8Core,  kUdpRecvConfig8Core, kLoggingConfig8Core,
+            kAuxConfig8Core,       kPublishConfig8Core, kMpcConfig8Core};
   }
   if (ncpu >= 6) {
     return {kRtControlConfig, kSensorConfig,  kUdpRecvConfig, kLoggingConfig,
             kAuxConfig,       kPublishConfig, kMpcConfig6Core};
   }
-  return {kRtControlConfig4Core, kSensorConfig4Core, kUdpRecvConfig4Core,
-          kLoggingConfig4Core,   kAuxConfig4Core,    kPublishConfig4Core,
-          kMpcConfig4Core};
+  return {kRtControlConfig4Core, kSensorConfig4Core,  kUdpRecvConfig4Core, kLoggingConfig4Core,
+          kAuxConfig4Core,       kPublishConfig4Core, kMpcConfig4Core};
 }
 
-} // namespace rtc
+}  // namespace rtc
 
-#endif // RTC_BASE_THREAD_UTILS_HPP_
+#endif  // RTC_BASE_THREAD_UTILS_HPP_

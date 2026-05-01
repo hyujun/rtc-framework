@@ -16,7 +16,7 @@ namespace rtc_bt {
 ///   - force_threshold_N (double): min force per fingertip [N] (default 1.0)
 ///   - min_fingertips (int): min fingertips in contact (default 2)
 class IsGrasped : public BT::ConditionNode {
-public:
+ public:
   IsGrasped(const std::string& name, const BT::NodeConfig& config,
             std::shared_ptr<BtRosBridge> bridge);
 
@@ -24,7 +24,7 @@ public:
 
   BT::NodeStatus tick() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
 };
 

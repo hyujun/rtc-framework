@@ -9,24 +9,24 @@
 
 #include "test_helpers.hpp"
 #include "ur5e_bt_coordinator/action_nodes/set_gains.hpp"
+#include <rtc_msgs/srv/grasp_command.hpp>
 
 #include <behaviortree_cpp/bt_factory.h>
 #include <gtest/gtest.h>
-#include <rtc_msgs/srv/grasp_command.hpp>
 
 using namespace rtc_bt;
 using namespace rtc_bt::test;
 
 class SetGainsTest : public RosTestFixture {
-protected:
+ protected:
   void SetUp() override {
     RosTestFixture::SetUp();
     factory_.registerNodeType<SetGains>("SetGains", bridge_);
   }
 
-  BT::Tree CreateTree(const std::string &xml) {
-    const std::string full = R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" +
-                             xml + R"(</BehaviorTree></root>)";
+  BT::Tree CreateTree(const std::string& xml) {
+    const std::string full =
+        R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" + xml + R"(</BehaviorTree></root>)";
     return factory_.createTreeFromText(full);
   }
 
@@ -45,9 +45,7 @@ TEST_F(SetGainsTest, DemoJointSetsRobotTrajectorySpeed) {
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 
   // SetGains maps trajectory_speed → robot_trajectory_speed for DemoJoint.
-  EXPECT_DOUBLE_EQ(
-      mock_joint_.node->get_parameter("robot_trajectory_speed").as_double(),
-      0.15);
+  EXPECT_DOUBLE_EQ(mock_joint_.node->get_parameter("robot_trajectory_speed").as_double(), 0.15);
 }
 
 TEST_F(SetGainsTest, DemoTaskSetsKpAndDamping) {
@@ -58,13 +56,11 @@ TEST_F(SetGainsTest, DemoTaskSetsKpAndDamping) {
                    damping="0.05"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 
-  const auto kp_t =
-      mock_task_.node->get_parameter("kp_translation").as_double_array();
+  const auto kp_t = mock_task_.node->get_parameter("kp_translation").as_double_array();
   ASSERT_EQ(kp_t.size(), 3u);
   EXPECT_DOUBLE_EQ(kp_t[0], 500.0);
 
-  const auto kp_r =
-      mock_task_.node->get_parameter("kp_rotation").as_double_array();
+  const auto kp_r = mock_task_.node->get_parameter("kp_rotation").as_double_array();
   ASSERT_EQ(kp_r.size(), 3u);
   EXPECT_DOUBLE_EQ(kp_r[1], 250.0);
 
@@ -75,31 +71,25 @@ TEST_F(SetGainsTest, DemoTaskMapsTrajectorySpeedDirectly) {
   auto tree = CreateTree(R"(<SetGains trajectory_speed="0.08"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 
-  EXPECT_DOUBLE_EQ(
-      mock_task_.node->get_parameter("trajectory_speed").as_double(), 0.08);
+  EXPECT_DOUBLE_EQ(mock_task_.node->get_parameter("trajectory_speed").as_double(), 0.08);
 }
 
 TEST_F(SetGainsTest, DemoWbcMapsTrajectorySpeedToArm) {
   SetActiveAlias("demo_wbc_controller");
-  auto tree =
-      CreateTree(R"(<SetGains trajectory_speed="0.4" se3_weight="200.0"/>)");
+  auto tree = CreateTree(R"(<SetGains trajectory_speed="0.4" se3_weight="200.0"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 
-  EXPECT_DOUBLE_EQ(
-      mock_wbc_.node->get_parameter("arm_trajectory_speed").as_double(), 0.4);
-  EXPECT_DOUBLE_EQ(mock_wbc_.node->get_parameter("se3_weight").as_double(),
-                   200.0);
+  EXPECT_DOUBLE_EQ(mock_wbc_.node->get_parameter("arm_trajectory_speed").as_double(), 0.4);
+  EXPECT_DOUBLE_EQ(mock_wbc_.node->get_parameter("se3_weight").as_double(), 200.0);
 }
 
 TEST_F(SetGainsTest, GraspCommandGraspCallsServer) {
   SetActiveAlias("demo_joint_controller");
-  auto tree =
-      CreateTree(R"(<SetGains grasp_command="1" grasp_target_force="3.0"/>)");
+  auto tree = CreateTree(R"(<SetGains grasp_command="1" grasp_target_force="3.0"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 
   EXPECT_GE(mock_joint_.grasp_cmd_calls.load(), 1);
-  EXPECT_EQ(mock_joint_.last_grasp_cmd,
-            rtc_msgs::srv::GraspCommand::Request::GRASP);
+  EXPECT_EQ(mock_joint_.last_grasp_cmd, rtc_msgs::srv::GraspCommand::Request::GRASP);
   EXPECT_DOUBLE_EQ(mock_joint_.last_grasp_force, 3.0);
 }
 
@@ -109,8 +99,7 @@ TEST_F(SetGainsTest, GraspCommandReleaseCallsServer) {
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 
   EXPECT_GE(mock_joint_.grasp_cmd_calls.load(), 1);
-  EXPECT_EQ(mock_joint_.last_grasp_cmd,
-            rtc_msgs::srv::GraspCommand::Request::RELEASE);
+  EXPECT_EQ(mock_joint_.last_grasp_cmd, rtc_msgs::srv::GraspCommand::Request::RELEASE);
 }
 
 TEST_F(SetGainsTest, GraspCommandZeroIsSkipped) {

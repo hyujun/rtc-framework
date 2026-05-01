@@ -72,11 +72,7 @@ def detect_fingertip_labels(df):
     """
     labels = []
     for col in df.columns:
-        if (
-            col.startswith("baro_")
-            and not col.startswith("baro_raw_")
-            and col.endswith("_0")
-        ):
+        if col.startswith("baro_") and not col.startswith("baro_raw_") and col.endswith("_0"):
             middle = col[len("baro_") : -len("_0")]
             if f"baro_{middle}_1" in df.columns:
                 labels.append(middle)

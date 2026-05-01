@@ -17,9 +17,7 @@ def plot_timing_breakdown(df, save_dir=None):
     labels = ["State Acquire", "Compute", "Publish"]
     colors = ["#2196F3", "#FF9800", "#4CAF50"]
 
-    available = [
-        (p, l, c) for p, l, c in zip(phases, labels, colors) if p in df.columns
-    ]
+    available = [(p, l, c) for p, l, c in zip(phases, labels, colors) if p in df.columns]
     if available:
         ax.stackplot(
             t,
@@ -90,9 +88,7 @@ def plot_timing_total_and_jitter(df, save_dir=None):
 
     # Jitter
     if "jitter_us" in df.columns:
-        ax2.plot(
-            t, df["jitter_us"], linewidth=0.5, alpha=0.7, color="C1", label="Jitter"
-        )
+        ax2.plot(t, df["jitter_us"], linewidth=0.5, alpha=0.7, color="C1", label="Jitter")
         ax2.set_title("Period Jitter")
     ax2.set_xlabel("Time (s)")
     ax2.set_ylabel("Jitter (µs)")
@@ -184,5 +180,3 @@ def print_timing_statistics(df):
         overruns = (df["t_total_us"] > budget).sum()
         pct = overruns / len(df) * 100
         print(f"\nOverruns (>{budget:.0f} µs): {overruns} ({pct:.3f}%)")
-
-

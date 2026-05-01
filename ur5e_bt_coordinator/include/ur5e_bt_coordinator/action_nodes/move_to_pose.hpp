@@ -20,7 +20,7 @@ namespace rtc_bt {
 ///   - orientation_tolerance (double): orientation threshold [rad] (default 0.05)
 ///   - timeout_s (double): timeout [s] (default 10.0)
 class MoveToPose : public BT::StatefulActionNode {
-public:
+ public:
   MoveToPose(const std::string& name, const BT::NodeConfig& config,
              std::shared_ptr<BtRosBridge> bridge);
 
@@ -30,7 +30,7 @@ public:
   BT::NodeStatus onRunning() override;
   void onHalted() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
   Pose6D target_;
   double pos_tol_{0.005};

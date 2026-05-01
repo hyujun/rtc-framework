@@ -1,5 +1,6 @@
 // file: src/nodes/ur5e_hold_pose.cpp
 #include "ur5e_bt_coordinator/action_nodes/ur5e_hold_pose.hpp"
+
 #include "ur5e_bt_coordinator/bt_logging.hpp"
 #include "ur5e_bt_coordinator/bt_utils.hpp"
 
@@ -8,23 +9,22 @@
 namespace rtc_bt {
 
 namespace {
-auto logger() { return ::rtc_bt::logging::ActionLogger("ur5e_hold_pose"); }
+auto logger() {
+  return ::rtc_bt::logging::ActionLogger("ur5e_hold_pose");
+}
 }  // namespace
 
 UR5eHoldPose::UR5eHoldPose(const std::string& name, const BT::NodeConfig& config,
                            std::shared_ptr<BtRosBridge> bridge)
-  : BT::StatefulActionNode(name, config), bridge_(std::move(bridge))
-{}
+    : BT::StatefulActionNode(name, config), bridge_(std::move(bridge)) {}
 
-BT::PortsList UR5eHoldPose::providedPorts()
-{
+BT::PortsList UR5eHoldPose::providedPorts() {
   return {
-    BT::InputPort<std::string>("pose", "명명된 UR5e 포즈 (예: demo_pose)"),
+      BT::InputPort<std::string>("pose", "명명된 UR5e 포즈 (예: demo_pose)"),
   };
 }
 
-BT::NodeStatus UR5eHoldPose::onStart()
-{
+BT::NodeStatus UR5eHoldPose::onStart() {
   auto pose_name = getInput<std::string>("pose");
   if (!pose_name) {
     throw BT::RuntimeError("UR5eHoldPose: missing pose: ", pose_name.error());
@@ -40,14 +40,12 @@ BT::NodeStatus UR5eHoldPose::onStart()
   return BT::NodeStatus::RUNNING;
 }
 
-BT::NodeStatus UR5eHoldPose::onRunning()
-{
+BT::NodeStatus UR5eHoldPose::onRunning() {
   // 의도적으로 SUCCESS를 반환하지 않음 — Parallel 부모에 의해 halt될 때까지 자세 유지
   return BT::NodeStatus::RUNNING;
 }
 
-void UR5eHoldPose::onHalted()
-{
+void UR5eHoldPose::onHalted() {
   RCLCPP_INFO(logger(), "halted");
 }
 

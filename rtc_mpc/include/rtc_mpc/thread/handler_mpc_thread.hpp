@@ -78,14 +78,14 @@ namespace rtc::mpc {
 /// @brief Concrete `MPCThread` that drives a `PhaseManagerBase` +
 ///        `MPCHandlerBase` pair at the target frequency.
 class HandlerMPCThread final : public MPCThread {
-public:
+ public:
   HandlerMPCThread() = default;
   ~HandlerMPCThread() override = default;
 
-  HandlerMPCThread(const HandlerMPCThread &) = delete;
-  HandlerMPCThread &operator=(const HandlerMPCThread &) = delete;
-  HandlerMPCThread(HandlerMPCThread &&) = delete;
-  HandlerMPCThread &operator=(HandlerMPCThread &&) = delete;
+  HandlerMPCThread(const HandlerMPCThread&) = delete;
+  HandlerMPCThread& operator=(const HandlerMPCThread&) = delete;
+  HandlerMPCThread(HandlerMPCThread&&) = delete;
+  HandlerMPCThread& operator=(HandlerMPCThread&&) = delete;
 
   /// @brief Install all runtime dependencies. Called once, off-RT, before
   ///        @ref MPCThread::Start. Takes ownership of @p handler and
@@ -105,8 +105,7 @@ public:
   ///
   /// @note Both factory YAMLs may be Null (default) — that disables cross-
   ///       mode swap and returns `kRebuildRequired` on mismatch ticks.
-  void Configure(const RobotModelHandler &model_handler,
-                 std::unique_ptr<MPCHandlerBase> handler,
+  void Configure(const RobotModelHandler& model_handler, std::unique_ptr<MPCHandlerBase> handler,
                  std::unique_ptr<PhaseManagerBase> phase_manager,
                  YAML::Node factory_cfg_light = YAML::Node{},
                  YAML::Node factory_cfg_rich = YAML::Node{}) noexcept;
@@ -138,21 +137,21 @@ public:
     return null_logged_.load(std::memory_order_relaxed);
   }
 
-protected:
-  bool Solve(const MPCStateSnapshot &state, MPCSolution &out,
+ protected:
+  bool Solve(const MPCStateSnapshot& state, MPCSolution& out,
              std::span<std::jthread> workers) override;
 
-private:
+ private:
   /// @brief Execute the cross-mode handler swap. Non-noexcept internally;
   ///        the caller wraps in try/catch. On success, returns true and
   ///        `handler_` points at the new instance (seeded via SeedWarmStart).
-  bool TryCrossModeSwap(const PhaseContext &ctx);
+  bool TryCrossModeSwap(const PhaseContext& ctx);
 
   /// @brief Emit a single `fprintf(stderr, …)` line at most once per
   ///        `kWarnThrottleNs`. Called from every `Solve` failure path
   ///        (dim-mismatch / rebuild-required / solver error) so a silently
   ///        failing thread is no longer invisible from outside.
-  void WarnThrottled(const char *what, int code) noexcept;
+  void WarnThrottled(const char* what, int code) noexcept;
 
   // Owned dependencies.
   std::unique_ptr<MPCHandlerBase> handler_{};
@@ -160,7 +159,7 @@ private:
   std::unique_ptr<pinocchio::Data> pdata_{};
 
   // Non-owning; must outlive this thread.
-  const RobotModelHandler *model_{nullptr};
+  const RobotModelHandler* model_{nullptr};
 
   // Pre-built YAML nodes for cross-mode swap; Null → swap disabled.
   YAML::Node factory_cfg_light_{};
@@ -169,7 +168,7 @@ private:
   // Scratch buffers (sized in Configure, reused each tick).
   Eigen::VectorXd q_scratch_{};
   Eigen::VectorXd v_scratch_{};
-  Eigen::VectorXd sensor_scratch_{}; // zero-length in Phase 6
+  Eigen::VectorXd sensor_scratch_{};  // zero-length in Phase 6
 
   // Last-published solution, used to seed the next handler on cross-mode swap.
   // MPCSolution is trivially copyable (~17 KB std::array bundle) so `=` is an
@@ -189,6 +188,6 @@ private:
   std::atomic<std::int64_t> last_warn_ns_{0};
 };
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc
 
-#endif // RTC_MPC_THREAD_HANDLER_MPC_THREAD_HPP_
+#endif  // RTC_MPC_THREAD_HANDLER_MPC_THREAD_HPP_

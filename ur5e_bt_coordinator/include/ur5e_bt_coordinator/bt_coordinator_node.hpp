@@ -10,9 +10,10 @@
 #include <behaviortree_cpp/loggers/groot2_publisher.h>
 #endif
 
+#include <lifecycle_msgs/msg/state.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
-#include <lifecycle_msgs/msg/state.hpp>
+
 #include <std_srvs/srv/trigger.hpp>
 
 #include <memory>
@@ -39,9 +40,8 @@ namespace rtc_bt {
 ///   // Launch event handler triggers configure/activate automatically.
 ///   rclcpp::spin(node->get_node_base_interface());
 class BtCoordinatorNode : public rclcpp_lifecycle::LifecycleNode {
-public:
-  using CallbackReturn =
-      rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+ public:
+  using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
   explicit BtCoordinatorNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
 
@@ -52,7 +52,7 @@ public:
   CallbackReturn on_shutdown(const rclcpp_lifecycle::State& state) override;
   CallbackReturn on_error(const rclcpp_lifecycle::State& state) override;
 
-private:
+ private:
   void DeclareParameters();
   void RegisterBtNodes();
   void LoadTree();
@@ -76,9 +76,8 @@ private:
       const std::vector<rclcpp::Parameter>& params);
 
   /// Service callback for single-step tick.
-  void StepCallback(
-      const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-      std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+  void StepCallback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                    std::shared_ptr<std_srvs::srv::Trigger::Response> response);
 
   BT::BehaviorTreeFactory factory_;
   std::unique_ptr<BT::Tree> tree_;

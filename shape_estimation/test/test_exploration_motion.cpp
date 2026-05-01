@@ -1,7 +1,8 @@
-#include <gtest/gtest.h>
-#include <cmath>
-
 #include "shape_estimation/exploration_motion.hpp"
+
+#include <gtest/gtest.h>
+
+#include <cmath>
 
 namespace se = shape_estimation;
 
@@ -23,10 +24,10 @@ class ExplorationMotionTest : public ::testing::Test {
       const auto idx = static_cast<size_t>(i);
       snap.readings[idx].distance_m = distance;
       snap.readings[idx].valid = true;
-      snap.sensor_positions_world[idx] = Eigen::Vector3d(
-          0.4 + static_cast<double>(i) * 0.001, 0, 0.3);
-      snap.surface_points_world[idx] = snap.sensor_positions_world[idx] +
-          Eigen::Vector3d(distance, 0, 0);
+      snap.sensor_positions_world[idx] =
+          Eigen::Vector3d(0.4 + static_cast<double>(i) * 0.001, 0, 0.3);
+      snap.surface_points_world[idx] =
+          snap.sensor_positions_world[idx] + Eigen::Vector3d(distance, 0, 0);
     }
     for (int f = 0; f < se::kNumFingers; ++f) {
       snap.beam_directions_world[static_cast<size_t>(f)] = Eigen::Vector3d::UnitX();
@@ -201,7 +202,8 @@ TEST_F(ExplorationMotionTest, TiltToEvaluateAfterCycle) {
   // SweepX → SweepY → Tilt 까지 진행
   for (int i = 0; i < 20; ++i) {
     (void)gen.Step(snap, est, home_pose_, 0.1);
-    if (gen.CurrentPhase() == se::ExplorePhase::kTilt) break;
+    if (gen.CurrentPhase() == se::ExplorePhase::kTilt)
+      break;
   }
 
   if (gen.CurrentPhase() == se::ExplorePhase::kTilt) {
@@ -228,7 +230,8 @@ TEST_F(ExplorationMotionTest, EvaluateSucceedsOnHighConfidence) {
   // Evaluate까지 진행
   for (int i = 0; i < 50; ++i) {
     (void)gen.Step(snap, est, home_pose_, 0.1);
-    if (gen.CurrentPhase() == se::ExplorePhase::kSucceeded) break;
+    if (gen.CurrentPhase() == se::ExplorePhase::kSucceeded)
+      break;
   }
   EXPECT_EQ(gen.CurrentPhase(), se::ExplorePhase::kSucceeded);
 }
@@ -306,7 +309,7 @@ TEST_F(ExplorationMotionTest, SweepGoalPreservesOrientation) {
 }
 
 TEST_F(ExplorationMotionTest, GoalStepSizeClamped) {
-  config_.max_step_size = 0.002;  // 매우 작은 max step
+  config_.max_step_size = 0.002;       // 매우 작은 max step
   config_.approach_step_size = 0.010;  // step size가 max보다 큼
   se::ExplorationMotionGenerator gen(config_);
   gen.Start(home_pose_, object_pos_);
@@ -333,7 +336,7 @@ TEST_F(ExplorationMotionTest, RejectsGoalTowardMinDistance) {
   auto est = MakeEstimate(0.0, 0);
 
   // 매우 가까운 거리에서 servo → 전진 목표가 min_distance 침범
-  auto snap = MakeSnapshot(0.015);  // 15mm (목표 30mm)
+  auto snap = MakeSnapshot(0.015);             // 15mm (목표 30mm)
   (void)gen.Step(snap, est, home_pose_, 0.1);  // → Servo
   ASSERT_EQ(gen.CurrentPhase(), se::ExplorePhase::kServo);
 
@@ -347,7 +350,7 @@ TEST_F(ExplorationMotionTest, RejectsGoalTowardMinDistance) {
 }
 
 TEST_F(ExplorationMotionTest, RejectsGoalBeyondMaxStep) {
-  config_.max_step_size = 0.001;  // 1mm
+  config_.max_step_size = 0.001;       // 1mm
   config_.approach_step_size = 0.005;  // 5mm > 1mm
   se::ExplorationMotionGenerator gen(config_);
   gen.Start(home_pose_, object_pos_);

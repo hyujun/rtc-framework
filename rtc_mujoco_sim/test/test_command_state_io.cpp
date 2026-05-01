@@ -78,13 +78,13 @@ TEST(CommandStateIO, FakeGroupTargetLpfRoundtrip) {
   auto cfg = test::MakeMinimalConfig();
   // Add a fake group
   JointGroupConfig fake;
-  fake.name                = "hand";
+  fake.name = "hand";
   fake.command_joint_names = {"finger1"};
-  fake.state_joint_names   = {"finger1"};
-  fake.command_topic       = "/hand/cmd";
-  fake.state_topic         = "/hand/state";
-  fake.is_robot            = false;
-  fake.filter_alpha        = 1.0;  // immediate convergence
+  fake.state_joint_names = {"finger1"};
+  fake.command_topic = "/hand/cmd";
+  fake.state_topic = "/hand/state";
+  fake.is_robot = false;
+  fake.filter_alpha = 1.0;  // immediate convergence
   cfg.groups.push_back(fake);
   MuJoCoSimulator sim(std::move(cfg));
   ASSERT_TRUE(sim.Initialize());
@@ -108,11 +108,8 @@ TEST(CommandStateIO, StateCallbackRegistration) {
   MuJoCoSimulator sim(test::MakeMinimalConfig());
   ASSERT_TRUE(sim.Initialize());
   bool called = false;
-  sim.SetStateCallback(0, [&](const std::vector<double>&,
-                              const std::vector<double>&,
-                              const std::vector<double>&) {
-    called = true;
-  });
+  sim.SetStateCallback(0, [&](const std::vector<double>&, const std::vector<double>&,
+                              const std::vector<double>&) { called = true; });
   // Callback is only fired inside SimLoop; here we only validate registration.
   // Direct invocation is private; lifecycle test will cover actual firing.
   EXPECT_FALSE(called);

@@ -76,9 +76,8 @@ TEST(SpscPublishBufferTest, FIFO_Order) {
   for (int64_t i = 0; i < 3; ++i) {
     rtc::PublishSnapshot snap{};
     ASSERT_TRUE(buf.Pop(snap));
-    EXPECT_EQ(snap.stamp_ns, (i + 1) * 1000)
-        << "Entry " << i << " out of FIFO order";
+    EXPECT_EQ(snap.stamp_ns, (i + 1) * 1000) << "Entry " << i << " out of FIFO order";
   }
 }
 
-} // namespace
+}  // namespace

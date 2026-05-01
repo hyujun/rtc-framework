@@ -6,10 +6,9 @@
 // flow through ControllerLogSet. No allocation, no string ops, bounded
 // by runtime num_* fields on the input arrays.
 
+#include "rtc_base/types/types.hpp"
 #include "ur5e_bringup/logging/device_sensor_log_pod.hpp"
 #include "ur5e_bringup/logging/device_state_log_pod.hpp"
-
-#include "rtc_base/types/types.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -17,17 +16,17 @@
 
 namespace ur5e_bringup {
 
-inline void FillUr5eStateLogPod(const rtc::ControllerState &state,
-                                const rtc::ControllerOutput &output,
-                                ur5e::DeviceStateLogPod &pod) noexcept {
+inline void FillUr5eStateLogPod(const rtc::ControllerState& state,
+                                const rtc::ControllerOutput& output,
+                                ur5e::DeviceStateLogPod& pod) noexcept {
   pod.t_relative_s = state.t_relative_s;
   if (state.num_devices < 1) {
     return;
   }
-  const auto &dev = state.devices[0];
-  const auto &out = output.devices[0];
-  const auto n = std::min(static_cast<std::size_t>(dev.num_channels),
-                          ur5e::DeviceStateLogPod::kMaxJoints);
+  const auto& dev = state.devices[0];
+  const auto& out = output.devices[0];
+  const auto n =
+      std::min(static_cast<std::size_t>(dev.num_channels), ur5e::DeviceStateLogPod::kMaxJoints);
   pod.num_joints = static_cast<std::uint8_t>(n);
   for (std::size_t i = 0; i < n; ++i) {
     pod.actual_positions[i] = dev.positions[i];
@@ -47,17 +46,17 @@ inline void FillUr5eStateLogPod(const rtc::ControllerState &state,
   pod.goal_type = (out.goal_type == rtc::GoalType::kTask) ? 1 : 0;
 }
 
-inline void FillHandStateLogPod(const rtc::ControllerState &state,
-                                const rtc::ControllerOutput &output,
-                                ur5e::DeviceStateLogPod &pod) noexcept {
+inline void FillHandStateLogPod(const rtc::ControllerState& state,
+                                const rtc::ControllerOutput& output,
+                                ur5e::DeviceStateLogPod& pod) noexcept {
   pod.t_relative_s = state.t_relative_s;
   if (state.num_devices < 2) {
     return;
   }
-  const auto &dev = state.devices[1];
-  const auto &out = output.devices[1];
-  const auto n = std::min(static_cast<std::size_t>(dev.num_channels),
-                          ur5e::DeviceStateLogPod::kMaxJoints);
+  const auto& dev = state.devices[1];
+  const auto& out = output.devices[1];
+  const auto n =
+      std::min(static_cast<std::size_t>(dev.num_channels), ur5e::DeviceStateLogPod::kMaxJoints);
   pod.num_joints = static_cast<std::uint8_t>(n);
   for (std::size_t i = 0; i < n; ++i) {
     pod.actual_positions[i] = dev.positions[i];
@@ -81,29 +80,25 @@ inline void FillHandStateLogPod(const rtc::ControllerState &state,
   pod.goal_type = (out.goal_type == rtc::GoalType::kTask) ? 1 : 0;
 }
 
-inline void FillHandSensorLogPod(const rtc::ControllerState &state,
-                                 int num_active_fingertips,
-                                 ur5e::DeviceSensorLogPod &pod) noexcept {
+inline void FillHandSensorLogPod(const rtc::ControllerState& state, int num_active_fingertips,
+                                 ur5e::DeviceSensorLogPod& pod) noexcept {
   pod.t_relative_s = state.t_relative_s;
   if (state.num_devices < 2) {
     return;
   }
-  const auto &dev = state.devices[1];
-  const auto num_fingertips =
-      std::min(static_cast<std::size_t>(num_active_fingertips),
-               ur5e::DeviceSensorLogPod::kMaxFingertips);
+  const auto& dev = state.devices[1];
+  const auto num_fingertips = std::min(static_cast<std::size_t>(num_active_fingertips),
+                                       ur5e::DeviceSensorLogPod::kMaxFingertips);
   pod.num_fingertips = static_cast<std::uint8_t>(num_fingertips);
   pod.inference_valid = false;
 
-  const auto n_sensor =
-      num_fingertips * ur5e::DeviceSensorLogPod::kSensorValuesPerFingertip;
+  const auto n_sensor = num_fingertips * ur5e::DeviceSensorLogPod::kSensorValuesPerFingertip;
   for (std::size_t i = 0; i < n_sensor && i < dev.sensor_data_raw.size(); ++i) {
     pod.sensor_data_raw[i] = dev.sensor_data_raw[i];
     pod.sensor_data[i] = dev.sensor_data[i];
   }
 
-  const auto n_inf =
-      num_fingertips * ur5e::DeviceSensorLogPod::kFTValuesPerFingertip;
+  const auto n_inf = num_fingertips * ur5e::DeviceSensorLogPod::kFTValuesPerFingertip;
   for (std::size_t i = 0; i < n_inf && i < dev.inference_data.size(); ++i) {
     pod.inference_output[i] = dev.inference_data[i];
   }
@@ -115,6 +110,6 @@ inline void FillHandSensorLogPod(const rtc::ControllerState &state,
   }
 }
 
-} // namespace ur5e_bringup
+}  // namespace ur5e_bringup
 
-#endif // UR5E_BRINGUP_LOGGING_POD_FILL_HPP_
+#endif  // UR5E_BRINGUP_LOGGING_POD_FILL_HPP_

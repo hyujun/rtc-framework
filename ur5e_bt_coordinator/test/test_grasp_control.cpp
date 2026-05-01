@@ -12,25 +12,22 @@ using namespace rtc_bt;
 using namespace rtc_bt::test;
 
 class GraspControlTest : public RosTestFixture {
-protected:
-  void SetUp() override
-  {
+ protected:
+  void SetUp() override {
     RosTestFixture::SetUp();
     factory_.registerNodeType<GraspControl>("GraspControl", bridge_);
   }
 
-  BT::Tree CreateTree(const std::string& xml)
-  {
-    const std::string full = R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" +
-                             xml + R"(</BehaviorTree></root>)";
+  BT::Tree CreateTree(const std::string& xml) {
+    const std::string full =
+        R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" + xml + R"(</BehaviorTree></root>)";
     return factory_.createTreeFromText(full);
   }
 
   BT::BehaviorTreeFactory factory_;
 };
 
-TEST_F(GraspControlTest, OpenModeStartsRunning)
-{
+TEST_F(GraspControlTest, OpenModeStartsRunning) {
   auto tree = CreateTree(
       R"(<GraspControl mode="open"
                        target_positions="0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0"
@@ -38,8 +35,7 @@ TEST_F(GraspControlTest, OpenModeStartsRunning)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 }
 
-TEST_F(GraspControlTest, OpenModeSucceedsAtTarget)
-{
+TEST_F(GraspControlTest, OpenModeSucceedsAtTarget) {
   auto tree = CreateTree(
       R"(<GraspControl mode="open"
                        target_positions="0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0"
@@ -54,8 +50,7 @@ TEST_F(GraspControlTest, OpenModeSucceedsAtTarget)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 }
 
-TEST_F(GraspControlTest, CloseModeStartsRunning)
-{
+TEST_F(GraspControlTest, CloseModeStartsRunning) {
   // Provide hand state so close mode can read current positions
   PublishHandState({0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
   Spin();
@@ -67,8 +62,7 @@ TEST_F(GraspControlTest, CloseModeStartsRunning)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 }
 
-TEST_F(GraspControlTest, CloseModeFailsAtMaxPosition)
-{
+TEST_F(GraspControlTest, CloseModeFailsAtMaxPosition) {
   // Start near max_position so all motors hit max quickly
   PublishHandState({1.39, 1.39, 1.39, 1.39, 1.39, 1.39, 1.39, 1.39, 1.39, 1.39});
   Spin();
@@ -83,8 +77,7 @@ TEST_F(GraspControlTest, CloseModeFailsAtMaxPosition)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
 }
 
-TEST_F(GraspControlTest, CloseModeTimeout)
-{
+TEST_F(GraspControlTest, CloseModeTimeout) {
   PublishHandState({0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
   Spin();
 
@@ -98,8 +91,7 @@ TEST_F(GraspControlTest, CloseModeTimeout)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
 }
 
-TEST_F(GraspControlTest, PinchModeOnlyAffectsSpecifiedMotors)
-{
+TEST_F(GraspControlTest, PinchModeOnlyAffectsSpecifiedMotors) {
   PublishHandState({0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
   Spin();
 
@@ -114,8 +106,7 @@ TEST_F(GraspControlTest, PinchModeOnlyAffectsSpecifiedMotors)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 }
 
-TEST_F(GraspControlTest, PresetModeSucceeds)
-{
+TEST_F(GraspControlTest, PresetModeSucceeds) {
   auto tree = CreateTree(
       R"(<GraspControl mode="preset"
                        target_positions="0.5;0.5;0.5;0.5;0.5;0.5;0.5;0.5;0.5;0.5"

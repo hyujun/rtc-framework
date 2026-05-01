@@ -46,99 +46,112 @@ from lifecycle_msgs.msg import Transition
 
 
 def generate_launch_description():
-    pkg_share = FindPackageShare('ur5e_bt_coordinator')
+    pkg_share = FindPackageShare("ur5e_bt_coordinator")
 
     declared_args = [
         DeclareLaunchArgument(
-            'tree', default_value='',
-            description='BT tree XML filename (e.g. pick_and_place_contact_stop.xml). '
-                        'Empty = use YAML default'),
+            "tree",
+            default_value="",
+            description="BT tree XML filename (e.g. pick_and_place_contact_stop.xml). "
+            "Empty = use YAML default",
+        ),
         DeclareLaunchArgument(
-            'tick_rate', default_value='0.0',
-            description='BT tick rate [Hz]. 0 = use YAML default (80 Hz)'),
+            "tick_rate",
+            default_value="0.0",
+            description="BT tick rate [Hz]. 0 = use YAML default (80 Hz)",
+        ),
         DeclareLaunchArgument(
-            'repeat', default_value='',
-            description='Auto-repeat on SUCCESS (true/false). '
-                        'Empty = use YAML default'),
+            "repeat",
+            default_value="",
+            description="Auto-repeat on SUCCESS (true/false). Empty = use YAML default",
+        ),
         DeclareLaunchArgument(
-            'repeat_delay', default_value='0.0',
-            description='Delay before repeat [s]. 0 = use YAML default'),
+            "repeat_delay",
+            default_value="0.0",
+            description="Delay before repeat [s]. 0 = use YAML default",
+        ),
         DeclareLaunchArgument(
-            'paused', default_value='',
-            description='Start paused (true/false). Empty = use YAML default'),
+            "paused",
+            default_value="",
+            description="Start paused (true/false). Empty = use YAML default",
+        ),
         DeclareLaunchArgument(
-            'groot2_port', default_value='0',
-            description='Groot2 ZMQ port (0 = disabled, 1667 = default)'),
+            "groot2_port",
+            default_value="0",
+            description="Groot2 ZMQ port (0 = disabled, 1667 = default)",
+        ),
         DeclareLaunchArgument(
-            'grip', default_value='',
-            description='Grip strength for pose-based grasp: soft, medium, hard. '
-                        'Empty = use YAML default (medium)'),
+            "grip",
+            default_value="",
+            description="Grip strength for pose-based grasp: soft, medium, hard. "
+            "Empty = use YAML default (medium)",
+        ),
     ]
 
     def launch_setup(context):
-        config_yaml = PathJoinSubstitution(
-            [pkg_share, 'config', 'bt_coordinator.yaml'])
-        poses_yaml = PathJoinSubstitution(
-            [pkg_share, 'config', 'poses.yaml'])
+        config_yaml = PathJoinSubstitution([pkg_share, "config", "bt_coordinator.yaml"])
+        poses_yaml = PathJoinSubstitution([pkg_share, "config", "poses.yaml"])
 
         # Resolve launch arguments
-        tree = LaunchConfiguration('tree').perform(context)
-        tick_rate = float(LaunchConfiguration('tick_rate').perform(context))
-        repeat = LaunchConfiguration('repeat').perform(context)
-        repeat_delay = float(
-            LaunchConfiguration('repeat_delay').perform(context))
-        paused = LaunchConfiguration('paused').perform(context)
-        groot2_port = int(
-            LaunchConfiguration('groot2_port').perform(context))
-        grip = LaunchConfiguration('grip').perform(context)
+        tree = LaunchConfiguration("tree").perform(context)
+        tick_rate = float(LaunchConfiguration("tick_rate").perform(context))
+        repeat = LaunchConfiguration("repeat").perform(context)
+        repeat_delay = float(LaunchConfiguration("repeat_delay").perform(context))
+        paused = LaunchConfiguration("paused").perform(context)
+        groot2_port = int(LaunchConfiguration("groot2_port").perform(context))
+        grip = LaunchConfiguration("grip").perform(context)
 
         # Only override parameters that the user explicitly set
         overrides = {}
         if tree:
-            overrides['tree_file'] = tree
+            overrides["tree_file"] = tree
         if tick_rate > 0.0:
-            overrides['tick_rate_hz'] = tick_rate
-        if repeat.lower() in ('true', 'false'):
-            overrides['repeat'] = repeat.lower() == 'true'
+            overrides["tick_rate_hz"] = tick_rate
+        if repeat.lower() in ("true", "false"):
+            overrides["repeat"] = repeat.lower() == "true"
         if repeat_delay > 0.0:
-            overrides['repeat_delay_s'] = repeat_delay
-        if paused.lower() in ('true', 'false'):
-            overrides['paused'] = paused.lower() == 'true'
+            overrides["repeat_delay_s"] = repeat_delay
+        if paused.lower() in ("true", "false"):
+            overrides["paused"] = paused.lower() == "true"
         if groot2_port > 0:
-            overrides['groot2_port'] = groot2_port
-        if grip in ('soft', 'medium', 'hard'):
-            overrides['bb.hand_close_pose'] = f'hand_close_{grip}'
+            overrides["groot2_port"] = groot2_port
+        if grip in ("soft", "medium", "hard"):
+            overrides["bb.hand_close_pose"] = f"hand_close_{grip}"
 
         # `namespace=''` is required by launch_ros >= jazzy (keyword-only
         # arg in LifecycleNode.__init__); earlier distros defaulted it
         # implicitly.
         bt_node = LifecycleNode(
-            package='ur5e_bt_coordinator',
-            executable='bt_coordinator_node',
-            name='bt_coordinator',
-            namespace='',
-            output='screen',
+            package="ur5e_bt_coordinator",
+            executable="bt_coordinator_node",
+            name="bt_coordinator",
+            namespace="",
+            output="screen",
             parameters=[config_yaml, poses_yaml, overrides],
         )
 
         auto_activate = RegisterEventHandler(
             OnStateTransition(
                 target_lifecycle_node=bt_node,
-                start_state='configuring',
-                goal_state='inactive',
-                entities=[EmitEvent(event=ChangeState(
-                    lifecycle_node_matcher=lambda n: n == bt_node,
-                    transition_id=Transition.TRANSITION_ACTIVATE,
-                ))],
+                start_state="configuring",
+                goal_state="inactive",
+                entities=[
+                    EmitEvent(
+                        event=ChangeState(
+                            lifecycle_node_matcher=lambda n: n == bt_node,
+                            transition_id=Transition.TRANSITION_ACTIVATE,
+                        )
+                    )
+                ],
             )
         )
-        trigger_configure = EmitEvent(event=ChangeState(
-            lifecycle_node_matcher=lambda n: n == bt_node,
-            transition_id=Transition.TRANSITION_CONFIGURE,
-        ))
+        trigger_configure = EmitEvent(
+            event=ChangeState(
+                lifecycle_node_matcher=lambda n: n == bt_node,
+                transition_id=Transition.TRANSITION_CONFIGURE,
+            )
+        )
 
         return [bt_node, auto_activate, trigger_configure]
 
-    return LaunchDescription(
-        declared_args + [OpaqueFunction(function=launch_setup)]
-    )
+    return LaunchDescription(declared_args + [OpaqueFunction(function=launch_setup)])

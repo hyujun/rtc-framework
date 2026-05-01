@@ -4,12 +4,12 @@
 // Uses the serial_6dof.urdf (6-DOF serial arm, joints joint_1..joint_6,
 // revolute Z-axis, base_link -> link_1 -> ... -> link_6 -> tool_link).
 
-#include <gtest/gtest.h>
-
 #include "rtc_controllers/direct/joint_pd_controller.hpp"
 #include "rtc_controllers/direct/operational_space_controller.hpp"
 #include "rtc_controllers/indirect/clik_controller.hpp"
 #include "rtc_controllers/indirect/p_controller.hpp"
+
+#include <gtest/gtest.h>
 
 #include <array>
 #include <cmath>
@@ -22,7 +22,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 static std::string GetTestUrdfPath() {
-  const char *env = std::getenv("RTC_TEST_URDF_PATH");
+  const char* env = std::getenv("RTC_TEST_URDF_PATH");
   if (env)
     return env;
   // Resolve relative to this source file
@@ -31,7 +31,7 @@ static std::string GetTestUrdfPath() {
   if (pos != std::string::npos) {
     return path.substr(0, pos) + "/rtc_urdf_bridge/test/urdf/serial_6dof.urdf";
   }
-  return "serial_6dof.urdf"; // last resort
+  return "serial_6dof.urdf";  // last resort
 }
 
 static rtc::ControllerState MakeState(int nj = 6, double dt = 0.002) {
@@ -85,8 +85,7 @@ TEST(PController, ComputeWithError) {
 
   // Other joints should remain near zero
   for (int i = 1; i < 6; ++i) {
-    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)], 0.0, 1e-6)
-        << "Joint " << i;
+    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)], 0.0, 1e-6) << "Joint " << i;
   }
 }
 
@@ -125,9 +124,7 @@ TEST(PController, InitializeHoldPosition) {
   // Should hold current position (command ~= position)
   for (int i = 0; i < 6; ++i) {
     const auto ui = static_cast<std::size_t>(i);
-    EXPECT_NEAR(out.devices[0].commands[ui], state.devices[0].positions[ui],
-                1e-6)
-        << "Joint " << i;
+    EXPECT_NEAR(out.devices[0].commands[ui], state.devices[0].positions[ui], 1e-6) << "Joint " << i;
   }
 }
 
@@ -148,8 +145,7 @@ TEST(PController, Estop) {
   // E-STOP: commands should equal current positions (hold in place)
   for (int i = 0; i < 6; ++i) {
     const auto ui = static_cast<std::size_t>(i);
-    EXPECT_NEAR(out.devices[0].commands[ui], state.devices[0].positions[ui],
-                1e-6)
+    EXPECT_NEAR(out.devices[0].commands[ui], state.devices[0].positions[ui], 1e-6)
         << "Joint " << i << " E-STOP should hold current position";
   }
 }
@@ -196,7 +192,7 @@ TEST(PController, Name) {
 
 TEST(PController, ZeroDt) {
   rtc::PController ctrl(GetTestUrdfPath());
-  auto state = MakeState(6, 0.0); // dt = 0
+  auto state = MakeState(6, 0.0);  // dt = 0
 
   ctrl.InitializeHoldPosition(state);
   std::array<double, 6> target{0.3, 0.0, 0.0, 0.0, 0.0, 0.0};
@@ -250,10 +246,9 @@ TEST(JointPD, ComputeWithError) {
 
   // At least one of these should have nonzero torque on joint 0
   // The trajectory interpolates, so after init joint 0 target != current
-  double max_cmd = std::max(std::abs(out1.devices[0].commands[0]),
-                            std::abs(out2.devices[0].commands[0]));
-  EXPECT_GT(max_cmd, 1e-6)
-      << "PD should produce nonzero torque when target != position";
+  double max_cmd =
+      std::max(std::abs(out1.devices[0].commands[0]), std::abs(out2.devices[0].commands[0]));
+  EXPECT_GT(max_cmd, 1e-6) << "PD should produce nonzero torque when target != position";
 }
 
 TEST(JointPD, SetDeviceTarget) {
@@ -337,10 +332,8 @@ TEST(JointPD, SetGetGainsRoundTrip) {
   ctrl.set_gains(gains);
   const auto rb = ctrl.get_gains();
   for (int i = 0; i < 6; ++i) {
-    EXPECT_NEAR(rb.kp[static_cast<std::size_t>(i)],
-                gains.kp[static_cast<std::size_t>(i)], 1e-12);
-    EXPECT_NEAR(rb.kd[static_cast<std::size_t>(i)],
-                gains.kd[static_cast<std::size_t>(i)], 1e-12);
+    EXPECT_NEAR(rb.kp[static_cast<std::size_t>(i)], gains.kp[static_cast<std::size_t>(i)], 1e-12);
+    EXPECT_NEAR(rb.kd[static_cast<std::size_t>(i)], gains.kd[static_cast<std::size_t>(i)], 1e-12);
   }
   EXPECT_TRUE(rb.enable_gravity_compensation);
   EXPECT_FALSE(rb.enable_coriolis_compensation);
@@ -406,13 +399,11 @@ TEST(Clik, ComputeWithTaskError) {
   bool goal_updated = false;
   for (int i = 0; i < 3; ++i) {
     if (std::abs(out1.task_goal_positions[static_cast<std::size_t>(i)] -
-                 out0.actual_task_positions[static_cast<std::size_t>(i)]) >
-        1e-6) {
+                 out0.actual_task_positions[static_cast<std::size_t>(i)]) > 1e-6) {
       goal_updated = true;
     }
   }
-  EXPECT_TRUE(goal_updated)
-      << "CLIK task_goal_positions should update after SetDeviceTarget";
+  EXPECT_TRUE(goal_updated) << "CLIK task_goal_positions should update after SetDeviceTarget";
 }
 
 TEST(Clik, InitializeHoldPosition) {
@@ -525,7 +516,7 @@ TEST(OSC, ComputeWithPosError) {
   rtc::OperationalSpaceController::Gains gains;
   gains.kp_pos = {5.0, 5.0, 5.0};
   gains.kd_pos = {0.1, 0.1, 0.1};
-  gains.trajectory_speed = 1.0; // fast trajectory for testing
+  gains.trajectory_speed = 1.0;  // fast trajectory for testing
   rtc::OperationalSpaceController ctrl(GetTestUrdfPath(), gains);
 
   auto state = MakeState();
@@ -548,13 +539,11 @@ TEST(OSC, ComputeWithPosError) {
   bool goal_updated = false;
   for (int i = 0; i < 3; ++i) {
     if (std::abs(out1.task_goal_positions[static_cast<std::size_t>(i)] -
-                 out0.actual_task_positions[static_cast<std::size_t>(i)]) >
-        1e-6) {
+                 out0.actual_task_positions[static_cast<std::size_t>(i)]) > 1e-6) {
       goal_updated = true;
     }
   }
-  EXPECT_TRUE(goal_updated)
-      << "OSC task_goal_positions should update after SetDeviceTarget";
+  EXPECT_TRUE(goal_updated) << "OSC task_goal_positions should update after SetDeviceTarget";
 }
 
 TEST(OSC, InitializeHoldPosition) {

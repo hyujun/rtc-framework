@@ -1,9 +1,9 @@
 #pragma once
 
 #include "ur5e_bt_coordinator/bt_ros_bridge.hpp"
+#include <shape_estimation_msgs/msg/shape_estimate.hpp>
 
 #include <behaviortree_cpp/action_node.h>
-#include <shape_estimation_msgs/msg/shape_estimate.hpp>
 
 #include <chrono>
 #include <memory>
@@ -23,7 +23,7 @@ namespace rtc_bt {
 /// Output ports:
 ///   - estimate (ShapeEstimate): the shape estimate message
 class WaitShapeResult : public BT::StatefulActionNode {
-public:
+ public:
   WaitShapeResult(const std::string& name, const BT::NodeConfig& config,
                   std::shared_ptr<BtRosBridge> bridge);
 
@@ -33,7 +33,7 @@ public:
   BT::NodeStatus onRunning() override;
   void onHalted() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
   double confidence_threshold_{0.7};
   double timeout_s_{10.0};

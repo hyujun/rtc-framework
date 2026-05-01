@@ -35,33 +35,31 @@ class Transceiver {
  public:
   using RecvPacket = typename Codec::RecvPacket;
   using SendPacket = typename Codec::SendPacket;
-  using State      = typename Codec::State;
+  using State = typename Codec::State;
   using StateCallback = std::function<void(const State&)>;
 
   // transport: the transport layer to use for send/recv.
   // thread_cfg: RT thread config for the receive loop.
-  explicit Transceiver(
-      std::unique_ptr<TransportInterface> transport,
-      const ThreadConfig& thread_cfg = kUdpRecvConfig) noexcept
+  explicit Transceiver(std::unique_ptr<TransportInterface> transport,
+                       const ThreadConfig& thread_cfg = kUdpRecvConfig) noexcept
       : transport_(std::move(transport)), thread_cfg_(thread_cfg) {}
 
   ~Transceiver() { Stop(); }
 
-  Transceiver(const Transceiver&)            = delete;
+  Transceiver(const Transceiver&) = delete;
   Transceiver& operator=(const Transceiver&) = delete;
-  Transceiver(Transceiver&&)                 = delete;
-  Transceiver& operator=(Transceiver&&)      = delete;
+  Transceiver(Transceiver&&) = delete;
+  Transceiver& operator=(Transceiver&&) = delete;
 
   // -- Receive path ----------------------------------------------------------
 
   // Opens the transport and starts the recv jthread. Returns false on failure.
   [[nodiscard]] bool StartRecv() {
-    if (!transport_ || !transport_->Open()) return false;
+    if (!transport_ || !transport_->Open())
+      return false;
 
     running_.store(true, std::memory_order_release);
-    recv_thread_ = std::jthread([this](std::stop_token st) {
-      RecvLoop(std::move(st));
-    });
+    recv_thread_ = std::jthread([this](std::stop_token st) { RecvLoop(std::move(st)); });
     return true;
   }
 
@@ -89,9 +87,7 @@ class Transceiver {
     return latest_state_;
   }
 
-  [[nodiscard]] bool IsRunning() const noexcept {
-    return running_.load(std::memory_order_acquire);
-  }
+  [[nodiscard]] bool IsRunning() const noexcept { return running_.load(std::memory_order_acquire); }
 
   [[nodiscard]] std::size_t recv_count() const noexcept {
     return recv_count_.load(std::memory_order_relaxed);
@@ -106,7 +102,8 @@ class Transceiver {
   // The caller owns the timing budget — sendto() may still block if the
   // kernel send buffer is full and the socket is configured blocking.
   [[nodiscard]] bool Send(const SendPacket& pkt) noexcept {
-    if (!transport_) return false;
+    if (!transport_)
+      return false;
     std::array<uint8_t, sizeof(SendPacket)> buf{};
     std::memcpy(buf.data(), &pkt, sizeof(SendPacket));
     const bool ok = transport_->Send(buf) >= 0;
@@ -133,14 +130,14 @@ class Transceiver {
 
     while (!stop_token.stop_requested()) [[likely]] {
       const ssize_t n = transport_->Recv(buffer);
-      if (n < 0) [[unlikely]] continue;  // timeout or transport closed
-      if (static_cast<std::size_t>(n) < sizeof(RecvPacket)) [[unlikely]] continue;
+      if (n < 0) [[unlikely]]
+        continue;  // timeout or transport closed
+      if (static_cast<std::size_t>(n) < sizeof(RecvPacket)) [[unlikely]]
+        continue;
 
       State state{};
-      if (Codec::Decode(
-              std::span<const uint8_t>(buffer.data(),
-                                       static_cast<std::size_t>(n)),
-              state)) {
+      if (Codec::Decode(std::span<const uint8_t>(buffer.data(), static_cast<std::size_t>(n)),
+                        state)) {
         {
           std::lock_guard lock(data_mutex_);
           latest_state_ = state;
@@ -156,10 +153,10 @@ class Transceiver {
   std::unique_ptr<TransportInterface> transport_;
   ThreadConfig thread_cfg_;
 
-  std::atomic<bool>        running_{false};
-  StateCallback            callback_;
-  mutable std::mutex       data_mutex_;
-  State                    latest_state_{};
+  std::atomic<bool> running_{false};
+  StateCallback callback_;
+  mutable std::mutex data_mutex_;
+  State latest_state_{};
   std::atomic<std::size_t> recv_count_{0};
   std::atomic<std::size_t> send_count_{0};
 

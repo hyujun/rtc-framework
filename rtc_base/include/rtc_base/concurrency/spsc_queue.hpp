@@ -30,24 +30,20 @@
 #include <cstdint>
 #include <type_traits>
 
-namespace rtc
-{
+namespace rtc {
 
-template<typename T, std::size_t N>
+template <typename T, std::size_t N>
 class SpscQueue {
-  static_assert(N > 0 && (N & (N - 1)) == 0,
-                "SpscQueue capacity N must be a power of 2");
-  static_assert(std::is_trivially_copyable_v<T>,
-                "SpscQueue payload T must be trivially copyable");
+  static_assert(N > 0 && (N & (N - 1)) == 0, "SpscQueue capacity N must be a power of 2");
+  static_assert(std::is_trivially_copyable_v<T>, "SpscQueue payload T must be trivially copyable");
 
-public:
+ public:
   using value_type = T;
   static constexpr std::size_t kCapacity = N;
 
   // Producer side. Returns false (and drops the entry) when the buffer is
   // full — no blocking, no allocation.
-  [[nodiscard]] bool Push(const T & entry) noexcept
-  {
+  [[nodiscard]] bool Push(const T& entry) noexcept {
     const std::size_t head = head_.load(std::memory_order_relaxed);
     const std::size_t next = (head + 1) & (N - 1);
 
@@ -65,8 +61,7 @@ public:
   }
 
   // Consumer side. Returns false when the buffer is empty.
-  [[nodiscard]] bool Pop(T & out) noexcept
-  {
+  [[nodiscard]] bool Pop(T& out) noexcept {
     const std::size_t tail = tail_.load(std::memory_order_relaxed);
 
     if (tail == cached_head_) {
@@ -82,12 +77,11 @@ public:
   }
 
   // Lifetime drop counter. Safe to call from any thread.
-  [[nodiscard]] std::uint64_t drop_count() const noexcept
-  {
+  [[nodiscard]] std::uint64_t drop_count() const noexcept {
     return drop_count_.load(std::memory_order_relaxed);
   }
 
-private:
+ private:
   std::array<T, N> buffer_{};
 
   alignas(kCacheLineSize) std::atomic<std::size_t> head_{0};
@@ -99,6 +93,6 @@ private:
   alignas(kCacheLineSize) std::atomic<std::uint64_t> drop_count_{0};
 };
 
-} // namespace rtc
+}  // namespace rtc
 
-#endif // RTC_BASE_CONCURRENCY_SPSC_QUEUE_HPP_
+#endif  // RTC_BASE_CONCURRENCY_SPSC_QUEUE_HPP_

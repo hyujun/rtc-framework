@@ -35,8 +35,7 @@ namespace rtc {
 
 template <typename T>
 class SeqLock {
-  static_assert(std::is_trivially_copyable_v<T>,
-                "SeqLock requires a trivially copyable type");
+  static_assert(std::is_trivially_copyable_v<T>, "SeqLock requires a trivially copyable type");
 
  public:
   SeqLock() noexcept = default;
@@ -47,11 +46,11 @@ class SeqLock {
   void Store(const T& val) noexcept {
     // Odd sequence = write in progress
     const uint32_t seq = seq_.load(std::memory_order_relaxed);
-    seq_.store(seq + 1, std::memory_order_release);           // → odd
+    seq_.store(seq + 1, std::memory_order_release);  // → odd
 
     std::memcpy(&data_, &val, sizeof(T));
 
-    seq_.store(seq + 2, std::memory_order_release);           // → even (next)
+    seq_.store(seq + 2, std::memory_order_release);  // → even (next)
   }
 
   // ── Reader (multi-consumer, lock-free with retry) ────────────────────
@@ -70,9 +69,7 @@ class SeqLock {
   }
 
   // ── Sequence number (for external staleness checks) ──────────────────
-  [[nodiscard]] uint32_t sequence() const noexcept {
-    return seq_.load(std::memory_order_acquire);
-  }
+  [[nodiscard]] uint32_t sequence() const noexcept { return seq_.load(std::memory_order_acquire); }
 
  private:
   alignas(kCacheLineSize) std::atomic<uint32_t> seq_{0};

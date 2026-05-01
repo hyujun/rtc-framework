@@ -28,12 +28,9 @@ struct DeviceSensorLogPod {
   //    each — barometer + ToF) ─────────────────────────────────────────────
   static constexpr std::size_t kMaxFingertips = 8;
   static constexpr std::size_t kSensorValuesPerFingertip = 11;
-  static constexpr std::size_t kMaxSensorValues =
-      kMaxFingertips * kSensorValuesPerFingertip; // 88
-  static constexpr std::size_t kFTValuesPerFingertip =
-      7; // contact + F(3) + u(3)
-  static constexpr std::size_t kMaxInferenceValues =
-      kMaxFingertips * kFTValuesPerFingertip; // 56
+  static constexpr std::size_t kMaxSensorValues = kMaxFingertips * kSensorValuesPerFingertip;  // 88
+  static constexpr std::size_t kFTValuesPerFingertip = 7;  // contact + F(3) + u(3)
+  static constexpr std::size_t kMaxInferenceValues = kMaxFingertips * kFTValuesPerFingertip;  // 56
 
   // ── Timestamp (CM-provided, session-relative) ─────────────────────────────
   double t_relative_s{0.0};
@@ -59,18 +56,16 @@ static_assert(std::is_trivially_copyable_v<DeviceSensorLogPod>,
 /// per-fingertip column expansion (each fingertip gets
 /// kSensorValuesPerFingertip raw + filtered + kFTValuesPerFingertip
 /// inference columns). The logger appends '\n'.
-inline void
-WriteDeviceSensorLogHeader(std::ostream &os,
-                           std::span<const std::string> sensor_names) {
+inline void WriteDeviceSensorLogHeader(std::ostream& os,
+                                       std::span<const std::string> sensor_names) {
   os << "t_relative_s";
 
   // Per-fingertip raw/filtered (each fingertip → kSensorValuesPerFingertip
   // values, named e.g. "thumb_baro_0..7", "thumb_tof_0..2"). We don't know
   // the value semantics here, so just index them.
   auto emit_ft_block = [&](std::string_view kind) {
-    for (const auto &name : sensor_names) {
-      for (std::size_t v = 0; v < DeviceSensorLogPod::kSensorValuesPerFingertip;
-           ++v) {
+    for (const auto& name : sensor_names) {
+      for (std::size_t v = 0; v < DeviceSensorLogPod::kSensorValuesPerFingertip; ++v) {
         os << ',' << name << '_' << kind << '_' << v;
       }
     }
@@ -80,10 +75,9 @@ WriteDeviceSensorLogHeader(std::ostream &os,
 
   os << ",inference_valid";
   // Inference: per-fingertip 7 columns: contact, fx, fy, fz, ux, uy, uz
-  static constexpr const char *kFtCols[] = {"contact", "fx", "fy", "fz",
-                                            "ux",      "uy", "uz"};
-  for (const auto &name : sensor_names) {
-    for (const char *col : kFtCols) {
+  static constexpr const char* kFtCols[] = {"contact", "fx", "fy", "fz", "ux", "uy", "uz"};
+  for (const auto& name : sensor_names) {
+    for (const char* col : kFtCols) {
       os << ',' << "ft_" << name << '_' << col;
     }
   }
@@ -91,12 +85,11 @@ WriteDeviceSensorLogHeader(std::ostream &os,
 
 /// Emit one row. Column count must agree with the header writer's
 /// sensor_names span — caller's responsibility.
-inline void WriteDeviceSensorLogRow(std::ostream &os,
-                                    const DeviceSensorLogPod &p) {
+inline void WriteDeviceSensorLogRow(std::ostream& os, const DeviceSensorLogPod& p) {
   os << p.t_relative_s;
 
-  const auto n_sensor = static_cast<std::size_t>(p.num_fingertips) *
-                        DeviceSensorLogPod::kSensorValuesPerFingertip;
+  const auto n_sensor =
+      static_cast<std::size_t>(p.num_fingertips) * DeviceSensorLogPod::kSensorValuesPerFingertip;
   for (std::size_t i = 0; i < n_sensor; ++i) {
     os << ',' << p.sensor_data_raw[i];
   }
@@ -106,13 +99,13 @@ inline void WriteDeviceSensorLogRow(std::ostream &os,
 
   os << ',' << (p.inference_valid ? 1 : 0);
 
-  const auto n_inf = static_cast<std::size_t>(p.num_fingertips) *
-                     DeviceSensorLogPod::kFTValuesPerFingertip;
+  const auto n_inf =
+      static_cast<std::size_t>(p.num_fingertips) * DeviceSensorLogPod::kFTValuesPerFingertip;
   for (std::size_t i = 0; i < n_inf; ++i) {
     os << ',' << p.inference_output[i];
   }
 }
 
-} // namespace ur5e
+}  // namespace ur5e
 
-#endif // UR5E_BRINGUP_LOGGING_DEVICE_SENSOR_LOG_POD_HPP_
+#endif  // UR5E_BRINGUP_LOGGING_DEVICE_SENSOR_LOG_POD_HPP_

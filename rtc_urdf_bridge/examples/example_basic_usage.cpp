@@ -19,8 +19,7 @@
 
 namespace rub = rtc_urdf_bridge;
 
-int main(int argc, char * argv[])
-{
+int main(int argc, char* argv[]) {
   if (argc < 2) {
     std::cerr << "사용법: " << argv[0] << " <yaml_config_path>\n";
     return EXIT_FAILURE;
@@ -33,21 +32,21 @@ int main(int argc, char * argv[])
   rub::PinocchioModelBuilder builder(argv[1]);
 
   // ── (2) URDF 분석 결과 출력 ───────────────────────────────────────────────
-  const auto & analyzer = builder.GetAnalyzer();
+  const auto& analyzer = builder.GetAnalyzer();
   std::cout << "\n[2] URDF 분석 결과\n";
   std::cout << "  루트 링크: " << analyzer.GetRootLinkName() << "\n";
   std::cout << "  링크 수: " << analyzer.GetNumLinks() << "\n";
   std::cout << "  관절 수: " << analyzer.GetNumJoints() << "\n";
 
   std::cout << "  Active 관절: ";
-  for (const auto & j : analyzer.GetActiveJointNames()) {
+  for (const auto& j : analyzer.GetActiveJointNames()) {
     std::cout << j << " ";
   }
   std::cout << "\n";
 
   if (!analyzer.GetPassiveJoints().empty()) {
     std::cout << "  Passive 관절: ";
-    for (const auto & pj : analyzer.GetPassiveJoints()) {
+    for (const auto& pj : analyzer.GetPassiveJoints()) {
       std::cout << pj.joint_name << " ";
     }
     std::cout << "\n";
@@ -55,9 +54,9 @@ int main(int argc, char * argv[])
 
   if (!analyzer.GetMimicJoints().empty()) {
     std::cout << "  Mimic 관절: ";
-    for (const auto & mi : analyzer.GetMimicJoints()) {
-      std::cout << mi.joint_name << " (→ " << mi.mimicked_joint
-                << ", x" << mi.multiplier << " +" << mi.offset << ") ";
+    for (const auto& mi : analyzer.GetMimicJoints()) {
+      std::cout << mi.joint_name << " (→ " << mi.mimicked_joint << ", x" << mi.multiplier << " +"
+                << mi.offset << ") ";
     }
     std::cout << "\n";
   }
@@ -81,7 +80,7 @@ int main(int argc, char * argv[])
   // 마지막 non-universe 프레임의 SE3 출력
   std::cout << "\n[4] FK 결과 (neutral config)\n";
   auto last_frame_id = static_cast<pinocchio::FrameIndex>(full_model->nframes - 1);
-  const auto & last_frame_name = full_model->frames[last_frame_id].name;
+  const auto& last_frame_name = full_model->frames[last_frame_id].name;
   auto pos = handle.GetFramePosition(last_frame_id);
   auto rot = handle.GetFrameRotation(last_frame_id);
 

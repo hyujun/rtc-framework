@@ -1,9 +1,9 @@
 #ifndef RTC_CONTROLLERS_TRAJECTORY_TASK_SPACE_SPLINE_TRAJECTORY_HPP_
 #define RTC_CONTROLLERS_TRAJECTORY_TASK_SPACE_SPLINE_TRAJECTORY_HPP_
 
-#include "rtc_controllers/trajectory/trajectory_utils.hpp"
 #include "rtc_controllers/trajectory/quintic_blend_trajectory.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
+#include "rtc_controllers/trajectory/trajectory_utils.hpp"
 
 // Suppress warnings emitted by Pinocchio
 #pragma GCC diagnostic push
@@ -11,30 +11,27 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/spatial/se3.hpp>
-#include <pinocchio/spatial/motion.hpp>
 #include <pinocchio/spatial/explog.hpp>
+#include <pinocchio/spatial/motion.hpp>
+#include <pinocchio/spatial/se3.hpp>
 #pragma GCC diagnostic pop
 
 #include <Eigen/Dense>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
-#include <algorithm>
 
-namespace rtc
-{
-namespace trajectory
-{
+namespace rtc {
+namespace trajectory {
 
 /// Multi-waypoint quintic spline trajectory in SE(3) task space with global C4 continuity.
 /// Uses piecewise tangent-space interpolation: each segment operates in the local tangent
 /// space of its start pose. A global linear system is solved per tangent-space component
 /// (mapped to a common reference frame) to determine smooth internal boundary conditions.
 class TaskSpaceSplineTrajectory {
-public:
-  struct Waypoint
-  {
+ public:
+  struct Waypoint {
     pinocchio::SE3 pose;
     double time{0.0};
   };
@@ -44,23 +41,18 @@ public:
   TaskSpaceSplineTrajectory() = default;
 
   /// Natural spline: start/end vel=0, acc=0 (non-RT path).
-  void initialize(
-    const std::array<Waypoint, kMaxWaypoints> & waypoints,
-    std::size_t num_waypoints) noexcept
-  {
+  void initialize(const std::array<Waypoint, kMaxWaypoints>& waypoints,
+                  std::size_t num_waypoints) noexcept {
     Eigen::Matrix<double, 6, 1> zero = Eigen::Matrix<double, 6, 1>::Zero();
     initialize(waypoints, num_waypoints, zero, zero, zero, zero);
   }
 
   /// Clamped spline: user-specified start/end vel and acc in local frame (non-RT path).
-  void initialize(
-    const std::array<Waypoint, kMaxWaypoints> & waypoints,
-    std::size_t num_waypoints,
-    const Eigen::Matrix<double, 6, 1> & start_vel,
-    const Eigen::Matrix<double, 6, 1> & start_acc,
-    const Eigen::Matrix<double, 6, 1> & end_vel,
-    const Eigen::Matrix<double, 6, 1> & end_acc) noexcept
-  {
+  void initialize(const std::array<Waypoint, kMaxWaypoints>& waypoints, std::size_t num_waypoints,
+                  const Eigen::Matrix<double, 6, 1>& start_vel,
+                  const Eigen::Matrix<double, 6, 1>& start_acc,
+                  const Eigen::Matrix<double, 6, 1>& end_vel,
+                  const Eigen::Matrix<double, 6, 1>& end_acc) noexcept {
     if (num_waypoints < 2) {
       num_segments_ = 0;
       duration_ = 0.0;
@@ -94,14 +86,11 @@ public:
     if (n == 2) {
       const double h = waypoints[1].time - waypoints[0].time;
       // End velocity: transform from wp[1] frame to wp[0] frame
-      Eigen::Matrix<double, 6, 1> v_end_local = T_rel[0].act(
-        pinocchio::Motion(end_vel)).toVector();
+      Eigen::Matrix<double, 6, 1> v_end_local = T_rel[0].act(pinocchio::Motion(end_vel)).toVector();
       for (std::size_t j = 0; j < 6; ++j) {
         const auto jj = static_cast<Eigen::Index>(j);
-        segments_[0][j].compute_coefficients(
-          0.0, start_vel[jj], start_acc[jj],
-          deltas[0][jj], v_end_local[jj], end_acc[jj],
-          h);
+        segments_[0][j].compute_coefficients(0.0, start_vel[jj], start_acc[jj], deltas[0][jj],
+                                             v_end_local[jj], end_acc[jj], h);
       }
       return;
     }
@@ -186,8 +175,7 @@ public:
     // Boundary: end velocity (transform end_vel from wp[n-1] frame to wp[0] frame)
     {
       pinocchio::SE3 T_0_last = waypoints[0].pose.actInv(waypoints[n - 1].pose);
-      Eigen::Matrix<double, 6, 1> v_end_0 = T_0_last.act(
-        pinocchio::Motion(end_vel)).toVector();
+      Eigen::Matrix<double, 6, 1> v_end_0 = T_0_last.act(pinocchio::Motion(end_vel)).toVector();
 
       const auto k = ns - 1;
       const auto base = static_cast<Eigen::Index>(6 * k);
@@ -234,13 +222,13 @@ public:
       const double hk5 = hk4 * hk;
 
       // Position continuity: p_k(h_k) - p_{k+1}(0) = 0
-      A(row, base_k)     = 1.0;
+      A(row, base_k) = 1.0;
       A(row, base_k + 1) = hk;
       A(row, base_k + 2) = hk2;
       A(row, base_k + 3) = hk3;
       A(row, base_k + 4) = hk4;
       A(row, base_k + 5) = hk5;
-      A(row, base_k1)    = -1.0;
+      A(row, base_k1) = -1.0;
       ++row;
 
       // Velocity
@@ -301,43 +289,39 @@ public:
         // Acceleration at segment start: 2*c2
         a_start_global[j] = 2.0 * X(base + 2, j);
         // Velocity at segment end
-        v_end_global[j] = X(base + 1, j) + 2.0 * X(base + 2, j) * hk
-                        + 3.0 * X(base + 3, j) * hk2 + 4.0 * X(base + 4, j) * hk3
-                        + 5.0 * X(base + 5, j) * hk4;
+        v_end_global[j] = X(base + 1, j) + 2.0 * X(base + 2, j) * hk + 3.0 * X(base + 3, j) * hk2 +
+                          4.0 * X(base + 4, j) * hk3 + 5.0 * X(base + 5, j) * hk4;
         // Acceleration at segment end
-        a_end_global[j] = 2.0 * X(base + 2, j) + 6.0 * X(base + 3, j) * hk
-                        + 12.0 * X(base + 4, j) * hk2 + 20.0 * X(base + 5, j) * hk3;
+        a_end_global[j] = 2.0 * X(base + 2, j) + 6.0 * X(base + 3, j) * hk +
+                          12.0 * X(base + 4, j) * hk2 + 20.0 * X(base + 5, j) * hk3;
       }
 
       // Transform velocities from wp[0] frame to segment start frame (wp[k])
       pinocchio::SE3 T_0_k = waypoints[0].pose.actInv(waypoints[k].pose);
 
       // v in wp[k] frame = T_0_k^{-1}.act(v in wp[0] frame)
-      Eigen::Matrix<double, 6, 1> v_start_local = T_0_k.actInv(
-        pinocchio::Motion(v_start_global)).toVector();
-      Eigen::Matrix<double, 6, 1> a_start_local = T_0_k.actInv(
-        pinocchio::Motion(a_start_global)).toVector();
+      Eigen::Matrix<double, 6, 1> v_start_local =
+          T_0_k.actInv(pinocchio::Motion(v_start_global)).toVector();
+      Eigen::Matrix<double, 6, 1> a_start_local =
+          T_0_k.actInv(pinocchio::Motion(a_start_global)).toVector();
 
       // End velocity in wp[0] frame -> transform to wp[k] frame (segment local)
       // (not wp[k+1] frame, since our segment polynomial is in wp[k]'s tangent space)
-      Eigen::Matrix<double, 6, 1> v_end_local = T_0_k.actInv(
-        pinocchio::Motion(v_end_global)).toVector();
-      Eigen::Matrix<double, 6, 1> a_end_local = T_0_k.actInv(
-        pinocchio::Motion(a_end_global)).toVector();
+      Eigen::Matrix<double, 6, 1> v_end_local =
+          T_0_k.actInv(pinocchio::Motion(v_end_global)).toVector();
+      Eigen::Matrix<double, 6, 1> a_end_local =
+          T_0_k.actInv(pinocchio::Motion(a_end_global)).toVector();
 
       for (std::size_t j = 0; j < 6; ++j) {
         const auto jj = static_cast<Eigen::Index>(j);
-        segments_[k][j].compute_coefficients(
-          0.0, v_start_local[jj], a_start_local[jj],
-          deltas[k][jj], v_end_local[jj], a_end_local[jj],
-          hk);
+        segments_[k][j].compute_coefficients(0.0, v_start_local[jj], a_start_local[jj],
+                                             deltas[k][jj], v_end_local[jj], a_end_local[jj], hk);
       }
     }
   }
 
   /// Compute trajectory state at given time (RT path).
-  [[nodiscard]] State compute(double time) const noexcept
-  {
+  [[nodiscard]] State compute(double time) const noexcept {
     State state;
 
     if (num_segments_ == 0) {
@@ -385,9 +369,10 @@ public:
   }
 
   [[nodiscard]] double duration() const noexcept { return duration_; }
+
   [[nodiscard]] std::size_t num_segments() const noexcept { return num_segments_; }
 
-private:
+ private:
   std::array<std::array<QuinticPolynomial, 6>, kMaxWaypoints - 1> segments_{};
   std::array<double, kMaxWaypoints> segment_start_times_{};
   std::array<pinocchio::SE3, kMaxWaypoints> segment_start_poses_{};

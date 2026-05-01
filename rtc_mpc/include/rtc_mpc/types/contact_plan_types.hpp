@@ -24,9 +24,9 @@ namespace rtc::mpc {
 /// then consumed by OCP handlers to place contact-force variables / friction
 /// cone constraints.
 struct ContactFrameInfo {
-  int frame_id{-1};   ///< Pinocchio frame index (`pinocchio::FrameIndex`)
-  int dim{3};         ///< force/torque dim: 3 (point) or 6 (wrench)
-  std::string name{}; ///< original URDF frame name (diagnostics only)
+  int frame_id{-1};    ///< Pinocchio frame index (`pinocchio::FrameIndex`)
+  int dim{3};          ///< force/torque dim: 3 (point) or 6 (wrench)
+  std::string name{};  ///< original URDF frame name (diagnostics only)
 };
 
 /// @brief Set of contact frames active during a time segment of the OCP.
@@ -35,9 +35,9 @@ struct ContactFrameInfo {
 /// `ContactPlan::frames`) so consumers can dispatch directly to Pinocchio
 /// algorithms without an extra lookup.
 struct ContactPhase {
-  std::vector<int> active_frame_ids{}; ///< Pinocchio frame ids active here
-  double t_start{0.0};                 ///< phase start time [s]
-  double t_end{0.0};                   ///< phase end time   [s]
+  std::vector<int> active_frame_ids{};  ///< Pinocchio frame ids active here
+  double t_start{0.0};                  ///< phase start time [s]
+  double t_end{0.0};                    ///< phase end time   [s]
 };
 
 /// @brief Full contact plan across the MPC horizon.
@@ -50,6 +50,6 @@ struct ContactPlan {
   std::vector<ContactPhase> phases{};
 };
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc
 
-#endif // RTC_MPC_TYPES_CONTACT_PLAN_TYPES_HPP_
+#endif  // RTC_MPC_TYPES_CONTACT_PLAN_TYPES_HPP_

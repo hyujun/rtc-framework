@@ -48,53 +48,54 @@ def _launch_setup(context):
     """Resolve launch arguments and build actions that need runtime values."""
     # ROS 2 Jazzy renamed use_fake_hardware -> use_mock_hardware.
     # Accept either flag; if either is 'true', enable mock hardware.
-    use_mock = context.launch_configurations.get('use_mock_hardware', 'false')
-    use_fake = context.launch_configurations.get('use_fake_hardware', 'false')
-    mock_enabled = 'true' if use_mock == 'true' or use_fake == 'true' else 'false'
+    use_mock = context.launch_configurations.get("use_mock_hardware", "false")
+    use_fake = context.launch_configurations.get("use_fake_hardware", "false")
+    mock_enabled = "true" if use_mock == "true" or use_fake == "true" else "false"
 
     # Humble uses 'use_fake_hardware', Jazzy+ uses 'use_mock_hardware'.
     # Pass both so the correct one is picked up regardless of ROS distro.
     ur_driver_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([
-            PathJoinSubstitution([
-                FindPackageShare('ur_robot_driver'),
-                'launch',
-                'ur_control.launch.py'
-            ])
-        ]),
+        PythonLaunchDescriptionSource(
+            [
+                PathJoinSubstitution(
+                    [FindPackageShare("ur_robot_driver"), "launch", "ur_control.launch.py"]
+                )
+            ]
+        ),
         launch_arguments={
-            'ur_type': 'ur5e',
-            'robot_ip': LaunchConfiguration('robot_ip'),
-            'use_mock_hardware': mock_enabled,
-            'use_fake_hardware': mock_enabled,
-            'launch_rviz': 'false',
-            'initial_joint_controller': 'forward_position_controller',
-        }.items()
+            "ur_type": "ur5e",
+            "robot_ip": LaunchConfiguration("robot_ip"),
+            "use_mock_hardware": mock_enabled,
+            "use_fake_hardware": mock_enabled,
+            "launch_rviz": "false",
+            "initial_joint_controller": "forward_position_controller",
+        }.items(),
     )
     # ── Activate forward_position_controller (mock hardware only) ────────────
     # For real robots, the UR driver's controller_stopper_node handles activation
     # via initial_joint_controller when play is pressed on the teach pendant.
     # For mock hardware, there is no controller_stopper, so we must switch manually.
     actions = [ur_driver_launch]
-    if mock_enabled == 'true':
+    if mock_enabled == "true":
         activate_fwd_controller = TimerAction(
             period=3.0,
             actions=[
                 ExecuteProcess(
                     cmd=[
-                        'bash', '-c',
+                        "bash",
+                        "-c",
                         'echo "[RT] Switching to forward_position_controller (mock mode)..."; '
-                        'ros2 service call /controller_manager/switch_controller '
-                        '  controller_manager_msgs/srv/SwitchController '
+                        "ros2 service call /controller_manager/switch_controller "
+                        "  controller_manager_msgs/srv/SwitchController "
                         '  "{activate_controllers: [forward_position_controller], '
-                        '    deactivate_controllers: [scaled_joint_trajectory_controller], '
+                        "    deactivate_controllers: [scaled_joint_trajectory_controller], "
                         '    strictness: 1}" '
                         '  && echo "[RT] forward_position_controller activated" '
-                        '  || echo "[RT] WARNING: controller switch failed"'
+                        '  || echo "[RT] WARNING: controller switch failed"',
                     ],
-                    output='screen',
+                    output="screen",
                 )
-            ]
+            ],
         )
         actions.append(activate_fwd_controller)
     return actions
@@ -108,117 +109,101 @@ def generate_launch_description():
 
     # ── Arguments ──────────────────────────────────────────────────────────────
     robot_ip_arg = DeclareLaunchArgument(
-        'robot_ip',
-        default_value='192.168.1.10',
-        description='IP address of the UR robot'
+        "robot_ip", default_value="192.168.1.10", description="IP address of the UR robot"
     )
 
     use_mock_hardware_arg = DeclareLaunchArgument(
-        'use_mock_hardware',
-        default_value='false',
-        description='Use mock hardware for testing (Jazzy)'
+        "use_mock_hardware",
+        default_value="false",
+        description="Use mock hardware for testing (Jazzy)",
     )
     use_fake_hardware_arg = DeclareLaunchArgument(
-        'use_fake_hardware',
-        default_value='false',
-        description='[Deprecated — use use_mock_hardware] Alias kept for compatibility'
+        "use_fake_hardware",
+        default_value="false",
+        description="[Deprecated — use use_mock_hardware] Alias kept for compatibility",
     )
 
     use_cpu_affinity_arg = DeclareLaunchArgument(
-        'use_cpu_affinity',
-        default_value='true',
+        "use_cpu_affinity",
+        default_value="true",
         description=(
-            'Pin UR driver process to Core 0-1 via taskset (3 s after launch). '
-            'Set false when running with fake hardware or in CI.'
-        )
+            "Pin UR driver process to Core 0-1 via taskset (3 s after launch). "
+            "Set false when running with fake hardware or in CI."
+        ),
     )
 
     enable_mpc_arg = DeclareLaunchArgument(
-        'enable_mpc',
-        default_value='',
+        "enable_mpc",
+        default_value="",
         description=(
-            'Enable the MPC thread in DemoWbcController. '
-            'Takes effect only when initial_controller is demo_wbc_controller. '
-            'Empty = use demo_wbc_controller.yaml default. '
-            'Runtime toggle is also available via gains index 7.'
-        )
+            "Enable the MPC thread in DemoWbcController. "
+            "Takes effect only when initial_controller is demo_wbc_controller. "
+            "Empty = use demo_wbc_controller.yaml default. "
+            "Runtime toggle is also available via gains index 7."
+        ),
     )
 
     # ── Paths ──────────────────────────────────────────────────────────────────
-    ur_control_config = PathJoinSubstitution([
-        FindPackageShare('ur5e_bringup'),
-        'config',
-        'ur5e_robot.yaml'
-    ])
+    ur_control_config = PathJoinSubstitution(
+        [FindPackageShare("ur5e_bringup"), "config", "ur5e_robot.yaml"]
+    )
 
     # Hand UDP config (ur5e_hand_driver package)
-    hand_udp_config = PathJoinSubstitution([
-        FindPackageShare('ur5e_hand_driver'),
-        'config',
-        'hand_udp_node.yaml'
-    ])
+    hand_udp_config = PathJoinSubstitution(
+        [FindPackageShare("ur5e_hand_driver"), "config", "hand_udp_node.yaml"]
+    )
 
     # Fingertip F/T inferencer config (ur5e_hand_driver package)
-    ft_inferencer_config = PathJoinSubstitution([
-        FindPackageShare('ur5e_hand_driver'),
-        'config',
-        'fingertip_ft_inferencer.yaml'
-    ])
+    ft_inferencer_config = PathJoinSubstitution(
+        [FindPackageShare("ur5e_hand_driver"), "config", "fingertip_ft_inferencer.yaml"]
+    )
 
-    cyclone_dds_xml = PathJoinSubstitution([
-        FindPackageShare('rtc_controller_manager'),
-        'config',
-        'cyclone_dds.xml'
-    ])
+    cyclone_dds_xml = PathJoinSubstitution(
+        [FindPackageShare("rtc_controller_manager"), "config", "cyclone_dds.xml"]
+    )
 
     # ── CycloneDDS thread restriction ─────────────────────────────────────────
     set_cyclone_uri = SetEnvironmentVariable(
-        name='CYCLONEDDS_URI',
-        value=['file://', cyclone_dds_xml]
+        name="CYCLONEDDS_URI", value=["file://", cyclone_dds_xml]
     )
 
-    set_session_dir = SetEnvironmentVariable(
-        name='RTC_SESSION_DIR',
-        value=session_dir
-    )
+    set_session_dir = SetEnvironmentVariable(name="RTC_SESSION_DIR", value=session_dir)
 
-    set_rmw = SetEnvironmentVariable(
-        name='RMW_IMPLEMENTATION',
-        value='rmw_cyclonedds_cpp'
-    )
+    set_rmw = SetEnvironmentVariable(name="RMW_IMPLEMENTATION", value="rmw_cyclonedds_cpp")
 
     # ── UR robot driver launch (via OpaqueFunction for mock_hardware compat) ──
     ur_driver_launch_action = OpaqueFunction(function=_launch_setup)
 
     # ── CPU Shield ────────────────────────────────────────────────────────────
-    _pkg_prefix = get_package_share_directory('repo_scripts')
+    _pkg_prefix = get_package_share_directory("repo_scripts")
     _shield_script = os.path.join(
-        os.path.dirname(os.path.dirname(_pkg_prefix)),
-        'lib', 'repo_scripts', 'cpu_shield.sh')
+        os.path.dirname(os.path.dirname(_pkg_prefix)), "lib", "repo_scripts", "cpu_shield.sh"
+    )
 
     enable_cpu_shield = ExecuteProcess(
         cmd=[
-            'bash', '-c',
+            "bash",
+            "-c",
             f'if [ -f "{_shield_script}" ]; then '
-            '  ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); '
+            "  ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); "
             '  if [ -z "$ISOLATED" ]; then '
             '    echo "[RT] CPU shield not active — enabling robot mode..."; '
-            '    if sudo -n true 2>/dev/null; then '
+            "    if sudo -n true 2>/dev/null; then "
             f'      sudo "{_shield_script}" on --robot; '
-            '    else '
+            "    else "
             '      echo "[RT] WARNING: sudo requires a password — skipping CPU shield. '
-            'Configure passwordless sudo for cpu_shield.sh or run: '
+            "Configure passwordless sudo for cpu_shield.sh or run: "
             f'sudo {_shield_script} on --robot"; '
-            '    fi; '
-            '  else '
+            "    fi; "
+            "  else "
             '    echo "[RT] CPU shield already active: Core $ISOLATED isolated"; '
-            '  fi; '
-            'else '
+            "  fi; "
+            "else "
             f'  echo "[RT] WARNING: cpu_shield.sh not found: {_shield_script}"; '
-            'fi'
+            "fi",
         ],
-        output='screen',
-        condition=IfCondition(LaunchConfiguration('use_cpu_affinity'))
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("use_cpu_affinity")),
     )
 
     # ── UR driver CPU pinning ─────────────────────────────────────────────────
@@ -227,16 +212,17 @@ def generate_launch_description():
         actions=[
             ExecuteProcess(
                 cmd=[
-                    'bash', '-c',
+                    "bash",
+                    "-c",
                     'PID=$(pgrep -nf ur_ros2_driver) && [ -n "$PID" ] && '
                     'taskset -cp 0-1 "$PID" && '
                     'echo "[RT] ur_ros2_driver (PID=$PID) pinned to Core 0-1" || '
-                    'echo "[RT] WARNING: ur_ros2_driver not found — CPU pinning skipped"'
+                    'echo "[RT] WARNING: ur_ros2_driver not found — CPU pinning skipped"',
                 ],
-                output='screen',
-                condition=IfCondition(LaunchConfiguration('use_cpu_affinity'))
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("use_cpu_affinity")),
             )
-        ]
+        ],
     )
 
     # ── ur5e_rt_controller DDS thread pinning ─────────────────────────────────
@@ -246,26 +232,27 @@ def generate_launch_description():
         actions=[
             ExecuteProcess(
                 cmd=[
-                    'bash', '-c',
+                    "bash",
+                    "-c",
                     'PID=$(pgrep -nf "ur5e_rt_controller"); '
                     'if [ -z "$PID" ]; then '
                     '  echo "[RT] WARNING: ur5e_rt_controller not found — DDS thread pinning skipped"; '
-                    '  exit 0; '
-                    'fi; '
+                    "  exit 0; "
+                    "fi; "
                     'taskset -cp 0-1 "$PID" 2>/dev/null; '
-                    'PINNED=0; '
-                    'for TID in $(ls /proc/$PID/task/ 2>/dev/null); do '
+                    "PINNED=0; "
+                    "for TID in $(ls /proc/$PID/task/ 2>/dev/null); do "
                     '  COMM=$(cat /proc/$PID/task/$TID/comm 2>/dev/null || echo ""); '
                     '  POLICY=$(chrt -p $TID 2>/dev/null | grep -o "SCHED_FIFO" || echo ""); '
                     '  if [ -n "$POLICY" ]; then continue; fi; '
                     '  taskset -cp 0-1 "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
-                    'done; '
-                    'echo "[RT] ur5e_rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core 0-1"'
+                    "done; "
+                    'echo "[RT] ur5e_rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core 0-1"',
                 ],
-                output='screen',
-                condition=IfCondition(LaunchConfiguration('use_cpu_affinity'))
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("use_cpu_affinity")),
             )
-        ]
+        ],
     )
 
     # ── RT controller node ─────────────────────────────────────────────────────
@@ -280,15 +267,15 @@ def generate_launch_description():
     # bringup owns runtime identity; rtc_controller_manager is library-only.
     # See agent_docs/design-principles.md.
     rt_controller_node = LifecycleNode(
-        package='ur5e_bringup',
-        executable='ur5e_rt_controller',
-        name='ur5e_rt_controller',
-        namespace='',
-        output='screen',
+        package="ur5e_bringup",
+        executable="ur5e_rt_controller",
+        name="ur5e_rt_controller",
+        namespace="",
+        output="screen",
         parameters=[
             ur_control_config,
             {
-                'log_dir': session_dir,
+                "log_dir": session_dir,
             },
         ],
         emulate_tty=True,
@@ -297,11 +284,11 @@ def generate_launch_description():
     # ── Hand UDP driver node (LifecycleNode) ──────────────────────────────────
     # Publishes /hand/joint_states and /hand/sensor_states for ur5e_rt_controller.
     hand_udp_node = LifecycleNode(
-        package='ur5e_hand_driver',
-        executable='hand_udp_node',
-        name='hand_udp_node',
-        namespace='',
-        output='screen',
+        package="ur5e_hand_driver",
+        executable="hand_udp_node",
+        name="hand_udp_node",
+        namespace="",
+        output="screen",
         parameters=[
             hand_udp_config,
             ft_inferencer_config,
@@ -313,35 +300,47 @@ def generate_launch_description():
     hand_auto_activate = RegisterEventHandler(
         OnStateTransition(
             target_lifecycle_node=hand_udp_node,
-            start_state='configuring',
-            goal_state='inactive',
-            entities=[EmitEvent(event=ChangeState(
-                lifecycle_node_matcher=lambda n: n == hand_udp_node,
-                transition_id=Transition.TRANSITION_ACTIVATE,
-            ))],
+            start_state="configuring",
+            goal_state="inactive",
+            entities=[
+                EmitEvent(
+                    event=ChangeState(
+                        lifecycle_node_matcher=lambda n: n == hand_udp_node,
+                        transition_id=Transition.TRANSITION_ACTIVATE,
+                    )
+                )
+            ],
         )
     )
-    hand_trigger_configure = EmitEvent(event=ChangeState(
-        lifecycle_node_matcher=lambda n: n == hand_udp_node,
-        transition_id=Transition.TRANSITION_CONFIGURE,
-    ))
+    hand_trigger_configure = EmitEvent(
+        event=ChangeState(
+            lifecycle_node_matcher=lambda n: n == hand_udp_node,
+            transition_id=Transition.TRANSITION_CONFIGURE,
+        )
+    )
 
     # ── Lifecycle auto-configure/activate for ur5e_rt_controller ──────────────
     rt_auto_activate = RegisterEventHandler(
         OnStateTransition(
             target_lifecycle_node=rt_controller_node,
-            start_state='configuring',
-            goal_state='inactive',
-            entities=[EmitEvent(event=ChangeState(
-                lifecycle_node_matcher=lambda n: n == rt_controller_node,
-                transition_id=Transition.TRANSITION_ACTIVATE,
-            ))],
+            start_state="configuring",
+            goal_state="inactive",
+            entities=[
+                EmitEvent(
+                    event=ChangeState(
+                        lifecycle_node_matcher=lambda n: n == rt_controller_node,
+                        transition_id=Transition.TRANSITION_ACTIVATE,
+                    )
+                )
+            ],
         )
     )
-    rt_trigger_configure = EmitEvent(event=ChangeState(
-        lifecycle_node_matcher=lambda n: n == rt_controller_node,
-        transition_id=Transition.TRANSITION_CONFIGURE,
-    ))
+    rt_trigger_configure = EmitEvent(
+        event=ChangeState(
+            lifecycle_node_matcher=lambda n: n == rt_controller_node,
+            transition_id=Transition.TRANSITION_CONFIGURE,
+        )
+    )
 
     # ── Readiness gate ────────────────────────────────────────────────────────
     # Polls until UR driver publishes /joint_states AND hand_udp_node publishes
@@ -349,30 +348,31 @@ def generate_launch_description():
     # this gate process exits successfully (via OnProcessExit event handler).
     comm_readiness_gate = ExecuteProcess(
         cmd=[
-            'bash', '-c',
+            "bash",
+            "-c",
             # --- Wait for /joint_states publisher (UR driver) ---
             'echo "[RT] Readiness gate: waiting for communication nodes..."; '
-            'timeout 30 bash -c \''
-            'while ! ros2 topic info /joint_states 2>/dev/null '
+            "timeout 30 bash -c '"
+            "while ! ros2 topic info /joint_states 2>/dev/null "
             '  | grep -q "Publisher count: [1-9]"; do sleep 0.5; done\' '
             '  && echo "[RT]   /joint_states publisher OK" '
             '  || { echo "[RT] FATAL: /joint_states not available after 30 s"; exit 1; }; '
             # --- Wait for /hand/joint_states publisher (hand_udp_node) ---
-            'timeout 30 bash -c \''
-            'while ! ros2 topic info /hand/joint_states 2>/dev/null '
+            "timeout 30 bash -c '"
+            "while ! ros2 topic info /hand/joint_states 2>/dev/null "
             '  | grep -q "Publisher count: [1-9]"; do sleep 0.5; done\' '
             '  && echo "[RT]   /hand/joint_states publisher OK" '
             '  || { echo "[RT] FATAL: /hand/joint_states not available after 30 s"; exit 1; }; '
             # --- Wait for forward_position_controller subscriber (ros2_control) ---
-            'timeout 30 bash -c \''
-            'while ! ros2 topic info /forward_position_controller/commands 2>/dev/null '
+            "timeout 30 bash -c '"
+            "while ! ros2 topic info /forward_position_controller/commands 2>/dev/null "
             '  | grep -q "Subscription count: [1-9]"; do sleep 0.5; done\' '
             '  && echo "[RT]   forward_position_controller subscriber OK" '
             '  || echo "[RT] WARNING: forward_position_controller not ready after 30 s '
             '(will activate later via controller_stopper or mock switch)"; '
-            'echo "[RT] All communication nodes ready"'
+            'echo "[RT] All communication nodes ready"',
         ],
-        output='screen',
+        output="screen",
     )
 
     # ── Event-driven launch chain ─────────────────────────────────────────────
@@ -384,7 +384,7 @@ def generate_launch_description():
         OnProcessStart(
             target_action=hand_udp_node,
             on_start=[
-                LogInfo(msg='[RT] hand_udp_node started — launching readiness gate'),
+                LogInfo(msg="[RT] hand_udp_node started — launching readiness gate"),
                 comm_readiness_gate,
             ],
         )
@@ -394,7 +394,7 @@ def generate_launch_description():
         OnProcessExit(
             target_action=comm_readiness_gate,
             on_exit=[
-                LogInfo(msg='[RT] Readiness gate passed — launching ur5e_rt_controller'),
+                LogInfo(msg="[RT] Readiness gate passed — launching ur5e_rt_controller"),
                 rt_controller_node,
                 rt_auto_activate,
                 rt_trigger_configure,
@@ -409,29 +409,31 @@ def generate_launch_description():
         )
     )
 
-    return LaunchDescription([
-        # 1) Arguments
-        robot_ip_arg,
-        use_mock_hardware_arg,
-        use_fake_hardware_arg,
-        use_cpu_affinity_arg,
-        enable_mpc_arg,
-        # 2) Environment
-        set_session_dir,
-        set_rmw,
-        set_cyclone_uri,
-        # 3) Infrastructure (parallel)
-        enable_cpu_shield,
-        ur_driver_launch_action,
-        pin_ur_driver,
-        hand_udp_node,
-        hand_auto_activate,
-        hand_trigger_configure,
-        # 4) Event-driven chain:
-        #    hand_udp_node started → comm_readiness_gate
-        #    → gate exits OK → ur5e_rt_controller
-        #    → CM process started → pin_rt_controller_dds
-        start_gate_after_hand,
-        start_rt_after_gate,
-        start_dds_pin_after_rt,
-    ])
+    return LaunchDescription(
+        [
+            # 1) Arguments
+            robot_ip_arg,
+            use_mock_hardware_arg,
+            use_fake_hardware_arg,
+            use_cpu_affinity_arg,
+            enable_mpc_arg,
+            # 2) Environment
+            set_session_dir,
+            set_rmw,
+            set_cyclone_uri,
+            # 3) Infrastructure (parallel)
+            enable_cpu_shield,
+            ur_driver_launch_action,
+            pin_ur_driver,
+            hand_udp_node,
+            hand_auto_activate,
+            hand_trigger_configure,
+            # 4) Event-driven chain:
+            #    hand_udp_node started → comm_readiness_gate
+            #    → gate exits OK → ur5e_rt_controller
+            #    → CM process started → pin_rt_controller_dds
+            start_gate_after_hand,
+            start_rt_after_gate,
+            start_dds_pin_after_rt,
+        ]
+    )

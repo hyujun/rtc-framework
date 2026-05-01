@@ -16,7 +16,7 @@ namespace {
 /// Returns a Node pointing at the effective MPC subtree. If neither form
 /// matches, returns the input unchanged and lets downstream parsing
 /// surface the missing-key failure.
-[[nodiscard]] YAML::Node ResolveMpcSubtree(const YAML::Node &cfg) noexcept {
+[[nodiscard]] YAML::Node ResolveMpcSubtree(const YAML::Node& cfg) noexcept {
   if (!cfg.IsDefined() || !cfg.IsMap())
     return cfg;
   if (cfg["mpc"] && cfg["mpc"].IsMap())
@@ -24,10 +24,9 @@ namespace {
   return cfg;
 }
 
-[[nodiscard]] bool ParseSolverConfig(const YAML::Node &solver_node,
-                                     MPCSolverConfig &out) noexcept {
+[[nodiscard]] bool ParseSolverConfig(const YAML::Node& solver_node, MPCSolverConfig& out) noexcept {
   if (!solver_node.IsDefined())
-    return true; // leave defaults
+    return true;  // leave defaults
   if (!solver_node.IsMap())
     return false;
   try {
@@ -49,8 +48,7 @@ namespace {
   return true;
 }
 
-[[nodiscard]] bool ParseLimits(const YAML::Node &limits_node, int nu,
-                               OCPLimits &out) noexcept {
+[[nodiscard]] bool ParseLimits(const YAML::Node& limits_node, int nu, OCPLimits& out) noexcept {
   if (!limits_node.IsDefined())
     return true;
   if (!limits_node.IsMap())
@@ -63,8 +61,8 @@ namespace {
       if (!raw.empty()) {
         if (static_cast<int>(raw.size()) != nu)
           return false;
-        out.u_min = Eigen::Map<const Eigen::VectorXd>(
-            raw.data(), static_cast<Eigen::Index>(raw.size()));
+        out.u_min =
+            Eigen::Map<const Eigen::VectorXd>(raw.data(), static_cast<Eigen::Index>(raw.size()));
       }
     }
     if (limits_node["u_max"] && limits_node["u_max"].IsSequence()) {
@@ -72,8 +70,8 @@ namespace {
       if (!raw.empty()) {
         if (static_cast<int>(raw.size()) != nu)
           return false;
-        out.u_max = Eigen::Map<const Eigen::VectorXd>(
-            raw.data(), static_cast<Eigen::Index>(raw.size()));
+        out.u_max =
+            Eigen::Map<const Eigen::VectorXd>(raw.data(), static_cast<Eigen::Index>(raw.size()));
       }
     }
   } catch (...) {
@@ -82,12 +80,11 @@ namespace {
   return true;
 }
 
-} // namespace
+}  // namespace
 
-MPCFactoryStatus
-MPCFactory::Create(const YAML::Node &cfg, const RobotModelHandler &model,
-                   const PhaseContext &initial_ctx,
-                   std::unique_ptr<MPCHandlerBase> &handler_out) noexcept {
+MPCFactoryStatus MPCFactory::Create(const YAML::Node& cfg, const RobotModelHandler& model,
+                                    const PhaseContext& initial_ctx,
+                                    std::unique_ptr<MPCHandlerBase>& handler_out) noexcept {
   handler_out.reset();
   MPCFactoryStatus status{};
 
@@ -143,7 +140,7 @@ MPCFactory::Create(const YAML::Node &cfg, const RobotModelHandler &model,
   }
 
   handler_out = std::move(handler);
-  return status; // kNoError
+  return status;  // kNoError
 }
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc

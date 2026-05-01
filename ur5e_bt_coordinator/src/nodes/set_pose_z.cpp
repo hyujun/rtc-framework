@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/action_nodes/set_pose_z.hpp"
+
 #include "ur5e_bt_coordinator/bt_logging.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -9,40 +10,34 @@
 namespace rtc_bt {
 
 namespace {
-auto logger() { return ::rtc_bt::logging::ActionLogger("set_pose_z"); }
+auto logger() {
+  return ::rtc_bt::logging::ActionLogger("set_pose_z");
+}
 }  // namespace
 
-BT::PortsList SetPoseZ::providedPorts()
-{
+BT::PortsList SetPoseZ::providedPorts() {
   return {
-    BT::InputPort<Pose6D>("input_pose"),
-    BT::InputPort<double>("z",
-                          std::numeric_limits<double>::quiet_NaN(),
-                          "Absolute Z [m]; NaN = disabled (pass-through)"),
-    BT::OutputPort<Pose6D>("output_pose"),
+      BT::InputPort<Pose6D>("input_pose"),
+      BT::InputPort<double>("z", std::numeric_limits<double>::quiet_NaN(),
+                            "Absolute Z [m]; NaN = disabled (pass-through)"),
+      BT::OutputPort<Pose6D>("output_pose"),
   };
 }
 
-BT::NodeStatus SetPoseZ::tick()
-{
+BT::NodeStatus SetPoseZ::tick() {
   auto pose = getInput<Pose6D>("input_pose");
   if (!pose) {
     RCLCPP_ERROR(logger(), "missing input_pose port");
     throw BT::RuntimeError("SetPoseZ: missing input_pose");
   }
 
-  double z_override = getInput<double>("z").value_or(
-      std::numeric_limits<double>::quiet_NaN());
+  double z_override = getInput<double>("z").value_or(std::numeric_limits<double>::quiet_NaN());
 
   Pose6D result = pose.value();
   if (std::isnan(z_override)) {
-    RCLCPP_DEBUG(logger(),
-                 "disabled (z=NaN), pass-through z=%.3f",
-                 result.z);
+    RCLCPP_DEBUG(logger(), "disabled (z=NaN), pass-through z=%.3f", result.z);
   } else {
-    RCLCPP_DEBUG(logger(),
-                 "override z: %.3f -> %.3f",
-                 result.z, z_override);
+    RCLCPP_DEBUG(logger(), "override z: %.3f -> %.3f", result.z, z_override);
     result.z = z_override;
   }
 

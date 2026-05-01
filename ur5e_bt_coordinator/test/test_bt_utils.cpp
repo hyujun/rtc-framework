@@ -10,8 +10,7 @@ using namespace rtc_bt;
 
 // ── ParseCsvList<int> ─────────────────────────────────────────────────────
 
-TEST(ParseCsvList, IntValid)
-{
+TEST(ParseCsvList, IntValid) {
   auto v = ParseCsvList<int>("1,2,3");
   ASSERT_EQ(v.size(), 3u);
   EXPECT_EQ(v[0], 1);
@@ -19,23 +18,20 @@ TEST(ParseCsvList, IntValid)
   EXPECT_EQ(v[2], 3);
 }
 
-TEST(ParseCsvList, IntSingle)
-{
+TEST(ParseCsvList, IntSingle) {
   auto v = ParseCsvList<int>("42");
   ASSERT_EQ(v.size(), 1u);
   EXPECT_EQ(v[0], 42);
 }
 
-TEST(ParseCsvList, IntNegative)
-{
+TEST(ParseCsvList, IntNegative) {
   auto v = ParseCsvList<int>("-1,-2");
   ASSERT_EQ(v.size(), 2u);
   EXPECT_EQ(v[0], -1);
   EXPECT_EQ(v[1], -2);
 }
 
-TEST(ParseCsvList, IntEmpty)
-{
+TEST(ParseCsvList, IntEmpty) {
   // Empty string: getline produces one empty token.
   // stoi("") throws → wrapped as RuntimeError, OR returns empty depending on impl.
   // Current impl: empty token → stoi throws → RuntimeError
@@ -50,15 +46,13 @@ TEST(ParseCsvList, IntEmpty)
   }
 }
 
-TEST(ParseCsvList, IntInvalidToken)
-{
+TEST(ParseCsvList, IntInvalidToken) {
   EXPECT_THROW(ParseCsvList<int>("1,abc,3"), BT::RuntimeError);
 }
 
 // ── ParseCsvList<double> ──────────────────────────────────────────────────
 
-TEST(ParseCsvList, DoubleValid)
-{
+TEST(ParseCsvList, DoubleValid) {
   auto v = ParseCsvList<double>("1.5,2.5,3.5");
   ASSERT_EQ(v.size(), 3u);
   EXPECT_DOUBLE_EQ(v[0], 1.5);
@@ -66,8 +60,7 @@ TEST(ParseCsvList, DoubleValid)
   EXPECT_DOUBLE_EQ(v[2], 3.5);
 }
 
-TEST(ParseCsvList, DoubleNegative)
-{
+TEST(ParseCsvList, DoubleNegative) {
   auto v = ParseCsvList<double>("-0.5,-1.5");
   ASSERT_EQ(v.size(), 2u);
   EXPECT_DOUBLE_EQ(v[0], -0.5);
@@ -75,25 +68,23 @@ TEST(ParseCsvList, DoubleNegative)
 
 // ── LookupOrThrow ─────────────────────────────────────────────────────────
 
-TEST(LookupOrThrow, Found)
-{
+TEST(LookupOrThrow, Found) {
   std::map<std::string, int> m = {{"a", 1}, {"b", 2}};
   EXPECT_EQ(LookupOrThrow(m, "a", "test"), 1);
 }
 
-TEST(LookupOrThrow, NotFoundThrows)
-{
+TEST(LookupOrThrow, NotFoundThrows) {
   std::map<std::string, int> m = {{"a", 1}};
   EXPECT_THROW(LookupOrThrow(m, "z", "test"), BT::RuntimeError);
 }
 
 // ── EstimateHandTrajectoryDuration (indexed version) ──────────────────────
 
-TEST(TrajectoryDuration, IndexedZeroDistance)
-{
+TEST(TrajectoryDuration, IndexedZeroDistance) {
   std::vector<double> current(10, 0.5);
   HandPose target{};
-  for (auto& v : target) v = 0.5;
+  for (auto& v : target)
+    v = 0.5;
   std::vector<int> indices = {0, 1, 2};
 
   double d = EstimateHandTrajectoryDuration(current, target, indices, 1.0, 2.0);
@@ -101,8 +92,7 @@ TEST(TrajectoryDuration, IndexedZeroDistance)
   EXPECT_NEAR(d, 0.011, 1e-6);
 }
 
-TEST(TrajectoryDuration, IndexedKnownDistance)
-{
+TEST(TrajectoryDuration, IndexedKnownDistance) {
   std::vector<double> current(10, 0.0);
   HandPose target{};
   target[0] = 1.0;  // 1 radian distance at index 0
@@ -115,8 +105,7 @@ TEST(TrajectoryDuration, IndexedKnownDistance)
   EXPECT_NEAR(d, 1.1, 1e-6);
 }
 
-TEST(TrajectoryDuration, IndexedMaxVelDominates)
-{
+TEST(TrajectoryDuration, IndexedMaxVelDominates) {
   std::vector<double> current(10, 0.0);
   HandPose target{};
   target[3] = 2.0;  // 2 radian distance
@@ -131,16 +120,14 @@ TEST(TrajectoryDuration, IndexedMaxVelDominates)
 
 // ── EstimateHandTrajectoryDuration (full 10-DoF version) ──────────────────
 
-TEST(TrajectoryDuration, FullZeroDistance)
-{
+TEST(TrajectoryDuration, FullZeroDistance) {
   std::vector<double> current(10, 0.0);
   std::vector<double> target(10, 0.0);
   double d = EstimateHandTrajectoryDuration(current, target, 1.0, 2.0);
   EXPECT_NEAR(d, 0.011, 1e-6);
 }
 
-TEST(TrajectoryDuration, FullKnownDistance)
-{
+TEST(TrajectoryDuration, FullKnownDistance) {
   std::vector<double> current(10, 0.0);
   std::vector<double> target(10, 0.0);
   target[5] = 0.5;  // max dist = 0.5
@@ -152,8 +139,7 @@ TEST(TrajectoryDuration, FullKnownDistance)
   EXPECT_NEAR(d, 0.55, 1e-6);
 }
 
-TEST(TrajectoryDuration, CustomMargin)
-{
+TEST(TrajectoryDuration, CustomMargin) {
   std::vector<double> current(10, 0.0);
   std::vector<double> target(10, 0.0);
   target[0] = 1.0;
@@ -165,8 +151,7 @@ TEST(TrajectoryDuration, CustomMargin)
 
 // ── Hand pose config constants ────────────────────────────────────────────
 
-TEST(HandPoseConfig, FingerJointIndices)
-{
+TEST(HandPoseConfig, FingerJointIndices) {
   EXPECT_EQ(kFingerJointIndices.at("thumb").size(), 3u);
   EXPECT_EQ(kFingerJointIndices.at("index").size(), 3u);
   EXPECT_EQ(kFingerJointIndices.at("middle").size(), 3u);
@@ -179,24 +164,21 @@ TEST(HandPoseConfig, FingerJointIndices)
   EXPECT_EQ(kFingerJointIndices.at("ring")[0], 9);
 }
 
-TEST(HandPoseConfig, DefaultPosesExist)
-{
+TEST(HandPoseConfig, DefaultPosesExist) {
   EXPECT_TRUE(kHandPoses.count("home") > 0);
   EXPECT_TRUE(kHandPoses.count("full_flex") > 0);
   EXPECT_TRUE(kUR5ePoses.count("home_pose") > 0);
   EXPECT_TRUE(kUR5ePoses.count("demo_pose") > 0);
 }
 
-TEST(HandPoseConfig, HomePoseIsZero)
-{
+TEST(HandPoseConfig, HomePoseIsZero) {
   const auto& home = kHandPoses.at("home");
   for (int i = 0; i < kHandDofCount; ++i) {
     EXPECT_DOUBLE_EQ(home[i], 0.0) << "home[" << i << "] != 0";
   }
 }
 
-TEST(HandPoseConfig, DegToRadConversion)
-{
+TEST(HandPoseConfig, DegToRadConversion) {
   // full_flex thumb CMC abd = 30 deg
   const auto& ff = kHandPoses.at("full_flex");
   EXPECT_NEAR(ff[0], 30.0 * kDeg2Rad, 1e-10);

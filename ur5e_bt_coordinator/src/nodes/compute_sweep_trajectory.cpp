@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/action_nodes/compute_sweep_trajectory.hpp"
+
 #include "ur5e_bt_coordinator/bt_logging.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -8,24 +9,24 @@
 namespace rtc_bt {
 
 namespace {
-auto logger() { return ::rtc_bt::logging::ActionLogger("compute_sweep_trajectory"); }
+auto logger() {
+  return ::rtc_bt::logging::ActionLogger("compute_sweep_trajectory");
+}
 }  // namespace
 
-BT::PortsList ComputeSweepTrajectory::providedPorts()
-{
+BT::PortsList ComputeSweepTrajectory::providedPorts() {
   return {
-    BT::InputPort<Pose6D>("start_pose"),
-    BT::InputPort<double>("direction_x", 1.0, "Sweep direction X"),
-    BT::InputPort<double>("direction_y", 0.0, "Sweep direction Y"),
-    BT::InputPort<double>("distance", 0.3, "Sweep distance [m]"),
-    BT::InputPort<double>("arc_height", 0.05, "Arc peak height [m]"),
-    BT::InputPort<int>("num_waypoints", 8, "Number of waypoints"),
-    BT::OutputPort<std::vector<Pose6D>>("waypoints"),
+      BT::InputPort<Pose6D>("start_pose"),
+      BT::InputPort<double>("direction_x", 1.0, "Sweep direction X"),
+      BT::InputPort<double>("direction_y", 0.0, "Sweep direction Y"),
+      BT::InputPort<double>("distance", 0.3, "Sweep distance [m]"),
+      BT::InputPort<double>("arc_height", 0.05, "Arc peak height [m]"),
+      BT::InputPort<int>("num_waypoints", 8, "Number of waypoints"),
+      BT::OutputPort<std::vector<Pose6D>>("waypoints"),
   };
 }
 
-BT::NodeStatus ComputeSweepTrajectory::tick()
-{
+BT::NodeStatus ComputeSweepTrajectory::tick() {
   auto start = getInput<Pose6D>("start_pose");
   if (!start) {
     RCLCPP_ERROR(logger(), "missing start_pose port");
@@ -37,11 +38,15 @@ BT::NodeStatus ComputeSweepTrajectory::tick()
   double distance = getInput<double>("distance").value_or(0.3);
   double arc_height = getInput<double>("arc_height").value_or(0.05);
   int n = getInput<int>("num_waypoints").value_or(8);
-  if (n < 2) n = 2;
+  if (n < 2)
+    n = 2;
 
   // Normalize direction
   double len = std::sqrt(dir_x * dir_x + dir_y * dir_y);
-  if (len > 1e-6) { dir_x /= len; dir_y /= len; }
+  if (len > 1e-6) {
+    dir_x /= len;
+    dir_y /= len;
+  }
 
   const Pose6D& s = start.value();
   std::vector<Pose6D> waypoints;
@@ -60,9 +65,8 @@ BT::NodeStatus ComputeSweepTrajectory::tick()
     waypoints.push_back(wp);
   }
 
-  RCLCPP_INFO(logger(),
-              "%d waypoints, distance=%.3fm arc_height=%.3fm dir=[%.2f, %.2f]",
-              n, distance, arc_height, dir_x, dir_y);
+  RCLCPP_INFO(logger(), "%d waypoints, distance=%.3fm arc_height=%.3fm dir=[%.2f, %.2f]", n,
+              distance, arc_height, dir_x, dir_y);
 
   setOutput("waypoints", waypoints);
   return BT::NodeStatus::SUCCESS;

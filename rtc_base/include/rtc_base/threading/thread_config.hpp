@@ -1,7 +1,7 @@
 #ifndef RTC_BASE_THREAD_CONFIG_HPP_
 #define RTC_BASE_THREAD_CONFIG_HPP_
 
-#include <sched.h> // SCHED_FIFO, SCHED_OTHER, SCHED_RR
+#include <sched.h>  // SCHED_FIFO, SCHED_OTHER, SCHED_RR
 
 #include <array>
 
@@ -9,11 +9,11 @@ namespace rtc {
 
 // Thread configuration for RT control and scheduling
 struct ThreadConfig {
-  int cpu_core;       // CPU affinity (0-based core index)
-  int sched_policy;   // SCHED_FIFO, SCHED_RR, or SCHED_OTHER
-  int sched_priority; // 1-99 for SCHED_FIFO/RR, ignored for OTHER
-  int nice_value;     // -20 to 19 for SCHED_OTHER, ignored for FIFO/RR
-  const char *name;   // Thread name for debugging (max 15 chars)
+  int cpu_core;        // CPU affinity (0-based core index)
+  int sched_policy;    // SCHED_FIFO, SCHED_RR, or SCHED_OTHER
+  int sched_priority;  // 1-99 for SCHED_FIFO/RR, ignored for OTHER
+  int nice_value;      // -20 to 19 for SCHED_OTHER, ignored for FIFO/RR
+  const char* name;    // Thread name for debugging (max 15 chars)
 };
 
 // ── MPC thread configuration (Phase 5) ──────────────────────────────────────
@@ -58,8 +58,7 @@ inline const ThreadConfig kSensorConfig{.cpu_core = 3,
                                         .name = "sensor_io"};
 
 inline const ThreadConfig kUdpRecvConfig{
-    .cpu_core =
-        5, // Moved from Core 3 → Core 5 (dedicated, no sensor_io contention)
+    .cpu_core = 5,  // Moved from Core 3 → Core 5 (dedicated, no sensor_io contention)
     .sched_policy = SCHED_FIFO,
     .sched_priority = 65,
     .nice_value = 0,
@@ -72,8 +71,7 @@ inline const ThreadConfig kLoggingConfig{.cpu_core = 4,
                                          .name = "logger"};
 
 inline const ThreadConfig kAuxConfig{
-    .cpu_core =
-        5, // Shares Core 5 with udp_recv (aux is event-driven, very light)
+    .cpu_core = 5,  // Shares Core 5 with udp_recv (aux is event-driven, very light)
     .sched_policy = SCHED_OTHER,
     .sched_priority = 0,
     .nice_value = 0,
@@ -132,28 +130,25 @@ inline const ThreadConfig kSensorConfig8Core{.cpu_core = 3,
                                              .nice_value = 0,
                                              .name = "sensor_io"};
 
-inline const ThreadConfig kUdpRecvConfig8Core{
-    .cpu_core = 5, // Shifted from Core 4 (now MPC main).
-    .sched_policy = SCHED_FIFO,
-    .sched_priority = 65,
-    .nice_value = 0,
-    .name = "udp_recv"};
+inline const ThreadConfig kUdpRecvConfig8Core{.cpu_core = 5,  // Shifted from Core 4 (now MPC main).
+                                              .sched_policy = SCHED_FIFO,
+                                              .sched_priority = 65,
+                                              .nice_value = 0,
+                                              .name = "udp_recv"};
 
-inline const ThreadConfig kLoggingConfig8Core{.cpu_core =
-                                                  6, // Shifted from Core 5.
+inline const ThreadConfig kLoggingConfig8Core{.cpu_core = 6,  // Shifted from Core 5.
                                               .sched_policy = SCHED_OTHER,
                                               .sched_priority = 0,
                                               .nice_value = -5,
                                               .name = "logger"};
 
-inline const ThreadConfig kAuxConfig8Core{.cpu_core = 7, // Shifted from Core 6.
+inline const ThreadConfig kAuxConfig8Core{.cpu_core = 7,  // Shifted from Core 6.
                                           .sched_policy = SCHED_OTHER,
                                           .sched_priority = 0,
                                           .nice_value = 0,
                                           .name = "aux"};
 
-inline const ThreadConfig kPublishConfig8Core{.cpu_core =
-                                                  7, // Shifted from Core 6.
+inline const ThreadConfig kPublishConfig8Core{.cpu_core = 7,  // Shifted from Core 6.
                                               .sched_policy = SCHED_OTHER,
                                               .sched_priority = 0,
                                               .nice_value = -3,
@@ -194,7 +189,7 @@ inline const ThreadConfig kSensorConfig4Core{.cpu_core = 2,
                                              .name = "sensor_io"};
 
 inline const ThreadConfig kUdpRecvConfig4Core{
-    .cpu_core = 2, // Shares Core 2 with sensor_io (4-core: unavoidable)
+    .cpu_core = 2,  // Shares Core 2 with sensor_io (4-core: unavoidable)
     .sched_policy = SCHED_FIFO,
     .sched_priority = 65,
     .nice_value = 0,
@@ -207,7 +202,7 @@ inline const ThreadConfig kLoggingConfig4Core{.cpu_core = 3,
                                               .name = "logger"};
 
 inline const ThreadConfig kAuxConfig4Core{
-    .cpu_core = 3, // Shares Core 3 with logging (4-core: unavoidable)
+    .cpu_core = 3,  // Shares Core 3 with logging (4-core: unavoidable)
     .sched_policy = SCHED_OTHER,
     .sched_priority = 0,
     .nice_value = 0,
@@ -267,27 +262,27 @@ inline const ThreadConfig kSensorConfig10Core{.cpu_core = 3,
                                               .name = "sensor_io"};
 
 inline const ThreadConfig kUdpRecvConfig10Core{
-    .cpu_core = 6, // Dedicated (was Core 9 shared prior to unified layout)
+    .cpu_core = 6,  // Dedicated (was Core 9 shared prior to unified layout)
     .sched_policy = SCHED_FIFO,
     .sched_priority = 65,
     .nice_value = 0,
     .name = "udp_recv"};
 
-inline const ThreadConfig kLoggingConfig10Core{.cpu_core = 7, // Dedicated
+inline const ThreadConfig kLoggingConfig10Core{.cpu_core = 7,  // Dedicated
                                                .sched_policy = SCHED_OTHER,
                                                .sched_priority = 0,
                                                .nice_value = -5,
                                                .name = "logger"};
 
 inline const ThreadConfig kAuxConfig10Core{
-    .cpu_core = 8, // Dedicated (shared only with rt_publish, both CFS)
+    .cpu_core = 8,  // Dedicated (shared only with rt_publish, both CFS)
     .sched_policy = SCHED_OTHER,
     .sched_priority = 0,
     .nice_value = 0,
     .name = "aux"};
 
 inline const ThreadConfig kPublishConfig10Core{
-    .cpu_core = 8, // Shares Core 8 with aux (both SCHED_OTHER)
+    .cpu_core = 8,  // Shares Core 8 with aux (both SCHED_OTHER)
     .sched_policy = SCHED_OTHER,
     .sched_priority = 0,
     .nice_value = -3,
@@ -351,20 +346,20 @@ inline const ThreadConfig kSensorConfig12Core{.cpu_core = 3,
                                               .nice_value = 0,
                                               .name = "sensor_io"};
 
-inline const ThreadConfig kUdpRecvConfig12Core{.cpu_core = 7, // Dedicated
+inline const ThreadConfig kUdpRecvConfig12Core{.cpu_core = 7,  // Dedicated
                                                .sched_policy = SCHED_FIFO,
                                                .sched_priority = 65,
                                                .nice_value = 0,
                                                .name = "udp_recv"};
 
-inline const ThreadConfig kLoggingConfig12Core{.cpu_core = 8, // Dedicated
+inline const ThreadConfig kLoggingConfig12Core{.cpu_core = 8,  // Dedicated
                                                .sched_policy = SCHED_OTHER,
                                                .sched_priority = 0,
                                                .nice_value = -5,
                                                .name = "logger"};
 
 inline const ThreadConfig kAuxConfig12Core{
-    .cpu_core = 9, // Dedicated (shared with rt_publish, both CFS)
+    .cpu_core = 9,  // Dedicated (shared with rt_publish, both CFS)
     .sched_policy = SCHED_OTHER,
     .sched_priority = 0,
     .nice_value = 0,
@@ -525,28 +520,28 @@ inline const ThreadConfig kSensorConfig16Core{.cpu_core = 3,
                                               .name = "sensor_io"};
 
 inline const ThreadConfig kUdpRecvConfig16Core{
-    .cpu_core = 12, // Shifted from Core 9 (now MPC main).
+    .cpu_core = 12,  // Shifted from Core 9 (now MPC main).
     .sched_policy = SCHED_FIFO,
     .sched_priority = 65,
     .nice_value = 0,
     .name = "udp_recv"};
 
 inline const ThreadConfig kLoggingConfig16Core{
-    .cpu_core = 13, // Shifted from Core 10 (now MPC worker 0).
+    .cpu_core = 13,  // Shifted from Core 10 (now MPC worker 0).
     .sched_policy = SCHED_OTHER,
     .sched_priority = 0,
     .nice_value = -5,
     .name = "logger"};
 
 inline const ThreadConfig kAuxConfig16Core{
-    .cpu_core = 14, // Shifted from Core 11 (now MPC worker 1).
+    .cpu_core = 14,  // Shifted from Core 11 (now MPC worker 1).
     .sched_policy = SCHED_OTHER,
     .sched_priority = 0,
     .nice_value = 0,
     .name = "aux"};
 
 inline const ThreadConfig kPublishConfig16Core{
-    .cpu_core = 14, // Shares Core 14 with aux (both CFS).
+    .cpu_core = 14,  // Shares Core 14 with aux (both CFS).
     .sched_policy = SCHED_OTHER,
     .sched_priority = 0,
     .nice_value = -3,
@@ -591,8 +586,8 @@ inline const MpcThreadConfig kMpcConfig16Core{
 // constraints). MuJoCo viewer_thread handles GLFW rendering (GPU-bound, OS core
 // OK).
 struct SimCoreLayout {
-  int sim_thread_core; // MuJoCo physics thread (-1 = no pinning)
-  int viewer_core;     // GLFW viewer thread (-1 = OS cores, no pinning)
+  int sim_thread_core;  // MuJoCo physics thread (-1 = no pinning)
+  int viewer_core;      // GLFW viewer thread (-1 = OS cores, no pinning)
 };
 
 /// Returns MuJoCo simulation core layout based on physical core count.
@@ -619,9 +614,9 @@ inline constexpr SimCoreLayout GetSimCoreLayout(int physical_cores) {
   // over the freed shield range under CFS.
   if (physical_cores >= 8)
     return {-1, -1};
-  return {-1, -1}; // <8: no dedicated sim core
+  return {-1, -1};  // <8: no dedicated sim core
 }
 
-} // namespace rtc
+}  // namespace rtc
 
-#endif // RTC_BASE_THREAD_CONFIG_HPP_
+#endif  // RTC_BASE_THREAD_CONFIG_HPP_

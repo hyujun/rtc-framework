@@ -25,17 +25,16 @@ class TcpVisualizer:
     """
 
     def __init__(self, config: dict):
-        self.frame_id = config.get('frame_id', 'base')
-        self.sphere_radius = config.get('sphere_radius', 0.012)
-        self.sphere_color = config.get('sphere_color', [0.2, 0.6, 1.0, 0.7])
-        self.axes_length = config.get('axes_length', 0.05)
-        self.axes_shaft = config.get('axes_shaft', 0.004)
-        self.show_goal = config.get('show_goal', True)
-        self.goal_sphere_radius = config.get('goal_sphere_radius', 0.010)
-        self.goal_color = config.get('goal_color', [1.0, 0.4, 0.1, 0.5])
+        self.frame_id = config.get("frame_id", "base")
+        self.sphere_radius = config.get("sphere_radius", 0.012)
+        self.sphere_color = config.get("sphere_color", [0.2, 0.6, 1.0, 0.7])
+        self.axes_length = config.get("axes_length", 0.05)
+        self.axes_shaft = config.get("axes_shaft", 0.004)
+        self.show_goal = config.get("show_goal", True)
+        self.goal_sphere_radius = config.get("goal_sphere_radius", 0.010)
+        self.goal_color = config.get("goal_color", [1.0, 0.4, 0.1, 0.5])
 
-    def create_markers(self, task_positions, stamp,
-                       goal_positions=None) -> MarkerArray:
+    def create_markers(self, task_positions, stamp, goal_positions=None) -> MarkerArray:
         """Create MarkerArray from task_positions [x, y, z, roll, pitch, yaw].
 
         Args:
@@ -50,8 +49,7 @@ class TcpVisualizer:
         if task_positions is None or len(task_positions) < 3:
             return markers
 
-        x, y, z = float(task_positions[0]), float(task_positions[1]), \
-            float(task_positions[2])
+        x, y, z = float(task_positions[0]), float(task_positions[1]), float(task_positions[2])
         roll = float(task_positions[3]) if len(task_positions) > 3 else 0.0
         pitch = float(task_positions[4]) if len(task_positions) > 4 else 0.0
         yaw = float(task_positions[5]) if len(task_positions) > 5 else 0.0
@@ -64,8 +62,10 @@ class TcpVisualizer:
 
         # TCP sphere
         markers.markers.append(
-            self._make_sphere(x, y, z, marker_id, 'tcp_sphere',
-                              self.sphere_radius, self.sphere_color, stamp))
+            self._make_sphere(
+                x, y, z, marker_id, "tcp_sphere", self.sphere_radius, self.sphere_color, stamp
+            )
+        )
         marker_id += 1
 
         # TCP orientation axes (X=red, Y=green, Z=blue)
@@ -80,28 +80,44 @@ class TcpVisualizer:
             dy = rot[1][axis_idx] * self.axes_length
             dz = rot[2][axis_idx] * self.axes_length
             markers.markers.append(
-                self._make_axis_arrow(x, y, z, dx, dy, dz,
-                                      marker_id, f'tcp_axis_{axis_idx}',
-                                      axis_colors[axis_idx], stamp))
+                self._make_axis_arrow(
+                    x,
+                    y,
+                    z,
+                    dx,
+                    dy,
+                    dz,
+                    marker_id,
+                    f"tcp_axis_{axis_idx}",
+                    axis_colors[axis_idx],
+                    stamp,
+                )
+            )
             marker_id += 1
 
         # Goal sphere (optional)
-        if self.show_goal and goal_positions is not None \
-                and len(goal_positions) >= 3:
+        if self.show_goal and goal_positions is not None and len(goal_positions) >= 3:
             gx = float(goal_positions[0])
             gy = float(goal_positions[1])
             gz = float(goal_positions[2])
             if abs(gx) > 1e-9 or abs(gy) > 1e-9 or abs(gz) > 1e-9:
                 markers.markers.append(
-                    self._make_sphere(gx, gy, gz, marker_id, 'tcp_goal',
-                                      self.goal_sphere_radius,
-                                      self.goal_color, stamp))
+                    self._make_sphere(
+                        gx,
+                        gy,
+                        gz,
+                        marker_id,
+                        "tcp_goal",
+                        self.goal_sphere_radius,
+                        self.goal_color,
+                        stamp,
+                    )
+                )
                 marker_id += 1
 
         return markers
 
-    def create_tf(self, task_positions, stamp,
-                  child_frame: str) -> TransformStamped | None:
+    def create_tf(self, task_positions, stamp, child_frame: str) -> TransformStamped | None:
         """Create TF TransformStamped from task_positions.
 
         Args:
@@ -159,14 +175,13 @@ class TcpVisualizer:
         d = radius * 2.0
         marker.scale = Vector3(x=d, y=d, z=d)
         marker.color = ColorRGBA(
-            r=float(color[0]), g=float(color[1]),
-            b=float(color[2]), a=float(color[3]))
+            r=float(color[0]), g=float(color[1]), b=float(color[2]), a=float(color[3])
+        )
         marker.lifetime.sec = 0
         marker.lifetime.nanosec = 200_000_000  # 200ms
         return marker
 
-    def _make_axis_arrow(self, ox, oy, oz, dx, dy, dz,
-                         marker_id, ns, color, stamp):
+    def _make_axis_arrow(self, ox, oy, oz, dx, dy, dz, marker_id, ns, color, stamp):
         marker = Marker()
         marker.header.frame_id = self.frame_id
         marker.header.stamp = stamp
@@ -182,8 +197,8 @@ class TcpVisualizer:
         s = self.axes_shaft
         marker.scale = Vector3(x=s, y=s * 2.0, z=0.0)
         marker.color = ColorRGBA(
-            r=float(color[0]), g=float(color[1]),
-            b=float(color[2]), a=float(color[3]))
+            r=float(color[0]), g=float(color[1]), b=float(color[2]), a=float(color[3])
+        )
         marker.lifetime.sec = 0
         marker.lifetime.nanosec = 200_000_000
         return marker
@@ -195,9 +210,9 @@ class TcpVisualizer:
         cp, sp = math.cos(pitch), math.sin(pitch)
         cy, sy = math.cos(yaw), math.sin(yaw)
         return [
-            [cy * cp,  cy * sp * sr - sy * cr,  cy * sp * cr + sy * sr],
-            [sy * cp,  sy * sp * sr + cy * cr,  sy * sp * cr - cy * sr],
-            [   -sp,              cp * sr,              cp * cr],
+            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+            [-sp, cp * sr, cp * cr],
         ]
 
     @staticmethod

@@ -17,8 +17,7 @@
 
 namespace rub = rtc_urdf_bridge;
 
-int main(int argc, char * argv[])
-{
+int main(int argc, char* argv[]) {
   if (argc < 2) {
     std::cerr << "사용법: " << argv[0] << " <yaml_config_path>\n";
     return EXIT_FAILURE;
@@ -32,18 +31,20 @@ int main(int argc, char * argv[])
   auto tree_names = builder.GetTreeModelNames();
   std::cout << "[1] 등록된 트리모델 수: " << tree_names.size() << "\n";
 
-  for (const auto & name : tree_names) {
+  for (const auto& name : tree_names) {
     auto model = builder.GetTreeModel(name);
-    const auto & def = builder.GetTreeModelDefinition(name);
+    const auto& def = builder.GetTreeModelDefinition(name);
 
     std::cout << "\n[2] 트리모델 '" << name << "'\n";
     std::cout << "  root: " << def.root_link << "\n";
     std::cout << "  tips: ";
-    for (const auto & tip : def.tip_links) std::cout << tip << " ";
+    for (const auto& tip : def.tip_links)
+      std::cout << tip << " ";
     std::cout << "\n";
     std::cout << "  nq=" << model->nq << ", nv=" << model->nv << "\n";
     std::cout << "  actuated joints: ";
-    for (const auto & j : def.joint_names) std::cout << j << " ";
+    for (const auto& j : def.joint_names)
+      std::cout << j << " ";
     std::cout << "\n";
 
     // ── (3) tool frame_id 매핑 ──────────────────────────────────────────────
@@ -51,7 +52,7 @@ int main(int argc, char * argv[])
 
     std::cout << "\n[3] Tip frame ID 매핑:\n";
     std::vector<pinocchio::FrameIndex> tip_fids;
-    for (const auto & tip : def.tip_links) {
+    for (const auto& tip : def.tip_links) {
       auto fid = handle.GetFrameId(tip);
       tip_fids.push_back(fid);
       std::cout << "  " << tip << " → frame_id=" << fid << "\n";
@@ -64,8 +65,7 @@ int main(int argc, char * argv[])
     std::cout << "\n[4] FK 결과 (q=0.3 rad):\n";
     for (std::size_t i = 0; i < def.tip_links.size(); ++i) {
       auto pos = handle.GetFramePosition(tip_fids[i]);
-      std::cout << "  " << def.tip_links[i]
-                << ": [" << pos.transpose() << "]\n";
+      std::cout << "  " << def.tip_links[i] << ": [" << pos.transpose() << "]\n";
     }
 
     // ── (5) Jacobian 추출 (첫 번째 tip) ─────────────────────────────────────
@@ -82,7 +82,7 @@ int main(int argc, char * argv[])
     if (def.branching_points.empty()) {
       std::cout << "  (없음)\n";
     } else {
-      for (const auto & bp : def.branching_points) {
+      for (const auto& bp : def.branching_points) {
         std::cout << "  " << bp << "\n";
       }
     }

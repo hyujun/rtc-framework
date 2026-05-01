@@ -6,25 +6,25 @@
 #include "ur5e_bt_coordinator/action_nodes/compute_offset_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/compute_sweep_trajectory.hpp"
 #include "ur5e_bt_coordinator/action_nodes/compute_tilt_sequence.hpp"
-#include "ur5e_bt_coordinator/action_nodes/get_current_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/flex_extend_finger.hpp"
+#include "ur5e_bt_coordinator/action_nodes/get_current_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/grasp_control.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_finger.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_opposition.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_to_joints.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_to_pose.hpp"
+#include "ur5e_bt_coordinator/action_nodes/process_search_data.hpp"
 #include "ur5e_bt_coordinator/action_nodes/set_gains.hpp"
 #include "ur5e_bt_coordinator/action_nodes/set_hand_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/set_pose_z.hpp"
+#include "ur5e_bt_coordinator/action_nodes/start_tof_collection.hpp"
+#include "ur5e_bt_coordinator/action_nodes/stop_tof_collection.hpp"
 #include "ur5e_bt_coordinator/action_nodes/switch_controller.hpp"
 #include "ur5e_bt_coordinator/action_nodes/track_trajectory.hpp"
 #include "ur5e_bt_coordinator/action_nodes/trigger_shape_estimation.hpp"
 #include "ur5e_bt_coordinator/action_nodes/ur5e_hold_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/wait_duration.hpp"
 #include "ur5e_bt_coordinator/action_nodes/wait_shape_result.hpp"
-#include "ur5e_bt_coordinator/action_nodes/start_tof_collection.hpp"
-#include "ur5e_bt_coordinator/action_nodes/stop_tof_collection.hpp"
-#include "ur5e_bt_coordinator/action_nodes/process_search_data.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/check_shape_type.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_grasp_phase.hpp"
@@ -33,6 +33,7 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_vision_target_ready.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
+
 #include <behaviortree_cpp/bt_factory.h>
 #include <gtest/gtest.h>
 
@@ -41,9 +42,8 @@
 using namespace rtc_bt;
 
 class TreeValidationTest : public ::testing::Test {
-protected:
-  void SetUp() override
-  {
+ protected:
+  void SetUp() override {
     std::shared_ptr<BtRosBridge> null_bridge;
 
     // Action nodes
@@ -80,8 +80,7 @@ protected:
 
     // Resolve trees directory
     try {
-      std::string pkg_share =
-          ament_index_cpp::get_package_share_directory("ur5e_bt_coordinator");
+      std::string pkg_share = ament_index_cpp::get_package_share_directory("ur5e_bt_coordinator");
       trees_dir_ = std::filesystem::path(pkg_share) / "trees";
     } catch (...) {
       // Fallback to source tree
@@ -90,11 +89,11 @@ protected:
   }
 
   /// Validate a tree file and return the total node count.
-  std::size_t ValidateTree(const std::string& filename)
-  {
+  std::size_t ValidateTree(const std::string& filename) {
     auto path = trees_dir_ / filename;
     EXPECT_TRUE(std::filesystem::exists(path)) << "Tree not found: " << path;
-    if (!std::filesystem::exists(path)) return 0;
+    if (!std::filesystem::exists(path))
+      return 0;
 
     auto tree = factory_.createTreeFromFile(path.string());
     std::size_t total = 0;
@@ -108,8 +107,7 @@ protected:
   std::filesystem::path trees_dir_;
 };
 
-TEST_F(TreeValidationTest, CommonMotions)
-{
+TEST_F(TreeValidationTest, CommonMotions) {
   // common_motions.xml is a subtree library (no main_tree_to_execute).
   // Validate it parses without errors via registerBehaviorTreeFromFile.
   auto path = trees_dir_ / "common_motions.xml";
@@ -117,56 +115,47 @@ TEST_F(TreeValidationTest, CommonMotions)
   EXPECT_NO_THROW(factory_.registerBehaviorTreeFromFile(path.string()));
 }
 
-TEST_F(TreeValidationTest, HandMotions)
-{
+TEST_F(TreeValidationTest, HandMotions) {
   auto count = ValidateTree("hand_motions.xml");
   EXPECT_GT(count, 0u) << "hand_motions.xml should have nodes";
 }
 
-TEST_F(TreeValidationTest, PickAndPlaceContactStop)
-{
+TEST_F(TreeValidationTest, PickAndPlaceContactStop) {
   auto count = ValidateTree("pick_and_place_contact_stop.xml");
   EXPECT_GT(count, 0u) << "pick_and_place_contact_stop.xml should have nodes";
 }
 
-TEST_F(TreeValidationTest, PickAndPlaceForcePI)
-{
+TEST_F(TreeValidationTest, PickAndPlaceForcePI) {
   auto count = ValidateTree("pick_and_place_force_pi.xml");
   EXPECT_GT(count, 0u) << "pick_and_place_force_pi.xml should have nodes";
 }
 
-TEST_F(TreeValidationTest, ShapeInspect)
-{
+TEST_F(TreeValidationTest, ShapeInspect) {
   auto count = ValidateTree("shape_inspect.xml");
   EXPECT_GT(count, 0u) << "shape_inspect.xml should have nodes";
 }
 
-TEST_F(TreeValidationTest, TowelUnfold)
-{
+TEST_F(TreeValidationTest, TowelUnfold) {
   auto count = ValidateTree("towel_unfold.xml");
   EXPECT_GT(count, 0u) << "towel_unfold.xml should have nodes";
 }
 
-TEST_F(TreeValidationTest, VisionApproach)
-{
+TEST_F(TreeValidationTest, VisionApproach) {
   auto count = ValidateTree("vision_approach.xml");
   EXPECT_GT(count, 0u) << "vision_approach.xml should have nodes";
 }
 
-TEST_F(TreeValidationTest, SearchMotion)
-{
+TEST_F(TreeValidationTest, SearchMotion) {
   auto count = ValidateTree("search_motion.xml");
   EXPECT_GT(count, 0u) << "search_motion.xml should have nodes";
 }
 
-TEST_F(TreeValidationTest, ShapeInspectSimple)
-{
+TEST_F(TreeValidationTest, ShapeInspectSimple) {
   auto count = ValidateTree("shape_inspect_simple.xml");
   EXPECT_GT(count, 0u) << "shape_inspect_simple.xml should have nodes";
 }
 
-TEST_F(TreeValidationTest, InvalidXmlThrows)
-{
+TEST_F(TreeValidationTest, InvalidXmlThrows) {
   const std::string bad_xml =
       R"(<root BTCPP_format="4"><BehaviorTree ID="Bad">
            <UnknownNodeType foo="bar"/>

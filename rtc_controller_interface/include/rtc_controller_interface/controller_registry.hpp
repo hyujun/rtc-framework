@@ -8,8 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace rtc
-{
+namespace rtc {
 
 // ── Controller entry for the plugin registry ─────────────────────────────────
 //
@@ -20,12 +19,11 @@ namespace rtc
 //   config_subdir  — "direct/" for torque controllers, "indirect/" for position
 //   config_package — ament package that owns the config YAML
 //   factory        — callable: (urdf_path) → unique_ptr<RTControllerInterface>
-struct ControllerEntry
-{
+struct ControllerEntry {
   std::string config_key;
   std::string config_subdir;
   std::string config_package;
-  std::function<std::unique_ptr<RTControllerInterface>(const std::string &)> factory;
+  std::function<std::unique_ptr<RTControllerInterface>(const std::string&)> factory;
 };
 
 // ── Singleton controller registry ────────────────────────────────────────────
@@ -36,19 +34,15 @@ struct ControllerEntry
 //
 // Thread safety: all Register() calls happen during static init or before
 // the RT loop starts.  GetEntries() is called once at startup.
-class ControllerRegistry
-{
-public:
-  static ControllerRegistry & Instance() noexcept;
+class ControllerRegistry {
+ public:
+  static ControllerRegistry& Instance() noexcept;
 
   void Register(ControllerEntry entry);
 
-  [[nodiscard]] const std::vector<ControllerEntry> & GetEntries() const noexcept
-  {
-    return entries_;
-  }
+  [[nodiscard]] const std::vector<ControllerEntry>& GetEntries() const noexcept { return entries_; }
 
-private:
+ private:
   ControllerRegistry() = default;
   std::vector<ControllerEntry> entries_;
 };
@@ -74,10 +68,9 @@ private:
 #define RTC_REGISTER_CONTROLLER(config_key, config_subdir, config_package, FactoryExpr) \
   namespace {                                                                           \
   [[maybe_unused]] const bool rtc_reg_##config_key = [] {                               \
-    ::rtc::ControllerRegistry::Instance().Register({                                    \
-      #config_key, config_subdir, config_package,                                       \
-      [](const std::string & urdf) { return FactoryExpr; }                              \
-    });                                                                                 \
+    ::rtc::ControllerRegistry::Instance().Register(                                     \
+        {#config_key, config_subdir, config_package,                                    \
+         [](const std::string& urdf) { return FactoryExpr; }});                         \
     return true;                                                                        \
   }();                                                                                  \
   }  // anonymous namespace

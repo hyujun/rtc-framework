@@ -19,7 +19,7 @@ namespace rtc_bt {
 ///   - min_fingertips (int): minimum fingertips above threshold (default 2)
 ///   - sustained_ms (int): sustained duration [ms] (default 0, no sustain check)
 class IsForceAbove : public BT::ConditionNode {
-public:
+ public:
   IsForceAbove(const std::string& name, const BT::NodeConfig& config,
                std::shared_ptr<BtRosBridge> bridge);
 
@@ -27,7 +27,7 @@ public:
 
   BT::NodeStatus tick() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
   std::chrono::steady_clock::time_point sustained_start_;
   bool sustained_active_{false};

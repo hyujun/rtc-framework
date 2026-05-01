@@ -36,8 +36,7 @@ void SnapshotHistory::PruneOld() {
   }
 
   const uint64_t newest_ns = buffer_.back().timestamp_ns;
-  const auto duration_ns =
-      static_cast<uint64_t>(max_duration_sec_ * 1'000'000'000.0);
+  const auto duration_ns = static_cast<uint64_t>(max_duration_sec_ * 1'000'000'000.0);
 
   if (newest_ns <= duration_ns) {
     return;  // 오버플로 방지

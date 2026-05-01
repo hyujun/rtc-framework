@@ -17,7 +17,7 @@ namespace shape_estimation {
 class VoxelPointCloud {
  public:
   struct Config {
-    double voxel_resolution_m{0.002};   // 2mm voxel
+    double voxel_resolution_m{0.002};  // 2mm voxel
     int max_points{2048};
     double expiry_duration_sec{5.0};
   };

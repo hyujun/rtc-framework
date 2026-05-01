@@ -4,14 +4,14 @@
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "ur5e_bringup/logging/pod_fill.hpp"
 
+#include <ament_index_cpp/get_package_share_directory.hpp>
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <string>
 #include <vector>
-
-#include <ament_index_cpp/get_package_share_directory.hpp>
-#include <rcl_interfaces/msg/parameter_descriptor.hpp>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -21,26 +21,24 @@
 #include <pinocchio/math/rpy.hpp>
 #pragma GCC diagnostic pop
 
-#include "rtc_tsid/tasks/force_task.hpp"
-#include "rtc_tsid/tasks/posture_task.hpp"
-#include "rtc_tsid/tasks/se3_task.hpp"
-
 #include "rtc_tsid/constraints/eom_constraint.hpp"
 #include "rtc_tsid/constraints/friction_cone_constraint.hpp"
 #include "rtc_tsid/constraints/joint_limit_constraint.hpp"
+#include "rtc_tsid/tasks/force_task.hpp"
+#include "rtc_tsid/tasks/posture_task.hpp"
+#include "rtc_tsid/tasks/se3_task.hpp"
 
 namespace ur5e_bringup {
 
 // ── Constructor ──────────────────────────────────────────────────────────────
 
-DemoWbcController::DemoWbcController(std::string_view urdf_path)
-    : urdf_path_(urdf_path) {
+DemoWbcController::DemoWbcController(std::string_view urdf_path) : urdf_path_(urdf_path) {
   // Model is built in LoadConfig() using system model config.
 }
 
 // ── Model initialization ─────────────────────────────────────────────────────
 
-void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig &config) {
+void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig& config) {
   namespace rub = rtc_urdf_bridge;
 
   // Prefer the shared builder injected by RtControllerNode so the URDF is
@@ -56,14 +54,13 @@ void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig &config) {
   // Arm sub-model (6-DoF) for FK / task-space logging
   const auto primary = GetPrimaryDeviceName();
   std::string arm_model_name = "arm";
-  for (const auto &sm : config.sub_models) {
+  for (const auto& sm : config.sub_models) {
     if (sm.name == primary) {
       arm_model_name = primary;
       break;
     }
   }
-  arm_handle_ = std::make_unique<rub::RtModelHandle>(
-      builder_->GetReducedModel(arm_model_name));
+  arm_handle_ = std::make_unique<rub::RtModelHandle>(builder_->GetReducedModel(arm_model_name));
 
   // Control model. Prefer the passive-locked reduced tree `wbc` built by
   // PinocchioModelBuilder (Analyzer auto-classifies mimic/closed-chain/hint
@@ -76,33 +73,30 @@ void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig &config) {
   // behaviour for URDFs without <mimic> tags.
   try {
     full_model_ptr_ = builder_->GetTreeModel("wbc");
-    RCLCPP_INFO(logger_,
-                "[wbc] control model: reduced tree 'wbc' (nq=%d nv=%d)",
+    RCLCPP_INFO(logger_, "[wbc] control model: reduced tree 'wbc' (nq=%d nv=%d)",
                 full_model_ptr_->nq, full_model_ptr_->nv);
-  } catch (const std::exception &e) {
+  } catch (const std::exception& e) {
     full_model_ptr_ = builder_->GetFullModel();
-    RCLCPP_INFO(
-        logger_,
-        "[wbc] control model: URDF full model (nq=%d nv=%d) — tree 'wbc' "
-        "missing (%s); MPC handler-mode + TSID will see mimic joints",
-        full_model_ptr_->nq, full_model_ptr_->nv, e.what());
+    RCLCPP_INFO(logger_,
+                "[wbc] control model: URDF full model (nq=%d nv=%d) — tree 'wbc' "
+                "missing (%s); MPC handler-mode + TSID will see mimic joints",
+                full_model_ptr_->nq, full_model_ptr_->nv, e.what());
   }
 
-  RCLCPP_INFO(logger_, "Models initialized: arm nv=%d, control nq=%d nv=%d",
-              arm_handle_->nv(), full_model_ptr_->nq, full_model_ptr_->nv);
+  RCLCPP_INFO(logger_, "Models initialized: arm nv=%d, control nq=%d nv=%d", arm_handle_->nv(),
+              full_model_ptr_->nq, full_model_ptr_->nv);
 }
 
 void DemoWbcController::BuildJointReorderMap() {
   if (!full_model_ptr_) {
     return;
   }
-  const auto &model = *full_model_ptr_;
+  const auto& model = *full_model_ptr_;
 
-  const auto *arm_cfg = GetDeviceNameConfig("ur5e");
-  const auto *hand_cfg = GetDeviceNameConfig("hand");
+  const auto* arm_cfg = GetDeviceNameConfig("ur5e");
+  const auto* hand_cfg = GetDeviceNameConfig("hand");
   if (!arm_cfg || !hand_cfg) {
-    RCLCPP_WARN(logger_,
-                "Device configs not available, using identity mapping");
+    RCLCPP_WARN(logger_, "Device configs not available, using identity mapping");
     for (int i = 0; i < kFullDof; ++i) {
       ext_to_pin_q_[static_cast<std::size_t>(i)] = i;
       ext_to_pin_v_[static_cast<std::size_t>(i)] = i;
@@ -114,10 +108,9 @@ void DemoWbcController::BuildJointReorderMap() {
   int ext_idx = 0;
 
   // Arm joints
-  for (const auto &jname : arm_cfg->joint_state_names) {
+  for (const auto& jname : arm_cfg->joint_state_names) {
     if (!model.existJointName(jname)) {
-      RCLCPP_ERROR(logger_, "Joint '%s' not found in full model",
-                   jname.c_str());
+      RCLCPP_ERROR(logger_, "Joint '%s' not found in full model", jname.c_str());
       continue;
     }
     const auto jid = model.getJointId(jname);
@@ -128,10 +121,9 @@ void DemoWbcController::BuildJointReorderMap() {
   }
 
   // Hand joints
-  for (const auto &jname : hand_cfg->joint_state_names) {
+  for (const auto& jname : hand_cfg->joint_state_names) {
     if (!model.existJointName(jname)) {
-      RCLCPP_ERROR(logger_, "Joint '%s' not found in full model",
-                   jname.c_str());
+      RCLCPP_ERROR(logger_, "Joint '%s' not found in full model", jname.c_str());
       continue;
     }
     const auto jid = model.getJointId(jname);
@@ -143,8 +135,7 @@ void DemoWbcController::BuildJointReorderMap() {
 
   joint_reorder_valid_ = (ext_idx == kFullDof);
   if (!joint_reorder_valid_) {
-    RCLCPP_ERROR(logger_, "Joint reorder incomplete: mapped %d/%d joints",
-                 ext_idx, kFullDof);
+    RCLCPP_ERROR(logger_, "Joint reorder incomplete: mapped %d/%d joints", ext_idx, kFullDof);
   }
 }
 
@@ -154,17 +145,16 @@ void DemoWbcController::BuildJointReorderMap() {
 // unique_ptr and transferred to formulation via add_task/add_constraint.
 // After construction each is init()'d with its own sub-node.
 
-void DemoWbcController::BuildTsidTasks(const YAML::Node &tsid_node) {
+void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
   if (!full_model_ptr_ || !tsid_node || !tsid_node["tasks"]) {
     return;
   }
-  const auto &model = *full_model_ptr_;
-  auto &formulation = tsid_controller_.formulation();
+  const auto& model = *full_model_ptr_;
+  auto& formulation = tsid_controller_.formulation();
 
-  for (auto it = tsid_node["tasks"].begin(); it != tsid_node["tasks"].end();
-       ++it) {
+  for (auto it = tsid_node["tasks"].begin(); it != tsid_node["tasks"].end(); ++it) {
     const auto key = it->first.as<std::string>();
-    const auto &task_cfg = it->second;
+    const auto& task_cfg = it->second;
     const auto type = task_cfg["type"].as<std::string>("");
 
     if (type == "posture") {
@@ -181,24 +171,22 @@ void DemoWbcController::BuildTsidTasks(const YAML::Node &tsid_node) {
       task->set_contact_manager(&contact_mgr_config_);
       formulation.add_task(std::move(task));
     } else {
-      RCLCPP_ERROR(logger_,
-                   "[wbc] unknown task type '%s' for entry '%s' — skipping",
-                   type.c_str(), key.c_str());
+      RCLCPP_ERROR(logger_, "[wbc] unknown task type '%s' for entry '%s' — skipping", type.c_str(),
+                   key.c_str());
     }
   }
 }
 
-void DemoWbcController::BuildTsidConstraints(const YAML::Node &tsid_node) {
+void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
   if (!full_model_ptr_ || !tsid_node || !tsid_node["constraints"]) {
     return;
   }
-  const auto &model = *full_model_ptr_;
-  auto &formulation = tsid_controller_.formulation();
+  const auto& model = *full_model_ptr_;
+  auto& formulation = tsid_controller_.formulation();
 
-  for (auto it = tsid_node["constraints"].begin();
-       it != tsid_node["constraints"].end(); ++it) {
+  for (auto it = tsid_node["constraints"].begin(); it != tsid_node["constraints"].end(); ++it) {
     const auto key = it->first.as<std::string>();
-    const auto &c_cfg = it->second;
+    const auto& c_cfg = it->second;
     const auto type = c_cfg["type"].as<std::string>("");
 
     if (type == "eom") {
@@ -215,24 +203,22 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node &tsid_node) {
       c->set_contact_manager(&contact_mgr_config_);
       formulation.add_constraint(std::move(c));
     } else {
-      RCLCPP_ERROR(
-          logger_,
-          "[wbc] unknown constraint type '%s' for entry '%s' — skipping",
-          type.c_str(), key.c_str());
+      RCLCPP_ERROR(logger_, "[wbc] unknown constraint type '%s' for entry '%s' — skipping",
+                   type.c_str(), key.c_str());
     }
   }
 }
 
 // ── Controller registry hooks ────────────────────────────────────────────────
 
-void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
+void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
   RTControllerInterface::LoadConfig(cfg);
   if (!cfg) {
     return;
   }
 
   // ── 1. Build models from system model config ──────────────────────────
-  const auto *sys_cfg = GetSystemModelConfig();
+  const auto* sys_cfg = GetSystemModelConfig();
   if (sys_cfg && !sys_cfg->urdf_path.empty()) {
     InitModels(*sys_cfg);
   } else if (!urdf_path_.empty()) {
@@ -252,7 +238,7 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
   // ── 2. TSID initialization ────────────────────────────────────────────
   const auto tsid_node = cfg["tsid"];
   if (tsid_node) {
-    const auto &model = *full_model_ptr_;
+    const auto& model = *full_model_ptr_;
 
     // RobotModelInfo
     robot_info_.build(model, tsid_node);
@@ -275,8 +261,7 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
     // ControlReference & CommandOutput pre-allocate
     control_ref_.init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated,
                       contact_mgr_config_.max_contact_vars);
-    tsid_output_.init(robot_info_.nv, robot_info_.n_actuated,
-                      contact_mgr_config_.max_contact_vars);
+    tsid_output_.init(robot_info_.nv, robot_info_.n_actuated, contact_mgr_config_.max_contact_vars);
 
     // ControlState pre-allocate
     ctrl_state_.q = Eigen::VectorXd::Zero(robot_info_.nq);
@@ -290,10 +275,9 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
     BuildTsidConstraints(tsid_node);
 
     // Verify contact frames resolved (catch mis-named fingertip frames early)
-    for (const auto &c : contact_mgr_config_.contacts) {
+    for (const auto& c : contact_mgr_config_.contacts) {
       if (c.frame_id == 0) {
-        RCLCPP_ERROR(logger_,
-                     "[wbc] contact '%s' frame '%s' not found in full model",
+        RCLCPP_ERROR(logger_, "[wbc] contact '%s' frame '%s' not found in full model",
                      c.name.c_str(), c.frame_name.c_str());
       }
     }
@@ -302,7 +286,7 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
     phase_preset_valid_.fill(false);
     if (tsid_node["phase_presets"]) {
       auto presets = rtc::tsid::load_phase_presets(tsid_node);
-      auto map_preset = [&](WbcPhase phase, const std::string &name) {
+      auto map_preset = [&](WbcPhase phase, const std::string& name) {
         auto it = presets.find(name);
         if (it != presets.end()) {
           const auto idx = static_cast<std::size_t>(phase);
@@ -316,9 +300,8 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
     }
 
     tsid_initialized_ = true;
-    RCLCPP_INFO(logger_, "TSID initialized: nq=%d nv=%d n_act=%d contacts=%d",
-                robot_info_.nq, robot_info_.nv, robot_info_.n_actuated,
-                contact_mgr_config_.max_contacts);
+    RCLCPP_INFO(logger_, "TSID initialized: nq=%d nv=%d n_act=%d contacts=%d", robot_info_.nq,
+                robot_info_.nv, robot_info_.n_actuated, contact_mgr_config_.max_contacts);
   }
 
   // ── 3. Integration buffers ────────────────────────────────────────────
@@ -330,8 +313,7 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
 
   // Joint limits with safety margins + force-rate filter (required)
   if (!cfg["integration"] || !cfg["integration"].IsMap()) {
-    throw std::runtime_error(
-        "demo_wbc_controller: required 'integration' section is missing");
+    throw std::runtime_error("demo_wbc_controller: required 'integration' section is missing");
   }
   {
     const auto int_node = cfg["integration"];
@@ -351,10 +333,8 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
     }
     force_rate_alpha_ = static_cast<float>(alpha);
   }
-  q_min_clamped_ =
-      full_model_ptr_->lowerPositionLimit.array() + position_margin_;
-  q_max_clamped_ =
-      full_model_ptr_->upperPositionLimit.array() - position_margin_;
+  q_min_clamped_ = full_model_ptr_->lowerPositionLimit.array() + position_margin_;
+  q_max_clamped_ = full_model_ptr_->upperPositionLimit.array() - position_margin_;
   v_limit_ = full_model_ptr_->velocityLimit * velocity_scale_;
 
   // ── 4. FSM thresholds ─────────────────────────────────────────────────
@@ -364,39 +344,32 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
     epsilon_pregrasp_ = fsm["epsilon_pregrasp"].as<double>(0.005);
     force_contact_threshold_ = fsm["force_contact_threshold"].as<double>(0.2);
     force_hold_threshold_ = fsm["force_hold_threshold"].as<double>(1.0);
-    min_contacts_for_hold_ =
-        fsm["min_contacts_for_hold"].as<int>(min_contacts_for_hold_);
-    slip_rate_threshold_ =
-        fsm["slip_rate_threshold"].as<double>(slip_rate_threshold_);
-    deformation_threshold_ =
-        fsm["deformation_threshold"].as<double>(deformation_threshold_);
-    max_qp_fail_before_fallback_ =
-        fsm["max_qp_fail_before_fallback"].as<int>(5);
+    min_contacts_for_hold_ = fsm["min_contacts_for_hold"].as<int>(min_contacts_for_hold_);
+    slip_rate_threshold_ = fsm["slip_rate_threshold"].as<double>(slip_rate_threshold_);
+    deformation_threshold_ = fsm["deformation_threshold"].as<double>(deformation_threshold_);
+    max_qp_fail_before_fallback_ = fsm["max_qp_fail_before_fallback"].as<int>(5);
     auto g = gains_lock_.Load();
-    g.arm_trajectory_speed = std::max(
-        1e-6, fsm["approach_speed"].as<double>(g.arm_trajectory_speed));
+    g.arm_trajectory_speed =
+        std::max(1e-6, fsm["approach_speed"].as<double>(g.arm_trajectory_speed));
     gains_lock_.Store(g);
   }
 
   // ── 4b. E-STOP arm safe position (required) ──────────────────────────
   if (!cfg["estop"] || !cfg["estop"].IsMap()) {
-    throw std::runtime_error(
-        "demo_wbc_controller: required 'estop' section is missing");
+    throw std::runtime_error("demo_wbc_controller: required 'estop' section is missing");
   }
   {
     const auto estop_node = cfg["estop"];
-    if (!estop_node["arm_safe_position"] ||
-        !estop_node["arm_safe_position"].IsSequence()) {
+    if (!estop_node["arm_safe_position"] || !estop_node["arm_safe_position"].IsSequence()) {
       throw std::runtime_error(
           "demo_wbc_controller: required 'estop.arm_safe_position' "
           "must be a sequence");
     }
     const auto sp = estop_node["arm_safe_position"];
     if (sp.size() != static_cast<std::size_t>(kArmDof)) {
-      throw std::runtime_error(
-          "demo_wbc_controller: 'estop.arm_safe_position' length " +
-          std::to_string(sp.size()) + " != expected " +
-          std::to_string(kArmDof));
+      throw std::runtime_error("demo_wbc_controller: 'estop.arm_safe_position' length " +
+                               std::to_string(sp.size()) + " != expected " +
+                               std::to_string(kArmDof));
     }
     for (std::size_t i = 0; i < static_cast<std::size_t>(kArmDof); ++i) {
       safe_position_[i] = sp[i].as<double>();
@@ -407,12 +380,10 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
   {
     auto g = gains_lock_.Load();
     if (cfg["arm_trajectory_speed"]) {
-      g.arm_trajectory_speed =
-          std::max(1e-6, cfg["arm_trajectory_speed"].as<double>());
+      g.arm_trajectory_speed = std::max(1e-6, cfg["arm_trajectory_speed"].as<double>());
     }
     if (cfg["hand_trajectory_speed"]) {
-      g.hand_trajectory_speed =
-          std::max(1e-6, cfg["hand_trajectory_speed"].as<double>());
+      g.hand_trajectory_speed = std::max(1e-6, cfg["hand_trajectory_speed"].as<double>());
     }
     if (cfg["arm_max_traj_velocity"]) {
       g.arm_max_traj_velocity = cfg["arm_max_traj_velocity"].as<double>();
@@ -426,8 +397,7 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
   // ── 6. Command type ───────────────────────────────────────────────────
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
-    command_type_ =
-        (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
+    command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
 
   // ── 7. MPC integration ────────────────────────────────────────────────
@@ -445,15 +415,13 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
   if (const auto mpc_cfg = cfg["mpc"]; mpc_cfg && full_model_ptr_) {
     mpc_enabled_ = mpc_cfg["enabled"] && mpc_cfg["enabled"].as<bool>();
 
-    const auto engine_str =
-        mpc_cfg["engine"] ? mpc_cfg["engine"].as<std::string>("mock") : "mock";
+    const auto engine_str = mpc_cfg["engine"] ? mpc_cfg["engine"].as<std::string>("mock") : "mock";
     if (engine_str == "handler") {
       mpc_engine_ = MpcEngine::kHandler;
     } else if (engine_str == "mock") {
       mpc_engine_ = MpcEngine::kMock;
     } else {
-      RCLCPP_ERROR(logger_,
-                   "[wbc] unknown mpc.engine '%s' — falling back to 'mock'",
+      RCLCPP_ERROR(logger_, "[wbc] unknown mpc.engine '%s' — falling back to 'mock'",
                    engine_str.c_str());
       mpc_engine_ = MpcEngine::kMock;
     }
@@ -484,13 +452,11 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
     mpc_u_fb_ = Eigen::VectorXd::Zero(mpc_nv);
 
     mpc_manager_.Init(mpc_cfg, mpc_nq, mpc_nv, mpc_n_contact);
-    const char *active_engine =
-        (mpc_engine_ == MpcEngine::kHandler) ? "handler" : "mock";
+    const char* active_engine = (mpc_engine_ == MpcEngine::kHandler) ? "handler" : "mock";
     RCLCPP_INFO(logger_,
                 "MPC integration: enabled=%d engine=%s (yaml=%s) nq=%d nv=%d "
                 "n_contact=%d",
-                mpc_enabled_, active_engine, engine_str.c_str(), mpc_nq, mpc_nv,
-                mpc_n_contact);
+                mpc_enabled_, active_engine, engine_str.c_str(), mpc_nq, mpc_nv, mpc_n_contact);
 
     if (mpc_engine_ == MpcEngine::kHandler) {
       // Resolve factory YAML paths relative to the ur5e_bringup share dir.
@@ -498,32 +464,30 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
       try {
         share = ament_index_cpp::get_package_share_directory("ur5e_bringup");
       } catch (...) {
-        RCLCPP_ERROR(logger_, "[wbc] cannot resolve ur5e_bringup share dir "
-                              "— handler mode disabled");
+        RCLCPP_ERROR(logger_,
+                     "[wbc] cannot resolve ur5e_bringup share dir "
+                     "— handler mode disabled");
         mpc_engine_ = MpcEngine::kMock;
       }
 
       if (mpc_engine_ == MpcEngine::kHandler) {
-        const auto phase_path =
-            mpc_cfg["phase_config_path"]
-                ? mpc_cfg["phase_config_path"].as<std::string>()
-                : std::string{"config/controllers/mpc/phase_config.yaml"};
-        const auto light_path =
-            mpc_cfg["light_contact_path"]
-                ? mpc_cfg["light_contact_path"].as<std::string>()
-                : std::string{"config/controllers/mpc/light_contact.yaml"};
-        const auto rich_path =
-            mpc_cfg["contact_rich_path"]
-                ? mpc_cfg["contact_rich_path"].as<std::string>()
-                : std::string{"config/controllers/mpc/contact_rich.yaml"};
+        const auto phase_path = mpc_cfg["phase_config_path"]
+                                    ? mpc_cfg["phase_config_path"].as<std::string>()
+                                    : std::string{"config/controllers/mpc/phase_config.yaml"};
+        const auto light_path = mpc_cfg["light_contact_path"]
+                                    ? mpc_cfg["light_contact_path"].as<std::string>()
+                                    : std::string{"config/controllers/mpc/light_contact.yaml"};
+        const auto rich_path = mpc_cfg["contact_rich_path"]
+                                   ? mpc_cfg["contact_rich_path"].as<std::string>()
+                                   : std::string{"config/controllers/mpc/contact_rich.yaml"};
 
-        const auto join = [&](const std::string &p) { return share + "/" + p; };
+        const auto join = [&](const std::string& p) { return share + "/" + p; };
 
         try {
           phase_cfg_ = YAML::LoadFile(join(phase_path));
           mpc_light_cfg_ = YAML::LoadFile(join(light_path));
           mpc_rich_cfg_ = YAML::LoadFile(join(rich_path));
-        } catch (const std::exception &e) {
+        } catch (const std::exception& e) {
           RCLCPP_ERROR(logger_,
                        "[wbc] failed to load handler YAML (%s) — "
                        "handler mode disabled",
@@ -536,13 +500,11 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
         // Build RobotModelHandler from light_contact.yaml's `model:` subtree
         // (identical to contact_rich.yaml by contract — cross-mode swap
         // requires matching contact_frames).
-        const auto model_node =
-            mpc_light_cfg_["mpc"] && mpc_light_cfg_["mpc"]["model"]
-                ? mpc_light_cfg_["mpc"]["model"]
-                : YAML::Node{};
+        const auto model_node = mpc_light_cfg_["mpc"] && mpc_light_cfg_["mpc"]["model"]
+                                    ? mpc_light_cfg_["mpc"]["model"]
+                                    : YAML::Node{};
         mpc_model_handler_ = std::make_unique<rtc::mpc::RobotModelHandler>();
-        const auto model_err =
-            mpc_model_handler_->Init(*full_model_ptr_, model_node);
+        const auto model_err = mpc_model_handler_->Init(*full_model_ptr_, model_node);
         if (model_err != rtc::mpc::RobotModelInitError::kNoError) {
           RCLCPP_ERROR(logger_,
                        "[wbc] RobotModelHandler::Init failed (code %d) — "
@@ -557,11 +519,9 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
         // GraspPhaseManager is built eagerly here (non-RT) so any YAML
         // schema errors surface before the RT thread starts. It is handed
         // over to HandlerMPCThread::Configure in InitializeHoldPosition.
-        auto pm = std::make_unique<ur5e_bringup::phase::GraspPhaseManager>(
-            *mpc_model_handler_);
-        const auto phase_err = pm->Load(phase_cfg_["grasp_phase_manager"]
-                                            ? phase_cfg_["grasp_phase_manager"]
-                                            : phase_cfg_);
+        auto pm = std::make_unique<ur5e_bringup::phase::GraspPhaseManager>(*mpc_model_handler_);
+        const auto phase_err = pm->Load(
+            phase_cfg_["grasp_phase_manager"] ? phase_cfg_["grasp_phase_manager"] : phase_cfg_);
         if (phase_err != ur5e_bringup::phase::GraspPhaseInitError::kNoError) {
           RCLCPP_ERROR(logger_,
                        "[wbc] GraspPhaseManager::Load failed (code %d) — "
@@ -585,20 +545,17 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
     if (!cfg["logs"].IsSequence()) {
       throw std::runtime_error("DemoWbcController: 'logs' must be a sequence");
     }
-    for (const auto &entry : cfg["logs"]) {
+    for (const auto& entry : cfg["logs"]) {
       if (!entry.IsMap() || !entry["msg_type"]) {
-        throw std::runtime_error(
-            "DemoWbcController: each `logs` entry needs `msg_type`");
+        throw std::runtime_error("DemoWbcController: each `logs` entry needs `msg_type`");
       }
       ParsedLogEntry e;
       e.msg_type = entry["msg_type"].as<std::string>();
       if (entry["instance"]) {
         e.instance = entry["instance"].as<std::string>();
       }
-      if (e.msg_type != "rtc_msgs/DeviceStateLog" &&
-          e.msg_type != "rtc_msgs/DeviceSensorLog") {
-        throw std::runtime_error(
-            "DemoWbcController: unknown msg_type in `logs`: " + e.msg_type);
+      if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != "rtc_msgs/DeviceSensorLog") {
+        throw std::runtime_error("DemoWbcController: unknown msg_type in `logs`: " + e.msg_type);
       }
       parsed_log_entries_.push_back(std::move(e));
     }
@@ -607,7 +564,7 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
 
 void DemoWbcController::OnDeviceConfigsSet() {
   // ── Arm frame IDs ─────────────────────────────────────────────────────
-  if (auto *cfg = GetDeviceNameConfig("ur5e"); cfg) {
+  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       auto fid = arm_handle_->GetFrameId(cfg->urdf->tip_link);
       if (fid != 0) {
@@ -635,7 +592,7 @@ void DemoWbcController::OnDeviceConfigsSet() {
   }
 
   // ── Hand limits ───────────────────────────────────────────────────────
-  if (auto *cfg = GetDeviceNameConfig("hand"); cfg && cfg->joint_limits) {
+  if (auto* cfg = GetDeviceNameConfig("hand"); cfg && cfg->joint_limits) {
     if (!cfg->joint_limits->max_velocity.empty()) {
       device_max_velocity_[1] = cfg->joint_limits->max_velocity;
     }
@@ -648,15 +605,15 @@ void DemoWbcController::OnDeviceConfigsSet() {
   }
 
   // Fallback defaults
-  for (auto &v : device_max_velocity_) {
+  for (auto& v : device_max_velocity_) {
     if (v.empty())
       v.assign(kMaxDeviceChannels, 2.0);
   }
-  for (auto &v : device_position_lower_) {
+  for (auto& v : device_position_lower_) {
     if (v.empty())
       v.assign(kMaxDeviceChannels, -6.2832);
   }
-  for (auto &v : device_position_upper_) {
+  for (auto& v : device_position_upper_) {
     if (v.empty())
       v.assign(kMaxDeviceChannels, 6.2832);
   }
@@ -665,25 +622,23 @@ void DemoWbcController::OnDeviceConfigsSet() {
   BuildJointReorderMap();
 
   // Phase C: capture joint/sensor names for CSV header expansion.
-  if (auto *cfg = GetDeviceNameConfig("ur5e"); cfg) {
+  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
     ur5e_joint_names_ = cfg->joint_state_names;
   }
-  if (auto *cfg = GetDeviceNameConfig("hand"); cfg) {
+  if (auto* cfg = GetDeviceNameConfig("hand"); cfg) {
     hand_joint_names_ = cfg->joint_state_names;
     hand_motor_names_ = cfg->motor_state_names;
     hand_sensor_names_ = cfg->sensor_names;
   }
 }
 
-DemoWbcController::FingertipReport
-DemoWbcController::GetFingertipReportForTesting(
+DemoWbcController::FingertipReport DemoWbcController::GetFingertipReportForTesting(
     int fingertip_idx) const noexcept {
   FingertipReport r{};
-  if (fingertip_idx < 0 ||
-      fingertip_idx >= static_cast<int>(rtc::kMaxFingertips)) {
+  if (fingertip_idx < 0 || fingertip_idx >= static_cast<int>(rtc::kMaxFingertips)) {
     return r;
   }
-  const auto &ft = fingertip_data_[static_cast<std::size_t>(fingertip_idx)];
+  const auto& ft = fingertip_data_[static_cast<std::size_t>(fingertip_idx)];
   r.force_magnitude = ft.force_magnitude;
   r.force_rate = ft.force_rate;
   r.contact_flag = ft.contact_flag;
@@ -693,8 +648,7 @@ DemoWbcController::GetFingertipReportForTesting(
 
 // ── RT control loop ──────────────────────────────────────────────────────────
 
-ControllerOutput
-DemoWbcController::Compute(const ControllerState &state) noexcept {
+ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexcept {
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
 
   ReadState(state);
@@ -746,7 +700,7 @@ DemoWbcController::Compute(const ControllerState &state) noexcept {
 
 // ── Phase 1: Read state ──────────────────────────────────────────────────────
 
-void DemoWbcController::ReadState(const ControllerState &state) noexcept {
+void DemoWbcController::ReadState(const ControllerState& state) noexcept {
   // Parse fingertip F/T inference data + raw sensor channels for
   // contact detection (kClosure -> kHold) and anomaly monitoring (kHold).
   // Layout mirrors DemoJointController::ReadState for consistency.
@@ -755,27 +709,23 @@ void DemoWbcController::ReadState(const ControllerState &state) noexcept {
     return;
   }
 
-  const auto &dev1 = state.devices[1];
+  const auto& dev1 = state.devices[1];
   const int num_sensor_ch = dev1.num_sensor_channels;
   const int num_fingertips =
-      (rtc::kSensorValuesPerFingertip > 0)
-          ? (num_sensor_ch / rtc::kSensorValuesPerFingertip)
-          : 0;
-  num_active_fingertips_ =
-      std::min(num_fingertips, static_cast<int>(rtc::kMaxFingertips));
+      (rtc::kSensorValuesPerFingertip > 0) ? (num_sensor_ch / rtc::kSensorValuesPerFingertip) : 0;
+  num_active_fingertips_ = std::min(num_fingertips, static_cast<int>(rtc::kMaxFingertips));
 
   const double inv_dt = (state.dt > 0.0) ? (1.0 / state.dt) : 500.0;
 
   for (int f = 0; f < num_active_fingertips_; ++f) {
-    auto &ft = fingertip_data_[static_cast<std::size_t>(f)];
+    auto& ft = fingertip_data_[static_cast<std::size_t>(f)];
     const int base = f * rtc::kSensorValuesPerFingertip;
 
     for (std::size_t j = 0; j < rtc::kBarometerCount; ++j) {
       ft.baro[j] = dev1.sensor_data[static_cast<std::size_t>(base) + j];
     }
     for (std::size_t j = 0; j < 3; ++j) {
-      ft.tof[j] = dev1.sensor_data[static_cast<std::size_t>(base) +
-                                   rtc::kBarometerCount + j];
+      ft.tof[j] = dev1.sensor_data[static_cast<std::size_t>(base) + rtc::kBarometerCount + j];
     }
 
     ft.valid = dev1.inference_enable[static_cast<std::size_t>(f)];
@@ -801,10 +751,9 @@ void DemoWbcController::ReadState(const ControllerState &state) noexcept {
 
     // df/dt with EMA smoothing; skip on first tick to avoid startup spike
     if (force_rate_initialized_) {
-      const float raw_rate = static_cast<float>(
-          (ft.force_magnitude - ft.prev_force_magnitude) * inv_dt);
-      ft.force_rate = force_rate_alpha_ * raw_rate +
-                      (1.0f - force_rate_alpha_) * ft.force_rate;
+      const float raw_rate =
+          static_cast<float>((ft.force_magnitude - ft.prev_force_magnitude) * inv_dt);
+      ft.force_rate = force_rate_alpha_ * raw_rate + (1.0f - force_rate_alpha_) * ft.force_rate;
     } else {
       ft.force_rate = 0.0f;
     }
@@ -815,8 +764,7 @@ void DemoWbcController::ReadState(const ControllerState &state) noexcept {
 
 // ── Phase 2: Compute control ─────────────────────────────────────────────────
 
-void DemoWbcController::ComputeControl(const ControllerState &state,
-                                       double dt) noexcept {
+void DemoWbcController::ComputeControl(const ControllerState& state, double dt) noexcept {
   UpdatePhase(state);
 
   // Keep MPC state fresh across all phases: HandlerMPCThread::Solve rejects
@@ -825,313 +773,227 @@ void DemoWbcController::ComputeControl(const ControllerState &state,
   // with only the header.
   if (mpc_enabled_ && mpc_manager_.Enabled()) {
     ExtractFullState(state);
-    const uint64_t now_ns =
-        static_cast<uint64_t>(state.iteration) * 2'000'000ULL;
+    const uint64_t now_ns = static_cast<uint64_t>(state.iteration) * 2'000'000ULL;
     mpc_manager_.WriteState(q_curr_full_, v_curr_full_, now_ns);
   }
 
   switch (phase_) {
-  case WbcPhase::kIdle:
-  case WbcPhase::kApproach:
-  case WbcPhase::kRetreat:
-  case WbcPhase::kRelease:
-    // ComputePositionMode(dt);
-    // break;
+    case WbcPhase::kIdle:
+    case WbcPhase::kApproach:
+    case WbcPhase::kRetreat:
+    case WbcPhase::kRelease:
+      // ComputePositionMode(dt);
+      // break;
 
-  case WbcPhase::kPreGrasp:
-  case WbcPhase::kClosure:
-  case WbcPhase::kHold:
-    if (tsid_initialized_) {
-      ComputeTSIDPosition(state, dt);
-    } else {
-      ComputePositionMode(dt); // Fallback if TSID not available
-    }
-    break;
+    case WbcPhase::kPreGrasp:
+    case WbcPhase::kClosure:
+    case WbcPhase::kHold:
+      if (tsid_initialized_) {
+        ComputeTSIDPosition(state, dt);
+      } else {
+        ComputePositionMode(dt);  // Fallback if TSID not available
+      }
+      break;
 
-  case WbcPhase::kFallback:
-    ComputeFallback();
-    break;
+    case WbcPhase::kFallback:
+      ComputeFallback();
+      break;
   }
 }
 
 // ── FSM ──────────────────────────────────────────────────────────────────────
 
-void DemoWbcController::UpdatePhase(const ControllerState &state) noexcept {
+void DemoWbcController::UpdatePhase(const ControllerState& state) noexcept {
   const int cmd = grasp_cmd_.load(std::memory_order_acquire);
   WbcPhase next = phase_;
 
   switch (phase_) {
-  case WbcPhase::kIdle:
-    // grasp_cmd=1 + valid target → approach
-    if (cmd == 1 && robot_new_target_.load(std::memory_order_acquire)) {
-      next = WbcPhase::kApproach;
-    }
-    break;
-
-  case WbcPhase::kApproach: {
-    // Trajectory complete → pre-grasp (TSID)
-    if (robot_trajectory_time_ >= robot_trajectory_.duration()) {
-      if (tsid_initialized_) {
-        next = WbcPhase::kPreGrasp;
-      } else {
-        next = WbcPhase::kIdle; // No TSID, stay in position mode
+    case WbcPhase::kIdle:
+      // grasp_cmd=1 + valid target → approach
+      if (cmd == 1 && robot_new_target_.load(std::memory_order_acquire)) {
+        next = WbcPhase::kApproach;
       }
-    }
-    // Abort
-    if (cmd == 0) {
-      next = WbcPhase::kIdle;
-    }
-    break;
-  }
+      break;
 
-  case WbcPhase::kPreGrasp: {
-    // TCP close enough to goal → closure
-    if (tcp_goal_valid_) {
-      const double err = ComputeTcpError(tcp_goal_);
-      if (err < epsilon_pregrasp_) {
-        next = WbcPhase::kClosure;
+    case WbcPhase::kApproach: {
+      // Trajectory complete → pre-grasp (TSID)
+      if (robot_trajectory_time_ >= robot_trajectory_.duration()) {
+        if (tsid_initialized_) {
+          next = WbcPhase::kPreGrasp;
+        } else {
+          next = WbcPhase::kIdle;  // No TSID, stay in position mode
+        }
       }
-    }
-    // Abort
-    if (cmd == 0) {
-      next = WbcPhase::kIdle;
-    }
-    break;
-  }
-
-  case WbcPhase::kClosure: {
-    // Count active contacts from parsed fingertip forces
-    int active_contacts = 0;
-    for (int f = 0; f < num_active_fingertips_; ++f) {
-      const auto &ft = fingertip_data_[static_cast<std::size_t>(f)];
-      if (ft.valid && ft.force_magnitude > force_contact_threshold_) {
-        ++active_contacts;
+      // Abort
+      if (cmd == 0) {
+        next = WbcPhase::kIdle;
       }
+      break;
     }
-    if (active_contacts >= min_contacts_for_hold_) {
-      next = WbcPhase::kHold;
-    }
-    if (cmd == 0) {
-      next = WbcPhase::kIdle;
-    }
-    break;
-  }
 
-  case WbcPhase::kHold: {
-    // Anomaly detection: slip (|df/dt|) or excessive deformation
-    for (int f = 0; f < num_active_fingertips_; ++f) {
-      const auto &ft = fingertip_data_[static_cast<std::size_t>(f)];
-      if (!ft.valid) {
-        continue;
+    case WbcPhase::kPreGrasp: {
+      // TCP close enough to goal → closure
+      if (tcp_goal_valid_) {
+        const double err = ComputeTcpError(tcp_goal_);
+        if (err < epsilon_pregrasp_) {
+          next = WbcPhase::kClosure;
+        }
       }
-      if (std::abs(ft.force_rate) > slip_rate_threshold_) {
-        RCLCPP_WARN_THROTTLE(
-            logger_, log_clock_, ur5e_bringup::logging::kThrottleSlowMs,
-            "[wbc] slip detected f=%d df/dt=%.2f N/s > %.2f", f,
-            static_cast<double>(ft.force_rate), slip_rate_threshold_);
-        next = WbcPhase::kFallback;
-        break;
+      // Abort
+      if (cmd == 0) {
+        next = WbcPhase::kIdle;
       }
-      const float dmag = std::sqrt(ft.displacement[0] * ft.displacement[0] +
-                                   ft.displacement[1] * ft.displacement[1] +
-                                   ft.displacement[2] * ft.displacement[2]);
-      if (dmag > deformation_threshold_) {
-        RCLCPP_WARN_THROTTLE(
-            logger_, log_clock_, ur5e_bringup::logging::kThrottleSlowMs,
-            "[wbc] deformation detected f=%d |d|=%.3f > %.3f", f,
-            static_cast<double>(dmag), deformation_threshold_);
-        next = WbcPhase::kFallback;
-        break;
+      break;
+    }
+
+    case WbcPhase::kClosure: {
+      // Count active contacts from parsed fingertip forces
+      int active_contacts = 0;
+      for (int f = 0; f < num_active_fingertips_; ++f) {
+        const auto& ft = fingertip_data_[static_cast<std::size_t>(f)];
+        if (ft.valid && ft.force_magnitude > force_contact_threshold_) {
+          ++active_contacts;
+        }
       }
+      if (active_contacts >= min_contacts_for_hold_) {
+        next = WbcPhase::kHold;
+      }
+      if (cmd == 0) {
+        next = WbcPhase::kIdle;
+      }
+      break;
     }
-    if (cmd == 2) {
-      next = WbcPhase::kRetreat;
-    }
-    if (cmd == 0) {
-      next = WbcPhase::kIdle;
-    }
-    break;
-  }
 
-  case WbcPhase::kRetreat:
-    // Trajectory complete → release
-    if (robot_trajectory_time_ >= robot_trajectory_.duration()) {
-      next = WbcPhase::kRelease;
+    case WbcPhase::kHold: {
+      // Anomaly detection: slip (|df/dt|) or excessive deformation
+      for (int f = 0; f < num_active_fingertips_; ++f) {
+        const auto& ft = fingertip_data_[static_cast<std::size_t>(f)];
+        if (!ft.valid) {
+          continue;
+        }
+        if (std::abs(ft.force_rate) > slip_rate_threshold_) {
+          RCLCPP_WARN_THROTTLE(logger_, log_clock_, ur5e_bringup::logging::kThrottleSlowMs,
+                               "[wbc] slip detected f=%d df/dt=%.2f N/s > %.2f", f,
+                               static_cast<double>(ft.force_rate), slip_rate_threshold_);
+          next = WbcPhase::kFallback;
+          break;
+        }
+        const float dmag = std::sqrt(ft.displacement[0] * ft.displacement[0] +
+                                     ft.displacement[1] * ft.displacement[1] +
+                                     ft.displacement[2] * ft.displacement[2]);
+        if (dmag > deformation_threshold_) {
+          RCLCPP_WARN_THROTTLE(logger_, log_clock_, ur5e_bringup::logging::kThrottleSlowMs,
+                               "[wbc] deformation detected f=%d |d|=%.3f > %.3f", f,
+                               static_cast<double>(dmag), deformation_threshold_);
+          next = WbcPhase::kFallback;
+          break;
+        }
+      }
+      if (cmd == 2) {
+        next = WbcPhase::kRetreat;
+      }
+      if (cmd == 0) {
+        next = WbcPhase::kIdle;
+      }
+      break;
     }
-    if (cmd == 0) {
-      next = WbcPhase::kIdle;
-    }
-    break;
 
-  case WbcPhase::kRelease:
-    // Hand open complete → idle
-    if (hand_trajectory_time_ >= hand_trajectory_.duration()) {
-      next = WbcPhase::kIdle;
-    }
-    break;
+    case WbcPhase::kRetreat:
+      // Trajectory complete → release
+      if (robot_trajectory_time_ >= robot_trajectory_.duration()) {
+        next = WbcPhase::kRelease;
+      }
+      if (cmd == 0) {
+        next = WbcPhase::kIdle;
+      }
+      break;
 
-  case WbcPhase::kFallback:
-    // Manual recovery only: grasp_cmd=0 → idle
-    if (cmd == 0) {
-      next = WbcPhase::kIdle;
-    }
-    break;
+    case WbcPhase::kRelease:
+      // Hand open complete → idle
+      if (hand_trajectory_time_ >= hand_trajectory_.duration()) {
+        next = WbcPhase::kIdle;
+      }
+      break;
+
+    case WbcPhase::kFallback:
+      // Manual recovery only: grasp_cmd=0 → idle
+      if (cmd == 0) {
+        next = WbcPhase::kIdle;
+      }
+      break;
   }
 
   if (next != phase_) {
-    RCLCPP_INFO_THROTTLE(logger_, log_clock_,
-                         ur5e_bringup::logging::kThrottleFastMs,
-                         "[wbc] phase %d -> %d", static_cast<int>(phase_),
-                         static_cast<int>(next));
+    RCLCPP_INFO_THROTTLE(logger_, log_clock_, ur5e_bringup::logging::kThrottleFastMs,
+                         "[wbc] phase %d -> %d", static_cast<int>(phase_), static_cast<int>(next));
     prev_phase_ = phase_;
     OnPhaseEnter(next, state);
     phase_ = next;
   }
 }
 
-void DemoWbcController::OnPhaseEnter(WbcPhase new_phase,
-                                     const ControllerState &state) noexcept {
+void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& state) noexcept {
   // Atomic gains snapshot — phase transitions are RT-safe reads.
   const auto gains = gains_lock_.Load();
-  const auto &dev0 = state.devices[0];
-  const auto &dev1 = state.devices[1];
+  const auto& dev0 = state.devices[0];
+  const auto& dev1 = state.devices[1];
 
   switch (new_phase) {
-  case WbcPhase::kIdle: {
-    // Hold current position
-    for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-      robot_computed_.positions[i] = dev0.positions[i];
-      robot_computed_.velocities[i] = 0.0;
-    }
-    if (state.num_devices > 1 && dev1.valid) {
-      for (std::size_t i = 0; i < kNumHandMotors; ++i) {
-        hand_computed_.positions[i] = dev1.positions[i];
-        hand_computed_.velocities[i] = 0.0;
+    case WbcPhase::kIdle: {
+      // Hold current position
+      for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+        robot_computed_.positions[i] = dev0.positions[i];
+        robot_computed_.velocities[i] = 0.0;
       }
-    }
-    tcp_goal_valid_ = false;
-    qp_fail_count_ = 0;
-    // Deactivate all contacts
-    for (auto &c : contact_state_.contacts) {
-      c.active = false;
-    }
-    contact_state_.recompute_active(contact_mgr_config_);
-    break;
-  }
-
-  case WbcPhase::kApproach: {
-    // Build quintic trajectory: current → target (arm)
-    std::lock_guard lock(target_mutex_);
-    trajectory::JointSpaceTrajectory<kNumRobotJoints>::State start{};
-    trajectory::JointSpaceTrajectory<kNumRobotJoints>::State goal{};
-    double max_delta = 0.0;
-    for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-      start.positions[i] = dev0.positions[i];
-      q_approach_start_[i] = dev0.positions[i]; // save for kRetreat
-      goal.positions[i] = device_targets_[0][i];
-      const double delta = std::abs(goal.positions[i] - start.positions[i]);
-      if (delta > max_delta) {
-        max_delta = delta;
-      }
-    }
-    const double duration =
-        std::max(max_delta / gains.arm_trajectory_speed, 0.1);
-    robot_trajectory_.initialize(start, goal, duration);
-    robot_trajectory_time_ = 0.0;
-    robot_new_target_.store(false, std::memory_order_relaxed);
-
-    // Compute FK of arm target for SE3Task reference in kPreGrasp
-    if (arm_handle_) {
-      std::span<const double> q_target(device_targets_[0].data(),
-                                       kNumRobotJoints);
-      arm_handle_->ComputeForwardKinematics(q_target);
-      tcp_goal_ = arm_handle_->GetFramePlacement(tip_frame_id_);
-      if (use_root_frame_) {
-        tcp_goal_ =
-            arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_goal_);
-      }
-      tcp_goal_valid_ = true;
-    }
-
-    // Hand trajectory (pre-shape)
-    if (hand_new_target_.load(std::memory_order_acquire) &&
-        state.num_devices > 1 && dev1.valid) {
-      trajectory::JointSpaceTrajectory<kNumHandMotors>::State hstart{};
-      trajectory::JointSpaceTrajectory<kNumHandMotors>::State hgoal{};
-      double hmax = 0.0;
-      for (std::size_t i = 0; i < kNumHandMotors; ++i) {
-        hstart.positions[i] = dev1.positions[i];
-        hgoal.positions[i] = device_targets_[1][i];
-        const double hd = std::abs(hgoal.positions[i] - hstart.positions[i]);
-        if (hd > hmax) {
-          hmax = hd;
+      if (state.num_devices > 1 && dev1.valid) {
+        for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+          hand_computed_.positions[i] = dev1.positions[i];
+          hand_computed_.velocities[i] = 0.0;
         }
       }
-      const double hdur = std::max(hmax / gains.hand_trajectory_speed, 0.1);
-      hand_trajectory_.initialize(hstart, hgoal, hdur);
-      hand_trajectory_time_ = 0.0;
-      hand_new_target_.store(false, std::memory_order_relaxed);
-    }
-    break;
-  }
-
-  case WbcPhase::kPreGrasp:
-  case WbcPhase::kClosure:
-  case WbcPhase::kHold: {
-    // Apply TSID phase preset (RT-safe: uses pre-resolved PhasePreset)
-    const auto idx = static_cast<std::size_t>(new_phase);
-    if (phase_preset_valid_[idx]) {
-      tsid_controller_.apply_phase_preset(phase_presets_[idx]);
-    }
-
-    // Set TSID integration initial conditions from current state
-    ExtractFullState(state);
-    q_next_full_ = q_curr_full_;
-    v_next_full_ = v_curr_full_;
-
-    // Set SE3Task reference (TCP goal)
-    if (tcp_goal_valid_) {
-      auto *se3_task = tsid_controller_.formulation().get_task("se3_tcp");
-      if (se3_task) {
-        static_cast<rtc::tsid::SE3Task *>(se3_task)->set_se3_reference(
-            tcp_goal_);
-      }
-    }
-
-    // Contact activation for closure/hold phases
-    if (new_phase == WbcPhase::kClosure || new_phase == WbcPhase::kHold) {
-      for (auto &c : contact_state_.contacts) {
-        c.active = true;
+      tcp_goal_valid_ = false;
+      qp_fail_count_ = 0;
+      // Deactivate all contacts
+      for (auto& c : contact_state_.contacts) {
+        c.active = false;
       }
       contact_state_.recompute_active(contact_mgr_config_);
+      break;
+    }
 
-      // Set per-contact force reference: +Z normal = gains.grasp_target_force
-      auto *force_task = tsid_initialized_
-                             ? tsid_controller_.formulation().get_task("force")
-                             : nullptr;
-      if (force_task) {
-        const int n = contact_mgr_config_.max_contact_vars;
-        if (n > 0) {
-          Eigen::VectorXd lambda_des = Eigen::VectorXd::Zero(n);
-          int offset = 0;
-          for (const auto &c : contact_mgr_config_.contacts) {
-            const int cdim = c.contact_dim;
-            if (offset + cdim > n) {
-              break;
-            }
-            // Point contact: lambda = [fx, fy, fz]; push +Z target force
-            if (cdim >= 3) {
-              lambda_des[offset + 2] = gains.grasp_target_force;
-            }
-            offset += cdim;
-          }
-          static_cast<rtc::tsid::ForceTask *>(force_task)
-              ->set_force_references(lambda_des);
+    case WbcPhase::kApproach: {
+      // Build quintic trajectory: current → target (arm)
+      std::lock_guard lock(target_mutex_);
+      trajectory::JointSpaceTrajectory<kNumRobotJoints>::State start{};
+      trajectory::JointSpaceTrajectory<kNumRobotJoints>::State goal{};
+      double max_delta = 0.0;
+      for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+        start.positions[i] = dev0.positions[i];
+        q_approach_start_[i] = dev0.positions[i];  // save for kRetreat
+        goal.positions[i] = device_targets_[0][i];
+        const double delta = std::abs(goal.positions[i] - start.positions[i]);
+        if (delta > max_delta) {
+          max_delta = delta;
         }
       }
+      const double duration = std::max(max_delta / gains.arm_trajectory_speed, 0.1);
+      robot_trajectory_.initialize(start, goal, duration);
+      robot_trajectory_time_ = 0.0;
+      robot_new_target_.store(false, std::memory_order_relaxed);
 
-      // Ramp hand joint target toward stored target (user-provided close pose)
-      if (state.num_devices > 1 && dev1.valid) {
+      // Compute FK of arm target for SE3Task reference in kPreGrasp
+      if (arm_handle_) {
+        std::span<const double> q_target(device_targets_[0].data(), kNumRobotJoints);
+        arm_handle_->ComputeForwardKinematics(q_target);
+        tcp_goal_ = arm_handle_->GetFramePlacement(tip_frame_id_);
+        if (use_root_frame_) {
+          tcp_goal_ = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_goal_);
+        }
+        tcp_goal_valid_ = true;
+      }
+
+      // Hand trajectory (pre-shape)
+      if (hand_new_target_.load(std::memory_order_acquire) && state.num_devices > 1 && dev1.valid) {
         trajectory::JointSpaceTrajectory<kNumHandMotors>::State hstart{};
         trajectory::JointSpaceTrajectory<kNumHandMotors>::State hgoal{};
         double hmax = 0.0;
@@ -1146,92 +1008,164 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase,
         const double hdur = std::max(hmax / gains.hand_trajectory_speed, 0.1);
         hand_trajectory_.initialize(hstart, hgoal, hdur);
         hand_trajectory_time_ = 0.0;
+        hand_new_target_.store(false, std::memory_order_relaxed);
       }
+      break;
     }
 
-    qp_fail_count_ = 0;
-    break;
-  }
-
-  case WbcPhase::kRetreat: {
-    // Deactivate contacts
-    for (auto &c : contact_state_.contacts) {
-      c.active = false;
-    }
-    contact_state_.recompute_active(contact_mgr_config_);
-
-    // Arm trajectory: current → saved approach-start pose
-    trajectory::JointSpaceTrajectory<kNumRobotJoints>::State start{};
-    trajectory::JointSpaceTrajectory<kNumRobotJoints>::State goal{};
-    double max_delta = 0.0;
-    for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-      start.positions[i] = dev0.positions[i];
-      goal.positions[i] = q_approach_start_[i];
-      const double delta = std::abs(goal.positions[i] - start.positions[i]);
-      if (delta > max_delta) {
-        max_delta = delta;
+    case WbcPhase::kPreGrasp:
+    case WbcPhase::kClosure:
+    case WbcPhase::kHold: {
+      // Apply TSID phase preset (RT-safe: uses pre-resolved PhasePreset)
+      const auto idx = static_cast<std::size_t>(new_phase);
+      if (phase_preset_valid_[idx]) {
+        tsid_controller_.apply_phase_preset(phase_presets_[idx]);
       }
-    }
-    const double duration =
-        std::max(max_delta / gains.arm_trajectory_speed, 0.1);
-    robot_trajectory_.initialize(start, goal, duration);
-    robot_trajectory_time_ = 0.0;
-    tcp_goal_valid_ = false;
-    break;
-  }
 
-  case WbcPhase::kRelease: {
-    // Hand open: all motors → 0
-    if (state.num_devices > 1 && dev1.valid) {
-      trajectory::JointSpaceTrajectory<kNumHandMotors>::State hstart{};
-      trajectory::JointSpaceTrajectory<kNumHandMotors>::State hgoal{};
-      double hmax = 0.0;
-      for (std::size_t i = 0; i < kNumHandMotors; ++i) {
-        hstart.positions[i] = dev1.positions[i];
-        hgoal.positions[i] = 0.0;
-        const double hd = std::abs(hstart.positions[i]);
-        if (hd > hmax) {
-          hmax = hd;
+      // Set TSID integration initial conditions from current state
+      ExtractFullState(state);
+      q_next_full_ = q_curr_full_;
+      v_next_full_ = v_curr_full_;
+
+      // Set SE3Task reference (TCP goal)
+      if (tcp_goal_valid_) {
+        auto* se3_task = tsid_controller_.formulation().get_task("se3_tcp");
+        if (se3_task) {
+          static_cast<rtc::tsid::SE3Task*>(se3_task)->set_se3_reference(tcp_goal_);
         }
       }
-      const double hdur = std::max(hmax / gains.hand_trajectory_speed, 0.1);
-      hand_trajectory_.initialize(hstart, hgoal, hdur);
-      hand_trajectory_time_ = 0.0;
-    }
-    // Arm holds current pose during release
-    for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-      robot_computed_.positions[i] = dev0.positions[i];
-      robot_computed_.velocities[i] = 0.0;
-    }
-    // Freeze arm trajectory (duration=0 so ComputePositionMode clamps)
-    trajectory::JointSpaceTrajectory<kNumRobotJoints>::State hold{};
-    for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-      hold.positions[i] = dev0.positions[i];
-    }
-    robot_trajectory_.initialize(hold, hold, 0.01);
-    robot_trajectory_time_ = 0.0;
-    break;
-  }
 
-  case WbcPhase::kFallback: {
-    // Hold current position, deactivate contacts
-    for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-      robot_computed_.positions[i] = dev0.positions[i];
-      robot_computed_.velocities[i] = 0.0;
-    }
-    if (state.num_devices > 1 && dev1.valid) {
-      for (std::size_t i = 0; i < kNumHandMotors; ++i) {
-        hand_computed_.positions[i] = dev1.positions[i];
-        hand_computed_.velocities[i] = 0.0;
+      // Contact activation for closure/hold phases
+      if (new_phase == WbcPhase::kClosure || new_phase == WbcPhase::kHold) {
+        for (auto& c : contact_state_.contacts) {
+          c.active = true;
+        }
+        contact_state_.recompute_active(contact_mgr_config_);
+
+        // Set per-contact force reference: +Z normal = gains.grasp_target_force
+        auto* force_task =
+            tsid_initialized_ ? tsid_controller_.formulation().get_task("force") : nullptr;
+        if (force_task) {
+          const int n = contact_mgr_config_.max_contact_vars;
+          if (n > 0) {
+            Eigen::VectorXd lambda_des = Eigen::VectorXd::Zero(n);
+            int offset = 0;
+            for (const auto& c : contact_mgr_config_.contacts) {
+              const int cdim = c.contact_dim;
+              if (offset + cdim > n) {
+                break;
+              }
+              // Point contact: lambda = [fx, fy, fz]; push +Z target force
+              if (cdim >= 3) {
+                lambda_des[offset + 2] = gains.grasp_target_force;
+              }
+              offset += cdim;
+            }
+            static_cast<rtc::tsid::ForceTask*>(force_task)->set_force_references(lambda_des);
+          }
+        }
+
+        // Ramp hand joint target toward stored target (user-provided close pose)
+        if (state.num_devices > 1 && dev1.valid) {
+          trajectory::JointSpaceTrajectory<kNumHandMotors>::State hstart{};
+          trajectory::JointSpaceTrajectory<kNumHandMotors>::State hgoal{};
+          double hmax = 0.0;
+          for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+            hstart.positions[i] = dev1.positions[i];
+            hgoal.positions[i] = device_targets_[1][i];
+            const double hd = std::abs(hgoal.positions[i] - hstart.positions[i]);
+            if (hd > hmax) {
+              hmax = hd;
+            }
+          }
+          const double hdur = std::max(hmax / gains.hand_trajectory_speed, 0.1);
+          hand_trajectory_.initialize(hstart, hgoal, hdur);
+          hand_trajectory_time_ = 0.0;
+        }
       }
+
+      qp_fail_count_ = 0;
+      break;
     }
-    for (auto &c : contact_state_.contacts) {
-      c.active = false;
+
+    case WbcPhase::kRetreat: {
+      // Deactivate contacts
+      for (auto& c : contact_state_.contacts) {
+        c.active = false;
+      }
+      contact_state_.recompute_active(contact_mgr_config_);
+
+      // Arm trajectory: current → saved approach-start pose
+      trajectory::JointSpaceTrajectory<kNumRobotJoints>::State start{};
+      trajectory::JointSpaceTrajectory<kNumRobotJoints>::State goal{};
+      double max_delta = 0.0;
+      for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+        start.positions[i] = dev0.positions[i];
+        goal.positions[i] = q_approach_start_[i];
+        const double delta = std::abs(goal.positions[i] - start.positions[i]);
+        if (delta > max_delta) {
+          max_delta = delta;
+        }
+      }
+      const double duration = std::max(max_delta / gains.arm_trajectory_speed, 0.1);
+      robot_trajectory_.initialize(start, goal, duration);
+      robot_trajectory_time_ = 0.0;
+      tcp_goal_valid_ = false;
+      break;
     }
-    contact_state_.recompute_active(contact_mgr_config_);
-    qp_fail_count_ = 0;
-    break;
-  }
+
+    case WbcPhase::kRelease: {
+      // Hand open: all motors → 0
+      if (state.num_devices > 1 && dev1.valid) {
+        trajectory::JointSpaceTrajectory<kNumHandMotors>::State hstart{};
+        trajectory::JointSpaceTrajectory<kNumHandMotors>::State hgoal{};
+        double hmax = 0.0;
+        for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+          hstart.positions[i] = dev1.positions[i];
+          hgoal.positions[i] = 0.0;
+          const double hd = std::abs(hstart.positions[i]);
+          if (hd > hmax) {
+            hmax = hd;
+          }
+        }
+        const double hdur = std::max(hmax / gains.hand_trajectory_speed, 0.1);
+        hand_trajectory_.initialize(hstart, hgoal, hdur);
+        hand_trajectory_time_ = 0.0;
+      }
+      // Arm holds current pose during release
+      for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+        robot_computed_.positions[i] = dev0.positions[i];
+        robot_computed_.velocities[i] = 0.0;
+      }
+      // Freeze arm trajectory (duration=0 so ComputePositionMode clamps)
+      trajectory::JointSpaceTrajectory<kNumRobotJoints>::State hold{};
+      for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+        hold.positions[i] = dev0.positions[i];
+      }
+      robot_trajectory_.initialize(hold, hold, 0.01);
+      robot_trajectory_time_ = 0.0;
+      break;
+    }
+
+    case WbcPhase::kFallback: {
+      // Hold current position, deactivate contacts
+      for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+        robot_computed_.positions[i] = dev0.positions[i];
+        robot_computed_.velocities[i] = 0.0;
+      }
+      if (state.num_devices > 1 && dev1.valid) {
+        for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+          hand_computed_.positions[i] = dev1.positions[i];
+          hand_computed_.velocities[i] = 0.0;
+        }
+      }
+      for (auto& c : contact_state_.contacts) {
+        c.active = false;
+      }
+      contact_state_.recompute_active(contact_mgr_config_);
+      qp_fail_count_ = 0;
+      break;
+    }
   }
 
   // ── GraspPhaseManager bridge (handler mode only) ──────────────────────────
@@ -1248,37 +1182,37 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase,
     namespace phase = ur5e_bringup::phase;
     int grasp_id = static_cast<int>(phase::GraspPhaseId::kIdle);
     switch (new_phase) {
-    case WbcPhase::kIdle:
-      grasp_id = static_cast<int>(phase::GraspPhaseId::kIdle);
-      break;
-    case WbcPhase::kApproach:
-      grasp_id = static_cast<int>(phase::GraspPhaseId::kApproach);
-      if (tcp_goal_valid_) {
-        phase::GraspTarget gt{};
-        gt.grasp_pose = tcp_goal_;
-        gt.pregrasp_pose = tcp_goal_;
-        gt.approach_start = tcp_goal_;
-        phase_manager_ptr_->SetTaskTarget(gt);
-      }
-      break;
-    case WbcPhase::kPreGrasp:
-      grasp_id = static_cast<int>(phase::GraspPhaseId::kPreGrasp);
-      break;
-    case WbcPhase::kClosure:
-      grasp_id = static_cast<int>(phase::GraspPhaseId::kClosure);
-      break;
-    case WbcPhase::kHold:
-      grasp_id = static_cast<int>(phase::GraspPhaseId::kHold);
-      break;
-    case WbcPhase::kRetreat:
-      grasp_id = static_cast<int>(phase::GraspPhaseId::kRetreat);
-      break;
-    case WbcPhase::kRelease:
-      grasp_id = static_cast<int>(phase::GraspPhaseId::kRelease);
-      break;
-    case WbcPhase::kFallback:
-      grasp_id = static_cast<int>(phase::GraspPhaseId::kIdle);
-      break;
+      case WbcPhase::kIdle:
+        grasp_id = static_cast<int>(phase::GraspPhaseId::kIdle);
+        break;
+      case WbcPhase::kApproach:
+        grasp_id = static_cast<int>(phase::GraspPhaseId::kApproach);
+        if (tcp_goal_valid_) {
+          phase::GraspTarget gt{};
+          gt.grasp_pose = tcp_goal_;
+          gt.pregrasp_pose = tcp_goal_;
+          gt.approach_start = tcp_goal_;
+          phase_manager_ptr_->SetTaskTarget(gt);
+        }
+        break;
+      case WbcPhase::kPreGrasp:
+        grasp_id = static_cast<int>(phase::GraspPhaseId::kPreGrasp);
+        break;
+      case WbcPhase::kClosure:
+        grasp_id = static_cast<int>(phase::GraspPhaseId::kClosure);
+        break;
+      case WbcPhase::kHold:
+        grasp_id = static_cast<int>(phase::GraspPhaseId::kHold);
+        break;
+      case WbcPhase::kRetreat:
+        grasp_id = static_cast<int>(phase::GraspPhaseId::kRetreat);
+        break;
+      case WbcPhase::kRelease:
+        grasp_id = static_cast<int>(phase::GraspPhaseId::kRelease);
+        break;
+      case WbcPhase::kFallback:
+        grasp_id = static_cast<int>(phase::GraspPhaseId::kIdle);
+        break;
     }
     phase_manager_ptr_->ForcePhase(grasp_id);
   }
@@ -1289,8 +1223,8 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase,
 void DemoWbcController::ComputePositionMode(double dt) noexcept {
   // Robot arm trajectory
   robot_trajectory_time_ += dt;
-  const auto rstate = robot_trajectory_.compute(
-      std::min(robot_trajectory_time_, robot_trajectory_.duration()));
+  const auto rstate =
+      robot_trajectory_.compute(std::min(robot_trajectory_time_, robot_trajectory_.duration()));
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
     robot_computed_.positions[i] = rstate.positions[i];
     robot_computed_.velocities[i] = rstate.velocities[i];
@@ -1298,16 +1232,15 @@ void DemoWbcController::ComputePositionMode(double dt) noexcept {
 
   // Hand trajectory
   hand_trajectory_time_ += dt;
-  const auto hstate = hand_trajectory_.compute(
-      std::min(hand_trajectory_time_, hand_trajectory_.duration()));
+  const auto hstate =
+      hand_trajectory_.compute(std::min(hand_trajectory_time_, hand_trajectory_.duration()));
   for (std::size_t i = 0; i < kNumHandMotors; ++i) {
     hand_computed_.positions[i] = hstate.positions[i];
     hand_computed_.velocities[i] = hstate.velocities[i];
   }
 }
 
-void DemoWbcController::ComputeTSIDPosition(const ControllerState &state,
-                                            double dt) noexcept {
+void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double dt) noexcept {
   // 1. Extract full state (sensor values, every tick)
   ExtractFullState(state);
 
@@ -1323,13 +1256,12 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState &state,
   // fall through to the TSID self-hold behaviour.
   bool mpc_ref_valid = false;
   if (mpc_enabled_ && mpc_manager_.Enabled()) {
-    const uint64_t now_ns =
-        static_cast<uint64_t>(state.iteration) * 2'000'000ULL; // 500 Hz tick
+    const uint64_t now_ns = static_cast<uint64_t>(state.iteration) * 2'000'000ULL;  // 500 Hz tick
     rtc::mpc::InterpMeta meta;
     mpc_manager_.WriteState(q_curr_full_, v_curr_full_, now_ns);
-    mpc_ref_valid = mpc_manager_.ComputeReference(
-        q_curr_full_, v_curr_full_, now_ns, mpc_q_ref_, mpc_v_ref_, mpc_a_ff_,
-        mpc_lambda_ref_, mpc_u_fb_, meta);
+    mpc_ref_valid =
+        mpc_manager_.ComputeReference(q_curr_full_, v_curr_full_, now_ns, mpc_q_ref_, mpc_v_ref_,
+                                      mpc_a_ff_, mpc_lambda_ref_, mpc_u_fb_, meta);
   }
 
   // 3. Set posture reference (regularization toward MPC q_ref if valid,
@@ -1340,8 +1272,8 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState &state,
     // TSID will combine a_ff with task PD correction. u_fb from Riccati
     // is additive acceleration feedback on the actuated joints only.
     control_ref_.a_des = mpc_a_ff_;
-    const int n_fb = std::min(static_cast<int>(mpc_u_fb_.size()),
-                              static_cast<int>(control_ref_.a_des.size()));
+    const int n_fb =
+        std::min(static_cast<int>(mpc_u_fb_.size()), static_cast<int>(control_ref_.a_des.size()));
     control_ref_.a_des.head(n_fb) += mpc_u_fb_.head(n_fb);
   } else {
     control_ref_.q_des = q_curr_full_;
@@ -1355,16 +1287,15 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState &state,
   ctrl_state_.timestamp_ns = state.iteration;
 
   // 5. TSID solve
-  tsid_output_ = tsid_controller_.compute(ctrl_state_, control_ref_,
-                                          pinocchio_cache_, contact_state_);
+  tsid_output_ =
+      tsid_controller_.compute(ctrl_state_, control_ref_, pinocchio_cache_, contact_state_);
 
   // 6. QP failure handling
   if (!tsid_output_.qp_converged) {
     ++qp_fail_count_;
-    RCLCPP_WARN_THROTTLE(
-        logger_, log_clock_, ur5e_bringup::logging::kThrottleSlowMs,
-        "[wbc] QP failed (%d/%d), solve=%.0fus", qp_fail_count_,
-        max_qp_fail_before_fallback_, tsid_output_.solve_time_us);
+    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ur5e_bringup::logging::kThrottleSlowMs,
+                         "[wbc] QP failed (%d/%d), solve=%.0fus", qp_fail_count_,
+                         max_qp_fail_before_fallback_, tsid_output_.solve_time_us);
 
     if (qp_fail_count_ >= max_qp_fail_before_fallback_) {
       phase_ = WbcPhase::kFallback;
@@ -1377,7 +1308,7 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState &state,
   qp_fail_count_ = 0;
 
   // 7. Semi-implicit Euler integration: a → v → q
-  const auto &a = tsid_output_.a_opt;
+  const auto& a = tsid_output_.a_opt;
 
   // v_next = v_curr + a · dt
   v_next_full_.noalias() = v_curr_full_ + a * dt;
@@ -1393,8 +1324,7 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState &state,
 
   // 8. Map Pinocchio order → device order
   for (int i = 0; i < kArmDof; ++i) {
-    const auto pin_idx =
-        static_cast<std::size_t>(ext_to_pin_q_[static_cast<std::size_t>(i)]);
+    const auto pin_idx = static_cast<std::size_t>(ext_to_pin_q_[static_cast<std::size_t>(i)]);
     robot_computed_.positions[static_cast<std::size_t>(i)] =
         q_next_full_[static_cast<Eigen::Index>(pin_idx)];
     robot_computed_.velocities[static_cast<std::size_t>(i)] =
@@ -1409,10 +1339,9 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState &state,
         v_next_full_[static_cast<Eigen::Index>(pin_idx)];
   }
 
-  RCLCPP_INFO_THROTTLE(logger_, log_clock_,
-                       ur5e_bringup::logging::kThrottleSlowMs,
-                       "[wbc] TSID solve=%.0fus qp_ok phase=%d",
-                       tsid_output_.solve_time_us, static_cast<int>(phase_));
+  RCLCPP_INFO_THROTTLE(logger_, log_clock_, ur5e_bringup::logging::kThrottleSlowMs,
+                       "[wbc] TSID solve=%.0fus qp_ok phase=%d", tsid_output_.solve_time_us,
+                       static_cast<int>(phase_));
 }
 
 void DemoWbcController::ComputeFallback() noexcept {
@@ -1428,15 +1357,14 @@ void DemoWbcController::ComputeFallback() noexcept {
 
 // ── Phase 3: Write output ────────────────────────────────────────────────────
 
-ControllerOutput
-DemoWbcController::WriteOutput(const ControllerState &state) noexcept {
+ControllerOutput DemoWbcController::WriteOutput(const ControllerState& state) noexcept {
   ControllerOutput output;
   output.num_devices = state.num_devices;
   output.command_type = command_type_;
 
   // ── Robot arm output ──────────────────────────────────────────────────
-  const auto &dev0 = state.devices[0];
-  auto &out0 = output.devices[0];
+  const auto& dev0 = state.devices[0];
+  auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
   out0.goal_type = GoalType::kJoint;
@@ -1449,13 +1377,11 @@ DemoWbcController::WriteOutput(const ControllerState &state) noexcept {
     out0.trajectory_velocities[i] = robot_computed_.velocities[i];
     out0.goal_positions[i] = device_targets_[0][i];
   }
-  ClampCommands(out0.commands, nc0, device_position_lower_[0],
-                device_position_upper_[0]);
+  ClampCommands(out0.commands, nc0, device_position_lower_[0], device_position_upper_[0]);
 
   // ── Task-space logging (FK) ───────────────────────────────────────────
   if (arm_handle_) {
-    std::span<const double> q_span(dev0.positions.data(),
-                                   static_cast<std::size_t>(nc0));
+    std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
     arm_handle_->ComputeForwardKinematics(q_span);
     pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
     if (use_root_frame_) {
@@ -1486,7 +1412,7 @@ DemoWbcController::WriteOutput(const ControllerState &state) noexcept {
   // ── Hand output ───────────────────────────────────────────────────────
   if (state.num_devices > 1 && state.devices[1].valid) {
     const int nc1 = state.devices[1].num_channels;
-    auto &out1 = output.devices[1];
+    auto& out1 = output.devices[1];
     out1.num_channels = nc1;
     out1.goal_type = GoalType::kJoint;
 
@@ -1498,20 +1424,19 @@ DemoWbcController::WriteOutput(const ControllerState &state) noexcept {
       out1.trajectory_velocities[i] = hand_computed_.velocities[i];
       out1.goal_positions[i] = device_targets_[1][i];
     }
-    ClampCommands(out1.commands, nc1, device_position_lower_[1],
-                  device_position_upper_[1]);
+    ClampCommands(out1.commands, nc1, device_position_lower_[1], device_position_upper_[1]);
   }
 
   // ── WBC state (per-fingertip aggregates + FSM phase) ─────────────────
   {
-    auto &ws = output.wbc_state;
+    auto& ws = output.wbc_state;
     ws.phase = static_cast<uint8_t>(phase_);
     ws.num_fingertips = num_active_fingertips_;
     int active_count = 0;
     float max_force = 0.0F;
     for (int f = 0; f < num_active_fingertips_; ++f) {
       const auto idx = static_cast<std::size_t>(f);
-      const auto &ft = fingertip_data_[idx];
+      const auto& ft = fingertip_data_[idx];
       const float mag = ft.force_magnitude;
       ws.force_magnitude[idx] = mag;
       ws.contact_flag[idx] = ft.contact_flag;
@@ -1531,7 +1456,7 @@ DemoWbcController::WriteOutput(const ControllerState &state) noexcept {
     ws.max_force = max_force;
     const auto g = gains_lock_.Load();
     ws.grasp_target_force = static_cast<float>(g.grasp_target_force);
-    ws.min_fingertips_for_grasp = 2; // WBC default; no YAML override yet
+    ws.min_fingertips_for_grasp = 2;  // WBC default; no YAML override yet
     ws.grasp_detected = (active_count >= ws.min_fingertips_for_grasp);
     ws.tsid_solver_ok = tsid_initialized_ && (qp_fail_count_ == 0);
     ws.qp_fail_count = qp_fail_count_;
@@ -1544,16 +1469,14 @@ DemoWbcController::WriteOutput(const ControllerState &state) noexcept {
 
 // ── Target management ────────────────────────────────────────────────────────
 
-void DemoWbcController::SetDeviceTarget(
-    int device_idx, std::span<const double> target) noexcept {
+void DemoWbcController::SetDeviceTarget(int device_idx, std::span<const double> target) noexcept {
   std::lock_guard lock(target_mutex_);
   const auto didx = static_cast<std::size_t>(device_idx);
   if (didx >= device_targets_.size()) {
     return;
   }
 
-  const auto n =
-      std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
+  const auto n = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
   std::copy_n(target.data(), n, device_targets_[didx].data());
 
   if (device_idx == 0) {
@@ -1563,13 +1486,12 @@ void DemoWbcController::SetDeviceTarget(
   }
 }
 
-void DemoWbcController::InitializeHoldPosition(
-    const ControllerState &state) noexcept {
+void DemoWbcController::InitializeHoldPosition(const ControllerState& state) noexcept {
   std::lock_guard lock(target_mutex_);
 
   // Robot arm: initialize trajectory at current position (zero velocity)
   {
-    const auto &dev0 = state.devices[0];
+    const auto& dev0 = state.devices[0];
     trajectory::JointSpaceTrajectory<kNumRobotJoints>::State hold{};
     for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
       device_targets_[0][i] = dev0.positions[i];
@@ -1583,14 +1505,12 @@ void DemoWbcController::InitializeHoldPosition(
   }
 
   // Hand
-  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices);
-       ++d) {
-    const auto &dev = state.devices[d];
+  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
+    const auto& dev = state.devices[d];
     if (!dev.valid)
       continue;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) &&
-                            i < kMaxDeviceChannels;
-         ++i) {
+    for (std::size_t i = 0;
+         i < static_cast<std::size_t>(dev.num_channels) && i < kMaxDeviceChannels; ++i) {
       device_targets_[d][i] = dev.positions[i];
     }
     if (d == 1) {
@@ -1630,8 +1550,7 @@ void DemoWbcController::InitializeHoldPosition(
     rtc::mpc::MpcThreadLaunchConfig launch{};
     launch.main = thread_configs.mpc.main;
     launch.num_workers = thread_configs.mpc.num_workers;
-    for (int i = 0; i < launch.num_workers && i < rtc::mpc::kMaxMpcWorkers;
-         ++i) {
+    for (int i = 0; i < launch.num_workers && i < rtc::mpc::kMaxMpcWorkers; ++i) {
       launch.workers[static_cast<std::size_t>(i)] =
           thread_configs.mpc.workers[static_cast<std::size_t>(i)];
     }
@@ -1639,8 +1558,7 @@ void DemoWbcController::InitializeHoldPosition(
 
     bool thread_started = false;
 
-    if (mpc_engine_ == MpcEngine::kHandler && mpc_model_handler_ &&
-        phase_manager_owned_) {
+    if (mpc_engine_ == MpcEngine::kHandler && mpc_model_handler_ && phase_manager_owned_) {
       // Build the initial PhaseContext from the idle phase so the factory
       // can size its OCP + solver workspace. GraspPhaseManager and all
       // downstream solvers live in the reduced (mimic-locked) MPC model's
@@ -1649,25 +1567,23 @@ void DemoWbcController::InitializeHoldPosition(
       Eigen::VectorXd v_zero = Eigen::VectorXd::Zero(full_model_ptr_->nv);
       Eigen::VectorXd sensor_zero = Eigen::VectorXd::Zero(0);
       const pinocchio::SE3 tcp_identity = pinocchio::SE3::Identity();
-      const auto initial_ctx = phase_manager_owned_->Update(
-          q_zero, v_zero, sensor_zero, tcp_identity, /*t=*/0.0);
+      const auto initial_ctx =
+          phase_manager_owned_->Update(q_zero, v_zero, sensor_zero, tcp_identity, /*t=*/0.0);
 
       std::unique_ptr<rtc::mpc::MPCHandlerBase> handler;
-      const auto status = rtc::mpc::MPCFactory::Create(
-          mpc_light_cfg_, *mpc_model_handler_, initial_ctx, handler);
+      const auto status =
+          rtc::mpc::MPCFactory::Create(mpc_light_cfg_, *mpc_model_handler_, initial_ctx, handler);
 
       if (status.error != rtc::mpc::MPCFactoryError::kNoError || !handler) {
         RCLCPP_ERROR(logger_,
                      "[wbc] MPCFactory::Create failed (err=%d, init=%d) — "
                      "falling back to mock engine",
-                     static_cast<int>(status.error),
-                     static_cast<int>(status.init_error));
+                     static_cast<int>(status.error), static_cast<int>(status.init_error));
         mpc_engine_ = MpcEngine::kMock;
       } else {
         auto hthread = std::make_unique<rtc::mpc::HandlerMPCThread>();
-        hthread->Configure(*mpc_model_handler_, std::move(handler),
-                           std::move(phase_manager_owned_), mpc_light_cfg_,
-                           mpc_rich_cfg_);
+        hthread->Configure(*mpc_model_handler_, std::move(handler), std::move(phase_manager_owned_),
+                           mpc_light_cfg_, mpc_rich_cfg_);
         hthread->Init(mpc_manager_, launch);
         hthread->Start();
         mpc_thread_ = std::move(hthread);
@@ -1676,8 +1592,8 @@ void DemoWbcController::InitializeHoldPosition(
         RCLCPP_INFO(logger_,
                     "MPC thread started (handler): core=%d prio=%d workers=%d "
                     "freq=%.1f Hz",
-                    launch.main.cpu_core, launch.main.sched_priority,
-                    launch.num_workers, launch.target_frequency_hz);
+                    launch.main.cpu_core, launch.main.sched_priority, launch.num_workers,
+                    launch.target_frequency_hz);
       }
     }
 
@@ -1693,8 +1609,8 @@ void DemoWbcController::InitializeHoldPosition(
       RCLCPP_INFO(logger_,
                   "MPC thread started (mock): core=%d prio=%d workers=%d "
                   "freq=%.1f Hz",
-                  launch.main.cpu_core, launch.main.sched_priority,
-                  launch.num_workers, launch.target_frequency_hz);
+                  launch.main.cpu_core, launch.main.sched_priority, launch.num_workers,
+                  launch.target_frequency_hz);
     }
   }
 }
@@ -1717,9 +1633,8 @@ void DemoWbcController::SetHandEstop(bool active) noexcept {
   hand_estopped_.store(active, std::memory_order_release);
 }
 
-ControllerOutput
-DemoWbcController::ComputeEstop(const ControllerState &state) noexcept {
-  const auto &dev0 = state.devices[0];
+ControllerOutput DemoWbcController::ComputeEstop(const ControllerState& state) noexcept {
+  const auto& dev0 = state.devices[0];
   ControllerOutput output;
   output.num_devices = state.num_devices;
   output.valid = true;
@@ -1728,27 +1643,24 @@ DemoWbcController::ComputeEstop(const ControllerState &state) noexcept {
   // Arm: ramp toward safe position with per-joint velocity limit (matches
   // DemoJoint/DemoTask ComputeEstop pattern — instant jump risks hardware
   // damage on real UR5e at high E-STOP delta).
-  auto &out0 = output.devices[0];
+  auto& out0 = output.devices[0];
   out0.num_channels = dev0.num_channels;
   out0.goal_type = GoalType::kJoint;
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    const double lim =
-        (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
+    const double lim = (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
     out0.commands[i] =
-        dev0.positions[i] +
-        std::clamp(safe_position_[i] - dev0.positions[i], -lim, lim) * dt;
+        dev0.positions[i] + std::clamp(safe_position_[i] - dev0.positions[i], -lim, lim) * dt;
     out0.target_positions[i] = out0.commands[i];
   }
 
   // Hold current position (hand)
   if (state.num_devices > 1 && state.devices[1].valid) {
-    auto &out1 = output.devices[1];
+    auto& out1 = output.devices[1];
     out1.num_channels = state.devices[1].num_channels;
     out1.goal_type = GoalType::kJoint;
     for (std::size_t i = 0;
-         i < static_cast<std::size_t>(state.devices[1].num_channels) &&
-         i < kMaxDeviceChannels;
+         i < static_cast<std::size_t>(state.devices[1].num_channels) && i < kMaxDeviceChannels;
          ++i) {
       out1.commands[i] = state.devices[1].positions[i];
       out1.target_positions[i] = state.devices[1].positions[i];
@@ -1760,13 +1672,12 @@ DemoWbcController::ComputeEstop(const ControllerState &state) noexcept {
 
 // ── Utility ──────────────────────────────────────────────────────────────────
 
-void DemoWbcController::ExtractFullState(
-    const ControllerState &state) noexcept {
+void DemoWbcController::ExtractFullState(const ControllerState& state) noexcept {
   if (!joint_reorder_valid_) {
     return;
   }
 
-  const auto &dev0 = state.devices[0];
+  const auto& dev0 = state.devices[0];
   // Arm joints: external [0..5] → Pinocchio order
   for (int i = 0; i < kArmDof; ++i) {
     const auto eidx = static_cast<std::size_t>(i);
@@ -1778,7 +1689,7 @@ void DemoWbcController::ExtractFullState(
 
   // Hand joints: external [6..15] → Pinocchio order
   if (state.num_devices > 1 && state.devices[1].valid) {
-    const auto &dev1 = state.devices[1];
+    const auto& dev1 = state.devices[1];
     for (int i = 0; i < kHandDof; ++i) {
       const auto eidx = static_cast<std::size_t>(kArmDof + i);
       const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
@@ -1789,8 +1700,7 @@ void DemoWbcController::ExtractFullState(
   }
 }
 
-double
-DemoWbcController::ComputeTcpError(const pinocchio::SE3 &target) noexcept {
+double DemoWbcController::ComputeTcpError(const pinocchio::SE3& target) noexcept {
   if (!arm_handle_) {
     return 1e10;
   }
@@ -1798,57 +1708,50 @@ DemoWbcController::ComputeTcpError(const pinocchio::SE3 &target) noexcept {
   return (tcp.translation() - target.translation()).norm();
 }
 
-void DemoWbcController::ClampCommands(
-    std::array<double, kMaxDeviceChannels> &commands, int n,
-    const std::vector<double> &lower,
-    const std::vector<double> &upper) noexcept {
+void DemoWbcController::ClampCommands(std::array<double, kMaxDeviceChannels>& commands, int n,
+                                      const std::vector<double>& lower,
+                                      const std::vector<double>& upper) noexcept {
   rtc::utils::ClampRange(commands, n, std::span<const double>(lower),
                          std::span<const double>(upper), -6.2832, 6.2832);
 }
 
 // ── Controller-owned topic lifecycle ──────────────────────────────────────
-RTControllerInterface::CallbackReturn
-DemoWbcController::on_configure(const rclcpp_lifecycle::State &prev,
-                                rclcpp_lifecycle::LifecycleNode::SharedPtr node,
-                                const YAML::Node &yaml) noexcept {
+RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
+    const rclcpp_lifecycle::State& prev, rclcpp_lifecycle::LifecycleNode::SharedPtr node,
+    const YAML::Node& yaml) noexcept {
   const auto ret = RTControllerInterface::on_configure(prev, node, yaml);
   if (ret != CallbackReturn::SUCCESS) {
     return ret;
   }
   try {
     CreateOwnedTopics(*this, owned_topics_);
-    mpc_timing_cb_group_ = node->create_callback_group(
-        rclcpp::CallbackGroupType::MutuallyExclusive);
+    mpc_timing_cb_group_ =
+        node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
     // ── Phase C: register controller-owned CSV log channels ─────────────
-    for (const auto &entry : parsed_log_entries_) {
+    for (const auto& entry : parsed_log_entries_) {
       if (entry.instance.empty()) {
-        RCLCPP_ERROR(
-            logger_,
-            "logs entry msg_type=%s missing required `instance:` field",
-            entry.msg_type.c_str());
+        RCLCPP_ERROR(logger_, "logs entry msg_type=%s missing required `instance:` field",
+                     entry.msg_type.c_str());
         return CallbackReturn::FAILURE;
       }
       if (entry.msg_type == "rtc_msgs/DeviceStateLog") {
         // Q-MSG-3 (Option A): hand_state vs hand_sensor instance names.
-        const bool is_hand =
-            (entry.instance == "hand_state" || entry.instance == "hand");
+        const bool is_hand = (entry.instance == "hand_state" || entry.instance == "hand");
         const std::vector<std::string> joint_names_copy =
             is_hand ? hand_joint_names_ : ur5e_joint_names_;
         const std::vector<std::string> motor_names_copy =
             is_hand ? hand_motor_names_ : std::vector<std::string>{};
         auto handle = log_set_.RegisterLog<ur5e::DeviceStateLogPod>(
             entry.instance,
-            [joint_names_copy, motor_names_copy](std::ostream &os) {
-              ur5e::WriteDeviceStateLogHeader(os, joint_names_copy,
-                                              motor_names_copy);
+            [joint_names_copy, motor_names_copy](std::ostream& os) {
+              ur5e::WriteDeviceStateLogHeader(os, joint_names_copy, motor_names_copy);
             },
-            [](std::ostream &os, const ur5e::DeviceStateLogPod &p) {
+            [](std::ostream& os, const ur5e::DeviceStateLogPod& p) {
               ur5e::WriteDeviceStateLogRow(os, p);
             });
         if (!handle) {
-          RCLCPP_WARN(logger_,
-                      "Failed to open device_state CSV for instance=%s",
+          RCLCPP_WARN(logger_, "Failed to open device_state CSV for instance=%s",
                       entry.instance.c_str());
         } else if (entry.instance == "ur5e") {
           ur5e_state_log_handle_ = handle;
@@ -1859,36 +1762,33 @@ DemoWbcController::on_configure(const rclcpp_lifecycle::State &prev,
         const std::vector<std::string> sensor_names_copy = hand_sensor_names_;
         auto handle = log_set_.RegisterLog<ur5e::DeviceSensorLogPod>(
             entry.instance,
-            [sensor_names_copy](std::ostream &os) {
+            [sensor_names_copy](std::ostream& os) {
               ur5e::WriteDeviceSensorLogHeader(os, sensor_names_copy);
             },
-            [](std::ostream &os, const ur5e::DeviceSensorLogPod &p) {
+            [](std::ostream& os, const ur5e::DeviceSensorLogPod& p) {
               ur5e::WriteDeviceSensorLogRow(os, p);
             });
         if (!handle) {
-          RCLCPP_WARN(logger_,
-                      "Failed to open device_sensor CSV for instance=%s",
+          RCLCPP_WARN(logger_, "Failed to open device_sensor CSV for instance=%s",
                       entry.instance.c_str());
-        } else if (entry.instance == "hand_sensor" ||
-                   entry.instance == "hand") {
+        } else if (entry.instance == "hand_sensor" || entry.instance == "hand") {
           hand_sensor_log_handle_ = handle;
         }
       }
     }
     if (!log_set_.empty() && node) {
-      log_drain_cb_group_ = node->create_callback_group(
-          rclcpp::CallbackGroupType::MutuallyExclusive);
+      log_drain_cb_group_ =
+          node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
       log_drain_timer_ = node->create_wall_timer(
-          std::chrono::milliseconds(100), [this]() { log_set_.DrainAll(); },
-          log_drain_cb_group_);
+          std::chrono::milliseconds(100), [this]() { log_set_.DrainAll(); }, log_drain_cb_group_);
     }
 
     // Phase D: declare tunable gains as ROS 2 parameters seeded from
     // gains_lock_ (populated by LoadConfig from YAML), register the
     // set-parameters callback, and create the WBC FSM grasp_command srv.
     DeclareGainParameters();
-    param_callback_handle_ = node_->add_on_set_parameters_callback(
-        [this](const std::vector<rclcpp::Parameter> &params) {
+    param_callback_handle_ =
+        node_->add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter>& params) {
           return OnGainParametersSet(params);
         });
 
@@ -1896,9 +1796,8 @@ DemoWbcController::on_configure(const rclcpp_lifecycle::State &prev,
     // handler updates grasp_cmd_ atomic + gains.grasp_target_force, which
     // the WBC FSM (UpdatePhase) reads to drive kApproach/kRelease.
     grasp_command_srv_ = node_->create_service<rtc_msgs::srv::GraspCommand>(
-        "grasp_command",
-        [this](const std::shared_ptr<rtc_msgs::srv::GraspCommand::Request> req,
-               std::shared_ptr<rtc_msgs::srv::GraspCommand::Response> resp) {
+        "grasp_command", [this](const std::shared_ptr<rtc_msgs::srv::GraspCommand::Request> req,
+                                std::shared_ptr<rtc_msgs::srv::GraspCommand::Response> resp) {
           if (estopped_.load(std::memory_order_acquire)) {
             resp->ok = false;
             resp->message = "E-STOP active";
@@ -1914,18 +1813,13 @@ DemoWbcController::on_configure(const rclcpp_lifecycle::State &prev,
             auto g = gains_lock_.Load();
             g.grasp_target_force = req->target_force;
             gains_lock_.Store(g);
-            grasp_cmd_.store(static_cast<int>(Req::GRASP),
-                             std::memory_order_release);
-            RCLCPP_INFO(
-                logger_,
-                "[grasp_command] GRASP target=%.2fN (WBC FSM kApproach)",
-                req->target_force);
+            grasp_cmd_.store(static_cast<int>(Req::GRASP), std::memory_order_release);
+            RCLCPP_INFO(logger_, "[grasp_command] GRASP target=%.2fN (WBC FSM kApproach)",
+                        req->target_force);
             resp->ok = true;
-            resp->message =
-                "grasp started @ " + std::to_string(req->target_force) + " N";
+            resp->message = "grasp started @ " + std::to_string(req->target_force) + " N";
           } else if (req->command == Req::RELEASE) {
-            grasp_cmd_.store(static_cast<int>(Req::RELEASE),
-                             std::memory_order_release);
+            grasp_cmd_.store(static_cast<int>(Req::RELEASE), std::memory_order_release);
             RCLCPP_INFO(logger_, "[grasp_command] RELEASE (WBC FSM kRelease)");
             resp->ok = true;
             resp->message = "release accepted";
@@ -1934,9 +1828,8 @@ DemoWbcController::on_configure(const rclcpp_lifecycle::State &prev,
             resp->message = "command must be GRASP or RELEASE";
           }
         });
-  } catch (const std::exception &e) {
-    RCLCPP_ERROR(logger_, "DemoWbcController on_configure failed: %s",
-                 e.what());
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(logger_, "DemoWbcController on_configure failed: %s", e.what());
     return CallbackReturn::FAILURE;
   } catch (...) {
     RCLCPP_ERROR(logger_, "DemoWbcController on_configure failed: unknown");
@@ -1946,8 +1839,7 @@ DemoWbcController::on_configure(const rclcpp_lifecycle::State &prev,
 }
 
 RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
-    const rclcpp_lifecycle::State &prev,
-    const rtc::ControllerState &device_snapshot) noexcept {
+    const rclcpp_lifecycle::State& prev, const rtc::ControllerState& device_snapshot) noexcept {
   ActivateOwnedTopics(prev, owned_topics_);
 
   // MPC tick-timing CSV + 1 Hz aux timer: one-shot setup per controller
@@ -1956,17 +1848,14 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
   // re-register the timer (executor churn).
   if (mpc_enabled_ && !mpc_timing_initialized_) {
     if (!mpc_timing_logger_.Open()) {
-      RCLCPP_WARN(logger_,
-                  "MpcTimingLogger::Open() failed — MPC timing CSV disabled");
+      RCLCPP_WARN(logger_, "MpcTimingLogger::Open() failed — MPC timing CSV disabled");
     } else {
-      RCLCPP_INFO(logger_, "MPC tick-timing CSV: %s",
-                  mpc_timing_logger_.Path().c_str());
+      RCLCPP_INFO(logger_, "MPC tick-timing CSV: %s", mpc_timing_logger_.Path().c_str());
     }
     auto node = get_lifecycle_node();
     if (node && mpc_timing_cb_group_) {
       mpc_timing_timer_ = node->create_wall_timer(
-          std::chrono::seconds(1), [this]() { LogMpcSolveTimingTick(); },
-          mpc_timing_cb_group_);
+          std::chrono::seconds(1), [this]() { LogMpcSolveTimingTick(); }, mpc_timing_cb_group_);
     }
     mpc_timing_initialized_ = true;
   }
@@ -1987,8 +1876,8 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
   return rc;
 }
 
-RTControllerInterface::CallbackReturn
-DemoWbcController::on_deactivate(const rclcpp_lifecycle::State &prev) noexcept {
+RTControllerInterface::CallbackReturn DemoWbcController::on_deactivate(
+    const rclcpp_lifecycle::State& prev) noexcept {
   // Pause the MPC solve loop so it stops burning CPU while this controller
   // is inactive. The timing logger / timer keep running — the MPCThread
   // TimingProducer drain naturally yields zero rows while paused, and the
@@ -1998,12 +1887,12 @@ DemoWbcController::on_deactivate(const rclcpp_lifecycle::State &prev) noexcept {
     mpc_thread_->Pause();
   }
   DeactivateOwnedTopics(prev, owned_topics_);
-  log_set_.DrainAll(); // flush in-flight log SPSC residue
+  log_set_.DrainAll();  // flush in-flight log SPSC residue
   return CallbackReturn::SUCCESS;
 }
 
-RTControllerInterface::CallbackReturn
-DemoWbcController::on_cleanup(const rclcpp_lifecycle::State &prev) noexcept {
+RTControllerInterface::CallbackReturn DemoWbcController::on_cleanup(
+    const rclcpp_lifecycle::State& prev) noexcept {
   mpc_timing_timer_.reset();
   mpc_timing_cb_group_.reset();
   mpc_timing_initialized_ = false;
@@ -2029,9 +1918,8 @@ void DemoWbcController::DeclareGainParameters() noexcept {
 
   auto g = gains_lock_.Load();
 
-  auto declare_double = [&](const std::string &name, double default_val,
-                            const std::string &description,
-                            bool read_only = false) {
+  auto declare_double = [&](const std::string& name, double default_val,
+                            const std::string& description, bool read_only = false) {
     rcl_interfaces::msg::ParameterDescriptor d;
     d.description = description;
     d.read_only = read_only;
@@ -2040,8 +1928,8 @@ void DemoWbcController::DeclareGainParameters() noexcept {
     }
     return node_->get_parameter(name).as_double();
   };
-  auto declare_bool = [&](const std::string &name, bool default_val,
-                          const std::string &description) {
+  auto declare_bool = [&](const std::string& name, bool default_val,
+                          const std::string& description) {
     rcl_interfaces::msg::ParameterDescriptor d;
     d.description = description;
     if (!node_->has_parameter(name)) {
@@ -2050,55 +1938,51 @@ void DemoWbcController::DeclareGainParameters() noexcept {
     return node_->get_parameter(name).as_bool();
   };
 
-  g.arm_trajectory_speed = std::max(
-      1e-6, declare_double("arm_trajectory_speed", g.arm_trajectory_speed,
-                           "Arm joint trajectory speed [rad/s]"));
-  g.hand_trajectory_speed = std::max(
-      1e-6, declare_double("hand_trajectory_speed", g.hand_trajectory_speed,
-                           "Hand motor trajectory speed [rad/s]"));
-  g.arm_max_traj_velocity = declare_double(
-      "arm_max_traj_velocity", g.arm_max_traj_velocity,
-      "Max arm joint velocity during trajectory [rad/s] (read-only)",
-      /*read_only=*/true);
-  g.hand_max_traj_velocity = declare_double(
-      "hand_max_traj_velocity", g.hand_max_traj_velocity,
-      "Max hand motor velocity during trajectory [rad/s] (read-only)",
-      /*read_only=*/true);
+  g.arm_trajectory_speed =
+      std::max(1e-6, declare_double("arm_trajectory_speed", g.arm_trajectory_speed,
+                                    "Arm joint trajectory speed [rad/s]"));
+  g.hand_trajectory_speed =
+      std::max(1e-6, declare_double("hand_trajectory_speed", g.hand_trajectory_speed,
+                                    "Hand motor trajectory speed [rad/s]"));
+  g.arm_max_traj_velocity =
+      declare_double("arm_max_traj_velocity", g.arm_max_traj_velocity,
+                     "Max arm joint velocity during trajectory [rad/s] (read-only)",
+                     /*read_only=*/true);
+  g.hand_max_traj_velocity =
+      declare_double("hand_max_traj_velocity", g.hand_max_traj_velocity,
+                     "Max hand motor velocity during trajectory [rad/s] (read-only)",
+                     /*read_only=*/true);
 
-  g.se3_weight = declare_double("se3_weight", g.se3_weight,
-                                "TSID SE3Task weight (runtime tuning)");
-  g.force_weight =
-      declare_double("force_weight", g.force_weight, "TSID ForceTask weight");
-  g.posture_weight = declare_double("posture_weight", g.posture_weight,
-                                    "TSID PostureTask weight");
+  g.se3_weight = declare_double("se3_weight", g.se3_weight, "TSID SE3Task weight (runtime tuning)");
+  g.force_weight = declare_double("force_weight", g.force_weight, "TSID ForceTask weight");
+  g.posture_weight = declare_double("posture_weight", g.posture_weight, "TSID PostureTask weight");
 
   gains_lock_.Store(g);
 
   // MPC runtime gates: handed straight to mpc_manager_. mpc_enable is gated
   // by structural mpc_enabled_ (decided at LoadConfig from YAML — toggling
   // a controller without an MPC thread is a no-op).
-  const bool mpc_enable = declare_bool(
-      "mpc_enable", mpc_manager_.Enabled(),
-      "Enable MPC output consumption (only effective when mpc_enabled_ "
-      "structural flag is true)");
+  const bool mpc_enable =
+      declare_bool("mpc_enable", mpc_manager_.Enabled(),
+                   "Enable MPC output consumption (only effective when mpc_enabled_ "
+                   "structural flag is true)");
   mpc_manager_.SetEnabled(mpc_enable && mpc_enabled_);
 
-  const double rgs =
-      declare_double("riccati_gain_scale", mpc_manager_.RiccatiGainScale(),
-                     "Riccati feedback gain scale [0,1]");
+  const double rgs = declare_double("riccati_gain_scale", mpc_manager_.RiccatiGainScale(),
+                                    "Riccati feedback gain scale [0,1]");
   mpc_manager_.SetRiccatiGainScale(rgs);
 }
 
 rcl_interfaces::msg::SetParametersResult DemoWbcController::OnGainParametersSet(
-    const std::vector<rclcpp::Parameter> &params) noexcept {
+    const std::vector<rclcpp::Parameter>& params) noexcept {
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
 
   auto g = gains_lock_.Load();
   bool gains_dirty = false;
 
-  for (const auto &p : params) {
-    const auto &name = p.get_name();
+  for (const auto& p : params) {
+    const auto& name = p.get_name();
     try {
       if (name == "arm_trajectory_speed") {
         g.arm_trajectory_speed = std::max(1e-6, p.as_double());
@@ -2121,7 +2005,7 @@ rcl_interfaces::msg::SetParametersResult DemoWbcController::OnGainParametersSet(
         mpc_manager_.SetRiccatiGainScale(p.as_double());
       }
       // Unknown names: silently allowed (other callbacks may own them).
-    } catch (const std::exception &e) {
+    } catch (const std::exception& e) {
       result.successful = false;
       result.reason = std::string("type error on '") + name + "': " + e.what();
       return result;
@@ -2145,9 +2029,7 @@ void DemoWbcController::LogMpcSolveTimingTick() noexcept {
   // main loop (see rtc_mpc/thread/mpc_thread.cpp::OnTick).
   if (mpc_thread_) {
     mpc_thread_->TimingProducer().Drain(
-        [this](const rtc::RtTickTimingSample &s) {
-          mpc_timing_logger_.Log(s);
-        });
+        [this](const rtc::RtTickTimingSample& s) { mpc_timing_logger_.Log(s); });
   }
 
   // Periodic aggregate INFO so tmux-watchers see progress without
@@ -2160,17 +2042,14 @@ void DemoWbcController::LogMpcSolveTimingTick() noexcept {
     RCLCPP_INFO(logger_,
                 "[mpc_timing] count=%lu window=%u p50=%.2fms p99=%.2fms "
                 "max=%.2fms",
-                static_cast<unsigned long>(stats.count),
-                static_cast<unsigned>(stats.window),
-                static_cast<double>(stats.p50_ns) / 1e6,
-                static_cast<double>(stats.p99_ns) / 1e6,
+                static_cast<unsigned long>(stats.count), static_cast<unsigned>(stats.window),
+                static_cast<double>(stats.p50_ns) / 1e6, static_cast<double>(stats.p99_ns) / 1e6,
                 static_cast<double>(stats.max_ns) / 1e6);
   }
 }
 
-void DemoWbcController::PublishNonRtSnapshot(
-    const rtc::PublishSnapshot &snap) noexcept {
+void DemoWbcController::PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept {
   PublishOwnedTopicsFromSnapshot(snap, owned_topics_);
 }
 
-} // namespace ur5e_bringup
+}  // namespace ur5e_bringup

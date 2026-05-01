@@ -29,7 +29,7 @@ namespace rtc_urdf_bridge {
 /// 로봇 비종속: 하드코딩된 link/joint 이름 없음.
 /// 모든 정보는 URDF XML + passive_hints 에서 런타임에 추출됨.
 class UrdfAnalyzer {
-public:
+ public:
   /// XML 문자열 생성자 오버로드 구분용 태그
   struct FromXmlTag {};
 
@@ -48,7 +48,7 @@ public:
   // ── 그래프 조회 ────────────────────────────────────────────────────────────
 
   /// 전체 링크 노드 (인접 리스트)
-  [[nodiscard]] const std::vector<LinkNode> &GetLinkNodes() const noexcept;
+  [[nodiscard]] const std::vector<LinkNode>& GetLinkNodes() const noexcept;
 
   /// 링크 이름 → 인덱스. 없으면 std::out_of_range throw.
   [[nodiscard]] int GetLinkIndex(std::string_view link_name) const;
@@ -57,7 +57,7 @@ public:
   [[nodiscard]] int GetRootIndex() const noexcept;
 
   /// 루트 링크 이름
-  [[nodiscard]] const std::string &GetRootLinkName() const noexcept;
+  [[nodiscard]] const std::string& GetRootLinkName() const noexcept;
 
   /// 전체 링크 개수
   [[nodiscard]] std::size_t GetNumLinks() const noexcept;
@@ -68,55 +68,45 @@ public:
   // ── 관절 분류 ──────────────────────────────────────────────────────────────
 
   /// 구동 대상 관절 (role == kActive). 정렬됨.
-  [[nodiscard]] const std::vector<std::string> &
-  GetActiveJointNames() const noexcept;
+  [[nodiscard]] const std::vector<std::string>& GetActiveJointNames() const noexcept;
 
   /// 수동 관절 (role == kPassive). 모든 subtype 포함. 정렬됨.
-  [[nodiscard]] const std::vector<std::string> &
-  GetPassiveJointNames() const noexcept;
+  [[nodiscard]] const std::vector<std::string>& GetPassiveJointNames() const noexcept;
 
   /// 고정 관절 (role == kFixed). 정렬됨.
-  [[nodiscard]] const std::vector<std::string> &
-  GetFixedJointNames() const noexcept;
+  [[nodiscard]] const std::vector<std::string>& GetFixedJointNames() const noexcept;
 
   /// 특정 subtype의 passive 관절만 필터링 (신규 컨테이너 반환).
-  [[nodiscard]] std::vector<std::string>
-  GetPassiveJointNamesOfSubtype(PassiveSubtype subtype) const;
+  [[nodiscard]] std::vector<std::string> GetPassiveJointNamesOfSubtype(
+      PassiveSubtype subtype) const;
 
   /// 모든 non-fixed 관절 이름 (active + passive). KinematicChainExtractor가
   /// lock 대상을 "체인 바깥 non-fixed" 로 계산할 때 사용.
-  [[nodiscard]] const std::vector<std::string> &
-  GetNonFixedJointNames() const noexcept;
+  [[nodiscard]] const std::vector<std::string>& GetNonFixedJointNames() const noexcept;
 
   /// 패시브 관절 상세 정보 (subtype 포함)
-  [[nodiscard]] const std::vector<PassiveJointInfo> &
-  GetPassiveJoints() const noexcept;
+  [[nodiscard]] const std::vector<PassiveJointInfo>& GetPassiveJoints() const noexcept;
 
   /// 마이믹 관절 목록
-  [[nodiscard]] const std::vector<MimicJointInfo> &
-  GetMimicJoints() const noexcept;
+  [[nodiscard]] const std::vector<MimicJointInfo>& GetMimicJoints() const noexcept;
 
   /// 관절 이름 → role
   [[nodiscard]] JointRole GetJointRole(std::string_view joint_name) const;
 
   /// 관절 이름 → passive subtype (role != kPassive이면 kNone)
-  [[nodiscard]] PassiveSubtype
-  GetPassiveSubtype(std::string_view joint_name) const;
+  [[nodiscard]] PassiveSubtype GetPassiveSubtype(std::string_view joint_name) const;
 
   /// 관절 이름 → URDF 토폴로지 타입
   [[nodiscard]] UrdfJointType GetJointType(std::string_view joint_name) const;
 
   /// 관절 이름 → 메타데이터 (role/subtype/physics 플래그 포함)
-  [[nodiscard]] const JointMeta &
-  GetJointMeta(std::string_view joint_name) const;
+  [[nodiscard]] const JointMeta& GetJointMeta(std::string_view joint_name) const;
 
   /// 관절 이름 → 자식 링크 이름
-  [[nodiscard]] const std::string &
-  GetJointChildLink(std::string_view joint_name) const;
+  [[nodiscard]] const std::string& GetJointChildLink(std::string_view joint_name) const;
 
   /// 관절 이름 → 부모 링크 이름
-  [[nodiscard]] const std::string &
-  GetJointParentLink(std::string_view joint_name) const;
+  [[nodiscard]] const std::string& GetJointParentLink(std::string_view joint_name) const;
 
   // ── 폐쇄 체인 감지 ────────────────────────────────────────────────────────
 
@@ -126,31 +116,29 @@ public:
   // ── 경로 탐색 ──────────────────────────────────────────────────────────────
 
   /// link_a → link_b 트리 경로 (링크 인덱스 시퀀스). 경로 없으면 빈 벡터.
-  [[nodiscard]] std::vector<int> FindPath(std::string_view link_a,
-                                          std::string_view link_b) const;
+  [[nodiscard]] std::vector<int> FindPath(std::string_view link_a, std::string_view link_b) const;
 
   /// 두 링크의 최소 공통 조상 (LCA) 링크 인덱스
-  [[nodiscard]] int FindLCA(std::string_view link_a,
-                            std::string_view link_b) const;
+  [[nodiscard]] int FindLCA(std::string_view link_a, std::string_view link_b) const;
 
   // ── URDF 원본 접근 ────────────────────────────────────────────────────────
 
   /// 전체 URDF XML 문자열
-  [[nodiscard]] const std::string &GetUrdfXmlString() const noexcept;
+  [[nodiscard]] const std::string& GetUrdfXmlString() const noexcept;
 
   /// URDF 파일 경로 (파일에서 로드한 경우)
-  [[nodiscard]] const std::string &GetUrdfFilePath() const noexcept;
+  [[nodiscard]] const std::string& GetUrdfFilePath() const noexcept;
 
-private:
+ private:
   // 파싱 파이프라인
-  void ParseUrdfXml(const std::string &xml);
+  void ParseUrdfXml(const std::string& xml);
   void BuildAdjacencyGraph();
   void ComputeDepths();
   void CollectClosedChainJoints();
   void ClassifyJointRoles();
 
   // Physics 판정 — A+B 조합 (limit 태그 + effort>0 + velocity>0)
-  [[nodiscard]] bool CheckPhysics(const JointMeta &meta) const noexcept;
+  [[nodiscard]] bool CheckPhysics(const JointMeta& meta) const noexcept;
 
   // ── 내부 데이터 ────────────────────────────────────────────────────────────
   std::string urdf_file_path_;
@@ -183,4 +171,4 @@ private:
   std::vector<int> depth_;
 };
 
-} // namespace rtc_urdf_bridge
+}  // namespace rtc_urdf_bridge

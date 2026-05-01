@@ -14,18 +14,16 @@ using namespace rtc_bt;
 using namespace rtc_bt::test;
 
 class ShapeNodeTest : public RosTestFixture {
-protected:
-  void SetUp() override
-  {
+ protected:
+  void SetUp() override {
     RosTestFixture::SetUp();
     factory_.registerNodeType<TriggerShapeEstimation>("TriggerShapeEstimation", bridge_);
     factory_.registerNodeType<WaitShapeResult>("WaitShapeResult", bridge_);
   }
 
-  BT::Tree CreateTree(const std::string& xml)
-  {
-    const std::string full = R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" +
-                             xml + R"(</BehaviorTree></root>)";
+  BT::Tree CreateTree(const std::string& xml) {
+    const std::string full =
+        R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" + xml + R"(</BehaviorTree></root>)";
     return factory_.createTreeFromText(full);
   }
 
@@ -36,29 +34,23 @@ protected:
 // TriggerShapeEstimation
 // ══════════════════════════════════════════════════════════════════════════
 
-TEST_F(ShapeNodeTest, TriggerStart_Succeeds)
-{
-  auto tree = CreateTree(
-      R"(<TriggerShapeEstimation command="start"/>)");
+TEST_F(ShapeNodeTest, TriggerStart_Succeeds) {
+  auto tree = CreateTree(R"(<TriggerShapeEstimation command="start"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 }
 
-TEST_F(ShapeNodeTest, TriggerStop_Succeeds)
-{
-  auto tree = CreateTree(
-      R"(<TriggerShapeEstimation command="stop"/>)");
+TEST_F(ShapeNodeTest, TriggerStop_Succeeds) {
+  auto tree = CreateTree(R"(<TriggerShapeEstimation command="stop"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 }
 
-TEST_F(ShapeNodeTest, TriggerDefaultCommand)
-{
+TEST_F(ShapeNodeTest, TriggerDefaultCommand) {
   // Default command is "start"
   auto tree = CreateTree(R"(<TriggerShapeEstimation/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 }
 
-TEST_F(ShapeNodeTest, TriggerStart_ClearsEstimate)
-{
+TEST_F(ShapeNodeTest, TriggerStart_ClearsEstimate) {
   // First inject a shape estimate
   PublishShapeEstimate(2, 0.9, 100);
   Spin();
@@ -68,8 +60,7 @@ TEST_F(ShapeNodeTest, TriggerStart_ClearsEstimate)
   EXPECT_TRUE(bridge_->GetShapeEstimate(est));
 
   // Trigger "start" should clear cached estimate
-  auto tree = CreateTree(
-      R"(<TriggerShapeEstimation command="start"/>)");
+  auto tree = CreateTree(R"(<TriggerShapeEstimation command="start"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 
   // Cached estimate should be cleared
@@ -80,16 +71,14 @@ TEST_F(ShapeNodeTest, TriggerStart_ClearsEstimate)
 // WaitShapeResult
 // ══════════════════════════════════════════════════════════════════════════
 
-TEST_F(ShapeNodeTest, WaitShapeResult_StartsRunning)
-{
+TEST_F(ShapeNodeTest, WaitShapeResult_StartsRunning) {
   auto tree = CreateTree(
       R"(<WaitShapeResult confidence_threshold="0.7"
                           timeout_s="5.0" estimate="{est}"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 }
 
-TEST_F(ShapeNodeTest, WaitShapeResult_SucceedsOnGoodEstimate)
-{
+TEST_F(ShapeNodeTest, WaitShapeResult_SucceedsOnGoodEstimate) {
   auto tree = CreateTree(
       R"(<WaitShapeResult confidence_threshold="0.7"
                           timeout_s="5.0" estimate="{est}"/>)");
@@ -107,8 +96,7 @@ TEST_F(ShapeNodeTest, WaitShapeResult_SucceedsOnGoodEstimate)
   EXPECT_GE(est.confidence, 0.7);
 }
 
-TEST_F(ShapeNodeTest, WaitShapeResult_StillRunningBelowThreshold)
-{
+TEST_F(ShapeNodeTest, WaitShapeResult_StillRunningBelowThreshold) {
   auto tree = CreateTree(
       R"(<WaitShapeResult confidence_threshold="0.8"
                           timeout_s="5.0" estimate="{est}"/>)");
@@ -122,8 +110,7 @@ TEST_F(ShapeNodeTest, WaitShapeResult_StillRunningBelowThreshold)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 }
 
-TEST_F(ShapeNodeTest, WaitShapeResult_RejectsUnknownType)
-{
+TEST_F(ShapeNodeTest, WaitShapeResult_RejectsUnknownType) {
   auto tree = CreateTree(
       R"(<WaitShapeResult confidence_threshold="0.1"
                           timeout_s="5.0" estimate="{est}"/>)");
@@ -137,8 +124,7 @@ TEST_F(ShapeNodeTest, WaitShapeResult_RejectsUnknownType)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 }
 
-TEST_F(ShapeNodeTest, WaitShapeResult_FailsOnTimeout)
-{
+TEST_F(ShapeNodeTest, WaitShapeResult_FailsOnTimeout) {
   auto tree = CreateTree(
       R"(<WaitShapeResult confidence_threshold="0.99"
                           timeout_s="0.05" estimate="{est}"/>)");
@@ -153,8 +139,7 @@ TEST_F(ShapeNodeTest, WaitShapeResult_FailsOnTimeout)
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
 }
 
-TEST_F(ShapeNodeTest, WaitShapeResult_TimeoutWithPartialResult)
-{
+TEST_F(ShapeNodeTest, WaitShapeResult_TimeoutWithPartialResult) {
   auto tree = CreateTree(
       R"(<WaitShapeResult confidence_threshold="0.99"
                           timeout_s="0.05" estimate="{est}"/>)");
@@ -173,8 +158,7 @@ TEST_F(ShapeNodeTest, WaitShapeResult_TimeoutWithPartialResult)
   EXPECT_EQ(est.shape_type, 3u);
 }
 
-TEST_F(ShapeNodeTest, WaitShapeResult_TimeoutNoEstimate)
-{
+TEST_F(ShapeNodeTest, WaitShapeResult_TimeoutNoEstimate) {
   auto tree = CreateTree(
       R"(<WaitShapeResult confidence_threshold="0.7"
                           timeout_s="0.05" estimate="{est}"/>)");

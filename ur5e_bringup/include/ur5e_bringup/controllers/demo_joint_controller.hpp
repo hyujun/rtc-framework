@@ -1,6 +1,29 @@
 #ifndef UR5E_BRINGUP_CONTROLLERS_DEMO_JOINT_CONTROLLER_H_
 #define UR5E_BRINGUP_CONTROLLERS_DEMO_JOINT_CONTROLLER_H_
 
+#include "rtc_base/threading/seqlock.hpp"
+#include "rtc_controller_interface/controller_log_set.hpp"
+#include "rtc_controller_interface/rt_controller_interface.hpp"
+#include "rtc_controllers/grasp/grasp_controller.hpp"
+#include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
+#include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
+#include "rtc_urdf_bridge/rt_model_handle.hpp"
+#include "ur5e_bringup/bringup_logging.hpp"
+#include "ur5e_bringup/controllers/owned_topics.hpp"
+#include "ur5e_bringup/controllers/virtual_tcp.hpp"
+#include "ur5e_bringup/logging/device_sensor_log_pod.hpp"
+#include "ur5e_bringup/logging/device_state_log_pod.hpp"
+#include "ur5e_description/ur5e_constants.hpp"
+#include <rtc_msgs/srv/grasp_command.hpp>
+
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
+#include <rclcpp/clock.hpp>
+#include <rclcpp/logger.hpp>
+#include <rclcpp/logging.hpp>
+#include <rclcpp/parameter.hpp>
+
+#include <Eigen/Core>
+
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -10,30 +33,6 @@
 #include <string>
 #include <string_view>
 #include <vector>
-
-#include "rtc_base/threading/seqlock.hpp"
-#include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
-#include "rtc_urdf_bridge/rt_model_handle.hpp"
-#include "ur5e_bringup/bringup_logging.hpp"
-#include "ur5e_bringup/controllers/virtual_tcp.hpp"
-
-#include <Eigen/Core>
-
-#include <rcl_interfaces/msg/set_parameters_result.hpp>
-#include <rclcpp/clock.hpp>
-#include <rclcpp/logger.hpp>
-#include <rclcpp/logging.hpp>
-#include <rclcpp/parameter.hpp>
-#include <rtc_msgs/srv/grasp_command.hpp>
-
-#include "rtc_controller_interface/controller_log_set.hpp"
-#include "rtc_controller_interface/rt_controller_interface.hpp"
-#include "rtc_controllers/grasp/grasp_controller.hpp"
-#include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
-#include "ur5e_bringup/controllers/owned_topics.hpp"
-#include "ur5e_bringup/logging/device_sensor_log_pod.hpp"
-#include "ur5e_bringup/logging/device_state_log_pod.hpp"
-#include "ur5e_description/ur5e_constants.hpp"
 
 namespace ur5e_bringup {
 
@@ -63,45 +62,35 @@ namespace trajectory = rtc::trajectory;
 //   robot_max_traj_velocity, hand_max_traj_velocity. Force-PI grasp
 //   transitions: ~/grasp_command srv (rtc_msgs/GraspCommand).
 class DemoJointController final : public RTControllerInterface {
-public:
+ public:
   struct Gains {
-    double robot_trajectory_speed{
-        1.0}; ///< Desired joint speed for trajectory duration [rad/s]
-    double hand_trajectory_speed{
-        1.0}; ///< Desired hand speed for trajectory duration [rad/s]
-    double robot_max_traj_velocity{
-        3.14}; ///< Max joint velocity during trajectory [rad/s]
-    double hand_max_traj_velocity{
-        2.0}; ///< Max hand motor velocity during trajectory [rad/s]
+    double robot_trajectory_speed{1.0};    ///< Desired joint speed for trajectory duration [rad/s]
+    double hand_trajectory_speed{1.0};     ///< Desired hand speed for trajectory duration [rad/s]
+    double robot_max_traj_velocity{3.14};  ///< Max joint velocity during trajectory [rad/s]
+    double hand_max_traj_velocity{2.0};    ///< Max hand motor velocity during trajectory [rad/s]
 
     // Virtual TCP (fingertip-based control point)
     VirtualTcpConfig vtcp;
 
     // Grasp detection parameters
-    float grasp_contact_threshold{
-        0.5f}; ///< Contact probability threshold (0.0~1.0)
-    float grasp_force_threshold{1.0f}; ///< Force magnitude threshold [N]
-    int grasp_min_fingertips{2};       ///< Min fingertips for grasp detection
+    float grasp_contact_threshold{0.5f};  ///< Contact probability threshold (0.0~1.0)
+    float grasp_force_threshold{1.0f};    ///< Force magnitude threshold [N]
+    int grasp_min_fingertips{2};          ///< Min fingertips for grasp detection
 
     // Trajectory / grasp FSM tuning
-    double contact_stop_release_eps{
-        0.005}; ///< Hand contact-stop release hysteresis [rad]
+    double contact_stop_release_eps{0.005};  ///< Hand contact-stop release hysteresis [rad]
   };
 
   explicit DemoJointController(std::string_view urdf_path);
   DemoJointController(std::string_view urdf_path, Gains gains);
 
-  [[nodiscard]] ControllerOutput
-  Compute(const ControllerState &state) noexcept override;
+  [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;
 
-  void SetDeviceTarget(int device_idx,
-                       std::span<const double> target) noexcept override;
+  void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override;
 
-  void InitializeHoldPosition(const ControllerState &state) noexcept override;
+  void InitializeHoldPosition(const ControllerState& state) noexcept override;
 
-  [[nodiscard]] std::string_view Name() const noexcept override {
-    return "DemoJointController";
-  }
+  [[nodiscard]] std::string_view Name() const noexcept override { return "DemoJointController"; }
 
   void TriggerEstop() noexcept override;
   void ClearEstop() noexcept override;
@@ -109,17 +98,14 @@ public:
   void SetHandEstop(bool active) noexcept override;
 
   // ── Phase 4: controller-owned sub/pub lifecycle ─────────────────────────
-  CallbackReturn on_configure(const rclcpp_lifecycle::State &prev,
+  CallbackReturn on_configure(const rclcpp_lifecycle::State& prev,
                               rclcpp_lifecycle::LifecycleNode::SharedPtr node,
-                              const YAML::Node &yaml) noexcept override;
-  CallbackReturn
-  on_activate(const rclcpp_lifecycle::State &prev,
-              const rtc::ControllerState &device_snapshot) noexcept override;
-  CallbackReturn
-  on_deactivate(const rclcpp_lifecycle::State &prev) noexcept override;
-  CallbackReturn
-  on_cleanup(const rclcpp_lifecycle::State &prev) noexcept override;
-  void PublishNonRtSnapshot(const rtc::PublishSnapshot &snap) noexcept override;
+                              const YAML::Node& yaml) noexcept override;
+  CallbackReturn on_activate(const rclcpp_lifecycle::State& prev,
+                             const rtc::ControllerState& device_snapshot) noexcept override;
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State& prev) noexcept override;
+  CallbackReturn on_cleanup(const rclcpp_lifecycle::State& prev) noexcept override;
+  void PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept override;
 
   // ── Controller registry hooks ────────────────────────────────────────────
   // gains layout: [robot_trajectory_speed, hand_trajectory_speed,
@@ -127,16 +113,16 @@ public:
   //                grasp_contact_threshold, grasp_force_threshold,
   //                grasp_min_fingertips,
   //                grasp_command, grasp_target_force] = 9 values
-  void LoadConfig(const YAML::Node &cfg) override;
+  void LoadConfig(const YAML::Node& cfg) override;
   void OnDeviceConfigsSet() override;
-  [[nodiscard]] CommandType GetCommandType() const noexcept override {
-    return command_type_;
-  }
+
+  [[nodiscard]] CommandType GetCommandType() const noexcept override { return command_type_; }
 
   void set_gains(Gains gains) noexcept { gains_lock_.Store(gains); }
+
   [[nodiscard]] Gains get_gains() const noexcept { return gains_lock_.Load(); }
 
-private:
+ private:
   // ── Phase 1→2 intermediate: parsed sensor data ──────────────────────────
   struct FingertipSensorData {
     std::array<int32_t, rtc::kBarometerCount> baro{};
@@ -146,6 +132,7 @@ private:
     float contact_flag{0.0f};
     bool valid{false};
   };
+
   std::array<FingertipSensorData, rtc::kMaxFingertips> fingertip_data_{};
   int num_active_fingertips_{0};
   rtc::GraspStateData grasp_state_{};
@@ -156,23 +143,22 @@ private:
     std::array<double, kMaxDeviceChannels> positions{};
     std::array<double, kMaxDeviceChannels> velocities{};
   };
+
   ComputedTrajectory robot_computed_{};
   ComputedTrajectory hand_computed_{};
 
   // ── 3-phase pipeline ────────────────────────────────────────────────────
-  void ReadState(const ControllerState &state) noexcept;
-  void ComputeControl(const ControllerState &state, double dt) noexcept;
-  [[nodiscard]] ControllerOutput WriteOutput(const ControllerState &state,
-                                             double dt) noexcept;
+  void ReadState(const ControllerState& state) noexcept;
+  void ComputeControl(const ControllerState& state, double dt) noexcept;
+  [[nodiscard]] ControllerOutput WriteOutput(const ControllerState& state, double dt) noexcept;
 
   // ── Internal state ──────────────────────────────────────────────────────
   rtc::SeqLock<Gains> gains_lock_;
-  std::array<std::array<double, rtc::kMaxDeviceChannels>,
-             ControllerState::kMaxDevices>
+  std::array<std::array<double, rtc::kMaxDeviceChannels>, ControllerState::kMaxDevices>
       device_targets_{};
 
   // ── rtc_urdf_bridge ────────────────────────────────────────────
-  std::string urdf_path_; // stored from constructor, used in LoadConfig
+  std::string urdf_path_;  // stored from constructor, used in LoadConfig
   std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> builder_;
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> arm_handle_;
   pinocchio::FrameIndex tip_frame_id_{0};
@@ -186,20 +172,17 @@ private:
   bool use_hand_root_frame_{false};
   std::array<Eigen::Vector3d, kNumFingertips> fingertip_positions_{};
   std::array<Eigen::Matrix3d, kNumFingertips> fingertip_rotations_{};
-  Eigen::VectorXd hand_q_; // pre-allocated for hand FK
+  Eigen::VectorXd hand_q_;  // pre-allocated for hand FK
 
   // ── Virtual TCP (fingertip-based control point) ───────────────────────
-  pinocchio::SE3 vtcp_pose_{
-      pinocchio::SE3::Identity()}; ///< World-frame virtual TCP pose (cached)
-  bool vtcp_valid_{false};         ///< Virtual TCP computed successfully
-  std::array<FingertipVtcpInput, kNumFingertips>
-      vtcp_inputs_{}; ///< Pre-allocated
+  pinocchio::SE3 vtcp_pose_{pinocchio::SE3::Identity()};  ///< World-frame virtual TCP pose (cached)
+  bool vtcp_valid_{false};                                ///< Virtual TCP computed successfully
+  std::array<FingertipVtcpInput, kNumFingertips> vtcp_inputs_{};  ///< Pre-allocated
 
-  void UpdateVirtualTcp(const pinocchio::SE3 &T_base_tcp,
-                        const Gains &gains) noexcept;
+  void UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp, const Gains& gains) noexcept;
 
-  void InitArmModel(const rtc_urdf_bridge::ModelConfig &config);
-  void InitHandModel(const rtc_urdf_bridge::ModelConfig &config);
+  void InitArmModel(const rtc_urdf_bridge::ModelConfig& config);
+  void InitHandModel(const rtc_urdf_bridge::ModelConfig& config);
 
   CommandType command_type_{CommandType::kPosition};
 
@@ -212,23 +195,19 @@ private:
   double robot_trajectory_time_{0.0};
   double hand_trajectory_time_{0.0};
 
-  std::array<std::vector<double>, ControllerState::kMaxDevices>
-      device_max_velocity_;
-  std::array<std::vector<double>, ControllerState::kMaxDevices>
-      device_position_lower_;
-  std::array<std::vector<double>, ControllerState::kMaxDevices>
-      device_position_upper_;
-  static void ClampCommands(std::array<double, kMaxDeviceChannels> &commands,
-                            int n, const std::vector<double> &lower,
-                            const std::vector<double> &upper) noexcept;
+  std::array<std::vector<double>, ControllerState::kMaxDevices> device_max_velocity_;
+  std::array<std::vector<double>, ControllerState::kMaxDevices> device_position_lower_;
+  std::array<std::vector<double>, ControllerState::kMaxDevices> device_position_upper_;
+  static void ClampCommands(std::array<double, kMaxDeviceChannels>& commands, int n,
+                            const std::vector<double>& lower,
+                            const std::vector<double>& upper) noexcept;
 
   // ── Grasp controller (force_pi mode) ──────────────────────────────────────
   std::string grasp_controller_type_{"contact_stop"};
   std::unique_ptr<rtc::grasp::GraspController> grasp_controller_;
   /// Finger index → hand motor indices mapping (thumb, index, middle).
   /// Cached from `DemoSharedConfig::hand_finger_joint_map` in LoadConfig.
-  std::array<std::array<int, 3>, 3> finger_joint_map_{
-      {{{0, 1, 2}}, {{3, 4, 5}}, {{6, 7, 8}}}};
+  std::array<std::array<int, 3>, 3> finger_joint_map_{{{{0, 1, 2}}, {{3, 4, 5}}, {{6, 7, 8}}}};
 
   /// Hand joint indices (matches ur5e hand joint order in YAML).
   /// Used by the contact_stop release-phase gate below.
@@ -256,11 +235,9 @@ private:
   /// LoadConfig(cfg["estop"]["arm_safe_position"]); this initializer only
   /// provides a safe default for unit/integration paths that construct the
   /// controller without LoadConfig.
-  std::array<double, kNumRobotJoints> safe_position_{0.0,   -1.57, 1.57,
-                                                     -1.57, -1.57, 0.0};
+  std::array<double, kNumRobotJoints> safe_position_{0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
 
-  [[nodiscard]] ControllerOutput
-  ComputeEstop(const ControllerState &state) noexcept;
+  [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state) noexcept;
 
   // ── Phase 4: controller-owned topic sub/pub handles ───────────────────
   ControllerTopicHandles owned_topics_{};
@@ -280,11 +257,10 @@ private:
   // Force-PI grasp_command rides on a dedicated srv (grasp_command_srv_)
   // because it is a one-shot event, not state.
   void DeclareGainParameters() noexcept;
-  rcl_interfaces::msg::SetParametersResult
-  OnGainParametersSet(const std::vector<rclcpp::Parameter> &params) noexcept;
+  rcl_interfaces::msg::SetParametersResult OnGainParametersSet(
+      const std::vector<rclcpp::Parameter>& params) noexcept;
 
-  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
-      param_callback_handle_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
   rclcpp::Service<rtc_msgs::srv::GraspCommand>::SharedPtr grasp_command_srv_;
 
   // ── Phase C (controller-owned CSV logging) ──────────────────────────────
@@ -301,6 +277,7 @@ private:
     std::string msg_type;
     std::string instance;
   };
+
   std::vector<ParsedLogEntry> parsed_log_entries_;
 
   rtc::ControllerLogSet log_set_{"demo_joint_controller"};
@@ -321,6 +298,6 @@ private:
   // all 3 demo controllers — Phase C).
 };
 
-} // namespace ur5e_bringup
+}  // namespace ur5e_bringup
 
-#endif // UR5E_BRINGUP_CONTROLLERS_DEMO_JOINT_CONTROLLER_H_
+#endif  // UR5E_BRINGUP_CONTROLLERS_DEMO_JOINT_CONTROLLER_H_

@@ -1,6 +1,8 @@
 #ifndef RTC_BASE_SESSION_DIR_HPP_
 #define RTC_BASE_SESSION_DIR_HPP_
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -11,8 +13,6 @@
 #include <string>
 #include <string_view>
 #include <vector>
-
-#include <unistd.h>
 
 namespace rtc {
 
@@ -55,18 +55,17 @@ inline std::string GenerateSessionTimestamp() {
 }
 
 /// 세션 디렉토리 내 표준 서브디렉토리 생성
-inline void EnsureSessionSubdirs(const std::filesystem::path &session_dir) {
-  static constexpr const char *kSubdirs[] = {
-      "controller", "timing", "monitor", "device", "sim", "plots", "motions"};
-  for (const auto *sub : kSubdirs) {
+inline void EnsureSessionSubdirs(const std::filesystem::path& session_dir) {
+  static constexpr const char* kSubdirs[] = {"controller", "timing", "monitor", "device",
+                                             "sim",        "plots",  "motions"};
+  for (const auto* sub : kSubdirs) {
     std::filesystem::create_directories(session_dir / sub);
   }
 }
 
 /// per-tick 스레드 타이밍 CSV 들의 공용 디렉토리.
 /// (cm_timing_log.csv, mpc_timing_log.csv, hand_udp_timing_log.csv)
-inline std::filesystem::path
-TimingDir(const std::filesystem::path &session_dir) {
+inline std::filesystem::path TimingDir(const std::filesystem::path& session_dir) {
   return session_dir / "timing";
 }
 
@@ -79,13 +78,12 @@ inline std::filesystem::path ResolveLoggingRoot() {
   namespace fs = std::filesystem;
 
   // 1) COLCON_PREFIX_PATH
-  if (const char *raw = std::getenv("COLCON_PREFIX_PATH"); raw && *raw) {
+  if (const char* raw = std::getenv("COLCON_PREFIX_PATH"); raw && *raw) {
     std::string_view view{raw};
     const auto colon = view.find(':');
     const std::string first{view.substr(0, colon)};
     std::error_code ec;
-    if (!first.empty() && fs::is_directory(first, ec) &&
-        ::access(first.c_str(), W_OK) == 0) {
+    if (!first.empty() && fs::is_directory(first, ec) && ::access(first.c_str(), W_OK) == 0) {
       return fs::path(first).parent_path() / "logging_data";
     }
   }
@@ -95,8 +93,7 @@ inline std::filesystem::path ResolveLoggingRoot() {
   fs::path cwd = fs::current_path(err_code);
   if (!err_code) {
     for (fs::path dir = cwd;;) {
-      if (fs::is_directory(dir / "install", err_code) &&
-          fs::is_directory(dir / "src", err_code)) {
+      if (fs::is_directory(dir / "install", err_code) && fs::is_directory(dir / "src", err_code)) {
         return dir / "logging_data";
       }
       fs::path parent = dir.parent_path();
@@ -119,7 +116,7 @@ inline std::filesystem::path ResolveLoggingRoot() {
 /// @return 세션 디렉토리 절대 경로 (e.g. .../logging_data/260314_1430)
 inline std::filesystem::path ResolveSessionDir() {
   // 1. 환경변수 우선 (RTC_SESSION_DIR)
-  const char *env = std::getenv("RTC_SESSION_DIR");
+  const char* env = std::getenv("RTC_SESSION_DIR");
   if (env != nullptr && env[0] != '\0') {
     std::filesystem::path session_dir{env};
     std::filesystem::create_directories(session_dir);
@@ -137,8 +134,8 @@ inline std::filesystem::path ResolveSessionDir() {
 }
 
 /// YYMMDD_HHMM 패턴과 일치하는 세션 디렉토리 목록을 정렬하여 반환
-inline std::vector<std::filesystem::path>
-ListSessionDirs(const std::filesystem::path &logging_root) {
+inline std::vector<std::filesystem::path> ListSessionDirs(
+    const std::filesystem::path& logging_root) {
   std::vector<std::filesystem::path> dirs;
   if (!std::filesystem::exists(logging_root)) {
     return dirs;
@@ -146,7 +143,7 @@ ListSessionDirs(const std::filesystem::path &logging_root) {
 
   // YYMMDD_HHMM 패턴: 6자리 날짜 _ 4자리 시간
   const std::regex pattern(R"(\d{6}_\d{4})");
-  for (const auto &entry : std::filesystem::directory_iterator(logging_root)) {
+  for (const auto& entry : std::filesystem::directory_iterator(logging_root)) {
     if (entry.is_directory()) {
       const std::string name = entry.path().filename().string();
       if (std::regex_match(name, pattern)) {
@@ -160,8 +157,7 @@ ListSessionDirs(const std::filesystem::path &logging_root) {
 
 /// 오래된 세션 디렉토리를 삭제하여 max_sessions 개수 이하로 유지.
 /// logging_root 내 YYMMDD_HHMM 패턴 디렉토리만 대상.
-inline void CleanupOldSessions(const std::filesystem::path &logging_root,
-                               int max_sessions) {
+inline void CleanupOldSessions(const std::filesystem::path& logging_root, int max_sessions) {
   auto dirs = ListSessionDirs(logging_root);
   while (static_cast<int>(dirs.size()) > max_sessions) {
     std::filesystem::remove_all(dirs.front());
@@ -169,6 +165,6 @@ inline void CleanupOldSessions(const std::filesystem::path &logging_root,
   }
 }
 
-} // namespace rtc
+}  // namespace rtc
 
-#endif // RTC_BASE_SESSION_DIR_HPP_
+#endif  // RTC_BASE_SESSION_DIR_HPP_

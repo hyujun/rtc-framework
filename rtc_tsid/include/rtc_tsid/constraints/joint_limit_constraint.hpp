@@ -23,55 +23,42 @@ namespace rtc::tsid {
 // ────────────────────────────────────────────────
 class JointLimitConstraint final : public ConstraintBase {
  public:
-  [[nodiscard]] std::string_view name() const noexcept override {
-    return "joint_limit";
-  }
+  [[nodiscard]] std::string_view name() const noexcept override { return "joint_limit"; }
 
-  void init(const pinocchio::Model& model,
-            const RobotModelInfo& robot_info,
-            PinocchioCache& cache,
+  void init(const pinocchio::Model& model, const RobotModelInfo& robot_info, PinocchioCache& cache,
             const YAML::Node& constraint_config) override;
 
-  [[nodiscard]] int eq_dim(
-      const ContactState& contacts) const noexcept override;
-  [[nodiscard]] int ineq_dim(
-      const ContactState& contacts) const noexcept override;
+  [[nodiscard]] int eq_dim(const ContactState& contacts) const noexcept override;
+  [[nodiscard]] int ineq_dim(const ContactState& contacts) const noexcept override;
 
-  void compute_equality(
-      const PinocchioCache& cache,
-      const ContactState& contacts,
-      const RobotModelInfo& robot_info,
-      int n_vars,
-      Eigen::Ref<Eigen::MatrixXd> A_block,
-      Eigen::Ref<Eigen::VectorXd> b_block) noexcept override;
+  void compute_equality(const PinocchioCache& cache, const ContactState& contacts,
+                        const RobotModelInfo& robot_info, int n_vars,
+                        Eigen::Ref<Eigen::MatrixXd> A_block,
+                        Eigen::Ref<Eigen::VectorXd> b_block) noexcept override;
 
-  void compute_inequality(
-      const PinocchioCache& cache,
-      const ContactState& contacts,
-      const RobotModelInfo& robot_info,
-      int n_vars,
-      Eigen::Ref<Eigen::MatrixXd> C_block,
-      Eigen::Ref<Eigen::VectorXd> l_block,
-      Eigen::Ref<Eigen::VectorXd> u_block) noexcept override;
+  void compute_inequality(const PinocchioCache& cache, const ContactState& contacts,
+                          const RobotModelInfo& robot_info, int n_vars,
+                          Eigen::Ref<Eigen::MatrixXd> C_block, Eigen::Ref<Eigen::VectorXd> l_block,
+                          Eigen::Ref<Eigen::VectorXd> u_block) noexcept override;
 
  private:
   int nv_{0};
   bool floating_base_{false};
 
-  double dt_{0.002};              // 제어 주기 (s)
-  double margin_pos_{0.05};       // position limit margin (rad)
-  double margin_vel_{0.1};        // velocity limit margin (rad/s)
+  double dt_{0.002};         // 제어 주기 (s)
+  double margin_pos_{0.05};  // position limit margin (rad)
+  double margin_vel_{0.1};   // velocity limit margin (rad/s)
 
-  Eigen::VectorXd q_min_;         // [nv] (margin 적용 후)
-  Eigen::VectorXd q_max_;         // [nv] (margin 적용 후)
-  Eigen::VectorXd v_min_;         // [nv] (margin 적용 후, = -v_max + margin)
-  Eigen::VectorXd v_max_limit_;   // [nv] (margin 적용 후, = v_max - margin)
+  Eigen::VectorXd q_min_;        // [nv] (margin 적용 후)
+  Eigen::VectorXd q_max_;        // [nv] (margin 적용 후)
+  Eigen::VectorXd v_min_;        // [nv] (margin 적용 후, = -v_max + margin)
+  Eigen::VectorXd v_max_limit_;  // [nv] (margin 적용 후, = v_max - margin)
 
   // Pre-allocated workspace
-  Eigen::VectorXd a_pos_lb_;      // [nv]
-  Eigen::VectorXd a_pos_ub_;      // [nv]
-  Eigen::VectorXd a_vel_lb_;      // [nv]
-  Eigen::VectorXd a_vel_ub_;      // [nv]
+  Eigen::VectorXd a_pos_lb_;  // [nv]
+  Eigen::VectorXd a_pos_ub_;  // [nv]
+  Eigen::VectorXd a_vel_lb_;  // [nv]
+  Eigen::VectorXd a_vel_ub_;  // [nv]
 };
 
 }  // namespace rtc::tsid

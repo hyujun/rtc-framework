@@ -1,18 +1,18 @@
 // ── Parameter declaration and loading
 // ──────────────────────────────────────────
-#include "rtc_controller_manager/rt_controller_node.hpp"
-
 #include "rtc_controller_interface/controller_registry.hpp"
+#include "rtc_controller_manager/rt_controller_node.hpp"
+#include <rtc_base/logging/session_dir.hpp>
+#include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
+#include <rtc_urdf_bridge/urdf_analyzer.hpp>
+#include <rtc_urdf_bridge/xacro_processor.hpp>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <lifecycle_msgs/msg/state.hpp>
 #include <rclcpp/node_options.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/state.hpp>
-#include <rtc_base/logging/session_dir.hpp>
-#include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
-#include <rtc_urdf_bridge/urdf_analyzer.hpp>
-#include <rtc_urdf_bridge/xacro_processor.hpp>
+
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
@@ -25,11 +25,10 @@ namespace urtc = rtc;
 namespace {
 
 // Split `str` on `.` into non-empty components.
-std::vector<std::string> SplitDotPath(const std::string &str) {
+std::vector<std::string> SplitDotPath(const std::string& str) {
   std::vector<std::string> out;
   std::string::size_type start = 0;
-  for (auto pos = str.find('.'); pos != std::string::npos;
-       pos = str.find('.', start)) {
+  for (auto pos = str.find('.'); pos != std::string::npos; pos = str.find('.', start)) {
     if (pos > start) {
       out.emplace_back(str.substr(start, pos - start));
     }
@@ -44,56 +43,56 @@ std::vector<std::string> SplitDotPath(const std::string &str) {
 // Write @p param's typed value into @p node under @p key.
 // Supports the scalar + string-array parameter kinds that controller YAMLs
 // exercise; silently skips types this helper hasn't been extended to carry.
-void SetYamlScalarFromParam(YAML::Node node, const std::string &key,
-                            const rclcpp::Parameter &param) {
+void SetYamlScalarFromParam(YAML::Node node, const std::string& key,
+                            const rclcpp::Parameter& param) {
   switch (param.get_type()) {
-  case rclcpp::ParameterType::PARAMETER_BOOL:
-    node[key] = param.as_bool();
-    break;
-  case rclcpp::ParameterType::PARAMETER_INTEGER:
-    node[key] = param.as_int();
-    break;
-  case rclcpp::ParameterType::PARAMETER_DOUBLE:
-    node[key] = param.as_double();
-    break;
-  case rclcpp::ParameterType::PARAMETER_STRING:
-    node[key] = param.as_string();
-    break;
-  case rclcpp::ParameterType::PARAMETER_BOOL_ARRAY: {
-    YAML::Node arr(YAML::NodeType::Sequence);
-    for (bool v : param.as_bool_array()) {
-      arr.push_back(v);
+    case rclcpp::ParameterType::PARAMETER_BOOL:
+      node[key] = param.as_bool();
+      break;
+    case rclcpp::ParameterType::PARAMETER_INTEGER:
+      node[key] = param.as_int();
+      break;
+    case rclcpp::ParameterType::PARAMETER_DOUBLE:
+      node[key] = param.as_double();
+      break;
+    case rclcpp::ParameterType::PARAMETER_STRING:
+      node[key] = param.as_string();
+      break;
+    case rclcpp::ParameterType::PARAMETER_BOOL_ARRAY: {
+      YAML::Node arr(YAML::NodeType::Sequence);
+      for (bool v : param.as_bool_array()) {
+        arr.push_back(v);
+      }
+      node[key] = arr;
+      break;
     }
-    node[key] = arr;
-    break;
-  }
-  case rclcpp::ParameterType::PARAMETER_INTEGER_ARRAY: {
-    YAML::Node arr(YAML::NodeType::Sequence);
-    for (int64_t v : param.as_integer_array()) {
-      arr.push_back(v);
+    case rclcpp::ParameterType::PARAMETER_INTEGER_ARRAY: {
+      YAML::Node arr(YAML::NodeType::Sequence);
+      for (int64_t v : param.as_integer_array()) {
+        arr.push_back(v);
+      }
+      node[key] = arr;
+      break;
     }
-    node[key] = arr;
-    break;
-  }
-  case rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY: {
-    YAML::Node arr(YAML::NodeType::Sequence);
-    for (double v : param.as_double_array()) {
-      arr.push_back(v);
+    case rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY: {
+      YAML::Node arr(YAML::NodeType::Sequence);
+      for (double v : param.as_double_array()) {
+        arr.push_back(v);
+      }
+      node[key] = arr;
+      break;
     }
-    node[key] = arr;
-    break;
-  }
-  case rclcpp::ParameterType::PARAMETER_STRING_ARRAY: {
-    YAML::Node arr(YAML::NodeType::Sequence);
-    for (const auto &v : param.as_string_array()) {
-      arr.push_back(v);
+    case rclcpp::ParameterType::PARAMETER_STRING_ARRAY: {
+      YAML::Node arr(YAML::NodeType::Sequence);
+      for (const auto& v : param.as_string_array()) {
+        arr.push_back(v);
+      }
+      node[key] = arr;
+      break;
     }
-    node[key] = arr;
-    break;
-  }
-  default:
-    // Unsupported: byte_array, not_set. Silently skip.
-    break;
+    default:
+      // Unsupported: byte_array, not_set. Silently skip.
+      break;
   }
 }
 
@@ -108,16 +107,15 @@ void SetYamlScalarFromParam(YAML::Node node, const std::string &key,
 // does NOT participate in the ROS parameter tree, so launch-arg overrides
 // (e.g. sim.launch.py's `enable_mpc` / `mpc_engine` flags) would otherwise
 // be silently discarded. This helper is the single bridge between the two.
-void ApplyControllerParamOverrides(rclcpp_lifecycle::LifecycleNode &node,
-                                   YAML::Node ctrl_node,
-                                   const std::string &config_key) {
+void ApplyControllerParamOverrides(rclcpp_lifecycle::LifecycleNode& node, YAML::Node ctrl_node,
+                                   const std::string& config_key) {
   // list_parameters depth counts `.`-separated segments from the root; we
   // set a generous cap to cover any reasonable nested YAML.
   constexpr uint64_t kMaxDepth = 20;
   const auto params = node.list_parameters({config_key}, kMaxDepth);
   const std::string prefix = config_key + ".";
 
-  for (const auto &pname : params.names) {
+  for (const auto& pname : params.names) {
     if (pname.rfind(prefix, 0) != 0) {
       continue;
     }
@@ -140,23 +138,21 @@ void ApplyControllerParamOverrides(rclcpp_lifecycle::LifecycleNode &node,
 
     try {
       SetYamlScalarFromParam(parent, parts.back(), node.get_parameter(pname));
-    } catch (const std::exception &e) {
-      RCLCPP_WARN(node.get_logger(),
-                  "[param-override] failed to apply '%s': %s", pname.c_str(),
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(node.get_logger(), "[param-override] failed to apply '%s': %s", pname.c_str(),
                   e.what());
     }
   }
 }
 
-} // namespace
+}  // namespace
 
 // ── Initialisation helpers
 // ────────────────────────────────────────────────────
 void RtControllerNode::DeclareAndLoadParameters() {
   // Helper: declare only if not already auto-declared from YAML overrides.
   // (NodeOptions::automatically_declare_parameters_from_overrides is enabled.)
-  auto safe_declare = [this](const std::string &name,
-                             const rclcpp::ParameterValue &val) {
+  auto safe_declare = [this](const std::string& name, const rclcpp::ParameterValue& val) {
     if (!has_parameter(name)) {
       declare_parameter(name, val);
     }
@@ -183,10 +179,8 @@ void RtControllerNode::DeclareAndLoadParameters() {
 
   // ── Device timeouts (replaces robot_timeout_ms / enable_ur5e / enable_hand)
   // ─
-  safe_declare("device_timeout_names",
-               rclcpp::ParameterValue(std::vector<std::string>{}));
-  safe_declare("device_timeout_values",
-               rclcpp::ParameterValue(std::vector<double>{}));
+  safe_declare("device_timeout_names", rclcpp::ParameterValue(std::vector<std::string>{}));
+  safe_declare("device_timeout_values", rclcpp::ParameterValue(std::vector<double>{}));
 
   control_rate_ = get_parameter("control_rate").as_double();
   budget_us_ = 1.0e6 / control_rate_;
@@ -212,13 +206,11 @@ void RtControllerNode::DeclareAndLoadParameters() {
       try {
         const auto pkg = get_parameter("urdf.package").as_string();
         const auto rel = get_parameter("urdf.path").as_string();
-        urdf_path =
-            ament_index_cpp::get_package_share_directory(pkg) + "/" + rel;
+        urdf_path = ament_index_cpp::get_package_share_directory(pkg) + "/" + rel;
         system_model_config_.urdf_path = urdf_path;
 
         if (has_parameter("urdf.root_joint_type")) {
-          system_model_config_.root_joint_type =
-              get_parameter("urdf.root_joint_type").as_string();
+          system_model_config_.root_joint_type = get_parameter("urdf.root_joint_type").as_string();
         }
 
         ParseSubModels(system_model_config_);
@@ -237,9 +229,8 @@ void RtControllerNode::DeclareAndLoadParameters() {
         // builder from GetSystemModelConfig().
         try {
           shared_builder =
-              std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(
-                  system_model_config_);
-        } catch (const std::exception &e) {
+              std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(system_model_config_);
+        } catch (const std::exception& e) {
           RCLCPP_WARN(get_logger(),
                       "Shared PinocchioModelBuilder build failed (%s) — "
                       "controllers will build their own",
@@ -247,17 +238,15 @@ void RtControllerNode::DeclareAndLoadParameters() {
         }
 
         if (shared_builder) {
-          const auto &analyzer = shared_builder->GetAnalyzer();
-          RCLCPP_INFO(
-              get_logger(),
-              "System URDF: %s (%zu sub_models, %zu tree_models, "
-              "%zu yaml-passive_joints; %zu <mimic> tags auto-locked by "
-              "PinocchioModelBuilder, %zu transmission-less passive)",
-              urdf_path.c_str(), system_model_config_.sub_models.size(),
-              system_model_config_.tree_models.size(),
-              system_model_config_.passive_joints.size(),
-              analyzer.GetMimicJoints().size(),
-              analyzer.GetPassiveJoints().size());
+          const auto& analyzer = shared_builder->GetAnalyzer();
+          RCLCPP_INFO(get_logger(),
+                      "System URDF: %s (%zu sub_models, %zu tree_models, "
+                      "%zu yaml-passive_joints; %zu <mimic> tags auto-locked by "
+                      "PinocchioModelBuilder, %zu transmission-less passive)",
+                      urdf_path.c_str(), system_model_config_.sub_models.size(),
+                      system_model_config_.tree_models.size(),
+                      system_model_config_.passive_joints.size(), analyzer.GetMimicJoints().size(),
+                      analyzer.GetPassiveJoints().size());
         } else {
           RCLCPP_INFO(get_logger(),
                       "System URDF: %s (%zu sub_models, %zu tree_models, %zu "
@@ -266,32 +255,27 @@ void RtControllerNode::DeclareAndLoadParameters() {
                       system_model_config_.tree_models.size(),
                       system_model_config_.passive_joints.size());
         }
-      } catch (const std::exception &e) {
-        RCLCPP_WARN(get_logger(), "Failed to resolve system URDF config: %s",
-                    e.what());
+      } catch (const std::exception& e) {
+        RCLCPP_WARN(get_logger(), "Failed to resolve system URDF config: %s", e.what());
       }
     }
 
     // 2) Fallback: scan devices for first URDF config (backward compatibility)
     if (urdf_path.empty()) {
       const auto params = list_parameters({"devices"}, 10);
-      for (const auto &prefix : params.prefixes) {
+      for (const auto& prefix : params.prefixes) {
         const std::string pkg_key = prefix + ".urdf.package";
         const std::string path_key = prefix + ".urdf.path";
         if (has_parameter(pkg_key) && has_parameter(path_key)) {
           try {
             const auto pkg = get_parameter(pkg_key).as_string();
             const auto rel = get_parameter(path_key).as_string();
-            urdf_path =
-                ament_index_cpp::get_package_share_directory(pkg) + "/" + rel;
+            urdf_path = ament_index_cpp::get_package_share_directory(pkg) + "/" + rel;
             system_model_config_.urdf_path = urdf_path;
-            RCLCPP_INFO(get_logger(),
-                        "URDF path from devices config (fallback): %s",
+            RCLCPP_INFO(get_logger(), "URDF path from devices config (fallback): %s",
                         urdf_path.c_str());
-          } catch (const std::exception &e) {
-            RCLCPP_WARN(get_logger(),
-                        "Failed to resolve URDF from devices config: %s",
-                        e.what());
+          } catch (const std::exception& e) {
+            RCLCPP_WARN(get_logger(), "Failed to resolve URDF from devices config: %s", e.what());
           }
           break;
         }
@@ -299,17 +283,16 @@ void RtControllerNode::DeclareAndLoadParameters() {
     }
 
     if (urdf_path.empty()) {
-      RCLCPP_WARN(get_logger(),
-                  "No URDF configured — controllers may lack kinematics");
+      RCLCPP_WARN(get_logger(), "No URDF configured — controllers may lack kinematics");
     }
   }
 
   // ── Instantiate and configure all registered controllers ─────────────────
   std::unordered_map<std::string, int> name_to_idx;
-  const auto &entries = urtc::ControllerRegistry::Instance().GetEntries();
+  const auto& entries = urtc::ControllerRegistry::Instance().GetEntries();
 
   for (std::size_t i = 0; i < entries.size(); ++i) {
-    const auto &entry = entries[i];
+    const auto& entry = entries[i];
     auto ctrl = entry.factory(urdf_path);
 
     if (!system_model_config_.urdf_path.empty()) {
@@ -325,15 +308,13 @@ void RtControllerNode::DeclareAndLoadParameters() {
     try {
       const std::string pkg_dir =
           ament_index_cpp::get_package_share_directory(entry.config_package);
-      const std::string yaml_path = pkg_dir + "/config/controllers/" +
-                                    entry.config_subdir + entry.config_key +
-                                    ".yaml";
+      const std::string yaml_path =
+          pkg_dir + "/config/controllers/" + entry.config_subdir + entry.config_key + ".yaml";
       YAML::Node file_node = YAML::LoadFile(yaml_path);
       ctrl_node = file_node[entry.config_key];
       ApplyControllerParamOverrides(*this, ctrl_node, entry.config_key);
-    } catch (const std::exception &e) {
-      RCLCPP_WARN(get_logger(),
-                  "Config load failed for '%s' (pkg=%s, %s) — using defaults",
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(get_logger(), "Config load failed for '%s' (pkg=%s, %s) — using defaults",
                   ctrl->Name().data(), entry.config_package.c_str(), e.what());
     }
 
@@ -348,10 +329,9 @@ void RtControllerNode::DeclareAndLoadParameters() {
     // /<config_key> namespacing and produces one
     // `rcl.logging_rosout: Publisher already registered` warning per child.
     const std::string ctrl_ns = "/" + entry.config_key;
-    const auto ctrl_node_options =
-        rclcpp::NodeOptions().use_global_arguments(false);
-    auto ctrl_lc_node = std::make_shared<rclcpp_lifecycle::LifecycleNode>(
-        entry.config_key, ctrl_ns, ctrl_node_options);
+    const auto ctrl_node_options = rclcpp::NodeOptions().use_global_arguments(false);
+    auto ctrl_lc_node = std::make_shared<rclcpp_lifecycle::LifecycleNode>(entry.config_key, ctrl_ns,
+                                                                          ctrl_node_options);
 
     // Inject the target-received notifier so controllers that own their own
     // target subscription flip CM's target_received_ gate in the callback.
@@ -364,8 +344,7 @@ void RtControllerNode::DeclareAndLoadParameters() {
     // return is non-fatal (matches previous "use defaults" semantics).
     const rclcpp_lifecycle::State unconfigured_state(
         lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "unconfigured");
-    const auto cfg_ret =
-        ctrl->on_configure(unconfigured_state, ctrl_lc_node, ctrl_node);
+    const auto cfg_ret = ctrl->on_configure(unconfigured_state, ctrl_lc_node, ctrl_node);
     if (cfg_ret != urtc::RTControllerInterface::CallbackReturn::SUCCESS) {
       RCLCPP_WARN(get_logger(),
                   "Controller '%s' on_configure returned non-SUCCESS — "
@@ -386,26 +365,25 @@ void RtControllerNode::DeclareAndLoadParameters() {
   // Cache per-controller topic configs and build active_groups_ +
   // group_slot_map_
   controller_topic_configs_.reserve(controllers_.size());
-  for (const auto &ctrl : controllers_) {
+  for (const auto& ctrl : controllers_) {
     controller_topic_configs_.push_back(ctrl->GetTopicConfig());
 
-    const auto &tc = controller_topic_configs_.back();
+    const auto& tc = controller_topic_configs_.back();
     std::string groups_info;
-    for (const auto &[name, group] : tc.groups) {
+    for (const auto& [name, group] : tc.groups) {
       if (!group.subscribe.empty() || !group.publish.empty()) {
-        groups_info += name + "(" + std::to_string(group.subscribe.size()) +
-                       "sub+" + std::to_string(group.publish.size()) + "pub) ";
+        groups_info += name + "(" + std::to_string(group.subscribe.size()) + "sub+" +
+                       std::to_string(group.publish.size()) + "pub) ";
       }
     }
-    RCLCPP_INFO(get_logger(), "Controller '%s': %s", ctrl->Name().data(),
-                groups_info.c_str());
+    RCLCPP_INFO(get_logger(), "Controller '%s': %s", ctrl->Name().data(), groups_info.c_str());
   }
 
   // ── Build active_groups_ (union of all controllers' groups) ──────────────
   {
     int slot_idx = 0;
-    for (const auto &tc : controller_topic_configs_) {
-      for (const auto &[name, group] : tc.groups) {
+    for (const auto& tc : controller_topic_configs_) {
+      for (const auto& [name, group] : tc.groups) {
         if (!group.subscribe.empty() || !group.publish.empty()) {
           if (active_groups_.insert(name).second) {
             group_slot_map_[name] = slot_idx++;
@@ -427,9 +405,9 @@ void RtControllerNode::DeclareAndLoadParameters() {
   // ── Build per-controller flat slot mappings (RT-safe, no map lookup) ────
   controller_slot_mappings_.resize(controllers_.size());
   for (std::size_t ci = 0; ci < controllers_.size(); ++ci) {
-    auto &mapping = controller_slot_mappings_[ci];
+    auto& mapping = controller_slot_mappings_[ci];
     int gi = 0;
-    for (const auto &[gname, ggroup] : controller_topic_configs_[ci].groups) {
+    for (const auto& [gname, ggroup] : controller_topic_configs_[ci].groups) {
       if (gi < ControllerSlotMapping::kMaxSlots) {
         const auto gidx = static_cast<std::size_t>(gi);
         mapping.slots[gidx] = group_slot_map_[gname];
@@ -441,7 +419,7 @@ void RtControllerNode::DeclareAndLoadParameters() {
   }
 
   // Pass control rate and device configs to all controllers
-  for (auto &ctrl : controllers_) {
+  for (auto& ctrl : controllers_) {
     ctrl->SetControlRate(control_rate_);
     ctrl->SetDeviceNameConfigs(device_name_configs_);
   }
@@ -454,8 +432,7 @@ void RtControllerNode::DeclareAndLoadParameters() {
   // removed.
   if (enable_logging_) {
     const std::string log_dir_param = get_parameter("log_dir").as_string();
-    const int max_sessions =
-        static_cast<int>(get_parameter("max_log_sessions").as_int());
+    const int max_sessions = static_cast<int>(get_parameter("max_log_sessions").as_int());
 
     std::filesystem::path session_dir;
     if (!log_dir_param.empty()) {
@@ -482,47 +459,39 @@ void RtControllerNode::DeclareAndLoadParameters() {
       }
     }
 
-    RCLCPP_INFO(get_logger(), "Session dir: %s (max_sessions=%d)",
-                session_dir.string().c_str(), max_sessions);
+    RCLCPP_INFO(get_logger(), "Session dir: %s (max_sessions=%d)", session_dir.string().c_str(),
+                max_sessions);
   }
 
   // ── Parse device_timeouts & match to active topic groups ─────────────────
   {
-    const auto timeout_names =
-        get_parameter("device_timeout_names").as_string_array();
-    const auto timeout_values =
-        get_parameter("device_timeout_values").as_double_array();
-    for (std::size_t i = 0;
-         i < timeout_names.size() && i < timeout_values.size(); ++i) {
-      const auto &name = timeout_names[i];
+    const auto timeout_names = get_parameter("device_timeout_names").as_string_array();
+    const auto timeout_values = get_parameter("device_timeout_values").as_double_array();
+    for (std::size_t i = 0; i < timeout_names.size() && i < timeout_values.size(); ++i) {
+      const auto& name = timeout_names[i];
       if (!active_groups_.contains(name)) {
-        RCLCPP_WARN(get_logger(),
-                    "Device timeout '%s' has no matching topic group — ignored",
+        RCLCPP_WARN(get_logger(), "Device timeout '%s' has no matching topic group — ignored",
                     name.c_str());
         continue;
       }
       std::string state_topic;
-      for (const auto &tc : controller_topic_configs_) {
-        state_topic =
-            tc.GetSubscribeTopicName(name, urtc::SubscribeRole::kState);
+      for (const auto& tc : controller_topic_configs_) {
+        state_topic = tc.GetSubscribeTopicName(name, urtc::SubscribeRole::kState);
         if (!state_topic.empty())
           break;
       }
       if (state_topic.empty()) {
-        RCLCPP_WARN(get_logger(),
-                    "Device timeout '%s' has no state subscription — ignored",
+        RCLCPP_WARN(get_logger(), "Device timeout '%s' has no state subscription — ignored",
                     name.c_str());
         continue;
       }
       DeviceTimeoutEntry entry;
       entry.group_name = name;
       entry.state_topic = state_topic;
-      entry.timeout =
-          std::chrono::milliseconds(static_cast<int>(timeout_values[i]));
+      entry.timeout = std::chrono::milliseconds(static_cast<int>(timeout_values[i]));
       device_timeouts_.push_back(std::move(entry));
-      RCLCPP_INFO(get_logger(), "Device timeout: '%s' → watching '%s' (%dms)",
-                  name.c_str(), state_topic.c_str(),
-                  static_cast<int>(timeout_values[i]));
+      RCLCPP_INFO(get_logger(), "Device timeout: '%s' → watching '%s' (%dms)", name.c_str(),
+                  state_topic.c_str(), static_cast<int>(timeout_values[i]));
     }
   }
 
@@ -530,23 +499,20 @@ void RtControllerNode::DeclareAndLoadParameters() {
   if (device_timeouts_.empty()) {
     state_received_.store(true, std::memory_order_release);
     target_received_.store(true, std::memory_order_release);
-    RCLCPP_INFO(get_logger(),
-                "No device timeouts configured — skipping init wait");
+    RCLCPP_INFO(get_logger(), "No device timeouts configured — skipping init wait");
   }
 
   // Resolve initial_controller parameter → controller index.
   // Empty or unknown name: fall back to the first registered controller
   // (idx 0). rtc_* stays robot-agnostic — it does not assume any specific
   // controller name is registered (ARCH-1).
-  const std::string initial_ctrl =
-      get_parameter("initial_controller").as_string();
+  const std::string initial_ctrl = get_parameter("initial_controller").as_string();
   const auto it = name_to_idx.find(initial_ctrl);
   if (it != name_to_idx.end()) {
     active_controller_idx_.store(it->second);
   } else {
     const std::string fallback_name =
-        controllers_.empty() ? std::string{"<none>"}
-                             : std::string(controllers_.front()->Name());
+        controllers_.empty() ? std::string{"<none>"} : std::string(controllers_.front()->Name());
     RCLCPP_WARN(get_logger(),
                 "initial_controller '%s' not found — defaulting to first "
                 "registered controller '%s'",

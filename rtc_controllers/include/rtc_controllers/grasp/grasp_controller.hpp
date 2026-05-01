@@ -1,14 +1,14 @@
 #ifndef RTC_CONTROLLERS_GRASP_GRASP_CONTROLLER_HPP_
 #define RTC_CONTROLLERS_GRASP_GRASP_CONTROLLER_HPP_
 
+#include "rtc_base/filters/bessel_filter.hpp"
+#include "rtc_controllers/grasp/grasp_types.hpp"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
 #include <span>
-
-#include "rtc_base/filters/bessel_filter.hpp"
-#include "rtc_controllers/grasp/grasp_types.hpp"
 
 namespace rtc::grasp {
 
@@ -21,20 +21,19 @@ namespace rtc::grasp {
 ///
 /// This class is ROS2-independent and RT-safe after Init().
 class GraspController {
-public:
+ public:
   GraspController() = default;
 
   /// Initialise with finger configurations and parameters.
   /// Must be called before Update().  Not RT-safe (may compute filter coeffs).
-  void Init(const std::array<FingerConfig, kNumGraspFingers>& configs,
-            const GraspParams& params);
+  void Init(const std::array<FingerConfig, kNumGraspFingers>& configs, const GraspParams& params);
 
   /// Main control update — call once per control cycle on the RT thread.
   /// @param f_raw  Force magnitude [N] per finger (3-axis norm).
   /// @param dt     Control period [s].
   /// @return Joint position commands for 3 fingers x 3 DOF.
-  [[nodiscard]] GraspJointCommands Update(
-    std::span<const double, kNumGraspFingers> f_raw, double dt) noexcept;
+  [[nodiscard]] GraspJointCommands Update(std::span<const double, kNumGraspFingers> f_raw,
+                                          double dt) noexcept;
 
   /// Request grasp start.  If target_force > 0, overrides params_.f_target.
   void CommandGrasp(double target_force = 0.0) noexcept;
@@ -46,8 +45,9 @@ public:
   [[nodiscard]] GraspPhase phase() const noexcept { return phase_; }
 
   /// Per-finger runtime states (for logging / monitoring).
-  [[nodiscard]] const std::array<FingerState, kNumGraspFingers>&
-  finger_states() const noexcept { return fingers_; }
+  [[nodiscard]] const std::array<FingerState, kNumGraspFingers>& finger_states() const noexcept {
+    return fingers_;
+  }
 
   /// Active target force [N].
   [[nodiscard]] double target_force() const noexcept { return active_target_force_; }
@@ -56,7 +56,7 @@ public:
   void set_target_force(double f) noexcept;
   void set_params(const GraspParams& params) noexcept;
 
-private:
+ private:
   // ── Phase update functions ────────────────────────────────────────────────
   void UpdateIdle() noexcept;
   void UpdateApproaching(double dt) noexcept;
@@ -68,8 +68,8 @@ private:
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   /// Linear interpolation: q(s) = (1-s)*q_open + s*q_close
-  [[nodiscard]] static std::array<double, kDoFPerFinger> InterpolatePosture(
-    const FingerConfig& cfg, double s) noexcept;
+  [[nodiscard]] static std::array<double, kDoFPerFinger> InterpolatePosture(const FingerConfig& cfg,
+                                                                            double s) noexcept;
 
   /// Clamp ds according to deformation guard logic.
   void ApplyDeformationGuard(int finger, double& ds) noexcept;

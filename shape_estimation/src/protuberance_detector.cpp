@@ -1,21 +1,23 @@
 #include "shape_estimation/protuberance_detector.hpp"
+
 #include "shape_estimation/shape_logging.hpp"
+
+#include <rclcpp/logging.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <numeric>
 #include <unordered_map>
 
-#include <rclcpp/logging.hpp>
-
 namespace shape_estimation {
 
 namespace {
-auto logger() { return ::rtc::shape::logging::ProtusLogger(); }
+auto logger() {
+  return ::rtc::shape::logging::ProtusLogger();
+}
 }  // namespace
 
-ProtuberanceDetector::ProtuberanceDetector(const ProtuberanceConfig& config)
-    : config_(config) {}
+ProtuberanceDetector::ProtuberanceDetector(const ProtuberanceConfig& config) : config_(config) {}
 
 void ProtuberanceDetector::UpdateConfig(const ProtuberanceConfig& config) {
   config_ = config;
@@ -26,8 +28,7 @@ void ProtuberanceDetector::UpdateConfig(const ProtuberanceConfig& config) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 ProtuberanceResult ProtuberanceDetector::Detect(
-    const ShapeEstimate& fitted_primitive,
-    const std::vector<PointWithNormal>& points,
+    const ShapeEstimate& fitted_primitive, const std::vector<PointWithNormal>& points,
     const std::vector<ToFSnapshot>& recent_snapshots) const {
   ProtuberanceResult result;
 
@@ -67,10 +68,9 @@ ProtuberanceResult ProtuberanceDetector::Detect(
   }
 
   // 신뢰도 기준 내림차순 정렬
-  std::sort(result.protuberances.begin(), result.protuberances.end(),
-            [](const Protuberance& a, const Protuberance& b) {
-              return a.confidence > b.confidence;
-            });
+  std::sort(
+      result.protuberances.begin(), result.protuberances.end(),
+      [](const Protuberance& a, const Protuberance& b) { return a.confidence > b.confidence; });
 
   result.detected = true;
 
@@ -91,14 +91,12 @@ ProtuberanceResult ProtuberanceDetector::Detect(
       ++count;
     }
   }
-  result.base_residual_rms =
-      count > 0 ? std::sqrt(sum_sq / static_cast<double>(count)) : 0.0;
+  result.base_residual_rms = count > 0 ? std::sqrt(sum_sq / static_cast<double>(count)) : 0.0;
 
   RCLCPP_DEBUG(logger(),
                "돌출 탐지 완료: %zu개 protuberance, "
                "base_rms=%.4f, gaps=%zu",
-               result.protuberances.size(), result.base_residual_rms,
-               gaps.size());
+               result.protuberances.size(), result.base_residual_rms, gaps.size());
 
   return result;
 }
@@ -107,9 +105,8 @@ ProtuberanceResult ProtuberanceDetector::Detect(
 // Step 1: Signed Residual 계산
 // ═════════════════════════════════════════════════════════════════════════════
 
-double ProtuberanceDetector::SignedDistanceFromPrimitive(
-    const Eigen::Vector3d& point,
-    const ShapeEstimate& primitive) {
+double ProtuberanceDetector::SignedDistanceFromPrimitive(const Eigen::Vector3d& point,
+                                                         const ShapeEstimate& primitive) {
   switch (primitive.type) {
     case ShapeType::kSphere: {
       // 양수 = 구 내부 (정상), 음수 = 구 외부 (돌출)
@@ -142,19 +139,15 @@ double ProtuberanceDetector::SignedDistanceFromPrimitive(
   }
 }
 
-std::vector<ProtuberanceDetector::PointResidual>
-ProtuberanceDetector::ComputeSignedResiduals(
-    const ShapeEstimate& primitive,
-    const std::vector<PointWithNormal>& points) const {
+std::vector<ProtuberanceDetector::PointResidual> ProtuberanceDetector::ComputeSignedResiduals(
+    const ShapeEstimate& primitive, const std::vector<PointWithNormal>& points) const {
   std::vector<PointResidual> results;
   results.reserve(points.size());
 
   for (uint32_t i = 0; i < static_cast<uint32_t>(points.size()); ++i) {
-    const double signed_dist =
-        SignedDistanceFromPrimitive(points[i].position, primitive);
+    const double signed_dist = SignedDistanceFromPrimitive(points[i].position, primitive);
     // signed_dist < 0 → primitive 외부 (돌출) → residual < 0
-    results.push_back(
-        PointResidual{i, signed_dist, points[i].position});
+    results.push_back(PointResidual{i, signed_dist, points[i].position});
   }
 
   return results;
@@ -164,8 +157,7 @@ ProtuberanceDetector::ComputeSignedResiduals(
 // Step 2: 음의 잔차 클러스터링 (Union-Find)
 // ═════════════════════════════════════════════════════════════════════════════
 
-std::vector<std::vector<uint32_t>>
-ProtuberanceDetector::ClusterNegativeResiduals(
+std::vector<std::vector<uint32_t>> ProtuberanceDetector::ClusterNegativeResiduals(
     const std::vector<PointResidual>& residuals) const {
   // threshold 이하인 포인트 추출
   std::vector<uint32_t> negative_indices;
@@ -177,9 +169,8 @@ ProtuberanceDetector::ClusterNegativeResiduals(
 
   const auto n = negative_indices.size();
   if (n < config_.min_cluster_points) {
-    RCLCPP_DEBUG(logger(),
-                 "클러스터링: 음의 잔차 포인트 부족 (%zu < %u)",
-                 n, config_.min_cluster_points);
+    RCLCPP_DEBUG(logger(), "클러스터링: 음의 잔차 포인트 부족 (%zu < %u)", n,
+                 config_.min_cluster_points);
     return {};
   }
 
@@ -216,8 +207,7 @@ ProtuberanceDetector::ClusterNegativeResiduals(
     const auto cz = static_cast<int32_t>(std::floor(p.z() * inv_cell));
     // 21-bit packing
     constexpr int64_t kMask = (1LL << 21) - 1;
-    return ((static_cast<int64_t>(cx) & kMask) << 42) |
-           ((static_cast<int64_t>(cy) & kMask) << 21) |
+    return ((static_cast<int64_t>(cx) & kMask) << 42) | ((static_cast<int64_t>(cy) & kMask) << 21) |
            (static_cast<int64_t>(cz) & kMask);
   };
 
@@ -231,13 +221,11 @@ ProtuberanceDetector::ClusterNegativeResiduals(
     // 현재 cell 내부 pairwise
     for (size_t a = 0; a < cell_indices.size(); ++a) {
       for (size_t b = a + 1; b < cell_indices.size(); ++b) {
-        const double dist_sq =
-            (residuals[negative_indices[cell_indices[a]]].position -
-             residuals[negative_indices[cell_indices[b]]].position)
-                .squaredNorm();
+        const double dist_sq = (residuals[negative_indices[cell_indices[a]]].position -
+                                residuals[negative_indices[cell_indices[b]]].position)
+                                   .squaredNorm();
         if (dist_sq < radius_sq) {
-          unite(static_cast<uint32_t>(cell_indices[a]),
-                static_cast<uint32_t>(cell_indices[b]));
+          unite(static_cast<uint32_t>(cell_indices[a]), static_cast<uint32_t>(cell_indices[b]));
         }
       }
     }
@@ -246,25 +234,22 @@ ProtuberanceDetector::ClusterNegativeResiduals(
     const auto cy = static_cast<int32_t>((key >> 21) & ((1LL << 21) - 1));
     const auto cz = static_cast<int32_t>(key & ((1LL << 21) - 1));
 
-    constexpr int kOffsets[13][3] = {
-        {1, 0, 0}, {0, 1, 0}, {0, 0, 1},
-        {1, 1, 0}, {1, -1, 0}, {1, 0, 1}, {1, 0, -1},
-        {0, 1, 1}, {0, 1, -1},
-        {1, 1, 1}, {1, 1, -1}, {1, -1, 1}, {1, -1, -1}};
+    constexpr int kOffsets[13][3] = {{1, 0, 0},  {0, 1, 0},  {0, 0, 1},  {1, 1, 0},  {1, -1, 0},
+                                     {1, 0, 1},  {1, 0, -1}, {0, 1, 1},  {0, 1, -1}, {1, 1, 1},
+                                     {1, 1, -1}, {1, -1, 1}, {1, -1, -1}};
 
     for (const auto& off : kOffsets) {
       constexpr int64_t kMask = (1LL << 21) - 1;
-      const int64_t nkey =
-          ((static_cast<int64_t>(cx + off[0]) & kMask) << 42) |
-          ((static_cast<int64_t>(cy + off[1]) & kMask) << 21) |
-          (static_cast<int64_t>(cz + off[2]) & kMask);
+      const int64_t nkey = ((static_cast<int64_t>(cx + off[0]) & kMask) << 42) |
+                           ((static_cast<int64_t>(cy + off[1]) & kMask) << 21) |
+                           (static_cast<int64_t>(cz + off[2]) & kMask);
       auto nit = grid.find(nkey);
-      if (nit == grid.end()) continue;
+      if (nit == grid.end())
+        continue;
       for (size_t a : cell_indices) {
         for (size_t b : nit->second) {
           const double dist_sq =
-              (residuals[negative_indices[a]].position -
-               residuals[negative_indices[b]].position)
+              (residuals[negative_indices[a]].position - residuals[negative_indices[b]].position)
                   .squaredNorm();
           if (dist_sq < radius_sq) {
             unite(static_cast<uint32_t>(a), static_cast<uint32_t>(b));
@@ -277,8 +262,7 @@ ProtuberanceDetector::ClusterNegativeResiduals(
   // 같은 root를 가진 포인트들을 그룹화
   std::unordered_map<uint32_t, std::vector<uint32_t>> groups;
   for (size_t i = 0; i < n; ++i) {
-    groups[find(static_cast<uint32_t>(i))].push_back(
-        negative_indices[i]);
+    groups[find(static_cast<uint32_t>(i))].push_back(negative_indices[i]);
   }
 
   // min_cluster_points 이상인 그룹만 반환
@@ -296,8 +280,7 @@ ProtuberanceDetector::ClusterNegativeResiduals(
 // Step 3: Gap 패턴 분석
 // ═════════════════════════════════════════════════════════════════════════════
 
-std::vector<ProtuberanceDetector::GapEvent>
-ProtuberanceDetector::DetectGaps(
+std::vector<ProtuberanceDetector::GapEvent> ProtuberanceDetector::DetectGaps(
     const std::vector<ToFSnapshot>& snapshots) const {
   if (snapshots.size() < 3) {
     return {};
@@ -326,20 +309,13 @@ ProtuberanceDetector::DetectGaps(
 
         if (gap_duration >= config_.min_gap_invalid_count) {
           const double d_after = reading.distance_m;
-          const Eigen::Vector3d& pos_after =
-              snapshots[t].surface_points_world[si];
+          const Eigen::Vector3d& pos_after = snapshots[t].surface_points_world[si];
 
           // gap 전후 거리 차이 확인
-          if (std::abs(last_valid_distance - d_after) >
-              config_.gap_distance_jump) {
-            gaps.push_back(GapEvent{
-                snapshots[t].timestamp_ns,
-                static_cast<uint8_t>(sensor_idx),
-                last_valid_position,
-                pos_after,
-                last_valid_distance,
-                d_after,
-                gap_duration});
+          if (std::abs(last_valid_distance - d_after) > config_.gap_distance_jump) {
+            gaps.push_back(GapEvent{snapshots[t].timestamp_ns, static_cast<uint8_t>(sensor_idx),
+                                    last_valid_position, pos_after, last_valid_distance, d_after,
+                                    gap_duration});
           }
         }
       }
@@ -358,9 +334,8 @@ ProtuberanceDetector::DetectGaps(
 // Step 4: 통합
 // ═════════════════════════════════════════════════════════════════════════════
 
-Eigen::Vector3d ProtuberanceDetector::PrimitiveOutwardNormal(
-    const Eigen::Vector3d& point,
-    const ShapeEstimate& primitive) {
+Eigen::Vector3d ProtuberanceDetector::PrimitiveOutwardNormal(const Eigen::Vector3d& point,
+                                                             const ShapeEstimate& primitive) {
   switch (primitive.type) {
     case ShapeType::kSphere: {
       const Eigen::Vector3d diff = point - primitive.center;
@@ -389,8 +364,7 @@ Eigen::Vector3d ProtuberanceDetector::PrimitiveOutwardNormal(
       int max_axis = 0;
       double max_ratio = 0.0;
       for (int i = 0; i < 3; ++i) {
-        const double ratio =
-            half(i) > 1e-9 ? std::abs(delta(i)) / half(i) : 0.0;
+        const double ratio = half(i) > 1e-9 ? std::abs(delta(i)) / half(i) : 0.0;
         if (ratio > max_ratio) {
           max_ratio = ratio;
           max_axis = i;
@@ -405,42 +379,34 @@ Eigen::Vector3d ProtuberanceDetector::PrimitiveOutwardNormal(
   }
 }
 
-double ProtuberanceDetector::ComputeSurfaceExtent(
-    const std::vector<uint32_t>& cluster_indices,
-    const std::vector<PointResidual>& residuals) {
+double ProtuberanceDetector::ComputeSurfaceExtent(const std::vector<uint32_t>& cluster_indices,
+                                                  const std::vector<PointResidual>& residuals) {
   double max_dist = 0.0;
   for (size_t i = 0; i < cluster_indices.size(); ++i) {
     for (size_t j = i + 1; j < cluster_indices.size(); ++j) {
       const double d =
-          (residuals[cluster_indices[i]].position -
-           residuals[cluster_indices[j]].position)
-              .norm();
+          (residuals[cluster_indices[i]].position - residuals[cluster_indices[j]].position).norm();
       max_dist = std::max(max_dist, d);
     }
   }
   return max_dist;
 }
 
-double ProtuberanceDetector::ComputeConfidence(
-    uint32_t num_points,
-    double protrusion_depth,
-    bool has_gap) const {
+double ProtuberanceDetector::ComputeConfidence(uint32_t num_points, double protrusion_depth,
+                                               bool has_gap) const {
   // 각 요소를 [0,1]로 정규화하여 가중 합산
-  const double score_points =
-      std::min(1.0, static_cast<double>(num_points) / 10.0);
+  const double score_points = std::min(1.0, static_cast<double>(num_points) / 10.0);
   const double score_depth = std::min(1.0, protrusion_depth / 0.020);
   const double score_gap = has_gap ? 1.0 : 0.0;
 
-  return config_.weight_num_points * score_points +
-         config_.weight_depth * score_depth +
+  return config_.weight_num_points * score_points + config_.weight_depth * score_depth +
          config_.weight_gap * score_gap;
 }
 
-Protuberance ProtuberanceDetector::BuildProtuberance(
-    const std::vector<uint32_t>& cluster_indices,
-    const std::vector<PointResidual>& residuals,
-    const ShapeEstimate& primitive,
-    const std::vector<GapEvent>& all_gaps) const {
+Protuberance ProtuberanceDetector::BuildProtuberance(const std::vector<uint32_t>& cluster_indices,
+                                                     const std::vector<PointResidual>& residuals,
+                                                     const ShapeEstimate& primitive,
+                                                     const std::vector<GapEvent>& all_gaps) const {
   // 클러스터 centroid
   Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
   double mean_abs_residual = 0.0;
@@ -453,8 +419,7 @@ Protuberance ProtuberanceDetector::BuildProtuberance(
   mean_abs_residual /= n;
 
   // 돌출 방향
-  const Eigen::Vector3d direction =
-      PrimitiveOutwardNormal(centroid, primitive);
+  const Eigen::Vector3d direction = PrimitiveOutwardNormal(centroid, primitive);
 
   // 표면 방향 크기
   const double extent = ComputeSurfaceExtent(cluster_indices, residuals);
@@ -462,10 +427,8 @@ Protuberance ProtuberanceDetector::BuildProtuberance(
   // 근처 gap 탐색
   bool has_gap = false;
   for (const auto& gap : all_gaps) {
-    const Eigen::Vector3d mid_point =
-        (gap.position_before + gap.position_after) * 0.5;
-    if ((mid_point - centroid).norm() <
-        config_.gap_cluster_association_radius) {
+    const Eigen::Vector3d mid_point = (gap.position_before + gap.position_after) * 0.5;
+    if ((mid_point - centroid).norm() < config_.gap_cluster_association_radius) {
       has_gap = true;
       break;
     }
@@ -473,8 +436,7 @@ Protuberance ProtuberanceDetector::BuildProtuberance(
 
   // 신뢰도
   const auto num_points = static_cast<uint32_t>(cluster_indices.size());
-  const double confidence =
-      ComputeConfidence(num_points, mean_abs_residual, has_gap);
+  const double confidence = ComputeConfidence(num_points, mean_abs_residual, has_gap);
 
   Protuberance prot;
   prot.centroid = centroid;
@@ -489,8 +451,7 @@ Protuberance ProtuberanceDetector::BuildProtuberance(
                "BuildProtuberance: centroid=[%.3f, %.3f, %.3f], "
                "depth=%.4f, extent=%.4f, confidence=%.2f, "
                "n=%u, has_gap=%d",
-               centroid.x(), centroid.y(), centroid.z(),
-               mean_abs_residual, extent, confidence,
+               centroid.x(), centroid.y(), centroid.z(), mean_abs_residual, extent, confidence,
                num_points, has_gap ? 1 : 0);
 
   return prot;

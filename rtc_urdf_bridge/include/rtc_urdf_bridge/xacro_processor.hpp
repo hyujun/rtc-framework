@@ -5,8 +5,7 @@
 #include <string_view>
 #include <unordered_map>
 
-namespace rtc_urdf_bridge
-{
+namespace rtc_urdf_bridge {
 
 /// 파일 경로가 .xacro 확장자인지 확인
 [[nodiscard]] bool IsXacroFile(std::string_view file_path) noexcept;
@@ -18,7 +17,7 @@ namespace rtc_urdf_bridge
 /// @return 처리된 URDF XML 문자열
 /// @throws std::runtime_error xacro 명령 실패 또는 미설치 시
 [[nodiscard]] std::string ProcessXacro(
-  const std::string & file_path,
-  const std::unordered_map<std::string, std::string> & xacro_args = {});
+    const std::string& file_path,
+    const std::unordered_map<std::string, std::string>& xacro_args = {});
 
 }  // namespace rtc_urdf_bridge

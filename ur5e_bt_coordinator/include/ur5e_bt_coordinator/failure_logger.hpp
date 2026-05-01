@@ -24,42 +24,31 @@
 namespace rtc_bt {
 
 class FailureLogger : public BT::StatusChangeLogger {
-public:
-  explicit FailureLogger(BT::TreeNode* root_node)
-    : BT::StatusChangeLogger(root_node) {}
+ public:
+  explicit FailureLogger(BT::TreeNode* root_node) : BT::StatusChangeLogger(root_node) {}
 
-  void callback(BT::Duration /*timestamp*/,
-                const BT::TreeNode& node,
-                BT::NodeStatus prev_status,
-                BT::NodeStatus status) override
-  {
-    if (status != BT::NodeStatus::FAILURE) return;
-    if (prev_status == BT::NodeStatus::FAILURE) return;  // avoid duplicates
+  void callback(BT::Duration /*timestamp*/, const BT::TreeNode& node, BT::NodeStatus prev_status,
+                BT::NodeStatus status) override {
+    if (status != BT::NodeStatus::FAILURE)
+      return;
+    if (prev_status == BT::NodeStatus::FAILURE)
+      return;  // avoid duplicates
 
-    const std::string display_name =
-        node.name().empty() ? "<anon>" : node.name();
+    const std::string display_name = node.name().empty() ? "<anon>" : node.name();
 
     // Condition nodes return FAILURE as normal polling behavior
     // (e.g. IsGrasped/IsForceAbove inside RetryUntilSuccessful).
     // Log at DEBUG to avoid flooding the terminal.
     if (node.type() == BT::NodeType::CONDITION) {
-      RCLCPP_DEBUG(
-        ::rtc_bt::logging::FailLogger(),
-        "[BT FAIL] %s (type=%s uid=%u) %s -> FAILURE",
-        display_name.c_str(),
-        node.registrationName().c_str(),
-        static_cast<unsigned>(node.UID()),
-        BT::toStr(prev_status).c_str());
+      RCLCPP_DEBUG(::rtc_bt::logging::FailLogger(), "[BT FAIL] %s (type=%s uid=%u) %s -> FAILURE",
+                   display_name.c_str(), node.registrationName().c_str(),
+                   static_cast<unsigned>(node.UID()), BT::toStr(prev_status).c_str());
       return;
     }
 
-    RCLCPP_ERROR(
-      ::rtc_bt::logging::FailLogger(),
-      "[BT FAIL] %s (type=%s uid=%u) %s -> FAILURE",
-      display_name.c_str(),
-      node.registrationName().c_str(),
-      static_cast<unsigned>(node.UID()),
-      BT::toStr(prev_status).c_str());
+    RCLCPP_ERROR(::rtc_bt::logging::FailLogger(), "[BT FAIL] %s (type=%s uid=%u) %s -> FAILURE",
+                 display_name.c_str(), node.registrationName().c_str(),
+                 static_cast<unsigned>(node.UID()), BT::toStr(prev_status).c_str());
   }
 
   void flush() override {}

@@ -11,25 +11,21 @@
 using namespace rtc_bt;
 
 class ComputeSweepTest : public ::testing::Test {
-protected:
-  void SetUp() override
-  {
+ protected:
+  void SetUp() override {
     factory_.registerNodeType<ComputeSweepTrajectory>("ComputeSweepTrajectory");
   }
 
-  BT::Tree CreateTree(const std::string& xml)
-  {
+  BT::Tree CreateTree(const std::string& xml) {
     const std::string full_xml =
-        R"(<root BTCPP_format="4"><BehaviorTree ID="Test">)" + xml +
-        R"(</BehaviorTree></root>)";
+        R"(<root BTCPP_format="4"><BehaviorTree ID="Test">)" + xml + R"(</BehaviorTree></root>)";
     return factory_.createTreeFromText(full_xml);
   }
 
   BT::BehaviorTreeFactory factory_;
 };
 
-TEST_F(ComputeSweepTest, DefaultParameters)
-{
+TEST_F(ComputeSweepTest, DefaultParameters) {
   auto tree = CreateTree(
       R"(<ComputeSweepTrajectory start_pose="0.0;0.0;0.0;0.0;0.0;0.0"
                                  waypoints="{wp}"/>)");
@@ -39,8 +35,7 @@ TEST_F(ComputeSweepTest, DefaultParameters)
   EXPECT_EQ(wp.size(), 8u);  // default num_waypoints=8
 }
 
-TEST_F(ComputeSweepTest, FirstAndLastWaypoint)
-{
+TEST_F(ComputeSweepTest, FirstAndLastWaypoint) {
   auto tree = CreateTree(
       R"(<ComputeSweepTrajectory start_pose="1.0;2.0;3.0;0.1;0.2;0.3"
                                  direction_x="1.0" direction_y="0.0"
@@ -60,11 +55,10 @@ TEST_F(ComputeSweepTest, FirstAndLastWaypoint)
   // Last waypoint = start + distance along dir (t=1, sin(pi)≈0)
   EXPECT_NEAR(wp[4].x, 1.5, 1e-12);  // 1.0 + 0.5*1.0
   EXPECT_NEAR(wp[4].y, 2.0, 1e-12);
-  EXPECT_NEAR(wp[4].z, 3.0, 1e-6);   // sin(pi)≈0
+  EXPECT_NEAR(wp[4].z, 3.0, 1e-6);  // sin(pi)≈0
 }
 
-TEST_F(ComputeSweepTest, ArcPeakAtMiddle)
-{
+TEST_F(ComputeSweepTest, ArcPeakAtMiddle) {
   auto tree = CreateTree(
       R"(<ComputeSweepTrajectory start_pose="0.0;0.0;0.0;0.0;0.0;0.0"
                                  direction_x="1.0" direction_y="0.0"
@@ -81,8 +75,7 @@ TEST_F(ComputeSweepTest, ArcPeakAtMiddle)
   EXPECT_NEAR(wp[1].x, 0.5, 1e-12);
 }
 
-TEST_F(ComputeSweepTest, DirectionNormalization)
-{
+TEST_F(ComputeSweepTest, DirectionNormalization) {
   auto tree = CreateTree(
       R"(<ComputeSweepTrajectory start_pose="0.0;0.0;0.0;0.0;0.0;0.0"
                                  direction_x="3.0" direction_y="4.0"
@@ -100,8 +93,7 @@ TEST_F(ComputeSweepTest, DirectionNormalization)
   EXPECT_NEAR(wp[1].y, 4.0, 1e-10);
 }
 
-TEST_F(ComputeSweepTest, MinimumTwoWaypoints)
-{
+TEST_F(ComputeSweepTest, MinimumTwoWaypoints) {
   auto tree = CreateTree(
       R"(<ComputeSweepTrajectory start_pose="0.0;0.0;0.0;0.0;0.0;0.0"
                                  num_waypoints="1"
@@ -112,8 +104,7 @@ TEST_F(ComputeSweepTest, MinimumTwoWaypoints)
   EXPECT_GE(wp.size(), 2u);  // n < 2 becomes n = 2
 }
 
-TEST_F(ComputeSweepTest, OrientationPreserved)
-{
+TEST_F(ComputeSweepTest, OrientationPreserved) {
   auto tree = CreateTree(
       R"(<ComputeSweepTrajectory start_pose="0.0;0.0;0.0;1.0;2.0;3.0"
                                  num_waypoints="4"

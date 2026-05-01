@@ -13,7 +13,6 @@
 // only that the lifecycle / counters / hooks behave as documented.
 
 #include "rtc_base/threading/periodic_rt_thread.hpp"
-
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/timing/rt_tick_timing_sample.hpp"
 
@@ -29,7 +28,7 @@ namespace {
 
 using namespace std::chrono_literals;
 
-rtc::ThreadConfig MakeNonRtConfig(const char *name) {
+rtc::ThreadConfig MakeNonRtConfig(const char* name) {
   // SCHED_OTHER + nice 0 keeps the test runnable without RT permissions.
   rtc::ThreadConfig cfg{};
   cfg.cpu_core = 0;
@@ -40,7 +39,7 @@ rtc::ThreadConfig MakeNonRtConfig(const char *name) {
   return cfg;
 }
 
-rtc::PeriodicRtThreadConfig MakeCfg(const char *name, double hz) {
+rtc::PeriodicRtThreadConfig MakeCfg(const char* name, double hz) {
   rtc::PeriodicRtThreadConfig cfg{};
   cfg.thread_config = MakeNonRtConfig(name);
   cfg.frequency_hz = hz;
@@ -50,10 +49,10 @@ rtc::PeriodicRtThreadConfig MakeCfg(const char *name, double hz) {
 // Minimal subclass that just counts ticks. Sleeps a tiny bit per tick to
 // keep timing payloads non-zero in the producer test.
 class CountingThread : public rtc::PeriodicRtThread {
-public:
+ public:
   std::atomic<std::uint64_t> ticks{0};
 
-protected:
+ protected:
   void OnTick() noexcept override {
     MarkStateAcquired();
     std::this_thread::sleep_for(50us);
@@ -62,7 +61,7 @@ protected:
   }
 };
 
-} // namespace
+}  // namespace
 
 TEST(PeriodicRtThread, StartStopRunsTicks) {
   CountingThread t;
@@ -102,7 +101,7 @@ TEST(PeriodicRtThread, PauseHaltsTicksAndResumeRestarts) {
 
   t.Pause();
   EXPECT_TRUE(t.Paused());
-  std::this_thread::sleep_for(40ms); // let the loop enter the cv wait
+  std::this_thread::sleep_for(40ms);  // let the loop enter the cv wait
   const auto frozen = t.ticks.load();
   std::this_thread::sleep_for(120ms);
   EXPECT_EQ(t.ticks.load(), frozen) << "Paused loop must not advance ticks";
@@ -134,12 +133,12 @@ namespace {
 // Subclass that binds a timing producer and lets the test inspect the
 // drained samples.
 class TimingThread : public rtc::PeriodicRtThread {
-public:
+ public:
   rtc::CmTimingBuffer producer;
 
   TimingThread() { SetTimingProducer<rtc::kCmTimingBufferCapacity>(&producer); }
 
-protected:
+ protected:
   void OnTick() noexcept override {
     MarkStateAcquired();
     std::this_thread::sleep_for(100us);
@@ -148,7 +147,7 @@ protected:
   }
 };
 
-} // namespace
+}  // namespace
 
 TEST(PeriodicRtThread, TimingProducerReceivesPerTickSamples) {
   TimingThread t;
@@ -158,16 +157,14 @@ TEST(PeriodicRtThread, TimingProducerReceivesPerTickSamples) {
   t.Join();
 
   std::vector<rtc::RtTickTimingSample> samples;
-  t.producer.Drain(
-      [&](const rtc::RtTickTimingSample &s) { samples.push_back(s); });
+  t.producer.Drain([&](const rtc::RtTickTimingSample& s) { samples.push_back(s); });
   ASSERT_GE(samples.size(), 5u);
   for (std::size_t i = 0; i < samples.size(); ++i) {
     EXPECT_EQ(samples[i].tick_count, i + 1);
     EXPECT_GT(samples[i].t_wall_ns, 0u);
     EXPECT_GE(samples[i].payload.t_total_us, 0.0);
     // Compute / state phases each waited > 0; total >= sum of phases.
-    const double summed = samples[i].payload.t_state_us +
-                          samples[i].payload.t_compute_us +
+    const double summed = samples[i].payload.t_state_us + samples[i].payload.t_compute_us +
                           samples[i].payload.t_publish_us;
     EXPECT_GE(samples[i].payload.t_total_us, summed - 1e-3);
   }
@@ -178,11 +175,11 @@ TEST(PeriodicRtThread, TimingProducerReceivesPerTickSamples) {
 namespace {
 
 class AbortingThread : public rtc::PeriodicRtThread {
-public:
+ public:
   std::atomic<int> wait_calls{0};
   std::atomic<bool> aborted{false};
 
-protected:
+ protected:
   WaitResult WaitForNextTick() noexcept override {
     const int n = wait_calls.fetch_add(1) + 1;
     if (n >= 3) {
@@ -199,7 +196,7 @@ protected:
   void OnLoopAborted() noexcept override { aborted.store(true); }
 };
 
-} // namespace
+}  // namespace
 
 TEST(PeriodicRtThread, WaitForNextTickAbortStopsLoop) {
   AbortingThread t;
@@ -220,11 +217,11 @@ TEST(PeriodicRtThread, WaitForNextTickAbortStopsLoop) {
 namespace {
 
 class OverrunThread : public rtc::PeriodicRtThread {
-public:
+ public:
   std::atomic<int> overruns{0};
   std::atomic<std::uint64_t> last_consecutive{0};
 
-protected:
+ protected:
   void OnTick() noexcept override {
     // Sleep > period to force the next deadline wait to detect lag.
     std::this_thread::sleep_for(15ms);
@@ -236,7 +233,7 @@ protected:
   }
 };
 
-} // namespace
+}  // namespace
 
 TEST(PeriodicRtThread, OverrunHookFiresOnDeadlineMiss) {
   OverrunThread t;

@@ -29,7 +29,7 @@ namespace rtc_bt {
 /// Output ports:
 ///   - waypoints (vector<Pose6D>): generated tilt waypoint sequence
 class ComputeTiltSequence : public BT::SyncActionNode {
-public:
+ public:
   using BT::SyncActionNode::SyncActionNode;
 
   static BT::PortsList providedPorts();

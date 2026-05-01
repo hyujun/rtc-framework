@@ -19,16 +19,16 @@ namespace rtc_bt {
 /// the swap and published the latched /rtc_cm/active_controller_name).
 /// FAILURE on E-STOP, unknown name, or timeout.
 class SwitchController : public BT::SyncActionNode {
-public:
-  SwitchController(const std::string &name, const BT::NodeConfig &config,
+ public:
+  SwitchController(const std::string& name, const BT::NodeConfig& config,
                    std::shared_ptr<BtRosBridge> bridge);
 
   static BT::PortsList providedPorts();
 
   BT::NodeStatus tick() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
 };
 
-} // namespace rtc_bt
+}  // namespace rtc_bt

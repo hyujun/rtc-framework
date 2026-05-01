@@ -145,9 +145,7 @@ def _plot_device_ft_legacy(df, labels, save_dir=None):
     num_ft = len(labels)
     ncols = 2
     fig, axes = plt.subplots(num_ft, ncols, figsize=(14, 4 * num_ft), squeeze=False)
-    fig.suptitle(
-        "Fingertip Force/Torque (ONNX inference)", fontsize=16, fontweight="bold"
-    )
+    fig.suptitle("Fingertip Force/Torque (ONNX inference)", fontsize=16, fontweight="bold")
 
     t = df["timestamp"]
     for f_idx, label in enumerate(labels):
@@ -242,9 +240,7 @@ def plot_device_ft_output(df, fingertip_labels, save_dir=None):
         if col in df.columns:
             ax.plot(t, df[col], linewidth=1.2, color="C0")
             ax.fill_between(t, 0, df[col], alpha=0.2, color="C0")
-            ax.axhline(
-                y=0.1, color="red", linestyle="--", alpha=0.5, label="threshold (0.1)"
-            )
+            ax.axhline(y=0.1, color="red", linestyle="--", alpha=0.5, label="threshold (0.1)")
         ax.set_ylim(-0.05, 1.05)
         ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
@@ -485,8 +481,6 @@ def plot_sensor_tof_combined(df, save_dir=None):
     else:
         plt.show()
     plt.close()
-
-
 
 
 # ── Pipeline adapters ──────────────────────────────────────────────────────

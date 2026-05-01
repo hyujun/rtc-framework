@@ -20,7 +20,7 @@ namespace rtc_bt {
 /// Input ports:
 ///   - pose (string): 명명된 UR5e 포즈 (예: "demo_pose")
 class UR5eHoldPose : public BT::StatefulActionNode {
-public:
+ public:
   UR5eHoldPose(const std::string& name, const BT::NodeConfig& config,
                std::shared_ptr<BtRosBridge> bridge);
 
@@ -36,7 +36,7 @@ public:
   /// @brief halt 로깅
   void onHalted() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
 };
 

@@ -9,8 +9,7 @@ void QPSolverWrapper::init(int max_n_vars, int max_n_eq, int max_n_ineq,
   config_ = config;
 
   // ProxSuite dense QP 객체 생성 (max dimension, workspace pre-allocate)
-  qp_ = std::make_unique<proxsuite::proxqp::dense::QP<double>>(
-      max_n_vars, max_n_eq, max_n_ineq);
+  qp_ = std::make_unique<proxsuite::proxqp::dense::QP<double>>(max_n_vars, max_n_eq, max_n_ineq);
 
   // Solver 설정
   qp_->settings.eps_abs = config_.eps_abs;
@@ -50,13 +49,11 @@ const SolveResult& QPSolverWrapper::solve(const QPData& qp) noexcept {
   auto g_view = qp.g.head(n);
 
   // Dimension 변경 시 QP 재구성
-  const bool dims_changed =
-      (n != prev_n_vars_) || (n_eq != prev_n_eq_) || (n_ineq != prev_n_ineq_);
+  const bool dims_changed = (n != prev_n_vars_) || (n_eq != prev_n_eq_) || (n_ineq != prev_n_ineq_);
 
   if (first_solve_ || dims_changed) {
     // 새 dimension으로 QP 재구성
-    qp_ = std::make_unique<proxsuite::proxqp::dense::QP<double>>(
-        n, n_eq, n_ineq);
+    qp_ = std::make_unique<proxsuite::proxqp::dense::QP<double>>(n, n_eq, n_ineq);
 
     qp_->settings.eps_abs = config_.eps_abs;
     qp_->settings.eps_rel = config_.eps_rel;
@@ -68,25 +65,20 @@ const SolveResult& QPSolverWrapper::solve(const QPData& qp) noexcept {
 
     // 첫 solve 또는 dimension 변경 시에는 equality constrained initial guess
     qp_->settings.initial_guess =
-        proxsuite::proxqp::InitialGuessStatus::
-            EQUALITY_CONSTRAINED_INITIAL_GUESS;
+        proxsuite::proxqp::InitialGuessStatus::EQUALITY_CONSTRAINED_INITIAL_GUESS;
 
     if (n_eq > 0 && n_ineq > 0) {
       qp_->init(H_view, g_view, qp.A.topLeftCorner(n_eq, n), qp.b.head(n_eq),
-                qp.C.topLeftCorner(n_ineq, n), qp.l.head(n_ineq),
-                qp.u.head(n_ineq));
+                qp.C.topLeftCorner(n_ineq, n), qp.l.head(n_ineq), qp.u.head(n_ineq));
     } else if (n_eq > 0) {
-      qp_->init(H_view, g_view, qp.A.topLeftCorner(n_eq, n), qp.b.head(n_eq),
-                std::nullopt, std::nullopt,
-                std::nullopt);
+      qp_->init(H_view, g_view, qp.A.topLeftCorner(n_eq, n), qp.b.head(n_eq), std::nullopt,
+                std::nullopt, std::nullopt);
     } else if (n_ineq > 0) {
-      qp_->init(H_view, g_view, std::nullopt,
-                std::nullopt, qp.C.topLeftCorner(n_ineq, n),
+      qp_->init(H_view, g_view, std::nullopt, std::nullopt, qp.C.topLeftCorner(n_ineq, n),
                 qp.l.head(n_ineq), qp.u.head(n_ineq));
     } else {
-      qp_->init(H_view, g_view, std::nullopt,
-                std::nullopt, std::nullopt,
-                std::nullopt, std::nullopt);
+      qp_->init(H_view, g_view, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+                std::nullopt);
     }
 
     qp_->solve();
@@ -99,21 +91,17 @@ const SolveResult& QPSolverWrapper::solve(const QPData& qp) noexcept {
   } else {
     // Dimension 동일 → update + solve (warm-start)
     if (n_eq > 0 && n_ineq > 0) {
-      qp_->update(H_view, g_view, qp.A.topLeftCorner(n_eq, n),
-                  qp.b.head(n_eq), qp.C.topLeftCorner(n_ineq, n),
-                  qp.l.head(n_ineq), qp.u.head(n_ineq));
+      qp_->update(H_view, g_view, qp.A.topLeftCorner(n_eq, n), qp.b.head(n_eq),
+                  qp.C.topLeftCorner(n_ineq, n), qp.l.head(n_ineq), qp.u.head(n_ineq));
     } else if (n_eq > 0) {
-      qp_->update(H_view, g_view, qp.A.topLeftCorner(n_eq, n),
-                  qp.b.head(n_eq), std::nullopt,
+      qp_->update(H_view, g_view, qp.A.topLeftCorner(n_eq, n), qp.b.head(n_eq), std::nullopt,
                   std::nullopt, std::nullopt);
     } else if (n_ineq > 0) {
-      qp_->update(H_view, g_view, std::nullopt,
-                  std::nullopt, qp.C.topLeftCorner(n_ineq, n),
+      qp_->update(H_view, g_view, std::nullopt, std::nullopt, qp.C.topLeftCorner(n_ineq, n),
                   qp.l.head(n_ineq), qp.u.head(n_ineq));
     } else {
-      qp_->update(H_view, g_view, std::nullopt,
-                  std::nullopt, std::nullopt,
-                  std::nullopt, std::nullopt);
+      qp_->update(H_view, g_view, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+                  std::nullopt);
     }
 
     qp_->solve();
@@ -121,8 +109,7 @@ const SolveResult& QPSolverWrapper::solve(const QPData& qp) noexcept {
 
   // 결과 추출
   result_.converged =
-      (qp_->results.info.status ==
-       proxsuite::proxqp::QPSolverOutput::PROXQP_SOLVED);
+      (qp_->results.info.status == proxsuite::proxqp::QPSolverOutput::PROXQP_SOLVED);
   result_.iterations = static_cast<int>(qp_->results.info.iter);
 
   if (result_.converged) {
@@ -134,8 +121,7 @@ const SolveResult& QPSolverWrapper::solve(const QPData& qp) noexcept {
   prev_n_ineq_ = n_ineq;
 
   const auto t_end = std::chrono::steady_clock::now();
-  result_.solve_time_us =
-      std::chrono::duration<double, std::micro>(t_end - t_start).count();
+  result_.solve_time_us = std::chrono::duration<double, std::micro>(t_end - t_start).count();
 
   return result_;
 }

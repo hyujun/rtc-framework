@@ -10,7 +10,7 @@
 
 namespace rub = rtc_urdf_bridge;
 
-static std::string TestUrdfPath(const std::string &filename) {
+static std::string TestUrdfPath(const std::string& filename) {
   std::filesystem::path p(__FILE__);
   return (p.parent_path() / "urdf" / filename).string();
 }
@@ -64,8 +64,7 @@ TEST(XacroProcessorTest, ProcessXacroWithArgs) {
 }
 
 TEST(XacroProcessorTest, NonexistentFileThrows) {
-  EXPECT_THROW(rub::ProcessXacro("/nonexistent/path/robot.xacro"),
-               std::runtime_error);
+  EXPECT_THROW(rub::ProcessXacro("/nonexistent/path/robot.xacro"), std::runtime_error);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -73,11 +72,11 @@ TEST(XacroProcessorTest, NonexistentFileThrows) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class UrdfAnalyzerXacroTest : public ::testing::Test {
-protected:
+ protected:
   void SetUp() override {
-    analyzer_ = std::make_unique<rub::UrdfAnalyzer>(
-        TestUrdfPath("simple_robot.urdf.xacro"));
+    analyzer_ = std::make_unique<rub::UrdfAnalyzer>(TestUrdfPath("simple_robot.urdf.xacro"));
   }
+
   std::unique_ptr<rub::UrdfAnalyzer> analyzer_;
 };
 
@@ -99,7 +98,7 @@ TEST_F(UrdfAnalyzerXacroTest, ActiveJointCount) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class ModelBuilderXacroTest : public ::testing::Test {
-protected:
+ protected:
   void SetUp() override {
     rub::ModelConfig cfg;
     cfg.urdf_path = TestUrdfPath("simple_robot.urdf.xacro");
@@ -107,6 +106,7 @@ protected:
     cfg.sub_models.push_back({"arm", "base_link", "link_3"});
     builder_ = std::make_unique<rub::PinocchioModelBuilder>(cfg);
   }
+
   std::unique_ptr<rub::PinocchioModelBuilder> builder_;
 };
 

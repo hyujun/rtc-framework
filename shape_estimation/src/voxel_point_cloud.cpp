@@ -1,24 +1,26 @@
 #include "shape_estimation/voxel_point_cloud.hpp"
+
 #include "shape_estimation/shape_logging.hpp"
+
+#include <rclcpp/clock.hpp>
+#include <rclcpp/logging.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 
-#include <rclcpp/clock.hpp>
-#include <rclcpp/logging.hpp>
-
 namespace shape_estimation {
 
 namespace {
-auto logger() { return ::rtc::shape::logging::VoxelLogger(); }
+auto logger() {
+  return ::rtc::shape::logging::VoxelLogger();
+}
 }  // namespace
 
 VoxelPointCloud::VoxelPointCloud() : VoxelPointCloud(Config{}) {}
 
 VoxelPointCloud::VoxelPointCloud(const Config& config)
-    : config_(config),
-      expiry_ns_(static_cast<uint64_t>(config.expiry_duration_sec * 1.0e9)) {}
+    : config_(config), expiry_ns_(static_cast<uint64_t>(config.expiry_duration_sec * 1.0e9)) {}
 
 void VoxelPointCloud::AddSnapshot(const ToFSnapshot& snapshot) {
   [[maybe_unused]] const auto size_before = voxels_.size();
@@ -69,8 +71,7 @@ void VoxelPointCloud::AddSnapshot(const ToFSnapshot& snapshot) {
     } else {
       // 신규 추가 (max_points 초과 시 oldest 제거)
       if (static_cast<int>(voxels_.size()) >= config_.max_points) {
-        RCLCPP_WARN_ONCE(logger(),
-                         "최대 포인트 도달 (%d) → FIFO eviction 시작",
+        RCLCPP_WARN_ONCE(logger(), "최대 포인트 도달 (%d) → FIFO eviction 시작",
                          config_.max_points);
         // timestamp_index_ 앞쪽 = oldest → O(1) 접근
         auto oldest_ti = timestamp_index_.begin();
@@ -89,10 +90,9 @@ void VoxelPointCloud::AddSnapshot(const ToFSnapshot& snapshot) {
     }
   }
   static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
-  RCLCPP_DEBUG_THROTTLE(logger(), steady_clock,
-                        ::rtc::shape::logging::kThrottleSlowMs,
-                        "AddSnapshot: new=%zu, total=%zu",
-                        voxels_.size() - size_before, voxels_.size());
+  RCLCPP_DEBUG_THROTTLE(logger(), steady_clock, ::rtc::shape::logging::kThrottleSlowMs,
+                        "AddSnapshot: new=%zu, total=%zu", voxels_.size() - size_before,
+                        voxels_.size());
 }
 
 void VoxelPointCloud::RemoveExpired(uint64_t current_time_ns) {
@@ -101,9 +101,7 @@ void VoxelPointCloud::RemoveExpired(uint64_t current_time_ns) {
   }
 
   const auto size_before = voxels_.size();
-  const uint64_t cutoff = (current_time_ns > expiry_ns_)
-                              ? (current_time_ns - expiry_ns_)
-                              : 0;
+  const uint64_t cutoff = (current_time_ns > expiry_ns_) ? (current_time_ns - expiry_ns_) : 0;
 
   // timestamp_index_ は timestamp 순 정렬 → 앞쪽부터 순차 제거 O(K)
   auto it = timestamp_index_.begin();
@@ -115,10 +113,8 @@ void VoxelPointCloud::RemoveExpired(uint64_t current_time_ns) {
   const auto removed = size_before - voxels_.size();
   if (removed > 0) {
     static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
-    RCLCPP_DEBUG_THROTTLE(logger(), steady_clock,
-                          ::rtc::shape::logging::kThrottleSlowMs,
-                          "RemoveExpired: removed=%zu, remaining=%zu",
-                          removed, voxels_.size());
+    RCLCPP_DEBUG_THROTTLE(logger(), steady_clock, ::rtc::shape::logging::kThrottleSlowMs,
+                          "RemoveExpired: removed=%zu, remaining=%zu", removed, voxels_.size());
   }
 }
 

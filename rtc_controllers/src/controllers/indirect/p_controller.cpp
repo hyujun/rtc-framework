@@ -3,7 +3,7 @@
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_base/utils/device_passthrough.hpp"
 
-#include <algorithm> // std::copy, std::clamp
+#include <algorithm>  // std::copy, std::clamp
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -15,11 +15,9 @@
 
 namespace rtc {
 
-PController::PController(std::string_view urdf_path)
-    : PController(urdf_path, Gains{}) {}
+PController::PController(std::string_view urdf_path) : PController(urdf_path, Gains{}) {}
 
-PController::PController(std::string_view urdf_path, Gains gains)
-    : gains_lock_(gains) {
+PController::PController(std::string_view urdf_path, Gains gains) : gains_lock_(gains) {
   rtc_urdf_bridge::ModelConfig config;
   config.urdf_path = std::string(urdf_path);
   config.root_joint_type = "fixed";
@@ -34,7 +32,7 @@ PController::PController(std::string_view urdf_path, Gains gains)
 
 void PController::OnDeviceConfigsSet() {
   const auto primary = GetPrimaryDeviceName();
-  if (auto *cfg = GetDeviceNameConfig(primary); cfg) {
+  if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       auto fid = handle_->GetFrameId(cfg->urdf->tip_link);
       if (fid != 0) {
@@ -50,16 +48,14 @@ void PController::OnDeviceConfigsSet() {
   }
 }
 
-ControllerOutput PController::Compute(const ControllerState &state) noexcept {
+ControllerOutput PController::Compute(const ControllerState& state) noexcept {
   if (estopped_.load(std::memory_order_acquire)) {
     // E-STOP: hold current position, zero velocity
     ControllerOutput output{};
     output.valid = true;
     output.command_type = command_type_;
-    for (std::size_t d = 0; d < static_cast<std::size_t>(state.num_devices);
-         ++d) {
-      for (std::size_t j = 0;
-           j < static_cast<std::size_t>(state.devices[d].num_channels); ++j) {
+    for (std::size_t d = 0; d < static_cast<std::size_t>(state.num_devices); ++d) {
+      for (std::size_t j = 0; j < static_cast<std::size_t>(state.devices[d].num_channels); ++j) {
         output.devices[d].commands[j] = state.devices[d].positions[j];
         device_targets_[d][j] = state.devices[d].positions[j];
       }
@@ -71,8 +67,8 @@ ControllerOutput PController::Compute(const ControllerState &state) noexcept {
   output.num_devices = state.num_devices;
 
   // Device 0 (robot arm): P control
-  const auto &dev0 = state.devices[0];
-  auto &out0 = output.devices[0];
+  const auto& dev0 = state.devices[0];
+  auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
 
@@ -90,7 +86,7 @@ ControllerOutput PController::Compute(const ControllerState &state) noexcept {
   const auto nv = handle_->nv();
   std::span<const double> q_span(q_buf.data(), static_cast<std::size_t>(nv));
   handle_->ComputeForwardKinematics(q_span);
-  const pinocchio::SE3 &tcp = handle_->GetFramePlacement(tip_frame_id_);
+  const pinocchio::SE3& tcp = handle_->GetFramePlacement(tip_frame_id_);
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
 
   output.actual_task_positions[0] = tcp.translation().x();
@@ -102,8 +98,7 @@ ControllerOutput PController::Compute(const ControllerState &state) noexcept {
 
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.target_positions[i] = device_targets_[0][i];
-    out0.target_velocities[i] =
-        gains.kp[i] * (device_targets_[0][i] - dev0.positions[i]);
+    out0.target_velocities[i] = gains.kp[i] * (device_targets_[0][i] - dev0.positions[i]);
     out0.goal_positions[i] = device_targets_[0][i];
   }
 
@@ -114,23 +109,19 @@ ControllerOutput PController::Compute(const ControllerState &state) noexcept {
   return output;
 }
 
-void PController::SetDeviceTarget(int device_idx,
-                                  std::span<const double> target) noexcept {
+void PController::SetDeviceTarget(int device_idx, std::span<const double> target) noexcept {
   if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices)
     return;
   const auto ud = static_cast<std::size_t>(device_idx);
-  const std::size_t n =
-      std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
+  const std::size_t n = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
   for (std::size_t i = 0; i < n; ++i) {
     device_targets_[ud][i] = target[i];
   }
 }
 
-void PController::InitializeHoldPosition(
-    const ControllerState &state) noexcept {
-  for (std::size_t d = 0; d < static_cast<std::size_t>(state.num_devices);
-       ++d) {
-    const auto &dev = state.devices[d];
+void PController::InitializeHoldPosition(const ControllerState& state) noexcept {
+  for (std::size_t d = 0; d < static_cast<std::size_t>(state.num_devices); ++d) {
+    const auto& dev = state.devices[d];
     if (!dev.valid && d > 0)
       continue;
     for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) &&
@@ -141,16 +132,15 @@ void PController::InitializeHoldPosition(
   }
 }
 
-void PController::ClampCommands(
-    std::array<double, kMaxDeviceChannels> &commands, int n) const noexcept {
-  rtc::utils::ClampSymmetric(commands, n,
-                             std::span<const double>(max_joint_velocity_),
+void PController::ClampCommands(std::array<double, kMaxDeviceChannels>& commands,
+                                int n) const noexcept {
+  rtc::utils::ClampSymmetric(commands, n, std::span<const double>(max_joint_velocity_),
                              kDefaultMaxJointVelocity);
 }
 
 // ── Controller registry hooks ────────────────────────────────────────────────
 
-void PController::LoadConfig(const YAML::Node &cfg) {
+void PController::LoadConfig(const YAML::Node& cfg) {
   RTControllerInterface::LoadConfig(cfg);
   if (!cfg) {
     return;
@@ -164,9 +154,8 @@ void PController::LoadConfig(const YAML::Node &cfg) {
   gains_lock_.Store(g);
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
-    command_type_ =
-        (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
+    command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
 }
 
-} // namespace rtc
+}  // namespace rtc

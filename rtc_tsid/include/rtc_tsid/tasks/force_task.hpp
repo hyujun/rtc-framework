@@ -1,9 +1,9 @@
 #pragma once
 
+#include "rtc_tsid/core/task_base.hpp"
+
 #include <string>
 #include <unordered_map>
-
-#include "rtc_tsid/core/task_base.hpp"
 
 namespace rtc::tsid {
 
@@ -21,26 +21,17 @@ namespace rtc::tsid {
 // ────────────────────────────────────────────────
 class ForceTask final : public TaskBase {
  public:
-  [[nodiscard]] std::string_view name() const noexcept override {
-    return "force";
-  }
+  [[nodiscard]] std::string_view name() const noexcept override { return "force"; }
 
-  void init(const pinocchio::Model& model,
-            const RobotModelInfo& robot_info,
-            PinocchioCache& cache,
+  void init(const pinocchio::Model& model, const RobotModelInfo& robot_info, PinocchioCache& cache,
             const YAML::Node& task_config) override;
 
-  [[nodiscard]] int residual_dim() const noexcept override {
-    return current_residual_dim_;
-  }
+  [[nodiscard]] int residual_dim() const noexcept override { return current_residual_dim_; }
 
-  void compute_residual(
-      const PinocchioCache& cache,
-      const ControlReference& ref,
-      const ContactState& contacts,
-      int n_vars,
-      Eigen::Ref<Eigen::MatrixXd> J_block,
-      Eigen::Ref<Eigen::VectorXd> r_block) noexcept override;
+  void compute_residual(const PinocchioCache& cache, const ControlReference& ref,
+                        const ContactState& contacts, int n_vars,
+                        Eigen::Ref<Eigen::MatrixXd> J_block,
+                        Eigen::Ref<Eigen::VectorXd> r_block) noexcept override;
 
   /// @brief ContactManagerConfig 포인터 설정 (init 후 외부에서 호출)
   void set_contact_manager(const ContactManagerConfig* manager) noexcept;
@@ -48,8 +39,7 @@ class ForceTask final : public TaskBase {
   /// @brief 개별 contact의 force reference 설정 (RT-safe)
   /// @param contact_index ContactManagerConfig 내 인덱스
   /// @param lambda_des 해당 contact의 desired force [contact_dim]
-  void set_force_reference(int contact_index,
-                           const Eigen::VectorXd& lambda_des) noexcept;
+  void set_force_reference(int contact_index, const Eigen::VectorXd& lambda_des) noexcept;
 
   /// @brief 전체 contact force reference 일괄 설정 (RT-safe)
   /// @param lambda_des_all 전체 contact force [max_contact_vars]
@@ -65,7 +55,7 @@ class ForceTask final : public TaskBase {
   const ContactManagerConfig* manager_{nullptr};
 
   // Per-contact force reference (max_contact_vars 크기로 pre-allocate)
-  Eigen::VectorXd lambda_des_;   // [max_contact_vars]
+  Eigen::VectorXd lambda_des_;  // [max_contact_vars]
   bool has_local_ref_{false};
 };
 

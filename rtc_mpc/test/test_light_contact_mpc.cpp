@@ -25,6 +25,12 @@
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "rtc_mpc/handler/light_contact_mpc.hpp"
+#include "rtc_mpc/model/robot_model_handler.hpp"
+#include "rtc_mpc/phase/phase_context.hpp"
+#include "rtc_mpc/phase/phase_cost_config.hpp"
+#include "rtc_mpc/types/mpc_solution_types.hpp"
+
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
@@ -33,17 +39,11 @@
 #include <iostream>
 #include <vector>
 
-#include "rtc_mpc/handler/light_contact_mpc.hpp"
-#include "rtc_mpc/model/robot_model_handler.hpp"
-#include "rtc_mpc/phase/phase_context.hpp"
-#include "rtc_mpc/phase/phase_cost_config.hpp"
-#include "rtc_mpc/types/mpc_solution_types.hpp"
-
 namespace {
 
-constexpr const char *kPandaUrdf = RTC_PANDA_URDF_PATH;
+constexpr const char* kPandaUrdf = RTC_PANDA_URDF_PATH;
 
-constexpr const char *kCostYaml = R"(
+constexpr const char* kCostYaml = R"(
 horizon_length: 20
 dt: 0.01
 w_frame_placement: 100.0
@@ -58,7 +58,7 @@ custom_weights: {}
 )";
 
 class LightContactMPCTest : public ::testing::Test {
-protected:
+ protected:
   void SetUp() override {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed — run ./install.sh verify";
@@ -73,13 +73,11 @@ contact_frames:
   - name: panda_rightfinger
     dim: 3
 )");
-    ASSERT_EQ(handler_.Init(model_, robot_cfg),
-              rtc::mpc::RobotModelInitError::kNoError);
+    ASSERT_EQ(handler_.Init(model_, robot_cfg), rtc::mpc::RobotModelInitError::kNoError);
 
     auto cost_node = YAML::Load(kCostYaml);
-    ASSERT_EQ(
-        rtc::mpc::PhaseCostConfig::LoadFromYaml(cost_node, handler_, cfg_),
-        rtc::mpc::PhaseCostConfigError::kNoError);
+    ASSERT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(cost_node, handler_, cfg_),
+              rtc::mpc::PhaseCostConfigError::kNoError);
 
     ctx_.phase_id = 0;
     ctx_.phase_name = "test";
@@ -126,15 +124,14 @@ contact_frames:
 
 TEST_F(LightContactMPCTest, InitSucceedsOnValidContext) {
   rtc::mpc::LightContactMPC mpc;
-  EXPECT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_),
-            rtc::mpc::MPCInitError::kNoError);
+  EXPECT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_), rtc::mpc::MPCInitError::kNoError);
   EXPECT_TRUE(mpc.Initialised());
   EXPECT_EQ(mpc.ocp_type(), std::string_view("light_contact"));
   EXPECT_EQ(mpc.horizon_length(), cfg_.horizon_length);
   EXPECT_EQ(mpc.nq(), handler_.nq());
   EXPECT_EQ(mpc.nv(), handler_.nv());
   EXPECT_EQ(mpc.nu(), handler_.nu());
-  EXPECT_EQ(mpc.n_contact_vars(), 6); // 2×3
+  EXPECT_EQ(mpc.n_contact_vars(), 6);  // 2×3
 }
 
 TEST_F(LightContactMPCTest, InitRejectsUninitialisedModel) {
@@ -163,8 +160,7 @@ TEST_F(LightContactMPCTest, InitRejectsInvalidSolverTol) {
 
 TEST_F(LightContactMPCTest, SolveReturnsValidSolutionOnFirstCall) {
   rtc::mpc::LightContactMPC mpc;
-  ASSERT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_),
-            rtc::mpc::MPCInitError::kNoError);
+  ASSERT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_), rtc::mpc::MPCInitError::kNoError);
 
   const auto state = MakeStateSnapshot();
   rtc::mpc::MPCSolution out{};
@@ -184,35 +180,30 @@ TEST_F(LightContactMPCTest, SolveReturnsValidSolutionOnFirstCall) {
 
 TEST_F(LightContactMPCTest, SolveRejectsStateDimMismatch) {
   rtc::mpc::LightContactMPC mpc;
-  ASSERT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_),
-            rtc::mpc::MPCInitError::kNoError);
+  ASSERT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_), rtc::mpc::MPCInitError::kNoError);
 
   auto bad_state = MakeStateSnapshot();
   bad_state.nq = handler_.nq() + 1;
   rtc::mpc::MPCSolution out{};
-  EXPECT_EQ(mpc.Solve(ctx_, bad_state, out),
-            rtc::mpc::MPCSolveError::kStateDimMismatch);
+  EXPECT_EQ(mpc.Solve(ctx_, bad_state, out), rtc::mpc::MPCSolveError::kStateDimMismatch);
 }
 
 TEST_F(LightContactMPCTest, SolveRejectsCrossModeContext) {
   rtc::mpc::LightContactMPC mpc;
-  ASSERT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_),
-            rtc::mpc::MPCInitError::kNoError);
+  ASSERT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_), rtc::mpc::MPCInitError::kNoError);
 
   auto alt = ctx_;
   alt.ocp_type = "contact_rich";
   const auto state = MakeStateSnapshot();
   rtc::mpc::MPCSolution out{};
-  EXPECT_EQ(mpc.Solve(alt, state, out),
-            rtc::mpc::MPCSolveError::kRebuildRequired);
+  EXPECT_EQ(mpc.Solve(alt, state, out), rtc::mpc::MPCSolveError::kRebuildRequired);
 }
 
 TEST_F(LightContactMPCTest, SolveBeforeInitRejected) {
   rtc::mpc::LightContactMPC mpc;
   const auto state = MakeStateSnapshot();
   rtc::mpc::MPCSolution out{};
-  EXPECT_EQ(mpc.Solve(ctx_, state, out),
-            rtc::mpc::MPCSolveError::kNotInitialised);
+  EXPECT_EQ(mpc.Solve(ctx_, state, out), rtc::mpc::MPCSolveError::kNotInitialised);
 }
 
 // ── Warm-start exit criterion (≥50% iter drop on small ref shift) ────────
@@ -225,16 +216,14 @@ TEST_F(LightContactMPCTest, WarmStartReducesIterationsAtLeastFiftyPercent) {
   solver_cfg_.max_iters = 120;
 
   rtc::mpc::LightContactMPC mpc;
-  ASSERT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_),
-            rtc::mpc::MPCInitError::kNoError);
+  ASSERT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_), rtc::mpc::MPCInitError::kNoError);
 
   const auto state = MakeStateSnapshot();
   rtc::mpc::MPCSolution out{};
 
   ASSERT_EQ(mpc.Solve(ctx_, state, out), rtc::mpc::MPCSolveError::kNoError);
   const int cold_iters = out.iterations;
-  ASSERT_GE(cold_iters, 4)
-      << "cold solve must do non-trivial work for the ≥50% drop gate";
+  ASSERT_GE(cold_iters, 4) << "cold solve must do non-trivial work for the ≥50% drop gate";
 
   // Small target perturbation — warm-start should cover it cheaply.
   rtc::mpc::PhaseContext ctx_next = ctx_;
@@ -246,8 +235,7 @@ TEST_F(LightContactMPCTest, WarmStartReducesIterationsAtLeastFiftyPercent) {
   ASSERT_EQ(mpc.Solve(ctx_next, state, out), rtc::mpc::MPCSolveError::kNoError);
   const int warm_iters = out.iterations;
 
-  std::cout << "[LightContactMPC warm-start] cold=" << cold_iters
-            << " warm=" << warm_iters << "\n";
+  std::cout << "[LightContactMPC warm-start] cold=" << cold_iters << " warm=" << warm_iters << "\n";
 
   EXPECT_LE(warm_iters * 2, cold_iters);
 }
@@ -256,8 +244,7 @@ TEST_F(LightContactMPCTest, WarmStartReducesIterationsAtLeastFiftyPercent) {
 
 TEST_F(LightContactMPCTest, SteadyStateSolveSequenceStable) {
   rtc::mpc::LightContactMPC mpc;
-  ASSERT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_),
-            rtc::mpc::MPCInitError::kNoError);
+  ASSERT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_), rtc::mpc::MPCInitError::kNoError);
 
   const auto state = MakeStateSnapshot();
   rtc::mpc::MPCSolution out{};
@@ -268,16 +255,14 @@ TEST_F(LightContactMPCTest, SteadyStateSolveSequenceStable) {
     const auto t0 = std::chrono::steady_clock::now();
     const auto err = mpc.Solve(ctx_, state, out);
     const auto t1 = std::chrono::steady_clock::now();
-    wall_us.push_back(
-        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
+    wall_us.push_back(std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
     ASSERT_EQ(err, rtc::mpc::MPCSolveError::kNoError);
   }
   std::sort(wall_us.begin(), wall_us.end());
   const long p50 = wall_us[wall_us.size() / 2];
   const long p99 = wall_us.back();
-  std::cout << "[LightContactMPC perf] 50 ticks: p50=" << p50
-            << "us p99=" << p99 << "us\n";
+  std::cout << "[LightContactMPC perf] 50 ticks: p50=" << p50 << "us p99=" << p99 << "us\n";
   SUCCEED();
 }
 
-} // namespace
+}  // namespace

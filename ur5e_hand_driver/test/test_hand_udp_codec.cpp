@@ -2,9 +2,9 @@
 //
 // Tier 1: Pure computation, no ROS2 or network dependencies.
 
-#include <gtest/gtest.h>
-
 #include "ur5e_hand_driver/hand_udp_codec.hpp"
+
+#include <gtest/gtest.h>
 
 #include <array>
 #include <cstdint>
@@ -16,8 +16,7 @@ using namespace hand_packets;
 
 // ── Encode requests ─────────────────────────────────────────────────────────
 
-TEST(HandUdpCodecEncode, EncodeReadRequest)
-{
+TEST(HandUdpCodecEncode, EncodeReadRequest) {
   std::array<uint8_t, kMotorPacketBytes> buf{};
   EncodeReadRequest(Command::kReadPosition, buf);
 
@@ -32,8 +31,7 @@ TEST(HandUdpCodecEncode, EncodeReadRequest)
   }
 }
 
-TEST(HandUdpCodecEncode, EncodeMotorReadRequest)
-{
+TEST(HandUdpCodecEncode, EncodeMotorReadRequest) {
   std::array<uint8_t, kSensorRequestBytes> buf{};
   EncodeMotorReadRequest(Command::kReadVelocity, buf, JointMode::kJoint);
 
@@ -42,8 +40,7 @@ TEST(HandUdpCodecEncode, EncodeMotorReadRequest)
   EXPECT_EQ(buf[2], static_cast<uint8_t>(JointMode::kJoint));
 }
 
-TEST(HandUdpCodecEncode, EncodeSensorReadRequest)
-{
+TEST(HandUdpCodecEncode, EncodeSensorReadRequest) {
   std::array<uint8_t, kSensorRequestBytes> buf{};
   EncodeSensorReadRequest(Command::kReadSensor0, buf, SensorMode::kNn);
 
@@ -52,8 +49,7 @@ TEST(HandUdpCodecEncode, EncodeSensorReadRequest)
   EXPECT_EQ(buf[2], static_cast<uint8_t>(SensorMode::kNn));
 }
 
-TEST(HandUdpCodecEncode, EncodeSetSensorMode)
-{
+TEST(HandUdpCodecEncode, EncodeSetSensorMode) {
   std::array<uint8_t, kSensorRequestBytes> buf{};
   EncodeSetSensorMode(SensorMode::kRaw, buf);
 
@@ -62,8 +58,7 @@ TEST(HandUdpCodecEncode, EncodeSetSensorMode)
   EXPECT_EQ(buf[2], static_cast<uint8_t>(SensorMode::kRaw));
 }
 
-TEST(HandUdpCodecEncode, EncodeReadAllMotorsRequest)
-{
+TEST(HandUdpCodecEncode, EncodeReadAllMotorsRequest) {
   std::array<uint8_t, kAllMotorRequestBytes> buf{};
   EncodeReadAllMotorsRequest(buf, JointMode::kMotor);
 
@@ -72,8 +67,7 @@ TEST(HandUdpCodecEncode, EncodeReadAllMotorsRequest)
   EXPECT_EQ(buf[2], static_cast<uint8_t>(JointMode::kMotor));
 }
 
-TEST(HandUdpCodecEncode, EncodeReadAllSensorsRequest)
-{
+TEST(HandUdpCodecEncode, EncodeReadAllSensorsRequest) {
   std::array<uint8_t, kAllSensorRequestBytes> buf{};
   EncodeReadAllSensorsRequest(buf, SensorMode::kRaw);
 
@@ -82,8 +76,7 @@ TEST(HandUdpCodecEncode, EncodeReadAllSensorsRequest)
   EXPECT_EQ(buf[2], static_cast<uint8_t>(SensorMode::kRaw));
 }
 
-TEST(HandUdpCodecEncode, EncodeWritePosition)
-{
+TEST(HandUdpCodecEncode, EncodeWritePosition) {
   std::array<float, kNumHandMotors> positions{};
   for (int i = 0; i < kNumHandMotors; ++i) {
     positions[static_cast<std::size_t>(i)] = static_cast<float>(i) + 0.5f;
@@ -104,8 +97,7 @@ TEST(HandUdpCodecEncode, EncodeWritePosition)
   }
 }
 
-TEST(HandUdpCodecEncode, EncodeWritePosition_JointMode)
-{
+TEST(HandUdpCodecEncode, EncodeWritePosition_JointMode) {
   std::array<float, kNumHandMotors> positions{};
   std::array<uint8_t, kMotorPacketBytes> buf{};
   EncodeWritePosition(positions, buf, JointMode::kJoint);
@@ -132,13 +124,11 @@ class DecodeMotorResponseTest : public ::testing::Test {
   std::array<uint8_t, kMotorPacketSize> buf_{};
 };
 
-TEST_F(DecodeMotorResponseTest, ValidDecode)
-{
+TEST_F(DecodeMotorResponseTest, ValidDecode) {
   uint8_t cmd_out{}, mode_out{};
   std::array<float, kMotorDataCount> data_out{};
 
-  ASSERT_TRUE(DecodeMotorResponse(buf_.data(), buf_.size(),
-                                  cmd_out, mode_out, data_out));
+  ASSERT_TRUE(DecodeMotorResponse(buf_.data(), buf_.size(), cmd_out, mode_out, data_out));
   EXPECT_EQ(cmd_out, static_cast<uint8_t>(Command::kReadPosition));
   EXPECT_EQ(mode_out, static_cast<uint8_t>(JointMode::kJoint));
 
@@ -147,8 +137,7 @@ TEST_F(DecodeMotorResponseTest, ValidDecode)
   }
 }
 
-TEST(HandUdpCodecDecode, DecodeMotorResponse_TooShort)
-{
+TEST(HandUdpCodecDecode, DecodeMotorResponse_TooShort) {
   std::array<uint8_t, 42> buf{};
   uint8_t cmd, mode;
   std::array<float, kMotorDataCount> data{};
@@ -172,8 +161,7 @@ class DecodeSensorResponseTest : public ::testing::Test {
     }
     // tof[13..15] = 10, 20, 30
     for (int i = 0; i < kTofCount; ++i) {
-      src.data[static_cast<std::size_t>(kBarometerCount + kReservedCount + i)] =
-          (i + 1) * 10;
+      src.data[static_cast<std::size_t>(kBarometerCount + kReservedCount + i)] = (i + 1) * 10;
     }
     std::memcpy(buf_.data(), &src, kSensorResponseSize);
   }
@@ -181,20 +169,17 @@ class DecodeSensorResponseTest : public ::testing::Test {
   std::array<uint8_t, kSensorResponseSize> buf_{};
 };
 
-TEST_F(DecodeSensorResponseTest, ValidDecode_Float)
-{
+TEST_F(DecodeSensorResponseTest, ValidDecode_Float) {
   uint8_t cmd_out{}, mode_out{};
   std::array<float, kSensorValuesPerFingertip> data_out{};
 
-  ASSERT_TRUE(DecodeSensorResponse(buf_.data(), buf_.size(),
-                                   cmd_out, mode_out, data_out));
+  ASSERT_TRUE(DecodeSensorResponse(buf_.data(), buf_.size(), cmd_out, mode_out, data_out));
   EXPECT_EQ(cmd_out, static_cast<uint8_t>(Command::kReadSensor0));
   EXPECT_EQ(mode_out, static_cast<uint8_t>(SensorMode::kRaw));
 
   // barometer: out[0..7]
   for (int i = 0; i < kBarometerCount; ++i) {
-    EXPECT_FLOAT_EQ(data_out[static_cast<std::size_t>(i)],
-                    static_cast<float>((i + 1) * 100));
+    EXPECT_FLOAT_EQ(data_out[static_cast<std::size_t>(i)], static_cast<float>((i + 1) * 100));
   }
   // tof: out[8..10]
   for (int i = 0; i < kTofCount; ++i) {
@@ -203,21 +188,18 @@ TEST_F(DecodeSensorResponseTest, ValidDecode_Float)
   }
 }
 
-TEST_F(DecodeSensorResponseTest, ValidDecode_Raw)
-{
+TEST_F(DecodeSensorResponseTest, ValidDecode_Raw) {
   uint8_t cmd_out{}, mode_out{};
   std::array<int32_t, kSensorValuesPerFingertip> data_out{};
 
-  ASSERT_TRUE(DecodeSensorResponseRaw(buf_.data(), buf_.size(),
-                                      cmd_out, mode_out, data_out));
+  ASSERT_TRUE(DecodeSensorResponseRaw(buf_.data(), buf_.size(), cmd_out, mode_out, data_out));
   EXPECT_EQ(data_out[0], 100);
   EXPECT_EQ(data_out[7], 800);
   EXPECT_EQ(data_out[8], 10);   // tof[0]
   EXPECT_EQ(data_out[10], 30);  // tof[2]
 }
 
-TEST(HandUdpCodecDecode, DecodeSensorResponse_TooShort)
-{
+TEST(HandUdpCodecDecode, DecodeSensorResponse_TooShort) {
   std::array<uint8_t, 66> buf{};
   uint8_t cmd, mode;
   std::array<float, kSensorValuesPerFingertip> data{};
@@ -226,8 +208,7 @@ TEST(HandUdpCodecDecode, DecodeSensorResponse_TooShort)
 
 // ── Bulk motor decode ───────────────────────────────────────────────────────
 
-TEST(HandUdpCodecDecode, DecodeAllMotorResponse_Valid)
-{
+TEST(HandUdpCodecDecode, DecodeAllMotorResponse_Valid) {
   AllMotorResponsePacket src{};
   src.id = kDeviceId;
   src.cmd = static_cast<uint8_t>(Command::kReadAllMotors);
@@ -244,8 +225,7 @@ TEST(HandUdpCodecDecode, DecodeAllMotorResponse_Valid)
   uint8_t cmd_out{}, mode_out{};
   std::array<float, kMotorDataCount> pos{}, vel{}, cur{};
 
-  ASSERT_TRUE(DecodeAllMotorResponse(buf.data(), buf.size(),
-                                     cmd_out, mode_out, pos, vel, cur));
+  ASSERT_TRUE(DecodeAllMotorResponse(buf.data(), buf.size(), cmd_out, mode_out, pos, vel, cur));
   EXPECT_EQ(cmd_out, static_cast<uint8_t>(Command::kReadAllMotors));
   EXPECT_EQ(mode_out, static_cast<uint8_t>(JointMode::kMotor));
 
@@ -256,19 +236,16 @@ TEST(HandUdpCodecDecode, DecodeAllMotorResponse_Valid)
   }
 }
 
-TEST(HandUdpCodecDecode, DecodeAllMotorResponse_TooShort)
-{
+TEST(HandUdpCodecDecode, DecodeAllMotorResponse_TooShort) {
   std::array<uint8_t, 122> buf{};
   uint8_t cmd, mode;
   std::array<float, kMotorDataCount> pos{}, vel{}, cur{};
-  EXPECT_FALSE(DecodeAllMotorResponse(buf.data(), buf.size(),
-                                      cmd, mode, pos, vel, cur));
+  EXPECT_FALSE(DecodeAllMotorResponse(buf.data(), buf.size(), cmd, mode, pos, vel, cur));
 }
 
 // ── Bulk sensor decode ──────────────────────────────────────────────────────
 
-TEST(HandUdpCodecDecode, DecodeAllSensorResponseRaw_Valid)
-{
+TEST(HandUdpCodecDecode, DecodeAllSensorResponseRaw_Valid) {
   AllSensorResponsePacket src{};
   src.id = kDeviceId;
   src.cmd = static_cast<uint8_t>(Command::kReadAllSensors);
@@ -278,8 +255,7 @@ TEST(HandUdpCodecDecode, DecodeAllSensorResponseRaw_Valid)
   for (int f = 0; f < kDefaultNumFingertips; ++f) {
     const auto base = static_cast<std::size_t>(f) * kSensorDataPerPacket;
     for (int b = 0; b < kBarometerCount; ++b) {
-      src.data[base + static_cast<std::size_t>(b)] =
-          static_cast<int32_t>(f * 100 + b);
+      src.data[base + static_cast<std::size_t>(b)] = static_cast<int32_t>(f * 100 + b);
     }
     for (int r = 0; r < kReservedCount; ++r) {
       src.data[base + static_cast<std::size_t>(kBarometerCount + r)] = -1;
@@ -296,9 +272,8 @@ TEST(HandUdpCodecDecode, DecodeAllSensorResponseRaw_Valid)
   uint8_t cmd_out{}, mode_out{};
   std::array<int32_t, kDefaultNumFingertips * kSensorValuesPerFingertip> out{};
 
-  ASSERT_TRUE(DecodeAllSensorResponseRaw(buf.data(), buf.size(),
-                                         cmd_out, mode_out,
-                                         out.data(), kDefaultNumFingertips));
+  ASSERT_TRUE(DecodeAllSensorResponseRaw(buf.data(), buf.size(), cmd_out, mode_out, out.data(),
+                                         kDefaultNumFingertips));
   EXPECT_EQ(cmd_out, static_cast<uint8_t>(Command::kReadAllSensors));
 
   for (int f = 0; f < kDefaultNumFingertips; ++f) {
@@ -307,16 +282,14 @@ TEST(HandUdpCodecDecode, DecodeAllSensorResponseRaw_Valid)
       EXPECT_EQ(out[out_base + static_cast<std::size_t>(b)], f * 100 + b);
     }
     for (int t = 0; t < kTofCount; ++t) {
-      EXPECT_EQ(out[out_base + static_cast<std::size_t>(kBarometerCount + t)],
-                f * 1000 + t);
+      EXPECT_EQ(out[out_base + static_cast<std::size_t>(kBarometerCount + t)], f * 1000 + t);
     }
   }
 }
 
 // ── Legacy API ──────────────────────────────────────────────────────────────
 
-TEST(HandUdpCodecLegacy, DecodeResponse_WithoutMode)
-{
+TEST(HandUdpCodecLegacy, DecodeResponse_WithoutMode) {
   MotorPacket src{};
   src.id = kDeviceId;
   src.cmd = static_cast<uint8_t>(Command::kReadPosition);
@@ -335,8 +308,7 @@ TEST(HandUdpCodecLegacy, DecodeResponse_WithoutMode)
 
 // ── Encode-Decode Roundtrip ─────────────────────────────────────────────────
 
-TEST(HandUdpCodecRoundtrip, WritePosition_EncodeDecodeRoundtrip)
-{
+TEST(HandUdpCodecRoundtrip, WritePosition_EncodeDecodeRoundtrip) {
   std::array<float, kNumHandMotors> original{};
   for (int i = 0; i < kNumHandMotors; ++i) {
     original[static_cast<std::size_t>(i)] = static_cast<float>(i) * 3.14f;
@@ -349,8 +321,7 @@ TEST(HandUdpCodecRoundtrip, WritePosition_EncodeDecodeRoundtrip)
   // Decode
   uint8_t cmd_out{}, mode_out{};
   std::array<float, kMotorDataCount> decoded{};
-  ASSERT_TRUE(DecodeMotorResponse(buf.data(), buf.size(),
-                                  cmd_out, mode_out, decoded));
+  ASSERT_TRUE(DecodeMotorResponse(buf.data(), buf.size(), cmd_out, mode_out, decoded));
   EXPECT_EQ(cmd_out, static_cast<uint8_t>(Command::kWritePosition));
   EXPECT_EQ(mode_out, static_cast<uint8_t>(JointMode::kJoint));
 
@@ -361,20 +332,17 @@ TEST(HandUdpCodecRoundtrip, WritePosition_EncodeDecodeRoundtrip)
 
 // ── Bulk sensor decode: too-short buffer ────────────────────────────────────
 
-TEST(HandUdpCodecDecode, DecodeAllSensorResponseRaw_TooShort)
-{
+TEST(HandUdpCodecDecode, DecodeAllSensorResponseRaw_TooShort) {
   std::array<uint8_t, 258> buf{};
   uint8_t cmd, mode;
   std::array<int32_t, kDefaultNumFingertips * kSensorValuesPerFingertip> out{};
-  EXPECT_FALSE(DecodeAllSensorResponseRaw(buf.data(), buf.size(),
-                                          cmd, mode,
-                                          out.data(), kDefaultNumFingertips));
+  EXPECT_FALSE(DecodeAllSensorResponseRaw(buf.data(), buf.size(), cmd, mode, out.data(),
+                                          kDefaultNumFingertips));
 }
 
 // ── Sensor mode encode-decode roundtrip ─────────────────────────────────────
 
-TEST(HandUdpCodecRoundtrip, SensorMode_EncodeVerify)
-{
+TEST(HandUdpCodecRoundtrip, SensorMode_EncodeVerify) {
   std::array<uint8_t, kSensorRequestBytes> buf{};
   EncodeSetSensorMode(hand_packets::SensorMode::kNn, buf);
 
@@ -385,8 +353,7 @@ TEST(HandUdpCodecRoundtrip, SensorMode_EncodeVerify)
 
 // ── Bulk motor encode with JointMode::kJoint ────────────────────────────────
 
-TEST(HandUdpCodecEncode, EncodeReadAllMotorsRequest_JointMode)
-{
+TEST(HandUdpCodecEncode, EncodeReadAllMotorsRequest_JointMode) {
   std::array<uint8_t, kAllMotorRequestBytes> buf{};
   EncodeReadAllMotorsRequest(buf, hand_packets::JointMode::kJoint);
 
@@ -395,8 +362,7 @@ TEST(HandUdpCodecEncode, EncodeReadAllMotorsRequest_JointMode)
 
 // ── Bulk sensor encode with NnMode ──────────────────────────────────────────
 
-TEST(HandUdpCodecEncode, EncodeReadAllSensorsRequest_NnMode)
-{
+TEST(HandUdpCodecEncode, EncodeReadAllSensorsRequest_NnMode) {
   std::array<uint8_t, kAllSensorRequestBytes> buf{};
   EncodeReadAllSensorsRequest(buf, hand_packets::SensorMode::kNn);
 
@@ -405,8 +371,7 @@ TEST(HandUdpCodecEncode, EncodeReadAllSensorsRequest_NnMode)
 
 // ── DecodeMotorResponse with wrong cmd: still decodes bytes ─────────────────
 
-TEST(HandUdpCodecDecode, DecodeMotorResponse_AnyCmd)
-{
+TEST(HandUdpCodecDecode, DecodeMotorResponse_AnyCmd) {
   // Build packet with kReadVelocity cmd
   hand_packets::MotorPacket src{};
   src.id = hand_packets::kDeviceId;
@@ -419,16 +384,14 @@ TEST(HandUdpCodecDecode, DecodeMotorResponse_AnyCmd)
 
   uint8_t cmd_out{}, mode_out{};
   std::array<float, hand_packets::kMotorDataCount> data_out{};
-  ASSERT_TRUE(DecodeMotorResponse(buf.data(), buf.size(),
-                                  cmd_out, mode_out, data_out));
+  ASSERT_TRUE(DecodeMotorResponse(buf.data(), buf.size(), cmd_out, mode_out, data_out));
   EXPECT_EQ(cmd_out, static_cast<uint8_t>(hand_packets::Command::kReadVelocity));
   EXPECT_FLOAT_EQ(data_out[0], 99.9f);
 }
 
 // ── Protocol constant aliases ───────────────────────────────────────────────
 
-TEST(HandUdpCodecConstants, Aliases)
-{
+TEST(HandUdpCodecConstants, Aliases) {
   EXPECT_EQ(kMotorPacketBytes, 43u);
   EXPECT_EQ(kSensorRequestBytes, 3u);
   EXPECT_EQ(kSensorResponseBytes, 67u);

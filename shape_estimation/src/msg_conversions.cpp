@@ -26,18 +26,15 @@ ToFSnapshot ConvertFromMsg(const rtc_msgs::msg::ToFSnapshot& msg) {
   ToFSnapshot snapshot;
 
   // 타임스탬프
-  const auto sec = static_cast<uint64_t>(
-      std::max(static_cast<int32_t>(0), msg.stamp.sec));
-  snapshot.timestamp_ns = sec * 1'000'000'000ULL +
-      static_cast<uint64_t>(msg.stamp.nanosec);
+  const auto sec = static_cast<uint64_t>(std::max(static_cast<int32_t>(0), msg.stamp.sec));
+  snapshot.timestamp_ns = sec * 1'000'000'000ULL + static_cast<uint64_t>(msg.stamp.nanosec);
 
   // 6개 ToF readings
   for (int i = 0; i < kTotalSensors; ++i) {
     const auto idx = static_cast<size_t>(i);
     snapshot.readings[idx].distance_m = msg.distances[idx];
-    snapshot.readings[idx].valid = msg.valid[idx] &&
-        msg.distances[idx] >= kTofMinRange &&
-        msg.distances[idx] <= kTofMaxRange;
+    snapshot.readings[idx].valid =
+        msg.valid[idx] && msg.distances[idx] >= kTofMinRange && msg.distances[idx] <= kTofMaxRange;
   }
 
   // 3개 tip_pose로부터 센서 위치, 빔 방향, 표면점 계산
@@ -91,9 +88,8 @@ ToFSnapshot ConvertFromMsg(const rtc_msgs::msg::ToFSnapshot& msg) {
 
 // ── ToMsg (ShapeEstimate only) ───────────────────────────────────────────────
 
-shape_estimation_msgs::msg::ShapeEstimate ToMsg(
-    const ShapeEstimate& estimate,
-    const std_msgs::msg::Header& header) {
+shape_estimation_msgs::msg::ShapeEstimate ToMsg(const ShapeEstimate& estimate,
+                                                const std_msgs::msg::Header& header) {
   shape_estimation_msgs::msg::ShapeEstimate msg;
   msg.stamp = header.stamp;
   msg.shape_type = static_cast<uint8_t>(estimate.type);
@@ -121,10 +117,9 @@ shape_estimation_msgs::msg::ShapeEstimate ToMsg(
 
 // ── ToMsg (ShapeEstimate + 곡률) ─────────────────────────────────────────────
 
-shape_estimation_msgs::msg::ShapeEstimate ToMsg(
-    const ShapeEstimate& estimate,
-    const ToFSnapshot& snapshot,
-    const std_msgs::msg::Header& header) {
+shape_estimation_msgs::msg::ShapeEstimate ToMsg(const ShapeEstimate& estimate,
+                                                const ToFSnapshot& snapshot,
+                                                const std_msgs::msg::Header& header) {
   auto msg = ToMsg(estimate, header);
 
   for (int i = 0; i < kNumFingers; ++i) {
@@ -138,11 +133,10 @@ shape_estimation_msgs::msg::ShapeEstimate ToMsg(
 
 // ── ToMsg (ShapeEstimate + 곡률 + 돌출 구조) ────────────────────────────────
 
-shape_estimation_msgs::msg::ShapeEstimate ToMsg(
-    const ShapeEstimate& estimate,
-    const ToFSnapshot& snapshot,
-    const ProtuberanceResult& protuberance,
-    const std_msgs::msg::Header& header) {
+shape_estimation_msgs::msg::ShapeEstimate ToMsg(const ShapeEstimate& estimate,
+                                                const ToFSnapshot& snapshot,
+                                                const ProtuberanceResult& protuberance,
+                                                const std_msgs::msg::Header& header) {
   auto msg = ToMsg(estimate, snapshot, header);
 
   if (protuberance.detected && !protuberance.protuberances.empty()) {

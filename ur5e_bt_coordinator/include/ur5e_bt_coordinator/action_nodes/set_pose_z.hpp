@@ -23,7 +23,7 @@ namespace rtc_bt {
 /// Output ports:
 ///   - output_pose (Pose6D): input_pose with Z optionally overridden
 class SetPoseZ : public BT::SyncActionNode {
-public:
+ public:
   using BT::SyncActionNode::SyncActionNode;
 
   static BT::PortsList providedPorts();

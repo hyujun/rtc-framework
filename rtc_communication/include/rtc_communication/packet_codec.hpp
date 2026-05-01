@@ -34,24 +34,25 @@ namespace rtc {
 //   C::Encode(const SendPacket&, span<uint8_t, sizeof(SendPacket)>) -> void
 
 template <typename C>
-concept PacketCodec = requires {
-  typename C::RecvPacket;
-  typename C::SendPacket;
-  typename C::State;
-} && std::is_trivially_copyable_v<typename C::RecvPacket>
-  && std::is_trivially_copyable_v<typename C::SendPacket>
-  && requires(std::span<const uint8_t> buf, typename C::State& state) {
-    { C::Decode(buf, state) } -> std::same_as<bool>;
-  };
+concept PacketCodec =
+    requires {
+      typename C::RecvPacket;
+      typename C::SendPacket;
+      typename C::State;
+    } && std::is_trivially_copyable_v<typename C::RecvPacket> &&
+    std::is_trivially_copyable_v<typename C::SendPacket> &&
+    requires(std::span<const uint8_t> buf, typename C::State& state) {
+      { C::Decode(buf, state) } -> std::same_as<bool>;
+    };
 
 // -- Generic decode helper ---------------------------------------------------
 // Decodes a raw buffer into a packed struct T via memcpy.
 // Returns false if the buffer is smaller than sizeof(T).
 template <typename T>
   requires std::is_trivially_copyable_v<T>
-[[nodiscard]] inline bool DecodePacket(
-    std::span<const uint8_t> buf, T& out) noexcept {
-  if (buf.size() < sizeof(T)) return false;
+[[nodiscard]] inline bool DecodePacket(std::span<const uint8_t> buf, T& out) noexcept {
+  if (buf.size() < sizeof(T))
+    return false;
   std::memcpy(&out, buf.data(), sizeof(T));
   return true;
 }
@@ -60,9 +61,7 @@ template <typename T>
 // Encodes a packed struct T into a raw byte buffer via memcpy.
 template <typename T>
   requires std::is_trivially_copyable_v<T>
-inline void EncodePacket(
-    const T& pkt,
-    std::span<uint8_t, sizeof(T)> out) noexcept {
+inline void EncodePacket(const T& pkt, std::span<uint8_t, sizeof(T)> out) noexcept {
   std::memcpy(out.data(), &pkt, sizeof(T));
 }
 

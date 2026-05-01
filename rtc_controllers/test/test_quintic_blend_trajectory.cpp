@@ -1,18 +1,18 @@
-#include "rtc_controllers/trajectory/quintic_blend_trajectory.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
+#include "rtc_controllers/trajectory/quintic_blend_trajectory.hpp"
+
 #include <gtest/gtest.h>
+
 #include <cmath>
 
-namespace rtc::trajectory
-{
+namespace rtc::trajectory {
 
 using Blend3 = QuinticBlendTrajectory<3>;
 using Blend6 = QuinticBlendTrajectory<6>;
 
 // --- Helper ---
 std::array<Blend3::Waypoint, kMaxWaypoints> make_waypoints_3dof(
-  const std::vector<std::pair<std::array<double, 3>, double>> & pts)
-{
+    const std::vector<std::pair<std::array<double, 3>, double>>& pts) {
   std::array<Blend3::Waypoint, kMaxWaypoints> wps{};
   for (std::size_t i = 0; i < pts.size(); ++i) {
     wps[i].positions = pts[i].first;
@@ -22,8 +22,7 @@ std::array<Blend3::Waypoint, kMaxWaypoints> make_waypoints_3dof(
 }
 
 // --- Two waypoints should match JointSpaceTrajectory (rest-to-rest) ---
-TEST(QuinticBlendTrajectory, TwoWaypointsMatchJointSpace)
-{
+TEST(QuinticBlendTrajectory, TwoWaypointsMatchJointSpace) {
   constexpr std::size_t N = 3;
   Blend3 blend;
   JointSpaceTrajectory<N> jst;
@@ -33,8 +32,8 @@ TEST(QuinticBlendTrajectory, TwoWaypointsMatchJointSpace)
   constexpr double T = 2.0;
 
   auto wps = make_waypoints_3dof({
-    {start, 0.0},
-    {goal, T},
+      {start, 0.0},
+      {goal, T},
   });
   blend.initialize(wps, 2);
 
@@ -58,13 +57,12 @@ TEST(QuinticBlendTrajectory, TwoWaypointsMatchJointSpace)
 }
 
 // --- Three waypoints: C2 continuity at via-point ---
-TEST(QuinticBlendTrajectory, ThreeWaypointsContinuity)
-{
+TEST(QuinticBlendTrajectory, ThreeWaypointsContinuity) {
   Blend3 blend;
   auto wps = make_waypoints_3dof({
-    {{0.0, 0.0, 0.0}, 0.0},
-    {{1.0, 2.0, -1.0}, 1.0},
-    {{3.0, 1.0, 0.5}, 2.5},
+      {{0.0, 0.0, 0.0}, 0.0},
+      {{1.0, 2.0, -1.0}, 1.0},
+      {{3.0, 1.0, 0.5}, 2.5},
   });
   blend.initialize(wps, 3);
 
@@ -91,14 +89,13 @@ TEST(QuinticBlendTrajectory, ThreeWaypointsContinuity)
 }
 
 // --- Start/end velocity is zero ---
-TEST(QuinticBlendTrajectory, RestToRest)
-{
+TEST(QuinticBlendTrajectory, RestToRest) {
   Blend3 blend;
   auto wps = make_waypoints_3dof({
-    {{0.0, 0.0, 0.0}, 0.0},
-    {{1.0, 2.0, -1.0}, 1.0},
-    {{3.0, 1.0, 0.5}, 2.0},
-    {{2.0, 0.0, 1.0}, 3.0},
+      {{0.0, 0.0, 0.0}, 0.0},
+      {{1.0, 2.0, -1.0}, 1.0},
+      {{3.0, 1.0, 0.5}, 2.0},
+      {{2.0, 0.0, 1.0}, 3.0},
   });
   blend.initialize(wps, 4);
 
@@ -112,12 +109,11 @@ TEST(QuinticBlendTrajectory, RestToRest)
 }
 
 // --- Clamp behavior ---
-TEST(QuinticBlendTrajectory, ClampTime)
-{
+TEST(QuinticBlendTrajectory, ClampTime) {
   Blend3 blend;
   auto wps = make_waypoints_3dof({
-    {{0.0, 1.0, 2.0}, 0.0},
-    {{3.0, 4.0, 5.0}, 1.0},
+      {{0.0, 1.0, 2.0}, 0.0},
+      {{3.0, 4.0, 5.0}, 1.0},
   });
   blend.initialize(wps, 2);
 
@@ -133,8 +129,7 @@ TEST(QuinticBlendTrajectory, ClampTime)
 }
 
 // --- Single waypoint: hold position ---
-TEST(QuinticBlendTrajectory, SingleWaypointHold)
-{
+TEST(QuinticBlendTrajectory, SingleWaypointHold) {
   Blend3 blend;
   auto wps = make_waypoints_3dof({{{1.0, 2.0, 3.0}, 0.0}});
   blend.initialize(wps, 1);
@@ -150,8 +145,7 @@ TEST(QuinticBlendTrajectory, SingleWaypointHold)
 }
 
 // --- Zero waypoints: safe ---
-TEST(QuinticBlendTrajectory, ZeroWaypoints)
-{
+TEST(QuinticBlendTrajectory, ZeroWaypoints) {
   Blend3 blend;
   std::array<Blend3::Waypoint, kMaxWaypoints> wps{};
   blend.initialize(wps, 0);
@@ -164,15 +158,14 @@ TEST(QuinticBlendTrajectory, ZeroWaypoints)
 }
 
 // --- Five waypoints: all internal via-points have continuity ---
-TEST(QuinticBlendTrajectory, FiveWaypointsContinuity)
-{
+TEST(QuinticBlendTrajectory, FiveWaypointsContinuity) {
   Blend3 blend;
   auto wps = make_waypoints_3dof({
-    {{0.0, 0.0, 0.0}, 0.0},
-    {{1.0, 0.5, -0.5}, 0.5},
-    {{2.0, 1.0, 0.0}, 1.2},
-    {{1.5, 0.0, 1.0}, 2.0},
-    {{3.0, 2.0, -1.0}, 3.0},
+      {{0.0, 0.0, 0.0}, 0.0},
+      {{1.0, 0.5, -0.5}, 0.5},
+      {{2.0, 1.0, 0.0}, 1.2},
+      {{1.5, 0.0, 1.0}, 2.0},
+      {{3.0, 2.0, -1.0}, 3.0},
   });
   blend.initialize(wps, 5);
 

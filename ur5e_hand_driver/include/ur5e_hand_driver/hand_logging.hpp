@@ -25,7 +25,7 @@ namespace ur5e_hand_driver::logging {
 inline constexpr int kThrottleFastMs = 500;    ///< Fast progress (recv failures)
 inline constexpr int kThrottleSlowMs = 2000;   ///< Generic recurring warning
 inline constexpr int kThrottleIdleMs = 10000;  ///< Long idle / one-shot transitions
-inline constexpr int kThrottleHotMs  = 5000;   ///< RT hot-path exception path
+inline constexpr int kThrottleHotMs = 5000;    ///< RT hot-path exception path
 
 // ── Sub-logger factories ───────────────────────────────────────────────────
 //

@@ -77,7 +77,7 @@ TEST(Lifecycle, SimTimeMatchesStepCount) {
     sim.SetCommand(0, {0.0, 0.0});
     std::this_thread::sleep_for(1ms);
   }
-  const auto steps   = sim.StepCount();
+  const auto steps = sim.StepCount();
   const auto simtime = sim.SimTimeSec();
   sim.Stop();
   if (steps > 0) {

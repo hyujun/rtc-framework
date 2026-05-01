@@ -75,25 +75,26 @@ class RiccatiFeedback {
 
   /// @brief Runtime gain scale, clamped to `[0, 1]`.
   void SetGainScale(double scale) noexcept;
+
   [[nodiscard]] double GainScale() const noexcept { return gain_scale_; }
 
   /// @brief Toggle "acceleration-only" mode (see class docs).
   void SetAccelOnly(bool accel_only) noexcept { accel_only_ = accel_only; }
+
   [[nodiscard]] bool AccelOnly() const noexcept { return accel_only_; }
 
   /// @brief Cap on @f$ \|\Delta x\| @f$ before feedback magnitude is
   ///        scaled down. Must be positive.
   void SetMaxDeltaXNorm(double value) noexcept;
-  [[nodiscard]] double MaxDeltaXNorm() const noexcept {
-    return max_delta_x_norm_;
-  }
+
+  [[nodiscard]] double MaxDeltaXNorm() const noexcept { return max_delta_x_norm_; }
 
   [[nodiscard]] bool HasGain() const noexcept { return nu_ > 0 && nx_ > 0; }
 
  private:
-  Eigen::MatrixXd K_;          // nu × nx (allocated max_nu × max_nx)
-  Eigen::VectorXd dx_;         // nx     (allocated max_nx)
-  Eigen::VectorXd u_fb_raw_;   // nu     (allocated max_nu)
+  Eigen::MatrixXd K_;         // nu × nx (allocated max_nu × max_nx)
+  Eigen::VectorXd dx_;        // nx     (allocated max_nx)
+  Eigen::VectorXd u_fb_raw_;  // nu     (allocated max_nu)
 
   int max_nv_{0};
   int max_nu_{0};

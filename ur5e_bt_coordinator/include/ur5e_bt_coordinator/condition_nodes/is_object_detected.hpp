@@ -16,7 +16,7 @@ namespace rtc_bt {
 /// Output ports:
 ///   - pose (Pose6D): detected object pose (position from vision, orientation from TCP)
 class IsObjectDetected : public BT::ConditionNode {
-public:
+ public:
   IsObjectDetected(const std::string& name, const BT::NodeConfig& config,
                    std::shared_ptr<BtRosBridge> bridge);
 
@@ -24,7 +24,7 @@ public:
 
   BT::NodeStatus tick() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
 };
 

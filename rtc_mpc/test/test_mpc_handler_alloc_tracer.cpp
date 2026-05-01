@@ -40,6 +40,16 @@
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "rtc_mpc/handler/contact_rich_mpc.hpp"
+#include "rtc_mpc/handler/light_contact_mpc.hpp"
+#include "rtc_mpc/handler/mpc_factory.hpp"
+#include "rtc_mpc/handler/mpc_handler_base.hpp"
+#include "rtc_mpc/model/robot_model_handler.hpp"
+#include "rtc_mpc/phase/phase_context.hpp"
+#include "rtc_mpc/phase/phase_cost_config.hpp"
+#include "rtc_mpc/types/mpc_solution_types.hpp"
+#include "test_utils/alloc_counter.hpp"
+
 #include <yaml-cpp/yaml.h>
 
 #include <chrono>
@@ -52,25 +62,14 @@
 #include <string>
 #include <thread>
 
-#include "rtc_mpc/handler/contact_rich_mpc.hpp"
-#include "rtc_mpc/handler/light_contact_mpc.hpp"
-#include "rtc_mpc/handler/mpc_factory.hpp"
-#include "rtc_mpc/handler/mpc_handler_base.hpp"
-#include "rtc_mpc/model/robot_model_handler.hpp"
-#include "rtc_mpc/phase/phase_context.hpp"
-#include "rtc_mpc/phase/phase_cost_config.hpp"
-#include "rtc_mpc/types/mpc_solution_types.hpp"
-
-#include "test_utils/alloc_counter.hpp"
-
 // ── Global operator new / delete overrides ────────────────────────────────
 // These live in this TU only; gtest links as a dynamic library (libgtest) so
 // its allocations happen through its own translation-unit-resolved calls and
 // do not route through these overrides. Even if they did, the `armed` flag
 // gates counter updates — overrides are a no-op cost on the unarmed path.
 
-void *operator new(std::size_t sz) {
-  void *p = std::malloc(sz);
+void* operator new(std::size_t sz) {
+  void* p = std::malloc(sz);
   if (p == nullptr) {
     throw std::bad_alloc{};
   }
@@ -78,8 +77,8 @@ void *operator new(std::size_t sz) {
   return p;
 }
 
-void *operator new[](std::size_t sz) {
-  void *p = std::malloc(sz);
+void* operator new[](std::size_t sz) {
+  void* p = std::malloc(sz);
   if (p == nullptr) {
     throw std::bad_alloc{};
   }
@@ -87,31 +86,31 @@ void *operator new[](std::size_t sz) {
   return p;
 }
 
-void operator delete(void *p) noexcept {
+void operator delete(void* p) noexcept {
   rtc::mpc::test_utils::AllocCounter::RecordFree();
   std::free(p);
 }
 
-void operator delete[](void *p) noexcept {
+void operator delete[](void* p) noexcept {
   rtc::mpc::test_utils::AllocCounter::RecordFree();
   std::free(p);
 }
 
-void operator delete(void *p, std::size_t) noexcept {
+void operator delete(void* p, std::size_t) noexcept {
   rtc::mpc::test_utils::AllocCounter::RecordFree();
   std::free(p);
 }
 
-void operator delete[](void *p, std::size_t) noexcept {
+void operator delete[](void* p, std::size_t) noexcept {
   rtc::mpc::test_utils::AllocCounter::RecordFree();
   std::free(p);
 }
 
 namespace {
 
-constexpr const char *kPandaUrdf = RTC_PANDA_URDF_PATH;
+constexpr const char* kPandaUrdf = RTC_PANDA_URDF_PATH;
 
-constexpr const char *kLightCostYaml = R"(
+constexpr const char* kLightCostYaml = R"(
 horizon_length: 15
 dt: 0.01
 w_frame_placement: 100.0
@@ -125,7 +124,7 @@ F_target: [0, 0, 0, 0, 0, 0]
 custom_weights: {}
 )";
 
-constexpr const char *kRichCostYaml = R"(
+constexpr const char* kRichCostYaml = R"(
 horizon_length: 10
 dt: 0.01
 w_frame_placement: 10.0
@@ -140,7 +139,7 @@ custom_weights: {}
 )";
 
 class AllocTracerTest : public ::testing::Test {
-protected:
+ protected:
   void SetUp() override {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed — run ./install.sh verify";
@@ -154,14 +153,12 @@ contact_frames:
   - name: panda_rightfinger
     dim: 3
 )");
-    ASSERT_EQ(handler_.Init(model_, robot_cfg),
-              rtc::mpc::RobotModelInitError::kNoError);
+    ASSERT_EQ(handler_.Init(model_, robot_cfg), rtc::mpc::RobotModelInitError::kNoError);
   }
 
   rtc::mpc::PhaseContext MakeLightContext() {
     rtc::mpc::PhaseCostConfig cfg{};
-    EXPECT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(
-                  YAML::Load(kLightCostYaml), handler_, cfg),
+    EXPECT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(YAML::Load(kLightCostYaml), handler_, cfg),
               rtc::mpc::PhaseCostConfigError::kNoError);
     rtc::mpc::PhaseContext ctx{};
     ctx.phase_id = 0;
@@ -177,8 +174,7 @@ contact_frames:
 
   rtc::mpc::PhaseContext MakeRichContext() {
     rtc::mpc::PhaseCostConfig cfg{};
-    EXPECT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(YAML::Load(kRichCostYaml),
-                                                      handler_, cfg),
+    EXPECT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(YAML::Load(kRichCostYaml), handler_, cfg),
               rtc::mpc::PhaseCostConfigError::kNoError);
     rtc::mpc::PhaseContext ctx{};
     ctx.phase_id = 1;
@@ -188,8 +184,7 @@ contact_frames:
     const int lf = handler_.contact_frames()[0].frame_id;
     const int rf = handler_.contact_frames()[1].frame_id;
     ctx.contact_plan.frames = handler_.contact_frames();
-    ctx.contact_plan.phases.push_back(
-        rtc::mpc::ContactPhase{{lf, rf}, 0.0, 100.0});
+    ctx.contact_plan.phases.push_back(rtc::mpc::ContactPhase{{lf, rf}, 0.0, 100.0});
     pinocchio::Data pdata(model_);
     const Eigen::VectorXd q0 = pinocchio::neutral(model_);
     pinocchio::framesForwardKinematics(model_, pdata, q0);
@@ -240,15 +235,13 @@ TEST_F(AllocTracerTest, LightContactSteadyStateZeroAllocs) {
   rtc::mpc::OCPLimits limits{};
   const auto ctx = MakeLightContext();
 
-  ASSERT_EQ(light->Init(solver_cfg, handler_, limits, ctx),
-            rtc::mpc::MPCInitError::kNoError);
+  ASSERT_EQ(light->Init(solver_cfg, handler_, limits, ctx), rtc::mpc::MPCInitError::kNoError);
 
   // One untracked solve so Aligator's workspace (deep DDP sweeps, proximal
   // regulariser state) is fully materialised before we arm.
   const auto state = MakeStateSnapshot();
   rtc::mpc::MPCSolution warm_out{};
-  ASSERT_EQ(light->Solve(ctx, state, warm_out),
-            rtc::mpc::MPCSolveError::kNoError);
+  ASSERT_EQ(light->Solve(ctx, state, warm_out), rtc::mpc::MPCSolveError::kNoError);
 
   WarmUpStaticState();
   rtc::mpc::MPCSolution tracked_out{};
@@ -259,16 +252,15 @@ TEST_F(AllocTracerTest, LightContactSteadyStateZeroAllocs) {
     const auto err = light->Solve(ctx, state, tracked_out);
     if (err != rtc::mpc::MPCSolveError::kNoError) {
       rtc::mpc::test_utils::AllocCounter::Disarm();
-      FAIL() << "Solve failed on tick " << i
-             << " err=" << static_cast<int>(err);
+      FAIL() << "Solve failed on tick " << i << " err=" << static_cast<int>(err);
     }
   }
   rtc::mpc::test_utils::AllocCounter::Disarm();
 
   const auto allocs = rtc::mpc::test_utils::AllocCounter::AllocCount();
   const auto frees = rtc::mpc::test_utils::AllocCounter::FreeCount();
-  std::cout << "[alloc tracer][LightContact] allocs=" << allocs
-            << " frees=" << frees << " (ticks=" << kTrackedTicks << ")\n";
+  std::cout << "[alloc tracer][LightContact] allocs=" << allocs << " frees=" << frees
+            << " (ticks=" << kTrackedTicks << ")\n";
   EXPECT_EQ(allocs, 0) << "LightContactMPC::Solve allocated on a steady-"
                           "state tick (Phase 5 Exit #3 regression).";
   EXPECT_EQ(frees, 0) << "LightContactMPC::Solve freed on a steady-state "
@@ -289,13 +281,11 @@ TEST_F(AllocTracerTest, ContactRichWarmStartZeroAllocs) {
   solver_cfg.max_al_iters = 10;
   rtc::mpc::OCPLimits limits{};
   const auto ctx_light = MakeLightContext();
-  ASSERT_EQ(light->Init(solver_cfg, handler_, limits, ctx_light),
-            rtc::mpc::MPCInitError::kNoError);
+  ASSERT_EQ(light->Init(solver_cfg, handler_, limits, ctx_light), rtc::mpc::MPCInitError::kNoError);
 
   const auto state = MakeStateSnapshot();
   rtc::mpc::MPCSolution prev{};
-  ASSERT_EQ(light->Solve(ctx_light, state, prev),
-            rtc::mpc::MPCSolveError::kNoError);
+  ASSERT_EQ(light->Solve(ctx_light, state, prev), rtc::mpc::MPCSolveError::kNoError);
 
   // Step 2: build ContactRich via the factory; seed with prev.
   auto rich_cfg_yaml = YAML::Load(R"(
@@ -310,8 +300,7 @@ mpc:
 )");
   auto ctx_rich = MakeRichContext();
   std::unique_ptr<rtc::mpc::MPCHandlerBase> rich;
-  const auto status =
-      rtc::mpc::MPCFactory::Create(rich_cfg_yaml, handler_, ctx_rich, rich);
+  const auto status = rtc::mpc::MPCFactory::Create(rich_cfg_yaml, handler_, ctx_rich, rich);
   ASSERT_EQ(status.error, rtc::mpc::MPCFactoryError::kNoError);
   ASSERT_NE(rich, nullptr);
 
@@ -325,8 +314,7 @@ mpc:
   rtc::mpc::MPCSolution rich_warm{};
   const auto first_err = rich->Solve(ctx_rich, state, rich_warm);
   if (first_err != rtc::mpc::MPCSolveError::kNoError) {
-    GTEST_SKIP() << "ContactRich first warm solve returned err="
-                 << static_cast<int>(first_err)
+    GTEST_SKIP() << "ContactRich first warm solve returned err=" << static_cast<int>(first_err)
                  << " — Risk #14 flake; not a Phase 6 regression";
   }
 
@@ -348,13 +336,11 @@ mpc:
 
   const auto allocs = rtc::mpc::test_utils::AllocCounter::AllocCount();
   const auto frees = rtc::mpc::test_utils::AllocCounter::FreeCount();
-  std::cout << "[alloc tracer][ContactRich warm] solved=" << solved << "/"
-            << kTrackedTicks << " allocs=" << allocs << " frees=" << frees
-            << "\n";
+  std::cout << "[alloc tracer][ContactRich warm] solved=" << solved << "/" << kTrackedTicks
+            << " allocs=" << allocs << " frees=" << frees << "\n";
 
-  ASSERT_GT(solved, 0)
-      << "ContactRich warm-start produced zero successful ticks — Risk #14 "
-         "likely broken, not an alloc regression";
+  ASSERT_GT(solved, 0) << "ContactRich warm-start produced zero successful ticks — Risk #14 "
+                          "likely broken, not an alloc regression";
 
   // ContactRich assertion is **informational** (Phase 6 finding; `git log
   // --grep='rtc_mpc Phase 6'`): the Phase 5
@@ -367,12 +353,11 @@ mpc:
   // `EXPECT_EQ(allocs, frees)` enforces. A wide upper bound acts as a
   // regression canary so the number cannot silently 10× without a failing
   // test; tuning the bound down is a Phase 7 perf-pass concern.
-  EXPECT_EQ(allocs, frees)
-      << "ContactRich warm solve leaked: alloc/free count mismatch";
+  EXPECT_EQ(allocs, frees) << "ContactRich warm solve leaked: alloc/free count mismatch";
   constexpr std::int64_t kRegressionCanary = 1'000'000;
   EXPECT_LT(allocs, kRegressionCanary)
       << "ContactRich warm solve exceeded informational alloc canary; "
          "investigate Aligator ContactRich workspace lifetime.";
 }
 
-} // namespace
+}  // namespace

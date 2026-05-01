@@ -8,8 +8,8 @@
 //   RenderModelInfoOverlay — bottom-right: F10 model statistics
 //   RenderRtfProfiler      — bottom-right corner graph: F3 RTF history
 // ──────────────────────────────────────────────────────────────────────────────
-#include "viewer/viewer_state.hpp"
 #include "rtc_mujoco_sim/mujoco_simulator.hpp"
+#include "viewer/viewer_state.hpp"
 
 #ifdef MUJOCO_HAVE_GLFW
 
@@ -21,28 +21,29 @@ namespace rtc {
 
 // ── Shared name tables ─────────────────────────────────────────────────────────
 static constexpr const char* kIntNames[] = {"Euler", "RK4", "Implicit", "ImplFast"};
-static constexpr const char* kSolNames[] = {"PGS",   "CG",  "Newton"};
-static constexpr const char* kCamNames[] = {"Free",  "Tracking", "Fixed"};
+static constexpr const char* kSolNames[] = {"PGS", "CG", "Newton"};
+static constexpr const char* kCamNames[] = {"Free", "Tracking", "Fixed"};
 
 static int IntIdx(const ViewerState& vs) noexcept {
   return std::max(0, std::min(vs.sim->GetIntegrator(), 3));
 }
+
 static int SolIdx(const ViewerState& vs) noexcept {
   return std::max(0, std::min(vs.sim->GetSolverType(), 2));
 }
+
 static int CamIdx(const ViewerState& vs) noexcept {
   return static_cast<int>(vs.cam_mode);
 }
 
 // ── RenderStatusOverlay ────────────────────────────────────────────────────────
 // Top-right: always-visible simulation status.
-void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp,
-                         float cur_rtf) noexcept {
+void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp, float cur_rtf) noexcept {
   const double max_rtf_val = vs.sim->GetMaxRtf();
-  const bool   is_paused   = vs.sim->IsPaused();
-  const bool   grav_on     = vs.sim->IsGravityEnabled();
-  const bool   grav_locked = vs.sim->IsGravityLockedByServo();
-  const bool   perturbing  = (vs.pert.active != 0);
+  const bool is_paused = vs.sim->IsPaused();
+  const bool grav_on = vs.sim->IsGravityEnabled();
+  const bool grav_locked = vs.sim->IsGravityLockedByServo();
+  const bool perturbing = (vs.pert.active != 0);
 
   char limit_str[32];
   if (max_rtf_val > 0.0) {
@@ -52,21 +53,19 @@ void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp,
     limit_str[sizeof(limit_str) - 1] = '\0';
   }
 
-  const auto ss  = vs.sim->GetSolverStats();
-  const int  n_sub = vs.sim->GetNumSubsteps();
-  const double substep_dt_ms =
-      vs.model ? static_cast<double>(vs.model->opt.timestep) * 1e3 : 0.0;
+  const auto ss = vs.sim->GetSolverStats();
+  const int n_sub = vs.sim->GetNumSubsteps();
+  const double substep_dt_ms = vs.model ? static_cast<double>(vs.model->opt.timestep) * 1e3 : 0.0;
   const double phys_load_pct = vs.sim->GetPhysicsLoad() * 100.0;
-  const int  ii  = IntIdx(vs);
-  const int  si  = SolIdx(vs);
-  const int  ci  = CamIdx(vs);
+  const int ii = IntIdx(vs);
+  const int si = SolIdx(vs);
+  const int ci = CamIdx(vs);
 
   // Named fixed camera label (e.g. "Fixed:ee_cam")
   char cam_str[64];
   if (vs.cam_mode == CameraMode::kFixed) {
     const char* name = mj_id2name(vs.model, mjOBJ_CAMERA, vs.fixed_cam_idx);
-    std::snprintf(cam_str, sizeof(cam_str), "Fixed:%s",
-                  name ? name : "(unnamed)");
+    std::snprintf(cam_str, sizeof(cam_str), "Fixed:%s", name ? name : "(unnamed)");
   } else {
     std::strncpy(cam_str, kCamNames[ci], sizeof(cam_str) - 1);
     cam_str[sizeof(cam_str) - 1] = '\0';
@@ -74,27 +73,19 @@ void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp,
 
   char labels[512], values[512];
   std::snprintf(labels, sizeof(labels),
-      "Mode\nCamera\nRTF\nLimit\nSim Time\nSteps\nContacts\nGravity\nStatus\n"
-      "Integrator\nSolver\nIterations\nResidual\nSubsteps\nPhysics Load\nFrames");
+                "Mode\nCamera\nRTF\nLimit\nSim Time\nSteps\nContacts\nGravity\nStatus\n"
+                "Integrator\nSolver\nIterations\nResidual\nSubsteps\nPhysics Load\nFrames");
   std::snprintf(values, sizeof(values),
-      "%s\n%s\n%.1fx\n%s\n%.2f s\n%lu\n%d/%s\n%s\n%s\n%s\n%s\n%d/%d\n%.2e\n"
-      "%d (%.2fms)\n%.1f%%\nLink:%s Joint:%s",
-      "sync",
-      cam_str,
-      static_cast<double>(cur_rtf), limit_str,
-      vs.sim->SimTimeSec(),
-      static_cast<unsigned long>(vs.sim->StepCount()),
-      ss.ncon,
-      vs.sim->IsContactEnabled() ? "on" : "OFF",
-      grav_locked ? "OFF(lock)" : (grav_on ? "ON" : "OFF"),
-      is_paused ? "PAUSED" : (perturbing ? "perturb" : "running"),
-      kIntNames[ii], kSolNames[si],
-      ss.iter, vs.sim->GetSolverIterations(),
-      ss.improvement,
-      n_sub, substep_dt_ms,
-      phys_load_pct,
-      vs.show_link_frames ? "ON" : "OFF",
-      vs.show_joint_frames ? "ON" : "OFF");
+                "%s\n%s\n%.1fx\n%s\n%.2f s\n%lu\n%d/%s\n%s\n%s\n%s\n%s\n%d/%d\n%.2e\n"
+                "%d (%.2fms)\n%.1f%%\nLink:%s Joint:%s",
+                "sync", cam_str, static_cast<double>(cur_rtf), limit_str, vs.sim->SimTimeSec(),
+                static_cast<unsigned long>(vs.sim->StepCount()), ss.ncon,
+                vs.sim->IsContactEnabled() ? "on" : "OFF",
+                grav_locked ? "OFF(lock)" : (grav_on ? "ON" : "OFF"),
+                is_paused ? "PAUSED" : (perturbing ? "perturb" : "running"), kIntNames[ii],
+                kSolNames[si], ss.iter, vs.sim->GetSolverIterations(), ss.improvement, n_sub,
+                substep_dt_ms, phys_load_pct, vs.show_link_frames ? "ON" : "OFF",
+                vs.show_joint_frames ? "ON" : "OFF");
 
   mjr_overlay(mjFONT_NORMAL, mjGRID_TOPRIGHT, vp, labels, values, vs.con);
 }
@@ -121,48 +112,45 @@ void RenderHelpOverlay(const ViewerState& vs, const mjrRect& vp, int page) noexc
     char cam_lbl[48];
     if (vs.cam_mode == CameraMode::kFixed) {
       const char* name = mj_id2name(vs.model, mjOBJ_CAMERA, vs.fixed_cam_idx);
-      std::snprintf(cam_lbl, sizeof(cam_lbl), "Fixed:%s",
-                    name ? name : "(unnamed)");
+      std::snprintf(cam_lbl, sizeof(cam_lbl), "Fixed:%s", name ? name : "(unnamed)");
     } else {
-      std::strncpy(cam_lbl, kCamNames[static_cast<int>(vs.cam_mode)],
-                   sizeof(cam_lbl) - 1);
+      std::strncpy(cam_lbl, kCamNames[static_cast<int>(vs.cam_mode)], sizeof(cam_lbl) - 1);
       cam_lbl[sizeof(cam_lbl) - 1] = '\0';
     }
 
     char keys[800], vals[800];
     std::snprintf(keys, sizeof(keys),
-        "Help 1/2  (F1=next)\n"
-        "Space\n+/KP_ADD\n-/KP_SUB\nRight\nR\n"
-        "TAB\nLeft drag\nShift+Left\nRight drag\nShift+Right\nScroll\nMiddle\nEsc\n"
-        "G\nN\n"
-        "I\nS\n]  /  [\nF4");
+                  "Help 1/2  (F1=next)\n"
+                  "Space\n+/KP_ADD\n-/KP_SUB\nRight\nR\n"
+                  "TAB\nLeft drag\nShift+Left\nRight drag\nShift+Right\nScroll\nMiddle\nEsc\n"
+                  "G\nN\n"
+                  "I\nS\n]  /  [\nF4");
     std::snprintf(vals, sizeof(vals),
-        "\n"
-        "Pause / Resume\n"
-        "2x speed [%s]\n"
-        "0.5x speed\n"
-        "Step once (paused)\n"
-        "Reset pose\n"
-        "Cycle camera [%s]\n"
-        "Orbit\n"
-        "Orbit horizontal\n"
-        "Pan\n"
-        "Pan horizontal\n"
-        "Zoom\n"
-        "Zoom (drag)\n"
-        "Reset camera\n"
-        "Gravity [%s]\n"
-        "Contacts [%s]\n"
-        "Integrator [%s]\n"
-        "Solver [%s]\n"
-        "Solver iter [%d]\n"
-        "Solver stats",
-        rtf_str, cam_lbl,
-        vs.sim->IsGravityLockedByServo() ? "OFF(lock)"
-            : (vs.sim->IsGravityEnabled() ? "ON" : "OFF"),
-        vs.sim->IsContactEnabled() ? "ON" : "OFF",
-        kIntNames[ii], kSolNames[si],
-        vs.sim->GetSolverIterations());
+                  "\n"
+                  "Pause / Resume\n"
+                  "2x speed [%s]\n"
+                  "0.5x speed\n"
+                  "Step once (paused)\n"
+                  "Reset pose\n"
+                  "Cycle camera [%s]\n"
+                  "Orbit\n"
+                  "Orbit horizontal\n"
+                  "Pan\n"
+                  "Pan horizontal\n"
+                  "Zoom\n"
+                  "Zoom (drag)\n"
+                  "Reset camera\n"
+                  "Gravity [%s]\n"
+                  "Contacts [%s]\n"
+                  "Integrator [%s]\n"
+                  "Solver [%s]\n"
+                  "Solver iter [%d]\n"
+                  "Solver stats",
+                  rtf_str, cam_lbl,
+                  vs.sim->IsGravityLockedByServo() ? "OFF(lock)"
+                                                   : (vs.sim->IsGravityEnabled() ? "ON" : "OFF"),
+                  vs.sim->IsContactEnabled() ? "ON" : "OFF", kIntNames[ii], kSolNames[si],
+                  vs.sim->GetSolverIterations());
     mjr_overlay(mjFONT_NORMAL, mjGRID_TOPLEFT, vp, keys, vals, vs.con);
 
   } else {
@@ -170,22 +158,23 @@ void RenderHelpOverlay(const ViewerState& vs, const mjrRect& vp, int page) noexc
     //            Perturbation / Other ────────────────────────────────────────
     char keys[1024], vals[1024];
     std::snprintf(keys, sizeof(keys),
-        "Help 2/2  (F1=close)\n"
-        "── Geometry ──\n"
-        "0/V\n1..5\nT\nX\n"
-        "── Frames ──\n"
-        "B\nJ\nShift+J\n"
-        "── Physics Viz ──\n"
-        "C\nF\nU\nE\nW\nL\nA\n"
-        "── Rendering ──\n"
-        "F5\nF6\nF7\nF8\n"
-        "── Overlays ──\n"
-        "F3\nF9\nF10\n"
-        "── Perturbation ──\n"
-        "Dbl-click\nCtrl+L drag\nCtrl+R drag\nCtrl+Sh+R\n"
-        "── Other ──\n"
-        "P\nBackspace");
-    std::snprintf(vals, sizeof(vals),
+                  "Help 2/2  (F1=close)\n"
+                  "── Geometry ──\n"
+                  "0/V\n1..5\nT\nX\n"
+                  "── Frames ──\n"
+                  "B\nJ\nShift+J\n"
+                  "── Physics Viz ──\n"
+                  "C\nF\nU\nE\nW\nL\nA\n"
+                  "── Rendering ──\n"
+                  "F5\nF6\nF7\nF8\n"
+                  "── Overlays ──\n"
+                  "F3\nF9\nF10\n"
+                  "── Perturbation ──\n"
+                  "Dbl-click\nCtrl+L drag\nCtrl+R drag\nCtrl+Sh+R\n"
+                  "── Other ──\n"
+                  "P\nBackspace");
+    std::snprintf(
+        vals, sizeof(vals),
         "\n"
         "\n"
         "Geom group 0 [%s]\n"
@@ -221,23 +210,16 @@ void RenderHelpOverlay(const ViewerState& vs, const mjrRect& vp, int page) noexc
         "\n"
         "Screenshot\n"
         "Reset all vis",
-        vs.opt->geomgroup[0]              ? "ON" : "OFF",
-        vs.opt->flags[mjVIS_TRANSPARENT]  ? "ON" : "OFF",
-        vs.opt->flags[mjVIS_CONVEXHULL]   ? "ON" : "OFF",
-        vs.show_link_frames               ? "ON" : "OFF",
-        vs.opt->flags[mjVIS_JOINT]        ? "ON" : "OFF",
-        vs.show_joint_frames              ? "ON" : "OFF",
+        vs.opt->geomgroup[0] ? "ON" : "OFF", vs.opt->flags[mjVIS_TRANSPARENT] ? "ON" : "OFF",
+        vs.opt->flags[mjVIS_CONVEXHULL] ? "ON" : "OFF", vs.show_link_frames ? "ON" : "OFF",
+        vs.opt->flags[mjVIS_JOINT] ? "ON" : "OFF", vs.show_joint_frames ? "ON" : "OFF",
         vs.opt->flags[mjVIS_CONTACTPOINT] ? "ON" : "OFF",
         vs.opt->flags[mjVIS_CONTACTFORCE] ? "ON" : "OFF",
-        vs.opt->flags[mjVIS_ACTUATOR]     ? "ON" : "OFF",
-        vs.opt->flags[mjVIS_INERTIA]      ? "ON" : "OFF",
-        vs.opt->flags[mjVIS_COM]          ? "ON" : "OFF",
-        vs.opt->flags[mjVIS_LIGHT]        ? "ON" : "OFF",
-        vs.opt->flags[mjVIS_TENDON]       ? "ON" : "OFF",
-        vs.scn->flags[mjRND_WIREFRAME]    ? "ON" : "OFF",
-        vs.scn->flags[mjRND_SHADOW]       ? "ON" : "OFF",
-        vs.scn->flags[mjRND_SKYBOX]       ? "ON" : "OFF",
-        vs.scn->flags[mjRND_REFLECTION]   ? "ON" : "OFF");
+        vs.opt->flags[mjVIS_ACTUATOR] ? "ON" : "OFF", vs.opt->flags[mjVIS_INERTIA] ? "ON" : "OFF",
+        vs.opt->flags[mjVIS_COM] ? "ON" : "OFF", vs.opt->flags[mjVIS_LIGHT] ? "ON" : "OFF",
+        vs.opt->flags[mjVIS_TENDON] ? "ON" : "OFF", vs.scn->flags[mjRND_WIREFRAME] ? "ON" : "OFF",
+        vs.scn->flags[mjRND_SHADOW] ? "ON" : "OFF", vs.scn->flags[mjRND_SKYBOX] ? "ON" : "OFF",
+        vs.scn->flags[mjRND_REFLECTION] ? "ON" : "OFF");
     mjr_overlay(mjFONT_NORMAL, mjGRID_TOPLEFT, vp, keys, vals, vs.con);
   }
 }
@@ -246,18 +228,16 @@ void RenderHelpOverlay(const ViewerState& vs, const mjrRect& vp, int page) noexc
 // Bottom-left: F4 solver statistics panel.
 void RenderSolverOverlay(const ViewerState& vs, const mjrRect& vp) noexcept {
   const auto ss = vs.sim->GetSolverStats();
-  const int  ii = IntIdx(vs);
-  const int  si = SolIdx(vs);
+  const int ii = IntIdx(vs);
+  const int si = SolIdx(vs);
 
   char sk[256], sv[256];
-  std::snprintf(sk, sizeof(sk),
+  std::snprintf(
+      sk, sizeof(sk),
       "Integrator\nSolver\nMax iter\nUsed iter\nImprovement\nGradient\nContacts\nTimestep");
-  std::snprintf(sv, sizeof(sv),
-      "%s\n%s\n%d\n%d\n%.3e\n%.3e\n%d\n%.4f ms",
-      kIntNames[ii], kSolNames[si],
-      vs.sim->GetSolverIterations(), ss.iter,
-      ss.improvement, ss.gradient, ss.ncon,
-      vs.model ? static_cast<double>(vs.model->opt.timestep) * 1e3 : 0.0);
+  std::snprintf(sv, sizeof(sv), "%s\n%s\n%d\n%d\n%.3e\n%.3e\n%d\n%.4f ms", kIntNames[ii],
+                kSolNames[si], vs.sim->GetSolverIterations(), ss.iter, ss.improvement, ss.gradient,
+                ss.ncon, vs.model ? static_cast<double>(vs.model->opt.timestep) * 1e3 : 0.0);
 
   mjr_overlay(mjFONT_NORMAL, mjGRID_BOTTOMLEFT, vp, sk, sv, vs.con);
 }
@@ -266,11 +246,12 @@ void RenderSolverOverlay(const ViewerState& vs, const mjrRect& vp) noexcept {
 // Top-left (exclusive with help): F9 sensor values from vis_data->sensordata.
 // mj_forward() is called before rendering, so sensor data is up to date.
 void RenderSensorOverlay(const ViewerState& vs, const mjrRect& vp) noexcept {
-  if (!vs.model || !vs.vis_data) { return; }
+  if (!vs.model || !vs.vis_data) {
+    return;
+  }
   const int nsensor = vs.model->nsensor;
   if (nsensor <= 0) {
-    mjr_overlay(mjFONT_NORMAL, mjGRID_TOPLEFT, vp,
-                "Sensors", "none in model", vs.con);
+    mjr_overlay(mjFONT_NORMAL, mjGRID_TOPLEFT, vp, "Sensors", "none in model", vs.con);
     return;
   }
 
@@ -278,8 +259,8 @@ void RenderSensorOverlay(const ViewerState& vs, const mjrRect& vp) noexcept {
   const int show_n = std::min(nsensor, 24);
   char labels[1024] = {};
   char values[1024] = {};
-  int  lpos = 0;
-  int  vpos = 0;
+  int lpos = 0;
+  int vpos = 0;
 
   lpos += std::snprintf(labels + lpos, sizeof(labels) - static_cast<size_t>(lpos),
                         "── Sensors (%d) ──", nsensor);
@@ -287,31 +268,25 @@ void RenderSensorOverlay(const ViewerState& vs, const mjrRect& vp) noexcept {
 
   for (int i = 0; i < show_n && lpos < 1000 && vpos < 1000; ++i) {
     const char* name = mj_id2name(vs.model, mjOBJ_SENSOR, i);
-    const int   adr  = vs.model->sensor_adr[i];
-    const int   dim  = vs.model->sensor_dim[i];
+    const int adr = vs.model->sensor_adr[i];
+    const int dim = vs.model->sensor_dim[i];
 
-    lpos += std::snprintf(labels + lpos,
-                          sizeof(labels) - static_cast<size_t>(lpos),
-                          "\n%s", name ? name : "(?)");
+    lpos += std::snprintf(labels + lpos, sizeof(labels) - static_cast<size_t>(lpos), "\n%s",
+                          name ? name : "(?)");
 
     if (dim == 1) {
-      vpos += std::snprintf(values + vpos,
-                            sizeof(values) - static_cast<size_t>(vpos),
-                            "\n%.4g", vs.vis_data->sensordata[adr]);
+      vpos += std::snprintf(values + vpos, sizeof(values) - static_cast<size_t>(vpos), "\n%.4g",
+                            vs.vis_data->sensordata[adr]);
     } else {
       // Multi-dim: show first value + dimension
-      vpos += std::snprintf(values + vpos,
-                            sizeof(values) - static_cast<size_t>(vpos),
-                            "\n%.4g  [dim %d]",
-                            vs.vis_data->sensordata[adr], dim);
+      vpos += std::snprintf(values + vpos, sizeof(values) - static_cast<size_t>(vpos),
+                            "\n%.4g  [dim %d]", vs.vis_data->sensordata[adr], dim);
     }
   }
   if (nsensor > show_n) {
-    lpos += std::snprintf(labels + lpos,
-                          sizeof(labels) - static_cast<size_t>(lpos),
+    lpos += std::snprintf(labels + lpos, sizeof(labels) - static_cast<size_t>(lpos),
                           "\n... +%d more", nsensor - show_n);
-    std::snprintf(values + vpos,
-                  sizeof(values) - static_cast<size_t>(vpos), "\n");
+    std::snprintf(values + vpos, sizeof(values) - static_cast<size_t>(vpos), "\n");
   }
 
   mjr_overlay(mjFONT_NORMAL, mjGRID_TOPLEFT, vp, labels, values, vs.con);
@@ -320,28 +295,26 @@ void RenderSensorOverlay(const ViewerState& vs, const mjrRect& vp) noexcept {
 // ── RenderModelInfoOverlay ────────────────────────────────────────────────────
 // Bottom-right: F10 static model statistics.
 void RenderModelInfoOverlay(const ViewerState& vs, const mjrRect& vp) noexcept {
-  if (!vs.model) { return; }
+  if (!vs.model) {
+    return;
+  }
   char labels[256], values[256];
-  std::snprintf(labels, sizeof(labels),
+  std::snprintf(
+      labels, sizeof(labels),
       "── Model Info ──\nnBody\nnGeom\nnJoint\nnActuator\nnSensor\nnSite\nnCamera\nnTimestep");
-  std::snprintf(values, sizeof(values),
-      "\n%d\n%d\n%d\n%d\n%d\n%d\n%d\n%.4f ms",
-      vs.model->nbody,
-      vs.model->ngeom,
-      vs.model->njnt,
-      vs.model->nu,
-      vs.model->nsensor,
-      vs.model->nsite,
-      vs.model->ncam,
-      static_cast<double>(vs.model->opt.timestep) * 1e3);
+  std::snprintf(values, sizeof(values), "\n%d\n%d\n%d\n%d\n%d\n%d\n%d\n%.4f ms", vs.model->nbody,
+                vs.model->ngeom, vs.model->njnt, vs.model->nu, vs.model->nsensor, vs.model->nsite,
+                vs.model->ncam, static_cast<double>(vs.model->opt.timestep) * 1e3);
   mjr_overlay(mjFONT_NORMAL, mjGRID_BOTTOMRIGHT, vp, labels, values, vs.con);
 }
 
 // ── RenderRtfProfiler ─────────────────────────────────────────────────────────
 // Bottom-right corner (F3): RTF time-series graph using mjr_figure.
 void RenderRtfProfiler(const ViewerState& vs, const mjrRect& vp) noexcept {
-  if (!vs.show_profiler || vs.rtf_count == 0 || !vs.fig_profiler) { return; }
-  const int fw = vp.width  / 3;
+  if (!vs.show_profiler || vs.rtf_count == 0 || !vs.fig_profiler) {
+    return;
+  }
+  const int fw = vp.width / 3;
   const int fh = vp.height / 3;
   mjr_figure(mjrRect{vp.width - fw, 0, fw, fh}, vs.fig_profiler, vs.con);
 }
@@ -350,11 +323,13 @@ void RenderRtfProfiler(const ViewerState& vs, const mjrRect& vp) noexcept {
 // Adds XYZ axis cylinders (RGB) at each joint position using the parent body's
 // rotation matrix.  Called between mjv_updateScene() and mjr_render().
 void AddJointFrameGeoms(ViewerState& vs) noexcept {
-  if (!vs.show_joint_frames || !vs.model || !vs.vis_data || !vs.scn) { return; }
+  if (!vs.show_joint_frames || !vs.model || !vs.vis_data || !vs.scn) {
+    return;
+  }
 
-  constexpr float kAxisLength = 0.08f;   // metres
-  constexpr float kAxisWidth  = 0.004f;  // cylinder radius
-  constexpr float kAlpha      = 0.85f;
+  constexpr float kAxisLength = 0.08f;  // metres
+  constexpr float kAxisWidth = 0.004f;  // cylinder radius
+  constexpr float kAlpha = 0.85f;
 
   // RGBA per axis: X=Red, Y=Green, Z=Blue
   static constexpr float kColors[3][4] = {
@@ -367,10 +342,12 @@ void AddJointFrameGeoms(ViewerState& vs) noexcept {
   for (int j = 0; j < njnt; ++j) {
     const int body_id = vs.model->jnt_bodyid[j];
     const double* anchor = vs.vis_data->xanchor + 3 * j;
-    const double* xmat   = vs.vis_data->xmat + 9 * body_id;
+    const double* xmat = vs.vis_data->xmat + 9 * body_id;
 
     for (int axis = 0; axis < 3; ++axis) {
-      if (vs.scn->ngeom >= vs.scn->maxgeom) { return; }
+      if (vs.scn->ngeom >= vs.scn->maxgeom) {
+        return;
+      }
 
       // Direction = column of body rotation matrix (row-major 3x3)
       const double dx = xmat[3 * 0 + axis];
@@ -385,9 +362,8 @@ void AddJointFrameGeoms(ViewerState& vs) noexcept {
 
       mjvGeom* g = vs.scn->geoms + vs.scn->ngeom;
       mjv_initGeom(g, mjGEOM_NONE, nullptr, nullptr, nullptr, nullptr);
-      mjv_makeConnector(g, mjGEOM_CAPSULE, kAxisWidth,
-                        anchor[0], anchor[1], anchor[2],
-                        end[0], end[1], end[2]);
+      mjv_makeConnector(g, mjGEOM_CAPSULE, kAxisWidth, anchor[0], anchor[1], anchor[2], end[0],
+                        end[1], end[2]);
 
       g->rgba[0] = kColors[axis][0];
       g->rgba[1] = kColors[axis][1];

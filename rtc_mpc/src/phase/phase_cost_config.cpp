@@ -11,7 +11,7 @@ namespace {
 // mismatch or missing-required. Required-vs-optional handling lives in the
 // caller so error codes can be specific.
 template <typename T>
-bool TryReadScalar(const YAML::Node &node, T &out) noexcept {
+bool TryReadScalar(const YAML::Node& node, T& out) noexcept {
   if (!node.IsDefined() || !node.IsScalar()) {
     return false;
   }
@@ -23,8 +23,7 @@ bool TryReadScalar(const YAML::Node &node, T &out) noexcept {
   }
 }
 
-bool TryReadSequenceToVectorXd(const YAML::Node &node,
-                               Eigen::VectorXd &out) noexcept {
+bool TryReadSequenceToVectorXd(const YAML::Node& node, Eigen::VectorXd& out) noexcept {
   if (!node.IsDefined() || !node.IsSequence()) {
     return false;
   }
@@ -40,14 +39,15 @@ bool TryReadSequenceToVectorXd(const YAML::Node &node,
   }
 }
 
-bool AnyNegative(double x) noexcept { return x < 0.0; }
+bool AnyNegative(double x) noexcept {
+  return x < 0.0;
+}
 
-} // namespace
+}  // namespace
 
-PhaseCostConfigError
-PhaseCostConfig::LoadFromYaml(const YAML::Node &cfg,
-                              const RobotModelHandler &model,
-                              PhaseCostConfig &out) noexcept {
+PhaseCostConfigError PhaseCostConfig::LoadFromYaml(const YAML::Node& cfg,
+                                                   const RobotModelHandler& model,
+                                                   PhaseCostConfig& out) noexcept {
   if (!model.Initialised()) {
     return PhaseCostConfigError::kModelNotInitialised;
   }
@@ -72,14 +72,14 @@ PhaseCostConfig::LoadFromYaml(const YAML::Node &cfg,
   }
 
   // Scalar weights ────────────────────────────────────────────────────────
-  const std::pair<const char *, double *> scalar_weights[] = {
+  const std::pair<const char*, double*> scalar_weights[] = {
       {"w_frame_placement", &tmp.w_frame_placement},
       {"w_state_reg", &tmp.w_state_reg},
       {"w_control_reg", &tmp.w_control_reg},
       {"w_contact_force", &tmp.w_contact_force},
       {"w_centroidal_momentum", &tmp.w_centroidal_momentum},
   };
-  for (const auto &[key, dst] : scalar_weights) {
+  for (const auto& [key, dst] : scalar_weights) {
     if (!TryReadScalar<double>(cfg[key], *dst)) {
       return PhaseCostConfigError::kInvalidYamlSchema;
     }
@@ -122,7 +122,7 @@ PhaseCostConfig::LoadFromYaml(const YAML::Node &cfg,
   // F_target (Σ contact dims entries) — optional iff zero contacts ────────
   const int force_dim_sum = [&]() noexcept {
     int s = 0;
-    for (const auto &cf : model.contact_frames()) {
+    for (const auto& cf : model.contact_frames()) {
       s += cf.dim;
     }
     return s;
@@ -156,7 +156,7 @@ PhaseCostConfig::LoadFromYaml(const YAML::Node &cfg,
         return PhaseCostConfigError::kInvalidYamlSchema;
       }
       try {
-        for (const auto &kv : node) {
+        for (const auto& kv : node) {
           auto key = kv.first.as<std::string>();
           const auto val = kv.second.as<double>();
           if (val < 0.0) {
@@ -174,4 +174,4 @@ PhaseCostConfig::LoadFromYaml(const YAML::Node &cfg,
   return PhaseCostConfigError::kNoError;
 }
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc

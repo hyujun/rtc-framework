@@ -1,20 +1,19 @@
 // Unit tests for hand_udp_transport.hpp — HandCommStats, transport lifecycle,
 // and mode validation on request-response via loopback UDP.
 
-#include <gtest/gtest.h>
-
 #include "ur5e_hand_driver/hand_udp_transport.hpp"
+
+#include <arpa/inet.h>
+#include <gtest/gtest.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <array>
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <thread>
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 namespace rtc::test {
 
@@ -40,7 +39,8 @@ class LoopbackDevice {
   }
 
   ~LoopbackDevice() {
-    if (fd_ >= 0) close(fd_);
+    if (fd_ >= 0)
+      close(fd_);
   }
 
   [[nodiscard]] int port() const { return port_; }
@@ -50,10 +50,9 @@ class LoopbackDevice {
     std::array<uint8_t, kMaxPacketSize> req{};
     sockaddr_in client_addr{};
     socklen_t addr_len = sizeof(client_addr);
-    ::recvfrom(fd_, req.data(), req.size(), 0,
-               reinterpret_cast<sockaddr*>(&client_addr), &addr_len);
-    ::sendto(fd_, data, len, 0,
-             reinterpret_cast<const sockaddr*>(&client_addr), addr_len);
+    ::recvfrom(fd_, req.data(), req.size(), 0, reinterpret_cast<sockaddr*>(&client_addr),
+               &addr_len);
+    ::sendto(fd_, data, len, 0, reinterpret_cast<const sockaddr*>(&client_addr), addr_len);
   }
 
  private:
@@ -82,8 +81,7 @@ TEST(HandUdpTransportModeValidation, MotorRead_ModeMatch_ReturnsTrue) {
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
   std::array<float, kMotorDataCount> out{};
-  const bool result = transport.RequestMotorRead(
-      Command::kReadPosition, out, JointMode::kMotor);
+  const bool result = transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kMotor);
   dev_thread.join();
 
   EXPECT_TRUE(result);
@@ -106,8 +104,7 @@ TEST(HandUdpTransportModeValidation, MotorRead_ModeMismatch_ReturnsFalse) {
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
   std::array<float, kMotorDataCount> out{};
-  const bool result = transport.RequestMotorRead(
-      Command::kReadPosition, out, JointMode::kMotor);
+  const bool result = transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kMotor);
   dev_thread.join();
 
   EXPECT_FALSE(result);
@@ -134,8 +131,7 @@ TEST(HandUdpTransportModeValidation, AllMotorRead_ModeMatch_ReturnsTrue) {
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
   std::array<float, kMotorDataCount> pos{}, vel{}, cur{};
-  const bool result = transport.RequestAllMotorRead(
-      pos, vel, cur, JointMode::kJoint);
+  const bool result = transport.RequestAllMotorRead(pos, vel, cur, JointMode::kJoint);
   dev_thread.join();
 
   EXPECT_TRUE(result);
@@ -158,8 +154,7 @@ TEST(HandUdpTransportModeValidation, AllMotorRead_ModeMismatch_ReturnsFalse) {
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
   std::array<float, kMotorDataCount> pos{}, vel{}, cur{};
-  const bool result = transport.RequestAllMotorRead(
-      pos, vel, cur, JointMode::kJoint);
+  const bool result = transport.RequestAllMotorRead(pos, vel, cur, JointMode::kJoint);
   dev_thread.join();
 
   EXPECT_FALSE(result);
@@ -183,8 +178,8 @@ TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMismatch_ReturnsFalse) {
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
   std::array<int32_t, kDefaultNumFingertips * kSensorValuesPerFingertip> out{};
-  const bool result = transport.RequestAllSensorRead(
-      out.data(), kDefaultNumFingertips, SensorMode::kRaw);
+  const bool result =
+      transport.RequestAllSensorRead(out.data(), kDefaultNumFingertips, SensorMode::kRaw);
   dev_thread.join();
 
   EXPECT_FALSE(result);
@@ -206,8 +201,8 @@ TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMatch_ReturnsTrue) {
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
   std::array<int32_t, kDefaultNumFingertips * kSensorValuesPerFingertip> out{};
-  const bool result = transport.RequestAllSensorRead(
-      out.data(), kDefaultNumFingertips, SensorMode::kRaw);
+  const bool result =
+      transport.RequestAllSensorRead(out.data(), kDefaultNumFingertips, SensorMode::kRaw);
   dev_thread.join();
 
   EXPECT_TRUE(result);
@@ -216,8 +211,7 @@ TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMatch_ReturnsTrue) {
 
 // ── HandCommStats defaults ─────────────────────────────────────────────────
 
-TEST(HandCommStats, DefaultValues)
-{
+TEST(HandCommStats, DefaultValues) {
   HandCommStats stats{};
   EXPECT_EQ(stats.recv_ok, 0u);
   EXPECT_EQ(stats.recv_timeout, 0u);
@@ -230,20 +224,17 @@ TEST(HandCommStats, DefaultValues)
 
 // ── Construction ───────────────────────────────────────────────────────────
 
-TEST(HandUdpTransport, Construction_NotOpen)
-{
+TEST(HandUdpTransport, Construction_NotOpen) {
   HandUdpTransport transport("127.0.0.1", 55151, 10.0);
   EXPECT_FALSE(transport.is_open());
 }
 
-TEST(HandUdpTransport, RecvTimeoutMs_StoredCorrectly)
-{
+TEST(HandUdpTransport, RecvTimeoutMs_StoredCorrectly) {
   HandUdpTransport transport("127.0.0.1", 55151, 0.4);
   EXPECT_DOUBLE_EQ(transport.recv_timeout_ms(), 0.4);
 }
 
-TEST(HandUdpTransport, CommStats_InitiallyZero)
-{
+TEST(HandUdpTransport, CommStats_InitiallyZero) {
   HandUdpTransport transport("127.0.0.1", 55151, 10.0);
   const auto& stats = transport.comm_stats();
   EXPECT_EQ(stats.recv_ok, 0u);
@@ -253,16 +244,14 @@ TEST(HandUdpTransport, CommStats_InitiallyZero)
   EXPECT_EQ(stats.total_cycles, 0u);
 }
 
-TEST(HandUdpTransport, RecvErrorCount_InitiallyZero)
-{
+TEST(HandUdpTransport, RecvErrorCount_InitiallyZero) {
   HandUdpTransport transport("127.0.0.1", 55151, 10.0);
   EXPECT_EQ(transport.recv_error_count(), 0u);
 }
 
 // ── Open / Close lifecycle ─────────────────────────────────────────────────
 
-TEST(HandUdpTransport, OpenClose_Loopback)
-{
+TEST(HandUdpTransport, OpenClose_Loopback) {
   HandUdpTransport transport("127.0.0.1", 55151, 10.0);
   ASSERT_TRUE(transport.Open());
   EXPECT_TRUE(transport.is_open());
@@ -270,8 +259,7 @@ TEST(HandUdpTransport, OpenClose_Loopback)
   EXPECT_FALSE(transport.is_open());
 }
 
-TEST(HandUdpTransport, DoubleClose_Safe)
-{
+TEST(HandUdpTransport, DoubleClose_Safe) {
   HandUdpTransport transport("127.0.0.1", 55151, 10.0);
   ASSERT_TRUE(transport.Open());
   transport.Close();
@@ -279,15 +267,13 @@ TEST(HandUdpTransport, DoubleClose_Safe)
   EXPECT_FALSE(transport.is_open());
 }
 
-TEST(HandUdpTransport, Open_InvalidIP_Fails)
-{
+TEST(HandUdpTransport, Open_InvalidIP_Fails) {
   HandUdpTransport transport("999.999.999.999", 55151, 10.0);
   EXPECT_FALSE(transport.Open());
   EXPECT_FALSE(transport.is_open());
 }
 
-TEST(HandUdpTransport, DestructorClosesSocket)
-{
+TEST(HandUdpTransport, DestructorClosesSocket) {
   {
     HandUdpTransport transport("127.0.0.1", 55151, 10.0);
     ASSERT_TRUE(transport.Open());
@@ -297,8 +283,7 @@ TEST(HandUdpTransport, DestructorClosesSocket)
 
 // ── DrainStaleResponses on empty socket ────────────────────────────────────
 
-TEST(HandUdpTransport, DrainStaleResponses_EmptySocket)
-{
+TEST(HandUdpTransport, DrainStaleResponses_EmptySocket) {
   HandUdpTransport transport("127.0.0.1", 55151, 10.0);
   ASSERT_TRUE(transport.Open());
   // Draining an empty socket should not block or crash
@@ -308,8 +293,7 @@ TEST(HandUdpTransport, DrainStaleResponses_EmptySocket)
 
 // ── CommStats mutable access ───────────────────────────────────────────────
 
-TEST(HandUdpTransport, CommStatsMut_Writable)
-{
+TEST(HandUdpTransport, CommStatsMut_Writable) {
   HandUdpTransport transport("127.0.0.1", 55151, 10.0);
   transport.comm_stats_mut().total_cycles = 42;
   EXPECT_EQ(transport.comm_stats().total_cycles, 42u);
@@ -317,8 +301,7 @@ TEST(HandUdpTransport, CommStatsMut_Writable)
 
 // ── WritePositionFireAndForget on open socket ──────────────────────────────
 
-TEST(HandUdpTransport, WritePositionFireAndForget_NoRecv)
-{
+TEST(HandUdpTransport, WritePositionFireAndForget_NoRecv) {
   HandUdpTransport transport("127.0.0.1", 55151, 10.0);
   ASSERT_TRUE(transport.Open());
 

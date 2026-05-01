@@ -38,14 +38,14 @@ namespace rtc::mpc {
 /// @brief Failure modes for @ref PhaseCostConfig::LoadFromYaml.
 enum class PhaseCostConfigError {
   kNoError = 0,
-  kModelNotInitialised,        ///< RobotModelHandler passed in is unusable
-  kInvalidYamlSchema,          ///< missing required key, wrong YAML node kind
-  kInvalidWeightSign,          ///< any weight scalar/vector entry < 0
-  kInvalidHorizon,             ///< horizon_length <= 0
-  kInvalidDt,                  ///< dt <= 0
-  kPostureRefDimMismatch,      ///< q_posture_ref.size() != nq
-  kForceTargetDimMismatch,     ///< F_target.size() != sum(contact_dims)
-  kPlacementWeightDimMismatch, ///< W_placement.size() != 6
+  kModelNotInitialised,         ///< RobotModelHandler passed in is unusable
+  kInvalidYamlSchema,           ///< missing required key, wrong YAML node kind
+  kInvalidWeightSign,           ///< any weight scalar/vector entry < 0
+  kInvalidHorizon,              ///< horizon_length <= 0
+  kInvalidDt,                   ///< dt <= 0
+  kPostureRefDimMismatch,       ///< q_posture_ref.size() != nq
+  kForceTargetDimMismatch,      ///< F_target.size() != sum(contact_dims)
+  kPlacementWeightDimMismatch,  ///< W_placement.size() != 6
 };
 
 /// @brief Generic cost weights + references for one OCP build.
@@ -85,9 +85,9 @@ struct PhaseCostConfig {
 
   // Vector weights / references ───────────────────────────────────────────────
   Eigen::Matrix<double, 6, 1> W_placement{
-      Eigen::Matrix<double, 6, 1>::Zero()}; ///< per-axis SE3 placement weight
-  Eigen::VectorXd q_posture_ref{}; ///< nq — state-reg reference posture
-  Eigen::VectorXd F_target{}; ///< Σ(contact_dims) — desired contact force
+      Eigen::Matrix<double, 6, 1>::Zero()};  ///< per-axis SE3 placement weight
+  Eigen::VectorXd q_posture_ref{};           ///< nq — state-reg reference posture
+  Eigen::VectorXd F_target{};                ///< Σ(contact_dims) — desired contact force
 
   // Robot-agnostic extension point ────────────────────────────────────────────
   /// Arbitrary scalar weights keyed by string. Phase managers (robot-specific
@@ -115,11 +115,11 @@ struct PhaseCostConfig {
   /// @param out     Destination. Left untouched on any error.
   /// @return `kNoError` on success, otherwise the first validation failure.
   ///         Never throws.
-  [[nodiscard]] static PhaseCostConfigError
-  LoadFromYaml(const YAML::Node &cfg, const RobotModelHandler &model,
-               PhaseCostConfig &out) noexcept;
+  [[nodiscard]] static PhaseCostConfigError LoadFromYaml(const YAML::Node& cfg,
+                                                         const RobotModelHandler& model,
+                                                         PhaseCostConfig& out) noexcept;
 };
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc
 
-#endif // RTC_MPC_PHASE_PHASE_COST_CONFIG_HPP_
+#endif  // RTC_MPC_PHASE_PHASE_COST_CONFIG_HPP_

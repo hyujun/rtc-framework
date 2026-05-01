@@ -30,19 +30,21 @@ namespace rtc {
 class UdpSocket {
  public:
   UdpSocket() noexcept = default;
+
   ~UdpSocket() { Close(); }
 
   // Non-copyable, non-movable (owns raw fd).
-  UdpSocket(const UdpSocket&)            = delete;
+  UdpSocket(const UdpSocket&) = delete;
   UdpSocket& operator=(const UdpSocket&) = delete;
-  UdpSocket(UdpSocket&&)                 = delete;
-  UdpSocket& operator=(UdpSocket&&)      = delete;
+  UdpSocket(UdpSocket&&) = delete;
+  UdpSocket& operator=(UdpSocket&&) = delete;
 
   // -- Socket lifecycle ------------------------------------------------------
 
   // Creates the underlying SOCK_DGRAM socket. Returns false on failure.
   [[nodiscard]] bool Open() noexcept {
-    if (fd_ >= 0) return true;  // already open
+    if (fd_ >= 0)
+      return true;  // already open
     fd_ = ::socket(AF_INET, SOCK_DGRAM, 0);
     return fd_ >= 0;
   }
@@ -50,11 +52,12 @@ class UdpSocket {
   // Binds to address:port (receiver mode).
   // Pass "0.0.0.0" or empty string to bind to all interfaces (INADDR_ANY).
   [[nodiscard]] bool Bind(std::string_view bind_address, int port) noexcept {
-    if (fd_ < 0 && !Open()) return false;
+    if (fd_ < 0 && !Open())
+      return false;
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port   = htons(static_cast<uint16_t>(port));
+    addr.sin_port = htons(static_cast<uint16_t>(port));
 
     if (bind_address.empty() || bind_address == "0.0.0.0") {
       addr.sin_addr.s_addr = INADDR_ANY;
@@ -77,11 +80,12 @@ class UdpSocket {
 
   // Resolves target_ip:port for subsequent Send() calls (sender mode).
   [[nodiscard]] bool Connect(std::string_view target_ip, int port) noexcept {
-    if (fd_ < 0 && !Open()) return false;
+    if (fd_ < 0 && !Open())
+      return false;
 
     std::memset(&target_addr_, 0, sizeof(target_addr_));
     target_addr_.sin_family = AF_INET;
-    target_addr_.sin_port   = htons(static_cast<uint16_t>(port));
+    target_addr_.sin_port = htons(static_cast<uint16_t>(port));
 
     // inet_pton needs a null-terminated string.
     char ip_buf[INET_ADDRSTRLEN]{};
@@ -115,9 +119,12 @@ class UdpSocket {
 
   // Set receive timeout (SO_RCVTIMEO).
   void SetRecvTimeout(int timeout_ms) noexcept {
-    if (fd_ < 0) return;
-    struct timeval tv{};
-    tv.tv_sec  = timeout_ms / 1000;
+    if (fd_ < 0)
+      return;
+
+    struct timeval tv {};
+
+    tv.tv_sec = timeout_ms / 1000;
     tv.tv_usec = (timeout_ms % 1000) * 1000;
     setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
   }
@@ -131,21 +138,22 @@ class UdpSocket {
 
   // Sends data to the previously Connect()'ed target.
   [[nodiscard]] ssize_t Send(std::span<const uint8_t> data) noexcept {
-    if (!has_target_) return -1;
+    if (!has_target_)
+      return -1;
     return ::sendto(fd_, data.data(), data.size(), 0,
-                    reinterpret_cast<const sockaddr*>(&target_addr_),
-                    sizeof(target_addr_));
+                    reinterpret_cast<const sockaddr*>(&target_addr_), sizeof(target_addr_));
   }
 
   // -- Accessors -------------------------------------------------------------
 
   [[nodiscard]] int fd() const noexcept { return fd_; }
+
   [[nodiscard]] bool is_open() const noexcept { return fd_ >= 0; }
 
  private:
-  int         fd_{-1};
+  int fd_{-1};
   sockaddr_in target_addr_{};
-  bool        has_target_{false};
+  bool has_target_{false};
 };
 
 }  // namespace rtc

@@ -32,6 +32,7 @@ from typing import Optional
 # Joint Classification
 # ════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(frozen=True)
 class MimicParams:
     """Parameters for a URDF mimic joint relationship."""
@@ -75,7 +76,8 @@ class JointClassification:
 
 
 def _parse_vec3(
-    text: str | None, default: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    text: str | None,
+    default: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> tuple[float, float, float]:
     if not text:
         return default
@@ -206,8 +208,10 @@ def classify_joints(urdf_xml: str) -> JointClassification:
 # URDF Pre-processing
 # ════════════════════════════════════════════════════════════════════════════
 
+
 def remove_closed_chain_joints(
-    urdf_xml: str, closed_chain_joints: dict[str, JointInfo],
+    urdf_xml: str,
+    closed_chain_joints: dict[str, JointInfo],
 ) -> str:
     """Remove closed-chain joints from URDF so MuJoCo can compile it as a tree.
 
@@ -233,6 +237,7 @@ def remove_closed_chain_joints(
 # Xacro / Package URI Helpers
 # ════════════════════════════════════════════════════════════════════════════
 
+
 def process_xacro(xacro_path: Path, xacro_args: Optional[list[str]] = None) -> str:
     """Process a xacro file and return URDF XML string."""
     try:
@@ -254,8 +259,7 @@ def process_xacro(xacro_path: Path, xacro_args: Optional[list[str]] = None) -> s
                 mappings[key] = val
             else:
                 print(
-                    f"Warning: ignoring invalid xacro arg '{arg}' "
-                    "(expected key:=value)",
+                    f"Warning: ignoring invalid xacro arg '{arg}' (expected key:=value)",
                     file=sys.stderr,
                 )
 
@@ -359,6 +363,7 @@ def resolve_mesh_paths(urdf_xml: str, urdf_dir: Path, meshdir: Path) -> str:
 # Directory Convention Helpers
 # ════════════════════════════════════════════════════════════════════════════
 
+
 def resolve_robot_dir_paths(
     robot_dir: Path,
     urdf_file: Optional[str] = None,
@@ -428,6 +433,7 @@ def resolve_robot_dir_paths(
 # MJCF Post-Processing
 # ════════════════════════════════════════════════════════════════════════════
 
+
 def _fix_compiler(mjcf_root: ET.Element, meshdir_rel: str) -> None:
     """Set compiler attributes for clean MJCF output."""
     compiler = mjcf_root.find("compiler")
@@ -452,7 +458,8 @@ def _add_option(mjcf_root: ET.Element) -> None:
 
 
 def _add_equality_constraints(
-    mjcf_root: ET.Element, classification: JointClassification,
+    mjcf_root: ET.Element,
+    classification: JointClassification,
 ) -> int:
     """Add ``<equality>`` constraints for mimic and closed-chain joints.
 
@@ -478,9 +485,7 @@ def _add_equality_constraints(
         attrib = {
             "joint1": name,
             "joint2": info.mimic.master_joint,
-            "polycoef": (
-                f"{info.mimic.offset} {info.mimic.multiplier} 0 0 0"
-            ),
+            "polycoef": (f"{info.mimic.offset} {info.mimic.multiplier} 0 0 0"),
         }
         equality.append(_make_element("joint", attrib))
         count += 1
@@ -500,7 +505,8 @@ def _add_equality_constraints(
 
 
 def _add_actuators(
-    mjcf_root: ET.Element, classification: JointClassification,
+    mjcf_root: ET.Element,
+    classification: JointClassification,
 ) -> int:
     """Add ``<actuator>`` entries for active (non-passive) joints only.
 
@@ -541,7 +547,8 @@ def _add_actuators(
 
 
 def _add_parent_child_collision_excludes(
-    mjcf_root: ET.Element, urdf_xml: str,
+    mjcf_root: ET.Element,
+    urdf_xml: str,
 ) -> int:
     """Add ``<contact><exclude>`` pairs for all parent–child links.
 
@@ -694,6 +701,7 @@ def generate_scene(output_dir: Path, robot_xml_name: str, model_name: str) -> Pa
 # Report Helpers
 # ════════════════════════════════════════════════════════════════════════════
 
+
 def print_classification(classification: JointClassification) -> None:
     """Print a human-readable summary of joint classification."""
     print("\nJoint classification:")
@@ -727,7 +735,10 @@ def print_classification(classification: JointClassification) -> None:
 
 
 def print_model_stats(
-    model: "mujoco.MjModel", n_eq: int, n_act: int, n_excl: int = 0,
+    model: "mujoco.MjModel",
+    n_eq: int,
+    n_act: int,
+    n_excl: int = 0,
 ) -> None:
     """Print MuJoCo model statistics."""
     print(f"\nModel statistics:")
@@ -745,6 +756,7 @@ def print_model_stats(
 # ════════════════════════════════════════════════════════════════════════════
 # Core Conversion
 # ════════════════════════════════════════════════════════════════════════════
+
 
 def convert_urdf_to_mjcf(
     input_path: Path,
@@ -811,7 +823,8 @@ def convert_urdf_to_mjcf(
             f"joint(s) for tree compilation..."
         )
         urdf_xml = remove_closed_chain_joints(
-            urdf_xml, classification.passive_closed_chain,
+            urdf_xml,
+            classification.passive_closed_chain,
         )
 
     # ── Step 4: Write temp URDF & compile with MuJoCo ─────────────────
@@ -856,7 +869,9 @@ def convert_urdf_to_mjcf(
     if generate_scene_file:
         robot_name = output_path.stem
         scene_path = generate_scene(
-            output_path.parent, output_path.name, robot_name,
+            output_path.parent,
+            output_path.name,
+            robot_name,
         )
         print(f"Scene saved: {scene_path}")
 
@@ -888,6 +903,7 @@ def _run_validation(mjcf_path: Path, urdf_path: Path) -> None:
 # ════════════════════════════════════════════════════════════════════════════
 # CLI Entry Point
 # ════════════════════════════════════════════════════════════════════════════
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -985,7 +1001,8 @@ Examples:
     # Resolve paths
     if args.robot_dir is not None:
         input_path, output_path, meshdir = resolve_robot_dir_paths(
-            args.robot_dir, args.urdf_file,
+            args.robot_dir,
+            args.urdf_file,
         )
         # Allow explicit overrides
         if args.output is not None:

@@ -4,11 +4,8 @@
 
 namespace rtc::tsid {
 
-void JointLimitConstraint::init(
-    const pinocchio::Model& /*model*/,
-    const RobotModelInfo& robot_info,
-    PinocchioCache& /*cache*/,
-    const YAML::Node& constraint_config) {
+void JointLimitConstraint::init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
+                                PinocchioCache& /*cache*/, const YAML::Node& constraint_config) {
   nv_ = robot_info.nv;
   floating_base_ = robot_info.floating_base;
 
@@ -76,34 +73,28 @@ void JointLimitConstraint::init(
   a_vel_ub_.setZero(nv_);
 }
 
-int JointLimitConstraint::eq_dim(
-    const ContactState& /*contacts*/) const noexcept {
+int JointLimitConstraint::eq_dim(const ContactState& /*contacts*/) const noexcept {
   return 0;
 }
 
-int JointLimitConstraint::ineq_dim(
-    const ContactState& /*contacts*/) const noexcept {
+int JointLimitConstraint::ineq_dim(const ContactState& /*contacts*/) const noexcept {
   return nv_;
 }
 
-void JointLimitConstraint::compute_equality(
-    const PinocchioCache& /*cache*/,
-    const ContactState& /*contacts*/,
-    const RobotModelInfo& /*robot_info*/,
-    int /*n_vars*/,
-    Eigen::Ref<Eigen::MatrixXd> /*A_block*/,
-    Eigen::Ref<Eigen::VectorXd> /*b_block*/) noexcept {
+void JointLimitConstraint::compute_equality(const PinocchioCache& /*cache*/,
+                                            const ContactState& /*contacts*/,
+                                            const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
+                                            Eigen::Ref<Eigen::MatrixXd> /*A_block*/,
+                                            Eigen::Ref<Eigen::VectorXd> /*b_block*/) noexcept {
   // No equality constraints
 }
 
-void JointLimitConstraint::compute_inequality(
-    const PinocchioCache& cache,
-    const ContactState& /*contacts*/,
-    const RobotModelInfo& /*robot_info*/,
-    int /*n_vars*/,
-    Eigen::Ref<Eigen::MatrixXd> C_block,
-    Eigen::Ref<Eigen::VectorXd> l_block,
-    Eigen::Ref<Eigen::VectorXd> u_block) noexcept {
+void JointLimitConstraint::compute_inequality(const PinocchioCache& cache,
+                                              const ContactState& /*contacts*/,
+                                              const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
+                                              Eigen::Ref<Eigen::MatrixXd> C_block,
+                                              Eigen::Ref<Eigen::VectorXd> l_block,
+                                              Eigen::Ref<Eigen::VectorXd> u_block) noexcept {
   const double dt2 = dt_ * dt_;
 
   // C = [I_{nv} | 0]

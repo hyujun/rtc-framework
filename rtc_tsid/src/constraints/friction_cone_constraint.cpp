@@ -4,26 +4,24 @@
 
 namespace rtc::tsid {
 
-void FrictionConeConstraint::init(
-    const pinocchio::Model& /*model*/,
-    const RobotModelInfo& robot_info,
-    PinocchioCache& /*cache*/,
-    const YAML::Node& /*constraint_config*/) {
+void FrictionConeConstraint::init(const pinocchio::Model& /*model*/,
+                                  const RobotModelInfo& robot_info, PinocchioCache& /*cache*/,
+                                  const YAML::Node& /*constraint_config*/) {
   nv_ = robot_info.nv;
 }
 
-int FrictionConeConstraint::eq_dim(
-    const ContactState& /*contacts*/) const noexcept {
+int FrictionConeConstraint::eq_dim(const ContactState& /*contacts*/) const noexcept {
   return 0;
 }
 
-int FrictionConeConstraint::ineq_dim(
-    const ContactState& contacts) const noexcept {
-  if (!manager_) return 0;
+int FrictionConeConstraint::ineq_dim(const ContactState& contacts) const noexcept {
+  if (!manager_)
+    return 0;
 
   int total = 0;
   for (size_t i = 0; i < contacts.contacts.size(); ++i) {
-    if (!contacts.contacts[i].active) continue;
+    if (!contacts.contacts[i].active)
+      continue;
     const auto& cfg = manager_->contacts[i];
     // Point contact: n_faces + 1 (cone edges + unilateral fz >= 0)
     // Surface contact: same for now (moment constraints in Phase 3)
@@ -32,24 +30,20 @@ int FrictionConeConstraint::ineq_dim(
   return total;
 }
 
-void FrictionConeConstraint::compute_equality(
-    const PinocchioCache& /*cache*/,
-    const ContactState& /*contacts*/,
-    const RobotModelInfo& /*robot_info*/,
-    int /*n_vars*/,
-    Eigen::Ref<Eigen::MatrixXd> /*A_block*/,
-    Eigen::Ref<Eigen::VectorXd> /*b_block*/) noexcept {
-}
+void FrictionConeConstraint::compute_equality(const PinocchioCache& /*cache*/,
+                                              const ContactState& /*contacts*/,
+                                              const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
+                                              Eigen::Ref<Eigen::MatrixXd> /*A_block*/,
+                                              Eigen::Ref<Eigen::VectorXd> /*b_block*/) noexcept {}
 
-void FrictionConeConstraint::compute_inequality(
-    const PinocchioCache& /*cache*/,
-    const ContactState& contacts,
-    const RobotModelInfo& /*robot_info*/,
-    int /*n_vars*/,
-    Eigen::Ref<Eigen::MatrixXd> C_block,
-    Eigen::Ref<Eigen::VectorXd> l_block,
-    Eigen::Ref<Eigen::VectorXd> u_block) noexcept {
-  if (!manager_) return;
+void FrictionConeConstraint::compute_inequality(const PinocchioCache& /*cache*/,
+                                                const ContactState& contacts,
+                                                const RobotModelInfo& /*robot_info*/,
+                                                int /*n_vars*/, Eigen::Ref<Eigen::MatrixXd> C_block,
+                                                Eigen::Ref<Eigen::VectorXd> l_block,
+                                                Eigen::Ref<Eigen::VectorXd> u_block) noexcept {
+  if (!manager_)
+    return;
 
   int row = 0;
   int lambda_offset = 0;
@@ -73,8 +67,7 @@ void FrictionConeConstraint::compute_inequality(
     const int lambda_col = nv_ + lambda_offset;
 
     for (int k = 0; k < n_faces; ++k) {
-      const double theta =
-          2.0 * M_PI * static_cast<double>(k) / static_cast<double>(n_faces);
+      const double theta = 2.0 * M_PI * static_cast<double>(k) / static_cast<double>(n_faces);
       // C[row, lambda_col + 0] = cos(θ)   (fx)
       // C[row, lambda_col + 1] = sin(θ)   (fy)
       // C[row, lambda_col + 2] = -μ       (fz)

@@ -30,18 +30,16 @@ class InferenceEngine {
 
   /// RT-safe: Run multiple models by index in a single batch call.
   /// Default implementation delegates to RunModel() sequentially.
-  [[nodiscard]] virtual bool RunModels(const int* model_indices,
-                                       int count) noexcept {
+  [[nodiscard]] virtual bool RunModels(const int* model_indices, int count) noexcept {
     for (int i = 0; i < count; ++i) {
-      if (!RunModel(model_indices[i])) return false;
+      if (!RunModel(model_indices[i]))
+        return false;
     }
     return true;
   }
 
   /// RT-safe: Run a single model by index.
-  [[nodiscard]] virtual bool RunModel(int /*model_idx*/) noexcept {
-    return Run();
-  }
+  [[nodiscard]] virtual bool RunModel(int /*model_idx*/) noexcept { return Run(); }
 
   [[nodiscard]] virtual bool is_initialized() const noexcept = 0;
   [[nodiscard]] virtual int num_models() const noexcept = 0;

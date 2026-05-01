@@ -14,49 +14,45 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    pkg_share = FindPackageShare('shape_estimation')
+    pkg_share = FindPackageShare("shape_estimation")
 
     use_rviz_arg = DeclareLaunchArgument(
-        'use_rviz', default_value='true',
-        description='RViz2 시각화 실행 여부')
+        "use_rviz", default_value="true", description="RViz2 시각화 실행 여부"
+    )
 
     config_file_arg = DeclareLaunchArgument(
-        'config_file',
-        default_value=PathJoinSubstitution([
-            pkg_share, 'config', 'shape_estimation_node.yaml'
-        ]),
-        description='shape_estimation_node YAML 설정 파일 경로')
+        "config_file",
+        default_value=PathJoinSubstitution([pkg_share, "config", "shape_estimation_node.yaml"]),
+        description="shape_estimation_node YAML 설정 파일 경로",
+    )
 
     rviz_config_arg = DeclareLaunchArgument(
-        'rviz_config',
-        default_value=PathJoinSubstitution([
-            pkg_share, 'config', 'shape_estimation.rviz'
-        ]),
-        description='RViz 설정 파일 경로')
+        "rviz_config",
+        default_value=PathJoinSubstitution([pkg_share, "config", "shape_estimation.rviz"]),
+        description="RViz 설정 파일 경로",
+    )
 
     node_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            PathJoinSubstitution([
-                pkg_share, 'launch', 'shape_estimation_node.launch.py'
-            ])
+            PathJoinSubstitution([pkg_share, "launch", "shape_estimation_node.launch.py"])
         ),
-        launch_arguments={'config_file': LaunchConfiguration('config_file')}.items(),
+        launch_arguments={"config_file": LaunchConfiguration("config_file")}.items(),
     )
 
     rviz_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            PathJoinSubstitution([
-                pkg_share, 'launch', 'shape_estimation_rviz.launch.py'
-            ])
+            PathJoinSubstitution([pkg_share, "launch", "shape_estimation_rviz.launch.py"])
         ),
-        launch_arguments={'rviz_config': LaunchConfiguration('rviz_config')}.items(),
-        condition=IfCondition(LaunchConfiguration('use_rviz')),
+        launch_arguments={"rviz_config": LaunchConfiguration("rviz_config")}.items(),
+        condition=IfCondition(LaunchConfiguration("use_rviz")),
     )
 
-    return LaunchDescription([
-        use_rviz_arg,
-        config_file_arg,
-        rviz_config_arg,
-        node_launch,
-        rviz_launch,
-    ])
+    return LaunchDescription(
+        [
+            use_rviz_arg,
+            config_file_arg,
+            rviz_config_arg,
+            node_launch,
+            rviz_launch,
+        ]
+    )

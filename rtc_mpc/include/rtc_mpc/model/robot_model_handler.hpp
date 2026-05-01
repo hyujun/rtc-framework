@@ -41,10 +41,10 @@ namespace rtc::mpc {
 enum class RobotModelInitError {
   kNoError = 0,
   kModelAlreadyInitialised,
-  kMissingEndEffectorFrame, ///< YAML `end_effector_frame` not in model
-  kMissingContactFrame,     ///< a YAML `contact_frames[i].name` not in model
-  kInvalidContactDim,       ///< contact frame dim ∉ {3, 6}
-  kInvalidYamlSchema,       ///< structure missing required keys
+  kMissingEndEffectorFrame,  ///< YAML `end_effector_frame` not in model
+  kMissingContactFrame,      ///< a YAML `contact_frames[i].name` not in model
+  kInvalidContactDim,        ///< contact frame dim ∉ {3, 6}
+  kInvalidYamlSchema,        ///< structure missing required keys
 };
 
 /// YAML schema expected by @ref RobotModelHandler::Init:
@@ -61,13 +61,13 @@ enum class RobotModelInitError {
 ///
 /// All frame names must exist in the `pinocchio::Model` passed to `Init`.
 class RobotModelHandler {
-public:
+ public:
   RobotModelHandler() = default;
 
-  RobotModelHandler(const RobotModelHandler &) = delete;
-  RobotModelHandler &operator=(const RobotModelHandler &) = delete;
-  RobotModelHandler(RobotModelHandler &&) = delete;
-  RobotModelHandler &operator=(RobotModelHandler &&) = delete;
+  RobotModelHandler(const RobotModelHandler&) = delete;
+  RobotModelHandler& operator=(const RobotModelHandler&) = delete;
+  RobotModelHandler(RobotModelHandler&&) = delete;
+  RobotModelHandler& operator=(RobotModelHandler&&) = delete;
 
   /// @brief Resolve YAML config against the provided Pinocchio model.
   ///
@@ -76,8 +76,8 @@ public:
   /// @param cfg    YAML node matching the schema documented above.
   /// @return `kNoError` on success, otherwise the first validation failure.
   ///         On failure the handler remains in the uninitialised state.
-  [[nodiscard]] RobotModelInitError Init(const pinocchio::Model &model,
-                                         const YAML::Node &cfg) noexcept;
+  [[nodiscard]] RobotModelInitError Init(const pinocchio::Model& model,
+                                         const YAML::Node& cfg) noexcept;
 
   /// @return true once @ref Init has succeeded.
   [[nodiscard]] bool Initialised() const noexcept { return model_ != nullptr; }
@@ -90,31 +90,26 @@ public:
   /// callers using `nu()` rather than `nv()` for control sizing.
   [[nodiscard]] int nu() const noexcept;
 
-  [[nodiscard]] int n_contacts() const noexcept {
-    return static_cast<int>(contact_frames_.size());
-  }
-  [[nodiscard]] const std::vector<ContactFrameInfo> &
-  contact_frames() const noexcept {
+  [[nodiscard]] int n_contacts() const noexcept { return static_cast<int>(contact_frames_.size()); }
+
+  [[nodiscard]] const std::vector<ContactFrameInfo>& contact_frames() const noexcept {
     return contact_frames_;
   }
-  [[nodiscard]] int end_effector_frame_id() const noexcept {
-    return ee_frame_id_;
-  }
-  [[nodiscard]] const pinocchio::Model &model() const noexcept {
-    return *model_;
-  }
+
+  [[nodiscard]] int end_effector_frame_id() const noexcept { return ee_frame_id_; }
+
+  [[nodiscard]] const pinocchio::Model& model() const noexcept { return *model_; }
 
   /// @return Pinocchio frame id for @p name, or `std::nullopt` if absent.
   /// Safe to call on an uninitialised handler (returns nullopt).
-  [[nodiscard]] std::optional<int>
-  FrameId(std::string_view name) const noexcept;
+  [[nodiscard]] std::optional<int> FrameId(std::string_view name) const noexcept;
 
-private:
-  const pinocchio::Model *model_{nullptr};
+ private:
+  const pinocchio::Model* model_{nullptr};
   int ee_frame_id_{-1};
   std::vector<ContactFrameInfo> contact_frames_{};
 };
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc
 
-#endif // RTC_MPC_MODEL_ROBOT_MODEL_HANDLER_HPP_
+#endif  // RTC_MPC_MODEL_ROBOT_MODEL_HANDLER_HPP_

@@ -11,82 +11,90 @@ from lifecycle_msgs.msg import Transition
 
 
 def generate_launch_description():
-    pkg_share = FindPackageShare('ur5e_hand_driver')
+    pkg_share = FindPackageShare("ur5e_hand_driver")
 
     # ── Launch arguments ────────────────────────────────────────────────
     target_ip_arg = DeclareLaunchArgument(
-        'target_ip',
-        default_value='192.168.1.2',
-        description='Target IP for hand controller',
+        "target_ip",
+        default_value="192.168.1.2",
+        description="Target IP for hand controller",
     )
 
     target_port_arg = DeclareLaunchArgument(
-        'target_port',
-        default_value='55151',
-        description='Target port for hand controller',
+        "target_port",
+        default_value="55151",
+        description="Target port for hand controller",
     )
 
     publish_rate_arg = DeclareLaunchArgument(
-        'publish_rate',
-        default_value='100.0',
-        description='Link status decimation base rate (Hz)',
+        "publish_rate",
+        default_value="100.0",
+        description="Link status decimation base rate (Hz)",
     )
 
     communication_mode_arg = DeclareLaunchArgument(
-        'communication_mode',
-        default_value='bulk',
+        "communication_mode",
+        default_value="bulk",
         description='Communication mode: "individual" or "bulk"',
     )
 
     recv_timeout_ms_arg = DeclareLaunchArgument(
-        'recv_timeout_ms',
-        default_value='0.4',
-        description='ppoll recv timeout in ms (sub-ms supported)',
+        "recv_timeout_ms",
+        default_value="0.4",
+        description="ppoll recv timeout in ms (sub-ms supported)",
     )
 
     use_fake_hand_arg = DeclareLaunchArgument(
-        'use_fake_hand',
-        default_value='false',
-        description='Use fake hand echo-back mock (no UDP socket)',
+        "use_fake_hand",
+        default_value="false",
+        description="Use fake hand echo-back mock (no UDP socket)",
     )
 
     fake_tick_rate_hz_arg = DeclareLaunchArgument(
-        'fake_tick_rate_hz',
-        default_value='500.0',
-        description='Internal tick rate for fake hand mode (Hz). '
-                    '0 or negative disables the node-side timer (use when '
-                    'rtc_controller_manager drives the fake controller directly).',
+        "fake_tick_rate_hz",
+        default_value="500.0",
+        description="Internal tick rate for fake hand mode (Hz). "
+        "0 or negative disables the node-side timer (use when "
+        "rtc_controller_manager drives the fake controller directly).",
     )
 
     # ── Config files ────────────────────────────────────────────────────
-    hand_config = PathJoinSubstitution([
-        pkg_share, 'config', 'hand_udp_node.yaml',
-    ])
+    hand_config = PathJoinSubstitution(
+        [
+            pkg_share,
+            "config",
+            "hand_udp_node.yaml",
+        ]
+    )
 
-    ft_config = PathJoinSubstitution([
-        pkg_share, 'config', 'fingertip_ft_inferencer.yaml',
-    ])
+    ft_config = PathJoinSubstitution(
+        [
+            pkg_share,
+            "config",
+            "fingertip_ft_inferencer.yaml",
+        ]
+    )
 
     # ── Lifecycle Node ──────────────────────────────────────────────────
     # `namespace=''` is required by launch_ros >= jazzy (keyword-only arg
     # in LifecycleNode.__init__); earlier distros defaulted it implicitly.
     hand_udp_node = LifecycleNode(
-        package='ur5e_hand_driver',
-        executable='hand_udp_node',
-        name='hand_udp_node',
-        namespace='',
-        output='screen',
+        package="ur5e_hand_driver",
+        executable="hand_udp_node",
+        name="hand_udp_node",
+        namespace="",
+        output="screen",
         parameters=[
             hand_config,
             ft_config,
             {
-                'target_ip': LaunchConfiguration('target_ip'),
-                'target_port': LaunchConfiguration('target_port'),
-                'publish_rate': LaunchConfiguration('publish_rate'),
-                'communication_mode': LaunchConfiguration('communication_mode'),
-                'recv_timeout_ms': LaunchConfiguration('recv_timeout_ms'),
-                'use_fake_hand': LaunchConfiguration('use_fake_hand'),
-                'fake_tick_rate_hz': LaunchConfiguration('fake_tick_rate_hz'),
+                "target_ip": LaunchConfiguration("target_ip"),
+                "target_port": LaunchConfiguration("target_port"),
+                "publish_rate": LaunchConfiguration("publish_rate"),
+                "communication_mode": LaunchConfiguration("communication_mode"),
+                "recv_timeout_ms": LaunchConfiguration("recv_timeout_ms"),
+                "use_fake_hand": LaunchConfiguration("use_fake_hand"),
+                "fake_tick_rate_hz": LaunchConfiguration("fake_tick_rate_hz"),
             },
         ],
         emulate_tty=True,
@@ -96,28 +104,36 @@ def generate_launch_description():
     auto_activate = RegisterEventHandler(
         OnStateTransition(
             target_lifecycle_node=hand_udp_node,
-            start_state='configuring',
-            goal_state='inactive',
-            entities=[EmitEvent(event=ChangeState(
-                lifecycle_node_matcher=lambda n: n == hand_udp_node,
-                transition_id=Transition.TRANSITION_ACTIVATE,
-            ))],
+            start_state="configuring",
+            goal_state="inactive",
+            entities=[
+                EmitEvent(
+                    event=ChangeState(
+                        lifecycle_node_matcher=lambda n: n == hand_udp_node,
+                        transition_id=Transition.TRANSITION_ACTIVATE,
+                    )
+                )
+            ],
         )
     )
-    trigger_configure = EmitEvent(event=ChangeState(
-        lifecycle_node_matcher=lambda n: n == hand_udp_node,
-        transition_id=Transition.TRANSITION_CONFIGURE,
-    ))
+    trigger_configure = EmitEvent(
+        event=ChangeState(
+            lifecycle_node_matcher=lambda n: n == hand_udp_node,
+            transition_id=Transition.TRANSITION_CONFIGURE,
+        )
+    )
 
-    return LaunchDescription([
-        target_ip_arg,
-        target_port_arg,
-        publish_rate_arg,
-        communication_mode_arg,
-        recv_timeout_ms_arg,
-        use_fake_hand_arg,
-        fake_tick_rate_hz_arg,
-        hand_udp_node,
-        auto_activate,
-        trigger_configure,
-    ])
+    return LaunchDescription(
+        [
+            target_ip_arg,
+            target_port_arg,
+            publish_rate_arg,
+            communication_mode_arg,
+            recv_timeout_ms_arg,
+            use_fake_hand_arg,
+            fake_tick_rate_hz_arg,
+            hand_udp_node,
+            auto_activate,
+            trigger_configure,
+        ]
+    )

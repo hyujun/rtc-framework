@@ -19,8 +19,7 @@ struct UdpTransportConfig {
 
 class UdpTransport : public TransportInterface {
  public:
-  explicit UdpTransport(const UdpTransportConfig& config) noexcept
-      : config_(config) {}
+  explicit UdpTransport(const UdpTransportConfig& config) noexcept : config_(config) {}
 
   [[nodiscard]] bool Open() override {
     if (config_.bind_port > 0) {
@@ -49,13 +48,9 @@ class UdpTransport : public TransportInterface {
     return recv_socket_.Recv(buffer);
   }
 
-  void SetRecvTimeout(int timeout_ms) noexcept override {
-    recv_socket_.SetRecvTimeout(timeout_ms);
-  }
+  void SetRecvTimeout(int timeout_ms) noexcept override { recv_socket_.SetRecvTimeout(timeout_ms); }
 
-  void SetRecvBufferSize(int size) noexcept override {
-    recv_socket_.SetRecvBufferSize(size);
-  }
+  void SetRecvBufferSize(int size) noexcept override { recv_socket_.SetRecvBufferSize(size); }
 
   [[nodiscard]] bool is_open() const noexcept override {
     return recv_socket_.is_open() || send_socket_.is_open();
@@ -63,6 +58,7 @@ class UdpTransport : public TransportInterface {
 
   // Direct access for legacy code migration
   UdpSocket& recv_socket() noexcept { return recv_socket_; }
+
   UdpSocket& send_socket() noexcept { return send_socket_; }
 
  private:

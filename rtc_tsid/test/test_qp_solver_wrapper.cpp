@@ -1,6 +1,6 @@
-#include <gtest/gtest.h>
-
 #include "rtc_tsid/solver/qp_solver_wrapper.hpp"
+
+#include <gtest/gtest.h>
 
 namespace rtc::tsid {
 namespace {
@@ -206,7 +206,7 @@ TEST_F(QPSolverWrapperTest, TsidLikeDimension) {
   const int nv = 7;
   const int n_lambda = 3;
   const int n_vars = nv + n_lambda;
-  const int n_eq = 3;    // contact accel = 0
+  const int n_eq = 3;     // contact accel = 0
   const int n_ineq = nv;  // torque limits
 
   solver.init(n_vars, n_eq, n_ineq);
@@ -228,8 +228,7 @@ TEST_F(QPSolverWrapperTest, TsidLikeDimension) {
 
   // Equality: random-ish contact Jacobian * a = -bias
   qp.A.topLeftCorner(n_eq, nv) =
-      Eigen::MatrixXd::Random(n_eq, nv) * 0.1 +
-      Eigen::MatrixXd::Identity(n_eq, nv);
+      Eigen::MatrixXd::Random(n_eq, nv) * 0.1 + Eigen::MatrixXd::Identity(n_eq, nv);
   qp.b.head(n_eq) = -Eigen::VectorXd::Ones(n_eq) * 0.05;
 
   // Inequality: torque limits  -100 <= a_i <= 100

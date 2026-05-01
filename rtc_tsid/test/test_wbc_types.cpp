@@ -14,17 +14,15 @@
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 // ──────────────────────────────────────────────
 // RobotModelInfo
 // ──────────────────────────────────────────────
 class RobotModelInfoTest : public ::testing::Test {
  protected:
-  void SetUp() override {
-    pinocchio::urdf::buildModel(kPandaUrdf, model_);
-  }
+  void SetUp() override { pinocchio::urdf::buildModel(kPandaUrdf, model_); }
+
   pinocchio::Model model_;
 };
 

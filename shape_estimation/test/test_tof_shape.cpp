@@ -1,12 +1,13 @@
-#include <gtest/gtest.h>
-#include <cmath>
-#include <random>
-#include <vector>
-
 #include "shape_estimation/fast_shape_classifier.hpp"
 #include "shape_estimation/primitive_fitter.hpp"
 #include "shape_estimation/tof_shape_types.hpp"
 #include "shape_estimation/voxel_point_cloud.hpp"
+
+#include <gtest/gtest.h>
+
+#include <cmath>
+#include <random>
+#include <vector>
 
 namespace se = shape_estimation;
 
@@ -16,9 +17,8 @@ namespace se = shape_estimation;
 
 class VoxelPointCloudTest : public ::testing::Test {
  protected:
-  se::VoxelPointCloud::Config config_{.voxel_resolution_m = 0.002,
-                                       .max_points = 100,
-                                       .expiry_duration_sec = 1.0};
+  se::VoxelPointCloud::Config config_{
+      .voxel_resolution_m = 0.002, .max_points = 100, .expiry_duration_sec = 1.0};
   se::VoxelPointCloud cloud_{config_};
 
   // 단순 스냅샷 생성 헬퍼
@@ -75,10 +75,8 @@ TEST_F(VoxelPointCloudTest, RespectsMaxCapacity) {
     snap.readings[0].distance_m = 0.05;
     snap.readings[0].valid = true;
     // 각각 다른 voxel에 배치 (간격 > voxel_resolution)
-    snap.sensor_positions_world[0] = Eigen::Vector3d(
-        static_cast<double>(i) * 0.01, 0, 0);
-    snap.surface_points_world[0] = Eigen::Vector3d(
-        static_cast<double>(i) * 0.01, 0, 0.05);
+    snap.sensor_positions_world[0] = Eigen::Vector3d(static_cast<double>(i) * 0.01, 0, 0);
+    snap.surface_points_world[0] = Eigen::Vector3d(static_cast<double>(i) * 0.01, 0, 0.05);
     snap.beam_directions_world[0] = Eigen::Vector3d::UnitZ();
     // 나머지 센서는 invalid
     for (int j = 1; j < se::kTotalSensors; ++j) {
@@ -168,8 +166,9 @@ class PrimitiveFitterTest : public ::testing::Test {
   std::mt19937 rng_{42};  // 재현 가능한 랜덤
 
   // 구 표면 위의 포인트 생성 (노이즈 포함)
-  std::vector<se::PointWithNormal> GenerateSpherePoints(
-      const Eigen::Vector3d& center, double radius, int count, double noise = 0.0) {
+  std::vector<se::PointWithNormal> GenerateSpherePoints(const Eigen::Vector3d& center,
+                                                        double radius, int count,
+                                                        double noise = 0.0) {
     std::vector<se::PointWithNormal> points;
     points.reserve(static_cast<size_t>(count));
     std::normal_distribution<double> dist(0.0, noise);
@@ -179,10 +178,8 @@ class PrimitiveFitterTest : public ::testing::Test {
       const double theta = 2.0 * M_PI * static_cast<double>(i) / static_cast<double>(count);
       const double phi = M_PI * (0.3 + 0.4 * static_cast<double>(i % 5) / 5.0);
 
-      Eigen::Vector3d dir(
-          std::sin(phi) * std::cos(theta),
-          std::sin(phi) * std::sin(theta),
-          std::cos(phi));
+      Eigen::Vector3d dir(std::sin(phi) * std::cos(theta), std::sin(phi) * std::sin(theta),
+                          std::cos(phi));
 
       se::PointWithNormal p;
       p.position = center + (radius + (noise > 0 ? dist(rng_) : 0.0)) * dir;
@@ -193,9 +190,9 @@ class PrimitiveFitterTest : public ::testing::Test {
   }
 
   // 평면 위의 포인트 생성
-  std::vector<se::PointWithNormal> GeneratePlanePoints(
-      const Eigen::Vector3d& center, const Eigen::Vector3d& normal,
-      int count, double extent = 0.05, double noise = 0.0) {
+  std::vector<se::PointWithNormal> GeneratePlanePoints(const Eigen::Vector3d& center,
+                                                       const Eigen::Vector3d& normal, int count,
+                                                       double extent = 0.05, double noise = 0.0) {
     std::vector<se::PointWithNormal> points;
     points.reserve(static_cast<size_t>(count));
     std::normal_distribution<double> dist(0.0, noise);
@@ -217,9 +214,10 @@ class PrimitiveFitterTest : public ::testing::Test {
   }
 
   // 실린더 표면 위의 포인트 생성
-  std::vector<se::PointWithNormal> GenerateCylinderPoints(
-      const Eigen::Vector3d& center, const Eigen::Vector3d& axis,
-      double radius, double height, int count, double noise = 0.0) {
+  std::vector<se::PointWithNormal> GenerateCylinderPoints(const Eigen::Vector3d& center,
+                                                          const Eigen::Vector3d& axis,
+                                                          double radius, double height, int count,
+                                                          double noise = 0.0) {
     std::vector<se::PointWithNormal> points;
     points.reserve(static_cast<size_t>(count));
     std::normal_distribution<double> dist(0.0, noise);
@@ -234,8 +232,7 @@ class PrimitiveFitterTest : public ::testing::Test {
       Eigen::Vector3d radial = std::cos(theta) * u + std::sin(theta) * v;
 
       se::PointWithNormal p;
-      p.position = center + h * axis +
-                   (radius + (noise > 0 ? dist(rng_) : 0.0)) * radial;
+      p.position = center + h * axis + (radius + (noise > 0 ? dist(rng_) : 0.0)) * radial;
       p.normal = radial;
       points.push_back(p);
     }
@@ -309,8 +306,7 @@ TEST_F(PrimitiveFitterTest, FitBestPrimitiveSelectsSphere) {
 }
 
 TEST_F(PrimitiveFitterTest, FitBestPrimitiveSelectsPlane) {
-  auto points = GeneratePlanePoints(
-      Eigen::Vector3d(0.3, 0, 0.3), Eigen::Vector3d::UnitZ(), 20);
+  auto points = GeneratePlanePoints(Eigen::Vector3d(0.3, 0, 0.3), Eigen::Vector3d::UnitZ(), 20);
 
   auto result = fitter_.FitBestPrimitive(points);
   EXPECT_NE(result.type, se::ShapeType::kUnknown);
@@ -425,8 +421,7 @@ TEST_F(PrimitiveFitterTest, FitsBoxFromCleanPoints) {
 TEST_F(PrimitiveFitterTest, FitBoxInsufficientPointsReturnsUnknown) {
   std::vector<se::PointWithNormal> points(3);
   for (int i = 0; i < 3; ++i) {
-    points[static_cast<size_t>(i)].position = Eigen::Vector3d(
-        static_cast<double>(i) * 0.01, 0, 0);
+    points[static_cast<size_t>(i)].position = Eigen::Vector3d(static_cast<double>(i) * 0.01, 0, 0);
   }
 
   auto result = fitter_.FitBox(points);
@@ -494,7 +489,10 @@ TEST(DefaultConstructorTest, FastShapeClassifierDefaultConfig) {
   std::array<double, se::kNumFingers> curvatures{0.1, 0.2, -0.1};
   std::array<bool, se::kNumFingers> valid{true, true, true};
   std::array<se::ToFReading, se::kTotalSensors> readings{};
-  for (auto& r : readings) { r.valid = true; r.distance_m = 0.05; }
+  for (auto& r : readings) {
+    r.valid = true;
+    r.distance_m = 0.05;
+  }
   auto result = classifier.Classify(curvatures, valid, readings);
   EXPECT_EQ(result.type, se::ShapeType::kPlane);
 }

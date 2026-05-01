@@ -55,48 +55,44 @@ def launch_setup(context, *args, **kwargs):
     # ── Session directory ────────────────────────────────────────────────────
     logging_root = resolve_logging_root()
     session_dir = create_session_dir(logging_root)
-    max_sessions = int(
-        LaunchConfiguration('max_log_sessions').perform(context) or '10')
+    max_sessions = int(LaunchConfiguration("max_log_sessions").perform(context) or "10")
     cleanup_old_sessions(logging_root, max_sessions)
 
     # ── Params: default file + optional override + CLI overrides ─────────────
-    pkg_sim = FindPackageShare('rtc_mujoco_sim')
-    default_params = PathJoinSubstitution(
-        [pkg_sim, 'config', 'mujoco_default.yaml'])
+    pkg_sim = FindPackageShare("rtc_mujoco_sim")
+    default_params = PathJoinSubstitution([pkg_sim, "config", "mujoco_default.yaml"])
 
-    params_file = LaunchConfiguration('params_file').perform(context)
+    params_file = LaunchConfiguration("params_file").perform(context)
     sim_params: list = [default_params]
-    if params_file != '':
+    if params_file != "":
         sim_params.append(params_file)
 
     overrides: dict = {}
-    model_path = LaunchConfiguration('model_path').perform(context)
-    if model_path != '':
-        overrides['model_path'] = model_path
+    model_path = LaunchConfiguration("model_path").perform(context)
+    if model_path != "":
+        overrides["model_path"] = model_path
 
-    enable_viewer = LaunchConfiguration('enable_viewer').perform(context)
-    if enable_viewer != '':
-        overrides['enable_viewer'] = enable_viewer.lower() in (
-            'true', '1', 'yes')
+    enable_viewer = LaunchConfiguration("enable_viewer").perform(context)
+    if enable_viewer != "":
+        overrides["enable_viewer"] = enable_viewer.lower() in ("true", "1", "yes")
 
-    max_rtf = LaunchConfiguration('max_rtf').perform(context)
-    if max_rtf != '':
-        overrides['max_rtf'] = float(max_rtf)
+    max_rtf = LaunchConfiguration("max_rtf").perform(context)
+    if max_rtf != "":
+        overrides["max_rtf"] = float(max_rtf)
 
     if overrides:
         sim_params.append(overrides)
 
     # ── Environment variables ────────────────────────────────────────────────
-    set_session_dir = SetEnvironmentVariable(
-        name='RTC_SESSION_DIR', value=session_dir)
+    set_session_dir = SetEnvironmentVariable(name="RTC_SESSION_DIR", value=session_dir)
 
     # ── MuJoCo simulator (LifecycleNode) ─────────────────────────────────────
     mujoco_node = LifecycleNode(
-        package='rtc_mujoco_sim',
-        executable='mujoco_simulator_node',
-        name='mujoco_simulator',
-        namespace='',
-        output='screen',
+        package="rtc_mujoco_sim",
+        executable="mujoco_simulator_node",
+        name="mujoco_simulator",
+        namespace="",
+        output="screen",
         emulate_tty=True,
         parameters=sim_params,
     )
@@ -105,51 +101,59 @@ def launch_setup(context, *args, **kwargs):
     auto_activate = RegisterEventHandler(
         OnStateTransition(
             target_lifecycle_node=mujoco_node,
-            start_state='configuring',
-            goal_state='inactive',
-            entities=[EmitEvent(event=ChangeState(
-                lifecycle_node_matcher=lambda n: n == mujoco_node,
-                transition_id=Transition.TRANSITION_ACTIVATE,
-            ))],
+            start_state="configuring",
+            goal_state="inactive",
+            entities=[
+                EmitEvent(
+                    event=ChangeState(
+                        lifecycle_node_matcher=lambda n: n == mujoco_node,
+                        transition_id=Transition.TRANSITION_ACTIVATE,
+                    )
+                )
+            ],
         )
     )
-    trigger_configure = EmitEvent(event=ChangeState(
-        lifecycle_node_matcher=lambda n: n == mujoco_node,
-        transition_id=Transition.TRANSITION_CONFIGURE,
-    ))
+    trigger_configure = EmitEvent(
+        event=ChangeState(
+            lifecycle_node_matcher=lambda n: n == mujoco_node,
+            transition_id=Transition.TRANSITION_CONFIGURE,
+        )
+    )
 
     return [set_session_dir, mujoco_node, auto_activate, trigger_configure]
 
 
 def generate_launch_description():
-    return LaunchDescription([
-        DeclareLaunchArgument(
-            'params_file',
-            default_value='',
-            description=(
-                'Optional ROS params YAML overlaid on top of mujoco_default.yaml. '
-                'Must supply robot_response.groups + per-group joint/topic config.'
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument(
+                "params_file",
+                default_value="",
+                description=(
+                    "Optional ROS params YAML overlaid on top of mujoco_default.yaml. "
+                    "Must supply robot_response.groups + per-group joint/topic config."
+                ),
             ),
-        ),
-        DeclareLaunchArgument(
-            'model_path',
-            default_value='',
-            description='Override model_path. Empty -> use YAML value.',
-        ),
-        DeclareLaunchArgument(
-            'enable_viewer',
-            default_value='',
-            description='Override enable_viewer. Empty -> use YAML value.',
-        ),
-        DeclareLaunchArgument(
-            'max_rtf',
-            default_value='',
-            description='Override max_rtf. Empty -> use YAML value.',
-        ),
-        DeclareLaunchArgument(
-            'max_log_sessions',
-            default_value='10',
-            description='Maximum number of session folders to keep.',
-        ),
-        OpaqueFunction(function=launch_setup),
-    ])
+            DeclareLaunchArgument(
+                "model_path",
+                default_value="",
+                description="Override model_path. Empty -> use YAML value.",
+            ),
+            DeclareLaunchArgument(
+                "enable_viewer",
+                default_value="",
+                description="Override enable_viewer. Empty -> use YAML value.",
+            ),
+            DeclareLaunchArgument(
+                "max_rtf",
+                default_value="",
+                description="Override max_rtf. Empty -> use YAML value.",
+            ),
+            DeclareLaunchArgument(
+                "max_log_sessions",
+                default_value="10",
+                description="Maximum number of session folders to keep.",
+            ),
+            OpaqueFunction(function=launch_setup),
+        ]
+    )

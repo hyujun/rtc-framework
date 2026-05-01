@@ -1,5 +1,6 @@
 // ── UrdfAnalyzer 구현 ────────────────────────────────────────────────────────
 #include "rtc_urdf_bridge/urdf_analyzer.hpp"
+
 #include "rtc_urdf_bridge/urdf_logging.hpp"
 #include "rtc_urdf_bridge/xacro_processor.hpp"
 
@@ -15,14 +16,15 @@
 namespace rtc_urdf_bridge {
 
 namespace {
-auto logger() { return ::rtc::urdf::logging::AnalyzerLogger(); }
-} // namespace
+auto logger() {
+  return ::rtc::urdf::logging::AnalyzerLogger();
+}
+}  // namespace
 
 // ── 생성자 (파일 경로) ───────────────────────────────────────────────────────
-UrdfAnalyzer::UrdfAnalyzer(std::string_view urdf_file_path,
-                           std::vector<std::string> passive_hints)
+UrdfAnalyzer::UrdfAnalyzer(std::string_view urdf_file_path, std::vector<std::string> passive_hints)
     : urdf_file_path_(urdf_file_path) {
-  for (auto &h : passive_hints)
+  for (auto& h : passive_hints)
     passive_hints_.insert(std::move(h));
 
   RCLCPP_DEBUG(logger(), "UrdfAnalyzer 로드: %s", urdf_file_path_.c_str());
@@ -33,10 +35,8 @@ UrdfAnalyzer::UrdfAnalyzer(std::string_view urdf_file_path,
     // 일반 URDF 파일 읽기
     std::ifstream ifs(urdf_file_path_);
     if (!ifs.is_open()) {
-      RCLCPP_ERROR(logger(), "URDF 파일을 열 수 없습니다: %s",
-                   urdf_file_path_.c_str());
-      throw std::runtime_error("UrdfAnalyzer: URDF 파일을 열 수 없습니다: " +
-                               urdf_file_path_);
+      RCLCPP_ERROR(logger(), "URDF 파일을 열 수 없습니다: %s", urdf_file_path_.c_str());
+      throw std::runtime_error("UrdfAnalyzer: URDF 파일을 열 수 없습니다: " + urdf_file_path_);
     }
     std::ostringstream oss;
     oss << ifs.rdbuf();
@@ -50,30 +50,29 @@ UrdfAnalyzer::UrdfAnalyzer(std::string_view urdf_file_path,
 UrdfAnalyzer::UrdfAnalyzer(std::string_view xml_string, FromXmlTag,
                            std::vector<std::string> passive_hints)
     : urdf_xml_string_(xml_string) {
-  for (auto &h : passive_hints)
+  for (auto& h : passive_hints)
     passive_hints_.insert(std::move(h));
   ParseUrdfXml(urdf_xml_string_);
 }
 
 // ── URDF XML 파싱 메인 로직 ─────────────────────────────────────────────────
-void UrdfAnalyzer::ParseUrdfXml(const std::string &xml) {
+void UrdfAnalyzer::ParseUrdfXml(const std::string& xml) {
   tinyxml2::XMLDocument doc;
   if (doc.Parse(xml.c_str()) != tinyxml2::XML_SUCCESS) {
     RCLCPP_ERROR(logger(), "XML 파싱 실패 — %s", doc.ErrorStr());
-    throw std::runtime_error("UrdfAnalyzer: XML 파싱 실패 — " +
-                             std::string(doc.ErrorStr()));
+    throw std::runtime_error("UrdfAnalyzer: XML 파싱 실패 — " + std::string(doc.ErrorStr()));
   }
 
-  auto *robot = doc.FirstChildElement("robot");
+  auto* robot = doc.FirstChildElement("robot");
   if (!robot) {
     RCLCPP_ERROR(logger(), "<robot> 루트 요소가 없습니다");
     throw std::runtime_error("UrdfAnalyzer: <robot> 루트 요소가 없습니다");
   }
 
   // ── (1) 모든 <link> 수집 ──────────────────────────────────────────────────
-  for (auto *link_el = robot->FirstChildElement("link"); link_el != nullptr;
+  for (auto* link_el = robot->FirstChildElement("link"); link_el != nullptr;
        link_el = link_el->NextSiblingElement("link")) {
-    const char *name_attr = link_el->Attribute("name");
+    const char* name_attr = link_el->Attribute("name");
     if (!name_attr)
       continue;
 
@@ -86,10 +85,10 @@ void UrdfAnalyzer::ParseUrdfXml(const std::string &xml) {
   }
 
   // ── (2) 모든 <joint> 수집 ─────────────────────────────────────────────────
-  for (auto *joint_el = robot->FirstChildElement("joint"); joint_el != nullptr;
+  for (auto* joint_el = robot->FirstChildElement("joint"); joint_el != nullptr;
        joint_el = joint_el->NextSiblingElement("joint")) {
-    const char *name_attr = joint_el->Attribute("name");
-    const char *type_attr = joint_el->Attribute("type");
+    const char* name_attr = joint_el->Attribute("name");
+    const char* type_attr = joint_el->Attribute("type");
     if (!name_attr || !type_attr)
       continue;
 
@@ -98,13 +97,13 @@ void UrdfAnalyzer::ParseUrdfXml(const std::string &xml) {
     meta.type = StringToJointType(type_attr);
 
     // parent / child link
-    auto *parent_el = joint_el->FirstChildElement("parent");
-    auto *child_el = joint_el->FirstChildElement("child");
+    auto* parent_el = joint_el->FirstChildElement("parent");
+    auto* child_el = joint_el->FirstChildElement("child");
     if (!parent_el || !child_el)
       continue;
 
-    const char *parent_link = parent_el->Attribute("link");
-    const char *child_link = child_el->Attribute("link");
+    const char* parent_link = parent_el->Attribute("link");
+    const char* child_link = child_el->Attribute("link");
     if (!parent_link || !child_link)
       continue;
 
@@ -112,8 +111,8 @@ void UrdfAnalyzer::ParseUrdfXml(const std::string &xml) {
     meta.child_link = child_link;
 
     // axis (기본값: Z축)
-    if (auto *axis_el = joint_el->FirstChildElement("axis")) {
-      const char *xyz = axis_el->Attribute("xyz");
+    if (auto* axis_el = joint_el->FirstChildElement("axis")) {
+      const char* xyz = axis_el->Attribute("xyz");
       if (xyz) {
         std::istringstream iss(xyz);
         iss >> meta.axis[0] >> meta.axis[1] >> meta.axis[2];
@@ -121,7 +120,7 @@ void UrdfAnalyzer::ParseUrdfXml(const std::string &xml) {
     }
 
     // limits
-    if (auto *limit_el = joint_el->FirstChildElement("limit")) {
+    if (auto* limit_el = joint_el->FirstChildElement("limit")) {
       meta.has_limit_tag = true;
       limit_el->QueryDoubleAttribute("lower", &meta.lower);
       limit_el->QueryDoubleAttribute("upper", &meta.upper);
@@ -130,14 +129,14 @@ void UrdfAnalyzer::ParseUrdfXml(const std::string &xml) {
     }
 
     // dynamics
-    if (auto *dyn_el = joint_el->FirstChildElement("dynamics")) {
+    if (auto* dyn_el = joint_el->FirstChildElement("dynamics")) {
       dyn_el->QueryDoubleAttribute("damping", &meta.damping);
       dyn_el->QueryDoubleAttribute("friction", &meta.friction);
     }
 
     // mimic 태그 감지
-    if (auto *mimic_el = joint_el->FirstChildElement("mimic")) {
-      const char *mimic_joint = mimic_el->Attribute("joint");
+    if (auto* mimic_el = joint_el->FirstChildElement("mimic")) {
+      const char* mimic_joint = mimic_el->Attribute("joint");
       if (mimic_joint) {
         MimicJointInfo mi;
         mi.joint_name = name_attr;
@@ -162,19 +161,19 @@ void UrdfAnalyzer::ParseUrdfXml(const std::string &xml) {
 
   // subtype별 카운트 요약
   std::size_t n_mimic = 0, n_closed = 0, n_free = 0;
-  for (const auto &pi : passive_joints_) {
+  for (const auto& pi : passive_joints_) {
     switch (pi.subtype) {
-    case PassiveSubtype::kMimic:
-      ++n_mimic;
-      break;
-    case PassiveSubtype::kClosedChain:
-      ++n_closed;
-      break;
-    case PassiveSubtype::kFree:
-      ++n_free;
-      break;
-    case PassiveSubtype::kNone:
-      break;
+      case PassiveSubtype::kMimic:
+        ++n_mimic;
+        break;
+      case PassiveSubtype::kClosedChain:
+        ++n_closed;
+        break;
+      case PassiveSubtype::kFree:
+        ++n_free;
+        break;
+      case PassiveSubtype::kNone:
+        break;
     }
   }
 
@@ -183,9 +182,8 @@ void UrdfAnalyzer::ParseUrdfXml(const std::string &xml) {
               "fixed=%zu, active=%zu, passive=%zu (mimic=%zu, "
               "closed_chain=%zu, free=%zu), "
               "root='%s'",
-              link_nodes_.size(), joint_meta_map_.size(),
-              fixed_joint_names_.size(), active_joint_names_.size(),
-              passive_joint_names_.size(), n_mimic, n_closed, n_free,
+              link_nodes_.size(), joint_meta_map_.size(), fixed_joint_names_.size(),
+              active_joint_names_.size(), passive_joint_names_.size(), n_mimic, n_closed, n_free,
               root_index_ >= 0 ? GetRootLinkName().c_str() : "(없음)");
 }
 
@@ -194,11 +192,10 @@ void UrdfAnalyzer::BuildAdjacencyGraph() {
   // 자식으로 참조되는 링크 집합 (루트 감지용)
   std::unordered_set<std::string> child_links;
 
-  for (const auto &[name, meta] : joint_meta_map_) {
+  for (const auto& [name, meta] : joint_meta_map_) {
     auto parent_it = link_name_to_index_.find(meta.parent_link);
     auto child_it = link_name_to_index_.find(meta.child_link);
-    if (parent_it == link_name_to_index_.end() ||
-        child_it == link_name_to_index_.end()) {
+    if (parent_it == link_name_to_index_.end() || child_it == link_name_to_index_.end()) {
       continue;
     }
 
@@ -207,10 +204,8 @@ void UrdfAnalyzer::BuildAdjacencyGraph() {
 
     link_nodes_[static_cast<std::size_t>(child_idx)].parent_index = parent_idx;
     link_nodes_[static_cast<std::size_t>(child_idx)].parent_joint_name = name;
-    link_nodes_[static_cast<std::size_t>(child_idx)].parent_joint_type =
-        meta.type;
-    link_nodes_[static_cast<std::size_t>(parent_idx)].child_indices.push_back(
-        child_idx);
+    link_nodes_[static_cast<std::size_t>(child_idx)].parent_joint_type = meta.type;
+    link_nodes_[static_cast<std::size_t>(parent_idx)].child_indices.push_back(child_idx);
 
     child_links.insert(meta.child_link);
   }
@@ -225,7 +220,7 @@ void UrdfAnalyzer::BuildAdjacencyGraph() {
 }
 
 // ── Physics 판정 (A+B 조합) ────────────────────────────────────────────────
-bool UrdfAnalyzer::CheckPhysics(const JointMeta &meta) const noexcept {
+bool UrdfAnalyzer::CheckPhysics(const JointMeta& meta) const noexcept {
   if (!meta.has_limit_tag)
     return false;
   if (meta.effort <= 0.0)
@@ -242,7 +237,7 @@ bool UrdfAnalyzer::CheckPhysics(const JointMeta &meta) const noexcept {
 // 관절을 closed_chain_joints_ 집합에 기록.
 void UrdfAnalyzer::CollectClosedChainJoints() {
   const auto chains = DetectClosedChains();
-  for (const auto &cc : chains) {
+  for (const auto& cc : chains) {
     // link 이름이 그래프에 없으면 경고 후 skip
     if (link_name_to_index_.find(cc.link_a) == link_name_to_index_.end() ||
         link_name_to_index_.find(cc.link_b) == link_name_to_index_.end()) {
@@ -260,15 +255,13 @@ void UrdfAnalyzer::CollectClosedChainJoints() {
     for (std::size_t i = 1; i < path.size(); ++i) {
       int prev = path[i - 1];
       int cur = path[i];
-      const auto &cur_node = link_nodes_[static_cast<std::size_t>(cur)];
-      const auto &prev_node = link_nodes_[static_cast<std::size_t>(prev)];
+      const auto& cur_node = link_nodes_[static_cast<std::size_t>(cur)];
+      const auto& prev_node = link_nodes_[static_cast<std::size_t>(prev)];
 
       std::string jname;
-      if (cur_node.parent_index == prev &&
-          !cur_node.parent_joint_name.empty()) {
+      if (cur_node.parent_index == prev && !cur_node.parent_joint_name.empty()) {
         jname = cur_node.parent_joint_name;
-      } else if (prev_node.parent_index == cur &&
-                 !prev_node.parent_joint_name.empty()) {
+      } else if (prev_node.parent_index == cur && !prev_node.parent_joint_name.empty()) {
         jname = prev_node.parent_joint_name;
       }
       if (jname.empty())
@@ -288,10 +281,10 @@ void UrdfAnalyzer::CollectClosedChainJoints() {
 // ── 관절 역할 분류 (fixed/active/passive + subtype) ────────────────────────
 void UrdfAnalyzer::ClassifyJointRoles() {
   std::unordered_set<std::string> mimic_names;
-  for (const auto &mi : mimic_joints_)
+  for (const auto& mi : mimic_joints_)
     mimic_names.insert(mi.joint_name);
 
-  for (auto &[name, meta] : joint_meta_map_) {
+  for (auto& [name, meta] : joint_meta_map_) {
     meta.has_physics = CheckPhysics(meta);
 
     // 1. fixed
@@ -308,10 +301,8 @@ void UrdfAnalyzer::ClassifyJointRoles() {
 
     // 중복 subtype 검출 (mimic ∧ closed-chain)
     if (is_mimic && is_closed) {
-      RCLCPP_WARN(
-          logger(),
-          "Joint '%s': mimic과 closed-chain 양쪽에 정의됨. kMimic으로 분류.",
-          name.c_str());
+      RCLCPP_WARN(logger(), "Joint '%s': mimic과 closed-chain 양쪽에 정의됨. kMimic으로 분류.",
+                  name.c_str());
     }
 
     if (is_mimic) {
@@ -328,13 +319,11 @@ void UrdfAnalyzer::ClassifyJointRoles() {
       meta.role = JointRole::kActive;
       meta.passive_subtype = PassiveSubtype::kNone;
       if (!meta.has_physics) {
-        RCLCPP_WARN(
-            logger(),
-            "Joint '%s' 는 active로 분류되었으나 physics가 정의되지 않았습니다 "
-            "(has_limit=%d, effort=%.3f, velocity=%.3f). "
-            "명시적 passive_hints 추가를 고려하세요.",
-            name.c_str(), meta.has_limit_tag ? 1 : 0, meta.effort,
-            meta.velocity);
+        RCLCPP_WARN(logger(),
+                    "Joint '%s' 는 active로 분류되었으나 physics가 정의되지 않았습니다 "
+                    "(has_limit=%d, effort=%.3f, velocity=%.3f). "
+                    "명시적 passive_hints 추가를 고려하세요.",
+                    name.c_str(), meta.has_limit_tag ? 1 : 0, meta.effort, meta.velocity);
       }
     }
 
@@ -359,16 +348,14 @@ void UrdfAnalyzer::ClassifyJointRoles() {
   std::sort(fixed_joint_names_.begin(), fixed_joint_names_.end());
   std::sort(non_fixed_joint_names_.begin(), non_fixed_joint_names_.end());
   std::sort(passive_joints_.begin(), passive_joints_.end(),
-            [](const PassiveJointInfo &a, const PassiveJointInfo &b) {
+            [](const PassiveJointInfo& a, const PassiveJointInfo& b) {
               return a.joint_name < b.joint_name;
             });
 
   // passive hint 중 존재하지 않는 이름 경고
-  for (const auto &h : passive_hints_) {
+  for (const auto& h : passive_hints_) {
     if (joint_meta_map_.find(h) == joint_meta_map_.end()) {
-      RCLCPP_WARN(logger(),
-                  "passive_hints에 지정된 '%s' 가 URDF에 존재하지 않습니다",
-                  h.c_str());
+      RCLCPP_WARN(logger(), "passive_hints에 지정된 '%s' 가 URDF에 존재하지 않습니다", h.c_str());
     }
   }
 }
@@ -387,32 +374,31 @@ void UrdfAnalyzer::ComputeDepths() {
     int cur = queue.front();
     queue.pop_front();
     for (int child : link_nodes_[static_cast<std::size_t>(cur)].child_indices) {
-      depth_[static_cast<std::size_t>(child)] =
-          depth_[static_cast<std::size_t>(cur)] + 1;
+      depth_[static_cast<std::size_t>(child)] = depth_[static_cast<std::size_t>(cur)] + 1;
       queue.push_back(child);
     }
   }
 }
 
 // ── 그래프 조회 ─────────────────────────────────────────────────────────────
-const std::vector<LinkNode> &UrdfAnalyzer::GetLinkNodes() const noexcept {
+const std::vector<LinkNode>& UrdfAnalyzer::GetLinkNodes() const noexcept {
   return link_nodes_;
 }
 
 int UrdfAnalyzer::GetLinkIndex(std::string_view link_name) const {
   auto it = link_name_to_index_.find(std::string(link_name));
   if (it == link_name_to_index_.end()) {
-    RCLCPP_ERROR(logger(), "링크를 찾을 수 없습니다: %s",
-                 std::string(link_name).c_str());
-    throw std::out_of_range("UrdfAnalyzer: 링크를 찾을 수 없습니다: " +
-                            std::string(link_name));
+    RCLCPP_ERROR(logger(), "링크를 찾을 수 없습니다: %s", std::string(link_name).c_str());
+    throw std::out_of_range("UrdfAnalyzer: 링크를 찾을 수 없습니다: " + std::string(link_name));
   }
   return it->second;
 }
 
-int UrdfAnalyzer::GetRootIndex() const noexcept { return root_index_; }
+int UrdfAnalyzer::GetRootIndex() const noexcept {
+  return root_index_;
+}
 
-const std::string &UrdfAnalyzer::GetRootLinkName() const noexcept {
+const std::string& UrdfAnalyzer::GetRootLinkName() const noexcept {
   return link_nodes_[static_cast<std::size_t>(root_index_)].link_name;
 }
 
@@ -425,43 +411,36 @@ std::size_t UrdfAnalyzer::GetNumJoints() const noexcept {
 }
 
 // ── 관절 분류 접근 ──────────────────────────────────────────────────────────
-const std::vector<std::string> &
-UrdfAnalyzer::GetActiveJointNames() const noexcept {
+const std::vector<std::string>& UrdfAnalyzer::GetActiveJointNames() const noexcept {
   return active_joint_names_;
 }
 
-const std::vector<std::string> &
-UrdfAnalyzer::GetPassiveJointNames() const noexcept {
+const std::vector<std::string>& UrdfAnalyzer::GetPassiveJointNames() const noexcept {
   return passive_joint_names_;
 }
 
-const std::vector<std::string> &
-UrdfAnalyzer::GetFixedJointNames() const noexcept {
+const std::vector<std::string>& UrdfAnalyzer::GetFixedJointNames() const noexcept {
   return fixed_joint_names_;
 }
 
-const std::vector<std::string> &
-UrdfAnalyzer::GetNonFixedJointNames() const noexcept {
+const std::vector<std::string>& UrdfAnalyzer::GetNonFixedJointNames() const noexcept {
   return non_fixed_joint_names_;
 }
 
-std::vector<std::string>
-UrdfAnalyzer::GetPassiveJointNamesOfSubtype(PassiveSubtype subtype) const {
+std::vector<std::string> UrdfAnalyzer::GetPassiveJointNamesOfSubtype(PassiveSubtype subtype) const {
   std::vector<std::string> out;
-  for (const auto &pi : passive_joints_) {
+  for (const auto& pi : passive_joints_) {
     if (pi.subtype == subtype)
       out.push_back(pi.joint_name);
   }
   return out;
 }
 
-const std::vector<PassiveJointInfo> &
-UrdfAnalyzer::GetPassiveJoints() const noexcept {
+const std::vector<PassiveJointInfo>& UrdfAnalyzer::GetPassiveJoints() const noexcept {
   return passive_joints_;
 }
 
-const std::vector<MimicJointInfo> &
-UrdfAnalyzer::GetMimicJoints() const noexcept {
+const std::vector<MimicJointInfo>& UrdfAnalyzer::GetMimicJoints() const noexcept {
   return mimic_joints_;
 }
 
@@ -469,40 +448,33 @@ JointRole UrdfAnalyzer::GetJointRole(std::string_view joint_name) const {
   return GetJointMeta(joint_name).role;
 }
 
-PassiveSubtype
-UrdfAnalyzer::GetPassiveSubtype(std::string_view joint_name) const {
+PassiveSubtype UrdfAnalyzer::GetPassiveSubtype(std::string_view joint_name) const {
   return GetJointMeta(joint_name).passive_subtype;
 }
 
 UrdfJointType UrdfAnalyzer::GetJointType(std::string_view joint_name) const {
   auto it = joint_meta_map_.find(std::string(joint_name));
   if (it == joint_meta_map_.end()) {
-    RCLCPP_ERROR(logger(), "관절을 찾을 수 없습니다: %s",
-                 std::string(joint_name).c_str());
-    throw std::out_of_range("UrdfAnalyzer: 관절을 찾을 수 없습니다: " +
-                            std::string(joint_name));
+    RCLCPP_ERROR(logger(), "관절을 찾을 수 없습니다: %s", std::string(joint_name).c_str());
+    throw std::out_of_range("UrdfAnalyzer: 관절을 찾을 수 없습니다: " + std::string(joint_name));
   }
   return it->second.type;
 }
 
-const JointMeta &UrdfAnalyzer::GetJointMeta(std::string_view joint_name) const {
+const JointMeta& UrdfAnalyzer::GetJointMeta(std::string_view joint_name) const {
   auto it = joint_meta_map_.find(std::string(joint_name));
   if (it == joint_meta_map_.end()) {
-    RCLCPP_ERROR(logger(), "관절을 찾을 수 없습니다: %s",
-                 std::string(joint_name).c_str());
-    throw std::out_of_range("UrdfAnalyzer: 관절을 찾을 수 없습니다: " +
-                            std::string(joint_name));
+    RCLCPP_ERROR(logger(), "관절을 찾을 수 없습니다: %s", std::string(joint_name).c_str());
+    throw std::out_of_range("UrdfAnalyzer: 관절을 찾을 수 없습니다: " + std::string(joint_name));
   }
   return it->second;
 }
 
-const std::string &
-UrdfAnalyzer::GetJointChildLink(std::string_view joint_name) const {
+const std::string& UrdfAnalyzer::GetJointChildLink(std::string_view joint_name) const {
   return GetJointMeta(joint_name).child_link;
 }
 
-const std::string &
-UrdfAnalyzer::GetJointParentLink(std::string_view joint_name) const {
+const std::string& UrdfAnalyzer::GetJointParentLink(std::string_view joint_name) const {
   return GetJointMeta(joint_name).parent_link;
 }
 
@@ -513,22 +485,21 @@ std::vector<ClosedChainInfo> UrdfAnalyzer::DetectClosedChains() const {
   // (1) 커스텀 <loop_joint> 태그 파싱
   tinyxml2::XMLDocument doc;
   doc.Parse(urdf_xml_string_.c_str());
-  auto *robot = doc.FirstChildElement("robot");
+  auto* robot = doc.FirstChildElement("robot");
   if (robot) {
-    for (auto *loop_el = robot->FirstChildElement("loop_joint");
-         loop_el != nullptr;
+    for (auto* loop_el = robot->FirstChildElement("loop_joint"); loop_el != nullptr;
          loop_el = loop_el->NextSiblingElement("loop_joint")) {
       ClosedChainInfo cc;
-      const char *name = loop_el->Attribute("name");
+      const char* name = loop_el->Attribute("name");
       cc.name = name ? name : "loop";
-      const char *la = loop_el->Attribute("link1");
-      const char *lb = loop_el->Attribute("link2");
+      const char* la = loop_el->Attribute("link1");
+      const char* lb = loop_el->Attribute("link2");
       if (la)
         cc.link_a = la;
       if (lb)
         cc.link_b = lb;
 
-      const char *contact = loop_el->Attribute("type");
+      const char* contact = loop_el->Attribute("type");
       if (contact && std::string(contact) == "3D") {
         cc.is_6d = false;
       }
@@ -537,14 +508,12 @@ std::vector<ClosedChainInfo> UrdfAnalyzer::DetectClosedChains() const {
   }
 
   // (2) Heuristic: joint 이름에 "loop" 포함 + type == fixed
-  for (const auto &[name, meta] : joint_meta_map_) {
-    if (meta.type == UrdfJointType::kFixed &&
-        name.find("loop") != std::string::npos) {
+  for (const auto& [name, meta] : joint_meta_map_) {
+    if (meta.type == UrdfJointType::kFixed && name.find("loop") != std::string::npos) {
       // 이미 <loop_joint>로 등록된 것과 중복 검사
       bool duplicate = false;
-      for (const auto &existing : result) {
-        if (existing.link_a == meta.parent_link &&
-            existing.link_b == meta.child_link) {
+      for (const auto& existing : result) {
+        if (existing.link_a == meta.parent_link && existing.link_b == meta.child_link) {
           duplicate = true;
           break;
         }
@@ -564,8 +533,7 @@ std::vector<ClosedChainInfo> UrdfAnalyzer::DetectClosedChains() const {
 }
 
 // ── LCA 알고리즘 (동시 상승법) ──────────────────────────────────────────────
-int UrdfAnalyzer::FindLCA(std::string_view link_a,
-                          std::string_view link_b) const {
+int UrdfAnalyzer::FindLCA(std::string_view link_a, std::string_view link_b) const {
   int a = GetLinkIndex(link_a);
   int b = GetLinkIndex(link_b);
 
@@ -592,8 +560,7 @@ int UrdfAnalyzer::FindLCA(std::string_view link_a,
 }
 
 // ── 경로 탐색 (LCA 경유) ───────────────────────────────────────────────────
-std::vector<int> UrdfAnalyzer::FindPath(std::string_view link_a,
-                                        std::string_view link_b) const {
+std::vector<int> UrdfAnalyzer::FindPath(std::string_view link_a, std::string_view link_b) const {
   int a = GetLinkIndex(link_a);
   int b = GetLinkIndex(link_b);
   int lca = FindLCA(link_a, link_b);
@@ -625,12 +592,12 @@ std::vector<int> UrdfAnalyzer::FindPath(std::string_view link_a,
 }
 
 // ── URDF 원본 접근 ──────────────────────────────────────────────────────────
-const std::string &UrdfAnalyzer::GetUrdfXmlString() const noexcept {
+const std::string& UrdfAnalyzer::GetUrdfXmlString() const noexcept {
   return urdf_xml_string_;
 }
 
-const std::string &UrdfAnalyzer::GetUrdfFilePath() const noexcept {
+const std::string& UrdfAnalyzer::GetUrdfFilePath() const noexcept {
   return urdf_file_path_;
 }
 
-} // namespace rtc_urdf_bridge
+}  // namespace rtc_urdf_bridge

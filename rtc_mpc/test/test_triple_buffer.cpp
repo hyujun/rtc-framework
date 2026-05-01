@@ -80,8 +80,7 @@ TEST(TripleBuffer, LatestOnlyWhenProducerOutpacesConsumer) {
 
   const Message* got = buf.TryAcquireLatest();
   ASSERT_NE(got, nullptr);
-  EXPECT_EQ(got->seq, kBurstCount)
-      << "Consumer must skip to the freshest buffer";
+  EXPECT_EQ(got->seq, kBurstCount) << "Consumer must skip to the freshest buffer";
 }
 
 TEST(TripleBuffer, StressOneProducerOneConsumer) {
@@ -109,8 +108,7 @@ TEST(TripleBuffer, StressOneProducerOneConsumer) {
   while (true) {
     const Message* got = buf.TryAcquireLatest();
     if (got == nullptr) {
-      if (producer_done.load(std::memory_order_acquire) &&
-          !buf.HasNewData()) {
+      if (producer_done.load(std::memory_order_acquire) && !buf.HasNewData()) {
         break;
       }
       std::this_thread::yield();

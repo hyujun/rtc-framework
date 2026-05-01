@@ -1,43 +1,37 @@
 // ── KinematicChainExtractor 구현 ─────────────────────────────────────────────
 #include "rtc_urdf_bridge/kinematic_chain_extractor.hpp"
+
 #include "rtc_urdf_bridge/urdf_logging.hpp"
 
 #include <algorithm>
 #include <stdexcept>
 #include <unordered_set>
 
-namespace rtc_urdf_bridge
-{
+namespace rtc_urdf_bridge {
 
-namespace
-{
-auto logger() {return ::rtc::urdf::logging::ChainLogger();}
+namespace {
+auto logger() {
+  return ::rtc::urdf::logging::ChainLogger();
+}
 }  // namespace
 
-KinematicChainExtractor::KinematicChainExtractor(const UrdfAnalyzer & analyzer)
-: analyzer_(analyzer)
-{
-}
+KinematicChainExtractor::KinematicChainExtractor(const UrdfAnalyzer& analyzer)
+    : analyzer_(analyzer) {}
 
 // ── 단일 체인 추출 (root → tip) ─────────────────────────────────────────────
-SubModelDefinition KinematicChainExtractor::ExtractSubModel(
-  std::string_view name,
-  std::string_view root_link,
-  std::string_view tip_link) const
-{
+SubModelDefinition KinematicChainExtractor::ExtractSubModel(std::string_view name,
+                                                            std::string_view root_link,
+                                                            std::string_view tip_link) const {
   // 링크 존재 확인 (없으면 GetLinkIndex에서 throw)
   (void)analyzer_.GetLinkIndex(root_link);
   (void)analyzer_.GetLinkIndex(tip_link);
 
   auto link_path = analyzer_.FindPath(root_link, tip_link);
   if (link_path.empty()) {
-    RCLCPP_ERROR(logger(),
-                 "%s → %s 경로를 찾을 수 없습니다",
-                 std::string(root_link).c_str(),
+    RCLCPP_ERROR(logger(), "%s → %s 경로를 찾을 수 없습니다", std::string(root_link).c_str(),
                  std::string(tip_link).c_str());
-    throw std::runtime_error(
-      "KinematicChainExtractor: " + std::string(root_link) +
-      " → " + std::string(tip_link) + " 경로를 찾을 수 없습니다");
+    throw std::runtime_error("KinematicChainExtractor: " + std::string(root_link) + " → " +
+                             std::string(tip_link) + " 경로를 찾을 수 없습니다");
   }
 
   SubModelDefinition def;
@@ -46,21 +40,16 @@ SubModelDefinition KinematicChainExtractor::ExtractSubModel(
   def.tip_link = tip_link;
 
   CollectJointsOnPath(link_path, def.joint_names, def.all_joint_names, def.link_names);
-  RCLCPP_DEBUG(logger(),
-               "ExtractSubModel '%s': links=%zu, actuated=%zu, all=%zu",
-               std::string(name).c_str(),
-               def.link_names.size(),
-               def.joint_names.size(),
+  RCLCPP_DEBUG(logger(), "ExtractSubModel '%s': links=%zu, actuated=%zu, all=%zu",
+               std::string(name).c_str(), def.link_names.size(), def.joint_names.size(),
                def.all_joint_names.size());
   return def;
 }
 
 // ── 트리 모델 추출 (root에서 여러 tip으로 분기) ─────────────────────────────
 TreeModelDefinition KinematicChainExtractor::ExtractTreeModel(
-  std::string_view name,
-  std::string_view root_link,
-  const std::vector<std::string> & tip_links) const
-{
+    std::string_view name, std::string_view root_link,
+    const std::vector<std::string>& tip_links) const {
   (void)analyzer_.GetLinkIndex(root_link);
 
   TreeModelDefinition def;
@@ -72,16 +61,13 @@ TreeModelDefinition KinematicChainExtractor::ExtractTreeModel(
   std::unordered_set<int> all_link_indices;
   std::vector<std::vector<int>> all_paths;
 
-  for (const auto & tip : tip_links) {
+  for (const auto& tip : tip_links) {
     auto path = analyzer_.FindPath(root_link, tip);
     if (path.empty()) {
-      RCLCPP_ERROR(logger(),
-                   "%s → %s 경로를 찾을 수 없습니다",
-                   std::string(root_link).c_str(),
+      RCLCPP_ERROR(logger(), "%s → %s 경로를 찾을 수 없습니다", std::string(root_link).c_str(),
                    tip.c_str());
-      throw std::runtime_error(
-        "KinematicChainExtractor: " + std::string(root_link) +
-        " → " + tip + " 경로를 찾을 수 없습니다");
+      throw std::runtime_error("KinematicChainExtractor: " + std::string(root_link) + " → " + tip +
+                               " 경로를 찾을 수 없습니다");
     }
     for (int idx : path) {
       all_link_indices.insert(idx);
@@ -90,7 +76,7 @@ TreeModelDefinition KinematicChainExtractor::ExtractTreeModel(
   }
 
   // 모든 경로에서 관절/링크 수집
-  for (const auto & path : all_paths) {
+  for (const auto& path : all_paths) {
     CollectJointsOnPath(path, def.joint_names, def.all_joint_names, def.link_names);
   }
 
@@ -100,9 +86,9 @@ TreeModelDefinition KinematicChainExtractor::ExtractTreeModel(
   DeduplicatePreserveOrder(def.link_names);
 
   // 분기점 감지: 2개 이상의 자식이 트리에 포함된 링크
-  const auto & nodes = analyzer_.GetLinkNodes();
+  const auto& nodes = analyzer_.GetLinkNodes();
   for (int idx : all_link_indices) {
-    const auto & node = nodes[static_cast<std::size_t>(idx)];
+    const auto& node = nodes[static_cast<std::size_t>(idx)];
     int children_in_tree = 0;
     for (int child : node.child_indices) {
       if (all_link_indices.count(child) > 0) {
@@ -117,25 +103,19 @@ TreeModelDefinition KinematicChainExtractor::ExtractTreeModel(
   RCLCPP_DEBUG(logger(),
                "ExtractTreeModel '%s': tips=%zu, links=%zu, actuated=%zu, "
                "all=%zu, branching=%zu",
-               std::string(name).c_str(),
-               tip_links.size(),
-               def.link_names.size(),
-               def.joint_names.size(),
-               def.all_joint_names.size(),
-               def.branching_points.size());
+               std::string(name).c_str(), tip_links.size(), def.link_names.size(),
+               def.joint_names.size(), def.all_joint_names.size(), def.branching_points.size());
   return def;
 }
 
 // ── 잠글 관절 계산 (서브모델) ───────────────────────────────────────────────
 std::vector<std::string> KinematicChainExtractor::ComputeJointsToLock(
-  const SubModelDefinition & sub_model) const
-{
-  const auto & all = analyzer_.GetNonFixedJointNames();
-  std::unordered_set<std::string> keep(
-    sub_model.joint_names.begin(), sub_model.joint_names.end());
+    const SubModelDefinition& sub_model) const {
+  const auto& all = analyzer_.GetNonFixedJointNames();
+  std::unordered_set<std::string> keep(sub_model.joint_names.begin(), sub_model.joint_names.end());
 
   std::vector<std::string> to_lock;
-  for (const auto & j : all) {
+  for (const auto& j : all) {
     if (keep.count(j) == 0) {
       to_lock.push_back(j);
     }
@@ -145,14 +125,13 @@ std::vector<std::string> KinematicChainExtractor::ComputeJointsToLock(
 
 // ── 잠글 관절 계산 (트리모델) ───────────────────────────────────────────────
 std::vector<std::string> KinematicChainExtractor::ComputeJointsToLock(
-  const TreeModelDefinition & tree_model) const
-{
-  const auto & all = analyzer_.GetNonFixedJointNames();
-  std::unordered_set<std::string> keep(
-    tree_model.joint_names.begin(), tree_model.joint_names.end());
+    const TreeModelDefinition& tree_model) const {
+  const auto& all = analyzer_.GetNonFixedJointNames();
+  std::unordered_set<std::string> keep(tree_model.joint_names.begin(),
+                                       tree_model.joint_names.end());
 
   std::vector<std::string> to_lock;
-  for (const auto & j : all) {
+  for (const auto& j : all) {
     if (keep.count(j) == 0) {
       to_lock.push_back(j);
     }
@@ -161,17 +140,15 @@ std::vector<std::string> KinematicChainExtractor::ComputeJointsToLock(
 }
 
 // ── 경로에서 관절/링크 이름 수집 ────────────────────────────────────────────
-void KinematicChainExtractor::CollectJointsOnPath(
-  const std::vector<int> & link_path,
-  std::vector<std::string> & actuated_out,
-  std::vector<std::string> & all_out,
-  std::vector<std::string> & links_out) const
-{
-  const auto & nodes = analyzer_.GetLinkNodes();
+void KinematicChainExtractor::CollectJointsOnPath(const std::vector<int>& link_path,
+                                                  std::vector<std::string>& actuated_out,
+                                                  std::vector<std::string>& all_out,
+                                                  std::vector<std::string>& links_out) const {
+  const auto& nodes = analyzer_.GetLinkNodes();
 
   for (std::size_t i = 0; i < link_path.size(); ++i) {
     int idx = link_path[i];
-    const auto & node = nodes[static_cast<std::size_t>(idx)];
+    const auto& node = nodes[static_cast<std::size_t>(idx)];
     links_out.push_back(node.link_name);
 
     // 인접한 두 노드 사이의 관절을 찾기:
@@ -188,7 +165,7 @@ void KinematicChainExtractor::CollectJointsOnPath(
       }
       // case 2: 현재 노드가 prev의 parent → prev의 parent_joint 사용
       else {
-        const auto & prev_node = nodes[static_cast<std::size_t>(prev)];
+        const auto& prev_node = nodes[static_cast<std::size_t>(prev)];
         if (prev_node.parent_index == idx && !prev_node.parent_joint_name.empty()) {
           all_out.push_back(prev_node.parent_joint_name);
           if (prev_node.parent_joint_type != UrdfJointType::kFixed) {
@@ -201,13 +178,10 @@ void KinematicChainExtractor::CollectJointsOnPath(
 }
 
 // ── 중복 제거 (순서 보존) ───────────────────────────────────────────────────
-void KinematicChainExtractor::DeduplicatePreserveOrder(std::vector<std::string> & vec)
-{
+void KinematicChainExtractor::DeduplicatePreserveOrder(std::vector<std::string>& vec) {
   std::unordered_set<std::string> seen;
   auto end = std::remove_if(vec.begin(), vec.end(),
-    [&seen](const std::string & s) {
-      return !seen.insert(s).second;
-    });
+                            [&seen](const std::string& s) { return !seen.insert(s).second; });
   vec.erase(end, vec.end());
 }
 

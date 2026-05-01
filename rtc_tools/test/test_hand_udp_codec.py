@@ -78,6 +78,7 @@ from rtc_tools.utils.hand_udp_sender_example import (
 # Protocol constants sanity check
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestProtocolConstants:
     """프로토콜 상수의 일관성 검증."""
 
@@ -126,6 +127,7 @@ class TestProtocolConstants:
 # float ↔ uint32 변환
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestFloatUint32Conversion:
     """float_to_uint32 / uint32_to_float: memcpy 동등 변환."""
 
@@ -153,24 +155,24 @@ class TestFloatUint32Conversion:
         assert raw == 0xBF800000
 
     def test_nan_roundtrip(self):
-        raw = float_to_uint32(float('nan'))
+        raw = float_to_uint32(float("nan"))
         assert math.isnan(uint32_to_float(raw))
 
     def test_inf_roundtrip(self):
-        raw = float_to_uint32(float('inf'))
-        assert uint32_to_float(raw) == float('inf')
+        raw = float_to_uint32(float("inf"))
+        assert uint32_to_float(raw) == float("inf")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # _is_sensor_command
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestIsSensorCommand:
     """C++ hand_packets::IsSensorCommand 동일 로직."""
 
     def test_individual_sensor_commands(self):
-        for cmd in [CMD_READ_SENSOR0, CMD_READ_SENSOR1,
-                    CMD_READ_SENSOR2, CMD_READ_SENSOR3]:
+        for cmd in [CMD_READ_SENSOR0, CMD_READ_SENSOR1, CMD_READ_SENSOR2, CMD_READ_SENSOR3]:
             assert _is_sensor_command(cmd) is True
 
     def test_set_sensor_mode(self):
@@ -180,8 +182,7 @@ class TestIsSensorCommand:
         assert _is_sensor_command(CMD_READ_ALL_SENSORS) is True
 
     def test_non_sensor_commands(self):
-        for cmd in [CMD_WRITE_POSITION, CMD_READ_POSITION,
-                    CMD_READ_VELOCITY, CMD_READ_ALL_MOTORS]:
+        for cmd in [CMD_WRITE_POSITION, CMD_READ_POSITION, CMD_READ_VELOCITY, CMD_READ_ALL_MOTORS]:
             assert _is_sensor_command(cmd) is False
 
 
@@ -189,19 +190,18 @@ class TestIsJointCommand:
     """C++ hand_packets::IsJointCommand 동일 로직."""
 
     def test_joint_commands(self):
-        for cmd in [CMD_WRITE_POSITION, CMD_READ_ALL_MOTORS,
-                    CMD_READ_POSITION, CMD_READ_VELOCITY]:
+        for cmd in [CMD_WRITE_POSITION, CMD_READ_ALL_MOTORS, CMD_READ_POSITION, CMD_READ_VELOCITY]:
             assert _is_joint_command(cmd) is True
 
     def test_non_joint_commands(self):
-        for cmd in [CMD_SET_SENSOR_MODE, CMD_READ_SENSOR0,
-                    CMD_READ_ALL_SENSORS]:
+        for cmd in [CMD_SET_SENSOR_MODE, CMD_READ_SENSOR0, CMD_READ_ALL_SENSORS]:
             assert _is_joint_command(cmd) is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Motor packet encoding / decoding
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestMotorPacketCodec:
     """encode_motor_packet / decode_motor_response 라운드트립."""
@@ -224,8 +224,7 @@ class TestMotorPacketCodec:
     def test_write_position_joint_mode(self):
         """joint_mode=JOINT_MODE_JOINT 시 MODE 바이트가 0x01."""
         values = [0.0] * NUM_HAND_MOTORS
-        pkt = encode_motor_packet(CMD_WRITE_POSITION, values,
-                                  joint_mode=JOINT_MODE_JOINT)
+        pkt = encode_motor_packet(CMD_WRITE_POSITION, values, joint_mode=JOINT_MODE_JOINT)
         assert pkt[2] == JOINT_MODE_JOINT
 
         _, mode, _ = decode_motor_response(pkt)
@@ -245,7 +244,7 @@ class TestMotorPacketCodec:
 
     def test_decode_short_buffer_raises(self):
         with pytest.raises(AssertionError):
-            decode_motor_response(b'\x00' * 10)
+            decode_motor_response(b"\x00" * 10)
 
 
 class TestMotorReadRequest:
@@ -264,8 +263,7 @@ class TestMotorReadRequest:
         assert pkt[1] == CMD_READ_VELOCITY
 
     def test_joint_mode(self):
-        pkt = encode_motor_read_request(CMD_READ_POSITION,
-                                        joint_mode=JOINT_MODE_JOINT)
+        pkt = encode_motor_read_request(CMD_READ_POSITION, joint_mode=JOINT_MODE_JOINT)
         assert pkt[2] == JOINT_MODE_JOINT
 
     def test_all_motors_with_joint_mode(self):
@@ -296,6 +294,7 @@ class TestLegacyAliases:
 # Sensor packet encoding / decoding
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestSensorPacketCodec:
     """encode_sensor_request / decode_sensor_response."""
 
@@ -322,10 +321,10 @@ class TestSensorPacketCodec:
     def test_sensor_response_decode(self):
         """67B 센서 응답 디코딩: barometer[8] + skip reserved[5] + tof[3] = 11."""
         # Build a fake 67-byte response (int32 — C++ SensorResponsePacket)
-        header = struct.pack('<BBB', DEVICE_ID, CMD_READ_SENSOR0, SENSOR_MODE_RAW)
+        header = struct.pack("<BBB", DEVICE_ID, CMD_READ_SENSOR0, SENSOR_MODE_RAW)
         # 16 int32 values: baro[0..7], reserved[8..12], tof[13..15]
         data_values = list(range(16))
-        data = struct.pack('<16i', *data_values)
+        data = struct.pack("<16i", *data_values)
         buf = header + data
 
         cmd, mode, values = decode_sensor_response(buf)
@@ -343,28 +342,44 @@ class TestSensorPacketCodec:
 
     def test_sensor_response_signed_values(self):
         """센서 데이터가 int32 (signed) 로 디코딩되는지 확인."""
-        header = struct.pack('<BBB', DEVICE_ID, CMD_READ_SENSOR0, SENSOR_MODE_RAW)
+        header = struct.pack("<BBB", DEVICE_ID, CMD_READ_SENSOR0, SENSOR_MODE_RAW)
         # 음수 barometer 값 포함
-        data_values = [-100, -50, 0, 50, 100, 200, 300, 400,  # baro[8]
-                       0, 0, 0, 0, 0,                          # reserved[5]
-                       -10, 20, -30]                            # tof[3]
-        data = struct.pack('<16i', *data_values)
+        data_values = [
+            -100,
+            -50,
+            0,
+            50,
+            100,
+            200,
+            300,
+            400,  # baro[8]
+            0,
+            0,
+            0,
+            0,
+            0,  # reserved[5]
+            -10,
+            20,
+            -30,
+        ]  # tof[3]
+        data = struct.pack("<16i", *data_values)
         buf = header + data
 
         _, _, values = decode_sensor_response(buf)
         assert values[0] == -100  # signed negative
         assert values[1] == -50
-        assert values[BAROMETER_COUNT] == -10      # tof[0]
+        assert values[BAROMETER_COUNT] == -10  # tof[0]
         assert values[BAROMETER_COUNT + 2] == -30  # tof[2]
 
     def test_sensor_response_short_buffer_raises(self):
         with pytest.raises(AssertionError):
-            decode_sensor_response(b'\x00' * 10)
+            decode_sensor_response(b"\x00" * 10)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Set sensor mode
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestSetSensorMode:
     def test_raw_mode(self):
@@ -386,6 +401,7 @@ class TestSetSensorMode:
 # All-motor (bulk) encoding / decoding
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestAllMotorCodec:
     """encode_all_motor_request / decode_all_motor_response: 123B bulk."""
 
@@ -402,11 +418,11 @@ class TestAllMotorCodec:
         currents = [0.01 * i for i in range(NUM_HAND_MOTORS)]
 
         # Build raw packet
-        header = struct.pack('<BBB', DEVICE_ID, CMD_READ_ALL_MOTORS, 0x00)
+        header = struct.pack("<BBB", DEVICE_ID, CMD_READ_ALL_MOTORS, 0x00)
         raw_ints = []
         for v in positions + velocities + currents:
             raw_ints.append(float_to_uint32(v))
-        data = struct.pack(f'<{ALL_MOTOR_DATA_COUNT}I', *raw_ints)
+        data = struct.pack(f"<{ALL_MOTOR_DATA_COUNT}I", *raw_ints)
         buf = header + data
 
         assert len(buf) == ALL_MOTOR_PACKET_SIZE
@@ -421,12 +437,13 @@ class TestAllMotorCodec:
 
     def test_short_buffer_raises(self):
         with pytest.raises(AssertionError):
-            decode_all_motor_response(b'\x00' * 50)
+            decode_all_motor_response(b"\x00" * 50)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # All-sensor (bulk) encoding / decoding
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestAllSensorCodec:
     """encode_all_sensor_request / decode_all_sensor_response: 259B bulk."""
@@ -444,7 +461,7 @@ class TestAllSensorCodec:
 
     def test_response_roundtrip(self):
         """Build a 259B response and verify decoded values (int32)."""
-        header = struct.pack('<BBB', DEVICE_ID, CMD_READ_ALL_SENSORS, SENSOR_MODE_RAW)
+        header = struct.pack("<BBB", DEVICE_ID, CMD_READ_ALL_SENSORS, SENSOR_MODE_RAW)
 
         # 4 fingertips × 16 int32 each (C++ AllSensorResponsePacket.data = int32_t[64])
         all_data = []
@@ -458,7 +475,7 @@ class TestAllSensorCodec:
             tof = [base + 50 + i for i in range(TOF_COUNT)]
             all_data.extend(baro + reserved + tof)
 
-        data = struct.pack(f'<{ALL_SENSOR_DATA_COUNT}i', *all_data)
+        data = struct.pack(f"<{ALL_SENSOR_DATA_COUNT}i", *all_data)
         buf = header + data
         assert len(buf) == ALL_SENSOR_RESPONSE_SIZE
 
@@ -482,12 +499,13 @@ class TestAllSensorCodec:
 
     def test_short_buffer_raises(self):
         with pytest.raises(AssertionError):
-            decode_all_sensor_response(b'\x00' * 100)
+            decode_all_sensor_response(b"\x00" * 100)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # _format_sensor_detail
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestFormatSensorDetail:
     def test_single_sensor(self):
@@ -522,6 +540,7 @@ class TestFormatSensorDetail:
 # ═══════════════════════════════════════════════════════════════════════════
 # UdpTimingStats
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestUdpTimingStats:
     def test_empty_stats(self):
@@ -588,11 +607,13 @@ class TestUdpTimingStats:
     def test_stats_str_na(self):
         """빈 deque에 대한 N/A 출력."""
         from collections import deque
+
         result = UdpTimingStats._stats_str(deque(), "test")
         assert "N/A" in result
 
     def test_stats_str_values(self):
         from collections import deque
+
         d = deque([0.001, 0.002, 0.003])
         result = UdpTimingStats._stats_str(d, "test")
         assert "avg=" in result
@@ -604,6 +625,7 @@ class TestUdpTimingStats:
 # ═══════════════════════════════════════════════════════════════════════════
 # HandDataFailureDetector
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestHandDataFailureDetector:
     """HandDataFailureDetector: 0 데이터 / 동일 데이터 연속 감지."""
@@ -698,21 +720,24 @@ class TestHandDataFailureDetector:
         """motor + sensor 둘 다 활성화 시 어느 하나라도 실패하면 exit."""
         det = HandDataFailureDetector(threshold=2)
         # motor None → sensor 정상
-        det.check({
-            "positions": None,
-            "sensors": list(range(1, NUM_HAND_SENSORS + 1)),
-        })
-
-        with pytest.raises(SystemExit):
-            det.check({
+        det.check(
+            {
                 "positions": None,
                 "sensors": list(range(1, NUM_HAND_SENSORS + 1)),
-            })
+            }
+        )
+
+        with pytest.raises(SystemExit):
+            det.check(
+                {
+                    "positions": None,
+                    "sensors": list(range(1, NUM_HAND_SENSORS + 1)),
+                }
+            )
 
     def test_disabled_checks_skipped(self):
         """비활성화된 검사는 건너뜀."""
-        det = HandDataFailureDetector(
-            threshold=2, motor_enabled=False, sensor_enabled=False)
+        det = HandDataFailureDetector(threshold=2, motor_enabled=False, sensor_enabled=False)
         for _ in range(100):
             det.check({"positions": None, "sensors": []})  # no exit
 
@@ -720,6 +745,7 @@ class TestHandDataFailureDetector:
 # ═══════════════════════════════════════════════════════════════════════════
 # Edge cases — packet boundary testing
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestPacketBoundaries:
     """패킷 크기 경계값 테스트."""
@@ -734,14 +760,14 @@ class TestPacketBoundaries:
 
     def test_motor_packet_extra_bytes_ok(self):
         """43B보다 큰 버퍼도 디코딩 성공 (앞 43B만 사용)."""
-        pkt = encode_motor_packet(CMD_READ_POSITION) + b'\xFF' * 10
+        pkt = encode_motor_packet(CMD_READ_POSITION) + b"\xff" * 10
         cmd, mode, vals = decode_motor_response(pkt)
         assert cmd == CMD_READ_POSITION
 
     def test_sensor_response_exact_size(self):
         """정확히 67B 센서 응답 디코딩 성공."""
-        header = struct.pack('<BBB', DEVICE_ID, CMD_READ_SENSOR0, 0)
-        data = struct.pack('<16i', *range(16))
+        header = struct.pack("<BBB", DEVICE_ID, CMD_READ_SENSOR0, 0)
+        data = struct.pack("<16i", *range(16))
         buf = header + data
         assert len(buf) == 67
         cmd, mode, vals = decode_sensor_response(buf)
@@ -749,9 +775,10 @@ class TestPacketBoundaries:
 
     def test_all_motor_exact_size(self):
         """정확히 123B all-motor 응답 디코딩 성공."""
-        header = struct.pack('<BBB', DEVICE_ID, CMD_READ_ALL_MOTORS, 0)
-        data = struct.pack(f'<{ALL_MOTOR_DATA_COUNT}I',
-                           *[float_to_uint32(0.0)] * ALL_MOTOR_DATA_COUNT)
+        header = struct.pack("<BBB", DEVICE_ID, CMD_READ_ALL_MOTORS, 0)
+        data = struct.pack(
+            f"<{ALL_MOTOR_DATA_COUNT}I", *[float_to_uint32(0.0)] * ALL_MOTOR_DATA_COUNT
+        )
         buf = header + data
         assert len(buf) == 123
         cmd, mode, pos, vel, cur = decode_all_motor_response(buf)
@@ -761,9 +788,8 @@ class TestPacketBoundaries:
 
     def test_all_sensor_exact_size(self):
         """정확히 259B all-sensor 응답 디코딩 성공."""
-        header = struct.pack('<BBB', DEVICE_ID, CMD_READ_ALL_SENSORS, 0)
-        data = struct.pack(f'<{ALL_SENSOR_DATA_COUNT}i',
-                           *range(ALL_SENSOR_DATA_COUNT))
+        header = struct.pack("<BBB", DEVICE_ID, CMD_READ_ALL_SENSORS, 0)
+        data = struct.pack(f"<{ALL_SENSOR_DATA_COUNT}i", *range(ALL_SENSOR_DATA_COUNT))
         buf = header + data
         assert len(buf) == 259
         cmd, mode, vals = decode_all_sensor_response(buf)
@@ -774,17 +800,18 @@ class TestPacketBoundaries:
 # Special float values
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestSpecialFloatValues:
     """특수 float 값(NaN, Inf, subnormal)의 패킷 라운드트립."""
 
     def test_nan_in_motor_packet(self):
-        values = [float('nan')] + [0.0] * (NUM_HAND_MOTORS - 1)
+        values = [float("nan")] + [0.0] * (NUM_HAND_MOTORS - 1)
         pkt = encode_motor_packet(CMD_WRITE_POSITION, values)
         _, _, decoded = decode_motor_response(pkt)
         assert math.isnan(decoded[0])
 
     def test_inf_in_motor_packet(self):
-        values = [float('inf')] + [0.0] * (NUM_HAND_MOTORS - 1)
+        values = [float("inf")] + [0.0] * (NUM_HAND_MOTORS - 1)
         pkt = encode_motor_packet(CMD_WRITE_POSITION, values)
         _, _, decoded = decode_motor_response(pkt)
         assert math.isinf(decoded[0])

@@ -35,13 +35,9 @@ struct AllocCounter {
     armed.store(true, std::memory_order_release);
   }
 
-  static void Disarm() noexcept {
-    armed.store(false, std::memory_order_release);
-  }
+  static void Disarm() noexcept { armed.store(false, std::memory_order_release); }
 
-  [[nodiscard]] static bool IsArmed() noexcept {
-    return armed.load(std::memory_order_acquire);
-  }
+  [[nodiscard]] static bool IsArmed() noexcept { return armed.load(std::memory_order_acquire); }
 
   [[nodiscard]] static std::int64_t AllocCount() noexcept {
     return alloc_count.load(std::memory_order_relaxed);
@@ -67,4 +63,4 @@ struct AllocCounter {
   }
 };
 
-} // namespace rtc::mpc::test_utils
+}  // namespace rtc::mpc::test_utils

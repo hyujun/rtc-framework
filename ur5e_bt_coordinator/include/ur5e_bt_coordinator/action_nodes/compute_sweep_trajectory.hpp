@@ -22,7 +22,7 @@ namespace rtc_bt {
 /// Output ports:
 ///   - waypoints (vector<Pose6D>): generated waypoint sequence
 class ComputeSweepTrajectory : public BT::SyncActionNode {
-public:
+ public:
   using BT::SyncActionNode::SyncActionNode;
 
   static BT::PortsList providedPorts();

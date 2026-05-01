@@ -21,10 +21,12 @@
 namespace rtc::test {
 
 #pragma pack(push, 1)
+
 struct FakePacket {
   uint32_t sequence;
-  int32_t  payload;
+  int32_t payload;
 };
+
 #pragma pack(pop)
 
 static_assert(std::is_trivially_copyable_v<FakePacket>);
@@ -32,19 +34,18 @@ static_assert(std::is_trivially_copyable_v<FakePacket>);
 struct FakeCodec {
   using RecvPacket = FakePacket;
   using SendPacket = FakePacket;
-  using State      = FakePacket;
+  using State = FakePacket;
 
   // Decodes a full FakePacket from buf. Returns false on short buffer.
-  [[nodiscard]] static bool Decode(
-      std::span<const uint8_t> buf, State& out) noexcept {
-    if (buf.size() < sizeof(FakePacket)) return false;
+  [[nodiscard]] static bool Decode(std::span<const uint8_t> buf, State& out) noexcept {
+    if (buf.size() < sizeof(FakePacket))
+      return false;
     std::memcpy(&out, buf.data(), sizeof(FakePacket));
     return true;
   }
 };
 
-static_assert(rtc::PacketCodec<FakeCodec>,
-              "FakeCodec must satisfy the PacketCodec concept");
+static_assert(rtc::PacketCodec<FakeCodec>, "FakeCodec must satisfy the PacketCodec concept");
 
 }  // namespace rtc::test
 

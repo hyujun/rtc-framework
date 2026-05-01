@@ -2,14 +2,12 @@
 // Unit tests for ur5e_bringup::ApplyDemoSharedConfig and BuildGraspController
 // (demo_shared_config.hpp / demo_shared_config.cpp)
 // ─────────────────────────────────────────────────────────────────────────────
-#include <gtest/gtest.h>
-
+#include "rtc_controllers/grasp/grasp_controller.hpp"
+#include "rtc_controllers/grasp/grasp_types.hpp"
 #include "ur5e_bringup/controllers/demo_shared_config.hpp"
 #include "ur5e_bringup/controllers/virtual_tcp.hpp"
 
-#include "rtc_controllers/grasp/grasp_controller.hpp"
-#include "rtc_controllers/grasp/grasp_types.hpp"
-
+#include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
 #include <memory>
@@ -25,8 +23,7 @@ using ur5e_bringup::VirtualTcpMode;
 // Defaults / no-op
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST(DemoSharedConfigTest, DefaultConstructedValues)
-{
+TEST(DemoSharedConfigTest, DefaultConstructedValues) {
   DemoSharedConfig cfg;
   EXPECT_EQ(cfg.vtcp.mode, VirtualTcpMode::kDisabled);
   EXPECT_FLOAT_EQ(cfg.grasp_contact_threshold, 0.5f);
@@ -36,8 +33,7 @@ TEST(DemoSharedConfigTest, DefaultConstructedValues)
   EXPECT_FALSE(cfg.has_force_pi_block);
 }
 
-TEST(DemoSharedConfigTest, NullNodeIsNoOp)
-{
+TEST(DemoSharedConfigTest, NullNodeIsNoOp) {
   DemoSharedConfig cfg;
   cfg.grasp_contact_threshold = 0.75f;
   cfg.grasp_controller_type = "force_pi";
@@ -49,10 +45,9 @@ TEST(DemoSharedConfigTest, NullNodeIsNoOp)
   EXPECT_EQ(cfg.grasp_controller_type, "force_pi");
 }
 
-TEST(DemoSharedConfigTest, PartialOverridePreservesOtherFields)
-{
+TEST(DemoSharedConfigTest, PartialOverridePreservesOtherFields) {
   DemoSharedConfig cfg;
-  cfg.grasp_contact_threshold = 0.9f;     // preserved
+  cfg.grasp_contact_threshold = 0.9f;  // preserved
   cfg.grasp_force_threshold = 1.0f;
   cfg.grasp_min_fingertips = 2;
 
@@ -68,15 +63,16 @@ TEST(DemoSharedConfigTest, PartialOverridePreservesOtherFields)
 // Virtual TCP parsing
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST(DemoSharedConfigTest, VirtualTcpModeStrings)
-{
-  struct Case { const char* str; VirtualTcpMode expected; };
+TEST(DemoSharedConfigTest, VirtualTcpModeStrings) {
+  struct Case {
+    const char* str;
+    VirtualTcpMode expected;
+  };
+
   const Case cases[] = {
-    {"centroid", VirtualTcpMode::kCentroid},
-    {"weighted", VirtualTcpMode::kWeighted},
-    {"constant", VirtualTcpMode::kConstant},
-    {"disabled", VirtualTcpMode::kDisabled},
-    {"bogus",    VirtualTcpMode::kDisabled},  // unknown → disabled
+      {"centroid", VirtualTcpMode::kCentroid}, {"weighted", VirtualTcpMode::kWeighted},
+      {"constant", VirtualTcpMode::kConstant}, {"disabled", VirtualTcpMode::kDisabled},
+      {"bogus", VirtualTcpMode::kDisabled},  // unknown → disabled
   };
   for (const auto& c : cases) {
     DemoSharedConfig cfg;
@@ -87,8 +83,7 @@ TEST(DemoSharedConfigTest, VirtualTcpModeStrings)
   }
 }
 
-TEST(DemoSharedConfigTest, VirtualTcpOffsetAndOrientation)
-{
+TEST(DemoSharedConfigTest, VirtualTcpOffsetAndOrientation) {
   DemoSharedConfig cfg;
   YAML::Node node = YAML::Load(R"YAML(
 virtual_tcp_mode: constant
@@ -97,16 +92,15 @@ virtual_tcp_orientation: [1.5708, 0.0, -1.5708]
 )YAML");
   ApplyDemoSharedConfig(node, cfg);
   EXPECT_EQ(cfg.vtcp.mode, VirtualTcpMode::kConstant);
-  EXPECT_DOUBLE_EQ(cfg.vtcp.offset[0],  0.1);
+  EXPECT_DOUBLE_EQ(cfg.vtcp.offset[0], 0.1);
   EXPECT_DOUBLE_EQ(cfg.vtcp.offset[1], -0.2);
-  EXPECT_DOUBLE_EQ(cfg.vtcp.offset[2],  0.3);
-  EXPECT_DOUBLE_EQ(cfg.vtcp.orientation[0],  1.5708);
-  EXPECT_DOUBLE_EQ(cfg.vtcp.orientation[1],  0.0);
+  EXPECT_DOUBLE_EQ(cfg.vtcp.offset[2], 0.3);
+  EXPECT_DOUBLE_EQ(cfg.vtcp.orientation[0], 1.5708);
+  EXPECT_DOUBLE_EQ(cfg.vtcp.orientation[1], 0.0);
   EXPECT_DOUBLE_EQ(cfg.vtcp.orientation[2], -1.5708);
 }
 
-TEST(DemoSharedConfigTest, VirtualTcpOffsetShortSequenceLeavesExtrasUntouched)
-{
+TEST(DemoSharedConfigTest, VirtualTcpOffsetShortSequenceLeavesExtrasUntouched) {
   DemoSharedConfig cfg;
   cfg.vtcp.offset = {{9.0, 9.0, 9.0}};  // sentinel
   YAML::Node node = YAML::Load("virtual_tcp_offset: [1.0, 2.0]\n");
@@ -120,8 +114,7 @@ TEST(DemoSharedConfigTest, VirtualTcpOffsetShortSequenceLeavesExtrasUntouched)
 // Grasp threshold fields
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST(DemoSharedConfigTest, GraspThresholdsAndType)
-{
+TEST(DemoSharedConfigTest, GraspThresholdsAndType) {
   DemoSharedConfig cfg;
   YAML::Node node = YAML::Load(R"YAML(
 grasp_contact_threshold: 0.42
@@ -140,8 +133,7 @@ grasp_controller_type: force_pi
 // force_pi_grasp block parsing
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST(DemoSharedConfigTest, ForcePiBlockParses)
-{
+TEST(DemoSharedConfigTest, ForcePiBlockParses) {
   DemoSharedConfig cfg;
   YAML::Node node = YAML::Load(R"YAML(
 force_pi_grasp:
@@ -195,8 +187,7 @@ force_pi_grasp:
   EXPECT_DOUBLE_EQ(cfg.force_pi_fingers[2].q_close[1], 1.2);
 }
 
-TEST(DemoSharedConfigTest, ForcePiBlockAbsentLeavesFlagFalse)
-{
+TEST(DemoSharedConfigTest, ForcePiBlockAbsentLeavesFlagFalse) {
   DemoSharedConfig cfg;
   YAML::Node node = YAML::Load("grasp_controller_type: force_pi\n");
   ApplyDemoSharedConfig(node, cfg);
@@ -205,8 +196,7 @@ TEST(DemoSharedConfigTest, ForcePiBlockAbsentLeavesFlagFalse)
 }
 
 // units: "deg" → 내부 저장은 radians 로 변환되어야 한다.
-TEST(DemoSharedConfigTest, ForcePiFingersDegreesConverted)
-{
+TEST(DemoSharedConfigTest, ForcePiFingersDegreesConverted) {
   DemoSharedConfig cfg;
   YAML::Node node = YAML::Load(R"YAML(
 force_pi_grasp:
@@ -229,13 +219,12 @@ force_pi_grasp:
   EXPECT_NEAR(cfg.force_pi_fingers[0].q_close[1], 60.0 * kD2R, 1e-12);
   EXPECT_NEAR(cfg.force_pi_fingers[0].q_close[2], 45.0 * kD2R, 1e-12);
   EXPECT_NEAR(cfg.force_pi_fingers[1].q_close[1], 90.0 * kD2R, 1e-12);
-  EXPECT_NEAR(cfg.force_pi_fingers[2].q_open[0],  10.0 * kD2R, 1e-12);
+  EXPECT_NEAR(cfg.force_pi_fingers[2].q_open[0], 10.0 * kD2R, 1e-12);
   EXPECT_NEAR(cfg.force_pi_fingers[2].q_close[2], std::numbers::pi_v<double>, 1e-12);
 }
 
 // units 미지정 → rad 로 해석 (하위 호환).
-TEST(DemoSharedConfigTest, ForcePiFingersDefaultsToRadians)
-{
+TEST(DemoSharedConfigTest, ForcePiFingersDefaultsToRadians) {
   DemoSharedConfig cfg;
   YAML::Node node = YAML::Load(R"YAML(
 force_pi_grasp:
@@ -252,8 +241,7 @@ force_pi_grasp:
 }
 
 // units: "rad" 을 명시적으로 설정한 경우도 스케일 없이 통과.
-TEST(DemoSharedConfigTest, ForcePiFingersExplicitRadians)
-{
+TEST(DemoSharedConfigTest, ForcePiFingersExplicitRadians) {
   DemoSharedConfig cfg;
   YAML::Node node = YAML::Load(R"YAML(
 force_pi_grasp:
@@ -273,8 +261,7 @@ force_pi_grasp:
 // BuildGraspController gating
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST(BuildGraspControllerTest, ContactStopTypeResetsController)
-{
+TEST(BuildGraspControllerTest, ContactStopTypeResetsController) {
   DemoSharedConfig cfg;
   cfg.grasp_controller_type = "contact_stop";
   cfg.has_force_pi_block = true;  // ignored — type check wins
@@ -284,8 +271,7 @@ TEST(BuildGraspControllerTest, ContactStopTypeResetsController)
   EXPECT_EQ(ctrl.get(), nullptr);
 }
 
-TEST(BuildGraspControllerTest, ForcePiWithoutBlockIsSkipped)
-{
+TEST(BuildGraspControllerTest, ForcePiWithoutBlockIsSkipped) {
   DemoSharedConfig cfg;
   cfg.grasp_controller_type = "force_pi";
   cfg.has_force_pi_block = false;
@@ -295,8 +281,7 @@ TEST(BuildGraspControllerTest, ForcePiWithoutBlockIsSkipped)
   EXPECT_EQ(ctrl.get(), nullptr);
 }
 
-TEST(BuildGraspControllerTest, ForcePiWithBlockBuildsControllerAtRequestedRate)
-{
+TEST(BuildGraspControllerTest, ForcePiWithBlockBuildsControllerAtRequestedRate) {
   DemoSharedConfig cfg;
   cfg.grasp_controller_type = "force_pi";
   cfg.has_force_pi_block = true;
@@ -309,7 +294,7 @@ TEST(BuildGraspControllerTest, ForcePiWithBlockBuildsControllerAtRequestedRate)
 
   // Provide plausible finger postures so Init() doesn't misbehave.
   for (auto& fc : cfg.force_pi_fingers) {
-    fc.q_open  = {0.0, 0.0, 0.0};
+    fc.q_open = {0.0, 0.0, 0.0};
     fc.q_close = {0.5, 1.0, 0.7};
   }
 
@@ -333,13 +318,12 @@ TEST(BuildGraspControllerTest, ForcePiWithBlockBuildsControllerAtRequestedRate)
   EXPECT_DOUBLE_EQ(ctrl2->target_force(), 1.5);
 }
 
-TEST(BuildGraspControllerTest, SwitchingBackToContactStopResetsExistingController)
-{
+TEST(BuildGraspControllerTest, SwitchingBackToContactStopResetsExistingController) {
   DemoSharedConfig cfg;
   cfg.grasp_controller_type = "force_pi";
   cfg.has_force_pi_block = true;
   for (auto& fc : cfg.force_pi_fingers) {
-    fc.q_open  = {0.0, 0.0, 0.0};
+    fc.q_open = {0.0, 0.0, 0.0};
     fc.q_close = {0.5, 1.0, 0.7};
   }
 

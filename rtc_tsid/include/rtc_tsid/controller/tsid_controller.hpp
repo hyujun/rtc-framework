@@ -1,13 +1,13 @@
 #pragma once
 
+#include "rtc_tsid/core/controller_base.hpp"
+#include "rtc_tsid/core/formulation_base.hpp"
+#include "rtc_tsid/types/qp_types.hpp"
+
 #include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
-
-#include "rtc_tsid/core/controller_base.hpp"
-#include "rtc_tsid/core/formulation_base.hpp"
-#include "rtc_tsid/types/qp_types.hpp"
 
 namespace rtc::tsid {
 
@@ -19,21 +19,16 @@ namespace rtc::tsid {
 // ────────────────────────────────────────────────
 class TSIDController final : public ControllerBase {
  public:
-  void init(const pinocchio::Model& model,
-            const RobotModelInfo& robot_info,
+  void init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
             const YAML::Node& config) override;
 
-  [[nodiscard]] CommandOutput compute(
-      const ControlState& state,
-      const ControlReference& ref,
-      const PinocchioCache& cache,
-      const ContactState& contacts) noexcept override;
+  [[nodiscard]] CommandOutput compute(const ControlState& state, const ControlReference& ref,
+                                      const PinocchioCache& cache,
+                                      const ContactState& contacts) noexcept override;
 
   void reset() noexcept override;
 
-  [[nodiscard]] std::string_view name() const noexcept override {
-    return "tsid";
-  }
+  [[nodiscard]] std::string_view name() const noexcept override { return "tsid"; }
 
   // Phase preset 적용
   void apply_phase_preset(const std::string& preset_name) noexcept;
@@ -45,9 +40,8 @@ class TSIDController final : public ControllerBase {
 
   // 연구용: formulation 직접 접근
   [[nodiscard]] FormulationBase& formulation() { return *formulation_; }
-  [[nodiscard]] const FormulationBase& formulation() const {
-    return *formulation_;
-  }
+
+  [[nodiscard]] const FormulationBase& formulation() const { return *formulation_; }
 
  private:
   RobotModelInfo robot_info_;
@@ -59,7 +53,7 @@ class TSIDController final : public ControllerBase {
   // τ 역산용 pre-allocated buffers
   Eigen::VectorXd tau_full_;      // [nv]
   Eigen::VectorXd tau_actuated_;  // [n_actuated]
-  Eigen::VectorXd JcT_lambda_;   // [nv]
+  Eigen::VectorXd JcT_lambda_;    // [nv]
 
   CommandOutput output_;
 };

@@ -28,9 +28,9 @@ from rtc_tools.plotting import plotters
 @dataclass(frozen=True)
 class PlotEntry:
     name: str
-    fn: Callable                                  # (df, save_dir) -> None
-    available: Callable = lambda df: True         # column-driven gate
-    flag: Optional[str] = None                    # CLI opt-in flag name
+    fn: Callable  # (df, save_dir) -> None
+    available: Callable = lambda df: True  # column-driven gate
+    flag: Optional[str] = None  # CLI opt-in flag name
 
 
 # Match original behaviour: state_log task plots fire if EITHER the
@@ -50,9 +50,9 @@ _TIMING_STATS = [
     PlotEntry("print_timing_stats", plotters.print_timing_statistics),
 ]
 _TIMING_PLOTS = [
-    PlotEntry("timing_breakdown",           plotters.plot_timing_breakdown),
-    PlotEntry("timing_total_jitter",        plotters.plot_timing_total_and_jitter),
-    PlotEntry("timing_histograms",          plotters.plot_timing_histograms),
+    PlotEntry("timing_breakdown", plotters.plot_timing_breakdown),
+    PlotEntry("timing_total_jitter", plotters.plot_timing_total_and_jitter),
+    PlotEntry("timing_histograms", plotters.plot_timing_histograms),
 ]
 
 
@@ -73,33 +73,39 @@ STATS_PRINTERS: dict[str, list[PlotEntry]] = {
 # `PIPELINES` runs unless --stats was passed. Order is significant.
 PIPELINES: dict[str, list[PlotEntry]] = {
     "state_log": [
-        PlotEntry("robot_positions",            plotters.plot_robot_positions),
-        PlotEntry("robot_velocities",           plotters.plot_robot_velocities),
-        PlotEntry("robot_torques",              plotters.plot_robot_torques),
+        PlotEntry("robot_positions", plotters.plot_robot_positions),
+        PlotEntry("robot_velocities", plotters.plot_robot_velocities),
+        PlotEntry("robot_torques", plotters.plot_robot_torques),
         # task-pos plots fire on auto-detect OR --task-pos
-        PlotEntry("robot_task_position",        plotters.plot_robot_task_position,
-                  available=has_task_goal, flag="task_pos"),
-        PlotEntry("robot_task_tracking_error",  plotters.plot_robot_task_tracking_error,
-                  available=has_task_goal, flag="task_pos"),
+        PlotEntry(
+            "robot_task_position",
+            plotters.plot_robot_task_position,
+            available=has_task_goal,
+            flag="task_pos",
+        ),
+        PlotEntry(
+            "robot_task_tracking_error",
+            plotters.plot_robot_task_tracking_error,
+            available=has_task_goal,
+            flag="task_pos",
+        ),
         # opt-in only
-        PlotEntry("robot_tracking_error",       plotters.plot_robot_tracking_error,
-                  flag="error"),
-        PlotEntry("robot_commands",             plotters.plot_robot_commands,
-                  flag="command"),
+        PlotEntry("robot_tracking_error", plotters.plot_robot_tracking_error, flag="error"),
+        PlotEntry("robot_commands", plotters.plot_robot_commands, flag="command"),
         # auto when motor channels present
-        PlotEntry("motor_positions",            plotters.plot_motor_positions,
-                  available=has_motor),
-        PlotEntry("motor_velocities",           plotters.plot_motor_velocities,
-                  available=has_motor),
-        PlotEntry("motor_efforts",              plotters.plot_motor_efforts,
-                  available=has_motor),
+        PlotEntry("motor_positions", plotters.plot_motor_positions, available=has_motor),
+        PlotEntry("motor_velocities", plotters.plot_motor_velocities, available=has_motor),
+        PlotEntry("motor_efforts", plotters.plot_motor_efforts, available=has_motor),
     ],
     "sensor_log": [
-        PlotEntry("sensor_barometer",           plotters.plot_sensor_barometer_combined),
-        PlotEntry("sensor_tof",                 plotters.plot_sensor_tof_combined),
-        PlotEntry("device_ft_output",           plotters.plot_device_ft_output_auto),
-        PlotEntry("device_sensor_comparison",   plotters.plot_device_sensor_comparison_auto,
-                  flag="sensor_compare"),
+        PlotEntry("sensor_barometer", plotters.plot_sensor_barometer_combined),
+        PlotEntry("sensor_tof", plotters.plot_sensor_tof_combined),
+        PlotEntry("device_ft_output", plotters.plot_device_ft_output_auto),
+        PlotEntry(
+            "device_sensor_comparison",
+            plotters.plot_device_sensor_comparison_auto,
+            flag="sensor_compare",
+        ),
     ],
     "cm_timing": list(_TIMING_PLOTS),
     "mpc_timing": list(_TIMING_PLOTS),

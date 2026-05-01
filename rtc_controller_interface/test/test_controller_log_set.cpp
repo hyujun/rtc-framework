@@ -30,37 +30,43 @@ struct PodA {
   double t_relative_s{0.0};
   std::int32_t a{0};
 };
+
 struct PodB {
   double t_relative_s{0.0};
   double x{0.0};
   double y{0.0};
 };
 
-void HeaderA(std::ostream &os) { os << "t_relative_s,a"; }
-void RowA(std::ostream &os, const PodA &p) {
+void HeaderA(std::ostream& os) {
+  os << "t_relative_s,a";
+}
+
+void RowA(std::ostream& os, const PodA& p) {
   os << p.t_relative_s << ',' << p.a;
 }
 
-void HeaderB(std::ostream &os) { os << "t_relative_s,x,y"; }
-void RowB(std::ostream &os, const PodB &p) {
+void HeaderB(std::ostream& os) {
+  os << "t_relative_s,x,y";
+}
+
+void RowB(std::ostream& os, const PodB& p) {
   os << p.t_relative_s << ',' << p.x << ',' << p.y;
 }
 
 class ScopedSessionDir {
-public:
+ public:
   ScopedSessionDir() {
-    if (const char *prev = std::getenv("RTC_SESSION_DIR")) {
+    if (const char* prev = std::getenv("RTC_SESSION_DIR")) {
       had_prev_ = true;
       prev_value_ = prev;
     }
     auto base = fs::temp_directory_path() / "rtc_log_set_test";
     fs::create_directories(base);
-    dir_ =
-        base / ("s_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) &
-                                      0xFFFFFFFFu));
+    dir_ = base / ("s_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) & 0xFFFFFFFFu));
     fs::create_directories(dir_);
     ::setenv("RTC_SESSION_DIR", dir_.c_str(), 1);
   }
+
   ~ScopedSessionDir() {
     if (had_prev_) {
       ::setenv("RTC_SESSION_DIR", prev_value_.c_str(), 1);
@@ -70,15 +76,16 @@ public:
     std::error_code ec;
     fs::remove_all(dir_, ec);
   }
-  const fs::path &dir() const noexcept { return dir_; }
 
-private:
+  const fs::path& dir() const noexcept { return dir_; }
+
+ private:
   fs::path dir_;
   bool had_prev_{false};
   std::string prev_value_;
 };
 
-std::vector<std::string> ReadAllLines(const fs::path &p) {
+std::vector<std::string> ReadAllLines(const fs::path& p) {
   std::vector<std::string> lines;
   std::ifstream in(p);
   for (std::string line; std::getline(in, line);) {
@@ -87,7 +94,7 @@ std::vector<std::string> ReadAllLines(const fs::path &p) {
   return lines;
 }
 
-} // namespace
+}  // namespace
 
 TEST(ControllerLogSet, EmptyByDefault) {
   rtc::ControllerLogSet set;
@@ -105,8 +112,7 @@ TEST(ControllerLogSet, RegisterLogResolvesPathUnderConfigKey) {
 
   const auto channels = set.Channels();
   ASSERT_EQ(channels.size(), 1u);
-  const auto expected =
-      scope.dir() / "controllers" / "my_controller" / "ur5e.csv";
+  const auto expected = scope.dir() / "controllers" / "my_controller" / "ur5e.csv";
   EXPECT_EQ(channels[0].second, expected);
   EXPECT_TRUE(fs::exists(expected));
 }
@@ -138,7 +144,7 @@ TEST(ControllerLogSet, PushDrainProducesRows) {
 
   const auto channels = set.Channels();
   const auto lines = ReadAllLines(channels[0].second);
-  ASSERT_EQ(lines.size(), 4u); // header + 3 rows
+  ASSERT_EQ(lines.size(), 4u);  // header + 3 rows
   EXPECT_EQ(lines[0], "t_relative_s,a");
   EXPECT_EQ(lines[1], "0.001,1");
   EXPECT_EQ(lines[2], "0.002,2");
@@ -169,15 +175,15 @@ TEST(ControllerLogSet, MultiplePodTypesCoexist) {
 
   const auto lines_a = ReadAllLines(channels[0].second);
   const auto lines_b = ReadAllLines(channels[1].second);
-  ASSERT_EQ(lines_a.size(), 3u); // header + 2 rows
-  ASSERT_EQ(lines_b.size(), 2u); // header + 1 row
+  ASSERT_EQ(lines_a.size(), 3u);  // header + 2 rows
+  ASSERT_EQ(lines_b.size(), 2u);  // header + 1 row
   EXPECT_EQ(lines_b[1], "0.2,1.5,2.5");
 }
 
 TEST(ControllerLogSet, UnboundHandlePushIsNoOp) {
   rtc::LogHandle<PodA> empty;
   EXPECT_FALSE(static_cast<bool>(empty));
-  EXPECT_FALSE(empty.Push(PodA{0.0, 0})); // must not crash
+  EXPECT_FALSE(empty.Push(PodA{0.0, 0}));  // must not crash
 }
 
 TEST(ControllerLogSet, ReopenAppendDoesNotDuplicateHeader) {
@@ -212,7 +218,7 @@ TEST(ControllerLogSet, DropCountsTrackPerChannelOverflow) {
   auto handle = set.RegisterLog<PodA, /*Capacity=*/4>("small", &HeaderA, &RowA);
   ASSERT_TRUE(static_cast<bool>(handle));
   for (int i = 0; i < 5; ++i) {
-    handle.Push(PodA{0.0, i}); // 5th drops
+    handle.Push(PodA{0.0, i});  // 5th drops
   }
   const auto drops = set.DropCounts();
   ASSERT_EQ(drops.size(), 1u);

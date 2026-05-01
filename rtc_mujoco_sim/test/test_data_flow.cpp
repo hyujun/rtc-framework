@@ -22,8 +22,7 @@ TEST(DataFlow, StateCallbackFiresDuringSimLoop) {
   std::atomic<int> callback_count{0};
   std::mutex last_mutex;
   std::vector<double> last_positions;
-  sim.SetStateCallback(0, [&](const std::vector<double>& pos,
-                              const std::vector<double>&,
+  sim.SetStateCallback(0, [&](const std::vector<double>& pos, const std::vector<double>&,
                               const std::vector<double>&) {
     callback_count.fetch_add(1, std::memory_order_relaxed);
     std::lock_guard lock(last_mutex);
@@ -50,10 +49,10 @@ TEST(DataFlow, SensorCallbackFiresWhenConfigured) {
   ASSERT_TRUE(sim.Initialize());
 
   std::atomic<int> sensor_count{0};
-  sim.SetSensorCallback(0, [&](const std::vector<JointGroup::SensorInfo>&,
-                                const std::vector<double>&) {
-    sensor_count.fetch_add(1, std::memory_order_relaxed);
-  });
+  sim.SetSensorCallback(
+      0, [&](const std::vector<JointGroup::SensorInfo>&, const std::vector<double>&) {
+        sensor_count.fetch_add(1, std::memory_order_relaxed);
+      });
 
   sim.Start();
   for (int i = 0; i < 30; ++i) {

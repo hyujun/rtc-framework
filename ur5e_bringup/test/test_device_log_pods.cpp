@@ -15,7 +15,7 @@
 
 namespace {
 
-int CountCommas(const std::string &s) {
+int CountCommas(const std::string& s) {
   int n = 0;
   for (char c : s)
     if (c == ',')
@@ -23,7 +23,7 @@ int CountCommas(const std::string &s) {
   return n;
 }
 
-} // namespace
+}  // namespace
 
 TEST(DeviceStateLogPod, IsTriviallyCopyable) {
   EXPECT_TRUE(std::is_trivially_copyable_v<ur5e::DeviceStateLogPod>);
@@ -31,14 +31,12 @@ TEST(DeviceStateLogPod, IsTriviallyCopyable) {
 
 TEST(DeviceStateLogPod, HeaderColumnsMatchRowColumnsForArmHand) {
   // ur5e arm 6 + hand 10 motors.
-  const std::vector<std::string> joint_names{
-      "shoulder_pan", "shoulder_lift", "elbow",   "wrist_1",
-      "wrist_2",      "wrist_3",       "thumb1",  "thumb2",
-      "index1",       "index2",        "middle1", "middle2",
-      "ring1",        "ring2",         "pinky1",  "pinky2"};
-  const std::vector<std::string> motor_names{
-      "m0", "m1", "m2",  "m3",  "m4",  "m5",  "m6",  "m7",
-      "m8", "m9", "m10", "m11", "m12", "m13", "m14", "m15"};
+  const std::vector<std::string> joint_names{"shoulder_pan", "shoulder_lift", "elbow",   "wrist_1",
+                                             "wrist_2",      "wrist_3",       "thumb1",  "thumb2",
+                                             "index1",       "index2",        "middle1", "middle2",
+                                             "ring1",        "ring2",         "pinky1",  "pinky2"};
+  const std::vector<std::string> motor_names{"m0", "m1", "m2",  "m3",  "m4",  "m5",  "m6",  "m7",
+                                             "m8", "m9", "m10", "m11", "m12", "m13", "m14", "m15"};
 
   std::ostringstream hdr_os;
   ur5e::WriteDeviceStateLogHeader(hdr_os, joint_names, motor_names);
@@ -52,8 +50,7 @@ TEST(DeviceStateLogPod, HeaderColumnsMatchRowColumnsForArmHand) {
   ur5e::WriteDeviceStateLogRow(row_os, pod);
   const std::string row = row_os.str();
 
-  EXPECT_EQ(CountCommas(hdr), CountCommas(row))
-      << "header: " << hdr << "\nrow: " << row;
+  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
 }
 
 TEST(DeviceStateLogPod, RowRespectsRuntimeNumJoints) {
@@ -84,8 +81,7 @@ TEST(DeviceSensorLogPod, IsTriviallyCopyable) {
 }
 
 TEST(DeviceSensorLogPod, HeaderColumnsMatchRowColumnsFor4Fingertips) {
-  const std::vector<std::string> sensor_names{"thumb", "index", "middle",
-                                              "ring"};
+  const std::vector<std::string> sensor_names{"thumb", "index", "middle", "ring"};
   std::ostringstream hdr_os;
   ur5e::WriteDeviceSensorLogHeader(hdr_os, sensor_names);
   const std::string hdr = hdr_os.str();
@@ -98,8 +94,7 @@ TEST(DeviceSensorLogPod, HeaderColumnsMatchRowColumnsFor4Fingertips) {
   ur5e::WriteDeviceSensorLogRow(row_os, pod);
   const std::string row = row_os.str();
 
-  EXPECT_EQ(CountCommas(hdr), CountCommas(row))
-      << "header: " << hdr << "\nrow: " << row;
+  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
 }
 
 TEST(DeviceSensorLogPod, RowRespectsRuntimeNumFingertips) {

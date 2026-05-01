@@ -58,28 +58,24 @@ def launch_setup(context, *args, **kwargs):
     logging_root = resolve_logging_root()
     session_dir = create_session_dir(logging_root)
 
-    max_sessions = int(
-        LaunchConfiguration('max_log_sessions').perform(context) or '10')
+    max_sessions = int(LaunchConfiguration("max_log_sessions").perform(context) or "10")
     cleanup_old_sessions(logging_root, max_sessions)
 
     # ── Package paths ─────────────────────────────────────────────────────────
-    pkg_sim = FindPackageShare('rtc_mujoco_sim')
-    pkg_bringup = FindPackageShare('ur5e_bringup')
+    pkg_sim = FindPackageShare("rtc_mujoco_sim")
+    pkg_bringup = FindPackageShare("ur5e_bringup")
 
     # MuJoCo sim params: agnostic defaults (rtc_mujoco_sim) + UR5e-specific
     # robot_response groups, joint names, topics, model_path (ur5e_bringup).
-    sim_default = PathJoinSubstitution(
-        [pkg_sim,     'config', 'mujoco_default.yaml'])
-    sim_config = PathJoinSubstitution(
-        [pkg_bringup, 'config', 'mujoco_simulator.yaml'])
-    ctrl_config = PathJoinSubstitution(
-        [pkg_bringup, 'config', 'ur5e_sim.yaml'])
+    sim_default = PathJoinSubstitution([pkg_sim, "config", "mujoco_default.yaml"])
+    sim_config = PathJoinSubstitution([pkg_bringup, "config", "mujoco_simulator.yaml"])
+    ctrl_config = PathJoinSubstitution([pkg_bringup, "config", "ur5e_sim.yaml"])
 
     # ur5e_hand_driver is optional — may not be built in sim-only installs
     hand_config = None
     try:
-        hand_share = get_package_share_directory('ur5e_hand_driver')
-        hand_config = os.path.join(hand_share, 'config', 'hand_udp_node.yaml')
+        hand_share = get_package_share_directory("ur5e_hand_driver")
+        hand_config = os.path.join(hand_share, "config", "hand_udp_node.yaml")
     except Exception:
         pass
 
@@ -88,44 +84,45 @@ def launch_setup(context, *args, **kwargs):
     sim_overrides = {}
 
     # Check each launch argument - only add to overrides if explicitly provided
-    model_path = LaunchConfiguration('model_path').perform(context)
-    if model_path != '':
-        sim_overrides['model_path'] = model_path
+    model_path = LaunchConfiguration("model_path").perform(context)
+    if model_path != "":
+        sim_overrides["model_path"] = model_path
 
-    enable_viewer = LaunchConfiguration('enable_viewer').perform(context)
-    if enable_viewer != '':
-        sim_overrides['enable_viewer'] = enable_viewer.lower() in (
-            'true', '1', 'yes')
+    enable_viewer = LaunchConfiguration("enable_viewer").perform(context)
+    if enable_viewer != "":
+        sim_overrides["enable_viewer"] = enable_viewer.lower() in ("true", "1", "yes")
 
-    sync_timeout_ms = LaunchConfiguration('sync_timeout_ms').perform(context)
-    if sync_timeout_ms != '':
-        sim_overrides['sync_timeout_ms'] = float(sync_timeout_ms)
+    sync_timeout_ms = LaunchConfiguration("sync_timeout_ms").perform(context)
+    if sync_timeout_ms != "":
+        sim_overrides["sync_timeout_ms"] = float(sync_timeout_ms)
 
-    max_rtf = LaunchConfiguration('max_rtf').perform(context)
-    if max_rtf != '':
-        sim_overrides['max_rtf'] = float(max_rtf)
+    max_rtf = LaunchConfiguration("max_rtf").perform(context)
+    if max_rtf != "":
+        sim_overrides["max_rtf"] = float(max_rtf)
 
-    use_yaml_servo_gains = LaunchConfiguration(
-        'use_yaml_servo_gains').perform(context)
-    if use_yaml_servo_gains != '':
-        sim_overrides['use_yaml_servo_gains'] = (
-            use_yaml_servo_gains.lower() in ('true', '1', 'yes'))
+    use_yaml_servo_gains = LaunchConfiguration("use_yaml_servo_gains").perform(context)
+    if use_yaml_servo_gains != "":
+        sim_overrides["use_yaml_servo_gains"] = use_yaml_servo_gains.lower() in (
+            "true",
+            "1",
+            "yes",
+        )
 
     # ── Fake hand response + control_rate ─────────────────────────────────────
     import yaml
 
     try:
         ctrl_yaml_path = os.path.join(
-            get_package_share_directory('ur5e_bringup'),
-            'config', 'ur5e_sim.yaml')
-        with open(ctrl_yaml_path, 'r') as f:
+            get_package_share_directory("ur5e_bringup"), "config", "ur5e_sim.yaml"
+        )
+        with open(ctrl_yaml_path, "r") as f:
             ctrl_yaml = yaml.safe_load(f)
-        control_rate = (ctrl_yaml.get('/**', {})
-                        .get('ros__parameters', {})
-                        .get('control_rate', 500.0))
-        sim_overrides['control_rate'] = float(control_rate)
+        control_rate = (
+            ctrl_yaml.get("/**", {}).get("ros__parameters", {}).get("control_rate", 500.0)
+        )
+        sim_overrides["control_rate"] = float(control_rate)
     except Exception:
-        sim_overrides['control_rate'] = 500.0
+        sim_overrides["control_rate"] = 500.0
 
     if sim_overrides:
         sim_params.append(sim_overrides)
@@ -136,88 +133,85 @@ def launch_setup(context, *args, **kwargs):
         ctrl_params.append(hand_config)
     ctrl_overrides = {}
 
-    kp = LaunchConfiguration('kp').perform(context)
-    if kp != '':
-        ctrl_overrides['kp'] = float(kp)
+    kp = LaunchConfiguration("kp").perform(context)
+    if kp != "":
+        ctrl_overrides["kp"] = float(kp)
 
-    kd = LaunchConfiguration('kd').perform(context)
-    if kd != '':
-        ctrl_overrides['kd'] = float(kd)
+    kd = LaunchConfiguration("kd").perform(context)
+    if kd != "":
+        ctrl_overrides["kd"] = float(kd)
 
-    ctrl_overrides['log_dir'] = session_dir
+    ctrl_overrides["log_dir"] = session_dir
 
     # Optional: override initial_controller (e.g. select demo_wbc_controller)
-    initial_controller = LaunchConfiguration(
-        'initial_controller').perform(context)
-    if initial_controller != '':
-        ctrl_overrides['initial_controller'] = initial_controller
+    initial_controller = LaunchConfiguration("initial_controller").perform(context)
+    if initial_controller != "":
+        ctrl_overrides["initial_controller"] = initial_controller
 
     # `enable_mpc` drives the `demo_wbc_controller.mpc.enabled` ROS parameter,
     # which ur5e_rt_controller's `ApplyControllerParamOverrides` helper
     # writes into the YAML::Node handed to `LoadConfig`. The runtime gains
     # topic (index 7) can also toggle MPC on/off dynamically without
     # restarting the launch.
-    enable_mpc = LaunchConfiguration('enable_mpc').perform(context)
-    if enable_mpc.lower() in ('true', '1', 'yes'):
-        ctrl_overrides['demo_wbc_controller.mpc.enabled'] = True
-    elif enable_mpc.lower() in ('false', '0', 'no'):
-        ctrl_overrides['demo_wbc_controller.mpc.enabled'] = False
+    enable_mpc = LaunchConfiguration("enable_mpc").perform(context)
+    if enable_mpc.lower() in ("true", "1", "yes"):
+        ctrl_overrides["demo_wbc_controller.mpc.enabled"] = True
+    elif enable_mpc.lower() in ("false", "0", "no"):
+        ctrl_overrides["demo_wbc_controller.mpc.enabled"] = False
 
     # `mpc_engine` selects between the MockMPCThread placeholder and the
     # HandlerMPCThread (real Aligator ProxDDP via MPCFactory +
     # GraspPhaseManager). Default "" leaves the YAML's `mpc.engine: "mock"`
     # untouched.
-    mpc_engine = LaunchConfiguration('mpc_engine').perform(context)
-    if mpc_engine.strip() != '':
+    mpc_engine = LaunchConfiguration("mpc_engine").perform(context)
+    if mpc_engine.strip() != "":
         engine_str = mpc_engine.strip().lower()
-        if engine_str not in ('mock', 'handler'):
+        if engine_str not in ("mock", "handler"):
             raise RuntimeError(
                 f"Invalid mpc_engine='{mpc_engine}'. "
                 "Must be 'mock' or 'handler' (or empty to use YAML default)."
             )
-        ctrl_overrides['demo_wbc_controller.mpc.engine'] = engine_str
+        ctrl_overrides["demo_wbc_controller.mpc.engine"] = engine_str
 
     if ctrl_overrides:
         ctrl_params.append(ctrl_overrides)
 
     # ── Environment variables ─────────────────────────────────────────────────
-    set_session_dir = SetEnvironmentVariable(
-        name='RTC_SESSION_DIR',
-        value=session_dir
-    )
+    set_session_dir = SetEnvironmentVariable(name="RTC_SESSION_DIR", value=session_dir)
 
     # ── CPU Shield (Tier 1 only for simulation) ───────────────────────────────
-    use_affinity = LaunchConfiguration('use_cpu_affinity').perform(context)
+    use_affinity = LaunchConfiguration("use_cpu_affinity").perform(context)
     actions = [set_session_dir]
 
-    if use_affinity.lower() in ('true', '1', 'yes'):
+    if use_affinity.lower() in ("true", "1", "yes"):
         # Mirror robot.launch.py: probe `sudo -n true` first.  Launch's stdin
         # isn't a tty so an interactive sudo prompt would silently hang and
         # leave the cores un-isolated — better to warn loudly and skip.
         enable_sim_cpu_shield = ExecuteProcess(
             cmd=[
-                'bash', '-c',
+                "bash",
+                "-c",
                 'SCRIPT_DIR="$(ros2 pkg prefix repo_scripts 2>/dev/null)/lib/repo_scripts" && '
                 'SHIELD="$SCRIPT_DIR/cpu_shield.sh" && '
                 'if [ -f "$SHIELD" ]; then '
-                '  ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); '
+                "  ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); "
                 '  if [ -z "$ISOLATED" ]; then '
                 '    echo "[SIM] CPU shield not active — enabling sim mode Tier 1 isolation..."; '
-                '    if sudo -n true 2>/dev/null; then '
+                "    if sudo -n true 2>/dev/null; then "
                 '      sudo "$SHIELD" on --sim; '
-                '    else '
+                "    else "
                 '      echo "[SIM] WARNING: sudo requires a password — skipping CPU shield. '
-                'Configure passwordless sudo for cpu_shield.sh or run beforehand: '
+                "Configure passwordless sudo for cpu_shield.sh or run beforehand: "
                 'sudo $SHIELD on --sim"; '
-                '    fi; '
-                '  else '
+                "    fi; "
+                "  else "
                 '    echo "[SIM] CPU shield already active: Core $ISOLATED isolated"; '
-                '  fi; '
-                'else '
+                "  fi; "
+                "else "
                 '  echo "[SIM] WARNING: cpu_shield.sh not found at $SHIELD"; '
-                'fi'
+                "fi",
             ],
-            output='screen',
+            output="screen",
         )
         actions.append(enable_sim_cpu_shield)
 
@@ -225,11 +219,11 @@ def launch_setup(context, *args, **kwargs):
     # `namespace=''` is required by launch_ros >= jazzy (keyword-only arg in
     # LifecycleNode.__init__); earlier ROS distros defaulted it implicitly.
     mujoco_node = LifecycleNode(
-        package='rtc_mujoco_sim',
-        executable='mujoco_simulator_node',
-        name='mujoco_simulator',
-        namespace='',
-        output='screen',
+        package="rtc_mujoco_sim",
+        executable="mujoco_simulator_node",
+        name="mujoco_simulator",
+        namespace="",
+        output="screen",
         emulate_tty=True,
         parameters=sim_params,
     )
@@ -239,11 +233,11 @@ def launch_setup(context, *args, **kwargs):
     # bringup owns runtime identity; rtc_controller_manager is library-only.
     # See agent_docs/design-principles.md.
     rt_controller_node = LifecycleNode(
-        package='ur5e_bringup',
-        executable='ur5e_rt_controller',
-        name='ur5e_rt_controller',
-        namespace='',
-        output='screen',
+        package="ur5e_bringup",
+        executable="ur5e_rt_controller",
+        name="ur5e_rt_controller",
+        namespace="",
+        output="screen",
         emulate_tty=True,
         parameters=ctrl_params,
     )
@@ -252,68 +246,88 @@ def launch_setup(context, *args, **kwargs):
     mujoco_auto_activate = RegisterEventHandler(
         OnStateTransition(
             target_lifecycle_node=mujoco_node,
-            start_state='configuring',
-            goal_state='inactive',
-            entities=[EmitEvent(event=ChangeState(
-                lifecycle_node_matcher=lambda n: n == mujoco_node,
-                transition_id=Transition.TRANSITION_ACTIVATE,
-            ))],
+            start_state="configuring",
+            goal_state="inactive",
+            entities=[
+                EmitEvent(
+                    event=ChangeState(
+                        lifecycle_node_matcher=lambda n: n == mujoco_node,
+                        transition_id=Transition.TRANSITION_ACTIVATE,
+                    )
+                )
+            ],
         )
     )
     chain_rt_after_mujoco = RegisterEventHandler(
         OnStateTransition(
             target_lifecycle_node=mujoco_node,
-            start_state='activating',
-            goal_state='active',
-            entities=[EmitEvent(event=ChangeState(
-                lifecycle_node_matcher=lambda n: n == rt_controller_node,
-                transition_id=Transition.TRANSITION_CONFIGURE,
-            ))],
+            start_state="activating",
+            goal_state="active",
+            entities=[
+                EmitEvent(
+                    event=ChangeState(
+                        lifecycle_node_matcher=lambda n: n == rt_controller_node,
+                        transition_id=Transition.TRANSITION_CONFIGURE,
+                    )
+                )
+            ],
         )
     )
     rt_auto_activate = RegisterEventHandler(
         OnStateTransition(
             target_lifecycle_node=rt_controller_node,
-            start_state='configuring',
-            goal_state='inactive',
-            entities=[EmitEvent(event=ChangeState(
-                lifecycle_node_matcher=lambda n: n == rt_controller_node,
-                transition_id=Transition.TRANSITION_ACTIVATE,
-            ))],
+            start_state="configuring",
+            goal_state="inactive",
+            entities=[
+                EmitEvent(
+                    event=ChangeState(
+                        lifecycle_node_matcher=lambda n: n == rt_controller_node,
+                        transition_id=Transition.TRANSITION_ACTIVATE,
+                    )
+                )
+            ],
         )
     )
-    trigger_mujoco_configure = EmitEvent(event=ChangeState(
-        lifecycle_node_matcher=lambda n: n == mujoco_node,
-        transition_id=Transition.TRANSITION_CONFIGURE,
-    ))
+    trigger_mujoco_configure = EmitEvent(
+        event=ChangeState(
+            lifecycle_node_matcher=lambda n: n == mujoco_node,
+            transition_id=Transition.TRANSITION_CONFIGURE,
+        )
+    )
 
-    actions.extend([
-        mujoco_node, rt_controller_node,
-        mujoco_auto_activate, chain_rt_after_mujoco, rt_auto_activate,
-        trigger_mujoco_configure,
-    ])
+    actions.extend(
+        [
+            mujoco_node,
+            rt_controller_node,
+            mujoco_auto_activate,
+            chain_rt_after_mujoco,
+            rt_auto_activate,
+            trigger_mujoco_configure,
+        ]
+    )
 
     # ── MuJoCo sim_thread CPU pinning ─────────────────────────────────────────
-    if use_affinity.lower() in ('true', '1', 'yes'):
+    if use_affinity.lower() in ("true", "1", "yes"):
         pin_mujoco_sim = TimerAction(
             period=2.0,
             actions=[
                 ExecuteProcess(
                     cmd=[
-                        'bash', '-c',
+                        "bash",
+                        "-c",
                         'PHYS=$(lscpu -p=Core,Socket 2>/dev/null | grep -v "^#" | sort -u | wc -l); '
                         'if [ "$PHYS" -ge 8 ]; then '
-                        '  PID=$(pgrep -nf mujoco_simulator_node); '
+                        "  PID=$(pgrep -nf mujoco_simulator_node); "
                         '  if [ -n "$PID" ]; then '
-                        '    SIM_CORE=$((PHYS >= 10 ? 7 : 6)); '
+                        "    SIM_CORE=$((PHYS >= 10 ? 7 : 6)); "
                         '    taskset -cp $SIM_CORE "$PID" && '
                         '    echo "[SIM] mujoco_simulator (PID=$PID) pinned to Core $SIM_CORE"; '
-                        '  fi; '
-                        'fi'
+                        "  fi; "
+                        "fi",
                     ],
-                    output='screen',
+                    output="screen",
                 )
-            ]
+            ],
         )
         actions.append(pin_mujoco_sim)
 
@@ -327,24 +341,25 @@ def launch_setup(context, *args, **kwargs):
             actions=[
                 ExecuteProcess(
                     cmd=[
-                        'bash', '-c',
+                        "bash",
+                        "-c",
                         'PID=$(pgrep -nf "ur5e_rt_controller"); '
                         'if [ -z "$PID" ]; then '
                         '  echo "[SIM] WARNING: ur5e_rt_controller not found — DDS thread pinning skipped"; '
-                        '  exit 0; '
-                        'fi; '
+                        "  exit 0; "
+                        "fi; "
                         'taskset -cp 0-1 "$PID" 2>/dev/null; '
-                        'PINNED=0; '
-                        'for TID in $(ls /proc/$PID/task/ 2>/dev/null); do '
+                        "PINNED=0; "
+                        "for TID in $(ls /proc/$PID/task/ 2>/dev/null); do "
                         '  POLICY=$(chrt -p $TID 2>/dev/null | grep -o "SCHED_FIFO" || echo ""); '
                         '  if [ -n "$POLICY" ]; then continue; fi; '
                         '  taskset -cp 0-1 "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
-                        'done; '
-                        'echo "[SIM] ur5e_rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core 0-1"'
+                        "done; "
+                        'echo "[SIM] ur5e_rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core 0-1"',
                     ],
-                    output='screen',
+                    output="screen",
                 )
-            ]
+            ],
         )
         actions.append(pin_rt_controller_dds)
 
@@ -354,138 +369,136 @@ def launch_setup(context, *args, **kwargs):
 def generate_launch_description():
     # ── Launch arguments with empty defaults (YAML values take precedence) ───
     model_path_arg = DeclareLaunchArgument(
-        'model_path',
-        default_value='',
+        "model_path",
+        default_value="",
         description=(
-            'Override model_path from YAML. '
-            'Empty -> use YAML value (ur5e_description/scene.xml). '
-            'Absolute path -> use specified MuJoCo scene.xml'
+            "Override model_path from YAML. "
+            "Empty -> use YAML value (ur5e_description/scene.xml). "
+            "Absolute path -> use specified MuJoCo scene.xml"
         ),
     )
 
     enable_viewer_arg = DeclareLaunchArgument(
-        'enable_viewer',
-        default_value='',
+        "enable_viewer",
+        default_value="",
         description=(
-            'Override enable_viewer from YAML. '
-            'Empty -> use YAML value (true). '
+            "Override enable_viewer from YAML. "
+            "Empty -> use YAML value (true). "
             'Set to "false" for headless mode'
         ),
     )
 
     sync_timeout_ms_arg = DeclareLaunchArgument(
-        'sync_timeout_ms',
-        default_value='',
+        "sync_timeout_ms",
+        default_value="",
         description=(
-            'Override sync_timeout_ms from YAML. '
-            'Empty -> use YAML value (50.0). '
-            'Command wait timeout per step in milliseconds'
+            "Override sync_timeout_ms from YAML. "
+            "Empty -> use YAML value (50.0). "
+            "Command wait timeout per step in milliseconds"
         ),
     )
 
     max_rtf_arg = DeclareLaunchArgument(
-        'max_rtf',
-        default_value='',
+        "max_rtf",
+        default_value="",
         description=(
-            'Override max_rtf from YAML. '
-            'Empty -> use YAML value (1.0). '
-            'Maximum Real-Time Factor (0.0 = unlimited). '
-            'Examples: 1.0 for real-time, 10.0 for 10x speed'
+            "Override max_rtf from YAML. "
+            "Empty -> use YAML value (1.0). "
+            "Maximum Real-Time Factor (0.0 = unlimited). "
+            "Examples: 1.0 for real-time, 10.0 for 10x speed"
         ),
     )
 
     kp_arg = DeclareLaunchArgument(
-        'kp',
-        default_value='',
+        "kp",
+        default_value="",
         description=(
-            'Override kp from YAML. '
-            'Empty -> use YAML value. '
-            'PD controller proportional gain'
+            "Override kp from YAML. Empty -> use YAML value. PD controller proportional gain"
         ),
     )
 
     kd_arg = DeclareLaunchArgument(
-        'kd',
-        default_value='',
+        "kd",
+        default_value="",
         description=(
-            'Override kd from YAML. '
-            'Empty -> use YAML value. '
-            'PD controller derivative gain'
+            "Override kd from YAML. Empty -> use YAML value. PD controller derivative gain"
         ),
     )
 
     use_yaml_servo_gains_arg = DeclareLaunchArgument(
-        'use_yaml_servo_gains',
-        default_value='',
+        "use_yaml_servo_gains",
+        default_value="",
         description=(
-            'Override use_yaml_servo_gains from YAML. '
-            'Empty -> use YAML value (false). '
-            'true: servo_kp/kd gains from YAML, false: XML gainprm/biasprm'
+            "Override use_yaml_servo_gains from YAML. "
+            "Empty -> use YAML value (false). "
+            "true: servo_kp/kd gains from YAML, false: XML gainprm/biasprm"
         ),
     )
 
     max_log_sessions_arg = DeclareLaunchArgument(
-        'max_log_sessions',
-        default_value='10',
-        description='Maximum number of session folders to keep (YYMMDD_HHMM)',
+        "max_log_sessions",
+        default_value="10",
+        description="Maximum number of session folders to keep (YYMMDD_HHMM)",
     )
 
     use_cpu_affinity_arg = DeclareLaunchArgument(
-        'use_cpu_affinity',
-        default_value='true',
+        "use_cpu_affinity",
+        default_value="true",
         description=(
-            'Enable CPU shield (Tier 1 isolation) and MuJoCo core pinning. '
-            'Set false for CI or environments without sudo.'
-        )
+            "Enable CPU shield (Tier 1 isolation) and MuJoCo core pinning. "
+            "Set false for CI or environments without sudo."
+        ),
     )
 
     initial_controller_arg = DeclareLaunchArgument(
-        'initial_controller',
-        default_value='',
+        "initial_controller",
+        default_value="",
         description=(
-            'Override initial controller name (e.g. demo_wbc_controller). '
-            'Empty = use value from ur5e_sim.yaml.'
-        )
+            "Override initial controller name (e.g. demo_wbc_controller). "
+            "Empty = use value from ur5e_sim.yaml."
+        ),
     )
 
     enable_mpc_arg = DeclareLaunchArgument(
-        'enable_mpc',
-        default_value='',
+        "enable_mpc",
+        default_value="",
         description=(
-            'Enable the MPC thread in DemoWbcController. '
-            'Takes effect only when initial_controller:=demo_wbc_controller. '
-            'Empty = use demo_wbc_controller.yaml default. '
-            'Runtime toggle is also available via gains index 7.'
-        )
+            "Enable the MPC thread in DemoWbcController. "
+            "Takes effect only when initial_controller:=demo_wbc_controller. "
+            "Empty = use demo_wbc_controller.yaml default. "
+            "Runtime toggle is also available via gains index 7."
+        ),
     )
 
     mpc_engine_arg = DeclareLaunchArgument(
-        'mpc_engine',
-        default_value='',
+        "mpc_engine",
+        default_value="",
         description=(
-            'Select MPC engine in DemoWbcController: '
+            "Select MPC engine in DemoWbcController: "
             '"mock" = MockMPCThread placeholder (default); '
             '"handler" = HandlerMPCThread + MPCFactory + GraspPhaseManager '
-            '(real Aligator ProxDDP solve, requires mpc/phase_config.yaml + '
-            'mpc/light_contact.yaml + mpc/contact_rich.yaml in the package '
-            'share). Empty = use demo_wbc_controller.yaml default.'
-        )
+            "(real Aligator ProxDDP solve, requires mpc/phase_config.yaml + "
+            "mpc/light_contact.yaml + mpc/contact_rich.yaml in the package "
+            "share). Empty = use demo_wbc_controller.yaml default."
+        ),
     )
 
-    return LaunchDescription([
-        # Arguments
-        model_path_arg,
-        enable_viewer_arg,
-        sync_timeout_ms_arg,
-        max_rtf_arg,
-        kp_arg,
-        kd_arg,
-        use_yaml_servo_gains_arg,
-        max_log_sessions_arg,
-        use_cpu_affinity_arg,
-        initial_controller_arg,
-        enable_mpc_arg,
-        mpc_engine_arg,
-        # Nodes (via OpaqueFunction for conditional parameter loading)
-        OpaqueFunction(function=launch_setup),
-    ])
+    return LaunchDescription(
+        [
+            # Arguments
+            model_path_arg,
+            enable_viewer_arg,
+            sync_timeout_ms_arg,
+            max_rtf_arg,
+            kp_arg,
+            kd_arg,
+            use_yaml_servo_gains_arg,
+            max_log_sessions_arg,
+            use_cpu_affinity_arg,
+            initial_controller_arg,
+            enable_mpc_arg,
+            mpc_engine_arg,
+            # Nodes (via OpaqueFunction for conditional parameter loading)
+            OpaqueFunction(function=launch_setup),
+        ]
+    )

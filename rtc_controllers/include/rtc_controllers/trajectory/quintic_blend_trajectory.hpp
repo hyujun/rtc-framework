@@ -2,14 +2,13 @@
 #define RTC_CONTROLLERS_TRAJECTORY_QUINTIC_BLEND_TRAJECTORY_HPP_
 
 #include "rtc_controllers/trajectory/trajectory_utils.hpp"
+
+#include <algorithm>
 #include <array>
 #include <cstddef>
-#include <algorithm>
 
-namespace rtc
-{
-namespace trajectory
-{
+namespace rtc {
+namespace trajectory {
 
 /// Maximum number of waypoints for blend/spline trajectories.
 inline constexpr std::size_t kMaxWaypoints = 32;
@@ -18,19 +17,17 @@ inline constexpr std::size_t kMaxWaypoints = 32;
 /// Each segment uses a quintic polynomial with C2 continuity at via-points.
 /// Via-point velocities are computed as the average of adjacent segment velocities.
 /// Start/end velocities and all accelerations are zero (rest-to-rest).
-template<std::size_t DOF>
+template <std::size_t DOF>
 class QuinticBlendTrajectory {
   static_assert(DOF > 0, "QuinticBlendTrajectory: DOF must be at least 1");
 
-public:
-  struct Waypoint
-  {
+ public:
+  struct Waypoint {
     std::array<double, DOF> positions{};
     double time{0.0};
   };
 
-  struct State
-  {
+  struct State {
     std::array<double, DOF> positions{};
     std::array<double, DOF> velocities{};
     std::array<double, DOF> accelerations{};
@@ -42,10 +39,8 @@ public:
   /// @param waypoints  Array of waypoints (2 to kMaxWaypoints).
   /// @param num_waypoints  Number of valid waypoints.
   /// @pre waypoints[0].time == 0.0, times monotonically increasing.
-  void initialize(
-    const std::array<Waypoint, kMaxWaypoints> & waypoints,
-    std::size_t num_waypoints) noexcept
-  {
+  void initialize(const std::array<Waypoint, kMaxWaypoints>& waypoints,
+                  std::size_t num_waypoints) noexcept {
     if (num_waypoints < 2) {
       // Hold position at first waypoint
       num_segments_ = 0;
@@ -86,17 +81,15 @@ public:
     for (std::size_t seg = 0; seg < num_segments_; ++seg) {
       const double h = waypoints[seg + 1].time - waypoints[seg].time;
       for (std::size_t j = 0; j < DOF; ++j) {
-        segments_[seg][j].compute_coefficients(
-          waypoints[seg].positions[j], velocities[seg][j], 0.0,
-          waypoints[seg + 1].positions[j], velocities[seg + 1][j], 0.0,
-          h);
+        segments_[seg][j].compute_coefficients(waypoints[seg].positions[j], velocities[seg][j], 0.0,
+                                               waypoints[seg + 1].positions[j],
+                                               velocities[seg + 1][j], 0.0, h);
       }
     }
   }
 
   /// Compute trajectory state at given time (RT path).
-  [[nodiscard]] State compute(double time) const noexcept
-  {
+  [[nodiscard]] State compute(double time) const noexcept {
     State state;
 
     if (num_segments_ == 0) {
@@ -131,9 +124,10 @@ public:
   }
 
   [[nodiscard]] double duration() const noexcept { return duration_; }
+
   [[nodiscard]] std::size_t num_segments() const noexcept { return num_segments_; }
 
-private:
+ private:
   std::array<std::array<QuinticPolynomial, DOF>, kMaxWaypoints - 1> segments_{};
   std::array<double, kMaxWaypoints> segment_start_times_{};
   std::array<double, DOF> hold_position_{};

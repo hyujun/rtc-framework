@@ -31,20 +31,19 @@
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "rtc_mpc/ocp/cost_factory.hpp"
+
 #include <yaml-cpp/yaml.h>
 
 #include <filesystem>
 #include <string>
 
-#include "rtc_mpc/ocp/cost_factory.hpp"
-
 namespace {
 
-constexpr const char *kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+constexpr const char* kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 // Baseline cost config matching Panda (nq=9, 2 × 3D contacts).
-constexpr const char *kBaselineYaml = R"(
+constexpr const char* kBaselineYaml = R"(
 horizon_length: 20
 dt: 0.01
 w_frame_placement: 100.0
@@ -59,7 +58,7 @@ custom_weights: {}
 )";
 
 class CostFactoryTest : public ::testing::Test {
-protected:
+ protected:
   void SetUp() override {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed — run ./install.sh verify";
@@ -74,8 +73,7 @@ contact_frames:
   - name: panda_rightfinger
     dim: 3
 )");
-    ASSERT_EQ(handler_.Init(model_, model_cfg),
-              rtc::mpc::RobotModelInitError::kNoError);
+    ASSERT_EQ(handler_.Init(model_, model_cfg), rtc::mpc::RobotModelInitError::kNoError);
 
     auto cfg_node = YAML::Load(kBaselineYaml);
     ASSERT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(cfg_node, handler_, cfg_),
@@ -98,8 +96,7 @@ contact_frames:
 
 TEST_F(CostFactoryTest, RunningCostAllThreeComponents) {
   rtc::mpc::CostFactoryError err = rtc::mpc::CostFactoryError::kNoError;
-  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg_, handler_, ee_target_,
-                                                     &err);
+  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg_, handler_, ee_target_, &err);
   EXPECT_EQ(err, rtc::mpc::CostFactoryError::kNoError);
   EXPECT_TRUE(sc.keys.has_frame_placement);
   EXPECT_TRUE(sc.keys.has_state_reg);
@@ -113,8 +110,7 @@ TEST_F(CostFactoryTest, AllWeightsZeroEmptyStack) {
   cfg_.w_control_reg = 0.0;
 
   rtc::mpc::CostFactoryError err = rtc::mpc::CostFactoryError::kNoError;
-  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg_, handler_, ee_target_,
-                                                     &err);
+  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg_, handler_, ee_target_, &err);
   EXPECT_EQ(err, rtc::mpc::CostFactoryError::kNoError);
   EXPECT_FALSE(sc.keys.has_frame_placement);
   EXPECT_FALSE(sc.keys.has_state_reg);
@@ -127,8 +123,7 @@ TEST_F(CostFactoryTest, OnlyFramePlacement) {
   cfg_.w_control_reg = 0.0;
 
   rtc::mpc::CostFactoryError err = rtc::mpc::CostFactoryError::kNoError;
-  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg_, handler_, ee_target_,
-                                                     &err);
+  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg_, handler_, ee_target_, &err);
   EXPECT_EQ(err, rtc::mpc::CostFactoryError::kNoError);
   EXPECT_TRUE(sc.keys.has_frame_placement);
   EXPECT_FALSE(sc.keys.has_state_reg);
@@ -138,12 +133,11 @@ TEST_F(CostFactoryTest, OnlyFramePlacement) {
 
 TEST_F(CostFactoryTest, TerminalOmitsControlReg) {
   rtc::mpc::CostFactoryError err = rtc::mpc::CostFactoryError::kNoError;
-  auto sc = rtc::mpc::cost_factory::BuildTerminalCost(cfg_, handler_,
-                                                      ee_target_, &err);
+  auto sc = rtc::mpc::cost_factory::BuildTerminalCost(cfg_, handler_, ee_target_, &err);
   EXPECT_EQ(err, rtc::mpc::CostFactoryError::kNoError);
   EXPECT_TRUE(sc.keys.has_frame_placement);
   EXPECT_TRUE(sc.keys.has_state_reg);
-  EXPECT_FALSE(sc.keys.has_control_reg); // terminal: no u-dep cost
+  EXPECT_FALSE(sc.keys.has_control_reg);  // terminal: no u-dep cost
   EXPECT_EQ(sc.stack.size(), 2u);
 }
 
@@ -156,8 +150,7 @@ TEST_F(CostFactoryTest, PolymorphicHandleRetrievalAfterStageAssembly) {
   // LightContactOCP is infeasible (spike Q3 would be invalidated).
 
   rtc::mpc::CostFactoryError err = rtc::mpc::CostFactoryError::kNoError;
-  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg_, handler_, ee_target_,
-                                                     &err);
+  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg_, handler_, ee_target_, &err);
   ASSERT_EQ(err, rtc::mpc::CostFactoryError::kNoError);
   ASSERT_TRUE(sc.keys.has_frame_placement);
 
@@ -168,14 +161,12 @@ TEST_F(CostFactoryTest, PolymorphicHandleRetrievalAfterStageAssembly) {
   // plumbing; instead, exercise the retrieval chain directly on the
   // returned CostStack.
 
-  aligator::CostStackTpl<double> &stored_stack = sc.stack;
-  auto *quad_fp =
-      stored_stack.getComponent<aligator::QuadraticResidualCostTpl<double>>(
-          std::string(rtc::mpc::kCostKeyFramePlacement));
+  aligator::CostStackTpl<double>& stored_stack = sc.stack;
+  auto* quad_fp = stored_stack.getComponent<aligator::QuadraticResidualCostTpl<double>>(
+      std::string(rtc::mpc::kCostKeyFramePlacement));
   ASSERT_NE(quad_fp, nullptr);
 
-  auto *fp_residual =
-      quad_fp->getResidual<aligator::FramePlacementResidualTpl<double>>();
+  auto* fp_residual = quad_fp->getResidual<aligator::FramePlacementResidualTpl<double>>();
   ASSERT_NE(fp_residual, nullptr);
 
   // Mutation round-trip: change reference, read back.
@@ -183,7 +174,7 @@ TEST_F(CostFactoryTest, PolymorphicHandleRetrievalAfterStageAssembly) {
   new_target.translation() += Eigen::Vector3d(0.1, -0.05, 0.02);
   fp_residual->setReference(new_target);
 
-  const auto &readback = fp_residual->getReference();
+  const auto& readback = fp_residual->getReference();
   EXPECT_TRUE(readback.translation().isApprox(new_target.translation()));
 }
 
@@ -191,12 +182,12 @@ TEST_F(CostFactoryTest, PolymorphicHandleRetrievalAfterStageAssembly) {
 
 TEST(CostFactoryStandaloneTest, UninitialisedModelRejected) {
   rtc::mpc::RobotModelHandler empty_handler;
-  rtc::mpc::PhaseCostConfig cfg; // default-init; horizon_length=20, dt=0.01
+  rtc::mpc::PhaseCostConfig cfg;  // default-init; horizon_length=20, dt=0.01
   // q_posture_ref is empty — validation should trip on model first.
 
   rtc::mpc::CostFactoryError err = rtc::mpc::CostFactoryError::kNoError;
-  auto sc = rtc::mpc::cost_factory::BuildRunningCost(
-      cfg, empty_handler, pinocchio::SE3::Identity(), &err);
+  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg, empty_handler, pinocchio::SE3::Identity(),
+                                                     &err);
   EXPECT_EQ(err, rtc::mpc::CostFactoryError::kModelNotInitialised);
   EXPECT_EQ(sc.stack.size(), 0u);
 }
@@ -204,8 +195,7 @@ TEST(CostFactoryStandaloneTest, UninitialisedModelRejected) {
 TEST_F(CostFactoryTest, InvalidHorizonRejected) {
   cfg_.horizon_length = 0;
   rtc::mpc::CostFactoryError err = rtc::mpc::CostFactoryError::kNoError;
-  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg_, handler_, ee_target_,
-                                                     &err);
+  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg_, handler_, ee_target_, &err);
   EXPECT_EQ(err, rtc::mpc::CostFactoryError::kInvalidCostConfig);
   EXPECT_EQ(sc.stack.size(), 0u);
 }
@@ -213,25 +203,22 @@ TEST_F(CostFactoryTest, InvalidHorizonRejected) {
 TEST_F(CostFactoryTest, InvalidDtRejected) {
   cfg_.dt = 0.0;
   rtc::mpc::CostFactoryError err = rtc::mpc::CostFactoryError::kNoError;
-  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg_, handler_, ee_target_,
-                                                     &err);
+  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg_, handler_, ee_target_, &err);
   EXPECT_EQ(err, rtc::mpc::CostFactoryError::kInvalidCostConfig);
 }
 
 TEST_F(CostFactoryTest, PostureRefDimMismatchRejected) {
-  cfg_.q_posture_ref = Eigen::VectorXd::Zero(handler_.nq() - 1); // wrong
+  cfg_.q_posture_ref = Eigen::VectorXd::Zero(handler_.nq() - 1);  // wrong
   rtc::mpc::CostFactoryError err = rtc::mpc::CostFactoryError::kNoError;
-  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg_, handler_, ee_target_,
-                                                     &err);
+  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg_, handler_, ee_target_, &err);
   EXPECT_EQ(err, rtc::mpc::CostFactoryError::kPostureRefDimMismatch);
 }
 
 TEST_F(CostFactoryTest, NullOutErrorIsSafe) {
   // Contract: out_error may be null; factory must not crash.
-  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg_, handler_, ee_target_,
-                                                     nullptr);
+  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg_, handler_, ee_target_, nullptr);
   EXPECT_EQ(sc.stack.size(), 3u);
   EXPECT_TRUE(sc.keys.has_frame_placement);
 }
 
-} // namespace
+}  // namespace

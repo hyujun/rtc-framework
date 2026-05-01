@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/action_nodes/move_to_pose.hpp"
+
 #include "ur5e_bt_coordinator/bt_logging.hpp"
 #include "ur5e_bt_coordinator/bt_utils.hpp"
 
@@ -7,26 +8,25 @@
 namespace rtc_bt {
 
 namespace {
-auto logger() { return ::rtc_bt::logging::ActionLogger("move_to_pose"); }
+auto logger() {
+  return ::rtc_bt::logging::ActionLogger("move_to_pose");
+}
 }  // namespace
 
 MoveToPose::MoveToPose(const std::string& name, const BT::NodeConfig& config,
                        std::shared_ptr<BtRosBridge> bridge)
-  : BT::StatefulActionNode(name, config), bridge_(std::move(bridge))
-{}
+    : BT::StatefulActionNode(name, config), bridge_(std::move(bridge)) {}
 
-BT::PortsList MoveToPose::providedPorts()
-{
+BT::PortsList MoveToPose::providedPorts() {
   return {
-    BT::InputPort<Pose6D>("target"),
-    BT::InputPort<double>("position_tolerance", 0.005, "Position tolerance [m]"),
-    BT::InputPort<double>("orientation_tolerance", 0.05, "Orientation tolerance [rad]"),
-    BT::InputPort<double>("timeout_s", 10.0, "Timeout [s]"),
+      BT::InputPort<Pose6D>("target"),
+      BT::InputPort<double>("position_tolerance", 0.005, "Position tolerance [m]"),
+      BT::InputPort<double>("orientation_tolerance", 0.05, "Orientation tolerance [rad]"),
+      BT::InputPort<double>("timeout_s", 10.0, "Timeout [s]"),
   };
 }
 
-BT::NodeStatus MoveToPose::onStart()
-{
+BT::NodeStatus MoveToPose::onStart() {
   auto target = getInput<Pose6D>("target");
   if (!target) {
     RCLCPP_ERROR(logger(), "missing target port: %s", target.error().c_str());
@@ -41,23 +41,21 @@ BT::NodeStatus MoveToPose::onStart()
   RCLCPP_INFO(logger(),
               "target=[%.3f, %.3f, %.3f, %.3f, %.3f, %.3f] "
               "pos_tol=%.4f rot_tol=%.4f timeout=%.1fs",
-              target_.x, target_.y, target_.z,
-              target_.roll, target_.pitch, target_.yaw,
-              pos_tol_, rot_tol_, timeout_s_);
+              target_.x, target_.y, target_.z, target_.roll, target_.pitch, target_.yaw, pos_tol_,
+              rot_tol_, timeout_s_);
 
   bridge_->PublishArmTarget(target_);
   return BT::NodeStatus::RUNNING;
 }
 
-BT::NodeStatus MoveToPose::onRunning()
-{
+BT::NodeStatus MoveToPose::onRunning() {
   auto current = bridge_->GetTcpPose();
   double pos_err = current.PositionDistanceTo(target_);
   double rot_err = current.OrientationDistanceTo(target_);
 
   if (pos_err < pos_tol_ && rot_err < rot_tol_) {
-    RCLCPP_INFO(logger(), "reached target (pos_err=%.4f rot_err=%.4f elapsed=%.2fs)",
-                pos_err, rot_err, ElapsedSeconds(start_time_));
+    RCLCPP_INFO(logger(), "reached target (pos_err=%.4f rot_err=%.4f elapsed=%.2fs)", pos_err,
+                rot_err, ElapsedSeconds(start_time_));
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -67,23 +65,19 @@ BT::NodeStatus MoveToPose::onRunning()
                 "timeout (%.1fs) "
                 "pos_err=%.4f/%.4f rot_err=%.4f/%.4f "
                 "target=[%.3f,%.3f,%.3f] current=[%.3f,%.3f,%.3f]",
-                timeout_s_, pos_err, pos_tol_, rot_err, rot_tol_,
-                target_.x, target_.y, target_.z,
+                timeout_s_, pos_err, pos_tol_, rot_err, rot_tol_, target_.x, target_.y, target_.z,
                 current.x, current.y, current.z);
     return BT::NodeStatus::FAILURE;
   }
 
   static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
-  RCLCPP_DEBUG_THROTTLE(logger(), steady_clock,
-                        ::rtc_bt::logging::kThrottleFastMs,
-                        "pos_err=%.4f rot_err=%.4f elapsed=%.2fs",
-                        pos_err, rot_err, elapsed);
+  RCLCPP_DEBUG_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleFastMs,
+                        "pos_err=%.4f rot_err=%.4f elapsed=%.2fs", pos_err, rot_err, elapsed);
 
   return BT::NodeStatus::RUNNING;
 }
 
-void MoveToPose::onHalted()
-{
+void MoveToPose::onHalted() {
   RCLCPP_INFO(logger(), "halted (elapsed=%.2fs)", ElapsedSeconds(start_time_));
 }
 

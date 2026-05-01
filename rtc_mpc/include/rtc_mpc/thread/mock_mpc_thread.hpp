@@ -14,11 +14,12 @@
 /// publish, interpolation, Riccati feedback, stale counter) without
 /// depending on a real trajectory optimiser.
 
-#include <Eigen/Core>
-#include <mutex>
-
 #include "rtc_mpc/thread/mpc_thread.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
+
+#include <Eigen/Core>
+
+#include <mutex>
 
 namespace rtc::mpc {
 
@@ -36,8 +37,7 @@ class MockMPCThread final : public MPCThread {
   void SetTarget(const Eigen::Ref<const Eigen::VectorXd>& q_target) noexcept;
 
  protected:
-  bool Solve(const MPCStateSnapshot& state,
-             MPCSolution& out_sol,
+  bool Solve(const MPCStateSnapshot& state, MPCSolution& out_sol,
              std::span<std::jthread> workers) override;
 
  private:

@@ -1,9 +1,9 @@
 #pragma once
 
 #include "ur5e_bt_coordinator/bt_ros_bridge.hpp"
+#include <shape_estimation_msgs/msg/shape_estimate.hpp>
 
 #include <behaviortree_cpp/condition_node.h>
-#include <shape_estimation_msgs/msg/shape_estimate.hpp>
 
 #include <memory>
 #include <string>
@@ -26,7 +26,7 @@ namespace rtc_bt {
 ///   - shape_name (string): human-readable shape name
 ///   - confidence (double): estimation confidence [0,1]
 class CheckShapeType : public BT::ConditionNode {
-public:
+ public:
   CheckShapeType(const std::string& name, const BT::NodeConfig& config,
                  std::shared_ptr<BtRosBridge> bridge);
 
@@ -34,7 +34,7 @@ public:
 
   BT::NodeStatus tick() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
 };
 

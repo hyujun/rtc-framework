@@ -1,37 +1,38 @@
 #include "ur5e_bt_coordinator/bt_coordinator_node.hpp"
+
 #include "ur5e_bt_coordinator/bt_logging.hpp"
 
 // Action nodes
 #include "ur5e_bt_coordinator/action_nodes/compute_offset_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/compute_sweep_trajectory.hpp"
 #include "ur5e_bt_coordinator/action_nodes/compute_tilt_sequence.hpp"
+#include "ur5e_bt_coordinator/action_nodes/flex_extend_finger.hpp"
 #include "ur5e_bt_coordinator/action_nodes/get_current_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/grasp_control.hpp"
+#include "ur5e_bt_coordinator/action_nodes/move_finger.hpp"
+#include "ur5e_bt_coordinator/action_nodes/move_opposition.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_to_joints.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_to_pose.hpp"
+#include "ur5e_bt_coordinator/action_nodes/process_search_data.hpp"
 #include "ur5e_bt_coordinator/action_nodes/set_gains.hpp"
+#include "ur5e_bt_coordinator/action_nodes/set_hand_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/set_pose_z.hpp"
-#include "ur5e_bt_coordinator/action_nodes/switch_controller.hpp"
-#include "ur5e_bt_coordinator/action_nodes/track_trajectory.hpp"
-#include "ur5e_bt_coordinator/action_nodes/wait_duration.hpp"
-#include "ur5e_bt_coordinator/action_nodes/move_finger.hpp"
-#include "ur5e_bt_coordinator/action_nodes/flex_extend_finger.hpp"
 #include "ur5e_bt_coordinator/action_nodes/start_tof_collection.hpp"
 #include "ur5e_bt_coordinator/action_nodes/stop_tof_collection.hpp"
-#include "ur5e_bt_coordinator/action_nodes/process_search_data.hpp"
-#include "ur5e_bt_coordinator/action_nodes/set_hand_pose.hpp"
-#include "ur5e_bt_coordinator/action_nodes/ur5e_hold_pose.hpp"
-#include "ur5e_bt_coordinator/action_nodes/move_opposition.hpp"
+#include "ur5e_bt_coordinator/action_nodes/switch_controller.hpp"
+#include "ur5e_bt_coordinator/action_nodes/track_trajectory.hpp"
 #include "ur5e_bt_coordinator/action_nodes/trigger_shape_estimation.hpp"
+#include "ur5e_bt_coordinator/action_nodes/ur5e_hold_pose.hpp"
+#include "ur5e_bt_coordinator/action_nodes/wait_duration.hpp"
 #include "ur5e_bt_coordinator/action_nodes/wait_shape_result.hpp"
 
 // Condition nodes
+#include "ur5e_bt_coordinator/condition_nodes/check_shape_type.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_grasp_phase.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_grasped.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_object_detected.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_vision_target_ready.hpp"
-#include "ur5e_bt_coordinator/condition_nodes/check_shape_type.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -46,19 +47,23 @@ namespace rtc_bt {
 namespace {
 constexpr const char* kDegSuffix = "_deg";
 constexpr std::size_t kDegSuffixLen = 4;  // strlen("_deg")
-auto coord_log()    { return ::rtc_bt::logging::CoordLogger(); }
-auto watchdog_log() { return ::rtc_bt::logging::WatchdogLogger(); }
+
+auto coord_log() {
+  return ::rtc_bt::logging::CoordLogger();
+}
+
+auto watchdog_log() {
+  return ::rtc_bt::logging::WatchdogLogger();
+}
 }  // namespace
 
 BtCoordinatorNode::BtCoordinatorNode(const rclcpp::NodeOptions& options)
-  : rclcpp_lifecycle::LifecycleNode("bt_coordinator", options)
-{
+    : rclcpp_lifecycle::LifecycleNode("bt_coordinator", options) {
   DeclareParameters();
 }
 
-BtCoordinatorNode::CallbackReturn
-BtCoordinatorNode::on_configure(const rclcpp_lifecycle::State& /*state*/)
-{
+BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_configure(
+    const rclcpp_lifecycle::State& /*state*/) {
   // shared_from_this() is safe here — node is managed via shared_ptr.
   bridge_ = std::make_shared<BtRosBridge>(
       std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()));
@@ -83,7 +88,8 @@ BtCoordinatorNode::on_configure(const rclcpp_lifecycle::State& /*state*/)
   if (groot2_port_ > 0) {
     RCLCPP_WARN(coord_log(),
                 "groot2_port=%d requested but Groot2 not available "
-                "(BehaviorTree.CPP compiled without ZMQ support)", groot2_port_);
+                "(BehaviorTree.CPP compiled without ZMQ support)",
+                groot2_port_);
   }
 #endif
 
@@ -91,64 +97,60 @@ BtCoordinatorNode::on_configure(const rclcpp_lifecycle::State& /*state*/)
 
   // Step mode service (always available once configured)
   step_service_ = create_service<std_srvs::srv::Trigger>(
-      "~/step",
-      std::bind(&BtCoordinatorNode::StepCallback, this,
-                std::placeholders::_1, std::placeholders::_2));
+      "~/step", std::bind(&BtCoordinatorNode::StepCallback, this, std::placeholders::_1,
+                          std::placeholders::_2));
 
   // Parameter change callback for runtime tree switching and pause
   param_callback_ = add_on_set_parameters_callback(
       std::bind(&BtCoordinatorNode::OnParameterChange, this, std::placeholders::_1));
 
-  RCLCPP_INFO(coord_log(),
-              "Tree loaded: %s (tick %.1f Hz, %s)",
-              tree_file_.c_str(), tick_rate_hz_,
+  RCLCPP_INFO(coord_log(), "Tree loaded: %s (tick %.1f Hz, %s)", tree_file_.c_str(), tick_rate_hz_,
               step_mode_ ? "step mode" : "auto mode");
   return CallbackReturn::SUCCESS;
 }
 
-BtCoordinatorNode::CallbackReturn
-BtCoordinatorNode::on_activate(const rclcpp_lifecycle::State& state)
-{
+BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_activate(
+    const rclcpp_lifecycle::State& state) {
   LifecycleNode::on_activate(state);
 
   // Tick timer (only if not in step mode)
   if (!step_mode_) {
     const auto period = std::chrono::duration<double>(1.0 / tick_rate_hz_);
-    tick_timer_ = create_wall_timer(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(period),
-        std::bind(&BtCoordinatorNode::TickCallback, this));
+    tick_timer_ = create_wall_timer(std::chrono::duration_cast<std::chrono::nanoseconds>(period),
+                                    std::bind(&BtCoordinatorNode::TickCallback, this));
   } else {
     RCLCPP_INFO(coord_log(), "Step mode enabled — use ~/step service to tick");
   }
 
   // Watchdog timer
   if (watchdog_interval_s_ > 0.0) {
-    watchdog_timer_ = create_wall_timer(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::duration<double>(watchdog_interval_s_)),
-        std::bind(&BtCoordinatorNode::WatchdogCheck, this));
+    watchdog_timer_ = create_wall_timer(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                            std::chrono::duration<double>(watchdog_interval_s_)),
+                                        std::bind(&BtCoordinatorNode::WatchdogCheck, this));
   }
 
   RCLCPP_INFO(coord_log(), "BtCoordinatorNode activated");
   return CallbackReturn::SUCCESS;
 }
 
-BtCoordinatorNode::CallbackReturn
-BtCoordinatorNode::on_deactivate(const rclcpp_lifecycle::State& state)
-{
-  if (tick_timer_) tick_timer_->cancel();
-  if (repeat_timer_) repeat_timer_->cancel();
-  if (watchdog_timer_) watchdog_timer_->cancel();
-  if (tree_) tree_->haltTree();
+BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_deactivate(
+    const rclcpp_lifecycle::State& state) {
+  if (tick_timer_)
+    tick_timer_->cancel();
+  if (repeat_timer_)
+    repeat_timer_->cancel();
+  if (watchdog_timer_)
+    watchdog_timer_->cancel();
+  if (tree_)
+    tree_->haltTree();
 
   LifecycleNode::on_deactivate(state);
   RCLCPP_INFO(coord_log(), "BtCoordinatorNode deactivated");
   return CallbackReturn::SUCCESS;
 }
 
-BtCoordinatorNode::CallbackReturn
-BtCoordinatorNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/)
-{
+BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_cleanup(
+    const rclcpp_lifecycle::State& /*state*/) {
   tick_timer_.reset();
   repeat_timer_.reset();
   watchdog_timer_.reset();
@@ -165,24 +167,25 @@ BtCoordinatorNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/)
   return CallbackReturn::SUCCESS;
 }
 
-BtCoordinatorNode::CallbackReturn
-BtCoordinatorNode::on_shutdown(const rclcpp_lifecycle::State& state)
-{
-  if (get_current_state().id() ==
-      lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_shutdown(
+    const rclcpp_lifecycle::State& state) {
+  if (get_current_state().id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
     on_deactivate(state);
   }
   return on_cleanup(state);
 }
 
-BtCoordinatorNode::CallbackReturn
-BtCoordinatorNode::on_error(const rclcpp_lifecycle::State& /*state*/)
-{
+BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_error(
+    const rclcpp_lifecycle::State& /*state*/) {
   RCLCPP_ERROR(coord_log(), "BtCoordinatorNode error — attempting recovery");
-  if (tick_timer_) tick_timer_->cancel();
-  if (repeat_timer_) repeat_timer_->cancel();
-  if (watchdog_timer_) watchdog_timer_->cancel();
-  if (tree_) tree_->haltTree();
+  if (tick_timer_)
+    tick_timer_->cancel();
+  if (repeat_timer_)
+    repeat_timer_->cancel();
+  if (watchdog_timer_)
+    watchdog_timer_->cancel();
+  if (tree_)
+    tree_->haltTree();
 
   tick_timer_.reset();
   repeat_timer_.reset();
@@ -199,8 +202,7 @@ BtCoordinatorNode::on_error(const rclcpp_lifecycle::State& /*state*/)
   return CallbackReturn::SUCCESS;
 }
 
-void BtCoordinatorNode::DeclareParameters()
-{
+void BtCoordinatorNode::DeclareParameters() {
   // When automatically_declare_parameters_from_overrides is true (for dynamic
   // params like bb.*, hand_pose.*, arm_pose.*), parameters from --params-file
   // are auto-declared before this function runs. Use get_parameter() for those
@@ -224,8 +226,7 @@ void BtCoordinatorNode::DeclareParameters()
   watchdog_interval_s_ = safe_declare("watchdog_interval_s", 5.0);
 }
 
-void BtCoordinatorNode::RegisterBtNodes()
-{
+void BtCoordinatorNode::RegisterBtNodes() {
   auto bridge = bridge_;
 
   // ── Action nodes ──────────────────────────────────────────────────────
@@ -267,16 +268,14 @@ void BtCoordinatorNode::RegisterBtNodes()
   factory_.registerNodeType<CheckShapeType>("CheckShapeType", bridge);
 }
 
-void BtCoordinatorNode::LoadTree()
-{
+void BtCoordinatorNode::LoadTree() {
   std::filesystem::path tree_path;
 
   // Support absolute paths
   if (std::filesystem::path(tree_file_).is_absolute()) {
     tree_path = tree_file_;
   } else {
-    std::string pkg_share =
-        ament_index_cpp::get_package_share_directory("ur5e_bt_coordinator");
+    std::string pkg_share = ament_index_cpp::get_package_share_directory("ur5e_bt_coordinator");
     tree_path = std::filesystem::path(pkg_share) / "trees" / tree_file_;
   }
 
@@ -287,47 +286,44 @@ void BtCoordinatorNode::LoadTree()
 
   RCLCPP_DEBUG(coord_log(), "Loading tree from: %s", tree_path.c_str());
 
-  tree_ = std::make_unique<BT::Tree>(
-      factory_.createTreeFromFile(tree_path.string()));
+  tree_ = std::make_unique<BT::Tree>(factory_.createTreeFromFile(tree_path.string()));
 }
 
-void BtCoordinatorNode::InitializeBlackboard()
-{
-  if (!tree_) return;
+void BtCoordinatorNode::InitializeBlackboard() {
+  if (!tree_)
+    return;
 
   auto bb = tree_->rootBlackboard();
   auto result = list_parameters({"bb"}, 1);
 
   for (const auto& param_name : result.names) {
     const std::string prefix = "bb.";
-    if (param_name.size() <= prefix.size()) continue;
+    if (param_name.size() <= prefix.size())
+      continue;
     std::string key = param_name.substr(prefix.size());
 
     auto param = get_parameter(param_name);
     switch (param.get_type()) {
       case rclcpp::ParameterType::PARAMETER_STRING:
         bb->set(key, param.as_string());
-        RCLCPP_DEBUG(coord_log(), "blackboard: %s = \"%s\" (string)",
-                     key.c_str(), param.as_string().c_str());
+        RCLCPP_DEBUG(coord_log(), "blackboard: %s = \"%s\" (string)", key.c_str(),
+                     param.as_string().c_str());
         break;
       case rclcpp::ParameterType::PARAMETER_DOUBLE:
         bb->set(key, param.as_double());
-        RCLCPP_DEBUG(coord_log(), "blackboard: %s = %f (double)",
-                     key.c_str(), param.as_double());
+        RCLCPP_DEBUG(coord_log(), "blackboard: %s = %f (double)", key.c_str(), param.as_double());
         break;
       case rclcpp::ParameterType::PARAMETER_INTEGER:
         bb->set(key, static_cast<int>(param.as_int()));
-        RCLCPP_DEBUG(coord_log(), "blackboard: %s = %ld (int)",
-                     key.c_str(), param.as_int());
+        RCLCPP_DEBUG(coord_log(), "blackboard: %s = %ld (int)", key.c_str(), param.as_int());
         break;
       case rclcpp::ParameterType::PARAMETER_BOOL:
         bb->set(key, param.as_bool());
-        RCLCPP_DEBUG(coord_log(), "blackboard: %s = %s (bool)",
-                     key.c_str(), param.as_bool() ? "true" : "false");
+        RCLCPP_DEBUG(coord_log(), "blackboard: %s = %s (bool)", key.c_str(),
+                     param.as_bool() ? "true" : "false");
         break;
       default:
-        RCLCPP_WARN(coord_log(), "blackboard: %s: unsupported type, skipped",
-                    key.c_str());
+        RCLCPP_WARN(coord_log(), "blackboard: %s: unsupported type, skipped", key.c_str());
         break;
     }
   }
@@ -335,7 +331,8 @@ void BtCoordinatorNode::InitializeBlackboard()
   // Auto-convert *_deg variables: store a rad counterpart without the suffix.
   // e.g. bb.tcp_rpy_offset_r_deg: 45.0 → blackboard "tcp_rpy_offset_r" = 0.785
   for (const auto& param_name : result.names) {
-    if (param_name.size() <= 3) continue;  // "bb." minimum
+    if (param_name.size() <= 3)
+      continue;                              // "bb." minimum
     std::string key = param_name.substr(3);  // strip "bb."
     if (key.size() > kDegSuffixLen &&
         key.compare(key.size() - kDegSuffixLen, kDegSuffixLen, kDegSuffix) == 0) {
@@ -344,29 +341,27 @@ void BtCoordinatorNode::InitializeBlackboard()
         std::string base_key = key.substr(0, key.size() - kDegSuffixLen);
         double rad_val = param.as_double() * kDeg2Rad;
         bb->set(base_key, rad_val);
-        RCLCPP_INFO(coord_log(), "blackboard: %s = %.4f deg → %s = %.6f rad",
-                    key.c_str(), param.as_double(), base_key.c_str(), rad_val);
+        RCLCPP_INFO(coord_log(), "blackboard: %s = %.4f deg → %s = %.6f rad", key.c_str(),
+                    param.as_double(), base_key.c_str(), rad_val);
       }
     }
   }
 }
 
-void BtCoordinatorNode::TickCallback()
-{
-  if (!tree_) return;
+void BtCoordinatorNode::TickCallback() {
+  if (!tree_)
+    return;
 
   // Paused check
   if (paused_) {
-    RCLCPP_INFO_THROTTLE(coord_log(), *get_clock(),
-                          ::rtc_bt::logging::kThrottleIdleMs,
-                          "Paused (set 'paused' param to false to resume)");
+    RCLCPP_INFO_THROTTLE(coord_log(), *get_clock(), ::rtc_bt::logging::kThrottleIdleMs,
+                         "Paused (set 'paused' param to false to resume)");
     return;
   }
 
   if (bridge_->IsEstopped()) {
-    RCLCPP_WARN_THROTTLE(coord_log(), *get_clock(),
-                          ::rtc_bt::logging::kThrottleSlowMs,
-                          "E-STOP active, tree paused");
+    RCLCPP_WARN_THROTTLE(coord_log(), *get_clock(), ::rtc_bt::logging::kThrottleSlowMs,
+                         "E-STOP active, tree paused");
     return;
   }
 
@@ -378,16 +373,15 @@ void BtCoordinatorNode::TickCallback()
     if (repeat_) {
       RCLCPP_INFO(coord_log(), "Restarting tree in %.1f s...", repeat_delay_s_);
       tick_timer_->cancel();
-      repeat_timer_ = create_wall_timer(
-          std::chrono::duration_cast<std::chrono::nanoseconds>(
-              std::chrono::duration<double>(repeat_delay_s_)),
-          [this]() {
-            repeat_timer_->cancel();
-            tree_->haltTree();
-            tree_->rootBlackboard()->unset("object_pose");
-            RCLCPP_INFO(coord_log(), "Tree restarted");
-            tick_timer_->reset();
-          });
+      repeat_timer_ = create_wall_timer(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                            std::chrono::duration<double>(repeat_delay_s_)),
+                                        [this]() {
+                                          repeat_timer_->cancel();
+                                          tree_->haltTree();
+                                          tree_->rootBlackboard()->unset("object_pose");
+                                          RCLCPP_INFO(coord_log(), "Tree restarted");
+                                          tick_timer_->reset();
+                                        });
     } else {
       tick_timer_->cancel();
     }
@@ -398,8 +392,7 @@ void BtCoordinatorNode::TickCallback()
   }
 }
 
-void BtCoordinatorNode::InstallFailureLogger()
-{
+void BtCoordinatorNode::InstallFailureLogger() {
   // Reset any previous logger (important after runtime tree switch, since
   // StatusChangeLogger keeps shared_ptrs to the old tree's nodes).
   failure_logger_.reset();
@@ -419,9 +412,9 @@ void BtCoordinatorNode::InstallFailureLogger()
   }
 }
 
-void BtCoordinatorNode::LogFailureDiagnosis()
-{
-  if (!tree_) return;
+void BtCoordinatorNode::LogFailureDiagnosis() {
+  if (!tree_)
+    return;
 
   RCLCPP_ERROR(coord_log(), "──── Failure Diagnosis ────");
 
@@ -431,46 +424,44 @@ void BtCoordinatorNode::LogFailureDiagnosis()
   // context around the leaf.
   std::function<bool(const BT::TreeNode*)> has_failed_descendant =
       [&](const BT::TreeNode* node) -> bool {
-    if (!node) return false;
+    if (!node)
+      return false;
     if (auto control = dynamic_cast<const BT::ControlNode*>(node)) {
       for (std::size_t i = 0; i < control->childrenCount(); ++i) {
         auto* child = control->child(i);
-        if (child && child->status() == BT::NodeStatus::FAILURE) return true;
-        if (has_failed_descendant(child)) return true;
+        if (child && child->status() == BT::NodeStatus::FAILURE)
+          return true;
+        if (has_failed_descendant(child))
+          return true;
       }
     } else if (auto decorator = dynamic_cast<const BT::DecoratorNode*>(node)) {
       auto* child = decorator->child();
-      if (child && child->status() == BT::NodeStatus::FAILURE) return true;
-      if (has_failed_descendant(child)) return true;
+      if (child && child->status() == BT::NodeStatus::FAILURE)
+        return true;
+      if (has_failed_descendant(child))
+        return true;
     }
     return false;
   };
 
   int failure_count = 0;
-  std::function<void(const BT::TreeNode*, int)> visit =
-      [&](const BT::TreeNode* node, int depth) {
-    if (!node) return;
+  std::function<void(const BT::TreeNode*, int)> visit = [&](const BT::TreeNode* node, int depth) {
+    if (!node)
+      return;
 
     const auto status = node->status();
     const std::string indent(depth * 2, ' ');
-    const std::string name =
-        node->name().empty() ? "<anon>" : node->name();
+    const std::string name = node->name().empty() ? "<anon>" : node->name();
 
     if (status == BT::NodeStatus::FAILURE) {
       const bool is_leaf_failure = !has_failed_descendant(node);
       if (is_leaf_failure) {
-        RCLCPP_ERROR(coord_log(),
-                     "%s[FAIL-LEAF] %s (type=%s uid=%u)",
-                     indent.c_str(), name.c_str(),
-                     node->registrationName().c_str(),
-                     static_cast<unsigned>(node->UID()));
+        RCLCPP_ERROR(coord_log(), "%s[FAIL-LEAF] %s (type=%s uid=%u)", indent.c_str(), name.c_str(),
+                     node->registrationName().c_str(), static_cast<unsigned>(node->UID()));
         ++failure_count;
       } else {
-        RCLCPP_WARN(coord_log(),
-                    "%s[FAIL] %s (type=%s uid=%u)",
-                    indent.c_str(), name.c_str(),
-                    node->registrationName().c_str(),
-                    static_cast<unsigned>(node->UID()));
+        RCLCPP_WARN(coord_log(), "%s[FAIL] %s (type=%s uid=%u)", indent.c_str(), name.c_str(),
+                    node->registrationName().c_str(), static_cast<unsigned>(node->UID()));
       }
     }
 
@@ -492,29 +483,24 @@ void BtCoordinatorNode::LogFailureDiagnosis()
                 "last [BT FAIL] line emitted by FailureLogger)");
   }
 
-  RCLCPP_ERROR(coord_log(), "──── End Diagnosis (%d leaf failures) ────",
-               failure_count);
+  RCLCPP_ERROR(coord_log(), "──── End Diagnosis (%d leaf failures) ────", failure_count);
 }
 
-void BtCoordinatorNode::WatchdogCheck()
-{
+void BtCoordinatorNode::WatchdogCheck() {
   auto health = bridge_->GetTopicHealth(watchdog_timeout_s_);
 
   bool any_critical_down = false;
   for (const auto& h : health) {
     if (!h.received) {
-      RCLCPP_WARN_THROTTLE(watchdog_log(), *get_clock(),
-                            ::rtc_bt::logging::kThrottleIdleMs,
-                            "%s: no messages received yet", h.name.c_str());
+      RCLCPP_WARN_THROTTLE(watchdog_log(), *get_clock(), ::rtc_bt::logging::kThrottleIdleMs,
+                           "%s: no messages received yet", h.name.c_str());
       any_critical_down = true;
     } else if (!h.healthy) {
-      RCLCPP_WARN(watchdog_log(),
-                  "%s: stale (%.1fs since last message, timeout=%.1fs)",
+      RCLCPP_WARN(watchdog_log(), "%s: stale (%.1fs since last message, timeout=%.1fs)",
                   h.name.c_str(), h.seconds_since_last, watchdog_timeout_s_);
       any_critical_down = true;
     } else {
-      RCLCPP_DEBUG(watchdog_log(), "%s: healthy (%.2fs ago)",
-                   h.name.c_str(), h.seconds_since_last);
+      RCLCPP_DEBUG(watchdog_log(), "%s: healthy (%.2fs ago)", h.name.c_str(), h.seconds_since_last);
     }
   }
 
@@ -524,8 +510,7 @@ void BtCoordinatorNode::WatchdogCheck()
 }
 
 rcl_interfaces::msg::SetParametersResult BtCoordinatorNode::OnParameterChange(
-    const std::vector<rclcpp::Parameter>& params)
-{
+    const std::vector<rclcpp::Parameter>& params) {
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
 
@@ -533,13 +518,14 @@ rcl_interfaces::msg::SetParametersResult BtCoordinatorNode::OnParameterChange(
     if (param.get_name() == "tree_file") {
       // Runtime tree switching
       std::string new_file = param.as_string();
-      RCLCPP_INFO(coord_log(), "Switching tree: %s → %s",
-                  tree_file_.c_str(), new_file.c_str());
+      RCLCPP_INFO(coord_log(), "Switching tree: %s → %s", tree_file_.c_str(), new_file.c_str());
 
       try {
         // Stop ticking
-        if (tick_timer_) tick_timer_->cancel();
-        if (repeat_timer_) repeat_timer_->cancel();
+        if (tick_timer_)
+          tick_timer_->cancel();
+        if (repeat_timer_)
+          repeat_timer_->cancel();
 
         // Halt current tree
         if (tree_) {
@@ -587,10 +573,12 @@ rcl_interfaces::msg::SetParametersResult BtCoordinatorNode::OnParameterChange(
     } else if (param.get_name() == "step_mode") {
       step_mode_ = param.as_bool();
       if (step_mode_) {
-        if (tick_timer_) tick_timer_->cancel();
+        if (tick_timer_)
+          tick_timer_->cancel();
         RCLCPP_INFO(coord_log(), "Step mode ON — use ~/step service");
       } else {
-        if (tick_timer_) tick_timer_->reset();
+        if (tick_timer_)
+          tick_timer_->reset();
         RCLCPP_INFO(coord_log(), "Step mode OFF — auto ticking resumed");
       }
     } else if (param.get_name() == "repeat") {
@@ -607,8 +595,7 @@ rcl_interfaces::msg::SetParametersResult BtCoordinatorNode::OnParameterChange(
 
 void BtCoordinatorNode::StepCallback(
     const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
-    std::shared_ptr<std_srvs::srv::Trigger::Response> response)
-{
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
   if (!tree_) {
     RCLCPP_ERROR(coord_log(), "step: no tree loaded");
     response->success = false;
@@ -627,10 +614,18 @@ void BtCoordinatorNode::StepCallback(
 
   std::string status_str;
   switch (status) {
-    case BT::NodeStatus::SUCCESS: status_str = "SUCCESS"; break;
-    case BT::NodeStatus::FAILURE: status_str = "FAILURE"; break;
-    case BT::NodeStatus::RUNNING: status_str = "RUNNING"; break;
-    default: status_str = "IDLE"; break;
+    case BT::NodeStatus::SUCCESS:
+      status_str = "SUCCESS";
+      break;
+    case BT::NodeStatus::FAILURE:
+      status_str = "FAILURE";
+      break;
+    case BT::NodeStatus::RUNNING:
+      status_str = "RUNNING";
+      break;
+    default:
+      status_str = "IDLE";
+      break;
   }
 
   response->success = (status != BT::NodeStatus::FAILURE);

@@ -13,8 +13,7 @@
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 class ForceTaskTest : public ::testing::Test {
  protected:
@@ -112,7 +111,7 @@ TEST_F(ForceTaskTest, ComputeResidualIdentityOnLambda) {
   ref_.lambda_des.head(3) << 10.0, 0.0, 5.0;
 
   const int n_vars = robot_info_.nv + contacts_.active_contact_vars;  // 7 + 3
-  const int rdim = contacts_.active_contact_vars;  // 3
+  const int rdim = contacts_.active_contact_vars;                     // 3
   Eigen::MatrixXd J(rdim, n_vars);
   Eigen::VectorXd r(rdim);
   J.setZero();

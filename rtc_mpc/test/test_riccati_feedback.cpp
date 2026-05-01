@@ -10,9 +10,9 @@
 
 #include "rtc_mpc/feedback/riccati_feedback.hpp"
 
+#include <Eigen/Core>
 #include <gtest/gtest.h>
 
-#include <Eigen/Core>
 #include <array>
 
 namespace rtc::mpc {
@@ -109,8 +109,7 @@ TEST_F(RiccatiFeedbackTest, DeltaXMagnitudeCapClampsOutput) {
 
   // After clamping, the effective |u_fb| magnitude should be ≤ max + ε.
   const double magnitude = u_fb_.norm();
-  EXPECT_LE(magnitude, 1.0 + 1e-9)
-      << "Clamped feedback must not exceed max_delta_x_norm";
+  EXPECT_LE(magnitude, 1.0 + 1e-9) << "Clamped feedback must not exceed max_delta_x_norm";
   EXPECT_GT(magnitude, 0.0);
 }
 
@@ -129,8 +128,7 @@ TEST_F(RiccatiFeedbackTest, AccelOnlyModeZerosExtraEntries) {
     EXPECT_NEAR(wide(i), static_cast<double>(i + 1), kTol);
   }
   for (int i = kNv; i < wide.size(); ++i) {
-    EXPECT_NEAR(wide(i), 0.0, kTol)
-        << "Tail of oversized u_fb must be zeroed in accel_only mode";
+    EXPECT_NEAR(wide(i), 0.0, kTol) << "Tail of oversized u_fb must be zeroed in accel_only mode";
   }
 }
 

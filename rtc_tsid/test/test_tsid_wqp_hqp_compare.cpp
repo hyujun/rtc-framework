@@ -15,8 +15,7 @@
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 class WQPvsHQPTest : public ::testing::Test {
  protected:
@@ -83,10 +82,9 @@ TEST_F(WQPvsHQPTest, SingleLevelEquivalence) {
 
   const int nv = robot_info_.nv;
   Eigen::VectorXd diff = r_wqp.x_opt.head(nv) - r_hqp.x_opt.head(nv);
-  EXPECT_LT(diff.norm(), 1e-3)
-      << "WQP and HQP should match for single level\n"
-      << "  WQP: " << r_wqp.x_opt.head(nv).transpose() << "\n"
-      << "  HQP: " << r_hqp.x_opt.head(nv).transpose();
+  EXPECT_LT(diff.norm(), 1e-3) << "WQP and HQP should match for single level\n"
+                               << "  WQP: " << r_wqp.x_opt.head(nv).transpose() << "\n"
+                               << "  HQP: " << r_hqp.x_opt.head(nv).transpose();
 }
 
 // With position error: WQP and HQP should agree on direction
@@ -97,8 +95,7 @@ TEST_F(WQPvsHQPTest, SingleLevelWithError) {
   cache_.update(q_, v_, contacts_);
 
   ref_.q_des = q_;
-  ref_.q_des.head(robot_info_.nv) +=
-      Eigen::VectorXd::Constant(robot_info_.nv, 0.1);
+  ref_.q_des.head(robot_info_.nv) += Eigen::VectorXd::Constant(robot_info_.nv, 0.1);
   ref_.v_des = v_;
   ref_.a_des.setZero(robot_info_.nv);
 
@@ -110,8 +107,7 @@ TEST_F(WQPvsHQPTest, SingleLevelWithError) {
 
   const int nv = robot_info_.nv;
   Eigen::VectorXd diff = r_wqp.x_opt.head(nv) - r_hqp.x_opt.head(nv);
-  EXPECT_LT(diff.norm(), 1e-2)
-      << "diff norm = " << diff.norm();
+  EXPECT_LT(diff.norm(), 1e-2) << "diff norm = " << diff.norm();
 }
 
 // TSIDController end-to-end: gravity compensation torque
@@ -150,8 +146,7 @@ TEST_F(WQPvsHQPTest, TSIDControllerGravityComp) {
   Eigen::VectorXd g = robot_info_.S * cache_.g;
   EXPECT_LT((output.tau.head(robot_info_.n_actuated) - g).norm(), 0.5)
       << "tau should approximate gravity comp\n"
-      << "  tau = " << output.tau.head(robot_info_.n_actuated).transpose()
-      << "\n"
+      << "  tau = " << output.tau.head(robot_info_.n_actuated).transpose() << "\n"
       << "  g   = " << g.transpose();
 }
 

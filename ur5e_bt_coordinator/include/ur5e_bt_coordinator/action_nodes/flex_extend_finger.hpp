@@ -25,8 +25,8 @@ namespace rtc_bt {
 ///
 /// Duration 추정의 max_vel은 bt_utils.hpp::kDefaultHandMaxTrajVelocity 사용.
 class FlexExtendFinger : public BT::StatefulActionNode {
-public:
-  FlexExtendFinger(const std::string &name, const BT::NodeConfig &config,
+ public:
+  FlexExtendFinger(const std::string& name, const BT::NodeConfig& config,
                    std::shared_ptr<BtRosBridge> bridge);
 
   static BT::PortsList providedPorts();
@@ -35,7 +35,7 @@ public:
   BT::NodeStatus onRunning() override;
   void onHalted() override;
 
-private:
+ private:
   enum class Phase { kFlex, kExtend };
 
   std::shared_ptr<BtRosBridge> bridge_;
@@ -51,4 +51,4 @@ private:
   std::chrono::steady_clock::time_point start_time_;
 };
 
-} // namespace rtc_bt
+}  // namespace rtc_bt

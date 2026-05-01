@@ -27,32 +27,35 @@ struct TestRow {
   std::uint32_t tag{0};
 };
 
-void WriteHeader(std::ostream &os) { os << "t_relative_s,tag"; }
-void WriteRow(std::ostream &os, const TestRow &r) {
+void WriteHeader(std::ostream& os) {
+  os << "t_relative_s,tag";
+}
+
+void WriteRow(std::ostream& os, const TestRow& r) {
   os << r.t_relative_s << ',' << r.tag;
 }
 
 class ScopedTempDir {
-public:
+ public:
   ScopedTempDir() {
     auto base = fs::temp_directory_path() / "rtc_thread_csv_test";
     fs::create_directories(base);
-    dir_ =
-        base / ("t_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) &
-                                      0xFFFFFFFFu));
+    dir_ = base / ("t_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) & 0xFFFFFFFFu));
     fs::create_directories(dir_);
   }
+
   ~ScopedTempDir() {
     std::error_code ec;
     fs::remove_all(dir_, ec);
   }
-  const fs::path &dir() const noexcept { return dir_; }
 
-private:
+  const fs::path& dir() const noexcept { return dir_; }
+
+ private:
   fs::path dir_;
 };
 
-std::vector<std::string> ReadAllLines(const fs::path &p) {
+std::vector<std::string> ReadAllLines(const fs::path& p) {
   std::vector<std::string> lines;
   std::ifstream in(p);
   for (std::string line; std::getline(in, line);) {
@@ -61,7 +64,7 @@ std::vector<std::string> ReadAllLines(const fs::path &p) {
   return lines;
 }
 
-} // namespace
+}  // namespace
 
 TEST(ThreadCsvProducer, PushDrainPreservesFifoOrder) {
   rtc::ThreadCsvProducer<TestRow, 8> producer;
@@ -69,8 +72,7 @@ TEST(ThreadCsvProducer, PushDrainPreservesFifoOrder) {
     EXPECT_TRUE(producer.Push(TestRow{0.001 * i, i}));
   }
   std::vector<std::uint32_t> seen;
-  const auto n =
-      producer.Drain([&](const TestRow &r) { seen.push_back(r.tag); });
+  const auto n = producer.Drain([&](const TestRow& r) { seen.push_back(r.tag); });
   EXPECT_EQ(n, 4u);
   ASSERT_EQ(seen.size(), 4u);
   for (std::uint32_t i = 0; i < 4; ++i) {
@@ -124,7 +126,7 @@ TEST(ThreadCsvLogger, ReopenAppendDoesNotDuplicateHeader) {
 TEST(ThreadCsvLogger, LogIsNoopWhenNotOpen) {
   rtc::ThreadCsvLogger<TestRow> logger;
   EXPECT_FALSE(logger.IsOpen());
-  logger.Log(TestRow{42.0, 7}); // must not throw / crash
+  logger.Log(TestRow{42.0, 7});  // must not throw / crash
   EXPECT_FALSE(logger.IsOpen());
 }
 
@@ -139,7 +141,7 @@ TEST(ThreadCsvProducer, EndToEndProducerToDrainToCsv) {
   for (std::uint32_t i = 0; i < 3; ++i) {
     EXPECT_TRUE(producer.Push(TestRow{0.001 * (i + 1), i + 1}));
   }
-  const auto n = producer.Drain([&](const TestRow &r) { logger.Log(r); });
+  const auto n = producer.Drain([&](const TestRow& r) { logger.Log(r); });
   EXPECT_EQ(n, 3u);
 
   const auto lines = ReadAllLines(path);

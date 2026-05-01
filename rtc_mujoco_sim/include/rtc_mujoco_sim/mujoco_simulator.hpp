@@ -12,8 +12,8 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
-#include <mutex>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -27,22 +27,22 @@ namespace rtc {
 
 struct SolverConfig {
   // Algorithm selection
-  std::string solver{"Newton"};         // "PGS", "CG", "Newton"
-  std::string cone{"pyramidal"};        // "pyramidal", "elliptic"
-  std::string jacobian{"auto"};         // "dense", "sparse", "auto"
-  std::string integrator{"Euler"};      // "Euler", "RK4", "implicit", "implicitfast"
+  std::string solver{"Newton"};     // "PGS", "CG", "Newton"
+  std::string cone{"pyramidal"};    // "pyramidal", "elliptic"
+  std::string jacobian{"auto"};     // "dense", "sparse", "auto"
+  std::string integrator{"Euler"};  // "Euler", "RK4", "implicit", "implicitfast"
 
   // Iteration parameters
-  int    iterations{100};
+  int iterations{100};
   double tolerance{1e-8};
-  int    ls_iterations{50};
+  int ls_iterations{50};
   double ls_tolerance{0.01};
-  int    noslip_iterations{0};
+  int noslip_iterations{0};
   double noslip_tolerance{1e-6};
-  int    ccd_iterations{50};
+  int ccd_iterations{50};
   double ccd_tolerance{1e-6};
-  int    sdf_iterations{10};
-  int    sdf_initpoints{40};
+  int sdf_iterations{10};
+  int sdf_initpoints{40};
 
   // Physics
   double impratio{1.0};
@@ -56,12 +56,13 @@ struct SolverConfig {
 
   // Contact override
   struct ContactOverride {
-    bool   enable{false};
+    bool enable{false};
     double o_margin{0.0};
     std::array<double, 2> o_solref{0.02, 1.0};
     std::array<double, 5> o_solimp{0.9, 0.95, 0.001, 0.5, 2.0};
     std::array<double, 5> o_friction{1.0, 1.0, 0.005, 0.0001, 0.0001};
   };
+
   ContactOverride contact_override;
 };
 
@@ -69,20 +70,20 @@ struct SolverConfig {
 // Per-group configuration loaded from YAML (robot_response / fake_response).
 
 struct JointGroupConfig {
-  std::string name;                       // 임의 이름 (ur5e, hand, kuka, ...)
-  std::vector<std::string> joint_names;   // 하위호환: command/state 미지정 시 사용
+  std::string name;                              // 임의 이름 (ur5e, hand, kuka, ...)
+  std::vector<std::string> joint_names;          // 하위호환: command/state 미지정 시 사용
   std::vector<std::string> command_joint_names;  // command용 joint names (빈 경우 joint_names 사용)
-  std::vector<std::string> state_joint_names;    // state용 joint names (빈 경우 XML 전체)
+  std::vector<std::string> state_joint_names;  // state용 joint names (빈 경우 XML 전체)
   std::string command_topic;
   std::string state_topic;
-  bool is_robot{true};                    // true=robot_response, false=fake_response
-  double filter_alpha{0.1};               // fake_response용 LPF 계수
-  std::vector<double> servo_kp;           // 비어있으면 글로벌 값 상속
+  bool is_robot{true};           // true=robot_response, false=fake_response
+  double filter_alpha{0.1};      // fake_response용 LPF 계수
+  std::vector<double> servo_kp;  // 비어있으면 글로벌 값 상속
   std::vector<double> servo_kd;
 
   // ── Sensor publishing (optional) ──────────────────────────────
-  std::string sensor_topic;                    // 빈 문자열이면 센서 publish 안 함
-  std::vector<std::string> sensor_names;       // XML sensor names (빈 경우 = 그룹에 센서 없음)
+  std::string sensor_topic;               // 빈 문자열이면 센서 publish 안 함
+  std::vector<std::string> sensor_names;  // XML sensor names (빈 경우 = 그룹에 센서 없음)
 };
 
 // ── JointGroup ───────────────────────────────────────────────────────────────
@@ -99,8 +100,8 @@ struct JointGroup {
   std::vector<std::string> state_joint_names;
   int num_state_joints{0};
 
-  bool is_robot{true};                    // robot_response 여부
-  bool is_primary{false};                 // sync_step 대기 대상
+  bool is_robot{true};     // robot_response 여부
+  bool is_primary{false};  // sync_step 대기 대상
 
   // ── MuJoCo 인덱스: command용 (is_robot==true, 이름 기반 비연속 가능)
   std::vector<int> qpos_indices;
@@ -119,9 +120,9 @@ struct JointGroup {
   std::vector<double> positions;
   std::vector<double> velocities;
   std::vector<double> efforts;
-  std::atomic<bool>   cmd_pending{false};
-  mutable std::mutex  cmd_mutex;
-  mutable std::mutex  state_mutex;
+  std::atomic<bool> cmd_pending{false};
+  mutable std::mutex cmd_mutex;
+  mutable std::mutex state_mutex;
 
   // ── Per-group control mode ──────────────────────────────────────
   std::atomic<bool> torque_mode{false};
@@ -132,31 +133,30 @@ struct JointGroup {
   std::vector<double> biasprm2_yaml;
 
   // ── State callback ──────────────────────────────────────────────
-  using StateCallback = std::function<void(
-      const std::vector<double>& positions,
-      const std::vector<double>& velocities,
-      const std::vector<double>& efforts)>;
+  using StateCallback = std::function<void(const std::vector<double>& positions,
+                                           const std::vector<double>& velocities,
+                                           const std::vector<double>& efforts)>;
   StateCallback state_cb{nullptr};
 
   // ── Fake response (is_robot==false일 때) ────────────────────────
   double filter_alpha{0.1};
   std::vector<double> fake_state;
   std::vector<double> fake_target;
-  mutable std::mutex  fake_mutex;
+  mutable std::mutex fake_mutex;
 
   // ── Sensor info (populated during Initialize from XML) ─────────
   struct SensorInfo {
     std::string name;
-    int type{0};       // mjtSensor enum
-    int adr{0};        // index into data_->sensordata
-    int dim{0};        // number of scalar outputs
+    int type{0};  // mjtSensor enum
+    int adr{0};   // index into data_->sensordata
+    int dim{0};   // number of scalar outputs
   };
-  std::vector<SensorInfo> sensor_infos;
-  std::vector<double> sensor_buffer;   // flat readback buffer [sum(dims)]
 
-  using SensorCallback = std::function<void(
-      const std::vector<SensorInfo>& infos,
-      const std::vector<double>& values)>;
+  std::vector<SensorInfo> sensor_infos;
+  std::vector<double> sensor_buffer;  // flat readback buffer [sum(dims)]
+
+  using SensorCallback =
+      std::function<void(const std::vector<SensorInfo>& infos, const std::vector<double>& values)>;
   SensorCallback sensor_cb{nullptr};
 
   // ── ROS2 토픽 ──────────────────────────────────────────────────
@@ -195,16 +195,16 @@ class MuJoCoSimulator {
 
   struct Config {
     std::string model_path;
-    std::string window_title;            // viewer window title (empty = "MuJoCo Simulator")
-    bool        enable_viewer{true};
-    double      sync_timeout_ms{50.0};   // command wait timeout
-    double      max_rtf{0.0};           // 0.0 = unlimited
-    double      physics_timestep{0.0};
-    int         n_substeps{1};          // substeps per control cycle (1 = legacy)
-    double      viewer_refresh_rate{60.0}; // viewer target refresh rate (Hz)
+    std::string window_title;  // viewer window title (empty = "MuJoCo Simulator")
+    bool enable_viewer{true};
+    double sync_timeout_ms{50.0};  // command wait timeout
+    double max_rtf{0.0};           // 0.0 = unlimited
+    double physics_timestep{0.0};
+    int n_substeps{1};                 // substeps per control cycle (1 = legacy)
+    double viewer_refresh_rate{60.0};  // viewer target refresh rate (Hz)
 
     // 글로벌 servo gain (그룹별 미지정 시 상속)
-    bool   use_yaml_servo_gains{false};
+    bool use_yaml_servo_gains{false};
     std::vector<double> servo_kp{500.0, 500.0, 500.0, 150.0, 150.0, 150.0};
     std::vector<double> servo_kd{400.0, 400.0, 400.0, 100.0, 100.0, 100.0};
 
@@ -218,10 +218,10 @@ class MuJoCoSimulator {
   explicit MuJoCoSimulator(Config cfg) noexcept;
   ~MuJoCoSimulator();
 
-  MuJoCoSimulator(const MuJoCoSimulator&)            = delete;
+  MuJoCoSimulator(const MuJoCoSimulator&) = delete;
   MuJoCoSimulator& operator=(const MuJoCoSimulator&) = delete;
-  MuJoCoSimulator(MuJoCoSimulator&&)                 = delete;
-  MuJoCoSimulator& operator=(MuJoCoSimulator&&)      = delete;
+  MuJoCoSimulator(MuJoCoSimulator&&) = delete;
+  MuJoCoSimulator& operator=(MuJoCoSimulator&&) = delete;
 
   // ── Pure parse helpers (testable without MuJoCo init) ────────────────────
   // String → MuJoCo enum conversion. Unknown input returns the documented
@@ -234,8 +234,7 @@ class MuJoCoSimulator {
   // In-place LPF step: state[i] += alpha * (target[i] - state[i]).
   // Processes min(state.size(), target.size()) elements; no-op if either empty.
   // NaN target values are skipped (state unchanged for that index).
-  static void ApplyFakeLpfStep(std::vector<double>& state,
-                               const std::vector<double>& target,
+  static void ApplyFakeLpfStep(std::vector<double>& state, const std::vector<double>& target,
                                double alpha) noexcept;
 
   // Load MJCF model and resolve joint indices.  Must be called before Start().
@@ -263,15 +262,17 @@ class MuJoCoSimulator {
       std::size_t group_idx) const noexcept;
   [[nodiscard]] bool HasSensors(std::size_t group_idx) const noexcept;
 
-  [[nodiscard]] std::vector<double> GetPositions(std::size_t group_idx)  const noexcept;
+  [[nodiscard]] std::vector<double> GetPositions(std::size_t group_idx) const noexcept;
   [[nodiscard]] std::vector<double> GetVelocities(std::size_t group_idx) const noexcept;
-  [[nodiscard]] std::vector<double> GetEfforts(std::size_t group_idx)    const noexcept;
+  [[nodiscard]] std::vector<double> GetEfforts(std::size_t group_idx) const noexcept;
 
   [[nodiscard]] const std::vector<std::string>& GetJointNames(std::size_t group_idx) const noexcept;
-  [[nodiscard]] const std::vector<std::string>& GetStateJointNames(std::size_t group_idx) const noexcept;
-  [[nodiscard]] int  NumGroupJoints(std::size_t group_idx) const noexcept;
-  [[nodiscard]] int  NumStateJoints(std::size_t group_idx) const noexcept;
+  [[nodiscard]] const std::vector<std::string>& GetStateJointNames(
+      std::size_t group_idx) const noexcept;
+  [[nodiscard]] int NumGroupJoints(std::size_t group_idx) const noexcept;
+  [[nodiscard]] int NumStateJoints(std::size_t group_idx) const noexcept;
   [[nodiscard]] bool IsGroupRobot(std::size_t group_idx) const noexcept;
+
   [[nodiscard]] std::size_t NumGroups() const noexcept { return groups_.size(); }
 
   // Per-group control mode (robot groups only).
@@ -287,13 +288,23 @@ class MuJoCoSimulator {
   // ── Backward-compatible API (delegates to group 0) ────────────────────────
 
   void SetCommand(const std::vector<double>& cmd) noexcept { SetCommand(0, cmd); }
+
   void SetStateCallback(StateCallback cb) noexcept { SetStateCallback(0, std::move(cb)); }
-  [[nodiscard]] std::vector<double> GetPositions()  const noexcept { return GetPositions(0); }
+
+  [[nodiscard]] std::vector<double> GetPositions() const noexcept { return GetPositions(0); }
+
   [[nodiscard]] std::vector<double> GetVelocities() const noexcept { return GetVelocities(0); }
-  [[nodiscard]] std::vector<double> GetEfforts()    const noexcept { return GetEfforts(0); }
-  [[nodiscard]] const std::vector<std::string>& GetJointNames() const noexcept { return GetJointNames(0); }
+
+  [[nodiscard]] std::vector<double> GetEfforts() const noexcept { return GetEfforts(0); }
+
+  [[nodiscard]] const std::vector<std::string>& GetJointNames() const noexcept {
+    return GetJointNames(0);
+  }
+
   [[nodiscard]] int NumRobotJoints() const noexcept { return NumGroupJoints(0); }
+
   void SetControlMode(bool torque_mode) noexcept { SetControlMode(0, torque_mode); }
+
   [[nodiscard]] bool IsInTorqueMode() const noexcept { return IsInTorqueMode(0); }
 
   // ── Fake response API (Node 타이머에서 호출) ──────────────────────────────
@@ -307,9 +318,10 @@ class MuJoCoSimulator {
   struct SolverStats {
     double improvement{0.0};
     double gradient{0.0};
-    int    iter{0};
-    int    ncon{0};
+    int iter{0};
+    int ncon{0};
   };
+
   [[nodiscard]] SolverStats GetSolverStats() const noexcept;
 
   // ── Physics solver controls (thread-safe) ─────────────────────────────────
@@ -317,21 +329,21 @@ class MuJoCoSimulator {
   void SetIntegrator(int type) noexcept {
     solver_integrator_.store(type, std::memory_order_relaxed);
   }
+
   [[nodiscard]] int GetIntegrator() const noexcept {
     return solver_integrator_.load(std::memory_order_relaxed);
   }
 
-  void SetSolverType(int type) noexcept {
-    solver_type_.store(type, std::memory_order_relaxed);
-  }
+  void SetSolverType(int type) noexcept { solver_type_.store(type, std::memory_order_relaxed); }
+
   [[nodiscard]] int GetSolverType() const noexcept {
     return solver_type_.load(std::memory_order_relaxed);
   }
 
   void SetSolverIterations(int iters) noexcept {
-    solver_iterations_.store(
-        std::max(1, std::min(iters, 1000)), std::memory_order_relaxed);
+    solver_iterations_.store(std::max(1, std::min(iters, 1000)), std::memory_order_relaxed);
   }
+
   [[nodiscard]] int GetSolverIterations() const noexcept {
     return solver_iterations_.load(std::memory_order_relaxed);
   }
@@ -339,6 +351,7 @@ class MuJoCoSimulator {
   void SetSolverTolerance(double tol) noexcept {
     solver_tolerance_.store(tol < 0.0 ? 0.0 : tol, std::memory_order_relaxed);
   }
+
   [[nodiscard]] double GetSolverTolerance() const noexcept {
     return solver_tolerance_.load(std::memory_order_relaxed);
   }
@@ -346,13 +359,13 @@ class MuJoCoSimulator {
   void SetContactEnabled(bool enabled) noexcept {
     contacts_enabled_.store(enabled, std::memory_order_relaxed);
   }
+
   [[nodiscard]] bool IsContactEnabled() const noexcept {
     return contacts_enabled_.load(std::memory_order_relaxed);
   }
 
-  void SetCone(int cone) noexcept {
-    solver_cone_.store(cone, std::memory_order_relaxed);
-  }
+  void SetCone(int cone) noexcept { solver_cone_.store(cone, std::memory_order_relaxed); }
+
   [[nodiscard]] int GetCone() const noexcept {
     return solver_cone_.load(std::memory_order_relaxed);
   }
@@ -360,28 +373,29 @@ class MuJoCoSimulator {
   void SetImpratio(double ratio) noexcept {
     solver_impratio_.store(ratio < 0.0 ? 1.0 : ratio, std::memory_order_relaxed);
   }
+
   [[nodiscard]] double GetImpratio() const noexcept {
     return solver_impratio_.load(std::memory_order_relaxed);
   }
 
   void SetNoslipIterations(int iters) noexcept {
-    solver_noslip_iterations_.store(
-        std::max(0, std::min(iters, 1000)), std::memory_order_relaxed);
+    solver_noslip_iterations_.store(std::max(0, std::min(iters, 1000)), std::memory_order_relaxed);
   }
+
   [[nodiscard]] int GetNoslipIterations() const noexcept {
     return solver_noslip_iterations_.load(std::memory_order_relaxed);
   }
 
   // ── Physics controls (thread-safe) ────────────────────────────────────────
 
-  void Pause()   noexcept { paused_.store(true,  std::memory_order_relaxed); }
-  void Resume()  noexcept {
+  void Pause() noexcept { paused_.store(true, std::memory_order_relaxed); }
+
+  void Resume() noexcept {
     paused_.store(false, std::memory_order_relaxed);
     sync_cv_.notify_all();
   }
-  [[nodiscard]] bool IsPaused() const noexcept {
-    return paused_.load(std::memory_order_relaxed);
-  }
+
+  [[nodiscard]] bool IsPaused() const noexcept { return paused_.load(std::memory_order_relaxed); }
 
   void RequestReset() noexcept {
     reset_requested_.store(true, std::memory_order_relaxed);
@@ -391,6 +405,7 @@ class MuJoCoSimulator {
   void SetMaxRtf(double rtf) noexcept {
     current_max_rtf_.store(rtf < 0.0 ? 0.0 : rtf, std::memory_order_relaxed);
   }
+
   [[nodiscard]] double GetMaxRtf() const noexcept {
     return current_max_rtf_.load(std::memory_order_relaxed);
   }
@@ -406,44 +421,50 @@ class MuJoCoSimulator {
     }
     gravity_enabled_.store(enable, std::memory_order_relaxed);
   }
+
   [[nodiscard]] bool IsGravityEnabled() const noexcept {
     return gravity_enabled_.load(std::memory_order_relaxed);
   }
+
   [[nodiscard]] bool IsGravityLockedByServo() const noexcept {
     return gravity_locked_by_servo_.load(std::memory_order_relaxed);
   }
 
   // ── External forces / perturbation ────────────────────────────────────────
 
-  void SetExternalForce(int body_id,
-                        const std::array<double, 6>& wrench_world) noexcept;
+  void SetExternalForce(int body_id, const std::array<double, 6>& wrench_world) noexcept;
   void ClearExternalForce() noexcept;
   void UpdatePerturb(const mjvPerturb& pert) noexcept;
   void ClearPerturb() noexcept;
 
   // ── Status accessors ──────────────────────────────────────────────────────
 
-  [[nodiscard]] bool     IsRunning()  const noexcept { return running_.load(); }
-  [[nodiscard]] uint64_t StepCount()  const noexcept { return step_count_.load(); }
-  [[nodiscard]] double   SimTimeSec() const noexcept { return sim_time_sec_.load(); }
-  [[nodiscard]] int      NumJoints()  const noexcept { return model_ ? model_->nq : 0; }
-  [[nodiscard]] double   GetRtf()     const noexcept {
-    return rtf_.load(std::memory_order_relaxed);
-  }
-  [[nodiscard]] double   GetPhysicsTimestep() const noexcept { return xml_timestep_; }
-  [[nodiscard]] int      GetNumSubsteps()    const noexcept { return cfg_.n_substeps; }
-  [[nodiscard]] double   GetPhysicsLoad()    const noexcept {
+  [[nodiscard]] bool IsRunning() const noexcept { return running_.load(); }
+
+  [[nodiscard]] uint64_t StepCount() const noexcept { return step_count_.load(); }
+
+  [[nodiscard]] double SimTimeSec() const noexcept { return sim_time_sec_.load(); }
+
+  [[nodiscard]] int NumJoints() const noexcept { return model_ ? model_->nq : 0; }
+
+  [[nodiscard]] double GetRtf() const noexcept { return rtf_.load(std::memory_order_relaxed); }
+
+  [[nodiscard]] double GetPhysicsTimestep() const noexcept { return xml_timestep_; }
+
+  [[nodiscard]] int GetNumSubsteps() const noexcept { return cfg_.n_substeps; }
+
+  [[nodiscard]] double GetPhysicsLoad() const noexcept {
     return physics_load_.load(std::memory_order_relaxed);
   }
 
  private:
-  Config   cfg_;
+  Config cfg_;
   mjModel* model_{nullptr};
-  mjData*  data_{nullptr};
+  mjData* data_{nullptr};
 
-  std::atomic<bool>     running_{false};
+  std::atomic<bool> running_{false};
   std::atomic<uint64_t> step_count_{0};
-  std::atomic<double>   sim_time_sec_{0.0};
+  std::atomic<double> sim_time_sec_{0.0};
 
   // ── Multi-group storage ─────────────────────────────────────────────────
   std::vector<std::unique_ptr<JointGroup>> groups_;
@@ -452,78 +473,80 @@ class MuJoCoSimulator {
   std::vector<std::string> all_xml_joint_names_;
 
   // ── Runtime control flags ─────────────────────────────────────────────────
-  std::atomic<bool>   paused_{false};
-  std::atomic<bool>   reset_requested_{false};
-  std::atomic<bool>   step_once_{false};
+  std::atomic<bool> paused_{false};
+  std::atomic<bool> reset_requested_{false};
+  std::atomic<bool> step_once_{false};
   std::atomic<double> current_max_rtf_{0.0};
-  std::atomic<bool>   gravity_enabled_{false};
-  double              original_gravity_z_{-9.81};
+  std::atomic<bool> gravity_enabled_{false};
+  double original_gravity_z_{-9.81};
 
   // ── Physics solver atomics (runtime-changeable via viewer/API) ─────────────
-  std::atomic<int>    solver_integrator_{mjINT_EULER};
-  std::atomic<int>    solver_type_{mjSOL_NEWTON};
-  std::atomic<int>    solver_iterations_{100};
+  std::atomic<int> solver_integrator_{mjINT_EULER};
+  std::atomic<int> solver_type_{mjSOL_NEWTON};
+  std::atomic<int> solver_iterations_{100};
   std::atomic<double> solver_tolerance_{1e-8};
-  std::atomic<bool>   contacts_enabled_{true};
+  std::atomic<bool> contacts_enabled_{true};
 
   // ── Physics solver atomics (additional, from solver_param.yaml) ───────────
-  std::atomic<int>    solver_cone_{mjCONE_PYRAMIDAL};
-  std::atomic<int>    solver_jacobian_{mjJAC_AUTO};
-  std::atomic<int>    solver_ls_iterations_{50};
+  std::atomic<int> solver_cone_{mjCONE_PYRAMIDAL};
+  std::atomic<int> solver_jacobian_{mjJAC_AUTO};
+  std::atomic<int> solver_ls_iterations_{50};
   std::atomic<double> solver_ls_tolerance_{0.01};
-  std::atomic<int>    solver_noslip_iterations_{0};
+  std::atomic<int> solver_noslip_iterations_{0};
   std::atomic<double> solver_noslip_tolerance_{1e-6};
   std::atomic<double> solver_impratio_{1.0};
 
   // ── Solver statistics ─────────────────────────────────────────────────────
   mutable std::mutex solver_stats_mutex_;
-  SolverStats        latest_solver_stats_{};
+  SolverStats latest_solver_stats_{};
 
   // ── Sync step ─────────────────────────────────────────────────────────────
-  std::mutex              sync_mutex_;
+  std::mutex sync_mutex_;
   std::condition_variable sync_cv_;
 
   // ── Viewer double-buffer ──────────────────────────────────────────────────
-  mutable std::mutex  viz_mutex_;
+  mutable std::mutex viz_mutex_;
   std::vector<double> viz_qpos_{};
-  int                 viz_ncon_{0};
-  bool                viz_dirty_{false};
+  int viz_ncon_{0};
+  bool viz_dirty_{false};
 
   std::jthread sim_thread_;
   std::jthread viewer_thread_;
 
   // ── RTF measurement ───────────────────────────────────────────────────────
   std::chrono::steady_clock::time_point rtf_wall_start_{};
-  double                                rtf_sim_start_{0.0};
-  std::atomic<double>                   rtf_{0.0};
-  std::atomic<double>                   physics_load_{0.0};
-  uint64_t                              viz_update_interval_{8};
-  int                                   viewer_sleep_ms_{16};
+  double rtf_sim_start_{0.0};
+  std::atomic<double> rtf_{0.0};
+  std::atomic<double> physics_load_{0.0};
+  uint64_t viz_update_interval_{8};
+  int viewer_sleep_ms_{16};
 
   // ── Max-RTF throttle (sim thread only) ───────────────────────────────────
   std::chrono::steady_clock::time_point throttle_wall_start_{};
-  double                                throttle_sim_start_{0.0};
-  double                                throttle_rtf_{0.0};
+  double throttle_sim_start_{0.0};
+  double throttle_rtf_{0.0};
 
   // ── Gravity lock (position servo 모드에서 gravity 변경 차단) ─────────────
   std::atomic<bool> gravity_locked_by_servo_{true};
 
   // ── Original actuator params (전체 actuator, Initialize()에서 저장) ──────
   double xml_timestep_{0.002};
+
   struct ActuatorParams {
     double gainprm0{0.0};
     double biasprm0{0.0};
     double biasprm1{0.0};
     double biasprm2{0.0};
   };
+
   std::vector<ActuatorParams> orig_actuator_params_;
 
   // ── External forces / perturbation (under pert_mutex_) ───────────────────
   mutable std::mutex pert_mutex_;
-  mjvPerturb         shared_pert_{};
-  bool               pert_active_{false};
+  mjvPerturb shared_pert_{};
+  bool pert_active_{false};
   std::vector<double> ext_xfrc_{};
-  bool                ext_xfrc_dirty_{false};
+  bool ext_xfrc_dirty_{false};
 
   // ── Internal helpers ───────────────────────────────────────────────────────
   // XML에서 모든 hinge+actuator 조인트를 발견하여 all_xml_joint_names_에 저장
@@ -541,8 +564,7 @@ class MuJoCoSimulator {
   // "auto" 키워드 시 XML 전체 센서 이름 목록 반환
   std::vector<std::string> CollectAllXmlSensorNames() const noexcept;
   // 그룹의 sensor_names를 XML 센서와 매핑
-  void MapSensorInfos(JointGroup& group,
-                      const std::vector<std::string>& sensor_names) noexcept;
+  void MapSensorInfos(JointGroup& group, const std::vector<std::string>& sensor_names) noexcept;
 
   // MJCF XML의 <option> 요소를 파싱하여 명시적으로 설정된 속성 이름 집합을 반환.
   // XML에 없는 속성에 대해서만 SolverConfig(YAML) 값을 적용하기 위한 헬퍼.

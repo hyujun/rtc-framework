@@ -2,7 +2,6 @@
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
-
 #include <rtc_base/threading/seqlock.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/rt_model_handle.hpp>
@@ -31,13 +30,12 @@ namespace rtc {
 /// enable_gravity, enable_coriolis, trajectory_speed where nv = model DOF
 /// (e.g. 6 for UR5e, determined at construction from URDF).
 class JointPDController final : public RTControllerInterface {
-public:
+ public:
   struct Gains {
-    std::array<double, kMaxRobotDOF> kp{{100.0, 100.0, 100.0, 100.0, 100.0,
-                                         100.0, 100.0, 100.0, 100.0, 100.0,
-                                         100.0, 100.0}};
-    std::array<double, kMaxRobotDOF> kd{{20.0, 20.0, 20.0, 20.0, 20.0, 20.0,
-                                         20.0, 20.0, 20.0, 20.0, 20.0, 20.0}};
+    std::array<double, kMaxRobotDOF> kp{
+        {100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0}};
+    std::array<double, kMaxRobotDOF> kd{
+        {20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0}};
     bool enable_gravity_compensation{false};
     bool enable_coriolis_compensation{false};
     double trajectory_speed{1.0};
@@ -47,17 +45,13 @@ public:
   JointPDController(std::string_view urdf_path, Gains gains);
 
   // ── RTControllerInterface ──────────────────────────────────────────────────
-  [[nodiscard]] ControllerOutput
-  Compute(const ControllerState &state) noexcept override;
+  [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;
 
-  void SetDeviceTarget(int device_idx,
-                       std::span<const double> target) noexcept override;
+  void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override;
 
-  void InitializeHoldPosition(const ControllerState &state) noexcept override;
+  void InitializeHoldPosition(const ControllerState& state) noexcept override;
 
-  [[nodiscard]] std::string_view Name() const noexcept override {
-    return "JointPDController";
-  }
+  [[nodiscard]] std::string_view Name() const noexcept override { return "JointPDController"; }
 
   // ── E-STOP ─────────────────────────────────────────────────────────────────
   void TriggerEstop() noexcept override;
@@ -66,23 +60,23 @@ public:
   void SetHandEstop(bool active) noexcept override;
 
   // ── Controller registry hooks ──────────────────────────────────────────────
-  void LoadConfig(const YAML::Node &cfg) override;
+  void LoadConfig(const YAML::Node& cfg) override;
   void OnDeviceConfigsSet() override;
-  [[nodiscard]] CommandType GetCommandType() const noexcept override {
-    return command_type_;
-  }
+
+  [[nodiscard]] CommandType GetCommandType() const noexcept override { return command_type_; }
 
   // ── Gain accessors ─────────────────────────────────────────────────────────
-  void set_gains(const Gains &g) noexcept { gains_lock_.Store(g); }
+  void set_gains(const Gains& g) noexcept { gains_lock_.Store(g); }
+
   [[nodiscard]] Gains get_gains() const noexcept { return gains_lock_.Load(); }
 
   // ── Diagnostic accessors (non-RT only) ─────────────────────────────────────
-  [[nodiscard]] std::array<double, kMaxRobotDOF>
-  gravity_torques() const noexcept;
+  [[nodiscard]] std::array<double, kMaxRobotDOF> gravity_torques() const noexcept;
   [[nodiscard]] std::array<double, 3> tcp_position() const noexcept;
+
   [[nodiscard]] Eigen::MatrixXd jacobian() const noexcept { return jacobian_; }
 
-private:
+ private:
   std::vector<double> safe_position_;
   std::vector<double> max_joint_velocity_;
   std::vector<double> max_joint_torque_;
@@ -97,8 +91,7 @@ private:
 
   // ── Controller state ───────────────────────────────────────────────────────
   SeqLock<Gains> gains_lock_;
-  std::array<std::array<double, kMaxDeviceChannels>,
-             ControllerState::kMaxDevices>
+  std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices>
       device_targets_{};
   std::array<double, kMaxRobotDOF> prev_error_{};
 
@@ -118,13 +111,12 @@ private:
   CommandType command_type_{CommandType::kTorque};
 
   // ── Internal helpers ───────────────────────────────────────────────────────
-  [[nodiscard]] ControllerOutput
-  ComputeEstop(const ControllerState &state) noexcept;
+  [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state) noexcept;
 
-  void UpdateDynamics(const DeviceState &dev, const Gains &gains) noexcept;
+  void UpdateDynamics(const DeviceState& dev, const Gains& gains) noexcept;
 
-  void ClampCommands(std::array<double, kMaxDeviceChannels> &cmds, int n,
+  void ClampCommands(std::array<double, kMaxDeviceChannels>& cmds, int n,
                      CommandType type) const noexcept;
 };
 
-} // namespace rtc
+}  // namespace rtc

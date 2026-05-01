@@ -97,6 +97,7 @@ def plot_device_velocities(df, save_dir=None):
         plt.show()
     plt.close()
 
+
 def print_device_statistics(df):
     """Print hand trajectory statistics."""
     duration = df["timestamp"].iloc[-1] - df["timestamp"].iloc[0]
@@ -120,12 +121,8 @@ def print_device_statistics(df):
             print(f"  Motor {i} ({motor_names[i]}): {rms:.6f}")
 
     # Sensor summary (filtered 컬럼만, raw 제외)
-    baro_cols = [
-        c for c in df.columns if c.startswith("baro_") and not c.startswith("baro_raw_")
-    ]
-    tof_cols = [
-        c for c in df.columns if c.startswith("tof_") and not c.startswith("tof_raw_")
-    ]
+    baro_cols = [c for c in df.columns if c.startswith("baro_") and not c.startswith("baro_raw_")]
+    tof_cols = [c for c in df.columns if c.startswith("tof_") and not c.startswith("tof_raw_")]
     if baro_cols:
         baro_vals = df[baro_cols].values.flatten()
         print(f"\nBarometer range: [{baro_vals.min():.1f}, {baro_vals.max():.1f}]")
@@ -158,4 +155,3 @@ def print_device_statistics(df):
                         f"  min={data.min():.4f}"
                         f"  max={data.max():.4f}"
                     )
-

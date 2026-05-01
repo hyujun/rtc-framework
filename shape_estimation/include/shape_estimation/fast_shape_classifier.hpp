@@ -11,18 +11,17 @@ namespace shape_estimation {
 class FastShapeClassifier {
  public:
   struct Config {
-    double flat_curvature_threshold{5.0};       // [1/m], 반지름 200mm 이상이면 flat
-    double curvature_uniformity_threshold{2.0}; // 곡률 분산 임계값
+    double flat_curvature_threshold{5.0};        // [1/m], 반지름 200mm 이상이면 flat
+    double curvature_uniformity_threshold{2.0};  // 곡률 분산 임계값
   };
 
   FastShapeClassifier();
   explicit FastShapeClassifier(const Config& config);
 
   /// 곡률 + 거리 기반 형상 분류
-  [[nodiscard]] ShapeEstimate Classify(
-      const std::array<double, kNumFingers>& curvatures,
-      const std::array<bool, kNumFingers>& curvature_valid,
-      const std::array<ToFReading, kTotalSensors>& readings) const;
+  [[nodiscard]] ShapeEstimate Classify(const std::array<double, kNumFingers>& curvatures,
+                                       const std::array<bool, kNumFingers>& curvature_valid,
+                                       const std::array<ToFReading, kTotalSensors>& readings) const;
 
  private:
   Config config_;

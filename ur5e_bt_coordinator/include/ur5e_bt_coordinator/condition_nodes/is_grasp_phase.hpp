@@ -19,7 +19,7 @@ namespace rtc_bt {
 ///     Valid values: "idle", "approaching", "contact", "force_control",
 ///                   "holding", "releasing"
 class IsGraspPhase : public BT::ConditionNode {
-public:
+ public:
   IsGraspPhase(const std::string& name, const BT::NodeConfig& config,
                std::shared_ptr<BtRosBridge> bridge);
 
@@ -27,7 +27,7 @@ public:
 
   BT::NodeStatus tick() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
 };
 

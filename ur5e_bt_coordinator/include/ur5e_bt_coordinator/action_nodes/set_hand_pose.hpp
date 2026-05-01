@@ -24,8 +24,8 @@ namespace rtc_bt {
 ///
 /// Duration 추정의 max_vel은 bt_utils.hpp::kDefaultHandMaxTrajVelocity 사용.
 class SetHandPose : public BT::StatefulActionNode {
-public:
-  SetHandPose(const std::string &name, const BT::NodeConfig &config,
+ public:
+  SetHandPose(const std::string& name, const BT::NodeConfig& config,
               std::shared_ptr<BtRosBridge> bridge);
 
   static BT::PortsList providedPorts();
@@ -34,11 +34,11 @@ public:
   BT::NodeStatus onRunning() override;
   void onHalted() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
   double duration_{0.01};
   std::vector<double> target_vec_;
   std::chrono::steady_clock::time_point start_time_;
 };
 
-} // namespace rtc_bt
+}  // namespace rtc_bt

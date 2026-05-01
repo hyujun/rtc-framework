@@ -16,6 +16,7 @@ class RuntimeControls : public ::testing::Test {
     sim_ = std::make_unique<MuJoCoSimulator>(test::MakeMinimalConfig());
     ASSERT_TRUE(sim_->Initialize());
   }
+
   std::unique_ptr<MuJoCoSimulator> sim_;
 };
 
@@ -88,7 +89,7 @@ TEST_F(RuntimeControls, ExternalForceOnInvalidBodyIsNoOp) {
   std::array<double, 6> wrench = {0, 0, 10, 0, 0, 0};
   sim_->SetExternalForce(-1, wrench);    // body_id <= 0 → reject
   sim_->SetExternalForce(9999, wrench);  // out of range → reject
-  sim_->ClearExternalForce();  // no crash
+  sim_->ClearExternalForce();            // no crash
   SUCCEED();
 }
 

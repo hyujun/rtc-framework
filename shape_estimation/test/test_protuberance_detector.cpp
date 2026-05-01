@@ -1,7 +1,7 @@
-#include <gtest/gtest.h>
-
 #include "shape_estimation/protuberance_detector.hpp"
 #include "shape_estimation/snapshot_history.hpp"
+
+#include <gtest/gtest.h>
 
 #include <cmath>
 #include <vector>
@@ -12,19 +12,15 @@ namespace {
 // ── 헬퍼 ────────────────────────────────────────────────────────────────────
 
 // cylinder 표면 위 포인트 생성 (축 = Z, 중심 = origin)
-std::vector<PointWithNormal> MakeCylinderSurfacePoints(
-    double radius, int count, double z_min = -0.05, double z_max = 0.05) {
+std::vector<PointWithNormal> MakeCylinderSurfacePoints(double radius, int count,
+                                                       double z_min = -0.05, double z_max = 0.05) {
   std::vector<PointWithNormal> points;
   points.reserve(static_cast<size_t>(count));
   for (int i = 0; i < count; ++i) {
-    const double angle =
-        2.0 * M_PI * static_cast<double>(i) / static_cast<double>(count);
-    const double z = z_min + (z_max - z_min) *
-                                 static_cast<double>(i) /
-                                 static_cast<double>(count);
+    const double angle = 2.0 * M_PI * static_cast<double>(i) / static_cast<double>(count);
+    const double z = z_min + (z_max - z_min) * static_cast<double>(i) / static_cast<double>(count);
     PointWithNormal p;
-    p.position = Eigen::Vector3d(radius * std::cos(angle),
-                                 radius * std::sin(angle), z);
+    p.position = Eigen::Vector3d(radius * std::cos(angle), radius * std::sin(angle), z);
     p.normal = Eigen::Vector3d(std::cos(angle), std::sin(angle), 0.0);
     p.timestamp_ns = static_cast<uint64_t>(i) * 10'000'000ULL;
     points.push_back(p);
@@ -33,21 +29,16 @@ std::vector<PointWithNormal> MakeCylinderSurfacePoints(
 }
 
 // sphere 표면 위 포인트 생성
-std::vector<PointWithNormal> MakeSphereSurfacePoints(
-    const Eigen::Vector3d& center, double radius, int count) {
+std::vector<PointWithNormal> MakeSphereSurfacePoints(const Eigen::Vector3d& center, double radius,
+                                                     int count) {
   std::vector<PointWithNormal> points;
   points.reserve(static_cast<size_t>(count));
   for (int i = 0; i < count; ++i) {
     // 균일하지 않지만 테스트에는 충분
-    const double theta =
-        M_PI * static_cast<double>(i) / static_cast<double>(count);
-    const double phi =
-        2.0 * M_PI * static_cast<double>(i * 7 % count) /
-        static_cast<double>(count);
-    const Eigen::Vector3d dir(
-        std::sin(theta) * std::cos(phi),
-        std::sin(theta) * std::sin(phi),
-        std::cos(theta));
+    const double theta = M_PI * static_cast<double>(i) / static_cast<double>(count);
+    const double phi = 2.0 * M_PI * static_cast<double>(i * 7 % count) / static_cast<double>(count);
+    const Eigen::Vector3d dir(std::sin(theta) * std::cos(phi), std::sin(theta) * std::sin(phi),
+                              std::cos(theta));
     PointWithNormal p;
     p.position = center + radius * dir;
     p.normal = dir;
@@ -62,10 +53,9 @@ std::vector<PointWithNormal> MakePlaneSurfacePoints(int count) {
   std::vector<PointWithNormal> points;
   points.reserve(static_cast<size_t>(count));
   for (int i = 0; i < count; ++i) {
-    const double x = -0.05 + 0.1 * static_cast<double>(i) /
-                                 static_cast<double>(count);
-    const double y = -0.05 + 0.1 * static_cast<double>((i * 3) % count) /
-                                 static_cast<double>(count);
+    const double x = -0.05 + 0.1 * static_cast<double>(i) / static_cast<double>(count);
+    const double y =
+        -0.05 + 0.1 * static_cast<double>((i * 3) % count) / static_cast<double>(count);
     PointWithNormal p;
     p.position = Eigen::Vector3d(x, y, 0.0);
     p.normal = Eigen::Vector3d(0, 0, 1);
@@ -86,8 +76,7 @@ ShapeEstimate MakeCylinderEstimate(double radius) {
   return est;
 }
 
-ShapeEstimate MakeSphereEstimate(const Eigen::Vector3d& center,
-                                 double radius) {
+ShapeEstimate MakeSphereEstimate(const Eigen::Vector3d& center, double radius) {
   ShapeEstimate est;
   est.type = ShapeType::kSphere;
   est.center = center;
@@ -109,9 +98,8 @@ ShapeEstimate MakePlaneEstimate() {
 }
 
 // 시계열 snapshot 생성 (센서 0만 유효)
-std::vector<ToFSnapshot> MakeSnapshotSeries(
-    const std::vector<double>& distances,
-    const std::vector<bool>& valid_flags) {
+std::vector<ToFSnapshot> MakeSnapshotSeries(const std::vector<double>& distances,
+                                            const std::vector<bool>& valid_flags) {
   std::vector<ToFSnapshot> snaps;
   snaps.reserve(distances.size());
   for (size_t i = 0; i < distances.size(); ++i) {
@@ -120,8 +108,7 @@ std::vector<ToFSnapshot> MakeSnapshotSeries(
     snap.readings[0].distance_m = distances[i];
     snap.readings[0].valid = valid_flags[i];
     if (valid_flags[i]) {
-      snap.surface_points_world[0] =
-          Eigen::Vector3d(0.0, 0.0, distances[i]);
+      snap.surface_points_world[0] = Eigen::Vector3d(0.0, 0.0, distances[i]);
     }
     snaps.push_back(snap);
   }
@@ -155,8 +142,7 @@ TEST(ProtuberanceDetector, CylinderResidualNegativeForProtrudingPoints) {
     PointWithNormal p;
     const double angle = 0.5 + 0.1 * static_cast<double>(i);
     const double r_out = radius + 0.015;  // 15mm 돌출
-    p.position = Eigen::Vector3d(r_out * std::cos(angle),
-                                 r_out * std::sin(angle), 0.01);
+    p.position = Eigen::Vector3d(r_out * std::cos(angle), r_out * std::sin(angle), 0.01);
     p.normal = Eigen::Vector3d(std::cos(angle), std::sin(angle), 0.0);
     points.push_back(p);
   }
@@ -201,8 +187,7 @@ TEST(ProtuberanceDetector, PlaneResidualCorrectSign) {
   // 평면 위 10mm 돌출 포인트 4개 (인접)
   for (int i = 0; i < 4; ++i) {
     PointWithNormal p;
-    p.position = Eigen::Vector3d(
-        0.01 * static_cast<double>(i), 0.0, 0.010);
+    p.position = Eigen::Vector3d(0.01 * static_cast<double>(i), 0.0, 0.010);
     p.normal = Eigen::Vector3d(0, 0, 1);
     points.push_back(p);
   }
@@ -240,8 +225,7 @@ TEST(ProtuberanceDetector, SingleClusterFromAdjacentPoints) {
   // 5개 인접 돌출 포인트 (10mm 간격 이내)
   for (int i = 0; i < 5; ++i) {
     PointWithNormal p;
-    p.position = Eigen::Vector3d(
-        radius + 0.015, 0.002 * static_cast<double>(i), 0.0);
+    p.position = Eigen::Vector3d(radius + 0.015, 0.002 * static_cast<double>(i), 0.0);
     p.normal = Eigen::Vector3d(1, 0, 0);
     points.push_back(p);
   }
@@ -261,8 +245,7 @@ TEST(ProtuberanceDetector, TwoClustersFromSeparatedPoints) {
   // 클러스터 1: x+ 방향
   for (int i = 0; i < 4; ++i) {
     PointWithNormal p;
-    p.position = Eigen::Vector3d(
-        radius + 0.015, 0.002 * static_cast<double>(i), 0.0);
+    p.position = Eigen::Vector3d(radius + 0.015, 0.002 * static_cast<double>(i), 0.0);
     p.normal = Eigen::Vector3d(1, 0, 0);
     points.push_back(p);
   }
@@ -270,8 +253,7 @@ TEST(ProtuberanceDetector, TwoClustersFromSeparatedPoints) {
   // 클러스터 2: x- 방향 (cluster_radius 이상 떨어짐)
   for (int i = 0; i < 4; ++i) {
     PointWithNormal p;
-    p.position = Eigen::Vector3d(
-        -(radius + 0.015), 0.002 * static_cast<double>(i), 0.0);
+    p.position = Eigen::Vector3d(-(radius + 0.015), 0.002 * static_cast<double>(i), 0.0);
     p.normal = Eigen::Vector3d(-1, 0, 0);
     points.push_back(p);
   }
@@ -293,8 +275,7 @@ TEST(ProtuberanceDetector, ClusterIgnoredIfTooFewPoints) {
   // 2개 돌출 포인트 (< min_cluster_points=3)
   for (int i = 0; i < 2; ++i) {
     PointWithNormal p;
-    p.position = Eigen::Vector3d(
-        radius + 0.015, 0.002 * static_cast<double>(i), 0.0);
+    p.position = Eigen::Vector3d(radius + 0.015, 0.002 * static_cast<double>(i), 0.0);
     p.normal = Eigen::Vector3d(1, 0, 0);
     points.push_back(p);
   }
@@ -328,8 +309,7 @@ TEST(ProtuberanceDetector, DetectsGapInTimeSeries) {
   // 돌출 포인트 추가 (z=0.012 근처, gap surface_point와 가까운 위치)
   for (int i = 0; i < 5; ++i) {
     PointWithNormal p;
-    p.position = Eigen::Vector3d(
-        radius + 0.015, 0.002 * static_cast<double>(i), 0.012);
+    p.position = Eigen::Vector3d(radius + 0.015, 0.002 * static_cast<double>(i), 0.012);
     p.normal = Eigen::Vector3d(1, 0, 0);
     points.push_back(p);
   }
@@ -353,8 +333,7 @@ TEST(ProtuberanceDetector, NoGapWhenDistanceSimilar) {
   // 돌출 포인트 추가
   for (int i = 0; i < 5; ++i) {
     PointWithNormal p;
-    p.position = Eigen::Vector3d(
-        radius + 0.015, 0.002 * static_cast<double>(i), 0.030);
+    p.position = Eigen::Vector3d(radius + 0.015, 0.002 * static_cast<double>(i), 0.030);
     p.normal = Eigen::Vector3d(1, 0, 0);
     points.push_back(p);
   }
@@ -382,8 +361,7 @@ TEST(ProtuberanceDetector, GapWithLargeDistanceJump) {
 
   for (int i = 0; i < 5; ++i) {
     PointWithNormal p;
-    p.position = Eigen::Vector3d(
-        radius + 0.015, 0.002 * static_cast<double>(i), 0.012);
+    p.position = Eigen::Vector3d(radius + 0.015, 0.002 * static_cast<double>(i), 0.012);
     p.normal = Eigen::Vector3d(1, 0, 0);
     points.push_back(p);
   }
@@ -411,8 +389,7 @@ TEST(ProtuberanceDetector, NoGapWhenInvalidTooShort) {
 
   for (int i = 0; i < 5; ++i) {
     PointWithNormal p;
-    p.position = Eigen::Vector3d(
-        radius + 0.015, 0.002 * static_cast<double>(i), 0.012);
+    p.position = Eigen::Vector3d(radius + 0.015, 0.002 * static_cast<double>(i), 0.012);
     p.normal = Eigen::Vector3d(1, 0, 0);
     points.push_back(p);
   }
@@ -437,8 +414,7 @@ TEST(ProtuberanceDetector, DetectsHandleOnCylinder) {
   // 손잡이: 표면에서 20mm 돌출, 5개 포인트
   for (int i = 0; i < 5; ++i) {
     PointWithNormal p;
-    p.position = Eigen::Vector3d(
-        radius + 0.020, 0.002 * static_cast<double>(i), 0.0);
+    p.position = Eigen::Vector3d(radius + 0.020, 0.002 * static_cast<double>(i), 0.0);
     p.normal = Eigen::Vector3d(1, 0, 0);
     points.push_back(p);
   }
@@ -493,8 +469,7 @@ TEST(ProtuberanceDetector, LowConfidenceWithoutGap) {
   // 돌출 포인트 (gap 없음)
   for (int i = 0; i < 5; ++i) {
     PointWithNormal p;
-    p.position = Eigen::Vector3d(
-        radius + 0.010, 0.002 * static_cast<double>(i), 0.0);
+    p.position = Eigen::Vector3d(radius + 0.010, 0.002 * static_cast<double>(i), 0.0);
     p.normal = Eigen::Vector3d(1, 0, 0);
     points.push_back(p);
   }
@@ -517,8 +492,7 @@ TEST(ProtuberanceDetector, MultipleProtuberances) {
   // 영역 1
   for (int i = 0; i < 4; ++i) {
     PointWithNormal p;
-    p.position = Eigen::Vector3d(
-        radius + 0.015, 0.002 * static_cast<double>(i), 0.0);
+    p.position = Eigen::Vector3d(radius + 0.015, 0.002 * static_cast<double>(i), 0.0);
     p.normal = Eigen::Vector3d(1, 0, 0);
     points.push_back(p);
   }
@@ -526,8 +500,7 @@ TEST(ProtuberanceDetector, MultipleProtuberances) {
   // 영역 2 (충분히 떨어진 위치)
   for (int i = 0; i < 4; ++i) {
     PointWithNormal p;
-    p.position = Eigen::Vector3d(
-        -(radius + 0.015), 0.002 * static_cast<double>(i), 0.0);
+    p.position = Eigen::Vector3d(-(radius + 0.015), 0.002 * static_cast<double>(i), 0.0);
     p.normal = Eigen::Vector3d(-1, 0, 0);
     points.push_back(p);
   }
@@ -553,8 +526,7 @@ TEST(ProtuberanceDetector, UpdateConfigChangesThreshold) {
   // 5mm 돌출 포인트 추가 (기본 residual_threshold=-0.005에서 경계)
   for (int i = 0; i < 5; ++i) {
     PointWithNormal p;
-    p.position = Eigen::Vector3d(
-        radius + 0.006, 0.002 * static_cast<double>(i), 0.0);
+    p.position = Eigen::Vector3d(radius + 0.006, 0.002 * static_cast<double>(i), 0.0);
     p.normal = Eigen::Vector3d(1, 0, 0);
     points.push_back(p);
   }
@@ -603,8 +575,8 @@ TEST(ProtuberanceDetector, BoxResidualCorrectSign) {
   // 박스 표면 밖으로 15mm 돌출된 포인트 추가
   for (int i = 0; i < 5; ++i) {
     PointWithNormal p;
-    p.position = Eigen::Vector3d(
-        0.002 * static_cast<double>(i), 0.0, 0.030 + 0.015);  // z face + 15mm
+    p.position =
+        Eigen::Vector3d(0.002 * static_cast<double>(i), 0.0, 0.030 + 0.015);  // z face + 15mm
     p.normal = Eigen::Vector3d(0, 0, 1);
     points.push_back(p);
   }

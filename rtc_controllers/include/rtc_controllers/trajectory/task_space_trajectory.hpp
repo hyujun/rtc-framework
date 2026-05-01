@@ -7,43 +7,36 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/spatial/se3.hpp>
-#include <pinocchio/spatial/motion.hpp>
 #include <pinocchio/spatial/explog.hpp>
+#include <pinocchio/spatial/motion.hpp>
+#include <pinocchio/spatial/se3.hpp>
 #pragma GCC diagnostic pop
+
+#include "rtc_controllers/trajectory/trajectory_utils.hpp"
 
 #include <Eigen/Dense>
 
-#include "rtc_controllers/trajectory/trajectory_utils.hpp"
 #include <array>
 
-namespace rtc
-{
-namespace trajectory
-{
+namespace rtc {
+namespace trajectory {
 
 class TaskSpaceTrajectory {
-public:
-  struct State
-  {
+ public:
+  struct State {
     pinocchio::SE3 pose;
-    pinocchio::Motion velocity;       // spatial velocity in LOCAL frame
-    pinocchio::Motion acceleration;   // spatial acceleration in LOCAL frame
+    pinocchio::Motion velocity;      // spatial velocity in LOCAL frame
+    pinocchio::Motion acceleration;  // spatial acceleration in LOCAL frame
   };
 
-  TaskSpaceTrajectory()
-  {
+  TaskSpaceTrajectory() {
     pose_start_.setIdentity();
     Jexp_prev_.setZero();
   }
 
-  void initialize(
-    const pinocchio::SE3 & start_pose,
-    const pinocchio::Motion & start_velocity_local,
-    const pinocchio::SE3 & goal_pose,
-    const pinocchio::Motion & goal_velocity_local,
-    double duration)
-  {
+  void initialize(const pinocchio::SE3& start_pose, const pinocchio::Motion& start_velocity_local,
+                  const pinocchio::SE3& goal_pose, const pinocchio::Motion& goal_velocity_local,
+                  double duration) {
     duration_ = duration;
     pose_start_ = start_pose;
     has_prev_Jexp_ = false;
@@ -65,10 +58,9 @@ public:
     Eigen::VectorXd v_goal = delta_vf.toVector();
 
     for (std::size_t i = 0; i < 6; ++i) {
-      polynomials_[i].compute_coefficients(
-          0.0, v_start[static_cast<Eigen::Index>(i)], 0.0,
-          p_goal[static_cast<Eigen::Index>(i)], v_goal[static_cast<Eigen::Index>(i)], 0.0,
-          duration);
+      polynomials_[i].compute_coefficients(0.0, v_start[static_cast<Eigen::Index>(i)], 0.0,
+                                           p_goal[static_cast<Eigen::Index>(i)],
+                                           v_goal[static_cast<Eigen::Index>(i)], 0.0, duration);
     }
   }
 
@@ -76,8 +68,7 @@ public:
   /// @param dt    Control period [s] for dJexp/dt numerical differentiation.
   ///              If <= 0 or on the first tick after initialize(), the dJexp/dt
   ///              term is omitted (falls back to the Jexp*a approximation).
-  State compute(double time, double dt = 0.0)
-  {
+  State compute(double time, double dt = 0.0) {
     State state;
     Eigen::Matrix<double, 6, 1> p;
     Eigen::Matrix<double, 6, 1> v;
@@ -116,9 +107,9 @@ public:
     return state;
   }
 
-  double duration() const {return duration_;}
+  double duration() const { return duration_; }
 
-private:
+ private:
   std::array<QuinticPolynomial, 6> polynomials_;
   pinocchio::SE3 pose_start_;
   double duration_{0.0};

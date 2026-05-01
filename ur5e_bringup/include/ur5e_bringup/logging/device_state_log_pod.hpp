@@ -30,9 +30,9 @@ namespace ur5e {
 
 struct DeviceStateLogPod {
   // ── Capacities (chosen for ur5e arm + 10-DoF hand) ────────────────────────
-  static constexpr std::size_t kMaxJoints = 16; // 6 arm + 10 hand
+  static constexpr std::size_t kMaxJoints = 16;  // 6 arm + 10 hand
   static constexpr std::size_t kMaxMotors = 16;
-  static constexpr std::size_t kTaskDim = 6; // x,y,z,roll,pitch,yaw
+  static constexpr std::size_t kTaskDim = 6;  // x,y,z,roll,pitch,yaw
 
   // ── Timestamp (CM-provided, session-relative) ─────────────────────────────
   double t_relative_s{0.0};
@@ -73,14 +73,12 @@ static_assert(std::is_trivially_copyable_v<DeviceStateLogPod>,
 /// `joint_names` and `motor_names` must match the runtime num_joints /
 /// num_motors used during Push (captured once at on_configure, not RT).
 /// The logger appends '\n'.
-inline void
-WriteDeviceStateLogHeader(std::ostream &os,
-                          std::span<const std::string> joint_names,
-                          std::span<const std::string> motor_names) {
+inline void WriteDeviceStateLogHeader(std::ostream& os, std::span<const std::string> joint_names,
+                                      std::span<const std::string> motor_names) {
   os << "t_relative_s";
 
   auto emit_joint_col = [&](std::string_view prefix) {
-    for (const auto &n : joint_names) {
+    for (const auto& n : joint_names) {
       os << ',' << prefix << '_' << n;
     }
   };
@@ -97,13 +95,13 @@ WriteDeviceStateLogHeader(std::ostream &os,
   os << ",task_pos_x,task_pos_y,task_pos_z";
   os << ",task_pos_roll,task_pos_pitch,task_pos_yaw";
 
-  for (const auto &n : motor_names) {
+  for (const auto& n : motor_names) {
     os << ",motor_pos_" << n;
   }
-  for (const auto &n : motor_names) {
+  for (const auto& n : motor_names) {
     os << ",motor_vel_" << n;
   }
-  for (const auto &n : motor_names) {
+  for (const auto& n : motor_names) {
     os << ",motor_eff_" << n;
   }
 
@@ -114,6 +112,7 @@ WriteDeviceStateLogHeader(std::ostream &os,
 inline std::string_view DeviceStateLogCommandTypeStr(std::uint8_t v) noexcept {
   return v == 0 ? "position" : (v == 1 ? "torque" : "unknown");
 }
+
 inline std::string_view DeviceStateLogGoalTypeStr(std::uint8_t v) noexcept {
   return v == 0 ? "joint" : (v == 1 ? "task" : "unknown");
 }
@@ -122,16 +121,14 @@ inline std::string_view DeviceStateLogGoalTypeStr(std::uint8_t v) noexcept {
 /// not possible at compile time because column count depends on runtime
 /// joint/motor counts — but the header *writer* and the row writer agree
 /// to read the *same* num_* fields). The logger appends '\n' + flush.
-inline void WriteDeviceStateLogRow(std::ostream &os,
-                                   const DeviceStateLogPod &p) {
+inline void WriteDeviceStateLogRow(std::ostream& os, const DeviceStateLogPod& p) {
   os << p.t_relative_s;
 
-  auto emit_joint_array =
-      [&](const std::array<double, DeviceStateLogPod::kMaxJoints> &a) {
-        for (std::size_t i = 0; i < p.num_joints; ++i) {
-          os << ',' << a[i];
-        }
-      };
+  auto emit_joint_array = [&](const std::array<double, DeviceStateLogPod::kMaxJoints>& a) {
+    for (std::size_t i = 0; i < p.num_joints; ++i) {
+      os << ',' << a[i];
+    }
+  };
   emit_joint_array(p.actual_positions);
   emit_joint_array(p.actual_velocities);
   emit_joint_array(p.efforts);
@@ -147,12 +144,11 @@ inline void WriteDeviceStateLogRow(std::ostream &os,
     os << ',' << p.actual_task_positions[i];
   }
 
-  auto emit_motor_array =
-      [&](const std::array<double, DeviceStateLogPod::kMaxMotors> &a) {
-        for (std::size_t i = 0; i < p.num_motors; ++i) {
-          os << ',' << a[i];
-        }
-      };
+  auto emit_motor_array = [&](const std::array<double, DeviceStateLogPod::kMaxMotors>& a) {
+    for (std::size_t i = 0; i < p.num_motors; ++i) {
+      os << ',' << a[i];
+    }
+  };
   emit_motor_array(p.motor_positions);
   emit_motor_array(p.motor_velocities);
   emit_motor_array(p.motor_efforts);
@@ -161,6 +157,6 @@ inline void WriteDeviceStateLogRow(std::ostream &os,
   os << ',' << DeviceStateLogGoalTypeStr(p.goal_type);
 }
 
-} // namespace ur5e
+}  // namespace ur5e
 
-#endif // UR5E_BRINGUP_LOGGING_DEVICE_STATE_LOG_POD_HPP_
+#endif  // UR5E_BRINGUP_LOGGING_DEVICE_STATE_LOG_POD_HPP_

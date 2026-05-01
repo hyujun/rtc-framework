@@ -16,21 +16,20 @@
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "rtc_mpc/phase/phase_cost_config.hpp"
+
 #include <yaml-cpp/yaml.h>
 
 #include <filesystem>
 
-#include "rtc_mpc/phase/phase_cost_config.hpp"
-
 namespace {
 
-constexpr const char *kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+constexpr const char* kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 // YAML template with placeholders; swap via string::replace in cases that
 // need to mutate one entry. Provides a well-formed baseline matching
 // Panda (nq=9, 2 contacts × 3-dim = 6-vec F_target).
-constexpr const char *kValidYaml = R"(
+constexpr const char* kValidYaml = R"(
 horizon_length: 20
 dt: 0.01
 w_frame_placement: 100.0
@@ -47,7 +46,7 @@ custom_weights:
 )";
 
 class PhaseCostConfigTest : public ::testing::Test {
-protected:
+ protected:
   void SetUp() override {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed at " << kPandaUrdf
@@ -63,8 +62,7 @@ contact_frames:
   - name: panda_rightfinger
     dim: 3
 )");
-    ASSERT_EQ(handler_.Init(model_, model_cfg),
-              rtc::mpc::RobotModelInitError::kNoError);
+    ASSERT_EQ(handler_.Init(model_, model_cfg), rtc::mpc::RobotModelInitError::kNoError);
   }
 
   pinocchio::Model model_{};
@@ -119,7 +117,7 @@ F_target: [0, 0, 0, 0, 0, 0]
   EXPECT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(cfg, handler_, out),
             rtc::mpc::PhaseCostConfigError::kNoError);
   EXPECT_TRUE(out.custom_weights.empty());
-  EXPECT_DOUBLE_EQ(out.CustomWeight("hand_posture"), 0.0); // absent key
+  EXPECT_DOUBLE_EQ(out.CustomWeight("hand_posture"), 0.0);  // absent key
   EXPECT_DOUBLE_EQ(out.CustomWeight("anything"), 0.0);
 }
 
@@ -162,7 +160,7 @@ TEST_F(PhaseCostConfigTest, NonPositiveDtRejected) {
 
 TEST_F(PhaseCostConfigTest, PostureRefDimMismatch) {
   auto cfg = YAML::Load(kValidYaml);
-  cfg["q_posture_ref"] = std::vector<double>(5, 0.0); // nq=9 expected
+  cfg["q_posture_ref"] = std::vector<double>(5, 0.0);  // nq=9 expected
 
   rtc::mpc::PhaseCostConfig out;
   EXPECT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(cfg, handler_, out),
@@ -171,7 +169,7 @@ TEST_F(PhaseCostConfigTest, PostureRefDimMismatch) {
 
 TEST_F(PhaseCostConfigTest, ForceTargetDimMismatch) {
   auto cfg = YAML::Load(kValidYaml);
-  cfg["F_target"] = std::vector<double>(4, 0.0); // 6 expected (2×3)
+  cfg["F_target"] = std::vector<double>(4, 0.0);  // 6 expected (2×3)
 
   rtc::mpc::PhaseCostConfig out;
   EXPECT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(cfg, handler_, out),
@@ -180,7 +178,7 @@ TEST_F(PhaseCostConfigTest, ForceTargetDimMismatch) {
 
 TEST_F(PhaseCostConfigTest, PlacementWeightDimMismatch) {
   auto cfg = YAML::Load(kValidYaml);
-  cfg["W_placement"] = std::vector<double>(5, 1.0); // 6 required
+  cfg["W_placement"] = std::vector<double>(5, 1.0);  // 6 required
 
   rtc::mpc::PhaseCostConfig out;
   EXPECT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(cfg, handler_, out),
@@ -196,4 +194,4 @@ TEST(PhaseCostConfigStandaloneTest, UninitialisedModelRejected) {
             rtc::mpc::PhaseCostConfigError::kModelNotInitialised);
 }
 
-} // namespace
+}  // namespace

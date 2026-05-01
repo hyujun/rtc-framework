@@ -6,9 +6,21 @@ import json
 import signal
 import numpy as np
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QTableWidget, QTableWidgetItem, QTabWidget,
-    QGroupBox, QSpinBox, QDoubleSpinBox, QFileDialog, QMessageBox,
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QGroupBox,
+    QSpinBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QMessageBox,
 )
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QBrush, QColor, QFont
@@ -24,16 +36,20 @@ NUM_JOINTS = 6
 NUM_HAND_MOTORS = 10
 
 HAND_FINGER_GROUPS = [
-    ("Thumb",  ["thumb_cmc_aa", "thumb_cmc_fe", "thumb_mcp_fe"]),
-    ("Index",  ["index_mcp_aa", "index_mcp_fe", "index_dip_fe"]),
+    ("Thumb", ["thumb_cmc_aa", "thumb_cmc_fe", "thumb_mcp_fe"]),
+    ("Index", ["index_mcp_aa", "index_mcp_fe", "index_dip_fe"]),
     ("Middle", ["middle_mcp_aa", "middle_mcp_fe", "middle_dip_fe"]),
-    ("Ring",   ["ring_mcp_fe"]),
+    ("Ring", ["ring_mcp_fe"]),
 ]
 HAND_MOTOR_NAMES = [m for _, motors in HAND_FINGER_GROUPS for m in motors]
 
 ROBOT_JOINT_NAMES = [
-    "shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
-    "wrist_1_joint", "wrist_2_joint", "wrist_3_joint",
+    "shoulder_pan_joint",
+    "shoulder_lift_joint",
+    "elbow_joint",
+    "wrist_1_joint",
+    "wrist_2_joint",
+    "wrist_3_joint",
 ]
 
 # Lookup tables for joint_names → display index mapping
@@ -41,14 +57,14 @@ _ROBOT_NAME_TO_IDX = {n: i for i, n in enumerate(ROBOT_JOINT_NAMES)}
 _HAND_NAME_TO_IDX = {n: i for i, n in enumerate(HAND_MOTOR_NAMES)}
 
 # 컬럼 인덱스
-COL_NUM = 0           # # (체크박스)
-COL_NAME = 1          # Name
-COL_STATUS = 2        # Status
-COL_PREVIEW = 3       # UR5e Preview (읽기전용)
+COL_NUM = 0  # # (체크박스)
+COL_NAME = 1  # Name
+COL_STATUS = 2  # Status
+COL_PREVIEW = 3  # UR5e Preview (읽기전용)
 COL_HAND_PREVIEW = 4  # Hand Preview (읽기전용)
-COL_TRAJ = 5          # Traj (s)
-COL_WAIT = 6          # Wait (s)
-COL_DESC = 7          # Description
+COL_TRAJ = 5  # Traj (s)
+COL_WAIT = 6  # Wait (s)
+COL_DESC = 7  # Description
 NUM_COLS = 8
 
 DEFAULT_POSES = 50
@@ -286,7 +302,7 @@ class MotionTab(QWidget):
 
         self.poses = [np.zeros(NUM_JOINTS) for _ in range(self._num_poses)]
         self.hand_poses = [np.zeros(NUM_HAND_MOTORS) for _ in range(self._num_poses)]
-        self.pose_names = [f"Pose {i+1}" for i in range(self._num_poses)]
+        self.pose_names = [f"Pose {i + 1}" for i in range(self._num_poses)]
         self.pose_descriptions = ["" for _ in range(self._num_poses)]
 
         # 파일에서 로드된 원본 스냅샷 (diff 비교용)
@@ -326,8 +342,7 @@ class MotionTab(QWidget):
     def _get_row_timing(self, row):
         traj_spin = self.pose_table.cellWidget(row, COL_TRAJ)
         wait_spin = self.pose_table.cellWidget(row, COL_WAIT)
-        return (traj_spin.value() if traj_spin else 2.0,
-                wait_spin.value() if wait_spin else 0.0)
+        return (traj_spin.value() if traj_spin else 2.0, wait_spin.value() if wait_spin else 0.0)
 
     # ──────────────────────────── 테이블 초기화 ────────────────────────────
 
@@ -354,10 +369,18 @@ class MotionTab(QWidget):
 
         # 테이블
         self.pose_table = QTableWidget(self._num_poses, NUM_COLS)
-        self.pose_table.setHorizontalHeaderLabels([
-            "#", "Name", "Status", "UR5e Preview",
-            "Hand Preview", "Traj (s)", "Wait (s)", "Description",
-        ])
+        self.pose_table.setHorizontalHeaderLabels(
+            [
+                "#",
+                "Name",
+                "Status",
+                "UR5e Preview",
+                "Hand Preview",
+                "Traj (s)",
+                "Wait (s)",
+                "Description",
+            ]
+        )
         self.pose_table.setColumnWidth(COL_NUM, 50)
         self.pose_table.setColumnWidth(COL_NAME, 150)
         self.pose_table.setColumnWidth(COL_STATUS, 90)
@@ -382,7 +405,7 @@ class MotionTab(QWidget):
         num_item.setCheckState(Qt.Unchecked)
         self.pose_table.setItem(i, COL_NUM, num_item)
 
-        name = self.pose_names[i] if i < len(self.pose_names) else f"Pose {i+1}"
+        name = self.pose_names[i] if i < len(self.pose_names) else f"Pose {i + 1}"
         self.pose_table.setItem(i, COL_NAME, QTableWidgetItem(name))
 
         self.pose_table.setItem(i, COL_STATUS, QTableWidgetItem("Empty"))
@@ -411,14 +434,18 @@ class MotionTab(QWidget):
             return
 
         if new_count < self._num_poses:
-            lost = [i + 1 for i in range(new_count, self._num_poses)
-                    if _has_data(self.poses[i], self.hand_poses[i])]
+            lost = [
+                i + 1
+                for i in range(new_count, self._num_poses)
+                if _has_data(self.poses[i], self.hand_poses[i])
+            ]
             if lost:
                 reply = QMessageBox.question(
-                    self, "Confirm",
-                    f"Reducing rows will delete saved data in row(s): {lost}\n"
-                    "Continue?",
-                    QMessageBox.Yes | QMessageBox.No)
+                    self,
+                    "Confirm",
+                    f"Reducing rows will delete saved data in row(s): {lost}\nContinue?",
+                    QMessageBox.Yes | QMessageBox.No,
+                )
                 if reply != QMessageBox.Yes:
                     self.row_count_spin.setValue(self._num_poses)
                     return
@@ -489,8 +516,11 @@ class MotionTab(QWidget):
         self._update_diff_highlight()
 
     def _checked_rows(self):
-        return [i for i in range(self._num_poses)
-                if self.pose_table.item(i, COL_NUM).checkState() == Qt.Checked]
+        return [
+            i
+            for i in range(self._num_poses)
+            if self.pose_table.item(i, COL_NUM).checkState() == Qt.Checked
+        ]
 
     def select_all_poses(self):
         self.pose_table.itemChanged.disconnect(self._on_item_changed)
@@ -508,8 +538,9 @@ class MotionTab(QWidget):
     # ──────────────────────────── 포즈 카운트 / Diff ────────────────────────
 
     def _gui_saved_count(self):
-        return sum(1 for i in range(len(self.poses))
-                   if _has_data(self.poses[i], self.hand_poses[i]))
+        return sum(
+            1 for i in range(len(self.poses)) if _has_data(self.poses[i], self.hand_poses[i])
+        )
 
     def _update_info_label(self):
         gui_count = self._gui_saved_count()
@@ -527,12 +558,12 @@ class MotionTab(QWidget):
 
     def _take_snapshot(self):
         self._file_snapshot = {
-            'poses': [p.copy() for p in self.poses],
-            'hand_poses': [p.copy() for p in self.hand_poses],
-            'descriptions': list(self.pose_descriptions),
-            'traj': [self._get_row_timing(i)[0] for i in range(self._num_poses)],
-            'wait': [self._get_row_timing(i)[1] for i in range(self._num_poses)],
-            'num_poses': self._num_poses,
+            "poses": [p.copy() for p in self.poses],
+            "hand_poses": [p.copy() for p in self.hand_poses],
+            "descriptions": list(self.pose_descriptions),
+            "traj": [self._get_row_timing(i)[0] for i in range(self._num_poses)],
+            "wait": [self._get_row_timing(i)[1] for i in range(self._num_poses)],
+            "num_poses": self._num_poses,
         }
         self._file_num_poses = self._gui_saved_count()
 
@@ -540,16 +571,16 @@ class MotionTab(QWidget):
         if self._file_snapshot is None:
             return False
         snap = self._file_snapshot
-        if row >= snap['num_poses']:
+        if row >= snap["num_poses"]:
             return _has_data(self.poses[row], self.hand_poses[row])
-        if not np.allclose(self.poses[row], snap['poses'][row], atol=1e-6):
+        if not np.allclose(self.poses[row], snap["poses"][row], atol=1e-6):
             return True
-        if not np.allclose(self.hand_poses[row], snap['hand_poses'][row], atol=1e-6):
+        if not np.allclose(self.hand_poses[row], snap["hand_poses"][row], atol=1e-6):
             return True
-        if self.pose_descriptions[row] != snap['descriptions'][row]:
+        if self.pose_descriptions[row] != snap["descriptions"][row]:
             return True
         traj, wait = self._get_row_timing(row)
-        if abs(traj - snap['traj'][row]) > 0.01 or abs(wait - snap['wait'][row]) > 0.01:
+        if abs(traj - snap["traj"][row]) > 0.01 or abs(wait - snap["wait"][row]) > 0.01:
             return True
         return False
 
@@ -557,7 +588,7 @@ class MotionTab(QWidget):
         for i in range(self._num_poses):
             if self._file_snapshot is None:
                 color, fg = COLOR_NORMAL, COLOR_NORMAL_FG
-            elif i >= self._file_snapshot['num_poses']:
+            elif i >= self._file_snapshot["num_poses"]:
                 if _has_data(self.poses[i], self.hand_poses[i]):
                     color, fg = COLOR_ADDED, COLOR_ADDED_FG
                 else:
@@ -582,8 +613,14 @@ class MotionTab(QWidget):
     def save_pose(self, current_q, current_hand=None):
         selected = self.pose_table.selectedIndexes()
         if not selected:
-            row = next((i for i in range(self._num_poses)
-                        if not _has_data(self.poses[i], self.hand_poses[i])), 0)
+            row = next(
+                (
+                    i
+                    for i in range(self._num_poses)
+                    if not _has_data(self.poses[i], self.hand_poses[i])
+                ),
+                0,
+            )
         else:
             row = selected[0].row()
 
@@ -615,7 +652,7 @@ class MotionTab(QWidget):
             return None
         row = selected[0].row()
         if not _has_data(self.poses[row], self.hand_poses[row]):
-            QMessageBox.warning(self, "Warning", f"Pose {row+1} is empty!")
+            QMessageBox.warning(self, "Warning", f"Pose {row + 1} is empty!")
             return None
         return row
 
@@ -623,8 +660,8 @@ class MotionTab(QWidget):
         selected = self.pose_table.selectedIndexes()
         if not selected:
             QMessageBox.warning(
-                self, "Warning",
-                "No row selected!\nClick a row to select it first.")
+                self, "Warning", "No row selected!\nClick a row to select it first."
+            )
             return None
 
         insert_after = selected[0].row()
@@ -633,10 +670,11 @@ class MotionTab(QWidget):
         last = self._num_poses - 1
         if _has_data(self.poses[last], self.hand_poses[last]):
             reply = QMessageBox.question(
-                self, "Confirm",
-                f"Inserting a row will drop Pose {last+1} "
-                "(last row has saved data).\nContinue?",
-                QMessageBox.Yes | QMessageBox.No)
+                self,
+                "Confirm",
+                f"Inserting a row will drop Pose {last + 1} (last row has saved data).\nContinue?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
             if reply != QMessageBox.Yes:
                 return None
 
@@ -647,7 +685,7 @@ class MotionTab(QWidget):
         self.poses.pop()
         self.hand_poses.insert(ins, np.zeros(NUM_HAND_MOTORS))
         self.hand_poses.pop()
-        self.pose_names.insert(ins, f"Pose {ins+1}")
+        self.pose_names.insert(ins, f"Pose {ins + 1}")
         self.pose_names.pop()
         self.pose_descriptions.insert(ins, "")
         self.pose_descriptions.pop()
@@ -674,28 +712,29 @@ class MotionTab(QWidget):
                 lost_rows.append(i + 1)
         if lost_rows:
             reply = QMessageBox.question(
-                self, "Confirm",
-                f"Inserting {n} row(s) will drop data in row(s): "
-                f"{lost_rows}.\nContinue?",
-                QMessageBox.Yes | QMessageBox.No)
+                self,
+                "Confirm",
+                f"Inserting {n} row(s) will drop data in row(s): {lost_rows}.\nContinue?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
             if reply != QMessageBox.Yes:
                 return
 
         ins = position + 1
         for j, rd in enumerate(row_data_list):
             idx = ins + j
-            self.poses.insert(idx, rd['pose'].copy())
+            self.poses.insert(idx, rd["pose"].copy())
             self.poses.pop()
-            hp = rd.get('hand_pose', np.zeros(NUM_HAND_MOTORS))
+            hp = rd.get("hand_pose", np.zeros(NUM_HAND_MOTORS))
             self.hand_poses.insert(idx, hp.copy())
             self.hand_poses.pop()
-            self.pose_names.insert(idx, rd.get('name', f"Pose {idx+1}"))
+            self.pose_names.insert(idx, rd.get("name", f"Pose {idx + 1}"))
             self.pose_names.pop()
-            self.pose_descriptions.insert(idx, rd.get('description', ''))
+            self.pose_descriptions.insert(idx, rd.get("description", ""))
             self.pose_descriptions.pop()
-            traj_vals.insert(idx, rd.get('traj', 2.0))
+            traj_vals.insert(idx, rd.get("traj", 2.0))
             traj_vals.pop()
-            wait_vals.insert(idx, rd.get('wait', 0.0))
+            wait_vals.insert(idx, rd.get("wait", 0.0))
             wait_vals.pop()
 
         self._rebuild_table(traj_vals, wait_vals)
@@ -724,7 +763,7 @@ class MotionTab(QWidget):
             idx = len(self.poses)
             self.poses.append(np.zeros(NUM_JOINTS))
             self.hand_poses.append(np.zeros(NUM_HAND_MOTORS))
-            self.pose_names.append(f"Pose {idx+1}")
+            self.pose_names.append(f"Pose {idx + 1}")
             self.pose_descriptions.append("")
             traj_vals.append(2.0)
             wait_vals.append(0.0)
@@ -743,14 +782,16 @@ class MotionTab(QWidget):
         data = []
         for row in rows:
             traj, wait = self._get_row_timing(row)
-            data.append({
-                'pose': self.poses[row].copy(),
-                'hand_pose': self.hand_poses[row].copy(),
-                'name': self.pose_names[row],
-                'description': self.pose_descriptions[row],
-                'traj': traj,
-                'wait': wait,
-            })
+            data.append(
+                {
+                    "pose": self.poses[row].copy(),
+                    "hand_pose": self.hand_poses[row].copy(),
+                    "name": self.pose_names[row],
+                    "description": self.pose_descriptions[row],
+                    "traj": traj,
+                    "wait": wait,
+                }
+            )
         return data
 
     def _rebuild_table(self, traj_vals=None, wait_vals=None, reconnect=True):
@@ -769,11 +810,10 @@ class MotionTab(QWidget):
             num_item.setText(str(i + 1))
             num_item.setCheckState(Qt.Unchecked)
 
-            self.pose_names[i] = f"Pose {i+1}"
+            self.pose_names[i] = f"Pose {i + 1}"
             self.pose_table.item(i, COL_NAME).setText(self.pose_names[i])
 
-            self.pose_table.item(i, COL_STATUS).setText(
-                "Saved" if has_pose else "Empty")
+            self.pose_table.item(i, COL_STATUS).setText("Saved" if has_pose else "Empty")
 
             # UR5e preview
             preview = self.pose_table.item(i, COL_PREVIEW)
@@ -800,8 +840,7 @@ class MotionTab(QWidget):
                 wait_spin.setValue(wait_vals[i])
 
             # Description
-            self.pose_table.item(i, COL_DESC).setText(
-                self.pose_descriptions[i])
+            self.pose_table.item(i, COL_DESC).setText(self.pose_descriptions[i])
 
         if reconnect:
             self.pose_table.itemChanged.connect(self._on_item_changed)
@@ -815,7 +854,7 @@ class MotionTab(QWidget):
     def _restore_row_bg(self, row):
         if self._file_snapshot is None:
             color, fg = COLOR_NORMAL, COLOR_NORMAL_FG
-        elif row >= self._file_snapshot['num_poses']:
+        elif row >= self._file_snapshot["num_poses"]:
             if _has_data(self.poses[row], self.hand_poses[row]):
                 color, fg = COLOR_ADDED, COLOR_ADDED_FG
             else:
@@ -833,12 +872,13 @@ class MotionTab(QWidget):
             default_name = self._current_file or ""
             if not default_name:
                 from rtc_tools.utils.session_dir import get_session_subdir
-                motions_dir = get_session_subdir('motions')
+
+                motions_dir = get_session_subdir("motions")
                 if motions_dir:
                     default_name = motions_dir
             filename, _ = QFileDialog.getSaveFileName(
-                self, "Save Motion", default_name,
-                "JSON Files (*.json);;All Files (*)")
+                self, "Save Motion", default_name, "JSON Files (*.json);;All Files (*)"
+            )
             if not filename:
                 return None
 
@@ -853,20 +893,16 @@ class MotionTab(QWidget):
 
         data = {
             "num_poses": self._num_poses,
-            "poses": {
-                f"pose_{i}": self.poses[i].tolist()
-                for i in range(self._num_poses)
-            },
+            "poses": {f"pose_{i}": self.poses[i].tolist() for i in range(self._num_poses)},
             "hand_poses": {
-                f"pose_{i}": self.hand_poses[i].tolist()
-                for i in range(self._num_poses)
+                f"pose_{i}": self.hand_poses[i].tolist() for i in range(self._num_poses)
             },
             "names": self.pose_names,
             "descriptions": self.pose_descriptions,
             "traj_times": traj_times,
             "wait_times": wait_times,
         }
-        with open(filename, 'w') as f:
+        with open(filename, "w") as f:
             json.dump(data, f, indent=2)
 
         self._current_file = filename
@@ -874,26 +910,26 @@ class MotionTab(QWidget):
         return filename
 
     def load_from_json(self, filename):
-        with open(filename, 'r') as f:
+        with open(filename, "r") as f:
             data = json.load(f)
 
-        file_num_poses = data.get('num_poses', len(data.get('poses', {})))
-        descriptions = data.get('descriptions', [""] * file_num_poses)
-        traj_times = data.get('traj_times', [2.0] * file_num_poses)
-        wait_times = data.get('wait_times', [0.0] * file_num_poses)
-        hand_poses_data = data.get('hand_poses', {})
+        file_num_poses = data.get("num_poses", len(data.get("poses", {})))
+        descriptions = data.get("descriptions", [""] * file_num_poses)
+        traj_times = data.get("traj_times", [2.0] * file_num_poses)
+        wait_times = data.get("wait_times", [0.0] * file_num_poses)
+        hand_poses_data = data.get("hand_poses", {})
 
         if file_num_poses != self._num_poses:
             self._resize_to(file_num_poses)
 
         self.pose_table.itemChanged.disconnect(self._on_item_changed)
 
-        for i in range(min(self._num_poses, len(data.get('poses', {})))):
+        for i in range(min(self._num_poses, len(data.get("poses", {})))):
             key = f"pose_{i}"
-            if key not in data['poses']:
+            if key not in data["poses"]:
                 continue
 
-            self.poses[i] = np.array(data['poses'][key])
+            self.poses[i] = np.array(data["poses"][key])
 
             # 핸드 데이터 로드 (하위 호환: 없으면 zeros)
             if key in hand_poses_data:
@@ -972,8 +1008,8 @@ class MotionEditor(QMainWindow):
         self.status_label = QLabel("Waiting for robot...")
         self.status_label.setFont(QFont("Arial", 14, QFont.Bold))
         self.status_label.setStyleSheet(
-            f"padding: 10px; background: {CAT_SURFACE0}; "
-            f"border-radius: 5px; color: {CAT_TEXT};")
+            f"padding: 10px; background: {CAT_SURFACE0}; border-radius: 5px; color: {CAT_TEXT};"
+        )
         header_layout.addWidget(self.status_label, stretch=1)
 
         header_layout.addSpacing(10)
@@ -981,7 +1017,8 @@ class MotionEditor(QMainWindow):
         self.estop_badge.setFont(QFont("Arial", 11, QFont.Bold))
         self.estop_badge.setStyleSheet(
             f"background: {CAT_GREEN}; color: {CAT_CRUST}; "
-            "font-weight: bold; padding: 6px 12px; border-radius: 4px;")
+            "font-weight: bold; padding: 6px 12px; border-radius: 4px;"
+        )
         header_layout.addWidget(self.estop_badge)
         layout.addLayout(header_layout)
 
@@ -997,7 +1034,7 @@ class MotionEditor(QMainWindow):
         joint_frame.addWidget(joint_title)
         self.joint_labels = []
         for i in range(NUM_JOINTS):
-            label = QLabel(f"J{i+1}: 0.000")
+            label = QLabel(f"J{i + 1}: 0.000")
             label.setFont(QFont("Courier", 11))
             self.joint_labels.append(label)
             joint_frame.addWidget(label)
@@ -1043,7 +1080,7 @@ class MotionEditor(QMainWindow):
             finger_label.setStyleSheet(f"color: {CAT_YELLOW};")
             hand_frame.addWidget(finger_label)
             for motor in motors:
-                short = motor.split('_', 1)[1] if '_' in motor else motor
+                short = motor.split("_", 1)[1] if "_" in motor else motor
                 label = QLabel(f"  {short}: 0.00")
                 label.setFont(QFont("Courier", 10))
                 self.hand_state_labels.append(label)
@@ -1063,8 +1100,8 @@ class MotionEditor(QMainWindow):
             swatch = QLabel("  ")
             swatch.setFixedSize(16, 16)
             swatch.setStyleSheet(
-                f"background: {bg_color.name()}; "
-                f"border: 1px solid {CAT_SURFACE2};")
+                f"background: {bg_color.name()}; border: 1px solid {CAT_SURFACE2};"
+            )
             legend_layout.addWidget(swatch)
             legend_label = QLabel(text)
             legend_label.setStyleSheet(f"color: {fg_color.name()};")
@@ -1085,13 +1122,11 @@ class MotionEditor(QMainWindow):
         check_layout = QHBoxLayout()
         self.select_all_btn = QPushButton("Select All (Saved)")
         self.select_all_btn.setObjectName("selectAllBtn")
-        self.select_all_btn.clicked.connect(
-            lambda: self._current_tab().select_all_poses())
+        self.select_all_btn.clicked.connect(lambda: self._current_tab().select_all_poses())
 
         self.deselect_all_btn = QPushButton("Deselect All")
         self.deselect_all_btn.setObjectName("deselectBtn")
-        self.deselect_all_btn.clicked.connect(
-            lambda: self._current_tab().deselect_all_poses())
+        self.deselect_all_btn.clicked.connect(lambda: self._current_tab().deselect_all_poses())
 
         check_layout.addWidget(self.select_all_btn)
         check_layout.addWidget(self.deselect_all_btn)
@@ -1113,7 +1148,8 @@ class MotionEditor(QMainWindow):
         self.insert_btn.setObjectName("insertBtn")
         self.insert_btn.setToolTip(
             "Insert an empty row after the selected row.\n"
-            "All rows below shift down; the last row is dropped.")
+            "All rows below shift down; the last row is dropped."
+        )
         self.insert_btn.clicked.connect(self.insert_row)
 
         self.play_btn = QPushButton("Play Checked Poses")
@@ -1192,16 +1228,17 @@ class MotionEditor(QMainWindow):
         tab = self.tab_widget.widget(index)
         if tab._modified:
             reply = QMessageBox.question(
-                self, "Unsaved Changes",
+                self,
+                "Unsaved Changes",
                 f"'{tab.tab_display_name().rstrip(' *')}' has unsaved "
                 "changes.\nClose without saving?",
-                QMessageBox.Yes | QMessageBox.No)
+                QMessageBox.Yes | QMessageBox.No,
+            )
             if reply != QMessageBox.Yes:
                 return
 
         if self.tab_widget.count() <= 1:
-            QMessageBox.information(
-                self, "Info", "Cannot close the last tab.")
+            QMessageBox.information(self, "Info", "Cannot close the last tab.")
             return
 
         self.tab_widget.removeTab(index)
@@ -1211,8 +1248,7 @@ class MotionEditor(QMainWindow):
     def update_joints(self, q):
         self.current_q = q.copy()
         for i, val in enumerate(q):
-            self.joint_labels[i].setText(
-                f"J{i+1}: {np.degrees(val):.2f}")
+            self.joint_labels[i].setText(f"J{i + 1}: {np.degrees(val):.2f}")
         self.status_label.setText("Live - Ready to save")
 
     def update_task_position(self, task_pos):
@@ -1220,20 +1256,17 @@ class MotionEditor(QMainWindow):
         names_rot = ["Roll", "Pitch", "Yaw"]
         for i, val in enumerate(task_pos):
             if i < 3:
-                self.task_labels[i].setText(
-                    f"{names_pos[i]}: {val:.4f} m")
+                self.task_labels[i].setText(f"{names_pos[i]}: {val:.4f} m")
             else:
-                self.task_labels[i].setText(
-                    f"{names_rot[i-3]}: {np.degrees(val):.2f}")
+                self.task_labels[i].setText(f"{names_rot[i - 3]}: {np.degrees(val):.2f}")
 
     def update_hand_state(self, hand_pos):
         self.current_hand = hand_pos.copy()
         for i, val in enumerate(hand_pos):
             if i < len(self.hand_state_labels):
                 motor = HAND_MOTOR_NAMES[i]
-                short = motor.split('_', 1)[1] if '_' in motor else motor
-                self.hand_state_labels[i].setText(
-                    f"  {short}: {np.degrees(val):.2f}")
+                short = motor.split("_", 1)[1] if "_" in motor else motor
+                self.hand_state_labels[i].setText(f"  {short}: {np.degrees(val):.2f}")
 
     def update_estop(self, active):
         if active:
@@ -1241,13 +1274,15 @@ class MotionEditor(QMainWindow):
             self.estop_badge.setStyleSheet(
                 f"background: {CAT_RED}; color: {CAT_CRUST}; "
                 "font-weight: bold; padding: 6px 12px; "
-                "border-radius: 4px;")
+                "border-radius: 4px;"
+            )
         else:
             self.estop_badge.setText("  NORMAL  ")
             self.estop_badge.setStyleSheet(
                 f"background: {CAT_GREEN}; color: {CAT_CRUST}; "
                 "font-weight: bold; padding: 6px 12px; "
-                "border-radius: 4px;")
+                "border-radius: 4px;"
+            )
 
     # ──────────────────────────── 포즈 조작 ──────────────────────────
 
@@ -1256,7 +1291,7 @@ class MotionEditor(QMainWindow):
         if tab is None:
             return
         row = tab.save_pose(self.current_q, self.current_hand)
-        self.status_label.setText(f"Saved to Pose {row+1}")
+        self.status_label.setText(f"Saved to Pose {row + 1}")
 
     def load_pose(self):
         tab = self._current_tab()
@@ -1264,8 +1299,8 @@ class MotionEditor(QMainWindow):
             return
         row = tab.load_pose()
         if row is not None:
-            self.status_label.setText(f"Loading Pose {row+1}...")
-            if hasattr(self, 'ros_node'):
+            self.status_label.setText(f"Loading Pose {row + 1}...")
+            if hasattr(self, "ros_node"):
                 self.ros_node.publish_pose(tab.poses[row])
                 self.ros_node.publish_hand_pose(tab.hand_poses[row])
 
@@ -1275,8 +1310,7 @@ class MotionEditor(QMainWindow):
             return
         result = tab.insert_row()
         if result is not None:
-            self.status_label.setText(
-                f"Inserted empty row after row {result+1}")
+            self.status_label.setText(f"Inserted empty row after row {result + 1}")
 
     def delete_rows(self):
         tab = self._current_tab()
@@ -1284,8 +1318,7 @@ class MotionEditor(QMainWindow):
             return
         count = tab.delete_rows()
         if count > 0:
-            self.status_label.setText(
-                f"Deleted {count} row(s)")
+            self.status_label.setText(f"Deleted {count} row(s)")
 
     def copy_rows(self):
         tab = self._current_tab()
@@ -1293,33 +1326,26 @@ class MotionEditor(QMainWindow):
             return
         self._clipboard = tab.get_selected_row_data()
         if not self._clipboard:
-            QMessageBox.warning(
-                self, "Warning", "No rows selected to copy!")
+            QMessageBox.warning(self, "Warning", "No rows selected to copy!")
             return
-        self.status_label.setText(
-            f"Copied {len(self._clipboard)} row(s) to clipboard")
+        self.status_label.setText(f"Copied {len(self._clipboard)} row(s) to clipboard")
 
     def paste_rows(self):
         tab = self._current_tab()
         if tab is None:
             return
         if not self._clipboard:
-            QMessageBox.warning(
-                self, "Warning",
-                "Clipboard is empty!\nCopy rows first.")
+            QMessageBox.warning(self, "Warning", "Clipboard is empty!\nCopy rows first.")
             return
 
         selected = tab.pose_table.selectedIndexes()
         if not selected:
-            QMessageBox.warning(
-                self, "Warning",
-                "No row selected!\nSelect a row to paste after.")
+            QMessageBox.warning(self, "Warning", "No row selected!\nSelect a row to paste after.")
             return
 
         position = selected[0].row()
         tab.insert_rows_at(position, self._clipboard)
-        self.status_label.setText(
-            f"Pasted {len(self._clipboard)} row(s) after row {position+1}")
+        self.status_label.setText(f"Pasted {len(self._clipboard)} row(s) after row {position + 1}")
 
     # ──────────────────────────── 재생 ────────────────────────────
 
@@ -1331,28 +1357,27 @@ class MotionEditor(QMainWindow):
         checked = tab._checked_rows()
         if not checked:
             QMessageBox.warning(
-                self, "Warning",
-                "No poses checked!\n"
-                "Use the checkboxes to select poses to play.")
+                self, "Warning", "No poses checked!\nUse the checkboxes to select poses to play."
+            )
             return
 
-        valid = [(i, tab.poses[i]) for i in checked
-                 if _has_data(tab.poses[i], tab.hand_poses[i])]
+        valid = [(i, tab.poses[i]) for i in checked if _has_data(tab.poses[i], tab.hand_poses[i])]
         if not valid:
-            QMessageBox.warning(
-                self, "Warning", "Checked poses are all empty!")
+            QMessageBox.warning(self, "Warning", "Checked poses are all empty!")
             return
 
         timing_preview = "\n".join(
-            f"  Pose {row+1}: traj={tab._get_row_timing(row)[0]:.1f}s"
+            f"  Pose {row + 1}: traj={tab._get_row_timing(row)[0]:.1f}s"
             f" + wait={tab._get_row_timing(row)[1]:.1f}s"
             for row, _ in valid
         )
         reply = QMessageBox.question(
-            self, "Confirm",
+            self,
+            "Confirm",
             f"Play {len(valid)} checked poses in sequence?\n"
-            f"Poses: {[r+1 for r, _ in valid]}\n\n{timing_preview}",
-            QMessageBox.Yes | QMessageBox.No)
+            f"Poses: {[r + 1 for r, _ in valid]}\n\n{timing_preview}",
+            QMessageBox.Yes | QMessageBox.No,
+        )
         if reply != QMessageBox.Yes:
             return
 
@@ -1375,23 +1400,22 @@ class MotionEditor(QMainWindow):
         if self._play_step >= len(self._play_queue):
             self.play_btn.setEnabled(True)
             self.stop_btn.setEnabled(False)
-            self.status_label.setText(
-                f"Motion complete ({len(self._play_queue)} poses)")
+            self.status_label.setText(f"Motion complete ({len(self._play_queue)} poses)")
             return
 
         row, pose = self._play_queue[self._play_step]
         tab.set_row_highlight(row, True)
-        tab.pose_table.scrollToItem(
-            tab.pose_table.item(row, COL_NUM))
+        tab.pose_table.scrollToItem(tab.pose_table.item(row, COL_NUM))
 
         traj, wait = tab._get_row_timing(row)
         delay_ms = max(100, int((traj + wait) * 1000))
         self.status_label.setText(
-            f"Playing Pose {row+1}  "
-            f"({self._play_step+1}/{len(self._play_queue)})  "
-            f"[traj={traj:.1f}s + wait={wait:.1f}s]")
+            f"Playing Pose {row + 1}  "
+            f"({self._play_step + 1}/{len(self._play_queue)})  "
+            f"[traj={traj:.1f}s + wait={wait:.1f}s]"
+        )
 
-        if hasattr(self, 'ros_node'):
+        if hasattr(self, "ros_node"):
             self.ros_node.publish_pose(pose)
             self.ros_node.publish_hand_pose(tab.hand_poses[row])
 
@@ -1402,8 +1426,7 @@ class MotionEditor(QMainWindow):
         self._play_timer.stop()
         tab = self._play_tab
         if tab and 0 < self._play_step <= len(self._play_queue):
-            tab.set_row_highlight(
-                self._play_queue[self._play_step - 1][0], False)
+            tab.set_row_highlight(self._play_queue[self._play_step - 1][0], False)
         self._play_queue = []
         self._play_step = 0
         self._play_tab = None
@@ -1423,8 +1446,8 @@ class MotionEditor(QMainWindow):
 
     def load_json(self):
         filename, _ = QFileDialog.getOpenFileName(
-            self, "Load Motion", "",
-            "JSON Files (*.json);;All Files (*)")
+            self, "Load Motion", "", "JSON Files (*.json);;All Files (*)"
+        )
         if not filename:
             return
 
@@ -1437,18 +1460,16 @@ class MotionEditor(QMainWindow):
 
             tab.load_from_json(filename)
             self.update_tab_title(tab)
-            self.status_label.setText(
-                f"Loaded from {os.path.basename(filename)}")
+            self.status_label.setText(f"Loaded from {os.path.basename(filename)}")
         except Exception as e:
-            QMessageBox.critical(
-                self, "Error", f"Failed to load: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to load: {str(e)}")
 
 
 class ROSNode(Node):
     """ROS2 통신 노드."""
 
     def __init__(self, gui):
-        super().__init__('motion_editor_node')
+        super().__init__("motion_editor_node")
         self.gui = gui
         gui.ros_node = self
 
@@ -1464,26 +1485,28 @@ class ROSNode(Node):
 
         # Manager-owned topics (fixed paths)
         self.estop_sub = self.create_subscription(
-            Bool, '/system/estop_status', self.estop_callback, self._qos)
+            Bool, "/system/estop_status", self.estop_callback, self._qos
+        )
 
         from rclpy.qos import DurabilityPolicy
+
         latched_qos = QoSProfile(depth=1)
         latched_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         latched_qos.reliability = ReliabilityPolicy.RELIABLE
         self.create_subscription(
-            String, '/rtc_cm/active_controller_name',
-            self._on_active_controller, latched_qos)
+            String, "/rtc_cm/active_controller_name", self._on_active_controller, latched_qos
+        )
 
         self.get_logger().info("Motion Editor ROS Node started")
 
     def _on_active_controller(self, msg):
-        name = (msg.data or '').strip()
+        name = (msg.data or "").strip()
         if not name or name == self._active_ctrl:
             return
         self._active_ctrl = name
-        ns = '/' + name
+        ns = "/" + name
 
-        for attr in ('task_pos_sub', 'hand_gui_pos_sub'):
+        for attr in ("task_pos_sub", "hand_gui_pos_sub"):
             sub = getattr(self, attr, None)
             if sub is not None:
                 try:
@@ -1491,7 +1514,7 @@ class ROSNode(Node):
                 except Exception:
                     pass
                 setattr(self, attr, None)
-        for attr in ('cmd_pub', 'hand_cmd_pub'):
+        for attr in ("cmd_pub", "hand_cmd_pub"):
             pub = getattr(self, attr, None)
             if pub is not None:
                 try:
@@ -1501,17 +1524,14 @@ class ROSNode(Node):
                 setattr(self, attr, None)
 
         self.task_pos_sub = self.create_subscription(
-            GuiPosition, ns + '/ur5e/gui_position',
-            self.gui_pos_callback, self._qos)
+            GuiPosition, ns + "/ur5e/gui_position", self.gui_pos_callback, self._qos
+        )
         self.hand_gui_pos_sub = self.create_subscription(
-            GuiPosition, ns + '/hand/gui_position',
-            self.hand_gui_pos_callback, self._qos)
-        self.cmd_pub = self.create_publisher(
-            RobotTarget, ns + '/ur5e/joint_goal', self._qos)
-        self.hand_cmd_pub = self.create_publisher(
-            RobotTarget, ns + '/hand/joint_goal', self._qos)
-        self.get_logger().info(
-            f"rewired controller-owned topics to '{name}'")
+            GuiPosition, ns + "/hand/gui_position", self.hand_gui_pos_callback, self._qos
+        )
+        self.cmd_pub = self.create_publisher(RobotTarget, ns + "/ur5e/joint_goal", self._qos)
+        self.hand_cmd_pub = self.create_publisher(RobotTarget, ns + "/hand/joint_goal", self._qos)
+        self.get_logger().info(f"rewired controller-owned topics to '{name}'")
 
     def gui_pos_callback(self, msg: GuiPosition):
         if len(msg.joint_positions) >= NUM_JOINTS:
@@ -1546,8 +1566,7 @@ class ROSNode(Node):
         msg.joint_names = ROBOT_JOINT_NAMES
         msg.joint_target = pose.tolist()
         if self.cmd_pub is None:
-            self.get_logger().warn(
-                "cmd_pub not yet bound — waiting for active controller")
+            self.get_logger().warn("cmd_pub not yet bound — waiting for active controller")
             return
         self.cmd_pub.publish(msg)
         self.get_logger().info(f"Published UR5e pose: {pose}")
@@ -1560,8 +1579,7 @@ class ROSNode(Node):
         msg.joint_names = HAND_MOTOR_NAMES
         msg.joint_target = hand_pose.tolist()
         if self.hand_cmd_pub is None:
-            self.get_logger().warn(
-                "hand_cmd_pub not yet bound — waiting for active controller")
+            self.get_logger().warn("hand_cmd_pub not yet bound — waiting for active controller")
             return
         self.hand_cmd_pub.publish(msg)
         self.get_logger().info(f"Published hand pose: {hand_pose}")
@@ -1571,7 +1589,7 @@ def main(args=None):
     rclpy.init(args=args)
 
     app = QApplication(sys.argv)
-    app.setStyle('Fusion')
+    app.setStyle("Fusion")
     app.setStyleSheet(CATPPUCCIN_STYLESHEET)
     signal.signal(signal.SIGINT, lambda *_: app.quit())
 
@@ -1581,9 +1599,7 @@ def main(args=None):
     ros_node = ROSNode(gui)
 
     timer = QTimer()
-    timer.timeout.connect(
-        lambda: rclpy.spin_once(ros_node, timeout_sec=0)
-        if rclpy.ok() else None)
+    timer.timeout.connect(lambda: rclpy.spin_once(ros_node, timeout_sec=0) if rclpy.ok() else None)
     timer.start(10)
 
     exit_code = app.exec_()
@@ -1595,5 +1611,5 @@ def main(args=None):
     sys.exit(exit_code)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

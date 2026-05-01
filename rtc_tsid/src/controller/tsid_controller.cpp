@@ -4,8 +4,7 @@
 
 namespace rtc::tsid {
 
-void TSIDController::init(const pinocchio::Model& model,
-                          const RobotModelInfo& robot_info,
+void TSIDController::init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
                           const YAML::Node& config) {
   robot_info_ = robot_info;
 
@@ -28,18 +27,14 @@ void TSIDController::init(const pinocchio::Model& model,
   tau_actuated_.setZero(robot_info.n_actuated);
   JcT_lambda_.setZero(robot_info.nv);
 
-  output_.init(robot_info.nv, robot_info.n_actuated,
-               contact_cfg.max_contact_vars);
+  output_.init(robot_info.nv, robot_info.n_actuated, contact_cfg.max_contact_vars);
 }
 
-CommandOutput TSIDController::compute(
-    const ControlState& /*state*/,
-    const ControlReference& ref,
-    const PinocchioCache& cache,
-    const ContactState& contacts) noexcept {
+CommandOutput TSIDController::compute(const ControlState& /*state*/, const ControlReference& ref,
+                                      const PinocchioCache& cache,
+                                      const ContactState& contacts) noexcept {
   // 1. Formulation solve (WQP 또는 HQP)
-  const auto& result =
-      formulation_->solve(cache, ref, contacts, robot_info_);
+  const auto& result = formulation_->solve(cache, ref, contacts, robot_info_);
 
   output_.qp_converged = result.converged;
   output_.solve_time_us = result.solve_time_us;
@@ -70,20 +65,22 @@ CommandOutput TSIDController::compute(
     int lambda_offset = 0;
 
     for (size_t i = 0; i < contacts.contacts.size(); ++i) {
-      if (!contacts.contacts[i].active) continue;
-      if (i >= cache.contact_frames.size()) continue;
+      if (!contacts.contacts[i].active)
+        continue;
+      if (i >= cache.contact_frames.size())
+        continue;
 
       // Contact dim 추론: lambda 남은 크기에서 판단
       // 보수적으로 3 사용 (point contact)
       const int cdim = 3;  // TODO: ContactManagerConfig 참조
 
-      if (lambda_offset + cdim > n_lambda) break;
+      if (lambda_offset + cdim > n_lambda)
+        break;
 
       const auto& Jc = cache.contact_frames[i].J;
       // Jcᵀ·λ_i = Jc[:cdim, :]ᵀ · λ_i
       JcT_lambda_.noalias() +=
-          Jc.topRows(cdim).transpose() *
-          output_.lambda_opt.segment(lambda_offset, cdim);
+          Jc.topRows(cdim).transpose() * output_.lambda_opt.segment(lambda_offset, cdim);
 
       lambda_offset += cdim;
     }
@@ -106,16 +103,14 @@ void TSIDController::reset() noexcept {
   output_.lambda_opt.setZero();
 }
 
-void TSIDController::apply_phase_preset(
-    const std::string& preset_name) noexcept {
+void TSIDController::apply_phase_preset(const std::string& preset_name) noexcept {
   auto it = presets_.find(preset_name);
   if (it != presets_.end()) {
     formulation_->apply_preset(it->second);
   }
 }
 
-void TSIDController::apply_phase_preset(
-    const PhasePreset& preset) noexcept {
+void TSIDController::apply_phase_preset(const PhasePreset& preset) noexcept {
   formulation_->apply_preset(preset);
 }
 
@@ -124,7 +119,6 @@ void TSIDController::activate_contact(int /*idx*/) noexcept {
   // 필요 시 내부 ContactState를 갖고 관리 가능
 }
 
-void TSIDController::deactivate_contact(int /*idx*/) noexcept {
-}
+void TSIDController::deactivate_contact(int /*idx*/) noexcept {}
 
 }  // namespace rtc::tsid

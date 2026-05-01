@@ -74,10 +74,10 @@ class KalmanFilterN {
   // ── Parameters ────────────────────────────────────────────────────────────
 
   struct Params {
-    double q_pos{1e-3};   // process noise — position  [unit²]
-    double q_vel{1e-2};   // process noise — velocity  [(unit/s)²]
-    double r{1e-1};       // measurement noise — position [unit²]
-    double dt{0.002};     // sample period [s] (default: 500 Hz)
+    double q_pos{1e-3};  // process noise — position  [unit²]
+    double q_vel{1e-2};  // process noise — velocity  [(unit/s)²]
+    double r{1e-1};      // measurement noise — position [unit²]
+    double dt{0.002};    // sample period [s] (default: 500 Hz)
   };
 
   // ── Initialisation ────────────────────────────────────────────────────────
@@ -104,9 +104,9 @@ class KalmanFilterN {
 
     params_.q_pos = q_pos;
     params_.q_vel = q_vel;
-    params_.r     = r;
-    params_.dt    = dt;
-    initialized_  = true;
+    params_.r = r;
+    params_.dt = dt;
+    initialized_ = true;
 
     Reset();
   }
@@ -122,9 +122,9 @@ class KalmanFilterN {
     for (auto& s : state_) {
       s.pos = 0.0;
       s.vel = 0.0;
-      s.p00 = 1.0;   // initial position uncertainty
+      s.p00 = 1.0;  // initial position uncertainty
       s.p01 = 0.0;
-      s.p11 = 1.0;   // initial velocity uncertainty
+      s.p11 = 1.0;  // initial velocity uncertainty
     }
   }
 
@@ -145,10 +145,10 @@ class KalmanFilterN {
   //
   // noexcept — safe on the 500 Hz RT path.
   void Predict() noexcept {
-    const double dt   = params_.dt;
-    const double dt2  = dt * dt;
-    const double qp   = params_.q_pos;
-    const double qv   = params_.q_vel;
+    const double dt = params_.dt;
+    const double dt2 = dt * dt;
+    const double qp = params_.q_pos;
+    const double qv = params_.q_vel;
 
     for (std::size_t i = 0; i < N; ++i) {
       ChannelState& s = state_[i];
@@ -182,8 +182,7 @@ class KalmanFilterN {
   //
   // Call after Predict() each tick.  Returns filtered position array.
   // noexcept — safe on the 500 Hz RT path.
-  [[nodiscard]] std::array<double, N> Update(
-      const std::array<double, N>& measurements) noexcept {
+  [[nodiscard]] std::array<double, N> Update(const std::array<double, N>& measurements) noexcept {
     std::array<double, N> out{};
     for (std::size_t i = 0; i < N; ++i) {
       out[i] = UpdateChannel(i, measurements[i]);
@@ -192,8 +191,7 @@ class KalmanFilterN {
   }
 
   // Single-channel convenience overload.
-  [[nodiscard]] double UpdateScalar(double z,
-                                    std::size_t channel = 0) noexcept {
+  [[nodiscard]] double UpdateScalar(double z, std::size_t channel = 0) noexcept {
     return UpdateChannel(channel, z);
   }
 
@@ -210,43 +208,40 @@ class KalmanFilterN {
   // ── State accessors ────────────────────────────────────────────────────────
 
   // Filtered position estimate for channel i.
-  [[nodiscard]] double position(std::size_t i) const noexcept {
-    return state_[i].pos;
-  }
+  [[nodiscard]] double position(std::size_t i) const noexcept { return state_[i].pos; }
 
   // Filtered velocity estimate for channel i  (differentiation-free!).
-  [[nodiscard]] double velocity(std::size_t i) const noexcept {
-    return state_[i].vel;
-  }
+  [[nodiscard]] double velocity(std::size_t i) const noexcept { return state_[i].vel; }
 
   // All filtered positions as an array.
   [[nodiscard]] std::array<double, N> positions() const noexcept {
     std::array<double, N> out{};
-    for (std::size_t i = 0; i < N; ++i) { out[i] = state_[i].pos; }
+    for (std::size_t i = 0; i < N; ++i) {
+      out[i] = state_[i].pos;
+    }
     return out;
   }
 
   // All filtered velocity estimates as an array.
   [[nodiscard]] std::array<double, N> velocities() const noexcept {
     std::array<double, N> out{};
-    for (std::size_t i = 0; i < N; ++i) { out[i] = state_[i].vel; }
+    for (std::size_t i = 0; i < N; ++i) {
+      out[i] = state_[i].vel;
+    }
     return out;
   }
 
   // Position variance (uncertainty) for channel i.  Converges to a small
   // value once the filter is warmed up.
-  [[nodiscard]] double position_variance(std::size_t i) const noexcept {
-    return state_[i].p00;
-  }
+  [[nodiscard]] double position_variance(std::size_t i) const noexcept { return state_[i].p00; }
 
   // Kalman gain for the position state of channel i (computed after the
   // last Update() call).  K → 1 means "trust sensor"; K → 0 means "trust model".
-  [[nodiscard]] double kalman_gain(std::size_t i) const noexcept {
-    return gain_[i];
-  }
+  [[nodiscard]] double kalman_gain(std::size_t i) const noexcept { return gain_[i]; }
 
-  [[nodiscard]] bool         initialized() const noexcept { return initialized_; }
-  [[nodiscard]] const Params& params()     const noexcept { return params_; }
+  [[nodiscard]] bool initialized() const noexcept { return initialized_; }
+
+  [[nodiscard]] const Params& params() const noexcept { return params_; }
 
  private:
   // ── Per-channel state ─────────────────────────────────────────────────────
@@ -275,12 +270,12 @@ class KalmanFilterN {
   //                              | −K₁    1 |
   [[nodiscard]] double UpdateChannel(std::size_t i, double z) noexcept {
     ChannelState& s = state_[i];
-    const double  r = params_.r;
+    const double r = params_.r;
 
-    const double S   = s.p00 + r;              // innovation covariance
-    const double k0  = s.p00 / S;              // Kalman gain — position row
-    const double k1  = s.p01 / S;              // Kalman gain — velocity row
-    const double nu  = z - s.pos;              // innovation
+    const double S = s.p00 + r;   // innovation covariance
+    const double k0 = s.p00 / S;  // Kalman gain — position row
+    const double k1 = s.p01 / S;  // Kalman gain — velocity row
+    const double nu = z - s.pos;  // innovation
 
     // State update
     s.pos += k0 * nu;
@@ -300,16 +295,16 @@ class KalmanFilterN {
   }
 
   // ── Member data ───────────────────────────────────────────────────────────
-  Params                     params_{};
+  Params params_{};
   std::array<ChannelState, N> state_{};
-  std::array<double, N>       gain_{};   // last computed Kalman gain (position row)
-  bool                        initialized_{false};
+  std::array<double, N> gain_{};  // last computed Kalman gain (position row)
+  bool initialized_{false};
 };
 
 // ── Convenience aliases ────────────────────────────────────────────────────
-using KalmanFilter6  = KalmanFilterN<6>;   // 6-DOF robot joints
+using KalmanFilter6 = KalmanFilterN<6>;    // 6-DOF robot joints
 using KalmanFilter11 = KalmanFilterN<11>;  // 11 sensor values per fingertip (8 baro + 3 ToF)
-using KalmanFilter1  = KalmanFilterN<1>;   // single-channel scalar use
+using KalmanFilter1 = KalmanFilterN<1>;    // single-channel scalar use
 
 }  // namespace rtc
 

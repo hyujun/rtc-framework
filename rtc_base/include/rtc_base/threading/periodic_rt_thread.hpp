@@ -36,11 +36,11 @@
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/timing/rt_tick_timing_sample.hpp"
 
-#include <time.h> // clock_nanosleep, clock_gettime, CLOCK_MONOTONIC, TIMER_ABSTIME
+#include <time.h>  // clock_nanosleep, clock_gettime, CLOCK_MONOTONIC, TIMER_ABSTIME
 
 #include <atomic>
 #include <chrono>
-#include <cmath> // std::abs
+#include <cmath>  // std::abs
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -62,18 +62,19 @@ struct PeriodicRtThreadConfig {
 };
 
 class PeriodicRtThread {
-public:
+ public:
   PeriodicRtThread() = default;
+
   virtual ~PeriodicRtThread() { Join(); }
 
-  PeriodicRtThread(const PeriodicRtThread &) = delete;
-  PeriodicRtThread &operator=(const PeriodicRtThread &) = delete;
-  PeriodicRtThread(PeriodicRtThread &&) = delete;
-  PeriodicRtThread &operator=(PeriodicRtThread &&) = delete;
+  PeriodicRtThread(const PeriodicRtThread&) = delete;
+  PeriodicRtThread& operator=(const PeriodicRtThread&) = delete;
+  PeriodicRtThread(PeriodicRtThread&&) = delete;
+  PeriodicRtThread& operator=(PeriodicRtThread&&) = delete;
 
   /// Spawn the loop thread. Idempotent once running. `cfg.frequency_hz`
   /// must be > 0; otherwise the call is a no-op and Running() stays false.
-  void Start(const PeriodicRtThreadConfig &cfg) {
+  void Start(const PeriodicRtThreadConfig& cfg) {
     if (running_.exchange(true)) {
       return;
     }
@@ -84,8 +85,7 @@ public:
     cfg_ = cfg;
     period_ns_ = static_cast<std::uint64_t>(1.0e9 / cfg.frequency_hz + 0.5);
     budget_us_ = static_cast<double>(period_ns_) / 1000.0;
-    thread_ = std::jthread(
-        [this](std::stop_token stoken) { RunLoop(std::move(stoken)); });
+    thread_ = std::jthread([this](std::stop_token stoken) { RunLoop(std::move(stoken)); });
   }
 
   /// Request the loop to stop and wake any pending pause/wait. Non-blocking.
@@ -133,12 +133,15 @@ public:
   [[nodiscard]] std::uint64_t TickCount() const noexcept {
     return tick_count_.load(std::memory_order_relaxed);
   }
+
   [[nodiscard]] std::uint64_t OverrunCount() const noexcept {
     return overrun_count_.load(std::memory_order_relaxed);
   }
+
   [[nodiscard]] std::uint64_t SkipCount() const noexcept {
     return skip_count_.load(std::memory_order_relaxed);
   }
+
   [[nodiscard]] std::uint64_t ConsecutiveOverruns() const noexcept {
     return consecutive_overruns_.load(std::memory_order_relaxed);
   }
@@ -152,18 +155,15 @@ public:
   /// Must be called before Start(); the loop reads `timing_push_` once per
   /// tick without locking.
   template <std::size_t N>
-  void SetTimingProducer(
-      ThreadTimingProducer<RtTickTimingPayload, N> *producer) noexcept {
+  void SetTimingProducer(ThreadTimingProducer<RtTickTimingPayload, N>* producer) noexcept {
     if (producer == nullptr) {
       timing_push_ = {};
       return;
     }
-    timing_push_ = [producer](const RtTickTimingPayload &p) noexcept {
-      (void)producer->Push(p);
-    };
+    timing_push_ = [producer](const RtTickTimingPayload& p) noexcept { (void)producer->Push(p); };
   }
 
-protected:
+ protected:
   enum class WaitResult { kProceed, kAbort };
 
   /// Subclass tick body. Base captures t0 before this is called and t3
@@ -197,9 +197,7 @@ protected:
   /// Overrun detection is provided by the default implementation only.
   /// CV-driven subclasses get no overrun bookkeeping (timeouts there are
   /// handled by the abort path).
-  virtual WaitResult WaitForNextTick() noexcept {
-    return DefaultWaitClockNanosleep();
-  }
+  virtual WaitResult WaitForNextTick() noexcept { return DefaultWaitClockNanosleep(); }
 
   /// Called once per overrun event (lag > period in the default wait).
   /// `consecutive` is the running count, reset to 0 on the next on-time
@@ -220,7 +218,7 @@ protected:
   /// subclasses that override WaitForNextTick.
   [[nodiscard]] std::uint64_t PeriodNs() const noexcept { return period_ns_; }
 
-private:
+ private:
   void RunLoop(std::stop_token stoken) {
     static_cast<void>(rtc::ApplyThreadConfig(cfg_.thread_config));
 
@@ -233,9 +231,8 @@ private:
       // ── Pause gate ──────────────────────────────────────────────────────
       if (paused_.load()) {
         std::unique_lock<std::mutex> lock(pause_mutex_);
-        pause_cv_.wait(lock, [this, &stoken]() {
-          return !paused_.load() || stoken.stop_requested();
-        });
+        pause_cv_.wait(lock,
+                       [this, &stoken]() { return !paused_.load() || stoken.stop_requested(); });
         if (stoken.stop_requested()) {
           break;
         }
@@ -269,14 +266,10 @@ private:
       // ── Per-tick payload push ───────────────────────────────────────────
       if (timing_push_) {
         RtTickTimingPayload p{};
-        p.t_state_us =
-            std::chrono::duration<double, std::micro>(t1_ - t0_).count();
-        p.t_compute_us =
-            std::chrono::duration<double, std::micro>(t2_ - t1_).count();
-        p.t_publish_us =
-            std::chrono::duration<double, std::micro>(t3 - t2_).count();
-        p.t_total_us =
-            std::chrono::duration<double, std::micro>(t3 - t0_).count();
+        p.t_state_us = std::chrono::duration<double, std::micro>(t1_ - t0_).count();
+        p.t_compute_us = std::chrono::duration<double, std::micro>(t2_ - t1_).count();
+        p.t_publish_us = std::chrono::duration<double, std::micro>(t3 - t2_).count();
+        p.t_total_us = std::chrono::duration<double, std::micro>(t3 - t0_).count();
         if (have_prev_t0_) {
           const double actual_period_us =
               std::chrono::duration<double, std::micro>(t0_ - prev_t0_).count();
@@ -308,13 +301,12 @@ private:
 
     // Overrun detection.
     struct timespec now_ts {};
+
     clock_gettime(CLOCK_MONOTONIC, &now_ts);
     const std::int64_t now_ns =
-        static_cast<std::int64_t>(now_ts.tv_sec) * 1'000'000'000L +
-        now_ts.tv_nsec;
+        static_cast<std::int64_t>(now_ts.tv_sec) * 1'000'000'000L + now_ts.tv_nsec;
     const std::int64_t wake_ns =
-        static_cast<std::int64_t>(next_wake_.tv_sec) * 1'000'000'000L +
-        next_wake_.tv_nsec;
+        static_cast<std::int64_t>(next_wake_.tv_sec) * 1'000'000'000L + next_wake_.tv_nsec;
     const std::int64_t lag_ns = now_ns - wake_ns;
 
     if (lag_ns > p_ns) {
@@ -326,10 +318,8 @@ private:
         next_wake_.tv_nsec %= 1'000'000'000L;
       }
       overrun_count_.fetch_add(1, std::memory_order_relaxed);
-      skip_count_.fetch_add(static_cast<std::uint64_t>(missed_ticks),
-                            std::memory_order_relaxed);
-      const auto consecutive =
-          consecutive_overruns_.fetch_add(1, std::memory_order_relaxed) + 1;
+      skip_count_.fetch_add(static_cast<std::uint64_t>(missed_ticks), std::memory_order_relaxed);
+      const auto consecutive = consecutive_overruns_.fetch_add(1, std::memory_order_relaxed) + 1;
       OnOverrun(consecutive);
       // Break jitter chain — next on-time tick reports 0 jitter against a
       // missing predecessor rather than a giant catch-up gap.
@@ -353,7 +343,9 @@ private:
   // Period / wakeup.
   std::uint64_t period_ns_{0};
   double budget_us_{0.0};
+
   struct timespec next_wake_ {};
+
   bool wake_initialised_{false};
 
   // Per-tick timestamps (loop-thread only — no synchronisation).
@@ -370,9 +362,9 @@ private:
   std::atomic<std::uint64_t> consecutive_overruns_{0};
 
   // Optional timing producer — bound via SetTimingProducer<N>().
-  std::function<void(const RtTickTimingPayload &)> timing_push_;
+  std::function<void(const RtTickTimingPayload&)> timing_push_;
 };
 
-} // namespace rtc
+}  // namespace rtc
 
-#endif // RTC_BASE_THREADING_PERIODIC_RT_THREAD_HPP_
+#endif  // RTC_BASE_THREADING_PERIODIC_RT_THREAD_HPP_

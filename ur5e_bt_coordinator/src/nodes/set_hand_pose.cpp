@@ -1,5 +1,6 @@
 // file: src/nodes/set_hand_pose.cpp
 #include "ur5e_bt_coordinator/action_nodes/set_hand_pose.hpp"
+
 #include "ur5e_bt_coordinator/bt_logging.hpp"
 #include "ur5e_bt_coordinator/bt_utils.hpp"
 
@@ -8,19 +9,19 @@
 namespace rtc_bt {
 
 namespace {
-auto logger() { return ::rtc_bt::logging::ActionLogger("set_hand_pose"); }
-} // namespace
+auto logger() {
+  return ::rtc_bt::logging::ActionLogger("set_hand_pose");
+}
+}  // namespace
 
-SetHandPose::SetHandPose(const std::string &name, const BT::NodeConfig &config,
+SetHandPose::SetHandPose(const std::string& name, const BT::NodeConfig& config,
                          std::shared_ptr<BtRosBridge> bridge)
     : BT::StatefulActionNode(name, config), bridge_(std::move(bridge)) {}
 
 BT::PortsList SetHandPose::providedPorts() {
   return {
-      BT::InputPort<std::string>("pose",
-                                 "명명된 Hand 포즈 (예: home, full_flex)"),
-      BT::InputPort<double>("hand_trajectory_speed",
-                            kDefaultHandTrajectorySpeed,
+      BT::InputPort<std::string>("pose", "명명된 Hand 포즈 (예: home, full_flex)"),
+      BT::InputPort<double>("hand_trajectory_speed", kDefaultHandTrajectorySpeed,
                             "Trajectory speed [rad/s]"),
   };
 }
@@ -31,11 +32,11 @@ BT::NodeStatus SetHandPose::onStart() {
     throw BT::RuntimeError("SetHandPose: missing pose: ", pose_name.error());
   }
 
-  const double speed = getInput<double>("hand_trajectory_speed")
-                           .value_or(kDefaultHandTrajectorySpeed);
+  const double speed =
+      getInput<double>("hand_trajectory_speed").value_or(kDefaultHandTrajectorySpeed);
   const double max_vel = kDefaultHandMaxTrajVelocity;
 
-  const auto &target = bridge_->GetHandPose(pose_name.value());
+  const auto& target = bridge_->GetHandPose(pose_name.value());
   target_vec_.assign(target.begin(), target.end());
 
   // 현재 위치 읽기 → trajectory duration 추정
@@ -44,14 +45,13 @@ BT::NodeStatus SetHandPose::onStart() {
     current.resize(kHandDofCount, 0.0);
   }
 
-  duration_ =
-      EstimateHandTrajectoryDuration(current, target_vec_, speed, max_vel);
+  duration_ = EstimateHandTrajectoryDuration(current, target_vec_, speed, max_vel);
 
   // 목표 전송
   bridge_->PublishHandTarget(target_vec_);
 
-  RCLCPP_INFO(logger(), "pose=%s estimated_duration=%.3fs (speed=%.2f)",
-              pose_name.value().c_str(), duration_, speed);
+  RCLCPP_INFO(logger(), "pose=%s estimated_duration=%.3fs (speed=%.2f)", pose_name.value().c_str(),
+              duration_, speed);
 
   start_time_ = std::chrono::steady_clock::now();
   return BT::NodeStatus::RUNNING;
@@ -65,6 +65,8 @@ BT::NodeStatus SetHandPose::onRunning() {
   return BT::NodeStatus::RUNNING;
 }
 
-void SetHandPose::onHalted() { RCLCPP_INFO(logger(), "halted"); }
+void SetHandPose::onHalted() {
+  RCLCPP_INFO(logger(), "halted");
+}
 
-} // namespace rtc_bt
+}  // namespace rtc_bt

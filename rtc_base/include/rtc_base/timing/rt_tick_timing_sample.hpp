@@ -40,17 +40,17 @@ struct RtTickTimingPayload {
   double t_total_us{0.0};
   double jitter_us{0.0};
 };
+
 static_assert(std::is_trivially_copyable_v<RtTickTimingPayload>,
               "RtTickTimingPayload must be trivially copyable");
 
-inline void WriteRtTickTimingHeader(std::ostream &os) {
+inline void WriteRtTickTimingHeader(std::ostream& os) {
   os << ",t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us";
 }
 
-inline void WriteRtTickTimingRow(std::ostream &os,
-                                 const RtTickTimingPayload &p) {
-  os << ',' << p.t_state_us << ',' << p.t_compute_us << ',' << p.t_publish_us
-     << ',' << p.t_total_us << ',' << p.jitter_us;
+inline void WriteRtTickTimingRow(std::ostream& os, const RtTickTimingPayload& p) {
+  os << ',' << p.t_state_us << ',' << p.t_compute_us << ',' << p.t_publish_us << ',' << p.t_total_us
+     << ',' << p.jitter_us;
 }
 
 /// SPSC ring capacity for the CM RT loop (500 Hz). 512 slots ≈ 1 s of
@@ -67,15 +67,12 @@ inline constexpr std::size_t kHandUdpTimingBufferCapacity = 512;
 
 using RtTickTimingSample = ThreadTimingSample<RtTickTimingPayload>;
 
-using CmTimingBuffer =
-    ThreadTimingProducer<RtTickTimingPayload, kCmTimingBufferCapacity>;
+using CmTimingBuffer = ThreadTimingProducer<RtTickTimingPayload, kCmTimingBufferCapacity>;
 
-using MpcTimingBuffer =
-    ThreadTimingProducer<RtTickTimingPayload, kMpcTimingBufferCapacity>;
+using MpcTimingBuffer = ThreadTimingProducer<RtTickTimingPayload, kMpcTimingBufferCapacity>;
 
-using HandUdpTimingBuffer =
-    ThreadTimingProducer<RtTickTimingPayload, kHandUdpTimingBufferCapacity>;
+using HandUdpTimingBuffer = ThreadTimingProducer<RtTickTimingPayload, kHandUdpTimingBufferCapacity>;
 
-} // namespace rtc
+}  // namespace rtc
 
-#endif // RTC_BASE_TIMING_RT_TICK_TIMING_SAMPLE_HPP_
+#endif  // RTC_BASE_TIMING_RT_TICK_TIMING_SAMPLE_HPP_

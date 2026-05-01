@@ -1,4 +1,5 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_object_detected.hpp"
+
 #include "ur5e_bt_coordinator/bt_logging.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -6,42 +7,39 @@
 namespace rtc_bt {
 
 namespace {
-auto logger() { return ::rtc_bt::logging::CondLogger("is_object_detected"); }
+auto logger() {
+  return ::rtc_bt::logging::CondLogger("is_object_detected");
+}
 }  // namespace
 
 IsObjectDetected::IsObjectDetected(const std::string& name, const BT::NodeConfig& config,
                                    std::shared_ptr<BtRosBridge> bridge)
-  : BT::ConditionNode(name, config), bridge_(std::move(bridge))
-{}
+    : BT::ConditionNode(name, config), bridge_(std::move(bridge)) {}
 
-BT::PortsList IsObjectDetected::providedPorts()
-{
+BT::PortsList IsObjectDetected::providedPorts() {
   return {
-    BT::OutputPort<Pose6D>("pose"),
+      BT::OutputPort<Pose6D>("pose"),
   };
 }
 
-BT::NodeStatus IsObjectDetected::tick()
-{
+BT::NodeStatus IsObjectDetected::tick() {
   Pose6D pose;
   if (bridge_->GetObjectPose(pose)) {
     // Position only from /world_target_info; use current TCP orientation
     auto tcp = bridge_->GetTcpPose();
-    pose.roll  = tcp.roll;
+    pose.roll = tcp.roll;
     pose.pitch = tcp.pitch;
-    pose.yaw   = tcp.yaw;
+    pose.yaw = tcp.yaw;
 
-    RCLCPP_INFO(logger(),
-                "object at [%.3f, %.3f, %.3f] orient(tcp)=[%.3f, %.3f, %.3f]",
-                pose.x, pose.y, pose.z, pose.roll, pose.pitch, pose.yaw);
+    RCLCPP_INFO(logger(), "object at [%.3f, %.3f, %.3f] orient(tcp)=[%.3f, %.3f, %.3f]", pose.x,
+                pose.y, pose.z, pose.roll, pose.pitch, pose.yaw);
     setOutput("pose", pose);
     return BT::NodeStatus::SUCCESS;
   }
   static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
-  RCLCPP_WARN_THROTTLE(
-    logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
-    "no valid pose on /world_target_info "
-    "(either no message received, or all points are zero)");
+  RCLCPP_WARN_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
+                       "no valid pose on /world_target_info "
+                       "(either no message received, or all points are zero)");
   return BT::NodeStatus::FAILURE;
 }
 

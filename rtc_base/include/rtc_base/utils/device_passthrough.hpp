@@ -1,10 +1,10 @@
 #ifndef RTC_BASE_UTILS_DEVICE_PASSTHROUGH_HPP_
 #define RTC_BASE_UTILS_DEVICE_PASSTHROUGH_HPP_
 
+#include "rtc_base/types/types.hpp"
+
 #include <array>
 #include <cstddef>
-
-#include "rtc_base/types/types.hpp"
 
 namespace rtc::utils {
 
@@ -19,15 +19,13 @@ namespace rtc::utils {
 // `state.devices` arrays; `device_targets` must be sized accordingly.
 // RT-safe (no allocation, no exceptions).
 template <std::size_t kMaxDevicesT>
-inline void PassthroughSecondaryDevices(
-    const ControllerState &state, ControllerOutput &output,
-    const std::array<std::array<double, kMaxDeviceChannels>, kMaxDevicesT>
-        &device_targets) noexcept {
-  for (std::size_t d = 1;
-       d < static_cast<std::size_t>(state.num_devices) && d < kMaxDevicesT;
+inline void PassthroughSecondaryDevices(const ControllerState& state, ControllerOutput& output,
+                                        const std::array<std::array<double, kMaxDeviceChannels>,
+                                                         kMaxDevicesT>& device_targets) noexcept {
+  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices) && d < kMaxDevicesT;
        ++d) {
-    const auto &devN = state.devices[d];
-    auto &outN = output.devices[d];
+    const auto& devN = state.devices[d];
+    auto& outN = output.devices[d];
     const int ncN = devN.num_channels;
     outN.num_channels = ncN;
     for (std::size_t i = 0; i < static_cast<std::size_t>(ncN); ++i) {
@@ -38,6 +36,6 @@ inline void PassthroughSecondaryDevices(
   }
 }
 
-} // namespace rtc::utils
+}  // namespace rtc::utils
 
-#endif // RTC_BASE_UTILS_DEVICE_PASSTHROUGH_HPP_
+#endif  // RTC_BASE_UTILS_DEVICE_PASSTHROUGH_HPP_

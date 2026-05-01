@@ -1,8 +1,8 @@
 #include "ur5e_bt_coordinator/bt_coordinator_node.hpp"
+
 #include <rclcpp/rclcpp.hpp>
 
-int main(int argc, char** argv)
-{
+int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
 
   // Enable auto-declare so that YAML parameters (hand_pose.*, arm_pose.*, bb.*)

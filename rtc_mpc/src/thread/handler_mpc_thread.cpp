@@ -21,11 +21,11 @@
 
 namespace rtc::mpc {
 
-void HandlerMPCThread::Configure(
-    const RobotModelHandler &model_handler,
-    std::unique_ptr<MPCHandlerBase> handler,
-    std::unique_ptr<PhaseManagerBase> phase_manager,
-    YAML::Node factory_cfg_light, YAML::Node factory_cfg_rich) noexcept {
+void HandlerMPCThread::Configure(const RobotModelHandler& model_handler,
+                                 std::unique_ptr<MPCHandlerBase> handler,
+                                 std::unique_ptr<PhaseManagerBase> phase_manager,
+                                 YAML::Node factory_cfg_light,
+                                 YAML::Node factory_cfg_rich) noexcept {
   model_ = &model_handler;
   handler_ = std::move(handler);
   phase_manager_ = std::move(phase_manager);
@@ -59,8 +59,8 @@ void HandlerMPCThread::Configure(
   has_prev_out_ = false;
 }
 
-void HandlerMPCThread::WarnThrottled(const char *what, int code) noexcept {
-  constexpr std::int64_t kWarnThrottleNs = 5'000'000'000LL; // 5 s
+void HandlerMPCThread::WarnThrottled(const char* what, int code) noexcept {
+  constexpr std::int64_t kWarnThrottleNs = 5'000'000'000LL;  // 5 s
   const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                           std::chrono::steady_clock::now().time_since_epoch())
                           .count();
@@ -69,15 +69,12 @@ void HandlerMPCThread::WarnThrottled(const char *what, int code) noexcept {
     return;
   }
   last_warn_ns_.store(now_ns, std::memory_order_relaxed);
-  std::fprintf(
-      stderr, "[HandlerMPCThread] %s code=%d total=%lu failed=%lu\n", what,
-      code,
-      static_cast<unsigned long>(total_solves_.load(std::memory_order_relaxed)),
-      static_cast<unsigned long>(
-          failed_solves_.load(std::memory_order_relaxed)));
+  std::fprintf(stderr, "[HandlerMPCThread] %s code=%d total=%lu failed=%lu\n", what, code,
+               static_cast<unsigned long>(total_solves_.load(std::memory_order_relaxed)),
+               static_cast<unsigned long>(failed_solves_.load(std::memory_order_relaxed)));
 }
 
-bool HandlerMPCThread::TryCrossModeSwap(const PhaseContext &ctx) {
+bool HandlerMPCThread::TryCrossModeSwap(const PhaseContext& ctx) {
   // Pick the matching pre-built YAML node. Baseline Phase 6 passes both as
   // Null, so this method is only reached from the cross-mode stretch test.
   YAML::Node cfg;
@@ -93,8 +90,7 @@ bool HandlerMPCThread::TryCrossModeSwap(const PhaseContext &ctx) {
   }
 
   std::unique_ptr<MPCHandlerBase> new_handler;
-  const MPCFactoryStatus status =
-      MPCFactory::Create(cfg, *model_, ctx, new_handler);
+  const MPCFactoryStatus status = MPCFactory::Create(cfg, *model_, ctx, new_handler);
   if (status.error != MPCFactoryError::kNoError || new_handler == nullptr) {
     return false;
   }
@@ -106,7 +102,7 @@ bool HandlerMPCThread::TryCrossModeSwap(const PhaseContext &ctx) {
   return true;
 }
 
-bool HandlerMPCThread::Solve(const MPCStateSnapshot &state, MPCSolution &out,
+bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out,
                              std::span<std::jthread> /*workers*/) {
   // ── Null-handler guard ────────────────────────────────────────────────
   if (handler_ == nullptr || phase_manager_ == nullptr || model_ == nullptr) {
@@ -123,12 +119,10 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot &state, MPCSolution &out,
   const int nq = model_->nq();
   const int nv = model_->nv();
   if (state.nq != nq || state.nv != nv) {
-    last_err_.store(static_cast<int>(MPCSolveError::kStateDimMismatch),
-                    std::memory_order_relaxed);
+    last_err_.store(static_cast<int>(MPCSolveError::kStateDimMismatch), std::memory_order_relaxed);
     failed_solves_.fetch_add(1, std::memory_order_relaxed);
     total_solves_.fetch_add(1, std::memory_order_relaxed);
-    WarnThrottled("state dim mismatch",
-                  static_cast<int>(MPCSolveError::kStateDimMismatch));
+    WarnThrottled("state dim mismatch", static_cast<int>(MPCSolveError::kStateDimMismatch));
     return false;
   }
   q_scratch_.head(nq) = Eigen::Map<const Eigen::VectorXd>(state.q.data(), nq);
@@ -137,15 +131,13 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot &state, MPCSolution &out,
   // ── FK for TCP pose (per-tick; reuses pdata_) ─────────────────────────
   pinocchio::forwardKinematics(model_->model(), *pdata_, q_scratch_);
   pinocchio::updateFramePlacements(model_->model(), *pdata_);
-  const pinocchio::SE3 &tcp =
+  const pinocchio::SE3& tcp =
       pdata_->oMf[static_cast<std::size_t>(model_->end_effector_frame_id())];
 
   // ── Phase manager tick ────────────────────────────────────────────────
-  const double t = std::chrono::duration<double>(
-                       std::chrono::steady_clock::now() - start_time_)
-                       .count();
-  const PhaseContext ctx =
-      phase_manager_->Update(q_scratch_, v_scratch_, sensor_scratch_, tcp, t);
+  const double t =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time_).count();
+  const PhaseContext ctx = phase_manager_->Update(q_scratch_, v_scratch_, sensor_scratch_, tcp, t);
   last_phase_id_.store(ctx.phase_id, std::memory_order_relaxed);
 
   // ── Cross-mode swap branch (try-wrapped; Solve stays noexcept) ────────
@@ -157,12 +149,10 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot &state, MPCSolution &out,
       swapped = false;
     }
     if (!swapped) {
-      last_err_.store(static_cast<int>(MPCSolveError::kRebuildRequired),
-                      std::memory_order_relaxed);
+      last_err_.store(static_cast<int>(MPCSolveError::kRebuildRequired), std::memory_order_relaxed);
       failed_solves_.fetch_add(1, std::memory_order_relaxed);
       total_solves_.fetch_add(1, std::memory_order_relaxed);
-      WarnThrottled("cross-mode swap failed",
-                    static_cast<int>(MPCSolveError::kRebuildRequired));
+      WarnThrottled("cross-mode swap failed", static_cast<int>(MPCSolveError::kRebuildRequired));
       return false;
     }
   }
@@ -184,4 +174,4 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot &state, MPCSolution &out,
   return true;
 }
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc

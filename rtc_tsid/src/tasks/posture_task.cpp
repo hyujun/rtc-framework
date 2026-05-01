@@ -2,10 +2,8 @@
 
 namespace rtc::tsid {
 
-void PostureTask::init(const pinocchio::Model& /*model*/,
-                       const RobotModelInfo& robot_info,
-                       PinocchioCache& /*cache*/,
-                       const YAML::Node& task_config) {
+void PostureTask::init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
+                       PinocchioCache& /*cache*/, const YAML::Node& task_config) {
   nv_ = robot_info.nv;
 
   // Default PD gains
@@ -48,13 +46,10 @@ void PostureTask::init(const pinocchio::Model& /*model*/,
   has_local_ref_ = false;
 }
 
-void PostureTask::compute_residual(
-    const PinocchioCache& cache,
-    const ControlReference& ref,
-    const ContactState& /*contacts*/,
-    int /*n_vars*/,
-    Eigen::Ref<Eigen::MatrixXd> J_block,
-    Eigen::Ref<Eigen::VectorXd> r_block) noexcept {
+void PostureTask::compute_residual(const PinocchioCache& cache, const ControlReference& ref,
+                                   const ContactState& /*contacts*/, int /*n_vars*/,
+                                   Eigen::Ref<Eigen::MatrixXd> J_block,
+                                   Eigen::Ref<Eigen::VectorXd> r_block) noexcept {
   // J = [I_{nv} | 0_{nv × n_contact_vars}]
   // J_block은 caller가 zero-init 해줌 → 좌상단 I만 설정
   for (int i = 0; i < nv_; ++i) {
@@ -75,22 +70,17 @@ void PostureTask::compute_residual(
 
   if (nq == nv) {
     // Fixed-base: q_err = q_des - q
-    r_block.head(nv) =
-        kp_.cwiseProduct(q_des.head(nv) - cache.q.head(nv)) +
-        kd_.cwiseProduct(v_des.head(nv) - cache.v.head(nv)) +
-        a_ff.head(nv);
+    r_block.head(nv) = kp_.cwiseProduct(q_des.head(nv) - cache.q.head(nv)) +
+                       kd_.cwiseProduct(v_des.head(nv) - cache.v.head(nv)) + a_ff.head(nv);
   } else {
     // Floating-base: pinocchio::difference(model, q, q_des) for proper SE3 diff
     // 간소화: v 공간에서 직접 차이 계산
     // TODO: pinocchio::difference 사용 (Phase 3에서 floating-base 본격 지원 시)
-    r_block.head(nv) =
-        kd_.cwiseProduct(v_des.head(nv) - cache.v.head(nv)) +
-        a_ff.head(nv);
+    r_block.head(nv) = kd_.cwiseProduct(v_des.head(nv) - cache.v.head(nv)) + a_ff.head(nv);
   }
 }
 
-void PostureTask::set_reference(const Eigen::VectorXd& q_des,
-                                const Eigen::VectorXd& v_des,
+void PostureTask::set_reference(const Eigen::VectorXd& q_des, const Eigen::VectorXd& v_des,
                                 const Eigen::VectorXd& a_ff) noexcept {
   local_q_des_ = q_des;
   local_v_des_ = v_des;
@@ -98,8 +88,7 @@ void PostureTask::set_reference(const Eigen::VectorXd& q_des,
   has_local_ref_ = true;
 }
 
-void PostureTask::set_gains(const Eigen::VectorXd& kp,
-                            const Eigen::VectorXd& kd) noexcept {
+void PostureTask::set_gains(const Eigen::VectorXd& kp, const Eigen::VectorXd& kd) noexcept {
   kp_ = kp;
   kd_ = kd;
 }

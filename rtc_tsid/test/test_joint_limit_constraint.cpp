@@ -13,8 +13,7 @@
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 class JointLimitConstraintTest : public ::testing::Test {
  protected:
@@ -105,10 +104,11 @@ TEST_F(JointLimitConstraintTest, TighterBoundsNearLimit) {
   Eigen::MatrixXd C(robot_info_.nv, n_vars);
   Eigen::VectorXd l_neutral(robot_info_.nv);
   Eigen::VectorXd u_neutral(robot_info_.nv);
-  C.setZero(); l_neutral.setZero(); u_neutral.setZero();
+  C.setZero();
+  l_neutral.setZero();
+  u_neutral.setZero();
 
-  constraint.compute_inequality(cache_, contacts_, robot_info_, n_vars,
-                                C, l_neutral, u_neutral);
+  constraint.compute_inequality(cache_, contacts_, robot_info_, n_vars, C, l_neutral, u_neutral);
 
   // upper limit 아주 가까이로 이동 (joint 0)
   Eigen::VectorXd q_near_limit = q_mid;
@@ -117,14 +117,14 @@ TEST_F(JointLimitConstraintTest, TighterBoundsNearLimit) {
 
   Eigen::VectorXd l_near(robot_info_.nv);
   Eigen::VectorXd u_near(robot_info_.nv);
-  C.setZero(); l_near.setZero(); u_near.setZero();
+  C.setZero();
+  l_near.setZero();
+  u_near.setZero();
 
-  constraint.compute_inequality(cache_, contacts_, robot_info_, n_vars,
-                                C, l_near, u_near);
+  constraint.compute_inequality(cache_, contacts_, robot_info_, n_vars, C, l_near, u_near);
 
   // upper limit 근처: position-based u가 더 tight해야 함
-  EXPECT_LT(u_near(0), u_neutral(0))
-      << "upper bound should be tighter near upper limit";
+  EXPECT_LT(u_near(0), u_neutral(0)) << "upper bound should be tighter near upper limit";
 }
 
 TEST_F(JointLimitConstraintTest, VelocityBoundsActive) {
@@ -146,14 +146,15 @@ TEST_F(JointLimitConstraintTest, VelocityBoundsActive) {
   Eigen::MatrixXd C(robot_info_.nv, n_vars);
   Eigen::VectorXd l(robot_info_.nv);
   Eigen::VectorXd u(robot_info_.nv);
-  C.setZero(); l.setZero(); u.setZero();
+  C.setZero();
+  l.setZero();
+  u.setZero();
 
   constraint.compute_inequality(cache_, contacts_, robot_info_, n_vars, C, l, u);
 
   // velocity limit 근처 → u가 tight해야 함 (감속 요구)
   // vel_ub = (v_max - margin - v_curr) / dt
-  const double expected_vel_ub =
-      (robot_info_.v_max(0) - 0.1 - v(0)) / 0.002;
+  const double expected_vel_ub = (robot_info_.v_max(0) - 0.1 - v(0)) / 0.002;
   EXPECT_NEAR(u(0), std::min(u(0), expected_vel_ub), 1e-6);
 }
 

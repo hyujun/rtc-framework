@@ -64,23 +64,23 @@ class JointWidget(QWidget):
     def __init__(self, meta: JointMeta, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._meta = meta
-        self._is_prismatic = meta.joint_type == 'prismatic'
-        self._is_continuous = meta.joint_type == 'continuous'
+        self._is_prismatic = meta.joint_type == "prismatic"
+        self._is_continuous = meta.joint_type == "continuous"
 
         # Determine display range
         if self._is_prismatic:
             self._min_display = meta.lower
             self._max_display = meta.upper
-            unit = 'm'
+            unit = "m"
         elif self._is_continuous:
             self._min_display = _CONTINUOUS_MIN_DEG
             self._max_display = _CONTINUOUS_MAX_DEG
-            unit = 'deg'
+            unit = "deg"
         else:
             # revolute — convert rad to deg
             self._min_display = math.degrees(meta.lower)
             self._max_display = math.degrees(meta.upper)
-            unit = 'deg'
+            unit = "deg"
 
         # Handle zero-range (both limits zero or equal)
         if abs(self._max_display - self._min_display) < 1e-9:
@@ -93,9 +93,9 @@ class JointWidget(QWidget):
 
         self._current_value = 0.0  # in display units (deg or m)
 
-        font_bold = QFont('Helvetica', 9)
+        font_bold = QFont("Helvetica", 9)
         font_bold.setBold(True)
-        font_normal = QFont('Helvetica', 9)
+        font_normal = QFont("Helvetica", 9)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(4, 2, 4, 2)
@@ -109,15 +109,15 @@ class JointWidget(QWidget):
         row1.addStretch()
 
         if not self._is_continuous:
-            limit_text = f'[{self._min_display:.1f} ~ {self._max_display:.1f}]'
+            limit_text = f"[{self._min_display:.1f} ~ {self._max_display:.1f}]"
             limit_label = QLabel(limit_text)
             limit_label.setFont(font_normal)
-            limit_label.setStyleSheet('color: gray;')
+            limit_label.setStyleSheet("color: gray;")
             row1.addWidget(limit_label)
 
         unit_label = QLabel(unit)
         unit_label.setFont(font_normal)
-        unit_label.setStyleSheet('color: gray;')
+        unit_label.setStyleSheet("color: gray;")
         row1.addWidget(unit_label)
 
         layout.addLayout(row1)
@@ -136,7 +136,7 @@ class JointWidget(QWidget):
         self._entry.setFont(font_bold)
         self._entry.setAlignment(Qt.AlignRight)
         self._entry.setFixedWidth(70)
-        self._entry.setText(f'{self._current_value:.1f}')
+        self._entry.setText(f"{self._current_value:.1f}")
         self._entry.returnPressed.connect(self._on_entry_return)
         row2.addWidget(self._entry)
 
@@ -161,7 +161,7 @@ class JointWidget(QWidget):
         self._slider.blockSignals(True)
         self._slider.setValue(self._value_to_slider(value))
         self._slider.blockSignals(False)
-        self._entry.setText(f'{value:.1f}')
+        self._entry.setText(f"{value:.1f}")
 
     def _value_to_slider(self, value: float) -> int:
         span = self._max_display - self._min_display
@@ -177,7 +177,7 @@ class JointWidget(QWidget):
     def _on_slider_changed(self, pos: int) -> None:
         value = self._slider_to_value(pos)
         self._current_value = value
-        self._entry.setText(f'{value:.1f}')
+        self._entry.setText(f"{value:.1f}")
 
     def _on_entry_return(self) -> None:
         text = self._entry.text().strip()
@@ -185,7 +185,7 @@ class JointWidget(QWidget):
             value = float(text)
         except ValueError:
             # Restore current value on invalid input
-            self._entry.setText(f'{self._current_value:.1f}')
+            self._entry.setText(f"{self._current_value:.1f}")
             return
         self.set_value_display(value)
 
@@ -195,7 +195,7 @@ class JointGuiWindow(QMainWindow):
 
     def __init__(self, joints: list[JointMeta]) -> None:
         super().__init__()
-        self.setWindowTitle('Joint State Publisher GUI')
+        self.setWindowTitle("Joint State Publisher GUI")
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -203,11 +203,11 @@ class JointGuiWindow(QMainWindow):
 
         # Buttons
         btn_layout = QHBoxLayout()
-        zero_btn = QPushButton('Zero All')
+        zero_btn = QPushButton("Zero All")
         zero_btn.clicked.connect(self._zero_all)
         btn_layout.addWidget(zero_btn)
 
-        center_btn = QPushButton('Center All')
+        center_btn = QPushButton("Center All")
         center_btn.clicked.connect(self._center_all)
         btn_layout.addWidget(center_btn)
 
@@ -259,37 +259,36 @@ class JointGuiNode(Node):
     """ROS2 node that publishes JointState from the GUI."""
 
     def __init__(self) -> None:
-        super().__init__('joint_gui_node')
+        super().__init__("joint_gui_node")
 
-        self.declare_parameter('robot_description', '')
-        self.declare_parameter('joint_gui.output_topic', '/joint_gui/joint_states')
-        self.declare_parameter('joint_gui.publish_rate', 10.0)
+        self.declare_parameter("robot_description", "")
+        self.declare_parameter("joint_gui.output_topic", "/joint_gui/joint_states")
+        self.declare_parameter("joint_gui.publish_rate", 10.0)
 
-        robot_description = self.get_parameter('robot_description').value
-        output_topic = self.get_parameter('joint_gui.output_topic').value
-        publish_rate = self.get_parameter('joint_gui.publish_rate').value
+        robot_description = self.get_parameter("robot_description").value
+        output_topic = self.get_parameter("joint_gui.output_topic").value
+        publish_rate = self.get_parameter("joint_gui.publish_rate").value
 
         if not robot_description:
-            self.get_logger().fatal('robot_description parameter is empty')
-            raise RuntimeError('robot_description parameter is required')
+            self.get_logger().fatal("robot_description parameter is empty")
+            raise RuntimeError("robot_description parameter is required")
 
         # Parse URDF
-        self.get_logger().debug('Parsing URDF for joint discovery...')
+        self.get_logger().debug("Parsing URDF for joint discovery...")
         try:
             parser = UrdfParser.from_xml(robot_description)
         except Exception as e:
-            self.get_logger().fatal(f'Failed to parse URDF: {e}')
+            self.get_logger().fatal(f"Failed to parse URDF: {e}")
             raise
 
         active_names = parser.get_active_joint_names()  # sorted
-        self._joint_metas = [
-            parser.get_joint_meta(name) for name in active_names]
+        self._joint_metas = [parser.get_joint_meta(name) for name in active_names]
 
         self.get_logger().info(
-            f'Joint GUI: {len(self._joint_metas)} active joints, '
-            f'output={output_topic}, rate={publish_rate}Hz')
-        self.get_logger().debug(
-            f'Active joints: {active_names}')
+            f"Joint GUI: {len(self._joint_metas)} active joints, "
+            f"output={output_topic}, rate={publish_rate}Hz"
+        )
+        self.get_logger().debug(f"Active joints: {active_names}")
 
         # Publisher
         self._pub = self.create_publisher(JointState, output_topic, 10)
@@ -337,17 +336,17 @@ def main(args=None):
     spin_timer.timeout.connect(lambda: rclpy.spin_once(node, timeout_sec=0))
     spin_timer.start(10)
 
-    node.get_logger().info('Joint GUI window opened')
+    node.get_logger().info("Joint GUI window opened")
 
     try:
         app.exec_()
     except KeyboardInterrupt:
-        node.get_logger().info('Shutting down (KeyboardInterrupt)')
+        node.get_logger().info("Shutting down (KeyboardInterrupt)")
     finally:
-        node.get_logger().info('Joint GUI shutting down')
+        node.get_logger().info("Joint GUI shutting down")
         node.destroy_node()
         rclpy.try_shutdown()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -19,7 +19,7 @@ using namespace rtc_bt;
 using namespace rtc_bt::test;
 
 class HandNodeTest : public RosTestFixture {
-protected:
+ protected:
   void SetUp() override {
     RosTestFixture::SetUp();
     factory_.registerNodeType<SetHandPose>("SetHandPose", bridge_);
@@ -30,9 +30,9 @@ protected:
     factory_.registerNodeType<TrackTrajectory>("TrackTrajectory", bridge_);
   }
 
-  BT::Tree CreateTree(const std::string &xml) {
-    const std::string full = R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" +
-                             xml + R"(</BehaviorTree></root>)";
+  BT::Tree CreateTree(const std::string& xml) {
+    const std::string full =
+        R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" + xml + R"(</BehaviorTree></root>)";
     return factory_.createTreeFromText(full);
   }
 
@@ -80,8 +80,7 @@ TEST_F(HandNodeTest, MoveFinger_StartsRunning) {
   PublishHandState({0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
   Spin();
 
-  auto tree =
-      CreateTree(R"(<MoveFinger finger_name="thumb" pose="thumb_flex"/>)");
+  auto tree = CreateTree(R"(<MoveFinger finger_name="thumb" pose="thumb_flex"/>)");
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 }
 
@@ -215,7 +214,7 @@ TEST_F(HandNodeTest, TrackTrajectory_SucceedsAllWaypoints) {
   Pose6D at_wp0{0.1, 0.0, 0.0, 0, 0, 0};
   PublishArmState(at_wp0, {0, 0, 0, 0, 0, 0});
   Spin();
-  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING); // Advances to wp[1]
+  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);  // Advances to wp[1]
 
   // Move to second waypoint
   Pose6D at_wp1{0.2, 0.0, 0.0, 0, 0, 0};

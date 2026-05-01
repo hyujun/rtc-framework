@@ -21,22 +21,22 @@
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
-#include <yaml-cpp/yaml.h>
-
-#include <filesystem>
-#include <iostream>
-
 #include "rtc_mpc/handler/contact_rich_mpc.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/phase/phase_context.hpp"
 #include "rtc_mpc/phase/phase_cost_config.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 
+#include <yaml-cpp/yaml.h>
+
+#include <filesystem>
+#include <iostream>
+
 namespace {
 
-constexpr const char *kPandaUrdf = RTC_PANDA_URDF_PATH;
+constexpr const char* kPandaUrdf = RTC_PANDA_URDF_PATH;
 
-constexpr const char *kCostYaml = R"(
+constexpr const char* kCostYaml = R"(
 horizon_length: 10
 dt: 0.01
 w_frame_placement: 10.0
@@ -51,7 +51,7 @@ custom_weights: {}
 )";
 
 class ContactRichMPCTest : public ::testing::Test {
-protected:
+ protected:
   void SetUp() override {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed — run ./install.sh verify";
@@ -66,13 +66,11 @@ contact_frames:
   - name: panda_rightfinger
     dim: 3
 )");
-    ASSERT_EQ(handler_.Init(model_, robot_cfg),
-              rtc::mpc::RobotModelInitError::kNoError);
+    ASSERT_EQ(handler_.Init(model_, robot_cfg), rtc::mpc::RobotModelInitError::kNoError);
 
     auto cost_node = YAML::Load(kCostYaml);
-    ASSERT_EQ(
-        rtc::mpc::PhaseCostConfig::LoadFromYaml(cost_node, handler_, cfg_),
-        rtc::mpc::PhaseCostConfigError::kNoError);
+    ASSERT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(cost_node, handler_, cfg_),
+              rtc::mpc::PhaseCostConfigError::kNoError);
 
     ctx_.phase_id = 0;
     ctx_.phase_name = "contact";
@@ -83,8 +81,7 @@ contact_frames:
     const int lf = handler_.contact_frames()[0].frame_id;
     const int rf = handler_.contact_frames()[1].frame_id;
     ctx_.contact_plan.frames = handler_.contact_frames();
-    ctx_.contact_plan.phases.push_back(
-        rtc::mpc::ContactPhase{{lf, rf}, 0.0, 100.0});
+    ctx_.contact_plan.phases.push_back(rtc::mpc::ContactPhase{{lf, rf}, 0.0, 100.0});
 
     pinocchio::Data pdata(model_);
     const Eigen::VectorXd q0 = pinocchio::neutral(model_);
@@ -122,8 +119,7 @@ contact_frames:
 
 TEST_F(ContactRichMPCTest, InitSucceedsAndSolveTerminatesGracefully) {
   rtc::mpc::ContactRichMPC mpc;
-  ASSERT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_),
-            rtc::mpc::MPCInitError::kNoError);
+  ASSERT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_), rtc::mpc::MPCInitError::kNoError);
 
   const auto state = MakeStateSnapshot();
   rtc::mpc::MPCSolution out{};
@@ -137,8 +133,8 @@ TEST_F(ContactRichMPCTest, InitSucceedsAndSolveTerminatesGracefully) {
   // All this test guards is that the handler **returns** rather than
   // crashing — the enum may be kNoError OR kSolverException, but never
   // an uncaught throw.
-  std::cout << "[ContactRichMPC cold] err=" << static_cast<int>(err)
-            << " iters=" << out.iterations << "\n";
+  std::cout << "[ContactRichMPC cold] err=" << static_cast<int>(err) << " iters=" << out.iterations
+            << "\n";
   EXPECT_TRUE(err == rtc::mpc::MPCSolveError::kNoError ||
               err == rtc::mpc::MPCSolveError::kSolverException ||
               err == rtc::mpc::MPCSolveError::kSolverDiverged);
@@ -146,12 +142,11 @@ TEST_F(ContactRichMPCTest, InitSucceedsAndSolveTerminatesGracefully) {
 
 TEST_F(ContactRichMPCTest, SeedWarmStartNoOpOnZeroPrev) {
   rtc::mpc::ContactRichMPC mpc;
-  ASSERT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_),
-            rtc::mpc::MPCInitError::kNoError);
+  ASSERT_EQ(mpc.Init(solver_cfg_, handler_, limits_, ctx_), rtc::mpc::MPCInitError::kNoError);
 
-  rtc::mpc::MPCSolution empty{}; // IsValid() == false
-  mpc.SeedWarmStart(empty);      // must not crash / mutate
+  rtc::mpc::MPCSolution empty{};  // IsValid() == false
+  mpc.SeedWarmStart(empty);       // must not crash / mutate
   EXPECT_TRUE(mpc.Initialised());
 }
 
-} // namespace
+}  // namespace

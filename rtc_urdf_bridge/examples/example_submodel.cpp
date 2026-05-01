@@ -17,8 +17,7 @@
 
 namespace rub = rtc_urdf_bridge;
 
-int main(int argc, char * argv[])
-{
+int main(int argc, char* argv[]) {
   if (argc < 2) {
     std::cerr << "사용법: " << argv[0] << " <yaml_config_path>\n";
     return EXIT_FAILURE;
@@ -30,22 +29,19 @@ int main(int argc, char * argv[])
   rub::PinocchioModelBuilder builder(argv[1]);
 
   auto full_model = builder.GetFullModel();
-  std::cout << "[1] Full model: nq=" << full_model->nq
-            << ", nv=" << full_model->nv << "\n\n";
+  std::cout << "[1] Full model: nq=" << full_model->nq << ", nv=" << full_model->nv << "\n\n";
 
   // ── (2) 서브모델 정보 출력 ────────────────────────────────────────────────
   auto sub_names = builder.GetSubModelNames();
   std::cout << "[2] 등록된 서브모델 수: " << sub_names.size() << "\n";
 
-  for (const auto & name : sub_names) {
+  for (const auto& name : sub_names) {
     auto model = builder.GetReducedModel(name);
-    const auto & def = builder.GetSubModelDefinition(name);
+    const auto& def = builder.GetSubModelDefinition(name);
 
-    std::cout << "  '" << name << "': "
-              << def.root_link << " → " << def.tip_link
-              << " | nq=" << model->nq << ", nv=" << model->nv
-              << " | joints: ";
-    for (const auto & j : def.joint_names) {
+    std::cout << "  '" << name << "': " << def.root_link << " → " << def.tip_link
+              << " | nq=" << model->nq << ", nv=" << model->nv << " | joints: ";
+    for (const auto& j : def.joint_names) {
       std::cout << j << " ";
     }
     std::cout << "\n";
@@ -57,7 +53,7 @@ int main(int argc, char * argv[])
 
     auto first_sub_name = sub_names[0];
     auto sub_model = builder.GetReducedModel(first_sub_name);
-    const auto & def = builder.GetSubModelDefinition(first_sub_name);
+    const auto& def = builder.GetSubModelDefinition(first_sub_name);
 
     rub::RtModelHandle full_handle(full_model);
     rub::RtModelHandle sub_handle(sub_model);

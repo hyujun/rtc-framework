@@ -13,8 +13,7 @@
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 class ContactConstraintTest : public ::testing::Test {
  protected:
@@ -39,8 +38,7 @@ class ContactConstraintTest : public ::testing::Test {
     contact_cfg_.contacts.resize(1);
     contact_cfg_.contacts[0].name = "ee";
     contact_cfg_.contacts[0].frame_name = frame_name_;
-    contact_cfg_.contacts[0].frame_id =
-        static_cast<int>(model_->getFrameId(frame_name_));
+    contact_cfg_.contacts[0].frame_id = static_cast<int>(model_->getFrameId(frame_name_));
     contact_cfg_.contacts[0].contact_dim = 3;
     contact_cfg_.contacts[0].friction_coeff = 0.7;
     contact_cfg_.contacts[0].friction_faces = 4;

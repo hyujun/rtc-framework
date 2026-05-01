@@ -12,8 +12,8 @@ namespace rtc {
 // not own a runtime ROS node identity. The robot-specific bringup executable
 // (e.g. ur5e_rt_controller) supplies a name that matches its own executable
 // so that exec / node / pgrep / log identifiers stay aligned.
-int RtControllerMain(int argc, char **argv, const std::string &node_name);
+int RtControllerMain(int argc, char** argv, const std::string& node_name);
 
-} // namespace rtc
+}  // namespace rtc
 
-#endif // RTC_CONTROLLER_MANAGER_RT_CONTROLLER_MAIN_HPP_
+#endif  // RTC_CONTROLLER_MANAGER_RT_CONTROLLER_MAIN_HPP_

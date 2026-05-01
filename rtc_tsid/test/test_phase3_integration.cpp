@@ -14,8 +14,8 @@
 #include "rtc_tsid/constraints/eom_constraint.hpp"
 #include "rtc_tsid/constraints/joint_limit_constraint.hpp"
 #include "rtc_tsid/constraints/torque_limit_constraint.hpp"
-#include "rtc_tsid/formulation/wqp_formulation.hpp"
 #include "rtc_tsid/formulation/hqp_formulation.hpp"
+#include "rtc_tsid/formulation/wqp_formulation.hpp"
 #include "rtc_tsid/tasks/com_task.hpp"
 #include "rtc_tsid/tasks/force_task.hpp"
 #include "rtc_tsid/tasks/momentum_task.hpp"
@@ -25,8 +25,7 @@
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 // ──────────────────────────────────────────────
 // Panda 7DoF fixed-base 통합 테스트 (WQP)
@@ -121,8 +120,7 @@ TEST_F(Phase3WQPTest, PostureAndSE3Solve) {
 
   // 균형 상태에서 a ≈ 0
   const auto a_opt = result.x_opt.head(robot_info_.nv);
-  EXPECT_LT(a_opt.norm(), 10.0)
-      << "Optimal acceleration should be small at equilibrium";
+  EXPECT_LT(a_opt.norm(), 10.0) << "Optimal acceleration should be small at equilibrium";
 }
 
 TEST_F(Phase3WQPTest, SE3WithPositionOffset) {
@@ -170,8 +168,7 @@ TEST_F(Phase3WQPTest, SE3WithPositionOffset) {
 
   // 위치 오차가 있으므로 a ≠ 0
   const auto a_opt = result.x_opt.head(robot_info_.nv);
-  EXPECT_GT(a_opt.norm(), 0.1)
-      << "Acceleration should be non-zero to track SE3 target";
+  EXPECT_GT(a_opt.norm(), 0.1) << "Acceleration should be non-zero to track SE3 target";
 }
 
 // ──────────────────────────────────────────────

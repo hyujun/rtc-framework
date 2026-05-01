@@ -23,17 +23,16 @@
 //   drain + deferred E-STOP log aux_executor     Core 5  SCHED_OTHER  0 E-STOP
 //   status + lifecycle services
 
-#include "rtc_controller_manager/rt_controller_main.hpp"
-#include "rtc_controller_manager/rt_controller_node.hpp"
-
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
+#include "rtc_controller_manager/rt_controller_main.hpp"
+#include "rtc_controller_manager/rt_controller_node.hpp"
 
 #include <lifecycle_msgs/msg/state.hpp>
 #include <rclcpp/executor.hpp>
 #include <rclcpp/utilities.hpp>
 
-#include <sys/mman.h> // mlockall
+#include <sys/mman.h>  // mlockall
 
 #include <chrono>
 #include <fstream>
@@ -42,14 +41,15 @@
 
 namespace rtc {
 
-int RtControllerMain(int argc, char **argv, const std::string &node_name) {
+int RtControllerMain(int argc, char** argv, const std::string& node_name) {
   // mlockall BEFORE rclcpp::init.
   // MCL_CURRENT locks pages already mapped; MCL_FUTURE ensures every page
   // allocated afterwards (including DDS/RMW heaps) is also locked.
   if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
     fprintf(stderr, "[WARN] mlockall failed — page faults possible\n");
-    fprintf(stderr, "       Check: /etc/security/limits.conf @realtime memlock "
-                    "unlimited\n");
+    fprintf(stderr,
+            "       Check: /etc/security/limits.conf @realtime memlock "
+            "unlimited\n");
   }
 
   rclcpp::init(argc, argv);
@@ -69,8 +69,7 @@ int RtControllerMain(int argc, char **argv, const std::string &node_name) {
               "       Run: sudo cpu_shield.sh on --robot  (or launch via "
               "ur_control.launch.py)\n");
     } else {
-      fprintf(stdout, "[INFO] CPU isolation active: Core %s\n",
-              isolated.c_str());
+      fprintf(stdout, "[INFO] CPU isolation active: Core %s\n", isolated.c_str());
     }
   }
 
@@ -82,8 +81,7 @@ int RtControllerMain(int argc, char **argv, const std::string &node_name) {
   rclcpp::executors::SingleThreadedExecutor lifecycle_executor;
   lifecycle_executor.add_node(node->get_node_base_interface());
 
-  std::thread lifecycle_thread(
-      [&lifecycle_executor]() { lifecycle_executor.spin(); });
+  std::thread lifecycle_thread([&lifecycle_executor]() { lifecycle_executor.spin(); });
 
   // ═══ Phase 2: wait for Active state ═══════════════════════════════════════
   // on_configure creates callback groups, publishers, subscribers.
@@ -125,12 +123,9 @@ int RtControllerMain(int argc, char **argv, const std::string &node_name) {
   rclcpp::executors::SingleThreadedExecutor log_executor;
   rclcpp::executors::SingleThreadedExecutor aux_executor;
 
-  sensor_executor.add_callback_group(node->GetSensorGroup(),
-                                     node->get_node_base_interface());
-  log_executor.add_callback_group(node->GetLogGroup(),
-                                  node->get_node_base_interface());
-  aux_executor.add_callback_group(node->GetAuxGroup(),
-                                  node->get_node_base_interface());
+  sensor_executor.add_callback_group(node->GetSensorGroup(), node->get_node_base_interface());
+  log_executor.add_callback_group(node->GetLogGroup(), node->get_node_base_interface());
+  aux_executor.add_callback_group(node->GetAuxGroup(), node->get_node_base_interface());
 
   // Keep default callback group on aux_executor so lifecycle services
   // (deactivate, cleanup, shutdown) continue to be processed at runtime.
@@ -139,14 +134,14 @@ int RtControllerMain(int argc, char **argv, const std::string &node_name) {
   // Attach each controller's LifecycleNode to aux_executor so controller-
   // owned subscriptions/publishers are processed off the RT path.  Created
   // during CM on_configure; stable for the lifetime of the CM node.
-  for (const auto &ctrl_node : node->GetControllerNodes()) {
+  for (const auto& ctrl_node : node->GetControllerNodes()) {
     if (ctrl_node) {
       aux_executor.add_node(ctrl_node->get_node_base_interface());
     }
   }
 
   // Helper lambda to create executor thread with RT config
-  auto make_thread = [](auto &executor, const ThreadConfig &cfg) {
+  auto make_thread = [](auto& executor, const ThreadConfig& cfg) {
     return std::thread([&executor, cfg]() {
       if (!ApplyThreadConfig(cfg)) {
         fprintf(stderr,
@@ -187,7 +182,7 @@ int RtControllerMain(int argc, char **argv, const std::string &node_name) {
   // begins. Without this, controller LifecycleNodes attached via
   // add_node() (per-controller `/<config_key>` namespace) could outlive
   // their expected scope during local-variable teardown.
-  for (const auto &ctrl_node : node->GetControllerNodes()) {
+  for (const auto& ctrl_node : node->GetControllerNodes()) {
     if (ctrl_node) {
       aux_executor.remove_node(ctrl_node->get_node_base_interface());
     }
@@ -198,4 +193,4 @@ int RtControllerMain(int argc, char **argv, const std::string &node_name) {
   return 0;
 }
 
-} // namespace rtc
+}  // namespace rtc

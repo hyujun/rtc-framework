@@ -22,12 +22,10 @@
 #include <cstdint>
 #include <type_traits>
 
-namespace rtc
-{
+namespace rtc {
 
-template<typename Payload>
-struct ThreadTimingSample
-{
+template <typename Payload>
+struct ThreadTimingSample {
   static_assert(std::is_trivially_copyable_v<Payload>,
                 "ThreadTimingSample Payload must be trivially copyable");
 
@@ -42,6 +40,6 @@ struct ThreadTimingSample
   Payload payload{};
 };
 
-} // namespace rtc
+}  // namespace rtc
 
-#endif // RTC_BASE_TIMING_THREAD_TIMING_SAMPLE_HPP_
+#endif  // RTC_BASE_TIMING_THREAD_TIMING_SAMPLE_HPP_

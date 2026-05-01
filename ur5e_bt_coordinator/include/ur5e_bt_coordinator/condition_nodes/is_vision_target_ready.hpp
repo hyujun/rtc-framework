@@ -18,7 +18,7 @@ namespace rtc_bt {
 /// Output ports:
 ///   - pose (Pose6D): world target pose (position from vision, orientation from TCP)
 class IsVisionTargetReady : public BT::ConditionNode {
-public:
+ public:
   IsVisionTargetReady(const std::string& name, const BT::NodeConfig& config,
                       std::shared_ptr<BtRosBridge> bridge);
 
@@ -26,7 +26,7 @@ public:
 
   BT::NodeStatus tick() override;
 
-private:
+ private:
   std::shared_ptr<BtRosBridge> bridge_;
 };
 

@@ -57,12 +57,12 @@ namespace rtc::mpc {
 /// Defaults are intentionally looser than Phase 3/4 fixtures so the typical
 /// 20-node Panda solve converges in tens of iterations rather than hundreds.
 struct MPCSolverConfig {
-  double prim_tol{1e-3}; ///< primal infeasibility target
-  double dual_tol{1e-2}; ///< dual infeasibility target
-  double mu_init{1e-2};  ///< AL penalty initial value
-  int max_iters{30};     ///< per-solve iteration ceiling
-  int max_al_iters{20};  ///< AL outer-loop ceiling
-  bool verbose{false};   ///< route Aligator's own stdout log
+  double prim_tol{1e-3};  ///< primal infeasibility target
+  double dual_tol{1e-2};  ///< dual infeasibility target
+  double mu_init{1e-2};   ///< AL penalty initial value
+  int max_iters{30};      ///< per-solve iteration ceiling
+  int max_al_iters{20};   ///< AL outer-loop ceiling
+  bool verbose{false};    ///< route Aligator's own stdout log
 };
 
 /// @brief Failure modes for @ref MPCHandlerBase::Init. Allocation is
@@ -71,34 +71,34 @@ struct MPCSolverConfig {
 ///        loop.
 enum class MPCInitError {
   kNoError = 0,
-  kModelNotInitialised, ///< RobotModelHandler.Initialised() == false
-  kOCPBuildFailed,      ///< underlying OCPHandlerBase::Build rejected
-  kSolverSetupFailed,   ///< Aligator's setup() threw (caught internally)
-  kInvalidSolverConfig, ///< tolerances / max_iters out of range
-  kOcpTypeMismatch,     ///< ctx.ocp_type != this handler's dispatch key
+  kModelNotInitialised,  ///< RobotModelHandler.Initialised() == false
+  kOCPBuildFailed,       ///< underlying OCPHandlerBase::Build rejected
+  kSolverSetupFailed,    ///< Aligator's setup() threw (caught internally)
+  kInvalidSolverConfig,  ///< tolerances / max_iters out of range
+  kOcpTypeMismatch,      ///< ctx.ocp_type != this handler's dispatch key
 };
 
 /// @brief Failure modes for @ref MPCHandlerBase::Solve. **Never thrown** —
 ///        the solve path is `noexcept`; failures surface via this enum.
 enum class MPCSolveError {
   kNoError = 0,
-  kNotInitialised,    ///< Solve called before successful Init
-  kStateDimMismatch,  ///< snapshot.{nq,nv} differ from handler's model
-  kRebuildRequired,   ///< phase_changed with cross-mode OCP type — the
-                      ///< MPCFactory / orchestration layer must swap the
-                      ///< handler, not this instance
-  kOCPRebuildFailed,  ///< in-handler topology rebuild (horizon / contacts
-                      ///< / weight-zero crossing) failed
-  kSolverException,   ///< Aligator threw during `run()` (caught, logged
-                      ///< once in Debug builds, returned as an error so
-                      ///< the RT thread can fall back to its last valid
-                      ///< solution)
-  kSolverDiverged,    ///< `run()` returned `false` AND NaN state — the
-                      ///< produced `out` is NOT valid
-  kSolutionTruncated, ///< horizon_length or a dim exceeds the fixed
-                      ///< `MPCSolution` capacity (kMaxHorizon, kMaxNu,
-                      ///< …). Indicates a configuration mistake, not a
-                      ///< runtime condition.
+  kNotInitialised,     ///< Solve called before successful Init
+  kStateDimMismatch,   ///< snapshot.{nq,nv} differ from handler's model
+  kRebuildRequired,    ///< phase_changed with cross-mode OCP type — the
+                       ///< MPCFactory / orchestration layer must swap the
+                       ///< handler, not this instance
+  kOCPRebuildFailed,   ///< in-handler topology rebuild (horizon / contacts
+                       ///< / weight-zero crossing) failed
+  kSolverException,    ///< Aligator threw during `run()` (caught, logged
+                       ///< once in Debug builds, returned as an error so
+                       ///< the RT thread can fall back to its last valid
+                       ///< solution)
+  kSolverDiverged,     ///< `run()` returned `false` AND NaN state — the
+                       ///< produced `out` is NOT valid
+  kSolutionTruncated,  ///< horizon_length or a dim exceeds the fixed
+                       ///< `MPCSolution` capacity (kMaxHorizon, kMaxNu,
+                       ///< …). Indicates a configuration mistake, not a
+                       ///< runtime condition.
 };
 
 /// @brief Abstract MPC handler. Concrete implementations pin themselves to
@@ -106,14 +106,14 @@ enum class MPCSolveError {
 ///        and own exactly one OCP + one solver. Cross-key transitions are
 ///        done at the orchestration layer via `MPCFactory`.
 class MPCHandlerBase {
-public:
+ public:
   MPCHandlerBase() = default;
   virtual ~MPCHandlerBase() = default;
 
-  MPCHandlerBase(const MPCHandlerBase &) = delete;
-  MPCHandlerBase &operator=(const MPCHandlerBase &) = delete;
-  MPCHandlerBase(MPCHandlerBase &&) = delete;
-  MPCHandlerBase &operator=(MPCHandlerBase &&) = delete;
+  MPCHandlerBase(const MPCHandlerBase&) = delete;
+  MPCHandlerBase& operator=(const MPCHandlerBase&) = delete;
+  MPCHandlerBase(MPCHandlerBase&&) = delete;
+  MPCHandlerBase& operator=(MPCHandlerBase&&) = delete;
 
   /// @brief Build the underlying OCP and set up the solver. Allocation-
   ///        heavy, called once off-RT before the MPC thread starts.
@@ -126,9 +126,9 @@ public:
   ///                    gravity-comp control trajectory.
   /// @return `kNoError` on success; on failure the handler stays in the
   ///         uninitialised state (`Initialised() == false`).
-  [[nodiscard]] virtual MPCInitError
-  Init(const MPCSolverConfig &solver_cfg, const RobotModelHandler &model,
-       const OCPLimits &limits, const PhaseContext &initial_ctx) noexcept = 0;
+  [[nodiscard]] virtual MPCInitError Init(const MPCSolverConfig& solver_cfg,
+                                          const RobotModelHandler& model, const OCPLimits& limits,
+                                          const PhaseContext& initial_ctx) noexcept = 0;
 
   /// @brief Run one MPC tick. Called off the 500 Hz RT path, but on a
   ///        latency-sensitive MPC thread — must be `noexcept` and must not
@@ -141,9 +141,8 @@ public:
   /// @param state  latest RT-side state snapshot (q, v, nq, nv, timestamp)
   /// @param out    filled on success: `xs/us/λ/K_riccati/converged/iters`
   /// @return enum; `out` is only guaranteed valid when `kNoError`.
-  [[nodiscard]] virtual MPCSolveError Solve(const PhaseContext &ctx,
-                                            const MPCStateSnapshot &state,
-                                            MPCSolution &out) noexcept = 0;
+  [[nodiscard]] virtual MPCSolveError Solve(const PhaseContext& ctx, const MPCStateSnapshot& state,
+                                            MPCSolution& out) noexcept = 0;
 
   /// @return true once `Init` has succeeded.
   [[nodiscard]] virtual bool Initialised() const noexcept = 0;
@@ -170,9 +169,9 @@ public:
   /// xs and `horizon_length()` for us; sizes outside that range are
   /// silently truncated / zero-padded (best-effort cross-topology seed).
   /// No-op if not Initialised.
-  virtual void SeedWarmStart(const MPCSolution &prev_solution) noexcept = 0;
+  virtual void SeedWarmStart(const MPCSolution& prev_solution) noexcept = 0;
 };
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc
 
-#endif // RTC_MPC_HANDLER_MPC_HANDLER_BASE_HPP_
+#endif  // RTC_MPC_HANDLER_MPC_HANDLER_BASE_HPP_

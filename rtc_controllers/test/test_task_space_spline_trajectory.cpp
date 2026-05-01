@@ -6,20 +6,18 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/spatial/se3.hpp>
-#include <pinocchio/spatial/motion.hpp>
 #include <pinocchio/spatial/explog.hpp>
+#include <pinocchio/spatial/motion.hpp>
+#include <pinocchio/spatial/se3.hpp>
 #pragma GCC diagnostic pop
 
 #include <gtest/gtest.h>
+
 #include <cmath>
 
-namespace rtc::trajectory
-{
+namespace rtc::trajectory {
 
-pinocchio::SE3 make_se3(double x, double y, double z,
-                         double roll, double pitch, double yaw)
-{
+pinocchio::SE3 make_se3(double x, double y, double z, double roll, double pitch, double yaw) {
   Eigen::AngleAxisd r(roll, Eigen::Vector3d::UnitX());
   Eigen::AngleAxisd p(pitch, Eigen::Vector3d::UnitY());
   Eigen::AngleAxisd ya(yaw, Eigen::Vector3d::UnitZ());
@@ -28,8 +26,7 @@ pinocchio::SE3 make_se3(double x, double y, double z,
 }
 
 // --- Two waypoints: natural spline matches rest-to-rest TaskSpaceTrajectory ---
-TEST(TaskSpaceSplineTrajectory, TwoWaypointsMatch)
-{
+TEST(TaskSpaceSplineTrajectory, TwoWaypointsMatch) {
   TaskSpaceSplineTrajectory spline;
   TaskSpaceTrajectory single;
 
@@ -49,7 +46,7 @@ TEST(TaskSpaceSplineTrajectory, TwoWaypointsMatch)
 
     for (int i = 0; i < 3; ++i) {
       EXPECT_NEAR(ss.pose.translation()[i], ts.pose.translation()[i], 1e-10)
-        << "t=" << t << " i=" << i;
+          << "t=" << t << " i=" << i;
     }
     double rot_diff = (ss.pose.rotation() - ts.pose.rotation()).norm();
     EXPECT_NEAR(rot_diff, 0.0, 1e-10) << "t=" << t;
@@ -57,8 +54,7 @@ TEST(TaskSpaceSplineTrajectory, TwoWaypointsMatch)
 }
 
 // --- Three waypoints: continuity at via-point ---
-TEST(TaskSpaceSplineTrajectory, ThreeWaypointsContinuity)
-{
+TEST(TaskSpaceSplineTrajectory, ThreeWaypointsContinuity) {
   TaskSpaceSplineTrajectory spline;
   std::array<TaskSpaceSplineTrajectory::Waypoint, kMaxWaypoints> wps{};
   wps[0] = {make_se3(0.0, 0.0, 0.0, 0.0, 0.0, 0.0), 0.0};
@@ -91,8 +87,7 @@ TEST(TaskSpaceSplineTrajectory, ThreeWaypointsContinuity)
 }
 
 // --- Natural boundary: rest-to-rest ---
-TEST(TaskSpaceSplineTrajectory, NaturalBoundary)
-{
+TEST(TaskSpaceSplineTrajectory, NaturalBoundary) {
   TaskSpaceSplineTrajectory spline;
   std::array<TaskSpaceSplineTrajectory::Waypoint, kMaxWaypoints> wps{};
   wps[0] = {pinocchio::SE3::Identity(), 0.0};
@@ -109,8 +104,7 @@ TEST(TaskSpaceSplineTrajectory, NaturalBoundary)
 }
 
 // --- Four waypoints: higher order continuity ---
-TEST(TaskSpaceSplineTrajectory, FourWaypointsSmoothness)
-{
+TEST(TaskSpaceSplineTrajectory, FourWaypointsSmoothness) {
   TaskSpaceSplineTrajectory spline;
   std::array<TaskSpaceSplineTrajectory::Waypoint, kMaxWaypoints> wps{};
   wps[0] = {make_se3(0.0, 0.0, 0.0, 0.0, 0.0, 0.0), 0.0};
@@ -133,7 +127,7 @@ TEST(TaskSpaceSplineTrajectory, FourWaypointsSmoothness)
     // Translation continuity
     for (int i = 0; i < 3; ++i) {
       EXPECT_NEAR(sl.pose.translation()[i], sr.pose.translation()[i], 1e-4)
-        << "trans at t=" << kt << " i=" << i;
+          << "trans at t=" << kt << " i=" << i;
     }
 
     // Velocity continuity (relaxed: tangent-space linearization error is O(rotation^2))
@@ -143,8 +137,7 @@ TEST(TaskSpaceSplineTrajectory, FourWaypointsSmoothness)
 }
 
 // --- Single waypoint hold ---
-TEST(TaskSpaceSplineTrajectory, SingleWaypointHold)
-{
+TEST(TaskSpaceSplineTrajectory, SingleWaypointHold) {
   TaskSpaceSplineTrajectory spline;
   std::array<TaskSpaceSplineTrajectory::Waypoint, kMaxWaypoints> wps{};
   wps[0] = {make_se3(1.0, 2.0, 3.0, 0.0, 0.0, 0.0), 0.0};
@@ -158,8 +151,7 @@ TEST(TaskSpaceSplineTrajectory, SingleWaypointHold)
 }
 
 // --- Clamp ---
-TEST(TaskSpaceSplineTrajectory, ClampTime)
-{
+TEST(TaskSpaceSplineTrajectory, ClampTime) {
   TaskSpaceSplineTrajectory spline;
   std::array<TaskSpaceSplineTrajectory::Waypoint, kMaxWaypoints> wps{};
   wps[0] = {pinocchio::SE3::Identity(), 0.0};
@@ -179,8 +171,7 @@ TEST(TaskSpaceSplineTrajectory, ClampTime)
 }
 
 // --- Pure translation: no rotation ---
-TEST(TaskSpaceSplineTrajectory, PureTranslation)
-{
+TEST(TaskSpaceSplineTrajectory, PureTranslation) {
   TaskSpaceSplineTrajectory spline;
   std::array<TaskSpaceSplineTrajectory::Waypoint, kMaxWaypoints> wps{};
   wps[0] = {make_se3(0.0, 0.0, 0.0, 0.0, 0.0, 0.0), 0.0};

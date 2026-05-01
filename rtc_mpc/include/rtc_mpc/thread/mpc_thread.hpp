@@ -58,21 +58,20 @@ struct MpcThreadLaunchConfig {
 };
 
 class MPCThread : public rtc::PeriodicRtThread {
-public:
+ public:
   MPCThread() = default;
   ~MPCThread() override;
 
-  MPCThread(const MPCThread &) = delete;
-  MPCThread &operator=(const MPCThread &) = delete;
-  MPCThread(MPCThread &&) = delete;
-  MPCThread &operator=(MPCThread &&) = delete;
+  MPCThread(const MPCThread&) = delete;
+  MPCThread& operator=(const MPCThread&) = delete;
+  MPCThread(MPCThread&&) = delete;
+  MPCThread& operator=(MPCThread&&) = delete;
 
   /// @brief Configure the thread before @ref Start.
   /// @param manager        shared solution manager (state read, solution
   ///                       publish)
   /// @param launch_config  thread affinity / priority / frequency
-  void Init(MPCSolutionManager &manager,
-            const MpcThreadLaunchConfig &launch_config) noexcept;
+  void Init(MPCSolutionManager& manager, const MpcThreadLaunchConfig& launch_config) noexcept;
 
   /// @brief Spawn workers + the base main solve loop. No-op if already
   ///        running or not initialised.
@@ -91,14 +90,13 @@ public:
   // increments).
 
   /// @brief Direct accessor for the per-tick MPC-loop timing producer.
-  [[nodiscard]] rtc::MpcTimingBuffer &TimingProducer() noexcept {
-    return timing_producer_;
-  }
-  [[nodiscard]] const rtc::MpcTimingBuffer &TimingProducer() const noexcept {
+  [[nodiscard]] rtc::MpcTimingBuffer& TimingProducer() noexcept { return timing_producer_; }
+
+  [[nodiscard]] const rtc::MpcTimingBuffer& TimingProducer() const noexcept {
     return timing_producer_;
   }
 
-protected:
+ protected:
   /// @brief Perform one MPC solve.
   ///
   /// @param state     latest RT-thread state snapshot.
@@ -106,15 +104,15 @@ protected:
   /// @param workers   worker jthread handles (empty span if no workers).
   /// @return true if @p out_sol contains a usable solution (will be
   ///         published); false to skip publishing this cycle.
-  virtual bool Solve(const MPCStateSnapshot &state, MPCSolution &out_sol,
+  virtual bool Solve(const MPCStateSnapshot& state, MPCSolution& out_sol,
                      std::span<std::jthread> workers) = 0;
 
   // PeriodicRtThread hook: drives one ReadState → Solve → PublishSolution
   // iteration on the base's thread.
   void OnTick() noexcept override;
 
-private:
-  MPCSolutionManager *manager_{nullptr};
+ private:
+  MPCSolutionManager* manager_{nullptr};
   MpcThreadLaunchConfig launch_config_{};
   bool initialised_{false};
 
@@ -130,6 +128,6 @@ private:
   rtc::MpcTimingBuffer timing_producer_;
 };
 
-} // namespace rtc::mpc
+}  // namespace rtc::mpc
 
-#endif // RTC_MPC_THREAD_MPC_THREAD_HPP_
+#endif  // RTC_MPC_THREAD_MPC_THREAD_HPP_
