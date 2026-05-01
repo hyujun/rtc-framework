@@ -91,16 +91,15 @@ int CountCommas(const std::string &s) {
 
 } // namespace
 
-TEST(MpcTimingLogger, OpenResolvesPathUnderControllerSubdir) {
+TEST(MpcTimingLogger, OpenResolvesPathUnderTimingDir) {
   ScopedSessionDir scope;
   rtc::mpc::MpcTimingLogger logger;
 
-  ASSERT_TRUE(logger.Open("foo_controller"));
+  ASSERT_TRUE(logger.Open());
   EXPECT_TRUE(logger.IsOpen());
 
   const auto &p = logger.Path();
-  const auto expected =
-      scope.dir() / "controllers" / "foo_controller" / "mpc_timing_log.csv";
+  const auto expected = scope.dir() / "timing" / "mpc_timing_log.csv";
   EXPECT_EQ(p, expected) << "logger path: " << p;
   EXPECT_TRUE(fs::exists(p));
 }
@@ -109,7 +108,7 @@ TEST(MpcTimingLogger, FirstOpenWritesHeader) {
   ScopedSessionDir scope;
   rtc::mpc::MpcTimingLogger logger;
 
-  ASSERT_TRUE(logger.Open("hdr_test"));
+  ASSERT_TRUE(logger.Open());
   const auto lines = ReadAllLines(logger.Path());
   ASSERT_EQ(lines.size(), 1u);
   EXPECT_EQ(lines[0],
@@ -121,7 +120,7 @@ TEST(MpcTimingLogger, ReopenAppendDoesNotDuplicateHeader) {
   ScopedSessionDir scope;
   {
     rtc::mpc::MpcTimingLogger logger;
-    ASSERT_TRUE(logger.Open("dup_test"));
+    ASSERT_TRUE(logger.Open());
     rtc::RtTickTimingSample sample{};
     sample.t_wall_ns = 1000;
     sample.tick_count = 1;
@@ -130,7 +129,7 @@ TEST(MpcTimingLogger, ReopenAppendDoesNotDuplicateHeader) {
   }
   {
     rtc::mpc::MpcTimingLogger logger;
-    ASSERT_TRUE(logger.Open("dup_test"));
+    ASSERT_TRUE(logger.Open());
     rtc::RtTickTimingSample sample{};
     sample.t_wall_ns = 2000;
     sample.tick_count = 2;
@@ -138,7 +137,7 @@ TEST(MpcTimingLogger, ReopenAppendDoesNotDuplicateHeader) {
     logger.Log(sample);
   }
   rtc::mpc::MpcTimingLogger probe;
-  ASSERT_TRUE(probe.Open("dup_test"));
+  ASSERT_TRUE(probe.Open());
   const auto lines = ReadAllLines(probe.Path());
   ASSERT_EQ(lines.size(), 3u);
   EXPECT_NE(lines[0].find("t_wall_ns"), std::string::npos);
@@ -149,7 +148,7 @@ TEST(MpcTimingLogger, ReopenAppendDoesNotDuplicateHeader) {
 TEST(MpcTimingLogger, LogWritesSevenCommaSeparatedColumns) {
   ScopedSessionDir scope;
   rtc::mpc::MpcTimingLogger logger;
-  ASSERT_TRUE(logger.Open("col_test"));
+  ASSERT_TRUE(logger.Open());
 
   rtc::RtTickTimingSample sample{};
   sample.t_wall_ns = 1234567890;

@@ -1823,7 +1823,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
   // deactivate must NOT re-Open the CSV (truncates accumulated rows) or
   // re-register the timer (executor churn).
   if (mpc_enabled_ && !mpc_timing_initialized_) {
-    if (!mpc_timing_logger_.Open("demo_wbc_controller")) {
+    if (!mpc_timing_logger_.Open()) {
       RCLCPP_WARN(logger_,
                   "MpcTimingLogger::Open() failed — MPC timing CSV disabled");
     } else {

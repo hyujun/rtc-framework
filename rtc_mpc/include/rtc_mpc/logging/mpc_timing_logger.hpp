@@ -6,10 +6,10 @@
 // The transport (SPSC ring) and the CSV header / row formatting shell are
 // generic — see `rtc_base/timing/thread_timing_*` and
 // `rtc_base/timing/rt_tick_timing_sample.hpp`. This header is a thin wrapper
-// that resolves the canonical
-// `<session>/controllers/<config_key>/mpc_timing_log.csv` path and pre-binds
-// the unified RtTickTimingPayload header / row writers (the same schema the
-// CM RT loop emits, so analysis scripts can join across threads).
+// that resolves the canonical `<session>/timing/mpc_timing_log.csv` path
+// and pre-binds the unified RtTickTimingPayload header / row writers (the
+// same schema the CM RT loop and hand_udp EventLoop emit, so analysis
+// scripts can join across threads).
 //
 // CSV schema:
 //   t_wall_ns,tick_count,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us
@@ -21,8 +21,6 @@
 #include "rtc_base/timing/thread_timing_csv_logger.hpp"
 
 #include <filesystem>
-#include <string>
-#include <string_view>
 #include <system_error>
 
 namespace rtc::mpc {
@@ -35,18 +33,17 @@ public:
   MpcTimingLogger(const MpcTimingLogger &) = delete;
   MpcTimingLogger &operator=(const MpcTimingLogger &) = delete;
 
-  /// Resolve the CSV path under `<session>/controllers/<config_key>/`,
-  /// create the parent directory, and open the file. Schema header is
-  /// written on first creation; existing files are appended without a
-  /// duplicate header. Returns false on filesystem errors.
-  [[nodiscard]] bool Open(std::string_view config_key) noexcept {
+  /// Resolve the CSV path under `<session>/timing/`, create the parent
+  /// directory, and open the file. Schema header is written on first
+  /// creation; existing files are appended without a duplicate header.
+  /// Returns false on filesystem errors.
+  [[nodiscard]] bool Open() noexcept {
     try {
       const auto session = ResolveSessionDir();
-      const auto controller_dir =
-          session / "controllers" / std::string(config_key);
+      const auto timing_dir = TimingDir(session);
       std::error_code ec;
-      std::filesystem::create_directories(controller_dir, ec);
-      const auto path = controller_dir / "mpc_timing_log.csv";
+      std::filesystem::create_directories(timing_dir, ec);
+      const auto path = timing_dir / "mpc_timing_log.csv";
       return inner_.Open(path, &rtc::WriteRtTickTimingHeader,
                          &rtc::WriteRtTickTimingRow);
     } catch (...) {

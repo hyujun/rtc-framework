@@ -158,7 +158,7 @@ public:
 
   // Per-tick raw-sample stream lives on the MPCThread (producer thread)
   // — see rtc_mpc/thread/mpc_thread.hpp::TimingProducer(). Drained by a
-  // non-RT consumer into <session>/controllers/<config_key>/mpc_timing_log.csv
+  // non-RT consumer into <session>/timing/mpc_timing_log.csv
   // via rtc::ThreadTimingCsvLogger<rtc::RtTickTimingPayload>.
 
 private:

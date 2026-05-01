@@ -393,7 +393,7 @@ private:
   // ── MPC tick-timing observability (aux thread, non-RT) ────────────────
   // Owned 1 Hz timer (spawned in on_activate when mpc_enabled_) drains the
   // MPCThread's TimingProducer SPSC ring and appends one row per MPC tick
-  // to <session>/controllers/<config_key>/mpc_timing_log.csv via
+  // to <session>/timing/mpc_timing_log.csv via
   // MpcTimingLogger (a thin wrapper over the generic
   // ThreadTimingCsvLogger<RtTickTimingPayload>, schema unified with the CM
   // RT loop). Aggregate INFO line every 10 ticks (~10 s) for tmux watchers.

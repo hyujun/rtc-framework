@@ -86,7 +86,7 @@ public:
   // Base captures t0..t3 around OnTick (which delegates to Solve()) and
   // pushes one rtc::RtTickTimingPayload onto this SPSC ring per iteration.
   // A non-RT consumer (e.g. the controller LifecycleNode's 1 Hz aux timer)
-  // drains via Drain(...) into <session>/controllers/<key>/mpc_timing_log.csv.
+  // drains via Drain(...) into <session>/timing/mpc_timing_log.csv.
   // Push is wait-free; on overflow the sample is dropped (DropCount()
   // increments).
 

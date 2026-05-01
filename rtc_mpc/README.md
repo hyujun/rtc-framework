@@ -80,7 +80,7 @@ which emits one `fprintf(stderr, …)` line at most every 5 s with
 `what=<cause> code=<int> total=N failed=M`. The null-handler setup error
 retains its own one-shot `fprintf` (separate semantics: fatal setup
 mistake, not runtime drift). Readers can also pair the stderr stream with
-`<session>/controllers/<config_key>/mpc_timing_log.csv` (writer:
+`<session>/timing/mpc_timing_log.csv` (writer:
 [`rtc_mpc/logging/mpc_timing_logger.hpp`](include/rtc_mpc/logging/mpc_timing_logger.hpp);
 each MPC-using controller's own LifecycleNode owns a 1 Hz aux timer that
 drains `MPCThread::TimingProducer()` per-tick SPSC into the CSV). Schema
