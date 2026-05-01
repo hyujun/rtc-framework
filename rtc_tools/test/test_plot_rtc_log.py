@@ -83,6 +83,21 @@ class TestDetectLogType:
     def test_state_log_with_prefix(self):
         assert detect_log_type("device0_state_log.csv") == "state_log"
 
+    def test_hand_udp_timing_log(self):
+        assert detect_log_type("hand_udp_timing_log.csv") == "cm_timing"
+
+    def test_phase_c_controller_owned_returns_unknown_for_column_fallback(
+        self, tmp_path
+    ):
+        # Phase C: <session>/controllers/<key>/<instance>.csv — stem alone
+        # carries no type, parent-of-parent is "controllers". Filename
+        # stage returns "unknown" so the column fallback decides.
+        ctrl_dir = tmp_path / "260501_1430" / "controllers" / "demo_joint_controller"
+        ctrl_dir.mkdir(parents=True)
+        f = ctrl_dir / "ur5e.csv"
+        f.write_text("t_relative_s,actual_pos_shoulder\n0.0,0.1\n")
+        assert detect_log_type(f) == "unknown"
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # detect_log_type_by_columns — 컬럼 기반 fallback 분류
@@ -117,6 +132,28 @@ class TestDetectLogTypeByColumns:
         # Defensive: timing columns win if both appear.
         cols = ["timestamp", "t_total_us", "actual_pos_0"]
         assert detect_log_type_by_columns(cols) == "cm_timing"
+
+    def test_phase_c_state_log_by_joint_named_columns(self):
+        # Phase C POD writes per-joint named columns instead of numeric
+        # suffixes (e.g. actual_pos_shoulder_pan).
+        cols = [
+            "t_relative_s",
+            "actual_pos_shoulder_pan",
+            "joint_goal_shoulder_pan",
+            "traj_pos_shoulder_pan",
+        ]
+        assert detect_log_type_by_columns(cols) == "state_log"
+
+    def test_phase_c_sensor_log_by_named_fingertip_columns(self):
+        # Phase C POD: <fingertip>_raw_<i>, <fingertip>_filt_<i>,
+        # ft_<fingertip>_<col>.
+        cols = [
+            "t_relative_s",
+            "thumb_raw_0",
+            "thumb_filt_0",
+            "ft_thumb_contact",
+        ]
+        assert detect_log_type_by_columns(cols) == "sensor_log"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
