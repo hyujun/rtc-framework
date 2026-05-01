@@ -1,0 +1,42 @@
+# RTC Framework editor defaults — applied by editorconfig-aware editors
+# (VS Code, JetBrains, neovim w/ plugin, etc.). Mirrors .clang-format /
+# pyproject.toml (ruff) settings so CLI edits don't drift.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+# C/C++  — 2-space, matches .clang-format IndentWidth.
+[*.{cpp,hpp,h,cc,cxx,inl}]
+indent_size = 2
+max_line_length = 100
+
+# Python — 4-space, ROS 2 PEP 8 line length 99.
+[*.py]
+indent_size = 4
+max_line_length = 99
+
+# CMake — 2-space.
+[{CMakeLists.txt,*.cmake}]
+indent_size = 2
+
+# YAML / package.xml / launch xml — 2-space.
+[*.{yaml,yml,xml,xacro,urdf,mjcf}]
+indent_size = 2
+
+# Shell.
+[*.sh]
+indent_size = 2
+
+# JSON.
+[*.json]
+indent_size = 2
+
+# Markdown — preserve trailing whitespace (line breaks).
+[*.md]
+indent_size = 2
+trim_trailing_whitespace = false

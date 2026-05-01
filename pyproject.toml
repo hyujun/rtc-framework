@@ -1,0 +1,68 @@
+# RTC Framework Python tooling config (ruff = formatter + linter).
+#
+# SSoT for Python style. Targets ROS 2 Jazzy / Python 3.12. Line length 99 is
+# the ROS 2 / ament_flake8 default. Per-package setup.py / setup.cfg keeps its
+# own metadata; this file only governs formatting / linting.
+#
+# Usage (after `source repo_scripts/scripts/setup_env.sh` activates .venv):
+#   ruff format .          # apply formatting
+#   ruff format --check .  # verify only
+#   ruff check .           # lint
+#   ruff check --fix .     # lint + auto-fix safe rules
+
+[tool.ruff]
+line-length = 99
+target-version = "py312"
+extend-exclude = [
+  "build",
+  "install",
+  "log",
+  "deps",
+  ".venv",
+  "**/__pycache__",
+  "logging_data",
+]
+
+[tool.ruff.lint]
+# Enable a pragmatic ROS-2-friendly subset. Avoid noisy categories (D = pydocstyle,
+# ANN = annotations) — ROS 2 codebases rarely satisfy them and noise drowns real bugs.
+select = [
+  "E",    # pycodestyle errors
+  "F",    # pyflakes
+  "W",    # pycodestyle warnings
+  "I",    # isort
+  "UP",   # pyupgrade
+  "B",    # flake8-bugbear
+  "SIM",  # flake8-simplify
+  "C4",   # flake8-comprehensions
+  "PIE",  # flake8-pie
+]
+ignore = [
+  "E501",   # line-too-long — formatter handles wrapping; long URLs / strings allowed
+  "B008",   # function call in default arg — rclpy / launch APIs use this idiomatically
+  "SIM108", # ternary may be less readable than if/else for control logic
+]
+
+[tool.ruff.lint.per-file-ignores]
+# launch files frequently set sys.path / env before imports
+"**/launch/*.py" = ["E402"]
+# __init__.py re-exports
+"**/__init__.py" = ["F401"]
+# setup.py uses bare `setup()` patterns
+"**/setup.py" = ["F401"]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+  "rtc_tools",
+  "rtc_digital_twin",
+  "ur5e_bringup",
+  "ur5e_description",
+  "shape_estimation",
+]
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+docstring-code-format = false

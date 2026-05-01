@@ -656,8 +656,9 @@ install_python_deps() {
         scipy \
         PyQt5 \
         "mujoco>=3.0.0" \
+        ruff \
       || warn "One or more pip installs failed — check output above"
-    success "Python dependencies installed in venv"
+    success "Python dependencies installed in venv (incl. ruff for formatting)"
   fi
 }
 

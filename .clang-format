@@ -1,0 +1,87 @@
+---
+# RTC Framework C++ formatter config.
+#
+# SSoT for C++ formatting. agent_docs/conventions.md describes intent in prose;
+# the machine-enforced rules live here. clang-format 18+ assumed.
+#
+# Aligned with conventions.md "Code Conventions":
+#   - Google base
+#   - 100-column line limit (matches .vscode/settings.json editor.rulers)
+#   - 2-space indent, spaces only
+#   - PointerAlignment Left (T* p, not T *p)
+#   - AccessModifierOffset -1 (Google default)
+#
+# Paper-notation variables (J_b, q_d, K_d) intentionally not aligned —
+# AlignConsecutive* would create distracting whitespace in math-heavy code.
+BasedOnStyle: Google
+Language: Cpp
+Standard: c++20
+
+ColumnLimit: 100
+IndentWidth: 2
+TabWidth: 2
+UseTab: Never
+ContinuationIndentWidth: 4
+ConstructorInitializerIndentWidth: 4
+
+AccessModifierOffset: -1
+DerivePointerAlignment: false
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortLambdasOnASingleLine: All
+AllowShortCaseLabelsOnASingleLine: false
+
+BreakBeforeBraces: Attach
+BreakConstructorInitializers: BeforeColon
+BreakInheritanceList: BeforeColon
+PackConstructorInitializers: NextLine
+
+AlignAfterOpenBracket: Align
+AlignTrailingComments: true
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignConsecutiveMacros: false
+
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+SeparateDefinitionBlocks: Always
+
+# Include groups: project headers first, then ROS 2 / third-party, then C++ stdlib.
+# Matches conventions.md "Include order".
+IncludeBlocks: Regroup
+SortIncludes: CaseSensitive
+IncludeCategories:
+  # C++ standard library (no slash, or starts with c+letter for C compat headers)
+  - Regex: '^<[a-z_]+>$'
+    Priority: 4
+  - Regex: '^<c[a-z]+>$'
+    Priority: 4
+  # Project headers — rtc_*, ur5e_*, shape_estimation*
+  - Regex: '^"(rtc_|ur5e_|shape_estimation)'
+    Priority: 1
+  - Regex: '^<(rtc_|ur5e_|shape_estimation)'
+    Priority: 1
+  # ROS 2
+  - Regex: '^<(rclcpp|rclcpp_lifecycle|rclcpp_action|lifecycle_msgs|std_msgs|sensor_msgs|geometry_msgs|trajectory_msgs|tf2|tf2_ros|tf2_eigen|tf2_geometry_msgs|ament_|rcl_|rmw_|rosidl_)'
+    Priority: 2
+  # Third-party (Eigen, Pinocchio, ProxSuite, fmt, BehaviorTree, MuJoCo, ONNX, etc.)
+  - Regex: '^<(Eigen|pinocchio|proxsuite|fmt|behaviortree|mujoco|onnxruntime|hpp/fcl|yaml-cpp)'
+    Priority: 3
+  - Regex: '^".*"$'
+    Priority: 1
+  - Regex: '^<.*>$'
+    Priority: 3
+
+# Misc
+FixNamespaceComments: true
+ShortNamespaceLines: 1
+NamespaceIndentation: None
+SortUsingDeclarations: true
+SpacesBeforeTrailingComments: 2
+Cpp11BracedListStyle: true
+ReflowComments: true
+...

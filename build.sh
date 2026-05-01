@@ -69,8 +69,8 @@ show_help() {
   echo "  -p, --packages             Comma-separated list of specific packages to build"
   echo "                             (Overrides default packages for the chosen mode)"
   echo "  -j, --jobs N               Limit parallel workers (e.g. -j 4)"
-  echo "  -e, --export-compile-commands  Generate compile_commands.json for VS Code"
-  echo "                             IntelliSense and clangd (sets CMAKE_EXPORT_COMPILE_COMMANDS=ON)"
+  echo "  -e, --export-compile-commands  (Deprecated, kept for compatibility — compile_commands.json"
+  echo "                             is now always exported and merged for clangd / VS Code)"
   echo "  --no-symlink               Do not use --symlink-install"
   echo "  --no-banner                Suppress the build banner (used by install.sh)"
   echo "  --mujoco <path>            Path to MuJoCo install dir (e.g. /opt/mujoco-3.2.4)"
@@ -228,11 +228,10 @@ if is_venv_active; then
   warn "Venv detected — cmake will use system Python: ${SYS_PYTHON}"
 fi
 
-# compile_commands.json: Debug 빌드이거나 --export-compile-commands 지정 시 자동 활성화
-if [[ "$EXPORT_COMPILE_COMMANDS" -eq 1 || "$BUILD_TYPE" == "Debug" ]]; then
-  CMAKE_ARGS+=("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
-  info "compile_commands.json will be generated (VS Code IntelliSense)"
-fi
+# compile_commands.json — clangd / IDE 통합용. 항상 켠다 (오버헤드 무시 가능).
+# 빌드 후 merge_compile_commands.py 가 패키지별 산출물을 단일 파일로 머지한다
+# (.clangd 의 CompilationDatabase: build/ 와 일치).
+CMAKE_ARGS+=("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
 
 COLCON_ARGS=("--packages-select" "${PACKAGES[@]}")
 
@@ -258,22 +257,21 @@ colcon build "${COLCON_ARGS[@]}" || error "Build failed!"
 # 빌드 후 최신 overlay 소싱 (check_rt_setup.sh 등 후속 작업용)
 source "${WORKSPACE}/install/setup.bash" || true
 
-# ── compile_commands.json — VS Code IntelliSense 연동 ─────────────────────────
-# Debug 빌드 또는 --export-compile-commands 옵션 사용 시 자동 생성됨.
-# .vscode/c_cpp_properties.json 의 compileCommands 경로와 일치:
-#   ${workspaceFolder}/../../build/rtc_controller_manager/compile_commands.json
-if [[ "$EXPORT_COMPILE_COMMANDS" -eq 1 || "$BUILD_TYPE" == "Debug" ]]; then
-  CC_SRC="$WORKSPACE/build/rtc_controller_manager/compile_commands.json"
-  if [[ -f "$CC_SRC" ]]; then
-    success "compile_commands.json generated: $CC_SRC"
-    success "VS Code IntelliSense will use this file automatically"
+# ── compile_commands.json 머지 (clangd / VS Code IntelliSense) ────────────────
+# colcon 은 build/<pkg>/compile_commands.json 을 패키지별로 생성한다. clangd
+# 는 단일 DB 를 기대하므로 merge_compile_commands.py 로 합쳐 build/ 루트에
+# 둔다 (.clangd 의 CompilationDatabase: build/ 와 매칭).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MERGE_SCRIPT="${SCRIPT_DIR}/merge_compile_commands.py"
+if [[ -f "$MERGE_SCRIPT" ]]; then
+  if python3 "$MERGE_SCRIPT" >/dev/null 2>&1; then
+    success "compile_commands.json merged → $WORKSPACE/build/compile_commands.json"
   else
-    warn "compile_commands.json not found at $CC_SRC — IntelliSense may be limited"
+    warn "merge_compile_commands.py failed — clangd may use stale per-package DBs"
   fi
 fi
 
 # ── RT Setup Verification ─────────────────────────────────────────────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECK_SCRIPT="${SCRIPT_DIR}/repo_scripts/scripts/check_rt_setup.sh"
 
 if [[ -f "$CHECK_SCRIPT" ]]; then
