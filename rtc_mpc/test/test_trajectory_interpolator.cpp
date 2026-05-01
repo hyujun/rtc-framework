@@ -15,8 +15,10 @@
 
 #include <Eigen/Core>
 
-namespace rtc::mpc {
-namespace {
+namespace rtc::mpc
+{
+namespace
+{
 
 constexpr int kNq = 3;
 constexpr int kNv = 3;
@@ -28,7 +30,8 @@ constexpr double kTol = 1e-12;
 
 /// Build a trivially valid solution whose q(t) = slope * t at each node.
 /// Velocity is set to `slope` (constant), lambda is zeroed.
-MPCSolution MakeLinearSolution(double slope) {
+MPCSolution MakeLinearSolution(double slope)
+{
   MPCSolution sol{};
   sol.horizon_length = kHorizon;
   sol.dt_node = kDtNode;
@@ -44,19 +47,20 @@ MPCSolution MakeLinearSolution(double slope) {
     const double t = static_cast<double>(k) * kDtNode;
     for (int i = 0; i < kNq; ++i) {
       sol.q_traj[static_cast<std::size_t>(k)]
-                [static_cast<std::size_t>(i)] = slope * t + 0.1 * i;
+      [static_cast<std::size_t>(i)] = slope * t + 0.1 * i;
     }
     for (int i = 0; i < kNv; ++i) {
       sol.v_traj[static_cast<std::size_t>(k)]
-                [static_cast<std::size_t>(i)] = slope;
+      [static_cast<std::size_t>(i)] = slope;
     }
   }
   return sol;
 }
 
 class TrajectoryInterpolatorTest : public ::testing::Test {
- protected:
-  void SetUp() override {
+protected:
+  void SetUp() override
+  {
     interp_.Init(kNq, kNv, kNc);
     q_ref_.setZero(kNq);
     v_ref_.setZero(kNv);
@@ -113,7 +117,7 @@ TEST_F(TrajectoryInterpolatorTest, LinearTrajectoryReproducedExactly) {
   // underlying signal is linear.
   for (double t_offset : {0.003, 0.017, 0.076}) {
     const uint64_t now = kReceiveNs +
-        static_cast<uint64_t>(t_offset * 1e9);
+      static_cast<uint64_t>(t_offset * 1e9);
     interp_.Interpolate(now, q_ref_, v_ref_, a_ff_, lambda_ref_, meta_);
     ASSERT_TRUE(meta_.valid);
     EXPECT_FALSE(meta_.beyond_horizon);
@@ -168,9 +172,9 @@ TEST_F(TrajectoryInterpolatorTest, RemainingHorizonMonotoneDecrease) {
 
   const double r0 = interp_.RemainingHorizonSec(kReceiveNs);
   const double r_mid =
-      interp_.RemainingHorizonSec(kReceiveNs + 50'000'000);  // +50 ms
+    interp_.RemainingHorizonSec(kReceiveNs + 50'000'000);    // +50 ms
   const double r_end =
-      interp_.RemainingHorizonSec(kReceiveNs + 200'000'000);  // past horizon
+    interp_.RemainingHorizonSec(kReceiveNs + 200'000'000);    // past horizon
   EXPECT_NEAR(r0, kHorizon * kDtNode, kTol);
   EXPECT_GT(r0, r_mid);
   EXPECT_GT(r_mid, 0.0);
@@ -180,7 +184,8 @@ TEST_F(TrajectoryInterpolatorTest, RemainingHorizonMonotoneDecrease) {
 /// Build a solution sampled from a cubic polynomial q(t) = c0 + c1 t + c2 t² + c3 t³
 /// with matching analytical velocity. A cubic Hermite interpolator must
 /// reproduce this exactly (up to fp roundoff) between any pair of nodes.
-MPCSolution MakeCubicSolution(double c0, double c1, double c2, double c3) {
+MPCSolution MakeCubicSolution(double c0, double c1, double c2, double c3)
+{
   MPCSolution sol{};
   sol.horizon_length = kHorizon;
   sol.dt_node = kDtNode;
@@ -197,9 +202,9 @@ MPCSolution MakeCubicSolution(double c0, double c1, double c2, double c3) {
     const double v = c1 + 2.0 * c2 * t + 3.0 * c3 * t * t;
     for (int i = 0; i < kNq; ++i) {
       sol.q_traj[static_cast<std::size_t>(k)]
-                [static_cast<std::size_t>(i)] = q + 0.1 * i;
+      [static_cast<std::size_t>(i)] = q + 0.1 * i;
       sol.v_traj[static_cast<std::size_t>(k)]
-                [static_cast<std::size_t>(i)] = v;
+      [static_cast<std::size_t>(i)] = v;
     }
   }
   return sol;
@@ -211,10 +216,10 @@ TEST_F(TrajectoryInterpolatorTest, HermiteReproducesCubicExactly) {
 
   // Sample at 7 non-node times spanning multiple segments.
   const std::array<double, 7> offsets{
-      0.0015, 0.0049, 0.023, 0.038, 0.061, 0.077, 0.091};
+    0.0015, 0.0049, 0.023, 0.038, 0.061, 0.077, 0.091};
   for (double t_offset : offsets) {
     const uint64_t now = kReceiveNs +
-        static_cast<uint64_t>(t_offset * 1e9);
+      static_cast<uint64_t>(t_offset * 1e9);
     interp_.Interpolate(now, q_ref_, v_ref_, a_ff_, lambda_ref_, meta_);
     ASSERT_TRUE(meta_.valid);
 
@@ -274,7 +279,7 @@ TEST_F(TrajectoryInterpolatorTest, HermiteReducesToLinearForLinearInput) {
 
   for (double t_offset : {0.003, 0.017, 0.076}) {
     const uint64_t now = kReceiveNs +
-        static_cast<uint64_t>(t_offset * 1e9);
+      static_cast<uint64_t>(t_offset * 1e9);
     interp_.Interpolate(now, q_ref_, v_ref_, a_ff_, lambda_ref_, meta_);
     ASSERT_TRUE(meta_.valid);
 

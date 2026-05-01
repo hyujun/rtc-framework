@@ -57,7 +57,8 @@ virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 | `SetHandEstop(bool)` | no-op | 핸드 비상 정지 설정 |
 | `LoadConfig(const YAML::Node&)` | 디바이스 플래그 경고 + 토픽 파싱 | YAML 설정 로드. `noexcept`가 아님 (throw 가능) |
 | `GetCommandType()` | `CommandType::kPosition` | 커맨드 타입 (`kPosition` 또는 `kTorque`) |
-| `GetMpcSolveStats()` | `std::nullopt` | MPC 루프를 보유한 컨트롤러만 오버라이드. **컨트롤러 자체 LifecycleNode**의 aux 1 Hz 타이머가 자기 자신을 폴링하여 `<session>/controllers/<config_key>/mpc_solve_timing.csv`로 기록하고 10초마다 `RCLCPP_INFO` 요약. 반환 타입은 `std::optional<rtc::MpcSolveStats>` ([`rtc_base/timing/mpc_solve_stats.hpp`](../rtc_base/include/rtc_base/timing/mpc_solve_stats.hpp)); writer는 [`rtc_mpc/logging/mpc_solve_timing_logger.hpp`](../rtc_mpc/include/rtc_mpc/logging/mpc_solve_timing_logger.hpp). |
+| `GetMpcSolveStats()` | `std::nullopt` | MPC 루프를 보유한 컨트롤러만 오버라이드. 반환 타입 `std::optional<rtc::MpcSolveStats>` ([`rtc_base/timing/mpc_solve_stats.hpp`](../rtc_base/include/rtc_base/timing/mpc_solve_stats.hpp)) — 256-sample 슬라이딩 윈도우 통계로 10 s aggregate INFO 라인용. 디스크에 직접 기록하지 않음 (per-tick raw 스트림은 `DrainMpcSolveSamples` 사용). |
+| `DrainMpcSolveSamples(callback)` | `0` 반환 | MPC 루프를 보유한 컨트롤러만 오버라이드. 매 MPC tick마다 producer가 `rtc::MpcSolveSample {t_wall_ns, count, solve_ns}`를 SPSC ring([`rtc_base/timing/mpc_solve_sample.hpp`](../rtc_base/include/rtc_base/timing/mpc_solve_sample.hpp))에 push; 이 함수는 비-RT consumer(컨트롤러 자체 LifecycleNode aux 1 Hz 타이머)가 호출해 FIFO 순으로 drain. 컨트롤러는 받은 샘플을 [`rtc_mpc/logging/mpc_solve_timing_logger.hpp`](../rtc_mpc/include/rtc_mpc/logging/mpc_solve_timing_logger.hpp)에 forward해 `<session>/controllers/<config_key>/mpc_solve_timing.csv`(per-tick 3 cols)에 append. 반환값은 이 호출에서 drain된 샘플 수. |
 
 > **`LoadConfig()` 기본 구현 동작:**
 > 1. `cfg["enable_ur5e"]` / `cfg["enable_hand"]` 존재 시 deprecated 경고 출력 후 무시

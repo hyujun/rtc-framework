@@ -5,12 +5,15 @@
 #include <algorithm>
 #include <chrono>
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
-MPCThread::~MPCThread() { Join(); }
+MPCThread::~MPCThread() {Join();}
 
-void MPCThread::Init(MPCSolutionManager &manager,
-                     const MpcThreadLaunchConfig &launch_config) noexcept {
+void MPCThread::Init(
+  MPCSolutionManager & manager,
+  const MpcThreadLaunchConfig & launch_config) noexcept
+{
   manager_ = &manager;
   launch_config_ = launch_config;
   if (launch_config_.num_workers < 0) {
@@ -25,17 +28,18 @@ void MPCThread::Init(MPCSolutionManager &manager,
   initialised_ = (manager_ != nullptr);
 }
 
-void MPCThread::Start() {
+void MPCThread::Start()
+{
   if (!initialised_ || running_.exchange(true)) {
     return;
   }
   // Workers are started first so that any solver which consumes the worker
   // span finds them live on first iteration.
   for (int i = 0; i < launch_config_.num_workers; ++i) {
-    const rtc::ThreadConfig &wcfg =
-        launch_config_.workers[static_cast<std::size_t>(i)];
+    const rtc::ThreadConfig & wcfg =
+      launch_config_.workers[static_cast<std::size_t>(i)];
     workers_[static_cast<std::size_t>(i)] =
-        std::jthread([wcfg](std::stop_token /*stoken*/) {
+      std::jthread([wcfg](std::stop_token /*stoken*/) {
           (void)rtc::ApplyThreadConfig(wcfg);
           // Workers are passive: they apply their thread config and then
           // sleep until destruction. Concrete solvers (e.g. Aligator)
@@ -43,28 +47,31 @@ void MPCThread::Start() {
         });
   }
   main_thread_ =
-      std::jthread([this](std::stop_token stoken) { RunMain(stoken); });
+    std::jthread([this](std::stop_token stoken) {RunMain(stoken);});
 }
 
-void MPCThread::RequestStop() noexcept {
+void MPCThread::RequestStop() noexcept
+{
   main_thread_.request_stop();
   for (int i = 0; i < launch_config_.num_workers; ++i) {
     workers_[static_cast<std::size_t>(i)].request_stop();
   }
   // Wake any pause-blocked main loop so it observes stop_requested and
   // exits promptly rather than waiting indefinitely on the cv.
-  { std::lock_guard<std::mutex> lock(pause_mutex_); }
+  {std::lock_guard<std::mutex> lock(pause_mutex_);}
   pause_cv_.notify_all();
 }
 
-void MPCThread::Pause() noexcept {
+void MPCThread::Pause() noexcept
+{
   paused_.store(true);
   // No notify needed — the loop polls paused_ at the top of each iteration
   // and enters the cv wait on its own. notify is only required to wake from
   // the wait (Resume / RequestStop).
 }
 
-void MPCThread::Resume() noexcept {
+void MPCThread::Resume() noexcept
+{
   {
     std::lock_guard<std::mutex> lock(pause_mutex_);
     paused_.store(false);
@@ -72,13 +79,14 @@ void MPCThread::Resume() noexcept {
   pause_cv_.notify_all();
 }
 
-void MPCThread::Join() noexcept {
+void MPCThread::Join() noexcept
+{
   RequestStop();
   if (main_thread_.joinable()) {
     main_thread_.join();
   }
   for (int i = 0; i < launch_config_.num_workers; ++i) {
-    auto &worker = workers_[static_cast<std::size_t>(i)];
+    auto & worker = workers_[static_cast<std::size_t>(i)];
     if (worker.joinable()) {
       worker.join();
     }
@@ -86,7 +94,8 @@ void MPCThread::Join() noexcept {
   running_.store(false);
 }
 
-void MPCThread::RunMain(std::stop_token stoken) {
+void MPCThread::RunMain(std::stop_token stoken)
+{
   (void)rtc::ApplyThreadConfig(launch_config_.main);
 
   const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -96,7 +105,7 @@ void MPCThread::RunMain(std::stop_token stoken) {
   MPCSolution scratch{};
 
   std::span<std::jthread> worker_span(
-      workers_.data(), static_cast<std::size_t>(launch_config_.num_workers));
+    workers_.data(), static_cast<std::size_t>(launch_config_.num_workers));
 
   while (!stoken.stop_requested()) {
     // Pause gate: block here when Pause() has been called. Resume() /
@@ -105,7 +114,7 @@ void MPCThread::RunMain(std::stop_token stoken) {
     if (paused_.load()) {
       std::unique_lock<std::mutex> lock(pause_mutex_);
       pause_cv_.wait(lock, [this, &stoken]() {
-        return !paused_.load() || stoken.stop_requested();
+          return !paused_.load() || stoken.stop_requested();
       });
       if (stoken.stop_requested()) {
         break;

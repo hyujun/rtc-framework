@@ -19,7 +19,8 @@ using ur5e_bringup::FingertipVtcpInput;
 using ur5e_bringup::VirtualTcpConfig;
 using ur5e_bringup::VirtualTcpMode;
 
-namespace {
+namespace
+{
 
 constexpr double kEps = 1e-9;
 
@@ -28,11 +29,13 @@ constexpr double kEps = 1e-9;
 std::array<FingertipVtcpInput, 4> MakeBalancedFingertips()
 {
   std::array<FingertipVtcpInput, 4> fts{};
-  fts[0].position_in_tcp = Eigen::Vector3d( 0.01,  0.02,  0.03);
-  fts[1].position_in_tcp = Eigen::Vector3d(-0.01, -0.02,  0.03);
-  fts[2].position_in_tcp = Eigen::Vector3d( 0.01, -0.02, -0.03);
-  fts[3].position_in_tcp = Eigen::Vector3d(-0.01,  0.02, -0.03);
-  for (auto& ft : fts) ft.active = true;
+  fts[0].position_in_tcp = Eigen::Vector3d(0.01, 0.02, 0.03);
+  fts[1].position_in_tcp = Eigen::Vector3d(-0.01, -0.02, 0.03);
+  fts[2].position_in_tcp = Eigen::Vector3d(0.01, -0.02, -0.03);
+  fts[3].position_in_tcp = Eigen::Vector3d(-0.01, 0.02, -0.03);
+  for (auto & ft : fts) {
+    ft.active = true;
+  }
   return fts;
 }
 
@@ -124,7 +127,9 @@ TEST(VirtualTcpTest, WeightedZeroForceEqualsCentroid)
   cfg_c.mode = VirtualTcpMode::kCentroid;
 
   auto fts = MakeBalancedFingertips();
-  for (auto& ft : fts) ft.force_magnitude = 0.0;
+  for (auto & ft : fts) {
+    ft.force_magnitude = 0.0;
+}
 
   auto rw = ComputeVirtualTcp(cfg_w, pinocchio::SE3::Identity(), fts);
   auto rc = ComputeVirtualTcp(cfg_c, pinocchio::SE3::Identity(), fts);
@@ -177,9 +182,9 @@ TEST(VirtualTcpTest, ConstantModeAppliesOffsetIndependentOfFingertips)
   std::array<FingertipVtcpInput, 4> fts{};  // fingertips ignored in constant mode
   auto result = ComputeVirtualTcp(cfg, pinocchio::SE3::Identity(), fts);
   ASSERT_TRUE(result.valid);
-  EXPECT_NEAR(result.T_tcp_vtcp.translation().x(),  0.1, kEps);
+  EXPECT_NEAR(result.T_tcp_vtcp.translation().x(), 0.1, kEps);
   EXPECT_NEAR(result.T_tcp_vtcp.translation().y(), -0.2, kEps);
-  EXPECT_NEAR(result.T_tcp_vtcp.translation().z(),  0.3, kEps);
+  EXPECT_NEAR(result.T_tcp_vtcp.translation().z(), 0.3, kEps);
 }
 
 TEST(VirtualTcpTest, ConstantModeRpyOrientationApplied)
@@ -195,7 +200,7 @@ TEST(VirtualTcpTest, ConstantModeRpyOrientationApplied)
   ASSERT_TRUE(result.valid);
 
   const Eigen::Matrix3d R_expected =
-      pinocchio::rpy::rpyToMatrix(0.0, 0.0, M_PI / 2.0);
+    pinocchio::rpy::rpyToMatrix(0.0, 0.0, M_PI / 2.0);
   EXPECT_TRUE((result.T_tcp_vtcp.rotation() - R_expected).norm() < 1e-9);
 }
 
@@ -220,13 +225,13 @@ TEST(VirtualTcpTest, WorldPoseEqualsBaseTimesTcpVtcp)
 
   const pinocchio::SE3 expected = T_base_tcp.act(result.T_tcp_vtcp);
   EXPECT_TRUE((result.world_pose.translation() - expected.translation())
-                  .isZero(1e-9));
+    .isZero(1e-9));
   EXPECT_TRUE((result.world_pose.rotation() - expected.rotation()).norm() < 1e-9);
 
   // Spot-check offset is in the TCP frame (not base frame):
   // world = T_base_tcp.translation() + R_base_tcp * offset
   const Eigen::Vector3d offset_in_tcp(cfg.offset[0], cfg.offset[1], cfg.offset[2]);
   const Eigen::Vector3d expected_world =
-      T_base_tcp.translation() + T_base_tcp.rotation() * offset_in_tcp;
+    T_base_tcp.translation() + T_base_tcp.rotation() * offset_in_tcp;
   EXPECT_TRUE((result.world_pose.translation() - expected_world).isZero(1e-9));
 }

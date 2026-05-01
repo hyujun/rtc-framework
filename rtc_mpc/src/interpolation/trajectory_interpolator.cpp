@@ -3,13 +3,16 @@
 #include <algorithm>
 #include <cmath>
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
-void TrajectoryInterpolator::Init(int nq, int nv, int n_contact_vars) {
+void TrajectoryInterpolator::Init(int nq, int nv, int n_contact_vars)
+{
   // Bounds check against the compile-time capacity of MPCSolution. These
   // are capacity limits, not per-robot limits, so they are runtime-invariant.
   if (nq < 0 || nq > kMaxNq || nv < 0 || nv > kMaxNv ||
-      n_contact_vars < 0 || n_contact_vars > kMaxContactVars) {
+    n_contact_vars < 0 || n_contact_vars > kMaxContactVars)
+  {
     nq_ = 0;
     nv_ = 0;
     n_contact_vars_ = 0;
@@ -22,8 +25,10 @@ void TrajectoryInterpolator::Init(int nq, int nv, int n_contact_vars) {
   has_solution_ = false;
 }
 
-void TrajectoryInterpolator::SetSolution(const MPCSolution& sol,
-                                         uint64_t receive_ns) noexcept {
+void TrajectoryInterpolator::SetSolution(
+  const MPCSolution & sol,
+  uint64_t receive_ns) noexcept
+{
   if (!sol.IsValid()) {
     has_solution_ = false;
     return;
@@ -34,12 +39,13 @@ void TrajectoryInterpolator::SetSolution(const MPCSolution& sol,
 }
 
 void TrajectoryInterpolator::Interpolate(
-    uint64_t now_ns,
-    Eigen::Ref<Eigen::VectorXd> q_ref,
-    Eigen::Ref<Eigen::VectorXd> v_ref,
-    Eigen::Ref<Eigen::VectorXd> a_ff,
-    Eigen::Ref<Eigen::VectorXd> lambda_ref,
-    InterpMeta& meta_out) noexcept {
+  uint64_t now_ns,
+  Eigen::Ref<Eigen::VectorXd> q_ref,
+  Eigen::Ref<Eigen::VectorXd> v_ref,
+  Eigen::Ref<Eigen::VectorXd> a_ff,
+  Eigen::Ref<Eigen::VectorXd> lambda_ref,
+  InterpMeta & meta_out) noexcept
+{
   meta_out.valid = false;
   meta_out.beyond_horizon = false;
   meta_out.progress = 0.0;
@@ -57,12 +63,12 @@ void TrajectoryInterpolator::Interpolate(
   // Elapsed time since node 0 (in seconds). Clamp to non-negative to
   // tolerate minor clock drift between MPC publish and RT consume.
   const int64_t delta_ns =
-      static_cast<int64_t>(now_ns) - static_cast<int64_t>(receive_ns_);
+    static_cast<int64_t>(now_ns) - static_cast<int64_t>(receive_ns_);
   const double t_local =
-      std::max<double>(0.0, static_cast<double>(delta_ns) * 1e-9);
+    std::max<double>(0.0, static_cast<double>(delta_ns) * 1e-9);
 
   const double horizon_sec =
-      static_cast<double>(horizon) * dt;
+    static_cast<double>(horizon) * dt;
 
   if (t_local >= horizon_sec) {
     // Beyond horizon: freeze on the final node and zero the feedforward.
@@ -74,16 +80,16 @@ void TrajectoryInterpolator::Interpolate(
 
     for (int i = 0; i < nq; ++i) {
       q_ref(i) = sol_.q_traj[static_cast<std::size_t>(last)]
-                           [static_cast<std::size_t>(i)];
+        [static_cast<std::size_t>(i)];
     }
     for (int i = 0; i < nv; ++i) {
       v_ref(i) = sol_.v_traj[static_cast<std::size_t>(last)]
-                           [static_cast<std::size_t>(i)];
+        [static_cast<std::size_t>(i)];
       a_ff(i) = 0.0;
     }
     for (int i = 0; i < nc; ++i) {
       lambda_ref(i) = sol_.lambda_traj[static_cast<std::size_t>(last_u)]
-                                     [static_cast<std::size_t>(i)];
+        [static_cast<std::size_t>(i)];
     }
     meta_out.valid = true;
     meta_out.beyond_horizon = true;
@@ -109,11 +115,12 @@ void TrajectoryInterpolator::Interpolate(
 }
 
 void TrajectoryInterpolator::InterpolateHermite(
-    int node_k, double alpha,
-    Eigen::Ref<Eigen::VectorXd> q_ref,
-    Eigen::Ref<Eigen::VectorXd> v_ref,
-    Eigen::Ref<Eigen::VectorXd> a_ff,
-    Eigen::Ref<Eigen::VectorXd> lambda_ref) noexcept {
+  int node_k, double alpha,
+  Eigen::Ref<Eigen::VectorXd> q_ref,
+  Eigen::Ref<Eigen::VectorXd> v_ref,
+  Eigen::Ref<Eigen::VectorXd> a_ff,
+  Eigen::Ref<Eigen::VectorXd> lambda_ref) noexcept
+{
   // Cubic Hermite basis evaluated at α ∈ [0, 1].
   const double a2 = alpha * alpha;
   const double a3 = a2 * alpha;
@@ -157,10 +164,10 @@ void TrajectoryInterpolator::InterpolateHermite(
     q_ref(i) = h00 * q_k + h10 * dt * v_k + h01 * q_k1 + h11 * dt * v_k1;
     // v(t) = dq/dt = (dq/dα) · (dα/dt) = (dq/dα) / Δt
     v_ref(i) = (h00p * q_k + h10p * dt * v_k + h01p * q_k1 +
-                h11p * dt * v_k1) * inv_dt;
+      h11p * dt * v_k1) * inv_dt;
     // a(t) = d²q/dt² = (d²q/dα²) / Δt²
     a_ff(i) = (h00pp * q_k + h10pp * dt * v_k + h01pp * q_k1 +
-               h11pp * dt * v_k1) * inv_dt2;
+      h11pp * dt * v_k1) * inv_dt2;
   }
   // If nq > nv (rare: config with un-modelled velocity components), fall
   // back to linear position interpolation for the tail and zero velocity /
@@ -168,7 +175,7 @@ void TrajectoryInterpolator::InterpolateHermite(
   for (int i = n_coupled; i < nq; ++i) {
     const auto idx = static_cast<std::size_t>(i);
     q_ref(i) = (1.0 - alpha) * sol_.q_traj[kk][idx] +
-               alpha * sol_.q_traj[kk1][idx];
+      alpha * sol_.q_traj[kk1][idx];
   }
   // If nv > nq (also rare), zero the extra velocity entries.
   for (int i = n_coupled; i < nv; ++i) {
@@ -181,21 +188,22 @@ void TrajectoryInterpolator::InterpolateHermite(
   for (int i = 0; i < nc; ++i) {
     const auto idx = static_cast<std::size_t>(i);
     lambda_ref(i) = one_minus_alpha * sol_.lambda_traj[kk][idx] +
-                    alpha * sol_.lambda_traj[kk1][idx];
+      alpha * sol_.lambda_traj[kk1][idx];
   }
 }
 
 double TrajectoryInterpolator::RemainingHorizonSec(
-    uint64_t now_ns) const noexcept {
+  uint64_t now_ns) const noexcept
+{
   if (!has_solution_ || sol_.dt_node <= 0.0 || sol_.horizon_length <= 0) {
     return 0.0;
   }
   const int64_t delta_ns =
-      static_cast<int64_t>(now_ns) - static_cast<int64_t>(receive_ns_);
+    static_cast<int64_t>(now_ns) - static_cast<int64_t>(receive_ns_);
   const double t_local =
-      std::max<double>(0.0, static_cast<double>(delta_ns) * 1e-9);
+    std::max<double>(0.0, static_cast<double>(delta_ns) * 1e-9);
   const double horizon_sec =
-      static_cast<double>(sol_.horizon_length) * sol_.dt_node;
+    static_cast<double>(sol_.horizon_length) * sol_.dt_node;
   const double remaining = horizon_sec - t_local;
   return remaining > 0.0 ? remaining : 0.0;
 }

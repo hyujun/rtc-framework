@@ -12,8 +12,10 @@
 #include <cstring>
 #include <type_traits>
 
-namespace rtc::mpc {
-namespace {
+namespace rtc::mpc
+{
+namespace
+{
 
 TEST(MpcSolutionTypes, TriviallyCopyable) {
   static_assert(std::is_trivially_copyable_v<MPCSolution>);

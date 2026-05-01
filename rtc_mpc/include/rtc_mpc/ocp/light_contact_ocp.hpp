@@ -48,7 +48,8 @@
 #include <string_view>
 #include <vector>
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
 /// @brief Non-owning raw-pointer handles to residuals stored inside a
 ///        StageModel's polymorphic cost tree. Populated **after** problem
@@ -56,7 +57,8 @@ namespace rtc::mpc {
 ///
 /// Null entries indicate the corresponding weight was <= 0 at Build and
 /// the residual is absent from the stage (no lookup possible).
-struct LightStageHandles {
+struct LightStageHandles
+{
   aligator::FramePlacementResidualTpl<double> *frame_placement{nullptr};
   aligator::StateErrorResidualTpl<double> *state_reg{nullptr};
   aligator::ControlErrorResidualTpl<double> *control_reg{nullptr};
@@ -68,30 +70,35 @@ public:
   ~LightContactOCP() override = default;
 
   LightContactOCP(const LightContactOCP &) = delete;
-  LightContactOCP &operator=(const LightContactOCP &) = delete;
+  LightContactOCP & operator=(const LightContactOCP &) = delete;
   LightContactOCP(LightContactOCP &&) = delete;
-  LightContactOCP &operator=(LightContactOCP &&) = delete;
+  LightContactOCP & operator=(LightContactOCP &&) = delete;
 
-  [[nodiscard]] OCPBuildError Build(const PhaseContext &ctx,
-                                    const RobotModelHandler &model,
-                                    const OCPLimits &limits) noexcept override;
+  [[nodiscard]] OCPBuildError Build(
+    const PhaseContext & ctx,
+    const RobotModelHandler & model,
+    const OCPLimits & limits) noexcept override;
 
   [[nodiscard]] OCPBuildError
-  UpdateReferences(const PhaseContext &ctx) noexcept override;
+  UpdateReferences(const PhaseContext & ctx) noexcept override;
 
-  [[nodiscard]] bool Built() const noexcept override {
+  [[nodiscard]] bool Built() const noexcept override
+  {
     return problem_ != nullptr;
   }
 
-  [[nodiscard]] aligator::TrajOptProblemTpl<double> &problem() override {
+  [[nodiscard]] aligator::TrajOptProblemTpl<double> & problem() override
+  {
     return *problem_;
   }
 
-  [[nodiscard]] int horizon_length() const noexcept override {
+  [[nodiscard]] int horizon_length() const noexcept override
+  {
     return horizon_length_;
   }
 
-  [[nodiscard]] std::string_view ocp_type() const noexcept override {
+  [[nodiscard]] std::string_view ocp_type() const noexcept override
+  {
     return std::string_view{"light_contact"};
   }
 

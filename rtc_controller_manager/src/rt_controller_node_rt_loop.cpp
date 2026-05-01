@@ -12,15 +12,17 @@ namespace urtc = rtc;
 
 // ── 50 Hz watchdog (E-STOP)
 // ───────────────────────────────────────────────────
-void RtControllerNode::CheckTimeouts() {
+void RtControllerNode::CheckTimeouts()
+{
   if (device_timeouts_.empty()) {
     return;
   }
 
   const auto now = std::chrono::steady_clock::now();
-  for (auto &dt : device_timeouts_) {
-    if (!dt.received.load(std::memory_order_relaxed))
+  for (auto & dt : device_timeouts_) {
+    if (!dt.received.load(std::memory_order_relaxed)) {
       continue;
+    }
     if ((now - dt.last_update) > dt.timeout && !IsGlobalEstopped()) {
       TriggerGlobalEstop(dt.group_name + "_timeout");
       return;
@@ -28,23 +30,27 @@ void RtControllerNode::CheckTimeouts() {
   }
 }
 
-bool RtControllerNode::AllTimeoutDevicesReceived() const noexcept {
-  for (const auto &dt : device_timeouts_) {
-    if (!dt.received.load(std::memory_order_relaxed))
+bool RtControllerNode::AllTimeoutDevicesReceived() const noexcept
+{
+  for (const auto & dt : device_timeouts_) {
+    if (!dt.received.load(std::memory_order_relaxed)) {
       return false;
+    }
   }
   return true;
 }
 
 // ── 500 Hz control loop
 // ───────────────────────────────────────────────────────
-void RtControllerNode::ControlLoop() {
+void RtControllerNode::ControlLoop()
+{
   // ── Phase 0: tick start + readiness check ──────────────────────────────
   const auto t0 = std::chrono::steady_clock::now();
 
   if (!state_received_.load(std::memory_order_acquire)) {
     if (!init_complete_ && init_timeout_ticks_ > 0 &&
-        ++init_wait_ticks_ > init_timeout_ticks_) {
+      ++init_wait_ticks_ > init_timeout_ticks_)
+    {
       RCLCPP_FATAL(get_logger(),
                    "Initialization timeout (%.1f s): robot=%d, target=%d",
                    static_cast<double>(init_timeout_ticks_) / control_rate_,
@@ -60,15 +66,15 @@ void RtControllerNode::ControlLoop() {
     if (auto_hold_position_) {
       const int idx = active_controller_idx_.load(std::memory_order_acquire);
       const auto uidx = static_cast<std::size_t>(idx);
-      const auto &active_tc = controller_topic_configs_[uidx];
+      const auto & active_tc = controller_topic_configs_[uidx];
 
-      const auto &hold_slots = controller_slot_mappings_[uidx];
+      const auto & hold_slots = controller_slot_mappings_[uidx];
       urtc::ControllerState hold_state{};
       {
         std::size_t di = 0;
         for ([[maybe_unused]] const auto &[gname, ggroup] : active_tc.groups) {
           const auto slot = static_cast<std::size_t>(hold_slots.slots[di]);
-          auto &dev = hold_state.devices[di];
+          auto & dev = hold_state.devices[di];
           const auto cache = device_states_[slot].Load();
           dev.num_channels = cache.num_channels;
           dev.positions = cache.positions;
@@ -83,7 +89,8 @@ void RtControllerNode::ControlLoop() {
 
       bool all_devices_valid = true;
       for (std::size_t d = 0;
-           d < static_cast<std::size_t>(hold_state.num_devices); ++d) {
+        d < static_cast<std::size_t>(hold_state.num_devices); ++d)
+      {
         if (!hold_state.devices[d].valid) {
           all_devices_valid = false;
           break;
@@ -101,7 +108,8 @@ void RtControllerNode::ControlLoop() {
                   controllers_[uidx]->Name().data());
     } else {
       if (!init_complete_ && init_timeout_ticks_ > 0 &&
-          ++init_wait_ticks_ > init_timeout_ticks_) {
+        ++init_wait_ticks_ > init_timeout_ticks_)
+      {
         RCLCPP_FATAL(get_logger(),
                      "Initialization timeout (%.1f s): robot=%d, target=%d",
                      static_cast<double>(init_timeout_ticks_) / control_rate_,
@@ -123,18 +131,18 @@ void RtControllerNode::ControlLoop() {
   // topic config lookup (Phase 1), Compute() dispatch (Phase 2), and
   // publish snapshot (Phase 3) within the same tick.
   const int active_idx = active_controller_idx_.load(std::memory_order_acquire);
-  const auto &active_tc =
-      controller_topic_configs_[static_cast<std::size_t>(active_idx)];
+  const auto & active_tc =
+    controller_topic_configs_[static_cast<std::size_t>(active_idx)];
 
-  const auto &slot_mapping =
-      controller_slot_mappings_[static_cast<std::size_t>(active_idx)];
+  const auto & slot_mapping =
+    controller_slot_mappings_[static_cast<std::size_t>(active_idx)];
 
   urtc::ControllerState state{};
   std::size_t di = 0;
   for ([[maybe_unused]] const auto &[gname, ggroup] : active_tc.groups) {
     const auto slot = static_cast<std::size_t>(slot_mapping.slots[di]);
     const auto cap = slot_mapping.capabilities[di];
-    auto &dev = state.devices[di];
+    auto & dev = state.devices[di];
     const auto cache = device_states_[slot].Load();
     const auto nc = static_cast<std::size_t>(cache.num_channels);
     dev.num_channels = cache.num_channels;
@@ -142,7 +150,8 @@ void RtControllerNode::ControlLoop() {
     std::copy_n(cache.velocities.data(), nc, dev.velocities.data());
     std::copy_n(cache.efforts.data(), nc, dev.efforts.data());
     if (urtc::HasCapability(cap, urtc::DeviceCapability::kMotorState) &&
-        cache.num_motor_channels > 0) {
+      cache.num_motor_channels > 0)
+    {
       const auto nmc = static_cast<std::size_t>(cache.num_motor_channels);
       dev.num_motor_channels = cache.num_motor_channels;
       std::copy_n(cache.motor_positions.data(), nmc,
@@ -152,7 +161,8 @@ void RtControllerNode::ControlLoop() {
       std::copy_n(cache.motor_efforts.data(), nmc, dev.motor_efforts.data());
     }
     if (urtc::HasCapability(cap, urtc::DeviceCapability::kSensorData) &&
-        cache.num_sensor_channels > 0) {
+      cache.num_sensor_channels > 0)
+    {
       const auto nsc = static_cast<std::size_t>(cache.num_sensor_channels);
       dev.num_sensor_channels = cache.num_sensor_channels;
       std::copy_n(cache.sensor_data.data(), nsc, dev.sensor_data.data());
@@ -160,9 +170,10 @@ void RtControllerNode::ControlLoop() {
                   dev.sensor_data_raw.data());
     }
     if (urtc::HasCapability(cap, urtc::DeviceCapability::kInference) &&
-        cache.num_inference_fingertips > 0) {
+      cache.num_inference_fingertips > 0)
+    {
       const auto nif = static_cast<std::size_t>(cache.num_inference_fingertips *
-                                                urtc::kFTValuesPerFingertip);
+        urtc::kFTValuesPerFingertip);
       dev.num_inference_fingertips = cache.num_inference_fingertips;
       std::copy_n(cache.inference_data.data(), nif, dev.inference_data.data());
       std::copy_n(cache.inference_enable.data(),
@@ -204,11 +215,12 @@ void RtControllerNode::ControlLoop() {
     // Per-group commands → group_commands slots
     std::size_t gi = 0;
     for ([[maybe_unused]] const auto &[gname, ggroup] : active_tc.groups) {
-      if (gi >= static_cast<std::size_t>(urtc::PublishSnapshot::kMaxGroups))
+      if (gi >= static_cast<std::size_t>(urtc::PublishSnapshot::kMaxGroups)) {
         break;
-      auto &gc = snap.group_commands[gi];
-      const auto &dout = output.devices[gi];
-      const auto &dstate = state.devices[gi];
+      }
+      auto & gc = snap.group_commands[gi];
+      const auto & dout = output.devices[gi];
+      const auto & dstate = state.devices[gi];
       const auto onc = static_cast<std::size_t>(dout.num_channels);
       const auto snc = static_cast<std::size_t>(dstate.num_channels);
       gc.num_channels = dout.num_channels;
@@ -247,10 +259,11 @@ void RtControllerNode::ControlLoop() {
       if (dstate.num_inference_fingertips > 0) {
         gc.inference_valid = true;
         gc.num_inference_values =
-            dstate.num_inference_fingertips * urtc::kFTValuesPerFingertip;
+          dstate.num_inference_fingertips * urtc::kFTValuesPerFingertip;
         const auto niv = static_cast<std::size_t>(gc.num_inference_values);
         for (std::size_t i = 0; i < niv && i < gc.inference_output.size();
-             ++i) {
+          ++i)
+        {
           gc.inference_output[i] = dstate.inference_data[i];
         }
       }
@@ -276,20 +289,20 @@ void RtControllerNode::ControlLoop() {
 
   // ── Phase 4: per-phase timing + log push ───────────────────────────────
   const double t_state_us =
-      std::chrono::duration<double, std::micro>(t1 - t0).count();
+    std::chrono::duration<double, std::micro>(t1 - t0).count();
   const double t_compute_us =
-      std::chrono::duration<double, std::micro>(t2 - t1).count();
+    std::chrono::duration<double, std::micro>(t2 - t1).count();
   const double t_publish_us =
-      std::chrono::duration<double, std::micro>(t3 - t2).count();
+    std::chrono::duration<double, std::micro>(t3 - t2).count();
   const double t_total_us =
-      std::chrono::duration<double, std::micro>(t3 - t0).count();
+    std::chrono::duration<double, std::micro>(t3 - t0).count();
 
   // Jitter = |actual_period - expected_period|
   double jitter_us = 0.0;
   if (loop_count_ > 0) {
     const double actual_period_us =
-        std::chrono::duration<double, std::micro>(t0 - prev_loop_start_)
-            .count();
+      std::chrono::duration<double, std::micro>(t0 - prev_loop_start_)
+      .count();
     jitter_us = std::abs(actual_period_us - budget_us_);
   }
   prev_loop_start_ = t0;
@@ -300,6 +313,13 @@ void RtControllerNode::ControlLoop() {
     compute_overrun_count_.fetch_add(1, std::memory_order_relaxed);
   }
 
+  // Push per-tick timing sample (independent stream — generic
+  // ThreadTimingProducer<CmTimingPayload>). Drained by DrainLog into
+  // timing_log.csv. Always-on; cheap and not gated on enable_logging_
+  // (the device CSVs are gated separately below).
+  static_cast<void>(cm_timing_producer_.Push(rtc::CmTimingPayload{
+    t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us}));
+
   // Push log entry to the SPSC ring buffer — O(1), no syscall.
   // DrainLog() (log thread, Core 4) pops entries and writes the CSV file.
   if (enable_logging_) {
@@ -307,15 +327,10 @@ void RtControllerNode::ControlLoop() {
       log_start_time_ = t0;
     }
     const double timestamp =
-        std::chrono::duration<double>(t0 - log_start_time_).count();
+      std::chrono::duration<double>(t0 - log_start_time_).count();
 
     urtc::LogEntry entry{};
     entry.timestamp = timestamp;
-    entry.t_state_acquire_us = t_state_us;
-    entry.t_compute_us = t_compute_us;
-    entry.t_publish_us = t_publish_us;
-    entry.t_total_us = t_total_us;
-    entry.jitter_us = jitter_us;
     entry.actual_task_positions = output.actual_task_positions;
     entry.task_goal_positions = output.task_goal_positions;
     entry.trajectory_task_positions = output.trajectory_task_positions;
@@ -324,14 +339,16 @@ void RtControllerNode::ControlLoop() {
 
     // Per-device logging
     for (std::size_t dvi = 0; dvi < static_cast<std::size_t>(state.num_devices);
-         ++dvi) {
-      auto &dl = entry.devices[dvi];
-      const auto &dout = output.devices[dvi];
-      const auto &dstate = state.devices[dvi];
+      ++dvi)
+    {
+      auto & dl = entry.devices[dvi];
+      const auto & dout = output.devices[dvi];
+      const auto & dstate = state.devices[dvi];
       dl.num_channels = dout.num_channels;
       dl.valid = dstate.valid;
       for (std::size_t j = 0; j < static_cast<std::size_t>(dout.num_channels);
-           ++j) {
+        ++j)
+      {
         dl.goal_positions[j] = dout.goal_positions[j];
         dl.actual_positions[j] = dstate.positions[j];
         dl.actual_velocities[j] = dstate.velocities[j];
@@ -343,14 +360,16 @@ void RtControllerNode::ControlLoop() {
       dl.goal_type = dout.goal_type;
       dl.num_motor_channels = dstate.num_motor_channels;
       for (std::size_t j = 0;
-           j < static_cast<std::size_t>(dstate.num_motor_channels); ++j) {
+        j < static_cast<std::size_t>(dstate.num_motor_channels); ++j)
+      {
         dl.motor_positions[j] = dstate.motor_positions[j];
         dl.motor_velocities[j] = dstate.motor_velocities[j];
         dl.motor_efforts[j] = dstate.motor_efforts[j];
       }
       dl.num_sensor_channels = dstate.num_sensor_channels;
       for (std::size_t j = 0;
-           j < static_cast<std::size_t>(dstate.num_sensor_channels); ++j) {
+        j < static_cast<std::size_t>(dstate.num_sensor_channels); ++j)
+      {
         dl.sensor_data[j] = static_cast<float>(dstate.sensor_data[j]);
         dl.sensor_data_raw[j] = static_cast<float>(dstate.sensor_data_raw[j]);
       }
@@ -360,15 +379,17 @@ void RtControllerNode::ControlLoop() {
     // Inference output for sensor log (from hand device, typically device index
     // 1)
     for (std::size_t dvi = 0; dvi < static_cast<std::size_t>(state.num_devices);
-         ++dvi) {
-      const auto &dstate = state.devices[dvi];
+      ++dvi)
+    {
+      const auto & dstate = state.devices[dvi];
       if (dstate.num_inference_fingertips > 0) {
         entry.inference_valid = true;
         entry.num_inference_values =
-            dstate.num_inference_fingertips * urtc::kFTValuesPerFingertip;
+          dstate.num_inference_fingertips * urtc::kFTValuesPerFingertip;
         const auto niv = static_cast<std::size_t>(entry.num_inference_values);
         for (std::size_t j = 0; j < niv && j < entry.inference_output.size();
-             ++j) {
+          ++j)
+        {
           entry.inference_output[j] = dstate.inference_data[j];
         }
         break; // only one device has inference
@@ -376,7 +397,7 @@ void RtControllerNode::ControlLoop() {
     }
 
     static_cast<void>(
-        log_buffer_.Push(entry)); // silently drops if buffer is full
+      log_buffer_.Push(entry));   // silently drops if buffer is full
   }
 
   ++loop_count_;
@@ -388,9 +409,18 @@ void RtControllerNode::ControlLoop() {
 }
 
 // File I/O and diagnostic logging stay exclusively in the log thread (Core 4).
-void RtControllerNode::DrainLog() {
+void RtControllerNode::DrainLog()
+{
   if (logger_) {
     logger_->DrainBuffer(log_buffer_);
+  }
+
+  // Per-tick timing CSV: drain SPSC into timing_log.csv. Same generic
+  // pattern the controller LifecycleNode aux thread uses for
+  // mpc_solve_timing.csv — see rtc_base/timing/thread_timing_*.hpp.
+  if (cm_timing_logger_.IsOpen()) {
+    cm_timing_producer_.Drain(
+      [this](const rtc::CmTimingSample & s) {cm_timing_logger_.Log(s);});
   }
 
   // Drain deferred E-STOP log messages (set by TriggerGlobalEstop /
@@ -416,22 +446,24 @@ void RtControllerNode::DrainLog() {
     int idx = active_controller_idx_.load(std::memory_order_acquire);
     const auto overruns = overrun_count_.load(std::memory_order_relaxed);
     const auto compute_overruns =
-        compute_overrun_count_.load(std::memory_order_relaxed);
+      compute_overrun_count_.load(std::memory_order_relaxed);
     const auto skips = skip_count_.load(std::memory_order_relaxed);
     const auto log_drops = log_buffer_.drop_count();
     const auto pub_drops = publish_buffer_.drop_count();
+    const auto timing_drops = cm_timing_producer_.DropCount();
     RCLCPP_INFO(get_logger(),
                 "%s  overruns=%lu  compute_overruns=%lu  skips=%lu  "
-                "log_drops=%lu  pub_drops=%lu",
+                "log_drops=%lu  pub_drops=%lu  timing_drops=%lu",
                 timing_profiler_
-                    .Summary(std::string(
+      .Summary(std::string(
                         controllers_[static_cast<std::size_t>(idx)]->Name()))
-                    .c_str(),
+      .c_str(),
                 static_cast<unsigned long>(overruns),
                 static_cast<unsigned long>(compute_overruns),
                 static_cast<unsigned long>(skips),
                 static_cast<unsigned long>(log_drops),
-                static_cast<unsigned long>(pub_drops));
+                static_cast<unsigned long>(pub_drops),
+                static_cast<unsigned long>(timing_drops));
     timing_profiler_.Reset();
   }
 }
@@ -446,7 +478,8 @@ void RtControllerNode::DrainLog() {
 // Threading: runs as std::jthread on Core 2, SCHED_FIFO 90.
 //            CheckTimeouts() inlined every 10th tick (50 Hz).
 
-void RtControllerNode::RtLoopEntry(const urtc::ThreadConfig &cfg) {
+void RtControllerNode::RtLoopEntry(const urtc::ThreadConfig & cfg)
+{
   static_cast<void>(urtc::ApplyThreadConfig(cfg));
   rt_loop_running_.store(true, std::memory_order_release);
 
@@ -455,7 +488,7 @@ void RtControllerNode::RtLoopEntry(const urtc::ThreadConfig &cfg) {
   if (use_sim_time_sync_) {
     // ═══ Simulation mode: CV-based wakeup on state arrival ═══
     const auto sim_timeout =
-        std::chrono::duration<double>(sim_sync_timeout_sec_);
+      std::chrono::duration<double>(sim_sync_timeout_sec_);
 
     RCLCPP_INFO(get_logger(),
                 "RT loop: simulation sync mode (CV wakeup, timeout=%.1f s)",
@@ -466,9 +499,9 @@ void RtControllerNode::RtLoopEntry(const urtc::ThreadConfig &cfg) {
       {
         std::unique_lock lock(state_cv_mutex_);
         woken = state_cv_.wait_for(lock, sim_timeout, [this] {
-          return state_fresh_.load(std::memory_order_acquire) ||
-                 !rt_loop_running_.load(std::memory_order_acquire) ||
-                 !rclcpp::ok();
+              return state_fresh_.load(std::memory_order_acquire) ||
+                     !rt_loop_running_.load(std::memory_order_acquire) ||
+                     !rclcpp::ok();
         });
         state_fresh_.store(false, std::memory_order_release);
       }
@@ -516,7 +549,7 @@ void RtControllerNode::RtLoopEntry(const urtc::ThreadConfig &cfg) {
       clock_gettime(CLOCK_MONOTONIC, &now_ts);
       const int64_t now_ns = now_ts.tv_sec * 1'000'000'000L + now_ts.tv_nsec;
       const int64_t wake_ns =
-          next_wake.tv_sec * 1'000'000'000L + next_wake.tv_nsec;
+        next_wake.tv_sec * 1'000'000'000L + next_wake.tv_nsec;
       const int64_t lag_ns = now_ns - wake_ns;
 
       if (lag_ns > period_ns) {
@@ -532,7 +565,7 @@ void RtControllerNode::RtLoopEntry(const urtc::ThreadConfig &cfg) {
                               std::memory_order_relaxed);
 
         const auto consecutive =
-            consecutive_overruns_.fetch_add(1, std::memory_order_relaxed) + 1;
+          consecutive_overruns_.fetch_add(1, std::memory_order_relaxed) + 1;
         if (consecutive >= kMaxConsecutiveOverruns) {
           TriggerGlobalEstop("consecutive_overrun");
         }
@@ -550,11 +583,13 @@ void RtControllerNode::RtLoopEntry(const urtc::ThreadConfig &cfg) {
   }
 }
 
-void RtControllerNode::StartRtLoop(const urtc::ThreadConfig &rt_cfg) {
-  rt_loop_thread_ = std::jthread([this, rt_cfg]() { RtLoopEntry(rt_cfg); });
+void RtControllerNode::StartRtLoop(const urtc::ThreadConfig & rt_cfg)
+{
+  rt_loop_thread_ = std::jthread([this, rt_cfg]() {RtLoopEntry(rt_cfg);});
 }
 
-void RtControllerNode::StopRtLoop() {
+void RtControllerNode::StopRtLoop()
+{
   rt_loop_running_.store(false, std::memory_order_release);
   // Wake sim-mode CV wait so the RT thread observes the stop flag immediately
   // instead of sleeping until sim_sync_timeout_sec_. Caller is destructor /

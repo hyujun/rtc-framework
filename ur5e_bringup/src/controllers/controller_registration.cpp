@@ -22,4 +22,3 @@ RTC_REGISTER_CONTROLLER(
 RTC_REGISTER_CONTROLLER(
   demo_wbc_controller, "", "ur5e_bringup",
   std::make_unique<ur5e_bringup::DemoWbcController>(urdf))
-

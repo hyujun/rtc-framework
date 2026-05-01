@@ -33,10 +33,12 @@
 #include <string>
 #include <string_view>
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
 /// @brief Failure modes for @ref PhaseCostConfig::LoadFromYaml.
-enum class PhaseCostConfigError {
+enum class PhaseCostConfigError
+{
   kNoError = 0,
   kModelNotInitialised,        ///< RobotModelHandler passed in is unusable
   kInvalidYamlSchema,          ///< missing required key, wrong YAML node kind
@@ -71,7 +73,8 @@ enum class PhaseCostConfigError {
 /// - `q_posture_ref.size()` == `model.nq()`
 /// - `F_target.size()`      == Σ `contact_frames[i].dim`
 /// - `W_placement.size()`   == 6  (SE3: [tx ty tz rx ry rz])
-struct PhaseCostConfig {
+struct PhaseCostConfig
+{
   // Horizon / timing ──────────────────────────────────────────────────────────
   int horizon_length{20};
   double dt{0.01};
@@ -85,7 +88,7 @@ struct PhaseCostConfig {
 
   // Vector weights / references ───────────────────────────────────────────────
   Eigen::Matrix<double, 6, 1> W_placement{
-      Eigen::Matrix<double, 6, 1>::Zero()}; ///< per-axis SE3 placement weight
+    Eigen::Matrix<double, 6, 1>::Zero()};   ///< per-axis SE3 placement weight
   Eigen::VectorXd q_posture_ref{}; ///< nq — state-reg reference posture
   Eigen::VectorXd F_target{}; ///< Σ(contact_dims) — desired contact force
 
@@ -97,7 +100,8 @@ struct PhaseCostConfig {
   std::map<std::string, double> custom_weights{};
 
   /// @brief Lookup a custom weight; absent key returns 0.0 (no throw).
-  [[nodiscard]] double CustomWeight(std::string_view key) const noexcept {
+  [[nodiscard]] double CustomWeight(std::string_view key) const noexcept
+  {
     // std::map::find with string_view requires a heterogeneous comparator
     // (C++14 transparent lookup), which std::map<std::string,...> lacks by
     // default. Construct a string for the lookup — non-RT path so allocation
@@ -116,8 +120,9 @@ struct PhaseCostConfig {
   /// @return `kNoError` on success, otherwise the first validation failure.
   ///         Never throws.
   [[nodiscard]] static PhaseCostConfigError
-  LoadFromYaml(const YAML::Node &cfg, const RobotModelHandler &model,
-               PhaseCostConfig &out) noexcept;
+  LoadFromYaml(
+    const YAML::Node & cfg, const RobotModelHandler & model,
+    PhaseCostConfig & out) noexcept;
 };
 
 } // namespace rtc::mpc

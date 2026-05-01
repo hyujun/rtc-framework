@@ -38,7 +38,8 @@
 #include <span>
 #include <thread>
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
 /// Max number of worker threads that can be managed alongside the main
 /// solve thread. Matches the parallel capacity of 12/16-core layouts.
@@ -47,7 +48,8 @@ inline constexpr int kMaxMpcWorkers = 2;
 /// Configuration struct for launching an MPC thread. Populated by the
 /// caller (typically from `rtc::SystemThreadConfigs::mpc`) and passed into
 /// @ref MPCThread::Init.
-struct MpcThreadLaunchConfig {
+struct MpcThreadLaunchConfig
+{
   /// Main solve thread scheduling / affinity.
   rtc::ThreadConfig main{};
   /// Number of active worker configs in @ref workers.
@@ -64,16 +66,17 @@ public:
   virtual ~MPCThread();
 
   MPCThread(const MPCThread &) = delete;
-  MPCThread &operator=(const MPCThread &) = delete;
+  MPCThread & operator=(const MPCThread &) = delete;
   MPCThread(MPCThread &&) = delete;
-  MPCThread &operator=(MPCThread &&) = delete;
+  MPCThread & operator=(MPCThread &&) = delete;
 
   /// @brief Configure the thread before @ref Start.
   /// @param manager        shared solution manager (state read, solution
   ///                       publish)
   /// @param launch_config  thread affinity / priority / frequency
-  void Init(MPCSolutionManager &manager,
-            const MpcThreadLaunchConfig &launch_config) noexcept;
+  void Init(
+    MPCSolutionManager & manager,
+    const MpcThreadLaunchConfig & launch_config) noexcept;
 
   /// @brief Spawn main + worker threads. No-op if already running or not
   ///        initialised.
@@ -85,7 +88,7 @@ public:
   /// @brief Join all threads. Idempotent; safe to call from the destructor.
   void Join() noexcept;
 
-  [[nodiscard]] bool Running() const noexcept { return running_.load(); }
+  [[nodiscard]] bool Running() const noexcept {return running_.load();}
 
   /// @brief Suspend the solve loop after the current iteration completes.
   ///
@@ -99,7 +102,7 @@ public:
   ///        Start (the loop will start un-paused on the first iteration).
   void Resume() noexcept;
 
-  [[nodiscard]] bool Paused() const noexcept { return paused_.load(); }
+  [[nodiscard]] bool Paused() const noexcept {return paused_.load();}
 
 protected:
   /// @brief Perform one MPC solve.
@@ -109,8 +112,9 @@ protected:
   /// @param workers   worker jthread handles (empty span if no workers).
   /// @return true if @p out_sol contains a usable solution (will be
   ///         published); false to skip publishing this cycle.
-  virtual bool Solve(const MPCStateSnapshot &state, MPCSolution &out_sol,
-                     std::span<std::jthread> workers) = 0;
+  virtual bool Solve(
+    const MPCStateSnapshot & state, MPCSolution & out_sol,
+    std::span<std::jthread> workers) = 0;
 
 private:
   void RunMain(std::stop_token stoken);

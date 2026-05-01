@@ -23,14 +23,16 @@
 
 #include "rtc_mpc/model/robot_model_handler.hpp"
 
-namespace {
+namespace
+{
 
 constexpr const char *kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+  RTC_PANDA_URDF_PATH;
 
 class RobotModelHandlerTest : public ::testing::Test {
 protected:
-  void SetUp() override {
+  void SetUp() override
+  {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed at " << kPandaUrdf
                    << " — run ./install.sh to install Aligator deps";
@@ -42,7 +44,9 @@ protected:
 };
 
 TEST_F(RobotModelHandlerTest, InitSucceedsWithValidYaml) {
-  auto cfg = YAML::Load(R"(
+  auto cfg =
+    YAML::Load(
+      R"(
 end_effector_frame: panda_hand_tcp
 contact_frames:
   - name: panda_leftfinger
@@ -87,7 +91,9 @@ end_effector_frame: not_a_real_frame
 }
 
 TEST_F(RobotModelHandlerTest, MissingContactFrameReturnsError) {
-  auto cfg = YAML::Load(R"(
+  auto cfg =
+    YAML::Load(
+      R"(
 end_effector_frame: panda_hand_tcp
 contact_frames:
   - name: panda_leftfinger
@@ -101,7 +107,9 @@ contact_frames:
 }
 
 TEST_F(RobotModelHandlerTest, InvalidContactDimReturnsError) {
-  auto cfg = YAML::Load(R"(
+  auto cfg =
+    YAML::Load(
+      R"(
 end_effector_frame: panda_hand_tcp
 contact_frames:
   - name: panda_leftfinger

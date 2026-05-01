@@ -31,7 +31,8 @@
 #include <memory>
 #include <vector>
 
-namespace rtc::mpc::internal {
+namespace rtc::mpc::internal
+{
 
 /// @brief Non-owning, non-copyable helper holding the solver and warm-start
 ///        workspace used by the concrete `MPCHandlerBase` subclasses.
@@ -45,58 +46,62 @@ public:
   ~MPCHandlerCore() = default;
 
   MPCHandlerCore(const MPCHandlerCore &) = delete;
-  MPCHandlerCore &operator=(const MPCHandlerCore &) = delete;
+  MPCHandlerCore & operator=(const MPCHandlerCore &) = delete;
   MPCHandlerCore(MPCHandlerCore &&) = delete;
-  MPCHandlerCore &operator=(MPCHandlerCore &&) = delete;
+  MPCHandlerCore & operator=(MPCHandlerCore &&) = delete;
 
   /// @brief Build the OCP through @p ocp and set up the solver. Allocates.
-  [[nodiscard]] MPCInitError Init(const MPCSolverConfig &solver_cfg,
-                                  const RobotModelHandler &model,
-                                  const OCPLimits &limits,
-                                  const PhaseContext &initial_ctx,
-                                  OCPHandlerBase &ocp) noexcept;
+  [[nodiscard]] MPCInitError Init(
+    const MPCSolverConfig & solver_cfg,
+    const RobotModelHandler & model,
+    const OCPLimits & limits,
+    const PhaseContext & initial_ctx,
+    OCPHandlerBase & ocp) noexcept;
 
   /// @brief One MPC tick: (optional) rebuild, warm-start shift, solve,
   ///        pack `out`. `noexcept`; never allocates on steady-state
   ///        topology after first Init.
-  [[nodiscard]] MPCSolveError Solve(const PhaseContext &ctx,
-                                    const MPCStateSnapshot &state,
-                                    OCPHandlerBase &ocp,
-                                    MPCSolution &out) noexcept;
+  [[nodiscard]] MPCSolveError Solve(
+    const PhaseContext & ctx,
+    const MPCStateSnapshot & state,
+    OCPHandlerBase & ocp,
+    MPCSolution & out) noexcept;
 
   /// @brief Copy xs/us from @p prev into the solver's `results_` so the
   ///        next `Solve` warm-starts from it. Used by `MPCFactory` to
   ///        transfer a trajectory across a cross-mode handler swap.
-  void SeedWarmStart(const MPCSolution &prev, OCPHandlerBase &ocp) noexcept;
+  void SeedWarmStart(const MPCSolution & prev, OCPHandlerBase & ocp) noexcept;
 
-  [[nodiscard]] bool Initialised() const noexcept { return initialised_; }
-  [[nodiscard]] int horizon_length() const noexcept { return horizon_length_; }
-  [[nodiscard]] int nq() const noexcept { return nq_; }
-  [[nodiscard]] int nv() const noexcept { return nv_; }
-  [[nodiscard]] int nu() const noexcept { return nu_; }
-  [[nodiscard]] int n_contact_vars() const noexcept { return n_contact_vars_; }
+  [[nodiscard]] bool Initialised() const noexcept {return initialised_;}
+  [[nodiscard]] int horizon_length() const noexcept {return horizon_length_;}
+  [[nodiscard]] int nq() const noexcept {return nq_;}
+  [[nodiscard]] int nv() const noexcept {return nv_;}
+  [[nodiscard]] int nu() const noexcept {return nu_;}
+  [[nodiscard]] int n_contact_vars() const noexcept {return n_contact_vars_;}
 
 private:
   /// @brief Recompute @p n_contact_vars_ from the model's configured
   ///        `ContactFrameInfo` list — the sum of per-frame `dim` values.
-  void RecomputeContactVarDim(const RobotModelHandler &model) noexcept;
+  void RecomputeContactVarDim(const RobotModelHandler & model) noexcept;
 
   /// @brief Fill `results_.xs` with broadcast x0 and `results_.us` with
   ///        gravity-comp τ (Risk #14 cold-seed). Called on first solve
   ///        after Init or a topology rebuild. Non-allocating — uses the
   ///        pre-built `pdata_` and pre-allocated tau buffer.
-  void ColdSeedGuess(const Eigen::VectorXd &q_current,
-                     const Eigen::VectorXd &x_current) noexcept;
+  void ColdSeedGuess(
+    const Eigen::VectorXd & q_current,
+    const Eigen::VectorXd & x_current) noexcept;
 
   /// @brief Copy the top-nu × right-ndx block of `results_.gains_[k]`
   ///        (ColMajor) into the row-major slot of `out.K_riccati[k]`.
   ///        ndx is captured from the OCP at Init.
-  void PackRiccatiGain(std::size_t k, MPCSolution &out) const noexcept;
+  void PackRiccatiGain(std::size_t k, MPCSolution & out) const noexcept;
 
   /// @brief Pack xs/us/lams/K_riccati + metadata into @p out after a
   ///        successful solve. Non-allocating.
-  void PackSolution(const OCPHandlerBase &ocp, MPCSolution &out, bool converged,
-                    std::uint64_t solve_duration_ns) const noexcept;
+  void PackSolution(
+    const OCPHandlerBase & ocp, MPCSolution & out, bool converged,
+    std::uint64_t solve_duration_ns) const noexcept;
 
   // ── State ────────────────────────────────────────────────────────────
   bool initialised_{false};

@@ -11,15 +11,18 @@
 #include <stdexcept>
 #include <string>
 
-namespace ur5e_bringup {
+namespace ur5e_bringup
+{
 
-namespace {
+namespace
+{
 
 constexpr const char *kSharedYamlRelPath =
-    "/config/controllers/demo_shared.yaml";
+  "/config/controllers/demo_shared.yaml";
 constexpr const char *kSharedYamlRootKey = "demo_shared";
 
-void ApplyVirtualTcp(const YAML::Node &node, VirtualTcpConfig &vtcp) {
+void ApplyVirtualTcp(const YAML::Node & node, VirtualTcpConfig & vtcp)
+{
   if (node["virtual_tcp_mode"]) {
     const auto mode_str = node["virtual_tcp_mode"].as<std::string>();
     if (mode_str == "centroid") {
@@ -39,7 +42,8 @@ void ApplyVirtualTcp(const YAML::Node &node, VirtualTcpConfig &vtcp) {
     }
   }
   if (node["virtual_tcp_orientation"] &&
-      node["virtual_tcp_orientation"].IsSequence()) {
+    node["virtual_tcp_orientation"].IsSequence())
+  {
     const auto seq = node["virtual_tcp_orientation"];
     for (std::size_t i = 0; i < 3 && i < seq.size(); ++i) {
       vtcp.orientation[i] = seq[i].as<double>();
@@ -47,48 +51,68 @@ void ApplyVirtualTcp(const YAML::Node &node, VirtualTcpConfig &vtcp) {
   }
 }
 
-void ApplyForcePiBlock(const YAML::Node &fp, DemoSharedConfig &cfg) {
+void ApplyForcePiBlock(const YAML::Node & fp, DemoSharedConfig & cfg)
+{
   cfg.has_force_pi_block = true;
-  auto &gp = cfg.force_pi_params;
+  auto & gp = cfg.force_pi_params;
 
-  if (fp["Kp_base"])
+  if (fp["Kp_base"]) {
     gp.Kp_base = fp["Kp_base"].as<double>();
-  if (fp["Ki_base"])
+  }
+  if (fp["Ki_base"]) {
     gp.Ki_base = fp["Ki_base"].as<double>();
-  if (fp["alpha_ema"])
+  }
+  if (fp["alpha_ema"]) {
     gp.alpha_ema = fp["alpha_ema"].as<double>();
-  if (fp["beta"])
+  }
+  if (fp["beta"]) {
     gp.beta = fp["beta"].as<double>();
-  if (fp["f_contact_threshold"])
+  }
+  if (fp["f_contact_threshold"]) {
     gp.f_contact_threshold = fp["f_contact_threshold"].as<double>();
-  if (fp["f_target"])
+  }
+  if (fp["f_target"]) {
     gp.f_target = fp["f_target"].as<double>();
-  if (fp["f_ramp_rate"])
+  }
+  if (fp["f_ramp_rate"]) {
     gp.f_ramp_rate = fp["f_ramp_rate"].as<double>();
-  if (fp["ds_max"])
+  }
+  if (fp["ds_max"]) {
     gp.ds_max = fp["ds_max"].as<double>();
-  if (fp["delta_s_max"])
+  }
+  if (fp["delta_s_max"]) {
     gp.delta_s_max = fp["delta_s_max"].as<double>();
-  if (fp["integral_clamp"])
+  }
+  if (fp["integral_clamp"]) {
     gp.integral_clamp = fp["integral_clamp"].as<double>();
-  if (fp["approach_speed"])
+  }
+  if (fp["approach_speed"]) {
     gp.approach_speed = fp["approach_speed"].as<double>();
-  if (fp["release_speed"])
+  }
+  if (fp["release_speed"]) {
     gp.release_speed = fp["release_speed"].as<double>();
-  if (fp["settle_epsilon"])
+  }
+  if (fp["settle_epsilon"]) {
     gp.settle_epsilon = fp["settle_epsilon"].as<double>();
-  if (fp["settle_time"])
+  }
+  if (fp["settle_time"]) {
     gp.settle_time = fp["settle_time"].as<double>();
-  if (fp["contact_settle_time"])
+  }
+  if (fp["contact_settle_time"]) {
     gp.contact_settle_time = fp["contact_settle_time"].as<double>();
-  if (fp["df_slip_threshold"])
+  }
+  if (fp["df_slip_threshold"]) {
     gp.df_slip_threshold = fp["df_slip_threshold"].as<double>();
-  if (fp["grip_tightening_ratio"])
+  }
+  if (fp["grip_tightening_ratio"]) {
     gp.grip_tightening_ratio = fp["grip_tightening_ratio"].as<double>();
-  if (fp["f_max_multiplier"])
+  }
+  if (fp["f_max_multiplier"]) {
     gp.f_max_multiplier = fp["f_max_multiplier"].as<double>();
-  if (fp["lpf_cutoff_hz"])
+  }
+  if (fp["lpf_cutoff_hz"]) {
     gp.lpf_cutoff_hz = fp["lpf_cutoff_hz"].as<double>();
+  }
 
   if (fp["fingers"]) {
     const auto fingers_node = fp["fingers"];
@@ -99,7 +123,7 @@ void ApplyForcePiBlock(const YAML::Node &fp, DemoSharedConfig &cfg) {
     if (fingers_node["units"]) {
       const auto units_str = fingers_node["units"].as<std::string>();
       if (units_str == "deg" || units_str == "degrees") {
-        angle_scale = std::numbers::pi_v<double> / 180.0;
+        angle_scale = std::numbers::pi_v<double>/ 180.0;
       } else if (units_str != "rad" && units_str != "radians") {
         RCLCPP_WARN(::ur5e_bringup::logging::SharedConfigLogger(),
                     "force_pi_grasp.fingers.units: unknown value '%s'; "
@@ -117,21 +141,23 @@ void ApplyForcePiBlock(const YAML::Node &fp, DemoSharedConfig &cfg) {
       if (fn["q_open"]) {
         const auto seq = fn["q_open"];
         for (int j = 0;
-             j < rtc::grasp::kDoFPerFinger && j < static_cast<int>(seq.size());
-             ++j) {
+          j < rtc::grasp::kDoFPerFinger && j < static_cast<int>(seq.size());
+          ++j)
+        {
           cfg.force_pi_fingers[static_cast<std::size_t>(i)]
-              .q_open[static_cast<std::size_t>(j)] =
-              seq[j].as<double>() * angle_scale;
+          .q_open[static_cast<std::size_t>(j)] =
+            seq[j].as<double>() * angle_scale;
         }
       }
       if (fn["q_close"]) {
         const auto seq = fn["q_close"];
         for (int j = 0;
-             j < rtc::grasp::kDoFPerFinger && j < static_cast<int>(seq.size());
-             ++j) {
+          j < rtc::grasp::kDoFPerFinger && j < static_cast<int>(seq.size());
+          ++j)
+        {
           cfg.force_pi_fingers[static_cast<std::size_t>(i)]
-              .q_close[static_cast<std::size_t>(j)] =
-              seq[j].as<double>() * angle_scale;
+          .q_close[static_cast<std::size_t>(j)] =
+            seq[j].as<double>() * angle_scale;
         }
       }
     }
@@ -140,7 +166,8 @@ void ApplyForcePiBlock(const YAML::Node &fp, DemoSharedConfig &cfg) {
 
 } // namespace
 
-void ApplyDemoSharedConfig(const YAML::Node &node, DemoSharedConfig &cfg) {
+void ApplyDemoSharedConfig(const YAML::Node & node, DemoSharedConfig & cfg)
+{
   if (!node) {
     return;
   }
@@ -161,10 +188,11 @@ void ApplyDemoSharedConfig(const YAML::Node &node, DemoSharedConfig &cfg) {
   }
 
   if (node["hand_finger_joint_map"] &&
-      node["hand_finger_joint_map"].IsSequence()) {
+    node["hand_finger_joint_map"].IsSequence())
+  {
     const auto seq = node["hand_finger_joint_map"];
     const std::size_t n_fingers =
-        std::min<std::size_t>(seq.size(), cfg.hand_finger_joint_map.size());
+      std::min<std::size_t>(seq.size(), cfg.hand_finger_joint_map.size());
     for (std::size_t f = 0; f < n_fingers; ++f) {
       if (!seq[f].IsSequence()) {
         continue;
@@ -191,12 +219,13 @@ void ApplyDemoSharedConfig(const YAML::Node &node, DemoSharedConfig &cfg) {
   }
 }
 
-void LoadDemoSharedYamlFile(DemoSharedConfig &cfg) {
+void LoadDemoSharedYamlFile(DemoSharedConfig & cfg)
+{
   std::string yaml_path;
   try {
     yaml_path = ament_index_cpp::get_package_share_directory("ur5e_bringup") +
-                kSharedYamlRelPath;
-  } catch (const std::exception &e) {
+      kSharedYamlRelPath;
+  } catch (const std::exception & e) {
     RCLCPP_WARN(::ur5e_bringup::logging::SharedConfigLogger(),
                 "demo_shared.yaml: package share dir lookup failed (%s); "
                 "skipping shared defaults",
@@ -207,7 +236,7 @@ void LoadDemoSharedYamlFile(DemoSharedConfig &cfg) {
   try {
     const YAML::Node file_node = YAML::LoadFile(yaml_path);
     ApplyDemoSharedConfig(file_node[kSharedYamlRootKey], cfg);
-  } catch (const YAML::Exception &e) {
+  } catch (const YAML::Exception & e) {
     RCLCPP_WARN(
         ::ur5e_bringup::logging::SharedConfigLogger(),
         "demo_shared.yaml: load failed at %s (%s); using built-in defaults",
@@ -220,18 +249,18 @@ void LoadDemoSharedYamlFile(DemoSharedConfig &cfg) {
   // up stale or unexpected shared defaults.
   const char *vtcp_mode_str = "disabled";
   switch (cfg.vtcp.mode) {
-  case VirtualTcpMode::kCentroid:
-    vtcp_mode_str = "centroid";
-    break;
-  case VirtualTcpMode::kWeighted:
-    vtcp_mode_str = "weighted";
-    break;
-  case VirtualTcpMode::kConstant:
-    vtcp_mode_str = "constant";
-    break;
-  case VirtualTcpMode::kDisabled:
-    vtcp_mode_str = "disabled";
-    break;
+    case VirtualTcpMode::kCentroid:
+      vtcp_mode_str = "centroid";
+      break;
+    case VirtualTcpMode::kWeighted:
+      vtcp_mode_str = "weighted";
+      break;
+    case VirtualTcpMode::kConstant:
+      vtcp_mode_str = "constant";
+      break;
+    case VirtualTcpMode::kDisabled:
+      vtcp_mode_str = "disabled";
+      break;
   }
   RCLCPP_INFO(
       ::ur5e_bringup::logging::SharedConfigLogger(),
@@ -244,8 +273,9 @@ void LoadDemoSharedYamlFile(DemoSharedConfig &cfg) {
 }
 
 void BuildGraspController(
-    const DemoSharedConfig &cfg, double control_rate_hz,
-    std::unique_ptr<rtc::grasp::GraspController> &grasp_controller) {
+  const DemoSharedConfig & cfg, double control_rate_hz,
+  std::unique_ptr<rtc::grasp::GraspController> & grasp_controller)
+{
   if (cfg.grasp_controller_type != "force_pi" || !cfg.has_force_pi_block) {
     grasp_controller.reset();
     return;

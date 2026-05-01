@@ -29,11 +29,13 @@
 #include "rtc_mpc/phase/phase_cost_config.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 
-namespace {
+namespace
+{
 
 constexpr const char *kPandaUrdf = RTC_PANDA_URDF_PATH;
 
-constexpr const char *kLightCost = R"(
+constexpr const char *kLightCost =
+  R"(
 horizon_length: 15
 dt: 0.01
 w_frame_placement: 100.0
@@ -47,7 +49,8 @@ F_target: [0, 0, 0, 0, 0, 0]
 custom_weights: {}
 )";
 
-constexpr const char *kContactCost = R"(
+constexpr const char *kContactCost =
+  R"(
 horizon_length: 10
 dt: 0.01
 w_frame_placement: 10.0
@@ -63,13 +66,16 @@ custom_weights: {}
 
 class MPCFactoryTest : public ::testing::Test {
 protected:
-  void SetUp() override {
+  void SetUp() override
+  {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed — run ./install.sh verify";
     }
     pinocchio::urdf::buildModel(kPandaUrdf, model_);
 
-    auto robot_cfg = YAML::Load(R"(
+    auto robot_cfg =
+      YAML::Load(
+        R"(
 end_effector_frame: panda_hand
 contact_frames:
   - name: panda_leftfinger
@@ -81,7 +87,8 @@ contact_frames:
               rtc::mpc::RobotModelInitError::kNoError);
   }
 
-  rtc::mpc::PhaseContext MakeLightContext() {
+  rtc::mpc::PhaseContext MakeLightContext()
+  {
     rtc::mpc::PhaseCostConfig cfg{};
     auto yn = YAML::Load(kLightCost);
     EXPECT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(yn, handler_, cfg),
@@ -99,7 +106,8 @@ contact_frames:
     return ctx;
   }
 
-  rtc::mpc::PhaseContext MakeContactContext() {
+  rtc::mpc::PhaseContext MakeContactContext()
+  {
     rtc::mpc::PhaseCostConfig cfg{};
     auto yn = YAML::Load(kContactCost);
     EXPECT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(yn, handler_, cfg),
@@ -123,15 +131,18 @@ contact_frames:
     return ctx;
   }
 
-  rtc::mpc::MPCStateSnapshot MakeStateSnapshot() const {
+  rtc::mpc::MPCStateSnapshot MakeStateSnapshot() const
+  {
     rtc::mpc::MPCStateSnapshot s{};
     const Eigen::VectorXd q = pinocchio::neutral(model_);
     s.nq = handler_.nq();
     s.nv = handler_.nv();
-    for (int i = 0; i < s.nq; ++i)
+    for (int i = 0; i < s.nq; ++i) {
       s.q[static_cast<std::size_t>(i)] = q[i];
-    for (int i = 0; i < s.nv; ++i)
+    }
+    for (int i = 0; i < s.nv; ++i) {
       s.v[static_cast<std::size_t>(i)] = 0.0;
+    }
     return s;
   }
 
@@ -140,7 +151,9 @@ contact_frames:
 };
 
 TEST_F(MPCFactoryTest, DispatchesLightContact) {
-  auto cfg = YAML::Load(R"(
+  auto cfg =
+    YAML::Load(
+      R"(
 mpc:
   ocp_type: light_contact
   solver:
@@ -158,7 +171,9 @@ mpc:
 }
 
 TEST_F(MPCFactoryTest, DispatchesContactRich) {
-  auto cfg = YAML::Load(R"(
+  auto cfg =
+    YAML::Load(
+      R"(
 mpc:
   ocp_type: contact_rich
   solver:
@@ -231,7 +246,9 @@ mpc:
 
 TEST_F(MPCFactoryTest, CrossModeSwapPreservesSolveability) {
   // Build LightContact first, solve, extract warm-start solution.
-  auto cfg_light = YAML::Load(R"(
+  auto cfg_light =
+    YAML::Load(
+      R"(
 mpc:
   ocp_type: light_contact
   solver:
@@ -253,7 +270,9 @@ mpc:
   // Build ContactRich and seed its warm-start with the LightContact
   // solution, then verify the first solve converges (or at minimum does
   // not diverge / throw).
-  auto cfg_rich = YAML::Load(R"(
+  auto cfg_rich =
+    YAML::Load(
+      R"(
 mpc:
   ocp_type: contact_rich
   solver:

@@ -50,11 +50,13 @@
 #include "rtc_mpc/ocp/contact_rich_ocp.hpp"
 #include "test_utils/solver_seeding.hpp"
 
-namespace {
+namespace
+{
 
 constexpr const char *kPandaUrdf = RTC_PANDA_URDF_PATH;
 
-constexpr const char *kCostYaml = R"(
+constexpr const char *kCostYaml =
+  R"(
 horizon_length: 10
 dt: 0.01
 w_frame_placement: 10.0
@@ -70,13 +72,16 @@ custom_weights: {}
 
 class ContactRichOCPTest : public ::testing::Test {
 protected:
-  void SetUp() override {
+  void SetUp() override
+  {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed — run ./install.sh verify";
     }
     pinocchio::urdf::buildModel(kPandaUrdf, model_);
 
-    auto robot_cfg = YAML::Load(R"(
+    auto robot_cfg =
+      YAML::Load(
+        R"(
 end_effector_frame: panda_hand
 contact_frames:
   - name: panda_leftfinger
@@ -115,17 +120,19 @@ contact_frames:
   }
 
   // Seed solver with gravity-comp τ and default xs.
-  void SeedSolver(aligator::SolverProxDDPTpl<double> &solver,
-                  rtc::mpc::ContactRichOCP &ocp) {
+  void SeedSolver(
+    aligator::SolverProxDDPTpl<double> & solver,
+    rtc::mpc::ContactRichOCP & ocp)
+  {
     const int H = ocp.horizon_length();
     std::vector<Eigen::VectorXd> xs(
-        static_cast<std::size_t>(H + 1),
-        Eigen::VectorXd::Zero(handler_.nq() + handler_.nv()));
-    for (auto &x : xs) {
+      static_cast<std::size_t>(H + 1),
+      Eigen::VectorXd::Zero(handler_.nq() + handler_.nv()));
+    for (auto & x : xs) {
       x.head(handler_.nq()) = pinocchio::neutral(model_);
     }
     std::vector<Eigen::VectorXd> us(static_cast<std::size_t>(H),
-                                    Eigen::VectorXd::Zero(handler_.nv()));
+      Eigen::VectorXd::Zero(handler_.nv()));
     rtc::mpc::test_utils::SeedGravityCompensation(
         model_, pinocchio::neutral(model_), us);
     solver.setup(ocp.problem());
@@ -133,8 +140,10 @@ contact_frames:
     run_us_ = std::move(us);
   }
 
-  bool Run(aligator::SolverProxDDPTpl<double> &solver,
-           rtc::mpc::ContactRichOCP &ocp) {
+  bool Run(
+    aligator::SolverProxDDPTpl<double> & solver,
+    rtc::mpc::ContactRichOCP & ocp)
+  {
     return solver.run(ocp.problem(), run_xs_, run_us_);
   }
 
@@ -165,7 +174,7 @@ TEST_F(ContactRichOCPTest, ContactForceTermPresentOnActiveStage) {
   ASSERT_EQ(ocp.Build(ctx_, handler_, limits_),
             rtc::mpc::OCPBuildError::kNoError);
 
-  auto &problem = ocp.problem();
+  auto & problem = ocp.problem();
   ASSERT_GT(problem.stages_.size(), 0u);
   auto *stack = problem.stages_[0]->getCost<aligator::CostStackTpl<double>>();
   ASSERT_NE(stack, nullptr);
@@ -207,10 +216,10 @@ TEST_F(ContactRichOCPTest, NoContactForceCostWhenWeightZero) {
             rtc::mpc::OCPBuildError::kNoError);
 
   auto *stack =
-      ocp.problem().stages_[0]->getCost<aligator::CostStackTpl<double>>();
+    ocp.problem().stages_[0]->getCost<aligator::CostStackTpl<double>>();
   ASSERT_NE(stack, nullptr);
   const aligator::CostStackTpl<double>::CostKey key{
-      std::string("contact_force::panda_leftfinger")};
+    std::string("contact_force::panda_leftfinger")};
   EXPECT_EQ(stack->components_.count(key), 0u);
 }
 
@@ -233,9 +242,9 @@ TEST_F(ContactRichOCPTest, SolveWithGravityCompSeedAttempts) {
     (void)Run(solver, ocp);
     std::cout << "[ContactRichOCP solve] iters=" << solver.results_.num_iters
               << " prim_infeas=" << solver.results_.prim_infeas << "\n";
-  } catch (const std::exception &e) {
+  } catch (const std::exception & e) {
     std::cout << "[ContactRichOCP solve] Risk #14 NaN — known cold-solve "
-                 "limitation: "
+      "limitation: "
               << e.what() << "\n";
   }
   SUCCEED();
@@ -253,13 +262,13 @@ TEST_F(ContactRichOCPTest, UpdateReferencesPropagatesTarget) {
   ASSERT_EQ(ocp.UpdateReferences(ctx_), rtc::mpc::OCPBuildError::kNoError);
 
   auto *stack =
-      ocp.problem().stages_[0]->getCost<aligator::CostStackTpl<double>>();
+    ocp.problem().stages_[0]->getCost<aligator::CostStackTpl<double>>();
   ASSERT_NE(stack, nullptr);
   auto *quad = stack->getComponent<aligator::QuadraticResidualCostTpl<double>>(
       std::string(rtc::mpc::kCostKeyFramePlacement));
   ASSERT_NE(quad, nullptr);
   auto *residual =
-      quad->getResidual<aligator::FramePlacementResidualTpl<double>>();
+    quad->getResidual<aligator::FramePlacementResidualTpl<double>>();
   ASSERT_NE(residual, nullptr);
   EXPECT_TRUE(residual->getReference().translation().isApprox(
       new_target.translation()));
@@ -277,7 +286,7 @@ TEST_F(ContactRichOCPTest, UpdateReferencesMutatesContactForceRef) {
   ASSERT_EQ(ocp.UpdateReferences(ctx_), rtc::mpc::OCPBuildError::kNoError);
 
   auto *stack =
-      ocp.problem().stages_[0]->getCost<aligator::CostStackTpl<double>>();
+    ocp.problem().stages_[0]->getCost<aligator::CostStackTpl<double>>();
   auto *quad = stack->getComponent<aligator::QuadraticResidualCostTpl<double>>(
       std::string("contact_force::panda_leftfinger"));
   ASSERT_NE(quad, nullptr);
@@ -422,7 +431,7 @@ TEST_F(ContactRichOCPTest, ColdSolveIterCount) {
     (void)Run(solver, ocp);
     std::cout << "[ContactRichOCP warm-start] cold iters="
               << solver.results_.num_iters << "\n";
-  } catch (const std::exception &e) {
+  } catch (const std::exception & e) {
     std::cout << "[ContactRichOCP warm-start] cold solve NaN (Risk #14): "
               << e.what() << "\n";
   }
@@ -445,7 +454,7 @@ TEST_F(ContactRichOCPTest, SeededSolveIterCount) {
     // Warm start: reuse previous trajectory; perturb ee_target slightly.
     run_xs_ = solver.results_.xs;
     run_us_ = solver.results_.us;
-  } catch (const std::exception &e) {
+  } catch (const std::exception & e) {
     std::cout << "[ContactRichOCP warm-start] cold solve NaN (Risk #14): "
               << e.what() << "\n";
     SUCCEED();
@@ -462,7 +471,7 @@ TEST_F(ContactRichOCPTest, SeededSolveIterCount) {
     const std::size_t seeded_iters = solver.results_.num_iters;
     std::cout << "[ContactRichOCP warm-start] cold=" << cold_iters
               << " seeded=" << seeded_iters << "\n";
-  } catch (const std::exception &e) {
+  } catch (const std::exception & e) {
     std::cout << "[ContactRichOCP warm-start] seeded solve NaN (Risk #14): "
               << e.what() << "\n";
   }

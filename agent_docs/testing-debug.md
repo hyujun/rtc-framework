@@ -13,7 +13,7 @@
 | `rtc_controllers/` gains/config | 위 + 해당 controller YAML 로드 smoke | `ros2 topic echo /rtc_cm/active_controller_name` |
 | `rtc_controller_manager/` | RT loop timing (`/system/estop_status`) | (MPC CSV는 `<session>/controllers/<config_key>/...` 경로로 컨트롤러가 자체 기록) |
 | `rtc_tsid/` | QP/task/constraint gtest | TSID performance tests |
-| `rtc_mpc/` | gtest (types, TripleBuffer, Riccati, SolutionManager) | `mpc_solve_timing.csv` p50/p99/max 회귀 |
+| `rtc_mpc/` | gtest (types, TripleBuffer, Riccati, SolutionManager) | `mpc_solve_timing.csv` per-tick 회귀 (post-process로 p50/p99/max 계산) |
 | `rtc_mujoco_sim/` | gtest (parse, lifecycle, solver, I/O) | `ros2 launch ur5e_bringup sim.launch.py` smoke |
 | `rtc_urdf_bridge/` | gtest (URDF/model parsing, xacro, chain extractor) | 실제 URDF 파싱 smoke |
 | `rtc_inference/` | ONNX engine unit test | 실제 모델 로드 smoke |
@@ -77,7 +77,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | `/rtc_cm/active_controller_name` | 동일 (TRANSIENT_LOCAL) | Controller switch 확인. BT / GUI / digital_twin은 이 토픽으로 리와이어 |
 | `/<config_key>/<config_key>/get_parameters` (srv) | active 데모 컨트롤러의 LifecycleNode | Runtime gain 값 조회 (`ros2 param get`) |
 | `/forward_position_controller/commands` | 동일 | RT loop 건강성 — `ros2 topic hz` 로 ~500 Hz 확인 |
-| `<session>/controllers/<config_key>/mpc_solve_timing.csv` | per-controller LifecycleNode 1 Hz aux (e.g. `DemoWbcController`) | MPC solve p50/p99/max 회귀 — 9 cols `t_wall_ns,count,window,last_ns,min_ns,p50_ns,p99_ns,max_ns,mean_ns` |
+| `<session>/controllers/<config_key>/mpc_solve_timing.csv` | per-controller LifecycleNode 1 Hz aux (e.g. `DemoWbcController`) drains MPC-thread SPSC | **Per-MPC-tick raw 샘플** — 3 cols `t_wall_ns,count,solve_ns`. 한 row = 한 solve. p50/p99/max는 post-process로 계산 (예: `awk` / pandas). aggregate INFO 라인은 controller 로그에 10 s마다 출력 |
 | `/{group}/digital_twin/joint_states` | controllers (per-group, RELIABLE) | Device 그룹별 건강성; `rtc_digital_twin`이 merge |
 | `/sim/status` | `rtc_mujoco_sim` 1 Hz | Sim 건강성 — 중단 시 sim sync timeout E-STOP |
 | `/hand/joint_states`, `/hand/motor_states`, `/hand/sensor_states` | `ur5e_hand_driver` | Hand UDP 건강성 |

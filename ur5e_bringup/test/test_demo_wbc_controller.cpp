@@ -13,7 +13,8 @@
 #include <array>
 #include <cmath>
 
-namespace {
+namespace
+{
 
 using rtc::ControllerOutput;
 using rtc::ControllerState;
@@ -21,14 +22,15 @@ using ur5e_bringup::DemoWbcController;
 using ur5e_bringup::WbcPhase;
 
 // ── Helper: build a minimal ControllerState ──────────────────────────────────
-ControllerState MakeState(double dt = 0.002) {
+ControllerState MakeState(double dt = 0.002)
+{
   ControllerState state{};
   state.num_devices = 2;
   state.dt = dt;
   state.iteration = 1;
 
   // Arm: 6 joints at home position
-  auto &dev0 = state.devices[0];
+  auto & dev0 = state.devices[0];
   dev0.num_channels = 6;
   dev0.valid = true;
   dev0.positions = {};
@@ -40,7 +42,7 @@ ControllerState MakeState(double dt = 0.002) {
   dev0.positions[5] = 0.0;
 
   // Hand: 10 joints at zero
-  auto &dev1 = state.devices[1];
+  auto & dev1 = state.devices[1];
   dev1.num_channels = 10;
   dev1.valid = true;
 
@@ -54,7 +56,8 @@ protected:
   DemoWbcController ctrl_{""};
   ControllerState state_ = MakeState();
 
-  void SetUp() override {
+  void SetUp() override
+  {
     // Initialize hold position so trajectories are set up
     ctrl_.InitializeHoldPosition(state_);
   }
@@ -193,7 +196,7 @@ TEST_F(WbcFSMTest, WbcStateAggregatesContactFromFingertipForce) {
   // Two fingertips with contact_flag > 0.5
   // (InjectFingertipForce sets contact = 1.0f by default)
   // First need to extend the helper; use direct injection here.
-  auto &dev1 = state_.devices[1];
+  auto & dev1 = state_.devices[1];
   dev1.valid = true;
   dev1.num_sensor_channels = 2 * rtc::kSensorValuesPerFingertip;
   for (int f = 0; f < 2; ++f) {
@@ -252,9 +255,11 @@ TEST_F(WbcFSMTest, RepeatedInitializeHoldPositionIsStable) {
 // ── ReadState / Fingertip Sensor Parsing Tests ───────────────────────────────
 
 // Populate fingertip f's force vector (Fx, Fy, Fz) into state.devices[1].
-static void InjectFingertipForce(ControllerState &s, int f, float fx, float fy,
-                                 float fz, float contact = 1.0f) {
-  auto &dev1 = s.devices[1];
+static void InjectFingertipForce(
+  ControllerState & s, int f, float fx, float fy,
+  float fz, float contact = 1.0f)
+{
+  auto & dev1 = s.devices[1];
   dev1.valid = true;
   // Ensure enough sensor channels for f+1 fingertips so parser reports it
   dev1.num_sensor_channels = std::max<int>(
@@ -388,9 +393,11 @@ TEST_F(WbcFSMTest, ReadStateHandlesDisabledFingertip) {
 }
 
 // Inject displacement (deformation magnitude vector) on fingertip f.
-static void InjectFingertipDisplacement(ControllerState &s, int f, float dx,
-                                        float dy, float dz) {
-  auto &dev1 = s.devices[1];
+static void InjectFingertipDisplacement(
+  ControllerState & s, int f, float dx,
+  float dy, float dz)
+{
+  auto & dev1 = s.devices[1];
   dev1.valid = true;
   dev1.num_sensor_channels = std::max<int>(
       dev1.num_sensor_channels, (f + 1) * rtc::kSensorValuesPerFingertip);
@@ -534,7 +541,7 @@ TEST_F(WbcFSMTest, ForceRateEMASmoothsImpulse) {
   InjectFingertipForce(state_, 0, 0.0f, 0.0f, 2.0f);
   (void)ctrl_.Compute(state_);
   const float rate_after_step =
-      ctrl_.GetFingertipReportForTesting(0).force_rate;
+    ctrl_.GetFingertipReportForTesting(0).force_rate;
   EXPECT_GT(rate_after_step, 0.0f);
 
   // Hold force constant for many ticks → rate should decay toward 0
@@ -542,7 +549,7 @@ TEST_F(WbcFSMTest, ForceRateEMASmoothsImpulse) {
     (void)ctrl_.Compute(state_);
   }
   const float rate_after_decay =
-      ctrl_.GetFingertipReportForTesting(0).force_rate;
+    ctrl_.GetFingertipReportForTesting(0).force_rate;
   EXPECT_LT(std::abs(rate_after_decay), std::abs(rate_after_step));
   EXPECT_LT(std::abs(rate_after_decay), 0.5f);
 }
@@ -574,7 +581,8 @@ TEST_F(WbcFSMTest, EstopDuringHoldProducesSafeAndCanResume) {
 TEST_F(WbcFSMTest, CommandTypeStableAcrossPhases) {
   const auto baseline = ctrl_.GetCommandType();
   for (auto p : {WbcPhase::kIdle, WbcPhase::kApproach, WbcPhase::kRetreat,
-                 WbcPhase::kRelease, WbcPhase::kFallback}) {
+      WbcPhase::kRelease, WbcPhase::kFallback})
+  {
     ctrl_.ForcePhaseForTesting(p);
     auto out = ctrl_.Compute(state_);
     EXPECT_EQ(out.command_type, baseline) << "phase=" << static_cast<int>(p);

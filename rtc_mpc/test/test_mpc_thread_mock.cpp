@@ -19,15 +19,18 @@
 #include <cmath>
 #include <thread>
 
-namespace rtc::mpc {
-namespace {
+namespace rtc::mpc
+{
+namespace
+{
 
 constexpr int kNq = 3;
 constexpr int kNv = 3;
 constexpr int kHorizon = 10;
 constexpr double kDtNode = 0.01;
 
-YAML::Node Config() {
+YAML::Node Config()
+{
   YAML::Node cfg;
   cfg["enabled"] = true;
   cfg["max_stale_solutions"] = 100;
@@ -83,7 +86,7 @@ TEST(MpcEndToEnd, MockSolverDrivesConvergence) {
     }
 
     const uint64_t now_ns = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
             now.time_since_epoch()).count());
     mgr.WriteState(q, v, now_ns);
     const bool ok = mgr.ComputeReference(q, v, now_ns, q_ref, v_ref, a_ff,

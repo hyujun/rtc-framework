@@ -22,45 +22,54 @@
 #include <atomic>
 #include <cstdint>
 
-namespace rtc::mpc::test_utils {
+namespace rtc::mpc::test_utils
+{
 
-struct AllocCounter {
+struct AllocCounter
+{
   inline static std::atomic<std::int64_t> alloc_count{0};
   inline static std::atomic<std::int64_t> free_count{0};
   inline static std::atomic<bool> armed{false};
 
-  static void Arm() noexcept {
+  static void Arm() noexcept
+  {
     alloc_count.store(0, std::memory_order_relaxed);
     free_count.store(0, std::memory_order_relaxed);
     armed.store(true, std::memory_order_release);
   }
 
-  static void Disarm() noexcept {
+  static void Disarm() noexcept
+  {
     armed.store(false, std::memory_order_release);
   }
 
-  [[nodiscard]] static bool IsArmed() noexcept {
+  [[nodiscard]] static bool IsArmed() noexcept
+  {
     return armed.load(std::memory_order_acquire);
   }
 
-  [[nodiscard]] static std::int64_t AllocCount() noexcept {
+  [[nodiscard]] static std::int64_t AllocCount() noexcept
+  {
     return alloc_count.load(std::memory_order_relaxed);
   }
 
-  [[nodiscard]] static std::int64_t FreeCount() noexcept {
+  [[nodiscard]] static std::int64_t FreeCount() noexcept
+  {
     return free_count.load(std::memory_order_relaxed);
   }
 
   /// Called from operator new/delete overrides. Increment only while armed;
   /// unarmed calls (warm-up / tear-down) are ignored so the fixture code
   /// itself doesn't trip the assertion.
-  static void RecordAlloc() noexcept {
+  static void RecordAlloc() noexcept
+  {
     if (armed.load(std::memory_order_acquire)) {
       alloc_count.fetch_add(1, std::memory_order_relaxed);
     }
   }
 
-  static void RecordFree() noexcept {
+  static void RecordFree() noexcept
+  {
     if (armed.load(std::memory_order_acquire)) {
       free_count.fetch_add(1, std::memory_order_relaxed);
     }

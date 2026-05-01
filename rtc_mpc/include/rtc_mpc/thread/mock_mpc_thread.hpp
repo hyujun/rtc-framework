@@ -20,10 +20,11 @@
 #include "rtc_mpc/thread/mpc_thread.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
 class MockMPCThread final : public MPCThread {
- public:
+public:
   /// @brief Configure the mock planner.
   /// @param nq               position dim (≤ kMaxNq)
   /// @param nv               velocity dim (≤ kMaxNv)
@@ -33,14 +34,15 @@ class MockMPCThread final : public MPCThread {
 
   /// @brief Set / update the target pose. Safe to call while the thread
   ///        is running.
-  void SetTarget(const Eigen::Ref<const Eigen::VectorXd>& q_target) noexcept;
+  void SetTarget(const Eigen::Ref<const Eigen::VectorXd> & q_target) noexcept;
 
- protected:
-  bool Solve(const MPCStateSnapshot& state,
-             MPCSolution& out_sol,
-             std::span<std::jthread> workers) override;
+protected:
+  bool Solve(
+    const MPCStateSnapshot & state,
+    MPCSolution & out_sol,
+    std::span<std::jthread> workers) override;
 
- private:
+private:
   mutable std::mutex mutex_;  // protects q_target_; called off RT path
   Eigen::VectorXd q_target_;
   int nq_{0};

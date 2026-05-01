@@ -23,11 +23,13 @@
 #include <pinocchio/spatial/se3.hpp>
 #pragma GCC diagnostic pop
 
-namespace ur5e_bringup::phase {
+namespace ur5e_bringup::phase
+{
 
 /// @brief External command bus driving the grasp FSM edges that are not
 ///        derived from TCP proximity / contact force.
-enum class GraspCommand : int {
+enum class GraspCommand : int
+{
   kNone = 0,       ///< No pending command; FSM advances via geometric guards.
   kApproach = 1,   ///< IDLE → APPROACH — start the grasp sequence.
   kManipulate = 2, ///< HOLD → MANIPULATE — begin object manipulation.
@@ -44,7 +46,8 @@ enum class GraspCommand : int {
 ///                     the caller; the FSM treats it as an opaque target.
 /// @var approach_start TCP pose recorded on APPROACH entry; RETREAT drives
 ///                     back to this pose before opening the hand.
-struct GraspTarget {
+struct GraspTarget
+{
   pinocchio::SE3 grasp_pose{pinocchio::SE3::Identity()};
   pinocchio::SE3 pregrasp_pose{pinocchio::SE3::Identity()};
   pinocchio::SE3 approach_start{pinocchio::SE3::Identity()};

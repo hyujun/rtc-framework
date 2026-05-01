@@ -38,13 +38,15 @@
 
 #include "rtc_mpc/ocp/cost_factory.hpp"
 
-namespace {
+namespace
+{
 
 constexpr const char *kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+  RTC_PANDA_URDF_PATH;
 
 // Baseline cost config matching Panda (nq=9, 2 × 3D contacts).
-constexpr const char *kBaselineYaml = R"(
+constexpr const char *kBaselineYaml =
+  R"(
 horizon_length: 20
 dt: 0.01
 w_frame_placement: 100.0
@@ -60,13 +62,16 @@ custom_weights: {}
 
 class CostFactoryTest : public ::testing::Test {
 protected:
-  void SetUp() override {
+  void SetUp() override
+  {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed — run ./install.sh verify";
     }
     pinocchio::urdf::buildModel(kPandaUrdf, model_);
 
-    auto model_cfg = YAML::Load(R"(
+    auto model_cfg =
+      YAML::Load(
+        R"(
 end_effector_frame: panda_hand
 contact_frames:
   - name: panda_leftfinger
@@ -168,14 +173,14 @@ TEST_F(CostFactoryTest, PolymorphicHandleRetrievalAfterStageAssembly) {
   // plumbing; instead, exercise the retrieval chain directly on the
   // returned CostStack.
 
-  aligator::CostStackTpl<double> &stored_stack = sc.stack;
+  aligator::CostStackTpl<double> & stored_stack = sc.stack;
   auto *quad_fp =
-      stored_stack.getComponent<aligator::QuadraticResidualCostTpl<double>>(
+    stored_stack.getComponent<aligator::QuadraticResidualCostTpl<double>>(
           std::string(rtc::mpc::kCostKeyFramePlacement));
   ASSERT_NE(quad_fp, nullptr);
 
   auto *fp_residual =
-      quad_fp->getResidual<aligator::FramePlacementResidualTpl<double>>();
+    quad_fp->getResidual<aligator::FramePlacementResidualTpl<double>>();
   ASSERT_NE(fp_residual, nullptr);
 
   // Mutation round-trip: change reference, read back.
@@ -183,7 +188,7 @@ TEST_F(CostFactoryTest, PolymorphicHandleRetrievalAfterStageAssembly) {
   new_target.translation() += Eigen::Vector3d(0.1, -0.05, 0.02);
   fp_residual->setReference(new_target);
 
-  const auto &readback = fp_residual->getReference();
+  const auto & readback = fp_residual->getReference();
   EXPECT_TRUE(readback.translation().isApprox(new_target.translation()));
 }
 

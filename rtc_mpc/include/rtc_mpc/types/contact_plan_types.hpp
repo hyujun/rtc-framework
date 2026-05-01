@@ -16,14 +16,16 @@
 #include <string>
 #include <vector>
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
 /// @brief Static description of a single contact frame.
 ///
 /// Populated once per robot from YAML + `pinocchio::Model::getFrameId(name)`;
 /// then consumed by OCP handlers to place contact-force variables / friction
 /// cone constraints.
-struct ContactFrameInfo {
+struct ContactFrameInfo
+{
   int frame_id{-1};   ///< Pinocchio frame index (`pinocchio::FrameIndex`)
   int dim{3};         ///< force/torque dim: 3 (point) or 6 (wrench)
   std::string name{}; ///< original URDF frame name (diagnostics only)
@@ -34,7 +36,8 @@ struct ContactFrameInfo {
 /// `active_frame_ids` holds Pinocchio frame indices (not array positions in
 /// `ContactPlan::frames`) so consumers can dispatch directly to Pinocchio
 /// algorithms without an extra lookup.
-struct ContactPhase {
+struct ContactPhase
+{
   std::vector<int> active_frame_ids{}; ///< Pinocchio frame ids active here
   double t_start{0.0};                 ///< phase start time [s]
   double t_end{0.0};                   ///< phase end time   [s]
@@ -45,7 +48,8 @@ struct ContactPhase {
 /// `frames` enumerates every possible contact frame (union across phases);
 /// `phases` lists which are active on each segment. Empty `phases` means
 /// "no contacts anywhere on the horizon" (free-flight / approach).
-struct ContactPlan {
+struct ContactPlan
+{
   std::vector<ContactFrameInfo> frames{};
   std::vector<ContactPhase> phases{};
 };

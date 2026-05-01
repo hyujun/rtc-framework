@@ -69,7 +69,8 @@
 // do not route through these overrides. Even if they did, the `armed` flag
 // gates counter updates — overrides are a no-op cost on the unarmed path.
 
-void *operator new(std::size_t sz) {
+void * operator new(std::size_t sz)
+{
   void *p = std::malloc(sz);
   if (p == nullptr) {
     throw std::bad_alloc{};
@@ -78,7 +79,8 @@ void *operator new(std::size_t sz) {
   return p;
 }
 
-void *operator new[](std::size_t sz) {
+void * operator new[](std::size_t sz)
+{
   void *p = std::malloc(sz);
   if (p == nullptr) {
     throw std::bad_alloc{};
@@ -87,31 +89,37 @@ void *operator new[](std::size_t sz) {
   return p;
 }
 
-void operator delete(void *p) noexcept {
+void operator delete(void *p) noexcept
+{
   rtc::mpc::test_utils::AllocCounter::RecordFree();
   std::free(p);
 }
 
-void operator delete[](void *p) noexcept {
+void operator delete[](void *p) noexcept
+{
   rtc::mpc::test_utils::AllocCounter::RecordFree();
   std::free(p);
 }
 
-void operator delete(void *p, std::size_t) noexcept {
+void operator delete(void *p, std::size_t) noexcept
+{
   rtc::mpc::test_utils::AllocCounter::RecordFree();
   std::free(p);
 }
 
-void operator delete[](void *p, std::size_t) noexcept {
+void operator delete[](void *p, std::size_t) noexcept
+{
   rtc::mpc::test_utils::AllocCounter::RecordFree();
   std::free(p);
 }
 
-namespace {
+namespace
+{
 
 constexpr const char *kPandaUrdf = RTC_PANDA_URDF_PATH;
 
-constexpr const char *kLightCostYaml = R"(
+constexpr const char *kLightCostYaml =
+  R"(
 horizon_length: 15
 dt: 0.01
 w_frame_placement: 100.0
@@ -125,7 +133,8 @@ F_target: [0, 0, 0, 0, 0, 0]
 custom_weights: {}
 )";
 
-constexpr const char *kRichCostYaml = R"(
+constexpr const char *kRichCostYaml =
+  R"(
 horizon_length: 10
 dt: 0.01
 w_frame_placement: 10.0
@@ -141,12 +150,15 @@ custom_weights: {}
 
 class AllocTracerTest : public ::testing::Test {
 protected:
-  void SetUp() override {
+  void SetUp() override
+  {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed — run ./install.sh verify";
     }
     pinocchio::urdf::buildModel(kPandaUrdf, model_);
-    auto robot_cfg = YAML::Load(R"(
+    auto robot_cfg =
+      YAML::Load(
+        R"(
 end_effector_frame: panda_hand
 contact_frames:
   - name: panda_leftfinger
@@ -158,7 +170,8 @@ contact_frames:
               rtc::mpc::RobotModelInitError::kNoError);
   }
 
-  rtc::mpc::PhaseContext MakeLightContext() {
+  rtc::mpc::PhaseContext MakeLightContext()
+  {
     rtc::mpc::PhaseCostConfig cfg{};
     EXPECT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(
                   YAML::Load(kLightCostYaml), handler_, cfg),
@@ -175,7 +188,8 @@ contact_frames:
     return ctx;
   }
 
-  rtc::mpc::PhaseContext MakeRichContext() {
+  rtc::mpc::PhaseContext MakeRichContext()
+  {
     rtc::mpc::PhaseCostConfig cfg{};
     EXPECT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(YAML::Load(kRichCostYaml),
                                                       handler_, cfg),
@@ -197,7 +211,8 @@ contact_frames:
     return ctx;
   }
 
-  rtc::mpc::MPCStateSnapshot MakeStateSnapshot() const {
+  rtc::mpc::MPCStateSnapshot MakeStateSnapshot() const
+  {
     rtc::mpc::MPCStateSnapshot s{};
     const Eigen::VectorXd q = pinocchio::neutral(model_);
     s.nq = handler_.nq();
@@ -214,7 +229,8 @@ contact_frames:
 
   // Touch every code path that might lazily initialise static / thread_local
   // state. Runs while unarmed.
-  static void WarmUpStaticState() {
+  static void WarmUpStaticState()
+  {
     for (int i = 0; i < 3; ++i) {
       std::string temp(32, 'x');
       (void)temp;
@@ -298,7 +314,9 @@ TEST_F(AllocTracerTest, ContactRichWarmStartZeroAllocs) {
             rtc::mpc::MPCSolveError::kNoError);
 
   // Step 2: build ContactRich via the factory; seed with prev.
-  auto rich_cfg_yaml = YAML::Load(R"(
+  auto rich_cfg_yaml =
+    YAML::Load(
+      R"(
 mpc:
   ocp_type: contact_rich
   solver:
@@ -311,7 +329,7 @@ mpc:
   auto ctx_rich = MakeRichContext();
   std::unique_ptr<rtc::mpc::MPCHandlerBase> rich;
   const auto status =
-      rtc::mpc::MPCFactory::Create(rich_cfg_yaml, handler_, ctx_rich, rich);
+    rtc::mpc::MPCFactory::Create(rich_cfg_yaml, handler_, ctx_rich, rich);
   ASSERT_EQ(status.error, rtc::mpc::MPCFactoryError::kNoError);
   ASSERT_NE(rich, nullptr);
 

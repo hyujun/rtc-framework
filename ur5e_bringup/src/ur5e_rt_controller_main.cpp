@@ -11,11 +11,13 @@
 #include "rtc_controller_manager/rt_controller_main.hpp"
 
 // Force-link built-in controller registrations from the static library
-namespace rtc {
+namespace rtc
+{
 void ForceBuiltinControllerRegistration();
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv)
+{
   rtc::ForceBuiltinControllerRegistration();
   return rtc::RtControllerMain(argc, argv, "ur5e_rt_controller");
 }

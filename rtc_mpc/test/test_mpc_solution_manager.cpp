@@ -10,13 +10,19 @@
 
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
 
+#include "rtc_base/timing/mpc_solve_sample.hpp"
+
 #include <gtest/gtest.h>
 
 #include <Eigen/Core>
 #include <yaml-cpp/yaml.h>
 
-namespace rtc::mpc {
-namespace {
+#include <vector>
+
+namespace rtc::mpc
+{
+namespace
+{
 
 constexpr int kNq = 3;
 constexpr int kNv = 3;
@@ -25,7 +31,8 @@ constexpr int kHorizon = 10;
 constexpr double kDtNode = 0.01;
 
 /// Build a trivially valid solution whose q(t) is linear, identity Riccati.
-MPCSolution MakeSolution(uint64_t timestamp = 1) {
+MPCSolution MakeSolution(uint64_t timestamp = 1)
+{
   MPCSolution sol{};
   sol.timestamp_ns = timestamp;
   sol.horizon_length = kHorizon;
@@ -44,7 +51,7 @@ MPCSolution MakeSolution(uint64_t timestamp = 1) {
     }
     for (int i = 0; i < kNv; ++i) {
       sol.v_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)] =
-          1.0;
+        1.0;
     }
   }
   // Identity Riccati gain (nu x nx) at node 0.
@@ -54,7 +61,8 @@ MPCSolution MakeSolution(uint64_t timestamp = 1) {
   return sol;
 }
 
-YAML::Node MakeConfig(bool enabled, int max_stale = 5) {
+YAML::Node MakeConfig(bool enabled, int max_stale = 5)
+{
   YAML::Node cfg;
   cfg["enabled"] = enabled;
   cfg["max_stale_solutions"] = max_stale;
@@ -68,7 +76,8 @@ YAML::Node MakeConfig(bool enabled, int max_stale = 5) {
 
 class MpcSolutionManagerTest : public ::testing::Test {
 protected:
-  void SetUp() override {
+  void SetUp() override
+  {
     q_curr_.setZero(kNq);
     v_curr_.setZero(kNv);
     q_ref_.setZero(kNq);
@@ -257,6 +266,95 @@ TEST_F(MpcSolutionManagerTest, ResetSolveStatsClearsAllFields) {
   EXPECT_EQ(s.count, 0u);
   EXPECT_EQ(s.window, 0u);
   EXPECT_EQ(s.last_ns, 0u);
+}
+
+// ── Per-tick raw sample stream ──────────────────────────────────────────────
+
+TEST_F(MpcSolutionManagerTest, DrainSolveSamplesYieldsOnePerPublish) {
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+
+  // Publish a handful of solutions with distinct durations.
+  constexpr int kN = 5;
+  for (int i = 0; i < kN; ++i) {
+    MPCSolution sol = MakeSolution(static_cast<uint64_t>(i + 1));
+    sol.solve_duration_ns = static_cast<uint64_t>(i + 1) * 7'000ULL;
+    mgr_.PublishSolution(sol);
+  }
+
+  std::vector<rtc::MpcSolveSample> drained;
+  const std::size_t n = mgr_.SolveTimingProducer().Drain(
+    [&drained](const rtc::MpcSolveSample & s) {drained.push_back(s);});
+
+  ASSERT_EQ(n, static_cast<std::size_t>(kN));
+  ASSERT_EQ(drained.size(), static_cast<std::size_t>(kN));
+  for (int i = 0; i < kN; ++i) {
+    // Sequence number must match the producer's monotonic tick count.
+    EXPECT_EQ(drained[static_cast<std::size_t>(i)].tick_count,
+              static_cast<std::uint64_t>(i + 1));
+    EXPECT_EQ(drained[static_cast<std::size_t>(i)].payload.solve_ns,
+              static_cast<std::uint64_t>(i + 1) * 7'000ULL);
+    EXPECT_GT(drained[static_cast<std::size_t>(i)].t_wall_ns, 0u);
+  }
+
+  // Empty after drain.
+  const std::size_t n2 =
+    mgr_.SolveTimingProducer().Drain([](const rtc::MpcSolveSample &) {});
+  EXPECT_EQ(n2, 0u);
+  EXPECT_EQ(mgr_.SolveTimingProducer().DropCount(), 0u);
+}
+
+TEST_F(MpcSolutionManagerTest, DrainSolveSamplesDropsWhenBufferFull) {
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+
+  // Push more samples than the SPSC ring can hold without draining; the
+  // overflow must be reflected in DropCount but the drain itself must still
+  // hand back a non-empty prefix of in-FIFO-order samples.
+  const std::size_t cap = rtc::kMpcSolveSampleBufferCapacity;
+  const std::size_t excess = 8;
+  const std::size_t total = cap + excess;
+  for (std::size_t i = 0; i < total; ++i) {
+    MPCSolution sol = MakeSolution(static_cast<uint64_t>(i + 1));
+    sol.solve_duration_ns = static_cast<uint64_t>(i + 1);
+    mgr_.PublishSolution(sol);
+  }
+
+  // The ring carries (cap - 1) usable slots in the standard SPSC layout, so
+  // at least `excess + 1` samples must have been dropped.
+  EXPECT_GE(mgr_.SolveTimingProducer().DropCount(),
+            static_cast<std::uint64_t>(excess + 1));
+
+  std::size_t drained = 0;
+  std::uint64_t prev_tick = 0;
+  mgr_.SolveTimingProducer().Drain([&](const rtc::MpcSolveSample & s) {
+      EXPECT_GT(s.tick_count, prev_tick);
+      prev_tick = s.tick_count;
+      ++drained;
+  });
+  EXPECT_GT(drained, 0u);
+  EXPECT_LT(drained, total); // some samples were dropped
+}
+
+TEST_F(MpcSolutionManagerTest, DrainSolveSamplesPreservesAggregateRing) {
+  // Per-sample drain consumes the SPSC stream but must not interfere with
+  // the windowed aggregate ring used by GetSolveStats. Both observability
+  // paths run in parallel.
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+
+  for (int i = 0; i < 16; ++i) {
+    MPCSolution sol = MakeSolution(static_cast<uint64_t>(i + 1));
+    sol.solve_duration_ns = 3'000'000ULL;
+    mgr_.PublishSolution(sol);
+  }
+
+  // Drain raw samples — should not affect the windowed stats below.
+  mgr_.SolveTimingProducer().Drain([](const rtc::MpcSolveSample &) {});
+
+  const auto s = mgr_.GetSolveStats();
+  EXPECT_EQ(s.count, 16u);
+  EXPECT_EQ(s.window, 16u);
+  EXPECT_EQ(s.last_ns, 3'000'000u);
+  EXPECT_EQ(s.min_ns, 3'000'000u);
+  EXPECT_EQ(s.max_ns, 3'000'000u);
 }
 
 } // namespace

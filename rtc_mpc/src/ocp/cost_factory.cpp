@@ -17,10 +17,13 @@
 #include <string>
 #include <utility>
 
-namespace rtc::mpc {
-namespace cost_factory {
+namespace rtc::mpc
+{
+namespace cost_factory
+{
 
-namespace {
+namespace
+{
 
 using CostStack = aligator::CostStackTpl<double>;
 using QuadCost = aligator::QuadraticResidualCostTpl<double>;
@@ -32,7 +35,8 @@ using PhaseSpace = aligator::MultibodyPhaseSpace<double>;
 // Empty stack + all-false keys. We cannot construct a `PhaseSpace` from an
 // uninitialised model (would deref a null `pinocchio::Model*`), so we fall
 // back to a 1-dim VectorSpace. Callers use this only for error returns.
-StageCost MakeEmpty(const RobotModelHandler &model) noexcept {
+StageCost MakeEmpty(const RobotModelHandler & model) noexcept
+{
   // -1 == Eigen::Dynamic; spelled literally because
   // `pinocchio::Dynamic` shadows the Eigen constant in some TUs.
   using FallbackSpace = aligator::VectorSpaceTpl<double, -1>;
@@ -45,9 +49,11 @@ StageCost MakeEmpty(const RobotModelHandler &model) noexcept {
   return StageCost{CostStack(fallback, nu), StageComponentKeys{}};
 }
 
-[[nodiscard]] bool ValidateCommon(const PhaseCostConfig &cfg,
-                                  const RobotModelHandler &model,
-                                  CostFactoryError &err) noexcept {
+[[nodiscard]] bool ValidateCommon(
+  const PhaseCostConfig & cfg,
+  const RobotModelHandler & model,
+  CostFactoryError & err) noexcept
+{
   if (!model.Initialised()) {
     err = CostFactoryError::kModelNotInitialised;
     return false;
@@ -66,29 +72,33 @@ StageCost MakeEmpty(const RobotModelHandler &model) noexcept {
 // Add frame-placement cost if w_frame_placement > 0. Caller owns `space`
 // and `stack`; `keys` is mutated on success. Aligator ctors may throw →
 // caller must be within a try/catch.
-void AddFramePlacement(CostStack &stack, StageComponentKeys &keys,
-                       const PhaseSpace &space, const PhaseCostConfig &cfg,
-                       const RobotModelHandler &model,
-                       const pinocchio::SE3 &ee_target) {
+void AddFramePlacement(
+  CostStack & stack, StageComponentKeys & keys,
+  const PhaseSpace & space, const PhaseCostConfig & cfg,
+  const RobotModelHandler & model,
+  const pinocchio::SE3 & ee_target)
+{
   if (cfg.w_frame_placement <= 0.0) {
     return;
   }
   const int ndx = space.ndx();
   const int nu = model.nu();
   FrameRes residual(
-      ndx, nu, model.model(), ee_target,
-      static_cast<pinocchio::FrameIndex>(model.end_effector_frame_id()));
+    ndx, nu, model.model(), ee_target,
+    static_cast<pinocchio::FrameIndex>(model.end_effector_frame_id()));
   Eigen::MatrixXd W =
-      cfg.w_frame_placement * cfg.W_placement.asDiagonal().toDenseMatrix();
+    cfg.w_frame_placement * cfg.W_placement.asDiagonal().toDenseMatrix();
   QuadCost qcost(space, residual, W);
   stack.addCost(std::string(kCostKeyFramePlacement), qcost, 1.0);
   keys.has_frame_placement = true;
 }
 
 // State error residual: target = [q_posture_ref; 0]. Weight is scalar I.
-void AddStateReg(CostStack &stack, StageComponentKeys &keys,
-                 const PhaseSpace &space, const PhaseCostConfig &cfg,
-                 const RobotModelHandler &model) {
+void AddStateReg(
+  CostStack & stack, StageComponentKeys & keys,
+  const PhaseSpace & space, const PhaseCostConfig & cfg,
+  const RobotModelHandler & model)
+{
   if (cfg.w_state_reg <= 0.0) {
     return;
   }
@@ -106,9 +116,11 @@ void AddStateReg(CostStack &stack, StageComponentKeys &keys,
 }
 
 // Control error residual: target = 0 (u_ref). Weight scalar I.
-void AddControlReg(CostStack &stack, StageComponentKeys &keys,
-                   const PhaseSpace &space, const PhaseCostConfig &cfg,
-                   const RobotModelHandler &model) {
+void AddControlReg(
+  CostStack & stack, StageComponentKeys & keys,
+  const PhaseSpace & space, const PhaseCostConfig & cfg,
+  const RobotModelHandler & model)
+{
   if (cfg.w_control_reg <= 0.0) {
     return;
   }
@@ -124,10 +136,12 @@ void AddControlReg(CostStack &stack, StageComponentKeys &keys,
 
 } // namespace
 
-StageCost BuildRunningCost(const PhaseCostConfig &cfg,
-                           const RobotModelHandler &model,
-                           const pinocchio::SE3 &ee_target,
-                           CostFactoryError *out_error) noexcept {
+StageCost BuildRunningCost(
+  const PhaseCostConfig & cfg,
+  const RobotModelHandler & model,
+  const pinocchio::SE3 & ee_target,
+  CostFactoryError *out_error) noexcept
+{
   CostFactoryError err = CostFactoryError::kNoError;
   if (!ValidateCommon(cfg, model, err)) {
     if (out_error != nullptr) {
@@ -162,10 +176,12 @@ StageCost BuildRunningCost(const PhaseCostConfig &cfg,
   }
 }
 
-StageCost BuildTerminalCost(const PhaseCostConfig &cfg,
-                            const RobotModelHandler &model,
-                            const pinocchio::SE3 &ee_target,
-                            CostFactoryError *out_error) noexcept {
+StageCost BuildTerminalCost(
+  const PhaseCostConfig & cfg,
+  const RobotModelHandler & model,
+  const pinocchio::SE3 & ee_target,
+  CostFactoryError *out_error) noexcept
+{
   CostFactoryError err = CostFactoryError::kNoError;
   if (!ValidateCommon(cfg, model, err)) {
     if (out_error != nullptr) {

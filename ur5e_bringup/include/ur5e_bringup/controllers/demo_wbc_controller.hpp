@@ -45,7 +45,8 @@
 #include <string_view>
 #include <vector>
 
-namespace ur5e_bringup {
+namespace ur5e_bringup
+{
 
 using rtc::CommandType;
 using rtc::ControllerOutput;
@@ -61,7 +62,8 @@ namespace trajectory = rtc::trajectory;
 //
 // Phase 4 MVP implements: kIdle, kApproach, kPreGrasp, kFallback.
 // Contact phases (kClosure, kHold, kRetreat, kRelease) are skeleton-only.
-enum class WbcPhase : uint8_t {
+enum class WbcPhase : uint8_t
+{
   kIdle,     ///< Home pose hold (position hold)
   kApproach, ///< Joint-space quintic trajectory to pre-grasp
   kPreGrasp, ///< TSID QP → position (no contact, fine positioning)
@@ -93,7 +95,8 @@ public:
   static constexpr int kFullDof = kArmDof + kHandDof;               // 16
   static constexpr int kNumPhases = 8;
 
-  struct Gains {
+  struct Gains
+  {
     double arm_trajectory_speed{0.5};   ///< Joint-space traj speed [rad/s]
     double hand_trajectory_speed{1.0};  ///< Hand traj speed [rad/s]
     double arm_max_traj_velocity{2.0};  ///< Max arm joint velocity [rad/s]
@@ -108,14 +111,16 @@ public:
 
   // ── RTControllerInterface overrides ──────────────────────────────────────
   [[nodiscard]] ControllerOutput
-  Compute(const ControllerState &state) noexcept override;
+  Compute(const ControllerState & state) noexcept override;
 
-  void SetDeviceTarget(int device_idx,
-                       std::span<const double> target) noexcept override;
+  void SetDeviceTarget(
+    int device_idx,
+    std::span<const double> target) noexcept override;
 
-  void InitializeHoldPosition(const ControllerState &state) noexcept override;
+  void InitializeHoldPosition(const ControllerState & state) noexcept override;
 
-  [[nodiscard]] std::string_view Name() const noexcept override {
+  [[nodiscard]] std::string_view Name() const noexcept override
+  {
     return "DemoWbcController";
   }
 
@@ -125,20 +130,23 @@ public:
   void SetHandEstop(bool active) noexcept override;
 
   // ── Phase 4: controller-owned sub/pub lifecycle ─────────────────────────
-  CallbackReturn on_configure(const rclcpp_lifecycle::State &prev,
-                              rclcpp_lifecycle::LifecycleNode::SharedPtr node,
-                              const YAML::Node &yaml) noexcept override;
+  CallbackReturn on_configure(
+    const rclcpp_lifecycle::State & prev,
+    rclcpp_lifecycle::LifecycleNode::SharedPtr node,
+    const YAML::Node & yaml) noexcept override;
   CallbackReturn
-  on_activate(const rclcpp_lifecycle::State &prev,
-              const rtc::ControllerState &device_snapshot) noexcept override;
+  on_activate(
+    const rclcpp_lifecycle::State & prev,
+    const rtc::ControllerState & device_snapshot) noexcept override;
   CallbackReturn
-  on_deactivate(const rclcpp_lifecycle::State &prev) noexcept override;
+  on_deactivate(const rclcpp_lifecycle::State & prev) noexcept override;
   CallbackReturn
-  on_cleanup(const rclcpp_lifecycle::State &prev) noexcept override;
-  void PublishNonRtSnapshot(const rtc::PublishSnapshot &snap) noexcept override;
+  on_cleanup(const rclcpp_lifecycle::State & prev) noexcept override;
+  void PublishNonRtSnapshot(const rtc::PublishSnapshot & snap) noexcept override;
 
   // ── Test accessors (const snapshots, not RT-safe) ───────────────────────
-  struct FingertipReport {
+  struct FingertipReport
+  {
     float force_magnitude{0.0f};
     float force_rate{0.0f};
     float contact_flag{0.0f};
@@ -146,30 +154,31 @@ public:
   };
   [[nodiscard]] FingertipReport
   GetFingertipReportForTesting(int fingertip_idx) const noexcept;
-  [[nodiscard]] int GetNumActiveFingertipsForTesting() const noexcept {
+  [[nodiscard]] int GetNumActiveFingertipsForTesting() const noexcept
+  {
     return num_active_fingertips_;
   }
-  [[nodiscard]] WbcPhase GetPhaseForTesting() const noexcept { return phase_; }
-  void ForcePhaseForTesting(WbcPhase p) noexcept { phase_ = p; }
-  void SetGraspCmdForTesting(int v) noexcept {
+  [[nodiscard]] WbcPhase GetPhaseForTesting() const noexcept {return phase_;}
+  void ForcePhaseForTesting(WbcPhase p) noexcept {phase_ = p;}
+  void SetGraspCmdForTesting(int v) noexcept
+  {
     grasp_cmd_.store(v, std::memory_order_release);
   }
 
-  void set_gains(Gains gains) noexcept { gains_lock_.Store(gains); }
-  [[nodiscard]] Gains get_gains() const noexcept { return gains_lock_.Load(); }
+  void set_gains(Gains gains) noexcept {gains_lock_.Store(gains);}
+  [[nodiscard]] Gains get_gains() const noexcept {return gains_lock_.Load();}
 
   // ── Registry hooks ──────────────────────────────────────────────────────
-  void LoadConfig(const YAML::Node &cfg) override;
+  void LoadConfig(const YAML::Node & cfg) override;
   void OnDeviceConfigsSet() override;
-  [[nodiscard]] CommandType GetCommandType() const noexcept override {
+  [[nodiscard]] CommandType GetCommandType() const noexcept override
+  {
     return command_type_;
   }
-  [[nodiscard]] std::optional<rtc::MpcSolveStats>
-  GetMpcSolveStats() const noexcept override;
 
 private:
   // ── Model initialization ────────────────────────────────────────────────
-  void InitModels(const rtc_urdf_bridge::ModelConfig &config);
+  void InitModels(const rtc_urdf_bridge::ModelConfig & config);
   void BuildJointReorderMap();
 
   // ── TSID task/constraint YAML factory ───────────────────────────────────
@@ -178,25 +187,25 @@ private:
   // `tsid.constraints`. Supported tasks: posture, se3, force. Supported
   // constraints: eom, joint_limit, friction_cone. Unknown types log ERROR
   // and skip. Called once in LoadConfig after TSIDController::init().
-  void BuildTsidTasks(const YAML::Node &tsid_node);
-  void BuildTsidConstraints(const YAML::Node &tsid_node);
+  void BuildTsidTasks(const YAML::Node & tsid_node);
+  void BuildTsidConstraints(const YAML::Node & tsid_node);
 
   // ── 3-phase pipeline (RT path) ──────────────────────────────────────────
-  void ReadState(const ControllerState &state) noexcept;
-  void ComputeControl(const ControllerState &state, double dt) noexcept;
+  void ReadState(const ControllerState & state) noexcept;
+  void ComputeControl(const ControllerState & state, double dt) noexcept;
   [[nodiscard]] ControllerOutput
-  WriteOutput(const ControllerState &state) noexcept;
+  WriteOutput(const ControllerState & state) noexcept;
 
   // ── FSM ─────────────────────────────────────────────────────────────────
   WbcPhase phase_{WbcPhase::kIdle};
   WbcPhase prev_phase_{WbcPhase::kIdle};
 
-  void UpdatePhase(const ControllerState &state) noexcept;
-  void OnPhaseEnter(WbcPhase new_phase, const ControllerState &state) noexcept;
+  void UpdatePhase(const ControllerState & state) noexcept;
+  void OnPhaseEnter(WbcPhase new_phase, const ControllerState & state) noexcept;
 
   // ── Control modes ───────────────────────────────────────────────────────
   void ComputePositionMode(double dt) noexcept;
-  void ComputeTSIDPosition(const ControllerState &state, double dt) noexcept;
+  void ComputeTSIDPosition(const ControllerState & state, double dt) noexcept;
   void ComputeFallback() noexcept;
 
   // ── E-STOP ──────────────────────────────────────────────────────────────
@@ -208,11 +217,11 @@ private:
   /// LoadConfig(cfg["estop"]["arm_safe_position"]); this initializer only
   /// provides a safe default for unit tests that construct the controller
   /// without calling LoadConfig.
-  std::array<double, kNumRobotJoints> safe_position_{0.0,   -1.57, 1.57,
-                                                     -1.57, -1.57, 0.0};
+  std::array<double, kNumRobotJoints> safe_position_{0.0, -1.57, 1.57,
+    -1.57, -1.57, 0.0};
 
   [[nodiscard]] ControllerOutput
-  ComputeEstop(const ControllerState &state) noexcept;
+  ComputeEstop(const ControllerState & state) noexcept;
 
   // ── Configuration ───────────────────────────────────────────────────────
   rtc::SeqLock<Gains> gains_lock_;
@@ -265,7 +274,8 @@ private:
   // Populated each tick from state.devices[1].sensor_data / inference_data.
   // Consumed by contact detection (kClosure -> kHold) and anomaly monitoring
   // (kHold slip/deformation -> kFallback).
-  struct FingertipSensorData {
+  struct FingertipSensorData
+  {
     std::array<int32_t, rtc::kBarometerCount> baro{};
     std::array<int32_t, 3> tof{};
     std::array<float, 3> force{};
@@ -300,8 +310,8 @@ private:
   std::atomic<bool> hand_new_target_{false};
 
   std::array<std::array<double, kMaxDeviceChannels>,
-             ControllerState::kMaxDevices>
-      device_targets_{};
+    ControllerState::kMaxDevices>
+  device_targets_{};
 
   // Task-space goal (computed from FK of arm target in SetDeviceTarget)
   pinocchio::SE3 tcp_goal_{pinocchio::SE3::Identity()};
@@ -315,18 +325,20 @@ private:
 
   // ── Device limits ───────────────────────────────────────────────────────
   std::array<std::vector<double>, ControllerState::kMaxDevices>
-      device_max_velocity_;
+  device_max_velocity_;
   std::array<std::vector<double>, ControllerState::kMaxDevices>
-      device_position_lower_;
+  device_position_lower_;
   std::array<std::vector<double>, ControllerState::kMaxDevices>
-      device_position_upper_;
+  device_position_upper_;
 
-  static void ClampCommands(std::array<double, kMaxDeviceChannels> &commands,
-                            int n, const std::vector<double> &lower,
-                            const std::vector<double> &upper) noexcept;
+  static void ClampCommands(
+    std::array<double, kMaxDeviceChannels> & commands,
+    int n, const std::vector<double> & lower,
+    const std::vector<double> & upper) noexcept;
 
   // ── Computed output (intermediate) ──────────────────────────────────────
-  struct ComputedTrajectory {
+  struct ComputedTrajectory
+  {
     std::array<double, kMaxDeviceChannels> positions{};
     std::array<double, kMaxDeviceChannels> velocities{};
   };
@@ -393,9 +405,11 @@ private:
   Eigen::VectorXd mpc_u_fb_;
 
   // ── MPC solve-timing observability (aux thread, non-RT) ────────────────
-  // Owned 1 Hz timer (spawned in on_activate when mpc_enabled_) polls the
-  // controller's GetMpcSolveStats() and appends one row per tick to
-  // <session>/controllers/<config_key>/mpc_solve_timing.csv. INFO line every
+  // Owned 1 Hz timer (spawned in on_activate when mpc_enabled_) drains the
+  // MPCSolutionManager's SolveTimingProducer SPSC ring and appends one row
+  // per MPC tick to <session>/controllers/<config_key>/mpc_solve_timing.csv
+  // via MpcSolveTimingLogger (a thin wrapper over the generic
+  // ThreadTimingCsvLogger<MpcTimingPayload>). Aggregate INFO line every
   // 10 ticks (~10 s) for tmux watchers.
   rclcpp::CallbackGroup::SharedPtr mpc_timing_cb_group_;
   rclcpp::TimerBase::SharedPtr mpc_timing_timer_;
@@ -425,8 +439,8 @@ private:
   float force_rate_alpha_{0.1f}; ///< EMA smoothing for df/dt (500Hz→~20Hz BW)
 
   // ── Utility ─────────────────────────────────────────────────────────────
-  void ExtractFullState(const ControllerState &state) noexcept;
-  [[nodiscard]] double ComputeTcpError(const pinocchio::SE3 &target) noexcept;
+  void ExtractFullState(const ControllerState & state) noexcept;
+  [[nodiscard]] double ComputeTcpError(const pinocchio::SE3 & target) noexcept;
 
   // ── Logging ─────────────────────────────────────────────────────────────
   rclcpp::Logger logger_{ur5e_bringup::logging::DemoWbcLogger()};
@@ -449,10 +463,10 @@ private:
   // deactivate to abort).
   void DeclareGainParameters() noexcept;
   rcl_interfaces::msg::SetParametersResult
-  OnGainParametersSet(const std::vector<rclcpp::Parameter> &params) noexcept;
+  OnGainParametersSet(const std::vector<rclcpp::Parameter> & params) noexcept;
 
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
-      param_callback_handle_;
+    param_callback_handle_;
   rclcpp::Service<rtc_msgs::srv::GraspCommand>::SharedPtr grasp_command_srv_;
 };
 

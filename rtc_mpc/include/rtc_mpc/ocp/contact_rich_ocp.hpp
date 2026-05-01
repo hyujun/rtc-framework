@@ -44,14 +44,20 @@
 // Forward-declare Aligator residual templates — we only take raw pointers to
 // them in `RichStageHandles`, so full definitions are not needed at header
 // parse time. The `.cpp` pulls in the concrete headers.
-namespace aligator {
-template <typename _Scalar> struct FramePlacementResidualTpl;
-template <typename _Scalar> struct StateErrorResidualTpl;
-template <typename _Scalar> struct ControlErrorResidualTpl;
-template <typename _Scalar> struct ContactForceResidualTpl;
+namespace aligator
+{
+template<typename _Scalar>
+struct FramePlacementResidualTpl;
+template<typename _Scalar>
+struct StateErrorResidualTpl;
+template<typename _Scalar>
+struct ControlErrorResidualTpl;
+template<typename _Scalar>
+struct ContactForceResidualTpl;
 } // namespace aligator
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
 class RobotModelHandler;
 class GraspQualityResidualProvider;
@@ -64,7 +70,7 @@ class GraspQualityResidualProvider;
 ///        prox settings) and therefore owned by this OCP rather than the
 ///        dynamics-agnostic cost factory. See Phase 4 Spike Notes Q6.
 inline constexpr std::string_view kCostKeyContactForcePrefix =
-    "contact_force::";
+  "contact_force::";
 
 /// @brief Non-owning raw-pointer handles to residuals stored inside a
 ///        contact-rich `StageModel`'s polymorphic cost tree. Populated
@@ -78,7 +84,8 @@ inline constexpr std::string_view kCostKeyContactForcePrefix =
 /// Phase 4.5+: a `grasp_quality` handle slot is intentionally reserved
 /// here (provider owns the concrete residual; the OCP would reference it
 /// through the polymorphic-chain retrieval pattern, not cache-on-build).
-struct RichStageHandles {
+struct RichStageHandles
+{
   aligator::FramePlacementResidualTpl<double> *frame_placement{nullptr};
   aligator::StateErrorResidualTpl<double> *state_reg{nullptr};
   aligator::ControlErrorResidualTpl<double> *control_reg{nullptr};
@@ -130,30 +137,35 @@ public:
   ~ContactRichOCP() override = default;
 
   ContactRichOCP(const ContactRichOCP &) = delete;
-  ContactRichOCP &operator=(const ContactRichOCP &) = delete;
+  ContactRichOCP & operator=(const ContactRichOCP &) = delete;
   ContactRichOCP(ContactRichOCP &&) = delete;
-  ContactRichOCP &operator=(ContactRichOCP &&) = delete;
+  ContactRichOCP & operator=(ContactRichOCP &&) = delete;
 
-  [[nodiscard]] OCPBuildError Build(const PhaseContext &ctx,
-                                    const RobotModelHandler &model,
-                                    const OCPLimits &limits) noexcept override;
+  [[nodiscard]] OCPBuildError Build(
+    const PhaseContext & ctx,
+    const RobotModelHandler & model,
+    const OCPLimits & limits) noexcept override;
 
   [[nodiscard]] OCPBuildError
-  UpdateReferences(const PhaseContext &ctx) noexcept override;
+  UpdateReferences(const PhaseContext & ctx) noexcept override;
 
-  [[nodiscard]] bool Built() const noexcept override {
+  [[nodiscard]] bool Built() const noexcept override
+  {
     return problem_ != nullptr;
   }
 
-  [[nodiscard]] aligator::TrajOptProblemTpl<double> &problem() override {
+  [[nodiscard]] aligator::TrajOptProblemTpl<double> & problem() override
+  {
     return *problem_;
   }
 
-  [[nodiscard]] int horizon_length() const noexcept override {
+  [[nodiscard]] int horizon_length() const noexcept override
+  {
     return horizon_length_;
   }
 
-  [[nodiscard]] std::string_view ocp_type() const noexcept override {
+  [[nodiscard]] std::string_view ocp_type() const noexcept override
+  {
     return std::string_view{"contact_rich"};
   }
 
@@ -171,7 +183,8 @@ public:
   /// handler. Passing `nullptr` detaches the provider. Never called on
   /// the 500 Hz RT solve path — only during off-RT reconfigure.
   void
-  SetGraspQualityProvider(GraspQualityResidualProvider *provider) noexcept {
+  SetGraspQualityProvider(GraspQualityResidualProvider *provider) noexcept
+  {
     grasp_quality_provider_ = provider;
   }
 

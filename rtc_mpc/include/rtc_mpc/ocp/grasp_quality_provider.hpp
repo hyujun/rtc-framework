@@ -76,7 +76,8 @@
 #include <string_view>
 #include <vector>
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
 class RobotModelHandler;
 
@@ -115,8 +116,8 @@ public:
   /// @return kNoError on success; any other value causes the surrounding
   ///         `Build` to abort and return the same code to the caller.
   [[nodiscard]] virtual OCPBuildError AppendRunningCost(
-      StageCost &stage_cost, const RobotModelHandler &model,
-      const std::vector<int> &active_contact_frame_ids) noexcept = 0;
+    StageCost & stage_cost, const RobotModelHandler & model,
+    const std::vector<int> & active_contact_frame_ids) noexcept = 0;
 
   /// @brief Optional: append grasp-quality residuals to the terminal cost.
   ///
@@ -126,8 +127,9 @@ public:
   /// is a no-op (returns `kNoError`) for providers that do not need a
   /// terminal contribution.
   [[nodiscard]] virtual OCPBuildError AppendTerminalCost(
-      StageCost & /*stage_cost*/, const RobotModelHandler & /*model*/,
-      const std::vector<int> & /*active_contact_frame_ids*/) noexcept {
+    StageCost & /*stage_cost*/, const RobotModelHandler & /*model*/,
+    const std::vector<int> & /*active_contact_frame_ids*/) noexcept
+  {
     return OCPBuildError::kNoError;
   }
 

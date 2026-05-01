@@ -31,11 +31,12 @@
 #include "ur5e_bringup/phase/grasp_phase_manager.hpp"
 #include "ur5e_bringup/phase/grasp_target.hpp"
 
-namespace {
+namespace
+{
 
 constexpr const char *kPandaUrdf =
-    "/usr/local/share/example-robot-data/robots/panda_description/urdf/"
-    "panda.urdf";
+  "/usr/local/share/example-robot-data/robots/panda_description/urdf/"
+  "panda.urdf";
 
 using ur5e_bringup::phase::GraspCommand;
 using ur5e_bringup::phase::GraspPhaseId;
@@ -44,7 +45,8 @@ using ur5e_bringup::phase::GraspTarget;
 
 // Full phase_config.yaml-equivalent schema sized for Panda (nq=9, 2 × 3-dim
 // contacts = 6-entry F_target).
-constexpr const char *kPandaPhaseConfig = R"(
+constexpr const char *kPandaPhaseConfig =
+  R"(
 transition:
   approach_tolerance: 0.05
   pregrasp_tolerance: 0.01
@@ -115,14 +117,17 @@ phases:
 
 class GraspPhaseManagerTest : public ::testing::Test {
 protected:
-  void SetUp() override {
+  void SetUp() override
+  {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed at " << kPandaUrdf
                    << " — run ./install.sh to install Aligator deps";
     }
     pinocchio::urdf::buildModel(kPandaUrdf, model_);
 
-    auto model_cfg = YAML::Load(R"(
+    auto model_cfg =
+      YAML::Load(
+        R"(
 end_effector_frame: panda_hand_tcp
 contact_frames:
   - name: panda_leftfinger
@@ -137,20 +142,25 @@ contact_frames:
   }
 
   // Convenience: pose at translation p, identity rotation.
-  static pinocchio::SE3 PoseAt(const Eigen::Vector3d &p) {
+  static pinocchio::SE3 PoseAt(const Eigen::Vector3d & p)
+  {
     return pinocchio::SE3(Eigen::Matrix3d::Identity(), p);
   }
 
   // Advance one FSM tick with all-zero sensor + given TCP.
   rtc::mpc::PhaseContext
-  Step(const pinocchio::SE3 &tcp,
-       const Eigen::VectorXd &sensor = Eigen::VectorXd::Zero(2)) {
+  Step(
+    const pinocchio::SE3 & tcp,
+    const Eigen::VectorXd & sensor = Eigen::VectorXd::Zero(2))
+  {
     return manager_->Update(q_, v_, sensor, tcp, /*t=*/0.0);
   }
 
-  GraspTarget MakeTarget(const Eigen::Vector3d &grasp,
-                         const Eigen::Vector3d &pregrasp,
-                         const Eigen::Vector3d &start) {
+  GraspTarget MakeTarget(
+    const Eigen::Vector3d & grasp,
+    const Eigen::Vector3d & pregrasp,
+    const Eigen::Vector3d & start)
+  {
     GraspTarget t;
     t.grasp_pose = PoseAt(grasp);
     t.pregrasp_pose = PoseAt(pregrasp);
@@ -377,7 +387,8 @@ TEST_F(GraspPhaseManagerTest, YamlTargetSetterBuildsPregraspFromOffset) {
   ASSERT_EQ(manager_->Load(YAML::Load(kPandaPhaseConfig)),
             ur5e_bringup::phase::GraspPhaseInitError::kNoError);
 
-  manager_->SetTaskTarget(YAML::Load(R"(
+  manager_->SetTaskTarget(YAML::Load(
+      R"(
 grasp_translation: [0.3, 0.0, 0.2]
 pregrasp_offset_local: [0.0, 0.0, 0.1]
 )"));

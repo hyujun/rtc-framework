@@ -13,18 +13,19 @@
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
 
-namespace ur5e_bringup::logging {
+namespace ur5e_bringup::logging
+{
 
 // ── Standard throttle periods ──────────────────────────────────────────────
 //
 // Use these constants instead of magic numbers in *_THROTTLE log macros.
 
 inline constexpr int kThrottleFastMs =
-    1000; ///< Fast progress (contact freeze, release skip)
+  1000;   ///< Fast progress (contact freeze, release skip)
 inline constexpr int kThrottleSlowMs =
-    2000; ///< Generic recurring snapshot/warning
+  2000;   ///< Generic recurring snapshot/warning
 inline constexpr int kThrottleIdleMs =
-    10000; ///< Long idle / one-shot transitions
+  10000;   ///< Long idle / one-shot transitions
 
 // ── Sub-logger factories ───────────────────────────────────────────────────
 //
@@ -39,19 +40,23 @@ inline constexpr int kThrottleIdleMs =
 // overhead. Demo controllers may still cache the result in a member to avoid
 // repeating the lookup on every cycle.
 
-inline rclcpp::Logger DemoJointLogger() {
+inline rclcpp::Logger DemoJointLogger()
+{
   return rclcpp::get_logger("ur5e_bringup.demo_joint_controller");
 }
 
-inline rclcpp::Logger DemoTaskLogger() {
+inline rclcpp::Logger DemoTaskLogger()
+{
   return rclcpp::get_logger("ur5e_bringup.demo_task_controller");
 }
 
-inline rclcpp::Logger DemoWbcLogger() {
+inline rclcpp::Logger DemoWbcLogger()
+{
   return rclcpp::get_logger("ur5e_bringup.demo_wbc_controller");
 }
 
-inline rclcpp::Logger SharedConfigLogger() {
+inline rclcpp::Logger SharedConfigLogger()
+{
   return rclcpp::get_logger("ur5e_bringup.demo_shared_config");
 }
 

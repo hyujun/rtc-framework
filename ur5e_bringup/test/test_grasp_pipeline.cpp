@@ -46,11 +46,12 @@
 
 #include "ur5e_bringup/phase/grasp_phase_manager.hpp"
 
-namespace {
+namespace
+{
 
 constexpr const char *kPandaUrdf =
-    "/usr/local/share/example-robot-data/robots/panda_description/urdf/"
-    "panda.urdf";
+  "/usr/local/share/example-robot-data/robots/panda_description/urdf/"
+  "panda.urdf";
 
 using ur5e_bringup::phase::GraspCommand;
 using ur5e_bringup::phase::GraspPhaseId;
@@ -58,7 +59,8 @@ using ur5e_bringup::phase::GraspPhaseManager;
 
 // Panda-sized equivalent of config/controllers/phase_config.yaml. Kept
 // minimal — only the dimensions the real YAML varies are exercised here.
-constexpr const char *kPandaPhaseConfig = R"(
+constexpr const char *kPandaPhaseConfig =
+  R"(
 transition:
   approach_tolerance: 0.05
   pregrasp_tolerance: 0.01
@@ -104,7 +106,8 @@ phases:
 // Panda-flavoured analogue of config/controllers/mpc/light_contact.yaml.
 // The `mpc.model` block is built by the test fixture before this YAML is
 // consumed — MPCFactory only reads `mpc.ocp_type`, `mpc.solver`, `mpc.limits`.
-constexpr const char *kLightFactoryYaml = R"(
+constexpr const char *kLightFactoryYaml =
+  R"(
 mpc:
   ocp_type: "light_contact"
   solver:
@@ -118,7 +121,8 @@ mpc:
     friction_mu: 0.7
 )";
 
-constexpr const char *kRichFactoryYaml = R"(
+constexpr const char *kRichFactoryYaml =
+  R"(
 mpc:
   ocp_type: "contact_rich"
   solver:
@@ -132,7 +136,8 @@ mpc:
     friction_mu: 0.7
 )";
 
-YAML::Node MinimalManagerConfig() {
+YAML::Node MinimalManagerConfig()
+{
   YAML::Node cfg;
   cfg["enabled"] = true;
   cfg["max_stale_solutions"] = 200;
@@ -144,7 +149,8 @@ YAML::Node MinimalManagerConfig() {
   return cfg;
 }
 
-rtc::mpc::MpcThreadLaunchConfig MakeLaunchCfg(double hz) {
+rtc::mpc::MpcThreadLaunchConfig MakeLaunchCfg(double hz)
+{
   rtc::mpc::MpcThreadLaunchConfig launch{};
   launch.main.cpu_core = -1; // no pinning in unit tests
   launch.main.sched_priority = 0;
@@ -155,13 +161,16 @@ rtc::mpc::MpcThreadLaunchConfig MakeLaunchCfg(double hz) {
 
 class GraspPipelineTest : public ::testing::Test {
 protected:
-  void SetUp() override {
+  void SetUp() override
+  {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed — run ./install.sh verify";
     }
     pinocchio::urdf::buildModel(kPandaUrdf, model_);
 
-    auto model_cfg = YAML::Load(R"(
+    auto model_cfg =
+      YAML::Load(
+        R"(
 end_effector_frame: panda_hand
 contact_frames:
   - name: panda_leftfinger
@@ -190,7 +199,8 @@ contact_frames:
     phase_manager_->SetTaskTarget(target);
   }
 
-  rtc::mpc::PhaseContext BuildIdleContext() {
+  rtc::mpc::PhaseContext BuildIdleContext()
+  {
     Eigen::VectorXd q = pinocchio::neutral(model_);
     Eigen::VectorXd v = Eigen::VectorXd::Zero(model_handler_.nv());
     Eigen::VectorXd sensor = Eigen::VectorXd::Zero(0);
@@ -200,7 +210,8 @@ contact_frames:
     return phase_manager_->Update(q, v, sensor, tcp, 0.0);
   }
 
-  void WriteNeutralState(rtc::mpc::MPCSolutionManager &mgr) const {
+  void WriteNeutralState(rtc::mpc::MPCSolutionManager & mgr) const
+  {
     const auto q = pinocchio::neutral(model_);
     const Eigen::VectorXd v = Eigen::VectorXd::Zero(model_handler_.nv());
     mgr.WriteState(q, v, /*timestamp_ns=*/1);
@@ -240,7 +251,7 @@ TEST_F(GraspPipelineTest, HandlerThreadLoopSolvesWithGraspPhaseManager) {
   std::unique_ptr<rtc::mpc::MPCHandlerBase> handler;
   ASSERT_EQ(rtc::mpc::MPCFactory::Create(YAML::Load(kLightFactoryYaml),
                                          model_handler_, ctx, handler)
-                .error,
+    .error,
             rtc::mpc::MPCFactoryError::kNoError);
 
   rtc::mpc::HandlerMPCThread thread;
@@ -255,7 +266,8 @@ TEST_F(GraspPipelineTest, HandlerThreadLoopSolvesWithGraspPhaseManager) {
   const auto start = std::chrono::steady_clock::now();
   while (std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::steady_clock::now() - start)
-             .count() < 400) {
+    .count() < 400)
+  {
     WriteNeutralState(mgr);
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
@@ -289,7 +301,7 @@ TEST_F(GraspPipelineTest, ForcePhaseClosureTriggersCrossModeSwap) {
   std::unique_ptr<rtc::mpc::MPCHandlerBase> handler;
   ASSERT_EQ(rtc::mpc::MPCFactory::Create(YAML::Load(kLightFactoryYaml),
                                          model_handler_, ctx, handler)
-                .error,
+    .error,
             rtc::mpc::MPCFactoryError::kNoError);
 
   // Capture a raw pointer so the test thread can call ForcePhase after

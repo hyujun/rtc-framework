@@ -22,15 +22,17 @@
 
 #include "rtc_mpc/phase/phase_cost_config.hpp"
 
-namespace {
+namespace
+{
 
 constexpr const char *kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+  RTC_PANDA_URDF_PATH;
 
 // YAML template with placeholders; swap via string::replace in cases that
 // need to mutate one entry. Provides a well-formed baseline matching
 // Panda (nq=9, 2 contacts × 3-dim = 6-vec F_target).
-constexpr const char *kValidYaml = R"(
+constexpr const char *kValidYaml =
+  R"(
 horizon_length: 20
 dt: 0.01
 w_frame_placement: 100.0
@@ -48,14 +50,17 @@ custom_weights:
 
 class PhaseCostConfigTest : public ::testing::Test {
 protected:
-  void SetUp() override {
+  void SetUp() override
+  {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed at " << kPandaUrdf
                    << " — run ./install.sh to install Aligator deps";
     }
     pinocchio::urdf::buildModel(kPandaUrdf, model_);
 
-    auto model_cfg = YAML::Load(R"(
+    auto model_cfg =
+      YAML::Load(
+        R"(
 end_effector_frame: panda_hand_tcp
 contact_frames:
   - name: panda_leftfinger
@@ -102,7 +107,9 @@ TEST_F(PhaseCostConfigTest, ValidYamlRoundTrip) {
 }
 
 TEST_F(PhaseCostConfigTest, AbsentCustomWeightsDefaultsToEmptyMap) {
-  auto cfg = YAML::Load(R"(
+  auto cfg =
+    YAML::Load(
+      R"(
 horizon_length: 10
 dt: 0.02
 w_frame_placement: 1.0

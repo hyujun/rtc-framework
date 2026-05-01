@@ -67,11 +67,13 @@
 #include <string>
 #include <string_view>
 
-namespace ur5e_bringup::phase {
+namespace ur5e_bringup::phase
+{
 
 /// @brief Stable integer ids for the 8 grasp FSM states. Matches the index
 ///        into the `phases` YAML map loaded by @ref GraspPhaseManager::Init.
-enum class GraspPhaseId : int {
+enum class GraspPhaseId : int
+{
   kIdle = 0,
   kApproach = 1,
   kPreGrasp = 2,
@@ -85,7 +87,8 @@ enum class GraspPhaseId : int {
 inline constexpr int kNumGraspPhases = 8;
 
 /// @brief Failure modes for @ref GraspPhaseManager::Init.
-enum class GraspPhaseInitError {
+enum class GraspPhaseInitError
+{
   kNoError = 0,
   kModelNotInitialised, ///< RobotModelHandler unusable
   kInvalidYamlSchema,   ///< required key missing / wrong kind
@@ -99,7 +102,8 @@ enum class GraspPhaseInitError {
 };
 
 /// @brief Transition thresholds + failure guard, loaded from YAML once.
-struct GraspTransitionConfig {
+struct GraspTransitionConfig
+{
   double approach_tolerance{0.05}; ///< m — APPROACH → PRE_GRASP guard
   double pregrasp_tolerance{0.01}; ///< m — PRE_GRASP → CLOSURE guard
   double force_threshold{0.5};     ///< N — Σ sensor for CLOSURE → HOLD
@@ -112,7 +116,7 @@ public:
   /// @param model  initialised handler; stays owned by the caller and must
   ///               outlive this manager (used only at @ref Init / @ref
   ///               SetTaskTarget time for dim validation + FK helpers).
-  explicit GraspPhaseManager(const rtc::mpc::RobotModelHandler &model) noexcept;
+  explicit GraspPhaseManager(const rtc::mpc::RobotModelHandler & model) noexcept;
   ~GraspPhaseManager() override = default;
 
   /// @brief Load thresholds + per-phase cost / contact plans from YAML.
@@ -142,17 +146,18 @@ public:
   /// Errors leave the manager in the uninitialised state (`Initialised()
   /// == false`); callers inspect the returned enum to decide whether to
   /// abort before starting the MPC thread.
-  [[nodiscard]] GraspPhaseInitError Load(const YAML::Node &cfg) noexcept;
+  [[nodiscard]] GraspPhaseInitError Load(const YAML::Node & cfg) noexcept;
 
   /// @brief PhaseManagerBase compatibility — delegates to @ref Load and
   ///        throws `std::runtime_error` on any error, since this entry is
   ///        only called off-RT during system init.
-  void Init(const YAML::Node &cfg) override;
+  void Init(const YAML::Node & cfg) override;
 
-  rtc::mpc::PhaseContext Update(const Eigen::VectorXd &q,
-                                const Eigen::VectorXd &v,
-                                const Eigen::VectorXd &sensor,
-                                const pinocchio::SE3 &tcp, double t) override;
+  rtc::mpc::PhaseContext Update(
+    const Eigen::VectorXd & q,
+    const Eigen::VectorXd & v,
+    const Eigen::VectorXd & sensor,
+    const pinocchio::SE3 & tcp, double t) override;
 
   /// @brief Update the grasp goal (and derived pre-grasp / approach-start
   ///        poses). Expected YAML:
@@ -165,10 +170,10 @@ public:
   /// ```
   /// Unknown / malformed payloads are logged to stderr and ignored — the
   /// FSM keeps the previous target.
-  void SetTaskTarget(const YAML::Node &target) override;
+  void SetTaskTarget(const YAML::Node & target) override;
 
   /// @brief Direct-object target setter used by tests and non-YAML wiring.
-  void SetTaskTarget(const GraspTarget &target) noexcept;
+  void SetTaskTarget(const GraspTarget & target) noexcept;
 
   /// @brief External command bus. Idempotent; repeated sets overwrite.
   void SetCommand(GraspCommand cmd) noexcept;
@@ -177,14 +182,16 @@ public:
   [[nodiscard]] std::string CurrentPhaseName() const override;
   void ForcePhase(int phase_id) override;
 
-  [[nodiscard]] bool Initialised() const noexcept { return initialised_; }
+  [[nodiscard]] bool Initialised() const noexcept {return initialised_;}
 
   // ── Test / diagnostic probes ────────────────────────────────────────────
-  [[nodiscard]] bool HasTarget() const noexcept {
+  [[nodiscard]] bool HasTarget() const noexcept
+  {
     return has_target_.load(std::memory_order_acquire);
   }
-  [[nodiscard]] int FailureCount() const noexcept { return failure_count_; }
-  [[nodiscard]] GraspTransitionConfig Thresholds() const noexcept {
+  [[nodiscard]] int FailureCount() const noexcept {return failure_count_;}
+  [[nodiscard]] GraspTransitionConfig Thresholds() const noexcept
+  {
     return thresholds_;
   }
 
@@ -195,7 +202,8 @@ public:
   [[nodiscard]] std::string_view OcpTypeFor(int id) const noexcept;
 
 private:
-  struct PhaseSlot {
+  struct PhaseSlot
+  {
     std::string ocp_type{"light_contact"};
     rtc::mpc::PhaseCostConfig cost{};
     rtc::mpc::ContactPlan contact_plan{};
@@ -204,20 +212,23 @@ private:
   static constexpr int kNoForcedPhase = -1;
 
   [[nodiscard]] GraspPhaseInitError
-  LoadTransition(const YAML::Node &cfg,
-                 GraspTransitionConfig &out) const noexcept;
+  LoadTransition(
+    const YAML::Node & cfg,
+    GraspTransitionConfig & out) const noexcept;
   [[nodiscard]] GraspPhaseInitError
-  LoadPhases(const YAML::Node &phases_cfg,
-             std::array<PhaseSlot, kNumGraspPhases> &out) const noexcept;
+  LoadPhases(
+    const YAML::Node & phases_cfg,
+    std::array<PhaseSlot, kNumGraspPhases> & out) const noexcept;
 
-  [[nodiscard]] int EvaluateTransition(int current_id,
-                                       const pinocchio::SE3 &tcp,
-                                       const Eigen::VectorXd &sensor,
-                                       GraspCommand cmd) noexcept;
+  [[nodiscard]] int EvaluateTransition(
+    int current_id,
+    const pinocchio::SE3 & tcp,
+    const Eigen::VectorXd & sensor,
+    GraspCommand cmd) noexcept;
   [[nodiscard]] rtc::mpc::PhaseContext BuildContext(int id, bool changed) const;
 
   // Injected (non-owning) — must outlive this manager.
-  const rtc::mpc::RobotModelHandler &model_;
+  const rtc::mpc::RobotModelHandler & model_;
 
   // Config (set in Load; const afterwards).
   GraspTransitionConfig thresholds_{};

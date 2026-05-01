@@ -29,10 +29,12 @@
 
 #include <string>
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
 /// @brief Snapshot of the phase state for one OCP build / reconfigure.
-struct PhaseContext {
+struct PhaseContext
+{
   int phase_id{0};           ///< opaque id, assigned by concrete FSM
   std::string phase_name{};  ///< diagnostics only
   bool phase_changed{false}; ///< true iff `phase_id` differs from prev tick

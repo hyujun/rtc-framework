@@ -29,7 +29,8 @@
 #include <string>
 #include <vector>
 
-namespace rtc::mpc::internal {
+namespace rtc::mpc::internal
+{
 
 using RigidConstraintModel = pinocchio::RigidConstraintModel;
 using RigidConstraintVec = PINOCCHIO_ALIGNED_STD_VECTOR(RigidConstraintModel);
@@ -47,16 +48,18 @@ using RigidConstraintVec = PINOCCHIO_ALIGNED_STD_VECTOR(RigidConstraintModel);
 /// `model.contact_frames()`. Callers enforce this before calling
 /// (`kContactPlanModelMismatch` is surfaced at the OCP level).
 inline RigidConstraintVec
-BuildConstraintModels(const RobotModelHandler &model,
-                      const std::vector<int> &active_frame_ids) noexcept {
+BuildConstraintModels(
+  const RobotModelHandler & model,
+  const std::vector<int> & active_frame_ids) noexcept
+{
   RigidConstraintVec out{};
-  const auto &pin_model = model.model();
-  const auto &frames = model.contact_frames();
+  const auto & pin_model = model.model();
+  const auto & frames = model.contact_frames();
 
   for (int fid : active_frame_ids) {
     int dim = 3;
     std::string name = "contact_" + std::to_string(fid);
-    for (const auto &info : frames) {
+    for (const auto & info : frames) {
       if (info.frame_id == fid) {
         dim = info.dim;
         name = info.name;
@@ -64,11 +67,11 @@ BuildConstraintModels(const RobotModelHandler &model,
       }
     }
     const auto joint_id = static_cast<pinocchio::JointIndex>(
-        pin_model.frames[static_cast<std::size_t>(fid)].parentJoint);
-    const auto &placement =
-        pin_model.frames[static_cast<std::size_t>(fid)].placement;
+      pin_model.frames[static_cast<std::size_t>(fid)].parentJoint);
+    const auto & placement =
+      pin_model.frames[static_cast<std::size_t>(fid)].placement;
     const auto contact_type =
-        (dim == 6) ? pinocchio::CONTACT_6D : pinocchio::CONTACT_3D;
+      (dim == 6) ? pinocchio::CONTACT_6D : pinocchio::CONTACT_3D;
     out.emplace_back(contact_type, pin_model, joint_id, placement,
                      pinocchio::LOCAL);
     out.back().name = name;

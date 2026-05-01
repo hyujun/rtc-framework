@@ -41,7 +41,8 @@
 
 #include <string_view>
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
 /// @brief Canonical string keys for component lookup on the stored
 ///        `CostStackTpl`. Stable across phases; must match the strings used
@@ -53,7 +54,8 @@ inline constexpr std::string_view kCostKeyControlReg = "control_reg";
 /// @brief Flags telling the caller which components the returned stack
 ///        actually contains. Components are omitted when their scalar
 ///        weight is <= 0 (avoids zero-contribution terms in the Hessian).
-struct StageComponentKeys {
+struct StageComponentKeys
+{
   bool has_frame_placement{false};
   bool has_state_reg{false};
   bool has_control_reg{false};
@@ -62,7 +64,8 @@ struct StageComponentKeys {
 /// @brief Return bundle: the freshly built cost stack + which components
 ///        are present. The stack is a value object intended to be passed by
 ///        move or copy into a `StageModelTpl` ctor.
-struct StageCost {
+struct StageCost
+{
   aligator::CostStackTpl<double> stack;
   StageComponentKeys keys{};
 };
@@ -70,7 +73,8 @@ struct StageCost {
 /// @brief Failure modes for the cost factory. Distinct from
 ///        `OCPBuildError` so the factory can be reused by
 ///        non-OCPHandler callers (e.g. future `FullDynamicsOCP`, tests).
-enum class CostFactoryError {
+enum class CostFactoryError
+{
   kNoError = 0,
   kModelNotInitialised,
   kInvalidCostConfig,            ///< horizon_length <= 0 or dt <= 0
@@ -78,7 +82,8 @@ enum class CostFactoryError {
   kAligatorInstantiationFailure, ///< an Aligator ctor threw
 };
 
-namespace cost_factory {
+namespace cost_factory
+{
 
 /// @brief Running-stage cost: frame placement + state reg + control reg.
 ///
@@ -94,18 +99,20 @@ namespace cost_factory {
 ///                         on success, otherwise the first failure cause.
 /// @return A `StageCost` bundle. On error, the returned stack is empty and
 ///         all keys are false.
-[[nodiscard]] StageCost BuildRunningCost(const PhaseCostConfig &cfg,
-                                         const RobotModelHandler &model,
-                                         const pinocchio::SE3 &ee_target,
-                                         CostFactoryError *out_error) noexcept;
+[[nodiscard]] StageCost BuildRunningCost(
+  const PhaseCostConfig & cfg,
+  const RobotModelHandler & model,
+  const pinocchio::SE3 & ee_target,
+  CostFactoryError *out_error) noexcept;
 
 /// @brief Terminal-stage cost: frame placement + state reg only. Control
 ///        reg and any `u`-dependent residuals are absent (the terminal
 ///        cost takes `x` only).
-[[nodiscard]] StageCost BuildTerminalCost(const PhaseCostConfig &cfg,
-                                          const RobotModelHandler &model,
-                                          const pinocchio::SE3 &ee_target,
-                                          CostFactoryError *out_error) noexcept;
+[[nodiscard]] StageCost BuildTerminalCost(
+  const PhaseCostConfig & cfg,
+  const RobotModelHandler & model,
+  const pinocchio::SE3 & ee_target,
+  CostFactoryError *out_error) noexcept;
 
 } // namespace cost_factory
 

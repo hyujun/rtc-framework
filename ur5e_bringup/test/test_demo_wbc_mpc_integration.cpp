@@ -18,19 +18,21 @@
 #include <array>
 #include <cmath>
 
-namespace {
+namespace
+{
 
 using rtc::ControllerState;
 using ur5e_bringup::DemoWbcController;
 
 /// Replicates MakeState() from test_demo_wbc_controller.cpp — 2-device UR5e
 /// + 10-DoF hand at home pose.
-ControllerState MakeDefaultState(double dt = 0.002) {
+ControllerState MakeDefaultState(double dt = 0.002)
+{
   ControllerState state{};
   state.num_devices = 2;
   state.dt = dt;
   state.iteration = 1;
-  auto &dev0 = state.devices[0];
+  auto & dev0 = state.devices[0];
   dev0.num_channels = 6;
   dev0.valid = true;
   dev0.positions[0] = 0.0;
@@ -39,7 +41,7 @@ ControllerState MakeDefaultState(double dt = 0.002) {
   dev0.positions[3] = -1.57;
   dev0.positions[4] = -1.57;
   dev0.positions[5] = 0.0;
-  auto &dev1 = state.devices[1];
+  auto & dev1 = state.devices[1];
   dev1.num_channels = 10;
   dev1.valid = true;
   return state;
@@ -50,7 +52,7 @@ protected:
   DemoWbcController ctrl_{""};
   ControllerState state_ = MakeDefaultState();
 
-  void SetUp() override { ctrl_.InitializeHoldPosition(state_); }
+  void SetUp() override {ctrl_.InitializeHoldPosition(state_);}
 };
 
 TEST_F(WbcMpcTest, GainsAccessorRoundTrip) {

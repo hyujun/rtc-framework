@@ -18,16 +18,20 @@
 #include <chrono>
 #include <thread>
 
-namespace rtc::mpc {
-namespace {
+namespace rtc::mpc
+{
+namespace
+{
 
 class NopMPCThread final : public MPCThread {
 public:
   std::atomic<int> solve_count{0};
 
 protected:
-  bool Solve(const MPCStateSnapshot & /*state*/, MPCSolution &out_sol,
-             std::span<std::jthread> /*workers*/) override {
+  bool Solve(
+    const MPCStateSnapshot & /*state*/, MPCSolution & out_sol,
+    std::span<std::jthread>/*workers*/) override
+  {
     ++solve_count;
     out_sol.horizon_length = 1;
     out_sol.dt_node = 0.01;
@@ -38,7 +42,8 @@ protected:
   }
 };
 
-YAML::Node MinimalConfig() {
+YAML::Node MinimalConfig()
+{
   YAML::Node cfg;
   cfg["enabled"] = true;
   cfg["max_stale_solutions"] = 100;

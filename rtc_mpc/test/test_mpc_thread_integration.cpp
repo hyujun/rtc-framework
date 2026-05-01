@@ -51,12 +51,14 @@
 
 #include "mock_phase_manager.hpp"
 
-namespace {
+namespace
+{
 
 constexpr const char *kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+  RTC_PANDA_URDF_PATH;
 
-constexpr const char *kPhaseACostYaml = R"(
+constexpr const char *kPhaseACostYaml =
+  R"(
 horizon_length: 15
 dt: 0.01
 w_frame_placement: 100.0
@@ -70,7 +72,8 @@ F_target: [0, 0, 0, 0, 0, 0]
 custom_weights: {}
 )";
 
-constexpr const char *kPhaseBCostYaml = R"(
+constexpr const char *kPhaseBCostYaml =
+  R"(
 horizon_length: 15
 dt: 0.01
 w_frame_placement: 150.0
@@ -84,7 +87,8 @@ F_target: [0, 0, 0, 0, 0, 0]
 custom_weights: {}
 )";
 
-YAML::Node MinimalManagerConfig() {
+YAML::Node MinimalManagerConfig()
+{
   YAML::Node cfg;
   cfg["enabled"] = true;
   cfg["max_stale_solutions"] = 100;
@@ -98,13 +102,16 @@ YAML::Node MinimalManagerConfig() {
 
 class MpcThreadIntegrationTest : public ::testing::Test {
 protected:
-  void SetUp() override {
+  void SetUp() override
+  {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed — run ./install.sh verify";
     }
     pinocchio::urdf::buildModel(kPandaUrdf, model_);
 
-    auto robot_cfg = YAML::Load(R"(
+    auto robot_cfg =
+      YAML::Load(
+        R"(
 end_effector_frame: panda_hand
 contact_frames:
   - name: panda_leftfinger
@@ -132,7 +139,8 @@ contact_frames:
     ee_target_B_.translation().z() += 0.10;
   }
 
-  rtc::mpc::PhaseContext MakeInitialContextForHandler() const {
+  rtc::mpc::PhaseContext MakeInitialContextForHandler() const
+  {
     rtc::mpc::PhaseContext ctx{};
     ctx.phase_id = 0;
     ctx.phase_name = "free_flight";
@@ -145,7 +153,8 @@ contact_frames:
   }
 
   rtc::mpc::test_utils::MockPhaseManager::Params
-  MakeMockParams(int transition_tick, bool cross_mode = false) const {
+  MakeMockParams(int transition_tick, bool cross_mode = false) const
+  {
     rtc::mpc::test_utils::MockPhaseManager::Params p;
     p.cost_config_A = cost_A_;
     p.cost_config_B = cost_B_;
@@ -161,7 +170,8 @@ contact_frames:
     return p;
   }
 
-  std::unique_ptr<rtc::mpc::LightContactMPC> MakeInitialisedLightHandler() {
+  std::unique_ptr<rtc::mpc::LightContactMPC> MakeInitialisedLightHandler()
+  {
     auto h = std::make_unique<rtc::mpc::LightContactMPC>();
     rtc::mpc::MPCSolverConfig cfg{};
     cfg.prim_tol = 1e-3;
@@ -176,13 +186,15 @@ contact_frames:
     return h;
   }
 
-  void WriteNeutralState(rtc::mpc::MPCSolutionManager &mgr) const {
+  void WriteNeutralState(rtc::mpc::MPCSolutionManager & mgr) const
+  {
     const Eigen::VectorXd q = pinocchio::neutral(model_);
     const Eigen::VectorXd v = Eigen::VectorXd::Zero(model_handler_.nv());
     mgr.WriteState(q, v, 0);
   }
 
-  rtc::mpc::MpcThreadLaunchConfig MakeLaunchCfg(double hz = 20.0) const {
+  rtc::mpc::MpcThreadLaunchConfig MakeLaunchCfg(double hz = 20.0) const
+  {
     rtc::mpc::MpcThreadLaunchConfig launch{};
     launch.main.cpu_core = -1; // no pinning in unit tests
     launch.main.sched_policy = 0;
@@ -397,12 +409,13 @@ TEST_F(MpcThreadIntegrationTest, SolutionManagerConsumptionE2E) {
   const auto start = std::chrono::steady_clock::now();
   while (std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::steady_clock::now() - start)
-             .count() < 500) {
+    .count() < 500)
+  {
     const auto now = std::chrono::steady_clock::now();
     const auto now_ns = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
             now.time_since_epoch())
-            .count());
+      .count());
     mgr.WriteState(q, v, now_ns);
     const bool ok = mgr.ComputeReference(q, v, now_ns, q_ref, v_ref, a_ff,
                                          lambda_ref, u_fb, meta);
@@ -457,7 +470,9 @@ TEST_F(MpcThreadIntegrationTest, CrossModeSwapSucceedsOnPhaseTransition) {
 
   // Pre-build both factory YAML nodes — MPCFactory cross-checks the YAML
   // `ocp_type` against `ctx.ocp_type`, so we need one per dispatch key.
-  auto cfg_light = YAML::Load(R"(
+  auto cfg_light =
+    YAML::Load(
+      R"(
 mpc:
   ocp_type: light_contact
   solver:
@@ -465,7 +480,9 @@ mpc:
     dual_tol: 1.0e-2
     max_iters: 40
 )");
-  auto cfg_rich = YAML::Load(R"(
+  auto cfg_rich =
+    YAML::Load(
+      R"(
 mpc:
   ocp_type: contact_rich
   solver:

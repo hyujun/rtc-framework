@@ -16,7 +16,8 @@
 #include <cstdint>
 #include <type_traits>
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
 /// Upper-bound capacity constants. Values chosen for UR5e + 10-DoF hand
 /// (16 DoF) with headroom for dual-arm setups; over-allocation is acceptable
@@ -37,7 +38,8 @@ inline constexpr int kMaxContactVars = 24;  ///< max Σ(contact_dim)
 /// - `K_riccati[k]` is stored row-major as `nu × nx`.
 /// - `horizon_length` / `nq` / `nv` / `nu` / `nx` / `n_contact_vars` are the
 ///   **actual** sizes used for this solve; consumers must not read past them.
-struct MPCSolution {
+struct MPCSolution
+{
   // ── Metadata ────────────────────────────────────────────────────────
   uint64_t timestamp_ns{0};       ///< wall-clock time solve completed
   uint64_t solve_duration_ns{0};  ///< profiling: time spent in solve()
@@ -63,14 +65,15 @@ struct MPCSolution {
   /// Riccati gains K[k] (nu × nx, row-major). Flattened length computed in
   /// std::size_t to avoid implicit widening on capacity arithmetic.
   static constexpr std::size_t kRiccatiGainFlatSize =
-      static_cast<std::size_t>(kMaxNu) * static_cast<std::size_t>(kMaxNx);
+    static_cast<std::size_t>(kMaxNu) * static_cast<std::size_t>(kMaxNx);
   std::array<std::array<double, kRiccatiGainFlatSize>, kMaxHorizon>
-      K_riccati{};
+  K_riccati{};
 
   /// @return true if this solution is safe to consume.
   /// Does not check `converged` because a non-converged but usable warm-start
   /// solution is still better than a stale one.
-  [[nodiscard]] constexpr bool IsValid() const noexcept {
+  [[nodiscard]] constexpr bool IsValid() const noexcept
+  {
     return horizon_length > 0 && nv > 0 && dt_node > 0.0;
   }
 };
@@ -82,7 +85,8 @@ static_assert(std::is_trivially_copyable_v<MPCSolution>,
 ///
 /// Written by the RT thread via `rtc::SeqLock<MPCStateSnapshot>::Store()`,
 /// read by the MPC thread at the top of each solve via `Load()`.
-struct MPCStateSnapshot {
+struct MPCStateSnapshot
+{
   std::array<double, kMaxNq> q{};
   std::array<double, kMaxNv> v{};
   uint64_t timestamp_ns{0};

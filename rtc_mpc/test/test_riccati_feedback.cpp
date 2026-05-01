@@ -15,8 +15,10 @@
 #include <Eigen/Core>
 #include <array>
 
-namespace rtc::mpc {
-namespace {
+namespace rtc::mpc
+{
+namespace
+{
 
 constexpr int kNq = 3;
 constexpr int kNv = 3;
@@ -25,8 +27,9 @@ constexpr int kNu = 3;
 constexpr double kTol = 1e-12;
 
 class RiccatiFeedbackTest : public ::testing::Test {
- protected:
-  void SetUp() override {
+protected:
+  void SetUp() override
+  {
     riccati_.Init(kNv, kNu, kNx);
     q_curr_.setZero(kNq);
     v_curr_.setZero(kNv);
@@ -36,7 +39,8 @@ class RiccatiFeedbackTest : public ::testing::Test {
   }
 
   /// Build the nu × nx identity gain (top-left of an identity matrix).
-  std::array<double, kNu * kNx> IdentityGain() const {
+  std::array<double, kNu * kNx> IdentityGain() const
+  {
     std::array<double, kNu * kNx> data{};
     for (int i = 0; i < kNu; ++i) {
       data[static_cast<std::size_t>(i * kNx + i)] = 1.0;

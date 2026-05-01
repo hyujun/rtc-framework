@@ -19,13 +19,15 @@
 #include <memory>
 #include <utility>
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
 void HandlerMPCThread::Configure(
-    const RobotModelHandler &model_handler,
-    std::unique_ptr<MPCHandlerBase> handler,
-    std::unique_ptr<PhaseManagerBase> phase_manager,
-    YAML::Node factory_cfg_light, YAML::Node factory_cfg_rich) noexcept {
+  const RobotModelHandler & model_handler,
+  std::unique_ptr<MPCHandlerBase> handler,
+  std::unique_ptr<PhaseManagerBase> phase_manager,
+  YAML::Node factory_cfg_light, YAML::Node factory_cfg_rich) noexcept
+{
   model_ = &model_handler;
   handler_ = std::move(handler);
   phase_manager_ = std::move(phase_manager);
@@ -59,11 +61,12 @@ void HandlerMPCThread::Configure(
   has_prev_out_ = false;
 }
 
-void HandlerMPCThread::WarnThrottled(const char *what, int code) noexcept {
+void HandlerMPCThread::WarnThrottled(const char *what, int code) noexcept
+{
   constexpr std::int64_t kWarnThrottleNs = 5'000'000'000LL; // 5 s
   const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                           std::chrono::steady_clock::now().time_since_epoch())
-                          .count();
+    .count();
   const auto last = last_warn_ns_.load(std::memory_order_relaxed);
   if (last != 0 && now_ns - last < kWarnThrottleNs) {
     return;
@@ -74,10 +77,11 @@ void HandlerMPCThread::WarnThrottled(const char *what, int code) noexcept {
       code,
       static_cast<unsigned long>(total_solves_.load(std::memory_order_relaxed)),
       static_cast<unsigned long>(
-          failed_solves_.load(std::memory_order_relaxed)));
+      failed_solves_.load(std::memory_order_relaxed)));
 }
 
-bool HandlerMPCThread::TryCrossModeSwap(const PhaseContext &ctx) {
+bool HandlerMPCThread::TryCrossModeSwap(const PhaseContext & ctx)
+{
   // Pick the matching pre-built YAML node. Baseline Phase 6 passes both as
   // Null, so this method is only reached from the cross-mode stretch test.
   YAML::Node cfg;
@@ -94,7 +98,7 @@ bool HandlerMPCThread::TryCrossModeSwap(const PhaseContext &ctx) {
 
   std::unique_ptr<MPCHandlerBase> new_handler;
   const MPCFactoryStatus status =
-      MPCFactory::Create(cfg, *model_, ctx, new_handler);
+    MPCFactory::Create(cfg, *model_, ctx, new_handler);
   if (status.error != MPCFactoryError::kNoError || new_handler == nullptr) {
     return false;
   }
@@ -106,8 +110,10 @@ bool HandlerMPCThread::TryCrossModeSwap(const PhaseContext &ctx) {
   return true;
 }
 
-bool HandlerMPCThread::Solve(const MPCStateSnapshot &state, MPCSolution &out,
-                             std::span<std::jthread> /*workers*/) {
+bool HandlerMPCThread::Solve(
+  const MPCStateSnapshot & state, MPCSolution & out,
+  std::span<std::jthread>/*workers*/)
+{
   // ── Null-handler guard ────────────────────────────────────────────────
   if (handler_ == nullptr || phase_manager_ == nullptr || model_ == nullptr) {
     if (!null_logged_.exchange(true, std::memory_order_relaxed)) {
@@ -137,15 +143,15 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot &state, MPCSolution &out,
   // ── FK for TCP pose (per-tick; reuses pdata_) ─────────────────────────
   pinocchio::forwardKinematics(model_->model(), *pdata_, q_scratch_);
   pinocchio::updateFramePlacements(model_->model(), *pdata_);
-  const pinocchio::SE3 &tcp =
-      pdata_->oMf[static_cast<std::size_t>(model_->end_effector_frame_id())];
+  const pinocchio::SE3 & tcp =
+    pdata_->oMf[static_cast<std::size_t>(model_->end_effector_frame_id())];
 
   // ── Phase manager tick ────────────────────────────────────────────────
   const double t = std::chrono::duration<double>(
                        std::chrono::steady_clock::now() - start_time_)
-                       .count();
+    .count();
   const PhaseContext ctx =
-      phase_manager_->Update(q_scratch_, v_scratch_, sensor_scratch_, tcp, t);
+    phase_manager_->Update(q_scratch_, v_scratch_, sensor_scratch_, tcp, t);
   last_phase_id_.store(ctx.phase_id, std::memory_order_relaxed);
 
   // ── Cross-mode swap branch (try-wrapped; Solve stays noexcept) ────────

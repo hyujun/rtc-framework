@@ -8,61 +8,82 @@
 
 #include <string>
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
-namespace {
+namespace
+{
 
 /// Accept either a root with `mpc:` nested or the nested map directly.
 /// Returns a Node pointing at the effective MPC subtree. If neither form
 /// matches, returns the input unchanged and lets downstream parsing
 /// surface the missing-key failure.
-[[nodiscard]] YAML::Node ResolveMpcSubtree(const YAML::Node &cfg) noexcept {
-  if (!cfg.IsDefined() || !cfg.IsMap())
+[[nodiscard]] YAML::Node ResolveMpcSubtree(const YAML::Node & cfg) noexcept
+{
+  if (!cfg.IsDefined() || !cfg.IsMap()) {
     return cfg;
-  if (cfg["mpc"] && cfg["mpc"].IsMap())
+  }
+  if (cfg["mpc"] && cfg["mpc"].IsMap()) {
     return cfg["mpc"];
+  }
   return cfg;
 }
 
-[[nodiscard]] bool ParseSolverConfig(const YAML::Node &solver_node,
-                                     MPCSolverConfig &out) noexcept {
-  if (!solver_node.IsDefined())
+[[nodiscard]] bool ParseSolverConfig(
+  const YAML::Node & solver_node,
+  MPCSolverConfig & out) noexcept
+{
+  if (!solver_node.IsDefined()) {
     return true; // leave defaults
-  if (!solver_node.IsMap())
+  }
+  if (!solver_node.IsMap()) {
     return false;
+  }
   try {
-    if (solver_node["prim_tol"])
+    if (solver_node["prim_tol"]) {
       out.prim_tol = solver_node["prim_tol"].as<double>();
-    if (solver_node["dual_tol"])
+    }
+    if (solver_node["dual_tol"]) {
       out.dual_tol = solver_node["dual_tol"].as<double>();
-    if (solver_node["mu_init"])
+    }
+    if (solver_node["mu_init"]) {
       out.mu_init = solver_node["mu_init"].as<double>();
-    if (solver_node["max_iters"])
+    }
+    if (solver_node["max_iters"]) {
       out.max_iters = solver_node["max_iters"].as<int>();
-    if (solver_node["max_al_iters"])
+    }
+    if (solver_node["max_al_iters"]) {
       out.max_al_iters = solver_node["max_al_iters"].as<int>();
-    if (solver_node["verbose"])
+    }
+    if (solver_node["verbose"]) {
       out.verbose = solver_node["verbose"].as<bool>();
+    }
   } catch (...) {
     return false;
   }
   return true;
 }
 
-[[nodiscard]] bool ParseLimits(const YAML::Node &limits_node, int nu,
-                               OCPLimits &out) noexcept {
-  if (!limits_node.IsDefined())
+[[nodiscard]] bool ParseLimits(
+  const YAML::Node & limits_node, int nu,
+  OCPLimits & out) noexcept
+{
+  if (!limits_node.IsDefined()) {
     return true;
-  if (!limits_node.IsMap())
+  }
+  if (!limits_node.IsMap()) {
     return false;
+  }
   try {
-    if (limits_node["friction_mu"])
+    if (limits_node["friction_mu"]) {
       out.friction_mu = limits_node["friction_mu"].as<double>();
+    }
     if (limits_node["u_min"] && limits_node["u_min"].IsSequence()) {
       const auto raw = limits_node["u_min"].as<std::vector<double>>();
       if (!raw.empty()) {
-        if (static_cast<int>(raw.size()) != nu)
+        if (static_cast<int>(raw.size()) != nu) {
           return false;
+        }
         out.u_min = Eigen::Map<const Eigen::VectorXd>(
             raw.data(), static_cast<Eigen::Index>(raw.size()));
       }
@@ -70,8 +91,9 @@ namespace {
     if (limits_node["u_max"] && limits_node["u_max"].IsSequence()) {
       const auto raw = limits_node["u_max"].as<std::vector<double>>();
       if (!raw.empty()) {
-        if (static_cast<int>(raw.size()) != nu)
+        if (static_cast<int>(raw.size()) != nu) {
           return false;
+        }
         out.u_max = Eigen::Map<const Eigen::VectorXd>(
             raw.data(), static_cast<Eigen::Index>(raw.size()));
       }
@@ -85,9 +107,11 @@ namespace {
 } // namespace
 
 MPCFactoryStatus
-MPCFactory::Create(const YAML::Node &cfg, const RobotModelHandler &model,
-                   const PhaseContext &initial_ctx,
-                   std::unique_ptr<MPCHandlerBase> &handler_out) noexcept {
+MPCFactory::Create(
+  const YAML::Node & cfg, const RobotModelHandler & model,
+  const PhaseContext & initial_ctx,
+  std::unique_ptr<MPCHandlerBase> & handler_out) noexcept
+{
   handler_out.reset();
   MPCFactoryStatus status{};
 

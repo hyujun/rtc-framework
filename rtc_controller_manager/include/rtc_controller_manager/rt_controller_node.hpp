@@ -7,6 +7,8 @@
 #include "rtc_base/threading/publish_buffer.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/threading/thread_config.hpp"
+#include "rtc_base/timing/cm_timing_sample.hpp"
+#include "rtc_base/timing/thread_timing_csv_logger.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controller_manager/controller_timing_profiler.hpp"
 #include "rtc_urdf_bridge/types.hpp"
@@ -61,7 +63,8 @@
 //   - cb_group_aux_:       estop_pub_  (aux core)
 // Forward declaration for friend access — defined in
 // test/test_controller_lifecycle.cpp.
-namespace rtc {
+namespace rtc
+{
 class ControllerLifecycleTestAccess;
 }
 
@@ -73,40 +76,42 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
 
 public:
   using CallbackReturn =
-      rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+    rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
   // Node name is supplied by the robot-specific bringup executable.
   // rtc_controller_manager is robot-agnostic — it does not own a runtime
   // identity. See agent_docs/design-principles.md.
-  explicit RtControllerNode(const std::string &node_name);
+  explicit RtControllerNode(const std::string & node_name);
   ~RtControllerNode() override;
 
   // ── Lifecycle callbacks ──────────────────────────────────────────────────
-  CallbackReturn on_configure(const rclcpp_lifecycle::State &state) override;
-  CallbackReturn on_activate(const rclcpp_lifecycle::State &state) override;
-  CallbackReturn on_deactivate(const rclcpp_lifecycle::State &state) override;
-  CallbackReturn on_cleanup(const rclcpp_lifecycle::State &state) override;
-  CallbackReturn on_shutdown(const rclcpp_lifecycle::State &state) override;
-  CallbackReturn on_error(const rclcpp_lifecycle::State &state) override;
+  CallbackReturn on_configure(const rclcpp_lifecycle::State & state) override;
+  CallbackReturn on_activate(const rclcpp_lifecycle::State & state) override;
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State & state) override;
+  CallbackReturn on_cleanup(const rclcpp_lifecycle::State & state) override;
+  CallbackReturn on_shutdown(const rclcpp_lifecycle::State & state) override;
+  CallbackReturn on_error(const rclcpp_lifecycle::State & state) override;
 
   // Public accessors for main() to retrieve callback groups
-  rclcpp::CallbackGroup::SharedPtr GetSensorGroup() const {
+  rclcpp::CallbackGroup::SharedPtr GetSensorGroup() const
+  {
     return cb_group_sensor_;
   }
-  rclcpp::CallbackGroup::SharedPtr GetLogGroup() const { return cb_group_log_; }
-  rclcpp::CallbackGroup::SharedPtr GetAuxGroup() const { return cb_group_aux_; }
+  rclcpp::CallbackGroup::SharedPtr GetLogGroup() const {return cb_group_log_;}
+  rclcpp::CallbackGroup::SharedPtr GetAuxGroup() const {return cb_group_aux_;}
 
   // Per-controller LifecycleNodes created in on_configure.  main() attaches
   // these to aux_executor so controller-owned subscriptions/publishers are
   // processed off the RT path.  Valid after CM's on_configure has succeeded.
   [[nodiscard]] const std::vector<rclcpp_lifecycle::LifecycleNode::SharedPtr> &
-  GetControllerNodes() const {
+  GetControllerNodes() const
+  {
     return controller_nodes_;
   }
 
   // RT loop lifecycle — public until Step 8 (RtControllerMain redesign)
-  void StartRtLoop(const rtc::ThreadConfig &rt_cfg);
-  void StartPublishLoop(const rtc::ThreadConfig &pub_cfg);
+  void StartRtLoop(const rtc::ThreadConfig & rt_cfg);
+  void StartPublishLoop(const rtc::ThreadConfig & pub_cfg);
   void StopRtLoop();
   void StopPublishLoop();
 
@@ -125,34 +130,40 @@ private:
   void CreateTimers();
 
   // ── Subscription callbacks (unified per-device) ──────────────────────────
-  void DeviceJointStateCallback(int device_slot,
-                                sensor_msgs::msg::JointState::SharedPtr msg);
-  void DeviceMotorStateCallback(int device_slot,
-                                sensor_msgs::msg::JointState::SharedPtr msg);
-  void DeviceSensorCallback(int device_slot,
-                            std_msgs::msg::Float64MultiArray::SharedPtr msg);
-  void HandSensorStateCallback(int device_slot,
-                               rtc_msgs::msg::HandSensorState::SharedPtr msg);
-  void DeviceTargetCallback(int device_slot,
-                            rtc_msgs::msg::RobotTarget::SharedPtr msg);
+  void DeviceJointStateCallback(
+    int device_slot,
+    sensor_msgs::msg::JointState::SharedPtr msg);
+  void DeviceMotorStateCallback(
+    int device_slot,
+    sensor_msgs::msg::JointState::SharedPtr msg);
+  void DeviceSensorCallback(
+    int device_slot,
+    std_msgs::msg::Float64MultiArray::SharedPtr msg);
+  void HandSensorStateCallback(
+    int device_slot,
+    rtc_msgs::msg::HandSensorState::SharedPtr msg);
+  void DeviceTargetCallback(
+    int device_slot,
+    rtc_msgs::msg::RobotTarget::SharedPtr msg);
 
   // ── System model configuration (top-level "urdf:" YAML) ──────────────────
-  void ParseSystemModelConfig(rtc_urdf_bridge::ModelConfig &config);
-  void ParseSubModels(rtc_urdf_bridge::ModelConfig &config);
-  void ParseTreeModels(rtc_urdf_bridge::ModelConfig &config);
+  void ParseSystemModelConfig(rtc_urdf_bridge::ModelConfig & config);
+  void ParseSubModels(rtc_urdf_bridge::ModelConfig & config);
+  void ParseTreeModels(rtc_urdf_bridge::ModelConfig & config);
 
   // ── Device name configuration ────────────────────────────────────────────
   void LoadDeviceNameConfigs();
-  void BuildDeviceReorderMap(int device_slot,
-                             const std::vector<std::string> &msg_names);
+  void BuildDeviceReorderMap(
+    int device_slot,
+    const std::vector<std::string> & msg_names);
 
   // ── RT loop (clock_nanosleep) ─────────────────────────────────────────────
-  void RtLoopEntry(const rtc::ThreadConfig &cfg);
+  void RtLoopEntry(const rtc::ThreadConfig & cfg);
   void CheckTimeouts(); // 50 Hz watchdog — called inline from RT loop
   void ControlLoop();   // 500 Hz control loop
 
   // ── Publish offload (SPSC drain → publish) ──────────────────────────────
-  void PublishLoopEntry(const rtc::ThreadConfig &cfg);
+  void PublishLoopEntry(const rtc::ThreadConfig & cfg);
   void DrainLog(); // Log drain (non-RT core)
 
   void PublishEstopStatus(bool estopped);
@@ -170,25 +181,28 @@ private:
   // only. Caller must hold lifecycle ordering invariants (e.g. don't
   // activate while another controller is active — use SwitchActiveController
   // for transitions).
-  CallbackReturn ActivateController(std::size_t ctrl_idx,
-                                    const rclcpp_lifecycle::State &prev_state,
-                                    const rtc::ControllerState &snapshot);
+  CallbackReturn ActivateController(
+    std::size_t ctrl_idx,
+    const rclcpp_lifecycle::State & prev_state,
+    const rtc::ControllerState & snapshot);
   CallbackReturn
-  DeactivateController(std::size_t ctrl_idx,
-                       const rclcpp_lifecycle::State &prev_state);
+  DeactivateController(
+    std::size_t ctrl_idx,
+    const rclcpp_lifecycle::State & prev_state);
 
   // Swap the active controller to `name`. Sync sequence: precondition →
   // build snapshot → target.on_activate → store active idx → wait one RT
   // tick → previous.on_deactivate → publish active_controller_name.
   // Returns true on success; sets `message` on failure. Aux-thread only.
-  bool SwitchActiveController(const std::string &name, std::string &message);
+  bool SwitchActiveController(const std::string & name, std::string & message);
 
   /// Trigger a global E-Stop that propagates to all subsystems.
   /// Safe to call from any thread. Idempotent — second call is a no-op.
   void TriggerGlobalEstop(std::string_view reason) noexcept;
   /// Clear global E-Stop and re-enable all subsystems.
   void ClearGlobalEstop() noexcept;
-  [[nodiscard]] bool IsGlobalEstopped() const noexcept {
+  [[nodiscard]] bool IsGlobalEstopped() const noexcept
+  {
     return global_estop_.load(std::memory_order_acquire);
   }
 
@@ -204,9 +218,10 @@ private:
 
   // ── Configurable topic publishers (created from controller YAML) ──────────
   // Key = topic name, value = publisher + pre-allocated message
-  struct PublisherEntry {
+  struct PublisherEntry
+  {
     rclcpp_lifecycle::LifecyclePublisher<
-        std_msgs::msg::Float64MultiArray>::SharedPtr publisher;
+      std_msgs::msg::Float64MultiArray>::SharedPtr publisher;
     std_msgs::msg::Float64MultiArray msg;
     // Reorder map: output index → input (gc.commands) index.
     // Built from joint_state_names → joint_command_names mapping.
@@ -225,51 +240,55 @@ private:
   // list_controllers builds its response from controller_states_ +
   // controller_topic_configs_ + controller_types_.
   rclcpp::Service<rtc_msgs::srv::ListControllers>::SharedPtr
-      list_controllers_srv_;
+    list_controllers_srv_;
   rclcpp::Service<rtc_msgs::srv::SwitchController>::SharedPtr
-      switch_controller_srv_;
+    switch_controller_srv_;
 
   // JointCommand publishers (created from controller YAML kJointCommand roles)
-  struct JointCommandPublisherEntry {
+  struct JointCommandPublisherEntry
+  {
     rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::JointCommand>::SharedPtr
-        publisher;
+      publisher;
     rtc_msgs::msg::JointCommand msg; // pre-allocated
     std::vector<int> reorder_map; // config (joint_state_names) → command order
   };
   std::unordered_map<std::string, JointCommandPublisherEntry>
-      joint_command_publishers_;
+  joint_command_publishers_;
 
   // Typed publishers for new topic roles
-  template <typename MsgT> struct TypedPublisherEntry {
+  template<typename MsgT>
+  struct TypedPublisherEntry
+  {
     typename rclcpp_lifecycle::LifecyclePublisher<MsgT>::SharedPtr publisher;
     MsgT msg; // pre-allocated
   };
   std::unordered_map<std::string,
-                     TypedPublisherEntry<rtc_msgs::msg::GuiPosition>>
-      gui_position_publishers_;
+    TypedPublisherEntry<rtc_msgs::msg::GuiPosition>>
+  gui_position_publishers_;
   std::unordered_map<std::string,
-                     TypedPublisherEntry<rtc_msgs::msg::RobotTarget>>
-      robot_target_publishers_;
+    TypedPublisherEntry<rtc_msgs::msg::RobotTarget>>
+  robot_target_publishers_;
   std::unordered_map<std::string,
-                     TypedPublisherEntry<rtc_msgs::msg::DeviceStateLog>>
-      device_state_log_publishers_;
+    TypedPublisherEntry<rtc_msgs::msg::DeviceStateLog>>
+  device_state_log_publishers_;
   std::unordered_map<std::string,
-                     TypedPublisherEntry<rtc_msgs::msg::DeviceSensorLog>>
-      device_sensor_log_publishers_;
+    TypedPublisherEntry<rtc_msgs::msg::DeviceSensorLog>>
+  device_sensor_log_publishers_;
   std::unordered_map<std::string,
-                     TypedPublisherEntry<rtc_msgs::msg::GraspState>>
-      grasp_state_publishers_;
+    TypedPublisherEntry<rtc_msgs::msg::GraspState>>
+  grasp_state_publishers_;
   std::unordered_map<std::string,
-                     TypedPublisherEntry<rtc_msgs::msg::ToFSnapshot>>
-      tof_snapshot_publishers_;
+    TypedPublisherEntry<rtc_msgs::msg::ToFSnapshot>>
+  tof_snapshot_publishers_;
 
   // ── Digital Twin JointState republishers (RELIABLE, depth 10) ────────────
   // key = "/{group}/digital_twin/joint_states"
-  struct DigitalTwinEntry {
+  struct DigitalTwinEntry
+  {
     rclcpp_lifecycle::LifecyclePublisher<
-        sensor_msgs::msg::JointState>::SharedPtr publisher;
+      sensor_msgs::msg::JointState>::SharedPtr publisher;
     sensor_msgs::msg::JointState
-        msg; // pre-allocated with config joint_state_names
+      msg;   // pre-allocated with config joint_state_names
   };
   std::unordered_map<std::string, DigitalTwinEntry> digital_twin_publishers_;
   // group_slot → digital_twin topic name mapping
@@ -291,22 +310,24 @@ private:
   // ── Dynamic device group management ──────────────────────────────────────
   std::set<std::string> active_groups_; // union of all controller groups
   std::map<std::string, int>
-      group_slot_map_; // group name → PublishSnapshot slot index
+  group_slot_map_;     // group name → PublishSnapshot slot index
 
   // Pre-resolved group→slot mapping per controller (avoids map lookup on RT
   // path). controller_slot_mappings_[ctrl_idx].slots[group_iteration_order] =
   // device slot index.
-  struct ControllerSlotMapping {
+  struct ControllerSlotMapping
+  {
     static constexpr int kMaxSlots = rtc::PublishSnapshot::kMaxGroups;
     std::array<int, kMaxSlots> slots{};
     std::array<uint16_t, kMaxSlots>
-        capabilities{}; ///< DeviceCapability per group
+    capabilities{};     ///< DeviceCapability per group
     int num_groups{0};
   };
   std::vector<ControllerSlotMapping> controller_slot_mappings_;
 
   // ── Device timeout entries (E-STOP watchdog) ──────────────────────────────
-  struct DeviceTimeoutEntry {
+  struct DeviceTimeoutEntry
+  {
     std::string group_name;
     std::string state_topic;
     std::chrono::milliseconds timeout{100};
@@ -314,21 +335,22 @@ private:
     std::atomic<bool> received{false};
 
     DeviceTimeoutEntry() = default;
-    DeviceTimeoutEntry(DeviceTimeoutEntry &&o) noexcept
-        : group_name(std::move(o.group_name)),
-          state_topic(std::move(o.state_topic)), timeout(o.timeout),
-          last_update(o.last_update),
-          received(o.received.load(std::memory_order_relaxed)) {}
-    DeviceTimeoutEntry &operator=(DeviceTimeoutEntry &&) = delete;
+    DeviceTimeoutEntry(DeviceTimeoutEntry && o) noexcept
+    : group_name(std::move(o.group_name)),
+      state_topic(std::move(o.state_topic)), timeout(o.timeout),
+      last_update(o.last_update),
+      received(o.received.load(std::memory_order_relaxed)) {}
+    DeviceTimeoutEntry & operator=(DeviceTimeoutEntry &&) = delete;
     DeviceTimeoutEntry(const DeviceTimeoutEntry &) = delete;
-    DeviceTimeoutEntry &operator=(const DeviceTimeoutEntry &) = delete;
+    DeviceTimeoutEntry & operator=(const DeviceTimeoutEntry &) = delete;
   };
   std::vector<DeviceTimeoutEntry> device_timeouts_;
   [[nodiscard]] bool AllTimeoutDevicesReceived() const noexcept;
 
   // ── Per-device state caches (indexed by group_slot_map_) ─────────────────
   static constexpr int kMaxDevices = rtc::PublishSnapshot::kMaxGroups;
-  struct DeviceStateCache {
+  struct DeviceStateCache
+  {
     int num_channels{0};
     std::array<double, rtc::kMaxDeviceChannels> positions{};
     std::array<double, rtc::kMaxDeviceChannels> velocities{};
@@ -353,9 +375,9 @@ private:
 
   // Per-device targets
   std::array<std::array<double, rtc::kMaxDeviceChannels>, kMaxDevices>
-      device_targets_{};
+  device_targets_{};
   std::array<std::array<double, rtc::kMaxDeviceChannels>, kMaxDevices>
-      device_target_snapshots_{};
+  device_target_snapshots_{};
 
   // Read-only parameter guard handle (topic params immutable after init)
   rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
@@ -371,7 +393,7 @@ private:
   std::jthread publish_thread_;
   std::atomic<bool> publish_running_{false};
   int publish_eventfd_{
-      -1}; // eventfd for RT→publish wakeup (replaces sched_yield)
+    -1};   // eventfd for RT→publish wakeup (replaces sched_yield)
 
   // ── Domain objects ────────────────────────────────────────────────────────
   std::vector<std::unique_ptr<rtc::RTControllerInterface>> controllers_;
@@ -388,6 +410,12 @@ private:
   std::unique_ptr<rtc::DataLogger> logger_;
   rtc::ControlLogBuffer log_buffer_{};              // SPSC ring buffer
   rtc::ControllerTimingProfiler timing_profiler_{}; // Compute() timing
+
+  // Per-RT-tick timing CSV (timing_log.csv). Producer is the 500 Hz RT
+  // loop; consumer is DrainLog on the log thread (Core 4). Same generic
+  // ThreadTiming infra the MPC controller uses for mpc_solve_timing.csv.
+  rtc::CmTimingBuffer cm_timing_producer_{};
+  rtc::ThreadTimingCsvLogger<rtc::CmTimingPayload> cm_timing_logger_;
 
   // ── Shared state ──────────────────────────────────────────────────────────
   // Device state: per-device SeqLock (lock-free single-writer/multi-reader).
@@ -406,10 +434,11 @@ private:
   // ── Per-device name configuration ────────────────────────────────────────
   std::map<std::string, rtc::DeviceNameConfig> device_name_configs_;
   std::vector<std::string>
-      slot_to_group_name_; // reverse: slot index → group name
+  slot_to_group_name_;     // reverse: slot index → group name
 
   // Per-device reorder maps (indexed by device slot)
-  struct DeviceReorderMap {
+  struct DeviceReorderMap
+  {
     std::vector<int> reorder;
     bool built{false};
     bool built_from_msg{false}; // true only when built from actual device msg
@@ -446,7 +475,7 @@ private:
   // ── Global E-Stop ──────────────────────────────────────────────────────────
   std::atomic<bool> global_estop_{false};
   std::array<char, 128>
-      estop_reason_{}; // fixed-size — no heap alloc on RT path
+  estop_reason_{};     // fixed-size — no heap alloc on RT path
   std::atomic<bool> estop_log_pending_{false}; // deferred logging flag
 
   // ── Per-tick timing & overrun detection ──────────────────────────────────

@@ -24,18 +24,21 @@
 #include <pinocchio/spatial/log.hpp>
 #pragma GCC diagnostic pop
 
-namespace ur5e_bringup {
+namespace ur5e_bringup
+{
 
 // ── Constructor ─────────────────────────────────────────────────────────────
 
 DemoTaskController::DemoTaskController(std::string_view urdf_path, Gains gains)
-    : gains_lock_(gains), urdf_path_(urdf_path) {
+: gains_lock_(gains), urdf_path_(urdf_path)
+{
   // Model is built in LoadConfig() (bridge YAML driven) or InitArmModel().
   // Constructor only stores urdf_path for later use.
 }
 
 void DemoTaskController::InitArmModel(
-    const rtc_urdf_bridge::ModelConfig &config) {
+  const rtc_urdf_bridge::ModelConfig & config)
+{
   namespace rub = rtc_urdf_bridge;
   // Prefer the shared builder injected by RtControllerNode so the URDF is
   // parsed only once across every controller. Fall back to building our own
@@ -49,7 +52,7 @@ void DemoTaskController::InitArmModel(
   // Resolve sub-model name: match primary device name, fallback to "arm"
   const auto primary = GetPrimaryDeviceName();
   std::string model_name = "arm";
-  for (const auto &sm : config.sub_models) {
+  for (const auto & sm : config.sub_models) {
     if (sm.name == primary) {
       model_name = primary;
       break;
@@ -83,10 +86,11 @@ void DemoTaskController::InitArmModel(
 
 // ── Hand tree-model initialization ──────────────────────────────────────────
 void DemoTaskController::InitHandModel(
-    const rtc_urdf_bridge::ModelConfig & /*config*/) {
+  const rtc_urdf_bridge::ModelConfig & /*config*/)
+{
   namespace rub = rtc_urdf_bridge;
   hand_handle_ =
-      std::make_unique<rub::RtModelHandle>(builder_->GetTreeModel("hand"));
+    std::make_unique<rub::RtModelHandle>(builder_->GetTreeModel("hand"));
 
   // Set joint reorder mapping: YAML joint_state_names → Pinocchio model order
   if (auto *hand_cfg = GetDeviceNameConfig("hand"); hand_cfg) {
@@ -95,7 +99,7 @@ void DemoTaskController::InitHandModel(
 
   const auto *sys_cfg = GetSystemModelConfig();
   if (sys_cfg) {
-    for (const auto &tm : sys_cfg->tree_models) {
+    for (const auto & tm : sys_cfg->tree_models) {
       if (tm.name == "hand") {
         if (!tm.root_link.empty()) {
           hand_root_frame_id_ = hand_handle_->GetFrameId(tm.root_link);
@@ -104,7 +108,8 @@ void DemoTaskController::InitHandModel(
           }
         }
         for (std::size_t i = 0;
-             i < std::min(tm.tip_links.size(), kNumFingertips); ++i) {
+          i < std::min(tm.tip_links.size(), kNumFingertips); ++i)
+        {
           fingertip_frame_ids_[i] = hand_handle_->GetFrameId(tm.tip_links[i]);
         }
         break;
@@ -113,13 +118,16 @@ void DemoTaskController::InitHandModel(
   }
 
   hand_q_ = Eigen::VectorXd::Zero(hand_handle_->nq());
-  for (auto &p : fingertip_positions_)
+  for (auto & p : fingertip_positions_) {
     p = Eigen::Vector3d::Zero();
-  for (auto &r : fingertip_rotations_)
+  }
+  for (auto & r : fingertip_rotations_) {
     r = Eigen::Matrix3d::Identity();
+  }
 }
 
-void DemoTaskController::OnDeviceConfigsSet() {
+void DemoTaskController::OnDeviceConfigsSet()
+{
   if (auto *cfg = GetDeviceNameConfig("ur5e"); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       auto fid = arm_handle_->GetFrameId(cfg->urdf->tip_link);
@@ -157,46 +165,53 @@ void DemoTaskController::OnDeviceConfigsSet() {
       device_position_upper_[1] = cfg->joint_limits->position_upper;
     }
   }
-  for (auto &v : device_max_velocity_) {
-    if (v.empty())
+  for (auto & v : device_max_velocity_) {
+    if (v.empty()) {
       v.assign(kMaxDeviceChannels, 2.0);
+    }
   }
-  for (auto &v : device_position_lower_) {
-    if (v.empty())
+  for (auto & v : device_position_lower_) {
+    if (v.empty()) {
       v.assign(kMaxDeviceChannels, -6.2832);
+    }
   }
-  for (auto &v : device_position_upper_) {
-    if (v.empty())
+  for (auto & v : device_position_upper_) {
+    if (v.empty()) {
       v.assign(kMaxDeviceChannels, 6.2832);
+    }
   }
 }
 
 // ── Virtual TCP computation ─────────────────────────────────────────────────
 
-void DemoTaskController::UpdateVirtualTcp(const pinocchio::SE3 &T_base_tcp,
-                                          const Gains &gains) noexcept {
+void DemoTaskController::UpdateVirtualTcp(
+  const pinocchio::SE3 & T_base_tcp,
+  const Gains & gains) noexcept
+{
   vtcp_valid_ = false;
-  if (!hand_handle_ || gains.vtcp.mode == VirtualTcpMode::kDisabled)
+  if (!hand_handle_ || gains.vtcp.mode == VirtualTcpMode::kDisabled) {
     return;
+  }
 
   // Build fingertip inputs from hand model FK
   for (std::size_t f = 0; f < kNumFingertips; ++f) {
     vtcp_inputs_[f].active = (fingertip_frame_ids_[f] != 0);
-    if (!vtcp_inputs_[f].active)
+    if (!vtcp_inputs_[f].active) {
       continue;
+    }
     auto ft_pose = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
     if (use_hand_root_frame_) {
       ft_pose =
-          hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(ft_pose);
+        hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(ft_pose);
     }
     vtcp_inputs_[f].position_in_tcp = ft_pose.translation();
     // Force magnitude for weighted mode
-    const auto &ft = fingertip_data_[f];
+    const auto & ft = fingertip_data_[f];
     vtcp_inputs_[f].force_magnitude =
-        ft.valid ? static_cast<double>(std::sqrt(ft.force[0] * ft.force[0] +
+      ft.valid ? static_cast<double>(std::sqrt(ft.force[0] * ft.force[0] +
                                                  ft.force[1] * ft.force[1] +
-                                                 ft.force[2] * ft.force[2]))
-                 : 0.0;
+                                                 ft.force[2] * ft.force[2])) :
+      0.0;
   }
 
   const auto result = ComputeVirtualTcp(gains.vtcp, T_base_tcp, vtcp_inputs_);
@@ -210,7 +225,8 @@ void DemoTaskController::UpdateVirtualTcp(const pinocchio::SE3 &T_base_tcp,
 // ── RTControllerInterface implementation ────────────────────────────────────
 
 ControllerOutput
-DemoTaskController::Compute(const ControllerState &state) noexcept {
+DemoTaskController::Compute(const ControllerState & state) noexcept
+{
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
   ReadState(state);
   ComputeControl(state, dt);
@@ -219,18 +235,19 @@ DemoTaskController::Compute(const ControllerState &state) noexcept {
 
 // ── Phase 1: Read joint states + sensor data ────────────────────────────────
 
-void DemoTaskController::ReadState(const ControllerState &state) noexcept {
+void DemoTaskController::ReadState(const ControllerState & state) noexcept
+{
   // Robot arm joint positions → FK + Jacobians via arm_handle_
-  const auto &dev0 = state.devices[0];
+  const auto & dev0 = state.devices[0];
   const int nc0 = dev0.num_channels;
   std::span<const double> q_span(dev0.positions.data(),
-                                 static_cast<std::size_t>(nc0));
+    static_cast<std::size_t>(nc0));
   arm_handle_->ComputeJacobians(q_span);
   arm_handle_->GetFrameJacobian(tip_frame_id_, pinocchio::LOCAL_WORLD_ALIGNED,
                                 J_full_);
   if (use_root_frame_) {
     const Eigen::Matrix3d R_root_T =
-        arm_handle_->GetFrameRotation(root_frame_id_).transpose();
+      arm_handle_->GetFrameRotation(root_frame_id_).transpose();
     J_full_.topRows(3) = R_root_T * J_full_.topRows(3);
     J_full_.bottomRows(3) = R_root_T * J_full_.bottomRows(3);
   }
@@ -257,15 +274,16 @@ void DemoTaskController::ReadState(const ControllerState &state) noexcept {
   // Hand sensor data (per-fingertip)
   num_active_fingertips_ = 0;
   if (state.num_devices > 1 && state.devices[1].valid) {
-    const auto &dev1 = state.devices[1];
+    const auto & dev1 = state.devices[1];
     const int num_sensor_ch = dev1.num_sensor_channels;
     const int num_fingertips = num_sensor_ch / rtc::kSensorValuesPerFingertip;
     num_active_fingertips_ =
-        std::min(num_fingertips, static_cast<int>(rtc::kMaxFingertips));
+      std::min(num_fingertips, static_cast<int>(rtc::kMaxFingertips));
 
     for (std::size_t f = 0;
-         f < static_cast<std::size_t>(num_active_fingertips_); ++f) {
-      auto &ft = fingertip_data_[f];
+      f < static_cast<std::size_t>(num_active_fingertips_); ++f)
+    {
+      auto & ft = fingertip_data_[f];
       const std::size_t base = f * rtc::kSensorValuesPerFingertip;
 
       for (std::size_t j = 0; j < rtc::kBarometerCount; ++j) {
@@ -294,8 +312,10 @@ void DemoTaskController::ReadState(const ControllerState &state) noexcept {
 
 // ── Phase 2: Compute control (IK/CLIK + trajectory + sensor-based logic) ────
 
-void DemoTaskController::ComputeControl(const ControllerState &state,
-                                        double dt) noexcept {
+void DemoTaskController::ComputeControl(
+  const ControllerState & state,
+  double dt) noexcept
+{
   // ── E-stop check ───────────────────────────────────────────────────────
   estop_active_ = estopped_.load(std::memory_order_acquire);
   if (estop_active_) {
@@ -305,7 +325,7 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
   // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
   const auto gains = gains_lock_.Load();
 
-  const auto &dev0 = state.devices[0];
+  const auto & dev0 = state.devices[0];
 
   // ── Arm TCP pose ──────────────────────────────────────────────────────
   pinocchio::SE3 tcp_pose = arm_handle_->GetFramePlacement(tip_frame_id_);
@@ -315,7 +335,7 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
 
   // ── Hand FK + Virtual TCP (must run before CLIK) ──────────────────────
   if (hand_handle_ && state.num_devices > 1 && state.devices[1].valid) {
-    const auto &dev1 = state.devices[1];
+    const auto & dev1 = state.devices[1];
     const auto hand_nq = static_cast<std::size_t>(hand_handle_->nq());
     for (std::size_t i = 0; i < hand_nq; ++i) {
       hand_q_[static_cast<Eigen::Index>(i)] = dev1.positions[i];
@@ -327,10 +347,10 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
     for (std::size_t f = 0; f < kNumFingertips; ++f) {
       if (fingertip_frame_ids_[f] != 0) {
         auto T_hand_ft =
-            hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
+          hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
         if (use_hand_root_frame_) {
           T_hand_ft = hand_handle_->GetFramePlacement(hand_root_frame_id_)
-                          .actInv(T_hand_ft);
+            .actInv(T_hand_ft);
         }
         const pinocchio::SE3 T_base_ft = tcp_pose.act(T_hand_ft);
         fingertip_positions_[f] = T_base_ft.translation();
@@ -352,9 +372,9 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
     // Modify translational Jacobian for offset: J_vtcp_lin = J_tcp_lin -
     // skew(offset) * J_tcp_ang
     const Eigen::Vector3d offset =
-        vtcp_pose_.translation() - tcp_pose.translation();
+      vtcp_pose_.translation() - tcp_pose.translation();
     skew_buf_ << 0.0, -offset(2), offset(1), offset(2), 0.0, -offset(0),
-        -offset(1), offset(0), 0.0;
+      -offset(1), offset(0), 0.0;
     J_full_.topRows(3) -= skew_buf_ * J_full_.bottomRows(3);
 
     // Rotate full Jacobian from world-aligned frame to vtcp frame
@@ -383,7 +403,7 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
       } else {
         goal_pose = start_pose;
         goal_pose.translation() =
-            Eigen::Vector3d(tcp_target_[0], tcp_target_[1], tcp_target_[2]);
+          Eigen::Vector3d(tcp_target_[0], tcp_target_[1], tcp_target_[2]);
       }
 
       const Eigen::Vector3d start_pos = start_pose.translation();
@@ -394,9 +414,9 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
       // Quintic rest-to-rest peak velocity = (15/8) * dist / T.
       const double T_speed_trans = trans_dist / gains.trajectory_speed;
       const double T_vel_trans =
-          (gains.max_traj_velocity > 0.0)
-              ? (1.875 * trans_dist / gains.max_traj_velocity)
-              : 0.0;
+        (gains.max_traj_velocity > 0.0) ?
+        (1.875 * trans_dist / gains.max_traj_velocity) :
+        0.0;
       double duration = std::max({0.01, T_speed_trans, T_vel_trans});
 
       // Angular distance via AngleAxisd (stable at θ → π, unlike log3)
@@ -406,16 +426,16 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
 
       if (gains.control_6dof) {
         const Eigen::AngleAxisd aa(start_pose.rotation().transpose() *
-                                   goal_pose.rotation());
+          goal_pose.rotation());
         angular_dist = aa.angle(); // always in [0, π]
         rot_axis = aa.axis();
 
         const double T_speed_rot =
-            angular_dist / gains.trajectory_angular_speed;
+          angular_dist / gains.trajectory_angular_speed;
         const double T_vel_rot =
-            (gains.max_traj_angular_velocity > 0.0)
-                ? (1.875 * angular_dist / gains.max_traj_angular_velocity)
-                : 0.0;
+          (gains.max_traj_angular_velocity > 0.0) ?
+          (1.875 * angular_dist / gains.max_traj_angular_velocity) :
+          0.0;
         duration = std::max({duration, T_speed_rot, T_vel_rot});
 
         split_trajectory = (angular_dist > M_PI - gains.pi_rotation_margin);
@@ -425,8 +445,8 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
         // ── π-rotation defense: split into 2 rest-to-rest segments ──
         const double half_angle = angular_dist * 0.5;
         const Eigen::Matrix3d R_mid =
-            start_pose.rotation() *
-            Eigen::AngleAxisd(half_angle, rot_axis).toRotationMatrix();
+          start_pose.rotation() *
+          Eigen::AngleAxisd(half_angle, rot_axis).toRotationMatrix();
 
         pinocchio::SE3 mid_pose;
         mid_pose.translation() = 0.5 * (start_pos + goal_pos);
@@ -436,16 +456,16 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
         const double half_trans = trans_dist * 0.5;
         const double T1_speed_t = half_trans / gains.trajectory_speed;
         const double T1_vel_t =
-            (gains.max_traj_velocity > 0.0)
-                ? (1.875 * half_trans / gains.max_traj_velocity)
-                : 0.0;
+          (gains.max_traj_velocity > 0.0) ?
+          (1.875 * half_trans / gains.max_traj_velocity) :
+          0.0;
         const double T1_speed_r = half_angle / gains.trajectory_angular_speed;
         const double T1_vel_r =
-            (gains.max_traj_angular_velocity > 0.0)
-                ? (1.875 * half_angle / gains.max_traj_angular_velocity)
-                : 0.0;
+          (gains.max_traj_angular_velocity > 0.0) ?
+          (1.875 * half_angle / gains.max_traj_angular_velocity) :
+          0.0;
         const double dur1 =
-            std::max({0.01, T1_speed_t, T1_vel_t, T1_speed_r, T1_vel_r});
+          std::max({0.01, T1_speed_t, T1_vel_t, T1_speed_r, T1_vel_r});
 
         // Segment 2: mid → goal (same half distances for symmetric split)
         const double dur2 = dur1;
@@ -515,7 +535,7 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
     JJt_6d_.diagonal().array() += gains.damping * gains.damping;
     ldlt_6d_.compute(JJt_6d_);
     JJt_inv_6d_.noalias() =
-        ldlt_6d_.solve(Eigen::Matrix<double, 6, 6>::Identity());
+      ldlt_6d_.solve(Eigen::Matrix<double, 6, 6>::Identity());
     Jpinv_6d_.noalias() = J_full_.transpose() * JJt_inv_6d_;
 
     Eigen::Matrix<double, 6, 1> kp_vec_6d;
@@ -525,22 +545,22 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
     }
 
     Eigen::Matrix<double, 6, 1> task_vel_6d =
-        kp_vec_6d.cwiseProduct(pos_error_6d_);
+      kp_vec_6d.cwiseProduct(pos_error_6d_);
     if (use_vtcp_frame) {
       // Trajectory velocity is in trajectory-pose local frame.
       // Jacobian is in current vtcp frame → rotate trajectory local → vtcp
       // frame.
       const Eigen::Matrix3d R_vtcp_traj =
-          control_pose.rotation().transpose() * traj_state_.pose.rotation();
+        control_pose.rotation().transpose() * traj_state_.pose.rotation();
       task_vel_6d.head<3>() += R_vtcp_traj * traj_state_.velocity.linear();
       task_vel_6d.tail<3>() += R_vtcp_traj * traj_state_.velocity.angular();
     } else {
       // Trajectory velocity is in trajectory-pose local frame.
       // Jacobian is LOCAL_WORLD_ALIGNED → rotate trajectory local → world.
       task_vel_6d.head<3>() +=
-          traj_state_.pose.rotation() * traj_state_.velocity.linear();
+        traj_state_.pose.rotation() * traj_state_.velocity.linear();
       task_vel_6d.tail<3>() +=
-          traj_state_.pose.rotation() * traj_state_.velocity.angular();
+        traj_state_.pose.rotation() * traj_state_.velocity.angular();
     }
 
     dq_.noalias() = Jpinv_6d_ * task_vel_6d;
@@ -552,12 +572,12 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
     Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
 
     Eigen::Vector3d kp_vec(gains.kp_translation[0], gains.kp_translation[1],
-                           gains.kp_translation[2]);
+      gains.kp_translation[2]);
     // Feedforward: trajectory local → Jacobian frame (vtcp or world-aligned)
     Eigen::Vector3d ff_vel;
     if (use_vtcp_frame) {
       const Eigen::Matrix3d R_vtcp_traj =
-          control_pose.rotation().transpose() * traj_state_.pose.rotation();
+        control_pose.rotation().transpose() * traj_state_.pose.rotation();
       ff_vel = R_vtcp_traj * traj_state_.velocity.linear();
     } else {
       ff_vel = traj_state_.pose.rotation() * traj_state_.velocity.linear();
@@ -571,21 +591,21 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
     Eigen::Matrix<double, 6, 1> ff_vel_6d;
     if (use_vtcp_frame) {
       const Eigen::Matrix3d R_vtcp_traj =
-          control_pose.rotation().transpose() * traj_state_.pose.rotation();
+        control_pose.rotation().transpose() * traj_state_.pose.rotation();
       ff_vel_6d.head<3>() = R_vtcp_traj * traj_state_.velocity.linear();
       ff_vel_6d.tail<3>() = R_vtcp_traj * traj_state_.velocity.angular();
     } else {
       ff_vel_6d.head<3>() =
-          traj_state_.pose.rotation() * traj_state_.velocity.linear();
+        traj_state_.pose.rotation() * traj_state_.velocity.linear();
       ff_vel_6d.tail<3>() =
-          traj_state_.pose.rotation() * traj_state_.velocity.angular();
+        traj_state_.pose.rotation() * traj_state_.velocity.angular();
     }
     traj_dq_.noalias() = Jpinv_6d_ * ff_vel_6d;
   } else {
     Eigen::Vector3d ff_lin;
     if (use_vtcp_frame) {
       const Eigen::Matrix3d R_vtcp_traj =
-          control_pose.rotation().transpose() * traj_state_.pose.rotation();
+        control_pose.rotation().transpose() * traj_state_.pose.rotation();
       ff_lin = R_vtcp_traj * traj_state_.velocity.linear();
     } else {
       ff_lin = traj_state_.pose.rotation() * traj_state_.velocity.linear();
@@ -600,7 +620,7 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
 
     for (Eigen::Index i = 0; i < arm_handle_->nv(); ++i) {
       null_err_[i] = null_target_[static_cast<std::size_t>(i)] -
-                     dev0.positions[static_cast<std::size_t>(i)];
+        dev0.positions[static_cast<std::size_t>(i)];
     }
     null_dq_.noalias() = N_ * null_err_;
     null_dq_ *= gains.null_kp;
@@ -609,7 +629,7 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
 
   // ── Hand motor trajectory ──────────────────────────────────────────────
   if (state.num_devices > 1 && state.devices[1].valid) {
-    const auto &dev1 = state.devices[1];
+    const auto & dev1 = state.devices[1];
 
     if (hand_new_target_.load(std::memory_order_acquire)) {
       trajectory::JointSpaceTrajectory<kNumHandMotors>::State start_state;
@@ -631,9 +651,9 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
 
       const double T_speed = max_dist / gains.hand_trajectory_speed;
       const double T_vel =
-          (gains.hand_max_traj_velocity > 0.0)
-              ? (1.875 * max_dist / gains.hand_max_traj_velocity)
-              : 0.0;
+        (gains.hand_max_traj_velocity > 0.0) ?
+        (1.875 * max_dist / gains.hand_max_traj_velocity) :
+        0.0;
       const double duration = std::max({0.01, T_speed, T_vel});
       hand_trajectory_.initialize(start_state, goal_state, duration);
       hand_trajectory_time_ = 0.0;
@@ -660,17 +680,18 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
 
     for (int f = 0; f < num_active_fingertips_; ++f) {
       const auto idx = static_cast<std::size_t>(f);
-      const auto &ft = fingertip_data_[idx];
+      const auto & ft = fingertip_data_[idx];
       const float mag =
-          std::sqrt(ft.force[0] * ft.force[0] + ft.force[1] * ft.force[1] +
+        std::sqrt(ft.force[0] * ft.force[0] + ft.force[1] * ft.force[1] +
                     ft.force[2] * ft.force[2]);
 
       grasp_state_.force_magnitude[idx] = mag;
       grasp_state_.contact_flag[idx] = ft.contact_flag;
       grasp_state_.inference_valid[idx] = ft.valid;
 
-      if (mag > max_force)
+      if (mag > max_force) {
         max_force = mag;
+      }
       if (ft.valid && ft.contact_flag > contact_thresh && mag > force_thresh) {
         ++active_count;
       }
@@ -698,7 +719,7 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
       std::array<double, rtc::grasp::kNumGraspFingers> f_raw{};
       for (int f = 0; f < rtc::grasp::kNumGraspFingers; ++f) {
         f_raw[static_cast<std::size_t>(f)] = static_cast<double>(
-            grasp_state_.force_magnitude[static_cast<std::size_t>(f)]);
+          grasp_state_.force_magnitude[static_cast<std::size_t>(f)]);
       }
 
       const auto commands = grasp_controller_->Update(
@@ -719,11 +740,11 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
         for (int f = 0; f < rtc::grasp::kNumGraspFingers; ++f) {
           for (int j = 0; j < rtc::grasp::kDoFPerFinger; ++j) {
             const auto mi = static_cast<std::size_t>(
-                finger_joint_map_[static_cast<std::size_t>(f)]
-                                 [static_cast<std::size_t>(j)]);
+              finger_joint_map_[static_cast<std::size_t>(f)]
+              [static_cast<std::size_t>(j)]);
             hand_computed_.positions[mi] =
-                commands.q[static_cast<std::size_t>(f)]
-                          [static_cast<std::size_t>(j)];
+              commands.q[static_cast<std::size_t>(f)]
+              [static_cast<std::size_t>(j)];
             hand_computed_.velocities[mi] = 0.0;
           }
         }
@@ -739,21 +760,21 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
       //   - middle_mcp_fe: 각도 감소 = loosening → target < actual 이면 release
       // 세 조건이 모두 성립할 때만 "release 의도" 로 판단.
       if (state.num_devices > 1 && state.devices[1].valid) {
-        const auto &dev1 = state.devices[1];
+        const auto & dev1 = state.devices[1];
 
         const double d_thumb = device_targets_[1][hand_idx_thumb_cmc_fe_] -
-                               dev1.positions[hand_idx_thumb_cmc_fe_];
+          dev1.positions[hand_idx_thumb_cmc_fe_];
         const double d_index = device_targets_[1][hand_idx_index_mcp_fe_] -
-                               dev1.positions[hand_idx_index_mcp_fe_];
+          dev1.positions[hand_idx_index_mcp_fe_];
         const double d_middle = device_targets_[1][hand_idx_middle_mcp_fe_] -
-                                dev1.positions[hand_idx_middle_mcp_fe_];
+          dev1.positions[hand_idx_middle_mcp_fe_];
 
         const bool thumb_releasing = d_thumb > gains.contact_stop_release_eps;
         const bool index_releasing = d_index < -gains.contact_stop_release_eps;
         const bool middle_releasing =
-            d_middle < -gains.contact_stop_release_eps;
+          d_middle < -gains.contact_stop_release_eps;
         const bool release_phase =
-            thumb_releasing && index_releasing && middle_releasing;
+          thumb_releasing && index_releasing && middle_releasing;
 
         if (release_phase) {
           RCLCPP_INFO_THROTTLE(logger_, log_clock_,
@@ -763,7 +784,8 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
                                d_thumb, d_index, d_middle);
         } else if (active_count > 0 && max_force > force_thresh) {
           for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors);
-               ++i) {
+            ++i)
+          {
             hand_computed_.positions[i] = dev1.positions[i];
             hand_computed_.velocities[i] = 0.0;
           }
@@ -771,12 +793,12 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
           // overshoot beyond target in a single number each, so 5 args are
           // enough to diagnose contact_stop engagement.
           const double err_thumb = device_targets_[1][hand_idx_thumb_cmc_fe_] -
-                                   dev1.positions[hand_idx_thumb_cmc_fe_];
+            dev1.positions[hand_idx_thumb_cmc_fe_];
           const double err_index = device_targets_[1][hand_idx_index_mcp_fe_] -
-                                   dev1.positions[hand_idx_index_mcp_fe_];
+            dev1.positions[hand_idx_index_mcp_fe_];
           const double err_middle =
-              device_targets_[1][hand_idx_middle_mcp_fe_] -
-              dev1.positions[hand_idx_middle_mcp_fe_];
+            device_targets_[1][hand_idx_middle_mcp_fe_] -
+            dev1.positions[hand_idx_middle_mcp_fe_];
           RCLCPP_INFO_THROTTLE(logger_, log_clock_,
                                ::ur5e_bringup::logging::kThrottleFastMs,
                                "[contact_stop] FREEZE active=%d fmax=%.2fN "
@@ -801,7 +823,7 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
 
       for (int f = 0; f < kNumTofFingers; ++f) {
         const auto fi = static_cast<std::size_t>(f);
-        const auto &ft = fingertip_data_[fi];
+        const auto & ft = fingertip_data_[fi];
         const int si = f * kSensorsPerFinger;
 
         // tof[1] → sensor A, tof[2] → sensor B (tof[0] 제외)
@@ -813,8 +835,8 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
         tof_snapshot_.valid[static_cast<std::size_t>(si + 1)] = (d_b > 0.0);
 
         // Fingertip SE3 pose → position + quaternion
-        auto &pose = tof_snapshot_.tip_poses[fi];
-        const auto &pos = fingertip_positions_[fi];
+        auto & pose = tof_snapshot_.tip_poses[fi];
+        const auto & pos = fingertip_positions_[fi];
         pose.position = {pos[0], pos[1], pos[2]};
         const Eigen::Quaterniond quat(fingertip_rotations_[fi]);
         pose.quaternion = {quat.w(), quat.x(), quat.y(), quat.z()};
@@ -826,8 +848,10 @@ void DemoTaskController::ComputeControl(const ControllerState &state,
 
 // ── Phase 3: Write output ────────────────────────────────────────────────────
 
-ControllerOutput DemoTaskController::WriteOutput(const ControllerState &state,
-                                                 double dt) noexcept {
+ControllerOutput DemoTaskController::WriteOutput(
+  const ControllerState & state,
+  double dt) noexcept
+{
   // ── E-stop early return ────────────────────────────────────────────────
   if (estop_active_) {
     auto out = ComputeEstop(state);
@@ -839,8 +863,8 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState &state,
   output.num_devices = state.num_devices;
 
   // ── Robot arm output ───────────────────────────────────────────────────
-  const auto &dev0 = state.devices[0];
-  auto &out0 = output.devices[0];
+  const auto & dev0 = state.devices[0];
+  auto & out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
   out0.goal_type = GoalType::kTask;
@@ -851,9 +875,9 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState &state,
   // Clamp joint velocities by max velocity limits (symmetric ±max_vel)
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     const double lim =
-        (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
+      (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
     out0.target_velocities[i] =
-        std::clamp(out0.target_velocities[i], -lim, lim);
+      std::clamp(out0.target_velocities[i], -lim, lim);
   }
 
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
@@ -865,7 +889,7 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState &state,
   }
   for (std::size_t i = 0; i < 3; ++i) {
     out0.target_positions[i] =
-        traj_state_.pose.translation()[static_cast<Eigen::Index>(i)];
+      traj_state_.pose.translation()[static_cast<Eigen::Index>(i)];
   }
   for (std::size_t i = 3; i < static_cast<std::size_t>(nc0); ++i) {
     out0.target_positions[i] = null_target_[i];
@@ -881,7 +905,7 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState &state,
   pinocchio::SE3 tcp_current = arm_handle_->GetFramePlacement(tip_frame_id_);
   if (use_root_frame_) {
     tcp_current =
-        arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_current);
+      arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_current);
   }
   // Log virtual TCP pose when active, otherwise raw TCP
   pinocchio::SE3 log_pose = vtcp_valid_ ? vtcp_pose_ : tcp_current;
@@ -899,7 +923,7 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState &state,
   output.task_goal_positions[2] = tcp_target_[2];
   if (gains_lock_.Load().control_6dof) {
     Eigen::Vector3d goal_rpy =
-        pinocchio::rpy::matrixToRpy(tcp_target_pose_.rotation());
+      pinocchio::rpy::matrixToRpy(tcp_target_pose_.rotation());
     output.task_goal_positions[3] = goal_rpy[0];
     output.task_goal_positions[4] = goal_rpy[1];
     output.task_goal_positions[5] = goal_rpy[2];
@@ -913,7 +937,7 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState &state,
   {
     const Eigen::Vector3d traj_pos = traj_state_.pose.translation();
     Eigen::Vector3d traj_rpy =
-        pinocchio::rpy::matrixToRpy(traj_state_.pose.rotation());
+      pinocchio::rpy::matrixToRpy(traj_state_.pose.rotation());
     output.trajectory_task_positions[0] = traj_pos[0];
     output.trajectory_task_positions[1] = traj_pos[1];
     output.trajectory_task_positions[2] = traj_pos[2];
@@ -932,7 +956,7 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState &state,
   // ── Hand output ────────────────────────────────────────────────────────
   if (state.num_devices > 1 && state.devices[1].valid) {
     const int nc1 = state.devices[1].num_channels;
-    auto &out1 = output.devices[1];
+    auto & out1 = output.devices[1];
     out1.num_channels = nc1;
     out1.goal_type = GoalType::kJoint;
 
@@ -952,15 +976,15 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState &state,
   if (grasp_controller_ && grasp_controller_type_ == "force_pi") {
     grasp_state_.grasp_phase = static_cast<uint8_t>(grasp_controller_->phase());
     grasp_state_.grasp_target_force =
-        static_cast<float>(grasp_controller_->target_force());
-    const auto &fs = grasp_controller_->finger_states();
+      static_cast<float>(grasp_controller_->target_force());
+    const auto & fs = grasp_controller_->finger_states();
     for (int f = 0; f < rtc::grasp::kNumGraspFingers; ++f) {
       const auto idx = static_cast<std::size_t>(f);
       grasp_state_.finger_s[idx] = static_cast<float>(fs[idx].s);
       grasp_state_.finger_filtered_force[idx] =
-          static_cast<float>(fs[idx].f_measured);
+        static_cast<float>(fs[idx].f_measured);
       grasp_state_.finger_force_error[idx] =
-          static_cast<float>(fs[idx].f_desired - fs[idx].f_measured);
+        static_cast<float>(fs[idx].f_desired - fs[idx].f_measured);
     }
   }
 
@@ -971,9 +995,11 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState &state,
 }
 
 void DemoTaskController::SetDeviceTarget(
-    int device_idx, std::span<const double> target) noexcept {
-  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices)
+  int device_idx, std::span<const double> target) noexcept
+{
+  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) {
     return;
+  }
   if (device_idx == 0) {
     std::lock_guard lock(target_mutex_);
     if (gains_lock_.Load().control_6dof) {
@@ -997,7 +1023,7 @@ void DemoTaskController::SetDeviceTarget(
       }
     } else {
       const std::size_t n =
-          std::min(target.size(), static_cast<std::size_t>(kNumRobotJoints));
+        std::min(target.size(), static_cast<std::size_t>(kNumRobotJoints));
       for (std::size_t i = 0; i < std::min(n, std::size_t{3}); ++i) {
         tcp_target_[i] = target[i];
       }
@@ -1008,7 +1034,7 @@ void DemoTaskController::SetDeviceTarget(
     new_target_.store(true, std::memory_order_release);
   } else {
     const std::size_t n =
-        std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
+      std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
     for (std::size_t i = 0; i < n; ++i) {
       device_targets_[static_cast<std::size_t>(device_idx)][i] = target[i];
     }
@@ -1019,10 +1045,11 @@ void DemoTaskController::SetDeviceTarget(
 }
 
 void DemoTaskController::InitializeHoldPosition(
-    const ControllerState &state) noexcept {
-  const auto &dev0 = state.devices[0];
+  const ControllerState & state) noexcept
+{
+  const auto & dev0 = state.devices[0];
   std::span<const double> q_span(dev0.positions.data(),
-                                 static_cast<std::size_t>(dev0.num_channels));
+    static_cast<std::size_t>(dev0.num_channels));
   arm_handle_->ComputeForwardKinematics(q_span);
   pinocchio::SE3 tcp_pose = arm_handle_->GetFramePlacement(tip_frame_id_);
   if (use_root_frame_) {
@@ -1032,7 +1059,7 @@ void DemoTaskController::InitializeHoldPosition(
   // Virtual TCP: compute hold_pose from fingertip kinematics if enabled
   pinocchio::SE3 hold_pose = tcp_pose;
   if (hand_handle_ && state.num_devices > 1 && state.devices[1].valid) {
-    const auto &dev1 = state.devices[1];
+    const auto & dev1 = state.devices[1];
     const auto hand_nq = static_cast<std::size_t>(hand_handle_->nq());
     for (std::size_t i = 0; i < hand_nq; ++i) {
       hand_q_[static_cast<Eigen::Index>(i)] = dev1.positions[i];
@@ -1055,7 +1082,7 @@ void DemoTaskController::InitializeHoldPosition(
   std::lock_guard lock(target_mutex_);
   tcp_target_pose_ = hold_pose;
   tcp_target_ = {hold_pose.translation()[0], hold_pose.translation()[1],
-                 hold_pose.translation()[2]};
+    hold_pose.translation()[2]};
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
     null_target_[i] = dev0.positions[i];
   }
@@ -1068,13 +1095,16 @@ void DemoTaskController::InitializeHoldPosition(
   has_pending_segment_ = false;
 
   for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices);
-       ++d) {
-    const auto &dev = state.devices[d];
-    if (!dev.valid)
+    ++d)
+  {
+    const auto & dev = state.devices[d];
+    if (!dev.valid) {
       continue;
+    }
     for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) &&
-                            i < kMaxDeviceChannels;
-         ++i) {
+      i < kMaxDeviceChannels;
+      ++i)
+    {
       device_targets_[d][i] = dev.positions[i];
     }
     if (d == 1) {
@@ -1091,51 +1121,57 @@ void DemoTaskController::InitializeHoldPosition(
   }
 }
 
-std::string_view DemoTaskController::Name() const noexcept {
+std::string_view DemoTaskController::Name() const noexcept
+{
   return "DemoTaskController";
 }
 
-void DemoTaskController::TriggerEstop() noexcept {
+void DemoTaskController::TriggerEstop() noexcept
+{
   estopped_.store(true, std::memory_order_release);
 }
 
-void DemoTaskController::ClearEstop() noexcept {
+void DemoTaskController::ClearEstop() noexcept
+{
   estopped_.store(false, std::memory_order_release);
 }
 
-bool DemoTaskController::IsEstopped() const noexcept {
+bool DemoTaskController::IsEstopped() const noexcept
+{
   return estopped_.load(std::memory_order_acquire);
 }
 
-void DemoTaskController::SetHandEstop(bool active) noexcept {
+void DemoTaskController::SetHandEstop(bool active) noexcept
+{
   hand_estopped_.store(active, std::memory_order_release);
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
 
 ControllerOutput
-DemoTaskController::ComputeEstop(const ControllerState &state) noexcept {
-  const auto &dev0 = state.devices[0];
+DemoTaskController::ComputeEstop(const ControllerState & state) noexcept
+{
+  const auto & dev0 = state.devices[0];
   ControllerOutput output;
   output.num_devices = state.num_devices;
-  auto &out0 = output.devices[0];
+  auto & out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
   out0.goal_type = GoalType::kJoint;
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     const double lim =
-        (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
+      (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
     out0.commands[i] =
-        dev0.positions[i] +
-        std::clamp(safe_position_[i] - dev0.positions[i], -lim, lim) *
-            ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
+      dev0.positions[i] +
+      std::clamp(safe_position_[i] - dev0.positions[i], -lim, lim) *
+      ((state.dt > 0.0) ? state.dt : (1.0 / 500.0));
   }
 
   // Hand: hold current position during E-Stop
   if (state.num_devices > 1 && state.devices[1].valid) {
-    const auto &dev1 = state.devices[1];
+    const auto & dev1 = state.devices[1];
     const int nc1 = dev1.num_channels;
-    auto &out1 = output.devices[1];
+    auto & out1 = output.devices[1];
     out1.num_channels = nc1;
     out1.goal_type = GoalType::kJoint;
     for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
@@ -1150,16 +1186,18 @@ DemoTaskController::ComputeEstop(const ControllerState &state) noexcept {
 }
 
 void DemoTaskController::ClampCommands(
-    std::array<double, kMaxDeviceChannels> &commands, int n,
-    const std::vector<double> &lower,
-    const std::vector<double> &upper) noexcept {
+  std::array<double, kMaxDeviceChannels> & commands, int n,
+  const std::vector<double> & lower,
+  const std::vector<double> & upper) noexcept
+{
   rtc::utils::ClampRange(commands, n, std::span<const double>(lower),
                          std::span<const double>(upper), -6.2832, 6.2832);
 }
 
 // ── Controller registry hooks ────────────────────────────────────────────────
 
-void DemoTaskController::LoadConfig(const YAML::Node &cfg) {
+void DemoTaskController::LoadConfig(const YAML::Node & cfg)
+{
   RTControllerInterface::LoadConfig(cfg);
   if (!cfg) {
     return;
@@ -1175,8 +1213,8 @@ void DemoTaskController::LoadConfig(const YAML::Node &cfg) {
     // Fallback: separate model config YAML file (backward compatibility)
     const auto yaml_name = cfg["model_config"].as<std::string>();
     const auto yaml_path =
-        ament_index_cpp::get_package_share_directory("ur5e_bringup") +
-        "/config/" + yaml_name;
+      ament_index_cpp::get_package_share_directory("ur5e_bringup") +
+      "/config/" + yaml_name;
     auto model_cfg = rub::PinocchioModelBuilder::LoadModelConfig(yaml_path);
     model_cfg.urdf_path = urdf_path_;
     InitArmModel(model_cfg);
@@ -1202,7 +1240,8 @@ void DemoTaskController::LoadConfig(const YAML::Node &cfg) {
   {
     const auto estop_node = cfg["estop"];
     if (!estop_node["arm_safe_position"] ||
-        !estop_node["arm_safe_position"].IsSequence()) {
+      !estop_node["arm_safe_position"].IsSequence())
+    {
       throw std::runtime_error(
           "demo_task_controller: required 'estop.arm_safe_position' "
           "must be a sequence");
@@ -1252,11 +1291,11 @@ void DemoTaskController::LoadConfig(const YAML::Node &cfg) {
   }
   if (cfg["trajectory_angular_speed"]) {
     g.trajectory_angular_speed =
-        std::max(1e-6, cfg["trajectory_angular_speed"].as<double>());
+      std::max(1e-6, cfg["trajectory_angular_speed"].as<double>());
   }
   if (cfg["hand_trajectory_speed"]) {
     g.hand_trajectory_speed =
-        std::max(1e-6, cfg["hand_trajectory_speed"].as<double>());
+      std::max(1e-6, cfg["hand_trajectory_speed"].as<double>());
   }
   if (cfg["max_traj_velocity"]) {
     g.max_traj_velocity = cfg["max_traj_velocity"].as<double>();
@@ -1274,7 +1313,7 @@ void DemoTaskController::LoadConfig(const YAML::Node &cfg) {
         "demo_task_controller: required 'fsm' section is missing");
   }
   {
-    const auto &fsm = cfg["fsm"];
+    const auto & fsm = cfg["fsm"];
     if (!fsm["pi_rotation_margin"]) {
       throw std::runtime_error(
           "demo_task_controller: required 'fsm.pi_rotation_margin' is missing");
@@ -1314,16 +1353,16 @@ void DemoTaskController::LoadConfig(const YAML::Node &cfg) {
   grasp_controller_type_ = shared.grasp_controller_type;
   finger_joint_map_ = shared.hand_finger_joint_map;
   hand_idx_thumb_cmc_fe_ =
-      static_cast<std::size_t>(shared.hand_idx_thumb_cmc_fe);
+    static_cast<std::size_t>(shared.hand_idx_thumb_cmc_fe);
   hand_idx_index_mcp_fe_ =
-      static_cast<std::size_t>(shared.hand_idx_index_mcp_fe);
+    static_cast<std::size_t>(shared.hand_idx_index_mcp_fe);
   hand_idx_middle_mcp_fe_ =
-      static_cast<std::size_t>(shared.hand_idx_middle_mcp_fe);
+    static_cast<std::size_t>(shared.hand_idx_middle_mcp_fe);
 
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
     command_type_ =
-        (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
+      (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
 
   BuildGraspController(shared, 1.0 / GetDefaultDt(), grasp_controller_);
@@ -1331,9 +1370,10 @@ void DemoTaskController::LoadConfig(const YAML::Node &cfg) {
 
 // ── Phase 4: controller-owned topic lifecycle ─────────────────────────────
 RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
-    const rclcpp_lifecycle::State &prev,
-    rclcpp_lifecycle::LifecycleNode::SharedPtr node,
-    const YAML::Node &yaml) noexcept {
+  const rclcpp_lifecycle::State & prev,
+  rclcpp_lifecycle::LifecycleNode::SharedPtr node,
+  const YAML::Node & yaml) noexcept
+{
   const auto ret = RTControllerInterface::on_configure(prev, node, yaml);
   if (ret != CallbackReturn::SUCCESS) {
     return ret;
@@ -1348,8 +1388,8 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
     // initial parameter values.
     DeclareGainParameters();
     param_callback_handle_ = node_->add_on_set_parameters_callback(
-        [this](const std::vector<rclcpp::Parameter> &params) {
-          return OnGainParametersSet(params);
+      [this](const std::vector<rclcpp::Parameter> & params) {
+        return OnGainParametersSet(params);
         });
 
     // Phase B: Force-PI grasp command channel (one-shot event, NOT a gain).
@@ -1357,53 +1397,53 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
     // namespace.
     grasp_command_srv_ = node_->create_service<rtc_msgs::srv::GraspCommand>(
         "grasp_command",
-        [this](const std::shared_ptr<rtc_msgs::srv::GraspCommand::Request> req,
-               std::shared_ptr<rtc_msgs::srv::GraspCommand::Response> resp) {
-          if (estopped_.load(std::memory_order_acquire)) {
+      [this](const std::shared_ptr<rtc_msgs::srv::GraspCommand::Request> req,
+      std::shared_ptr<rtc_msgs::srv::GraspCommand::Response> resp) {
+        if (estopped_.load(std::memory_order_acquire)) {
+          resp->ok = false;
+          resp->message = "E-STOP active";
+          return;
+        }
+        if (!grasp_controller_) {
+          resp->ok = false;
+          resp->message =
+          "grasp_controller unavailable (set 'grasp_controller_type: "
+          "force_pi' in YAML to enable Grasp/Release)";
+          return;
+        }
+        using Req = rtc_msgs::srv::GraspCommand::Request;
+        if (req->command == Req::GRASP) {
+          if (!(req->target_force > 0.0)) {
             resp->ok = false;
-            resp->message = "E-STOP active";
+            resp->message = "GRASP requires target_force > 0";
             return;
           }
-          if (!grasp_controller_) {
-            resp->ok = false;
-            resp->message =
-                "grasp_controller unavailable (set 'grasp_controller_type: "
-                "force_pi' in YAML to enable Grasp/Release)";
-            return;
-          }
-          using Req = rtc_msgs::srv::GraspCommand::Request;
-          if (req->command == Req::GRASP) {
-            if (!(req->target_force > 0.0)) {
-              resp->ok = false;
-              resp->message = "GRASP requires target_force > 0";
-              return;
-            }
-            const auto phase_before =
-                static_cast<unsigned>(grasp_controller_->phase());
-            grasp_controller_->CommandGrasp(req->target_force);
-            RCLCPP_INFO(
+          const auto phase_before =
+          static_cast<unsigned>(grasp_controller_->phase());
+          grasp_controller_->CommandGrasp(req->target_force);
+          RCLCPP_INFO(
                 logger_,
                 "[grasp_command] GRASP target=%.2fN type=%s phase_before=%u",
                 req->target_force, grasp_controller_type_.c_str(),
                 phase_before);
-            resp->ok = true;
-            resp->message =
-                "grasp started @ " + std::to_string(req->target_force) + " N";
-          } else if (req->command == Req::RELEASE) {
-            const auto phase_before =
-                static_cast<unsigned>(grasp_controller_->phase());
-            grasp_controller_->CommandRelease();
-            RCLCPP_INFO(logger_,
+          resp->ok = true;
+          resp->message =
+          "grasp started @ " + std::to_string(req->target_force) + " N";
+        } else if (req->command == Req::RELEASE) {
+          const auto phase_before =
+          static_cast<unsigned>(grasp_controller_->phase());
+          grasp_controller_->CommandRelease();
+          RCLCPP_INFO(logger_,
                         "[grasp_command] RELEASE type=%s phase_before=%u",
                         grasp_controller_type_.c_str(), phase_before);
-            resp->ok = true;
-            resp->message = "release accepted";
-          } else {
-            resp->ok = false;
-            resp->message = "command must be GRASP or RELEASE";
-          }
+          resp->ok = true;
+          resp->message = "release accepted";
+        } else {
+          resp->ok = false;
+          resp->message = "command must be GRASP or RELEASE";
+        }
         });
-  } catch (const std::exception &e) {
+  } catch (const std::exception & e) {
     RCLCPP_ERROR(logger_, "DemoTaskController on_configure failed: %s",
                  e.what());
     return CallbackReturn::FAILURE;
@@ -1415,20 +1455,23 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
 }
 
 RTControllerInterface::CallbackReturn DemoTaskController::on_activate(
-    const rclcpp_lifecycle::State &prev,
-    const rtc::ControllerState &device_snapshot) noexcept {
+  const rclcpp_lifecycle::State & prev,
+  const rtc::ControllerState & device_snapshot) noexcept
+{
   ActivateOwnedTopics(prev, owned_topics_);
   return RTControllerInterface::on_activate(prev, device_snapshot);
 }
 
 RTControllerInterface::CallbackReturn DemoTaskController::on_deactivate(
-    const rclcpp_lifecycle::State &prev) noexcept {
+  const rclcpp_lifecycle::State & prev) noexcept
+{
   DeactivateOwnedTopics(prev, owned_topics_);
   return CallbackReturn::SUCCESS;
 }
 
 RTControllerInterface::CallbackReturn
-DemoTaskController::on_cleanup(const rclcpp_lifecycle::State &prev) noexcept {
+DemoTaskController::on_cleanup(const rclcpp_lifecycle::State & prev) noexcept
+{
   ResetOwnedTopics(owned_topics_);
   grasp_command_srv_.reset();
   param_callback_handle_.reset();
@@ -1436,7 +1479,8 @@ DemoTaskController::on_cleanup(const rclcpp_lifecycle::State &prev) noexcept {
 }
 
 void DemoTaskController::PublishNonRtSnapshot(
-    const rtc::PublishSnapshot &snap) noexcept {
+  const rtc::PublishSnapshot & snap) noexcept
+{
   PublishOwnedTopicsFromSnapshot(snap, owned_topics_);
 }
 
@@ -1451,7 +1495,8 @@ void DemoTaskController::PublishNonRtSnapshot(
 // Read-only fields (D-2): max_traj_velocity, max_traj_angular_velocity,
 // hand_max_traj_velocity. Declared with read_only=true; honour startup
 // overrides but reject runtime `ros2 param set`.
-void DemoTaskController::DeclareGainParameters() noexcept {
+void DemoTaskController::DeclareGainParameters() noexcept
+{
   if (!node_) {
     return;
   }
@@ -1462,46 +1507,46 @@ void DemoTaskController::DeclareGainParameters() noexcept {
   rcl_interfaces::msg::ParameterDescriptor desc_ro;
   desc_ro.read_only = true;
 
-  auto declare_double_array = [&](const std::string &name,
-                                  std::vector<double> default_val,
-                                  const std::string &description) {
-    rcl_interfaces::msg::ParameterDescriptor d;
-    d.description = description;
-    if (!node_->has_parameter(name)) {
-      return node_->declare_parameter<std::vector<double>>(
+  auto declare_double_array = [&](const std::string & name,
+    std::vector<double> default_val,
+    const std::string & description) {
+      rcl_interfaces::msg::ParameterDescriptor d;
+      d.description = description;
+      if (!node_->has_parameter(name)) {
+        return node_->declare_parameter<std::vector<double>>(
           name, std::move(default_val), d);
-    }
-    return node_->get_parameter(name).as_double_array();
-  };
-  auto declare_double = [&](const std::string &name, double default_val,
-                            const std::string &description,
-                            bool read_only = false) {
-    rcl_interfaces::msg::ParameterDescriptor d;
-    d.description = description;
-    d.read_only = read_only;
-    if (!node_->has_parameter(name)) {
-      return node_->declare_parameter<double>(name, default_val, d);
-    }
-    return node_->get_parameter(name).as_double();
-  };
-  auto declare_bool = [&](const std::string &name, bool default_val,
-                          const std::string &description) {
-    rcl_interfaces::msg::ParameterDescriptor d;
-    d.description = description;
-    if (!node_->has_parameter(name)) {
-      return node_->declare_parameter<bool>(name, default_val, d);
-    }
-    return node_->get_parameter(name).as_bool();
-  };
-  auto declare_int = [&](const std::string &name, int64_t default_val,
-                         const std::string &description) {
-    rcl_interfaces::msg::ParameterDescriptor d;
-    d.description = description;
-    if (!node_->has_parameter(name)) {
-      return node_->declare_parameter<int64_t>(name, default_val, d);
-    }
-    return node_->get_parameter(name).as_int();
-  };
+      }
+      return node_->get_parameter(name).as_double_array();
+    };
+  auto declare_double = [&](const std::string & name, double default_val,
+    const std::string & description,
+    bool read_only = false) {
+      rcl_interfaces::msg::ParameterDescriptor d;
+      d.description = description;
+      d.read_only = read_only;
+      if (!node_->has_parameter(name)) {
+        return node_->declare_parameter<double>(name, default_val, d);
+      }
+      return node_->get_parameter(name).as_double();
+    };
+  auto declare_bool = [&](const std::string & name, bool default_val,
+    const std::string & description) {
+      rcl_interfaces::msg::ParameterDescriptor d;
+      d.description = description;
+      if (!node_->has_parameter(name)) {
+        return node_->declare_parameter<bool>(name, default_val, d);
+      }
+      return node_->get_parameter(name).as_bool();
+    };
+  auto declare_int = [&](const std::string & name, int64_t default_val,
+    const std::string & description) {
+      rcl_interfaces::msg::ParameterDescriptor d;
+      d.description = description;
+      if (!node_->has_parameter(name)) {
+        return node_->declare_parameter<int64_t>(name, default_val, d);
+      }
+      return node_->get_parameter(name).as_int();
+    };
 
   // CLIK gains
   const auto kp_t = declare_double_array(
@@ -1526,14 +1571,14 @@ void DemoTaskController::DeclareGainParameters() noexcept {
   g.enable_null_space = declare_bool("enable_null_space", g.enable_null_space,
                                      "Enable null-space secondary task");
   g.control_6dof =
-      declare_bool("control_6dof", g.control_6dof,
+    declare_bool("control_6dof", g.control_6dof,
                    "false=3-DOF (position only), true=6-DOF (pose)");
 
   g.trajectory_speed = std::max(
       1e-6, declare_double("trajectory_speed", g.trajectory_speed,
                            "TCP translational trajectory speed [m/s]"));
   g.trajectory_angular_speed =
-      std::max(1e-6, declare_double("trajectory_angular_speed",
+    std::max(1e-6, declare_double("trajectory_angular_speed",
                                     g.trajectory_angular_speed,
                                     "TCP rotational trajectory speed [rad/s]"));
   g.hand_trajectory_speed = std::max(
@@ -1546,7 +1591,7 @@ void DemoTaskController::DeclareGainParameters() noexcept {
       "Max TCP translational velocity during trajectory [m/s] (read-only)",
       /*read_only=*/true);
   g.max_traj_angular_velocity =
-      declare_double("max_traj_angular_velocity", g.max_traj_angular_velocity,
+    declare_double("max_traj_angular_velocity", g.max_traj_angular_velocity,
                      "Max TCP angular velocity during trajectory [rad/s] "
                      "(read-only)",
                      /*read_only=*/true);
@@ -1557,13 +1602,13 @@ void DemoTaskController::DeclareGainParameters() noexcept {
 
   // Grasp detection
   g.grasp_contact_threshold = static_cast<float>(
-      declare_double("grasp_contact_threshold", g.grasp_contact_threshold,
+    declare_double("grasp_contact_threshold", g.grasp_contact_threshold,
                      "Contact probability threshold [0,1]"));
   g.grasp_force_threshold = static_cast<float>(
-      declare_double("grasp_force_threshold", g.grasp_force_threshold,
+    declare_double("grasp_force_threshold", g.grasp_force_threshold,
                      "Force magnitude threshold [N]"));
   g.grasp_min_fingertips = static_cast<int>(
-      declare_int("grasp_min_fingertips", g.grasp_min_fingertips,
+    declare_int("grasp_min_fingertips", g.grasp_min_fingertips,
                   "Min fingertips with contact for grasp detection"));
 
   gains_lock_.Store(g);
@@ -1571,7 +1616,8 @@ void DemoTaskController::DeclareGainParameters() noexcept {
 
 rcl_interfaces::msg::SetParametersResult
 DemoTaskController::OnGainParametersSet(
-    const std::vector<rclcpp::Parameter> &params) noexcept {
+  const std::vector<rclcpp::Parameter> & params) noexcept
+{
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
 
@@ -1579,8 +1625,8 @@ DemoTaskController::OnGainParametersSet(
   auto g = gains_lock_.Load();
   bool gains_dirty = false;
 
-  for (const auto &p : params) {
-    const auto &name = p.get_name();
+  for (const auto & p : params) {
+    const auto & name = p.get_name();
     try {
       if (name == "kp_translation") {
         const auto v = p.as_double_array();
@@ -1637,7 +1683,7 @@ DemoTaskController::OnGainParametersSet(
       }
       // Unknown parameter names are silently allowed — other callbacks
       // (CM topic param read-only validator, lifecycle) may own them.
-    } catch (const std::exception &e) {
+    } catch (const std::exception & e) {
       result.successful = false;
       result.reason = std::string("type error on '") + name + "': " + e.what();
       return result;

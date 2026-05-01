@@ -39,11 +39,13 @@
 #include "rtc_mpc/phase/phase_cost_config.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 
-namespace {
+namespace
+{
 
 constexpr const char *kPandaUrdf = RTC_PANDA_URDF_PATH;
 
-constexpr const char *kCostYaml = R"(
+constexpr const char *kCostYaml =
+  R"(
 horizon_length: 20
 dt: 0.01
 w_frame_placement: 100.0
@@ -59,13 +61,16 @@ custom_weights: {}
 
 class LightContactMPCTest : public ::testing::Test {
 protected:
-  void SetUp() override {
+  void SetUp() override
+  {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed — run ./install.sh verify";
     }
     pinocchio::urdf::buildModel(kPandaUrdf, model_);
 
-    auto robot_cfg = YAML::Load(R"(
+    auto robot_cfg =
+      YAML::Load(
+        R"(
 end_effector_frame: panda_hand
 contact_frames:
   - name: panda_leftfinger
@@ -101,15 +106,18 @@ contact_frames:
     solver_cfg_.verbose = false;
   }
 
-  rtc::mpc::MPCStateSnapshot MakeStateSnapshot() const {
+  rtc::mpc::MPCStateSnapshot MakeStateSnapshot() const
+  {
     rtc::mpc::MPCStateSnapshot s{};
     const Eigen::VectorXd q = pinocchio::neutral(model_);
     s.nq = handler_.nq();
     s.nv = handler_.nv();
-    for (int i = 0; i < s.nq; ++i)
+    for (int i = 0; i < s.nq; ++i) {
       s.q[static_cast<std::size_t>(i)] = q[i];
-    for (int i = 0; i < s.nv; ++i)
+    }
+    for (int i = 0; i < s.nv; ++i) {
       s.v[static_cast<std::size_t>(i)] = 0.0;
+    }
     s.timestamp_ns = 0;
     return s;
   }

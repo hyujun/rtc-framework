@@ -36,7 +36,8 @@
 
 #include <string_view>
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
 /// @brief Non-cost, non-per-phase OCP limits. Loaded once from YAML at
 ///        handler construction; **not** an extension of `PhaseCostConfig`
@@ -45,14 +46,16 @@ namespace rtc::mpc {
 /// Empty `u_min` / `u_max` vectors mean "no control box applied". If one
 /// is populated both must match `RobotModelHandler::nu()`; mismatch causes
 /// `OCPBuildError::kLimitsDimMismatch`.
-struct OCPLimits {
+struct OCPLimits
+{
   Eigen::VectorXd u_min{}; ///< size `nu`, or empty = unlimited
   Eigen::VectorXd u_max{}; ///< size `nu`, or empty = unlimited
   double friction_mu{0.7}; ///< shared across active contacts
 };
 
 /// @brief Failure modes for `OCPHandlerBase::Build` / `::UpdateReferences`.
-enum class OCPBuildError {
+enum class OCPBuildError
+{
   kNoError = 0,
   kModelNotInitialised,      ///< passed-in RobotModelHandler is unusable
   kInvalidPhaseContext,      ///< unknown `ocp_type`, or topology change on
@@ -73,9 +76,9 @@ public:
   virtual ~OCPHandlerBase() = default;
 
   OCPHandlerBase(const OCPHandlerBase &) = delete;
-  OCPHandlerBase &operator=(const OCPHandlerBase &) = delete;
+  OCPHandlerBase & operator=(const OCPHandlerBase &) = delete;
   OCPHandlerBase(OCPHandlerBase &&) = delete;
-  OCPHandlerBase &operator=(OCPHandlerBase &&) = delete;
+  OCPHandlerBase & operator=(OCPHandlerBase &&) = delete;
 
   /// @brief Full problem rebuild. Off-RT path; allocation is permitted.
   /// @param ctx     phase snapshot (contact plan + cost config + targets)
@@ -86,8 +89,9 @@ public:
   ///         partially constructed — callers should treat `Built() == false`
   ///         and re-Build with corrected inputs.
   [[nodiscard]] virtual OCPBuildError
-  Build(const PhaseContext &ctx, const RobotModelHandler &model,
-        const OCPLimits &limits) noexcept = 0;
+  Build(
+    const PhaseContext & ctx, const RobotModelHandler & model,
+    const OCPLimits & limits) noexcept = 0;
 
   /// @brief Mutate per-stage cost references without touching stage topology.
   ///
@@ -97,7 +101,7 @@ public:
   /// state — caller must `Build` again. Weight crossings (0 ↔ positive)
   /// also count as topology changes because they add or remove cost terms.
   [[nodiscard]] virtual OCPBuildError
-  UpdateReferences(const PhaseContext &ctx) noexcept = 0;
+  UpdateReferences(const PhaseContext & ctx) noexcept = 0;
 
   /// @return true once a successful `Build` has completed.
   [[nodiscard]] virtual bool Built() const noexcept = 0;
@@ -105,7 +109,7 @@ public:
   /// @return non-owning reference to the internal TrajOptProblem for solver
   ///         binding (Phase 5 `MPCHandler` calls `solver.setup(problem())`).
   ///         Precondition: `Built() == true`.
-  [[nodiscard]] virtual aligator::TrajOptProblemTpl<double> &problem() = 0;
+  [[nodiscard]] virtual aligator::TrajOptProblemTpl<double> & problem() = 0;
 
   /// @return horizon length used by the last successful Build.
   [[nodiscard]] virtual int horizon_length() const noexcept = 0;

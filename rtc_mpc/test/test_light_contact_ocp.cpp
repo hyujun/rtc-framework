@@ -41,12 +41,14 @@
 
 #include "rtc_mpc/ocp/light_contact_ocp.hpp"
 
-namespace {
+namespace
+{
 
 constexpr const char *kPandaUrdf =
-    RTC_PANDA_URDF_PATH;
+  RTC_PANDA_URDF_PATH;
 
-constexpr const char *kCostYaml = R"(
+constexpr const char *kCostYaml =
+  R"(
 horizon_length: 20
 dt: 0.01
 w_frame_placement: 100.0
@@ -62,13 +64,16 @@ custom_weights: {}
 
 class LightContactOCPTest : public ::testing::Test {
 protected:
-  void SetUp() override {
+  void SetUp() override
+  {
     if (!std::filesystem::exists(kPandaUrdf)) {
       GTEST_SKIP() << "Panda URDF not installed — run ./install.sh verify";
     }
     pinocchio::urdf::buildModel(kPandaUrdf, model_);
 
-    auto robot_cfg = YAML::Load(R"(
+    auto robot_cfg =
+      YAML::Load(
+        R"(
 end_effector_frame: panda_hand
 contact_frames:
   - name: panda_leftfinger
@@ -130,7 +135,7 @@ TEST_F(LightContactOCPTest, SolveReachesEETarget) {
 
   const bool ran = solver.run(ocp.problem());
   (void)ran;
-  const auto &res = solver.results_;
+  const auto & res = solver.results_;
   // The solve must at least produce a small primal residual. Convergence of
   // the dual is not asserted for this trivial setup.
   EXPECT_LT(res.prim_infeas, 1e-3);
@@ -151,16 +156,16 @@ TEST_F(LightContactOCPTest, UpdateReferencesPropagatesTarget) {
   ASSERT_EQ(ocp.UpdateReferences(ctx_), rtc::mpc::OCPBuildError::kNoError);
 
   // Cross-check by walking the live problem tree.
-  auto &problem = ocp.problem();
+  auto & problem = ocp.problem();
   ASSERT_GT(problem.stages_.size(), 0u);
-  auto &stage0 = *problem.stages_[0];
+  auto & stage0 = *problem.stages_[0];
   auto *stack = stage0.getCost<aligator::CostStackTpl<double>>();
   ASSERT_NE(stack, nullptr);
   auto *quad = stack->getComponent<aligator::QuadraticResidualCostTpl<double>>(
       std::string(rtc::mpc::kCostKeyFramePlacement));
   ASSERT_NE(quad, nullptr);
   auto *residual =
-      quad->getResidual<aligator::FramePlacementResidualTpl<double>>();
+    quad->getResidual<aligator::FramePlacementResidualTpl<double>>();
   ASSERT_NE(residual, nullptr);
   EXPECT_TRUE(residual->getReference().translation().isApprox(
       new_target.translation()));

@@ -20,8 +20,10 @@
 #include <thread>
 #include <type_traits>
 
-namespace rtc::mpc {
-namespace {
+namespace rtc::mpc
+{
+namespace
+{
 
 constexpr std::size_t kPayloadWords = 8;
 constexpr uint64_t kSentinelSeq = 42;
@@ -30,7 +32,8 @@ constexpr uint64_t kStressIterations = 1'000'000;
 
 /// Simple POD payload where every word encodes the producer's sequence number.
 /// Redundant copies enable torn-read detection in the stress test.
-struct Message {
+struct Message
+{
   uint64_t seq;
   std::array<uint64_t, kPayloadWords> payload;
 };
@@ -46,15 +49,15 @@ TEST(TripleBuffer, EmptyOnInit) {
 TEST(TripleBuffer, SinglePublishRoundTrip) {
   TripleBuffer<Message> buf;
 
-  auto& slot = buf.StartWrite();
+  auto & slot = buf.StartWrite();
   slot.seq = kSentinelSeq;
-  for (auto& word : slot.payload) {
+  for (auto & word : slot.payload) {
     word = kSentinelSeq;
   }
   buf.FinishWrite();
 
   EXPECT_TRUE(buf.HasNewData());
-  const Message* got = buf.TryAcquireLatest();
+  const Message * got = buf.TryAcquireLatest();
   ASSERT_NE(got, nullptr);
   EXPECT_EQ(got->seq, kSentinelSeq);
   EXPECT_EQ(got->payload[0], kSentinelSeq);
@@ -70,15 +73,15 @@ TEST(TripleBuffer, LatestOnlyWhenProducerOutpacesConsumer) {
   TripleBuffer<Message> buf;
 
   for (uint64_t i = 1; i <= kBurstCount; ++i) {
-    auto& slot = buf.StartWrite();
+    auto & slot = buf.StartWrite();
     slot.seq = i;
-    for (auto& word : slot.payload) {
+    for (auto & word : slot.payload) {
       word = i;
     }
     buf.FinishWrite();
   }
 
-  const Message* got = buf.TryAcquireLatest();
+  const Message * got = buf.TryAcquireLatest();
   ASSERT_NE(got, nullptr);
   EXPECT_EQ(got->seq, kBurstCount)
       << "Consumer must skip to the freshest buffer";
@@ -94,30 +97,31 @@ TEST(TripleBuffer, StressOneProducerOneConsumer) {
   uint64_t last_seen = 0;
 
   std::jthread producer([&] {
-    for (uint64_t i = 1; i <= kStressIterations; ++i) {
-      auto& slot = buf.StartWrite();
-      slot.seq = i;
-      for (auto& word : slot.payload) {
-        word = i;
+      for (uint64_t i = 1; i <= kStressIterations; ++i) {
+        auto & slot = buf.StartWrite();
+        slot.seq = i;
+        for (auto & word : slot.payload) {
+          word = i;
+        }
+        buf.FinishWrite();
       }
-      buf.FinishWrite();
-    }
-    producer_done.store(true, std::memory_order_release);
-  });
+      producer_done.store(true, std::memory_order_release);
+    });
 
   // Consumer drains until producer finishes and no more data remains.
   while (true) {
-    const Message* got = buf.TryAcquireLatest();
+    const Message * got = buf.TryAcquireLatest();
     if (got == nullptr) {
       if (producer_done.load(std::memory_order_acquire) &&
-          !buf.HasNewData()) {
+        !buf.HasNewData())
+      {
         break;
       }
       std::this_thread::yield();
       continue;
     }
     const uint64_t seq = got->seq;
-    for (const auto& word : got->payload) {
+    for (const auto & word : got->payload) {
       if (word != seq) {
         ++torn_reads;
         break;

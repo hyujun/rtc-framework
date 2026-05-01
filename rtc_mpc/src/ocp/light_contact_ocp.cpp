@@ -21,9 +21,11 @@
 #include <string>
 #include <utility>
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
-namespace {
+namespace
+{
 
 using CostStack = aligator::CostStackTpl<double>;
 using QuadCost = aligator::QuadraticResidualCostTpl<double>;
@@ -32,7 +34,7 @@ using StateRes = aligator::StateErrorResidualTpl<double>;
 using ControlRes = aligator::ControlErrorResidualTpl<double>;
 using PhaseSpace = aligator::MultibodyPhaseSpace<double>;
 using MultibodyConstraintFwd =
-    aligator::dynamics::MultibodyConstraintFwdDynamicsTpl<double>;
+  aligator::dynamics::MultibodyConstraintFwdDynamicsTpl<double>;
 using IntegratorSE = aligator::dynamics::IntegratorSemiImplEulerTpl<double>;
 using StageModel = aligator::StageModelTpl<double>;
 using TrajOptProblem = aligator::TrajOptProblemTpl<double>;
@@ -41,11 +43,13 @@ using TrajOptProblem = aligator::TrajOptProblemTpl<double>;
 // time per `ContactPlan::phases`; empty if no phase covers t_k (free-flight)
 // or if `phases` is empty. Sets `*overlap_found = true` if more than one
 // phase's [t_start, t_end) contains t_k.
-std::vector<int> ActiveContactsAtTime(const ContactPlan &plan, double t,
-                                      bool *overlap_found) noexcept {
+std::vector<int> ActiveContactsAtTime(
+  const ContactPlan & plan, double t,
+  bool *overlap_found) noexcept
+{
   std::vector<int> active{};
   int cover_count = 0;
-  for (const auto &phase : plan.phases) {
+  for (const auto & phase : plan.phases) {
     if (t >= phase.t_start && t < phase.t_end) {
       ++cover_count;
       if (cover_count == 1) {
@@ -62,8 +66,10 @@ std::vector<int> ActiveContactsAtTime(const ContactPlan &plan, double t,
 
 // Walk a freshly-built StageModel's polymorphic cost tree and populate
 // raw-pointer handles for alloc-free mutation in UpdateReferences.
-LightStageHandles CacheStageHandles(StageModel &stage,
-                                    const StageComponentKeys &keys) noexcept {
+LightStageHandles CacheStageHandles(
+  StageModel & stage,
+  const StageComponentKeys & keys) noexcept
+{
   LightStageHandles h{};
   auto *stack = stage.getCost<CostStack>();
   if (stack == nullptr) {
@@ -72,7 +78,7 @@ LightStageHandles CacheStageHandles(StageModel &stage,
 
   if (keys.has_frame_placement) {
     auto *quad =
-        stack->getComponent<QuadCost>(std::string(kCostKeyFramePlacement));
+      stack->getComponent<QuadCost>(std::string(kCostKeyFramePlacement));
     if (quad != nullptr) {
       h.frame_placement = quad->getResidual<FrameRes>();
     }
@@ -95,8 +101,10 @@ LightStageHandles CacheStageHandles(StageModel &stage,
 // Mutate cached handles to reflect new references. Pre-condition: topology
 // unchanged (caller verified); handles non-null only where corresponding
 // components were built.
-void ApplyReferences(const LightStageHandles &h, const PhaseCostConfig &cfg,
-                     const pinocchio::SE3 &ee_target, int nq, int nv) noexcept {
+void ApplyReferences(
+  const LightStageHandles & h, const PhaseCostConfig & cfg,
+  const pinocchio::SE3 & ee_target, int nq, int nv) noexcept
+{
   if (h.frame_placement != nullptr) {
     h.frame_placement->setReference(ee_target);
   }
@@ -115,9 +123,11 @@ void ApplyReferences(const LightStageHandles &h, const PhaseCostConfig &cfg,
 
 } // namespace
 
-OCPBuildError LightContactOCP::Build(const PhaseContext &ctx,
-                                     const RobotModelHandler &model,
-                                     const OCPLimits &limits) noexcept {
+OCPBuildError LightContactOCP::Build(
+  const PhaseContext & ctx,
+  const RobotModelHandler & model,
+  const OCPLimits & limits) noexcept
+{
   // ── Input validation ────────────────────────────────────────────────
   if (!model.Initialised()) {
     return OCPBuildError::kModelNotInitialised;
@@ -125,7 +135,7 @@ OCPBuildError LightContactOCP::Build(const PhaseContext &ctx,
   if (ctx.ocp_type != "light_contact") {
     return OCPBuildError::kInvalidPhaseContext;
   }
-  const auto &cfg = ctx.cost_config;
+  const auto & cfg = ctx.cost_config;
   if (cfg.horizon_length <= 0 || cfg.dt <= 0.0) {
     return OCPBuildError::kInvalidCostConfig;
   }
@@ -145,13 +155,13 @@ OCPBuildError LightContactOCP::Build(const PhaseContext &ctx,
   }
 
   // Cross-check contact plan against model frames.
-  const auto &model_frames = model.contact_frames();
+  const auto & model_frames = model.contact_frames();
   auto frame_is_known = [&](int fid) {
-    return std::any_of(
+      return std::any_of(
         model_frames.begin(), model_frames.end(),
-        [fid](const ContactFrameInfo &f) { return f.frame_id == fid; });
-  };
-  for (const auto &phase : ctx.contact_plan.phases) {
+        [fid](const ContactFrameInfo & f) {return f.frame_id == fid;});
+    };
+  for (const auto & phase : ctx.contact_plan.phases) {
     for (int fid : phase.active_frame_ids) {
       if (!frame_is_known(fid)) {
         return OCPBuildError::kContactPlanModelMismatch;
@@ -166,7 +176,7 @@ OCPBuildError LightContactOCP::Build(const PhaseContext &ctx,
   for (int k = 0; k < H; ++k) {
     const double t_k = static_cast<double>(k) * cfg.dt;
     stage_active[static_cast<std::size_t>(k)] =
-        ActiveContactsAtTime(ctx.contact_plan, t_k, &overlap);
+      ActiveContactsAtTime(ctx.contact_plan, t_k, &overlap);
   }
   if (overlap) {
     return OCPBuildError::kOverlappingContactPhases;
@@ -189,25 +199,25 @@ OCPBuildError LightContactOCP::Build(const PhaseContext &ctx,
     stage_keys.reserve(static_cast<std::size_t>(H));
 
     for (int k = 0; k < H; ++k) {
-      const auto &active_fids = stage_active[static_cast<std::size_t>(k)];
+      const auto & active_fids = stage_active[static_cast<std::size_t>(k)];
 
       // Build running cost via CostFactory.
       CostFactoryError cost_err = CostFactoryError::kNoError;
       auto stage_cost =
-          cost_factory::BuildRunningCost(cfg, model, ctx.ee_target, &cost_err);
+        cost_factory::BuildRunningCost(cfg, model, ctx.ee_target, &cost_err);
       if (cost_err != CostFactoryError::kNoError) {
         return OCPBuildError::kInvalidCostConfig;
       }
 
       // Build rigid-contact dynamics for this stage.
       auto constraint_models =
-          internal::BuildConstraintModels(model, active_fids);
+        internal::BuildConstraintModels(model, active_fids);
       MultibodyConstraintFwd cont_dyn(space, actuation, constraint_models,
-                                      prox_settings);
+        prox_settings);
       IntegratorSE integrator(
-          xyz::polymorphic<aligator::dynamics::ODEAbstractTpl<double>>(
+        xyz::polymorphic<aligator::dynamics::ODEAbstractTpl<double>>(
               cont_dyn),
-          cfg.dt);
+        cfg.dt);
 
       // Compose stage (cost + dynamics are value-copied into polymorphic).
       StageModel stage(stage_cost.stack, integrator);
@@ -218,7 +228,7 @@ OCPBuildError LightContactOCP::Build(const PhaseContext &ctx,
     // Terminal cost (no control reg).
     CostFactoryError term_err = CostFactoryError::kNoError;
     auto term_cost =
-        cost_factory::BuildTerminalCost(cfg, model, ctx.ee_target, &term_err);
+      cost_factory::BuildTerminalCost(cfg, model, ctx.ee_target, &term_err);
     if (term_err != CostFactoryError::kNoError) {
       return OCPBuildError::kInvalidCostConfig;
     }
@@ -228,7 +238,7 @@ OCPBuildError LightContactOCP::Build(const PhaseContext &ctx,
     Eigen::VectorXd x0 = space.neutral();
 
     auto problem_new =
-        std::make_unique<TrajOptProblem>(x0, stages, term_cost.stack);
+      std::make_unique<TrajOptProblem>(x0, stages, term_cost.stack);
 
     // Walk the STORED stages inside the freshly built problem to cache
     // raw handles. Pointers into `stages` (local) would dangle — the
@@ -236,7 +246,7 @@ OCPBuildError LightContactOCP::Build(const PhaseContext &ctx,
     std::vector<LightStageHandles> fresh_handles{};
     fresh_handles.reserve(static_cast<std::size_t>(H));
     for (int k = 0; k < H; ++k) {
-      auto &stored_stage = *problem_new->stages_[static_cast<std::size_t>(k)];
+      auto & stored_stage = *problem_new->stages_[static_cast<std::size_t>(k)];
       fresh_handles.push_back(CacheStageHandles(
           stored_stage, stage_keys[static_cast<std::size_t>(k)]));
     }
@@ -255,7 +265,7 @@ OCPBuildError LightContactOCP::Build(const PhaseContext &ctx,
       }
       if (term_cost.keys.has_state_reg) {
         auto *quad =
-            term_stack->getComponent<QuadCost>(std::string(kCostKeyStateReg));
+          term_stack->getComponent<QuadCost>(std::string(kCostKeyStateReg));
         if (quad != nullptr) {
           term_handles.state_reg = quad->getResidual<StateRes>();
         }
@@ -283,14 +293,15 @@ OCPBuildError LightContactOCP::Build(const PhaseContext &ctx,
 }
 
 OCPBuildError
-LightContactOCP::UpdateReferences(const PhaseContext &ctx) noexcept {
+LightContactOCP::UpdateReferences(const PhaseContext & ctx) noexcept
+{
   if (!Built()) {
     return OCPBuildError::kInvalidPhaseContext;
   }
   if (ctx.ocp_type != "light_contact") {
     return OCPBuildError::kInvalidPhaseContext;
   }
-  const auto &cfg = ctx.cost_config;
+  const auto & cfg = ctx.cost_config;
   // Topology checks — any mismatch means caller must Build instead.
   if (cfg.horizon_length != horizon_length_ || cfg.dt != dt_) {
     return OCPBuildError::kInvalidPhaseContext;

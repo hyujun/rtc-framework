@@ -58,6 +58,11 @@ if(BUILD_TESTING)
   if(TARGET test_cpu_topology)
     target_include_directories(test_cpu_topology PRIVATE include)
   endif()
+
+  ament_add_gtest(test_thread_timing test/test_thread_timing.cpp)
+  if(TARGET test_thread_timing)
+    target_include_directories(test_thread_timing PRIVATE include)
+  endif()
 endif()
 
 ament_package()

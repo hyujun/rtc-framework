@@ -5,6 +5,7 @@
 // Covers: empty pop, push/pop round-trip, FIFO order, buffer-full drop
 // counting, wraparound, and concurrent producer/consumer correctness.
 // ─────────────────────────────────────────────────────────────────────────────
+#include <rtc_base/concurrency/spsc_queue.hpp>
 #include <rtc_base/logging/log_buffer.hpp>
 #include <rtc_base/threading/publish_buffer.hpp>
 
@@ -14,7 +15,8 @@
 #include <cstdint>
 #include <thread>
 
-namespace {
+namespace
+{
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SpscLogBuffer tests
@@ -34,8 +36,8 @@ TEST(SpscLogBufferTest, PushAndPop) {
 
   rtc::LogEntry input{};
   input.timestamp = 1.234;
-  input.t_compute_us = 55.0;
   input.num_devices = 2;
+  input.command_type = rtc::CommandType::kTorque;
 
   EXPECT_TRUE(buf.Push(input));
 
@@ -43,8 +45,8 @@ TEST(SpscLogBufferTest, PushAndPop) {
   EXPECT_TRUE(buf.Pop(output));
 
   EXPECT_DOUBLE_EQ(output.timestamp, 1.234);
-  EXPECT_DOUBLE_EQ(output.t_compute_us, 55.0);
   EXPECT_EQ(output.num_devices, 2);
+  EXPECT_EQ(output.command_type, rtc::CommandType::kTorque);
 }
 
 // ── FIFO_Order ──────────────────────────────────────────────────────────────
@@ -76,7 +78,7 @@ TEST(SpscLogBufferTest, FIFO_Order) {
 // Fill buffer to capacity (N=4, usable slots = N-1 = 3), push one more
 // -> returns false, drop_count increments.
 TEST(SpscLogBufferTest, BufferFull_DropsAndCounts) {
-  rtc::SpscLogBuffer<4> buf;  // capacity 4, usable = 3 (one slot reserved)
+  rtc::SpscLogBuffer<4> buf; // capacity 4, usable = 3 (one slot reserved)
 
   // Fill all usable slots.
   for (int i = 0; i < 3; ++i) {
@@ -102,7 +104,7 @@ TEST(SpscLogBufferTest, BufferFull_DropsAndCounts) {
 // Push N-1 entries, pop all, push N-1 more (wraps around), pop all — verify
 // data correctness across the wrap boundary.
 TEST(SpscLogBufferTest, Wraparound) {
-  rtc::SpscLogBuffer<4> buf;  // usable = 3
+  rtc::SpscLogBuffer<4> buf; // usable = 3
 
   // First fill + drain.
   for (int i = 0; i < 3; ++i) {
@@ -136,7 +138,8 @@ TEST(SpscLogBufferTest, Wraparound) {
 // Producer pushes 10000 entries, consumer pops — verify no data loss:
 //   push_count - drop_count == pop_count
 TEST(SpscLogBufferTest, ConcurrentProducerConsumer) {
-  rtc::SpscLogBuffer<64> buf;  // Moderate size to exercise both full/empty paths.
+  rtc::SpscLogBuffer<64>
+      buf; // Moderate size to exercise both full/empty paths.
 
   constexpr int kNumEntries = 10000;
   std::atomic<bool> producer_done{false};
@@ -144,35 +147,35 @@ TEST(SpscLogBufferTest, ConcurrentProducerConsumer) {
   std::atomic<int> pop_count{0};
 
   std::jthread producer([&](std::stop_token /*st*/) {
-    for (int i = 0; i < kNumEntries; ++i) {
-      rtc::LogEntry entry{};
-      entry.timestamp = static_cast<double>(i);
-      entry.num_devices = i;
-      if (buf.Push(entry)) {
-        push_count.fetch_add(1, std::memory_order_relaxed);
+      for (int i = 0; i < kNumEntries; ++i) {
+        rtc::LogEntry entry{};
+        entry.timestamp = static_cast<double>(i);
+        entry.num_devices = i;
+        if (buf.Push(entry)) {
+          push_count.fetch_add(1, std::memory_order_relaxed);
+        }
       }
-    }
-    producer_done.store(true, std::memory_order_release);
-  });
+      producer_done.store(true, std::memory_order_release);
+    });
 
   std::jthread consumer([&](std::stop_token /*st*/) {
-    int local_pop = 0;
-    while (true) {
-      rtc::LogEntry entry{};
-      if (buf.Pop(entry)) {
-        ++local_pop;
-      } else if (producer_done.load(std::memory_order_acquire)) {
-        // Producer finished — drain any remaining entries.
-        while (buf.Pop(entry)) {
+      int local_pop = 0;
+      while (true) {
+        rtc::LogEntry entry{};
+        if (buf.Pop(entry)) {
           ++local_pop;
+        } else if (producer_done.load(std::memory_order_acquire)) {
+        // Producer finished — drain any remaining entries.
+          while (buf.Pop(entry)) {
+            ++local_pop;
+          }
+          break;
+        } else {
+          std::this_thread::yield();
         }
-        break;
-      } else {
-        std::this_thread::yield();
       }
-    }
-    pop_count.store(local_pop, std::memory_order_relaxed);
-  });
+      pop_count.store(local_pop, std::memory_order_relaxed);
+    });
 
   producer.join();
   consumer.join();
@@ -249,4 +252,42 @@ TEST(SpscPublishBufferTest, FIFO_Order) {
   }
 }
 
-}  // namespace
+// ═══════════════════════════════════════════════════════════════════════════
+// SpscQueue<T, N> generic tests — exercises the template directly with a
+// minimal POD payload. Ensures the alias-based SpscLogBuffer /
+// SpscPublishBuffer instantiations are not the only working specializations.
+// ═══════════════════════════════════════════════════════════════════════════
+
+namespace
+{
+struct PodSample
+{
+  std::uint64_t a{0};
+  std::uint64_t b{0};
+};
+} // namespace
+
+TEST(SpscQueueGenericTest, PushPopFifoAndDropCount) {
+  rtc::SpscQueue<PodSample, 4> q;
+
+  // Capacity 4 → 3 usable slots.
+  EXPECT_TRUE(q.Push(PodSample{1, 10}));
+  EXPECT_TRUE(q.Push(PodSample{2, 20}));
+  EXPECT_TRUE(q.Push(PodSample{3, 30}));
+  EXPECT_FALSE(q.Push(PodSample{4, 40})); // full → drop
+  EXPECT_EQ(q.drop_count(), 1u);
+
+  PodSample out{};
+  ASSERT_TRUE(q.Pop(out));
+  EXPECT_EQ(out.a, 1u);
+  EXPECT_EQ(out.b, 10u);
+  ASSERT_TRUE(q.Pop(out));
+  EXPECT_EQ(out.a, 2u);
+  EXPECT_EQ(out.b, 20u);
+  ASSERT_TRUE(q.Pop(out));
+  EXPECT_EQ(out.a, 3u);
+  EXPECT_EQ(out.b, 30u);
+  EXPECT_FALSE(q.Pop(out));
+}
+
+} // namespace

@@ -19,42 +19,49 @@
 #include <algorithm>
 #include <chrono>
 
-namespace rtc::mpc::internal {
+namespace rtc::mpc::internal
+{
 
-namespace {
+namespace
+{
 
 using Solver = aligator::SolverProxDDPTpl<double>;
 
 /// @brief Clamp an int `v` against the compile-time capacity `cap`,
 ///        returning true when the input fit.
-[[nodiscard]] bool CapacityOk(int v, int cap) noexcept {
+[[nodiscard]] bool CapacityOk(int v, int cap) noexcept
+{
   return v >= 0 && v <= cap;
 }
 
 } // namespace
 
 void MPCHandlerCore::RecomputeContactVarDim(
-    const RobotModelHandler &model) noexcept {
+  const RobotModelHandler & model) noexcept
+{
   int total = 0;
-  for (const auto &frame : model.contact_frames()) {
+  for (const auto & frame : model.contact_frames()) {
     total += frame.dim;
   }
   n_contact_vars_ = total;
 }
 
-MPCInitError MPCHandlerCore::Init(const MPCSolverConfig &solver_cfg,
-                                  const RobotModelHandler &model,
-                                  const OCPLimits &limits,
-                                  const PhaseContext &initial_ctx,
-                                  OCPHandlerBase &ocp) noexcept {
+MPCInitError MPCHandlerCore::Init(
+  const MPCSolverConfig & solver_cfg,
+  const RobotModelHandler & model,
+  const OCPLimits & limits,
+  const PhaseContext & initial_ctx,
+  OCPHandlerBase & ocp) noexcept
+{
   initialised_ = false;
 
   if (!model.Initialised()) {
     return MPCInitError::kModelNotInitialised;
   }
   if (solver_cfg.prim_tol <= 0.0 || solver_cfg.dual_tol <= 0.0 ||
-      solver_cfg.mu_init <= 0.0 || solver_cfg.max_iters <= 0 ||
-      solver_cfg.max_al_iters <= 0) {
+    solver_cfg.mu_init <= 0.0 || solver_cfg.max_iters <= 0 ||
+    solver_cfg.max_al_iters <= 0)
+  {
     return MPCInitError::kInvalidSolverConfig;
   }
   if (initial_ctx.ocp_type != ocp.ocp_type()) {
@@ -73,7 +80,7 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig &solver_cfg,
     solver_->setDualTolerance(solver_cfg.dual_tol);
     solver_->max_al_iters = static_cast<std::size_t>(solver_cfg.max_al_iters);
     solver_->verbose_ =
-        solver_cfg.verbose ? aligator::VERBOSE : aligator::QUIET;
+      solver_cfg.verbose ? aligator::VERBOSE : aligator::QUIET;
     solver_->setup(ocp.problem());
   } catch (...) {
     solver_.reset();
@@ -116,10 +123,12 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig &solver_cfg,
   return MPCInitError::kNoError;
 }
 
-void MPCHandlerCore::ColdSeedGuess(const Eigen::VectorXd &q_current,
-                                   const Eigen::VectorXd &x_current) noexcept {
+void MPCHandlerCore::ColdSeedGuess(
+  const Eigen::VectorXd & q_current,
+  const Eigen::VectorXd & x_current) noexcept
+{
   // Populate xs_warm_: broadcast current state across every node.
-  for (auto &x : xs_warm_) {
+  for (auto & x : xs_warm_) {
     if (x.size() == x_current.size()) {
       x = x_current;
     }
@@ -129,7 +138,7 @@ void MPCHandlerCore::ColdSeedGuess(const Eigen::VectorXd &q_current,
     // constraint-force equilibrium λ → 0 at neutral pose.
     pinocchio::computeGeneralizedGravity(model_->model(), *pdata_, q_current);
     tau_g_ = pdata_->g;
-    for (auto &u : us_warm_) {
+    for (auto & u : us_warm_) {
       if (u.size() == tau_g_.size()) {
         u = tau_g_;
       }
@@ -137,16 +146,18 @@ void MPCHandlerCore::ColdSeedGuess(const Eigen::VectorXd &q_current,
   } else {
     // LightContact: zero torque is the cheaper seed — no self-gravity
     // drift to wrestle the cost landscape against.
-    for (auto &u : us_warm_) {
+    for (auto & u : us_warm_) {
       u.setZero();
     }
   }
 }
 
-MPCSolveError MPCHandlerCore::Solve(const PhaseContext &ctx,
-                                    const MPCStateSnapshot &state,
-                                    OCPHandlerBase &ocp,
-                                    MPCSolution &out) noexcept {
+MPCSolveError MPCHandlerCore::Solve(
+  const PhaseContext & ctx,
+  const MPCStateSnapshot & state,
+  OCPHandlerBase & ocp,
+  MPCSolution & out) noexcept
+{
   if (!initialised_ || solver_ == nullptr || model_ == nullptr) {
     return MPCSolveError::kNotInitialised;
   }
@@ -157,18 +168,22 @@ MPCSolveError MPCHandlerCore::Solve(const PhaseContext &ctx,
     return MPCSolveError::kRebuildRequired;
   }
   if (!CapacityOk(horizon_length_, kMaxHorizon) || !CapacityOk(nq_, kMaxNq) ||
-      !CapacityOk(nv_, kMaxNv) || !CapacityOk(nu_, kMaxNu) ||
-      !CapacityOk(n_contact_vars_, kMaxContactVars)) {
+    !CapacityOk(nv_, kMaxNv) || !CapacityOk(nu_, kMaxNu) ||
+    !CapacityOk(n_contact_vars_, kMaxContactVars))
+  {
     return MPCSolveError::kSolutionTruncated;
   }
 
   // Copy RT-side state into pre-allocated Eigen buffers.
-  for (int i = 0; i < nq_; ++i)
+  for (int i = 0; i < nq_; ++i) {
     q_current_[i] = state.q[static_cast<std::size_t>(i)];
-  for (int i = 0; i < nq_; ++i)
+  }
+  for (int i = 0; i < nq_; ++i) {
     x_current_[i] = state.q[static_cast<std::size_t>(i)];
-  for (int i = 0; i < nv_; ++i)
+  }
+  for (int i = 0; i < nv_; ++i) {
     x_current_[nq_ + i] = state.v[static_cast<std::size_t>(i)];
+  }
 
   // Attempt reference update; fall through to a full rebuild on topology
   // change. Every tick pays the ref-update cost so continuously-moving
@@ -221,22 +236,25 @@ MPCSolveError MPCHandlerCore::Solve(const PhaseContext &ctx,
   // Aligator's assign_no_resize doesn't alias results_.xs onto itself
   // inside check_initial_guess_and_assign.
   {
-    auto &xs_r = solver_->results_.xs;
-    auto &us_r = solver_->results_.us;
+    auto & xs_r = solver_->results_.xs;
+    auto & us_r = solver_->results_.us;
     if (first_solve_after_build_ || xs_warm_.size() != xs_r.size() ||
-        us_warm_.size() != us_r.size()) {
+      us_warm_.size() != us_r.size())
+    {
       // Cold path populated xs_warm_/us_warm_ directly (ColdSeedGuess).
       // Nothing extra to do.
     } else {
       // Shifted results_ already hold the warm-start (from cycleAppend);
       // mirror them into the separate buffers we pass to run().
       for (std::size_t i = 0; i < xs_warm_.size(); ++i) {
-        if (xs_warm_[i].size() == xs_r[i].size())
+        if (xs_warm_[i].size() == xs_r[i].size()) {
           xs_warm_[i] = xs_r[i];
+        }
       }
       for (std::size_t i = 0; i < us_warm_.size(); ++i) {
-        if (us_warm_[i].size() == us_r[i].size())
+        if (us_warm_[i].size() == us_r[i].size()) {
           us_warm_[i] = us_r[i];
+        }
       }
     }
   }
@@ -250,12 +268,12 @@ MPCSolveError MPCHandlerCore::Solve(const PhaseContext &ctx,
   }
   const auto t1 = std::chrono::steady_clock::now();
   const auto dur_ns = static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+    std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
 
   // Divergence with NaN state invalidates the solution. `converged` means
   // the solver met its tolerance; false without NaN means "used the budget,
   // still usable as a warm-start".
-  const auto &xs = solver_->results_.xs;
+  const auto & xs = solver_->results_.xs;
   if (!converged && !xs.empty() && xs.front().hasNaN()) {
     return MPCSolveError::kSolverDiverged;
   }
@@ -264,15 +282,19 @@ MPCSolveError MPCHandlerCore::Solve(const PhaseContext &ctx,
   return MPCSolveError::kNoError;
 }
 
-void MPCHandlerCore::SeedWarmStart(const MPCSolution &prev,
-                                   OCPHandlerBase &ocp) noexcept {
-  if (!initialised_ || solver_ == nullptr)
+void MPCHandlerCore::SeedWarmStart(
+  const MPCSolution & prev,
+  OCPHandlerBase & ocp) noexcept
+{
+  if (!initialised_ || solver_ == nullptr) {
     return;
-  if (!prev.IsValid())
+  }
+  if (!prev.IsValid()) {
     return;
+  }
 
-  auto &xs = solver_->results_.xs;
-  auto &us = solver_->results_.us;
+  auto & xs = solver_->results_.xs;
+  auto & us = solver_->results_.us;
   const int H = horizon_length_;
   const int Hp = std::min(prev.horizon_length, H);
 
@@ -280,25 +302,27 @@ void MPCHandlerCore::SeedWarmStart(const MPCSolution &prev,
   const int nq_copy = std::min(prev.nq, nq_);
   const int nv_copy = std::min(prev.nv, nv_);
   for (int k = 0; k <= Hp && static_cast<std::size_t>(k) < xs.size(); ++k) {
-    if (xs[static_cast<std::size_t>(k)].size() != nq_ + nv_)
+    if (xs[static_cast<std::size_t>(k)].size() != nq_ + nv_) {
       continue;
+    }
     for (int i = 0; i < nq_copy; ++i) {
       xs[static_cast<std::size_t>(k)][i] =
-          prev.q_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)];
+        prev.q_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)];
     }
     for (int i = 0; i < nv_copy; ++i) {
       xs[static_cast<std::size_t>(k)][nq_ + i] =
-          prev.v_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)];
+        prev.v_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)];
     }
   }
   // Copy controls (nodes 0..Hp-1).
   const int nu_copy = std::min(prev.nu, nu_);
   for (int k = 0; k < Hp && static_cast<std::size_t>(k) < us.size(); ++k) {
-    if (us[static_cast<std::size_t>(k)].size() != nv_)
+    if (us[static_cast<std::size_t>(k)].size() != nv_) {
       continue;
+    }
     for (int i = 0; i < nu_copy; ++i) {
       us[static_cast<std::size_t>(k)][i] =
-          prev.u_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)];
+        prev.u_traj[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)];
     }
   }
 
@@ -307,39 +331,44 @@ void MPCHandlerCore::SeedWarmStart(const MPCSolution &prev,
   (void)ocp;
 }
 
-void MPCHandlerCore::PackRiccatiGain(std::size_t k,
-                                     MPCSolution &out) const noexcept {
-  const auto &gains = solver_->results_.gains_;
-  if (k >= gains.size())
+void MPCHandlerCore::PackRiccatiGain(
+  std::size_t k,
+  MPCSolution & out) const noexcept
+{
+  const auto & gains = solver_->results_.gains_;
+  if (k >= gains.size()) {
     return;
-  const auto &gk = gains[k];
-  if (gk.rows() < nu_ || gk.cols() < ndx_ + 1)
+  }
+  const auto & gk = gains[k];
+  if (gk.rows() < nu_ || gk.cols() < ndx_ + 1) {
     return;
+  }
 
   // gains_[k] is (nu + nc + ndx2) × (1 + ndx1) ColMajor.
   // Top-nu rows, right-ndx cols = feedback gain block in control-space.
   const auto block = gk.topRightCorner(nu_, ndx_);
-  auto &flat = out.K_riccati[k];
+  auto & flat = out.K_riccati[k];
   // Row-major write: K_row[i, j] = block(i, j).
   for (int i = 0; i < nu_; ++i) {
     for (int j = 0; j < ndx_; ++j) {
       flat[static_cast<std::size_t>(i) * static_cast<std::size_t>(kMaxNx) +
-           static_cast<std::size_t>(j)] = block(i, j);
+        static_cast<std::size_t>(j)] = block(i, j);
     }
   }
 }
 
 void MPCHandlerCore::PackSolution(
-    const OCPHandlerBase &ocp, MPCSolution &out, bool converged,
-    std::uint64_t solve_duration_ns) const noexcept {
-  const auto &results = solver_->results_;
-  const auto &xs = results.xs;
-  const auto &us = results.us;
+  const OCPHandlerBase & ocp, MPCSolution & out, bool converged,
+  std::uint64_t solve_duration_ns) const noexcept
+{
+  const auto & results = solver_->results_;
+  const auto & xs = results.xs;
+  const auto & us = results.us;
 
   out.timestamp_ns = static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now().time_since_epoch())
-          .count());
+    .count());
   out.solve_duration_ns = solve_duration_ns;
   out.horizon_length = horizon_length_;
   out.dt_node = dt_;
@@ -354,7 +383,7 @@ void MPCHandlerCore::PackSolution(
   // State + control trajectories.
   const std::size_t H = static_cast<std::size_t>(horizon_length_);
   for (std::size_t k = 0; k <= H && k < xs.size(); ++k) {
-    const auto &x = xs[k];
+    const auto & x = xs[k];
     if (x.size() == nq_ + nv_) {
       for (int i = 0; i < nq_; ++i) {
         out.q_traj[k][static_cast<std::size_t>(i)] = x[i];
@@ -365,7 +394,7 @@ void MPCHandlerCore::PackSolution(
     }
   }
   for (std::size_t k = 0; k < H && k < us.size(); ++k) {
-    const auto &u = us[k];
+    const auto & u = us[k];
     if (u.size() == nv_) {
       for (int i = 0; i < nv_; ++i) {
         out.u_traj[k][static_cast<std::size_t>(i)] = u[i];
@@ -383,7 +412,7 @@ void MPCHandlerCore::PackSolution(
   for (std::size_t k = 0; k < H; ++k) {
     for (int i = 0; i < nv_; ++i) {
       out.a_ff_traj[k][static_cast<std::size_t>(i)] =
-          out.u_traj[k][static_cast<std::size_t>(i)];
+        out.u_traj[k][static_cast<std::size_t>(i)];
     }
   }
 
@@ -395,8 +424,9 @@ void MPCHandlerCore::PackSolution(
   (void)ocp;
   for (std::size_t k = 0; k < H; ++k) {
     for (std::size_t i = 0;
-         i < static_cast<std::size_t>(n_contact_vars_) && i < kMaxContactVars;
-         ++i) {
+      i < static_cast<std::size_t>(n_contact_vars_) && i < kMaxContactVars;
+      ++i)
+    {
       out.lambda_traj[k][i] = 0.0;
     }
   }

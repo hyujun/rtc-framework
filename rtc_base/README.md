@@ -27,8 +27,10 @@ rtc_base/
 └── include/rtc_base/
     ├── types/
     │   └── types.hpp              <- 공유 데이터 타입, 상수, 열거형, 캐시 라인 상수
+    ├── concurrency/
+    │   └── spsc_queue.hpp         <- 락-프리 SPSC 링 버퍼 (POD payload 템플릿)
     ├── logging/
-    │   ├── log_buffer.hpp         <- 락-프리 SPSC 로그 링 버퍼
+    │   ├── log_buffer.hpp         <- LogEntry용 SpscLogBuffer alias (SpscQueue<LogEntry,N>)
     │   ├── data_logger.hpp        <- CSV 파일 로거
     │   └── session_dir.hpp        <- 세션 디렉토리 관리
     ├── filters/
@@ -37,11 +39,13 @@ rtc_base/
     │   ├── sensor_rate_estimator.hpp  <- EMA 기반 센서 샘플링 레이트 추정
     │   └── sliding_trend_detector.hpp <- O(1) 슬라이딩 윈도우 OLS 드리프트 감지
     ├── timing/
-    │   └── timing_profiler_base.hpp   <- 락-프리 히스토그램 기반 타이밍 프로파일러
+    │   ├── timing_profiler_base.hpp   <- 락-프리 히스토그램 기반 타이밍 프로파일러
+    │   ├── mpc_solve_stats.hpp        <- MPC 해 통계 스냅샷 POD (윈도우 aggregate)
+    │   └── mpc_solve_sample.hpp       <- MPC tick당 raw timing 샘플 + SPSC alias
     └── threading/
         ├── thread_config.hpp      <- CPU 코어별 스레드 레이아웃 프리셋
         ├── thread_utils.hpp       <- 스레드 구성/검증 유틸리티
-        ├── publish_buffer.hpp     <- 락-프리 SPSC 퍼블리시 버퍼
+        ├── publish_buffer.hpp     <- PublishSnapshot용 SpscPublishBuffer alias (SpscQueue<PublishSnapshot,N>)
         └── seqlock.hpp            <- 락-프리 단일 쓰기/다중 읽기 동기화
 ```
 
@@ -416,14 +420,15 @@ state_lock.Store(new_state);           // RT 스레드 (500 Hz, wait-free)
 auto snapshot = state_lock.Load();     // 다른 스레드 (lock-free, 재시도 가능)
 ```
 
-#### SPSC 버퍼 (`log_buffer.hpp`, `publish_buffer.hpp`)
+#### SPSC 버퍼 (`concurrency/spsc_queue.hpp` + `log_buffer.hpp` / `publish_buffer.hpp`)
 
-RT 스레드(producer)에서 비-RT 스레드(consumer)로 데이터를 전달하는 락-프리 링 버퍼입니다.
+RT 스레드(producer)에서 비-RT 스레드(consumer)로 데이터를 전달하는 락-프리 링 버퍼입니다. 공통 구현은 `SpscQueue<T, N>` 템플릿이며, payload별 alias가 두 헤더에서 노출됩니다.
 
-| 버퍼 | 데이터 | 용량 | 용도 |
-|------|--------|------|------|
-| `ControlLogBuffer` | `LogEntry` | 512 (~1초 @500Hz) | CSV 로깅 |
-| `ControlPublishBuffer` | `PublishSnapshot` | 512 (~1초 @500Hz) | ROS2 퍼블리시 오프로드 |
+| 버퍼 | 정의 | 데이터 | 용량 | 용도 |
+|------|------|--------|------|------|
+| `ControlLogBuffer` | `SpscQueue<LogEntry, 512>` | `LogEntry` | 512 (~1초 @500Hz) | CSV 로깅 |
+| `ControlPublishBuffer` | `SpscQueue<PublishSnapshot, 512>` | `PublishSnapshot` | 512 (~1초 @500Hz) | ROS2 퍼블리시 오프로드 |
+| `MpcSolveSampleBuffer` | `SpscQueue<MpcSolveSample, 128>` | `MpcSolveSample` | 128 (~6초 @20Hz) | MPC solve timing per-tick CSV 로깅 |
 
 **공통 API:**
 

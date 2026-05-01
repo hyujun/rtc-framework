@@ -1,12 +1,17 @@
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
 
+#include "rtc_base/timing/mpc_solve_sample.hpp"
+
 #include <algorithm>
 #include <cstring>
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
-void MPCSolutionManager::Init(const YAML::Node &cfg, int nq, int nv,
-                              int n_contact_vars) {
+void MPCSolutionManager::Init(
+  const YAML::Node & cfg, int nq, int nv,
+  int n_contact_vars)
+{
   nq_ = nq;
   nv_ = nv;
   n_contact_vars_ = n_contact_vars;
@@ -42,8 +47,9 @@ void MPCSolutionManager::Init(const YAML::Node &cfg, int nq, int nv,
   has_ever_received_solution_ = false;
 }
 
-void MPCSolutionManager::PublishSolution(const MPCSolution &sol) noexcept {
-  MPCSolution &slot = solution_buffer_.StartWrite();
+void MPCSolutionManager::PublishSolution(const MPCSolution & sol) noexcept
+{
+  MPCSolution & slot = solution_buffer_.StartWrite();
   std::memcpy(&slot, &sol, sizeof(MPCSolution));
   solution_buffer_.FinishWrite();
 
@@ -54,10 +60,10 @@ void MPCSolutionManager::PublishSolution(const MPCSolution &sol) noexcept {
   try {
     std::lock_guard<std::mutex> lock(solve_stats_mutex_);
     const std::size_t slot_idx =
-        static_cast<std::size_t>(solve_stats_next_) % kSolveStatsWindow;
+      static_cast<std::size_t>(solve_stats_next_) % kSolveStatsWindow;
     solve_stats_ring_[slot_idx] = sol.solve_duration_ns;
     solve_stats_next_ =
-        static_cast<std::uint32_t>((slot_idx + 1) % kSolveStatsWindow);
+      static_cast<std::uint32_t>((slot_idx + 1) % kSolveStatsWindow);
     if (solve_stats_filled_ < kSolveStatsWindow) {
       ++solve_stats_filled_;
     }
@@ -67,10 +73,19 @@ void MPCSolutionManager::PublishSolution(const MPCSolution &sol) noexcept {
     // Mutex ops can't throw in practice (non-RT) and this function is
     // noexcept; swallow to uphold the contract.
   }
+
+  // Per-tick raw-sample stream — wait-free SPSC push via the generic
+  // ThreadTimingProducer. The producer stamps t_wall_ns + tick_count
+  // internally; we only supply the MPC-specific payload. On a full ring
+  // the sample is dropped (DropCount() increments) rather than blocking
+  // the MPC thread.
+  (void)solve_timing_producer_.Push(
+      rtc::MpcTimingPayload{sol.solve_duration_ns});
 }
 
 MPCSolutionManager::SolveTimingStats
-MPCSolutionManager::GetSolveStats() const noexcept {
+MPCSolutionManager::GetSolveStats() const noexcept
+{
   SolveTimingStats s{};
 
   // Snapshot under the mutex, compute outside.
@@ -108,16 +123,17 @@ MPCSolutionManager::GetSolveStats() const noexcept {
   // Rank-based percentile. For small windows p99 may coincide with max;
   // callers should read `window` to judge sample adequacy.
   const auto rank_for = [window](double q) -> std::size_t {
-    const double r = q * static_cast<double>(window - 1);
-    const std::size_t idx = static_cast<std::size_t>(r + 0.5);
-    return idx < window ? idx : window - 1;
-  };
+      const double r = q * static_cast<double>(window - 1);
+      const std::size_t idx = static_cast<std::size_t>(r + 0.5);
+      return idx < window ? idx : window - 1;
+    };
   s.p50_ns = snap[rank_for(0.50)];
   s.p99_ns = snap[rank_for(0.99)];
   return s;
 }
 
-void MPCSolutionManager::ResetSolveStats() noexcept {
+void MPCSolutionManager::ResetSolveStats() noexcept
+{
   try {
     std::lock_guard<std::mutex> lock(solve_stats_mutex_);
     solve_stats_ring_.fill(0);
@@ -130,13 +146,16 @@ void MPCSolutionManager::ResetSolveStats() noexcept {
   }
 }
 
-MPCStateSnapshot MPCSolutionManager::ReadState() const noexcept {
+MPCStateSnapshot MPCSolutionManager::ReadState() const noexcept
+{
   return state_lock_.Load();
 }
 
-void MPCSolutionManager::WriteState(const Eigen::Ref<const Eigen::VectorXd> &q,
-                                    const Eigen::Ref<const Eigen::VectorXd> &v,
-                                    uint64_t timestamp_ns) noexcept {
+void MPCSolutionManager::WriteState(
+  const Eigen::Ref<const Eigen::VectorXd> & q,
+  const Eigen::Ref<const Eigen::VectorXd> & v,
+  uint64_t timestamp_ns) noexcept
+{
   MPCStateSnapshot snap{};
   const int nq = std::min(static_cast<int>(q.size()), static_cast<int>(kMaxNq));
   const int nv = std::min(static_cast<int>(v.size()), static_cast<int>(kMaxNv));
@@ -153,11 +172,12 @@ void MPCSolutionManager::WriteState(const Eigen::Ref<const Eigen::VectorXd> &q,
 }
 
 bool MPCSolutionManager::ComputeReference(
-    const Eigen::Ref<const Eigen::VectorXd> &q_curr,
-    const Eigen::Ref<const Eigen::VectorXd> &v_curr, uint64_t now_ns,
-    Eigen::Ref<Eigen::VectorXd> q_ref, Eigen::Ref<Eigen::VectorXd> v_ref,
-    Eigen::Ref<Eigen::VectorXd> a_ff, Eigen::Ref<Eigen::VectorXd> lambda_ref,
-    Eigen::Ref<Eigen::VectorXd> u_fb, InterpMeta &meta_out) noexcept {
+  const Eigen::Ref<const Eigen::VectorXd> & q_curr,
+  const Eigen::Ref<const Eigen::VectorXd> & v_curr, uint64_t now_ns,
+  Eigen::Ref<Eigen::VectorXd> q_ref, Eigen::Ref<Eigen::VectorXd> v_ref,
+  Eigen::Ref<Eigen::VectorXd> a_ff, Eigen::Ref<Eigen::VectorXd> lambda_ref,
+  Eigen::Ref<Eigen::VectorXd> u_fb, InterpMeta & meta_out) noexcept
+{
   meta_out.valid = false;
   meta_out.beyond_horizon = false;
   meta_out.progress = 0.0;

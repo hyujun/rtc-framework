@@ -73,7 +73,8 @@
 #include <memory>
 #include <span>
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
 /// @brief Concrete `MPCThread` that drives a `PhaseManagerBase` +
 ///        `MPCHandlerBase` pair at the target frequency.
@@ -83,9 +84,9 @@ public:
   ~HandlerMPCThread() override = default;
 
   HandlerMPCThread(const HandlerMPCThread &) = delete;
-  HandlerMPCThread &operator=(const HandlerMPCThread &) = delete;
+  HandlerMPCThread & operator=(const HandlerMPCThread &) = delete;
   HandlerMPCThread(HandlerMPCThread &&) = delete;
-  HandlerMPCThread &operator=(HandlerMPCThread &&) = delete;
+  HandlerMPCThread & operator=(HandlerMPCThread &&) = delete;
 
   /// @brief Install all runtime dependencies. Called once, off-RT, before
   ///        @ref MPCThread::Start. Takes ownership of @p handler and
@@ -105,48 +106,55 @@ public:
   ///
   /// @note Both factory YAMLs may be Null (default) — that disables cross-
   ///       mode swap and returns `kRebuildRequired` on mismatch ticks.
-  void Configure(const RobotModelHandler &model_handler,
-                 std::unique_ptr<MPCHandlerBase> handler,
-                 std::unique_ptr<PhaseManagerBase> phase_manager,
-                 YAML::Node factory_cfg_light = YAML::Node{},
-                 YAML::Node factory_cfg_rich = YAML::Node{}) noexcept;
+  void Configure(
+    const RobotModelHandler & model_handler,
+    std::unique_ptr<MPCHandlerBase> handler,
+    std::unique_ptr<PhaseManagerBase> phase_manager,
+    YAML::Node factory_cfg_light = YAML::Node{},
+    YAML::Node factory_cfg_rich = YAML::Node{}) noexcept;
 
   // ── Observability (lock-free atomics; safe from any thread) ─────────────
 
   /// @return the most recent `MPCSolveError` cast to int (0 on clean path).
-  [[nodiscard]] int LastSolveErrorCode() const noexcept {
+  [[nodiscard]] int LastSolveErrorCode() const noexcept
+  {
     return last_err_.load(std::memory_order_relaxed);
   }
 
   /// @return the phase id returned by the most recent `PhaseManager::Update`.
-  [[nodiscard]] int LastPhaseId() const noexcept {
+  [[nodiscard]] int LastPhaseId() const noexcept
+  {
     return last_phase_id_.load(std::memory_order_relaxed);
   }
 
   /// @return solves attempted since @ref MPCThread::Start.
-  [[nodiscard]] std::uint64_t TotalSolves() const noexcept {
+  [[nodiscard]] std::uint64_t TotalSolves() const noexcept
+  {
     return total_solves_.load(std::memory_order_relaxed);
   }
 
   /// @return solves that returned non-`kNoError`.
-  [[nodiscard]] std::uint64_t FailedSolves() const noexcept {
+  [[nodiscard]] std::uint64_t FailedSolves() const noexcept
+  {
     return failed_solves_.load(std::memory_order_relaxed);
   }
 
   /// @return true once the null-handler guard has logged at least once.
-  [[nodiscard]] bool NullHandlerLogged() const noexcept {
+  [[nodiscard]] bool NullHandlerLogged() const noexcept
+  {
     return null_logged_.load(std::memory_order_relaxed);
   }
 
 protected:
-  bool Solve(const MPCStateSnapshot &state, MPCSolution &out,
-             std::span<std::jthread> workers) override;
+  bool Solve(
+    const MPCStateSnapshot & state, MPCSolution & out,
+    std::span<std::jthread> workers) override;
 
 private:
   /// @brief Execute the cross-mode handler swap. Non-noexcept internally;
   ///        the caller wraps in try/catch. On success, returns true and
   ///        `handler_` points at the new instance (seeded via SeedWarmStart).
-  bool TryCrossModeSwap(const PhaseContext &ctx);
+  bool TryCrossModeSwap(const PhaseContext & ctx);
 
   /// @brief Emit a single `fprintf(stderr, …)` line at most once per
   ///        `kWarnThrottleNs`. Called from every `Solve` failure path

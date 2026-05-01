@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <cmath>
 
-namespace rtc::mpc {
+namespace rtc::mpc
+{
 
-void RiccatiFeedback::Init(int max_nv, int max_nu, int max_nx) {
+void RiccatiFeedback::Init(int max_nv, int max_nu, int max_nx)
+{
   if (max_nv <= 0 || max_nu <= 0 || max_nx <= 0) {
     max_nv_ = 0;
     max_nu_ = 0;
@@ -24,9 +26,11 @@ void RiccatiFeedback::Init(int max_nv, int max_nu, int max_nx) {
   nx_ = 0;
 }
 
-void RiccatiFeedback::SetGain(const double* K_data, int nu, int nx) noexcept {
+void RiccatiFeedback::SetGain(const double * K_data, int nu, int nx) noexcept
+{
   if (K_data == nullptr || nu <= 0 || nx <= 0 || nu > max_nu_ ||
-      nx > max_nx_) {
+    nx > max_nx_)
+  {
     nu_ = 0;
     nx_ = 0;
     return;
@@ -42,11 +46,12 @@ void RiccatiFeedback::SetGain(const double* K_data, int nu, int nx) noexcept {
 }
 
 void RiccatiFeedback::Compute(
-    const Eigen::Ref<const Eigen::VectorXd>& q_curr,
-    const Eigen::Ref<const Eigen::VectorXd>& v_curr,
-    const Eigen::Ref<const Eigen::VectorXd>& q_ref,
-    const Eigen::Ref<const Eigen::VectorXd>& v_ref,
-    Eigen::Ref<Eigen::VectorXd> u_fb_out) noexcept {
+  const Eigen::Ref<const Eigen::VectorXd> & q_curr,
+  const Eigen::Ref<const Eigen::VectorXd> & v_curr,
+  const Eigen::Ref<const Eigen::VectorXd> & q_ref,
+  const Eigen::Ref<const Eigen::VectorXd> & v_ref,
+  Eigen::Ref<Eigen::VectorXd> u_fb_out) noexcept
+{
   if (nu_ <= 0 || nx_ <= 0) {
     u_fb_out.setZero();
     return;
@@ -76,12 +81,12 @@ void RiccatiFeedback::Compute(
 
   // u_fb = scale * K * Δx  (noalias: avoid Eigen temporaries).
   u_fb_raw_.head(nu_).noalias() =
-      effective_scale * K_.topLeftCorner(nu_, nx_) * dx_.head(nx_);
+    effective_scale * K_.topLeftCorner(nu_, nx_) * dx_.head(nx_);
 
   // Write to the caller's buffer. In accel_only mode we populate only the
   // first `nv` entries (the portion consumed by TSID acceleration tasks).
-  const int n_write = accel_only_ ? std::min(nv, nu_)
-                                   : std::min(static_cast<int>(u_fb_out.size()),
+  const int n_write = accel_only_ ? std::min(nv, nu_) :
+    std::min(static_cast<int>(u_fb_out.size()),
                                               nu_);
   u_fb_out.head(n_write) = u_fb_raw_.head(n_write);
   if (u_fb_out.size() > n_write) {
@@ -89,11 +94,13 @@ void RiccatiFeedback::Compute(
   }
 }
 
-void RiccatiFeedback::SetGainScale(double scale) noexcept {
+void RiccatiFeedback::SetGainScale(double scale) noexcept
+{
   gain_scale_ = std::clamp(scale, 0.0, 1.0);
 }
 
-void RiccatiFeedback::SetMaxDeltaXNorm(double value) noexcept {
+void RiccatiFeedback::SetMaxDeltaXNorm(double value) noexcept
+{
   if (value > 0.0 && std::isfinite(value)) {
     max_delta_x_norm_ = value;
   }
