@@ -510,10 +510,10 @@ CM, MPC, ur5e_hand_driver의 hand UDP EventLoop가 이 패턴의 세 사용처. 
 세션 디렉토리 구조:
 ```
 logging_data/YYMMDD_HHMM/
-  controller/                -- rtc_controller_manager 의 RT 루프 CSV (state_log, sensor_log, cm_timing_log)
-  controllers/<config_key>/  -- 개별 controller LifecycleNode 가 자체 기록하는 CSV
-                                (예: demo_wbc_controller/mpc_timing_log.csv;
-                                writer = rtc_mpc/logging/mpc_timing_logger.hpp)
+  controller/                -- rtc_controller_manager 의 RT 루프 CSV (state_log, sensor_log; Phase C에서 정리됨)
+  controllers/<config_key>/  -- 개별 controller LifecycleNode 가 자체 기록하는 데이터 CSV
+  timing/                    -- per-tick 스레드 타이밍 CSV (cm_timing_log,
+                                mpc_timing_log, hand_udp_timing_log)
   device/                    -- device 통신 통계
   sim/                       -- mujoco 스크린샷
   plots/                     -- 플롯 출력
@@ -525,7 +525,8 @@ logging_data/YYMMDD_HHMM/
 | `GenerateSessionTimestamp()` | `YYMMDD_HHMM` 형식 타임스탬프 생성 |
 | `ResolveLoggingRoot()` | 3단 체인으로 `logging_data` 루트 경로 결정 (아래 참고) |
 | `ResolveSessionDir()` | env → `ResolveLoggingRoot()` → `YYMMDD_HHMM` 세션 디렉토리 생성 |
-| `EnsureSessionSubdirs(session_dir)` | controller, monitor, device, sim, plots, motions 하위 폴더 생성 |
+| `EnsureSessionSubdirs(session_dir)` | controller, timing, monitor, device, sim, plots, motions 하위 폴더 생성 |
+| `TimingDir(session_dir)` | per-tick timing CSV 들이 모이는 `<session>/timing/` 경로 반환 |
 | `ListSessionDirs(logging_root)` | `YYMMDD_HHMM` 패턴 디렉토리 정렬 목록 반환 |
 | `CleanupOldSessions(logging_root, max)` | 최대 세션 수 초과 시 오래된 세션 삭제 |
 

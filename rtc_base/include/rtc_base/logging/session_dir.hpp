@@ -21,9 +21,11 @@ namespace rtc {
 // 모든 패키지에서 공유하는 세션 기반 로깅 디렉토리 관리.
 // 세션 디렉토리 구조:
 //   logging_data/YYMMDD_HHMM/
-//     controller/   — CM RT 루프 CSV (state/sensor/cm_timing_log)
-//     controllers/  — per-controller CSV (예: demo_wbc_controller/
-//                     mpc_timing_log.csv); on-demand 생성
+//     controller/   — CM RT 루프 CSV (state/sensor 로그; Phase C에서 정리됨)
+//     controllers/  — per-controller 데이터 CSV (예:
+//                     demo_wbc_controller/<log_name>.csv); on-demand 생성
+//     timing/       — per-tick 스레드 타이밍 CSV (cm_timing_log,
+//                     mpc_timing_log, hand_udp_timing_log)
 //     monitor/      — 모니터링 로그
 //     device/       — device 통신 통계 / 센서 로그
 //     sim/          — mujoco 스크린샷
@@ -55,10 +57,17 @@ inline std::string GenerateSessionTimestamp() {
 /// 세션 디렉토리 내 표준 서브디렉토리 생성
 inline void EnsureSessionSubdirs(const std::filesystem::path &session_dir) {
   static constexpr const char *kSubdirs[] = {
-      "controller", "monitor", "device", "sim", "plots", "motions"};
+      "controller", "timing", "monitor", "device", "sim", "plots", "motions"};
   for (const auto *sub : kSubdirs) {
     std::filesystem::create_directories(session_dir / sub);
   }
+}
+
+/// per-tick 스레드 타이밍 CSV 들의 공용 디렉토리.
+/// (cm_timing_log.csv, mpc_timing_log.csv, hand_udp_timing_log.csv)
+inline std::filesystem::path
+TimingDir(const std::filesystem::path &session_dir) {
+  return session_dir / "timing";
 }
 
 /// 로깅 루트 디렉토리 결정 (env 우선순위 제외, 물리 경로만).
