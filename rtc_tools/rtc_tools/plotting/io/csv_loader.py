@@ -8,8 +8,6 @@ regressions. Re-record sessions with the current code.
 
 import csv
 
-import pandas as pd
-
 
 class LegacyCsvError(ValueError):
     """Raised when a CSV's header column count does not match its data rows."""
@@ -48,6 +46,8 @@ def _coerce_numeric_columns(df):
     timestamp + known enum/string columns are excluded.
     Mutates df in place; returns df for chaining.
     """
+    import pandas as pd
+
     for col in df.columns:
         if col in _STR_COLS:
             continue
@@ -64,6 +64,8 @@ def load_log_csv(filepath, log_type):
       - LegacyCsvError if header column count is shorter than data rows.
     Caller handles ParserError fallback if desired.
     """
+    import pandas as pd
+
     _check_header_matches_data(filepath)
     df = pd.read_csv(filepath)
     _coerce_numeric_columns(df)
