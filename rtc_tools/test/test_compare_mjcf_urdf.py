@@ -147,12 +147,20 @@ URDF_TEMPLATE = """\
 </robot>
 """
 
+# Test fixtures — names baked into URDF_TEMPLATE / MJCF_TEMPLATE.
+# MJCF body "base" maps to URDF link "base_link_inertia"; "shoulder_link" matches both sides.
+LINK_MAP_FIXTURE = {"base": "base_link_inertia", "shoulder_link": "shoulder_link"}
+URDF_LINK_NAMES = set(LINK_MAP_FIXTURE.values())
+MJCF_LINK_NAMES = set(LINK_MAP_FIXTURE.keys())
+JOINT_NAMES_FIXTURE = ["shoulder_pan_joint"]
+JOINT_NAMES_SET = set(JOINT_NAMES_FIXTURE)
+
 
 class TestParseUrdf:
     def test_link_mass(self, tmp_path):
         urdf = tmp_path / "test.urdf"
         urdf.write_text(URDF_TEMPLATE)
-        links, joints = parse_urdf(urdf)
+        links, joints = parse_urdf(urdf, URDF_LINK_NAMES, JOINT_NAMES_SET)
 
         assert "base_link_inertia" in links
         assert links["base_link_inertia"].mass == pytest.approx(4.0)
@@ -160,7 +168,7 @@ class TestParseUrdf:
     def test_link_inertia(self, tmp_path):
         urdf = tmp_path / "test.urdf"
         urdf.write_text(URDF_TEMPLATE)
-        links, _ = parse_urdf(urdf)
+        links, _ = parse_urdf(urdf, URDF_LINK_NAMES, JOINT_NAMES_SET)
 
         ip = links["base_link_inertia"]
         assert ip.diag_inertia[0] == pytest.approx(0.00443)  # ixx
@@ -170,7 +178,7 @@ class TestParseUrdf:
     def test_off_diagonal_inertia(self, tmp_path):
         urdf = tmp_path / "test.urdf"
         urdf.write_text(URDF_TEMPLATE)
-        links, _ = parse_urdf(urdf)
+        links, _ = parse_urdf(urdf, URDF_LINK_NAMES, JOINT_NAMES_SET)
 
         ip = links["shoulder_link"]
         assert ip.off_diag_inertia[0] == pytest.approx(0.001)  # ixy
@@ -180,7 +188,7 @@ class TestParseUrdf:
     def test_link_origin(self, tmp_path):
         urdf = tmp_path / "test.urdf"
         urdf.write_text(URDF_TEMPLATE)
-        links, _ = parse_urdf(urdf)
+        links, _ = parse_urdf(urdf, URDF_LINK_NAMES, JOINT_NAMES_SET)
 
         ip = links["base_link_inertia"]
         assert ip.origin_xyz == [0.0, 0.0, 0.025]
@@ -188,7 +196,7 @@ class TestParseUrdf:
     def test_joint_axis(self, tmp_path):
         urdf = tmp_path / "test.urdf"
         urdf.write_text(URDF_TEMPLATE)
-        _, joints = parse_urdf(urdf)
+        _, joints = parse_urdf(urdf, URDF_LINK_NAMES, JOINT_NAMES_SET)
 
         jp = joints["shoulder_pan_joint"]
         assert jp.axis == [0.0, 0.0, 1.0]
@@ -196,7 +204,7 @@ class TestParseUrdf:
     def test_joint_limits(self, tmp_path):
         urdf = tmp_path / "test.urdf"
         urdf.write_text(URDF_TEMPLATE)
-        _, joints = parse_urdf(urdf)
+        _, joints = parse_urdf(urdf, URDF_LINK_NAMES, JOINT_NAMES_SET)
 
         jp = joints["shoulder_pan_joint"]
         assert jp.lower == pytest.approx(-6.2832)
@@ -207,23 +215,22 @@ class TestParseUrdf:
     def test_joint_origin(self, tmp_path):
         urdf = tmp_path / "test.urdf"
         urdf.write_text(URDF_TEMPLATE)
-        _, joints = parse_urdf(urdf)
+        _, joints = parse_urdf(urdf, URDF_LINK_NAMES, JOINT_NAMES_SET)
 
         jp = joints["shoulder_pan_joint"]
         assert jp.origin_xyz == [0.0, 0.0, 0.1625]
 
     def test_ignores_unknown_links(self, tmp_path):
+        """link_names set 에 없는 link 는 결과 dict 에 들어오지 않는다."""
         urdf = tmp_path / "test.urdf"
         urdf.write_text(URDF_TEMPLATE)
-        links, _ = parse_urdf(urdf)
-        # Only links in MJCF_TO_URDF_LINK.values() are parsed
-        for name in links:
-            from rtc_tools.validation.compare_mjcf_urdf import MJCF_TO_URDF_LINK
-
-            assert name in MJCF_TO_URDF_LINK.values()
+        # Only request "base_link_inertia"; "shoulder_link" must be filtered out.
+        links, _ = parse_urdf(urdf, {"base_link_inertia"}, JOINT_NAMES_SET)
+        assert "base_link_inertia" in links
+        assert "shoulder_link" not in links
 
     def test_ignores_unknown_joints(self, tmp_path):
-        """JOINT_NAMES 에 없는 joint 는 무시."""
+        """joint_names set 에 없는 joint 는 무시."""
         urdf_text = """\
 <robot name="test">
   <link name="base_link_inertia"/>
@@ -238,7 +245,7 @@ class TestParseUrdf:
 """
         urdf = tmp_path / "test.urdf"
         urdf.write_text(urdf_text)
-        _, joints = parse_urdf(urdf)
+        _, joints = parse_urdf(urdf, {"base_link_inertia"}, {"shoulder_pan_joint"})
         assert "custom_joint" not in joints
 
 
@@ -249,7 +256,7 @@ class TestParseUrdf:
 MJCF_TEMPLATE = """\
 <mujoco model="test_robot">
   <default>
-    <default class="ur5e">
+    <default class="test_robot">
       <joint axis="0 1 0" armature="0.1"/>
       <general forcerange="-150 150"/>
     </default>
@@ -261,7 +268,7 @@ MJCF_TEMPLATE = """\
     <body name="base" pos="0 0 0">
       <inertial mass="4.0" pos="0 0 0.025" diaginertia="0.00443 0.00443 0.0072"/>
       <body name="shoulder_link" pos="0 0 0.1625">
-        <joint name="shoulder_pan_joint" class="ur5e" axis="0 0 1"
+        <joint name="shoulder_pan_joint" class="test_robot" axis="0 0 1"
                range="-6.2832 6.2832"/>
         <inertial mass="3.7" pos="0 0 0" diaginertia="0.0102 0.0102 0.00666"/>
       </body>
@@ -275,7 +282,7 @@ class TestParseMjcf:
     def test_link_mass(self, tmp_path):
         mjcf = tmp_path / "test.xml"
         mjcf.write_text(MJCF_TEMPLATE)
-        links, _ = parse_mjcf(mjcf)
+        links, _ = parse_mjcf(mjcf, MJCF_LINK_NAMES, JOINT_NAMES_SET)
 
         assert "base" in links
         assert links["base"].mass == pytest.approx(4.0)
@@ -283,7 +290,7 @@ class TestParseMjcf:
     def test_link_inertia(self, tmp_path):
         mjcf = tmp_path / "test.xml"
         mjcf.write_text(MJCF_TEMPLATE)
-        links, _ = parse_mjcf(mjcf)
+        links, _ = parse_mjcf(mjcf, MJCF_LINK_NAMES, JOINT_NAMES_SET)
 
         ip = links["base"]
         assert ip.diag_inertia == [0.00443, 0.00443, 0.0072]
@@ -291,7 +298,7 @@ class TestParseMjcf:
     def test_joint_axis(self, tmp_path):
         mjcf = tmp_path / "test.xml"
         mjcf.write_text(MJCF_TEMPLATE)
-        _, joints = parse_mjcf(mjcf)
+        _, joints = parse_mjcf(mjcf, MJCF_LINK_NAMES, JOINT_NAMES_SET)
 
         jp = joints["shoulder_pan_joint"]
         assert jp.axis == [0.0, 0.0, 1.0]
@@ -299,7 +306,7 @@ class TestParseMjcf:
     def test_joint_range(self, tmp_path):
         mjcf = tmp_path / "test.xml"
         mjcf.write_text(MJCF_TEMPLATE)
-        _, joints = parse_mjcf(mjcf)
+        _, joints = parse_mjcf(mjcf, MJCF_LINK_NAMES, JOINT_NAMES_SET)
 
         jp = joints["shoulder_pan_joint"]
         assert jp.lower == pytest.approx(-6.2832)
@@ -308,7 +315,7 @@ class TestParseMjcf:
     def test_joint_effort_from_defaults(self, tmp_path):
         mjcf = tmp_path / "test.xml"
         mjcf.write_text(MJCF_TEMPLATE)
-        _, joints = parse_mjcf(mjcf)
+        _, joints = parse_mjcf(mjcf, MJCF_LINK_NAMES, JOINT_NAMES_SET)
 
         jp = joints["shoulder_pan_joint"]
         assert jp.effort == pytest.approx(150.0)
@@ -316,7 +323,7 @@ class TestParseMjcf:
     def test_joint_armature(self, tmp_path):
         mjcf = tmp_path / "test.xml"
         mjcf.write_text(MJCF_TEMPLATE)
-        _, joints = parse_mjcf(mjcf)
+        _, joints = parse_mjcf(mjcf, MJCF_LINK_NAMES, JOINT_NAMES_SET)
 
         jp = joints["shoulder_pan_joint"]
         assert jp.armature == pytest.approx(0.1)
@@ -324,7 +331,7 @@ class TestParseMjcf:
     def test_joint_origin_from_body_pos(self, tmp_path):
         mjcf = tmp_path / "test.xml"
         mjcf.write_text(MJCF_TEMPLATE)
-        _, joints = parse_mjcf(mjcf)
+        _, joints = parse_mjcf(mjcf, MJCF_LINK_NAMES, JOINT_NAMES_SET)
 
         jp = joints["shoulder_pan_joint"]
         assert jp.origin_xyz == [0.0, 0.0, 0.1625]
@@ -343,7 +350,9 @@ class TestCompare:
         urdf = tmp_path / "test.urdf"
         urdf.write_text(URDF_TEMPLATE)
 
-        mismatches = compare(mjcf, urdf)
+        mismatches = compare(
+            mjcf, urdf, link_map=LINK_MAP_FIXTURE, joint_names=JOINT_NAMES_FIXTURE
+        )
         assert mismatches == 0
 
         captured = capsys.readouterr()
@@ -357,7 +366,9 @@ class TestCompare:
         urdf = tmp_path / "test.urdf"
         urdf.write_text(URDF_TEMPLATE)
 
-        mismatches = compare(mjcf, urdf)
+        mismatches = compare(
+            mjcf, urdf, link_map=LINK_MAP_FIXTURE, joint_names=JOINT_NAMES_FIXTURE
+        )
         assert mismatches >= 1
 
         captured = capsys.readouterr()
@@ -371,7 +382,9 @@ class TestCompare:
         urdf = tmp_path / "test.urdf"
         urdf.write_text(URDF_TEMPLATE)
 
-        mismatches = compare(mjcf, urdf)
+        mismatches = compare(
+            mjcf, urdf, link_map=LINK_MAP_FIXTURE, joint_names=JOINT_NAMES_FIXTURE
+        )
         assert mismatches >= 1
 
         captured = capsys.readouterr()
@@ -386,8 +399,26 @@ class TestCompare:
         urdf = tmp_path / "test.urdf"
         urdf.write_text(URDF_TEMPLATE)
 
-        assert compare(mjcf, urdf, tolerance=0.01) == 0
-        assert compare(mjcf, urdf, tolerance=1e-4) >= 1
+        assert (
+            compare(
+                mjcf,
+                urdf,
+                link_map=LINK_MAP_FIXTURE,
+                joint_names=JOINT_NAMES_FIXTURE,
+                tolerance=0.01,
+            )
+            == 0
+        )
+        assert (
+            compare(
+                mjcf,
+                urdf,
+                link_map=LINK_MAP_FIXTURE,
+                joint_names=JOINT_NAMES_FIXTURE,
+                tolerance=1e-4,
+            )
+            >= 1
+        )
 
     def test_off_diagonal_warning(self, tmp_path, capsys):
         """URDF에 off-diagonal inertia가 있으면 NOTE 출력."""
@@ -396,7 +427,7 @@ class TestCompare:
         urdf = tmp_path / "test.urdf"
         urdf.write_text(URDF_TEMPLATE)
 
-        compare(mjcf, urdf)
+        compare(mjcf, urdf, link_map=LINK_MAP_FIXTURE, joint_names=JOINT_NAMES_FIXTURE)
         captured = capsys.readouterr()
         assert "off-diagonal" in captured.out
 
@@ -406,7 +437,7 @@ class TestCompare:
         mjcf_text = """\
 <mujoco model="test">
   <default>
-    <default class="ur5e">
+    <default class="test_robot">
       <joint axis="0 1 0"/>
       <general forcerange="-150 150"/>
     </default>
@@ -423,6 +454,6 @@ class TestCompare:
         urdf = tmp_path / "test.urdf"
         urdf.write_text(URDF_TEMPLATE)
 
-        compare(mjcf, urdf)
+        compare(mjcf, urdf, link_map=LINK_MAP_FIXTURE, joint_names=JOINT_NAMES_FIXTURE)
         captured = capsys.readouterr()
         assert "WARN" in captured.out
