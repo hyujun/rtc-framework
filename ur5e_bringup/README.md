@@ -29,6 +29,9 @@ ur5e_bringup/
 │   │   ├── demo_joint_controller.hpp   <- 관절 공간 Quintic 궤적 제어 (로봇+핸드)
 │   │   ├── demo_task_controller.hpp    <- 태스크 공간 CLIK 제어 (로봇+핸드)
 │   │   └── demo_wbc_controller.hpp     <- TSID whole-body + MPC 통합
+│   ├── logging/
+│   │   ├── device_state_log_pod.hpp    <- DeviceStateLog POD mirror (kMaxJoints=16)
+│   │   └── device_sensor_log_pod.hpp   <- DeviceSensorLog POD mirror (kMaxFingertips=8)
 │   └── phase/
 │       ├── grasp_target.hpp            <- grasp 목표 pose 구조체 + 외부 명령 enum
 │       └── grasp_phase_manager.hpp     <- 8-state grasp FSM (rtc_mpc::PhaseManagerBase 구현)

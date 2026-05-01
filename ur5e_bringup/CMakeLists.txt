@@ -172,6 +172,12 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(Eigen3 REQUIRED)
 
+  # ── DeviceStateLog / DeviceSensorLog POD mirrors (header-only) ────────────
+  ament_add_gtest(test_device_log_pods test/test_device_log_pods.cpp)
+  target_include_directories(test_device_log_pods PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+
   # ── virtual_tcp header-only tests ──────────────────────────────────────────
   ament_add_gtest(test_virtual_tcp test/test_virtual_tcp.cpp)
   target_include_directories(test_virtual_tcp PRIVATE
