@@ -128,8 +128,7 @@ RTControllerInterface::~RTControllerInterface() = default;
 // noexcept contract: transitions that touch YAML/allocators must catch all
 // exceptions and report FAILURE via CallbackReturn.
 
-RTControllerInterface::CallbackReturn RTControllerInterface::on_configure(
-    const rclcpp_lifecycle::State& /*previous_state*/,
+RTControllerInterface::CallbackReturn RTControllerInterface::PreConfigure(
     rclcpp_lifecycle::LifecycleNode::SharedPtr node, const YAML::Node& yaml_cfg) noexcept {
   if (!node) {
     return CallbackReturn::FAILURE;
@@ -145,6 +144,33 @@ RTControllerInterface::CallbackReturn RTControllerInterface::on_configure(
     RCLCPP_ERROR(rclcpp::get_logger("rtc_controller_interface"),
                  "[%s] LoadConfig failed: unknown exception", std::string(Name()).c_str());
     return CallbackReturn::FAILURE;
+  }
+  return CallbackReturn::SUCCESS;
+}
+
+RTControllerInterface::CallbackReturn RTControllerInterface::on_configure(
+    const rclcpp_lifecycle::State& /*previous_state*/,
+    rclcpp_lifecycle::LifecycleNode::SharedPtr node, const YAML::Node& yaml_cfg) noexcept {
+  // Idempotent re-entry: when CM drives the 3-pass bring-up, PreConfigure has
+  // already stored node_ and parsed yaml_cfg. Direct callers (unit tests,
+  // legacy paths) skip PreConfigure, so we still accept the node + reparse
+  // here.
+  if (!node_) {
+    if (!node) {
+      return CallbackReturn::FAILURE;
+    }
+    node_ = std::move(node);
+    try {
+      LoadConfig(yaml_cfg);
+    } catch (const std::exception& e) {
+      RCLCPP_ERROR(rclcpp::get_logger("rtc_controller_interface"), "[%s] LoadConfig failed: %s",
+                   std::string(Name()).c_str(), e.what());
+      return CallbackReturn::FAILURE;
+    } catch (...) {
+      RCLCPP_ERROR(rclcpp::get_logger("rtc_controller_interface"),
+                   "[%s] LoadConfig failed: unknown exception", std::string(Name()).c_str());
+      return CallbackReturn::FAILURE;
+    }
   }
   return CallbackReturn::SUCCESS;
 }

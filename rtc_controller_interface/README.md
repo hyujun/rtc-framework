@@ -73,14 +73,17 @@ virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 
 | 훅 | 시그니처 | 기본 동작 |
 |---|---|---|
-| `on_configure` | `(State, LifecycleNode::SharedPtr, YAML::Node) → CallbackReturn` | `node_`에 주입된 노드 저장 → `LoadConfig(yaml_cfg)`를 try/catch로 호출 → 성공 시 `SUCCESS`, YAML 파싱 throw 시 `FAILURE` 반환. 실패 경로 로그는 `rclcpp::get_logger("rtc_controller_interface")` 정적 logger 사용 + 메시지 본문에 `[<controller_name>]` prefix로 호출 주체 표시 — 네이밍 규약은 [agent_docs/conventions.md](../agent_docs/conventions.md) "Logging" 섹션 참조 |
+| `PreConfigure` | `(LifecycleNode::SharedPtr, YAML::Node) → CallbackReturn` | CM 3-pass bring-up의 1단계. `node_` 저장 + `LoadConfig(yaml_cfg)` try/catch → `topic_config_` 채움. **RegisterLog / 리소스 할당 금지** — CM이 이 결과로 `active_groups_` 와 `device_name_configs_` 를 빌드한 뒤 `SetDeviceNameConfigs()` 를 호출하고, 이어서 `on_configure()` 에서 본격 작업이 일어남 |
+| `on_configure` | `(State, LifecycleNode::SharedPtr, YAML::Node) → CallbackReturn` | `PreConfigure` 경유 시 멱등 (이미 set된 `node_`/`topic_config_` 보존, LoadConfig 재호출 안 함). 직접 호출 (legacy 단위 테스트) 시 `node_` 저장 + LoadConfig. 서브클래스가 `RegisterLog<>(...)` / 파라미터 / 퍼블리셔를 만드는 시점이며, 이때 `GetDeviceNameConfig(...)` 결과는 이미 채워져 있어 헤더 writer 에 안전히 전달 가능. 실패 경로 로그는 `rclcpp::get_logger("rtc_controller_interface")` 정적 logger 사용 + 메시지 본문에 `[<controller_name>]` prefix — 네이밍 규약은 [agent_docs/conventions.md](../agent_docs/conventions.md) "Logging" 섹션 참조 |
 | `on_activate` | `(State) → CallbackReturn` | no-op `SUCCESS` |
 | `on_deactivate` | `(State) → CallbackReturn` | no-op `SUCCESS` |
 | `on_cleanup` | `(State) → CallbackReturn` | `node_.reset()` → `SUCCESS` |
 | `on_shutdown` | `(State) → CallbackReturn` | `on_cleanup(state)` 위임 |
 | `on_error` | `(State) → CallbackReturn` | no-op `SUCCESS` (서브클래스에서 E-STOP 트리거 등 원하는 복구 로직 override) |
 
-> **Override 규약**: 서브클래스가 `on_configure`를 오버라이드해 자체 sub/pub을 만들 때 반드시 `RTControllerInterface::on_configure(previous_state, node, yaml_cfg)`를 먼저 호출한 뒤 `node_->create_subscription(...)` / `node_->create_publisher(...)`로 확장합니다. 이 순서를 어기면 `LoadConfig()`가 실행되지 않아 `topic_config_`가 기본값으로 남습니다.
+> **3-pass bring-up 계약**: CM은 (1) `PreConfigure(node, yaml)` → (2) 모든 컨트롤러의 `topic_config_` 으로 `active_groups_` 빌드 + `LoadDeviceNameConfigs()` + 컨트롤러별 `SetDeviceNameConfigs(...)` → (3) `on_configure(state, node, yaml)` 순서로 호출합니다. RegisterLog 람다가 `joint_state_names` / `motor_state_names` 등 device-name 정보를 capture할 때, `OnDeviceConfigsSet` 이 이미 실행됐음이 보장됩니다. 단위 테스트에서 `on_configure`를 직접 호출하는 legacy 경로는 `node_ == nullptr` 가드로 분기하여 종전 동작을 유지합니다.
+>
+> **Override 규약**: 서브클래스가 `on_configure`를 오버라이드해 자체 sub/pub을 만들 때 반드시 `RTControllerInterface::on_configure(previous_state, node, yaml_cfg)`를 먼저 호출한 뒤 `node_->create_subscription(...)` / `node_->create_publisher(...)`로 확장합니다. `PreConfigure` 는 base 전용이므로 override 불필요.
 >
 > RT 경로(`Compute`, `SetDeviceTarget` 등)에서는 **절대 `node_`에 접근하지 않습니다** — ROS2 API 호출은 non-RT 훅에서만 수행하고, RT 경로에서는 사전 할당된 SeqLock/SPSC 버퍼를 통해 값을 읽습니다.
 

@@ -56,7 +56,14 @@ class RTControllerInterface {
   // throw (YAML parsing, dynamic allocation) must be caught inside.
   //
   // Default contract:
-  //   on_configure:  store node_, invoke LoadConfig(yaml_cfg) in try/catch
+  //   PreConfigure: store node_, invoke LoadConfig(yaml_cfg) in try/catch
+  //                  → topic_config_ available; no resource allocation,
+  //                    no RegisterLog, no lifecycle state change. CM uses
+  //                    the result to build active_groups_ + device_name_configs_
+  //                    and calls SetDeviceNameConfigs() before on_configure().
+  //   on_configure:  store node_ (idempotent), LoadConfig (idempotent if
+  //                  PreConfigure ran), then subclass work (RegisterLog,
+  //                  publishers, parameter declares, …)
   //   on_activate:   if device_snapshot.num_devices > 0,
   //                    InitializeHoldPosition(device_snapshot); SUCCESS
   //   on_deactivate: no-op SUCCESS
@@ -75,6 +82,20 @@ class RTControllerInterface {
   // the switch_controller helper after a successful state read) populate the
   // snapshot so the controller's hold target is initialised in lockstep with
   // the activation, before any Compute() runs.
+  // PreConfigure: lightweight first pass. Stores node_ and calls LoadConfig(yaml)
+  // so that GetTopicConfig() returns valid data BEFORE CM resolves
+  // device_name_configs_. Must precede on_configure() in the CM bring-up
+  // sequence; CM also calls SetDeviceNameConfigs() between PreConfigure and
+  // on_configure, so on_configure can rely on GetDeviceNameConfig(...) being
+  // populated when it allocates resources / registers log channels.
+  //
+  // Subclasses must NOT override — base implementation suffices. A controller
+  // never instantiated through CM (e.g. unit tests calling on_configure
+  // directly) skips PreConfigure; on_configure's idempotent guard handles that
+  // legacy path.
+  CallbackReturn PreConfigure(rclcpp_lifecycle::LifecycleNode::SharedPtr node,
+                              const YAML::Node& yaml_cfg) noexcept;
+
   virtual CallbackReturn on_configure(const rclcpp_lifecycle::State& previous_state,
                                       rclcpp_lifecycle::LifecycleNode::SharedPtr node,
                                       const YAML::Node& yaml_cfg) noexcept;

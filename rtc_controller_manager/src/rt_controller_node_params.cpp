@@ -288,9 +288,24 @@ void RtControllerNode::DeclareAndLoadParameters() {
   }
 
   // ── Instantiate and configure all registered controllers ─────────────────
+  //
+  // 3-pass bring-up so device-name configs are resolved BEFORE controllers'
+  // on_configure runs:
+  //   Pass 1: factory + per-controller LifecycleNode + PreConfigure
+  //           (loads yaml → topic_config_; no RegisterLog yet)
+  //   Pass 2: collect topic_config_ → active_groups_/group_slot_map_;
+  //           LoadDeviceNameConfigs(); SetDeviceNameConfigs() per controller
+  //           (triggers OnDeviceConfigsSet → joint_names captured)
+  //   Pass 3: on_configure() per controller — RegisterLog now sees populated
+  //           name spans, so CSV headers match data row widths.
   std::unordered_map<std::string, int> name_to_idx;
   const auto& entries = urtc::ControllerRegistry::Instance().GetEntries();
 
+  // Per-controller yaml node retained until Pass 3.
+  std::vector<YAML::Node> controller_yamls;
+  controller_yamls.reserve(entries.size());
+
+  // ── Pass 1: instantiate, build LifecycleNode, PreConfigure ───────────────
   for (std::size_t i = 0; i < entries.size(); ++i) {
     const auto& entry = entries[i];
     auto ctrl = entry.factory(urdf_path);
@@ -302,8 +317,9 @@ void RtControllerNode::DeclareAndLoadParameters() {
       ctrl->SetSharedModelBuilder(shared_builder);
     }
 
-    // Load YAML for this controller; empty node on failure so on_configure
-    // falls through to built-in defaults (matches previous behavior).
+    // Load YAML for this controller; empty node on failure so PreConfigure /
+    // on_configure fall through to built-in defaults (matches previous
+    // behavior).
     YAML::Node ctrl_node;
     try {
       const std::string pkg_dir =
@@ -339,15 +355,13 @@ void RtControllerNode::DeclareAndLoadParameters() {
     ctrl->SetTargetReceivedNotifier(
         [this]() { target_received_.store(true, std::memory_order_release); });
 
-    // Drive the controller's lifecycle on_configure.  Default implementation
-    // stores the node and invokes LoadConfig(ctrl_node) internally; a FAILURE
-    // return is non-fatal (matches previous "use defaults" semantics).
-    const rclcpp_lifecycle::State unconfigured_state(
-        lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "unconfigured");
-    const auto cfg_ret = ctrl->on_configure(unconfigured_state, ctrl_lc_node, ctrl_node);
-    if (cfg_ret != urtc::RTControllerInterface::CallbackReturn::SUCCESS) {
+    // PreConfigure: stores node_ + parses yaml so GetTopicConfig() is valid
+    // before Pass 2 builds active_groups_. No RegisterLog or resource
+    // allocation here.
+    const auto pre_ret = ctrl->PreConfigure(ctrl_lc_node, ctrl_node);
+    if (pre_ret != urtc::RTControllerInterface::CallbackReturn::SUCCESS) {
       RCLCPP_WARN(get_logger(),
-                  "Controller '%s' on_configure returned non-SUCCESS — "
+                  "Controller '%s' PreConfigure returned non-SUCCESS — "
                   "continuing with defaults",
                   ctrl->Name().data());
     }
@@ -360,6 +374,7 @@ void RtControllerNode::DeclareAndLoadParameters() {
     controllers_.push_back(std::move(ctrl));
     controller_nodes_.push_back(std::move(ctrl_lc_node));
     controller_types_.push_back(entry.config_key);
+    controller_yamls.push_back(ctrl_node);
   }
 
   // Cache per-controller topic configs and build active_groups_ +
@@ -422,6 +437,25 @@ void RtControllerNode::DeclareAndLoadParameters() {
   for (auto& ctrl : controllers_) {
     ctrl->SetControlRate(control_rate_);
     ctrl->SetDeviceNameConfigs(device_name_configs_);
+  }
+
+  // ── Pass 3: drive on_configure now that device-name configs are resolved ─
+  // RegisterLog calls inside controllers' on_configure can capture populated
+  // joint_name / motor_name / sensor_name spans, so the CSV header writer
+  // emits a row that matches the runtime data row width.
+  {
+    const rclcpp_lifecycle::State unconfigured_state(
+        lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "unconfigured");
+    for (std::size_t ci = 0; ci < controllers_.size(); ++ci) {
+      const auto cfg_ret = controllers_[ci]->on_configure(unconfigured_state, controller_nodes_[ci],
+                                                          controller_yamls[ci]);
+      if (cfg_ret != urtc::RTControllerInterface::CallbackReturn::SUCCESS) {
+        RCLCPP_WARN(get_logger(),
+                    "Controller '%s' on_configure returned non-SUCCESS — "
+                    "continuing with defaults",
+                    controllers_[ci]->Name().data());
+      }
+    }
   }
 
   // ── Deferred logging setup ───────────────────────────────────────────────

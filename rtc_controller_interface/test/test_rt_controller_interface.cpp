@@ -13,6 +13,10 @@
 #include <rtc_controller_interface/rt_controller_interface.hpp>
 #include <rtc_urdf_bridge/types.hpp>
 
+#include <lifecycle_msgs/msg/state.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
+
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
@@ -644,6 +648,132 @@ TEST(TopicConfigTest, InsertionOrderPreserved) {
   EXPECT_EQ(cfg.groups[0].first, "charlie");
   EXPECT_EQ(cfg.groups[1].first, "alpha");
   EXPECT_EQ(cfg.groups[2].first, "bravo");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 3-pass bring-up: PreConfigure → SetDeviceNameConfigs → on_configure
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Regression: before the 3-pass split, CM called on_configure BEFORE
+// SetDeviceNameConfigs(), so RegisterLog lambdas captured empty
+// joint_name spans. These tests pin the contract that CM relies on:
+//   1. PreConfigure populates topic_config_ but does not trigger
+//      OnDeviceConfigsSet.
+//   2. SetDeviceNameConfigs (called between PreConfigure and on_configure)
+//      runs OnDeviceConfigsSet exactly once.
+//   3. on_configure can therefore observe device-name configs at the moment
+//      it allocates resources / registers log channels.
+
+class RclcppEnv : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    if (!rclcpp::ok()) {
+      rclcpp::init(0, nullptr);
+      owns_init_ = true;
+    }
+  }
+
+  void TearDown() override {
+    if (owns_init_) {
+      rclcpp::shutdown();
+    }
+  }
+
+ private:
+  bool owns_init_{false};
+};
+
+[[maybe_unused]] auto* const kRclcppEnv = ::testing::AddGlobalTestEnvironment(new RclcppEnv);
+
+namespace {
+rclcpp_lifecycle::LifecycleNode::SharedPtr MakeLcNode(const std::string& name) {
+  auto opts = rclcpp::NodeOptions().use_global_arguments(false);
+  return std::make_shared<rclcpp_lifecycle::LifecycleNode>(name, "/" + name, opts);
+}
+}  // namespace
+
+TEST(RTControllerInterfaceTest, PreConfigurePopulatesTopicConfigBeforeOnDeviceConfigsSet) {
+  StubController ctrl;
+  auto node = MakeLcNode("ctrl_pre_topics");
+
+  YAML::Node yaml;
+  yaml["topics"]["robot"]["subscribe"]["state"] = "/joint_states";
+  yaml["topics"]["robot"]["subscribe"]["target"] = "/robot/target_joint_positions";
+
+  // Pass 1: PreConfigure. Must succeed and populate topic_config_, but must
+  // NOT trigger OnDeviceConfigsSet (CM has not called SetDeviceNameConfigs
+  // yet).
+  ASSERT_EQ(ctrl.PreConfigure(node, yaml), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  EXPECT_FALSE(ctrl.GetTopicConfig().groups.empty());
+  EXPECT_EQ(ctrl.device_config_set_count, 0);
+}
+
+TEST(RTControllerInterfaceTest, SetDeviceNameConfigsBetweenPassesRunsHookOnce) {
+  StubController ctrl;
+  auto node = MakeLcNode("ctrl_pre_then_set");
+
+  YAML::Node yaml;
+  yaml["topics"]["robot"]["subscribe"]["state"] = "/joint_states";
+  ASSERT_EQ(ctrl.PreConfigure(node, yaml), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+
+  // Pass 2: CM resolves device-name configs and pushes them down. The hook
+  // must fire exactly once and the configs must be visible via
+  // GetDeviceNameConfig() before on_configure runs.
+  std::map<std::string, rtc::DeviceNameConfig> configs;
+  configs["robot"].device_name = "robot";
+  configs["robot"].joint_state_names = {"j1", "j2", "j3"};
+  ctrl.SetDeviceNameConfigs(std::move(configs));
+
+  EXPECT_EQ(ctrl.device_config_set_count, 1);
+  ASSERT_NE(ctrl.GetDeviceNameConfig("robot"), nullptr);
+  EXPECT_EQ(ctrl.GetDeviceNameConfig("robot")->joint_state_names.size(), std::size_t{3});
+}
+
+TEST(RTControllerInterfaceTest, OnConfigureAfterPreConfigureIsIdempotent) {
+  // CM's 3-pass bring-up calls on_configure() AFTER PreConfigure() and
+  // SetDeviceNameConfigs(). on_configure must not clobber state set in those
+  // earlier passes — node_ stays the one from PreConfigure, topic_config_
+  // stays populated, and device-name configs remain visible.
+  StubController ctrl;
+  auto node = MakeLcNode("ctrl_idempotent");
+
+  YAML::Node yaml;
+  yaml["topics"]["robot"]["subscribe"]["state"] = "/joint_states";
+
+  ASSERT_EQ(ctrl.PreConfigure(node, yaml), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  std::map<std::string, rtc::DeviceNameConfig> configs;
+  configs["robot"].device_name = "robot";
+  configs["robot"].joint_state_names = {"j1"};
+  ctrl.SetDeviceNameConfigs(std::move(configs));
+
+  // Pass 3: same yaml + same node passed back in — base must not re-parse
+  // (node_ already non-null) and must not retrigger OnDeviceConfigsSet.
+  const rclcpp_lifecycle::State unconfigured(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED,
+                                             "unconfigured");
+  ASSERT_EQ(ctrl.on_configure(unconfigured, node, yaml),
+            rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+
+  EXPECT_EQ(ctrl.device_config_set_count, 1);
+  EXPECT_FALSE(ctrl.GetTopicConfig().groups.empty());
+  ASSERT_NE(ctrl.GetDeviceNameConfig("robot"), nullptr);
+  EXPECT_EQ(ctrl.GetDeviceNameConfig("robot")->joint_state_names.front(), "j1");
+}
+
+TEST(RTControllerInterfaceTest, OnConfigureLegacyDirectCallStillWorks) {
+  // Legacy callers (older unit tests, embedded usages) skip PreConfigure and
+  // call on_configure() directly. The idempotency guard must fall through to
+  // the original behavior: store node_, parse yaml, return SUCCESS.
+  StubController ctrl;
+  auto node = MakeLcNode("ctrl_legacy");
+
+  YAML::Node yaml;
+  yaml["topics"]["robot"]["subscribe"]["state"] = "/joint_states";
+
+  const rclcpp_lifecycle::State unconfigured(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED,
+                                             "unconfigured");
+  ASSERT_EQ(ctrl.on_configure(unconfigured, node, yaml),
+            rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  EXPECT_FALSE(ctrl.GetTopicConfig().groups.empty());
 }
 
 }  // namespace
