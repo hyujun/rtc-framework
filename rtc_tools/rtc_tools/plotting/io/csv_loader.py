@@ -56,6 +56,28 @@ def _coerce_numeric_columns(df):
     return df
 
 
+def _ensure_timestamp_column(df):
+    """Derive a `timestamp` column (seconds since first sample) when absent.
+
+    Producer side writes one of:
+      - `t_wall_ns`     (uint64 ns since boot — timing CSVs)
+      - `t_relative_s`  (float seconds since session start — Phase C state/sensor)
+    Plotters universally read `df["timestamp"]`. This is the single boundary
+    where unit normalization happens, so plotters stay schema-agnostic.
+
+    No-op if `timestamp` already exists or if neither source column is present.
+    Mutates df in place; returns df for chaining.
+    """
+    if "timestamp" in df.columns:
+        return df
+    if "t_wall_ns" in df.columns:
+        t0 = df["t_wall_ns"].iloc[0]
+        df["timestamp"] = (df["t_wall_ns"] - t0) / 1e9
+    elif "t_relative_s" in df.columns:
+        df["timestamp"] = df["t_relative_s"]
+    return df
+
+
 def load_log_csv(filepath, log_type):
     """Load a CSV by log_type.
 
@@ -69,4 +91,5 @@ def load_log_csv(filepath, log_type):
     _check_header_matches_data(filepath)
     df = pd.read_csv(filepath)
     _coerce_numeric_columns(df)
+    _ensure_timestamp_column(df)
     return df

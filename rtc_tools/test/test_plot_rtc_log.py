@@ -89,9 +89,9 @@ class TestDetectLogType:
         # Phase C: <session>/controllers/<key>/<instance>.csv — stem alone
         # carries no type, parent-of-parent is "controllers". Filename
         # stage returns "unknown" so the column fallback decides.
-        ctrl_dir = tmp_path / "260501_1430" / "controllers" / "demo_joint_controller"
+        ctrl_dir = tmp_path / "260501_1430" / "controllers" / "demo_controller"
         ctrl_dir.mkdir(parents=True)
-        f = ctrl_dir / "ur5e.csv"
+        f = ctrl_dir / "arm.csv"
         f.write_text("t_relative_s,actual_pos_shoulder\n0.0,0.1\n")
         assert detect_log_type(f) == "unknown"
 
@@ -480,6 +480,45 @@ class TestLoadLogCsv:
 
         with pytest.raises(pd.errors.EmptyDataError):
             load_log_csv(str(path), "sensor_log")
+
+    def test_derives_timestamp_from_t_wall_ns(self, tmp_path):
+        """Timing CSVs use t_wall_ns; loader normalizes to seconds-since-start."""
+        path = tmp_path / "cm_timing_log.csv"
+        _write_csv(
+            path,
+            ["t_wall_ns", "tick_count", "t_total_us", "jitter_us"],
+            [
+                [1_000_000_000, 1, 100, 5],
+                [1_002_000_000, 2, 110, 4],
+                [1_004_000_000, 3, 105, 6],
+            ],
+        )
+        df = load_log_csv(str(path), "cm_timing")
+        assert "timestamp" in df.columns
+        assert df["timestamp"].iloc[0] == pytest.approx(0.0)
+        assert df["timestamp"].iloc[1] == pytest.approx(0.002)
+        assert df["timestamp"].iloc[2] == pytest.approx(0.004)
+
+    def test_derives_timestamp_from_t_relative_s(self, tmp_path):
+        """Phase C state/sensor CSVs use t_relative_s; loader aliases to timestamp."""
+        path = tmp_path / "arm_state_log.csv"
+        _write_csv(
+            path,
+            ["t_relative_s", "actual_pos_0"],
+            [[0.0, 0.1], [0.002, 0.11], [0.004, 0.12]],
+        )
+        df = load_log_csv(str(path), "state_log")
+        assert "timestamp" in df.columns
+        assert df["timestamp"].iloc[0] == pytest.approx(0.0)
+        assert df["timestamp"].iloc[2] == pytest.approx(0.004)
+
+    def test_existing_timestamp_passthrough(self, tmp_path):
+        """If timestamp already present (legacy fixtures), don't overwrite."""
+        path = tmp_path / "hand_sensor_log.csv"
+        _write_csv(path, ["timestamp", "baro_0"], [[10.0, 100], [10.002, 101]])
+        df = load_log_csv(str(path), "sensor_log")
+        assert df["timestamp"].iloc[0] == 10.0
+        assert df["timestamp"].iloc[1] == pytest.approx(10.002)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
