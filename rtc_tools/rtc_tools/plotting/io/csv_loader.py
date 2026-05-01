@@ -28,7 +28,7 @@ def _check_header_matches_data(filepath: str) -> None:
         if header is None:
             return  # empty file: let pandas raise EmptyDataError downstream
         header_count = len(header)
-        for _, row in zip(range(10), reader):
+        for _, row in zip(range(10), reader, strict=False):
             if len(row) > header_count:
                 raise LegacyCsvError(
                     f"Legacy CSV without complete header: {filepath} "

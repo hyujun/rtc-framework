@@ -420,7 +420,7 @@ class DigitalTwinNode(Node):
             and self._joint_classification
             and self._joint_classification.passive_mimic
         ):
-            positions_map = dict(zip(js.name, js.position))
+            positions_map = dict(zip(js.name, js.position, strict=False))
             mimic_positions = self._parser.compute_mimic_positions(positions_map)
             for name, pos in mimic_positions.items():
                 if name not in positions_map:

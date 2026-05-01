@@ -200,7 +200,7 @@ def plot_timing(df: pd.DataFrame):
     if len(available) == 1:
         axes = [axes]
 
-    for ax, col in zip(axes, available):
+    for ax, col in zip(axes, available, strict=False):
         data = pd.to_numeric(df[col], errors="coerce")
         label = TIMING_LABELS.get(col, col)
         ax.plot(df["timestamp"], data, linewidth=0.5, alpha=0.7, label=label)
@@ -219,7 +219,7 @@ def plot_timing(df: pd.DataFrame):
     if len(available) == 1:
         axes2 = [axes2]
 
-    for ax, col in zip(axes2, available):
+    for ax, col in zip(axes2, available, strict=False):
         data = pd.to_numeric(df[col], errors="coerce").dropna()
         label = TIMING_LABELS.get(col, col)
         ax.hist(data, bins=50, edgecolor="black", linewidth=0.5, alpha=0.7)

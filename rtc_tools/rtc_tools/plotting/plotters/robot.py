@@ -279,7 +279,6 @@ def plot_robot_task_position(df, save_dir=None):
         if task_goal_mask is not None:
             tg = df[f"task_goal_{i}"].copy()
             tg[~task_goal_mask] = np.nan
-            unit = "m" if i < 3 else "rad"
             ax.plot(
                 t,
                 tg,

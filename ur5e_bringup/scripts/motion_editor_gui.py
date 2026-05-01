@@ -285,7 +285,7 @@ def _format_hand_preview(h):
     prefixes = ["T", "I", "M", "R"]
     indices_list = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9]]
     parts = []
-    for prefix, indices in zip(prefixes, indices_list):
+    for prefix, indices in zip(prefixes, indices_list, strict=False):
         vals = ",".join(f"{h_deg[j]:.1f}" for j in indices)
         parts.append(f"{prefix}:{vals}")
     return " ".join(parts)

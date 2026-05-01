@@ -133,7 +133,7 @@ def print_motor_statistics(df):
     print(f"Motor channels: {len(pos_cols)}")
 
     print("\nMotor Positions (range):")
-    for i, (col, name) in enumerate(zip(pos_cols, names)):
+    for i, (col, name) in enumerate(zip(pos_cols, names, strict=False)):
         data = pd.to_numeric(df[col], errors="coerce")
         print(
             f"  Motor {i} ({name}): [{data.min():.4f}, {data.max():.4f}]  mean={data.mean():.4f}"
@@ -142,7 +142,7 @@ def print_motor_statistics(df):
     vel_cols, _ = _detect_joint_columns(df, "motor_vel_")
     if vel_cols:
         print("\nMotor Velocities (range):")
-        for i, (col, name) in enumerate(zip(vel_cols, names)):
+        for i, (col, name) in enumerate(zip(vel_cols, names, strict=False)):
             data = pd.to_numeric(df[col], errors="coerce")
             print(
                 f"  Motor {i} ({name}): "
@@ -153,7 +153,7 @@ def print_motor_statistics(df):
     eff_cols, _ = _detect_joint_columns(df, "motor_eff_")
     if eff_cols:
         print("\nMotor Efforts (range):")
-        for i, (col, name) in enumerate(zip(eff_cols, names)):
+        for i, (col, name) in enumerate(zip(eff_cols, names, strict=False)):
             data = pd.to_numeric(df[col], errors="coerce")
             print(
                 f"  Motor {i} ({name}): "

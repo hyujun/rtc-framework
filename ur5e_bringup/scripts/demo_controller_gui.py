@@ -627,7 +627,7 @@ class DemoControllerGUI(Node):
             self._grasp_threshold_label,
             self._grasp_minfinger_label,
         ]
-        for i, (text, lbl) in enumerate(zip(agg_texts, agg_labels)):
+        for i, (text, lbl) in enumerate(zip(agg_texts, agg_labels, strict=False)):
             if self._prev_grasp_agg[i] != text:
                 self._prev_grasp_agg[i] = text
                 lbl.config(text=text)
@@ -2054,9 +2054,9 @@ class DemoControllerGUI(Node):
 
     def _update_applied_display(self):
         for widgets, applied_labels, is_bool in zip(
-            self._gain_entries, self._applied_label_widgets, self._gain_is_bool
+            self._gain_entries, self._applied_label_widgets, self._gain_is_bool, strict=False
         ):
-            for w, lbl in zip(widgets, applied_labels):
+            for w, lbl in zip(widgets, applied_labels, strict=False):
                 raw = w.get()
                 if is_bool:
                     val = int(raw)
@@ -2169,7 +2169,7 @@ class DemoControllerGUI(Node):
                 return
             # resp is rcl_interfaces.srv.GetParameters.Response → values list.
             flat: list[float] = []
-            for entry, p_value in zip(dispatch.items(), resp.values):
+            for entry, p_value in zip(dispatch.items(), resp.values, strict=False):
                 # entry = (gain_def_name, (param_name, value_builder)). The
                 # GUI widget order matches GAIN_DEFS exactly, so we flatten
                 # in dispatch-iteration order.
@@ -2198,7 +2198,7 @@ class DemoControllerGUI(Node):
 
     def _fill_gains_from_data(self, data: list[float]):
         idx = 0
-        for widgets, is_bool in zip(self._gain_entries, self._gain_is_bool):
+        for widgets, is_bool in zip(self._gain_entries, self._gain_is_bool, strict=False):
             for w in widgets:
                 if idx >= len(data):
                     break
@@ -2236,7 +2236,7 @@ class DemoControllerGUI(Node):
     def _collect_gain_values(self) -> list[float] | None:
         """Collect current gain values from UI widgets. Returns None on error."""
         values: list[float] = []
-        for widgets, is_bool in zip(self._gain_entries, self._gain_is_bool):
+        for widgets, is_bool in zip(self._gain_entries, self._gain_is_bool, strict=False):
             for w in widgets:
                 try:
                     values.append(float(w.get()))
@@ -2255,7 +2255,7 @@ class DemoControllerGUI(Node):
         # GAIN_DEFS and dispatch are both keyed by entry name; iterate the
         # widget rows in declared order and consume `size` widgets each.
         params: list[Parameter] = []
-        widget_iter = iter(zip(self._gain_entries, self._gain_is_bool))
+        widget_iter = iter(zip(self._gain_entries, self._gain_is_bool, strict=False))
         for entry in GAIN_DEFS[ctrl]:
             entry_name, size, _defaults, is_bool, _grp = entry
             try:
@@ -2507,7 +2507,7 @@ class DemoControllerGUI(Node):
 
         # Calculate required hand_trajectory_speed from grasp_time
         max_dist = 0.0
-        for target, current in zip(positions_rad, self.current_hand_positions):
+        for target, current in zip(positions_rad, self.current_hand_positions, strict=False):
             max_dist = max(max_dist, abs(target - current))
 
         if max_dist > 0.001 and grasp_time > 0.01:

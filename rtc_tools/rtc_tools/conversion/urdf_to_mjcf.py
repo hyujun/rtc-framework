@@ -24,6 +24,10 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import mujoco
 
 # ════════════════════════════════════════════════════════════════════════════
 # Joint Classification

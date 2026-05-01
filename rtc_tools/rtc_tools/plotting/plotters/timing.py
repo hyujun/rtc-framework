@@ -17,7 +17,7 @@ def plot_timing_breakdown(df, save_dir=None):
     labels = ["State Acquire", "Compute", "Publish"]
     colors = ["#2196F3", "#FF9800", "#4CAF50"]
 
-    available = [(p, l, c) for p, l, c in zip(phases, labels, colors) if p in df.columns]
+    available = [(p, l, c) for p, l, c in zip(phases, labels, colors, strict=False) if p in df.columns]
     if available:
         ax.stackplot(
             t,
@@ -121,7 +121,7 @@ def plot_timing_histograms(df, save_dir=None):
     if len(cols) == 1:
         axes = [axes]
 
-    for ax, (col, label) in zip(axes, cols):
+    for ax, (col, label) in zip(axes, cols, strict=False):
         data = df[col]
         ax.hist(data, bins=100, edgecolor="black", linewidth=0.3, alpha=0.7)
         p50 = data.quantile(0.50)
