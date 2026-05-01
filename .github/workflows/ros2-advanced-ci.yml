@@ -223,7 +223,7 @@ jobs:
           install-numpy: "false"
 
       - name: Install Python test dependencies
-        run: pip install pytest pytest-cov coverage
+        run: pip install pytest pytest-cov coverage pandas numpy matplotlib
 
       - name: Build Python packages
         uses: ./.github/actions/colcon-build
