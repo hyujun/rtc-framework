@@ -2,6 +2,7 @@
 
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "ur5e_bringup/controllers/demo_shared_config.hpp"
+#include "ur5e_bringup/logging/pod_fill.hpp"
 
 #include <algorithm> // std::copy, std::clamp
 #include <cmath>     // std::sqrt
@@ -164,121 +165,6 @@ void DemoJointController::OnDeviceConfigsSet() {
   }
 }
 
-// ── Phase C: POD fill helpers (RT-safe) ──────────────────────────────────────
-// All operate on already-captured arrays in `state` / `output`; no allocation,
-// no virtual calls, no string ops. Joint names are NOT in the POD — they were
-// captured at on_configure for the header writer.
-
-void DemoJointController::FillUr5eStateLogPod(
-    const ControllerState &state, const ControllerOutput &output,
-    ur5e::DeviceStateLogPod &pod) const noexcept {
-  pod.t_relative_s = state.t_relative_s;
-
-  if (state.num_devices < 1) {
-    return;
-  }
-  const auto &dev = state.devices[0];
-  const auto &out = output.devices[0];
-  const auto n = std::min(static_cast<std::size_t>(dev.num_channels),
-                          ur5e::DeviceStateLogPod::kMaxJoints);
-  pod.num_joints = static_cast<std::uint8_t>(n);
-
-  for (std::size_t i = 0; i < n; ++i) {
-    pod.actual_positions[i] = dev.positions[i];
-    pod.actual_velocities[i] = dev.velocities[i];
-    pod.efforts[i] = dev.efforts[i];
-    pod.commands[i] = out.commands[i];
-    pod.joint_goal[i] = out.goal_positions[i];
-    pod.trajectory_positions[i] = out.trajectory_positions[i];
-    pod.trajectory_velocities[i] = out.trajectory_velocities[i];
-  }
-
-  for (std::size_t i = 0; i < ur5e::DeviceStateLogPod::kTaskDim; ++i) {
-    pod.task_goal[i] = output.task_goal_positions[i];
-    pod.actual_task_positions[i] = output.actual_task_positions[i];
-  }
-
-  pod.num_motors = 0; // arm has no motor state
-  pod.command_type = (output.command_type == CommandType::kTorque) ? 1 : 0;
-  pod.goal_type = (out.goal_type == GoalType::kTask) ? 1 : 0;
-}
-
-void DemoJointController::FillHandStateLogPod(
-    const ControllerState &state, const ControllerOutput &output,
-    ur5e::DeviceStateLogPod &pod) const noexcept {
-  pod.t_relative_s = state.t_relative_s;
-
-  if (state.num_devices < 2) {
-    return;
-  }
-  const auto &dev = state.devices[1];
-  const auto &out = output.devices[1];
-  const auto n = std::min(static_cast<std::size_t>(dev.num_channels),
-                          ur5e::DeviceStateLogPod::kMaxJoints);
-  pod.num_joints = static_cast<std::uint8_t>(n);
-
-  for (std::size_t i = 0; i < n; ++i) {
-    pod.actual_positions[i] = dev.positions[i];
-    pod.actual_velocities[i] = dev.velocities[i];
-    pod.efforts[i] = dev.efforts[i];
-    pod.commands[i] = out.commands[i];
-    pod.joint_goal[i] = out.goal_positions[i];
-    pod.trajectory_positions[i] = out.trajectory_positions[i];
-    pod.trajectory_velocities[i] = out.trajectory_velocities[i];
-  }
-
-  // task_goal / actual_task are arm-only; hand row inherits zeros.
-
-  const auto nm = std::min(static_cast<std::size_t>(dev.num_motor_channels),
-                           ur5e::DeviceStateLogPod::kMaxMotors);
-  pod.num_motors = static_cast<std::uint8_t>(nm);
-  for (std::size_t i = 0; i < nm; ++i) {
-    pod.motor_positions[i] = dev.motor_positions[i];
-    pod.motor_velocities[i] = dev.motor_velocities[i];
-    pod.motor_efforts[i] = dev.motor_efforts[i];
-  }
-
-  pod.command_type = (output.command_type == CommandType::kTorque) ? 1 : 0;
-  pod.goal_type = (out.goal_type == GoalType::kTask) ? 1 : 0;
-}
-
-void DemoJointController::FillHandSensorLogPod(
-    const ControllerState &state,
-    ur5e::DeviceSensorLogPod &pod) const noexcept {
-  pod.t_relative_s = state.t_relative_s;
-
-  if (state.num_devices < 2) {
-    return;
-  }
-  const auto &dev = state.devices[1];
-  const auto num_fingertips =
-      std::min(static_cast<std::size_t>(num_active_fingertips_),
-               ur5e::DeviceSensorLogPod::kMaxFingertips);
-  pod.num_fingertips = static_cast<std::uint8_t>(num_fingertips);
-  pod.inference_valid = false;
-
-  const auto n_sensor =
-      num_fingertips * ur5e::DeviceSensorLogPod::kSensorValuesPerFingertip;
-  for (std::size_t i = 0; i < n_sensor && i < dev.sensor_data_raw.size(); ++i) {
-    pod.sensor_data_raw[i] = dev.sensor_data_raw[i];
-    pod.sensor_data[i] = dev.sensor_data[i];
-  }
-
-  bool any_inf = false;
-  const auto n_inf =
-      num_fingertips * ur5e::DeviceSensorLogPod::kFTValuesPerFingertip;
-  for (std::size_t i = 0; i < n_inf && i < dev.inference_data.size(); ++i) {
-    pod.inference_output[i] = dev.inference_data[i];
-  }
-  for (std::size_t f = 0; f < num_fingertips; ++f) {
-    if (dev.inference_enable[f]) {
-      any_inf = true;
-      break;
-    }
-  }
-  pod.inference_valid = any_inf;
-}
-
 ControllerOutput
 DemoJointController::Compute(const ControllerState &state) noexcept {
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
@@ -300,7 +186,7 @@ DemoJointController::Compute(const ControllerState &state) noexcept {
     }
     if (hand_sensor_log_handle_) {
       ur5e::DeviceSensorLogPod pod{};
-      FillHandSensorLogPod(state, pod);
+      FillHandSensorLogPod(state, num_active_fingertips_, pod);
       hand_sensor_log_handle_.Push(pod);
     }
     return out;
@@ -323,7 +209,7 @@ DemoJointController::Compute(const ControllerState &state) noexcept {
   }
   if (hand_sensor_log_handle_) {
     ur5e::DeviceSensorLogPod pod{};
-    FillHandSensorLogPod(state, pod);
+    FillHandSensorLogPod(state, num_active_fingertips_, pod);
     hand_sensor_log_handle_.Push(pod);
   }
   return output;

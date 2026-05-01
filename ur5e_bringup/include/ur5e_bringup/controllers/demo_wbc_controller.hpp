@@ -16,6 +16,7 @@
 #include "rtc_tsid/types/qp_types.hpp"
 #include "rtc_tsid/types/wbc_types.hpp"
 
+#include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_mpc/handler/mpc_factory.hpp"
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
 #include "rtc_mpc/logging/mpc_timing_logger.hpp"
@@ -24,6 +25,8 @@
 #include "rtc_mpc/thread/handler_mpc_thread.hpp"
 #include "rtc_mpc/thread/mock_mpc_thread.hpp"
 #include "rtc_mpc/thread/mpc_thread.hpp"
+#include "ur5e_bringup/logging/device_sensor_log_pod.hpp"
+#include "ur5e_bringup/logging/device_state_log_pod.hpp"
 #include "ur5e_bringup/phase/grasp_phase_manager.hpp"
 
 // Third-party
@@ -454,6 +457,26 @@ private:
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
       param_callback_handle_;
   rclcpp::Service<rtc_msgs::srv::GraspCommand>::SharedPtr grasp_command_srv_;
+
+  // ── Phase C (controller-owned CSV logging) ────────────────────────────
+  struct ParsedLogEntry {
+    std::string msg_type;
+    std::string instance;
+  };
+  std::vector<ParsedLogEntry> parsed_log_entries_;
+
+  rtc::ControllerLogSet log_set_{"demo_wbc_controller"};
+  rtc::LogHandle<ur5e::DeviceStateLogPod> ur5e_state_log_handle_;
+  rtc::LogHandle<ur5e::DeviceStateLogPod> hand_state_log_handle_;
+  rtc::LogHandle<ur5e::DeviceSensorLogPod> hand_sensor_log_handle_;
+
+  std::vector<std::string> ur5e_joint_names_;
+  std::vector<std::string> hand_joint_names_;
+  std::vector<std::string> hand_motor_names_;
+  std::vector<std::string> hand_sensor_names_;
+
+  rclcpp::CallbackGroup::SharedPtr log_drain_cb_group_;
+  rclcpp::TimerBase::SharedPtr log_drain_timer_;
 };
 
 } // namespace ur5e_bringup

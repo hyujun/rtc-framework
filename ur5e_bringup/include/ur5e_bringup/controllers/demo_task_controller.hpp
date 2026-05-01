@@ -3,9 +3,12 @@
 #pragma once
 
 #include "rtc_base/threading/seqlock.hpp"
+#include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "ur5e_bringup/bringup_logging.hpp"
 #include "ur5e_bringup/controllers/virtual_tcp.hpp"
+#include "ur5e_bringup/logging/device_sensor_log_pod.hpp"
+#include "ur5e_bringup/logging/device_state_log_pod.hpp"
 
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
@@ -383,6 +386,26 @@ private:
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
       param_callback_handle_;
   rclcpp::Service<rtc_msgs::srv::GraspCommand>::SharedPtr grasp_command_srv_;
+
+  // ── Phase C (controller-owned CSV logging) ────────────────────────────
+  struct ParsedLogEntry {
+    std::string msg_type;
+    std::string instance;
+  };
+  std::vector<ParsedLogEntry> parsed_log_entries_;
+
+  rtc::ControllerLogSet log_set_{"demo_task_controller"};
+  rtc::LogHandle<ur5e::DeviceStateLogPod> ur5e_state_log_handle_;
+  rtc::LogHandle<ur5e::DeviceStateLogPod> hand_state_log_handle_;
+  rtc::LogHandle<ur5e::DeviceSensorLogPod> hand_sensor_log_handle_;
+
+  std::vector<std::string> ur5e_joint_names_;
+  std::vector<std::string> hand_joint_names_;
+  std::vector<std::string> hand_motor_names_;
+  std::vector<std::string> hand_sensor_names_;
+
+  rclcpp::CallbackGroup::SharedPtr log_drain_cb_group_;
+  rclcpp::TimerBase::SharedPtr log_drain_timer_;
 };
 
 } // namespace ur5e_bringup

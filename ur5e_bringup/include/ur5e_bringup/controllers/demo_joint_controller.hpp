@@ -317,14 +317,8 @@ private:
   rclcpp::CallbackGroup::SharedPtr log_drain_cb_group_;
   rclcpp::TimerBase::SharedPtr log_drain_timer_;
 
-  void FillUr5eStateLogPod(const ControllerState &state,
-                           const ControllerOutput &output,
-                           ur5e::DeviceStateLogPod &pod) const noexcept;
-  void FillHandStateLogPod(const ControllerState &state,
-                           const ControllerOutput &output,
-                           ur5e::DeviceStateLogPod &pod) const noexcept;
-  void FillHandSensorLogPod(const ControllerState &state,
-                            ur5e::DeviceSensorLogPod &pod) const noexcept;
+  // Pod fill helpers live in ur5e_bringup/logging/pod_fill.hpp (shared by
+  // all 3 demo controllers — Phase C).
 };
 
 } // namespace ur5e_bringup

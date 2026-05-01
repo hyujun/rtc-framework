@@ -2,6 +2,7 @@
 
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
+#include "ur5e_bringup/logging/pod_fill.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -577,6 +578,31 @@ void DemoWbcController::LoadConfig(const YAML::Node &cfg) {
                   mpc_engine_ == MpcEngine::kHandler ? "ready" : "DEGRADED");
     }
   }
+
+  // ── Phase C: parse `logs:` section ──────────────────────────────────────
+  parsed_log_entries_.clear();
+  if (cfg["logs"]) {
+    if (!cfg["logs"].IsSequence()) {
+      throw std::runtime_error("DemoWbcController: 'logs' must be a sequence");
+    }
+    for (const auto &entry : cfg["logs"]) {
+      if (!entry.IsMap() || !entry["msg_type"]) {
+        throw std::runtime_error(
+            "DemoWbcController: each `logs` entry needs `msg_type`");
+      }
+      ParsedLogEntry e;
+      e.msg_type = entry["msg_type"].as<std::string>();
+      if (entry["instance"]) {
+        e.instance = entry["instance"].as<std::string>();
+      }
+      if (e.msg_type != "rtc_msgs/DeviceStateLog" &&
+          e.msg_type != "rtc_msgs/DeviceSensorLog") {
+        throw std::runtime_error(
+            "DemoWbcController: unknown msg_type in `logs`: " + e.msg_type);
+      }
+      parsed_log_entries_.push_back(std::move(e));
+    }
+  }
 }
 
 void DemoWbcController::OnDeviceConfigsSet() {
@@ -637,6 +663,16 @@ void DemoWbcController::OnDeviceConfigsSet() {
 
   // ── Joint reorder map ─────────────────────────────────────────────────
   BuildJointReorderMap();
+
+  // Phase C: capture joint/sensor names for CSV header expansion.
+  if (auto *cfg = GetDeviceNameConfig("ur5e"); cfg) {
+    ur5e_joint_names_ = cfg->joint_state_names;
+  }
+  if (auto *cfg = GetDeviceNameConfig("hand"); cfg) {
+    hand_joint_names_ = cfg->joint_state_names;
+    hand_motor_names_ = cfg->motor_state_names;
+    hand_sensor_names_ = cfg->sensor_names;
+  }
 }
 
 DemoWbcController::FingertipReport
@@ -668,11 +704,44 @@ DemoWbcController::Compute(const ControllerState &state) noexcept {
   if (estop_active_) {
     auto out = ComputeEstop(state);
     out.command_type = command_type_;
+    if (ur5e_state_log_handle_) {
+      ur5e::DeviceStateLogPod pod{};
+      FillUr5eStateLogPod(state, out, pod);
+      ur5e_state_log_handle_.Push(pod);
+    }
+    if (hand_state_log_handle_) {
+      ur5e::DeviceStateLogPod pod{};
+      FillHandStateLogPod(state, out, pod);
+      hand_state_log_handle_.Push(pod);
+    }
+    if (hand_sensor_log_handle_) {
+      ur5e::DeviceSensorLogPod pod{};
+      FillHandSensorLogPod(state, num_active_fingertips_, pod);
+      hand_sensor_log_handle_.Push(pod);
+    }
     return out;
   }
 
   ComputeControl(state, dt);
-  return WriteOutput(state);
+  auto output = WriteOutput(state);
+
+  // ── Phase C: push log PODs (only from inside Compute()) ──────────────
+  if (ur5e_state_log_handle_) {
+    ur5e::DeviceStateLogPod pod{};
+    FillUr5eStateLogPod(state, output, pod);
+    ur5e_state_log_handle_.Push(pod);
+  }
+  if (hand_state_log_handle_) {
+    ur5e::DeviceStateLogPod pod{};
+    FillHandStateLogPod(state, output, pod);
+    hand_state_log_handle_.Push(pod);
+  }
+  if (hand_sensor_log_handle_) {
+    ur5e::DeviceSensorLogPod pod{};
+    FillHandSensorLogPod(state, num_active_fingertips_, pod);
+    hand_sensor_log_handle_.Push(pod);
+  }
+  return output;
 }
 
 // ── Phase 1: Read state ──────────────────────────────────────────────────────
@@ -1751,6 +1820,66 @@ DemoWbcController::on_configure(const rclcpp_lifecycle::State &prev,
     mpc_timing_cb_group_ = node->create_callback_group(
         rclcpp::CallbackGroupType::MutuallyExclusive);
 
+    // ── Phase C: register controller-owned CSV log channels ─────────────
+    for (const auto &entry : parsed_log_entries_) {
+      if (entry.instance.empty()) {
+        RCLCPP_ERROR(
+            logger_,
+            "logs entry msg_type=%s missing required `instance:` field",
+            entry.msg_type.c_str());
+        return CallbackReturn::FAILURE;
+      }
+      if (entry.msg_type == "rtc_msgs/DeviceStateLog") {
+        const std::vector<std::string> joint_names_copy =
+            (entry.instance == "ur5e") ? ur5e_joint_names_ : hand_joint_names_;
+        const std::vector<std::string> motor_names_copy =
+            (entry.instance == "hand") ? hand_motor_names_
+                                       : std::vector<std::string>{};
+        auto handle = log_set_.RegisterLog<ur5e::DeviceStateLogPod>(
+            entry.instance,
+            [joint_names_copy, motor_names_copy](std::ostream &os) {
+              ur5e::WriteDeviceStateLogHeader(os, joint_names_copy,
+                                              motor_names_copy);
+            },
+            [](std::ostream &os, const ur5e::DeviceStateLogPod &p) {
+              ur5e::WriteDeviceStateLogRow(os, p);
+            });
+        if (!handle) {
+          RCLCPP_WARN(logger_,
+                      "Failed to open device_state CSV for instance=%s",
+                      entry.instance.c_str());
+        } else if (entry.instance == "ur5e") {
+          ur5e_state_log_handle_ = handle;
+        } else if (entry.instance == "hand") {
+          hand_state_log_handle_ = handle;
+        }
+      } else if (entry.msg_type == "rtc_msgs/DeviceSensorLog") {
+        const std::vector<std::string> sensor_names_copy = hand_sensor_names_;
+        auto handle = log_set_.RegisterLog<ur5e::DeviceSensorLogPod>(
+            entry.instance,
+            [sensor_names_copy](std::ostream &os) {
+              ur5e::WriteDeviceSensorLogHeader(os, sensor_names_copy);
+            },
+            [](std::ostream &os, const ur5e::DeviceSensorLogPod &p) {
+              ur5e::WriteDeviceSensorLogRow(os, p);
+            });
+        if (!handle) {
+          RCLCPP_WARN(logger_,
+                      "Failed to open device_sensor CSV for instance=%s",
+                      entry.instance.c_str());
+        } else if (entry.instance == "hand") {
+          hand_sensor_log_handle_ = handle;
+        }
+      }
+    }
+    if (!log_set_.empty() && node) {
+      log_drain_cb_group_ = node->create_callback_group(
+          rclcpp::CallbackGroupType::MutuallyExclusive);
+      log_drain_timer_ = node->create_wall_timer(
+          std::chrono::milliseconds(100), [this]() { log_set_.DrainAll(); },
+          log_drain_cb_group_);
+    }
+
     // Phase D: declare tunable gains as ROS 2 parameters seeded from
     // gains_lock_ (populated by LoadConfig from YAML), register the
     // set-parameters callback, and create the WBC FSM grasp_command srv.
@@ -1866,6 +1995,7 @@ DemoWbcController::on_deactivate(const rclcpp_lifecycle::State &prev) noexcept {
     mpc_thread_->Pause();
   }
   DeactivateOwnedTopics(prev, owned_topics_);
+  log_set_.DrainAll(); // flush in-flight log SPSC residue
   return CallbackReturn::SUCCESS;
 }
 
@@ -1875,6 +2005,8 @@ DemoWbcController::on_cleanup(const rclcpp_lifecycle::State &prev) noexcept {
   mpc_timing_cb_group_.reset();
   mpc_timing_initialized_ = false;
   mpc_timing_tick_ = 0;
+  log_drain_timer_.reset();
+  log_drain_cb_group_.reset();
   ResetOwnedTopics(owned_topics_);
   grasp_command_srv_.reset();
   param_callback_handle_.reset();

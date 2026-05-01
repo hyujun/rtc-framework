@@ -4,6 +4,7 @@
 
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "ur5e_bringup/controllers/demo_shared_config.hpp"
+#include "ur5e_bringup/logging/pod_fill.hpp"
 
 #include <algorithm>
 #include <cmath> // std::sqrt
@@ -169,6 +170,16 @@ void DemoTaskController::OnDeviceConfigsSet() {
     if (v.empty())
       v.assign(kMaxDeviceChannels, 6.2832);
   }
+
+  // Phase C: capture joint/sensor names for CSV header expansion.
+  if (auto *cfg = GetDeviceNameConfig("ur5e"); cfg) {
+    ur5e_joint_names_ = cfg->joint_state_names;
+  }
+  if (auto *cfg = GetDeviceNameConfig("hand"); cfg) {
+    hand_joint_names_ = cfg->joint_state_names;
+    hand_motor_names_ = cfg->motor_state_names;
+    hand_sensor_names_ = cfg->sensor_names;
+  }
 }
 
 // ── Virtual TCP computation ─────────────────────────────────────────────────
@@ -214,7 +225,25 @@ DemoTaskController::Compute(const ControllerState &state) noexcept {
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
   ReadState(state);
   ComputeControl(state, dt);
-  return WriteOutput(state, dt);
+  auto output = WriteOutput(state, dt);
+
+  // ── Phase C: push log PODs (only from inside Compute()) ──────────────
+  if (ur5e_state_log_handle_) {
+    ur5e::DeviceStateLogPod pod{};
+    FillUr5eStateLogPod(state, output, pod);
+    ur5e_state_log_handle_.Push(pod);
+  }
+  if (hand_state_log_handle_) {
+    ur5e::DeviceStateLogPod pod{};
+    FillHandStateLogPod(state, output, pod);
+    hand_state_log_handle_.Push(pod);
+  }
+  if (hand_sensor_log_handle_) {
+    ur5e::DeviceSensorLogPod pod{};
+    FillHandSensorLogPod(state, num_active_fingertips_, pod);
+    hand_sensor_log_handle_.Push(pod);
+  }
+  return output;
 }
 
 // ── Phase 1: Read joint states + sensor data ────────────────────────────────
@@ -1327,6 +1356,31 @@ void DemoTaskController::LoadConfig(const YAML::Node &cfg) {
   }
 
   BuildGraspController(shared, 1.0 / GetDefaultDt(), grasp_controller_);
+
+  // ── Phase C: parse `logs:` section ──────────────────────────────────────
+  parsed_log_entries_.clear();
+  if (cfg["logs"]) {
+    if (!cfg["logs"].IsSequence()) {
+      throw std::runtime_error("DemoTaskController: 'logs' must be a sequence");
+    }
+    for (const auto &entry : cfg["logs"]) {
+      if (!entry.IsMap() || !entry["msg_type"]) {
+        throw std::runtime_error(
+            "DemoTaskController: each `logs` entry needs `msg_type`");
+      }
+      ParsedLogEntry e;
+      e.msg_type = entry["msg_type"].as<std::string>();
+      if (entry["instance"]) {
+        e.instance = entry["instance"].as<std::string>();
+      }
+      if (e.msg_type != "rtc_msgs/DeviceStateLog" &&
+          e.msg_type != "rtc_msgs/DeviceSensorLog") {
+        throw std::runtime_error(
+            "DemoTaskController: unknown msg_type in `logs`: " + e.msg_type);
+      }
+      parsed_log_entries_.push_back(std::move(e));
+    }
+  }
 }
 
 // ── Phase 4: controller-owned topic lifecycle ─────────────────────────────
@@ -1340,6 +1394,66 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
   }
   try {
     CreateOwnedTopics(*this, owned_topics_);
+
+    // ── Phase C: register controller-owned CSV log channels ─────────────
+    for (const auto &entry : parsed_log_entries_) {
+      if (entry.instance.empty()) {
+        RCLCPP_ERROR(
+            logger_,
+            "logs entry msg_type=%s missing required `instance:` field",
+            entry.msg_type.c_str());
+        return CallbackReturn::FAILURE;
+      }
+      if (entry.msg_type == "rtc_msgs/DeviceStateLog") {
+        const std::vector<std::string> joint_names_copy =
+            (entry.instance == "ur5e") ? ur5e_joint_names_ : hand_joint_names_;
+        const std::vector<std::string> motor_names_copy =
+            (entry.instance == "hand") ? hand_motor_names_
+                                       : std::vector<std::string>{};
+        auto handle = log_set_.RegisterLog<ur5e::DeviceStateLogPod>(
+            entry.instance,
+            [joint_names_copy, motor_names_copy](std::ostream &os) {
+              ur5e::WriteDeviceStateLogHeader(os, joint_names_copy,
+                                              motor_names_copy);
+            },
+            [](std::ostream &os, const ur5e::DeviceStateLogPod &p) {
+              ur5e::WriteDeviceStateLogRow(os, p);
+            });
+        if (!handle) {
+          RCLCPP_WARN(logger_,
+                      "Failed to open device_state CSV for instance=%s",
+                      entry.instance.c_str());
+        } else if (entry.instance == "ur5e") {
+          ur5e_state_log_handle_ = handle;
+        } else if (entry.instance == "hand") {
+          hand_state_log_handle_ = handle;
+        }
+      } else if (entry.msg_type == "rtc_msgs/DeviceSensorLog") {
+        const std::vector<std::string> sensor_names_copy = hand_sensor_names_;
+        auto handle = log_set_.RegisterLog<ur5e::DeviceSensorLogPod>(
+            entry.instance,
+            [sensor_names_copy](std::ostream &os) {
+              ur5e::WriteDeviceSensorLogHeader(os, sensor_names_copy);
+            },
+            [](std::ostream &os, const ur5e::DeviceSensorLogPod &p) {
+              ur5e::WriteDeviceSensorLogRow(os, p);
+            });
+        if (!handle) {
+          RCLCPP_WARN(logger_,
+                      "Failed to open device_sensor CSV for instance=%s",
+                      entry.instance.c_str());
+        } else if (entry.instance == "hand") {
+          hand_sensor_log_handle_ = handle;
+        }
+      }
+    }
+    if (!log_set_.empty() && node_) {
+      log_drain_cb_group_ = node_->create_callback_group(
+          rclcpp::CallbackGroupType::MutuallyExclusive);
+      log_drain_timer_ = node_->create_wall_timer(
+          std::chrono::milliseconds(100), [this]() { log_set_.DrainAll(); },
+          log_drain_cb_group_);
+    }
 
     // Phase B: declare tunable gains as ROS 2 parameters on the controller's
     // own LifecycleNode and register the set-parameters callback. LoadConfig
@@ -1424,12 +1538,15 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_activate(
 RTControllerInterface::CallbackReturn DemoTaskController::on_deactivate(
     const rclcpp_lifecycle::State &prev) noexcept {
   DeactivateOwnedTopics(prev, owned_topics_);
+  log_set_.DrainAll(); // flush in-flight log SPSC residue
   return CallbackReturn::SUCCESS;
 }
 
 RTControllerInterface::CallbackReturn
 DemoTaskController::on_cleanup(const rclcpp_lifecycle::State &prev) noexcept {
   ResetOwnedTopics(owned_topics_);
+  log_drain_timer_.reset();
+  log_drain_cb_group_.reset();
   grasp_command_srv_.reset();
   param_callback_handle_.reset();
   return RTControllerInterface::on_cleanup(prev);
