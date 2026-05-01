@@ -183,6 +183,16 @@ void RtControllerNode::ControlLoop() {
   state.dt = 1.0 / control_rate_;
   state.iteration = loop_count_;
 
+  // Session origin (captured once on the very first tick — independent
+  // of enable_logging_, never reset on controller switch). Controllers
+  // read state.t_relative_s for any timestamp embedded in their own
+  // logs/telemetry instead of calling chrono::*::now().
+  if (loop_count_ == 0) {
+    log_start_time_ = t0;
+  }
+  state.t_relative_s =
+      std::chrono::duration<double>(t0 - log_start_time_).count();
+
   const auto t1 = std::chrono::steady_clock::now(); // end of state acquisition
   rt_loop_.StampStateAcquired();
 
@@ -294,14 +304,8 @@ void RtControllerNode::ControlLoop() {
   // Push log entry to the SPSC ring buffer — O(1), no syscall.
   // DrainLog() (log thread, Core 4) pops entries and writes the CSV file.
   if (enable_logging_) {
-    if (loop_count_ == 0) {
-      log_start_time_ = t0;
-    }
-    const double timestamp =
-        std::chrono::duration<double>(t0 - log_start_time_).count();
-
     urtc::LogEntry entry{};
-    entry.timestamp = timestamp;
+    entry.timestamp = state.t_relative_s;
     entry.actual_task_positions = output.actual_task_positions;
     entry.task_goal_positions = output.task_goal_positions;
     entry.trajectory_task_positions = output.trajectory_task_positions;

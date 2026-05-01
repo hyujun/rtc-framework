@@ -478,7 +478,10 @@ private:
   // ── Auto-hold position ─────────────────────────────────────────────────────
   bool auto_hold_position_{true};
 
-  // Baseline for log timestamps — captured on first ControlLoop() iteration.
+  // Session-wide t=0 origin for ControllerState::t_relative_s (and the
+  // legacy log timestamp). Captured on the very first ControlLoop()
+  // iteration regardless of logging flags, NEVER reset on controller
+  // switch — keeps cross-controller log alignment monotonic.
   std::chrono::steady_clock::time_point log_start_time_{};
 
   // ── Global E-Stop ──────────────────────────────────────────────────────────

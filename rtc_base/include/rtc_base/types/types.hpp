@@ -150,6 +150,15 @@ struct ControllerState {
   int num_devices{0};
   double dt{0.002};
   uint64_t iteration{0};
+
+  // Session-relative wall time in seconds (current_tick - first-tick origin),
+  // filled by CM RT loop before each Compute() dispatch. Controllers must
+  // read this for any timestamp embedded in logs/telemetry — calling
+  // chrono::*::now() inside Compute() bypasses the shared session origin
+  // and breaks cross-controller log alignment. The origin is captured at
+  // the very first RT tick (loop_count_ == 0) and is NEVER reset on
+  // controller switch.
+  double t_relative_s{0.0};
 };
 
 enum class CommandType { kPosition, kTorque };

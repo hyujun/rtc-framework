@@ -122,7 +122,7 @@ rtc_base/
 | 구조체 | 설명 |
 |--------|------|
 | `DeviceState` | 가변 채널 디바이스 상태 -- `positions[64]`, `velocities[64]`, `efforts[64]`, 모터 공간 (`motor_positions[64]`, `motor_velocities[64]`, `motor_efforts[64]`), 센서 (`sensor_data[128]`, `sensor_data_raw[128]`), 추론 (`inference_data[64]`, `inference_enable[8]`, `num_inference_fingertips`) |
-| `ControllerState` | `devices[4]` (DeviceState 배열) + `num_devices`, `dt`, `iteration` |
+| `ControllerState` | `devices[4]` (DeviceState 배열) + `num_devices`, `dt`, `iteration`, `t_relative_s` (CM 가 매 tick 채워주는 session-wide 상대 시간; controller 는 `chrono::*::now()` 대신 이 값을 읽어 로그 timestamp 으로 사용) |
 | `DeviceOutput` | 가변 채널 출력 -- `commands[64]`, `goal_positions[64]`, `target_positions[64]`, `target_velocities[64]`, `trajectory_positions[64]`, `trajectory_velocities[64]`, `goal_type` |
 | `ControllerOutput` | `devices[4]` (DeviceOutput 배열) + `actual_task_positions[6]`, `task_goal_positions[6]`, `trajectory_task_positions[6]`, `trajectory_task_velocities[6]`, `valid`, `command_type`, `grasp_state`, `wbc_state`, `tof_snapshot` |
 | `FingertipFTState` | 핑거팁 힘/토크 추론 결과 -- `ft_data[56]` (`kFTValuesPerFingertip * kMaxFingertips`), `per_fingertip_valid[8]`, `num_fingertips` |
