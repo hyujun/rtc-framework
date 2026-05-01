@@ -49,6 +49,34 @@
 
 RT path logging 금지 규칙과 SPSC 우회 패턴은 [invariants.md](invariants.md) RT-3 참조.
 
+## Controller-owned CSV logging (`logs:` schema)
+
+데이터 CSV (per-tick state / sensor / inference 등) 는 controller 가 직접 소유한다. CM 은 logging authority 가 아니다 (Phase C 결정). 컨트롤러 YAML 에 `topics:` sibling 으로 `logs:` 섹션을 두고, 각 항목은 `rtc_msgs/<*Log>` 메시지 타입을 schema 키로 사용한다.
+
+```yaml
+<config_key>:
+  topics:
+    ...
+  logs:
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: ur5e          # 같은 msg_type 이 여러 번 등장할 때 disambiguator
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: hand
+    - msg_type: rtc_msgs/DeviceSensorLog
+      instance: hand
+```
+
+규칙:
+
+- `msg_type` (필수): `rtc_msgs/<*Log>` 형식. 메시지 카탈로그 enum 으로 매핑되어 오타는 on_configure 시 hard fail
+- `instance` (필수 if 같은 msg_type 이 둘 이상): 컨트롤러 코드의 `RegisterLog<MsgT>("<instance>", ...)` 호출과 1:1 매칭. 불일치는 hard fail. CSV 파일 stem 으로도 사용됨 → `<session>/controllers/<config_key>/<instance>.csv`
+- `topic` (옵션, 현재는 unused): 향후 `rtc_msgs/*Log` 를 DDS 로 publish 하는 옵션을 위해 예약. Q-MSG-1(a) lock 으로 현재는 schema-only POD→SPSC→CSV
+- POD 미러 정의 위치 (Q-MSG-2(d)): `<robot>_bringup/include/<robot>_bringup/logging/<msg>_pod.hpp`. `kMaxJoints` 등 capacity 는 *그 robot 의 hardware* 에 맞게 선정 — `rtc_base` 에 robot constant 금지 (ARCH-1)
+- Push site 제약 (Q-ACTIVITY-GATING): controller 는 **`Compute()` 에서만** push 한다. parameter callback / BT bridge / 비-RT thread 에서 push 금지 — inactive controller 의 CSV 에 row 가 쌓이는 것을 방지
+- Timestamp (Q-TIME): 첫 numeric column 은 `state.t_relative_s` (CM RT loop 가 `t0 - log_start_time_` 으로 채움). controller 는 `chrono::*::now()` 호출 금지
+
+세부 결정 / 구현 phase 는 `~/.claude/plans/csv-logging-cleanup.md` (Phase C handoff) 참조.
+
 ## Documentation Requirements
 
 - **Doxygen for public API**: `@brief`, `@param`, `@return`, `@note` on every public class/function
