@@ -70,9 +70,9 @@ demo_wbc_controller:
     - msg_type: rtc_msgs/DeviceStateLog
       instance: ur5e
     - msg_type: rtc_msgs/DeviceStateLog
-      instance: hand
+      instance: hand_state
     - msg_type: rtc_msgs/DeviceSensorLog
-      instance: hand
+      instance: hand_sensor
 
   # ── TSID QP configuration ────────────────────────────────────────────
   tsid:

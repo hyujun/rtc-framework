@@ -1830,11 +1830,13 @@ DemoWbcController::on_configure(const rclcpp_lifecycle::State &prev,
         return CallbackReturn::FAILURE;
       }
       if (entry.msg_type == "rtc_msgs/DeviceStateLog") {
+        // Q-MSG-3 (Option A): hand_state vs hand_sensor instance names.
+        const bool is_hand =
+            (entry.instance == "hand_state" || entry.instance == "hand");
         const std::vector<std::string> joint_names_copy =
-            (entry.instance == "ur5e") ? ur5e_joint_names_ : hand_joint_names_;
+            is_hand ? hand_joint_names_ : ur5e_joint_names_;
         const std::vector<std::string> motor_names_copy =
-            (entry.instance == "hand") ? hand_motor_names_
-                                       : std::vector<std::string>{};
+            is_hand ? hand_motor_names_ : std::vector<std::string>{};
         auto handle = log_set_.RegisterLog<ur5e::DeviceStateLogPod>(
             entry.instance,
             [joint_names_copy, motor_names_copy](std::ostream &os) {
@@ -1850,7 +1852,7 @@ DemoWbcController::on_configure(const rclcpp_lifecycle::State &prev,
                       entry.instance.c_str());
         } else if (entry.instance == "ur5e") {
           ur5e_state_log_handle_ = handle;
-        } else if (entry.instance == "hand") {
+        } else if (is_hand) {
           hand_state_log_handle_ = handle;
         }
       } else if (entry.msg_type == "rtc_msgs/DeviceSensorLog") {
@@ -1867,7 +1869,8 @@ DemoWbcController::on_configure(const rclcpp_lifecycle::State &prev,
           RCLCPP_WARN(logger_,
                       "Failed to open device_sensor CSV for instance=%s",
                       entry.instance.c_str());
-        } else if (entry.instance == "hand") {
+        } else if (entry.instance == "hand_sensor" ||
+                   entry.instance == "hand") {
           hand_sensor_log_handle_ = handle;
         }
       }
