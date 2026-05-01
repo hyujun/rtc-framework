@@ -55,7 +55,7 @@ rtc_controller_manager/
 |--------|------|----------|--------|------|
 | **rt_loop** | 2 | SCHED_FIFO 90 | 500 Hz + 50 Hz | `clock_nanosleep` 제어 루프 + 워치독 |
 | **sensor_executor** | 3 | SCHED_FIFO 70 | 이벤트 | 디바이스별 JointState, MotorState, SensorState, Target 구독 |
-| **log_executor** | 4 | SCHED_OTHER -5 | 100 Hz | `SpscLogBuffer` -> CSV 드레인 + 타이밍 서머리 출력 |
+| **log_executor** | 4 | SCHED_OTHER -5 | 100 Hz | `cm_timing_log.csv` 드레인 + 1초 타이밍 서머리 + deferred E-STOP 메시지 (Phase C 이후 controller 데이터 CSV 는 각 controller LifecycleNode 가 자체 드레인) |
 | **publish_thread** | 5 | SCHED_OTHER -3 | 이벤트 | SPSC 드레인 → ROS2 `publish()` (eventfd wakeup, 모든 DDS 직렬화/시스콜 처리) |
 | **aux_executor** | 5 | SCHED_OTHER 0 | 이벤트 | 컨트롤러 전환, E-STOP 상태 퍼블리시, 컨트롤러 LifecycleNode parameter 콜백 (게인 채널) |
 

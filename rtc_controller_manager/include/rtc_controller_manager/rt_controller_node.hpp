@@ -2,8 +2,6 @@
 
 // ── Project headers
 // ───────────────────────────────────────────────────────────
-#include "rtc_base/logging/data_logger.hpp"
-#include "rtc_base/logging/log_buffer.hpp"
 #include "rtc_base/threading/periodic_rt_thread.hpp"
 #include "rtc_base/threading/publish_buffer.hpp"
 #include "rtc_base/threading/seqlock.hpp"

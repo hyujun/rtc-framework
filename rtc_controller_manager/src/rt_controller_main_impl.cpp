@@ -19,9 +19,9 @@
 //   rt_loop          Core 2  SCHED_FIFO 90   clock_nanosleep 500Hz + 50Hz
 //   E-STOP publish_thread   Core 5  SCHED_OTHER -3   SPSC drain → all publish()
 //   calls sensor_executor  Core 3  SCHED_FIFO 70   /joint_states, /target,
-//   /hand subs log_executor     Core 4  SCHED_OTHER -5   SpscLogBuffer → CSV
-//   drain aux_executor     Core 5  SCHED_OTHER  0   E-STOP status + lifecycle
-//   services
+//   /hand subs log_executor     Core 4  SCHED_OTHER -5   cm_timing_log.csv
+//   drain + deferred E-STOP log aux_executor     Core 5  SCHED_OTHER  0 E-STOP
+//   status + lifecycle services
 
 #include "rtc_controller_manager/rt_controller_main.hpp"
 #include "rtc_controller_manager/rt_controller_node.hpp"

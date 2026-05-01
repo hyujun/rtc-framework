@@ -49,7 +49,7 @@ Channel-specific instantiations:
 ## Lock-Free Rules
 
 - **SeqLock<T>**: single-writer/multi-reader, requires `is_trivially_copyable_v<T>`
-- **SpscLogBuffer/SpscPublishBuffer<512>**: wait-free push (drops on full), power-of-2
+- **SpscQueue<T,N> / SpscPublishBuffer<512>**: wait-free push (drops on full), power-of-2 (controller data CSVs use `ThreadCsvProducer<Pod, N>` which wraps `SpscQueue` — Phase C)
 - **try_lock only** on RT path (never block), `lock_guard` on non-RT `SetDeviceTarget()`
 - **jthread + stop_token** for cooperative cancellation
 - **Separate mutexes**: `state_mutex_`, `target_mutex_`, `hand_mutex_` -- never hold more than one

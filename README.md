@@ -209,7 +209,7 @@ PID=$(pgrep -f ur5e_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep
 |--------|------|------|----------|----------|------|
 | `rt_loop` | jthread (clock_nanosleep) | 2 | SCHED_FIFO | 90 | ControlLoop 500Hz + CheckTimeouts 50Hz |
 | `sensor_executor` | ROS2 Executor | 3 | SCHED_FIFO | 70 | /joint_states, /target_joint_positions 구독 |
-| `log_executor` | ROS2 Executor | 4 | SCHED_OTHER | nice -5 | CSV 3-파일 로깅 (SpscLogBuffer drain) |
+| `log_executor` | ROS2 Executor | 4 | SCHED_OTHER | nice -5 | `cm_timing_log.csv` 드레인 + deferred E-STOP 로그 (Phase C 이후 controller-owned CSV 는 각 controller LifecycleNode 소유) |
 | `mpc_main` (Phase 5) | jthread | 4 | SCHED_FIFO | 60 | 20 Hz MPC solve, TripleBuffer publish (6코어는 logging과 공유; 8+코어는 dedicated) |
 | `publish_thread` | jthread (SPSC drain) | 5 | SCHED_OTHER | nice -3 | ROS2 publish offload (ControlPublishBuffer) |
 | `aux_executor` | ROS2 Executor | 5 | SCHED_OTHER | 0 | E-STOP 상태 퍼블리시 |
