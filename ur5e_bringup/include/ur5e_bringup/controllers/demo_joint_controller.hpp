@@ -26,10 +26,13 @@
 #include <rclcpp/parameter.hpp>
 #include <rtc_msgs/srv/grasp_command.hpp>
 
+#include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/grasp/grasp_controller.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 #include "ur5e_bringup/controllers/owned_topics.hpp"
+#include "ur5e_bringup/logging/device_sensor_log_pod.hpp"
+#include "ur5e_bringup/logging/device_state_log_pod.hpp"
 #include "ur5e_description/ur5e_constants.hpp"
 
 namespace ur5e_bringup {
@@ -283,6 +286,45 @@ private:
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
       param_callback_handle_;
   rclcpp::Service<rtc_msgs::srv::GraspCommand>::SharedPtr grasp_command_srv_;
+
+  // ── Phase C (controller-owned CSV logging) ──────────────────────────────
+  //
+  // Declared via `logs:` section in YAML; each entry maps an rtc_msgs/<*Log>
+  // type to a CSV under
+  // `<session>/controllers/demo_joint_controller/<instance>.csv`. Push site is
+  // *only* inside Compute() (Q-ACTIVITY-GATING) — drain timer runs on a non-RT
+  // callback group at 100 ms and writes pending rows.
+  //
+  // Coexists with the legacy CM-side DataLogger path during Phase C transition
+  // (parallel write for byte-comparison); Track R removes the legacy side.
+  struct ParsedLogEntry {
+    std::string msg_type;
+    std::string instance;
+  };
+  std::vector<ParsedLogEntry> parsed_log_entries_;
+
+  rtc::ControllerLogSet log_set_{"demo_joint_controller"};
+  rtc::LogHandle<ur5e::DeviceStateLogPod> ur5e_state_log_handle_;
+  rtc::LogHandle<ur5e::DeviceStateLogPod> hand_state_log_handle_;
+  rtc::LogHandle<ur5e::DeviceSensorLogPod> hand_sensor_log_handle_;
+
+  // Captured at on_configure for header expansion (not RT).
+  std::vector<std::string> ur5e_joint_names_;
+  std::vector<std::string> hand_joint_names_;
+  std::vector<std::string> hand_motor_names_;
+  std::vector<std::string> hand_sensor_names_;
+
+  rclcpp::CallbackGroup::SharedPtr log_drain_cb_group_;
+  rclcpp::TimerBase::SharedPtr log_drain_timer_;
+
+  void FillUr5eStateLogPod(const ControllerState &state,
+                           const ControllerOutput &output,
+                           ur5e::DeviceStateLogPod &pod) const noexcept;
+  void FillHandStateLogPod(const ControllerState &state,
+                           const ControllerOutput &output,
+                           ur5e::DeviceStateLogPod &pod) const noexcept;
+  void FillHandSensorLogPod(const ControllerState &state,
+                            ur5e::DeviceSensorLogPod &pod) const noexcept;
 };
 
 } // namespace ur5e_bringup
