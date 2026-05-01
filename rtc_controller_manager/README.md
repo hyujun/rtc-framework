@@ -279,7 +279,7 @@ CM RT loop와 MPC thread 모두 두 가지 base 인프라를 공유한다: (1) [
 
 | 채널 | Producer 멤버 | Logger | CSV 경로 | Schema (payload 컬럼) |
 |------|--------------|--------|----------|----------------------|
-| CM RT loop (500 Hz) | `cm_timing_producer_` (`ThreadTimingProducer<RtTickTimingPayload, 512>`) | `cm_timing_logger_` | `<session>/controller/cm_timing_log.csv` | `t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` |
+| CM RT loop (500 Hz) | `cm_timing_producer_` (`ThreadTimingProducer<RtTickTimingPayload, 512>`) | `cm_timing_logger_` | `<session>/timing/cm_timing_log.csv` | `t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` |
 | MPC thread (≤ 100 Hz, per-controller) | `MPCThread::TimingProducer()` (`ThreadTimingProducer<RtTickTimingPayload, 128>`) | `MpcTimingLogger` (controller-owned) | `<session>/controllers/<config_key>/mpc_timing_log.csv` | `t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` |
 
 공통 컬럼 `t_wall_ns, tick_count`는 `ThreadTimingCsvLogger`가 자동으로 emit. `tick_count`는 producer-side monotonic 시퀀스 번호 (drop 검증용). CM/MPC 두 thread가 동일한 5-컬럼 payload schema (`rtc_base/timing/rt_tick_timing_sample.hpp`)를 공유하므로 cross-thread 분석 도구 한 세트가 두 CSV를 모두 처리한다.

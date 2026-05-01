@@ -469,7 +469,9 @@ void RtControllerNode::DeclareAndLoadParameters() {
     std::filesystem::create_directories(ctrl_dir);
 
     if (enable_timing) {
-      const auto timing_path = ctrl_dir / "cm_timing_log.csv";
+      const auto timing_dir = urtc::TimingDir(session_dir);
+      std::filesystem::create_directories(timing_dir);
+      const auto timing_path = timing_dir / "cm_timing_log.csv";
       if (!cm_timing_logger_.Open(timing_path, &urtc::WriteRtTickTimingHeader,
                                   &urtc::WriteRtTickTimingRow)) {
         RCLCPP_WARN(get_logger(),

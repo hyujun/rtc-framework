@@ -419,7 +419,7 @@ private:
   rtc::ControlLogBuffer log_buffer_{};              // SPSC ring buffer
   rtc::ControllerTimingProfiler timing_profiler_{}; // Compute() timing
 
-  // Per-tick RT-loop timing → <session>/controller/cm_timing_log.csv.
+  // Per-tick RT-loop timing → <session>/timing/cm_timing_log.csv.
   // Producer (RT thread, ControlLoop) pushes one RtTickTimingPayload per
   // tick; consumer (log thread, DrainLog at 100 Hz) drains into the CSV
   // logger. Schema is shared with the MPC thread — see
