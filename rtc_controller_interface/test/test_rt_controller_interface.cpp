@@ -252,7 +252,6 @@ TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigPublishEntries) {
   bool has_ros2_command = false;
   bool has_gui_position = false;
   bool has_robot_target = false;
-  bool has_state_log = false;
 
   for (const auto &[name, group] : cfg.groups) {
     if (name != "ur5e") {
@@ -272,9 +271,6 @@ TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigPublishEntries) {
       case rtc::PublishRole::kRobotTarget:
         has_robot_target = true;
         break;
-      case rtc::PublishRole::kDeviceStateLog:
-        has_state_log = true;
-        break;
       default:
         break;
       }
@@ -285,7 +281,6 @@ TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigPublishEntries) {
   EXPECT_TRUE(has_ros2_command);
   EXPECT_TRUE(has_gui_position);
   EXPECT_TRUE(has_robot_target);
-  EXPECT_TRUE(has_state_log);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -489,7 +484,7 @@ TEST(RTControllerInterfaceTest, ParseTopicConfigDataSizePreserved) {
   const auto node = YAML::Load(R"(
 robot:
   publish:
-    - {topic: /log, role: device_state_log, data_size: 30}
+    - {topic: /cmd, role: ros2_command, data_size: 30}
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
 
@@ -521,6 +516,9 @@ alpha_device:
 }
 
 TEST(RTControllerInterfaceTest, ParseTopicConfigAllPublishRoles) {
+  // Phase C: device_state_log / device_sensor_log roles removed; controller
+  // data CSVs flow through ControllerLogSet under the top-level `logs:`
+  // section instead.
   const auto node = YAML::Load(
       R"(
 robot:
@@ -529,8 +527,6 @@ robot:
     - {topic: /b, role: ros2_command}
     - {topic: /c, role: gui_position}
     - {topic: /d, role: robot_target}
-    - {topic: /e, role: device_state_log}
-    - {topic: /f, role: device_sensor_log}
     - {topic: /g, role: grasp_state}
     - {topic: /h, role: tof_snapshot}
     - {topic: /i, role: digital_twin_state}
@@ -539,7 +535,7 @@ robot:
 
   for (const auto &[name, group] : cfg.groups) {
     if (name == "robot") {
-      EXPECT_EQ(group.publish.size(), std::size_t{9});
+      EXPECT_EQ(group.publish.size(), std::size_t{7});
       return;
     }
   }

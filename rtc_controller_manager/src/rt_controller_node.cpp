@@ -229,8 +229,6 @@ RtControllerNode::on_cleanup(const rclcpp_lifecycle::State & /*state*/) {
   joint_command_publishers_.clear();
   gui_position_publishers_.clear();
   robot_target_publishers_.clear();
-  device_state_log_publishers_.clear();
-  device_sensor_log_publishers_.clear();
   grasp_state_publishers_.clear();
   tof_snapshot_publishers_.clear();
   digital_twin_publishers_.clear();
@@ -313,8 +311,6 @@ RtControllerNode::on_error(const rclcpp_lifecycle::State & /*state*/) {
   joint_command_publishers_.clear();
   gui_position_publishers_.clear();
   robot_target_publishers_.clear();
-  device_state_log_publishers_.clear();
-  device_sensor_log_publishers_.clear();
   grasp_state_publishers_.clear();
   tof_snapshot_publishers_.clear();
   digital_twin_publishers_.clear();

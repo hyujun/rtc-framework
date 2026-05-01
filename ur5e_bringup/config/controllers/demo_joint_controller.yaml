@@ -58,8 +58,6 @@ demo_joint_controller:
         - topic: "ur5e/gui_position"
           role: "gui_position"
           ownership: "controller"
-        - topic: "/ur5e/state_log"
-          role: "device_state_log"
     hand:
       subscribe:
         - topic: "hand/joint_goal"
@@ -77,10 +75,6 @@ demo_joint_controller:
         - topic: "hand/gui_position"
           role: "gui_position"
           ownership: "controller"
-        - topic: "/hand/state_log"
-          role: "device_state_log"
-        - topic: "/hand/sensor_log"
-          role: "device_sensor_log"
         - topic: "hand/grasp_state"
           role: "grasp_state"
           ownership: "controller"
@@ -92,9 +86,7 @@ demo_joint_controller:
   # Each entry maps an rtc_msgs/<*Log> message type to a CSV file under
   # <session>/controllers/<config_key>/<instance>.csv. Schema is the
   # corresponding rtc_msgs message; RT path uses ur5e_bringup POD mirrors
-  # (kMaxJoints=16, kMaxFingertips=8). Legacy `role: device_state_log` /
-  # `device_sensor_log` rows above remain during Phase C transition for
-  # byte-compare against this new path; Track R removes them.
+  # (kMaxJoints=16, kMaxFingertips=8).
   logs:
     - msg_type: rtc_msgs/DeviceStateLog
       instance: ur5e

@@ -27,12 +27,12 @@ const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
     {"ros2_command", PublishRole::kRos2Command},
     // GUI / Monitoring
     {"gui_position", PublishRole::kGuiPosition},
-    // Topic-based State/Command/Goal/Log
+    // Topic-based State/Command/Goal
     {"robot_target", PublishRole::kRobotTarget},
     // backward compat
     {"joint_goal", PublishRole::kRobotTarget},
-    {"device_state_log", PublishRole::kDeviceStateLog},
-    {"device_sensor_log", PublishRole::kDeviceSensorLog},
+    // (Phase C: device_state_log / device_sensor_log roles removed —
+    // controller data CSVs flow through ControllerLogSet now.)
     {"grasp_state", PublishRole::kGraspState},
     {"wbc_state", PublishRole::kWbcState},
     {"tof_snapshot", PublishRole::kToFSnapshot},
@@ -218,7 +218,8 @@ RTControllerInterface::MakeDefaultTopicConfig(const std::string &device_name) {
       {"/forward_position_controller/commands", PublishRole::kRos2Command, 0},
       {ns + "/gui_position", PublishRole::kGuiPosition, 0},
       {ns + "/robot_target", PublishRole::kRobotTarget, 0},
-      {ns + "/state_log", PublishRole::kDeviceStateLog, 0},
+      // (Phase C: legacy device_state_log entry removed — controller-owned
+      // CSV via ControllerLogSet replaces it.)
   };
   cfg[device_name].capability = InferCapability(cfg[device_name]);
 

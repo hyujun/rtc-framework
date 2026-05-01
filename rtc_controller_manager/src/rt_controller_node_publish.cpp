@@ -167,79 +167,9 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig &cfg) {
         it->second.publisher->publish(m);
         return;
       }
-      case urtc::PublishRole::kDeviceStateLog: {
-        auto it = device_state_log_publishers_.find(pt.topic_name);
-        if (it == device_state_log_publishers_.end()) {
-          return;
-        }
-        auto &m = it->second.msg;
-        m.header.stamp.sec = sec;
-        m.header.stamp.nanosec = nsec;
-        m.command_type = cmd_type_str;
-        m.goal_type = urtc::GoalTypeToString(gc.goal_type);
-        // Use the larger of controller output channels and device state
-        // channels so that actual_positions are always logged even when
-        // the controller skips a device (E-Stop, valid=false).
-        const auto unc = static_cast<std::size_t>(nc);
-        const auto n = std::min(
-            std::max(unc, static_cast<std::size_t>(gc.actual_num_channels)),
-            m.actual_positions.size());
-        for (std::size_t i = 0; i < n; ++i) {
-          m.actual_positions[i] = gc.actual_positions[i];
-          m.actual_velocities[i] = gc.actual_velocities[i];
-          m.efforts[i] = gc.efforts[i];
-          m.commands[i] = (i < unc) ? gc.commands[i] : 0.0;
-          m.joint_goal[i] = (i < unc) ? gc.goal_positions[i] : 0.0;
-          m.trajectory_positions[i] =
-              (i < unc) ? gc.trajectory_positions[i] : 0.0;
-          m.trajectory_velocities[i] =
-              (i < unc) ? gc.trajectory_velocities[i] : 0.0;
-        }
-        std::copy(snap.task_goals[group_idx].begin(),
-                  snap.task_goals[group_idx].end(), m.task_goal.begin());
-        if (group_idx == 0) {
-          std::copy(snap.actual_task_positions.begin(),
-                    snap.actual_task_positions.end(),
-                    m.actual_task_positions.begin());
-        } else {
-          m.actual_task_positions.fill(0.0);
-        }
-        // Motor state fields
-        const auto nm =
-            std::min(static_cast<std::size_t>(gc.num_motor_channels),
-                     m.motor_positions.size());
-        for (std::size_t i = 0; i < nm; ++i) {
-          m.motor_positions[i] = gc.motor_positions[i];
-          m.motor_velocities[i] = gc.motor_velocities[i];
-          m.motor_efforts[i] = gc.motor_efforts[i];
-        }
-        it->second.publisher->publish(m);
-        return;
-      }
-      case urtc::PublishRole::kDeviceSensorLog: {
-        auto it = device_sensor_log_publishers_.find(pt.topic_name);
-        if (it == device_sensor_log_publishers_.end()) {
-          return;
-        }
-        auto &m = it->second.msg;
-        m.header.stamp.sec = sec;
-        m.header.stamp.nanosec = nsec;
-        const auto uns = static_cast<std::size_t>(gc.num_sensor_channels);
-        for (std::size_t i = 0; i < uns && i < m.sensor_data_raw.size(); ++i) {
-          m.sensor_data_raw[i] = gc.sensor_data_raw[i];
-          m.sensor_data[i] = gc.sensor_data[i];
-        }
-        m.inference_valid = gc.inference_valid;
-        if (gc.inference_valid && gc.num_inference_values > 0) {
-          const auto univ = static_cast<std::size_t>(gc.num_inference_values);
-          for (std::size_t i = 0; i < univ && i < m.inference_output.size();
-               ++i) {
-            m.inference_output[i] = gc.inference_output[i];
-          }
-        }
-        it->second.publisher->publish(m);
-        return;
-      }
+      // (Phase C: kDeviceStateLog / kDeviceSensorLog publish branches
+      // removed — controller-owned ControllerLogSet writes the same data
+      // directly to <session>/controllers/<key>/*.csv.)
       case urtc::PublishRole::kGraspState: {
         auto it = grasp_state_publishers_.find(pt.topic_name);
         if (it == grasp_state_publishers_.end()) {

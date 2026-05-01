@@ -71,7 +71,7 @@ struct PublishSnapshot {
   // ── Shared data (group-independent) ────────────────────────────────────
   CommandType command_type{CommandType::kPosition};
   std::array<double, kTaskSpaceDim> actual_task_positions{};
-  // Per-group task goals (for kRobotTarget / kDeviceStateLog)
+  // Per-group task goals (for kRobotTarget; Phase C kDeviceStateLog removed)
   std::array<std::array<double, kTaskSpaceDim>, kMaxGroups> task_goals{};
 
   // JointCommand header stamp (monotonic nanoseconds)

@@ -14,8 +14,6 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/lifecycle_publisher.hpp>
-#include <rtc_msgs/msg/device_sensor_log.hpp>
-#include <rtc_msgs/msg/device_state_log.hpp>
 #include <rtc_msgs/msg/grasp_state.hpp>
 #include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/msg/hand_sensor_state.hpp>
@@ -276,12 +274,8 @@ private:
   std::unordered_map<std::string,
                      TypedPublisherEntry<rtc_msgs::msg::RobotTarget>>
       robot_target_publishers_;
-  std::unordered_map<std::string,
-                     TypedPublisherEntry<rtc_msgs::msg::DeviceStateLog>>
-      device_state_log_publishers_;
-  std::unordered_map<std::string,
-                     TypedPublisherEntry<rtc_msgs::msg::DeviceSensorLog>>
-      device_sensor_log_publishers_;
+  // (Phase C: device_state_log_publishers_ / device_sensor_log_publishers_
+  // removed — controller-owned ControllerLogSet replaces them.)
   std::unordered_map<std::string,
                      TypedPublisherEntry<rtc_msgs::msg::GraspState>>
       grasp_state_publishers_;

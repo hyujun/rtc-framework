@@ -350,10 +350,10 @@ enum class PublishRole {
   kRos2Command,  // Float64MultiArray (ros2_control 전용)
   // GUI / Monitoring
   kGuiPosition, // rtc_msgs/GuiPosition (joint_pos + task_pos)
-  // Topic-based State/Command/Goal/Log
-  kRobotTarget,     // rtc_msgs/RobotTarget (joint/task 목표)
-  kDeviceStateLog,  // rtc_msgs/DeviceStateLog (통합 상태 로그)
-  kDeviceSensorLog, // rtc_msgs/DeviceSensorLog (센서 + inference 로그)
+  // Topic-based State/Command/Goal
+  kRobotTarget, // rtc_msgs/RobotTarget (joint/task 목표)
+  // (Phase C: kDeviceStateLog / kDeviceSensorLog removed — controller
+  // data CSVs flow through ControllerLogSet, not CM publish.)
   // Digital Twin
   kDigitalTwinState, // sensor_msgs/JointState (RELIABLE republish for digital
                      // twin)
@@ -502,10 +502,6 @@ PublishRoleToString(PublishRole role) noexcept {
     return "gui_position";
   case PublishRole::kRobotTarget:
     return "robot_target";
-  case PublishRole::kDeviceStateLog:
-    return "device_state_log";
-  case PublishRole::kDeviceSensorLog:
-    return "device_sensor_log";
   case PublishRole::kDigitalTwinState:
     return "digital_twin_state";
   case PublishRole::kGraspState:

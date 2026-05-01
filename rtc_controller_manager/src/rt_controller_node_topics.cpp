@@ -232,54 +232,9 @@ void RtControllerNode::CreatePublishers() {
       log_pub("robot_target");
       return;
     }
-    case urtc::PublishRole::kDeviceStateLog: {
-      if (device_state_log_publishers_.count(entry.topic_name) > 0) {
-        return;
-      }
-      TypedPublisherEntry<rtc_msgs::msg::DeviceStateLog> pe;
-      pe.publisher = create_publisher<rtc_msgs::msg::DeviceStateLog>(
-          entry.topic_name, cmd_qos);
-      pe.msg.joint_names.assign(joint_names.begin(), joint_names.end());
-      pe.msg.actual_positions.resize(n, 0.0);
-      pe.msg.actual_velocities.resize(n, 0.0);
-      pe.msg.efforts.resize(n, 0.0);
-      pe.msg.commands.resize(n, 0.0);
-      pe.msg.command_type = "position";
-      pe.msg.goal_type = "joint";
-      pe.msg.joint_goal.resize(n, 0.0);
-      pe.msg.trajectory_positions.resize(n, 0.0);
-      pe.msg.trajectory_velocities.resize(n, 0.0);
-      if (cfg_it != device_name_configs_.end() &&
-          !cfg_it->second.motor_state_names.empty()) {
-        const auto &mnames = cfg_it->second.motor_state_names;
-        const auto nm = mnames.size();
-        pe.msg.motor_names.assign(mnames.begin(), mnames.end());
-        pe.msg.motor_positions.resize(nm, 0.0);
-        pe.msg.motor_velocities.resize(nm, 0.0);
-        pe.msg.motor_efforts.resize(nm, 0.0);
-      }
-      device_state_log_publishers_[entry.topic_name] = std::move(pe);
-      log_pub("device_state_log");
-      return;
-    }
-    case urtc::PublishRole::kDeviceSensorLog: {
-      if (device_sensor_log_publishers_.count(entry.topic_name) > 0) {
-        return;
-      }
-      TypedPublisherEntry<rtc_msgs::msg::DeviceSensorLog> pe;
-      pe.publisher = create_publisher<rtc_msgs::msg::DeviceSensorLog>(
-          entry.topic_name, cmd_qos);
-      pe.msg.sensor_names.assign(sensor_names.begin(), sensor_names.end());
-      // Pre-allocate to max sensor channels to avoid resize() in publish loop
-      const auto max_sc = static_cast<std::size_t>(urtc::kMaxSensorChannels);
-      pe.msg.sensor_data_raw.resize(max_sc, 0);
-      pe.msg.sensor_data.resize(max_sc, 0);
-      const auto max_inf = static_cast<std::size_t>(urtc::kMaxInferenceValues);
-      pe.msg.inference_output.resize(max_inf, 0.0f);
-      device_sensor_log_publishers_[entry.topic_name] = std::move(pe);
-      log_pub("device_sensor_log");
-      return;
-    }
+    // (Phase C: kDeviceStateLog / kDeviceSensorLog publisher creation
+    // removed — controller-owned ControllerLogSet writes the same data
+    // directly to <session>/controllers/<key>/*.csv.)
     case urtc::PublishRole::kGraspState: {
       if (grasp_state_publishers_.count(entry.topic_name) > 0) {
         return;

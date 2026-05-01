@@ -76,8 +76,6 @@ demo_task_controller:
         - topic: "ur5e/gui_position"
           role: "gui_position"
           ownership: "controller"
-        - topic: "/ur5e/state_log"
-          role: "device_state_log"
     hand:
       subscribe:
         - topic: "hand/joint_goal"
@@ -95,10 +93,6 @@ demo_task_controller:
         - topic: "hand/gui_position"
           role: "gui_position"
           ownership: "controller"
-        - topic: "/hand/state_log"
-          role: "device_state_log"
-        - topic: "/hand/sensor_log"
-          role: "device_sensor_log"
         - topic: "hand/grasp_state"
           role: "grasp_state"
           ownership: "controller"
